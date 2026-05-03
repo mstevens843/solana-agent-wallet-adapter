@@ -29,6 +29,9 @@ importers:
       '@solana-agent-wallet-adapter/wallet-standard-web':
         specifier: workspace:*
         version: link:../../packages/wallet-standard-web
+      '@solana/web3.js':
+        specifier: ^1.95.0
+        version: 1.98.4(bufferutil@4.1.0)(typescript@5.9.3)(utf-8-validate@5.0.10)
     devDependencies:
       typescript:
         specifier: ^5.6.0

@@ -48,6 +48,72 @@ button.primary {
   color: #ffffff;
 }
 
+.toast-stack {
+  display: grid;
+  gap: 12px;
+  max-width: min(420px, calc(100vw - 32px));
+  position: fixed;
+  right: 18px;
+  top: 18px;
+  z-index: 20;
+}
+
+.toast {
+  align-items: start;
+  background: rgba(255, 255, 255, 0.96);
+  border: 1px solid #cce3d6;
+  border-radius: 8px;
+  box-shadow: 0 18px 45px rgba(20, 61, 43, 0.18);
+  color: #245742;
+  display: grid;
+  gap: 12px;
+  grid-template-columns: auto 1fr auto;
+  padding: 16px;
+}
+
+.toast.error {
+  border-color: #efcaca;
+  color: #9d2528;
+}
+
+.toast-icon {
+  align-items: center;
+  background: #dff1e7;
+  border-radius: 50%;
+  display: inline-flex;
+  height: 32px;
+  justify-content: center;
+  width: 32px;
+}
+
+.toast.error .toast-icon {
+  background: #fff0f0;
+}
+
+.toast-icon svg {
+  fill: currentColor;
+  height: 22px;
+  width: 22px;
+}
+
+.toast p {
+  color: #53635b;
+  font-size: 0.96rem;
+  line-height: 1.4;
+  margin: 4px 0 0;
+}
+
+.toast strong {
+  font-size: 1.02rem;
+}
+
+.toast button {
+  border: 0;
+  color: inherit;
+  min-height: 24px;
+  padding: 0 6px;
+}
+
 .shell {
   margin: 0 auto;
   max-width: 1180px;
@@ -152,6 +218,26 @@ h2 {
   min-height: 560px;
 }
 
+.tabs {
+  background: #eef4f1;
+  border: 1px solid #d6dfd9;
+  border-radius: 8px;
+  display: inline-flex;
+  gap: 4px;
+  margin-bottom: 20px;
+  padding: 4px;
+}
+
+.tabs button {
+  border: 0;
+  min-height: 34px;
+}
+
+.tabs button.active {
+  background: #143d2b;
+  color: #ffffff;
+}
+
 .panel-header {
   align-items: start;
   display: flex;
@@ -162,6 +248,20 @@ h2 {
 .panel-header p {
   color: #65756d;
   margin-bottom: 0;
+}
+
+.panel-actions {
+  align-items: end;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+button.utility {
+  font-size: 0.9rem;
+  min-height: 36px;
+  padding: 0 12px;
+  white-space: nowrap;
 }
 
 .field {
@@ -248,11 +348,102 @@ textarea {
   background: #b52f32;
 }
 
-.action-grid {
-  align-items: end;
+.actions {
+  display: grid;
+  gap: 16px;
+}
+
+.message-actions {
+  display: flex;
+}
+
+.transaction-actions {
+  border-top: 1px solid #dbe4df;
   display: grid;
   gap: 12px;
-  grid-template-columns: minmax(150px, auto) 1fr minmax(150px, auto);
+  padding-top: 16px;
+}
+
+.transaction-action-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+}
+
+.transaction-action-row button,
+.message-actions button {
+  min-width: 170px;
+}
+
+.transaction-field textarea {
+  min-height: 132px;
+}
+
+.agent-grid {
+  display: grid;
+  gap: 16px;
+}
+
+.agent-prompt textarea {
+  min-height: 130px;
+}
+
+.agent-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+}
+
+.agent-actions button {
+  min-width: 170px;
+}
+
+.plan-card {
+  background: #f7faf8;
+  border: 1px solid #dbe4df;
+  border-radius: 8px;
+  margin-top: 20px;
+  padding: 18px;
+}
+
+.plan-card h3 {
+  font-size: 1.1rem;
+  margin: 10px 0 16px;
+}
+
+.risk-badge {
+  background: #e5eee9;
+  border-radius: 999px;
+  color: #245742;
+  display: inline-block;
+  font-size: 0.8rem;
+  font-weight: 800;
+  padding: 5px 10px;
+  text-transform: uppercase;
+}
+
+.plan-card dl {
+  display: grid;
+  gap: 12px;
+  margin: 0;
+}
+
+.plan-card div {
+  border-top: 1px solid #dbe4df;
+  display: grid;
+  gap: 8px;
+  grid-template-columns: 110px 1fr;
+  padding-top: 12px;
+}
+
+.plan-card dt {
+  color: #53635b;
+  font-weight: 800;
+}
+
+.plan-card dd {
+  color: #4a5a52;
+  margin: 0;
 }
 
 .compact {
@@ -261,11 +452,13 @@ textarea {
 
 .results,
 .empty,
+.notice,
 .error {
   margin-top: 20px;
 }
 
 .empty,
+.notice,
 .error {
   border-radius: 8px;
   padding: 14px;
@@ -274,6 +467,12 @@ textarea {
 .empty {
   background: #f2f6f4;
   color: #65756d;
+}
+
+.notice {
+  background: #eef7f2;
+  border: 1px solid #cce3d6;
+  color: #245742;
 }
 
 .error {
@@ -307,8 +506,20 @@ code {
 @media (max-width: 820px) {
   .hero,
   .workspace,
-  .action-grid,
   .result-row {
+    grid-template-columns: 1fr;
+  }
+
+  .panel-header,
+  .panel-actions,
+  .message-actions,
+  .transaction-action-row,
+  .agent-actions {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .plan-card div {
     grid-template-columns: 1fr;
   }
 

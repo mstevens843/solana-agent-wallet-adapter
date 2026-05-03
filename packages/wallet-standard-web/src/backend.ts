@@ -25,12 +25,21 @@ import {
   type StandardConnectFeature,
   type StandardDisconnectFeature,
 } from '@wallet-standard/features';
+import { Connection } from '@solana/web3.js';
 
 import { type DiscoveredWallet } from './discovery.js';
+
+export type SignAndSendStrategy = 'auto' | 'native' | 'sign-then-send';
+export type WalletStandardCommitment = 'processed' | 'confirmed' | 'finalized';
 
 export interface WalletStandardWebBackendOptions {
   wallet: Wallet | DiscoveredWallet;
   cluster: Cluster;
+  rpcUrl?: string;
+  signAndSendStrategy?: SignAndSendStrategy;
+  commitment?: WalletStandardCommitment;
+  skipPreflight?: boolean;
+  maxRetries?: number;
 }
 
 interface PendingApproval {
@@ -42,6 +51,11 @@ export class WalletStandardWebBackend implements WalletBackend {
   private readonly wallet: Wallet;
   private readonly cluster: Cluster;
   private readonly chain: string;
+  private readonly connection: Connection;
+  private readonly signAndSendStrategy: SignAndSendStrategy;
+  private readonly commitment: WalletStandardCommitment;
+  private readonly skipPreflight: boolean;
+  private readonly maxRetries: number;
   private readonly pending = new Map<SigningRequestId, PendingApproval>();
   private connectedAccount: WalletAccount | null = null;
 
@@ -50,6 +64,11 @@ export class WalletStandardWebBackend implements WalletBackend {
     this.wallet = wallet;
     this.cluster = options.cluster;
     this.chain = clusterToChain(options.cluster);
+    this.connection = new Connection(options.rpcUrl ?? clusterToRpcUrl(options.cluster), 'confirmed');
+    this.signAndSendStrategy = options.signAndSendStrategy ?? 'auto';
+    this.commitment = options.commitment ?? 'confirmed';
+    this.skipPreflight = options.skipPreflight ?? false;
+    this.maxRetries = options.maxRetries ?? 3;
 
     if (!wallet.chains.includes(this.chain as Wallet['chains'][number])) {
       throw new ProtocolError(
@@ -254,35 +273,95 @@ export class WalletStandardWebBackend implements WalletBackend {
       }
 
       case 'sign_and_send_transaction': {
-        const feature = features[SolanaSignAndSendTransaction] as
-          | SolanaSignAndSendTransactionFeature[typeof SolanaSignAndSendTransaction]
-          | undefined;
-        if (!feature) {
-          throw new ProtocolError(
-            'invalid_request',
-            `Wallet ${this.wallet.name} does not support sign_and_send_transaction.`,
-          );
-        }
-        const transaction = decodePayload(request.payload.data, request.payload.encoding);
-        const [output] = await feature.signAndSendTransaction({
-          account,
-          chain: this.chain as Parameters<typeof feature.signAndSendTransaction>[0]['chain'],
-          transaction,
-        });
-        if (!output) {
-          throw new ProtocolError('wallet_unreachable', 'Wallet returned no signature.');
-        }
-        const signature = bs58.encode(output.signature);
-        return {
-          requestId: request.id,
-          status: 'approved',
-          result: { signature, txid: signature },
-        };
+        return this.executeSignAndSend(request, account, features);
       }
 
       default:
         throw new ProtocolError('invalid_request', `Unsupported signing kind: ${request.kind}`);
     }
+  }
+
+  private async executeSignAndSend(
+    request: SigningRequest,
+    account: WalletAccount,
+    features: Record<string, unknown>,
+  ): Promise<ApprovalResource> {
+    const transaction = decodePayload(request.payload.data, request.payload.encoding);
+    const nativeFeature = features[SolanaSignAndSendTransaction] as
+      | SolanaSignAndSendTransactionFeature[typeof SolanaSignAndSendTransaction]
+      | undefined;
+    const useSignThenSend =
+      this.signAndSendStrategy === 'sign-then-send' ||
+      (this.signAndSendStrategy === 'auto' && isBackpack(this.wallet.name)) ||
+      !nativeFeature;
+
+    if (useSignThenSend) {
+      return this.signThenSend(request, account, features, transaction);
+    }
+
+    const latest = await this.connection.getLatestBlockhashAndContext(this.commitment);
+    const [output] = await nativeFeature.signAndSendTransaction({
+      account,
+      chain: this.chain as Parameters<typeof nativeFeature.signAndSendTransaction>[0]['chain'],
+      transaction,
+      options: {
+        minContextSlot: latest.context.slot,
+        preflightCommitment: this.commitment,
+        commitment: this.commitment,
+        skipPreflight: this.skipPreflight,
+        maxRetries: this.maxRetries,
+      },
+    });
+    if (!output) {
+      throw new ProtocolError('wallet_unreachable', 'Wallet returned no signature.');
+    }
+    const signature = bs58.encode(output.signature);
+    return {
+      requestId: request.id,
+      status: 'approved',
+      result: { signature, txid: signature },
+    };
+  }
+
+  private async signThenSend(
+    request: SigningRequest,
+    account: WalletAccount,
+    features: Record<string, unknown>,
+    transaction: Uint8Array,
+  ): Promise<ApprovalResource> {
+    const feature = features[SolanaSignTransaction] as
+      | SolanaSignTransactionFeature[typeof SolanaSignTransaction]
+      | undefined;
+    if (!feature) {
+      throw new ProtocolError(
+        'invalid_request',
+        `Wallet ${this.wallet.name} does not support sign_transaction or sign_and_send_transaction.`,
+      );
+    }
+
+    const [output] = await feature.signTransaction({
+      account,
+      chain: this.chain as Parameters<typeof feature.signTransaction>[0]['chain'],
+      transaction,
+      options: {
+        preflightCommitment: this.commitment,
+      },
+    });
+    if (!output) {
+      throw new ProtocolError('wallet_unreachable', 'Wallet returned no signed transaction.');
+    }
+
+    const txid = await this.connection.sendRawTransaction(output.signedTransaction, {
+      preflightCommitment: this.commitment,
+      skipPreflight: this.skipPreflight,
+      maxRetries: this.maxRetries,
+    });
+    await this.connection.confirmTransaction(txid, this.commitment);
+    return {
+      requestId: request.id,
+      status: 'approved',
+      result: { signature: txid, txid },
+    };
   }
 }
 
@@ -301,6 +380,23 @@ function clusterToChain(cluster: Cluster): string {
     case 'localnet':
       return 'solana:localnet';
   }
+}
+
+function clusterToRpcUrl(cluster: Cluster): string {
+  switch (cluster) {
+    case 'mainnet-beta':
+      return 'https://api.mainnet-beta.solana.com';
+    case 'testnet':
+      return 'https://api.testnet.solana.com';
+    case 'devnet':
+      return 'https://api.devnet.solana.com';
+    case 'localnet':
+      return 'http://127.0.0.1:8899';
+  }
+}
+
+function isBackpack(walletName: string): boolean {
+  return walletName.toLowerCase().includes('backpack');
 }
 
 function decodePayload(data: string, encoding: 'utf8' | 'base64'): Uint8Array {

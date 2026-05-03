@@ -12,7 +12,8 @@
   },
   "dependencies": {
     "@solana-agent-wallet-adapter/core": "workspace:*",
-    "@solana-agent-wallet-adapter/wallet-standard-web": "workspace:*"
+    "@solana-agent-wallet-adapter/wallet-standard-web": "workspace:*",
+    "@solana/web3.js": "^1.95.0"
   },
   "devDependencies": {
     "typescript": "^5.6.0",
