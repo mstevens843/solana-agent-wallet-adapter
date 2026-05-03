@@ -1,0 +1,37 @@
+{
+  "name": "@solana-agent-wallet-adapter/vercel-ai",
+  "version": "0.0.1",
+  "description": "Vercel AI SDK tools for the Solana Agent Wallet Adapter. Routes signing through the user's actual wallet with built-in needsApproval HITL.",
+  "license": "Apache-2.0",
+  "type": "module",
+  "main": "./dist/index.js",
+  "module": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist",
+    "src",
+    "README.md"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "clean": "rm -rf dist"
+  },
+  "dependencies": {
+    "@solana-agent-wallet-adapter/core": "workspace:*",
+    "zod": "^3.23.0"
+  },
+  "peerDependencies": {
+    "ai": "^4.0.0 || ^5.0.0"
+  },
+  "devDependencies": {
+    "ai": "^5.0.0",
+    "typescript": "^5.6.0"
+  }
+}

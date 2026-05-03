@@ -1,0 +1,10 @@
+{
+  "mcpServers": {
+    "solana-agent-wallet": {
+      "command": "node",
+      "args": [
+        "/ABSOLUTE/PATH/TO/solana-agent-wallet-adapter/packages/mcp-server/dist/bin/server.js"
+      ]
+    }
+  }
+}
