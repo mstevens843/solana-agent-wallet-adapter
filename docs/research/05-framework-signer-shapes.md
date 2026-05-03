@@ -1,10 +1,10 @@
-# 05 — Framework signer interface shapes
+# 05 - Framework signer interface shapes
 
 Concrete plug-in shape for each AI agent framework we'll ship adapter packages for.
 
 ## Per-framework reference
 
-### LangChain JS — `@langchain/core`
+### LangChain JS - `@langchain/core`
 
 [Reference](https://v03.api.js.langchain.com/classes/_langchain_core.tools.StructuredTool.html). Primary type: `StructuredTool` with Zod input schema.
 
@@ -31,7 +31,7 @@ class SolanaSignMessageTool extends StructuredTool {
 - Return type is string (or stringified JSON).
 - Human-in-the-loop is handled at the agent-executor level (LangGraph), not in the tool itself.
 
-### LangChain Python — `langchain-core`
+### LangChain Python - `langchain-core`
 
 [Source](https://github.com/langchain-ai/langchain/blob/master/libs/core/langchain_core/tools/base.py). Primary type: `BaseTool` with Pydantic schema.
 
@@ -50,11 +50,11 @@ class SolanaSignMessageTool(BaseTool):
     args_schema: Type[BaseModel] = SolanaSignMessageInput
 
     def _run(self, message: str, cluster: str) -> str:
-        # sync path — block on poll
+        # sync path - block on poll
         ...
 
     async def _arun(self, message: str, cluster: str) -> str:
-        # async path — await poll
+        # async path - await poll
         ...
 ```
 
@@ -62,9 +62,9 @@ class SolanaSignMessageTool(BaseTool):
 - Pydantic schema required.
 - Return type: any JSON-serializable.
 
-### Vercel AI SDK — `ai` package
+### Vercel AI SDK - `ai` package
 
-[Reference](https://ai-sdk.dev/docs/reference/ai-sdk-core/tool). Primary type: result of the `tool()` helper. **First-class `needsApproval` flag — best fit for our pattern.**
+[Reference](https://ai-sdk.dev/docs/reference/ai-sdk-core/tool). Primary type: result of the `tool()` helper. **First-class `needsApproval` flag - best fit for our pattern.**
 
 ```typescript
 import { tool } from 'ai';
@@ -84,11 +84,11 @@ export const solanaSignMessageTool = (backend: WalletBackend) => tool({
 });
 ```
 
-- `needsApproval: true | (input) => Promise<boolean>` — built-in human-in-the-loop. Should be the **first integration we ship** because it makes the demo cleaner than any other framework.
+- `needsApproval: true | (input) => Promise<boolean>` - built-in human-in-the-loop. Should be the **first integration we ship** because it makes the demo cleaner than any other framework.
 - Zod schemas.
 - `execute` can be sync or async.
 
-### Solana Agent Kit (sendaifun) — `solana-agent-kit`
+### Solana Agent Kit (sendaifun) - `solana-agent-kit`
 
 Covered in note 04. Implement `BaseWallet`. Plug into `SolanaAgentKit` constructor.
 
@@ -101,9 +101,9 @@ const agent = new SolanaAgentKit(wallet, rpcUrl, { OPENAI_API_KEY: '...' });
 ```
 
 - Async-only.
-- No tool wrapper — we plug at the wallet layer, lower than the tool layer.
+- No tool wrapper - we plug at the wallet layer, lower than the tool layer.
 
-### CrewAI — `crewai-tools`
+### CrewAI - `crewai-tools`
 
 [Docs](https://docs.crewai.com/en/learn/create-custom-tools). Primary type: `BaseTool` with Pydantic schema.
 
@@ -130,7 +130,7 @@ class SolanaSignMessageTool(BaseTool):
 - Pydantic schema must match `_run` parameter names.
 - No first-class human-in-the-loop; rely on the JSON-text + polling pattern from note 02.
 
-### Pydantic AI — `pydantic-ai`
+### Pydantic AI - `pydantic-ai`
 
 [Docs](https://pydantic.dev/docs/ai/tools-toolsets/tools/). Primary mechanism: `@agent.tool` / `@agent.tool_plain` decorators.
 
@@ -180,7 +180,7 @@ interface SolanaSigningClient {
 
 Adapters expose `SolanaSigningClient` as: a `BaseWallet` (Solana Agent Kit), a `tool({...})` (Vercel AI), a `StructuredTool` subclass (LangChain JS), a `BaseTool` subclass (LangChain Py + CrewAI), or a decorator-friendly function (Pydantic AI).
 
-## First integration to ship — Vercel AI SDK
+## First integration to ship - Vercel AI SDK
 
 **Pick Vercel AI first** because it has built-in `needsApproval` support, which makes the reference-agent demo show the approval UX without any additional plumbing. Order of subsequent integrations:
 

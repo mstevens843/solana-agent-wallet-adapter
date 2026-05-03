@@ -2,7 +2,7 @@
 <html lang="en">
   <head>
     <meta charset="utf-8" />
-    <title>Wallet Standard smoke — solana-agent-wallet-adapter</title>
+    <title>Wallet Standard smoke: solana-agent-wallet-adapter</title>
     <style>
       body {
         font-family: -apple-system, BlinkMacSystemFont, sans-serif;
@@ -40,7 +40,7 @@
     </style>
   </head>
   <body>
-    <h1>Wallet Standard smoke — solana-agent-wallet-adapter</h1>
+    <h1>Wallet Standard smoke: solana-agent-wallet-adapter</h1>
     <p>
       Smoke test for <code>@solana-agent-wallet-adapter/wallet-standard-web</code>.
       Have Phantom or Solflare browser extension installed and unlocked, then click the buttons below.
@@ -49,20 +49,17 @@
 
     <div class="row">
       <button id="list">1. List wallets</button>
+      <select id="wallet" aria-label="Wallet">
+        <option value="">Select wallet after listing</option>
+      </select>
       <button id="address">2. Get address</button>
       <button id="sign">3. Sign 'hello' on devnet</button>
     </div>
 
     <div class="label">Output</div>
-    <pre id="out">click a button…</pre>
+    <pre id="out">initializing smoke harness...</pre>
 
     <script type="module">
-      import {
-        listAvailableWallets,
-        WalletStandardWebBackend,
-      } from './packages/wallet-standard-web/dist/index.js';
-      import { SolanaSigningClient } from './packages/core/dist/index.js';
-
       const out = document.getElementById('out');
       const log = (label, value) => {
         out.textContent =
@@ -71,65 +68,120 @@
           (typeof value === 'string' ? value : JSON.stringify(value, null, 2));
       };
 
-      let cachedClient = null;
-      function clientFor(walletEntry) {
-        const backend = new WalletStandardWebBackend({
-          wallet: walletEntry,
-          cluster: 'devnet',
+      const reportError = (label, err) => {
+        log(label, {
+          message: err?.message ?? String(err),
+          stack: err?.stack,
         });
-        cachedClient = new SolanaSigningClient({ backend });
-        return cachedClient;
-      }
+      };
 
-      document.getElementById('list').addEventListener('click', () => {
-        try {
-          const wallets = listAvailableWallets();
-          log(
-            `Found ${wallets.length} wallet(s):`,
-            wallets.map((w) => ({
-              name: w.name,
-              chains: w.supportedChains,
-              features: w.features,
-            })),
-          );
-        } catch (err) {
-          log('list error:', err.message ?? String(err));
-        }
+      window.addEventListener('error', (event) => {
+        reportError('window error:', event.error ?? event.message);
       });
 
-      document.getElementById('address').addEventListener('click', async () => {
-        try {
-          const wallets = listAvailableWallets();
-          if (wallets.length === 0) {
-            log('No wallets registered. Install Phantom or Solflare.', '');
-            return;
-          }
-          const client = clientFor(wallets[0]);
-          const address = await client.getAddress();
-          log(`address (${wallets[0].name}):`, address);
-        } catch (err) {
-          log('address error:', err.message ?? String(err));
-        }
+      window.addEventListener('unhandledrejection', (event) => {
+        reportError('unhandled rejection:', event.reason);
       });
 
-      document.getElementById('sign').addEventListener('click', async () => {
-        try {
-          const wallets = listAvailableWallets();
-          if (wallets.length === 0) {
-            log('No wallets registered. Install Phantom or Solflare.', '');
-            return;
-          }
-          const client = clientFor(wallets[0]);
-          const result = await client.signMessage('hello', {
+      try {
+        const walletStandardWeb = await import(
+          './packages/wallet-standard-web/dist/index.js'
+        );
+        const core = await import('./packages/core/dist/index.js');
+        const { listAvailableWallets, WalletStandardWebBackend } =
+          walletStandardWeb;
+        const { SolanaSigningClient } = core;
+        const walletSelect = document.getElementById('wallet');
+
+        let cachedClient = null;
+        function clientFor(walletEntry) {
+          const backend = new WalletStandardWebBackend({
+            wallet: walletEntry,
             cluster: 'devnet',
-            summary: 'wallet-standard-web smoke test',
           });
-          log(`signed by ${wallets[0].name}:`, result);
-        } catch (err) {
-          log('sign error:', err.message ?? String(err));
+          cachedClient = new SolanaSigningClient({ backend });
+          return cachedClient;
         }
-      });
+
+        function refreshWalletSelect(wallets) {
+          const previous = walletSelect.value;
+          walletSelect.textContent = '';
+          for (const wallet of wallets) {
+            const option = document.createElement('option');
+            option.value = wallet.name;
+            option.textContent = wallet.name;
+            walletSelect.appendChild(option);
+          }
+          if (wallets.some((wallet) => wallet.name === previous)) {
+            walletSelect.value = previous;
+          }
+        }
+
+        function selectedWallet(wallets) {
+          if (wallets.length === 0) {
+            log('No wallets registered. Install Phantom or Solflare.', '');
+            return null;
+          }
+          const selectedName = walletSelect.value || wallets[0].name;
+          return wallets.find((wallet) => wallet.name === selectedName) ?? wallets[0];
+        }
+
+        document.getElementById('list').addEventListener('click', () => {
+          try {
+            const wallets = listAvailableWallets();
+            refreshWalletSelect(wallets);
+            log(
+              `Found ${wallets.length} wallet(s):`,
+              wallets.map((w) => ({
+                name: w.name,
+                chains: w.supportedChains,
+                features: w.features,
+              })),
+            );
+          } catch (err) {
+            reportError('list error:', err);
+          }
+        });
+
+        document.getElementById('address').addEventListener('click', async () => {
+          try {
+            const wallets = listAvailableWallets();
+            refreshWalletSelect(wallets);
+            const wallet = selectedWallet(wallets);
+            if (!wallet) {
+              return;
+            }
+            const client = clientFor(wallet);
+            const address = await client.getAddress();
+            log(`address (${wallet.name}):`, address);
+          } catch (err) {
+            reportError('address error:', err);
+          }
+        });
+
+        document.getElementById('sign').addEventListener('click', async () => {
+          try {
+            const wallets = listAvailableWallets();
+            refreshWalletSelect(wallets);
+            const wallet = selectedWallet(wallets);
+            if (!wallet) {
+              return;
+            }
+            const client = clientFor(wallet);
+            const result = await client.signMessage('hello', {
+              cluster: 'devnet',
+              summary: 'wallet-standard-web smoke test',
+            });
+            log(`signed by ${wallet.name}:`, result);
+          } catch (err) {
+            reportError('sign error:', err);
+          }
+        });
+
+        log('ready:', 'click a button');
+      } catch (err) {
+        reportError('module load error:', err);
+      }
     </script>
   </body>
 </html>
-

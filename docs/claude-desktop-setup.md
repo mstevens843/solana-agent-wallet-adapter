@@ -64,7 +64,7 @@ In a new chat, type the following one at a time. Expected agent behavior is in t
 |---|---|
 | "What's my Solana wallet address? Use the solana-agent-wallet tools." | Claude calls `solana_get_address`. Result: `{"address":"11111111111111111111111111111111"}` (the mock backend's hard-coded base58 zero address). |
 | "Sign the message 'hello' on devnet using the solana-agent-wallet tools." | Claude calls `solana_sign_message`. Result text starts with `Solana wallet approval pending. Request id: sar_…` and includes a `mock://approve/sar_…` URL plus the machine-readable JSON. Claude should narrate that approval is pending. |
-| "Now check approval `<paste the request id from above>`." | Claude calls `solana_check_approval`. Mock backend keeps it at `pending` indefinitely (it's a mock — no real wallet to advance it). The result text confirms the still-pending state. |
+| "Now check approval `<paste the request id from above>`." | Claude calls `solana_check_approval`. Mock backend keeps it at `pending` indefinitely (it's a mock - no real wallet to advance it). The result text confirms the still-pending state. |
 
 ### 6. What success looks like
 
@@ -83,4 +83,4 @@ In a new chat, type the following one at a time. Expected agent behavior is in t
 
 ### 8. Real-wallet smoke (later)
 
-The mock backend always stays pending so it's safe to register and click around without any real signing. Once `wallet-standard-web` is wired up to a real wallet (Phantom, Solflare in a browser), we'll do a real-wallet smoke that covers the full `pending → approved → signature` lifecycle. That's a follow-up task — for now, this mock smoke proves the protocol layer end-to-end in Claude Desktop.
+The mock backend always stays pending so it's safe to register and click around without any real signing. Once `wallet-standard-web` is wired up to a real wallet (Phantom, Solflare in a browser), we'll do a real-wallet smoke that covers the full `pending → approved → signature` lifecycle. That's a follow-up task - for now, this mock smoke proves the protocol layer end-to-end in Claude Desktop.

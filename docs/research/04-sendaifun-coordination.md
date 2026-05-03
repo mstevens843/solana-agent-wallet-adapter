@@ -1,10 +1,10 @@
-# 04 — Sendaifun / Solana Agent Kit coordination
+# 04 - Sendaifun / Solana Agent Kit coordination
 
 Are sendaifun about to ship features that overlap this project, and what's the right way to engage them.
 
 ## Findings
 
-### Solana Agent Kit v2 — current wallet backends
+### Solana Agent Kit v2 - current wallet backends
 
 [Source](https://github.com/sendaifun/solana-agent-kit/blob/v2/packages/core/src/types/wallet.ts). The `BaseWallet` interface:
 
@@ -25,11 +25,11 @@ export interface BaseWallet {
 Constructor: `new SolanaAgentKit(wallet: BaseWallet | EvmWallet, rpcUrl: string, apiKeys?: Record<string, string>)`
 
 Backends in the wild today:
-- **Privy** (multiple example starters) — embedded wallets, server-side signing, optional human confirmation via Privy's UI
-- **Turnkey** — fine-grained policies / rules
-- **Phantom** — browser hot-swap pattern
-- **OWS (Open Wallet Standard) via `owsWallet()`** — encrypted vault
-- **`KeypairWallet`** — local raw keypair (still present despite v2 security narrative; used by their own MCP)
+- **Privy** (multiple example starters) - embedded wallets, server-side signing, optional human confirmation via Privy's UI
+- **Turnkey** - fine-grained policies / rules
+- **Phantom** - browser hot-swap pattern
+- **OWS (Open Wallet Standard) via `owsWallet()`** - encrypted vault
+- **`KeypairWallet`** - local raw keypair (still present despite v2 security narrative; used by their own MCP)
 
 **No MWA, no Wallet Standard, no user-approval-flow backend.** The MCP they ship (`solana-mcp`) auto-signs with `KeypairWallet` and an env-var private key.
 
@@ -54,7 +54,7 @@ Backends in the wild today:
 
 ## Verdict
 
-**Overlap risk: LOW.** Sendaifun owns the **action execution layer** (swap, mint, transfer, stake — 50+ Solana actions). This project owns the **wallet adapter + user-approval layer**. Orthogonal scopes. Their MCP is custodial; ours is non-custodial — different products.
+**Overlap risk: LOW.** Sendaifun owns the **action execution layer** (swap, mint, transfer, stake - 50+ Solana actions). This project owns the **wallet adapter + user-approval layer**. Orthogonal scopes. Their MCP is custodial; ours is non-custodial - different products.
 
 Their plugin system + active Discussions page are explicitly open to extensions. No hostility detected.
 
@@ -66,7 +66,7 @@ Their plugin system + active Discussions page are explicitly open to extensions.
 
 Body should:
 1. Introduce `solana-agent-wallet-adapter` and explain the gap (MCP user-approval signing, non-custodial).
-2. Show that the project ships as a separate package implementing their existing `BaseWallet` interface — no changes required on their side.
+2. Show that the project ships as a separate package implementing their existing `BaseWallet` interface - no changes required on their side.
 3. Ask whether they'd be open to listing it as a recommended community backend alongside Privy / Turnkey / Phantom.
 4. Offer to mirror the API style of their existing backend examples for consistency.
 

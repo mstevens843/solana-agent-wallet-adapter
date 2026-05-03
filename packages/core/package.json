@@ -1,7 +1,7 @@
 {
   "name": "@solana-agent-wallet-adapter/core",
   "version": "0.0.1",
-  "description": "Core protocol types and helpers for the Solana Agent Wallet Adapter.",
+  "description": "Core protocol types and signing client for Solana AI agents that use the user's real wallet.",
   "license": "Apache-2.0",
   "type": "module",
   "main": "./dist/index.js",
@@ -21,6 +21,8 @@
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "vitest run",
+    "test:watch": "vitest",
     "clean": "rm -rf dist"
   },
   "devDependencies": {

@@ -2,23 +2,29 @@
   "name": "solana-agent-wallet-adapter",
   "version": "0.0.0",
   "private": true,
-  "description": "MWA for AI agents. MCP signing bridge plus framework integrations that let agents transact on Solana through the user's actual wallet, no custody.",
+  "description": "Real-wallet adapter for Solana AI agents. Route MCP and framework signing through the user's installed wallet, no custody.",
   "license": "Apache-2.0",
   "engines": {
     "node": ">=20"
   },
   "packageManager": "pnpm@10.33.0",
   "scripts": {
-    "build": "pnpm -r --filter \"./packages/*\" build",
-    "typecheck": "pnpm -r --filter \"./packages/*\" typecheck",
+    "build": "pnpm -r --filter \"./packages/*\" --filter \"./apps/*\" build",
+    "typecheck": "pnpm -r --filter \"./packages/*\" --filter \"./apps/*\" typecheck",
     "lint": "pnpm -r --filter \"./packages/*\" lint",
     "test": "pnpm -r --filter \"./packages/*\" test",
+    "demo:web": "pnpm demo:browser",
     "smoke:web": "vite",
+    "demo:browser": "pnpm -F @solana-agent-wallet-adapter/browser-demo dev",
+    "demo:browser:build": "pnpm -F @solana-agent-wallet-adapter/browser-demo build",
+    "demo:agent": "pnpm -F reference-agent dev",
+    "demo:agent:build": "pnpm -F reference-agent build",
     "clean": "pnpm -r exec rm -rf dist .turbo node_modules/.cache"
   },
   "devDependencies": {
     "@types/node": "^22.7.0",
     "typescript": "^5.6.0",
+    "vitest": "^2.1.0",
     "vite": "^5.4.0"
   }
 }

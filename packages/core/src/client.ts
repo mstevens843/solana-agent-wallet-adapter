@@ -5,6 +5,7 @@ import type {
   AdapterCapabilities,
   ApprovalResource,
   Cluster,
+  SimulationResult,
   SigningRequest,
   SigningResult,
 } from './types.js';
@@ -80,6 +81,24 @@ export class SolanaSigningClient {
     });
   }
 
+  async simulateTransaction(
+    transactionBase64: string,
+    options: Pick<SignRequestOptions, 'cluster' | 'summary'>,
+  ): Promise<SimulationResult> {
+    if (!this.backend.simulate) {
+      throw new ProtocolError(
+        'unsupported_method',
+        'The configured wallet backend does not support transaction simulation.',
+      );
+    }
+    const request = this.buildRequest({
+      kind: 'sign_transaction',
+      payload: { data: transactionBase64, encoding: 'base64' },
+      ...options,
+    });
+    return this.backend.simulate(request);
+  }
+
   cancel(requestId: string): Promise<void> {
     if (!this.backend.cancel) {
       return Promise.resolve();
@@ -95,16 +114,7 @@ export class SolanaSigningClient {
     pollIntervalMs?: number;
     timeoutMs?: number;
   }): Promise<SigningResult> {
-    const request: SigningRequest = {
-      id: newSigningRequestId(),
-      kind: spec.kind,
-      payload: spec.payload,
-      cluster: spec.cluster,
-    };
-    if (spec.summary !== undefined) {
-      request.display = { summary: spec.summary };
-    }
-
+    const request = this.buildRequest(spec);
     const initial = await this.backend.submit(request);
     const resolved = await this.waitForResolution(
       initial,
@@ -128,6 +138,24 @@ export class SolanaSigningClient {
       recoverable: false,
     };
     throw ProtocolError.fromPayload(errorPayload);
+  }
+
+  private buildRequest(spec: {
+    kind: SigningRequest['kind'];
+    payload: SigningRequest['payload'];
+    cluster: Cluster;
+    summary?: string;
+  }): SigningRequest {
+    const request: SigningRequest = {
+      id: newSigningRequestId(),
+      kind: spec.kind,
+      payload: spec.payload,
+      cluster: spec.cluster,
+    };
+    if (spec.summary !== undefined) {
+      request.display = { summary: spec.summary };
+    }
+    return request;
   }
 
   private async waitForResolution(

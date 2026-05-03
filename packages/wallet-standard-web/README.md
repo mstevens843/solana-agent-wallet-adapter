@@ -24,13 +24,14 @@ const server = createServer({ backend });
 - `listAvailableWallets()` enumerates browser wallets registered through the Wallet Standard `wallets` event bus and filters to those declaring `solana:*` chain support.
 - `WalletStandardWebBackend` implements `WalletBackend` from `@solana-agent-wallet-adapter/core`. It uses the `StandardConnect`, `SolanaSignMessage`, `SolanaSignTransaction`, and `SolanaSignAndSendTransaction` features.
 - Submitting a signing request returns a pending `ApprovalResource` immediately, then resolves it asynchronously when the wallet's popup confirmation completes. The MCP server polls or subscribes against the same backend.
+- Simulation is reported as `unsupported_method` because Wallet Standard does not define a generic simulation feature.
 
 ## Caveats
 
-- Browser-only. Cannot run in plain Node — needs `window` and a Wallet Standard registry. Use the mock backend (`@solana-agent-wallet-adapter/mcp-server` ships one) for CI tests.
+- Browser-only. Cannot run in plain Node - needs `window` and a Wallet Standard registry. Use the mock backend (`@solana-agent-wallet-adapter/mcp-server` ships one) for CI tests.
 - One backend instance per cluster; switching clusters requires a new instance.
 - The wallet must already be installed and registered with `getWallets()` before the backend constructs.
 
 ## Status
 
-Phase 1 implementation. Smoke-tested against the build pipeline; browser end-to-end smoke pending (B2d in the plan file).
+Phase 1 implementation. Unit-tested with a fake Wallet Standard wallet and smoke-tested with Backpack on devnet. Phantom and Solflare remain useful follow-up smokes.

@@ -1,4 +1,4 @@
-# 06 — Prior-Art Audit (2026-05-03)
+# 06 - Prior-Art Audit (2026-05-03)
 
 ## Why this exists
 
@@ -23,7 +23,7 @@ Pre-build sanity check before pushing further on Phase 1. Four parallel research
 
 | # | Project | Chain | Pattern | Why close / why not |
 |---|---|---|---|---|
-| 1 | **nikicat/mcp-wallet-signer** | EVM | MCP server opens local browser sign-page, EIP-6963 wallet discovery | **Structural twin — but EVM only.** 5-tool surface nearly identical to ours |
+| 1 | **nikicat/mcp-wallet-signer** | EVM | MCP server opens local browser sign-page, EIP-6963 wallet discovery | **Structural twin - but EVM only.** 5-tool surface nearly identical to ours |
 | 2 | **@phantom/mcp-server** (Feb 18, 2026) | Solana + EVM + BTC + Sui | Phantom *embedded* wallet via SSO | Closest Solana competitor; owns "Phantom + Claude" mindshare but uses embedded wallet |
 | 3 | **SeekerClaw** (Feb 27, 2026, Solana Mobile-boosted) | Solana | Foreground service on Seeker, Seed Vault hardware sign | Only mobile competitor with official Solana Mobile mindshare. Seeker-only, not generalized MWA |
 | 4 | **Trust Wallet Agent Kit (TWAK)** | Multichain incl. Solana | "WalletConnect mode" + autonomous mode | Exact two-mode framing to lift |
@@ -36,20 +36,20 @@ Pre-build sanity check before pushing further on Phase 1. Four parallel research
 
 ## Standards / tailwinds
 
-- **MCP SEP-1036 "URL Mode Elicitation"** — landed in MCP 2025-11-25 spec draft. Server returns `mode: "url"`, client opens URL out-of-band for "auth flows, payment processing, sensitive operations." Adopt this instead of inventing a pending-approval resource.
-- **ERC-8004 Trustless Agents** (Draft, 100+ contributors incl. Coinbase, MetaMask, ENS) — formally defines `agentWallet` field. Cite in README.
-- **ERC-7710/7715** — delegation/permission standards. Different model, same UX promise.
-- **MoonPay Open Wallet Standard** (Mar 23, 2026) — Solana Foundation co-signed. Foundation-level direction signal. Different model (library-managed keys with policy); their type shapes for the policy layer are worth lifting.
-- **Google Cloud Feb 2026 blog** — explicitly endorses "MCP-as-tx-builder, user-signs-separately" as the recommended secure architecture for blockchain agents. Pitch-deck validation.
-- **Vercel AI SDK v6 native `needsApproval: true`** (Feb 2026) — easiest first framework integration; HITL is built in.
+- **MCP SEP-1036 "URL Mode Elicitation"** - landed in MCP 2025-11-25 spec draft. Server returns `mode: "url"`, client opens URL out-of-band for "auth flows, payment processing, sensitive operations." Adopt this instead of inventing a pending-approval resource.
+- **ERC-8004 Trustless Agents** (Draft, 100+ contributors incl. Coinbase, MetaMask, ENS) - formally defines `agentWallet` field. Cite in README.
+- **ERC-7710/7715** - delegation/permission standards. Different model, same UX promise.
+- **MoonPay Open Wallet Standard** (Mar 23, 2026) - Solana Foundation co-signed. Foundation-level direction signal. Different model (library-managed keys with policy); their type shapes for the policy layer are worth lifting.
+- **Google Cloud Feb 2026 blog** - explicitly endorses "MCP-as-tx-builder, user-signs-separately" as the recommended secure architecture for blockchain agents. Pitch-deck validation.
+- **Vercel AI SDK v6 native `needsApproval: true`** (Feb 2026) - easiest first framework integration; HITL is built in.
 
 ## Per-framework integration matrix
 
 | Framework | Solana? | Custodial? | Notes |
 |---|---|---|---|
-| Solana Agent Kit (sendaifun) | Dominant | Pluggable; default custodial | `BaseWallet` interface matches our shape — **ship as adapter, not replacement** |
+| Solana Agent Kit (sendaifun) | Dominant | Pluggable; default custodial | `BaseWallet` interface matches our shape - **ship as adapter, not replacement** |
 | LangChain JS/Py | via SAK + GOAT | Mostly custodial | |
-| Vercel AI SDK | via SAK + GOAT | Custodial in examples | **v6 has native `needsApproval`** — easiest demo |
+| Vercel AI SDK | via SAK + GOAT | Custodial in examples | **v6 has native `needsApproval`** - easiest demo |
 | CrewAI | via SAK | Custodial typical | |
 | ElizaOS plugin-solana | Yes | Flat custodial (env var) | **Clear gap** |
 | Pydantic AI / Mastra / AutoGen / LlamaIndex / Smolagents / BeeAI | None | n/a | All open |
@@ -58,27 +58,27 @@ Pre-build sanity check before pushing further on Phase 1. Four parallel research
 
 ## Competitive risk timeline
 
-- **Phantom MCP** (~11 weeks ago) — biggest threat. They can extend `@phantom/mcp-server` to support extension/mobile-app passthrough at any time. **Multi-wallet + MWA is our durable moat** since Phantom won't ship those for Solflare/Backpack.
-- **MoonPay OWS** (6 weeks ago, Solana Foundation-backed) — standards-level competitor.
-- **SeekerClaw** (9 weeks ago, Solana Mobile-boosted) — owns "agent on mobile" mindshare today, but Seeker-only.
+- **Phantom MCP** (~11 weeks ago) - biggest threat. They can extend `@phantom/mcp-server` to support extension/mobile-app passthrough at any time. **Multi-wallet + MWA is our durable moat** since Phantom won't ship those for Solflare/Backpack.
+- **MoonPay OWS** (6 weeks ago, Solana Foundation-backed) - standards-level competitor.
+- **SeekerClaw** (9 weeks ago, Solana Mobile-boosted) - owns "agent on mobile" mindshare today, but Seeker-only.
 - **Frontier hackathon** closes **2026-05-11** (8 days from this audit). No public submission matches our exact pitch yet (submissions hidden until close).
 
 ## Recommended reframing (positioning)
 
 **Drop:** "First MCP server with user-approval signing for Solana." (nikicat owns the EVM concept; Phantom owns Solana + Claude mindshare.)
 
-**Adopt:** "The only open, multi-wallet, mobile-native MCP signing bridge that uses the user's *real installed wallet* — built on Solana standards (MCP URL Elicitation + Wallet Standard + MWA + ERC-8004 wallet-shape compatibility), not a vendor embedded wallet."
+**Adopt:** "The only open, multi-wallet, mobile-native MCP signing bridge that uses the user's *real installed wallet* - built on Solana standards (MCP URL Elicitation + Wallet Standard + MWA + ERC-8004 wallet-shape compatibility), not a vendor embedded wallet."
 
 **Three durable differentiators** (rank-ordered):
-1. **Multi-wallet** — Phantom + Solflare + Backpack + Glow (Phantom MCP is Phantom-only by definition)
-2. **Mobile-native via MWA** — Android passthrough to user's real installed wallet (no shipped competitor)
-3. **MCP URL-mode elicitation** — adopt SEP-1036 as the approval mechanism (protocol-level, future-proof)
+1. **Multi-wallet** - Phantom + Solflare + Backpack + Glow (Phantom MCP is Phantom-only by definition)
+2. **Mobile-native via MWA** - Android passthrough to user's real installed wallet (no shipped competitor)
+3. **MCP URL-mode elicitation** - adopt SEP-1036 as the approval mechanism (protocol-level, future-proof)
 
 ## What to NOT do
 
 - **Don't try to beat Phantom on Phantom-embedded UX.** They will always own that surface. Our pitch is multi-wallet + "user's real wallet."
 - **Don't fork sendaifun/solana-agent-kit.** Plug into their `BaseWallet` interface as an adapter.
-- **Don't claim "agentic wallet."** The term is captured by Cobo / Coinbase / MoonPay for *agent-owned* wallets. Use "agent wallet adapter" — emphasize *adapter*.
+- **Don't claim "agentic wallet."** The term is captured by Cobo / Coinbase / MoonPay for *agent-owned* wallets. Use "agent wallet adapter" - emphasize *adapter*.
 - **Don't roll a custom approval-resource format.** SEP-1036 URL elicitation is landing; align with the spec.
 - **Don't spend cycles on MoonPay OWS compatibility yet.** Different model; watch, don't integrate.
 

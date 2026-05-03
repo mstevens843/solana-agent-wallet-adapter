@@ -1,4 +1,4 @@
-# Sendaifun coordination RFC — draft
+# Sendaifun coordination RFC - draft
 
 Paste this as a new issue at <https://github.com/sendaifun/solana-agent-kit/issues/new>. Title and body separated.
 
@@ -13,15 +13,15 @@ RFC: alternate `BaseWallet` backend for user-approval signing flows (multi-walle
 ## Body
 
 ```markdown
-Hi sendaifun team — opening this as an RFC rather than a PR because the work plugs into your existing `BaseWallet` contract without requiring any changes on your side. Wanted to surface it early in case there's appetite for collaboration or a recommended-backend listing.
+Hi sendaifun team - opening this as an RFC rather than a PR because the work plugs into your existing `BaseWallet` contract without requiring any changes on your side. Wanted to surface it early in case there's appetite for collaboration or a recommended-backend listing.
 
 ## What I'm building
 
-`solana-agent-wallet-adapter` — a Solana wallet adapter for AI agents that routes signing through the user's actual installed wallet (Phantom, Solflare, Backpack) with no key custody. Three wallet backends:
+`solana-agent-wallet-adapter` - a Solana wallet adapter for AI agents that routes signing through the user's actual installed wallet (Phantom, Solflare, Backpack) with no key custody. Three wallet backends:
 
-- **Web** — Wallet Standard via `@wallet-standard/app`, working today
-- **Android** — real MWA via `@solana-mobile/mobile-wallet-adapter-protocol` (planned)
-- **iOS** — universal-link + AES-GCM session per wallet (planned, sibling repo `ios-solana-wallet-adapter`)
+- **Web** - Wallet Standard via `@wallet-standard/app`, working today
+- **Android** - real MWA via `@solana-mobile/mobile-wallet-adapter-protocol` (planned)
+- **iOS** - universal-link + AES-GCM session per wallet (planned, sibling repo `ios-solana-wallet-adapter`)
 
 Layered on top: an MCP server with user-approval signing for Claude Desktop / Cursor / Anthropic Agents, plus framework integration packages. First framework integration is Vercel AI SDK; second is intended to be Solana Agent Kit.
 
@@ -29,7 +29,7 @@ Repo: <https://github.com/mstevens843/solana-agent-wallet-adapter>
 
 ## Why I'm writing
 
-The plan is to ship `@solana-agent-wallet-adapter/solana-agent-kit` — a thin adapter that implements your `BaseWallet` interface so anyone using `SolanaAgentKit` can plug in a non-custodial, user-approval-driven backend alongside your existing Privy / Turnkey / Phantom examples. No changes to your repo required; the package would consume `BaseWallet` from `solana-agent-kit` as a peer dependency.
+The plan is to ship `@solana-agent-wallet-adapter/solana-agent-kit` - a thin adapter that implements your `BaseWallet` interface so anyone using `SolanaAgentKit` can plug in a non-custodial, user-approval-driven backend alongside your existing Privy / Turnkey / Phantom examples. No changes to your repo required; the package would consume `BaseWallet` from `solana-agent-kit` as a peer dependency.
 
 Two questions for you:
 
@@ -41,7 +41,7 @@ Two questions for you:
 
 Privy and Turnkey are excellent for embedded-wallet flows (one-tap onboarding, social login). They're not the right fit for users who already own Phantom, Solflare, or Backpack and don't want a separate wallet for their agent. The community pattern of "agent calls signTransaction → user approves in the wallet they already use → agent never holds a key" doesn't have a good story today on Solana Agent Kit.
 
-This adapter fills that gap and pairs naturally with the embedded options you ship — you can say "use Privy if you want managed, use this if you want user-controlled."
+This adapter fills that gap and pairs naturally with the embedded options you ship - you can say "use Privy if you want managed, use this if you want user-controlled."
 
 ## What's done
 
@@ -54,7 +54,7 @@ This adapter fills that gap and pairs naturally with the embedded options you sh
 
 Happy to chat in DM, on Twitter, or here. Whatever's easiest.
 
-— [your-handle]
+- [your-handle]
 ```
 ```
 

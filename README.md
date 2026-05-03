@@ -5,6 +5,7 @@ A Solana wallet adapter for AI agents. No custody, no env-var private keys, no P
 [![license: Apache-2.0](https://img.shields.io/badge/license-Apache--2.0-blue)](./LICENSE)
 [![packages: 5](https://img.shields.io/badge/packages-5-green)](./packages)
 [![status: phase 1](https://img.shields.io/badge/status-phase%201-yellow)](./PROGRESS.md)
+[![ci](https://github.com/mstevens843/solana-agent-wallet-adapter/actions/workflows/ci.yml/badge.svg)](https://github.com/mstevens843/solana-agent-wallet-adapter/actions/workflows/ci.yml)
 
 ```
                     agent calls a signing tool
@@ -67,10 +68,10 @@ Three minutes, mock backend, no real wallet required for the first pass.
 git clone git@github.com:mstevens843/solana-agent-wallet-adapter.git
 cd solana-agent-wallet-adapter
 pnpm install
-pnpm -r --filter "./packages/*" build
+pnpm build
 ```
 
-All five packages should report `Done`.
+All five packages and both demo apps should report `Done`.
 
 ### Register the MCP server with Claude Code
 
@@ -98,6 +99,16 @@ pnpm smoke:web
 Vite serves `http://localhost:5173/test.html`. With Phantom or Solflare unlocked in the same browser, click **List wallets** to see them appear, click **Get address** to authorize a connection, click **Sign hello on devnet** to round-trip a real signing flow.
 
 That is the full happy path. Five packages built, MCP server live, browser backend live, real wallet popup confirms a signature.
+
+### Polished browser demo
+
+For the public demo surface:
+
+```bash
+pnpm demo:browser
+```
+
+Open `http://127.0.0.1:5174`, choose Phantom, Solflare, Backpack, or any discovered Wallet Standard provider, connect, and sign the demo message. This is the fastest way to show the core difference against Phantom MCP and custodial agent wallets: the agent asks, but the user's existing installed wallet makes the signing decision.
 
 ## Three usage flavors
 
@@ -129,12 +140,13 @@ claude mcp add --scope user solana-agent-wallet \
 claude mcp list
 ```
 
-Five tools become available to the agent:
+Six tools become available to the agent:
 
 - `solana_get_address` returns the connected wallet address.
 - `solana_sign_message` requests a UTF-8 message signature.
 - `solana_sign_transaction` requests a transaction signature without broadcasting.
 - `solana_sign_and_send_transaction` signs and broadcasts in one approval.
+- `solana_simulate_transaction` returns a simulation preview when the backend supports it.
 - `solana_check_approval` polls the status of a pending approval.
 
 The mock backend ships with the binary, so the server runs with no real wallet attached and is ideal for first-time registration plus protocol smoke. Swap to a real backend (`wallet-standard-web` in a custom host today, `mwa-android` and `ios-deeplink` later) when you want the popup to actually fire.
@@ -206,7 +218,7 @@ This is the most leveraged integration in the repo. `SolanaAgentKit` ships fifty
 | --- | --- | --- |
 | [`@solana-agent-wallet-adapter/core`](./packages/core) | Protocol types, error model, `SolanaSigningClient` submit and poll wrapper | builds clean |
 | [`@solana-agent-wallet-adapter/mcp-server`](./packages/mcp-server) | MCP server with five signing tools, stdio + Streamable HTTP transports, mock backend for local smoke | builds clean, smoked |
-| [`@solana-agent-wallet-adapter/wallet-standard-web`](./packages/wallet-standard-web) | Browser `WalletBackend` over `@wallet-standard/app`, talks to any Solana Wallet Standard wallet | builds clean |
+| [`@solana-agent-wallet-adapter/wallet-standard-web`](./packages/wallet-standard-web) | Browser `WalletBackend` over `@wallet-standard/app`, talks to any Solana Wallet Standard wallet | builds clean, smoked with Backpack |
 | [`@solana-agent-wallet-adapter/vercel-ai`](./packages/vercel-ai) | Vercel AI SDK 5 tool definitions, four tools wrapping the core client | builds clean |
 | [`@solana-agent-wallet-adapter/solana-agent-kit`](./packages/solana-agent-kit) | `BaseWallet` adapter for sendaifun's `SolanaAgentKit` constructor | builds clean |
 
@@ -247,22 +259,22 @@ The full audit, including ten ranked competitors, the per-framework integration 
 
 The protocol is small enough to memorize. Six types do all the work.
 
-- **`WalletBackend`** (`packages/core/src/backend.ts`). The five-method interface every transport implements: `capabilities`, `getAddress`, `submit`, `poll`, optional `cancel`. If you can implement this against your wallet, every framework integration in the repo works for free.
+- **`WalletBackend`** (`packages/core/src/backend.ts`). The core interface every transport implements: `capabilities`, `getAddress`, `submit`, `poll`, optional `cancel`, optional `simulate`. If you can implement this against your wallet, every framework integration in the repo works for free.
 - **`SigningRequest`** (`packages/core/src/types.ts`). The shape every signing call submits. Carries `id`, `kind` (one of `sign_message`, `sign_transaction`, `sign_and_send_transaction`), `payload` (utf8 or base64), `cluster`, optional human-readable `display` metadata, optional `expiresAt`.
 - **`ApprovalResource`** (`packages/core/src/types.ts`). What the backend returns immediately after `submit`. Status starts at `pending`. Resolves to `approved` (with `result`), `rejected`, `expired`, or `failed` (with `error`). Carries an optional `approvalUri` the host can render to the user.
 - **`SigningResult`** (`packages/core/src/types.ts`). The signed payload: base64 signature for messages and signed transactions, optional `txid` for `sign_and_send_transaction`.
-- **`ProtocolError`** (`packages/core/src/errors.ts`). Eight error codes (`user_rejected`, `user_no_response`, `wallet_unreachable`, `invalid_request`, `simulation_failed`, `cluster_mismatch`, `expired`, `unauthorized`) with a `recoverable` flag so callers can retry the right ones.
+- **`ProtocolError`** (`packages/core/src/errors.ts`). Nine error codes (`user_rejected`, `user_no_response`, `wallet_unreachable`, `invalid_request`, `simulation_failed`, `cluster_mismatch`, `expired`, `unauthorized`, `unsupported_method`) with a `recoverable` flag so callers can retry the right ones.
 - **`SolanaSigningClient`** (`packages/core/src/client.ts`). The async wrapper that submits a request, polls until resolution (default 500ms interval, 2-minute timeout, both configurable), and returns a `SigningResult` or throws a `ProtocolError`. Every framework integration sits on top of this one class.
 
-The full draft v0.1 protocol spec (open questions included) is at [`spec/protocol.md`](./spec/protocol.md).
+The full draft v0.2 protocol spec (open questions included) is at [`spec/protocol.md`](./spec/protocol.md).
 
 ## Roadmap
 
 Honest status as of 2026-05-03 (commit `4e11377`).
 
-**Done.** Core protocol, MCP server with five tools and stdio plus HTTP transports, `wallet-standard-web` browser backend, Vercel AI SDK tools, Solana Agent Kit `BaseWallet` adapter, six research notes including the full prior-art audit, end-to-end stdio smoke confirmed in a real Claude Code client, browser smoke harness ready.
+**Done.** Core protocol, MCP server with six tools and stdio plus HTTP transports, `wallet-standard-web` browser backend, Vercel AI SDK tools, Solana Agent Kit `BaseWallet` adapter, six research notes including the full prior-art audit, end-to-end stdio smoke confirmed in a real Claude Code client, browser smoke confirmed with Backpack through Wallet Standard, unit tests, CI, and two browser demo apps.
 
-**Next near term.** End-to-end real-wallet smoke (browser plus Phantom plus Vercel AI agent plus SAK adapter), npm publish at 0.0.1 to lock the package slugs, sendaifun RFC posted, ElizaOS userwallet plugin, LangChain JS, LangChain Python, CrewAI, Pydantic AI integration packages.
+**Next near term.** Phantom and Solflare browser smokes, Vercel AI agent smoke, SAK adapter smoke, npm publish at 0.0.1 to lock the package slugs, sendaifun RFC posted, ElizaOS userwallet plugin, LangChain JS, LangChain Python, CrewAI, Pydantic AI integration packages.
 
 **Farther out.** `mwa-android` real MWA backend wrapping `@solana-mobile/mobile-wallet-adapter-protocol`, `ios-deeplink` package wrapping the protocol shipped in the sibling `ios-solana-wallet-adapter` repo, reference autonomous agent demo doing one Jupiter swap end to end, React Native sample app hosting the MCP server locally on Android, submission to the official MCP Registry, mainnet safety review.
 
@@ -272,13 +284,15 @@ The full ordered backlog with task scopes, files to touch, acceptance criteria, 
 
 ```
 solana-agent-wallet-adapter/
+├── apps/
+│   ├── browser-demo          polished Wallet Standard browser demo
+│   └── reference-agent       richer agent-plan browser demo
 ├── packages/
 │   ├── core/                 protocol types, error model, SolanaSigningClient
 │   ├── mcp-server/           MCP server, stdio + HTTP transports, mock backend
 │   ├── wallet-standard-web/  browser WalletBackend over @wallet-standard/app
 │   ├── vercel-ai/            Vercel AI SDK 5 tool definitions
 │   └── solana-agent-kit/     BaseWallet adapter for SolanaAgentKit
-├── apps/                     reference agent + mobile sample (planned)
 ├── docs/
 │   ├── claude-desktop-setup.md   smoke procedure for Claude Desktop GUI
 │   ├── research/                 six research notes (MCP UX, prior art, etc)
@@ -286,7 +300,7 @@ solana-agent-wallet-adapter/
 ├── examples/
 │   └── claude-desktop-config.json   drop-in MCP config
 ├── spec/
-│   └── protocol.md           draft v0.1 of the agent wallet adapter protocol
+│   └── protocol.md           draft v0.2 of the agent wallet adapter protocol
 ├── test.html                 browser smoke harness loaded by `pnpm smoke:web`
 ├── vite.config.js            dev server config for the browser smoke
 ├── pnpm-workspace.yaml
@@ -308,7 +322,11 @@ To run the existing smokes:
 
 ```bash
 pnpm install
-pnpm -r --filter "./packages/*" build       # all five packages must report Done
+pnpm typecheck
+pnpm -r test
+pnpm build                                  # packages and demo apps must report Done
+pnpm demo:browser                           # polished demo on 127.0.0.1:5174
+pnpm demo:agent                             # reference agent demo on 127.0.0.1:5174
 pnpm smoke:web                              # browser harness (open Phantom)
 node packages/mcp-server/dist/bin/server.js # stdio MCP server (no output, awaits JSON-RPC)
 node packages/mcp-server/dist/bin/serverHttp.js   # HTTP MCP server on :8723
@@ -328,4 +346,4 @@ claude mcp list   # confirms the registration
 
 ## Status
 
-As of 2026-05-03, on `master` at commit `4e11377`. All five packages build clean under strict TypeScript. Stdio MCP smoke confirmed end to end in a real MCP client. Browser smoke harness ready for manual exercise. Real-wallet end-to-end smoke pending. Sibling repo `ios-solana-wallet-adapter` has scaffold pushed, sibling repo `unreal-solana-mwa` exists as an empty folder. Ship target for all three projects is 2026-05-31.
+As of 2026-05-03, all five packages and both demo apps build clean under strict TypeScript. Stdio MCP smoke confirmed end to end in a real MCP client. Browser Wallet Standard smoke confirmed with Backpack on devnet. Phantom and Solflare browser smokes remain useful follow-ups. Sibling repo `ios-solana-wallet-adapter` has scaffold pushed, sibling repo `unreal-solana-mwa` exists as an empty folder. Ship target for all three projects is 2026-05-31.

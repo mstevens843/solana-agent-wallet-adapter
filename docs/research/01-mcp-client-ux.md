@@ -1,4 +1,4 @@
-# 01 — MCP client UX for resource + approval rendering
+# 01 - MCP client UX for resource + approval rendering
 
 What MCP clients actually render today vs what the spec promises. This determines the minimum viable approval shape we can ship now.
 
@@ -67,7 +67,7 @@ Plain language first (so Claude can narrate it in chat), structured fields embed
 - Clickable URIs triggering wallet flows (Claude Desktop won't fire them)
 - `content: [{type: 'resource', ...}]` (not surfaced in chat)
 
-**Layer 2 (later):** add resource subscription per note 03 for clients that support `notifications/resources/updated`. That's pure upside — clients without subscription support fall back to polling automatically.
+**Layer 2 (later):** add resource subscription per note 03 for clients that support `notifications/resources/updated`. That's pure upside - clients without subscription support fall back to polling automatically.
 
 ## Open questions
 

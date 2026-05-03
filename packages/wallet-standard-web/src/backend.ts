@@ -1,7 +1,6 @@
 import bs58 from 'bs58';
 
 import {
-  newSigningRequestId,
   ProtocolError,
   type AdapterCapabilities,
   type ApprovalResource,
@@ -150,6 +149,13 @@ export class WalletStandardWebBackend implements WalletBackend {
         recoverable: false,
       },
     };
+  }
+
+  async simulate(): Promise<never> {
+    throw new ProtocolError(
+      'unsupported_method',
+      `Wallet ${this.wallet.name} does not expose a Wallet Standard transaction simulation feature.`,
+    );
   }
 
   private async ensureConnected(): Promise<WalletAccount> {
@@ -301,13 +307,18 @@ function decodePayload(data: string, encoding: 'utf8' | 'base64'): Uint8Array {
   if (encoding === 'utf8') {
     return new TextEncoder().encode(data);
   }
-  const buffer = Buffer.from(data, 'base64');
-  return new Uint8Array(buffer.buffer, buffer.byteOffset, buffer.byteLength);
+  const binary = atob(data);
+  const bytes = new Uint8Array(binary.length);
+  for (let index = 0; index < binary.length; index += 1) {
+    bytes[index] = binary.charCodeAt(index);
+  }
+  return bytes;
 }
 
 function encodeBase64(bytes: Uint8Array): string {
-  return Buffer.from(bytes).toString('base64');
+  let binary = '';
+  for (const byte of bytes) {
+    binary += String.fromCharCode(byte);
+  }
+  return btoa(binary);
 }
-
-// Used for newSigningRequestId import to avoid tree-shake removal warning.
-void newSigningRequestId;

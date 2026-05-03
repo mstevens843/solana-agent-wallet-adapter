@@ -20,7 +20,7 @@ export function createMockBackend(): WalletBackend {
       signTransaction: true,
       signAndSendTransaction: true,
       multiSign: false,
-      simulationPreview: false,
+      simulationPreview: true,
     },
     address: MOCK_ADDRESS,
   };
@@ -47,6 +47,13 @@ export function createMockBackend(): WalletBackend {
         throw new ProtocolError('invalid_request', `Unknown request id: ${requestId}`);
       }
       return approval;
+    },
+    async simulate() {
+      return {
+        err: null,
+        logs: ['mock simulation'],
+        unitsConsumed: 0,
+      };
     },
   };
 }

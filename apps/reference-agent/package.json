@@ -1,0 +1,23 @@
+{
+  "name": "reference-agent",
+  "version": "0.0.1",
+  "private": true,
+  "description": "Reference browser agent demo for the Solana Agent Wallet Adapter.",
+  "license": "Apache-2.0",
+  "type": "module",
+  "scripts": {
+    "build": "tsc -p tsconfig.json && vite build",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "dev": "vite --host 127.0.0.1 --port 5174",
+    "preview": "vite preview --host 127.0.0.1 --port 4174"
+  },
+  "dependencies": {
+    "@solana-agent-wallet-adapter/core": "workspace:*",
+    "@solana-agent-wallet-adapter/wallet-standard-web": "workspace:*",
+    "@solana/web3.js": "^1.95.0"
+  },
+  "devDependencies": {
+    "typescript": "^5.6.0",
+    "vite": "^5.4.0"
+  }
+}

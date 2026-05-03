@@ -1,7 +1,7 @@
 {
   "name": "@solana-agent-wallet-adapter/mcp-server",
   "version": "0.0.1",
-  "description": "MCP server that exposes Solana wallet operations as tools with user-approval flows. Routes signing through any pluggable WalletBackend.",
+  "description": "MCP server that routes Solana agent signing through the user's real wallet with explicit approval.",
   "license": "Apache-2.0",
   "type": "module",
   "main": "./dist/index.js",
@@ -24,6 +24,8 @@
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "vitest run",
+    "test:watch": "vitest",
     "clean": "rm -rf dist"
   },
   "dependencies": {

@@ -1,7 +1,7 @@
 {
   "name": "@solana-agent-wallet-adapter/vercel-ai",
   "version": "0.0.1",
-  "description": "Vercel AI SDK tools for the Solana Agent Wallet Adapter. Routes signing through the user's actual wallet with built-in needsApproval HITL.",
+  "description": "Vercel AI SDK tools that route Solana agent signing through the user's real wallet.",
   "license": "Apache-2.0",
   "type": "module",
   "main": "./dist/index.js",

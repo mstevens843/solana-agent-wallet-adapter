@@ -97,6 +97,37 @@ export function createServer(options: CreateServerOptions): McpServer {
   );
 
   server.registerTool(
+    'solana_simulate_transaction',
+    {
+      description:
+        'Preflight-simulate a base64-encoded Solana transaction without requesting a wallet signature.',
+      inputSchema: {
+        transactionBase64: z.string().min(1),
+        cluster: ClusterSchema,
+        summary: z.string().optional(),
+      },
+    },
+    async ({ transactionBase64, cluster, summary }) => {
+      if (!backend.simulate) {
+        return errorReply(
+          new ProtocolError(
+            'unsupported_method',
+            'The configured wallet backend does not support transaction simulation.',
+          ),
+        );
+      }
+      try {
+        const result = await backend.simulate(
+          buildRequest('sign_transaction', transactionBase64, 'base64', cluster, summary),
+        );
+        return jsonReply({ simulation: result });
+      } catch (err) {
+        return errorReply(err);
+      }
+    },
+  );
+
+  server.registerTool(
     'solana_check_approval',
     {
       description:
@@ -148,7 +179,7 @@ function buildRequest(
 
 function jsonReply(payload: unknown) {
   return {
-    content: [{ type: 'text' as const, text: JSON.stringify(payload) }],
+    content: [{ type: 'text' as const, text: stringify(payload) }],
   };
 }
 
@@ -179,7 +210,7 @@ function errorReply(err: unknown) {
 function renderApproval(approval: ApprovalResource): string {
   const header = approvalHeader(approval);
   const body = approvalBody(approval);
-  return `${header}\n\n${body}\n\nMachine-readable JSON:\n${JSON.stringify(approval)}`;
+  return `${header}\n\n${body}\n\nMachine-readable JSON:\n${stringify(approval)}`;
 }
 
 function approvalHeader(approval: ApprovalResource): string {
@@ -223,5 +254,11 @@ function approvalBody(approval: ApprovalResource): string {
 
 function renderError(err: ProtocolError): string {
   const payload = err.toPayload();
-  return `Solana wallet adapter error.\n\nCode: ${payload.code}\nRecoverable: ${payload.recoverable}\nMessage: ${payload.message}\n\nMachine-readable JSON:\n${JSON.stringify(payload)}`;
+  return `Solana wallet adapter error.\n\nCode: ${payload.code}\nRecoverable: ${payload.recoverable}\nMessage: ${payload.message}\n\nMachine-readable JSON:\n${stringify(payload)}`;
+}
+
+function stringify(payload: unknown): string {
+  return JSON.stringify(payload, (_key, value: unknown) =>
+    typeof value === 'bigint' ? value.toString() : value,
+  );
 }

@@ -81,6 +81,7 @@ export type ErrorCode =
   | 'user_no_response'
   | 'wallet_unreachable'
   | 'invalid_request'
+  | 'unsupported_method'
   | 'simulation_failed'
   | 'cluster_mismatch'
   | 'expired'

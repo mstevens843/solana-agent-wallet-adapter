@@ -1,6 +1,6 @@
 # PROGRESS, handoff for the next agent
 
-This document is for whoever picks this project up next. It captures the exact state of the repo as of the last commit, every piece of work that has been done and verified, every piece that remains, every cross referenced document, and every constraint the next agent must honor.
+This document is for whoever picks this project up next. It captures the exact state of the repo as of the last commit, plus the current dirty worktree that landed after `4e11377`. For the short current-state snapshot, read `STATUS.md` after this file.
 
 If you are an agent reading this cold: read this file from top to bottom before writing any code. Then read the plan file referenced under "Where the deep context lives." Then read the six research notes in `docs/research/`. Then start on the next task in the priority list.
 
@@ -10,11 +10,12 @@ If you are an agent reading this cold: read this file from top to bottom before 
 - **Branch:** `master`
 - **HEAD:** `4e11377` (B2f: Solana Agent Kit BaseWallet adapter + Vite browser smoke + sendaifun RFC)
 - **Remote:** `git@github.com:mstevens843/solana-agent-wallet-adapter.git`
-- **Commits ahead of `origin/master`:** 1 as of last push attempt (verify with `git status` before pushing)
+- **Commits ahead of `origin/master`:** verify with `git status` before pushing
 - **Total commits:** 5
-- **Packages:** 5 (all building clean under strict TypeScript)
-- **Build status:** `pnpm -r --filter "./packages/*" build` reports Done across the workspace
-- **Type check status:** `pnpm typecheck` clean (no errors, no warnings)
+- **Packages:** 5 plus 2 demo apps in the current worktree
+- **Build status:** `pnpm build` should report Done across packages and apps
+- **Type check status:** `pnpm typecheck` was clean after the demo and test work
+- **Test status:** `pnpm -r test` was clean after the core, MCP server, and Wallet Standard suites landed
 - **MCP smoke status:** confirmed end to end in real Claude Code client (CLI), three prompts exercised every signing tool
 
 ## Repo tree, annotated
@@ -31,7 +32,9 @@ solana-agent-wallet-adapter/
 ├── tsconfig.base.json            strict TS, exactOptionalPropertyTypes intentionally off
 ├── vite.config.js                browser smoke dev server config
 ├── test.html                     browser smoke harness, served by vite
-├── apps/                         empty, reference agent + mobile sample go here later
+├── apps/
+│   ├── browser-demo              polished Wallet Standard browser demo
+│   └── reference-agent           agent-plan browser demo with OpenAI fallback
 ├── docs/
 │   ├── claude-desktop-setup.md   step by step for the GUI app smoke
 │   ├── outreach/
@@ -52,16 +55,16 @@ solana-agent-wallet-adapter/
 │   ├── vercel-ai/                Vercel AI SDK 5 tool definitions
 │   └── solana-agent-kit/         BaseWallet adapter for sendaifun's SolanaAgentKit
 └── spec/
-    └── protocol.md               draft v0.1 of the agent wallet adapter protocol
+    └── protocol.md               draft v0.2 of the agent wallet adapter protocol
 ```
 
 ## Package status
 
 | Package | Source files | Builds | Smoked | Notes |
 | --- | --- | --- | --- | --- |
-| `@solana-agent-wallet-adapter/core` | 6 (`types.ts`, `errors.ts`, `backend.ts`, `ids.ts`, `client.ts`, `index.ts`), 310 lines total | yes | yes (via mcp-server stdio smoke) | `SolanaSigningClient.run()` is the central submit + poll loop; every framework adapter sits on top of it. |
-| `@solana-agent-wallet-adapter/mcp-server` | 6 source files, 397 lines total | yes | yes (raw JSON-RPC + Claude Code) | Two bins: `solana-agent-wallet-mcp` (stdio) and `solana-agent-wallet-mcp-http` (Streamable HTTP, env vars `PORT`, `HOST`, `MCP_STATEFUL=1`). Mock backend ships in the bin so first registration works without any wallet. |
-| `@solana-agent-wallet-adapter/wallet-standard-web` | 3 source files, 399 lines total | yes | not yet (harness ready, manual user step) | Implements `WalletBackend` over `@wallet-standard/app` `getWallets()`. Discovery filters wallets that declare `solana:*` chain support. Browser only by design. |
+| `@solana-agent-wallet-adapter/core` | 6 (`types.ts`, `errors.ts`, `backend.ts`, `ids.ts`, `client.ts`, `index.ts`) | yes | yes (via tests and mcp-server stdio smoke) | `SolanaSigningClient.run()` is the central submit + poll loop; `simulateTransaction()` delegates to optional backend simulation. |
+| `@solana-agent-wallet-adapter/mcp-server` | 6 source files plus tests | yes | yes (raw JSON-RPC + Claude Code) | Six tools including `solana_simulate_transaction`. Two bins: stdio and Streamable HTTP. Mock backend ships in the bin so first registration works without any wallet. |
+| `@solana-agent-wallet-adapter/wallet-standard-web` | 3 source files plus tests | yes | yes (Backpack, browser harness) | Implements `WalletBackend` over `@wallet-standard/app` `getWallets()`. Browser only by design and no longer imports Node builtins. |
 | `@solana-agent-wallet-adapter/vercel-ai` | 2 source files, 124 lines total | yes | not yet | Four `tool()` definitions wrapping `SolanaSigningClient`. AI SDK 5 dropped `needsApproval`, approval enforcement lives in the underlying client which blocks until the wallet resolves. |
 | `@solana-agent-wallet-adapter/solana-agent-kit` | 2 source files, 175 lines total | yes | not yet | `AgentWalletAdapterBackend` implements the minimal `BaseWallet` from `solana-agent-kit` v2. Static `create()` lazily fetches the address. Supports `Transaction` and `VersionedTransaction`. |
 
@@ -72,17 +75,20 @@ Total source: roughly 1400 lines of TypeScript, distributed across the five pack
 These have all been confirmed by running them, not by inspection.
 
 - `pnpm install` clean from a fresh clone (verified after the last commit; pnpm 10.33.0 expected per `packageManager` field).
-- `pnpm -r --filter "./packages/*" build` reports Done for all five packages.
-- Stdio MCP smoke via raw JSON-RPC: `initialize` returns capabilities, `tools/list` returns five tools with correct JSON Schema, `tools/call` for `solana_get_address` returns the mock address, `tools/call` for `solana_sign_message` returns a humanized pending `ApprovalResource` with the request id and approval URI.
-- HTTP MCP smoke via `curl`: in stateful mode (`MCP_STATEFUL=1`), `initialize` returns an `mcp-session-id` header, follow up requests with that header succeed, `tools/list` advertises all five tools, server stays up across requests.
+- `pnpm build` reports Done for packages and apps.
+- `pnpm typecheck` reports clean.
+- `pnpm -r test` reports clean for core, mcp-server, and wallet-standard-web.
+- Stdio MCP smoke via raw JSON-RPC: `initialize` returns capabilities, `tools/list` returns six tools with correct JSON Schema, `tools/call` for `solana_get_address` returns the mock address, `tools/call` for `solana_sign_message` returns a humanized pending `ApprovalResource` with the request id and approval URI.
+- HTTP MCP smoke via `curl`: in stateful mode (`MCP_STATEFUL=1`), `initialize` returns an `mcp-session-id` header, follow up requests with that header succeed, `tools/list` advertises all six tools, server stays up across requests.
 - Claude Code MCP smoke (real CLI client): three prompts exercised the full happy path. Prompt 1 ("What's my Solana wallet address?") triggered `solana_get_address` and Claude correctly identified the response as the mock address. Prompt 2 ("Sign the message 'hello' on devnet, summary: test") triggered `solana_sign_message`, returned a pending state, Claude correctly extracted the request id, then auto called `solana_check_approval` to poll. Prompt 3 explicit poll on the request id returned still-pending. The mock backend never resolves on its own, that's intentional and correct.
+- Browser Wallet Standard smoke via Backpack: `pnpm smoke:web --host 127.0.0.1` served `http://localhost:5173/test.html`, `List wallets` discovered seven Wallet Standard providers, `Get address` returned `9W6pmAzjQGxNiu3yQAZ4dE1FwmvHexWEuWGdYZnnyEu1`, and `Sign 'hello' on devnet` returned signature `AfVhSRZmGuomfo4P6Pop2h2tB4ZgRq17bCMQ1gbkUUid1AdWoRHpekWnRYGdiEsx4MBhE4dt94i3QcHjuoQwziV`. Details are recorded in `docs/smoke/browser-wallet-standard.md`.
 
 ## Verification outstanding
 
 Ordered by importance.
 
-1. **Browser smoke against a real wallet.** Run `pnpm smoke:web`, click List wallets, Get address, Sign hello on devnet. Phantom or Solflare unlocked in the browser. This validates the full pending → approved lifecycle through a real wallet popup, the only piece the Claude Code smoke could not exercise (mock backend stays pending forever). Estimated time once you sit down: five minutes.
-2. **Claude Desktop GUI smoke.** The user already merged the MCP config into `~/Library/Application Support/Claude/claude_desktop_config.json` (entry name `solana-agent-wallet`). Quit and relaunch the GUI app, run the same three prompts. Validates that the humanized text renders the same way in the GUI client as it did in the CLI.
+1. **Claude Desktop GUI smoke.** The user already merged the MCP config into `~/Library/Application Support/Claude/claude_desktop_config.json` (entry name `solana-agent-wallet`). Quit and relaunch the GUI app, run the same three prompts. Validates that the humanized text renders the same way in the GUI client as it did in the CLI.
+2. **Phantom and Solflare browser smoke.** Backpack passed the real Wallet Standard path. Repeat `pnpm smoke:web`, choose Phantom and then Solflare from the wallet dropdown, click Get address, then Sign hello on devnet.
 3. **Vercel AI agent end to end.** Tiny Node script: instantiate `WalletStandardWebBackend`, wrap with `SolanaSigningClient`, pass to `createSolanaTools`, call `generateText` from `ai` with an OpenAI or Anthropic model, prompt "sign hello on devnet." Confirms the AI SDK 5 tool wiring works in a real model call, not just type check.
 4. **Solana Agent Kit end to end.** Wrap the same client with `AgentWalletAdapterBackend.create({ backend, cluster: 'devnet' })`, instantiate `SolanaAgentKit`, call something light like `agent.getBalance()` or a no-op signMessage. Confirms the `BaseWallet` interface mapping is correct in practice and not just at the type level.
 5. **Android Saga emulator smoke.** Blocked on the `mwa-android` package which has not been built yet.
@@ -117,7 +123,7 @@ Read in this order if you are starting cold:
 2. **`~/Desktop/projects/SDK_GAP_RANKING.md`**. The 32 row impact ranking out of 100, four tier breakdown, MWA vs not reframe, top 3 commitment with 2026-05-31 target.
 3. **`~/Desktop/projects/RESEARCH_SUMMARY.md`**. One page survey overview. Five highlights worth remembering.
 4. **This file (`PROGRESS.md`)**. Exact state plus next tasks.
-5. **`spec/protocol.md`**. Protocol design draft v0.1. Read before touching the wallet backend or core types.
+5. **`spec/protocol.md`**. Protocol design draft v0.2. Read before touching the wallet backend or core types.
 6. **`docs/research/01-` through `06-`**. The six research notes. Each is one page. Read 04 (sendaifun coordination), 05 (framework signer shapes), and 06 (prior art audit) before touching the next set of integration packages.
 
 ## Next tasks ordered by leverage
@@ -238,7 +244,7 @@ pnpm install
 pnpm -r --filter "./packages/*" build
 ```
 
-All five packages should report `Done`. If any fail, fix before moving on.
+All packages and apps should report `Done`. If any fail, fix before moving on.
 
 ### Type check
 
@@ -259,7 +265,7 @@ Should produce no output (success). The strict TypeScript settings catch most re
  sleep 0.5) | node packages/mcp-server/dist/bin/server.js | head -3
 ```
 
-Expected: three lines of JSON, one for `initialize`, one for `tools/list` (with five tools), one trailing.
+Expected: three lines of JSON, one for `initialize`, one for `tools/list` (with six tools), one trailing.
 
 ### HTTP MCP smoke (curl)
 
@@ -293,7 +299,7 @@ curl -s -X POST http://127.0.0.1:8723/mcp \
   -d '{"jsonrpc":"2.0","id":2,"method":"tools/list"}'
 ```
 
-Expected: `tools/list` response advertises five tools.
+Expected: `tools/list` response advertises six tools.
 
 ### Browser smoke (Vite)
 

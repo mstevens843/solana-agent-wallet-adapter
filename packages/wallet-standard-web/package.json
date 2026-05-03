@@ -1,7 +1,7 @@
 {
   "name": "@solana-agent-wallet-adapter/wallet-standard-web",
   "version": "0.0.1",
-  "description": "Wallet Standard browser backend for the Solana Agent Wallet Adapter. Routes signing through any Wallet Standard compliant Solana browser wallet (Phantom, Solflare, Backpack).",
+  "description": "Wallet Standard backend for AI agents that sign through installed Solana browser wallets.",
   "license": "Apache-2.0",
   "type": "module",
   "main": "./dist/index.js",
@@ -21,6 +21,8 @@
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "vitest run",
+    "test:watch": "vitest",
     "clean": "rm -rf dist"
   },
   "dependencies": {
