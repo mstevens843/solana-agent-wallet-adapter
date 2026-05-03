@@ -1,0 +1,38 @@
+{
+  "name": "@solana-agent-wallet-adapter/solana-agent-kit",
+  "version": "0.0.1",
+  "description": "Solana Agent Kit BaseWallet adapter for the Solana Agent Wallet Adapter. Plugs user-approval signing into sendaifun's SolanaAgentKit alongside Privy / Turnkey / Phantom backends, with no key custody.",
+  "license": "Apache-2.0",
+  "type": "module",
+  "main": "./dist/index.js",
+  "module": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist",
+    "src",
+    "README.md"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "clean": "rm -rf dist"
+  },
+  "dependencies": {
+    "@solana-agent-wallet-adapter/core": "workspace:*",
+    "@solana/web3.js": "^1.95.0",
+    "bs58": "^6.0.0"
+  },
+  "peerDependencies": {
+    "solana-agent-kit": "^2.0.0"
+  },
+  "devDependencies": {
+    "solana-agent-kit": "^2.0.0",
+    "typescript": "^5.6.0"
+  }
+}
