@@ -154,7 +154,7 @@ function jsonReply(payload: unknown) {
 
 function approvalReply(approval: ApprovalResource) {
   return {
-    content: [{ type: 'text' as const, text: JSON.stringify(approval) }],
+    content: [{ type: 'text' as const, text: renderApproval(approval) }],
     isError:
       approval.status === 'rejected' ||
       approval.status === 'failed' ||
@@ -171,7 +171,57 @@ function errorReply(err: unknown) {
           err instanceof Error ? err.message : 'Unknown backend error',
         );
   return {
-    content: [{ type: 'text' as const, text: JSON.stringify(protocolErr.toPayload()) }],
+    content: [{ type: 'text' as const, text: renderError(protocolErr) }],
     isError: true,
   };
+}
+
+function renderApproval(approval: ApprovalResource): string {
+  const header = approvalHeader(approval);
+  const body = approvalBody(approval);
+  return `${header}\n\n${body}\n\nMachine-readable JSON:\n${JSON.stringify(approval)}`;
+}
+
+function approvalHeader(approval: ApprovalResource): string {
+  switch (approval.status) {
+    case 'pending':
+      return `Solana wallet approval pending. Request id: ${approval.requestId}`;
+    case 'approved':
+      return `Solana wallet approval granted. Request id: ${approval.requestId}`;
+    case 'rejected':
+      return `Solana wallet approval rejected. Request id: ${approval.requestId}`;
+    case 'expired':
+      return `Solana wallet approval expired. Request id: ${approval.requestId}`;
+    case 'failed':
+      return `Solana wallet approval failed. Request id: ${approval.requestId}`;
+  }
+}
+
+function approvalBody(approval: ApprovalResource): string {
+  switch (approval.status) {
+    case 'pending': {
+      const next = approval.approvalUri
+        ? `Open this URL in your wallet to approve, then call solana_check_approval with requestId="${approval.requestId}":\n${approval.approvalUri}`
+        : `Open the connected wallet's approval popup, then call solana_check_approval with requestId="${approval.requestId}".`;
+      return next;
+    }
+    case 'approved': {
+      const sig = approval.result?.signature ?? '(no signature returned)';
+      const tx = approval.result?.txid ? `\nTransaction id: ${approval.result.txid}` : '';
+      return `Signature: ${sig}${tx}`;
+    }
+    case 'rejected':
+    case 'expired':
+    case 'failed': {
+      const detail = approval.error
+        ? `${approval.error.message} (code: ${approval.error.code}, recoverable: ${approval.error.recoverable})`
+        : '(no error detail provided)';
+      return detail;
+    }
+  }
+}
+
+function renderError(err: ProtocolError): string {
+  const payload = err.toPayload();
+  return `Solana wallet adapter error.\n\nCode: ${payload.code}\nRecoverable: ${payload.recoverable}\nMessage: ${payload.message}\n\nMachine-readable JSON:\n${JSON.stringify(payload)}`;
 }

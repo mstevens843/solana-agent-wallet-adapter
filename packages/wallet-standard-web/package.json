@@ -1,0 +1,38 @@
+{
+  "name": "@solana-agent-wallet-adapter/wallet-standard-web",
+  "version": "0.0.1",
+  "description": "Wallet Standard browser backend for the Solana Agent Wallet Adapter. Routes signing through any Wallet Standard compliant Solana browser wallet (Phantom, Solflare, Backpack).",
+  "license": "Apache-2.0",
+  "type": "module",
+  "main": "./dist/index.js",
+  "module": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist",
+    "src",
+    "README.md"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "clean": "rm -rf dist"
+  },
+  "dependencies": {
+    "@solana-agent-wallet-adapter/core": "workspace:*",
+    "@solana/wallet-standard-features": "^1.3.0",
+    "@solana/web3.js": "^1.95.0",
+    "@wallet-standard/app": "^1.1.0",
+    "@wallet-standard/base": "^1.1.0",
+    "@wallet-standard/features": "^1.1.0",
+    "bs58": "^6.0.0"
+  },
+  "devDependencies": {
+    "typescript": "^5.6.0"
+  }
+}
