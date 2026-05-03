@@ -108,7 +108,9 @@ For the public demo surface:
 pnpm demo:browser
 ```
 
-Open `http://127.0.0.1:5174`, choose Phantom, Solflare, Backpack, or any discovered Wallet Standard provider, connect, and sign the demo message. This is the fastest way to show the core difference against Phantom MCP and custodial agent wallets: the agent asks, but the user's existing installed wallet makes the signing decision.
+Open `http://127.0.0.1:5174`, choose Phantom, Solflare, Backpack, or any discovered Wallet Standard provider, connect, and sign the demo message. The Wallet Flow tab also creates a devnet memo transaction, signs transaction bytes without broadcasting, and can sign plus broadcast on devnet. The Agent Plan tab is simulated for now, but it signs a real off-chain approval proof with the selected wallet.
+
+This is the fastest way to show the core difference against Phantom MCP and custodial agent wallets: the agent asks, but the user's existing installed wallet makes the signing decision.
 
 ## Three usage flavors
 
@@ -272,7 +274,7 @@ The full draft v0.2 protocol spec (open questions included) is at [`spec/protoco
 
 Honest status as of 2026-05-03 (commit `4e11377`).
 
-**Done.** Core protocol, MCP server with six tools and stdio plus HTTP transports, `wallet-standard-web` browser backend, Vercel AI SDK tools, Solana Agent Kit `BaseWallet` adapter, six research notes including the full prior-art audit, end-to-end stdio smoke confirmed in a real Claude Code client, browser smoke confirmed with Backpack through Wallet Standard, unit tests, CI, and two browser demo apps.
+**Done.** Core protocol, MCP server with six tools and stdio plus HTTP transports, `wallet-standard-web` browser backend, Vercel AI SDK tools, Solana Agent Kit `BaseWallet` adapter, six research notes including the full prior-art audit, end-to-end stdio smoke confirmed in a real Claude Code client, browser smoke confirmed with Backpack through Wallet Standard, Backpack devnet sign-and-send confirmed, unit tests, CI, and two browser demo apps.
 
 **Next near term.** Phantom and Solflare browser smokes, Vercel AI agent smoke, SAK adapter smoke, npm publish at 0.0.1 to lock the package slugs, sendaifun RFC posted, ElizaOS userwallet plugin, LangChain JS, LangChain Python, CrewAI, Pydantic AI integration packages.
 

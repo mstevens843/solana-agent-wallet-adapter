@@ -12,9 +12,10 @@ This repo is a real-wallet signing bridge for Solana AI agents. Agents can ask f
 - Five publishable packages are present: `core`, `mcp-server`, `wallet-standard-web`, `vercel-ai`, `solana-agent-kit`.
 - Two demo apps are present: `apps/browser-demo` and `apps/reference-agent`.
 - Unit tests exist for `core`, `mcp-server`, and `wallet-standard-web`.
-- CI exists at `.github/workflows/ci.yml` and runs install, typecheck, tests, and build.
-- Browser smoke passed with Backpack on devnet. Phantom and Solflare remain useful follow-ups.
-- The repo has a dirty worktree from multiple agents. Do not revert unrelated edits. Stabilize them, then let the user stage and commit.
+- CI exists at `.github/workflows/ci.yml` and runs install, build, typecheck, and tests. Build runs before typecheck so workspace package exports can resolve from `dist` in fresh CI checkouts.
+- Browser smoke passed with Backpack on devnet for message signing, transaction signing, and sign-and-send broadcast. Phantom and Solflare remain useful follow-ups.
+- Demo MP4s are local posting assets and intentionally ignored by git.
+- The repo has a small dirty worktree from demo polish. Do not revert unrelated edits. Stabilize them, then let the user stage and commit.
 
 ## Package table
 
@@ -28,7 +29,7 @@ This repo is a real-wallet signing bridge for Solana AI agents. Agents can ask f
 
 ## Apps
 
-- `apps/browser-demo`: primary public demo. Runs on `127.0.0.1:5174`, discovers Wallet Standard providers, connects, signs a message, and exposes transaction-signing controls.
+- `apps/browser-demo`: primary public demo. Runs on `127.0.0.1:5174`, discovers Wallet Standard providers, connects, signs a message, creates a devnet memo transaction, signs transaction bytes, and sign-and-sends on devnet. Its Agent Plan tab is simulated but signs a real off-chain approval proof.
 - `apps/reference-agent`: richer agent-plan demo. The Vite dev server exposes `/api/agent-plan`, uses `OPENAI_API_KEY` and `OPENAI_MODEL` when present, and falls back to deterministic demo output when absent.
 
 ## Build, test, run
@@ -64,7 +65,9 @@ node packages/mcp-server/dist/bin/serverHttp.js
 - Wallet Standard backend reports `unsupported_method` for simulation instead of pretending it can simulate.
 - Tests were added for core errors, IDs, client polling, MCP tool behavior, and Wallet Standard backend behavior.
 - Public demo and reference-agent app scaffolds were added.
-- CI was added.
+- Browser demo toast styling was enlarged and lowered for screen recording readability.
+- Wallet Standard sign-and-send now handles Backpack with sign-then-RPC-send and Phantom native sign-and-send with `minContextSlot`.
+- CI was added and then reordered so package build output exists before typecheck.
 
 ## Still outstanding
 

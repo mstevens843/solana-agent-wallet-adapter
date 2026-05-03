@@ -50,67 +50,70 @@ button.primary {
 
 .toast-stack {
   display: grid;
-  gap: 12px;
-  max-width: min(420px, calc(100vw - 32px));
+  gap: 14px;
+  max-width: min(520px, calc(100vw - 40px));
   position: fixed;
-  right: 18px;
-  top: 18px;
-  z-index: 20;
+  right: 28px;
+  top: 88px;
+  z-index: 50;
 }
 
 .toast {
   align-items: start;
-  background: rgba(255, 255, 255, 0.96);
-  border: 1px solid #cce3d6;
+  background: #ffffff;
+  border: 2px solid #94d4ad;
   border-radius: 8px;
-  box-shadow: 0 18px 45px rgba(20, 61, 43, 0.18);
-  color: #245742;
+  box-shadow: 0 22px 70px rgba(20, 61, 43, 0.28), 0 0 0 1px rgba(20, 61, 43, 0.06);
+  color: #123f2a;
   display: grid;
-  gap: 12px;
+  gap: 14px;
   grid-template-columns: auto 1fr auto;
-  padding: 16px;
+  min-width: min(500px, calc(100vw - 40px));
+  padding: 20px;
 }
 
 .toast.error {
-  border-color: #efcaca;
-  color: #9d2528;
+  border-color: #ef9b9b;
+  color: #8d171b;
 }
 
 .toast-icon {
   align-items: center;
-  background: #dff1e7;
+  background: #14965c;
   border-radius: 50%;
+  color: #ffffff;
   display: inline-flex;
-  height: 32px;
+  height: 42px;
   justify-content: center;
-  width: 32px;
+  width: 42px;
 }
 
 .toast.error .toast-icon {
-  background: #fff0f0;
+  background: #d2363c;
 }
 
 .toast-icon svg {
   fill: currentColor;
-  height: 22px;
-  width: 22px;
+  height: 28px;
+  width: 28px;
 }
 
 .toast p {
-  color: #53635b;
-  font-size: 0.96rem;
+  color: #3f5048;
+  font-size: 1.04rem;
   line-height: 1.4;
-  margin: 4px 0 0;
+  margin: 5px 0 0;
 }
 
 .toast strong {
-  font-size: 1.02rem;
+  font-size: 1.16rem;
 }
 
 .toast button {
   border: 0;
   color: inherit;
-  min-height: 24px;
+  font-size: 1.1rem;
+  min-height: 28px;
   padding: 0 6px;
 }
 

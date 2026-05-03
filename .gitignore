@@ -4,6 +4,7 @@ build/
 .turbo/
 *.tsbuildinfo
 *.log
+*.mp4
 .DS_Store
 .env
 .env.local
