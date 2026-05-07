@@ -818,11 +818,8 @@ function homePage(): string {
   return `
     ${heroSection()}
     ${launchAppSection()}
-    ${docsSection()}
     ${gapSection()}
     ${walletDirectorySection()}
-    ${cliInstallSection()}
-    ${desktopDownloadSection()}
     ${homepageDemoCtaSection()}
   `;
 }

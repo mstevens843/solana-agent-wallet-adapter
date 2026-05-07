@@ -23,6 +23,25 @@ pnpm android:debug
 pnpm android:install
 ```
 
+## Android Studio
+
+Open `apps/android-twa` as the Android Studio project. Do not open the repository root for this app; the Gradle root is
+`apps/android-twa/settings.gradle.kts`, and that project imports the `:app` module.
+
+If Android Studio opens the Run configuration with `Module: <no module>`, it is local IDE state rather than a missing
+Gradle module. Wait for Gradle sync to finish, then edit the `app` run configuration:
+
+- Module: `AgenticAndroid.app`
+- Deploy: `Default APK`
+- Launch: `Default Activity`
+
+If the module list is still empty, close Android Studio, reopen `apps/android-twa`, and run **File > Sync Project with
+Gradle Files**. The command-line path remains valid even when Android Studio's run configuration is stale:
+
+```sh
+pnpm android:install
+```
+
 Build a release bundle/APK:
 
 ```sh
