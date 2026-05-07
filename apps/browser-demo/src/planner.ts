@@ -437,8 +437,8 @@ async function generateOpenAiCompatiblePlan(settings: AiSettings, request: AiPla
 }
 
 function normalizeHostedAiPlan(payload: unknown, request: AiPlanRequest): AgentPlan {
-  if (!payload || typeof payload !== 'object') {
-    return normalizeAiPlan(payload, request);
+  if (!isHostedPlanPayload(payload)) {
+    throw new Error('Hosted AI returned an invalid plan.');
   }
   const record = payload as Partial<AgentPlan>;
   const fields = Array.isArray(record.fields)
@@ -468,6 +468,18 @@ function normalizeHostedAiPlan(payload: unknown, request: AiPlanRequest): AgentP
     fields,
     safeguards,
   };
+}
+
+function isHostedPlanPayload(payload: unknown): payload is Partial<AgentPlan> {
+  if (!payload || typeof payload !== 'object') return false;
+  const record = payload as Partial<AgentPlan>;
+  return (
+    record.source === 'ai' &&
+    typeof record.intent === 'string' &&
+    typeof record.route === 'string' &&
+    typeof record.risk === 'string' &&
+    typeof record.approval === 'string'
+  );
 }
 
 async function generateAnthropicPlan(settings: AiSettings, request: AiPlanRequest): Promise<AgentPlan> {

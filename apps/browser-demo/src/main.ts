@@ -1280,8 +1280,8 @@ function heroSection(): string {
       <div class="hero-copy">
         <div class="chain-strip" aria-label="Network and signing layer">
           <span class="logo-chip solana-chip">${brandLogo('solana', 'logo-chip-icon')}<span>Solana</span></span>
-          <span class="logo-chip">${brandLogo('solana', 'logo-chip-icon')}<span>Wallet Standard</span></span>
-          <span class="logo-chip">${brandLogo('solanaMobile', 'logo-chip-icon')}<span>Mobile Wallet Adapter</span></span>
+          <span class="logo-chip" aria-label="Wallet Standard">${brandLogo('solana', 'logo-chip-icon')}<span class="chip-label chip-label-full">Wallet Standard</span><span class="chip-label chip-label-mobile" aria-hidden="true">Wallet Std</span></span>
+          <span class="logo-chip" aria-label="Mobile Wallet Adapter">${brandLogo('solanaMobile', 'logo-chip-icon')}<span class="chip-label chip-label-full">Mobile Wallet Adapter</span><span class="chip-label chip-label-mobile" aria-hidden="true">MWA</span></span>
         </div>
         <p class="eyebrow mini">Wallet authority for agents</p>
         <h1 id="hero-title">

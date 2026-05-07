@@ -6387,3 +6387,462 @@ code {
     font-size: 0.68rem;
   }
 }
+
+.chip-label-mobile {
+  display: none;
+}
+
+@media (max-width: 900px) {
+  .route-home {
+    --mobile-nav-height: 54px;
+    gap: 16px;
+    padding-top: calc(var(--native-toolbar-offset) + var(--mobile-nav-height) + 12px);
+  }
+
+  .route-home::before {
+    height: calc(var(--native-toolbar-offset) + var(--mobile-nav-height) + 14px);
+  }
+
+  .route-home .homepage-nav {
+    background: rgba(5, 8, 7, 0.9);
+    border-color: rgba(224, 230, 226, 0.105);
+    border-radius: 9px;
+    box-shadow: 0 10px 22px rgba(0, 0, 0, 0.28);
+    gap: 5px;
+    height: var(--mobile-nav-height);
+    padding: 5px 6px;
+    top: calc(var(--native-toolbar-offset) + 5px);
+  }
+
+  .route-home .homepage-brand {
+    max-width: 38px;
+    min-width: 38px;
+  }
+
+  .route-home .homepage-brand .agentic-mark {
+    height: 25px;
+    width: 36px;
+  }
+
+  .route-home .homepage-links {
+    display: grid;
+    gap: 4px;
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+    justify-content: stretch;
+    min-width: 0;
+    overflow: hidden;
+    width: auto;
+  }
+
+  .route-home .homepage-links a {
+    border-radius: 7px;
+    font-size: 0.77rem;
+    min-height: 44px;
+    min-width: 0;
+    padding: 0 7px;
+    width: 100%;
+  }
+
+  .route-home .homepage-links .launch-app-link {
+    min-width: 54px;
+    padding: 0 10px;
+  }
+
+  .route-home .homepage-hero {
+    gap: 14px;
+    overflow: hidden;
+    padding: 2px 0 8px;
+    width: 100%;
+  }
+
+  .route-home .hero-copy {
+    gap: 12px;
+  }
+
+  .route-home .chain-strip {
+    gap: 6px;
+    padding-bottom: 0;
+    scroll-padding-inline: 2px;
+    scroll-snap-type: x proximity;
+  }
+
+  .route-home .chain-strip .chip-label-full {
+    display: none;
+  }
+
+  .route-home .chain-strip .chip-label-mobile {
+    display: inline;
+  }
+
+  .route-home .logo-chip,
+  .route-home .wallet-chip,
+  .route-home .integration-strip > span {
+    border-radius: 7px;
+    font-size: 0.8rem;
+    min-height: 40px;
+    padding: 0 10px;
+    scroll-snap-align: start;
+  }
+
+  .route-home .chain-strip .logo-chip {
+    font-size: 0.78rem;
+    min-height: 36px;
+    padding: 0 8px;
+  }
+
+  .route-home .logo-chip-icon {
+    height: 22px;
+    width: 22px;
+  }
+
+  .route-home .eyebrow.mini {
+    font-size: 0.73rem;
+    letter-spacing: 0.08em;
+  }
+
+  .route-home .hero-copy h1 {
+    font-size: 2.58rem;
+    line-height: 1.01;
+    max-width: 100%;
+    overflow-wrap: normal;
+    word-break: normal;
+  }
+
+  .route-home .hero-copy h1 span {
+    display: inline;
+  }
+
+  .route-home .hero-lede {
+    color: rgba(214, 224, 220, 0.9);
+    font-size: 0.99rem;
+    line-height: 1.46;
+  }
+
+  .route-home .hero-command-area {
+    gap: 10px;
+    margin-top: 2px;
+  }
+
+  .route-home .command-deck {
+    border-color: rgba(224, 230, 226, 0.125);
+    gap: 10px;
+    overflow: hidden;
+    padding: 10px;
+  }
+
+  .route-home .command-deck-options {
+    display: grid;
+    gap: 7px;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    overflow: visible;
+  }
+
+  .route-home .command-path {
+    flex: initial;
+    min-height: 62px;
+    min-width: 0;
+    padding: 8px 7px;
+  }
+
+  .route-home .command-path span {
+    font-size: 0.62rem;
+    line-height: 1;
+  }
+
+  .route-home .command-path strong {
+    font-size: 0.82rem;
+    line-height: 1.1;
+    overflow-wrap: normal;
+    word-break: normal;
+  }
+
+  .route-home .command-readout {
+    align-items: stretch;
+    border-radius: 7px;
+    gap: 9px;
+    grid-template-columns: 1fr;
+    padding: 10px;
+  }
+
+  .route-home .command-readout-line {
+    align-items: start;
+    display: grid;
+    gap: 8px;
+    grid-template-columns: auto minmax(0, 1fr);
+  }
+
+  .route-home .command-readout code {
+    font-size: 0.91rem;
+    line-height: 1.22;
+    overflow-wrap: anywhere;
+    white-space: normal;
+    word-break: break-word;
+  }
+
+  .route-home .command-caret,
+  .route-home .command-status-pill {
+    display: none;
+  }
+
+  .route-home .command-copy-button,
+  .route-home .command-deck-action {
+    justify-self: stretch;
+    min-height: 44px;
+    min-width: 0;
+    width: 100%;
+  }
+
+  .route-home .integration-strip,
+  .route-home .wallet-chip-strip {
+    gap: 8px;
+    padding-bottom: 2px;
+    scroll-padding-inline: 2px;
+    scroll-snap-type: x proximity;
+  }
+
+  .route-home .runtime-logo,
+  .route-home .wallet-chip-icon {
+    height: 28px;
+    width: 28px;
+  }
+
+  .route-home .gap-section {
+    gap: 14px;
+    margin-top: 2px;
+    overflow: hidden;
+    padding: 16px 14px;
+    width: 100%;
+  }
+
+  .route-home .gap-copy h2 {
+    font-size: 1.72rem;
+    line-height: 1.09;
+  }
+
+  .route-home .gap-body {
+    gap: 12px;
+  }
+
+  .route-home .gap-body > p {
+    font-size: 0.94rem;
+    line-height: 1.45;
+  }
+
+  .route-home .gap-proof-grid {
+    display: grid;
+    gap: 8px;
+    grid-auto-flow: row;
+    grid-template-columns: 1fr;
+    margin-top: 2px;
+    overflow: visible;
+    padding-bottom: 0;
+  }
+
+  .route-home .gap-proof {
+    border: 1px solid rgba(224, 230, 226, 0.07);
+    border-radius: 8px;
+    min-width: 0;
+    padding: 12px;
+  }
+
+  .route-home .gap-proof strong {
+    font-size: 0.98rem;
+    white-space: normal;
+  }
+
+  .route-home .gap-proof p {
+    color: rgba(196, 205, 202, 0.84);
+    display: block;
+    font-size: 0.88rem;
+    line-height: 1.38;
+  }
+
+  .route-home .wallet-directory-section {
+    overflow: hidden;
+    padding-top: 22px;
+    width: 100%;
+  }
+
+  .route-home .section-heading {
+    gap: 9px;
+    margin-bottom: 14px;
+  }
+
+  .route-home .section-heading h2 {
+    font-size: 1.72rem;
+    line-height: 1.08;
+  }
+
+  .route-home .section-heading p {
+    font-size: 0.94rem;
+    line-height: 1.45;
+  }
+
+  .route-home .wallet-directory-grid {
+    display: grid;
+    gap: 10px;
+    grid-auto-columns: auto !important;
+    grid-auto-flow: row !important;
+    grid-template-columns: repeat(2, minmax(0, 1fr)) !important;
+    min-width: 0;
+    overflow: visible !important;
+    padding-bottom: 0;
+    width: 100%;
+  }
+
+  .route-home .wallet-directory-card {
+    gap: 12px;
+    min-height: 206px;
+    min-width: 0;
+    padding: 13px 11px;
+    width: auto;
+  }
+
+  .route-home .wallet-directory-head {
+    align-items: flex-start;
+    flex-direction: column;
+    gap: 9px;
+  }
+
+  .route-home .wallet-directory-icon {
+    height: 44px;
+    width: 44px;
+  }
+
+  .route-home .wallet-directory-head h3 {
+    font-size: 1.05rem;
+    line-height: 1.1;
+    margin-bottom: 3px;
+    overflow-wrap: normal;
+    word-break: normal;
+  }
+
+  .route-home .wallet-directory-head span {
+    font-size: 0.74rem;
+  }
+
+  .route-home .wallet-directory-card p {
+    color: rgba(196, 205, 202, 0.84);
+    display: -webkit-box;
+    font-size: 0.88rem;
+    line-height: 1.4;
+    overflow: hidden;
+    -webkit-box-orient: vertical;
+    -webkit-line-clamp: 3;
+  }
+
+  .route-home .wallet-directory-action {
+    gap: 9px;
+    margin-top: 14px;
+  }
+
+  .route-home .wallet-directory-action button {
+    font-size: 0.96rem;
+    min-height: 48px;
+  }
+
+  .route-home .wallet-directory-action span {
+    font-size: 0.88rem;
+    line-height: 1.35;
+  }
+
+  .route-home .homepage-footer {
+    gap: 12px;
+    margin-top: 2px;
+    padding-top: 20px;
+  }
+}
+
+@media (max-width: 430px) {
+  .route-home {
+    --mobile-nav-height: 52px;
+    gap: 15px;
+    padding-top: calc(var(--native-toolbar-offset) + var(--mobile-nav-height) + 11px);
+  }
+
+  .route-home .homepage-nav {
+    height: var(--mobile-nav-height);
+  }
+
+  .route-home .homepage-links {
+    gap: 3px;
+  }
+
+  .route-home .homepage-links a {
+    font-size: 0.74rem;
+    min-height: 44px;
+    padding: 0 6px;
+  }
+
+  .route-home .homepage-links .launch-app-link {
+    min-width: 51px;
+    padding: 0 9px;
+  }
+
+  .route-home .hero-copy h1 {
+    font-size: 2.08rem;
+  }
+
+  .route-home .hero-lede {
+    font-size: 0.96rem;
+  }
+
+  .route-home .command-path {
+    min-height: 60px;
+    padding: 8px 6px;
+  }
+
+  .route-home .command-path strong {
+    font-size: 0.78rem;
+  }
+
+  .route-home .gap-copy h2,
+  .route-home .section-heading h2 {
+    font-size: 1.64rem;
+  }
+
+  .route-home .wallet-directory-card {
+    min-height: 214px;
+    padding: 12px 10px;
+  }
+}
+
+@media (max-width: 370px) {
+  .route-home .homepage-links a {
+    font-size: 0.7rem;
+    padding: 0 5px;
+  }
+
+  .route-home .homepage-links .launch-app-link {
+    min-width: 48px;
+  }
+
+  .route-home .hero-copy h1 {
+    font-size: 2.05rem;
+  }
+
+  .route-home .command-deck {
+    padding: 8px;
+  }
+
+  .route-home .command-deck-options {
+    gap: 5px;
+  }
+
+  .route-home .command-path {
+    min-height: 58px;
+    padding: 7px 5px;
+  }
+
+  .route-home .command-path strong {
+    font-size: 0.73rem;
+  }
+
+  .route-home .wallet-directory-grid {
+    gap: 8px;
+  }
+
+  .route-home .wallet-directory-card {
+    min-height: 218px;
+  }
+}

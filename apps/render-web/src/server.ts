@@ -1,7 +1,7 @@
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
 import { readFile, stat } from 'node:fs/promises';
 import { extname, isAbsolute, join, relative, resolve } from 'node:path';
-import { pathToFileURL } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 
 import {
   BridgeAiPlanner,
@@ -12,7 +12,7 @@ import {
 const DEFAULT_HOST = '0.0.0.0';
 const DEFAULT_PORT = 3000;
 const MAX_JSON_BYTES = 64 * 1024;
-const DEFAULT_STATIC_DIR = resolve(process.cwd(), 'apps/browser-demo/dist');
+const DEFAULT_STATIC_DIR = fileURLToPath(new URL('../../browser-demo/dist', import.meta.url));
 
 type HostedProviderId = 'openai' | 'anthropic' | 'gemini' | 'openrouter';
 
