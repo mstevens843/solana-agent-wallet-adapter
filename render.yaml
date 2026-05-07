@@ -7,6 +7,8 @@ services:
     envVars:
       - key: SKIP_INSTALL_DEPS
         value: "true"
+      - key: VITE_AGENTIC_DEV_CONTROLS
+        value: "false"
     routes:
       - type: rewrite
         source: "/*"

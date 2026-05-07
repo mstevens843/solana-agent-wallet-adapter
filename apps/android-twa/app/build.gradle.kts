@@ -10,7 +10,7 @@ fun escapedResValue(value: String): String =
 
 val launchUrl = propertyOrEnv("AGENTIC_ANDROID_LAUNCH_URL")
     ?: propertyOrEnv("agenticLaunchUrl")
-    ?: "https://agentic.onrender.com"
+    ?: "https://agentic.onrender.com/app"
 val launchUri = uri(launchUrl)
 val launchScheme = launchUri.scheme ?: "https"
 val launchHost = propertyOrEnv("AGENTIC_ANDROID_HOST")

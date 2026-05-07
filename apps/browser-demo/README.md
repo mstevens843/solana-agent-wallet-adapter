@@ -79,6 +79,7 @@ This app is deployable as a Render Static Site using the root `render.yaml` blue
 - Build command: `pnpm install --frozen-lockfile --ignore-scripts && pnpm render:build`
 - Publish directory: `apps/browser-demo/dist`
 - Environment variable: `SKIP_INSTALL_DEPS=true`
+- Production UI env: `VITE_AGENTIC_DEV_CONTROLS=false`
 - Optional Android trust env: `AGENTIC_ANDROID_SHA256_CERT_FINGERPRINTS`
 - Production Android trust guard: `AGENTIC_ANDROID_REQUIRE_TRUST=1`
 - Rewrite rule: `/*` to `/index.html`

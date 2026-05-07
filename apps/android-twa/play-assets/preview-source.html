@@ -1,0 +1,332 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=1200, initial-scale=1" />
+    <title>Agentic Android Preview</title>
+    <style>
+      :root {
+        --bg: #030706;
+        --panel: rgba(8, 13, 12, 0.86);
+        --panel-2: rgba(255, 255, 255, 0.045);
+        --line: rgba(224, 230, 226, 0.13);
+        --text: #f4f8f6;
+        --muted: #a8b4b0;
+        --dim: #6b7774;
+        --accent: #46dc98;
+        --warn: #e1bd64;
+        --purple: #9945ff;
+      }
+
+      * {
+        box-sizing: border-box;
+      }
+
+      html,
+      body {
+        background: var(--bg);
+        height: 700px;
+        margin: 0;
+        min-height: 700px;
+        overflow: hidden;
+        width: 1200px;
+      }
+
+      body {
+        background:
+          radial-gradient(circle at 88% 18%, rgba(70, 220, 152, 0.2), transparent 34%),
+          radial-gradient(circle at 16% 84%, rgba(153, 69, 255, 0.18), transparent 32%),
+          linear-gradient(135deg, #020404 0%, #07110d 68%, #030706 100%);
+        color: var(--text);
+        font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      }
+
+      .slide {
+        display: grid;
+        gap: 34px;
+        grid-template-columns: 420px minmax(0, 1fr);
+        height: 600px;
+        padding: 48px;
+      }
+
+      .copy {
+        align-content: center;
+        display: grid;
+      }
+
+      .brand {
+        align-items: center;
+        display: flex;
+        gap: 14px;
+        margin-bottom: 44px;
+      }
+
+      .brand img {
+        height: 46px;
+        object-fit: contain;
+        width: 70px;
+      }
+
+      .brand strong {
+        font-size: 26px;
+      }
+
+      .kicker {
+        color: var(--accent);
+        font-size: 16px;
+        font-weight: 900;
+        letter-spacing: 0.12em;
+        margin: 0 0 16px;
+        text-transform: uppercase;
+      }
+
+      h1 {
+        font-size: 54px;
+        font-weight: 900;
+        letter-spacing: -0.045em;
+        line-height: 0.98;
+        margin: 0;
+      }
+
+      .lede {
+        color: rgba(226, 235, 231, 0.9);
+        font-size: 22px;
+        font-weight: 700;
+        line-height: 1.35;
+        margin: 22px 0 0;
+      }
+
+      .ui {
+        align-content: center;
+        display: grid;
+      }
+
+      .window {
+        background: rgba(2, 5, 4, 0.72);
+        border: 1px solid rgba(255, 255, 255, 0.14);
+        border-radius: 24px;
+        box-shadow: 0 24px 80px rgba(0, 0, 0, 0.34);
+        min-height: 470px;
+        overflow: hidden;
+        padding: 22px;
+      }
+
+      .top {
+        align-items: center;
+        border-bottom: 1px solid var(--line);
+        display: flex;
+        justify-content: space-between;
+        margin-bottom: 18px;
+        padding-bottom: 14px;
+      }
+
+      .top strong {
+        font-size: 20px;
+      }
+
+      .pill {
+        background: rgba(70, 220, 152, 0.12);
+        border: 1px solid rgba(70, 220, 152, 0.34);
+        border-radius: 999px;
+        color: #dff8ea;
+        display: inline-flex;
+        font-size: 14px;
+        font-weight: 900;
+        min-height: 32px;
+        padding: 7px 12px;
+      }
+
+      .grid {
+        display: grid;
+        gap: 12px;
+      }
+
+      .grid.three {
+        grid-template-columns: repeat(3, minmax(0, 1fr));
+      }
+
+      .card {
+        background: var(--panel-2);
+        border: 1px solid var(--line);
+        border-radius: 16px;
+        display: grid;
+        gap: 9px;
+        min-height: 108px;
+        padding: 16px;
+      }
+
+      .card span {
+        color: var(--dim);
+        font-size: 12px;
+        font-weight: 900;
+        letter-spacing: 0.1em;
+        text-transform: uppercase;
+      }
+
+      .card strong {
+        font-size: 19px;
+        line-height: 1.18;
+      }
+
+      .card p {
+        color: var(--muted);
+        font-size: 15px;
+        line-height: 1.35;
+        margin: 0;
+      }
+
+      .primary {
+        background: var(--accent);
+        border-radius: 12px;
+        color: #031108;
+        display: inline-flex;
+        font-size: 18px;
+        font-weight: 900;
+        justify-content: center;
+        margin-top: 16px;
+        min-height: 48px;
+        padding: 13px 18px;
+        width: 190px;
+      }
+
+      .list {
+        display: grid;
+        gap: 10px;
+      }
+
+      .row {
+        align-items: center;
+        background: var(--panel-2);
+        border: 1px solid var(--line);
+        border-radius: 14px;
+        display: grid;
+        gap: 13px;
+        grid-template-columns: 40px minmax(0, 1fr) auto;
+        min-height: 66px;
+        padding: 12px;
+      }
+
+      .icon {
+        align-items: center;
+        background: rgba(70, 220, 152, 0.12);
+        border: 1px solid rgba(70, 220, 152, 0.28);
+        border-radius: 10px;
+        color: #c7f4da;
+        display: flex;
+        font-weight: 900;
+        height: 40px;
+        justify-content: center;
+        width: 40px;
+      }
+
+      .row strong {
+        display: block;
+        font-size: 18px;
+      }
+
+      .row span {
+        color: var(--muted);
+        display: block;
+        font-size: 14px;
+        margin-top: 3px;
+      }
+
+      .status {
+        color: var(--accent);
+        font-size: 13px;
+        font-weight: 900;
+        letter-spacing: 0.08em;
+        text-transform: uppercase;
+      }
+
+      .hash {
+        color: var(--muted);
+        font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+        font-size: 13px;
+      }
+    </style>
+  </head>
+  <body>
+    <main class="slide">
+      <section class="copy">
+        <div class="brand">
+          <img src="../../browser-demo/src/assets/logos/saturn_6_cutout.png" alt="" />
+          <strong>Agentic</strong>
+        </div>
+        <p id="kicker" class="kicker"></p>
+        <h1 id="headline"></h1>
+        <p id="lede" class="lede"></p>
+      </section>
+      <section class="ui">
+        <div id="mock" class="window"></div>
+      </section>
+    </main>
+    <script>
+      const slides = {
+        wallet: {
+          kicker: "Launch App",
+          headline: "Wallet signing workspace",
+          lede: "Agents prepare the action. The user connects a real Solana wallet before anything signs.",
+          mock: `
+            <div class="top"><strong>Wallet signing</strong><span class="pill">Mainnet ready</span></div>
+            <div class="grid three">
+              <div class="card"><span>1</span><strong>Discover</strong><p>Find installed Solana wallet providers.</p></div>
+              <div class="card"><span>2</span><strong>Select</strong><p>Choose Phantom, Solflare, Backpack, MWA, or another path.</p></div>
+              <div class="card"><span>3</span><strong>Connect</strong><p>Authorize the app in the wallet.</p></div>
+            </div>
+            <div class="primary">Discover wallets</div>
+          `,
+        },
+        wallets: {
+          kicker: "Multi-wallet",
+          headline: "Not Phantom-only",
+          lede: "Agentic is built around Solana wallet standards instead of one vendor path.",
+          mock: `
+            <div class="top"><strong>Wallet paths</strong><span class="pill">Solana native</span></div>
+            <div class="list">
+              <div class="row"><div class="icon">WS</div><div><strong>Wallet Standard</strong><span>Browser wallets and Solana dapp providers</span></div><b class="status">Ready</b></div>
+              <div class="row"><div class="icon">MW</div><div><strong>Mobile Wallet Adapter</strong><span>Android Chrome and mobile wallet surfaces</span></div><b class="status">Ready</b></div>
+              <div class="row"><div class="icon">IL</div><div><strong>iOS wallet links</strong><span>Compatibility path for wallet-specific links</span></div><b class="status">Path</b></div>
+              <div class="row"><div class="icon">WB</div><div><strong>Shared WalletBackend</strong><span>One approval protocol across agent hosts</span></div><b class="status">Core</b></div>
+            </div>
+          `,
+        },
+        request: {
+          kicker: "Agent approval",
+          headline: "Intent, route, limits",
+          lede: "The agent can prepare a request, but the wallet remains the signing boundary.",
+          mock: `
+            <div class="top"><strong>Agent request</strong><span class="pill">Review required</span></div>
+            <div class="card"><span>Intent</span><strong>Swap a tiny amount of SOL to USDC</strong><p>Only if simulation shows no authority grants and route stays inside limits.</p></div>
+            <div class="grid three">
+              <div class="card"><span>Policy</span><strong>Capped</strong><p>Limits before wallet approval.</p></div>
+              <div class="card"><span>Signer</span><strong>User wallet</strong><p>No key handoff.</p></div>
+              <div class="card"><span>Status</span><strong>Pending</strong><p>Waiting for wallet.</p></div>
+            </div>
+            <div class="primary">Approve in wallet</div>
+          `,
+        },
+        receipts: {
+          kicker: "Receipts",
+          headline: "Proof after approval",
+          lede: "Approvals, rejections, signatures, and artifacts stay auditable after the agent action.",
+          mock: `
+            <div class="top"><strong>Signed receipt</strong><span class="pill">Verified</span></div>
+            <div class="list">
+              <div class="row"><div class="icon">IN</div><div><strong>Intent hash</strong><span class="hash">9d54...7af2</span></div><b class="status">Bound</b></div>
+              <div class="row"><div class="icon">WA</div><div><strong>Wallet signature</strong><span class="hash">4Gj2...q9Kp</span></div><b class="status">Signed</b></div>
+              <div class="row"><div class="icon">TX</div><div><strong>Transaction receipt</strong><span class="hash">5nYQ...B1x8</span></div><b class="status">Stored</b></div>
+              <div class="row"><div class="icon">AR</div><div><strong>Agent artifact</strong><span>Policy, route, and result captured</span></div><b class="status">Audit</b></div>
+            </div>
+          `,
+        },
+      };
+      const key = new URLSearchParams(location.search).get("slide") || "wallet";
+      const slide = slides[key] || slides.wallet;
+      document.getElementById("kicker").textContent = slide.kicker;
+      document.getElementById("headline").textContent = slide.headline;
+      document.getElementById("lede").textContent = slide.lede;
+      document.getElementById("mock").innerHTML = slide.mock;
+    </script>
+  </body>
+</html>

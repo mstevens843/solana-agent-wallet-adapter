@@ -1,4 +1,5 @@
 import './styles.css';
+import saturnLogo from './assets/saturn-logo.png';
 
 interface BridgeHealth {
   walletConnected: boolean;
@@ -143,9 +144,12 @@ function render(): void {
   appRoot.innerHTML = `
     <main class="shell">
       <header class="topbar">
-        <div>
-          <p class="eyebrow">Desktop Control Center</p>
-          <h1>Agentic</h1>
+        <div class="brand">
+          <img class="brand-logo" src="${saturnLogo}" alt="" />
+          <div>
+            <p class="eyebrow">Desktop Control Center</p>
+            <h1>Agentic</h1>
+          </div>
         </div>
         <span class="badge ${state.health?.walletConnected ? 'good' : bridgeReachable ? 'warn' : ''}">
           ${state.health?.walletConnected ? 'wallet connected' : bridgeReachable ? 'runtime reachable' : 'waiting'}

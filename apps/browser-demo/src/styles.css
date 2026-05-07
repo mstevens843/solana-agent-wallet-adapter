@@ -324,10 +324,13 @@ code {
   color: var(--text);
   display: inline-flex;
   flex: 0 0 auto;
-  font-size: 1.04rem;
-  font-weight: 860;
+  font-family: "Space Grotesk", Inter, ui-sans-serif, system-ui, sans-serif;
+  font-size: 1.18rem;
+  font-weight: 700;
+  letter-spacing: -0.012em;
   gap: 11px;
 }
+
 
 .homepage-brand:hover {
   color: var(--text);
@@ -526,7 +529,7 @@ code {
 .command-deck-options {
   display: grid;
   gap: 6px;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
+  grid-template-columns: repeat(3, minmax(0, 1fr));
 }
 
 .command-path {
@@ -776,6 +779,17 @@ code {
   color: var(--text);
 }
 
+.button-link.nav-pill-link {
+  background: rgba(125, 231, 176, 0.1);
+  border-color: rgba(125, 231, 176, 0.3);
+  color: var(--text);
+}
+
+.button-link.nav-pill-link:hover {
+  background: rgba(125, 231, 176, 0.15);
+  border-color: rgba(125, 231, 176, 0.42);
+}
+
 .wallet-chip {
   min-height: 38px;
   padding: 7px 9px;
@@ -985,6 +999,10 @@ code {
   grid-template-columns: repeat(3, minmax(0, 1fr));
 }
 
+.demo-guide-grid {
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+}
+
 .browser-app-card {
   background: rgba(10, 12, 12, 0.66);
   border: 1px solid rgba(224, 230, 226, 0.078);
@@ -1145,7 +1163,9 @@ code {
   align-items: center;
   color: var(--text);
   display: inline-flex;
-  font-weight: 860;
+  font-family: "Space Grotesk", Inter, ui-sans-serif, system-ui, sans-serif;
+  font-weight: 700;
+  letter-spacing: -0.012em;
   gap: 9px;
 }
 
@@ -1383,6 +1403,75 @@ code {
   display: grid;
   gap: 12px;
   grid-template-columns: 250px minmax(0, 1fr) 304px;
+}
+
+.app-workspace-section.public-app .workspace-intro {
+  align-items: start;
+  grid-template-columns: minmax(0, 1fr);
+  margin-bottom: 18px;
+}
+
+.app-workspace-section.public-app .workspace-intro h2 {
+  max-width: 880px;
+}
+
+.workspace.public-workspace {
+  gap: 14px;
+  grid-template-columns: minmax(220px, 280px) minmax(0, 1fr);
+}
+
+.workspace.public-workspace .main-panel {
+  min-height: min(700px, calc(100vh - 220px));
+}
+
+.public-request-context {
+  grid-column: 2;
+  padding: 14px 16px;
+  position: static;
+}
+
+.public-request-context summary {
+  align-items: center;
+  color: rgba(196, 205, 202, 0.84);
+  cursor: pointer;
+  display: flex;
+  font-size: 0.9rem;
+  font-weight: 820;
+  justify-content: space-between;
+  list-style: none;
+}
+
+.public-request-context summary::-webkit-details-marker {
+  display: none;
+}
+
+.public-request-context summary::after {
+  color: var(--dim);
+  content: "+";
+  font-weight: 900;
+}
+
+.public-request-context[open] summary::after {
+  content: "-";
+}
+
+.public-request-context .evidence-rail {
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  margin-top: 14px;
+}
+
+.public-request-context .evidence-step {
+  border-bottom: 0;
+  border-right: 1px solid rgba(224, 230, 226, 0.055);
+  padding: 8px 12px 8px 0;
+}
+
+.public-request-context .evidence-step:last-child {
+  border-right: 0;
+}
+
+.public-request-context .compact-manifest {
+  margin-top: 12px;
 }
 
 .workspace > * {
@@ -3441,6 +3530,24 @@ code {
     grid-template-columns: 1fr;
   }
 
+  .workspace.public-workspace {
+    grid-template-columns: 1fr;
+  }
+
+  .public-request-context {
+    grid-column: 1;
+  }
+
+  .public-request-context .evidence-rail {
+    grid-template-columns: 1fr;
+  }
+
+  .public-request-context .evidence-step {
+    border-bottom: 1px solid rgba(224, 230, 226, 0.055);
+    border-right: 0;
+    padding: 11px 0;
+  }
+
   .terminal-command-row {
     align-items: stretch;
     grid-template-columns: 1fr;
@@ -3699,4 +3806,48 @@ code {
   .terminal-command-row:hover {
     transform: none;
   }
+}
+
+.legal-page .legal-prose {
+  max-width: 760px;
+  font-size: 0.96rem;
+  line-height: 1.62;
+  color: rgba(218, 229, 224, 0.9);
+}
+
+.legal-page .legal-prose h3 {
+  margin-top: 32px;
+  margin-bottom: 10px;
+  font-size: 1.08rem;
+  color: var(--text);
+}
+
+.legal-page .legal-prose p {
+  margin: 0 0 14px;
+}
+
+.legal-page .legal-prose ul,
+.legal-page .legal-prose ol {
+  margin: 0 0 14px 22px;
+  padding: 0;
+}
+
+.legal-page .legal-prose li {
+  margin-bottom: 6px;
+}
+
+.legal-page .legal-prose strong {
+  color: var(--text);
+}
+
+.legal-page .legal-prose a {
+  color: var(--accent, #18f18b);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
+.legal-page .legal-meta {
+  opacity: 0.6;
+  font-size: 0.84rem;
+  margin-top: 6px;
 }

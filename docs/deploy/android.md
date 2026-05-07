@@ -40,17 +40,29 @@ pnpm android:release
 ```
 
 `AGENTIC_ANDROID_VERSION_CODE` must be a positive integer. `AGENTIC_ANDROID_VERSION_NAME` is the user-visible release
-label. Release builds also require `AGENTIC_ANDROID_LAUNCH_URL` to be a non-local HTTPS origin. Set
+label. Release builds also require `AGENTIC_ANDROID_LAUNCH_URL` to be a non-local HTTPS URL. Set
 `AGENTIC_ANDROID_REQUIRE_SIGNING=1` in production CI so incomplete signing configuration fails before artifacts are
 staged.
 
 Override the hosted launch URL for a build:
 
 ```sh
-pnpm android:debug -- -PagenticLaunchUrl=https://agentic.onrender.com
+pnpm android:debug -- -PagenticLaunchUrl=https://agentic.onrender.com/app
 ```
 
+The default launch URL opens `/app`; set a full custom-domain URL such as `https://agenticwalletadapter.com/app` for
+production releases.
+
 For LAN testing, prefer `pnpm dev:mobile` and open the printed URL directly in Android Chrome. The packaged TWA is intended for the deployed HTTPS origin.
+
+## Store Listing
+
+Use `apps/android-twa/play-assets/listing.md` for the Android listing form copy. The ready-to-upload assets live beside
+that file:
+
+- dApp icon: `apps/android-twa/play-assets/icon-512.png`
+- Banner: `apps/android-twa/play-assets/feature-1200x600.png`
+- Preview images: `apps/android-twa/play-assets/previews/`
 
 ## Digital Asset Links
 
