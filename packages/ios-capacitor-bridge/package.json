@@ -1,0 +1,22 @@
+{
+  "name": "@solana-agent-wallet-adapter/ios-capacitor-bridge",
+  "version": "0.0.1",
+  "private": true,
+  "description": "Native Capacitor iOS bridge for Agentic Wallet Adapter state and WalletConnect method surface.",
+  "license": "Apache-2.0",
+  "type": "module",
+  "main": "./index.js",
+  "types": "./index.d.ts",
+  "files": [
+    "index.js",
+    "index.d.ts",
+    "ios",
+    "AgenticIosCapacitorBridge.podspec",
+    "README.md"
+  ],
+  "capacitor": {
+    "ios": {
+      "src": "ios"
+    }
+  }
+}

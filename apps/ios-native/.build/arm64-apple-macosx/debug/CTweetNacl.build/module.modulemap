@@ -1,0 +1,4 @@
+module CTweetNacl {
+    umbrella header "/Users/devlegacy/Desktop/projects/solana-agent-wallet-adapter/apps/ios-native/.build/checkouts/tweetnacl-swiftwrap/Sources/CTweetNacl/include/CTweetNacl.h"
+    export *
+}

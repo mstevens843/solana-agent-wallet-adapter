@@ -2,7 +2,7 @@
   "name": "Agentic",
   "short_name": "Agentic",
   "description": "Let agents use your Solana wallet without giving them one.",
-  "start_url": "/app",
+  "start_url": "/#app",
   "scope": "/",
   "display": "standalone",
   "background_color": "#050706",

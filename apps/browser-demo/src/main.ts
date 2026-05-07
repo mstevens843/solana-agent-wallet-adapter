@@ -40,16 +40,6 @@ import {
   type AiSettings,
   type BridgeAiStatus,
 } from './planner.js';
-import {
-  detectIosNativeEnvironment,
-  iosNativeCacheSummary,
-  IosNativeWalletBackend,
-  listIosNativeWalletOptions,
-  restoreLatestIosNativeWallet,
-  type IosNativeEnvironment,
-  type IosNativeWalletId,
-  type IosNativeWalletOption,
-} from './iosNative.js';
 import './styles.css';
 
 type StepState = 'idle' | 'active' | 'done' | 'error';
@@ -73,6 +63,23 @@ type PreparedActionStatus =
 type PreparedActionTxStatus = 'pending' | 'confirmed' | 'failed';
 type RecurringCadence = 'weekly' | 'monthly' | 'interval_days' | 'interval_hours' | 'interval_minutes';
 type InstructionData = ConstructorParameters<typeof TransactionInstruction>[0]['data'];
+type IosNativeWalletId = 'phantom' | 'solflare' | 'backpack' | 'jupiter';
+
+interface IosNativeEnvironment {
+  isNative: boolean;
+  platform: string;
+  isIos: boolean;
+  isIosNative: boolean;
+  callbackScheme: string;
+}
+
+interface IosNativeWalletOption {
+  id: IosNativeWalletId;
+  name: string;
+  detail: string;
+  transport: 'encrypted-deeplink' | 'walletconnect';
+  appStoreUrl: string;
+}
 
 interface IosNativeRestoreResult {
   backend: IosNativeMaintenanceBackend;
@@ -214,6 +221,75 @@ const BRAND_LOGOS: Record<BrandLogoId, string> = {
   solflare: new URL('./assets/logos/solflare.svg', import.meta.url).href,
   vercel: new URL('./assets/logos/vercel.svg', import.meta.url).href,
 };
+const IOS_NATIVE_WALLETS: ReadonlyArray<IosNativeWalletOption> = [
+  {
+    id: 'phantom',
+    name: 'Phantom',
+    detail: 'Encrypted iOS deeplink',
+    transport: 'encrypted-deeplink',
+    appStoreUrl: 'https://apps.apple.com/app/phantom-crypto-wallet/id1598432977',
+  },
+  {
+    id: 'solflare',
+    name: 'Solflare',
+    detail: 'Encrypted iOS deeplink',
+    transport: 'encrypted-deeplink',
+    appStoreUrl: 'https://apps.apple.com/app/solflare/id1580902717',
+  },
+  {
+    id: 'backpack',
+    name: 'Backpack',
+    detail: 'Encrypted iOS deeplink',
+    transport: 'encrypted-deeplink',
+    appStoreUrl: 'https://apps.apple.com/app/backpack-crypto-wallet/id6445964121',
+  },
+  {
+    id: 'jupiter',
+    name: 'Jupiter',
+    detail: 'WalletConnect path',
+    transport: 'walletconnect',
+    appStoreUrl: 'https://apps.apple.com/app/jupiter-mobile/id6474343098',
+  },
+];
+
+function detectIosNativeEnvironment(): IosNativeEnvironment {
+  return {
+    isNative: false,
+    platform: 'web',
+    isIos: false,
+    isIosNative: false,
+    callbackScheme: 'agenticwallet',
+  };
+}
+
+function listIosNativeWalletOptions(): ReadonlyArray<IosNativeWalletOption> {
+  return IOS_NATIVE_WALLETS;
+}
+
+async function iosNativeCacheSummary(): Promise<{ count: number }> {
+  return { count: 0 };
+}
+
+async function restoreLatestIosNativeWallet(_options?: {
+  cluster: Cluster;
+  appUrl: string;
+  rpcUrl?: string;
+  logLevel?: 'silent' | 'error' | 'info' | 'debug';
+}): Promise<IosNativeRestoreResult | null> {
+  return null;
+}
+
+const IosNativeWalletBackend = class {
+  constructor() {
+    throw new Error('iOS native wallet backend is not available in the web build yet.');
+  }
+} as unknown as new (options: {
+  walletId: IosNativeWalletId;
+  cluster: Cluster;
+  appUrl: string;
+  rpcUrl?: string;
+  logLevel?: 'silent' | 'error' | 'info' | 'debug';
+}) => IosNativeMaintenanceBackend;
 
 interface Toast {
   id: number;

@@ -23,13 +23,13 @@ fun booleanFlag(value: String?, name: String, defaultValue: Boolean): Boolean {
 
 val launchUrl = propertyOrEnv("AGENTIC_ANDROID_LAUNCH_URL")
     ?: propertyOrEnv("agenticLaunchUrl")
-    ?: "https://agentic.onrender.com/app"
+    ?: "https://agenticwalletadapter.com/#app"
 val launchUri = uri(launchUrl)
 val launchScheme = launchUri.scheme ?: "https"
 val launchHost = propertyOrEnv("AGENTIC_ANDROID_HOST")
     ?: propertyOrEnv("agenticHost")
     ?: launchUri.host
-    ?: "agentic.onrender.com"
+    ?: "agenticwalletadapter.com"
 val launchPort = launchUri.port
 val launchOrigin = "$launchScheme://$launchHost${if (launchPort > 0) ":$launchPort" else ""}"
 val usesCleartext = launchScheme == "http"

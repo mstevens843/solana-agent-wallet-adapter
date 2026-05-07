@@ -119,7 +119,7 @@ class MainActivity : ComponentActivity() {
         root.addView(button("Get capabilities") { getCapabilities() })
         siwsDomainInput = EditText(this).apply {
             hint = "SIWS domain"
-            setText(Uri.parse(BuildConfig.AGENTIC_LAUNCH_URL).host ?: "agentic.onrender.com")
+            setText(Uri.parse(BuildConfig.AGENTIC_LAUNCH_URL).host ?: "agenticwalletadapter.com")
             setSingleLine(true)
         }
         root.addView(siwsDomainInput)

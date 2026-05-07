@@ -1,0 +1,4 @@
+module TweetNacl {
+    header "/Users/devlegacy/Desktop/projects/solana-agent-wallet-adapter/apps/ios-native/.build/arm64-apple-macosx/debug/TweetNacl.build/TweetNacl-Swift.h"
+    requires objc
+}

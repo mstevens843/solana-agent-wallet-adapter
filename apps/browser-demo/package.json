@@ -15,8 +15,8 @@
     "@solana-agent-wallet-adapter/ios-link": "workspace:*",
     "@solana-agent-wallet-adapter/mwa-mobile-web": "workspace:*",
     "@solana-agent-wallet-adapter/wallet-standard-web": "workspace:*",
-    "@capacitor/app": "^8.2.0",
-    "@capacitor/core": "^8.2.0",
+    "@capacitor/app": "^8.1.0",
+    "@capacitor/core": "^8.1.0",
     "@solana/web3.js": "^1.95.0",
     "bs58": "^6.0.0",
     "tweetnacl": "^1.0.3"

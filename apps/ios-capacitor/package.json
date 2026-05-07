@@ -1,0 +1,24 @@
+{
+  "name": "@solana-agent-wallet-adapter/ios-capacitor",
+  "version": "0.0.1",
+  "private": true,
+  "description": "Capacitor iOS shell for Agentic Wallet Adapter.",
+  "license": "Apache-2.0",
+  "type": "module",
+  "scripts": {
+    "copy-web": "node scripts/copy-web.mjs",
+    "ensure:ios": "node scripts/ensure-ios.mjs",
+    "sync": "node scripts/sync-ios.mjs",
+    "open": "node scripts/open-ios.mjs"
+  },
+  "dependencies": {
+    "@capacitor/app": "^8.1.0",
+    "@capacitor/core": "^8.1.0",
+    "@solana-agent-wallet-adapter/ios-capacitor-bridge": "workspace:*"
+  },
+  "devDependencies": {
+    "@capacitor/cli": "^8.1.0",
+    "@capacitor/ios": "^8.1.0",
+    "typescript": "^5.6.0"
+  }
+}

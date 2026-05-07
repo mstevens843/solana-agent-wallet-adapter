@@ -50,11 +50,11 @@ staged.
 Override the hosted launch URL for a build:
 
 ```sh
-pnpm android:debug -- -PagenticLaunchUrl=https://agentic.onrender.com/app
+pnpm android:debug -- -PagenticLaunchUrl=https://agenticwalletadapter.com/#app
 ```
 
-The default launch URL opens `/app`; set a full custom-domain URL such as `https://agenticwalletadapter.com/app` for
-production releases.
+The default launch URL opens `https://agenticwalletadapter.com/#app`. The hash route avoids static-host 404s when a
+deployed site has not yet applied its client-side routing rewrite.
 
 Switch the launcher between the regular app and the native example host:
 
@@ -71,7 +71,7 @@ set.
 For LAN testing the native Android app can connect to the local bridge URL printed by `pnpm dev:mobile`. The web
 fallback can still open the deployed HTTPS origin or the LAN URL in Android Chrome.
 
-Android users can use the `/app` planner without an AI key through templates. If they want AI planning without a
+Android users can use the app planner without an AI key through templates. If they want AI planning without a
 desktop bridge, they can paste a provider or gateway key into the session-only BYOK field; see `docs/ai-byok.md`.
 
 ## Store Listing
@@ -88,7 +88,7 @@ that file:
 The TWA reaches full trusted mode only when the deployed origin serves:
 
 ```text
-https://agentic.onrender.com/.well-known/assetlinks.json
+https://agenticwalletadapter.com/.well-known/assetlinks.json
 ```
 
 The checked-in browser-demo file contains a safe placeholder fingerprint. Replace it with the release signing certificate before production deployment.

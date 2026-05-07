@@ -64,8 +64,9 @@ The Android section links GitHub Release artifacts with these expected asset nam
 - `agentic-android.apk`
 - `agentic-android.aab`
 
-The Android app defaults to launching this hosted `/app` experience. The native Solana Mobile Wallet Adapter example
-host remains available for local testing with `AGENTIC_ANDROID_SHOW_EXAMPLE_APP=true pnpm android:install`.
+The Android app defaults to launching this hosted app experience at `https://agenticwalletadapter.com/#app`. The native
+Solana Mobile Wallet Adapter example host remains available for local testing with
+`AGENTIC_ANDROID_SHOW_EXAMPLE_APP=true pnpm android:install`.
 Production trusted web mode still requires `/.well-known/assetlinks.json` to contain the release signing certificate fingerprint.
 Generate it with:
 

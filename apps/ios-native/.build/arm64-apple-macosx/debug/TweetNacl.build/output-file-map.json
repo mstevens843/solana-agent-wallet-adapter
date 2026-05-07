@@ -1,0 +1,17 @@
+{
+  "": {
+    "swift-dependencies": "/Users/devlegacy/Desktop/projects/solana-agent-wallet-adapter/apps/ios-native/.build/arm64-apple-macosx/debug/TweetNacl.build/master.swiftdeps"
+  },
+  "/Users/devlegacy/Desktop/projects/solana-agent-wallet-adapter/apps/ios-native/.build/checkouts/tweetnacl-swiftwrap/Sources/TweetNacl/Constant.swift": {
+    "dependencies": "/Users/devlegacy/Desktop/projects/solana-agent-wallet-adapter/apps/ios-native/.build/arm64-apple-macosx/debug/TweetNacl.build/Constant.d",
+    "object": "/Users/devlegacy/Desktop/projects/solana-agent-wallet-adapter/apps/ios-native/.build/arm64-apple-macosx/debug/TweetNacl.build/Constant.swift.o",
+    "swiftmodule": "/Users/devlegacy/Desktop/projects/solana-agent-wallet-adapter/apps/ios-native/.build/arm64-apple-macosx/debug/TweetNacl.build/Constant~partial.swiftmodule",
+    "swift-dependencies": "/Users/devlegacy/Desktop/projects/solana-agent-wallet-adapter/apps/ios-native/.build/arm64-apple-macosx/debug/TweetNacl.build/Constant.swiftdeps"
+  },
+  "/Users/devlegacy/Desktop/projects/solana-agent-wallet-adapter/apps/ios-native/.build/checkouts/tweetnacl-swiftwrap/Sources/TweetNacl/TweetNacl.swift": {
+    "dependencies": "/Users/devlegacy/Desktop/projects/solana-agent-wallet-adapter/apps/ios-native/.build/arm64-apple-macosx/debug/TweetNacl.build/TweetNacl.d",
+    "object": "/Users/devlegacy/Desktop/projects/solana-agent-wallet-adapter/apps/ios-native/.build/arm64-apple-macosx/debug/TweetNacl.build/TweetNacl.swift.o",
+    "swiftmodule": "/Users/devlegacy/Desktop/projects/solana-agent-wallet-adapter/apps/ios-native/.build/arm64-apple-macosx/debug/TweetNacl.build/TweetNacl~partial.swiftmodule",
+    "swift-dependencies": "/Users/devlegacy/Desktop/projects/solana-agent-wallet-adapter/apps/ios-native/.build/arm64-apple-macosx/debug/TweetNacl.build/TweetNacl.swiftdeps"
+  }
+}

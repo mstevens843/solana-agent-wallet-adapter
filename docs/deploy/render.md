@@ -69,7 +69,7 @@ npm exec @solana-agent-wallet-adapter/cli -- app
 The static site must serve Digital Asset Links at:
 
 ```text
-https://agentic.onrender.com/.well-known/assetlinks.json
+https://agenticwalletadapter.com/.well-known/assetlinks.json
 ```
 
 The checked-in file is a safe placeholder until a release signing certificate exists. Render can generate the production
@@ -85,6 +85,9 @@ active.
 
 Set `AGENTIC_ANDROID_REQUIRE_TRUST=1` for production Render builds that back an Android release. With that guard
 enabled, `pnpm render:prepare` fails instead of deploying the placeholder trust file.
+
+The Android APK launches `https://agenticwalletadapter.com/#app` by default. Keep the Render static rewrite rule
+`/*` to `/index.html` enabled so direct browser visits to client-side routes such as `/app` and `/demo` also resolve.
 
 ## Local Verification
 
