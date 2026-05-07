@@ -9,7 +9,7 @@ Trusted Web Activity wrapper around this hosted origin.
 Use the root `render.yaml` as a Render Blueprint. It defines one static web service:
 
 - Service name: `agentic`
-- Build command: `corepack enable && pnpm install --frozen-lockfile --ignore-scripts && pnpm render:prepare && pnpm -F @solana-agent-wallet-adapter/browser-demo build`
+- Build command: `pnpm install --frozen-lockfile --ignore-scripts && pnpm render:prepare && pnpm -F @solana-agent-wallet-adapter/browser-demo build`
 - Publish directory: `apps/browser-demo/dist`
 - Environment variable: `SKIP_INSTALL_DEPS=true`
 - Optional Android trust env: `AGENTIC_ANDROID_SHA256_CERT_FINGERPRINTS`
@@ -21,7 +21,7 @@ Use the root `render.yaml` as a Render Blueprint. It defines one static web serv
 If configuring Render manually, use:
 
 - Root directory: repository root
-- Build command: `corepack enable && pnpm install --frozen-lockfile --ignore-scripts && pnpm render:prepare && pnpm -F @solana-agent-wallet-adapter/browser-demo build`
+- Build command: `pnpm install --frozen-lockfile --ignore-scripts && pnpm render:prepare && pnpm -F @solana-agent-wallet-adapter/browser-demo build`
 - Publish directory: `apps/browser-demo/dist`
 - Environment variable: `SKIP_INSTALL_DEPS=true`
 - Optional Android trust env: `AGENTIC_ANDROID_SHA256_CERT_FINGERPRINTS`

@@ -76,7 +76,7 @@ pnpm android:assetlinks:write -- --keystore /absolute/path/agentic-release.jks -
 This app is deployable as a Render Static Site using the root `render.yaml` blueprint. Manual Render settings are:
 
 - Root directory: repository root
-- Build command: `corepack enable && pnpm install --frozen-lockfile --ignore-scripts && pnpm render:prepare && pnpm -F @solana-agent-wallet-adapter/browser-demo build`
+- Build command: `pnpm install --frozen-lockfile --ignore-scripts && pnpm render:prepare && pnpm -F @solana-agent-wallet-adapter/browser-demo build`
 - Publish directory: `apps/browser-demo/dist`
 - Environment variable: `SKIP_INSTALL_DEPS=true`
 - Optional Android trust env: `AGENTIC_ANDROID_SHA256_CERT_FINGERPRINTS`

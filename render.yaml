@@ -2,7 +2,7 @@ services:
   - type: web
     name: agentic
     runtime: static
-    buildCommand: corepack enable && pnpm install --frozen-lockfile --ignore-scripts && pnpm render:prepare && pnpm -F @solana-agent-wallet-adapter/browser-demo build
+    buildCommand: pnpm install --frozen-lockfile --ignore-scripts && pnpm render:prepare && pnpm -F @solana-agent-wallet-adapter/browser-demo build
     staticPublishPath: apps/browser-demo/dist
     envVars:
       - key: SKIP_INSTALL_DEPS
