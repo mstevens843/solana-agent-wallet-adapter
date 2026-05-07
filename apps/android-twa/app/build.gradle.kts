@@ -1,3 +1,5 @@
+import java.io.File
+
 plugins {
     id("com.android.application")
     id("org.jetbrains.kotlin.android")
@@ -19,6 +21,16 @@ fun booleanFlag(value: String?, name: String, defaultValue: Boolean): Boolean {
             "$name must be a boolean value: true/false, 1/0, yes/no, or on/off. Current value: $value",
         )
     }
+}
+
+fun resolvedPnpmCommand(): String {
+    val configured = propertyOrEnv("PNPM_BIN")
+        ?: propertyOrEnv("agenticPnpmBin")
+    if (!configured.isNullOrBlank()) return configured
+
+    return listOf("/usr/local/bin/pnpm", "/opt/homebrew/bin/pnpm")
+        .firstOrNull { file(it).isFile }
+        ?: "pnpm"
 }
 
 val launchUrl = propertyOrEnv("AGENTIC_ANDROID_LAUNCH_URL")
@@ -167,7 +179,13 @@ android {
 
 val buildBundledWebAssets = tasks.register<Exec>("buildBundledWebAssets") {
     workingDir = rootProject.layout.projectDirectory.dir("../..").asFile
-    commandLine("pnpm", "-F", "@solana-agent-wallet-adapter/browser-demo", "build")
+    commandLine(resolvedPnpmCommand(), "-F", "@solana-agent-wallet-adapter/browser-demo", "build")
+    environment(
+        "PATH",
+        listOf("/usr/local/bin", "/opt/homebrew/bin", System.getenv("PATH") ?: "")
+            .filter { it.isNotBlank() }
+            .joinToString(File.pathSeparator),
+    )
     environment("VITE_AGENTIC_ANDROID_APP", "true")
     environment("VITE_AGENTIC_ANDROID_SHOW_EXAMPLE_TAB", showExampleTab.toString())
     environment("VITE_CAPACITOR_IOS_APP", "false")

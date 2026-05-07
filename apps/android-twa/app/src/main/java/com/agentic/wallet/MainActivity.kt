@@ -131,6 +131,6 @@ class MainActivity : ComponentActivity() {
 
     private companion object {
         private const val LOCAL_APP_HOST = "agentic.local"
-        private const val LOCAL_APP_START_URL = "https://agentic.local/app"
+        private const val LOCAL_APP_START_URL = "https://agentic.local/"
     }
 }

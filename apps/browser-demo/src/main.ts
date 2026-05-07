@@ -789,8 +789,10 @@ function isAppRoute(pathname: string): pathname is AppRoute {
 }
 
 function pageShell(content: string, activeRoute: AppRoute | null): string {
+  const routeClass = activeRoute ? `route-${activeRoute === '/' ? 'home' : activeRoute.slice(1).replace(/[^a-z0-9-]/g, '-')}` : 'route-unknown';
+  const platformClass = state.iosNativeEnvironment.isIosNative ? 'ios-native-shell' : agenticAndroidBridge() ? 'android-shell' : '';
   return `
-    <section class="shell homepage-shell">
+    <section class="shell homepage-shell ${routeClass} ${platformClass}">
       ${toastStack()}
       ${homepageNav(activeRoute)}
       ${content}
@@ -867,7 +869,7 @@ function androidPage(): string {
 }
 
 function demoPage(): string {
-  return guidedDemoPage();
+  return appWorkspace();
 }
 
 function notFoundPage(): string {
@@ -2494,6 +2496,7 @@ function agentPlanPanel(): string {
       </div>
 
       ${agentPlannerWorkbench()}
+      ${agentPathExplainer()}
 
       ${state.agentPlan ? agentPlanCard(state.agentPlan) : signaturePlaceholder('Plan details', 'Generate a plan to show route, risk, and approval constraints before signing.')}
       ${agentResultBlock()}
@@ -2550,8 +2553,47 @@ function agentPlannerWorkbench(): string {
           <button id="queueAgentPlan" class="utility" ${!state.address || !state.agentPlan || !state.bridgeActive || !canQueueAgentPlan(state.agentPlan) || state.busy ? 'disabled' : ''} title="${queuePlanTitle()}">Queue approval</button>
         </div>
       </div>
-      ${aiSettingsCard()}
+      ${aiSettingsPanel()}
     </div>
+  `;
+}
+
+function aiSettingsPanel(): string {
+  const configured = state.aiSettings.mode === 'session'
+    ? Boolean(state.aiSettings.apiKey.trim())
+    : Boolean(state.aiStatus?.available);
+  const open = isCompactMobileLayout() ? '' : 'open';
+  return `
+    <details class="ai-settings-panel" ${open}>
+      <summary>
+        <span>BYOK planning</span>
+        <strong>${configured ? 'configured' : 'not configured'}</strong>
+      </summary>
+      ${aiSettingsCard()}
+    </details>
+  `;
+}
+
+function isCompactMobileLayout(): boolean {
+  return window.matchMedia('(max-width: 700px)').matches;
+}
+
+function agentPathExplainer(): string {
+  return `
+    <aside class="agent-path-explainer" aria-label="Template and connected agent paths">
+      <div>
+        <span>Templates</span>
+        <p>Pick an action, fill fields and notes, then generate a keyless approval record. No AI key, Claude, Codex, or MCP required.</p>
+      </div>
+      <div>
+        <span>Connected agent</span>
+        <p>Claude, Codex, MCP, or Solana Agent Kit can prepare richer requests through the local bridge. Your wallet still signs.</p>
+      </div>
+      <div>
+        <span>Always true</span>
+        <p>Agentic never receives a private key. Templates and agents both end in explicit wallet approval.</p>
+      </div>
+    </aside>
   `;
 }
 
@@ -3100,6 +3142,10 @@ function bindRouteLinks(): void {
       if (!isAppRoute(route)) return;
 
       event.preventDefault();
+      if (route === '/mwa-test' && SHOW_ANDROID_EXAMPLE_TAB && agenticAndroidBridge()?.openMwaExample) {
+        openAndroidMwaTest();
+        return;
+      }
       navigateTo(route);
     });
   }

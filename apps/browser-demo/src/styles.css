@@ -3882,6 +3882,42 @@ code {
   margin-top: 0;
 }
 
+.agent-path-explainer {
+  background: rgba(255, 255, 255, 0.026);
+  border: 1px solid rgba(224, 230, 226, 0.1);
+  border-radius: 8px;
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  margin: 14px 0 0;
+  overflow: hidden;
+}
+
+.agent-path-explainer > div {
+  min-width: 0;
+  padding: 14px 16px;
+}
+
+.agent-path-explainer > div + div {
+  border-left: 1px solid rgba(224, 230, 226, 0.08);
+}
+
+.agent-path-explainer span {
+  color: var(--dim);
+  display: block;
+  font-size: 0.72rem;
+  font-weight: 900;
+  letter-spacing: 0.08em;
+  margin-bottom: 7px;
+  text-transform: uppercase;
+}
+
+.agent-path-explainer p {
+  color: var(--muted);
+  font-size: 0.9rem;
+  line-height: 1.42;
+  margin: 0;
+}
+
 .ai-settings-card {
   align-content: start;
   background: rgba(255, 255, 255, 0.035);
@@ -3966,6 +4002,15 @@ code {
   .agent-planner-grid,
   .planner-fields {
     grid-template-columns: 1fr;
+  }
+
+  .agent-path-explainer {
+    grid-template-columns: 1fr;
+  }
+
+  .agent-path-explainer > div + div {
+    border-left: 0;
+    border-top: 1px solid rgba(224, 230, 226, 0.08);
   }
 }
 
