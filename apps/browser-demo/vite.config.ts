@@ -1,6 +1,17 @@
 import { defineConfig } from 'vite';
 
+const capacitorIosApp =
+  process.env.VITE_CAPACITOR_IOS_APP ??
+  process.env.VITE_CAPACITATOR_IOS_APP ??
+  process.env.CAPACITOR_IOS_APP ??
+  process.env.CAPACITATOR_IOS_APP ??
+  'true';
+
 export default defineConfig({
+  define: {
+    'import.meta.env.VITE_CAPACITOR_IOS_APP': JSON.stringify(capacitorIosApp),
+    'import.meta.env.VITE_CAPACITATOR_IOS_APP': JSON.stringify(capacitorIosApp),
+  },
   build: {
     rollupOptions: {
       output: {

@@ -66,7 +66,7 @@ export interface IosNativeWalletOption {
   appStoreUrl: string;
 }
 
-type IosNativeLogLevel = 'silent' | 'error' | 'info' | 'debug';
+export type IosNativeLogLevel = 'silent' | 'error' | 'info' | 'debug';
 
 interface IosAuthRecord {
   publicKey: string;
@@ -154,13 +154,28 @@ const AUTH_CACHE_KEY = 'agentic-ios-auth-cache-v1';
 const PENDING_STATE_KEY = 'agentic-ios-pending-state-v1';
 const DEFAULT_CALLBACK_SCHEME = 'agenticwallet';
 const DEFAULT_REQUEST_TTL_MS = 120_000;
+const FALSE_ENV_VALUES = new Set(['0', 'false', 'no', 'off', 'native', 'swift']);
 const IOS_URL_SUBSCRIBERS = new Set<(url: string) => void>();
 let urlDispatcherInstalled = false;
 let urlDispatcherPromise: Promise<void> | null = null;
 
+export function capacitorIosAppEnabled(): boolean {
+  const viteEnv = (import.meta as ImportMeta & {
+    env?: Record<string, string | boolean | undefined>;
+  }).env;
+  const raw =
+    viteEnv?.VITE_CAPACITOR_IOS_APP ??
+    viteEnv?.VITE_CAPACITATOR_IOS_APP ??
+    viteEnv?.CAPACITOR_IOS_APP ??
+    viteEnv?.CAPACITATOR_IOS_APP ??
+    'true';
+  return !FALSE_ENV_VALUES.has(String(raw).trim().toLowerCase());
+}
+
 export function detectIosNativeEnvironment(callbackScheme = DEFAULT_CALLBACK_SCHEME): IosNativeEnvironment {
   const platform = safeCapacitorPlatform();
-  const isNative = safeIsNativePlatform();
+  const useCapacitorIosApp = capacitorIosAppEnabled();
+  const isNative = useCapacitorIosApp && safeIsNativePlatform();
   const ua = typeof navigator === 'undefined' ? '' : navigator.userAgent;
   const uaLooksIos =
     /iPhone|iPad|iPod/i.test(ua) ||
@@ -170,7 +185,7 @@ export function detectIosNativeEnvironment(callbackScheme = DEFAULT_CALLBACK_SCH
     isNative,
     platform,
     isIos,
-    isIosNative: isNative && platform === 'ios',
+    isIosNative: useCapacitorIosApp && isNative && platform === 'ios',
     callbackScheme,
   };
 }
