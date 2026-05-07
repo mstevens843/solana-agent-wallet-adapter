@@ -4585,23 +4585,49 @@ code {
 
 .ai-settings-panel > summary {
   align-items: center;
-  background: rgba(255, 255, 255, 0.032);
-  border: 1px solid rgba(224, 230, 226, 0.1);
+  background:
+    linear-gradient(135deg, rgba(37, 199, 123, 0.13), rgba(255, 255, 255, 0.035)),
+    rgba(255, 255, 255, 0.04);
+  border: 1px solid rgba(94, 231, 158, 0.28);
   border-radius: 8px;
+  box-shadow:
+    0 0 0 1px rgba(37, 199, 123, 0.06),
+    0 14px 32px rgba(0, 0, 0, 0.18);
   cursor: pointer;
-  display: flex;
+  display: grid;
   gap: 12px;
-  justify-content: space-between;
+  grid-template-columns: minmax(0, 1fr) auto auto;
   list-style: none;
   min-height: 44px;
-  padding: 8px 12px 12px;
+  padding: 10px 12px;
+  transition:
+    background 140ms ease,
+    border-color 140ms ease,
+    box-shadow 140ms ease;
+}
+
+.ai-settings-panel > summary:hover,
+.ai-settings-panel[open] > summary {
+  background:
+    linear-gradient(135deg, rgba(52, 211, 153, 0.18), rgba(133, 220, 255, 0.07)),
+    rgba(255, 255, 255, 0.052);
+  border-color: rgba(94, 231, 158, 0.46);
+  box-shadow:
+    0 0 0 1px rgba(37, 199, 123, 0.12),
+    0 16px 34px rgba(0, 0, 0, 0.22);
 }
 
 .ai-settings-panel > summary::-webkit-details-marker {
   display: none;
 }
 
-.ai-settings-panel > summary span {
+.ai-summary-copy {
+  display: grid;
+  gap: 3px;
+  min-width: 0;
+}
+
+.ai-summary-copy > span {
   color: var(--dim);
   font-size: 0.72rem;
   font-weight: 900;
@@ -4609,16 +4635,40 @@ code {
   text-transform: uppercase;
 }
 
+.ai-summary-copy em {
+  color: rgba(218, 229, 224, 0.82);
+  font-size: 0.82rem;
+  font-style: normal;
+  font-weight: 650;
+  line-height: 1.25;
+  overflow-wrap: anywhere;
+}
+
 .ai-settings-panel > summary strong {
+  align-self: center;
+  background: rgba(2, 8, 6, 0.45);
+  border: 1px solid rgba(224, 230, 226, 0.13);
+  border-radius: 999px;
   color: var(--text);
   font-size: 0.86rem;
+  line-height: 1.1;
+  padding: 5px 8px;
   text-align: right;
+  white-space: nowrap;
+}
+
+.ai-settings-panel.configured > summary strong {
+  background: rgba(52, 211, 153, 0.14);
+  border-color: rgba(94, 231, 158, 0.3);
+  color: #d9ffea;
 }
 
 .ai-settings-panel > summary::after {
-  color: var(--dim);
+  align-self: center;
+  color: var(--accent-2);
   content: "+";
   font-weight: 900;
+  line-height: 1;
 }
 
 .ai-settings-panel[open] > summary::after {
@@ -5176,9 +5226,13 @@ code {
     padding: 9px 10px;
   }
 
-  .ai-settings-panel > summary span,
+  .ai-summary-copy > span,
   .ai-settings-panel > summary strong {
     font-size: 0.72rem;
+  }
+
+  .ai-summary-copy em {
+    font-size: 0.78rem;
   }
 
   .ai-settings-card {
@@ -6346,9 +6400,14 @@ code {
     padding: 0 10px;
   }
 
-  .route-app .ai-settings-panel summary span,
-  .route-demo .ai-settings-panel summary span {
+  .route-app .ai-summary-copy > span,
+  .route-demo .ai-summary-copy > span {
     font-size: 0.64rem;
+  }
+
+  .route-app .ai-summary-copy em,
+  .route-demo .ai-summary-copy em {
+    font-size: 0.74rem;
   }
 
   .route-app .signature-placeholder,

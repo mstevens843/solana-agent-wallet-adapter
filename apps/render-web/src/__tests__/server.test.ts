@@ -1,7 +1,7 @@
-import { mkdtemp, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { request as httpRequest } from 'node:http';
+import { request as httpRequest, type IncomingHttpHeaders } from 'node:http';
 
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
@@ -10,6 +10,12 @@ import { createRenderWebServer } from '../server.js';
 interface TestResponse {
   status: number;
   body: Record<string, unknown>;
+}
+
+interface TextResponse {
+  status: number;
+  body: string;
+  headers: IncomingHttpHeaders;
 }
 
 const aiRequest = {
@@ -33,17 +39,11 @@ describe('render web hosted BYOK API', () => {
     vi.unstubAllGlobals();
   });
 
-  it('routes OpenAI hosted BYOK requests through the server-side chat completions API', async () => {
+  it('routes OpenAI hosted BYOK requests through the server-side Responses API', async () => {
     const providerCalls: Array<{ url: string; init: RequestInit | undefined }> = [];
     vi.stubGlobal('fetch', vi.fn(async (url: string | URL | Request, init?: RequestInit) => {
       providerCalls.push({ url: String(url), init });
-      return jsonResponse({
-        choices: [{
-          message: {
-            content: planJson('OpenAI intent'),
-          },
-        }],
-      });
+      return jsonResponse({ output_text: planJson('OpenAI intent') });
     }));
 
     await withServer(async (port) => {
@@ -60,8 +60,19 @@ describe('render web hosted BYOK API', () => {
       expect(response.status).toBe(200);
       expect(response.body.intent).toBe('OpenAI intent');
       expect(providerCalls).toHaveLength(1);
-      expect(providerCalls[0]?.url).toBe('https://api.openai.com/v1/chat/completions');
+      expect(providerCalls[0]?.url).toBe('https://api.openai.com/v1/responses');
       expect((providerCalls[0]?.init?.headers as Record<string, string>).authorization).toBe('Bearer sk-test-openai');
+      const body = JSON.parse(String(providerCalls[0]?.init?.body ?? '{}')) as Record<string, unknown>;
+      expect(body.temperature).toBeUndefined();
+      expect(body.store).toBe(false);
+      expect(body.reasoning).toEqual({ effort: 'low' });
+      expect(body.text).toMatchObject({
+        format: {
+          type: 'json_schema',
+          name: 'agentic_ai_plan',
+          strict: true,
+        },
+      });
     });
   });
 
@@ -139,11 +150,36 @@ describe('render web hosted BYOK API', () => {
       expect(String(response.body.error)).toContain('[redacted]');
     });
   });
+
+  it('serves the SPA shell for direct visits to client-side routes', async () => {
+    await withServer(async (port) => {
+      for (const route of ['/app', '/docs', '/demo', '/android', '/privacy', '/terms']) {
+        const response = await getText(port, route);
+
+        expect(response.status).toBe(200);
+        expect(String(response.headers['content-type'])).toContain('text/html');
+        expect(response.headers['cache-control']).toBe('no-cache');
+        expect(response.body).toContain('<div id="app"></div>');
+      }
+    });
+  });
+
+  it('keeps unknown API routes on the API 404 path instead of the SPA fallback', async () => {
+    await withServer(async (port) => {
+      const response = await getText(port, '/api/not-a-real-route');
+
+      expect(response.status).toBe(404);
+      expect(String(response.headers['content-type'])).toContain('application/json');
+      expect(JSON.parse(response.body)).toEqual({ error: 'not_found' });
+    });
+  });
 });
 
 async function withServer(callback: (port: number) => Promise<void>): Promise<void> {
   const staticDir = await mkdtemp(join(tmpdir(), 'agentic-render-web-'));
   await writeFile(join(staticDir, 'index.html'), '<!doctype html><div id="app"></div>');
+  await mkdir(join(staticDir, 'app'));
+  await writeFile(join(staticDir, 'app', 'index.html'), '<!doctype html><div id="app"></div>');
   const server = createRenderWebServer({ staticDir });
   await new Promise<void>((resolve, reject) => {
     server.once('error', reject);
@@ -186,6 +222,30 @@ function postJson(port: number, path: string, body: unknown): Promise<TestRespon
     });
     req.on('error', reject);
     req.end(payload);
+  });
+}
+
+function getText(port: number, path: string): Promise<TextResponse> {
+  return new Promise((resolve, reject) => {
+    const req = httpRequest({
+      hostname: '127.0.0.1',
+      port,
+      path,
+      method: 'GET',
+    }, (res) => {
+      const chunks: Buffer[] = [];
+      res.on('data', (chunk) => chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk)));
+      res.on('error', reject);
+      res.on('end', () => {
+        resolve({
+          status: res.statusCode ?? 0,
+          body: Buffer.concat(chunks).toString('utf8'),
+          headers: res.headers,
+        });
+      });
+    });
+    req.on('error', reject);
+    req.end();
   });
 }
 

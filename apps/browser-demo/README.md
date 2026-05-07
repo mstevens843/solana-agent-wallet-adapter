@@ -97,6 +97,9 @@ blueprint. Manual Render settings are:
 
 See [Render deployment notes](../../docs/deploy/render.md) for the full handoff.
 
+Production should answer `200` from `/api/ai/status`; a `404` there means the custom domain is still serving a static
+site instead of the Node web service. Direct visits to `/app`, `/docs`, and `/demo` should return the app shell HTML.
+
 ## Workspace Tabs
 
 - `Agent Plan`: wallet-gated agent request flow with off-chain approval proofs and bridge-backed approval queue actions.

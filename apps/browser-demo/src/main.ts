@@ -25,6 +25,14 @@ import {
 import { Connection, PublicKey, Transaction, TransactionInstruction } from '@solana/web3.js';
 
 import {
+  AndroidNativeWalletBackend,
+  androidNativeCacheSummary,
+  detectAndroidNativeEnvironment,
+  restoreLatestAndroidNativeWallet,
+  type AndroidNativeEnvironment,
+  type AndroidNativeRestoreResult,
+} from './androidNative.js';
+import {
   AI_PROVIDER_PRESETS,
   AGENT_PLAN_TEMPLATES,
   DEFAULT_AI_BASE_URL,
@@ -51,7 +59,7 @@ type StepState = 'idle' | 'active' | 'done' | 'error';
 type StepName = 'discover' | 'connect' | 'sign' | 'transaction' | 'bridge' | 'inbox' | 'lab' | 'ai';
 type ActiveTab = 'wallet' | 'agent' | 'inbox' | 'schedule' | 'labs';
 type ArtifactView = 'create' | 'signed';
-type ToastKind = 'success' | 'error';
+type ToastKind = 'success' | 'error' | 'pending';
 type RuntimePathId = 'exec' | 'install' | 'desktop';
 type AppRoute = (typeof ROUTE_PATHS)[number];
 type InboxFilter = 'all' | 'ready' | 'scheduled' | 'approved' | 'failed' | 'rejected' | 'one-time' | 'recurring';
@@ -89,6 +97,7 @@ interface IosNativeWalletOption {
 interface AgenticAndroidBridge {
   openMwaExample?: () => void;
   isExampleTabEnabled?: () => boolean;
+  mwaRequest?: (requestId: string, method: string, payloadJson: string) => void;
 }
 
 interface IosNativeRestoreResult {
@@ -480,6 +489,11 @@ interface PersistedState {
   cluster?: Cluster;
   bridgeUrl?: string;
   bridgeToken?: string;
+  aiMode?: AiSettings['mode'];
+  aiProvider?: AiSettings['provider'];
+  aiApiFormat?: AiSettings['apiFormat'];
+  aiBaseUrl?: string;
+  aiModel?: string;
 }
 
 interface DemoState {
@@ -490,6 +504,9 @@ interface DemoState {
   inboxFilter: InboxFilter;
   wallets: DiscoveredWallet[];
   selectedWalletName: string;
+  androidNativeEnvironment: AndroidNativeEnvironment;
+  androidAuthCacheCount: number;
+  androidNativeStatus: string;
   iosNativeEnvironment: IosNativeEnvironment;
   iosWallets: ReadonlyArray<IosNativeWalletOption>;
   selectedIosWalletId: IosNativeWalletId;
@@ -508,6 +525,7 @@ interface DemoState {
   agentSignature: string;
   agentPreparedActionId: string;
   aiSettings: AiSettings;
+  aiSettingsPanelOpen: boolean | null;
   aiStatus: BridgeAiStatus | null;
   toasts: Toast[];
   capabilities: AdapterCapabilities | null;
@@ -648,7 +666,7 @@ const persisted = loadPersistedState();
 const initialCluster = SHOW_DEV_CONTROLS ? (persisted.cluster ?? 'mainnet-beta') : 'mainnet-beta';
 const initialTemplate = templateById('custom-request');
 const defaultWorkspaceTab: ActiveTab = 'agent';
-const initialAiMode: AiSettings['mode'] = defaultAiMode();
+const initialAiSettings = persistedAiSettings(persisted);
 
 const state: DemoState = {
   activeTab: defaultWorkspaceTab,
@@ -658,6 +676,9 @@ const state: DemoState = {
   inboxFilter: 'all',
   wallets: [],
   selectedWalletName: persisted.selectedWalletName ?? '',
+  androidNativeEnvironment: detectAndroidNativeEnvironment(),
+  androidAuthCacheCount: 0,
+  androidNativeStatus: 'Android native MWA idle.',
   iosNativeEnvironment: detectIosNativeEnvironment(),
   iosWallets: listIosNativeWalletOptions(),
   selectedIosWalletId: persisted.selectedIosWalletId ?? 'phantom',
@@ -676,13 +697,10 @@ const state: DemoState = {
   agentSignature: '',
   agentPreparedActionId: '',
   aiSettings: {
-    mode: initialAiMode,
-    provider: DEFAULT_AI_PROVIDER_ID,
-    apiFormat: aiProviderPresetById(DEFAULT_AI_PROVIDER_ID).apiFormat,
-    baseUrl: DEFAULT_AI_BASE_URL,
-    model: DEFAULT_AI_MODEL,
+    ...initialAiSettings,
     apiKey: '',
   },
+  aiSettingsPanelOpen: null,
   aiStatus: null,
   toasts: [],
   capabilities: null,
@@ -749,6 +767,15 @@ async function bootstrap(): Promise<void> {
     logLevel: 'info',
   });
   state.mwaEnvironment = state.mwaRegistration.environment;
+  state.androidNativeEnvironment = detectAndroidNativeEnvironment();
+  if (state.androidNativeEnvironment.isAndroidNative && state.cluster === 'localnet') {
+    state.cluster = 'devnet';
+    savePersistedState();
+  }
+  await refreshAndroidNativeCacheState();
+  if (state.androidNativeEnvironment.isAndroidNative) {
+    await restoreAndroidNativeSession();
+  }
   state.iosNativeEnvironment = detectIosNativeEnvironment();
   await refreshIosNativeCacheState();
   if (state.iosNativeEnvironment.isIosNative) {
@@ -783,6 +810,11 @@ function normalizeInitialRoute(): void {
     return;
   }
 
+  if (normalizedPath === '/dos') {
+    window.history.replaceState({}, '', '/docs');
+    return;
+  }
+
   if (isAppRoute(normalizedPath) && window.location.pathname !== normalizedPath) {
     window.history.replaceState({}, '', normalizedPath);
   }
@@ -813,7 +845,11 @@ function isAppRoute(pathname: string): pathname is AppRoute {
 
 function pageShell(content: string, activeRoute: AppRoute | null): string {
   const routeClass = activeRoute ? `route-${activeRoute === '/' ? 'home' : activeRoute.slice(1).replace(/[^a-z0-9-]/g, '-')}` : 'route-unknown';
-  const platformClass = state.iosNativeEnvironment.isIosNative ? 'ios-native-shell' : agenticAndroidBridge() ? 'android-shell' : '';
+  const platformClass = state.iosNativeEnvironment.isIosNative
+    ? 'ios-native-shell'
+    : state.androidNativeEnvironment.bridgeAvailable
+      ? 'android-shell'
+      : '';
   return `
     <section class="shell homepage-shell ${routeClass} ${platformClass}">
       ${toastStack()}
@@ -2081,7 +2117,12 @@ function metric(label: string, value: string, tone = ''): string {
 
 function walletRail(): string {
   const showConnectionDetails = SHOW_DEV_CONTROLS && !state.address;
-  const showPublicWalletPicker = !SHOW_DEV_CONTROLS && !state.address && !state.iosNativeEnvironment.isIosNative && state.wallets.length > 1;
+  const showPublicWalletPicker =
+    !SHOW_DEV_CONTROLS &&
+    !state.address &&
+    !state.androidNativeEnvironment.isAndroidNative &&
+    !state.iosNativeEnvironment.isIosNative &&
+    state.wallets.length > 1;
   const showPublicIosPicker = !SHOW_DEV_CONTROLS && !state.address && state.iosNativeEnvironment.isIosNative;
   const wallet = walletIdentity();
   return `
@@ -2161,7 +2202,9 @@ function walletRailIcon(wallet: WalletIdentity): string {
 
 function publicWalletActions(): string {
   const selectedProvider = discoveredSelectedWalletName();
+  const androidNative = state.androidNativeEnvironment.isAndroidNative;
   const iosNative = state.iosNativeEnvironment.isIosNative;
+  const nativeWallet = androidNative || iosNative;
   if (state.address) {
     return `
       <div class="wallet-actions public-wallet-actions connected">
@@ -2171,10 +2214,10 @@ function publicWalletActions(): string {
   }
   return `
     <div class="wallet-actions public-wallet-actions">
-      <button data-start-action="discover" class="${state.wallets.length || iosNative ? '' : 'primary'}" ${state.busy ? 'disabled' : ''}>
-        ${iosNative ? 'Refresh iOS' : state.wallets.length ? 'Refresh' : 'Discover'}
+      <button data-start-action="discover" class="${state.wallets.length || nativeWallet ? '' : 'primary'}" ${state.busy ? 'disabled' : ''}>
+        ${androidNative ? 'Discover' : iosNative ? 'Refresh iOS' : state.wallets.length ? 'Refresh' : 'Discover'}
       </button>
-      <button data-start-action="connect" class="${state.wallets.length || iosNative ? 'primary' : ''}" ${(!iosNative && (state.wallets.length === 0 || !selectedProvider)) || state.busy ? 'disabled' : ''} title="${!iosNative && !selectedProvider ? 'Discover and select a wallet provider first.' : ''}">
+      <button data-start-action="connect" class="${state.wallets.length || nativeWallet ? 'primary' : ''}" ${(!nativeWallet && (state.wallets.length === 0 || !selectedProvider)) || state.busy ? 'disabled' : ''} title="${!nativeWallet && !selectedProvider ? 'Discover and select a wallet provider first.' : ''}">
         Connect wallet
       </button>
     </div>
@@ -2182,15 +2225,16 @@ function publicWalletActions(): string {
 }
 
 function developerConnectionSettings(): string {
+  const androidNative = state.androidNativeEnvironment.isAndroidNative;
   return `
     <label class="field">
       <span>Cluster</span>
       <select id="clusterSelect" ${state.busy || state.bridgeActive ? 'disabled' : ''}>
-        ${CLUSTERS.map((cluster) => `<option value="${cluster}" ${cluster === state.cluster ? 'selected' : ''}>${cluster}</option>`).join('')}
+        ${CLUSTERS.map((cluster) => `<option value="${cluster}" ${cluster === state.cluster ? 'selected' : ''} ${androidNative && cluster === 'localnet' ? 'disabled' : ''}>${cluster}</option>`).join('')}
       </select>
     </label>
 
-    ${state.iosNativeEnvironment.isIosNative ? `
+    ${androidNative ? '' : state.iosNativeEnvironment.isIosNative ? `
     <label class="field">
       <span>iOS wallet</span>
       <select id="iosWalletSelect" ${state.busy ? 'disabled' : ''}>
@@ -2205,11 +2249,30 @@ function developerConnectionSettings(): string {
     </label>`}
 
     ${state.capabilities ? capabilityBlock(state.capabilities) : ''}
-    ${state.iosNativeEnvironment.isIosNative ? mobileWalletBox() : ''}
+    ${androidNative || state.iosNativeEnvironment.isIosNative ? mobileWalletBox() : ''}
   `;
 }
 
 function mobileWalletBox(): string {
+  if (state.androidNativeEnvironment.isAndroidNative) {
+    return `
+      <div class="mobile-wallet-box android-native-box">
+        <h3>Android Native MWA</h3>
+        <p>${escapeHtml(state.androidNativeStatus)}</p>
+        <div class="capabilities compact-caps">
+          <span>Android app</span>
+          <span>MWA picker</span>
+          <span>${state.androidAuthCacheCount} cached</span>
+        </div>
+        <div class="bridge-actions ios-state-actions">
+          <button id="androidReconnectCached" ${state.busy ? 'disabled' : ''}>Reconnect cached</button>
+          <button id="androidClearTransient" ${state.busy ? 'disabled' : ''}>Clear transient</button>
+          <button id="androidFullReset" ${state.busy ? 'disabled' : ''}>Full reset</button>
+          <button id="androidClearAllAccounts" ${state.busy ? 'disabled' : ''}>Clear all accounts</button>
+        </div>
+      </div>
+    `;
+  }
   if (state.iosNativeEnvironment.isIosNative) {
     return `
       <div class="mobile-wallet-box ios-native-box">
@@ -2295,7 +2358,9 @@ function compactEndpoint(value: string): string {
 
 function guidedStartPanel(title: string, detail: string): string {
   const selectedProvider = discoveredSelectedWalletName();
+  const androidNative = state.androidNativeEnvironment.isAndroidNative;
   const iosNative = state.iosNativeEnvironment.isIosNative;
+  const nativeWallet = androidNative || iosNative;
   const selectedIosWallet = iosWalletLabel(state.selectedIosWalletId);
   return `
     <section class="guided-start signature-stage stage-dormant">
@@ -2304,13 +2369,13 @@ function guidedStartPanel(title: string, detail: string): string {
         <p>${escapeHtml(detail)}</p>
       </div>
       <div class="guided-path" aria-label="Wallet connection path">
-        ${guidedStep('1', iosNative ? 'iOS paths' : 'Discover', iosNative ? `${state.iosWallets.length} wallet path(s) ready` : state.wallets.length ? `${state.wallets.length} provider(s) found` : 'Find installed Wallet Standard providers', iosNative || state.wallets.length > 0)}
-        ${guidedStep('2', 'Select', iosNative ? selectedIosWallet : selectedProvider || (state.wallets.length ? 'Choose a discovered provider' : 'Choose a wallet provider'), iosNative ? Boolean(selectedIosWallet) : Boolean(selectedProvider))}
+        ${guidedStep('1', androidNative ? 'Discover' : iosNative ? 'iOS paths' : 'Discover', androidNative ? 'Open the Android MWA wallet picker' : iosNative ? `${state.iosWallets.length} wallet path(s) ready` : state.wallets.length ? `${state.wallets.length} provider(s) found` : 'Find installed Wallet Standard providers', nativeWallet || state.wallets.length > 0)}
+        ${guidedStep('2', 'Select', androidNative ? 'Choose from the MWA picker' : iosNative ? selectedIosWallet : selectedProvider || (state.wallets.length ? 'Choose a discovered provider' : 'Choose a wallet provider'), androidNative || (iosNative ? Boolean(selectedIosWallet) : Boolean(selectedProvider)))}
         ${guidedStep('3', 'Connect', 'Authorize this app in the wallet', Boolean(state.address))}
       </div>
       <div class="guided-actions">
-        <button data-start-action="discover" class="${state.wallets.length || iosNative ? '' : 'primary'}" ${state.busy ? 'disabled' : ''}>${iosNative ? 'Refresh iOS state' : 'Discover wallets'}</button>
-        <button data-start-action="connect" class="${state.wallets.length || iosNative ? 'primary' : ''}" ${(!iosNative && (state.wallets.length === 0 || !selectedProvider)) || state.busy ? 'disabled' : ''} title="${!iosNative && !selectedProvider ? 'Discover and select a wallet provider first.' : ''}">Connect wallet</button>
+        <button data-start-action="discover" class="${state.wallets.length || nativeWallet ? '' : 'primary'}" ${state.busy ? 'disabled' : ''}>${androidNative ? 'Discover wallets' : iosNative ? 'Refresh iOS state' : 'Discover wallets'}</button>
+        <button data-start-action="connect" class="${state.wallets.length || nativeWallet ? 'primary' : ''}" ${(!nativeWallet && (state.wallets.length === 0 || !selectedProvider)) || state.busy ? 'disabled' : ''} title="${!nativeWallet && !selectedProvider ? 'Discover and select a wallet provider first.' : ''}">Connect wallet</button>
       </div>
       <p class="guided-note">Bridge review, recurring approvals, artifact creation, and transaction tools unlock after a wallet is connected.</p>
     </section>
@@ -2634,11 +2699,15 @@ function agentPlannerWorkbench(): string {
 
 function aiSettingsPanel(): string {
   const configured = isAiConfiguredForCurrentMode();
-  const open = configured && !isCompactMobileLayout() ? 'open' : '';
+  const shouldOpen = state.aiSettingsPanelOpen ?? (configured && !isCompactMobileLayout());
+  const open = shouldOpen ? 'open' : '';
   return `
-    <details class="ai-settings-panel" ${open}>
+    <details class="ai-settings-panel ${configured ? 'configured' : 'optional'}" ${open}>
       <summary>
-        <span>Connect AI Agent</span>
+        <span class="ai-summary-copy">
+          <span>Optional AI Agent</span>
+          <em>Use BYOK AI for drafts; templates work without it.</em>
+        </span>
         <strong>${configured ? 'configured' : 'not configured'}</strong>
       </summary>
       ${aiSettingsCard()}
@@ -3316,6 +3385,10 @@ function bind(): void {
   document.querySelector<HTMLButtonElement>('#discover')?.addEventListener('click', runDiscover);
   document.querySelector<HTMLButtonElement>('#connect')?.addEventListener('click', runConnect);
   document.querySelector<HTMLButtonElement>('#disconnect')?.addEventListener('click', runDisconnect);
+  document.querySelector<HTMLButtonElement>('#androidReconnectCached')?.addEventListener('click', runReconnectAndroidCached);
+  document.querySelector<HTMLButtonElement>('#androidClearTransient')?.addEventListener('click', runClearAndroidTransient);
+  document.querySelector<HTMLButtonElement>('#androidFullReset')?.addEventListener('click', runClearAndroidFullReset);
+  document.querySelector<HTMLButtonElement>('#androidClearAllAccounts')?.addEventListener('click', runClearAndroidAllAccounts);
   document.querySelector<HTMLButtonElement>('#iosReconnectCached')?.addEventListener('click', runReconnectIosCached);
   document.querySelector<HTMLButtonElement>('#iosClearTransient')?.addEventListener('click', runClearIosTransient);
   document.querySelector<HTMLButtonElement>('#iosFullReset')?.addEventListener('click', runClearIosFullReset);
@@ -3332,6 +3405,9 @@ function bind(): void {
   document.querySelector<HTMLButtonElement>('#saveBridgeAiKey')?.addEventListener('click', runSaveBridgeAiKey);
   document.querySelector<HTMLButtonElement>('#clearAiKey')?.addEventListener('click', runClearAiKey);
   document.querySelector<HTMLButtonElement>('#refreshAiStatus')?.addEventListener('click', runRefreshAiStatus);
+  document.querySelector<HTMLDetailsElement>('.ai-settings-panel')?.addEventListener('toggle', (event) => {
+    state.aiSettingsPanelOpen = (event.currentTarget as HTMLDetailsElement).open;
+  });
   document.querySelector<HTMLButtonElement>('#connectBridge')?.addEventListener('click', runConnectBridge);
   document.querySelector<HTMLButtonElement>('#disconnectBridge')?.addEventListener('click', runDisconnectBridge);
   document.querySelector<HTMLButtonElement>('#refreshInbox')?.addEventListener('click', runRefreshInbox);
@@ -3433,6 +3509,7 @@ function bind(): void {
     const value = (event.currentTarget as HTMLSelectElement).value;
     state.aiSettings.mode = value === 'session' || value === 'hosted' ? value : 'bridge';
     ensureAiProviderAllowedForMode();
+    savePersistedState();
     render();
   });
 
@@ -3442,22 +3519,26 @@ function bind(): void {
     state.aiSettings.apiFormat = preset.apiFormat;
     state.aiSettings.baseUrl = preset.baseUrl;
     state.aiSettings.model = preset.model;
+    savePersistedState();
     render();
   });
 
   document.querySelector<HTMLInputElement>('#aiBaseUrl')?.addEventListener('input', (event) => {
     state.aiSettings.baseUrl = (event.currentTarget as HTMLInputElement).value.trim();
+    savePersistedState();
     syncAiActionButtons();
   });
 
   document.querySelector<HTMLSelectElement>('#aiModelSelect')?.addEventListener('change', (event) => {
     const value = (event.currentTarget as HTMLSelectElement).value;
     state.aiSettings.model = value === CUSTOM_AI_MODEL_VALUE ? '' : value;
+    savePersistedState();
     render();
   });
 
   document.querySelector<HTMLInputElement>('#aiModelCustom')?.addEventListener('input', (event) => {
     state.aiSettings.model = (event.currentTarget as HTMLInputElement).value.trim();
+    savePersistedState();
     syncAiActionButtons();
   });
 
@@ -3771,6 +3852,11 @@ function focusAdjacentTemplateOption(options: HTMLButtonElement[], direction: 1 
 
 async function runDiscover(): Promise<void> {
   await run('discover', async () => {
+    if (state.androidNativeEnvironment.isAndroidNative) {
+      await connectAndroidNativeWallet(true);
+      pushToast('success', 'Android MWA connected', short(state.address));
+      return;
+    }
     if (state.iosNativeEnvironment.isIosNative) {
       state.iosWallets = listIosNativeWalletOptions();
       await refreshIosNativeCacheState();
@@ -3793,6 +3879,16 @@ async function runDiscover(): Promise<void> {
 
 async function runConnect(): Promise<void> {
   await run('connect', async () => {
+    if (state.androidNativeEnvironment.isAndroidNative) {
+      await connectAndroidNativeWallet(false);
+      state.transactionStatus = `Android MWA wallet connected on ${state.cluster}.`;
+      if (state.bridgeActive) {
+        await connectBridgeHost();
+      }
+      savePersistedState();
+      pushToast('success', 'Android MWA connected', short(state.address));
+      return;
+    }
     if (state.iosNativeEnvironment.isIosNative) {
       walletBackend = new IosNativeWalletBackend({
         walletId: state.selectedIosWalletId,
@@ -3840,8 +3936,67 @@ async function runDisconnect(): Promise<void> {
     }
     await disconnectWalletBackend().catch(() => undefined);
     resetWalletConnection();
+    await refreshAndroidNativeCacheState();
+    if (state.androidNativeEnvironment.isAndroidNative) {
+      state.androidNativeStatus = state.androidAuthCacheCount > 0
+        ? 'Android MWA disconnected locally. Cached authorization retained.'
+        : 'Android MWA disconnected.';
+    }
     await refreshIosNativeCacheState();
     pushToast('success', 'Wallet disconnected', 'Local signing session cleared.');
+  });
+}
+
+async function runReconnectAndroidCached(): Promise<void> {
+  await run('connect', async () => {
+    assertAndroidNativeRuntime();
+    const restored = await restoreLatestAndroidNativeWallet({ cluster: androidNativeCluster() });
+    if (!restored) {
+      throw new Error('No cached Android MWA authorization found.');
+    }
+    await applyAndroidNativeRestore(restored);
+    if (state.bridgeActive) {
+      await connectBridgeHost();
+    }
+    pushToast('success', 'Android MWA restored', short(state.address));
+  });
+}
+
+async function runClearAndroidTransient(): Promise<void> {
+  await run('connect', async () => {
+    assertAndroidNativeRuntime();
+    await androidBackendOrNew().clearTransientState();
+    state.androidNativeStatus = 'Android MWA transient state cleared. Cached authorization retained.';
+    await refreshAndroidNativeCacheState();
+    pushToast('success', 'Android state cleared', 'Cached authorization retained.');
+  });
+}
+
+async function runClearAndroidFullReset(): Promise<void> {
+  await run('connect', async () => {
+    assertAndroidNativeRuntime();
+    if (state.bridgeActive) {
+      await disconnectBridgeHost().catch(() => undefined);
+    }
+    await androidBackendOrNew().clearStateFullReset();
+    resetWalletConnection();
+    await refreshAndroidNativeCacheState();
+    state.androidNativeStatus = 'Android MWA authorization reset. Discover again to authorize.';
+    pushToast('success', 'Android wallet reset', 'Authorization cleared.');
+  });
+}
+
+async function runClearAndroidAllAccounts(): Promise<void> {
+  await run('connect', async () => {
+    assertAndroidNativeRuntime();
+    if (state.bridgeActive) {
+      await disconnectBridgeHost().catch(() => undefined);
+    }
+    await androidBackendOrNew().clearAllCachedAuthorizations();
+    resetWalletConnection();
+    await refreshAndroidNativeCacheState();
+    state.androidNativeStatus = 'All Android MWA cached authorizations cleared.';
+    pushToast('success', 'Android cache cleared', 'All cached accounts removed.');
   });
 }
 
@@ -4793,6 +4948,80 @@ function selectedWallet(): DiscoveredWallet {
   return wallet;
 }
 
+async function connectAndroidNativeWallet(_forcePicker: boolean): Promise<void> {
+  assertAndroidNativeRuntime();
+  const backend = new AndroidNativeWalletBackend({ cluster: androidNativeCluster() });
+  walletBackend = backend;
+  client = new SolanaSigningClient({ backend });
+  const cachedAddress = _forcePicker ? null : await backend.reconnectLatest();
+  state.address = cachedAddress ?? await backend.connect();
+  state.capabilities = await client.capabilities();
+  state.selectedWalletName = backend.walletName();
+  state.wallets = [];
+  state.androidAuthCacheCount = backend.cacheCount();
+  state.androidNativeStatus = `Android ${state.selectedWalletName} connected on ${state.cluster}.`;
+  state.transactionStatus = `Android MWA wallet connected on ${state.cluster}.`;
+  state.steps.connect = 'done';
+  savePersistedState();
+}
+
+async function applyAndroidNativeRestore(restored: AndroidNativeRestoreResult): Promise<void> {
+  walletBackend = restored.backend;
+  client = new SolanaSigningClient({ backend: walletBackend });
+  state.address = restored.address;
+  state.selectedWalletName = restored.walletName;
+  state.wallets = [];
+  state.capabilities = await client.capabilities();
+  state.androidAuthCacheCount = restored.cacheCount;
+  state.androidNativeStatus = `Restored cached ${restored.walletName} authorization on ${state.cluster}.`;
+  state.transactionStatus = `Android MWA wallet connected on ${state.cluster}.`;
+  state.steps.connect = 'done';
+  savePersistedState();
+}
+
+async function restoreAndroidNativeSession(): Promise<void> {
+  if (state.cluster === 'localnet') {
+    state.androidNativeStatus = 'Android native MWA supports mainnet-beta, devnet, and testnet. Select devnet for local testing.';
+    return;
+  }
+  const restored = await restoreLatestAndroidNativeWallet({
+    cluster: androidNativeCluster(),
+  });
+  if (!restored) {
+    state.androidNativeStatus = 'No cached Android MWA authorization found. Tap Discover to open the wallet picker.';
+    return;
+  }
+  await applyAndroidNativeRestore(restored);
+}
+
+async function refreshAndroidNativeCacheState(): Promise<void> {
+  if (!state.androidNativeEnvironment.isAndroidNative) {
+    return;
+  }
+  const summary = await androidNativeCacheSummary().catch(() => ({ count: 0 }));
+  state.androidAuthCacheCount = summary.count;
+}
+
+function androidBackendOrNew(): AndroidNativeWalletBackend {
+  return walletBackend instanceof AndroidNativeWalletBackend
+    ? walletBackend
+    : new AndroidNativeWalletBackend({ cluster: androidNativeCluster() });
+}
+
+function androidNativeCluster(): Cluster {
+  if (state.cluster === 'localnet') {
+    state.cluster = 'devnet';
+    savePersistedState();
+  }
+  return state.cluster;
+}
+
+function assertAndroidNativeRuntime(): void {
+  if (!state.androidNativeEnvironment.isAndroidNative) {
+    throw new Error('Android native MWA controls are available only inside the Android app.');
+  }
+}
+
 async function restoreIosNativeSession(): Promise<void> {
   const restored = await restoreLatestIosNativeWallet({
     cluster: state.cluster,
@@ -4923,6 +5152,15 @@ function walletIdentity(): WalletIdentity {
       title: name,
       summary: short(state.address),
       detail: `${titleCaseCluster(state.cluster)} signer`,
+    };
+  }
+  if (state.androidNativeEnvironment.isAndroidNative) {
+    return {
+      icon: 'MW',
+      logoId: 'solanaMobile',
+      title: 'Android MWA standby',
+      summary: 'Mobile Wallet Adapter',
+      detail: state.androidAuthCacheCount > 0 ? `${state.androidAuthCacheCount} cached authorization(s)` : 'Tap Discover to open the wallet picker',
     };
   }
   if (state.iosNativeEnvironment.isIosNative) {
@@ -5955,6 +6193,7 @@ function titleCase(value: string): string {
 }
 
 function bridgeModeLabel(): string {
+  if (state.androidNativeEnvironment.isAndroidNative) return 'Android native MWA ready';
   if (state.iosNativeEnvironment.isIosNative) return 'iOS native wallet ready';
   if (state.mwaEnvironment.supportsMwaMobileWeb) return 'Android MWA ready';
   if (state.mwaEnvironment.supportsIosWalletStandardFallback) return 'iOS wallet browser';
@@ -6201,6 +6440,30 @@ function resolveDevControls(): boolean {
 
 function defaultAiMode(): AiSettings['mode'] {
   return isLocalBrowserOrigin() ? 'bridge' : 'hosted';
+}
+
+function persistedAiSettings(persistedState: PersistedState): Omit<AiSettings, 'apiKey'> {
+  const fallback = aiProviderPresetById(DEFAULT_AI_PROVIDER_ID);
+  const provider = persistedState.aiProvider ? aiProviderPresetById(persistedState.aiProvider) : fallback;
+  const mode = persistedState.aiMode ?? defaultAiMode();
+  const model = persistedState.aiModel?.trim() || provider.model;
+  const settings = {
+    mode,
+    provider: provider.id,
+    apiFormat: persistedState.aiApiFormat ?? provider.apiFormat,
+    baseUrl: persistedState.aiBaseUrl?.trim() || provider.baseUrl,
+    model,
+  };
+  if (settings.mode === 'hosted' && settings.provider === 'custom-openai-compatible') {
+    return {
+      mode: settings.mode,
+      provider: fallback.id,
+      apiFormat: fallback.apiFormat,
+      baseUrl: fallback.baseUrl,
+      model: fallback.model,
+    };
+  }
+  return settings;
 }
 
 function isLocalBrowserOrigin(): boolean {

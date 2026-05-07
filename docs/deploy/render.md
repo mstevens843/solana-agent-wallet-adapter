@@ -39,6 +39,22 @@ If configuring Render manually, use:
 
 If hard-refreshing `/app`, `/docs`, `/cli`, `/desktop`, or `/demo` returns `Not Found`, the deployed service is still
 using the old static configuration. Redeploy from the root Blueprint so `apps/render-web` serves the SPA fallback.
+If `https://agenticwalletadapter.com/api/ai/status` also returns `404`, the custom domain is still attached to a static
+site or stale service; move the domain to the root Blueprint Node web service before debugging client-side routing.
+
+## Production Sanity Checks
+
+After each production deploy, verify:
+
+```sh
+curl -i https://agenticwalletadapter.com/api/ai/status
+curl -i https://agenticwalletadapter.com/app
+curl -i https://agenticwalletadapter.com/docs
+curl -i https://agenticwalletadapter.com/demo
+```
+
+`/api/ai/status` must return `200` JSON. The client-side routes must return `200` HTML with the app shell, not Render's
+plain-text `Not Found` response.
 
 ## Hosted BYOK AI
 

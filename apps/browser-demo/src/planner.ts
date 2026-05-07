@@ -411,18 +411,19 @@ export async function generateHostedAiPlan(
 
 async function generateOpenAiCompatiblePlan(settings: AiSettings, request: AiPlanRequest): Promise<AgentPlan> {
   const baseUrl = normalizeBaseUrl(settings.baseUrl, 'openai-compatible');
+  const body = {
+    model: settings.model.trim() || DEFAULT_AI_MODEL,
+    response_format: { type: 'json_object' },
+    messages: aiMessages(request),
+    ...(!isDefaultTemperatureOnlyModel(settings.model.trim() || DEFAULT_AI_MODEL) && { temperature: 0.2 }),
+  };
   const response = await fetch(`${baseUrl}/chat/completions`, {
     method: 'POST',
     headers: {
       authorization: `Bearer ${settings.apiKey.trim()}`,
       'content-type': 'application/json',
     },
-    body: JSON.stringify({
-      model: settings.model.trim() || DEFAULT_AI_MODEL,
-      response_format: { type: 'json_object' },
-      messages: aiMessages(request),
-      temperature: 0.2,
-    }),
+    body: JSON.stringify(body),
   }).catch((err) => {
     throw new Error(
       `AI provider request failed. Use the local bridge or a browser-compatible gateway. ${err instanceof Error ? err.message : String(err)}`,
@@ -431,7 +432,7 @@ async function generateOpenAiCompatiblePlan(settings: AiSettings, request: AiPla
 
   const payload = await response.json().catch(() => ({})) as unknown;
   if (!response.ok) {
-    throw new Error(redactSecrets(extractProviderError(payload) || `AI provider returned HTTP ${response.status}.`));
+    throw new Error(providerFailureMessage(payload, response.status));
   }
   return normalizeAiPlan(payload, request);
 }
@@ -510,7 +511,7 @@ async function generateAnthropicPlan(settings: AiSettings, request: AiPlanReques
 
   const payload = await response.json().catch(() => ({})) as unknown;
   if (!response.ok) {
-    throw new Error(redactSecrets(extractProviderError(payload) || `AI provider returned HTTP ${response.status}.`));
+    throw new Error(providerFailureMessage(payload, response.status));
   }
   return normalizeAiPlan(payload, request);
 }
@@ -698,6 +699,27 @@ function extractProviderError(payload: unknown): string {
     return typeof message === 'string' ? message : '';
   }
   return '';
+}
+
+function providerFailureMessage(payload: unknown, status: number): string {
+  const message = extractProviderError(payload) || `AI provider returned HTTP ${status}.`;
+  if (/unsupported value:\s*['"]?temperature/i.test(message) || /temperature.*only the default/i.test(message)) {
+    return redactSecrets(`Model does not support one of Agentic's request parameters. ${message}`);
+  }
+  return redactSecrets(message);
+}
+
+function isDefaultTemperatureOnlyModel(model: string): boolean {
+  const normalized = model.trim().toLowerCase();
+  return (
+    normalized.startsWith('gpt-5') ||
+    normalized.includes('/gpt-5') ||
+    /^o\d/.test(normalized) ||
+    normalized.startsWith('o-') ||
+    normalized.includes('/o1') ||
+    normalized.includes('/o3') ||
+    normalized.includes('/o4')
+  );
 }
 
 function extractModelText(payload: unknown): string {

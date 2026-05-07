@@ -58,11 +58,29 @@ const DEFAULT_AI_BASE_URL = 'https://api.openai.com/v1';
 const DEFAULT_AI_MODEL = 'gpt-5';
 const DEFAULT_ANTHROPIC_BASE_URL = 'https://api.anthropic.com/v1';
 const DEFAULT_ANTHROPIC_MODEL = 'claude-sonnet-4-5';
+const OPENAI_REASONING_EFFORT = 'low';
+const OPENAI_MAX_OUTPUT_TOKENS = 1600;
 const SHARED_SAFEGUARDS = [
   'Wallet approval is required before any signature or transaction leaves the device.',
   'The agent never receives the wallet private key or seed phrase.',
   'Amounts, recipients, routes, and policy notes must be visible before signing.',
 ];
+
+const PLAN_JSON_SCHEMA = {
+  type: 'object',
+  additionalProperties: false,
+  properties: {
+    intent: { type: 'string' },
+    route: { type: 'string' },
+    risk: { type: 'string' },
+    approval: { type: 'string' },
+    safeguards: {
+      type: 'array',
+      items: { type: 'string' },
+    },
+  },
+  required: ['intent', 'route', 'risk', 'approval', 'safeguards'],
+} as const;
 
 export class BridgeAiPlanner {
   #sessionConfig: AiRuntimeConfig | null = null;
@@ -120,14 +138,20 @@ export class BridgeAiPlanner {
     if (config.apiFormat === 'anthropic') {
       return this.generateAnthropicPlan(config, normalizedRequest);
     }
+    if (shouldUseOpenAiResponses(config)) {
+      return this.generateOpenAiResponsesPlan(config, normalizedRequest);
+    }
     return this.generateOpenAiCompatiblePlan(config, normalizedRequest);
   }
 
-  private async generateOpenAiCompatiblePlan(
+  private async generateOpenAiResponsesPlan(
     config: AiRuntimeConfig,
     normalizedRequest: Required<AiPlanRequest>,
   ): Promise<AiPlan> {
-    const response = await fetch(`${normalizeBaseUrl(config.baseUrl, 'openai-compatible')}/chat/completions`, {
+    const messages = aiMessages(normalizedRequest);
+    const systemMessage = messages[0]?.content ?? '';
+    const userMessage = messages[1]?.content ?? JSON.stringify(normalizedRequest);
+    const response = await fetch(`${normalizeBaseUrl(config.baseUrl, 'openai-compatible')}/responses`, {
       method: 'POST',
       headers: {
         authorization: `Bearer ${config.apiKey}`,
@@ -135,9 +159,21 @@ export class BridgeAiPlanner {
       },
       body: JSON.stringify({
         model: config.model,
-        response_format: { type: 'json_object' },
-        messages: aiMessages(normalizedRequest),
-        temperature: 0.2,
+        instructions: systemMessage,
+        input: userMessage,
+        max_output_tokens: OPENAI_MAX_OUTPUT_TOKENS,
+        store: false,
+        text: {
+          format: {
+            type: 'json_schema',
+            name: 'agentic_ai_plan',
+            strict: true,
+            schema: PLAN_JSON_SCHEMA,
+          },
+        },
+        ...(isReasoningModel(config.model) && {
+          reasoning: { effort: OPENAI_REASONING_EFFORT },
+        }),
       }),
     }).catch((err) => {
       throw new ProtocolError(
@@ -149,7 +185,40 @@ export class BridgeAiPlanner {
     if (!response.ok) {
       throw new ProtocolError(
         'wallet_unreachable',
-        redactText(extractProviderError(payload) || `AI provider returned HTTP ${response.status}.`),
+        providerFailureMessage(payload, response.status),
+      );
+    }
+    return normalizeAiPlan(payload, normalizedRequest);
+  }
+
+  private async generateOpenAiCompatiblePlan(
+    config: AiRuntimeConfig,
+    normalizedRequest: Required<AiPlanRequest>,
+  ): Promise<AiPlan> {
+    const body = {
+      model: config.model,
+      response_format: { type: 'json_object' },
+      messages: aiMessages(normalizedRequest),
+      ...(!isDefaultTemperatureOnlyModel(config.model) && { temperature: 0.2 }),
+    };
+    const response = await fetch(`${normalizeBaseUrl(config.baseUrl, 'openai-compatible')}/chat/completions`, {
+      method: 'POST',
+      headers: {
+        authorization: `Bearer ${config.apiKey}`,
+        'content-type': 'application/json',
+      },
+      body: JSON.stringify(body),
+    }).catch((err) => {
+      throw new ProtocolError(
+        'wallet_unreachable',
+        `AI provider request failed. ${redactText(err instanceof Error ? err.message : String(err))}`,
+      );
+    });
+    const payload = await response.json().catch(() => ({})) as unknown;
+    if (!response.ok) {
+      throw new ProtocolError(
+        'wallet_unreachable',
+        providerFailureMessage(payload, response.status),
       );
     }
     return normalizeAiPlan(payload, normalizedRequest);
@@ -186,7 +255,7 @@ export class BridgeAiPlanner {
     if (!response.ok) {
       throw new ProtocolError(
         'wallet_unreachable',
-        redactText(extractProviderError(payload) || `AI provider returned HTTP ${response.status}.`),
+        providerFailureMessage(payload, response.status),
       );
     }
     return normalizeAiPlan(payload, normalizedRequest);
@@ -291,6 +360,35 @@ function defaultModel(format: AiApiFormat): string {
   return format === 'anthropic' ? DEFAULT_ANTHROPIC_MODEL : DEFAULT_AI_MODEL;
 }
 
+function shouldUseOpenAiResponses(config: AiRuntimeConfig): boolean {
+  return isOfficialOpenAiBaseUrl(config.baseUrl);
+}
+
+function isOfficialOpenAiBaseUrl(baseUrl: string): boolean {
+  try {
+    return new URL(normalizeBaseUrl(baseUrl, 'openai-compatible')).hostname === 'api.openai.com';
+  } catch {
+    return false;
+  }
+}
+
+function isReasoningModel(model: string): boolean {
+  return isDefaultTemperatureOnlyModel(model);
+}
+
+function isDefaultTemperatureOnlyModel(model: string): boolean {
+  const normalized = model.trim().toLowerCase();
+  return (
+    normalized.startsWith('gpt-5') ||
+    normalized.includes('/gpt-5') ||
+    /^o\d/.test(normalized) ||
+    normalized.startsWith('o-') ||
+    normalized.includes('/o1') ||
+    normalized.includes('/o3') ||
+    normalized.includes('/o4')
+  );
+}
+
 function normalizeBaseUrl(baseUrl: string, format: AiApiFormat): string {
   const trimmed = baseUrl.trim().replace(/\/+$/, '');
   if (!trimmed) return defaultBaseUrl(format);
@@ -334,6 +432,14 @@ function extractProviderError(payload: unknown): string {
   return '';
 }
 
+function providerFailureMessage(payload: unknown, status: number): string {
+  const message = extractProviderError(payload) || `AI provider returned HTTP ${status}.`;
+  if (/unsupported value:\s*['"]?temperature/i.test(message) || /temperature.*only the default/i.test(message)) {
+    return redactText(`Model does not support one of Agentic's request parameters. ${message}`);
+  }
+  return redactText(message);
+}
+
 function extractModelText(payload: unknown): string {
   if (!payload || typeof payload !== 'object') return '';
   const record = payload as Record<string, unknown>;
@@ -363,6 +469,28 @@ function extractModelText(payload: unknown): string {
       const text = (first as Record<string, unknown>).text;
       if (typeof text === 'string') return text;
     }
+  }
+  const output = record.output;
+  if (Array.isArray(output)) {
+    const text = output
+      .map((entry) => {
+        if (!entry || typeof entry !== 'object') return '';
+        const entryRecord = entry as Record<string, unknown>;
+        if (typeof entryRecord.text === 'string') return entryRecord.text;
+        const entryContent = entryRecord.content;
+        if (!Array.isArray(entryContent)) return '';
+        return entryContent
+          .map((contentEntry) => {
+            if (!contentEntry || typeof contentEntry !== 'object') return '';
+            const contentRecord = contentEntry as Record<string, unknown>;
+            return typeof contentRecord.text === 'string' ? contentRecord.text : '';
+          })
+          .filter(Boolean)
+          .join('\n');
+      })
+      .filter(Boolean)
+      .join('\n');
+    if (text) return text;
   }
   return JSON.stringify(payload);
 }
