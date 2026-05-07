@@ -111,6 +111,10 @@ export const AI_PROVIDER_PRESETS: AiProviderPreset[] = [
     baseUrl: DEFAULT_AI_BASE_URL,
     model: DEFAULT_AI_MODEL,
     models: [
+      { id: 'gpt-5.5', label: 'GPT-5.5' },
+      { id: 'gpt-5.4', label: 'GPT-5.4' },
+      { id: 'gpt-5.4-mini', label: 'GPT-5.4 mini' },
+      { id: 'gpt-5.4-nano', label: 'GPT-5.4 nano' },
       { id: DEFAULT_AI_MODEL, label: 'GPT-5' },
       { id: 'gpt-5.2', label: 'GPT-5.2' },
       { id: 'gpt-5.1', label: 'GPT-5.1' },
@@ -144,6 +148,7 @@ export const AI_PROVIDER_PRESETS: AiProviderPreset[] = [
     models: [
       { id: 'gemini-2.5-flash', label: 'Gemini 2.5 Flash' },
       { id: 'gemini-2.5-pro', label: 'Gemini 2.5 Pro' },
+      { id: 'gemini-2.5-flash-lite', label: 'Gemini 2.5 Flash-Lite' },
       { id: 'gemini-2.0-flash', label: 'Gemini 2.0 Flash' },
     ],
   },

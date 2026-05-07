@@ -48,12 +48,11 @@ import './styles.css';
 
 type StepState = 'idle' | 'active' | 'done' | 'error';
 type StepName = 'discover' | 'connect' | 'sign' | 'transaction' | 'bridge' | 'inbox' | 'lab' | 'ai';
-type ActiveTab = 'wallet' | 'agent' | 'inbox' | 'labs';
+type ActiveTab = 'wallet' | 'agent' | 'inbox' | 'schedule' | 'labs';
 type ToastKind = 'success' | 'error';
 type RuntimePathId = 'exec' | 'install' | 'desktop';
 type AppRoute = (typeof ROUTE_PATHS)[number];
 type InboxFilter = 'all' | 'ready' | 'scheduled' | 'approved' | 'failed' | 'rejected' | 'one-time' | 'recurring';
-type InboxMode = 'inbox' | 'recurring';
 type PreparedActionKind = 'transfer_sol' | 'transfer_spl' | 'swap';
 type PreparedActionStatus =
   | 'scheduled'
@@ -136,14 +135,22 @@ const HASH_ROUTE_MAP = new Map<string, AppRoute>([
   ['#workspace', '/demo'],
   ['#mwa-test', '/mwa-test'],
 ]);
-const NAV_ITEMS: ReadonlyArray<{ route: AppRoute; label: string; pill?: boolean }> = [
+type NavItem = {
+  route: AppRoute;
+  label: string;
+  pill?: boolean;
+  mobileHidden?: boolean;
+  mobileLabel?: string;
+};
+
+const NAV_ITEMS: ReadonlyArray<NavItem> = [
   { route: '/', label: 'Home' },
   { route: '/docs', label: 'Docs' },
-  { route: '/cli', label: 'CLI' },
-  { route: '/desktop', label: 'Desktop App' },
-  { route: '/demo', label: 'Launch Demo' },
-  ...(SHOW_ANDROID_EXAMPLE_TAB ? [{ route: '/mwa-test' as AppRoute, label: 'MWA' }] : []),
-  { route: '/app', label: 'Launch App', pill: true },
+  { route: '/cli', label: 'CLI', mobileHidden: true },
+  { route: '/desktop', label: 'Desktop App', mobileHidden: true },
+  { route: '/demo', label: 'Launch Demo', mobileLabel: 'Demo' },
+  ...(SHOW_ANDROID_EXAMPLE_TAB ? [{ route: '/mwa-test' as AppRoute, label: 'MWA', mobileHidden: true }] : []),
+  { route: '/app', label: 'Launch App', pill: true, mobileLabel: 'App' },
 ];
 const ROUTE_TITLES: Record<string, string> = {
   '/mwa-test': 'MWA · Agentic',
@@ -473,7 +480,6 @@ interface DemoState {
   activeTab: ActiveTab;
   selectedRuntimePath: RuntimePathId;
   recentCopyId: string;
-  inboxMode: InboxMode;
   inboxFilter: InboxFilter;
   wallets: DiscoveredWallet[];
   selectedWalletName: string;
@@ -638,7 +644,6 @@ const state: DemoState = {
   activeTab: SHOW_DEV_CONTROLS ? 'wallet' : 'agent',
   selectedRuntimePath: 'exec',
   recentCopyId: '',
-  inboxMode: 'inbox',
   inboxFilter: 'all',
   wallets: [],
   selectedWalletName: persisted.selectedWalletName ?? '',
@@ -709,6 +714,7 @@ let bridgePollTimer: number | null = null;
 let bridgeRequestBusy = false;
 let lastPassiveInboxRefresh = 0;
 let copyResetTimer: number | null = null;
+let templatePickerController: AbortController | null = null;
 
 const app = document.querySelector<HTMLDivElement>('#app');
 if (!app) {
@@ -744,6 +750,7 @@ async function bootstrap(): Promise<void> {
 function render(): void {
   const route = currentRoute();
   applyRouteTitle(route);
+  closeTemplatePickerInteractions();
   appRoot.innerHTML = pageShell(pageContent(route), route);
   bind();
 }
@@ -1234,18 +1241,20 @@ function homepageNav(activeRoute: AppRoute | null): string {
   `;
 }
 
-function navLink(
-  item: { route: AppRoute; label: string; pill?: boolean },
-  activeRoute: AppRoute | null,
-): string {
+function navLink(item: NavItem, activeRoute: AppRoute | null): string {
   const active = item.route === activeRoute;
   const className = [
     item.pill ? 'nav-pill-link' : '',
     item.route === '/app' ? 'launch-app-link' : '',
+    item.mobileHidden ? 'mobile-nav-hidden' : '',
+    item.mobileLabel ? 'has-mobile-label' : '',
   ].filter(Boolean).join(' ');
+  const label = item.mobileLabel
+    ? `<span class="nav-label nav-label-full">${escapeHtml(item.label)}</span><span class="nav-label nav-label-mobile">${escapeHtml(item.mobileLabel)}</span>`
+    : `<span class="nav-label">${escapeHtml(item.label)}</span>`;
   return `
     <a href="${escapeHtml(item.route)}" class="${className}" ${active ? 'aria-current="page"' : ''}>
-      ${escapeHtml(item.label)}
+      ${label}
     </a>
   `;
 }
@@ -1275,8 +1284,8 @@ function heroSection(): string {
         </p>
         <div class="hero-command-area">
           ${commandDeck()}
-          <a class="button-link hero-app-link nav-pill-link launch-app-link" href="/app">Launch App</a>
-          <a class="button-link hero-demo-link" href="/demo">Launch Demo</a>
+          <a class="button-link hero-app-link nav-pill-link launch-app-link mobile-redundant-nav" href="/app">Launch App</a>
+          <a class="button-link hero-demo-link mobile-redundant-nav" href="/demo">Launch Demo</a>
         </div>
         ${agentRuntimeStrip()}
         ${heroWalletStrip()}
@@ -1713,8 +1722,8 @@ function homepageDemoCtaSection(): string {
         </p>
       </div>
       <div class="homepage-cta-actions">
-        <a class="button-link nav-pill-link launch-app-link" href="/app">Launch App</a>
-        <a class="button-link" href="/demo">Preview Demo</a>
+        <a class="button-link nav-pill-link launch-app-link mobile-redundant-nav" href="/app">Launch App</a>
+        <a class="button-link mobile-redundant-nav" href="/demo">Preview Demo</a>
       </div>
     </section>
   `;
@@ -1734,7 +1743,8 @@ function guidedDemoPage(): string {
       <div class="browser-app-grid demo-guide-grid">
         ${guidedDemoStepCard('wallet', 'Wallet signing', 'Discover providers, connect an installed wallet, and sign a bounded demo message without exposing a private key.', 'Try signing')}
         ${guidedDemoStepCard('agent', 'Agent plan', 'Generate a structured approval plan from a template, then sign the proof when your wallet is connected.', 'Draft a plan')}
-        ${guidedDemoStepCard('inbox', 'Approvals', 'Preview prepared actions, recurring approvals, and receipts when the local bridge is running.', 'View queue')}
+        ${guidedDemoStepCard('inbox', 'Approval Inbox', 'Preview prepared actions and receipts when the local bridge is running.', 'View inbox')}
+        ${guidedDemoStepCard('schedule', 'Scheduled Approvals', 'Preview recurring approval setup and scheduled review items.', 'Set schedule')}
         ${guidedDemoStepCard('labs', 'Artifacts', 'Create wallet-signed audit artifacts that bind intent, policy, evidence, and verification.', 'Create artifact')}
       </div>
       <div class="browser-app-actions">
@@ -1742,8 +1752,8 @@ function guidedDemoPage(): string {
           ${state.wallets.length ? 'Refresh Wallets' : 'Discover Wallets'}
         </button>
         <button class="nav-pill-link" data-demo-tab="wallet" ${state.busy ? 'disabled' : ''}>Open live demo</button>
-        <a class="button-link launch-app-link" href="/app">Launch full app</a>
-        <a class="button-link" href="/docs">Read Docs</a>
+        <a class="button-link launch-app-link mobile-redundant-nav" href="/app">Launch full app</a>
+        <a class="button-link mobile-redundant-nav" href="/docs">Read Docs</a>
       </div>
     </section>
   `;
@@ -1885,7 +1895,7 @@ function appWorkspace(mode: 'app' | 'demo' = 'app'): string {
     <section id="${workspaceId}" class="app-workspace-section ${appModeClass} ${modeClass}" aria-labelledby="${titleId}">
       <div class="workspace-intro">
         <div>
-          <p class="eyebrow mini">${mode === 'demo' ? 'Interactive demo' : 'Launch App'}</p>
+          ${mode === 'demo' ? '<p class="eyebrow mini">Interactive demo</p>' : '<!-- Launch App eyebrow intentionally hidden. -->'}
           <h2 id="${titleId}">${mode === 'demo' ? 'Live approval demo.' : 'Agentic approval workspace.'}</h2>
         </div>
         ${SHOW_DEV_CONTROLS ? systemSpine() : ''}
@@ -1911,9 +1921,10 @@ function appWorkspace(mode: 'app' | 'demo' = 'app'): string {
             </div>
             <nav class="nav-cluster tabs workspace-tabs" aria-label="Workspace navigation">
               ${tabButton('wallet', 'Wallet')}
-              ${tabButton('agent', 'Agent Plan')}
-              ${tabButton('inbox', 'Approvals')}
-              ${tabButton('labs', 'Artifacts')}
+              ${tabButton('agent', 'Agent Plan', 'Plan')}
+              ${tabButton('inbox', 'Approval Inbox', 'Inbox')}
+              ${tabButton('schedule', 'Scheduled Approvals', 'Sched')}
+              ${tabButton('labs', 'Artifacts', 'Files')}
             </nav>
           </div>
           ${activePanel()}
@@ -2432,7 +2443,9 @@ function activePanel(): string {
     case 'agent':
       return agentPlanPanel();
     case 'inbox':
-      return inboxPanel();
+      return approvalInboxPanel();
+    case 'schedule':
+      return scheduledApprovalsPanel();
     case 'labs':
       return labsPanel();
   }
@@ -2557,16 +2570,10 @@ function agentPlannerWorkbench(): string {
           </div>
           <strong>${escapeHtml(template.category)}</strong>
         </div>
-        <label class="field compact planner-template-select">
-          <span>Plan template</span>
-          <select id="templateSelect" ${state.busy ? 'disabled' : ''}>
-            ${AGENT_PLAN_TEMPLATES.map((candidate) => `
-              <option value="${escapeHtml(candidate.id)}" ${candidate.id === template.id ? 'selected' : ''}>
-                ${escapeHtml(`${titleCase(candidate.category)} - ${candidate.title}`)}
-              </option>
-            `).join('')}
-          </select>
-        </label>
+        <div class="field compact planner-template-select">
+          <span id="templatePickerLabel">Plan template</span>
+          ${templatePicker(template)}
+        </div>
         <p class="template-description">${escapeHtml(template.description)}</p>
         <div class="planner-fields">
           ${template.fields.map(templateFieldInput).join('')}
@@ -2598,7 +2605,7 @@ function aiSettingsPanel(): string {
   const configured = state.aiSettings.mode === 'session'
     ? Boolean(state.aiSettings.apiKey.trim() && modelReady && providerReady)
     : Boolean(state.aiStatus?.available);
-  const open = isCompactMobileLayout() ? '' : 'open';
+  const open = configured && !isCompactMobileLayout() ? 'open' : '';
   return `
     <details class="ai-settings-panel" ${open}>
       <summary>
@@ -2633,10 +2640,63 @@ function agentPathExplainer(): string {
   `;
 }
 
+function templatePicker(template: AgentPlanTemplate): string {
+  const selectedLabel = templatePickerLabel(template);
+  return `
+    <div class="template-picker" data-template-picker>
+      <button
+        id="templatePickerButton"
+        class="template-picker-trigger"
+        type="button"
+        aria-haspopup="listbox"
+        aria-expanded="false"
+        aria-labelledby="templatePickerLabel templatePickerValue"
+        ${state.busy ? 'disabled' : ''}
+      >
+        <span class="template-picker-current">
+          <span class="template-picker-category">${escapeHtml(titleCase(template.category))}</span>
+          <strong id="templatePickerValue">${escapeHtml(template.title)}</strong>
+        </span>
+        <span class="template-picker-caret" aria-hidden="true"></span>
+      </button>
+      <div
+        id="templatePickerMenu"
+        class="template-picker-menu"
+        role="listbox"
+        aria-labelledby="templatePickerLabel"
+        hidden
+      >
+        ${AGENT_PLAN_TEMPLATES.map((candidate) => {
+          const selected = candidate.id === template.id;
+          return `
+            <button
+              id="template-option-${escapeHtml(candidate.id)}"
+              class="template-picker-option ${selected ? 'selected' : ''}"
+              type="button"
+              role="option"
+              aria-selected="${selected ? 'true' : 'false'}"
+              data-template-option="${escapeHtml(candidate.id)}"
+              title="${escapeHtml(templatePickerLabel(candidate))}"
+            >
+              <span>${escapeHtml(titleCase(candidate.category))}</span>
+              <strong>${escapeHtml(candidate.title)}</strong>
+            </button>
+          `;
+        }).join('')}
+      </div>
+      <span class="template-picker-sr">${escapeHtml(selectedLabel)}</span>
+    </div>
+  `;
+}
+
+function templatePickerLabel(template: AgentPlanTemplate): string {
+  return `${titleCase(template.category)} - ${template.title}`;
+}
+
 function templateFieldInput(fieldDef: AgentPlanTemplateField): string {
   const value = templateFieldValue(fieldDef.id);
   const disabled = state.busy ? 'disabled' : '';
-  if (fieldDef.type === 'textarea') {
+  if (fieldDef.type === 'textarea' || fieldDef.id === 'policy') {
     return `
       <label class="field compact planner-field">
         <span>${escapeHtml(fieldDef.label)}</span>
@@ -2742,24 +2802,20 @@ function aiSettingsCard(): string {
   `;
 }
 
-function inboxPanel(): string {
+function approvalInboxPanel(): string {
   if (!state.address) {
-    return guidedStartPanel('Approval queue', 'Connect a wallet before reviewing prepared actions from the local bridge.');
+    return guidedStartPanel('Approval inbox', 'Connect a wallet before reviewing prepared actions from the local bridge.');
   }
   const actions = filteredPreparedActions();
   return `
     <section class="approval-object signature-stage stage-inbox stage-anchor ${state.preparedActions.length ? 'stage-active' : 'stage-draft'}">
       <div class="signature-object-head">
         <div>
-          <h2>Prepared approvals</h2>
+          <h2>Approval inbox</h2>
           <p>Actions wait here until policy, intent, and wallet approval are all visible.</p>
         </div>
         <div class="inbox-toolbar signature-toolbar">
-          <div class="segmented compact-tabs">
-            <button data-inbox-mode="inbox" class="${state.inboxMode === 'inbox' ? 'active' : ''}">Inbox</button>
-            <button data-inbox-mode="recurring" class="${state.inboxMode === 'recurring' ? 'active' : ''}">Schedule</button>
-          </div>
-          <select id="inboxFilter" ${state.inboxMode === 'recurring' ? 'disabled' : ''}>
+          <select id="inboxFilter">
             ${inboxFilterOption('all', 'All')}
             ${inboxFilterOption('ready', 'Ready')}
             ${inboxFilterOption('scheduled', 'Scheduled')}
@@ -2774,7 +2830,28 @@ function inboxPanel(): string {
       </div>
 
       ${queueStatusLine(actions.length)}
-      ${state.inboxMode === 'recurring' ? recurringComposer() : preparedActionsList(actions)}
+      ${preparedActionsList(actions)}
+      ${state.error ? `<div class="error">${escapeHtml(state.error)}</div>` : ''}
+    </section>
+  `;
+}
+
+function scheduledApprovalsPanel(): string {
+  if (!state.address) {
+    return guidedStartPanel('Scheduled approvals', 'Connect a wallet before setting up recurring approval requests.');
+  }
+  return `
+    <section class="approval-object signature-stage stage-schedule stage-anchor ${state.recurringPayments.length ? 'stage-active' : 'stage-draft'}">
+      <div class="signature-object-head">
+        <div>
+          <h2>Scheduled approvals</h2>
+          <p>Define recurring requests. Each occurrence still lands in the approval inbox for wallet review.</p>
+        </div>
+        <button id="refreshInbox" class="utility" ${!state.bridgeActive || state.busy ? 'disabled' : ''} title="${!state.bridgeActive ? 'Connect the bridge to refresh scheduled approvals.' : ''}">Refresh</button>
+      </div>
+
+      ${scheduleStatusLine()}
+      ${recurringComposer()}
       ${recurringList()}
       ${state.error ? `<div class="error">${escapeHtml(state.error)}</div>` : ''}
     </section>
@@ -2863,7 +2940,9 @@ function contextPanel(): string {
         ? 'Generate an agent plan'
         : state.activeTab === 'inbox'
           ? 'Review queued approvals'
-          : 'Review current request';
+          : state.activeTab === 'schedule'
+            ? 'Set up scheduled approvals'
+            : 'Review current request';
   return `
     <aside class="panel context-panel evidence-panel">
       <div class="evidence-header">
@@ -2929,6 +3008,7 @@ function requestContextDetails(): string {
 
 function bind(): void {
   bindRouteLinks();
+  bindTemplatePicker();
 
   for (const button of document.querySelectorAll<HTMLButtonElement>('[data-tab]')) {
     button.addEventListener('click', () => {
@@ -3034,19 +3114,6 @@ function bind(): void {
     state.agentPreparedActionId = '';
   });
 
-  document.querySelector<HTMLSelectElement>('#templateSelect')?.addEventListener('change', (event) => {
-    const template = templateById((event.currentTarget as HTMLSelectElement).value);
-    state.selectedTemplateId = template.id;
-    state.templateFields = {
-      ...defaultTemplateFieldValues(template),
-      ...state.templateFields,
-    };
-    state.agentPlan = null;
-    state.agentSignature = '';
-    state.agentPreparedActionId = '';
-    render();
-  });
-
   for (const fieldInput of document.querySelectorAll<HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement>('[data-template-field]')) {
     fieldInput.addEventListener('input', () => {
       const fieldId = fieldInput.dataset.templateField;
@@ -3122,13 +3189,6 @@ function bind(): void {
     state.recurringDraft.cadence = (event.currentTarget as HTMLSelectElement).value as RecurringCadence;
     render();
   });
-
-  for (const button of document.querySelectorAll<HTMLButtonElement>('[data-inbox-mode]')) {
-    button.addEventListener('click', () => {
-      state.inboxMode = button.dataset.inboxMode as InboxMode;
-      render();
-    });
-  }
 
   for (const button of document.querySelectorAll<HTMLButtonElement>('[data-action-op]')) {
     button.addEventListener('click', () => {
@@ -3217,6 +3277,183 @@ function bindRouteLinks(): void {
       navigateTo(route);
     });
   }
+}
+
+function bindTemplatePicker(): void {
+  const picker = document.querySelector<HTMLElement>('[data-template-picker]');
+  if (!picker) return;
+  const trigger = picker.querySelector<HTMLButtonElement>('#templatePickerButton');
+  const menu = picker.querySelector<HTMLElement>('#templatePickerMenu');
+  const options = [...picker.querySelectorAll<HTMLButtonElement>('[data-template-option]')];
+  if (!trigger || !menu || options.length === 0) return;
+
+  const openPicker = (focusOption: 'selected' | 'first' | 'last' | false = false): void => {
+    if (trigger.disabled) return;
+    closeTemplatePickerInteractions();
+    picker.classList.add('open');
+    trigger.setAttribute('aria-expanded', 'true');
+    menu.hidden = false;
+    positionTemplatePickerMenu(trigger, menu);
+    window.requestAnimationFrame(() => positionTemplatePickerMenu(trigger, menu));
+
+    const selectedOption = options.find((option) => option.dataset.templateOption === state.selectedTemplateId) ?? options[0]!;
+    const activeOption = focusOption === 'first'
+      ? options[0]!
+      : focusOption === 'last'
+        ? options[options.length - 1]!
+        : selectedOption;
+    setActiveTemplateOption(options, activeOption, Boolean(focusOption));
+
+    templatePickerController = new AbortController();
+    const { signal } = templatePickerController;
+    window.addEventListener('pointerdown', (event) => {
+      if (event.target instanceof Node && picker.contains(event.target)) return;
+      closePicker(false);
+    }, { signal });
+    window.addEventListener('keydown', (event) => {
+      if (event.key === 'Escape') {
+        event.preventDefault();
+        closePicker(true);
+      }
+    }, { signal });
+    window.addEventListener('resize', () => positionTemplatePickerMenu(trigger, menu), { signal });
+    window.visualViewport?.addEventListener('resize', () => positionTemplatePickerMenu(trigger, menu), { signal });
+  };
+
+  const closePicker = (returnFocus: boolean): void => {
+    picker.classList.remove('open');
+    trigger.setAttribute('aria-expanded', 'false');
+    menu.hidden = true;
+    closeTemplatePickerInteractions();
+    if (returnFocus) {
+      trigger.focus({ preventScroll: true });
+    }
+  };
+
+  trigger.addEventListener('click', (event) => {
+    event.stopPropagation();
+    if (menu.hidden) {
+      openPicker(false);
+    } else {
+      closePicker(false);
+    }
+  });
+
+  trigger.addEventListener('keydown', (event) => {
+    if (event.key === 'ArrowDown') {
+      event.preventDefault();
+      openPicker('selected');
+      focusAdjacentTemplateOption(options, 1);
+    }
+    if (event.key === 'ArrowUp') {
+      event.preventDefault();
+      openPicker('selected');
+      focusAdjacentTemplateOption(options, -1);
+    }
+    if (event.key === 'Enter' || event.key === ' ') {
+      event.preventDefault();
+      openPicker('selected');
+    }
+  });
+
+  menu.addEventListener('keydown', (event) => {
+    if (event.key === 'ArrowDown') {
+      event.preventDefault();
+      focusAdjacentTemplateOption(options, 1);
+    }
+    if (event.key === 'ArrowUp') {
+      event.preventDefault();
+      focusAdjacentTemplateOption(options, -1);
+    }
+    if (event.key === 'Home') {
+      event.preventDefault();
+      setActiveTemplateOption(options, options[0]!, true);
+    }
+    if (event.key === 'End') {
+      event.preventDefault();
+      setActiveTemplateOption(options, options[options.length - 1]!, true);
+    }
+    if (event.key === 'Enter' || event.key === ' ') {
+      event.preventDefault();
+      const activeOption = document.activeElement instanceof HTMLButtonElement
+        ? document.activeElement
+        : options.find((option) => option.classList.contains('active')) ?? options[0]!;
+      const templateId = activeOption.dataset.templateOption;
+      if (!templateId) return;
+      if (!selectAgentTemplate(templateId)) {
+        closePicker(true);
+      }
+    }
+  });
+
+  for (const option of options) {
+    option.addEventListener('click', () => {
+      const templateId = option.dataset.templateOption;
+      if (!templateId) return;
+      if (!selectAgentTemplate(templateId)) {
+        closePicker(true);
+      }
+    });
+    option.addEventListener('pointermove', () => setActiveTemplateOption(options, option, false));
+  }
+}
+
+function closeTemplatePickerInteractions(): void {
+  templatePickerController?.abort();
+  templatePickerController = null;
+}
+
+function selectAgentTemplate(templateId: string): boolean {
+  const template = templateById(templateId);
+  if (template.id === state.selectedTemplateId) {
+    return false;
+  }
+  state.selectedTemplateId = template.id;
+  state.templateFields = {
+    ...defaultTemplateFieldValues(template),
+    ...state.templateFields,
+  };
+  state.agentPlan = null;
+  state.agentSignature = '';
+  state.agentPreparedActionId = '';
+  render();
+  return true;
+}
+
+function positionTemplatePickerMenu(trigger: HTMLElement, menu: HTMLElement): void {
+  const viewport = window.visualViewport;
+  const viewportTop = viewport?.offsetTop ?? 0;
+  const viewportWidth = viewport?.width ?? window.innerWidth;
+  const triggerRect = trigger.getBoundingClientRect();
+  const safeTop = viewportTop + 10;
+  const spaceAbove = Math.max(0, Math.floor(triggerRect.top - safeTop - 8));
+  const maxHeight = Math.min(420, spaceAbove);
+  menu.style.setProperty('--template-menu-max-height', `${maxHeight}px`);
+  menu.style.setProperty('--template-menu-max-width', `${Math.max(220, Math.floor(viewportWidth - 20))}px`);
+}
+
+function setActiveTemplateOption(
+  options: HTMLButtonElement[],
+  activeOption: HTMLButtonElement,
+  focus: boolean,
+): void {
+  for (const option of options) {
+    const active = option === activeOption;
+    option.classList.toggle('active', active);
+    option.tabIndex = active ? 0 : -1;
+  }
+  if (focus) {
+    activeOption.focus({ preventScroll: true });
+  }
+  activeOption.scrollIntoView({ block: 'nearest' });
+}
+
+function focusAdjacentTemplateOption(options: HTMLButtonElement[], direction: 1 | -1): void {
+  const currentIndex = options.findIndex((option) => option === document.activeElement || option.classList.contains('active'));
+  const nextIndex = currentIndex < 0
+    ? 0
+    : (currentIndex + direction + options.length) % options.length;
+  setActiveTemplateOption(options, options[nextIndex]!, true);
 }
 
 async function runDiscover(): Promise<void> {
@@ -3542,7 +3779,6 @@ async function runQueueAgentPlan(): Promise<void> {
     const response = await queuePlanThroughBridge(state.agentPlan);
     state.agentPreparedActionId = response.id;
     state.activeTab = 'inbox';
-    state.inboxMode = 'inbox';
     state.inboxFilter = 'ready';
     await refreshInboxData();
     pushToast('success', 'Prepared action queued', response.id);
@@ -3626,7 +3862,7 @@ async function runCreateRecurring(): Promise<void> {
       method: 'POST',
       body: JSON.stringify(body),
     });
-    state.inboxMode = 'inbox';
+    state.activeTab = 'schedule';
     await refreshInboxData();
     pushToast('success', 'Recurring approval created', `${body.amount} ${body.token}`);
   });
@@ -3854,7 +4090,7 @@ async function pollBridge(): Promise<void> {
       return;
     }
     const now = Date.now();
-    if (state.activeTab === 'inbox' && now - lastPassiveInboxRefresh > 5000) {
+    if ((state.activeTab === 'inbox' || state.activeTab === 'schedule') && now - lastPassiveInboxRefresh > 5000) {
       lastPassiveInboxRefresh = now;
       await refreshInboxData().catch(() => undefined);
       render();
@@ -4367,9 +4603,16 @@ function capabilitySummary(capabilities: AdapterCapabilities): string {
   return supported.length ? `${capabilities.backend}: ${supported.join(', ')}` : capabilities.backend;
 }
 
-function tabButton(tab: ActiveTab, label: string): string {
+function tabButton(tab: ActiveTab, label: string, mobileLabel?: string): string {
   const locked = !state.address && tab !== 'wallet' && tab !== 'agent';
-  return `<button data-tab="${tab}" class="${state.activeTab === tab ? 'active' : ''}" ${locked ? 'disabled title="Connect a wallet to unlock this workspace."' : ''}>${escapeHtml(label)}</button>`;
+  const className = [
+    state.activeTab === tab ? 'active' : '',
+    mobileLabel ? 'has-mobile-label' : '',
+  ].filter(Boolean).join(' ');
+  const content = mobileLabel
+    ? `<span class="nav-label nav-label-full">${escapeHtml(label)}</span><span class="nav-label nav-label-mobile">${escapeHtml(mobileLabel)}</span>`
+    : `<span class="nav-label">${escapeHtml(label)}</span>`;
+  return `<button data-tab="${tab}" class="${className}" aria-label="${escapeHtml(label)}" ${locked ? 'disabled title="Connect a wallet to unlock this workspace."' : ''}>${content}</button>`;
 }
 
 function step(name: StepName, title: string, detail: string): string {
@@ -4500,13 +4743,27 @@ function agentResultBlock(): string {
 function queueStatusLine(visibleCount: number): string {
   const total = state.preparedActions.filter((action) => !action.archived).length;
   const bridge = state.bridgeActive ? 'Bridge connected' : 'Bridge unavailable';
-  const filter = state.inboxMode === 'recurring' ? 'Scheduling mode' : queueFilterLabel(state.inboxFilter);
+  const filter = queueFilterLabel(state.inboxFilter);
   return `
     <div class="queue-status">
       <span>${escapeHtml(bridge)}</span>
       <strong>${visibleCount} awaiting review</strong>
       <span>${total} in queue</span>
       <span>${escapeHtml(filter)}</span>
+    </div>
+  `;
+}
+
+function scheduleStatusLine(): string {
+  const active = state.recurringPayments.filter((payment) => payment.status === 'active').length;
+  const total = state.recurringPayments.length;
+  const bridge = state.bridgeActive ? 'Bridge connected' : 'Bridge unavailable';
+  return `
+    <div class="queue-status">
+      <span>${escapeHtml(bridge)}</span>
+      <strong>${active} active schedule${active === 1 ? '' : 's'}</strong>
+      <span>${total} saved</span>
+      <span>Each run still needs wallet approval</span>
     </div>
   `;
 }
@@ -4951,6 +5208,16 @@ function evidenceIntent(): { status: string; detail: string; meta?: string } {
       meta: state.bridgeActive ? 'Bridge queue connected' : 'Bridge offline',
     };
   }
+  if (state.activeTab === 'schedule') {
+    const activeSchedules = state.recurringPayments.filter((payment) => payment.status === 'active').length;
+    return {
+      status: activeSchedules ? 'Scheduled' : 'Draft',
+      detail: activeSchedules
+        ? `${activeSchedules} recurring approval schedule${activeSchedules === 1 ? '' : 's'} active.`
+        : 'Create a recurring approval schedule for future wallet review.',
+      meta: state.bridgeActive ? 'Bridge scheduler connected' : 'Bridge offline',
+    };
+  }
   if (state.activeTab === 'labs') {
     const lab = activeLab();
     return {
@@ -4982,6 +5249,13 @@ function evidencePolicy(): { status: string; detail: string; meta?: string } {
       status: state.agentPlan ? 'Plan scoped' : 'Draft',
       detail: state.agentPlan?.risk ?? 'Generate a plan to expose route and risk before signing.',
       meta: state.bridgeActive ? 'Can queue prepared action' : 'Bridge queue unavailable',
+    };
+  }
+  if (state.activeTab === 'schedule') {
+    return {
+      status: state.bridgeActive ? 'Scheduler ready' : 'Bridge required',
+      detail: 'Scheduled approvals create reviewable inbox items, not automatic signatures.',
+      meta: state.recurringPayments.length ? `${state.recurringPayments.length} schedule(s)` : undefined,
     };
   }
   if (openApprovals > 0) {
@@ -5082,8 +5356,8 @@ function evidenceReceipt(latestLab: LabArtifact | undefined): { status: string; 
   return {
     status: 'Pending',
     detail:
-      state.activeTab === 'inbox'
-        ? 'Receipts appear after an inbox approval is approved, rejected, or archived.'
+      state.activeTab === 'inbox' || state.activeTab === 'schedule'
+        ? 'Receipts appear after an approval is approved, rejected, or archived.'
         : 'Receipts appear after wallet approval or signed artifact creation.',
   };
 }
@@ -5109,7 +5383,7 @@ function trustChain(): string {
   return `
     <div class="trust-chain" aria-label="Approval trust chain">
       ${trustNode('Intent', Boolean(state.agentPlan || state.signature || state.customTransactionBase64), state.activeTab === 'agent')}
-      ${trustNode('Policy', Boolean(state.bridgeActive || state.preparedActions.length), state.activeTab === 'inbox')}
+      ${trustNode('Policy', Boolean(state.bridgeActive || state.preparedActions.length), state.activeTab === 'inbox' || state.activeTab === 'schedule')}
       ${trustNode('Wallet', Boolean(state.address), state.busy)}
       ${trustNode('Receipt', hasReceipt, false)}
     </div>
@@ -5170,7 +5444,9 @@ function surfaceEyebrow(): string {
     case 'agent':
       return 'Intent review';
     case 'inbox':
-      return 'Approval operations';
+      return 'Approval inbox';
+    case 'schedule':
+      return 'Scheduled approvals';
     case 'labs':
       return 'Audit artifacts';
   }
@@ -5183,7 +5459,9 @@ function surfaceTitle(): string {
     case 'agent':
       return 'Agent Plan';
     case 'inbox':
-      return 'Approvals';
+      return 'Approval Inbox';
+    case 'schedule':
+      return 'Scheduled Approvals';
     case 'labs':
       return 'Audit Artifacts';
   }
