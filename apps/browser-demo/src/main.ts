@@ -29,7 +29,7 @@ type StepState = 'idle' | 'active' | 'done' | 'error';
 type StepName = 'discover' | 'connect' | 'sign' | 'transaction' | 'bridge' | 'inbox' | 'lab';
 type ActiveTab = 'wallet' | 'agent' | 'inbox' | 'labs';
 type ToastKind = 'success' | 'error';
-type RuntimePathId = 'exec' | 'install' | 'desktop' | 'android';
+type RuntimePathId = 'exec' | 'install' | 'desktop';
 type AppRoute = (typeof ROUTE_PATHS)[number];
 type InboxFilter = 'all' | 'ready' | 'scheduled' | 'approved' | 'failed' | 'rejected' | 'one-time' | 'recurring';
 type InboxMode = 'inbox' | 'recurring';
@@ -64,11 +64,13 @@ const RELEASE_PAGE_URL =
 const NPM_GLOBAL_INSTALL_COMMAND = 'npm install -g @solana-agent-wallet-adapter/cli';
 const NPM_EXEC_COMMAND = 'npm exec @solana-agent-wallet-adapter/cli -- app';
 const INSTALLED_APP_COMMAND = 'solana-agent-wallet app';
-const ROUTE_PATHS = ['/', '/docs', '/cli', '/desktop', '/android', '/demo'] as const;
+const ROUTE_PATHS = ['/', '/docs', '/app', '/cli', '/desktop', '/android', '/demo'] as const;
 const ROUTE_PATH_SET = new Set<string>(ROUTE_PATHS);
 const HASH_ROUTE_MAP = new Map<string, AppRoute>([
   ['#top', '/'],
   ['#docs', '/docs'],
+  ['#browser', '/app'],
+  ['#app', '/app'],
   ['#cli', '/cli'],
   ['#desktop', '/desktop'],
   ['#android', '/android'],
@@ -77,9 +79,9 @@ const HASH_ROUTE_MAP = new Map<string, AppRoute>([
 const NAV_ITEMS: ReadonlyArray<{ route: AppRoute; label: string; pill?: boolean }> = [
   { route: '/docs', label: 'Docs' },
   { route: '/cli', label: 'CLI' },
-  { route: '/desktop', label: 'Desktop' },
-  { route: '/android', label: 'Android' },
-  { route: '/demo', label: 'Launch Demo', pill: true },
+  { route: '/desktop', label: 'Desktop App' },
+  { route: '/demo', label: 'Launch Demo' },
+  { route: '/app', label: 'Launch App', pill: true },
 ];
 const RUNTIME_PATHS: RuntimePath[] = [
   {
@@ -113,30 +115,16 @@ const RUNTIME_PATHS: RuntimePath[] = [
   {
     id: 'desktop',
     eyebrow: 'App UI',
-    label: 'Desktop app',
+    label: 'Desktop App',
     detail: 'Use bundled controls, logs, and diagnostics.',
     command: '/desktop',
     terminalCommand: '/desktop',
     badge: 'App UI',
-    actionLabel: 'View downloads',
+    actionLabel: 'View Desktop App',
     actionKind: 'link',
     href: '/desktop',
     bridgeLine: 'Desktop runtime manages the local bridge',
     walletLine: 'Browser wallet still approves every request',
-  },
-  {
-    id: 'android',
-    eyebrow: 'Mobile',
-    label: 'Android app',
-    detail: 'Install the hosted TWA for MWA approvals.',
-    command: '/android',
-    terminalCommand: '/android',
-    badge: 'Android',
-    actionLabel: 'View Android',
-    actionKind: 'link',
-    href: '/android',
-    bridgeLine: 'Trusted Web Activity opens the hosted Agentic origin',
-    walletLine: 'Android Chrome can expose Mobile Wallet Adapter',
   },
 ];
 const CLI_RELEASE_ASSETS = [
@@ -603,6 +591,11 @@ function normalizeInitialRoute(): void {
   }
 
   const normalizedPath = normalizePathname(window.location.pathname);
+  if (normalizedPath === '/browser') {
+    window.history.replaceState({}, '', '/app');
+    return;
+  }
+
   if (isAppRoute(normalizedPath) && window.location.pathname !== normalizedPath) {
     window.history.replaceState({}, '', normalizedPath);
   }
@@ -648,6 +641,8 @@ function pageContent(route: AppRoute | null): string {
       return homePage();
     case '/docs':
       return docsPage();
+    case '/app':
+      return appPage();
     case '/cli':
       return cliPage();
     case '/desktop':
@@ -664,12 +659,12 @@ function pageContent(route: AppRoute | null): string {
 function homePage(): string {
   return `
     ${heroSection()}
+    ${launchAppSection()}
     ${docsSection()}
     ${gapSection()}
     ${walletDirectorySection()}
     ${cliInstallSection()}
     ${desktopDownloadSection()}
-    ${androidDownloadSection()}
     ${homepageDemoCtaSection()}
   `;
 }
@@ -679,6 +674,14 @@ function docsPage(): string {
     ${docsSection()}
     ${gapSection()}
     ${walletDirectorySection()}
+  `;
+}
+
+function appPage(): string {
+  return `
+    ${launchAppSection()}
+    ${walletDirectorySection()}
+    ${browserDemoCtaSection()}
   `;
 }
 
@@ -707,7 +710,7 @@ function notFoundPage(): string {
       <div class="section-heading">
         <p class="eyebrow mini">Not found</p>
         <h2 id="not-found-title">This Agentic page does not exist.</h2>
-        <p>Use the navigation bar to open docs, install paths, downloads, or the live approval demo.</p>
+        <p>Use the navigation bar to open docs, install paths, the guided demo, or the hosted app.</p>
       </div>
     </section>
   `;
@@ -765,8 +768,8 @@ function heroSection(): string {
         </p>
         <div class="hero-command-area">
           ${commandDeck()}
+          <a class="button-link hero-app-link nav-pill-link" href="/app">Launch App</a>
           <a class="button-link hero-demo-link" href="/demo">Launch Demo</a>
-          <a class="button-link hero-android-link" href="/android">Android App</a>
         </div>
         ${agentRuntimeStrip()}
         ${heroWalletStrip()}
@@ -852,6 +855,44 @@ function commandDeckAction(runtimePath: RuntimePath, copyId: string, copied: boo
   `;
 }
 
+function launchAppSection(): string {
+  return `
+    <section id="app" class="browser-app-section" aria-labelledby="launch-app-title">
+      <div class="section-heading">
+        <p class="eyebrow mini">Launch App</p>
+        <h2 id="launch-app-title">Use Agentic directly in your browser or mobile wallet surface.</h2>
+        <p>
+          The hosted app is the front door for wallet discovery, Wallet Standard approvals, Mobile Wallet Adapter
+          readiness, and the live signing proof. It is not a cloud wallet, account system, database, or private-key
+          backend. Your installed wallet remains the signer.
+        </p>
+      </div>
+      <div class="browser-app-grid">
+        ${launchAppCard('Desktop browser wallets', 'Discover Phantom, Solflare, Backpack, and compatible Wallet Standard providers in the current browser.')}
+        ${launchAppCard('Android mobile web', 'Use Android Chrome or PWA surfaces where Mobile Wallet Adapter is available, without making users install an APK first.')}
+        ${launchAppCard('Local agents stay local', 'For Codex, Claude, MCP, inboxes, and recurring approvals, start the local bridge with the CLI or Desktop App.')}
+      </div>
+      <div class="browser-app-actions">
+        <a class="button-link nav-pill-link" href="/app">Launch App</a>
+        <a class="button-link" href="/demo">Launch Demo</a>
+        <button data-start-action="discover" ${state.busy ? 'disabled' : ''}>
+          ${state.wallets.length ? 'Refresh Wallets' : 'Discover Wallets'}
+        </button>
+        <a class="button-link" href="/cli">Install CLI for Local Agents</a>
+      </div>
+    </section>
+  `;
+}
+
+function launchAppCard(title: string, detail: string): string {
+  return `
+    <article class="browser-app-card">
+      <h3>${escapeHtml(title)}</h3>
+      <p>${escapeHtml(detail)}</p>
+    </article>
+  `;
+}
+
 function docsSection(): string {
   return `
     <section id="docs" class="docs-section" aria-labelledby="docs-title">
@@ -859,15 +900,15 @@ function docsSection(): string {
         <p class="eyebrow mini">Docs</p>
         <h2 id="docs-title">A local signing boundary for agent runtimes.</h2>
         <p>
-          Render serves this website, but Agentic's bridge, CLI, and desktop app run locally beside the user's wallet.
-          Android users can install the Trusted Web Activity wrapper for the same hosted origin and Mobile Wallet
-          Adapter path. Agents can ask for signatures, swaps, transfers, receipts, and inbox approvals without
-          receiving a seed phrase, keypair file, or server-side private key.
+          Render serves this website, but Agentic's bridge, CLI, and Desktop App run locally beside the user's wallet.
+          Android users can use the hosted app in mobile browser surfaces that support Mobile Wallet Adapter. Agents
+          can ask for signatures, swaps, transfers, receipts, and inbox approvals without receiving a seed phrase,
+          keypair file, or server-side private key.
         </p>
       </div>
       <div class="docs-grid">
-        ${docsCard('1. Install a local runtime', 'Use the npm CLI, a standalone CLI binary, or the desktop app to run the bridge on your machine. Android installs the hosted mobile shell.')}
-        ${docsCard('2. Connect an existing wallet', 'Open the browser wallet host and connect Phantom, Solflare, Backpack, Seed Vault, MWA, or a compatible Wallet Standard provider.')}
+        ${docsCard('1. Launch the app', 'Use the hosted app and guided demo to see wallet discovery, connection, signing, and Mobile Wallet Adapter readiness.')}
+        ${docsCard('2. Install a local runtime', 'Use the npm CLI, a standalone CLI binary, or the Desktop App when Codex, Claude, or an MCP client needs a persistent local bridge.')}
         ${docsCard('3. Let agents request approval', 'Claude, Codex, MCP clients, and framework adapters send bounded actions to the local bridge; the wallet still signs every request.')}
       </div>
     </section>
@@ -1136,11 +1177,12 @@ function desktopDownloadSection(): string {
   return `
     <section id="desktop" class="desktop-section" aria-labelledby="desktop-title">
       <div class="section-heading">
-        <p class="eyebrow mini">Desktop</p>
-        <h2 id="desktop-title">Download the Agentic desktop app.</h2>
+        <p class="eyebrow mini">Desktop App</p>
+        <h2 id="desktop-title">Download the Agentic Desktop App.</h2>
         <p>
-          The desktop app wraps the local bridge controls and diagnostics for users who want an app instead of a
-          terminal. Browser extension wallets still approve through the external wallet host.
+          The Desktop App is optional easy mode for the local bridge, approval inbox, logs, and diagnostics. Use it
+          when you want app controls instead of terminal commands. Browser extension wallets still approve every
+          signing request through the external wallet host.
         </p>
       </div>
       <div class="download-grid desktop-download-grid">
@@ -1185,14 +1227,30 @@ function homepageDemoCtaSection(): string {
   return `
     <section class="homepage-demo-cta" aria-labelledby="homepage-demo-title">
       <div>
-        <p class="eyebrow mini">Live approval demo</p>
-        <h2 id="homepage-demo-title">Open the wallet workspace when you are ready to test signing.</h2>
+        <p class="eyebrow mini">Guided demo</p>
+        <h2 id="homepage-demo-title">Run the browser signing proof when you are ready.</h2>
         <p>
-          The demo route keeps the interactive Wallet Standard, Mobile Wallet Adapter, bridge, inbox, and artifact
-          flows separate from the public download pages.
+          The demo route is the hands-on workspace for Wallet Standard, Mobile Wallet Adapter, bridge, inbox, and
+          signed artifact flows. Launch App is the browser/mobile web entry point for real users.
         </p>
       </div>
       <a class="button-link nav-pill-link" href="/demo">Launch Demo</a>
+    </section>
+  `;
+}
+
+function browserDemoCtaSection(): string {
+  return `
+    <section class="homepage-demo-cta" aria-labelledby="browser-demo-title">
+      <div>
+        <p class="eyebrow mini">Guided demo</p>
+        <h2 id="browser-demo-title">Open the live wallet workspace.</h2>
+        <p>
+          Test wallet discovery, connection, message signing, devnet transaction signing, Mobile Wallet Adapter
+          registration, and local bridge status from one browser route.
+        </p>
+      </div>
+      <a class="button-link nav-pill-link" href="/demo">Launch Guided Demo</a>
     </section>
   `;
 }
@@ -1202,14 +1260,14 @@ function homepageFooter(): string {
     <footer class="homepage-footer" aria-label="Agentic footer">
       <div>
         <span class="footer-brand">${agenticMark('mini-mark')} Agentic</span>
-        <p>Render hosts the static website. CLI, desktop, bridge, and wallet approvals run locally.</p>
+        <p>Render hosts the static website. CLI, Desktop App, bridge, and wallet approvals run locally.</p>
       </div>
       <nav aria-label="Footer navigation">
         <a href="/docs">Docs</a>
         <a href="/cli">CLI</a>
-        <a href="/desktop">Desktop</a>
-        <a href="/android">Android</a>
+        <a href="/desktop">Desktop App</a>
         <a href="/demo">Demo</a>
+        <a href="/app">Launch App</a>
         <a href="${RELEASE_PAGE_URL}" target="_blank" rel="noreferrer">Releases</a>
       </nav>
     </footer>
@@ -1228,14 +1286,14 @@ function localDevelopmentSection(): string {
       </div>
       <div class="runtime-grid">
         <article class="runtime-card">
-          <span class="runtime-kicker">Browser demo</span>
-          <h3>Develop the website</h3>
+          <span class="runtime-kicker">Launch App</span>
+          <h3>Develop the hosted app</h3>
           ${runtimeCommandRow('Browser dev server', 'pnpm demo:browser', 'Copy command')}
         </article>
         <article class="runtime-card">
           <span class="runtime-kicker">Repo fallback</span>
           <h3>Run unreleased local runtimes</h3>
-          ${runtimeCommandRow('Desktop shell dev', 'pnpm desktop:dev', 'Copy command')}
+          ${runtimeCommandRow('Desktop App dev', 'pnpm desktop:dev', 'Copy command')}
           ${runtimeCommandRow('CLI from repo', 'pnpm cli -- app', 'Copy command')}
         </article>
       </div>
@@ -1281,8 +1339,8 @@ function appWorkspace(): string {
     <section id="workspace" class="app-workspace-section" aria-labelledby="workspace-title">
       <div class="workspace-intro">
         <div>
-          <p class="eyebrow mini">Live browser workspace</p>
-          <h2 id="workspace-title">Try Agentic with installed Solana wallets.</h2>
+          <p class="eyebrow mini">Guided browser demo</p>
+          <h2 id="workspace-title">Run the Agentic approval flow with installed Solana wallets.</h2>
         </div>
         ${systemSpine()}
       </div>
@@ -1292,7 +1350,7 @@ function appWorkspace(): string {
           <span class="brand-mark">${agenticMark('mini-mark')}</span>
           <div>
             <p class="eyebrow mini">Solana Agent Wallet Adapter</p>
-            <h1>Interactive approval console</h1>
+            <h1>Guided approval demo</h1>
           </div>
         </div>
         ${systemSpine()}
