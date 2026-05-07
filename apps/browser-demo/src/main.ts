@@ -120,6 +120,7 @@ const RELEASE_PAGE_URL =
 const NPM_GLOBAL_INSTALL_COMMAND = 'npm install -g @solana-agent-wallet-adapter/cli';
 const NPM_EXEC_COMMAND = 'npm exec @solana-agent-wallet-adapter/cli -- app';
 const INSTALLED_APP_COMMAND = 'solana-agent-wallet app';
+const CUSTOM_AI_MODEL_VALUE = '__custom__';
 const ROUTE_PATHS = ['/', '/docs', '/app', '/cli', '/desktop', '/android', '/demo', '/mwa-test', '/privacy', '/terms'] as const;
 const ROUTE_PATH_SET = new Set<string>(ROUTE_PATHS);
 const SHOW_DEV_CONTROLS = resolveDevControls();
@@ -850,7 +851,7 @@ function docsPage(): string {
 }
 
 function appPage(): string {
-  return appWorkspace();
+  return appWorkspace('app');
 }
 
 function cliPage(): string {
@@ -869,7 +870,10 @@ function androidPage(): string {
 }
 
 function demoPage(): string {
-  return appWorkspace();
+  return `
+    ${guidedDemoPage()}
+    ${appWorkspace('demo')}
+  `;
 }
 
 function notFoundPage(): string {
@@ -1235,7 +1239,10 @@ function navLink(
   activeRoute: AppRoute | null,
 ): string {
   const active = item.route === activeRoute;
-  const className = item.pill ? 'nav-pill-link' : '';
+  const className = [
+    item.pill ? 'nav-pill-link' : '',
+    item.route === '/app' ? 'launch-app-link' : '',
+  ].filter(Boolean).join(' ');
   return `
     <a href="${escapeHtml(item.route)}" class="${className}" ${active ? 'aria-current="page"' : ''}>
       ${escapeHtml(item.label)}
@@ -1268,7 +1275,7 @@ function heroSection(): string {
         </p>
         <div class="hero-command-area">
           ${commandDeck()}
-          <a class="button-link hero-app-link nav-pill-link" href="/app">Launch App</a>
+          <a class="button-link hero-app-link nav-pill-link launch-app-link" href="/app">Launch App</a>
           <a class="button-link hero-demo-link" href="/demo">Launch Demo</a>
         </div>
         ${agentRuntimeStrip()}
@@ -1698,43 +1705,59 @@ function homepageDemoCtaSection(): string {
   return `
     <section class="homepage-demo-cta" aria-labelledby="homepage-demo-title">
       <div>
-        <p class="eyebrow mini">Guided demo</p>
-        <h2 id="homepage-demo-title">Preview the approval flow before launching the app.</h2>
+        <p class="eyebrow mini">Approval workspace</p>
+        <h2 id="homepage-demo-title">Open the real wallet approval workspace.</h2>
         <p>
-          The demo route explains the wallet, agent plan, approvals, and artifact surfaces. Launch App opens the real
-          browser and mobile-web approval workspace.
+          Launch App opens the browser and mobile-web approval surface. The demo stays available when you want a guided
+          preview before connecting a wallet.
         </p>
       </div>
-      <a class="button-link nav-pill-link" href="/demo">Launch Demo</a>
+      <div class="homepage-cta-actions">
+        <a class="button-link nav-pill-link launch-app-link" href="/app">Launch App</a>
+        <a class="button-link" href="/demo">Preview Demo</a>
+      </div>
     </section>
   `;
 }
 
 function guidedDemoPage(): string {
   return `
-    <section id="demo" class="browser-app-section" aria-labelledby="guided-demo-title">
+    <section id="demo-guide" class="browser-app-section guided-demo-overview" aria-labelledby="guided-demo-title">
       <div class="section-heading">
         <p class="eyebrow mini">Guided demo</p>
-        <h2 id="guided-demo-title">See what Agentic asks your wallet to approve.</h2>
+        <h2 id="guided-demo-title">Try the approval flow before launching the full app.</h2>
         <p>
-          This route is a guided preview of the live app surfaces. It shows the shape of wallet connection, agent
-          request review, approval queues, and signed artifacts before you open the full workspace.
+          This page keeps a short guide above the live demo workspace. Use the cards to jump into wallet signing,
+          agent plan review, approval queues, or signed artifacts without losing the interactive controls below.
         </p>
       </div>
       <div class="browser-app-grid demo-guide-grid">
-        ${launchAppCard('Wallet', 'Discover providers, choose a cluster, connect the installed wallet, and keep the private key inside the wallet.')}
-        ${launchAppCard('Agent Plan', 'Generate a bounded request so the agent prepares intent and the wallet keeps final signing authority.')}
-        ${launchAppCard('Approvals', 'Review bridge-backed prepared actions, recurring approvals, and receipts when the local bridge is running.')}
-        ${launchAppCard('Artifacts', 'Create wallet-signed audit artifacts that bind intent, policy, evidence, and outcomes.')}
+        ${guidedDemoStepCard('wallet', 'Wallet signing', 'Discover providers, connect an installed wallet, and sign a bounded demo message without exposing a private key.', 'Try signing')}
+        ${guidedDemoStepCard('agent', 'Agent plan', 'Generate a structured approval plan from a template, then sign the proof when your wallet is connected.', 'Draft a plan')}
+        ${guidedDemoStepCard('inbox', 'Approvals', 'Preview prepared actions, recurring approvals, and receipts when the local bridge is running.', 'View queue')}
+        ${guidedDemoStepCard('labs', 'Artifacts', 'Create wallet-signed audit artifacts that bind intent, policy, evidence, and verification.', 'Create artifact')}
       </div>
       <div class="browser-app-actions">
-        <a class="button-link nav-pill-link" href="/app">Launch App</a>
         <button data-start-action="discover" ${state.busy ? 'disabled' : ''}>
           ${state.wallets.length ? 'Refresh Wallets' : 'Discover Wallets'}
         </button>
+        <button class="nav-pill-link" data-demo-tab="wallet" ${state.busy ? 'disabled' : ''}>Open live demo</button>
+        <a class="button-link launch-app-link" href="/app">Launch full app</a>
         <a class="button-link" href="/docs">Read Docs</a>
       </div>
     </section>
+  `;
+}
+
+function guidedDemoStepCard(tab: ActiveTab, title: string, detail: string, actionLabel: string): string {
+  return `
+    <article class="browser-app-card demo-step-card">
+      <div>
+        <h3>${escapeHtml(title)}</h3>
+        <p>${escapeHtml(detail)}</p>
+      </div>
+      <button class="demo-step-action" data-demo-tab="${escapeHtml(tab)}">${escapeHtml(actionLabel)}</button>
+    </article>
   `;
 }
 
@@ -1774,13 +1797,17 @@ function homepageFooter(): string {
       <div>
         <span class="footer-brand">${agenticMark('mini-mark')} Agentic</span>
         <p>Render hosts the static website. CLI, Desktop App, bridge, and wallet approvals run locally.</p>
+        <p class="footer-contact">
+          <span>SolPulse LLC</span>
+          <a href="mailto:support@solpulse.trade">support@solpulse.trade</a>
+        </p>
       </div>
       <nav aria-label="Footer navigation">
         <a href="/docs">Docs</a>
         <a href="/cli">CLI</a>
         <a href="/desktop">Desktop App</a>
         <a href="/demo">Demo</a>
-        <a href="/app">Launch App</a>
+        <a class="launch-app-link footer-launch-app-link" href="/app">Launch App</a>
         <a href="${RELEASE_PAGE_URL}" target="_blank" rel="noreferrer">Releases</a>
         <a href="/terms">Terms</a>
         <a href="/privacy">Privacy</a>
@@ -1849,14 +1876,17 @@ function runtimeCommandRow(label: string, command: string, actionLabel: string):
   `;
 }
 
-function appWorkspace(): string {
+function appWorkspace(mode: 'app' | 'demo' = 'app'): string {
   const appModeClass = SHOW_DEV_CONTROLS ? 'dev-app' : 'public-app';
+  const workspaceId = mode === 'demo' ? 'demo-workspace' : 'workspace';
+  const titleId = mode === 'demo' ? 'demo-workspace-title' : 'workspace-title';
+  const modeClass = mode === 'demo' ? 'demo-workspace-mode' : 'launch-workspace-mode';
   return `
-    <section id="workspace" class="app-workspace-section ${appModeClass}" aria-labelledby="workspace-title">
+    <section id="${workspaceId}" class="app-workspace-section ${appModeClass} ${modeClass}" aria-labelledby="${titleId}">
       <div class="workspace-intro">
         <div>
-          <p class="eyebrow mini">Launch App</p>
-          <h2 id="workspace-title">Agentic approval workspace.</h2>
+          <p class="eyebrow mini">${mode === 'demo' ? 'Interactive demo' : 'Launch App'}</p>
+          <h2 id="${titleId}">${mode === 'demo' ? 'Live approval demo.' : 'Agentic approval workspace.'}</h2>
         </div>
         ${SHOW_DEV_CONTROLS ? systemSpine() : ''}
       </div>
@@ -2511,8 +2541,11 @@ function agentPlanPanel(): string {
 function agentPlannerWorkbench(): string {
   const template = selectedTemplate();
   const notesRequired = templateRequiresUserNotes(template);
+  const aiProviderPreset = aiProviderPresetById(state.aiSettings.provider);
+  const modelReady = Boolean(state.aiSettings.model.trim());
+  const providerReady = aiProviderPreset.id !== 'custom-openai-compatible' || Boolean(state.aiSettings.baseUrl.trim());
   const canUseAi = state.aiSettings.mode === 'session'
-    ? Boolean(state.aiSettings.apiKey.trim())
+    ? Boolean(state.aiSettings.apiKey.trim() && modelReady && providerReady)
     : Boolean(state.aiStatus?.available);
   return `
     <div class="agent-planner-grid">
@@ -2559,8 +2592,11 @@ function agentPlannerWorkbench(): string {
 }
 
 function aiSettingsPanel(): string {
+  const providerPreset = aiProviderPresetById(state.aiSettings.provider);
+  const modelReady = Boolean(state.aiSettings.model.trim());
+  const providerReady = providerPreset.id !== 'custom-openai-compatible' || Boolean(state.aiSettings.baseUrl.trim());
   const configured = state.aiSettings.mode === 'session'
-    ? Boolean(state.aiSettings.apiKey.trim())
+    ? Boolean(state.aiSettings.apiKey.trim() && modelReady && providerReady)
     : Boolean(state.aiStatus?.available);
   const open = isCompactMobileLayout() ? '' : 'open';
   return `
@@ -2630,6 +2666,10 @@ function aiSettingsCard(): string {
   const status = state.aiStatus;
   const providerPreset = aiProviderPresetById(state.aiSettings.provider);
   const formatLabel = aiFormatLabel(state.aiSettings.apiFormat);
+  const customProvider = providerPreset.id === 'custom-openai-compatible';
+  const providerReady = !customProvider || Boolean(state.aiSettings.baseUrl.trim());
+  const selectedPresetModel = providerPreset.models.find((model) => model.id === state.aiSettings.model);
+  const usingCustomModel = !selectedPresetModel;
   const bridgeLabel = status?.available
     ? `${status.source} - ${status.provider ?? status.apiFormat ?? 'AI'} - ${status.model ?? 'model configured'}`
     : 'not configured';
@@ -2658,19 +2698,34 @@ function aiSettingsCard(): string {
         </select>
       </label>
       <label class="field compact">
-        <span>Base URL</span>
-        <input id="aiBaseUrl" value="${escapeHtml(state.aiSettings.baseUrl)}" placeholder="${escapeHtml(providerPreset.baseUrl)}" ${state.busy ? 'disabled' : ''} />
-      </label>
-      <label class="field compact">
         <span>Model</span>
-        <input id="aiModel" value="${escapeHtml(state.aiSettings.model)}" placeholder="${escapeHtml(providerPreset.model)}" ${state.busy ? 'disabled' : ''} />
+        <select id="aiModelSelect" ${state.busy ? 'disabled' : ''}>
+          ${providerPreset.models.map((model) => `
+            <option value="${escapeHtml(model.id)}" ${model.id === state.aiSettings.model ? 'selected' : ''}>
+              ${escapeHtml(model.label)}
+            </option>
+          `).join('')}
+          <option value="${CUSTOM_AI_MODEL_VALUE}" ${usingCustomModel ? 'selected' : ''}>Custom model</option>
+        </select>
       </label>
+      ${usingCustomModel ? `
+        <label class="field compact">
+          <span>Custom model</span>
+          <input id="aiModelCustom" value="${escapeHtml(state.aiSettings.model)}" placeholder="${escapeHtml(providerPreset.model)}" ${state.busy ? 'disabled' : ''} />
+        </label>
+      ` : ''}
+      ${customProvider ? `
+        <label class="field compact">
+          <span>Gateway URL</span>
+          <input id="aiBaseUrl" value="${escapeHtml(state.aiSettings.baseUrl)}" placeholder="${escapeHtml(providerPreset.baseUrl)}" ${state.busy ? 'disabled' : ''} />
+        </label>
+      ` : ''}
       <label class="field compact">
         <span>${state.aiSettings.mode === 'bridge' ? 'Bridge session key' : 'Session key'}</span>
         <input id="aiApiKey" type="password" value="${escapeHtml(state.aiSettings.apiKey)}" placeholder="Not saved by default" autocomplete="off" ${state.busy ? 'disabled' : ''} />
       </label>
       <div class="ai-actions">
-        <button id="saveBridgeAiKey" ${state.aiSettings.mode !== 'bridge' || !state.aiSettings.apiKey.trim() || state.busy ? 'disabled' : ''}>Set bridge key</button>
+        <button id="saveBridgeAiKey" ${state.aiSettings.mode !== 'bridge' || !state.aiSettings.apiKey.trim() || !state.aiSettings.model.trim() || !providerReady || state.busy ? 'disabled' : ''}>Set bridge key</button>
         <button id="clearAiKey" ${!state.aiSettings.apiKey.trim() && !status?.available ? 'disabled' : ''}>Clear key</button>
         <button id="refreshAiStatus" ${state.busy ? 'disabled' : ''}>Refresh</button>
       </div>
@@ -2920,6 +2975,19 @@ function bind(): void {
     });
   }
 
+  for (const button of document.querySelectorAll<HTMLButtonElement>('[data-demo-tab]')) {
+    button.addEventListener('click', () => {
+      const tab = button.dataset.demoTab as ActiveTab | undefined;
+      if (!tab) return;
+      state.activeTab = tab;
+      state.error = '';
+      render();
+      window.requestAnimationFrame(() => {
+        document.querySelector('#demo-workspace')?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+      });
+    });
+  }
+
   document.querySelector<HTMLSelectElement>('#clusterSelect')?.addEventListener('change', (event) => {
     const cluster = (event.currentTarget as HTMLSelectElement).value;
     if (!isCluster(cluster)) return;
@@ -3011,15 +3079,15 @@ function bind(): void {
 
   document.querySelector<HTMLInputElement>('#aiBaseUrl')?.addEventListener('input', (event) => {
     state.aiSettings.baseUrl = (event.currentTarget as HTMLInputElement).value.trim();
-    const preset = aiProviderPresetById(state.aiSettings.provider);
-    if (state.aiSettings.apiFormat === 'openai-compatible' && state.aiSettings.baseUrl !== preset.baseUrl) {
-      const custom = aiProviderPresetById('custom-openai-compatible');
-      state.aiSettings.provider = custom.id;
-      state.aiSettings.apiFormat = custom.apiFormat;
-    }
   });
 
-  document.querySelector<HTMLInputElement>('#aiModel')?.addEventListener('input', (event) => {
+  document.querySelector<HTMLSelectElement>('#aiModelSelect')?.addEventListener('change', (event) => {
+    const value = (event.currentTarget as HTMLSelectElement).value;
+    state.aiSettings.model = value === CUSTOM_AI_MODEL_VALUE ? '' : value;
+    render();
+  });
+
+  document.querySelector<HTMLInputElement>('#aiModelCustom')?.addEventListener('input', (event) => {
     state.aiSettings.model = (event.currentTarget as HTMLInputElement).value.trim();
   });
 

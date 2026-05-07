@@ -13,6 +13,8 @@ import android.webkit.WebSettings
 import android.webkit.WebView
 import android.webkit.WebViewClient
 import androidx.activity.ComponentActivity
+import androidx.core.view.ViewCompat
+import androidx.core.view.WindowInsetsCompat
 import androidx.webkit.WebViewAssetLoader
 import com.agentic.wallet.mwa.AgentMwaLog
 import java.io.FileNotFoundException
@@ -64,6 +66,7 @@ class MainActivity : ComponentActivity() {
         }
         WebView.setWebContentsDebuggingEnabled(BuildConfig.DEBUG)
         setContentView(webView)
+        applySystemBarInsets(webView)
 
         if (savedInstanceState == null) {
             webView.loadUrl(LOCAL_APP_START_URL)
@@ -90,6 +93,15 @@ class MainActivity : ComponentActivity() {
                 mapOf("scheme" to uri.scheme, "host" to uri.host),
             )
         }
+    }
+
+    private fun applySystemBarInsets(view: WebView) {
+        ViewCompat.setOnApplyWindowInsetsListener(view) { target, insets ->
+            val bars = insets.getInsets(WindowInsetsCompat.Type.systemBars())
+            target.setPadding(bars.left, bars.top, bars.right, bars.bottom)
+            insets
+        }
+        ViewCompat.requestApplyInsets(view)
     }
 
     private class AndroidBridge(private val context: Context) {

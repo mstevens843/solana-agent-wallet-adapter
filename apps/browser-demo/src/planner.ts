@@ -94,6 +94,12 @@ export interface AiProviderPreset {
   apiFormat: AiApiFormat;
   baseUrl: string;
   model: string;
+  models: AiProviderModel[];
+}
+
+export interface AiProviderModel {
+  id: string;
+  label: string;
 }
 
 export const AI_PROVIDER_PRESETS: AiProviderPreset[] = [
@@ -104,6 +110,14 @@ export const AI_PROVIDER_PRESETS: AiProviderPreset[] = [
     apiFormat: 'openai-compatible',
     baseUrl: DEFAULT_AI_BASE_URL,
     model: DEFAULT_AI_MODEL,
+    models: [
+      { id: DEFAULT_AI_MODEL, label: 'GPT-5' },
+      { id: 'gpt-5.2', label: 'GPT-5.2' },
+      { id: 'gpt-5.1', label: 'GPT-5.1' },
+      { id: 'gpt-5-mini', label: 'GPT-5 mini' },
+      { id: 'gpt-5-nano', label: 'GPT-5 nano' },
+      { id: 'gpt-4.1', label: 'GPT-4.1' },
+    ],
   },
   {
     id: 'anthropic',
@@ -112,6 +126,13 @@ export const AI_PROVIDER_PRESETS: AiProviderPreset[] = [
     apiFormat: 'anthropic',
     baseUrl: 'https://api.anthropic.com/v1',
     model: 'claude-sonnet-4-5',
+    models: [
+      { id: 'claude-sonnet-4-5', label: 'Claude Sonnet 4.5' },
+      { id: 'claude-sonnet-4-5-20250929', label: 'Claude Sonnet 4.5 snapshot' },
+      { id: 'claude-opus-4-1-20250805', label: 'Claude Opus 4.1' },
+      { id: 'claude-sonnet-4-20250514', label: 'Claude Sonnet 4' },
+      { id: 'claude-3-5-haiku-20241022', label: 'Claude Haiku 3.5' },
+    ],
   },
   {
     id: 'gemini',
@@ -120,6 +141,11 @@ export const AI_PROVIDER_PRESETS: AiProviderPreset[] = [
     apiFormat: 'openai-compatible',
     baseUrl: 'https://generativelanguage.googleapis.com/v1beta/openai',
     model: 'gemini-2.5-flash',
+    models: [
+      { id: 'gemini-2.5-flash', label: 'Gemini 2.5 Flash' },
+      { id: 'gemini-2.5-pro', label: 'Gemini 2.5 Pro' },
+      { id: 'gemini-2.0-flash', label: 'Gemini 2.0 Flash' },
+    ],
   },
   {
     id: 'openrouter',
@@ -128,6 +154,12 @@ export const AI_PROVIDER_PRESETS: AiProviderPreset[] = [
     apiFormat: 'openai-compatible',
     baseUrl: 'https://openrouter.ai/api/v1',
     model: 'openrouter/auto',
+    models: [
+      { id: 'openrouter/auto', label: 'Auto Router' },
+      { id: 'openai/gpt-5', label: 'OpenAI GPT-5' },
+      { id: 'anthropic/claude-sonnet-4.5', label: 'Claude Sonnet 4.5' },
+      { id: 'google/gemini-2.5-pro', label: 'Gemini 2.5 Pro' },
+    ],
   },
   {
     id: 'custom-openai-compatible',
@@ -136,6 +168,9 @@ export const AI_PROVIDER_PRESETS: AiProviderPreset[] = [
     apiFormat: 'openai-compatible',
     baseUrl: DEFAULT_AI_BASE_URL,
     model: DEFAULT_AI_MODEL,
+    models: [
+      { id: DEFAULT_AI_MODEL, label: 'GPT-5 compatible default' },
+    ],
   },
 ];
 
