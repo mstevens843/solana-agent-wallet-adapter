@@ -11,6 +11,7 @@
     "index.js",
     "index.d.ts",
     "ios",
+    "Package.swift",
     "AgenticIosCapacitorBridge.podspec",
     "README.md"
   ],

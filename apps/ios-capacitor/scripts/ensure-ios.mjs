@@ -21,6 +21,15 @@ function patchInfoPlist() {
     return;
   }
   let plist = readFileSync(infoPlist, 'utf8');
+  plist = plist
+    .replace(/\n\s*<key>ITSAppUsesNonExemptEncryption<\/key>\s*\n\s*<false\/>\s*(?=<\/dict>\s*<\/array>)/g, '')
+    .replace(/\n\s*<key>ITSAppUsesNonExemptEncryption<\/key>\s*\n\s*<false\/>\s*(?=<\/array>)/g, '');
+  if (!plist.includes('<key>ITSAppUsesNonExemptEncryption</key>')) {
+    plist = plist.replace(
+      '<key>CFBundleURLTypes</key>',
+      '<key>ITSAppUsesNonExemptEncryption</key>\n\t<false/>\n\t<key>CFBundleURLTypes</key>',
+    );
+  }
   if (!plist.includes('<string>agenticwallet</string>')) {
     plist = plist.replace(
       '</dict>',
@@ -41,7 +50,10 @@ function patchInfoPlist() {
     );
   }
   if (!plist.includes('<key>ITSAppUsesNonExemptEncryption</key>')) {
-    plist = plist.replace('</dict>', '\t<key>ITSAppUsesNonExemptEncryption</key>\n\t<false/>\n</dict>');
+    plist = plist.replace(
+      '<key>CFBundleURLTypes</key>',
+      '<key>ITSAppUsesNonExemptEncryption</key>\n\t<false/>\n\t<key>CFBundleURLTypes</key>',
+    );
   }
   writeFileSync(infoPlist, plist);
   console.log('[ios-capacitor] Ensured URL scheme and encryption export plist entries');

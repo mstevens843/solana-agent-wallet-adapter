@@ -1,7 +1,7 @@
 # Android Native MWA Smoke
 
-This smoke verifies the Android app as a native Mobile Wallet Adapter approval host. The native host is an opt-in
-example mode; normal Android builds launch the hosted web app.
+This smoke verifies the Android app as a native Mobile Wallet Adapter approval host. The raw MWA harness is an opt-in
+example mode; normal Android builds launch the native Agentic app.
 
 ## Start
 

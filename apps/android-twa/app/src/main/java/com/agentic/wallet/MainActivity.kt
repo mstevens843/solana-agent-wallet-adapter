@@ -1,6 +1,9 @@
 package com.agentic.wallet
 
 import android.content.Intent
+import android.graphics.Color
+import android.graphics.Typeface
+import android.graphics.drawable.GradientDrawable
 import android.net.Uri
 import android.os.Bundle
 import android.util.Base64
@@ -49,14 +52,8 @@ class MainActivity : ComponentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        if (!BuildConfig.AGENTIC_ANDROID_SHOW_EXAMPLE_APP) {
-            startActivity(Intent(this, WebLaunchActivity::class.java).setData(Uri.parse(BuildConfig.AGENTIC_LAUNCH_URL)))
-            finish()
-            return
-        }
-
         controller = MwaController(applicationContext, defaultIdentity())
-        setContentView(buildContent())
+        setContentView(if (BuildConfig.AGENTIC_ANDROID_SHOW_EXAMPLE_APP) buildExampleContent() else buildAppContent())
         val restored = controller.reconnectLatest()
         if (restored != null) {
             setCluster(restored.cluster)
@@ -73,7 +70,142 @@ class MainActivity : ComponentActivity() {
         super.onDestroy()
     }
 
-    private fun buildContent(): View {
+    private fun buildAppContent(): View {
+        actionButtons.clear()
+        val scrollView = ScrollView(this).apply {
+            setBackgroundColor(Color.rgb(5, 7, 6))
+        }
+        val root = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(dp(18), dp(18), dp(18), dp(28))
+        }
+        scrollView.addView(root)
+
+        root.addView(TextView(this).apply {
+            text = "Agentic"
+            textSize = 28f
+            typeface = Typeface.DEFAULT_BOLD
+            setTextColor(Color.WHITE)
+        })
+        root.addView(TextView(this).apply {
+            text = "Android wallet approvals"
+            textSize = 14f
+            setTextColor(Color.rgb(171, 184, 178))
+            setPadding(0, dp(2), 0, dp(16))
+        })
+
+        val overview = panel()
+        overview.addView(cardTitle("Wallet"))
+        statusView = TextView(this).apply {
+            textSize = 14f
+            setTextColor(Color.rgb(224, 232, 228))
+            setPadding(0, dp(2), 0, dp(12))
+        }
+        overview.addView(statusView)
+
+        clusterSpinner = Spinner(this).apply {
+            adapter = ArrayAdapter(
+                this@MainActivity,
+                android.R.layout.simple_spinner_dropdown_item,
+                AgentCluster.entries.map { it.id },
+            )
+        }
+        overview.addView(label("Cluster"))
+        overview.addView(clusterSpinner)
+        row(
+            overview,
+            button("Connect wallet") { connectWallet() },
+            button("Reconnect cached") { reconnectCached() },
+        )
+        row(
+            overview,
+            button("Disconnect") { disconnectWallet() },
+            button("Clear transient") { clearTransient() },
+        )
+        root.addView(overview)
+
+        val signing = panel()
+        signing.addView(cardTitle("Agent action"))
+        messageInput = EditText(this).apply {
+            hint = "Message to sign"
+            setText("Approve this Solana agent action with user custody.")
+            minLines = 2
+        }
+        signing.addView(messageInput)
+        signing.addView(button("Sign message") { signMessage() })
+        root.addView(signing)
+
+        val bridge = panel()
+        bridge.addView(cardTitle("Bridge"))
+        bridgeUrlInput = EditText(this).apply {
+            hint = "Bridge URL"
+            setText("http://127.0.0.1:8787")
+            setSingleLine(true)
+        }
+        bridge.addView(bridgeUrlInput)
+        bridgeTokenInput = EditText(this).apply {
+            hint = "Bridge token"
+            setText("local-agent-wallet")
+            setSingleLine(true)
+        }
+        bridge.addView(bridgeTokenInput)
+        row(
+            bridge,
+            button("Connect bridge") { connectBridge() },
+            button("Disconnect bridge") { disconnectBridge() },
+        )
+        root.addView(bridge)
+
+        val advanced = panel()
+        advanced.addView(cardTitle("Advanced"))
+        advanced.addView(button("Get capabilities") { getCapabilities() })
+        siwsDomainInput = EditText(this).apply {
+            hint = "SIWS domain"
+            setText(Uri.parse(BuildConfig.AGENTIC_LAUNCH_URL).host ?: "agenticwalletadapter.com")
+            setSingleLine(true)
+        }
+        advanced.addView(siwsDomainInput)
+        siwsStatementInput = EditText(this).apply {
+            hint = "SIWS statement"
+            setText("Sign in to Agentic.")
+            minLines = 2
+        }
+        advanced.addView(siwsStatementInput)
+        advanced.addView(button("Connect + SIWS") { connectWithSignIn() })
+        transactionInput = EditText(this).apply {
+            hint = "Base64 serialized transaction"
+            minLines = 3
+        }
+        advanced.addView(transactionInput)
+        row(
+            advanced,
+            button("Sign transaction") { signTransaction() },
+            button("Sign and send") { signAndSendTransaction() },
+        )
+        row(
+            advanced,
+            button("Full reset") { clearFullReset() },
+            button("Clear accounts") { clearAllAccounts() },
+        )
+        advanced.addView(button("Open web fallback") {
+            startActivity(Intent(this, WebLaunchActivity::class.java).setData(Uri.parse(BuildConfig.AGENTIC_LAUNCH_URL)))
+        })
+        root.addView(advanced)
+
+        val logPanel = panel()
+        logPanel.addView(cardTitle("Activity"))
+        logView = TextView(this).apply {
+            textSize = 12f
+            setTextColor(Color.rgb(190, 202, 196))
+        }
+        logPanel.addView(logView)
+        root.addView(logPanel)
+
+        return scrollView
+    }
+
+    private fun buildExampleContent(): View {
+        actionButtons.clear()
         val scrollView = ScrollView(this)
         val root = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
@@ -401,10 +533,38 @@ class MainActivity : ComponentActivity() {
         logView.text = ("$prefix  $line\n${logView.text}").take(8_000)
     }
 
+    private fun panel(): LinearLayout =
+        LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(dp(14), dp(14), dp(14), dp(14))
+            background = GradientDrawable().apply {
+                shape = GradientDrawable.RECTANGLE
+                cornerRadius = dp(8).toFloat()
+                setColor(Color.rgb(9, 14, 12))
+                setStroke(dp(1), Color.rgb(31, 50, 41))
+            }
+            layoutParams = LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT,
+            ).apply {
+                setMargins(0, 0, 0, dp(12))
+            }
+        }
+
+    private fun cardTitle(text: String): TextView =
+        TextView(this).apply {
+            this.text = text
+            textSize = 18f
+            typeface = Typeface.DEFAULT_BOLD
+            setTextColor(Color.WHITE)
+            setPadding(0, 0, 0, dp(8))
+        }
+
     private fun label(text: String): TextView =
         TextView(this).apply {
             this.text = text
             textSize = 12f
+            setTextColor(Color.rgb(157, 172, 165))
             setPadding(0, dp(8), 0, dp(3))
         }
 
@@ -412,6 +572,7 @@ class MainActivity : ComponentActivity() {
         TextView(this).apply {
             this.text = text
             textSize = 18f
+            setTextColor(Color.rgb(224, 232, 228))
             setPadding(0, dp(18), 0, dp(8))
         }
 

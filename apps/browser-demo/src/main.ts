@@ -197,7 +197,7 @@ const ANDROID_RELEASE_ASSETS = [
   ['Android APK', 'agentic-android.apk'],
   ['Android App Bundle', 'agentic-android.aab'],
 ] as const;
-const AGENTIC_MARK_LOGO = new URL('./assets/logos/saturn_6_green_dark_3.png', import.meta.url).href;
+const AGENTIC_MARK_LOGO = new URL('../../../assets/agentic/saturn-source-cutout.png', import.meta.url).href;
 
 type BrandLogoId =
   | 'backpack'

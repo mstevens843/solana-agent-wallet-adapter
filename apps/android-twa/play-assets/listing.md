@@ -22,12 +22,13 @@ Agentic lets AI agents request Solana wallet actions while your existing wallet 
 
 ## Assets
 
-- dApp icon: `icon-512.png`
-- Banner: `feature-1200x600.png`
-- Preview 1: `previews/preview-1-wallet-signing.png`
-- Preview 2: `previews/preview-2-multi-wallet.png`
-- Preview 3: `previews/preview-3-agent-request.png`
-- Preview 4: `previews/preview-4-receipts.png`
+- dApp icon: `../../../assets/agentic/app-icon-512.png`
+- Banner: `../../../assets/agentic/banner-1200x600.png`
+- Editor's Choice graphic: `../../../assets/agentic/editor-choice-1200x1200.png`
+- Preview 1: `../../../assets/agentic/previews/preview-1-wallet-signing.png`
+- Preview 2: `../../../assets/agentic/previews/preview-2-multi-wallet.png`
+- Preview 3: `../../../assets/agentic/previews/preview-3-agent-request.png`
+- Preview 4: `../../../assets/agentic/previews/preview-4-receipts.png`
 
 ## Positioning
 

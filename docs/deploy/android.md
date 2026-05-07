@@ -1,8 +1,7 @@
 # Build Agentic For Android
 
-Agentic's Android app defaults to launching the hosted web app at `AGENTIC_ANDROID_LAUNCH_URL`. The native Solana
-Mobile Wallet Adapter example host remains available behind the Android build-time flag
-`AGENTIC_ANDROID_SHOW_EXAMPLE_APP=true`.
+Agentic's Android app defaults to the native Android approval surface. The raw native Solana Mobile Wallet Adapter
+example host remains available behind the Android build-time flag `AGENTIC_ANDROID_SHOW_EXAMPLE_APP=true`.
 
 ## Prerequisites
 
@@ -47,14 +46,14 @@ label. Release builds also require `AGENTIC_ANDROID_LAUNCH_URL` to be a non-loca
 `AGENTIC_ANDROID_REQUIRE_SIGNING=1` in production CI so incomplete signing configuration fails before artifacts are
 staged.
 
-Override the hosted launch URL for a build:
+Override the hosted fallback URL for a build:
 
 ```sh
 pnpm android:debug -- -PagenticLaunchUrl=https://agenticwalletadapter.com/#app
 ```
 
-The default launch URL opens `https://agenticwalletadapter.com/#app`. The hash route avoids static-host 404s when a
-deployed site has not yet applied its client-side routing rewrite.
+The fallback URL defaults to `https://agenticwalletadapter.com/#app`. It is used only by the explicit web fallback
+button, not as the default Android launcher.
 
 Switch the launcher between the regular app and the native example host:
 
@@ -64,7 +63,7 @@ AGENTIC_ANDROID_SHOW_EXAMPLE_APP=true pnpm android:install
 pnpm android:install -- -PagenticShowExampleApp=true
 ```
 
-`AGENTIC_ANDROID_SHOW_EXAMPLE_APP` defaults to `false`, so live Android builds open the regular web app. The flag is
+`AGENTIC_ANDROID_SHOW_EXAMPLE_APP` defaults to `false`, so live Android builds open the native app. The flag is
 separate from the website's `VITE_AGENTIC_DEV_CONTROLS` setting and only affects Android APKs built after the value is
 set.
 
@@ -76,12 +75,12 @@ desktop bridge, they can paste a provider or gateway key into the session-only B
 
 ## Store Listing
 
-Use `apps/android-twa/play-assets/listing.md` for the Android listing form copy. The ready-to-upload assets live beside
-that file:
+Use `apps/android-twa/play-assets/listing.md` for the Android listing form copy. The canonical ready-to-upload assets
+live in `assets/agentic`:
 
-- dApp icon: `apps/android-twa/play-assets/icon-512.png`
-- Banner: `apps/android-twa/play-assets/feature-1200x600.png`
-- Preview images: `apps/android-twa/play-assets/previews/`
+- dApp icon: `assets/agentic/app-icon-512.png`
+- Banner: `assets/agentic/banner-1200x600.png`
+- Preview images: `assets/agentic/previews/`
 
 ## Digital Asset Links
 

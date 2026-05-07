@@ -394,7 +394,6 @@ code {
   width: 52px;
 }
 
-.brand-mark .agentic-mark,
 .mini-mark {
   height: 22px;
   width: 34px;
@@ -1310,7 +1309,21 @@ code {
   min-width: 0;
 }
 
-.brand-mark,
+.brand-mark {
+  align-items: center;
+  color: #9bd9b5;
+  display: inline-flex;
+  flex: 0 0 auto;
+  height: 42px;
+  justify-content: center;
+  width: 42px;
+}
+
+.brand-mark .agentic-mark {
+  height: 28px;
+  width: 42px;
+}
+
 .rail-icon {
   align-items: center;
   background: rgba(255, 255, 255, 0.035);

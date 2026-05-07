@@ -62,8 +62,10 @@ async function runCapacitor(selectedCommand, forwardedArgs) {
     return;
   }
 
-  const destination = process.env.AGENTIC_IOS_DESTINATION ?? 'generic/platform=iOS Simulator';
+  const destination = process.env.AGENTIC_IOS_DESTINATION ?? 'generic/platform=iOS';
   const configuration = selectedCommand === 'release' ? 'Release' : 'Debug';
+  const derivedDataPath = process.env.AGENTIC_IOS_DERIVED_DATA ?? join(capacitorAppDir, 'build/DerivedData');
+  const clonedPackagesPath = process.env.AGENTIC_IOS_SOURCE_PACKAGES ?? join(capacitorAppDir, 'build/SourcePackages');
   const buildArgs = existsSync(workspace)
     ? ['-workspace', workspace, '-scheme', 'App']
     : ['-project', project, '-scheme', 'App'];
@@ -75,13 +77,17 @@ async function runCapacitor(selectedCommand, forwardedArgs) {
       configuration,
       '-destination',
       destination,
+      '-derivedDataPath',
+      derivedDataPath,
+      '-clonedSourcePackagesDirPath',
+      clonedPackagesPath,
       'CODE_SIGNING_ALLOWED=NO',
       ...forwardedArgs,
       'build',
     ],
     {
       cwd: capacitorAppDir,
-      env: iosEnv(),
+      env: xcodeEnv(),
     },
   );
 }
@@ -115,12 +121,28 @@ function resolveIosFlagRaw() {
 
 function iosEnv() {
   const raw = String(resolveIosFlagRaw());
-  return {
+  const env = {
     ...process.env,
     CAPACITOR_IOS_APP: raw,
     CAPACITATOR_IOS_APP: raw,
     VITE_CAPACITOR_IOS_APP: raw,
     VITE_CAPACITATOR_IOS_APP: raw,
+  };
+  const xcodeDeveloperDir = '/Applications/Xcode.app/Contents/Developer';
+  if (!env.DEVELOPER_DIR && existsSync(xcodeDeveloperDir)) {
+    env.DEVELOPER_DIR = xcodeDeveloperDir;
+  }
+  const cacheRoot = join(root, 'build/ios-cache');
+  env.XDG_CACHE_HOME = env.XDG_CACHE_HOME ?? join(cacheRoot, 'xdg');
+  env.CLANG_MODULE_CACHE_PATH = env.CLANG_MODULE_CACHE_PATH ?? join(cacheRoot, 'clang-modules');
+  env.SWIFTPM_MODULECACHE_OVERRIDE = env.SWIFTPM_MODULECACHE_OVERRIDE ?? join(cacheRoot, 'swiftpm-modules');
+  return env;
+}
+
+function xcodeEnv() {
+  return {
+    ...iosEnv(),
+    HOME: process.env.AGENTIC_IOS_HOME ?? join(root, 'build/ios-home'),
   };
 }
 
