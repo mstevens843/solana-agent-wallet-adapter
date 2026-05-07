@@ -2,7 +2,7 @@
   "name": "@solana-agent-wallet-adapter/android-twa",
   "version": "0.0.1",
   "private": true,
-  "description": "Native Android Mobile Wallet Adapter approval host for Agentic, with a TWA web fallback.",
+  "description": "Native Android Mobile Wallet Adapter approval host for Agentic, with an opt-in TWA web fallback.",
   "license": "Apache-2.0",
   "scripts": {
     "build": "node ../../scripts/android.mjs build",

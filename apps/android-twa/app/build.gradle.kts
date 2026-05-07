@@ -44,6 +44,15 @@ val showExampleApp = booleanFlag(
     "AGENTIC_ANDROID_SHOW_EXAMPLE_APP",
     false,
 )
+val enableWebFallbackInput = providers.gradleProperty("agenticEnableWebFallback").orNull
+    ?: providers.gradleProperty("AGENTIC_ANDROID_ENABLE_WEB_FALLBACK").orNull
+    ?: System.getenv("AGENTIC_ANDROID_ENABLE_WEB_FALLBACK")
+    ?: System.getenv("agenticEnableWebFallback")
+val enableWebFallback = booleanFlag(
+    enableWebFallbackInput,
+    "AGENTIC_ANDROID_ENABLE_WEB_FALLBACK",
+    false,
+)
 val requestedTasks = gradle.startParameter.taskNames.map { it.lowercase() }
 val isReleaseBuild = requestedTasks.any { it.contains("release") }
 val localLaunchHosts = setOf("localhost", "127.0.0.1", "0.0.0.0", "::1")
@@ -101,6 +110,7 @@ android {
 
         manifestPlaceholders["agenticScheme"] = launchScheme
         manifestPlaceholders["agenticHost"] = launchHost
+        manifestPlaceholders["agenticWebFallbackEnabled"] = enableWebFallback.toString()
         manifestPlaceholders["usesCleartextTraffic"] = usesCleartext.toString()
 
         buildConfigField("String", "AGENTIC_LAUNCH_URL", "\"${launchUrl.replace("\"", "\\\"")}\"")
@@ -108,6 +118,7 @@ android {
         buildConfigField("String", "AGENTIC_LAUNCH_HOST", "\"${launchHost.replace("\"", "\\\"")}\"")
         buildConfigField("int", "AGENTIC_LAUNCH_PORT", launchPort.toString())
         buildConfigField("boolean", "AGENTIC_ANDROID_SHOW_EXAMPLE_APP", showExampleApp.toString())
+        buildConfigField("boolean", "AGENTIC_ANDROID_ENABLE_WEB_FALLBACK", enableWebFallback.toString())
         resValue("string", "launch_url", launchUrl)
         resValue("string", "asset_statements", escapedResValue(assetStatements))
     }

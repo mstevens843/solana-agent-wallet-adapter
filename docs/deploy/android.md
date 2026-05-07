@@ -1,7 +1,8 @@
 # Build Agentic For Android
 
 Agentic's Android app defaults to the native Android approval surface. The raw native Solana Mobile Wallet Adapter
-example host remains available behind the Android build-time flag `AGENTIC_ANDROID_SHOW_EXAMPLE_APP=true`.
+example host remains available behind `AGENTIC_ANDROID_SHOW_EXAMPLE_APP=true`, and the hosted web/TWA fallback remains
+disabled unless `AGENTIC_ANDROID_ENABLE_WEB_FALLBACK=true` is set for that APK build.
 
 ## Prerequisites
 
@@ -52,10 +53,20 @@ Override the hosted fallback URL for a build:
 pnpm android:debug -- -PagenticLaunchUrl=https://agenticwalletadapter.com/#app
 ```
 
-The fallback URL defaults to `https://agenticwalletadapter.com/#app`. It is used only by the explicit web fallback
-button, not as the default Android launcher.
+The fallback URL defaults to `https://agenticwalletadapter.com/#app`. It is used only when web fallback is explicitly
+enabled, not as the default Android launcher.
 
-Switch the launcher between the regular app and the native example host:
+Enable the hosted web/TWA fallback for a debug build:
+
+```sh
+AGENTIC_ANDROID_ENABLE_WEB_FALLBACK=true pnpm android:install
+pnpm android:install -- -PagenticEnableWebFallback=true
+```
+
+`AGENTIC_ANDROID_ENABLE_WEB_FALLBACK` defaults to `false`. When false, the APK disables `WebLaunchActivity`, hides the
+fallback button, and does not claim the hosted website link.
+
+Switch the native Android surface between the regular app and the raw example host:
 
 ```sh
 pnpm android:install
@@ -68,7 +79,8 @@ separate from the website's `VITE_AGENTIC_DEV_CONTROLS` setting and only affects
 set.
 
 For LAN testing the native Android app can connect to the local bridge URL printed by `pnpm dev:mobile`. The web
-fallback can still open the deployed HTTPS origin or the LAN URL in Android Chrome.
+fallback can still open the deployed HTTPS origin or the LAN URL in Android Chrome when
+`AGENTIC_ANDROID_ENABLE_WEB_FALLBACK=true` is set for the APK build.
 
 Android users can use the app planner without an AI key through templates. If they want AI planning without a
 desktop bridge, they can paste a provider or gateway key into the session-only BYOK field; see `docs/ai-byok.md`.
@@ -84,7 +96,7 @@ live in `assets/agentic`:
 
 ## Digital Asset Links
 
-The TWA reaches full trusted mode only when the deployed origin serves:
+The optional TWA fallback reaches full trusted mode only when the deployed origin serves:
 
 ```text
 https://agenticwalletadapter.com/.well-known/assetlinks.json
@@ -155,7 +167,7 @@ The workflow fails if it cannot produce a signed release APK and AAB.
 
 1. Start the local bridge/browser flow with `pnpm dev:mobile` when testing bridge approvals from a phone.
 2. Install an MWA-compatible Android wallet such as Phantom, Solflare, or Seed Vault Wallet.
-3. Install the native example debug APK with `AGENTIC_ANDROID_SHOW_EXAMPLE_APP=true pnpm android:install`.
+3. Install the native debug APK with `pnpm android:install`.
 4. Launch Agentic.
 5. Tap `Connect wallet` and approve in the installed wallet.
 6. Close and relaunch Agentic. It should restore the cached authorization automatically without a button press.
@@ -166,6 +178,7 @@ The workflow fails if it cannot produce a signed release APK and AAB.
 9. Connect the bridge with the LAN bridge URL and token, then request a signature from the agent host.
 10. Use `Clear transient`, `Full reset`, and `Clear all accounts` to verify state/cache semantics. `Full reset`
     attempts remote MWA deauthorization before clearing local cached state.
+11. Confirm logcat includes `native activity launched` with `mode="app_native"` and `webFallbackEnabled="false"`.
 
 Wallet caveats match the Unity/Godot/Unreal native SDKs: Backpack uses sign-then-RPC for sign-and-send, Phantom and
 Solflare may not support MWA message signing, Jupiter does not support standalone `sign_transactions`, and Phantom

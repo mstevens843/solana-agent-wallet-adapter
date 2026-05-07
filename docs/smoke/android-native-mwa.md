@@ -1,13 +1,14 @@
 # Android Native MWA Smoke
 
 This smoke verifies the Android app as a native Mobile Wallet Adapter approval host. The raw MWA harness is an opt-in
-example mode; normal Android builds launch the native Agentic app.
+example mode; normal Android builds launch the native Agentic app. The hosted web/TWA fallback is also opt-in and is
+disabled for this smoke.
 
 ## Start
 
 ```sh
 pnpm dev:mobile
-AGENTIC_ANDROID_SHOW_EXAMPLE_APP=true pnpm android:install
+pnpm android:install
 ```
 
 Install Phantom, Solflare, Backpack, Jupiter, or Seed Vault Wallet on the Android device.
@@ -49,3 +50,12 @@ Every user action and bridge approval should emit deterministic redacted lines:
 ```text
 [AgentAndroidMWA] [Component] method | START/STEP/SUCCESS/FAIL key=value
 ```
+
+The first launch should include the native marker:
+
+```text
+message="native activity launched" mode="app_native" webFallbackEnabled="false"
+```
+
+It should not emit `TwaLauncher` or start `WebLaunchActivity` unless the APK was built with
+`AGENTIC_ANDROID_ENABLE_WEB_FALLBACK=true`.

@@ -35,6 +35,11 @@ import java.util.Date
 import java.util.Locale
 
 class MainActivity : ComponentActivity() {
+    companion object {
+        // Local Android Studio override. Keep false for committed and live builds.
+        private const val FORCE_EXAMPLE_APP_FOR_ANDROID_STUDIO = false
+    }
+
     private lateinit var controller: MwaController
     private lateinit var statusView: TextView
     private lateinit var logView: TextView
@@ -52,8 +57,21 @@ class MainActivity : ComponentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        val showExampleApp = shouldShowExampleApp()
+        val mode = if (showExampleApp) "example_native" else "app_native"
+        AgentMwaLog.info(
+            "MainActivity",
+            "onCreate",
+            "START",
+            "native activity launched",
+            mapOf(
+                "mode" to mode,
+                "webFallbackEnabled" to BuildConfig.AGENTIC_ANDROID_ENABLE_WEB_FALLBACK,
+            ),
+        )
         controller = MwaController(applicationContext, defaultIdentity())
-        setContentView(if (BuildConfig.AGENTIC_ANDROID_SHOW_EXAMPLE_APP) buildExampleContent() else buildAppContent())
+        setContentView(if (showExampleApp) buildExampleContent() else buildAppContent())
+        appendLog("Native mode: $mode. Web fallback: ${if (BuildConfig.AGENTIC_ANDROID_ENABLE_WEB_FALLBACK) "enabled" else "disabled"}.")
         val restored = controller.reconnectLatest()
         if (restored != null) {
             setCluster(restored.cluster)
@@ -187,9 +205,9 @@ class MainActivity : ComponentActivity() {
             button("Full reset") { clearFullReset() },
             button("Clear accounts") { clearAllAccounts() },
         )
-        advanced.addView(button("Open web fallback") {
-            startActivity(Intent(this, WebLaunchActivity::class.java).setData(Uri.parse(BuildConfig.AGENTIC_LAUNCH_URL)))
-        })
+        if (BuildConfig.AGENTIC_ANDROID_ENABLE_WEB_FALLBACK) {
+            advanced.addView(button("Open web fallback") { openWebFallback() })
+        }
         root.addView(advanced)
 
         val logPanel = panel()
@@ -298,10 +316,10 @@ class MainActivity : ComponentActivity() {
             button("Disconnect bridge") { disconnectBridge() },
         )
 
-        root.addView(section("Fallback"))
-        root.addView(button("Open web app") {
-            startActivity(Intent(this, WebLaunchActivity::class.java).setData(Uri.parse(BuildConfig.AGENTIC_LAUNCH_URL)))
-        })
+        if (BuildConfig.AGENTIC_ANDROID_ENABLE_WEB_FALLBACK) {
+            root.addView(section("Fallback"))
+            root.addView(button("Open web app") { openWebFallback() })
+        }
 
         root.addView(section("Log"))
         logView = TextView(this).apply {
@@ -310,6 +328,17 @@ class MainActivity : ComponentActivity() {
         }
         root.addView(logView)
         return scrollView
+    }
+
+    private fun shouldShowExampleApp(): Boolean =
+        FORCE_EXAMPLE_APP_FOR_ANDROID_STUDIO || BuildConfig.AGENTIC_ANDROID_SHOW_EXAMPLE_APP
+
+    private fun openWebFallback() {
+        if (!BuildConfig.AGENTIC_ANDROID_ENABLE_WEB_FALLBACK) {
+            appendLog("Web fallback is disabled for this build.")
+            return
+        }
+        startActivity(Intent(this, WebLaunchActivity::class.java).setData(Uri.parse(BuildConfig.AGENTIC_LAUNCH_URL)))
     }
 
     private fun connectWallet() = runAction("connect") {

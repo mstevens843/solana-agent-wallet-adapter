@@ -39,6 +39,7 @@
 
         <activity
             android:name=".WebLaunchActivity"
+            android:enabled="${agenticWebFallbackEnabled}"
             android:exported="true"
             android:theme="@style/AppTheme">
             <meta-data

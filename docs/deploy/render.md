@@ -86,9 +86,9 @@ active.
 Set `AGENTIC_ANDROID_REQUIRE_TRUST=1` for production Render builds that back an Android release. With that guard
 enabled, `pnpm render:prepare` fails instead of deploying the placeholder trust file.
 
-The native Android APK uses `https://agenticwalletadapter.com/#app` only for its explicit web fallback. Keep the Render
-static rewrite rule `/*` to `/index.html` enabled so direct browser visits to client-side routes such as `/app` and
-`/demo` also resolve.
+The native Android APK uses `https://agenticwalletadapter.com/#app` only when its optional web fallback is built with
+`AGENTIC_ANDROID_ENABLE_WEB_FALLBACK=true`. Keep the Render static rewrite rule `/*` to `/index.html` enabled so direct
+browser visits to client-side routes such as `/app` and `/demo` also resolve.
 
 ## Local Verification
 
