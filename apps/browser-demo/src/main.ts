@@ -25,12 +25,16 @@ import {
 import { Connection, PublicKey, Transaction, TransactionInstruction } from '@solana/web3.js';
 
 import {
+  AI_PROVIDER_PRESETS,
   AGENT_PLAN_TEMPLATES,
   DEFAULT_AI_BASE_URL,
   DEFAULT_AI_MODEL,
+  DEFAULT_AI_PROVIDER_ID,
+  aiFormatLabel,
+  aiProviderPresetById,
   buildTemplatePlan,
   defaultTemplateFieldValues,
-  generateOpenAiCompatiblePlan,
+  generateSessionAiPlan,
   redactSecrets,
   templateById,
   templateFieldLabel,
@@ -81,6 +85,11 @@ interface IosNativeWalletOption {
   appStoreUrl: string;
 }
 
+interface AgenticAndroidBridge {
+  openMwaExample?: () => void;
+  isExampleTabEnabled?: () => boolean;
+}
+
 interface IosNativeRestoreResult {
   backend: IosNativeMaintenanceBackend;
   address: string;
@@ -100,8 +109,7 @@ const DEMO_MESSAGE = 'Approve this Solana agent action with user custody.';
 const DEMO_MEMO = 'Solana Agent Wallet Adapter demo';
 const DEFAULT_BRIDGE_URL = 'http://127.0.0.1:8787';
 const DEFAULT_BRIDGE_TOKEN = 'local-agent-wallet';
-const DEFAULT_AGENT_PROMPT =
-  'Swap a tiny amount of SOL to USDC using my wallet, then show me what I am approving.';
+const DEFAULT_AGENT_PROMPT = '';
 const STORAGE_KEY = 'solana-agent-wallet-demo-v2';
 const LAB_STORAGE_KEY = 'solana-agent-wallet-lab-artifacts-v1';
 const MEMO_PROGRAM_ID = new PublicKey('MemoSq4gqABAXKb96qnH8TysNcWxMyWCqXgDLGmfcHr');
@@ -112,9 +120,10 @@ const RELEASE_PAGE_URL =
 const NPM_GLOBAL_INSTALL_COMMAND = 'npm install -g @solana-agent-wallet-adapter/cli';
 const NPM_EXEC_COMMAND = 'npm exec @solana-agent-wallet-adapter/cli -- app';
 const INSTALLED_APP_COMMAND = 'solana-agent-wallet app';
-const ROUTE_PATHS = ['/', '/docs', '/app', '/cli', '/desktop', '/android', '/demo', '/privacy', '/terms'] as const;
+const ROUTE_PATHS = ['/', '/docs', '/app', '/cli', '/desktop', '/android', '/demo', '/mwa-test', '/privacy', '/terms'] as const;
 const ROUTE_PATH_SET = new Set<string>(ROUTE_PATHS);
 const SHOW_DEV_CONTROLS = resolveDevControls();
+const SHOW_ANDROID_EXAMPLE_TAB = resolveAndroidExampleTab();
 const HASH_ROUTE_MAP = new Map<string, AppRoute>([
   ['#top', '/'],
   ['#docs', '/docs'],
@@ -124,6 +133,7 @@ const HASH_ROUTE_MAP = new Map<string, AppRoute>([
   ['#desktop', '/desktop'],
   ['#android', '/android'],
   ['#workspace', '/demo'],
+  ['#mwa-test', '/mwa-test'],
 ]);
 const NAV_ITEMS: ReadonlyArray<{ route: AppRoute; label: string; pill?: boolean }> = [
   { route: '/', label: 'Home' },
@@ -131,9 +141,11 @@ const NAV_ITEMS: ReadonlyArray<{ route: AppRoute; label: string; pill?: boolean 
   { route: '/cli', label: 'CLI' },
   { route: '/desktop', label: 'Desktop App' },
   { route: '/demo', label: 'Launch Demo' },
+  ...(SHOW_ANDROID_EXAMPLE_TAB ? [{ route: '/mwa-test' as AppRoute, label: 'MWA' }] : []),
   { route: '/app', label: 'Launch App', pill: true },
 ];
 const ROUTE_TITLES: Record<string, string> = {
+  '/mwa-test': 'MWA · Agentic',
   '/privacy': 'Privacy Policy · Agentic',
   '/terms': 'Terms of Service · Agentic',
 };
@@ -648,6 +660,8 @@ const state: DemoState = {
   agentPreparedActionId: '',
   aiSettings: {
     mode: 'bridge',
+    provider: DEFAULT_AI_PROVIDER_ID,
+    apiFormat: aiProviderPresetById(DEFAULT_AI_PROVIDER_ID).apiFormat,
     baseUrl: DEFAULT_AI_BASE_URL,
     model: DEFAULT_AI_MODEL,
     apiKey: '',
@@ -801,6 +815,8 @@ function pageContent(route: AppRoute | null): string {
       return androidPage();
     case '/demo':
       return demoPage();
+    case '/mwa-test':
+      return SHOW_ANDROID_EXAMPLE_TAB ? mwaTestPage() : notFoundPage();
     case '/privacy':
       return privacyPage();
     case '/terms':
@@ -817,7 +833,6 @@ function applyRouteTitle(route: AppRoute | null): void {
 function homePage(): string {
   return `
     ${heroSection()}
-    ${launchAppSection()}
     ${gapSection()}
     ${walletDirectorySection()}
     ${homepageDemoCtaSection()}
@@ -1338,35 +1353,6 @@ function commandDeckAction(runtimePath: RuntimePath, copyId: string, copied: boo
   `;
 }
 
-function launchAppSection(): string {
-  return `
-    <section id="app" class="browser-app-section" aria-labelledby="launch-app-title">
-      <div class="section-heading">
-        <p class="eyebrow mini">Launch App</p>
-        <h2 id="launch-app-title">Use Agentic directly in your browser or mobile wallet surface.</h2>
-        <p>
-          The hosted app is the front door for wallet discovery, Wallet Standard approvals, Mobile Wallet Adapter
-          readiness, and the live signing proof. It is not a cloud wallet, account system, database, or private-key
-          backend. Your installed wallet remains the signer.
-        </p>
-      </div>
-      <div class="browser-app-grid">
-        ${launchAppCard('Desktop browser wallets', 'Discover Phantom, Solflare, Backpack, and compatible Wallet Standard providers in the current browser.')}
-        ${launchAppCard('Android mobile web', 'Use Android Chrome or PWA surfaces where Mobile Wallet Adapter is available, without making users install an APK first.')}
-        ${launchAppCard('Local agents stay local', 'For Codex, Claude, MCP, inboxes, and recurring approvals, start the local bridge with the CLI or Desktop App.')}
-      </div>
-      <div class="browser-app-actions">
-        <a class="button-link nav-pill-link" href="/app">Launch App</a>
-        <a class="button-link" href="/demo">Launch Demo</a>
-        <button data-start-action="discover" ${state.busy ? 'disabled' : ''}>
-          ${state.wallets.length ? 'Refresh Wallets' : 'Discover Wallets'}
-        </button>
-        <a class="button-link" href="/cli">Install CLI for Local Agents</a>
-      </div>
-    </section>
-  `;
-}
-
 function launchAppCard(title: string, detail: string): string {
   return `
     <article class="browser-app-card">
@@ -1750,6 +1736,36 @@ function guidedDemoPage(): string {
   `;
 }
 
+function mwaTestPage(): string {
+  const bridgeAvailable = Boolean(agenticAndroidBridge()?.openMwaExample);
+  return `
+    <section id="mwa-test" class="browser-app-section" aria-labelledby="mwa-test-title">
+      <div class="section-heading">
+        <p class="eyebrow mini">Android MWA</p>
+        <h2 id="mwa-test-title">Raw Mobile Wallet Adapter controls.</h2>
+        <p>
+          This tab is available only in Android builds with the example tab flag enabled. It opens the native MWA
+          tester for wallet connect, SIWS, message signing, transaction signing, bridge polling, and reset smokes.
+        </p>
+      </div>
+      <div class="browser-app-grid demo-guide-grid">
+        ${launchAppCard('Native tester', 'Use the old Android MWA test surface without making it the app launcher.')}
+        ${launchAppCard('Wallet handoff', 'Exercise Solana Mobile Wallet Adapter connect, reconnect, and signing paths.')}
+        ${launchAppCard('Bridge smoke', 'Connect to the local Agentic bridge and resolve agent requests with a real wallet.')}
+      </div>
+      <div class="browser-app-actions">
+        <button id="openAndroidMwaTest" class="nav-pill-link" ${bridgeAvailable ? '' : 'disabled'}>
+          Open MWA
+        </button>
+        <a class="button-link" href="/app">Back to Launch App</a>
+      </div>
+      ${bridgeAvailable
+        ? ''
+        : `<p class="inline-status warning">MWA is only available inside the Android app build.</p>`}
+    </section>
+  `;
+}
+
 function homepageFooter(): string {
   return `
     <footer class="homepage-footer" aria-label="Agentic footer">
@@ -2016,7 +2032,8 @@ function walletRail(): string {
         </div>
       </div>
 
-      ${state.address ? `<button id="disconnect" class="text-button" ${state.busy ? 'disabled' : ''}>Disconnect wallet</button>` : ''}
+      ${SHOW_DEV_CONTROLS && state.address ? `<button id="disconnect" class="text-button" ${state.busy ? 'disabled' : ''}>Disconnect wallet</button>` : ''}
+      ${SHOW_DEV_CONTROLS ? '' : publicWalletActions()}
 
       ${SHOW_DEV_CONTROLS ? `
       <details class="rail-details developer-settings" ${showConnectionDetails ? 'open' : ''}>
@@ -2057,6 +2074,28 @@ function walletRail(): string {
         ${mobileWalletBox()}
       </details>` : ''}
     </aside>
+  `;
+}
+
+function publicWalletActions(): string {
+  const selectedProvider = discoveredSelectedWalletName();
+  const iosNative = state.iosNativeEnvironment.isIosNative;
+  if (state.address) {
+    return `
+      <div class="wallet-actions public-wallet-actions connected">
+        <button id="disconnect" ${state.busy ? 'disabled' : ''}>Disconnect wallet</button>
+      </div>
+    `;
+  }
+  return `
+    <div class="wallet-actions public-wallet-actions">
+      <button data-start-action="discover" class="${state.wallets.length || iosNative ? '' : 'primary'}" ${state.busy ? 'disabled' : ''}>
+        ${iosNative ? 'Refresh iOS' : state.wallets.length ? 'Refresh' : 'Discover'}
+      </button>
+      <button data-start-action="connect" class="${state.wallets.length || iosNative ? 'primary' : ''}" ${(!iosNative && (state.wallets.length === 0 || !selectedProvider)) || state.busy ? 'disabled' : ''} title="${!iosNative && !selectedProvider ? 'Discover and select a wallet provider first.' : ''}">
+        Connect wallet
+      </button>
+    </div>
   `;
 }
 
@@ -2449,7 +2488,7 @@ function agentPlanPanel(): string {
       <div class="signature-object-head">
         <div>
           <h2>Agent planner</h2>
-          <p>Use templates without a key, or bring your own model key for smarter plan drafting. Wallet approval stays separate.</p>
+          <p>Use keyless templates or BYOK AI to draft plans; wallet approval stays separate.</p>
         </div>
         <span class="signature-state ${state.agentSignature ? 'complete' : state.agentPlan ? 'active' : ''}">${state.agentSignature ? 'proof signed' : state.agentPlan ? 'plan ready' : 'draft'}</span>
       </div>
@@ -2468,6 +2507,7 @@ function agentPlanPanel(): string {
 
 function agentPlannerWorkbench(): string {
   const template = selectedTemplate();
+  const notesRequired = templateRequiresUserNotes(template);
   const canUseAi = state.aiSettings.mode === 'session'
     ? Boolean(state.aiSettings.apiKey.trim())
     : Boolean(state.aiStatus?.available);
@@ -2496,12 +2536,12 @@ function agentPlannerWorkbench(): string {
           ${template.fields.map(templateFieldInput).join('')}
         </div>
         <label class="intent-document planner-prompt">
-          <span>User request</span>
-          <textarea id="agentPrompt" ${state.busy ? 'disabled' : ''}>${escapeHtml(state.agentPrompt)}</textarea>
+          <span>${notesRequired ? 'Custom request / notes' : 'User notes / instructions'}${notesRequired ? ' *' : ''}</span>
+          <textarea id="agentPrompt" placeholder="${notesRequired ? 'Describe what you want prepared or reviewed.' : 'Optional context, reason, policy note, or instruction for this approval record.'}" ${state.busy ? 'disabled' : ''}>${escapeHtml(state.agentPrompt)}</textarea>
         </label>
         <div class="intent-policy-strip">
           <span>Approval rule</span>
-          <p>Templates work with no AI key. AI drafts only a plan; wallet approval is always separate.</p>
+          <p>Templates do not call AI. They create a structured approval record from the fields and notes you enter.</p>
         </div>
         <div class="agent-actions signature-actions intent-document-actions">
           <button id="generatePlan" class="${state.agentPlan ? '' : 'primary'}" ${state.busy ? 'disabled' : ''}>Generate template plan</button>
@@ -2546,8 +2586,10 @@ function templateFieldInput(fieldDef: AgentPlanTemplateField): string {
 
 function aiSettingsCard(): string {
   const status = state.aiStatus;
+  const providerPreset = aiProviderPresetById(state.aiSettings.provider);
+  const formatLabel = aiFormatLabel(state.aiSettings.apiFormat);
   const bridgeLabel = status?.available
-    ? `${status.source} - ${status.model ?? 'model configured'}`
+    ? `${status.source} - ${status.provider ?? status.apiFormat ?? 'AI'} - ${status.model ?? 'model configured'}`
     : 'not configured';
   return `
     <aside class="ai-settings-card">
@@ -2564,12 +2606,22 @@ function aiSettingsCard(): string {
         </select>
       </label>
       <label class="field compact">
+        <span>Provider preset</span>
+        <select id="aiProvider" ${state.busy ? 'disabled' : ''}>
+          ${AI_PROVIDER_PRESETS.map((preset) => `
+            <option value="${escapeHtml(preset.id)}" ${preset.id === state.aiSettings.provider ? 'selected' : ''}>
+              ${escapeHtml(preset.label)}
+            </option>
+          `).join('')}
+        </select>
+      </label>
+      <label class="field compact">
         <span>Base URL</span>
-        <input id="aiBaseUrl" value="${escapeHtml(state.aiSettings.baseUrl)}" placeholder="${DEFAULT_AI_BASE_URL}" ${state.busy ? 'disabled' : ''} />
+        <input id="aiBaseUrl" value="${escapeHtml(state.aiSettings.baseUrl)}" placeholder="${escapeHtml(providerPreset.baseUrl)}" ${state.busy ? 'disabled' : ''} />
       </label>
       <label class="field compact">
         <span>Model</span>
-        <input id="aiModel" value="${escapeHtml(state.aiSettings.model)}" placeholder="${DEFAULT_AI_MODEL}" ${state.busy ? 'disabled' : ''} />
+        <input id="aiModel" value="${escapeHtml(state.aiSettings.model)}" placeholder="${escapeHtml(providerPreset.model)}" ${state.busy ? 'disabled' : ''} />
       </label>
       <label class="field compact">
         <span>${state.aiSettings.mode === 'bridge' ? 'Bridge session key' : 'Session key'}</span>
@@ -2583,6 +2635,10 @@ function aiSettingsCard(): string {
       <div class="ai-status-line">
         <span>Bridge AI</span>
         <strong>${escapeHtml(bridgeLabel)}</strong>
+      </div>
+      <div class="ai-status-line">
+        <span>Format</span>
+        <strong>${escapeHtml(formatLabel)}</strong>
       </div>
       <p class="ai-security-note">No AI can sign, submit, or approve. It only drafts a structured plan for your wallet review.</p>
     </aside>
@@ -2809,6 +2865,7 @@ function bind(): void {
   document.querySelector<HTMLButtonElement>('#refreshInbox')?.addEventListener('click', runRefreshInbox);
   document.querySelector<HTMLButtonElement>('#createRecurring')?.addEventListener('click', runCreateRecurring);
   document.querySelector<HTMLButtonElement>('#createLabArtifact')?.addEventListener('click', runCreateLabArtifact);
+  document.querySelector<HTMLButtonElement>('#openAndroidMwaTest')?.addEventListener('click', openAndroidMwaTest);
 
   for (const button of document.querySelectorAll<HTMLButtonElement>('[data-start-action]')) {
     button.addEventListener('click', () => {
@@ -2901,8 +2958,23 @@ function bind(): void {
     render();
   });
 
+  document.querySelector<HTMLSelectElement>('#aiProvider')?.addEventListener('change', (event) => {
+    const preset = aiProviderPresetById((event.currentTarget as HTMLSelectElement).value);
+    state.aiSettings.provider = preset.id;
+    state.aiSettings.apiFormat = preset.apiFormat;
+    state.aiSettings.baseUrl = preset.baseUrl;
+    state.aiSettings.model = preset.model;
+    render();
+  });
+
   document.querySelector<HTMLInputElement>('#aiBaseUrl')?.addEventListener('input', (event) => {
     state.aiSettings.baseUrl = (event.currentTarget as HTMLInputElement).value.trim();
+    const preset = aiProviderPresetById(state.aiSettings.provider);
+    if (state.aiSettings.apiFormat === 'openai-compatible' && state.aiSettings.baseUrl !== preset.baseUrl) {
+      const custom = aiProviderPresetById('custom-openai-compatible');
+      state.aiSettings.provider = custom.id;
+      state.aiSettings.apiFormat = custom.apiFormat;
+    }
   });
 
   document.querySelector<HTMLInputElement>('#aiModel')?.addEventListener('input', (event) => {
@@ -3278,11 +3350,9 @@ async function runGenerateAgentPlan(): Promise<void> {
     const template = selectedTemplate();
     const parameters = readTemplateFields(template);
     assertRequiredTemplateFields(template, parameters);
-    const prompt = state.agentPrompt.trim();
-    state.agentPlan = {
-      ...buildTemplatePlan(template, parameters, 'template'),
-      intent: prompt ? `${template.title}: ${prompt}` : buildTemplatePlan(template, parameters, 'template').intent,
-    };
+    const userNotes = state.agentPrompt.trim();
+    assertRequiredUserNotes(template, userNotes);
+    state.agentPlan = buildTemplatePlan(template, parameters, 'template', userNotes);
     state.agentSignature = '';
     state.agentPreparedActionId = '';
     pushToast('success', 'Template plan generated', `${template.title} is ready for review.`);
@@ -3294,8 +3364,11 @@ async function runGenerateAiPlan(): Promise<void> {
     const template = selectedTemplate();
     const parameters = readTemplateFields(template);
     assertRequiredTemplateFields(template, parameters);
+    const userNotes = state.agentPrompt.trim();
+    assertRequiredUserNotes(template, userNotes);
     const request = {
-      prompt: state.agentPrompt.trim() || template.description,
+      prompt: userNotes || template.description,
+      userNotes,
       template: {
         id: template.id,
         category: template.category,
@@ -3311,7 +3384,7 @@ async function runGenerateAiPlan(): Promise<void> {
           method: 'POST',
           body: JSON.stringify(request),
         })
-      : await generateOpenAiCompatiblePlan(state.aiSettings, request);
+      : await generateSessionAiPlan(state.aiSettings, request);
     state.agentSignature = '';
     state.agentPreparedActionId = '';
     pushToast('success', 'AI plan generated', `${state.agentPlan.templateTitle} is ready for wallet review.`);
@@ -3331,11 +3404,13 @@ async function runSignAgentPlan(): Promise<void> {
       `Source: ${state.agentPlan.source}`,
       `Template: ${state.agentPlan.templateTitle}`,
       `Action: ${state.agentPlan.actionType}`,
+      `Prepared by: ${planPreparedBy(state.agentPlan)}`,
       `Intent: ${state.agentPlan.intent}`,
       `Route: ${state.agentPlan.route}`,
       `Risk: ${state.agentPlan.risk}`,
       `Approval: ${state.agentPlan.approval}`,
       `Parameters: ${stableJson(state.agentPlan.parameters)}`,
+      `User notes: ${state.agentPlan.userNotes || 'None'}`,
       `Safeguards: ${state.agentPlan.safeguards.join(' | ')}`,
       `Time: ${new Date().toISOString()}`,
     ].join('\n');
@@ -3368,7 +3443,8 @@ async function runSaveBridgeAiKey(): Promise<void> {
         apiKey: state.aiSettings.apiKey,
         baseUrl: state.aiSettings.baseUrl,
         model: state.aiSettings.model,
-        provider: 'openai-compatible',
+        provider: state.aiSettings.provider,
+        apiFormat: state.aiSettings.apiFormat,
       }),
     });
     state.aiSettings.apiKey = '';
@@ -3784,6 +3860,16 @@ function assertRequiredTemplateFields(template: AgentPlanTemplate, parameters: R
     .map((fieldDef) => fieldDef.label);
   if (missing.length > 0) {
     throw new Error(`Complete required planner fields: ${missing.join(', ')}.`);
+  }
+}
+
+function templateRequiresUserNotes(template: AgentPlanTemplate): boolean {
+  return template.id === 'custom-request';
+}
+
+function assertRequiredUserNotes(template: AgentPlanTemplate, userNotes: string): void {
+  if (templateRequiresUserNotes(template) && !userNotes.trim()) {
+    throw new Error('Describe the custom request before generating this plan.');
   }
 }
 
@@ -4227,7 +4313,7 @@ function agentPlanCard(plan: AgentPlan): string {
   return `
     <article class="plan-card proof-preview">
       <div>
-        <span class="workbench-kicker">${escapeHtml(plan.source === 'ai' ? 'AI-drafted plan' : 'Template plan')}</span>
+        <span class="workbench-kicker">${escapeHtml(plan.source === 'ai' ? 'AI-drafted plan' : 'Keyless template plan')}</span>
         <h3>${escapeHtml(plan.intent)}</h3>
       </div>
       <div class="pill-row">
@@ -4235,11 +4321,19 @@ function agentPlanCard(plan: AgentPlan): string {
         <span class="status-pill neutral">${escapeHtml(plan.actionType.replace(/_/g, ' '))}</span>
         <span class="status-pill ${canQueueAgentPlan(plan) ? 'tx-confirmed' : 'tx-pending'}">${canQueueAgentPlan(plan) ? 'queueable' : 'proof only'}</span>
       </div>
+      <dl class="proof-grid plan-review-grid">
+        ${reviewSummaryRows(plan).map(([label, value]) => definitionRow(label, value)).join('')}
+      </dl>
       <dl class="proof-grid">
         ${definitionRow('Route', plan.route)}
         ${definitionRow('Risk', plan.risk)}
         ${definitionRow('Approval', plan.approval)}
       </dl>
+      ${plan.userNotes ? `
+        <dl class="proof-grid plan-notes-grid">
+          ${definitionRow('User notes', plan.userNotes)}
+        </dl>
+      ` : ''}
       ${plan.fields.length ? `
         <dl class="proof-grid plan-field-grid">
           ${plan.fields.map((entry) => definitionRow(entry.label, entry.value)).join('')}
@@ -4253,6 +4347,25 @@ function agentPlanCard(plan: AgentPlan): string {
       </div>
     </article>
   `;
+}
+
+function reviewSummaryRows(plan: AgentPlan): Array<[string, string]> {
+  return [
+    ['Prepared by', planPreparedBy(plan)],
+    ['Source', planSourceLabel(plan)],
+    ['Wallet', state.address ? short(state.address) : 'Connect wallet to sign'],
+    ['Network', titleCaseCluster(state.cluster)],
+    ['Template', plan.templateTitle],
+    ['Action', plan.actionType.replace(/_/g, ' ')],
+  ];
+}
+
+function planPreparedBy(plan: AgentPlan): string {
+  return plan.source === 'ai' ? 'AI draft reviewed in Agentic' : 'You in Agentic';
+}
+
+function planSourceLabel(plan: AgentPlan): string {
+  return plan.source === 'ai' ? 'Bring-your-own-key AI draft' : 'Keyless template, no AI';
 }
 
 function agentResultBlock(): string {
@@ -5275,6 +5388,29 @@ function resolveDevControls(): boolean {
 
   const hostname = globalThis.location?.hostname ?? '';
   return hostname === 'localhost' || hostname === '127.0.0.1' || hostname === '::1';
+}
+
+function resolveAndroidExampleTab(): boolean {
+  const viteEnv = (import.meta as ImportMeta & {
+    env?: {
+      VITE_AGENTIC_ANDROID_SHOW_EXAMPLE_TAB?: string;
+    };
+  }).env;
+  const explicit = String(viteEnv?.VITE_AGENTIC_ANDROID_SHOW_EXAMPLE_TAB ?? '').trim().toLowerCase();
+  return ['1', 'true', 'yes', 'on'].includes(explicit);
+}
+
+function agenticAndroidBridge(): AgenticAndroidBridge | undefined {
+  return (globalThis as typeof globalThis & { AgenticAndroid?: AgenticAndroidBridge }).AgenticAndroid;
+}
+
+function openAndroidMwaTest(): void {
+  const bridge = agenticAndroidBridge();
+  if (!bridge?.openMwaExample) {
+    pushToast('error', 'MWA unavailable', 'Open this tab inside an Android build with the MWA tab enabled.');
+    return;
+  }
+  bridge.openMwaExample();
 }
 
 function isCluster(value: string): value is Cluster {

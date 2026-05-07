@@ -1,8 +1,9 @@
 # Build Agentic For Android
 
-Agentic's Android app defaults to the native Android approval surface. The raw native Solana Mobile Wallet Adapter
-example host remains available behind `AGENTIC_ANDROID_SHOW_EXAMPLE_APP=true`, and the hosted web/TWA fallback remains
-disabled unless `AGENTIC_ANDROID_ENABLE_WEB_FALLBACK=true` is set for that APK build.
+Agentic's Android app defaults to the bundled app shell, so it opens the same Agentic Home, Docs, CLI, Desktop App,
+Launch Demo, and Launch App surfaces without a browser URL bar. The raw native Solana Mobile Wallet Adapter controls
+remain available as an optional `MWA` tab behind `AGENTIC_ANDROID_SHOW_EXAMPLE_TAB=true`, and the hosted web/TWA
+fallback remains disabled unless `AGENTIC_ANDROID_ENABLE_WEB_FALLBACK=true` is set for that APK build.
 
 ## Prerequisites
 
@@ -85,17 +86,17 @@ pnpm android:install -- -PagenticEnableWebFallback=true
 `AGENTIC_ANDROID_ENABLE_WEB_FALLBACK` defaults to `false`. When false, the APK disables `WebLaunchActivity`, hides the
 fallback button, and does not claim the hosted website link.
 
-Switch the native Android surface between the regular app and the raw example host:
+Show or hide the raw native MWA tab:
 
 ```sh
 pnpm android:install
-AGENTIC_ANDROID_SHOW_EXAMPLE_APP=true pnpm android:install
-pnpm android:install -- -PagenticShowExampleApp=true
+AGENTIC_ANDROID_SHOW_EXAMPLE_TAB=false pnpm android:install
+pnpm android:install -- -PagenticShowExampleTab=false
 ```
 
-`AGENTIC_ANDROID_SHOW_EXAMPLE_APP` defaults to `false`, so live Android builds open the native app. The flag is
-separate from the website's `VITE_AGENTIC_DEV_CONTROLS` setting and only affects Android APKs built after the value is
-set.
+`AGENTIC_ANDROID_SHOW_EXAMPLE_TAB` defaults to `true` for local debug/install builds and `false` for release builds.
+The flag is separate from the website's `VITE_AGENTIC_DEV_CONTROLS` setting and only affects Android APKs built after
+the value is set.
 
 For LAN testing the native Android app can connect to the local bridge URL printed by `pnpm dev:mobile`. The web
 fallback can still open the deployed HTTPS origin or the LAN URL in Android Chrome when

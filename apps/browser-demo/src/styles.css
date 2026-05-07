@@ -1421,10 +1421,19 @@ code {
 .app-workspace-section.public-app .workspace-intro {
   align-items: start;
   grid-template-columns: minmax(0, 1fr);
-  margin-bottom: 18px;
+  margin-bottom: 10px;
+}
+
+.app-workspace-section.public-app {
+  padding-top: 16px;
+}
+
+.app-workspace-section.public-app .workspace-intro .eyebrow {
+  margin-bottom: 2px;
 }
 
 .app-workspace-section.public-app .workspace-intro h2 {
+  font-size: 2.15rem;
   max-width: 880px;
 }
 
@@ -2022,6 +2031,20 @@ code {
   display: grid;
   gap: 8px;
   grid-template-columns: 1fr;
+}
+
+.public-wallet-actions {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  margin: 12px 0 0;
+}
+
+.public-wallet-actions.connected {
+  grid-template-columns: 1fr;
+}
+
+.public-wallet-actions button {
+  min-width: 0;
+  width: 100%;
 }
 
 .bridge-box p,

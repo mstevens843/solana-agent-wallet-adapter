@@ -2,6 +2,8 @@ import { ProtocolError } from '@solana-agent-wallet-adapter/core';
 
 import { redactSecrets } from './trace.js';
 
+type AiApiFormat = 'openai-compatible' | 'anthropic';
+
 export interface AiPlanTemplateContext {
   id: string;
   category: string;
@@ -15,6 +17,7 @@ export interface AiPlanRequest {
   prompt?: string;
   template?: AiPlanTemplateContext;
   parameters?: Record<string, string>;
+  userNotes?: string;
 }
 
 export interface AiPlan {
@@ -26,6 +29,7 @@ export interface AiPlan {
   category: string;
   actionType: string;
   templateTitle: string;
+  userNotes?: string;
   parameters: Record<string, string>;
   fields: Array<{ label: string; value: string }>;
   safeguards: string[];
@@ -33,6 +37,7 @@ export interface AiPlan {
 
 interface AiRuntimeConfig {
   provider: string;
+  apiFormat: AiApiFormat;
   baseUrl: string;
   model: string;
   apiKey: string;
@@ -44,12 +49,15 @@ export interface AiStatus {
   configured: boolean;
   source: 'env' | 'session' | 'none';
   provider?: string;
+  apiFormat?: AiApiFormat;
   baseUrl?: string;
   model?: string;
 }
 
 const DEFAULT_AI_BASE_URL = 'https://api.openai.com/v1';
 const DEFAULT_AI_MODEL = 'gpt-5';
+const DEFAULT_ANTHROPIC_BASE_URL = 'https://api.anthropic.com/v1';
+const DEFAULT_ANTHROPIC_MODEL = 'claude-sonnet-4-5';
 const SHARED_SAFEGUARDS = [
   'Wallet approval is required before any signature or transaction leaves the device.',
   'The agent never receives the wallet private key or seed phrase.',
@@ -69,6 +77,7 @@ export class BridgeAiPlanner {
       configured: true,
       source: config.source,
       provider: config.provider,
+      apiFormat: config.apiFormat,
       baseUrl: stripKeyFromUrl(config.baseUrl),
       model: config.model,
     };
@@ -79,6 +88,7 @@ export class BridgeAiPlanner {
     baseUrl?: string;
     model?: string;
     provider?: string;
+    apiFormat?: string;
     clear?: boolean;
   }): AiStatus {
     if (input.clear) {
@@ -88,10 +98,13 @@ export class BridgeAiPlanner {
     if (!input.apiKey?.trim()) {
       throw new ProtocolError('invalid_request', 'Missing AI API key.');
     }
+    const provider = input.provider?.trim() || 'openai-compatible';
+    const apiFormat = normalizeApiFormat(input.apiFormat, provider);
     this.#sessionConfig = {
-      provider: input.provider?.trim() || 'openai-compatible',
-      baseUrl: normalizeBaseUrl(input.baseUrl || DEFAULT_AI_BASE_URL),
-      model: input.model?.trim() || DEFAULT_AI_MODEL,
+      provider,
+      apiFormat,
+      baseUrl: normalizeBaseUrl(input.baseUrl || defaultBaseUrl(apiFormat), apiFormat),
+      model: input.model?.trim() || defaultModel(apiFormat),
       apiKey: input.apiKey.trim(),
       source: 'session',
     };
@@ -104,7 +117,17 @@ export class BridgeAiPlanner {
       throw new ProtocolError('unsupported_method', 'Bridge AI is not configured. Set AGENTIC_AI_API_KEY or provide a bridge session key.');
     }
     const normalizedRequest = normalizeRequest(request);
-    const response = await fetch(`${normalizeBaseUrl(config.baseUrl)}/chat/completions`, {
+    if (config.apiFormat === 'anthropic') {
+      return this.generateAnthropicPlan(config, normalizedRequest);
+    }
+    return this.generateOpenAiCompatiblePlan(config, normalizedRequest);
+  }
+
+  private async generateOpenAiCompatiblePlan(
+    config: AiRuntimeConfig,
+    normalizedRequest: Required<AiPlanRequest>,
+  ): Promise<AiPlan> {
+    const response = await fetch(`${normalizeBaseUrl(config.baseUrl, 'openai-compatible')}/chat/completions`, {
       method: 'POST',
       headers: {
         authorization: `Bearer ${config.apiKey}`,
@@ -132,6 +155,43 @@ export class BridgeAiPlanner {
     return normalizeAiPlan(payload, normalizedRequest);
   }
 
+  private async generateAnthropicPlan(
+    config: AiRuntimeConfig,
+    normalizedRequest: Required<AiPlanRequest>,
+  ): Promise<AiPlan> {
+    const messages = aiMessages(normalizedRequest);
+    const systemMessage = messages[0]?.content ?? '';
+    const userMessage = messages[1]?.content ?? JSON.stringify(normalizedRequest);
+    const response = await fetch(`${normalizeBaseUrl(config.baseUrl, 'anthropic')}/messages`, {
+      method: 'POST',
+      headers: {
+        'anthropic-version': '2023-06-01',
+        'content-type': 'application/json',
+        'x-api-key': config.apiKey,
+      },
+      body: JSON.stringify({
+        model: config.model,
+        max_tokens: 1024,
+        system: systemMessage,
+        messages: [{ role: 'user', content: userMessage }],
+        temperature: 0.2,
+      }),
+    }).catch((err) => {
+      throw new ProtocolError(
+        'wallet_unreachable',
+        `AI provider request failed. ${redactText(err instanceof Error ? err.message : String(err))}`,
+      );
+    });
+    const payload = await response.json().catch(() => ({})) as unknown;
+    if (!response.ok) {
+      throw new ProtocolError(
+        'wallet_unreachable',
+        redactText(extractProviderError(payload) || `AI provider returned HTTP ${response.status}.`),
+      );
+    }
+    return normalizeAiPlan(payload, normalizedRequest);
+  }
+
   private config(): AiRuntimeConfig | null {
     return this.#sessionConfig ?? envConfig();
   }
@@ -140,10 +200,13 @@ export class BridgeAiPlanner {
 function envConfig(): AiRuntimeConfig | null {
   const apiKey = process.env.AGENTIC_AI_API_KEY?.trim();
   if (!apiKey) return null;
+  const provider = process.env.AGENTIC_AI_PROVIDER?.trim() || 'openai-compatible';
+  const apiFormat = normalizeApiFormat(process.env.AGENTIC_AI_API_FORMAT, provider);
   return {
-    provider: process.env.AGENTIC_AI_PROVIDER?.trim() || 'openai-compatible',
-    baseUrl: normalizeBaseUrl(process.env.AGENTIC_AI_BASE_URL || DEFAULT_AI_BASE_URL),
-    model: process.env.AGENTIC_AI_MODEL?.trim() || DEFAULT_AI_MODEL,
+    provider,
+    apiFormat,
+    baseUrl: normalizeBaseUrl(process.env.AGENTIC_AI_BASE_URL || defaultBaseUrl(apiFormat), apiFormat),
+    model: process.env.AGENTIC_AI_MODEL?.trim() || defaultModel(apiFormat),
     apiKey,
     source: 'env',
   };
@@ -162,6 +225,7 @@ function normalizeRequest(request: AiPlanRequest): Required<AiPlanRequest> {
     prompt: request.prompt?.trim() || template.description,
     template,
     parameters: request.parameters ?? {},
+    userNotes: request.userNotes?.trim() || request.prompt?.trim() || template.description,
   };
 }
 
@@ -176,6 +240,7 @@ function aiMessages(request: Required<AiPlanRequest>): Array<{ role: 'system' | 
       role: 'user',
       content: JSON.stringify({
         userPrompt: request.prompt,
+        userNotes: request.userNotes,
         template: request.template,
         parameters: request.parameters,
         requiredBoundary: 'AI drafts a plan only. Wallet approval and signing happen later in the user wallet.',
@@ -196,6 +261,7 @@ function normalizeAiPlan(payload: unknown, request: Required<AiPlanRequest>): Ai
     category: request.template.category,
     actionType: request.template.actionType,
     templateTitle: request.template.title,
+    userNotes: request.userNotes,
     parameters,
     fields: Object.entries(parameters)
       .filter(([, value]) => value.trim().length > 0)
@@ -210,10 +276,31 @@ function normalizeSafeguards(value: unknown): string[] {
   return [...SHARED_SAFEGUARDS, ...entries.slice(0, 8)];
 }
 
-function normalizeBaseUrl(baseUrl: string): string {
+function normalizeApiFormat(value: string | undefined, provider: string): AiApiFormat {
+  const normalized = value?.trim().toLowerCase();
+  if (normalized === 'anthropic') return 'anthropic';
+  if (/anthropic|claude/i.test(provider)) return 'anthropic';
+  return 'openai-compatible';
+}
+
+function defaultBaseUrl(format: AiApiFormat): string {
+  return format === 'anthropic' ? DEFAULT_ANTHROPIC_BASE_URL : DEFAULT_AI_BASE_URL;
+}
+
+function defaultModel(format: AiApiFormat): string {
+  return format === 'anthropic' ? DEFAULT_ANTHROPIC_MODEL : DEFAULT_AI_MODEL;
+}
+
+function normalizeBaseUrl(baseUrl: string, format: AiApiFormat): string {
   const trimmed = baseUrl.trim().replace(/\/+$/, '');
-  if (!trimmed) return DEFAULT_AI_BASE_URL;
-  return trimmed.endsWith('/v1') ? trimmed : `${trimmed}/v1`;
+  if (!trimmed) return defaultBaseUrl(format);
+  if (format === 'anthropic') {
+    return /\/v\d+(\/|$)/i.test(trimmed) ? trimmed : `${trimmed}/v1`;
+  }
+  if (/\/v\d+(beta)?(\/|$)/i.test(trimmed) || /\/openai$/i.test(trimmed)) {
+    return trimmed;
+  }
+  return `${trimmed}/v1`;
 }
 
 function stripKeyFromUrl(baseUrl: string): string {
@@ -252,6 +339,18 @@ function extractModelText(payload: unknown): string {
   const record = payload as Record<string, unknown>;
   const outputText = record.output_text;
   if (typeof outputText === 'string') return outputText;
+  const content = record.content;
+  if (Array.isArray(content)) {
+    const text = content
+      .map((entry) => {
+        if (!entry || typeof entry !== 'object') return '';
+        const value = (entry as Record<string, unknown>).text;
+        return typeof value === 'string' ? value : '';
+      })
+      .filter(Boolean)
+      .join('\n');
+    if (text) return text;
+  }
   const choices = record.choices;
   if (Array.isArray(choices)) {
     const first = choices[0];

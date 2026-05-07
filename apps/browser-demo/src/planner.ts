@@ -1,6 +1,8 @@
 export type AgentPlanSource = 'template' | 'ai';
 export type TemplateRisk = 'low' | 'medium' | 'high';
 export type TemplateFieldType = 'text' | 'number' | 'textarea' | 'select' | 'datetime-local';
+export type AiApiFormat = 'openai-compatible' | 'anthropic';
+export type AiProviderId = 'openai' | 'anthropic' | 'gemini' | 'openrouter' | 'custom-openai-compatible';
 
 export interface AgentPlanField {
   label: string;
@@ -16,6 +18,7 @@ export interface AgentPlan {
   category: string;
   actionType: string;
   templateTitle: string;
+  userNotes?: string;
   parameters: Record<string, string>;
   fields: AgentPlanField[];
   safeguards: string[];
@@ -50,6 +53,8 @@ export interface AgentPlanTemplate {
 
 export interface AiSettings {
   mode: 'session' | 'bridge';
+  provider: AiProviderId;
+  apiFormat: AiApiFormat;
   baseUrl: string;
   model: string;
   apiKey: string;
@@ -60,6 +65,7 @@ export interface BridgeAiStatus {
   configured: boolean;
   source: 'env' | 'session' | 'none';
   provider?: string;
+  apiFormat?: AiApiFormat;
   baseUrl?: string;
   model?: string;
 }
@@ -68,6 +74,7 @@ export interface AiPlanRequest {
   prompt: string;
   template: Pick<AgentPlanTemplate, 'id' | 'category' | 'title' | 'description' | 'actionType' | 'risk'>;
   parameters: Record<string, string>;
+  userNotes?: string;
 }
 
 const SHARED_SAFEGUARDS = [
@@ -78,6 +85,59 @@ const SHARED_SAFEGUARDS = [
 
 export const DEFAULT_AI_BASE_URL = 'https://api.openai.com/v1';
 export const DEFAULT_AI_MODEL = 'gpt-5';
+export const DEFAULT_AI_PROVIDER_ID: AiProviderId = 'openai';
+
+export interface AiProviderPreset {
+  id: AiProviderId;
+  label: string;
+  detail: string;
+  apiFormat: AiApiFormat;
+  baseUrl: string;
+  model: string;
+}
+
+export const AI_PROVIDER_PRESETS: AiProviderPreset[] = [
+  {
+    id: 'openai',
+    label: 'OpenAI',
+    detail: 'GPT models through the OpenAI-compatible chat API.',
+    apiFormat: 'openai-compatible',
+    baseUrl: DEFAULT_AI_BASE_URL,
+    model: DEFAULT_AI_MODEL,
+  },
+  {
+    id: 'anthropic',
+    label: 'Claude / Anthropic',
+    detail: 'Claude models through the Anthropic Messages API.',
+    apiFormat: 'anthropic',
+    baseUrl: 'https://api.anthropic.com/v1',
+    model: 'claude-sonnet-4-5',
+  },
+  {
+    id: 'gemini',
+    label: 'Gemini',
+    detail: 'Google Gemini through its OpenAI-compatible endpoint.',
+    apiFormat: 'openai-compatible',
+    baseUrl: 'https://generativelanguage.googleapis.com/v1beta/openai',
+    model: 'gemini-2.5-flash',
+  },
+  {
+    id: 'openrouter',
+    label: 'OpenRouter',
+    detail: 'Use OpenRouter as a gateway for many hosted models.',
+    apiFormat: 'openai-compatible',
+    baseUrl: 'https://openrouter.ai/api/v1',
+    model: 'openrouter/auto',
+  },
+  {
+    id: 'custom-openai-compatible',
+    label: 'Custom OpenAI-compatible',
+    detail: 'Vercel AI Gateway, Cloudflare AI Gateway, or a self-hosted proxy.',
+    apiFormat: 'openai-compatible',
+    baseUrl: DEFAULT_AI_BASE_URL,
+    model: DEFAULT_AI_MODEL,
+  },
+];
 
 export const AGENT_PLAN_TEMPLATES: AgentPlanTemplate[] = [
   template('payments', 'transfer-sol', 'Send SOL', 'Prepare a SOL payment with recipient, amount, memo, and wallet approval.', 'transfer_sol', 'medium', [
@@ -209,7 +269,6 @@ export const AGENT_PLAN_TEMPLATES: AgentPlanTemplate[] = [
     textareaField('notes', 'Notes', 'Accounting or audit notes'),
   ]),
   template('custom', 'custom-request', 'Custom request', 'Turn any plain-English request into a visible approval plan before signing.', 'manual_review', 'medium', [
-    textareaField('request', 'Request', 'Type anything the agent should prepare or review'),
     field('policy', 'Policy cap', 'What should never be allowed?', 'No private key sharing, no unlimited approvals'),
   ]),
 ];
@@ -230,11 +289,13 @@ export function buildTemplatePlan(
   template: AgentPlanTemplate,
   parameters: Record<string, string>,
   source: AgentPlanSource = 'template',
+  userNotes = '',
 ): AgentPlan {
   const readableParams = readableParameters(template, parameters);
   const actionSummary = readableParams.length
     ? readableParams.map((entry) => `${entry.label}: ${entry.value}`).join('; ')
     : template.prompt;
+  const notes = userNotes.trim();
   return {
     intent: source === 'ai'
       ? template.prompt
@@ -246,20 +307,36 @@ export function buildTemplatePlan(
     category: template.category,
     actionType: template.actionType,
     templateTitle: template.title,
+    ...(notes && { userNotes: notes }),
     parameters,
     fields: readableParams,
     safeguards: [...SHARED_SAFEGUARDS, ...template.safeguards],
   };
 }
 
-export async function generateOpenAiCompatiblePlan(
+export function aiProviderPresetById(id: string): AiProviderPreset {
+  return AI_PROVIDER_PRESETS.find((preset) => preset.id === id) ?? AI_PROVIDER_PRESETS[0]!;
+}
+
+export function aiFormatLabel(format: AiApiFormat): string {
+  return format === 'anthropic' ? 'Anthropic Messages API' : 'OpenAI-compatible';
+}
+
+export async function generateSessionAiPlan(
   settings: AiSettings,
   request: AiPlanRequest,
 ): Promise<AgentPlan> {
   if (!settings.apiKey.trim()) {
     throw new Error('Session AI key is required.');
   }
-  const baseUrl = normalizeBaseUrl(settings.baseUrl);
+  if (settings.apiFormat === 'anthropic') {
+    return generateAnthropicPlan(settings, request);
+  }
+  return generateOpenAiCompatiblePlan(settings, request);
+}
+
+async function generateOpenAiCompatiblePlan(settings: AiSettings, request: AiPlanRequest): Promise<AgentPlan> {
+  const baseUrl = normalizeBaseUrl(settings.baseUrl, 'openai-compatible');
   const response = await fetch(`${baseUrl}/chat/completions`, {
     method: 'POST',
     headers: {
@@ -270,6 +347,39 @@ export async function generateOpenAiCompatiblePlan(
       model: settings.model.trim() || DEFAULT_AI_MODEL,
       response_format: { type: 'json_object' },
       messages: aiMessages(request),
+      temperature: 0.2,
+    }),
+  }).catch((err) => {
+    throw new Error(
+      `AI provider request failed. Use the local bridge or a browser-compatible gateway. ${err instanceof Error ? err.message : String(err)}`,
+    );
+  });
+
+  const payload = await response.json().catch(() => ({})) as unknown;
+  if (!response.ok) {
+    throw new Error(redactSecrets(extractProviderError(payload) || `AI provider returned HTTP ${response.status}.`));
+  }
+  return normalizeAiPlan(payload, request);
+}
+
+async function generateAnthropicPlan(settings: AiSettings, request: AiPlanRequest): Promise<AgentPlan> {
+  const baseUrl = normalizeBaseUrl(settings.baseUrl, 'anthropic');
+  const messages = aiMessages(request);
+  const systemMessage = messages[0]?.content ?? '';
+  const userMessage = messages[1]?.content ?? JSON.stringify(request);
+  const response = await fetch(`${baseUrl}/messages`, {
+    method: 'POST',
+    headers: {
+      'anthropic-dangerous-direct-browser-access': 'true',
+      'anthropic-version': '2023-06-01',
+      'content-type': 'application/json',
+      'x-api-key': settings.apiKey.trim(),
+    },
+    body: JSON.stringify({
+      model: settings.model.trim() || aiProviderPresetById('anthropic').model,
+      max_tokens: 1024,
+      system: systemMessage,
+      messages: [{ role: 'user', content: userMessage }],
       temperature: 0.2,
     }),
   }).catch((err) => {
@@ -296,6 +406,7 @@ export function aiMessages(request: AiPlanRequest): Array<{ role: 'system' | 'us
       role: 'user',
       content: JSON.stringify({
         userPrompt: request.prompt,
+        userNotes: request.userNotes,
         template: request.template,
         parameters: request.parameters,
         requiredBoundary: 'AI drafts a plan only. Wallet approval and signing happen later in the user wallet.',
@@ -316,6 +427,7 @@ export function normalizeAiPlan(payload: unknown, request: AiPlanRequest): Agent
     risk: stringOr(parsed.risk, fallback.risk),
     approval: stringOr(parsed.approval, fallback.approval),
     source: 'ai',
+    userNotes: request.userNotes?.trim() || request.prompt.trim() || undefined,
     safeguards: normalizeSafeguards(parsed.safeguards, fallback.safeguards),
   };
 }
@@ -444,10 +556,16 @@ function interpolate(template: string, parameters: Record<string, string>): stri
   });
 }
 
-function normalizeBaseUrl(baseUrl: string): string {
+function normalizeBaseUrl(baseUrl: string, format: AiApiFormat): string {
   const trimmed = baseUrl.trim().replace(/\/+$/, '');
-  if (!trimmed) return DEFAULT_AI_BASE_URL;
-  return trimmed.endsWith('/v1') ? trimmed : `${trimmed}/v1`;
+  if (!trimmed) return aiProviderPresetById(format === 'anthropic' ? 'anthropic' : DEFAULT_AI_PROVIDER_ID).baseUrl;
+  if (format === 'anthropic') {
+    return /\/v\d+(\/|$)/i.test(trimmed) ? trimmed : `${trimmed}/v1`;
+  }
+  if (/\/v\d+(beta)?(\/|$)/i.test(trimmed) || /\/openai$/i.test(trimmed)) {
+    return trimmed;
+  }
+  return `${trimmed}/v1`;
 }
 
 function extractProviderError(payload: unknown): string {
@@ -467,6 +585,18 @@ function extractModelText(payload: unknown): string {
   const record = payload as Record<string, unknown>;
   const outputText = record.output_text;
   if (typeof outputText === 'string') return outputText;
+  const content = record.content;
+  if (Array.isArray(content)) {
+    const text = content
+      .map((entry) => {
+        if (!entry || typeof entry !== 'object') return '';
+        const value = (entry as Record<string, unknown>).text;
+        return typeof value === 'string' ? value : '';
+      })
+      .filter(Boolean)
+      .join('\n');
+    if (text) return text;
+  }
   const choices = record.choices;
   if (Array.isArray(choices)) {
     const first = choices[0];

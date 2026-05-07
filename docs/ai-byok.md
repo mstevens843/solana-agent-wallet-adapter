@@ -6,7 +6,7 @@ templates for common Solana wallet plans, and the wallet still performs every si
 ## Modes
 
 - **Keyless templates:** default. Users choose a template, fill visible fields, generate a plan, and optionally sign an
-  approval proof in their wallet.
+  approval proof in their wallet. The notes box is included in the plan review and signed approval message.
 - **Local bridge BYOK:** recommended for desktop and CLI users. The key stays on the user's machine and the hosted site
   talks only to the local bridge.
 - **Session BYOK:** fallback for Android and browser-only users. The key is held in browser memory for the current
@@ -17,15 +17,28 @@ templates for common Solana wallet plans, and the wallet still performs every si
 Set these before starting the bridge or desktop runtime:
 
 ```sh
-export AGENTIC_AI_PROVIDER=openai-compatible
+export AGENTIC_AI_PROVIDER=openai
+export AGENTIC_AI_API_FORMAT=openai-compatible
 export AGENTIC_AI_API_KEY=...
 export AGENTIC_AI_MODEL=gpt-5
 export AGENTIC_AI_BASE_URL=https://api.openai.com/v1
 solana-agent-wallet app
 ```
 
-OpenAI-compatible gateways such as OpenRouter, Cloudflare AI Gateway, Vercel AI Gateway, or a self-hosted proxy can be
-used by changing `AGENTIC_AI_BASE_URL` and `AGENTIC_AI_MODEL`.
+Claude can be used through the Anthropic Messages API:
+
+```sh
+export AGENTIC_AI_PROVIDER=anthropic
+export AGENTIC_AI_API_FORMAT=anthropic
+export AGENTIC_AI_API_KEY=...
+export AGENTIC_AI_MODEL=claude-sonnet-4-5
+export AGENTIC_AI_BASE_URL=https://api.anthropic.com/v1
+solana-agent-wallet app
+```
+
+OpenAI-compatible gateways such as OpenRouter, Gemini's OpenAI-compatible endpoint, Cloudflare AI Gateway, Vercel AI
+Gateway, or a self-hosted proxy can be used by changing `AGENTIC_AI_PROVIDER`, `AGENTIC_AI_BASE_URL`, and
+`AGENTIC_AI_MODEL`. In the browser app, selecting a provider preset fills the matching base URL and starter model.
 
 ## Security Rules
 

@@ -35,14 +35,16 @@ val launchOrigin = "$launchScheme://$launchHost${if (launchPort > 0) ":$launchPo
 val usesCleartext = launchScheme == "http"
 val assetStatements =
     """[{"relation":["delegate_permission/common.handle_all_urls"],"target":{"namespace":"web","site":"$launchOrigin"}}]"""
-val showExampleAppInput = providers.gradleProperty("agenticShowExampleApp").orNull
-    ?: providers.gradleProperty("AGENTIC_ANDROID_SHOW_EXAMPLE_APP").orNull
-    ?: System.getenv("AGENTIC_ANDROID_SHOW_EXAMPLE_APP")
-    ?: System.getenv("agenticShowExampleApp")
-val showExampleApp = booleanFlag(
-    showExampleAppInput,
-    "AGENTIC_ANDROID_SHOW_EXAMPLE_APP",
-    false,
+val requestedTasks = gradle.startParameter.taskNames.map { it.lowercase() }
+val isReleaseBuild = requestedTasks.any { it.contains("release") }
+val showExampleTabInput = providers.gradleProperty("agenticShowExampleTab").orNull
+    ?: providers.gradleProperty("AGENTIC_ANDROID_SHOW_EXAMPLE_TAB").orNull
+    ?: System.getenv("AGENTIC_ANDROID_SHOW_EXAMPLE_TAB")
+    ?: System.getenv("agenticShowExampleTab")
+val showExampleTab = booleanFlag(
+    showExampleTabInput,
+    "AGENTIC_ANDROID_SHOW_EXAMPLE_TAB",
+    !isReleaseBuild,
 )
 val enableWebFallbackInput = providers.gradleProperty("agenticEnableWebFallback").orNull
     ?: providers.gradleProperty("AGENTIC_ANDROID_ENABLE_WEB_FALLBACK").orNull
@@ -53,8 +55,6 @@ val enableWebFallback = booleanFlag(
     "AGENTIC_ANDROID_ENABLE_WEB_FALLBACK",
     false,
 )
-val requestedTasks = gradle.startParameter.taskNames.map { it.lowercase() }
-val isReleaseBuild = requestedTasks.any { it.contains("release") }
 val localLaunchHosts = setOf("localhost", "127.0.0.1", "0.0.0.0", "::1")
 
 if (isReleaseBuild && (launchScheme != "https" || launchHost.lowercase() in localLaunchHosts)) {
@@ -117,7 +117,7 @@ android {
         buildConfigField("String", "AGENTIC_LAUNCH_SCHEME", "\"${launchScheme.replace("\"", "\\\"")}\"")
         buildConfigField("String", "AGENTIC_LAUNCH_HOST", "\"${launchHost.replace("\"", "\\\"")}\"")
         buildConfigField("int", "AGENTIC_LAUNCH_PORT", launchPort.toString())
-        buildConfigField("boolean", "AGENTIC_ANDROID_SHOW_EXAMPLE_APP", showExampleApp.toString())
+        buildConfigField("boolean", "AGENTIC_ANDROID_SHOW_EXAMPLE_TAB", showExampleTab.toString())
         buildConfigField("boolean", "AGENTIC_ANDROID_ENABLE_WEB_FALLBACK", enableWebFallback.toString())
         resValue("string", "launch_url", launchUrl)
         resValue("string", "asset_statements", escapedResValue(assetStatements))
@@ -157,12 +157,33 @@ android {
             }
         }
     }
+
+    sourceSets {
+        getByName("main") {
+            assets.srcDir(rootProject.layout.projectDirectory.dir("../browser-demo/dist"))
+        }
+    }
+}
+
+val buildBundledWebAssets = tasks.register<Exec>("buildBundledWebAssets") {
+    workingDir = rootProject.layout.projectDirectory.dir("../..").asFile
+    commandLine("pnpm", "-F", "@solana-agent-wallet-adapter/browser-demo", "build")
+    environment("VITE_AGENTIC_ANDROID_APP", "true")
+    environment("VITE_AGENTIC_ANDROID_SHOW_EXAMPLE_TAB", showExampleTab.toString())
+    environment("VITE_CAPACITOR_IOS_APP", "false")
+}
+
+tasks.matching { task ->
+    task.name.startsWith("merge") && task.name.endsWith("Assets")
+}.configureEach {
+    dependsOn(buildBundledWebAssets)
 }
 
 dependencies {
     implementation("com.google.androidbrowserhelper:androidbrowserhelper:2.7.0")
     implementation("com.solanamobile:mobile-wallet-adapter-clientlib-ktx:2.0.8")
     implementation("androidx.activity:activity-ktx:1.9.3")
+    implementation("androidx.webkit:webkit:1.12.1")
     implementation("androidx.lifecycle:lifecycle-runtime-ktx:2.8.7")
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.9.0")
 }

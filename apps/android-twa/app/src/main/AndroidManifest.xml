@@ -38,6 +38,11 @@
         </activity>
 
         <activity
+            android:name=".MwaExampleActivity"
+            android:exported="false"
+            android:theme="@style/AppTheme" />
+
+        <activity
             android:name=".WebLaunchActivity"
             android:enabled="${agenticWebFallbackEnabled}"
             android:exported="true"

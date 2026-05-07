@@ -265,6 +265,7 @@ async function handleRequest(
         baseUrl?: string;
         model?: string;
         provider?: string;
+        apiFormat?: string;
         clear?: boolean;
       };
       writeJson(res, 200, aiPlanner.setSessionKey(body));
