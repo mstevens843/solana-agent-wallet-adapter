@@ -2,6 +2,7 @@
 import { createBridgeServer } from '../bridgeServer.js';
 import { loadConfig } from '../config.js';
 import { loadDotEnv } from '../env.js';
+import { JsonLabArtifactStore, defaultLabArtifactStorePath } from '../labArtifacts.js';
 import { LocalBridgeBackend } from '../localBridgeBackend.js';
 import { JsonPreparedActionStore, defaultPreparedActionStorePath } from '../preparedActions.js';
 import { IosLinkBackend, type IosLinkWalletId } from '@solana-agent-wallet-adapter/ios-link';
@@ -11,6 +12,10 @@ async function main(): Promise<void> {
   loadDotEnv(args.env);
   const config = await loadConfig(args.config);
   const token = args.token ?? process.env.BRIDGE_TOKEN ?? 'local-agent-wallet';
+  const preparedActionsPath =
+    args.preparedActions ?? process.env.AGENT_WALLET_PREPARED_ACTIONS ?? defaultPreparedActionStorePath();
+  const labArtifactsPath =
+    args.labArtifacts ?? process.env.AGENT_WALLET_LAB_ARTIFACTS ?? defaultLabArtifactStorePath(preparedActionsPath);
   const fallbackCallbackBaseUrl = `http://${args.host ?? '127.0.0.1'}:${args.port ?? 8787}/`;
   const backend = args.iosProvider
     ? new IosLinkBackend({
@@ -33,9 +38,8 @@ async function main(): Promise<void> {
   const bridge = createBridgeServer({
     backend,
     actionConfig: config,
-    preparedActions: new JsonPreparedActionStore(
-      args.preparedActions ?? process.env.AGENT_WALLET_PREPARED_ACTIONS ?? defaultPreparedActionStorePath(),
-    ),
+    preparedActions: new JsonPreparedActionStore(preparedActionsPath),
+    labArtifacts: new JsonLabArtifactStore(labArtifactsPath),
     ...(args.host !== undefined && { host: args.host }),
     ...(args.port !== undefined && { port: args.port }),
   });
@@ -58,6 +62,7 @@ interface CliArgs {
   port?: number;
   token?: string;
   preparedActions?: string;
+  labArtifacts?: string;
   iosProvider?: IosLinkWalletId;
   iosCallbackBaseUrl?: string;
   iosAppUrl?: string;
@@ -99,6 +104,11 @@ function parseArgs(args: string[]): CliArgs {
     }
     if (arg === '--prepared-actions') {
       parsed.preparedActions = requireValue(args, index, arg);
+      index += 1;
+      continue;
+    }
+    if (arg === '--lab-artifacts') {
+      parsed.labArtifacts = requireValue(args, index, arg);
       index += 1;
       continue;
     }

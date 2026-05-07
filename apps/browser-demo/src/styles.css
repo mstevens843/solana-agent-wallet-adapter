@@ -1054,7 +1054,7 @@ code {
 }
 
 .demo-guide-grid {
-  grid-template-columns: repeat(4, minmax(0, 1fr));
+  grid-template-columns: repeat(5, minmax(0, 1fr));
 }
 
 .guided-demo-overview {
@@ -1063,7 +1063,7 @@ code {
 
 .demo-step-card {
   align-content: space-between;
-  gap: 16px;
+  gap: 12px;
   grid-template-rows: minmax(0, 1fr) auto;
 }
 
@@ -1080,6 +1080,11 @@ code {
   gap: 11px;
   min-height: 172px;
   padding: 16px;
+}
+
+.demo-guide-grid .browser-app-card {
+  min-height: 160px;
+  padding: 14px;
 }
 
 .browser-app-card h3 {
@@ -1442,7 +1447,12 @@ code {
   font-weight: 860;
   height: 42px;
   justify-content: center;
+  overflow: hidden;
   width: 42px;
+}
+
+.rail-icon.wallet-provider-icon {
+  padding: 8px;
 }
 
 .app-header h1 {
@@ -2885,6 +2895,28 @@ code {
   padding: 0 13px;
 }
 
+.artifact-workspace-head {
+  align-items: flex-start;
+}
+
+.artifact-view-tabs {
+  flex: 0 0 auto;
+  justify-content: flex-start;
+}
+
+.artifact-view-tabs button {
+  min-height: 36px;
+}
+
+.artifact-create-status {
+  display: flex;
+  justify-content: flex-end;
+}
+
+.artifact-archive-toolbar {
+  justify-content: space-between;
+}
+
 .inbox-list,
 .recurring-list,
 .lab-history {
@@ -3229,6 +3261,141 @@ code {
 .lab-history article span {
   color: var(--muted);
   font-size: 0.86rem;
+}
+
+.signed-artifacts-panel {
+  display: grid;
+  gap: 12px;
+}
+
+.artifact-archive-status {
+  align-items: center;
+  border-bottom: 1px solid rgba(224, 230, 226, 0.065);
+  color: var(--muted);
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 14px;
+  justify-content: space-between;
+  padding-bottom: 12px;
+}
+
+.artifact-archive-status span,
+.artifact-detail-grid span,
+.artifact-intent-block span,
+.artifact-evidence-list span,
+.signed-artifact-facts span {
+  color: var(--dim);
+  display: block;
+  font-size: 0.66rem;
+  font-weight: 860;
+  letter-spacing: 0.07em;
+  text-transform: uppercase;
+}
+
+.artifact-archive-status strong {
+  color: rgba(196, 205, 202, 0.82);
+  font-size: 0.82rem;
+  max-width: 100%;
+  overflow-wrap: anywhere;
+}
+
+.signed-artifact-list {
+  display: grid;
+  gap: 10px;
+}
+
+.signed-artifact-row {
+  background: rgba(255, 255, 255, 0.018);
+  border: 1px solid rgba(224, 230, 226, 0.06);
+  border-radius: var(--radius);
+  display: grid;
+  gap: 12px;
+  grid-template-columns: minmax(220px, 1.25fr) minmax(260px, 1fr) auto;
+  padding: 14px;
+}
+
+.signed-artifact-main,
+.signed-artifact-facts,
+.signed-artifact-actions,
+.signed-artifact-details {
+  min-width: 0;
+}
+
+.signed-artifact-main h3 {
+  color: var(--text);
+  font-size: 1rem;
+  margin: 7px 0 6px;
+}
+
+.signed-artifact-main p,
+.artifact-intent-block p,
+.artifact-evidence-list p {
+  color: var(--muted);
+  margin: 0;
+}
+
+.signed-artifact-facts,
+.artifact-detail-grid,
+.artifact-evidence-list {
+  display: grid;
+  gap: 8px;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.signed-artifact-facts div,
+.artifact-detail-grid div,
+.artifact-evidence-list div {
+  background: rgba(2, 5, 4, 0.28);
+  border: 1px solid rgba(224, 230, 226, 0.07);
+  border-radius: var(--radius);
+  display: grid;
+  gap: 6px;
+  min-width: 0;
+  padding: 10px;
+}
+
+.artifact-evidence-list div.good {
+  border-color: rgba(139, 205, 170, 0.3);
+}
+
+.artifact-evidence-list div.warn {
+  border-color: rgba(214, 168, 79, 0.34);
+}
+
+.artifact-evidence-list div.danger {
+  border-color: rgba(239, 111, 120, 0.34);
+}
+
+.signed-artifact-facts strong,
+.artifact-detail-grid strong,
+.artifact-evidence-list code {
+  color: var(--text);
+  overflow-wrap: anywhere;
+}
+
+.signed-artifact-actions {
+  align-content: start;
+  display: grid;
+  gap: 8px;
+}
+
+.signed-artifact-details {
+  grid-column: 1 / -1;
+  margin-top: 0;
+}
+
+.signed-artifact-details > div,
+.artifact-intent-block {
+  margin-top: 12px;
+}
+
+.artifact-intent-block {
+  background: rgba(2, 5, 4, 0.28);
+  border: 1px solid rgba(224, 230, 226, 0.07);
+  border-radius: var(--radius);
+  display: grid;
+  gap: 8px;
+  padding: 12px;
 }
 
 .evidence-header {
@@ -3591,6 +3758,7 @@ code {
 
   .proof-preview,
   .approval-ticket,
+  .signed-artifact-row,
   .lab-workbench-grid,
   .terminal-try-panel,
   .artifact-evidence-row,
@@ -3620,6 +3788,11 @@ code {
 
   .contract-section {
     grid-template-columns: 1fr;
+  }
+
+  .signed-artifact-actions {
+    grid-template-columns: repeat(2, minmax(0, max-content));
+    justify-content: start;
   }
 }
 
@@ -3708,6 +3881,9 @@ code {
   .tx-block,
   .result-row,
   .lab-history article,
+  .signed-artifact-facts,
+  .artifact-detail-grid,
+  .artifact-evidence-list,
   .recurring-item,
   .plan-card div,
   .action-preview div,
@@ -3782,7 +3958,7 @@ code {
   .workspace-tabs {
     display: grid;
     gap: 0;
-    grid-template-columns: repeat(5, minmax(0, 1fr));
+    grid-template-columns: repeat(4, minmax(0, 1fr));
     justify-content: stretch;
     width: 100%;
   }
@@ -3815,6 +3991,7 @@ code {
   .message-actions button,
   .agent-actions button,
   .lab-actions button,
+  .signed-artifact-actions button,
   .inbox-actions button,
   .recurring-actions button {
     width: 100%;
@@ -4417,7 +4594,7 @@ code {
   justify-content: space-between;
   list-style: none;
   min-height: 44px;
-  padding: 10px 12px;
+  padding: 8px 12px 12px;
 }
 
 .ai-settings-panel > summary::-webkit-details-marker {
@@ -4449,7 +4626,7 @@ code {
 }
 
 .ai-settings-panel[open] > .ai-settings-card {
-  margin-top: 10px;
+  margin-top: 12px;
 }
 
 @media (max-width: 900px) {
@@ -5972,7 +6149,7 @@ code {
     border-radius: 9px;
     display: grid;
     gap: 3px;
-    grid-template-columns: repeat(5, minmax(0, 1fr));
+    grid-template-columns: repeat(4, minmax(0, 1fr));
     overflow: visible;
     padding: 3px;
   }

@@ -26,17 +26,21 @@ test('doctor creates installed runtime config and reports packaged wallet host a
     runtimeDir?: string;
     configPath?: string;
     preparedActionsPath?: string;
+    labArtifactsPath?: string;
     files?: {
       config?: boolean;
       preparedActionsDir?: boolean;
+      labArtifactsDir?: boolean;
       walletHostAssets?: boolean;
     };
   };
   assert.equal(doctor.runtimeDir, runtimeDir);
   assert.equal(doctor.configPath, join(runtimeDir, 'agent-wallet.config.json'));
   assert.equal(doctor.preparedActionsPath, join(runtimeDir, 'prepared-actions.json'));
+  assert.equal(doctor.labArtifactsPath, join(runtimeDir, 'lab-artifacts.json'));
   assert.equal(doctor.files?.config, true);
   assert.equal(doctor.files?.preparedActionsDir, true);
+  assert.equal(doctor.files?.labArtifactsDir, true);
   assert.equal(doctor.files?.walletHostAssets, true);
 });
 
@@ -92,6 +96,7 @@ test('bridge start self-spawns a reachable bridge serve process', async () => {
   const health = await waitForJson(`${bridgeUrl}/bridge/health?token=local-agent-wallet`);
   assert.equal(health.cluster, 'localnet');
   assert.equal(health.preparedActionStorePath, join(runtimeDir, 'prepared-actions.json'));
+  assert.equal(health.labArtifactStorePath, join(runtimeDir, 'lab-artifacts.json'));
 
   if (started.pid) {
     process.kill(started.pid, 'SIGTERM');

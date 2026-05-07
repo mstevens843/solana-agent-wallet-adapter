@@ -34,6 +34,7 @@ import {
   aiProviderPresetById,
   buildTemplatePlan,
   defaultTemplateFieldValues,
+  generateHostedAiPlan,
   generateSessionAiPlan,
   redactSecrets,
   templateById,
@@ -49,6 +50,7 @@ import './styles.css';
 type StepState = 'idle' | 'active' | 'done' | 'error';
 type StepName = 'discover' | 'connect' | 'sign' | 'transaction' | 'bridge' | 'inbox' | 'lab' | 'ai';
 type ActiveTab = 'wallet' | 'agent' | 'inbox' | 'schedule' | 'labs';
+type ArtifactView = 'create' | 'signed';
 type ToastKind = 'success' | 'error';
 type RuntimePathId = 'exec' | 'install' | 'desktop';
 type AppRoute = (typeof ROUTE_PATHS)[number];
@@ -111,6 +113,9 @@ const DEFAULT_BRIDGE_TOKEN = 'local-agent-wallet';
 const DEFAULT_AGENT_PROMPT = '';
 const STORAGE_KEY = 'solana-agent-wallet-demo-v2';
 const LAB_STORAGE_KEY = 'solana-agent-wallet-lab-artifacts-v1';
+const LAB_ARCHIVE_DB_NAME = 'solana-agent-wallet-lab-artifacts';
+const LAB_ARCHIVE_DB_VERSION = 1;
+const LAB_ARCHIVE_STORE_NAME = 'artifacts';
 const MEMO_PROGRAM_ID = new PublicKey('MemoSq4gqABAXKb96qnH8TysNcWxMyWCqXgDLGmfcHr');
 const RELEASE_BASE_URL =
   'https://github.com/mstevens843/solana-agent-wallet-adapter/releases/latest/download';
@@ -409,6 +414,7 @@ interface BridgeHealth {
   mainnetEnabled?: boolean;
   capsEnabled?: boolean;
   preparedActionStorePath?: string | null;
+  labArtifactStorePath?: string | null;
 }
 
 interface BalanceView {
@@ -478,6 +484,7 @@ interface PersistedState {
 
 interface DemoState {
   activeTab: ActiveTab;
+  artifactView: ArtifactView;
   selectedRuntimePath: RuntimePathId;
   recentCopyId: string;
   inboxFilter: InboxFilter;
@@ -524,6 +531,7 @@ interface DemoState {
   activeLab: string;
   labInputs: Record<string, string>;
   labArtifacts: LabArtifact[];
+  labArchiveStatus: string;
   steps: Record<StepName, StepState>;
 }
 
@@ -639,9 +647,12 @@ const LABS: LabDefinition[] = [
 const persisted = loadPersistedState();
 const initialCluster = SHOW_DEV_CONTROLS ? (persisted.cluster ?? 'mainnet-beta') : 'mainnet-beta';
 const initialTemplate = templateById('custom-request');
+const defaultWorkspaceTab: ActiveTab = 'agent';
+const initialAiMode: AiSettings['mode'] = defaultAiMode();
 
 const state: DemoState = {
-  activeTab: SHOW_DEV_CONTROLS ? 'wallet' : 'agent',
+  activeTab: defaultWorkspaceTab,
+  artifactView: 'create',
   selectedRuntimePath: 'exec',
   recentCopyId: '',
   inboxFilter: 'all',
@@ -665,7 +676,7 @@ const state: DemoState = {
   agentSignature: '',
   agentPreparedActionId: '',
   aiSettings: {
-    mode: 'bridge',
+    mode: initialAiMode,
     provider: DEFAULT_AI_PROVIDER_ID,
     apiFormat: aiProviderPresetById(DEFAULT_AI_PROVIDER_ID).apiFormat,
     baseUrl: DEFAULT_AI_BASE_URL,
@@ -695,6 +706,7 @@ const state: DemoState = {
   activeLab: LABS[0]!.id,
   labInputs: defaultLabInputs(),
   labArtifacts: loadLabArtifacts(),
+  labArchiveStatus: 'Browser archive loading.',
   steps: {
     discover: 'idle',
     connect: 'idle',
@@ -742,8 +754,11 @@ async function bootstrap(): Promise<void> {
   if (state.iosNativeEnvironment.isIosNative) {
     await restoreIosNativeSession();
   }
+  await hydrateLabArtifactArchive();
   await loadBridgeConfig(false);
-  await refreshBridgeAiStatus(false);
+  if (state.aiSettings.mode === 'bridge') {
+    await refreshBridgeAiStatus(false);
+  }
   render();
 }
 
@@ -952,7 +967,7 @@ function privacyPage(): string {
         <p>We do not sell your personal data. We may share it with service providers who help us operate the Platform under strict confidentiality obligations, and with regulators or law enforcement if required by law.</p>
 
         <h3>3. Cookies, Local Storage & Analytics</h3>
-        <p>The Agentic website uses browser-based storage methods such as localStorage to maintain app state, selected wallet name, selected cluster, bridge URL, bridge token, lab artifacts, UI preferences, and similar local workspace data. The Android app may store Mobile Wallet Adapter authorization records in app-private storage so you can reconnect a previously approved wallet. You may clear browser storage, app storage, or local runtime files, but doing so may remove preferences, authorization cache, receipts, or local artifacts.</p>
+        <p>The Agentic website uses browser-based storage methods such as IndexedDB and localStorage to maintain app state, selected wallet name, selected cluster, bridge URL, bridge token, lab artifacts, UI preferences, and similar local workspace data. When a local bridge is connected, signed lab artifacts may also be mirrored to a local bridge archive file. The Android app may store Mobile Wallet Adapter authorization records in app-private storage so you can reconnect a previously approved wallet. You may clear browser storage, app storage, or local runtime files, but doing so may remove preferences, authorization cache, receipts, or local artifacts.</p>
         <p>We may add Google Analytics 4 to the public marketing site or hosted app. If enabled, Google Analytics may collect or process usage events, page views, device/browser information, approximate location, and related identifiers according to Google&apos;s terms and settings. We will not use Google Analytics to sell personal information or for cross-context behavioral advertising, and we will update the Google Play Data Safety form before enabling analytics in the Android distribution.</p>
 
         <h3>4. Data Storage & Security</h3>
@@ -1009,7 +1024,7 @@ function privacyPage(): string {
           <li><strong>Mobile Wallet Adapter wallets and Android platform services</strong> — chosen by you or provided by the Android/browser environment to route approvals, foreground data-sync behavior, and wallet handoffs.</li>
           <li><strong>Solana RPC providers</strong> (e.g., Helius, public mainnet RPC, or configured RPC endpoints) — for on-chain reads, simulations, balance checks, and transaction submission initiated by you, your wallet, or your agent.</li>
           <li><strong>Hosting (Render), Google Play, Chrome/Custom Tabs/TWA, and app-store services</strong> — to distribute or serve the public website and Android app surfaces.</li>
-          <li><strong>Optional AI clients and providers</strong> (Anthropic Claude, OpenAI/Codex, Vercel AI SDK, third-party MCP servers, or OpenAI-compatible providers you configure) — Agentic does <strong>not</strong> call AI providers through SolPulse servers by default. Your chosen agent client, browser session key, or local bridge calls them under its own terms and privacy policy.</li>
+          <li><strong>Optional AI clients and providers</strong> (Anthropic Claude, OpenAI/Codex, Vercel AI SDK, third-party MCP servers, or OpenAI-compatible providers you configure) — your chosen agent client, browser session key, local bridge, or hosted BYOK request calls them under its own terms and privacy policy. Hosted BYOK relays your API key to the selected provider for that request and does not store it.</li>
           <li><strong>Google Analytics 4</strong> (if enabled) — aggregated usage measurement for product and reliability analysis, subject to Google Analytics configuration and applicable consent requirements.</li>
         </ul>
 
@@ -1384,7 +1399,7 @@ function docsSection(): string {
   return `
     <section id="docs" class="docs-section" aria-labelledby="docs-title">
       <div class="section-heading">
-        <p class="eyebrow mini">Docs</p>
+        <!-- Docs eyebrow intentionally hidden. -->
         <h2 id="docs-title">A local signing boundary for agent runtimes.</h2>
         <p>
           Render serves this website, but Agentic's bridge, CLI, and Desktop App run locally beside the user's wallet.
@@ -1626,7 +1641,7 @@ function cliInstallSection(): string {
   return `
     <section id="cli" class="runtime-section cli-section" aria-labelledby="cli-title">
       <div class="section-heading runtime-heading">
-        <p class="eyebrow mini">CLI</p>
+        <!-- CLI eyebrow intentionally hidden. -->
         <h2 id="cli-title">Install the local approval CLI.</h2>
         <p>
           The public CLI path is npm first, with standalone binaries for users who prefer a direct download.
@@ -1664,7 +1679,7 @@ function desktopDownloadSection(): string {
   return `
     <section id="desktop" class="desktop-section" aria-labelledby="desktop-title">
       <div class="section-heading">
-        <p class="eyebrow mini">Desktop App</p>
+        <!-- Desktop App eyebrow intentionally hidden. -->
         <h2 id="desktop-title">Download the Agentic Desktop App.</h2>
         <p>
           The Desktop App is optional easy mode for the local bridge, approval inbox, logs, and diagnostics. Use it
@@ -1686,7 +1701,7 @@ function androidDownloadSection(): string {
   return `
     <section id="android" class="android-section" aria-labelledby="android-title">
       <div class="section-heading">
-        <p class="eyebrow mini">Android</p>
+        <!-- Android eyebrow intentionally hidden. -->
         <h2 id="android-title">Install the Agentic Android app.</h2>
         <p>
           The Android build is a Trusted Web Activity for the Render-hosted Agentic site. It keeps the browser-based
@@ -1737,15 +1752,15 @@ function guidedDemoPage(): string {
         <h2 id="guided-demo-title">Try the approval flow before launching the full app.</h2>
         <p>
           This page keeps a short guide above the live demo workspace. Use the cards to jump into wallet signing,
-          agent plan review, approval queues, or signed artifacts without losing the interactive controls below.
+          agent plan review, approval queues, recurring approvals, or artifacts without losing the interactive controls below.
         </p>
       </div>
       <div class="browser-app-grid demo-guide-grid">
-        ${guidedDemoStepCard('wallet', 'Wallet signing', 'Discover providers, connect an installed wallet, and sign a bounded demo message without exposing a private key.', 'Try signing')}
-        ${guidedDemoStepCard('agent', 'Agent plan', 'Generate a structured approval plan from a template, then sign the proof when your wallet is connected.', 'Draft a plan')}
-        ${guidedDemoStepCard('inbox', 'Approval Inbox', 'Preview prepared actions and receipts when the local bridge is running.', 'View inbox')}
-        ${guidedDemoStepCard('schedule', 'Scheduled Approvals', 'Preview recurring approval setup and scheduled review items.', 'Set schedule')}
-        ${guidedDemoStepCard('labs', 'Artifacts', 'Create wallet-signed audit artifacts that bind intent, policy, evidence, and verification.', 'Create artifact')}
+        ${guidedDemoStepCard('wallet', 'Wallet signing', 'Connect a wallet and sign a bounded demo message without exposing keys.', 'Try signing')}
+        ${guidedDemoStepCard('agent', 'Agent plan', 'Draft a structured approval plan, then sign the proof when connected.', 'Draft a plan')}
+        ${guidedDemoStepCard('inbox', 'Approval Inbox', 'Preview prepared actions and receipts from the local bridge.', 'View inbox')}
+        ${guidedDemoStepCard('schedule', 'Create Recurring', 'Create recurring approval requests that still require wallet review each time.', 'Create recurring')}
+        ${guidedDemoStepCard('labs', 'Artifacts', 'Create wallet-signed audit artifacts for intent, policy, evidence, and verification.', 'Create artifact')}
       </div>
       <div class="browser-app-actions">
         <button data-start-action="discover" ${state.busy ? 'disabled' : ''}>
@@ -1920,11 +1935,14 @@ function appWorkspace(mode: 'app' | 'demo' = 'app'): string {
               <h2>${surfaceTitle()}</h2>
             </div>
             <nav class="nav-cluster tabs workspace-tabs" aria-label="Workspace navigation">
-              ${tabButton('wallet', 'Wallet')}
+              ${/*
+                Wallet tab intentionally hidden across web, Android, and iOS app shells.
+                tabButton('wallet', 'Wallet')
+              */ ''}
               ${tabButton('agent', 'Agent Plan', 'Plan')}
               ${tabButton('inbox', 'Approval Inbox', 'Inbox')}
-              ${tabButton('schedule', 'Scheduled Approvals', 'Sched')}
-              ${tabButton('labs', 'Artifacts', 'Files')}
+              ${tabButton('schedule', 'Create Recurring', 'Recur')}
+              ${tabButton('labs', 'Artifacts')}
             </nav>
           </div>
           ${activePanel()}
@@ -2006,6 +2024,15 @@ function providerInitials(name: string): string {
     .join('');
 }
 
+function walletLogoIdForName(name: string): BrandLogoId | undefined {
+  const normalized = name.toLowerCase();
+  if (normalized.includes('backpack')) return 'backpack';
+  if (normalized.includes('phantom')) return 'phantom';
+  if (normalized.includes('solflare')) return 'solflare';
+  if (normalized.includes('jupiter')) return 'jupiter';
+  return undefined;
+}
+
 function missionStrip(): string {
   const openApprovals = state.preparedActions.filter(
     (action) => !action.archived && !['approved', 'rejected'].includes(action.status),
@@ -2060,7 +2087,7 @@ function walletRail(): string {
   return `
     <aside class="panel custody-panel custody-module">
       <div class="rail-heading custody-heading">
-        <span class="rail-icon">${escapeHtml(wallet.icon)}</span>
+        ${walletRailIcon(wallet)}
         <div>
           <p class="eyebrow mini">Signer</p>
           <h2>${escapeHtml(wallet.title)}</h2>
@@ -2118,6 +2145,18 @@ function walletRail(): string {
       </details>` : ''}
     </aside>
   `;
+}
+
+function walletRailIcon(wallet: WalletIdentity): string {
+  const iconSrc = wallet.logoId ? BRAND_LOGOS[wallet.logoId] : wallet.discoveredWallet?.icon;
+  if (iconSrc) {
+    return `
+      <span class="rail-icon wallet-provider-icon" aria-hidden="true">
+        <img src="${escapeHtml(iconSrc)}" alt="" />
+      </span>
+    `;
+  }
+  return `<span class="rail-icon" aria-hidden="true">${escapeHtml(wallet.icon)}</span>`;
 }
 
 function publicWalletActions(): string {
@@ -2273,7 +2312,7 @@ function guidedStartPanel(title: string, detail: string): string {
         <button data-start-action="discover" class="${state.wallets.length || iosNative ? '' : 'primary'}" ${state.busy ? 'disabled' : ''}>${iosNative ? 'Refresh iOS state' : 'Discover wallets'}</button>
         <button data-start-action="connect" class="${state.wallets.length || iosNative ? 'primary' : ''}" ${(!iosNative && (state.wallets.length === 0 || !selectedProvider)) || state.busy ? 'disabled' : ''} title="${!iosNative && !selectedProvider ? 'Discover and select a wallet provider first.' : ''}">Connect wallet</button>
       </div>
-      <p class="guided-note">Bridge review, scheduled approvals, audit artifacts, and transaction tools unlock after a wallet is connected.</p>
+      <p class="guided-note">Bridge review, recurring approvals, artifact creation, and transaction tools unlock after a wallet is connected.</p>
     </section>
   `;
 }
@@ -2554,12 +2593,7 @@ function agentPlanPanel(): string {
 function agentPlannerWorkbench(): string {
   const template = selectedTemplate();
   const notesRequired = templateRequiresUserNotes(template);
-  const aiProviderPreset = aiProviderPresetById(state.aiSettings.provider);
-  const modelReady = Boolean(state.aiSettings.model.trim());
-  const providerReady = aiProviderPreset.id !== 'custom-openai-compatible' || Boolean(state.aiSettings.baseUrl.trim());
-  const canUseAi = state.aiSettings.mode === 'session'
-    ? Boolean(state.aiSettings.apiKey.trim() && modelReady && providerReady)
-    : Boolean(state.aiStatus?.available);
+  const canUseAi = canGenerateAiPlanFromSettings();
   return `
     <div class="agent-planner-grid">
       <div class="intent-capsule intent-document-card planner-card ${state.agentPlan ? 'plan-linked' : 'draft'}">
@@ -2584,11 +2618,11 @@ function agentPlannerWorkbench(): string {
         </label>
         <div class="intent-policy-strip">
           <span>Approval rule</span>
-          <p>Templates do not call AI. They create a structured approval record from the fields and notes you enter.</p>
+          <p>Templates create one-off approval plans without the bridge. The inbox and recurring approvals require the local bridge.</p>
         </div>
         <div class="agent-actions signature-actions intent-document-actions">
           <button id="generatePlan" class="${state.agentPlan ? '' : 'primary'}" ${state.busy ? 'disabled' : ''}>Generate template plan</button>
-          <button id="generateAiPlan" class="${canUseAi ? 'primary' : ''}" ${!canUseAi || state.busy ? 'disabled' : ''} title="${canUseAi ? 'Generate through your configured AI key.' : 'Add a session key or configure local bridge AI first.'}">Generate with AI</button>
+          <button id="generateAiPlan" class="${canUseAi ? 'primary' : ''}" ${!canUseAi || state.busy ? 'disabled' : ''} title="${canUseAi ? 'Generate through your configured AI key.' : 'Add a hosted/session key or configure local bridge AI first.'}">Generate with AI</button>
           <button id="signAgentPlan" class="${state.agentPlan ? 'primary' : ''}" ${!state.address || !state.agentPlan || state.busy ? 'disabled' : ''} title="${!state.address ? 'Connect a wallet before signing.' : !state.agentPlan ? 'Generate a plan before signing approval.' : ''}">Sign approval</button>
           <button id="queueAgentPlan" class="utility" ${!state.address || !state.agentPlan || !state.bridgeActive || !canQueueAgentPlan(state.agentPlan) || state.busy ? 'disabled' : ''} title="${queuePlanTitle()}">Queue approval</button>
         </div>
@@ -2599,17 +2633,12 @@ function agentPlannerWorkbench(): string {
 }
 
 function aiSettingsPanel(): string {
-  const providerPreset = aiProviderPresetById(state.aiSettings.provider);
-  const modelReady = Boolean(state.aiSettings.model.trim());
-  const providerReady = providerPreset.id !== 'custom-openai-compatible' || Boolean(state.aiSettings.baseUrl.trim());
-  const configured = state.aiSettings.mode === 'session'
-    ? Boolean(state.aiSettings.apiKey.trim() && modelReady && providerReady)
-    : Boolean(state.aiStatus?.available);
+  const configured = isAiConfiguredForCurrentMode();
   const open = configured && !isCompactMobileLayout() ? 'open' : '';
   return `
     <details class="ai-settings-panel" ${open}>
       <summary>
-        <span>BYOK planning</span>
+        <span>Connect AI Agent</span>
         <strong>${configured ? 'configured' : 'not configured'}</strong>
       </summary>
       ${aiSettingsCard()}
@@ -2727,30 +2756,39 @@ function aiSettingsCard(): string {
   const providerPreset = aiProviderPresetById(state.aiSettings.provider);
   const formatLabel = aiFormatLabel(state.aiSettings.apiFormat);
   const customProvider = providerPreset.id === 'custom-openai-compatible';
-  const providerReady = !customProvider || Boolean(state.aiSettings.baseUrl.trim());
+  const providerOptions = selectableAiProviderPresets();
   const selectedPresetModel = providerPreset.models.find((model) => model.id === state.aiSettings.model);
   const usingCustomModel = !selectedPresetModel;
-  const bridgeLabel = status?.available
-    ? `${status.source} - ${status.provider ?? status.apiFormat ?? 'AI'} - ${status.model ?? 'model configured'}`
-    : 'not configured';
+  const routeLabel = aiRouteStatusLabel(status);
+  const keyLabel = state.aiSettings.mode === 'bridge'
+    ? 'Bridge session key'
+    : state.aiSettings.mode === 'hosted'
+      ? 'Hosted request key'
+      : 'Browser session key';
+  const securityCopy = state.aiSettings.mode === 'hosted'
+    ? 'Hosted BYOK relays your key to the selected provider for this request only. Agentic does not store it.'
+    : state.aiSettings.mode === 'bridge'
+      ? 'The local bridge keeps the key in process memory and calls the provider from your machine.'
+      : 'Browser session keys stay in this browser tab only and require a browser-compatible provider or gateway.';
   return `
     <aside class="ai-settings-card">
       <div>
-        <span class="workbench-kicker">BYOK planning</span>
+        <span class="workbench-kicker">Connect AI Agent</span>
         <h3>AI key stays out of Agentic custody</h3>
-        <p>Use a local bridge key when possible. Browser-only keys require a provider or gateway that allows browser requests and are forgotten on refresh.</p>
+        <p>${escapeHtml(securityCopy)}</p>
       </div>
       <label class="field compact">
         <span>AI path</span>
         <select id="aiMode" ${state.busy ? 'disabled' : ''}>
+          <option value="hosted" ${state.aiSettings.mode === 'hosted' ? 'selected' : ''}>Hosted BYOK</option>
           <option value="bridge" ${state.aiSettings.mode === 'bridge' ? 'selected' : ''}>Local bridge</option>
-          <option value="session" ${state.aiSettings.mode === 'session' ? 'selected' : ''}>This session only</option>
+          <option value="session" ${state.aiSettings.mode === 'session' ? 'selected' : ''}>Browser session only</option>
         </select>
       </label>
       <label class="field compact">
         <span>Provider preset</span>
         <select id="aiProvider" ${state.busy ? 'disabled' : ''}>
-          ${AI_PROVIDER_PRESETS.map((preset) => `
+          ${providerOptions.map((preset) => `
             <option value="${escapeHtml(preset.id)}" ${preset.id === state.aiSettings.provider ? 'selected' : ''}>
               ${escapeHtml(preset.label)}
             </option>
@@ -2781,17 +2819,17 @@ function aiSettingsCard(): string {
         </label>
       ` : ''}
       <label class="field compact">
-        <span>${state.aiSettings.mode === 'bridge' ? 'Bridge session key' : 'Session key'}</span>
+        <span>${escapeHtml(keyLabel)}</span>
         <input id="aiApiKey" type="password" value="${escapeHtml(state.aiSettings.apiKey)}" placeholder="Not saved by default" autocomplete="off" ${state.busy ? 'disabled' : ''} />
       </label>
       <div class="ai-actions">
-        <button id="saveBridgeAiKey" ${state.aiSettings.mode !== 'bridge' || !state.aiSettings.apiKey.trim() || !state.aiSettings.model.trim() || !providerReady || state.busy ? 'disabled' : ''}>Set bridge key</button>
-        <button id="clearAiKey" ${!state.aiSettings.apiKey.trim() && !status?.available ? 'disabled' : ''}>Clear key</button>
-        <button id="refreshAiStatus" ${state.busy ? 'disabled' : ''}>Refresh</button>
+        ${state.aiSettings.mode === 'bridge' ? `<button id="saveBridgeAiKey" ${!canSaveBridgeAiKey() ? 'disabled' : ''}>Set bridge key</button>` : ''}
+        <button id="clearAiKey" ${!canClearAiKey() ? 'disabled' : ''}>Clear key</button>
+        ${state.aiSettings.mode === 'bridge' ? `<button id="refreshAiStatus" ${state.busy ? 'disabled' : ''}>Refresh</button>` : ''}
       </div>
       <div class="ai-status-line">
-        <span>Bridge AI</span>
-        <strong>${escapeHtml(bridgeLabel)}</strong>
+        <span>AI route</span>
+        <strong>${escapeHtml(routeLabel)}</strong>
       </div>
       <div class="ai-status-line">
         <span>Format</span>
@@ -2800,6 +2838,92 @@ function aiSettingsCard(): string {
       <p class="ai-security-note">No AI can sign, submit, or approve. It only drafts a structured plan for your wallet review.</p>
     </aside>
   `;
+}
+
+function canSaveBridgeAiKey(): boolean {
+  return state.aiSettings.mode === 'bridge'
+    && Boolean(state.aiSettings.apiKey.trim())
+    && Boolean(state.aiSettings.model.trim())
+    && aiProviderReadyForCurrentMode()
+    && !state.busy;
+}
+
+function canClearAiKey(): boolean {
+  return Boolean(state.aiSettings.apiKey.trim() || (state.aiSettings.mode === 'bridge' && state.aiStatus?.available));
+}
+
+function canGenerateAiPlanFromSettings(): boolean {
+  const modelReady = Boolean(state.aiSettings.model.trim());
+  if (state.aiSettings.mode === 'bridge') {
+    return Boolean(state.aiStatus?.available && !state.busy);
+  }
+  return Boolean(state.aiSettings.apiKey.trim() && modelReady && aiProviderReadyForCurrentMode() && !state.busy);
+}
+
+function isAiConfiguredForCurrentMode(): boolean {
+  const modelReady = Boolean(state.aiSettings.model.trim());
+  if (state.aiSettings.mode === 'bridge') {
+    return Boolean(state.aiStatus?.available);
+  }
+  return Boolean(state.aiSettings.apiKey.trim() && modelReady && aiProviderReadyForCurrentMode());
+}
+
+function aiProviderReadyForCurrentMode(): boolean {
+  const providerPreset = aiProviderPresetById(state.aiSettings.provider);
+  if (state.aiSettings.mode === 'hosted') {
+    return providerPreset.id !== 'custom-openai-compatible';
+  }
+  return providerPreset.id !== 'custom-openai-compatible' || Boolean(state.aiSettings.baseUrl.trim());
+}
+
+function selectableAiProviderPresets(): typeof AI_PROVIDER_PRESETS {
+  return state.aiSettings.mode === 'hosted'
+    ? AI_PROVIDER_PRESETS.filter((preset) => preset.id !== 'custom-openai-compatible')
+    : AI_PROVIDER_PRESETS;
+}
+
+function aiRouteStatusLabel(status: BridgeAiStatus | null): string {
+  if (state.aiSettings.mode === 'hosted') {
+    return state.aiSettings.apiKey.trim() ? `hosted - ${state.aiSettings.provider} - ${state.aiSettings.model || 'model configured'}` : 'hosted - key required';
+  }
+  if (state.aiSettings.mode === 'session') {
+    return state.aiSettings.apiKey.trim() ? `browser - ${state.aiSettings.provider} - ${state.aiSettings.model || 'model configured'}` : 'browser - key required';
+  }
+  return status?.available
+    ? `${status.source} - ${status.provider ?? status.apiFormat ?? 'AI'} - ${status.model ?? 'model configured'}`
+    : 'bridge - not configured';
+}
+
+function ensureAiProviderAllowedForMode(): void {
+  if (state.aiSettings.mode !== 'hosted' || state.aiSettings.provider !== 'custom-openai-compatible') {
+    return;
+  }
+  const preset = aiProviderPresetById(DEFAULT_AI_PROVIDER_ID);
+  state.aiSettings.provider = preset.id;
+  state.aiSettings.apiFormat = preset.apiFormat;
+  state.aiSettings.baseUrl = preset.baseUrl;
+  state.aiSettings.model = preset.model;
+}
+
+function syncAiActionButtons(): void {
+  const saveButton = document.querySelector<HTMLButtonElement>('#saveBridgeAiKey');
+  const clearButton = document.querySelector<HTMLButtonElement>('#clearAiKey');
+  const generateButton = document.querySelector<HTMLButtonElement>('#generateAiPlan');
+  const canGenerateAi = canGenerateAiPlanFromSettings();
+
+  if (saveButton) {
+    saveButton.disabled = !canSaveBridgeAiKey();
+  }
+  if (clearButton) {
+    clearButton.disabled = !canClearAiKey();
+  }
+  if (generateButton) {
+    generateButton.disabled = !canGenerateAi;
+    generateButton.classList.toggle('primary', canGenerateAi);
+    generateButton.title = canGenerateAi
+      ? 'Generate through your configured AI key.'
+      : 'Add a hosted/session key or configure local bridge AI first.';
+  }
 }
 
 function approvalInboxPanel(): string {
@@ -2838,16 +2962,16 @@ function approvalInboxPanel(): string {
 
 function scheduledApprovalsPanel(): string {
   if (!state.address) {
-    return guidedStartPanel('Scheduled approvals', 'Connect a wallet before setting up recurring approval requests.');
+    return guidedStartPanel('Create recurring approval', 'Connect a wallet before creating recurring approval requests.');
   }
   return `
     <section class="approval-object signature-stage stage-schedule stage-anchor ${state.recurringPayments.length ? 'stage-active' : 'stage-draft'}">
       <div class="signature-object-head">
         <div>
-          <h2>Scheduled approvals</h2>
-          <p>Define recurring requests. Each occurrence still lands in the approval inbox for wallet review.</p>
+          <h2>Create recurring approval</h2>
+          <p>Define recurring requests. Each occurrence still lands in Approval Inbox for wallet review.</p>
         </div>
-        <button id="refreshInbox" class="utility" ${!state.bridgeActive || state.busy ? 'disabled' : ''} title="${!state.bridgeActive ? 'Connect the bridge to refresh scheduled approvals.' : ''}">Refresh</button>
+        <button id="refreshInbox" class="utility" ${!state.bridgeActive || state.busy ? 'disabled' : ''} title="${!state.bridgeActive ? 'Connect the bridge to refresh recurring approvals.' : ''}">Refresh</button>
       </div>
 
       ${scheduleStatusLine()}
@@ -2859,22 +2983,65 @@ function scheduledApprovalsPanel(): string {
 }
 
 function labsPanel(): string {
+  const lab = activeLab();
+  const artifact = latestLabArtifact(lab.id);
+  const signedArtifacts = state.labArtifacts;
+  const complete = state.artifactView === 'signed' ? signedArtifacts.length > 0 : Boolean(artifact);
+  const detail =
+    state.artifactView === 'signed'
+      ? `Review wallet-signed audit records saved on this device${state.bridgeActive ? ' and mirrored to the local bridge archive' : ''}.`
+      : 'Create a signed record that binds request intent, policy interpretation, wallet identity, and local verification.';
+  return `
+    <section class="approval-object signature-stage stage-labs stage-anchor ${complete ? 'stage-complete' : 'stage-draft'}">
+      <div class="signature-object-head artifact-workspace-head">
+        <div>
+          <h2>Artifacts</h2>
+          <p>${escapeHtml(detail)}</p>
+        </div>
+        ${artifactWorkspaceTabs()}
+      </div>
+
+      ${state.artifactView === 'signed' ? signedArtifactsPanel() : createArtifactPanel()}
+      ${state.error ? `<div class="error">${escapeHtml(state.error)}</div>` : ''}
+    </section>
+  `;
+}
+
+function artifactWorkspaceTabs(): string {
+  return `
+    <div class="tabs compact-tabs artifact-view-tabs" role="tablist" aria-label="Artifact views">
+      ${artifactViewButton('create', 'Create Artifact')}
+      ${artifactViewButton('signed', 'Signed Artifacts')}
+    </div>
+  `;
+}
+
+function artifactViewButton(view: ArtifactView, label: string): string {
+  const active = state.artifactView === view;
+  return `
+    <button
+      data-artifact-view="${view}"
+      class="${active ? 'active' : ''}"
+      role="tab"
+      aria-selected="${active ? 'true' : 'false'}"
+      type="button"
+    >
+      ${escapeHtml(label)}
+    </button>
+  `;
+}
+
+function createArtifactPanel(): string {
   if (!state.address) {
-    return guidedStartPanel('Audit artifacts', 'Connect a wallet before creating signed audit artifacts.');
+    return guidedStartPanel('Create artifact', 'Connect a wallet before creating signed audit artifacts.');
   }
   const lab = activeLab();
   const artifact = latestLabArtifact(lab.id);
   return `
-    <section class="approval-object signature-stage stage-labs stage-anchor ${artifact ? 'stage-complete' : 'stage-draft'}">
-      <div class="signature-object-head">
-        <div>
-          <h2>Audit artifact</h2>
-          <p>Create a signed record that binds request intent, policy interpretation, wallet identity, and local verification.</p>
-        </div>
-        <span class="signature-state">${escapeHtml(labIndexLabel())}</span>
-      </div>
-
       <div class="lab-panel lab-workbench">
+        <div class="artifact-create-status">
+          <span class="signature-state">${escapeHtml(labIndexLabel())}</span>
+        </div>
         ${labCommandMenu(lab)}
         <div class="lab-workbench-grid">
           <div class="lab-copy research-brief">
@@ -2899,10 +3066,131 @@ function labsPanel(): string {
         </div>
 
         ${artifact ? labArtifactCard(artifact) : labEmptyState()}
-        ${labHistory()}
       </div>
-      ${state.error ? `<div class="error">${escapeHtml(state.error)}</div>` : ''}
-    </section>
+  `;
+}
+
+function signedArtifactsPanel(): string {
+  const artifacts = state.labArtifacts;
+  return `
+    <div class="lab-panel signed-artifacts-panel">
+      <div class="inbox-toolbar signature-toolbar artifact-archive-toolbar">
+        <span class="signature-state">${escapeHtml(`${artifacts.length} artifact${artifacts.length === 1 ? '' : 's'}`)}</span>
+        <button id="refreshLabArtifacts" class="utility" ${state.busy ? 'disabled' : ''}>Refresh</button>
+      </div>
+      ${artifactArchiveStatusLine()}
+      ${artifacts.length ? signedArtifactList(artifacts) : signedArtifactsEmptyState()}
+    </div>
+  `;
+}
+
+function artifactArchiveStatusLine(): string {
+  const bridge = state.bridgeActive
+    ? state.health?.labArtifactStorePath
+      ? `Bridge file: ${state.health.labArtifactStorePath}`
+      : 'Bridge archive connected'
+    : 'Bridge archive unavailable';
+  return `
+    <div class="artifact-archive-status">
+      <span>${escapeHtml(state.labArchiveStatus)}</span>
+      <strong>${escapeHtml(bridge)}</strong>
+    </div>
+  `;
+}
+
+function signedArtifactsEmptyState(): string {
+  return `
+    <div class="empty lab-empty-state">
+      <span>No signed artifacts</span>
+      <h3>Archive is empty</h3>
+      <p>Use Create Artifact to add the first wallet-bound record.</p>
+    </div>
+  `;
+}
+
+function signedArtifactList(artifacts: LabArtifact[]): string {
+  return `
+    <div class="signed-artifact-list">
+      ${artifacts.map((artifact) => signedArtifactRow(artifact)).join('')}
+    </div>
+  `;
+}
+
+function signedArtifactRow(artifact: LabArtifact): string {
+  return `
+    <article class="signed-artifact-row">
+      <div class="signed-artifact-main">
+        <div class="artifact-meta-line">
+          <span class="status-pill ${artifact.verified ? 'tx-confirmed' : 'tx-pending'}">${artifact.verified ? 'verified' : 'signed'}</span>
+          <span>${escapeHtml(labKindLabel(artifact.kind))}</span>
+        </div>
+        <h3>${escapeHtml(artifact.title)}</h3>
+        <p>${escapeHtml(artifact.payload.thesis)}</p>
+      </div>
+      <div class="signed-artifact-facts">
+        ${archiveFact('Created', formatDateTime(artifact.createdAt))}
+        ${archiveFact('Wallet', short(artifact.walletAddress))}
+        ${archiveFact('Cluster', titleCaseCluster(artifact.cluster))}
+        ${archiveFact('Artifact', short(artifact.artifactHash))}
+      </div>
+      <div class="signed-artifact-actions">
+        <button data-copy="${escapeHtml(stableJson(artifact))}" data-copy-name="Artifact JSON">Copy JSON</button>
+        <button data-copy="${escapeHtml(artifact.signingMessage)}" data-copy-name="Signing payload">Copy Payload</button>
+      </div>
+      <details class="artifact-technical-details signed-artifact-details">
+        <summary>
+          <span>Full artifact</span>
+          <strong>Creation details and evidence</strong>
+        </summary>
+        ${signedArtifactDetail(artifact)}
+      </details>
+    </article>
+  `;
+}
+
+function archiveFact(label: string, value: string): string {
+  return `
+    <div>
+      <span>${escapeHtml(label)}</span>
+      <strong>${escapeHtml(value)}</strong>
+    </div>
+  `;
+}
+
+function signedArtifactDetail(artifact: LabArtifact): string {
+  return `
+    <div class="artifact-detail-grid">
+      ${archiveFact('Artifact type', artifact.title)}
+      ${archiveFact('Kind', labKindLabel(artifact.kind))}
+      ${archiveFact('Created', formatDateTime(artifact.createdAt))}
+      ${archiveFact('Cluster', titleCaseCluster(artifact.cluster))}
+      ${archiveFact('Wallet', artifact.walletAddress)}
+      ${archiveFact('Artifact hash', artifact.artifactHash)}
+    </div>
+    <div class="artifact-intent-block">
+      <span>Agent intent</span>
+      <p>${escapeHtml(artifact.input)}</p>
+    </div>
+    <div class="artifact-evidence-row">
+      ${artifactMetricCard(artifact, 'Decision')}
+      ${artifactMetricCard(artifact, 'Custody')}
+      ${artifactMetricCard(artifact, 'Settlement')}
+    </div>
+    <div class="artifact-evidence-list">
+      ${artifact.payload.evidence.map((entry) => `
+        <div class="${escapeHtml(entry.tone)}">
+          <span>${escapeHtml(entry.title)}</span>
+          <p>${escapeHtml(entry.detail)}</p>
+          <code>${escapeHtml(short(entry.hash))}</code>
+        </div>
+      `).join('')}
+    </div>
+    <div class="hash-grid">
+      ${hashTile('Pre-signature', artifact.preSignatureHash)}
+      ${hashTile('Artifact', artifact.artifactHash)}
+      ${hashTile('Signature', artifact.signature)}
+      ${hashTile('Wallet', artifact.walletAddress)}
+    </div>
   `;
 }
 
@@ -2941,8 +3229,12 @@ function contextPanel(): string {
         : state.activeTab === 'inbox'
           ? 'Review queued approvals'
           : state.activeTab === 'schedule'
-            ? 'Set up scheduled approvals'
-            : 'Review current request';
+            ? 'Create recurring approval'
+            : state.activeTab === 'labs' && state.artifactView === 'signed'
+              ? 'Review signed artifacts'
+              : state.activeTab === 'labs'
+                ? 'Create an artifact'
+                : 'Review current request';
   return `
     <aside class="panel context-panel evidence-panel">
       <div class="evidence-header">
@@ -3013,6 +3305,9 @@ function bind(): void {
   for (const button of document.querySelectorAll<HTMLButtonElement>('[data-tab]')) {
     button.addEventListener('click', () => {
       state.activeTab = button.dataset.tab as ActiveTab;
+      if (state.activeTab === 'labs') {
+        state.artifactView = 'create';
+      }
       state.error = '';
       render();
     });
@@ -3042,6 +3337,7 @@ function bind(): void {
   document.querySelector<HTMLButtonElement>('#refreshInbox')?.addEventListener('click', runRefreshInbox);
   document.querySelector<HTMLButtonElement>('#createRecurring')?.addEventListener('click', runCreateRecurring);
   document.querySelector<HTMLButtonElement>('#createLabArtifact')?.addEventListener('click', runCreateLabArtifact);
+  document.querySelector<HTMLButtonElement>('#refreshLabArtifacts')?.addEventListener('click', runRefreshLabArtifacts);
   document.querySelector<HTMLButtonElement>('#openAndroidMwaTest')?.addEventListener('click', openAndroidMwaTest);
 
   for (const button of document.querySelectorAll<HTMLButtonElement>('[data-start-action]')) {
@@ -3060,6 +3356,9 @@ function bind(): void {
       const tab = button.dataset.demoTab as ActiveTab | undefined;
       if (!tab) return;
       state.activeTab = tab;
+      if (tab === 'labs') {
+        state.artifactView = 'create';
+      }
       state.error = '';
       render();
       window.requestAnimationFrame(() => {
@@ -3131,7 +3430,9 @@ function bind(): void {
   }
 
   document.querySelector<HTMLSelectElement>('#aiMode')?.addEventListener('change', (event) => {
-    state.aiSettings.mode = (event.currentTarget as HTMLSelectElement).value === 'session' ? 'session' : 'bridge';
+    const value = (event.currentTarget as HTMLSelectElement).value;
+    state.aiSettings.mode = value === 'session' || value === 'hosted' ? value : 'bridge';
+    ensureAiProviderAllowedForMode();
     render();
   });
 
@@ -3146,6 +3447,7 @@ function bind(): void {
 
   document.querySelector<HTMLInputElement>('#aiBaseUrl')?.addEventListener('input', (event) => {
     state.aiSettings.baseUrl = (event.currentTarget as HTMLInputElement).value.trim();
+    syncAiActionButtons();
   });
 
   document.querySelector<HTMLSelectElement>('#aiModelSelect')?.addEventListener('change', (event) => {
@@ -3156,15 +3458,16 @@ function bind(): void {
 
   document.querySelector<HTMLInputElement>('#aiModelCustom')?.addEventListener('input', (event) => {
     state.aiSettings.model = (event.currentTarget as HTMLInputElement).value.trim();
+    syncAiActionButtons();
   });
 
   document.querySelector<HTMLInputElement>('#aiApiKey')?.addEventListener('input', (event) => {
     state.aiSettings.apiKey = (event.currentTarget as HTMLInputElement).value;
+    syncAiActionButtons();
   });
 
   document.querySelector<HTMLTextAreaElement>('#labInput')?.addEventListener('input', (event) => {
     state.labInputs[state.activeLab] = (event.currentTarget as HTMLTextAreaElement).value;
-    saveLabArtifacts();
   });
 
   document.querySelector<HTMLSelectElement>('#labSelect')?.addEventListener('change', (event) => {
@@ -3172,6 +3475,16 @@ function bind(): void {
     state.error = '';
     render();
   });
+
+  for (const button of document.querySelectorAll<HTMLButtonElement>('[data-artifact-view]')) {
+    button.addEventListener('click', () => {
+      const view = button.dataset.artifactView;
+      if (view !== 'create' && view !== 'signed') return;
+      state.artifactView = view;
+      state.error = '';
+      render();
+    });
+  }
 
   document.querySelector<HTMLTextAreaElement>('#txInput')?.addEventListener('input', (event) => {
     state.customTransactionBase64 = (event.currentTarget as HTMLTextAreaElement).value.trim();
@@ -3730,12 +4043,16 @@ async function runGenerateAiPlan(): Promise<void> {
       },
       parameters,
     };
-    state.agentPlan = state.aiSettings.mode === 'bridge'
-      ? await bridgeRequest<AgentPlan>('/bridge/ai/generate-plan', {
-          method: 'POST',
-          body: JSON.stringify(request),
-        })
-      : await generateSessionAiPlan(state.aiSettings, request);
+    if (state.aiSettings.mode === 'bridge') {
+      state.agentPlan = await bridgeRequest<AgentPlan>('/bridge/ai/generate-plan', {
+        method: 'POST',
+        body: JSON.stringify(request),
+      });
+    } else if (state.aiSettings.mode === 'hosted') {
+      state.agentPlan = await generateHostedAiPlan(state.aiSettings, request);
+    } else {
+      state.agentPlan = await generateSessionAiPlan(state.aiSettings, request);
+    }
     state.agentSignature = '';
     state.agentPreparedActionId = '';
     pushToast('success', 'AI plan generated', `${state.agentPlan.templateTitle} is ready for wallet review.`);
@@ -3806,12 +4123,14 @@ async function runSaveBridgeAiKey(): Promise<void> {
 async function runClearAiKey(): Promise<void> {
   await run('ai', async () => {
     state.aiSettings.apiKey = '';
-    await bridgeRequest('/bridge/ai/session-key', {
-      method: 'POST',
-      body: JSON.stringify({ clear: true }),
-    }).catch(() => undefined);
-    await refreshBridgeAiStatus(false);
-    pushToast('success', 'AI key cleared', 'Session key removed from this app and local bridge memory.');
+    if (state.aiSettings.mode === 'bridge') {
+      await bridgeRequest('/bridge/ai/session-key', {
+        method: 'POST',
+        body: JSON.stringify({ clear: true }),
+      }).catch(() => undefined);
+      await refreshBridgeAiStatus(false);
+    }
+    pushToast('success', 'AI key cleared', aiClearMessage());
   });
 }
 
@@ -3820,6 +4139,16 @@ async function runRefreshAiStatus(): Promise<void> {
     await refreshBridgeAiStatus(true);
     pushToast('success', 'AI status refreshed', state.aiStatus?.available ? 'Bridge AI is available.' : 'Bridge AI is not configured.');
   });
+}
+
+function aiClearMessage(): string {
+  if (state.aiSettings.mode === 'hosted') {
+    return 'Hosted BYOK key removed from this browser session.';
+  }
+  if (state.aiSettings.mode === 'session') {
+    return 'Browser session key removed from this app.';
+  }
+  return 'Session key removed from this app and local bridge memory.';
 }
 
 async function runConnectBridge(): Promise<void> {
@@ -3831,7 +4160,7 @@ async function runConnectBridge(): Promise<void> {
     state.bridgeActive = true;
     state.bridgeStatus = 'Connected to local bridge. Waiting for agent requests.';
     startBridgePolling();
-    await Promise.all([refreshInboxData(), refreshHealth(), refreshBalances().catch(() => undefined)]);
+    await Promise.all([refreshInboxData(), refreshHealth(), refreshBalances().catch(() => undefined), syncLabArtifactsWithBridge()]);
     savePersistedState();
     pushToast('success', 'Bridge connected', bridgeHostLabel());
   });
@@ -3849,7 +4178,7 @@ async function runDisconnectBridge(): Promise<void> {
 
 async function runRefreshInbox(): Promise<void> {
   await run('inbox', async () => {
-    await Promise.all([refreshInboxData(), refreshHealth(), refreshBalances().catch(() => undefined)]);
+    await Promise.all([refreshInboxData(), refreshHealth(), refreshBalances().catch(() => undefined), syncLabArtifactsWithBridge()]);
     pushToast('success', 'Inbox refreshed', `${state.preparedActions.length} action(s) loaded.`);
   });
 }
@@ -3979,9 +4308,22 @@ async function runCreateLabArtifact(): Promise<void> {
       ...artifactBase,
       artifactHash: await sha256(stableJson(artifactBase)),
     };
-    state.labArtifacts = [artifact, ...state.labArtifacts.filter((candidate) => candidate.id !== artifact.id)].slice(0, 20);
-    saveLabArtifacts();
-    pushToast('success', `${lab.title} signed`, verified ? 'Signature verified locally.' : 'Signature returned.');
+    const savedToBridge = await archiveLabArtifact(artifact);
+    pushToast(
+      'success',
+      `${lab.title} signed`,
+      savedToBridge ? 'Saved locally and to the bridge archive.' : 'Saved to the local device archive.',
+    );
+  });
+}
+
+async function runRefreshLabArtifacts(): Promise<void> {
+  await run('lab', async () => {
+    await hydrateLabArtifactArchive();
+    if (state.bridgeActive) {
+      await syncLabArtifactsWithBridge();
+    }
+    pushToast('success', 'Artifacts refreshed', `${state.labArtifacts.length} artifact(s) loaded.`);
   });
 }
 
@@ -4001,6 +4343,51 @@ async function run(stepName: StepName, action: () => Promise<void>): Promise<voi
     state.busy = false;
     render();
   }
+}
+
+async function archiveLabArtifact(artifact: LabArtifact): Promise<boolean> {
+  state.labArtifacts = mergeLabArtifacts([artifact], state.labArtifacts);
+  await saveLabArtifacts();
+  if (!state.bridgeActive) {
+    return false;
+  }
+  try {
+    await saveBridgeLabArtifact(artifact);
+    return true;
+  } catch (err) {
+    state.bridgeStatus = `Artifact bridge archive failed: ${err instanceof Error ? err.message : String(err)}`;
+    return false;
+  }
+}
+
+async function syncLabArtifactsWithBridge(): Promise<void> {
+  if (!state.bridgeActive) return;
+  try {
+    const remote = await loadBridgeLabArtifacts();
+    const local = state.labArtifacts;
+    const remoteIds = new Set(remote.map((artifact) => artifact.id));
+    const missingRemote = local.filter((artifact) => !remoteIds.has(artifact.id));
+    for (const artifact of missingRemote) {
+      await saveBridgeLabArtifact(artifact);
+    }
+    state.labArtifacts = mergeLabArtifacts(remote, local);
+    await saveLabArtifacts();
+    state.labArchiveStatus = 'Browser archive synced with bridge.';
+  } catch (err) {
+    state.bridgeStatus = `Artifact bridge archive unavailable: ${err instanceof Error ? err.message : String(err)}`;
+  }
+}
+
+async function loadBridgeLabArtifacts(): Promise<LabArtifact[]> {
+  const response = await bridgeRequest<{ artifacts?: unknown[] }>('/bridge/lab-artifacts');
+  return mergeLabArtifacts(Array.isArray(response.artifacts) ? response.artifacts.filter(isLabArtifact) : []);
+}
+
+async function saveBridgeLabArtifact(artifact: LabArtifact): Promise<void> {
+  await bridgeRequest('/bridge/lab-artifacts', {
+    method: 'POST',
+    body: JSON.stringify({ artifact }),
+  });
 }
 
 async function refreshInboxData(): Promise<void> {
@@ -4229,7 +4616,7 @@ function canQueueAgentPlan(plan: AgentPlan): boolean {
 
 function queuePlanTitle(): string {
   if (!state.address) return 'Connect a wallet before queueing.';
-  if (!state.bridgeActive) return 'Connect the local bridge before queueing approvals.';
+  if (!state.bridgeActive) return 'Templates can be signed directly. Connect the local bridge only to queue approvals into the inbox.';
   if (!state.agentPlan) return 'Generate a plan before queueing.';
   if (!canQueueAgentPlan(state.agentPlan)) return 'Queueing is available for transfer, swap, and recurring payment templates.';
   return 'Queue this plan in the local bridge approval inbox.';
@@ -4491,7 +4878,7 @@ function publicKeyFromConnectedWallet(): PublicKey {
 function resetWalletConnection(): void {
   client = null;
   walletBackend = null;
-  state.activeTab = 'wallet';
+  state.activeTab = defaultWorkspaceTab;
   state.address = '';
   state.signature = '';
   state.txSignature = '';
@@ -4515,13 +4902,24 @@ function discoveredSelectedWalletName(): string {
   return state.wallets.some((wallet) => wallet.name === state.selectedWalletName) ? state.selectedWalletName : '';
 }
 
-function walletIdentity(): { icon: string; title: string; summary: string; detail: string } {
+interface WalletIdentity {
+  icon: string;
+  title: string;
+  summary: string;
+  detail: string;
+  logoId?: BrandLogoId;
+  discoveredWallet?: DiscoveredWallet;
+}
+
+function walletIdentity(): WalletIdentity {
   const liveSelectedName = discoveredSelectedWalletName();
   const providerCount = state.wallets.length;
   if (state.address) {
     const name = liveSelectedName || state.selectedWalletName || 'Connected wallet';
     return {
-      icon: name.slice(0, 2).toUpperCase(),
+      icon: providerInitials(name),
+      logoId: walletLogoIdForName(name),
+      discoveredWallet: discoveredWalletByName(name),
       title: name,
       summary: short(state.address),
       detail: `${titleCaseCluster(state.cluster)} signer`,
@@ -4530,7 +4928,8 @@ function walletIdentity(): { icon: string; title: string; summary: string; detai
   if (state.iosNativeEnvironment.isIosNative) {
     const name = iosWalletLabel(state.selectedIosWalletId);
     return {
-      icon: name.slice(0, 2).toUpperCase(),
+      icon: providerInitials(name),
+      logoId: walletLogoIdForName(name),
       title: 'iOS wallet standby',
       summary: name,
       detail: state.iosAuthCacheCount > 0 ? `${state.iosAuthCacheCount} cached authorization(s)` : 'Encrypted links and WalletConnect ready',
@@ -4538,7 +4937,9 @@ function walletIdentity(): { icon: string; title: string; summary: string; detai
   }
   if (providerCount > 0 && liveSelectedName) {
     return {
-      icon: liveSelectedName.slice(0, 2).toUpperCase(),
+      icon: providerInitials(liveSelectedName),
+      logoId: walletLogoIdForName(liveSelectedName),
+      discoveredWallet: discoveredWalletByName(liveSelectedName),
       title: 'Wallet standby',
       summary: liveSelectedName,
       detail: `${providerCount} provider(s) discovered`,
@@ -4604,7 +5005,7 @@ function capabilitySummary(capabilities: AdapterCapabilities): string {
 }
 
 function tabButton(tab: ActiveTab, label: string, mobileLabel?: string): string {
-  const locked = !state.address && tab !== 'wallet' && tab !== 'agent';
+  const locked = !state.address && tab !== 'wallet' && tab !== 'agent' && tab !== 'labs';
   const className = [
     state.activeTab === tab ? 'active' : '',
     mobileLabel ? 'has-mobile-label' : '',
@@ -4761,7 +5162,7 @@ function scheduleStatusLine(): string {
   return `
     <div class="queue-status">
       <span>${escapeHtml(bridge)}</span>
-      <strong>${active} active schedule${active === 1 ? '' : 's'}</strong>
+      <strong>${active} active recurring approval${active === 1 ? '' : 's'}</strong>
       <span>${total} saved</span>
       <span>Each run still needs wallet approval</span>
     </div>
@@ -4856,9 +5257,9 @@ function recurringComposer(): string {
     <div class="recurring-panel recurring-contract">
       <div class="contract-head">
         <div>
-          <span>Schedule</span>
-          <h3>Recurring approval</h3>
-          <p class="recurring-help">Define the schedule. Each occurrence still requires wallet approval.</p>
+          <span>Recurring setup</span>
+          <h3>Create recurring approval</h3>
+          <p class="recurring-help">Define the recurring request. Each occurrence still requires wallet approval.</p>
         </div>
         <strong>${escapeHtml(recurringCadenceLabel(draft.cadence))}</strong>
       </div>
@@ -4903,8 +5304,8 @@ function recurringComposer(): string {
         <input id="recurringNote" value="${escapeHtml(draft.note)}" placeholder="Reason shown in the approval inbox" />
       </label>
       <div class="recurring-form-actions contract-actions">
-        <button id="createRecurring" class="primary" ${createDisabled ? 'disabled' : ''}>Create schedule</button>
-        ${createDisabled ? '<span class="contract-helper">Bridge required before scheduling.</span>' : '<span class="contract-helper">Schedule will create reviewable inbox items.</span>'}
+        <button id="createRecurring" class="primary" ${createDisabled ? 'disabled' : ''}>Create recurring approval</button>
+        ${createDisabled ? '<span class="contract-helper">Bridge required before creating recurring approvals.</span>' : '<span class="contract-helper">Recurring approvals create reviewable inbox items.</span>'}
       </div>
     </div>
   `;
@@ -5046,7 +5447,7 @@ function queueFilterLabel(filter: InboxFilter): string {
     case 'ready':
       return 'Showing ready approvals';
     case 'scheduled':
-      return 'Showing scheduled approvals';
+      return 'Showing scheduled items';
     case 'approved':
       return 'Showing approved approvals';
     case 'failed':
@@ -5211,14 +5612,23 @@ function evidenceIntent(): { status: string; detail: string; meta?: string } {
   if (state.activeTab === 'schedule') {
     const activeSchedules = state.recurringPayments.filter((payment) => payment.status === 'active').length;
     return {
-      status: activeSchedules ? 'Scheduled' : 'Draft',
+      status: activeSchedules ? 'Recurring' : 'Draft',
       detail: activeSchedules
-        ? `${activeSchedules} recurring approval schedule${activeSchedules === 1 ? '' : 's'} active.`
-        : 'Create a recurring approval schedule for future wallet review.',
-      meta: state.bridgeActive ? 'Bridge scheduler connected' : 'Bridge offline',
+        ? `${activeSchedules} recurring approval${activeSchedules === 1 ? '' : 's'} active.`
+        : 'Create a recurring approval for future wallet review.',
+        meta: state.bridgeActive ? 'Bridge recurring engine connected' : 'Bridge offline',
     };
   }
   if (state.activeTab === 'labs') {
+    if (state.artifactView === 'signed') {
+      return {
+        status: state.labArtifacts.length ? 'Archived' : 'Empty',
+        detail: state.labArtifacts.length
+          ? `${state.labArtifacts.length} signed audit artifact(s) are available for review.`
+          : 'No signed audit artifacts have been created yet.',
+        meta: state.labArtifacts[0] ? short(state.labArtifacts[0].artifactHash) : undefined,
+      };
+    }
     const lab = activeLab();
     return {
       status: 'Artifact',
@@ -5253,9 +5663,23 @@ function evidencePolicy(): { status: string; detail: string; meta?: string } {
   }
   if (state.activeTab === 'schedule') {
     return {
-      status: state.bridgeActive ? 'Scheduler ready' : 'Bridge required',
-      detail: 'Scheduled approvals create reviewable inbox items, not automatic signatures.',
-      meta: state.recurringPayments.length ? `${state.recurringPayments.length} schedule(s)` : undefined,
+      status: state.bridgeActive ? 'Recurring ready' : 'Bridge required',
+      detail: 'Recurring approvals create reviewable inbox items, not automatic signatures.',
+      meta: state.recurringPayments.length ? `${state.recurringPayments.length} recurring approval(s)` : undefined,
+    };
+  }
+  if (state.activeTab === 'labs') {
+    if (state.artifactView === 'signed') {
+      return {
+        status: state.bridgeActive ? 'Bridge mirrored' : 'Local archive',
+        detail: state.labArchiveStatus,
+        meta: state.health?.labArtifactStorePath ?? (state.bridgeActive ? 'Bridge archive connected' : 'Browser durable storage'),
+      };
+    }
+    return {
+      status: 'Local verification',
+      detail: 'Audit artifacts bind payload hash, wallet, cluster, and signature for review.',
+      meta: state.labArtifacts.length ? `${state.labArtifacts.length} artifact(s)` : 'No artifacts yet',
     };
   }
   if (openApprovals > 0) {
@@ -5270,13 +5694,6 @@ function evidencePolicy(): { status: string; detail: string; meta?: string } {
       status: 'Active',
       detail: 'Local bridge is connected and ready to enforce prepared-action policy.',
       meta: bridgeHostLabel(),
-    };
-  }
-  if (state.activeTab === 'labs') {
-    return {
-      status: 'Local verification',
-      detail: 'Audit artifacts bind payload hash, wallet, cluster, and signature for review.',
-      meta: state.labArtifacts.length ? `${state.labArtifacts.length} artifact(s)` : 'No artifacts yet',
     };
   }
   return {
@@ -5379,7 +5796,7 @@ function evidenceTone(kind: 'intent' | 'policy' | 'wallet' | 'receipt'): 'good' 
 }
 
 function trustChain(): string {
-  const hasReceipt = Boolean(state.txid || state.txSignature || state.agentSignature || state.receipts.length);
+  const hasReceipt = Boolean(state.txid || state.txSignature || state.agentSignature || state.receipts.length || state.labArtifacts.length);
   return `
     <div class="trust-chain" aria-label="Approval trust chain">
       ${trustNode('Intent', Boolean(state.agentPlan || state.signature || state.customTransactionBase64), state.activeTab === 'agent')}
@@ -5446,9 +5863,9 @@ function surfaceEyebrow(): string {
     case 'inbox':
       return 'Approval inbox';
     case 'schedule':
-      return 'Scheduled approvals';
+      return 'Recurring approvals';
     case 'labs':
-      return 'Audit artifacts';
+      return state.artifactView === 'signed' ? 'Artifact archive' : 'Artifact creation';
   }
 }
 
@@ -5461,9 +5878,9 @@ function surfaceTitle(): string {
     case 'inbox':
       return 'Approval Inbox';
     case 'schedule':
-      return 'Scheduled Approvals';
+      return 'Create Recurring';
     case 'labs':
-      return 'Audit Artifacts';
+      return 'Artifacts';
   }
 }
 
@@ -5472,7 +5889,7 @@ function emptyInboxText(): string {
     return 'No one-time actions. Ask the MCP agent to prepare a payment or swap.';
   }
   if (state.inboxFilter === 'recurring') {
-    return 'No recurring actions yet. Create a recurring approval schedule above.';
+    return 'No recurring actions yet. Create a recurring approval above.';
   }
   return 'No prepared actions yet. Ask the MCP agent to prepare a payment, swap, or recurring payment.';
 }
@@ -5782,6 +6199,15 @@ function resolveDevControls(): boolean {
   return hostname === 'localhost' || hostname === '127.0.0.1' || hostname === '::1';
 }
 
+function defaultAiMode(): AiSettings['mode'] {
+  return isLocalBrowserOrigin() ? 'bridge' : 'hosted';
+}
+
+function isLocalBrowserOrigin(): boolean {
+  const hostname = globalThis.location?.hostname ?? '';
+  return hostname === 'localhost' || hostname === '127.0.0.1' || hostname === '::1' || hostname === '';
+}
+
 function resolveAndroidExampleTab(): boolean {
   const viteEnv = (import.meta as ImportMeta & {
     env?: {
@@ -6017,16 +6443,145 @@ function loadLabArtifacts(): LabArtifact[] {
     const raw = window.localStorage.getItem(LAB_STORAGE_KEY);
     if (!raw) return [];
     const parsed = JSON.parse(raw);
-    return Array.isArray(parsed) ? (parsed as LabArtifact[]) : [];
+    return Array.isArray(parsed) ? mergeLabArtifacts(parsed.filter(isLabArtifact)) : [];
   } catch {
     return [];
   }
 }
 
-function saveLabArtifacts(): void {
+async function hydrateLabArtifactArchive(): Promise<void> {
+  const legacy = loadLabArtifacts();
+  const indexed = await loadIndexedLabArtifacts().catch(() => []);
+  state.labArtifacts = mergeLabArtifacts(state.labArtifacts, legacy, indexed);
+  await requestPersistentLabArtifactStorage();
+  await saveLabArtifacts();
+}
+
+async function saveLabArtifacts(): Promise<void> {
+  state.labArtifacts = mergeLabArtifacts(state.labArtifacts);
+  await saveIndexedLabArtifacts(state.labArtifacts).catch(() => undefined);
   try {
-    window.localStorage.setItem(LAB_STORAGE_KEY, JSON.stringify(state.labArtifacts.slice(0, 20)));
+    window.localStorage.setItem(LAB_STORAGE_KEY, JSON.stringify(state.labArtifacts));
   } catch {
     // Best-effort browser persistence.
   }
+}
+
+function mergeLabArtifacts(...artifactGroups: unknown[][]): LabArtifact[] {
+  const byId = new Map<string, LabArtifact>();
+  for (const artifacts of artifactGroups) {
+    for (const artifact of artifacts) {
+      if (!isLabArtifact(artifact)) continue;
+      const current = byId.get(artifact.id);
+      if (!current || artifact.createdAt.localeCompare(current.createdAt) >= 0) {
+        byId.set(artifact.id, artifact);
+      }
+    }
+  }
+  return [...byId.values()].sort((left, right) => right.createdAt.localeCompare(left.createdAt));
+}
+
+function isLabArtifact(value: unknown): value is LabArtifact {
+  if (!value || typeof value !== 'object') return false;
+  const artifact = value as Partial<LabArtifact>;
+  return (
+    typeof artifact.id === 'string' &&
+    typeof artifact.labId === 'string' &&
+    typeof artifact.title === 'string' &&
+    typeof artifact.kind === 'string' &&
+    typeof artifact.createdAt === 'string' &&
+    typeof artifact.walletAddress === 'string' &&
+    isCluster(artifact.cluster ?? '') &&
+    typeof artifact.input === 'string' &&
+    typeof artifact.preSignatureHash === 'string' &&
+    typeof artifact.signingMessage === 'string' &&
+    typeof artifact.signature === 'string' &&
+    typeof artifact.verified === 'boolean' &&
+    typeof artifact.artifactHash === 'string' &&
+    isLabPayload(artifact.payload)
+  );
+}
+
+function isLabPayload(value: unknown): value is LabPayload {
+  if (!value || typeof value !== 'object') return false;
+  const payload = value as Partial<LabPayload>;
+  return (
+    (payload.status === 'approved' || payload.status === 'blocked' || payload.status === 'warn' || payload.status === 'observed') &&
+    typeof payload.thesis === 'string' &&
+    typeof payload.nextSignatureGate === 'string' &&
+    Array.isArray(payload.metrics) &&
+    Array.isArray(payload.evidence)
+  );
+}
+
+async function requestPersistentLabArtifactStorage(): Promise<void> {
+  try {
+    if (!navigator.storage?.persist) {
+      state.labArchiveStatus = 'Browser archive ready.';
+      return;
+    }
+    const alreadyPersistent = await navigator.storage.persisted?.();
+    if (alreadyPersistent) {
+      state.labArchiveStatus = 'Persistent browser archive ready.';
+      return;
+    }
+    const granted = await navigator.storage.persist();
+    state.labArchiveStatus = granted ? 'Persistent browser archive ready.' : 'Browser archive ready.';
+  } catch {
+    state.labArchiveStatus = 'Browser archive ready.';
+  }
+}
+
+async function loadIndexedLabArtifacts(): Promise<LabArtifact[]> {
+  const db = await openLabArchiveDb();
+  return new Promise((resolve, reject) => {
+    const transaction = db.transaction(LAB_ARCHIVE_STORE_NAME, 'readonly');
+    const store = transaction.objectStore(LAB_ARCHIVE_STORE_NAME);
+    const request = store.getAll();
+    request.onsuccess = () => resolve(mergeLabArtifacts((request.result as unknown[]).filter(isLabArtifact)));
+    request.onerror = () => reject(request.error ?? new Error('Unable to load lab artifact archive.'));
+    transaction.oncomplete = () => db.close();
+    transaction.onerror = () => {
+      db.close();
+      reject(transaction.error ?? new Error('Unable to load lab artifact archive.'));
+    };
+  });
+}
+
+async function saveIndexedLabArtifacts(artifacts: LabArtifact[]): Promise<void> {
+  const db = await openLabArchiveDb();
+  await new Promise<void>((resolve, reject) => {
+    const transaction = db.transaction(LAB_ARCHIVE_STORE_NAME, 'readwrite');
+    const store = transaction.objectStore(LAB_ARCHIVE_STORE_NAME);
+    for (const artifact of mergeLabArtifacts(artifacts)) {
+      store.put(artifact);
+    }
+    transaction.oncomplete = () => {
+      db.close();
+      resolve();
+    };
+    transaction.onerror = () => {
+      db.close();
+      reject(transaction.error ?? new Error('Unable to save lab artifact archive.'));
+    };
+  });
+}
+
+function openLabArchiveDb(): Promise<IDBDatabase> {
+  return new Promise((resolve, reject) => {
+    if (!window.indexedDB) {
+      reject(new Error('IndexedDB is unavailable.'));
+      return;
+    }
+    const request = window.indexedDB.open(LAB_ARCHIVE_DB_NAME, LAB_ARCHIVE_DB_VERSION);
+    request.onupgradeneeded = () => {
+      const db = request.result;
+      if (!db.objectStoreNames.contains(LAB_ARCHIVE_STORE_NAME)) {
+        const store = db.createObjectStore(LAB_ARCHIVE_STORE_NAME, { keyPath: 'id' });
+        store.createIndex('createdAt', 'createdAt');
+      }
+    };
+    request.onsuccess = () => resolve(request.result);
+    request.onerror = () => reject(request.error ?? new Error('Unable to open lab artifact archive.'));
+  });
 }

@@ -1,35 +1,50 @@
 # Deploy Agentic on Render
 
-Agentic's public homepage is a static Vite build from `apps/browser-demo`. Render hosts the website only; the CLI,
-desktop app, bridge, and wallet host run locally on the user's machine after installation. The Android app is a
-Trusted Web Activity wrapper around this hosted origin.
+Agentic's public homepage is a Vite build from `apps/browser-demo` served by a small same-origin Node service in
+`apps/render-web`. Render serves the website and the hosted BYOK AI planning proxy; the CLI, desktop app, bridge, and
+wallet host still run locally on the user's machine after installation. The Android app is a Trusted Web Activity
+wrapper around this hosted origin.
 
 ## Blueprint Deploy
 
-Use the root `render.yaml` as a Render Blueprint. It defines one static web service:
+Use the root `render.yaml` as a Render Blueprint. It defines one Node web service:
 
 - Service name: `agentic`
-- Build command: `pnpm install --frozen-lockfile --ignore-scripts && pnpm render:build`
-- Publish directory: `apps/browser-demo/dist`
+- Build command: `pnpm install --frozen-lockfile --ignore-scripts && pnpm render:build && pnpm -F @solana-agent-wallet-adapter/render-web build`
+- Start command: `pnpm -F @solana-agent-wallet-adapter/render-web start`
+- Health check path: `/api/ai/status`
 - Environment variable: `SKIP_INSTALL_DEPS=true`
 - Production UI env: `VITE_AGENTIC_DEV_CONTROLS=false`
 - Optional Android trust env: `AGENTIC_ANDROID_SHA256_CERT_FINGERPRINTS`
 - Production Android trust guard: `AGENTIC_ANDROID_REQUIRE_TRUST=1`
-- Rewrite rule: `/*` to `/index.html`
 
-## Manual Static Site Settings
+`pnpm render:build` also writes static fallback files for the known client routes (`/app`, `/docs`, `/cli`,
+`/desktop`, `/demo`, `/terms`, `/privacy`, and Android/TWA utility routes). The Node server also falls back to
+`index.html` for direct visits and hard refreshes on client-side routes.
+
+## Manual Web Service Settings
 
 If configuring Render manually, use:
 
 - Root directory: repository root
-- Build command: `pnpm install --frozen-lockfile --ignore-scripts && pnpm render:build`
-- Publish directory: `apps/browser-demo/dist`
+- Runtime: Node
+- Build command: `pnpm install --frozen-lockfile --ignore-scripts && pnpm render:build && pnpm -F @solana-agent-wallet-adapter/render-web build`
+- Start command: `pnpm -F @solana-agent-wallet-adapter/render-web start`
+- Health check path: `/api/ai/status`
 - Environment variable: `SKIP_INSTALL_DEPS=true`
 - Production UI env: `VITE_AGENTIC_DEV_CONTROLS=false`
 - Optional Android trust env: `AGENTIC_ANDROID_SHA256_CERT_FINGERPRINTS`
 - Production Android trust guard: `AGENTIC_ANDROID_REQUIRE_TRUST=1`
 - Auto deploy: enabled for the production branch
-- Redirects/Rewrites: rewrite `/*` to `/index.html`
+
+If hard-refreshing `/app`, `/docs`, `/cli`, `/desktop`, or `/demo` returns `Not Found`, the deployed service is still
+using the old static configuration. Redeploy from the root Blueprint so `apps/render-web` serves the SPA fallback.
+
+## Hosted BYOK AI
+
+The deployed app defaults to `Hosted BYOK` for AI planning. Users paste their OpenAI, Claude / Anthropic, Gemini, or
+OpenRouter key in the browser. The same-origin Node server relays that request to the selected provider and does not
+persist or log the key. Do not add user keys to Render environment variables.
 
 ## Release Links Used by the Website
 
@@ -66,7 +81,7 @@ npm exec @solana-agent-wallet-adapter/cli -- app
 
 ## Android Trust File
 
-The static site must serve Digital Asset Links at:
+The web service must serve Digital Asset Links at:
 
 ```text
 https://agenticwalletadapter.com/.well-known/assetlinks.json
@@ -80,15 +95,15 @@ AGENTIC_ANDROID_SHA256_CERT_FINGERPRINTS="AA:BB:..."
 ```
 
 `pnpm render:prepare` writes `apps/browser-demo/public/.well-known/assetlinks.json` from that fingerprint before the
-static build. If the env var is absent, the build keeps the safe placeholder and Android TWA trusted mode will not be
+browser build. If the env var is absent, the build keeps the safe placeholder and Android TWA trusted mode will not be
 active.
 
 Set `AGENTIC_ANDROID_REQUIRE_TRUST=1` for production Render builds that back an Android release. With that guard
 enabled, `pnpm render:prepare` fails instead of deploying the placeholder trust file.
 
 The native Android APK uses `https://agenticwalletadapter.com/#app` only when its optional web fallback is built with
-`AGENTIC_ANDROID_ENABLE_WEB_FALLBACK=true`. Keep the Render static rewrite rule `/*` to `/index.html` enabled so direct
-browser visits to client-side routes such as `/app` and `/demo` also resolve.
+`AGENTIC_ANDROID_ENABLE_WEB_FALLBACK=true`. The Node web service handles direct browser visits to client-side routes
+such as `/app` and `/demo`.
 
 ## Local Verification
 
@@ -97,6 +112,8 @@ Before deploying, run:
 ```sh
 pnpm install --frozen-lockfile --ignore-scripts
 pnpm render:build
+pnpm -F @solana-agent-wallet-adapter/render-web build
+pnpm -F @solana-agent-wallet-adapter/render-web test
 pnpm -F @solana-agent-wallet-adapter/browser-demo typecheck
 pnpm verify:release-links
 ```

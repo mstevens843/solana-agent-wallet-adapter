@@ -1,15 +1,12 @@
 services:
   - type: web
     name: agentic
-    runtime: static
-    buildCommand: pnpm install --frozen-lockfile --ignore-scripts && pnpm render:build
-    staticPublishPath: apps/browser-demo/dist
+    runtime: node
+    buildCommand: pnpm install --frozen-lockfile --ignore-scripts && pnpm render:build && pnpm -F @solana-agent-wallet-adapter/render-web build
+    startCommand: pnpm -F @solana-agent-wallet-adapter/render-web start
+    healthCheckPath: /api/ai/status
     envVars:
       - key: SKIP_INSTALL_DEPS
         value: "true"
       - key: VITE_AGENTIC_DEV_CONTROLS
         value: "false"
-    routes:
-      - type: rewrite
-        source: "/*"
-        destination: /index.html

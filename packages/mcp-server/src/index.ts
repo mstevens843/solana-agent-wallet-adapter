@@ -8,6 +8,7 @@ export { createBridgeServer } from './bridgeServer.js';
 export { DEFAULT_CONFIG, loadConfig, normalizeConfig } from './config.js';
 export type { AgentWalletConfig, TokenLimitConfig } from './config.js';
 export { JsonPreparedActionStore, defaultPreparedActionStorePath } from './preparedActions.js';
+export { JsonLabArtifactStore, defaultLabArtifactStorePath } from './labArtifacts.js';
 export type {
   PreparedAction,
   PreparedActionKind,
@@ -15,6 +16,11 @@ export type {
   PreparedActionStore,
   RecurringPayment,
 } from './preparedActions.js';
+export type {
+  LabArtifact,
+  LabArtifactPayload,
+  LabArtifactStore,
+} from './labArtifacts.js';
 export {
   AgentWalletActionService,
   assertPreparedActionExecutable,
@@ -29,3 +35,11 @@ export type {
   SwapInput,
   UpdateRecurringPaymentInput,
 } from './actionService.js';
+export { BridgeAiPlanner } from './aiPlanner.js';
+export type {
+  AiApiFormat,
+  AiPlan,
+  AiPlanRequest,
+  AiPlanTemplateContext,
+  AiStatus,
+} from './aiPlanner.js';

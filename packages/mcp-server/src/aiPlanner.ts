@@ -2,7 +2,7 @@ import { ProtocolError } from '@solana-agent-wallet-adapter/core';
 
 import { redactSecrets } from './trace.js';
 
-type AiApiFormat = 'openai-compatible' | 'anthropic';
+export type AiApiFormat = 'openai-compatible' | 'anthropic';
 
 export interface AiPlanTemplateContext {
   id: string;

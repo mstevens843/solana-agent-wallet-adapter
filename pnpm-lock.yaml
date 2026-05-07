@@ -114,6 +114,22 @@ importers:
         specifier: ^5.4.0
         version: 5.4.21(@types/node@22.19.17)(terser@5.46.2)
 
+  apps/render-web:
+    dependencies:
+      '@solana-agent-wallet-adapter/mcp-server':
+        specifier: workspace:*
+        version: link:../../packages/mcp-server
+    devDependencies:
+      '@types/node':
+        specifier: ^22.7.0
+        version: 22.19.17
+      typescript:
+        specifier: ^5.6.0
+        version: 5.9.3
+      vitest:
+        specifier: ^2.1.0
+        version: 2.1.9(@types/node@22.19.17)(terser@5.46.2)
+
   packages/cli:
     devDependencies:
       '@solana-agent-wallet-adapter/mcp-server':

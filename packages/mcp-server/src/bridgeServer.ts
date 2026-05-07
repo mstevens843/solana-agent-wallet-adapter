@@ -18,6 +18,7 @@ import { BridgeAiPlanner, type AiPlanRequest } from './aiPlanner.js';
 import { requireMainnetEnabled, type AgentWalletConfig, type TokenLimitConfig } from './config.js';
 import { assertMaxAmount, parseDecimalAmount } from './amounts.js';
 import { LocalBridgeBackend } from './localBridgeBackend.js';
+import type { LabArtifact, LabArtifactStore } from './labArtifacts.js';
 import type { PreparedActionStore, PreparedActionTxStatus } from './preparedActions.js';
 import { trace } from './trace.js';
 
@@ -31,6 +32,7 @@ export interface CreateBridgeServerOptions {
   backend: LocalBridgeBackend | IosLinkBackend;
   actionConfig?: AgentWalletConfig;
   preparedActions?: PreparedActionStore;
+  labArtifacts?: LabArtifactStore;
   host?: string;
   port?: number;
 }
@@ -41,6 +43,7 @@ export function createBridgeServer(options: CreateBridgeServerOptions): BridgeSe
   const backend = options.backend;
   const actionConfig = options.actionConfig;
   const preparedActions = options.preparedActions;
+  const labArtifacts = options.labArtifacts;
   const actionService = actionConfig
     ? new AgentWalletActionService({
         backend,
@@ -59,7 +62,7 @@ export function createBridgeServer(options: CreateBridgeServerOptions): BridgeSe
     async start() {
       await new Promise<void>((resolve, reject) => {
         server = createServer((req, res) => {
-          void handleRequest(req, res, backend, actionConfig, preparedActions, actionService, aiPlanner);
+          void handleRequest(req, res, backend, actionConfig, preparedActions, labArtifacts, actionService, aiPlanner);
         });
         server.once('error', reject);
         server.listen(port, host, () => resolve());
@@ -81,6 +84,7 @@ async function handleRequest(
   backend: LocalBridgeBackend | IosLinkBackend,
   actionConfig: AgentWalletConfig | undefined,
   preparedActions: PreparedActionStore | undefined,
+  labArtifacts: LabArtifactStore | undefined,
   actionService: AgentWalletActionService | undefined,
   aiPlanner: BridgeAiPlanner,
 ): Promise<void> {
@@ -236,6 +240,16 @@ async function handleRequest(
       writeJson(res, 200, actionService ? await actionService.receipts() : { receipts: [] });
       return;
     }
+    if (req.method === 'GET' && url.pathname === '/bridge/lab-artifacts') {
+      writeJson(res, 200, { artifacts: labArtifacts ? await labArtifacts.listArtifacts() : [] });
+      return;
+    }
+    if (req.method === 'POST' && url.pathname === '/bridge/lab-artifacts') {
+      const body = (await readJson(req)) as { artifact?: unknown };
+      const artifact = requireLabArtifact(body.artifact);
+      writeJson(res, 200, { artifact: await requireLabArtifactStore(labArtifacts).upsertArtifact(artifact) });
+      return;
+    }
     if (req.method === 'GET' && url.pathname === '/bridge/health') {
       const caps = await backend.capabilities().catch(() => null);
       const rpcWritable = actionConfig
@@ -252,6 +266,7 @@ async function handleRequest(
         mainnetEnabled: actionConfig?.mainnet.enabled ?? false,
         capsEnabled: Boolean(actionConfig?.mainnet.enabled),
         preparedActionStorePath: preparedActions?.getStoragePath?.() ?? null,
+        labArtifactStorePath: labArtifacts?.getStoragePath?.() ?? null,
       });
       return;
     }
@@ -505,6 +520,39 @@ function requireActionService(actionService: AgentWalletActionService | undefine
     throw new ProtocolError('unsupported_method', 'Bridge action service is not configured.');
   }
   return actionService;
+}
+
+function requireLabArtifactStore(labArtifacts: LabArtifactStore | undefined): LabArtifactStore {
+  if (!labArtifacts) {
+    throw new ProtocolError('unsupported_method', 'Bridge lab artifact archive is not configured.');
+  }
+  return labArtifacts;
+}
+
+function requireLabArtifact(value: unknown): LabArtifact {
+  if (!value || typeof value !== 'object') {
+    throw new ProtocolError('invalid_request', 'Missing lab artifact.');
+  }
+  const artifact = value as Partial<LabArtifact>;
+  if (
+    typeof artifact.id !== 'string' ||
+    typeof artifact.labId !== 'string' ||
+    typeof artifact.title !== 'string' ||
+    typeof artifact.kind !== 'string' ||
+    typeof artifact.createdAt !== 'string' ||
+    typeof artifact.walletAddress !== 'string' ||
+    typeof artifact.cluster !== 'string' ||
+    typeof artifact.input !== 'string' ||
+    typeof artifact.preSignatureHash !== 'string' ||
+    typeof artifact.signingMessage !== 'string' ||
+    typeof artifact.signature !== 'string' ||
+    typeof artifact.verified !== 'boolean' ||
+    typeof artifact.artifactHash !== 'string' ||
+    !artifact.payload
+  ) {
+    throw new ProtocolError('invalid_request', 'Invalid lab artifact.');
+  }
+  return artifact as LabArtifact;
 }
 
 function isLocalBridgeBackend(backend: WalletBackend): backend is LocalBridgeBackend {

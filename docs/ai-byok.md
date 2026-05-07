@@ -9,8 +9,11 @@ templates for common Solana wallet plans, and the wallet still performs every si
   approval proof in their wallet. The notes box is included in the plan review and signed approval message.
 - **Local bridge BYOK:** recommended for desktop and CLI users. The key stays on the user's machine and the hosted site
   talks only to the local bridge.
+- **Hosted BYOK:** default for the deployed web app. The user enters a provider key in the browser, the same-origin
+  Agentic web server relays one plan-generation request to the selected provider, and the key is not stored or logged.
 - **Session BYOK:** fallback for Android and browser-only users. The key is held in browser memory for the current
-  session and is forgotten on refresh or close.
+  session and is forgotten on refresh or close. Raw OpenAI keys should not use this path because OpenAI does not allow
+  exposing API keys in browser/mobile clients.
 
 ## Local Bridge Env
 
@@ -39,10 +42,13 @@ solana-agent-wallet app
 OpenAI-compatible gateways such as OpenRouter, Gemini's OpenAI-compatible endpoint, Cloudflare AI Gateway, Vercel AI
 Gateway, or a self-hosted proxy can be used by changing `AGENTIC_AI_PROVIDER`, `AGENTIC_AI_BASE_URL`, and
 `AGENTIC_AI_MODEL`. In the browser app, selecting a provider preset fills the matching base URL and starter model.
+Hosted BYOK accepts preset providers only: OpenAI, Claude / Anthropic, Gemini, and OpenRouter.
 
 ## Security Rules
 
 - Do not put user AI keys in Render environment variables for public BYOK.
+- Hosted BYOK must treat the user key as request-scoped secret material: no persistence, no logs, no receipts, and no
+  echoing provider errors that include the key.
 - Do not put AI keys in URLs, checked-in config, prepared-action notes, receipts, issue reports, or screenshots.
 - Prefer provider keys with low spending limits and easy revocation.
 - AI output is only a draft plan. It cannot approve, sign, submit, or bypass wallet review.

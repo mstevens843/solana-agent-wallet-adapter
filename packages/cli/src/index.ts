@@ -12,9 +12,11 @@ import * as readline from 'node:readline/promises';
 
 import {
   DEFAULT_CONFIG,
+  JsonLabArtifactStore,
   JsonPreparedActionStore,
   LocalBridgeBackend,
   createBridgeServer,
+  defaultLabArtifactStorePath,
   loadConfig,
 } from '@solana-agent-wallet-adapter/mcp-server';
 
@@ -58,6 +60,7 @@ interface GlobalOptions {
   envPath: string;
   configPath: string;
   preparedActionsPath: string;
+  labArtifactsPath: string;
   walletHostDir: string;
   json: boolean;
   color: boolean;
@@ -139,6 +142,7 @@ interface BridgeHealth {
   mainnetEnabled?: boolean;
   capsEnabled?: boolean;
   preparedActionStorePath?: string | null;
+  labArtifactStorePath?: string | null;
 }
 
 interface WalletStatus {
@@ -1451,6 +1455,7 @@ async function serveBridge(options: GlobalOptions): Promise<void> {
     backend,
     actionConfig: config,
     preparedActions: new JsonPreparedActionStore(options.preparedActionsPath),
+    labArtifacts: new JsonLabArtifactStore(options.labArtifactsPath),
     host,
     port,
   });
@@ -1580,6 +1585,7 @@ async function ensureRuntimeFiles(options: GlobalOptions): Promise<void> {
   await mkdir(options.runtimeDir, { recursive: true });
   await mkdir(dirname(options.configPath), { recursive: true });
   await mkdir(dirname(options.preparedActionsPath), { recursive: true });
+  await mkdir(dirname(options.labArtifactsPath), { recursive: true });
   if (!existsSync(options.configPath)) {
     await writeFile(options.configPath, `${stableJson(DEFAULT_CONFIG)}\n`, 'utf8');
   }
@@ -1669,6 +1675,8 @@ function childGlobalArgs(options: GlobalOptions): string[] {
     options.configPath,
     '--prepared-actions',
     options.preparedActionsPath,
+    '--lab-artifacts',
+    options.labArtifactsPath,
     '--wallet-host-dir',
     options.walletHostDir,
   ];
@@ -1694,6 +1702,7 @@ function bridgeEnv(options: GlobalOptions): NodeJS.ProcessEnv {
     ...process.env,
     BRIDGE_TOKEN: options.token,
     AGENT_WALLET_PREPARED_ACTIONS: options.preparedActionsPath,
+    AGENT_WALLET_LAB_ARTIFACTS: options.labArtifactsPath,
   };
 }
 
@@ -1797,11 +1806,13 @@ async function runDoctor(options: GlobalOptions): Promise<JsonRecord> {
     runtimeDir: options.runtimeDir,
     configPath: options.configPath,
     preparedActionsPath: options.preparedActionsPath,
+    labArtifactsPath: options.labArtifactsPath,
     walletHostDir: options.walletHostDir,
     files: {
       env: existsSync(options.envPath),
       config: existsSync(options.configPath),
       preparedActionsDir: existsSync(dirname(options.preparedActionsPath)),
+      labArtifactsDir: existsSync(dirname(options.labArtifactsPath)),
       walletHostAssets: walletHostAssetsAvailable(options),
     },
     bridge: bridgeHealth.ok ? { reachable: true, health: bridgeHealth.value } : {
@@ -2287,6 +2298,7 @@ Global options:
   --env <path>               Bridge .env path
   --config <path>            agent-wallet.config.json path
   --prepared-actions <path>  Prepared action store path
+  --lab-artifacts <path>     Signed lab artifact archive path
   --wallet-host-dir <path>   Built wallet host static asset directory
   --json                     Print scriptable JSON
   --no-color                 Disable ANSI colors
@@ -2355,6 +2367,9 @@ function parseArgs(argv: string[]): ParsedArgs {
     preparedActionsPath: repoRoot
       ? join(repoRoot, '.agent-wallet', 'prepared-actions.json')
       : join(runtimeDir, 'prepared-actions.json'),
+    labArtifactsPath: repoRoot
+      ? join(repoRoot, '.agent-wallet', 'lab-artifacts.json')
+      : join(runtimeDir, 'lab-artifacts.json'),
     walletHostDir: defaultWalletHostDir(),
     json: false,
     color: process.env.NO_COLOR !== '1',
@@ -2410,6 +2425,7 @@ function parseArgs(argv: string[]): ParsedArgs {
       options.envPath = join(options.repoRoot, '.env');
       options.configPath = join(options.repoRoot, 'agent-wallet.config.json');
       options.preparedActionsPath = join(options.repoRoot, '.agent-wallet', 'prepared-actions.json');
+      options.labArtifactsPath = defaultLabArtifactStorePath(options.preparedActionsPath);
       index = value.index;
       continue;
     }
@@ -2419,6 +2435,7 @@ function parseArgs(argv: string[]): ParsedArgs {
       options.envPath = join(options.runtimeDir, '.env');
       options.configPath = join(options.runtimeDir, 'agent-wallet.config.json');
       options.preparedActionsPath = join(options.runtimeDir, 'prepared-actions.json');
+      options.labArtifactsPath = defaultLabArtifactStorePath(options.preparedActionsPath);
       index = value.index;
       continue;
     }
@@ -2437,6 +2454,13 @@ function parseArgs(argv: string[]): ParsedArgs {
     if (flag === '--prepared-actions') {
       const value = optionArgument(argv, index, flag, inlineValue);
       options.preparedActionsPath = resolve(value.value);
+      options.labArtifactsPath = defaultLabArtifactStorePath(options.preparedActionsPath);
+      index = value.index;
+      continue;
+    }
+    if (flag === '--lab-artifacts') {
+      const value = optionArgument(argv, index, flag, inlineValue);
+      options.labArtifactsPath = resolve(value.value);
       index = value.index;
       continue;
     }

@@ -12,11 +12,15 @@ pnpm demo:browser
 
 Open `http://127.0.0.1:5174`. The workspace discovers installed Solana wallets, connects one account, signs a demo message, signs devnet memo transactions, and can talk to the local bridge when a runtime is running.
 
-Build the deployable static site with:
+Build the deployable browser assets with:
 
 ```sh
-pnpm -F @solana-agent-wallet-adapter/browser-demo build
+pnpm render:build
 ```
+
+The Render build writes route fallback files for `/app`, `/docs`, `/cli`, `/desktop`, `/demo`, `/terms`, and
+`/privacy`. The deployed Node service in `apps/render-web` also serves `index.html` for SPA hard refreshes and exposes
+the hosted BYOK AI planning endpoint.
 
 ## Public CLI Paths
 
@@ -55,7 +59,8 @@ The desktop section links release artifacts from GitHub Releases with these expe
 - `agentic-desktop-windows-x64.msi`
 - `agentic-desktop-linux-x64.AppImage`
 
-The desktop app and CLI still run locally on the user's machine. Render only hosts the public static website.
+The desktop app and CLI still run locally on the user's machine. Render hosts the public website and hosted BYOK AI
+planning proxy.
 
 ## Android App
 
@@ -77,16 +82,18 @@ pnpm android:assetlinks:write -- --keystore /absolute/path/agentic-release.jks -
 
 ## Render Deployment
 
-This app is deployable as a Render Static Site using the root `render.yaml` blueprint. Manual Render settings are:
+This app is deployed behind the same-origin Render Node service in `apps/render-web` using the root `render.yaml`
+blueprint. Manual Render settings are:
 
 - Root directory: repository root
-- Build command: `pnpm install --frozen-lockfile --ignore-scripts && pnpm render:build`
-- Publish directory: `apps/browser-demo/dist`
+- Runtime: Node
+- Build command: `pnpm install --frozen-lockfile --ignore-scripts && pnpm render:build && pnpm -F @solana-agent-wallet-adapter/render-web build`
+- Start command: `pnpm -F @solana-agent-wallet-adapter/render-web start`
+- Health check path: `/api/ai/status`
 - Environment variable: `SKIP_INSTALL_DEPS=true`
 - Production UI env: `VITE_AGENTIC_DEV_CONTROLS=false`
 - Optional Android trust env: `AGENTIC_ANDROID_SHA256_CERT_FINGERPRINTS`
 - Production Android trust guard: `AGENTIC_ANDROID_REQUIRE_TRUST=1`
-- Rewrite rule: `/*` to `/index.html`
 
 See [Render deployment notes](../../docs/deploy/render.md) for the full handoff.
 
@@ -94,8 +101,9 @@ See [Render deployment notes](../../docs/deploy/render.md) for the full handoff.
 
 - `Agent Plan`: wallet-gated agent request flow with off-chain approval proofs and bridge-backed approval queue actions.
 - `Wallet Flow`: Wallet Standard discovery, account connection, message signing, transaction signing, and devnet sign-and-send.
-- `Approval Inbox`: prepared actions and recurring manual-approval schedules from the local bridge.
-- `Agent Labs`: deterministic wallet-signed artifacts for agent safety, policy, receipt, and outcome concepts.
+- `Approval Inbox`: prepared actions and recurring approval items from the local bridge.
+- `Create Recurring`: recurring approval setup; each occurrence still lands in Approval Inbox for wallet review.
+- `Artifacts`: `Create Artifact` and `Signed Artifacts` views for deterministic wallet-signed audit records.
 
 Android mobile web remains additive: run `pnpm dev:mobile` from the repo root, open the printed LAN URL in Android
 Chrome, and `@solana-agent-wallet-adapter/mwa-mobile-web` registers Mobile Wallet Adapter as another Wallet Standard

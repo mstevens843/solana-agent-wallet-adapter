@@ -52,7 +52,7 @@ export interface AgentPlanTemplate {
 }
 
 export interface AiSettings {
-  mode: 'session' | 'bridge';
+  mode: 'hosted' | 'session' | 'bridge';
   provider: AiProviderId;
   apiFormat: AiApiFormat;
   baseUrl: string;
@@ -375,6 +375,40 @@ export async function generateSessionAiPlan(
   return generateOpenAiCompatiblePlan(settings, request);
 }
 
+export async function generateHostedAiPlan(
+  settings: AiSettings,
+  request: AiPlanRequest,
+): Promise<AgentPlan> {
+  if (!settings.apiKey.trim()) {
+    throw new Error('Hosted BYOK key is required.');
+  }
+  const response = await fetch('/api/ai/generate-plan', {
+    method: 'POST',
+    headers: {
+      'content-type': 'application/json',
+    },
+    body: JSON.stringify({
+      settings: {
+        apiKey: settings.apiKey,
+        provider: settings.provider,
+        apiFormat: settings.apiFormat,
+        baseUrl: settings.baseUrl,
+        model: settings.model,
+      },
+      request,
+    }),
+  }).catch((err) => {
+    throw new Error(
+      `Hosted AI request failed. ${err instanceof Error ? err.message : String(err)}`,
+    );
+  });
+  const payload = await response.json().catch(() => ({})) as unknown;
+  if (!response.ok) {
+    throw new Error(redactSecrets(extractProviderError(payload) || `Hosted AI returned HTTP ${response.status}.`));
+  }
+  return normalizeHostedAiPlan(payload, request);
+}
+
 async function generateOpenAiCompatiblePlan(settings: AiSettings, request: AiPlanRequest): Promise<AgentPlan> {
   const baseUrl = normalizeBaseUrl(settings.baseUrl, 'openai-compatible');
   const response = await fetch(`${baseUrl}/chat/completions`, {
@@ -400,6 +434,40 @@ async function generateOpenAiCompatiblePlan(settings: AiSettings, request: AiPla
     throw new Error(redactSecrets(extractProviderError(payload) || `AI provider returned HTTP ${response.status}.`));
   }
   return normalizeAiPlan(payload, request);
+}
+
+function normalizeHostedAiPlan(payload: unknown, request: AiPlanRequest): AgentPlan {
+  if (!payload || typeof payload !== 'object') {
+    return normalizeAiPlan(payload, request);
+  }
+  const record = payload as Partial<AgentPlan>;
+  const fields = Array.isArray(record.fields)
+    ? record.fields.filter((field): field is AgentPlanField => (
+        Boolean(field) &&
+        typeof field === 'object' &&
+        typeof field.label === 'string' &&
+        typeof field.value === 'string'
+      ))
+    : Object.entries(request.parameters)
+        .filter(([, value]) => value.trim().length > 0)
+        .map(([key, value]) => ({ label: titleCase(key), value }));
+  const safeguards = Array.isArray(record.safeguards)
+    ? record.safeguards.filter((entry): entry is string => typeof entry === 'string' && entry.trim().length > 0)
+    : SHARED_SAFEGUARDS;
+  return {
+    intent: stringOr(record.intent, `${request.template.title}: ${request.prompt}`),
+    route: stringOr(record.route, `Draft ${request.template.actionType} request and show route details before wallet approval.`),
+    risk: stringOr(record.risk, `Risk level ${request.template.risk}. Verify all visible fields before signing.`),
+    approval: stringOr(record.approval, 'Wallet approval remains a separate explicit user action.'),
+    source: 'ai',
+    category: stringOr(record.category, request.template.category),
+    actionType: stringOr(record.actionType, request.template.actionType),
+    templateTitle: stringOr(record.templateTitle, request.template.title),
+    userNotes: typeof record.userNotes === 'string' ? record.userNotes : request.userNotes,
+    parameters: record.parameters && typeof record.parameters === 'object' ? record.parameters : request.parameters,
+    fields,
+    safeguards,
+  };
 }
 
 async function generateAnthropicPlan(settings: AiSettings, request: AiPlanRequest): Promise<AgentPlan> {
