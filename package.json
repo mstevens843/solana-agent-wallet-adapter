@@ -47,6 +47,7 @@
     "demo:agent": "pnpm -F reference-agent dev",
     "demo:agent:build": "pnpm -F reference-agent build",
     "verify:release-links": "node scripts/verify-release-links.mjs",
+    "verify:release-links:live": "node scripts/verify-release-links.mjs --live",
     "clean": "pnpm -r exec rm -rf dist .turbo node_modules/.cache"
   },
   "devDependencies": {

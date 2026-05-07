@@ -2164,6 +2164,27 @@ code {
   width: 100%;
 }
 
+.public-wallet-actions.native-wallet-actions {
+  grid-template-columns: minmax(0, 1fr);
+}
+
+.wallet-connect-cta {
+  align-items: center;
+  display: inline-flex;
+  gap: 8px;
+  justify-content: center;
+}
+
+.wallet-button-icon {
+  flex: 0 0 auto;
+  height: 18px;
+  width: 18px;
+}
+
+.wallet-button-icon path {
+  fill: currentColor;
+}
+
 .bridge-box p,
 .mobile-wallet-box p,
 .custody-manifest p,
@@ -6166,6 +6187,11 @@ code {
     gap: 7px;
     grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
     margin-top: 8px;
+  }
+
+  .route-app .public-wallet-actions.native-wallet-actions,
+  .route-demo .public-wallet-actions.native-wallet-actions {
+    grid-template-columns: minmax(0, 1fr);
   }
 
   .route-app .public-wallet-actions button,

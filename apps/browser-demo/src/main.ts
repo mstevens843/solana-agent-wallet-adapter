@@ -57,9 +57,10 @@ import './styles.css';
 
 type StepState = 'idle' | 'active' | 'done' | 'error';
 type StepName = 'discover' | 'connect' | 'sign' | 'transaction' | 'bridge' | 'inbox' | 'lab' | 'ai';
-type ActiveTab = 'wallet' | 'agent' | 'inbox' | 'schedule' | 'labs';
+type ActiveTab = 'wallet' | 'agent' | 'generated' | 'inbox' | 'schedule' | 'labs';
 type ArtifactView = 'create' | 'signed';
 type ToastKind = 'success' | 'error' | 'pending';
+type GeneratedPlanStatus = 'draft' | 'signed' | 'queued' | 'archived';
 type RuntimePathId = 'exec' | 'install' | 'desktop';
 type AppRoute = (typeof ROUTE_PATHS)[number];
 type InboxFilter = 'all' | 'ready' | 'scheduled' | 'approved' | 'failed' | 'rejected' | 'one-time' | 'recurring';
@@ -121,6 +122,8 @@ const DEFAULT_BRIDGE_URL = 'http://127.0.0.1:8787';
 const DEFAULT_BRIDGE_TOKEN = 'local-agent-wallet';
 const DEFAULT_AGENT_PROMPT = '';
 const STORAGE_KEY = 'solana-agent-wallet-demo-v2';
+const GENERATED_PLANS_STORAGE_KEY = 'solana-agent-wallet-generated-plans-v1';
+const GENERATED_PLANS_LIMIT = 100;
 const LAB_STORAGE_KEY = 'solana-agent-wallet-lab-artifacts-v1';
 const LAB_ARCHIVE_DB_NAME = 'solana-agent-wallet-lab-artifacts';
 const LAB_ARCHIVE_DB_VERSION = 1;
@@ -332,6 +335,20 @@ interface Toast {
   message: string;
 }
 
+interface GeneratedPlanRecord {
+  id: string;
+  plan: AgentPlan;
+  createdAt: string;
+  updatedAt: string;
+  source: AgentPlan['source'];
+  templateId: string;
+  templateTitle: string;
+  prompt: string;
+  status: GeneratedPlanStatus;
+  signature?: string;
+  preparedActionId?: string;
+}
+
 interface RuntimePath {
   id: RuntimePathId;
   eyebrow: string;
@@ -524,6 +541,9 @@ interface DemoState {
   agentPlan: AgentPlan | null;
   agentSignature: string;
   agentPreparedActionId: string;
+  generatedPlans: GeneratedPlanRecord[];
+  selectedGeneratedPlanId: string;
+  showArchivedGeneratedPlans: boolean;
   aiSettings: AiSettings;
   aiSettingsPanelOpen: boolean | null;
   aiStatus: BridgeAiStatus | null;
@@ -531,6 +551,7 @@ interface DemoState {
   capabilities: AdapterCapabilities | null;
   error: string;
   busy: boolean;
+  activeOperation: 'generate-template-plan' | 'generate-ai-plan' | null;
   cluster: Cluster;
   bridgeUrl: string;
   bridgeToken: string;
@@ -667,6 +688,7 @@ const initialCluster = SHOW_DEV_CONTROLS ? (persisted.cluster ?? 'mainnet-beta')
 const initialTemplate = templateById('custom-request');
 const defaultWorkspaceTab: ActiveTab = 'agent';
 const initialAiSettings = persistedAiSettings(persisted);
+const initialGeneratedPlans = loadGeneratedPlans();
 
 const state: DemoState = {
   activeTab: defaultWorkspaceTab,
@@ -696,6 +718,9 @@ const state: DemoState = {
   agentPlan: null,
   agentSignature: '',
   agentPreparedActionId: '',
+  generatedPlans: initialGeneratedPlans,
+  selectedGeneratedPlanId: initialGeneratedPlans.find((record) => record.status !== 'archived')?.id ?? initialGeneratedPlans[0]?.id ?? '',
+  showArchivedGeneratedPlans: false,
   aiSettings: {
     ...initialAiSettings,
     apiKey: '',
@@ -706,6 +731,7 @@ const state: DemoState = {
   capabilities: null,
   error: '',
   busy: false,
+  activeOperation: null,
   cluster: initialCluster,
   bridgeUrl: persisted.bridgeUrl ?? DEFAULT_BRIDGE_URL,
   bridgeToken: persisted.bridgeToken ?? DEFAULT_BRIDGE_TOKEN,
@@ -1865,10 +1891,6 @@ function homepageFooter(): string {
       </div>
       <nav aria-label="Footer navigation">
         <a href="/docs">Docs</a>
-        <a href="/cli">CLI</a>
-        <a href="/desktop">Desktop App</a>
-        <a href="/demo">Demo</a>
-        <a class="launch-app-link footer-launch-app-link" href="/app">Launch App</a>
         <a href="${RELEASE_PAGE_URL}" target="_blank" rel="noreferrer">Releases</a>
         <a href="/terms">Terms</a>
         <a href="/privacy">Privacy</a>
@@ -1976,6 +1998,7 @@ function appWorkspace(mode: 'app' | 'demo' = 'app'): string {
                 tabButton('wallet', 'Wallet')
               */ ''}
               ${tabButton('agent', 'Agent Plan', 'Plan')}
+              ${tabButton('generated', 'Generated Plans', 'Plans')}
               ${tabButton('inbox', 'Approval Inbox', 'Inbox')}
               ${tabButton('schedule', 'Create Recurring', 'Recur')}
               ${tabButton('labs', 'Artifacts')}
@@ -2212,15 +2235,33 @@ function publicWalletActions(): string {
       </div>
     `;
   }
+  if (nativeWallet) {
+    return `
+      <div class="wallet-actions public-wallet-actions native-wallet-actions">
+        <button data-start-action="connect" class="primary wallet-connect-cta" ${state.busy ? 'disabled' : ''}>
+          ${walletButtonIcon()}
+          <span>Connect wallet</span>
+        </button>
+      </div>
+    `;
+  }
   return `
     <div class="wallet-actions public-wallet-actions">
-      <button data-start-action="discover" class="${state.wallets.length || nativeWallet ? '' : 'primary'}" ${state.busy ? 'disabled' : ''}>
-        ${androidNative ? 'Discover' : iosNative ? 'Refresh iOS' : state.wallets.length ? 'Refresh' : 'Discover'}
+      <button data-start-action="discover" class="${state.wallets.length ? '' : 'primary'}" ${state.busy ? 'disabled' : ''}>
+        ${state.wallets.length ? 'Refresh' : 'Discover'}
       </button>
-      <button data-start-action="connect" class="${state.wallets.length || nativeWallet ? 'primary' : ''}" ${(!nativeWallet && (state.wallets.length === 0 || !selectedProvider)) || state.busy ? 'disabled' : ''} title="${!nativeWallet && !selectedProvider ? 'Discover and select a wallet provider first.' : ''}">
+      <button data-start-action="connect" class="${state.wallets.length ? 'primary' : ''}" ${(state.wallets.length === 0 || !selectedProvider) || state.busy ? 'disabled' : ''} title="${!selectedProvider ? 'Discover and select a wallet provider first.' : ''}">
         Connect wallet
       </button>
     </div>
+  `;
+}
+
+function walletButtonIcon(): string {
+  return `
+    <svg class="wallet-button-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+      <path d="M19 7h-1V6.5A2.5 2.5 0 0 0 15.5 4H5.75A3.75 3.75 0 0 0 2 7.75v8.5A3.75 3.75 0 0 0 5.75 20H19a3 3 0 0 0 3-3v-7a3 3 0 0 0-3-3Zm-3-1a.5.5 0 0 1 .5.5V7H5.75a1.25 1.25 0 0 1 0-2.5h9.75ZM20 17a1 1 0 0 1-1 1H5.75A1.75 1.75 0 0 1 4 16.25V8.76c.52.16 1.08.24 1.75.24H19a1 1 0 0 1 1 1v7Zm-4.5-4.5a1.25 1.25 0 1 0 0 2.5 1.25 1.25 0 0 0 0-2.5Z"></path>
+    </svg>
   `;
 }
 
@@ -2374,8 +2415,13 @@ function guidedStartPanel(title: string, detail: string): string {
         ${guidedStep('3', 'Connect', 'Authorize this app in the wallet', Boolean(state.address))}
       </div>
       <div class="guided-actions">
-        <button data-start-action="discover" class="${state.wallets.length || nativeWallet ? '' : 'primary'}" ${state.busy ? 'disabled' : ''}>${androidNative ? 'Discover wallets' : iosNative ? 'Refresh iOS state' : 'Discover wallets'}</button>
-        <button data-start-action="connect" class="${state.wallets.length || nativeWallet ? 'primary' : ''}" ${(!nativeWallet && (state.wallets.length === 0 || !selectedProvider)) || state.busy ? 'disabled' : ''} title="${!nativeWallet && !selectedProvider ? 'Discover and select a wallet provider first.' : ''}">Connect wallet</button>
+        ${nativeWallet ? `
+        <button data-start-action="connect" class="primary wallet-connect-cta" ${state.busy ? 'disabled' : ''}>
+          ${walletButtonIcon()}
+          <span>Connect wallet</span>
+        </button>` : `
+        <button data-start-action="discover" class="${state.wallets.length ? '' : 'primary'}" ${state.busy ? 'disabled' : ''}>Discover wallets</button>
+        <button data-start-action="connect" class="${state.wallets.length ? 'primary' : ''}" ${(state.wallets.length === 0 || !selectedProvider) || state.busy ? 'disabled' : ''} title="${!selectedProvider ? 'Discover and select a wallet provider first.' : ''}">Connect wallet</button>`}
       </div>
       <p class="guided-note">Bridge review, recurring approvals, artifact creation, and transaction tools unlock after a wallet is connected.</p>
     </section>
@@ -2546,6 +2592,8 @@ function activePanel(): string {
       return walletFlowPanel();
     case 'agent':
       return agentPlanPanel();
+    case 'generated':
+      return generatedPlansPanel();
     case 'inbox':
       return approvalInboxPanel();
     case 'schedule':
@@ -3880,7 +3928,7 @@ async function runDiscover(): Promise<void> {
 async function runConnect(): Promise<void> {
   await run('connect', async () => {
     if (state.androidNativeEnvironment.isAndroidNative) {
-      await connectAndroidNativeWallet(false);
+      await connectAndroidNativeWallet(true);
       state.transactionStatus = `Android MWA wallet connected on ${state.cluster}.`;
       if (state.bridgeActive) {
         await connectBridgeHost();

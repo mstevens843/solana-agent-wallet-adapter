@@ -1,6 +1,6 @@
 [package]
 name = "solana-agent-wallet-desktop"
-version = "0.0.1"
+version = "0.1.0"
 description = "Agentic desktop runtime for Solana Agent Wallet Adapter"
 edition = "2021"
 

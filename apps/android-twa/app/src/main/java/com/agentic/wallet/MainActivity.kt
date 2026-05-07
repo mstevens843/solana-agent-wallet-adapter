@@ -164,8 +164,22 @@ class MainActivity : ComponentActivity() {
         fun mwaRequest(requestId: String, method: String, payloadJson: String) {
             activity.lifecycleScope.launch {
                 try {
+                    AgentMwaLog.info(
+                        "MainActivity",
+                        "mwaRequest",
+                        "START",
+                        "android js bridge request received",
+                        mapOf("method" to method, "requestId" to requestId),
+                    )
                     val payload = payloadObject(payloadJson)
                     val result = handleMwaRequest(method, payload)
+                    AgentMwaLog.info(
+                        "MainActivity",
+                        "mwaRequest",
+                        "SUCCESS",
+                        "android js bridge request resolved",
+                        mapOf("method" to method, "requestId" to requestId),
+                    )
                     activity.resolveMwaRequest(requestId, result)
                 } catch (err: Throwable) {
                     AgentMwaLog.warn(
@@ -173,7 +187,7 @@ class MainActivity : ComponentActivity() {
                         "mwaRequest",
                         "FAIL",
                         "android js bridge request failed",
-                        mapOf("method" to method, "class" to err.javaClass.simpleName, "message" to err.message),
+                        mapOf("method" to method, "requestId" to requestId, "class" to err.javaClass.simpleName, "message" to err.message),
                     )
                     activity.rejectMwaRequest(requestId, err)
                 }

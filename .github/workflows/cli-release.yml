@@ -14,7 +14,77 @@ on:
 permissions:
   contents: write
 
+env:
+  RELEASE_TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
+
 jobs:
+  npm:
+    name: publish npm package
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref }}
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 10.33.0
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+          registry-url: https://registry.npmjs.org
+
+      - name: Install
+        run: pnpm install --frozen-lockfile --ignore-scripts
+
+      - name: Validate npm release version
+        shell: bash
+        run: |
+          set -euo pipefail
+          case "$RELEASE_TAG" in
+            v*) ;;
+            *)
+              echo "CLI release tag must start with v. Current value: $RELEASE_TAG" >&2
+              exit 1
+              ;;
+          esac
+          package_version="$(node -p "require('./packages/cli/package.json').version")"
+          tag_version="${RELEASE_TAG#v}"
+          if [ "$package_version" != "$tag_version" ]; then
+            echo "CLI package version $package_version must match release tag $RELEASE_TAG." >&2
+            exit 1
+          fi
+
+      - name: Build CLI package
+        run: pnpm -F @solana-agent-wallet-adapter/cli build
+
+      - name: Pack CLI package
+        run: pnpm -F @solana-agent-wallet-adapter/cli pack --pack-destination "$RUNNER_TEMP" --json
+
+      - name: Publish CLI to npm
+        shell: bash
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: |
+          set -euo pipefail
+          if [ -z "${NODE_AUTH_TOKEN:-}" ]; then
+            echo "Missing NPM_TOKEN repository secret." >&2
+            exit 1
+          fi
+          package_version="$(node -p "require('./packages/cli/package.json').version")"
+          if npm view "@solana-agent-wallet-adapter/cli@$package_version" version >/dev/null 2>&1; then
+            echo "@solana-agent-wallet-adapter/cli@$package_version already exists on npm; skipping publish."
+            exit 0
+          fi
+          cd packages/cli
+          pnpm publish --access public --no-git-checks
+
   build:
     name: build ${{ matrix.target }}
     runs-on: ${{ matrix.os }}
@@ -91,7 +161,9 @@ jobs:
 
   release:
     name: publish release assets
-    needs: build
+    needs:
+      - build
+      - npm
     runs-on: ubuntu-latest
 
     steps:
@@ -104,6 +176,6 @@ jobs:
       - name: Publish GitHub Release
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
+          tag_name: ${{ env.RELEASE_TAG }}
           files: release-assets/*
           fail_on_unmatched_files: true

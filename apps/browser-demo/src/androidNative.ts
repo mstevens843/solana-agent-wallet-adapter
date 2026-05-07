@@ -37,6 +37,7 @@ interface AndroidNativeCallbackBridge {
 }
 
 interface PendingNativeRequest {
+  method: string;
   resolve(value: unknown): void;
   reject(err: Error): void;
   timer: number;
@@ -265,26 +266,41 @@ function requireAndroidNativeCluster(cluster: Cluster): Cluster {
 function androidNativeRequest<T>(method: string, payload?: unknown): Promise<T> {
   installAndroidNativeCallbackBridge();
   const bridge = androidNativeBridge();
-  const mwaRequest = bridge?.mwaRequest;
-  if (!mwaRequest) {
+  if (!bridge?.mwaRequest) {
     return Promise.reject(new ProtocolError('wallet_unreachable', 'Android native MWA bridge is not available.'));
   }
+  const injectedBridge = bridge as AndroidNativeBridge & {
+    mwaRequest: NonNullable<AndroidNativeBridge['mwaRequest']>;
+  };
   const requestId = `android-mwa-${Date.now()}-${nextRequestNonce++}`;
   return new Promise<T>((resolve, reject) => {
     const timer = window.setTimeout(() => {
       pendingNativeRequests.delete(requestId);
+      logAndroidNative('request', 'FAIL', { method, requestId, reason: 'timeout' }, 'warn');
       reject(new ProtocolError('expired', `Android native MWA request ${requestId} timed out.`));
     }, ANDROID_NATIVE_TIMEOUT_MS);
     pendingNativeRequests.set(requestId, {
+      method,
       resolve: (value) => resolve(value as T),
       reject,
       timer,
     });
     try {
-      mwaRequest(requestId, method, JSON.stringify(payload ?? {}));
+      logAndroidNative('request', 'START', { method, requestId });
+      injectedBridge.mwaRequest(requestId, method, JSON.stringify(payload ?? {}));
     } catch (err) {
       window.clearTimeout(timer);
       pendingNativeRequests.delete(requestId);
+      logAndroidNative(
+        'request',
+        'FAIL',
+        {
+          method,
+          requestId,
+          error: err instanceof Error ? err.message : String(err),
+        },
+        'warn',
+      );
       reject(protocolErrorFromUnknown(err));
     }
   });
@@ -301,6 +317,7 @@ function installAndroidNativeCallbackBridge(): void {
       if (!pending) return;
       window.clearTimeout(pending.timer);
       pendingNativeRequests.delete(requestId);
+      logAndroidNative('request', 'SUCCESS', { method: pending.method, requestId });
       pending.resolve(payload);
     },
     reject(requestId, error) {
@@ -308,6 +325,12 @@ function installAndroidNativeCallbackBridge(): void {
       if (!pending) return;
       window.clearTimeout(pending.timer);
       pendingNativeRequests.delete(requestId);
+      logAndroidNative('request', 'FAIL', {
+        method: pending.method,
+        requestId,
+        code: error.code ?? 'UNKNOWN',
+        message: error.message ?? 'Android native MWA request failed.',
+      }, 'warn');
       pending.reject(protocolErrorFromNative(error));
     },
   };
@@ -382,4 +405,21 @@ function walletNameFromStatus(status: AndroidMwaStatus | null): string {
   if (packageName.includes('jupiter')) return 'Jupiter';
   if (status?.accountLabel) return status.accountLabel;
   return 'Mobile Wallet Adapter';
+}
+
+function logAndroidNative(
+  operation: string,
+  phase: 'START' | 'SUCCESS' | 'FAIL',
+  fields: Record<string, string>,
+  level: 'info' | 'warn' = 'info',
+): void {
+  const details = Object.entries(fields)
+    .map(([key, value]) => `${key}=${JSON.stringify(value)}`)
+    .join(' ');
+  const line = `[AgentAndroidNative] ${operation} | ${phase}${details ? ` ${details}` : ''}`;
+  if (level === 'warn') {
+    console.warn(line);
+    return;
+  }
+  console.info(line);
 }
