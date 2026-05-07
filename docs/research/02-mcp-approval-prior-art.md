@@ -1,5 +1,7 @@
 # 02 - MCP approval-gated prior art
 
+> Superseded context, 2026-05-07: this note is preserved as dated research. URL Mode Elicitation later became a final standards-track SEP. Keep JSON-text plus polling as the compatibility baseline, and treat URL elicitation as the preferred path when a client advertises support.
+
 Existing MCP servers that gate actions behind explicit user confirmation. We want to copy a working pattern, not invent one.
 
 ## Patterns surveyed

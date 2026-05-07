@@ -1,6 +1,6 @@
 # @solana-agent-wallet-adapter/wallet-standard-web
 
-Browser `WalletBackend` implementation for the Solana Agent Wallet Adapter, built on the [Wallet Standard](https://github.com/wallet-standard/wallet-standard). Routes signing through any installed Solana browser wallet (Phantom, Solflare, Backpack, Glow) without holding the user's keys.
+Browser `WalletBackend` implementation built on the [Wallet Standard](https://github.com/wallet-standard/wallet-standard). Use it when an agent host runs in a browser and should route Solana signing through installed wallets such as Phantom, Solflare, Backpack, Glow, or another compatible provider.
 
 ```ts
 import { listAvailableWallets, WalletStandardWebBackend } from '@solana-agent-wallet-adapter/wallet-standard-web';
@@ -22,7 +22,7 @@ const server = createServer({ backend });
 
 ## How it works
 
-- `listAvailableWallets()` enumerates browser wallets registered through the Wallet Standard `wallets` event bus and filters to those declaring `solana:*` chain support.
+- `listAvailableWallets()` enumerates browser wallets registered through the Wallet Standard event bus and filters to wallets that declare Solana chain support.
 - `WalletStandardWebBackend` implements `WalletBackend` from `@solana-agent-wallet-adapter/core`. It uses the `StandardConnect`, `SolanaSignMessage`, `SolanaSignTransaction`, and `SolanaSignAndSendTransaction` features.
 - Submitting a signing request returns a pending `ApprovalResource` immediately, then resolves it asynchronously when the wallet's popup confirmation completes. The MCP server polls or subscribes against the same backend.
 - Simulation is reported as `unsupported_method` because Wallet Standard does not define a generic simulation feature.
@@ -30,11 +30,11 @@ const server = createServer({ backend });
 
 ## Caveats
 
-- Browser-only. Cannot run in plain Node - needs `window` and a Wallet Standard registry. Use the mock backend (`@solana-agent-wallet-adapter/mcp-server` ships one) for CI tests.
+- Browser-only. Cannot run in plain Node because it needs `window` and a Wallet Standard registry. Use the mock backend from `@solana-agent-wallet-adapter/mcp-server` for CI tests.
 - One backend instance per cluster; switching clusters requires a new instance.
 - The wallet must already be installed and registered with `getWallets()` before the backend constructs.
 - Sign-then-RPC-send needs an RPC endpoint for the selected cluster. Defaults use Solana public RPC URLs; pass `rpcUrl` if you need a dedicated endpoint.
 
 ## Status
 
-Phase 1 implementation. Unit-tested with a fake Wallet Standard wallet and smoke-tested with Backpack on devnet. Phantom and Solflare remain useful follow-up smokes.
+Unit-tested with a fake Wallet Standard wallet and smoke-tested with Backpack on devnet. Phantom and Solflare remain useful follow-up smokes.

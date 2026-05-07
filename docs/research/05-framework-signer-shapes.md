@@ -1,5 +1,7 @@
 # 05 - Framework signer interface shapes
 
+> Superseded context, 2026-05-07: this note is preserved as dated research. The Vercel AI package now targets AI SDK 5 with approval enforced at the wallet boundary through `SolanaSigningClient`, not through an agent-side `needsApproval` flag.
+
 Concrete plug-in shape for each AI agent framework we'll ship adapter packages for.
 
 ## Per-framework reference

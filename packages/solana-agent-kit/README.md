@@ -1,6 +1,6 @@
 # @solana-agent-wallet-adapter/solana-agent-kit
 
-[Solana Agent Kit](https://github.com/sendaifun/solana-agent-kit) `BaseWallet` adapter for the Solana Agent Wallet Adapter. Plugs user-approval signing into `SolanaAgentKit` alongside their built-in Privy / Turnkey / Phantom backends, with no key custody.
+[Solana Agent Kit](https://github.com/sendaifun/solana-agent-kit) `BaseWallet` adapter for the Solana Agent Wallet Adapter. Use it to keep Solana Agent Kit's action library while routing signatures through the user's installed wallet.
 
 ```ts
 import { SolanaAgentKit } from 'solana-agent-kit';
@@ -30,7 +30,7 @@ const swapResult = await agent.trade(
 
 ## What it does
 
-Implements `BaseWallet` from `solana-agent-kit` over a `WalletBackend` from `@solana-agent-wallet-adapter/core`. Every signing call submits a request to the wallet backend (browser Wallet Standard / Android MWA / iOS deeplinks / mock), polls for resolution, and returns the signed result. The agent never holds a key.
+Implements `BaseWallet` from `solana-agent-kit` over a `WalletBackend` from `@solana-agent-wallet-adapter/core`. Every signing call submits a request to the wallet backend, polls for resolution, and returns the signed result. The agent never holds a key.
 
 ## Why a non-custodial adapter
 
@@ -47,4 +47,4 @@ This adapter fills that gap. Pair it with embedded options:
 
 ## Status
 
-Phase 1: builds clean; smoke-tested against the type contract. End-to-end runtime smoke (browser → Phantom → SolanaAgentKit `trade()`) pending. The tool surface in `SolanaAgentKit` is large; expect to fix edge cases as you exercise more actions.
+Builds clean and is smoke-tested against the type contract. End-to-end runtime smoke through a browser wallet and a Solana Agent Kit action remains a release-gate follow-up.

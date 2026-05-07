@@ -1,40 +1,95 @@
-# Browser Demo
+# Agentic Browser Website
 
-Polished Wallet Standard demo for the Solana Agent Wallet Adapter.
+Public website and live browser workspace for Agentic, the Solana Agent Wallet Adapter. The site explains the local
+signing boundary, links public CLI, desktop, and Android release paths, and keeps the existing Wallet Standard demo
+available below the homepage.
+
+## Local Development
 
 ```sh
 pnpm demo:browser
 ```
 
-Open `http://127.0.0.1:5174`, discover installed Solana wallets, connect one account, and sign the demo message on devnet. The demo uses the same `WalletStandardWebBackend` and `SolanaSigningClient` that framework adapters use, so it is the quickest public proof that the agent request routes through the user's installed wallet.
+Open `http://127.0.0.1:5174`. The workspace discovers installed Solana wallets, connects one account, signs a demo message, signs devnet memo transactions, and can talk to the local bridge when a runtime is running.
 
-The app has two tabs:
+Build the deployable static site with:
 
-- `Agent Plan`: simulated agent request flow. It lets a user generate a plan and sign an off-chain approval proof with a real wallet. It does not build or execute a swap yet.
-- `Wallet Flow`: real Wallet Standard flow. It discovers installed wallets, connects, signs a message, creates a devnet memo transaction, signs transaction bytes, and can sign plus broadcast on devnet.
+```sh
+pnpm -F @solana-agent-wallet-adapter/browser-demo build
+```
 
-## What it proves
+## Public CLI Paths
 
-- Wallet Standard discovery across Phantom, Solflare, Backpack, and compatible providers.
-- Explicit wallet connection before signing.
-- Message signing with no private key in app or agent state.
-- Base64 transaction signing without broadcast.
-- Sign-and-send transaction broadcast on devnet.
-- Wallet switching across providers, for example Phantom approval on the Agent Plan tab and Backpack signing on the Wallet Flow tab.
+The website presents npm as the primary CLI path:
 
-## Recording flow
+```sh
+npm install -g @solana-agent-wallet-adapter/cli
+```
 
-The current public demo recording shows:
+Users who do not want a global install can run the local approval app through npm exec:
 
-1. Start on `Agent Plan`.
-2. Discover wallets.
-3. Select Phantom.
-4. Generate a simulated agent plan.
-5. Sign the agent approval with Phantom.
-6. Switch to `Wallet Flow`.
-7. Select Backpack.
-8. Sign a message.
-9. Create a demo devnet transaction.
-10. Sign the transaction bytes without broadcasting.
-11. Create another demo transaction.
-12. Sign and send it on devnet.
+```sh
+npm exec @solana-agent-wallet-adapter/cli -- app
+```
+
+Standalone binaries are linked from GitHub Releases with these expected asset names:
+
+- `solana-agent-wallet-macos-arm64.tar.gz`
+- `solana-agent-wallet-macos-x64.tar.gz`
+- `solana-agent-wallet-linux-x64.tar.gz`
+- `solana-agent-wallet-windows-x64.zip`
+
+Contributor-only fallbacks stay separate from public install copy:
+
+```sh
+pnpm cli -- app
+pnpm desktop:dev
+```
+
+## Desktop App
+
+The desktop section links release artifacts from GitHub Releases with these expected asset names:
+
+- `agentic-desktop-macos-arm64.dmg`
+- `agentic-desktop-macos-x64.dmg`
+- `agentic-desktop-windows-x64.msi`
+- `agentic-desktop-linux-x64.AppImage`
+
+The desktop app and CLI still run locally on the user's machine. Render only hosts the public static website.
+
+## Android App
+
+The Android section links GitHub Release artifacts with these expected asset names:
+
+- `agentic-android.apk`
+- `agentic-android.aab`
+
+The Android app is a Trusted Web Activity for the Render-hosted site, not a private-key wallet. Production trusted mode
+requires `/.well-known/assetlinks.json` to contain the release signing certificate fingerprint. Generate it with:
+
+```sh
+pnpm android:assetlinks:write -- --keystore /absolute/path/agentic-release.jks --alias agentic --storepass "$AGENTIC_ANDROID_STORE_PASSWORD"
+```
+
+## Render Deployment
+
+This app is deployable as a Render Static Site using the root `render.yaml` blueprint. Manual Render settings are:
+
+- Root directory: repository root
+- Build command: `corepack enable && pnpm install --frozen-lockfile --ignore-scripts && pnpm render:prepare && pnpm -F @solana-agent-wallet-adapter/browser-demo build`
+- Publish directory: `apps/browser-demo/dist`
+- Environment variable: `SKIP_INSTALL_DEPS=true`
+- Optional Android trust env: `AGENTIC_ANDROID_SHA256_CERT_FINGERPRINTS`
+- Production Android trust guard: `AGENTIC_ANDROID_REQUIRE_TRUST=1`
+- Rewrite rule: `/*` to `/index.html`
+
+See [Render deployment notes](../../docs/deploy/render.md) for the full handoff.
+
+## Workspace Tabs
+
+- `Agent Plan`: wallet-gated agent request flow with off-chain approval proofs and bridge-backed approval queue actions.
+- `Wallet Flow`: Wallet Standard discovery, account connection, message signing, transaction signing, and devnet sign-and-send.
+- `Approval Inbox`: prepared actions and recurring manual-approval schedules from the local bridge.
+- `Agent Labs`: deterministic wallet-signed artifacts for agent safety, policy, receipt, and outcome concepts.
+
+Android mobile web is additive. Run `pnpm dev:mobile` from the repo root, open the printed LAN URL in Android Chrome, and `@solana-agent-wallet-adapter/mwa-mobile-web` registers Mobile Wallet Adapter as another Wallet Standard option. Desktop extension wallets continue to work as before.

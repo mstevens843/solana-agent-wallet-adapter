@@ -70,6 +70,16 @@ describe('WalletStandardWebBackend', () => {
     expect(wallet.connectCalls()).toBe(1);
   });
 
+  it('can request silent reconnect without changing normal connect behavior', async () => {
+    const wallet = fakeWallet();
+    const backend = new WalletStandardWebBackend({ wallet, cluster: 'devnet' });
+
+    await expect(backend.connect({ silent: true })).resolves.toBe('FakeAddress111111111111111111111111111111');
+
+    expect(wallet.connectCalls()).toBe(1);
+    expect(wallet.connectInputs()).toEqual([{ silent: true }]);
+  });
+
   it('signs messages through a pending approval lifecycle', async () => {
     const backend = new WalletStandardWebBackend({ wallet: fakeWallet(), cluster: 'devnet' });
     const request = requestFor('sign_message', 'hello', 'utf8');
@@ -223,11 +233,13 @@ function fakeWallet(options: {
   includeSignAndSend?: boolean;
 } = {}): Wallet & {
   connectCalls(): number;
+  connectInputs(): unknown[];
   signTransactionCalls(): number;
   signAndSendCalls(): number;
   lastSignAndSendInput(): { options?: unknown } | undefined;
 } {
   let connectCalls = 0;
+  const connectInputs: unknown[] = [];
   let signTransactionCalls = 0;
   let signAndSendCalls = 0;
   let lastSignAndSendInput: { options?: unknown } | undefined;
@@ -248,8 +260,9 @@ function fakeWallet(options: {
   const features: Record<string, unknown> = {
     [StandardConnect]: {
       version: '1.0.0',
-      connect: async () => {
+      connect: async (input?: unknown) => {
         connectCalls += 1;
+        connectInputs.push(input);
         return { accounts: [account] };
       },
     },
@@ -297,12 +310,14 @@ function fakeWallet(options: {
     features,
     accounts: [account],
     connectCalls: () => connectCalls,
+    connectInputs: () => connectInputs,
     signTransactionCalls: () => signTransactionCalls,
     signAndSendCalls: () => signAndSendCalls,
     lastSignAndSendInput: () => lastSignAndSendInput,
   };
   return wallet as unknown as Wallet & {
     connectCalls(): number;
+    connectInputs(): unknown[];
     signTransactionCalls(): number;
     signAndSendCalls(): number;
     lastSignAndSendInput(): { options?: unknown } | undefined;

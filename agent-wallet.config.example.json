@@ -1,0 +1,23 @@
+{
+  "cluster": "mainnet-beta",
+  "rpcUrl": "https://api.mainnet-beta.solana.com",
+  "mainnet": {
+    "enabled": false,
+    "maxSolTransfer": "0.05",
+    "maxSwapInput": "0.05",
+    "maxSlippageBps": 100,
+    "allowArbitraryTransactions": false
+  },
+  "tokens": [
+    {
+      "symbol": "USDC",
+      "mint": "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
+      "decimals": 6,
+      "maxTransfer": "25"
+    }
+  ],
+  "jupiter": {
+    "baseUrl": "https://api.jup.ag/swap/v2",
+    "apiKeyEnv": "JUPITER_API_KEY"
+  }
+}

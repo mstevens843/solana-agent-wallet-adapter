@@ -1,0 +1,56 @@
+{
+  "name": "@solana-agent-wallet-adapter/cli",
+  "version": "0.0.1",
+  "description": "Terminal CLI for the Solana Agent Wallet Adapter local bridge.",
+  "license": "Apache-2.0",
+  "type": "module",
+  "engines": {
+    "node": ">=20"
+  },
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "bin": {
+    "solana-agent-wallet": "./dist/index.js"
+  },
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist/index.js",
+    "dist/index.js.map",
+    "dist/index.d.ts",
+    "dist/index.d.ts.map",
+    "dist/wallet-host",
+    "README.md"
+  ],
+  "publishConfig": {
+    "access": "public"
+  },
+  "pkg": {
+    "assets": [
+      "dist/wallet-host/**/*"
+    ]
+  },
+  "scripts": {
+    "build": "pnpm -F @solana-agent-wallet-adapter/mcp-server build && pnpm -F @solana-agent-wallet-adapter/browser-demo build && tsc -p tsconfig.json && node scripts/build.mjs",
+    "start": "node dist/index.js",
+    "typecheck": "pnpm -F @solana-agent-wallet-adapter/mcp-server build && tsc -p tsconfig.json --noEmit",
+    "test": "pnpm -F @solana-agent-wallet-adapter/cli build && node --test dist/__tests__/*.test.js",
+    "prepack": "pnpm -F @solana-agent-wallet-adapter/cli build",
+    "build:binary:macos-arm64": "node scripts/build-standalone.mjs macos-arm64",
+    "build:binary:macos-x64": "node scripts/build-standalone.mjs macos-x64",
+    "build:binary:linux-x64": "node scripts/build-standalone.mjs linux-x64",
+    "build:binary:windows-x64": "node scripts/build-standalone.mjs windows-x64",
+    "smoke:standalone": "node scripts/smoke-standalone.mjs",
+    "clean": "rm -rf dist"
+  },
+  "devDependencies": {
+    "@solana-agent-wallet-adapter/mcp-server": "workspace:*",
+    "@yao-pkg/pkg": "^6.19.0",
+    "esbuild": "^0.25.12",
+    "typescript": "^5.6.0"
+  }
+}

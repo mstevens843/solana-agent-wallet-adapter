@@ -8,7 +8,8 @@
   "module": "./dist/index.js",
   "types": "./dist/index.d.ts",
   "bin": {
-    "solana-agent-wallet-mcp": "./dist/bin/server.js"
+    "solana-agent-wallet-mcp": "./dist/bin/server.js",
+    "solana-agent-wallet-bridge": "./dist/bin/bridge.js"
   },
   "exports": {
     ".": {
@@ -31,6 +32,8 @@
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.0.0",
     "@solana-agent-wallet-adapter/core": "workspace:*",
+    "@solana-agent-wallet-adapter/ios-link": "workspace:*",
+    "@solana/web3.js": "^1.95.0",
     "zod": "^3.23.0"
   },
   "devDependencies": {

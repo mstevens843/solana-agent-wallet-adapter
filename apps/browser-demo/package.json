@@ -12,8 +12,11 @@
   },
   "dependencies": {
     "@solana-agent-wallet-adapter/core": "workspace:*",
+    "@solana-agent-wallet-adapter/mwa-mobile-web": "workspace:*",
     "@solana-agent-wallet-adapter/wallet-standard-web": "workspace:*",
-    "@solana/web3.js": "^1.95.0"
+    "@solana/web3.js": "^1.95.0",
+    "bs58": "^6.0.0",
+    "tweetnacl": "^1.0.3"
   },
   "devDependencies": {
     "typescript": "^5.6.0",

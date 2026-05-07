@@ -1,0 +1,203 @@
+name: android release
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Release tag to publish, for example v0.1.0. Defaults to the current ref.'
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+env:
+  RELEASE_TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
+  AGENTIC_ANDROID_REQUIRE_SIGNING: "1"
+
+jobs:
+  build:
+    name: android apk and bundle
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref }}
+
+      - name: Validate release tag
+        shell: bash
+        run: |
+          set -euo pipefail
+          case "$RELEASE_TAG" in
+            v*) ;;
+            *)
+              echo "Android release tag must start with v. Current value: $RELEASE_TAG" >&2
+              exit 1
+              ;;
+          esac
+          echo "AGENTIC_ANDROID_VERSION_NAME=${RELEASE_TAG#v}" >> "$GITHUB_ENV"
+          echo "AGENTIC_ANDROID_VERSION_CODE=${{ github.run_number }}" >> "$GITHUB_ENV"
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 10.33.0
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - name: Setup Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 21
+
+      - name: Install Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Install Android platform
+        run: sdkmanager "platforms;android-36" "build-tools;36.0.0"
+
+      - name: Install workspace dependencies
+        run: pnpm install --frozen-lockfile --ignore-scripts
+
+      - name: Validate signing secrets
+        shell: bash
+        env:
+          AGENTIC_ANDROID_KEYSTORE_BASE64: ${{ secrets.AGENTIC_ANDROID_KEYSTORE_BASE64 }}
+          AGENTIC_ANDROID_KEY_ALIAS: ${{ secrets.AGENTIC_ANDROID_KEY_ALIAS }}
+          AGENTIC_ANDROID_STORE_PASSWORD: ${{ secrets.AGENTIC_ANDROID_STORE_PASSWORD }}
+          AGENTIC_ANDROID_KEY_PASSWORD: ${{ secrets.AGENTIC_ANDROID_KEY_PASSWORD }}
+        run: |
+          set -euo pipefail
+          missing=()
+          for name in \
+            AGENTIC_ANDROID_KEYSTORE_BASE64 \
+            AGENTIC_ANDROID_KEY_ALIAS \
+            AGENTIC_ANDROID_STORE_PASSWORD \
+            AGENTIC_ANDROID_KEY_PASSWORD
+          do
+            if [ -z "${!name:-}" ]; then
+              missing+=("$name")
+            fi
+          done
+          if [ "${#missing[@]}" -gt 0 ]; then
+            printf 'Missing Android signing secret(s): %s\n' "${missing[*]}" >&2
+            exit 1
+          fi
+
+      - name: Decode release keystore
+        shell: bash
+        env:
+          AGENTIC_ANDROID_KEYSTORE_BASE64: ${{ secrets.AGENTIC_ANDROID_KEYSTORE_BASE64 }}
+        run: |
+          set -euo pipefail
+          if [ -z "$AGENTIC_ANDROID_KEYSTORE_BASE64" ]; then
+            echo "Missing AGENTIC_ANDROID_KEYSTORE_BASE64 secret" >&2
+            exit 1
+          fi
+          mkdir -p "$RUNNER_TEMP/agentic-android"
+          printf '%s' "$AGENTIC_ANDROID_KEYSTORE_BASE64" | base64 -d > "$RUNNER_TEMP/agentic-android/release.jks"
+
+      - name: Build signed Android release
+        env:
+          AGENTIC_ANDROID_KEYSTORE: ${{ runner.temp }}/agentic-android/release.jks
+          AGENTIC_ANDROID_KEY_ALIAS: ${{ secrets.AGENTIC_ANDROID_KEY_ALIAS }}
+          AGENTIC_ANDROID_STORE_PASSWORD: ${{ secrets.AGENTIC_ANDROID_STORE_PASSWORD }}
+          AGENTIC_ANDROID_KEY_PASSWORD: ${{ secrets.AGENTIC_ANDROID_KEY_PASSWORD }}
+        run: pnpm android:release
+
+      - name: Stage Android release assets
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p dist/android
+
+          apk="apps/android-twa/app/build/outputs/apk/release/app-release.apk"
+          aab="apps/android-twa/app/build/outputs/bundle/release/app-release.aab"
+          if [ ! -f "$apk" ]; then
+            echo "Signed release APK not found at $apk" >&2
+            exit 1
+          fi
+          if [ ! -f "$aab" ]; then
+            echo "Release AAB not found at $aab" >&2
+            exit 1
+          fi
+
+          cp "$apk" dist/android/agentic-android.apk
+          cp "$aab" dist/android/agentic-android.aab
+
+      - name: Generate Digital Asset Links artifact
+        env:
+          AGENTIC_ANDROID_KEYSTORE: ${{ runner.temp }}/agentic-android/release.jks
+          AGENTIC_ANDROID_KEY_ALIAS: ${{ secrets.AGENTIC_ANDROID_KEY_ALIAS }}
+          AGENTIC_ANDROID_STORE_PASSWORD: ${{ secrets.AGENTIC_ANDROID_STORE_PASSWORD }}
+        run: pnpm android:assetlinks:write -- --out dist/android/assetlinks.json
+
+      - name: Verify Android release assets
+        shell: bash
+        run: |
+          set -euo pipefail
+          build_tools="$ANDROID_HOME/build-tools/36.0.0"
+          apk="dist/android/agentic-android.apk"
+          aab="dist/android/agentic-android.aab"
+          assetlinks="dist/android/assetlinks.json"
+
+          package_name="$("$build_tools/aapt2" dump packagename "$apk")"
+          if [ "$package_name" != "com.agentic.wallet" ]; then
+            echo "Unexpected APK package name: $package_name" >&2
+            exit 1
+          fi
+          badging="$("$build_tools/aapt2" dump badging "$apk")"
+          version_code="$(printf '%s\n' "$badging" | sed -n "s/^package: .*versionCode='\([^']*\)'.*/\1/p")"
+          version_name="$(printf '%s\n' "$badging" | sed -n "s/^package: .*versionName='\([^']*\)'.*/\1/p")"
+          if [ "$version_code" != "$AGENTIC_ANDROID_VERSION_CODE" ]; then
+            echo "Unexpected APK versionCode: $version_code" >&2
+            exit 1
+          fi
+          if [ "$version_name" != "$AGENTIC_ANDROID_VERSION_NAME" ]; then
+            echo "Unexpected APK versionName: $version_name" >&2
+            exit 1
+          fi
+
+          certs="$("$build_tools/apksigner" verify --print-certs "$apk")"
+          digest="$(printf '%s\n' "$certs" | awk -F': ' '/SHA-256 digest/{print $2; exit}')"
+          if [ -z "$digest" ]; then
+            echo "Could not read APK signing certificate digest" >&2
+            exit 1
+          fi
+          fingerprint="$(printf '%s' "$digest" | sed 's/../&:/g;s/:$//' | tr '[:lower:]' '[:upper:]')"
+
+          jarsigner -verify -certs -verbose "$aab" >/tmp/agentic-aab-verify.txt
+          grep -q "jar verified." /tmp/agentic-aab-verify.txt
+          ! grep -qi "jar is unsigned" /tmp/agentic-aab-verify.txt
+          grep -q "$fingerprint" "$assetlinks"
+          pnpm android:assetlinks:verify -- --file "$assetlinks"
+
+      - name: Upload Android artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: agentic-android
+          path: |
+            dist/android/agentic-android.apk
+            dist/android/agentic-android.aab
+            dist/android/assetlinks.json
+          if-no-files-found: error
+
+      - name: Publish GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ env.RELEASE_TAG }}
+          files: |
+            dist/android/agentic-android.apk
+            dist/android/agentic-android.aab
+            dist/android/assetlinks.json
+          fail_on_unmatched_files: true

@@ -1,33 +1,140 @@
 # @solana-agent-wallet-adapter/mcp-server
 
-MCP server that exposes Solana wallet operations as tools with user-approval flows. Routes signing through any pluggable `WalletBackend` from `@solana-agent-wallet-adapter/core`.
+MCP server for Solana wallet operations with explicit user approval. It routes signing through a pluggable `WalletBackend` from `@solana-agent-wallet-adapter/core`, so the same MCP tools can use a mock wallet, a browser Wallet Standard wallet, Android MWA mobile web, or an iOS link backend.
 
 ## Tools
 
+Base wallet tools:
+
 - `solana_get_address`
+- `solana_connect_wallet`
 - `solana_sign_message`
 - `solana_sign_transaction`
 - `solana_sign_and_send_transaction`
 - `solana_simulate_transaction`
 - `solana_check_approval`
 
-Each signing tool returns an `ApprovalResource` with `status: 'pending'` and an `approvalUri`. The host (Claude Desktop, Cursor, an Anthropic Agents harness) renders the resource so the user can approve. The agent polls `solana_check_approval` until status flips to `approved` or `rejected`. `solana_simulate_transaction` returns a preview when the backend supports simulation; backends that cannot simulate return `unsupported_method`.
+Bridge mode also exposes higher-level tools:
 
-## Wiring it up - stdio transport (Claude Desktop, Cursor)
+- `solana_wallet_status`
+- `solana_get_balances`
+- `solana_portfolio_summary`
+- `solana_prepare_transfer_sol`
+- `solana_prepare_transfer_spl`
+- `solana_prepare_swap`
+- `solana_list_prepared_actions`
+- `solana_execute_prepared_action`
+- `solana_reject_prepared_action`
+- `solana_archive_prepared_action`
+- `solana_create_recurring_payment`
+- `solana_list_recurring_payments`
+- `solana_pause_recurring_payment`
+- `solana_resume_recurring_payment`
+- `solana_delete_recurring_payment`
+- `solana_export_receipts`
+- `solana_health_check`
+- `solana_transfer_sol`
+- `solana_transfer_spl`
+- `solana_get_swap_quote`
+- `solana_swap`
 
-```ts
-import { createServer } from '@solana-agent-wallet-adapter/mcp-server';
-import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
-// import a real backend, e.g. @solana-agent-wallet-adapter/wallet-standard-web
+Signing tools return an `ApprovalResource`. Compatibility clients poll with `solana_check_approval`; clients that support URL elicitation can render `approvalUri` as the out-of-band wallet approval path. `solana_simulate_transaction` returns a preview only when the selected backend supports simulation. Product-level tools are thin wrappers around `AgentWalletActionService`, which is also used by the HTTP bridge, CLI, browser demo, and desktop shell.
 
-const backend = /* your WalletBackend */;
-const server = createServer({ backend });
-await server.connect(new StdioServerTransport());
+## Mock MCP Smoke
+
+The bundled `bin/server.js` includes a mock backend. Use it to confirm MCP registration before attaching a real wallet.
+
+```bash
+pnpm build
+claude mcp add --scope user solana-agent-wallet -- \
+  node <repo>/packages/mcp-server/dist/bin/server.js
 ```
 
-The bundled `bin/server.js` ships with a mock backend so you can register the server with Claude Desktop and exercise the tool surface end-to-end before plugging in a real wallet.
+Restart the MCP client and ask:
 
-## Wiring it up - HTTP transport (web + remote agents)
+```text
+What is my Solana wallet address? Use the solana-agent-wallet tool.
+```
+
+Expected mock address: `11111111111111111111111111111111`.
+
+## Real-Wallet Bridge Mode
+
+Bridge mode connects MCP clients such as Codex, Claude Code, or Claude Desktop to a browser wallet running at localhost. The wallet stays in the browser, and each real signing or send action still opens the selected wallet for approval.
+
+Fast path:
+
+```bash
+cp .env.example .env
+cp agent-wallet.config.example.json agent-wallet.config.json
+pnpm mcp:codex:add
+pnpm dev
+```
+
+Open `http://127.0.0.1:5174`, discover wallets, connect the selected wallet, and click `Connect bridge`. Restart Codex after registration and ask:
+
+```text
+Use solana-agent-wallet to show my wallet status.
+```
+
+Manual bridge start:
+
+```bash
+node packages/mcp-server/dist/bin/bridge.js \
+  --token local-agent-wallet \
+  --env ./.env \
+  --config ./agent-wallet.config.json \
+  --prepared-actions ./.agent-wallet/prepared-actions.json
+```
+
+Then run the browser demo:
+
+```bash
+pnpm demo:browser
+```
+
+Prepared actions use `.agent-wallet/prepared-actions.json` by default when started through `pnpm dev` and `pnpm mcp:codex:add`. Override with `AGENT_WALLET_PREPARED_ACTIONS` or `--prepared-actions`.
+
+## Claude Bridge Registration
+
+For Claude Code or Claude Desktop with a running bridge:
+
+```bash
+claude mcp add --scope user solana-agent-wallet -- \
+  node <repo>/packages/mcp-server/dist/bin/server.js \
+  --bridge-url http://127.0.0.1:8787 \
+  --bridge-token local-agent-wallet \
+  --env <repo>/.env \
+  --config <repo>/agent-wallet.config.json \
+  --prepared-actions <repo>/.agent-wallet/prepared-actions.json
+```
+
+The default config keeps `mainnet.enabled=false`. Turn on mainnet only after setting RPC and caps. Arbitrary mainnet transaction signing remains disabled unless `allowArbitraryTransactions=true`.
+
+## iOS Link Mode
+
+iOS does not use Android MWA. Start the bridge with an iOS provider and call `solana_connect_wallet`.
+
+```bash
+node packages/mcp-server/dist/bin/bridge.js \
+  --ios-provider phantom \
+  --ios-callback-base-url http://<lan-ip>:8787 \
+  --token local-agent-wallet
+```
+
+For Jupiter Mobile:
+
+```bash
+REOWN_PROJECT_ID=<your-reown-project-id> \
+node packages/mcp-server/dist/bin/bridge.js \
+  --ios-provider jupiter \
+  --walletconnect-storage-dir ./.agent-wallet/walletconnect \
+  --token local-agent-wallet
+```
+
+Phantom, Solflare, and Backpack use wallet-specific encrypted links. Jupiter uses WalletConnect/Reown QR approval.
+
+## HTTP Transport
 
 ```ts
 import { createHttpServer, createMockBackend } from '@solana-agent-wallet-adapter/mcp-server';
@@ -35,25 +142,30 @@ import { createHttpServer, createMockBackend } from '@solana-agent-wallet-adapte
 const handle = createHttpServer({
   backend: createMockBackend(),
   port: 8723,
-  stateful: true, // session-id header per client; default is stateless single-shot
+  stateful: true,
 });
+
 await handle.start();
 console.log(`MCP listening on ${handle.url}`);
 ```
 
-A second bin ships ready-to-run: `solana-agent-wallet-mcp-http` (env vars `PORT`, `HOST`, `MCP_STATEFUL=1`). Quick smoke:
+Ready-to-run binary:
 
 ```bash
-node packages/mcp-server/dist/bin/serverHttp.js &
-# in another shell:
+node packages/mcp-server/dist/bin/serverHttp.js
+```
+
+Quick initialize request:
+
+```bash
 curl -s -X POST http://127.0.0.1:8723/mcp \
   -H 'Content-Type: application/json' \
   -H 'Accept: application/json, text/event-stream' \
   -d '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"curl","version":"0"}}}'
 ```
 
-The transport speaks Streamable HTTP per the MCP spec - JSON-RPC over POST with optional SSE streaming. Stateful mode returns an `mcp-session-id` header on init that subsequent requests must echo back.
+The transport speaks MCP Streamable HTTP: JSON-RPC over POST with optional SSE streaming. Stateful mode returns an `mcp-session-id` header on initialize.
 
 ## Status
 
-Phase 1: stdio + HTTP transports working, mock backend ships, six MCP tools wired, unit tests passing, end-to-end smoke clean. Approval-resource rendering is currently humanized text plus a machine-readable JSON appendix, with SEP-1036 URL elicitation tracked in the protocol spec as the preferred future UX for clients that support it.
+The server builds and tests cleanly, mock MCP registration works, HTTP and stdio transports are wired, bridge mode has confirmed real-wallet mainnet transfer proof, and iOS link mode is available as an experimental transport. Remaining useful smokes are listed in [PROGRESS.md](../../PROGRESS.md).

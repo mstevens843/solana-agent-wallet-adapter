@@ -1,6 +1,7 @@
 node_modules/
 dist/
 build/
+.gradle/
 .turbo/
 *.tsbuildinfo
 *.log
@@ -8,6 +9,14 @@ build/
 .DS_Store
 .env
 .env.local
+.env.*
+!.env.example
 .idea/
 .vscode/
 coverage/
+.agent-wallet/
+target/
+apps/**/src-tauri/gen/schemas/
+apps/android-twa/local.properties
+*.jks
+*.keystore

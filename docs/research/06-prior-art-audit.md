@@ -1,21 +1,23 @@
 # 06 - Prior-Art Audit (2026-05-03)
 
+> Superseded context, 2026-05-07: this note is preserved as dated research. The current competitive positioning lives in [STANDOUT_FEATURES.MD](../../STANDOUT_FEATURES.MD). A later scan found closer user-approval competitors, especially y0.exchange, Trust Wallet Agent Kit, VaultPilot, and deBridge MCP, so do not reuse the broad empty-wedge claim without the narrower scope in the updated positioning doc.
+
 ## Why this exists
 
 Pre-build sanity check before pushing further on Phase 1. Four parallel research agents covered (1) MCP HITL signing servers, (2) AI-framework Solana signers, (3) cross-chain agent-wallet analogs, (4) deep-web obscure (Colosseum, Twitter, npm namespace claims). Source-of-truth: `~/.claude/plans/2-things-i-need-serene-map.md`.
 
 ## Headline finding
 
-**The category is contested but the specific wedge is genuinely empty.** Every shipped Solana competitor uses a **non-user wallet** for signing:
+**Dated finding:** the category was contested, and this scan judged the specific real-wallet wedge as open at the time. Every shipped Solana competitor found in this pass used a **non-user wallet** for signing:
 
-- Phantom MCP → Phantom **embedded** wallet (Google/Apple SSO)
-- Solana Agent Kit v2 → embedded / Privy / Turnkey
-- AgentWallet Protocol, Cloaked → PDA + delegate key
-- solana-clawd → local AES-256 vault
-- SeekerClaw → Seeker Seed Vault hardware (single device)
-- MoonPay OWS → library-managed AES keys + policy
+- Phantom MCP: Phantom **embedded** wallet (Google/Apple SSO)
+- Solana Agent Kit v2: embedded / Privy / Turnkey
+- AgentWallet Protocol, Cloaked: PDA + delegate key
+- solana-clawd: local AES-256 vault
+- SeekerClaw: Seeker Seed Vault hardware (single device)
+- MoonPay OWS: library-managed AES keys + policy
 
-**No one has shipped:** "user's existing Phantom/Solflare/Backpack pops the approval, agent never holds keys, Android via MWA + iOS via deeplinks + web via Wallet Standard." That triple is open.
+**No one has shipped:** "user's existing Phantom/Solflare/Backpack pops the approval, agent never holds keys, Android via MWA + iOS via separate link transport + web via Wallet Standard." That triple is open.
 
 **Slug `solana-agent-wallet-adapter` is unclaimed on GitHub + npm.** So is `agent-wallet-adapter`, `solana-mcp-signer`, `solana-hitl`, `solana-agent-bridge`.
 
@@ -67,7 +69,7 @@ Pre-build sanity check before pushing further on Phase 1. Four parallel research
 
 **Drop:** "First MCP server with user-approval signing for Solana." (nikicat owns the EVM concept; Phantom owns Solana + Claude mindshare.)
 
-**Adopt:** "The only open, multi-wallet, mobile-native MCP signing bridge that uses the user's *real installed wallet* - built on Solana standards (MCP URL Elicitation + Wallet Standard + MWA + ERC-8004 wallet-shape compatibility), not a vendor embedded wallet."
+**Adopt at the time:** "An open, multi-wallet, mobile-native MCP signing bridge that uses the user's *real installed wallet* - built on Solana standards (MCP URL Elicitation + Wallet Standard + MWA + ERC-8004 wallet-shape compatibility), not a vendor embedded wallet."
 
 **Three durable differentiators** (rank-ordered):
 1. **Multi-wallet** - Phantom + Solflare + Backpack + Glow (Phantom MCP is Phantom-only by definition)
@@ -86,7 +88,7 @@ Pre-build sanity check before pushing further on Phase 1. Four parallel research
 
 - Subscribe to `@phantom`, `@solanamobile`, `@solana`, `@sendaifun`, `@anthropic` on X for first-party MCP/wallet announcements
 - Watch `github.com/sendaifun/solana-agent-kit` issues and PRs for any "MWA" or "wallet-standard" PR
-- Watch `github.com/modelcontextprotocol/modelcontextprotocol/pull/887` for SEP-1036 merge → adopt immediately
+- Watch `github.com/modelcontextprotocol/modelcontextprotocol/pull/887` for SEP-1036 merge, then adopt immediately
 - Re-run a focused prior-art sweep on 2026-05-11 once Frontier submissions become public
 
 ## Sources

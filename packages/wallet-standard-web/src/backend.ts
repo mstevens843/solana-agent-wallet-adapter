@@ -22,6 +22,7 @@ import type { Wallet, WalletAccount } from '@wallet-standard/base';
 import {
   StandardConnect,
   StandardDisconnect,
+  type StandardConnectInput,
   type StandardConnectFeature,
   type StandardDisconnectFeature,
 } from '@wallet-standard/features';
@@ -105,6 +106,11 @@ export class WalletStandardWebBackend implements WalletBackend {
     return account.address;
   }
 
+  async connect(input?: StandardConnectInput): Promise<string> {
+    const account = await this.ensureConnected(input);
+    return account.address;
+  }
+
   async submit(request: SigningRequest): Promise<ApprovalResource> {
     if (request.cluster !== this.cluster) {
       throw new ProtocolError(
@@ -177,7 +183,7 @@ export class WalletStandardWebBackend implements WalletBackend {
     );
   }
 
-  private async ensureConnected(): Promise<WalletAccount> {
+  private async ensureConnected(input?: StandardConnectInput): Promise<WalletAccount> {
     if (this.connectedAccount) {
       return this.connectedAccount;
     }
@@ -189,7 +195,7 @@ export class WalletStandardWebBackend implements WalletBackend {
         `Wallet ${this.wallet.name} does not implement StandardConnect.`,
       );
     }
-    const result = await connectFeature.connect();
+    const result = await connectFeature.connect(input);
     const account = result.accounts.find((candidate) =>
       candidate.chains.includes(this.chain as WalletAccount['chains'][number]),
     );

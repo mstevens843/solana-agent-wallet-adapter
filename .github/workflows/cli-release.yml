@@ -1,0 +1,109 @@
+name: cli-release
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Release tag to build and publish, for example v0.1.0'
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: build ${{ matrix.target }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: macos-arm64
+            os: macos-15
+            binary: packages/cli/dist/standalone/macos-arm64/solana-agent-wallet
+            asset: solana-agent-wallet-macos-arm64.tar.gz
+          - target: macos-x64
+            os: macos-15-intel
+            binary: packages/cli/dist/standalone/macos-x64/solana-agent-wallet
+            asset: solana-agent-wallet-macos-x64.tar.gz
+          - target: linux-x64
+            os: ubuntu-latest
+            binary: packages/cli/dist/standalone/linux-x64/solana-agent-wallet
+            asset: solana-agent-wallet-linux-x64.tar.gz
+          - target: windows-x64
+            os: windows-latest
+            binary: packages/cli/dist/standalone/windows-x64/solana-agent-wallet.exe
+            asset: solana-agent-wallet-windows-x64.zip
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref }}
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 10.33.0
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - name: Install
+        run: pnpm install --frozen-lockfile --ignore-scripts
+
+      - name: Build CLI package
+        run: pnpm -F @solana-agent-wallet-adapter/cli build
+
+      - name: Build standalone binary
+        run: pnpm -F @solana-agent-wallet-adapter/cli build:binary:${{ matrix.target }}
+
+      - name: Smoke standalone binary
+        run: node packages/cli/scripts/smoke-standalone.mjs "${{ matrix.binary }}"
+
+      - name: Archive Unix asset
+        if: runner.os != 'Windows'
+        shell: bash
+        run: |
+          mkdir -p packages/cli/dist/release
+          tar -C "packages/cli/dist/standalone/${{ matrix.target }}" -czf "packages/cli/dist/release/${{ matrix.asset }}" solana-agent-wallet
+
+      - name: Archive Windows asset
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force packages/cli/dist/release | Out-Null
+          Compress-Archive -Path "packages/cli/dist/standalone/${{ matrix.target }}/solana-agent-wallet.exe" -DestinationPath "packages/cli/dist/release/${{ matrix.asset }}" -Force
+
+      - name: Upload release asset artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.asset }}
+          path: packages/cli/dist/release/${{ matrix.asset }}
+          if-no-files-found: error
+
+  release:
+    name: publish release assets
+    needs: build
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Download release assets
+        uses: actions/download-artifact@v4
+        with:
+          path: release-assets
+          merge-multiple: true
+
+      - name: Publish GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
+          files: release-assets/*
+          fail_on_unmatched_files: true

@@ -1,0 +1,181 @@
+name: desktop release
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Release tag to publish, for example v0.1.0.'
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+env:
+  RELEASE_TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
+
+jobs:
+  build:
+    name: ${{ matrix.name }}
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: macos-arm64
+            runner: macos-15
+            rustTarget: aarch64-apple-darwin
+            bundle: dmg
+            cliAsset: solana-agent-wallet-macos-arm64.tar.gz
+            desktopAsset: agentic-desktop-macos-arm64.dmg
+            sidecarSuffix: ''
+          - name: macos-x64
+            runner: macos-15-intel
+            rustTarget: x86_64-apple-darwin
+            bundle: dmg
+            cliAsset: solana-agent-wallet-macos-x64.tar.gz
+            desktopAsset: agentic-desktop-macos-x64.dmg
+            sidecarSuffix: ''
+          - name: windows-x64
+            runner: windows-latest
+            rustTarget: x86_64-pc-windows-msvc
+            bundle: msi
+            cliAsset: solana-agent-wallet-windows-x64.zip
+            desktopAsset: agentic-desktop-windows-x64.msi
+            sidecarSuffix: '.exe'
+          - name: linux-x64
+            runner: ubuntu-22.04
+            rustTarget: x86_64-unknown-linux-gnu
+            bundle: appimage
+            cliAsset: solana-agent-wallet-linux-x64.tar.gz
+            desktopAsset: agentic-desktop-linux-x64.AppImage
+            sidecarSuffix: ''
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref }}
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 10.33.0
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: pnpm
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.rustTarget }}
+
+      - name: Install Linux Tauri dependencies
+        if: matrix.runner == 'ubuntu-22.04'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libwebkit2gtk-4.1-dev \
+            build-essential \
+            curl \
+            wget \
+            file \
+            libxdo-dev \
+            libssl-dev \
+            libayatana-appindicator3-dev \
+            librsvg2-dev \
+            patchelf
+
+      - name: Install Tauri CLI
+        run: cargo install tauri-cli --version '^2' --locked
+
+      - name: Install workspace dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Stage CLI sidecar
+        shell: bash
+        run: |
+          set -euo pipefail
+          work_dir="$RUNNER_TEMP/agentic-sidecar"
+          archive="$work_dir/${{ matrix.cliAsset }}"
+          extract_dir="$work_dir/extract"
+          sidecar_dir="apps/desktop-shell/src-tauri/target/sidecars"
+          sidecar_path="$sidecar_dir/agentic-cli-sidecar-${{ matrix.rustTarget }}${{ matrix.sidecarSuffix }}"
+
+          rm -rf "$work_dir"
+          mkdir -p "$extract_dir" "$sidecar_dir"
+
+          tag_url="https://github.com/${{ github.repository }}/releases/download/${RELEASE_TAG}/${{ matrix.cliAsset }}"
+          downloaded=0
+          for attempt in {1..120}; do
+            if curl -fL "$tag_url" -o "$archive"; then
+              downloaded=1
+              break
+            fi
+            echo "CLI sidecar asset ${{ matrix.cliAsset }} is not available for ${RELEASE_TAG} yet; retry ${attempt}/120."
+            sleep 15
+          done
+          if [ "$downloaded" != "1" ]; then
+            echo "CLI sidecar asset ${{ matrix.cliAsset }} was not found for ${RELEASE_TAG}." >&2
+            exit 1
+          fi
+
+          case "${{ matrix.cliAsset }}" in
+            *.zip)
+              if command -v unzip >/dev/null 2>&1; then
+                unzip -q "$archive" -d "$extract_dir"
+              else
+                powershell -NoProfile -Command "Expand-Archive -LiteralPath '$archive' -DestinationPath '$extract_dir' -Force"
+              fi
+              ;;
+            *.tar.gz)
+              tar -xzf "$archive" -C "$extract_dir"
+              ;;
+            *)
+              echo "Unsupported CLI sidecar archive: $archive" >&2
+              exit 1
+              ;;
+          esac
+
+          candidate="$(find "$extract_dir" -type f \( -name 'solana-agent-wallet' -o -name 'solana-agent-wallet.exe' \) -print -quit)"
+          if [ -z "$candidate" ]; then
+            echo "Could not find solana-agent-wallet executable in $archive" >&2
+            find "$extract_dir" -maxdepth 3 -type f >&2
+            exit 1
+          fi
+
+          cp "$candidate" "$sidecar_path"
+          chmod +x "$sidecar_path"
+          "$sidecar_path" --help
+
+      - name: Typecheck desktop
+        run: pnpm -F @solana-agent-wallet-adapter/desktop-shell typecheck
+
+      - name: Build desktop web assets
+        run: pnpm -F @solana-agent-wallet-adapter/desktop-shell build
+
+      - name: Test desktop runtime
+        run: cargo test --manifest-path apps/desktop-shell/src-tauri/Cargo.toml
+
+      - name: Build Tauri installer
+        uses: tauri-apps/tauri-action@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          projectPath: apps/desktop-shell
+          tagName: ${{ env.RELEASE_TAG }}
+          releaseName: Agentic ${{ env.RELEASE_TAG }}
+          releaseBody: Download the Agentic desktop installer for your platform.
+          releaseDraft: false
+          prerelease: false
+          uploadUpdaterJson: false
+          uploadUpdaterSignatures: false
+          tauriScript: cargo tauri
+          args: --target ${{ matrix.rustTarget }} --bundles ${{ matrix.bundle }} --config src-tauri/tauri.release.conf.json
+          releaseAssetNamePattern: ${{ matrix.desktopAsset }}

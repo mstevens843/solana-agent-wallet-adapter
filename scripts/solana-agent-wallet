@@ -1,0 +1,11 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+REPO_ROOT="/Users/devlegacy/Desktop/projects/solana-agent-wallet-adapter"
+CLI_ENTRY="$REPO_ROOT/packages/cli/dist/index.js"
+
+if [ ! -f "$CLI_ENTRY" ]; then
+  pnpm --dir "$REPO_ROOT" -F @solana-agent-wallet-adapter/cli build >/dev/null
+fi
+
+exec node "$CLI_ENTRY" --repo-root "$REPO_ROOT" "$@"

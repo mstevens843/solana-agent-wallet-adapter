@@ -1,0 +1,49 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 192 128" fill="none">
+  <defs>
+    <linearGradient id="agenticRingBack" x1="38" y1="42" x2="162" y2="80" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#2c3134"/>
+      <stop offset=".46" stop-color="#6f7168"/>
+      <stop offset="1" stop-color="#b9975d"/>
+    </linearGradient>
+    <linearGradient id="agenticRingFront" x1="25" y1="86" x2="166" y2="45" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#c6b27a"/>
+      <stop offset=".3" stop-color="#efe6ce"/>
+      <stop offset=".64" stop-color="#8d9088"/>
+      <stop offset="1" stop-color="#252a2d"/>
+    </linearGradient>
+    <linearGradient id="agenticPlanetEdge" x1="55" y1="31" x2="122" y2="99" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#cfc8ac"/>
+      <stop offset=".28" stop-color="#777d78"/>
+      <stop offset=".68" stop-color="#20282b"/>
+      <stop offset="1" stop-color="#070909"/>
+    </linearGradient>
+    <radialGradient id="agenticPlanetCore" cx="0" cy="0" r="1" gradientTransform="matrix(46 -38 37 45 75 45)" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#343d3d"/>
+      <stop offset=".48" stop-color="#151d1f"/>
+      <stop offset="1" stop-color="#050606"/>
+    </radialGradient>
+    <radialGradient id="agenticPlanetShade" cx="0" cy="0" r="1" gradientTransform="matrix(-26 36 -32 -23 101 76)" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#020303" stop-opacity=".86"/>
+      <stop offset=".72" stop-color="#020303" stop-opacity=".18"/>
+      <stop offset="1" stop-color="#020303" stop-opacity="0"/>
+    </radialGradient>
+    <clipPath id="agenticPlanetClip">
+      <path d="M60.8 44.7c9.9-18.8 39-23.8 56.4-9.6 16.7 13.6 17.3 41.3 1 57.5-15.8 15.7-43 15.3-57.4-.9-12-13.6-8.7-30.7 0-47Z"/>
+    </clipPath>
+  </defs>
+
+  <path d="M35 55c31-15 91-17 124 1" stroke="#070909" stroke-width="9.5" stroke-linecap="round" opacity=".78"/>
+  <path d="M36 55c31-14 90-16 122 1" stroke="url(#agenticRingBack)" stroke-width="4.2" stroke-linecap="round" opacity=".74"/>
+
+  <g clip-path="url(#agenticPlanetClip)">
+    <path d="M60.8 44.7c9.9-18.8 39-23.8 56.4-9.6 16.7 13.6 17.3 41.3 1 57.5-15.8 15.7-43 15.3-57.4-.9-12-13.6-8.7-30.7 0-47Z" fill="url(#agenticPlanetCore)"/>
+    <path d="M60.8 44.7c9.9-18.8 39-23.8 56.4-9.6 16.7 13.6 17.3 41.3 1 57.5-15.8 15.7-43 15.3-57.4-.9-12-13.6-8.7-30.7 0-47Z" fill="url(#agenticPlanetShade)"/>
+    <path d="M67 53c15-5 36-4 52 3" stroke="#d8cfaf" stroke-width="1.1" stroke-linecap="round" opacity=".16"/>
+    <path d="M63 69c18 6 42 5 61-2" stroke="#9b9888" stroke-width="1.1" stroke-linecap="round" opacity=".18"/>
+  </g>
+  <path d="M60.8 44.7c9.9-18.8 39-23.8 56.4-9.6 16.7 13.6 17.3 41.3 1 57.5-15.8 15.7-43 15.3-57.4-.9-12-13.6-8.7-30.7 0-47Z" stroke="url(#agenticPlanetEdge)" stroke-width="2.4"/>
+
+  <path d="M22 75c35 22 105 17 149-12" stroke="#070909" stroke-width="9.5" stroke-linecap="round"/>
+  <path d="M22 75c35 22 105 17 149-12" stroke="url(#agenticRingFront)" stroke-width="4.4" stroke-linecap="round"/>
+  <path d="M52 85c31 8 77 2 111-19" stroke="#efe6ce" stroke-width="1.15" stroke-linecap="round" opacity=".62"/>
+</svg>

@@ -1,0 +1,17 @@
+{
+  "name": "@solana-agent-wallet-adapter/android-twa",
+  "version": "0.0.1",
+  "private": true,
+  "description": "Android Trusted Web Activity wrapper for the Agentic web app.",
+  "license": "Apache-2.0",
+  "scripts": {
+    "build": "node ../../scripts/android.mjs build",
+    "debug": "node ../../scripts/android.mjs debug",
+    "release": "node ../../scripts/android.mjs release",
+    "device:install": "node ../../scripts/android.mjs install",
+    "fingerprint": "node ../../scripts/android.mjs fingerprint",
+    "assetlinks": "node ../../scripts/android.mjs assetlinks",
+    "assetlinks:write": "node ../../scripts/android.mjs assetlinks:write",
+    "assetlinks:verify": "node ../../scripts/android.mjs assetlinks:verify"
+  }
+}

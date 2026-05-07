@@ -1,6 +1,6 @@
 # Reference Agent
 
-Browser demo that turns a prompt into a signing plan, then asks the user's installed wallet to sign the resulting devnet proof message.
+Browser demo that turns a prompt into a signing plan, then asks the user's installed wallet to sign the resulting devnet proof message. Use it as the narrative demo after the lower-level browser wallet flow is working.
 
 ```sh
 pnpm demo:agent
@@ -22,3 +22,4 @@ OPENAI_API_KEY=... pnpm demo:agent
 
 `browser-demo` is the cleanest wallet proof. `reference-agent` is the narrative demo: prompt, plan, approval, signature, raw result.
 
+Start with `browser-demo` for wallet debugging. Use this app when you need to show how an agent prompt becomes a wallet approval.

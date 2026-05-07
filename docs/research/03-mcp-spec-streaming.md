@@ -1,5 +1,7 @@
 # 03 - MCP spec on streaming, notifications, sampling
 
+> Superseded context, 2026-05-07: this note is preserved as dated research. Polling remains the compatibility baseline. URL Mode Elicitation is now the preferred approval UX when a client supports it, while Streamable HTTP remains useful for push updates.
+
 What the latest spec actually offers for "tell the agent when approval status changes." Polling vs push.
 
 ## Findings
@@ -82,7 +84,7 @@ All production-ready as of v1.29.
 
 ## What this means for the implementation
 
-- `WalletBackend.poll(requestId)` already exists in core types and stays. ✓
+- `WalletBackend.poll(requestId)` already exists in core types and stays.
 - Add `WalletBackend.subscribe?(requestId, callback)` as an optional capability. Backends that can push (e.g., a wallet-standard browser backend with a Promise) populate it; backends that can't (raw HTTP polling) leave it undefined.
 - MCP server registers a resource per pending request. When `subscribe` is set on the backend, the server wires the callback to `server.sendResourceUpdated(uri)`. When it's not, the server falls back to polling on demand.
 - HTTP transport is a prereq for the push path. Stdio works for polling only.

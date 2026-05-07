@@ -1,0 +1,36 @@
+{
+  "name": "@solana-agent-wallet-adapter/mwa-mobile-web",
+  "version": "0.0.1",
+  "description": "Android Mobile Wallet Adapter registration for Solana Agent Wallet Adapter browser hosts.",
+  "license": "Apache-2.0",
+  "type": "module",
+  "main": "./dist/index.js",
+  "module": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist",
+    "src",
+    "README.md"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "clean": "rm -rf dist"
+  },
+  "dependencies": {
+    "@solana-mobile/wallet-standard-mobile": "^0.5.2",
+    "@wallet-standard/base": "^1.1.0"
+  },
+  "devDependencies": {
+    "typescript": "^5.6.0",
+    "vitest": "^2.1.0"
+  }
+}

@@ -36,8 +36,8 @@ The polished browser demo at `http://127.0.0.1:5174` was also tested on devnet.
 Verified flow:
 
 1. `Agent Plan` discovered Wallet Standard providers.
-2. Phantom was selected for a simulated agent plan.
-3. `Generate plan` created a simulated SOL to USDC approval plan.
+2. Phantom was selected for an agent plan.
+3. `Generate plan` created a capped SOL to USDC approval plan.
 4. `Sign agent approval` opened Phantom and returned a real message signature.
 5. `Wallet Flow` switched to Backpack through Wallet Standard.
 6. Backpack signed the demo message.
@@ -45,7 +45,7 @@ Verified flow:
 8. `Sign transaction` opened Backpack and returned signed transaction bytes without broadcasting.
 9. `Sign and send` opened Backpack and returned a devnet transaction id after RPC broadcast.
 
-Important distinction: the `Agent Plan` tab is simulated for now. The wallet signature is real, but the app does not yet build or execute a Jupiter swap from that tab.
+Important distinction: the `Agent Plan` tab queues a prepared swap approval into the local Approval Inbox. The final transaction is still rebuilt later at inbox approval time, so no swap executes from plan generation alone.
 
 ## Issues Fixed During Smoke
 

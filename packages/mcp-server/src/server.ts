@@ -10,13 +10,24 @@ import {
   type WalletBackend,
 } from '@solana-agent-wallet-adapter/core';
 
+import { registerActionTools } from './actionTools.js';
+import type { AgentWalletConfig } from './config.js';
+import type { PreparedActionStore } from './preparedActions.js';
+import { newTraceId, trace } from './trace.js';
+
 export interface CreateServerOptions {
   backend: WalletBackend;
   serverName?: string;
   serverVersion?: string;
+  actionConfig?: AgentWalletConfig;
+  preparedActions?: PreparedActionStore;
 }
 
 const ClusterSchema = z.enum(['mainnet-beta', 'testnet', 'devnet', 'localnet']);
+
+interface ConnectableWalletBackend extends WalletBackend {
+  connectWallet(): Promise<ApprovalResource>;
+}
 
 export function createServer(options: CreateServerOptions): McpServer {
   const { backend } = options;
@@ -24,6 +35,32 @@ export function createServer(options: CreateServerOptions): McpServer {
     name: options.serverName ?? 'solana-agent-wallet-mcp',
     version: options.serverVersion ?? '0.0.1',
   });
+
+  if (options.actionConfig) {
+    registerActionTools(server, {
+      backend,
+      config: options.actionConfig,
+      ...(options.preparedActions !== undefined && { preparedActions: options.preparedActions }),
+    });
+  }
+
+  server.registerTool(
+    'solana_connect_wallet',
+    {
+      description:
+        'Request user approval to connect/authorize the configured wallet transport. For iOS link mode, returns an ApprovalResource with an approvalUri to open on the phone.',
+      inputSchema: {},
+    },
+    async () => {
+      return traceServerTool('solana_connect_wallet', {}, async () => {
+        if (isConnectableBackend(backend)) {
+          return approvalReply(await backend.connectWallet());
+        }
+        const address = await backend.getAddress();
+        return jsonReply({ address });
+      });
+    },
+  );
 
   server.registerTool(
     'solana_get_address',
@@ -33,12 +70,10 @@ export function createServer(options: CreateServerOptions): McpServer {
       inputSchema: {},
     },
     async () => {
-      try {
+      return traceServerTool('solana_get_address', {}, async () => {
         const address = await backend.getAddress();
         return jsonReply({ address });
-      } catch (err) {
-        return errorReply(err);
-      }
+      });
     },
   );
 
@@ -54,7 +89,9 @@ export function createServer(options: CreateServerOptions): McpServer {
       },
     },
     async ({ message, cluster, summary }) => {
-      return submitOrError(backend, buildRequest('sign_message', message, 'utf8', cluster, summary));
+      return traceServerTool('solana_sign_message', { cluster, summary }, async () =>
+        submitOrError(backend, buildRequest('sign_message', message, 'utf8', cluster, summary)),
+      );
     },
   );
 
@@ -70,10 +107,14 @@ export function createServer(options: CreateServerOptions): McpServer {
       },
     },
     async ({ transactionBase64, cluster, summary }) => {
-      return submitOrError(
-        backend,
-        buildRequest('sign_transaction', transactionBase64, 'base64', cluster, summary),
-      );
+      return traceServerTool('solana_sign_transaction', { cluster, summary }, async () => {
+        const blocked = rejectArbitraryMainnetTransaction(options.actionConfig, cluster);
+        if (blocked) return blocked;
+        return submitOrError(
+          backend,
+          buildRequest('sign_transaction', transactionBase64, 'base64', cluster, summary),
+        );
+      });
     },
   );
 
@@ -89,10 +130,14 @@ export function createServer(options: CreateServerOptions): McpServer {
       },
     },
     async ({ transactionBase64, cluster, summary }) => {
-      return submitOrError(
-        backend,
-        buildRequest('sign_and_send_transaction', transactionBase64, 'base64', cluster, summary),
-      );
+      return traceServerTool('solana_sign_and_send_transaction', { cluster, summary }, async () => {
+        const blocked = rejectArbitraryMainnetTransaction(options.actionConfig, cluster);
+        if (blocked) return blocked;
+        return submitOrError(
+          backend,
+          buildRequest('sign_and_send_transaction', transactionBase64, 'base64', cluster, summary),
+        );
+      });
     },
   );
 
@@ -108,22 +153,20 @@ export function createServer(options: CreateServerOptions): McpServer {
       },
     },
     async ({ transactionBase64, cluster, summary }) => {
-      if (!backend.simulate) {
-        return errorReply(
-          new ProtocolError(
-            'unsupported_method',
-            'The configured wallet backend does not support transaction simulation.',
-          ),
-        );
-      }
-      try {
+      return traceServerTool('solana_simulate_transaction', { cluster, summary }, async () => {
+        if (!backend.simulate) {
+          return errorReply(
+            new ProtocolError(
+              'unsupported_method',
+              'The configured wallet backend does not support transaction simulation.',
+            ),
+          );
+        }
         const result = await backend.simulate(
           buildRequest('sign_transaction', transactionBase64, 'base64', cluster, summary),
         );
         return jsonReply({ simulation: result });
-      } catch (err) {
-        return errorReply(err);
-      }
+      });
     },
   );
 
@@ -137,16 +180,54 @@ export function createServer(options: CreateServerOptions): McpServer {
       },
     },
     async ({ requestId }) => {
-      try {
+      return traceServerTool('solana_check_approval', { requestId }, async () => {
         const approval = await backend.poll(requestId);
         return approvalReply(approval);
-      } catch (err) {
-        return errorReply(err);
-      }
+      });
     },
   );
 
   return server;
+}
+
+function isConnectableBackend(backend: WalletBackend): backend is ConnectableWalletBackend {
+  return typeof (backend as Partial<ConnectableWalletBackend>).connectWallet === 'function';
+}
+
+async function traceServerTool<T>(tool: string, payload: Record<string, unknown>, run: () => Promise<T> | T) {
+  const traceId = newTraceId('tool');
+  trace('mcp.tool.start', { traceId, tool, ...payload });
+  try {
+    const result = await run();
+    trace('mcp.tool.success', { traceId, tool });
+    return result;
+  } catch (err) {
+    trace('mcp.tool.error', {
+      traceId,
+      tool,
+      message: err instanceof Error ? err.message : String(err),
+    });
+    return errorReply(err);
+  }
+}
+
+function rejectArbitraryMainnetTransaction(
+  config: AgentWalletConfig | undefined,
+  cluster: Cluster,
+): ReturnType<typeof errorReply> | null {
+  if (
+    config &&
+    cluster === 'mainnet-beta' &&
+    !config.mainnet.allowArbitraryTransactions
+  ) {
+    return errorReply(
+      new ProtocolError(
+        'unauthorized',
+        'Arbitrary mainnet transaction signing is disabled. Use solana_transfer_sol, solana_transfer_spl, or solana_swap so caps and summaries are enforced.',
+      ),
+    );
+  }
+  return null;
 }
 
 async function submitOrError(backend: WalletBackend, request: SigningRequest) {

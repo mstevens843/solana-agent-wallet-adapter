@@ -37,7 +37,7 @@ export interface BaseWallet {
 }
 
 export interface AgentWalletAdapterBackendOptions {
-  /** Underlying wallet backend (web Wallet Standard, Android MWA, iOS deeplinks, mock). */
+  /** Underlying wallet backend (web Wallet Standard, Android MWA, planned iOS link transport, mock). */
   backend: WalletBackend;
   /** Solana cluster every signing request will target. */
   cluster: Cluster;
@@ -55,8 +55,8 @@ export interface AgentWalletAdapterBackendOptions {
  *
  * The agent never sees the user's private key. Each `signTransaction`,
  * `signMessage`, and `signAndSendTransaction` call submits a request to the
- * configured wallet backend (browser Wallet Standard, Android MWA, iOS
- * deeplinks, or mock) and resolves only when the user has approved or
+ * configured wallet backend (browser Wallet Standard, Android MWA, planned iOS
+ * link transport, or mock) and resolves only when the user has approved or
  * rejected the request in their wallet.
  *
  * Plug into `SolanaAgentKit`:
