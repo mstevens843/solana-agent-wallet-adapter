@@ -40,11 +40,16 @@ export function redactSecrets(value: unknown): unknown {
 }
 
 function redactString(value: string): string {
-  if (!value.includes('://')) {
-    return value;
+  const redacted = value
+    .replace(/Bearer\s+[A-Za-z0-9._~+/=-]+/gi, 'Bearer [redacted]')
+    .replace(/\bsk-proj-[A-Za-z0-9_-]{8,}\b/g, 'sk-proj-[redacted]')
+    .replace(/\bsk-[A-Za-z0-9_-]{8,}\b/g, 'sk-[redacted]')
+    .replace(/\b[A-Za-z0-9_-]{20,}\.[A-Za-z0-9_-]{20,}\.[A-Za-z0-9_-]{20,}\b/g, '[redacted-token]');
+  if (!redacted.includes('://')) {
+    return redacted;
   }
   try {
-    const url = new URL(value);
+    const url = new URL(redacted);
     for (const key of [...url.searchParams.keys()]) {
       if (SECRET_QUERY_KEYS.has(key.toLowerCase())) {
         url.searchParams.set(key, '[redacted]');
@@ -52,7 +57,7 @@ function redactString(value: string): string {
     }
     return url.toString();
   } catch {
-    return value.replace(/([?&](?:api-key|apikey|key|token)=)[^&\s]+/gi, '$1[redacted]');
+    return redacted.replace(/([?&](?:api-key|apikey|key|token)=)[^&\s]+/gi, '$1[redacted]');
   }
 }
 

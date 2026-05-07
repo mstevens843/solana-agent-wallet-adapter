@@ -117,6 +117,10 @@ pnpm cli -- app
 
 The terminal app checks or starts the local bridge, checks or starts the browser wallet host, opens the host with the bridge token, and gives slash commands for `/connect`, `/wallet`, `/inbox`, `/inspect`, `/approve`, `/schedule`, `/plan`, `/research`, `/receipts`, and `/doctor`. The terminal controls the approval flow; the real wallet popup still performs the signature.
 
+Optional AI planning uses BYOK. Agentic works without an AI key through templates; for smarter natural-language planning,
+set `AGENTIC_AI_API_KEY`, `AGENTIC_AI_MODEL`, and `AGENTIC_AI_BASE_URL` on the local bridge, or use the browser session
+key field for Android/browser-only testing. See [docs/ai-byok.md](./docs/ai-byok.md).
+
 Restart Codex after MCP registration and ask:
 
 ```text

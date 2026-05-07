@@ -9,6 +9,7 @@ import {
   type ProtocolErrorPayload,
   type SigningRequest,
   type SigningResult,
+  type WalletBackend,
 } from '@solana-agent-wallet-adapter/core';
 import {
   detectMwaEnvironment,
@@ -23,10 +24,26 @@ import {
 } from '@solana-agent-wallet-adapter/wallet-standard-web';
 import { Connection, PublicKey, Transaction, TransactionInstruction } from '@solana/web3.js';
 
+import {
+  AGENT_PLAN_TEMPLATES,
+  DEFAULT_AI_BASE_URL,
+  DEFAULT_AI_MODEL,
+  buildTemplatePlan,
+  defaultTemplateFieldValues,
+  generateOpenAiCompatiblePlan,
+  redactSecrets,
+  templateById,
+  templateFieldLabel,
+  type AgentPlan,
+  type AgentPlanTemplate,
+  type AgentPlanTemplateField,
+  type AiSettings,
+  type BridgeAiStatus,
+} from './planner.js';
 import './styles.css';
 
 type StepState = 'idle' | 'active' | 'done' | 'error';
-type StepName = 'discover' | 'connect' | 'sign' | 'transaction' | 'bridge' | 'inbox' | 'lab';
+type StepName = 'discover' | 'connect' | 'sign' | 'transaction' | 'bridge' | 'inbox' | 'lab' | 'ai';
 type ActiveTab = 'wallet' | 'agent' | 'inbox' | 'labs';
 type ToastKind = 'success' | 'error';
 type RuntimePathId = 'exec' | 'install' | 'desktop';
@@ -46,6 +63,37 @@ type PreparedActionStatus =
 type PreparedActionTxStatus = 'pending' | 'confirmed' | 'failed';
 type RecurringCadence = 'weekly' | 'monthly' | 'interval_days' | 'interval_hours' | 'interval_minutes';
 type InstructionData = ConstructorParameters<typeof TransactionInstruction>[0]['data'];
+type IosNativeWalletId = 'phantom' | 'solflare' | 'backpack' | 'jupiter';
+
+interface IosNativeEnvironment {
+  isNative: boolean;
+  platform: string;
+  isIos: boolean;
+  isIosNative: boolean;
+  callbackScheme: string;
+}
+
+interface IosNativeWalletOption {
+  id: IosNativeWalletId;
+  name: string;
+  detail: string;
+  transport: 'encrypted-deeplink' | 'walletconnect';
+  appStoreUrl: string;
+}
+
+interface IosNativeRestoreResult {
+  backend: IosNativeMaintenanceBackend;
+  address: string;
+  walletId: IosNativeWalletId;
+  walletName: string;
+  cacheCount: number;
+}
+
+type IosNativeMaintenanceBackend = WalletBackend & {
+  clearTransientState(reason: string): Promise<void>;
+  clearStateFullReset(reason: string): Promise<void>;
+  clearAllCachedAuthorizations(): Promise<void>;
+};
 
 const CLUSTERS: Cluster[] = ['mainnet-beta', 'devnet', 'testnet', 'localnet'];
 const DEMO_MESSAGE = 'Approve this Solana agent action with user custody.';
@@ -85,6 +133,10 @@ const NAV_ITEMS: ReadonlyArray<{ route: AppRoute; label: string; pill?: boolean 
   { route: '/demo', label: 'Launch Demo' },
   { route: '/app', label: 'Launch App', pill: true },
 ];
+const ROUTE_TITLES: Record<string, string> = {
+  '/privacy': 'Privacy Policy · Agentic',
+  '/terms': 'Terms of Service · Agentic',
+};
 const RUNTIME_PATHS: RuntimePath[] = [
   {
     id: 'exec',
@@ -145,7 +197,7 @@ const ANDROID_RELEASE_ASSETS = [
   ['Android APK', 'agentic-android.apk'],
   ['Android App Bundle', 'agentic-android.aab'],
 ] as const;
-const AGENTIC_MARK_LOGO = new URL('./assets/logos/saturn_6_cutout.png', import.meta.url).href;
+const AGENTIC_MARK_LOGO = new URL('./assets/logos/saturn_6_green_dark_3.png', import.meta.url).href;
 
 type BrandLogoId =
   | 'backpack'
@@ -169,13 +221,75 @@ const BRAND_LOGOS: Record<BrandLogoId, string> = {
   solflare: new URL('./assets/logos/solflare.svg', import.meta.url).href,
   vercel: new URL('./assets/logos/vercel.svg', import.meta.url).href,
 };
+const IOS_NATIVE_WALLETS: ReadonlyArray<IosNativeWalletOption> = [
+  {
+    id: 'phantom',
+    name: 'Phantom',
+    detail: 'Encrypted iOS deeplink',
+    transport: 'encrypted-deeplink',
+    appStoreUrl: 'https://apps.apple.com/app/phantom-crypto-wallet/id1598432977',
+  },
+  {
+    id: 'solflare',
+    name: 'Solflare',
+    detail: 'Encrypted iOS deeplink',
+    transport: 'encrypted-deeplink',
+    appStoreUrl: 'https://apps.apple.com/app/solflare/id1580902717',
+  },
+  {
+    id: 'backpack',
+    name: 'Backpack',
+    detail: 'Encrypted iOS deeplink',
+    transport: 'encrypted-deeplink',
+    appStoreUrl: 'https://apps.apple.com/app/backpack-crypto-wallet/id6445964121',
+  },
+  {
+    id: 'jupiter',
+    name: 'Jupiter',
+    detail: 'WalletConnect path',
+    transport: 'walletconnect',
+    appStoreUrl: 'https://apps.apple.com/app/jupiter-mobile/id6474343098',
+  },
+];
 
-interface AgentPlan {
-  intent: string;
-  route: string;
-  risk: string;
-  approval: string;
+function detectIosNativeEnvironment(): IosNativeEnvironment {
+  return {
+    isNative: false,
+    platform: 'web',
+    isIos: false,
+    isIosNative: false,
+    callbackScheme: 'agenticwallet',
+  };
 }
+
+function listIosNativeWalletOptions(): ReadonlyArray<IosNativeWalletOption> {
+  return IOS_NATIVE_WALLETS;
+}
+
+async function iosNativeCacheSummary(): Promise<{ count: number }> {
+  return { count: 0 };
+}
+
+async function restoreLatestIosNativeWallet(_options?: {
+  cluster: Cluster;
+  appUrl: string;
+  rpcUrl?: string;
+  logLevel?: 'silent' | 'error' | 'info' | 'debug';
+}): Promise<IosNativeRestoreResult | null> {
+  return null;
+}
+
+const IosNativeWalletBackend = class {
+  constructor() {
+    throw new Error('iOS native wallet backend is not available in the web build yet.');
+  }
+} as unknown as new (options: {
+  walletId: IosNativeWalletId;
+  cluster: Cluster;
+  appUrl: string;
+  rpcUrl?: string;
+  logLevel?: 'silent' | 'error' | 'info' | 'debug';
+}) => IosNativeMaintenanceBackend;
 
 interface Toast {
   id: number;
@@ -336,6 +450,7 @@ interface RecurringDraft {
 
 interface PersistedState {
   selectedWalletName?: string;
+  selectedIosWalletId?: IosNativeWalletId;
   cluster?: Cluster;
   bridgeUrl?: string;
   bridgeToken?: string;
@@ -349,6 +464,11 @@ interface DemoState {
   inboxFilter: InboxFilter;
   wallets: DiscoveredWallet[];
   selectedWalletName: string;
+  iosNativeEnvironment: IosNativeEnvironment;
+  iosWallets: ReadonlyArray<IosNativeWalletOption>;
+  selectedIosWalletId: IosNativeWalletId;
+  iosAuthCacheCount: number;
+  iosNativeStatus: string;
   address: string;
   signature: string;
   txSignature: string;
@@ -356,9 +476,13 @@ interface DemoState {
   customTransactionBase64: string;
   transactionStatus: string;
   agentPrompt: string;
+  selectedTemplateId: string;
+  templateFields: Record<string, string>;
   agentPlan: AgentPlan | null;
   agentSignature: string;
   agentPreparedActionId: string;
+  aiSettings: AiSettings;
+  aiStatus: BridgeAiStatus | null;
   toasts: Toast[];
   capabilities: AdapterCapabilities | null;
   error: string;
@@ -495,15 +619,21 @@ const LABS: LabDefinition[] = [
 
 const persisted = loadPersistedState();
 const initialCluster = SHOW_DEV_CONTROLS ? (persisted.cluster ?? 'mainnet-beta') : 'mainnet-beta';
+const initialTemplate = templateById('custom-request');
 
 const state: DemoState = {
-  activeTab: 'wallet',
+  activeTab: SHOW_DEV_CONTROLS ? 'wallet' : 'agent',
   selectedRuntimePath: 'exec',
   recentCopyId: '',
   inboxMode: 'inbox',
   inboxFilter: 'all',
   wallets: [],
   selectedWalletName: persisted.selectedWalletName ?? '',
+  iosNativeEnvironment: detectIosNativeEnvironment(),
+  iosWallets: listIosNativeWalletOptions(),
+  selectedIosWalletId: persisted.selectedIosWalletId ?? 'phantom',
+  iosAuthCacheCount: 0,
+  iosNativeStatus: 'iOS native wallet idle.',
   address: '',
   signature: '',
   txSignature: '',
@@ -511,9 +641,18 @@ const state: DemoState = {
   customTransactionBase64: '',
   transactionStatus: '',
   agentPrompt: DEFAULT_AGENT_PROMPT,
+  selectedTemplateId: initialTemplate.id,
+  templateFields: defaultTemplateFieldValues(initialTemplate),
   agentPlan: null,
   agentSignature: '',
   agentPreparedActionId: '',
+  aiSettings: {
+    mode: 'bridge',
+    baseUrl: DEFAULT_AI_BASE_URL,
+    model: DEFAULT_AI_MODEL,
+    apiKey: '',
+  },
+  aiStatus: null,
   toasts: [],
   capabilities: null,
   error: '',
@@ -544,11 +683,12 @@ const state: DemoState = {
     bridge: 'idle',
     inbox: 'idle',
     lab: 'idle',
+    ai: 'idle',
   },
 };
 
 let client: SolanaSigningClient | null = null;
-let walletBackend: WalletStandardWebBackend | null = null;
+let walletBackend: WalletBackend | null = null;
 let nextToastId = 1;
 let bridgePollTimer: number | null = null;
 let bridgeRequestBusy = false;
@@ -576,7 +716,13 @@ async function bootstrap(): Promise<void> {
     logLevel: 'info',
   });
   state.mwaEnvironment = state.mwaRegistration.environment;
+  state.iosNativeEnvironment = detectIosNativeEnvironment();
+  await refreshIosNativeCacheState();
+  if (state.iosNativeEnvironment.isIosNative) {
+    await restoreIosNativeSession();
+  }
   await loadBridgeConfig(false);
+  await refreshBridgeAiStatus(false);
   render();
 }
 
@@ -664,11 +810,6 @@ function pageContent(route: AppRoute | null): string {
   }
 }
 
-const ROUTE_TITLES: Record<string, string> = {
-  '/privacy': 'Privacy Policy · Agentic',
-  '/terms': 'Terms of Service · Agentic',
-};
-
 function applyRouteTitle(route: AppRoute | null): void {
   document.title = ROUTE_TITLES[route ?? ''] ?? 'Agentic | Solana Agent Wallet Adapter';
 }
@@ -741,12 +882,24 @@ function privacyPage(): string {
         <p>SolPulse LLC ("SolPulse," "we," "our," or "us") values your privacy and is committed to protecting your information. This Privacy Policy describes how we collect, use, store, and disclose information when you access or use the Agentic websites, command-line interface, desktop app, browser app, mobile clients, runtime bridge, APIs, or related services (collectively, the "Platform" or "Agentic"). Agentic is a non-custodial wallet authority adapter — we do not take possession of your assets or private keys. You remain in full control of your wallets and signatures at all times, but certain data you provide or that we collect may still constitute personal data under applicable privacy laws.</p>
         <p>By accessing or using Agentic, you acknowledge that you have read, understood, and agree to this Privacy Policy. If you disagree with any portion of this Policy, please discontinue use of the Platform.</p>
 
+        <h3>Quick Summary</h3>
+        <ul>
+          <li><strong>No private keys:</strong> Agentic does not ask for, collect, store, transmit, recover, or custody seed phrases, private keys, or wallet recovery credentials.</li>
+          <li><strong>No hosted account required:</strong> the current public app does not require an Agentic account.</li>
+          <li><strong>Local-first runtime:</strong> CLI, desktop, bridge settings, approval queues, bridge tokens, Android MWA authorization cache, and app logs are designed to stay on your device unless you choose to send information to us for support or connect them to third-party services.</li>
+          <li><strong>Android permissions:</strong> the Android app currently requests Internet access and foreground data-sync service permissions for wallet approval and bridge polling. It does not request camera, microphone, contacts, SMS, phone, precise location, health, calendar, or file-system permissions.</li>
+          <li><strong>No ad sale:</strong> we do not sell personal information and do not share it for cross-context behavioral advertising.</li>
+          <li><strong>Public blockchain:</strong> wallet addresses, transaction IDs, signatures, balances, token activity, timing, and other on-chain data may be public, permanent, and outside our control.</li>
+        </ul>
+
         <h3>1. Information We Collect</h3>
         <p><strong>A. Information You Provide</strong></p>
         <ul>
           <li>Contact details such as your email address (when you contact support)</li>
           <li>Wallet information such as your Solana public key when you connect a wallet to a demo or web flow (which may be considered personal data when linked to other identifiers)</li>
-          <li>Any content you submit via forms, customer support, feedback surveys, or community channels</li>
+          <li>Any content you submit via forms, customer support, feedback surveys, community channels, or app-store review communications</li>
+          <li>AI planner prompts, templates, parameters, policy notes, and model settings you enter when you use the optional planner features</li>
+          <li>Session AI keys or bridge AI keys you choose to enter. Browser session keys are intended to be used for the current session only; bridge session keys are intended to stay in the local bridge process memory unless you configure otherwise. We do not ask you to send AI keys to SolPulse servers.</li>
         </ul>
         <p>We do not require know-your-customer (KYC) verification because the Platform is non-custodial and does not match, settle, or take the other side of any trade. However, regulations may change; we reserve the right to request additional information to comply with applicable laws or to prevent fraud, money laundering, or other illicit activity.</p>
         <p><strong>B. Information We Collect Automatically</strong></p>
@@ -755,8 +908,10 @@ function privacyPage(): string {
           <li>Usage data such as access timestamps, referral URLs, pages visited, and actions taken on the public website</li>
           <li>Wallet-connection events on the website (for example, when you connect, approve, or disconnect a wallet for a demo)</li>
           <li>Approximate geolocation information inferred from your IP address, to comply with sanctions and jurisdictional restrictions</li>
+          <li>Android app technical data needed for Mobile Wallet Adapter operation, such as wallet package or URI availability checks, public wallet address, account label if supplied by the wallet, cluster, wallet capabilities, shortened signatures or transaction IDs in local logs, foreground service status, and bridge polling status</li>
+          <li>App diagnostics, errors, and security telemetry such as request IDs, timestamps, status codes, rejected wallet operations, and redacted log metadata</li>
         </ul>
-        <p>The Agentic CLI, desktop runtime, and bridge run <strong>locally on your device</strong> and are not telemetered by default. Approval rails, prepared-action queues, and signing flows execute on your machine; we do not receive telemetry on transaction content unless you contact us with a support request that you elect to attach.</p>
+        <p>The Agentic CLI, desktop runtime, Android MWA surface, and bridge run <strong>locally on your device</strong> and are not telemetered to SolPulse by default. Approval rails, prepared-action queues, Android authorization cache, signing flows, bridge tokens, and local logs execute or persist on your machine; we do not receive telemetry on transaction content unless you contact us with a support request that you elect to attach.</p>
         <p><strong>C. Public Blockchain Data</strong></p>
         <p>Transactions you broadcast to the Solana blockchain are publicly accessible and cannot be erased. We do not control or store on-chain data, but we may analyse publicly available blockchain information to detect suspicious activity, debug issues, or improve documentation.</p>
 
@@ -771,12 +926,13 @@ function privacyPage(): string {
         </ul>
         <p>We do not sell your personal data. We may share it with service providers who help us operate the Platform under strict confidentiality obligations, and with regulators or law enforcement if required by law.</p>
 
-        <h3>3. Cookies & Tracking Technologies</h3>
-        <p>The Agentic website uses cookies and other browser-based storage methods (such as localStorage) to maintain session state, track UI preferences, and improve performance and responsiveness. You may disable cookies in your browser settings, but doing so may limit your ability to use certain features. By continuing to use the Platform, you consent to our use of cookies and local storage as described here.</p>
+        <h3>3. Cookies, Local Storage & Analytics</h3>
+        <p>The Agentic website uses browser-based storage methods such as localStorage to maintain app state, selected wallet name, selected cluster, bridge URL, bridge token, lab artifacts, UI preferences, and similar local workspace data. The Android app may store Mobile Wallet Adapter authorization records in app-private storage so you can reconnect a previously approved wallet. You may clear browser storage, app storage, or local runtime files, but doing so may remove preferences, authorization cache, receipts, or local artifacts.</p>
+        <p>We may add Google Analytics 4 to the public marketing site or hosted app. If enabled, Google Analytics may collect or process usage events, page views, device/browser information, approximate location, and related identifiers according to Google&apos;s terms and settings. We will not use Google Analytics to sell personal information or for cross-context behavioral advertising, and we will update the Google Play Data Safety form before enabling analytics in the Android distribution.</p>
 
         <h3>4. Data Storage & Security</h3>
         <p>We implement reasonable technical and organizational measures designed to protect your personal information. Examples include encryption in transit via SSL/TLS, secure infrastructure, and access controls. Despite these measures, no method of transmission or storage is completely secure; you use the Platform at your own risk.</p>
-        <p>We retain your information only as long as necessary to provide the Platform, comply with our legal obligations, resolve disputes, and enforce our agreements. Where feasible, we minimize data and may anonymize or aggregate information to further protect your privacy.</p>
+        <p>We retain your information only as long as necessary to provide the Platform, comply with our legal obligations, resolve disputes, and enforce our agreements. Where feasible, we minimize data and may anonymize or aggregate information to further protect your privacy. You remain responsible for securing your device, browser profile, wallet app, seed phrase, bridge token, AI provider key, and any third-party agent software you connect.</p>
 
         <h3>5. Children's Privacy</h3>
         <p>Agentic does not knowingly collect or store data from anyone under the age of 18. If you are a parent or guardian and believe your child has submitted information to us, contact us at support@solpulse.trade and we'll promptly delete it.</p>
@@ -811,21 +967,25 @@ function privacyPage(): string {
           <li><strong>Legal Obligation:</strong> to satisfy regulatory, tax, accounting, and law-enforcement requirements.</li>
         </ul>
 
-        <h3>13. Data Retention</h3>
+        <h3>13. Data Retention & Deletion</h3>
         <ul>
           <li><strong>Public-website usage logs:</strong> approximately 30–90 days, extendable for security or abuse investigations.</li>
           <li><strong>Support tickets &amp; attachments:</strong> active ticket duration plus up to 24 months.</li>
-          <li><strong>Local-device data (CLI, runtime, desktop bridge):</strong> stays on your device under your control; we do not retain it.</li>
+          <li><strong>Google Analytics 4 data, if enabled:</strong> retained according to the configured Google Analytics property retention settings and applicable Google controls.</li>
+          <li><strong>Local-device data (CLI, runtime, desktop bridge, Android MWA app, local logs, authorization cache, bridge tokens, session AI keys, and receipts):</strong> stays on your device under your control; we do not retain it unless you send it to us.</li>
+          <li><strong>Public blockchain data:</strong> may be permanent and cannot be deleted or modified by SolPulse.</li>
+          <li><strong>Legal, safety, and compliance records:</strong> retained as long as necessary to satisfy legal obligations, sanctions controls, fraud prevention, security, dispute resolution, or legal defense.</li>
         </ul>
 
         <h3>14. Third-Party Services & Processors</h3>
         <p>We rely on third-party providers to operate the public-facing parts of the Platform. These providers act as processors or service providers under contracts that restrict their use of personal information to the services we request.</p>
         <ul>
           <li><strong>Wallet Standard wallets</strong> (Phantom, Solflare, Backpack, Glow, etc.) — chosen by you. When you connect a wallet, that wallet provider's privacy policy applies to wallet-side data, including key custody and recovery.</li>
-          <li><strong>Solana RPC providers</strong> (e.g., Helius, public mainnet RPC) — for on-chain reads and transaction submission initiated by you and your agent.</li>
-          <li><strong>Hosting (Render)</strong> — serves the public marketing website only.</li>
-          <li><strong>Optional AI clients</strong> (Anthropic Claude, OpenAI/Codex, Vercel AI SDK, third-party MCP servers) — Agentic does <strong>not</strong> relay your data to these providers. Your chosen agent client calls them directly under its own privacy policy.</li>
-          <li><strong>Google Analytics 4</strong> (if enabled on the marketing site) — anonymous, aggregated usage analytics.</li>
+          <li><strong>Mobile Wallet Adapter wallets and Android platform services</strong> — chosen by you or provided by the Android/browser environment to route approvals, foreground data-sync behavior, and wallet handoffs.</li>
+          <li><strong>Solana RPC providers</strong> (e.g., Helius, public mainnet RPC, or configured RPC endpoints) — for on-chain reads, simulations, balance checks, and transaction submission initiated by you, your wallet, or your agent.</li>
+          <li><strong>Hosting (Render), Google Play, Chrome/Custom Tabs/TWA, and app-store services</strong> — to distribute or serve the public website and Android app surfaces.</li>
+          <li><strong>Optional AI clients and providers</strong> (Anthropic Claude, OpenAI/Codex, Vercel AI SDK, third-party MCP servers, or OpenAI-compatible providers you configure) — Agentic does <strong>not</strong> call AI providers through SolPulse servers by default. Your chosen agent client, browser session key, or local bridge calls them under its own terms and privacy policy.</li>
+          <li><strong>Google Analytics 4</strong> (if enabled) — aggregated usage measurement for product and reliability analysis, subject to Google Analytics configuration and applicable consent requirements.</li>
         </ul>
 
         <h3>15. Additional Rights by Jurisdiction</h3>
@@ -845,6 +1005,9 @@ function privacyPage(): string {
 
         <h3>20. Tutorials, Documentation & Help Resources</h3>
         <p>Tutorials, videos, FAQs, and helpdesk responses describe Platform functionality only and are not personalized advice, suitability assessments, or recommendations. We may process the content of your help requests and attachments to resolve issues and improve quality. Aggregated, de-identified analytics may be used to improve support resources.</p>
+
+        <h3>21. Google Play Data Safety & Financial Features</h3>
+        <p>If Agentic is distributed through Google Play, the Google Play Data Safety form and any Financial features declaration must be kept consistent with this Privacy Policy and the actual Android app behavior. Because Agentic involves cryptocurrency wallet actions, SolPulse may disclose financial-feature information to Google Play and may update app availability, disclosures, or functionality to satisfy store policy or applicable law.</p>
       </article>
     </section>
   `;
@@ -891,6 +1054,7 @@ function termsPage(): string {
           <li>A buggy or hostile agent could attempt to author transactions that drain, lock, or otherwise harm your wallet if signed</li>
           <li>Agentic's role is to surface the proposed action so you can review it; the Platform does not auto-approve and does not vet the agent's intent</li>
           <li>AI providers (Anthropic, OpenAI, third-party MCP authors, Vercel AI, etc.) are not SolPulse's agents, employees, or representatives; their behavior is not under our control</li>
+          <li>Optional AI planner features only draft plans or explanations; they do not make a transaction safe, signed, submitted, profitable, reversible, or suitable for you</li>
           <li>You remain solely responsible for what you sign, including approvals issued by automation or pre-authorized categories you enabled</li>
         </ul>
 
@@ -903,6 +1067,8 @@ function termsPage(): string {
           <li>Match, settle, or take the other side of any trade</li>
           <li>Operate an order book, an exchange, or a liquidity pool</li>
         </ul>
+
+        <p><strong>3c. Bring-Your-Own AI Keys.</strong> If you paste or configure an AI provider key, base URL, model name, prompt, template, or plan parameter in Agentic, you are instructing your browser, local bridge, or chosen client to contact that provider. You are responsible for the provider you choose, its terms, its privacy practices, its billing, and the content you send to it. SolPulse does not guarantee that provider responses are accurate, secure, compliant, or fit for any purpose. Never enter a wallet seed phrase, private key, recovery phrase, or unrestricted credential into any AI prompt, MCP server, bridge, or support request.</p>
 
         <h3>4. Future Paid Features</h3>
         <p>The Platform is currently provided without subscription fees. SolPulse may, in the future, offer paid features, subscriptions, or premium tiers. If we do, the pricing, billing terms, and payment schedule will be presented at signup, and your use of those paid features will be subject to these Terms together with any additional, feature-specific terms posted at the time of purchase. Network fees, RPC fees, protocol fees, and any other third-party fees you incur when broadcasting transactions through the Platform are set by third parties and not by SolPulse.</p>
@@ -921,7 +1087,7 @@ function termsPage(): string {
 
         <h3>6. Compliance & Regulatory Status</h3>
         <p>Agentic is a non-custodial software interface that brokers wallet authority between you and the agents you choose to connect. We do not operate an exchange, an order book, a matching engine, or a liquidity pool. We do not take the other side of any trade. We do not hold, custody, or control your funds or private keys at any time. All transactions are signed by you in your own wallet and broadcast to public networks (such as Solana) through third-party RPC providers and on-chain protocols.</p>
-        <p>As noted in legal guidance for non-custodial wallet interfaces, providers that simply facilitate access to blockchain networks without holding users' assets generally do not require money transmitter or similar licences. Nevertheless, laws and regulations regarding digital assets are evolving. You are responsible for determining whether use of the Platform is permitted under the laws of your jurisdiction and for complying with any applicable licensing, registration, tax, or reporting obligations. We reserve the right to implement KYC/AML procedures or other compliance measures as necessary to meet legal requirements.</p>
+        <p>SolPulse intends Agentic to operate as non-custodial software and not as a money transmitter, broker, dealer, exchange, investment adviser, bank, fiduciary, payment processor, or other regulated financial intermediary. Laws and regulations regarding digital assets, wallets, AI agents, and automated approvals are evolving and may be interpreted differently by different authorities. You are responsible for determining whether use of the Platform is permitted under the laws of your jurisdiction and for complying with any applicable licensing, registration, tax, accounting, or reporting obligations. We reserve the right to implement KYC/AML procedures, sanctions screening, geoblocking, app-store declarations, feature restrictions, or other compliance measures as necessary to meet legal requirements or risk controls.</p>
 
         <h3>7. No Warranty</h3>
         <p>The Platform and all related services are provided on an "as is" and "as available" basis without warranty of any kind. To the fullest extent permitted by law, SolPulse disclaims all warranties, express or implied, including but not limited to warranties of merchantability, fitness for a particular purpose, accuracy, non-infringement, and uninterrupted or error-free operation. We do not guarantee the availability, timeliness, completeness, or reliability of any information, agent integration, or feature offered through the Platform. You use the Platform at your own risk.</p>
@@ -931,7 +1097,7 @@ function termsPage(): string {
         <p><strong>Claims Only Against the Company.</strong> You agree that any claim you may have in connection with the Platform may be brought only against SolPulse LLC and not against its owners, officers, directors, employees, contractors, affiliates, service providers, or licensors in their personal or individual capacity. This limitation applies to the fullest extent permitted by law.</p>
 
         <h3>9. Intellectual Property</h3>
-        <p>All intellectual property rights in the Platform, including but not limited to code, branding, UI, and documentation, remain the property of SolPulse. You may not copy, modify, distribute, or reverse-engineer any part of the Platform without permission.</p>
+        <p>All intellectual property rights in the Platform, including but not limited to branding, UI, documentation, hosted service configuration, app-store listings, images, names, logos, and non-open-source assets, remain the property of SolPulse or its licensors. Open-source code published by SolPulse is governed by the open-source license included with that code, currently Apache-2.0 for this repository. These Terms do not reduce rights granted to you under that open-source license, but they do not grant rights to use SolPulse names, logos, trade dress, hosted services, app listings, or other brand assets except as expressly permitted in writing.</p>
         <p>All trademarks, service marks, trade names, logos, and brand identifiers appearing on the Platform that are not owned by SolPulse are the property of their respective owners. Reference to any third-party mark, protocol, token, or service is for identification only and does not imply endorsement, partnership, or affiliation.</p>
         <p><strong>9a. Copyright & DMCA.</strong> SolPulse respects the intellectual property rights of others and expects users of the Platform to do the same. If you believe material accessible on or from the Platform infringes your copyright, you may request its removal by sending a written notice of infringement to our designated agent that includes: (a) a physical or electronic signature of the copyright owner or a person authorized to act on their behalf; (b) identification of the copyrighted work claimed to be infringed; (c) identification of the allegedly infringing material and information reasonably sufficient to locate it on the Platform; (d) your contact information (name, address, telephone number, and email); (e) a statement that you have a good-faith belief that the use is not authorized by the copyright owner, its agent, or the law; and (f) a statement, made under penalty of perjury, that the information in your notice is accurate and that you are the copyright owner or authorized to act on the owner's behalf. Send notices to our DMCA agent at support@solpulse.trade with the subject line "DMCA Notice." We may, in appropriate circumstances and at our discretion, terminate the accounts of users who are repeat infringers. Knowingly submitting a false or misleading notice of infringement may subject you to liability under applicable law.</p>
 
@@ -964,7 +1130,7 @@ function termsPage(): string {
         <p>The Platform may rely on third-party services and data sources such as wallet providers, RPC nodes, AI clients, MCP servers, DEX aggregators/routers, market data providers, block explorers, messaging services, and email providers. We do not control and are not responsible for their availability, accuracy, performance, security, or legality. Outages, inaccuracies, or changes in those services may affect your experience and outcomes. Your use of third-party services may be governed by their own terms and privacy policies.</p>
 
         <h3>17. Automation, Caps & Pre-Authorized Categories</h3>
-        <p>If you enable automated approvals, spend caps, recurring payments, allowlisted recipients, or any "always allow" / pre-authorized category in the Platform, you authorize the Platform to prepare or submit transactions via your connected wallet in accordance with your parameters. You are responsible for maintaining adequate balances, monitoring the automation, and disabling or revoking it when desired. We may implement idempotency or duplicate-protection mechanisms, but they cannot prevent all race conditions, retries, or double-submissions across networks or wallets.</p>
+        <p>If you enable automated approvals, spend caps, recurring payments, allowlisted recipients, bridge polling, Android foreground wallet-approval flows, or any "always allow" / pre-authorized category in the Platform, you authorize the Platform to prepare, queue, poll for, or submit transactions via your connected wallet in accordance with your parameters. You are responsible for maintaining adequate balances, monitoring the automation, and disabling or revoking it when desired. We may implement idempotency or duplicate-protection mechanisms, but they cannot prevent all race conditions, retries, stale authorizations, wallet bugs, bridge failures, or double-submissions across networks, devices, agents, or wallets.</p>
 
         <h3>18. Safety Checks & Heuristics</h3>
         <p>Any safety, simulation, cap, allowlist, balance, slippage, or risk check surfaced by the Platform is heuristic and informational only. Such checks do not constitute a guarantee that an action is safe, that a token is legitimate, that liquidity is sufficient, or that an agent is non-malicious. You should conduct your own due diligence before approving any action and understand that heuristic checks can be incomplete, stale, or bypassed. We are not liable for losses arising from rug pulls, honeypots, scam tokens, exploits, prompt-injected agents, or any fraudulent activity that you authorize through the Platform, even if our safety checks failed to detect it.</p>
@@ -1832,7 +1998,8 @@ function metric(label: string, value: string, tone = ''): string {
 
 function walletRail(): string {
   const showConnectionDetails = SHOW_DEV_CONTROLS && !state.address;
-  const showPublicWalletPicker = !SHOW_DEV_CONTROLS && !state.address && state.wallets.length > 1;
+  const showPublicWalletPicker = !SHOW_DEV_CONTROLS && !state.address && !state.iosNativeEnvironment.isIosNative && state.wallets.length > 1;
+  const showPublicIosPicker = !SHOW_DEV_CONTROLS && !state.address && state.iosNativeEnvironment.isIosNative;
   const wallet = walletIdentity();
   return `
     <aside class="panel custody-panel custody-module">
@@ -1871,6 +2038,17 @@ function walletRail(): string {
         </label>
       </details>` : ''}
 
+      ${showPublicIosPicker ? `
+      <details class="rail-details wallet-picker-details" open>
+        <summary>Choose iOS wallet</summary>
+        <label class="field">
+          <span>Selected wallet</span>
+          <select id="iosWalletSelect" ${state.busy ? 'disabled' : ''}>
+            ${iosWalletOptions()}
+          </select>
+        </label>
+      </details>` : ''}
+
       ${SHOW_DEV_CONTROLS && state.address ? `
       <details class="rail-details bridge-details" ${state.bridgeActive ? 'open' : ''}>
         <summary>Bridge operations</summary>
@@ -1894,18 +2072,45 @@ function developerConnectionSettings(): string {
       </select>
     </label>
 
+    ${state.iosNativeEnvironment.isIosNative ? `
+    <label class="field">
+      <span>iOS wallet</span>
+      <select id="iosWalletSelect" ${state.busy ? 'disabled' : ''}>
+        ${iosWalletOptions()}
+      </select>
+    </label>` : `
     <label class="field">
       <span>Selected wallet</span>
       <select id="walletSelect" ${state.wallets.length === 0 || state.busy ? 'disabled' : ''}>
         ${walletOptions()}
       </select>
-    </label>
+    </label>`}
 
     ${state.capabilities ? capabilityBlock(state.capabilities) : ''}
+    ${state.iosNativeEnvironment.isIosNative ? mobileWalletBox() : ''}
   `;
 }
 
 function mobileWalletBox(): string {
+  if (state.iosNativeEnvironment.isIosNative) {
+    return `
+      <div class="mobile-wallet-box ios-native-box">
+        <h3>iOS Wallet Runtime</h3>
+        <p>${escapeHtml(state.iosNativeStatus)}</p>
+        <div class="capabilities compact-caps">
+          <span>Capacitor iOS</span>
+          <span>${escapeHtml(iosWalletLabel(state.selectedIosWalletId))}</span>
+          <span>${state.iosAuthCacheCount} cached</span>
+        </div>
+        <div class="bridge-actions ios-state-actions">
+          <button id="iosReconnectCached" ${state.busy ? 'disabled' : ''}>Reconnect cached</button>
+          <button id="iosClearTransient" ${state.busy ? 'disabled' : ''}>Clear transient</button>
+          <button id="iosFullReset" ${state.busy ? 'disabled' : ''}>Full reset</button>
+          <button id="iosClearAllAccounts" ${state.busy ? 'disabled' : ''}>Clear all accounts</button>
+        </div>
+      </div>
+    `;
+  }
   return `
     <div class="mobile-wallet-box">
       <h3>Android MWA</h3>
@@ -1972,6 +2177,8 @@ function compactEndpoint(value: string): string {
 
 function guidedStartPanel(title: string, detail: string): string {
   const selectedProvider = discoveredSelectedWalletName();
+  const iosNative = state.iosNativeEnvironment.isIosNative;
+  const selectedIosWallet = iosWalletLabel(state.selectedIosWalletId);
   return `
     <section class="guided-start signature-stage stage-dormant">
       <div class="guided-start-copy">
@@ -1979,13 +2186,13 @@ function guidedStartPanel(title: string, detail: string): string {
         <p>${escapeHtml(detail)}</p>
       </div>
       <div class="guided-path" aria-label="Wallet connection path">
-        ${guidedStep('1', 'Discover', state.wallets.length ? `${state.wallets.length} provider(s) found` : 'Find installed Wallet Standard providers', state.wallets.length > 0)}
-        ${guidedStep('2', 'Select', selectedProvider || (state.wallets.length ? 'Choose a discovered provider' : 'Choose a wallet provider'), Boolean(selectedProvider))}
+        ${guidedStep('1', iosNative ? 'iOS paths' : 'Discover', iosNative ? `${state.iosWallets.length} wallet path(s) ready` : state.wallets.length ? `${state.wallets.length} provider(s) found` : 'Find installed Wallet Standard providers', iosNative || state.wallets.length > 0)}
+        ${guidedStep('2', 'Select', iosNative ? selectedIosWallet : selectedProvider || (state.wallets.length ? 'Choose a discovered provider' : 'Choose a wallet provider'), iosNative ? Boolean(selectedIosWallet) : Boolean(selectedProvider))}
         ${guidedStep('3', 'Connect', 'Authorize this app in the wallet', Boolean(state.address))}
       </div>
       <div class="guided-actions">
-        <button data-start-action="discover" class="${state.wallets.length ? '' : 'primary'}" ${state.busy ? 'disabled' : ''}>Discover wallets</button>
-        <button data-start-action="connect" class="${state.wallets.length ? 'primary' : ''}" ${state.wallets.length === 0 || !selectedProvider || state.busy ? 'disabled' : ''} title="${!selectedProvider ? 'Discover and select a wallet provider first.' : ''}">Connect wallet</button>
+        <button data-start-action="discover" class="${state.wallets.length || iosNative ? '' : 'primary'}" ${state.busy ? 'disabled' : ''}>${iosNative ? 'Refresh iOS state' : 'Discover wallets'}</button>
+        <button data-start-action="connect" class="${state.wallets.length || iosNative ? 'primary' : ''}" ${(!iosNative && (state.wallets.length === 0 || !selectedProvider)) || state.busy ? 'disabled' : ''} title="${!iosNative && !selectedProvider ? 'Discover and select a wallet provider first.' : ''}">Connect wallet</button>
       </div>
       <p class="guided-note">Bridge review, scheduled approvals, audit artifacts, and transaction tools unlock after a wallet is connected.</p>
     </section>
@@ -2238,47 +2445,150 @@ function walletFlowPanel(): string {
 }
 
 function agentPlanPanel(): string {
-  if (!state.address) {
-    return guidedStartPanel('Agent plan', 'Connect a wallet before generating or signing an agent request.');
-  }
+  const walletReady = Boolean(state.address);
+  const queueable = state.agentPlan ? canQueueAgentPlan(state.agentPlan) : false;
   return `
     <section class="approval-object signature-stage stage-agent ${state.agentSignature ? 'stage-complete' : state.agentPlan ? 'stage-active' : 'stage-draft'}">
       <div class="signature-object-head">
         <div>
-          <h2>Agent plan</h2>
-          <p>Review the request, route, and risk before any prepared action can execute.</p>
+          <h2>Agent planner</h2>
+          <p>Use templates without a key, or bring your own model key for smarter plan drafting. Wallet approval stays separate.</p>
         </div>
         <span class="signature-state ${state.agentSignature ? 'complete' : state.agentPlan ? 'active' : ''}">${state.agentSignature ? 'proof signed' : state.agentPlan ? 'plan ready' : 'draft'}</span>
       </div>
 
-      <div class="intent-capsule intent-document-card ${state.agentPlan ? 'plan-linked' : 'draft'}">
+      ${agentPlannerWorkbench()}
+
+      ${state.agentPlan ? agentPlanCard(state.agentPlan) : signaturePlaceholder('Plan details', 'Generate a plan to show route, risk, and approval constraints before signing.')}
+      ${agentResultBlock()}
+      ${state.agentPreparedActionId ? `<div class="notice">Queued prepared action: ${escapeHtml(state.agentPreparedActionId)}</div>` : ''}
+      ${!walletReady ? '<div class="notice">You can draft plans without a wallet. Connect a wallet only when you are ready to sign an approval proof.</div>' : ''}
+      ${state.agentPlan && !queueable ? '<div class="notice">This template creates a review/proof plan. Queueing is available for SOL transfers, SPL transfers, swaps, and recurring payments.</div>' : ''}
+      ${state.error ? `<div class="error">${escapeHtml(state.error)}</div>` : ''}
+    </section>
+  `;
+}
+
+function agentPlannerWorkbench(): string {
+  const template = selectedTemplate();
+  const canUseAi = state.aiSettings.mode === 'session'
+    ? Boolean(state.aiSettings.apiKey.trim())
+    : Boolean(state.aiStatus?.available);
+  return `
+    <div class="agent-planner-grid">
+      <div class="intent-capsule intent-document-card planner-card ${state.agentPlan ? 'plan-linked' : 'draft'}">
         <div class="intent-document-head">
           <div>
-            <span>Request</span>
-            <h3>Agent request</h3>
+            <span>Template planner</span>
+            <h3>${escapeHtml(template.title)}</h3>
           </div>
-          <strong>${state.agentSignature ? 'Proof signed' : state.agentPlan ? 'Ready for proof' : 'Draft'}</strong>
+          <strong>${escapeHtml(template.category)}</strong>
         </div>
-        <label class="intent-document">
+        <label class="field compact planner-template-select">
+          <span>Plan template</span>
+          <select id="templateSelect" ${state.busy ? 'disabled' : ''}>
+            ${AGENT_PLAN_TEMPLATES.map((candidate) => `
+              <option value="${escapeHtml(candidate.id)}" ${candidate.id === template.id ? 'selected' : ''}>
+                ${escapeHtml(`${titleCase(candidate.category)} - ${candidate.title}`)}
+              </option>
+            `).join('')}
+          </select>
+        </label>
+        <p class="template-description">${escapeHtml(template.description)}</p>
+        <div class="planner-fields">
+          ${template.fields.map(templateFieldInput).join('')}
+        </div>
+        <label class="intent-document planner-prompt">
           <span>User request</span>
           <textarea id="agentPrompt" ${state.busy ? 'disabled' : ''}>${escapeHtml(state.agentPrompt)}</textarea>
         </label>
         <div class="intent-policy-strip">
           <span>Approval rule</span>
-          <p>Review route, risk, and approval constraints before signing.</p>
+          <p>Templates work with no AI key. AI drafts only a plan; wallet approval is always separate.</p>
         </div>
         <div class="agent-actions signature-actions intent-document-actions">
-          <button id="generatePlan" class="${state.agentPlan ? '' : 'primary'}" ${!state.address || state.busy ? 'disabled' : ''}>Generate plan</button>
-          <button id="signAgentPlan" class="${state.agentPlan ? 'primary' : ''}" ${!state.address || !state.agentPlan || state.busy ? 'disabled' : ''} title="${!state.agentPlan ? 'Generate a plan before signing approval.' : ''}">Sign approval</button>
-          <button id="queueAgentPlan" class="utility" ${!state.address || !state.agentPlan || !state.bridgeActive || state.busy ? 'disabled' : ''} title="${!state.bridgeActive ? 'Connect the bridge before queueing approvals.' : ''}">Queue approval</button>
+          <button id="generatePlan" class="${state.agentPlan ? '' : 'primary'}" ${state.busy ? 'disabled' : ''}>Generate template plan</button>
+          <button id="generateAiPlan" class="${canUseAi ? 'primary' : ''}" ${!canUseAi || state.busy ? 'disabled' : ''} title="${canUseAi ? 'Generate through your configured AI key.' : 'Add a session key or configure local bridge AI first.'}">Generate with AI</button>
+          <button id="signAgentPlan" class="${state.agentPlan ? 'primary' : ''}" ${!state.address || !state.agentPlan || state.busy ? 'disabled' : ''} title="${!state.address ? 'Connect a wallet before signing.' : !state.agentPlan ? 'Generate a plan before signing approval.' : ''}">Sign approval</button>
+          <button id="queueAgentPlan" class="utility" ${!state.address || !state.agentPlan || !state.bridgeActive || !canQueueAgentPlan(state.agentPlan) || state.busy ? 'disabled' : ''} title="${queuePlanTitle()}">Queue approval</button>
         </div>
       </div>
+      ${aiSettingsCard()}
+    </div>
+  `;
+}
 
-      ${state.agentPlan ? agentPlanCard(state.agentPlan) : signaturePlaceholder('Plan details', 'Generate a plan to show route, risk, and approval constraints before signing.')}
-      ${agentResultBlock()}
-      ${state.agentPreparedActionId ? `<div class="notice">Queued prepared action: ${escapeHtml(state.agentPreparedActionId)}</div>` : ''}
-      ${state.error ? `<div class="error">${escapeHtml(state.error)}</div>` : ''}
-    </section>
+function templateFieldInput(fieldDef: AgentPlanTemplateField): string {
+  const value = templateFieldValue(fieldDef.id);
+  const disabled = state.busy ? 'disabled' : '';
+  if (fieldDef.type === 'textarea') {
+    return `
+      <label class="field compact planner-field">
+        <span>${escapeHtml(fieldDef.label)}</span>
+        <textarea data-template-field="${escapeHtml(fieldDef.id)}" placeholder="${escapeHtml(fieldDef.placeholder ?? '')}" ${disabled}>${escapeHtml(value)}</textarea>
+      </label>
+    `;
+  }
+  if (fieldDef.type === 'select' && fieldDef.options?.length) {
+    return `
+      <label class="field compact planner-field">
+        <span>${escapeHtml(fieldDef.label)}</span>
+        <select data-template-field="${escapeHtml(fieldDef.id)}" ${disabled}>
+          ${fieldDef.options.map((option) => `<option value="${escapeHtml(option)}" ${option === value ? 'selected' : ''}>${escapeHtml(option)}</option>`).join('')}
+        </select>
+      </label>
+    `;
+  }
+  return `
+    <label class="field compact planner-field">
+      <span>${escapeHtml(fieldDef.label)}</span>
+      <input data-template-field="${escapeHtml(fieldDef.id)}" value="${escapeHtml(value)}" placeholder="${escapeHtml(fieldDef.placeholder ?? '')}" ${disabled} />
+    </label>
+  `;
+}
+
+function aiSettingsCard(): string {
+  const status = state.aiStatus;
+  const bridgeLabel = status?.available
+    ? `${status.source} - ${status.model ?? 'model configured'}`
+    : 'not configured';
+  return `
+    <aside class="ai-settings-card">
+      <div>
+        <span class="workbench-kicker">BYOK planning</span>
+        <h3>AI key stays out of Agentic custody</h3>
+        <p>Use a local bridge key when possible. Browser-only keys require a provider or gateway that allows browser requests and are forgotten on refresh.</p>
+      </div>
+      <label class="field compact">
+        <span>AI path</span>
+        <select id="aiMode" ${state.busy ? 'disabled' : ''}>
+          <option value="bridge" ${state.aiSettings.mode === 'bridge' ? 'selected' : ''}>Local bridge</option>
+          <option value="session" ${state.aiSettings.mode === 'session' ? 'selected' : ''}>This session only</option>
+        </select>
+      </label>
+      <label class="field compact">
+        <span>Base URL</span>
+        <input id="aiBaseUrl" value="${escapeHtml(state.aiSettings.baseUrl)}" placeholder="${DEFAULT_AI_BASE_URL}" ${state.busy ? 'disabled' : ''} />
+      </label>
+      <label class="field compact">
+        <span>Model</span>
+        <input id="aiModel" value="${escapeHtml(state.aiSettings.model)}" placeholder="${DEFAULT_AI_MODEL}" ${state.busy ? 'disabled' : ''} />
+      </label>
+      <label class="field compact">
+        <span>${state.aiSettings.mode === 'bridge' ? 'Bridge session key' : 'Session key'}</span>
+        <input id="aiApiKey" type="password" value="${escapeHtml(state.aiSettings.apiKey)}" placeholder="Not saved by default" autocomplete="off" ${state.busy ? 'disabled' : ''} />
+      </label>
+      <div class="ai-actions">
+        <button id="saveBridgeAiKey" ${state.aiSettings.mode !== 'bridge' || !state.aiSettings.apiKey.trim() || state.busy ? 'disabled' : ''}>Set bridge key</button>
+        <button id="clearAiKey" ${!state.aiSettings.apiKey.trim() && !status?.available ? 'disabled' : ''}>Clear key</button>
+        <button id="refreshAiStatus" ${state.busy ? 'disabled' : ''}>Refresh</button>
+      </div>
+      <div class="ai-status-line">
+        <span>Bridge AI</span>
+        <strong>${escapeHtml(bridgeLabel)}</strong>
+      </div>
+      <p class="ai-security-note">No AI can sign, submit, or approve. It only drafts a structured plan for your wallet review.</p>
+    </aside>
   `;
 }
 
@@ -2481,14 +2791,22 @@ function bind(): void {
   document.querySelector<HTMLButtonElement>('#discover')?.addEventListener('click', runDiscover);
   document.querySelector<HTMLButtonElement>('#connect')?.addEventListener('click', runConnect);
   document.querySelector<HTMLButtonElement>('#disconnect')?.addEventListener('click', runDisconnect);
+  document.querySelector<HTMLButtonElement>('#iosReconnectCached')?.addEventListener('click', runReconnectIosCached);
+  document.querySelector<HTMLButtonElement>('#iosClearTransient')?.addEventListener('click', runClearIosTransient);
+  document.querySelector<HTMLButtonElement>('#iosFullReset')?.addEventListener('click', runClearIosFullReset);
+  document.querySelector<HTMLButtonElement>('#iosClearAllAccounts')?.addEventListener('click', runClearIosAllAccounts);
   document.querySelector<HTMLButtonElement>('#signMessage')?.addEventListener('click', runSignMessage);
   document.querySelector<HTMLButtonElement>('#airdrop')?.addEventListener('click', runAirdrop);
   document.querySelector<HTMLButtonElement>('#createTx')?.addEventListener('click', runCreateDemoTransaction);
   document.querySelector<HTMLButtonElement>('#signTx')?.addEventListener('click', runSignTransaction);
   document.querySelector<HTMLButtonElement>('#sendTx')?.addEventListener('click', runSignAndSendTransaction);
   document.querySelector<HTMLButtonElement>('#generatePlan')?.addEventListener('click', runGenerateAgentPlan);
+  document.querySelector<HTMLButtonElement>('#generateAiPlan')?.addEventListener('click', runGenerateAiPlan);
   document.querySelector<HTMLButtonElement>('#signAgentPlan')?.addEventListener('click', runSignAgentPlan);
   document.querySelector<HTMLButtonElement>('#queueAgentPlan')?.addEventListener('click', runQueueAgentPlan);
+  document.querySelector<HTMLButtonElement>('#saveBridgeAiKey')?.addEventListener('click', runSaveBridgeAiKey);
+  document.querySelector<HTMLButtonElement>('#clearAiKey')?.addEventListener('click', runClearAiKey);
+  document.querySelector<HTMLButtonElement>('#refreshAiStatus')?.addEventListener('click', runRefreshAiStatus);
   document.querySelector<HTMLButtonElement>('#connectBridge')?.addEventListener('click', runConnectBridge);
   document.querySelector<HTMLButtonElement>('#disconnectBridge')?.addEventListener('click', runDisconnectBridge);
   document.querySelector<HTMLButtonElement>('#refreshInbox')?.addEventListener('click', runRefreshInbox);
@@ -2524,6 +2842,17 @@ function bind(): void {
     render();
   });
 
+  document.querySelector<HTMLSelectElement>('#iosWalletSelect')?.addEventListener('change', (event) => {
+    const walletId = (event.currentTarget as HTMLSelectElement).value;
+    if (!isIosNativeWalletId(walletId)) return;
+    state.selectedIosWalletId = walletId;
+    state.selectedWalletName = iosWalletLabel(walletId);
+    resetWalletConnection();
+    state.error = '';
+    savePersistedState();
+    render();
+  });
+
   document.querySelector<HTMLInputElement>('#bridgeUrl')?.addEventListener('input', (event) => {
     state.bridgeUrl = (event.currentTarget as HTMLInputElement).value.trim();
     savePersistedState();
@@ -2539,6 +2868,52 @@ function bind(): void {
     state.agentPlan = null;
     state.agentSignature = '';
     state.agentPreparedActionId = '';
+  });
+
+  document.querySelector<HTMLSelectElement>('#templateSelect')?.addEventListener('change', (event) => {
+    const template = templateById((event.currentTarget as HTMLSelectElement).value);
+    state.selectedTemplateId = template.id;
+    state.templateFields = {
+      ...defaultTemplateFieldValues(template),
+      ...state.templateFields,
+    };
+    state.agentPlan = null;
+    state.agentSignature = '';
+    state.agentPreparedActionId = '';
+    render();
+  });
+
+  for (const fieldInput of document.querySelectorAll<HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement>('[data-template-field]')) {
+    fieldInput.addEventListener('input', () => {
+      const fieldId = fieldInput.dataset.templateField;
+      if (!fieldId) return;
+      state.templateFields[fieldId] = fieldInput.value;
+      state.agentPlan = null;
+      state.agentSignature = '';
+      state.agentPreparedActionId = '';
+    });
+    fieldInput.addEventListener('change', () => {
+      const fieldId = fieldInput.dataset.templateField;
+      if (!fieldId) return;
+      state.templateFields[fieldId] = fieldInput.value;
+    });
+  }
+
+  document.querySelector<HTMLSelectElement>('#aiMode')?.addEventListener('change', (event) => {
+    state.aiSettings.mode = (event.currentTarget as HTMLSelectElement).value === 'session' ? 'session' : 'bridge';
+    render();
+  });
+
+  document.querySelector<HTMLInputElement>('#aiBaseUrl')?.addEventListener('input', (event) => {
+    state.aiSettings.baseUrl = (event.currentTarget as HTMLInputElement).value.trim();
+  });
+
+  document.querySelector<HTMLInputElement>('#aiModel')?.addEventListener('input', (event) => {
+    state.aiSettings.model = (event.currentTarget as HTMLInputElement).value.trim();
+  });
+
+  document.querySelector<HTMLInputElement>('#aiApiKey')?.addEventListener('input', (event) => {
+    state.aiSettings.apiKey = (event.currentTarget as HTMLInputElement).value;
   });
 
   document.querySelector<HTMLTextAreaElement>('#labInput')?.addEventListener('input', (event) => {
@@ -2663,6 +3038,14 @@ function bindRouteLinks(): void {
 
 async function runDiscover(): Promise<void> {
   await run('discover', async () => {
+    if (state.iosNativeEnvironment.isIosNative) {
+      state.iosWallets = listIosNativeWalletOptions();
+      await refreshIosNativeCacheState();
+      state.iosNativeStatus = `${state.iosWallets.length} iOS wallet path(s) available. Cached authorizations: ${state.iosAuthCacheCount}.`;
+      savePersistedState();
+      pushToast('success', 'iOS wallets ready', `${state.iosWallets.length} wallet path(s) available.`);
+      return;
+    }
     state.wallets = [...listAvailableWallets()];
     if (!state.wallets.some((wallet) => wallet.name === state.selectedWalletName)) {
       state.selectedWalletName = state.wallets[0]?.name ?? '';
@@ -2677,6 +3060,28 @@ async function runDiscover(): Promise<void> {
 
 async function runConnect(): Promise<void> {
   await run('connect', async () => {
+    if (state.iosNativeEnvironment.isIosNative) {
+      walletBackend = new IosNativeWalletBackend({
+        walletId: state.selectedIosWalletId,
+        cluster: state.cluster,
+        appUrl: window.location.origin,
+        rpcUrl: activeRpcUrl(),
+        logLevel: 'info',
+      });
+      client = new SolanaSigningClient({ backend: walletBackend });
+      state.address = await client.getAddress();
+      state.capabilities = await client.capabilities();
+      state.selectedWalletName = iosWalletLabel(state.selectedIosWalletId);
+      state.iosNativeStatus = `iOS ${state.selectedWalletName} connected on ${state.cluster}.`;
+      state.transactionStatus = `iOS wallet connected on ${state.cluster}.`;
+      await refreshIosNativeCacheState();
+      if (state.bridgeActive) {
+        await connectBridgeHost();
+      }
+      savePersistedState();
+      pushToast('success', 'iOS wallet connected', short(state.address));
+      return;
+    }
     const selected = selectedWallet();
     walletBackend = new WalletStandardWebBackend({
       wallet: selected,
@@ -2700,9 +3105,75 @@ async function runDisconnect(): Promise<void> {
     if (state.bridgeActive) {
       await disconnectBridgeHost().catch(() => undefined);
     }
-    await walletBackend?.disconnect().catch(() => undefined);
+    await disconnectWalletBackend().catch(() => undefined);
     resetWalletConnection();
+    await refreshIosNativeCacheState();
     pushToast('success', 'Wallet disconnected', 'Local signing session cleared.');
+  });
+}
+
+async function runReconnectIosCached(): Promise<void> {
+  await run('connect', async () => {
+    assertIosNativeRuntime();
+    const restored = await restoreLatestIosNativeWallet({
+      cluster: state.cluster,
+      appUrl: window.location.origin,
+      rpcUrl: activeRpcUrl(),
+      logLevel: 'info',
+    });
+    if (!restored) {
+      throw new Error('No cached iOS wallet authorization is available. Connect once first.');
+    }
+    walletBackend = restored.backend;
+    client = new SolanaSigningClient({ backend: walletBackend });
+    state.address = restored.address;
+    state.selectedIosWalletId = restored.walletId;
+    state.selectedWalletName = restored.walletName;
+    state.capabilities = await client.capabilities();
+    state.iosAuthCacheCount = restored.cacheCount;
+    state.iosNativeStatus = `Restored cached ${restored.walletName} authorization on ${state.cluster}.`;
+    if (state.bridgeActive) {
+      await connectBridgeHost();
+    }
+    savePersistedState();
+    pushToast('success', 'iOS cache restored', short(state.address));
+  });
+}
+
+async function runClearIosTransient(): Promise<void> {
+  await run('connect', async () => {
+    assertIosNativeRuntime();
+    await iosBackendOrNew().clearTransientState('browser_demo');
+    state.iosNativeStatus = 'iOS transient callback state cleared. Auth cache retained.';
+    pushToast('success', 'iOS transient state cleared', 'Cached authorizations were retained.');
+  });
+}
+
+async function runClearIosFullReset(): Promise<void> {
+  await run('connect', async () => {
+    assertIosNativeRuntime();
+    if (state.bridgeActive) {
+      await disconnectBridgeHost().catch(() => undefined);
+    }
+    await iosBackendOrNew().clearStateFullReset('browser_demo');
+    resetWalletConnection();
+    await refreshIosNativeCacheState();
+    state.iosNativeStatus = 'iOS wallet state reset. Connect again to authorize.';
+    pushToast('success', 'iOS wallet reset', 'Latest authorization cleared.');
+  });
+}
+
+async function runClearIosAllAccounts(): Promise<void> {
+  await run('connect', async () => {
+    assertIosNativeRuntime();
+    if (state.bridgeActive) {
+      await disconnectBridgeHost().catch(() => undefined);
+    }
+    await iosBackendOrNew().clearAllCachedAuthorizations();
+    resetWalletConnection();
+    await refreshIosNativeCacheState();
+    state.iosNativeStatus = 'All cached iOS wallet authorizations cleared.';
+    pushToast('success', 'iOS auth cache cleared', 'All cached accounts were removed.');
   });
 }
 
@@ -2807,19 +3278,46 @@ async function runSignAndSendTransaction(): Promise<void> {
 
 async function runGenerateAgentPlan(): Promise<void> {
   await run('sign', async () => {
-    if (!state.address) {
-      throw new Error('Connect a wallet before generating an agent plan.');
-    }
-    const intent = state.agentPrompt.trim() || DEFAULT_AGENT_PROMPT;
+    const template = selectedTemplate();
+    const parameters = readTemplateFields(template);
+    assertRequiredTemplateFields(template, parameters);
+    const prompt = state.agentPrompt.trim();
     state.agentPlan = {
-      intent,
-      route: 'SOL to USDC through the local bridge action service and Jupiter at approval time.',
-      risk: 'Capped prepared action. It cannot execute until this wallet approves the inbox item.',
-      approval: 'Wallet can sign an off-chain proof now or queue a prepared action for later review.',
+      ...buildTemplatePlan(template, parameters, 'template'),
+      intent: prompt ? `${template.title}: ${prompt}` : buildTemplatePlan(template, parameters, 'template').intent,
     };
     state.agentSignature = '';
     state.agentPreparedActionId = '';
-    pushToast('success', 'Agent plan generated', 'Approval plan ready.');
+    pushToast('success', 'Template plan generated', `${template.title} is ready for review.`);
+  });
+}
+
+async function runGenerateAiPlan(): Promise<void> {
+  await run('ai', async () => {
+    const template = selectedTemplate();
+    const parameters = readTemplateFields(template);
+    assertRequiredTemplateFields(template, parameters);
+    const request = {
+      prompt: state.agentPrompt.trim() || template.description,
+      template: {
+        id: template.id,
+        category: template.category,
+        title: template.title,
+        description: template.description,
+        actionType: template.actionType,
+        risk: template.risk,
+      },
+      parameters,
+    };
+    state.agentPlan = state.aiSettings.mode === 'bridge'
+      ? await bridgeRequest<AgentPlan>('/bridge/ai/generate-plan', {
+          method: 'POST',
+          body: JSON.stringify(request),
+        })
+      : await generateOpenAiCompatiblePlan(state.aiSettings, request);
+    state.agentSignature = '';
+    state.agentPreparedActionId = '';
+    pushToast('success', 'AI plan generated', `${state.agentPlan.templateTitle} is ready for wallet review.`);
   });
 }
 
@@ -2833,9 +3331,15 @@ async function runSignAgentPlan(): Promise<void> {
       'Solana Agent Wallet Adapter agent approval',
       `Address: ${state.address}`,
       `Cluster: ${state.cluster}`,
+      `Source: ${state.agentPlan.source}`,
+      `Template: ${state.agentPlan.templateTitle}`,
+      `Action: ${state.agentPlan.actionType}`,
       `Intent: ${state.agentPlan.intent}`,
       `Route: ${state.agentPlan.route}`,
       `Risk: ${state.agentPlan.risk}`,
+      `Approval: ${state.agentPlan.approval}`,
+      `Parameters: ${stableJson(state.agentPlan.parameters)}`,
+      `Safeguards: ${state.agentPlan.safeguards.join(' | ')}`,
       `Time: ${new Date().toISOString()}`,
     ].join('\n');
     const result = await signingClient.signMessage(message, signOptions('Agent plan approval proof'));
@@ -2849,21 +3353,49 @@ async function runQueueAgentPlan(): Promise<void> {
     if (!state.agentPlan) {
       throw new Error('Generate an agent plan before queueing.');
     }
-    const response = await bridgeRequest<{ preparedAction: PreparedAction }>('/bridge/action/prepare-swap', {
-      method: 'POST',
-      body: JSON.stringify({
-        inputToken: 'SOL',
-        outputToken: 'USDC',
-        amount: '0.01',
-        note: state.agentPlan.intent,
-      }),
-    });
-    state.agentPreparedActionId = response.preparedAction.id;
+    const response = await queuePlanThroughBridge(state.agentPlan);
+    state.agentPreparedActionId = response.id;
     state.activeTab = 'inbox';
     state.inboxMode = 'inbox';
     state.inboxFilter = 'ready';
     await refreshInboxData();
-    pushToast('success', 'Prepared action queued', response.preparedAction.id);
+    pushToast('success', 'Prepared action queued', response.id);
+  });
+}
+
+async function runSaveBridgeAiKey(): Promise<void> {
+  await run('ai', async () => {
+    await bridgeRequest('/bridge/ai/session-key', {
+      method: 'POST',
+      body: JSON.stringify({
+        apiKey: state.aiSettings.apiKey,
+        baseUrl: state.aiSettings.baseUrl,
+        model: state.aiSettings.model,
+        provider: 'openai-compatible',
+      }),
+    });
+    state.aiSettings.apiKey = '';
+    await refreshBridgeAiStatus(true);
+    pushToast('success', 'Bridge AI key set', 'The key is held only in the local bridge process memory.');
+  });
+}
+
+async function runClearAiKey(): Promise<void> {
+  await run('ai', async () => {
+    state.aiSettings.apiKey = '';
+    await bridgeRequest('/bridge/ai/session-key', {
+      method: 'POST',
+      body: JSON.stringify({ clear: true }),
+    }).catch(() => undefined);
+    await refreshBridgeAiStatus(false);
+    pushToast('success', 'AI key cleared', 'Session key removed from this app and local bridge memory.');
+  });
+}
+
+async function runRefreshAiStatus(): Promise<void> {
+  await run('ai', async () => {
+    await refreshBridgeAiStatus(true);
+    pushToast('success', 'AI status refreshed', state.aiStatus?.available ? 'Bridge AI is available.' : 'Bridge AI is not configured.');
   });
 }
 
@@ -3040,7 +3572,7 @@ async function run(stepName: StepName, action: () => Promise<void>): Promise<voi
     state.steps[stepName] = 'done';
   } catch (err) {
     state.steps[stepName] = 'error';
-    state.error = err instanceof Error ? err.message : String(err);
+    state.error = redactSecrets(err instanceof Error ? err.message : String(err));
     pushToast('error', 'Action failed', state.error);
   } finally {
     state.busy = false;
@@ -3217,6 +3749,197 @@ async function bridgeTrace(event: string, payload: Record<string, unknown>): Pro
   }).catch(() => undefined);
 }
 
+async function refreshBridgeAiStatus(strict: boolean): Promise<void> {
+  try {
+    state.aiStatus = await bridgeRequest<BridgeAiStatus>('/bridge/ai/status');
+  } catch (err) {
+    state.aiStatus = null;
+    if (strict) {
+      throw err;
+    }
+  }
+}
+
+function selectedTemplate(): AgentPlanTemplate {
+  return templateById(state.selectedTemplateId);
+}
+
+function readTemplateFields(template = selectedTemplate()): Record<string, string> {
+  const current = { ...defaultTemplateFieldValues(template), ...state.templateFields };
+  for (const input of document.querySelectorAll<HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement>('[data-template-field]')) {
+    const fieldId = input.dataset.templateField;
+    if (fieldId) {
+      current[fieldId] = input.value;
+    }
+  }
+  state.templateFields = current;
+  return current;
+}
+
+function templateFieldValue(fieldId: string): string {
+  const template = selectedTemplate();
+  return state.templateFields[fieldId] ?? defaultTemplateFieldValues(template)[fieldId] ?? '';
+}
+
+function assertRequiredTemplateFields(template: AgentPlanTemplate, parameters: Record<string, string>): void {
+  const missing = template.fields
+    .filter((fieldDef) => fieldDef.required && !parameters[fieldDef.id]?.trim())
+    .map((fieldDef) => fieldDef.label);
+  if (missing.length > 0) {
+    throw new Error(`Complete required planner fields: ${missing.join(', ')}.`);
+  }
+}
+
+function canQueueAgentPlan(plan: AgentPlan): boolean {
+  return ['transfer_sol', 'transfer_spl', 'swap', 'recurring_payment'].includes(plan.actionType);
+}
+
+function queuePlanTitle(): string {
+  if (!state.address) return 'Connect a wallet before queueing.';
+  if (!state.bridgeActive) return 'Connect the local bridge before queueing approvals.';
+  if (!state.agentPlan) return 'Generate a plan before queueing.';
+  if (!canQueueAgentPlan(state.agentPlan)) return 'Queueing is available for transfer, swap, and recurring payment templates.';
+  return 'Queue this plan in the local bridge approval inbox.';
+}
+
+async function queuePlanThroughBridge(plan: AgentPlan): Promise<{ id: string }> {
+  const note = plan.intent.slice(0, 500);
+  switch (plan.actionType) {
+    case 'transfer_sol': {
+      const response = await bridgeRequest<{ preparedAction: PreparedAction }>('/bridge/action/prepare-transfer-sol', {
+        method: 'POST',
+        body: JSON.stringify({
+          recipient: requiredPlanParam(plan, 'recipient'),
+          amountSol: requiredPlanParam(plan, 'amount'),
+          note,
+        }),
+      });
+      return { id: response.preparedAction.id };
+    }
+    case 'transfer_spl': {
+      const response = await bridgeRequest<{ preparedAction: PreparedAction }>('/bridge/action/prepare-transfer-spl', {
+        method: 'POST',
+        body: JSON.stringify({
+          token: requiredPlanParam(plan, 'token'),
+          recipient: requiredPlanParam(plan, 'recipient'),
+          amount: requiredPlanParam(plan, 'amount'),
+          note,
+        }),
+      });
+      return { id: response.preparedAction.id };
+    }
+    case 'swap': {
+      const slippageBps = Number(plan.parameters.slippageBps || '50');
+      const response = await bridgeRequest<{ preparedAction: PreparedAction }>('/bridge/action/prepare-swap', {
+        method: 'POST',
+        body: JSON.stringify({
+          inputToken: plan.parameters.inputToken || 'SOL',
+          outputToken: plan.parameters.outputToken || 'USDC',
+          amount: requiredPlanParam(plan, 'amount'),
+          slippageBps: Number.isFinite(slippageBps) ? slippageBps : 50,
+          note,
+        }),
+      });
+      return { id: response.preparedAction.id };
+    }
+    case 'recurring_payment': {
+      const response = await bridgeRequest<{ recurringPayment?: { id: string }; payment?: { id: string } }>('/bridge/recurring-payments', {
+        method: 'POST',
+        body: JSON.stringify({
+          token: requiredPlanParam(plan, 'token'),
+          recipient: requiredPlanParam(plan, 'recipient'),
+          amount: requiredPlanParam(plan, 'amount'),
+          ...recurringSchedulePayload(plan),
+          note,
+        }),
+      });
+      return { id: response.recurringPayment?.id ?? response.payment?.id ?? 'recurring-payment' };
+    }
+    default:
+      throw new Error('This plan type creates a review/proof only and cannot be queued as a bridge action yet.');
+  }
+}
+
+function recurringSchedulePayload(plan: AgentPlan): {
+  cadence: RecurringCadence;
+  dayOfWeek?: number;
+  dayOfMonth?: number;
+  intervalDays?: number;
+  intervalHours?: number;
+  intervalMinutes?: number;
+  localTime?: string;
+  startAt?: string;
+} {
+  const cadence = parseRecurringCadence(plan.parameters.cadence);
+  const localTime = plan.parameters.localTime?.trim() || '09:00';
+  switch (cadence) {
+    case 'weekly':
+      return {
+        cadence,
+        dayOfWeek: planIntegerParam(plan, 'dayOfWeek', 1, 0, 6),
+        localTime,
+      };
+    case 'monthly':
+      return {
+        cadence,
+        dayOfMonth: planIntegerParam(plan, 'dayOfMonth', 1, 1, 31),
+        localTime,
+      };
+    case 'interval_days':
+      return {
+        cadence,
+        intervalDays: planIntegerParam(plan, 'intervalDays', 7, 1, 365),
+        startAt: plan.parameters.startAt?.trim() || nextScheduleStartIso(),
+      };
+    case 'interval_hours':
+      return {
+        cadence,
+        intervalHours: planIntegerParam(plan, 'intervalHours', 24, 1, 8760),
+        startAt: plan.parameters.startAt?.trim() || nextScheduleStartIso(),
+      };
+    case 'interval_minutes':
+      return {
+        cadence,
+        intervalMinutes: planIntegerParam(plan, 'intervalMinutes', 60, 1, 525600),
+        startAt: plan.parameters.startAt?.trim() || nextScheduleStartIso(),
+      };
+  }
+}
+
+function parseRecurringCadence(value: string | undefined): RecurringCadence {
+  const normalized = value?.trim();
+  if (
+    normalized === 'weekly' ||
+    normalized === 'monthly' ||
+    normalized === 'interval_days' ||
+    normalized === 'interval_hours' ||
+    normalized === 'interval_minutes'
+  ) {
+    return normalized;
+  }
+  return 'weekly';
+}
+
+function planIntegerParam(plan: AgentPlan, id: string, fallback: number, min: number, max: number): number {
+  const parsed = Number(plan.parameters[id]);
+  if (!Number.isInteger(parsed) || parsed < min || parsed > max) {
+    return fallback;
+  }
+  return parsed;
+}
+
+function nextScheduleStartIso(): string {
+  return new Date(Date.now() + 60_000).toISOString();
+}
+
+function requiredPlanParam(plan: AgentPlan, id: string): string {
+  const value = plan.parameters[id]?.trim();
+  if (!value) {
+    throw new Error(`Plan is missing ${templateFieldLabel(templateById(state.selectedTemplateId), id)}.`);
+  }
+  return value;
+}
+
 async function bridgeRequest<T = unknown>(path: string, init?: RequestInit): Promise<T> {
   if (!state.bridgeToken) {
     throw new Error('Bridge token is required.');
@@ -3248,6 +3971,64 @@ function selectedWallet(): DiscoveredWallet {
     throw new Error('Select a wallet first.');
   }
   return wallet;
+}
+
+async function restoreIosNativeSession(): Promise<void> {
+  const restored = await restoreLatestIosNativeWallet({
+    cluster: state.cluster,
+    appUrl: window.location.origin,
+    rpcUrl: activeRpcUrl(),
+    logLevel: 'info',
+  });
+  if (!restored) {
+    state.iosNativeStatus = 'No cached iOS authorization found.';
+    return;
+  }
+  walletBackend = restored.backend;
+  client = new SolanaSigningClient({ backend: walletBackend });
+  state.address = restored.address;
+  state.selectedIosWalletId = restored.walletId;
+  state.selectedWalletName = restored.walletName;
+  state.capabilities = await client.capabilities();
+  state.iosAuthCacheCount = restored.cacheCount;
+  state.iosNativeStatus = `Restored cached ${restored.walletName} authorization on ${state.cluster}.`;
+}
+
+async function refreshIosNativeCacheState(): Promise<void> {
+  if (!state.iosNativeEnvironment.isIos) {
+    return;
+  }
+  const summary = await iosNativeCacheSummary().catch(() => ({ count: 0 }));
+  state.iosAuthCacheCount = summary.count;
+}
+
+function iosBackendOrNew(): IosNativeMaintenanceBackend {
+  const candidate = walletBackend as Partial<IosNativeMaintenanceBackend> | null;
+  if (
+    candidate?.clearTransientState &&
+    candidate.clearStateFullReset &&
+    candidate.clearAllCachedAuthorizations
+  ) {
+    return candidate as IosNativeMaintenanceBackend;
+  }
+  return new IosNativeWalletBackend({
+    walletId: state.selectedIosWalletId,
+    cluster: state.cluster,
+    appUrl: window.location.origin,
+    rpcUrl: activeRpcUrl(),
+    logLevel: 'info',
+  });
+}
+
+async function disconnectWalletBackend(): Promise<void> {
+  const disconnectable = walletBackend as (WalletBackend & { disconnect?: () => Promise<void> }) | null;
+  await disconnectable?.disconnect?.();
+}
+
+function assertIosNativeRuntime(): void {
+  if (!state.iosNativeEnvironment.isIosNative) {
+    throw new Error('iOS native wallet controls are available only inside the Capacitor iOS app.');
+  }
 }
 
 function requireClient(): SolanaSigningClient {
@@ -3313,6 +4094,15 @@ function walletIdentity(): { icon: string; title: string; summary: string; detai
       detail: `${titleCaseCluster(state.cluster)} signer`,
     };
   }
+  if (state.iosNativeEnvironment.isIosNative) {
+    const name = iosWalletLabel(state.selectedIosWalletId);
+    return {
+      icon: name.slice(0, 2).toUpperCase(),
+      title: 'iOS wallet standby',
+      summary: name,
+      detail: state.iosAuthCacheCount > 0 ? `${state.iosAuthCacheCount} cached authorization(s)` : 'Encrypted links and WalletConnect ready',
+    };
+  }
   if (providerCount > 0 && liveSelectedName) {
     return {
       icon: liveSelectedName.slice(0, 2).toUpperCase(),
@@ -3341,6 +4131,23 @@ function walletOptions(): string {
     .join('');
 }
 
+function iosWalletOptions(): string {
+  return state.iosWallets
+    .map(
+      (wallet) =>
+        `<option value="${escapeHtml(wallet.id)}" ${wallet.id === state.selectedIosWalletId ? 'selected' : ''}>${escapeHtml(wallet.name)} - ${escapeHtml(wallet.detail)}</option>`,
+    )
+    .join('');
+}
+
+function iosWalletLabel(walletId: IosNativeWalletId): string {
+  return state.iosWallets.find((wallet) => wallet.id === walletId)?.name ?? walletId;
+}
+
+function isIosNativeWalletId(value: string): value is IosNativeWalletId {
+  return state.iosWallets.some((wallet) => wallet.id === value);
+}
+
 function capabilityBlock(capabilities: AdapterCapabilities): string {
   const support = capabilities.supports;
   return `
@@ -3364,7 +4171,7 @@ function capabilitySummary(capabilities: AdapterCapabilities): string {
 }
 
 function tabButton(tab: ActiveTab, label: string): string {
-  const locked = !state.address && tab !== 'wallet';
+  const locked = !state.address && tab !== 'wallet' && tab !== 'agent';
   return `<button data-tab="${tab}" class="${state.activeTab === tab ? 'active' : ''}" ${locked ? 'disabled title="Connect a wallet to unlock this workspace."' : ''}>${escapeHtml(label)}</button>`;
 }
 
@@ -3423,14 +4230,30 @@ function agentPlanCard(plan: AgentPlan): string {
   return `
     <article class="plan-card proof-preview">
       <div>
-        <span class="workbench-kicker">Wallet approval</span>
+        <span class="workbench-kicker">${escapeHtml(plan.source === 'ai' ? 'AI-drafted plan' : 'Template plan')}</span>
         <h3>${escapeHtml(plan.intent)}</h3>
+      </div>
+      <div class="pill-row">
+        <span class="status-pill neutral">${escapeHtml(titleCase(plan.category))}</span>
+        <span class="status-pill neutral">${escapeHtml(plan.actionType.replace(/_/g, ' '))}</span>
+        <span class="status-pill ${canQueueAgentPlan(plan) ? 'tx-confirmed' : 'tx-pending'}">${canQueueAgentPlan(plan) ? 'queueable' : 'proof only'}</span>
       </div>
       <dl class="proof-grid">
         ${definitionRow('Route', plan.route)}
         ${definitionRow('Risk', plan.risk)}
         ${definitionRow('Approval', plan.approval)}
       </dl>
+      ${plan.fields.length ? `
+        <dl class="proof-grid plan-field-grid">
+          ${plan.fields.map((entry) => definitionRow(entry.label, entry.value)).join('')}
+        </dl>
+      ` : ''}
+      <div class="plan-safeguards">
+        <span>Safeguards</span>
+        <ul>
+          ${plan.safeguards.slice(0, 6).map((safeguard) => `<li>${escapeHtml(safeguard)}</li>`).join('')}
+        </ul>
+      </div>
     </article>
   `;
 }
@@ -4205,7 +5028,15 @@ function txTone(status: PreparedActionTxStatus): string {
   return 'tx-pending';
 }
 
+function titleCase(value: string): string {
+  return value
+    .replace(/[-_]+/g, ' ')
+    .trim()
+    .replace(/\b\w/g, (char) => char.toUpperCase());
+}
+
 function bridgeModeLabel(): string {
+  if (state.iosNativeEnvironment.isIosNative) return 'iOS native wallet ready';
   if (state.mwaEnvironment.supportsMwaMobileWeb) return 'Android MWA ready';
   if (state.mwaEnvironment.supportsIosWalletStandardFallback) return 'iOS wallet browser';
   return 'Desktop browser wallet';
@@ -4453,6 +5284,10 @@ function isCluster(value: string): value is Cluster {
   return value === 'mainnet-beta' || value === 'devnet' || value === 'testnet' || value === 'localnet';
 }
 
+function isPersistedIosWalletId(value: string): value is IosNativeWalletId {
+  return value === 'phantom' || value === 'solflare' || value === 'backpack' || value === 'jupiter';
+}
+
 function inputValue(selector: string): string {
   const input = document.querySelector<HTMLInputElement | HTMLSelectElement | HTMLTextAreaElement>(selector);
   return input?.value.trim() ?? '';
@@ -4498,14 +5333,14 @@ function toProtocolErrorPayload(err: unknown): ProtocolErrorPayload {
 function extractBridgeError(payload: unknown): string {
   if (payload && typeof payload === 'object' && 'error' in payload) {
     const error = (payload as { error?: unknown }).error;
-    if (typeof error === 'string') return error;
+    if (typeof error === 'string') return redactSecrets(error);
     if (error && typeof error === 'object' && 'message' in error) {
       const message = (error as { message?: unknown }).message;
-      if (typeof message === 'string') return message;
+      if (typeof message === 'string') return redactSecrets(message);
     }
-    return stableJson(error);
+    return redactSecrets(stableJson(error));
   }
-  return stableJson(payload);
+  return redactSecrets(stableJson(payload));
 }
 
 async function sha256(value: string): Promise<string> {
@@ -4624,6 +5459,8 @@ function loadPersistedState(): PersistedState {
     const parsed = JSON.parse(raw) as Record<string, unknown>;
     return {
       ...(typeof parsed.selectedWalletName === 'string' && { selectedWalletName: parsed.selectedWalletName }),
+      ...(typeof parsed.selectedIosWalletId === 'string' &&
+        isPersistedIosWalletId(parsed.selectedIosWalletId) && { selectedIosWalletId: parsed.selectedIosWalletId }),
       ...(typeof parsed.cluster === 'string' && isCluster(parsed.cluster) && { cluster: parsed.cluster }),
       ...(typeof parsed.bridgeUrl === 'string' && { bridgeUrl: parsed.bridgeUrl }),
       ...(typeof parsed.bridgeToken === 'string' && { bridgeToken: parsed.bridgeToken }),
@@ -4639,6 +5476,7 @@ function savePersistedState(): void {
       STORAGE_KEY,
       JSON.stringify({
         selectedWalletName: state.selectedWalletName,
+        selectedIosWalletId: state.selectedIosWalletId,
         cluster: state.cluster,
         bridgeUrl: state.bridgeUrl,
         bridgeToken: state.bridgeToken,

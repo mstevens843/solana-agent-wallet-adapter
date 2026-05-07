@@ -12,7 +12,8 @@ This directory keeps product guides, smoke procedures, dated research, and outre
 ## Smoke Guides
 
 - [Browser Wallet Standard smoke](./smoke/browser-wallet-standard.md): desktop browser wallet harness and demo results.
-- [Android MWA mobile web smoke](./smoke/android-mwa-web.md): Android Chrome and Mobile Wallet Adapter path.
+- [Android MWA mobile web smoke](./smoke/android-mwa-web.md): Android Chrome and Mobile Wallet Adapter web path.
+- [Android native MWA smoke](./smoke/android-native-mwa.md): Android app connect, cached reconnect, signing, clear state, and bridge approval path.
 - [iOS wallet web smoke](./smoke/ios-wallet-web.md): iOS Wallet Standard host fallback plus iOS link bridge path.
 
 ## Research Notes

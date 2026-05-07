@@ -44,3 +44,11 @@ AI agents ask. Your Solana wallet signs.
 ```
 
 Use the narrow claim above. Avoid broader claims like "first Solana agent signer" or "only Solana agent signer".
+
+## Play Compliance Notes
+
+- Privacy policy URL: `https://agenticwalletadapter.com/privacy`
+- Terms URL: `https://agenticwalletadapter.com/terms`
+- Complete the Google Play Data Safety form so it matches the published privacy policy and the Android app behavior.
+- Complete the Google Play Financial features declaration because Agentic involves cryptocurrency wallet actions.
+- If Google Analytics 4 is enabled later, update the Data Safety form and privacy disclosures before shipping that build.

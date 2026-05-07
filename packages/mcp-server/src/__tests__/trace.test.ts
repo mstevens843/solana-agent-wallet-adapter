@@ -26,4 +26,10 @@ describe('trace redaction', () => {
       },
     });
   });
+
+  it('redacts provider keys and bearer tokens from plain strings', () => {
+    expect(redactSecrets('Authorization: Bearer sk-proj-abc123456789XYZ and key sk-live123456789')).toBe(
+      'Authorization: Bearer [redacted] and key sk-[redacted]',
+    );
+  });
 });

@@ -64,8 +64,10 @@ The Android section links GitHub Release artifacts with these expected asset nam
 - `agentic-android.apk`
 - `agentic-android.aab`
 
-The Android app is a Trusted Web Activity for the Render-hosted site, not a private-key wallet. Production trusted mode
-requires `/.well-known/assetlinks.json` to contain the release signing certificate fingerprint. Generate it with:
+The Android app defaults to launching this hosted `/app` experience. The native Solana Mobile Wallet Adapter example
+host remains available for local testing with `AGENTIC_ANDROID_SHOW_EXAMPLE_APP=true pnpm android:install`.
+Production trusted web mode still requires `/.well-known/assetlinks.json` to contain the release signing certificate fingerprint.
+Generate it with:
 
 ```sh
 pnpm android:assetlinks:write -- --keystore /absolute/path/agentic-release.jks --alias agentic --storepass "$AGENTIC_ANDROID_STORE_PASSWORD"
@@ -93,4 +95,6 @@ See [Render deployment notes](../../docs/deploy/render.md) for the full handoff.
 - `Approval Inbox`: prepared actions and recurring manual-approval schedules from the local bridge.
 - `Agent Labs`: deterministic wallet-signed artifacts for agent safety, policy, receipt, and outcome concepts.
 
-Android mobile web is additive. Run `pnpm dev:mobile` from the repo root, open the printed LAN URL in Android Chrome, and `@solana-agent-wallet-adapter/mwa-mobile-web` registers Mobile Wallet Adapter as another Wallet Standard option. Desktop extension wallets continue to work as before.
+Android mobile web remains additive: run `pnpm dev:mobile` from the repo root, open the printed LAN URL in Android
+Chrome, and `@solana-agent-wallet-adapter/mwa-mobile-web` registers Mobile Wallet Adapter as another Wallet Standard
+option. Desktop extension wallets continue to work as before.

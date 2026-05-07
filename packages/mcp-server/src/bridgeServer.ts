@@ -14,6 +14,7 @@ import { Connection, PublicKey } from '@solana/web3.js';
 import {
   AgentWalletActionService,
 } from './actionService.js';
+import { BridgeAiPlanner, type AiPlanRequest } from './aiPlanner.js';
 import { requireMainnetEnabled, type AgentWalletConfig, type TokenLimitConfig } from './config.js';
 import { assertMaxAmount, parseDecimalAmount } from './amounts.js';
 import { LocalBridgeBackend } from './localBridgeBackend.js';
@@ -47,6 +48,7 @@ export function createBridgeServer(options: CreateBridgeServerOptions): BridgeSe
         ...(preparedActions !== undefined && { preparedActions }),
       })
     : undefined;
+  const aiPlanner = new BridgeAiPlanner();
   const url = `http://${host}:${port}/`;
   backend.setApprovalBaseUrl(url);
 
@@ -57,7 +59,7 @@ export function createBridgeServer(options: CreateBridgeServerOptions): BridgeSe
     async start() {
       await new Promise<void>((resolve, reject) => {
         server = createServer((req, res) => {
-          void handleRequest(req, res, backend, actionConfig, preparedActions, actionService);
+          void handleRequest(req, res, backend, actionConfig, preparedActions, actionService, aiPlanner);
         });
         server.once('error', reject);
         server.listen(port, host, () => resolve());
@@ -80,6 +82,7 @@ async function handleRequest(
   actionConfig: AgentWalletConfig | undefined,
   preparedActions: PreparedActionStore | undefined,
   actionService: AgentWalletActionService | undefined,
+  aiPlanner: BridgeAiPlanner,
 ): Promise<void> {
   const url = new URL(req.url ?? '/', `http://${req.headers.host ?? '127.0.0.1'}`);
   setCors(res);
@@ -250,6 +253,25 @@ async function handleRequest(
         capsEnabled: Boolean(actionConfig?.mainnet.enabled),
         preparedActionStorePath: preparedActions?.getStoragePath?.() ?? null,
       });
+      return;
+    }
+    if (req.method === 'GET' && url.pathname === '/bridge/ai/status') {
+      writeJson(res, 200, aiPlanner.status());
+      return;
+    }
+    if (req.method === 'POST' && url.pathname === '/bridge/ai/session-key') {
+      const body = (await readJson(req)) as {
+        apiKey?: string;
+        baseUrl?: string;
+        model?: string;
+        provider?: string;
+        clear?: boolean;
+      };
+      writeJson(res, 200, aiPlanner.setSessionKey(body));
+      return;
+    }
+    if (req.method === 'POST' && url.pathname === '/bridge/ai/generate-plan') {
+      writeJson(res, 200, await aiPlanner.generatePlan((await readJson(req)) as AiPlanRequest));
       return;
     }
     if (req.method === 'GET' && url.pathname === '/bridge/action/status') {

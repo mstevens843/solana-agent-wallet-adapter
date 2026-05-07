@@ -11,6 +11,10 @@
     ".": {
       "types": "./dist/index.d.ts",
       "import": "./dist/index.js"
+    },
+    "./deeplink": {
+      "types": "./dist/deeplink.d.ts",
+      "import": "./dist/deeplink.js"
     }
   },
   "files": [

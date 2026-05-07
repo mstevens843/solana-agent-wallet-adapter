@@ -1,11 +1,14 @@
 # Build Agentic For Android
 
-Agentic's Android app is a Trusted Web Activity wrapper around the hosted browser app. This keeps the Solana Mobile Wallet Adapter path in Android Chrome/Chrome PWA territory instead of a generic WebView, which is important because MWA mobile web support is Android Chrome-based.
+Agentic's Android app defaults to launching the hosted web app at `AGENTIC_ANDROID_LAUNCH_URL`. The native Solana
+Mobile Wallet Adapter example host remains available behind the Android build-time flag
+`AGENTIC_ANDROID_SHOW_EXAMPLE_APP=true`.
 
 ## Prerequisites
 
 - Android SDK platform 36. The app compiles against API 36 and intentionally targets API 35, which satisfies the
   current Google Play target API requirement for new mobile apps and updates.
+- Android min SDK is 24 because `com.solanamobile:mobile-wallet-adapter-clientlib-ktx:2.0.8` requires API 24 or newer.
 - Android build tools and platform tools.
 - Java available on `PATH`.
 - `ANDROID_HOME` or `ANDROID_SDK_ROOT` set. On macOS, the helper defaults to `$HOME/Library/Android/sdk` when those variables are unset.
@@ -53,7 +56,23 @@ pnpm android:debug -- -PagenticLaunchUrl=https://agentic.onrender.com/app
 The default launch URL opens `/app`; set a full custom-domain URL such as `https://agenticwalletadapter.com/app` for
 production releases.
 
-For LAN testing, prefer `pnpm dev:mobile` and open the printed URL directly in Android Chrome. The packaged TWA is intended for the deployed HTTPS origin.
+Switch the launcher between the regular app and the native example host:
+
+```sh
+pnpm android:install
+AGENTIC_ANDROID_SHOW_EXAMPLE_APP=true pnpm android:install
+pnpm android:install -- -PagenticShowExampleApp=true
+```
+
+`AGENTIC_ANDROID_SHOW_EXAMPLE_APP` defaults to `false`, so live Android builds open the regular web app. The flag is
+separate from the website's `VITE_AGENTIC_DEV_CONTROLS` setting and only affects Android APKs built after the value is
+set.
+
+For LAN testing the native Android app can connect to the local bridge URL printed by `pnpm dev:mobile`. The web
+fallback can still open the deployed HTTPS origin or the LAN URL in Android Chrome.
+
+Android users can use the `/app` planner without an AI key through templates. If they want AI planning without a
+desktop bridge, they can paste a provider or gateway key into the session-only BYOK field; see `docs/ai-byok.md`.
 
 ## Store Listing
 
@@ -133,15 +152,24 @@ Set these repository secrets before running `.github/workflows/android-release.y
 
 The workflow fails if it cannot produce a signed release APK and AAB.
 
-## Android MWA Smoke
+## Android Native MWA Smoke
 
-1. Deploy the website or run the LAN dev flow from `docs/smoke/android-mwa-web.md`.
+1. Start the local bridge/browser flow with `pnpm dev:mobile` when testing bridge approvals from a phone.
 2. Install an MWA-compatible Android wallet such as Phantom, Solflare, or Seed Vault Wallet.
-3. Install the debug APK with `pnpm android:install`.
+3. Install the native example debug APK with `AGENTIC_ANDROID_SHOW_EXAMPLE_APP=true pnpm android:install`.
 4. Launch Agentic.
-5. Tap `Discover Wallets`.
-6. Confirm the MWA panel says Android MWA is ready or registered.
-7. Select Mobile Wallet Adapter, connect, and approve in the wallet.
-8. Request message or transaction signing from the workspace.
+5. Tap `Connect wallet` and approve in the installed wallet.
+6. Close and relaunch Agentic. It should restore the cached authorization automatically without a button press.
+7. Use `Disconnect` to return to a local idle state while keeping the cache, then `Reconnect cached` to restore it.
+   Cached records include the auth token and wallet URI so later operations can route back to the intended wallet when
+   the wallet supports endpoint-specific MWA links.
+8. Use `Get capabilities`, `Connect + SIWS`, `Sign transaction`, and `Sign and send` with a devnet transaction payload.
+9. Connect the bridge with the LAN bridge URL and token, then request a signature from the agent host.
+10. Use `Clear transient`, `Full reset`, and `Clear all accounts` to verify state/cache semantics. `Full reset`
+    attempts remote MWA deauthorization before clearing local cached state.
+
+Wallet caveats match the Unity/Godot/Unreal native SDKs: Backpack uses sign-then-RPC for sign-and-send, Phantom and
+Solflare may not support MWA message signing, Jupiter does not support standalone `sign_transactions`, and Phantom
+native sign-and-send requires a `minContextSlot` workaround.
 
 iOS MWA and generic Android WebView wrappers are intentionally out of scope.

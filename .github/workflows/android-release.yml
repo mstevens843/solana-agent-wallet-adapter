@@ -17,6 +17,7 @@ permissions:
 env:
   RELEASE_TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
   AGENTIC_ANDROID_REQUIRE_SIGNING: "1"
+  AGENTIC_ANDROID_SHOW_EXAMPLE_APP: "false"
 
 jobs:
   build:

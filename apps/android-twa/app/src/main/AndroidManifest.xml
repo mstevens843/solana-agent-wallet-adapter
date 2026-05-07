@@ -1,11 +1,18 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
     <uses-permission android:name="android.permission.INTERNET" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
 
     <queries>
         <package android:name="com.android.chrome" />
         <package android:name="com.chrome.beta" />
         <package android:name="com.chrome.dev" />
         <package android:name="com.chrome.canary" />
+        <intent>
+            <action android:name="android.intent.action.VIEW" />
+            <category android:name="android.intent.category.BROWSABLE" />
+            <data android:scheme="solana-wallet" />
+        </intent>
     </queries>
 
     <application
@@ -24,6 +31,16 @@
             android:name=".MainActivity"
             android:exported="true"
             android:theme="@style/AppTheme">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity>
+
+        <activity
+            android:name=".WebLaunchActivity"
+            android:exported="true"
+            android:theme="@style/AppTheme">
             <meta-data
                 android:name="android.support.customtabs.trusted.DEFAULT_URL"
                 android:value="@string/launch_url" />
@@ -38,15 +55,10 @@
                 android:resource="@color/navigation_bar_color" />
             <meta-data
                 android:name="android.support.customtabs.trusted.SPLASH_IMAGE_DRAWABLE"
-                android:resource="@drawable/agentic_mark" />
+                android:resource="@drawable/agentic_splash_mark" />
             <meta-data
                 android:name="android.support.customtabs.trusted.SPLASH_SCREEN_BACKGROUND_COLOR"
                 android:resource="@color/splash_background_color" />
-
-            <intent-filter>
-                <action android:name="android.intent.action.MAIN" />
-                <category android:name="android.intent.category.LAUNCHER" />
-            </intent-filter>
 
             <intent-filter android:autoVerify="true">
                 <action android:name="android.intent.action.VIEW" />
@@ -58,5 +70,21 @@
                     android:scheme="${agenticScheme}" />
             </intent-filter>
         </activity>
+
+        <activity
+            android:name="com.google.androidbrowserhelper.trusted.ManageDataLauncherActivity"
+            android:enabled="false"
+            android:exported="true"
+            android:theme="@style/AppTheme">
+            <intent-filter>
+                <action android:name="android.support.customtabs.action.ACTION_MANAGE_TRUSTED_WEB_ACTIVITY_DATA" />
+                <category android:name="android.intent.category.DEFAULT" />
+            </intent-filter>
+        </activity>
+
+        <service
+            android:name=".mwa.MwaKeepAliveService"
+            android:exported="false"
+            android:foregroundServiceType="dataSync" />
     </application>
 </manifest>

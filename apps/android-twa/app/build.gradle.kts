@@ -1,5 +1,6 @@
 plugins {
     id("com.android.application")
+    id("org.jetbrains.kotlin.android")
 }
 
 fun propertyOrEnv(name: String): String? =
@@ -7,6 +8,18 @@ fun propertyOrEnv(name: String): String? =
 
 fun escapedResValue(value: String): String =
     value.replace("\\", "\\\\").replace("\"", "\\\"")
+
+fun booleanFlag(value: String?, name: String, defaultValue: Boolean): Boolean {
+    val normalized = value?.trim()?.lowercase()
+    return when (normalized) {
+        null, "" -> defaultValue
+        "1", "true", "yes", "on" -> true
+        "0", "false", "no", "off" -> false
+        else -> throw GradleException(
+            "$name must be a boolean value: true/false, 1/0, yes/no, or on/off. Current value: $value",
+        )
+    }
+}
 
 val launchUrl = propertyOrEnv("AGENTIC_ANDROID_LAUNCH_URL")
     ?: propertyOrEnv("agenticLaunchUrl")
@@ -22,6 +35,15 @@ val launchOrigin = "$launchScheme://$launchHost${if (launchPort > 0) ":$launchPo
 val usesCleartext = launchScheme == "http"
 val assetStatements =
     """[{"relation":["delegate_permission/common.handle_all_urls"],"target":{"namespace":"web","site":"$launchOrigin"}}]"""
+val showExampleAppInput = providers.gradleProperty("agenticShowExampleApp").orNull
+    ?: providers.gradleProperty("AGENTIC_ANDROID_SHOW_EXAMPLE_APP").orNull
+    ?: System.getenv("AGENTIC_ANDROID_SHOW_EXAMPLE_APP")
+    ?: System.getenv("agenticShowExampleApp")
+val showExampleApp = booleanFlag(
+    showExampleAppInput,
+    "AGENTIC_ANDROID_SHOW_EXAMPLE_APP",
+    false,
+)
 val requestedTasks = gradle.startParameter.taskNames.map { it.lowercase() }
 val isReleaseBuild = requestedTasks.any { it.contains("release") }
 val localLaunchHosts = setOf("localhost", "127.0.0.1", "0.0.0.0", "::1")
@@ -72,7 +94,7 @@ android {
 
     defaultConfig {
         applicationId = "com.agentic.wallet"
-        minSdk = 23
+        minSdk = 24
         targetSdk = 35
         versionCode = parsedVersionCode
         versionName = appVersionName
@@ -85,6 +107,7 @@ android {
         buildConfigField("String", "AGENTIC_LAUNCH_SCHEME", "\"${launchScheme.replace("\"", "\\\"")}\"")
         buildConfigField("String", "AGENTIC_LAUNCH_HOST", "\"${launchHost.replace("\"", "\\\"")}\"")
         buildConfigField("int", "AGENTIC_LAUNCH_PORT", launchPort.toString())
+        buildConfigField("boolean", "AGENTIC_ANDROID_SHOW_EXAMPLE_APP", showExampleApp.toString())
         resValue("string", "launch_url", launchUrl)
         resValue("string", "asset_statements", escapedResValue(assetStatements))
     }
@@ -96,6 +119,10 @@ android {
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_17
         targetCompatibility = JavaVersion.VERSION_17
+    }
+
+    kotlinOptions {
+        jvmTarget = "17"
     }
 
     signingConfigs {
@@ -123,4 +150,8 @@ android {
 
 dependencies {
     implementation("com.google.androidbrowserhelper:androidbrowserhelper:2.7.0")
+    implementation("com.solanamobile:mobile-wallet-adapter-clientlib-ktx:2.0.8")
+    implementation("androidx.activity:activity-ktx:1.9.3")
+    implementation("androidx.lifecycle:lifecycle-runtime-ktx:2.8.7")
+    implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.9.0")
 }

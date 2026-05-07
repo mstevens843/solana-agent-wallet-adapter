@@ -5,7 +5,7 @@ import android.net.Uri;
 
 import com.google.androidbrowserhelper.trusted.LauncherActivity;
 
-public final class MainActivity extends LauncherActivity {
+public final class WebLaunchActivity extends LauncherActivity {
     @Override
     protected Uri getLaunchingUrl() {
         Intent intent = getIntent();

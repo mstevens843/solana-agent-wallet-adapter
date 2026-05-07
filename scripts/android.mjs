@@ -17,6 +17,7 @@ const gradleZip = join(root, '.gradle/agentic-android', `gradle-${gradleVersion}
 const sdkFallback = join(process.env.HOME ?? '', 'Library/Android/sdk');
 
 const [command = 'build', ...extraArgs] = process.argv.slice(2);
+const forwardedGradleArgs = extraArgs.filter((arg) => arg !== '--');
 
 if (command === 'fingerprint') {
   fingerprint(extraArgs);
@@ -59,7 +60,7 @@ const env = {
 
 await ensureAndroidSdk(env);
 const gradle = await resolveGradle();
-await run(gradle.command, [...gradle.args, '--no-daemon', ...tasks[command], ...extraArgs], {
+await run(gradle.command, [...gradle.args, '--no-daemon', ...forwardedGradleArgs, ...tasks[command]], {
   cwd: appDir,
   env,
 });

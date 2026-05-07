@@ -17,6 +17,18 @@ npm exec @solana-agent-wallet-adapter/cli -- app
 
 `solana-agent-wallet app` starts the local bridge at `http://127.0.0.1:8787`, starts the wallet host at `http://127.0.0.1:5174`, opens the wallet host in your browser, and launches the terminal control center.
 
+Optional AI planning is BYOK and local-first:
+
+```sh
+export AGENTIC_AI_API_KEY=...
+export AGENTIC_AI_MODEL=gpt-5
+export AGENTIC_AI_BASE_URL=https://api.openai.com/v1
+solana-agent-wallet app
+```
+
+The key stays in the local bridge process or your shell environment. The hosted app can draft plans through the bridge,
+but wallet approval remains separate.
+
 ## Standalone Downloads
 
 Download the asset for your platform from the latest GitHub Release:
