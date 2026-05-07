@@ -26,6 +26,7 @@
     "android:assetlinks:write": "node scripts/android.mjs assetlinks:write",
     "android:assetlinks:verify": "node scripts/android.mjs assetlinks:verify",
     "render:prepare": "node scripts/prepare-render-site.mjs",
+    "render:build": "pnpm render:prepare && pnpm --filter @solana-agent-wallet-adapter/browser-demo... build",
     "mcp:codex:add": "node scripts/codex-mcp.mjs add",
     "mcp:codex:remove": "node scripts/codex-mcp.mjs remove",
     "build": "pnpm -r --filter \"./packages/*\" --filter \"./apps/*\" build",
