@@ -84,6 +84,9 @@ type TemplateOutcome = 'queueable' | 'proof' | 'audit';
 type TemplateOutcomeFilter = TemplateOutcome | 'all';
 type RecurringPresetId = 'scheduled-transfer' | 'subscription';
 type PreparedActionKind = 'transfer_sol' | 'transfer_spl' | 'swap';
+type GuidedDemoScenarioId = 'transfer' | 'swap' | 'dca' | 'payouts';
+type GuidedDemoStage = 'request' | 'prepared' | 'queued' | 'receipt';
+type GuidedDemoDecision = 'pending' | 'approved' | 'denied';
 type PreparedActionStatus =
   | 'scheduled'
   | 'ready'
@@ -507,6 +510,20 @@ interface LabDefinition {
   kind: string;
   defaultInput: string;
   description: string;
+  category: 'receipt' | 'advanced';
+  summary: string;
+  whatThisProves: string;
+  recommendedUse: string;
+  fields?: LabFieldDefinition[];
+}
+
+interface LabFieldDefinition {
+  id: string;
+  label: string;
+  type: 'text' | 'textarea' | 'select';
+  required: boolean;
+  placeholder?: string;
+  options?: string[];
 }
 
 interface LabArtifact {
@@ -532,6 +549,13 @@ interface LabPayload {
   nextSignatureGate: string;
   metrics: Array<{ label: string; value: string; tone: 'good' | 'warn' | 'danger' | 'neutral' }>;
   evidence: Array<{ title: string; detail: string; tone: 'good' | 'warn' | 'danger' | 'neutral'; hash: string }>;
+  receiptType?: string;
+  summary?: string;
+  verdict?: string;
+  effect?: string;
+  whatThisProves?: string;
+  recommendedUse?: string;
+  fieldValues?: Record<string, string>;
 }
 
 interface RecurringDraft {
@@ -558,6 +582,32 @@ interface RecurringPreset {
   draft: Partial<RecurringDraft>;
 }
 
+interface GuidedDemoScenario {
+  id: GuidedDemoScenarioId;
+  eyebrow: string;
+  title: string;
+  prompt: string;
+  detail: string;
+  planTitle: string;
+  route: string;
+  risk: string;
+  approvalBoundary: string;
+  receiptType: string;
+  receiptSummary: string;
+  constraints: string[];
+  facts: Array<{ label: string; value: string }>;
+}
+
+interface GuidedDemoState {
+  selectedScenarioId: GuidedDemoScenarioId;
+  stage: GuidedDemoStage;
+  decision: GuidedDemoDecision;
+  receiptId: string;
+  receiptCreatedAt: string;
+  receiptJson: string;
+  signedReceipt: string;
+}
+
 interface PersistedState {
   selectedWalletName?: string;
   selectedIosWalletId?: IosNativeWalletId;
@@ -578,6 +628,7 @@ interface DemoState {
   completedPlanFilter: CompletedPlanFilter;
   selectedRuntimePath: RuntimePathId;
   recentCopyId: string;
+  guidedDemo: GuidedDemoState;
   inboxFilter: InboxFilter;
   wallets: DiscoveredWallet[];
   selectedWalletName: string;
@@ -635,6 +686,8 @@ interface DemoState {
   mwaRegistration: RegisterAgentMobileWalletAdapterResult | null;
   activeLab: string;
   labInputs: Record<string, string>;
+  labFieldValues: Record<string, Record<string, string>>;
+  labFieldErrors: Record<string, string>;
   labArtifacts: LabArtifact[];
   labArchiveStatus: string;
   artifactFilter: ArtifactFilter;
@@ -643,114 +696,349 @@ interface DemoState {
   steps: Record<StepName, StepState>;
 }
 
-const LABS: LabDefinition[] = [
+const RECEIPT_LABS: LabDefinition[] = [
+  {
+    id: 'intent-receipt',
+    title: 'Intent Receipt',
+    kind: 'intent_receipt',
+    category: 'receipt',
+    defaultInput: '',
+    description: 'Sign the requested action and the constraints that must be true before any future wallet approval.',
+    summary: 'A wallet-signed record of what the agent or user intended to do.',
+    whatThisProves: 'The action, limits, and review context existed before any transaction approval.',
+    recommendedUse: 'Attach it to an agent run, support thread, or personal audit trail before approving a related wallet request.',
+    fields: [
+      {
+        id: 'request',
+        label: 'Requested action',
+        type: 'textarea',
+        required: true,
+        placeholder: 'Swap 0.05 SOL to USDC, send 10 USDC, review this Blink, etc.',
+      },
+      {
+        id: 'constraints',
+        label: 'Required constraints',
+        type: 'textarea',
+        required: true,
+        placeholder: 'Max slippage, allowed programs, recipient, deadline, no authority grants, or other caps.',
+      },
+      {
+        id: 'context',
+        label: 'Context / source',
+        type: 'text',
+        required: false,
+        placeholder: 'Optional app, agent, ticket, or reason.',
+      },
+    ],
+  },
+  {
+    id: 'policy-receipt',
+    title: 'Policy Receipt',
+    kind: 'policy_receipt',
+    category: 'receipt',
+    defaultInput: '',
+    description: 'Sign that a wallet policy or personal rule was checked before approving or rejecting a request.',
+    summary: 'A wallet-signed policy check for a specific request.',
+    whatThisProves: 'The user had a stated rule and checked the request against it before taking action.',
+    recommendedUse: 'Use it when you want repeatable wallet rules around approvals, spend limits, custody, or allowed actions.',
+    fields: [
+      {
+        id: 'policy',
+        label: 'Policy checked',
+        type: 'textarea',
+        required: true,
+        placeholder: 'Never sign unlimited approvals. Swaps must stay below 100 bps slippage. No private key sharing.',
+      },
+      {
+        id: 'request',
+        label: 'Request being checked',
+        type: 'textarea',
+        required: true,
+        placeholder: 'Describe the agent request, transaction preview, or approval proposal.',
+      },
+      {
+        id: 'result',
+        label: 'Policy result',
+        type: 'select',
+        required: true,
+        options: ['Recorded', 'Pass', 'Warning', 'Blocked'],
+      },
+    ],
+  },
+  {
+    id: 'risk-receipt',
+    title: 'Risk Review Receipt',
+    kind: 'risk_review_receipt',
+    category: 'receipt',
+    defaultInput: '',
+    description: 'Sign the risks reviewed before a wallet decision.',
+    summary: 'A wallet-signed risk review for an agent action.',
+    whatThisProves: 'Specific risks were reviewed before a later approval, rejection, or support/audit discussion.',
+    recommendedUse: 'Use it before swaps, transfers, new protocols, links, or any action where the route needs review.',
+    fields: [
+      {
+        id: 'request',
+        label: 'Request reviewed',
+        type: 'textarea',
+        required: true,
+        placeholder: 'Describe the payment, swap, app interaction, link, or agent action.',
+      },
+      {
+        id: 'risks',
+        label: 'Risks checked',
+        type: 'textarea',
+        required: true,
+        placeholder: 'Unknown programs, authority changes, slippage, route drift, fees, recipient, simulation result.',
+      },
+      {
+        id: 'verdict',
+        label: 'Risk verdict',
+        type: 'select',
+        required: true,
+        options: ['Recorded', 'Warning', 'Blocked'],
+      },
+    ],
+  },
+  {
+    id: 'rejection-receipt',
+    title: 'Rejection Receipt',
+    kind: 'rejection_receipt',
+    category: 'receipt',
+    defaultInput: '',
+    description: 'Sign why a request was refused without exposing private wallet data.',
+    summary: 'A wallet-signed refusal record for a rejected request.',
+    whatThisProves: 'The user intentionally rejected a request for a stated reason at a specific time.',
+    recommendedUse: 'Use it to document unsafe agent requests, support disputes, policy violations, or blocked approvals.',
+    fields: [
+      {
+        id: 'request',
+        label: 'Rejected request',
+        type: 'textarea',
+        required: true,
+        placeholder: 'Describe what the agent, site, or transaction asked for.',
+      },
+      {
+        id: 'reason',
+        label: 'Reason for rejection',
+        type: 'textarea',
+        required: true,
+        placeholder: 'Unlimited approval, unknown custody, wrong recipient, route mismatch, private key request, etc.',
+      },
+      {
+        id: 'policy',
+        label: 'Policy triggered',
+        type: 'text',
+        required: false,
+        placeholder: 'Optional rule or policy this violated.',
+      },
+    ],
+  },
+  {
+    id: 'tool-trace-receipt',
+    title: 'Tool Trace Receipt',
+    kind: 'tool_trace_receipt',
+    category: 'receipt',
+    defaultInput: '',
+    description: 'Sign which tools, data, or checks an agent used before asking for wallet approval.',
+    summary: 'A wallet-signed record of the tool/data trail behind a request.',
+    whatThisProves: 'The listed tools, data, and result summary were part of the review context.',
+    recommendedUse: 'Use it when an agent gathered quotes, simulations, balances, policy checks, or portfolio data.',
+    fields: [
+      {
+        id: 'task',
+        label: 'Agent task',
+        type: 'textarea',
+        required: true,
+        placeholder: 'What the agent was asked to prepare or review.',
+      },
+      {
+        id: 'tools',
+        label: 'Tools / data used',
+        type: 'textarea',
+        required: true,
+        placeholder: 'Quote API, simulation, balance read, policy diff, portfolio read, transaction decoder, etc.',
+      },
+      {
+        id: 'result',
+        label: 'Result summary',
+        type: 'textarea',
+        required: false,
+        placeholder: 'Optional short conclusion from the tools.',
+      },
+    ],
+  },
+];
+
+const ADVANCED_EVIDENCE_LABS: LabDefinition[] = [
   {
     id: 'flight',
-    title: '1. Flight Recorder',
+    title: 'Flight Recorder',
     kind: 'agent_flight_recorder',
+    category: 'advanced',
     defaultInput:
       'Swap 0.05 SOL to USDC only if simulation shows no new authority grants and the route stays within 50 bps slippage.',
     description: "Bind the agent's stated intent, plan, tool trace, and risk interpretation to the wallet signature.",
+    summary: 'Experimental record that binds agent intent, plan, tool trace, and risk interpretation.',
+    whatThisProves: 'The stated intent and risk interpretation were signed at a specific review moment.',
+    recommendedUse: 'Use only when testing advanced evidence concepts or demos.',
   },
   {
     id: 'auction',
-    title: '2. Intent Auctions',
+    title: 'Intent Auctions',
     kind: 'signed_intent_auction',
+    category: 'advanced',
     defaultInput: 'Ask three quote agents for the best SOL to USDC route and select only offers matching my caps.',
     description: 'Sign demand once, then let competing agents attach auditable offers without gaining custody.',
+    summary: 'Experimental record for comparing offers against a signed demand.',
+    whatThisProves: 'The demand and caps existed before attached offers were reviewed.',
+    recommendedUse: 'Use only when testing agent-market or quote-auction concepts.',
   },
   {
     id: 'cosigner',
-    title: '3. Risk Co-Signers',
+    title: 'Risk Co-Signers',
     kind: 'risk_cosigner_market',
+    category: 'advanced',
     defaultInput: 'Review this swap request for unknown programs, authority deltas, route drift, and hidden approvals.',
     description: 'Collect multiple agent reviews before the wallet opens for the final settlement signature.',
+    summary: 'Experimental record for multiple agent risk reviews.',
+    whatThisProves: 'A risk-review request was signed before final wallet approval.',
+    recommendedUse: 'Use only when testing multi-agent risk review concepts.',
   },
   {
     id: 'rejection',
-    title: '4. Rejection Intelligence',
+    title: 'Rejection Intelligence',
     kind: 'rejection_fingerprint',
+    category: 'advanced',
     defaultInput: 'Reject any request that mentions unlimited approvals, private keys, or unknown custody delegation.',
     description: 'Turn a rejection into a reusable local safety fingerprint.',
+    summary: 'Experimental local safety fingerprint for refused requests.',
+    whatThisProves: 'A refusal pattern was signed as local evidence.',
+    recommendedUse: 'Prefer Rejection Receipt for normal public use.',
   },
   {
     id: 'semantic',
-    title: '5. Semantic Firewall',
+    title: 'Semantic Firewall',
     kind: 'semantic_firewall',
+    category: 'advanced',
     defaultInput: 'Allow SOL to USDC swap semantics only when touched programs and authority changes match the explanation.',
     description: 'Compare what the agent says with what the eventual transaction does.',
+    summary: 'Experimental comparison between agent explanation and transaction semantics.',
+    whatThisProves: 'A semantic policy was signed before comparing against a later transaction.',
+    recommendedUse: 'Use only when testing transaction-explanation matching.',
   },
   {
     id: 'nonaction',
-    title: '6. Proof of Non-Action',
+    title: 'Proof of Non-Action',
     kind: 'signed_non_action',
+    category: 'advanced',
     defaultInput: 'Do nothing unless SOL drops below the signed threshold and liquidity remains above the floor.',
     description: 'Prove the agent checked conditions and intentionally avoided a wallet action.',
+    summary: 'Experimental record that a checked condition did not trigger action.',
+    whatThisProves: 'The agent/user intentionally avoided a wallet action under stated conditions.',
+    recommendedUse: 'Use only when testing non-action or restraint proofs.',
   },
   {
     id: 'reputation',
-    title: '7. Agent Reputation',
+    title: 'Agent Reputation',
     kind: 'agent_reputation',
+    category: 'advanced',
     defaultInput: 'Score the agent based on signed successes, rejections, warnings, and restraint proofs.',
     description: 'Make behavior portable across apps through wallet-signed outcome records.',
+    summary: 'Experimental reputation record for agent behavior across apps.',
+    whatThisProves: 'A reputation score or outcome summary was signed by the wallet.',
+    recommendedUse: 'Use only when testing agent reputation concepts.',
   },
   {
     id: 'blinks',
-    title: '8. Agent-Reviewed Links',
+    title: 'Agent-Reviewed Links',
     kind: 'agent_reviewed_blink',
+    category: 'advanced',
     defaultInput: 'Review this Blink claim, summarize cost and authority deltas, and attach the signed interpretation.',
     description: 'Carry agent interpretation beside a Solana Action before wallet settlement.',
+    summary: 'Experimental signed interpretation for Solana Actions or links.',
+    whatThisProves: 'The wallet signed an interpretation of a link or action before settlement.',
+    recommendedUse: 'Prefer Risk Review Receipt for normal link review.',
   },
   {
     id: 'capsule',
-    title: '9. Intent Time Capsules',
+    title: 'Intent Time Capsules',
     kind: 'intent_time_capsule',
+    category: 'advanced',
     defaultInput: 'Seal an intent that can open later only if price, route, deadline, and slippage all match.',
     description: 'Sign future permission without allowing arbitrary future execution.',
+    summary: 'Experimental time-boxed intent envelope.',
+    whatThisProves: 'The user signed a future intent envelope with stated conditions.',
+    recommendedUse: 'Use only when testing delayed intent concepts.',
   },
   {
     id: 'delegation',
-    title: '10. Sub-Agent Delegation',
+    title: 'Sub-Agent Delegation',
     kind: 'sub_agent_delegation',
+    category: 'advanced',
     defaultInput: 'Delegate quote, risk, tax tag, and final explanation slices to specialist agents.',
     description: 'Let agents hire specialists while every responsibility slice remains signed and auditable.',
+    summary: 'Experimental record for delegated agent responsibility slices.',
+    whatThisProves: 'A delegation scope was signed before specialists acted.',
+    recommendedUse: 'Use only when testing sub-agent coordination.',
   },
   {
     id: 'outcome',
-    title: '11. Outcome Signatures',
+    title: 'Outcome Signatures',
     kind: 'outcome_signature',
+    category: 'advanced',
     defaultInput: 'Authorize only the acceptable end state: minimum USDC output, no authority grants, and capped fees.',
     description: 'Give agents path freedom while the wallet signs the acceptable result envelope.',
+    summary: 'Experimental result-envelope signature.',
+    whatThisProves: 'The acceptable outcome was signed before route selection or execution.',
+    recommendedUse: 'Use only when testing outcome-constrained agents.',
   },
   {
     id: 'insurance',
-    title: '12. Request Insurance',
+    title: 'Request Insurance',
     kind: 'request_insurance',
+    category: 'advanced',
     defaultInput: 'Quote coverage for route mismatch, simulation divergence, and known exploit classes.',
     description: 'Show deterministic risk-transfer terms beside the signing request.',
+    summary: 'Experimental risk-transfer terms attached to an approval request.',
+    whatThisProves: 'Insurance or coverage terms were signed as context.',
+    recommendedUse: 'Use only when testing insurance-style request metadata.',
   },
   {
     id: 'constitution',
-    title: '13. Personal Constitution',
+    title: 'Personal Constitution',
     kind: 'personal_constitution',
+    category: 'advanced',
     defaultInput: 'My wallet never signs unlimited approvals, mainnet-first tests, or swaps above 100 bps slippage.',
     description: 'Diff each request against a portable wallet-signed personal policy.',
+    summary: 'Experimental portable wallet policy.',
+    whatThisProves: 'A personal wallet policy existed before request review.',
+    recommendedUse: 'Prefer Policy Receipt for normal public use.',
   },
   {
     id: 'receipts',
-    title: '14. Tool Receipts',
+    title: 'Tool Receipts',
     kind: 'tool_receipts',
+    category: 'advanced',
     defaultInput: 'Attach hashes for portfolio read, quote, simulation, policy diff, and final explanation tools.',
     description: 'Prove which tools and data the agent actually used before requesting approval.',
+    summary: 'Experimental tool-hash receipt.',
+    whatThisProves: 'Tool hashes and data references were signed as review context.',
+    recommendedUse: 'Prefer Tool Trace Receipt for normal public use.',
   },
   {
     id: 'apprentice',
-    title: '15. Apprenticeship Mode',
+    title: 'Apprenticeship Mode',
     kind: 'apprenticeship_mode',
+    category: 'advanced',
     defaultInput: 'Run five training scenarios and score the agent before granting live signing authority.',
     description: 'Require signed predictions and scorecards before an agent graduates to production signing.',
+    summary: 'Experimental agent training scorecard.',
+    whatThisProves: 'Training scenarios or scorecards were signed before production use.',
+    recommendedUse: 'Use only when testing agent evaluation workflows.',
   },
 ];
+
+const LABS: LabDefinition[] = [...RECEIPT_LABS, ...ADVANCED_EVIDENCE_LABS];
 
 const persisted = loadPersistedState();
 const initialCluster = SHOW_DEV_CONTROLS ? (persisted.cluster ?? 'mainnet-beta') : 'mainnet-beta';
@@ -786,6 +1074,117 @@ const RECURRING_PRESETS: RecurringPreset[] = [
   },
 ];
 
+const GUIDED_DEMO_SCENARIOS: ReadonlyArray<GuidedDemoScenario> = [
+  {
+    id: 'transfer',
+    eyebrow: 'One-time transfer',
+    title: '0.2 SOL transfer',
+    prompt: 'Prepare a 0.2 SOL transfer. Don\'t send until I approve.',
+    detail: 'The agent prepares the payment terms, but the wallet still owns the final approve or deny step.',
+    planTitle: 'Prepared SOL transfer for wallet review',
+    route: 'Create One-Time Plan -> Approval Inbox',
+    risk: 'Confirm the recipient, amount, cluster, and network fee before approving the final wallet request.',
+    approvalBoundary: 'No transaction is signed or submitted until you approve it from the wallet review step.',
+    receiptType: 'one_time_transfer_receipt',
+    receiptSummary: 'A bounded SOL transfer was prepared and reviewed before wallet approval.',
+    constraints: [
+      'Amount is capped at 0.2 SOL.',
+      'Recipient must match the final wallet review.',
+      'No recurring allowance or delegated signer is created.',
+      'User approval is required before any send.',
+    ],
+    facts: [
+      { label: 'Action', value: 'Send SOL' },
+      { label: 'Amount', value: '0.2 SOL max' },
+      { label: 'Custody', value: 'User wallet' },
+    ],
+  },
+  {
+    id: 'swap',
+    eyebrow: 'Swap review',
+    title: 'SOL to USDC swap',
+    prompt: 'Swap SOL to USDC if slippage stays under 1%.',
+    detail: 'The agent turns a plain-English swap into a route, limits, and wallet approval boundary.',
+    planTitle: 'Prepared Jupiter-style swap review',
+    route: 'Create One-Time Plan -> Approval Inbox',
+    risk: 'Review price impact, route programs, minimum output, and final quote before approving.',
+    approvalBoundary: 'The agent can prepare route context, but only the wallet can approve the swap signature.',
+    receiptType: 'swap_review_receipt',
+    receiptSummary: 'A swap request was constrained by a 1% slippage cap before review.',
+    constraints: [
+      'Maximum slippage is 100 bps.',
+      'Final wallet quote must show the actual minimum output.',
+      'Unexpected authority grants should be rejected.',
+      'Route changes require a fresh wallet review.',
+    ],
+    facts: [
+      { label: 'Route', value: 'SOL -> USDC' },
+      { label: 'Limit', value: '1% slippage' },
+      { label: 'Signer', value: 'Wallet only' },
+    ],
+  },
+  {
+    id: 'dca',
+    eyebrow: 'Recurring plan',
+    title: 'Weekly capped DCA',
+    prompt: 'Create weekly DCA with a max spend cap.',
+    detail: 'The agent creates the schedule; each due occurrence still returns for approve or deny.',
+    planTitle: 'Prepared weekly DCA schedule',
+    route: 'Create Recurring Plan -> Approval Inbox occurrence',
+    risk: 'Recurring schedules should keep a clear max spend, cadence, token pair, and manual review rule.',
+    approvalBoundary: 'The schedule prepares future requests; it never gives the agent unlimited signing authority.',
+    receiptType: 'recurring_schedule_receipt',
+    receiptSummary: 'A weekly DCA schedule was prepared with a spend cap and manual approval on each run.',
+    constraints: [
+      'Weekly cadence only.',
+      'Spend cap must be visible before schedule creation.',
+      'Every occurrence appears in Approval Inbox.',
+      'User can pause, resume, or delete the schedule.',
+    ],
+    facts: [
+      { label: 'Cadence', value: 'Weekly' },
+      { label: 'Limit', value: 'Capped spend' },
+      { label: 'Review', value: 'Every run' },
+    ],
+  },
+  {
+    id: 'payouts',
+    eyebrow: 'Team payouts',
+    title: 'Contributor queue',
+    prompt: 'Queue contributor payouts for wallet review.',
+    detail: 'The agent prepares multiple payout requests and keeps the signer as the final control point.',
+    planTitle: 'Prepared contributor payout queue',
+    route: 'Create One-Time Plan -> Approval Inbox batch',
+    risk: 'Check every recipient, memo, token, and payout amount before approving individual requests.',
+    approvalBoundary: 'Payouts wait in review; the agent cannot batch-send funds without wallet approval.',
+    receiptType: 'payout_queue_receipt',
+    receiptSummary: 'Contributor payouts were queued for explicit wallet review instead of auto-sending.',
+    constraints: [
+      'Each recipient needs a visible payout line.',
+      'No unlimited token approval is requested.',
+      'Approvals can be accepted or denied individually.',
+      'Receipts stay attached to the approval decision.',
+    ],
+    facts: [
+      { label: 'Workload', value: 'Batch queue' },
+      { label: 'Control', value: 'Per payout' },
+      { label: 'Record', value: 'Receipt kept' },
+    ],
+  },
+];
+
+function defaultGuidedDemoState(scenarioId: GuidedDemoScenarioId = 'transfer'): GuidedDemoState {
+  return {
+    selectedScenarioId: scenarioId,
+    stage: 'request',
+    decision: 'pending',
+    receiptId: '',
+    receiptCreatedAt: '',
+    receiptJson: '',
+    signedReceipt: '',
+  };
+}
+
 const state: DemoState = {
   activeTab: defaultWorkspaceTab,
   oneTimePlanView: 'create',
@@ -793,6 +1192,7 @@ const state: DemoState = {
   completedPlanFilter: 'all',
   selectedRuntimePath: 'exec',
   recentCopyId: '',
+  guidedDemo: defaultGuidedDemoState(),
   inboxFilter: 'all',
   wallets: [],
   selectedWalletName: persisted.selectedWalletName ?? '',
@@ -853,6 +1253,8 @@ const state: DemoState = {
   mwaRegistration: null,
   activeLab: LABS[0]!.id,
   labInputs: defaultLabInputs(),
+  labFieldValues: defaultLabFieldValues(),
+  labFieldErrors: {},
   labArtifacts: loadLabArtifacts(),
   labArchiveStatus: 'Browser archive loading.',
   artifactFilter: 'all',
@@ -1135,10 +1537,7 @@ function androidPage(): string {
 }
 
 function demoPage(): string {
-  return `
-    ${guidedDemoPage()}
-    ${appWorkspace('demo')}
-  `;
+  return guidedDemoWalkthroughPage();
 }
 
 function notFoundPage(): string {
@@ -1693,7 +2092,7 @@ function heroTerminalPreview(): string {
       <div class="hero-proof-panel" aria-label="Authority model">
         ${heroProof('Agent requests', 'Intent, route, limits, and transaction bytes.')}
         ${heroProof('Wallet approves', state.address ? short(state.address) : 'Existing user wallet signs.')}
-        ${heroProof('Adapter records', 'Receipt, policy context, bridge state, and audit artifacts.')}
+        ${heroProof('Adapter records', 'Receipt, policy context, bridge state, and evidence receipts.')}
       </div>
     </aside>
   `;
@@ -1987,47 +2386,284 @@ function homepageDemoCtaSection(): string {
   `;
 }
 
-function guidedDemoPage(): string {
+function guidedDemoWalkthroughPage(): string {
+  const scenario = selectedGuidedDemoScenario();
   return `
-    <section id="demo-guide" class="browser-app-section guided-demo-overview" aria-labelledby="guided-demo-title">
-      <div class="section-heading">
-        <p class="eyebrow mini">Guided demo</p>
-        <h2 id="guided-demo-title">Try the approval flow before launching the full app.</h2>
-        <p>
-          This page keeps a short guide above the live demo workspace. Use the cards to jump into wallet signing,
-          one-time plans, recurring plans, approval decisions, or audit artifacts without losing the interactive controls below.
-        </p>
+    <section id="demo-guide" class="guided-demo-page" aria-labelledby="guided-demo-title">
+      <div class="guided-demo-hero">
+        <div class="guided-demo-hero-copy">
+          <p class="eyebrow mini">Guided demo</p>
+          <h1 id="guided-demo-title">The agent prepares. You approve.</h1>
+          <p>
+            Pick a practical Solana request and watch Agentic turn it into a bounded wallet review. This demo
+            simulates the approval flow, does not move funds, and never asks you to start the local bridge.
+          </p>
+        </div>
+        <div class="guided-demo-trust-grid" aria-label="Demo safety model">
+          ${guidedDemoTrustItem('No key handoff', 'The agent never receives your seed phrase, private key, or unlimited signer.')}
+          ${guidedDemoTrustItem('Explicit approval', 'Prepared actions wait until the wallet owner approves or denies them.')}
+          ${guidedDemoTrustItem('Receipt trail', 'Every demo decision ends with a receipt you can inspect or copy.')}
+        </div>
       </div>
-      <div class="browser-app-grid demo-guide-grid">
-        ${guidedDemoStepCard('wallet', 'Wallet signing', 'Connect a wallet and sign a bounded demo message without exposing keys.', 'Try signing')}
-        ${guidedDemoStepCard('agent', 'Create One-Time Plan', 'Create and finish one-time send, swap, or review plans.', 'Create plan')}
-        ${guidedDemoStepCard('schedule', 'Create Recurring Plan', 'Create recurring schedules. Each due occurrence returns for wallet review.', 'Create recurring')}
-        ${guidedDemoStepCard('inbox', 'Approval Inbox', 'Approve or deny one-time and recurring requests waiting for wallet review.', 'View inbox')}
-        ${guidedDemoStepCard('completed', 'Completed Plans', 'Review finished plans, recurring occurrences, proofs, and receipts.', 'View history')}
-        ${guidedDemoStepCard('labs', 'Audit Artifacts', 'Create wallet-signed evidence records that do not move funds.', 'Create artifact')}
+
+      <div class="guided-demo-shell">
+        <aside class="guided-demo-scenarios" aria-label="Choose a demo scenario">
+          <div>
+            <p class="eyebrow mini">Use cases</p>
+            <h2>Start with a real request.</h2>
+            <p>These are the approval moments Agentic is built for: the agent drafts, the wallet decides.</p>
+          </div>
+          <div class="guided-demo-scenario-list">
+            ${GUIDED_DEMO_SCENARIOS.map((candidate) => guidedDemoScenarioCard(candidate)).join('')}
+          </div>
+        </aside>
+
+        <section class="guided-demo-runner" aria-label="Simulated approval walkthrough">
+          ${guidedDemoStepRail()}
+          <div class="guided-demo-runner-body">
+            ${guidedDemoRequestCard(scenario)}
+            ${guidedDemoPreparedPlan(scenario)}
+            ${guidedDemoReviewCard(scenario)}
+            ${guidedDemoReceiptCard(scenario)}
+          </div>
+          ${guidedDemoActions()}
+        </section>
       </div>
-      <div class="browser-app-actions">
-        <button data-start-action="discover" ${state.busy ? 'disabled' : ''}>
-          ${state.wallets.length ? 'Refresh Wallets' : 'Discover Wallets'}
-        </button>
-        <button class="nav-pill-link" data-demo-tab="wallet" ${state.busy ? 'disabled' : ''}>Open live demo</button>
+
+      <div class="guided-demo-footer-cta">
+        <div>
+          <span>Ready for the real workspace?</span>
+          <strong>Create plans, connect optional AI, review inbox items, and keep signed evidence in /app.</strong>
+        </div>
         <a class="button-link launch-app-link mobile-redundant-nav" href="/app">Launch full app</a>
-        <a class="button-link mobile-redundant-nav" href="/docs">Read Docs</a>
+        <a class="button-link mobile-redundant-nav" href="/docs">Read docs</a>
       </div>
     </section>
   `;
 }
 
-function guidedDemoStepCard(tab: ActiveTab, title: string, detail: string, actionLabel: string): string {
+function guidedDemoTrustItem(title: string, detail: string): string {
   return `
-    <article class="browser-app-card demo-step-card">
-      <div>
-        <h3>${escapeHtml(title)}</h3>
-        <p>${escapeHtml(detail)}</p>
-      </div>
-      <button class="demo-step-action" data-demo-tab="${escapeHtml(tab)}">${escapeHtml(actionLabel)}</button>
+    <article class="guided-demo-trust-item">
+      <strong>${escapeHtml(title)}</strong>
+      <p>${escapeHtml(detail)}</p>
     </article>
   `;
+}
+
+function guidedDemoScenarioCard(scenario: GuidedDemoScenario): string {
+  const active = scenario.id === state.guidedDemo.selectedScenarioId;
+  return `
+    <button
+      class="guided-demo-scenario-card ${active ? 'active' : ''}"
+      data-demo-scenario="${escapeHtml(scenario.id)}"
+      aria-pressed="${active ? 'true' : 'false'}"
+      ${state.busy ? 'disabled' : ''}
+    >
+      <span>${escapeHtml(scenario.eyebrow)}</span>
+      <strong>${escapeHtml(scenario.title)}</strong>
+      <em>${escapeHtml(scenario.prompt)}</em>
+    </button>
+  `;
+}
+
+function guidedDemoStepRail(): string {
+  const steps = [
+    { id: 'request', label: 'Request', detail: 'Choose a use case' },
+    { id: 'prepared', label: 'Prepared plan', detail: 'Agent drafts limits' },
+    { id: 'queued', label: 'Wallet review', detail: 'Approve or deny' },
+    { id: 'receipt', label: 'Receipt', detail: 'Decision recorded' },
+  ] satisfies Array<{ id: GuidedDemoStage; label: string; detail: string }>;
+  const activeIndex = guidedDemoStageIndex(state.guidedDemo.stage);
+  return `
+    <div class="guided-demo-step-rail" aria-label="Demo progress">
+      ${steps
+        .map((step, index) => {
+          const complete = index < activeIndex || state.guidedDemo.stage === 'receipt';
+          const active = index === activeIndex && state.guidedDemo.stage !== 'receipt';
+          return `
+            <div class="guided-demo-step ${complete ? 'complete' : ''} ${active ? 'active' : ''}">
+              <span>${index + 1}</span>
+              <div>
+                <strong>${escapeHtml(step.label)}</strong>
+                <p>${escapeHtml(step.detail)}</p>
+              </div>
+            </div>
+          `;
+        })
+        .join('')}
+    </div>
+  `;
+}
+
+function guidedDemoRequestCard(scenario: GuidedDemoScenario): string {
+  return `
+    <article class="guided-demo-request-card">
+      <div>
+        <span>User request</span>
+        <p>${escapeHtml(scenario.prompt)}</p>
+      </div>
+      <strong>Simulation only</strong>
+    </article>
+  `;
+}
+
+function guidedDemoPreparedPlan(scenario: GuidedDemoScenario): string {
+  if (!guidedDemoAtLeast('prepared')) {
+    return `
+      <article class="guided-demo-placeholder">
+        <span>Next</span>
+        <h3>Prepare the plan</h3>
+        <p>Click Prepare plan to see the structured request the agent would hand back for wallet review.</p>
+      </article>
+    `;
+  }
+  return `
+    <article class="guided-demo-plan-card">
+      <div class="guided-demo-card-heading">
+        <span>Prepared plan</span>
+        <h3>${escapeHtml(scenario.planTitle)}</h3>
+        <p>${escapeHtml(scenario.detail)}</p>
+      </div>
+      <div class="guided-demo-fact-grid">
+        ${scenario.facts.map((fact) => guidedDemoFact(fact.label, fact.value)).join('')}
+      </div>
+      <div class="guided-demo-constraint-list">
+        <span>Approval constraints</span>
+        <ul>
+          ${scenario.constraints.map((constraint) => `<li>${escapeHtml(constraint)}</li>`).join('')}
+        </ul>
+      </div>
+      <div class="guided-demo-risk-note">
+        <span>Risk check</span>
+        <p>${escapeHtml(scenario.risk)}</p>
+      </div>
+    </article>
+  `;
+}
+
+function guidedDemoReviewCard(scenario: GuidedDemoScenario): string {
+  if (!guidedDemoAtLeast('queued')) return '';
+  const receiptReady = state.guidedDemo.stage === 'receipt';
+  const approved = state.guidedDemo.decision === 'approved';
+  const status = receiptReady ? (approved ? 'Approved' : 'Denied') : 'Waiting for you';
+  return `
+    <article class="guided-demo-review-card ${receiptReady ? state.guidedDemo.decision : ''}">
+      <div class="guided-demo-card-heading">
+        <span>Wallet review</span>
+        <h3>${escapeHtml(status)}</h3>
+        <p>${escapeHtml(scenario.approvalBoundary)}</p>
+      </div>
+      <div class="guided-demo-review-route">
+        ${guidedDemoFact('Route', scenario.route)}
+        ${guidedDemoFact('Signer', state.address ? short(state.address) : 'Demo wallet')}
+        ${guidedDemoFact('Result', receiptReady ? status : 'Pending decision')}
+      </div>
+    </article>
+  `;
+}
+
+function guidedDemoReceiptCard(scenario: GuidedDemoScenario): string {
+  if (state.guidedDemo.stage !== 'receipt') return '';
+  const signed = Boolean(state.guidedDemo.signedReceipt);
+  return `
+    <article class="guided-demo-receipt-card ${state.guidedDemo.decision}">
+      <div class="guided-demo-card-heading">
+        <span>${escapeHtml(state.guidedDemo.decision === 'approved' ? 'Approval receipt' : 'Denial receipt')}</span>
+        <h3>${escapeHtml(scenario.receiptSummary)}</h3>
+        <p>This is demo output only. It shows the record a real approval flow would preserve for review.</p>
+      </div>
+      <div class="guided-demo-review-route">
+        ${guidedDemoFact('Receipt', state.guidedDemo.receiptId || 'demo')}
+        ${guidedDemoFact('Created', formatDateTime(state.guidedDemo.receiptCreatedAt))}
+        ${guidedDemoFact('Signature', signed ? short(state.guidedDemo.signedReceipt) : 'Optional')}
+      </div>
+      <details class="guided-demo-json">
+        <summary>Receipt JSON</summary>
+        <pre>${escapeHtml(state.guidedDemo.receiptJson)}</pre>
+      </details>
+    </article>
+  `;
+}
+
+function guidedDemoFact(label: string, value: string): string {
+  return `
+    <div class="guided-demo-fact">
+      <span>${escapeHtml(label)}</span>
+      <strong>${escapeHtml(value)}</strong>
+    </div>
+  `;
+}
+
+function guidedDemoActions(): string {
+  const demo = state.guidedDemo;
+  const disabled = state.busy ? 'disabled' : '';
+  if (demo.stage === 'request') {
+    return `
+      <div class="guided-demo-actions">
+        <button class="primary" data-demo-action="prepare" ${disabled}>Prepare plan</button>
+        <a class="button-link" href="/app">Open full app</a>
+      </div>
+    `;
+  }
+  if (demo.stage === 'prepared') {
+    return `
+      <div class="guided-demo-actions">
+        <button class="primary" data-demo-action="queue" ${disabled}>Queue for wallet review</button>
+        <button data-demo-action="reset" ${disabled}>Reset demo</button>
+      </div>
+    `;
+  }
+  if (demo.stage === 'queued') {
+    return `
+      <div class="guided-demo-actions">
+        <button class="primary" data-demo-action="approve" ${disabled}>Approve demo</button>
+        <button data-demo-action="deny" ${disabled}>Deny demo</button>
+        <button data-demo-action="reset" ${disabled}>Reset demo</button>
+      </div>
+    `;
+  }
+  return `
+    <div class="guided-demo-actions receipt-actions">
+      <button
+        data-copy="${escapeHtml(demo.receiptJson)}"
+        data-copy-name="Demo receipt JSON"
+        ${demo.receiptJson ? '' : 'disabled'}
+      >Copy receipt</button>
+      ${
+        state.address
+          ? `<button data-demo-action="sign-receipt" ${disabled || demo.signedReceipt ? 'disabled' : ''}>${demo.signedReceipt ? 'Receipt signed' : 'Sign demo receipt'}</button>`
+          : '<span class="guided-demo-action-note">Optional wallet signature appears after a wallet is connected in the full app.</span>'
+      }
+      <button data-demo-action="reset" ${disabled}>Reset demo</button>
+      <a class="button-link launch-app-link mobile-redundant-nav" href="/app">Try in full app</a>
+    </div>
+  `;
+}
+
+function selectedGuidedDemoScenario(): GuidedDemoScenario {
+  return guidedDemoScenarioById(state.guidedDemo.selectedScenarioId);
+}
+
+function guidedDemoScenarioById(scenarioId: string | undefined): GuidedDemoScenario {
+  return GUIDED_DEMO_SCENARIOS.find((scenario) => scenario.id === scenarioId) ?? GUIDED_DEMO_SCENARIOS[0]!;
+}
+
+function guidedDemoStageIndex(stage: GuidedDemoStage): number {
+  switch (stage) {
+    case 'request':
+      return 0;
+    case 'prepared':
+      return 1;
+    case 'queued':
+      return 2;
+    case 'receipt':
+      return 3;
+  }
+}
+
+function guidedDemoAtLeast(stage: GuidedDemoStage): boolean {
+  return guidedDemoStageIndex(state.guidedDemo.stage) >= guidedDemoStageIndex(stage);
 }
 
 function mwaTestPage(): string {
@@ -2065,7 +2701,7 @@ function homepageFooter(): string {
     <footer class="homepage-footer" aria-label="Agentic footer">
       <div>
         <span class="footer-brand">${agenticMark('mini-mark')} Agentic</span>
-        <p>Render hosts the static website. CLI, Desktop App, bridge, and wallet approvals run locally.</p>
+        <p>Render serves the web app and hosted BYOK AI proxy. CLI, Desktop App, local bridge, and wallet approvals run on your device.</p>
         <p class="footer-contact">
           <span>SolPulse LLC</span>
           <a href="mailto:support@solpulse.trade">support@solpulse.trade</a>
@@ -2160,6 +2796,7 @@ function appWorkspace(mode: 'app' | 'demo' = 'app'): string {
         <div>
           ${mode === 'demo' ? '<p class="eyebrow mini">Interactive demo</p>' : '<!-- Launch App eyebrow intentionally hidden. -->'}
           <h2 id="${titleId}">${mode === 'demo' ? 'Live approval demo.' : 'Agentic approval workspace.'}</h2>
+          ${mode === 'demo' ? '' : '<p>Draft agent actions, route approvals through your real wallet, and keep signed evidence in one place.</p>'}
         </div>
         ${SHOW_DEV_CONTROLS ? systemSpine() : ''}
       </div>
@@ -2191,7 +2828,7 @@ function appWorkspace(mode: 'app' | 'demo' = 'app'): string {
               ${tabButton('schedule', 'Create Recurring Plan', 'Recurring')}
               ${tabButton('inbox', 'Approval Inbox', 'Inbox')}
               ${tabButton('completed', 'Completed Plans', 'Completed')}
-              ${tabButton('labs', 'Audit Artifacts', 'Audit')}
+              ${tabButton('labs', 'Evidence Receipts', 'Evidence')}
             </nav>
           </div>
           ${activePanel()}
@@ -2359,12 +2996,6 @@ function walletRail(): string {
       ${SHOW_DEV_CONTROLS && state.address ? `<button id="disconnect" class="text-button" ${state.busy ? 'disabled' : ''}>Disconnect wallet</button>` : ''}
       ${SHOW_DEV_CONTROLS ? '' : publicWalletActions()}
 
-      ${SHOW_DEV_CONTROLS ? `
-      <details class="rail-details developer-settings" ${showConnectionDetails ? 'open' : ''}>
-        <summary>Developer settings</summary>
-        ${developerConnectionSettings()}
-      </details>` : ''}
-
       ${showPublicWalletPicker ? `
       <details class="rail-details wallet-picker-details" open>
         <summary>Choose wallet</summary>
@@ -2385,6 +3016,14 @@ function walletRail(): string {
             ${iosWalletOptions()}
           </select>
         </label>
+      </details>` : ''}
+
+      ${aiSettingsPanel('rail')}
+
+      ${SHOW_DEV_CONTROLS ? `
+      <details class="rail-details developer-settings" ${showConnectionDetails ? 'open' : ''}>
+        <summary>Developer settings</summary>
+        ${developerConnectionSettings()}
       </details>` : ''}
 
       ${SHOW_DEV_CONTROLS && state.address ? `
@@ -2613,7 +3252,7 @@ function guidedStartPanel(title: string, detail: string): string {
         <button data-start-action="discover" class="${state.wallets.length ? '' : 'primary'}" ${state.busy ? 'disabled' : ''}>Discover wallets</button>
         <button data-start-action="connect" class="${state.wallets.length ? 'primary' : ''}" ${(state.wallets.length === 0 || !selectedProvider) || state.busy ? 'disabled' : ''} title="${!selectedProvider ? 'Discover and select a wallet provider first.' : ''}">Connect wallet</button>`}
       </div>
-      <p class="guided-note">Bridge review, recurring plans, artifact creation, and transaction tools unlock after a wallet is connected.</p>
+      <p class="guided-note">Bridge review, recurring plans, evidence receipts, and transaction tools unlock after a wallet is connected.</p>
     </section>
   `;
 }
@@ -2968,7 +3607,7 @@ function agentPlanPanel(): string {
       <div class="signature-object-head">
         <div>
           <h2>Create one-time plan</h2>
-          <p>Create a send, swap, or review plan. Queueable plans go to Approval Inbox only when you choose to queue them.</p>
+          <p>Create a draft, review it, then sign proof or queue wallet approval when ready.</p>
         </div>
         <span class="signature-state ${state.agentSignature ? 'complete' : state.agentPlan ? 'active' : ''}">${state.oneTimePlanView === 'review' ? `${reviewCount} plan${reviewCount === 1 ? '' : 's'}` : 'create plan'}</span>
       </div>
@@ -3309,9 +3948,19 @@ function bridgeRequiredNotice(message: string): string {
   return `
     <div class="bridge-required-notice">
       <p>${escapeHtml(message)}</p>
-      <div>
+      <div class="bridge-required-actions">
         <button type="button" class="utility" data-bridge-action="connect" ${!state.address || state.busy ? 'disabled' : ''}>Connect local bridge</button>
-        <a href="/desktop" data-route-link>Use Desktop App</a>
+        <details class="bridge-setup-details">
+          <summary>Bridge setup</summary>
+          <div class="bridge-setup-card">
+            <p>Website mode can create plans, sign review proofs, and create evidence receipts without the bridge.</p>
+            <p>Approval Inbox, recurring schedules, queued approvals, and receipts need the local approval bridge at <code>${escapeHtml(compactEndpoint(state.bridgeUrl))}</code>.</p>
+            <div class="bridge-command-row">
+              <code>${escapeHtml(NPM_EXEC_COMMAND)}</code>
+              <button type="button" data-copy="${escapeHtml(NPM_EXEC_COMMAND)}" data-copy-name="local bridge command">Copy</button>
+            </div>
+          </div>
+        </details>
       </div>
     </div>
   `;
@@ -3481,7 +4130,7 @@ function agentPlannerWorkbench(): string {
       ? 'Optional context, reason, policy note, or AI instruction for this plan.'
       : 'Optional context, reason, or policy note saved with this plan.';
   return `
-    <div class="agent-planner-grid">
+    <div class="agent-planner-grid planner-single-column">
       <div class="intent-capsule intent-document-card planner-card ${state.agentPlan ? 'plan-linked' : 'draft'}">
         <div class="intent-document-head">
           <div>
@@ -3514,7 +4163,6 @@ function agentPlannerWorkbench(): string {
           <button id="generateAiPlan" class="${canUseAi ? 'primary' : ''}" ${!canUseAi || state.busy ? 'disabled' : ''} title="${canUseAi ? 'Create through your configured AI key.' : 'Add a hosted/session key or configure local bridge AI first.'}">${aiGenerating ? `${buttonSpinner()}Creating...` : 'Create with AI'}</button>
         </div>
       </div>
-      ${aiSettingsPanel()}
     </div>
   `;
 }
@@ -3552,16 +4200,24 @@ function templateOutcomeSummary(template: AgentPlanTemplate): string {
   `;
 }
 
-function aiSettingsPanel(): string {
+function aiSettingsPanel(location: 'rail' | 'planner' = 'planner'): string {
   const configured = isAiConfiguredForCurrentMode();
   const shouldOpen = state.aiSettingsPanelOpen ?? (configured && !isCompactMobileLayout());
   const open = shouldOpen ? 'open' : '';
+  const routeLabel = aiRouteStatusLabel(state.aiStatus);
+  const summaryDetail = location === 'rail'
+    ? configured
+      ? routeLabel
+      : 'BYOK planning optional'
+    : configured
+      ? routeLabel
+      : 'Optional BYOK planning; templates work without it.';
   return `
-    <details class="ai-settings-panel ${configured ? 'configured' : 'optional'}" ${open}>
+    <details class="ai-settings-panel ${configured ? 'configured' : 'optional'} ${location === 'rail' ? 'rail-ai-settings' : ''}" ${open}>
       <summary>
         <span class="ai-summary-copy">
-          <span>Optional AI Agent</span>
-          <em>Use BYOK AI for plans; templates work without it.</em>
+          <span>AI Agent</span>
+          <em>${escapeHtml(summaryDetail)}</em>
         </span>
         <strong>${configured ? 'configured' : 'not configured'}</strong>
       </summary>
@@ -3587,7 +4243,7 @@ function agentPathExplainer(): string {
       </div>
       <div>
         <span>Audit evidence</span>
-        <p>Review proofs and artifacts are signed records. They do not queue, approve, or submit transactions.</p>
+        <p>Review proofs and evidence receipts are signed records. They do not queue, approve, or submit transactions.</p>
       </div>
     </aside>
   `;
@@ -3966,6 +4622,26 @@ function syncAiActionButtons(): void {
   }
 }
 
+function updateLabFieldValue(field: HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement): void {
+  const labId = field.dataset.labId || state.activeLab;
+  const fieldId = field.dataset.labField;
+  if (!fieldId) return;
+  state.labFieldValues[labId] = {
+    ...(state.labFieldValues[labId] ?? {}),
+    [fieldId]: field.value,
+  };
+  delete state.labFieldErrors[receiptFieldErrorKey(labId, fieldId)];
+  state.error = '';
+  syncLabActionButton();
+}
+
+function syncLabActionButton(): void {
+  const button = document.querySelector<HTMLButtonElement>('#createLabArtifact');
+  if (button) {
+    button.disabled = !state.address || state.busy;
+  }
+}
+
 function syncRecurringPreview(): void {
   const preview = document.querySelector<HTMLElement>('#recurringNextOccurrence');
   if (preview) {
@@ -3991,7 +4667,7 @@ function approvalInboxPanel(): string {
       <div class="signature-object-head">
         <div>
           <h2>Approval inbox</h2>
-          <p>Queued one-time requests and recurring occurrences wait here for approve or deny.</p>
+          <p>Active one-time approvals and recurring occurrences wait here for approve or deny.</p>
         </div>
         <div class="inbox-toolbar signature-toolbar">
           <select id="inboxFilter">
@@ -4008,7 +4684,7 @@ function approvalInboxPanel(): string {
 
       ${queueStatusLine(actions.length)}
       ${preparedActionsList(actions)}
-      ${!state.bridgeActive ? bridgeRequiredNotice('Local bridge required to load queued approvals and recurring occurrences.') : ''}
+      ${!state.bridgeActive ? bridgeRequiredNotice('Local approval bridge required to load active approvals and recurring occurrences.') : ''}
       ${state.error ? `<div class="error">${escapeHtml(state.error)}</div>` : ''}
     </section>
   `;
@@ -4025,7 +4701,7 @@ function completedPlansPanel(): string {
       <div class="signature-object-head">
         <div>
           <h2>Completed plans</h2>
-          <p>Terminal one-time plans, recurring occurrences, review proofs, and ended schedules stay here until you delete them.</p>
+          <p>Approved, rejected, cancelled, signed, and ended work stays here until you delete it.</p>
         </div>
         <div class="generated-plans-toolbar signature-toolbar">
           <span class="signature-state">${escapeHtml(`${plans.length} completed`)}</span>
@@ -4035,13 +4711,13 @@ function completedPlansPanel(): string {
 
       ${completedPlanFilterControls()}
       <div class="queue-status completed-plan-status">
-        <span>${escapeHtml(state.bridgeActive ? 'Bridge receipts connected' : 'Local proof history')}</span>
+        <span>${escapeHtml(state.bridgeActive ? 'Bridge receipts connected' : 'Browser-saved proofs')}</span>
         <strong>${visiblePlans.length} visible</strong>
         <span>${receiptCount} receipt${receiptCount === 1 ? '' : 's'}</span>
         <span>${proofCount} proof${proofCount === 1 ? '' : 's'}</span>
         <span>${recurringCount} recurring</span>
       </div>
-      ${!state.bridgeActive ? bridgeRequiredNotice('Connect the local bridge to load approval receipts and recurring completion history. Signed one-time proofs saved in this browser still appear here.') : ''}
+      ${!state.bridgeActive ? bridgeRequiredNotice('Connect the local approval bridge to load receipts and recurring history. Browser-saved proofs still appear here.') : ''}
       ${
         visiblePlans.length
           ? `<div class="generated-plan-grid completed-plan-grid" aria-label="Completed plans">${visiblePlans.map(completedPlanCard).join('')}</div>`
@@ -4171,13 +4847,13 @@ function labsPanel(): string {
   const complete = state.artifactView === 'signed' ? signedArtifacts.length > 0 : Boolean(artifact);
   const detail =
     state.artifactView === 'signed'
-      ? `Review wallet-signed evidence records saved on this device${state.bridgeActive ? ' and mirrored to the local bridge archive' : ''}.`
-      : 'Create wallet-signed evidence records. Evidence labs do not queue, approve, or submit transactions.';
+      ? `Review wallet-signed receipts saved on this device${state.bridgeActive ? ' and mirrored to the local bridge archive' : ''}.`
+      : 'Create wallet-signed receipts for intent, policy, risk, rejection, and tool evidence. Receipts do not queue, approve, or submit transactions.';
   return `
     <section class="approval-object signature-stage stage-labs stage-anchor ${complete ? 'stage-complete' : 'stage-draft'}">
       <div class="signature-object-head artifact-workspace-head">
         <div>
-          <h2>Audit artifacts</h2>
+          <h2>Evidence receipts</h2>
           <p>${escapeHtml(detail)}</p>
         </div>
         ${artifactWorkspaceTabs()}
@@ -4191,9 +4867,9 @@ function labsPanel(): string {
 
 function artifactWorkspaceTabs(): string {
   return `
-    <div class="tabs compact-tabs artifact-view-tabs" role="tablist" aria-label="Artifact views">
-      ${artifactViewButton('create', 'Create Artifact')}
-      ${artifactViewButton('signed', 'Signed Evidence')}
+    <div class="tabs compact-tabs artifact-view-tabs" role="tablist" aria-label="Evidence receipt views">
+      ${artifactViewButton('create', 'Create Receipt')}
+      ${artifactViewButton('signed', 'Receipt Archive')}
     </div>
   `;
 }
@@ -4215,10 +4891,11 @@ function artifactViewButton(view: ArtifactView, label: string): string {
 
 function createArtifactPanel(): string {
   if (!state.address) {
-    return guidedStartPanel('Create artifact', 'Connect a wallet before creating signed audit artifacts.');
+    return guidedStartPanel('Create receipt', 'Connect a wallet before creating signed evidence receipts.');
   }
   const lab = activeLab();
   const artifact = latestLabArtifact(lab.id);
+  const publicReceipt = isPublicReceiptLab(lab);
   return `
       <div class="lab-panel lab-workbench">
         <div class="artifact-create-status">
@@ -4227,28 +4904,89 @@ function createArtifactPanel(): string {
         ${labCommandMenu(lab)}
         <div class="lab-workbench-grid">
           <div class="lab-copy research-brief">
-            <span class="workbench-kicker">Definition</span>
+            <span class="workbench-kicker">${publicReceipt ? 'Receipt purpose' : 'Advanced lab'}</span>
             <h3>${escapeHtml(lab.title.replace(/^\d+\.\s*/, ''))}</h3>
-            <p>${escapeHtml(lab.description)}</p>
+            <p>${escapeHtml(lab.summary)}</p>
+            <div class="receipt-explainer-stack">
+              <div>
+                <span>What this proves</span>
+                <p>${escapeHtml(lab.whatThisProves)}</p>
+              </div>
+              <div>
+                <span>Best use</span>
+                <p>${escapeHtml(lab.recommendedUse)}</p>
+              </div>
+            </div>
             <div class="capabilities compact-caps">
               <span>${escapeHtml(labKindLabel(lab.kind))}</span>
-              <span>${artifact ? 'artifact ready' : 'awaiting signature'}</span>
+              <span>${artifact ? 'receipt signed' : 'ready to sign'}</span>
             </div>
           </div>
 
-          <label class="field agent-prompt lab-intent-document">
-            <span>Agent intent</span>
-            <textarea id="labInput" ${state.busy ? 'disabled' : ''}>${escapeHtml(labInput(lab.id))}</textarea>
-          </label>
+          ${publicReceipt ? receiptFieldInputs(lab) : advancedLabInput(lab)}
         </div>
 
         <div class="lab-actions lab-signature-action">
-          <button id="createLabArtifact" class="primary" ${!state.address || state.busy ? 'disabled' : ''}>Create signed artifact</button>
-          <span>The next wallet approval creates a locally verified audit artifact.</span>
+          <button id="createLabArtifact" class="primary" ${!state.address || state.busy ? 'disabled' : ''}>${publicReceipt ? 'Sign evidence receipt' : 'Sign evidence lab'}</button>
+          <span>Your wallet signs this record only. No transaction is submitted.</span>
         </div>
 
         ${artifact ? labArtifactCard(artifact) : labEmptyState()}
       </div>
+  `;
+}
+
+function receiptFieldInputs(lab: LabDefinition): string {
+  return `
+    <div class="receipt-fields lab-intent-document">
+      ${(lab.fields ?? []).map((field) => receiptFieldInput(lab, field)).join('')}
+    </div>
+  `;
+}
+
+function receiptFieldInput(lab: LabDefinition, field: LabFieldDefinition): string {
+  const value = receiptFieldValue(lab.id, field.id);
+  const errorKey = receiptFieldErrorKey(lab.id, field.id);
+  const error = state.labFieldErrors[errorKey];
+  const label = `${field.label}${field.required ? ' *' : ''}`;
+  const attrs = `data-lab-field="${escapeHtml(field.id)}" data-lab-id="${escapeHtml(lab.id)}" ${state.busy ? 'disabled' : ''}`;
+  if (field.type === 'select') {
+    return `
+      <label class="field compact receipt-field ${error ? 'field-error' : ''}">
+        <span>${escapeHtml(label)}</span>
+        <select ${attrs}>
+          ${(field.options ?? []).map((option) => `<option value="${escapeHtml(option)}" ${option === value ? 'selected' : ''}>${escapeHtml(option)}</option>`).join('')}
+        </select>
+        ${error ? `<em class="field-error-text">${escapeHtml(error)}</em>` : ''}
+      </label>
+    `;
+  }
+  if (field.type === 'textarea') {
+    return `
+      <label class="field compact receipt-field ${error ? 'field-error' : ''}">
+        <span>${escapeHtml(label)}</span>
+        <textarea ${attrs} placeholder="${escapeHtml(field.placeholder ?? '')}">${escapeHtml(value)}</textarea>
+        ${error ? `<em class="field-error-text">${escapeHtml(error)}</em>` : ''}
+      </label>
+    `;
+  }
+  return `
+    <label class="field compact receipt-field ${error ? 'field-error' : ''}">
+      <span>${escapeHtml(label)}</span>
+      <input ${attrs} value="${escapeHtml(value)}" placeholder="${escapeHtml(field.placeholder ?? '')}" />
+      ${error ? `<em class="field-error-text">${escapeHtml(error)}</em>` : ''}
+    </label>
+  `;
+}
+
+function advancedLabInput(lab: LabDefinition): string {
+  const error = state.labFieldErrors[receiptFieldErrorKey(lab.id, '__advanced')];
+  return `
+    <label class="field agent-prompt lab-intent-document ${error ? 'field-error' : ''}">
+      <span>Evidence note *</span>
+      <textarea id="labInput" ${state.busy ? 'disabled' : ''}>${escapeHtml(labInput(lab.id))}</textarea>
+      ${error ? `<em class="field-error-text">${escapeHtml(error)}</em>` : ''}
+    </label>
   `;
 }
 
@@ -4261,6 +4999,7 @@ function signedArtifactsPanel(): string {
         <button id="refreshLabArtifacts" class="utility" ${state.busy ? 'disabled' : ''}>Refresh</button>
       </div>
       ${artifactArchiveControls()}
+      <p class="receipt-copy-helper">Full receipt is for sharing or verification. Signed message is the exact text your wallet signed.</p>
       ${artifactArchiveStatusLine()}
       ${artifacts.length ? signedArtifactList(artifacts) : signedArtifactsEmptyState()}
     </div>
@@ -4276,7 +5015,7 @@ function artifactArchiveControls(): string {
   ];
   return `
     <div class="artifact-archive-controls">
-      <div class="template-filter-row artifact-filter-row" role="group" aria-label="Signed evidence filter">
+      <div class="template-filter-row artifact-filter-row" role="group" aria-label="Receipt archive filter">
         ${filters.map(([filter, label]) => `
           <button
             type="button"
@@ -4292,7 +5031,8 @@ function artifactArchiveControls(): string {
         <span>Type</span>
         <select id="artifactTypeFilter" ${state.busy ? 'disabled' : ''}>
           <option value="all" ${state.artifactTypeFilter === 'all' ? 'selected' : ''}>All types</option>
-          ${LABS.map((lab) => `<option value="${escapeHtml(lab.id)}" ${state.artifactTypeFilter === lab.id ? 'selected' : ''}>${escapeHtml(lab.title)}</option>`).join('')}
+          ${RECEIPT_LABS.map((lab) => `<option value="${escapeHtml(lab.id)}" ${state.artifactTypeFilter === lab.id ? 'selected' : ''}>${escapeHtml(lab.title)}</option>`).join('')}
+          ${ADVANCED_EVIDENCE_LABS.map((lab) => `<option value="${escapeHtml(lab.id)}" ${state.artifactTypeFilter === lab.id ? 'selected' : ''}>Legacy / ${escapeHtml(lab.title)}</option>`).join('')}
         </select>
       </label>
       <label class="field compact artifact-search-field">
@@ -4320,9 +5060,9 @@ function artifactArchiveStatusLine(): string {
 function signedArtifactsEmptyState(): string {
   return `
     <div class="empty lab-empty-state">
-      <span>No signed artifacts</span>
+      <span>No signed receipts</span>
       <h3>Archive is empty</h3>
-      <p>Use Create Artifact to add the first wallet-bound record.</p>
+      <p>Use Create Receipt to add the first wallet-bound evidence record.</p>
     </div>
   `;
 }
@@ -4351,11 +5091,18 @@ function filteredLabArtifacts(): LabArtifact[] {
       artifact.signature,
       artifact.input,
       artifact.payload.thesis,
+      artifact.payload.summary ?? '',
+      artifact.payload.whatThisProves ?? '',
+      artifact.payload.recommendedUse ?? '',
     ].some((value) => value.toLowerCase().includes(search));
   });
 }
 
 function signedArtifactRow(artifact: LabArtifact): string {
+  const lab = labById(artifact.labId);
+  const legacy = !lab || lab.category === 'advanced';
+  const fullReceiptLabel = legacy ? 'Copy legacy record' : 'Copy full receipt';
+  const signedMessageLabel = 'Copy signed message';
   const searchText = [
     artifact.title,
     artifact.kind,
@@ -4364,32 +5111,39 @@ function signedArtifactRow(artifact: LabArtifact): string {
     artifact.signature,
     artifact.input,
     artifact.payload.thesis,
+    artifact.payload.summary ?? '',
+    artifact.payload.whatThisProves ?? '',
+    artifact.payload.recommendedUse ?? '',
   ].join(' ').toLowerCase();
   return `
     <article class="signed-artifact-row" data-artifact-search-text="${escapeHtml(searchText)}">
       <div class="signed-artifact-main">
         <div class="artifact-meta-line">
           <span class="status-pill ${artifact.verified ? 'tx-confirmed' : 'tx-pending'}">${artifact.verified ? 'verified' : 'signed'}</span>
-          <span>${escapeHtml(labKindLabel(artifact.kind))}</span>
+          <span>${escapeHtml(legacy ? 'Legacy evidence lab' : labKindLabel(artifact.kind))}</span>
         </div>
         <h3>${escapeHtml(artifact.title)}</h3>
-        <p>${escapeHtml(artifact.payload.thesis)}</p>
+        <p>${escapeHtml(artifact.payload.summary ?? artifact.payload.thesis)}</p>
+        <div class="signed-artifact-request">
+          <span>Signed request</span>
+          <p>${escapeHtml(artifact.input)}</p>
+        </div>
       </div>
       <div class="signed-artifact-facts">
         ${archiveFact('Created', formatDateTime(artifact.createdAt))}
         ${archiveFact('Wallet', short(artifact.walletAddress))}
         ${archiveFact('Cluster', titleCaseCluster(artifact.cluster))}
-        ${archiveFact('Artifact', short(artifact.artifactHash))}
+        ${archiveFact('Receipt', short(artifact.artifactHash))}
       </div>
       <div class="signed-artifact-actions">
-        <button data-copy="${escapeHtml(stableJson(artifact))}" data-copy-name="Artifact JSON">Copy JSON</button>
-        <button data-copy="${escapeHtml(artifact.signingMessage)}" data-copy-name="Signing payload">Copy Payload</button>
+        <button data-copy="${escapeHtml(stableJson(artifact))}" data-copy-name="${escapeHtml(fullReceiptLabel)}">${escapeHtml(fullReceiptLabel)}</button>
+        <button data-copy="${escapeHtml(artifact.signingMessage)}" data-copy-name="${escapeHtml(signedMessageLabel)}">${escapeHtml(signedMessageLabel)}</button>
         <button class="utility danger" data-artifact-delete="${escapeHtml(artifact.id)}" ${state.busy ? 'disabled' : ''}>Delete</button>
       </div>
       <details class="artifact-technical-details signed-artifact-details">
         <summary>
-          <span>Full artifact</span>
-          <strong>Creation details and evidence</strong>
+          <span>Technical details</span>
+          <strong>Hashes, signature, and receipt fields</strong>
         </summary>
         ${signedArtifactDetail(artifact)}
       </details>
@@ -4409,21 +5163,27 @@ function archiveFact(label: string, value: string): string {
 function signedArtifactDetail(artifact: LabArtifact): string {
   return `
     <div class="artifact-detail-grid">
-      ${archiveFact('Artifact type', artifact.title)}
+      ${archiveFact('Receipt type', artifact.title)}
       ${archiveFact('Kind', labKindLabel(artifact.kind))}
       ${archiveFact('Created', formatDateTime(artifact.createdAt))}
       ${archiveFact('Cluster', titleCaseCluster(artifact.cluster))}
       ${archiveFact('Wallet', artifact.walletAddress)}
-      ${archiveFact('Artifact hash', artifact.artifactHash)}
+      ${archiveFact('Receipt hash', artifact.artifactHash)}
     </div>
     <div class="artifact-intent-block">
-      <span>Agent intent</span>
+      <span>Signed request</span>
       <p>${escapeHtml(artifact.input)}</p>
     </div>
+    ${artifact.payload.whatThisProves || artifact.payload.recommendedUse ? `
+      <div class="artifact-detail-grid">
+        ${artifact.payload.whatThisProves ? archiveFact('What this proves', artifact.payload.whatThisProves) : ''}
+        ${artifact.payload.recommendedUse ? archiveFact('Recommended use', artifact.payload.recommendedUse) : ''}
+      </div>
+    ` : ''}
     <div class="artifact-evidence-row">
-      ${artifactMetricCard(artifact, 'Decision')}
+      ${artifactMetricCard(artifact, 'Verdict')}
       ${artifactMetricCard(artifact, 'Custody')}
-      ${artifactMetricCard(artifact, 'Settlement')}
+      ${artifactMetricCard(artifact, 'Effect')}
     </div>
     <div class="artifact-evidence-list">
       ${artifact.payload.evidence.map((entry) => `
@@ -4436,7 +5196,7 @@ function signedArtifactDetail(artifact: LabArtifact): string {
     </div>
     <div class="hash-grid">
       ${hashTile('Pre-signature', artifact.preSignatureHash)}
-      ${hashTile('Artifact', artifact.artifactHash)}
+      ${hashTile('Receipt', artifact.artifactHash)}
       ${hashTile('Signature', artifact.signature)}
       ${hashTile('Wallet', artifact.walletAddress)}
     </div>
@@ -4446,7 +5206,7 @@ function signedArtifactDetail(artifact: LabArtifact): string {
 function labCommandMenu(lab: LabDefinition): string {
   return `
     <div class="field compact lab-select-field planner-template-select">
-      <span id="artifactPickerLabel">Artifact type</span>
+      <span id="artifactPickerLabel">Receipt type</span>
       ${artifactPicker(lab)}
     </div>
   `;
@@ -4479,9 +5239,15 @@ function artifactPicker(lab: LabDefinition): string {
         hidden
       >
         <div class="template-picker-group">
-          <span>Evidence labs</span>
-          ${LABS.map((candidate) => artifactPickerOption(candidate, lab)).join('')}
+          <span>Evidence receipts</span>
+          ${RECEIPT_LABS.map((candidate) => artifactPickerOption(candidate, lab)).join('')}
         </div>
+        <details class="template-picker-group advanced-evidence-picker">
+          <summary>Advanced Evidence Labs</summary>
+          <div>
+            ${ADVANCED_EVIDENCE_LABS.map((candidate) => artifactPickerOption(candidate, lab)).join('')}
+          </div>
+        </details>
       </div>
     </div>
   `;
@@ -4508,9 +5274,9 @@ function artifactPickerOption(candidate: LabDefinition, selectedLab: LabDefiniti
 function labEmptyState(): string {
   return `
     <div class="empty lab-empty-state">
-      <span>No artifact yet</span>
-      <h3>Signed artifact required</h3>
-      <p>The next wallet signature creates evidence only. It does not approve or submit a transaction.</p>
+      <span>No receipt yet</span>
+      <h3>Sign an evidence receipt</h3>
+      <p>Your wallet signs a record for your archive only. No transaction is created, approved, or submitted.</p>
     </div>
   `;
 }
@@ -4630,6 +5396,27 @@ function bind(): void {
       }
       trackNavClick(`${currentRoute() ?? '/app'}#one-time-${view}`, 'one_time_plan');
       render();
+    });
+  }
+
+  for (const button of document.querySelectorAll<HTMLButtonElement>('[data-demo-scenario]')) {
+    button.addEventListener('click', () => {
+      const scenario = guidedDemoScenarioById(button.dataset.demoScenario);
+      state.guidedDemo = defaultGuidedDemoState(scenario.id);
+      state.error = '';
+      render();
+    });
+  }
+
+  for (const button of document.querySelectorAll<HTMLButtonElement>('[data-demo-action]')) {
+    button.addEventListener('click', () => {
+      const action = button.dataset.demoAction;
+      if (!action) return;
+      if (action === 'sign-receipt') {
+        void runSignGuidedDemoReceipt();
+        return;
+      }
+      runGuidedDemoAction(action);
     });
   }
 
@@ -4864,6 +5651,8 @@ function bind(): void {
 
   document.querySelector<HTMLTextAreaElement>('#labInput')?.addEventListener('input', (event) => {
     state.labInputs[state.activeLab] = (event.currentTarget as HTMLTextAreaElement).value;
+    delete state.labFieldErrors[receiptFieldErrorKey(state.activeLab, '__advanced')];
+    syncLabActionButton();
   });
 
   document.querySelector<HTMLSelectElement>('#labSelect')?.addEventListener('change', (event) => {
@@ -4871,6 +5660,20 @@ function bind(): void {
     state.error = '';
     render();
   });
+
+  for (const field of document.querySelectorAll<HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement>('[data-lab-field]')) {
+    field.addEventListener('input', () => updateLabFieldValue(field));
+    field.addEventListener('change', () => updateLabFieldValue(field));
+  }
+
+  for (const button of document.querySelectorAll<HTMLButtonElement>('[data-lab-action]')) {
+    button.addEventListener('click', () => {
+      if (button.dataset.labAction !== 'create-another') return;
+      clearActiveLabDraft();
+      state.error = '';
+      render();
+    });
+  }
 
   for (const button of document.querySelectorAll<HTMLButtonElement>('[data-artifact-view]')) {
     button.addEventListener('click', () => {
@@ -5337,6 +6140,7 @@ function selectArtifactLab(labId: string): boolean {
   }
   state.activeLab = lab.id;
   state.error = '';
+  state.labFieldErrors = {};
   render();
   return true;
 }
@@ -5620,6 +6424,124 @@ async function runClearIosAllAccounts(): Promise<void> {
     await refreshIosNativeCacheState();
     state.iosNativeStatus = 'All cached iOS wallet authorizations cleared.';
     pushToast('success', 'iOS auth cache cleared', 'All cached accounts were removed.');
+  });
+}
+
+function runGuidedDemoAction(action: string): void {
+  const currentScenarioId = state.guidedDemo.selectedScenarioId;
+  switch (action) {
+    case 'prepare':
+      state.guidedDemo = {
+        ...defaultGuidedDemoState(currentScenarioId),
+        stage: 'prepared',
+      };
+      pushToast('success', 'Demo plan prepared', 'Review the constraints, then queue it for wallet review.');
+      render();
+      return;
+    case 'queue':
+      state.guidedDemo = {
+        ...state.guidedDemo,
+        stage: 'queued',
+        decision: 'pending',
+        receiptId: '',
+        receiptCreatedAt: '',
+        receiptJson: '',
+        signedReceipt: '',
+      };
+      pushToast('success', 'Queued for review', 'The demo request is waiting for approve or deny.');
+      render();
+      return;
+    case 'approve':
+      completeGuidedDemo('approved');
+      return;
+    case 'deny':
+      completeGuidedDemo('denied');
+      return;
+    case 'reset':
+      state.guidedDemo = defaultGuidedDemoState(currentScenarioId);
+      pushToast('success', 'Demo reset', 'Choose a scenario or prepare the current one again.');
+      render();
+      return;
+    default:
+      return;
+  }
+}
+
+function completeGuidedDemo(decision: Exclude<GuidedDemoDecision, 'pending'>): void {
+  const scenario = selectedGuidedDemoScenario();
+  const receiptId = newId('demo');
+  const receiptCreatedAt = new Date().toISOString();
+  state.guidedDemo = {
+    ...state.guidedDemo,
+    stage: 'receipt',
+    decision,
+    receiptId,
+    receiptCreatedAt,
+    receiptJson: stableJson(guidedDemoReceiptPayload(scenario, decision, receiptId, receiptCreatedAt)),
+    signedReceipt: '',
+  };
+  pushToast(
+    'success',
+    decision === 'approved' ? 'Demo approved' : 'Demo denied',
+    'Demo receipt created. Nothing was signed or submitted.',
+  );
+  render();
+}
+
+function guidedDemoReceiptPayload(
+  scenario: GuidedDemoScenario,
+  decision: GuidedDemoDecision,
+  receiptId: string,
+  createdAt: string,
+  signature = '',
+): Record<string, unknown> {
+  return {
+    version: 'agentic-demo-v1',
+    demoOnly: true,
+    receiptId,
+    receiptType: scenario.receiptType,
+    createdAt,
+    cluster: state.cluster,
+    wallet: state.address || 'demo-wallet',
+    decision,
+    scenario: {
+      id: scenario.id,
+      title: scenario.title,
+      request: scenario.prompt,
+    },
+    route: scenario.route,
+    constraints: scenario.constraints,
+    risk: scenario.risk,
+    approvalBoundary: scenario.approvalBoundary,
+    summary: scenario.receiptSummary,
+    signature: signature || undefined,
+  };
+}
+
+async function runSignGuidedDemoReceipt(): Promise<void> {
+  await run('sign', async () => {
+    if (state.guidedDemo.stage !== 'receipt' || !state.guidedDemo.receiptJson) {
+      throw new Error('Complete the demo decision before signing a demo receipt.');
+    }
+    const signingClient = requireClient();
+    const signingMessage = [
+      'Agentic demo receipt',
+      `Receipt: ${state.guidedDemo.receiptId}`,
+      state.guidedDemo.receiptJson,
+    ].join('\n');
+    const result = await signingClient.signMessage(signingMessage, signOptions('Demo receipt signature'));
+    const scenario = selectedGuidedDemoScenario();
+    state.guidedDemo.signedReceipt = result.signature;
+    state.guidedDemo.receiptJson = stableJson(
+      guidedDemoReceiptPayload(
+        scenario,
+        state.guidedDemo.decision,
+        state.guidedDemo.receiptId,
+        state.guidedDemo.receiptCreatedAt,
+        result.signature,
+      ),
+    );
+    pushToast('success', 'Demo receipt signed', 'Signature saved only inside this simulated demo.');
   });
 }
 
@@ -6521,6 +7443,11 @@ async function runSaveBridgeAiKey(): Promise<void> {
     state.aiSettings.apiKey = '';
     await refreshBridgeAiStatus(true);
     pushToast('success', 'Bridge AI key set', 'The key is held only in the local bridge process memory.');
+  }, {
+    onError(message) {
+      state.error = '';
+      pushToast('error', isBridgeOfflineMessage(message) ? 'AI bridge offline' : 'AI setup failed', message);
+    },
   });
 }
 
@@ -6542,6 +7469,11 @@ async function runRefreshAiStatus(): Promise<void> {
   await run('ai', async () => {
     await refreshBridgeAiStatus(true);
     pushToast('success', 'AI status refreshed', state.aiStatus?.available ? 'Bridge AI is available.' : 'Bridge AI is not configured.');
+  }, {
+    onError(message) {
+      state.error = '';
+      pushToast('error', isBridgeOfflineMessage(message) ? 'AI bridge offline' : 'AI status unavailable', message);
+    },
   });
 }
 
@@ -6567,6 +7499,18 @@ async function runConnectBridge(): Promise<void> {
     await Promise.all([refreshInboxData(), refreshHealth(), refreshBalances().catch(() => undefined), syncLabArtifactsWithBridge()]);
     savePersistedState();
     pushToast('success', 'Bridge connected', bridgeHostLabel());
+  }, {
+    onError(message) {
+      state.bridgeActive = false;
+      stopBridgePolling();
+      state.bridgeStatus = message;
+      if (isBridgeOfflineMessage(message)) {
+        state.error = '';
+        pushToast('error', 'Approval bridge offline', 'Start the bridge, then click Connect local bridge again.');
+        return;
+      }
+      pushToast('error', 'Bridge connection failed', message);
+    },
   });
 }
 
@@ -6675,9 +7619,11 @@ async function runCreateLabArtifact(): Promise<void> {
   await run('lab', async () => {
     const signingClient = requireClient();
     const lab = activeLab();
-    const input = labInput(lab.id).trim() || lab.defaultInput;
+    const fieldValues = isPublicReceiptLab(lab) ? readReceiptFieldValues(lab) : {};
+    validateLabForSigning(lab, fieldValues);
+    const input = isPublicReceiptLab(lab) ? receiptInputSummary(lab, fieldValues) : labInput(lab.id).trim();
     const createdAt = new Date().toISOString();
-    const payload = await labPayload(lab.id, input, createdAt);
+    const payload = await labPayload(lab.id, input, createdAt, fieldValues);
     const id = newId(lab.id.slice(0, 3).replace(/[^a-z]/g, '') || 'lab');
     const unsigned = {
       version: 'labs-ui-v1',
@@ -6694,8 +7640,8 @@ async function runCreateLabArtifact(): Promise<void> {
     const preSignatureHash = await sha256(stableJson(unsigned));
     const signingMessage = [
       'Solana Agent Wallet Adapter',
-      `Lab: ${lab.title}`,
-      `Artifact: ${id}`,
+      `Evidence receipt: ${lab.title}`,
+      `Receipt: ${id}`,
       `Wallet: ${state.address}`,
       `Cluster: ${state.cluster}`,
       `Hash: ${preSignatureHash}`,
@@ -6716,7 +7662,7 @@ async function runCreateLabArtifact(): Promise<void> {
     const savedToBridge = await archiveLabArtifact(artifact);
     pushToast(
       'success',
-      'Evidence signed',
+      isPublicReceiptLab(lab) ? 'Receipt signed' : 'Evidence signed',
       savedToBridge ? 'Saved locally and to the bridge archive.' : 'Saved to the local device archive.',
     );
   });
@@ -7221,10 +8167,15 @@ async function bridgeRequest<T = unknown>(path: string, init?: RequestInit): Pro
   if (init?.body !== undefined && !headers.has('content-type')) {
     headers.set('content-type', 'application/json');
   }
-  const response = await fetch(url, {
-    ...init,
-    headers,
-  });
+  let response: Response;
+  try {
+    response = await fetch(url, {
+      ...init,
+      headers,
+    });
+  } catch {
+    throw new Error(bridgeOfflineMessage());
+  }
   const payload = (await response.json().catch(() => ({}))) as unknown;
   if (!response.ok) {
     const error = extractBridgeError(payload);
@@ -7234,6 +8185,14 @@ async function bridgeRequest<T = unknown>(path: string, init?: RequestInit): Pro
     throw new Error(error);
   }
   return payload as T;
+}
+
+function bridgeOfflineMessage(): string {
+  return `Local approval bridge is not running at ${compactEndpoint(state.bridgeUrl)}. Start it, then click Connect local bridge.`;
+}
+
+function isBridgeOfflineMessage(message: string): boolean {
+  return message.startsWith('Local approval bridge is not running at ');
 }
 
 function selectedWallet(): DiscoveredWallet {
@@ -7678,7 +8637,7 @@ function agentResultBlock(): string {
 
 function queueStatusLine(visibleCount: number): string {
   const total = state.preparedActions.filter(isActionInboxActive).length;
-  const bridge = state.bridgeActive ? 'Bridge connected' : 'Bridge unavailable';
+  const bridge = state.bridgeActive ? 'Bridge connected' : 'Approval bridge offline';
   const filter = queueFilterLabel(state.inboxFilter);
   return `
     <div class="queue-status">
@@ -7694,7 +8653,7 @@ function scheduleStatusLine(): string {
   const active = state.recurringPayments.filter((payment) => payment.status === 'active' && !isRecurringPaymentCompleted(payment)).length;
   const completed = state.recurringPayments.filter(isRecurringPaymentCompleted).length;
   const total = state.recurringPayments.length;
-  const bridge = state.bridgeActive ? 'Bridge connected' : 'Bridge unavailable';
+  const bridge = state.bridgeActive ? 'Bridge connected' : 'Approval bridge offline';
   return `
     <div class="queue-status">
       <span>${escapeHtml(bridge)}</span>
@@ -7722,11 +8681,11 @@ function preparedActionsList(actions = filteredPreparedActions()): string {
 
 function queueEmptyState(kind: 'bridge' | 'clear'): string {
   const bridgeMissing = kind === 'bridge';
-  const title = bridgeMissing ? 'Approval queue unavailable' : 'No approvals waiting';
+  const title = bridgeMissing ? 'Approval bridge offline' : 'No approvals waiting';
   const detail = bridgeMissing
-    ? 'Start the local bridge to review prepared payment, swap, and recurring actions.'
+    ? 'Start the local approval bridge to load queued one-time approvals and recurring occurrences.'
     : emptyInboxText();
-  const chip = bridgeMissing ? 'Bridge required' : 'Queue clear';
+  const chip = bridgeMissing ? 'Bridge setup needed' : 'Queue clear';
   return `
     <div class="empty queue-empty queue-empty-state">
       <div>
@@ -7926,6 +8885,8 @@ function recurringCard(payment: RecurringPayment): string {
 }
 
 function labArtifactCard(artifact: LabArtifact): string {
+  const legacy = labById(artifact.labId)?.category === 'advanced';
+  const fullReceiptLabel = legacy ? 'Copy legacy record' : 'Copy full receipt';
   return `
     <article class="lab-artifact artifact-summary-card">
       <div class="artifact-summary-head">
@@ -7935,24 +8896,31 @@ function labArtifactCard(artifact: LabArtifact): string {
         </div>
         <span>${escapeHtml(formatDateTime(artifact.createdAt))}</span>
       </div>
-      <h3>${escapeHtml(artifact.title)}</h3>
-      <p class="lab-thesis">${escapeHtml(artifact.payload.thesis)}</p>
+      <h3>${escapeHtml(legacy ? 'Evidence signed and saved' : 'Receipt signed and saved')}</h3>
+      <p class="lab-thesis">No further action is required. Use this record for your own audit trail or share it with an agent, auditor, support thread, or teammate.</p>
+      <div class="artifact-intent-block">
+        <span>Signed request</span>
+        <p>${escapeHtml(artifact.input)}</p>
+      </div>
       <div class="artifact-evidence-row">
-        ${artifactMetricCard(artifact, 'Decision')}
+        ${artifactMetricCard(artifact, 'Verdict')}
         ${artifactMetricCard(artifact, 'Custody')}
-        ${artifactMetricCard(artifact, 'Settlement')}
+        ${artifactMetricCard(artifact, 'Effect')}
       </div>
       <div class="lab-actions lab-signature-action">
-        <button type="button" class="utility" data-artifact-view="signed">View signed evidence</button>
+        <button type="button" class="utility" data-artifact-view="signed">View in archive</button>
+        <button type="button" data-copy="${escapeHtml(stableJson(artifact))}" data-copy-name="${escapeHtml(fullReceiptLabel)}">${escapeHtml(fullReceiptLabel)}</button>
+        <button type="button" data-copy="${escapeHtml(artifact.signingMessage)}" data-copy-name="Copy signed message">Copy signed message</button>
+        <button type="button" class="utility" data-lab-action="create-another">Create another</button>
       </div>
       <details class="artifact-technical-details">
         <summary>
-          <span>Technical evidence</span>
-          <strong>Hashes and signing payload</strong>
+          <span>Technical details</span>
+          <strong>Hashes and signed message</strong>
         </summary>
         <div class="hash-grid">
           ${hashTile('Pre-signature', artifact.preSignatureHash)}
-          ${hashTile('Artifact', artifact.artifactHash)}
+          ${hashTile('Receipt', artifact.artifactHash)}
           ${hashTile('Signature', artifact.signature)}
           ${hashTile('Wallet', artifact.walletAddress)}
         </div>
@@ -7960,7 +8928,7 @@ function labArtifactCard(artifact: LabArtifact): string {
           <div class="result-row">
             <span>Signing message</span>
             <code>${escapeHtml(artifact.signingMessage)}</code>
-            <button data-copy="${escapeHtml(artifact.signingMessage)}">Copy</button>
+            <button data-copy="${escapeHtml(artifact.signingMessage)}" data-copy-name="Copy signed message">Copy</button>
           </div>
         </div>
       </details>
@@ -7986,13 +8954,13 @@ function labHistory(): string {
   }
   return `
     <div class="lab-history">
-      <h3>Recent artifacts</h3>
+      <h3>Recent receipts</h3>
       ${state.labArtifacts.slice(0, 5).map(
         (artifact) => `
           <article>
             <strong>${escapeHtml(artifact.title)}</strong>
             <span>${escapeHtml(formatDateTime(artifact.createdAt))}</span>
-            <button data-copy="${escapeHtml(stableJson(artifact))}">Copy JSON</button>
+            <button data-copy="${escapeHtml(stableJson(artifact))}" data-copy-name="Full receipt">Copy full receipt</button>
           </article>
         `,
       ).join('')}
@@ -8295,7 +9263,7 @@ function evidencePolicy(): { status: string; detail: string; meta?: string } {
     }
     return {
       status: 'Local verification',
-      detail: 'Audit artifacts bind payload hash, wallet, cluster, and signature for review.',
+      detail: 'Evidence receipts bind payload hash, wallet, cluster, and signature for review.',
       meta: state.labArtifacts.length ? `${state.labArtifacts.length} artifact(s)` : 'No artifacts yet',
     };
   }
@@ -8518,7 +9486,7 @@ function surfaceEyebrow(): string {
     case 'schedule':
       return 'Recurring plans';
     case 'labs':
-      return state.artifactView === 'signed' ? 'Audit archive' : 'Audit artifact';
+      return state.artifactView === 'signed' ? 'Receipt archive' : 'Evidence receipt';
   }
 }
 
@@ -8537,7 +9505,7 @@ function surfaceTitle(): string {
     case 'schedule':
       return 'Create Recurring Plan';
     case 'labs':
-      return 'Audit Artifacts';
+      return 'Evidence Receipts';
   }
 }
 
@@ -8699,8 +9667,16 @@ function latestLabArtifact(labId: string): LabArtifact | null {
   return state.labArtifacts.find((artifact) => artifact.labId === labId) ?? null;
 }
 
+function labById(labId: string): LabDefinition | null {
+  return LABS.find((lab) => lab.id === labId) ?? null;
+}
+
 function activeLab(): LabDefinition {
   return LABS.find((lab) => lab.id === state.activeLab) ?? LABS[0]!;
+}
+
+function isPublicReceiptLab(lab: LabDefinition): boolean {
+  return lab.category === 'receipt';
 }
 
 function labInput(labId: string): string {
@@ -8708,17 +9684,79 @@ function labInput(labId: string): string {
 }
 
 function labIndexLabel(): string {
-  const index = LABS.findIndex((lab) => lab.id === state.activeLab);
-  return index >= 0 ? `lab ${index + 1} of ${LABS.length}` : 'lab';
+  const lab = activeLab();
+  if (isPublicReceiptLab(lab)) {
+    const index = RECEIPT_LABS.findIndex((candidate) => candidate.id === lab.id);
+    return index >= 0 ? `receipt ${index + 1} of ${RECEIPT_LABS.length}` : 'receipt';
+  }
+  const index = ADVANCED_EVIDENCE_LABS.findIndex((candidate) => candidate.id === lab.id);
+  return index >= 0 ? `advanced lab ${index + 1} of ${ADVANCED_EVIDENCE_LABS.length}` : 'legacy lab';
 }
 
-async function labPayload(labId: string, input: string, createdAt: string): Promise<LabPayload> {
+function receiptFieldValue(labId: string, fieldId: string): string {
+  return state.labFieldValues[labId]?.[fieldId] ?? '';
+}
+
+function receiptFieldErrorKey(labId: string, fieldId: string): string {
+  return `${labId}.${fieldId}`;
+}
+
+function readReceiptFieldValues(lab: LabDefinition): Record<string, string> {
+  const values: Record<string, string> = {};
+  for (const field of lab.fields ?? []) {
+    const selector = `[data-lab-id="${CSS.escape(lab.id)}"][data-lab-field="${CSS.escape(field.id)}"]`;
+    const element = document.querySelector<HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement>(selector);
+    values[field.id] = (element?.value ?? receiptFieldValue(lab.id, field.id)).trim();
+  }
+  state.labFieldValues[lab.id] = values;
+  return values;
+}
+
+function validateLabForSigning(lab: LabDefinition, fieldValues: Record<string, string>): void {
+  state.labFieldErrors = {};
+  if (isPublicReceiptLab(lab)) {
+    for (const field of lab.fields ?? []) {
+      if (field.required && !fieldValues[field.id]?.trim()) {
+        state.labFieldErrors[receiptFieldErrorKey(lab.id, field.id)] = `${field.label} is required.`;
+      }
+    }
+  } else {
+    const input = labInput(lab.id).trim();
+    if (!input || input === lab.defaultInput.trim()) {
+      state.labFieldErrors[receiptFieldErrorKey(lab.id, '__advanced')] = 'Add your own evidence note before signing this advanced lab.';
+    }
+  }
+  if (Object.keys(state.labFieldErrors).length > 0) {
+    throw new Error('Complete the required evidence fields before signing.');
+  }
+}
+
+function clearActiveLabDraft(): void {
+  const lab = activeLab();
+  if (isPublicReceiptLab(lab)) {
+    state.labFieldValues[lab.id] = {};
+  } else {
+    state.labInputs[lab.id] = '';
+  }
+  state.labFieldErrors = {};
+}
+
+function receiptInputSummary(lab: LabDefinition, values: Record<string, string>): string {
+  return (lab.fields ?? [])
+    .map((field) => [field.label, values[field.id]?.trim()] as const)
+    .filter(([, value]) => Boolean(value))
+    .map(([label, value]) => `${label}: ${value}`)
+    .join('\n');
+}
+
+async function labPayload(labId: string, input: string, createdAt: string, fieldValues: Record<string, string> = {}): Promise<LabPayload> {
+  const lab = labById(labId);
   const unsafe = /\bunlimited\b|seed phrase|private key|unknown custody/i.test(input);
-  const status: LabPayload['status'] = unsafe ? 'blocked' : /unknown|authority|insurance|override/i.test(input) ? 'warn' : 'approved';
+  const status = receiptStatus(lab, fieldValues, input, unsafe);
   const baseEvidence: Array<[string, string, 'good' | 'warn' | 'danger' | 'neutral']> = [
-    ['Request', input, unsafe ? 'danger' : 'neutral'],
-    ['Wallet gate', 'Final transaction signing remains a separate wallet approval.', 'good'],
-    ['Replay guard', `Artifact time ${createdAt} binds this record to one review moment.`, 'good'],
+    ...receiptEvidenceEntries(lab, fieldValues, input, status),
+    ['Wallet boundary', 'This receipt is evidence only. It does not approve or submit a transaction.', 'good'],
+    ['Integrity', `Receipt time ${createdAt} binds this record to one review moment.`, 'good'],
   ];
   const evidence = await Promise.all(
     baseEvidence.map(async ([title, detail, tone]) => ({
@@ -8728,30 +9766,95 @@ async function labPayload(labId: string, input: string, createdAt: string): Prom
       hash: await sha256(stableJson({ title, detail, tone })),
     })),
   );
+  const verdict = receiptVerdictLabel(status);
   return {
     status,
     thesis: labThesis(labId, status),
-    nextSignatureGate:
-      status === 'blocked'
-        ? 'Future matching requests should warn before wallet approval and require a fresh explicit signature.'
-        : 'Only sign settlement if the future transaction preview matches this signed envelope.',
+    nextSignatureGate: status === 'blocked'
+      ? 'Receipt complete. Use it to explain why matching requests should be rejected.'
+      : 'Receipt complete. Compare future wallet requests against this signed record before approving.',
+    receiptType: lab?.title,
+    summary: lab?.summary,
+    verdict,
+    effect: 'evidence only, no transaction',
+    whatThisProves: lab?.whatThisProves,
+    recommendedUse: lab?.recommendedUse,
+    fieldValues,
     metrics: [
-      { label: 'Decision', value: status, tone: status === 'blocked' ? 'danger' : status === 'warn' ? 'warn' : 'good' },
+      { label: 'Verdict', value: verdict, tone: status === 'blocked' ? 'danger' : status === 'warn' ? 'warn' : status === 'observed' ? 'neutral' : 'good' },
       { label: 'Custody', value: 'user wallet', tone: 'good' },
-      { label: 'Settlement', value: 'future gated', tone: 'neutral' },
+      { label: 'Effect', value: 'evidence only', tone: 'neutral' },
     ],
     evidence,
   };
 }
 
+function receiptStatus(
+  lab: LabDefinition | null,
+  fieldValues: Record<string, string>,
+  input: string,
+  unsafe: boolean,
+): LabPayload['status'] {
+  if (unsafe || lab?.id === 'rejection-receipt') return 'blocked';
+  const explicit = (fieldValues.verdict || fieldValues.result || '').toLowerCase();
+  if (explicit.includes('blocked')) return 'blocked';
+  if (explicit.includes('warning')) return 'warn';
+  if (explicit.includes('pass')) return 'approved';
+  if (/unknown|authority|insurance|override/i.test(input)) return 'warn';
+  return lab?.category === 'receipt' ? 'observed' : 'approved';
+}
+
+function receiptVerdictLabel(status: LabPayload['status']): string {
+  switch (status) {
+    case 'approved':
+      return 'approved';
+    case 'blocked':
+      return 'blocked';
+    case 'warn':
+      return 'warning';
+    case 'observed':
+      return 'recorded';
+  }
+}
+
+function receiptEvidenceEntries(
+  lab: LabDefinition | null,
+  fieldValues: Record<string, string>,
+  input: string,
+  status: LabPayload['status'],
+): Array<[string, string, 'good' | 'warn' | 'danger' | 'neutral']> {
+  if (!lab || !isPublicReceiptLab(lab) || !lab.fields?.length) {
+    return [['Evidence note', input, status === 'blocked' ? 'danger' : status === 'warn' ? 'warn' : 'neutral']];
+  }
+  return lab.fields
+    .map((field) => {
+      const value = fieldValues[field.id]?.trim();
+      if (!value) return null;
+      const tone: 'good' | 'warn' | 'danger' | 'neutral' =
+        status === 'blocked' && /reason|policy|request/i.test(field.id)
+          ? 'danger'
+          : status === 'warn' && /risk|verdict|result|request/i.test(field.id)
+            ? 'warn'
+            : 'neutral';
+      return [field.label, value, tone] as [string, string, 'good' | 'warn' | 'danger' | 'neutral'];
+    })
+    .filter((entry): entry is [string, string, 'good' | 'warn' | 'danger' | 'neutral'] => Boolean(entry));
+}
+
 function labThesis(labId: string, status: LabPayload['status']): string {
   const lab = LABS.find((candidate) => candidate.id === labId);
-  if (!lab) return 'Signed agent artifact created.';
+  if (!lab) return 'Signed evidence record created.';
+  if (isPublicReceiptLab(lab)) {
+    if (status === 'blocked') return `${lab.title} signed and saved as a blocked evidence record.`;
+    if (status === 'warn') return `${lab.title} signed and saved with a warning verdict.`;
+    if (status === 'observed') return `${lab.title} signed and saved as evidence only.`;
+    return `${lab.title} signed and saved with an approved verdict.`;
+  }
   if (status === 'blocked') {
     return 'The request becomes a refusal fingerprint without exposing private wallet data.';
   }
   if (status === 'warn') {
-    return 'The request is reviewable, but the next wallet signature must prove semantic and policy alignment.';
+    return 'The advanced evidence lab was signed with a warning. No transaction was submitted.';
   }
   return lab.description;
 }
@@ -8885,7 +9988,16 @@ function defaultRecurringDraft(): RecurringDraft {
 }
 
 function defaultLabInputs(): Record<string, string> {
-  return Object.fromEntries(LABS.map((lab) => [lab.id, lab.defaultInput]));
+  return Object.fromEntries(LABS.map((lab) => [lab.id, isPublicReceiptLab(lab) ? '' : lab.defaultInput]));
+}
+
+function defaultLabFieldValues(): Record<string, Record<string, string>> {
+  return Object.fromEntries(
+    RECEIPT_LABS.map((lab) => [
+      lab.id,
+      Object.fromEntries((lab.fields ?? []).map((field) => [field.id, field.type === 'select' ? (field.options?.[0] ?? '') : ''])),
+    ]),
+  );
 }
 
 function requestSignOptions(request: SigningRequest): { cluster: Cluster; summary?: string } {
