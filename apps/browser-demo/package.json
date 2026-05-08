@@ -6,9 +6,9 @@
   "license": "Apache-2.0",
   "type": "module",
   "scripts": {
-    "build": "vite build",
+    "build": "pnpm -F @solana-agent-wallet-adapter/core build && pnpm -F @solana-agent-wallet-adapter/ios-link build && pnpm -F @solana-agent-wallet-adapter/wallet-standard-web build && pnpm -F @solana-agent-wallet-adapter/mwa-mobile-web build && vite build",
     "dev": "vite --host 127.0.0.1",
-    "typecheck": "tsc -p tsconfig.json --noEmit"
+    "typecheck": "pnpm -F @solana-agent-wallet-adapter/core build && pnpm -F @solana-agent-wallet-adapter/ios-link build && pnpm -F @solana-agent-wallet-adapter/wallet-standard-web build && pnpm -F @solana-agent-wallet-adapter/mwa-mobile-web build && tsc -p tsconfig.json --noEmit"
   },
   "dependencies": {
     "@solana-agent-wallet-adapter/core": "workspace:*",

@@ -19,8 +19,8 @@
     "README.md"
   ],
   "scripts": {
-    "build": "tsc -p tsconfig.json",
-    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "build": "pnpm -F @solana-agent-wallet-adapter/core build && tsc -p tsconfig.json",
+    "typecheck": "pnpm -F @solana-agent-wallet-adapter/core build && tsc -p tsconfig.json --noEmit",
     "test": "vitest run",
     "test:watch": "vitest",
     "clean": "rm -rf dist"
