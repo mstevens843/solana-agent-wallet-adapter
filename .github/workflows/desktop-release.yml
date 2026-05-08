@@ -71,6 +71,34 @@ jobs:
           node-version: 20
           cache: pnpm
 
+      - name: Validate desktop release version
+        shell: bash
+        run: |
+          set -euo pipefail
+          case "$RELEASE_TAG" in
+            v*) ;;
+            *)
+              echo "Desktop release tag must start with v. Current value: $RELEASE_TAG" >&2
+              exit 1
+              ;;
+          esac
+          package_version="$(node -p "require('./apps/desktop-shell/package.json').version")"
+          tag_version="${RELEASE_TAG#v}"
+          if [ "$package_version" != "$tag_version" ]; then
+            echo "Desktop package version $package_version must match release tag $RELEASE_TAG." >&2
+            exit 1
+          fi
+          tauri_version="$(node -p "require('./apps/desktop-shell/src-tauri/tauri.conf.json').version")"
+          if [ "$tauri_version" != "$tag_version" ]; then
+            echo "Tauri version $tauri_version must match release tag $RELEASE_TAG." >&2
+            exit 1
+          fi
+          cargo_version="$(sed -n 's/^version = \"\\(.*\\)\"/\\1/p' apps/desktop-shell/src-tauri/Cargo.toml | head -n 1)"
+          if [ "$cargo_version" != "$tag_version" ]; then
+            echo "Cargo version $cargo_version must match release tag $RELEASE_TAG." >&2
+            exit 1
+          fi
+
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
         with:

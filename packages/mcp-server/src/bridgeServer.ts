@@ -576,6 +576,8 @@ function setCors(res: ServerResponse): void {
   res.setHeader('access-control-allow-origin', '*');
   res.setHeader('access-control-allow-methods', 'GET,POST,OPTIONS');
   res.setHeader('access-control-allow-headers', 'content-type,x-agent-wallet-token');
+  res.setHeader('access-control-allow-private-network', 'true');
+  res.setHeader('vary', 'Access-Control-Request-Private-Network');
 }
 
 function writeJson(res: ServerResponse, status: number, payload: unknown): void {

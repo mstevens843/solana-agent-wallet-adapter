@@ -203,3 +203,29 @@ jobs:
             dist/android/agentic-android.aab
             dist/android/assetlinks.json
           fail_on_unmatched_files: true
+
+  verify:
+    name: verify public release links
+    needs: build
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref }}
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Verify npm and GitHub release links
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          node scripts/verify-release-links.mjs \
+            --live \
+            --tag "$RELEASE_TAG" \
+            --retries 240 \
+            --retry-delay-ms 15000

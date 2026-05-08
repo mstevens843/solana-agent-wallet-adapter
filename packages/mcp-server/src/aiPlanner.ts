@@ -59,7 +59,8 @@ const DEFAULT_AI_MODEL = 'gpt-5';
 const DEFAULT_ANTHROPIC_BASE_URL = 'https://api.anthropic.com/v1';
 const DEFAULT_ANTHROPIC_MODEL = 'claude-sonnet-4-5';
 const OPENAI_REASONING_EFFORT = 'low';
-const OPENAI_MAX_OUTPUT_TOKENS = 1600;
+const OPENAI_TEXT_VERBOSITY = 'low';
+const OPENAI_MAX_OUTPUT_TOKENS = 4096;
 const SHARED_SAFEGUARDS = [
   'Wallet approval is required before any signature or transaction leaves the device.',
   'The agent never receives the wallet private key or seed phrase.',
@@ -164,6 +165,7 @@ export class BridgeAiPlanner {
         max_output_tokens: OPENAI_MAX_OUTPUT_TOKENS,
         store: false,
         text: {
+          verbosity: OPENAI_TEXT_VERBOSITY,
           format: {
             type: 'json_schema',
             name: 'agentic_ai_plan',
@@ -188,7 +190,8 @@ export class BridgeAiPlanner {
         providerFailureMessage(payload, response.status),
       );
     }
-    return normalizeAiPlan(payload, normalizedRequest);
+    assertCompleteOpenAiResponse(payload);
+    return normalizeStrictAiPlan(payload, normalizedRequest, 'OpenAI');
   }
 
   private async generateOpenAiCompatiblePlan(
@@ -320,6 +323,32 @@ function aiMessages(request: Required<AiPlanRequest>): Array<{ role: 'system' | 
 
 function normalizeAiPlan(payload: unknown, request: Required<AiPlanRequest>): AiPlan {
   const parsed = parsePlanJson(extractModelText(payload));
+  return aiPlanFromParsed(parsed, request);
+}
+
+function normalizeStrictAiPlan(
+  payload: unknown,
+  request: Required<AiPlanRequest>,
+  providerLabel: string,
+): AiPlan {
+  const content = extractModelText(payload).trim();
+  if (!content) {
+    throw new ProtocolError(
+      'wallet_unreachable',
+      `${providerLabel} returned no plan text. Try again or choose a model with enough output tokens for structured JSON.`,
+    );
+  }
+  const parsed = parsePlanJson(content);
+  if (!isPlanJson(parsed)) {
+    throw new ProtocolError(
+      'wallet_unreachable',
+      `${providerLabel} returned a response that was not a valid Agentic plan JSON.`,
+    );
+  }
+  return aiPlanFromParsed(parsed, request);
+}
+
+function aiPlanFromParsed(parsed: Record<string, unknown>, request: Required<AiPlanRequest>): AiPlan {
   const parameters = request.parameters;
   return {
     intent: stringOr(parsed.intent, `${request.template.title}: ${request.prompt}`),
@@ -337,6 +366,17 @@ function normalizeAiPlan(payload: unknown, request: Required<AiPlanRequest>): Ai
       .map(([key, value]) => ({ label: titleCase(key), value })),
     safeguards: normalizeSafeguards(parsed.safeguards),
   };
+}
+
+function isPlanJson(value: Record<string, unknown>): boolean {
+  return (
+    typeof value.intent === 'string' &&
+    typeof value.route === 'string' &&
+    typeof value.risk === 'string' &&
+    typeof value.approval === 'string' &&
+    Array.isArray(value.safeguards) &&
+    value.safeguards.every((entry) => typeof entry === 'string')
+  );
 }
 
 function normalizeSafeguards(value: unknown): string[] {
@@ -438,6 +478,34 @@ function providerFailureMessage(payload: unknown, status: number): string {
     return redactText(`Model does not support one of Agentic's request parameters. ${message}`);
   }
   return redactText(message);
+}
+
+function assertCompleteOpenAiResponse(payload: unknown): void {
+  if (!payload || typeof payload !== 'object') return;
+  const record = payload as Record<string, unknown>;
+  if (record.status === 'incomplete') {
+    const details = record.incomplete_details;
+    const reason = details && typeof details === 'object'
+      ? (details as Record<string, unknown>).reason
+      : undefined;
+    const suffix = typeof reason === 'string' && reason.trim()
+      ? ` Reason: ${reason.trim()}.`
+      : '';
+    throw new ProtocolError(
+      'wallet_unreachable',
+      `OpenAI response was incomplete before a valid plan was produced.${suffix}`,
+    );
+  }
+  if (record.status === 'failed') {
+    const error = record.error;
+    const message = error && typeof error === 'object'
+      ? (error as Record<string, unknown>).message
+      : undefined;
+    throw new ProtocolError(
+      'wallet_unreachable',
+      redactText(typeof message === 'string' && message.trim() ? message : 'OpenAI response failed before a valid plan was produced.'),
+    );
+  }
 }
 
 function extractModelText(payload: unknown): string {

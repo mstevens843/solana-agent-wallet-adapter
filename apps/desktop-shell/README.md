@@ -70,8 +70,9 @@ macOS DMG packaging uses `hdiutil`, so local release builds must run outside san
 
 ## Release Checklist
 
-1. Publish the CLI release assets for the tag first:
-   `solana-agent-wallet-macos-arm64.tar.gz`, `solana-agent-wallet-macos-x64.tar.gz`, `solana-agent-wallet-windows-x64.zip`, and `solana-agent-wallet-linux-x64.tar.gz`.
-2. Run the desktop release workflow for the same tag.
+1. Push a `v*` tag that matches the desktop package/Tauri/Cargo version.
+2. Let `cli-release` publish the CLI npm package and standalone archives first. The desktop workflow waits for those
+   archives and stages the matching CLI sidecar.
 3. Confirm the release contains exactly these desktop installers:
    `agentic-desktop-macos-arm64.dmg`, `agentic-desktop-macos-x64.dmg`, `agentic-desktop-windows-x64.msi`, and `agentic-desktop-linux-x64.AppImage`.
+4. Confirm `android release` finishes its live release verifier so every advertised download URL is reachable.

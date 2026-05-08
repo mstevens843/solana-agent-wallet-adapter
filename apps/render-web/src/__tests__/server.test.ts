@@ -67,6 +67,7 @@ describe('render web hosted BYOK API', () => {
       expect(body.store).toBe(false);
       expect(body.reasoning).toEqual({ effort: 'low' });
       expect(body.text).toMatchObject({
+        verbosity: 'low',
         format: {
           type: 'json_schema',
           name: 'agentic_ai_plan',

@@ -149,7 +149,8 @@ async function verifyLiveRelease() {
 
 async function verifyNpmPackage(attemptFailures) {
   const url = `https://registry.npmjs.org/${encodeURIComponent(npmPackageName)}`;
-  const response = await fetchWithHeaders(url);
+  const response = await fetchForVerification(url, attemptFailures);
+  if (!response) return;
   if (!response.ok) {
     attemptFailures.push(`${npmPackageName} returned HTTP ${response.status} from npm registry`);
     return;
@@ -166,7 +167,8 @@ async function verifyGithubRelease(attemptFailures) {
   const endpoint = releaseTag
     ? `https://api.github.com/repos/${repo}/releases/tags/${releaseTag}`
     : `https://api.github.com/repos/${repo}/releases/latest`;
-  const response = await fetchWithHeaders(endpoint);
+  const response = await fetchForVerification(endpoint, attemptFailures);
+  if (!response) return;
   if (!response.ok) {
     attemptFailures.push(`${endpoint} returned HTTP ${response.status}`);
     return;
@@ -188,11 +190,23 @@ async function verifyGithubRelease(attemptFailures) {
 async function verifyDownloadUrls(attemptFailures) {
   await Promise.all(requiredAssets.map(async (asset) => {
     const url = `https://github.com/${repo}/releases/latest/download/${asset}`;
-    const response = await fetchWithHeaders(url, { method: 'HEAD' });
+    const response = await fetchForVerification(url, attemptFailures, { method: 'HEAD' });
+    if (!response) return;
     if (!response.ok) {
       attemptFailures.push(`${url} returned HTTP ${response.status}`);
     }
   }));
+}
+
+async function fetchForVerification(url, attemptFailures, init = {}) {
+  try {
+    return await fetchWithHeaders(url, init);
+  } catch (err) {
+    const cause = err instanceof Error && err.cause instanceof Error ? `: ${err.cause.message}` : '';
+    const message = err instanceof Error ? `${err.message}${cause}` : String(err);
+    attemptFailures.push(`${url} failed: ${message}`);
+    return null;
+  }
 }
 
 async function fetchWithHeaders(url, init = {}) {
@@ -219,6 +233,7 @@ function parseArgs(argv) {
   const flags = new Set();
   for (let index = 0; index < argv.length; index += 1) {
     const arg = argv[index];
+    if (arg === '--') continue;
     if (!arg.startsWith('--')) continue;
     const withoutPrefix = arg.slice(2);
     const equalsIndex = withoutPrefix.indexOf('=');

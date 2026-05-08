@@ -38,6 +38,28 @@ describe('bridge lab artifact routes', () => {
       await handle.stop();
     }
   });
+
+  it('allows browser private-network preflight requests', async () => {
+    const handle = await startTestBridge();
+    try {
+      const response = await fetch(new URL('/bridge/ai/status', handle.url), {
+        method: 'OPTIONS',
+        headers: {
+          origin: 'https://agenticwalletadapter.com',
+          'access-control-request-method': 'POST',
+          'access-control-request-private-network': 'true',
+        },
+      });
+
+      expect(response.status).toBe(204);
+      expect(response.headers.get('access-control-allow-origin')).toBe('*');
+      expect(response.headers.get('access-control-allow-private-network')).toBe('true');
+      expect(response.headers.get('access-control-allow-headers')).toContain('x-agent-wallet-token');
+      expect(response.headers.get('vary')).toContain('Access-Control-Request-Private-Network');
+    } finally {
+      await handle.stop();
+    }
+  });
 });
 
 async function startTestBridge(): Promise<{ url: string; stop(): Promise<void> }> {

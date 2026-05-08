@@ -106,7 +106,7 @@ export const AI_PROVIDER_PRESETS: AiProviderPreset[] = [
   {
     id: 'openai',
     label: 'OpenAI',
-    detail: 'GPT models through the OpenAI-compatible chat API.',
+    detail: 'GPT models through Agentic hosted or local bridge calls.',
     apiFormat: 'openai-compatible',
     baseUrl: DEFAULT_AI_BASE_URL,
     model: DEFAULT_AI_MODEL,
@@ -369,6 +369,9 @@ export async function generateSessionAiPlan(
   if (!settings.apiKey.trim()) {
     throw new Error('Session AI key is required.');
   }
+  if (settings.provider === 'openai') {
+    throw new Error('OpenAI keys cannot be called directly from browser session mode. Select Hosted BYOK or Local bridge.');
+  }
   if (settings.apiFormat === 'anthropic') {
     return generateAnthropicPlan(settings, request);
   }
@@ -382,6 +385,7 @@ export async function generateHostedAiPlan(
   if (!settings.apiKey.trim()) {
     throw new Error('Hosted BYOK key is required.');
   }
+  await assertHostedAiAvailable();
   const response = await fetch('/api/ai/generate-plan', {
     method: 'POST',
     headers: {
@@ -402,11 +406,49 @@ export async function generateHostedAiPlan(
       `Hosted AI request failed. ${err instanceof Error ? err.message : String(err)}`,
     );
   });
-  const payload = await response.json().catch(() => ({})) as unknown;
+  const payload = await readHostedJson(
+    response,
+    'Hosted BYOK API returned a non-JSON response. Serve Agentic through the Render Node service or use Local bridge.',
+  );
   if (!response.ok) {
     throw new Error(redactSecrets(extractProviderError(payload) || `Hosted AI returned HTTP ${response.status}.`));
   }
   return normalizeHostedAiPlan(payload, request);
+}
+
+async function assertHostedAiAvailable(): Promise<void> {
+  const response = await fetch('/api/ai/status', {
+    headers: {
+      accept: 'application/json',
+    },
+  }).catch((err) => {
+    throw new Error(
+      `Hosted BYOK API is not reachable on this origin. Serve Agentic through the Render Node service or use Local bridge. ${err instanceof Error ? err.message : String(err)}`,
+    );
+  });
+  const payload = await readHostedJson(
+    response,
+    'Hosted BYOK API is not available on this origin. Serve Agentic through the Render Node service or use Local bridge.',
+  );
+  if (!response.ok || !isHostedAiStatusPayload(payload)) {
+    throw new Error('Hosted BYOK API is not available on this origin. Serve Agentic through the Render Node service or use Local bridge.');
+  }
+}
+
+function isHostedAiStatusPayload(payload: unknown): payload is { available: boolean; mode: string } {
+  if (!payload || typeof payload !== 'object') return false;
+  const record = payload as Record<string, unknown>;
+  return record.available === true && record.mode === 'hosted-byok';
+}
+
+async function readHostedJson(response: Response, fallbackMessage: string): Promise<unknown> {
+  const raw = await response.text().catch(() => '');
+  if (!raw.trim()) return {};
+  try {
+    return JSON.parse(raw) as unknown;
+  } catch {
+    throw new Error(fallbackMessage);
+  }
 }
 
 async function generateOpenAiCompatiblePlan(settings: AiSettings, request: AiPlanRequest): Promise<AgentPlan> {

@@ -50,12 +50,68 @@ describe('BridgeAiPlanner', () => {
     expect(calls[0]?.body.store).toBe(false);
     expect(calls[0]?.body.reasoning).toEqual({ effort: 'low' });
     expect(calls[0]?.body.text).toMatchObject({
+      verbosity: 'low',
       format: {
         type: 'json_schema',
         name: 'agentic_ai_plan',
         strict: true,
       },
     });
+  });
+
+  it('parses OpenAI Responses output array text content', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => jsonResponse({
+      output: [{
+        type: 'message',
+        content: [{ type: 'output_text', text: planJson('Output array intent') }],
+      }],
+    })));
+    const planner = new BridgeAiPlanner();
+    planner.setSessionKey({
+      apiKey: 'sk-test-openai',
+      provider: 'openai',
+      apiFormat: 'openai-compatible',
+      baseUrl: 'https://api.openai.com/v1',
+      model: 'gpt-5',
+    });
+
+    const plan = await planner.generatePlan(request);
+
+    expect(plan.intent).toBe('Output array intent');
+  });
+
+  it('rejects incomplete OpenAI Responses payloads instead of falling back to a template plan', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => jsonResponse({
+      status: 'incomplete',
+      incomplete_details: { reason: 'max_output_tokens' },
+      output: [{ type: 'reasoning', summary: [] }],
+    })));
+    const planner = new BridgeAiPlanner();
+    planner.setSessionKey({
+      apiKey: 'sk-test-openai',
+      provider: 'openai',
+      apiFormat: 'openai-compatible',
+      baseUrl: 'https://api.openai.com/v1',
+      model: 'gpt-5',
+    });
+
+    await expect(planner.generatePlan(request)).rejects.toThrow('OpenAI response was incomplete');
+  });
+
+  it('rejects reasoning-only OpenAI Responses payloads as invalid plan JSON', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => jsonResponse({
+      output: [{ type: 'reasoning', summary: [] }],
+    })));
+    const planner = new BridgeAiPlanner();
+    planner.setSessionKey({
+      apiKey: 'sk-test-openai',
+      provider: 'openai',
+      apiFormat: 'openai-compatible',
+      baseUrl: 'https://api.openai.com/v1',
+      model: 'gpt-5',
+    });
+
+    await expect(planner.generatePlan(request)).rejects.toThrow('not a valid Agentic plan JSON');
   });
 
   it('keeps OpenAI-compatible gateways on chat completions and omits temperature for GPT-5 models', async () => {

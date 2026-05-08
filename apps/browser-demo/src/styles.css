@@ -2642,6 +2642,33 @@ code {
   min-width: 150px;
 }
 
+.button-spinner,
+.toast-spinner {
+  animation: spin 0.8s linear infinite;
+  border: 2px solid currentColor;
+  border-right-color: transparent;
+  border-radius: 999px;
+  display: inline-block;
+}
+
+.button-spinner {
+  height: 14px;
+  margin-right: 7px;
+  vertical-align: -2px;
+  width: 14px;
+}
+
+.toast-spinner {
+  height: 18px;
+  width: 18px;
+}
+
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
 .transaction-field textarea,
 .agent-prompt textarea,
 .intent-document textarea,
@@ -2901,6 +2928,127 @@ code {
   flex-wrap: wrap;
   gap: 8px;
   justify-content: flex-end;
+}
+
+.generated-plans-toolbar {
+  min-width: fit-content;
+}
+
+.generated-plans-layout {
+  align-items: start;
+  display: grid;
+  gap: 14px;
+  grid-template-columns: minmax(220px, 0.36fr) minmax(0, 1fr);
+}
+
+.generated-plan-list {
+  display: grid;
+  gap: 8px;
+}
+
+.generated-plan-row {
+  background: var(--surface-soft);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  overflow: hidden;
+}
+
+.generated-plan-row.selected {
+  border-color: rgba(139, 205, 170, 0.4);
+  box-shadow: inset 3px 0 0 var(--accent-2);
+}
+
+.generated-plan-row.archived {
+  opacity: 0.62;
+}
+
+.generated-plan-row button {
+  align-items: stretch;
+  background: transparent;
+  border: 0;
+  color: var(--text);
+  display: grid;
+  gap: 8px;
+  min-height: 0;
+  padding: 12px;
+  text-align: left;
+  width: 100%;
+}
+
+.generated-plan-row button:hover:not(:disabled) {
+  background: rgba(255, 255, 255, 0.04);
+  transform: none;
+}
+
+.generated-plan-row-top {
+  align-items: center;
+  color: var(--dim);
+  display: flex;
+  flex-wrap: wrap;
+  font-size: 0.76rem;
+  gap: 8px;
+}
+
+.generated-plan-row strong {
+  color: var(--text);
+  font-size: 0.94rem;
+  line-height: 1.32;
+}
+
+.generated-plan-row button > span:last-child {
+  color: var(--muted);
+  font-size: 0.82rem;
+  line-height: 1.35;
+}
+
+.generated-plan-detail {
+  display: grid;
+  gap: 12px;
+  min-width: 0;
+}
+
+.generated-plan-detail-head {
+  align-items: start;
+  background: rgba(255, 255, 255, 0.024);
+  border: 1px solid rgba(224, 230, 226, 0.055);
+  border-radius: var(--radius);
+  display: flex;
+  gap: 14px;
+  justify-content: space-between;
+  padding: 14px;
+}
+
+.generated-plan-detail-head h3 {
+  color: var(--text);
+  font-size: 1.06rem;
+  line-height: 1.28;
+  margin: 5px 0 6px;
+}
+
+.generated-plan-detail-head p {
+  color: var(--muted);
+  font-size: 0.86rem;
+  margin: 0;
+}
+
+.generated-plan-actions {
+  background: rgba(255, 255, 255, 0.018);
+  border: 1px solid rgba(224, 230, 226, 0.055);
+  border-radius: var(--radius);
+  padding: 10px;
+}
+
+.generated-plan-actions button {
+  min-width: 126px;
+}
+
+button.danger {
+  border-color: rgba(239, 111, 120, 0.32);
+  color: #f2b2b7;
+}
+
+button.danger:hover:not(:disabled) {
+  background: rgba(239, 111, 120, 0.1);
 }
 
 .inbox-toolbar select {
@@ -3591,6 +3739,10 @@ code {
   border-color: rgba(239, 111, 120, 0.34);
 }
 
+.toast.pending {
+  border-color: rgba(196, 205, 202, 0.24);
+}
+
 .toast-icon {
   align-items: center;
   background: rgba(63, 189, 131, 0.1);
@@ -3607,6 +3759,12 @@ code {
   background: var(--danger-soft);
   border-color: rgba(239, 111, 120, 0.28);
   color: #f3a5ab;
+}
+
+.toast.pending .toast-icon {
+  background: rgba(196, 205, 202, 0.08);
+  border-color: rgba(196, 205, 202, 0.22);
+  color: var(--muted);
 }
 
 .toast-icon svg {
@@ -3781,6 +3939,7 @@ code {
   .approval-ticket,
   .signed-artifact-row,
   .lab-workbench-grid,
+  .generated-plans-layout,
   .terminal-try-panel,
   .artifact-evidence-row,
   .hash-grid {
@@ -3917,6 +4076,10 @@ code {
     grid-template-columns: 1fr;
   }
 
+  .generated-plan-list {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
   .public-request-context {
     grid-column: 1;
   }
@@ -3963,7 +4126,8 @@ code {
   .signature-object-head,
   .contract-head,
   .intent-document-head,
-  .artifact-summary-head {
+  .artifact-summary-head,
+  .generated-plan-detail-head {
     align-items: stretch;
     flex-direction: column;
   }
@@ -3979,7 +4143,7 @@ code {
   .workspace-tabs {
     display: grid;
     gap: 0;
-    grid-template-columns: repeat(4, minmax(0, 1fr));
+    grid-template-columns: repeat(5, minmax(0, 1fr));
     justify-content: stretch;
     width: 100%;
   }
@@ -5401,9 +5565,14 @@ code {
   .signature-object-head,
   .intent-document-head,
   .contract-head,
-  .artifact-summary-head {
+  .artifact-summary-head,
+  .generated-plan-detail-head {
     align-items: stretch;
     flex-direction: column;
+  }
+
+  .generated-plan-list {
+    grid-template-columns: 1fr;
   }
 
   .transaction-action-row button,
@@ -6229,7 +6398,7 @@ code {
     border-radius: 9px;
     display: grid;
     gap: 3px;
-    grid-template-columns: repeat(4, minmax(0, 1fr));
+    grid-template-columns: repeat(5, minmax(0, 1fr));
     overflow: visible;
     padding: 3px;
   }

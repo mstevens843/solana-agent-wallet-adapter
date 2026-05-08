@@ -89,10 +89,17 @@ Expected Android assets:
 - `agentic-android.apk`
 - `agentic-android.aab`
 
-Until release automation publishes those artifacts, the npm CLI path remains the primary public install path:
+The release workflows publish those artifacts and the npm CLI package. Before deploying homepage copy that advertises
+downloads, run the static verifier:
 
 ```sh
-npm exec @solana-agent-wallet-adapter/cli -- app
+pnpm verify:release-links
+```
+
+After publishing a public release, run the live verifier against the tag:
+
+```sh
+pnpm verify:release-links:live -- --tag v0.1.0
 ```
 
 ## Android Trust File
@@ -130,8 +137,9 @@ pnpm install --frozen-lockfile --ignore-scripts
 pnpm render:build
 pnpm -F @solana-agent-wallet-adapter/render-web build
 pnpm -F @solana-agent-wallet-adapter/render-web test
+pnpm smoke:render-web
 pnpm -F @solana-agent-wallet-adapter/browser-demo typecheck
 pnpm verify:release-links
 ```
 
-Then smoke `/`, `/docs`, `/cli`, `/desktop`, `/android`, and `/demo` at desktop and mobile widths.
+Then manually smoke `/docs`, `/cli`, `/desktop`, and `/android` at desktop and mobile widths.

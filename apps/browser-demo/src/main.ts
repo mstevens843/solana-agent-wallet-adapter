@@ -344,6 +344,8 @@ interface GeneratedPlanRecord {
   templateId: string;
   templateTitle: string;
   prompt: string;
+  walletAddress: string;
+  cluster: Cluster;
   status: GeneratedPlanStatus;
   signature?: string;
   preparedActionId?: string;
@@ -688,7 +690,6 @@ const initialCluster = SHOW_DEV_CONTROLS ? (persisted.cluster ?? 'mainnet-beta')
 const initialTemplate = templateById('custom-request');
 const defaultWorkspaceTab: ActiveTab = 'agent';
 const initialAiSettings = persistedAiSettings(persisted);
-const initialGeneratedPlans = loadGeneratedPlans();
 
 const state: DemoState = {
   activeTab: defaultWorkspaceTab,
@@ -718,8 +719,8 @@ const state: DemoState = {
   agentPlan: null,
   agentSignature: '',
   agentPreparedActionId: '',
-  generatedPlans: initialGeneratedPlans,
-  selectedGeneratedPlanId: initialGeneratedPlans.find((record) => record.status !== 'archived')?.id ?? initialGeneratedPlans[0]?.id ?? '',
+  generatedPlans: [],
+  selectedGeneratedPlanId: '',
   showArchivedGeneratedPlans: false,
   aiSettings: {
     ...initialAiSettings,
@@ -772,16 +773,75 @@ let lastPassiveInboxRefresh = 0;
 let copyResetTimer: number | null = null;
 let templatePickerController: AbortController | null = null;
 
-const app = document.querySelector<HTMLDivElement>('#app');
-if (!app) {
-  throw new Error('Missing #app');
-}
-const appRoot = app;
+const appRoot = document.querySelector<HTMLDivElement>('#app');
 
-normalizeInitialRoute();
-render();
-window.addEventListener('popstate', () => render());
-void bootstrap();
+void startApp();
+
+async function startApp(): Promise<void> {
+  try {
+    if (!appRoot) {
+      throw new Error('Missing #app');
+    }
+    normalizeInitialRoute();
+    hydrateGeneratedPlansForStartup();
+    render();
+    window.addEventListener('popstate', () => render());
+    await bootstrap();
+  } catch (err) {
+    renderStartupFailure(err);
+  }
+}
+
+function hydrateGeneratedPlansForStartup(): void {
+  try {
+    const plans = loadGeneratedPlans();
+    state.generatedPlans = plans;
+    state.selectedGeneratedPlanId = plans.find((record) => record.status !== 'archived')?.id ?? plans[0]?.id ?? '';
+  } catch (err) {
+    state.generatedPlans = [];
+    state.selectedGeneratedPlanId = '';
+    console.warn('Generated plan storage could not be loaded.', err);
+  }
+}
+
+function renderStartupFailure(err: unknown): void {
+  const message = err instanceof Error ? err.message : String(err);
+  const escaped = escapeHtml(message || 'Unknown startup error.');
+  const target = appRoot ?? document.body;
+  target.innerHTML = `
+    <section data-agentic-startup-failure style="
+      min-height: 100vh;
+      box-sizing: border-box;
+      display: grid;
+      place-items: center;
+      padding: 24px;
+      background: #020504;
+      color: #eef8f2;
+      font-family: Space Grotesk, Inter, system-ui, sans-serif;
+    ">
+      <div style="
+        max-width: 620px;
+        border: 1px solid rgba(94, 231, 158, 0.35);
+        border-radius: 12px;
+        background: rgba(9, 18, 15, 0.94);
+        box-shadow: 0 24px 80px rgba(0, 0, 0, 0.42);
+        padding: 22px;
+      ">
+        <p style="
+          margin: 0 0 8px;
+          color: #8bcdaa;
+          font-size: 0.75rem;
+          font-weight: 900;
+          letter-spacing: 0.08em;
+          text-transform: uppercase;
+        ">Agentic startup failed</p>
+        <h1 style="margin: 0 0 10px; font-size: 1.35rem; line-height: 1.2;">Refresh loaded the shell, but the app could not start.</h1>
+        <p style="margin: 0; color: rgba(218, 229, 224, 0.84); line-height: 1.5;">${escaped}</p>
+      </div>
+    </section>
+  `;
+  console.error('Agentic startup failed.', err);
+}
 
 async function bootstrap(): Promise<void> {
   state.mwaRegistration = await registerAgentMobileWalletAdapter({
@@ -816,6 +876,7 @@ async function bootstrap(): Promise<void> {
 }
 
 function render(): void {
+  if (!appRoot) return;
   const route = currentRoute();
   applyRouteTitle(route);
   closeTemplatePickerInteractions();
@@ -1820,6 +1881,7 @@ function guidedDemoPage(): string {
       <div class="browser-app-grid demo-guide-grid">
         ${guidedDemoStepCard('wallet', 'Wallet signing', 'Connect a wallet and sign a bounded demo message without exposing keys.', 'Try signing')}
         ${guidedDemoStepCard('agent', 'Agent plan', 'Draft a structured approval plan, then sign the proof when connected.', 'Draft a plan')}
+        ${guidedDemoStepCard('generated', 'Generated plans', 'Review saved AI and template drafts before signing proofs or queueing approvals.', 'Review plans')}
         ${guidedDemoStepCard('inbox', 'Approval Inbox', 'Preview prepared actions and receipts from the local bridge.', 'View inbox')}
         ${guidedDemoStepCard('schedule', 'Create Recurring', 'Create recurring approval requests that still require wallet review each time.', 'Create recurring')}
         ${guidedDemoStepCard('labs', 'Artifacts', 'Create wallet-signed audit artifacts for intent, policy, evidence, and verification.', 'Create artifact')}
@@ -2703,10 +2765,183 @@ function agentPlanPanel(): string {
   `;
 }
 
+function generatedPlansPanel(): string {
+  const visiblePlans = visibleGeneratedPlans();
+  const selected = selectedGeneratedPlan() ?? visiblePlans[0];
+  const archivedCount = state.generatedPlans.filter((record) => record.status === 'archived').length;
+  const activeCount = state.generatedPlans.length - archivedCount;
+  return `
+    <section class="approval-object signature-stage stage-generated stage-anchor ${state.generatedPlans.length ? 'stage-active' : 'stage-draft'}">
+      <div class="signature-object-head">
+        <div>
+          <h2>Generated plans</h2>
+          <p>Review every AI and template draft saved in this browser. Queue only executable actions into Approval Inbox.</p>
+        </div>
+        <div class="generated-plans-toolbar signature-toolbar">
+          <span class="signature-state">${escapeHtml(`${activeCount} active`)}</span>
+          <button
+            id="toggleArchivedGeneratedPlans"
+            class="utility"
+            ${archivedCount === 0 ? 'disabled' : ''}
+          >
+            ${state.showArchivedGeneratedPlans ? 'Hide archived' : `Show archived (${archivedCount})`}
+          </button>
+        </div>
+      </div>
+
+      ${generatedPlanStatusLine(visiblePlans.length, archivedCount)}
+      ${
+        visiblePlans.length
+          ? `
+            <div class="generated-plans-layout">
+              <div class="generated-plan-list" aria-label="Generated plans">
+                ${visiblePlans.map((record) => generatedPlanRow(record, selected?.id === record.id)).join('')}
+              </div>
+              ${selected ? generatedPlanDetail(selected) : generatedPlansEmptyState()}
+            </div>
+          `
+          : generatedPlansEmptyState()
+      }
+      ${state.error ? `<div class="error">${escapeHtml(state.error)}</div>` : ''}
+    </section>
+  `;
+}
+
+function generatedPlanStatusLine(visibleCount: number, archivedCount: number): string {
+  return `
+    <div class="queue-status generated-plan-status">
+      <span>${escapeHtml(`${state.generatedPlans.length} saved`)}</span>
+      <strong>${visibleCount} visible</strong>
+      <span>${archivedCount} archived</span>
+      <span>Newest first</span>
+    </div>
+  `;
+}
+
+function generatedPlanRow(record: GeneratedPlanRecord, selected: boolean): string {
+  const queued = record.preparedActionId ? `Queued ${short(record.preparedActionId)}` : canQueueAgentPlan(record.plan) ? 'Queueable' : 'Proof only';
+  return `
+    <article class="generated-plan-row ${selected ? 'selected' : ''} ${record.status === 'archived' ? 'archived' : ''}">
+      <button
+        data-generated-plan-action="view"
+        data-generated-plan-id="${escapeHtml(record.id)}"
+        type="button"
+        ${state.busy ? 'disabled' : ''}
+      >
+        <span class="generated-plan-row-top">
+          <span class="status-pill ${generatedPlanStatusTone(record)}">${escapeHtml(generatedPlanStatusLabel(record))}</span>
+          <span>${escapeHtml(formatDateTime(record.createdAt))}</span>
+        </span>
+        <strong>${escapeHtml(record.plan.intent)}</strong>
+        <span>${escapeHtml(`${planSourceLabel(record.plan)} · ${queued}`)}</span>
+      </button>
+    </article>
+  `;
+}
+
+function generatedPlanDetail(record: GeneratedPlanRecord): string {
+  const queueable = canQueueAgentPlan(record.plan);
+  const archived = record.status === 'archived';
+  const signDisabled = !state.address || state.busy || archived ? 'disabled' : '';
+  const queueDisabled = !state.address || !state.bridgeActive || !queueable || state.busy || archived ? 'disabled' : '';
+  return `
+    <div class="generated-plan-detail">
+      <div class="generated-plan-detail-head">
+        <div>
+          <span class="workbench-kicker">${escapeHtml(record.source === 'ai' ? 'AI draft' : 'Template draft')}</span>
+          <h3>${escapeHtml(record.plan.templateTitle)}</h3>
+          <p>${escapeHtml(generatedPlanMeta(record))}</p>
+        </div>
+        <span class="status-pill ${generatedPlanStatusTone(record)}">${escapeHtml(generatedPlanStatusLabel(record))}</span>
+      </div>
+      <div class="generated-plan-actions agent-actions">
+        <button
+          data-generated-plan-action="make-active"
+          data-generated-plan-id="${escapeHtml(record.id)}"
+          ${state.busy ? 'disabled' : ''}
+        >
+          Make active
+        </button>
+        <button
+          class="${record.signature ? '' : 'primary'}"
+          data-generated-plan-action="sign-proof"
+          data-generated-plan-id="${escapeHtml(record.id)}"
+          ${signDisabled}
+          title="${escapeHtml(signProofTitle(record))}"
+        >
+          Sign proof
+        </button>
+        <button
+          class="utility"
+          data-generated-plan-action="queue"
+          data-generated-plan-id="${escapeHtml(record.id)}"
+          ${queueDisabled}
+          title="${escapeHtml(generatedQueuePlanTitle(record))}"
+        >
+          Queue approval
+        </button>
+        <button
+          class="utility"
+          data-generated-plan-action="${archived ? 'restore' : 'archive'}"
+          data-generated-plan-id="${escapeHtml(record.id)}"
+          ${state.busy ? 'disabled' : ''}
+        >
+          ${archived ? 'Restore' : 'Archive'}
+        </button>
+        <button
+          class="utility danger"
+          data-generated-plan-action="delete"
+          data-generated-plan-id="${escapeHtml(record.id)}"
+          ${state.busy ? 'disabled' : ''}
+        >
+          Delete
+        </button>
+      </div>
+      ${agentPlanCard(record.plan)}
+      ${generatedPlanResultBlock(record)}
+      ${!state.address ? '<div class="notice">Connect a wallet when you are ready to sign a review proof for this plan.</div>' : ''}
+      ${queueable ? '' : '<div class="notice">This draft is a review/proof plan. Queue approval is only available for SOL transfers, SPL transfers, swaps, and recurring payments.</div>'}
+    </div>
+  `;
+}
+
+function generatedPlanResultBlock(record: GeneratedPlanRecord): string {
+  if (!record.signature && !record.preparedActionId) {
+    return '<div class="empty">Signed proof and queued approval ids appear here after action.</div>';
+  }
+  return `
+    <div class="results generated-plan-results">
+      ${record.signature ? `
+        <div class="result-row">
+          <span>Signed proof</span>
+          <code>${escapeHtml(record.signature)}</code>
+          <button data-copy="${escapeHtml(record.signature)}" data-copy-name="Signed proof">Copy</button>
+        </div>
+      ` : ''}
+      ${record.preparedActionId ? `
+        <div class="result-row">
+          <span>Queued approval</span>
+          <code>${escapeHtml(record.preparedActionId)}</code>
+          <button data-copy="${escapeHtml(record.preparedActionId)}" data-copy-name="Queued approval id">Copy</button>
+        </div>
+      ` : ''}
+    </div>
+  `;
+}
+
+function generatedPlansEmptyState(): string {
+  const detail = state.generatedPlans.length
+    ? 'Archived plans are hidden. Show archived to inspect or restore them.'
+    : 'Generate a template or AI plan from Agent Plan. It will be saved here automatically.';
+  return signaturePlaceholder('No generated plans visible', detail);
+}
+
 function agentPlannerWorkbench(): string {
   const template = selectedTemplate();
   const notesRequired = templateRequiresUserNotes(template);
   const canUseAi = canGenerateAiPlanFromSettings();
+  const templateGenerating = state.activeOperation === 'generate-template-plan';
+  const aiGenerating = state.activeOperation === 'generate-ai-plan';
   return `
     <div class="agent-planner-grid">
       <div class="intent-capsule intent-document-card planner-card ${state.agentPlan ? 'plan-linked' : 'draft'}">
@@ -2734,9 +2969,9 @@ function agentPlannerWorkbench(): string {
           <p>Templates create one-off approval plans without the bridge. The inbox and recurring approvals require the local bridge.</p>
         </div>
         <div class="agent-actions signature-actions intent-document-actions">
-          <button id="generatePlan" class="${state.agentPlan ? '' : 'primary'}" ${state.busy ? 'disabled' : ''}>Generate template plan</button>
-          <button id="generateAiPlan" class="${canUseAi ? 'primary' : ''}" ${!canUseAi || state.busy ? 'disabled' : ''} title="${canUseAi ? 'Generate through your configured AI key.' : 'Add a hosted/session key or configure local bridge AI first.'}">Generate with AI</button>
-          <button id="signAgentPlan" class="${state.agentPlan ? 'primary' : ''}" ${!state.address || !state.agentPlan || state.busy ? 'disabled' : ''} title="${!state.address ? 'Connect a wallet before signing.' : !state.agentPlan ? 'Generate a plan before signing approval.' : ''}">Sign approval</button>
+          <button id="generatePlan" class="${state.agentPlan ? '' : 'primary'}" ${state.busy ? 'disabled' : ''}>${templateGenerating ? `${buttonSpinner()}Generating...` : 'Generate template plan'}</button>
+          <button id="generateAiPlan" class="${canUseAi ? 'primary' : ''}" ${!canUseAi || state.busy ? 'disabled' : ''} title="${canUseAi ? 'Generate through your configured AI key.' : 'Add a hosted/session key or configure local bridge AI first.'}">${aiGenerating ? `${buttonSpinner()}Generating...` : 'Generate with AI'}</button>
+          <button id="signAgentPlan" class="${state.agentPlan ? 'primary' : ''}" ${!state.address || !state.agentPlan || state.busy ? 'disabled' : ''} title="${!state.address ? 'Connect a wallet before signing.' : !state.agentPlan ? 'Generate a plan before signing approval.' : ''}">Sign proof</button>
           <button id="queueAgentPlan" class="utility" ${!state.address || !state.agentPlan || !state.bridgeActive || !canQueueAgentPlan(state.agentPlan) || state.busy ? 'disabled' : ''} title="${queuePlanTitle()}">Queue approval</button>
         </div>
       </div>
@@ -2987,6 +3222,9 @@ function isAiConfiguredForCurrentMode(): boolean {
 
 function aiProviderReadyForCurrentMode(): boolean {
   const providerPreset = aiProviderPresetById(state.aiSettings.provider);
+  if (state.aiSettings.mode === 'session' && providerPreset.id === 'openai') {
+    return false;
+  }
   if (state.aiSettings.mode === 'hosted') {
     return providerPreset.id !== 'custom-openai-compatible';
   }
@@ -3004,6 +3242,9 @@ function aiRouteStatusLabel(status: BridgeAiStatus | null): string {
     return state.aiSettings.apiKey.trim() ? `hosted - ${state.aiSettings.provider} - ${state.aiSettings.model || 'model configured'}` : 'hosted - key required';
   }
   if (state.aiSettings.mode === 'session') {
+    if (state.aiSettings.provider === 'openai') {
+      return 'browser - OpenAI requires hosted or bridge';
+    }
     return state.aiSettings.apiKey.trim() ? `browser - ${state.aiSettings.provider} - ${state.aiSettings.model || 'model configured'}` : 'browser - key required';
   }
   return status?.available
@@ -3338,11 +3579,13 @@ function labEmptyState(): string {
 function contextPanel(): string {
   const latestLab = state.labArtifacts[0];
   const nextAction = state.busy
-    ? 'Waiting on wallet response'
-    : !state.address
-      ? 'Connect a wallet'
+      ? 'Waiting on wallet response'
+      : !state.address
+        ? 'Connect a wallet'
       : state.activeTab === 'agent' && !state.agentPlan
         ? 'Generate an agent plan'
+        : state.activeTab === 'generated'
+          ? 'Review generated plans'
         : state.activeTab === 'inbox'
           ? 'Review queued approvals'
           : state.activeTab === 'schedule'
@@ -3450,6 +3693,19 @@ function bind(): void {
   document.querySelector<HTMLButtonElement>('#generateAiPlan')?.addEventListener('click', runGenerateAiPlan);
   document.querySelector<HTMLButtonElement>('#signAgentPlan')?.addEventListener('click', runSignAgentPlan);
   document.querySelector<HTMLButtonElement>('#queueAgentPlan')?.addEventListener('click', runQueueAgentPlan);
+  document.querySelector<HTMLButtonElement>('#toggleArchivedGeneratedPlans')?.addEventListener('click', () => {
+    state.showArchivedGeneratedPlans = !state.showArchivedGeneratedPlans;
+    state.error = '';
+    render();
+  });
+  for (const button of document.querySelectorAll<HTMLButtonElement>('[data-generated-plan-action]')) {
+    button.addEventListener('click', () => {
+      const action = button.dataset.generatedPlanAction;
+      const planId = button.dataset.generatedPlanId;
+      if (!action || !planId) return;
+      void runGeneratedPlanAction(planId, action);
+    });
+  }
   document.querySelector<HTMLButtonElement>('#saveBridgeAiKey')?.addEventListener('click', runSaveBridgeAiKey);
   document.querySelector<HTMLButtonElement>('#clearAiKey')?.addEventListener('click', runClearAiKey);
   document.querySelector<HTMLButtonElement>('#refreshAiStatus')?.addEventListener('click', runRefreshAiStatus);
@@ -4213,81 +4469,92 @@ async function runSignAndSendTransaction(): Promise<void> {
 }
 
 async function runGenerateAgentPlan(): Promise<void> {
-  await run('sign', async () => {
-    const template = selectedTemplate();
-    const parameters = readTemplateFields(template);
-    assertRequiredTemplateFields(template, parameters);
-    const userNotes = state.agentPrompt.trim();
-    assertRequiredUserNotes(template, userNotes);
-    state.agentPlan = buildTemplatePlan(template, parameters, 'template', userNotes);
-    state.agentSignature = '';
-    state.agentPreparedActionId = '';
-    pushToast('success', 'Template plan generated', `${template.title} is ready for review.`);
-  });
+  state.activeOperation = 'generate-template-plan';
+  const toastId = pushToast('pending', 'Generating template plan', 'Preparing a saved review draft.');
+  try {
+    await run(
+      'sign',
+      async () => {
+        const template = selectedTemplate();
+        const parameters = readTemplateFields(template);
+        assertRequiredTemplateFields(template, parameters);
+        const userNotes = state.agentPrompt.trim();
+        assertRequiredUserNotes(template, userNotes);
+        const plan = buildTemplatePlan(template, parameters, 'template', userNotes);
+        state.agentPlan = plan;
+        state.agentSignature = '';
+        state.agentPreparedActionId = '';
+        const record = saveGeneratedPlan(plan, template, userNotes || template.description);
+        state.selectedGeneratedPlanId = record.id;
+        state.activeTab = 'generated';
+        replaceToast(toastId, 'success', 'Template plan saved', `${template.title} is in Generated Plans.`);
+      },
+      { onError: (message) => replaceToast(toastId, 'error', 'Template plan failed', message) },
+    );
+  } finally {
+    state.activeOperation = null;
+    render();
+  }
 }
 
 async function runGenerateAiPlan(): Promise<void> {
-  await run('ai', async () => {
-    const template = selectedTemplate();
-    const parameters = readTemplateFields(template);
-    assertRequiredTemplateFields(template, parameters);
-    const userNotes = state.agentPrompt.trim();
-    assertRequiredUserNotes(template, userNotes);
-    const request = {
-      prompt: userNotes || template.description,
-      userNotes,
-      template: {
-        id: template.id,
-        category: template.category,
-        title: template.title,
-        description: template.description,
-        actionType: template.actionType,
-        risk: template.risk,
+  state.activeOperation = 'generate-ai-plan';
+  const toastId = pushToast('pending', 'Generating AI plan', 'Drafting through your configured AI route.');
+  try {
+    await run(
+      'ai',
+      async () => {
+        const template = selectedTemplate();
+        const parameters = readTemplateFields(template);
+        assertRequiredTemplateFields(template, parameters);
+        const userNotes = state.agentPrompt.trim();
+        assertRequiredUserNotes(template, userNotes);
+        const request = {
+          prompt: userNotes || template.description,
+          userNotes,
+          template: {
+            id: template.id,
+            category: template.category,
+            title: template.title,
+            description: template.description,
+            actionType: template.actionType,
+            risk: template.risk,
+          },
+          parameters,
+        };
+        const plan = state.aiSettings.mode === 'bridge'
+          ? await bridgeRequest<AgentPlan>('/bridge/ai/generate-plan', {
+            method: 'POST',
+            body: JSON.stringify(request),
+          })
+          : state.aiSettings.mode === 'hosted'
+            ? await generateHostedAiPlan(state.aiSettings, request)
+            : await generateSessionAiPlan(state.aiSettings, request);
+        state.agentPlan = plan;
+        state.agentSignature = '';
+        state.agentPreparedActionId = '';
+        const record = saveGeneratedPlan(plan, template, request.prompt);
+        state.selectedGeneratedPlanId = record.id;
+        state.activeTab = 'generated';
+        replaceToast(toastId, 'success', 'AI plan generated', `${plan.templateTitle} is ready in Generated Plans.`);
       },
-      parameters,
-    };
-    if (state.aiSettings.mode === 'bridge') {
-      state.agentPlan = await bridgeRequest<AgentPlan>('/bridge/ai/generate-plan', {
-        method: 'POST',
-        body: JSON.stringify(request),
-      });
-    } else if (state.aiSettings.mode === 'hosted') {
-      state.agentPlan = await generateHostedAiPlan(state.aiSettings, request);
-    } else {
-      state.agentPlan = await generateSessionAiPlan(state.aiSettings, request);
-    }
-    state.agentSignature = '';
-    state.agentPreparedActionId = '';
-    pushToast('success', 'AI plan generated', `${state.agentPlan.templateTitle} is ready for wallet review.`);
-  });
+      { onError: (message) => replaceToast(toastId, 'error', 'AI plan failed', message) },
+    );
+  } finally {
+    state.activeOperation = null;
+    render();
+  }
 }
 
 async function runSignAgentPlan(): Promise<void> {
   await run('sign', async () => {
-    const signingClient = requireClient();
     if (!state.agentPlan) {
       throw new Error('Generate an agent plan before signing.');
     }
-    const message = [
-      'Solana Agent Wallet Adapter agent approval',
-      `Address: ${state.address}`,
-      `Cluster: ${state.cluster}`,
-      `Source: ${state.agentPlan.source}`,
-      `Template: ${state.agentPlan.templateTitle}`,
-      `Action: ${state.agentPlan.actionType}`,
-      `Prepared by: ${planPreparedBy(state.agentPlan)}`,
-      `Intent: ${state.agentPlan.intent}`,
-      `Route: ${state.agentPlan.route}`,
-      `Risk: ${state.agentPlan.risk}`,
-      `Approval: ${state.agentPlan.approval}`,
-      `Parameters: ${stableJson(state.agentPlan.parameters)}`,
-      `User notes: ${state.agentPlan.userNotes || 'None'}`,
-      `Safeguards: ${state.agentPlan.safeguards.join(' | ')}`,
-      `Time: ${new Date().toISOString()}`,
-    ].join('\n');
-    const result = await signingClient.signMessage(message, signOptions('Agent plan approval proof'));
-    state.agentSignature = result.signature;
-    pushToast('success', 'Agent approval signed', short(result.signature));
+    const signature = await signAgentPlanProof(state.agentPlan, 'Agent plan review proof');
+    state.agentSignature = signature;
+    updateActiveGeneratedPlanRecord({ signature, status: 'signed' });
+    pushToast('success', 'Plan proof signed', short(signature));
   });
 }
 
@@ -4298,11 +4565,253 @@ async function runQueueAgentPlan(): Promise<void> {
     }
     const response = await queuePlanThroughBridge(state.agentPlan);
     state.agentPreparedActionId = response.id;
+    updateActiveGeneratedPlanRecord({ preparedActionId: response.id, status: 'queued' });
     state.activeTab = 'inbox';
     state.inboxFilter = 'ready';
     await refreshInboxData();
     pushToast('success', 'Prepared action queued', response.id);
   });
+}
+
+async function runGeneratedPlanAction(planId: string, action: string): Promise<void> {
+  const record = generatedPlanById(planId);
+  if (!record) return;
+
+  if (action === 'view') {
+    state.selectedGeneratedPlanId = planId;
+    state.error = '';
+    render();
+    return;
+  }
+  if (action === 'make-active') {
+    makeGeneratedPlanActive(record);
+    pushToast('success', 'Plan made active', `${record.plan.templateTitle} is ready on Agent Plan.`);
+    render();
+    return;
+  }
+  if (action === 'archive') {
+    updateGeneratedPlan(planId, { status: 'archived' });
+    selectFallbackGeneratedPlan();
+    pushToast('success', 'Plan archived', record.plan.templateTitle);
+    render();
+    return;
+  }
+  if (action === 'restore') {
+    updateGeneratedPlan(planId, { status: restoredGeneratedPlanStatus(record) });
+    state.selectedGeneratedPlanId = planId;
+    pushToast('success', 'Plan restored', record.plan.templateTitle);
+    render();
+    return;
+  }
+  if (action === 'delete') {
+    if (!window.confirm('Delete this generated plan permanently?')) return;
+    state.generatedPlans = state.generatedPlans.filter((candidate) => candidate.id !== planId);
+    saveGeneratedPlans();
+    selectFallbackGeneratedPlan();
+    pushToast('success', 'Plan deleted', record.plan.templateTitle);
+    render();
+    return;
+  }
+  if (action === 'sign-proof') {
+    await runSignGeneratedPlan(planId);
+    return;
+  }
+  if (action === 'queue') {
+    await runQueueGeneratedPlan(planId);
+  }
+}
+
+async function runSignGeneratedPlan(planId: string): Promise<void> {
+  await run('sign', async () => {
+    const record = requireGeneratedPlanRecord(planId);
+    if (record.status === 'archived') {
+      throw new Error('Restore this generated plan before signing a proof.');
+    }
+    const signature = await signAgentPlanProof(record.plan, 'Generated plan review proof');
+    updateGeneratedPlan(planId, { signature, status: 'signed' });
+    state.selectedGeneratedPlanId = planId;
+    if (state.agentPlan && samePlan(state.agentPlan, record.plan)) {
+      state.agentSignature = signature;
+    }
+    pushToast('success', 'Plan proof signed', short(signature));
+  });
+}
+
+async function runQueueGeneratedPlan(planId: string): Promise<void> {
+  await run('inbox', async () => {
+    const record = requireGeneratedPlanRecord(planId);
+    if (record.status === 'archived') {
+      throw new Error('Restore this generated plan before queueing it.');
+    }
+    if (!canQueueAgentPlan(record.plan)) {
+      throw new Error('Queue approval is available only for transfer, swap, and recurring payment plans.');
+    }
+    const response = await queuePlanThroughBridge(record.plan);
+    updateGeneratedPlan(planId, { preparedActionId: response.id, status: 'queued' });
+    state.selectedGeneratedPlanId = planId;
+    if (state.agentPlan && samePlan(state.agentPlan, record.plan)) {
+      state.agentPreparedActionId = response.id;
+    }
+    state.activeTab = 'inbox';
+    state.inboxFilter = 'ready';
+    await refreshInboxData();
+    pushToast('success', 'Prepared action queued', response.id);
+  });
+}
+
+function saveGeneratedPlan(plan: AgentPlan, template: AgentPlanTemplate, prompt: string): GeneratedPlanRecord {
+  const now = new Date().toISOString();
+  const record: GeneratedPlanRecord = {
+    id: newId('plan'),
+    plan,
+    createdAt: now,
+    updatedAt: now,
+    source: plan.source,
+    templateId: template.id,
+    templateTitle: template.title,
+    prompt,
+    walletAddress: state.address,
+    cluster: state.cluster,
+    status: 'draft',
+  };
+  state.generatedPlans = mergeGeneratedPlans([record], state.generatedPlans);
+  saveGeneratedPlans();
+  return record;
+}
+
+function updateGeneratedPlan(planId: string, patch: Partial<Pick<GeneratedPlanRecord, 'status' | 'signature' | 'preparedActionId'>>): void {
+  const updatedAt = new Date().toISOString();
+  state.generatedPlans = state.generatedPlans.map((record) => {
+    if (record.id !== planId) return record;
+    return {
+      ...record,
+      ...patch,
+      updatedAt,
+    };
+  });
+  saveGeneratedPlans();
+}
+
+function updateActiveGeneratedPlanRecord(
+  patch: Partial<Pick<GeneratedPlanRecord, 'status' | 'signature' | 'preparedActionId'>>,
+): void {
+  if (!state.agentPlan) return;
+  const record = generatedPlanById(state.selectedGeneratedPlanId);
+  if (record && samePlan(record.plan, state.agentPlan)) {
+    updateGeneratedPlan(record.id, patch);
+  }
+}
+
+function makeGeneratedPlanActive(record: GeneratedPlanRecord): void {
+  state.agentPlan = record.plan;
+  state.agentSignature = record.signature ?? '';
+  state.agentPreparedActionId = record.preparedActionId ?? '';
+  state.selectedGeneratedPlanId = record.id;
+  state.activeTab = 'agent';
+  state.error = '';
+}
+
+function visibleGeneratedPlans(): GeneratedPlanRecord[] {
+  return state.showArchivedGeneratedPlans
+    ? state.generatedPlans
+    : state.generatedPlans.filter((record) => record.status !== 'archived');
+}
+
+function selectedGeneratedPlan(): GeneratedPlanRecord | undefined {
+  const selected = generatedPlanById(state.selectedGeneratedPlanId);
+  if (!selected) return undefined;
+  if (!state.showArchivedGeneratedPlans && selected.status === 'archived') return undefined;
+  return selected;
+}
+
+function generatedPlanById(planId: string): GeneratedPlanRecord | undefined {
+  return state.generatedPlans.find((record) => record.id === planId);
+}
+
+function requireGeneratedPlanRecord(planId: string): GeneratedPlanRecord {
+  const record = generatedPlanById(planId);
+  if (!record) {
+    throw new Error('Generated plan was not found.');
+  }
+  return record;
+}
+
+function selectFallbackGeneratedPlan(): void {
+  const next = visibleGeneratedPlans()[0] ?? state.generatedPlans[0];
+  state.selectedGeneratedPlanId = next?.id ?? '';
+}
+
+function restoredGeneratedPlanStatus(record: GeneratedPlanRecord): GeneratedPlanStatus {
+  if (record.preparedActionId) return 'queued';
+  if (record.signature) return 'signed';
+  return 'draft';
+}
+
+function generatedPlanStatusLabel(record: GeneratedPlanRecord): string {
+  if (record.status === 'archived') return 'archived';
+  if (record.preparedActionId || record.status === 'queued') return 'queued';
+  if (record.signature || record.status === 'signed') return 'proof signed';
+  return 'draft';
+}
+
+function generatedPlanStatusTone(record: GeneratedPlanRecord): string {
+  if (record.status === 'archived') return 'neutral';
+  if (record.preparedActionId || record.status === 'queued') return 'tx-pending';
+  if (record.signature || record.status === 'signed') return 'tx-confirmed';
+  return 'neutral';
+}
+
+function signedGeneratedPlanCount(): number {
+  return state.generatedPlans.filter((record) => Boolean(record.signature)).length;
+}
+
+function generatedPlanMeta(record: GeneratedPlanRecord): string {
+  const wallet = record.walletAddress ? short(record.walletAddress) : 'No wallet at creation';
+  return `${formatDateTime(record.createdAt)} · ${titleCaseCluster(record.cluster)} · ${wallet}`;
+}
+
+function signProofTitle(record: GeneratedPlanRecord): string {
+  if (record.status === 'archived') return 'Restore this generated plan before signing.';
+  if (!state.address) return 'Connect a wallet before signing a review proof.';
+  return record.signature ? 'Sign a fresh review proof for this generated plan.' : 'Sign that you reviewed this generated plan.';
+}
+
+function generatedQueuePlanTitle(record: GeneratedPlanRecord): string {
+  if (record.status === 'archived') return 'Restore this generated plan before queueing it.';
+  if (!state.address) return 'Connect a wallet before queueing.';
+  if (!state.bridgeActive) return 'Connect the local bridge before queueing this approval.';
+  if (!canQueueAgentPlan(record.plan)) return 'Queue approval is available only for transfers, swaps, and recurring payments.';
+  return 'Queue this generated plan in Approval Inbox.';
+}
+
+function samePlan(left: AgentPlan, right: AgentPlan): boolean {
+  return stableJson(left) === stableJson(right);
+}
+
+async function signAgentPlanProof(plan: AgentPlan, summary: string): Promise<string> {
+  const signingClient = requireClient();
+  const result = await signingClient.signMessage(agentPlanApprovalMessage(plan), signOptions(summary));
+  return result.signature;
+}
+
+function agentPlanApprovalMessage(plan: AgentPlan): string {
+  return [
+    'Solana Agent Wallet Adapter agent approval',
+    `Address: ${state.address}`,
+    `Cluster: ${state.cluster}`,
+    `Source: ${plan.source}`,
+    `Template: ${plan.templateTitle}`,
+    `Action: ${plan.actionType}`,
+    `Prepared by: ${planPreparedBy(plan)}`,
+    `Intent: ${plan.intent}`,
+    `Route: ${plan.route}`,
+    `Risk: ${plan.risk}`,
+    `Approval: ${plan.approval}`,
+    `Parameters: ${stableJson(plan.parameters)}`,
+    `User notes: ${plan.userNotes || 'None'}`,
+    `Safeguards: ${plan.safeguards.join(' | ')}`,
+    `Time: ${new Date().toISOString()}`,
+  ].join('\n');
 }
 
 async function runSaveBridgeAiKey(): Promise<void> {
@@ -4530,7 +5039,11 @@ async function runRefreshLabArtifacts(): Promise<void> {
   });
 }
 
-async function run(stepName: StepName, action: () => Promise<void>): Promise<void> {
+async function run(
+  stepName: StepName,
+  action: () => Promise<void>,
+  options: { onError?: (message: string) => void } = {},
+): Promise<void> {
   state.error = '';
   state.busy = true;
   state.steps[stepName] = 'active';
@@ -4541,7 +5054,11 @@ async function run(stepName: StepName, action: () => Promise<void>): Promise<voi
   } catch (err) {
     state.steps[stepName] = 'error';
     state.error = redactSecrets(err instanceof Error ? err.message : String(err));
-    pushToast('error', 'Action failed', state.error);
+    if (options.onError) {
+      options.onError(state.error);
+    } else {
+      pushToast('error', 'Action failed', state.error);
+    }
   } finally {
     state.busy = false;
     render();
@@ -5291,7 +5808,7 @@ function capabilitySummary(capabilities: AdapterCapabilities): string {
 }
 
 function tabButton(tab: ActiveTab, label: string, mobileLabel?: string): string {
-  const locked = !state.address && tab !== 'wallet' && tab !== 'agent' && tab !== 'labs';
+  const locked = !state.address && tab !== 'wallet' && tab !== 'agent' && tab !== 'generated' && tab !== 'labs';
   const className = [
     state.activeTab === tab ? 'active' : '',
     mobileLabel ? 'has-mobile-label' : '',
@@ -5859,6 +6376,14 @@ function evidenceStep(
 }
 
 function evidenceIntent(): { status: string; detail: string; meta?: string } {
+  if (state.activeTab === 'generated') {
+    const selected = selectedGeneratedPlan();
+    return {
+      status: state.generatedPlans.length ? 'Saved' : 'Empty',
+      detail: selected?.plan.intent ?? 'Generated AI and template plans are saved here for later review.',
+      meta: selected ? `${generatedPlanStatusLabel(selected)} · ${formatDateTime(selected.createdAt)}` : undefined,
+    };
+  }
   if (state.activeTab === 'wallet') {
     return {
       status: state.signature ? 'Signed' : 'Ready',
@@ -5947,6 +6472,14 @@ function evidencePolicy(): { status: string; detail: string; meta?: string } {
       meta: state.bridgeActive ? 'Can queue prepared action' : 'Bridge queue unavailable',
     };
   }
+  if (state.activeTab === 'generated') {
+    const selected = selectedGeneratedPlan();
+    return {
+      status: selected ? 'Review scoped' : 'No drafts',
+      detail: selected?.plan.risk ?? 'Generated plans stay separate from Approval Inbox until they are queued.',
+      meta: selected && canQueueAgentPlan(selected.plan) ? 'Queueable with bridge' : 'Proof-only review',
+    };
+  }
   if (state.activeTab === 'schedule') {
     return {
       status: state.bridgeActive ? 'Recurring ready' : 'Bridge required',
@@ -6021,6 +6554,23 @@ function evidenceReceipt(latestLab: LabArtifact | undefined): { status: string; 
       meta: short(state.agentSignature),
     };
   }
+  if (state.activeTab === 'generated') {
+    const selected = selectedGeneratedPlan();
+    if (selected?.signature) {
+      return {
+        status: 'Proof signed',
+        detail: 'This generated plan has a wallet-signed review proof.',
+        meta: short(selected.signature),
+      };
+    }
+    if (selected?.preparedActionId) {
+      return {
+        status: 'Queued',
+        detail: 'This generated plan has been sent to Approval Inbox.',
+        meta: selected.preparedActionId,
+      };
+    }
+  }
   if (state.txid) {
     return {
       status: 'Broadcast',
@@ -6068,7 +6618,11 @@ function evidenceReceipt(latestLab: LabArtifact | undefined): { status: string; 
 function evidenceTone(kind: 'intent' | 'policy' | 'wallet' | 'receipt'): 'good' | 'active' | 'warn' | 'idle' {
   switch (kind) {
     case 'intent':
-      return state.agentPlan || state.signature || state.customTransactionBase64 ? 'good' : state.address ? 'active' : 'idle';
+      return state.agentPlan || state.generatedPlans.length || state.signature || state.customTransactionBase64
+        ? 'good'
+        : state.address
+          ? 'active'
+          : 'idle';
     case 'policy':
       if (state.preparedActions.length || state.bridgeActive) return 'good';
       return state.cluster === 'mainnet-beta' ? 'warn' : 'idle';
@@ -6082,10 +6636,10 @@ function evidenceTone(kind: 'intent' | 'policy' | 'wallet' | 'receipt'): 'good' 
 }
 
 function trustChain(): string {
-  const hasReceipt = Boolean(state.txid || state.txSignature || state.agentSignature || state.receipts.length || state.labArtifacts.length);
+  const hasReceipt = Boolean(state.txid || state.txSignature || state.agentSignature || signedGeneratedPlanCount() || state.receipts.length || state.labArtifacts.length);
   return `
     <div class="trust-chain" aria-label="Approval trust chain">
-      ${trustNode('Intent', Boolean(state.agentPlan || state.signature || state.customTransactionBase64), state.activeTab === 'agent')}
+      ${trustNode('Intent', Boolean(state.agentPlan || state.generatedPlans.length || state.signature || state.customTransactionBase64), state.activeTab === 'agent' || state.activeTab === 'generated')}
       ${trustNode('Policy', Boolean(state.bridgeActive || state.preparedActions.length), state.activeTab === 'inbox' || state.activeTab === 'schedule')}
       ${trustNode('Wallet', Boolean(state.address), state.busy)}
       ${trustNode('Receipt', hasReceipt, false)}
@@ -6146,6 +6700,8 @@ function surfaceEyebrow(): string {
       return 'Direct signing';
     case 'agent':
       return 'Intent review';
+    case 'generated':
+      return 'Generated plans';
     case 'inbox':
       return 'Approval inbox';
     case 'schedule':
@@ -6161,6 +6717,8 @@ function surfaceTitle(): string {
       return 'Wallet signing';
     case 'agent':
       return 'Agent Plan';
+    case 'generated':
+      return 'Generated Plans';
     case 'inbox':
       return 'Approval Inbox';
     case 'schedule':
@@ -6546,6 +7104,18 @@ function isCluster(value: string): value is Cluster {
   return value === 'mainnet-beta' || value === 'devnet' || value === 'testnet' || value === 'localnet';
 }
 
+function isAiMode(value: string): value is AiSettings['mode'] {
+  return value === 'hosted' || value === 'session' || value === 'bridge';
+}
+
+function isAiApiFormat(value: string): value is AiSettings['apiFormat'] {
+  return value === 'openai-compatible' || value === 'anthropic';
+}
+
+function isAiProviderId(value: string): value is AiSettings['provider'] {
+  return AI_PROVIDER_PRESETS.some((preset) => preset.id === value);
+}
+
 function isPersistedIosWalletId(value: string): value is IosNativeWalletId {
   return value === 'phantom' || value === 'solflare' || value === 'backpack' || value === 'jupiter';
 }
@@ -6658,7 +7228,7 @@ function toastStack(): string {
         .map(
           (toast) => `
             <div class="toast ${toast.kind}">
-              <span class="toast-icon" aria-hidden="true">${checkIcon()}</span>
+              <span class="toast-icon" aria-hidden="true">${toastIcon(toast.kind)}</span>
               <div>
                 <strong>${escapeHtml(toast.title)}</strong>
                 <p>${escapeHtml(toast.message)}</p>
@@ -6672,13 +7242,26 @@ function toastStack(): string {
   `;
 }
 
-function pushToast(kind: ToastKind, title: string, message: string): void {
+function pushToast(kind: ToastKind, title: string, message: string): number {
   const toast: Toast = { id: nextToastId, kind, title, message };
   nextToastId += 1;
   state.toasts = [toast, ...state.toasts].slice(0, 2);
-  window.setTimeout(() => {
-    dismissToast(toast.id);
-  }, 4000);
+  if (kind !== 'pending') {
+    window.setTimeout(() => {
+      dismissToast(toast.id);
+    }, 4000);
+  }
+  return toast.id;
+}
+
+function replaceToast(id: number, kind: ToastKind, title: string, message: string): void {
+  state.toasts = state.toasts.map((toast) => toast.id === id ? { ...toast, kind, title, message } : toast);
+  if (kind !== 'pending') {
+    window.setTimeout(() => {
+      dismissToast(id);
+    }, 4000);
+  }
+  render();
 }
 
 function dismissToast(id: number): void {
@@ -6690,6 +7273,20 @@ function dismissToast(id: number): void {
 
 function checkIcon(): string {
   return '<svg viewBox="0 0 24 24" focusable="false"><path d="M9.4 16.6 5.8 13l1.4-1.4 2.2 2.2 7.4-7.4L18.2 8 9.4 16.6Z"></path></svg>';
+}
+
+function errorIcon(): string {
+  return '<svg viewBox="0 0 24 24" focusable="false"><path d="m12 10.6 4.1-4.1 1.4 1.4-4.1 4.1 4.1 4.1-1.4 1.4-4.1-4.1-4.1 4.1-1.4-1.4 4.1-4.1-4.1-4.1 1.4-1.4 4.1 4.1Z"></path></svg>';
+}
+
+function toastIcon(kind: ToastKind): string {
+  if (kind === 'pending') return '<span class="toast-spinner"></span>';
+  if (kind === 'error') return errorIcon();
+  return checkIcon();
+}
+
+function buttonSpinner(): string {
+  return '<span class="button-spinner" aria-hidden="true"></span>';
 }
 
 function short(value: string): string {
@@ -6726,6 +7323,11 @@ function loadPersistedState(): PersistedState {
       ...(typeof parsed.cluster === 'string' && isCluster(parsed.cluster) && { cluster: parsed.cluster }),
       ...(typeof parsed.bridgeUrl === 'string' && { bridgeUrl: parsed.bridgeUrl }),
       ...(typeof parsed.bridgeToken === 'string' && { bridgeToken: parsed.bridgeToken }),
+      ...(typeof parsed.aiMode === 'string' && isAiMode(parsed.aiMode) && { aiMode: parsed.aiMode }),
+      ...(typeof parsed.aiProvider === 'string' && isAiProviderId(parsed.aiProvider) && { aiProvider: parsed.aiProvider }),
+      ...(typeof parsed.aiApiFormat === 'string' && isAiApiFormat(parsed.aiApiFormat) && { aiApiFormat: parsed.aiApiFormat }),
+      ...(typeof parsed.aiBaseUrl === 'string' && { aiBaseUrl: parsed.aiBaseUrl }),
+      ...(typeof parsed.aiModel === 'string' && { aiModel: parsed.aiModel }),
     };
   } catch {
     return {};
@@ -6742,11 +7344,106 @@ function savePersistedState(): void {
         cluster: state.cluster,
         bridgeUrl: state.bridgeUrl,
         bridgeToken: state.bridgeToken,
+        aiMode: state.aiSettings.mode,
+        aiProvider: state.aiSettings.provider,
+        aiApiFormat: state.aiSettings.apiFormat,
+        aiBaseUrl: state.aiSettings.baseUrl,
+        aiModel: state.aiSettings.model,
       }),
     );
   } catch {
     // Best-effort browser persistence.
   }
+}
+
+function loadGeneratedPlans(): GeneratedPlanRecord[] {
+  try {
+    const raw = window.localStorage.getItem(GENERATED_PLANS_STORAGE_KEY);
+    if (!raw) return [];
+    const parsed = JSON.parse(raw);
+    return Array.isArray(parsed) ? mergeGeneratedPlans(parsed.filter(isGeneratedPlanRecord)) : [];
+  } catch {
+    return [];
+  }
+}
+
+function saveGeneratedPlans(): void {
+  try {
+    state.generatedPlans = mergeGeneratedPlans(state.generatedPlans);
+    window.localStorage.setItem(GENERATED_PLANS_STORAGE_KEY, JSON.stringify(state.generatedPlans));
+  } catch {
+    // Best-effort browser persistence.
+  }
+}
+
+function mergeGeneratedPlans(...planGroups: unknown[][]): GeneratedPlanRecord[] {
+  const byId = new Map<string, GeneratedPlanRecord>();
+  for (const plans of planGroups) {
+    for (const plan of plans) {
+      if (!isGeneratedPlanRecord(plan)) continue;
+      const current = byId.get(plan.id);
+      if (!current || plan.updatedAt.localeCompare(current.updatedAt) >= 0) {
+        byId.set(plan.id, plan);
+      }
+    }
+  }
+  return [...byId.values()]
+    .sort((left, right) => right.createdAt.localeCompare(left.createdAt))
+    .slice(0, GENERATED_PLANS_LIMIT);
+}
+
+function isGeneratedPlanRecord(value: unknown): value is GeneratedPlanRecord {
+  if (!value || typeof value !== 'object') return false;
+  const record = value as Partial<GeneratedPlanRecord>;
+  return (
+    typeof record.id === 'string' &&
+    isAgentPlan(record.plan) &&
+    typeof record.createdAt === 'string' &&
+    typeof record.updatedAt === 'string' &&
+    (record.source === 'template' || record.source === 'ai') &&
+    typeof record.templateId === 'string' &&
+    typeof record.templateTitle === 'string' &&
+    typeof record.prompt === 'string' &&
+    typeof record.walletAddress === 'string' &&
+    isCluster(record.cluster ?? '') &&
+    isGeneratedPlanStatus(record.status) &&
+    (record.signature === undefined || typeof record.signature === 'string') &&
+    (record.preparedActionId === undefined || typeof record.preparedActionId === 'string')
+  );
+}
+
+function isAgentPlan(value: unknown): value is AgentPlan {
+  if (!value || typeof value !== 'object') return false;
+  const plan = value as Partial<AgentPlan>;
+  return (
+    typeof plan.intent === 'string' &&
+    typeof plan.route === 'string' &&
+    typeof plan.risk === 'string' &&
+    typeof plan.approval === 'string' &&
+    (plan.source === 'template' || plan.source === 'ai') &&
+    typeof plan.category === 'string' &&
+    typeof plan.actionType === 'string' &&
+    typeof plan.templateTitle === 'string' &&
+    (plan.userNotes === undefined || typeof plan.userNotes === 'string') &&
+    Boolean(plan.parameters) &&
+    typeof plan.parameters === 'object' &&
+    !Array.isArray(plan.parameters) &&
+    Object.values(plan.parameters).every((entry) => typeof entry === 'string') &&
+    Array.isArray(plan.fields) &&
+    plan.fields.every(isAgentPlanField) &&
+    Array.isArray(plan.safeguards) &&
+    plan.safeguards.every((entry) => typeof entry === 'string')
+  );
+}
+
+function isAgentPlanField(value: unknown): value is AgentPlan['fields'][number] {
+  if (!value || typeof value !== 'object') return false;
+  const field = value as Partial<AgentPlan['fields'][number]>;
+  return typeof field.label === 'string' && typeof field.value === 'string';
+}
+
+function isGeneratedPlanStatus(value: unknown): value is GeneratedPlanStatus {
+  return value === 'draft' || value === 'signed' || value === 'queued' || value === 'archived';
 }
 
 function loadLabArtifacts(): LabArtifact[] {

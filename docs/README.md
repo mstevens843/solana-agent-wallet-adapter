@@ -16,6 +16,11 @@ This directory keeps product guides, smoke procedures, dated research, and outre
 - [Android native MWA smoke](./smoke/android-native-mwa.md): Android app connect, cached reconnect, signing, clear state, and bridge approval path.
 - [iOS wallet web smoke](./smoke/ios-wallet-web.md): iOS Wallet Standard host fallback plus iOS link bridge path.
 
+## Deploy Guides
+
+- [Public release](./deploy/release.md): publish the npm CLI, GitHub release assets, desktop installers, and Android artifacts advertised by the website.
+- [Render deployment](./deploy/render.md): deploy the public website and hosted BYOK proxy.
+
 ## Research Notes
 
 Research notes are dated artifacts. They preserve what was known when written and may be superseded by newer docs.

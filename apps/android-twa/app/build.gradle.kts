@@ -191,10 +191,34 @@ val buildBundledWebAssets = tasks.register<Exec>("buildBundledWebAssets") {
     environment("VITE_CAPACITOR_IOS_APP", "false")
 }
 
+val typecheckBundledWebAssets = tasks.register<Exec>("typecheckBundledWebAssets") {
+    workingDir = rootProject.layout.projectDirectory.dir("../..").asFile
+    commandLine(resolvedPnpmCommand(), "-F", "@solana-agent-wallet-adapter/browser-demo", "typecheck")
+    environment(
+        "PATH",
+        listOf("/usr/local/bin", "/opt/homebrew/bin", System.getenv("PATH") ?: "")
+            .filter { it.isNotBlank() }
+            .joinToString(File.pathSeparator),
+    )
+    environment("VITE_AGENTIC_ANDROID_APP", "true")
+    environment("VITE_AGENTIC_ANDROID_SHOW_EXAMPLE_TAB", showExampleTab.toString())
+    environment("VITE_CAPACITOR_IOS_APP", "false")
+}
+
+val verifyBundledWebAssets = tasks.register<Exec>("verifyBundledWebAssets") {
+    workingDir = rootProject.layout.projectDirectory.dir("../..").asFile
+    commandLine("node", "scripts/verify-browser-dist.mjs")
+    dependsOn(buildBundledWebAssets)
+}
+
+buildBundledWebAssets.configure {
+    dependsOn(typecheckBundledWebAssets)
+}
+
 tasks.matching { task ->
     task.name.startsWith("merge") && task.name.endsWith("Assets")
 }.configureEach {
-    dependsOn(buildBundledWebAssets)
+    dependsOn(verifyBundledWebAssets)
 }
 
 dependencies {

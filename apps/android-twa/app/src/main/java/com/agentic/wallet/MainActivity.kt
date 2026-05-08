@@ -6,7 +6,10 @@ import android.content.Context
 import android.content.Intent
 import android.net.Uri
 import android.os.Bundle
+import android.webkit.ConsoleMessage
 import android.webkit.JavascriptInterface
+import android.webkit.WebChromeClient
+import android.webkit.WebResourceError
 import android.webkit.WebResourceRequest
 import android.webkit.WebResourceResponse
 import android.webkit.WebSettings
@@ -59,11 +62,75 @@ class MainActivity : ComponentActivity() {
             settings.allowContentAccess = false
             settings.mediaPlaybackRequiresUserGesture = false
             addJavascriptInterface(AndroidBridge(this@MainActivity), "AgenticAndroid")
+            webChromeClient = object : WebChromeClient() {
+                override fun onConsoleMessage(consoleMessage: ConsoleMessage): Boolean {
+                    val level = consoleMessage.messageLevel()
+                    val metadata = mapOf(
+                        "level" to level,
+                        "line" to consoleMessage.lineNumber(),
+                        "source" to consoleMessage.sourceId(),
+                    )
+                    if (level == ConsoleMessage.MessageLevel.ERROR) {
+                        AgentMwaLog.warn(
+                            "MainActivity",
+                            "console",
+                            "WEBVIEW_CONSOLE",
+                            consoleMessage.message(),
+                            metadata,
+                        )
+                    } else {
+                        AgentMwaLog.info(
+                            "MainActivity",
+                            "console",
+                            "WEBVIEW_CONSOLE",
+                            consoleMessage.message(),
+                            metadata,
+                        )
+                    }
+                    return true
+                }
+            }
             webViewClient = object : WebViewClient() {
                 override fun shouldInterceptRequest(
                     view: WebView,
                     request: WebResourceRequest,
                 ): WebResourceResponse? = assetLoader.shouldInterceptRequest(request.url)
+
+                override fun onReceivedError(
+                    view: WebView,
+                    request: WebResourceRequest,
+                    error: WebResourceError,
+                ) {
+                    AgentMwaLog.warn(
+                        "MainActivity",
+                        "onReceivedError",
+                        "WEBVIEW_RESOURCE_ERROR",
+                        error.description?.toString() ?: "web resource load failed",
+                        mapOf(
+                            "code" to error.errorCode,
+                            "url" to request.url,
+                            "mainFrame" to request.isForMainFrame,
+                        ),
+                    )
+                }
+
+                override fun onReceivedHttpError(
+                    view: WebView,
+                    request: WebResourceRequest,
+                    errorResponse: WebResourceResponse,
+                ) {
+                    AgentMwaLog.warn(
+                        "MainActivity",
+                        "onReceivedHttpError",
+                        "WEBVIEW_HTTP_ERROR",
+                        errorResponse.reasonPhrase ?: "web resource http error",
+                        mapOf(
+                            "status" to errorResponse.statusCode,
+                            "url" to request.url,
+                            "mainFrame" to request.isForMainFrame,
+                        ),
+                    )
+                }
 
                 override fun shouldOverrideUrlLoading(
                     view: WebView,
