@@ -93,7 +93,7 @@ jobs:
             echo "Tauri version $tauri_version must match release tag $RELEASE_TAG." >&2
             exit 1
           fi
-          cargo_version="$(sed -n 's/^version = \"\\(.*\\)\"/\\1/p' apps/desktop-shell/src-tauri/Cargo.toml | head -n 1)"
+          cargo_version="$(node -e "const fs = require('node:fs'); const text = fs.readFileSync('apps/desktop-shell/src-tauri/Cargo.toml', 'utf8'); console.log(text.match(/^version = \"([^\"]+)\"/m)?.[1] ?? '')")"
           if [ "$cargo_version" != "$tag_version" ]; then
             echo "Cargo version $cargo_version must match release tag $RELEASE_TAG." >&2
             exit 1
