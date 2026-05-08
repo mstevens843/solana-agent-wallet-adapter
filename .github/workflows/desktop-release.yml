@@ -192,7 +192,7 @@ jobs:
         run: cargo test --manifest-path apps/desktop-shell/src-tauri/Cargo.toml
 
       - name: Build Tauri installer
-        uses: tauri-apps/tauri-action@v1
+        uses: tauri-apps/tauri-action@v0.6.2
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
@@ -202,8 +202,7 @@ jobs:
           releaseBody: Download the Agentic desktop installer for your platform.
           releaseDraft: false
           prerelease: false
-          uploadUpdaterJson: false
-          uploadUpdaterSignatures: false
+          includeUpdaterJson: false
           tauriScript: cargo tauri
           args: --target ${{ matrix.rustTarget }} --bundles ${{ matrix.bundle }} --config src-tauri/tauri.release.conf.json
-          releaseAssetNamePattern: ${{ matrix.desktopAsset }}
+          assetNamePattern: ${{ matrix.desktopAsset }}
