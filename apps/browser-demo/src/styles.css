@@ -3013,6 +3013,63 @@ code {
   white-space: nowrap;
 }
 
+.generated-plan-action-helper {
+  color: var(--muted);
+  font-size: 0.86rem;
+  line-height: 1.35;
+  margin: 2px 0 0;
+}
+
+.bridge-required-notice {
+  align-items: center;
+  background: rgba(19, 63, 42, 0.42);
+  border: 1px solid rgba(74, 214, 143, 0.26);
+  border-radius: 8px;
+  display: flex;
+  gap: 12px;
+  justify-content: space-between;
+  margin-top: 8px;
+  padding: 10px 12px;
+}
+
+.bridge-required-notice p {
+  color: #d7f7e5;
+  font-size: 0.86rem;
+  line-height: 1.35;
+  margin: 0;
+}
+
+.bridge-required-notice div {
+  align-items: center;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.bridge-required-notice a {
+  color: var(--accent-2);
+  font-size: 0.82rem;
+  font-weight: 900;
+  text-decoration: none;
+}
+
+.field-error-text {
+  color: #ffb8c7;
+  display: block;
+  font-size: 0.76rem;
+  font-style: normal;
+  font-weight: 800;
+  line-height: 1.25;
+  margin-top: 6px;
+}
+
+.field.field-error input,
+.field.field-error select,
+.field.field-error textarea {
+  border-color: rgba(255, 112, 143, 0.62);
+  box-shadow: 0 0 0 1px rgba(255, 112, 143, 0.12);
+}
+
 .generated-plan-quick-facts {
   display: grid;
   gap: 7px;
@@ -3582,11 +3639,59 @@ button.danger:hover:not(:disabled) {
 }
 
 .lab-select-field {
-  max-width: 360px;
+  max-width: 460px;
 }
 
 .lab-select-field select {
   min-height: 38px;
+}
+
+.artifact-picker .template-picker-menu {
+  --template-menu-max-height: 400px;
+}
+
+.artifact-picker .template-picker-option em {
+  display: block;
+  overflow: visible;
+  text-overflow: initial;
+  white-space: normal;
+}
+
+.recurring-preset-row {
+  margin: 14px 0;
+}
+
+.recurring-next-preview {
+  align-items: center;
+  border-bottom: 1px solid rgba(224, 230, 226, 0.065);
+  border-top: 1px solid rgba(224, 230, 226, 0.065);
+  display: flex;
+  gap: 12px;
+  justify-content: space-between;
+  padding: 12px 0;
+}
+
+.recurring-next-preview span {
+  color: var(--dim);
+  font-size: 0.68rem;
+  font-weight: 900;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.recurring-next-preview strong {
+  color: var(--text);
+  font-size: 0.96rem;
+}
+
+.artifact-archive-controls {
+  display: grid;
+  gap: 10px;
+  grid-template-columns: minmax(0, 1fr) minmax(160px, 0.36fr) minmax(220px, 0.52fr);
+}
+
+.artifact-filter-row {
+  align-self: end;
 }
 
 .lab-workbench-grid {
@@ -4544,6 +4649,20 @@ button.danger:hover:not(:disabled) {
 
   .homepage-footer nav {
     justify-content: flex-start;
+  }
+}
+
+@media (max-width: 900px) {
+  .artifact-archive-controls,
+  .bridge-required-notice,
+  .recurring-next-preview {
+    align-items: stretch;
+    grid-template-columns: 1fr;
+  }
+
+  .bridge-required-notice,
+  .recurring-next-preview {
+    flex-direction: column;
   }
 }
 

@@ -29,6 +29,28 @@ describe('bridge lab artifact routes', () => {
     }
   });
 
+  it('deletes signed lab artifacts through the bridge API', async () => {
+    const handle = await startTestBridge();
+    try {
+      const artifact = sampleArtifact();
+      await bridgeFetch<{ artifact: LabArtifact }>(handle.url, '/bridge/lab-artifacts', {
+        method: 'POST',
+        body: JSON.stringify({ artifact }),
+      });
+
+      const deleted = await bridgeFetch<{ deleted: boolean }>(handle.url, '/bridge/lab-artifacts/delete', {
+        method: 'POST',
+        body: JSON.stringify({ artifactId: artifact.id }),
+      });
+      const listed = await bridgeFetch<{ artifacts: LabArtifact[] }>(handle.url, '/bridge/lab-artifacts');
+
+      expect(deleted.deleted).toBe(true);
+      expect(listed.artifacts).toEqual([]);
+    } finally {
+      await handle.stop();
+    }
+  });
+
   it('requires the bridge token for lab artifact access', async () => {
     const handle = await startTestBridge();
     try {

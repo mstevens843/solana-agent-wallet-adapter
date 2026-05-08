@@ -250,6 +250,14 @@ async function handleRequest(
       writeJson(res, 200, { artifact: await requireLabArtifactStore(labArtifacts).upsertArtifact(artifact) });
       return;
     }
+    if (req.method === 'POST' && url.pathname === '/bridge/lab-artifacts/delete') {
+      const body = (await readJson(req)) as { artifactId?: string };
+      if (!body.artifactId) {
+        throw new ProtocolError('invalid_request', 'Missing artifactId.');
+      }
+      writeJson(res, 200, { deleted: await requireLabArtifactStore(labArtifacts).deleteArtifact(body.artifactId) });
+      return;
+    }
     if (req.method === 'GET' && url.pathname === '/bridge/health') {
       const caps = await backend.capabilities().catch(() => null);
       const rpcWritable = actionConfig

@@ -36,6 +36,19 @@ describe('JsonLabArtifactStore', () => {
       { id: 'lab_other', title: 'Other' },
     ]);
   });
+
+  it('deletes artifacts by id', async () => {
+    const store = new JsonLabArtifactStore(await tempStorePath());
+    const keep = sampleArtifact({ id: 'lab_keep' });
+    const remove = sampleArtifact({ id: 'lab_remove' });
+
+    await store.upsertArtifact(keep);
+    await store.upsertArtifact(remove);
+
+    await expect(store.deleteArtifact(remove.id)).resolves.toBe(true);
+    await expect(store.deleteArtifact(remove.id)).resolves.toBe(false);
+    await expect(store.listArtifacts()).resolves.toEqual([keep]);
+  });
 });
 
 async function tempStorePath(): Promise<string> {

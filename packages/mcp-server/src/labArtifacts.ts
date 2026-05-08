@@ -48,6 +48,7 @@ interface LabArtifactState {
 export interface LabArtifactStore {
   upsertArtifact(artifact: LabArtifact): Promise<LabArtifact>;
   listArtifacts(): Promise<LabArtifact[]>;
+  deleteArtifact(id: string): Promise<boolean>;
   getStoragePath?(): string;
 }
 
@@ -69,6 +70,14 @@ export class JsonLabArtifactStore implements LabArtifactStore {
   async listArtifacts(): Promise<LabArtifact[]> {
     const state = await this.read();
     return sortArtifacts(state.artifacts);
+  }
+
+  async deleteArtifact(id: string): Promise<boolean> {
+    return this.mutate((state) => {
+      const before = state.artifacts.length;
+      state.artifacts = state.artifacts.filter((artifact) => artifact.id !== id);
+      return state.artifacts.length !== before;
+    });
   }
 
   getStoragePath(): string {
