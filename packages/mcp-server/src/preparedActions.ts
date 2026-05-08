@@ -84,6 +84,8 @@ export interface ActionReceipt {
   createdAt: string;
   completedAt: string;
   error?: string;
+  recurringId?: string;
+  occurrenceKey?: string;
 }
 
 interface PreparedActionState {
@@ -551,6 +553,8 @@ function actionReceipt(action: PreparedAction): ActionReceipt {
     createdAt: action.createdAt,
     completedAt: action.confirmedAt ?? action.updatedAt,
     ...(action.error !== undefined && { error: action.error }),
+    ...(action.recurringId !== undefined && { recurringId: action.recurringId }),
+    ...(action.occurrenceKey !== undefined && { occurrenceKey: action.occurrenceKey }),
   };
 }
 

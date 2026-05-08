@@ -225,7 +225,7 @@ export const AGENT_PLAN_TEMPLATES: AgentPlanTemplate[] = [
     field('amount', 'Input amount', '0.01', '0.01', true),
     field('slippageBps', 'Max slippage bps', '50', '50'),
   ]),
-  template('recurring', 'dca', 'DCA recurring buy', 'Create a recurring approval schedule where every occurrence still needs wallet review.', 'recurring_payment', 'medium', [
+  template('recurring', 'dca', 'DCA recurring buy', 'Create a recurring plan where every occurrence still needs wallet review.', 'recurring_payment', 'medium', [
     selectField('token', 'Spend token', ['SOL', 'USDC', 'PYUSD'], 'USDC'),
     field('amount', 'Amount per occurrence', '10', '10', true),
     field('recipient', 'Recipient / settlement wallet', 'Recipient public key', '', true),
@@ -239,7 +239,7 @@ export const AGENT_PLAN_TEMPLATES: AgentPlanTemplate[] = [
     selectField('cadence', 'Cadence', ['weekly', 'monthly', 'interval_days'], 'monthly'),
     field('memo', 'Service / reason', 'Subscription memo', 'Recurring user-approved payment'),
   ]),
-  template('trading', 'limit-order', 'Limit order review', 'Draft a limit-order intent that waits for explicit wallet approval at execution time.', 'manual_review', 'medium', [
+  template('trading', 'limit-order', 'Limit order review', 'Prepare a limit-order intent that waits for explicit wallet approval at execution time.', 'manual_review', 'medium', [
     selectField('inputToken', 'Input token', ['SOL', 'USDC', 'JUP', 'BONK', 'WIF'], 'SOL'),
     selectField('outputToken', 'Output token', ['USDC', 'SOL', 'JUP', 'BONK', 'WIF'], 'USDC'),
     field('amount', 'Input amount', '0.1', '0.1'),
@@ -258,7 +258,7 @@ export const AGENT_PLAN_TEMPLATES: AgentPlanTemplate[] = [
     field('collection', 'Collection / mint', 'Optional collection name or mint', ''),
     selectField('goal', 'Goal', ['Summarize', 'Flag suspicious assets', 'Prepare sale review', 'Prepare transfer review'], 'Summarize'),
   ]),
-  template('staking', 'stake-sol', 'Stake SOL', 'Draft a staking/delegation action with validator and amount visible before signing.', 'manual_review', 'medium', [
+  template('staking', 'stake-sol', 'Stake SOL', 'Prepare a staking/delegation action with validator and amount visible before signing.', 'manual_review', 'medium', [
     field('validator', 'Validator vote account', 'Vote account or validator name', '', true),
     field('amount', 'Amount SOL', '1', '1'),
     field('memo', 'Reason', 'Stake with selected validator', 'Stake review'),
@@ -281,7 +281,7 @@ export const AGENT_PLAN_TEMPLATES: AgentPlanTemplate[] = [
     field('programOrMint', 'Program, mint, or account', 'Address to review', ''),
     textareaField('concern', 'Concern', 'What feels risky or needs checking?'),
   ]),
-  template('security', 'rug-check', 'Token risk check', 'Draft a token risk review before buying, swapping, or accepting a token.', 'manual_review', 'high', [
+  template('security', 'rug-check', 'Token risk check', 'Prepare a token risk review before buying, swapping, or accepting a token.', 'manual_review', 'high', [
     field('mint', 'Token mint', 'Mint address', ''),
     field('amount', 'Planned amount', 'Optional amount', ''),
     field('source', 'Source / link', 'DexScreener, Jupiter, X, website', ''),
@@ -302,7 +302,7 @@ export const AGENT_PLAN_TEMPLATES: AgentPlanTemplate[] = [
     field('recipient', 'Recipient address', 'Recipient public key', '', true),
     field('memo', 'Reason', 'Transfer memo', 'NFT transfer review'),
   ]),
-  template('nft', 'marketplace-listing', 'Marketplace listing review', 'Draft a listing or delisting review with price, marketplace, and royalties visible.', 'manual_review', 'medium', [
+  template('nft', 'marketplace-listing', 'Marketplace listing review', 'Prepare a listing or delisting review with price, marketplace, and royalties visible.', 'manual_review', 'medium', [
     field('mint', 'NFT mint', 'Mint address', ''),
     field('marketplace', 'Marketplace', 'Tensor, Magic Eden, custom', ''),
     field('price', 'Price', '1 SOL', ''),
@@ -336,7 +336,7 @@ export const AGENT_PLAN_TEMPLATES: AgentPlanTemplate[] = [
     field('label', 'Label', 'Treasury transfer, swap, reimbursement', 'Agentic wallet action'),
     textareaField('notes', 'Notes', 'Accounting or audit notes'),
   ]),
-  template('custom', 'custom-request', 'Custom request', 'Turn any plain-English request into a visible review draft before signing evidence.', 'manual_review', 'medium', [
+  template('custom', 'custom-request', 'Custom request', 'Turn any plain-English request into a visible review plan before signing evidence.', 'manual_review', 'medium', [
     field('policy', 'Policy cap', 'What should never be allowed?', 'No private key sharing, no unlimited approvals'),
   ]),
 ];
@@ -660,7 +660,7 @@ function normalizeHostedAiPlan(payload: unknown, request: AiPlanRequest): AgentP
     : SHARED_SAFEGUARDS;
   return {
     intent: stringOr(record.intent, `${request.template.title}: ${request.prompt}`),
-    route: stringOr(record.route, `Draft ${request.template.actionType} request and show route details before wallet approval.`),
+    route: stringOr(record.route, `Prepare ${request.template.actionType} request and show route details before wallet approval.`),
     risk: stringOr(record.risk, `Risk level ${request.template.risk}. Verify all visible fields before signing.`),
     approval: stringOr(record.approval, 'Wallet approval remains a separate explicit user action.'),
     source: 'ai',
@@ -733,7 +733,7 @@ export function aiMessages(request: AiPlanRequest): Array<{ role: 'system' | 'us
         userNotes: request.userNotes,
         template: request.template,
         parameters: request.parameters,
-        requiredBoundary: 'AI drafts a plan only. Wallet approval and signing happen later in the user wallet.',
+        requiredBoundary: 'AI prepares a plan only. Wallet approval and signing happen later in the user wallet.',
       }),
     },
   ];
@@ -822,7 +822,7 @@ function routeFor(actionType: string): string {
     case 'read_only':
       return 'Read or review wallet context only. No transaction should be produced unless the user creates a separate approval.';
     default:
-      return 'Draft the request, expose the route and policy checks, then require a separate wallet approval before signing.';
+      return 'Prepare the request, expose the route and policy checks, then require a separate wallet approval before signing.';
   }
 }
 

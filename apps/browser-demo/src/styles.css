@@ -3343,6 +3343,42 @@ button.danger:hover:not(:disabled) {
   padding: 0 13px;
 }
 
+.one-time-plan-tabs {
+  justify-content: flex-start;
+  margin-bottom: 12px;
+  width: 100%;
+}
+
+.one-time-plan-tabs button {
+  min-height: 38px;
+}
+
+.one-time-create-panel,
+.one-time-review-panel {
+  display: grid;
+  gap: 12px;
+}
+
+.completed-filter-row {
+  margin-bottom: 12px;
+}
+
+.completed-plan-grid {
+  align-items: start;
+}
+
+.completed-plan-card .template-description {
+  margin: 0;
+}
+
+.completed-plan-actions {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.completed-plan-details .proof-grid {
+  margin-top: 10px;
+}
+
 .artifact-workspace-head {
   align-items: flex-start;
 }

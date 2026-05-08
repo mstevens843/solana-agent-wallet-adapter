@@ -129,6 +129,8 @@ interface ActionReceipt {
   createdAt: string;
   completedAt: string;
   error?: string;
+  recurringId?: string;
+  occurrenceKey?: string;
 }
 
 interface BridgeHealth {

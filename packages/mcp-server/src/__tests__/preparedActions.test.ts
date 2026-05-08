@@ -79,6 +79,7 @@ describe('JsonPreparedActionStore', () => {
       cadence: 'weekly',
       dayOfWeek: 5,
       localTime: '00:00',
+      startAt: '2026-05-01T00:00:00.000Z',
       note: 'Weekly content payout',
     });
 
