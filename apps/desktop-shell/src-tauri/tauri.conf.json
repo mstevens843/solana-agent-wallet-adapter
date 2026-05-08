@@ -24,7 +24,8 @@
     "active": true,
     "targets": "all",
     "icon": [
-      "icons/icon.png"
+      "icons/icon.png",
+      "icons/icon.ico"
     ],
     "category": "Finance",
     "shortDescription": "Agentic desktop runtime for Solana Agent Wallet Adapter."
