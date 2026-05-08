@@ -933,9 +933,11 @@ async function bootstrap(): Promise<void> {
     await restoreIosNativeSession();
   }
   await hydrateLabArtifactArchive();
-  await loadBridgeConfig(false);
-  if (state.aiSettings.mode === 'bridge') {
-    await refreshBridgeAiStatus(false);
+  if (shouldProbeBridgeOnStartup()) {
+    await loadBridgeConfig(false);
+    if (state.aiSettings.mode === 'bridge') {
+      await refreshBridgeAiStatus(false);
+    }
   }
   render();
 }
@@ -8287,6 +8289,10 @@ function resolveDevControls(): boolean {
   return hostname === 'localhost' || hostname === '127.0.0.1' || hostname === '::1';
 }
 
+function shouldProbeBridgeOnStartup(): boolean {
+  return isLocalOrPrivateHostname(globalThis.location?.hostname ?? '');
+}
+
 function defaultAiMode(): AiSettings['mode'] {
   return isLocalBrowserOrigin() ? 'bridge' : 'hosted';
 }
@@ -8317,7 +8323,50 @@ function persistedAiSettings(persistedState: PersistedState): Omit<AiSettings, '
 
 function isLocalBrowserOrigin(): boolean {
   const hostname = globalThis.location?.hostname ?? '';
-  return hostname === 'localhost' || hostname === '127.0.0.1' || hostname === '::1' || hostname === '';
+  return isLoopbackHostname(hostname) || normalizeHostname(hostname) === '';
+}
+
+function isLocalOrPrivateHostname(hostname: string): boolean {
+  const normalized = normalizeHostname(hostname);
+  return (
+    isLoopbackHostname(normalized) ||
+    normalized.endsWith('.local') ||
+    isPrivateIpv4Hostname(normalized) ||
+    isPrivateIpv6Hostname(normalized)
+  );
+}
+
+function isLoopbackHostname(hostname: string): boolean {
+  const normalized = normalizeHostname(hostname);
+  return normalized === 'localhost' || normalized === '127.0.0.1' || normalized === '::1' || normalized === '';
+}
+
+function normalizeHostname(hostname: string): string {
+  return hostname.trim().toLowerCase().replace(/^\[|\]$/g, '').replace(/\.$/, '');
+}
+
+function isPrivateIpv4Hostname(hostname: string): boolean {
+  const parts = hostname.split('.');
+  if (parts.length !== 4) return false;
+  const octets = parts.map((part) => {
+    if (!/^\d{1,3}$/.test(part)) return Number.NaN;
+    const value = Number(part);
+    return value >= 0 && value <= 255 ? value : Number.NaN;
+  });
+  if (octets.some((octet) => Number.isNaN(octet))) return false;
+  const [first, second] = octets as [number, number, number, number];
+  return (
+    first === 10 ||
+    first === 127 ||
+    (first === 172 && second >= 16 && second <= 31) ||
+    (first === 192 && second === 168) ||
+    (first === 169 && second === 254)
+  );
+}
+
+function isPrivateIpv6Hostname(hostname: string): boolean {
+  if (!hostname.includes(':')) return false;
+  return hostname === '::1' || hostname.startsWith('fc') || hostname.startsWith('fd') || hostname.startsWith('fe80:');
 }
 
 function resolveAndroidExampleTab(): boolean {

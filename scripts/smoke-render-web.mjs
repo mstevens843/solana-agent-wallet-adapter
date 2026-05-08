@@ -42,6 +42,7 @@ try {
     '--headless=new',
     `--remote-debugging-port=${chromePort}`,
     `--user-data-dir=${userDataDir}`,
+    '--host-resolver-rules=MAP agentic-smoke.test 127.0.0.1',
     '--no-first-run',
     '--disable-gpu',
     'about:blank',
@@ -66,6 +67,13 @@ try {
     }
     console.log(`[smoke-render-web] ${route} rendered ${result.page.appHtmlLength} HTML byte(s).`);
   }
+
+  const publicHostResult = await page.inspect(`http://agentic-smoke.test:${serverPort}/app`);
+  const publicHostBridgeProbe = publicHostResult.events.find(isLocalBridgeConfigRequest);
+  if (publicHostBridgeProbe) {
+    throw new Error(`Public-host startup requested the local bridge: ${eventSummary(publicHostBridgeProbe)}`);
+  }
+  console.log('[smoke-render-web] public-host startup did not request the local bridge.');
 
   page.close();
 } finally {
@@ -209,6 +217,9 @@ async function connectPage(port) {
     if (message.method === 'Runtime.exceptionThrown' || message.method === 'Log.entryAdded') {
       events.push(message);
     }
+    if (message.method === 'Network.requestWillBeSent') {
+      events.push(message);
+    }
     if (message.id && pending.has(message.id)) {
       pending.get(message.id)(message);
       pending.delete(message.id);
@@ -228,6 +239,7 @@ async function connectPage(port) {
 
   await send('Runtime.enable');
   await send('Log.enable');
+  await send('Network.enable');
   await send('Page.enable');
 
   return {
@@ -273,7 +285,22 @@ function eventSummary(event) {
   if (event.method === 'Runtime.exceptionThrown') {
     return event.params?.exceptionDetails?.exception?.description ?? event.params?.exceptionDetails?.text ?? 'runtime exception';
   }
+  if (event.method === 'Network.requestWillBeSent') {
+    return event.params?.request?.url ?? 'network request';
+  }
   return event.params?.entry?.text ?? 'browser log error';
+}
+
+function isLocalBridgeConfigRequest(event) {
+  if (event?.method !== 'Network.requestWillBeSent') return false;
+  const raw = event.params?.request?.url;
+  if (typeof raw !== 'string') return false;
+  try {
+    const url = new URL(raw);
+    return url.hostname === '127.0.0.1' && url.port === '8787' && url.pathname === '/bridge/config';
+  } catch {
+    return false;
+  }
 }
 
 function sleep(ms) {
