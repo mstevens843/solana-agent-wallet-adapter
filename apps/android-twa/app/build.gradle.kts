@@ -33,6 +33,16 @@ fun resolvedPnpmCommand(): String {
         ?: "pnpm"
 }
 
+fun resolvedNodeCommand(): String {
+    val configured = propertyOrEnv("NODE_BIN")
+        ?: propertyOrEnv("agenticNodeBin")
+    if (!configured.isNullOrBlank()) return configured
+
+    return listOf("/usr/local/bin/node", "/opt/homebrew/bin/node")
+        .firstOrNull { file(it).isFile }
+        ?: "node"
+}
+
 val launchUrl = propertyOrEnv("AGENTIC_ANDROID_LAUNCH_URL")
     ?: propertyOrEnv("agenticLaunchUrl")
     ?: "https://agenticwalletadapter.com/#app"
@@ -218,7 +228,13 @@ val typecheckBundledWebAssets = tasks.register<Exec>("typecheckBundledWebAssets"
 
 val verifyBundledWebAssets = tasks.register<Exec>("verifyBundledWebAssets") {
     workingDir = rootProject.layout.projectDirectory.dir("../..").asFile
-    commandLine("node", "scripts/verify-browser-dist.mjs")
+    commandLine(resolvedNodeCommand(), "scripts/verify-browser-dist.mjs")
+    environment(
+        "PATH",
+        listOf("/usr/local/bin", "/opt/homebrew/bin", System.getenv("PATH") ?: "")
+            .filter { it.isNotBlank() }
+            .joinToString(File.pathSeparator),
+    )
     dependsOn(buildBundledWebAssets)
 }
 

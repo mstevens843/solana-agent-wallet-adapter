@@ -29,6 +29,7 @@ export interface AndroidNativeWalletBackendOptions {
 
 interface AndroidNativeBridge {
   mwaRequest?: (requestId: string, method: string, payloadJson: string) => void;
+  isDebugBuild?: () => boolean;
 }
 
 interface AndroidNativeCallbackBridge {
@@ -153,6 +154,12 @@ export class AndroidNativeWalletBackend implements WalletBackend {
       status: 'pending',
     };
     this.approvals.set(request.id, approval);
+    logAndroidNative('submit', 'START', {
+      requestId: request.id,
+      kind: request.kind,
+      cluster: request.cluster,
+      payload: formatNativePayload(request),
+    });
 
     void androidNativeRequest<SigningResult>('sign', request)
       .then((result) => {
@@ -160,6 +167,11 @@ export class AndroidNativeWalletBackend implements WalletBackend {
           requestId: request.id,
           status: 'approved',
           result,
+        });
+        logAndroidNative('submit', 'SUCCESS', {
+          requestId: request.id,
+          kind: request.kind,
+          result: formatNativePayload(result),
         });
       })
       .catch((err: unknown) => {
@@ -169,6 +181,13 @@ export class AndroidNativeWalletBackend implements WalletBackend {
           status: protocolErr.code === 'user_rejected' ? 'rejected' : 'failed',
           error: protocolErr.toPayload(),
         });
+        logAndroidNative('submit', 'FAIL', {
+          requestId: request.id,
+          kind: request.kind,
+          code: protocolErr.code,
+          message: protocolErr.message,
+          error: protocolErr.toPayload(),
+        }, 'warn');
       });
 
     return approval;
@@ -286,8 +305,15 @@ function androidNativeRequest<T>(method: string, payload?: unknown): Promise<T> 
       timer,
     });
     try {
-      logAndroidNative('request', 'START', { method, requestId });
-      injectedBridge.mwaRequest(requestId, method, JSON.stringify(payload ?? {}));
+      const payloadJson = JSON.stringify(payload ?? {});
+      logAndroidNative('request', 'START', {
+        method,
+        requestId,
+        payloadChars: payloadJson.length,
+        payloadHash: deterministicHash(payloadJson),
+        payload: formatNativePayload(payload ?? {}),
+      });
+      injectedBridge.mwaRequest(requestId, method, payloadJson);
     } catch (err) {
       window.clearTimeout(timer);
       pendingNativeRequests.delete(requestId);
@@ -298,6 +324,7 @@ function androidNativeRequest<T>(method: string, payload?: unknown): Promise<T> 
           method,
           requestId,
           error: err instanceof Error ? err.message : String(err),
+          payload: formatNativePayload(payload ?? {}),
         },
         'warn',
       );
@@ -317,7 +344,11 @@ function installAndroidNativeCallbackBridge(): void {
       if (!pending) return;
       window.clearTimeout(pending.timer);
       pendingNativeRequests.delete(requestId);
-      logAndroidNative('request', 'SUCCESS', { method: pending.method, requestId });
+      logAndroidNative('request', 'SUCCESS', {
+        method: pending.method,
+        requestId,
+        payload: formatNativePayload(payload),
+      });
       pending.resolve(payload);
     },
     reject(requestId, error) {
@@ -330,6 +361,7 @@ function installAndroidNativeCallbackBridge(): void {
         requestId,
         code: error.code ?? 'UNKNOWN',
         message: error.message ?? 'Android native MWA request failed.',
+        error: formatNativePayload(error),
       }, 'warn');
       pending.reject(protocolErrorFromNative(error));
     },
@@ -338,6 +370,14 @@ function installAndroidNativeCallbackBridge(): void {
 
 function androidNativeBridge(): AndroidNativeBridge | undefined {
   return (globalThis as typeof globalThis & { AgenticAndroid?: AndroidNativeBridge }).AgenticAndroid;
+}
+
+function androidNativeDebugEnabled(): boolean {
+  try {
+    return androidNativeBridge()?.isDebugBuild?.() === true;
+  } catch {
+    return false;
+  }
 }
 
 function protocolErrorFromUnknown(err: unknown): ProtocolError {
@@ -410,11 +450,11 @@ function walletNameFromStatus(status: AndroidMwaStatus | null): string {
 function logAndroidNative(
   operation: string,
   phase: 'START' | 'SUCCESS' | 'FAIL',
-  fields: Record<string, string>,
+  fields: Record<string, unknown>,
   level: 'info' | 'warn' = 'info',
 ): void {
   const details = Object.entries(fields)
-    .map(([key, value]) => `${key}=${JSON.stringify(value)}`)
+    .map(([key, value]) => `${key}=${stringifyLogValue(value)}`)
     .join(' ');
   const line = `[AgentAndroidNative] ${operation} | ${phase}${details ? ` ${details}` : ''}`;
   if (level === 'warn') {
@@ -422,4 +462,86 @@ function logAndroidNative(
     return;
   }
   console.info(line);
+}
+
+function stringifyLogValue(value: unknown): string {
+  try {
+    return JSON.stringify(value) ?? 'undefined';
+  } catch (err) {
+    return JSON.stringify(err instanceof Error ? err.message : String(value)) ?? '"[unserializable]"';
+  }
+}
+
+function formatNativePayload(value: unknown): unknown {
+  if (androidNativeDebugEnabled()) {
+    return value;
+  }
+  return summarizeNativePayload(value);
+}
+
+function summarizeNativePayload(value: unknown): unknown {
+  if (!value || typeof value !== 'object') {
+    return value;
+  }
+  if (isSigningRequestLike(value)) {
+    const request = value as SigningRequest;
+    return {
+      id: request.id,
+      kind: request.kind,
+      cluster: request.cluster,
+      payload: {
+        encoding: request.payload.encoding,
+        chars: request.payload.data.length,
+        hash: deterministicHash(request.payload.data),
+      },
+      display: request.display
+        ? {
+            summary: request.display.summary,
+            riskLevel: request.display.riskLevel,
+            simulationErr: request.display.simulation?.err ?? null,
+            simulationLogCount: request.display.simulation?.logs?.length ?? 0,
+          }
+        : undefined,
+      expiresAt: request.expiresAt,
+    };
+  }
+  if (isSigningResultLike(value)) {
+    const result = value as SigningResult;
+    return {
+      signature: result.signature,
+      txid: result.txid,
+    };
+  }
+  if (isNativeMwaError(value)) {
+    return {
+      code: value.code,
+      message: value.message,
+    };
+  }
+  return value;
+}
+
+function isSigningRequestLike(value: object): value is SigningRequest {
+  const candidate = value as Partial<SigningRequest>;
+  return typeof candidate.id === 'string'
+    && typeof candidate.kind === 'string'
+    && typeof candidate.cluster === 'string'
+    && typeof candidate.payload === 'object'
+    && candidate.payload !== null
+    && typeof candidate.payload.data === 'string'
+    && typeof candidate.payload.encoding === 'string';
+}
+
+function isSigningResultLike(value: object): value is SigningResult {
+  const candidate = value as Partial<SigningResult>;
+  return typeof candidate.signature === 'string' || typeof candidate.txid === 'string';
+}
+
+function deterministicHash(value: string): string {
+  let hash = 0x811c9dc5;
+  for (let index = 0; index < value.length; index += 1) {
+    hash ^= value.charCodeAt(index);
+    hash = Math.imul(hash, 0x01000193);
+  }
+  return (hash >>> 0).toString(16).padStart(8, '0');
 }

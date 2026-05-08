@@ -431,6 +431,13 @@ class MwaExampleActivity : ComponentActivity() {
 
     private fun connectBridge() = runAction("connectBridge") {
         hideKeyboard()
+        AgentMwaLog.info(
+            "MwaExampleActivity",
+            "connectBridge",
+            "STEP_INPUT",
+            "bridge connect inputs captured",
+            mapOf("bridgeUrl" to bridgeUrlInput.text.toString().trim(), "bridgeAuthHeaderChars" to bridgeTokenInput.text.toString().trim().length),
+        )
         val active = controller.activeAuthorization()
             ?: controller.reconnectLatest(selectedCluster())
             ?: throw MwaOperationException("UNAUTHORIZED", "Connect or reconnect a wallet before connecting the bridge.")
@@ -499,11 +506,27 @@ class MwaExampleActivity : ComponentActivity() {
             client.reject(request.id, err)
             appendLog("Rejected ${request.kind}: ${err.code} ${err.message}")
             requestSummaryView?.text = "Rejected ${request.kind}. Waiting for the next agent request."
+            AgentMwaLog.failure(
+                "MwaExampleActivity",
+                "handleBridgeRequest",
+                "FAIL_MWA_OPERATION",
+                "bridge request handling failed with MWA error",
+                err,
+                mapOf("requestId" to request.id, "kind" to request.kind, "code" to err.code),
+            )
         } catch (err: Exception) {
             val wrapped = MwaOperationException("WALLET_ERROR", err.message ?: err.javaClass.simpleName, err)
             client.reject(request.id, wrapped)
             appendLog("Failed ${request.kind}: ${wrapped.message}")
             requestSummaryView?.text = "Request failed. Waiting for the next agent request."
+            AgentMwaLog.failure(
+                "MwaExampleActivity",
+                "handleBridgeRequest",
+                "FAIL_EXCEPTION",
+                "bridge request handling threw",
+                err,
+                mapOf("requestId" to request.id, "kind" to request.kind),
+            )
         }
     }
 
@@ -518,10 +541,10 @@ class MwaExampleActivity : ComponentActivity() {
                 AgentMwaLog.info("MainActivity", label, "SUCCESS", "user action completed")
             } catch (err: MwaOperationException) {
                 appendLog("${err.code}: ${err.message}")
-                AgentMwaLog.warn("MainActivity", label, "FAIL", "user action failed", mapOf("code" to err.code, "message" to err.message))
+                AgentMwaLog.failure("MainActivity", label, "FAIL", "user action failed", err, mapOf("code" to err.code))
             } catch (err: Exception) {
                 appendLog("ERROR: ${err.message ?: err.javaClass.simpleName}")
-                AgentMwaLog.warn("MainActivity", label, "FAIL", "user action failed", mapOf("class" to err.javaClass.simpleName, "message" to err.message))
+                AgentMwaLog.failure("MainActivity", label, "FAIL", "user action failed", err)
             } finally {
                 busy = false
                 renderState()
@@ -587,10 +610,37 @@ class MwaExampleActivity : ComponentActivity() {
 
     private fun decodeTransactionInput(): ByteArray {
         val value = transactionInput.text.toString().trim()
+        AgentMwaLog.info(
+            "MwaExampleActivity",
+            "decodeTransactionInput",
+            "START",
+            "decoding manual transaction input",
+            mapOf("base64Chars" to value.length, "base64Payload" to if (BuildConfig.DEBUG) value else "[debug-only]"),
+        )
         if (value.isBlank()) {
             throw MwaOperationException("INVALID_PAYLOADS", "Paste a base64 serialized transaction first.")
         }
-        return Base64.decode(value, Base64.DEFAULT)
+        return try {
+            Base64.decode(value, Base64.DEFAULT).also {
+                AgentMwaLog.info(
+                    "MwaExampleActivity",
+                    "decodeTransactionInput",
+                    "SUCCESS",
+                    "manual transaction input decoded",
+                    AgentMwaLog.transactionMetadata("transaction", it),
+                )
+            }
+        } catch (err: IllegalArgumentException) {
+            AgentMwaLog.failure(
+                "MwaExampleActivity",
+                "decodeTransactionInput",
+                "FAIL_DECODE",
+                "manual transaction input decode failed",
+                err,
+                mapOf("base64Chars" to value.length, "base64Payload" to if (BuildConfig.DEBUG) value else "[debug-only]"),
+            )
+            throw MwaOperationException("INVALID_PAYLOADS", "Invalid base64 serialized transaction: ${err.message}", err)
+        }
     }
 
     private fun appendLog(line: String) {

@@ -100,6 +100,7 @@ interface IosNativeWalletOption {
 interface AgenticAndroidBridge {
   openMwaExample?: () => void;
   isExampleTabEnabled?: () => boolean;
+  isDebugBuild?: () => boolean;
   mwaRequest?: (requestId: string, method: string, payloadJson: string) => void;
 }
 
@@ -547,6 +548,7 @@ interface DemoState {
   agentPreparedActionId: string;
   generatedPlans: GeneratedPlanRecord[];
   selectedGeneratedPlanId: string;
+  generatedPlanAuditId: string;
   showArchivedGeneratedPlans: boolean;
   aiSettings: AiSettings;
   aiSettingsPanelOpen: boolean | null;
@@ -724,6 +726,7 @@ const state: DemoState = {
   agentPreparedActionId: '',
   generatedPlans: [],
   selectedGeneratedPlanId: '',
+  generatedPlanAuditId: '',
   showArchivedGeneratedPlans: false,
   aiSettings: {
     ...initialAiSettings,
@@ -790,9 +793,17 @@ async function startApp(): Promise<void> {
     hydrateGeneratedPlansForStartup();
     render();
     window.addEventListener('popstate', () => render());
+    window.addEventListener('keydown', handleGlobalKeydown);
     await bootstrap();
   } catch (err) {
     renderStartupFailure(err);
+  }
+}
+
+function handleGlobalKeydown(event: KeyboardEvent): void {
+  if (event.key === 'Escape' && state.generatedPlanAuditId) {
+    event.preventDefault();
+    closeGeneratedPlanAuditModal();
   }
 }
 
@@ -2771,9 +2782,9 @@ function agentPlanPanel(): string {
 
 function generatedPlansPanel(): string {
   const visiblePlans = visibleGeneratedPlans();
-  const selected = selectedGeneratedPlan() ?? visiblePlans[0];
   const archivedCount = state.generatedPlans.filter((record) => record.status === 'archived').length;
   const activeCount = state.generatedPlans.length - archivedCount;
+  const auditRecord = generatedPlanById(state.generatedPlanAuditId);
   return `
     <section class="approval-object signature-stage stage-generated stage-anchor ${state.generatedPlans.length ? 'stage-active' : 'stage-draft'}">
       <div class="signature-object-head">
@@ -2797,17 +2808,15 @@ function generatedPlansPanel(): string {
       ${
         visiblePlans.length
           ? `
-            <div class="generated-plans-layout">
-              <div class="generated-plan-list" aria-label="Generated plans">
-                ${visiblePlans.map((record) => generatedPlanRow(record, selected?.id === record.id)).join('')}
-              </div>
-              ${selected ? generatedPlanDetail(selected) : generatedPlansEmptyState()}
+            <div class="generated-plan-grid" aria-label="Generated plans">
+              ${visiblePlans.map((record) => generatedPlanCard(record)).join('')}
             </div>
           `
           : generatedPlansEmptyState()
       }
       ${state.error ? `<div class="error">${escapeHtml(state.error)}</div>` : ''}
     </section>
+    ${auditRecord ? generatedPlanAuditModal(auditRecord) : ''}
   `;
 }
 
@@ -2822,43 +2831,40 @@ function generatedPlanStatusLine(visibleCount: number, archivedCount: number): s
   `;
 }
 
-function generatedPlanRow(record: GeneratedPlanRecord, selected: boolean): string {
-  const queued = record.preparedActionId ? `Queued ${short(record.preparedActionId)}` : canQueueAgentPlan(record.plan) ? 'Queueable' : 'Proof only';
-  return `
-    <article class="generated-plan-row ${selected ? 'selected' : ''} ${record.status === 'archived' ? 'archived' : ''}">
-      <button
-        data-generated-plan-action="view"
-        data-generated-plan-id="${escapeHtml(record.id)}"
-        type="button"
-        ${state.busy ? 'disabled' : ''}
-      >
-        <span class="generated-plan-row-top">
-          <span class="status-pill ${generatedPlanStatusTone(record)}">${escapeHtml(generatedPlanStatusLabel(record))}</span>
-          <span>${escapeHtml(formatDateTime(record.createdAt))}</span>
-        </span>
-        <strong>${escapeHtml(record.plan.intent)}</strong>
-        <span>${escapeHtml(`${planSourceLabel(record.plan)} · ${queued}`)}</span>
-      </button>
-    </article>
-  `;
-}
-
-function generatedPlanDetail(record: GeneratedPlanRecord): string {
-  const queueable = canQueueAgentPlan(record.plan);
+function generatedPlanCard(record: GeneratedPlanRecord): string {
+  const plan = record.plan;
+  const queueable = canQueueAgentPlan(plan);
   const archived = record.status === 'archived';
   const signDisabled = !state.address || state.busy || archived ? 'disabled' : '';
   const queueDisabled = !state.address || !state.bridgeActive || !queueable || state.busy || archived ? 'disabled' : '';
+  const selected = state.selectedGeneratedPlanId === record.id;
+  const detailsCount = plan.safeguards.length + plan.fields.length + (plan.userNotes ? 1 : 0);
   return `
-    <div class="generated-plan-detail">
-      <div class="generated-plan-detail-head">
-        <div>
-          <span class="workbench-kicker">${escapeHtml(record.source === 'ai' ? 'AI draft' : 'Template draft')}</span>
-          <h3>${escapeHtml(record.plan.templateTitle)}</h3>
-          <p>${escapeHtml(generatedPlanMeta(record))}</p>
-        </div>
+    <article class="generated-plan-card ${selected ? 'selected' : ''} ${archived ? 'archived' : ''}">
+      <div class="generated-plan-card-top">
         <span class="status-pill ${generatedPlanStatusTone(record)}">${escapeHtml(generatedPlanStatusLabel(record))}</span>
+        <span>${escapeHtml(formatDateTime(record.createdAt))}</span>
       </div>
-      <div class="generated-plan-actions agent-actions">
+      <div class="generated-plan-card-title">
+        <span class="workbench-kicker">${escapeHtml(record.source === 'ai' ? 'AI draft' : 'Template draft')}</span>
+        <h3 title="${escapeHtml(plan.intent)}">${escapeHtml(plan.intent)}</h3>
+      </div>
+      <div class="generated-plan-card-chips">
+        <span title="${escapeHtml(plan.templateTitle)}">${escapeHtml(plan.templateTitle)}</span>
+        <span>${escapeHtml(titleCase(plan.category))}</span>
+        <span>${escapeHtml(queueable ? 'Queueable' : 'Proof only')}</span>
+      </div>
+      <div class="generated-plan-quick-facts">
+        ${generatedPlanFact('Network', titleCaseCluster(record.cluster))}
+        ${generatedPlanFact('Wallet', record.walletAddress ? short(record.walletAddress) : 'No wallet')}
+        ${generatedPlanFact('Action', plan.actionType.replace(/_/g, ' '))}
+      </div>
+      <div class="generated-plan-decision-grid">
+        ${generatedPlanDecisionRows(plan).map(([label, value]) => generatedPlanDecisionItem(label, value)).join('')}
+      </div>
+      ${generatedPlanInlineDetails(plan, detailsCount)}
+      ${generatedPlanOutcomeStrip(record)}
+      <div class="generated-plan-card-actions">
         <button
           data-generated-plan-action="make-active"
           data-generated-plan-id="${escapeHtml(record.id)}"
@@ -2882,30 +2888,206 @@ function generatedPlanDetail(record: GeneratedPlanRecord): string {
           ${queueDisabled}
           title="${escapeHtml(generatedQueuePlanTitle(record))}"
         >
-          Queue approval
+          Queue
         </button>
         <button
           class="utility"
-          data-generated-plan-action="${archived ? 'restore' : 'archive'}"
+          data-generated-plan-action="view"
           data-generated-plan-id="${escapeHtml(record.id)}"
-          ${state.busy ? 'disabled' : ''}
         >
-          ${archived ? 'Restore' : 'Archive'}
-        </button>
-        <button
-          class="utility danger"
-          data-generated-plan-action="delete"
-          data-generated-plan-id="${escapeHtml(record.id)}"
-          ${state.busy ? 'disabled' : ''}
-        >
-          Delete
+          Details
         </button>
       </div>
-      ${agentPlanCard(record.plan)}
-      ${generatedPlanResultBlock(record)}
-      ${!state.address ? '<div class="notice">Connect a wallet when you are ready to sign a review proof for this plan.</div>' : ''}
-      ${queueable ? '' : '<div class="notice">This draft is a review/proof plan. Queue approval is only available for SOL transfers, SPL transfers, swaps, and recurring payments.</div>'}
+      <details class="generated-plan-more">
+        <summary>More</summary>
+        <div>
+          <button
+            class="utility"
+            data-generated-plan-action="${archived ? 'restore' : 'archive'}"
+            data-generated-plan-id="${escapeHtml(record.id)}"
+            ${state.busy ? 'disabled' : ''}
+          >
+            ${archived ? 'Restore' : 'Archive'}
+          </button>
+          <button
+            class="utility danger"
+            data-generated-plan-action="delete"
+            data-generated-plan-id="${escapeHtml(record.id)}"
+            ${state.busy ? 'disabled' : ''}
+          >
+            Delete
+          </button>
+        </div>
+      </details>
+    </article>
+  `;
+}
+
+function generatedPlanDecisionRows(plan: AgentPlan): Array<[string, string]> {
+  const policyCap = plan.fields.find((field) => /policy|cap|limit/i.test(field.label) && field.value.trim().length > 0);
+  return [
+    ['Risk', plan.risk],
+    ['Approval', plan.approval],
+    policyCap ? [policyCap.label, policyCap.value] : ['Route', plan.route],
+  ];
+}
+
+function generatedPlanDecisionItem(label: string, value: string): string {
+  return `
+    <div title="${escapeHtml(value)}">
+      <span>${escapeHtml(label)}</span>
+      <p>${escapeHtml(value)}</p>
     </div>
+  `;
+}
+
+function generatedPlanFact(label: string, value: string): string {
+  return `
+    <div title="${escapeHtml(value)}">
+      <span>${escapeHtml(label)}</span>
+      <strong>${escapeHtml(value)}</strong>
+    </div>
+  `;
+}
+
+function generatedPlanInlineDetails(plan: AgentPlan, detailsCount: number): string {
+  if (detailsCount === 0) return '';
+  return `
+    <details class="generated-plan-inline-details">
+      <summary>${escapeHtml(`${detailsCount} review details`)}</summary>
+      <div>
+        ${plan.userNotes ? generatedPlanMiniSection('User notes', [plan.userNotes]) : ''}
+        ${plan.fields.length ? generatedPlanMiniSection('Fields', plan.fields.map((field) => `${field.label}: ${field.value}`)) : ''}
+        ${plan.safeguards.length ? generatedPlanMiniSection('Safeguards', plan.safeguards) : ''}
+      </div>
+    </details>
+  `;
+}
+
+function generatedPlanMiniSection(label: string, values: string[]): string {
+  return `
+    <section>
+      <span>${escapeHtml(label)}</span>
+      <ul>
+        ${values.map((value) => `<li>${escapeHtml(value)}</li>`).join('')}
+      </ul>
+    </section>
+  `;
+}
+
+function generatedPlanOutcomeStrip(record: GeneratedPlanRecord): string {
+  if (!record.signature && !record.preparedActionId) return '';
+  return `
+    <div class="generated-plan-outcomes">
+      ${record.signature ? `<span title="${escapeHtml(record.signature)}">Proof ${escapeHtml(short(record.signature))}</span>` : ''}
+      ${record.preparedActionId ? `<span title="${escapeHtml(record.preparedActionId)}">Queued ${escapeHtml(short(record.preparedActionId))}</span>` : ''}
+    </div>
+  `;
+}
+
+function generatedPlanAuditModal(record: GeneratedPlanRecord): string {
+  const plan = record.plan;
+  return `
+    <div class="generated-plan-modal-backdrop" role="presentation">
+      <section class="generated-plan-modal" role="dialog" aria-modal="true" aria-labelledby="generated-plan-audit-title">
+        <div class="generated-plan-modal-head">
+          <div>
+            <span class="workbench-kicker">${escapeHtml(record.source === 'ai' ? 'AI draft audit' : 'Template draft audit')}</span>
+            <h2 id="generated-plan-audit-title">${escapeHtml(plan.intent)}</h2>
+            <p>${escapeHtml(generatedPlanMeta(record))}</p>
+          </div>
+          <button class="utility" data-generated-plan-modal-close aria-label="Close plan details">Close</button>
+        </div>
+        <div class="generated-plan-modal-actions">
+          <button
+            data-generated-plan-action="make-active"
+            data-generated-plan-id="${escapeHtml(record.id)}"
+            ${state.busy ? 'disabled' : ''}
+          >
+            Make active
+          </button>
+          <button
+            class="${record.signature ? '' : 'primary'}"
+            data-generated-plan-action="sign-proof"
+            data-generated-plan-id="${escapeHtml(record.id)}"
+            ${!state.address || state.busy || record.status === 'archived' ? 'disabled' : ''}
+            title="${escapeHtml(signProofTitle(record))}"
+          >
+            Sign proof
+          </button>
+          <button
+            class="utility"
+            data-generated-plan-action="queue"
+            data-generated-plan-id="${escapeHtml(record.id)}"
+            ${!state.address || !state.bridgeActive || !canQueueAgentPlan(plan) || state.busy || record.status === 'archived' ? 'disabled' : ''}
+            title="${escapeHtml(generatedQueuePlanTitle(record))}"
+          >
+            Queue approval
+          </button>
+        </div>
+        <div class="generated-plan-audit-body">
+          <section class="generated-plan-audit-section">
+            <div class="generated-plan-audit-section-head">
+              <h3>Decision</h3>
+              <span class="status-pill ${generatedPlanStatusTone(record)}">${escapeHtml(generatedPlanStatusLabel(record))}</span>
+            </div>
+            <dl class="generated-plan-audit-grid">
+              ${generatedPlanAuditRow('Route', plan.route)}
+              ${generatedPlanAuditRow('Risk', plan.risk)}
+              ${generatedPlanAuditRow('Approval', plan.approval)}
+            </dl>
+          </section>
+          <section class="generated-plan-audit-section">
+            <div class="generated-plan-audit-section-head">
+              <h3>Plan facts</h3>
+            </div>
+            <dl class="generated-plan-audit-grid compact">
+              ${reviewSummaryRows(plan).map(([label, value]) => generatedPlanAuditRow(label, value)).join('')}
+              ${generatedPlanAuditRow('Created', formatDateTime(record.createdAt))}
+              ${generatedPlanAuditRow('Updated', formatDateTime(record.updatedAt))}
+              ${generatedPlanAuditRow('Queueability', canQueueAgentPlan(plan) ? 'Queueable approval' : 'Review proof only')}
+            </dl>
+          </section>
+          ${plan.userNotes ? generatedPlanAuditTextSection('User notes', plan.userNotes) : ''}
+          ${plan.fields.length ? generatedPlanAuditListSection('Fields', plan.fields.map((field) => `${field.label}: ${field.value}`)) : ''}
+          ${plan.safeguards.length ? generatedPlanAuditListSection('Safeguards', plan.safeguards) : ''}
+          ${generatedPlanResultBlock(record)}
+        </div>
+      </section>
+    </div>
+  `;
+}
+
+function generatedPlanAuditRow(label: string, value: string): string {
+  return `
+    <div>
+      <dt>${escapeHtml(label)}</dt>
+      <dd>${escapeHtml(value)}</dd>
+    </div>
+  `;
+}
+
+function generatedPlanAuditTextSection(label: string, value: string): string {
+  return `
+    <section class="generated-plan-audit-section">
+      <div class="generated-plan-audit-section-head">
+        <h3>${escapeHtml(label)}</h3>
+      </div>
+      <p>${escapeHtml(value)}</p>
+    </section>
+  `;
+}
+
+function generatedPlanAuditListSection(label: string, values: string[]): string {
+  return `
+    <section class="generated-plan-audit-section">
+      <div class="generated-plan-audit-section-head">
+        <h3>${escapeHtml(label)}</h3>
+      </div>
+      <ul>
+        ${values.map((value) => `<li>${escapeHtml(value)}</li>`).join('')}
+      </ul>
+    </section>
   `;
 }
 
@@ -3780,6 +3962,11 @@ function bind(): void {
   document.querySelector<HTMLButtonElement>('#queueAgentPlan')?.addEventListener('click', runQueueAgentPlan);
   document.querySelector<HTMLButtonElement>('#toggleArchivedGeneratedPlans')?.addEventListener('click', () => {
     state.showArchivedGeneratedPlans = !state.showArchivedGeneratedPlans;
+    const auditRecord = generatedPlanById(state.generatedPlanAuditId);
+    if (!state.showArchivedGeneratedPlans && auditRecord?.status === 'archived') {
+      state.generatedPlanAuditId = '';
+    }
+    selectFallbackGeneratedPlan();
     state.error = '';
     render();
   });
@@ -3791,6 +3978,14 @@ function bind(): void {
       void runGeneratedPlanAction(planId, action);
     });
   }
+  for (const button of document.querySelectorAll<HTMLButtonElement>('[data-generated-plan-modal-close]')) {
+    button.addEventListener('click', closeGeneratedPlanAuditModal);
+  }
+  document.querySelector<HTMLElement>('.generated-plan-modal-backdrop')?.addEventListener('click', (event) => {
+    if (event.target === event.currentTarget) {
+      closeGeneratedPlanAuditModal();
+    }
+  });
   document.querySelector<HTMLButtonElement>('#saveBridgeAiKey')?.addEventListener('click', runSaveBridgeAiKey);
   document.querySelector<HTMLButtonElement>('#clearAiKey')?.addEventListener('click', runClearAiKey);
   document.querySelector<HTMLButtonElement>('#refreshAiStatus')?.addEventListener('click', runRefreshAiStatus);
@@ -4676,6 +4871,7 @@ async function runGeneratedPlanAction(planId: string, action: string): Promise<v
 
   if (action === 'view') {
     state.selectedGeneratedPlanId = planId;
+    state.generatedPlanAuditId = planId;
     state.error = '';
     render();
     return;
@@ -4688,6 +4884,9 @@ async function runGeneratedPlanAction(planId: string, action: string): Promise<v
   }
   if (action === 'archive') {
     updateGeneratedPlan(planId, { status: 'archived' });
+    if (state.generatedPlanAuditId === planId) {
+      state.generatedPlanAuditId = '';
+    }
     selectFallbackGeneratedPlan();
     pushToast('success', 'Plan archived', record.plan.templateTitle);
     render();
@@ -4703,6 +4902,9 @@ async function runGeneratedPlanAction(planId: string, action: string): Promise<v
   if (action === 'delete') {
     if (!window.confirm('Delete this generated plan permanently?')) return;
     state.generatedPlans = state.generatedPlans.filter((candidate) => candidate.id !== planId);
+    if (state.generatedPlanAuditId === planId) {
+      state.generatedPlanAuditId = '';
+    }
     saveGeneratedPlans();
     selectFallbackGeneratedPlan();
     pushToast('success', 'Plan deleted', record.plan.templateTitle);
@@ -4804,6 +5006,7 @@ function makeGeneratedPlanActive(record: GeneratedPlanRecord): void {
   state.agentSignature = record.signature ?? '';
   state.agentPreparedActionId = record.preparedActionId ?? '';
   state.selectedGeneratedPlanId = record.id;
+  state.generatedPlanAuditId = '';
   state.activeTab = 'agent';
   state.error = '';
 }
@@ -4836,6 +5039,14 @@ function requireGeneratedPlanRecord(planId: string): GeneratedPlanRecord {
 function selectFallbackGeneratedPlan(): void {
   const next = visibleGeneratedPlans()[0] ?? state.generatedPlans[0];
   state.selectedGeneratedPlanId = next?.id ?? '';
+  if (state.generatedPlanAuditId && !generatedPlanById(state.generatedPlanAuditId)) {
+    state.generatedPlanAuditId = '';
+  }
+}
+
+function closeGeneratedPlanAuditModal(): void {
+  state.generatedPlanAuditId = '';
+  render();
 }
 
 function restoredGeneratedPlanStatus(record: GeneratedPlanRecord): GeneratedPlanStatus {
