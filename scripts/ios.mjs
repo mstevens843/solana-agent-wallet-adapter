@@ -38,6 +38,10 @@ async function runCapacitor(selectedCommand, forwardedArgs) {
     return;
   }
 
+  await run('pnpm', ['--filter', '@solana-agent-wallet-adapter/browser-demo^...', 'build'], {
+    cwd: root,
+    env: iosEnv(),
+  });
   await run('pnpm', ['-F', '@solana-agent-wallet-adapter/browser-demo', 'build'], {
     cwd: root,
     env: iosEnv(),

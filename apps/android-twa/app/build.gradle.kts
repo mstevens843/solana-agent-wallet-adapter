@@ -177,6 +177,17 @@ android {
     }
 }
 
+val buildBundledWebAssetDependencies = tasks.register<Exec>("buildBundledWebAssetDependencies") {
+    workingDir = rootProject.layout.projectDirectory.dir("../..").asFile
+    commandLine(resolvedPnpmCommand(), "--filter", "@solana-agent-wallet-adapter/browser-demo^...", "build")
+    environment(
+        "PATH",
+        listOf("/usr/local/bin", "/opt/homebrew/bin", System.getenv("PATH") ?: "")
+            .filter { it.isNotBlank() }
+            .joinToString(File.pathSeparator),
+    )
+}
+
 val buildBundledWebAssets = tasks.register<Exec>("buildBundledWebAssets") {
     workingDir = rootProject.layout.projectDirectory.dir("../..").asFile
     commandLine(resolvedPnpmCommand(), "-F", "@solana-agent-wallet-adapter/browser-demo", "build")
@@ -213,6 +224,10 @@ val verifyBundledWebAssets = tasks.register<Exec>("verifyBundledWebAssets") {
 
 buildBundledWebAssets.configure {
     dependsOn(typecheckBundledWebAssets)
+}
+
+typecheckBundledWebAssets.configure {
+    dependsOn(buildBundledWebAssetDependencies)
 }
 
 tasks.matching { task ->
