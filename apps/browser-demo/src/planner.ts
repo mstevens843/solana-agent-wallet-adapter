@@ -77,6 +77,34 @@ export interface AiPlanRequest {
   userNotes?: string;
 }
 
+export type AiDiagnosticCode =
+  | 'AI_ROUTE'
+  | 'AI_HTTP'
+  | 'AI_CONTENT_TYPE'
+  | 'AI_ROUTE_MISMATCH'
+  | 'AI_PROVIDER_ERROR'
+  | 'AI_PLAN_READY';
+
+export interface AiDiagnosticEntry {
+  code: AiDiagnosticCode;
+  message: string;
+  detail?: string;
+  method?: string;
+  path?: string;
+  status?: number;
+  contentType?: string;
+}
+
+export class AiPlanConnectionError extends Error {
+  readonly diagnostics: AiDiagnosticEntry[];
+
+  constructor(message: string, diagnostics: AiDiagnosticEntry[]) {
+    super(redactSecrets(message));
+    this.name = 'AiPlanConnectionError';
+    this.diagnostics = diagnostics.map(redactAiDiagnostic);
+  }
+}
+
 const SHARED_SAFEGUARDS = [
   'Wallet approval is required before any signature or transaction leaves the device.',
   'The agent never receives the wallet private key or seed phrase.',
@@ -385,7 +413,16 @@ export async function generateHostedAiPlan(
   if (!settings.apiKey.trim()) {
     throw new Error('Hosted BYOK key is required.');
   }
-  await assertHostedAiAvailable();
+  const diagnostics: AiDiagnosticEntry[] = [
+    {
+      code: 'AI_ROUTE',
+      message: 'Hosted BYOK route selected.',
+      detail: `provider=${settings.provider}; model=${settings.model.trim() || aiProviderPresetById(settings.provider).model}`,
+      method: 'POST',
+      path: '/api/ai/generate-plan',
+    },
+  ];
+  await assertHostedAiAvailable(diagnostics);
   const response = await fetch('/api/ai/generate-plan', {
     method: 'POST',
     headers: {
@@ -402,36 +439,83 @@ export async function generateHostedAiPlan(
       request,
     }),
   }).catch((err) => {
-    throw new Error(
+    throw aiPlanConnectionError(
       `Hosted AI request failed. ${err instanceof Error ? err.message : String(err)}`,
+      diagnostics,
+      {
+        code: 'AI_PROVIDER_ERROR',
+        message: 'Hosted BYOK request could not reach the same-origin API.',
+        detail: err instanceof Error ? err.message : String(err),
+        method: 'POST',
+        path: '/api/ai/generate-plan',
+      },
     );
   });
   const payload = await readHostedJson(
     response,
     'Hosted BYOK API returned a non-JSON response. Serve Agentic through the Render Node service or use Local bridge.',
+    diagnostics,
+    { method: 'POST', path: '/api/ai/generate-plan' },
   );
   if (!response.ok) {
-    throw new Error(redactSecrets(extractProviderError(payload) || `Hosted AI returned HTTP ${response.status}.`));
+    const message = redactSecrets(extractProviderError(payload) || `Hosted AI returned HTTP ${response.status}.`);
+    throw aiPlanConnectionError(message, diagnostics, {
+      code: 'AI_PROVIDER_ERROR',
+      message,
+      method: 'POST',
+      path: '/api/ai/generate-plan',
+      status: response.status,
+      contentType: response.headers.get('content-type') ?? '',
+    });
   }
+  diagnostics.push({
+    code: 'AI_PLAN_READY',
+    message: 'Hosted BYOK returned a valid AI plan.',
+    method: 'POST',
+    path: '/api/ai/generate-plan',
+    status: response.status,
+    contentType: response.headers.get('content-type') ?? '',
+  });
   return normalizeHostedAiPlan(payload, request);
 }
 
-async function assertHostedAiAvailable(): Promise<void> {
+async function assertHostedAiAvailable(diagnostics: AiDiagnosticEntry[]): Promise<void> {
   const response = await fetch('/api/ai/status', {
     headers: {
       accept: 'application/json',
     },
   }).catch((err) => {
-    throw new Error(
+    throw aiPlanConnectionError(
       `Hosted BYOK API is not reachable on this origin. Serve Agentic through the Render Node service or use Local bridge. ${err instanceof Error ? err.message : String(err)}`,
+      diagnostics,
+      {
+        code: 'AI_PROVIDER_ERROR',
+        message: 'Hosted BYOK status request failed before a response was returned.',
+        detail: err instanceof Error ? err.message : String(err),
+        method: 'GET',
+        path: '/api/ai/status',
+      },
     );
   });
   const payload = await readHostedJson(
     response,
     'Hosted BYOK API is not available on this origin. Serve Agentic through the Render Node service or use Local bridge.',
+    diagnostics,
+    { method: 'GET', path: '/api/ai/status' },
   );
   if (!response.ok || !isHostedAiStatusPayload(payload)) {
-    throw new Error('Hosted BYOK API is not available on this origin. Serve Agentic through the Render Node service or use Local bridge.');
+    throw aiPlanConnectionError(
+      'Hosted BYOK API is not available on this origin. Serve Agentic through the Render Node service or use Local bridge.',
+      diagnostics,
+      {
+        code: 'AI_PROVIDER_ERROR',
+        message: 'Hosted BYOK status response was not the expected hosted-byok JSON.',
+        method: 'GET',
+        path: '/api/ai/status',
+        status: response.status,
+        contentType: response.headers.get('content-type') ?? '',
+      },
+    );
   }
 }
 
@@ -441,14 +525,91 @@ function isHostedAiStatusPayload(payload: unknown): payload is { available: bool
   return record.available === true && record.mode === 'hosted-byok';
 }
 
-async function readHostedJson(response: Response, fallbackMessage: string): Promise<unknown> {
+async function readHostedJson(
+  response: Response,
+  fallbackMessage: string,
+  diagnostics: AiDiagnosticEntry[],
+  request: { method: string; path: string },
+): Promise<unknown> {
+  const contentType = response.headers.get('content-type') ?? '';
+  diagnostics.push({
+    code: 'AI_HTTP',
+    message: `${request.method} ${request.path} returned HTTP ${response.status}.`,
+    method: request.method,
+    path: request.path,
+    status: response.status,
+    contentType,
+  });
   const raw = await response.text().catch(() => '');
   if (!raw.trim()) return {};
   try {
     return JSON.parse(raw) as unknown;
   } catch {
-    throw new Error(fallbackMessage);
+    if (looksLikeHtmlResponse(raw, contentType)) {
+      throw aiPlanConnectionError(hostedApiRoutedToFrontendMessage(request.path, response.status, contentType), diagnostics, {
+        code: 'AI_ROUTE_MISMATCH',
+        message: 'Hosted AI API routed to frontend shell.',
+        detail: `${request.path} returned HTML instead of hosted BYOK JSON.`,
+        method: request.method,
+        path: request.path,
+        status: response.status,
+        contentType,
+      });
+    }
+    throw aiPlanConnectionError(fallbackMessage, diagnostics, {
+      code: 'AI_CONTENT_TYPE',
+      message: 'Hosted BYOK API returned a non-JSON response.',
+      method: request.method,
+      path: request.path,
+      status: response.status,
+      contentType,
+    });
   }
+}
+
+function looksLikeHtmlResponse(raw: string, contentType: string): boolean {
+  return /text\/html/i.test(contentType) || /^\s*<!doctype\s+html/i.test(raw) || /^\s*<html[\s>]/i.test(raw);
+}
+
+function hostedApiRoutedToFrontendMessage(path: string, status: number, contentType: string): string {
+  const type = contentType || 'unknown content-type';
+  return `Hosted AI API routed to frontend shell. ${path} returned HTTP ${status} ${type} instead of JSON. Redeploy Render as the Node web service.`;
+}
+
+function aiPlanConnectionError(
+  message: string,
+  diagnostics: AiDiagnosticEntry[],
+  entry: AiDiagnosticEntry,
+): AiPlanConnectionError {
+  return new AiPlanConnectionError(message, [...diagnostics, entry]);
+}
+
+function redactAiDiagnostic(entry: AiDiagnosticEntry): AiDiagnosticEntry {
+  return {
+    ...entry,
+    message: redactSecrets(entry.message),
+    ...(entry.detail !== undefined && { detail: redactSecrets(entry.detail) }),
+    ...(entry.contentType !== undefined && { contentType: redactSecrets(entry.contentType) }),
+  };
+}
+
+export function aiDiagnosticsFromError(err: unknown): AiDiagnosticEntry[] {
+  if (err instanceof AiPlanConnectionError) {
+    return err.diagnostics;
+  }
+  if (err && typeof err === 'object' && 'diagnostics' in err) {
+    const diagnostics = (err as { diagnostics?: unknown }).diagnostics;
+    if (Array.isArray(diagnostics)) {
+      return diagnostics.filter(isAiDiagnosticEntry).map(redactAiDiagnostic);
+    }
+  }
+  return [];
+}
+
+function isAiDiagnosticEntry(value: unknown): value is AiDiagnosticEntry {
+  if (!value || typeof value !== 'object') return false;
+  const record = value as Partial<AiDiagnosticEntry>;
+  return typeof record.code === 'string' && typeof record.message === 'string';
 }
 
 async function generateOpenAiCompatiblePlan(settings: AiSettings, request: AiPlanRequest): Promise<AgentPlan> {

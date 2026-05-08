@@ -38,6 +38,7 @@ import {
   DEFAULT_AI_BASE_URL,
   DEFAULT_AI_MODEL,
   DEFAULT_AI_PROVIDER_ID,
+  aiDiagnosticsFromError,
   aiFormatLabel,
   aiProviderPresetById,
   buildTemplatePlan,
@@ -50,6 +51,7 @@ import {
   type AgentPlan,
   type AgentPlanTemplate,
   type AgentPlanTemplateField,
+  type AiDiagnosticEntry,
   type AiSettings,
   type BridgeAiStatus,
 } from './planner.js';
@@ -549,6 +551,7 @@ interface DemoState {
   aiSettings: AiSettings;
   aiSettingsPanelOpen: boolean | null;
   aiStatus: BridgeAiStatus | null;
+  aiDiagnostics: AiDiagnosticEntry[];
   toasts: Toast[];
   capabilities: AdapterCapabilities | null;
   error: string;
@@ -728,6 +731,7 @@ const state: DemoState = {
   },
   aiSettingsPanelOpen: null,
   aiStatus: null,
+  aiDiagnostics: [],
   toasts: [],
   capabilities: null,
   error: '',
@@ -4522,6 +4526,8 @@ async function runGenerateAiPlan(): Promise<void> {
           },
           parameters,
         };
+        state.aiDiagnostics = [aiRouteDiagnostic('/api/ai/generate-plan')];
+        render();
         const plan = state.aiSettings.mode === 'bridge'
           ? await bridgeRequest<AgentPlan>('/bridge/ai/generate-plan', {
             method: 'POST',
@@ -4536,9 +4542,19 @@ async function runGenerateAiPlan(): Promise<void> {
         const record = saveGeneratedPlan(plan, template, request.prompt);
         state.selectedGeneratedPlanId = record.id;
         state.activeTab = 'generated';
+        appendAiDiagnostic({
+          code: 'AI_PLAN_READY',
+          message: 'AI route returned a valid plan.',
+          detail: `${state.aiSettings.provider} ${state.aiSettings.model || 'model configured'}`,
+        });
         replaceToast(toastId, 'success', 'AI plan generated', `${plan.templateTitle} is ready in Generated Plans.`);
       },
-      { onError: (message) => replaceToast(toastId, 'error', 'AI plan failed', message) },
+      {
+        onError: (message, err) => {
+          const toastMessage = applyAiErrorDiagnostics(err, message);
+          replaceToast(toastId, 'error', aiErrorToastTitle(err), toastMessage);
+        },
+      },
     );
   } finally {
     state.activeOperation = null;
@@ -5042,7 +5058,7 @@ async function runRefreshLabArtifacts(): Promise<void> {
 async function run(
   stepName: StepName,
   action: () => Promise<void>,
-  options: { onError?: (message: string) => void } = {},
+  options: { onError?: (message: string, err: unknown) => void } = {},
 ): Promise<void> {
   state.error = '';
   state.busy = true;
@@ -5055,7 +5071,7 @@ async function run(
     state.steps[stepName] = 'error';
     state.error = redactSecrets(err instanceof Error ? err.message : String(err));
     if (options.onError) {
-      options.onError(state.error);
+      options.onError(state.error, err);
     } else {
       pushToast('error', 'Action failed', state.error);
     }
