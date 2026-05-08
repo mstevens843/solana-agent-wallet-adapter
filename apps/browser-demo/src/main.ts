@@ -3191,9 +3191,38 @@ function aiSettingsCard(): string {
         <span>Format</span>
         <strong>${escapeHtml(formatLabel)}</strong>
       </div>
+      ${aiDiagnosticsPanel()}
       <p class="ai-security-note">No AI can sign, submit, or approve. It only drafts a structured plan for your wallet review.</p>
     </aside>
   `;
+}
+
+function aiDiagnosticsPanel(): string {
+  if (state.aiDiagnostics.length === 0) return '';
+  return `
+    <div class="ai-diagnostics" aria-label="AI diagnostics">
+      <span>Diagnostics</span>
+      <div class="ai-diagnostics-list">
+        ${state.aiDiagnostics.map((entry) => `
+          <div class="ai-diagnostic-entry ${entry.code === 'AI_ROUTE_MISMATCH' || entry.code === 'AI_PROVIDER_ERROR' ? 'error' : ''}">
+            <strong>${escapeHtml(entry.code)}</strong>
+            <p>${escapeHtml(aiDiagnosticMessage(entry))}</p>
+          </div>
+        `).join('')}
+      </div>
+    </div>
+  `;
+}
+
+function aiDiagnosticMessage(entry: AiDiagnosticEntry): string {
+  const parts = [
+    entry.message,
+    entry.detail,
+    entry.status !== undefined ? `status=${entry.status}` : '',
+    entry.contentType ? `content-type=${entry.contentType}` : '',
+    entry.path ? `path=${entry.path}` : '',
+  ].filter(Boolean);
+  return redactSecrets(parts.join(' | '));
 }
 
 function canSaveBridgeAiKey(): boolean {
@@ -3254,6 +3283,58 @@ function aiRouteStatusLabel(status: BridgeAiStatus | null): string {
   return status?.available
     ? `${status.source} - ${status.provider ?? status.apiFormat ?? 'AI'} - ${status.model ?? 'model configured'}`
     : 'bridge - not configured';
+}
+
+function aiRouteDiagnostic(path: string): AiDiagnosticEntry {
+  if (state.aiSettings.mode === 'bridge') {
+    return {
+      code: 'AI_ROUTE',
+      message: 'Local bridge AI route selected.',
+      detail: `${bridgeBaseUrl()}bridge/ai/generate-plan`,
+      method: 'POST',
+      path: '/bridge/ai/generate-plan',
+    };
+  }
+  if (state.aiSettings.mode === 'session') {
+    return {
+      code: 'AI_ROUTE',
+      message: 'Browser session AI route selected.',
+      detail: `${state.aiSettings.provider} ${state.aiSettings.model || 'model configured'}`,
+    };
+  }
+  return {
+    code: 'AI_ROUTE',
+    message: 'Hosted BYOK route selected.',
+    detail: `${state.aiSettings.provider} ${state.aiSettings.model || 'model configured'} on ${window.location.origin}`,
+    method: 'POST',
+    path,
+  };
+}
+
+function appendAiDiagnostic(entry: AiDiagnosticEntry): void {
+  state.aiDiagnostics = [...state.aiDiagnostics, entry].slice(-6);
+}
+
+function applyAiErrorDiagnostics(err: unknown, fallbackMessage: string): string {
+  const diagnostics = aiDiagnosticsFromError(err);
+  if (diagnostics.length > 0) {
+    state.aiDiagnostics = diagnostics.slice(-6);
+  } else {
+    appendAiDiagnostic({
+      code: 'AI_PROVIDER_ERROR',
+      message: fallbackMessage,
+      detail: `${state.aiSettings.provider} ${state.aiSettings.model || 'model configured'}`,
+    });
+  }
+  return aiRouteMismatchDiagnostic(err)?.message ?? fallbackMessage;
+}
+
+function aiErrorToastTitle(err: unknown): string {
+  return aiRouteMismatchDiagnostic(err) ? 'Hosted AI route failed' : 'AI plan failed';
+}
+
+function aiRouteMismatchDiagnostic(err: unknown): AiDiagnosticEntry | undefined {
+  return aiDiagnosticsFromError(err).find((entry) => entry.code === 'AI_ROUTE_MISMATCH');
 }
 
 function ensureAiProviderAllowedForMode(): void {

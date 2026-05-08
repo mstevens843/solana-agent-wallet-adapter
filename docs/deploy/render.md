@@ -53,8 +53,15 @@ curl -i https://agenticwalletadapter.com/docs
 curl -i https://agenticwalletadapter.com/demo
 ```
 
-`/api/ai/status` must return `200` JSON. The client-side routes must return `200` HTML with the app shell, not Render's
-plain-text `Not Found` response.
+`/api/ai/status` must return `200` JSON with `mode: "hosted-byok"`. If it returns `text/html`, the domain is serving
+the frontend shell for API routes and hosted BYOK AI will fail. The client-side routes must return `200` HTML with the
+app shell, not Render's plain-text `Not Found` response.
+
+The live checker performs the same content-type checks:
+
+```sh
+pnpm smoke:render-web:live
+```
 
 ## Hosted BYOK AI
 

@@ -7,6 +7,18 @@ import { createServer } from 'node:net';
 
 import { publicAppRoutes } from './public-routes.mjs';
 
+const liveIndex = process.argv.indexOf('--live');
+if (liveIndex !== -1) {
+  const origin = process.argv[liveIndex + 1] ?? process.env.AGENTIC_RENDER_ORIGIN ?? 'https://agenticwalletadapter.com';
+  try {
+    await verifyLiveRender(origin);
+    process.exit(0);
+  } catch (err) {
+    console.error(`[smoke-render-web] ${err instanceof Error ? err.message : String(err)}`);
+    process.exit(1);
+  }
+}
+
 const routes = publicAppRoutes;
 const serverPort = await freePort();
 const chromePort = await freePort();
@@ -25,7 +37,7 @@ const server = spawn(process.execPath, ['apps/render-web/dist/server.js'], {
 let chrome;
 
 try {
-  await waitForHttp(`http://127.0.0.1:${serverPort}/api/ai/status`);
+  await waitForHostedAiStatus(`http://127.0.0.1:${serverPort}/api/ai/status`);
   chrome = spawn(chromePath, [
     '--headless=new',
     `--remote-debugging-port=${chromePort}`,
@@ -116,6 +128,71 @@ async function waitForHttp(url) {
     await sleep(200);
   }
   throw lastError instanceof Error ? lastError : new Error(`Timed out waiting for ${url}`);
+}
+
+async function waitForHostedAiStatus(url) {
+  const deadline = Date.now() + 15_000;
+  let lastError;
+  while (Date.now() < deadline) {
+    try {
+      await verifyHostedAiStatus(url);
+      return;
+    } catch (err) {
+      lastError = err;
+    }
+    await sleep(200);
+  }
+  throw lastError instanceof Error ? lastError : new Error(`Timed out waiting for ${url}`);
+}
+
+async function verifyLiveRender(origin) {
+  const base = origin.replace(/\/+$/, '');
+  await verifyHostedAiStatus(`${base}/api/ai/status`);
+  for (const route of ['/app', '/demo']) {
+    await verifyHtmlRoute(`${base}${route}`, route);
+  }
+}
+
+async function verifyHostedAiStatus(url) {
+  const response = await fetch(url);
+  const contentType = response.headers.get('content-type') ?? '';
+  const raw = await response.text();
+  if (!response.ok) {
+    throw new Error(`${url} returned HTTP ${response.status}: ${snippet(raw)}`);
+  }
+  if (!/application\/json/i.test(contentType)) {
+    throw new Error(`${url} returned ${contentType || 'missing content-type'} instead of application/json: ${snippet(raw)}`);
+  }
+  let payload;
+  try {
+    payload = JSON.parse(raw);
+  } catch {
+    throw new Error(`${url} returned invalid JSON: ${snippet(raw)}`);
+  }
+  if (payload?.available !== true || payload?.mode !== 'hosted-byok') {
+    throw new Error(`${url} returned unexpected hosted AI status: ${JSON.stringify(payload)}`);
+  }
+  console.log(`[smoke-render-web] ${url} returned hosted BYOK JSON.`);
+}
+
+async function verifyHtmlRoute(url, route) {
+  const response = await fetch(url);
+  const contentType = response.headers.get('content-type') ?? '';
+  const raw = await response.text();
+  if (!response.ok) {
+    throw new Error(`${url} returned HTTP ${response.status}: ${snippet(raw)}`);
+  }
+  if (!/text\/html/i.test(contentType)) {
+    throw new Error(`${url} returned ${contentType || 'missing content-type'} instead of text/html.`);
+  }
+  if (!raw.includes('id="app"')) {
+    throw new Error(`${url} did not include the app shell.`);
+  }
+  console.log(`[smoke-render-web] ${route} returned HTML app shell.`);
+}
+
+function snippet(value) {
+  return value.replace(/\s+/g, ' ').trim().slice(0, 180);
 }
 
 async function connectPage(port) {

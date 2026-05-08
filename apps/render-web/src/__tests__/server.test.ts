@@ -39,6 +39,20 @@ describe('render web hosted BYOK API', () => {
     vi.unstubAllGlobals();
   });
 
+  it('serves hosted BYOK status as JSON instead of the SPA shell', async () => {
+    await withServer(async (port) => {
+      const response = await getText(port, '/api/ai/status');
+
+      expect(response.status).toBe(200);
+      expect(String(response.headers['content-type'])).toContain('application/json');
+      expect(response.headers['cache-control']).toBe('no-store');
+      expect(JSON.parse(response.body)).toMatchObject({
+        available: true,
+        mode: 'hosted-byok',
+      });
+    });
+  });
+
   it('routes OpenAI hosted BYOK requests through the server-side Responses API', async () => {
     const providerCalls: Array<{ url: string; init: RequestInit | undefined }> = [];
     vi.stubGlobal('fetch', vi.fn(async (url: string | URL | Request, init?: RequestInit) => {

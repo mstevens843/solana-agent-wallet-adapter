@@ -4683,6 +4683,53 @@ button.danger:hover:not(:disabled) {
   text-align: right;
 }
 
+.ai-diagnostics {
+  background: rgba(2, 8, 6, 0.34);
+  border: 1px solid rgba(224, 230, 226, 0.09);
+  border-radius: 8px;
+  display: grid;
+  gap: 9px;
+  padding: 10px 12px;
+}
+
+.ai-diagnostics > span {
+  color: var(--dim);
+  font-size: 0.72rem;
+  font-weight: 900;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.ai-diagnostics-list {
+  display: grid;
+  gap: 7px;
+}
+
+.ai-diagnostic-entry {
+  border-left: 2px solid rgba(139, 205, 170, 0.45);
+  display: grid;
+  gap: 2px;
+  padding-left: 9px;
+}
+
+.ai-diagnostic-entry.error {
+  border-left-color: rgba(243, 165, 171, 0.82);
+}
+
+.ai-diagnostic-entry strong {
+  color: var(--text);
+  font-size: 0.68rem;
+  letter-spacing: 0.08em;
+}
+
+.ai-diagnostic-entry p {
+  color: var(--muted);
+  font-size: 0.82rem;
+  line-height: 1.35;
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
 .plan-field-grid {
   margin-top: 12px;
 }
