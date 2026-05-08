@@ -5,7 +5,9 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createServer } from 'node:net';
 
-const routes = ['/', '/app', '/demo'];
+import { publicAppRoutes } from './public-routes.mjs';
+
+const routes = publicAppRoutes;
 const serverPort = await freePort();
 const chromePort = await freePort();
 const chromePath = resolveChromePath();

@@ -44,7 +44,7 @@
     "smoke:web": "vite",
     "smoke:render-web": "node scripts/smoke-render-web.mjs",
     "demo:browser": "pnpm -F @solana-agent-wallet-adapter/browser-demo dev",
-    "demo:browser:build": "pnpm -F @solana-agent-wallet-adapter/browser-demo typecheck && pnpm -F @solana-agent-wallet-adapter/browser-demo build && node scripts/verify-browser-dist.mjs",
+    "demo:browser:build": "pnpm -F @solana-agent-wallet-adapter/browser-demo typecheck && pnpm -F @solana-agent-wallet-adapter/browser-demo build && node scripts/verify-browser-dist.mjs && node scripts/write-spa-route-fallbacks.mjs",
     "demo:agent": "pnpm -F reference-agent dev",
     "demo:agent:build": "pnpm -F reference-agent build",
     "verify:release-links": "node scripts/verify-release-links.mjs",

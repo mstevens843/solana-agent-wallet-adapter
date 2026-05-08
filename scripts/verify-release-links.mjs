@@ -3,6 +3,8 @@ import { readFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
+import { publicAppRoutes } from './public-routes.mjs';
+
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const defaultRepo = 'mstevens843/solana-agent-wallet-adapter';
 const npmPackageName = '@solana-agent-wallet-adapter/cli';
@@ -30,7 +32,7 @@ const requiredCommands = [
   'npm install -g @solana-agent-wallet-adapter/cli',
   'npm exec @solana-agent-wallet-adapter/cli -- app',
 ];
-const routePaths = ['/', '/docs', '/cli', '/desktop', '/android', '/demo'];
+const routePaths = publicAppRoutes;
 const localOnlyCommands = ['pnpm desktop:dev', 'pnpm cli -- app'];
 
 const cliArgs = parseArgs(process.argv.slice(2));
