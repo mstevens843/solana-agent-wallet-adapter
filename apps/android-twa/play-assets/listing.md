@@ -52,4 +52,4 @@ Use the narrow claim above. Avoid broader claims like "first Solana agent signer
 - Terms URL: `https://agenticwalletadapter.com/terms`
 - Complete the Google Play Data Safety form so it matches the published privacy policy and the Android app behavior.
 - Complete the Google Play Financial features declaration because Agentic involves cryptocurrency wallet actions.
-- If Google Analytics 4 is enabled later, update the Data Safety form and privacy disclosures before shipping that build.
+- The hosted website uses Google Analytics 4 when `VITE_AGENTIC_GA_MEASUREMENT_ID` is configured; keep the Data Safety form and privacy disclosures aligned before shipping any Android build that loads the hosted surface.

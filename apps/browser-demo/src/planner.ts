@@ -268,7 +268,7 @@ export const AGENT_PLAN_TEMPLATES: AgentPlanTemplate[] = [
     field('amount', 'Amount SOL or all', 'all', 'all'),
     field('memo', 'Reason', 'Liquidity needed', 'Unstake review'),
   ]),
-  template('governance', 'vote', 'Governance vote', 'Summarize a proposal and create a wallet approval proof for the chosen vote.', 'manual_review', 'medium', [
+  template('governance', 'vote', 'Governance vote', 'Summarize a proposal and create a wallet review proof for the chosen vote.', 'manual_review', 'medium', [
     field('proposal', 'Proposal link / id', 'Realm proposal URL or id', '', true),
     selectField('vote', 'Vote', ['Yes', 'No', 'Abstain'], 'Abstain'),
     textareaField('reason', 'Voting reason', 'Why this vote matches my policy'),
@@ -336,7 +336,7 @@ export const AGENT_PLAN_TEMPLATES: AgentPlanTemplate[] = [
     field('label', 'Label', 'Treasury transfer, swap, reimbursement', 'Agentic wallet action'),
     textareaField('notes', 'Notes', 'Accounting or audit notes'),
   ]),
-  template('custom', 'custom-request', 'Custom request', 'Turn any plain-English request into a visible approval plan before signing.', 'manual_review', 'medium', [
+  template('custom', 'custom-request', 'Custom request', 'Turn any plain-English request into a visible review draft before signing evidence.', 'manual_review', 'medium', [
     field('policy', 'Policy cap', 'What should never be allowed?', 'No private key sharing, no unlimited approvals'),
   ]),
 ];
@@ -842,7 +842,7 @@ function approvalFor(actionType: string): string {
     case 'read_only':
       return 'No wallet signature is required unless the user chooses to sign an audit proof.';
     case 'manual_review':
-      return 'Wallet can sign an off-chain approval proof after the user reviews the structured plan.';
+      return 'Wallet can sign an off-chain review proof after the user reviews the structured draft.';
     default:
       return 'The local bridge can queue this action, but the wallet must still approve the final signature.';
   }

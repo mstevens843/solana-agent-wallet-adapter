@@ -15,6 +15,7 @@ Use the root `render.yaml` as a Render Blueprint. It defines one Node web servic
 - Health check path: `/api/ai/status`
 - Environment variable: `SKIP_INSTALL_DEPS=true`
 - Production UI env: `VITE_AGENTIC_DEV_CONTROLS=false`
+- Production analytics env: `VITE_AGENTIC_GA_MEASUREMENT_ID=G-MJ3VZ7VEX7`
 - Optional Android trust env: `AGENTIC_ANDROID_SHA256_CERT_FINGERPRINTS`
 - Production Android trust guard: `AGENTIC_ANDROID_REQUIRE_TRUST=1`
 
@@ -33,6 +34,7 @@ If configuring Render manually, use:
 - Health check path: `/api/ai/status`
 - Environment variable: `SKIP_INSTALL_DEPS=true`
 - Production UI env: `VITE_AGENTIC_DEV_CONTROLS=false`
+- Production analytics env: `VITE_AGENTIC_GA_MEASUREMENT_ID=G-MJ3VZ7VEX7`
 - Optional Android trust env: `AGENTIC_ANDROID_SHA256_CERT_FINGERPRINTS`
 - Production Android trust guard: `AGENTIC_ANDROID_REQUIRE_TRUST=1`
 - Auto deploy: enabled for the production branch
@@ -62,6 +64,16 @@ The live checker performs the same content-type checks:
 ```sh
 pnpm smoke:render-web:live
 ```
+
+## Google Analytics
+
+The hosted website loads Google Analytics 4 only when `VITE_AGENTIC_GA_MEASUREMENT_ID` is set at build time. The
+production Blueprint sets it to `G-MJ3VZ7VEX7`. The client sends sanitized SPA page views and product interaction
+events only; it does not send query strings, hashes, wallet addresses, signatures, transaction IDs, AI prompts, AI
+keys, or bridge tokens.
+
+In the GA4 Web Stream settings, disable Enhanced Measurement's browser-history page-change tracking if manual SPA
+page views show duplicates. The app already sets `send_page_view: false` and emits one route-level page view itself.
 
 ## Hosted BYOK AI
 

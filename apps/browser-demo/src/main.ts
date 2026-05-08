@@ -33,6 +33,17 @@ import {
   type AndroidNativeRestoreResult,
 } from './androidNative.js';
 import {
+  initializeAnalytics,
+  trackCliCommandCopy,
+  trackDownloadClick,
+  trackGenerateAiPlan,
+  trackGenerateTemplatePlan,
+  trackNavClick,
+  trackPageView,
+  trackWalletConnectClick,
+  trackWalletConnectSuccess,
+} from './analytics.js';
+import {
   AI_PROVIDER_PRESETS,
   AGENT_PLAN_TEMPLATES,
   DEFAULT_AI_BASE_URL,
@@ -66,6 +77,8 @@ type GeneratedPlanStatus = 'draft' | 'signed' | 'queued' | 'archived';
 type RuntimePathId = 'exec' | 'install' | 'desktop';
 type AppRoute = (typeof ROUTE_PATHS)[number];
 type InboxFilter = 'all' | 'ready' | 'scheduled' | 'approved' | 'failed' | 'rejected' | 'one-time' | 'recurring';
+type TemplateOutcome = 'queueable' | 'proof' | 'audit';
+type TemplateOutcomeFilter = TemplateOutcome | 'all';
 type PreparedActionKind = 'transfer_sol' | 'transfer_spl' | 'swap';
 type PreparedActionStatus =
   | 'scheduled'
@@ -542,6 +555,7 @@ interface DemoState {
   transactionStatus: string;
   agentPrompt: string;
   selectedTemplateId: string;
+  templateOutcomeFilter: TemplateOutcomeFilter;
   templateFields: Record<string, string>;
   agentPlan: AgentPlan | null;
   agentSignature: string;
@@ -692,7 +706,7 @@ const LABS: LabDefinition[] = [
 
 const persisted = loadPersistedState();
 const initialCluster = SHOW_DEV_CONTROLS ? (persisted.cluster ?? 'mainnet-beta') : 'mainnet-beta';
-const initialTemplate = templateById('custom-request');
+const initialTemplate = templateById('swap');
 const defaultWorkspaceTab: ActiveTab = 'agent';
 const initialAiSettings = persistedAiSettings(persisted);
 
@@ -720,6 +734,7 @@ const state: DemoState = {
   transactionStatus: '',
   agentPrompt: DEFAULT_AGENT_PROMPT,
   selectedTemplateId: initialTemplate.id,
+  templateOutcomeFilter: 'queueable',
   templateFields: defaultTemplateFieldValues(initialTemplate),
   agentPlan: null,
   agentSignature: '',
@@ -789,6 +804,7 @@ async function startApp(): Promise<void> {
     if (!appRoot) {
       throw new Error('Missing #app');
     }
+    initializeAnalytics();
     normalizeInitialRoute();
     hydrateGeneratedPlansForStartup();
     render();
@@ -894,6 +910,7 @@ function render(): void {
   if (!appRoot) return;
   const route = currentRoute();
   applyRouteTitle(route);
+  trackPageView(route ?? normalizePathname(window.location.pathname), document.title);
   closeTemplatePickerInteractions();
   appRoot.innerHTML = pageShell(pageContent(route), route);
   bind();
@@ -1106,7 +1123,7 @@ function privacyPage(): string {
 
         <h3>3. Cookies, Local Storage & Analytics</h3>
         <p>The Agentic website uses browser-based storage methods such as IndexedDB and localStorage to maintain app state, selected wallet name, selected cluster, bridge URL, bridge token, lab artifacts, UI preferences, and similar local workspace data. When a local bridge is connected, signed lab artifacts may also be mirrored to a local bridge archive file. The Android app may store Mobile Wallet Adapter authorization records in app-private storage so you can reconnect a previously approved wallet. You may clear browser storage, app storage, or local runtime files, but doing so may remove preferences, authorization cache, receipts, or local artifacts.</p>
-        <p>We may add Google Analytics 4 to the public marketing site or hosted app. If enabled, Google Analytics may collect or process usage events, page views, device/browser information, approximate location, and related identifiers according to Google&apos;s terms and settings. We will not use Google Analytics to sell personal information or for cross-context behavioral advertising, and we will update the Google Play Data Safety form before enabling analytics in the Android distribution.</p>
+        <p>We use Google Analytics 4 on the public marketing site and hosted app when a measurement ID is configured. Google Analytics may collect or process page views, route changes, download clicks, navigation clicks, wallet-connect events, planner button clicks, device/browser information, approximate location, and related identifiers according to Google&apos;s terms and settings. We do not send wallet addresses, signatures, transaction IDs, AI prompts, AI keys, bridge tokens, or raw user-entered planner values to Google Analytics, and we do not use Google Analytics to sell personal information or for cross-context behavioral advertising.</p>
 
         <h3>4. Data Storage & Security</h3>
         <p>We implement reasonable technical and organizational measures designed to protect your personal information. Examples include encryption in transit via SSL/TLS, secure infrastructure, and access controls. Despite these measures, no method of transmission or storage is completely secure; you use the Platform at your own risk.</p>
@@ -1149,7 +1166,7 @@ function privacyPage(): string {
         <ul>
           <li><strong>Public-website usage logs:</strong> approximately 30–90 days, extendable for security or abuse investigations.</li>
           <li><strong>Support tickets &amp; attachments:</strong> active ticket duration plus up to 24 months.</li>
-          <li><strong>Google Analytics 4 data, if enabled:</strong> retained according to the configured Google Analytics property retention settings and applicable Google controls.</li>
+          <li><strong>Google Analytics 4 data, when enabled:</strong> retained according to the configured Google Analytics property retention settings and applicable Google controls.</li>
           <li><strong>Local-device data (CLI, runtime, desktop bridge, Android MWA app, local logs, authorization cache, bridge tokens, session AI keys, and receipts):</strong> stays on your device under your control; we do not retain it unless you send it to us.</li>
           <li><strong>Public blockchain data:</strong> may be permanent and cannot be deleted or modified by SolPulse.</li>
           <li><strong>Legal, safety, and compliance records:</strong> retained as long as necessary to satisfy legal obligations, sanctions controls, fraud prevention, security, dispute resolution, or legal defense.</li>
@@ -1163,7 +1180,7 @@ function privacyPage(): string {
           <li><strong>Solana RPC providers</strong> (e.g., Helius, public mainnet RPC, or configured RPC endpoints) — for on-chain reads, simulations, balance checks, and transaction submission initiated by you, your wallet, or your agent.</li>
           <li><strong>Hosting (Render), Google Play, Chrome/Custom Tabs/TWA, and app-store services</strong> — to distribute or serve the public website and Android app surfaces.</li>
           <li><strong>Optional AI clients and providers</strong> (Anthropic Claude, OpenAI/Codex, Vercel AI SDK, third-party MCP servers, or OpenAI-compatible providers you configure) — your chosen agent client, browser session key, local bridge, or hosted BYOK request calls them under its own terms and privacy policy. Hosted BYOK relays your API key to the selected provider for that request and does not store it.</li>
-          <li><strong>Google Analytics 4</strong> (if enabled) — aggregated usage measurement for product and reliability analysis, subject to Google Analytics configuration and applicable consent requirements.</li>
+          <li><strong>Google Analytics 4</strong> — aggregated usage measurement for product and reliability analysis when configured, subject to Google Analytics configuration and applicable consent requirements.</li>
         </ul>
 
         <h3>15. Additional Rights by Jurisdiction</h3>
@@ -1685,7 +1702,7 @@ function gapSection(): string {
         <div class="gap-proof-grid" aria-label="Differentiators">
           ${gapProof('Existing wallet', 'Phantom, Solflare, Backpack, Seed Vault, and compatible Solana wallets stay in control.')}
           ${gapProof('No private key handoff', 'Agents request signatures without receiving a seed phrase, keypair file, or env-var signer.')}
-          ${gapProof('One adapter layer', 'The same wallet backend supports browser, mobile, MCP, framework, CLI, receipts, and approval inbox flows.')}
+          ${gapProof('One adapter layer', 'The same wallet backend supports browser, mobile, MCP, framework, CLI, receipts, and Approve / Deny flows.')}
         </div>
       </div>
     </section>
@@ -1820,7 +1837,7 @@ function desktopDownloadSection(): string {
         <!-- Desktop App eyebrow intentionally hidden. -->
         <h2 id="desktop-title">Download the Agentic Desktop App.</h2>
         <p>
-          The Desktop App is optional easy mode for the local bridge, approval inbox, logs, and diagnostics. Use it
+          The Desktop App is optional easy mode for the local bridge, Approve / Deny queue, logs, and diagnostics. Use it
           when you want app controls instead of terminal commands. Browser extension wallets still approve every
           signing request through the external wallet host.
         </p>
@@ -1890,16 +1907,16 @@ function guidedDemoPage(): string {
         <h2 id="guided-demo-title">Try the approval flow before launching the full app.</h2>
         <p>
           This page keeps a short guide above the live demo workspace. Use the cards to jump into wallet signing,
-          agent plan review, approval queues, recurring approvals, or artifacts without losing the interactive controls below.
+          draft requests, approval decisions, recurring approvals, or audit artifacts without losing the interactive controls below.
         </p>
       </div>
       <div class="browser-app-grid demo-guide-grid">
         ${guidedDemoStepCard('wallet', 'Wallet signing', 'Connect a wallet and sign a bounded demo message without exposing keys.', 'Try signing')}
-        ${guidedDemoStepCard('agent', 'Agent plan', 'Draft a structured approval plan, then sign the proof when connected.', 'Draft a plan')}
-        ${guidedDemoStepCard('generated', 'Generated plans', 'Review saved AI and template drafts before signing proofs or queueing approvals.', 'Review plans')}
-        ${guidedDemoStepCard('inbox', 'Approval Inbox', 'Preview prepared actions and receipts from the local bridge.', 'View inbox')}
-        ${guidedDemoStepCard('schedule', 'Create Recurring', 'Create recurring approval requests that still require wallet review each time.', 'Create recurring')}
-        ${guidedDemoStepCard('labs', 'Artifacts', 'Create wallet-signed audit artifacts for intent, policy, evidence, and verification.', 'Create artifact')}
+        ${guidedDemoStepCard('agent', 'Draft Request', 'Create a one-time draft from a template or BYOK AI before queueing it.', 'Draft request')}
+        ${guidedDemoStepCard('generated', 'Review Drafts', 'Review saved drafts, then queue one when you want a wallet decision.', 'Review drafts')}
+        ${guidedDemoStepCard('inbox', 'Approve / Deny', 'Preview requests waiting for wallet approval or rejection.', 'View decisions')}
+        ${guidedDemoStepCard('schedule', 'Create Recurring', 'Create recurring rules. Each occurrence still returns for wallet review.', 'Create recurring')}
+        ${guidedDemoStepCard('labs', 'Audit Artifacts', 'Create wallet-signed evidence records that do not move funds.', 'Create artifact')}
       </div>
       <div class="browser-app-actions">
         <button data-start-action="discover" ${state.busy ? 'disabled' : ''}>
@@ -2006,7 +2023,15 @@ function localDevelopmentSection(): string {
 function downloadCard(label: string, asset: string, kind: string): string {
   const url = `${RELEASE_BASE_URL}/${asset}`;
   return `
-    <a class="download-card" href="${escapeHtml(url)}" target="_blank" rel="noreferrer">
+    <a
+      class="download-card"
+      href="${escapeHtml(url)}"
+      target="_blank"
+      rel="noreferrer"
+      data-download-kind="${escapeHtml(kind)}"
+      data-download-platform="${escapeHtml(label)}"
+      data-download-asset="${escapeHtml(asset)}"
+    >
       <span>${escapeHtml(kind)}</span>
       <strong>${escapeHtml(label)}</strong>
       <code>${escapeHtml(asset)}</code>
@@ -2074,11 +2099,11 @@ function appWorkspace(mode: 'app' | 'demo' = 'app'): string {
                 Wallet tab intentionally hidden across web, Android, and iOS app shells.
                 tabButton('wallet', 'Wallet')
               */ ''}
-              ${tabButton('agent', 'Agent Plan', 'Plan')}
-              ${tabButton('generated', 'Generated Plans', 'Plans')}
-              ${tabButton('inbox', 'Approval Inbox', 'Inbox')}
+              ${tabButton('agent', 'Draft Request', 'Draft')}
+              ${tabButton('generated', 'Review Drafts', 'Drafts')}
+              ${tabButton('inbox', 'Approve / Deny', 'Approve')}
               ${tabButton('schedule', 'Create Recurring', 'Recur')}
-              ${tabButton('labs', 'Artifacts')}
+              ${tabButton('labs', 'Audit Artifacts', 'Audit')}
             </nav>
           </div>
           ${activePanel()}
@@ -2663,6 +2688,91 @@ function signaturePlaceholder(title: string, detail: string): string {
   `;
 }
 
+function templateOutcome(template: AgentPlanTemplate): TemplateOutcome {
+  if (template.actionType === 'read_only') return 'audit';
+  if (templateCanQueue(template)) return 'queueable';
+  return 'proof';
+}
+
+function templateCanQueue(template: AgentPlanTemplate): boolean {
+  return ['transfer_sol', 'transfer_spl', 'swap', 'recurring_payment'].includes(template.actionType);
+}
+
+function planOutcome(plan: AgentPlan): TemplateOutcome {
+  if (plan.actionType === 'read_only') return 'audit';
+  if (canQueueAgentPlan(plan)) return 'queueable';
+  return 'proof';
+}
+
+function outcomeLabel(outcome: TemplateOutcome): string {
+  switch (outcome) {
+    case 'queueable':
+      return 'Can queue to Approve / Deny';
+    case 'proof':
+      return 'Review proof only';
+    case 'audit':
+      return 'Read-only / audit';
+  }
+}
+
+function outcomeShortLabel(outcome: TemplateOutcome): string {
+  switch (outcome) {
+    case 'queueable':
+      return 'Queueable';
+    case 'proof':
+      return 'Proof only';
+    case 'audit':
+      return 'Audit only';
+  }
+}
+
+function outcomeDetailForTemplate(template: AgentPlanTemplate): string {
+  const outcome = templateOutcome(template);
+  if (template.actionType === 'recurring_payment') {
+    return 'This draft creates a recurring rule. Each occurrence still appears in Approve / Deny.';
+  }
+  switch (outcome) {
+    case 'queueable':
+      return 'This draft can become an Approve / Deny item when the local bridge is connected.';
+    case 'proof':
+      return 'This can be signed as review evidence, but it cannot be queued as a transaction.';
+    case 'audit':
+      return 'This records context or analysis only. It does not queue a wallet action.';
+  }
+}
+
+function outcomeDetailForPlan(plan: AgentPlan): string {
+  const outcome = planOutcome(plan);
+  if (plan.actionType === 'recurring_payment') {
+    return 'Queueing creates a recurring approval rule. Future occurrences still require Approve / Deny.';
+  }
+  switch (outcome) {
+    case 'queueable':
+      return 'Queue this draft when you want it to wait in Approve / Deny for a wallet decision.';
+    case 'proof':
+      return 'This draft is for review evidence. Sign a review proof if you want an audit record.';
+    case 'audit':
+      return 'This draft records read-only context or audit notes. It does not move funds.';
+  }
+}
+
+function outcomeClass(outcome: TemplateOutcome): string {
+  return `outcome-${outcome}`;
+}
+
+function queueActionLabelForPlan(plan: AgentPlan): string {
+  return plan.actionType === 'recurring_payment' ? 'Create recurring approval' : 'Queue for wallet approval';
+}
+
+function templatesForOutcomeFilter(filter = state.templateOutcomeFilter): AgentPlanTemplate[] {
+  if (filter === 'all') return AGENT_PLAN_TEMPLATES;
+  return AGENT_PLAN_TEMPLATES.filter((template) => templateOutcome(template) === filter);
+}
+
+function firstTemplateForOutcomeFilter(filter: TemplateOutcomeFilter): AgentPlanTemplate {
+  return templatesForOutcomeFilter(filter)[0] ?? AGENT_PLAN_TEMPLATES[0]!;
+}
+
 function activePanel(): string {
   switch (state.activeTab) {
     case 'wallet':
@@ -2761,21 +2871,61 @@ function agentPlanPanel(): string {
     <section class="approval-object signature-stage stage-agent ${state.agentSignature ? 'stage-complete' : state.agentPlan ? 'stage-active' : 'stage-draft'}">
       <div class="signature-object-head">
         <div>
-          <h2>Agent planner</h2>
-          <p>Use keyless templates or BYOK AI to draft plans; wallet approval stays separate.</p>
+          <h2>Draft request</h2>
+          <p>Create a one-time draft from a template or BYOK AI. Drafts are not approvals until you queue them.</p>
         </div>
-        <span class="signature-state ${state.agentSignature ? 'complete' : state.agentPlan ? 'active' : ''}">${state.agentSignature ? 'proof signed' : state.agentPlan ? 'plan ready' : 'draft'}</span>
+        <span class="signature-state ${state.agentSignature ? 'complete' : state.agentPlan ? 'active' : ''}">${state.agentSignature ? 'review proof signed' : state.agentPlan ? 'draft ready' : 'drafting'}</span>
       </div>
 
       ${agentPlannerWorkbench()}
       ${agentPathExplainer()}
 
-      ${state.agentPlan ? agentPlanCard(state.agentPlan) : signaturePlaceholder('Plan details', 'Generate a plan to show route, risk, and approval constraints before signing.')}
+      ${state.agentPlan ? draftReadyPanel(state.agentPlan) : signaturePlaceholder('No draft yet', 'Choose a template or connect AI, then create a draft. Nothing goes to Approve / Deny until you queue it.')}
+      ${state.agentPlan ? agentPlanCard(state.agentPlan) : ''}
       ${agentResultBlock()}
       ${state.agentPreparedActionId ? `<div class="notice">Queued prepared action: ${escapeHtml(state.agentPreparedActionId)}</div>` : ''}
-      ${!walletReady ? '<div class="notice">You can draft plans without a wallet. Connect a wallet only when you are ready to sign an approval proof.</div>' : ''}
-      ${state.agentPlan && !queueable ? '<div class="notice">This template creates a review/proof plan. Queueing is available for SOL transfers, SPL transfers, swaps, and recurring payments.</div>' : ''}
+      ${!walletReady ? '<div class="notice">You can draft without a wallet. Connect a wallet when you are ready to queue an approval or sign an optional review proof.</div>' : ''}
+      ${state.agentPlan && !queueable ? '<div class="notice">This draft is not executable. It can be reviewed or signed as evidence, but it cannot enter Approve / Deny as a wallet action.</div>' : ''}
       ${state.error ? `<div class="error">${escapeHtml(state.error)}</div>` : ''}
+    </section>
+  `;
+}
+
+function draftReadyPanel(plan: AgentPlan): string {
+  const outcome = planOutcome(plan);
+  const queueable = canQueueAgentPlan(plan);
+  return `
+    <section class="draft-ready-panel ${escapeHtml(outcomeClass(outcome))}">
+      <div>
+        <span class="workbench-kicker">Draft ready</span>
+        <h3>${escapeHtml(outcomeLabel(outcome))}</h3>
+        <p>${escapeHtml(outcomeDetailForPlan(plan))}</p>
+      </div>
+      <div class="draft-ready-actions">
+        <button
+          id="queueAgentPlan"
+          class="${queueable ? 'primary' : 'utility'}"
+          ${!state.address || !state.bridgeActive || !queueable || state.busy ? 'disabled' : ''}
+          title="${escapeHtml(queuePlanTitle())}"
+        >
+          ${escapeHtml(queueActionLabelForPlan(plan))}
+        </button>
+        <button
+          data-tab="generated"
+          class="utility"
+          ${state.busy ? 'disabled' : ''}
+        >
+          View in Review Drafts
+        </button>
+        <button
+          id="signAgentPlan"
+          class="utility"
+          ${!state.address || state.busy ? 'disabled' : ''}
+          title="${!state.address ? 'Connect a wallet before signing review evidence.' : 'Creates audit evidence only. It does not queue, approve, or submit a transaction.'}"
+        >
+          Sign review proof
+        </button>
+      </div>
     </section>
   `;
 }
@@ -2789,8 +2939,8 @@ function generatedPlansPanel(): string {
     <section class="approval-object signature-stage stage-generated stage-anchor ${state.generatedPlans.length ? 'stage-active' : 'stage-draft'}">
       <div class="signature-object-head">
         <div>
-          <h2>Generated plans</h2>
-          <p>Review every AI and template draft saved in this browser. Queue only executable actions into Approval Inbox.</p>
+          <h2>Review drafts</h2>
+          <p>Saved template and AI drafts. Queue one only when you want it to wait for a wallet decision.</p>
         </div>
         <div class="generated-plans-toolbar signature-toolbar">
           <span class="signature-state">${escapeHtml(`${activeCount} active`)}</span>
@@ -2808,7 +2958,7 @@ function generatedPlansPanel(): string {
       ${
         visiblePlans.length
           ? `
-            <div class="generated-plan-grid" aria-label="Generated plans">
+            <div class="generated-plan-grid" aria-label="Review drafts">
               ${visiblePlans.map((record) => generatedPlanCard(record)).join('')}
             </div>
           `
@@ -2823,7 +2973,7 @@ function generatedPlansPanel(): string {
 function generatedPlanStatusLine(visibleCount: number, archivedCount: number): string {
   return `
     <div class="queue-status generated-plan-status">
-      <span>${escapeHtml(`${state.generatedPlans.length} saved`)}</span>
+      <span>${escapeHtml(`${state.generatedPlans.length} draft${state.generatedPlans.length === 1 ? '' : 's'} saved`)}</span>
       <strong>${visibleCount} visible</strong>
       <span>${archivedCount} archived</span>
       <span>Newest first</span>
@@ -2839,6 +2989,7 @@ function generatedPlanCard(record: GeneratedPlanRecord): string {
   const queueDisabled = !state.address || !state.bridgeActive || !queueable || state.busy || archived ? 'disabled' : '';
   const selected = state.selectedGeneratedPlanId === record.id;
   const detailsCount = plan.safeguards.length + plan.fields.length + (plan.userNotes ? 1 : 0);
+  const outcome = planOutcome(plan);
   return `
     <article class="generated-plan-card ${selected ? 'selected' : ''} ${archived ? 'archived' : ''}">
       <div class="generated-plan-card-top">
@@ -2852,7 +3003,7 @@ function generatedPlanCard(record: GeneratedPlanRecord): string {
       <div class="generated-plan-card-chips">
         <span title="${escapeHtml(plan.templateTitle)}">${escapeHtml(plan.templateTitle)}</span>
         <span>${escapeHtml(titleCase(plan.category))}</span>
-        <span>${escapeHtml(queueable ? 'Queueable' : 'Proof only')}</span>
+        <span>${escapeHtml(outcomeShortLabel(outcome))}</span>
       </div>
       <div class="generated-plan-quick-facts">
         ${generatedPlanFact('Network', titleCaseCluster(record.cluster))}
@@ -2870,25 +3021,25 @@ function generatedPlanCard(record: GeneratedPlanRecord): string {
           data-generated-plan-id="${escapeHtml(record.id)}"
           ${state.busy ? 'disabled' : ''}
         >
-          Make active
+          Open draft
         </button>
         <button
-          class="${record.signature ? '' : 'primary'}"
+          class="utility"
           data-generated-plan-action="sign-proof"
           data-generated-plan-id="${escapeHtml(record.id)}"
           ${signDisabled}
           title="${escapeHtml(signProofTitle(record))}"
         >
-          Sign proof
+          Sign review proof
         </button>
         <button
-          class="utility"
+          class="${queueable ? 'primary' : 'utility'}"
           data-generated-plan-action="queue"
           data-generated-plan-id="${escapeHtml(record.id)}"
           ${queueDisabled}
           title="${escapeHtml(generatedQueuePlanTitle(record))}"
         >
-          Queue
+          ${escapeHtml(queueActionLabelForPlan(plan))}
         </button>
         <button
           class="utility"
@@ -2987,16 +3138,17 @@ function generatedPlanOutcomeStrip(record: GeneratedPlanRecord): string {
 
 function generatedPlanAuditModal(record: GeneratedPlanRecord): string {
   const plan = record.plan;
+  const queueable = canQueueAgentPlan(plan);
   return `
     <div class="generated-plan-modal-backdrop" role="presentation">
       <section class="generated-plan-modal" role="dialog" aria-modal="true" aria-labelledby="generated-plan-audit-title">
         <div class="generated-plan-modal-head">
           <div>
-            <span class="workbench-kicker">${escapeHtml(record.source === 'ai' ? 'AI draft audit' : 'Template draft audit')}</span>
+            <span class="workbench-kicker">${escapeHtml(record.source === 'ai' ? 'AI draft details' : 'Template draft details')}</span>
             <h2 id="generated-plan-audit-title">${escapeHtml(plan.intent)}</h2>
             <p>${escapeHtml(generatedPlanMeta(record))}</p>
           </div>
-          <button class="utility" data-generated-plan-modal-close aria-label="Close plan details">Close</button>
+          <button class="utility" data-generated-plan-modal-close aria-label="Close draft details">Close</button>
         </div>
         <div class="generated-plan-modal-actions">
           <button
@@ -3004,25 +3156,25 @@ function generatedPlanAuditModal(record: GeneratedPlanRecord): string {
             data-generated-plan-id="${escapeHtml(record.id)}"
             ${state.busy ? 'disabled' : ''}
           >
-            Make active
+            Open draft
           </button>
           <button
-            class="${record.signature ? '' : 'primary'}"
+            class="utility"
             data-generated-plan-action="sign-proof"
             data-generated-plan-id="${escapeHtml(record.id)}"
             ${!state.address || state.busy || record.status === 'archived' ? 'disabled' : ''}
             title="${escapeHtml(signProofTitle(record))}"
           >
-            Sign proof
+            Sign review proof
           </button>
           <button
-            class="utility"
+            class="${queueable ? 'primary' : 'utility'}"
             data-generated-plan-action="queue"
             data-generated-plan-id="${escapeHtml(record.id)}"
-            ${!state.address || !state.bridgeActive || !canQueueAgentPlan(plan) || state.busy || record.status === 'archived' ? 'disabled' : ''}
+            ${!state.address || !state.bridgeActive || !queueable || state.busy || record.status === 'archived' ? 'disabled' : ''}
             title="${escapeHtml(generatedQueuePlanTitle(record))}"
           >
-            Queue approval
+            ${escapeHtml(queueActionLabelForPlan(plan))}
           </button>
         </div>
         <div class="generated-plan-audit-body">
@@ -3045,7 +3197,7 @@ function generatedPlanAuditModal(record: GeneratedPlanRecord): string {
               ${reviewSummaryRows(plan).map(([label, value]) => generatedPlanAuditRow(label, value)).join('')}
               ${generatedPlanAuditRow('Created', formatDateTime(record.createdAt))}
               ${generatedPlanAuditRow('Updated', formatDateTime(record.updatedAt))}
-              ${generatedPlanAuditRow('Queueability', canQueueAgentPlan(plan) ? 'Queueable approval' : 'Review proof only')}
+              ${generatedPlanAuditRow('Outcome', outcomeLabel(planOutcome(plan)))}
             </dl>
           </section>
           ${plan.userNotes ? generatedPlanAuditTextSection('User notes', plan.userNotes) : ''}
@@ -3093,20 +3245,20 @@ function generatedPlanAuditListSection(label: string, values: string[]): string 
 
 function generatedPlanResultBlock(record: GeneratedPlanRecord): string {
   if (!record.signature && !record.preparedActionId) {
-    return '<div class="empty">Signed proof and queued approval ids appear here after action.</div>';
+    return '<div class="empty">Review proof signatures and queued approval ids appear here after action.</div>';
   }
   return `
     <div class="results generated-plan-results">
       ${record.signature ? `
         <div class="result-row">
-          <span>Signed proof</span>
+          <span>Review proof</span>
           <code>${escapeHtml(record.signature)}</code>
-          <button data-copy="${escapeHtml(record.signature)}" data-copy-name="Signed proof">Copy</button>
+          <button data-copy="${escapeHtml(record.signature)}" data-copy-name="Review proof">Copy</button>
         </div>
       ` : ''}
       ${record.preparedActionId ? `
         <div class="result-row">
-          <span>Queued approval</span>
+          <span>Queued approval / recurring rule</span>
           <code>${escapeHtml(record.preparedActionId)}</code>
           <button data-copy="${escapeHtml(record.preparedActionId)}" data-copy-name="Queued approval id">Copy</button>
         </div>
@@ -3118,8 +3270,8 @@ function generatedPlanResultBlock(record: GeneratedPlanRecord): string {
 function generatedPlansEmptyState(): string {
   const detail = state.generatedPlans.length
     ? 'Archived plans are hidden. Show archived to inspect or restore them.'
-    : 'Generate a template or AI plan from Agent Plan. It will be saved here automatically.';
-  return signaturePlaceholder('No generated plans visible', detail);
+    : 'Create a draft from Draft Request. It will be saved here, but it will not enter Approve / Deny until queued.';
+  return signaturePlaceholder('No drafts visible', detail);
 }
 
 function agentPlannerWorkbench(): string {
@@ -3128,20 +3280,23 @@ function agentPlannerWorkbench(): string {
   const canUseAi = canGenerateAiPlanFromSettings();
   const templateGenerating = state.activeOperation === 'generate-template-plan';
   const aiGenerating = state.activeOperation === 'generate-ai-plan';
+  const outcome = templateOutcome(template);
   return `
     <div class="agent-planner-grid">
       <div class="intent-capsule intent-document-card planner-card ${state.agentPlan ? 'plan-linked' : 'draft'}">
         <div class="intent-document-head">
           <div>
-            <span>Template planner</span>
+            <span>Draft method</span>
             <h3>${escapeHtml(template.title)}</h3>
           </div>
-          <strong>${escapeHtml(template.category)}</strong>
+          <strong class="template-outcome-badge ${escapeHtml(outcomeClass(outcome))}">${escapeHtml(outcomeShortLabel(outcome))}</strong>
         </div>
+        ${templateOutcomeControls()}
         <div class="field compact planner-template-select">
-          <span id="templatePickerLabel">Plan template</span>
+          <span id="templatePickerLabel">Request template</span>
           ${templatePicker(template)}
         </div>
+        ${templateOutcomeSummary(template)}
         <p class="template-description">${escapeHtml(template.description)}</p>
         <div class="planner-fields">
           ${template.fields.map(templateFieldInput).join('')}
@@ -3151,17 +3306,48 @@ function agentPlannerWorkbench(): string {
           <textarea id="agentPrompt" placeholder="${notesRequired ? 'Describe what you want prepared or reviewed.' : 'Optional context, reason, policy note, or instruction for this approval record.'}" ${state.busy ? 'disabled' : ''}>${escapeHtml(state.agentPrompt)}</textarea>
         </label>
         <div class="intent-policy-strip">
-          <span>Approval rule</span>
-          <p>Templates create one-off approval plans without the bridge. The inbox and recurring approvals require the local bridge.</p>
+          <span>Where this goes</span>
+          <p>Drafts are saved in Review Drafts. Queueable drafts enter Approve / Deny only after you choose to queue them.</p>
         </div>
         <div class="agent-actions signature-actions intent-document-actions">
-          <button id="generatePlan" class="${state.agentPlan ? '' : 'primary'}" ${state.busy ? 'disabled' : ''}>${templateGenerating ? `${buttonSpinner()}Generating...` : 'Generate template plan'}</button>
-          <button id="generateAiPlan" class="${canUseAi ? 'primary' : ''}" ${!canUseAi || state.busy ? 'disabled' : ''} title="${canUseAi ? 'Generate through your configured AI key.' : 'Add a hosted/session key or configure local bridge AI first.'}">${aiGenerating ? `${buttonSpinner()}Generating...` : 'Generate with AI'}</button>
-          <button id="signAgentPlan" class="${state.agentPlan ? 'primary' : ''}" ${!state.address || !state.agentPlan || state.busy ? 'disabled' : ''} title="${!state.address ? 'Connect a wallet before signing.' : !state.agentPlan ? 'Generate a plan before signing approval.' : ''}">Sign proof</button>
-          <button id="queueAgentPlan" class="utility" ${!state.address || !state.agentPlan || !state.bridgeActive || !canQueueAgentPlan(state.agentPlan) || state.busy ? 'disabled' : ''} title="${queuePlanTitle()}">Queue approval</button>
+          <button id="generatePlan" class="${state.agentPlan ? '' : 'primary'}" ${state.busy ? 'disabled' : ''}>${templateGenerating ? `${buttonSpinner()}Creating...` : 'Create draft from template'}</button>
+          <button id="generateAiPlan" class="${!state.agentPlan && canUseAi ? 'primary' : ''}" ${!canUseAi || state.busy ? 'disabled' : ''} title="${canUseAi ? 'Draft through your configured AI key.' : 'Add a hosted/session key or configure local bridge AI first.'}">${aiGenerating ? `${buttonSpinner()}Drafting...` : 'Draft with AI'}</button>
         </div>
       </div>
       ${aiSettingsPanel()}
+    </div>
+  `;
+}
+
+function templateOutcomeControls(): string {
+  const filters: Array<[TemplateOutcomeFilter, string]> = [
+    ['queueable', 'Queueable'],
+    ['proof', 'Review only'],
+    ['audit', 'Read-only'],
+    ['all', 'All'],
+  ];
+  return `
+    <div class="template-filter-row" role="group" aria-label="Template outcome filter">
+      ${filters.map(([filter, label]) => `
+        <button
+          type="button"
+          data-template-filter="${escapeHtml(filter)}"
+          class="${state.templateOutcomeFilter === filter ? 'active' : ''}"
+          ${state.busy ? 'disabled' : ''}
+        >
+          ${escapeHtml(label)}
+        </button>
+      `).join('')}
+    </div>
+  `;
+}
+
+function templateOutcomeSummary(template: AgentPlanTemplate): string {
+  const outcome = templateOutcome(template);
+  return `
+    <div class="template-outcome-summary ${escapeHtml(outcomeClass(outcome))}">
+      <strong>${escapeHtml(outcomeLabel(outcome))}</strong>
+      <p>${escapeHtml(outcomeDetailForTemplate(template))}</p>
     </div>
   `;
 }
@@ -3192,16 +3378,16 @@ function agentPathExplainer(): string {
   return `
     <aside class="agent-path-explainer" aria-label="Template and connected agent paths">
       <div>
-        <span>Templates</span>
-        <p>Pick an action, fill fields and notes, then generate a keyless approval record. No AI key, Claude, Codex, or MCP required.</p>
+        <span>One-time approvals</span>
+        <p>Draft a send or swap, then queue it to Approve / Deny when you want a wallet decision.</p>
       </div>
       <div>
-        <span>Connected agent</span>
-        <p>Claude, Codex, MCP, or Solana Agent Kit can prepare richer requests through the local bridge. Your wallet still signs.</p>
+        <span>Recurring approvals</span>
+        <p>Create a recurring rule. Every occurrence still returns to Approve / Deny before signing.</p>
       </div>
       <div>
-        <span>Always true</span>
-        <p>Agentic never receives a private key. Templates and agents both end in explicit wallet approval.</p>
+        <span>Audit evidence</span>
+        <p>Review proofs and artifacts are signed records. They do not queue, approve, or submit transactions.</p>
       </div>
     </aside>
   `;
@@ -3209,6 +3395,12 @@ function agentPathExplainer(): string {
 
 function templatePicker(template: AgentPlanTemplate): string {
   const selectedLabel = templatePickerLabel(template);
+  const visibleTemplates = templatesForOutcomeFilter();
+  const groups: Array<[TemplateOutcome, string]> = [
+    ['queueable', 'Can queue to Approve / Deny'],
+    ['proof', 'Review proof only'],
+    ['audit', 'Read-only / audit'],
+  ];
   return `
     <div class="template-picker" data-template-picker>
       <button
@@ -3233,21 +3425,14 @@ function templatePicker(template: AgentPlanTemplate): string {
         aria-labelledby="templatePickerLabel"
         hidden
       >
-        ${AGENT_PLAN_TEMPLATES.map((candidate) => {
-          const selected = candidate.id === template.id;
+        ${groups.map(([outcome, heading]) => {
+          const groupTemplates = visibleTemplates.filter((candidate) => templateOutcome(candidate) === outcome);
+          if (groupTemplates.length === 0) return '';
           return `
-            <button
-              id="template-option-${escapeHtml(candidate.id)}"
-              class="template-picker-option ${selected ? 'selected' : ''}"
-              type="button"
-              role="option"
-              aria-selected="${selected ? 'true' : 'false'}"
-              data-template-option="${escapeHtml(candidate.id)}"
-              title="${escapeHtml(templatePickerLabel(candidate))}"
-            >
-              <span>${escapeHtml(titleCase(candidate.category))}</span>
-              <strong>${escapeHtml(candidate.title)}</strong>
-            </button>
+            <div class="template-picker-group" role="presentation">
+              <span>${escapeHtml(heading)}</span>
+              ${groupTemplates.map((candidate) => templatePickerOption(candidate, template)).join('')}
+            </div>
           `;
         }).join('')}
       </div>
@@ -3258,6 +3443,26 @@ function templatePicker(template: AgentPlanTemplate): string {
 
 function templatePickerLabel(template: AgentPlanTemplate): string {
   return `${titleCase(template.category)} - ${template.title}`;
+}
+
+function templatePickerOption(candidate: AgentPlanTemplate, selectedTemplate: AgentPlanTemplate): string {
+  const selected = candidate.id === selectedTemplate.id;
+  const outcome = templateOutcome(candidate);
+  return `
+    <button
+      id="template-option-${escapeHtml(candidate.id)}"
+      class="template-picker-option ${selected ? 'selected' : ''}"
+      type="button"
+      role="option"
+      aria-selected="${selected ? 'true' : 'false'}"
+      data-template-option="${escapeHtml(candidate.id)}"
+      title="${escapeHtml(templatePickerLabel(candidate))}"
+    >
+      <span>${escapeHtml(titleCase(candidate.category))} / ${escapeHtml(outcomeShortLabel(outcome))}</span>
+      <strong>${escapeHtml(candidate.title)}</strong>
+      <em>${escapeHtml(candidate.description)}</em>
+    </button>
+  `;
 }
 
 function templateFieldInput(fieldDef: AgentPlanTemplateField): string {
@@ -3544,24 +3749,24 @@ function syncAiActionButtons(): void {
   }
   if (generateButton) {
     generateButton.disabled = !canGenerateAi;
-    generateButton.classList.toggle('primary', canGenerateAi);
+    generateButton.classList.toggle('primary', canGenerateAi && !state.agentPlan);
     generateButton.title = canGenerateAi
-      ? 'Generate through your configured AI key.'
+      ? 'Draft through your configured AI key.'
       : 'Add a hosted/session key or configure local bridge AI first.';
   }
 }
 
 function approvalInboxPanel(): string {
   if (!state.address) {
-    return guidedStartPanel('Approval inbox', 'Connect a wallet before reviewing prepared actions from the local bridge.');
+    return guidedStartPanel('Approve / deny', 'Connect a wallet before reviewing queued approvals from the local bridge.');
   }
   const actions = filteredPreparedActions();
   return `
     <section class="approval-object signature-stage stage-inbox stage-anchor ${state.preparedActions.length ? 'stage-active' : 'stage-draft'}">
       <div class="signature-object-head">
         <div>
-          <h2>Approval inbox</h2>
-          <p>Actions wait here until policy, intent, and wallet approval are all visible.</p>
+          <h2>Approve / deny</h2>
+          <p>Queued one-time requests and recurring occurrences wait here for a wallet decision.</p>
         </div>
         <div class="inbox-toolbar signature-toolbar">
           <select id="inboxFilter">
@@ -3594,7 +3799,7 @@ function scheduledApprovalsPanel(): string {
       <div class="signature-object-head">
         <div>
           <h2>Create recurring approval</h2>
-          <p>Define recurring requests. Each occurrence still lands in Approval Inbox for wallet review.</p>
+          <p>Define repeated requests. Each occurrence still returns to Approve / Deny before signing.</p>
         </div>
         <button id="refreshInbox" class="utility" ${!state.bridgeActive || state.busy ? 'disabled' : ''} title="${!state.bridgeActive ? 'Connect the bridge to refresh recurring approvals.' : ''}">Refresh</button>
       </div>
@@ -3614,13 +3819,13 @@ function labsPanel(): string {
   const complete = state.artifactView === 'signed' ? signedArtifacts.length > 0 : Boolean(artifact);
   const detail =
     state.artifactView === 'signed'
-      ? `Review wallet-signed audit records saved on this device${state.bridgeActive ? ' and mirrored to the local bridge archive' : ''}.`
-      : 'Create a signed record that binds request intent, policy interpretation, wallet identity, and local verification.';
+      ? `Review wallet-signed evidence records saved on this device${state.bridgeActive ? ' and mirrored to the local bridge archive' : ''}.`
+      : 'Create a signed evidence record. Artifacts do not queue, approve, or submit transactions.';
   return `
     <section class="approval-object signature-stage stage-labs stage-anchor ${complete ? 'stage-complete' : 'stage-draft'}">
       <div class="signature-object-head artifact-workspace-head">
         <div>
-          <h2>Artifacts</h2>
+          <h2>Audit artifacts</h2>
           <p>${escapeHtml(detail)}</p>
         </div>
         ${artifactWorkspaceTabs()}
@@ -3636,7 +3841,7 @@ function artifactWorkspaceTabs(): string {
   return `
     <div class="tabs compact-tabs artifact-view-tabs" role="tablist" aria-label="Artifact views">
       ${artifactViewButton('create', 'Create Artifact')}
-      ${artifactViewButton('signed', 'Signed Artifacts')}
+      ${artifactViewButton('signed', 'Signed Evidence')}
     </div>
   `;
 }
@@ -3838,7 +4043,7 @@ function labEmptyState(): string {
     <div class="empty lab-empty-state">
       <span>No artifact yet</span>
       <h3>Signed artifact required</h3>
-      <p>The next wallet approval will bind the selected artifact type, request, wallet, cluster, and local verification result.</p>
+      <p>The next wallet signature creates evidence only. It does not approve or submit a transaction.</p>
     </div>
   `;
 }
@@ -3850,15 +4055,15 @@ function contextPanel(): string {
       : !state.address
         ? 'Connect a wallet'
       : state.activeTab === 'agent' && !state.agentPlan
-        ? 'Generate an agent plan'
+        ? 'Create a draft request'
         : state.activeTab === 'generated'
-          ? 'Review generated plans'
+          ? 'Review saved drafts'
         : state.activeTab === 'inbox'
-          ? 'Review queued approvals'
+          ? 'Approve or deny queued requests'
           : state.activeTab === 'schedule'
             ? 'Create recurring approval'
             : state.activeTab === 'labs' && state.artifactView === 'signed'
-              ? 'Review signed artifacts'
+              ? 'Review signed evidence'
               : state.activeTab === 'labs'
                 ? 'Create an artifact'
                 : 'Review current request';
@@ -3931,11 +4136,27 @@ function bind(): void {
 
   for (const button of document.querySelectorAll<HTMLButtonElement>('[data-tab]')) {
     button.addEventListener('click', () => {
-      state.activeTab = button.dataset.tab as ActiveTab;
+      const tab = button.dataset.tab as ActiveTab;
+      trackNavClick(`${currentRoute() ?? '/app'}#${tab}`, 'workspace');
+      state.activeTab = tab;
       if (state.activeTab === 'labs') {
         state.artifactView = 'create';
       }
       state.error = '';
+      render();
+    });
+  }
+
+  for (const button of document.querySelectorAll<HTMLButtonElement>('[data-template-filter]')) {
+    button.addEventListener('click', () => {
+      const filter = button.dataset.templateFilter as TemplateOutcomeFilter | undefined;
+      if (!filter) return;
+      state.templateOutcomeFilter = filter;
+      const current = selectedTemplate();
+      if (filter !== 'all' && templateOutcome(current) !== filter) {
+        selectAgentTemplate(firstTemplateForOutcomeFilter(filter).id);
+        return;
+      }
       render();
     });
   }
@@ -4015,6 +4236,7 @@ function bind(): void {
     button.addEventListener('click', () => {
       const tab = button.dataset.demoTab as ActiveTab | undefined;
       if (!tab) return;
+      trackNavClick(`/demo#${tab}`, 'demo_guide');
       state.activeTab = tab;
       if (tab === 'labs') {
         state.artifactView = 'create';
@@ -4214,6 +4436,10 @@ function bind(): void {
         await navigator.clipboard.writeText(value);
         markCopied(copyId);
         pushToast('success', `${label} copied`, value);
+        const commandKind = trackedCliCommandKind(value);
+        if (commandKind) {
+          trackCliCommandCopy(commandKind);
+        }
       } catch (err) {
         const message = err instanceof Error ? err.message : 'Clipboard permission was denied.';
         pushToast('error', 'Copy failed', message);
@@ -4224,6 +4450,16 @@ function bind(): void {
 
   for (const button of document.querySelectorAll<HTMLButtonElement>('[data-toast-dismiss]')) {
     button.addEventListener('click', () => dismissToast(Number(button.dataset.toastDismiss)));
+  }
+
+  for (const link of document.querySelectorAll<HTMLAnchorElement>('[data-download-asset]')) {
+    link.addEventListener('click', () => {
+      trackDownloadClick(
+        link.dataset.downloadKind ?? 'download',
+        link.dataset.downloadPlatform ?? 'unknown',
+        link.dataset.downloadAsset ?? 'unknown',
+      );
+    });
   }
 }
 
@@ -4248,6 +4484,7 @@ function bindRouteLinks(): void {
       if (!isAppRoute(route)) return;
 
       event.preventDefault();
+      trackNavClick(route, navAreaForLink(link));
       if (route === '/mwa-test' && SHOW_ANDROID_EXAMPLE_TAB && agenticAndroidBridge()?.openMwaExample) {
         openAndroidMwaTest();
         return;
@@ -4255,6 +4492,29 @@ function bindRouteLinks(): void {
       navigateTo(route);
     });
   }
+}
+
+function navAreaForLink(link: HTMLAnchorElement): string {
+  if (link.closest('.homepage-nav')) return 'header';
+  if (link.closest('.homepage-footer')) return 'footer';
+  if (link.closest('.hero-command-area')) return 'hero';
+  if (link.closest('.homepage-cta-actions')) return 'homepage_cta';
+  if (link.closest('.browser-app-actions')) return 'workspace_cta';
+  if (link.closest('.command-deck')) return 'runtime_deck';
+  return 'internal_link';
+}
+
+function trackedCliCommandKind(value: string): string | null {
+  if (value === NPM_GLOBAL_INSTALL_COMMAND) return 'npm_global_install';
+  if (value === NPM_EXEC_COMMAND) return 'npm_exec_app';
+  if (value === INSTALLED_APP_COMMAND) return 'installed_app';
+  return null;
+}
+
+function walletConnectSurface(): string {
+  if (state.androidNativeEnvironment.isAndroidNative) return 'android_native';
+  if (state.iosNativeEnvironment.isIosNative) return 'ios_native';
+  return 'wallet_standard';
 }
 
 function bindTemplatePicker(): void {
@@ -4402,10 +4662,15 @@ function positionTemplatePickerMenu(trigger: HTMLElement, menu: HTMLElement): vo
   const viewport = window.visualViewport;
   const viewportTop = viewport?.offsetTop ?? 0;
   const viewportWidth = viewport?.width ?? window.innerWidth;
+  const viewportHeight = viewport?.height ?? window.innerHeight;
   const triggerRect = trigger.getBoundingClientRect();
   const safeTop = viewportTop + 10;
+  const safeBottom = viewportTop + viewportHeight - 10;
   const spaceAbove = Math.max(0, Math.floor(triggerRect.top - safeTop - 8));
-  const maxHeight = Math.min(420, spaceAbove);
+  const spaceBelow = Math.max(0, Math.floor(safeBottom - triggerRect.bottom - 8));
+  const openUp = spaceBelow < 220 && spaceAbove > spaceBelow;
+  const maxHeight = Math.min(420, Math.max(180, openUp ? spaceAbove : spaceBelow));
+  menu.classList.toggle('drop-up', openUp);
   menu.style.setProperty('--template-menu-max-height', `${maxHeight}px`);
   menu.style.setProperty('--template-menu-max-width', `${Math.max(220, Math.floor(viewportWidth - 20))}px`);
 }
@@ -4437,7 +4702,9 @@ function focusAdjacentTemplateOption(options: HTMLButtonElement[], direction: 1 
 async function runDiscover(): Promise<void> {
   await run('discover', async () => {
     if (state.androidNativeEnvironment.isAndroidNative) {
+      trackWalletConnectClick('android_native', 'discover_button');
       await connectAndroidNativeWallet(true);
+      trackWalletConnectSuccess('android_native', state.cluster, 'discover_button');
       pushToast('success', 'Android MWA connected', short(state.address));
       return;
     }
@@ -4462,6 +4729,8 @@ async function runDiscover(): Promise<void> {
 }
 
 async function runConnect(): Promise<void> {
+  const connectSurface = walletConnectSurface();
+  trackWalletConnectClick(connectSurface, 'connect_button');
   await run('connect', async () => {
     if (state.androidNativeEnvironment.isAndroidNative) {
       await connectAndroidNativeWallet(true);
@@ -4470,6 +4739,7 @@ async function runConnect(): Promise<void> {
         await connectBridgeHost();
       }
       savePersistedState();
+      trackWalletConnectSuccess(connectSurface, state.cluster, 'connect_button');
       pushToast('success', 'Android MWA connected', short(state.address));
       return;
     }
@@ -4492,6 +4762,7 @@ async function runConnect(): Promise<void> {
         await connectBridgeHost();
       }
       savePersistedState();
+      trackWalletConnectSuccess(connectSurface, state.cluster, 'connect_button');
       pushToast('success', 'iOS wallet connected', short(state.address));
       return;
     }
@@ -4509,6 +4780,7 @@ async function runConnect(): Promise<void> {
       await connectBridgeHost();
     }
     savePersistedState();
+    trackWalletConnectSuccess(connectSurface, state.cluster, 'connect_button');
     pushToast('success', 'Wallet connected', short(state.address));
   });
 }
@@ -4532,6 +4804,7 @@ async function runDisconnect(): Promise<void> {
 }
 
 async function runReconnectAndroidCached(): Promise<void> {
+  trackWalletConnectClick('android_native', 'reconnect_cached');
   await run('connect', async () => {
     assertAndroidNativeRuntime();
     const restored = await restoreLatestAndroidNativeWallet({ cluster: androidNativeCluster() });
@@ -4542,6 +4815,7 @@ async function runReconnectAndroidCached(): Promise<void> {
     if (state.bridgeActive) {
       await connectBridgeHost();
     }
+    trackWalletConnectSuccess('android_native', state.cluster, 'reconnect_cached');
     pushToast('success', 'Android MWA restored', short(state.address));
   });
 }
@@ -4585,6 +4859,7 @@ async function runClearAndroidAllAccounts(): Promise<void> {
 }
 
 async function runReconnectIosCached(): Promise<void> {
+  trackWalletConnectClick('ios_native', 'reconnect_cached');
   await run('connect', async () => {
     assertIosNativeRuntime();
     const restored = await restoreLatestIosNativeWallet({
@@ -4608,6 +4883,7 @@ async function runReconnectIosCached(): Promise<void> {
       await connectBridgeHost();
     }
     savePersistedState();
+    trackWalletConnectSuccess('ios_native', state.cluster, 'reconnect_cached');
     pushToast('success', 'iOS cache restored', short(state.address));
   });
 }
@@ -4749,13 +5025,14 @@ async function runSignAndSendTransaction(): Promise<void> {
 }
 
 async function runGenerateAgentPlan(): Promise<void> {
+  const template = selectedTemplate();
+  trackGenerateTemplatePlan(template.id);
   state.activeOperation = 'generate-template-plan';
-  const toastId = pushToast('pending', 'Generating template plan', 'Preparing a saved review draft.');
+  const toastId = pushToast('pending', 'Creating template draft', 'Preparing a saved draft for review.');
   try {
     await run(
       'sign',
       async () => {
-        const template = selectedTemplate();
         const parameters = readTemplateFields(template);
         assertRequiredTemplateFields(template, parameters);
         const userNotes = state.agentPrompt.trim();
@@ -4766,10 +5043,9 @@ async function runGenerateAgentPlan(): Promise<void> {
         state.agentPreparedActionId = '';
         const record = saveGeneratedPlan(plan, template, userNotes || template.description);
         state.selectedGeneratedPlanId = record.id;
-        state.activeTab = 'generated';
-        replaceToast(toastId, 'success', 'Template plan saved', `${template.title} is in Generated Plans.`);
+        replaceToast(toastId, 'success', 'Draft created', `${template.title} is saved in Review Drafts.`);
       },
-      { onError: (message) => replaceToast(toastId, 'error', 'Template plan failed', message) },
+      { onError: (message) => replaceToast(toastId, 'error', 'Template draft failed', message) },
     );
   } finally {
     state.activeOperation = null;
@@ -4778,13 +5054,14 @@ async function runGenerateAgentPlan(): Promise<void> {
 }
 
 async function runGenerateAiPlan(): Promise<void> {
+  const template = selectedTemplate();
+  trackGenerateAiPlan(template.id, state.aiSettings.mode, state.aiSettings.provider);
   state.activeOperation = 'generate-ai-plan';
-  const toastId = pushToast('pending', 'Generating AI plan', 'Drafting through your configured AI route.');
+  const toastId = pushToast('pending', 'Drafting with AI', 'Drafting through your configured AI route.');
   try {
     await run(
       'ai',
       async () => {
-        const template = selectedTemplate();
         const parameters = readTemplateFields(template);
         assertRequiredTemplateFields(template, parameters);
         const userNotes = state.agentPrompt.trim();
@@ -4817,13 +5094,12 @@ async function runGenerateAiPlan(): Promise<void> {
         state.agentPreparedActionId = '';
         const record = saveGeneratedPlan(plan, template, request.prompt);
         state.selectedGeneratedPlanId = record.id;
-        state.activeTab = 'generated';
         appendAiDiagnostic({
           code: 'AI_PLAN_READY',
           message: 'AI route returned a valid plan.',
           detail: `${state.aiSettings.provider} ${state.aiSettings.model || 'model configured'}`,
         });
-        replaceToast(toastId, 'success', 'AI plan generated', `${plan.templateTitle} is ready in Generated Plans.`);
+        replaceToast(toastId, 'success', 'AI draft created', `${plan.templateTitle} is saved in Review Drafts.`);
       },
       {
         onError: (message, err) => {
@@ -4841,27 +5117,35 @@ async function runGenerateAiPlan(): Promise<void> {
 async function runSignAgentPlan(): Promise<void> {
   await run('sign', async () => {
     if (!state.agentPlan) {
-      throw new Error('Generate an agent plan before signing.');
+      throw new Error('Create a draft before signing a review proof.');
     }
-    const signature = await signAgentPlanProof(state.agentPlan, 'Agent plan review proof');
+    const signature = await signAgentPlanProof(state.agentPlan, 'Draft review proof');
     state.agentSignature = signature;
     updateActiveGeneratedPlanRecord({ signature, status: 'signed' });
-    pushToast('success', 'Plan proof signed', short(signature));
+    pushToast('success', 'Review proof signed', short(signature));
   });
 }
 
 async function runQueueAgentPlan(): Promise<void> {
   await run('inbox', async () => {
     if (!state.agentPlan) {
-      throw new Error('Generate an agent plan before queueing.');
+      throw new Error('Create a draft before queueing.');
     }
     const response = await queuePlanThroughBridge(state.agentPlan);
     state.agentPreparedActionId = response.id;
     updateActiveGeneratedPlanRecord({ preparedActionId: response.id, status: 'queued' });
-    state.activeTab = 'inbox';
-    state.inboxFilter = 'ready';
+    if (state.agentPlan.actionType === 'recurring_payment') {
+      state.activeTab = 'schedule';
+    } else {
+      state.activeTab = 'inbox';
+      state.inboxFilter = 'ready';
+    }
     await refreshInboxData();
-    pushToast('success', 'Prepared action queued', response.id);
+    pushToast(
+      'success',
+      state.agentPlan.actionType === 'recurring_payment' ? 'Recurring approval created' : 'Draft queued for approval',
+      response.id,
+    );
   });
 }
 
@@ -4878,7 +5162,7 @@ async function runGeneratedPlanAction(planId: string, action: string): Promise<v
   }
   if (action === 'make-active') {
     makeGeneratedPlanActive(record);
-    pushToast('success', 'Plan made active', `${record.plan.templateTitle} is ready on Agent Plan.`);
+    pushToast('success', 'Draft opened', `${record.plan.templateTitle} is ready in Draft Request.`);
     render();
     return;
   }
@@ -4900,7 +5184,7 @@ async function runGeneratedPlanAction(planId: string, action: string): Promise<v
     return;
   }
   if (action === 'delete') {
-    if (!window.confirm('Delete this generated plan permanently?')) return;
+    if (!window.confirm('Delete this draft permanently?')) return;
     state.generatedPlans = state.generatedPlans.filter((candidate) => candidate.id !== planId);
     if (state.generatedPlanAuditId === planId) {
       state.generatedPlanAuditId = '';
@@ -4924,15 +5208,15 @@ async function runSignGeneratedPlan(planId: string): Promise<void> {
   await run('sign', async () => {
     const record = requireGeneratedPlanRecord(planId);
     if (record.status === 'archived') {
-      throw new Error('Restore this generated plan before signing a proof.');
+      throw new Error('Restore this draft before signing a review proof.');
     }
-    const signature = await signAgentPlanProof(record.plan, 'Generated plan review proof');
+    const signature = await signAgentPlanProof(record.plan, 'Draft review proof');
     updateGeneratedPlan(planId, { signature, status: 'signed' });
     state.selectedGeneratedPlanId = planId;
     if (state.agentPlan && samePlan(state.agentPlan, record.plan)) {
       state.agentSignature = signature;
     }
-    pushToast('success', 'Plan proof signed', short(signature));
+    pushToast('success', 'Review proof signed', short(signature));
   });
 }
 
@@ -4940,10 +5224,10 @@ async function runQueueGeneratedPlan(planId: string): Promise<void> {
   await run('inbox', async () => {
     const record = requireGeneratedPlanRecord(planId);
     if (record.status === 'archived') {
-      throw new Error('Restore this generated plan before queueing it.');
+      throw new Error('Restore this draft before queueing it.');
     }
     if (!canQueueAgentPlan(record.plan)) {
-      throw new Error('Queue approval is available only for transfer, swap, and recurring payment plans.');
+      throw new Error('Only transfer, swap, and recurring payment drafts can be queued.');
     }
     const response = await queuePlanThroughBridge(record.plan);
     updateGeneratedPlan(planId, { preparedActionId: response.id, status: 'queued' });
@@ -4951,10 +5235,18 @@ async function runQueueGeneratedPlan(planId: string): Promise<void> {
     if (state.agentPlan && samePlan(state.agentPlan, record.plan)) {
       state.agentPreparedActionId = response.id;
     }
-    state.activeTab = 'inbox';
-    state.inboxFilter = 'ready';
+    if (record.plan.actionType === 'recurring_payment') {
+      state.activeTab = 'schedule';
+    } else {
+      state.activeTab = 'inbox';
+      state.inboxFilter = 'ready';
+    }
     await refreshInboxData();
-    pushToast('success', 'Prepared action queued', response.id);
+    pushToast(
+      'success',
+      record.plan.actionType === 'recurring_payment' ? 'Recurring approval created' : 'Draft queued for approval',
+      response.id,
+    );
   });
 }
 
@@ -5031,7 +5323,7 @@ function generatedPlanById(planId: string): GeneratedPlanRecord | undefined {
 function requireGeneratedPlanRecord(planId: string): GeneratedPlanRecord {
   const record = generatedPlanById(planId);
   if (!record) {
-    throw new Error('Generated plan was not found.');
+    throw new Error('Draft was not found.');
   }
   return record;
 }
@@ -5079,17 +5371,20 @@ function generatedPlanMeta(record: GeneratedPlanRecord): string {
 }
 
 function signProofTitle(record: GeneratedPlanRecord): string {
-  if (record.status === 'archived') return 'Restore this generated plan before signing.';
+  if (record.status === 'archived') return 'Restore this draft before signing review evidence.';
   if (!state.address) return 'Connect a wallet before signing a review proof.';
-  return record.signature ? 'Sign a fresh review proof for this generated plan.' : 'Sign that you reviewed this generated plan.';
+  return record.signature
+    ? 'Sign a fresh review proof. This does not queue, approve, or submit a transaction.'
+    : 'Sign that you reviewed this draft. This creates audit evidence only.';
 }
 
 function generatedQueuePlanTitle(record: GeneratedPlanRecord): string {
-  if (record.status === 'archived') return 'Restore this generated plan before queueing it.';
+  if (record.status === 'archived') return 'Restore this draft before queueing it.';
   if (!state.address) return 'Connect a wallet before queueing.';
   if (!state.bridgeActive) return 'Connect the local bridge before queueing this approval.';
-  if (!canQueueAgentPlan(record.plan)) return 'Queue approval is available only for transfers, swaps, and recurring payments.';
-  return 'Queue this generated plan in Approval Inbox.';
+  if (!canQueueAgentPlan(record.plan)) return 'Only transfers, swaps, and recurring payment drafts can be queued.';
+  if (record.plan.actionType === 'recurring_payment') return 'Create a recurring rule. Each occurrence still returns to Approve / Deny.';
+  return 'Send this draft to Approve / Deny for wallet review.';
 }
 
 function samePlan(left: AgentPlan, right: AgentPlan): boolean {
@@ -5104,7 +5399,7 @@ async function signAgentPlanProof(plan: AgentPlan, summary: string): Promise<str
 
 function agentPlanApprovalMessage(plan: AgentPlan): string {
   return [
-    'Solana Agent Wallet Adapter agent approval',
+    'Solana Agent Wallet Adapter draft review proof',
     `Address: ${state.address}`,
     `Cluster: ${state.cluster}`,
     `Source: ${plan.source}`,
@@ -5644,10 +5939,11 @@ function canQueueAgentPlan(plan: AgentPlan): boolean {
 
 function queuePlanTitle(): string {
   if (!state.address) return 'Connect a wallet before queueing.';
-  if (!state.bridgeActive) return 'Templates can be signed directly. Connect the local bridge only to queue approvals into the inbox.';
-  if (!state.agentPlan) return 'Generate a plan before queueing.';
-  if (!canQueueAgentPlan(state.agentPlan)) return 'Queueing is available for transfer, swap, and recurring payment templates.';
-  return 'Queue this plan in the local bridge approval inbox.';
+  if (!state.bridgeActive) return 'Connect the local bridge to send queueable drafts to Approve / Deny.';
+  if (!state.agentPlan) return 'Create a draft before queueing.';
+  if (!canQueueAgentPlan(state.agentPlan)) return 'Only transfer, swap, and recurring payment drafts can be queued.';
+  if (state.agentPlan.actionType === 'recurring_payment') return 'Create a recurring rule. Each occurrence still returns to Approve / Deny.';
+  return 'Send this draft to Approve / Deny for wallet review.';
 }
 
 async function queuePlanThroughBridge(plan: AgentPlan): Promise<{ id: string }> {
@@ -6179,16 +6475,17 @@ function resultBlock(): string {
 }
 
 function agentPlanCard(plan: AgentPlan): string {
+  const outcome = planOutcome(plan);
   return `
     <article class="plan-card proof-preview">
       <div>
-        <span class="workbench-kicker">${escapeHtml(plan.source === 'ai' ? 'AI-drafted plan' : 'Keyless template plan')}</span>
+        <span class="workbench-kicker">${escapeHtml(plan.source === 'ai' ? 'AI draft' : 'Template draft')}</span>
         <h3>${escapeHtml(plan.intent)}</h3>
       </div>
       <div class="pill-row">
         <span class="status-pill neutral">${escapeHtml(titleCase(plan.category))}</span>
         <span class="status-pill neutral">${escapeHtml(plan.actionType.replace(/_/g, ' '))}</span>
-        <span class="status-pill ${canQueueAgentPlan(plan) ? 'tx-confirmed' : 'tx-pending'}">${canQueueAgentPlan(plan) ? 'queueable' : 'proof only'}</span>
+        <span class="status-pill ${canQueueAgentPlan(plan) ? 'tx-confirmed' : 'tx-pending'}">${escapeHtml(outcomeShortLabel(outcome))}</span>
       </div>
       <dl class="proof-grid plan-review-grid">
         ${reviewSummaryRows(plan).map(([label, value]) => definitionRow(label, value)).join('')}
@@ -6239,12 +6536,12 @@ function planSourceLabel(plan: AgentPlan): string {
 
 function agentResultBlock(): string {
   if (!state.agentSignature) {
-    return '<div class="empty">Agent approval signature appears here after wallet approval.</div>';
+    return '<div class="empty">Optional review proof appears here after signing. It does not approve or submit a transaction.</div>';
   }
   return `
     <div class="results">
       <div class="result-row">
-        <span>Agent approval signature</span>
+        <span>Review proof signature</span>
         <code>${escapeHtml(state.agentSignature)}</code>
         <button data-copy="${escapeHtml(state.agentSignature)}">Copy</button>
       </div>
@@ -6394,7 +6691,7 @@ function recurringComposer(): string {
       <div class="contract-section">
         <div>
           <span>Schedule terms</span>
-          <p>When new approval items should appear for review.</p>
+          <p>When new requests should appear in Approve / Deny.</p>
         </div>
         <div class="recurring-grid schedule-grid">
           <label class="field compact">
@@ -6412,11 +6709,11 @@ function recurringComposer(): string {
       </div>
       <label class="field compact approval-memo">
         <span>Approval memo</span>
-        <input id="recurringNote" value="${escapeHtml(draft.note)}" placeholder="Reason shown in the approval inbox" />
+        <input id="recurringNote" value="${escapeHtml(draft.note)}" placeholder="Reason shown when this appears in Approve / Deny" />
       </label>
       <div class="recurring-form-actions contract-actions">
         <button id="createRecurring" class="primary" ${createDisabled ? 'disabled' : ''}>Create recurring approval</button>
-        ${createDisabled ? '<span class="contract-helper">Bridge required before creating recurring approvals.</span>' : '<span class="contract-helper">Recurring approvals create reviewable inbox items.</span>'}
+        ${createDisabled ? '<span class="contract-helper">Bridge required before creating recurring approvals.</span>' : '<span class="contract-helper">Each occurrence returns to Approve / Deny before signing.</span>'}
       </div>
     </div>
   `;
@@ -6688,7 +6985,7 @@ function evidenceIntent(): { status: string; detail: string; meta?: string } {
     const selected = selectedGeneratedPlan();
     return {
       status: state.generatedPlans.length ? 'Saved' : 'Empty',
-      detail: selected?.plan.intent ?? 'Generated AI and template plans are saved here for later review.',
+      detail: selected?.plan.intent ?? 'Template and AI drafts are saved here for later review.',
       meta: selected ? `${generatedPlanStatusLabel(selected)} · ${formatDateTime(selected.createdAt)}` : undefined,
     };
   }
@@ -6703,7 +7000,7 @@ function evidenceIntent(): { status: string; detail: string; meta?: string } {
     return {
       status: 'Prepared',
       detail: state.agentPlan.intent,
-      meta: 'Agent plan is ready for wallet review.',
+      meta: 'Draft is ready for review.',
     };
   }
   if (state.signature) {
@@ -6724,7 +7021,7 @@ function evidenceIntent(): { status: string; detail: string; meta?: string } {
     const count = state.preparedActions.filter((action) => !action.archived).length;
     return {
       status: count ? 'Queued' : 'Empty',
-      detail: count ? `${count} prepared action(s) are ready for review.` : 'No prepared actions are currently waiting.',
+      detail: count ? `${count} request(s) are waiting for Approve / Deny.` : 'No queued approvals are currently waiting.',
       meta: state.bridgeActive ? 'Bridge queue connected' : 'Bridge offline',
     };
   }
@@ -6734,17 +7031,17 @@ function evidenceIntent(): { status: string; detail: string; meta?: string } {
       status: activeSchedules ? 'Recurring' : 'Draft',
       detail: activeSchedules
         ? `${activeSchedules} recurring approval${activeSchedules === 1 ? '' : 's'} active.`
-        : 'Create a recurring approval for future wallet review.',
+        : 'Create a recurring rule for future wallet review.',
         meta: state.bridgeActive ? 'Bridge recurring engine connected' : 'Bridge offline',
     };
   }
   if (state.activeTab === 'labs') {
     if (state.artifactView === 'signed') {
       return {
-        status: state.labArtifacts.length ? 'Archived' : 'Empty',
-        detail: state.labArtifacts.length
-          ? `${state.labArtifacts.length} signed audit artifact(s) are available for review.`
-          : 'No signed audit artifacts have been created yet.',
+      status: state.labArtifacts.length ? 'Archived' : 'Empty',
+      detail: state.labArtifacts.length
+          ? `${state.labArtifacts.length} signed evidence record(s) are available for review.`
+          : 'No signed evidence records have been created yet.',
         meta: state.labArtifacts[0] ? short(state.labArtifacts[0].artifactHash) : undefined,
       };
     }
@@ -6775,23 +7072,23 @@ function evidencePolicy(): { status: string; detail: string; meta?: string } {
   }
   if (state.activeTab === 'agent') {
     return {
-      status: state.agentPlan ? 'Plan scoped' : 'Draft',
-      detail: state.agentPlan?.risk ?? 'Generate a plan to expose route and risk before signing.',
-      meta: state.bridgeActive ? 'Can queue prepared action' : 'Bridge queue unavailable',
+      status: state.agentPlan ? 'Draft scoped' : 'Draft',
+      detail: state.agentPlan?.risk ?? 'Create a draft to expose route and risk before queueing.',
+      meta: state.bridgeActive ? 'Can queue executable drafts' : 'Bridge queue unavailable',
     };
   }
   if (state.activeTab === 'generated') {
     const selected = selectedGeneratedPlan();
     return {
       status: selected ? 'Review scoped' : 'No drafts',
-      detail: selected?.plan.risk ?? 'Generated plans stay separate from Approval Inbox until they are queued.',
+      detail: selected?.plan.risk ?? 'Drafts stay separate from Approve / Deny until you queue them.',
       meta: selected && canQueueAgentPlan(selected.plan) ? 'Queueable with bridge' : 'Proof-only review',
     };
   }
   if (state.activeTab === 'schedule') {
     return {
       status: state.bridgeActive ? 'Recurring ready' : 'Bridge required',
-      detail: 'Recurring approvals create reviewable inbox items, not automatic signatures.',
+      detail: 'Recurring rules create future Approve / Deny items, not automatic signatures.',
       meta: state.recurringPayments.length ? `${state.recurringPayments.length} recurring approval(s)` : undefined,
     };
   }
@@ -6857,8 +7154,8 @@ function evidenceReceipt(latestLab: LabArtifact | undefined): { status: string; 
   }
   if (state.activeTab === 'agent' && state.agentSignature) {
     return {
-      status: 'Approval proof',
-      detail: 'The signed agent plan proof is available for audit.',
+      status: 'Review proof',
+      detail: 'The signed draft review proof is available for audit.',
       meta: short(state.agentSignature),
     };
   }
@@ -6867,14 +7164,14 @@ function evidenceReceipt(latestLab: LabArtifact | undefined): { status: string; 
     if (selected?.signature) {
       return {
         status: 'Proof signed',
-        detail: 'This generated plan has a wallet-signed review proof.',
+        detail: 'This draft has a wallet-signed review proof.',
         meta: short(selected.signature),
       };
     }
     if (selected?.preparedActionId) {
       return {
         status: 'Queued',
-        detail: 'This generated plan has been sent to Approval Inbox.',
+        detail: 'This draft has been sent to Approve / Deny or recurring setup.',
         meta: selected.preparedActionId,
       };
     }
@@ -6896,7 +7193,7 @@ function evidenceReceipt(latestLab: LabArtifact | undefined): { status: string; 
   if (state.agentSignature) {
     return {
       status: 'Proof signed',
-      detail: 'The agent approval proof is available for copy or audit.',
+      detail: 'The draft review proof is available for copy or audit.',
       meta: short(state.agentSignature),
     };
   }
@@ -7007,15 +7304,15 @@ function surfaceEyebrow(): string {
     case 'wallet':
       return 'Direct signing';
     case 'agent':
-      return 'Intent review';
+      return 'Draft request';
     case 'generated':
-      return 'Generated plans';
+      return 'Review drafts';
     case 'inbox':
-      return 'Approval inbox';
+      return 'Wallet decisions';
     case 'schedule':
       return 'Recurring approvals';
     case 'labs':
-      return state.artifactView === 'signed' ? 'Artifact archive' : 'Artifact creation';
+      return state.artifactView === 'signed' ? 'Audit archive' : 'Audit artifact';
   }
 }
 
@@ -7024,26 +7321,26 @@ function surfaceTitle(): string {
     case 'wallet':
       return 'Wallet signing';
     case 'agent':
-      return 'Agent Plan';
+      return 'Draft Request';
     case 'generated':
-      return 'Generated Plans';
+      return 'Review Drafts';
     case 'inbox':
-      return 'Approval Inbox';
+      return 'Approve / Deny';
     case 'schedule':
       return 'Create Recurring';
     case 'labs':
-      return 'Artifacts';
+      return 'Audit Artifacts';
   }
 }
 
 function emptyInboxText(): string {
   if (state.inboxFilter === 'one-time') {
-    return 'No one-time actions. Ask the MCP agent to prepare a payment or swap.';
+    return 'No one-time approvals. Queue a send or swap draft when you want a wallet decision.';
   }
   if (state.inboxFilter === 'recurring') {
-    return 'No recurring actions yet. Create a recurring approval above.';
+    return 'No recurring occurrences waiting. Create a recurring rule first.';
   }
-  return 'No prepared actions yet. Ask the MCP agent to prepare a payment, swap, or recurring payment.';
+  return 'No approvals waiting. Queue a draft or create a recurring rule to send future items here.';
 }
 
 function amountLabel(action: PreparedAction): string {

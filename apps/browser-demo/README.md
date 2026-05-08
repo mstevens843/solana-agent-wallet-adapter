@@ -92,6 +92,7 @@ blueprint. Manual Render settings are:
 - Health check path: `/api/ai/status`
 - Environment variable: `SKIP_INSTALL_DEPS=true`
 - Production UI env: `VITE_AGENTIC_DEV_CONTROLS=false`
+- Production analytics env: `VITE_AGENTIC_GA_MEASUREMENT_ID=G-MJ3VZ7VEX7`
 - Optional Android trust env: `AGENTIC_ANDROID_SHA256_CERT_FINGERPRINTS`
 - Production Android trust guard: `AGENTIC_ANDROID_REQUIRE_TRUST=1`
 

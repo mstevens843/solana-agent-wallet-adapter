@@ -10,3 +10,5 @@ services:
         value: "true"
       - key: VITE_AGENTIC_DEV_CONTROLS
         value: "false"
+      - key: VITE_AGENTIC_GA_MEASUREMENT_ID
+        value: "G-MJ3VZ7VEX7"

@@ -11,6 +11,7 @@ const androidShowExampleTab =
   process.env.VITE_AGENTIC_ANDROID_SHOW_EXAMPLE_TAB ??
   process.env.AGENTIC_ANDROID_SHOW_EXAMPLE_TAB ??
   'false';
+const gaMeasurementId = process.env.VITE_AGENTIC_GA_MEASUREMENT_ID ?? process.env.AGENTIC_GA_MEASUREMENT_ID ?? '';
 
 export default defineConfig({
   define: {
@@ -18,6 +19,7 @@ export default defineConfig({
     'import.meta.env.VITE_CAPACITATOR_IOS_APP': JSON.stringify(capacitorIosApp),
     'import.meta.env.VITE_AGENTIC_ANDROID_APP': JSON.stringify(androidApp),
     'import.meta.env.VITE_AGENTIC_ANDROID_SHOW_EXAMPLE_TAB': JSON.stringify(androidShowExampleTab),
+    'import.meta.env.VITE_AGENTIC_GA_MEASUREMENT_ID': JSON.stringify(gaMeasurementId),
   },
   build: {
     rollupOptions: {
