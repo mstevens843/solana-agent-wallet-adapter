@@ -2731,13 +2731,19 @@ code {
 }
 
 .rail-cloud-head strong {
+  align-items: center;
   background: rgba(112, 170, 229, 0.12);
   border: 1px solid rgba(112, 170, 229, 0.22);
   border-radius: 999px;
   color: #dbeeff;
+  display: inline-flex;
   font-size: 0.76rem;
+  justify-content: center;
   line-height: 1;
+  min-height: 31px;
+  min-width: 92px;
   padding: 5px 8px;
+  text-align: center;
 }
 
 .rail-cloud-card.signed-in .rail-cloud-head strong {
@@ -2783,6 +2789,17 @@ code {
 
 .rail-cloud-actions button {
   width: 100%;
+}
+
+.rail-cloud-button {
+  background: rgba(112, 170, 229, 0.12);
+  border-color: rgba(112, 170, 229, 0.24);
+  color: #dbeeff;
+}
+
+.rail-cloud-button:hover:not(:disabled) {
+  background: rgba(112, 170, 229, 0.18);
+  border-color: rgba(112, 170, 229, 0.34);
 }
 
 .rail-cloud-warning {
@@ -3201,7 +3218,7 @@ code {
 
 .public-wallet-actions {
   grid-template-columns: 1fr;
-  margin: 12px 0 0;
+  margin: 4px 0 0;
 }
 
 .public-wallet-actions.connected {
@@ -4333,12 +4350,14 @@ code {
 }
 
 .wallet-action-summary {
-  background: rgba(63, 189, 131, 0.045);
-  border: 1px solid rgba(139, 205, 170, 0.14);
+  background:
+    linear-gradient(180deg, rgba(20, 48, 36, 0.66), rgba(16, 23, 21, 0.96)),
+    rgba(16, 23, 21, 0.96);
+  border: 1px solid rgba(139, 205, 170, 0.24);
   border-radius: 8px;
   display: grid;
-  gap: 9px;
-  padding: 10px;
+  gap: 7px;
+  padding: 9px 10px;
 }
 
 .plan-guardrail-strip {
@@ -4442,13 +4461,17 @@ code {
 
 .wallet-action-grid {
   display: grid;
-  gap: 7px;
-  grid-template-columns: repeat(5, minmax(0, 1fr));
+  gap: 8px;
+  grid-template-columns: minmax(120px, 0.8fr) minmax(130px, 0.9fr) minmax(160px, 1.1fr) minmax(220px, 1.5fr);
   margin: 0;
 }
 
 .wallet-action-grid div {
+  background: rgba(255, 255, 255, 0.026);
+  border: 1px solid rgba(224, 230, 226, 0.08);
+  border-radius: 7px;
   min-width: 0;
+  padding: 7px 8px;
 }
 
 .wallet-action-grid dt {
@@ -4462,11 +4485,33 @@ code {
 
 .wallet-action-grid dd {
   color: var(--text);
-  font-size: 0.78rem;
+  font-size: 0.8rem;
+  font-weight: 820;
   line-height: 1.22;
   margin: 0;
   overflow: hidden;
   text-overflow: ellipsis;
+}
+
+.wallet-action-grid .wallet-action-amount {
+  background: rgba(139, 205, 170, 0.09);
+  border-color: rgba(139, 205, 170, 0.24);
+}
+
+.wallet-action-grid .wallet-action-amount dd {
+  color: #a9f1c9;
+  font-weight: 930;
+}
+
+.wallet-action-grid .wallet-action-effect {
+  background: rgba(221, 196, 112, 0.075);
+  border-color: rgba(221, 196, 112, 0.24);
+}
+
+.wallet-action-grid .wallet-action-effect dd {
+  color: #fff0bf;
+  font-size: 0.82rem;
+  font-weight: 940;
 }
 
 @media (max-width: 900px) {
@@ -9191,7 +9236,7 @@ button.danger:hover:not(:disabled) {
     display: grid;
     gap: 7px;
     grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
-    margin-top: 8px;
+    margin-top: 4px;
   }
 
   .route-app .public-wallet-actions.native-wallet-actions,
@@ -10446,10 +10491,6 @@ button.danger:hover:not(:disabled) {
   justify-self: start;
 }
 
-.planner-ai-setup-row {
-  margin-top: 12px;
-}
-
 .rail-advanced-details > summary,
 .recurring-advanced-details > summary {
   align-items: center;
@@ -10499,14 +10540,30 @@ button.danger:hover:not(:disabled) {
   padding-bottom: 10px;
 }
 
+.route-app .section-title-line {
+  align-items: baseline;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 9px;
+  min-width: 0;
+}
+
 .route-app .signature-object-head h2 {
   font-size: 1.16rem;
   line-height: 1.16;
+  margin: 0;
 }
 
 .route-app .signature-object-head p {
   font-size: 0.9rem;
   line-height: 1.34;
+  margin: 0;
+  max-width: 80ch;
+}
+
+.route-app .section-title-line p span {
+  color: rgba(139, 205, 170, 0.7);
+  font-weight: 900;
 }
 
 .route-app .one-time-create-panel,
@@ -10519,8 +10576,37 @@ button.danger:hover:not(:disabled) {
 }
 
 .route-app .one-time-plan-tabs button,
+.route-app .recurring-view-tabs button,
+.route-app .artifact-view-tabs button,
 .route-app .template-filter-row button {
   min-height: 34px;
+}
+
+.route-app .one-time-plan-tabs,
+.route-app .recurring-view-tabs,
+.route-app .artifact-view-tabs {
+  background: rgba(255, 255, 255, 0.026);
+  border: 1px solid rgba(224, 230, 226, 0.09);
+  border-radius: 8px;
+  padding: 4px;
+}
+
+.route-app .one-time-plan-tabs button,
+.route-app .recurring-view-tabs button,
+.route-app .artifact-view-tabs button {
+  background: transparent;
+  border-color: transparent;
+  color: rgba(224, 230, 226, 0.78);
+  font-weight: 880;
+}
+
+.route-app .one-time-plan-tabs button.active,
+.route-app .recurring-view-tabs button.active,
+.route-app .artifact-view-tabs button.active {
+  background: linear-gradient(180deg, rgba(70, 196, 136, 0.38), rgba(37, 122, 82, 0.32));
+  border-color: rgba(139, 205, 170, 0.35);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.08);
+  color: #f2fff7;
 }
 
 .route-app .intent-document-card.planner-card {
@@ -10566,12 +10652,12 @@ button.danger:hover:not(:disabled) {
   padding-top: 0;
 }
 
-.route-app .planner-ai-setup-row {
-  margin-top: 8px;
-}
-
 .route-app .ai-settings-panel[data-layout="ai-setup-panel"] {
   scroll-margin-top: 96px;
+}
+
+.route-app .rail-ai-settings[data-layout="ai-setup-panel"] {
+  scroll-margin-top: 24px;
 }
 
 .route-app .ai-settings-panel[data-layout="ai-setup-panel"][open] {
@@ -10740,6 +10826,11 @@ button.danger:hover:not(:disabled) {
   align-items: start;
 }
 
+.stage-overview .workflow-status-band,
+.stage-overview .trust-layer-panel {
+  margin-bottom: 12px;
+}
+
 .command-center-actions {
   display: flex;
   flex-wrap: wrap;
@@ -10752,7 +10843,7 @@ button.danger:hover:not(:disabled) {
   border-radius: var(--app-card-radius);
   display: grid;
   grid-template-columns: repeat(4, minmax(0, 1fr));
-  margin-bottom: 14px;
+  margin-bottom: 12px;
   overflow: hidden;
 }
 
@@ -10761,8 +10852,8 @@ button.danger:hover:not(:disabled) {
   border-left: 1px solid rgba(224, 230, 226, 0.06);
   display: grid;
   gap: 5px;
-  min-height: 92px;
-  padding: 13px;
+  min-height: 76px;
+  padding: 11px 12px;
 }
 
 .command-loop div:first-child {
@@ -10900,7 +10991,7 @@ button.danger:hover:not(:disabled) {
 }
 
 .review-plan-list .wallet-action-grid {
-  grid-template-columns: 1fr 0.8fr 1.15fr 1.25fr;
+  grid-template-columns: 1fr 0.85fr 1.12fr 1.45fr;
 }
 
 .review-plan-list .wallet-action-grid dd {
@@ -10929,12 +11020,25 @@ button.danger:hover:not(:disabled) {
   margin: 0;
 }
 
+.route-app .generated-plans-toolbar-row {
+  display: flex;
+  justify-content: flex-end;
+}
+
+.route-app .wallet-action-summary-head {
+  gap: 10px;
+}
+
 .route-app .wallet-action-grid {
-  grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+  grid-template-columns: minmax(118px, 0.8fr) minmax(126px, 0.86fr) minmax(154px, 1.1fr) minmax(210px, 1.45fr);
 }
 
 .route-app .wallet-action-grid dd {
   white-space: normal;
+}
+
+.route-app .wallet-action-grid div {
+  min-height: 44px;
 }
 
 .route-app .generated-plan-card-actions {

@@ -3119,8 +3119,6 @@ function appWorkspace(mode: 'app' | 'demo' = 'app'): string {
               ${tabButton('labs', 'Proofs', 'Proofs')}
             </nav>
           </div>
-          ${SHOW_DEV_CONTROLS ? '' : firstRunActionBand()}
-          ${SHOW_DEV_CONTROLS ? '' : trustLayerPanel()}
           <div data-layout="active-panel">${activePanel()}</div>
         </section>
         ${SHOW_DEV_CONTROLS ? contextPanel() : requestContextDetails()}
@@ -3181,6 +3179,15 @@ function firstRunActionBand(): string {
         </button>
       </div>
     </section>
+  `;
+}
+
+function sectionTitleLine(title: string, detail: string): string {
+  return `
+    <div class="section-title-line">
+      <h2>${escapeHtml(title)}</h2>
+      <p><span aria-hidden="true">-</span> ${escapeHtml(detail)}</p>
+    </div>
   `;
 }
 
@@ -3533,6 +3540,7 @@ function walletRail(): string {
       <div class="rail-primary-stack">
         ${cloudWorkspaceCard()}
         ${aiPlannerRailCard()}
+        ${aiSettingsPanel('rail')}
       </div>
       ${SHOW_DEV_CONTROLS ? '' : `
         <details class="rail-details rail-advanced-details">
@@ -3600,7 +3608,7 @@ function cloudWorkspaceCard(): string {
         ` : !state.address ? `
           <button
             type="button"
-            class="primary"
+            class="rail-cloud-button"
             data-first-run-action="${escapeHtml(noWalletCloudAction.id)}"
             ${state.busy ? 'disabled' : ''}
             title="Connect a wallet before signing in to Agentic Cloud."
@@ -3608,9 +3616,9 @@ function cloudWorkspaceCard(): string {
             Connect wallet to sign in
           </button>
         ` : unavailable ? `
-          <button class="primary" disabled title="Cloud APIs are unavailable from this host.">Cloud unavailable</button>
+          <button class="rail-cloud-button" disabled title="Cloud APIs are unavailable from this host.">Cloud unavailable</button>
         ` : `
-          <button id="cloudSignIn" class="primary" ${state.busy ? 'disabled' : ''} title="Sign in with a wallet ownership proof.">Sign in</button>
+          <button id="cloudSignIn" class="rail-cloud-button" ${state.busy ? 'disabled' : ''} title="Sign in with a wallet ownership proof.">Sign in</button>
         `}
       </div>
       ${mismatch ? '<p class="rail-cloud-warning">Cloud sessions prove wallet ownership only. They do not grant spending authority.</p>' : ''}
@@ -4232,15 +4240,15 @@ function commandCenterPanel(): string {
   return `
     <section class="approval-object signature-stage stage-overview stage-anchor ${openApprovals.length ? 'stage-active' : 'stage-draft'}">
       <div class="signature-object-head command-center-head">
-        <div>
-          <h2>Approval workspace</h2>
-          <p>Draft, review, approve, and prove agent actions from one controlled workspace.</p>
-        </div>
+        ${sectionTitleLine('Approval workspace', 'Draft, review, approve, and prove agent actions from one controlled workspace.')}
         <div class="command-center-actions">
           <button type="button" class="primary" data-one-time-view="create">Create Agent Action</button>
           <button type="button" class="utility" data-tab="labs">Sign Proof</button>
         </div>
       </div>
+
+      ${SHOW_DEV_CONTROLS ? '' : firstRunActionBand()}
+      ${SHOW_DEV_CONTROLS ? '' : trustLayerPanel()}
 
       <div class="command-loop" aria-label="Agentic approval loop">
         ${commandLoopStep('Draft', 'AI or templates prepare a bounded request.', Boolean(state.agentPlan) || state.generatedPlans.length > 0)}
@@ -4365,13 +4373,14 @@ function walletFlowPanel(): string {
 
 function agentPlanPanel(): string {
   const reviewCount = generatedPlansForPanel(true).filter(isGeneratedPlanActiveInReview).length;
+  const headerTitle = state.oneTimePlanView === 'review' ? 'Review & finish' : 'Create agent action';
+  const headerDetail = state.oneTimePlanView === 'review'
+    ? 'Saved drafts. Send executable work to Inbox for a wallet decision; finished work moves to History.'
+    : 'Draft a bounded request, review the wallet action, then send it to Inbox or sign proof.';
   return `
     <section class="approval-object signature-stage stage-agent ${state.agentSignature ? 'stage-complete' : state.agentPlan ? 'stage-active' : 'stage-draft'}">
       <div class="signature-object-head">
-        <div>
-          <h2>Create agent action</h2>
-          <p>Draft a bounded request, review the wallet action, then send it to Inbox or sign proof.</p>
-        </div>
+        ${sectionTitleLine(headerTitle, headerDetail)}
         <span class="signature-state ${state.agentSignature ? 'complete' : state.agentPlan ? 'active' : ''}">${state.oneTimePlanView === 'review' ? `${reviewCount} plan${reviewCount === 1 ? '' : 's'}` : 'draft'}</span>
       </div>
 
@@ -4471,12 +4480,7 @@ function generatedPlansPanel(embedded = false): string {
   const auditRecord = selectedAuditRecord && (!embedded || isOneTimeGeneratedPlan(selectedAuditRecord))
     ? selectedAuditRecord
     : undefined;
-  const content = `
-      <div class="signature-object-head">
-        <div>
-          <h2>Review & finish</h2>
-          <p>Saved drafts. Send executable work to Inbox when you want a wallet decision; finished work moves to History.</p>
-        </div>
+  const toolbar = `
         <div class="generated-plans-toolbar signature-toolbar">
           <span class="signature-state">${escapeHtml(`${activeCount} active`)}</span>
           <button
@@ -4494,7 +4498,15 @@ function generatedPlansPanel(embedded = false): string {
             ${state.showArchivedGeneratedPlans ? 'Hide archived' : `Show archived (${archivedCount})`}
           </button>
         </div>
+  `;
+  const content = `
+      ${embedded
+        ? `<div class="generated-plans-toolbar-row">${toolbar}</div>`
+        : `<div class="signature-object-head">
+        ${sectionTitleLine('Review & finish', 'Saved drafts. Send executable work to Inbox for a wallet decision; finished work moves to History.')}
+        ${toolbar}
       </div>
+      `}
 
       ${generatedPlanStatusLine(allPlans.length, visiblePlans.length, archivedCount, movedCount)}
       ${
@@ -4714,11 +4726,11 @@ function generatedPlanDecisionItem(label: string, value: string): string {
 }
 
 function generatedPlanWalletActionSummary(record: GeneratedPlanRecord): string {
-  const rows: Array<[string, string]> = [
-    ['Type', walletActionLabelForPlan(record.plan)],
-    ['Amount', planAmountSummary(record.plan)],
-    ['Route or recipient', planRecipientOrRoute(record.plan)],
-    ['Effect', generatedPlanEffectLabel(record)],
+  const rows: Array<{ label: string; value: string; tone?: 'amount' | 'effect' }> = [
+    { label: 'Type', value: walletActionLabelForPlan(record.plan) },
+    { label: 'Amount', value: planAmountSummary(record.plan), tone: 'amount' },
+    { label: 'Route or recipient', value: planRecipientOrRoute(record.plan) },
+    { label: 'Effect', value: generatedPlanEffectLabel(record), tone: 'effect' },
   ];
   return `
     <section class="wallet-action-summary" aria-label="Wallet action summary">
@@ -4727,9 +4739,18 @@ function generatedPlanWalletActionSummary(record: GeneratedPlanRecord): string {
         <strong>${escapeHtml(canQueueAgentPlan(record.plan) ? 'Review before Inbox' : 'Evidence only')}</strong>
       </div>
       <dl class="wallet-action-grid">
-        ${rows.map(([label, value]) => definitionRow(label, value)).join('')}
+        ${rows.map(walletActionSummaryRow).join('')}
       </dl>
     </section>
+  `;
+}
+
+function walletActionSummaryRow(row: { label: string; value: string; tone?: 'amount' | 'effect' }): string {
+  return `
+    <div class="${row.tone ? `wallet-action-${row.tone}` : ''}" title="${escapeHtml(row.value)}">
+      <dt>${escapeHtml(row.label)}</dt>
+      <dd>${escapeHtml(row.value)}</dd>
+    </div>
   `;
 }
 
@@ -5179,9 +5200,6 @@ function agentPlannerWorkbench(): string {
           <p>Drafts are saved in Review. Approval-ready drafts enter Inbox only after you choose to send them; finished work appears in History.</p>
         </div>
       </div>
-      <div class="planner-ai-setup-row">
-        ${aiSettingsPanel('planner')}
-      </div>
     </div>
   `;
 }
@@ -5222,7 +5240,7 @@ function templateOutcomeSummary(template: AgentPlanTemplate): string {
 function aiSettingsPanel(location: 'rail' | 'planner' = 'planner'): string {
   const configured = isAiConfiguredForCurrentMode();
   const confirmed = isAiPlannerConfirmedForCurrentSettings();
-  const shouldOpen = state.aiSettingsPanelOpen ?? (location === 'planner' && configured && !isCompactMobileLayout());
+  const shouldOpen = state.aiSettingsPanelOpen === true;
   const open = shouldOpen ? 'open' : '';
   const readinessLabel = aiReadinessLabel(state.aiStatus);
   const summaryDetail = location === 'rail'
@@ -5244,10 +5262,6 @@ function aiSettingsPanel(location: 'rail' | 'planner' = 'planner'): string {
       ${aiSettingsCard()}
     </details>
   `;
-}
-
-function isCompactMobileLayout(): boolean {
-  return window.matchMedia('(max-width: 700px)').matches;
 }
 
 function agentPathExplainer(): string {
@@ -5473,6 +5487,7 @@ function aiSettingsCard(): string {
       <label class="field compact">
         <span>${escapeHtml(keyLabel)}</span>
         <input id="aiApiKey" type="password" value="${escapeHtml(state.aiSettings.apiKey)}" placeholder="Not saved by default" autocomplete="off" ${state.busy ? 'disabled' : ''} />
+        <em class="ai-route-helper">${escapeHtml(aiProviderKeyHint(providerPreset.id))}</em>
       </label>
       <div class="ai-actions">
         ${state.aiSettings.mode === 'bridge'
@@ -5616,6 +5631,21 @@ function aiProviderHelperText(): string {
     return HOSTED_CUSTOM_PROVIDER_DISABLED_REASON;
   }
   return '';
+}
+
+function aiProviderKeyHint(providerId: string): string {
+  switch (providerId) {
+    case 'openai':
+      return 'OpenAI/Codex keys are provider-specific; no universal agent-key pattern exists.';
+    case 'anthropic':
+      return 'Use a Claude / Anthropic key. Do not rely on a shared pattern across providers.';
+    case 'gemini':
+      return 'Use a Gemini / Google API key. Treat provider keys as opaque secrets.';
+    case 'openrouter':
+      return 'Use an OpenRouter key. Examples often use sk-or-v1, but validate by provider.';
+    default:
+      return 'Provider keys are opaque. Use a key for the selected gateway.';
+  }
 }
 
 function aiModeLimitations(): string {
@@ -6088,10 +6118,7 @@ function approvalInboxPanel(): string {
   return `
     <section class="approval-object signature-stage stage-inbox stage-anchor ${actions.length ? 'stage-active' : 'stage-draft'}">
       <div class="signature-object-head">
-        <div>
-          <h2>Approval inbox</h2>
-          <p>${escapeHtml(approvalInboxDescription())}</p>
-        </div>
+        ${sectionTitleLine('Approval inbox', approvalInboxDescription())}
         <div class="inbox-toolbar signature-toolbar">
           ${selectPicker({
             id: 'inboxFilter',
@@ -6125,10 +6152,7 @@ function completedPlansPanel(): string {
   return `
     <section class="approval-object signature-stage stage-completed stage-anchor ${plans.length ? 'stage-active' : 'stage-draft'}">
       <div class="signature-object-head">
-        <div>
-          <h2>Completed work</h2>
-          <p>Approved, rejected, cancelled, signed, and ended work stays here until you delete it.</p>
-        </div>
+        ${sectionTitleLine('Completed work', 'Approved, rejected, cancelled, signed, and ended work stays here until you delete it.')}
         <div class="generated-plans-toolbar signature-toolbar">
           <span class="signature-state">${escapeHtml(`${plans.length} completed`)}</span>
           <button id="refreshCompletedPlans" class="utility" ${state.busy ? 'disabled' : ''}>Refresh</button>
@@ -6451,10 +6475,7 @@ function scheduledApprovalsPanel(): string {
   return `
     <section class="approval-object signature-stage stage-schedule stage-anchor ${recurringPayments.length ? 'stage-active' : 'stage-draft'}">
       <div class="signature-object-head app-inline-head">
-        <div>
-          <h2>Recurring</h2>
-          <p>Create payment schedules. Each due occurrence appears in Inbox for approval or denial.</p>
-        </div>
+        ${sectionTitleLine('Recurring', 'Create payment schedules. Each due occurrence appears in Inbox for approval or denial.')}
         <button id="refreshInbox" class="utility" ${state.busy ? 'disabled' : ''}>Refresh</button>
       </div>
 
@@ -6503,10 +6524,7 @@ function labsPanel(): string {
   return `
     <section class="approval-object signature-stage stage-labs stage-anchor ${complete ? 'stage-complete' : 'stage-draft'}">
       <div class="signature-object-head artifact-workspace-head">
-        <div>
-          <h2>Proofs</h2>
-          <p>${escapeHtml(detail)}</p>
-        </div>
+        ${sectionTitleLine('Proofs', detail)}
         ${artifactWorkspaceTabs()}
       </div>
 
