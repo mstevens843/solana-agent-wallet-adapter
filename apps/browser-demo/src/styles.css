@@ -2389,6 +2389,100 @@ code {
   border-color: rgba(224, 230, 226, 0.12);
 }
 
+.rail-bridge-card.connected {
+  background: rgba(45, 50, 60, 0.36);
+  border-color: rgba(185, 196, 214, 0.18);
+}
+
+.rail-cloud-card {
+  background: rgba(17, 28, 39, 0.38);
+  border: 1px solid rgba(112, 170, 229, 0.2);
+  border-radius: 8px;
+  display: grid;
+  gap: 10px;
+  margin-bottom: 12px;
+  padding: 12px;
+}
+
+.rail-cloud-card.signed-in {
+  background: rgba(25, 54, 48, 0.34);
+  border-color: rgba(94, 231, 158, 0.24);
+}
+
+.rail-cloud-head {
+  align-items: center;
+  display: flex;
+  gap: 8px;
+  justify-content: space-between;
+}
+
+.rail-cloud-head span {
+  color: var(--dim);
+  font-size: 0.72rem;
+  font-weight: 900;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.rail-cloud-head strong {
+  background: rgba(112, 170, 229, 0.12);
+  border: 1px solid rgba(112, 170, 229, 0.22);
+  border-radius: 999px;
+  color: #dbeeff;
+  font-size: 0.76rem;
+  line-height: 1;
+  padding: 5px 8px;
+}
+
+.rail-cloud-card.signed-in .rail-cloud-head strong {
+  background: rgba(52, 211, 153, 0.14);
+  border-color: rgba(94, 231, 158, 0.3);
+  color: #d9ffea;
+}
+
+.rail-cloud-card p {
+  color: var(--muted);
+  font-size: 0.82rem;
+  line-height: 1.38;
+  margin: 0;
+}
+
+.rail-cloud-facts {
+  display: grid;
+  gap: 6px;
+}
+
+.rail-cloud-facts span {
+  color: var(--muted);
+  display: flex;
+  font-size: 0.78rem;
+  gap: 8px;
+  justify-content: space-between;
+  min-width: 0;
+}
+
+.rail-cloud-facts strong {
+  color: var(--text);
+  font-size: 0.78rem;
+  max-width: 60%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.rail-cloud-actions {
+  display: grid;
+  gap: 8px;
+}
+
+.rail-cloud-actions button {
+  width: 100%;
+}
+
+.rail-cloud-warning {
+  color: #e1c178 !important;
+}
+
 .rail-bridge-head {
   align-items: center;
   display: flex;
@@ -4749,6 +4843,64 @@ button.danger:hover:not(:disabled) {
   overflow-wrap: anywhere;
 }
 
+.artifact-archive-status .cloud-evidence-status {
+  color: rgba(196, 205, 202, 0.82);
+  display: inline-block;
+  font-size: 0.78rem;
+  font-weight: 600;
+  letter-spacing: normal;
+  text-transform: none;
+}
+
+.artifact-archive-status .cloud-evidence-status.cloud-active {
+  color: var(--accent, #7ad9b6);
+}
+
+.artifact-archive-status .cloud-evidence-status.cloud-inactive {
+  color: rgba(196, 205, 202, 0.6);
+}
+
+.receipt-storage-badge {
+  border: 1px solid rgba(224, 230, 226, 0.16);
+  border-radius: 999px;
+  color: rgba(196, 205, 202, 0.82);
+  display: inline-block;
+  font-size: 0.66rem;
+  font-weight: 700;
+  letter-spacing: 0.05em;
+  margin-left: 6px;
+  padding: 2px 8px;
+  text-transform: uppercase;
+}
+
+.receipt-storage-badge.browser {
+  background: rgba(122, 217, 182, 0.08);
+  border-color: rgba(122, 217, 182, 0.3);
+  color: var(--accent, #7ad9b6);
+}
+
+.receipt-storage-badge.cloud.on {
+  background: rgba(122, 217, 182, 0.16);
+  border-color: rgba(122, 217, 182, 0.45);
+  color: var(--accent, #7ad9b6);
+}
+
+.receipt-storage-badge.cloud.off {
+  background: transparent;
+  color: rgba(196, 205, 202, 0.45);
+}
+
+.receipt-storage-badge.bridge.on {
+  background: rgba(255, 196, 0, 0.12);
+  border-color: rgba(255, 196, 0, 0.35);
+  color: rgba(255, 215, 90, 0.92);
+}
+
+.receipt-storage-badge.bridge.off {
+  background: transparent;
+  color: rgba(196, 205, 202, 0.45);
+}
+
 .signed-artifact-list {
   display: grid;
   gap: 10px;
@@ -6184,6 +6336,48 @@ button.danger:hover:not(:disabled) {
 
 .ai-actions button {
   min-height: 38px;
+}
+
+.ai-limitations,
+.ai-confirmation-line {
+  background: rgba(2, 8, 6, 0.28);
+  border: 1px solid rgba(224, 230, 226, 0.09);
+  border-radius: 8px;
+  display: grid;
+  gap: 7px;
+  padding: 10px 12px;
+}
+
+.ai-limitations > span,
+.ai-confirmation-line > span {
+  color: var(--dim);
+  font-size: 0.72rem;
+  font-weight: 900;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.ai-limitations ul {
+  color: var(--muted);
+  display: grid;
+  font-size: 0.82rem;
+  gap: 4px;
+  line-height: 1.35;
+  margin: 0;
+  padding-left: 17px;
+}
+
+.ai-confirmation-line strong {
+  color: var(--text);
+  font-size: 0.9rem;
+  line-height: 1.2;
+}
+
+.ai-confirmation-line p {
+  color: var(--muted);
+  font-size: 0.82rem;
+  line-height: 1.35;
+  margin: 0;
 }
 
 .local-bridge-connection-card {

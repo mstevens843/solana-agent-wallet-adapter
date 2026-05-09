@@ -8,16 +8,21 @@
   "main": "./dist/server.js",
   "types": "./dist/server.d.ts",
   "scripts": {
-    "build": "pnpm -F @solana-agent-wallet-adapter/mcp-server build && tsc -p tsconfig.json",
+    "build": "pnpm -F @solana-agent-wallet-adapter/workflow build && pnpm -F @solana-agent-wallet-adapter/mcp-server build && tsc -p tsconfig.json",
+    "db:migrate": "node dist/cloud/cli.js migrate",
+    "recurring:materialize": "node dist/cloud/cli.js materialize-due",
     "start": "node dist/server.js",
-    "typecheck": "tsc -p tsconfig.json --noEmit",
-    "test": "vitest run"
+    "typecheck": "pnpm -F @solana-agent-wallet-adapter/workflow build && tsc -p tsconfig.json --noEmit",
+    "test": "pnpm -F @solana-agent-wallet-adapter/workflow build && vitest run"
   },
   "dependencies": {
-    "@solana-agent-wallet-adapter/mcp-server": "workspace:*"
+    "@solana-agent-wallet-adapter/mcp-server": "workspace:*",
+    "@solana-agent-wallet-adapter/workflow": "workspace:*",
+    "pg": "^8.20.0"
   },
   "devDependencies": {
     "@types/node": "^22.7.0",
+    "@types/pg": "^8.20.0",
     "typescript": "^5.6.0",
     "vitest": "^2.1.0"
   }

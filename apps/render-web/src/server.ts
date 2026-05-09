@@ -3,112 +3,40 @@ import { readFile, stat } from 'node:fs/promises';
 import { extname, isAbsolute, join, relative, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
-import {
-  BridgeAiPlanner,
-  type AiApiFormat,
-  type AiPlanRequest,
-} from '@solana-agent-wallet-adapter/mcp-server';
+import { createCloudApiRouter, type CloudApiRouter, type CloudApiRouterOptions } from './cloud/router.js';
+import { assertProductionConfig, createRuntimeWorkflowStore } from './cloud/runtimeStore.js';
 
 const DEFAULT_HOST = '0.0.0.0';
 const DEFAULT_PORT = 3000;
-const MAX_JSON_BYTES = 64 * 1024;
 const DEFAULT_STATIC_DIR = fileURLToPath(new URL('../../browser-demo/dist', import.meta.url));
 
-type HostedProviderId = 'openai' | 'anthropic' | 'gemini' | 'openrouter';
-
-interface HostedProviderPreset {
-  id: HostedProviderId;
-  label: string;
-  apiFormat: AiApiFormat;
-  baseUrl: string;
-  defaultModel: string;
-}
-
-interface RenderWebServerOptions {
+interface RenderWebServerOptions extends CloudApiRouterOptions {
   staticDir?: string;
 }
 
-interface HostedAiBody {
-  settings?: {
-    apiKey?: unknown;
-    provider?: unknown;
-    model?: unknown;
-  };
-  request?: unknown;
-}
-
-const HOSTED_PROVIDER_PRESETS: Record<HostedProviderId, HostedProviderPreset> = {
-  openai: {
-    id: 'openai',
-    label: 'OpenAI',
-    apiFormat: 'openai-compatible',
-    baseUrl: 'https://api.openai.com/v1',
-    defaultModel: 'gpt-5',
-  },
-  anthropic: {
-    id: 'anthropic',
-    label: 'Claude / Anthropic',
-    apiFormat: 'anthropic',
-    baseUrl: 'https://api.anthropic.com/v1',
-    defaultModel: 'claude-sonnet-4-5',
-  },
-  gemini: {
-    id: 'gemini',
-    label: 'Gemini',
-    apiFormat: 'openai-compatible',
-    baseUrl: 'https://generativelanguage.googleapis.com/v1beta/openai',
-    defaultModel: 'gemini-2.5-flash',
-  },
-  openrouter: {
-    id: 'openrouter',
-    label: 'OpenRouter',
-    apiFormat: 'openai-compatible',
-    baseUrl: 'https://openrouter.ai/api/v1',
-    defaultModel: 'openrouter/auto',
-  },
-};
-
 export function createRenderWebServer(options: RenderWebServerOptions = {}): Server {
   const staticDir = resolve(options.staticDir ?? process.env.AGENTIC_WEB_DIST ?? DEFAULT_STATIC_DIR);
+  const apiRouter = createCloudApiRouter({
+    store: options.store,
+    clock: options.clock,
+  });
   return createServer((req, res) => {
-    void handleRequest(req, res, staticDir);
+    void handleRequest(req, res, staticDir, apiRouter);
   });
 }
 
-async function handleRequest(req: IncomingMessage, res: ServerResponse, staticDir: string): Promise<void> {
+async function handleRequest(
+  req: IncomingMessage,
+  res: ServerResponse,
+  staticDir: string,
+  apiRouter: CloudApiRouter,
+): Promise<void> {
   const url = new URL(req.url ?? '/', `http://${req.headers.host ?? 'localhost'}`);
   setCommonHeaders(res);
 
   try {
-    if (url.pathname === '/api/ai/status') {
-      if (req.method !== 'GET') {
-        writeJson(res, 405, { error: 'method_not_allowed' });
-        return;
-      }
-      writeJson(res, 200, {
-        available: true,
-        mode: 'hosted-byok',
-        providers: Object.values(HOSTED_PROVIDER_PRESETS).map(({ id, label, apiFormat, defaultModel }) => ({
-          id,
-          label,
-          apiFormat,
-          defaultModel,
-        })),
-      });
-      return;
-    }
-
-    if (url.pathname === '/api/ai/generate-plan') {
-      if (req.method !== 'POST') {
-        writeJson(res, 405, { error: 'method_not_allowed' });
-        return;
-      }
-      await handleHostedAiRequest(req, res);
-      return;
-    }
-
     if (url.pathname.startsWith('/api/')) {
-      writeJson(res, 404, { error: 'not_found' });
+      await apiRouter.handle(req, res, url);
       return;
     }
 
@@ -121,88 +49,6 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse, staticDi
     const status = err instanceof HttpError ? err.status : 500;
     const message = err instanceof Error ? redactSecrets(err.message) : 'Unexpected server error.';
     writeJson(res, status, { error: message });
-  }
-}
-
-async function handleHostedAiRequest(req: IncomingMessage, res: ServerResponse): Promise<void> {
-  const body = await readJsonBody(req) as HostedAiBody;
-  const settings = hostedSettings(body.settings);
-  const request = hostedPlanRequest(body.request);
-  const planner = new BridgeAiPlanner();
-
-  try {
-    planner.setSessionKey({
-      apiKey: settings.apiKey,
-      provider: settings.provider.id,
-      apiFormat: settings.provider.apiFormat,
-      baseUrl: settings.provider.baseUrl,
-      model: settings.model,
-    });
-    writeJson(res, 200, await planner.generatePlan(request));
-  } catch (err) {
-    const code = typeof err === 'object' && err !== null && 'code' in err ? String((err as { code?: unknown }).code) : '';
-    const status = code === 'invalid_request' ? 400 : 502;
-    const message = err instanceof Error ? redactSecrets(err.message) : 'AI provider request failed.';
-    writeJson(res, status, { error: message });
-  }
-}
-
-function hostedSettings(input: HostedAiBody['settings']): {
-  apiKey: string;
-  provider: HostedProviderPreset;
-  model: string;
-} {
-  if (!input || typeof input !== 'object') {
-    throw new HttpError(400, 'Missing hosted AI settings.');
-  }
-  const apiKey = stringField(input.apiKey).trim();
-  if (!apiKey) {
-    throw new HttpError(400, 'Missing AI API key.');
-  }
-  const providerId = stringField(input.provider).trim() || 'openai';
-  if (!isHostedProviderId(providerId)) {
-    throw new HttpError(400, 'Hosted BYOK supports preset providers only. Select OpenAI, Claude / Anthropic, Gemini, or OpenRouter.');
-  }
-  const provider = HOSTED_PROVIDER_PRESETS[providerId];
-  const model = stringField(input.model).trim() || provider.defaultModel;
-  if (model.length > 160) {
-    throw new HttpError(400, 'AI model name is too long.');
-  }
-  return { apiKey, provider, model };
-}
-
-function hostedPlanRequest(input: unknown): AiPlanRequest {
-  if (!input || typeof input !== 'object') {
-    throw new HttpError(400, 'Missing AI plan request.');
-  }
-  return input as AiPlanRequest;
-}
-
-function isHostedProviderId(value: string): value is HostedProviderId {
-  return value === 'openai' || value === 'anthropic' || value === 'gemini' || value === 'openrouter';
-}
-
-function stringField(value: unknown): string {
-  return typeof value === 'string' ? value : '';
-}
-
-async function readJsonBody(req: IncomingMessage): Promise<unknown> {
-  const chunks: Buffer[] = [];
-  let total = 0;
-  for await (const chunk of req) {
-    const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
-    total += buffer.byteLength;
-    if (total > MAX_JSON_BYTES) {
-      throw new HttpError(413, 'Request body is too large.');
-    }
-    chunks.push(buffer);
-  }
-  const raw = Buffer.concat(chunks).toString('utf8');
-  if (!raw.trim()) return {};
-  try {
-    return JSON.parse(raw);
-  } catch {
-    throw new HttpError(400, 'Request body must be valid JSON.');
   }
 }
 
@@ -287,9 +133,11 @@ class HttpError extends Error {
 }
 
 async function start(): Promise<void> {
+  assertProductionConfig();
   const port = Number(process.env.PORT ?? DEFAULT_PORT);
   const host = process.env.HOST ?? DEFAULT_HOST;
-  const server = createRenderWebServer();
+  const store = await createRuntimeWorkflowStore();
+  const server = createRenderWebServer({ store });
   await new Promise<void>((resolve, reject) => {
     server.once('error', reject);
     server.listen(port, host, resolve);

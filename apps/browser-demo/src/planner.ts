@@ -390,6 +390,37 @@ export function aiFormatLabel(format: AiApiFormat): string {
   return format === 'anthropic' ? 'Anthropic Messages API' : 'OpenAI-compatible';
 }
 
+export function aiRouteDiagnosticForSettings(
+  settings: Pick<AiSettings, 'mode' | 'provider' | 'model'>,
+  route: { path: string; method?: string; origin?: string; bridgeBaseUrl?: string },
+): AiDiagnosticEntry {
+  const method = route.method ?? (settings.mode === 'session' ? undefined : 'POST');
+  const model = settings.model.trim() || 'model configured';
+  if (settings.mode === 'bridge') {
+    return {
+      code: 'AI_ROUTE',
+      message: method === 'GET' ? 'Local bridge AI status route selected.' : 'Local bridge AI route selected.',
+      detail: bridgeRouteDetail(route.bridgeBaseUrl, route.path),
+      ...(method && { method }),
+      path: route.path,
+    };
+  }
+  if (settings.mode === 'session') {
+    return {
+      code: 'AI_ROUTE',
+      message: 'Browser session AI route selected.',
+      detail: `${settings.provider} ${model}`,
+    };
+  }
+  return {
+    code: 'AI_ROUTE',
+    message: method === 'GET' ? 'Hosted BYOK status route selected.' : 'Hosted BYOK route selected.',
+    detail: `${settings.provider} ${model}${route.origin ? ` on ${route.origin}` : ''}`,
+    ...(method && { method }),
+    path: route.path,
+  };
+}
+
 export async function generateSessionAiPlan(
   settings: AiSettings,
   request: AiPlanRequest,
@@ -440,12 +471,12 @@ export async function generateHostedAiPlan(
     }),
   }).catch((err) => {
     throw aiPlanConnectionError(
-      `Hosted AI request failed. ${err instanceof Error ? err.message : String(err)}`,
+      `Hosted AI request failed. ${redactSecrets(err instanceof Error ? err.message : String(err), settings.apiKey)}`,
       diagnostics,
       {
         code: 'AI_PROVIDER_ERROR',
         message: 'Hosted BYOK request could not reach the same-origin API.',
-        detail: err instanceof Error ? err.message : String(err),
+        detail: redactSecrets(err instanceof Error ? err.message : String(err), settings.apiKey),
         method: 'POST',
         path: '/api/ai/generate-plan',
       },
@@ -458,7 +489,7 @@ export async function generateHostedAiPlan(
     { method: 'POST', path: '/api/ai/generate-plan' },
   );
   if (!response.ok) {
-    const message = redactSecrets(extractProviderError(payload) || `Hosted AI returned HTTP ${response.status}.`);
+    const message = redactSecrets(extractProviderError(payload) || `Hosted AI returned HTTP ${response.status}.`, settings.apiKey);
     throw aiPlanConnectionError(message, diagnostics, {
       code: 'AI_PROVIDER_ERROR',
       message,
@@ -477,6 +508,37 @@ export async function generateHostedAiPlan(
     contentType: response.headers.get('content-type') ?? '',
   });
   return normalizeHostedAiPlan(payload, request);
+}
+
+export async function confirmHostedAiPlanner(settings: AiSettings): Promise<AiDiagnosticEntry[]> {
+  if (!settings.apiKey.trim()) {
+    throw new Error('Hosted BYOK key is required before confirming planner setup.');
+  }
+  if (settings.provider === 'custom-openai-compatible') {
+    throw new Error('Hosted BYOK supports preset providers only. Use Local bridge or Browser Session for custom gateways.');
+  }
+  if (!settings.model.trim()) {
+    throw new Error('Choose or enter an AI model before confirming planner setup.');
+  }
+
+  const diagnostics: AiDiagnosticEntry[] = [
+    {
+      code: 'AI_ROUTE',
+      message: 'Hosted BYOK planner confirmation selected.',
+      detail: `provider=${settings.provider}; model=${settings.model.trim() || aiProviderPresetById(settings.provider).model}`,
+      method: 'GET',
+      path: '/api/ai/status',
+    },
+  ];
+  await assertHostedAiAvailable(diagnostics);
+  diagnostics.push({
+    code: 'AI_PLAN_READY',
+    message: 'Hosted BYOK planner route confirmed. No plan was generated.',
+    detail: 'Provider key is used only when creating an AI draft; workflow approvals remain separate.',
+    method: 'GET',
+    path: '/api/ai/status',
+  });
+  return diagnostics.map(redactAiDiagnostic);
 }
 
 async function assertHostedAiAvailable(diagnostics: AiDiagnosticEntry[]): Promise<void> {
@@ -629,13 +691,13 @@ async function generateOpenAiCompatiblePlan(settings: AiSettings, request: AiPla
     body: JSON.stringify(body),
   }).catch((err) => {
     throw new Error(
-      `AI provider request failed. Use the local bridge or a browser-compatible gateway. ${err instanceof Error ? err.message : String(err)}`,
+      `AI provider request failed. Use the local bridge or a browser-compatible gateway. ${redactSecrets(err instanceof Error ? err.message : String(err), settings.apiKey)}`,
     );
   });
 
   const payload = await response.json().catch(() => ({})) as unknown;
   if (!response.ok) {
-    throw new Error(providerFailureMessage(payload, response.status));
+    throw new Error(providerFailureMessage(payload, response.status, settings.apiKey));
   }
   return normalizeAiPlan(payload, request);
 }
@@ -708,13 +770,13 @@ async function generateAnthropicPlan(settings: AiSettings, request: AiPlanReques
     }),
   }).catch((err) => {
     throw new Error(
-      `AI provider request failed. Use the local bridge or a browser-compatible gateway. ${err instanceof Error ? err.message : String(err)}`,
+      `AI provider request failed. Use the local bridge or a browser-compatible gateway. ${redactSecrets(err instanceof Error ? err.message : String(err), settings.apiKey)}`,
     );
   });
 
   const payload = await response.json().catch(() => ({})) as unknown;
   if (!response.ok) {
-    throw new Error(providerFailureMessage(payload, response.status));
+    throw new Error(providerFailureMessage(payload, response.status, settings.apiKey));
   }
   return normalizeAiPlan(payload, request);
 }
@@ -756,11 +818,13 @@ export function normalizeAiPlan(payload: unknown, request: AiPlanRequest): Agent
   };
 }
 
-export function redactSecrets(value: string): string {
-  return value
+export function redactSecrets(value: string, exactSecret = ''): string {
+  const secret = exactSecret.trim();
+  const exactRedacted = secret ? value.split(secret).join('[redacted]') : value;
+  return exactRedacted
     .replace(/Bearer\s+[A-Za-z0-9._~+/=-]+/gi, 'Bearer [redacted]')
-    .replace(/\bsk-[A-Za-z0-9_-]{8,}\b/g, 'sk-[redacted]')
     .replace(/\bsk-proj-[A-Za-z0-9_-]{8,}\b/g, 'sk-proj-[redacted]')
+    .replace(/\bsk-[A-Za-z0-9_-]{8,}\b/g, 'sk-[redacted]')
     .replace(/\b[A-Za-z0-9_-]{20,}\.[A-Za-z0-9_-]{20,}\.[A-Za-z0-9_-]{20,}\b/g, '[redacted-token]');
 }
 
@@ -892,6 +956,11 @@ function normalizeBaseUrl(baseUrl: string, format: AiApiFormat): string {
   return `${trimmed}/v1`;
 }
 
+function bridgeRouteDetail(bridgeBaseUrl: string | undefined, path: string): string {
+  const base = bridgeBaseUrl?.trim().replace(/\/+$/, '');
+  return base ? `${base}${path.startsWith('/') ? path : `/${path}`}` : path;
+}
+
 function extractProviderError(payload: unknown): string {
   if (!payload || typeof payload !== 'object') return '';
   const record = payload as Record<string, unknown>;
@@ -904,12 +973,12 @@ function extractProviderError(payload: unknown): string {
   return '';
 }
 
-function providerFailureMessage(payload: unknown, status: number): string {
+function providerFailureMessage(payload: unknown, status: number, exactSecret = ''): string {
   const message = extractProviderError(payload) || `AI provider returned HTTP ${status}.`;
   if (/unsupported value:\s*['"]?temperature/i.test(message) || /temperature.*only the default/i.test(message)) {
-    return redactSecrets(`Model does not support one of Agentic's request parameters. ${message}`);
+    return redactSecrets(`Model does not support one of Agentic's request parameters. ${message}`, exactSecret);
   }
-  return redactSecrets(message);
+  return redactSecrets(message, exactSecret);
 }
 
 function isDefaultTemperatureOnlyModel(model: string): boolean {

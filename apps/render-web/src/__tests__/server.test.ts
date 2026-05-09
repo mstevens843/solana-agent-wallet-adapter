@@ -49,6 +49,10 @@ describe('render web hosted BYOK API', () => {
       expect(JSON.parse(response.body)).toMatchObject({
         available: true,
         mode: 'hosted-byok',
+        providers: expect.arrayContaining([
+          expect.objectContaining({ id: 'openai', apiFormat: 'openai-compatible' }),
+          expect.objectContaining({ id: 'anthropic', apiFormat: 'anthropic' }),
+        ]),
       });
     });
   });
@@ -144,9 +148,10 @@ describe('render web hosted BYOK API', () => {
   });
 
   it('redacts provider errors before returning them to the browser', async () => {
+    const exactApiKey = 'provider-secret-value-123456789';
     vi.stubGlobal('fetch', vi.fn(async () => jsonResponse({
       error: {
-        message: 'Bad key sk-test-secret-value',
+        message: `Bad key ${exactApiKey}; Authorization: Bearer ${exactApiKey}; https://provider.example/debug?api-key=${exactApiKey}`,
       },
     }, 401)));
 
@@ -155,13 +160,16 @@ describe('render web hosted BYOK API', () => {
         settings: {
           provider: 'openai',
           model: 'gpt-5',
-          apiKey: 'sk-test-secret-value',
+          apiKey: exactApiKey,
         },
         request: aiRequest,
       });
 
       expect(response.status).toBe(502);
-      expect(JSON.stringify(response.body)).not.toContain('sk-test-secret-value');
+      const serialized = JSON.stringify(response.body);
+      expect(serialized).not.toContain(exactApiKey);
+      expect(serialized).not.toContain(`Bearer ${exactApiKey}`);
+      expect(serialized).not.toContain(`api-key=${exactApiKey}`);
       expect(String(response.body.error)).toContain('[redacted]');
     });
   });

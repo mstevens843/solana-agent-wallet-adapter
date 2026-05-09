@@ -7,13 +7,21 @@ wrapper around this hosted origin.
 
 ## Blueprint Deploy
 
-Use the root `render.yaml` as a Render Blueprint. It defines one Node web service:
+Use the root `render.yaml` as a Render Blueprint. It defines one Node web service, one Render Postgres database, and
+one cron job:
 
 - Service name: `agentic`
 - Build command: `pnpm install --frozen-lockfile --ignore-scripts && pnpm render:build && pnpm -F @solana-agent-wallet-adapter/render-web build`
+- Predeploy command: `pnpm -F @solana-agent-wallet-adapter/render-web db:migrate`
 - Start command: `pnpm -F @solana-agent-wallet-adapter/render-web start`
 - Health check path: `/api/ai/status`
+- Custom domain: `agentic-signer.com`
+- Database: `agentic-postgres`
+- Cron service: `agentic-recurring-materializer`, schedule `* * * * *`
 - Environment variable: `SKIP_INSTALL_DEPS=true`
+- Database env: `DATABASE_URL` from the Render Postgres internal connection string
+- Session env: generated `SESSION_SECRET`
+- Public origin env: `AGENTIC_PUBLIC_ORIGIN=https://agentic-signer.com`
 - Production UI env: `VITE_AGENTIC_DEV_CONTROLS=false`
 - Production analytics env: `VITE_AGENTIC_GA_MEASUREMENT_ID=G-MJ3VZ7VEX7`
 - Optional Android trust env: `AGENTIC_ANDROID_SHA256_CERT_FINGERPRINTS`
@@ -30,18 +38,52 @@ If configuring Render manually, use:
 - Root directory: repository root
 - Runtime: Node
 - Build command: `pnpm install --frozen-lockfile --ignore-scripts && pnpm render:build && pnpm -F @solana-agent-wallet-adapter/render-web build`
+- Predeploy command: `pnpm -F @solana-agent-wallet-adapter/render-web db:migrate`
 - Start command: `pnpm -F @solana-agent-wallet-adapter/render-web start`
 - Health check path: `/api/ai/status`
+- Custom domain: `agentic-signer.com`
 - Environment variable: `SKIP_INSTALL_DEPS=true`
+- `DATABASE_URL`: internal connection string from a same-region Render Postgres database
+- `SESSION_SECRET`: random 256-bit secret or Render-generated value, at least 32 characters
+- `AGENTIC_PUBLIC_ORIGIN=https://agentic-signer.com`
 - Production UI env: `VITE_AGENTIC_DEV_CONTROLS=false`
 - Production analytics env: `VITE_AGENTIC_GA_MEASUREMENT_ID=G-MJ3VZ7VEX7`
 - Optional Android trust env: `AGENTIC_ANDROID_SHA256_CERT_FINGERPRINTS`
 - Production Android trust guard: `AGENTIC_ANDROID_REQUIRE_TRUST=1`
 - Auto deploy: enabled for the production branch
 
+## Agentic Cloud Persistence
+
+Production must run with `DATABASE_URL`. The server uses the Postgres store whenever that variable exists and only falls
+back to memory for local development or tests. The migration command creates these tables:
+
+- `users`, `wallet_sessions`, `nonces`
+- `plans`, `approval_requests`, `recurring_schedules`, `recurring_occurrences`
+- `completed_records`, `evidence_receipts`, `audit_events`
+
+The schema indexes wallet address, status, due time, created time, and recurring occurrence windows. Expired sessions
+and nonces are removed by the store cleanup path. Render should use the database's internal connection string and keep
+external database access disabled unless you need temporary admin access.
+
+Session cookies are HTTP-only and same-site. They are marked `Secure` in Render production and whenever the canonical
+origin is HTTPS. Wallet auth messages are bound to `AGENTIC_PUBLIC_ORIGIN`, so use `https://agentic-signer.com` for final
+sign-in testing instead of the `.onrender.com` service URL.
+
+## Recurring Cron
+
+Create or sync the `agentic-recurring-materializer` cron service from `render.yaml`.
+
+- Schedule: `* * * * *`
+- Build command: `pnpm install --frozen-lockfile --ignore-scripts && pnpm -F @solana-agent-wallet-adapter/render-web build`
+- Start command: `pnpm -F @solana-agent-wallet-adapter/render-web recurring:materialize`
+- Env: `DATABASE_URL` from `agentic-postgres`
+
+Keep `AGENTIC_ENABLE_WEB_SCHEDULER` unset in production so the web service does not also run an in-process scheduler.
+After deploy, manually trigger one cron run and confirm the logs include `Agentic recurring materialization complete`.
+
 If hard-refreshing `/app`, `/docs`, `/cli`, `/desktop`, or `/demo` returns `Not Found`, the deployed service is still
 using the old static configuration. Redeploy from the root Blueprint so `apps/render-web` serves the SPA fallback.
-If `https://agenticwalletadapter.com/api/ai/status` also returns `404`, the custom domain is still attached to a static
+If `https://agentic-signer.com/api/ai/status` also returns `404`, the custom domain is still attached to a static
 site or stale service; move the domain to the root Blueprint Node web service before debugging client-side routing.
 
 ## Production Sanity Checks
@@ -49,10 +91,10 @@ site or stale service; move the domain to the root Blueprint Node web service be
 After each production deploy, verify:
 
 ```sh
-curl -i https://agenticwalletadapter.com/api/ai/status
-curl -i https://agenticwalletadapter.com/app
-curl -i https://agenticwalletadapter.com/docs
-curl -i https://agenticwalletadapter.com/demo
+curl -i https://agentic-signer.com/api/ai/status
+curl -i https://agentic-signer.com/app
+curl -i https://agentic-signer.com/docs
+curl -i https://agentic-signer.com/demo
 ```
 
 `/api/ai/status` must return `200` JSON with `mode: "hosted-byok"`. If it returns `text/html`, the domain is serving
@@ -80,6 +122,11 @@ page views show duplicates. The app already sets `send_page_view: false` and emi
 The deployed app defaults to `Hosted BYOK` for AI planning. Users paste their OpenAI, Claude / Anthropic, Gemini, or
 OpenRouter key in the browser. The same-origin Node server relays that request to the selected provider and does not
 persist or log the key. Do not add user keys to Render environment variables.
+
+## Private Local Mode
+
+Private local mode remains optional. Users who start the desktop app or local bridge can keep workflow state local to
+their machine. Normal signed-in web users use Agentic Cloud on `https://agentic-signer.com` and do not need localhost.
 
 ## Release Links Used by the Website
 
@@ -123,10 +170,10 @@ pnpm verify:release-links:live -- --tag v0.1.0
 
 ## Android Trust File
 
-The web service must serve Digital Asset Links at:
+For Android trusted web mode on the production Agentic Cloud domain, the web service must serve Digital Asset Links at:
 
 ```text
-https://agenticwalletadapter.com/.well-known/assetlinks.json
+https://agentic-signer.com/.well-known/assetlinks.json
 ```
 
 The checked-in file is a safe placeholder until a release signing certificate exists. Render can generate the production
@@ -143,9 +190,9 @@ active.
 Set `AGENTIC_ANDROID_REQUIRE_TRUST=1` for production Render builds that back an Android release. With that guard
 enabled, `pnpm render:prepare` fails instead of deploying the placeholder trust file.
 
-The native Android APK uses `https://agenticwalletadapter.com/#app` only when its optional web fallback is built with
-`AGENTIC_ANDROID_ENABLE_WEB_FALLBACK=true`. The Node web service handles direct browser visits to client-side routes
-such as `/app` and `/demo`.
+The native Android APK still defaults to `https://agenticwalletadapter.com/#app` unless it is built with
+`AGENTIC_ANDROID_LAUNCH_URL=https://agentic-signer.com/app`. The Node web service handles direct browser visits to
+client-side routes such as `/app` and `/demo`.
 
 ## Local Verification
 
@@ -153,11 +200,15 @@ Before deploying, run:
 
 ```sh
 pnpm install --frozen-lockfile --ignore-scripts
+pnpm build
 pnpm render:build
 pnpm -F @solana-agent-wallet-adapter/render-web build
+pnpm -F @solana-agent-wallet-adapter/render-web typecheck
 pnpm -F @solana-agent-wallet-adapter/render-web test
-pnpm smoke:render-web
 pnpm -F @solana-agent-wallet-adapter/browser-demo typecheck
+pnpm -F @solana-agent-wallet-adapter/browser-demo test
+pnpm smoke:render-web
+pnpm smoke:render-web:workflow
 pnpm verify:release-links
 ```
 

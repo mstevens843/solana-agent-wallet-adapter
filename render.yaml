@@ -1,14 +1,46 @@
+databases:
+  - name: agentic-postgres
+    databaseName: agentic
+    user: agentic
+    plan: basic-256mb
+    ipAllowList: []
+
 services:
   - type: web
     name: agentic
     runtime: node
     buildCommand: pnpm install --frozen-lockfile --ignore-scripts && pnpm render:build && pnpm -F @solana-agent-wallet-adapter/render-web build
+    preDeployCommand: pnpm -F @solana-agent-wallet-adapter/render-web db:migrate
     startCommand: pnpm -F @solana-agent-wallet-adapter/render-web start
     healthCheckPath: /api/ai/status
+    domains:
+      - agentic-signer.com
     envVars:
       - key: SKIP_INSTALL_DEPS
         value: "true"
+      - key: DATABASE_URL
+        fromDatabase:
+          name: agentic-postgres
+          property: connectionString
+      - key: SESSION_SECRET
+        generateValue: true
+      - key: AGENTIC_PUBLIC_ORIGIN
+        value: "https://agentic-signer.com"
       - key: VITE_AGENTIC_DEV_CONTROLS
         value: "false"
       - key: VITE_AGENTIC_GA_MEASUREMENT_ID
         value: "G-MJ3VZ7VEX7"
+
+  - type: cron
+    name: agentic-recurring-materializer
+    runtime: node
+    schedule: "* * * * *"
+    buildCommand: pnpm install --frozen-lockfile --ignore-scripts && pnpm -F @solana-agent-wallet-adapter/render-web build
+    startCommand: pnpm -F @solana-agent-wallet-adapter/render-web recurring:materialize
+    envVars:
+      - key: SKIP_INSTALL_DEPS
+        value: "true"
+      - key: DATABASE_URL
+        fromDatabase:
+          name: agentic-postgres
+          property: connectionString

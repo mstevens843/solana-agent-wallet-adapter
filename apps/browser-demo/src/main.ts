@@ -12,6 +12,24 @@ import {
   type WalletBackend,
 } from '@solana-agent-wallet-adapter/core';
 import {
+  parseApprovalListResponse,
+  parseApprovalRequestRecord,
+  parseAuthNonceResponse,
+  parseCompletedListResponse,
+  parsePlanDraftRecord,
+  parsePlanListResponse,
+  parseRecurringListResponse,
+  parseRecurringScheduleRecord,
+  parseSessionResponse,
+  type ApprovalRequestRecord as WorkflowApprovalRequestRecord,
+  type AuthNonceResponse as WorkflowAuthNonceResponse,
+  type CompletedRecord as WorkflowCompletedRecord,
+  type PlanDraftRecord as WorkflowPlanDraftRecord,
+  type RecurringOccurrenceRecord as WorkflowRecurringOccurrenceRecord,
+  type RecurringScheduleRecord as WorkflowRecurringScheduleRecord,
+  type SessionResponse as WorkflowSessionResponse,
+} from '@solana-agent-wallet-adapter/workflow';
+import {
   detectMwaEnvironment,
   registerAgentMobileWalletAdapter,
   type MwaEnvironment,
@@ -52,7 +70,9 @@ import {
   aiDiagnosticsFromError,
   aiFormatLabel,
   aiProviderPresetById,
+  aiRouteDiagnosticForSettings,
   buildTemplatePlan,
+  confirmHostedAiPlanner,
   defaultTemplateFieldValues,
   generateHostedAiPlan,
   generateSessionAiPlan,
@@ -82,6 +102,7 @@ type CompletedPlanFilter = 'all' | 'one-time' | 'recurring' | 'proofs' | 'receip
 type ArtifactFilter = 'all' | 'verified' | 'warnings' | 'blocked';
 type TemplateOutcome = 'queueable' | 'proof' | 'audit';
 type TemplateOutcomeFilter = TemplateOutcome | 'all';
+type AiPlannerConfirmationStatus = 'untested' | 'confirmed' | 'failed';
 type RecurringPresetId = 'scheduled-transfer' | 'subscription';
 type PreparedActionKind = 'transfer_sol' | 'transfer_spl' | 'swap';
 type GuidedDemoScenarioId = 'transfer' | 'swap' | 'dca' | 'payouts';
@@ -100,6 +121,18 @@ type PreparedActionTxStatus = 'pending' | 'confirmed' | 'failed';
 type RecurringCadence = 'weekly' | 'monthly' | 'interval_days' | 'interval_hours' | 'interval_minutes';
 type InstructionData = ConstructorParameters<typeof TransactionInstruction>[0]['data'];
 type IosNativeWalletId = 'phantom' | 'solflare' | 'backpack' | 'jupiter';
+type WorkflowModePreference = 'auto' | 'local-bridge';
+type ActiveWorkflowMode = 'agentic-cloud' | 'browser-workflow' | 'local-bridge';
+type WorkflowRecordSource = 'cloud' | 'browser' | 'local-bridge';
+type CloudSessionStatus = 'unknown' | 'signed-out' | 'signed-in' | 'unavailable';
+type QueueWorkflowResult = { id: string; mode: ActiveWorkflowMode; planRecordId?: string };
+
+type JsonPrimitive = string | number | boolean | null;
+type JsonValue = JsonPrimitive | JsonObject | JsonValue[];
+
+interface JsonObject {
+  [key: string]: JsonValue;
+}
 
 interface IosNativeEnvironment {
   isNative: boolean;
@@ -146,6 +179,7 @@ const DEFAULT_BRIDGE_TOKEN = 'local-agent-wallet';
 const DEFAULT_AGENT_PROMPT = '';
 const STORAGE_KEY = 'solana-agent-wallet-demo-v2';
 const GENERATED_PLANS_STORAGE_KEY = 'solana-agent-wallet-generated-plans-v1';
+const BROWSER_WORKFLOW_STORAGE_KEY = 'solana-agent-wallet-browser-workflow-v1';
 const GENERATED_PLANS_LIMIT = 100;
 const LAB_STORAGE_KEY = 'solana-agent-wallet-lab-artifacts-v1';
 const LAB_ARCHIVE_DB_NAME = 'solana-agent-wallet-lab-artifacts';
@@ -164,6 +198,11 @@ const OPENAI_BROWSER_SESSION_DISABLED_REASON =
   'OpenAI cannot be called directly from Browser Session. Use Hosted BYOK or Local bridge for OpenAI.';
 const HOSTED_CUSTOM_PROVIDER_DISABLED_REASON =
   'Hosted BYOK supports preset providers only. Use Local bridge or Browser Session for custom gateways.';
+const BROWSER_AI_LIMITATIONS = [
+  'Provider may block direct browser calls.',
+  'Key lives only in the current browser runtime.',
+  'Browser AI cannot run background jobs after the tab closes.',
+];
 const CUSTOM_AI_MODEL_VALUE = '__custom__';
 const ROUTE_PATHS = ['/', '/docs', '/app', '/cli', '/desktop', '/android', '/demo', '/mwa-test', '/privacy', '/terms'] as const;
 const ROUTE_PATH_SET = new Set<string>(ROUTE_PATHS);
@@ -363,6 +402,26 @@ interface Toast {
   message: string;
 }
 
+interface AiPlannerConfirmationState {
+  status: AiPlannerConfirmationStatus;
+  key: string;
+  message: string;
+  checkedAt: string;
+}
+
+interface CloudSessionState {
+  status: CloudSessionStatus;
+  walletAddress: string;
+  expiresAt: string;
+  error: string;
+}
+
+type CloudSessionResponse = WorkflowSessionResponse;
+type CloudAuthNonceResponse = WorkflowAuthNonceResponse;
+type CloudPlanDraftRecord = WorkflowPlanDraftRecord;
+type CloudApprovalRequestRecord = WorkflowApprovalRequestRecord;
+type CloudCompletedRecord = WorkflowCompletedRecord;
+
 interface GeneratedPlanRecord {
   id: string;
   plan: AgentPlan;
@@ -377,6 +436,7 @@ interface GeneratedPlanRecord {
   status: GeneratedPlanStatus;
   signature?: string;
   preparedActionId?: string;
+  workflowSource?: WorkflowRecordSource;
 }
 
 interface RuntimePath {
@@ -413,9 +473,11 @@ interface PreparedAction {
   txError?: string;
   error?: string;
   note?: string;
+  planDraftId?: string;
   recurringId?: string;
   occurrenceKey?: string;
   archived?: boolean;
+  workflowSource?: WorkflowRecordSource;
 }
 
 interface RecurringPayment {
@@ -448,6 +510,7 @@ interface ActionReceipt {
   txStatus?: PreparedActionTxStatus;
   txid?: string;
   explorerUrl?: string;
+  proofSignature?: string;
   summary: string;
   note?: string;
   walletAddress: string;
@@ -460,6 +523,12 @@ interface ActionReceipt {
   error?: string;
   recurringId?: string;
   occurrenceKey?: string;
+}
+
+interface BrowserWorkflowState {
+  preparedActions: PreparedAction[];
+  recurringPayments: RecurringPayment[];
+  receipts: ActionReceipt[];
 }
 
 interface CompletedPlanRecord {
@@ -485,6 +554,7 @@ interface CompletedPlanRecord {
   occurrenceKey?: string;
   copyPayload: string;
   detailRows: Array<[string, string]>;
+  workflowSource?: WorkflowRecordSource;
 }
 
 interface BridgeHealth {
@@ -546,6 +616,8 @@ interface LabArtifact {
   signature: string;
   verified: boolean;
   artifactHash: string;
+  cloudReceiptId?: string;
+  bridgeArchived?: boolean;
 }
 
 interface LabPayload {
@@ -616,6 +688,7 @@ interface GuidedDemoState {
 interface PersistedState {
   selectedWalletName?: string;
   selectedIosWalletId?: IosNativeWalletId;
+  workflowModePreference?: WorkflowModePreference;
   cluster?: Cluster;
   bridgeUrl?: string;
   bridgeToken?: string;
@@ -635,6 +708,8 @@ interface DemoState {
   recentCopyId: string;
   guidedDemo: GuidedDemoState;
   inboxFilter: InboxFilter;
+  workflowModePreference: WorkflowModePreference;
+  cloudSession: CloudSessionState;
   wallets: DiscoveredWallet[];
   selectedWalletName: string;
   androidNativeEnvironment: AndroidNativeEnvironment;
@@ -667,11 +742,12 @@ interface DemoState {
   aiSettingsPanelOpen: boolean | null;
   aiStatus: BridgeAiStatus | null;
   aiDiagnostics: AiDiagnosticEntry[];
+  aiPlannerConfirmation: AiPlannerConfirmationState;
   toasts: Toast[];
   capabilities: AdapterCapabilities | null;
   error: string;
   busy: boolean;
-  activeOperation: 'generate-template-plan' | 'generate-ai-plan' | null;
+  activeOperation: 'generate-template-plan' | 'generate-ai-plan' | 'confirm-ai-planner' | null;
   cluster: Cluster;
   bridgeUrl: string;
   bridgeToken: string;
@@ -684,6 +760,8 @@ interface DemoState {
   materializedActions: PreparedAction[];
   recurringPayments: RecurringPayment[];
   receipts: ActionReceipt[];
+  cloudCompletedPlans: CompletedPlanRecord[];
+  cloudLastSync: string;
   recurringDraft: RecurringDraft;
   recurringPreset: RecurringPresetId;
   recurringErrors: Record<string, string>;
@@ -695,6 +773,7 @@ interface DemoState {
   labFieldErrors: Record<string, string>;
   labArtifacts: LabArtifact[];
   labArchiveStatus: string;
+  cloudEvidenceStatus: string;
   artifactFilter: ArtifactFilter;
   artifactTypeFilter: string;
   artifactSearch: string;
@@ -1050,6 +1129,7 @@ const initialCluster = SHOW_DEV_CONTROLS ? (persisted.cluster ?? 'mainnet-beta')
 const initialTemplate = templateById('swap');
 const defaultWorkspaceTab: ActiveTab = 'agent';
 const initialAiSettings = persistedAiSettings(persisted);
+const initialBrowserWorkflow = loadBrowserWorkflowState();
 const RECURRING_TOKEN_OPTIONS = ['SOL', 'USDC', 'PYUSD'];
 
 const RECURRING_PRESETS: RecurringPreset[] = [
@@ -1202,6 +1282,13 @@ const state: DemoState = {
   recentCopyId: '',
   guidedDemo: defaultGuidedDemoState(),
   inboxFilter: 'all',
+  workflowModePreference: persisted.workflowModePreference ?? 'auto',
+  cloudSession: {
+    status: 'unknown',
+    walletAddress: '',
+    expiresAt: '',
+    error: '',
+  },
   wallets: [],
   selectedWalletName: persisted.selectedWalletName ?? '',
   androidNativeEnvironment: detectAndroidNativeEnvironment(),
@@ -1237,6 +1324,12 @@ const state: DemoState = {
   aiSettingsPanelOpen: null,
   aiStatus: null,
   aiDiagnostics: [],
+  aiPlannerConfirmation: {
+    status: 'untested',
+    key: '',
+    message: '',
+    checkedAt: '',
+  },
   toasts: [],
   capabilities: null,
   error: '',
@@ -1250,10 +1343,12 @@ const state: DemoState = {
   bridgeRpcUrl: '',
   health: null,
   balances: null,
-  preparedActions: [],
-  materializedActions: [],
-  recurringPayments: [],
-  receipts: [],
+  preparedActions: initialBrowserWorkflow.preparedActions,
+  materializedActions: initialBrowserWorkflow.preparedActions,
+  recurringPayments: initialBrowserWorkflow.recurringPayments,
+  receipts: initialBrowserWorkflow.receipts,
+  cloudCompletedPlans: [],
+  cloudLastSync: '',
   recurringDraft: defaultRecurringDraft(),
   recurringPreset: 'scheduled-transfer',
   recurringErrors: {},
@@ -1265,6 +1360,7 @@ const state: DemoState = {
   labFieldErrors: {},
   labArtifacts: loadLabArtifacts(),
   labArchiveStatus: 'Browser archive loading.',
+  cloudEvidenceStatus: 'Cloud evidence archive: sign in to also store receipts in Agentic Cloud.',
   artifactFilter: 'all',
   artifactTypeFilter: 'all',
   artifactSearch: '',
@@ -1393,7 +1489,11 @@ async function bootstrap(): Promise<void> {
   if (state.iosNativeEnvironment.isIosNative) {
     await restoreIosNativeSession();
   }
+  await refreshCloudSession(false);
   await hydrateLabArtifactArchive();
+  if (cloudSessionMatchesWallet()) {
+    await refreshCloudWorkspaceData().catch(() => undefined);
+  }
   if (shouldProbeBridgeOnStartup()) {
     await loadBridgeConfig(false);
     if (state.aiSettings.mode === 'bridge') {
@@ -1589,7 +1689,7 @@ function privacyPage(): string {
           <li>Wallet information such as your Solana public key when you connect a wallet to a demo or web flow (which may be considered personal data when linked to other identifiers)</li>
           <li>Any content you submit via forms, customer support, feedback surveys, community channels, or app-store review communications</li>
           <li>AI planner prompts, templates, parameters, policy notes, and model settings you enter when you use the optional planner features</li>
-          <li>Session AI keys or bridge AI keys you choose to enter. Browser session keys are intended to be used for the current session only; bridge session keys are intended to stay in the local bridge process memory unless you configure otherwise. We do not ask you to send AI keys to SolPulse servers.</li>
+          <li>AI provider keys you choose to enter. Browser session keys stay in the current browser runtime, bridge keys are intended to stay in local bridge process memory unless you configure otherwise, and Hosted BYOK keys are relayed through the same-origin Agentic server only for the current draft request and are not stored by Agentic.</li>
         </ul>
         <p>We do not require know-your-customer (KYC) verification because the Platform is non-custodial and does not match, settle, or take the other side of any trade. However, regulations may change; we reserve the right to request additional information to comply with applicable laws or to prevent fraud, money laundering, or other illicit activity.</p>
         <p><strong>B. Information We Collect Automatically</strong></p>
@@ -1753,12 +1853,12 @@ function termsPage(): string {
           <li>Custody, hold, or escrow your digital assets</li>
           <li>Generate, store, or recover seed phrases or private keys</li>
           <li>Auto-approve transactions on your behalf</li>
-          <li>Call AI providers on your behalf — your chosen agent client makes those calls under its own privacy policy</li>
+          <li>Call AI providers without your chosen AI path. Hosted BYOK relays only the draft request you submit; browser session, local bridge, and external agent clients call providers under their own configuration and provider policies</li>
           <li>Match, settle, or take the other side of any trade</li>
           <li>Operate an order book, an exchange, or a liquidity pool</li>
         </ul>
 
-        <p><strong>3c. Bring-Your-Own AI Keys.</strong> If you paste or configure an AI provider key, base URL, model name, prompt, template, or plan parameter in Agentic, you are instructing your browser, local bridge, or chosen client to contact that provider. You are responsible for the provider you choose, its terms, its privacy practices, its billing, and the content you send to it. SolPulse does not guarantee that provider responses are accurate, secure, compliant, or fit for any purpose. Never enter a wallet seed phrase, private key, recovery phrase, or unrestricted credential into any AI prompt, MCP server, bridge, or support request.</p>
+        <p><strong>3c. Bring-Your-Own AI Keys.</strong> If you paste or configure an AI provider key, base URL, model name, prompt, template, or plan parameter in Agentic, you are instructing the selected AI path to contact that provider. Hosted BYOK sends the key and draft request through the same-origin Agentic server for that request only; browser session and local bridge paths use your browser or local runtime. You are responsible for the provider you choose, its terms, its privacy practices, its billing, and the content you send to it. SolPulse does not guarantee that provider responses are accurate, secure, compliant, or fit for any purpose. Never enter a wallet seed phrase, private key, recovery phrase, or unrestricted credential into any AI prompt, MCP server, bridge, or support request.</p>
 
         <h3>4. Future Paid Features</h3>
         <p>The Platform is currently provided without subscription fees. SolPulse may, in the future, offer paid features, subscriptions, or premium tiers. If we do, the pricing, billing terms, and payment schedule will be presented at signup, and your use of those paid features will be subject to these Terms together with any additional, feature-specific terms posted at the time of purchase. Network fees, RPC fees, protocol fees, and any other third-party fees you incur when broadcasting transactions through the Platform are set by third parties and not by SolPulse.</p>
@@ -3038,6 +3138,7 @@ function walletRail(): string {
         </label>
       </details>` : ''}
 
+      ${cloudWorkspaceCard()}
       ${aiSettingsPanel('rail')}
       ${SHOW_DEV_CONTROLS ? '' : publicBridgeStatusCard()}
 
@@ -3061,17 +3162,64 @@ function walletRail(): string {
   `;
 }
 
+function cloudWorkspaceCard(): string {
+  const mode = activeWorkflowMode();
+  const signedIn = state.cloudSession.status === 'signed-in';
+  const matched = cloudSessionMatchesWallet();
+  const mismatch = cloudSessionWalletMismatch();
+  const unavailable = state.cloudSession.status === 'unavailable';
+  const status = unavailable
+    ? 'Unavailable'
+    : signedIn
+      ? matched
+        ? 'Signed in'
+        : 'Wallet mismatch'
+      : 'Signed out';
+  const detail = unavailable
+    ? (state.cloudSession.error || 'Cloud APIs are not available from this host.')
+    : signedIn
+      ? matched
+        ? 'One-time drafts, approvals, and completed history sync through Agentic Cloud.'
+        : `Signed in as ${short(state.cloudSession.walletAddress)}. Connect that wallet to use cloud workflow.`
+      : 'Signed-out workflow data stays in this browser on this device.';
+  return `
+    <section class="rail-cloud-card ${escapeHtml(mode)} ${signedIn ? 'signed-in' : ''}" aria-label="Cloud workspace status">
+      <div class="rail-cloud-head">
+        <span>Cloud workspace</span>
+        <strong>${escapeHtml(status)}</strong>
+      </div>
+      <p>${escapeHtml(detail)}</p>
+      <div class="rail-cloud-facts">
+        <span>Active <strong>${escapeHtml(activeWorkflowLabel())}</strong></span>
+        ${matched ? `<span>Wallet <strong>${escapeHtml(short(state.cloudSession.walletAddress))}</strong></span>` : ''}
+        ${state.cloudLastSync && matched ? `<span>Synced <strong>${escapeHtml(formatDateTime(state.cloudLastSync))}</strong></span>` : ''}
+      </div>
+      <div class="rail-cloud-actions">
+        ${signedIn ? `
+          <button id="cloudLogout" class="utility" ${state.busy ? 'disabled' : ''}>Sign out</button>
+        ` : `
+          <button id="cloudSignIn" class="primary" ${!state.address || state.busy || unavailable ? 'disabled' : ''} title="${!state.address ? 'Connect a wallet before signing in.' : unavailable ? 'Cloud APIs are unavailable from this host.' : 'Sign in with a wallet ownership proof.'}">Sign in</button>
+        `}
+      </div>
+      ${mismatch ? '<p class="rail-cloud-warning">Cloud sessions prove wallet ownership only. They do not grant spending authority.</p>' : ''}
+    </section>
+  `;
+}
+
 function publicBridgeStatusCard(): string {
   const connected = state.bridgeActive;
-  const tone = connected ? 'online' : state.busy ? 'checking' : 'offline';
-  const status = connected ? 'Connected' : state.busy ? 'Checking' : 'Offline';
+  const localMode = activeWorkflowMode() === 'local-bridge';
+  const tone = localMode ? 'online' : connected ? 'connected' : state.busy ? 'checking' : 'offline';
+  const status = localMode ? 'Active' : connected ? 'Connected' : state.busy ? 'Checking' : 'Offline';
   const detail = connected
-    ? 'Approval Inbox, recurring schedules, and bridge receipt history are connected.'
-    : 'Start the local runtime on this computer, keep its terminal open, then check the bridge.';
+    ? localMode
+      ? 'Private local mode owns new workflow actions on this device.'
+      : 'Bridge is connected. Select private local mode only when you want local-only workflow storage.'
+    : 'Private local mode is optional. Start the local runtime only if you want local-only workflow storage.';
   return `
-    <section class="rail-bridge-card ${tone}" aria-label="Local approval bridge status">
+    <section class="rail-bridge-card ${tone}" aria-label="Private local mode status">
       <div class="rail-bridge-head">
-        <span>Local approval bridge</span>
+        <span>Private local mode</span>
         <strong>${escapeHtml(status)}</strong>
       </div>
       <p>${escapeHtml(detail)}</p>
@@ -3079,6 +3227,11 @@ function publicBridgeStatusCard(): string {
         <div class="rail-bridge-facts">
           <span>Endpoint <strong>${escapeHtml(compactEndpoint(state.bridgeUrl))}</strong></span>
           <span>Wallet <strong>${escapeHtml(state.address ? short(state.address) : 'Not connected')}</strong></span>
+        </div>
+        <div class="rail-bridge-actions">
+          ${localMode
+            ? `<button type="button" data-workflow-mode="auto" ${state.busy ? 'disabled' : ''}>Use cloud or browser</button>`
+            : `<button type="button" class="utility" data-workflow-mode="local-bridge" ${!state.address || state.busy ? 'disabled' : ''}>Use private local mode</button>`}
         </div>
       ` : `
         <div class="rail-bridge-actions">
@@ -3228,6 +3381,7 @@ function mobileWalletBox(): string {
 function bridgeBox(): string {
   const bridgeTone = state.bridgeActive ? 'online' : state.busy ? 'checking' : '';
   const bridgeStatus = state.bridgeActive ? 'Connected' : state.busy ? 'Checking' : 'Offline';
+  const localMode = activeWorkflowMode() === 'local-bridge';
   return `
     <div class="bridge-box bridge-ops-card">
       <div class="bridge-ops-head">
@@ -3247,6 +3401,11 @@ function bridgeBox(): string {
             Check local bridge
           </button>
         `}
+        ${state.bridgeActive
+          ? localMode
+            ? `<button data-workflow-mode="auto" ${state.busy ? 'disabled' : ''}>Use cloud/browser</button>`
+            : `<button data-workflow-mode="local-bridge" class="utility" ${state.busy ? 'disabled' : ''}>Use private local mode</button>`
+          : ''}
         <button id="disconnectBridge" ${!state.bridgeActive || state.busy ? 'disabled' : ''}>Disconnect</button>
       </div>
       <p class="bridge-ops-status">${escapeHtml(state.bridgeStatus)}</p>
@@ -3514,7 +3673,7 @@ function outcomeDetailForTemplate(template: AgentPlanTemplate): string {
   }
   switch (outcome) {
     case 'queueable':
-      return 'This plan can become an Approval Inbox item when the local bridge is connected.';
+      return 'This plan can become an Approval Inbox item. Signed-in users use Agentic Cloud; signed-out workflow stays in this browser.';
     case 'proof':
       return 'This can be signed as review evidence, but it cannot be queued as a transaction.';
     case 'audit':
@@ -3727,7 +3886,7 @@ function draftReadyPanel(plan: AgentPlan): string {
         <button
           id="queueAgentPlan"
           class="${queueable ? 'primary' : 'utility'}"
-          ${!state.address || !state.bridgeActive || !queueable || state.busy ? 'disabled' : ''}
+          ${!state.address || !queueable || state.busy ? 'disabled' : ''}
           title="${escapeHtml(queuePlanTitle())}"
         >
           ${escapeHtml(queueActionLabelForPlan(plan))}
@@ -3832,7 +3991,7 @@ function generatedPlanCard(record: GeneratedPlanRecord): string {
   const queueable = canQueueAgentPlan(plan);
   const archived = record.status === 'archived';
   const signDisabled = !state.address || state.busy || archived ? 'disabled' : '';
-  const queueDisabled = !state.address || !state.bridgeActive || !queueable || state.busy || archived ? 'disabled' : '';
+  const queueDisabled = !state.address || !queueable || state.busy || archived ? 'disabled' : '';
   const selected = state.selectedGeneratedPlanId === record.id;
   const detailsCount = plan.safeguards.length + plan.fields.length + (plan.userNotes ? 1 : 0);
   const outcome = planOutcome(plan);
@@ -3989,8 +4148,12 @@ function generatedPlanActionHint(record: GeneratedPlanRecord): string {
   if (!state.address) {
     return '<p class="generated-plan-action-helper">Connect a wallet to sign a review proof or send this plan to Approval Inbox.</p>';
   }
-  if (canQueueAgentPlan(record.plan) && !state.bridgeActive) {
-    return '<p class="generated-plan-bridge-helper">Approval Inbox needs the local bridge. You can still sign proof & complete this plan as evidence.</p>';
+  const mode = activeWorkflowMode();
+  if (canQueueAgentPlan(record.plan) && mode === 'agentic-cloud') {
+    return '<p class="generated-plan-action-helper">Signed in: this will use Agentic Cloud and still require wallet approval.</p>';
+  }
+  if (canQueueAgentPlan(record.plan) && mode === 'browser-workflow') {
+    return '<p class="generated-plan-action-helper">Signed out: this will use browser workflow storage local to this device.</p>';
   }
   if (!canQueueAgentPlan(record.plan)) {
     return '<p class="generated-plan-action-helper">Review-only plan: sign a proof to complete it. It will not enter Approval Inbox.</p>';
@@ -4092,7 +4255,7 @@ function generatedPlanAuditModal(record: GeneratedPlanRecord): string {
             class="${queueable ? 'primary' : 'utility'}"
             data-generated-plan-action="queue"
             data-generated-plan-id="${escapeHtml(record.id)}"
-            ${!state.address || !state.bridgeActive || !queueable || state.busy || record.status === 'archived' ? 'disabled' : ''}
+            ${!state.address || !queueable || state.busy || record.status === 'archived' ? 'disabled' : ''}
             title="${escapeHtml(generatedQueuePlanTitle(record))}"
           >
             ${escapeHtml(queueActionLabelForPlan(plan))}
@@ -4294,15 +4457,16 @@ function templateOutcomeSummary(template: AgentPlanTemplate): string {
 
 function aiSettingsPanel(location: 'rail' | 'planner' = 'planner'): string {
   const configured = isAiConfiguredForCurrentMode();
+  const confirmed = isAiPlannerConfirmedForCurrentSettings();
   const shouldOpen = state.aiSettingsPanelOpen ?? (configured && !isCompactMobileLayout());
   const open = shouldOpen ? 'open' : '';
   const readinessLabel = aiReadinessLabel(state.aiStatus);
   const summaryDetail = location === 'rail'
     ? configured
-      ? readinessLabel
+      ? `${readinessLabel} - ${aiConfirmationLabel()}`
       : 'Plan drafting optional'
     : configured
-      ? readinessLabel
+      ? `${readinessLabel} - ${aiConfirmationLabel()}`
       : 'Optional AI planner; templates work without it.';
   return `
     <details class="ai-settings-panel ${configured ? 'configured' : 'optional'} ${location === 'rail' ? 'rail-ai-settings' : ''}" ${open}>
@@ -4311,7 +4475,7 @@ function aiSettingsPanel(location: 'rail' | 'planner' = 'planner'): string {
           <span>AI Planner</span>
           <em>${escapeHtml(summaryDetail)}</em>
         </span>
-        <strong>${configured ? 'configured' : 'not configured'}</strong>
+        <strong>${confirmed ? 'confirmed' : configured ? 'configured' : 'not configured'}</strong>
       </summary>
       ${aiSettingsCard()}
     </details>
@@ -4463,16 +4627,19 @@ function aiSettingsCard(): string {
   const usingCustomModel = !selectedPresetModel;
   const routeLabel = aiRouteStatusLabel(status);
   const readinessLabel = aiReadinessLabel(status);
+  const confirmationLabel = aiConfirmationLabel();
+  const confirmationDetail = aiConfirmationDetail();
+  const confirming = state.activeOperation === 'confirm-ai-planner';
   const keyLabel = state.aiSettings.mode === 'bridge'
     ? 'Bridge session key'
     : state.aiSettings.mode === 'hosted'
       ? 'Hosted BYOK key'
       : 'Browser session key';
   const securityCopy = state.aiSettings.mode === 'hosted'
-    ? 'Hosted BYOK uses this key only while drafting a plan. It does not queue approvals, create recurring schedules, or sign anything.'
+    ? 'Hosted BYOK relays this key only for AI draft requests. It cannot queue approvals, create recurring schedules, approve, submit, or sign.'
     : state.aiSettings.mode === 'bridge'
-      ? 'The local bridge can call AI from your machine and also powers Approval Inbox, recurring schedules, and bridge receipts.'
-      : 'Browser session keys stay in this tab and can draft plans only. Browser mode cannot queue approvals or create recurring schedules.';
+      ? 'Local bridge AI drafts from your machine only. Approval Inbox, recurring schedules, receipts, and wallet signatures remain separate workflow actions.'
+      : 'Browser session keys stay in this tab and draft plans only. Queueing, recurring schedules, approvals, submissions, and signatures use the active workflow, not the AI key.';
   return `
     <aside class="ai-settings-card">
       <div>
@@ -4525,11 +4692,20 @@ function aiSettingsCard(): string {
         ${state.aiSettings.mode === 'bridge'
           ? `<button id="saveBridgeAiKey" ${!canSaveBridgeAiKey() ? 'disabled' : ''}>Set bridge key</button>`
           : `<button id="saveDirectAiKey" ${!canSaveDirectAiKey() ? 'disabled' : ''}>Use key for drafts</button>`}
+        <button id="confirmAiPlanner" class="utility" ${!canConfirmAiPlanner() ? 'disabled' : ''} title="${escapeHtml(canConfirmAiPlanner() ? 'Confirm planner readiness without creating a plan.' : aiConfirmDisabledReason())}">
+          ${confirming ? `${buttonSpinner()}Confirming...` : 'Confirm planner'}
+        </button>
         <button id="clearAiKey" ${!canClearAiKey() ? 'disabled' : ''}>Clear key</button>
         ${state.aiSettings.mode === 'bridge' ? `<button id="refreshAiStatus" ${state.busy ? 'disabled' : ''}>Refresh</button>` : ''}
       </div>
+      ${aiModeLimitations()}
       ${state.aiSettings.mode === 'bridge' ? localBridgeConnectionCard(status) : ''}
       ${state.aiSettings.mode === 'bridge' && !state.bridgeActive && !status?.available ? localRuntimeGuide('ai-runtime-guide') : ''}
+      <div class="ai-confirmation-line">
+        <span>Planner check</span>
+        <strong id="aiConfirmationStatus">${escapeHtml(confirmationLabel)}</strong>
+        <p id="aiConfirmationDetail">${escapeHtml(confirmationDetail)}</p>
+      </div>
       <div class="ai-status-line">
         <span>Planner status</span>
         <strong>${escapeHtml(readinessLabel)}</strong>
@@ -4542,8 +4718,12 @@ function aiSettingsCard(): string {
         <span>Format</span>
         <strong>${escapeHtml(formatLabel)}</strong>
       </div>
+      <div class="ai-status-line">
+        <span>Workflow impact</span>
+        <strong>Drafting only</strong>
+      </div>
       ${aiDiagnosticsPanel()}
-      <p class="ai-security-note">AI Planner only drafts one-time plans. The local approval bridge is separate and required for Approval Inbox, recurring schedules, and bridge-backed receipt history.</p>
+      <p class="ai-security-note">AI Planner only drafts. Templates, Approval Inbox, recurring schedules, and receipts use the active workflow; private local bridge is optional.</p>
     </aside>
   `;
 }
@@ -4616,6 +4796,39 @@ function aiProviderHelperText(): string {
   return '';
 }
 
+function aiModeLimitations(): string {
+  if (state.aiSettings.mode === 'session') {
+    return `
+      <div class="ai-limitations">
+        <span>Browser session limits</span>
+        <ul>
+          ${BROWSER_AI_LIMITATIONS.map((item) => `<li>${escapeHtml(item)}</li>`).join('')}
+        </ul>
+      </div>
+    `;
+  }
+  if (state.aiSettings.mode === 'hosted') {
+    return `
+      <div class="ai-limitations">
+        <span>Hosted BYOK boundary</span>
+        <ul>
+          <li>Agentic relays the key only for the current draft request.</li>
+          <li>No AI path can approve, submit, sign, or change workflow capability.</li>
+        </ul>
+      </div>
+    `;
+  }
+  return `
+    <div class="ai-limitations">
+      <span>Local bridge AI boundary</span>
+      <ul>
+        <li>Local bridge AI drafts only from your machine.</li>
+        <li>Private local workflow remains optional and separate from AI setup.</li>
+      </ul>
+    </div>
+  `;
+}
+
 function localBridgeConnectionCard(status: BridgeAiStatus | null): string {
   const connected = state.bridgeActive;
   const aiConfigured = Boolean(status?.available);
@@ -4680,6 +4893,108 @@ function aiDiagnosticMessage(entry: AiDiagnosticEntry): string {
     entry.path ? `path=${entry.path}` : '',
   ].filter(Boolean);
   return redactSecrets(parts.join(' | '));
+}
+
+function currentAiPlannerConfirmationKey(): string {
+  const mode = state.aiSettings.mode;
+  const provider = mode === 'bridge'
+    ? state.aiStatus?.provider ?? state.aiSettings.provider
+    : state.aiSettings.provider;
+  const apiFormat = mode === 'bridge'
+    ? state.aiStatus?.apiFormat ?? state.aiSettings.apiFormat
+    : state.aiSettings.apiFormat;
+  const baseUrl = mode === 'bridge'
+    ? state.aiStatus?.baseUrl ?? state.aiSettings.baseUrl
+    : state.aiSettings.baseUrl;
+  const model = mode === 'bridge'
+    ? state.aiStatus?.model ?? state.aiSettings.model
+    : state.aiSettings.model;
+  return [mode, provider, apiFormat, baseUrl.trim(), model.trim()].join('|');
+}
+
+function isAiPlannerConfirmedForCurrentSettings(): boolean {
+  return state.aiPlannerConfirmation.status === 'confirmed'
+    && state.aiPlannerConfirmation.key === currentAiPlannerConfirmationKey();
+}
+
+function isAiPlannerFailedForCurrentSettings(): boolean {
+  return state.aiPlannerConfirmation.status === 'failed'
+    && state.aiPlannerConfirmation.key === currentAiPlannerConfirmationKey();
+}
+
+function aiConfirmationLabel(): string {
+  if (isAiPlannerConfirmedForCurrentSettings()) {
+    if (state.aiSettings.mode === 'hosted') return 'Route confirmed';
+    if (state.aiSettings.mode === 'session') return 'Config ready';
+    return 'Status confirmed';
+  }
+  if (isAiPlannerFailedForCurrentSettings()) return 'Check failed';
+  if (isAiConfiguredForCurrentMode()) return 'Confirm planner';
+  return 'Not ready';
+}
+
+function aiConfirmationDetail(): string {
+  if (isAiPlannerConfirmedForCurrentSettings()) {
+    const checkedAt = state.aiPlannerConfirmation.checkedAt
+      ? ` Checked ${formatDateTime(state.aiPlannerConfirmation.checkedAt)}.`
+      : '';
+    return `${state.aiPlannerConfirmation.message}${checkedAt}`.trim();
+  }
+  if (isAiPlannerFailedForCurrentSettings()) {
+    return state.aiPlannerConfirmation.message || 'Planner confirmation failed. Templates still work without AI.';
+  }
+  if (isAiConfiguredForCurrentMode()) {
+    return 'Confirm the planner route before generating if you want a readiness check. Templates still work without AI.';
+  }
+  return `${aiGenerateDisabledReason()} Templates still work without AI.`;
+}
+
+function setAiPlannerConfirmation(status: AiPlannerConfirmationStatus, message: string): void {
+  state.aiPlannerConfirmation = {
+    status,
+    key: currentAiPlannerConfirmationKey(),
+    message,
+    checkedAt: status === 'untested' ? '' : new Date().toISOString(),
+  };
+}
+
+function resetAiPlannerConfirmation(message = ''): void {
+  state.aiPlannerConfirmation = {
+    status: 'untested',
+    key: '',
+    message,
+    checkedAt: '',
+  };
+}
+
+function canConfirmAiPlanner(): boolean {
+  if (state.busy) return false;
+  if (state.aiSettings.mode === 'bridge') return true;
+  return Boolean(
+    state.aiSettings.apiKey.trim()
+      && state.aiSettings.model.trim()
+      && aiProviderReadyForCurrentMode(),
+  );
+}
+
+function aiConfirmDisabledReason(): string {
+  if (state.busy) return 'Wait for the current action to finish.';
+  if (state.aiSettings.mode === 'bridge') return 'Start the local runtime, then confirm planner status.';
+  if (state.aiSettings.mode === 'session' && state.aiSettings.provider === 'openai') {
+    return OPENAI_BROWSER_SESSION_DISABLED_REASON;
+  }
+  if (!state.aiSettings.apiKey.trim()) {
+    return state.aiSettings.mode === 'hosted'
+      ? 'Add a Hosted BYOK request key before confirming.'
+      : 'Add a browser-compatible session key before confirming.';
+  }
+  if (!state.aiSettings.model.trim()) return 'Choose or enter an AI model before confirming.';
+  if (!aiProviderReadyForCurrentMode()) {
+    return state.aiSettings.mode === 'hosted'
+      ? HOSTED_CUSTOM_PROVIDER_DISABLED_REASON
+      : 'Add a browser-compatible gateway URL for this provider.';
+  }
+  return 'Confirm planner readiness before generating.';
 }
 
 function canSaveBridgeAiKey(): boolean {
@@ -4761,7 +5076,7 @@ function aiProviderReadyForCurrentMode(): boolean {
 
 function aiRouteStatusLabel(status: BridgeAiStatus | null): string {
   if (state.aiSettings.mode === 'hosted') {
-    return state.aiSettings.apiKey.trim() ? `hosted draft - ${state.aiSettings.provider} - ${state.aiSettings.model || 'model configured'}` : 'hosted draft - key required';
+    return state.aiSettings.apiKey.trim() ? `hosted draft route - ${state.aiSettings.provider} - ${state.aiSettings.model || 'model configured'}` : 'hosted draft - key required';
   }
   if (state.aiSettings.mode === 'session') {
     if (state.aiSettings.provider === 'openai') {
@@ -4790,33 +5105,16 @@ function aiReadinessLabel(status: BridgeAiStatus | null): string {
   if (!aiProviderReadyForCurrentMode()) {
     return state.aiSettings.mode === 'hosted' ? 'Choose hosted provider' : 'Gateway URL required';
   }
-  return 'Key ready for this tab';
+  return state.aiSettings.mode === 'hosted' ? 'Hosted key entered' : 'Config ready for this tab';
 }
 
-function aiRouteDiagnostic(path: string): AiDiagnosticEntry {
-  if (state.aiSettings.mode === 'bridge') {
-    return {
-      code: 'AI_ROUTE',
-      message: 'Local bridge AI route selected.',
-      detail: `${bridgeBaseUrl()}bridge/ai/generate-plan`,
-      method: 'POST',
-      path: '/bridge/ai/generate-plan',
-    };
-  }
-  if (state.aiSettings.mode === 'session') {
-    return {
-      code: 'AI_ROUTE',
-      message: 'Browser session AI route selected.',
-      detail: `${state.aiSettings.provider} ${state.aiSettings.model || 'model configured'}`,
-    };
-  }
-  return {
-    code: 'AI_ROUTE',
-    message: 'Hosted BYOK route selected.',
-    detail: `${state.aiSettings.provider} ${state.aiSettings.model || 'model configured'} on ${window.location.origin}`,
-    method: 'POST',
+function aiRouteDiagnostic(path: string, method = 'POST'): AiDiagnosticEntry {
+  return aiRouteDiagnosticForSettings(state.aiSettings, {
     path,
-  };
+    method,
+    origin: window.location.origin,
+    bridgeBaseUrl: bridgeBaseUrl(),
+  });
 }
 
 function appendAiDiagnostic(entry: AiDiagnosticEntry): void {
@@ -4839,6 +5137,10 @@ function applyAiErrorDiagnostics(err: unknown, fallbackMessage: string): string 
 
 function aiErrorToastTitle(err: unknown): string {
   return aiRouteMismatchDiagnostic(err) ? 'Hosted AI route failed' : 'AI plan failed';
+}
+
+function aiConfirmErrorToastTitle(err: unknown): string {
+  return aiRouteMismatchDiagnostic(err) ? 'Hosted AI route failed' : 'Planner check failed';
 }
 
 function aiRouteMismatchDiagnostic(err: unknown): AiDiagnosticEntry | undefined {
@@ -4866,6 +5168,7 @@ function ensureAiProviderAllowedForMode(): void {
 function syncAiActionButtons(): void {
   const saveButton = document.querySelector<HTMLButtonElement>('#saveBridgeAiKey');
   const directKeyButton = document.querySelector<HTMLButtonElement>('#saveDirectAiKey');
+  const confirmButton = document.querySelector<HTMLButtonElement>('#confirmAiPlanner');
   const clearButton = document.querySelector<HTMLButtonElement>('#clearAiKey');
   const generateButton = document.querySelector<HTMLButtonElement>('#generateAiPlan');
   const canGenerateAi = canGenerateAiPlanFromSettings();
@@ -4876,6 +5179,13 @@ function syncAiActionButtons(): void {
   if (directKeyButton) {
     directKeyButton.disabled = !canSaveDirectAiKey();
   }
+  if (confirmButton) {
+    const canConfirm = canConfirmAiPlanner();
+    confirmButton.disabled = !canConfirm;
+    confirmButton.title = canConfirm
+      ? 'Confirm planner readiness without creating a plan.'
+      : aiConfirmDisabledReason();
+  }
   if (clearButton) {
     clearButton.disabled = !canClearAiKey();
   }
@@ -4885,6 +5195,18 @@ function syncAiActionButtons(): void {
     generateButton.title = canGenerateAi
       ? 'Create a one-time draft through your configured AI planner.'
       : aiGenerateDisabledReason();
+  }
+  syncAiConfirmationStatusLine();
+}
+
+function syncAiConfirmationStatusLine(): void {
+  const status = document.querySelector<HTMLElement>('#aiConfirmationStatus');
+  const detail = document.querySelector<HTMLElement>('#aiConfirmationDetail');
+  if (status) {
+    status.textContent = aiConfirmationLabel();
+  }
+  if (detail) {
+    detail.textContent = aiConfirmationDetail();
   }
 }
 
@@ -4925,15 +5247,15 @@ function syncArtifactSearchResults(): void {
 
 function approvalInboxPanel(): string {
   if (!state.address) {
-    return guidedStartPanel('Approval inbox', 'Connect a wallet before approving or denying queued requests from the local bridge.');
+    return guidedStartPanel('Approval inbox', 'Connect a wallet before approving or denying queued requests.');
   }
   const actions = filteredPreparedActions();
   return `
-    <section class="approval-object signature-stage stage-inbox stage-anchor ${state.preparedActions.length ? 'stage-active' : 'stage-draft'}">
+    <section class="approval-object signature-stage stage-inbox stage-anchor ${actions.length ? 'stage-active' : 'stage-draft'}">
       <div class="signature-object-head">
         <div>
           <h2>Approval inbox</h2>
-          <p>Active one-time approvals and recurring occurrences wait here for approve or deny.</p>
+          <p>${escapeHtml(approvalInboxDescription())}</p>
         </div>
         <div class="inbox-toolbar signature-toolbar">
           <select id="inboxFilter">
@@ -4944,13 +5266,12 @@ function approvalInboxPanel(): string {
             ${inboxFilterOption('one-time', 'One-time')}
             ${inboxFilterOption('recurring', 'Recurring')}
           </select>
-          <button id="refreshInbox" class="utility" ${!state.bridgeActive || state.busy ? 'disabled' : ''} title="${!state.bridgeActive ? 'Connect the bridge to refresh prepared approvals.' : ''}">Refresh</button>
+          <button id="refreshInbox" class="utility" ${state.busy ? 'disabled' : ''}>Refresh</button>
         </div>
       </div>
 
       ${queueStatusLine(actions.length)}
       ${preparedActionsList(actions)}
-      ${!state.bridgeActive ? bridgeRequiredNotice('Local approval bridge required to load active approvals and recurring occurrences. AI Planner routes only create drafts.') : ''}
       ${state.error ? `<div class="error">${escapeHtml(state.error)}</div>` : ''}
     </section>
   `;
@@ -4971,13 +5292,13 @@ function completedPlansPanel(): string {
         </div>
         <div class="generated-plans-toolbar signature-toolbar">
           <span class="signature-state">${escapeHtml(`${plans.length} completed`)}</span>
-          <button id="refreshCompletedPlans" class="utility" ${!state.bridgeActive || state.busy ? 'disabled' : ''} title="${!state.bridgeActive ? 'Connect the bridge to refresh receipts.' : ''}">Refresh</button>
+          <button id="refreshCompletedPlans" class="utility" ${state.busy ? 'disabled' : ''}>Refresh</button>
         </div>
       </div>
 
       ${completedPlanFilterControls()}
       <div class="queue-status completed-plan-status">
-        <span>${escapeHtml(state.bridgeActive ? 'Bridge receipts connected' : 'Browser-saved proofs')}</span>
+        <span>${escapeHtml(completedHistorySourceLabel())}</span>
         <strong>${visiblePlans.length} visible</strong>
         <span>${receiptCount} receipt${receiptCount === 1 ? '' : 's'}</span>
         <span>${proofCount} proof${proofCount === 1 ? '' : 's'}</span>
@@ -4994,13 +5315,36 @@ function completedPlansPanel(): string {
   `;
 }
 
+function approvalInboxDescription(): string {
+  if (activeWorkflowMode() === 'agentic-cloud') {
+    return 'Active one-time cloud approvals wait here for approve, deny, or cancel.';
+  }
+  if (activeWorkflowMode() === 'local-bridge') {
+    return 'Private local one-time approvals and recurring occurrences wait here for approve or deny.';
+  }
+  return 'Browser-local one-time approvals and recurring occurrences wait here for approve or deny.';
+}
+
 function completedBridgeStatusHint(): string {
-  if (state.bridgeActive) return '';
+  if (activeWorkflowMode() === 'agentic-cloud') {
+    return `
+      <p class="completed-bridge-hint">
+        Completed cloud approvals are loaded from Agentic Cloud for the signed-in wallet.
+      </p>
+    `;
+  }
+  if (activeWorkflowMode() === 'local-bridge') return '';
   return `
     <p class="completed-bridge-hint">
-      Browser-saved proofs are visible. Bridge receipts and recurring history appear after the local approval bridge is connected.
+      Browser workflow history is local to this device. Sign in to Agentic Cloud to sync one-time approvals.
     </p>
   `;
+}
+
+function completedHistorySourceLabel(): string {
+  if (activeWorkflowMode() === 'agentic-cloud') return 'Cloud completed history';
+  if (activeWorkflowMode() === 'local-bridge') return 'Private local receipts';
+  return 'Browser workflow history';
 }
 
 function completedPlanFilterControls(): string {
@@ -5030,12 +5374,19 @@ function completedPlanFilterControls(): string {
 function completedPlansEmptyState(totalCount: number): string {
   const detail = totalCount
     ? 'No completed plans match this filter.'
-    : 'Sign a review proof, approve or reject an inbox item, or finish a recurring schedule to create history here.';
+    : activeWorkflowMode() === 'agentic-cloud'
+      ? 'Approve, deny, or cancel a cloud approval to create completed cloud history.'
+      : 'Sign a review proof, approve or reject an inbox item, or finish a recurring schedule to create history here.';
   return signaturePlaceholder('No completed plans', detail);
 }
 
 function completedPlanCard(plan: CompletedPlanRecord): string {
-  const deleteRequiresBridge = Boolean((plan.actionId || completedPlanIsEndedSchedule(plan)) && !state.bridgeActive);
+  const deleteRequiresBridge = Boolean(
+    plan.workflowSource !== 'cloud' &&
+    !state.bridgeActive &&
+    ((plan.actionId && !isBrowserWorkflowId(plan.actionId)) ||
+      (completedPlanIsEndedSchedule(plan) && plan.recurringId && !isBrowserWorkflowId(plan.recurringId))),
+  );
   const evidenceLabel = plan.txid ? 'Transaction' : plan.signature ? 'Review proof' : plan.actionId ? 'Receipt' : 'Schedule';
   const copyLabel = plan.actionId ? 'Copy receipt JSON' : plan.signature ? 'Copy proof JSON' : 'Copy schedule JSON';
   return `
@@ -5102,9 +5453,9 @@ function scheduledApprovalsPanel(): string {
       <div class="signature-object-head">
         <div>
           <h2>Create recurring schedule</h2>
-          <p>Create a supported payment or subscription schedule through the local approval bridge. Each due occurrence appears in Approval Inbox for approve or deny.</p>
+          <p>Create a supported payment or subscription schedule. Each due occurrence appears in Approval Inbox for approve or deny.</p>
         </div>
-        <button id="refreshInbox" class="utility" ${!state.bridgeActive || state.busy ? 'disabled' : ''} title="${!state.bridgeActive ? 'Connect the bridge to refresh recurring plans.' : ''}">Refresh</button>
+        <button id="refreshInbox" class="utility" ${state.busy ? 'disabled' : ''}>Refresh</button>
       </div>
 
       ${scheduleStatusLine()}
@@ -5324,9 +5675,11 @@ function artifactArchiveStatusLine(): string {
       ? `Bridge file: ${state.health.labArtifactStorePath}`
       : 'Bridge archive connected'
     : 'Bridge archive unavailable';
+  const cloudClass = cloudSessionMatchesWallet() ? 'cloud-active' : 'cloud-inactive';
   return `
     <div class="artifact-archive-status">
       <span>${escapeHtml(state.labArchiveStatus)}</span>
+      <span class="cloud-evidence-status ${cloudClass}">${escapeHtml(state.cloudEvidenceStatus)}</span>
       <strong>${escapeHtml(bridge)}</strong>
     </div>
   `;
@@ -5397,6 +5750,7 @@ function signedArtifactRow(artifact: LabArtifact): string {
         <div class="artifact-meta-line">
           <span class="status-pill ${artifact.verified ? 'tx-confirmed' : 'tx-pending'}">${artifact.verified ? 'verified' : 'signed'}</span>
           <span>${escapeHtml(legacy ? 'Legacy receipt' : labKindLabel(artifact.kind))}</span>
+          ${receiptStorageBadges(artifact)}
         </div>
         <h3>${escapeHtml(artifact.title)}</h3>
         <p>${escapeHtml(summary)}</p>
@@ -5438,6 +5792,16 @@ function archiveFact(label: string, value: string): string {
       <span>${escapeHtml(label)}</span>
       <strong>${escapeHtml(value)}</strong>
     </div>
+  `;
+}
+
+function receiptStorageBadges(artifact: LabArtifact): string {
+  const cloud = Boolean(artifact.cloudReceiptId);
+  const bridge = Boolean(artifact.bridgeArchived);
+  return `
+    <span class="receipt-storage-badge browser" title="Saved on this device">Browser</span>
+    <span class="receipt-storage-badge cloud ${cloud ? 'on' : 'off'}" title="${cloud ? 'Archived in Agentic Cloud' : 'Not archived in Agentic Cloud'}">Cloud${cloud ? '' : ' off'}</span>
+    <span class="receipt-storage-badge bridge ${bridge ? 'on' : 'off'}" title="${bridge ? 'Mirrored to local bridge archive' : 'Not in bridge archive'}">Bridge${bridge ? '' : ' off'}</span>
   `;
 }
 
@@ -5603,7 +5967,7 @@ function contextPanel(): string {
           ${contextRow('Wallet', state.address ? short(state.address) : 'Not connected', state.address ? 'good' : '')}
           ${contextRow('Cluster', titleCaseCluster(state.cluster), state.cluster === 'mainnet-beta' ? 'warn' : '')}
           ${contextRow('Bridge', state.bridgeActive ? 'Ready' : 'Disconnected', state.bridgeActive ? 'good' : '')}
-          ${contextRow('MCP inbox', `${state.preparedActions.filter((action) => !action.archived).length} action(s)`, state.preparedActions.length ? 'warn' : '')}
+          ${contextRow('Workflow inbox', `${activeWorkflowPreparedActions().filter((action) => !action.archived).length} action(s)`, activeWorkflowPreparedActions().length ? 'warn' : '')}
           ${contextRow('Agent proof', state.agentSignature ? short(state.agentSignature) : 'Unsigned')}
           ${contextRow('Last tx', state.txid ? short(state.txid) : latestConfirmedTx())}
           ${contextRow('Latest lab', latestLab ? short(latestLab.artifactHash) : 'No artifact')}
@@ -5619,7 +5983,7 @@ function contextPanel(): string {
 
 function requestContextDetails(): string {
   const latestLab = state.labArtifacts[0];
-  const openApprovals = state.preparedActions.filter((action) => !action.archived).length;
+  const openApprovals = activeWorkflowPreparedActions().filter((action) => !action.archived).length;
   const hasRequestContext =
     Boolean(state.address) ||
     openApprovals > 0 ||
@@ -5781,11 +6145,21 @@ function bind(): void {
   });
   document.querySelector<HTMLButtonElement>('#saveBridgeAiKey')?.addEventListener('click', runSaveBridgeAiKey);
   document.querySelector<HTMLButtonElement>('#saveDirectAiKey')?.addEventListener('click', runSaveDirectAiKey);
+  document.querySelector<HTMLButtonElement>('#confirmAiPlanner')?.addEventListener('click', runConfirmAiPlanner);
   document.querySelector<HTMLButtonElement>('#clearAiKey')?.addEventListener('click', runClearAiKey);
   document.querySelector<HTMLButtonElement>('#refreshAiStatus')?.addEventListener('click', runRefreshAiStatus);
   document.querySelector<HTMLDetailsElement>('.ai-settings-panel')?.addEventListener('toggle', (event) => {
     state.aiSettingsPanelOpen = (event.currentTarget as HTMLDetailsElement).open;
   });
+  document.querySelector<HTMLButtonElement>('#cloudSignIn')?.addEventListener('click', runCloudSignIn);
+  document.querySelector<HTMLButtonElement>('#cloudLogout')?.addEventListener('click', runCloudLogout);
+  for (const button of document.querySelectorAll<HTMLButtonElement>('[data-workflow-mode]')) {
+    button.addEventListener('click', () => {
+      const mode = button.dataset.workflowMode;
+      if (!mode || !isWorkflowModePreference(mode)) return;
+      void runSetWorkflowModePreference(mode);
+    });
+  }
   document.querySelector<HTMLButtonElement>('#connectBridge')?.addEventListener('click', runConnectBridge);
   for (const button of document.querySelectorAll<HTMLButtonElement>('[data-bridge-action="connect"]')) {
     button.addEventListener('click', runConnectBridge);
@@ -5898,6 +6272,7 @@ function bind(): void {
     }
     state.aiSettings.mode = mode;
     ensureAiProviderAllowedForMode();
+    resetAiPlannerConfirmation('AI path changed. Workflow capability is unchanged.');
     savePersistedState();
     pushToast('success', 'AI Planner path changed', aiModeToastMessage(mode));
     render();
@@ -5913,12 +6288,14 @@ function bind(): void {
     state.aiSettings.apiFormat = preset.apiFormat;
     state.aiSettings.baseUrl = preset.baseUrl;
     state.aiSettings.model = preset.model;
+    resetAiPlannerConfirmation('AI provider changed. Confirm planner again if needed.');
     savePersistedState();
     render();
   });
 
   document.querySelector<HTMLInputElement>('#aiBaseUrl')?.addEventListener('input', (event) => {
     state.aiSettings.baseUrl = (event.currentTarget as HTMLInputElement).value.trim();
+    resetAiPlannerConfirmation('Gateway changed. Confirm planner again if needed.');
     savePersistedState();
     syncAiActionButtons();
   });
@@ -5926,18 +6303,21 @@ function bind(): void {
   document.querySelector<HTMLSelectElement>('#aiModelSelect')?.addEventListener('change', (event) => {
     const value = (event.currentTarget as HTMLSelectElement).value;
     state.aiSettings.model = value === CUSTOM_AI_MODEL_VALUE ? '' : value;
+    resetAiPlannerConfirmation('Model changed. Confirm planner again if needed.');
     savePersistedState();
     render();
   });
 
   document.querySelector<HTMLInputElement>('#aiModelCustom')?.addEventListener('input', (event) => {
     state.aiSettings.model = (event.currentTarget as HTMLInputElement).value.trim();
+    resetAiPlannerConfirmation('Model changed. Confirm planner again if needed.');
     savePersistedState();
     syncAiActionButtons();
   });
 
   document.querySelector<HTMLInputElement>('#aiApiKey')?.addEventListener('input', (event) => {
     state.aiSettings.apiKey = (event.currentTarget as HTMLInputElement).value;
+    resetAiPlannerConfirmation('AI key changed. Confirm planner again if needed.');
     syncAiActionButtons();
   });
 
@@ -6508,6 +6888,7 @@ async function runDiscover(): Promise<void> {
     if (state.androidNativeEnvironment.isAndroidNative) {
       trackWalletConnectClick('android_native', 'discover_button');
       await connectAndroidNativeWallet(true);
+      await afterWalletConnected();
       trackWalletConnectSuccess('android_native', state.cluster, 'discover_button');
       pushToast('success', 'Android MWA connected', short(state.address));
       return;
@@ -6542,6 +6923,7 @@ async function runConnect(): Promise<void> {
       if (state.bridgeActive) {
         await connectBridgeHost();
       }
+      await afterWalletConnected();
       savePersistedState();
       trackWalletConnectSuccess(connectSurface, state.cluster, 'connect_button');
       pushToast('success', 'Android MWA connected', short(state.address));
@@ -6565,6 +6947,7 @@ async function runConnect(): Promise<void> {
       if (state.bridgeActive) {
         await connectBridgeHost();
       }
+      await afterWalletConnected();
       savePersistedState();
       trackWalletConnectSuccess(connectSurface, state.cluster, 'connect_button');
       pushToast('success', 'iOS wallet connected', short(state.address));
@@ -6583,6 +6966,7 @@ async function runConnect(): Promise<void> {
     if (state.bridgeActive) {
       await connectBridgeHost();
     }
+    await afterWalletConnected();
     savePersistedState();
     trackWalletConnectSuccess(connectSurface, state.cluster, 'connect_button');
     pushToast('success', 'Wallet connected', short(state.address));
@@ -6619,6 +7003,7 @@ async function runReconnectAndroidCached(): Promise<void> {
     if (state.bridgeActive) {
       await connectBridgeHost();
     }
+    await afterWalletConnected();
     trackWalletConnectSuccess('android_native', state.cluster, 'reconnect_cached');
     pushToast('success', 'Android MWA restored', short(state.address));
   });
@@ -6686,6 +7071,7 @@ async function runReconnectIosCached(): Promise<void> {
     if (state.bridgeActive) {
       await connectBridgeHost();
     }
+    await afterWalletConnected();
     savePersistedState();
     trackWalletConnectSuccess('ios_native', state.cluster, 'reconnect_cached');
     pushToast('success', 'iOS cache restored', short(state.address));
@@ -6962,7 +7348,7 @@ async function runGenerateAgentPlan(): Promise<void> {
         state.agentPlan = plan;
         state.agentSignature = '';
         state.agentPreparedActionId = '';
-        const record = saveGeneratedPlan(plan, template, userNotes || template.description);
+        const record = await saveGeneratedPlan(plan, template, userNotes || template.description);
         state.selectedGeneratedPlanId = record.id;
         state.oneTimePlanView = 'review';
         replaceToast(toastId, 'success', 'Plan created', `${template.title} is ready in Review & Finish.`);
@@ -7000,7 +7386,9 @@ async function runGenerateAiPlan(): Promise<void> {
           },
           parameters,
         };
-        state.aiDiagnostics = [aiRouteDiagnostic('/api/ai/generate-plan')];
+        state.aiDiagnostics = [
+          aiRouteDiagnostic(state.aiSettings.mode === 'bridge' ? '/bridge/ai/generate-plan' : '/api/ai/generate-plan'),
+        ];
         render();
         const plan = state.aiSettings.mode === 'bridge'
           ? await bridgeRequest<AgentPlan>('/bridge/ai/generate-plan', {
@@ -7013,7 +7401,7 @@ async function runGenerateAiPlan(): Promise<void> {
         state.agentPlan = plan;
         state.agentSignature = '';
         state.agentPreparedActionId = '';
-        const record = saveGeneratedPlan(plan, template, request.prompt);
+        const record = await saveGeneratedPlan(plan, template, request.prompt);
         state.selectedGeneratedPlanId = record.id;
         state.oneTimePlanView = 'review';
         appendAiDiagnostic({
@@ -7044,7 +7432,7 @@ async function runSignAgentPlan(): Promise<void> {
     const signature = await signAgentPlanProof(state.agentPlan, 'Plan review proof');
     const activeRecord = generatedPlanById(state.selectedGeneratedPlanId);
     state.agentSignature = signature;
-    updateActiveGeneratedPlanRecord({ signature, status: 'signed' });
+    await updateActiveGeneratedPlanRecord({ signature, status: 'signed' });
     if (activeRecord && samePlan(activeRecord.plan, state.agentPlan)) {
       if (state.generatedPlanAuditId === activeRecord.id) {
         state.generatedPlanAuditId = '';
@@ -7060,12 +7448,17 @@ async function runQueueAgentPlan(): Promise<void> {
     if (!state.agentPlan) {
       throw new Error('Create a plan before queueing.');
     }
-    const response = await queuePlanThroughBridge(state.agentPlan);
     const activeRecord = generatedPlanById(state.selectedGeneratedPlanId);
+    const response = await queuePlanThroughActiveWorkflow(state.agentPlan, activeRecord);
     state.agentPreparedActionId = response.id;
-    updateActiveGeneratedPlanRecord({ preparedActionId: response.id, status: 'queued' });
-    if (activeRecord && samePlan(activeRecord.plan, state.agentPlan)) {
-      if (state.generatedPlanAuditId === activeRecord.id) {
+    if (response.mode === 'agentic-cloud' && response.planRecordId) {
+      state.selectedGeneratedPlanId = response.planRecordId;
+    } else {
+      await updateActiveGeneratedPlanRecord({ preparedActionId: response.id, status: 'queued' });
+    }
+    const queuedRecordId = response.planRecordId ?? activeRecord?.id ?? '';
+    if (queuedRecordId && activeRecord && samePlan(activeRecord.plan, state.agentPlan)) {
+      if (state.generatedPlanAuditId === queuedRecordId || state.generatedPlanAuditId === activeRecord.id) {
         state.generatedPlanAuditId = '';
       }
       selectFallbackGeneratedPlan();
@@ -7076,11 +7469,21 @@ async function runQueueAgentPlan(): Promise<void> {
       state.activeTab = 'inbox';
       state.inboxFilter = 'ready';
     }
-    await refreshInboxData();
+    if (response.mode === 'local-bridge') {
+      await refreshInboxData();
+    } else if (response.mode === 'agentic-cloud') {
+      await refreshCloudWorkspaceData();
+    }
     pushToast(
       'success',
       state.agentPlan.actionType === 'recurring_payment' ? 'Recurring schedule created' : 'Sent to Approval Inbox',
-      state.agentPlan.actionType === 'recurring_payment' ? 'Future occurrences will appear in Approval Inbox.' : response.id,
+      state.agentPlan.actionType === 'recurring_payment'
+        ? 'Future occurrences will appear in Approval Inbox.'
+        : response.mode === 'agentic-cloud'
+          ? 'Saved to Agentic Cloud. No localhost required.'
+          : response.mode === 'browser-workflow'
+            ? 'Saved to the browser workflow on this device.'
+            : response.id,
     );
   });
 }
@@ -7103,7 +7506,7 @@ async function runGeneratedPlanAction(planId: string, action: string): Promise<v
     return;
   }
   if (action === 'archive') {
-    updateGeneratedPlan(planId, { status: 'archived' });
+    await updateGeneratedPlan(planId, { status: 'archived' });
     if (state.generatedPlanAuditId === planId) {
       state.generatedPlanAuditId = '';
     }
@@ -7113,7 +7516,7 @@ async function runGeneratedPlanAction(planId: string, action: string): Promise<v
     return;
   }
   if (action === 'restore') {
-    updateGeneratedPlan(planId, { status: restoredGeneratedPlanStatus(record) });
+    await updateGeneratedPlan(planId, { status: restoredGeneratedPlanStatus(record) });
     state.selectedGeneratedPlanId = planId;
     pushToast('success', 'Plan restored', record.plan.templateTitle);
     render();
@@ -7121,6 +7524,9 @@ async function runGeneratedPlanAction(planId: string, action: string): Promise<v
   }
   if (action === 'delete') {
     if (!window.confirm('Delete this plan permanently?')) return;
+    if (record.workflowSource === 'cloud') {
+      await cloudRequest(`/api/plans/${encodeURIComponent(planId)}`, { method: 'DELETE' });
+    }
     state.generatedPlans = state.generatedPlans.filter((candidate) => candidate.id !== planId);
     if (state.generatedPlanAuditId === planId) {
       state.generatedPlanAuditId = '';
@@ -7146,7 +7552,20 @@ async function runDeleteCompletedPlan(completedId: string): Promise<void> {
   if (!window.confirm('Delete this completed plan from history?')) return;
 
   await run('inbox', async () => {
+    if (record.workflowSource === 'cloud') {
+      await cloudRequest(`/api/completed/${encodeURIComponent(record.id)}`, { method: 'DELETE' });
+      state.cloudCompletedPlans = state.cloudCompletedPlans.filter((candidate) => candidate.id !== record.id);
+      await refreshCloudWorkspaceData().catch(() => undefined);
+      pushToast('success', 'Completed plan deleted', record.title);
+      return;
+    }
     if (record.actionId) {
+      if (isBrowserWorkflowId(record.actionId)) {
+        state.preparedActions = state.preparedActions.filter((candidate) => candidate.id !== record.actionId);
+        state.materializedActions = state.preparedActions;
+        state.receipts = state.receipts.filter((receipt) => receipt.actionId !== record.actionId);
+        saveBrowserWorkflowState();
+      } else {
       if (!state.bridgeActive) {
         throw new Error('Connect the local bridge before deleting bridge-backed history.');
       }
@@ -7154,8 +7573,13 @@ async function runDeleteCompletedPlan(completedId: string): Promise<void> {
         method: 'POST',
         body: JSON.stringify({ actionId: record.actionId }),
       });
+      }
     }
     if (completedPlanIsEndedSchedule(record) && record.recurringId) {
+      if (isBrowserWorkflowId(record.recurringId)) {
+        state.recurringPayments = state.recurringPayments.filter((candidate) => candidate.id !== record.recurringId);
+        saveBrowserWorkflowState();
+      } else {
       if (!state.bridgeActive) {
         throw new Error('Connect the local bridge before deleting recurring history.');
       }
@@ -7163,6 +7587,7 @@ async function runDeleteCompletedPlan(completedId: string): Promise<void> {
         method: 'POST',
         body: JSON.stringify({ recurringId: record.recurringId }),
       });
+      }
     }
     if (record.generatedPlanId) {
       state.generatedPlans = state.generatedPlans.filter((candidate) => candidate.id !== record.generatedPlanId);
@@ -7188,7 +7613,7 @@ async function runSignGeneratedPlan(planId: string): Promise<void> {
       throw new Error('Restore this plan before signing a review proof.');
     }
     const signature = await signAgentPlanProof(record.plan, 'Plan review proof');
-    updateGeneratedPlan(planId, { signature, status: 'signed' });
+    await updateGeneratedPlan(planId, { signature, status: 'signed' });
     if (state.generatedPlanAuditId === planId) {
       state.generatedPlanAuditId = '';
     }
@@ -7209,9 +7634,13 @@ async function runQueueGeneratedPlan(planId: string): Promise<void> {
     if (!canQueueAgentPlan(record.plan)) {
       throw new Error('Only transfer, swap, and recurring schedules can be queued.');
     }
-    const response = await queuePlanThroughBridge(record.plan);
-    updateGeneratedPlan(planId, { preparedActionId: response.id, status: 'queued' });
-    if (state.generatedPlanAuditId === planId) {
+    const response = await queuePlanThroughActiveWorkflow(record.plan, record);
+    if (response.mode === 'agentic-cloud' && response.planRecordId) {
+      state.selectedGeneratedPlanId = response.planRecordId;
+    } else {
+      await updateGeneratedPlan(planId, { preparedActionId: response.id, status: 'queued' });
+    }
+    if (state.generatedPlanAuditId === planId || (response.planRecordId && state.generatedPlanAuditId === response.planRecordId)) {
       state.generatedPlanAuditId = '';
     }
     selectFallbackGeneratedPlan();
@@ -7224,16 +7653,46 @@ async function runQueueGeneratedPlan(planId: string): Promise<void> {
       state.activeTab = 'inbox';
       state.inboxFilter = 'ready';
     }
-    await refreshInboxData();
+    if (response.mode === 'local-bridge') {
+      await refreshInboxData();
+    } else if (response.mode === 'agentic-cloud') {
+      await refreshCloudWorkspaceData();
+    }
     pushToast(
       'success',
       record.plan.actionType === 'recurring_payment' ? 'Recurring schedule created' : 'Sent to Approval Inbox',
-      record.plan.actionType === 'recurring_payment' ? 'Future occurrences will appear in Approval Inbox.' : response.id,
+      record.plan.actionType === 'recurring_payment'
+        ? 'Future occurrences will appear in Approval Inbox.'
+        : response.mode === 'agentic-cloud'
+          ? 'Saved to Agentic Cloud. No localhost required.'
+          : response.mode === 'browser-workflow'
+            ? 'Saved to the browser workflow on this device.'
+            : response.id,
     );
   });
 }
 
-function saveGeneratedPlan(plan: AgentPlan, template: AgentPlanTemplate, prompt: string): GeneratedPlanRecord {
+async function saveGeneratedPlan(plan: AgentPlan, template: AgentPlanTemplate, prompt: string): Promise<GeneratedPlanRecord> {
+  if (activeWorkflowMode() === 'agentic-cloud' && plan.actionType !== 'recurring_payment') {
+    const cloudPlan = parseCloudPlanResponse(await cloudRequest('/api/plans', {
+      method: 'POST',
+      body: JSON.stringify({
+        plan,
+        source: plan.source,
+        templateId: template.id,
+        templateTitle: template.title,
+        prompt,
+        cluster: state.cluster,
+        status: 'draft',
+      }),
+    }));
+    const record = cloudPlanToGeneratedPlan(cloudPlan);
+    if (!record) {
+      throw new Error('Agentic Cloud did not return a valid plan draft.');
+    }
+    state.generatedPlans = mergeGeneratedPlans([record], state.generatedPlans.filter((candidate) => candidate.id !== record.id));
+    return record;
+  }
   const now = new Date().toISOString();
   const record: GeneratedPlanRecord = {
     id: newId('plan'),
@@ -7247,13 +7706,34 @@ function saveGeneratedPlan(plan: AgentPlan, template: AgentPlanTemplate, prompt:
     walletAddress: state.address,
     cluster: state.cluster,
     status: 'draft',
+    workflowSource: activeWorkflowMode() === 'local-bridge' ? 'local-bridge' : 'browser',
   };
   state.generatedPlans = mergeGeneratedPlans([record], state.generatedPlans);
   saveGeneratedPlans();
   return record;
 }
 
-function updateGeneratedPlan(planId: string, patch: Partial<Pick<GeneratedPlanRecord, 'status' | 'signature' | 'preparedActionId'>>): void {
+async function updateGeneratedPlan(
+  planId: string,
+  patch: Partial<Pick<GeneratedPlanRecord, 'status' | 'signature' | 'preparedActionId'>>,
+): Promise<void> {
+  const existing = generatedPlanById(planId);
+  if (existing?.workflowSource === 'cloud') {
+    const cloudPlan = parseCloudPlanResponse(await cloudRequest(`/api/plans/${encodeURIComponent(planId)}`, {
+      method: 'PATCH',
+      body: JSON.stringify({
+        ...(patch.status !== undefined && { status: patch.status }),
+        ...(patch.signature !== undefined && { signature: patch.signature }),
+        ...(patch.preparedActionId !== undefined && { approvalRequestId: patch.preparedActionId }),
+      }),
+    }));
+    const record = cloudPlanToGeneratedPlan(cloudPlan);
+    if (!record) {
+      throw new Error('Agentic Cloud did not return a valid plan update.');
+    }
+    state.generatedPlans = mergeGeneratedPlans([record], state.generatedPlans.filter((candidate) => candidate.id !== planId));
+    return;
+  }
   const updatedAt = new Date().toISOString();
   state.generatedPlans = state.generatedPlans.map((record) => {
     if (record.id !== planId) return record;
@@ -7266,13 +7746,13 @@ function updateGeneratedPlan(planId: string, patch: Partial<Pick<GeneratedPlanRe
   saveGeneratedPlans();
 }
 
-function updateActiveGeneratedPlanRecord(
+async function updateActiveGeneratedPlanRecord(
   patch: Partial<Pick<GeneratedPlanRecord, 'status' | 'signature' | 'preparedActionId'>>,
-): void {
+): Promise<void> {
   if (!state.agentPlan) return;
   const record = generatedPlanById(state.selectedGeneratedPlanId);
   if (record && samePlan(record.plan, state.agentPlan)) {
-    updateGeneratedPlan(record.id, patch);
+    await updateGeneratedPlan(record.id, patch);
   }
 }
 
@@ -7327,12 +7807,22 @@ function openDcaReviewProofTemplate(): void {
   state.activeTab = 'agent';
   state.oneTimePlanView = 'create';
   state.error = '';
-  pushToast('success', 'DCA review proof selected', 'This creates evidence only. Active recurring schedules still require the local bridge.');
+  pushToast(
+    'success',
+    'DCA review proof selected',
+    'This creates evidence only. Active recurring schedules use the selected workflow and each run still returns to Approval Inbox.',
+  );
   render();
 }
 
 function generatedPlansForPanel(oneTimeOnly = false): GeneratedPlanRecord[] {
-  return oneTimeOnly ? state.generatedPlans.filter(isOneTimeGeneratedPlan) : state.generatedPlans;
+  const mode = activeWorkflowMode();
+  const scoped = mode === 'agentic-cloud'
+    ? state.generatedPlans.filter((record) => record.workflowSource === 'cloud')
+    : mode === 'local-bridge'
+      ? state.generatedPlans.filter((record) => record.workflowSource === 'local-bridge')
+      : state.generatedPlans.filter((record) => record.workflowSource === 'browser' || !record.workflowSource);
+  return oneTimeOnly ? scoped.filter(isOneTimeGeneratedPlan) : scoped;
 }
 
 function isOneTimeGeneratedPlan(record: GeneratedPlanRecord): boolean {
@@ -7358,12 +7848,25 @@ function hasGeneratedPlanMovedPastReview(record: GeneratedPlanRecord): boolean {
 }
 
 function completedPlanRecords(): CompletedPlanRecord[] {
-  const receiptsByActionId = new Map(state.receipts.map((receipt) => [receipt.actionId, receipt]));
-  const actionsById = new Map(state.preparedActions.map((action) => [action.id, action]));
+  const mode = activeWorkflowMode();
+  if (mode === 'agentic-cloud') {
+    return [...state.cloudCompletedPlans].sort((left, right) => right.completedAt.localeCompare(left.completedAt));
+  }
+  const historyActions = mode === 'browser-workflow'
+    ? state.preparedActions.filter((action) => isBrowserWorkflowId(action.id))
+    : state.preparedActions.filter((action) => action.workflowSource === 'local-bridge');
+  const historyReceipts = mode === 'browser-workflow'
+    ? state.receipts.filter((receipt) => isBrowserWorkflowId(receipt.actionId))
+    : state.receipts.filter((receipt) => !isBrowserWorkflowId(receipt.actionId));
+  const historyPlans = mode === 'browser-workflow'
+    ? state.generatedPlans.filter((record) => record.workflowSource === 'browser' || !record.workflowSource)
+    : state.generatedPlans.filter((record) => record.workflowSource === 'local-bridge');
+  const receiptsByActionId = new Map(historyReceipts.map((receipt) => [receipt.actionId, receipt]));
+  const actionsById = new Map(historyActions.map((action) => [action.id, action]));
   const usedActionIds = new Set<string>();
   const records: CompletedPlanRecord[] = [];
 
-  for (const record of state.generatedPlans.filter(isOneTimeGeneratedPlan)) {
+  for (const record of historyPlans.filter(isOneTimeGeneratedPlan)) {
     const action = record.preparedActionId ? actionsById.get(record.preparedActionId) : undefined;
     const receipt = record.preparedActionId ? receiptsByActionId.get(record.preparedActionId) : undefined;
     const hasTerminalAction = Boolean(action && isTerminalPreparedAction(action));
@@ -7374,19 +7877,22 @@ function completedPlanRecords(): CompletedPlanRecord[] {
     if (record.preparedActionId) usedActionIds.add(record.preparedActionId);
   }
 
-  for (const receipt of state.receipts) {
+  for (const receipt of historyReceipts) {
     if (usedActionIds.has(receipt.actionId)) continue;
     records.push(completedPlanFromReceipt(receipt, actionsById.get(receipt.actionId)));
     usedActionIds.add(receipt.actionId);
   }
 
-  for (const action of state.preparedActions) {
+  for (const action of historyActions) {
     if (usedActionIds.has(action.id) || !isTerminalPreparedAction(action)) continue;
     records.push(completedPlanFromAction(action));
     usedActionIds.add(action.id);
   }
 
-  for (const payment of state.recurringPayments.filter(isRecurringPaymentCompleted)) {
+  const historyRecurring = activeWorkflowMode() === 'browser-workflow'
+    ? state.recurringPayments.filter((payment) => isBrowserWorkflowId(payment.id))
+    : state.recurringPayments;
+  for (const payment of historyRecurring.filter(isRecurringPaymentCompleted)) {
     records.push(completedPlanFromEndedRecurring(payment));
   }
 
@@ -7426,6 +7932,7 @@ function completedPlanFromGeneratedPlan(
   const amount = receipt?.amount ?? (action ? amountLabel(action) : planParameter(record.plan, ['amountSol', 'amount', 'inputAmount', 'plannedAmount']));
   const token = receipt?.token ?? (action ? tokenLabel(action) : planParameter(record.plan, ['token', 'inputToken', 'outputToken']));
   const recipient = receipt?.recipient ?? (action ? stringParam(action, 'recipient') : planParameter(record.plan, ['recipient', 'recipientAddress']));
+  const workflowSource = record.workflowSource ?? action?.workflowSource ?? (actionId && isBrowserWorkflowId(actionId) ? 'browser' : undefined);
   const payload = {
     type: 'completed_one_time_plan',
     status,
@@ -7454,6 +7961,7 @@ function completedPlanFromGeneratedPlan(
     ...(receipt?.explorerUrl && { explorerUrl: receipt.explorerUrl }),
     generatedPlanId: record.id,
     ...(actionId ? { actionId } : {}),
+    ...(workflowSource ? { workflowSource } : {}),
     copyPayload: stableJson(payload),
     detailRows: completedRows([
       ['Type', 'One-time plan'],
@@ -7478,6 +7986,7 @@ function completedPlanFromReceipt(receipt: ActionReceipt, action: PreparedAction
   const status = completedActionStatusLabel(receipt.status, receipt.txStatus);
   const recurringId = receipt.recurringId ?? action?.recurringId;
   const occurrenceKey = receipt.occurrenceKey ?? action?.occurrenceKey;
+  const workflowSource = action?.workflowSource ?? (isBrowserWorkflowId(receipt.actionId) ? 'browser' : undefined);
   const payload = {
     type: kind === 'recurring' ? 'completed_recurring_occurrence' : 'completed_one_time_approval',
     receipt,
@@ -7499,9 +8008,11 @@ function completedPlanFromReceipt(receipt: ActionReceipt, action: PreparedAction
     ...(receipt.recipient && { recipient: receipt.recipient }),
     ...(receipt.txid && { txid: receipt.txid }),
     ...(receipt.explorerUrl && { explorerUrl: receipt.explorerUrl }),
+    ...(receipt.proofSignature && { signature: receipt.proofSignature }),
     actionId: receipt.actionId,
     ...(recurringId ? { recurringId } : {}),
     ...(occurrenceKey ? { occurrenceKey } : {}),
+    ...(workflowSource ? { workflowSource } : {}),
     copyPayload: stableJson(payload),
     detailRows: completedRows([
       ['Type', kind === 'recurring' ? 'Recurring occurrence' : 'One-time approval'],
@@ -7514,6 +8025,7 @@ function completedPlanFromReceipt(receipt: ActionReceipt, action: PreparedAction
       receipt.amount ? ['Amount', `${receipt.amount} ${receipt.token ?? ''}`.trim()] : undefined,
       ['Created', formatDateTime(receipt.createdAt)],
       ['Completed', formatDateTime(receipt.completedAt)],
+      receipt.proofSignature ? ['Decision proof', receipt.proofSignature] : undefined,
       receipt.txid ? ['Transaction', receipt.txid] : undefined,
       receipt.error ? ['Error', receipt.error] : undefined,
     ]),
@@ -7545,6 +8057,7 @@ function completedPlanFromAction(action: PreparedAction): CompletedPlanRecord {
     actionId: action.id,
     ...(action.recurringId && { recurringId: action.recurringId }),
     ...(action.occurrenceKey && { occurrenceKey: action.occurrenceKey }),
+    ...(action.workflowSource ? { workflowSource: action.workflowSource } : {}),
     copyPayload: stableJson({ type: kind === 'recurring' ? 'completed_recurring_occurrence' : 'completed_one_time_approval', action }),
     detailRows: completedRows([
       ['Type', kind === 'recurring' ? 'Recurring occurrence' : 'One-time approval'],
@@ -7582,6 +8095,7 @@ function completedPlanFromEndedRecurring(payment: RecurringPayment): CompletedPl
     token: payment.token,
     recipient: payment.recipient,
     recurringId: payment.id,
+    workflowSource: isBrowserWorkflowId(payment.id) ? 'browser' : 'local-bridge',
     copyPayload: stableJson({ type: 'completed_recurring_schedule', recurringPayment: payment }),
     detailRows: completedRows([
       ['Type', 'Recurring schedule'],
@@ -7718,10 +8232,18 @@ function signProofTitle(record: GeneratedPlanRecord): string {
 function generatedQueuePlanTitle(record: GeneratedPlanRecord): string {
   if (record.status === 'archived') return 'Restore this plan before queueing it.';
   if (!state.address) return 'Connect a wallet before queueing.';
-  if (!state.bridgeActive) return 'Connect the local bridge before queueing this approval.';
   if (!canQueueAgentPlan(record.plan)) return 'Only transfers, swaps, and recurring schedules can be queued.';
-  if (record.plan.actionType === 'recurring_payment') return 'Create a recurring schedule. Each due occurrence appears in Approval Inbox.';
-  return 'Send this plan to Approval Inbox for wallet review.';
+  const mode = activeWorkflowMode();
+  if (record.plan.actionType === 'recurring_payment') {
+    if (mode === 'agentic-cloud') return 'Create an Agentic Cloud recurring schedule. Each due occurrence appears in Approval Inbox.';
+    return mode === 'local-bridge'
+      ? 'Create a local recurring schedule. Each due occurrence appears in Approval Inbox.'
+      : 'Create a browser-backed recurring schedule. It stays local to this device.';
+  }
+  if (mode === 'agentic-cloud') return 'Send this plan to Agentic Cloud Approval Inbox for wallet review.';
+  return mode === 'local-bridge'
+    ? 'Send this plan to the local Approval Inbox for wallet review.'
+    : 'Send this plan to the browser Approval Inbox. It stays local to this device.';
 }
 
 function samePlan(left: AgentPlan, right: AgentPlan): boolean {
@@ -7767,6 +8289,7 @@ async function runSaveBridgeAiKey(): Promise<void> {
       }),
     });
     await refreshBridgeAiStatus(true);
+    resetAiPlannerConfirmation('Bridge key changed. Confirm planner again if needed.');
     const connected = await ensureBridgeConnectedAfterLocalCall();
     pushToast(
       'success',
@@ -7794,20 +8317,93 @@ async function runSaveDirectAiKey(): Promise<void> {
     return;
   }
   await run('ai', async () => {
+    resetAiPlannerConfirmation('AI draft key saved. Confirm planner before generating if you want a route or config check.');
     appendAiDiagnostic(aiRouteDiagnostic('/api/ai/generate-plan'));
     pushToast(
       'success',
-      'AI Planner key ready',
+      state.aiSettings.mode === 'hosted' ? 'Hosted BYOK key entered' : 'Browser session key entered',
       state.aiSettings.mode === 'hosted'
-        ? 'Hosted BYOK can draft one-time plans. It cannot queue approvals, create schedules, or sign.'
-        : 'Browser session AI can draft one-time plans in this tab. It cannot queue approvals, create schedules, or sign.',
+        ? 'Hosted BYOK will relay only submitted AI draft requests. Queueing, schedules, and signing stay in the active workflow.'
+        : 'Browser session AI can draft plans in this tab. Queueing, schedules, and signing stay in the active workflow.',
     );
   });
+}
+
+async function runConfirmAiPlanner(): Promise<void> {
+  if (!canConfirmAiPlanner()) {
+    const message = aiConfirmDisabledReason();
+    setAiPlannerConfirmation('failed', message);
+    pushToast('error', 'Planner check unavailable', message);
+    render();
+    return;
+  }
+
+  state.activeOperation = 'confirm-ai-planner';
+  const toastId = pushToast('pending', 'Confirming planner', 'Checking the selected AI draft route.');
+  try {
+    await run('ai', async () => {
+      if (state.aiSettings.mode === 'bridge') {
+        state.aiDiagnostics = [aiRouteDiagnostic('/bridge/ai/status', 'GET')];
+        await refreshBridgeAiStatus(true);
+        if (!state.aiStatus?.available) {
+          throw new Error('Local bridge AI is not configured. Set a bridge key or AGENTIC_AI_API_KEY, then confirm again.');
+        }
+        const detail = `${state.aiStatus.source} - ${state.aiStatus.provider ?? state.aiStatus.apiFormat ?? 'AI'} - ${state.aiStatus.model ?? 'model configured'}`;
+        state.aiDiagnostics = [
+          aiRouteDiagnostic('/bridge/ai/status', 'GET'),
+          {
+            code: 'AI_PLAN_READY',
+            message: 'Local bridge AI planner confirmed. No plan was generated.',
+            detail,
+            method: 'GET',
+            path: '/bridge/ai/status',
+          },
+        ];
+        setAiPlannerConfirmation('confirmed', 'Local bridge AI is reachable for drafts only. Workflow capability is unchanged.');
+        replaceToast(toastId, 'success', 'Planner confirmed', 'Local bridge AI can draft plans only.');
+        return;
+      }
+
+      if (state.aiSettings.mode === 'hosted') {
+        state.aiDiagnostics = await confirmHostedAiPlanner(state.aiSettings);
+        setAiPlannerConfirmation('confirmed', 'Hosted BYOK route is reachable for draft requests only. Provider key validity is checked on the first AI draft. Workflow capability is unchanged.');
+        replaceToast(toastId, 'success', 'Planner confirmed', 'Hosted BYOK can draft plans only.');
+        return;
+      }
+
+      if (state.aiSettings.provider === 'openai') {
+        throw new Error(OPENAI_BROWSER_SESSION_DISABLED_REASON);
+      }
+      if (!state.aiSettings.apiKey.trim() || !state.aiSettings.model.trim() || !aiProviderReadyForCurrentMode()) {
+        throw new Error(aiConfirmDisabledReason());
+      }
+      state.aiDiagnostics = [
+        aiRouteDiagnostic('browser-session'),
+        {
+          code: 'AI_PLAN_READY',
+          message: 'Browser session planner configuration confirmed. No provider request was made.',
+          detail: BROWSER_AI_LIMITATIONS.join(' '),
+        },
+      ];
+      setAiPlannerConfirmation('confirmed', 'Browser session AI is configured for this tab and drafts only. Workflow capability is unchanged.');
+      replaceToast(toastId, 'success', 'Planner confirmed', 'Browser session AI can draft plans only.');
+    }, {
+      onError(message, err) {
+        const toastMessage = applyAiErrorDiagnostics(err, message);
+        setAiPlannerConfirmation('failed', toastMessage);
+        replaceToast(toastId, 'error', aiConfirmErrorToastTitle(err), toastMessage);
+      },
+    });
+  } finally {
+    state.activeOperation = null;
+    render();
+  }
 }
 
 async function runClearAiKey(): Promise<void> {
   await run('ai', async () => {
     state.aiSettings.apiKey = '';
+    resetAiPlannerConfirmation('AI key cleared.');
     if (state.aiSettings.mode === 'bridge') {
       await bridgeRequest('/bridge/ai/session-key', {
         method: 'POST',
@@ -7823,6 +8419,7 @@ async function runRefreshAiStatus(): Promise<void> {
   await run('ai', async () => {
     await refreshBridgeAiStatus(true);
     state.aiSettings.apiKey = '';
+    resetAiPlannerConfirmation('Bridge AI status refreshed. Confirm planner again if needed.');
     const connected = await ensureBridgeConnectedAfterLocalCall();
     pushToast(
       'success',
@@ -7857,12 +8454,685 @@ function aiClearMessage(): string {
 
 function aiModeToastMessage(mode: AiSettings['mode']): string {
   if (mode === 'bridge') {
-    return 'Local bridge AI can draft plans and the bridge also powers Approval Inbox and recurring schedules.';
+    return 'Local bridge AI can draft plans in private local mode.';
   }
   if (mode === 'hosted') {
-    return 'Hosted BYOK drafts one-time plans only. It does not unlock Approval Inbox or recurring schedules.';
+    return 'Hosted BYOK drafts plans only. Workflow actions still require explicit wallet review.';
   }
-  return 'Browser session AI drafts one-time plans only and keeps the key in this tab.';
+  return 'Browser session AI drafts plans only and keeps the key in this tab.';
+}
+
+function activeWorkflowMode(): ActiveWorkflowMode {
+  if (state.workflowModePreference === 'local-bridge' && state.bridgeActive) {
+    return 'local-bridge';
+  }
+  if (cloudSessionMatchesWallet()) {
+    return 'agentic-cloud';
+  }
+  return 'browser-workflow';
+}
+
+function activeWorkflowLabel(): string {
+  switch (activeWorkflowMode()) {
+    case 'agentic-cloud':
+      return 'Agentic Cloud workspace';
+    case 'local-bridge':
+      return 'Private local mode';
+    case 'browser-workflow':
+      return 'Browser workflow';
+  }
+}
+
+function cloudSessionMatchesWallet(): boolean {
+  return Boolean(
+    state.address &&
+      state.cloudSession.status === 'signed-in' &&
+      state.cloudSession.walletAddress === state.address,
+  );
+}
+
+function cloudSessionWalletMismatch(): boolean {
+  return Boolean(
+    state.address &&
+      state.cloudSession.status === 'signed-in' &&
+      state.cloudSession.walletAddress &&
+      state.cloudSession.walletAddress !== state.address,
+  );
+}
+
+async function afterWalletConnected(): Promise<void> {
+  await refreshCloudSession(false);
+  if (cloudSessionMatchesWallet()) {
+    await refreshCloudWorkspaceData().catch((err) => {
+      state.cloudSession = {
+        ...state.cloudSession,
+        error: err instanceof Error ? err.message : String(err),
+      };
+    });
+  } else if (activeWorkflowMode() === 'browser-workflow') {
+    refreshBrowserWorkflowData();
+  }
+}
+
+async function runCloudSignIn(): Promise<void> {
+  await run('connect', async () => {
+    if (!state.address) {
+      throw new Error('Connect a wallet before signing in to Agentic Cloud.');
+    }
+    const signingClient = requireClient();
+    const nonce = parseAuthNonceResponse(await cloudRequest('/api/auth/nonce', {
+      method: 'POST',
+      body: JSON.stringify({ walletAddress: state.address }),
+    }));
+    const message = stringPayload(nonce.message, 'Auth message');
+    const nonceValue = stringPayload(nonce.nonce, 'Auth nonce');
+    const result = await signingClient.signMessage(message, signOptions('Agentic Cloud sign-in'));
+    const session = parseSessionResponse(await cloudRequest('/api/auth/verify-wallet', {
+      method: 'POST',
+      body: JSON.stringify({
+        walletAddress: state.address,
+        nonce: nonceValue,
+        message,
+        signature: result.signature,
+        domain: stringPayload(nonce.domain, 'Auth domain'),
+        issuedAt: stringPayload(nonce.issuedAt, 'Auth issued time'),
+        expiresAt: stringPayload(nonce.expiresAt, 'Auth expiration time'),
+        signatureEncoding: 'base58',
+      }),
+    }));
+    state.cloudSession = cloudSessionFromResponse(session);
+    state.workflowModePreference = 'auto';
+    savePersistedState();
+    await refreshCloudWorkspaceData();
+    pushToast('success', 'Cloud workspace signed in', short(state.address));
+  });
+}
+
+async function runCloudLogout(): Promise<void> {
+  await run('connect', async () => {
+    await cloudRequest('/api/auth/logout', { method: 'POST' }).catch(() => undefined);
+    state.cloudSession = emptyCloudSession('signed-out');
+    state.cloudCompletedPlans = [];
+    state.cloudLastSync = '';
+    refreshBrowserWorkflowData();
+    pushToast('success', 'Cloud workspace signed out', 'Browser workflow fallback is active on this device.');
+  });
+}
+
+async function runSetWorkflowModePreference(preference: WorkflowModePreference): Promise<void> {
+  await run('bridge', async () => {
+    if (preference === 'local-bridge' && !state.bridgeActive) {
+      throw new Error('Connect the local bridge before using private local mode.');
+    }
+    state.workflowModePreference = preference;
+    savePersistedState();
+    await refreshActiveWorkflowData();
+    pushToast(
+      'success',
+      preference === 'local-bridge' ? 'Private local mode active' : 'Workspace mode updated',
+      `${activeWorkflowLabel()} will handle new one-time workflow actions.`,
+    );
+  });
+}
+
+async function refreshCloudSession(strict: boolean): Promise<void> {
+  try {
+    const response = parseSessionResponse(await cloudRequest('/api/session', { method: 'GET' }));
+    state.cloudSession = cloudSessionFromResponse(response);
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    state.cloudSession = {
+      status: 'unavailable',
+      walletAddress: '',
+      expiresAt: '',
+      error: message,
+    };
+    if (strict) throw err;
+  }
+}
+
+async function refreshActiveWorkflowData(): Promise<void> {
+  switch (activeWorkflowMode()) {
+    case 'agentic-cloud':
+      await refreshCloudWorkspaceData();
+      return;
+    case 'local-bridge':
+      await refreshInboxData();
+      return;
+    case 'browser-workflow':
+      refreshBrowserWorkflowData();
+      return;
+  }
+}
+
+function refreshBrowserWorkflowData(): void {
+  const browserWorkflow = loadBrowserWorkflowState();
+  state.preparedActions = browserWorkflow.preparedActions;
+  state.materializedActions = browserWorkflow.preparedActions;
+  state.recurringPayments = browserWorkflow.recurringPayments;
+  state.receipts = browserWorkflow.receipts;
+}
+
+async function refreshCloudWorkspaceData(): Promise<void> {
+  if (state.cloudSession.status !== 'signed-in') {
+    throw new Error('Sign in to Agentic Cloud before loading cloud workflow data.');
+  }
+  const recurringResponse = await cloudRecurringList().catch((err) => {
+    // eslint-disable-next-line no-console
+    console.warn('Cloud recurring API unavailable:', err);
+    return { schedules: [] as CloudRecurringScheduleRecord[], occurrences: [] as CloudRecurringOccurrenceRecord[] };
+  });
+  const [plansResponse, approvalsResponse, completedResponse] = await Promise.all([
+    cloudRequest('/api/plans', { method: 'GET' }).then((payload) => parsePlanListResponse(payload)),
+    cloudRequest('/api/approvals', { method: 'GET' }).then((payload) => parseApprovalListResponse(payload)),
+    cloudRequest('/api/completed', { method: 'GET' }).then((payload) => parseCompletedListResponse(payload)),
+  ]);
+  const cloudPlans = plansResponse.plans.map(cloudPlanToGeneratedPlan).filter(isGeneratedPlanRecord);
+  const localPlans = state.generatedPlans.filter((plan) => plan.workflowSource !== 'cloud');
+  state.generatedPlans = mergeGeneratedPlans(cloudPlans, localPlans);
+
+  const scheduleIndex = new Map<string, CloudRecurringScheduleRecord>();
+  for (const schedule of recurringResponse.schedules) {
+    if (schedule && typeof schedule === 'object' && typeof schedule.id === 'string') {
+      scheduleIndex.set(schedule.id, schedule);
+    }
+  }
+  const cloudOccurrences = recurringResponse.occurrences
+    .filter((occurrence) => !occurrence.approvalRequestId)
+    .map((occurrence) => cloudOccurrenceToPreparedAction(occurrence, scheduleIndex))
+    .filter(isPreparedAction);
+  const cloudApprovals = approvalsResponse.approvals.map(cloudApprovalToPreparedAction).filter(isPreparedAction);
+  state.preparedActions = mergePreparedActions(cloudApprovals, cloudOccurrences);
+  state.materializedActions = state.preparedActions;
+  state.recurringPayments = recurringResponse.schedules
+    .filter((schedule) => schedule.status === 'active' || schedule.status === 'paused')
+    .map(cloudRecurringScheduleToPayment)
+    .filter((payment): payment is RecurringPayment => Boolean(payment));
+  const cloudCompletedFromApprovals = completedResponse.completed
+    .map(cloudCompletedToCompletedPlan)
+    .filter((record): record is CompletedPlanRecord => Boolean(record));
+  const cloudCompletedFromSchedules = recurringResponse.schedules
+    .filter((schedule) => schedule.status === 'completed' || schedule.status === 'cancelled')
+    .map(cloudEndedScheduleToCompletedPlan)
+    .filter((record): record is CompletedPlanRecord => Boolean(record));
+  state.cloudCompletedPlans = [...cloudCompletedFromApprovals, ...cloudCompletedFromSchedules].sort(
+    (left, right) => right.completedAt.localeCompare(left.completedAt),
+  );
+  state.cloudLastSync = new Date().toISOString();
+  selectFallbackGeneratedPlan();
+  await syncLabArtifactsWithCloud().catch(() => undefined);
+}
+
+async function cloudRequest<T = unknown>(path: string, init: RequestInit = {}): Promise<T> {
+  const headers = new Headers(init.headers);
+  if (init.body !== undefined && !headers.has('content-type')) {
+    headers.set('content-type', 'application/json');
+  }
+  let response: Response;
+  try {
+    response = await fetch(path, {
+      ...init,
+      credentials: 'include',
+      headers,
+    });
+  } catch {
+    throw new Error('Agentic Cloud is not reachable from this page.');
+  }
+  const payload = await response.json().catch(() => null) as unknown;
+  if (!response.ok) {
+    if (response.status === 401) {
+      state.cloudSession = emptyCloudSession('signed-out');
+    }
+    throw new Error(cloudErrorMessage(payload, response.status));
+  }
+  if (payload === null) {
+    throw new Error('Agentic Cloud did not return JSON. Use the same-origin Render app for cloud workflow APIs.');
+  }
+  return payload as T;
+}
+
+function cloudSessionFromResponse(response: CloudSessionResponse): CloudSessionState {
+  const walletAddress = typeof response.user?.walletAddress === 'string' ? response.user.walletAddress : '';
+  const expiresAt = typeof response.session?.expiresAt === 'string'
+    ? response.session.expiresAt
+    : typeof response.expiresAt === 'string'
+      ? response.expiresAt
+      : '';
+  if (response.signedIn && walletAddress) {
+    return {
+      status: 'signed-in',
+      walletAddress,
+      expiresAt,
+      error: '',
+    };
+  }
+  return emptyCloudSession('signed-out');
+}
+
+function emptyCloudSession(status: Exclude<CloudSessionStatus, 'signed-in'>): CloudSessionState {
+  return {
+    status,
+    walletAddress: '',
+    expiresAt: '',
+    error: '',
+  };
+}
+
+function cloudErrorMessage(payload: unknown, status: number): string {
+  if (payload && typeof payload === 'object') {
+    const record = payload as Record<string, unknown>;
+    if (typeof record.message === 'string' && record.message.trim()) return record.message;
+    if (typeof record.error === 'string' && record.error.trim()) {
+      if (status === 404 && record.error === 'not_found') return 'Agentic Cloud workflow APIs are not available from this host yet.';
+      return record.error;
+    }
+  }
+  if (status === 404) return 'Agentic Cloud workflow APIs are not available from this host yet.';
+  if (status === 401) return 'Sign in to Agentic Cloud before using cloud workflow actions.';
+  return `Agentic Cloud request failed with HTTP ${status}.`;
+}
+
+function stringPayload(value: unknown, label: string): string {
+  if (typeof value === 'string' && value.trim()) return value;
+  throw new Error(`${label} was missing from Agentic Cloud.`);
+}
+
+function parseCloudPlanResponse(payload: unknown): CloudPlanDraftRecord {
+  const record = cloudResponseObject(payload, 'plan draft response');
+  return parsePlanDraftRecord(record.plan, '$.plan');
+}
+
+function parseCloudApprovalResponse(payload: unknown): CloudApprovalRequestRecord {
+  const record = cloudResponseObject(payload, 'approval response');
+  return parseApprovalRequestRecord(record.approval, '$.approval');
+}
+
+function parseCloudRecurringScheduleResponse(payload: unknown): CloudRecurringScheduleRecord {
+  const record = cloudResponseObject(payload, 'recurring schedule response');
+  return parseRecurringScheduleRecord(record.schedule, '$.schedule');
+}
+
+function cloudResponseObject(payload: unknown, label: string): Record<string, unknown> {
+  if (payload && typeof payload === 'object' && !Array.isArray(payload)) {
+    return payload as Record<string, unknown>;
+  }
+  throw new Error(`Agentic Cloud returned an invalid ${label}.`);
+}
+
+function cloudPlanToGeneratedPlan(value: unknown): GeneratedPlanRecord | null {
+  if (!value || typeof value !== 'object') return null;
+  const record = value as Partial<CloudPlanDraftRecord>;
+  if (
+    typeof record.id !== 'string' ||
+    typeof record.walletAddress !== 'string' ||
+    !isAgentPlan(record.plan) ||
+    typeof record.createdAt !== 'string' ||
+    typeof record.updatedAt !== 'string' ||
+    (record.source !== 'template' && record.source !== 'ai') ||
+    typeof record.templateId !== 'string' ||
+    typeof record.templateTitle !== 'string' ||
+    typeof record.prompt !== 'string' ||
+    !isGeneratedPlanStatus(record.status)
+  ) {
+    return null;
+  }
+  const cluster = typeof record.cluster === 'string' && isCluster(record.cluster) ? record.cluster : state.cluster;
+  return {
+    id: record.id,
+    plan: record.plan,
+    createdAt: record.createdAt,
+    updatedAt: record.updatedAt,
+    source: record.source,
+    templateId: record.templateId,
+    templateTitle: record.templateTitle,
+    prompt: record.prompt,
+    walletAddress: record.walletAddress,
+    cluster,
+    status: record.status,
+    ...(typeof record.signature === 'string' && { signature: record.signature }),
+    ...(typeof record.approvalRequestId === 'string' && { preparedActionId: record.approvalRequestId }),
+    workflowSource: 'cloud',
+  };
+}
+
+function cloudApprovalToPreparedAction(value: unknown): PreparedAction | null {
+  if (!value || typeof value !== 'object') return null;
+  const record = value as Partial<CloudApprovalRequestRecord>;
+  if (
+    typeof record.id !== 'string' ||
+    typeof record.walletAddress !== 'string' ||
+    typeof record.kind !== 'string' ||
+    typeof record.summary !== 'string' ||
+    !isJsonObject(record.params) ||
+    typeof record.dueAt !== 'string' ||
+    typeof record.createdAt !== 'string' ||
+    typeof record.updatedAt !== 'string'
+  ) {
+    return null;
+  }
+  const kind = preparedActionKindFromCloud(record.kind);
+  const cluster = typeof record.cluster === 'string' && isCluster(record.cluster) ? record.cluster : state.cluster;
+  const status = preparedActionStatusFromCloud(record.status);
+  const planDraftId = typeof record.planDraftId === 'string'
+    ? record.planDraftId
+    : typeof record.planId === 'string'
+      ? record.planId
+      : undefined;
+  return {
+    id: record.id,
+    kind,
+    status,
+    walletAddress: record.walletAddress,
+    cluster,
+    summary: record.summary,
+    params: paramsFromCloudApproval(record),
+    dueAt: record.dueAt,
+    createdAt: record.createdAt,
+    updatedAt: record.updatedAt,
+    ...(planDraftId && { planDraftId }),
+    ...(typeof record.recurringScheduleId === 'string' && { recurringId: record.recurringScheduleId }),
+    ...(typeof record.occurrenceKey === 'string' && { occurrenceKey: record.occurrenceKey }),
+    ...(typeof record.txid === 'string' && { txid: record.txid }),
+    ...(typeof record.error === 'string' && { error: record.error }),
+    ...(typeof record.note === 'string' && { note: record.note }),
+    ...(record.status === 'cancelled' && { archived: true }),
+    workflowSource: 'cloud',
+  };
+}
+
+function cloudCompletedToCompletedPlan(value: unknown): CompletedPlanRecord | null {
+  if (!value || typeof value !== 'object') return null;
+  const record = value as Partial<CloudCompletedRecord>;
+  if (
+    typeof record.id !== 'string' ||
+    typeof record.status !== 'string' ||
+    typeof record.title !== 'string' ||
+    typeof record.summary !== 'string' ||
+    typeof record.walletAddress !== 'string' ||
+    typeof record.createdAt !== 'string' ||
+    typeof record.completedAt !== 'string'
+  ) {
+    return null;
+  }
+  const cluster = typeof record.cluster === 'string' && isCluster(record.cluster) ? record.cluster : state.cluster;
+  const signature = typeof record.signature === 'string'
+    ? record.signature
+    : typeof record.proofSignature === 'string'
+      ? record.proofSignature
+      : undefined;
+  const generatedPlanId = typeof record.planDraftId === 'string'
+    ? record.planDraftId
+    : typeof record.planId === 'string'
+      ? record.planId
+      : undefined;
+  const actionId = typeof record.approvalRequestId === 'string'
+    ? record.approvalRequestId
+    : typeof record.approvalId === 'string'
+      ? record.approvalId
+      : undefined;
+  return {
+    id: record.id,
+    kind: record.kind === 'recurring_occurrence' ? 'recurring' : 'one-time',
+    status: record.status,
+    tone: completedStatusTone(record.status),
+    title: record.title,
+    summary: record.summary,
+    completedAt: record.completedAt,
+    createdAt: record.createdAt,
+    walletAddress: record.walletAddress,
+    cluster,
+    ...(typeof record.amount === 'string' && { amount: record.amount }),
+    ...(typeof record.token === 'string' && { token: record.token }),
+    ...(typeof record.recipient === 'string' && { recipient: record.recipient }),
+    ...(signature && { signature }),
+    ...(typeof record.txid === 'string' && { txid: record.txid }),
+    ...(typeof record.explorerUrl === 'string' && { explorerUrl: record.explorerUrl }),
+    ...(generatedPlanId && { generatedPlanId }),
+    ...(actionId && { actionId }),
+    ...(typeof record.recurringScheduleId === 'string' && { recurringId: record.recurringScheduleId }),
+    ...(typeof record.occurrenceKey === 'string' && { occurrenceKey: record.occurrenceKey }),
+    copyPayload: stableJson(record.payload ?? record.copyPayload ?? record),
+    detailRows: Array.isArray(record.detailRows) && record.detailRows.every(isDetailRow)
+      ? record.detailRows
+      : completedRows([
+          ['Type', 'Cloud one-time approval'],
+          ['Status', record.status],
+          actionId ? ['Approval id', actionId] : undefined,
+          generatedPlanId ? ['Plan id', generatedPlanId] : undefined,
+          ['Wallet', record.walletAddress],
+          ['Created', formatDateTime(record.createdAt)],
+          ['Completed', formatDateTime(record.completedAt)],
+          signature ? ['Decision proof', signature] : undefined,
+          typeof record.txid === 'string' ? ['Transaction', record.txid] : undefined,
+        ]),
+    workflowSource: 'cloud',
+  };
+}
+
+type CloudRecurringScheduleRecord = WorkflowRecurringScheduleRecord;
+type CloudRecurringOccurrenceRecord = WorkflowRecurringOccurrenceRecord;
+
+function cloudEndedScheduleToCompletedPlan(value: unknown): CompletedPlanRecord | null {
+  if (!value || typeof value !== 'object') return null;
+  const record = value as Partial<CloudRecurringScheduleRecord>;
+  if (
+    typeof record.id !== 'string' ||
+    typeof record.walletAddress !== 'string' ||
+    typeof record.cluster !== 'string' ||
+    typeof record.token !== 'string' ||
+    typeof record.recipient !== 'string' ||
+    typeof record.amount !== 'string' ||
+    typeof record.cadence !== 'string' ||
+    typeof record.createdAt !== 'string' ||
+    typeof record.updatedAt !== 'string'
+  ) {
+    return null;
+  }
+  if (record.status !== 'completed' && record.status !== 'cancelled') return null;
+  const cluster = isCluster(record.cluster) ? record.cluster : state.cluster;
+  const reason = record.status === 'completed' ? 'Schedule completed' : 'Schedule cancelled';
+  const tone = completedStatusTone(record.status);
+  const occurrenceLabel = typeof record.occurrencesCreated === 'number'
+    ? `${record.occurrencesCreated} occurrence${record.occurrencesCreated === 1 ? '' : 's'} materialized`
+    : 'No occurrences materialized';
+  return {
+    id: `recurring:${record.id}`,
+    kind: 'recurring',
+    status: record.status,
+    tone,
+    title: `${record.amount} ${record.token} recurring schedule`,
+    summary: reason,
+    completedAt: record.updatedAt,
+    createdAt: record.createdAt,
+    walletAddress: record.walletAddress,
+    cluster,
+    amount: record.amount,
+    token: record.token,
+    recipient: record.recipient,
+    recurringId: record.id,
+    copyPayload: stableJson(record),
+    detailRows: completedRows([
+      ['Type', 'Cloud recurring schedule'],
+      ['Status', record.status],
+      ['Cadence', record.cadence],
+      ['Recipient', record.recipient],
+      [`Amount ${record.token}`, record.amount],
+      ['Wallet', record.walletAddress],
+      ['Created', formatDateTime(record.createdAt)],
+      ['Ended', formatDateTime(record.updatedAt)],
+      ['Occurrences', occurrenceLabel],
+    ]),
+    workflowSource: 'cloud',
+  };
+}
+
+
+function cloudRecurringScheduleToPayment(value: unknown): RecurringPayment | null {
+  if (!value || typeof value !== 'object') return null;
+  const record = value as Partial<CloudRecurringScheduleRecord>;
+  if (
+    typeof record.id !== 'string' ||
+    typeof record.walletAddress !== 'string' ||
+    typeof record.cluster !== 'string' ||
+    typeof record.token !== 'string' ||
+    typeof record.recipient !== 'string' ||
+    typeof record.amount !== 'string' ||
+    typeof record.cadence !== 'string' ||
+    typeof record.createdAt !== 'string' ||
+    typeof record.updatedAt !== 'string'
+  ) {
+    return null;
+  }
+  const status: 'active' | 'paused' = record.status === 'paused' ? 'paused' : 'active';
+  return {
+    id: record.id,
+    status,
+    walletAddress: record.walletAddress,
+    cluster: record.cluster as Cluster,
+    token: record.token,
+    recipient: record.recipient,
+    amount: record.amount,
+    cadence: record.cadence as RecurringCadence,
+    ...(typeof record.dayOfWeek === 'number' && { dayOfWeek: record.dayOfWeek }),
+    ...(typeof record.dayOfMonth === 'number' && { dayOfMonth: record.dayOfMonth }),
+    ...(typeof record.intervalDays === 'number' && { intervalDays: record.intervalDays }),
+    ...(typeof record.intervalHours === 'number' && { intervalHours: record.intervalHours }),
+    ...(typeof record.intervalMinutes === 'number' && { intervalMinutes: record.intervalMinutes }),
+    ...(typeof record.localTime === 'string' && { localTime: record.localTime }),
+    ...(typeof record.startAt === 'string' && { startAt: record.startAt }),
+    ...(typeof record.maxOccurrences === 'number' && { maxOccurrences: record.maxOccurrences }),
+    ...(typeof record.occurrencesCreated === 'number' && { occurrencesCreated: record.occurrencesCreated }),
+    ...(typeof record.note === 'string' && { note: record.note }),
+    createdAt: record.createdAt,
+    updatedAt: record.updatedAt,
+    ...(typeof record.nextDueAt === 'string' && { nextDueAt: record.nextDueAt }),
+  };
+}
+
+function cloudOccurrenceToPreparedAction(
+  value: unknown,
+  schedules: Map<string, CloudRecurringScheduleRecord>,
+): PreparedAction | null {
+  if (!value || typeof value !== 'object') return null;
+  const record = value as Partial<CloudRecurringOccurrenceRecord>;
+  if (
+    typeof record.id !== 'string' ||
+    typeof record.recurringScheduleId !== 'string' ||
+    typeof record.walletAddress !== 'string' ||
+    typeof record.cluster !== 'string' ||
+    typeof record.occurrenceKey !== 'string' ||
+    typeof record.dueAt !== 'string' ||
+    typeof record.createdAt !== 'string' ||
+    typeof record.updatedAt !== 'string'
+  ) {
+    return null;
+  }
+  const schedule = schedules.get(record.recurringScheduleId);
+  const token = schedule?.token ?? 'SOL';
+  const isSol = token.toUpperCase() === 'SOL';
+  const summary = schedule
+    ? `${schedule.amount} ${schedule.token} recurring approval`
+    : 'Recurring occurrence approval';
+  const status: PreparedActionStatus = record.status === 'completed'
+    ? 'approved'
+    : record.status === 'failed' || record.status === 'cancelled' || record.status === 'skipped'
+      ? 'rejected'
+      : new Date(record.dueAt).getTime() > Date.now()
+        ? 'scheduled'
+        : 'ready';
+  return {
+    id: record.id,
+    kind: isSol ? 'transfer_sol' : 'transfer_spl',
+    status,
+    walletAddress: record.walletAddress,
+    cluster: record.cluster as Cluster,
+    summary,
+    params: schedule
+      ? isSol
+        ? { recipient: schedule.recipient, amountSol: schedule.amount, memo: schedule.note ?? '' }
+        : { token: schedule.token, recipient: schedule.recipient, amount: schedule.amount, memo: schedule.note ?? '' }
+      : { recurringScheduleId: record.recurringScheduleId, occurrenceKey: record.occurrenceKey },
+    dueAt: record.dueAt,
+    createdAt: record.createdAt,
+    updatedAt: record.updatedAt,
+    recurringId: record.recurringScheduleId,
+    occurrenceKey: record.occurrenceKey,
+    workflowSource: 'cloud',
+  };
+}
+
+async function cloudRecurringList(): Promise<{
+  schedules: CloudRecurringScheduleRecord[];
+  occurrences: CloudRecurringOccurrenceRecord[];
+}> {
+  return parseRecurringListResponse(await cloudRequest('/api/recurring', { method: 'GET' }));
+}
+
+async function cloudCreateRecurring(body: Record<string, unknown>): Promise<void> {
+  await cloudRequest('/api/recurring', {
+    method: 'POST',
+    body: JSON.stringify(body),
+  });
+}
+
+async function cloudPatchRecurring(id: string, patch: Record<string, unknown>): Promise<void> {
+  await cloudRequest(`/api/recurring/${encodeURIComponent(id)}`, {
+    method: 'PATCH',
+    body: JSON.stringify(patch),
+  });
+}
+
+async function cloudDeleteRecurring(id: string): Promise<void> {
+  await cloudRequest(`/api/recurring/${encodeURIComponent(id)}`, { method: 'DELETE' });
+}
+
+async function cloudMaterializeRecurring(): Promise<void> {
+  await cloudRequest('/api/recurring/materialize-due', { method: 'POST', body: '{}' });
+}
+
+function isDetailRow(value: unknown): value is [string, string] {
+  return Array.isArray(value) && value.length === 2 && typeof value[0] === 'string' && typeof value[1] === 'string';
+}
+
+function isJsonObject(value: unknown): value is JsonObject {
+  return Boolean(value && typeof value === 'object' && !Array.isArray(value));
+}
+
+function preparedActionKindFromCloud(value: string): PreparedActionKind {
+  if (value === 'transfer_sol' || value === 'transfer_spl' || value === 'swap') return value;
+  return 'transfer_sol';
+}
+
+function preparedActionStatusFromCloud(status: CloudApprovalRequestRecord['status'] | 'pending' | 'denied' | undefined): PreparedActionStatus {
+  if (status === 'scheduled') return 'scheduled';
+  if (status === 'overdue') return 'overdue';
+  if (status === 'approval_pending') return 'approval_pending';
+  if (status === 'approved') return 'approved';
+  if (status === 'rejected' || status === 'denied' || status === 'cancelled') return 'rejected';
+  if (status === 'expired') return 'failed';
+  if (status === 'blocked') return 'blocked';
+  if (status === 'failed') return 'failed';
+  return 'ready';
+}
+
+function paramsFromCloudApproval(record: Partial<CloudApprovalRequestRecord>): Record<string, unknown> {
+  const params: Record<string, unknown> = { ...(record.params ?? {}) };
+  if (typeof record.amount === 'string' && params.amount === undefined && params.amountSol === undefined) {
+    params[record.kind === 'transfer_sol' ? 'amountSol' : 'amount'] = record.amount;
+  }
+  if (typeof record.token === 'string' && params.token === undefined) {
+    params.token = record.token;
+  }
+  if (typeof record.recipient === 'string' && params.recipient === undefined) {
+    params.recipient = record.recipient;
+  }
+  return params;
+}
+
+function completedStatusTone(status: string): string {
+  if (status === 'approved') return 'tx-confirmed';
+  if (status === 'denied' || status === 'rejected' || status === 'failed') return 'tx-failed';
+  return 'neutral';
 }
 
 async function runConnectBridge(): Promise<void> {
@@ -7870,7 +9140,10 @@ async function runConnectBridge(): Promise<void> {
     state.bridgeUrl = inputValue('#bridgeUrl') || state.bridgeUrl;
     state.bridgeToken = inputValue('#bridgeToken') || state.bridgeToken;
     await activateBridgeConnection({ refreshConfig: true, strictSync: true });
-    pushToast('success', 'Bridge connected', bridgeHostLabel());
+    if (activeWorkflowMode() !== 'local-bridge') {
+      await refreshActiveWorkflowData();
+    }
+    pushToast('success', 'Bridge connected', 'Select private local mode to route workflow storage through the bridge.');
   }, {
     async onError(message) {
       state.bridgeActive = false;
@@ -7891,6 +9164,10 @@ async function runDisconnectBridge(): Promise<void> {
     await disconnectBridgeHost();
     state.bridgeActive = false;
     state.bridgeStatus = 'Bridge disconnected.';
+    if (state.workflowModePreference === 'local-bridge') {
+      state.workflowModePreference = 'auto';
+      savePersistedState();
+    }
     stopBridgePolling();
     pushToast('success', 'Bridge disconnected', 'Local approval host stopped polling.');
   });
@@ -7898,8 +9175,12 @@ async function runDisconnectBridge(): Promise<void> {
 
 async function runRefreshInbox(): Promise<void> {
   await run('inbox', async () => {
-    await Promise.all([refreshInboxData(), refreshHealth(), refreshBalances().catch(() => undefined), syncLabArtifactsWithBridge()]);
-    pushToast('success', 'Inbox refreshed', `${state.preparedActions.length} action(s) loaded.`);
+    if (activeWorkflowMode() === 'local-bridge') {
+      await Promise.all([refreshInboxData(), refreshHealth(), refreshBalances().catch(() => undefined), syncLabArtifactsWithBridge()]);
+    } else {
+      await refreshActiveWorkflowData();
+    }
+    pushToast('success', 'Workspace refreshed', `${activeWorkflowPreparedActions().length} approval request(s) loaded from ${activeWorkflowLabel()}.`);
   });
 }
 
@@ -7907,14 +9188,35 @@ async function runCreateRecurring(): Promise<void> {
   await run('inbox', async () => {
     state.recurringDraft = readRecurringDraft();
     assertValidRecurringDraft(state.recurringDraft);
+    const mode = activeWorkflowMode();
     const body = recurringBody(state.recurringDraft);
-    await bridgeRequest('/bridge/recurring-payments', {
-      method: 'POST',
-      body: JSON.stringify(body),
-    });
+    if (mode === 'local-bridge') {
+      await bridgeRequest('/bridge/recurring-payments', {
+        method: 'POST',
+        body: JSON.stringify(body),
+      });
+      await refreshInboxData();
+    } else if (mode === 'agentic-cloud') {
+      await cloudCreateRecurring({ ...body, cluster: state.cluster });
+      await refreshCloudWorkspaceData();
+    } else {
+      const payment = browserRecurringPaymentFromDraft(state.recurringDraft);
+      const occurrence = browserOccurrenceFromRecurring(payment);
+      state.recurringPayments = mergeRecurringPayments([payment], state.recurringPayments);
+      state.preparedActions = mergePreparedActions([occurrence], state.preparedActions);
+      state.materializedActions = state.preparedActions;
+      saveBrowserWorkflowState();
+    }
     state.activeTab = 'schedule';
-    await refreshInboxData();
-    pushToast('success', 'Recurring schedule created', 'Future occurrences will appear in Approval Inbox.');
+    pushToast(
+      'success',
+      'Recurring schedule created',
+      mode === 'local-bridge'
+        ? 'Future occurrences will appear in Approval Inbox.'
+        : mode === 'agentic-cloud'
+          ? 'Each run returns to your wallet for review.'
+          : 'Created one local approval now. Browser workflow does not run background schedules after this tab closes.',
+    );
   });
 }
 
@@ -7925,6 +9227,21 @@ async function runPreparedActionOp(actionId: string, op: string): Promise<void> 
       await navigator.clipboard.writeText(stableJson(action));
       pushToast('success', 'Receipt copied', actionId);
     }
+    return;
+  }
+
+  const action = state.preparedActions.find((candidate) => candidate.id === actionId);
+  if (action?.workflowSource === 'cloud') {
+    await run('inbox', async () => {
+      await runCloudPreparedActionOp(action, op);
+    });
+    return;
+  }
+
+  if (isBrowserWorkflowId(actionId)) {
+    await run('inbox', async () => {
+      await runBrowserPreparedActionOp(actionId, op);
+    });
     return;
   }
 
@@ -7965,7 +9282,193 @@ async function runPreparedActionOp(actionId: string, op: string): Promise<void> 
   });
 }
 
+async function runCloudPreparedActionOp(action: PreparedAction, op: string): Promise<void> {
+  switch (op) {
+    case 'execute': {
+      const proofSignature = await signCloudWorkflowDecision(action, 'approved');
+      await cloudRequest(`/api/approvals/${encodeURIComponent(action.id)}/approve`, {
+        method: 'POST',
+        body: JSON.stringify({
+          proofSignature,
+          note: 'Approved in Agentic Cloud workspace.',
+        }),
+      });
+      await refreshCloudWorkspaceData();
+      pushToast('success', 'Approval recorded', 'Cloud receipt saved in Completed Plans.');
+      return;
+    }
+    case 'reject': {
+      const proofSignature = await signCloudWorkflowDecision(action, 'denied');
+      await cloudRequest(`/api/approvals/${encodeURIComponent(action.id)}/deny`, {
+        method: 'POST',
+        body: JSON.stringify({
+          proofSignature,
+          note: 'Denied in Agentic Cloud workspace.',
+        }),
+      });
+      await refreshCloudWorkspaceData();
+      pushToast('success', 'Request denied', 'Cloud denial receipt saved in Completed Plans.');
+      return;
+    }
+    case 'archive':
+    case 'delete':
+      await cloudRequest(`/api/approvals/${encodeURIComponent(action.id)}/cancel`, {
+        method: 'POST',
+        body: JSON.stringify({ note: 'Cancelled in Agentic Cloud workspace.' }),
+      });
+      await refreshCloudWorkspaceData();
+      pushToast('success', 'Request cancelled', 'Cloud cancellation receipt saved in Completed Plans.');
+      return;
+    default:
+      throw new Error(`Unknown action operation: ${op}`);
+  }
+}
+
+async function runBrowserPreparedActionOp(actionId: string, op: string): Promise<void> {
+  const action = state.preparedActions.find((candidate) => candidate.id === actionId);
+  if (!action) {
+    throw new Error('Approval request was not found.');
+  }
+  switch (op) {
+    case 'execute': {
+      const proofSignature = await signBrowserWorkflowDecision(action, 'approved');
+      completeBrowserPreparedAction(action, 'approved', proofSignature);
+      pushToast('success', 'Approval recorded', 'Wallet proof saved in Completed Plans.');
+      return;
+    }
+    case 'reject': {
+      const proofSignature = await signBrowserWorkflowDecision(action, 'rejected');
+      completeBrowserPreparedAction(action, 'rejected', proofSignature);
+      pushToast('success', 'Request rejected', 'Wallet rejection proof saved in Completed Plans.');
+      return;
+    }
+    case 'archive':
+      state.preparedActions = state.preparedActions.map((candidate) =>
+        candidate.id === action.id
+          ? { ...candidate, archived: true, updatedAt: new Date().toISOString() }
+          : candidate,
+      );
+      state.materializedActions = state.preparedActions;
+      saveBrowserWorkflowState();
+      pushToast('success', 'Request cancelled', 'Saved in Completed Plans.');
+      return;
+    case 'delete':
+      state.preparedActions = state.preparedActions.filter((candidate) => candidate.id !== action.id);
+      state.materializedActions = state.preparedActions;
+      state.receipts = state.receipts.filter((receipt) => receipt.actionId !== action.id);
+      saveBrowserWorkflowState();
+      pushToast('success', 'Deleted permanently', action.id);
+      return;
+    default:
+      throw new Error(`Unknown action operation: ${op}`);
+  }
+}
+
+async function signCloudWorkflowDecision(
+  action: PreparedAction,
+  decision: 'approved' | 'denied',
+): Promise<string> {
+  const signingClient = requireClient();
+  const signingMessage = [
+    'Agentic Cloud workflow decision',
+    `Decision: ${decision}`,
+    `Approval: ${action.id}`,
+    `Wallet: ${state.address}`,
+    `Cluster: ${action.cluster}`,
+    `Summary: ${action.summary}`,
+    `Kind: ${action.kind}`,
+    `Params: ${stableJson(action.params)}`,
+    `Time: ${new Date().toISOString()}`,
+    'This signature records a cloud workflow decision only. It does not submit a transaction or grant spending authority.',
+  ].join('\n');
+  const result = await signingClient.signMessage(signingMessage, signOptions(`Agentic Cloud ${decision}`));
+  return result.signature;
+}
+
+async function signBrowserWorkflowDecision(
+  action: PreparedAction,
+  decision: 'approved' | 'rejected',
+): Promise<string> {
+  const signingClient = requireClient();
+  const signingMessage = [
+    'Agentic browser workflow decision',
+    `Decision: ${decision}`,
+    `Approval: ${action.id}`,
+    `Wallet: ${state.address}`,
+    `Cluster: ${state.cluster}`,
+    `Summary: ${action.summary}`,
+    `Kind: ${action.kind}`,
+    `Params: ${stableJson(action.params)}`,
+    `Time: ${new Date().toISOString()}`,
+    'This signature records a browser workflow decision only. It does not submit a transaction.',
+  ].join('\n');
+  const result = await signingClient.signMessage(signingMessage, signOptions(`Browser workflow ${decision}`));
+  return result.signature;
+}
+
+function completeBrowserPreparedAction(
+  action: PreparedAction,
+  status: Extract<PreparedActionStatus, 'approved' | 'rejected'>,
+  proofSignature: string,
+): void {
+  const completedAt = new Date().toISOString();
+  const updatedAction: PreparedAction = {
+    ...action,
+    status,
+    updatedAt: completedAt,
+    confirmedAt: completedAt,
+  };
+  const receipt: ActionReceipt = {
+    actionId: action.id,
+    status,
+    summary: action.summary,
+    note: action.note,
+    walletAddress: action.walletAddress,
+    recipient: stringParam(action, 'recipient') || undefined,
+    amount: amountLabel(action) === 'n/a' ? undefined : amountLabel(action),
+    token: tokenLabel(action) === 'n/a' ? undefined : tokenLabel(action),
+    cluster: action.cluster,
+    createdAt: action.createdAt,
+    completedAt,
+    proofSignature,
+    ...(action.recurringId && { recurringId: action.recurringId }),
+    ...(action.occurrenceKey && { occurrenceKey: action.occurrenceKey }),
+  };
+  state.preparedActions = mergePreparedActions([updatedAction], state.preparedActions);
+  state.materializedActions = state.preparedActions;
+  state.receipts = mergeActionReceipts([receipt], state.receipts);
+  saveBrowserWorkflowState();
+}
+
 async function runRecurringOp(recurringId: string, op: string): Promise<void> {
+  if (isBrowserWorkflowId(recurringId)) {
+    await run('inbox', async () => {
+      runBrowserRecurringOp(recurringId, op);
+    });
+    return;
+  }
+
+  if (activeWorkflowMode() === 'agentic-cloud' && recurringId.startsWith('recurring_')) {
+    await run('inbox', async () => {
+      switch (op) {
+        case 'pause':
+          await cloudPatchRecurring(recurringId, { status: 'paused' });
+          break;
+        case 'resume':
+          await cloudPatchRecurring(recurringId, { status: 'active' });
+          break;
+        case 'delete':
+          await cloudDeleteRecurring(recurringId);
+          break;
+        default:
+          throw new Error(`Unknown recurring operation: ${op}`);
+      }
+      await refreshCloudWorkspaceData();
+      pushToast('success', op === 'delete' ? 'Deleted permanently' : `Recurring ${op}`, recurringId);
+    });
+    return;
+  }
+
   await run('inbox', async () => {
     const path =
       op === 'pause'
@@ -7985,6 +9488,35 @@ async function runRecurringOp(recurringId: string, op: string): Promise<void> {
     await refreshInboxData();
     pushToast('success', op === 'delete' ? 'Deleted permanently' : `Recurring ${op}`, recurringId);
   });
+}
+
+function runBrowserRecurringOp(recurringId: string, op: string): void {
+  const payment = state.recurringPayments.find((candidate) => candidate.id === recurringId);
+  if (!payment) {
+    throw new Error('Recurring schedule was not found.');
+  }
+  const updatedAt = new Date().toISOString();
+  switch (op) {
+    case 'pause':
+      state.recurringPayments = mergeRecurringPayments([{ ...payment, status: 'paused', updatedAt }], state.recurringPayments);
+      saveBrowserWorkflowState();
+      pushToast('success', 'Recurring paused', recurringId);
+      return;
+    case 'resume':
+      state.recurringPayments = mergeRecurringPayments([{ ...payment, status: 'active', updatedAt }], state.recurringPayments);
+      saveBrowserWorkflowState();
+      pushToast('success', 'Recurring resumed', recurringId);
+      return;
+    case 'delete':
+      state.recurringPayments = state.recurringPayments.filter((candidate) => candidate.id !== recurringId);
+      state.preparedActions = state.preparedActions.filter((candidate) => candidate.recurringId !== recurringId || isTerminalPreparedAction(candidate));
+      state.materializedActions = state.preparedActions;
+      saveBrowserWorkflowState();
+      pushToast('success', 'Deleted permanently', recurringId);
+      return;
+    default:
+      throw new Error(`Unknown recurring operation: ${op}`);
+  }
 }
 
 async function runCreateLabArtifact(): Promise<void> {
@@ -8031,20 +9563,38 @@ async function runCreateLabArtifact(): Promise<void> {
       ...artifactBase,
       artifactHash: await sha256(stableJson(artifactBase)),
     };
-    const savedToBridge = await archiveLabArtifact(artifact);
+    const archiveResult = await archiveLabArtifact(artifact);
     pushToast(
       'success',
       isPublicReceiptLab(lab) ? 'Receipt signed' : 'Evidence signed',
-      savedToBridge ? 'Saved locally and to the bridge archive.' : 'Saved to the local device archive.',
+      archiveLabArtifactToastDetail(archiveResult, lab),
     );
   });
 }
 
+function archiveLabArtifactToastDetail(result: ArchiveLabArtifactResult, lab: LabDefinition): string {
+  if (result.savedToCloud && result.savedToBridge) return 'Saved locally, to Agentic Cloud, and to the bridge archive.';
+  if (result.savedToCloud) return 'Saved locally and to the Agentic Cloud archive.';
+  if (result.savedToBridge) return 'Saved locally and to the bridge archive.';
+  const mode = activeWorkflowMode();
+  if (mode === 'local-bridge' && isPublicReceiptLab(lab)) {
+    return 'Saved to the local device archive. Private local mode keeps receipts off Agentic Cloud.';
+  }
+  if (mode !== 'agentic-cloud' && isPublicReceiptLab(lab)) {
+    return 'Saved to the local device archive. Sign in to also archive to Agentic Cloud.';
+  }
+  return 'Saved to the local device archive.';
+}
+
 async function runRefreshLabArtifacts(): Promise<void> {
   await run('lab', async () => {
+    await refreshCloudSession(false);
     await hydrateLabArtifactArchive();
     if (state.bridgeActive) {
       await syncLabArtifactsWithBridge();
+    }
+    if (activeWorkflowMode() === 'agentic-cloud') {
+      await syncLabArtifactsWithCloud();
     }
     pushToast('success', 'Artifacts refreshed', `${state.labArtifacts.length} artifact(s) loaded.`);
   });
@@ -8059,6 +9609,9 @@ async function runDeleteLabArtifact(artifactId: string): Promise<void> {
     await saveLabArtifacts();
     if (state.bridgeActive) {
       await deleteBridgeLabArtifact(artifactId);
+    }
+    if (activeWorkflowMode() === 'agentic-cloud') {
+      await deleteCloudEvidenceArtifact(artifact);
     }
     pushToast('success', 'Evidence deleted', artifact.title);
   });
@@ -8090,19 +9643,194 @@ async function run(
   }
 }
 
-async function archiveLabArtifact(artifact: LabArtifact): Promise<boolean> {
-  state.labArtifacts = mergeLabArtifacts([artifact], state.labArtifacts);
+interface ArchiveLabArtifactResult {
+  savedToCloud: boolean;
+  savedToBridge: boolean;
+}
+
+async function archiveLabArtifact(artifact: LabArtifact): Promise<ArchiveLabArtifactResult> {
+  let working: LabArtifact = artifact;
+  state.labArtifacts = mergeLabArtifacts([working], state.labArtifacts);
   await saveLabArtifacts();
-  if (!state.bridgeActive) {
-    return false;
+  const result: ArchiveLabArtifactResult = { savedToCloud: false, savedToBridge: false };
+  const mode = activeWorkflowMode();
+  if (mode === 'agentic-cloud' && isCloudEvidenceReceiptKind(working.kind)) {
+    try {
+      const response = await cloudRequest<{ receipt?: { id?: unknown } }>('/api/evidence', {
+        method: 'POST',
+        body: JSON.stringify(cloudEvidenceCreateBody(working)),
+      });
+      const cloudId = typeof response.receipt?.id === 'string' ? response.receipt.id : undefined;
+      if (cloudId) {
+        working = { ...working, cloudReceiptId: cloudId };
+      }
+      state.cloudEvidenceStatus = 'Cloud evidence archive synced for the signed-in wallet.';
+      result.savedToCloud = true;
+    } catch (err) {
+      state.cloudEvidenceStatus = `Cloud evidence archive failed: ${err instanceof Error ? err.message : String(err)}`;
+    }
+  }
+  if (state.bridgeActive) {
+    try {
+      await saveBridgeLabArtifact(working);
+      working = { ...working, bridgeArchived: true };
+      result.savedToBridge = true;
+    } catch (err) {
+      state.bridgeStatus = `Artifact bridge archive failed: ${err instanceof Error ? err.message : String(err)}`;
+    }
+  }
+  if (working !== artifact) {
+    state.labArtifacts = mergeLabArtifacts([working], state.labArtifacts);
+    await saveLabArtifacts();
+  }
+  return result;
+}
+
+function cloudEvidenceCreateBody(artifact: LabArtifact): Record<string, unknown> {
+  return {
+    title: artifact.title,
+    kind: artifact.kind,
+    status: artifact.payload.status,
+    cluster: artifact.cluster,
+    payload: artifact.payload,
+    preSignatureHash: artifact.preSignatureHash,
+    signingMessage: artifact.signingMessage,
+    signature: artifact.signature,
+    artifactHash: artifact.artifactHash,
+    receiptType: artifact.payload.receiptType ?? artifact.kind,
+    summary: artifact.payload.summary ?? artifact.input,
+    verdict: artifact.payload.verdict,
+    effect: artifact.payload.effect,
+    metadata: {
+      labId: artifact.labId,
+      browserArtifactId: artifact.id,
+    },
+  };
+}
+
+async function syncLabArtifactsWithCloud(): Promise<void> {
+  if (activeWorkflowMode() !== 'agentic-cloud') return;
+  try {
+    const remote = await loadCloudEvidenceArtifacts();
+    const local = state.labArtifacts;
+    const remoteIds = new Set(remote.map((artifact) => artifact.id));
+    const missingRemote = local.filter(
+      (artifact) =>
+        !remoteIds.has(artifact.id) &&
+        artifact.walletAddress === state.address &&
+        isCloudEvidenceReceiptKind(artifact.kind) &&
+        !artifact.cloudReceiptId,
+    );
+    const pushed: LabArtifact[] = [];
+    for (const artifact of missingRemote) {
+      try {
+        const response = await cloudRequest<{ receipt?: { id?: unknown } }>('/api/evidence', {
+          method: 'POST',
+          body: JSON.stringify(cloudEvidenceCreateBody(artifact)),
+        });
+        const cloudId = typeof response.receipt?.id === 'string' ? response.receipt.id : undefined;
+        if (cloudId) pushed.push({ ...artifact, cloudReceiptId: cloudId });
+      } catch (err) {
+        state.cloudEvidenceStatus = `Cloud evidence archive failed: ${err instanceof Error ? err.message : String(err)}`;
+      }
+    }
+    state.labArtifacts = mergeLabArtifacts(remote, pushed, local);
+    await saveLabArtifacts();
+    state.cloudEvidenceStatus = `Cloud evidence archive synced (${remote.length} receipt${remote.length === 1 ? '' : 's'}).`;
+  } catch (err) {
+    state.cloudEvidenceStatus = `Cloud evidence archive unavailable: ${err instanceof Error ? err.message : String(err)}`;
+  }
+}
+
+async function loadCloudEvidenceArtifacts(): Promise<LabArtifact[]> {
+  const response = await cloudRequest<{ receipts?: unknown[] }>('/api/evidence', { method: 'GET' });
+  const records = Array.isArray(response.receipts) ? response.receipts : [];
+  const artifacts: LabArtifact[] = [];
+  for (const record of records) {
+    const artifact = cloudEvidenceRecordToLabArtifact(record);
+    if (artifact) artifacts.push(artifact);
+  }
+  return artifacts;
+}
+
+function cloudEvidenceRecordToLabArtifact(value: unknown): LabArtifact | null {
+  if (!value || typeof value !== 'object') return null;
+  const record = value as Record<string, unknown>;
+  const metadata = (record.metadata && typeof record.metadata === 'object') ? record.metadata as Record<string, unknown> : {};
+  const cloudId = typeof record.id === 'string' ? record.id : '';
+  const browserId = typeof metadata.browserArtifactId === 'string' && metadata.browserArtifactId
+    ? metadata.browserArtifactId
+    : cloudId;
+  const labId = typeof metadata.labId === 'string' && metadata.labId ? metadata.labId : labIdForKind(record.kind);
+  const cluster = typeof record.cluster === 'string' && isCluster(record.cluster) ? record.cluster : state.cluster;
+  const payload = record.payload as LabPayload | undefined;
+  if (!payload || typeof payload !== 'object') return null;
+  const signingMessage = stringField(record.signingMessage) ?? '';
+  const signature = stringField(record.signature) ?? '';
+  const verified = signingMessage && signature ? verifyMessageSignature(signingMessage, signature) : false;
+  const candidate: LabArtifact = {
+    id: browserId,
+    labId,
+    title: stringField(record.title) ?? '',
+    kind: stringField(record.kind) ?? '',
+    createdAt: stringField(record.createdAt) ?? new Date().toISOString(),
+    walletAddress: stringField(record.walletAddress) ?? state.address,
+    cluster,
+    input: stringField(record.summary) ?? stringField(payload.summary) ?? stringField(payload.thesis) ?? '',
+    payload,
+    preSignatureHash: stringField(record.preSignatureHash) ?? '',
+    signingMessage,
+    signature,
+    verified,
+    artifactHash: stringField(record.artifactHash) ?? stringField(record.preSignatureHash) ?? '',
+    ...(cloudId ? { cloudReceiptId: cloudId } : {}),
+  };
+  return isLabArtifact(candidate) ? candidate : null;
+}
+
+function labIdForKind(value: unknown): string {
+  const kind = typeof value === 'string' ? value : '';
+  switch (kind) {
+    case 'intent_receipt':
+      return 'intent-receipt';
+    case 'policy_receipt':
+      return 'policy-receipt';
+    case 'risk_review_receipt':
+      return 'risk-receipt';
+    case 'rejection_receipt':
+      return 'rejection-receipt';
+    case 'tool_trace_receipt':
+      return 'tool-trace-receipt';
+    default:
+      return 'intent-receipt';
+  }
+}
+
+function stringField(value: unknown): string | undefined {
+  return typeof value === 'string' && value ? value : undefined;
+}
+
+async function deleteCloudEvidenceArtifact(artifact: LabArtifact): Promise<void> {
+  if (activeWorkflowMode() !== 'agentic-cloud' || !isCloudEvidenceReceiptKind(artifact.kind)) return;
+  if (!artifact.cloudReceiptId) {
+    state.cloudEvidenceStatus = 'Cloud receipt id missing — refresh archive then retry delete.';
+    return;
   }
   try {
-    await saveBridgeLabArtifact(artifact);
-    return true;
+    await cloudRequest(`/api/evidence/${encodeURIComponent(artifact.cloudReceiptId)}`, { method: 'DELETE' });
   } catch (err) {
-    state.bridgeStatus = `Artifact bridge archive failed: ${err instanceof Error ? err.message : String(err)}`;
-    return false;
+    state.cloudEvidenceStatus = `Cloud evidence delete failed: ${err instanceof Error ? err.message : String(err)}`;
   }
+}
+
+function isCloudEvidenceReceiptKind(value: string): boolean {
+  return (
+    value === 'intent_receipt' ||
+    value === 'policy_receipt' ||
+    value === 'risk_review_receipt' ||
+    value === 'rejection_receipt' ||
+    value === 'tool_trace_receipt'
+  );
 }
 
 async function syncLabArtifactsWithBridge(): Promise<void> {
@@ -8143,16 +9871,23 @@ async function deleteBridgeLabArtifact(artifactId: string): Promise<void> {
 }
 
 async function refreshInboxData(): Promise<void> {
+  const browserWorkflow = loadBrowserWorkflowState();
   const [actionsResponse, recurringResponse, receiptsResponse, txResponse] = await Promise.all([
     bridgeRequest<{ materialized?: PreparedAction[]; actions?: PreparedAction[] }>('/bridge/prepared-actions'),
     bridgeRequest<{ recurringPayments?: RecurringPayment[] }>('/bridge/recurring-payments'),
     bridgeRequest<{ receipts?: ActionReceipt[] }>('/bridge/receipts'),
     bridgeRequest<{ updates?: unknown[]; actions?: PreparedAction[] }>('/bridge/prepared-actions/tx-status').catch(() => null),
   ]);
-  state.materializedActions = actionsResponse.materialized ?? [];
-  state.preparedActions = txResponse?.actions ?? actionsResponse.actions ?? [];
-  state.recurringPayments = recurringResponse.recurringPayments ?? [];
-  state.receipts = receiptsResponse.receipts ?? [];
+  state.materializedActions = mergePreparedActions(
+    withPreparedActionSource(actionsResponse.materialized ?? [], 'local-bridge'),
+    browserWorkflow.preparedActions,
+  );
+  state.preparedActions = mergePreparedActions(
+    withPreparedActionSource(txResponse?.actions ?? actionsResponse.actions ?? [], 'local-bridge'),
+    browserWorkflow.preparedActions,
+  );
+  state.recurringPayments = mergeRecurringPayments(recurringResponse.recurringPayments ?? [], browserWorkflow.recurringPayments);
+  state.receipts = mergeActionReceipts(receiptsResponse.receipts ?? [], browserWorkflow.receipts);
 }
 
 async function refreshHealth(): Promise<void> {
@@ -8274,7 +10009,11 @@ async function pollBridge(): Promise<void> {
       return;
     }
     const now = Date.now();
-    if ((state.activeTab === 'inbox' || state.activeTab === 'schedule') && now - lastPassiveInboxRefresh > 5000) {
+    if (
+      activeWorkflowMode() === 'local-bridge' &&
+      (state.activeTab === 'inbox' || state.activeTab === 'schedule') &&
+      now - lastPassiveInboxRefresh > 5000
+    ) {
       lastPassiveInboxRefresh = now;
       await refreshInboxData().catch(() => undefined);
       render();
@@ -8433,11 +10172,19 @@ function canQueueAgentPlan(plan: AgentPlan): boolean {
 
 function queuePlanTitle(): string {
   if (!state.address) return 'Connect a wallet before queueing.';
-  if (!state.bridgeActive) return 'Connect the local bridge to send queueable plans to Approval Inbox.';
   if (!state.agentPlan) return 'Create a plan before queueing.';
   if (!canQueueAgentPlan(state.agentPlan)) return 'Only transfer, swap, and recurring schedules can be queued.';
-  if (state.agentPlan.actionType === 'recurring_payment') return 'Create a recurring schedule. Each due occurrence appears in Approval Inbox.';
-  return 'Send this plan to Approval Inbox for wallet review.';
+  const mode = activeWorkflowMode();
+  if (state.agentPlan.actionType === 'recurring_payment') {
+    if (mode === 'agentic-cloud') return 'Create an Agentic Cloud recurring schedule. Each due occurrence appears in Approval Inbox.';
+    return mode === 'local-bridge'
+      ? 'Create a local recurring schedule. Each due occurrence appears in Approval Inbox.'
+      : 'Create a browser-backed recurring schedule. It stays local to this device.';
+  }
+  if (mode === 'agentic-cloud') return 'Send this plan to Agentic Cloud Approval Inbox for wallet review.';
+  return mode === 'local-bridge'
+    ? 'Send this plan to the local Approval Inbox for wallet review.'
+    : 'Send this plan to the browser Approval Inbox. It stays local to this device.';
 }
 
 async function queuePlanThroughBridge(plan: AgentPlan): Promise<{ id: string }> {
@@ -8496,6 +10243,246 @@ async function queuePlanThroughBridge(plan: AgentPlan): Promise<{ id: string }> 
     default:
       throw new Error('This plan type creates a review/proof only and cannot be queued as a bridge action yet.');
   }
+}
+
+async function queuePlanThroughActiveWorkflow(
+  plan: AgentPlan,
+  sourceRecord?: GeneratedPlanRecord,
+): Promise<QueueWorkflowResult> {
+  const mode = activeWorkflowMode();
+  if (mode === 'local-bridge') {
+    const response = await queuePlanThroughBridge(plan);
+    return { ...response, mode: 'local-bridge' };
+  }
+  if (mode === 'agentic-cloud') {
+    const response = plan.actionType === 'recurring_payment'
+      ? await queueRecurringPlanThroughCloud(plan)
+      : await queuePlanThroughCloud(plan, sourceRecord);
+    return { ...response, mode: 'agentic-cloud' };
+  }
+  const response = queuePlanThroughBrowserWorkflow(plan);
+  return { ...response, mode: 'browser-workflow' };
+}
+
+async function queuePlanThroughCloud(plan: AgentPlan, sourceRecord?: GeneratedPlanRecord): Promise<{ id: string; planRecordId: string }> {
+  if (!cloudSessionMatchesWallet()) {
+    throw new Error('Sign in to Agentic Cloud with the connected wallet before queueing to cloud.');
+  }
+  const cloudRecord = sourceRecord?.workflowSource === 'cloud' && samePlan(sourceRecord.plan, plan)
+    ? sourceRecord
+    : state.generatedPlans.find((record) =>
+        record.workflowSource === 'cloud' && record.status !== 'archived' && samePlan(record.plan, plan),
+      );
+  const template = sourceRecord ? templateById(sourceRecord.templateId) : templateById(state.selectedTemplateId);
+  const planId = cloudRecord
+    ? cloudRecord.id
+    : (await saveGeneratedPlan(plan, template, sourceRecord?.prompt || plan.userNotes || plan.intent)).id;
+  const approvalRecord = parseCloudApprovalResponse(await cloudRequest('/api/approvals', {
+    method: 'POST',
+    body: JSON.stringify({
+      planDraftId: planId,
+      kind: plan.actionType,
+      summary: plan.intent,
+      params: plan.parameters,
+      cluster: state.cluster,
+      note: plan.userNotes || plan.approval,
+      amount: planParameter(plan, ['amountSol', 'amount', 'inputAmount', 'plannedAmount']),
+      token: planParameter(plan, ['token', 'inputToken']),
+      recipient: planParameter(plan, ['recipient', 'recipientAddress']),
+    }),
+  }));
+  const approval = cloudApprovalToPreparedAction(approvalRecord);
+  if (!approval) {
+    throw new Error('Agentic Cloud did not return a valid approval request.');
+  }
+  return { id: approval.id, planRecordId: planId };
+}
+
+async function queueRecurringPlanThroughCloud(plan: AgentPlan): Promise<{ id: string }> {
+  if (!cloudSessionMatchesWallet()) {
+    throw new Error('Sign in to Agentic Cloud with the connected wallet before creating cloud recurring schedules.');
+  }
+  const body = {
+    cluster: state.cluster,
+    token: requiredPlanParam(plan, 'token'),
+    recipient: requiredPlanParam(plan, 'recipient'),
+    amount: requiredPlanParam(plan, 'amount'),
+    ...recurringSchedulePayload(plan),
+    note: plan.userNotes || plan.intent,
+  };
+  const cloudSchedule = parseCloudRecurringScheduleResponse(await cloudRequest('/api/recurring', {
+    method: 'POST',
+    body: JSON.stringify(body),
+  }));
+  const schedule = cloudRecurringScheduleToPayment(cloudSchedule);
+  if (!schedule) {
+    throw new Error('Agentic Cloud did not return a valid recurring schedule.');
+  }
+  await cloudMaterializeRecurring().catch(() => undefined);
+  return { id: schedule.id };
+}
+
+function queuePlanThroughBrowserWorkflow(plan: AgentPlan): { id: string } {
+  if (!state.address) {
+    throw new Error('Connect a wallet before queueing.');
+  }
+  if (plan.actionType === 'recurring_payment') {
+    const recurring = browserRecurringPaymentFromPlan(plan);
+    const occurrence = browserOccurrenceFromRecurring(recurring, plan.intent);
+    state.recurringPayments = mergeRecurringPayments([recurring], state.recurringPayments);
+    state.preparedActions = mergePreparedActions([occurrence], state.preparedActions);
+    state.materializedActions = state.preparedActions;
+    saveBrowserWorkflowState();
+    return { id: recurring.id };
+  }
+  const action = browserPreparedActionFromPlan(plan);
+  state.preparedActions = mergePreparedActions([action], state.preparedActions);
+  state.materializedActions = state.preparedActions;
+  saveBrowserWorkflowState();
+  return { id: action.id };
+}
+
+function browserPreparedActionFromPlan(plan: AgentPlan): PreparedAction {
+  const now = new Date().toISOString();
+  const id = newId('browser-action');
+  const kind = browserActionKindForPlan(plan);
+  return {
+    id,
+    kind,
+    status: 'ready',
+    walletAddress: state.address,
+    cluster: state.cluster,
+    summary: plan.intent,
+    params: browserActionParams(plan, kind),
+    dueAt: now,
+    createdAt: now,
+    updatedAt: now,
+    note: plan.userNotes || plan.approval,
+    workflowSource: 'browser',
+  };
+}
+
+function browserActionKindForPlan(plan: AgentPlan): PreparedActionKind {
+  if (plan.actionType === 'transfer_sol') return 'transfer_sol';
+  if (plan.actionType === 'transfer_spl') return 'transfer_spl';
+  if (plan.actionType === 'swap') return 'swap';
+  throw new Error('Only transfers, swaps, and recurring schedules can be queued.');
+}
+
+function browserActionParams(plan: AgentPlan, kind: PreparedActionKind): Record<string, unknown> {
+  if (kind === 'transfer_sol') {
+    return {
+      recipient: requiredPlanParam(plan, 'recipient'),
+      amountSol: requiredPlanParam(plan, 'amount'),
+      memo: plan.parameters.memo ?? '',
+    };
+  }
+  if (kind === 'transfer_spl') {
+    return {
+      token: requiredPlanParam(plan, 'token'),
+      recipient: requiredPlanParam(plan, 'recipient'),
+      amount: requiredPlanParam(plan, 'amount'),
+      memo: plan.parameters.memo ?? '',
+    };
+  }
+  return {
+    inputToken: plan.parameters.inputToken || 'SOL',
+    outputToken: plan.parameters.outputToken || 'USDC',
+    amount: requiredPlanParam(plan, 'amount'),
+    slippageBps: plan.parameters.slippageBps || '50',
+  };
+}
+
+function browserRecurringPaymentFromPlan(plan: AgentPlan): RecurringPayment {
+  const now = new Date().toISOString();
+  const payload = recurringSchedulePayload(plan);
+  const maxOccurrences = Number(plan.parameters.maxOccurrences);
+  return {
+    id: newId('browser-recurring'),
+    status: 'active',
+    walletAddress: state.address,
+    cluster: state.cluster,
+    token: plan.parameters.token || 'SOL',
+    recipient: requiredPlanParam(plan, 'recipient'),
+    amount: requiredPlanParam(plan, 'amount'),
+    ...payload,
+    ...(Number.isInteger(maxOccurrences) && maxOccurrences > 0 ? { maxOccurrences } : {}),
+    occurrencesCreated: 1,
+    note: plan.userNotes || plan.intent,
+    createdAt: now,
+    updatedAt: now,
+    nextDueAt: recurringNextDueFromPayload(payload),
+  };
+}
+
+function browserRecurringPaymentFromDraft(draft: RecurringDraft): RecurringPayment {
+  const now = new Date().toISOString();
+  const payload = recurringBody(draft) as ReturnType<typeof recurringSchedulePayload>;
+  const maxOccurrences = Number(draft.maxOccurrences);
+  return {
+    id: newId('browser-recurring'),
+    status: 'active',
+    walletAddress: state.address,
+    cluster: state.cluster,
+    token: draft.token,
+    recipient: draft.recipient,
+    amount: draft.amount,
+    ...payload,
+    ...(Number.isInteger(maxOccurrences) && maxOccurrences > 0 ? { maxOccurrences } : {}),
+    occurrencesCreated: 1,
+    note: draft.note || 'Browser recurring schedule',
+    createdAt: now,
+    updatedAt: now,
+    nextDueAt: recurringNextOccurrence(draft)?.toISOString(),
+  };
+}
+
+function browserOccurrenceFromRecurring(payment: RecurringPayment, summary?: string): PreparedAction {
+  const now = new Date().toISOString();
+  const actionId = newId('browser-action');
+  const token = payment.token || 'SOL';
+  return {
+    id: actionId,
+    kind: token.toUpperCase() === 'SOL' ? 'transfer_sol' : 'transfer_spl',
+    status: 'ready',
+    walletAddress: payment.walletAddress,
+    cluster: payment.cluster,
+    summary: summary || `${payment.amount} ${payment.token} recurring approval`,
+    params: token.toUpperCase() === 'SOL'
+      ? {
+          recipient: payment.recipient,
+          amountSol: payment.amount,
+          memo: payment.note ?? '',
+        }
+      : {
+          token: payment.token,
+          recipient: payment.recipient,
+          amount: payment.amount,
+          memo: payment.note ?? '',
+        },
+    dueAt: now,
+    createdAt: now,
+    updatedAt: now,
+    note: payment.note,
+    recurringId: payment.id,
+    occurrenceKey: `browser-${now}`,
+    workflowSource: 'browser',
+  };
+}
+
+function recurringNextDueFromPayload(payload: ReturnType<typeof recurringSchedulePayload>): string | undefined {
+  if (payload.startAt) return payload.startAt;
+  const draft: RecurringDraft = {
+    ...defaultRecurringDraft(),
+    cadence: payload.cadence,
+    dayOfWeek: payload.dayOfWeek === undefined ? '' : String(payload.dayOfWeek),
+    dayOfMonth: payload.dayOfMonth === undefined ? '' : String(payload.dayOfMonth),
+    intervalDays: payload.intervalDays === undefined ? '' : String(payload.intervalDays),
+    intervalHours: payload.intervalHours === undefined ? '' : String(payload.intervalHours),
+    intervalMinutes: payload.intervalMinutes === undefined ? '' : String(payload.intervalMinutes),
+    localTime: payload.localTime ?? '09:00',
+  };
+  return recurringNextOccurrence(draft)?.toISOString();
 }
 
 function recurringSchedulePayload(plan: AgentPlan): {
@@ -9103,8 +11090,8 @@ function agentResultBlock(): string {
 }
 
 function queueStatusLine(visibleCount: number): string {
-  const total = state.preparedActions.filter(isActionInboxActive).length;
-  const bridge = state.bridgeActive ? 'Bridge connected' : 'Approval bridge offline';
+  const total = activeWorkflowPreparedActions().filter(isActionInboxActive).length;
+  const bridge = activeWorkflowLabel();
   const filter = queueFilterLabel(state.inboxFilter);
   return `
     <div class="queue-status">
@@ -9120,10 +11107,14 @@ function scheduleStatusLine(): string {
   const active = state.recurringPayments.filter((payment) => payment.status === 'active' && !isRecurringPaymentCompleted(payment)).length;
   const completed = state.recurringPayments.filter(isRecurringPaymentCompleted).length;
   const total = state.recurringPayments.length;
-  const bridge = state.bridgeActive ? 'Bridge connected' : 'Approval bridge offline';
+  const owner = activeWorkflowMode() === 'agentic-cloud'
+    ? 'Agentic Cloud recurring'
+    : activeWorkflowMode() === 'local-bridge'
+      ? 'Private local mode'
+      : 'Browser local fallback';
   return `
     <div class="queue-status">
-      <span>${escapeHtml(bridge)}</span>
+      <span>${escapeHtml(owner)}</span>
       <strong>${active} active recurring plan${active === 1 ? '' : 's'}</strong>
       <span>${total} saved</span>
       <span>${completed} completed</span>
@@ -9133,7 +11124,7 @@ function scheduleStatusLine(): string {
 }
 
 function preparedActionsList(actions = filteredPreparedActions()): string {
-  if (!state.bridgeActive) {
+  if (activeWorkflowMode() !== 'local-bridge' && actions.length === 0) {
     return queueEmptyState('bridge');
   }
   if (actions.length === 0) {
@@ -9148,11 +11139,13 @@ function preparedActionsList(actions = filteredPreparedActions()): string {
 
 function queueEmptyState(kind: 'bridge' | 'clear'): string {
   const bridgeMissing = kind === 'bridge';
-  const title = bridgeMissing ? 'Approval bridge offline' : 'No approvals waiting';
+  const title = bridgeMissing ? 'No approvals waiting' : 'No approvals waiting';
   const detail = bridgeMissing
-    ? 'Start the local approval bridge to load queued one-time approvals and recurring occurrences.'
+    ? activeWorkflowMode() === 'agentic-cloud'
+      ? 'Queue a one-time plan to Agentic Cloud. No localhost is required.'
+      : 'Queue a one-time plan or create a recurring schedule. Browser workflow stays local to this device.'
     : emptyInboxText();
-  const chip = bridgeMissing ? 'Bridge setup needed' : 'Queue clear';
+  const chip = bridgeMissing ? 'Queue clear' : 'Queue clear';
   return `
     <div class="empty queue-empty queue-empty-state">
       <div>
@@ -9166,6 +11159,8 @@ function queueEmptyState(kind: 'bridge' | 'clear'): string {
 
 function preparedActionCard(action: PreparedAction): string {
   const executable = ['ready', 'overdue', 'failed'].includes(action.status);
+  const browserWorkflow = isBrowserWorkflowId(action.id);
+  const cloudWorkflow = action.workflowSource === 'cloud';
   return `
     <article class="inbox-item approval-ticket ${action.status}">
       <div class="ticket-status-rail ${statusTone(action.status)}"></div>
@@ -9185,7 +11180,7 @@ function preparedActionCard(action: PreparedAction): string {
         ${action.txid ? txBlock(action.txid, action.cluster) : ''}
       </div>
       <div class="inbox-actions">
-        <button data-action-op="execute" data-action-id="${action.id}" class="primary" ${!state.bridgeActive || state.busy || !executable ? 'disabled' : ''}>Approve</button>
+        <button data-action-op="execute" data-action-id="${action.id}" class="primary" ${(!state.bridgeActive && !browserWorkflow && !cloudWorkflow) || state.busy || !executable ? 'disabled' : ''}>Approve</button>
         <button data-action-op="reject" data-action-id="${action.id}" ${state.busy || ['approved', 'rejected'].includes(action.status) ? 'disabled' : ''}>Reject</button>
         <button data-action-op="copy" data-action-id="${action.id}">Copy request</button>
         <details class="generated-plan-more inbox-more-actions">
@@ -9220,21 +11215,34 @@ function recurringComposer(): string {
   const draft = state.recurringDraft;
   const recipient = draft.recipient ? short(draft.recipient) : 'Recipient required';
   const limit = draft.maxOccurrences ? `${draft.maxOccurrences} occurrence${draft.maxOccurrences === '1' ? '' : 's'}` : 'Manual review every time';
-  const createDisabled = !state.bridgeActive || state.busy;
+  const createDisabled = !state.address || state.busy;
   const nextOccurrence = recurringNextOccurrenceLabel(draft);
+  const workflowMode = activeWorkflowMode();
+  const browserWorkflow = workflowMode === 'browser-workflow';
+  const recurringHelp = browserWorkflow
+    ? 'Define a device-local recurring fallback. It creates an immediate Approval Inbox item here, but does not run background schedules after this tab closes.'
+    : 'Define a supported recurring payment or subscription. Each occurrence returns to Approval Inbox before wallet signing.';
+  const boundaryCopy = browserWorkflow
+    ? 'Browser workflow stores this schedule on this device and creates one local approval item now. Use Agentic Cloud or Private local mode for background scheduling.'
+    : `${activeWorkflowLabel()} owns this schedule. No transaction signs until you approve an occurrence.`;
+  const actionHelper = !state.address
+    ? 'Connect a wallet before creating a recurring schedule.'
+    : browserWorkflow
+      ? 'Creates one local Approval Inbox item now. No background scheduler runs after this tab closes.'
+      : 'Future occurrences will appear in Approval Inbox.';
   return `
     <div class="recurring-panel recurring-contract">
       <div class="contract-head">
         <div>
           <span>Recurring setup</span>
           <h3>Create recurring schedule</h3>
-          <p class="recurring-help">Define a supported recurring payment or subscription. This creates an active schedule, so it requires the local approval bridge.</p>
+          <p class="recurring-help">${escapeHtml(recurringHelp)}</p>
         </div>
         <strong>${escapeHtml(recurringCadenceLabel(draft.cadence))}</strong>
       </div>
       <div class="recurring-boundary-note">
-        <strong>AI Planner boundary</strong>
-        <p>AI can draft one-time plans and review proofs. Active recurring schedules are bridge-owned because they must create future Approval Inbox occurrences.</p>
+        <strong>Signing boundary</strong>
+        <p>${escapeHtml(boundaryCopy)}</p>
       </div>
       <dl class="contract-summary">
         ${definitionRow('Asset', `${draft.amount || 'Amount'} ${draft.token || 'Token'}`)}
@@ -9284,7 +11292,7 @@ function recurringComposer(): string {
       <div class="recurring-form-actions contract-actions">
         <button id="createRecurring" class="primary" ${createDisabled ? 'disabled' : ''}>Create recurring schedule</button>
         <button type="button" class="utility" data-recurring-action="dca-proof">Create DCA review proof instead</button>
-        ${createDisabled ? bridgeRequiredNotice('Local approval bridge required to create active recurring schedules.') : '<span class="contract-helper">Future occurrences will appear in Approval Inbox.</span>'}
+        <span class="contract-helper">${escapeHtml(actionHelper)}</span>
       </div>
     </div>
   `;
@@ -9322,7 +11330,7 @@ function recurringTokenSelect(value: string): string {
 }
 
 function recurringList(): string {
-  if (!state.bridgeActive || state.recurringPayments.length === 0) {
+  if (state.recurringPayments.length === 0) {
     return '';
   }
   return `
@@ -9440,7 +11448,7 @@ function labHistory(): string {
 }
 
 function filteredPreparedActions(): PreparedAction[] {
-  const actions = state.preparedActions.filter(isActionInboxActive);
+  const actions = activeWorkflowPreparedActions().filter(isActionInboxActive);
   switch (state.inboxFilter) {
     case 'one-time':
       return actions.filter((action) => !action.recurringId);
@@ -9454,6 +11462,17 @@ function filteredPreparedActions(): PreparedAction[] {
       return actions.filter((action) => action.status === 'failed' || action.status === 'blocked');
     case 'all':
       return actions;
+  }
+}
+
+function activeWorkflowPreparedActions(): PreparedAction[] {
+  switch (activeWorkflowMode()) {
+    case 'agentic-cloud':
+      return state.preparedActions.filter((action) => action.workflowSource === 'cloud');
+    case 'browser-workflow':
+      return state.preparedActions.filter((action) => isBrowserWorkflowId(action.id));
+    case 'local-bridge':
+      return state.preparedActions.filter((action) => action.workflowSource === 'local-bridge');
   }
 }
 
@@ -9632,11 +11651,11 @@ function evidenceIntent(): { status: string; detail: string; meta?: string } {
     };
   }
   if (state.activeTab === 'inbox') {
-    const count = state.preparedActions.filter((action) => !action.archived).length;
+    const count = activeWorkflowPreparedActions().filter((action) => !action.archived).length;
     return {
       status: count ? 'Queued' : 'Empty',
       detail: count ? `${count} request(s) are waiting in Approval Inbox.` : 'No queued approvals are currently waiting.',
-      meta: state.bridgeActive ? 'Bridge queue connected' : 'Bridge offline',
+      meta: activeWorkflowLabel(),
     };
   }
   if (state.activeTab === 'completed') {
@@ -9654,7 +11673,7 @@ function evidenceIntent(): { status: string; detail: string; meta?: string } {
       detail: activeSchedules
         ? `${activeSchedules} recurring plan${activeSchedules === 1 ? '' : 's'} active.`
         : 'Create a recurring plan for future wallet review.',
-        meta: state.bridgeActive ? 'Bridge recurring engine connected' : 'Bridge offline',
+        meta: activeWorkflowLabel(),
     };
   }
   if (state.activeTab === 'labs') {
@@ -9681,7 +11700,7 @@ function evidenceIntent(): { status: string; detail: string; meta?: string } {
 }
 
 function evidencePolicy(): { status: string; detail: string; meta?: string } {
-  const openApprovals = state.preparedActions.filter((action) => !action.archived).length;
+  const openApprovals = activeWorkflowPreparedActions().filter((action) => !action.archived).length;
   if (state.activeTab === 'wallet') {
     return {
       status: state.cluster === 'mainnet-beta' ? 'Mainnet caution' : 'Local policy',
@@ -9696,7 +11715,7 @@ function evidencePolicy(): { status: string; detail: string; meta?: string } {
     return {
       status: state.agentPlan ? 'Plan scoped' : 'Plan',
       detail: state.agentPlan?.risk ?? 'Create a plan to expose route and risk before queueing.',
-      meta: state.bridgeActive ? 'Can queue executable plans' : 'Bridge queue unavailable',
+      meta: `Queue path: ${activeWorkflowLabel()}`,
     };
   }
   if (state.activeTab === 'generated') {
@@ -9704,14 +11723,14 @@ function evidencePolicy(): { status: string; detail: string; meta?: string } {
     return {
       status: selected ? 'Review scoped' : 'No plans',
       detail: selected?.plan.risk ?? 'Plans stay separate from Approval Inbox until you queue them.',
-      meta: selected && canQueueAgentPlan(selected.plan) ? 'Queueable with bridge' : 'Proof-only review',
+      meta: selected && canQueueAgentPlan(selected.plan) ? `Queueable through ${activeWorkflowLabel()}` : 'Proof-only review',
     };
   }
   if (state.activeTab === 'schedule') {
     return {
-      status: state.bridgeActive ? 'Recurring ready' : 'Bridge required',
+      status: 'Recurring ready',
       detail: 'Recurring plans create future Approval Inbox items, not automatic signatures.',
-      meta: state.recurringPayments.length ? `${state.recurringPayments.length} recurring plan(s)` : undefined,
+      meta: state.recurringPayments.length ? `${state.recurringPayments.length} recurring plan(s) · ${activeWorkflowLabel()}` : activeWorkflowLabel(),
     };
   }
   if (state.activeTab === 'completed') {
@@ -9742,7 +11761,7 @@ function evidencePolicy(): { status: string; detail: string; meta?: string } {
     return {
       status: 'Queued',
       detail: `${openApprovals} prepared action(s) are waiting for review.`,
-      meta: state.bridgeActive ? 'Local bridge policy is active.' : 'Bridge is offline.',
+      meta: `${activeWorkflowLabel()} policy is active.`,
     };
   }
   if (state.bridgeActive) {
@@ -9757,7 +11776,7 @@ function evidencePolicy(): { status: string; detail: string; meta?: string } {
     detail:
       state.cluster === 'mainnet-beta'
         ? 'Mainnet requests require explicit wallet approval and visible receipts.'
-        : 'Policy checks activate when the local bridge is connected.',
+        : `${activeWorkflowLabel()} will hold queued work until explicit wallet approval.`,
   };
 }
 
@@ -9872,7 +11891,7 @@ function evidenceTone(kind: 'intent' | 'policy' | 'wallet' | 'receipt'): 'good' 
           ? 'active'
           : 'idle';
     case 'policy':
-      if (state.preparedActions.length || state.bridgeActive) return 'good';
+      if (activeWorkflowPreparedActions().length || state.bridgeActive) return 'good';
       return state.cluster === 'mainnet-beta' ? 'warn' : 'idle';
     case 'wallet':
       return state.address ? 'good' : 'idle';
@@ -9888,7 +11907,7 @@ function trustChain(): string {
   return `
     <div class="trust-chain" aria-label="Approval trust chain">
       ${trustNode('Intent', Boolean(state.agentPlan || state.generatedPlans.length || state.signature || state.customTransactionBase64), state.activeTab === 'agent' || state.activeTab === 'generated')}
-      ${trustNode('Policy', Boolean(state.bridgeActive || state.preparedActions.length), state.activeTab === 'inbox' || state.activeTab === 'schedule')}
+      ${trustNode('Policy', Boolean(state.bridgeActive || activeWorkflowPreparedActions().length), state.activeTab === 'inbox' || state.activeTab === 'schedule')}
       ${trustNode('Wallet', Boolean(state.address), state.busy)}
       ${trustNode('Receipt', hasReceipt, state.activeTab === 'completed')}
     </div>
@@ -10665,6 +12684,10 @@ function isAiMode(value: string): value is AiSettings['mode'] {
   return value === 'hosted' || value === 'session' || value === 'bridge';
 }
 
+function isWorkflowModePreference(value: string): value is WorkflowModePreference {
+  return value === 'auto' || value === 'local-bridge';
+}
+
 function isAiApiFormat(value: string): value is AiSettings['apiFormat'] {
   return value === 'openai-compatible' || value === 'anthropic';
 }
@@ -10877,6 +12900,8 @@ function loadPersistedState(): PersistedState {
       ...(typeof parsed.selectedWalletName === 'string' && { selectedWalletName: parsed.selectedWalletName }),
       ...(typeof parsed.selectedIosWalletId === 'string' &&
         isPersistedIosWalletId(parsed.selectedIosWalletId) && { selectedIosWalletId: parsed.selectedIosWalletId }),
+      ...(typeof parsed.workflowModePreference === 'string' &&
+        isWorkflowModePreference(parsed.workflowModePreference) && { workflowModePreference: parsed.workflowModePreference }),
       ...(typeof parsed.cluster === 'string' && isCluster(parsed.cluster) && { cluster: parsed.cluster }),
       ...(typeof parsed.bridgeUrl === 'string' && { bridgeUrl: parsed.bridgeUrl }),
       ...(typeof parsed.bridgeToken === 'string' && { bridgeToken: parsed.bridgeToken }),
@@ -10898,6 +12923,7 @@ function savePersistedState(): void {
       JSON.stringify({
         selectedWalletName: state.selectedWalletName,
         selectedIosWalletId: state.selectedIosWalletId,
+        workflowModePreference: state.workflowModePreference,
         cluster: state.cluster,
         bridgeUrl: state.bridgeUrl,
         bridgeToken: state.bridgeToken,
@@ -10918,7 +12944,12 @@ function loadGeneratedPlans(): GeneratedPlanRecord[] {
     const raw = window.localStorage.getItem(GENERATED_PLANS_STORAGE_KEY);
     if (!raw) return [];
     const parsed = JSON.parse(raw);
-    return Array.isArray(parsed) ? mergeGeneratedPlans(parsed.filter(isGeneratedPlanRecord)) : [];
+    return Array.isArray(parsed)
+      ? mergeGeneratedPlans(parsed.filter(isGeneratedPlanRecord).map((record) => ({
+          ...record,
+          workflowSource: record.workflowSource ?? 'browser',
+        })))
+      : [];
   } catch {
     return [];
   }
@@ -10927,10 +12958,180 @@ function loadGeneratedPlans(): GeneratedPlanRecord[] {
 function saveGeneratedPlans(): void {
   try {
     state.generatedPlans = mergeGeneratedPlans(state.generatedPlans);
-    window.localStorage.setItem(GENERATED_PLANS_STORAGE_KEY, JSON.stringify(state.generatedPlans));
+    window.localStorage.setItem(
+      GENERATED_PLANS_STORAGE_KEY,
+      JSON.stringify(state.generatedPlans.filter((record) => record.workflowSource !== 'cloud')),
+    );
   } catch {
     // Best-effort browser persistence.
   }
+}
+
+function loadBrowserWorkflowState(): BrowserWorkflowState {
+  try {
+    const raw = window.localStorage.getItem(BROWSER_WORKFLOW_STORAGE_KEY);
+    if (!raw) {
+      return emptyBrowserWorkflowState();
+    }
+    const parsed = JSON.parse(raw) as Partial<BrowserWorkflowState>;
+    return normalizeBrowserWorkflowState(parsed);
+  } catch {
+    return emptyBrowserWorkflowState();
+  }
+}
+
+function emptyBrowserWorkflowState(): BrowserWorkflowState {
+  return {
+    preparedActions: [],
+    recurringPayments: [],
+    receipts: [],
+  };
+}
+
+function normalizeBrowserWorkflowState(input: Partial<BrowserWorkflowState>): BrowserWorkflowState {
+  return {
+    preparedActions: mergePreparedActions((input.preparedActions ?? []).filter(isPreparedAction).map((action) => ({
+      ...action,
+      workflowSource: 'browser',
+    }))),
+    recurringPayments: mergeRecurringPayments((input.recurringPayments ?? []).filter(isRecurringPayment)),
+    receipts: mergeActionReceipts((input.receipts ?? []).filter(isActionReceipt)),
+  };
+}
+
+function saveBrowserWorkflowState(): void {
+  try {
+    const workflow = normalizeBrowserWorkflowState({
+      preparedActions: state.preparedActions.filter(isBrowserWorkflowId),
+      recurringPayments: state.recurringPayments.filter(isBrowserWorkflowId),
+      receipts: state.receipts.filter((receipt) => isBrowserWorkflowId(receipt.actionId)),
+    });
+    window.localStorage.setItem(BROWSER_WORKFLOW_STORAGE_KEY, JSON.stringify(workflow));
+  } catch {
+    // Best-effort browser workflow persistence.
+  }
+}
+
+function mergePreparedActions(...groups: PreparedAction[][]): PreparedAction[] {
+  const byId = new Map<string, PreparedAction>();
+  for (const actions of groups) {
+    for (const action of actions) {
+      const current = byId.get(action.id);
+      if (!current || action.updatedAt.localeCompare(current.updatedAt) >= 0) {
+        byId.set(action.id, action);
+      }
+    }
+  }
+  return [...byId.values()].sort((left, right) => right.createdAt.localeCompare(left.createdAt));
+}
+
+function withPreparedActionSource(actions: PreparedAction[], workflowSource: WorkflowRecordSource): PreparedAction[] {
+  return actions.filter(isPreparedAction).map((action) => ({ ...action, workflowSource }));
+}
+
+function mergeRecurringPayments(...groups: RecurringPayment[][]): RecurringPayment[] {
+  const byId = new Map<string, RecurringPayment>();
+  for (const payments of groups) {
+    for (const payment of payments) {
+      const current = byId.get(payment.id);
+      if (!current || payment.updatedAt.localeCompare(current.updatedAt) >= 0) {
+        byId.set(payment.id, payment);
+      }
+    }
+  }
+  return [...byId.values()].sort((left, right) => right.createdAt.localeCompare(left.createdAt));
+}
+
+function mergeActionReceipts(...groups: ActionReceipt[][]): ActionReceipt[] {
+  const byId = new Map<string, ActionReceipt>();
+  for (const receipts of groups) {
+    for (const receipt of receipts) {
+      const current = byId.get(receipt.actionId);
+      if (!current || receipt.completedAt.localeCompare(current.completedAt) >= 0) {
+        byId.set(receipt.actionId, receipt);
+      }
+    }
+  }
+  return [...byId.values()].sort((left, right) => right.completedAt.localeCompare(left.completedAt));
+}
+
+function isPreparedAction(value: unknown): value is PreparedAction {
+  if (!value || typeof value !== 'object') return false;
+  const action = value as Partial<PreparedAction>;
+  return (
+    typeof action.id === 'string' &&
+    (action.kind === 'transfer_sol' || action.kind === 'transfer_spl' || action.kind === 'swap') &&
+    isPreparedActionStatus(action.status) &&
+    typeof action.walletAddress === 'string' &&
+    isCluster(action.cluster ?? '') &&
+    typeof action.summary === 'string' &&
+    Boolean(action.params) &&
+    typeof action.params === 'object' &&
+    !Array.isArray(action.params) &&
+    typeof action.dueAt === 'string' &&
+    typeof action.createdAt === 'string' &&
+    typeof action.updatedAt === 'string'
+  );
+}
+
+function isRecurringPayment(value: unknown): value is RecurringPayment {
+  if (!value || typeof value !== 'object') return false;
+  const payment = value as Partial<RecurringPayment>;
+  return (
+    typeof payment.id === 'string' &&
+    (payment.status === 'active' || payment.status === 'paused') &&
+    typeof payment.walletAddress === 'string' &&
+    isCluster(payment.cluster ?? '') &&
+    typeof payment.token === 'string' &&
+    typeof payment.recipient === 'string' &&
+    typeof payment.amount === 'string' &&
+    isRecurringCadence(payment.cadence) &&
+    typeof payment.createdAt === 'string' &&
+    typeof payment.updatedAt === 'string'
+  );
+}
+
+function isActionReceipt(value: unknown): value is ActionReceipt {
+  if (!value || typeof value !== 'object') return false;
+  const receipt = value as Partial<ActionReceipt>;
+  return (
+    typeof receipt.actionId === 'string' &&
+    isPreparedActionStatus(receipt.status) &&
+    typeof receipt.summary === 'string' &&
+    typeof receipt.walletAddress === 'string' &&
+    isCluster(receipt.cluster ?? '') &&
+    typeof receipt.createdAt === 'string' &&
+    typeof receipt.completedAt === 'string' &&
+    (receipt.proofSignature === undefined || typeof receipt.proofSignature === 'string')
+  );
+}
+
+function isPreparedActionStatus(value: unknown): value is PreparedActionStatus {
+  return (
+    value === 'scheduled' ||
+    value === 'ready' ||
+    value === 'overdue' ||
+    value === 'approval_pending' ||
+    value === 'approved' ||
+    value === 'rejected' ||
+    value === 'blocked' ||
+    value === 'failed'
+  );
+}
+
+function isRecurringCadence(value: unknown): value is RecurringCadence {
+  return (
+    value === 'weekly' ||
+    value === 'monthly' ||
+    value === 'interval_days' ||
+    value === 'interval_hours' ||
+    value === 'interval_minutes'
+  );
+}
+
+function isBrowserWorkflowId(value: { id: string } | string): boolean {
+  const id = typeof value === 'string' ? value : value.id;
+  return id.startsWith('browser-');
 }
 
 function mergeGeneratedPlans(...planGroups: unknown[][]): GeneratedPlanRecord[] {
@@ -11017,7 +13218,23 @@ function loadLabArtifacts(): LabArtifact[] {
 async function hydrateLabArtifactArchive(): Promise<void> {
   const legacy = loadLabArtifacts();
   const indexed = await loadIndexedLabArtifacts().catch(() => []);
-  state.labArtifacts = mergeLabArtifacts(state.labArtifacts, legacy, indexed);
+  const mode = activeWorkflowMode();
+  const cloud = mode === 'agentic-cloud'
+    ? await loadCloudEvidenceArtifacts().catch((err) => {
+        state.cloudEvidenceStatus = `Cloud evidence archive unavailable: ${err instanceof Error ? err.message : String(err)}`;
+        return [] as LabArtifact[];
+      })
+    : [];
+  state.labArtifacts = mergeLabArtifacts(state.labArtifacts, legacy, indexed, cloud);
+  if (mode === 'agentic-cloud' && cloud.length > 0) {
+    state.cloudEvidenceStatus = `Cloud evidence archive synced (${cloud.length} receipt${cloud.length === 1 ? '' : 's'}).`;
+  } else if (mode === 'agentic-cloud') {
+    state.cloudEvidenceStatus = 'Cloud evidence archive ready (no receipts yet).';
+  } else if (mode === 'local-bridge') {
+    state.cloudEvidenceStatus = 'Private local mode: receipts stay off Agentic Cloud.';
+  } else {
+    state.cloudEvidenceStatus = 'Cloud evidence archive: sign in to also store receipts in Agentic Cloud.';
+  }
   await requestPersistentLabArtifactStorage();
   await saveLabArtifacts();
 }
@@ -11049,6 +13266,8 @@ function mergeLabArtifacts(...artifactGroups: unknown[][]): LabArtifact[] {
 function isLabArtifact(value: unknown): value is LabArtifact {
   if (!value || typeof value !== 'object') return false;
   const artifact = value as Partial<LabArtifact>;
+  if (artifact.cloudReceiptId !== undefined && typeof artifact.cloudReceiptId !== 'string') return false;
+  if (artifact.bridgeArchived !== undefined && typeof artifact.bridgeArchived !== 'boolean') return false;
   return (
     typeof artifact.id === 'string' &&
     typeof artifact.labId === 'string' &&
