@@ -49,6 +49,40 @@ export interface WalletScopedWorkflowStore {
   listAuditEvents(): Promise<AuditEventRecord[]>;
 }
 
+export interface CloudWorkspaceDeleteCounts {
+  plans: number;
+  approvals: number;
+  transactionFinalizations: number;
+  recurringSchedules: number;
+  recurringOccurrences: number;
+  recurringNotificationDeliveries: number;
+  evidenceReceipts: number;
+  completedRecords: number;
+  auditEvents: number;
+  nonces: number;
+  sessions: number;
+  users: number;
+}
+
+export const emptyCloudWorkspaceDeleteCounts = (): CloudWorkspaceDeleteCounts => ({
+  plans: 0,
+  approvals: 0,
+  transactionFinalizations: 0,
+  recurringSchedules: 0,
+  recurringOccurrences: 0,
+  recurringNotificationDeliveries: 0,
+  evidenceReceipts: 0,
+  completedRecords: 0,
+  auditEvents: 0,
+  nonces: 0,
+  sessions: 0,
+  users: 0,
+});
+
+export interface CloudWorkspaceDeleteStore {
+  deleteCloudWorkspace(walletAddress: string): Promise<CloudWorkspaceDeleteCounts>;
+}
+
 export interface WorkflowStore {
   createAuthNonce(record: AuthNonceRecord): Promise<void>;
   getAuthNonce(nonce: string): Promise<AuthNonceRecord | undefined>;

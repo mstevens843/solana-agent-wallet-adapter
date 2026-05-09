@@ -9,8 +9,10 @@ import {
 
 import {
   AuthValidationError,
+  buildCloudWorkspaceDeleteMessage,
   buildWalletLoginMessage,
   createAuthNonceResponse,
+  createCloudWorkspaceDeleteIntentResponse,
   normalizeWalletAddress,
   parseVerifyWalletRequest,
   verifyWalletSignature,
@@ -35,7 +37,14 @@ import { RecurringService, type RecurringStore } from './recurringService.js';
 import { redactSecrets } from './redaction.js';
 import { RecurringScheduler } from './scheduler.js';
 import { createWalletSession, deleteSessionFromRequest, SESSION_TTL_MS, sessionFromRequest } from './session.js';
-import { sessionResponse, systemClock, type Clock, type WorkflowStore } from './store.js';
+import {
+  sessionResponse,
+  systemClock,
+  type CloudWorkspaceDeleteCounts,
+  type CloudWorkspaceDeleteStore,
+  type Clock,
+  type WorkflowStore,
+} from './store.js';
 import { WorkflowService, type WorkflowStore as OneTimeWorkflowStore } from './workflowService.js';
 import { createWorkflowApiHandler } from './workflowRoutes.js';
 
@@ -52,6 +61,8 @@ const REGISTERED_API_ROUTES = [
   'POST /api/auth/nonce',
   'POST /api/auth/verify-wallet',
   'POST /api/auth/logout',
+  'POST /api/cloud-workspace/delete-intent',
+  'POST /api/cloud-workspace/delete',
   'GET /api/session',
   'GET /api/audit',
   '/api/plans',
@@ -229,6 +240,9 @@ export function createCloudApiRouter(options: CloudApiRouterOptions = {}): Cloud
           url,
           store,
           clock,
+          workflowStore,
+          evidenceStore,
+          recurringStore,
           workflowApiHandler,
           evidenceApiHandler,
           recurringApiHandler,
@@ -313,6 +327,7 @@ function authRateLimitedRoute(pathname: string): AuthRateLimitInput['route'] | u
   if (pathname.startsWith('/api/approvals')) return '/api/approvals:*';
   if (pathname.startsWith('/api/recurring')) return '/api/recurring:*';
   if (pathname.startsWith('/api/evidence')) return '/api/evidence:*';
+  if (pathname.startsWith('/api/cloud-workspace')) return '/api/cloud-workspace:*';
   if (pathname === '/api/auth/logout') return pathname;
   return undefined;
 }
@@ -338,6 +353,9 @@ async function routeApiRequest(
   url: URL,
   store: WorkflowStore,
   clock: Clock,
+  workflowStore: WorkflowStore & OneTimeWorkflowStore,
+  evidenceStore: EvidenceStore,
+  recurringStore: RecurringStore,
   workflowApiHandler: (req: IncomingMessage, res: ServerResponse) => Promise<boolean>,
   evidenceApiHandler: (req: IncomingMessage, res: ServerResponse) => Promise<boolean>,
   recurringApiHandler: (req: IncomingMessage, res: ServerResponse) => Promise<boolean>,
@@ -383,6 +401,27 @@ async function routeApiRequest(
   if (url.pathname === '/api/auth/logout') {
     requireMethod(req, 'POST');
     await handleLogout(req, res, store, clock);
+    return;
+  }
+
+  if (url.pathname === '/api/cloud-workspace/delete-intent') {
+    requireMethod(req, 'POST');
+    await handleCloudWorkspaceDeleteIntent(req, res, url, store, clock);
+    return;
+  }
+
+  if (url.pathname === '/api/cloud-workspace/delete') {
+    requireMethod(req, 'POST');
+    await handleCloudWorkspaceDelete(
+      req,
+      res,
+      url,
+      store,
+      clock,
+      workflowStore,
+      evidenceStore,
+      recurringStore,
+    );
     return;
   }
 
@@ -521,6 +560,86 @@ async function handleLogout(
   writeJson(res, 200, sessionResponse(undefined));
 }
 
+async function handleCloudWorkspaceDeleteIntent(
+  req: IncomingMessage,
+  res: ServerResponse,
+  url: URL,
+  store: WorkflowStore,
+  clock: Clock,
+): Promise<void> {
+  await readJsonBody(req);
+  const session = await sessionFromRequest({ req, store, clock });
+  if (!session) {
+    throw new ApiError(401, 'Sign in required.');
+  }
+  await store.cleanupExpired(clock.now().toISOString());
+  const response = createCloudWorkspaceDeleteIntentResponse({
+    walletAddress: session.walletAddress,
+    domain: requestDomain(req, url),
+    clock,
+  });
+  await store.createAuthNonce({
+    ...response,
+    createdAt: response.issuedAt,
+  });
+  writeJson(res, 200, response);
+}
+
+async function handleCloudWorkspaceDelete(
+  req: IncomingMessage,
+  res: ServerResponse,
+  url: URL,
+  store: WorkflowStore,
+  clock: Clock,
+  workflowStore: WorkflowStore & OneTimeWorkflowStore,
+  evidenceStore: EvidenceStore,
+  recurringStore: RecurringStore,
+): Promise<void> {
+  const session = await sessionFromRequest({ req, store, clock });
+  if (!session) {
+    throw new ApiError(401, 'Sign in required.');
+  }
+  const body = parseCloudWorkspaceDeleteRequest(await readJsonBody(req), session.walletAddress);
+  const nonce = await store.getAuthNonce(body.nonce);
+  const now = clock.now();
+  if (!nonce || nonce.consumedAt) {
+    throw new ApiError(401, 'Invalid or already used deletion nonce.');
+  }
+  if (nonce.walletAddress !== session.walletAddress || body.walletAddress !== session.walletAddress) {
+    throw new ApiError(401, 'Wallet address does not match the signed-in cloud session.');
+  }
+  if (nonce.domain !== requestDomain(req, url) || body.domain !== nonce.domain) {
+    throw new ApiError(401, 'Signed domain does not match this server.');
+  }
+  if (body.issuedAt !== nonce.issuedAt || body.expiresAt !== nonce.expiresAt) {
+    throw new ApiError(401, 'Signed deletion intent metadata does not match the nonce.');
+  }
+  if (Date.parse(nonce.issuedAt) > now.getTime() || Date.parse(nonce.expiresAt) <= now.getTime()) {
+    throw new ApiError(401, 'Deletion nonce has expired.');
+  }
+  const expectedMessage = buildCloudWorkspaceDeleteMessage(nonce);
+  if (body.message !== nonce.message || body.message !== expectedMessage) {
+    throw new ApiError(401, 'Signed message does not match deletion intent.');
+  }
+  if (!verifyWalletSignature(body)) {
+    throw new ApiError(401, 'Wallet signature could not be verified.');
+  }
+  const consumed = await store.consumeAuthNonce(nonce.nonce, clock.now().toISOString());
+  if (!consumed) {
+    throw new ApiError(401, 'Invalid or already used deletion nonce.');
+  }
+
+  const deleted = await deleteCloudWorkspaceRecords(
+    session.walletAddress,
+    store,
+    workflowStore,
+    evidenceStore,
+    recurringStore,
+  );
+  res.setHeader('set-cookie', serializeClearSessionCookie(shouldSetSecureCookie(req)));
+  writeJson(res, 200, { ok: true, signedOut: true, deleted });
+}
+
 async function handleListAuditEvents(
   req: IncomingMessage,
   res: ServerResponse,
@@ -629,6 +748,73 @@ function hostedPlanRequest(input: unknown): AiPlanRequest {
     throw new ApiError(400, 'Missing AI plan request.');
   }
   return input as AiPlanRequest;
+}
+
+interface CloudWorkspaceDeleteRequest {
+  walletAddress: string;
+  nonce: string;
+  message: string;
+  signature: string;
+  domain: string;
+  issuedAt: string;
+  expiresAt: string;
+  signatureEncoding: 'base58' | 'base64';
+}
+
+function parseCloudWorkspaceDeleteRequest(input: unknown, fallbackWalletAddress: string): CloudWorkspaceDeleteRequest {
+  if (!input || typeof input !== 'object' || Array.isArray(input)) {
+    throw new ApiError(400, 'Missing cloud workspace deletion request.');
+  }
+  const record = input as Record<string, unknown>;
+  return {
+    walletAddress: record.walletAddress === undefined
+      ? fallbackWalletAddress
+      : normalizeWalletAddress(record.walletAddress),
+    nonce: requiredDeleteString(record.nonce, 'Missing deletion nonce.'),
+    message: requiredDeleteString(record.message, 'Missing signed deletion message.'),
+    signature: requiredDeleteString(record.signature, 'Missing wallet signature.'),
+    domain: requiredDeleteString(record.domain, 'Missing signed domain.'),
+    issuedAt: requiredDeleteString(record.issuedAt, 'Missing signed issued time.'),
+    expiresAt: requiredDeleteString(record.expiresAt, 'Missing signed expiration time.'),
+    signatureEncoding: parseSignatureEncoding(record.signatureEncoding),
+  };
+}
+
+function requiredDeleteString(value: unknown, message: string): string {
+  const stringValue = stringField(value).trim();
+  if (!stringValue) {
+    throw new ApiError(400, message);
+  }
+  return stringValue;
+}
+
+function parseSignatureEncoding(value: unknown): 'base58' | 'base64' {
+  if (value === undefined || value === 'base58') return 'base58';
+  if (value === 'base64') return 'base64';
+  throw new ApiError(400, 'Unsupported wallet signature encoding.');
+}
+
+async function deleteCloudWorkspaceRecords(
+  walletAddress: string,
+  store: WorkflowStore,
+  _workflowStore: WorkflowStore & OneTimeWorkflowStore,
+  evidenceStore: EvidenceStore,
+  recurringStore: RecurringStore,
+): Promise<CloudWorkspaceDeleteCounts> {
+  if (!isCloudWorkspaceDeleteStore(store)) {
+    throw new ApiError(501, 'Cloud workspace deletion is not supported by the configured store.');
+  }
+  const counts = await store.deleteCloudWorkspace(walletAddress);
+  if ((evidenceStore as unknown) !== store) {
+    counts.evidenceReceipts += await evidenceStore.deleteAllEvidence(walletAddress);
+  }
+  if ((recurringStore as unknown) !== store) {
+    const recurringCounts = await recurringStore.deleteAllRecurringData(walletAddress);
+    counts.recurringSchedules += recurringCounts.recurringSchedules;
+    counts.recurringOccurrences += recurringCounts.recurringOccurrences;
+    counts.recurringNotificationDeliveries += recurringCounts.recurringNotificationDeliveries;
+  }
+  return counts;
 }
 
 async function readJsonBody(req: IncomingMessage): Promise<unknown> {
@@ -750,4 +936,8 @@ function isEvidenceStore(store: WorkflowStore): store is WorkflowStore & Evidenc
 
 function isRecurringStore(store: WorkflowStore): store is WorkflowStore & RecurringStore {
   return typeof (store as Partial<RecurringStore>).listSchedules === 'function';
+}
+
+function isCloudWorkspaceDeleteStore(store: WorkflowStore): store is WorkflowStore & CloudWorkspaceDeleteStore {
+  return typeof (store as Partial<CloudWorkspaceDeleteStore>).deleteCloudWorkspace === 'function';
 }

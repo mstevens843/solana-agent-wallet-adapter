@@ -29,6 +29,7 @@ export interface EvidenceStore {
   getEvidence(walletAddress: string, id: string): Promise<EvidenceReceiptRecord | undefined>;
   saveEvidence(walletAddress: string, record: EvidenceReceiptRecord): Promise<void>;
   deleteEvidence(walletAddress: string, id: string): Promise<boolean>;
+  deleteAllEvidence(walletAddress: string): Promise<number>;
   appendEvidenceAuditEvent(walletAddress: string, event: EvidenceAuditEvent): Promise<void>;
 }
 
@@ -215,6 +216,17 @@ export class MemoryEvidenceStore implements EvidenceStore {
     const record = this.receipts.get(id);
     if (!record || record.walletAddress !== walletAddress) return false;
     return this.receipts.delete(id);
+  }
+
+  async deleteAllEvidence(walletAddress: string): Promise<number> {
+    let deleted = 0;
+    for (const [id, record] of this.receipts) {
+      if (record.walletAddress === walletAddress) {
+        this.receipts.delete(id);
+        deleted += 1;
+      }
+    }
+    return deleted;
   }
 
   async appendEvidenceAuditEvent(_walletAddress: string, event: EvidenceAuditEvent): Promise<void> {

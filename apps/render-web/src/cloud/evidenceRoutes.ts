@@ -67,6 +67,16 @@ export function evidenceStoreAdapterForCloudStore(store: CloudSessionStore): Evi
       if (!record || record.walletAddress !== walletAddress) return false;
       return records.delete(id);
     },
+    async deleteAllEvidence(walletAddress) {
+      let deleted = 0;
+      for (const [id, record] of records) {
+        if (record.walletAddress === walletAddress) {
+          records.delete(id);
+          deleted += 1;
+        }
+      }
+      return deleted;
+    },
     async appendEvidenceAuditEvent(walletAddress, event: EvidenceAuditEvent) {
       await store.forWallet(walletAddress).insertAuditEvent({
         id: event.id,

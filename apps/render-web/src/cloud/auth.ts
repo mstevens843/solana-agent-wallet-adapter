@@ -14,6 +14,7 @@ const ED25519_SPKI_PREFIX = Buffer.from('302a300506032b6570032100', 'hex');
 export const AUTH_NONCE_TTL_MS = 5 * 60 * 1000;
 
 export type AuthNonceResponse = SharedAuthNonceResponse & { walletAddress: string };
+export type CloudWorkspaceDeleteIntentResponse = AuthNonceResponse;
 
 export interface VerifyWalletRequest extends
   Omit<SharedVerifyWalletRequest, 'domain' | 'issuedAt' | 'expiresAt' | 'signatureEncoding'> {
@@ -55,6 +56,26 @@ export function createAuthNonceResponse(input: {
   };
 }
 
+export function createCloudWorkspaceDeleteIntentResponse(input: {
+  walletAddress: string;
+  domain: string;
+  clock: Clock;
+}): CloudWorkspaceDeleteIntentResponse {
+  const issuedAt = input.clock.now();
+  const expiresAt = new Date(issuedAt.getTime() + AUTH_NONCE_TTL_MS);
+  const fields = {
+    domain: input.domain,
+    walletAddress: input.walletAddress,
+    nonce: encodeBase58(randomBytes(24)),
+    issuedAt: issuedAt.toISOString(),
+    expiresAt: expiresAt.toISOString(),
+  };
+  return {
+    ...fields,
+    message: buildCloudWorkspaceDeleteMessage(fields),
+  };
+}
+
 export function buildWalletLoginMessage(fields: LoginMessageFields): string {
   return [
     'Agentic Cloud wants you to sign in with your Solana wallet.',
@@ -66,6 +87,21 @@ export function buildWalletLoginMessage(fields: LoginMessageFields): string {
     `Expires At: ${fields.expiresAt}`,
     '',
     'This signature proves wallet ownership only. It does not grant spending authority, transaction approval, delegated signing, or permission to move funds.',
+  ].join('\n');
+}
+
+export function buildCloudWorkspaceDeleteMessage(fields: LoginMessageFields): string {
+  return [
+    'Agentic Cloud wants you to delete this wallet workspace.',
+    '',
+    `Domain: ${fields.domain}`,
+    `Wallet: ${fields.walletAddress}`,
+    `Nonce: ${fields.nonce}`,
+    `Issued At: ${fields.issuedAt}`,
+    `Expires At: ${fields.expiresAt}`,
+    '',
+    'This signature permanently deletes Agentic Cloud workspace data for this wallet, including drafts, approvals, schedules, receipts, completed history, and app audit events.',
+    'It does not submit a transaction, grant spending authority, delegated signing, or permission to move funds.',
   ].join('\n');
 }
 

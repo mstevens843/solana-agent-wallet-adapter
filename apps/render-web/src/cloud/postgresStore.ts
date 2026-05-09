@@ -19,12 +19,15 @@ import type {
   RecurringStore,
 } from './recurringService.js';
 import type {
+  CloudWorkspaceDeleteCounts,
+  CloudWorkspaceDeleteStore,
   AuditEventRecord,
   AuthNonceRecord,
   WalletScopedWorkflowStore,
   WalletSessionRecord,
   WorkflowStore as SessionWorkflowStore,
 } from './store.js';
+import { emptyCloudWorkspaceDeleteCounts } from './store.js';
 import type { WorkflowStore as OneTimeWorkflowStore } from './workflowService.js';
 import type {
   ApprovalRequestRecord,
@@ -100,7 +103,8 @@ export class PostgresWorkflowStore implements
   OneTimeWorkflowStore,
   EvidenceStore,
   RecurringStore,
-  RecurringNotificationStore {
+  RecurringNotificationStore,
+  CloudWorkspaceDeleteStore {
   private readonly client: PgClient;
   private readonly ownsClient: boolean;
 
@@ -621,6 +625,10 @@ export class PostgresWorkflowStore implements
     return this.deleteByOwner('evidence.delete', 'evidence_receipts', walletAddress, id);
   }
 
+  async deleteAllEvidence(walletAddress: string): Promise<number> {
+    return this.deleteByWallet('evidence.deleteAll', 'evidence_receipts', walletAddress);
+  }
+
   async appendEvidenceAuditEvent(walletAddress: string, event: EvidenceAuditEvent): Promise<void> {
     await this.insertAuditEvent({
       id: event.id,
@@ -674,6 +682,33 @@ export class PostgresWorkflowStore implements
 
   async deleteSchedule(walletAddress: string, id: string): Promise<boolean> {
     return this.deleteByOwner('recurring.schedule.delete', 'recurring_schedules', walletAddress, id);
+  }
+
+  async deleteAllRecurringData(walletAddress: string): Promise<{
+    recurringSchedules: number;
+    recurringOccurrences: number;
+    recurringNotificationDeliveries: number;
+  }> {
+    const recurringNotificationDeliveries = await this.deleteByWallet(
+      'recurring.notification.deleteAllForWallet',
+      'recurring_notification_deliveries',
+      walletAddress,
+    );
+    const recurringOccurrences = await this.deleteByWallet(
+      'recurring.occurrence.deleteAllForWallet',
+      'recurring_occurrences',
+      walletAddress,
+    );
+    const recurringSchedules = await this.deleteByWallet(
+      'recurring.schedule.deleteAllForWallet',
+      'recurring_schedules',
+      walletAddress,
+    );
+    return {
+      recurringSchedules,
+      recurringOccurrences,
+      recurringNotificationDeliveries,
+    };
   }
 
   async listOccurrences(walletAddress: string, scheduleId?: string): Promise<RecurringOccurrenceRecord[]> {
@@ -873,6 +908,93 @@ export class PostgresWorkflowStore implements
     return result.rows.map((row) => jsonRecord(row.record));
   }
 
+  async deleteCloudWorkspace(walletAddress: string): Promise<CloudWorkspaceDeleteCounts> {
+    const client = await this.checkoutClient();
+    await client.query({ text: 'BEGIN' });
+    try {
+      const counts = emptyCloudWorkspaceDeleteCounts();
+      counts.recurringNotificationDeliveries = await deleteByWalletWithClient(
+        client,
+        'cloudWorkspace.recurringNotifications.delete',
+        'recurring_notification_deliveries',
+        walletAddress,
+      );
+      counts.transactionFinalizations = await deleteByWalletWithClient(
+        client,
+        'cloudWorkspace.finalizations.delete',
+        'transaction_finalizations',
+        walletAddress,
+      );
+      counts.recurringOccurrences = await deleteByWalletWithClient(
+        client,
+        'cloudWorkspace.recurringOccurrences.delete',
+        'recurring_occurrences',
+        walletAddress,
+      );
+      counts.recurringSchedules = await deleteByWalletWithClient(
+        client,
+        'cloudWorkspace.recurringSchedules.delete',
+        'recurring_schedules',
+        walletAddress,
+      );
+      counts.evidenceReceipts = await deleteByWalletWithClient(
+        client,
+        'cloudWorkspace.evidence.delete',
+        'evidence_receipts',
+        walletAddress,
+      );
+      counts.completedRecords = await deleteByWalletWithClient(
+        client,
+        'cloudWorkspace.completed.delete',
+        'completed_records',
+        walletAddress,
+      );
+      counts.approvals = await deleteByWalletWithClient(
+        client,
+        'cloudWorkspace.approvals.delete',
+        'approval_requests',
+        walletAddress,
+      );
+      counts.plans = await deleteByWalletWithClient(
+        client,
+        'cloudWorkspace.plans.delete',
+        'plans',
+        walletAddress,
+      );
+      counts.auditEvents = await deleteByWalletWithClient(
+        client,
+        'cloudWorkspace.audit.delete',
+        'audit_events',
+        walletAddress,
+      );
+      counts.nonces = await deleteByWalletWithClient(
+        client,
+        'cloudWorkspace.nonces.delete',
+        'nonces',
+        walletAddress,
+      );
+      counts.sessions = await deleteByWalletWithClient(
+        client,
+        'cloudWorkspace.sessions.delete',
+        'wallet_sessions',
+        walletAddress,
+      );
+      counts.users = await deleteByWalletWithClient(
+        client,
+        'cloudWorkspace.users.delete',
+        'users',
+        walletAddress,
+      );
+      await client.query({ text: 'COMMIT' });
+      return counts;
+    } catch (err) {
+      await client.query({ text: 'ROLLBACK' });
+      throw err;
+    } finally {
+      client.release?.();
+    }
+  }
+
   private async insertAuditEvent(record: AuditEventRecord): Promise<void> {
     await this.ensureUser(record.walletAddress, record.createdAt);
     await this.query({
@@ -958,6 +1080,10 @@ export class PostgresWorkflowStore implements
     return (result.rowCount ?? 0) > 0;
   }
 
+  private async deleteByWallet(name: string, table: string, walletAddress: string): Promise<number> {
+    return deleteByWalletWithClient(this.client, name, table, walletAddress);
+  }
+
   private query<R extends QueryResultRow = QueryResultRow>(query: QueryConfig): Promise<QueryResult<R>> {
     return this.client.query<R>(query);
   }
@@ -976,6 +1102,20 @@ function isPgUniqueViolation(err: unknown, name: string): boolean {
   const pgError = err as { code?: unknown; constraint?: unknown; message?: unknown; detail?: unknown };
   return pgError.code === '23505' &&
     (pgError.constraint === name || String(pgError.message ?? '').includes(name) || String(pgError.detail ?? '').includes(name));
+}
+
+async function deleteByWalletWithClient(
+  client: PgClient,
+  name: string,
+  table: string,
+  walletAddress: string,
+): Promise<number> {
+  const result = await client.query({
+    name,
+    text: `DELETE FROM ${table} WHERE wallet_address = $1`,
+    values: [walletAddress],
+  });
+  return result.rowCount ?? 0;
 }
 
 function approvalExistsError(): Error {

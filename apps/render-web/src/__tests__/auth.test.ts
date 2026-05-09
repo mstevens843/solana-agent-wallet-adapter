@@ -15,6 +15,13 @@ import { MemoryWorkflowStore } from '../cloud/memoryStore.js';
 import type { AuthRateLimiter } from '../cloud/router.js';
 import { createWalletSession, sessionFromRequest } from '../cloud/session.js';
 import type { Clock } from '../cloud/store.js';
+import type {
+  ApprovalRequestRecord,
+  CompletedRecord,
+  JsonObject,
+  PlanDraftRecord,
+  TransactionFinalizationRecord,
+} from '../cloud/workflowValidation.js';
 import { createRenderWebServer } from '../server.js';
 
 interface JsonResponse {
@@ -350,6 +357,79 @@ describe('render web cloud wallet auth', () => {
     });
   });
 
+  it('deletes signed-in cloud workspace data after a wallet-signed deletion intent', async () => {
+    const store = new MemoryWorkflowStore();
+    const wallet = createTestWallet();
+    const recipient = createTestWallet();
+    await withServer(async (port) => {
+      const nonce = await createNonce(port, wallet);
+      const verify = await postJson(port, '/api/auth/verify-wallet', signedVerifyBody(wallet, nonce.body));
+      const cookie = sessionCookie(verify);
+      await seedCloudWorkspace(store, wallet.walletAddress, recipient.walletAddress);
+
+      const recurring = await postJson(port, '/api/recurring', validRecurringBody(recipient.walletAddress), { cookie });
+      expect(recurring.status).toBe(201);
+
+      const evidenceMessage = [
+        'Evidence receipt: Cloud delete test',
+        `Wallet: ${wallet.walletAddress}`,
+        'Approval: approval_delete',
+      ].join('\n');
+      const evidence = await postJson(port, '/api/evidence', {
+        title: 'Cloud delete test',
+        kind: 'intent_receipt',
+        status: 'approved',
+        cluster: 'devnet',
+        payload: { summary: 'Delete this cloud receipt' },
+        preSignatureHash: '0x' + 'a'.repeat(64),
+        signingMessage: evidenceMessage,
+        signature: signMessage(evidenceMessage, wallet.privateKey),
+      }, { cookie });
+      expect(evidence.status).toBe(201);
+
+      const intent = await postJson(port, '/api/cloud-workspace/delete-intent', {}, { cookie });
+      expect(intent.status).toBe(200);
+      expect(String(intent.body.message)).toContain('permanently deletes Agentic Cloud workspace data');
+
+      const deleted = await postJson(
+        port,
+        '/api/cloud-workspace/delete',
+        signedDeleteBody(wallet, intent.body),
+        { cookie },
+      );
+      expect(deleted.status).toBe(200);
+      expect(deleted.body).toMatchObject({
+        ok: true,
+        signedOut: true,
+        deleted: {
+          plans: 1,
+          approvals: 1,
+          transactionFinalizations: 1,
+          completedRecords: 1,
+          recurringSchedules: 1,
+          evidenceReceipts: 1,
+        },
+      });
+      expect(firstSetCookie(deleted)).toContain('Max-Age=0');
+
+      const oldSession = await getJson(port, '/api/session', { cookie });
+      expect(parseSessionResponse(oldSession.body).signedIn).toBe(false);
+
+      const nextSession = await createWalletSession({
+        store,
+        walletAddress: wallet.walletAddress,
+        clock: fixedClock('2026-05-08T18:10:00.000Z'),
+      });
+      const nextCookie = `agentic_session=${nextSession.token}`;
+      expect((await getJson(port, '/api/plans', { cookie: nextCookie })).body.plans).toEqual([]);
+      expect((await getJson(port, '/api/approvals', { cookie: nextCookie })).body.approvals).toEqual([]);
+      expect((await getJson(port, '/api/completed', { cookie: nextCookie })).body.completed).toEqual([]);
+      expect((await getJson(port, '/api/evidence', { cookie: nextCookie })).body.receipts).toEqual([]);
+      expect((await getJson(port, '/api/recurring', { cookie: nextCookie })).body.schedules).toEqual([]);
+      expect((await getJson(port, '/api/audit', { cookie: nextCookie })).body.events).toEqual([]);
+    }, { store });
+  });
+
   it('marks session cookies secure in Render production', async () => {
     await withEnv({ RENDER: 'true' }, async () => {
       await withServer(async (port) => {
@@ -538,6 +618,193 @@ function signedVerifyBody(wallet: TestWallet, nonce: Record<string, unknown>): R
     issuedAt: nonce.issuedAt,
     expiresAt: nonce.expiresAt,
     signatureEncoding: 'base58',
+  };
+}
+
+function signedDeleteBody(wallet: TestWallet, intent: Record<string, unknown>): Record<string, unknown> {
+  return {
+    walletAddress: wallet.walletAddress,
+    nonce: intent.nonce,
+    message: intent.message,
+    signature: signMessage(String(intent.message), wallet.privateKey),
+    domain: intent.domain,
+    issuedAt: intent.issuedAt,
+    expiresAt: intent.expiresAt,
+    signatureEncoding: 'base58',
+  };
+}
+
+async function seedCloudWorkspace(
+  store: MemoryWorkflowStore,
+  walletAddress: string,
+  recipient: string,
+): Promise<void> {
+  const now = '2026-05-08T18:00:00.000Z';
+  const plan = samplePlan(walletAddress, recipient, now);
+  const approval = sampleApproval(walletAddress, recipient, now, plan.id);
+  await store.savePlan(walletAddress, plan);
+  await store.saveApproval(walletAddress, approval);
+  await store.saveFinalization(walletAddress, sampleFinalization(walletAddress, recipient, now, approval.id, plan.id));
+  await store.saveCompleted(walletAddress, sampleCompleted(walletAddress, recipient, now, approval.id, plan.id));
+  await store.forWallet(walletAddress).insertAuditEvent({
+    id: 'audit_delete',
+    type: 'test.delete_seeded',
+    createdAt: now,
+    metadata: {
+      recordType: 'approval',
+      recordId: approval.id,
+    },
+  });
+}
+
+function samplePlan(walletAddress: string, recipient: string, now: string): PlanDraftRecord {
+  return {
+    id: 'plan_delete',
+    walletAddress,
+    plan: samplePlanPayload(recipient),
+    title: 'Delete test plan',
+    intent: 'Send 0.25 SOL to recipient',
+    route: 'Wallet approval required.',
+    risk: 'Medium risk.',
+    approval: 'Review in wallet before signing.',
+    source: 'template',
+    category: 'payments',
+    actionType: 'transfer_sol',
+    parameters: {
+      recipient,
+      amount: '0.25',
+    },
+    fields: [
+      { label: 'Recipient address', value: recipient },
+      { label: 'Amount SOL', value: '0.25' },
+    ],
+    safeguards: ['Wallet approval is required.'],
+    status: 'draft',
+    createdAt: now,
+    updatedAt: now,
+    templateId: 'transfer-sol',
+    templateTitle: 'Send SOL',
+    prompt: 'Send 0.25 SOL',
+    cluster: 'devnet',
+  };
+}
+
+function sampleApproval(
+  walletAddress: string,
+  recipient: string,
+  now: string,
+  planDraftId: string,
+): ApprovalRequestRecord {
+  return {
+    id: 'approval_delete',
+    walletAddress,
+    planDraftId,
+    kind: 'transfer_sol',
+    status: 'ready',
+    summary: 'Delete test approval',
+    params: {
+      recipient,
+      amount: '0.25',
+    },
+    cluster: 'devnet',
+    dueAt: now,
+    createdAt: now,
+    updatedAt: now,
+    finalizationRequirement: 'transaction_preview',
+  };
+}
+
+function sampleCompleted(
+  walletAddress: string,
+  recipient: string,
+  now: string,
+  approvalRequestId: string,
+  planDraftId: string,
+): CompletedRecord {
+  return {
+    id: 'completed_delete',
+    kind: 'one_time',
+    status: 'approved',
+    title: 'Delete test completed',
+    summary: 'Completed record slated for deletion',
+    walletAddress,
+    createdAt: now,
+    completedAt: now,
+    cluster: 'devnet',
+    amount: '0.25',
+    token: 'SOL',
+    recipient,
+    approvalRequestId,
+    planDraftId,
+    copyPayload: { approvalRequestId },
+    detailRows: [['Status', 'approved']],
+  };
+}
+
+function sampleFinalization(
+  walletAddress: string,
+  recipient: string,
+  now: string,
+  approvalRequestId: string,
+  planDraftId: string,
+): TransactionFinalizationRecord {
+  return {
+    id: 'finalization_delete',
+    walletAddress,
+    approvalRequestId,
+    planDraftId,
+    kind: 'transfer_sol',
+    status: 'prepared',
+    cluster: 'devnet',
+    walletAction: {
+      kind: 'transfer_sol',
+      walletAddress,
+      cluster: 'devnet',
+      summary: 'Delete test finalization',
+      sender: walletAddress,
+      recipient,
+      amount: '0.25',
+      token: 'SOL',
+      instructionSummary: ['Transfer 0.25 SOL'],
+      touchedPrograms: ['11111111111111111111111111111111'],
+    },
+    transactionHash: '0x' + 'b'.repeat(64),
+    createdAt: now,
+    updatedAt: now,
+    expiresAt: '2026-05-08T18:10:00.000Z',
+  };
+}
+
+function samplePlanPayload(recipient: string): JsonObject {
+  return {
+    intent: 'Send 0.25 SOL to recipient',
+    route: 'Wallet approval required.',
+    risk: 'Medium risk.',
+    approval: 'Review in wallet before signing.',
+    source: 'template',
+    category: 'payments',
+    actionType: 'transfer_sol',
+    templateTitle: 'Send SOL',
+    parameters: {
+      recipient,
+      amount: '0.25',
+    },
+    fields: [
+      { label: 'Recipient address', value: recipient },
+      { label: 'Amount SOL', value: '0.25' },
+    ],
+    safeguards: ['Wallet approval is required.'],
+  };
+}
+
+function validRecurringBody(recipient: string): Record<string, unknown> {
+  return {
+    cluster: 'devnet',
+    token: 'SOL',
+    recipient,
+    amount: '0.10',
+    cadence: 'interval_minutes',
+    intervalMinutes: 10,
   };
 }
 

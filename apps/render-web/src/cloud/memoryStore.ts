@@ -1,4 +1,6 @@
 import type {
+  CloudWorkspaceDeleteCounts,
+  CloudWorkspaceDeleteStore,
   AuditEventRecord,
   AuthNonceRecord,
   WalletScopedWorkflowStore,
@@ -13,8 +15,9 @@ import type {
   TransactionFinalizationRecord,
 } from '@solana-agent-wallet-adapter/workflow';
 import type { WorkflowStore as OneTimeWorkflowStore } from './workflowService.js';
+import { emptyCloudWorkspaceDeleteCounts } from './store.js';
 
-export class MemoryWorkflowStore implements SessionWorkflowStore, OneTimeWorkflowStore {
+export class MemoryWorkflowStore implements SessionWorkflowStore, OneTimeWorkflowStore, CloudWorkspaceDeleteStore {
   private readonly nonces = new Map<string, AuthNonceRecord>();
   private readonly sessions = new Map<string, WalletSessionRecord>();
   private readonly auditEvents = new Map<string, AuditEventRecord[]>();
@@ -217,11 +220,35 @@ export class MemoryWorkflowStore implements SessionWorkflowStore, OneTimeWorkflo
       },
     });
   }
+
+  async deleteCloudWorkspace(walletAddress: string): Promise<CloudWorkspaceDeleteCounts> {
+    const counts = emptyCloudWorkspaceDeleteCounts();
+    counts.nonces = deleteOwned(this.nonces, (record) => record.walletAddress === walletAddress);
+    counts.sessions = deleteOwned(this.sessions, (record) => record.walletAddress === walletAddress);
+    counts.auditEvents = this.auditEvents.get(walletAddress)?.length ?? 0;
+    this.auditEvents.delete(walletAddress);
+    counts.plans = deleteOwned(this.plans, (record) => record.walletAddress === walletAddress);
+    counts.approvals = deleteOwned(this.approvals, (record) => record.walletAddress === walletAddress);
+    counts.completedRecords = deleteOwned(this.completed, (record) => record.walletAddress === walletAddress);
+    counts.transactionFinalizations = deleteOwned(this.finalizations, (record) => record.walletAddress === walletAddress);
+    return counts;
+  }
 }
 
 function ownerClone<T extends { walletAddress: string }>(record: T | undefined, walletAddress: string): T | undefined {
   if (!record || record.walletAddress !== walletAddress) return undefined;
   return clone(record);
+}
+
+function deleteOwned<T>(records: Map<string, T>, predicate: (record: T) => boolean): number {
+  let deleted = 0;
+  for (const [id, record] of records) {
+    if (predicate(record)) {
+      records.delete(id);
+      deleted += 1;
+    }
+  }
+  return deleted;
 }
 
 function clone<T>(value: T): T {

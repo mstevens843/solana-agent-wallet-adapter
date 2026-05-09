@@ -108,6 +108,7 @@ type StepState = 'idle' | 'active' | 'done' | 'error';
 type StepName = 'discover' | 'connect' | 'sign' | 'transaction' | 'bridge' | 'inbox' | 'lab' | 'ai';
 type ActiveTab = 'overview' | 'wallet' | 'agent' | 'generated' | 'inbox' | 'completed' | 'schedule' | 'labs';
 type CommandCenterView = 'center' | 'ai' | 'storage';
+type CommandCenterIconId = 'wallet' | 'approvals' | 'recurring' | 'proofs';
 type ArtifactView = 'create' | 'signed';
 type OneTimePlanView = 'create' | 'review';
 type RecurringView = 'create' | 'active';
@@ -164,6 +165,7 @@ interface SelectPickerOption {
   label: string;
   meta?: string;
   detail?: string;
+  logoId?: BrandLogoId;
   disabled?: boolean;
   title?: string;
 }
@@ -349,9 +351,11 @@ const ANDROID_RELEASE_ASSETS = [
 const AGENTIC_MARK_LOGO = new URL('../../../assets/agentic/saturn-source-cutout.png', import.meta.url).href;
 
 type BrandLogoId =
+  | 'agentRouter'
   | 'backpack'
   | 'claude'
   | 'codex'
+  | 'gemini'
   | 'jupiter'
   | 'phantom'
   | 'solana'
@@ -360,9 +364,11 @@ type BrandLogoId =
   | 'vercel';
 
 const BRAND_LOGOS: Record<BrandLogoId, string> = {
+  agentRouter: new URL('./assets/logos/agent-router.svg', import.meta.url).href,
   backpack: new URL('./assets/logos/backpack.svg', import.meta.url).href,
   claude: new URL('./assets/logos/claude.svg', import.meta.url).href,
   codex: new URL('./assets/logos/codex.svg', import.meta.url).href,
+  gemini: new URL('./assets/logos/gemini.svg', import.meta.url).href,
   jupiter: new URL('./assets/logos/jupiter.svg', import.meta.url).href,
   phantom: new URL('./assets/logos/phantom.svg', import.meta.url).href,
   solana: new URL('./assets/logos/solana.svg', import.meta.url).href,
@@ -463,10 +469,32 @@ interface CloudSessionState {
 
 type CloudSessionResponse = WorkflowSessionResponse;
 type CloudAuthNonceResponse = WorkflowAuthNonceResponse;
+type CloudWorkspaceDeleteIntentResponse = CloudAuthNonceResponse;
 type CloudPlanDraftRecord = WorkflowPlanDraftRecord;
 type CloudApprovalRequestRecord = WorkflowApprovalRequestRecord;
 type CloudCompletedRecord = WorkflowCompletedRecord;
 type CloudTransactionFinalizationRecord = WorkflowTransactionFinalizationRecord;
+
+interface CloudWorkspaceDeleteCounts {
+  plans?: number;
+  approvals?: number;
+  transactionFinalizations?: number;
+  recurringSchedules?: number;
+  recurringOccurrences?: number;
+  recurringNotificationDeliveries?: number;
+  evidenceReceipts?: number;
+  completedRecords?: number;
+  auditEvents?: number;
+  nonces?: number;
+  sessions?: number;
+  users?: number;
+}
+
+interface CloudWorkspaceDeleteResponse {
+  ok: boolean;
+  signedOut: boolean;
+  deleted: CloudWorkspaceDeleteCounts;
+}
 
 interface GeneratedPlanRecord {
   id: string;
@@ -850,6 +878,7 @@ interface DemoState {
   inboxFilter: InboxFilter;
   workflowModePreference: WorkflowModePreference;
   cloudSession: CloudSessionState;
+  cloudWorkspaceDeleteModalOpen: boolean;
   wallets: DiscoveredWallet[];
   selectedWalletName: string;
   androidNativeEnvironment: AndroidNativeEnvironment;
@@ -1447,6 +1476,7 @@ const state: DemoState = {
     expiresAt: '',
     error: '',
   },
+  cloudWorkspaceDeleteModalOpen: false,
   wallets: [],
   selectedWalletName: persisted.selectedWalletName ?? '',
   androidNativeEnvironment: detectAndroidNativeEnvironment(),
@@ -1574,6 +1604,11 @@ async function startApp(): Promise<void> {
 }
 
 function handleGlobalKeydown(event: KeyboardEvent): void {
+  if (event.key === 'Escape' && state.cloudWorkspaceDeleteModalOpen) {
+    event.preventDefault();
+    closeCloudWorkspaceDeleteModal();
+    return;
+  }
   if (event.key === 'Escape' && state.generatedPlanAuditId) {
     event.preventDefault();
     closeGeneratedPlanAuditModal();
@@ -1738,6 +1773,7 @@ function pageShell(content: string, activeRoute: AppRoute | null): string {
       ${toastStack()}
       ${homepageNav(activeRoute)}
       ${content}
+      ${cloudWorkspaceDeleteModal()}
       ${homepageFooter()}
     </section>
   `;
@@ -1900,7 +1936,7 @@ function privacyPage(): string {
         <p>SolPulse LLC operates globally. Your information may be processed in countries outside of your jurisdiction of residence, which may have different data protection laws. Where required by law, we use appropriate safeguards, such as standard contractual clauses, to protect cross-border data transfers. By using the Platform, you consent to this processing and transfer of your information.</p>
 
         <h3>8. Your Rights</h3>
-        <p>Depending on your jurisdiction, you may have the right to request access to your personal information, request deletion of your personal data, or opt out of email communications. To exercise these rights, email us at support@solpulse.trade. We will remove your personal data within 30 days of a verified request, except where retention is required by law (e.g., compliance logs).</p>
+        <p>Depending on your jurisdiction, you may have the right to request access to your personal information, request deletion of your personal data, or opt out of email communications. Signed-in Agentic Cloud users can also delete wallet-scoped Cloud Workspace Data from the Connect Cloud Storage tab after signing a wallet ownership confirmation. To exercise broader rights, email us at support@solpulse.trade. We will remove your personal data within 30 days of a verified request, except where retention is required by law (e.g., compliance logs).</p>
 
         <h3>9. Updates to This Policy</h3>
         <p>We may update this Privacy Policy from time to time. The most current version will always be available at https://agenticwalletadapter.com/privacy. Your continued use of Agentic after changes are posted signifies your acceptance of those changes.</p>
@@ -2393,6 +2429,7 @@ function agentRuntimeStrip(): string {
   const runtimes: Array<{ name: string; logoId?: BrandLogoId }> = [
     { name: 'Claude', logoId: 'claude' },
     { name: 'Codex', logoId: 'codex' },
+    { name: 'Gemini', logoId: 'gemini' },
     { name: 'MCP' },
     { name: 'Vercel AI', logoId: 'vercel' },
     { name: 'Solana Agent Kit', logoId: 'solana' },
@@ -4209,7 +4246,7 @@ function commandCenterPanel(): string {
       <div class="command-subtab-row" role="tablist" aria-label="Command center sections">
         ${commandCenterSubtab('center', 'Center', 'Command overview')}
         ${commandCenterSubtab('ai', 'Connect AI', 'Agent setup')}
-        ${commandCenterSubtab('storage', 'Connect Cloud Storage', 'Cloud and local workspace')}
+        ${commandCenterSubtab('storage', 'Connect Cloud Storage', 'Device and cloud workspace')}
       </div>
       ${state.commandCenterView === 'ai'
         ? commandCenterAiPanel()
@@ -4269,9 +4306,9 @@ function commandCenterOverviewPanel(): string {
 
         <div class="command-center-grid">
           ${commandCenterWalletCard()}
-          ${commandCenterCard('Approvals', `${openApprovals.length} pending`, openApprovals[0]?.summary ?? 'No approvals waiting', openApprovals.length ? 'warn' : 'idle', 'open-inbox', openApprovals.length ? 'Review' : 'Open')}
-          ${commandCenterCard('Recurring', `${recurringActive.length} active`, recurringActive[0] ? scheduleLabel(recurringActive[0]) : 'No active recurring schedules', recurringActive.length ? 'good' : 'idle', 'open-recurring', 'Open')}
-          ${commandCenterCard('Proofs', proofLabel, latestProof ? formatDateTime(latestProof.createdAt) : latestHistory ? formatDateTime(latestHistory.completedAt) : 'Create a receipt proof or complete an approval', latestProof || latestHistory ? 'good' : 'idle', 'open-proofs', latestProof || latestHistory ? 'View' : 'Create')}
+          ${commandCenterCard('Approvals', `${openApprovals.length} pending`, openApprovals[0]?.summary ?? 'No approvals waiting', openApprovals.length ? 'warn' : 'idle', 'open-inbox', openApprovals.length ? 'Review' : 'Open', 'approvals')}
+          ${commandCenterCard('Recurring', `${recurringActive.length} active`, recurringActive[0] ? scheduleLabel(recurringActive[0]) : 'No active recurring schedules', recurringActive.length ? 'good' : 'idle', 'open-recurring', 'Open', 'recurring')}
+          ${commandCenterCard('Proofs', proofLabel, latestProof ? formatDateTime(latestProof.createdAt) : latestHistory ? formatDateTime(latestHistory.completedAt) : 'Create a receipt proof or complete an approval', latestProof || latestHistory ? 'good' : 'idle', 'open-proofs', latestProof || latestHistory ? 'View' : 'Create', 'proofs')}
         </div>
       </section>
     </div>
@@ -4288,7 +4325,6 @@ function commandCenterAiPanel(): string {
           ${sectionTitleLine('Connect AI', 'Set up the agent route, provider, model, and connection boundary. Workflow actions still require explicit review.')}
           <div class="command-center-actions">
             <button type="button" class="primary" data-one-time-view="create">Create Agent Action</button>
-            <button type="button" class="utility" data-command-center-view="storage">Connect Cloud Storage</button>
           </div>
         </div>
 
@@ -4313,6 +4349,10 @@ function commandCenterAiPanel(): string {
           )}
         </div>
 
+        ${state.aiSettings.mode === 'bridge' ? localRuntimeGuide('command-bridge-prereq') : ''}
+
+        ${commandAiWorkflowEducation()}
+
         <div class="command-ai-boundary">
           <strong>${configured ? confirmed ? 'Planner confirmed' : 'Planner configured' : 'Templates work without AI'}</strong>
           <span>No AI route can approve, submit, sign, move funds, or change workflow authority.</span>
@@ -4321,6 +4361,55 @@ function commandCenterAiPanel(): string {
         ${aiSettingsCard('planner')}
       </section>
     </div>
+  `;
+}
+
+function commandAiWorkflowEducation(): string {
+  return `
+    <section class="command-ai-education" aria-label="AI workflow capabilities">
+      <div class="command-ai-principle">
+        <span>Benefits of connecting AI</span>
+        <strong>Workflow-first. Wallet-approved. AI-optional.</strong>
+        <p>AI changes the drafting and intelligence layer. It does not change who approves, signs, submits, or owns authority.</p>
+      </div>
+      <div class="command-ai-info-grid">
+        ${commandAiInfoCard(
+          'No AI / Templates',
+          'Manual setup',
+          'User fills the fields; the app creates a structured plan, queues Inbox work, schedules recurring actions, and saves receipts.',
+          'Best for deterministic actions where the user already knows the exact fields.',
+        )}
+        ${commandAiInfoCard(
+          'Hosted BYOK',
+          'Natural-language setup',
+          'User brings a provider key; Agentic calls AI to translate messy intent into a structured workflow plan.',
+          'More capable at understanding intent, not more powerful over approval.',
+        )}
+        ${commandAiInfoCard(
+          IS_ANDROID_APP ? 'Android Session AI' : 'Browser Session AI',
+          'Session drafting',
+          `AI drafts inside ${IS_ANDROID_APP ? 'this app runtime' : 'this browser session'}, then the plan enters the same normalized workflow pipeline.`,
+          'Useful for temporary keys, but subject to provider and session limits.',
+        )}
+        ${commandAiInfoCard(
+          'Local Bridge',
+          'Private local mode',
+          'AI and workflow storage can run through the local runtime when the user wants private machine-local control.',
+          'Still ends at explicit wallet approval and local signing.',
+        )}
+      </div>
+    </section>
+  `;
+}
+
+function commandAiInfoCard(title: string, badge: string, detail: string, foot: string): string {
+  return `
+    <article class="command-ai-info-card">
+      <span>${escapeHtml(badge)}</span>
+      <strong>${escapeHtml(title)}</strong>
+      <p>${escapeHtml(detail)}</p>
+      <em>${escapeHtml(foot)}</em>
+    </article>
   `;
 }
 
@@ -4348,22 +4437,31 @@ function commandAiRouteCard(mode: AiSettings['mode'], title: string, detail: str
 }
 
 function commandCenterStoragePanel(): string {
+  const signedIn = state.cloudSession.status === 'signed-in' && cloudSessionMatchesWallet();
+  const unavailable = state.cloudSession.status === 'unavailable';
+  const headerAction = !state.address
+    ? ''
+    : unavailable
+      ? `<button type="button" class="utility" disabled>Cloud unavailable</button>`
+      : signedIn
+        ? `<button type="button" class="utility" disabled>Cloud connected</button>`
+        : `<button type="button" class="primary" data-cloud-action="sign-in" ${state.busy ? 'disabled' : ''}>Connect Cloud Storage</button>`;
   return `
     <div class="command-detail-stack command-storage-panel">
       <section class="approval-object signature-stage command-page-card">
         <div class="signature-object-head command-center-head">
-          ${sectionTitleLine('Connect Cloud Storage', 'Connect Agentic Cloud or the local bridge for workspace storage; signed-out mode stays on this device.')}
-          <div class="command-center-actions">
-            <button type="button" class="primary" data-first-run-action="cloud-sign-in" ${!state.address || state.cloudSession.status === 'unavailable' || state.busy ? 'disabled' : ''}>Sign in</button>
-            <button type="button" class="utility" data-bridge-action="connect" ${!state.address || state.busy ? 'disabled' : ''}>Check local bridge</button>
+          ${sectionTitleLine('Connect Cloud Storage', 'Choose browser-local storage or sign in to Agentic Cloud. No localhost required.')}
+          <div class="command-center-actions" ${headerAction ? '' : 'hidden'}>
+            ${headerAction}
           </div>
         </div>
 
         <div class="command-storage-grid" aria-label="Workspace storage modes">
           ${commandStorageDeviceCard()}
           ${commandStorageCloudCard()}
-          ${commandStorageBridgeCard()}
         </div>
+
+        ${commandCloudStorageEducation()}
 
         <div class="command-storage-note">
           <strong>Wallet safety</strong>
@@ -4371,12 +4469,7 @@ function commandCenterStoragePanel(): string {
           <span>Signed-out plans, approvals, and proofs stay on this device. No localhost is required.</span>
         </div>
 
-        ${!state.bridgeActive ? `
-          <details class="bridge-setup-details command-storage-runtime">
-            <summary>Advanced local setup</summary>
-            ${localRuntimeGuide('storage-runtime-guide')}
-          </details>
-        ` : ''}
+        ${commandCloudStorageDangerZone()}
       </section>
     </div>
   `;
@@ -4391,10 +4484,10 @@ function commandStorageDeviceCard(): string {
         <span>Saved on device</span>
         <strong>${active ? 'Active' : 'Available'}</strong>
       </div>
-      <p>Browser-local workflow for signed-out use. Plans, approvals, recurring schedules, and receipts stay here.</p>
+      <p>Plans, approvals, recurring schedules, and proofs stay on this device. No localhost required.</p>
       <div class="command-storage-facts">
+        <span>Saved on this device</span>
         <span>No localhost</span>
-        <span>No key custody</span>
       </div>
       <div class="command-storage-actions">
         ${signedIn
@@ -4407,11 +4500,77 @@ function commandStorageDeviceCard(): string {
   `;
 }
 
+function commandCloudStorageEducation(): string {
+  return `
+    <section class="command-ai-education command-cloud-education" aria-label="Cloud storage benefits">
+      <div class="command-ai-principle">
+        <span>Benefits of connecting Cloud Storage</span>
+        <strong>Durable workflow state without wallet custody.</strong>
+        <p>Storage controls where unsigned plans, Inbox, history, schedules, and receipts live. AI setup stays in Connect AI.</p>
+      </div>
+      <div class="command-ai-info-grid">
+        ${commandAiInfoCard(
+          'Cloud Approval Inbox',
+          'Cross-session review',
+          'Save drafts and due approval items to a wallet-scoped cloud Inbox instead of only this browser.',
+          'The wallet still signs every decision proof or supported transaction.',
+        )}
+        ${commandAiInfoCard(
+          'Recurring Scheduler',
+          'Background workflow',
+          'Cloud recurring schedules can create due Inbox items, track occurrence history, pause/resume, expiry, and spend caps.',
+          'AI can draft terms, but Cloud stores and schedules the workflow.',
+        )}
+        ${commandAiInfoCard(
+          'History + Receipts',
+          'Persistent audit trail',
+          'Completed plans, evidence receipts, risk metadata, and audit events survive refreshes and device changes.',
+          'Receipt records are wallet-scoped and do not grant signing authority.',
+        )}
+        ${commandAiInfoCard(
+          'No Key Custody',
+          'Identity only',
+          'Cloud sign-in proves wallet ownership for sync. It must not store seed phrases, private keys, delegated signers, or AI provider keys.',
+          'Cloud makes the workflow durable; it cannot move funds by itself.',
+        )}
+      </div>
+    </section>
+  `;
+}
+
+function commandCloudStorageDangerZone(): string {
+  if (state.cloudSession.status !== 'signed-in') return '';
+  const matched = cloudSessionMatchesWallet();
+  const reason = matched
+    ? 'Permanently delete this wallet\'s Agentic Cloud drafts, Inbox, schedules, receipts, completed history, and app audit events.'
+    : `Connect ${short(state.cloudSession.walletAddress)} to delete this cloud workspace.`;
+  return `
+    <div class="command-storage-danger-zone">
+      <div>
+        <span>Danger zone</span>
+        <strong>Delete Cloud Workspace Data</strong>
+        <p>${escapeHtml(reason)} Saved-on-device data and on-chain history remain unchanged.</p>
+      </div>
+      <button
+        type="button"
+        class="utility danger"
+        data-cloud-action="delete-workspace"
+        ${!matched || state.busy ? 'disabled' : ''}
+        title="${escapeHtml(matched ? 'Requires a wallet signature before deletion.' : reason)}"
+      >
+        Delete Cloud Workspace Data
+      </button>
+    </div>
+  `;
+}
+
 function commandStorageCloudCard(): string {
   const active = activeWorkflowMode() === 'agentic-cloud';
   const signedIn = state.cloudSession.status === 'signed-in';
   const unavailable = state.cloudSession.status === 'unavailable';
   const matched = cloudSessionMatchesWallet();
+  const selectedProvider = discoveredSelectedWalletName();
+  const hasDiscoveredWallet = state.wallets.length > 0 && Boolean(selectedProvider);
   const status = unavailable
     ? 'Unavailable'
     : active
@@ -4421,7 +4580,7 @@ function commandStorageCloudCard(): string {
         : 'Signed out';
   const detail = signedIn && !matched
     ? `Signed in as ${short(state.cloudSession.walletAddress)}. Connect that wallet to use cloud workflow.`
-    : 'Optional sync for one-time drafts, approvals, recurring schedules, and completed history.';
+    : 'Optional sync for one-time drafts, approvals, recurring schedules, receipts, and completed history.';
   return `
     <article class="command-storage-card ${active ? 'active' : ''}">
       <div class="command-storage-card-head">
@@ -4435,7 +4594,25 @@ function commandStorageCloudCard(): string {
       </div>
       <div class="command-storage-actions">
         ${!state.address
-          ? `<button type="button" class="utility" data-first-run-action="connect-wallet" ${state.busy ? 'disabled' : ''}>Connect wallet</button>`
+          ? `
+            <button
+              type="button"
+              class="primary command-storage-discover"
+              data-first-run-action="discover-wallets"
+              ${state.busy ? 'disabled' : ''}
+            >
+              Discover
+            </button>
+            <button
+              type="button"
+              class="${hasDiscoveredWallet ? 'primary' : 'utility'} command-storage-connect"
+              data-first-run-action="connect-wallet"
+              ${hasDiscoveredWallet && !state.busy ? '' : 'disabled'}
+              title="${hasDiscoveredWallet ? 'Connect the selected wallet provider.' : 'Discover and select a wallet provider first.'}"
+            >
+              Connect wallet
+            </button>
+          `
           : unavailable
             ? `<button type="button" class="utility" disabled>Cloud unavailable</button>`
             : signedIn
@@ -4446,41 +4623,15 @@ function commandStorageCloudCard(): string {
   `;
 }
 
-function commandStorageBridgeCard(): string {
-  const active = activeWorkflowMode() === 'local-bridge';
-  const connected = state.bridgeActive;
-  const status = active ? 'Active' : connected ? 'Connected' : 'Not connected';
-  return `
-    <article class="command-storage-card ${active ? 'active' : ''}">
-      <div class="command-storage-card-head">
-        <span>Private Local Bridge</span>
-        <strong>${escapeHtml(status)}</strong>
-      </div>
-      <p>Use the local runtime when workflow storage should stay on this computer.</p>
-      <div class="command-storage-facts">
-        <span>Endpoint ${escapeHtml(compactEndpoint(state.bridgeUrl))}</span>
-        <span>${state.address ? short(state.address) : 'Wallet required'}</span>
-      </div>
-      <div class="command-storage-actions">
-        ${connected
-          ? active
-            ? `<button type="button" class="utility" data-workflow-mode="auto" ${state.busy ? 'disabled' : ''}>Use cloud/browser</button>`
-            : `<button type="button" class="primary" data-workflow-mode="local-bridge" ${!state.address || state.busy ? 'disabled' : ''}>Use private local mode</button>`
-          : `<button type="button" class="utility" data-bridge-action="connect" ${!state.address || state.busy ? 'disabled' : ''}>Check local bridge</button>`}
-      </div>
-    </article>
-  `;
-}
-
 function commandCenterWalletCard(): string {
   if (state.address) {
-    return commandCenterCard('Wallet', 'Connected', short(state.address), 'good', 'open-create-plan', 'Open');
+    return commandCenterCard('Wallet', 'Connected', short(state.address), 'good', 'open-create-plan', 'Open', 'wallet');
   }
   const nativeWallet = state.androidNativeEnvironment.isAndroidNative || state.iosNativeEnvironment.isIosNative;
   if (nativeWallet) {
     return `
       <article class="command-center-card command-wallet-card warn">
-        <span>Wallet</span>
+        ${commandCenterCardLabel('Wallet', 'wallet')}
         <strong>Connect wallet</strong>
         <p>No signing authority granted</p>
         <div class="command-wallet-actions single">
@@ -4493,13 +4644,13 @@ function commandCenterWalletCard(): string {
   }
   const selectedProvider = discoveredSelectedWalletName();
   const hasDiscoveredWallet = state.wallets.length > 0 && Boolean(selectedProvider);
-  const discoverLabel = state.wallets.length ? 'Refresh' : 'Discover wallets';
+  const discoverLabel = state.wallets.length ? 'Refresh' : 'Discover';
   const detail = hasDiscoveredWallet
     ? `${state.wallets.length} provider${state.wallets.length === 1 ? '' : 's'} discovered - ${selectedProvider}`
     : 'No signing authority granted';
   return `
     <article class="command-center-card command-wallet-card warn">
-      <span>Wallet</span>
+      ${commandCenterCardLabel('Wallet', 'wallet')}
       <strong>Connect wallet</strong>
       <p>${escapeHtml(detail)}</p>
       <div class="command-wallet-actions">
@@ -4534,7 +4685,15 @@ function commandLoopStep(label: string, detail: string, complete: boolean): stri
   `;
 }
 
-function commandCenterCard(label: string, value: string, detail: string, tone: string, action: FirstRunActionId | 'open-recurring' | 'open-proofs', buttonLabel = 'Open'): string {
+function commandCenterCard(
+  label: string,
+  value: string,
+  detail: string,
+  tone: string,
+  action: FirstRunActionId | 'open-recurring' | 'open-proofs',
+  buttonLabel = 'Open',
+  icon?: CommandCenterIconId,
+): string {
   const disabled = action === 'connect-wallet'
     ? !state.address && state.wallets.length === 0 && !state.androidNativeEnvironment.isAndroidNative && !state.iosNativeEnvironment.isIosNative
     : false;
@@ -4545,13 +4704,36 @@ function commandCenterCard(label: string, value: string, detail: string, tone: s
       : '';
   return `
     <article class="command-center-card ${escapeHtml(tone)}">
-      <span>${escapeHtml(label)}</span>
+      ${commandCenterCardLabel(label, icon)}
       <strong>${escapeHtml(value)}</strong>
       <p>${escapeHtml(detail)}</p>
       ${targetTab
         ? `<button type="button" class="utility" data-tab="${escapeHtml(targetTab)}" ${action === 'open-recurring' ? 'data-recurring-view="active"' : ''}>${escapeHtml(buttonLabel)}</button>`
         : `<button type="button" class="utility" data-first-run-action="${escapeHtml(action)}" ${disabled ? 'disabled' : ''}>${escapeHtml(buttonLabel)}</button>`}
     </article>
+  `;
+}
+
+function commandCenterCardLabel(label: string, icon?: CommandCenterIconId): string {
+  return `
+    <span class="command-center-card-label">
+      ${icon ? commandCenterIcon(icon) : ''}
+      <span>${escapeHtml(label)}</span>
+    </span>
+  `;
+}
+
+function commandCenterIcon(icon: CommandCenterIconId): string {
+  const paths: Record<CommandCenterIconId, string> = {
+    wallet: '<path d="M4.75 7.75h13.5a2 2 0 0 1 2 2v6.5a2 2 0 0 1-2 2H5.75a2 2 0 0 1-2-2v-9a2 2 0 0 1 2-2h11.5" /><path d="M15.75 12.25h4.5v3.25h-4.5a1.63 1.63 0 0 1 0-3.25Z" /><path d="M7 5.75 15.5 4" />',
+    approvals: '<path d="M8.75 5.75h6.5" /><path d="M9.25 4.25h5.5a1 1 0 0 1 1 1v1.5h-7.5v-1.5a1 1 0 0 1 1-1Z" /><path d="M7 6.75H5.75a2 2 0 0 0-2 2v9.5a2 2 0 0 0 2 2h12.5a2 2 0 0 0 2-2v-9.5a2 2 0 0 0-2-2H17" /><path d="m8 14 2.35 2.35L16 10.75" />',
+    recurring: '<path d="M17.25 7.25h-7.5a4 4 0 0 0-3.63 2.31" /><path d="m14.75 4.75 2.5 2.5-2.5 2.5" /><path d="M6.75 16.75h7.5a4 4 0 0 0 3.63-2.31" /><path d="m9.25 19.25-2.5-2.5 2.5-2.5" />',
+    proofs: '<path d="M7.25 3.75h6.9l3.6 3.6v10.9a2 2 0 0 1-2 2h-8.5a2 2 0 0 1-2-2V5.75a2 2 0 0 1 2-2Z" /><path d="M14 3.95V7.5h3.55" /><path d="m8.5 13.85 2.15 2.15 4.85-5" />',
+  };
+  return `
+    <svg class="command-center-card-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+      ${paths[icon]}
+    </svg>
   `;
 }
 
@@ -4639,7 +4821,7 @@ function agentPlanPanel(): string {
     <section class="approval-object signature-stage stage-agent ${state.agentSignature ? 'stage-complete' : state.agentPlan ? 'stage-active' : 'stage-draft'}">
       <div class="signature-object-head">
         ${sectionTitleLine(headerTitle, headerDetail)}
-        <span class="signature-state ${state.agentSignature ? 'complete' : state.agentPlan ? 'active' : ''}">${state.oneTimePlanView === 'review' ? `${reviewCount} plan${reviewCount === 1 ? '' : 's'}` : 'draft'}</span>
+        <span class="signature-state micro-emphasis ${state.agentSignature ? 'complete' : state.agentPlan ? 'active' : ''}">${state.oneTimePlanView === 'review' ? `${reviewCount} plan${reviewCount === 1 ? '' : 's'}` : 'draft'}</span>
       </div>
 
       ${oneTimePlanTabs()}
@@ -4694,8 +4876,8 @@ function draftFlowHint(hasOneTimePlans: boolean, walletReady: boolean): string {
   const walletCopy = walletReady ? 'Wallet is ready when you send work to Inbox.' : 'Wallet is optional until Inbox or proof signing.';
   return `
     <div class="draft-flow-hint">
-      <span>Draft flow</span>
-      <p>${escapeHtml(reviewCopy)} ${escapeHtml(walletCopy)}</p>
+      <span class="micro-emphasis">Draft flow</span>
+      <p class="micro-emphasis">${escapeHtml(reviewCopy)} ${escapeHtml(walletCopy)}</p>
     </div>
   `;
 }
@@ -4752,7 +4934,7 @@ function generatedPlansPanel(embedded = false): string {
     : undefined;
   const toolbar = `
         <div class="generated-plans-toolbar signature-toolbar">
-          <span class="signature-state">${escapeHtml(`${activeCount} active`)}</span>
+          <span class="signature-state micro-emphasis">${escapeHtml(`${activeCount} active`)}</span>
           <button
             data-one-time-view="create"
             class="utility"
@@ -5390,17 +5572,20 @@ function localRuntimeGuide(extraClass = ''): string {
         <li>Connect your wallet in the browser tab it opens.</li>
         <li>Come back here and check the local bridge.</li>
       </ol>
+      <span class="local-runtime-command-label">Install once or use CLI</span>
       <div class="bridge-command-row primary-runtime-command">
         <code>${escapeHtml(NPM_EXEC_COMMAND)}</code>
         <button type="button" data-copy="${escapeHtml(NPM_EXEC_COMMAND)}" data-copy-name="local runtime command">Copy</button>
       </div>
       <details class="local-runtime-alt">
-        <summary>Install once or use Desktop App</summary>
+        <summary>Install CLI once or use Desktop App</summary>
         <div class="local-runtime-alt-body">
+          <span class="local-runtime-alt-label">Install CLI globally</span>
           <div class="bridge-command-row">
             <code>${escapeHtml(NPM_GLOBAL_INSTALL_COMMAND)}</code>
             <button type="button" data-copy="${escapeHtml(NPM_GLOBAL_INSTALL_COMMAND)}" data-copy-name="CLI install command">Copy</button>
           </div>
+          <span class="local-runtime-alt-label">Run installed CLI</span>
           <div class="bridge-command-row">
             <code>${escapeHtml(INSTALLED_APP_COMMAND)}</code>
             <button type="button" data-copy="${escapeHtml(INSTALLED_APP_COMMAND)}" data-copy-name="installed CLI command">Copy</button>
@@ -5408,6 +5593,35 @@ function localRuntimeGuide(extraClass = ''): string {
           <a class="button-link local-runtime-desktop-link" href="/desktop">Desktop App downloads</a>
         </div>
       </details>
+    </div>
+  `;
+}
+
+function cloudWorkspaceDeleteModal(): string {
+  if (!state.cloudWorkspaceDeleteModalOpen) return '';
+  const wallet = state.cloudSession.status === 'signed-in'
+    ? short(state.cloudSession.walletAddress)
+    : 'this wallet';
+  return `
+    <div class="generated-plan-modal-backdrop cloud-delete-modal-backdrop" role="presentation">
+      <section class="generated-plan-modal cloud-delete-modal" role="dialog" aria-modal="true" aria-labelledby="cloud-delete-title">
+        <div class="generated-plan-modal-head">
+          <div>
+            <span class="workbench-kicker">Cloud workspace deletion</span>
+            <h2 id="cloud-delete-title">Delete Cloud Workspace Data?</h2>
+            <p>This permanently removes the Agentic Cloud workspace for ${escapeHtml(wallet)}.</p>
+          </div>
+          <button class="utility" data-cloud-delete-cancel aria-label="Close cloud deletion confirmation">Close</button>
+        </div>
+        <div class="cloud-delete-warning">
+          <strong>Requires wallet signature</strong>
+          <p>Cloud drafts, Inbox items, recurring schedules, receipts, completed history, finalization records, and app audit events for this wallet will be deleted. Saved-on-device data and on-chain history are not deleted.</p>
+        </div>
+        <div class="generated-plan-modal-actions cloud-delete-actions">
+          <button type="button" class="utility" data-cloud-delete-cancel ${state.busy ? 'disabled' : ''}>Cancel</button>
+          <button type="button" class="utility danger" data-cloud-delete-confirm ${state.busy ? 'disabled' : ''}>Sign and delete cloud data</button>
+        </div>
+      </section>
     </div>
   `;
 }
@@ -5642,7 +5856,7 @@ function templateOutcomeControls(placement: 'header' | 'inline' = 'inline'): str
       <div class="one-time-method-control" role="group" aria-label="Template outcome filter">
         <span class="one-time-method-label">
           <strong>Plan method</strong>
-          <em>What this draft can do</em>
+          <em class="micro-emphasis">What this draft can do</em>
         </span>
         <div class="template-filter-row one-time-method-filter">
           ${buttons}
@@ -5948,6 +6162,7 @@ function aiSettingsCard(location: 'rail' | 'planner' = 'planner'): string {
   const usingCustomModel = !selectedPresetModel;
   const modeHelperText = aiModeHelperText();
   const providerHelperText = aiProviderHelperText();
+  const setupHelperMessages = Array.from(new Set([modeHelperText, providerHelperText].filter(Boolean)));
   const routeLabel = aiRouteStatusLabel(status);
   const readinessLabel = aiReadinessLabel(status);
   const confirmationLabel = aiConfirmationLabel();
@@ -5968,12 +6183,12 @@ function aiSettingsCard(location: 'rail' | 'planner' = 'planner'): string {
   const keyHint = aiProviderKeyHint(providerPreset.id);
   return `
     <aside class="ai-settings-card" data-ai-settings-scope="${escapeHtml(scope)}">
-      ${isRail ? '' : `<div>
+      ${isRail ? '' : `<div class="ai-settings-intro">
         <span class="workbench-kicker">Connect AI</span>
         <h3>Agent setup</h3>
         <p>${escapeHtml(securityCopy)}</p>
       </div>`}
-      <label class="field compact">
+      <label class="field compact ai-setting-field ai-setting-path">
         <span>AI path</span>
         ${selectPicker({
           id: `aiMode-${scope}`,
@@ -5983,9 +6198,9 @@ function aiSettingsCard(location: 'rail' | 'planner' = 'planner'): string {
           disabled: state.busy,
           title: modeHelperText,
         })}
-        ${!isRail && modeHelperText ? `<em class="ai-route-helper">${escapeHtml(modeHelperText)}</em>` : ''}
+        ${isRail && modeHelperText ? `<em class="ai-route-helper">${escapeHtml(modeHelperText)}</em>` : ''}
       </label>
-      <label class="field compact">
+      <label class="field compact ai-setting-field ai-setting-provider">
         <span>Provider preset</span>
         ${selectPicker({
           id: `aiProvider-${scope}`,
@@ -5995,9 +6210,9 @@ function aiSettingsCard(location: 'rail' | 'planner' = 'planner'): string {
           disabled: state.busy,
           title: providerHelperText,
         })}
-        ${!isRail && providerHelperText ? `<em class="ai-route-helper">${escapeHtml(providerHelperText)}</em>` : ''}
+        ${isRail && providerHelperText ? `<em class="ai-route-helper">${escapeHtml(providerHelperText)}</em>` : ''}
       </label>
-      <label class="field compact">
+      <label class="field compact ai-setting-field ai-setting-model">
         <span>Model</span>
         ${selectPicker({
           id: `aiModelSelect-${scope}`,
@@ -6015,18 +6230,23 @@ function aiSettingsCard(location: 'rail' | 'planner' = 'planner'): string {
         })}
       </label>
       ${usingCustomModel ? `
-        <label class="field compact">
+        <label class="field compact ai-setting-field ai-setting-custom-model">
           <span>Custom model</span>
           <input id="aiModelCustom-${escapeHtml(scope)}" data-ai-control="model-custom" value="${escapeHtml(state.aiSettings.model)}" placeholder="${escapeHtml(providerPreset.model)}" ${state.busy ? 'disabled' : ''} />
         </label>
       ` : ''}
       ${customProvider ? `
-        <label class="field compact">
+        <label class="field compact ai-setting-field ai-setting-base-url">
           <span>Gateway URL</span>
           <input id="aiBaseUrl-${escapeHtml(scope)}" data-ai-control="base-url" value="${escapeHtml(state.aiSettings.baseUrl)}" placeholder="${escapeHtml(providerPreset.baseUrl)}" ${state.busy ? 'disabled' : ''} />
         </label>
       ` : ''}
-      <label class="field compact">
+      ${!isRail && setupHelperMessages.length ? `
+        <div class="ai-helper-row" aria-live="polite">
+          ${setupHelperMessages.map((message) => `<em class="ai-route-helper">${escapeHtml(message)}</em>`).join('')}
+        </div>
+      ` : ''}
+      <label class="field compact ai-setting-field ai-setting-key">
         <span>${escapeHtml(keyLabel)}</span>
         <input id="aiApiKey-${escapeHtml(scope)}" data-ai-control="api-key" type="password" value="${escapeHtml(state.aiSettings.apiKey)}" placeholder="Not saved by default" autocomplete="off" ${state.busy ? 'disabled' : ''} />
         ${!isRail && keyHint ? `<em class="ai-route-helper">${escapeHtml(keyHint)}</em>` : ''}
@@ -6046,7 +6266,6 @@ function aiSettingsCard(location: 'rail' | 'planner' = 'planner'): string {
         : `
           ${aiModeLimitations()}
           ${state.aiSettings.mode === 'bridge' ? localBridgeConnectionCard(status) : ''}
-          ${state.aiSettings.mode === 'bridge' && !state.bridgeActive && !status?.available ? localRuntimeGuide('ai-runtime-guide') : ''}
           <div class="ai-confirmation-line">
             <span>Planner check</span>
             <strong id="aiConfirmationStatus-${escapeHtml(scope)}" data-ai-confirmation-status>${escapeHtml(confirmationLabel)}</strong>
@@ -6132,10 +6351,25 @@ function aiProviderSelectOptions(): SelectPickerOption[] {
       label: preset.label,
       meta: preset.apiFormat ? aiFormatLabel(preset.apiFormat) : 'Provider',
       detail: disabledReason || preset.baseUrl || 'Provider preset',
+      logoId: aiProviderLogoId(preset.id),
       disabled: Boolean(disabledReason),
       title: disabledReason,
     };
   });
+}
+
+function aiProviderLogoId(providerId: AiSettings['provider']): BrandLogoId {
+  switch (providerId) {
+    case 'openai':
+      return 'codex';
+    case 'anthropic':
+      return 'claude';
+    case 'gemini':
+      return 'gemini';
+    case 'openrouter':
+    case 'custom-openai-compatible':
+      return 'agentRouter';
+  }
 }
 
 function aiModeDisabledReason(mode: AiSettings['mode']): string {
@@ -6159,22 +6393,29 @@ function aiProviderDisabledReason(providerId: string): string {
 }
 
 function aiModeHelperText(): string {
-  return state.aiSettings.provider === 'openai'
+  return state.aiSettings.mode === 'session' && state.aiSettings.provider === 'openai'
     ? OPENAI_BROWSER_SESSION_DISABLED_REASON
     : '';
 }
 
 function aiProviderHelperText(): string {
   if (state.aiSettings.mode === 'session') {
-    return IS_ANDROID_APP
-      ? 'Android session AI drafts in the bundled app only. Use OpenRouter or a browser-compatible gateway.'
-      : OPENAI_BROWSER_SESSION_DISABLED_REASON;
+    if (IS_ANDROID_APP) {
+      return state.aiSettings.provider === 'openai'
+        ? 'Android session AI drafts in the bundled app only. Use OpenRouter or a browser-compatible gateway.'
+        : '';
+    }
+    return state.aiSettings.provider === 'openai'
+      ? OPENAI_BROWSER_SESSION_DISABLED_REASON
+      : '';
   }
   if (state.aiSettings.mode === 'hosted') {
     if (IS_ANDROID_APP) {
       return ANDROID_HOSTED_BYOK_DISABLED_REASON;
     }
-    return HOSTED_CUSTOM_PROVIDER_DISABLED_REASON;
+    return state.aiSettings.provider === 'custom-openai-compatible'
+      ? HOSTED_CUSTOM_PROVIDER_DISABLED_REASON
+      : '';
   }
   return '';
 }
@@ -8030,8 +8271,22 @@ function bind(): void {
       if (button.dataset.cloudAction === 'sign-out') {
         void runCloudLogout();
       }
+      if (button.dataset.cloudAction === 'delete-workspace') {
+        openCloudWorkspaceDeleteModal();
+      }
     });
   }
+  for (const button of document.querySelectorAll<HTMLButtonElement>('[data-cloud-delete-cancel]')) {
+    button.addEventListener('click', closeCloudWorkspaceDeleteModal);
+  }
+  document.querySelector<HTMLButtonElement>('[data-cloud-delete-confirm]')?.addEventListener('click', () => {
+    void runConfirmCloudWorkspaceDelete();
+  });
+  document.querySelector<HTMLElement>('.cloud-delete-modal-backdrop')?.addEventListener('click', (event) => {
+    if (event.target === event.currentTarget) {
+      closeCloudWorkspaceDeleteModal();
+    }
+  });
   for (const button of document.querySelectorAll<HTMLButtonElement>('[data-workflow-mode]')) {
     button.addEventListener('click', () => {
       const mode = button.dataset.workflowMode;
@@ -10823,13 +11078,75 @@ async function runCloudSignIn(): Promise<void> {
 async function runCloudLogout(): Promise<void> {
   await run('connect', async () => {
     await cloudRequest('/api/auth/logout', { method: 'POST' }).catch(() => undefined);
-    state.cloudSession = emptyCloudSession('signed-out');
-    state.cloudCompletedPlans = [];
-    state.cloudLastSync = '';
-    state.cloudEvidenceStatus = 'Cloud evidence archive: sign in to also store receipts in Agentic Cloud.';
+    resetCloudWorkspaceState();
     refreshBrowserWorkflowData();
     pushToast('success', 'Cloud workspace signed out', 'Saved-on-device workflow is active in this browser.');
   });
+}
+
+function openCloudWorkspaceDeleteModal(): void {
+  if (!cloudSessionMatchesWallet()) {
+    pushToast('error', 'Cloud delete unavailable', 'Connect the signed-in wallet before deleting this cloud workspace.');
+    return;
+  }
+  state.cloudWorkspaceDeleteModalOpen = true;
+  render();
+}
+
+function closeCloudWorkspaceDeleteModal(): void {
+  if (!state.cloudWorkspaceDeleteModalOpen) return;
+  state.cloudWorkspaceDeleteModalOpen = false;
+  render();
+}
+
+async function runConfirmCloudWorkspaceDelete(): Promise<void> {
+  state.cloudWorkspaceDeleteModalOpen = false;
+  await run('connect', async () => {
+    if (!cloudSessionMatchesWallet()) {
+      throw new Error('Connect the signed-in wallet before deleting this cloud workspace.');
+    }
+    const signingClient = requireClient();
+    const intent = parseCloudWorkspaceDeleteIntentResponse(await cloudRequest('/api/cloud-workspace/delete-intent', {
+      method: 'POST',
+      body: JSON.stringify({}),
+    }));
+    const message = stringPayload(intent.message, 'Cloud deletion message');
+    const signature = await signingClient.signMessage(message, signOptions('Delete Agentic Cloud workspace'));
+    const result = parseCloudWorkspaceDeleteResponse(await cloudRequest('/api/cloud-workspace/delete', {
+      method: 'POST',
+      body: JSON.stringify({
+        walletAddress: state.address,
+        nonce: intent.nonce,
+        message,
+        signature: signature.signature,
+        domain: intent.domain,
+        issuedAt: intent.issuedAt,
+        expiresAt: intent.expiresAt,
+        signatureEncoding: 'base58',
+      }),
+    }));
+    resetCloudWorkspaceState();
+    refreshBrowserWorkflowData();
+    pushToast(
+      'success',
+      'Cloud workspace deleted',
+      `${cloudDeleteCount(result.deleted)} cloud record${cloudDeleteCount(result.deleted) === 1 ? '' : 's'} removed. Browser storage is still available.`,
+    );
+  });
+}
+
+function resetCloudWorkspaceState(): void {
+  state.cloudSession = emptyCloudSession('signed-out');
+  state.cloudCompletedPlans = [];
+  state.cloudLastSync = '';
+  state.cloudEvidenceStatus = 'Cloud evidence archive: sign in to also store receipts in Agentic Cloud.';
+  state.cloudEvidenceLastSyncAt = 0;
+  state.generatedPlans = state.generatedPlans.filter((plan) => plan.workflowSource !== 'cloud');
+  selectFallbackGeneratedPlan();
+  state.recurringOccurrenceHistory = {};
+  state.recurringNotificationStatus = {};
+  state.recurringWebhookSecretOnce = null;
+  state.auditActivity = {};
 }
 
 async function runSetWorkflowModePreference(preference: WorkflowModePreference): Promise<void> {
@@ -11018,6 +11335,32 @@ function cloudSessionFromResponse(response: CloudSessionResponse): CloudSessionS
     };
   }
   return emptyCloudSession('signed-out');
+}
+
+function parseCloudWorkspaceDeleteIntentResponse(payload: unknown): CloudWorkspaceDeleteIntentResponse {
+  const record = cloudResponseObject(payload, 'cloud workspace deletion intent');
+  return {
+    walletAddress: stringPayload(record.walletAddress, 'Cloud deletion wallet address'),
+    nonce: stringPayload(record.nonce, 'Cloud deletion nonce'),
+    message: stringPayload(record.message, 'Cloud deletion message'),
+    domain: stringPayload(record.domain, 'Cloud deletion domain'),
+    issuedAt: stringPayload(record.issuedAt, 'Cloud deletion issued time'),
+    expiresAt: stringPayload(record.expiresAt, 'Cloud deletion expiration time'),
+  };
+}
+
+function parseCloudWorkspaceDeleteResponse(payload: unknown): CloudWorkspaceDeleteResponse {
+  const record = cloudResponseObject(payload, 'cloud workspace deletion response');
+  const deleted = isJsonObject(record.deleted) ? record.deleted : {};
+  return {
+    ok: record.ok === true,
+    signedOut: record.signedOut === true,
+    deleted: deleted as CloudWorkspaceDeleteCounts,
+  };
+}
+
+function cloudDeleteCount(counts: CloudWorkspaceDeleteCounts): number {
+  return Object.values(counts).reduce((sum, value) => sum + (typeof value === 'number' ? value : 0), 0);
 }
 
 function emptyCloudSession(status: Exclude<CloudSessionStatus, 'signed-in'>): CloudSessionState {
@@ -13962,7 +14305,7 @@ async function canReachLocalEndpoint(url: string): Promise<boolean> {
 function selectedWallet(): DiscoveredWallet {
   const wallet = state.wallets.find((candidate) => candidate.name === state.selectedWalletName);
   if (!wallet) {
-    throw new Error('Select a wallet first.');
+    throw new Error('Click Discover first, then connect a wallet.');
   }
   return wallet;
 }
@@ -14275,6 +14618,7 @@ function selectPicker(input: {
   const baseId = selectPickerBaseId(input);
   const selectedLabel = selected?.label ?? 'Select';
   const selectedMeta = selected?.meta ?? '';
+  const selectedLogo = selected?.logoId ? selectPickerLogo(selected.logoId) : '';
   const attrs = htmlAttrs({
     ...(input.id ? { id: input.id } : {}),
     ...(input.attrs ?? {}),
@@ -14306,6 +14650,7 @@ function selectPicker(input: {
           ${input.disabled ? 'disabled' : ''}
           ${input.title ? `title="${escapeHtml(input.title)}"` : ''}
         >
+          ${selectedLogo}
           <span class="template-picker-current">
             <span class="template-picker-category select-picker-meta" ${selectedMeta ? '' : 'hidden'}>${escapeHtml(selectedMeta)}</span>
             <strong id="${escapeHtml(`${baseId}-value`)}" data-select-picker-value>${escapeHtml(selectedLabel)}</strong>
@@ -14330,9 +14675,10 @@ function selectPicker(input: {
 
 function selectPickerOption(option: SelectPickerOption, selected: boolean): string {
   const title = option.title ?? option.detail ?? option.label;
+  const logo = option.logoId ? selectPickerLogo(option.logoId) : '';
   return `
     <button
-      class="template-picker-option select-picker-option ${selected ? 'selected active' : ''}"
+      class="template-picker-option select-picker-option ${logo ? 'has-logo' : ''} ${selected ? 'selected active' : ''}"
       type="button"
       role="option"
       aria-selected="${selected ? 'true' : 'false'}"
@@ -14343,11 +14689,18 @@ function selectPickerOption(option: SelectPickerOption, selected: boolean): stri
       ${option.disabled ? 'disabled aria-disabled="true"' : ''}
       ${title ? `title="${escapeHtml(title)}"` : ''}
     >
-      ${option.meta ? `<span>${escapeHtml(option.meta)}</span>` : ''}
-      <strong>${escapeHtml(option.label)}</strong>
-      ${option.detail ? `<em>${escapeHtml(option.detail)}</em>` : ''}
+      ${logo}
+      <span class="select-picker-option-copy">
+        ${option.meta ? `<span>${escapeHtml(option.meta)}</span>` : ''}
+        <strong>${escapeHtml(option.label)}</strong>
+        ${option.detail ? `<em>${escapeHtml(option.detail)}</em>` : ''}
+      </span>
     </button>
   `;
+}
+
+function selectPickerLogo(logoId: BrandLogoId): string {
+  return brandLogo(logoId, 'select-picker-logo');
 }
 
 function selectPickerBaseId(input: {
@@ -14402,7 +14755,8 @@ function capabilitySummary(capabilities: AdapterCapabilities): string {
 }
 
 function tabButton(tab: ActiveTab, label: string, mobileLabel?: string): string {
-  const locked = !state.address && (tab === 'schedule' || tab === 'inbox');
+  const lockedReason = lockedTabReason(tab);
+  const locked = Boolean(lockedReason);
   const className = [
     state.activeTab === tab ? 'active' : '',
     mobileLabel ? 'has-mobile-label' : '',
@@ -14410,7 +14764,17 @@ function tabButton(tab: ActiveTab, label: string, mobileLabel?: string): string 
   const content = mobileLabel
     ? `<span class="nav-label nav-label-full">${escapeHtml(label)}</span><span class="nav-label nav-label-mobile">${escapeHtml(mobileLabel)}</span>`
     : `<span class="nav-label">${escapeHtml(label)}</span>`;
-  return `<button data-tab="${tab}" class="${className}" aria-label="${escapeHtml(label)}" ${locked ? 'disabled title="Connect a wallet to unlock this workspace."' : ''}>${content}</button>`;
+  const button = `<button data-tab="${tab}" class="${className}" aria-label="${escapeHtml(label)}" ${locked ? `disabled title="${escapeHtml(lockedReason)}"` : ''}>${content}</button>`;
+  return locked
+    ? `<span class="workspace-tab-tooltip" data-tab-tooltip="${escapeHtml(lockedReason)}">${button}</span>`
+    : button;
+}
+
+function lockedTabReason(tab: ActiveTab): string {
+  if (state.address) return '';
+  if (tab === 'schedule') return 'Connect a wallet to create or manage recurring plans.';
+  if (tab === 'inbox') return 'Connect a wallet to review approval requests in Inbox.';
+  return '';
 }
 
 function step(name: StepName, title: string, detail: string): string {

@@ -20,6 +20,8 @@ Each production release review must verify the source below or remove the SVG im
 | `jupiter.svg` | Jupiter Mobile wallet/swap context | Provider-site reference required before production release |
 | `claude.svg` | Claude agent runtime context | Provider-site reference required before production release |
 | `codex.svg` | Codex/OpenAI agent runtime context | Provider-site reference required before production release |
+| `gemini.svg` | Gemini AI provider context | Wikimedia Commons `Google_Gemini_icon_2025.svg`; attributed there to Google LLC. Verify trademark/source before production release. |
+| `agent-router.svg` | Generic AI gateway/router context for OpenRouter/custom providers | Original project artwork; not an OpenRouter trademark. |
 | `vercel.svg` | Vercel runtime context | Provider-site reference required before production release |
 
 ## Fallback Rule

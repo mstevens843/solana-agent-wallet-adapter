@@ -113,6 +113,7 @@ export interface RecurringStore {
   getSchedule(walletAddress: string, id: string): Promise<RecurringScheduleRecord | undefined>;
   saveSchedule(walletAddress: string, record: RecurringScheduleRecord): Promise<void>;
   deleteSchedule(walletAddress: string, id: string): Promise<boolean>;
+  deleteAllRecurringData(walletAddress: string): Promise<RecurringDeleteCounts>;
   listOccurrences(walletAddress: string, scheduleId?: string): Promise<RecurringOccurrenceRecord[]>;
   getOccurrence(walletAddress: string, id: string): Promise<RecurringOccurrenceRecord | undefined>;
   claimOccurrence(walletAddress: string, record: RecurringOccurrenceRecord): Promise<RecurringOccurrenceClaim>;
@@ -125,6 +126,12 @@ export interface RecurringStore {
     limit: number,
   ): Promise<RecurringNotificationDeliveryRecord[]>;
   listKnownWallets?(): Promise<string[]>;
+}
+
+export interface RecurringDeleteCounts {
+  recurringSchedules: number;
+  recurringOccurrences: number;
+  recurringNotificationDeliveries: number;
 }
 
 export interface RecurringOccurrenceClaim {
@@ -197,6 +204,28 @@ export class MemoryRecurringStore implements RecurringStore {
       }
     }
     return true;
+  }
+
+  async deleteAllRecurringData(walletAddress: string): Promise<RecurringDeleteCounts> {
+    let recurringSchedules = 0;
+    let recurringOccurrences = 0;
+    for (const [occurrenceId, occurrence] of this.occurrences) {
+      if (occurrence.walletAddress === walletAddress) {
+        this.occurrences.delete(occurrenceId);
+        recurringOccurrences += 1;
+      }
+    }
+    for (const [scheduleId, schedule] of this.schedules) {
+      if (schedule.walletAddress === walletAddress) {
+        this.schedules.delete(scheduleId);
+        recurringSchedules += 1;
+      }
+    }
+    return {
+      recurringSchedules,
+      recurringOccurrences,
+      recurringNotificationDeliveries: 0,
+    };
   }
 
   async listOccurrences(walletAddress: string, scheduleId?: string): Promise<RecurringOccurrenceRecord[]> {

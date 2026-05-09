@@ -86,6 +86,34 @@ export function recurringStoreAdapterForCloudStore(store: CloudSessionStore): Re
       }
       return true;
     },
+    async deleteAllRecurringData(walletAddress) {
+      let recurringSchedules = 0;
+      let recurringOccurrences = 0;
+      let recurringNotificationDeliveries = 0;
+      for (const [deliveryId, delivery] of state.notificationDeliveries) {
+        if (delivery.walletAddress === walletAddress) {
+          state.notificationDeliveries.delete(deliveryId);
+          recurringNotificationDeliveries += 1;
+        }
+      }
+      for (const [occurrenceId, occurrence] of state.occurrences) {
+        if (occurrence.walletAddress === walletAddress) {
+          state.occurrences.delete(occurrenceId);
+          recurringOccurrences += 1;
+        }
+      }
+      for (const [scheduleId, schedule] of state.schedules) {
+        if (schedule.walletAddress === walletAddress) {
+          state.schedules.delete(scheduleId);
+          recurringSchedules += 1;
+        }
+      }
+      return {
+        recurringSchedules,
+        recurringOccurrences,
+        recurringNotificationDeliveries,
+      };
+    },
     async listOccurrences(walletAddress, scheduleId) {
       return [...state.occurrences.values()]
         .filter((record) => record.walletAddress === walletAddress)
