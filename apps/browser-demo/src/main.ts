@@ -102,6 +102,15 @@ import {
   type AiSettings,
   type BridgeAiStatus,
 } from './planner.js';
+import {
+  browserWalletPickerOptions,
+  browserWalletRestoreName,
+  createBrowserWalletSession,
+  hasDiscoveredBrowserWalletSelection,
+  isPersistedBrowserWalletSession,
+  reconcileBrowserWalletSelection,
+  type BrowserWalletSession,
+} from './walletSelection.js';
 import './styles.css';
 
 type StepState = 'idle' | 'active' | 'done' | 'error';
@@ -854,6 +863,7 @@ interface FirstRunAction {
 
 interface PersistedState {
   selectedWalletName?: string;
+  browserWalletSession?: BrowserWalletSession;
   selectedIosWalletId?: IosNativeWalletId;
   workflowModePreference?: WorkflowModePreference;
   cluster?: Cluster;
@@ -881,6 +891,7 @@ interface DemoState {
   cloudWorkspaceDeleteModalOpen: boolean;
   wallets: DiscoveredWallet[];
   selectedWalletName: string;
+  browserWalletSession?: BrowserWalletSession;
   androidNativeEnvironment: AndroidNativeEnvironment;
   androidAuthCacheCount: number;
   androidNativeStatus: string;
@@ -1478,7 +1489,8 @@ const state: DemoState = {
   },
   cloudWorkspaceDeleteModalOpen: false,
   wallets: [],
-  selectedWalletName: persisted.selectedWalletName ?? '',
+  selectedWalletName: persisted.browserWalletSession?.cluster === initialCluster ? persisted.browserWalletSession.walletName : '',
+  browserWalletSession: persisted.browserWalletSession,
   androidNativeEnvironment: detectAndroidNativeEnvironment(),
   androidAuthCacheCount: 0,
   androidNativeStatus: 'Android native MWA idle.',
@@ -1689,6 +1701,9 @@ async function bootstrap(): Promise<void> {
   await refreshIosNativeCacheState();
   if (state.iosNativeEnvironment.isIosNative) {
     await restoreIosNativeSession();
+  }
+  if (!state.androidNativeEnvironment.isAndroidNative && !state.iosNativeEnvironment.isIosNative) {
+    await restoreBrowserWalletSession();
   }
   await refreshCloudSession(false);
   await hydrateLabArtifactArchive();
@@ -3527,7 +3542,7 @@ function walletRail(): string {
     !state.address &&
     !state.androidNativeEnvironment.isAndroidNative &&
     !state.iosNativeEnvironment.isIosNative &&
-    state.wallets.length > 1;
+    state.wallets.length > 0;
   const showPublicIosPicker = !SHOW_DEV_CONTROLS && !state.address && state.iosNativeEnvironment.isIosNative;
   const wallet = walletIdentity();
   return `
@@ -4349,7 +4364,7 @@ function commandCenterAiPanel(): string {
           )}
         </div>
 
-        ${state.aiSettings.mode === 'bridge' ? localRuntimeGuide('command-bridge-prereq') : ''}
+        ${state.aiSettings.mode === 'bridge' ? commandBridgePrereqPanel() : ''}
 
         ${commandAiWorkflowEducation()}
 
@@ -4360,6 +4375,46 @@ function commandCenterAiPanel(): string {
 
         ${aiSettingsCard('planner')}
       </section>
+    </div>
+  `;
+}
+
+function commandBridgePrereqPanel(): string {
+  return `
+    <div class="command-bridge-prereq command-bridge-prereq-compact">
+      <div class="command-bridge-prereq-head">
+        <div>
+          <span class="accent-note">Install once or use CLI</span>
+          <strong>Local bridge required on this computer</strong>
+          <p>Start the local runtime, connect the same wallet in the tab it opens, then check the bridge here.</p>
+        </div>
+        <strong class="command-bridge-endpoint">${escapeHtml(compactEndpoint(state.bridgeUrl))}</strong>
+      </div>
+      <div class="bridge-command-row primary-runtime-command">
+        <code>${escapeHtml(NPM_EXEC_COMMAND)}</code>
+        <button type="button" data-copy="${escapeHtml(NPM_EXEC_COMMAND)}" data-copy-name="local runtime command">Copy</button>
+      </div>
+      <details class="command-bridge-details">
+        <summary>Setup details and Desktop App</summary>
+        <div class="command-bridge-detail-body">
+          <ol class="local-runtime-steps">
+            <li>Copy and run the one-shot command in Terminal.</li>
+            <li>Connect your wallet in the browser tab it opens.</li>
+            <li>Come back here and check the local bridge.</li>
+          </ol>
+          <span class="local-runtime-alt-label">Install CLI globally</span>
+          <div class="bridge-command-row">
+            <code>${escapeHtml(NPM_GLOBAL_INSTALL_COMMAND)}</code>
+            <button type="button" data-copy="${escapeHtml(NPM_GLOBAL_INSTALL_COMMAND)}" data-copy-name="CLI install command">Copy</button>
+          </div>
+          <span class="local-runtime-alt-label">Run installed CLI</span>
+          <div class="bridge-command-row">
+            <code>${escapeHtml(INSTALLED_APP_COMMAND)}</code>
+            <button type="button" data-copy="${escapeHtml(INSTALLED_APP_COMMAND)}" data-copy-name="installed CLI command">Copy</button>
+          </div>
+          <a class="button-link local-runtime-desktop-link" href="/desktop">Desktop App downloads</a>
+        </div>
+      </details>
     </div>
   `;
 }
@@ -4647,6 +4702,8 @@ function commandCenterWalletCard(): string {
   const discoverLabel = state.wallets.length ? 'Refresh' : 'Discover';
   const detail = hasDiscoveredWallet
     ? `${state.wallets.length} provider${state.wallets.length === 1 ? '' : 's'} discovered - ${selectedProvider}`
+    : state.wallets.length
+      ? `${state.wallets.length} provider${state.wallets.length === 1 ? '' : 's'} discovered - choose a wallet`
     : 'No signing authority granted';
   return `
     <article class="command-center-card command-wallet-card warn">
@@ -4817,11 +4874,14 @@ function agentPlanPanel(): string {
   const headerDetail = state.oneTimePlanView === 'review'
     ? 'Saved drafts. Send executable work to Inbox for a wallet decision; finished work moves to History.'
     : 'Draft a bounded request, review the wallet action, then send it to Inbox or sign proof.';
+  const statusMarker = state.oneTimePlanView === 'review'
+    ? `<span class="signature-state accent-note ${state.agentSignature ? 'complete' : state.agentPlan ? 'active' : ''}">${reviewCount} plan${reviewCount === 1 ? '' : 's'}</span>`
+    : '';
   return `
     <section class="approval-object signature-stage stage-agent ${state.agentSignature ? 'stage-complete' : state.agentPlan ? 'stage-active' : 'stage-draft'}">
       <div class="signature-object-head">
         ${sectionTitleLine(headerTitle, headerDetail)}
-        <span class="signature-state micro-emphasis ${state.agentSignature ? 'complete' : state.agentPlan ? 'active' : ''}">${state.oneTimePlanView === 'review' ? `${reviewCount} plan${reviewCount === 1 ? '' : 's'}` : 'draft'}</span>
+        ${statusMarker}
       </div>
 
       ${oneTimePlanTabs()}
@@ -4876,8 +4936,8 @@ function draftFlowHint(hasOneTimePlans: boolean, walletReady: boolean): string {
   const walletCopy = walletReady ? 'Wallet is ready when you send work to Inbox.' : 'Wallet is optional until Inbox or proof signing.';
   return `
     <div class="draft-flow-hint">
-      <span class="micro-emphasis">Draft flow</span>
-      <p class="micro-emphasis">${escapeHtml(reviewCopy)} ${escapeHtml(walletCopy)}</p>
+      <span class="accent-note">Draft flow</span>
+      <p class="accent-note">${escapeHtml(reviewCopy)} Drafts save to Review; send to Inbox only when ready. ${escapeHtml(walletCopy)}</p>
     </div>
   `;
 }
@@ -4992,7 +5052,7 @@ function generatedPlanStatusLine(totalCount: number, visibleCount: number, archi
   return `
     <div class="queue-status generated-plan-status">
       <span>${escapeHtml(`${totalCount} plan${totalCount === 1 ? '' : 's'} saved`)}</span>
-      <strong>${visibleCount} in review</strong>
+      <strong class="accent-note">${visibleCount} in review</strong>
       <span>${movedCount} moved forward</span>
       <span>${archivedCount} archived</span>
       <span>Newest first</span>
@@ -5825,10 +5885,6 @@ function agentPlannerWorkbench(): string {
             <button id="generateAiPlan" class="${canUseAi ? 'primary' : ''}" ${!canUseAi || state.busy ? 'disabled' : ''} title="${escapeHtml(canUseAi ? 'Draft through your configured AI planner.' : aiDisabledReason)}">${aiGenerating ? `${buttonSpinner()}Drafting...` : 'Draft with AI'}</button>
           </div>
         </div>
-        <div class="intent-policy-strip">
-          <span>Where this goes</span>
-          <p>Drafts are saved in Review. Approval-ready drafts enter Inbox only after you choose to send them; finished work appears in History.</p>
-        </div>
       </div>
     </div>
   `;
@@ -5856,7 +5912,7 @@ function templateOutcomeControls(placement: 'header' | 'inline' = 'inline'): str
       <div class="one-time-method-control" role="group" aria-label="Template outcome filter">
         <span class="one-time-method-label">
           <strong>Plan method</strong>
-          <em class="micro-emphasis">What this draft can do</em>
+          <em class="accent-note">What this draft can do</em>
         </span>
         <div class="template-filter-row one-time-method-filter">
           ${buttons}
@@ -6266,26 +6322,28 @@ function aiSettingsCard(location: 'rail' | 'planner' = 'planner'): string {
         : `
           ${aiModeLimitations()}
           ${state.aiSettings.mode === 'bridge' ? localBridgeConnectionCard(status) : ''}
-          <div class="ai-confirmation-line">
-            <span>Planner check</span>
-            <strong id="aiConfirmationStatus-${escapeHtml(scope)}" data-ai-confirmation-status>${escapeHtml(confirmationLabel)}</strong>
-            <p id="aiConfirmationDetail-${escapeHtml(scope)}" data-ai-confirmation-detail>${escapeHtml(confirmationDetail)}</p>
-          </div>
-          <div class="ai-status-line">
-            <span>Planner status</span>
-            <strong>${escapeHtml(readinessLabel)}</strong>
-          </div>
-          <div class="ai-status-line">
-            <span>Route</span>
-            <strong>${escapeHtml(routeLabel)}</strong>
-          </div>
-          <div class="ai-status-line">
-            <span>Format</span>
-            <strong>${escapeHtml(formatLabel)}</strong>
-          </div>
-          <div class="ai-status-line">
-            <span>Workflow impact</span>
-            <strong>Drafting only</strong>
+          <div class="ai-readiness-summary" aria-label="AI planner readiness">
+            <div>
+              <span>Planner check</span>
+              <strong id="aiConfirmationStatus-${escapeHtml(scope)}" data-ai-confirmation-status>${escapeHtml(confirmationLabel)}</strong>
+              <p id="aiConfirmationDetail-${escapeHtml(scope)}" data-ai-confirmation-detail>${escapeHtml(confirmationDetail)}</p>
+            </div>
+            <div>
+              <span>Status</span>
+              <strong>${escapeHtml(readinessLabel)}</strong>
+            </div>
+            <div>
+              <span>Route</span>
+              <strong>${escapeHtml(routeLabel)}</strong>
+            </div>
+            <div>
+              <span>Format</span>
+              <strong>${escapeHtml(formatLabel)}</strong>
+            </div>
+            <div>
+              <span>Impact</span>
+              <strong>Drafting only</strong>
+            </div>
           </div>
           ${aiDiagnosticsPanel()}
           <p class="ai-security-note">AI Planner only drafts. Templates, Approval Inbox, recurring schedules, and receipts use the active workflow; private local bridge is optional.</p>
@@ -7479,11 +7537,22 @@ function createArtifactPanel(): string {
           ${publicReceipt ? receiptFieldInputs(lab) : advancedLabInput(lab)}
         </div>
 
+        ${artifactSigningPreview(lab, publicReceipt, artifact)}
+
         <div class="lab-actions lab-signature-action">
           <button id="createLabArtifact" class="primary" ${!state.address || state.busy ? 'disabled' : ''}>${publicReceipt ? 'Sign receipt proof' : 'Sign advanced evidence'}</button>
-          <span>Your wallet signs this record only. No transaction is submitted.</span>
         </div>
       </div>
+  `;
+}
+
+function artifactSigningPreview(lab: LabDefinition, publicReceipt: boolean, artifact: LabArtifact | null): string {
+  return `
+    <div class="proof-signing-preview">
+      <span class="accent-note">${artifact ? 'Receipt signed' : publicReceipt ? 'Common proof ready' : 'Advanced proof ready'}</span>
+      <strong>${escapeHtml(publicReceipt ? receiptLabelForKind(lab.kind) : lab.title.replace(/^\d+\.\s*/, ''))}</strong>
+      <p>Your wallet signs this evidence record only. No transaction is submitted.</p>
+    </div>
   `;
 }
 
@@ -8337,6 +8406,10 @@ function bind(): void {
     const cluster = (event.currentTarget as HTMLSelectElement).value;
     if (!isCluster(cluster)) return;
     state.cluster = cluster;
+    clearBrowserWalletSession();
+    if (isBrowserWalletSurface()) {
+      state.selectedWalletName = '';
+    }
     resetWalletConnection();
     state.error = '';
     savePersistedState();
@@ -8345,6 +8418,7 @@ function bind(): void {
 
   document.querySelector<HTMLSelectElement>('#walletSelect')?.addEventListener('change', (event) => {
     state.selectedWalletName = (event.currentTarget as HTMLSelectElement).value;
+    clearBrowserWalletSession();
     resetWalletConnection();
     state.error = '';
     savePersistedState();
@@ -9365,10 +9439,14 @@ async function runDiscover(): Promise<void> {
       return;
     }
     state.wallets = [...listAvailableWallets()];
-    if (!state.wallets.some((wallet) => wallet.name === state.selectedWalletName)) {
-      state.selectedWalletName = state.wallets[0]?.name ?? '';
+    state.selectedWalletName = reconcileBrowserWalletSelection(state.wallets, state.selectedWalletName);
+    if (!browserWalletRestoreName(state.wallets, state.browserWalletSession, state.cluster)) {
+      clearBrowserWalletSession();
     }
     if (state.wallets.length === 0) {
+      state.selectedWalletName = '';
+      clearBrowserWalletSession();
+      savePersistedState();
       throw new Error('No Wallet Standard Solana wallets are registered in this browser.');
     }
     savePersistedState();
@@ -9426,6 +9504,8 @@ async function runConnect(): Promise<void> {
     state.address = await client.getAddress();
     state.capabilities = await client.capabilities();
     state.transactionStatus = `Wallet connected on ${state.cluster}.`;
+    state.selectedWalletName = selected.name;
+    state.browserWalletSession = createBrowserWalletSession(selected.name, state.cluster);
     if (state.bridgeActive) {
       await connectBridgeHost();
     }
@@ -9438,11 +9518,16 @@ async function runConnect(): Promise<void> {
 
 async function runDisconnect(): Promise<void> {
   await run('connect', async () => {
+    const browserWallet = isBrowserWalletSurface();
     if (state.bridgeActive) {
       await disconnectBridgeHost().catch(() => undefined);
     }
     await disconnectWalletBackend().catch(() => undefined);
     resetWalletConnection();
+    if (browserWallet) {
+      state.selectedWalletName = '';
+      clearBrowserWalletSession();
+    }
     await refreshAndroidNativeCacheState();
     if (state.androidNativeEnvironment.isAndroidNative) {
       state.androidNativeStatus = state.androidAuthCacheCount > 0
@@ -9450,6 +9535,7 @@ async function runDisconnect(): Promise<void> {
         : 'Android MWA disconnected.';
     }
     await refreshIosNativeCacheState();
+    savePersistedState();
     pushToast('success', 'Wallet disconnected', 'Local signing session cleared.');
   });
 }
@@ -14302,10 +14388,67 @@ async function canReachLocalEndpoint(url: string): Promise<boolean> {
   }
 }
 
+function isBrowserWalletSurface(): boolean {
+  return !state.androidNativeEnvironment.isAndroidNative && !state.iosNativeEnvironment.isIosNative;
+}
+
+function clearBrowserWalletSession(): void {
+  state.browserWalletSession = undefined;
+}
+
+async function restoreBrowserWalletSession(): Promise<void> {
+  state.wallets = [...listAvailableWallets()];
+  state.selectedWalletName = reconcileBrowserWalletSelection(state.wallets, state.selectedWalletName);
+  const restoreName = browserWalletRestoreName(state.wallets, state.browserWalletSession, state.cluster);
+  if (!restoreName) {
+    if (state.browserWalletSession) {
+      clearBrowserWalletSession();
+      savePersistedState();
+    }
+    return;
+  }
+
+  state.selectedWalletName = restoreName;
+  const selected = selectedWallet();
+  const backend = new WalletStandardWebBackend({
+    wallet: selected,
+    cluster: state.cluster,
+    rpcUrl: activeRpcUrl(),
+  });
+
+  try {
+    const address = await backend.connect({ silent: true });
+    walletBackend = backend;
+    client = new SolanaSigningClient({ backend });
+    state.address = address;
+    state.capabilities = await client.capabilities();
+    state.transactionStatus = `Wallet restored on ${state.cluster}.`;
+    state.steps.connect = 'done';
+    state.browserWalletSession = createBrowserWalletSession(
+      selected.name,
+      state.cluster,
+      state.browserWalletSession?.connectedAt,
+    );
+    await afterWalletConnected();
+    savePersistedState();
+  } catch (err) {
+    client = null;
+    walletBackend = null;
+    state.address = '';
+    state.capabilities = null;
+    state.transactionStatus = '';
+    state.steps.connect = 'idle';
+    state.selectedWalletName = '';
+    clearBrowserWalletSession();
+    savePersistedState();
+    console.info('Browser wallet silent restore skipped.', err);
+  }
+}
+
 function selectedWallet(): DiscoveredWallet {
   const wallet = state.wallets.find((candidate) => candidate.name === state.selectedWalletName);
   if (!wallet) {
-    throw new Error('Click Discover first, then connect a wallet.');
+    throw new Error('Click Discover, choose a wallet, then connect.');
   }
   return wallet;
 }
@@ -14490,7 +14633,8 @@ function resetWalletConnection(): void {
 }
 
 function discoveredSelectedWalletName(): string {
-  return state.wallets.some((wallet) => wallet.name === state.selectedWalletName) ? state.selectedWalletName : '';
+  if (!hasDiscoveredBrowserWalletSelection(state.wallets, state.selectedWalletName)) return '';
+  return reconcileBrowserWalletSelection(state.wallets, state.selectedWalletName);
 }
 
 interface WalletIdentity {
@@ -14566,13 +14710,9 @@ function walletOptions(): string {
 }
 
 function walletSelectOptions(): SelectPickerOption[] {
-  if (state.wallets.length === 0) {
-    return [{ value: '', label: 'No wallets discovered', meta: 'Wallet provider', disabled: true }];
-  }
-  return state.wallets.map((wallet) => ({
-    value: wallet.name,
-    label: wallet.name,
-    meta: 'Wallet provider',
+  return browserWalletPickerOptions(state.wallets).map((option) => ({
+    ...option,
+    ...(option.value ? { logoId: walletLogoIdForName(option.value) } : {}),
   }));
 }
 
@@ -15322,46 +15462,51 @@ function recurringComposer(): string {
   const workflowMode = activeWorkflowMode();
   const browserWorkflow = workflowMode === 'browser-workflow';
   const recurringHelp = browserWorkflow
-    ? 'Saved on this device. Creates one Inbox item now; background runs need Cloud or the local connector.'
-    : 'Define payment or subscription terms. Every occurrence returns to Inbox before wallet signing.';
+    ? 'Creates one local Inbox item now. Use Cloud or the local connector for background runs.'
+    : 'Every occurrence returns to Inbox before wallet signing.';
   const boundaryCopy = browserWorkflow
-    ? 'Saved on this device. One local approval item is created now; use Cloud or the local approval connector for background scheduling.'
+    ? 'One local approval item is created now; background scheduling needs Cloud or local connector.'
     : `${activeWorkflowLabel()} owns this schedule. No transaction signs until you approve an occurrence.`;
   const actionHelper = !state.address
     ? 'Connect a wallet before creating a recurring schedule.'
     : browserWorkflow
-      ? 'Creates one local Inbox item now. No background scheduler runs after this tab closes.'
+      ? 'Creates one local Inbox item now.'
       : 'Future occurrences will appear in Inbox.';
   return `
     <div class="recurring-panel recurring-contract">
-      <div class="contract-head app-inline-head">
+      <div class="contract-head app-inline-head recurring-composer-head">
         <div>
           <span>Recurring setup</span>
           <h3>Create recurring request</h3>
           <p class="recurring-help">${escapeHtml(recurringHelp)}</p>
         </div>
-        <strong>${escapeHtml(recurringCadenceLabel(draft.cadence))}</strong>
+        <div class="recurring-composer-meta">
+          <strong>${escapeHtml(recurringCadenceLabel(draft.cadence))}</strong>
+          <em class="accent-note">${browserWorkflow ? 'Local now; Cloud for background' : `${activeWorkflowLabel()} scheduler`}</em>
+        </div>
       </div>
-      <div class="recurring-boundary-note">
-        <strong>Signing boundary</strong>
-        <p>${escapeHtml(boundaryCopy)}</p>
+      <div class="recurring-create-primary-row">
+        <div class="recurring-boundary-note">
+          <strong>Signing boundary</strong>
+          <p>${escapeHtml(boundaryCopy)}</p>
+        </div>
+        <div class="recurring-form-actions contract-actions">
+          <button id="createRecurring" class="primary" ${createDisabled ? 'disabled' : ''}>Create recurring request</button>
+          <button type="button" class="utility" data-recurring-action="dca-proof">Create DCA review proof</button>
+          <span class="contract-helper accent-note">${escapeHtml(actionHelper)}</span>
+        </div>
       </div>
-      <div class="recurring-form-actions contract-actions">
-        <button id="createRecurring" class="primary" ${createDisabled ? 'disabled' : ''}>Create recurring request</button>
-        <button type="button" class="utility" data-recurring-action="dca-proof">Create DCA review proof instead</button>
-        <span class="contract-helper">${escapeHtml(actionHelper)}</span>
-      </div>
-      <dl class="contract-summary">
+      <dl class="contract-summary recurring-create-summary">
         ${definitionRow('Asset', `${draft.amount || 'Amount'} ${draft.token || 'Token'}`)}
         ${definitionRow('Recipient', recipient)}
         ${definitionRow('Cadence', recurringDraftScheduleLabel(draft))}
         ${definitionRow('Limit', limit)}
       </dl>
       ${recurringPresetControls()}
-      <div class="contract-section">
+      <div class="contract-section recurring-create-section">
         <div>
           <span>Payment terms</span>
-          <p>What the prepared action will request from the wallet.</p>
+          <p>Token, amount, recipient.</p>
         </div>
         <div class="recurring-grid">
           ${recurringTokenSelect(draft.token)}
@@ -15369,10 +15514,10 @@ function recurringComposer(): string {
           ${fieldInput('recurringRecipient', 'Recipient *', draft.recipient)}
         </div>
       </div>
-      <div class="contract-section">
+      <div class="contract-section recurring-create-section">
         <div>
           <span>Schedule terms</span>
-          <p>When new requests should appear in Inbox.</p>
+          <p>Cadence and local time.</p>
         </div>
         <div class="recurring-grid schedule-grid">
           <label class="field compact">
@@ -15398,7 +15543,7 @@ function recurringComposer(): string {
         <div class="contract-section">
           <div>
             <span>Caps and reminders</span>
-            <p>Optional stop time and webhook reminder path.</p>
+            <p>Stop time and webhook reminders.</p>
           </div>
           <div class="recurring-grid">
             ${fieldInput('recurringMaxOccurrences', 'Max occurrences', draft.maxOccurrences, 'empty for indefinite')}
@@ -15687,12 +15832,7 @@ function recurringHistoryPanel(
   history: RecurringOccurrenceHistoryState | undefined,
 ): string {
   if (!history) {
-    return `
-      <div class="recurring-history-strip">
-        <strong>History not loaded</strong>
-        <span>Use Load history to fetch completed and pending runs.</span>
-      </div>
-    `;
+    return '';
   }
   if (history.error) {
     return `<div class="recurring-history-strip error-text">${escapeHtml(history.error)}</div>`;
@@ -17499,6 +17639,7 @@ function loadPersistedState(): PersistedState {
     const parsed = JSON.parse(raw) as Record<string, unknown>;
     return {
       ...(typeof parsed.selectedWalletName === 'string' && { selectedWalletName: parsed.selectedWalletName }),
+      ...(isPersistedBrowserWalletSession(parsed.browserWalletSession) && { browserWalletSession: parsed.browserWalletSession }),
       ...(typeof parsed.selectedIosWalletId === 'string' &&
         isPersistedIosWalletId(parsed.selectedIosWalletId) && { selectedIosWalletId: parsed.selectedIosWalletId }),
       ...(typeof parsed.workflowModePreference === 'string' &&
@@ -17522,6 +17663,7 @@ function savePersistedState(): void {
       STORAGE_KEY,
       JSON.stringify({
         selectedWalletName: state.selectedWalletName,
+        browserWalletSession: state.browserWalletSession,
         selectedIosWalletId: state.selectedIosWalletId,
         workflowModePreference: state.workflowModePreference,
         cluster: state.cluster,
