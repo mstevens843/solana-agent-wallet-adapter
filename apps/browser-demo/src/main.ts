@@ -159,6 +159,11 @@ const RELEASE_PAGE_URL =
 const NPM_GLOBAL_INSTALL_COMMAND = 'npm install -g @solana-agent-wallet-adapter/cli';
 const NPM_EXEC_COMMAND = 'npm exec @solana-agent-wallet-adapter/cli -- app';
 const INSTALLED_APP_COMMAND = 'solana-agent-wallet app';
+const BROWSER_SESSION_DEFAULT_PROVIDER_ID = 'openrouter';
+const OPENAI_BROWSER_SESSION_DISABLED_REASON =
+  'OpenAI cannot be called directly from Browser Session. Use Hosted BYOK or Local bridge for OpenAI.';
+const HOSTED_CUSTOM_PROVIDER_DISABLED_REASON =
+  'Hosted BYOK supports preset providers only. Use Local bridge or Browser Session for custom gateways.';
 const CUSTOM_AI_MODEL_VALUE = '__custom__';
 const ROUTE_PATHS = ['/', '/docs', '/app', '/cli', '/desktop', '/android', '/demo', '/mwa-test', '/privacy', '/terms'] as const;
 const ROUTE_PATH_SET = new Set<string>(ROUTE_PATHS);
@@ -1127,17 +1132,19 @@ const GUIDED_DEMO_SCENARIOS: ReadonlyArray<GuidedDemoScenario> = [
     id: 'dca',
     eyebrow: 'Recurring plan',
     title: 'Weekly capped DCA',
-    prompt: 'Create weekly DCA with a max spend cap.',
-    detail: 'The agent creates the schedule; each due occurrence still returns for approve or deny.',
+    prompt: 'Create a weekly DCA plan with a max spend cap. Each run waits for my approval.',
+    detail: 'The agent prepares the recurring schedule; every due occurrence still returns for approve or deny.',
     planTitle: 'Prepared weekly DCA schedule',
     route: 'Create Recurring Plan -> Approval Inbox occurrence',
     risk: 'Recurring schedules should keep a clear max spend, cadence, token pair, and manual review rule.',
-    approvalBoundary: 'The schedule prepares future requests; it never gives the agent unlimited signing authority.',
+    approvalBoundary:
+      'The schedule only prepares future requests. Each occurrence still requires wallet approval before funds move.',
     receiptType: 'recurring_schedule_receipt',
     receiptSummary: 'A weekly DCA schedule was prepared with a spend cap and manual approval on each run.',
     constraints: [
       'Weekly cadence only.',
       'Spend cap must be visible before schedule creation.',
+      'Each future run still needs explicit approval.',
       'Every occurrence appears in Approval Inbox.',
       'User can pause, resume, or delete the schedule.',
     ],
@@ -1151,18 +1158,19 @@ const GUIDED_DEMO_SCENARIOS: ReadonlyArray<GuidedDemoScenario> = [
     id: 'payouts',
     eyebrow: 'Team payouts',
     title: 'Contributor queue',
-    prompt: 'Queue contributor payouts for wallet review.',
-    detail: 'The agent prepares multiple payout requests and keeps the signer as the final control point.',
+    prompt: 'Queue contributor payouts for wallet review. Let me approve each payout individually.',
+    detail: 'The agent prepares the payout queue, but each recipient payment stays individually reviewable.',
     planTitle: 'Prepared contributor payout queue',
     route: 'Create One-Time Plan -> Approval Inbox batch',
     risk: 'Check every recipient, memo, token, and payout amount before approving individual requests.',
-    approvalBoundary: 'Payouts wait in review; the agent cannot batch-send funds without wallet approval.',
+    approvalBoundary:
+      'The agent can prepare the payout list; each payout still needs wallet approval before sending.',
     receiptType: 'payout_queue_receipt',
-    receiptSummary: 'Contributor payouts were queued for explicit wallet review instead of auto-sending.',
+    receiptSummary: 'Contributor payouts were queued for individual wallet review instead of auto-sending.',
     constraints: [
       'Each recipient needs a visible payout line.',
       'No unlimited token approval is requested.',
-      'Approvals can be accepted or denied individually.',
+      'Each payout can be approved or denied individually.',
       'Receipts stay attached to the approval decision.',
     ],
     facts: [
@@ -2468,11 +2476,16 @@ function guidedDemoScenarioCard(scenario: GuidedDemoScenario): string {
 }
 
 function guidedDemoStepRail(): string {
+  const receiptComplete = state.guidedDemo.stage === 'receipt';
   const steps = [
     { id: 'request', label: 'Request', detail: 'Choose a use case' },
     { id: 'prepared', label: 'Prepared plan', detail: 'Agent drafts limits' },
     { id: 'queued', label: 'Wallet review', detail: 'Approve or deny' },
-    { id: 'receipt', label: 'Receipt', detail: 'Decision recorded' },
+    {
+      id: 'receipt',
+      label: receiptComplete ? 'Demo complete' : 'Receipt',
+      detail: receiptComplete ? 'Receipt ready' : 'Decision recorded',
+    },
   ] satisfies Array<{ id: GuidedDemoStage; label: string; detail: string }>;
   const activeIndex = guidedDemoStageIndex(state.guidedDemo.stage);
   return `
@@ -2513,8 +2526,8 @@ function guidedDemoPreparedPlan(scenario: GuidedDemoScenario): string {
     return `
       <article class="guided-demo-placeholder">
         <span>Next</span>
-        <h3>Prepare the plan</h3>
-        <p>Click Prepare plan to see the structured request the agent would hand back for wallet review.</p>
+        <h3>Prepare the request</h3>
+        <p>Click Prepare request to see the structured plan the agent would hand back for wallet review.</p>
       </article>
     `;
   }
@@ -2566,12 +2579,18 @@ function guidedDemoReviewCard(scenario: GuidedDemoScenario): string {
 function guidedDemoReceiptCard(scenario: GuidedDemoScenario): string {
   if (state.guidedDemo.stage !== 'receipt') return '';
   const signed = Boolean(state.guidedDemo.signedReceipt);
+  const approved = state.guidedDemo.decision === 'approved';
+  const decisionCopy = approved ? 'You approved the simulated wallet review.' : 'You denied the simulated wallet review.';
   return `
     <article class="guided-demo-receipt-card ${state.guidedDemo.decision}">
       <div class="guided-demo-card-heading">
-        <span>${escapeHtml(state.guidedDemo.decision === 'approved' ? 'Approval receipt' : 'Denial receipt')}</span>
+        <span>${escapeHtml(approved ? 'Approval receipt' : 'Denial receipt')}</span>
         <h3>${escapeHtml(scenario.receiptSummary)}</h3>
         <p>This is demo output only. It shows the record a real approval flow would preserve for review.</p>
+      </div>
+      <div class="guided-demo-human-summary">
+        <span>Human-readable summary</span>
+        <p>${escapeHtml(`${decisionCopy} ${scenario.receiptSummary} No funds moved in this demo.`)}</p>
       </div>
       <div class="guided-demo-review-route">
         ${guidedDemoFact('Receipt', state.guidedDemo.receiptId || 'demo')}
@@ -2579,7 +2598,7 @@ function guidedDemoReceiptCard(scenario: GuidedDemoScenario): string {
         ${guidedDemoFact('Signature', signed ? short(state.guidedDemo.signedReceipt) : 'Optional')}
       </div>
       <details class="guided-demo-json">
-        <summary>Receipt JSON</summary>
+        <summary>Technical receipt JSON</summary>
         <pre>${escapeHtml(state.guidedDemo.receiptJson)}</pre>
       </details>
     </article>
@@ -2601,15 +2620,14 @@ function guidedDemoActions(): string {
   if (demo.stage === 'request') {
     return `
       <div class="guided-demo-actions">
-        <button class="primary" data-demo-action="prepare" ${disabled}>Prepare plan</button>
-        <a class="button-link" href="/app">Open full app</a>
+        <button class="primary" data-demo-action="prepare" ${disabled}>Prepare request</button>
       </div>
     `;
   }
   if (demo.stage === 'prepared') {
     return `
       <div class="guided-demo-actions">
-        <button class="primary" data-demo-action="queue" ${disabled}>Queue for wallet review</button>
+        <button class="primary" data-demo-action="queue" ${disabled}>Move to wallet review</button>
         <button data-demo-action="reset" ${disabled}>Reset demo</button>
       </div>
     `;
@@ -2617,8 +2635,8 @@ function guidedDemoActions(): string {
   if (demo.stage === 'queued') {
     return `
       <div class="guided-demo-actions">
-        <button class="primary" data-demo-action="approve" ${disabled}>Approve demo</button>
-        <button data-demo-action="deny" ${disabled}>Deny demo</button>
+        <button class="primary" data-demo-action="approve" ${disabled}>Approve simulation</button>
+        <button data-demo-action="deny" ${disabled}>Deny simulation</button>
         <button data-demo-action="reset" ${disabled}>Reset demo</button>
       </div>
     `;
@@ -2628,12 +2646,14 @@ function guidedDemoActions(): string {
       <button
         data-copy="${escapeHtml(demo.receiptJson)}"
         data-copy-name="Demo receipt JSON"
+        data-copy-toast="Demo receipt copied"
+        data-copy-message="Receipt JSON is on your clipboard."
         ${demo.receiptJson ? '' : 'disabled'}
       >Copy receipt</button>
       ${
         state.address
           ? `<button data-demo-action="sign-receipt" ${disabled || demo.signedReceipt ? 'disabled' : ''}>${demo.signedReceipt ? 'Receipt signed' : 'Sign demo receipt'}</button>`
-          : '<span class="guided-demo-action-note">Optional wallet signature appears after a wallet is connected in the full app.</span>'
+          : '<span class="guided-demo-action-note">Real wallet signing happens in the full app. This demo never moves funds.</span>'
       }
       <button data-demo-action="reset" ${disabled}>Reset demo</button>
       <a class="button-link launch-app-link mobile-redundant-nav" href="/app">Try in full app</a>
@@ -3019,6 +3039,7 @@ function walletRail(): string {
       </details>` : ''}
 
       ${aiSettingsPanel('rail')}
+      ${SHOW_DEV_CONTROLS ? '' : publicBridgeStatusCard()}
 
       ${SHOW_DEV_CONTROLS ? `
       <details class="rail-details developer-settings" ${showConnectionDetails ? 'open' : ''}>
@@ -3037,6 +3058,36 @@ function walletRail(): string {
         ${mobileWalletBox()}
       </details>` : ''}
     </aside>
+  `;
+}
+
+function publicBridgeStatusCard(): string {
+  const connected = state.bridgeActive;
+  const tone = connected ? 'online' : state.busy ? 'checking' : 'offline';
+  const status = connected ? 'Connected' : state.busy ? 'Checking' : 'Offline';
+  const detail = connected
+    ? 'Approval Inbox, recurring schedules, and bridge receipt history are connected.'
+    : 'Start the local runtime on this computer, keep its terminal open, then check the bridge.';
+  return `
+    <section class="rail-bridge-card ${tone}" aria-label="Local approval bridge status">
+      <div class="rail-bridge-head">
+        <span>Local approval bridge</span>
+        <strong>${escapeHtml(status)}</strong>
+      </div>
+      <p>${escapeHtml(detail)}</p>
+      ${connected ? `
+        <div class="rail-bridge-facts">
+          <span>Endpoint <strong>${escapeHtml(compactEndpoint(state.bridgeUrl))}</strong></span>
+          <span>Wallet <strong>${escapeHtml(state.address ? short(state.address) : 'Not connected')}</strong></span>
+        </div>
+      ` : `
+        <div class="rail-bridge-actions">
+          <button type="button" class="utility" data-bridge-action="connect" ${!state.address || state.busy ? 'disabled' : ''}>Check local bridge</button>
+          <button type="button" data-copy="${escapeHtml(NPM_EXEC_COMMAND)}" data-copy-name="local bridge command">Copy command</button>
+        </div>
+      `}
+      ${connected ? '' : localRuntimeGuide('rail-runtime-guide')}
+    </section>
   `;
 }
 
@@ -3191,16 +3242,19 @@ function bridgeBox(): string {
         <code>${escapeHtml(compactEndpoint(state.bridgeUrl))}</code>
       </div>
       <div class="bridge-actions bridge-primary-actions">
-        <button id="connectBridge" class="primary" ${!state.address || state.busy || state.bridgeActive ? 'disabled' : ''}>
-          Connect bridge
-        </button>
+        ${state.bridgeActive ? '' : `
+          <button id="connectBridge" class="primary" ${!state.address || state.busy ? 'disabled' : ''}>
+            Check local bridge
+          </button>
+        `}
         <button id="disconnectBridge" ${!state.bridgeActive || state.busy ? 'disabled' : ''}>Disconnect</button>
       </div>
       <p class="bridge-ops-status">${escapeHtml(state.bridgeStatus)}</p>
       <div class="bridge-terminal-hint">
-        <span>Terminal control</span>
+        <span>Start local runtime</span>
         <code>${NPM_EXEC_COMMAND}</code>
         <button data-copy="${NPM_EXEC_COMMAND}" data-copy-name="CLI one-shot command" title="Copy terminal command">Copy</button>
+        <p>Run this in Terminal and keep that window open. Pressing Ctrl+C stops the bridge.</p>
       </div>
       <details class="bridge-advanced-settings">
         <summary>Advanced bridge settings</summary>
@@ -3436,9 +3490,9 @@ function outcomeLabel(outcome: TemplateOutcome): string {
     case 'queueable':
       return 'Can queue to Approval Inbox';
     case 'proof':
-      return 'Review proof only';
+      return 'Proof only';
     case 'audit':
-      return 'Read-only / audit';
+      return 'Evidence only';
   }
 }
 
@@ -3449,7 +3503,7 @@ function outcomeShortLabel(outcome: TemplateOutcome): string {
     case 'proof':
       return 'Proof only';
     case 'audit':
-      return 'Audit only';
+      return 'Evidence only';
   }
 }
 
@@ -3488,7 +3542,7 @@ function outcomeClass(outcome: TemplateOutcome): string {
 }
 
 function queueActionLabelForPlan(plan: AgentPlan): string {
-  return plan.actionType === 'recurring_payment' ? 'Create recurring plan' : 'Send to Approval Inbox';
+  return plan.actionType === 'recurring_payment' ? 'Create recurring schedule' : 'Send to Approval Inbox';
 }
 
 function templatesForOutcomeFilter(filter = state.templateOutcomeFilter): AgentPlanTemplate[] {
@@ -3502,7 +3556,7 @@ function firstTemplateForOutcomeFilter(filter: TemplateOutcomeFilter): AgentPlan
 }
 
 function oneTimePlanTemplates(): AgentPlanTemplate[] {
-  return AGENT_PLAN_TEMPLATES.filter((template) => template.category !== 'recurring' && template.actionType !== 'recurring_payment');
+  return AGENT_PLAN_TEMPLATES.filter((template) => template.actionType !== 'recurring_payment');
 }
 
 function activePanel(): string {
@@ -3607,7 +3661,7 @@ function agentPlanPanel(): string {
       <div class="signature-object-head">
         <div>
           <h2>Create one-time plan</h2>
-          <p>Create a draft, review it, then sign proof or queue wallet approval when ready.</p>
+          <p>Create a bounded draft, review it, then either sign proof or send it to wallet review.</p>
         </div>
         <span class="signature-state ${state.agentSignature ? 'complete' : state.agentPlan ? 'active' : ''}">${state.oneTimePlanView === 'review' ? `${reviewCount} plan${reviewCount === 1 ? '' : 's'}` : 'create plan'}</span>
       </div>
@@ -3936,7 +3990,7 @@ function generatedPlanActionHint(record: GeneratedPlanRecord): string {
     return '<p class="generated-plan-action-helper">Connect a wallet to sign a review proof or send this plan to Approval Inbox.</p>';
   }
   if (canQueueAgentPlan(record.plan) && !state.bridgeActive) {
-    return bridgeRequiredNotice('Local bridge required for Approval Inbox. You can still sign a proof to complete this plan as evidence only.');
+    return '<p class="generated-plan-bridge-helper">Approval Inbox needs the local bridge. You can still sign proof & complete this plan as evidence.</p>';
   }
   if (!canQueueAgentPlan(record.plan)) {
     return '<p class="generated-plan-action-helper">Review-only plan: sign a proof to complete it. It will not enter Approval Inbox.</p>';
@@ -3945,23 +3999,60 @@ function generatedPlanActionHint(record: GeneratedPlanRecord): string {
 }
 
 function bridgeRequiredNotice(message: string): string {
+  if (state.bridgeActive) return '';
   return `
     <div class="bridge-required-notice">
       <p>${escapeHtml(message)}</p>
       <div class="bridge-required-actions">
-        <button type="button" class="utility" data-bridge-action="connect" ${!state.address || state.busy ? 'disabled' : ''}>Connect local bridge</button>
-        <details class="bridge-setup-details">
-          <summary>Bridge setup</summary>
-          <div class="bridge-setup-card">
-            <p>Website mode can create plans, sign review proofs, and create evidence receipts without the bridge.</p>
-            <p>Approval Inbox, recurring schedules, queued approvals, and receipts need the local approval bridge at <code>${escapeHtml(compactEndpoint(state.bridgeUrl))}</code>.</p>
-            <div class="bridge-command-row">
-              <code>${escapeHtml(NPM_EXEC_COMMAND)}</code>
-              <button type="button" data-copy="${escapeHtml(NPM_EXEC_COMMAND)}" data-copy-name="local bridge command">Copy</button>
-            </div>
-          </div>
-        </details>
+        <button type="button" class="utility" data-bridge-action="connect" ${!state.address || state.busy ? 'disabled' : ''}>Check local bridge</button>
+        ${bridgeSetupDetails('inline-bridge-setup', true)}
       </div>
+    </div>
+  `;
+}
+
+function bridgeSetupDetails(extraClass = '', open = false): string {
+  return `
+    <details class="bridge-setup-details ${escapeHtml(extraClass)}" ${open ? 'open' : ''}>
+      <summary>Start local runtime</summary>
+      <div class="bridge-setup-card">
+        ${localRuntimeGuide('setup-popover')}
+      </div>
+    </details>
+  `;
+}
+
+function localRuntimeGuide(extraClass = ''): string {
+  return `
+    <div class="local-runtime-guide ${escapeHtml(extraClass)}">
+      <div class="local-runtime-guide-head">
+        <span>Required on this computer</span>
+        <strong>${escapeHtml(compactEndpoint(state.bridgeUrl))}</strong>
+      </div>
+      <p>This website cannot start the approval bridge directly. Start the local runtime, keep that terminal window open, then return here and click Check local bridge.</p>
+      <ol class="local-runtime-steps">
+        <li>Copy and run the one-shot command in Terminal.</li>
+        <li>Connect your wallet in the browser tab it opens.</li>
+        <li>Come back here and check the local bridge.</li>
+      </ol>
+      <div class="bridge-command-row primary-runtime-command">
+        <code>${escapeHtml(NPM_EXEC_COMMAND)}</code>
+        <button type="button" data-copy="${escapeHtml(NPM_EXEC_COMMAND)}" data-copy-name="local runtime command">Copy</button>
+      </div>
+      <details class="local-runtime-alt">
+        <summary>Install once or use Desktop App</summary>
+        <div class="local-runtime-alt-body">
+          <div class="bridge-command-row">
+            <code>${escapeHtml(NPM_GLOBAL_INSTALL_COMMAND)}</code>
+            <button type="button" data-copy="${escapeHtml(NPM_GLOBAL_INSTALL_COMMAND)}" data-copy-name="CLI install command">Copy</button>
+          </div>
+          <div class="bridge-command-row">
+            <code>${escapeHtml(INSTALLED_APP_COMMAND)}</code>
+            <button type="button" data-copy="${escapeHtml(INSTALLED_APP_COMMAND)}" data-copy-name="installed CLI command">Copy</button>
+          </div>
+          <a class="button-link local-runtime-desktop-link" href="/desktop">Desktop App downloads</a>
+        </div>
+      </details>
     </div>
   `;
 }
@@ -4116,6 +4207,7 @@ function agentPlannerWorkbench(): string {
   const template = selectedTemplate();
   const notesRequired = templateRequiresUserNotes(template);
   const canUseAi = canGenerateAiPlanFromSettings();
+  const aiDisabledReason = aiGenerateDisabledReason();
   const templateGenerating = state.activeOperation === 'generate-template-plan';
   const aiGenerating = state.activeOperation === 'generate-ai-plan';
   const outcome = templateOutcome(template);
@@ -4159,8 +4251,8 @@ function agentPlannerWorkbench(): string {
           <p>Plans are saved in Review & Finish. Queueable plans enter Approval Inbox only after you choose to queue them; finished plans appear in Completed Plans.</p>
         </div>
         <div class="agent-actions signature-actions intent-document-actions">
-          <button id="generatePlan" class="primary" ${state.busy ? 'disabled' : ''}>${templateGenerating ? `${buttonSpinner()}Creating...` : 'Create template plan'}</button>
-          <button id="generateAiPlan" class="${canUseAi ? 'primary' : ''}" ${!canUseAi || state.busy ? 'disabled' : ''} title="${canUseAi ? 'Create through your configured AI key.' : 'Add a hosted/session key or configure local bridge AI first.'}">${aiGenerating ? `${buttonSpinner()}Creating...` : 'Create with AI'}</button>
+          <button id="generatePlan" class="primary" ${state.busy ? 'disabled' : ''}>${templateGenerating ? `${buttonSpinner()}Creating...` : 'Create plan from template'}</button>
+          <button id="generateAiPlan" class="${canUseAi ? 'primary' : ''}" ${!canUseAi || state.busy ? 'disabled' : ''} title="${escapeHtml(canUseAi ? 'Create through your configured AI planner.' : aiDisabledReason)}">${aiGenerating ? `${buttonSpinner()}Creating...` : 'Create plan with AI'}</button>
         </div>
       </div>
     </div>
@@ -4170,8 +4262,8 @@ function agentPlannerWorkbench(): string {
 function templateOutcomeControls(): string {
   const filters: Array<[TemplateOutcomeFilter, string]> = [
     ['queueable', 'Queueable'],
-    ['proof', 'Review only'],
-    ['audit', 'Read-only'],
+    ['proof', 'Proof only'],
+    ['audit', 'Evidence only'],
     ['all', 'All'],
   ];
   return `
@@ -4204,19 +4296,19 @@ function aiSettingsPanel(location: 'rail' | 'planner' = 'planner'): string {
   const configured = isAiConfiguredForCurrentMode();
   const shouldOpen = state.aiSettingsPanelOpen ?? (configured && !isCompactMobileLayout());
   const open = shouldOpen ? 'open' : '';
-  const routeLabel = aiRouteStatusLabel(state.aiStatus);
+  const readinessLabel = aiReadinessLabel(state.aiStatus);
   const summaryDetail = location === 'rail'
     ? configured
-      ? routeLabel
-      : 'BYOK planning optional'
+      ? readinessLabel
+      : 'Plan drafting optional'
     : configured
-      ? routeLabel
-      : 'Optional BYOK planning; templates work without it.';
+      ? readinessLabel
+      : 'Optional AI planner; templates work without it.';
   return `
     <details class="ai-settings-panel ${configured ? 'configured' : 'optional'} ${location === 'rail' ? 'rail-ai-settings' : ''}" ${open}>
       <summary>
         <span class="ai-summary-copy">
-          <span>AI Agent</span>
+          <span>AI Planner</span>
           <em>${escapeHtml(summaryDetail)}</em>
         </span>
         <strong>${configured ? 'configured' : 'not configured'}</strong>
@@ -4232,20 +4324,22 @@ function isCompactMobileLayout(): boolean {
 
 function agentPathExplainer(): string {
   return `
-    <aside class="agent-path-explainer" aria-label="Template and connected agent paths">
-      <div>
-        <span>One-time plans</span>
-        <p>Create a send or swap plan, then queue it to Approval Inbox when you want a wallet decision.</p>
-      </div>
-      <div>
-        <span>Recurring plans</span>
-        <p>Create a recurring schedule. Every due occurrence still returns to Approval Inbox before signing.</p>
-      </div>
-      <div>
-        <span>Audit evidence</span>
-        <p>Review proofs and evidence receipts are signed records. They do not queue, approve, or submit transactions.</p>
-      </div>
+    <aside class="agent-route-strip" aria-label="One-time plan route">
+      ${agentRouteStep('1', 'Create plan', 'Template or AI drafts a bounded request.')}
+      ${agentRouteStep('2', 'Review & Finish', 'Check limits, risk, route, and approval rule.')}
+      ${agentRouteStep('3', 'Send or sign', 'Send queueable work to Inbox or sign proof only.')}
+      ${agentRouteStep('4', 'Completed', 'Receipts and proofs stay in history.')}
     </aside>
+  `;
+}
+
+function agentRouteStep(index: string, title: string, detail: string): string {
+  return `
+    <div>
+      <span>${escapeHtml(index)}</span>
+      <strong>${escapeHtml(title)}</strong>
+      <p>${escapeHtml(detail)}</p>
+    </div>
   `;
 }
 
@@ -4254,8 +4348,8 @@ function templatePicker(template: AgentPlanTemplate): string {
   const visibleTemplates = templatesForOutcomeFilter();
   const groups: Array<[TemplateOutcome, string]> = [
     ['queueable', 'Can queue to Approval Inbox'],
-    ['proof', 'Review proof only'],
-    ['audit', 'Read-only / audit'],
+    ['proof', 'Proof only'],
+    ['audit', 'Evidence only'],
   ];
   return `
     <div class="template-picker" data-template-picker>
@@ -4365,44 +4459,40 @@ function aiSettingsCard(): string {
   const providerPreset = aiProviderPresetById(state.aiSettings.provider);
   const formatLabel = aiFormatLabel(state.aiSettings.apiFormat);
   const customProvider = providerPreset.id === 'custom-openai-compatible';
-  const providerOptions = selectableAiProviderPresets();
   const selectedPresetModel = providerPreset.models.find((model) => model.id === state.aiSettings.model);
   const usingCustomModel = !selectedPresetModel;
   const routeLabel = aiRouteStatusLabel(status);
+  const readinessLabel = aiReadinessLabel(status);
   const keyLabel = state.aiSettings.mode === 'bridge'
     ? 'Bridge session key'
     : state.aiSettings.mode === 'hosted'
-      ? 'Hosted request key'
+      ? 'Hosted BYOK key'
       : 'Browser session key';
   const securityCopy = state.aiSettings.mode === 'hosted'
-    ? 'Hosted BYOK relays your key to the selected provider for this request only. Agentic does not store it.'
+    ? 'Hosted BYOK uses this key only while drafting a plan. It does not queue approvals, create recurring schedules, or sign anything.'
     : state.aiSettings.mode === 'bridge'
-      ? 'The local bridge keeps the key in process memory and calls the provider from your machine.'
-      : 'Browser session keys stay in this browser tab only and require a browser-compatible provider or gateway.';
+      ? 'The local bridge can call AI from your machine and also powers Approval Inbox, recurring schedules, and bridge receipts.'
+      : 'Browser session keys stay in this tab and can draft plans only. Browser mode cannot queue approvals or create recurring schedules.';
   return `
     <aside class="ai-settings-card">
       <div>
-        <span class="workbench-kicker">Connect AI Agent</span>
-        <h3>AI key stays out of Agentic custody</h3>
+        <span class="workbench-kicker">Connect AI Planner</span>
+        <h3>AI drafts plans only</h3>
         <p>${escapeHtml(securityCopy)}</p>
       </div>
       <label class="field compact">
         <span>AI path</span>
-        <select id="aiMode" ${state.busy ? 'disabled' : ''}>
-          <option value="hosted" ${state.aiSettings.mode === 'hosted' ? 'selected' : ''}>Hosted BYOK</option>
-          <option value="bridge" ${state.aiSettings.mode === 'bridge' ? 'selected' : ''}>Local bridge</option>
-          <option value="session" ${state.aiSettings.mode === 'session' ? 'selected' : ''}>Browser session only</option>
+        <select id="aiMode" ${state.busy ? 'disabled' : ''} ${aiModeHelperText() ? `title="${escapeHtml(aiModeHelperText())}"` : ''}>
+          ${aiModeOptions()}
         </select>
+        ${aiModeHelperText() ? `<em class="ai-route-helper">${escapeHtml(aiModeHelperText())}</em>` : ''}
       </label>
       <label class="field compact">
         <span>Provider preset</span>
-        <select id="aiProvider" ${state.busy ? 'disabled' : ''}>
-          ${providerOptions.map((preset) => `
-            <option value="${escapeHtml(preset.id)}" ${preset.id === state.aiSettings.provider ? 'selected' : ''}>
-              ${escapeHtml(preset.label)}
-            </option>
-          `).join('')}
+        <select id="aiProvider" ${state.busy ? 'disabled' : ''} ${aiProviderHelperText() ? `title="${escapeHtml(aiProviderHelperText())}"` : ''}>
+          ${aiProviderOptions()}
         </select>
+        ${aiProviderHelperText() ? `<em class="ai-route-helper">${escapeHtml(aiProviderHelperText())}</em>` : ''}
       </label>
       <label class="field compact">
         <span>Model</span>
@@ -4432,12 +4522,20 @@ function aiSettingsCard(): string {
         <input id="aiApiKey" type="password" value="${escapeHtml(state.aiSettings.apiKey)}" placeholder="Not saved by default" autocomplete="off" ${state.busy ? 'disabled' : ''} />
       </label>
       <div class="ai-actions">
-        ${state.aiSettings.mode === 'bridge' ? `<button id="saveBridgeAiKey" ${!canSaveBridgeAiKey() ? 'disabled' : ''}>Set bridge key</button>` : ''}
+        ${state.aiSettings.mode === 'bridge'
+          ? `<button id="saveBridgeAiKey" ${!canSaveBridgeAiKey() ? 'disabled' : ''}>Set bridge key</button>`
+          : `<button id="saveDirectAiKey" ${!canSaveDirectAiKey() ? 'disabled' : ''}>Use key for drafts</button>`}
         <button id="clearAiKey" ${!canClearAiKey() ? 'disabled' : ''}>Clear key</button>
         ${state.aiSettings.mode === 'bridge' ? `<button id="refreshAiStatus" ${state.busy ? 'disabled' : ''}>Refresh</button>` : ''}
       </div>
+      ${state.aiSettings.mode === 'bridge' ? localBridgeConnectionCard(status) : ''}
+      ${state.aiSettings.mode === 'bridge' && !state.bridgeActive && !status?.available ? localRuntimeGuide('ai-runtime-guide') : ''}
       <div class="ai-status-line">
-        <span>AI route</span>
+        <span>Planner status</span>
+        <strong>${escapeHtml(readinessLabel)}</strong>
+      </div>
+      <div class="ai-status-line">
+        <span>Route</span>
         <strong>${escapeHtml(routeLabel)}</strong>
       </div>
       <div class="ai-status-line">
@@ -4445,8 +4543,114 @@ function aiSettingsCard(): string {
         <strong>${escapeHtml(formatLabel)}</strong>
       </div>
       ${aiDiagnosticsPanel()}
-      <p class="ai-security-note">No AI can sign, submit, or approve. It only creates a structured plan for your wallet review.</p>
+      <p class="ai-security-note">AI Planner only drafts one-time plans. The local approval bridge is separate and required for Approval Inbox, recurring schedules, and bridge-backed receipt history.</p>
     </aside>
+  `;
+}
+
+function aiModeOptions(): string {
+  const options: Array<{ id: AiSettings['mode']; label: string }> = [
+    { id: 'hosted', label: 'Hosted BYOK - drafts only' },
+    { id: 'bridge', label: 'Local bridge AI - draft via bridge' },
+    { id: 'session', label: 'Browser session - drafts only' },
+  ];
+  return options.map((option) => {
+    const disabledReason = aiModeDisabledReason(option.id);
+    return `
+      <option
+        value="${escapeHtml(option.id)}"
+        ${option.id === state.aiSettings.mode ? 'selected' : ''}
+        ${disabledReason ? `disabled title="${escapeHtml(disabledReason)}"` : ''}
+      >
+        ${escapeHtml(option.label)}
+      </option>
+    `;
+  }).join('');
+}
+
+function aiProviderOptions(): string {
+  return AI_PROVIDER_PRESETS.map((preset) => {
+    const disabledReason = aiProviderDisabledReason(preset.id);
+    return `
+      <option
+        value="${escapeHtml(preset.id)}"
+        ${preset.id === state.aiSettings.provider ? 'selected' : ''}
+        ${disabledReason ? `disabled title="${escapeHtml(disabledReason)}"` : ''}
+      >
+        ${escapeHtml(preset.label)}
+      </option>
+    `;
+  }).join('');
+}
+
+function aiModeDisabledReason(mode: AiSettings['mode']): string {
+  if (mode === 'session' && state.aiSettings.provider === 'openai') {
+    return OPENAI_BROWSER_SESSION_DISABLED_REASON;
+  }
+  return '';
+}
+
+function aiProviderDisabledReason(providerId: string): string {
+  if (state.aiSettings.mode === 'session' && providerId === 'openai') {
+    return OPENAI_BROWSER_SESSION_DISABLED_REASON;
+  }
+  if (state.aiSettings.mode === 'hosted' && providerId === 'custom-openai-compatible') {
+    return HOSTED_CUSTOM_PROVIDER_DISABLED_REASON;
+  }
+  return '';
+}
+
+function aiModeHelperText(): string {
+  return state.aiSettings.provider === 'openai'
+    ? OPENAI_BROWSER_SESSION_DISABLED_REASON
+    : '';
+}
+
+function aiProviderHelperText(): string {
+  if (state.aiSettings.mode === 'session') {
+    return OPENAI_BROWSER_SESSION_DISABLED_REASON;
+  }
+  if (state.aiSettings.mode === 'hosted') {
+    return HOSTED_CUSTOM_PROVIDER_DISABLED_REASON;
+  }
+  return '';
+}
+
+function localBridgeConnectionCard(status: BridgeAiStatus | null): string {
+  const connected = state.bridgeActive;
+  const aiConfigured = Boolean(status?.available);
+  const tone = connected ? 'connected' : aiConfigured ? 'partial' : 'offline';
+  const title = connected
+    ? 'Local bridge connected'
+    : aiConfigured
+      ? 'Bridge AI key configured'
+      : 'Local bridge not connected';
+  const detail = connected
+    ? 'Approval queue, recurring plans, receipts, and local AI route are reachable from this browser.'
+    : aiConfigured
+      ? 'The AI key is set in the local bridge, but this wallet host still needs to connect to the approval bridge.'
+      : 'Start the local runtime on this computer, then check the local bridge from this browser.';
+  const keyLabel = aiConfigured
+    ? `${status?.provider ?? status?.apiFormat ?? 'AI'} - ${status?.model ?? 'model configured'}`
+    : 'AI key not configured';
+  return `
+    <div class="local-bridge-connection-card ${tone}">
+      <div class="local-bridge-connection-head">
+        <span>${escapeHtml(connected ? 'Connected' : aiConfigured ? 'Key set' : 'Setup needed')}</span>
+        <strong>${escapeHtml(title)}</strong>
+      </div>
+      <p>${escapeHtml(detail)}</p>
+      <div class="local-bridge-facts">
+        <span>Endpoint <strong>${escapeHtml(compactEndpoint(state.bridgeUrl))}</strong></span>
+        <span>Wallet <strong>${escapeHtml(state.address ? short(state.address) : 'Not connected')}</strong></span>
+        <span>AI <strong>${escapeHtml(keyLabel)}</strong></span>
+      </div>
+      ${connected ? '' : `
+        <button type="button" class="utility" data-bridge-action="connect" ${!state.address || state.busy ? 'disabled' : ''}>
+          Check local bridge
+        </button>
+      `}
+    </div>
   `;
 }
 
@@ -4486,6 +4690,14 @@ function canSaveBridgeAiKey(): boolean {
     && !state.busy;
 }
 
+function canSaveDirectAiKey(): boolean {
+  return state.aiSettings.mode !== 'bridge'
+    && Boolean(state.aiSettings.apiKey.trim())
+    && Boolean(state.aiSettings.model.trim())
+    && aiProviderReadyForCurrentMode()
+    && !state.busy;
+}
+
 function canClearAiKey(): boolean {
   return Boolean(state.aiSettings.apiKey.trim() || (state.aiSettings.mode === 'bridge' && state.aiStatus?.available));
 }
@@ -4496,6 +4708,36 @@ function canGenerateAiPlanFromSettings(): boolean {
     return Boolean(state.aiStatus?.available && !state.busy);
   }
   return Boolean(state.aiSettings.apiKey.trim() && modelReady && aiProviderReadyForCurrentMode() && !state.busy);
+}
+
+function aiGenerateDisabledReason(): string {
+  const modelReady = Boolean(state.aiSettings.model.trim());
+  if (state.busy) {
+    return 'Wait for the current action to finish.';
+  }
+  if (state.aiSettings.mode === 'bridge') {
+    if (!state.aiStatus?.available) {
+      return 'Start the local runtime, set a bridge key, then refresh AI status.';
+    }
+    return 'Bridge AI is ready.';
+  }
+  if (state.aiSettings.mode === 'session' && state.aiSettings.provider === 'openai') {
+    return OPENAI_BROWSER_SESSION_DISABLED_REASON;
+  }
+  if (!state.aiSettings.apiKey.trim()) {
+    return state.aiSettings.mode === 'hosted'
+      ? 'Add a Hosted BYOK request key.'
+      : 'Add a browser-compatible session key.';
+  }
+  if (!modelReady) {
+    return 'Choose or enter an AI model.';
+  }
+  if (!aiProviderReadyForCurrentMode()) {
+    return state.aiSettings.mode === 'hosted'
+      ? HOSTED_CUSTOM_PROVIDER_DISABLED_REASON
+      : 'Add a browser-compatible gateway URL for this provider.';
+  }
+  return 'Configure the AI Planner first, or use templates without AI.';
 }
 
 function isAiConfiguredForCurrentMode(): boolean {
@@ -4517,25 +4759,38 @@ function aiProviderReadyForCurrentMode(): boolean {
   return providerPreset.id !== 'custom-openai-compatible' || Boolean(state.aiSettings.baseUrl.trim());
 }
 
-function selectableAiProviderPresets(): typeof AI_PROVIDER_PRESETS {
-  return state.aiSettings.mode === 'hosted'
-    ? AI_PROVIDER_PRESETS.filter((preset) => preset.id !== 'custom-openai-compatible')
-    : AI_PROVIDER_PRESETS;
-}
-
 function aiRouteStatusLabel(status: BridgeAiStatus | null): string {
   if (state.aiSettings.mode === 'hosted') {
-    return state.aiSettings.apiKey.trim() ? `hosted - ${state.aiSettings.provider} - ${state.aiSettings.model || 'model configured'}` : 'hosted - key required';
+    return state.aiSettings.apiKey.trim() ? `hosted draft - ${state.aiSettings.provider} - ${state.aiSettings.model || 'model configured'}` : 'hosted draft - key required';
   }
   if (state.aiSettings.mode === 'session') {
     if (state.aiSettings.provider === 'openai') {
-      return 'browser - OpenAI requires hosted or bridge';
+      return 'browser draft - OpenAI requires hosted or bridge';
     }
-    return state.aiSettings.apiKey.trim() ? `browser - ${state.aiSettings.provider} - ${state.aiSettings.model || 'model configured'}` : 'browser - key required';
+    return state.aiSettings.apiKey.trim() ? `browser draft - ${state.aiSettings.provider} - ${state.aiSettings.model || 'model configured'}` : 'browser draft - key required';
   }
   return status?.available
     ? `${status.source} - ${status.provider ?? status.apiFormat ?? 'AI'} - ${status.model ?? 'model configured'}`
     : 'bridge - not configured';
+}
+
+function aiReadinessLabel(status: BridgeAiStatus | null): string {
+  if (state.aiSettings.mode === 'bridge') {
+    return status?.available ? 'Bridge AI verified' : 'Bridge key required';
+  }
+  if (state.aiSettings.mode === 'session' && state.aiSettings.provider === 'openai') {
+    return 'Use hosted or bridge for OpenAI';
+  }
+  if (!state.aiSettings.apiKey.trim()) {
+    return state.aiSettings.mode === 'hosted' ? 'Hosted key required' : 'Browser key required';
+  }
+  if (!state.aiSettings.model.trim()) {
+    return 'Choose a model';
+  }
+  if (!aiProviderReadyForCurrentMode()) {
+    return state.aiSettings.mode === 'hosted' ? 'Choose hosted provider' : 'Gateway URL required';
+  }
+  return 'Key ready for this tab';
 }
 
 function aiRouteDiagnostic(path: string): AiDiagnosticEntry {
@@ -4591,24 +4846,35 @@ function aiRouteMismatchDiagnostic(err: unknown): AiDiagnosticEntry | undefined 
 }
 
 function ensureAiProviderAllowedForMode(): void {
-  if (state.aiSettings.mode !== 'hosted' || state.aiSettings.provider !== 'custom-openai-compatible') {
+  if (state.aiSettings.mode === 'session' && state.aiSettings.provider === 'openai') {
+    const preset = aiProviderPresetById(BROWSER_SESSION_DEFAULT_PROVIDER_ID);
+    state.aiSettings.provider = preset.id;
+    state.aiSettings.apiFormat = preset.apiFormat;
+    state.aiSettings.baseUrl = preset.baseUrl;
+    state.aiSettings.model = preset.model;
     return;
   }
-  const preset = aiProviderPresetById(DEFAULT_AI_PROVIDER_ID);
-  state.aiSettings.provider = preset.id;
-  state.aiSettings.apiFormat = preset.apiFormat;
-  state.aiSettings.baseUrl = preset.baseUrl;
-  state.aiSettings.model = preset.model;
+  if (state.aiSettings.mode === 'hosted' && state.aiSettings.provider === 'custom-openai-compatible') {
+    const preset = aiProviderPresetById(DEFAULT_AI_PROVIDER_ID);
+    state.aiSettings.provider = preset.id;
+    state.aiSettings.apiFormat = preset.apiFormat;
+    state.aiSettings.baseUrl = preset.baseUrl;
+    state.aiSettings.model = preset.model;
+  }
 }
 
 function syncAiActionButtons(): void {
   const saveButton = document.querySelector<HTMLButtonElement>('#saveBridgeAiKey');
+  const directKeyButton = document.querySelector<HTMLButtonElement>('#saveDirectAiKey');
   const clearButton = document.querySelector<HTMLButtonElement>('#clearAiKey');
   const generateButton = document.querySelector<HTMLButtonElement>('#generateAiPlan');
   const canGenerateAi = canGenerateAiPlanFromSettings();
 
   if (saveButton) {
     saveButton.disabled = !canSaveBridgeAiKey();
+  }
+  if (directKeyButton) {
+    directKeyButton.disabled = !canSaveDirectAiKey();
   }
   if (clearButton) {
     clearButton.disabled = !canClearAiKey();
@@ -4617,8 +4883,8 @@ function syncAiActionButtons(): void {
     generateButton.disabled = !canGenerateAi;
     generateButton.classList.toggle('primary', canGenerateAi);
     generateButton.title = canGenerateAi
-      ? 'Create through your configured AI key.'
-      : 'Add a hosted/session key or configure local bridge AI first.';
+      ? 'Create a one-time draft through your configured AI planner.'
+      : aiGenerateDisabledReason();
   }
 }
 
@@ -4684,7 +4950,7 @@ function approvalInboxPanel(): string {
 
       ${queueStatusLine(actions.length)}
       ${preparedActionsList(actions)}
-      ${!state.bridgeActive ? bridgeRequiredNotice('Local approval bridge required to load active approvals and recurring occurrences.') : ''}
+      ${!state.bridgeActive ? bridgeRequiredNotice('Local approval bridge required to load active approvals and recurring occurrences. AI Planner routes only create drafts.') : ''}
       ${state.error ? `<div class="error">${escapeHtml(state.error)}</div>` : ''}
     </section>
   `;
@@ -4717,7 +4983,7 @@ function completedPlansPanel(): string {
         <span>${proofCount} proof${proofCount === 1 ? '' : 's'}</span>
         <span>${recurringCount} recurring</span>
       </div>
-      ${!state.bridgeActive ? bridgeRequiredNotice('Connect the local approval bridge to load receipts and recurring history. Browser-saved proofs still appear here.') : ''}
+      ${completedBridgeStatusHint()}
       ${
         visiblePlans.length
           ? `<div class="generated-plan-grid completed-plan-grid" aria-label="Completed plans">${visiblePlans.map(completedPlanCard).join('')}</div>`
@@ -4725,6 +4991,15 @@ function completedPlansPanel(): string {
       }
       ${state.error ? `<div class="error">${escapeHtml(state.error)}</div>` : ''}
     </section>
+  `;
+}
+
+function completedBridgeStatusHint(): string {
+  if (state.bridgeActive) return '';
+  return `
+    <p class="completed-bridge-hint">
+      Browser-saved proofs are visible. Bridge receipts and recurring history appear after the local approval bridge is connected.
+    </p>
   `;
 }
 
@@ -4820,14 +5095,14 @@ function completedPlanCard(plan: CompletedPlanRecord): string {
 
 function scheduledApprovalsPanel(): string {
   if (!state.address) {
-    return guidedStartPanel('Create recurring plan', 'Connect a wallet before creating recurring plans.');
+    return guidedStartPanel('Create recurring schedule', 'Connect a wallet before creating recurring schedules.');
   }
   return `
     <section class="approval-object signature-stage stage-schedule stage-anchor ${state.recurringPayments.length ? 'stage-active' : 'stage-draft'}">
       <div class="signature-object-head">
         <div>
-          <h2>Create recurring plan</h2>
-          <p>Create a recurring schedule. Each due occurrence appears in Approval Inbox for approve or deny.</p>
+          <h2>Create recurring schedule</h2>
+          <p>Create a supported payment or subscription schedule through the local approval bridge. Each due occurrence appears in Approval Inbox for approve or deny.</p>
         </div>
         <button id="refreshInbox" class="utility" ${!state.bridgeActive || state.busy ? 'disabled' : ''} title="${!state.bridgeActive ? 'Connect the bridge to refresh recurring plans.' : ''}">Refresh</button>
       </div>
@@ -4999,7 +5274,7 @@ function signedArtifactsPanel(): string {
         <button id="refreshLabArtifacts" class="utility" ${state.busy ? 'disabled' : ''}>Refresh</button>
       </div>
       ${artifactArchiveControls()}
-      <p class="receipt-copy-helper">Full receipt is for sharing or verification. Signed message is the exact text your wallet signed.</p>
+      <p class="receipt-copy-helper">Receipt JSON is for sharing or verification. Signed message is the exact text your wallet signed.</p>
       ${artifactArchiveStatusLine()}
       ${artifacts.length ? signedArtifactList(artifacts) : signedArtifactsEmptyState()}
     </div>
@@ -5101,8 +5376,9 @@ function filteredLabArtifacts(): LabArtifact[] {
 function signedArtifactRow(artifact: LabArtifact): string {
   const lab = labById(artifact.labId);
   const legacy = !lab || lab.category === 'advanced';
-  const fullReceiptLabel = legacy ? 'Copy legacy record' : 'Copy full receipt';
-  const signedMessageLabel = 'Copy signed message';
+  const summary = legacy
+    ? 'Older signed evidence record. The signed request and receipt JSON are preserved.'
+    : artifact.payload.summary ?? artifact.payload.thesis;
   const searchText = [
     artifact.title,
     artifact.kind,
@@ -5120,10 +5396,10 @@ function signedArtifactRow(artifact: LabArtifact): string {
       <div class="signed-artifact-main">
         <div class="artifact-meta-line">
           <span class="status-pill ${artifact.verified ? 'tx-confirmed' : 'tx-pending'}">${artifact.verified ? 'verified' : 'signed'}</span>
-          <span>${escapeHtml(legacy ? 'Legacy evidence lab' : labKindLabel(artifact.kind))}</span>
+          <span>${escapeHtml(legacy ? 'Legacy receipt' : labKindLabel(artifact.kind))}</span>
         </div>
         <h3>${escapeHtml(artifact.title)}</h3>
-        <p>${escapeHtml(artifact.payload.summary ?? artifact.payload.thesis)}</p>
+        <p>${escapeHtml(summary)}</p>
         <div class="signed-artifact-request">
           <span>Signed request</span>
           <p>${escapeHtml(artifact.input)}</p>
@@ -5136,9 +5412,14 @@ function signedArtifactRow(artifact: LabArtifact): string {
         ${archiveFact('Receipt', short(artifact.artifactHash))}
       </div>
       <div class="signed-artifact-actions">
-        <button data-copy="${escapeHtml(stableJson(artifact))}" data-copy-name="${escapeHtml(fullReceiptLabel)}">${escapeHtml(fullReceiptLabel)}</button>
-        <button data-copy="${escapeHtml(artifact.signingMessage)}" data-copy-name="${escapeHtml(signedMessageLabel)}">${escapeHtml(signedMessageLabel)}</button>
-        <button class="utility danger" data-artifact-delete="${escapeHtml(artifact.id)}" ${state.busy ? 'disabled' : ''}>Delete</button>
+        <button data-copy="${escapeHtml(stableJson(artifact))}" data-copy-name="Receipt JSON">Copy receipt JSON</button>
+        <button data-copy="${escapeHtml(artifact.signingMessage)}" data-copy-name="Signed message">Copy signed message</button>
+        <details class="generated-plan-more signed-artifact-more">
+          <summary>More</summary>
+          <div>
+            <button class="utility danger" data-artifact-delete="${escapeHtml(artifact.id)}" ${state.busy ? 'disabled' : ''}>Delete</button>
+          </div>
+        </details>
       </div>
       <details class="artifact-technical-details signed-artifact-details">
         <summary>
@@ -5296,7 +5577,7 @@ function contextPanel(): string {
             : state.activeTab === 'inbox'
               ? 'Review approval inbox'
               : state.activeTab === 'schedule'
-                ? 'Create recurring plan'
+                ? 'Create recurring schedule'
                 : state.activeTab === 'completed'
                   ? 'Review completed plans'
                   : state.activeTab === 'labs' && state.artifactView === 'signed'
@@ -5499,6 +5780,7 @@ function bind(): void {
     }
   });
   document.querySelector<HTMLButtonElement>('#saveBridgeAiKey')?.addEventListener('click', runSaveBridgeAiKey);
+  document.querySelector<HTMLButtonElement>('#saveDirectAiKey')?.addEventListener('click', runSaveDirectAiKey);
   document.querySelector<HTMLButtonElement>('#clearAiKey')?.addEventListener('click', runClearAiKey);
   document.querySelector<HTMLButtonElement>('#refreshAiStatus')?.addEventListener('click', runRefreshAiStatus);
   document.querySelector<HTMLDetailsElement>('.ai-settings-panel')?.addEventListener('toggle', (event) => {
@@ -5609,14 +5891,24 @@ function bind(): void {
 
   document.querySelector<HTMLSelectElement>('#aiMode')?.addEventListener('change', (event) => {
     const value = (event.currentTarget as HTMLSelectElement).value;
-    state.aiSettings.mode = value === 'session' || value === 'hosted' ? value : 'bridge';
+    const mode: AiSettings['mode'] = value === 'session' || value === 'hosted' ? value : 'bridge';
+    if (aiModeDisabledReason(mode)) {
+      render();
+      return;
+    }
+    state.aiSettings.mode = mode;
     ensureAiProviderAllowedForMode();
     savePersistedState();
+    pushToast('success', 'AI Planner path changed', aiModeToastMessage(mode));
     render();
   });
 
   document.querySelector<HTMLSelectElement>('#aiProvider')?.addEventListener('change', (event) => {
     const preset = aiProviderPresetById((event.currentTarget as HTMLSelectElement).value);
+    if (aiProviderDisabledReason(preset.id)) {
+      render();
+      return;
+    }
     state.aiSettings.provider = preset.id;
     state.aiSettings.apiFormat = preset.apiFormat;
     state.aiSettings.baseUrl = preset.baseUrl;
@@ -5739,6 +6031,14 @@ function bind(): void {
     });
   }
 
+  for (const button of document.querySelectorAll<HTMLButtonElement>('[data-recurring-action]')) {
+    button.addEventListener('click', () => {
+      if (button.dataset.recurringAction === 'dca-proof') {
+        openDcaReviewProofTemplate();
+      }
+    });
+  }
+
   for (const recurringInput of document.querySelectorAll<HTMLInputElement | HTMLSelectElement>('[data-recurring-field]')) {
     recurringInput.addEventListener('input', () => {
       const field = recurringInput.dataset.recurringField;
@@ -5800,10 +6100,12 @@ function bind(): void {
       const value = button.dataset.copy ?? '';
       const label = button.dataset.copyName ?? 'Value';
       const copyId = button.dataset.copyId ?? commandCopyId('copy', label, value);
+      const toastTitle = button.dataset.copyToast ?? `${label} copied`;
+      const toastMessage = button.dataset.copyMessage ?? value;
       try {
         await navigator.clipboard.writeText(value);
         markCopied(copyId);
-        pushToast('success', `${label} copied`, value);
+        pushToast('success', toastTitle, toastMessage);
         const commandKind = trackedCliCommandKind(value);
         if (commandKind) {
           trackCliCommandCopy(commandKind);
@@ -6435,7 +6737,7 @@ function runGuidedDemoAction(action: string): void {
         ...defaultGuidedDemoState(currentScenarioId),
         stage: 'prepared',
       };
-      pushToast('success', 'Demo plan prepared', 'Review the constraints, then queue it for wallet review.');
+      pushToast('success', 'Demo request prepared', 'Review the constraints, then move it to wallet review.');
       render();
       return;
     case 'queue':
@@ -6448,7 +6750,7 @@ function runGuidedDemoAction(action: string): void {
         receiptJson: '',
         signedReceipt: '',
       };
-      pushToast('success', 'Queued for review', 'The demo request is waiting for approve or deny.');
+      pushToast('success', 'Moved to wallet review', 'Approve or deny the simulated request.');
       render();
       return;
     case 'approve':
@@ -6482,7 +6784,7 @@ function completeGuidedDemo(decision: Exclude<GuidedDemoDecision, 'pending'>): v
   };
   pushToast(
     'success',
-    decision === 'approved' ? 'Demo approved' : 'Demo denied',
+    decision === 'approved' ? 'Simulation approved' : 'Simulation denied',
     'Demo receipt created. Nothing was signed or submitted.',
   );
   render();
@@ -6677,7 +6979,7 @@ async function runGenerateAiPlan(): Promise<void> {
   const template = selectedTemplate();
   trackGenerateAiPlan(template.id, state.aiSettings.mode, state.aiSettings.provider);
   state.activeOperation = 'generate-ai-plan';
-  const toastId = pushToast('pending', 'Creating AI plan', 'Preparing through your configured AI route.');
+  const toastId = pushToast('pending', 'Creating AI plan', 'Preparing through your configured AI Planner.');
   try {
     await run(
       'ai',
@@ -6716,7 +7018,7 @@ async function runGenerateAiPlan(): Promise<void> {
         state.oneTimePlanView = 'review';
         appendAiDiagnostic({
           code: 'AI_PLAN_READY',
-          message: 'AI route returned a valid plan.',
+          message: 'AI Planner returned a valid plan.',
           detail: `${state.aiSettings.provider} ${state.aiSettings.model || 'model configured'}`,
         });
         replaceToast(toastId, 'success', 'AI plan created', `${plan.templateTitle} is ready in Review & Finish.`);
@@ -6905,7 +7207,7 @@ async function runQueueGeneratedPlan(planId: string): Promise<void> {
       throw new Error('Restore this plan before queueing it.');
     }
     if (!canQueueAgentPlan(record.plan)) {
-      throw new Error('Only transfer, swap, and recurring payment plans can be queued.');
+      throw new Error('Only transfer, swap, and recurring schedules can be queued.');
     }
     const response = await queuePlanThroughBridge(record.plan);
     updateGeneratedPlan(planId, { preparedActionId: response.id, status: 'queued' });
@@ -7003,6 +7305,30 @@ function useGeneratedPlanAsStartingPoint(record: GeneratedPlanRecord): void {
   state.activeTab = 'agent';
   state.oneTimePlanView = 'create';
   state.error = '';
+}
+
+function openDcaReviewProofTemplate(): void {
+  const template = templateById('dca');
+  state.selectedTemplateId = template.id;
+  state.templateOutcomeFilter = templateOutcome(template);
+  state.templateFields = {
+    ...defaultTemplateFieldValues(template),
+    token: state.recurringDraft.token || defaultTemplateFieldValues(template).token || '',
+    amount: state.recurringDraft.amount || defaultTemplateFieldValues(template).amount || '',
+    recipient: state.recurringDraft.recipient || '',
+    cadence: state.recurringDraft.cadence || defaultTemplateFieldValues(template).cadence || 'weekly',
+    memo: state.recurringDraft.note || defaultTemplateFieldValues(template).memo || 'Recurring DCA approval',
+  };
+  state.templateFieldErrors = {};
+  state.agentPrompt = 'Create a review proof for this recurring DCA strategy before any active schedule is created.';
+  state.agentPlan = null;
+  state.agentSignature = '';
+  state.agentPreparedActionId = '';
+  state.activeTab = 'agent';
+  state.oneTimePlanView = 'create';
+  state.error = '';
+  pushToast('success', 'DCA review proof selected', 'This creates evidence only. Active recurring schedules still require the local bridge.');
+  render();
 }
 
 function generatedPlansForPanel(oneTimeOnly = false): GeneratedPlanRecord[] {
@@ -7393,7 +7719,7 @@ function generatedQueuePlanTitle(record: GeneratedPlanRecord): string {
   if (record.status === 'archived') return 'Restore this plan before queueing it.';
   if (!state.address) return 'Connect a wallet before queueing.';
   if (!state.bridgeActive) return 'Connect the local bridge before queueing this approval.';
-  if (!canQueueAgentPlan(record.plan)) return 'Only transfers, swaps, and recurring payment plans can be queued.';
+  if (!canQueueAgentPlan(record.plan)) return 'Only transfers, swaps, and recurring schedules can be queued.';
   if (record.plan.actionType === 'recurring_payment') return 'Create a recurring schedule. Each due occurrence appears in Approval Inbox.';
   return 'Send this plan to Approval Inbox for wallet review.';
 }
@@ -7440,14 +7766,42 @@ async function runSaveBridgeAiKey(): Promise<void> {
         apiFormat: state.aiSettings.apiFormat,
       }),
     });
-    state.aiSettings.apiKey = '';
     await refreshBridgeAiStatus(true);
-    pushToast('success', 'Bridge AI key set', 'The key is held only in the local bridge process memory.');
+    const connected = await ensureBridgeConnectedAfterLocalCall();
+    pushToast(
+      'success',
+      'Bridge AI key set',
+      connected
+        ? 'The key is held in local bridge memory and the approval bridge is connected.'
+        : 'The key is held in local bridge memory. Connect a wallet, then check the local bridge.',
+    );
   }, {
-    onError(message) {
+    async onError(message) {
       state.error = '';
-      pushToast('error', isBridgeOfflineMessage(message) ? 'AI bridge offline' : 'AI setup failed', message);
+      if (isBridgeOfflineMessage(message)) {
+        await showBridgeOfflineToast('AI bridge offline');
+        return;
+      }
+      pushToast('error', 'AI setup failed', message);
     },
+  });
+}
+
+async function runSaveDirectAiKey(): Promise<void> {
+  if (!canSaveDirectAiKey()) {
+    pushToast('error', 'AI setup incomplete', aiGenerateDisabledReason());
+    render();
+    return;
+  }
+  await run('ai', async () => {
+    appendAiDiagnostic(aiRouteDiagnostic('/api/ai/generate-plan'));
+    pushToast(
+      'success',
+      'AI Planner key ready',
+      state.aiSettings.mode === 'hosted'
+        ? 'Hosted BYOK can draft one-time plans. It cannot queue approvals, create schedules, or sign.'
+        : 'Browser session AI can draft one-time plans in this tab. It cannot queue approvals, create schedules, or sign.',
+    );
   });
 }
 
@@ -7468,11 +7822,25 @@ async function runClearAiKey(): Promise<void> {
 async function runRefreshAiStatus(): Promise<void> {
   await run('ai', async () => {
     await refreshBridgeAiStatus(true);
-    pushToast('success', 'AI status refreshed', state.aiStatus?.available ? 'Bridge AI is available.' : 'Bridge AI is not configured.');
+    state.aiSettings.apiKey = '';
+    const connected = await ensureBridgeConnectedAfterLocalCall();
+    pushToast(
+      'success',
+      'AI status refreshed',
+      state.aiStatus?.available
+        ? connected
+          ? 'Bridge AI is available and the approval bridge is connected.'
+          : 'Bridge AI is available. Connect a wallet, then check the local bridge.'
+        : 'Bridge AI is not configured.',
+    );
   }, {
-    onError(message) {
+    async onError(message) {
       state.error = '';
-      pushToast('error', isBridgeOfflineMessage(message) ? 'AI bridge offline' : 'AI status unavailable', message);
+      if (isBridgeOfflineMessage(message)) {
+        await showBridgeOfflineToast('AI bridge offline');
+        return;
+      }
+      pushToast('error', 'AI status unavailable', message);
     },
   });
 }
@@ -7487,26 +7855,30 @@ function aiClearMessage(): string {
   return 'Session key removed from this app and local bridge memory.';
 }
 
+function aiModeToastMessage(mode: AiSettings['mode']): string {
+  if (mode === 'bridge') {
+    return 'Local bridge AI can draft plans and the bridge also powers Approval Inbox and recurring schedules.';
+  }
+  if (mode === 'hosted') {
+    return 'Hosted BYOK drafts one-time plans only. It does not unlock Approval Inbox or recurring schedules.';
+  }
+  return 'Browser session AI drafts one-time plans only and keeps the key in this tab.';
+}
+
 async function runConnectBridge(): Promise<void> {
   await run('bridge', async () => {
     state.bridgeUrl = inputValue('#bridgeUrl') || state.bridgeUrl;
     state.bridgeToken = inputValue('#bridgeToken') || state.bridgeToken;
-    await loadBridgeConfig(true);
-    await connectBridgeHost();
-    state.bridgeActive = true;
-    state.bridgeStatus = 'Connected to local bridge. Waiting for agent requests.';
-    startBridgePolling();
-    await Promise.all([refreshInboxData(), refreshHealth(), refreshBalances().catch(() => undefined), syncLabArtifactsWithBridge()]);
-    savePersistedState();
+    await activateBridgeConnection({ refreshConfig: true, strictSync: true });
     pushToast('success', 'Bridge connected', bridgeHostLabel());
   }, {
-    onError(message) {
+    async onError(message) {
       state.bridgeActive = false;
       stopBridgePolling();
       state.bridgeStatus = message;
       if (isBridgeOfflineMessage(message)) {
         state.error = '';
-        pushToast('error', 'Approval bridge offline', 'Start the bridge, then click Connect local bridge again.');
+        await showBridgeOfflineToast('Approval bridge offline');
         return;
       }
       pushToast('error', 'Bridge connection failed', message);
@@ -7695,7 +8067,7 @@ async function runDeleteLabArtifact(artifactId: string): Promise<void> {
 async function run(
   stepName: StepName,
   action: () => Promise<void>,
-  options: { onError?: (message: string, err: unknown) => void } = {},
+  options: { onError?: (message: string, err: unknown) => void | Promise<void> } = {},
 ): Promise<void> {
   state.error = '';
   state.busy = true;
@@ -7708,7 +8080,7 @@ async function run(
     state.steps[stepName] = 'error';
     state.error = redactSecrets(err instanceof Error ? err.message : String(err));
     if (options.onError) {
-      options.onError(state.error, err);
+      await options.onError(state.error, err);
     } else {
       pushToast('error', 'Action failed', state.error);
     }
@@ -7826,6 +8198,51 @@ async function connectBridgeHost(): Promise<void> {
   });
 }
 
+async function activateBridgeConnection(
+  options: { refreshConfig?: boolean; strictSync?: boolean } = {},
+): Promise<void> {
+  if (options.refreshConfig) {
+    await loadBridgeConfig(true);
+  } else {
+    await loadBridgeConfig(false);
+  }
+  await connectBridgeHost();
+  state.bridgeActive = true;
+  state.bridgeStatus = 'Connected to local bridge. Waiting for agent requests.';
+  startBridgePolling();
+  await refreshConnectedBridgeState(Boolean(options.strictSync));
+  savePersistedState();
+}
+
+async function refreshConnectedBridgeState(strict: boolean): Promise<void> {
+  const refreshes = [
+    refreshInboxData(),
+    refreshHealth(),
+    refreshBalances().catch(() => undefined),
+    syncLabArtifactsWithBridge(),
+  ];
+  if (strict) {
+    await Promise.all(refreshes);
+    return;
+  }
+  await Promise.all(refreshes.map((refresh) => refresh.catch(() => undefined)));
+}
+
+async function ensureBridgeConnectedAfterLocalCall(): Promise<boolean> {
+  if (!state.address || !state.capabilities) {
+    return false;
+  }
+  try {
+    await activateBridgeConnection({ refreshConfig: false, strictSync: false });
+    return true;
+  } catch (err) {
+    state.bridgeActive = false;
+    stopBridgePolling();
+    state.bridgeStatus = err instanceof Error ? err.message : String(err);
+    return false;
+  }
+}
+
 async function disconnectBridgeHost(): Promise<void> {
   await bridgeRequest('/bridge/disconnect', { method: 'POST' }).catch(() => undefined);
 }
@@ -7864,6 +8281,10 @@ async function pollBridge(): Promise<void> {
     }
   } catch (err) {
     state.bridgeStatus = err instanceof Error ? err.message : String(err);
+    if (isBridgeOfflineMessage(state.bridgeStatus)) {
+      state.bridgeActive = false;
+      stopBridgePolling();
+    }
     render();
   } finally {
     bridgeRequestBusy = false;
@@ -8014,7 +8435,7 @@ function queuePlanTitle(): string {
   if (!state.address) return 'Connect a wallet before queueing.';
   if (!state.bridgeActive) return 'Connect the local bridge to send queueable plans to Approval Inbox.';
   if (!state.agentPlan) return 'Create a plan before queueing.';
-  if (!canQueueAgentPlan(state.agentPlan)) return 'Only transfer, swap, and recurring payment plans can be queued.';
+  if (!canQueueAgentPlan(state.agentPlan)) return 'Only transfer, swap, and recurring schedules can be queued.';
   if (state.agentPlan.actionType === 'recurring_payment') return 'Create a recurring schedule. Each due occurrence appears in Approval Inbox.';
   return 'Send this plan to Approval Inbox for wallet review.';
 }
@@ -8188,11 +8609,57 @@ async function bridgeRequest<T = unknown>(path: string, init?: RequestInit): Pro
 }
 
 function bridgeOfflineMessage(): string {
-  return `Local approval bridge is not running at ${compactEndpoint(state.bridgeUrl)}. Start it, then click Connect local bridge.`;
+  return `Local approval bridge is not running at ${compactEndpoint(state.bridgeUrl)}. Run ${NPM_EXEC_COMMAND}, keep that terminal open, then click Check local bridge.`;
 }
 
 function isBridgeOfflineMessage(message: string): boolean {
   return message.startsWith('Local approval bridge is not running at ');
+}
+
+async function showBridgeOfflineToast(title: string): Promise<void> {
+  const detail = await bridgeOfflineDiagnosticMessage();
+  state.bridgeStatus = detail;
+  pushToast('error', title, detail);
+}
+
+async function bridgeOfflineDiagnosticMessage(): Promise<string> {
+  const bridgeEndpoint = compactEndpoint(state.bridgeUrl);
+  const walletHostUrl = inferredWalletHostUrl();
+  const walletHostReachable = walletHostUrl ? await canReachLocalEndpoint(walletHostUrl) : false;
+  if (walletHostReachable) {
+    return `Wallet host is running at ${compactEndpoint(walletHostUrl)}, but the approval bridge is stopped at ${bridgeEndpoint}. Run ${NPM_EXEC_COMMAND}, keep that terminal open, then click Check local bridge.`;
+  }
+  return `Local approval bridge is not running at ${bridgeEndpoint}. Run ${NPM_EXEC_COMMAND}, keep that terminal open, then click Check local bridge.`;
+}
+
+function inferredWalletHostUrl(): string {
+  try {
+    const bridge = new URL(bridgeBaseUrl());
+    bridge.port = '5174';
+    bridge.pathname = '/';
+    bridge.search = '';
+    bridge.hash = '';
+    return bridge.toString();
+  } catch {
+    return 'http://127.0.0.1:5174/';
+  }
+}
+
+async function canReachLocalEndpoint(url: string): Promise<boolean> {
+  const controller = new AbortController();
+  const timeout = window.setTimeout(() => controller.abort(), 1200);
+  try {
+    await fetch(url, {
+      cache: 'no-store',
+      mode: 'no-cors',
+      signal: controller.signal,
+    });
+    return true;
+  } catch {
+    return false;
+  } finally {
+    window.clearTimeout(timeout);
+  }
 }
 
 function selectedWallet(): DiscoveredWallet {
@@ -8760,10 +9227,14 @@ function recurringComposer(): string {
       <div class="contract-head">
         <div>
           <span>Recurring setup</span>
-          <h3>Create recurring plan</h3>
-          <p class="recurring-help">Define the recurring request. Each due occurrence still appears in Approval Inbox for approve or deny.</p>
+          <h3>Create recurring schedule</h3>
+          <p class="recurring-help">Define a supported recurring payment or subscription. This creates an active schedule, so it requires the local approval bridge.</p>
         </div>
         <strong>${escapeHtml(recurringCadenceLabel(draft.cadence))}</strong>
+      </div>
+      <div class="recurring-boundary-note">
+        <strong>AI Planner boundary</strong>
+        <p>AI can draft one-time plans and review proofs. Active recurring schedules are bridge-owned because they must create future Approval Inbox occurrences.</p>
       </div>
       <dl class="contract-summary">
         ${definitionRow('Asset', `${draft.amount || 'Amount'} ${draft.token || 'Token'}`)}
@@ -8811,8 +9282,9 @@ function recurringComposer(): string {
         <strong id="recurringNextOccurrence">${escapeHtml(nextOccurrence)}</strong>
       </div>
       <div class="recurring-form-actions contract-actions">
-        <button id="createRecurring" class="primary" ${createDisabled ? 'disabled' : ''}>Create recurring plan</button>
-        ${createDisabled ? bridgeRequiredNotice('Create recurring plans through the local approval bridge.') : '<span class="contract-helper">Future occurrences will appear in Approval Inbox.</span>'}
+        <button id="createRecurring" class="primary" ${createDisabled ? 'disabled' : ''}>Create recurring schedule</button>
+        <button type="button" class="utility" data-recurring-action="dca-proof">Create DCA review proof instead</button>
+        ${createDisabled ? bridgeRequiredNotice('Local approval bridge required to create active recurring schedules.') : '<span class="contract-helper">Future occurrences will appear in Approval Inbox.</span>'}
       </div>
     </div>
   `;
@@ -8886,7 +9358,6 @@ function recurringCard(payment: RecurringPayment): string {
 
 function labArtifactCard(artifact: LabArtifact): string {
   const legacy = labById(artifact.labId)?.category === 'advanced';
-  const fullReceiptLabel = legacy ? 'Copy legacy record' : 'Copy full receipt';
   return `
     <article class="lab-artifact artifact-summary-card">
       <div class="artifact-summary-head">
@@ -8896,7 +9367,7 @@ function labArtifactCard(artifact: LabArtifact): string {
         </div>
         <span>${escapeHtml(formatDateTime(artifact.createdAt))}</span>
       </div>
-      <h3>${escapeHtml(legacy ? 'Evidence signed and saved' : 'Receipt signed and saved')}</h3>
+      <h3>${escapeHtml(legacy ? 'Legacy receipt signed and saved' : 'Receipt signed and saved')}</h3>
       <p class="lab-thesis">No further action is required. Use this record for your own audit trail or share it with an agent, auditor, support thread, or teammate.</p>
       <div class="artifact-intent-block">
         <span>Signed request</span>
@@ -8909,7 +9380,7 @@ function labArtifactCard(artifact: LabArtifact): string {
       </div>
       <div class="lab-actions lab-signature-action">
         <button type="button" class="utility" data-artifact-view="signed">View in archive</button>
-        <button type="button" data-copy="${escapeHtml(stableJson(artifact))}" data-copy-name="${escapeHtml(fullReceiptLabel)}">${escapeHtml(fullReceiptLabel)}</button>
+        <button type="button" data-copy="${escapeHtml(stableJson(artifact))}" data-copy-name="Receipt JSON">Copy receipt JSON</button>
         <button type="button" data-copy="${escapeHtml(artifact.signingMessage)}" data-copy-name="Copy signed message">Copy signed message</button>
         <button type="button" class="utility" data-lab-action="create-another">Create another</button>
       </div>
@@ -8960,7 +9431,7 @@ function labHistory(): string {
           <article>
             <strong>${escapeHtml(artifact.title)}</strong>
             <span>${escapeHtml(formatDateTime(artifact.createdAt))}</span>
-            <button data-copy="${escapeHtml(stableJson(artifact))}" data-copy-name="Full receipt">Copy full receipt</button>
+            <button data-copy="${escapeHtml(stableJson(artifact))}" data-copy-name="Receipt JSON">Copy receipt JSON</button>
           </article>
         `,
       ).join('')}
@@ -10100,6 +10571,16 @@ function persistedAiSettings(persistedState: PersistedState): Omit<AiSettings, '
       apiFormat: fallback.apiFormat,
       baseUrl: fallback.baseUrl,
       model: fallback.model,
+    };
+  }
+  if (settings.mode === 'session' && settings.provider === 'openai') {
+    const browserPreset = aiProviderPresetById(BROWSER_SESSION_DEFAULT_PROVIDER_ID);
+    return {
+      mode: settings.mode,
+      provider: browserPreset.id,
+      apiFormat: browserPreset.apiFormat,
+      baseUrl: browserPreset.baseUrl,
+      model: browserPreset.model,
     };
   }
   return settings;

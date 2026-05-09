@@ -225,7 +225,7 @@ export const AGENT_PLAN_TEMPLATES: AgentPlanTemplate[] = [
     field('amount', 'Input amount', '0.01', '0.01', true),
     field('slippageBps', 'Max slippage bps', '50', '50'),
   ]),
-  template('recurring', 'dca', 'DCA recurring buy review', 'Review a recurring DCA intent before using a swap-capable recurring engine.', 'manual_review', 'medium', [
+  template('recurring', 'dca', 'DCA review proof', 'Sign a review proof for a recurring DCA strategy before using a swap-capable recurring engine.', 'manual_review', 'medium', [
     selectField('token', 'Spend token', ['SOL', 'USDC', 'PYUSD'], 'USDC'),
     field('amount', 'Amount per occurrence', '10', '10', true),
     field('recipient', 'Recipient / settlement wallet', 'Recipient public key', '', true),
