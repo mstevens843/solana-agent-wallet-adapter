@@ -5833,12 +5833,46 @@ button.danger:hover:not(:disabled) {
   padding: 11px;
 }
 
+.inline-receipt-actions > summary,
+.record-activity > summary {
+  align-items: center;
+  cursor: pointer;
+  display: flex;
+  gap: 10px;
+  justify-content: space-between;
+  list-style: none;
+  min-width: 0;
+}
+
+.inline-receipt-actions > summary::-webkit-details-marker,
+.record-activity > summary::-webkit-details-marker {
+  display: none;
+}
+
+.inline-receipt-actions > summary::after,
+.record-activity > summary::after {
+  color: var(--dim);
+  content: "+";
+  font-weight: 900;
+}
+
+.inline-receipt-actions[open] > summary::after,
+.record-activity[open] > summary::after {
+  content: "-";
+}
+
 .inline-receipt-actions > div:first-child strong,
+.inline-receipt-actions > summary strong,
 .related-receipts-head strong,
 .record-activity > summary {
   color: var(--text);
   font-size: 0.88rem;
   font-weight: 820;
+}
+
+.inline-receipt-actions > summary span {
+  color: var(--muted);
+  font-size: 0.78rem;
 }
 
 .inline-receipt-actions p,
@@ -5853,6 +5887,7 @@ button.danger:hover:not(:disabled) {
   display: flex;
   flex-wrap: wrap;
   gap: 8px;
+  padding-top: 2px;
 }
 
 .inline-receipt-button-grid button,
@@ -5931,8 +5966,7 @@ button.danger:hover:not(:disabled) {
 }
 
 .record-activity > summary {
-  cursor: pointer;
-  list-style-position: inside;
+  min-height: 18px;
 }
 
 .record-activity-actions {
@@ -7683,19 +7717,19 @@ button.danger:hover:not(:disabled) {
 
 .rail-ai-settings > summary {
   gap: 8px;
-  grid-template-columns: minmax(0, 1fr) auto;
+  grid-template-columns: minmax(0, 1fr) auto auto;
   padding: 10px;
 }
 
 .rail-ai-settings > summary strong {
-  grid-column: 1 / -1;
-  justify-self: start;
-  text-align: left;
+  grid-column: auto;
+  justify-self: end;
+  text-align: right;
 }
 
 .rail-ai-settings > summary::after {
-  grid-column: 2;
-  grid-row: 1;
+  grid-column: auto;
+  grid-row: auto;
 }
 
 .rail-ai-settings .ai-settings-card {
@@ -10271,10 +10305,32 @@ button.danger:hover:not(:disabled) {
   --app-nav-h: 64px;
   --app-panel-pad: 16px;
   --app-card-radius: 8px;
+  --app-terminal-bg: #050606;
+  --app-terminal-bg-2: #080a09;
+  --app-terminal-surface: rgba(5, 6, 6, 0.94);
+  --app-terminal-surface-2: rgba(8, 10, 9, 0.9);
+  --app-terminal-line: rgba(224, 230, 226, 0.13);
+  --app-terminal-line-strong: rgba(139, 205, 170, 0.28);
+  --app-terminal-text: #dfe8e4;
+  --app-terminal-muted: #8d9995;
+  --app-terminal-dim: #65706d;
+  --app-terminal-green: #3fbd83;
+  --app-terminal-green-bright: #49e37c;
+  --app-terminal-amber: #e1c178;
+  --app-terminal-red: #ef6f78;
+  --app-terminal-caret: #8bcdaa;
+  --app-terminal-mono: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
   gap: var(--app-gap);
-  max-width: var(--app-shell-max);
+  max-width: min(var(--app-shell-max), 100vw);
+  overflow-x: hidden;
   padding: var(--app-shell-pad-y) var(--app-shell-pad-x) 48px;
   width: 100%;
+}
+
+.route-app *,
+.route-app *::before,
+.route-app *::after {
+  box-sizing: border-box;
 }
 
 .route-app [data-layout] {
@@ -10306,6 +10362,7 @@ button.danger:hover:not(:disabled) {
   font-size: clamp(1.9rem, 2.3vw, 2.35rem);
   line-height: 1.04;
   max-width: 820px;
+  overflow-wrap: anywhere;
 }
 
 .route-app .workspace-intro[data-layout="app-intro"] p {
@@ -10781,6 +10838,33 @@ button.danger:hover:not(:disabled) {
   line-height: 1.36;
 }
 
+.draft-flow-hint {
+  align-items: center;
+  background: rgba(3, 7, 6, 0.58);
+  border: 1px solid rgba(139, 205, 170, 0.12);
+  border-radius: 8px;
+  display: grid;
+  gap: 8px;
+  grid-template-columns: auto minmax(0, 1fr);
+  margin-top: 4px;
+  padding: 9px 11px;
+}
+
+.draft-flow-hint span {
+  color: #49e37c;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  font-size: 0.78rem;
+  font-weight: 900;
+  white-space: nowrap;
+}
+
+.draft-flow-hint p {
+  color: var(--muted);
+  font-size: 0.86rem;
+  line-height: 1.3;
+  margin: 0;
+}
+
 .route-app .template-filter-row {
   gap: 8px;
 }
@@ -10812,6 +10896,22 @@ button.danger:hover:not(:disabled) {
 .route-app .generated-plan-outcomes,
 .route-app .pill-row {
   align-items: center;
+}
+
+.route-app .workbench-kicker,
+.route-app .generated-plan-card-top,
+.route-app .command-loop span,
+.route-app .command-center-card > span,
+.route-app .wallet-action-summary-head span,
+.route-app .contract-head span,
+.route-app .contract-section > div:first-child span,
+.route-app .receipt-explainer-stack span,
+.route-app .artifact-summary-head > span,
+.route-app .status-pill,
+.route-app .recurring-count,
+.route-app .draft-flow-hint span {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  letter-spacing: 0;
 }
 
 .route-app .generated-plan-card-chips span,
@@ -10869,7 +10969,7 @@ button.danger:hover:not(:disabled) {
   color: var(--dim);
   font-size: 0.68rem;
   font-weight: 900;
-  letter-spacing: 0.08em;
+  letter-spacing: 0;
   text-transform: uppercase;
 }
 
@@ -10893,8 +10993,8 @@ button.danger:hover:not(:disabled) {
   border-radius: var(--app-card-radius);
   display: grid;
   gap: 9px;
-  min-height: 164px;
-  padding: 14px;
+  min-height: 124px;
+  padding: 12px;
 }
 
 .command-center-card.good {
@@ -10930,7 +11030,7 @@ button.danger:hover:not(:disabled) {
 
 .review-plan-list .review-plan-card {
   overflow: hidden;
-  padding: 10px;
+  padding: 9px 10px;
   width: 100%;
 }
 
@@ -10975,7 +11075,7 @@ button.danger:hover:not(:disabled) {
 
 .review-plan-main {
   display: grid;
-  gap: 6px;
+  gap: 5px;
 }
 
 .review-plan-facts {
@@ -11002,10 +11102,15 @@ button.danger:hover:not(:disabled) {
 }
 
 .review-plan-list .generated-plan-card-actions {
-  display: grid;
+  display: flex;
+  flex-wrap: wrap;
   gap: 7px;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
+  justify-content: flex-end;
   max-width: none;
+}
+
+.review-plan-list .generated-plan-card-actions button {
+  flex: 1 1 138px;
 }
 
 .review-plan-details > div {
@@ -11038,7 +11143,7 @@ button.danger:hover:not(:disabled) {
 }
 
 .route-app .wallet-action-grid div {
-  min-height: 44px;
+  min-height: 40px;
 }
 
 .route-app .generated-plan-card-actions {
@@ -11064,7 +11169,7 @@ button.danger:hover:not(:disabled) {
 
 .route-app .ticket-body {
   min-width: 0;
-  padding: 12px;
+  padding: 10px 12px;
 }
 
 .route-app .approval-ticket .inbox-actions {
@@ -11095,8 +11200,15 @@ button.danger:hover:not(:disabled) {
 }
 
 .route-app .approval-ticket .action-preview div {
-  min-height: 44px;
-  padding: 8px 9px;
+  min-height: 38px;
+  padding: 7px 9px;
+}
+
+.route-app .ticket-meta-line {
+  color: var(--muted);
+  font-size: 0.82rem;
+  line-height: 1.3;
+  margin: 4px 0 0;
 }
 
 .route-app .inline-receipt-actions,
@@ -11105,8 +11217,44 @@ button.danger:hover:not(:disabled) {
   margin-top: 8px;
 }
 
-.route-app .approval-effect {
+.route-app .inline-receipt-actions,
+.route-app .record-activity {
+  gap: 7px;
   padding: 8px 10px;
+}
+
+.route-app .inline-receipt-actions:not([open]),
+.route-app .record-activity:not([open]) {
+  background: rgba(255, 255, 255, 0.014);
+}
+
+.route-app .record-activity[open] {
+  grid-template-columns: minmax(0, 1fr) auto;
+}
+
+.route-app .record-activity[open] > summary {
+  grid-column: 1 / -1;
+}
+
+.route-app .record-activity[open] .activity-note {
+  margin: 0;
+}
+
+.route-app .record-activity[open] .record-activity-actions {
+  align-self: start;
+}
+
+.route-app .approval-effect {
+  align-items: center;
+  display: grid;
+  gap: 6px 12px;
+  grid-template-columns: auto minmax(0, 1fr);
+  padding: 7px 9px;
+}
+
+.route-app .approval-effect p {
+  font-size: 0.8rem;
+  line-height: 1.28;
 }
 
 .route-app .receipt-proof-grid {
@@ -11177,6 +11325,40 @@ button.danger:hover:not(:disabled) {
   padding-top: 10px;
 }
 
+.route-app .lab-workbench {
+  gap: 10px;
+}
+
+.route-app .lab-workbench-grid {
+  gap: 10px;
+  grid-template-columns: minmax(210px, 0.52fr) minmax(0, 1.48fr);
+  padding: 10px 0;
+}
+
+.route-app .research-brief {
+  padding-right: 10px;
+}
+
+.route-app .research-brief h3 {
+  font-size: 0.96rem;
+  margin: 4px 0 6px;
+}
+
+.route-app .research-brief p,
+.route-app .receipt-explainer-stack p {
+  font-size: 0.84rem;
+  line-height: 1.34;
+}
+
+.route-app .receipt-explainer-stack {
+  gap: 7px;
+  margin: 8px 0;
+}
+
+.route-app .receipt-explainer-stack div {
+  padding: 8px;
+}
+
 .route-app .recurring-view-tabs {
   margin: 0 0 10px;
 }
@@ -11219,8 +11401,8 @@ button.danger:hover:not(:disabled) {
 
 .route-app .completed-plan-details .proof-grid.compact {
   display: grid;
-  gap: 8px;
-  grid-template-columns: repeat(auto-fit, minmax(210px, 1fr));
+  gap: 6px;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
 }
 
 .route-app .completed-plan-grid {
@@ -11242,8 +11424,49 @@ button.danger:hover:not(:disabled) {
   margin: 0;
 }
 
-.route-app .completed-plan-actions {
-  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+.completed-card-head {
+  align-items: start;
+  display: grid;
+  gap: 12px;
+  grid-template-columns: minmax(0, 1fr) minmax(320px, auto);
+}
+
+.completed-header-actions {
+  align-content: start;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 7px;
+  justify-content: flex-end;
+}
+
+.completed-header-actions button {
+  min-height: 32px;
+  padding: 0 10px;
+  white-space: nowrap;
+}
+
+.route-app .completed-plan-details .proof-grid.compact div {
+  display: block;
+  min-width: 0;
+  padding: 7px 8px;
+}
+
+.route-app .completed-plan-details .proof-grid.compact dt {
+  display: block;
+  font-size: 0.63rem;
+  margin-bottom: 4px;
+}
+
+.route-app .completed-plan-details .proof-grid.compact dd {
+  color: var(--text);
+  display: -webkit-box;
+  font-size: 0.78rem;
+  line-height: 1.22;
+  max-height: 2.44em;
+  overflow: hidden;
+  overflow-wrap: anywhere;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
 }
 
 .artifact-detail-actions {
@@ -11261,9 +11484,535 @@ button.danger:hover:not(:disabled) {
   min-height: 34px;
 }
 
+.route-app .workspace-tabs[data-layout="app-tabs"] {
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.035), rgba(255, 255, 255, 0.01)),
+    var(--app-terminal-bg);
+  border: 1px solid var(--app-terminal-line);
+  border-radius: var(--app-card-radius);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.04),
+    0 16px 34px rgba(0, 0, 0, 0.2);
+  font-family: var(--app-terminal-mono);
+  gap: 4px;
+  padding: 5px;
+}
+
+.route-app .workspace-tabs[data-layout="app-tabs"] button {
+  align-items: center;
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  color: var(--app-terminal-muted);
+  display: inline-flex;
+  font-family: var(--app-terminal-mono);
+  font-size: 0.78rem;
+  font-weight: 760;
+  min-height: 38px;
+  padding: 0 9px;
+}
+
+.route-app .workspace-tabs[data-layout="app-tabs"] button:hover:not(:disabled) {
+  background: rgba(139, 205, 170, 0.06);
+  border-color: rgba(139, 205, 170, 0.16);
+  color: var(--app-terminal-text);
+  transform: none;
+}
+
+.route-app .workspace-tabs[data-layout="app-tabs"] button.active {
+  background:
+    linear-gradient(180deg, rgba(63, 189, 131, 0.12), rgba(63, 189, 131, 0.045)),
+    var(--app-terminal-surface);
+  border-color: var(--app-terminal-line-strong);
+  box-shadow:
+    inset 0 0 0 1px rgba(73, 227, 124, 0.055),
+    0 0 18px rgba(63, 189, 131, 0.08);
+  color: var(--app-terminal-text);
+}
+
+.route-app .workspace-tabs[data-layout="app-tabs"] button.active::before {
+  color: var(--app-terminal-green-bright);
+  content: "$";
+  font-weight: 860;
+  margin-right: 6px;
+}
+
+.route-app .workspace-tabs[data-layout="app-tabs"] button.active::after {
+  animation: commandCaret 1.15s steps(2, end) infinite;
+  background: var(--app-terminal-caret);
+  bottom: auto;
+  content: "";
+  display: inline-block;
+  height: 0.92em;
+  left: auto;
+  margin-left: 6px;
+  position: static;
+  right: auto;
+  width: 7px;
+}
+
+.route-app .workspace-tabs[data-layout="app-tabs"] button:disabled {
+  background: transparent;
+  border-color: transparent;
+  color: rgba(141, 153, 149, 0.42);
+}
+
+.route-app .one-time-plan-tabs,
+.route-app .recurring-view-tabs,
+.route-app .artifact-view-tabs,
+.route-app .template-filter-row {
+  background: rgba(5, 6, 6, 0.72);
+  border-color: var(--app-terminal-line);
+  font-family: var(--app-terminal-mono);
+}
+
+.route-app .one-time-plan-tabs button,
+.route-app .recurring-view-tabs button,
+.route-app .artifact-view-tabs button,
+.route-app .template-filter-row button {
+  border-radius: 6px;
+  color: var(--app-terminal-muted);
+  font-family: var(--app-terminal-mono);
+  font-size: 0.78rem;
+}
+
+.route-app .one-time-plan-tabs button.active,
+.route-app .recurring-view-tabs button.active,
+.route-app .artifact-view-tabs button.active,
+.route-app .template-filter-row button.active {
+  background:
+    linear-gradient(180deg, rgba(63, 189, 131, 0.14), rgba(63, 189, 131, 0.05)),
+    var(--app-terminal-surface);
+  border-color: var(--app-terminal-line-strong);
+  color: var(--app-terminal-text);
+}
+
+.route-app .generated-plan-card,
+.route-app .approval-ticket,
+.route-app .recurring-item,
+.route-app .recurring-contract,
+.route-app .artifact-summary-card,
+.route-app .signed-artifact-row.receipt-proof-card,
+.route-app .lab-history article,
+.route-app .command-center-card {
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.028), rgba(255, 255, 255, 0.008)),
+    var(--app-terminal-surface);
+  border-color: var(--app-terminal-line);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.035),
+    inset 0 -1px 0 rgba(0, 0, 0, 0.34),
+    0 18px 42px rgba(0, 0, 0, 0.24);
+  color: var(--app-terminal-text);
+  font-family: var(--app-terminal-mono);
+  position: relative;
+}
+
+.route-app .generated-plan-card::after,
+.route-app .approval-ticket::after,
+.route-app .recurring-item::after,
+.route-app .recurring-contract::after,
+.route-app .artifact-summary-card::after,
+.route-app .signed-artifact-row.receipt-proof-card::after,
+.route-app .command-center-card::after {
+  background: repeating-linear-gradient(
+    180deg,
+    rgba(255, 255, 255, 0.018) 0,
+    rgba(255, 255, 255, 0.018) 1px,
+    transparent 1px,
+    transparent 7px
+  );
+  content: "";
+  inset: 0;
+  opacity: 0.16;
+  pointer-events: none;
+  position: absolute;
+}
+
+.route-app .generated-plan-card > *,
+.route-app .approval-ticket > *,
+.route-app .recurring-item > *,
+.route-app .recurring-contract > *,
+.route-app .artifact-summary-card > *,
+.route-app .signed-artifact-row.receipt-proof-card > *,
+.route-app .command-center-card > * {
+  position: relative;
+  z-index: 1;
+}
+
+.route-app .generated-plan-card.selected,
+.route-app .approval-ticket.ready,
+.route-app .approval-ticket.overdue,
+.route-app .recurring-item {
+  border-color: rgba(73, 227, 124, 0.34);
+  box-shadow:
+    inset 3px 0 0 var(--app-terminal-green),
+    inset 0 1px 0 rgba(255, 255, 255, 0.04),
+    0 18px 42px rgba(0, 0, 0, 0.24);
+}
+
+.route-app .approval-ticket.overdue,
+.route-app .command-center-card.warn {
+  border-color: rgba(225, 193, 120, 0.34);
+  box-shadow:
+    inset 3px 0 0 var(--app-terminal-amber),
+    inset 0 1px 0 rgba(255, 255, 255, 0.04),
+    0 18px 42px rgba(0, 0, 0, 0.24);
+}
+
+.route-app .generated-plan-card.archived {
+  opacity: 0.58;
+}
+
+.route-app .generated-plan-card-top,
+.route-app .artifact-summary-head,
+.route-app .receipt-proof-head,
+.route-app .ticket-title-row,
+.route-app .contract-head,
+.route-app .recurring-history-head {
+  color: var(--app-terminal-muted);
+  font-family: var(--app-terminal-mono);
+}
+
+.route-app .generated-plan-card-title h3,
+.route-app .approval-ticket h3,
+.route-app .recurring-item h3,
+.route-app .artifact-summary-card h3,
+.route-app .receipt-proof-head h3,
+.route-app .command-center-card strong {
+  color: #f2f5f3;
+  font-family: var(--app-terminal-mono);
+  font-weight: 860;
+  letter-spacing: 0;
+}
+
+.route-app .generated-plan-card-title h3,
+.route-app .approval-ticket h3,
+.route-app .recurring-item h3,
+.route-app .receipt-proof-head h3 {
+  font-size: 0.98rem;
+}
+
+.route-app .generated-plan-action-helper,
+.route-app .review-plan-details p,
+.route-app .approval-ticket p,
+.route-app .recurring-item p,
+.route-app .artifact-summary-card p,
+.route-app .receipt-proof-head p,
+.route-app .command-center-card p,
+.route-app .contract-head p,
+.route-app .recurring-help,
+.route-app .receipt-copy-helper {
+  color: var(--app-terminal-muted);
+  font-family: var(--app-terminal-mono);
+}
+
+.route-app .workbench-kicker,
+.route-app .command-loop span,
+.route-app .command-center-card > span,
+.route-app .generated-plan-quick-facts span,
+.route-app .generated-plan-decision-grid span,
+.route-app .wallet-action-grid dt,
+.route-app .contract-summary dt,
+.route-app .receipt-proof-grid dt,
+.route-app .artifact-detail-grid span,
+.route-app .artifact-evidence-row span,
+.route-app .hash-grid span,
+.route-app .metric-grid span,
+.route-app .field.compact > span,
+.route-app .contract-section > div:first-child span,
+.route-app .artifact-technical-details summary span,
+.route-app .plan-guardrail-strip span {
+  color: var(--app-terminal-dim);
+  font-family: var(--app-terminal-mono);
+  font-size: 0.64rem;
+  font-weight: 860;
+  letter-spacing: 0;
+}
+
+.route-app .generated-plan-card-chips span,
+.route-app .generated-plan-outcomes span,
+.route-app .status-pill,
+.route-app .recurring-count,
+.route-app .receipt-storage-badge {
+  background: rgba(255, 255, 255, 0.035);
+  border-color: rgba(224, 230, 226, 0.12);
+  color: var(--app-terminal-text);
+  font-family: var(--app-terminal-mono);
+  font-weight: 820;
+}
+
+.route-app .status-pill.tx-confirmed,
+.route-app .status-pill.good,
+.route-app .status-pill.success,
+.route-app .status-pill.ready,
+.route-app .receipt-storage-badge.cloud.on {
+  background: rgba(73, 227, 124, 0.105);
+  border-color: rgba(73, 227, 124, 0.32);
+  color: var(--app-terminal-green-bright);
+}
+
+.route-app .status-pill.tx-pending,
+.route-app .status-pill.warn,
+.route-app .status-pill.warning,
+.route-app .status-pill.overdue {
+  background: rgba(225, 193, 120, 0.1);
+  border-color: rgba(225, 193, 120, 0.32);
+  color: var(--app-terminal-amber);
+}
+
+.route-app .status-pill.tx-failed,
+.route-app .status-pill.danger,
+.route-app .status-pill.error {
+  background: rgba(239, 111, 120, 0.1);
+  border-color: rgba(239, 111, 120, 0.34);
+  color: #ff9daa;
+}
+
+.route-app .generated-plan-quick-facts div,
+.route-app .generated-plan-decision-grid div,
+.route-app .wallet-action-grid div,
+.route-app .approval-ticket .action-preview div,
+.route-app .finalization-checklist div,
+.route-app .contract-summary div,
+.route-app .receipt-proof-grid > div,
+.route-app .artifact-detail-grid div,
+.route-app .artifact-evidence-row div,
+.route-app .hash-grid div,
+.route-app .metric-grid div,
+.route-app .receipt-explainer-stack div,
+.route-app .signed-artifact-request,
+.route-app .activity-event-row,
+.route-app .related-receipt-row,
+.route-app .recurring-history-row,
+.route-app .recurring-production-preview li {
+  background: rgba(0, 0, 0, 0.24);
+  border-color: rgba(224, 230, 226, 0.095);
+  border-radius: 7px;
+}
+
+.route-app .generated-plan-quick-facts strong,
+.route-app .wallet-action-grid dd,
+.route-app .contract-summary dd,
+.route-app .receipt-proof-grid p,
+.route-app .receipt-proof-grid code,
+.route-app .artifact-detail-grid strong,
+.route-app .hash-grid code,
+.route-app .activity-event-row strong,
+.route-app .recurring-history-row strong {
+  color: var(--app-terminal-text);
+  font-family: var(--app-terminal-mono);
+}
+
+.route-app .wallet-action-summary,
+.route-app .plan-guardrail-strip,
+.route-app .approval-effect,
+.route-app .inline-receipt-actions,
+.route-app .related-receipts,
+.route-app .record-activity,
+.route-app .recurring-card-metrics,
+.route-app .recurring-history-strip,
+.route-app .recurring-secret-reveal,
+.route-app .decision-proof-block,
+.route-app .action-note,
+.route-app .recurring-boundary-note,
+.route-app .artifact-intent-block {
+  background:
+    linear-gradient(180deg, rgba(63, 189, 131, 0.055), rgba(255, 255, 255, 0.012)),
+    rgba(0, 0, 0, 0.24);
+  border-color: rgba(139, 205, 170, 0.18);
+  color: var(--app-terminal-text);
+}
+
+.route-app .wallet-action-summary-head strong,
+.route-app .wallet-action-grid .wallet-action-amount dd,
+.route-app .plan-guardrail-strip.pass strong,
+.route-app .decision-proof-icon,
+.route-app .approval-effect strong {
+  color: var(--app-terminal-green-bright);
+}
+
+.route-app .wallet-action-grid .wallet-action-effect,
+.route-app .plan-guardrail-strip.warn,
+.route-app .finalization-checklist div.complete {
+  background: rgba(225, 193, 120, 0.07);
+  border-color: rgba(225, 193, 120, 0.26);
+}
+
+.route-app .wallet-action-grid .wallet-action-effect dd,
+.route-app .plan-guardrail-strip.warn strong,
+.route-app .finalization-checklist div.complete span {
+  color: var(--app-terminal-amber);
+}
+
+.route-app .plan-guardrail-strip.block,
+.route-app .generated-plan-action-helper.danger,
+.route-app .error-text,
+.route-app .field-error-text {
+  border-color: rgba(239, 111, 120, 0.34);
+  color: #ff9daa !important;
+}
+
+.route-app .command-loop {
+  background: var(--app-terminal-bg);
+  border-color: var(--app-terminal-line);
+}
+
+.route-app .command-loop div {
+  background: rgba(255, 255, 255, 0.012);
+  border-left-color: rgba(224, 230, 226, 0.08);
+}
+
+.route-app .command-loop div.complete {
+  background: rgba(63, 189, 131, 0.065);
+}
+
+.route-app .command-loop div.complete span {
+  color: var(--app-terminal-green-bright);
+}
+
+.route-app .ticket-status-rail {
+  background: var(--app-terminal-dim);
+}
+
+.route-app .ticket-status-rail.tx-confirmed,
+.route-app .ticket-status-rail.ready {
+  background: var(--app-terminal-green-bright);
+}
+
+.route-app .ticket-status-rail.tx-pending,
+.route-app .ticket-status-rail.overdue {
+  background: var(--app-terminal-amber);
+}
+
+.route-app .ticket-status-rail.tx-failed,
+.route-app .ticket-status-rail.failed {
+  background: var(--app-terminal-red);
+}
+
+.route-app .generated-plan-card button,
+.route-app .approval-ticket button,
+.route-app .recurring-item button,
+.route-app .recurring-contract button,
+.route-app .artifact-summary-card button,
+.route-app .signed-artifact-row.receipt-proof-card button,
+.route-app .command-center-card button,
+.route-app .command-center-actions button,
+.route-app .generated-plan-more summary,
+.route-app .signed-artifact-more summary {
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.04), rgba(255, 255, 255, 0.012)),
+    rgba(0, 0, 0, 0.24);
+  border-color: rgba(224, 230, 226, 0.15);
+  color: var(--app-terminal-text);
+  font-family: var(--app-terminal-mono);
+  font-size: 0.78rem;
+  font-weight: 780;
+}
+
+.route-app .generated-plan-card button:hover:not(:disabled),
+.route-app .approval-ticket button:hover:not(:disabled),
+.route-app .recurring-item button:hover:not(:disabled),
+.route-app .recurring-contract button:hover:not(:disabled),
+.route-app .artifact-summary-card button:hover:not(:disabled),
+.route-app .signed-artifact-row.receipt-proof-card button:hover:not(:disabled),
+.route-app .command-center-card button:hover:not(:disabled),
+.route-app .command-center-actions button:hover:not(:disabled) {
+  background: rgba(139, 205, 170, 0.08);
+  border-color: rgba(139, 205, 170, 0.28);
+  box-shadow: 0 0 18px rgba(63, 189, 131, 0.08);
+  color: #f2fff7;
+  transform: translateY(-1px);
+}
+
+.route-app .generated-plan-card button.primary,
+.route-app .approval-ticket button.primary,
+.route-app .recurring-contract button.primary,
+.route-app .command-center-actions button.primary {
+  background:
+    linear-gradient(180deg, rgba(73, 227, 124, 0.92), rgba(63, 189, 131, 0.86));
+  border-color: rgba(139, 205, 170, 0.58);
+  color: #04110b;
+}
+
+.route-app .generated-plan-card button.danger,
+.route-app .approval-ticket button.danger,
+.route-app .recurring-item button[data-recurring-op="delete"],
+.route-app .signed-artifact-row.receipt-proof-card button[data-artifact-delete],
+.route-app .completed-plan-actions button.danger,
+.route-app .completed-header-actions button.danger {
+  background: rgba(239, 111, 120, 0.08);
+  border-color: rgba(239, 111, 120, 0.28);
+  color: #ff9daa;
+}
+
+.route-app .generated-plan-card button:disabled,
+.route-app .approval-ticket button:disabled,
+.route-app .recurring-item button:disabled,
+.route-app .recurring-contract button:disabled,
+.route-app .artifact-summary-card button:disabled,
+.route-app .signed-artifact-row.receipt-proof-card button:disabled,
+.route-app .command-center-card button:disabled,
+.route-app .command-center-actions button:disabled {
+  background: rgba(255, 255, 255, 0.018);
+  border-color: rgba(224, 230, 226, 0.075);
+  color: rgba(141, 153, 149, 0.44);
+}
+
+.route-app .generated-plan-inline-details,
+.route-app .generated-plan-more,
+.route-app .artifact-technical-details,
+.route-app .recurring-upcoming-runs,
+.route-app .recurring-history-list,
+.route-app .recurring-notifications-panel {
+  border-top-color: rgba(224, 230, 226, 0.095);
+}
+
+.route-app .generated-plan-inline-details summary,
+.route-app .generated-plan-more summary,
+.route-app .artifact-technical-details summary,
+.route-app .recurring-upcoming-runs summary,
+.route-app .record-activity > summary {
+  color: var(--app-terminal-text);
+  font-family: var(--app-terminal-mono);
+}
+
+.route-app .generated-plan-inline-details summary::after,
+.route-app .generated-plan-more summary::after,
+.route-app .artifact-technical-details summary::after {
+  color: var(--app-terminal-green-bright);
+}
+
+.route-app .decision-proof-grid dd,
+.route-app .decision-proof-text,
+.route-app .artifact-signed-message-block pre,
+.route-app .receipt-proof-grid pre,
+.route-app .recurring-secret-reveal code {
+  background: rgba(0, 0, 0, 0.32);
+  border: 1px solid rgba(224, 230, 226, 0.095);
+  color: var(--app-terminal-text);
+  font-family: var(--app-terminal-mono);
+}
+
 @media (max-width: 1120px) {
   .review-plan-list .review-plan-facts,
   .review-plan-list .wallet-action-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .completed-card-head,
+  .route-app .ticket-title-row,
+  .route-app .lab-workbench-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .route-app .research-brief {
+    border-right: 0;
+    border-bottom: 1px solid rgba(224, 230, 226, 0.055);
+    padding: 0 0 10px;
+  }
+
+  .route-app .completed-plan-details .proof-grid.compact {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 }
@@ -11421,13 +12170,25 @@ button.danger:hover:not(:disabled) {
   }
 
   .review-plan-card-head,
-  .review-plan-facts {
+  .review-plan-facts,
+  .completed-card-head,
+  .route-app .completed-plan-details .proof-grid.compact {
     grid-template-columns: minmax(0, 1fr);
   }
 
   .review-plan-actions {
     grid-template-columns: minmax(0, 1fr);
     justify-self: stretch;
+  }
+
+  .completed-header-actions,
+  .route-app .approval-ticket .inbox-actions {
+    justify-content: stretch;
+  }
+
+  .completed-header-actions button,
+  .route-app .approval-ticket .inbox-actions button {
+    flex: 1 1 140px;
   }
 
   .command-center-actions,
@@ -11445,5 +12206,76 @@ button.danger:hover:not(:disabled) {
   .route-app .workspace-tabs[data-layout="app-tabs"] button {
     font-size: 0.64rem;
     min-height: 32px;
+  }
+}
+
+@media (max-width: 899px) {
+  .route-app .workspace-tabs[data-layout="app-tabs"] button.active::before {
+    margin-right: 3px;
+  }
+
+  .route-app .workspace-tabs[data-layout="app-tabs"] button.active::after {
+    margin-left: 3px;
+    width: 5px;
+  }
+}
+
+@media (max-width: 480px) {
+  .route-app,
+  .route-app .workspace-intro[data-layout="app-intro"],
+  .route-app .workspace.public-workspace[data-layout="app-shell"],
+  .route-app .custody-panel[data-layout="app-rail"],
+  .route-app .main-panel[data-layout="app-main"] {
+    max-width: 100%;
+    overflow-x: hidden;
+  }
+
+  .route-app .workspace-intro[data-layout="app-intro"] h2 {
+    font-size: clamp(1.26rem, 5.6vw, 1.5rem);
+    max-width: calc(100vw - 24px);
+    overflow-wrap: anywhere;
+    text-wrap: wrap;
+    white-space: normal;
+    word-break: break-word;
+  }
+
+  .route-app .workspace-intro[data-layout="app-intro"] p {
+    max-width: calc(100vw - 24px);
+    overflow-wrap: anywhere;
+  }
+
+  .route-app .public-wallet-actions {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .route-app .rail-cloud-head,
+  .route-app .rail-bridge-head {
+    align-items: start;
+    display: grid;
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .route-app .rail-cloud-head strong,
+  .route-app .rail-bridge-head strong {
+    justify-self: start;
+    max-width: 100%;
+    min-width: 0;
+    overflow-wrap: anywhere;
+    white-space: normal;
+  }
+
+  .route-app .rail-cloud-facts span,
+  .route-app .rail-bridge-facts span {
+    display: grid;
+    gap: 3px;
+    grid-template-columns: minmax(0, 1fr);
+    justify-content: start;
+  }
+
+  .route-app .rail-cloud-facts strong,
+  .route-app .rail-bridge-facts strong {
+    justify-self: start;
+    max-width: 100%;
+    white-space: normal;
   }
 }

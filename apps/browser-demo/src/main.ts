@@ -3119,6 +3119,8 @@ function appWorkspace(mode: 'app' | 'demo' = 'app'): string {
               ${tabButton('labs', 'Proofs', 'Proofs')}
             </nav>
           </div>
+          ${SHOW_DEV_CONTROLS ? '' : firstRunActionBand()}
+          ${SHOW_DEV_CONTROLS ? '' : trustLayerPanel()}
           <div data-layout="active-panel">${activePanel()}</div>
         </section>
         ${SHOW_DEV_CONTROLS ? contextPanel() : requestContextDetails()}
@@ -3539,7 +3541,6 @@ function walletRail(): string {
 
       <div class="rail-primary-stack">
         ${cloudWorkspaceCard()}
-        ${aiPlannerRailCard()}
         ${aiSettingsPanel('rail')}
       </div>
       ${SHOW_DEV_CONTROLS ? '' : `
@@ -4247,9 +4248,6 @@ function commandCenterPanel(): string {
         </div>
       </div>
 
-      ${SHOW_DEV_CONTROLS ? '' : firstRunActionBand()}
-      ${SHOW_DEV_CONTROLS ? '' : trustLayerPanel()}
-
       <div class="command-loop" aria-label="Agentic approval loop">
         ${commandLoopStep('Draft', 'AI or templates prepare a bounded request.', Boolean(state.agentPlan) || state.generatedPlans.length > 0)}
         ${commandLoopStep('Review', 'Check amount, route, recipient, risk, and rule.', state.generatedPlans.some(isGeneratedPlanActiveInReview))}
@@ -4423,9 +4421,18 @@ function oneTimeCreatePlanPanel(): string {
     <div class="one-time-create-panel">
       ${agentPlannerWorkbench()}
 
-      ${signaturePlaceholder('Draft first', 'Choose a template or connect AI. New drafts move to Review before anything can enter Inbox.')}
-      ${hasOneTimePlans ? signaturePlaceholder('Review available', 'Existing one-time plans are available in Review.') : ''}
-      ${!walletReady ? signaturePlaceholder('Wallet optional', 'You can draft without a wallet. Connect when you are ready to queue approval or sign proof.') : ''}
+      ${draftFlowHint(hasOneTimePlans, walletReady)}
+    </div>
+  `;
+}
+
+function draftFlowHint(hasOneTimePlans: boolean, walletReady: boolean): string {
+  const reviewCopy = hasOneTimePlans ? 'Review already has saved drafts.' : 'New drafts move to Review.';
+  const walletCopy = walletReady ? 'Wallet is ready when you send work to Inbox.' : 'Wallet is optional until Inbox or proof signing.';
+  return `
+    <div class="draft-flow-hint">
+      <span>Draft flow</span>
+      <p>${escapeHtml(reviewCopy)} ${escapeHtml(walletCopy)}</p>
     </div>
   `;
 }
@@ -5254,7 +5261,7 @@ function aiSettingsPanel(location: 'rail' | 'planner' = 'planner'): string {
     <details class="ai-settings-panel ${configured ? 'configured' : 'optional'} ${location === 'rail' ? 'rail-ai-settings' : ''}" data-layout="ai-setup-panel" ${open}>
       <summary>
         <span class="ai-summary-copy">
-          <span>AI drafting setup</span>
+          <span>AI drafting</span>
           <em>${escapeHtml(summaryDetail)}</em>
         </span>
         <strong>${confirmed ? 'confirmed' : configured ? 'configured' : 'not configured'}</strong>
@@ -6292,13 +6299,30 @@ function completedPlanCard(plan: CompletedPlanRecord): string {
   const decisionProofBlock = decisionProofRow(plan);
   return `
     <article class="generated-plan-card completed-plan-card ${focused ? 'focused' : ''}" ${focused ? 'data-completed-focus="true"' : ''}>
-      <div class="generated-plan-card-top">
-        <span class="status-pill ${escapeHtml(plan.tone)}">${escapeHtml(plan.status)}</span>
-        <span>${escapeHtml(formatDateTime(plan.completedAt))}</span>
-      </div>
-      <div class="generated-plan-card-title">
-        <span class="workbench-kicker">${escapeHtml(plan.kind === 'recurring' ? 'Recurring history' : 'One-time history')}</span>
-        <h3 title="${escapeHtml(plan.summary)}">${escapeHtml(plan.title)}</h3>
+      <div class="completed-card-head">
+        <div>
+          <div class="generated-plan-card-top">
+            <span class="status-pill ${escapeHtml(plan.tone)}">${escapeHtml(plan.status)}</span>
+            <span>${escapeHtml(formatDateTime(plan.completedAt))}</span>
+          </div>
+          <div class="generated-plan-card-title">
+            <span class="workbench-kicker">${escapeHtml(plan.kind === 'recurring' ? 'Recurring history' : 'One-time history')}</span>
+            <h3 title="${escapeHtml(plan.summary)}">${escapeHtml(plan.title)}</h3>
+          </div>
+        </div>
+        <div class="completed-header-actions">
+          <button data-copy="${escapeHtml(plan.copyPayload)}" data-copy-name="Completed plan">${escapeHtml(copyLabel)}</button>
+          ${plan.trustBundlePayload ? `<button data-copy="${escapeHtml(plan.trustBundlePayload)}" data-copy-name="Trust bundle">Copy trust bundle</button>` : ''}
+          ${plan.txid ? `<button data-copy="${escapeHtml(plan.txid)}" data-copy-name="Transaction id">Copy txid</button>` : ''}
+          <button
+            class="utility danger"
+            data-completed-delete="${escapeHtml(plan.id)}"
+            ${state.busy || deleteRequiresBridge ? 'disabled' : ''}
+            title="${deleteRequiresBridge ? 'Connect the local bridge before deleting bridge-backed history.' : 'Delete this completed plan from history.'}"
+          >
+            Delete history
+          </button>
+        </div>
       </div>
       <div class="generated-plan-card-chips">
         <span>${escapeHtml(plan.kind === 'recurring' ? 'Recurring' : 'One-time')}</span>
@@ -6319,19 +6343,6 @@ function completedPlanCard(plan: CompletedPlanRecord): string {
         ${plan.txid ? `<span title="${escapeHtml(plan.txid)}">Tx ${escapeHtml(short(plan.txid))}</span>` : ''}
         ${plan.actionId ? `<span title="${escapeHtml(plan.actionId)}">Receipt ${escapeHtml(short(plan.actionId))}</span>` : ''}
         ${plan.recurringId ? `<span title="${escapeHtml(plan.recurringId)}">Recurring ${escapeHtml(short(plan.recurringId))}</span>` : ''}
-      </div>
-      <div class="generated-plan-card-actions completed-plan-actions">
-        <button data-copy="${escapeHtml(plan.copyPayload)}" data-copy-name="Completed plan">${escapeHtml(copyLabel)}</button>
-        ${plan.trustBundlePayload ? `<button data-copy="${escapeHtml(plan.trustBundlePayload)}" data-copy-name="Trust bundle">Copy trust bundle</button>` : ''}
-        ${plan.txid ? `<button data-copy="${escapeHtml(plan.txid)}" data-copy-name="Transaction id">Copy transaction id</button>` : ''}
-        <button
-          class="utility danger"
-          data-completed-delete="${escapeHtml(plan.id)}"
-          ${state.busy || deleteRequiresBridge ? 'disabled' : ''}
-          title="${deleteRequiresBridge ? 'Connect the local bridge before deleting bridge-backed history.' : 'Delete this completed plan from history.'}"
-        >
-          Delete history
-        </button>
       </div>
       <details class="generated-plan-inline-details completed-plan-details">
         <summary>View details</summary>
@@ -13803,16 +13814,17 @@ function preparedActionCard(action: PreparedAction): string {
     <article class="inbox-item approval-ticket ${action.status}">
       <div class="ticket-status-rail ${statusTone(action.status)}"></div>
       <div class="ticket-body">
-        <div class="pill-row">
-          <span class="status-pill ${statusTone(action.status)}">${escapeHtml(action.status)}</span>
-          <span class="status-pill neutral">${escapeHtml(action.kind.replace('_', ' '))}</span>
-          ${action.recurringId ? '<span class="status-pill neutral">recurring</span>' : ''}
-          ${action.txStatus ? `<span class="status-pill ${txTone(action.txStatus)}">tx ${escapeHtml(action.txStatus)}</span>` : ''}
-        </div>
         <div class="ticket-title-row">
           <div>
+            <div class="pill-row">
+              <span class="status-pill ${statusTone(action.status)}">${escapeHtml(action.status)}</span>
+              <span class="status-pill neutral">${escapeHtml(action.kind.replace('_', ' '))}</span>
+              ${action.recurringId ? '<span class="status-pill neutral">recurring</span>' : ''}
+              ${action.txStatus ? `<span class="status-pill ${txTone(action.txStatus)}">tx ${escapeHtml(action.txStatus)}</span>` : ''}
+            </div>
             <h3>${escapeHtml(action.summary)}</h3>
             ${action.note ? `<p class="action-note">${escapeHtml(action.note)}</p>` : ''}
+            <p class="ticket-meta-line">${escapeHtml(action.kind)} on ${escapeHtml(action.cluster)} - due ${formatDateTime(action.dueAt)}</p>
           </div>
           <div class="inbox-actions">
             <button data-action-op="execute" data-action-id="${action.id}" class="primary" ${executeDisabled ? 'disabled' : ''} ${executionBlockReason ? `title="${escapeHtml(executionBlockReason)}"` : ''}>${escapeHtml(decisionLabels.approve)}</button>
@@ -13828,7 +13840,6 @@ function preparedActionCard(action: PreparedAction): string {
         ${inlineReceiptActions(action)}
         ${relatedReceiptBlockForApproval(action.id)}
         ${recordActivityDetails('approval', action.id)}
-        <p>${escapeHtml(action.kind)} on ${escapeHtml(action.cluster)} - due ${formatDateTime(action.dueAt)}</p>
         ${action.error ? `<p class="error-text">${escapeHtml(action.error)}</p>` : ''}
         ${action.txError ? `<p class="error-text">${escapeHtml(action.txError)}</p>` : ''}
         ${action.txid ? txBlock(action.txid, action.cluster) : ''}
@@ -13853,11 +13864,11 @@ function inlineReceiptActions(action: PreparedAction): string {
     ['rejection', 'Deny with proof', 'Sign a rejection receipt, then deny this request.', 'Rejection proof signed'],
   ];
   return `
-    <div class="inline-receipt-actions" aria-label="Receipt proof actions">
-      <div>
+    <details class="inline-receipt-actions receipt-proof-drawer" aria-label="Receipt proof actions">
+      <summary>
         <strong>Receipt proofs</strong>
-        <p>Optional wallet-signed records for this approval. They do not approve, submit, or move funds.</p>
-      </div>
+        <span>Optional evidence only</span>
+      </summary>
       <div class="inline-receipt-button-grid">
         ${actions.map(([kind, label, title, signedLabel]) => {
           const lab = labById(receiptLabIdForInlineKind(kind));
@@ -13875,7 +13886,7 @@ function inlineReceiptActions(action: PreparedAction): string {
           `;
         }).join('')}
       </div>
-    </div>
+    </details>
   `;
 }
 
@@ -14972,7 +14983,7 @@ function definitionRow(label: string, value: string): string {
   return `
     <div>
       <dt>${escapeHtml(label)}</dt>
-      <dd>${escapeHtml(value)}</dd>
+      <dd title="${escapeHtml(value)}">${escapeHtml(value)}</dd>
     </div>
   `;
 }
