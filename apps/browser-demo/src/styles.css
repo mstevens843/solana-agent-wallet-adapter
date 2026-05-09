@@ -10217,18 +10217,19 @@ button.danger:hover:not(:disabled) {
 
 /* Deterministic /app layout contract. All new /app layout work should use these tokens. */
 .route-app {
-  --app-shell-max: 1480px;
+  --app-shell-max: 1760px;
   --app-shell-pad-x: 22px;
   --app-shell-pad-y: 16px;
   --app-gap: 14px;
-  --app-rail-w: 316px;
-  --app-rail-min: 280px;
+  --app-rail-w: 292px;
+  --app-rail-min: 248px;
   --app-nav-h: 64px;
   --app-panel-pad: 16px;
   --app-card-radius: 8px;
   gap: var(--app-gap);
   max-width: var(--app-shell-max);
   padding: var(--app-shell-pad-y) var(--app-shell-pad-x) 48px;
+  width: 100%;
 }
 
 .route-app [data-layout] {
@@ -10272,6 +10273,7 @@ button.danger:hover:not(:disabled) {
   gap: var(--app-gap);
   grid-template-columns: minmax(var(--app-rail-min), var(--app-rail-w)) minmax(0, 1fr);
   overflow: visible;
+  width: 100%;
 }
 
 .route-app .custody-panel[data-layout="app-rail"] {
@@ -10286,8 +10288,11 @@ button.danger:hover:not(:disabled) {
 }
 
 .route-app .main-panel[data-layout="app-main"] {
+  max-width: 100%;
+  min-width: 0;
   overflow: visible;
   padding: var(--app-panel-pad);
+  width: 100%;
 }
 
 .route-app .surface-topbar[data-layout="app-tabs-row"] {
@@ -10574,6 +10579,163 @@ button.danger:hover:not(:disabled) {
   box-shadow: inset 3px 0 0 rgba(125, 231, 176, 0.46);
 }
 
+.route-app .native-select-fallback {
+  border: 0;
+  height: 1px;
+  min-width: 0;
+  opacity: 0;
+  pointer-events: none;
+  position: absolute;
+  width: 1px;
+}
+
+.route-app .select-picker-shell {
+  max-width: 100%;
+  min-width: 0;
+  position: relative;
+}
+
+.route-app .select-picker-trigger {
+  min-height: 40px;
+}
+
+.route-app .select-picker-menu {
+  z-index: 180;
+}
+
+.route-app .select-picker-option[disabled] {
+  cursor: not-allowed;
+  opacity: 0.48;
+}
+
+.route-app .workflow-status-band[data-layout="workflow-status"].compact {
+  grid-template-columns: minmax(176px, 0.5fr) minmax(430px, 1fr) minmax(132px, auto);
+}
+
+.route-app .workflow-status-band.compact .first-run-progress {
+  gap: 9px;
+}
+
+.route-app .workflow-status-band.compact .first-run-step {
+  gap: 3px 5px;
+  min-height: 38px;
+  padding: 6px 3px 0;
+}
+
+.route-app .workflow-status-band.compact .first-run-step span {
+  font-size: 0.64rem;
+  height: 20px;
+  width: 20px;
+}
+
+.route-app .workflow-status-band.compact .first-run-step strong {
+  font-size: 0.72rem;
+  line-height: 1.08;
+  overflow: visible;
+  text-overflow: clip;
+  white-space: normal;
+}
+
+.route-app .app-inline-head > div,
+.route-app .contract-head.app-inline-head > div {
+  align-items: baseline;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 12px;
+  min-width: 0;
+}
+
+.route-app .app-inline-head p,
+.route-app .contract-head.app-inline-head p {
+  margin: 0;
+  max-width: 72ch;
+}
+
+.route-app .plan-method-title {
+  align-items: baseline;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 2px;
+}
+
+.route-app .plan-method-title small {
+  color: var(--muted);
+  font-size: 0.86rem;
+  font-weight: 560;
+  line-height: 1.32;
+}
+
+.route-app .plan-method-title small::before {
+  color: var(--dim);
+  content: "- ";
+}
+
+.route-app .intent-document-head {
+  margin-bottom: 8px;
+  padding-bottom: 9px;
+}
+
+.route-app .intent-policy-strip {
+  margin-top: 8px;
+  padding-top: 9px;
+}
+
+.route-app .signature-placeholder {
+  margin-top: 8px;
+  padding-top: 9px;
+}
+
+.route-app .signature-placeholder span {
+  font-size: 0.68rem;
+}
+
+.route-app .signature-placeholder p {
+  font-size: 0.88rem;
+  line-height: 1.36;
+}
+
+.route-app .template-filter-row {
+  gap: 8px;
+}
+
+.route-app .generated-plan-card,
+.route-app .approval-ticket,
+.route-app .recurring-item,
+.route-app .recurring-contract,
+.route-app .artifact-summary-card,
+.route-app .lab-history article,
+.route-app .command-center-card {
+  background:
+    linear-gradient(180deg, rgba(28, 34, 32, 0.94), rgba(17, 21, 20, 0.96)),
+    rgba(17, 21, 20, 0.94);
+  border-color: rgba(224, 230, 226, 0.16);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.035),
+    0 14px 36px rgba(0, 0, 0, 0.2);
+}
+
+.route-app .generated-plan-card.selected,
+.route-app .approval-ticket.ready,
+.route-app .approval-ticket.overdue,
+.route-app .recurring-item {
+  border-color: rgba(139, 205, 170, 0.3);
+}
+
+.route-app .generated-plan-card-chips,
+.route-app .generated-plan-outcomes,
+.route-app .pill-row {
+  align-items: center;
+}
+
+.route-app .generated-plan-card-chips span,
+.route-app .generated-plan-outcomes span,
+.route-app .status-pill,
+.route-app .recurring-count {
+  align-items: center;
+  justify-content: center;
+}
+
 .command-center-head {
   align-items: start;
 }
@@ -10665,18 +10827,19 @@ button.danger:hover:not(:disabled) {
 }
 
 .review-plan-card {
-  gap: 12px;
+  gap: 8px;
 }
 
 .review-plan-list {
   display: grid;
-  gap: 12px;
+  gap: 9px;
   grid-template-columns: minmax(0, 1fr);
   width: 100%;
 }
 
 .review-plan-list .review-plan-card {
   overflow: hidden;
+  padding: 10px;
   width: 100%;
 }
 
@@ -10688,8 +10851,9 @@ button.danger:hover:not(:disabled) {
 }
 
 .review-plan-list .review-plan-card-head {
+  align-items: center;
   gap: 8px;
-  grid-template-columns: minmax(0, 1fr);
+  grid-template-columns: minmax(0, 1fr) auto;
 }
 
 .review-plan-actions {
@@ -10702,9 +10866,9 @@ button.danger:hover:not(:disabled) {
 .review-plan-list .review-plan-actions {
   display: flex;
   flex-wrap: wrap;
-  justify-self: start;
-  max-width: 520px;
-  width: 100%;
+  justify-self: end;
+  max-width: 560px;
+  width: auto;
 }
 
 .review-plan-actions button {
@@ -10715,12 +10879,12 @@ button.danger:hover:not(:disabled) {
 }
 
 .review-plan-list .review-plan-actions button {
-  flex: 1 1 154px;
+  flex: 0 1 auto;
 }
 
 .review-plan-main {
   display: grid;
-  gap: 8px;
+  gap: 6px;
 }
 
 .review-plan-facts {
@@ -10747,12 +10911,15 @@ button.danger:hover:not(:disabled) {
 }
 
 .review-plan-list .generated-plan-card-actions {
-  max-width: 520px;
+  display: grid;
+  gap: 7px;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  max-width: none;
 }
 
 .review-plan-details > div {
   display: grid;
-  gap: 10px;
+  gap: 8px;
 }
 
 .review-plan-details p {
@@ -10771,7 +10938,71 @@ button.danger:hover:not(:disabled) {
 }
 
 .route-app .generated-plan-card-actions {
-  grid-template-columns: repeat(2, minmax(0, 1fr));
+  display: grid;
+  gap: 7px;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+}
+
+.route-app .generated-plan-card-actions button {
+  min-height: 34px;
+}
+
+.route-app .ticket-title-row {
+  align-items: start;
+  display: grid;
+  gap: 10px;
+  grid-template-columns: minmax(0, 1fr) minmax(300px, auto);
+}
+
+.route-app .approval-ticket {
+  grid-template-columns: 4px minmax(0, 1fr);
+}
+
+.route-app .ticket-body {
+  min-width: 0;
+  padding: 12px;
+}
+
+.route-app .approval-ticket .inbox-actions {
+  align-content: start;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 7px;
+  justify-content: flex-end;
+  padding: 0;
+}
+
+.route-app .approval-ticket .inbox-actions button {
+  min-height: 34px;
+  padding: 0 11px;
+}
+
+.route-app .approval-ticket h3,
+.route-app .recurring-item h3 {
+  margin: 5px 0;
+}
+
+.route-app .approval-ticket .action-preview {
+  display: grid;
+  gap: 0;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  margin-top: 8px;
+  width: 100%;
+}
+
+.route-app .approval-ticket .action-preview div {
+  min-height: 44px;
+  padding: 8px 9px;
+}
+
+.route-app .inline-receipt-actions,
+.route-app .related-receipts,
+.route-app .approval-effect {
+  margin-top: 8px;
+}
+
+.route-app .approval-effect {
+  padding: 8px 10px;
 }
 
 .route-app .receipt-proof-grid {
@@ -10842,10 +11073,73 @@ button.danger:hover:not(:disabled) {
   padding-top: 10px;
 }
 
+.route-app .recurring-view-tabs {
+  margin: 0 0 10px;
+}
+
+.route-app .recurring-item {
+  gap: 10px;
+  grid-template-columns: minmax(0, 1fr) auto;
+  padding: 12px;
+}
+
+.route-app .recurring-card-metrics,
+.route-app .recurring-history-strip {
+  margin: 8px 0;
+  padding: 8px 10px;
+}
+
+.route-app .recurring-card-metrics {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.route-app .recurring-upcoming-runs,
+.route-app .recurring-history-list,
+.route-app .recurring-notifications-panel {
+  margin-top: 8px;
+  padding-top: 8px;
+}
+
+.route-app .recurring-actions {
+  align-content: start;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 7px;
+  justify-content: flex-end;
+}
+
+.route-app .recurring-actions button {
+  min-height: 34px;
+}
+
 .route-app .completed-plan-details .proof-grid.compact {
   display: grid;
   gap: 8px;
   grid-template-columns: repeat(auto-fit, minmax(210px, 1fr));
+}
+
+.route-app .completed-plan-grid {
+  grid-template-columns: minmax(0, 1fr);
+}
+
+.route-app .completed-plan-card {
+  gap: 8px;
+  padding: 10px 12px;
+}
+
+.route-app .completed-plan-card .generated-plan-card-title h3 {
+  min-height: 0;
+}
+
+.route-app .completed-plan-card .template-description {
+  font-size: 0.86rem;
+  line-height: 1.34;
+  margin: 0;
+}
+
+.route-app .completed-plan-actions {
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
 }
 
 .artifact-detail-actions {
@@ -10870,7 +11164,7 @@ button.danger:hover:not(:disabled) {
   }
 }
 
-@media (max-width: 1179px) {
+@media (max-width: 1240px) {
   .route-app {
     --app-shell-pad-x: 16px;
   }
@@ -10881,7 +11175,9 @@ button.danger:hover:not(:disabled) {
 
   .route-app .custody-panel[data-layout="app-rail"] {
     max-height: none;
+    max-width: none;
     overflow: visible;
+    width: 100%;
   }
 
   .route-app .rail-primary-stack {

@@ -109,6 +109,7 @@ type StepName = 'discover' | 'connect' | 'sign' | 'transaction' | 'bridge' | 'in
 type ActiveTab = 'overview' | 'wallet' | 'agent' | 'generated' | 'inbox' | 'completed' | 'schedule' | 'labs';
 type ArtifactView = 'create' | 'signed';
 type OneTimePlanView = 'create' | 'review';
+type RecurringView = 'create' | 'active';
 type ToastKind = 'success' | 'error' | 'pending';
 type GeneratedPlanStatus = 'draft' | 'signed' | 'queued' | 'archived';
 type RuntimePathId = 'exec' | 'install' | 'desktop';
@@ -156,6 +157,15 @@ type ActiveWorkflowMode = 'agentic-cloud' | 'browser-workflow' | 'local-bridge';
 type WorkflowRecordSource = 'cloud' | 'browser' | 'local-bridge';
 type CloudSessionStatus = 'unknown' | 'signed-out' | 'signed-in' | 'unavailable';
 type QueueWorkflowResult = { id: string; mode: ActiveWorkflowMode; planRecordId?: string };
+
+interface SelectPickerOption {
+  value: string;
+  label: string;
+  meta?: string;
+  detail?: string;
+  disabled?: boolean;
+  title?: string;
+}
 
 type JsonPrimitive = string | number | boolean | null;
 type JsonValue = JsonPrimitive | JsonObject | JsonValue[];
@@ -829,6 +839,7 @@ interface PersistedState {
 interface DemoState {
   activeTab: ActiveTab;
   oneTimePlanView: OneTimePlanView;
+  recurringView: RecurringView;
   artifactView: ArtifactView;
   completedPlanFilter: CompletedPlanFilter;
   selectedRuntimePath: RuntimePathId;
@@ -1419,6 +1430,7 @@ function defaultGuidedDemoState(scenarioId: GuidedDemoScenarioId = 'transfer'): 
 const state: DemoState = {
   activeTab: defaultWorkspaceTab,
   oneTimePlanView: 'create',
+  recurringView: 'create',
   artifactView: 'create',
   completedPlanFilter: 'all',
   selectedRuntimePath: 'exec',
@@ -1535,6 +1547,7 @@ let lastPassiveInboxRefresh = 0;
 let copyResetTimer: number | null = null;
 let templatePickerController: AbortController | null = null;
 let artifactPickerController: AbortController | null = null;
+let selectPickerController: AbortController | null = null;
 
 const appRoot = document.querySelector<HTMLDivElement>('#app');
 
@@ -3212,7 +3225,7 @@ function firstRunSteps(): FirstRunStep[] {
     },
     {
       id: 'decision',
-      label: 'Approve / Deny',
+      label: 'Decide',
       detail: signals.hasReceipt ? 'Decision recorded.' : signals.activeApprovalCount ? 'Inbox item waiting.' : 'Send to Inbox.',
       complete: signals.hasReceipt,
     },
@@ -3283,7 +3296,7 @@ function firstRunNextAction(): FirstRunAction {
     return {
       id: 'discover-wallets',
       label: 'Discover wallets',
-      detail: 'Find installed Solana wallet providers in this browser.',
+      detail: 'Find Solana wallet providers in this browser.',
     };
   }
   if (!signals.hasPlan) {
@@ -3304,7 +3317,7 @@ function firstRunNextAction(): FirstRunAction {
     return {
       id: 'open-review',
       label: 'Review',
-      detail: 'Check the wallet action, route, limits, and destination before sending to Inbox.',
+      detail: 'Check action, route, limits, and destination before Inbox.',
     };
   }
   return {
@@ -3494,9 +3507,12 @@ function walletRail(): string {
         <summary>Choose wallet</summary>
         <label class="field">
           <span>Selected wallet</span>
-          <select id="walletSelect" ${state.busy ? 'disabled' : ''}>
-            ${walletOptions()}
-          </select>
+          ${selectPicker({
+            id: 'walletSelect',
+            value: state.selectedWalletName,
+            options: walletSelectOptions(),
+            disabled: state.wallets.length === 0 || state.busy,
+          })}
         </label>
       </details>` : ''}
 
@@ -3505,9 +3521,12 @@ function walletRail(): string {
         <summary>Choose iOS wallet</summary>
         <label class="field">
           <span>Selected wallet</span>
-          <select id="iosWalletSelect" ${state.busy ? 'disabled' : ''}>
-            ${iosWalletOptions()}
-          </select>
+          ${selectPicker({
+            id: 'iosWalletSelect',
+            value: state.selectedIosWalletId,
+            options: iosWalletSelectOptions(),
+            disabled: state.busy,
+          })}
         </label>
       </details>` : ''}
 
@@ -3745,23 +3764,38 @@ function developerConnectionSettings(): string {
   return `
     <label class="field">
       <span>Cluster</span>
-      <select id="clusterSelect" ${state.busy || state.bridgeActive ? 'disabled' : ''}>
-        ${CLUSTERS.map((cluster) => `<option value="${cluster}" ${cluster === state.cluster ? 'selected' : ''} ${androidNative && cluster === 'localnet' ? 'disabled' : ''}>${cluster}</option>`).join('')}
-      </select>
+      ${selectPicker({
+        id: 'clusterSelect',
+        value: state.cluster,
+        options: CLUSTERS.map((cluster) => ({
+          value: cluster,
+          label: cluster,
+          meta: 'Network',
+          disabled: androidNative && cluster === 'localnet',
+          detail: androidNative && cluster === 'localnet' ? 'Unavailable in Android native mode.' : titleCaseCluster(cluster),
+        })),
+        disabled: state.busy || state.bridgeActive,
+      })}
     </label>
 
     ${androidNative ? '' : state.iosNativeEnvironment.isIosNative ? `
     <label class="field">
       <span>iOS wallet</span>
-      <select id="iosWalletSelect" ${state.busy ? 'disabled' : ''}>
-        ${iosWalletOptions()}
-      </select>
+      ${selectPicker({
+        id: 'iosWalletSelect',
+        value: state.selectedIosWalletId,
+        options: iosWalletSelectOptions(),
+        disabled: state.busy,
+      })}
     </label>` : `
     <label class="field">
       <span>Selected wallet</span>
-      <select id="walletSelect" ${state.wallets.length === 0 || state.busy ? 'disabled' : ''}>
-        ${walletOptions()}
-      </select>
+      ${selectPicker({
+        id: 'walletSelect',
+        value: state.selectedWalletName,
+        options: walletSelectOptions(),
+        disabled: state.wallets.length === 0 || state.busy,
+      })}
     </label>`}
 
     ${state.capabilities ? capabilityBlock(state.capabilities) : ''}
@@ -4249,7 +4283,7 @@ function commandCenterCard(label: string, value: string, detail: string, tone: s
       <strong>${escapeHtml(value)}</strong>
       <p>${escapeHtml(detail)}</p>
       ${targetTab
-        ? `<button type="button" class="utility" data-tab="${escapeHtml(targetTab)}">${escapeHtml(buttonLabel)}</button>`
+        ? `<button type="button" class="utility" data-tab="${escapeHtml(targetTab)}" ${action === 'open-recurring' ? 'data-recurring-view="active"' : ''}>${escapeHtml(buttonLabel)}</button>`
         : `<button type="button" class="utility" data-first-run-action="${escapeHtml(action)}" ${disabled ? 'disabled' : ''}>${escapeHtml(buttonLabel)}</button>`}
     </article>
   `;
@@ -4381,8 +4415,8 @@ function oneTimeCreatePlanPanel(): string {
       ${agentPlannerWorkbench()}
 
       ${signaturePlaceholder('Draft first', 'Choose a template or connect AI. New drafts move to Review before anything can enter Inbox.')}
-      ${hasOneTimePlans ? '<div class="notice">Existing one-time plans are available in Review.</div>' : ''}
-      ${!walletReady ? '<div class="notice">You can create a plan without a wallet. Connect a wallet when you are ready to queue an approval or sign an optional review proof.</div>' : ''}
+      ${hasOneTimePlans ? signaturePlaceholder('Review available', 'Existing one-time plans are available in Review.') : ''}
+      ${!walletReady ? signaturePlaceholder('Wallet optional', 'You can draft without a wallet. Connect when you are ready to queue approval or sign proof.') : ''}
     </div>
   `;
 }
@@ -4617,28 +4651,23 @@ function generatedPlanCard(record: GeneratedPlanRecord): string {
         >
           Details
         </button>
+        <button
+          class="utility"
+          data-generated-plan-action="${archived ? 'restore' : 'archive'}"
+          data-generated-plan-id="${escapeHtml(record.id)}"
+          ${state.busy ? 'disabled' : ''}
+        >
+          ${archived ? 'Restore' : 'Archive'}
+        </button>
+        <button
+          class="utility danger"
+          data-generated-plan-action="delete"
+          data-generated-plan-id="${escapeHtml(record.id)}"
+          ${state.busy ? 'disabled' : ''}
+        >
+          Delete
+        </button>
       </div>
-      <details class="generated-plan-more">
-        <summary>More</summary>
-        <div>
-          <button
-            class="utility"
-            data-generated-plan-action="${archived ? 'restore' : 'archive'}"
-            data-generated-plan-id="${escapeHtml(record.id)}"
-            ${state.busy ? 'disabled' : ''}
-          >
-            ${archived ? 'Restore' : 'Archive'}
-          </button>
-          <button
-            class="utility danger"
-            data-generated-plan-action="delete"
-            data-generated-plan-id="${escapeHtml(record.id)}"
-            ${state.busy ? 'disabled' : ''}
-          >
-            Delete
-          </button>
-        </div>
-      </details>
     </article>
   `;
 }
@@ -4686,7 +4715,7 @@ function generatedPlanDecisionItem(label: string, value: string): string {
 
 function generatedPlanWalletActionSummary(record: GeneratedPlanRecord): string {
   const rows: Array<[string, string]> = [
-    ['Wallet action', walletActionLabelForPlan(record.plan)],
+    ['Type', walletActionLabelForPlan(record.plan)],
     ['Amount', planAmountSummary(record.plan)],
     ['Route or recipient', planRecipientOrRoute(record.plan)],
     ['Effect', generatedPlanEffectLabel(record)],
@@ -5120,7 +5149,10 @@ function agentPlannerWorkbench(): string {
         <div class="intent-document-head">
           <div>
             <span>Plan method</span>
-            <h3>${escapeHtml(template.title)}</h3>
+            <h3 class="plan-method-title">
+              <span>${escapeHtml(template.title)}</span>
+              <small>${escapeHtml(outcomeDetailForTemplate(template))}</small>
+            </h3>
           </div>
           <strong class="template-outcome-badge ${escapeHtml(outcomeClass(outcome))}">${escapeHtml(outcomeShortLabel(outcome))}</strong>
         </div>
@@ -5129,7 +5161,6 @@ function agentPlannerWorkbench(): string {
           <span id="templatePickerLabel">Plan template</span>
           ${templatePicker(template)}
         </div>
-        ${templateOutcomeSummary(template)}
         <div class="agent-actions signature-actions intent-document-actions">
           <button id="generatePlan" class="primary" ${state.busy ? 'disabled' : ''}>${templateGenerating ? `${buttonSpinner()}Drafting...` : 'Draft from template'}</button>
           <button id="generateAiPlan" class="${canUseAi ? 'primary' : ''}" ${!canUseAi || state.busy ? 'disabled' : ''} title="${escapeHtml(canUseAi ? 'Draft through your configured AI planner.' : aiDisabledReason)}">${aiGenerating ? `${buttonSpinner()}Drafting...` : 'Draft with AI'}</button>
@@ -5330,9 +5361,16 @@ function templateFieldInput(fieldDef: AgentPlanTemplateField): string {
     return `
       <label class="field compact planner-field ${state.templateFieldErrors[fieldDef.id] ? 'field-error' : ''}">
         <span>${escapeHtml(label)}</span>
-        <select data-template-field="${escapeHtml(fieldDef.id)}" ${disabled}>
-          ${fieldDef.options.map((option) => `<option value="${escapeHtml(option)}" ${option === value ? 'selected' : ''}>${escapeHtml(option)}</option>`).join('')}
-        </select>
+        ${selectPicker({
+          value,
+          options: fieldDef.options.map((option) => ({
+            value: option,
+            label: option,
+            meta: fieldDef.label,
+          })),
+          attrs: { 'data-template-field': fieldDef.id },
+          disabled: state.busy,
+        })}
         ${error}
       </label>
     `;
@@ -5384,28 +5422,41 @@ function aiSettingsCard(): string {
       </div>
       <label class="field compact">
         <span>AI path</span>
-        <select id="aiMode" ${state.busy ? 'disabled' : ''} ${aiModeHelperText() ? `title="${escapeHtml(aiModeHelperText())}"` : ''}>
-          ${aiModeOptions()}
-        </select>
+        ${selectPicker({
+          id: 'aiMode',
+          value: state.aiSettings.mode,
+          options: aiModeSelectOptions(),
+          disabled: state.busy,
+          title: aiModeHelperText(),
+        })}
         ${aiModeHelperText() ? `<em class="ai-route-helper">${escapeHtml(aiModeHelperText())}</em>` : ''}
       </label>
       <label class="field compact">
         <span>Provider preset</span>
-        <select id="aiProvider" ${state.busy ? 'disabled' : ''} ${aiProviderHelperText() ? `title="${escapeHtml(aiProviderHelperText())}"` : ''}>
-          ${aiProviderOptions()}
-        </select>
+        ${selectPicker({
+          id: 'aiProvider',
+          value: state.aiSettings.provider,
+          options: aiProviderSelectOptions(),
+          disabled: state.busy,
+          title: aiProviderHelperText(),
+        })}
         ${aiProviderHelperText() ? `<em class="ai-route-helper">${escapeHtml(aiProviderHelperText())}</em>` : ''}
       </label>
       <label class="field compact">
         <span>Model</span>
-        <select id="aiModelSelect" ${state.busy ? 'disabled' : ''}>
-          ${providerPreset.models.map((model) => `
-            <option value="${escapeHtml(model.id)}" ${model.id === state.aiSettings.model ? 'selected' : ''}>
-              ${escapeHtml(model.label)}
-            </option>
-          `).join('')}
-          <option value="${CUSTOM_AI_MODEL_VALUE}" ${usingCustomModel ? 'selected' : ''}>Custom model</option>
-        </select>
+        ${selectPicker({
+          id: 'aiModelSelect',
+          value: usingCustomModel ? CUSTOM_AI_MODEL_VALUE : state.aiSettings.model,
+          options: [
+            ...providerPreset.models.map((model) => ({
+              value: model.id,
+              label: model.label,
+              meta: 'Model preset',
+            })),
+            { value: CUSTOM_AI_MODEL_VALUE, label: 'Custom model', meta: 'Model' },
+          ],
+          disabled: state.busy,
+        })}
       </label>
       ${usingCustomModel ? `
         <label class="field compact">
@@ -5464,6 +5515,18 @@ function aiSettingsCard(): string {
 }
 
 function aiModeOptions(): string {
+  return aiModeSelectOptions().map((option) => `
+      <option
+        value="${escapeHtml(option.value)}"
+        ${option.value === state.aiSettings.mode ? 'selected' : ''}
+        ${option.disabled ? `disabled title="${escapeHtml(option.title ?? option.detail ?? '')}"` : ''}
+      >
+        ${escapeHtml(option.label)}
+      </option>
+    `).join('');
+}
+
+function aiModeSelectOptions(): SelectPickerOption[] {
   const options: Array<{ id: AiSettings['mode']; label: string }> = IS_ANDROID_APP
     ? [
         { id: 'session', label: 'Android session - drafts only' },
@@ -5477,31 +5540,41 @@ function aiModeOptions(): string {
       ];
   return options.map((option) => {
     const disabledReason = aiModeDisabledReason(option.id);
-    return `
-      <option
-        value="${escapeHtml(option.id)}"
-        ${option.id === state.aiSettings.mode ? 'selected' : ''}
-        ${disabledReason ? `disabled title="${escapeHtml(disabledReason)}"` : ''}
-      >
-        ${escapeHtml(option.label)}
-      </option>
-    `;
-  }).join('');
+    return {
+      value: option.id,
+      label: option.label,
+      meta: 'Draft path',
+      detail: disabledReason || 'Drafts only; approvals and signatures stay separate.',
+      disabled: Boolean(disabledReason),
+      title: disabledReason,
+    };
+  });
 }
 
 function aiProviderOptions(): string {
+  return aiProviderSelectOptions().map((option) => `
+      <option
+        value="${escapeHtml(option.value)}"
+        ${option.value === state.aiSettings.provider ? 'selected' : ''}
+        ${option.disabled ? `disabled title="${escapeHtml(option.title ?? option.detail ?? '')}"` : ''}
+      >
+        ${escapeHtml(option.label)}
+      </option>
+    `).join('');
+}
+
+function aiProviderSelectOptions(): SelectPickerOption[] {
   return AI_PROVIDER_PRESETS.map((preset) => {
     const disabledReason = aiProviderDisabledReason(preset.id);
-    return `
-      <option
-        value="${escapeHtml(preset.id)}"
-        ${preset.id === state.aiSettings.provider ? 'selected' : ''}
-        ${disabledReason ? `disabled title="${escapeHtml(disabledReason)}"` : ''}
-      >
-        ${escapeHtml(preset.label)}
-      </option>
-    `;
-  }).join('');
+    return {
+      value: preset.id,
+      label: preset.label,
+      meta: preset.apiFormat ? aiFormatLabel(preset.apiFormat) : 'Provider',
+      detail: disabledReason || preset.baseUrl || 'Provider preset',
+      disabled: Boolean(disabledReason),
+      title: disabledReason,
+    };
+  });
 }
 
 function aiModeDisabledReason(mode: AiSettings['mode']): string {
@@ -6020,14 +6093,18 @@ function approvalInboxPanel(): string {
           <p>${escapeHtml(approvalInboxDescription())}</p>
         </div>
         <div class="inbox-toolbar signature-toolbar">
-          <select id="inboxFilter">
-            ${inboxFilterOption('all', 'All active')}
-            ${inboxFilterOption('ready', 'Ready')}
-            ${inboxFilterOption('scheduled', 'Scheduled')}
-            ${inboxFilterOption('attention', 'Needs attention')}
-            ${inboxFilterOption('one-time', 'One-time')}
-            ${inboxFilterOption('recurring', 'Recurring')}
-          </select>
+          ${selectPicker({
+            id: 'inboxFilter',
+            value: state.inboxFilter,
+            options: [
+              { value: 'all', label: 'All active', meta: 'Inbox filter' },
+              { value: 'ready', label: 'Ready', meta: 'Inbox filter' },
+              { value: 'scheduled', label: 'Scheduled', meta: 'Inbox filter' },
+              { value: 'attention', label: 'Needs attention', meta: 'Inbox filter' },
+              { value: 'one-time', label: 'One-time', meta: 'Inbox filter' },
+              { value: 'recurring', label: 'Recurring', meta: 'Inbox filter' },
+            ],
+          })}
           <button id="refreshInbox" class="utility" ${state.busy ? 'disabled' : ''}>Refresh</button>
         </div>
       </div>
@@ -6223,6 +6300,14 @@ function completedPlanCard(plan: CompletedPlanRecord): string {
         <button data-copy="${escapeHtml(plan.copyPayload)}" data-copy-name="Completed plan">${escapeHtml(copyLabel)}</button>
         ${plan.trustBundlePayload ? `<button data-copy="${escapeHtml(plan.trustBundlePayload)}" data-copy-name="Trust bundle">Copy trust bundle</button>` : ''}
         ${plan.txid ? `<button data-copy="${escapeHtml(plan.txid)}" data-copy-name="Transaction id">Copy transaction id</button>` : ''}
+        <button
+          class="utility danger"
+          data-completed-delete="${escapeHtml(plan.id)}"
+          ${state.busy || deleteRequiresBridge ? 'disabled' : ''}
+          title="${deleteRequiresBridge ? 'Connect the local bridge before deleting bridge-backed history.' : 'Delete this completed plan from history.'}"
+        >
+          Delete history
+        </button>
       </div>
       <details class="generated-plan-inline-details completed-plan-details">
         <summary>View details</summary>
@@ -6230,19 +6315,6 @@ function completedPlanCard(plan: CompletedPlanRecord): string {
           ${plan.detailRows.map(([label, value]) => definitionRow(label, value)).join('')}
         </dl>
         ${plan.txid ? txBlock(plan.txid, plan.cluster) : ''}
-      </details>
-      <details class="generated-plan-more">
-        <summary>More</summary>
-        <div>
-          <button
-            class="utility danger"
-            data-completed-delete="${escapeHtml(plan.id)}"
-            ${state.busy || deleteRequiresBridge ? 'disabled' : ''}
-            title="${deleteRequiresBridge ? 'Connect the local bridge before deleting bridge-backed history.' : 'Delete this completed plan from history.'}"
-          >
-            Delete history
-          </button>
-        </div>
       </details>
     </article>
   `;
@@ -6375,21 +6447,47 @@ function scheduledApprovalsPanel(): string {
     return guidedStartPanel('Recurring', 'Connect a wallet before creating recurring requests.');
   }
   const recurringPayments = activeWorkflowRecurringPayments();
+  const activeCount = recurringPayments.filter((payment) => payment.status === 'active' && !isRecurringPaymentCompleted(payment)).length;
   return `
     <section class="approval-object signature-stage stage-schedule stage-anchor ${recurringPayments.length ? 'stage-active' : 'stage-draft'}">
-      <div class="signature-object-head">
+      <div class="signature-object-head app-inline-head">
         <div>
           <h2>Recurring</h2>
-          <p>Create a supported payment or subscription request. Each due occurrence appears in Inbox for approve or deny.</p>
+          <p>Create payment schedules. Each due occurrence appears in Inbox for approval or denial.</p>
         </div>
         <button id="refreshInbox" class="utility" ${state.busy ? 'disabled' : ''}>Refresh</button>
       </div>
 
       ${scheduleStatusLine()}
-      ${recurringComposer()}
-      ${recurringList()}
+      ${recurringViewTabs(activeCount)}
+      ${state.recurringView === 'active' ? recurringList() || signaturePlaceholder('No active schedules', 'Create a recurring request to track active schedules here.') : recurringComposer()}
       ${state.error ? `<div class="error">${escapeHtml(state.error)}</div>` : ''}
     </section>
+  `;
+}
+
+function recurringViewTabs(activeCount: number): string {
+  return `
+    <div class="tabs compact-tabs recurring-view-tabs" role="tablist" aria-label="Recurring views">
+      ${recurringViewButton('create', 'Create Recurring')}
+      ${recurringViewButton('active', activeCount ? `Active Recurring (${activeCount})` : 'Active Recurring')}
+    </div>
+  `;
+}
+
+function recurringViewButton(view: RecurringView, label: string): string {
+  const active = state.recurringView === view;
+  return `
+    <button
+      data-recurring-view="${view}"
+      class="${active ? 'active' : ''}"
+      role="tab"
+      aria-selected="${active ? 'true' : 'false'}"
+      type="button"
+      ${state.busy ? 'disabled' : ''}
+    >
+      ${escapeHtml(label)}
+    </button>
   `;
 }
 
@@ -6507,9 +6605,19 @@ function receiptFieldInput(lab: LabDefinition, field: LabFieldDefinition): strin
     return `
       <label class="field compact receipt-field ${error ? 'field-error' : ''}">
         <span>${escapeHtml(label)}</span>
-        <select ${attrs}>
-          ${(field.options ?? []).map((option) => `<option value="${escapeHtml(option)}" ${option === value ? 'selected' : ''}>${escapeHtml(option)}</option>`).join('')}
-        </select>
+        ${selectPicker({
+          value,
+          options: (field.options ?? []).map((option) => ({
+            value: option,
+            label: option,
+            meta: field.label,
+          })),
+          attrs: {
+            'data-lab-field': field.id,
+            'data-lab-id': lab.id,
+          },
+          disabled: state.busy,
+        })}
         ${error ? `<em class="field-error-text">${escapeHtml(error)}</em>` : ''}
       </label>
     `;
@@ -6583,11 +6691,26 @@ function artifactArchiveControls(): string {
       </div>
       <label class="field compact">
         <span>Type</span>
-        <select id="artifactTypeFilter" ${state.busy ? 'disabled' : ''}>
-          <option value="all" ${state.artifactTypeFilter === 'all' ? 'selected' : ''}>All types</option>
-          ${RECEIPT_LABS.map((lab) => `<option value="${escapeHtml(lab.id)}" ${state.artifactTypeFilter === lab.id ? 'selected' : ''}>${escapeHtml(lab.title)}</option>`).join('')}
-          ${ADVANCED_EVIDENCE_LABS.map((lab) => `<option value="${escapeHtml(lab.id)}" ${state.artifactTypeFilter === lab.id ? 'selected' : ''}>Legacy / ${escapeHtml(lab.title)}</option>`).join('')}
-        </select>
+        ${selectPicker({
+          id: 'artifactTypeFilter',
+          value: state.artifactTypeFilter,
+          options: [
+            { value: 'all', label: 'All types', meta: 'Receipt type' },
+            ...RECEIPT_LABS.map((lab) => ({
+              value: lab.id,
+              label: lab.title,
+              meta: 'Receipt proof',
+              detail: lab.description,
+            })),
+            ...ADVANCED_EVIDENCE_LABS.map((lab) => ({
+              value: lab.id,
+              label: `Legacy / ${lab.title}`,
+              meta: 'Advanced evidence',
+              detail: lab.description,
+            })),
+          ],
+          disabled: state.busy,
+        })}
       </label>
       <label class="field compact artifact-search-field">
         <span>Search</span>
@@ -7003,6 +7126,7 @@ function bind(): void {
   bindRouteLinks();
   bindTemplatePicker();
   bindArtifactPicker();
+  bindSelectPickers();
 
   for (const button of document.querySelectorAll<HTMLButtonElement>('[data-tab]')) {
     button.addEventListener('click', () => {
@@ -7027,6 +7151,17 @@ function bind(): void {
         state.generatedPlanAuditId = '';
       }
       trackNavClick(`${currentRoute() ?? '/app'}#one-time-${view}`, 'one_time_plan');
+      render();
+    });
+  }
+
+  for (const button of document.querySelectorAll<HTMLButtonElement>('[data-recurring-view]')) {
+    button.addEventListener('click', () => {
+      const view = button.dataset.recurringView as RecurringView | undefined;
+      if (!view) return;
+      state.activeTab = 'schedule';
+      state.recurringView = view;
+      state.error = '';
       render();
     });
   }
@@ -7856,6 +7991,161 @@ function closeArtifactPickerInteractions(): void {
   artifactPickerController = null;
 }
 
+function bindSelectPickers(): void {
+  for (const picker of document.querySelectorAll<HTMLElement>('[data-select-picker]')) {
+    const shell = picker.closest<HTMLElement>('.select-picker-shell');
+    const select = shell?.querySelector<HTMLSelectElement>('select[data-select-picker-native]');
+    const trigger = picker.querySelector<HTMLButtonElement>('.select-picker-trigger');
+    const menu = picker.querySelector<HTMLElement>('.select-picker-menu');
+    const options = [...picker.querySelectorAll<HTMLButtonElement>('[data-select-picker-option]')];
+    const enabledOptions = options.filter((option) => !option.disabled);
+    if (!select || !trigger || !menu || enabledOptions.length === 0) continue;
+
+    const openPicker = (focusOption: 'selected' | 'first' | 'last' | false = false): void => {
+      if (trigger.disabled) return;
+      closeSelectPickerInteractions();
+      picker.classList.add('open');
+      trigger.setAttribute('aria-expanded', 'true');
+      menu.hidden = false;
+      positionTemplatePickerMenu(trigger, menu);
+      window.requestAnimationFrame(() => positionTemplatePickerMenu(trigger, menu));
+
+      const selectedOption = enabledOptions.find((option) => option.dataset.selectPickerOption === select.value) ?? enabledOptions[0]!;
+      const activeOption = focusOption === 'first'
+        ? enabledOptions[0]!
+        : focusOption === 'last'
+          ? enabledOptions[enabledOptions.length - 1]!
+          : selectedOption;
+      setActiveTemplateOption(enabledOptions, activeOption, Boolean(focusOption));
+
+      selectPickerController = new AbortController();
+      const { signal } = selectPickerController;
+      window.addEventListener('pointerdown', (event) => {
+        if (event.target instanceof Node && picker.contains(event.target)) return;
+        closePicker(false);
+      }, { signal });
+      window.addEventListener('keydown', (event) => {
+        if (event.key === 'Escape') {
+          event.preventDefault();
+          closePicker(true);
+        }
+      }, { signal });
+      window.addEventListener('resize', () => positionTemplatePickerMenu(trigger, menu), { signal });
+      window.visualViewport?.addEventListener('resize', () => positionTemplatePickerMenu(trigger, menu), { signal });
+    };
+
+    const closePicker = (returnFocus: boolean): void => {
+      picker.classList.remove('open');
+      trigger.setAttribute('aria-expanded', 'false');
+      menu.hidden = true;
+      closeSelectPickerInteractions();
+      if (returnFocus) {
+        trigger.focus({ preventScroll: true });
+      }
+    };
+
+    const chooseOption = (option: HTMLButtonElement): void => {
+      const value = option.dataset.selectPickerOption;
+      if (!value || option.disabled) return;
+      const changed = select.value !== value;
+      select.value = value;
+      updateSelectPickerView(picker, value);
+      closePicker(false);
+      if (changed) {
+        select.dispatchEvent(new Event('input', { bubbles: true }));
+        select.dispatchEvent(new Event('change', { bubbles: true }));
+      } else {
+        trigger.focus({ preventScroll: true });
+      }
+    };
+
+    trigger.addEventListener('click', (event) => {
+      event.stopPropagation();
+      if (menu.hidden) {
+        openPicker(false);
+      } else {
+        closePicker(false);
+      }
+    });
+
+    trigger.addEventListener('keydown', (event) => {
+      if (event.key === 'ArrowDown') {
+        event.preventDefault();
+        openPicker('selected');
+        focusAdjacentTemplateOption(enabledOptions, 1);
+      }
+      if (event.key === 'ArrowUp') {
+        event.preventDefault();
+        openPicker('selected');
+        focusAdjacentTemplateOption(enabledOptions, -1);
+      }
+      if (event.key === 'Enter' || event.key === ' ') {
+        event.preventDefault();
+        openPicker('selected');
+      }
+    });
+
+    menu.addEventListener('keydown', (event) => {
+      if (event.key === 'ArrowDown') {
+        event.preventDefault();
+        focusAdjacentTemplateOption(enabledOptions, 1);
+      }
+      if (event.key === 'ArrowUp') {
+        event.preventDefault();
+        focusAdjacentTemplateOption(enabledOptions, -1);
+      }
+      if (event.key === 'Home') {
+        event.preventDefault();
+        setActiveTemplateOption(enabledOptions, enabledOptions[0]!, true);
+      }
+      if (event.key === 'End') {
+        event.preventDefault();
+        setActiveTemplateOption(enabledOptions, enabledOptions[enabledOptions.length - 1]!, true);
+      }
+      if (event.key === 'Enter' || event.key === ' ') {
+        event.preventDefault();
+        const activeOption = document.activeElement instanceof HTMLButtonElement
+          ? document.activeElement
+          : enabledOptions.find((option) => option.classList.contains('active')) ?? enabledOptions[0]!;
+        chooseOption(activeOption);
+      }
+    });
+
+    for (const option of enabledOptions) {
+      option.addEventListener('click', () => chooseOption(option));
+      option.addEventListener('pointermove', () => setActiveTemplateOption(enabledOptions, option, false));
+    }
+  }
+}
+
+function closeSelectPickerInteractions(): void {
+  selectPickerController?.abort();
+  selectPickerController = null;
+}
+
+function updateSelectPickerView(picker: HTMLElement, value: string): void {
+  const options = [...picker.querySelectorAll<HTMLButtonElement>('[data-select-picker-option]')];
+  const selectedOption = options.find((option) => option.dataset.selectPickerOption === value);
+  if (!selectedOption) return;
+  for (const option of options) {
+    const selected = option === selectedOption;
+    option.classList.toggle('selected', selected);
+    option.classList.toggle('active', selected);
+    option.setAttribute('aria-selected', selected ? 'true' : 'false');
+    option.tabIndex = selected ? 0 : -1;
+  }
+  const valueNode = picker.querySelector<HTMLElement>('[data-select-picker-value]');
+  if (valueNode) {
+    valueNode.textContent = selectedOption.dataset.selectPickerLabel ?? selectedOption.textContent?.trim() ?? value;
+  }
+  const metaNode = picker.querySelector<HTMLElement>('.select-picker-meta');
+  if (metaNode) {
+    const meta = selectedOption.dataset.selectPickerMeta ?? '';
+    metaNode.textContent = meta;
+    metaNode.hidden = meta.length === 0;
+  }
+}
+
 function selectArtifactLab(labId: string): boolean {
   const lab = LABS.find((candidate) => candidate.id === labId);
   if (!lab || lab.id === state.activeLab) {
@@ -8570,6 +8860,7 @@ async function runQueueAgentPlan(): Promise<void> {
     }
     if (state.agentPlan.actionType === 'recurring_payment') {
       state.activeTab = 'schedule';
+      state.recurringView = 'active';
     } else {
       state.activeTab = 'inbox';
       state.inboxFilter = 'ready';
@@ -8766,6 +9057,7 @@ async function runQueueGeneratedPlan(planId: string): Promise<void> {
     }
     if (record.plan.actionType === 'recurring_payment') {
       state.activeTab = 'schedule';
+      state.recurringView = 'active';
     } else {
       state.activeTab = 'inbox';
       state.inboxFilter = 'ready';
@@ -10736,6 +11028,7 @@ async function runCreateRecurring(): Promise<void> {
       saveBrowserWorkflowState();
     }
     state.activeTab = 'schedule';
+    state.recurringView = 'active';
     pushToast(
       'success',
       'Recurring schedule created',
@@ -13089,6 +13382,17 @@ function walletOptions(): string {
     .join('');
 }
 
+function walletSelectOptions(): SelectPickerOption[] {
+  if (state.wallets.length === 0) {
+    return [{ value: '', label: 'No wallets discovered', meta: 'Wallet provider', disabled: true }];
+  }
+  return state.wallets.map((wallet) => ({
+    value: wallet.name,
+    label: wallet.name,
+    meta: 'Wallet provider',
+  }));
+}
+
 function iosWalletOptions(): string {
   return state.iosWallets
     .map(
@@ -13098,12 +13402,141 @@ function iosWalletOptions(): string {
     .join('');
 }
 
+function iosWalletSelectOptions(): SelectPickerOption[] {
+  return state.iosWallets.map((wallet) => ({
+    value: wallet.id,
+    label: wallet.name,
+    meta: 'iOS wallet',
+    detail: wallet.detail,
+  }));
+}
+
 function iosWalletLabel(walletId: IosNativeWalletId): string {
   return state.iosWallets.find((wallet) => wallet.id === walletId)?.name ?? walletId;
 }
 
 function isIosNativeWalletId(value: string): value is IosNativeWalletId {
   return state.iosWallets.some((wallet) => wallet.id === value);
+}
+
+function selectPicker(input: {
+  id?: string;
+  value: string;
+  options: SelectPickerOption[];
+  attrs?: Record<string, string | boolean | undefined>;
+  disabled?: boolean;
+  labelId?: string;
+  className?: string;
+  title?: string;
+}): string {
+  const selected = input.options.find((option) => option.value === input.value) ??
+    input.options.find((option) => !option.disabled) ??
+    input.options[0];
+  const baseId = selectPickerBaseId(input);
+  const selectedLabel = selected?.label ?? 'Select';
+  const selectedMeta = selected?.meta ?? '';
+  const attrs = htmlAttrs({
+    ...(input.id ? { id: input.id } : {}),
+    ...(input.attrs ?? {}),
+    class: 'native-select-fallback',
+    'data-select-picker-native': true,
+    disabled: input.disabled,
+    tabindex: '-1',
+    'aria-hidden': 'true',
+  });
+  const labelledBy = [input.labelId, `${baseId}-value`].filter(Boolean).join(' ');
+  return `
+    <div class="select-picker-shell ${input.className ? escapeHtml(input.className) : ''}">
+      <select ${attrs}>
+        ${input.options.map((option) => `
+          <option value="${escapeHtml(option.value)}" ${option.value === input.value ? 'selected' : ''} ${option.disabled ? 'disabled' : ''}>
+            ${escapeHtml(option.label)}
+          </option>
+        `).join('')}
+      </select>
+      <div class="template-picker select-picker" data-select-picker>
+        <button
+          id="${escapeHtml(`${baseId}-button`)}"
+          class="template-picker-trigger select-picker-trigger"
+          type="button"
+          aria-haspopup="listbox"
+          aria-expanded="false"
+          aria-controls="${escapeHtml(`${baseId}-menu`)}"
+          aria-labelledby="${escapeHtml(labelledBy)}"
+          ${input.disabled ? 'disabled' : ''}
+          ${input.title ? `title="${escapeHtml(input.title)}"` : ''}
+        >
+          <span class="template-picker-current">
+            <span class="template-picker-category select-picker-meta" ${selectedMeta ? '' : 'hidden'}>${escapeHtml(selectedMeta)}</span>
+            <strong id="${escapeHtml(`${baseId}-value`)}" data-select-picker-value>${escapeHtml(selectedLabel)}</strong>
+          </span>
+          <span class="template-picker-caret" aria-hidden="true"></span>
+        </button>
+        <div
+          id="${escapeHtml(`${baseId}-menu`)}"
+          class="template-picker-menu select-picker-menu"
+          role="listbox"
+          aria-labelledby="${escapeHtml(labelledBy)}"
+          hidden
+        >
+          <div class="template-picker-group select-picker-group">
+            ${input.options.map((option) => selectPickerOption(option, option.value === input.value)).join('')}
+          </div>
+        </div>
+      </div>
+    </div>
+  `;
+}
+
+function selectPickerOption(option: SelectPickerOption, selected: boolean): string {
+  const title = option.title ?? option.detail ?? option.label;
+  return `
+    <button
+      class="template-picker-option select-picker-option ${selected ? 'selected active' : ''}"
+      type="button"
+      role="option"
+      aria-selected="${selected ? 'true' : 'false'}"
+      data-select-picker-option="${escapeHtml(option.value)}"
+      data-select-picker-label="${escapeHtml(option.label)}"
+      data-select-picker-meta="${escapeHtml(option.meta ?? '')}"
+      tabindex="${selected ? '0' : '-1'}"
+      ${option.disabled ? 'disabled aria-disabled="true"' : ''}
+      ${title ? `title="${escapeHtml(title)}"` : ''}
+    >
+      ${option.meta ? `<span>${escapeHtml(option.meta)}</span>` : ''}
+      <strong>${escapeHtml(option.label)}</strong>
+      ${option.detail ? `<em>${escapeHtml(option.detail)}</em>` : ''}
+    </button>
+  `;
+}
+
+function selectPickerBaseId(input: {
+  id?: string;
+  value: string;
+  attrs?: Record<string, string | boolean | undefined>;
+  labelId?: string;
+}): string {
+  const seed = input.id ??
+    stringAttr(input.attrs, 'data-template-field') ??
+    stringAttr(input.attrs, 'data-recurring-field') ??
+    (stringAttr(input.attrs, 'data-lab-field')
+      ? `${stringAttr(input.attrs, 'data-lab-id') ?? 'select'}-${stringAttr(input.attrs, 'data-lab-field')}`
+      : undefined) ??
+    input.labelId ??
+    input.value;
+  return `select-picker-${seed.replace(/[^a-z0-9_-]+/gi, '-').replace(/^-+|-+$/g, '') || 'control'}`;
+}
+
+function stringAttr(attrs: Record<string, string | boolean | undefined> | undefined, key: string): string | undefined {
+  const value = attrs?.[key];
+  return typeof value === 'string' && value.length ? value : undefined;
+}
+
+function htmlAttrs(attrs: Record<string, string | boolean | undefined>): string {
+  return Object.entries(attrs)
+    .filter(([, value]) => value !== undefined && value !== false)
+    .map(([key, value]) => value === true ? key : `${key}="${escapeHtml(String(value))}"`)
+    .join(' ');
 }
 
 function capabilityBlock(capabilities: AdapterCapabilities): string {
@@ -13358,8 +13791,20 @@ function preparedActionCard(action: PreparedAction): string {
           ${action.recurringId ? '<span class="status-pill neutral">recurring</span>' : ''}
           ${action.txStatus ? `<span class="status-pill ${txTone(action.txStatus)}">tx ${escapeHtml(action.txStatus)}</span>` : ''}
         </div>
-        <h3>${escapeHtml(action.summary)}</h3>
-        ${action.note ? `<p class="action-note">${escapeHtml(action.note)}</p>` : ''}
+        <div class="ticket-title-row">
+          <div>
+            <h3>${escapeHtml(action.summary)}</h3>
+            ${action.note ? `<p class="action-note">${escapeHtml(action.note)}</p>` : ''}
+          </div>
+          <div class="inbox-actions">
+            <button data-action-op="execute" data-action-id="${action.id}" class="primary" ${executeDisabled ? 'disabled' : ''} ${executionBlockReason ? `title="${escapeHtml(executionBlockReason)}"` : ''}>${escapeHtml(decisionLabels.approve)}</button>
+            ${confirmable ? `<button data-action-op="confirm" data-action-id="${action.id}" class="primary" ${state.busy ? 'disabled' : ''}>Check confirmation</button>` : ''}
+            <button class="utility danger" data-action-op="reject" data-action-id="${action.id}" ${state.busy || isTerminalPreparedAction(action) ? 'disabled' : ''}>${escapeHtml(decisionLabels.reject)}</button>
+            <button data-action-op="copy" data-action-id="${action.id}">Copy request</button>
+            <button data-action-op="archive" data-action-id="${action.id}" ${state.busy ? 'disabled' : ''}>Cancel</button>
+            <button class="utility danger" data-action-op="delete" data-action-id="${action.id}" ${state.busy ? 'disabled' : ''}>Delete</button>
+          </div>
+        </div>
         ${actionPreview(action)}
         ${finalizationChecklist(action)}
         ${inlineReceiptActions(action)}
@@ -13374,19 +13819,6 @@ function preparedActionCard(action: PreparedAction): string {
           <p>${escapeHtml(effectCopy)}</p>
         </div>
         ${executionBlockReason ? `<p class="error-text">${escapeHtml(executionBlockReason)}</p>` : ''}
-      </div>
-      <div class="inbox-actions">
-        <button data-action-op="execute" data-action-id="${action.id}" class="primary" ${executeDisabled ? 'disabled' : ''} ${executionBlockReason ? `title="${escapeHtml(executionBlockReason)}"` : ''}>${escapeHtml(decisionLabels.approve)}</button>
-        ${confirmable ? `<button data-action-op="confirm" data-action-id="${action.id}" class="primary" ${state.busy ? 'disabled' : ''}>Check confirmation</button>` : ''}
-        <button data-action-op="reject" data-action-id="${action.id}" ${state.busy || isTerminalPreparedAction(action) ? 'disabled' : ''}>${escapeHtml(decisionLabels.reject)}</button>
-        <button data-action-op="copy" data-action-id="${action.id}">Copy request</button>
-        <details class="generated-plan-more inbox-more-actions">
-          <summary>More</summary>
-          <div>
-            <button data-action-op="archive" data-action-id="${action.id}" ${state.busy ? 'disabled' : ''}>Cancel request</button>
-            <button class="utility danger" data-action-op="delete" data-action-id="${action.id}" ${state.busy ? 'disabled' : ''}>Delete permanently</button>
-          </div>
-        </details>
       </div>
     </article>
   `;
@@ -13573,8 +14005,8 @@ function recurringComposer(): string {
   const workflowMode = activeWorkflowMode();
   const browserWorkflow = workflowMode === 'browser-workflow';
   const recurringHelp = browserWorkflow
-    ? 'Create a recurring approval request saved on this device. It creates one Inbox item now; background scheduling needs Cloud or the local approval connector.'
-    : 'Define a supported recurring payment or subscription. Each occurrence returns to Approval Inbox before wallet signing.';
+    ? 'Saved on this device. Creates one Inbox item now; background runs need Cloud or the local connector.'
+    : 'Define payment or subscription terms. Every occurrence returns to Inbox before wallet signing.';
   const boundaryCopy = browserWorkflow
     ? 'Saved on this device. One local approval item is created now; use Cloud or the local approval connector for background scheduling.'
     : `${activeWorkflowLabel()} owns this schedule. No transaction signs until you approve an occurrence.`;
@@ -13585,7 +14017,7 @@ function recurringComposer(): string {
       : 'Future occurrences will appear in Inbox.';
   return `
     <div class="recurring-panel recurring-contract">
-      <div class="contract-head">
+      <div class="contract-head app-inline-head">
         <div>
           <span>Recurring setup</span>
           <h3>Create recurring request</h3>
@@ -13628,13 +14060,18 @@ function recurringComposer(): string {
         <div class="recurring-grid schedule-grid">
           <label class="field compact">
             <span>Cadence</span>
-            <select id="recurringCadence" data-recurring-field="cadence">
-              ${cadenceOption('weekly', 'Weekly')}
-              ${cadenceOption('monthly', 'Monthly')}
-              ${cadenceOption('interval_days', 'Interval days')}
-              ${cadenceOption('interval_hours', 'Interval hours')}
-              ${cadenceOption('interval_minutes', 'Interval minutes')}
-            </select>
+            ${selectPicker({
+              id: 'recurringCadence',
+              value: draft.cadence,
+              attrs: { 'data-recurring-field': 'cadence' },
+              options: [
+                { value: 'weekly', label: 'Weekly', meta: 'Cadence' },
+                { value: 'monthly', label: 'Monthly', meta: 'Cadence' },
+                { value: 'interval_days', label: 'Interval days', meta: 'Cadence' },
+                { value: 'interval_hours', label: 'Interval hours', meta: 'Cadence' },
+                { value: 'interval_minutes', label: 'Interval minutes', meta: 'Cadence' },
+              ],
+            })}
           </label>
           ${recurringScheduleFields(draft)}
         </div>
@@ -13720,9 +14157,16 @@ function recurringTokenSelect(value: string): string {
   return `
     <label class="field compact ${state.recurringErrors.recurringToken ? 'field-error' : ''}">
       <span>Token</span>
-      <select id="recurringToken" data-recurring-field="token">
-        ${RECURRING_TOKEN_OPTIONS.map((token) => `<option value="${escapeHtml(token)}" ${token === value ? 'selected' : ''}>${escapeHtml(token)}</option>`).join('')}
-      </select>
+      ${selectPicker({
+        id: 'recurringToken',
+        value,
+        attrs: { 'data-recurring-field': 'token' },
+        options: RECURRING_TOKEN_OPTIONS.map((token) => ({
+          value: token,
+          label: token,
+          meta: 'Token',
+        })),
+      })}
       ${error}
     </label>
   `;
@@ -14095,11 +14539,17 @@ function recurringScheduleFields(draft: RecurringDraft): string {
     return `
       <label class="field compact">
         <span>Day</span>
-        <select id="recurringDayOfWeek" data-recurring-field="dayOfWeek">
-          ${['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday']
-            .map((day, index) => `<option value="${index}" ${draft.dayOfWeek === String(index) ? 'selected' : ''}>${day}</option>`)
-            .join('')}
-        </select>
+        ${selectPicker({
+          id: 'recurringDayOfWeek',
+          value: draft.dayOfWeek,
+          attrs: { 'data-recurring-field': 'dayOfWeek' },
+          options: ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday']
+            .map((day, index) => ({
+              value: String(index),
+              label: day,
+              meta: 'Weekday',
+            })),
+        })}
         ${fieldError('recurringDayOfWeek')}
       </label>
       ${fieldInput('recurringLocalTime', 'Local time', draft.localTime, '09:00')}
