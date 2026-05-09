@@ -2426,7 +2426,6 @@ function gapSection(): string {
       <div class="gap-copy">
         <p class="eyebrow mini">The gap</p>
         <h2 id="gap-title">
-          <span>Solana agents need wallet approval.</span>
           <span>Solana lacked a universal agent-to-wallet approval layer.</span>
         </h2>
         <p class="gap-risks">
