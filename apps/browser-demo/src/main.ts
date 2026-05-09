@@ -3145,12 +3145,12 @@ function firstRunActionBand(): string {
     ? 'Your latest approval proof or receipt is saved in History.'
     : action.detail;
   return `
-    <section class="first-run-band workflow-status-band ${complete ? 'complete' : ''}" aria-label="First-time approval flow" data-layout="workflow-status">
+    <section class="first-run-band workflow-status-band ${complete ? 'complete compact' : state.address ? 'compact' : ''}" aria-label="First-time approval flow" data-layout="workflow-status">
       <div class="first-run-copy">
         <span>Approval loop</span>
         <h3>${escapeHtml(title)}</h3>
         <p>${escapeHtml(detail)}</p>
-        <small>Active workflow: ${escapeHtml(activeWorkflowLabel())}</small>
+        <small>Workspace: ${escapeHtml(activeWorkflowLabel())}</small>
       </div>
       <div class="first-run-progress" role="list" aria-label="First-time progress">
         ${steps.map((stepItem, index) => firstRunStepItem(stepItem, index, currentStep.id)).join('')}
@@ -3303,7 +3303,7 @@ function firstRunNextAction(): FirstRunAction {
     return {
       id: 'open-review',
       label: 'Review',
-      detail: 'Check the wallet action, route, limits, and destination before queueing.',
+      detail: 'Check the wallet action, route, limits, and destination before sending to Inbox.',
     };
   }
   return {
@@ -3512,7 +3512,7 @@ function walletRail(): string {
 
       <div class="rail-primary-stack">
         ${cloudWorkspaceCard()}
-        ${aiSettingsPanel('rail')}
+        ${aiPlannerRailCard()}
       </div>
       ${SHOW_DEV_CONTROLS ? '' : `
         <details class="rail-details rail-advanced-details">
@@ -3585,6 +3585,31 @@ function cloudWorkspaceCard(): string {
   `;
 }
 
+function aiPlannerRailCard(): string {
+  const configured = isAiConfiguredForCurrentMode();
+  const confirmed = isAiPlannerConfirmedForCurrentSettings();
+  const readinessLabel = aiReadinessLabel(state.aiStatus);
+  const routeLabel = aiRouteStatusLabel(state.aiStatus);
+  const status = confirmed ? 'Confirmed' : configured ? 'Configured' : 'Not configured';
+  const detail = configured
+    ? `${readinessLabel}. AI can draft only; wallet approval stays separate.`
+    : 'Optional. Templates work without AI.';
+  return `
+    <section class="rail-ai-card ${configured ? 'configured' : 'optional'}" aria-label="AI planner status">
+      <div class="rail-ai-card-head">
+        <span>AI drafting</span>
+        <strong>${escapeHtml(status)}</strong>
+      </div>
+      <p>${escapeHtml(detail)}</p>
+      <div class="rail-ai-facts">
+        <span>Route <strong>${escapeHtml(routeLabel)}</strong></span>
+        <span>Impact <strong>Drafting only</strong></span>
+      </div>
+      <button type="button" class="utility" data-first-run-action="open-create-plan">${configured ? 'Review AI setup' : 'Configure AI'}</button>
+    </section>
+  `;
+}
+
 function publicBridgeStatusCard(): string {
   const connected = state.bridgeActive;
   const localMode = activeWorkflowMode() === 'local-bridge';
@@ -3631,7 +3656,7 @@ function optionalPrivateLocalModeDetails(): string {
           <span>Optional on this computer</span>
           <strong>${escapeHtml(compactEndpoint(state.bridgeUrl))}</strong>
         </div>
-        <p>Use the local runtime only when you want workflow storage to stay on this machine. The normal web app can use Agentic Cloud or browser workflow without localhost.</p>
+        <p>Use the local runtime only when you want workflow storage to stay on this machine. The normal web app can use Agentic Cloud or saved-on-device workflow without localhost.</p>
         <ol class="local-runtime-steps">
           <li>Run the one-shot command in Terminal.</li>
           <li>Connect the same wallet in the local browser tab.</li>
@@ -4049,7 +4074,7 @@ function planOutcome(plan: AgentPlan): TemplateOutcome {
 function outcomeLabel(outcome: TemplateOutcome): string {
   switch (outcome) {
     case 'queueable':
-      return 'Can queue to Approval Inbox';
+      return 'Can request wallet approval';
     case 'proof':
       return 'Proof only';
     case 'audit':
@@ -4060,7 +4085,7 @@ function outcomeLabel(outcome: TemplateOutcome): string {
 function outcomeShortLabel(outcome: TemplateOutcome): string {
   switch (outcome) {
     case 'queueable':
-      return 'Queueable';
+      return 'Approval-ready';
     case 'proof':
       return 'Proof only';
     case 'audit':
@@ -4075,7 +4100,7 @@ function outcomeDetailForTemplate(template: AgentPlanTemplate): string {
   }
   switch (outcome) {
     case 'queueable':
-      return 'This plan can become an Approval Inbox item. Signed-in users use Agentic Cloud; signed-out workflow stays in this browser.';
+      return 'This draft can request a wallet approval. Signed-in users use Agentic Cloud; signed-out workflow stays on this device.';
     case 'proof':
       return 'This can be signed as review evidence, but it cannot be queued as a transaction.';
     case 'audit':
@@ -4090,7 +4115,7 @@ function outcomeDetailForPlan(plan: AgentPlan): string {
   }
   switch (outcome) {
     case 'queueable':
-      return 'Queue this plan when you want it to wait in Approval Inbox for a wallet decision.';
+      return 'Send this plan to Inbox when you want a wallet decision.';
     case 'proof':
       return 'This plan is for review evidence. Sign a review proof if you want an audit record.';
     case 'audit':
@@ -4159,7 +4184,7 @@ function commandCenterPanel(): string {
     <section class="approval-object signature-stage stage-overview stage-anchor ${openApprovals.length ? 'stage-active' : 'stage-draft'}">
       <div class="signature-object-head command-center-head">
         <div>
-          <h2>Command center</h2>
+          <h2>Approval workspace</h2>
           <p>Draft, review, approve, and prove agent actions from one controlled workspace.</p>
         </div>
         <div class="command-center-actions">
@@ -4176,10 +4201,10 @@ function commandCenterPanel(): string {
       </div>
 
       <div class="command-center-grid">
-        ${commandCenterCard('Wallet', state.address ? 'Connected' : 'Connect wallet', state.address ? short(state.address) : 'No signing authority granted', state.address ? 'good' : 'warn', walletAction)}
-        ${commandCenterCard('Inbox', `${openApprovals.length} pending`, openApprovals[0]?.summary ?? 'No approvals waiting', openApprovals.length ? 'warn' : 'idle', 'open-inbox')}
-        ${commandCenterCard('Recurring', `${recurringActive.length} active`, recurringActive[0] ? scheduleLabel(recurringActive[0]) : 'No active recurring schedules', recurringActive.length ? 'good' : 'idle', 'open-recurring')}
-        ${commandCenterCard('Latest proof', proofLabel, latestProof ? formatDateTime(latestProof.createdAt) : latestHistory ? formatDateTime(latestHistory.completedAt) : 'Create a receipt proof or complete an approval', latestProof || latestHistory ? 'good' : 'idle', 'open-proofs')}
+        ${commandCenterCard('Wallet', state.address ? 'Connected' : 'Connect wallet', state.address ? short(state.address) : 'No signing authority granted', state.address ? 'good' : 'warn', walletAction, state.address ? 'Open' : 'Connect')}
+        ${commandCenterCard('Approvals', `${openApprovals.length} pending`, openApprovals[0]?.summary ?? 'No approvals waiting', openApprovals.length ? 'warn' : 'idle', 'open-inbox', openApprovals.length ? 'Review' : 'Open')}
+        ${commandCenterCard('Recurring', `${recurringActive.length} active`, recurringActive[0] ? scheduleLabel(recurringActive[0]) : 'No active recurring schedules', recurringActive.length ? 'good' : 'idle', 'open-recurring', 'Open')}
+        ${commandCenterCard('Proofs', proofLabel, latestProof ? formatDateTime(latestProof.createdAt) : latestHistory ? formatDateTime(latestHistory.completedAt) : 'Create a receipt proof or complete an approval', latestProof || latestHistory ? 'good' : 'idle', 'open-proofs', latestProof || latestHistory ? 'View' : 'Create')}
       </div>
     </section>
   `;
@@ -4194,7 +4219,7 @@ function commandLoopStep(label: string, detail: string, complete: boolean): stri
   `;
 }
 
-function commandCenterCard(label: string, value: string, detail: string, tone: string, action: FirstRunActionId | 'open-recurring' | 'open-proofs'): string {
+function commandCenterCard(label: string, value: string, detail: string, tone: string, action: FirstRunActionId | 'open-recurring' | 'open-proofs', buttonLabel = 'Open'): string {
   const disabled = action === 'connect-wallet'
     ? !state.address && state.wallets.length === 0 && !state.androidNativeEnvironment.isAndroidNative && !state.iosNativeEnvironment.isIosNative
     : false;
@@ -4209,8 +4234,8 @@ function commandCenterCard(label: string, value: string, detail: string, tone: s
       <strong>${escapeHtml(value)}</strong>
       <p>${escapeHtml(detail)}</p>
       ${targetTab
-        ? `<button type="button" class="utility" data-tab="${escapeHtml(targetTab)}">Open</button>`
-        : `<button type="button" class="utility" data-first-run-action="${escapeHtml(action)}" ${disabled ? 'disabled' : ''}>Open</button>`}
+        ? `<button type="button" class="utility" data-tab="${escapeHtml(targetTab)}">${escapeHtml(buttonLabel)}</button>`
+        : `<button type="button" class="utility" data-first-run-action="${escapeHtml(action)}" ${disabled ? 'disabled' : ''}>${escapeHtml(buttonLabel)}</button>`}
     </article>
   `;
 }
@@ -4339,7 +4364,6 @@ function oneTimeCreatePlanPanel(): string {
   return `
     <div class="one-time-create-panel">
       ${agentPlannerWorkbench()}
-      ${agentPathExplainer()}
 
       ${signaturePlaceholder('Draft first', 'Choose a template or connect AI. New drafts move to Review before anything can enter Inbox.')}
       ${hasOneTimePlans ? '<div class="notice">Existing one-time plans are available in Review.</div>' : ''}
@@ -4473,34 +4497,96 @@ function generatedPlanCard(record: GeneratedPlanRecord): string {
   const detailsCount = plan.safeguards.length + plan.fields.length + (plan.userNotes ? 1 : 0);
   const outcome = planOutcome(plan);
   const actionHint = generatedPlanActionHint(record);
+  const primaryIsQueue = queueable;
   return `
-    <article class="generated-plan-card ${selected ? 'selected' : ''} ${archived ? 'archived' : ''}">
-      <div class="generated-plan-card-top">
-        <span class="status-pill ${generatedPlanStatusTone(record)}">${escapeHtml(generatedPlanStatusLabel(record))}</span>
-        <span>${escapeHtml(formatDateTime(record.createdAt))}</span>
+    <article class="generated-plan-card review-plan-card ${selected ? 'selected' : ''} ${archived ? 'archived' : ''}">
+      <div class="review-plan-card-head">
+        <div class="generated-plan-card-top">
+          <span class="status-pill ${generatedPlanStatusTone(record)}">${escapeHtml(generatedPlanStatusLabel(record))}</span>
+          <span>${escapeHtml(formatDateTime(record.createdAt))}</span>
+        </div>
+        <div class="review-plan-actions">
+          ${primaryIsQueue ? `
+            <button
+              class="primary"
+              data-generated-plan-action="queue"
+              data-generated-plan-id="${escapeHtml(record.id)}"
+              ${queueDisabled}
+              title="${escapeHtml(generatedQueuePlanTitle(record))}"
+            >
+              ${escapeHtml(queueActionLabelForPlan(plan))}
+            </button>
+            <button
+              class="utility"
+              data-generated-plan-action="sign-proof"
+              data-generated-plan-id="${escapeHtml(record.id)}"
+              ${signDisabled}
+              title="${escapeHtml(signProofTitle(record))}"
+            >
+              Sign proof
+            </button>
+          ` : `
+            <button
+              class="primary"
+              data-generated-plan-action="sign-proof"
+              data-generated-plan-id="${escapeHtml(record.id)}"
+              ${signDisabled}
+              title="${escapeHtml(signProofTitle(record))}"
+            >
+              Sign review proof
+            </button>
+            <button
+              class="utility"
+              data-generated-plan-action="queue"
+              data-generated-plan-id="${escapeHtml(record.id)}"
+              disabled
+              title="${escapeHtml(generatedQueuePlanTitle(record))}"
+            >
+              Send to Inbox
+            </button>
+          `}
+        </div>
       </div>
-      <div class="generated-plan-card-title">
-        <span class="workbench-kicker">${escapeHtml(record.source === 'ai' ? 'AI plan' : 'Template plan')}</span>
-        <h3 title="${escapeHtml(plan.intent)}">${escapeHtml(plan.intent)}</h3>
+
+      <div class="review-plan-main">
+        <div class="generated-plan-card-title">
+          <span class="workbench-kicker">${escapeHtml(record.source === 'ai' ? 'AI draft' : 'Template draft')}</span>
+          <h3 title="${escapeHtml(plan.intent)}">${escapeHtml(plan.intent)}</h3>
+        </div>
+        <div class="generated-plan-card-chips">
+          <span title="${escapeHtml(plan.templateTitle)}">${escapeHtml(plan.templateTitle)}</span>
+          <span>${escapeHtml(titleCase(plan.category))}</span>
+          <span>${escapeHtml(outcomeShortLabel(outcome))}</span>
+        </div>
       </div>
-      <div class="generated-plan-card-chips">
-        <span title="${escapeHtml(plan.templateTitle)}">${escapeHtml(plan.templateTitle)}</span>
-        <span>${escapeHtml(titleCase(plan.category))}</span>
-        <span>${escapeHtml(outcomeShortLabel(outcome))}</span>
-      </div>
-      ${planGuardrailStrip(plan)}
-      <div class="generated-plan-quick-facts">
+
+      <div class="generated-plan-quick-facts review-plan-facts">
         ${generatedPlanFact('Network', titleCaseCluster(record.cluster))}
         ${generatedPlanFact('Wallet', record.walletAddress ? short(record.walletAddress) : 'No wallet')}
         ${generatedPlanFact('Action', plan.actionType.replace(/_/g, ' '))}
+        ${generatedPlanFact('Risk', plan.risk)}
       </div>
-      <div class="generated-plan-decision-grid">
-        ${generatedPlanDecisionRows(plan).map(([label, value]) => generatedPlanDecisionItem(label, value)).join('')}
-      </div>
+
       ${generatedPlanWalletActionSummary(record)}
-      ${generatedPlanInlineDetails(plan, detailsCount)}
-      ${generatedPlanOutcomeStrip(record)}
       ${actionHint}
+
+      <details class="generated-plan-inline-details review-plan-details">
+        <summary>${escapeHtml(`${detailsCount + 3} review details`)}</summary>
+        <div>
+          <section>
+            <span>Route</span>
+            <p>${escapeHtml(plan.route)}</p>
+          </section>
+          <section>
+            <span>Approval rule</span>
+            <p>${escapeHtml(plan.approval)}</p>
+          </section>
+          ${planGuardrailStrip(plan)}
+          ${generatedPlanInlineDetailsContent(plan)}
+          ${generatedPlanOutcomeStrip(record)}
+        </div>
+      </details>
+
       <div class="generated-plan-card-actions">
         <button
           data-generated-plan-action="reuse"
@@ -4508,24 +4594,6 @@ function generatedPlanCard(record: GeneratedPlanRecord): string {
           ${state.busy ? 'disabled' : ''}
         >
           Use as starting point
-        </button>
-        <button
-          class="utility"
-          data-generated-plan-action="sign-proof"
-          data-generated-plan-id="${escapeHtml(record.id)}"
-          ${signDisabled}
-          title="${escapeHtml(signProofTitle(record))}"
-        >
-          Sign review proof
-        </button>
-        <button
-          class="${queueable ? 'primary' : 'utility'}"
-          data-generated-plan-action="queue"
-          data-generated-plan-id="${escapeHtml(record.id)}"
-          ${queueDisabled}
-          title="${escapeHtml(generatedQueuePlanTitle(record))}"
-        >
-          ${escapeHtml(queueActionLabelForPlan(plan))}
         </button>
         <button
           class="utility"
@@ -4560,6 +4628,29 @@ function generatedPlanCard(record: GeneratedPlanRecord): string {
   `;
 }
 
+function generatedPlanInlineDetailsContent(plan: AgentPlan): string {
+  return `
+    ${plan.userNotes ? `
+      <section>
+        <span>User notes</span>
+        <p>${escapeHtml(plan.userNotes)}</p>
+      </section>
+    ` : ''}
+    ${plan.fields.length ? `
+      <section>
+        <span>Fields</span>
+        <ul>${plan.fields.map((field) => `<li>${escapeHtml(`${field.label}: ${field.value}`)}</li>`).join('')}</ul>
+      </section>
+    ` : ''}
+    ${plan.safeguards.length ? `
+      <section>
+        <span>Safeguards</span>
+        <ul>${plan.safeguards.map((safeguard) => `<li>${escapeHtml(safeguard)}</li>`).join('')}</ul>
+      </section>
+    ` : ''}
+  `;
+}
+
 function generatedPlanDecisionRows(plan: AgentPlan): Array<[string, string]> {
   const policyCap = plan.fields.find((field) => /policy|cap|limit/i.test(field.label) && field.value.trim().length > 0);
   return [
@@ -4582,15 +4673,14 @@ function generatedPlanWalletActionSummary(record: GeneratedPlanRecord): string {
   const rows: Array<[string, string]> = [
     ['Wallet action', walletActionLabelForPlan(record.plan)],
     ['Amount', planAmountSummary(record.plan)],
-    ['Recipient / route', planRecipientOrRoute(record.plan)],
-    ['Destination', generatedPlanDestinationLabel(record)],
+    ['Route or recipient', planRecipientOrRoute(record.plan)],
     ['Effect', generatedPlanEffectLabel(record)],
   ];
   return `
     <section class="wallet-action-summary" aria-label="Wallet action summary">
       <div class="wallet-action-summary-head">
         <span>Wallet action</span>
-        <strong>${escapeHtml(canQueueAgentPlan(record.plan) ? 'Review before queueing' : 'Evidence only')}</strong>
+        <strong>${escapeHtml(canQueueAgentPlan(record.plan) ? 'Review before Inbox' : 'Evidence only')}</strong>
       </div>
       <dl class="wallet-action-grid">
         ${rows.map(([label, value]) => definitionRow(label, value)).join('')}
@@ -4690,7 +4780,7 @@ function workflowSourceLabel(source: WorkflowRecordSource | undefined): string {
     case 'local-bridge':
       return 'Private local mode';
     case 'browser':
-      return 'Browser workflow';
+      return 'Saved on this device';
     default:
       return activeWorkflowLabel();
   }
@@ -4700,7 +4790,7 @@ function generatedPlanEffectLabel(record: GeneratedPlanRecord): string {
   const plan = record.plan;
   const report = planGuardrailReport(plan);
   if (report?.verdict === 'block') {
-    return 'Blocked by guardrails. Recreate or edit the plan before queueing.';
+    return 'Blocked by guardrails. Recreate or edit the plan before sending to Inbox.';
   }
   if (!canQueueAgentPlan(plan)) {
     return 'Signs review evidence only. No approval, transaction, or funds movement.';
@@ -4710,12 +4800,12 @@ function generatedPlanEffectLabel(record: GeneratedPlanRecord): string {
   }
   const source = record.workflowSource ?? (activeWorkflowMode() === 'agentic-cloud' ? 'cloud' : activeWorkflowMode() === 'local-bridge' ? 'local-bridge' : 'browser');
   if (source === 'local-bridge') {
-    return 'Queues a local prepared action. The wallet still approves the final request.';
+    return 'Creates a local approval request. The wallet still approves the final request.';
   }
   if (source === 'cloud') {
-    return 'Queues a cloud approval request. A later wallet proof records approve or deny.';
+    return 'Creates a cloud approval request. A later wallet proof records approve or deny.';
   }
-  return 'Queues a browser-local approval request. A later wallet proof records approve or deny.';
+  return 'Creates a saved-on-device approval request. A later wallet proof records approve or deny.';
 }
 
 function generatedPlanFact(label: string, value: string): string {
@@ -4757,7 +4847,7 @@ function generatedPlanOutcomeStrip(record: GeneratedPlanRecord): string {
   return `
     <div class="generated-plan-outcomes">
       ${record.signature ? `<span title="${escapeHtml(record.signature)}">Proof ${escapeHtml(short(record.signature))}</span>` : ''}
-      ${record.preparedActionId ? `<span title="${escapeHtml(record.preparedActionId)}">Queued ${escapeHtml(short(record.preparedActionId))}</span>` : ''}
+      ${record.preparedActionId ? `<span title="${escapeHtml(record.preparedActionId)}">Inbox ${escapeHtml(short(record.preparedActionId))}</span>` : ''}
     </div>
   `;
 }
@@ -4776,7 +4866,7 @@ function generatedPlanActionHint(record: GeneratedPlanRecord): string {
     return '<p class="generated-plan-action-helper">Signed in: this will use Agentic Cloud and still require wallet approval.</p>';
   }
   if (canQueueAgentPlan(record.plan) && mode === 'browser-workflow') {
-    return '<p class="generated-plan-action-helper">Signed out: this will use browser workflow storage local to this device.</p>';
+    return '<p class="generated-plan-action-helper">Signed out: this will use saved-on-device storage in this browser.</p>';
   }
   if (!canQueueAgentPlan(record.plan)) {
     return '<p class="generated-plan-action-helper">Review-only plan: sign a proof to complete it. It will not enter Approval Inbox.</p>';
@@ -4967,7 +5057,7 @@ function generatedPlanResultBlock(record: GeneratedPlanRecord): string {
       ` : ''}
       ${record.preparedActionId ? `
         <div class="result-row">
-          <span>Queued approval / recurring schedule</span>
+          <span>Inbox request / recurring schedule</span>
           <code>${escapeHtml(record.preparedActionId)}</code>
           <button data-copy="${escapeHtml(record.preparedActionId)}" data-copy-name="Queued approval id">Copy</button>
         </div>
@@ -5036,12 +5126,15 @@ function agentPlannerWorkbench(): string {
         </label>
         <div class="intent-policy-strip">
           <span>Where this goes</span>
-          <p>Drafts are saved in Review. Queueable drafts enter Inbox only after you choose to send them; finished work appears in History.</p>
+          <p>Drafts are saved in Review. Approval-ready drafts enter Inbox only after you choose to send them; finished work appears in History.</p>
         </div>
         <div class="agent-actions signature-actions intent-document-actions">
           <button id="generatePlan" class="primary" ${state.busy ? 'disabled' : ''}>${templateGenerating ? `${buttonSpinner()}Drafting...` : 'Draft from template'}</button>
           <button id="generateAiPlan" class="${canUseAi ? 'primary' : ''}" ${!canUseAi || state.busy ? 'disabled' : ''} title="${escapeHtml(canUseAi ? 'Draft through your configured AI planner.' : aiDisabledReason)}">${aiGenerating ? `${buttonSpinner()}Drafting...` : 'Draft with AI'}</button>
         </div>
+      </div>
+      <div class="planner-ai-setup-row">
+        ${aiSettingsPanel('planner')}
       </div>
     </div>
   `;
@@ -5049,7 +5142,7 @@ function agentPlannerWorkbench(): string {
 
 function templateOutcomeControls(): string {
   const filters: Array<[TemplateOutcomeFilter, string]> = [
-    ['queueable', 'Queueable'],
+    ['queueable', 'Can request approval'],
     ['proof', 'Proof only'],
     ['audit', 'Evidence only'],
     ['all', 'All'],
@@ -5083,7 +5176,7 @@ function templateOutcomeSummary(template: AgentPlanTemplate): string {
 function aiSettingsPanel(location: 'rail' | 'planner' = 'planner'): string {
   const configured = isAiConfiguredForCurrentMode();
   const confirmed = isAiPlannerConfirmedForCurrentSettings();
-  const shouldOpen = state.aiSettingsPanelOpen ?? (configured && !isCompactMobileLayout());
+  const shouldOpen = state.aiSettingsPanelOpen ?? (location === 'planner' && configured && !isCompactMobileLayout());
   const open = shouldOpen ? 'open' : '';
   const readinessLabel = aiReadinessLabel(state.aiStatus);
   const summaryDetail = location === 'rail'
@@ -5097,7 +5190,7 @@ function aiSettingsPanel(location: 'rail' | 'planner' = 'planner'): string {
     <details class="ai-settings-panel ${configured ? 'configured' : 'optional'} ${location === 'rail' ? 'rail-ai-settings' : ''}" ${open}>
       <summary>
         <span class="ai-summary-copy">
-          <span>AI Planner</span>
+          <span>AI drafting setup</span>
           <em>${escapeHtml(summaryDetail)}</em>
         </span>
         <strong>${confirmed ? 'confirmed' : configured ? 'configured' : 'not configured'}</strong>
@@ -5136,7 +5229,7 @@ function templatePicker(template: AgentPlanTemplate): string {
   const selectedLabel = templatePickerLabel(template);
   const visibleTemplates = templatesForOutcomeFilter();
   const groups: Array<[TemplateOutcome, string]> = [
-    ['queueable', 'Can queue to Approval Inbox'],
+    ['queueable', 'Can request wallet approval'],
     ['proof', 'Proof only'],
     ['audit', 'Evidence only'],
   ];
@@ -5990,7 +6083,7 @@ function completedBridgeStatusHint(): string {
   if (activeWorkflowMode() === 'local-bridge') return '';
   return `
     <p class="completed-bridge-hint">
-      Browser workflow history is local to this device. Sign in to Agentic Cloud to sync one-time approvals.
+      Saved-on-device history is local to this browser. Sign in to Agentic Cloud to sync one-time approvals.
     </p>
   `;
 }
@@ -5998,7 +6091,7 @@ function completedBridgeStatusHint(): string {
 function completedHistorySourceLabel(): string {
   if (activeWorkflowMode() === 'agentic-cloud') return 'Cloud completed history';
   if (activeWorkflowMode() === 'local-bridge') return 'Private local receipts';
-  return 'Browser workflow history';
+  return 'Saved-on-device history';
 }
 
 function completedPlanFilterControls(): string {
@@ -6445,7 +6538,7 @@ function signedArtifactsPanel(): string {
       </div>
       ${artifactArchiveControls()}
       <p class="receipt-copy-helper">Receipt proofs only sign a record. They do not queue, approve, submit, or move funds.</p>
-      <p class="receipt-copy-helper">Signed text is exactly what your wallet signed. JSON is for sharing or later verification.</p>
+      <p class="receipt-copy-helper">Each archive card starts with the human proof. Exact signed text and hashes live in Technical details.</p>
       ${artifactArchiveStatusLine()}
       ${artifacts.length ? signedArtifactList(artifacts) : signedArtifactsEmptyState()}
     </div>
@@ -6577,17 +6670,16 @@ function signedArtifactRow(artifact: LabArtifact): string {
       </div>
       <dl class="receipt-proof-grid">
         ${receiptProofRow('What was requested', requested)}
-        ${receiptProofRow('What the wallet signed', artifact.signingMessage, 'pre')}
         ${receiptProofRow('What this proves', proves)}
         ${receiptProofRow('Signed by', artifact.walletAddress)}
         ${receiptProofRow('When', formatDateTime(artifact.createdAt))}
         ${receiptProofRow('Signature / hash', signatureHash, 'code', `${artifact.signature} / ${artifact.artifactHash}`)}
       </dl>
       <div class="signed-artifact-actions receipt-proof-actions">
+        <button data-share-receipt="${escapeHtml(artifact.id)}">Share receipt</button>
+        <button data-copy="${escapeHtml(stableJson(artifact))}" data-copy-name="Receipt JSON">Copy JSON</button>
         <button data-copy="${escapeHtml(artifact.signingMessage)}" data-copy-name="Signed text">Copy signed text</button>
         <button data-copy="${escapeHtml(artifact.signature)}" data-copy-name="Receipt signature">Copy signature</button>
-        <button data-copy="${escapeHtml(stableJson(artifact))}" data-copy-name="Receipt JSON">Copy JSON</button>
-        <button data-share-receipt="${escapeHtml(artifact.id)}">Share receipt</button>
         <details class="generated-plan-more signed-artifact-more">
           <summary>More</summary>
           <div>
@@ -6598,7 +6690,7 @@ function signedArtifactRow(artifact: LabArtifact): string {
       <details class="artifact-technical-details signed-artifact-details">
         <summary>
           <span>Technical details</span>
-          <strong>Hashes, signature, and receipt fields</strong>
+          <strong>Exact signed text, hashes, signature, and receipt fields</strong>
         </summary>
         ${signedArtifactDetail(artifact)}
       </details>
@@ -7121,6 +7213,7 @@ function bind(): void {
 
   document.querySelector<HTMLInputElement>('#bridgeToken')?.addEventListener('input', (event) => {
     state.bridgeToken = (event.currentTarget as HTMLInputElement).value.trim();
+    saveSessionBridgeToken(state.bridgeToken);
     savePersistedState();
   });
 
@@ -8417,7 +8510,7 @@ async function runSignAgentPlan(): Promise<void> {
 async function runQueueAgentPlan(): Promise<void> {
   await run('inbox', async () => {
     if (!state.agentPlan) {
-      throw new Error('Create a plan before queueing.');
+      throw new Error('Create a plan before sending it to Inbox.');
     }
     const activeRecord = generatedPlanById(state.selectedGeneratedPlanId);
     const response = await queuePlanThroughActiveWorkflow(state.agentPlan, activeRecord);
@@ -8450,12 +8543,12 @@ async function runQueueAgentPlan(): Promise<void> {
       state.agentPlan.actionType === 'recurring_payment' ? 'Recurring schedule created' : 'Sent to Approval Inbox',
       state.agentPlan.actionType === 'recurring_payment'
         ? response.mode === 'browser-workflow'
-          ? 'Created one local approval now. Browser workflow does not run background schedules after this tab closes.'
+          ? 'Created one local approval now. Saved-on-device workflow does not run background schedules after this tab closes.'
           : 'Future occurrences will appear in Approval Inbox.'
         : response.mode === 'agentic-cloud'
           ? 'Saved to Agentic Cloud. No localhost required.'
           : response.mode === 'browser-workflow'
-            ? 'Saved to the browser workflow on this device.'
+            ? 'Saved on this device.'
             : response.id,
     );
   });
@@ -8614,7 +8707,7 @@ async function runQueueGeneratedPlan(planId: string): Promise<void> {
   await run('inbox', async () => {
     const record = requireGeneratedPlanRecord(planId);
     if (record.status === 'archived') {
-      throw new Error('Restore this plan before queueing it.');
+      throw new Error('Restore this plan before sending it to Inbox.');
     }
     assertPlanCanQueue(record.plan);
     const response = await queuePlanThroughActiveWorkflow(record.plan, record);
@@ -8646,12 +8739,12 @@ async function runQueueGeneratedPlan(planId: string): Promise<void> {
       record.plan.actionType === 'recurring_payment' ? 'Recurring schedule created' : 'Sent to Approval Inbox',
       record.plan.actionType === 'recurring_payment'
         ? response.mode === 'browser-workflow'
-          ? 'Created one local approval now. Browser workflow does not run background schedules after this tab closes.'
+          ? 'Created one local approval now. Saved-on-device workflow does not run background schedules after this tab closes.'
           : 'Future occurrences will appear in Approval Inbox.'
         : response.mode === 'agentic-cloud'
           ? 'Saved to Agentic Cloud. No localhost required.'
           : response.mode === 'browser-workflow'
-            ? 'Saved to the browser workflow on this device.'
+            ? 'Saved on this device.'
             : response.id,
     );
   });
@@ -9237,8 +9330,8 @@ function signProofTitle(record: GeneratedPlanRecord): string {
 }
 
 function generatedQueuePlanTitle(record: GeneratedPlanRecord): string {
-  if (record.status === 'archived') return 'Restore this plan before queueing it.';
-  if (!state.address) return 'Connect a wallet before queueing.';
+  if (record.status === 'archived') return 'Restore this plan before sending it to Inbox.';
+  if (!state.address) return 'Connect a wallet before sending to Inbox.';
   if (!canQueueAgentPlan(record.plan)) return 'Only transfers, swaps, and recurring schedules can be queued.';
   const report = planGuardrailReport(record.plan);
   if (report?.verdict === 'block') return report.summary;
@@ -9496,7 +9589,7 @@ function activeWorkflowLabel(): string {
     case 'local-bridge':
       return 'Private local mode';
     case 'browser-workflow':
-      return 'Browser workflow';
+      return 'Saved on this device';
   }
 }
 
@@ -9573,7 +9666,7 @@ async function runCloudLogout(): Promise<void> {
     state.cloudLastSync = '';
     state.cloudEvidenceStatus = 'Cloud evidence archive: sign in to also store receipts in Agentic Cloud.';
     refreshBrowserWorkflowData();
-    pushToast('success', 'Cloud workspace signed out', 'Browser workflow fallback is active on this device.');
+    pushToast('success', 'Cloud workspace signed out', 'Saved-on-device workflow is active in this browser.');
   });
 }
 
@@ -10609,7 +10702,7 @@ async function runCreateRecurring(): Promise<void> {
         ? 'Future occurrences will appear in Approval Inbox.'
         : mode === 'agentic-cloud'
           ? 'Each run returns to your wallet for review.'
-          : 'Created one local approval now. Browser workflow does not run background schedules after this tab closes.',
+          : 'Created one local approval now. Saved-on-device workflow does not run background schedules after this tab closes.',
     );
   });
 }
@@ -12170,8 +12263,8 @@ function assertPlanCanQueue(plan: AgentPlan): void {
 }
 
 function queuePlanTitle(): string {
-  if (!state.address) return 'Connect a wallet before queueing.';
-  if (!state.agentPlan) return 'Create a plan before queueing.';
+  if (!state.address) return 'Connect a wallet before sending to Inbox.';
+  if (!state.agentPlan) return 'Create a plan before sending to Inbox.';
   if (!canQueueAgentPlan(state.agentPlan)) return 'Only transfer, swap, and recurring schedules can be queued.';
   const report = planGuardrailReport(state.agentPlan);
   if (report?.verdict === 'block') return report.summary;
@@ -12274,7 +12367,7 @@ async function queuePlanThroughActiveWorkflow(
 
 async function queuePlanThroughCloud(plan: AgentPlan, sourceRecord?: GeneratedPlanRecord): Promise<{ id: string; planRecordId: string }> {
   if (!cloudSessionMatchesWallet()) {
-    throw new Error('Sign in to Agentic Cloud with the connected wallet before queueing to cloud.');
+    throw new Error('Sign in to Agentic Cloud with the connected wallet before sending to Cloud Inbox.');
   }
   const unsupported = cloudQueueUnsupportedReason(plan);
   if (unsupported) throw new Error(unsupported);
@@ -12349,7 +12442,7 @@ async function queueRecurringPlanThroughCloud(plan: AgentPlan): Promise<{ id: st
 
 function queuePlanThroughBrowserWorkflow(plan: AgentPlan): { id: string } {
   if (!state.address) {
-    throw new Error('Connect a wallet before queueing.');
+    throw new Error('Connect a wallet before sending to Inbox.');
   }
   if (plan.actionType === 'recurring_payment') {
     const recurring = browserRecurringPaymentFromPlan(plan);
@@ -13155,7 +13248,7 @@ function scheduleStatusLine(): string {
     ? 'Agentic Cloud recurring'
     : activeWorkflowMode() === 'local-bridge'
       ? 'Private local mode'
-      : 'Browser local fallback';
+      : 'Saved on this device';
   return `
     <div class="queue-status">
       <span>${escapeHtml(owner)}</span>
@@ -13186,10 +13279,10 @@ function queueEmptyState(kind: 'bridge' | 'clear'): string {
   const title = bridgeMissing ? 'No approvals waiting' : 'No approvals waiting';
   const detail = bridgeMissing
     ? activeWorkflowMode() === 'agentic-cloud'
-      ? 'Queue a one-time plan to Agentic Cloud. No localhost is required.'
-      : 'Queue a one-time plan or create a recurring schedule. Browser workflow stays local to this device.'
+      ? 'Send a one-time plan to Agentic Cloud for wallet review. No localhost is required.'
+      : 'Create a one-time plan or recurring request. Saved-on-device workflow stays local to this browser.'
     : emptyInboxText();
-  const chip = bridgeMissing ? 'Queue clear' : 'Queue clear';
+  const chip = bridgeMissing ? 'Inbox clear' : 'Inbox clear';
   return `
     <div class="empty queue-empty queue-empty-state">
       <div>
@@ -13439,10 +13532,10 @@ function recurringComposer(): string {
   const workflowMode = activeWorkflowMode();
   const browserWorkflow = workflowMode === 'browser-workflow';
   const recurringHelp = browserWorkflow
-    ? 'Create a saved-on-this-device recurring request. It creates one Inbox item now; background scheduling needs Cloud or the local connector.'
+    ? 'Create a recurring approval request saved on this device. It creates one Inbox item now; background scheduling needs Cloud or the local approval connector.'
     : 'Define a supported recurring payment or subscription. Each occurrence returns to Approval Inbox before wallet signing.';
   const boundaryCopy = browserWorkflow
-    ? 'Saved on this device. One local approval item is created now; use Cloud or the local connector for background scheduling.'
+    ? 'Saved on this device. One local approval item is created now; use Cloud or the local approval connector for background scheduling.'
     : `${activeWorkflowLabel()} owns this schedule. No transaction signs until you approve an occurrence.`;
   const actionHelper = !state.address
     ? 'Connect a wallet before creating a recurring schedule.'
@@ -13798,7 +13891,6 @@ function labArtifactCard(artifact: LabArtifact): string {
       <div class="lab-actions lab-signature-action">
         <button type="button" class="utility" data-artifact-view="signed">View in archive</button>
         <button type="button" data-copy="${escapeHtml(stableJson(artifact))}" data-copy-name="Receipt JSON">Copy receipt JSON</button>
-        <button type="button" data-copy="${escapeHtml(artifact.signingMessage)}" data-copy-name="Copy signed message">Copy signed message</button>
         <button type="button" class="utility" data-lab-action="create-another">Create another</button>
       </div>
       <details class="artifact-technical-details">
@@ -14128,16 +14220,16 @@ function evidencePolicy(): { status: string; detail: string; meta?: string } {
   if (state.activeTab === 'agent') {
     return {
       status: state.agentPlan ? 'Plan scoped' : 'Plan',
-      detail: state.agentPlan?.risk ?? 'Create a plan to expose route and risk before queueing.',
-      meta: `Queue path: ${activeWorkflowLabel()}`,
+      detail: state.agentPlan?.risk ?? 'Create a plan to expose route and risk before sending to Inbox.',
+      meta: `Approval path: ${activeWorkflowLabel()}`,
     };
   }
   if (state.activeTab === 'generated') {
     const selected = selectedGeneratedPlan();
     return {
       status: selected ? 'Review scoped' : 'No plans',
-      detail: selected?.plan.risk ?? 'Plans stay separate from Approval Inbox until you queue them.',
-      meta: selected && canQueueAgentPlan(selected.plan) ? `Queueable through ${activeWorkflowLabel()}` : 'Proof-only review',
+      detail: selected?.plan.risk ?? 'Plans stay separate from Approval Inbox until you send them.',
+      meta: selected && canQueueAgentPlan(selected.plan) ? `Approval-ready through ${activeWorkflowLabel()}` : 'Proof-only review',
     };
   }
   if (state.activeTab === 'schedule') {
@@ -14425,7 +14517,7 @@ function emptyInboxText(): string {
   if (state.inboxFilter === 'recurring') {
     return 'No recurring occurrences waiting. Create a recurring plan first.';
   }
-  return 'No approvals waiting. Queue a one-time plan or create a recurring plan. Due recurring occurrences appear here for approve or deny.';
+  return 'No approvals waiting. Create a one-time plan or recurring request. Due recurring occurrences appear here for approve or deny.';
 }
 
 function amountLabel(action: PreparedAction): string {
@@ -15506,10 +15598,30 @@ function readLaunchParams(): { bridgeUrl?: string; bridgeToken?: string } {
   const params = new URLSearchParams(window.location.search);
   const bridgeUrl = params.get('bridgeUrl')?.trim();
   const bridgeToken = params.get('token')?.trim();
+  if (bridgeToken) {
+    saveSessionBridgeToken(bridgeToken);
+  }
   return {
     ...(bridgeUrl && isLoopbackBridgeUrl(bridgeUrl) ? { bridgeUrl } : {}),
     ...(bridgeToken ? { bridgeToken } : {}),
   };
+}
+
+function sessionBridgeToken(): string | undefined {
+  const value = window.sessionStorage.getItem(BRIDGE_TOKEN_SESSION_KEY)?.trim();
+  return value || undefined;
+}
+
+function saveSessionBridgeToken(value: string): void {
+  try {
+    if (value) {
+      window.sessionStorage.setItem(BRIDGE_TOKEN_SESSION_KEY, value);
+    } else {
+      window.sessionStorage.removeItem(BRIDGE_TOKEN_SESSION_KEY);
+    }
+  } catch {
+    // Session-only convenience; local bridge can still be configured manually.
+  }
 }
 
 function clearSensitiveLaunchParams(): void {

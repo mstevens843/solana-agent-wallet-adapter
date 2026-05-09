@@ -154,13 +154,25 @@ async function verifyLayoutSmoke() {
           await page.inspect(`${origin}/app`);
           await connectFakeWallet(page);
           for (const tab of tabs) {
-            await clickAndWait(page, `[data-tab="${tab}"]`, `layout tab ${tab}`);
-            await page.waitFor(`document.querySelector('[data-tab="${tab}"]')?.classList.contains('active')`);
-            const report = await appLayoutReport(page, `${viewport.width}x${viewport.height} ${tab}`);
-            if (report.errors.length) {
-              throw new Error(`Layout failed for ${report.label}: ${report.errors.join('; ')}\n${formatLayoutRects(report)}`);
+            await page.evaluate('window.scrollTo(0, 0)');
+            await page.waitFor('window.scrollY < 3');
+            await clickAndWait(page, `[data-layout="app-tabs"] [data-tab="${tab}"]`, `layout tab ${tab}`);
+            await page.waitFor(`document.querySelector('[data-layout="app-tabs"] [data-tab="${tab}"]')?.classList.contains('active')`);
+            const maxScroll = await page.evaluate(`Math.max(0, document.documentElement.scrollHeight - window.innerHeight)`);
+            const scrollChecks = [
+              ['top', 0],
+              ['middle', Math.round(maxScroll / 2)],
+              ['bottom', maxScroll],
+            ];
+            for (const [scrollName, scrollY] of scrollChecks) {
+              await page.evaluate(`window.scrollTo(0, ${Number(scrollY)})`);
+              await page.waitFor(`Math.abs(window.scrollY - ${Number(scrollY)}) < 3 || document.documentElement.scrollHeight <= window.innerHeight + 3`);
+              const report = await appLayoutReport(page, `${viewport.width}x${viewport.height} ${tab} ${scrollName}`);
+              if (report.errors.length) {
+                throw new Error(`Layout failed for ${report.label}: ${report.errors.join('; ')}\n${formatLayoutRects(report)}`);
+              }
+              console.log(`[smoke-render-web] PASS layout ${report.label} scroll=${report.scrollWidth}/${report.innerWidth} y=${report.scrollY}`);
             }
-            console.log(`[smoke-render-web] PASS layout ${report.label} scroll=${report.scrollWidth}/${report.innerWidth}`);
           }
         }
       });
@@ -233,7 +245,14 @@ async function appLayoutReport(page, label) {
       if (tabs.left < main.left - 1) errors.push('tabs start outside main');
       if (tabs.right > main.right + 1) errors.push('tabs end outside main');
     }
-    return { errors, innerWidth, label, rects, scrollWidth };
+    const activePanel = rects.activePanel;
+    if (nav && activePanel && (nav.position === 'fixed' || nav.position === 'sticky')) {
+      const activeVisible = activePanel.bottom > 0 && activePanel.top < window.innerHeight;
+      if (activeVisible && nav.bottom > activePanel.top + 1 && nav.top < activePanel.bottom - 1) {
+        errors.push('nav overlaps active panel');
+      }
+    }
+    return { errors, innerWidth, label, rects, scrollWidth, scrollY: window.scrollY };
   })()`);
 }
 
@@ -404,6 +423,7 @@ async function verifyWorkflowSmoke({ requireLocalBridge: bridgeRequired }) {
       const apiKey = 'sk-smoke-hosted-secret';
       const drafted = await apiJson(origin, '/api/ai/generate-plan', {
         method: 'POST',
+        cookie: session.cookie,
         body: {
           settings: { provider: 'openai', model: 'gpt-5', apiKey },
           request: hostedAiRequest(),
@@ -413,6 +433,7 @@ async function verifyWorkflowSmoke({ requireLocalBridge: bridgeRequired }) {
       assert(!JSON.stringify(drafted).includes(apiKey), 'hosted BYOK draft leaked a provider key');
       const missingKey = await apiRaw(origin, '/api/ai/generate-plan', {
         method: 'POST',
+        cookie: session.cookie,
         body: {
           settings: { provider: 'openai', model: 'gpt-5' },
           request: hostedAiRequest(),
@@ -493,7 +514,7 @@ async function verifyWorkflowSmoke({ requireLocalBridge: bridgeRequired }) {
             assert(browserRecurring.length === 1, `expected one browser recurring seed, found ${browserRecurring.length}`);
 
             await configureBridgeStorage(page, { bridgeOrigin, bridgeToken });
-            await page.inspect(`${browserOrigin}/app`);
+            await page.inspect(localBridgeAppUrl(browserOrigin, bridgeOrigin, bridgeToken));
             await connectFakeWallet(page);
             await clickAndWait(page, '[data-bridge-action="connect"]', 'check mocked local bridge for recurring isolation');
             await page.waitFor(`Boolean(document.querySelector('[data-workflow-mode="local-bridge"]:not([disabled])')) || document.body.innerText.includes('Bridge connected')`);
@@ -560,7 +581,7 @@ async function verifyWorkflowSmoke({ requireLocalBridge: bridgeRequired }) {
 
           await report.check('Private local bridge mode works with a mocked local bridge', async () => {
             await configureBridgeStorage(page, { bridgeOrigin, bridgeToken });
-            await page.inspect(`${browserOrigin}/app`);
+            await page.inspect(localBridgeAppUrl(browserOrigin, bridgeOrigin, bridgeToken));
             await connectFakeWallet(page);
             await clickAndWait(page, '[data-bridge-action="connect"]', 'check mocked local bridge');
             await page.waitFor(`Boolean(document.querySelector('[data-workflow-mode="local-bridge"]:not([disabled])')) || document.body.innerText.includes('Bridge connected')`);
@@ -818,10 +839,17 @@ async function configureBridgeStorage(page, { bridgeOrigin, bridgeToken, workflo
     localStorage.setItem(storageKey, JSON.stringify({
       ...parsed,
       bridgeUrl: ${JSON.stringify(bridgeOrigin)},
-      bridgeToken: ${JSON.stringify(bridgeToken)},
       workflowModePreference: ${JSON.stringify(workflowModePreference)},
     }));
+    sessionStorage.setItem('agentic-local-bridge-token', ${JSON.stringify(bridgeToken)});
   })()`);
+}
+
+function localBridgeAppUrl(browserOrigin, bridgeOrigin, bridgeToken) {
+  const url = new URL('/app', browserOrigin);
+  url.searchParams.set('bridgeUrl', bridgeOrigin);
+  url.searchParams.set('token', bridgeToken);
+  return String(url);
 }
 
 async function createCloudRecurringViaUi(page) {
