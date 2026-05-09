@@ -33,7 +33,7 @@ export class MemoryWorkflowStore implements SessionWorkflowStore, OneTimeWorkflo
 
   async consumeAuthNonce(nonce: string, consumedAt: string): Promise<AuthNonceRecord | undefined> {
     const record = this.nonces.get(nonce);
-    if (!record || record.consumedAt) {
+    if (!record || record.consumedAt || Date.parse(record.expiresAt) <= Date.parse(consumedAt)) {
       return undefined;
     }
     const consumed = { ...record, consumedAt };

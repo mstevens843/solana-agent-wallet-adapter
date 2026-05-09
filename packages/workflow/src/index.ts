@@ -506,7 +506,7 @@ export interface CreateEvidenceReceiptRequest {
   preSignatureHash: string;
   signingMessage: string;
   signature: string;
-  cluster?: WorkflowCluster | string;
+  cluster: WorkflowCluster;
   artifactHash?: string;
   receiptType?: string;
   summary?: string;
@@ -735,7 +735,7 @@ export function capabilitiesForWorkflowMode(mode: WorkflowMode): WorkflowCapabil
 
 export function parseJsonObject(input: unknown, path = '$'): JsonObject {
   if (!isPlainObject(input)) {
-    throw new WorkflowValidationError(path, 'Expected a JSON object.');
+    throw new WorkflowValidationError('invalid_object', 'Expected a JSON object.', path);
   }
   const output: JsonObject = {};
   for (const [key, value] of Object.entries(input)) {
@@ -1201,6 +1201,11 @@ const FORBIDDEN_EXACT_KEYS = new Set([
   'unlimitedapproval',
 ]);
 
+const EVIDENCE_SHORT_FIELD_MAX_LENGTH = 240;
+const EVIDENCE_HASH_MAX_LENGTH = 256;
+const EVIDENCE_SIGNING_MESSAGE_MAX_LENGTH = 8192;
+const EVIDENCE_SIGNATURE_MAX_LENGTH = 1024;
+
 export function validateCreatePlanRequest(body: unknown, path = '$'): CreatePlanInput {
   assertNoForbiddenWorkflowSecrets(body);
   const input = requireObject(body, path);
@@ -1393,6 +1398,28 @@ export function validateRecurringId(value: string): string {
   return decoded;
 }
 
+export function validateCreateEvidenceReceiptRequest(body: unknown, path = '$'): CreateEvidenceReceiptRequest {
+  assertNoForbiddenWorkflowSecrets(body);
+  const input = requireObject(body, path);
+
+  return {
+    title: requiredEvidenceShortString(input.title, 'title'),
+    kind: requireEvidenceReceiptKind(input.kind),
+    status: requireEvidenceReceiptStatus(input.status),
+    cluster: requireRequiredCluster(input.cluster),
+    payload: requireJsonObject(input.payload, 'payload'),
+    preSignatureHash: requiredEvidenceHash(input.preSignatureHash, 'preSignatureHash'),
+    signingMessage: requiredEvidenceSigningMessage(input.signingMessage),
+    signature: requiredEvidenceSignature(input.signature),
+    ...(optionalEvidenceHash(input.artifactHash, 'artifactHash') ? { artifactHash: optionalEvidenceHash(input.artifactHash, 'artifactHash') } : {}),
+    ...(optionalEvidenceShortString(input.receiptType, 'receiptType') ? { receiptType: optionalEvidenceShortString(input.receiptType, 'receiptType') } : {}),
+    ...(optionalEvidenceShortString(input.summary, 'summary') ? { summary: optionalEvidenceShortString(input.summary, 'summary') } : {}),
+    ...(optionalEvidenceShortString(input.verdict, 'verdict') ? { verdict: optionalEvidenceShortString(input.verdict, 'verdict') } : {}),
+    ...(optionalEvidenceShortString(input.effect, 'effect') ? { effect: optionalEvidenceShortString(input.effect, 'effect') } : {}),
+    ...(input.metadata === undefined ? {} : { metadata: requireJsonObject(input.metadata, 'metadata') }),
+  };
+}
+
 export function stringFromJson(object: JsonObject | undefined, key: string): string | undefined {
   const value = object?.[key];
   return typeof value === 'string' && value.trim() ? value : undefined;
@@ -1439,7 +1466,7 @@ function parseJsonValue(input: unknown, path: string): JsonValue {
   }
   if (typeof input === 'number') {
     if (!Number.isFinite(input)) {
-      throw new WorkflowValidationError(path, 'Expected a finite JSON number.');
+      throw new WorkflowValidationError('invalid_json', 'Expected a finite JSON number.', path);
     }
     return input;
   }
@@ -1449,12 +1476,12 @@ function parseJsonValue(input: unknown, path: string): JsonValue {
   if (isPlainObject(input)) {
     return parseJsonObject(input, path);
   }
-  throw new WorkflowValidationError(path, 'Expected a JSON value.');
+  throw new WorkflowValidationError('invalid_json', 'Expected a JSON value.', path);
 }
 
 function expectRecord(input: unknown, path: string): Record<string, unknown> {
   if (!isPlainObject(input)) {
-    throw new WorkflowValidationError(path, 'Expected an object.');
+    throw new WorkflowValidationError('invalid_object', 'Expected an object.', path);
   }
   return input;
 }
@@ -1462,7 +1489,7 @@ function expectRecord(input: unknown, path: string): Record<string, unknown> {
 function expectRequired(record: Record<string, unknown>, key: string, path: string): unknown {
   const value = record[key];
   if (value === undefined) {
-    throw new WorkflowValidationError(`${path}.${key}`, 'Missing required field.');
+    throw new WorkflowValidationError('missing_field', 'Missing required field.', `${path}.${key}`);
   }
   return value;
 }
@@ -1470,7 +1497,7 @@ function expectRequired(record: Record<string, unknown>, key: string, path: stri
 function expectString(record: Record<string, unknown>, key: string, path: string): string {
   const value = expectRequired(record, key, path);
   if (typeof value !== 'string') {
-    throw new WorkflowValidationError(`${path}.${key}`, 'Expected a string.');
+    throw new WorkflowValidationError('invalid_string', 'Expected a string.', `${path}.${key}`);
   }
   return value;
 }
@@ -1478,7 +1505,7 @@ function expectString(record: Record<string, unknown>, key: string, path: string
 function expectBoolean(record: Record<string, unknown>, key: string, path: string): boolean {
   const value = expectRequired(record, key, path);
   if (typeof value !== 'boolean') {
-    throw new WorkflowValidationError(`${path}.${key}`, 'Expected a boolean.');
+    throw new WorkflowValidationError('invalid_boolean', 'Expected a boolean.', `${path}.${key}`);
   }
   return value;
 }
@@ -1491,7 +1518,7 @@ function expectEnum<const T extends readonly string[]>(
 ): T[number] {
   const value = expectString(record, key, path);
   if (!values.includes(value as T[number])) {
-    throw new WorkflowValidationError(`${path}.${key}`, `Expected one of: ${values.join(', ')}.`);
+    throw new WorkflowValidationError('invalid_enum', `Expected one of: ${values.join(', ')}.`, `${path}.${key}`);
   }
   return value as T[number];
 }
@@ -1499,7 +1526,7 @@ function expectEnum<const T extends readonly string[]>(
 function expectArray(record: Record<string, unknown>, key: string, path: string): unknown[] {
   const value = expectRequired(record, key, path);
   if (!Array.isArray(value)) {
-    throw new WorkflowValidationError(`${path}.${key}`, 'Expected an array.');
+    throw new WorkflowValidationError('invalid_array', 'Expected an array.', `${path}.${key}`);
   }
   return value;
 }
@@ -1507,7 +1534,7 @@ function expectArray(record: Record<string, unknown>, key: string, path: string)
 function expectStringArray(record: Record<string, unknown>, key: string, path: string): string[] {
   return expectArray(record, key, path).map((value, index) => {
     if (typeof value !== 'string') {
-      throw new WorkflowValidationError(`${path}.${key}[${index}]`, 'Expected a string.');
+      throw new WorkflowValidationError('invalid_string', 'Expected a string.', `${path}.${key}[${index}]`);
     }
     return value;
   });
@@ -1516,12 +1543,12 @@ function expectStringArray(record: Record<string, unknown>, key: string, path: s
 function expectStringRecord(record: Record<string, unknown>, key: string, path: string): Record<string, string> {
   const value = expectRequired(record, key, path);
   if (!isPlainObject(value)) {
-    throw new WorkflowValidationError(`${path}.${key}`, 'Expected an object.');
+    throw new WorkflowValidationError('invalid_object', 'Expected an object.', `${path}.${key}`);
   }
   const output: Record<string, string> = {};
   for (const [entryKey, entryValue] of Object.entries(value)) {
     if (typeof entryValue !== 'string') {
-      throw new WorkflowValidationError(`${path}.${key}.${entryKey}`, 'Expected a string.');
+      throw new WorkflowValidationError('invalid_string', 'Expected a string.', `${path}.${key}.${entryKey}`);
     }
     output[entryKey] = entryValue;
   }
@@ -1536,7 +1563,7 @@ function optionalStringProp<T extends string>(record: Record<string, unknown>, k
   const value = record[key];
   if (value === undefined) return {};
   if (typeof value !== 'string') {
-    throw new WorkflowValidationError(`${path}.${key}`, 'Expected a string.');
+    throw new WorkflowValidationError('invalid_string', 'Expected a string.', `${path}.${key}`);
   }
   return { [key]: value } as Partial<Record<T, string>>;
 }
@@ -1549,7 +1576,7 @@ function optionalBooleanProp<T extends string>(
   const value = record[key];
   if (value === undefined) return {};
   if (typeof value !== 'boolean') {
-    throw new WorkflowValidationError(`${path}.${key}`, 'Expected a boolean.');
+    throw new WorkflowValidationError('invalid_boolean', 'Expected a boolean.', `${path}.${key}`);
   }
   return { [key]: value } as Partial<Record<T, boolean>>;
 }
@@ -1562,7 +1589,7 @@ function optionalIntegerProp<T extends string>(
   const value = record[key];
   if (value === undefined) return {};
   if (!Number.isInteger(value)) {
-    throw new WorkflowValidationError(`${path}.${key}`, 'Expected an integer.');
+    throw new WorkflowValidationError('invalid_integer', 'Expected an integer.', `${path}.${key}`);
   }
   return { [key]: value } as Partial<Record<T, number>>;
 }
@@ -1576,7 +1603,7 @@ function optionalEnumProp<T extends string, const V extends readonly string[]>(
   const value = record[key];
   if (value === undefined) return {};
   if (typeof value !== 'string' || !values.includes(value as V[number])) {
-    throw new WorkflowValidationError(`${path}.${key}`, `Expected one of: ${values.join(', ')}.`);
+    throw new WorkflowValidationError('invalid_enum', `Expected one of: ${values.join(', ')}.`, `${path}.${key}`);
   }
   return { [key]: value } as Partial<Record<T, V[number]>>;
 }
@@ -1599,12 +1626,12 @@ function optionalStringArrayProp<T extends string>(
   const value = record[key];
   if (value === undefined) return {};
   if (!Array.isArray(value)) {
-    throw new WorkflowValidationError(`${path}.${key}`, 'Expected an array.');
+    throw new WorkflowValidationError('invalid_array', 'Expected an array.', `${path}.${key}`);
   }
   return {
     [key]: value.map((entry, index) => {
       if (typeof entry !== 'string') {
-        throw new WorkflowValidationError(`${path}.${key}[${index}]`, 'Expected a string.');
+        throw new WorkflowValidationError('invalid_string', 'Expected a string.', `${path}.${key}[${index}]`);
       }
       return entry;
     }),
@@ -1631,7 +1658,7 @@ function optionalParsedArrayProp<T extends string, V>(
   const value = record[key];
   if (value === undefined) return {};
   if (!Array.isArray(value)) {
-    throw new WorkflowValidationError(`${path}.${key}`, 'Expected an array.');
+    throw new WorkflowValidationError('invalid_array', 'Expected an array.', `${path}.${key}`);
   }
   return {
     [key]: value.map((entry, index) => parser(entry, `${path}.${key}[${index}]`)),
@@ -1644,13 +1671,13 @@ function expectCompletedKind(record: Record<string, unknown>, key: string, path:
   if (COMPLETED_KINDS.includes(value as (typeof COMPLETED_KINDS)[number])) {
     return value as CompletedKind;
   }
-  throw new WorkflowValidationError(`${path}.${key}`, `Expected one of: one-time, ${COMPLETED_KINDS.join(', ')}.`);
+  throw new WorkflowValidationError('invalid_kind', `Expected one of: one-time, ${COMPLETED_KINDS.join(', ')}.`, `${path}.${key}`);
 }
 
 function expectDetailRows(record: Record<string, unknown>, key: string, path: string): Array<[string, string]> {
   return expectArray(record, key, path).map((value, index) => {
     if (!Array.isArray(value) || value.length !== 2 || typeof value[0] !== 'string' || typeof value[1] !== 'string') {
-      throw new WorkflowValidationError(`${path}.${key}[${index}]`, 'Expected a [label, value] string tuple.');
+      throw new WorkflowValidationError('invalid_detail_rows', 'Expected a [label, value] string tuple.', `${path}.${key}[${index}]`);
     }
     return [value[0], value[1]];
   });

@@ -12,6 +12,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 
 import { encodeBase58 } from '../cloud/auth.js';
 import { MemoryWorkflowStore } from '../cloud/memoryStore.js';
+import type { AuthRateLimiter } from '../cloud/router.js';
 import { createWalletSession, sessionFromRequest } from '../cloud/session.js';
 import type { Clock } from '../cloud/store.js';
 import { createRenderWebServer } from '../server.js';
@@ -144,6 +145,24 @@ describe('render web cloud wallet auth', () => {
     }, { clock });
   });
 
+  it('rejects a nonce that expires before the atomic consume step', async () => {
+    const clock = queuedClock([
+      '2026-05-08T17:59:59.000Z',
+      '2026-05-08T18:00:00.000Z',
+      '2026-05-08T18:04:59.999Z',
+      '2026-05-08T18:05:00.000Z',
+    ]);
+    await withServer(async (port) => {
+      const wallet = createTestWallet();
+      const nonce = await createNonce(port, wallet);
+
+      const verify = await postJson(port, '/api/auth/verify-wallet', signedVerifyBody(wallet, nonce.body));
+
+      expect(verify.status).toBe(401);
+      expect(firstSetCookie(verify)).toBe('');
+    }, { clock });
+  });
+
   it('rejects replayed nonces', async () => {
     await withServer(async (port) => {
       const wallet = createTestWallet();
@@ -200,6 +219,35 @@ describe('render web cloud wallet auth', () => {
       expect(verify.status).toBe(401);
       expect(String(verify.body.error)).toContain('domain');
     });
+  });
+
+  it('rejects cross-origin state-changing API requests', async () => {
+    await withServer(async (port) => {
+      const wallet = createTestWallet();
+      const response = await postJson(port, '/api/auth/nonce', {
+        walletAddress: wallet.walletAddress,
+      }, {
+        origin: 'https://evil.example',
+      });
+
+      expect(response.status).toBe(403);
+      expect(String(response.body.error)).toContain('Cross-origin');
+    });
+  });
+
+  it('rate limits wallet auth endpoints', async () => {
+    const authRateLimiter: AuthRateLimiter = {
+      allow: () => false,
+    };
+    await withServer(async (port) => {
+      const wallet = createTestWallet();
+      const response = await postJson(port, '/api/auth/nonce', {
+        walletAddress: wallet.walletAddress,
+      });
+
+      expect(response.status).toBe(429);
+      expect(String(response.body.error)).toContain('Too many');
+    }, { authRateLimiter });
   });
 
   it('clears the session on logout', async () => {
@@ -280,7 +328,7 @@ describe('render web cloud wallet auth', () => {
 
 async function withServer(
   callback: (port: number) => Promise<void>,
-  options: { clock?: Clock; store?: MemoryWorkflowStore } = {},
+  options: { authRateLimiter?: AuthRateLimiter | false; clock?: Clock; store?: MemoryWorkflowStore } = {},
 ): Promise<void> {
   const staticDir = await mkdtemp(join(tmpdir(), 'agentic-render-web-auth-'));
   await writeFile(join(staticDir, 'index.html'), '<!doctype html><div id="app"></div>');
@@ -289,6 +337,7 @@ async function withServer(
   const server = createRenderWebServer({
     staticDir,
     clock: options.clock,
+    authRateLimiter: options.authRateLimiter,
     store: options.store,
   });
   await new Promise<void>((resolve, reject) => {
@@ -365,6 +414,17 @@ function mutableClock(initial: string): Clock & { set(value: string): void } {
 function fixedClock(value: string): Clock {
   return {
     now: () => new Date(value),
+  };
+}
+
+function queuedClock(values: string[]): Clock {
+  let index = 0;
+  return {
+    now: () => {
+      const value = values[Math.min(index, values.length - 1)];
+      index += 1;
+      return new Date(value);
+    },
   };
 }
 

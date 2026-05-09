@@ -217,7 +217,7 @@ export class PostgresWorkflowStore implements
       text: `
         UPDATE nonces
         SET consumed_at = $2
-        WHERE nonce = $1 AND consumed_at IS NULL
+        WHERE nonce = $1 AND consumed_at IS NULL AND expires_at > $2
         RETURNING *
       `,
       values: [nonce, consumedAt],

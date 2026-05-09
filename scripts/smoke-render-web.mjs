@@ -297,13 +297,49 @@ async function verifyWorkflowSmoke({ requireLocalBridge: bridgeRequired }) {
           await page.addInitScript(fakeWalletScript(wallet, signerOrigin));
           await report.check('Signed-out browser fallback one-time flow queues and completes locally', async () => {
             await page.inspect(`${browserOrigin}/app`);
+            await resetBrowserWorkflow(page);
+            await page.inspect(`${browserOrigin}/app`);
             await connectFakeWallet(page);
             await ensureCreatePlanView(page);
             await clickAndWait(page, '#generatePlan');
             const actionId = await queueCurrentPlan(page);
             assert(actionId, 'browser fallback did not expose a queued action id');
+            let snapshot = await browserWorkflowSnapshot(page);
+            assert(snapshot.activeActions.some((entry) => entry.id === actionId), 'browser fallback did not persist an active prepared action');
             await clickAndWait(page, `[data-action-op="execute"][data-action-id="${actionId}"]`, 'browser fallback approval action');
             await waitForBrowserReceipt(page, actionId, 'approved');
+            snapshot = await browserWorkflowSnapshot(page);
+            assert(!snapshot.activeActions.some((entry) => entry.id === actionId), 'approved browser workflow action remained active');
+            assert(snapshot.completedActions.some((entry) => entry.id === actionId && entry.status === 'approved'), 'approved browser workflow action was not terminal');
+          });
+
+          await report.check('Signed-out browser fallback rejects queued work and removes it from the active inbox', async () => {
+            await page.inspect(`${browserOrigin}/app`);
+            await resetBrowserWorkflow(page);
+            await page.inspect(`${browserOrigin}/app`);
+            await connectFakeWallet(page);
+            await ensureCreatePlanView(page);
+            await clickAndWait(page, '#generatePlan');
+            const actionId = await queueCurrentPlan(page);
+            await clickAndWait(page, `[data-action-op="reject"][data-action-id="${actionId}"]`, 'browser fallback rejection action');
+            await waitForBrowserReceipt(page, actionId, 'rejected');
+            const snapshot = await browserWorkflowSnapshot(page);
+            assert(!snapshot.activeActions.some((entry) => entry.id === actionId), 'rejected browser workflow action remained active');
+          });
+
+          await report.check('Browser recurring fallback creates one local occurrence and explains scheduler limits', async () => {
+            await page.inspect(`${browserOrigin}/app`);
+            await resetBrowserWorkflow(page);
+            await page.inspect(`${browserOrigin}/app`);
+            await connectFakeWallet(page);
+            await createBrowserRecurringViaUi(page, wallet.walletAddress);
+            const snapshot = await browserWorkflowSnapshot(page);
+            const browserRecurring = snapshot.recurringPayments.filter((entry) => String(entry.id).startsWith('browser-recurring'));
+            const recurringActions = snapshot.activeActions.filter((entry) => entry.recurringId === browserRecurring[0]?.id);
+            const bodyText = await page.evaluate(`document.body.innerText`);
+            assert(browserRecurring.length === 1, `expected one browser recurring schedule, found ${browserRecurring.length}`);
+            assert(recurringActions.length === 1, `expected one browser recurring occurrence, found ${recurringActions.length}`);
+            assert(/does not run background schedules after this tab closes/i.test(bodyText), 'browser recurring fallback did not explain the scheduler limitation');
           });
 
           await report.check('Browser AI unavailable does not block template workflow', async () => {
@@ -368,7 +404,7 @@ async function verifyWorkflowSmoke({ requireLocalBridge: bridgeRequired }) {
             const publicHostResult = await page.inspect(`${browserOrigin}/app`);
             const bridgeProbe = publicHostResult.events.find(isLocalBridgeConfigRequest);
             assert(!bridgeProbe, `public-host startup requested local bridge: ${eventSummary(bridgeProbe)}`);
-            assert(!/localhost is required|required.*localhost/i.test(publicHostResult.page.bodyText), 'UI says localhost is required for the default app');
+            assert(!/local bridge required|bridge required|localhost is required|required.*localhost/i.test(publicHostResult.page.bodyText), 'UI says local bridge or localhost is required for the default app');
           });
         });
       });
@@ -456,9 +492,30 @@ async function queueCurrentPlan(page, { waitForInboxAction = true } = {}) {
   return page.evaluate(`document.querySelector('[data-action-op="execute"]')?.dataset.actionId ?? ''`);
 }
 
+async function resetBrowserWorkflow(page) {
+  await page.evaluate(`localStorage.removeItem(${JSON.stringify(BROWSER_WORKFLOW_STORAGE_KEY)})`);
+}
+
+async function browserWorkflowSnapshot(page) {
+  return page.evaluate(`(() => {
+    const raw = localStorage.getItem(${JSON.stringify(BROWSER_WORKFLOW_STORAGE_KEY)});
+    const parsed = raw ? JSON.parse(raw) : {};
+    const preparedActions = Array.isArray(parsed.preparedActions) ? parsed.preparedActions : [];
+    const receipts = Array.isArray(parsed.receipts) ? parsed.receipts : [];
+    const recurringPayments = Array.isArray(parsed.recurringPayments) ? parsed.recurringPayments : [];
+    const activeActions = preparedActions.filter((entry) =>
+      !entry.archived && !['approved', 'rejected', 'failed', 'blocked'].includes(entry.status)
+    );
+    const completedActions = preparedActions.filter((entry) =>
+      Boolean(entry.archived) || ['approved', 'rejected', 'failed', 'blocked'].includes(entry.status)
+    );
+    return { activeActions, completedActions, receipts, recurringPayments };
+  })()`);
+}
+
 async function waitForBrowserReceipt(page, actionId, status) {
   await page.waitFor(`(() => {
-    const raw = localStorage.getItem('solana-agent-wallet-browser-workflow-v1');
+    const raw = localStorage.getItem(${JSON.stringify(BROWSER_WORKFLOW_STORAGE_KEY)});
     const parsed = raw ? JSON.parse(raw) : {};
     return Array.isArray(parsed.receipts) && parsed.receipts.some((receipt) =>
       receipt.actionId === ${JSON.stringify(actionId)} && receipt.status === ${JSON.stringify(status)}
@@ -523,6 +580,29 @@ async function createCloudRecurringViaUi(page) {
   })()`);
   await clickAndWait(page, '#createRecurring', 'create recurring schedule');
   await page.waitFor(`document.body.innerText.includes('Recurring schedule created') || document.body.innerText.includes('Agentic Cloud recurring')`);
+}
+
+async function createBrowserRecurringViaUi(page, recipient) {
+  await clickAndWait(page, '[data-tab="schedule"]', 'recurring schedule tab');
+  await page.waitFor(`Boolean(document.querySelector('#createRecurring'))`);
+  await page.evaluate(`(() => {
+    const setValue = (selector, value) => {
+      const el = document.querySelector(selector);
+      if (!el) throw new Error('Missing recurring field: ' + selector);
+      el.value = value;
+      el.dispatchEvent(new Event('input', { bubbles: true }));
+      el.dispatchEvent(new Event('change', { bubbles: true }));
+    };
+    setValue('#recurringToken', 'SOL');
+    setValue('#recurringAmount', '0.03');
+    setValue('#recurringRecipient', ${JSON.stringify(recipient)});
+    setValue('#recurringCadence', 'weekly');
+    setValue('#recurringDayOfWeek', '1');
+    setValue('#recurringLocalTime', '09:00');
+    setValue('#recurringNote', 'Browser local recurring fallback smoke');
+  })()`);
+  await clickAndWait(page, '#createRecurring', 'create browser recurring schedule');
+  await page.waitFor(`document.body.innerText.includes('Recurring schedule created')`);
 }
 
 async function clickAndWait(page, selector, label = selector) {

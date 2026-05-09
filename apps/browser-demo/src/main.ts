@@ -7478,7 +7478,9 @@ async function runQueueAgentPlan(): Promise<void> {
       'success',
       state.agentPlan.actionType === 'recurring_payment' ? 'Recurring schedule created' : 'Sent to Approval Inbox',
       state.agentPlan.actionType === 'recurring_payment'
-        ? 'Future occurrences will appear in Approval Inbox.'
+        ? response.mode === 'browser-workflow'
+          ? 'Created one local approval now. Browser workflow does not run background schedules after this tab closes.'
+          : 'Future occurrences will appear in Approval Inbox.'
         : response.mode === 'agentic-cloud'
           ? 'Saved to Agentic Cloud. No localhost required.'
           : response.mode === 'browser-workflow'
@@ -7662,7 +7664,9 @@ async function runQueueGeneratedPlan(planId: string): Promise<void> {
       'success',
       record.plan.actionType === 'recurring_payment' ? 'Recurring schedule created' : 'Sent to Approval Inbox',
       record.plan.actionType === 'recurring_payment'
-        ? 'Future occurrences will appear in Approval Inbox.'
+        ? response.mode === 'browser-workflow'
+          ? 'Created one local approval now. Browser workflow does not run background schedules after this tab closes.'
+          : 'Future occurrences will appear in Approval Inbox.'
         : response.mode === 'agentic-cloud'
           ? 'Saved to Agentic Cloud. No localhost required.'
           : response.mode === 'browser-workflow'
@@ -8238,7 +8242,7 @@ function generatedQueuePlanTitle(record: GeneratedPlanRecord): string {
     if (mode === 'agentic-cloud') return 'Create an Agentic Cloud recurring schedule. Each due occurrence appears in Approval Inbox.';
     return mode === 'local-bridge'
       ? 'Create a local recurring schedule. Each due occurrence appears in Approval Inbox.'
-      : 'Create a browser-backed recurring schedule. It stays local to this device.';
+      : 'Create one browser-local recurring approval now. Background scheduling needs Agentic Cloud or Private local mode.';
   }
   if (mode === 'agentic-cloud') return 'Send this plan to Agentic Cloud Approval Inbox for wallet review.';
   return mode === 'local-bridge'
@@ -10179,7 +10183,7 @@ function queuePlanTitle(): string {
     if (mode === 'agentic-cloud') return 'Create an Agentic Cloud recurring schedule. Each due occurrence appears in Approval Inbox.';
     return mode === 'local-bridge'
       ? 'Create a local recurring schedule. Each due occurrence appears in Approval Inbox.'
-      : 'Create a browser-backed recurring schedule. It stays local to this device.';
+      : 'Create one browser-local recurring approval now. Background scheduling needs Agentic Cloud or Private local mode.';
   }
   if (mode === 'agentic-cloud') return 'Send this plan to Agentic Cloud Approval Inbox for wallet review.';
   return mode === 'local-bridge'

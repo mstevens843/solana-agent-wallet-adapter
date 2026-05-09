@@ -19,11 +19,9 @@ import { isSecureRequest, serializeClearSessionCookie, serializeSessionCookie } 
 import { createEvidenceApiHandler, evidenceStoreAdapterForCloudStore } from './evidenceRoutes.js';
 import type { EvidenceStore } from './evidenceService.js';
 import { MemoryWorkflowStore } from './memoryStore.js';
-import { PostgresWorkflowStore } from './postgresStore.js';
 import { createRecurringApprovalSink, createRecurringApprovalStatusReader } from './recurringApprovalSink.js';
 import { createRecurringApiHandler, recurringStoreAdapterForCloudStore } from './recurringRoutes.js';
 import { RecurringService, type RecurringStore } from './recurringService.js';
-import { shouldUsePostgresWorkflowStore } from './runtimeStore.js';
 import { RecurringScheduler } from './scheduler.js';
 import { createWalletSession, deleteSessionFromRequest, SESSION_TTL_MS, sessionFromRequest } from './session.js';
 import { sessionResponse, systemClock, type Clock, type WorkflowStore } from './store.js';
@@ -31,6 +29,8 @@ import { WorkflowService, type WorkflowStore as OneTimeWorkflowStore } from './w
 import { createWorkflowApiHandler } from './workflowRoutes.js';
 
 const MAX_JSON_BYTES = 64 * 1024;
+const AUTH_RATE_LIMIT_WINDOW_MS = 5 * 60 * 1000;
+const AUTH_RATE_LIMIT_MAX_ATTEMPTS = 60;
 
 type HostedProviderId = 'openai' | 'anthropic' | 'gemini' | 'openrouter';
 
@@ -54,11 +54,22 @@ interface HostedAiBody {
 export interface CloudApiRouterOptions {
   store?: WorkflowStore;
   clock?: Clock;
+  authRateLimiter?: AuthRateLimiter | false;
 }
 
 export interface CloudApiRouter {
   readonly store: WorkflowStore;
   handle(req: IncomingMessage, res: ServerResponse, url: URL): Promise<boolean>;
+}
+
+export interface AuthRateLimitInput {
+  key: string;
+  route: '/api/auth/nonce' | '/api/auth/verify-wallet';
+  now: Date;
+}
+
+export interface AuthRateLimiter {
+  allow(input: AuthRateLimitInput): boolean | Promise<boolean>;
 }
 
 const HOSTED_PROVIDER_PRESETS: Record<HostedProviderId, HostedProviderPreset> = {
@@ -95,6 +106,9 @@ const HOSTED_PROVIDER_PRESETS: Record<HostedProviderId, HostedProviderPreset> = 
 export function createCloudApiRouter(options: CloudApiRouterOptions = {}): CloudApiRouter {
   const store = options.store ?? createDefaultWorkflowStore();
   const clock = options.clock ?? systemClock;
+  const authRateLimiter = options.authRateLimiter === false
+    ? undefined
+    : options.authRateLimiter ?? new MemoryAuthRateLimiter();
   const sessionResolver = async (req: IncomingMessage) => {
     const session = await sessionFromRequest({ req, store, clock });
     return session ? { walletAddress: session.walletAddress, sessionId: session.tokenHash } : null;
@@ -134,6 +148,8 @@ export function createCloudApiRouter(options: CloudApiRouterOptions = {}): Cloud
       }
 
       try {
+        enforceSameOrigin(req, url);
+        await enforceAuthRateLimit(req, url, clock, authRateLimiter);
         await routeApiRequest(
           req,
           res,
@@ -155,10 +171,68 @@ export function createCloudApiRouter(options: CloudApiRouterOptions = {}): Cloud
 }
 
 export function createDefaultWorkflowStore(): WorkflowStore {
-  if (shouldUsePostgresWorkflowStore()) {
-    return new PostgresWorkflowStore();
-  }
   return new MemoryWorkflowStore();
+}
+
+class MemoryAuthRateLimiter implements AuthRateLimiter {
+  private readonly buckets = new Map<string, { windowStart: number; count: number }>();
+
+  allow(input: AuthRateLimitInput): boolean {
+    const bucketKey = `${input.route}:${input.key}`;
+    const now = input.now.getTime();
+    const bucket = this.buckets.get(bucketKey);
+    if (!bucket || now - bucket.windowStart >= AUTH_RATE_LIMIT_WINDOW_MS) {
+      this.buckets.set(bucketKey, { windowStart: now, count: 1 });
+      return true;
+    }
+    if (bucket.count >= AUTH_RATE_LIMIT_MAX_ATTEMPTS) {
+      return false;
+    }
+    bucket.count += 1;
+    return true;
+  }
+}
+
+function enforceSameOrigin(req: IncomingMessage, url: URL): void {
+  if (!isStateChangingMethod(req.method)) return;
+  const origin = firstHeaderValue(req.headers.origin);
+  if (!origin) return;
+  let originHost: string;
+  try {
+    originHost = new URL(origin).host.toLowerCase();
+  } catch {
+    throw new ApiError(403, 'Cross-origin requests are not allowed.');
+  }
+  if (originHost !== requestDomain(req, url)) {
+    throw new ApiError(403, 'Cross-origin requests are not allowed.');
+  }
+}
+
+async function enforceAuthRateLimit(
+  req: IncomingMessage,
+  url: URL,
+  clock: Clock,
+  limiter: AuthRateLimiter | undefined,
+): Promise<void> {
+  if (!limiter || req.method !== 'POST') return;
+  const route = authRateLimitedRoute(url.pathname);
+  if (!route) return;
+  const allowed = await limiter.allow({
+    key: rateLimitKey(req),
+    route,
+    now: clock.now(),
+  });
+  if (!allowed) {
+    throw new ApiError(429, 'Too many wallet auth attempts. Try again later.');
+  }
+}
+
+function authRateLimitedRoute(pathname: string): AuthRateLimitInput['route'] | undefined {
+  return pathname === '/api/auth/nonce' || pathname === '/api/auth/verify-wallet' ? pathname : undefined;
+}
+
+function isStateChangingMethod(method: string | undefined): boolean {
+  return method === 'POST' || method === 'PUT' || method === 'PATCH' || method === 'DELETE';
 }
 
 async function routeApiRequest(
@@ -296,7 +370,8 @@ async function handleVerifyWallet(
     throw new ApiError(401, 'Wallet signature could not be verified.');
   }
 
-  const consumed = await store.consumeAuthNonce(nonce.nonce, now.toISOString());
+  const consumedAt = clock.now().toISOString();
+  const consumed = await store.consumeAuthNonce(nonce.nonce, consumedAt);
   if (!consumed) {
     throw new ApiError(401, 'Invalid or already used auth nonce.');
   }
@@ -425,6 +500,12 @@ function requestDomain(req: IncomingMessage, url: URL): string {
   return String(req.headers.host || url.host).toLowerCase();
 }
 
+function rateLimitKey(req: IncomingMessage): string {
+  const forwardedFor = firstHeaderValue(req.headers['x-forwarded-for']);
+  const clientIp = forwardedFor?.split(',')[0]?.trim() || req.socket.remoteAddress || 'unknown';
+  return clientIp;
+}
+
 function shouldSetSecureCookie(req: IncomingMessage): boolean {
   return isSecureRequest(req) ||
     process.env.NODE_ENV === 'production' ||
@@ -447,6 +528,12 @@ function isHostedProviderId(value: string): value is HostedProviderId {
 
 function stringField(value: unknown): string {
   return typeof value === 'string' ? value : '';
+}
+
+function firstHeaderValue(value: string | string[] | undefined): string | undefined {
+  const header = Array.isArray(value) ? value[0] : value;
+  const trimmed = header?.trim();
+  return trimmed || undefined;
 }
 
 function writeJson(res: ServerResponse, status: number, payload: unknown): void {
