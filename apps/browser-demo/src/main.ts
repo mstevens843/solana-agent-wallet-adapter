@@ -107,6 +107,7 @@ import './styles.css';
 type StepState = 'idle' | 'active' | 'done' | 'error';
 type StepName = 'discover' | 'connect' | 'sign' | 'transaction' | 'bridge' | 'inbox' | 'lab' | 'ai';
 type ActiveTab = 'overview' | 'wallet' | 'agent' | 'generated' | 'inbox' | 'completed' | 'schedule' | 'labs';
+type CommandCenterView = 'center' | 'ai' | 'storage';
 type ArtifactView = 'create' | 'signed';
 type OneTimePlanView = 'create' | 'review';
 type RecurringView = 'create' | 'active';
@@ -838,6 +839,7 @@ interface PersistedState {
 
 interface DemoState {
   activeTab: ActiveTab;
+  commandCenterView: CommandCenterView;
   oneTimePlanView: OneTimePlanView;
   recurringView: RecurringView;
   artifactView: ArtifactView;
@@ -1429,6 +1431,7 @@ function defaultGuidedDemoState(scenarioId: GuidedDemoScenarioId = 'transfer'): 
 
 const state: DemoState = {
   activeTab: defaultWorkspaceTab,
+  commandCenterView: 'center',
   oneTimePlanView: 'create',
   recurringView: 'create',
   artifactView: 'create',
@@ -3119,8 +3122,6 @@ function appWorkspace(mode: 'app' | 'demo' = 'app'): string {
               ${tabButton('labs', 'Proofs', 'Proofs')}
             </nav>
           </div>
-          ${SHOW_DEV_CONTROLS ? '' : firstRunActionBand()}
-          ${SHOW_DEV_CONTROLS ? '' : trustLayerPanel()}
           <div data-layout="active-panel">${activePanel()}</div>
         </section>
         ${SHOW_DEV_CONTROLS ? contextPanel() : requestContextDetails()}
@@ -3153,13 +3154,14 @@ function firstRunActionBand(): string {
   const steps = firstRunSteps();
   const complete = firstRunComplete(steps);
   const action = firstRunNextAction();
+  const showAction = action.id !== 'discover-wallets' && action.id !== 'connect-wallet';
   const currentStep = steps.find((step) => step.active) ?? steps[steps.length - 1]!;
   const title = complete ? 'Proof saved' : `Next: ${action.label}`;
   const detail = complete
     ? 'Your latest approval proof or receipt is saved in History.'
     : action.detail;
   return `
-    <section class="first-run-band workflow-status-band ${complete ? 'complete compact' : 'compact'}" aria-label="First-time approval flow" data-layout="workflow-status">
+    <section class="first-run-band workflow-status-band ${complete ? 'complete compact' : 'compact'} ${showAction ? '' : 'no-action'}" aria-label="First-time approval flow" data-layout="workflow-status">
       <div class="first-run-copy">
         <span>Approval loop</span>
         <h3>${escapeHtml(title)}</h3>
@@ -3169,7 +3171,7 @@ function firstRunActionBand(): string {
       <div class="first-run-progress" role="list" aria-label="First-time progress">
         ${steps.map((stepItem, index) => firstRunStepItem(stepItem, index, currentStep.id)).join('')}
       </div>
-      <div class="first-run-actions">
+      ${showAction ? `<div class="first-run-actions">
         <button
           type="button"
           class="primary"
@@ -3179,7 +3181,7 @@ function firstRunActionBand(): string {
         >
           ${escapeHtml(action.label)}
         </button>
-      </div>
+      </div>` : ''}
     </section>
   `;
 }
@@ -3585,7 +3587,7 @@ function cloudWorkspaceCard(): string {
         : 'Wallet mismatch'
       : 'Signed out';
   const detail = unavailable
-    ? 'Plans, approvals, and proofs are saved on this device. No localhost is required.'
+    ? 'Plans, approvals, and proofs stay on this device. No localhost required.'
     : signedIn
       ? matched
         ? 'One-time drafts, approvals, and completed history sync through Agentic Cloud.'
@@ -3624,31 +3626,6 @@ function cloudWorkspaceCard(): string {
       </div>
       ${mismatch ? '<p class="rail-cloud-warning">Cloud sessions prove wallet ownership only. They do not grant spending authority.</p>' : ''}
       ${!signedIn && !state.address ? '<p class="rail-cloud-warning">Cloud sign-in uses your wallet as identity only. It does not grant spending authority.</p>' : ''}
-    </section>
-  `;
-}
-
-function aiPlannerRailCard(): string {
-  const configured = isAiConfiguredForCurrentMode();
-  const confirmed = isAiPlannerConfirmedForCurrentSettings();
-  const readinessLabel = aiReadinessLabel(state.aiStatus);
-  const routeLabel = aiRouteStatusLabel(state.aiStatus);
-  const status = confirmed ? 'Confirmed' : configured ? 'Configured' : 'Not configured';
-  const detail = configured
-    ? `${readinessLabel}. AI can draft only; wallet approval stays separate.`
-    : 'Optional. Templates work without AI.';
-  return `
-    <section class="rail-ai-card ${configured ? 'configured' : 'optional'}" aria-label="AI planner status">
-      <div class="rail-ai-card-head">
-        <span>AI drafting</span>
-        <strong>${escapeHtml(status)}</strong>
-      </div>
-      <p>${escapeHtml(detail)}</p>
-      <div class="rail-ai-facts">
-        <span>Route <strong>${escapeHtml(routeLabel)}</strong></span>
-        <span>Impact <strong>Drafting only</strong></span>
-      </div>
-      <button type="button" class="utility" data-first-run-action="open-ai-setup">${configured ? 'Review AI setup' : 'Configure AI'}</button>
     </section>
   `;
 }
@@ -4227,41 +4204,324 @@ function activePanel(): string {
 }
 
 function commandCenterPanel(): string {
+  return `
+    <div class="command-shell">
+      <div class="command-subtab-row" role="tablist" aria-label="Command center sections">
+        ${commandCenterSubtab('center', 'Center', 'Command overview')}
+        ${commandCenterSubtab('ai', 'Connect AI', 'Agent setup')}
+        ${commandCenterSubtab('storage', 'Connect Cloud Storage', 'Cloud and local workspace')}
+      </div>
+      ${state.commandCenterView === 'ai'
+        ? commandCenterAiPanel()
+        : state.commandCenterView === 'storage'
+          ? commandCenterStoragePanel()
+          : commandCenterOverviewPanel()}
+    </div>
+  `;
+}
+
+function commandCenterSubtab(view: CommandCenterView, label: string, detail: string): string {
+  const active = state.commandCenterView === view;
+  return `
+    <button
+      type="button"
+      class="${active ? 'active' : ''}"
+      data-command-center-view="${escapeHtml(view)}"
+      role="tab"
+      aria-selected="${active ? 'true' : 'false'}"
+    >
+      <strong>${escapeHtml(label)}</strong>
+      <span>${escapeHtml(detail)}</span>
+    </button>
+  `;
+}
+
+function commandCenterOverviewPanel(): string {
   const openApprovals = activeWorkflowPreparedActions().filter((action) => !action.archived && isActionInboxActive(action));
   const recurringActive = activeWorkflowRecurringPayments().filter((payment) => payment.status === 'active' && !isRecurringPaymentCompleted(payment));
   const completed = completedPlanRecords();
   const latestProof = state.labArtifacts[0];
   const latestHistory = completed[0];
-  const walletAction = state.address ? 'open-create-plan' : firstRunNextAction().id;
   const proofLabel = latestProof
     ? `${latestProof.title || receiptLabelForKind(latestProof.kind)} - ${short(latestProof.artifactHash)}`
     : latestHistory
       ? `${latestHistory.status} - ${short(latestHistory.actionId ?? latestHistory.signature ?? latestHistory.id)}`
       : 'No proof yet';
   return `
-    <section class="approval-object signature-stage stage-overview stage-anchor ${openApprovals.length ? 'stage-active' : 'stage-draft'}">
-      <div class="signature-object-head command-center-head">
-        ${sectionTitleLine('Approval workspace', 'Draft, review, approve, and prove agent actions from one controlled workspace.')}
-        <div class="command-center-actions">
-          <button type="button" class="primary" data-one-time-view="create">Create Agent Action</button>
-          <button type="button" class="utility" data-tab="labs">Sign Proof</button>
+    <div class="command-overview-stack">
+      ${SHOW_DEV_CONTROLS ? '' : firstRunActionBand()}
+      ${SHOW_DEV_CONTROLS ? '' : trustLayerPanel()}
+      <section class="approval-object signature-stage stage-overview stage-anchor ${openApprovals.length ? 'stage-active' : 'stage-draft'}">
+        <div class="signature-object-head command-center-head">
+          ${sectionTitleLine('Approval workspace', 'Draft, review, approve, and prove agent actions from one controlled workspace.')}
+          <div class="command-center-actions">
+            <button type="button" class="primary" data-one-time-view="create">Create Agent Action</button>
+            <button type="button" class="utility" data-tab="labs">Sign Proof</button>
+          </div>
         </div>
-      </div>
 
-      <div class="command-loop" aria-label="Agentic approval loop">
-        ${commandLoopStep('Draft', 'AI or templates prepare a bounded request.', Boolean(state.agentPlan) || state.generatedPlans.length > 0)}
-        ${commandLoopStep('Review', 'Check amount, route, recipient, risk, and rule.', state.generatedPlans.some(isGeneratedPlanActiveInReview))}
-        ${commandLoopStep('Approve', 'Wallet signs only the visible decision.', openApprovals.length > 0)}
-        ${commandLoopStep('Prove', 'Signed receipts stay attached to history.', completed.length > 0 || state.labArtifacts.length > 0)}
-      </div>
+        <div class="command-loop" aria-label="Agentic approval loop">
+          ${commandLoopStep('Draft', 'AI or templates prepare a bounded request.', Boolean(state.agentPlan) || state.generatedPlans.length > 0)}
+          ${commandLoopStep('Review', 'Check amount, route, recipient, risk, and rule.', state.generatedPlans.some(isGeneratedPlanActiveInReview))}
+          ${commandLoopStep('Approve', 'Wallet signs only the visible decision.', openApprovals.length > 0)}
+          ${commandLoopStep('Prove', 'Signed receipts stay attached to history.', completed.length > 0 || state.labArtifacts.length > 0)}
+        </div>
 
-      <div class="command-center-grid">
-        ${commandCenterCard('Wallet', state.address ? 'Connected' : 'Connect wallet', state.address ? short(state.address) : 'No signing authority granted', state.address ? 'good' : 'warn', walletAction, state.address ? 'Open' : 'Connect')}
-        ${commandCenterCard('Approvals', `${openApprovals.length} pending`, openApprovals[0]?.summary ?? 'No approvals waiting', openApprovals.length ? 'warn' : 'idle', 'open-inbox', openApprovals.length ? 'Review' : 'Open')}
-        ${commandCenterCard('Recurring', `${recurringActive.length} active`, recurringActive[0] ? scheduleLabel(recurringActive[0]) : 'No active recurring schedules', recurringActive.length ? 'good' : 'idle', 'open-recurring', 'Open')}
-        ${commandCenterCard('Proofs', proofLabel, latestProof ? formatDateTime(latestProof.createdAt) : latestHistory ? formatDateTime(latestHistory.completedAt) : 'Create a receipt proof or complete an approval', latestProof || latestHistory ? 'good' : 'idle', 'open-proofs', latestProof || latestHistory ? 'View' : 'Create')}
+        <div class="command-center-grid">
+          ${commandCenterWalletCard()}
+          ${commandCenterCard('Approvals', `${openApprovals.length} pending`, openApprovals[0]?.summary ?? 'No approvals waiting', openApprovals.length ? 'warn' : 'idle', 'open-inbox', openApprovals.length ? 'Review' : 'Open')}
+          ${commandCenterCard('Recurring', `${recurringActive.length} active`, recurringActive[0] ? scheduleLabel(recurringActive[0]) : 'No active recurring schedules', recurringActive.length ? 'good' : 'idle', 'open-recurring', 'Open')}
+          ${commandCenterCard('Proofs', proofLabel, latestProof ? formatDateTime(latestProof.createdAt) : latestHistory ? formatDateTime(latestHistory.completedAt) : 'Create a receipt proof or complete an approval', latestProof || latestHistory ? 'good' : 'idle', 'open-proofs', latestProof || latestHistory ? 'View' : 'Create')}
+        </div>
+      </section>
+    </div>
+  `;
+}
+
+function commandCenterAiPanel(): string {
+  const configured = isAiConfiguredForCurrentMode();
+  const confirmed = isAiPlannerConfirmedForCurrentSettings();
+  return `
+    <div class="command-detail-stack command-ai-panel">
+      <section class="approval-object signature-stage command-page-card">
+        <div class="signature-object-head command-center-head">
+          ${sectionTitleLine('Connect AI', 'Set up the agent route, provider, model, and connection boundary. Workflow actions still require explicit review.')}
+          <div class="command-center-actions">
+            <button type="button" class="primary" data-one-time-view="create">Create Agent Action</button>
+            <button type="button" class="utility" data-command-center-view="storage">Connect Cloud Storage</button>
+          </div>
+        </div>
+
+        <div class="command-route-grid" aria-label="AI route capabilities">
+          ${commandAiRouteCard(
+            'hosted',
+            'Hosted BYOK',
+            'Connect a preset provider key through Agentic for AI agent requests.',
+            'Cloud AI connection',
+          )}
+          ${commandAiRouteCard(
+            'bridge',
+            'Local Bridge AI',
+            'Connect the local runtime so AI agent requests can use this machine.',
+            'Local AI connection',
+          )}
+          ${commandAiRouteCard(
+            'session',
+            IS_ANDROID_APP ? 'Android Session' : 'Browser Session',
+            `Connect a temporary key in ${IS_ANDROID_APP ? 'this app runtime' : 'this tab'} without saving it to Agentic.`,
+            'Session AI connection',
+          )}
+        </div>
+
+        <div class="command-ai-boundary">
+          <strong>${configured ? confirmed ? 'Planner confirmed' : 'Planner configured' : 'Templates work without AI'}</strong>
+          <span>No AI route can approve, submit, sign, move funds, or change workflow authority.</span>
+        </div>
+
+        ${aiSettingsCard('planner')}
+      </section>
+    </div>
+  `;
+}
+
+function commandAiRouteCard(mode: AiSettings['mode'], title: string, detail: string, meta: string): string {
+  const active = state.aiSettings.mode === mode;
+  const disabledReason = aiModeDisabledReason(mode);
+  return `
+    <article class="command-route-card ${active ? 'active' : ''}">
+      <div>
+        <span>${escapeHtml(meta)}</span>
+        <strong>${escapeHtml(title)}</strong>
+        <p>${escapeHtml(detail)}</p>
       </div>
-    </section>
+      <button
+        type="button"
+        class="${active ? 'primary' : 'utility'}"
+        data-ai-mode-choice="${escapeHtml(mode)}"
+        ${disabledReason || state.busy ? 'disabled' : ''}
+        ${disabledReason ? `title="${escapeHtml(disabledReason)}"` : ''}
+      >
+        ${active ? 'Selected' : 'Use route'}
+      </button>
+    </article>
+  `;
+}
+
+function commandCenterStoragePanel(): string {
+  return `
+    <div class="command-detail-stack command-storage-panel">
+      <section class="approval-object signature-stage command-page-card">
+        <div class="signature-object-head command-center-head">
+          ${sectionTitleLine('Connect Cloud Storage', 'Connect Agentic Cloud or the local bridge for workspace storage; signed-out mode stays on this device.')}
+          <div class="command-center-actions">
+            <button type="button" class="primary" data-first-run-action="cloud-sign-in" ${!state.address || state.cloudSession.status === 'unavailable' || state.busy ? 'disabled' : ''}>Sign in</button>
+            <button type="button" class="utility" data-bridge-action="connect" ${!state.address || state.busy ? 'disabled' : ''}>Check local bridge</button>
+          </div>
+        </div>
+
+        <div class="command-storage-grid" aria-label="Workspace storage modes">
+          ${commandStorageDeviceCard()}
+          ${commandStorageCloudCard()}
+          ${commandStorageBridgeCard()}
+        </div>
+
+        <div class="command-storage-note">
+          <strong>Wallet safety</strong>
+          <span>Cloud sign-in uses your wallet as identity only. It does not grant spending authority.</span>
+          <span>Signed-out plans, approvals, and proofs stay on this device. No localhost is required.</span>
+        </div>
+
+        ${!state.bridgeActive ? `
+          <details class="bridge-setup-details command-storage-runtime">
+            <summary>Advanced local setup</summary>
+            ${localRuntimeGuide('storage-runtime-guide')}
+          </details>
+        ` : ''}
+      </section>
+    </div>
+  `;
+}
+
+function commandStorageDeviceCard(): string {
+  const active = activeWorkflowMode() === 'browser-workflow';
+  const signedIn = state.cloudSession.status === 'signed-in';
+  return `
+    <article class="command-storage-card ${active ? 'active' : ''}">
+      <div class="command-storage-card-head">
+        <span>Saved on device</span>
+        <strong>${active ? 'Active' : 'Available'}</strong>
+      </div>
+      <p>Browser-local workflow for signed-out use. Plans, approvals, recurring schedules, and receipts stay here.</p>
+      <div class="command-storage-facts">
+        <span>No localhost</span>
+        <span>No key custody</span>
+      </div>
+      <div class="command-storage-actions">
+        ${signedIn
+          ? `<button type="button" class="utility" data-cloud-action="sign-out" ${state.busy ? 'disabled' : ''}>Sign out to use device</button>`
+          : active
+            ? `<button type="button" class="utility" disabled>Active</button>`
+            : `<button type="button" class="utility" data-workflow-mode="auto" ${state.busy ? 'disabled' : ''}>Use browser storage</button>`}
+      </div>
+    </article>
+  `;
+}
+
+function commandStorageCloudCard(): string {
+  const active = activeWorkflowMode() === 'agentic-cloud';
+  const signedIn = state.cloudSession.status === 'signed-in';
+  const unavailable = state.cloudSession.status === 'unavailable';
+  const matched = cloudSessionMatchesWallet();
+  const status = unavailable
+    ? 'Unavailable'
+    : active
+      ? 'Active'
+      : signedIn
+        ? matched ? 'Signed in' : 'Wallet mismatch'
+        : 'Signed out';
+  const detail = signedIn && !matched
+    ? `Signed in as ${short(state.cloudSession.walletAddress)}. Connect that wallet to use cloud workflow.`
+    : 'Optional sync for one-time drafts, approvals, recurring schedules, and completed history.';
+  return `
+    <article class="command-storage-card ${active ? 'active' : ''}">
+      <div class="command-storage-card-head">
+        <span>Agentic Cloud</span>
+        <strong>${escapeHtml(status)}</strong>
+      </div>
+      <p>${escapeHtml(detail)}</p>
+      <div class="command-storage-facts">
+        <span>Wallet identity only</span>
+        <span>No spending authority</span>
+      </div>
+      <div class="command-storage-actions">
+        ${!state.address
+          ? `<button type="button" class="utility" data-first-run-action="connect-wallet" ${state.busy ? 'disabled' : ''}>Connect wallet</button>`
+          : unavailable
+            ? `<button type="button" class="utility" disabled>Cloud unavailable</button>`
+            : signedIn
+              ? `<button type="button" class="utility" data-cloud-action="sign-out" ${state.busy ? 'disabled' : ''}>Sign out</button>`
+              : `<button type="button" class="primary" data-cloud-action="sign-in" ${state.busy ? 'disabled' : ''}>Sign in</button>`}
+      </div>
+    </article>
+  `;
+}
+
+function commandStorageBridgeCard(): string {
+  const active = activeWorkflowMode() === 'local-bridge';
+  const connected = state.bridgeActive;
+  const status = active ? 'Active' : connected ? 'Connected' : 'Not connected';
+  return `
+    <article class="command-storage-card ${active ? 'active' : ''}">
+      <div class="command-storage-card-head">
+        <span>Private Local Bridge</span>
+        <strong>${escapeHtml(status)}</strong>
+      </div>
+      <p>Use the local runtime when workflow storage should stay on this computer.</p>
+      <div class="command-storage-facts">
+        <span>Endpoint ${escapeHtml(compactEndpoint(state.bridgeUrl))}</span>
+        <span>${state.address ? short(state.address) : 'Wallet required'}</span>
+      </div>
+      <div class="command-storage-actions">
+        ${connected
+          ? active
+            ? `<button type="button" class="utility" data-workflow-mode="auto" ${state.busy ? 'disabled' : ''}>Use cloud/browser</button>`
+            : `<button type="button" class="primary" data-workflow-mode="local-bridge" ${!state.address || state.busy ? 'disabled' : ''}>Use private local mode</button>`
+          : `<button type="button" class="utility" data-bridge-action="connect" ${!state.address || state.busy ? 'disabled' : ''}>Check local bridge</button>`}
+      </div>
+    </article>
+  `;
+}
+
+function commandCenterWalletCard(): string {
+  if (state.address) {
+    return commandCenterCard('Wallet', 'Connected', short(state.address), 'good', 'open-create-plan', 'Open');
+  }
+  const nativeWallet = state.androidNativeEnvironment.isAndroidNative || state.iosNativeEnvironment.isIosNative;
+  if (nativeWallet) {
+    return `
+      <article class="command-center-card command-wallet-card warn">
+        <span>Wallet</span>
+        <strong>Connect wallet</strong>
+        <p>No signing authority granted</p>
+        <div class="command-wallet-actions single">
+          <button type="button" class="primary command-wallet-connect" data-first-run-action="connect-wallet" ${state.busy ? 'disabled' : ''}>
+            Connect wallet
+          </button>
+        </div>
+      </article>
+    `;
+  }
+  const selectedProvider = discoveredSelectedWalletName();
+  const hasDiscoveredWallet = state.wallets.length > 0 && Boolean(selectedProvider);
+  const discoverLabel = state.wallets.length ? 'Refresh' : 'Discover wallets';
+  const detail = hasDiscoveredWallet
+    ? `${state.wallets.length} provider${state.wallets.length === 1 ? '' : 's'} discovered - ${selectedProvider}`
+    : 'No signing authority granted';
+  return `
+    <article class="command-center-card command-wallet-card warn">
+      <span>Wallet</span>
+      <strong>Connect wallet</strong>
+      <p>${escapeHtml(detail)}</p>
+      <div class="command-wallet-actions">
+        <button
+          type="button"
+          class="utility command-wallet-discover ${state.wallets.length ? '' : 'primary'}"
+          data-first-run-action="discover-wallets"
+          ${state.busy ? 'disabled' : ''}
+        >
+          ${escapeHtml(discoverLabel)}
+        </button>
+        <button
+          type="button"
+          class="${hasDiscoveredWallet ? 'primary' : 'utility'} command-wallet-connect"
+          data-first-run-action="connect-wallet"
+          ${hasDiscoveredWallet && !state.busy ? '' : 'disabled'}
+          title="${hasDiscoveredWallet ? 'Connect the selected wallet provider.' : 'Discover and select a wallet provider first.'}"
+        >
+          Connect
+        </button>
+      </div>
+    </article>
   `;
 }
 
@@ -4391,9 +4651,12 @@ function agentPlanPanel(): string {
 
 function oneTimePlanTabs(): string {
   return `
-    <div class="tabs compact-tabs one-time-plan-tabs" role="tablist" aria-label="One-time plan steps">
-      ${oneTimePlanViewButton('create', 'Draft')}
-      ${oneTimePlanViewButton('review', 'Review')}
+    <div class="one-time-plan-control-row">
+      <div class="tabs compact-tabs one-time-plan-tabs" role="tablist" aria-label="One-time plan steps">
+        ${oneTimePlanViewButton('create', 'Draft')}
+        ${oneTimePlanViewButton('review', 'Review')}
+      </div>
+      ${state.oneTimePlanView === 'create' ? templateOutcomeControls('header') : ''}
     </div>
   `;
 }
@@ -4562,21 +4825,28 @@ function generatedPlanCard(record: GeneratedPlanRecord): string {
   const signDisabled = !state.address || state.busy || archived ? 'disabled' : '';
   const queueDisabled = !state.address || !queueable || state.busy || archived ? 'disabled' : '';
   const selected = state.selectedGeneratedPlanId === record.id;
-  const detailsCount = plan.safeguards.length + plan.fields.length + (plan.userNotes ? 1 : 0);
-  const outcome = planOutcome(plan);
   const actionHint = generatedPlanActionHint(record);
-  const primaryIsQueue = queueable;
+  const guardrailBlocked = planGuardrailVerdict(plan) === 'block';
+  const reviewSummary = generatedPlanReviewSummary(record);
+  const metaHint = generatedPlanMetaHint(record, guardrailBlocked);
   return `
     <article class="generated-plan-card review-plan-card ${selected ? 'selected' : ''} ${archived ? 'archived' : ''}" data-layout="review-plan-card">
       <div class="review-plan-card-head">
-        <div class="generated-plan-card-top">
-          <span class="status-pill ${generatedPlanStatusTone(record)}">${escapeHtml(generatedPlanStatusLabel(record))}</span>
-          <span>${escapeHtml(formatDateTime(record.createdAt))}</span>
+        <div class="review-plan-title-block">
+          <div class="review-plan-meta">
+            <span class="status-pill ${generatedPlanStatusTone(record)}">${escapeHtml(generatedPlanStatusLabel(record))}</span>
+            <span>${escapeHtml(record.source === 'ai' ? 'AI draft' : 'Template draft')}</span>
+            <span>${escapeHtml(formatDateTime(record.createdAt))}</span>
+            ${metaHint ? `<span class="review-plan-meta-pill">${escapeHtml(metaHint)}</span>` : ''}
+          </div>
+          <h3>${escapeHtml(generatedPlanReviewTitle(record))}</h3>
+          ${reviewSummary ? `<p>${escapeHtml(reviewSummary)}</p>` : ''}
         </div>
+        ${generatedPlanHeroValue(record)}
         <div class="review-plan-actions">
-          ${primaryIsQueue ? `
+          ${queueable ? `
             <button
-              class="primary"
+              class="review-action-inbox"
               data-generated-plan-action="queue"
               data-generated-plan-id="${escapeHtml(record.id)}"
               ${queueDisabled}
@@ -4584,102 +4854,38 @@ function generatedPlanCard(record: GeneratedPlanRecord): string {
             >
               ${escapeHtml(queueActionLabelForPlan(plan))}
             </button>
-            <button
-              class="utility"
-              data-generated-plan-action="sign-proof"
-              data-generated-plan-id="${escapeHtml(record.id)}"
-              ${signDisabled}
-              title="${escapeHtml(signProofTitle(record))}"
-            >
-              Sign proof
-            </button>
-          ` : `
-            <button
-              class="primary"
-              data-generated-plan-action="sign-proof"
-              data-generated-plan-id="${escapeHtml(record.id)}"
-              ${signDisabled}
-              title="${escapeHtml(signProofTitle(record))}"
-            >
-              Sign review proof
-            </button>
-            <button
-              class="utility"
-              data-generated-plan-action="queue"
-              data-generated-plan-id="${escapeHtml(record.id)}"
-              disabled
-              title="${escapeHtml(generatedQueuePlanTitle(record))}"
-            >
-              Send to Inbox
-            </button>
-          `}
+          ` : ''}
+          <button
+            class="review-action-proof"
+            data-generated-plan-action="sign-proof"
+            data-generated-plan-id="${escapeHtml(record.id)}"
+            ${signDisabled}
+            title="${escapeHtml(signProofTitle(record))}"
+          >
+            Sign proof
+          </button>
         </div>
       </div>
 
-      <div class="review-plan-main">
-        <div class="generated-plan-card-title">
-          <span class="workbench-kicker">${escapeHtml(record.source === 'ai' ? 'AI draft' : 'Template draft')}</span>
-          <h3 title="${escapeHtml(plan.intent)}">${escapeHtml(plan.intent)}</h3>
-        </div>
-        <div class="generated-plan-card-chips">
-          <span title="${escapeHtml(plan.templateTitle)}">${escapeHtml(plan.templateTitle)}</span>
-          <span>${escapeHtml(titleCase(plan.category))}</span>
-          <span>${escapeHtml(outcomeShortLabel(outcome))}</span>
-        </div>
-      </div>
+      ${generatedPlanReviewSummaryGrid(record)}
+      ${generatedPlanUserNote(plan)}
+      ${guardrailBlocked ? actionHint : ''}
 
-      <div class="generated-plan-quick-facts review-plan-facts">
-        ${generatedPlanFact('Network', titleCaseCluster(record.cluster))}
-        ${generatedPlanFact('Wallet', record.walletAddress ? short(record.walletAddress) : 'No wallet')}
-        ${generatedPlanFact('Action', plan.actionType.replace(/_/g, ' '))}
-        ${generatedPlanFact('Risk', plan.risk)}
-      </div>
-
-      ${generatedPlanWalletActionSummary(record)}
-      ${actionHint}
-
-      <details class="generated-plan-inline-details review-plan-details">
-        <summary>${escapeHtml(`${detailsCount + 3} review details`)}</summary>
-        <div>
-          <section>
-            <span>Route</span>
-            <p>${escapeHtml(plan.route)}</p>
-          </section>
-          <section>
-            <span>Approval rule</span>
-            <p>${escapeHtml(plan.approval)}</p>
-          </section>
-          ${planGuardrailStrip(plan)}
-          ${generatedPlanInlineDetailsContent(plan)}
-          ${generatedPlanOutcomeStrip(record)}
-        </div>
-      </details>
-
-      <div class="generated-plan-card-actions">
+      <div class="review-plan-footer-row">
+        <details class="generated-plan-inline-details review-plan-details">
+          <summary>Details</summary>
+          <div class="review-plan-details-body">
+            <dl class="review-detail-list">
+              ${reviewPlanDetailRows(record).map(([label, value]) => reviewPlanDetailRow(label, value)).join('')}
+            </dl>
+            ${planGuardrailStrip(plan)}
+            ${generatedPlanCompactExtras(plan)}
+            ${generatedPlanOutcomeStrip(record)}
+            ${generatedPlanDetailActions(record)}
+          </div>
+        </details>
         <button
-          data-generated-plan-action="reuse"
-          data-generated-plan-id="${escapeHtml(record.id)}"
-          ${state.busy ? 'disabled' : ''}
-        >
-          Use as starting point
-        </button>
-        <button
-          class="utility"
-          data-generated-plan-action="view"
-          data-generated-plan-id="${escapeHtml(record.id)}"
-        >
-          Details
-        </button>
-        <button
-          class="utility"
-          data-generated-plan-action="${archived ? 'restore' : 'archive'}"
-          data-generated-plan-id="${escapeHtml(record.id)}"
-          ${state.busy ? 'disabled' : ''}
-        >
-          ${archived ? 'Restore' : 'Archive'}
-        </button>
-        <button
-          class="utility danger"
+          class="utility danger review-delete-mini"
           data-generated-plan-action="delete"
           data-generated-plan-id="${escapeHtml(record.id)}"
           ${state.busy ? 'disabled' : ''}
@@ -4689,6 +4895,192 @@ function generatedPlanCard(record: GeneratedPlanRecord): string {
       </div>
     </article>
   `;
+}
+
+function generatedPlanReviewTitle(record: GeneratedPlanRecord): string {
+  return record.plan.templateTitle || record.plan.intent;
+}
+
+function generatedPlanReviewSummary(record: GeneratedPlanRecord): string {
+  const plan = record.plan;
+  if (plan.actionType === 'swap') {
+    return '';
+  }
+  if (plan.actionType === 'manual_review') {
+    return 'Prepare the request, expose the route and policy checks, then require a separate wallet approval before signing.';
+  }
+  if (plan.actionType === 'transfer_sol' || plan.actionType === 'transfer_spl' || plan.actionType === 'recurring_payment') {
+    const recipient = planParameter(plan, ['recipient', 'recipientAddress', 'settlementWallet']);
+    const recipientCopy = recipient ? ` to ${short(recipient)}` : '';
+    return `${planAmountSummary(plan)}${recipientCopy}.`;
+  }
+  return compactSentence(plan.route || plan.intent);
+}
+
+function generatedPlanHeroValue(record: GeneratedPlanRecord): string {
+  const plan = record.plan;
+  const metric = reviewPlanMetric(plan);
+  return `
+    <div class="review-plan-value" title="${escapeHtml(`${metric.primary} ${metric.secondary}`.trim())}">
+      <strong>${escapeHtml(metric.primary)}</strong>
+      ${metric.secondary ? `<span>${escapeHtml(metric.secondary)}</span>` : ''}
+    </div>
+  `;
+}
+
+function reviewPlanMetric(plan: AgentPlan): { primary: string; secondary: string } {
+  if (plan.actionType === 'swap') {
+    const amount = planParameter(plan, ['amount', 'inputAmount', 'plannedAmount']) || 'Amount';
+    const input = plan.parameters.inputToken || planParameter(plan, ['token']) || 'Input';
+    const output = plan.parameters.outputToken || 'Output';
+    const slippage = plan.parameters.slippageBps ? `${slippageBpsToPercentInput(plan.parameters.slippageBps)} max` : '';
+    return {
+      primary: `${amount} ${input}`,
+      secondary: `${input} -> ${output}${slippage ? ` · ${slippage}` : ''}`,
+    };
+  }
+  if (plan.actionType === 'transfer_sol' || plan.actionType === 'transfer_spl' || plan.actionType === 'recurring_payment') {
+    return {
+      primary: planAmountSummary(plan),
+      secondary: planRecipientOrRoute(plan),
+    };
+  }
+  if (plan.actionType === 'manual_review') {
+    const amount = planAmountSummary(plan);
+    return {
+      primary: amount === 'n/a' ? 'Review proof' : amount,
+      secondary: compactSentence(plan.templateTitle || 'Manual review', 56),
+    };
+  }
+  return {
+    primary: plan.actionType === 'read_only' ? 'Evidence only' : compactRiskLabel(plan.risk),
+    secondary: compactSentence(plan.templateTitle || plan.actionType.replace(/_/g, ' '), 56),
+  };
+}
+
+function generatedPlanReviewSummaryGrid(record: GeneratedPlanRecord): string {
+  const plan = record.plan;
+  const rows: WalletActionSummaryRow[] = [
+    {
+      label: 'Wallet',
+      value: record.walletAddress || 'No wallet yet',
+      tone: 'wallet',
+      copyValue: record.walletAddress,
+      copyName: 'Wallet address',
+    },
+    { label: plan.actionType === 'swap' ? 'Slippage' : 'Amount', value: plan.actionType === 'swap' ? planSlippageSummary(plan) : planAmountSummary(plan), tone: 'amount' },
+    { label: 'Route', value: planRecipientOrRoute(plan) },
+    { label: 'Risk', value: compactRiskLabel(plan.risk) },
+  ];
+  return `
+    <section class="review-plan-summary" aria-label="Review summary">
+      <dl class="review-plan-summary-grid">
+        ${rows.map(walletActionSummaryRow).join('')}
+      </dl>
+    </section>
+  `;
+}
+
+function generatedPlanUserNote(plan: AgentPlan): string {
+  const note = plan.userNotes?.trim();
+  if (!note) return '';
+  return `
+    <section class="review-plan-user-note" aria-label="User note" title="${escapeHtml(note)}">
+      <span>Note</span>
+      <p>${escapeHtml(note)}</p>
+    </section>
+  `;
+}
+
+function reviewPlanDetailRows(record: GeneratedPlanRecord): Array<[string, string]> {
+  const plan = record.plan;
+  return [
+    ['Intent', compactSentence(plan.intent)],
+    ['Template', plan.templateTitle],
+    ['Network', titleCaseCluster(record.cluster)],
+    ['Action', plan.actionType.replace(/_/g, ' ')],
+    ['Route', compactSentence(plan.route)],
+    ['Rule', compactSentence(plan.approval)],
+    ['Effect', compactSentence(generatedPlanEffectLabel(record))],
+  ];
+}
+
+function reviewPlanDetailRow(label: string, value: string): string {
+  return `
+    <div title="${escapeHtml(value)}">
+      <dt>${escapeHtml(label)}</dt>
+      <dd>${escapeHtml(value)}</dd>
+    </div>
+  `;
+}
+
+function compactRiskLabel(value: string): string {
+  if (/high/i.test(value)) return 'High';
+  if (/medium/i.test(value)) return 'Medium';
+  if (/low/i.test(value)) return 'Low';
+  return compactSentence(value);
+}
+
+function compactSentence(value: string, maxLength = 132): string {
+  const normalized = value.replace(/\s+/g, ' ').trim();
+  if (normalized.length <= maxLength) return normalized;
+  return `${normalized.slice(0, maxLength - 1).trimEnd()}...`;
+}
+
+function planSlippageSummary(plan: AgentPlan): string {
+  const slippage = plan.parameters.slippageBps;
+  return slippage ? `${slippageBpsToPercentInput(slippage)} max` : 'Default';
+}
+
+function generatedPlanCompactExtras(plan: AgentPlan): string {
+  const rows: Array<[string, string]> = [];
+  if (plan.fields.length) {
+    rows.push(['Fields', plan.fields.map((field) => `${field.label}: ${field.value}`).join('; ')]);
+  }
+  if (plan.safeguards.length) {
+    rows.push(['Safeguards', plan.safeguards.join(' ')]);
+  }
+  if (!rows.length) return '';
+  return `
+    <dl class="review-detail-list compact-extra">
+      ${rows.map(([label, value]) => reviewPlanDetailRow(label, compactSentence(value, 180))).join('')}
+    </dl>
+  `;
+}
+
+function generatedPlanDetailActions(record: GeneratedPlanRecord): string {
+  const archived = record.status === 'archived';
+  return `
+    <div class="generated-plan-card-actions review-plan-detail-actions">
+      <button
+        data-generated-plan-action="reuse"
+        data-generated-plan-id="${escapeHtml(record.id)}"
+        ${state.busy ? 'disabled' : ''}
+      >
+        Use as starting point
+      </button>
+      <button
+        class="utility"
+        data-generated-plan-action="view"
+        data-generated-plan-id="${escapeHtml(record.id)}"
+      >
+        Full details
+      </button>
+      <button
+        class="utility"
+        data-generated-plan-action="${archived ? 'restore' : 'archive'}"
+        data-generated-plan-id="${escapeHtml(record.id)}"
+        ${state.busy ? 'disabled' : ''}
+      >
+        ${archived ? 'Restore' : 'Archive'}
+      </button>
+    </div>
+  `;
+}
+
+function generatedPlanMetaHint(record: GeneratedPlanRecord, guardrailBlocked: boolean): string {
+  if (record.status === 'archived' || guardrailBlocked || state.address) return '';
+  return 'Connect wallet to continue';
 }
 
 function generatedPlanInlineDetailsContent(plan: AgentPlan): string {
@@ -4732,19 +5124,22 @@ function generatedPlanDecisionItem(label: string, value: string): string {
   `;
 }
 
+type WalletActionSummaryRow = {
+  label: string;
+  value: string;
+  tone?: 'amount' | 'effect' | 'wallet';
+  copyName?: string;
+  copyValue?: string;
+};
+
 function generatedPlanWalletActionSummary(record: GeneratedPlanRecord): string {
-  const rows: Array<{ label: string; value: string; tone?: 'amount' | 'effect' }> = [
-    { label: 'Type', value: walletActionLabelForPlan(record.plan) },
+  const rows: WalletActionSummaryRow[] = [
+    { label: 'Wallet', value: record.walletAddress || 'No wallet at creation', tone: 'wallet' },
     { label: 'Amount', value: planAmountSummary(record.plan), tone: 'amount' },
     { label: 'Route or recipient', value: planRecipientOrRoute(record.plan) },
-    { label: 'Effect', value: generatedPlanEffectLabel(record), tone: 'effect' },
   ];
   return `
     <section class="wallet-action-summary" aria-label="Wallet action summary">
-      <div class="wallet-action-summary-head">
-        <span>Wallet action</span>
-        <strong>${escapeHtml(canQueueAgentPlan(record.plan) ? 'Review before Inbox' : 'Evidence only')}</strong>
-      </div>
       <dl class="wallet-action-grid">
         ${rows.map(walletActionSummaryRow).join('')}
       </dl>
@@ -4752,11 +5147,23 @@ function generatedPlanWalletActionSummary(record: GeneratedPlanRecord): string {
   `;
 }
 
-function walletActionSummaryRow(row: { label: string; value: string; tone?: 'amount' | 'effect' }): string {
+function walletActionSummaryRow(row: WalletActionSummaryRow): string {
   return `
     <div class="${row.tone ? `wallet-action-${row.tone}` : ''}" title="${escapeHtml(row.value)}">
       <dt>${escapeHtml(row.label)}</dt>
-      <dd>${escapeHtml(row.value)}</dd>
+      <dd class="${row.copyValue ? 'has-copy' : ''}">
+        <span class="wallet-action-value">${escapeHtml(row.value)}</span>
+        ${row.copyValue ? `
+          <button
+            type="button"
+            class="wallet-action-copy"
+            data-copy="${escapeHtml(row.copyValue)}"
+            data-copy-name="${escapeHtml(row.copyName ?? row.label)}"
+          >
+            Copy
+          </button>
+        ` : ''}
+      </dd>
     </div>
   `;
 }
@@ -4831,7 +5238,7 @@ function planAmountSummary(plan: AgentPlan): string {
 
 function planRecipientOrRoute(plan: AgentPlan): string {
   const recipient = planParameter(plan, ['recipient', 'recipientAddress', 'settlementWallet']);
-  if (recipient) return short(recipient);
+  if (recipient) return recipient;
   if (plan.actionType === 'swap') {
     return `${plan.parameters.inputToken || 'input'} -> ${plan.parameters.outputToken || 'output'}`;
   }
@@ -5176,7 +5583,6 @@ function agentPlannerWorkbench(): string {
       <div class="intent-capsule intent-document-card planner-card ${state.agentPlan ? 'plan-linked' : 'draft'}">
         <div class="intent-document-head">
           <div>
-            <span>Plan method</span>
             <h3 class="plan-method-title">
               <span>${escapeHtml(template.title)}</span>
               <small>${escapeHtml(outcomeDetailForTemplate(template))}</small>
@@ -5184,24 +5590,27 @@ function agentPlannerWorkbench(): string {
           </div>
           <strong class="template-outcome-badge ${escapeHtml(outcomeClass(outcome))}">${escapeHtml(outcomeShortLabel(outcome))}</strong>
         </div>
-        ${templateOutcomeControls()}
-        <div class="field compact planner-template-select">
-          <span id="templatePickerLabel">Plan template</span>
-          ${templatePicker(template)}
+        <div class="planner-template-block">
+          <div class="field compact planner-template-select">
+            <span id="templatePickerLabel">Plan template</span>
+            ${templatePicker(template)}
+          </div>
+          <p class="template-description">${escapeHtml(template.description)}</p>
         </div>
-        <div class="agent-actions signature-actions intent-document-actions">
-          <button id="generatePlan" class="primary" ${state.busy ? 'disabled' : ''}>${templateGenerating ? `${buttonSpinner()}Drafting...` : 'Draft from template'}</button>
-          <button id="generateAiPlan" class="${canUseAi ? 'primary' : ''}" ${!canUseAi || state.busy ? 'disabled' : ''} title="${escapeHtml(canUseAi ? 'Draft through your configured AI planner.' : aiDisabledReason)}">${aiGenerating ? `${buttonSpinner()}Drafting...` : 'Draft with AI'}</button>
+        <div class="planner-form-body">
+          <div class="planner-fields">
+            ${template.fields.map(templateFieldInput).join('')}
+          </div>
+          <label class="intent-document planner-prompt">
+            <span>${notesLabel}${notesRequired ? ' *' : ''}</span>
+            <textarea id="agentPrompt" placeholder="${escapeHtml(notesPlaceholder)}" ${state.busy ? 'disabled' : ''}>${escapeHtml(state.agentPrompt)}</textarea>
+            ${fieldError('__notes')}
+          </label>
+          <div class="agent-actions signature-actions intent-document-actions">
+            <button id="generatePlan" class="primary" ${state.busy ? 'disabled' : ''}>${templateGenerating ? `${buttonSpinner()}Drafting...` : 'Draft from template'}</button>
+            <button id="generateAiPlan" class="${canUseAi ? 'primary' : ''}" ${!canUseAi || state.busy ? 'disabled' : ''} title="${escapeHtml(canUseAi ? 'Draft through your configured AI planner.' : aiDisabledReason)}">${aiGenerating ? `${buttonSpinner()}Drafting...` : 'Draft with AI'}</button>
+          </div>
         </div>
-        <p class="template-description">${escapeHtml(template.description)}</p>
-        <div class="planner-fields">
-          ${template.fields.map(templateFieldInput).join('')}
-        </div>
-        <label class="intent-document planner-prompt">
-          <span>${notesLabel}${notesRequired ? ' *' : ''}</span>
-          <textarea id="agentPrompt" placeholder="${escapeHtml(notesPlaceholder)}" ${state.busy ? 'disabled' : ''}>${escapeHtml(state.agentPrompt)}</textarea>
-          ${fieldError('__notes')}
-        </label>
         <div class="intent-policy-strip">
           <span>Where this goes</span>
           <p>Drafts are saved in Review. Approval-ready drafts enter Inbox only after you choose to send them; finished work appears in History.</p>
@@ -5211,25 +5620,39 @@ function agentPlannerWorkbench(): string {
   `;
 }
 
-function templateOutcomeControls(): string {
+function templateOutcomeControls(placement: 'header' | 'inline' = 'inline'): string {
   const filters: Array<[TemplateOutcomeFilter, string]> = [
     ['queueable', 'Can request approval'],
     ['proof', 'Proof only'],
     ['audit', 'Evidence only'],
     ['all', 'All'],
   ];
+  const buttons = filters.map(([filter, label]) => `
+    <button
+      type="button"
+      data-template-filter="${escapeHtml(filter)}"
+      class="${state.templateOutcomeFilter === filter ? 'active' : ''}"
+      ${state.busy ? 'disabled' : ''}
+    >
+      ${escapeHtml(label)}
+    </button>
+  `).join('');
+  if (placement === 'header') {
+    return `
+      <div class="one-time-method-control" role="group" aria-label="Template outcome filter">
+        <span class="one-time-method-label">
+          <strong>Plan method</strong>
+          <em>What this draft can do</em>
+        </span>
+        <div class="template-filter-row one-time-method-filter">
+          ${buttons}
+        </div>
+      </div>
+    `;
+  }
   return `
     <div class="template-filter-row" role="group" aria-label="Template outcome filter">
-      ${filters.map(([filter, label]) => `
-        <button
-          type="button"
-          data-template-filter="${escapeHtml(filter)}"
-          class="${state.templateOutcomeFilter === filter ? 'active' : ''}"
-          ${state.busy ? 'disabled' : ''}
-        >
-          ${escapeHtml(label)}
-        </button>
-      `).join('')}
+      ${buttons}
     </div>
   `;
 }
@@ -5266,7 +5689,7 @@ function aiSettingsPanel(location: 'rail' | 'planner' = 'planner'): string {
         </span>
         <strong>${confirmed ? 'confirmed' : configured ? 'configured' : 'not configured'}</strong>
       </summary>
-      ${aiSettingsCard()}
+      ${aiSettingsCard(location)}
     </details>
   `;
 }
@@ -5369,6 +5792,12 @@ function templateFieldInput(fieldDef: AgentPlanTemplateField): string {
   const disabled = state.busy ? 'disabled' : '';
   const label = `${fieldDef.label}${fieldDef.required ? ' *' : ''}`;
   const error = fieldError(fieldDef.id);
+  if (fieldDef.id === 'slippageBps') {
+    return slippageFieldInput(fieldDef, value, label, error);
+  }
+  if (isTokenSelectField(fieldDef)) {
+    return tokenFieldInput(fieldDef, value, label, error);
+  }
   if (fieldDef.type === 'textarea' || fieldDef.id === 'policy') {
     return `
       <label class="field compact planner-field ${state.templateFieldErrors[fieldDef.id] ? 'field-error' : ''}">
@@ -5405,18 +5834,120 @@ function templateFieldInput(fieldDef: AgentPlanTemplateField): string {
   `;
 }
 
+function slippageFieldInput(fieldDef: AgentPlanTemplateField, value: string, label: string, error: string): string {
+  return `
+    <label class="field compact planner-field ${state.templateFieldErrors[fieldDef.id] ? 'field-error' : ''}">
+      <span>${escapeHtml(label)}</span>
+      <input
+        data-template-slippage-field="${escapeHtml(fieldDef.id)}"
+        value="${escapeHtml(slippageBpsToPercentInput(value))}"
+        placeholder="${escapeHtml(fieldDef.placeholder ?? '0.5%')}"
+        inputmode="decimal"
+        ${state.busy ? 'disabled' : ''}
+      />
+      ${error}
+    </label>
+  `;
+}
+
+function slippageBpsToPercentInput(value: string): string {
+  const bps = Number(value);
+  if (!Number.isFinite(bps) || bps <= 0) return value;
+  const percent = bps / 100;
+  const formatted = Number.isInteger(percent)
+    ? String(percent)
+    : percent.toFixed(4).replace(/0+$/, '').replace(/\.$/, '');
+  return `${formatted}%`;
+}
+
+function slippagePercentInputToBps(value: string): string {
+  const trimmed = value.trim();
+  if (!trimmed) return '';
+  const normalized = trimmed.toLowerCase().replace(/\s+/g, '');
+  const parsed = Number(normalized.replace(/%|bps/g, ''));
+  if (!Number.isFinite(parsed) || parsed < 0) return trimmed;
+  const bps = normalized.includes('bps') ? parsed : parsed * 100;
+  return Number.isInteger(bps)
+    ? String(bps)
+    : bps.toFixed(4).replace(/0+$/, '').replace(/\.$/, '');
+}
+
+function isTokenSelectField(fieldDef: AgentPlanTemplateField): boolean {
+  return fieldDef.type === 'select' &&
+    ['token', 'inputToken', 'outputToken'].includes(fieldDef.id) &&
+    Boolean(fieldDef.options?.length);
+}
+
+function tokenFieldInput(fieldDef: AgentPlanTemplateField, value: string, label: string, error: string): string {
+  const options = fieldDef.options ?? [];
+  const presetMode = options.includes(value);
+  const customValue = presetMode ? '' : value;
+  const disabled = state.busy;
+  return `
+    <div class="field compact planner-field token-choice-field ${state.templateFieldErrors[fieldDef.id] ? 'field-error' : ''}">
+      <span class="token-choice-head">
+        <span>${escapeHtml(label)}</span>
+        <span class="token-choice-mode" role="group" aria-label="${escapeHtml(`${fieldDef.label} input mode`)}">
+          <button
+            type="button"
+            data-token-field-mode="preset"
+            data-token-field-id="${escapeHtml(fieldDef.id)}"
+            class="${presetMode ? 'active' : ''}"
+            ${disabled ? 'disabled' : ''}
+          >
+            List
+          </button>
+          <button
+            type="button"
+            data-token-field-mode="custom"
+            data-token-field-id="${escapeHtml(fieldDef.id)}"
+            class="${presetMode ? '' : 'active'}"
+            ${disabled ? 'disabled' : ''}
+          >
+            Mint
+          </button>
+        </span>
+      </span>
+      ${presetMode ? selectPicker({
+        value,
+        options: options.map((option) => ({
+          value: option,
+          label: option,
+          meta: fieldDef.label,
+        })),
+        attrs: { 'data-template-field': fieldDef.id },
+        disabled,
+      }) : `
+        <input
+          data-template-field="${escapeHtml(fieldDef.id)}"
+          value="${escapeHtml(customValue)}"
+          placeholder="Paste token mint address"
+          autocomplete="off"
+          spellcheck="false"
+          ${disabled ? 'disabled' : ''}
+        />
+      `}
+      ${error}
+    </div>
+  `;
+}
+
 function fieldError(fieldId: string): string {
   const message = state.templateFieldErrors[fieldId] ?? state.recurringErrors[fieldId];
   return message ? `<em class="field-error-text">${escapeHtml(message)}</em>` : '';
 }
 
-function aiSettingsCard(): string {
+function aiSettingsCard(location: 'rail' | 'planner' = 'planner'): string {
   const status = state.aiStatus;
   const providerPreset = aiProviderPresetById(state.aiSettings.provider);
+  const isRail = location === 'rail';
+  const scope = isRail ? 'rail' : 'command';
   const formatLabel = aiFormatLabel(state.aiSettings.apiFormat);
   const customProvider = providerPreset.id === 'custom-openai-compatible';
   const selectedPresetModel = providerPreset.models.find((model) => model.id === state.aiSettings.model);
   const usingCustomModel = !selectedPresetModel;
+  const modeHelperText = aiModeHelperText();
+  const providerHelperText = aiProviderHelperText();
   const routeLabel = aiRouteStatusLabel(status);
   const readinessLabel = aiReadinessLabel(status);
   const confirmationLabel = aiConfirmationLabel();
@@ -5433,40 +5964,43 @@ function aiSettingsCard(): string {
     ? 'Hosted BYOK relays this key only for AI draft requests. It cannot queue approvals, create recurring schedules, approve, submit, or sign.'
     : state.aiSettings.mode === 'bridge'
       ? 'Local bridge AI drafts from your machine only. Approval Inbox, recurring schedules, receipts, and wallet signatures remain separate workflow actions.'
-      : `${IS_ANDROID_APP ? 'Android session' : 'Browser session'} keys stay in ${IS_ANDROID_APP ? 'this app runtime' : 'this tab'} and draft plans only. Queueing, recurring schedules, approvals, submissions, and signatures use the active workflow, not the AI key.`;
+        : `${IS_ANDROID_APP ? 'Android session' : 'Browser session'} keys stay in ${IS_ANDROID_APP ? 'this app runtime' : 'this tab'} and draft plans only. Queueing, recurring schedules, approvals, submissions, and signatures use the active workflow, not the AI key.`;
+  const keyHint = aiProviderKeyHint(providerPreset.id);
   return `
-    <aside class="ai-settings-card">
-      <div>
-        <span class="workbench-kicker">Connect AI Planner</span>
-        <h3>AI drafts plans only</h3>
+    <aside class="ai-settings-card" data-ai-settings-scope="${escapeHtml(scope)}">
+      ${isRail ? '' : `<div>
+        <span class="workbench-kicker">Connect AI</span>
+        <h3>Agent setup</h3>
         <p>${escapeHtml(securityCopy)}</p>
-      </div>
+      </div>`}
       <label class="field compact">
         <span>AI path</span>
         ${selectPicker({
-          id: 'aiMode',
+          id: `aiMode-${scope}`,
           value: state.aiSettings.mode,
           options: aiModeSelectOptions(),
+          attrs: { 'data-ai-control': 'mode' },
           disabled: state.busy,
-          title: aiModeHelperText(),
+          title: modeHelperText,
         })}
-        ${aiModeHelperText() ? `<em class="ai-route-helper">${escapeHtml(aiModeHelperText())}</em>` : ''}
+        ${!isRail && modeHelperText ? `<em class="ai-route-helper">${escapeHtml(modeHelperText)}</em>` : ''}
       </label>
       <label class="field compact">
         <span>Provider preset</span>
         ${selectPicker({
-          id: 'aiProvider',
+          id: `aiProvider-${scope}`,
           value: state.aiSettings.provider,
           options: aiProviderSelectOptions(),
+          attrs: { 'data-ai-control': 'provider' },
           disabled: state.busy,
-          title: aiProviderHelperText(),
+          title: providerHelperText,
         })}
-        ${aiProviderHelperText() ? `<em class="ai-route-helper">${escapeHtml(aiProviderHelperText())}</em>` : ''}
+        ${!isRail && providerHelperText ? `<em class="ai-route-helper">${escapeHtml(providerHelperText)}</em>` : ''}
       </label>
       <label class="field compact">
         <span>Model</span>
         ${selectPicker({
-          id: 'aiModelSelect',
+          id: `aiModelSelect-${scope}`,
           value: usingCustomModel ? CUSTOM_AI_MODEL_VALUE : state.aiSettings.model,
           options: [
             ...providerPreset.models.map((model) => ({
@@ -5476,62 +6010,67 @@ function aiSettingsCard(): string {
             })),
             { value: CUSTOM_AI_MODEL_VALUE, label: 'Custom model', meta: 'Model' },
           ],
+          attrs: { 'data-ai-control': 'model-select' },
           disabled: state.busy,
         })}
       </label>
       ${usingCustomModel ? `
         <label class="field compact">
           <span>Custom model</span>
-          <input id="aiModelCustom" value="${escapeHtml(state.aiSettings.model)}" placeholder="${escapeHtml(providerPreset.model)}" ${state.busy ? 'disabled' : ''} />
+          <input id="aiModelCustom-${escapeHtml(scope)}" data-ai-control="model-custom" value="${escapeHtml(state.aiSettings.model)}" placeholder="${escapeHtml(providerPreset.model)}" ${state.busy ? 'disabled' : ''} />
         </label>
       ` : ''}
       ${customProvider ? `
         <label class="field compact">
           <span>Gateway URL</span>
-          <input id="aiBaseUrl" value="${escapeHtml(state.aiSettings.baseUrl)}" placeholder="${escapeHtml(providerPreset.baseUrl)}" ${state.busy ? 'disabled' : ''} />
+          <input id="aiBaseUrl-${escapeHtml(scope)}" data-ai-control="base-url" value="${escapeHtml(state.aiSettings.baseUrl)}" placeholder="${escapeHtml(providerPreset.baseUrl)}" ${state.busy ? 'disabled' : ''} />
         </label>
       ` : ''}
       <label class="field compact">
         <span>${escapeHtml(keyLabel)}</span>
-        <input id="aiApiKey" type="password" value="${escapeHtml(state.aiSettings.apiKey)}" placeholder="Not saved by default" autocomplete="off" ${state.busy ? 'disabled' : ''} />
-        <em class="ai-route-helper">${escapeHtml(aiProviderKeyHint(providerPreset.id))}</em>
+        <input id="aiApiKey-${escapeHtml(scope)}" data-ai-control="api-key" type="password" value="${escapeHtml(state.aiSettings.apiKey)}" placeholder="Not saved by default" autocomplete="off" ${state.busy ? 'disabled' : ''} />
+        ${!isRail && keyHint ? `<em class="ai-route-helper">${escapeHtml(keyHint)}</em>` : ''}
       </label>
       <div class="ai-actions">
         ${state.aiSettings.mode === 'bridge'
-          ? `<button id="saveBridgeAiKey" ${!canSaveBridgeAiKey() ? 'disabled' : ''}>Set bridge key</button>`
-          : `<button id="saveDirectAiKey" ${!canSaveDirectAiKey() ? 'disabled' : ''}>Use key for drafts</button>`}
-        <button id="confirmAiPlanner" class="utility" ${!canConfirmAiPlanner() ? 'disabled' : ''} title="${escapeHtml(canConfirmAiPlanner() ? 'Confirm planner readiness without creating a plan.' : aiConfirmDisabledReason())}">
+          ? `<button id="saveBridgeAiKey-${escapeHtml(scope)}" data-ai-action="save-bridge-key" ${!canSaveBridgeAiKey() ? 'disabled' : ''}>Set bridge key</button>`
+          : `<button id="saveDirectAiKey-${escapeHtml(scope)}" data-ai-action="save-direct-key" ${!canSaveDirectAiKey() ? 'disabled' : ''}>Use key for drafts</button>`}
+        <button id="confirmAiPlanner-${escapeHtml(scope)}" data-ai-action="confirm-planner" class="utility" ${!canConfirmAiPlanner() ? 'disabled' : ''} title="${escapeHtml(canConfirmAiPlanner() ? 'Confirm planner readiness without creating a plan.' : aiConfirmDisabledReason())}">
           ${confirming ? `${buttonSpinner()}Confirming...` : 'Confirm planner'}
         </button>
-        <button id="clearAiKey" ${!canClearAiKey() ? 'disabled' : ''}>Clear key</button>
-        ${state.aiSettings.mode === 'bridge' ? `<button id="refreshAiStatus" ${state.busy ? 'disabled' : ''}>Refresh</button>` : ''}
+        <button id="clearAiKey-${escapeHtml(scope)}" data-ai-action="clear-key" ${!canClearAiKey() ? 'disabled' : ''}>Clear key</button>
+        ${state.aiSettings.mode === 'bridge' ? `<button id="refreshAiStatus-${escapeHtml(scope)}" data-ai-action="refresh-status" ${state.busy ? 'disabled' : ''}>Refresh</button>` : ''}
       </div>
-      ${aiModeLimitations()}
-      ${state.aiSettings.mode === 'bridge' ? localBridgeConnectionCard(status) : ''}
-      ${state.aiSettings.mode === 'bridge' && !state.bridgeActive && !status?.available ? localRuntimeGuide('ai-runtime-guide') : ''}
-      <div class="ai-confirmation-line">
-        <span>Planner check</span>
-        <strong id="aiConfirmationStatus">${escapeHtml(confirmationLabel)}</strong>
-        <p id="aiConfirmationDetail">${escapeHtml(confirmationDetail)}</p>
-      </div>
-      <div class="ai-status-line">
-        <span>Planner status</span>
-        <strong>${escapeHtml(readinessLabel)}</strong>
-      </div>
-      <div class="ai-status-line">
-        <span>Route</span>
-        <strong>${escapeHtml(routeLabel)}</strong>
-      </div>
-      <div class="ai-status-line">
-        <span>Format</span>
-        <strong>${escapeHtml(formatLabel)}</strong>
-      </div>
-      <div class="ai-status-line">
-        <span>Workflow impact</span>
-        <strong>Drafting only</strong>
-      </div>
-      ${aiDiagnosticsPanel()}
-      <p class="ai-security-note">AI Planner only drafts. Templates, Approval Inbox, recurring schedules, and receipts use the active workflow; private local bridge is optional.</p>
+      ${isRail
+        ? '<p class="ai-security-note compact">Drafts only. Wallet approvals stay separate.</p>'
+        : `
+          ${aiModeLimitations()}
+          ${state.aiSettings.mode === 'bridge' ? localBridgeConnectionCard(status) : ''}
+          ${state.aiSettings.mode === 'bridge' && !state.bridgeActive && !status?.available ? localRuntimeGuide('ai-runtime-guide') : ''}
+          <div class="ai-confirmation-line">
+            <span>Planner check</span>
+            <strong id="aiConfirmationStatus-${escapeHtml(scope)}" data-ai-confirmation-status>${escapeHtml(confirmationLabel)}</strong>
+            <p id="aiConfirmationDetail-${escapeHtml(scope)}" data-ai-confirmation-detail>${escapeHtml(confirmationDetail)}</p>
+          </div>
+          <div class="ai-status-line">
+            <span>Planner status</span>
+            <strong>${escapeHtml(readinessLabel)}</strong>
+          </div>
+          <div class="ai-status-line">
+            <span>Route</span>
+            <strong>${escapeHtml(routeLabel)}</strong>
+          </div>
+          <div class="ai-status-line">
+            <span>Format</span>
+            <strong>${escapeHtml(formatLabel)}</strong>
+          </div>
+          <div class="ai-status-line">
+            <span>Workflow impact</span>
+            <strong>Drafting only</strong>
+          </div>
+          ${aiDiagnosticsPanel()}
+          <p class="ai-security-note">AI Planner only drafts. Templates, Approval Inbox, recurring schedules, and receipts use the active workflow; private local bridge is optional.</p>
+        `}
     </aside>
   `;
 }
@@ -6034,27 +6573,23 @@ function ensureAiProviderAllowedForMode(): void {
 }
 
 function syncAiActionButtons(): void {
-  const saveButton = document.querySelector<HTMLButtonElement>('#saveBridgeAiKey');
-  const directKeyButton = document.querySelector<HTMLButtonElement>('#saveDirectAiKey');
-  const confirmButton = document.querySelector<HTMLButtonElement>('#confirmAiPlanner');
-  const clearButton = document.querySelector<HTMLButtonElement>('#clearAiKey');
   const generateButton = document.querySelector<HTMLButtonElement>('#generateAiPlan');
   const canGenerateAi = canGenerateAiPlanFromSettings();
 
-  if (saveButton) {
+  for (const saveButton of document.querySelectorAll<HTMLButtonElement>('[data-ai-action="save-bridge-key"]')) {
     saveButton.disabled = !canSaveBridgeAiKey();
   }
-  if (directKeyButton) {
+  for (const directKeyButton of document.querySelectorAll<HTMLButtonElement>('[data-ai-action="save-direct-key"]')) {
     directKeyButton.disabled = !canSaveDirectAiKey();
   }
-  if (confirmButton) {
+  for (const confirmButton of document.querySelectorAll<HTMLButtonElement>('[data-ai-action="confirm-planner"]')) {
     const canConfirm = canConfirmAiPlanner();
     confirmButton.disabled = !canConfirm;
     confirmButton.title = canConfirm
       ? 'Confirm planner readiness without creating a plan.'
       : aiConfirmDisabledReason();
   }
-  if (clearButton) {
+  for (const clearButton of document.querySelectorAll<HTMLButtonElement>('[data-ai-action="clear-key"]')) {
     clearButton.disabled = !canClearAiKey();
   }
   if (generateButton) {
@@ -6068,12 +6603,10 @@ function syncAiActionButtons(): void {
 }
 
 function syncAiConfirmationStatusLine(): void {
-  const status = document.querySelector<HTMLElement>('#aiConfirmationStatus');
-  const detail = document.querySelector<HTMLElement>('#aiConfirmationDetail');
-  if (status) {
+  for (const status of document.querySelectorAll<HTMLElement>('[data-ai-confirmation-status]')) {
     status.textContent = aiConfirmationLabel();
   }
-  if (detail) {
+  for (const detail of document.querySelectorAll<HTMLElement>('[data-ai-confirmation-detail]')) {
     detail.textContent = aiConfirmationDetail();
   }
 }
@@ -6297,20 +6830,23 @@ function completedPlanCard(plan: CompletedPlanRecord): string {
   const copyLabel = plan.actionId ? 'Copy receipt JSON' : plan.signature ? 'Copy proof JSON' : 'Copy schedule JSON';
   const focused = state.lastCompletedFocusId === plan.id || Boolean(plan.actionId && state.lastCompletedFocusId === plan.actionId);
   const decisionProofBlock = decisionProofRow(plan);
+  const historyLabel = plan.kind === 'recurring' ? 'Recurring history' : 'One-time history';
   return `
     <article class="generated-plan-card completed-plan-card ${focused ? 'focused' : ''}" ${focused ? 'data-completed-focus="true"' : ''}>
-      <div class="completed-card-head">
-        <div>
-          <div class="generated-plan-card-top">
+      <div class="completed-history-head">
+        <div class="completed-history-title-block">
+          <div class="completed-history-meta">
             <span class="status-pill ${escapeHtml(plan.tone)}">${escapeHtml(plan.status)}</span>
-            <span>${escapeHtml(formatDateTime(plan.completedAt))}</span>
+            <strong class="completed-history-meta-title">${escapeHtml(historyLabel)}</strong>
+            <span>${escapeHtml(plan.kind === 'recurring' ? 'Recurring' : 'One-time')}</span>
+            <span>${escapeHtml(evidenceLabel)}</span>
+            <span>${escapeHtml(titleCaseCluster(plan.cluster))}</span>
           </div>
-          <div class="generated-plan-card-title">
-            <span class="workbench-kicker">${escapeHtml(plan.kind === 'recurring' ? 'Recurring history' : 'One-time history')}</span>
-            <h3 title="${escapeHtml(plan.summary)}">${escapeHtml(plan.title)}</h3>
-          </div>
+          <h3 title="${escapeHtml(plan.title)}">${escapeHtml(completedPlanDisplayTitle(plan))}</h3>
+          <p>${escapeHtml(formatDateTime(plan.completedAt))}</p>
         </div>
-        <div class="completed-header-actions">
+        ${completedPlanHero(plan)}
+        <div class="completed-header-actions completed-history-actions">
           <button data-copy="${escapeHtml(plan.copyPayload)}" data-copy-name="Completed plan">${escapeHtml(copyLabel)}</button>
           ${plan.trustBundlePayload ? `<button data-copy="${escapeHtml(plan.trustBundlePayload)}" data-copy-name="Trust bundle">Copy trust bundle</button>` : ''}
           ${plan.txid ? `<button data-copy="${escapeHtml(plan.txid)}" data-copy-name="Transaction id">Copy txid</button>` : ''}
@@ -6324,34 +6860,128 @@ function completedPlanCard(plan: CompletedPlanRecord): string {
           </button>
         </div>
       </div>
-      <div class="generated-plan-card-chips">
-        <span>${escapeHtml(plan.kind === 'recurring' ? 'Recurring' : 'One-time')}</span>
-        <span>${escapeHtml(evidenceLabel)}</span>
-        <span>${escapeHtml(titleCaseCluster(plan.cluster))}</span>
-      </div>
-      <div class="generated-plan-quick-facts">
-        ${generatedPlanFact('Wallet', plan.walletAddress ? short(plan.walletAddress) : 'No wallet')}
-        ${generatedPlanFact('Amount', plan.amount ? `${plan.amount} ${plan.token ?? ''}`.trim() : 'n/a')}
-        ${generatedPlanFact('Completed', formatDateTime(plan.completedAt))}
-      </div>
-      ${plan.summary ? `<p class="template-description">${escapeHtml(plan.summary)}</p>` : ''}
+      ${completedPlanSummaryGrid(plan)}
+      ${completedPlanSummaryNote(plan)}
       ${decisionProofBlock}
       ${plan.actionId ? relatedReceiptBlockForApproval(plan.actionId) : ''}
-      ${plan.actionId ? recordActivityDetails('approval', plan.actionId) : recordActivityDetails('completed', plan.id)}
-      <div class="generated-plan-outcomes">
-        ${plan.signature ? `<span title="${escapeHtml(plan.signature)}">Proof ${escapeHtml(short(plan.signature))}</span>` : ''}
-        ${plan.txid ? `<span title="${escapeHtml(plan.txid)}">Tx ${escapeHtml(short(plan.txid))}</span>` : ''}
-        ${plan.actionId ? `<span title="${escapeHtml(plan.actionId)}">Receipt ${escapeHtml(short(plan.actionId))}</span>` : ''}
-        ${plan.recurringId ? `<span title="${escapeHtml(plan.recurringId)}">Recurring ${escapeHtml(short(plan.recurringId))}</span>` : ''}
+      <div class="completed-history-drawers">
+        ${plan.actionId ? recordActivityDetails('approval', plan.actionId) : recordActivityDetails('completed', plan.id)}
+        <details class="generated-plan-inline-details completed-plan-details completed-history-details">
+          <summary>View details</summary>
+          <div>
+            <dl class="proof-grid compact">
+              ${plan.detailRows.map(([label, value]) => definitionRow(label, value)).join('')}
+            </dl>
+            ${plan.txid ? txBlock(plan.txid, plan.cluster) : ''}
+          </div>
+        </details>
       </div>
-      <details class="generated-plan-inline-details completed-plan-details">
-        <summary>View details</summary>
-        <dl class="proof-grid compact">
-          ${plan.detailRows.map(([label, value]) => definitionRow(label, value)).join('')}
-        </dl>
-        ${plan.txid ? txBlock(plan.txid, plan.cluster) : ''}
-      </details>
     </article>
+  `;
+}
+
+function completedPlanDisplayTitle(plan: CompletedPlanRecord): string {
+  const title = plan.title.trim();
+  if (!title) return plan.kind === 'recurring' ? 'Recurring history' : 'Completed record';
+  const compactTitle = title.split(':')[0]?.trim() || title;
+  return compactTitle.length <= 54 ? compactTitle : `${compactTitle.slice(0, 51)}...`;
+}
+
+function completedPlanHero(plan: CompletedPlanRecord): string {
+  const metric = completedPlanMetric(plan);
+  return `
+    <div class="completed-history-value" title="${escapeHtml(`${metric.primary} ${metric.secondary}`.trim())}">
+      <strong>${escapeHtml(metric.primary)}</strong>
+      ${metric.secondary ? `<span>${escapeHtml(metric.secondary)}</span>` : ''}
+    </div>
+  `;
+}
+
+function completedPlanMetric(plan: CompletedPlanRecord): { primary: string; secondary: string } {
+  const amount = completedPlanAmountLabel(plan);
+  const swap = parseCompletedSwapAmount(amount);
+  if (swap) {
+    return {
+      primary: swap.primary,
+      secondary: `${swap.from} -> ${swap.to}`,
+    };
+  }
+  return {
+    primary: amount,
+    secondary: plan.recipient ? `To ${short(plan.recipient)}` : formatDateTime(plan.completedAt),
+  };
+}
+
+function completedPlanAmountLabel(plan: CompletedPlanRecord): string {
+  if (!plan.amount) return plan.txid ? `Tx ${short(plan.txid)}` : plan.signature ? `Proof ${short(plan.signature)}` : 'Completed';
+  const token = plan.token?.trim();
+  if (!token || plan.amount.includes(token)) return plan.amount;
+  return `${plan.amount} ${token}`;
+}
+
+function parseCompletedSwapAmount(value: string): { primary: string; from: string; to: string } | null {
+  const match = value.match(/^(.+?\s+([A-Za-z0-9]{2,12}))\s+to\s+(.+)$/i);
+  if (!match || !match[1] || !match[2] || !match[3]) return null;
+  return {
+    primary: match[1].trim(),
+    from: match[2].trim(),
+    to: match[3].trim(),
+  };
+}
+
+function completedPlanRecordRef(plan: CompletedPlanRecord): { label: string; value: string; copyValue?: string } {
+  if (plan.txid) return { label: 'Tx', value: short(plan.txid), copyValue: plan.txid };
+  if (plan.signature) return { label: 'Proof', value: short(plan.signature), copyValue: plan.signature };
+  if (plan.actionId) return { label: 'Receipt', value: short(plan.actionId), copyValue: plan.actionId };
+  if (plan.recurringId) return { label: 'Schedule', value: short(plan.recurringId), copyValue: plan.recurringId };
+  return { label: 'Record', value: 'Local history' };
+}
+
+function completedPlanSummaryGrid(plan: CompletedPlanRecord): string {
+  const record = completedPlanRecordRef(plan);
+  const rows: Array<{ label: string; value: string; title?: string; copyValue?: string; tone?: 'amount' }> = [
+    { label: 'Wallet', value: plan.walletAddress ? short(plan.walletAddress) : 'No wallet', title: plan.walletAddress || 'No wallet', copyValue: plan.walletAddress || undefined },
+    { label: 'Amount', value: completedPlanAmountLabel(plan), tone: 'amount' },
+    { label: 'Completed', value: formatDateTime(plan.completedAt) },
+    { label: record.label, value: record.value, title: record.copyValue || record.value, copyValue: record.copyValue },
+  ];
+  return `
+    <dl class="completed-history-summary-grid" aria-label="Completed history summary">
+      ${rows.map(completedPlanSummaryItem).join('')}
+    </dl>
+  `;
+}
+
+function completedPlanSummaryItem(row: { label: string; value: string; title?: string; copyValue?: string; tone?: 'amount' }): string {
+  const title = row.title ?? row.value;
+  return `
+    <div class="${row.tone ? `completed-history-summary-${row.tone}` : ''}" title="${escapeHtml(title)}">
+      <dt>${escapeHtml(row.label)}</dt>
+      <dd class="${row.copyValue ? 'has-copy' : ''}">
+        <span>${escapeHtml(row.value)}</span>
+        ${row.copyValue ? `
+          <button
+            type="button"
+            class="wallet-action-copy"
+            data-copy="${escapeHtml(row.copyValue)}"
+            data-copy-name="${escapeHtml(row.label)}"
+          >
+            Copy
+          </button>
+        ` : ''}
+      </dd>
+    </div>
+  `;
+}
+
+function completedPlanSummaryNote(plan: CompletedPlanRecord): string {
+  const summary = compactSentence(plan.summary || '');
+  if (!summary || summary === completedPlanDisplayTitle(plan)) return '';
+  return `
+    <section class="completed-history-note" aria-label="Completed history note" title="${escapeHtml(summary)}">
+      <span>Note</span>
+      <p>${escapeHtml(summary)}</p>
+    </section>
   `;
 }
 
@@ -6415,18 +7045,19 @@ function recordActivityDetails(recordType: AuditRecordType, recordId: string): s
       data-audit-record-id="${escapeHtml(recordId)}"
       ${open ? 'open' : ''}
     >
-      <summary>Activity</summary>
-      ${body}
-      <div class="record-activity-actions">
+      <summary>
+        <span>Activity</span>
         <button
           type="button"
+          class="record-activity-refresh"
           data-audit-refresh-record-type="${escapeHtml(recordType)}"
           data-audit-refresh-record-id="${escapeHtml(recordId)}"
           ${state.busy || !cloudSessionMatchesWallet() ? 'disabled' : ''}
         >
-          Refresh activity
+          Refresh
         </button>
-      </div>
+      </summary>
+      ${body}
     </details>
   `;
 }
@@ -6581,6 +7212,7 @@ function createArtifactPanel(): string {
         <div class="artifact-create-status">
           <span class="signature-state">${escapeHtml(labIndexLabel())}</span>
         </div>
+        ${artifactProofGroupTabs(lab)}
         ${labCommandMenu(lab)}
         <div class="lab-workbench-grid">
           <div class="lab-copy research-brief">
@@ -6610,9 +7242,39 @@ function createArtifactPanel(): string {
           <button id="createLabArtifact" class="primary" ${!state.address || state.busy ? 'disabled' : ''}>${publicReceipt ? 'Sign receipt proof' : 'Sign advanced evidence'}</button>
           <span>Your wallet signs this record only. No transaction is submitted.</span>
         </div>
-
-        ${artifact ? labArtifactCard(artifact) : labEmptyState()}
       </div>
+  `;
+}
+
+type ArtifactProofGroup = 'common' | 'advanced';
+
+function artifactProofGroupForLab(lab: LabDefinition): ArtifactProofGroup {
+  return lab.category === 'advanced' ? 'advanced' : 'common';
+}
+
+function artifactProofGroupTabs(lab: LabDefinition): string {
+  const active = artifactProofGroupForLab(lab);
+  return `
+    <div class="tabs compact-tabs artifact-proof-group-tabs" role="tablist" aria-label="Proof category">
+      ${artifactProofGroupButton('common', 'Common Proofs', active)}
+      ${artifactProofGroupButton('advanced', 'Advanced Proofs', active)}
+    </div>
+  `;
+}
+
+function artifactProofGroupButton(group: ArtifactProofGroup, label: string, active: ArtifactProofGroup): string {
+  const selected = group === active;
+  return `
+    <button
+      type="button"
+      data-artifact-proof-group="${group}"
+      class="${selected ? 'active' : ''}"
+      role="tab"
+      aria-selected="${selected ? 'true' : 'false'}"
+      ${state.busy ? 'disabled' : ''}
+    >
+      ${escapeHtml(label)}
+    </button>
   `;
 }
 
@@ -6684,20 +7346,13 @@ function signedArtifactsPanel(): string {
   const artifacts = filteredLabArtifacts();
   return `
     <div class="lab-panel signed-artifacts-panel">
-      <div class="inbox-toolbar signature-toolbar artifact-archive-toolbar">
-        <span class="signature-state">${escapeHtml(`${artifacts.length} visible`)}</span>
-        <button id="refreshLabArtifacts" class="utility" ${state.busy ? 'disabled' : ''}>Refresh</button>
-      </div>
-      ${artifactArchiveControls()}
-      <p class="receipt-copy-helper">Receipt proofs only sign a record. They do not queue, approve, submit, or move funds.</p>
-      <p class="receipt-copy-helper">Each archive card starts with the human proof. Exact signed text and hashes live in Technical details.</p>
-      ${artifactArchiveStatusLine()}
+      ${artifactArchiveControls(artifacts.length)}
       ${artifacts.length ? signedArtifactList(artifacts) : signedArtifactsEmptyState()}
     </div>
   `;
 }
 
-function artifactArchiveControls(): string {
+function artifactArchiveControls(visibleCount: number): string {
   const filters: Array<[ArtifactFilter, string]> = [
     ['all', 'All'],
     ['verified', 'Verified'],
@@ -6705,7 +7360,9 @@ function artifactArchiveControls(): string {
     ['blocked', 'Blocked'],
   ];
   return `
-    <div class="artifact-archive-controls">
+    <div class="artifact-archive-control-panel">
+      <div class="artifact-archive-primary-row">
+        <span class="signature-state artifact-visible-count">${escapeHtml(`${visibleCount} visible`)}</span>
       <div class="template-filter-row artifact-filter-row" role="group" aria-label="Receipt archive filter">
         ${filters.map(([filter, label]) => `
           <button
@@ -6719,7 +7376,6 @@ function artifactArchiveControls(): string {
         `).join('')}
       </div>
       <label class="field compact">
-        <span>Type</span>
         ${selectPicker({
           id: 'artifactTypeFilter',
           value: state.artifactTypeFilter,
@@ -6742,9 +7398,11 @@ function artifactArchiveControls(): string {
         })}
       </label>
       <label class="field compact artifact-search-field">
-        <span>Search</span>
         <input id="artifactSearch" value="${escapeHtml(state.artifactSearch)}" placeholder="Search receipts, type, wallet, hash, or intent" ${state.busy ? 'disabled' : ''} />
       </label>
+        <button id="refreshLabArtifacts" class="utility artifact-refresh-button" ${state.busy ? 'disabled' : ''}>Refresh</button>
+      </div>
+      ${artifactArchiveStatusLine()}
     </div>
   `;
 }
@@ -6822,35 +7480,38 @@ function signedArtifactRow(artifact: LabArtifact): string {
   const proves = receiptProvesText(artifact);
   const signatureHash = `${short(artifact.signature)} / ${short(artifact.artifactHash)}`;
   const searchText = artifactSearchText(artifact);
+  const verdict = artifact.payload.metrics.find((metric) => metric.label.toLowerCase() === 'verdict')?.value ?? (artifact.verified ? 'verified' : 'signed');
   return `
     <article class="signed-artifact-row receipt-proof-card ${legacy ? 'legacy' : ''}" data-artifact-search-text="${escapeHtml(searchText)}">
-      <div class="receipt-proof-head">
-        <div>
-          <div class="artifact-meta-line">
+      <div class="receipt-proof-card-head">
+        <div class="receipt-proof-title-block">
+          <div class="receipt-proof-meta">
             <span class="status-pill ${artifact.verified ? 'tx-confirmed' : 'tx-pending'}">${artifact.verified ? 'wallet verified' : 'signed'}</span>
-            <span>${escapeHtml(receiptLabel)}</span>
-            ${receiptStorageBadges(artifact)}
+            <span class="receipt-proof-type-label">${escapeHtml(labKindLabel(artifact.kind))}</span>
+            <time class="receipt-proof-date" datetime="${escapeHtml(artifact.createdAt)}">${escapeHtml(formatDateTime(artifact.createdAt))}</time>
           </div>
-          <h3>${escapeHtml(artifact.title || receiptLabel)}</h3>
           <p>${escapeHtml(artifact.payload.summary ?? artifact.payload.thesis)}</p>
         </div>
+        <div class="receipt-proof-value" title="${escapeHtml(`${verdict} - ${artifact.artifactHash}`)}">
+          <strong>${escapeHtml(verdict)}</strong>
+          <span>${escapeHtml(short(artifact.artifactHash))}</span>
+        </div>
+        <div class="signed-artifact-actions receipt-proof-actions">
+          <button data-share-receipt="${escapeHtml(artifact.id)}">Share receipt</button>
+          <button data-copy="${escapeHtml(stableJson(artifact))}" data-copy-name="Receipt JSON">Copy JSON</button>
+        </div>
       </div>
-      <dl class="receipt-proof-grid">
-        ${receiptProofRow('What was requested', requested)}
-        ${receiptProofRow('What this proves', proves)}
-        ${receiptProofRow('Signed by', artifact.walletAddress)}
-        ${receiptProofRow('When', formatDateTime(artifact.createdAt))}
-        ${receiptProofRow('Signature / hash', signatureHash, 'code', `${artifact.signature} / ${artifact.artifactHash}`)}
+      <dl class="receipt-proof-summary-grid" aria-label="Receipt proof summary">
+        ${receiptProofSummaryItem('Requested', requested)}
+        ${receiptProofSummaryItem('Proves', proves)}
+        ${receiptProofSummaryItem('Signed by', short(artifact.walletAddress), artifact.walletAddress, artifact.walletAddress)}
+        ${receiptProofSummaryItem('Signature / hash', signatureHash, `${artifact.signature} / ${artifact.artifactHash}`, `${artifact.signature} / ${artifact.artifactHash}`)}
       </dl>
-      <div class="signed-artifact-actions receipt-proof-actions">
-        <button data-share-receipt="${escapeHtml(artifact.id)}">Share receipt</button>
-        <button data-copy="${escapeHtml(stableJson(artifact))}" data-copy-name="Receipt JSON">Copy JSON</button>
-        <details class="generated-plan-more signed-artifact-more">
-          <summary>More</summary>
-          <div>
-            <button class="utility danger" data-artifact-delete="${escapeHtml(artifact.id)}" ${state.busy ? 'disabled' : ''}>Delete</button>
-          </div>
-        </details>
+      <div class="receipt-proof-storage-row" aria-label="Receipt archive destinations">
+        <div class="receipt-proof-storage-badges">
+          ${receiptStorageBadges(artifact)}
+        </div>
+        <button class="utility danger receipt-proof-delete-button" data-artifact-delete="${escapeHtml(artifact.id)}" ${state.busy ? 'disabled' : ''}>Delete</button>
       </div>
       <details class="artifact-technical-details signed-artifact-details">
         <summary>
@@ -6860,6 +7521,27 @@ function signedArtifactRow(artifact: LabArtifact): string {
         ${signedArtifactDetail(artifact)}
       </details>
     </article>
+  `;
+}
+
+function receiptProofSummaryItem(label: string, value: string, title = value, copyValue?: string): string {
+  return `
+    <div title="${escapeHtml(title)}">
+      <dt>${escapeHtml(label)}</dt>
+      <dd class="${copyValue ? 'has-copy' : ''}">
+        <span>${escapeHtml(value)}</span>
+        ${copyValue ? `
+          <button
+            type="button"
+            class="wallet-action-copy"
+            data-copy="${escapeHtml(copyValue)}"
+            data-copy-name="${escapeHtml(label)}"
+          >
+            Copy
+          </button>
+        ` : ''}
+      </dd>
+    </div>
   `;
 }
 
@@ -6936,51 +7618,53 @@ function receiptStorageBadges(artifact: LabArtifact): string {
 
 function signedArtifactDetail(artifact: LabArtifact): string {
   return `
-    <div class="artifact-detail-grid">
-      ${archiveFact('Receipt type', artifact.title)}
-      ${archiveFact('Kind', labKindLabel(artifact.kind))}
-      ${archiveFact('Created', formatDateTime(artifact.createdAt))}
-      ${archiveFact('Cluster', titleCaseCluster(artifact.cluster))}
-      ${archiveFact('Wallet', artifact.walletAddress)}
-      ${archiveFact('Receipt hash', artifact.artifactHash)}
-    </div>
-    <div class="artifact-intent-block">
-      <span>Signed request</span>
-      <p>${escapeHtml(artifact.input)}</p>
-    </div>
-    <div class="artifact-intent-block artifact-signed-message-block">
-      <span>Exact signed text</span>
-      <pre>${escapeHtml(artifact.signingMessage)}</pre>
-    </div>
-    ${artifact.payload.whatThisProves || artifact.payload.recommendedUse ? `
-      <div class="artifact-detail-grid">
-        ${artifact.payload.whatThisProves ? archiveFact('What this proves', artifact.payload.whatThisProves) : ''}
-        ${artifact.payload.recommendedUse ? archiveFact('Recommended use', artifact.payload.recommendedUse) : ''}
+    <div class="receipt-tech-detail">
+      <div class="artifact-detail-actions receipt-tech-actions">
+        <button data-copy="${escapeHtml(artifact.signingMessage)}" data-copy-name="Signed text">Copy signed text</button>
+        <button data-copy="${escapeHtml(artifact.signature)}" data-copy-name="Receipt signature">Copy signature</button>
       </div>
-    ` : ''}
-    <div class="artifact-evidence-row">
-      ${artifactMetricCard(artifact, 'Verdict')}
-      ${artifactMetricCard(artifact, 'Custody')}
-      ${artifactMetricCard(artifact, 'Effect')}
-    </div>
-    <div class="artifact-evidence-list">
-      ${artifact.payload.evidence.map((entry) => `
-        <div class="${escapeHtml(entry.tone)}">
-          <span>${escapeHtml(entry.title)}</span>
-          <p>${escapeHtml(entry.detail)}</p>
-          <code>${escapeHtml(short(entry.hash))}</code>
+      <div class="artifact-detail-grid receipt-tech-id-grid">
+        ${archiveFact('Receipt type', artifact.title)}
+        ${archiveFact('Kind', labKindLabel(artifact.kind))}
+        ${archiveFact('Created', formatDateTime(artifact.createdAt))}
+        ${archiveFact('Cluster', titleCaseCluster(artifact.cluster))}
+        ${archiveFact('Wallet', artifact.walletAddress)}
+        ${archiveFact('Receipt hash', artifact.artifactHash)}
+      </div>
+      <div class="artifact-intent-block receipt-tech-request">
+        <span>Signed request</span>
+        <p>${escapeHtml(artifact.input)}</p>
+      </div>
+      <div class="artifact-intent-block artifact-signed-message-block">
+        <span>Exact signed text</span>
+        <pre>${escapeHtml(artifact.signingMessage)}</pre>
+      </div>
+      ${artifact.payload.whatThisProves || artifact.payload.recommendedUse ? `
+        <div class="artifact-detail-grid receipt-tech-explainer-grid">
+          ${artifact.payload.whatThisProves ? archiveFact('What this proves', artifact.payload.whatThisProves) : ''}
+          ${artifact.payload.recommendedUse ? archiveFact('Recommended use', artifact.payload.recommendedUse) : ''}
         </div>
-      `).join('')}
-    </div>
-    <div class="hash-grid">
-      ${hashTile('Pre-signature', artifact.preSignatureHash)}
-      ${hashTile('Receipt', artifact.artifactHash)}
-      ${hashTile('Signature', artifact.signature)}
-      ${hashTile('Wallet', artifact.walletAddress)}
-    </div>
-    <div class="artifact-detail-actions">
-      <button data-copy="${escapeHtml(artifact.signingMessage)}" data-copy-name="Signed text">Copy signed text</button>
-      <button data-copy="${escapeHtml(artifact.signature)}" data-copy-name="Receipt signature">Copy signature</button>
+      ` : ''}
+      <div class="artifact-evidence-row receipt-tech-metric-row">
+        ${artifactMetricCard(artifact, 'Verdict')}
+        ${artifactMetricCard(artifact, 'Custody')}
+        ${artifactMetricCard(artifact, 'Effect')}
+      </div>
+      <div class="artifact-evidence-list receipt-tech-evidence-list">
+        ${artifact.payload.evidence.map((entry) => `
+          <div class="${escapeHtml(entry.tone)}">
+            <span>${escapeHtml(entry.title)}</span>
+            <p>${escapeHtml(entry.detail)}</p>
+            <code>${escapeHtml(short(entry.hash))}</code>
+          </div>
+        `).join('')}
+      </div>
+      <div class="hash-grid receipt-tech-hash-grid">
+        ${hashTile('Pre-signature', artifact.preSignatureHash)}
+        ${hashTile('Receipt', artifact.artifactHash)}
+        ${hashTile('Signature', artifact.signature)}
+        ${hashTile('Wallet', artifact.walletAddress)}
+      </div>
     </div>
   `;
 }
@@ -6995,6 +7679,9 @@ function labCommandMenu(lab: LabDefinition): string {
 }
 
 function artifactPicker(lab: LabDefinition): string {
+  const activeGroup = artifactProofGroupForLab(lab);
+  const candidates = activeGroup === 'advanced' ? ADVANCED_EVIDENCE_LABS : RECEIPT_LABS;
+  const groupLabel = activeGroup === 'advanced' ? 'Advanced proofs' : 'Common proofs';
   return `
     <div class="template-picker artifact-picker" data-artifact-picker>
       <button
@@ -7021,15 +7708,9 @@ function artifactPicker(lab: LabDefinition): string {
         hidden
       >
         <div class="template-picker-group">
-          <span>Receipt proofs</span>
-          ${RECEIPT_LABS.map((candidate) => artifactPickerOption(candidate, lab)).join('')}
+          <span>${escapeHtml(groupLabel)}</span>
+          ${candidates.map((candidate) => artifactPickerOption(candidate, lab)).join('')}
         </div>
-        <details class="template-picker-group advanced-evidence-picker">
-          <summary>Advanced Evidence Labs</summary>
-          <div>
-            ${ADVANCED_EVIDENCE_LABS.map((candidate) => artifactPickerOption(candidate, lab)).join('')}
-          </div>
-        </details>
       </div>
     </div>
   `;
@@ -7170,6 +7851,17 @@ function bind(): void {
     });
   }
 
+  for (const button of document.querySelectorAll<HTMLButtonElement>('[data-command-center-view]')) {
+    button.addEventListener('click', () => {
+      const view = button.dataset.commandCenterView as CommandCenterView | undefined;
+      if (view !== 'center' && view !== 'ai' && view !== 'storage') return;
+      state.activeTab = 'overview';
+      state.commandCenterView = view;
+      state.error = '';
+      render();
+    });
+  }
+
   for (const button of document.querySelectorAll<HTMLButtonElement>('[data-one-time-view]')) {
     button.addEventListener('click', () => {
       const view = button.dataset.oneTimeView as OneTimePlanView | undefined;
@@ -7302,16 +7994,44 @@ function bind(): void {
       closeGeneratedPlanAuditModal();
     }
   });
-  document.querySelector<HTMLButtonElement>('#saveBridgeAiKey')?.addEventListener('click', runSaveBridgeAiKey);
-  document.querySelector<HTMLButtonElement>('#saveDirectAiKey')?.addEventListener('click', runSaveDirectAiKey);
-  document.querySelector<HTMLButtonElement>('#confirmAiPlanner')?.addEventListener('click', runConfirmAiPlanner);
-  document.querySelector<HTMLButtonElement>('#clearAiKey')?.addEventListener('click', runClearAiKey);
-  document.querySelector<HTMLButtonElement>('#refreshAiStatus')?.addEventListener('click', runRefreshAiStatus);
-  document.querySelector<HTMLDetailsElement>('.ai-settings-panel')?.addEventListener('toggle', (event) => {
-    state.aiSettingsPanelOpen = (event.currentTarget as HTMLDetailsElement).open;
-  });
+  for (const button of document.querySelectorAll<HTMLButtonElement>('[data-ai-action]')) {
+    button.addEventListener('click', () => {
+      switch (button.dataset.aiAction) {
+        case 'save-bridge-key':
+          void runSaveBridgeAiKey();
+          return;
+        case 'save-direct-key':
+          void runSaveDirectAiKey();
+          return;
+        case 'confirm-planner':
+          void runConfirmAiPlanner();
+          return;
+        case 'clear-key':
+          void runClearAiKey();
+          return;
+        case 'refresh-status':
+          void runRefreshAiStatus();
+          return;
+      }
+    });
+  }
+  for (const details of document.querySelectorAll<HTMLDetailsElement>('.ai-settings-panel')) {
+    details.addEventListener('toggle', (event) => {
+      state.aiSettingsPanelOpen = (event.currentTarget as HTMLDetailsElement).open;
+    });
+  }
   document.querySelector<HTMLButtonElement>('#cloudSignIn')?.addEventListener('click', runCloudSignIn);
   document.querySelector<HTMLButtonElement>('#cloudLogout')?.addEventListener('click', runCloudLogout);
+  for (const button of document.querySelectorAll<HTMLButtonElement>('[data-cloud-action]')) {
+    button.addEventListener('click', () => {
+      if (button.dataset.cloudAction === 'sign-in') {
+        void runCloudSignIn();
+      }
+      if (button.dataset.cloudAction === 'sign-out') {
+        void runCloudLogout();
+      }
+    });
+  }
   for (const button of document.querySelectorAll<HTMLButtonElement>('[data-workflow-mode]')) {
     button.addEventListener('click', () => {
       const mode = button.dataset.workflowMode;
@@ -7423,63 +8143,115 @@ function bind(): void {
     });
   }
 
-  document.querySelector<HTMLSelectElement>('#aiMode')?.addEventListener('change', (event) => {
-    const value = (event.currentTarget as HTMLSelectElement).value;
-    const mode: AiSettings['mode'] = value === 'session' || value === 'hosted' ? value : 'bridge';
-    if (aiModeDisabledReason(mode)) {
+  for (const fieldInput of document.querySelectorAll<HTMLInputElement>('[data-template-slippage-field]')) {
+    fieldInput.addEventListener('input', () => {
+      const fieldId = fieldInput.dataset.templateSlippageField;
+      if (!fieldId) return;
+      state.templateFields[fieldId] = slippagePercentInputToBps(fieldInput.value);
+      delete state.templateFieldErrors[fieldId];
+      state.agentPlan = null;
+      state.agentSignature = '';
+      state.agentPreparedActionId = '';
+    });
+    fieldInput.addEventListener('change', () => {
+      const fieldId = fieldInput.dataset.templateSlippageField;
+      if (!fieldId) return;
+      state.templateFields[fieldId] = slippagePercentInputToBps(fieldInput.value);
+      fieldInput.value = slippageBpsToPercentInput(state.templateFields[fieldId] ?? '');
+    });
+  }
+
+  for (const button of document.querySelectorAll<HTMLButtonElement>('[data-token-field-mode]')) {
+    button.addEventListener('click', () => {
+      const fieldId = button.dataset.tokenFieldId;
+      const mode = button.dataset.tokenFieldMode;
+      const fieldDef = selectedTemplate().fields.find((field) => field.id === fieldId);
+      if (!fieldId || !fieldDef || !isTokenSelectField(fieldDef)) return;
+      const options = fieldDef.options ?? [];
+      const current = state.templateFields[fieldId] ?? defaultTemplateFieldValues(selectedTemplate())[fieldId] ?? '';
+      if (mode === 'custom') {
+        state.templateFields[fieldId] = options.includes(current) ? '' : current;
+      } else {
+        state.templateFields[fieldId] = options.includes(current)
+          ? current
+          : fieldDef.defaultValue || options[0] || '';
+      }
+      delete state.templateFieldErrors[fieldId];
+      state.agentPlan = null;
+      state.agentSignature = '';
+      state.agentPreparedActionId = '';
       render();
-      return;
-    }
-    state.aiSettings.mode = mode;
-    ensureAiProviderAllowedForMode();
-    resetAiPlannerConfirmation('AI path changed. Workflow capability is unchanged.');
-    savePersistedState();
-    pushToast('success', 'AI Planner path changed', aiModeToastMessage(mode));
-    render();
-  });
+    });
+  }
 
-  document.querySelector<HTMLSelectElement>('#aiProvider')?.addEventListener('change', (event) => {
-    const preset = aiProviderPresetById((event.currentTarget as HTMLSelectElement).value);
-    if (aiProviderDisabledReason(preset.id)) {
+  for (const button of document.querySelectorAll<HTMLButtonElement>('[data-ai-mode-choice]')) {
+    button.addEventListener('click', () => {
+      const value = button.dataset.aiModeChoice;
+      const mode: AiSettings['mode'] = value === 'session' || value === 'hosted' ? value : 'bridge';
+      setAiPlannerMode(mode);
+    });
+  }
+
+  for (const control of document.querySelectorAll<HTMLSelectElement>('[data-ai-control="mode"]')) {
+    control.addEventListener('change', (event) => {
+      const value = (event.currentTarget as HTMLSelectElement).value;
+      const mode: AiSettings['mode'] = value === 'session' || value === 'hosted' ? value : 'bridge';
+      setAiPlannerMode(mode);
+    });
+  }
+
+  for (const control of document.querySelectorAll<HTMLSelectElement>('[data-ai-control="provider"]')) {
+    control.addEventListener('change', (event) => {
+      const preset = aiProviderPresetById((event.currentTarget as HTMLSelectElement).value);
+      if (aiProviderDisabledReason(preset.id)) {
+        render();
+        return;
+      }
+      state.aiSettings.provider = preset.id;
+      state.aiSettings.apiFormat = preset.apiFormat;
+      state.aiSettings.baseUrl = preset.baseUrl;
+      state.aiSettings.model = preset.model;
+      resetAiPlannerConfirmation('AI provider changed. Confirm planner again if needed.');
+      savePersistedState();
       render();
-      return;
-    }
-    state.aiSettings.provider = preset.id;
-    state.aiSettings.apiFormat = preset.apiFormat;
-    state.aiSettings.baseUrl = preset.baseUrl;
-    state.aiSettings.model = preset.model;
-    resetAiPlannerConfirmation('AI provider changed. Confirm planner again if needed.');
-    savePersistedState();
-    render();
-  });
+    });
+  }
 
-  document.querySelector<HTMLInputElement>('#aiBaseUrl')?.addEventListener('input', (event) => {
-    state.aiSettings.baseUrl = (event.currentTarget as HTMLInputElement).value.trim();
-    resetAiPlannerConfirmation('Gateway changed. Confirm planner again if needed.');
-    savePersistedState();
-    syncAiActionButtons();
-  });
+  for (const control of document.querySelectorAll<HTMLInputElement>('[data-ai-control="base-url"]')) {
+    control.addEventListener('input', (event) => {
+      state.aiSettings.baseUrl = (event.currentTarget as HTMLInputElement).value.trim();
+      resetAiPlannerConfirmation('Gateway changed. Confirm planner again if needed.');
+      savePersistedState();
+      syncAiActionButtons();
+    });
+  }
 
-  document.querySelector<HTMLSelectElement>('#aiModelSelect')?.addEventListener('change', (event) => {
-    const value = (event.currentTarget as HTMLSelectElement).value;
-    state.aiSettings.model = value === CUSTOM_AI_MODEL_VALUE ? '' : value;
-    resetAiPlannerConfirmation('Model changed. Confirm planner again if needed.');
-    savePersistedState();
-    render();
-  });
+  for (const control of document.querySelectorAll<HTMLSelectElement>('[data-ai-control="model-select"]')) {
+    control.addEventListener('change', (event) => {
+      const value = (event.currentTarget as HTMLSelectElement).value;
+      state.aiSettings.model = value === CUSTOM_AI_MODEL_VALUE ? '' : value;
+      resetAiPlannerConfirmation('Model changed. Confirm planner again if needed.');
+      savePersistedState();
+      render();
+    });
+  }
 
-  document.querySelector<HTMLInputElement>('#aiModelCustom')?.addEventListener('input', (event) => {
-    state.aiSettings.model = (event.currentTarget as HTMLInputElement).value.trim();
-    resetAiPlannerConfirmation('Model changed. Confirm planner again if needed.');
-    savePersistedState();
-    syncAiActionButtons();
-  });
+  for (const control of document.querySelectorAll<HTMLInputElement>('[data-ai-control="model-custom"]')) {
+    control.addEventListener('input', (event) => {
+      state.aiSettings.model = (event.currentTarget as HTMLInputElement).value.trim();
+      resetAiPlannerConfirmation('Model changed. Confirm planner again if needed.');
+      savePersistedState();
+      syncAiActionButtons();
+    });
+  }
 
-  document.querySelector<HTMLInputElement>('#aiApiKey')?.addEventListener('input', (event) => {
-    state.aiSettings.apiKey = (event.currentTarget as HTMLInputElement).value;
-    resetAiPlannerConfirmation('AI key changed. Confirm planner again if needed.');
-    syncAiActionButtons();
-  });
+  for (const control of document.querySelectorAll<HTMLInputElement>('[data-ai-control="api-key"]')) {
+    control.addEventListener('input', (event) => {
+      state.aiSettings.apiKey = (event.currentTarget as HTMLInputElement).value;
+      resetAiPlannerConfirmation('AI key changed. Confirm planner again if needed.');
+      syncAiActionButtons();
+    });
+  }
 
   document.querySelector<HTMLTextAreaElement>('#labInput')?.addEventListener('input', (event) => {
     state.labInputs[state.activeLab] = (event.currentTarget as HTMLTextAreaElement).value;
@@ -7513,6 +8285,18 @@ function bind(): void {
       if (view !== 'create' && view !== 'signed') return;
       state.artifactView = view;
       state.error = '';
+      render();
+    });
+  }
+
+  for (const button of document.querySelectorAll<HTMLButtonElement>('[data-artifact-proof-group]')) {
+    button.addEventListener('click', () => {
+      const group = button.dataset.artifactProofGroup as ArtifactProofGroup | undefined;
+      if (group !== 'common' && group !== 'advanced') return;
+      if (artifactProofGroupForLab(activeLab()) === group) return;
+      state.activeLab = group === 'advanced' ? ADVANCED_EVIDENCE_LABS[0]!.id : RECEIPT_LABS[0]!.id;
+      state.error = '';
+      state.labFieldErrors = {};
       render();
     });
   }
@@ -8262,8 +9046,8 @@ async function runFirstRunAction(action: FirstRunActionId): Promise<void> {
       render();
       return;
     case 'open-ai-setup':
-      state.activeTab = 'agent';
-      state.oneTimePlanView = 'create';
+      state.activeTab = 'overview';
+      state.commandCenterView = 'ai';
       state.aiSettingsPanelOpen = true;
       state.generatedPlanAuditId = '';
       state.error = '';
@@ -9671,7 +10455,7 @@ function generatedPlanStatusTone(record: GeneratedPlanRecord): string {
   if (record.status === 'archived') return 'neutral';
   if (record.preparedActionId || record.status === 'queued') return 'tx-pending';
   if (record.signature || record.status === 'signed') return 'tx-confirmed';
-  return 'neutral';
+  return 'needs-review';
 }
 
 function signedGeneratedPlanCount(): number {
@@ -9932,6 +10716,22 @@ function aiModeToastMessage(mode: AiSettings['mode']): string {
   return IS_ANDROID_APP
     ? 'Android session AI drafts plans only and keeps the key in this app runtime.'
     : 'Browser session AI drafts plans only and keeps the key in this tab.';
+}
+
+function setAiPlannerMode(mode: AiSettings['mode']): void {
+  if (aiModeDisabledReason(mode)) {
+    render();
+    return;
+  }
+  if (state.aiSettings.mode === mode) {
+    return;
+  }
+  state.aiSettings.mode = mode;
+  ensureAiProviderAllowedForMode();
+  resetAiPlannerConfirmation('AI path changed. Workflow capability is unchanged.');
+  savePersistedState();
+  pushToast('success', 'AI Planner path changed', aiModeToastMessage(mode));
+  render();
 }
 
 function activeWorkflowMode(): ActiveWorkflowMode {
@@ -11690,6 +12490,11 @@ async function runCreateLabArtifact(): Promise<void> {
       fieldValues,
       signSummary: isPublicReceiptLab(lab) ? lab.title : `${lab.title} evidence`,
     });
+    clearActiveLabDraft();
+    state.artifactFilter = 'all';
+    state.artifactTypeFilter = 'all';
+    state.artifactSearch = '';
+    state.artifactView = 'signed';
     pushToast(
       'success',
       isPublicReceiptLab(lab) ? 'Receipt signed' : 'Evidence signed',
@@ -12543,6 +13348,12 @@ function readTemplateFields(template = selectedTemplate()): Record<string, strin
     const fieldId = input.dataset.templateField;
     if (fieldId) {
       current[fieldId] = input.value;
+    }
+  }
+  for (const input of document.querySelectorAll<HTMLInputElement>('[data-template-slippage-field]')) {
+    const fieldId = input.dataset.templateSlippageField;
+    if (fieldId) {
+      current[fieldId] = slippagePercentInputToBps(input.value);
     }
   }
   state.templateFields = current;
@@ -13811,35 +14622,35 @@ function preparedActionCard(action: PreparedAction): string {
     !executable ||
     Boolean(executionBlockReason);
   return `
-    <article class="inbox-item approval-ticket ${action.status}">
-      <div class="ticket-status-rail ${statusTone(action.status)}"></div>
-      <div class="ticket-body">
-        <div class="ticket-title-row">
-          <div>
-            <div class="pill-row">
+    <article class="inbox-item approval-ticket inbox-approval-card ${action.status}">
+      <div class="ticket-body inbox-approval-body">
+        <div class="inbox-approval-head">
+          <div class="inbox-approval-title-block">
+            <div class="inbox-approval-meta">
               <span class="status-pill ${statusTone(action.status)}">${escapeHtml(action.status)}</span>
-              <span class="status-pill neutral">${escapeHtml(action.kind.replace('_', ' '))}</span>
-              ${action.recurringId ? '<span class="status-pill neutral">recurring</span>' : ''}
+              <strong class="inbox-approval-meta-title">${escapeHtml(preparedActionCardTitle(action))}</strong>
+              <span>${escapeHtml(action.kind.replace(/_/g, ' '))}</span>
+              ${action.recurringId ? '<span>Recurring</span>' : ''}
               ${action.txStatus ? `<span class="status-pill ${txTone(action.txStatus)}">tx ${escapeHtml(action.txStatus)}</span>` : ''}
+              <span>${escapeHtml(inboxApprovalSourceLabel(action))}</span>
             </div>
-            <h3>${escapeHtml(action.summary)}</h3>
-            ${action.note ? `<p class="action-note">${escapeHtml(action.note)}</p>` : ''}
             <p class="ticket-meta-line">${escapeHtml(action.kind)} on ${escapeHtml(action.cluster)} - due ${formatDateTime(action.dueAt)}</p>
           </div>
-          <div class="inbox-actions">
+          ${inboxApprovalHero(action)}
+          <div class="inbox-actions inbox-approval-actions">
             <button data-action-op="execute" data-action-id="${action.id}" class="primary" ${executeDisabled ? 'disabled' : ''} ${executionBlockReason ? `title="${escapeHtml(executionBlockReason)}"` : ''}>${escapeHtml(decisionLabels.approve)}</button>
             ${confirmable ? `<button data-action-op="confirm" data-action-id="${action.id}" class="primary" ${state.busy ? 'disabled' : ''}>Check confirmation</button>` : ''}
             <button class="utility danger" data-action-op="reject" data-action-id="${action.id}" ${state.busy || isTerminalPreparedAction(action) ? 'disabled' : ''}>${escapeHtml(decisionLabels.reject)}</button>
-            <button data-action-op="copy" data-action-id="${action.id}">Copy request</button>
-            <button data-action-op="archive" data-action-id="${action.id}" ${state.busy ? 'disabled' : ''}>Cancel</button>
-            <button class="utility danger" data-action-op="delete" data-action-id="${action.id}" ${state.busy ? 'disabled' : ''}>Delete</button>
           </div>
         </div>
-        ${actionPreview(action)}
+        ${inboxApprovalSummaryGrid(action)}
+        ${inboxApprovalNote(action)}
         ${finalizationChecklist(action)}
-        ${inlineReceiptActions(action)}
+        <div class="inbox-approval-drawers">
+          ${inlineReceiptActions(action)}
+          ${recordActivityDetails('approval', action.id)}
+        </div>
         ${relatedReceiptBlockForApproval(action.id)}
-        ${recordActivityDetails('approval', action.id)}
         ${action.error ? `<p class="error-text">${escapeHtml(action.error)}</p>` : ''}
         ${action.txError ? `<p class="error-text">${escapeHtml(action.txError)}</p>` : ''}
         ${action.txid ? txBlock(action.txid, action.cluster) : ''}
@@ -13848,9 +14659,122 @@ function preparedActionCard(action: PreparedAction): string {
           <p>${escapeHtml(effectCopy)}</p>
         </div>
         ${executionBlockReason ? `<p class="error-text">${escapeHtml(executionBlockReason)}</p>` : ''}
+        <div class="inbox-approval-footer-row">
+          <button class="utility inbox-footer-action" data-action-op="copy" data-action-id="${action.id}">Copy request</button>
+          <button class="utility inbox-footer-action" data-action-op="archive" data-action-id="${action.id}" ${state.busy ? 'disabled' : ''} title="Remove from Inbox without signing a denial proof.">Archive</button>
+          <button class="utility danger recurring-delete-mini" data-action-op="delete" data-action-id="${action.id}" ${state.busy ? 'disabled' : ''}>Delete</button>
+        </div>
       </div>
     </article>
   `;
+}
+
+function preparedActionCardTitle(action: PreparedAction): string {
+  if (action.recurringId) return 'Recurring approval';
+  if (action.kind === 'transfer_sol' || action.kind === 'transfer_spl') return 'Transfer approval';
+  if (action.kind === 'swap') return 'Swap approval';
+  return action.summary;
+}
+
+function inboxApprovalHero(action: PreparedAction): string {
+  const primary = amountLabel(action);
+  const secondary = recipientParam(action)
+    ? `To ${short(recipientParam(action))}`
+    : formatDateTime(action.dueAt);
+  return `
+    <div class="inbox-approval-value" title="${escapeHtml(`${primary} ${secondary}`.trim())}">
+      <strong>${escapeHtml(primary)}</strong>
+      <span>${escapeHtml(secondary)}</span>
+    </div>
+  `;
+}
+
+function inboxApprovalTokenSummary(action: PreparedAction): { value: string; title: string; copyValue?: string } {
+  if (action.kind === 'transfer_sol') {
+    return { value: 'SOL', title: 'SOL', copyValue: 'SOL' };
+  }
+  const token = stringParam(action, 'token');
+  if (token) {
+    return { value: tokenDisplayLabel(token), title: token, copyValue: token };
+  }
+  const inputToken = stringParam(action, 'inputToken');
+  const outputToken = stringParam(action, 'outputToken');
+  if (inputToken || outputToken) {
+    const input = inputToken || 'input';
+    const output = outputToken || 'output';
+    return {
+      value: `${tokenDisplayLabel(input)} -> ${tokenDisplayLabel(output)}`,
+      title: `${input} -> ${output}`,
+      copyValue: `${input} -> ${output}`,
+    };
+  }
+  return { value: 'n/a', title: 'n/a' };
+}
+
+function tokenDisplayLabel(value: string): string {
+  const trimmed = value.trim();
+  if (!looksLikeMintAddress(trimmed)) return trimmed;
+  return `${trimmed.slice(0, 4)}...${trimmed.slice(-4)}`;
+}
+
+function looksLikeMintAddress(value: string): boolean {
+  return /^[1-9A-HJ-NP-Za-km-z]{32,44}$/.test(value);
+}
+
+function inboxApprovalSummaryGrid(action: PreparedAction): string {
+  const recipient = recipientParam(action);
+  const tokenSummary = inboxApprovalTokenSummary(action);
+  const rows: Array<{ label: string; value: string; title?: string; copyValue?: string; tone?: 'amount' }> = [
+    { label: 'Wallet', value: short(action.walletAddress), title: action.walletAddress, copyValue: action.walletAddress },
+    { label: 'Recipient', value: recipient ? short(recipient) : 'n/a', title: recipient || 'n/a', copyValue: recipient || undefined },
+    { label: 'Token', value: tokenSummary.value, title: tokenSummary.title, copyValue: tokenSummary.copyValue },
+    { label: 'Due', value: formatDateTime(action.dueAt) },
+  ];
+  return `
+    <dl class="inbox-approval-summary-grid" aria-label="Approval summary">
+      ${rows.map((row) => inboxApprovalSummaryItem(row)).join('')}
+    </dl>
+  `;
+}
+
+function inboxApprovalSummaryItem(row: { label: string; value: string; title?: string; copyValue?: string; tone?: 'amount' }): string {
+  const title = row.title ?? row.value;
+  return `
+    <div class="${row.tone ? `inbox-approval-summary-${row.tone}` : ''}" title="${escapeHtml(title)}">
+      <dt>${escapeHtml(row.label)}</dt>
+      <dd class="${row.copyValue ? 'has-copy' : ''}">
+        <span>${escapeHtml(row.value)}</span>
+        ${row.copyValue ? `
+          <button
+            type="button"
+            class="wallet-action-copy"
+            data-copy="${escapeHtml(row.copyValue)}"
+            data-copy-name="${escapeHtml(row.label)}"
+          >
+            Copy
+          </button>
+        ` : ''}
+      </dd>
+    </div>
+  `;
+}
+
+function inboxApprovalNote(action: PreparedAction): string {
+  const note = action.note?.trim();
+  if (!note) return '';
+  return `
+    <section class="review-plan-user-note inbox-approval-note" aria-label="Approval note" title="${escapeHtml(note)}">
+      <span>Note</span>
+      <p>${escapeHtml(note)}</p>
+    </section>
+  `;
+}
+
+function inboxApprovalSourceLabel(action: PreparedAction): string {
+  if (action.workflowSource === 'cloud') return 'Cloud';
+  if (action.workflowSource === 'local-bridge') return 'Local bridge';
+  if (action.workflowSource === 'browser' || isBrowserWorkflowId(action.id)) return 'Browser';
+  return 'Local bridge';
 }
 
 function inlineReceiptActions(action: PreparedAction): string {
@@ -14223,39 +15147,175 @@ function recurringCard(payment: RecurringPayment): string {
   const notifications = state.recurringNotificationStatus[payment.id];
   const source = recurringPaymentWorkflowSource(payment);
   return `
-    <article class="recurring-item">
-      <div>
-        <div class="pill-row">
-          <span class="status-pill ${statusLabelToneClass(status.tone)}">${escapeHtml(status.label)}</span>
-          <span class="status-pill neutral">${escapeHtml(payment.cadence)}</span>
-          <span class="recurring-count">${payment.occurrencesCreated ?? 0}${payment.maxOccurrences ? ` of ${payment.maxOccurrences}` : ''}</span>
+    <article class="recurring-item recurring-card">
+      <div class="recurring-card-main">
+        <div class="recurring-card-head">
+          <div class="recurring-card-title-block">
+            <div class="recurring-card-meta">
+              <span class="status-pill ${statusLabelToneClass(status.tone)}">${escapeHtml(status.label)}</span>
+              <span>${escapeHtml(recurringCadenceLabel(payment.cadence))}</span>
+              <span>${escapeHtml(recurringOccurrenceCountLabel(payment))}</span>
+              <span>${escapeHtml(recurringSourceLabel(source))}</span>
+            </div>
+            <h3>${escapeHtml(recurringPaymentTitle(payment))}</h3>
+            <p title="${escapeHtml(payment.recipient)}">To ${escapeHtml(short(payment.recipient))}</p>
+          </div>
+          ${recurringCardHero(payment, nextRuns)}
+          <div class="recurring-actions recurring-card-actions">
+            <button data-recurring-op="${flipOp}" data-recurring-id="${payment.id}" ${completed || state.busy ? 'disabled' : ''}>${payment.status === 'active' ? 'Pause' : 'Resume'}</button>
+            <button data-recurring-op="history" data-recurring-id="${payment.id}" ${state.busy ? 'disabled' : ''}>${history ? 'Refresh history' : 'Load history'}</button>
+          </div>
         </div>
-        <h3>${escapeHtml(payment.amount)} ${escapeHtml(payment.token)} to ${escapeHtml(short(payment.recipient))}</h3>
-        <p>${escapeHtml(scheduleLabel(payment))}</p>
-        <div class="recurring-card-metrics">
-          <span>${escapeHtml(nextRuns[0] ? `Next ${formatDateTime(nextRuns[0])}` : 'No future run preview')}</span>
-          <span>${escapeHtml(lifetimeSpendCopy(spend, payment.token))}</span>
-          ${payment.expiresAt ? `<span>${escapeHtml(`Expires ${formatDateTime(payment.expiresAt)}`)}</span>` : ''}
-          ${payment.notifications?.webhookUrl ? `<span>${escapeHtml(`Webhook ${short(payment.notifications.webhookUrl)}`)}</span>` : ''}
-        </div>
-        ${nextRuns.length ? `
-          <details class="recurring-upcoming-runs">
-            <summary>Upcoming runs</summary>
-            <ol>${nextRuns.map((run) => `<li>${escapeHtml(formatDateTime(run))}</li>`).join('')}</ol>
-          </details>
-        ` : ''}
-        ${recurringHistoryPanel(payment, history)}
-        ${recurringNotificationsPanel(payment, notifications, source)}
-        ${payment.note ? `<p class="action-note">${escapeHtml(payment.note)}</p>` : ''}
-      </div>
-      <div class="recurring-actions">
-        <button data-recurring-op="${flipOp}" data-recurring-id="${payment.id}" ${completed || state.busy ? 'disabled' : ''}>${payment.status === 'active' ? 'Pause' : 'Resume'}</button>
-        <button data-recurring-op="history" data-recurring-id="${payment.id}" ${state.busy ? 'disabled' : ''}>${history ? 'Refresh history' : 'Load history'}</button>
-        ${source === 'cloud' && payment.notifications?.webhookUrl ? `<button data-recurring-op="notifications" data-recurring-id="${payment.id}" ${state.busy ? 'disabled' : ''}>${notifications ? 'Refresh notifications' : 'Notifications'}</button>` : ''}
-        <button data-recurring-op="delete" data-recurring-id="${payment.id}" ${state.busy ? 'disabled' : ''}>Delete</button>
+        ${recurringCardSummaryGrid(payment, nextRuns, spend, source)}
+        ${recurringCardNote(payment)}
+        ${recurringCardFooter(payment, history, notifications, source, nextRuns)}
       </div>
     </article>
   `;
+}
+
+function recurringPaymentTitle(payment: RecurringPayment): string {
+  return payment.token === 'SOL' ? 'Recurring SOL transfer' : `Recurring ${payment.token} transfer`;
+}
+
+function recurringCardHero(payment: RecurringPayment, nextRuns: string[]): string {
+  const nextRun = nextRuns[0] ? `Next ${formatDateTime(nextRuns[0])}` : 'No future run preview';
+  return `
+    <div class="recurring-card-value" title="${escapeHtml(`${payment.amount} ${payment.token} - ${nextRun}`)}">
+      <strong>${escapeHtml(`${payment.amount} ${payment.token}`)}</strong>
+      <span>${escapeHtml(nextRun)}</span>
+    </div>
+  `;
+}
+
+function recurringCardSummaryGrid(
+  payment: RecurringPayment,
+  nextRuns: string[],
+  spend: LifetimeSpend,
+  source: WorkflowRecordSource,
+): string {
+  const nextRun = nextRuns[0] ? formatDateTime(nextRuns[0]) : 'No preview';
+  const rows: Array<{ label: string; value: string; title?: string; copyValue?: string; tone?: 'amount' }> = [
+    { label: 'Recipient', value: short(payment.recipient), title: payment.recipient, copyValue: payment.recipient },
+    { label: 'Next run', value: nextRun },
+    { label: 'Cadence', value: recurringScheduleShortLabel(payment) },
+    { label: 'Limit', value: recurringLimitShortLabel(payment) },
+    { label: 'Rate', value: recurringRateShortLabel(spend, payment.token), tone: 'amount' },
+    { label: 'Source', value: recurringSourceLabel(source) },
+  ];
+  return `
+    <dl class="recurring-card-summary-grid" aria-label="Recurring schedule summary">
+      ${rows.map((row) => recurringCardSummaryItem(row)).join('')}
+    </dl>
+  `;
+}
+
+function recurringCardSummaryItem(row: { label: string; value: string; title?: string; copyValue?: string; tone?: 'amount' }): string {
+  const title = row.title ?? row.value;
+  return `
+    <div class="${row.tone ? `recurring-card-summary-${row.tone}` : ''}" title="${escapeHtml(title)}">
+      <dt>${escapeHtml(row.label)}</dt>
+      <dd class="${row.copyValue ? 'has-copy' : ''}">
+        <span>${escapeHtml(row.value)}</span>
+        ${row.copyValue ? `
+          <button
+            type="button"
+            class="wallet-action-copy"
+            data-copy="${escapeHtml(row.copyValue)}"
+            data-copy-name="${escapeHtml(row.label)}"
+          >
+            Copy
+          </button>
+        ` : ''}
+      </dd>
+    </div>
+  `;
+}
+
+function recurringCardNote(payment: RecurringPayment): string {
+  const note = payment.note?.trim();
+  if (!note) return '';
+  return `
+    <section class="review-plan-user-note recurring-card-note" aria-label="Recurring note" title="${escapeHtml(note)}">
+      <span>Note</span>
+      <p>${escapeHtml(note)}</p>
+    </section>
+  `;
+}
+
+function recurringCardFooter(
+  payment: RecurringPayment,
+  history: RecurringOccurrenceHistoryState | undefined,
+  notifications: RecurringNotificationStatusState | undefined,
+  source: WorkflowRecordSource,
+  nextRuns: string[],
+): string {
+  const completed = isRecurringPaymentCompleted(payment);
+  return `
+    <div class="recurring-card-footer-row">
+      <div class="recurring-card-footer-stack">
+        ${recurringUpcomingRunsDetails(nextRuns)}
+        ${recurringHistoryPanel(payment, history)}
+        ${recurringNotificationsPanel(payment, notifications, source)}
+      </div>
+      <div class="recurring-card-footer-actions">
+        <button class="utility danger recurring-delete-mini" data-recurring-op="delete" data-recurring-id="${payment.id}" ${completed || state.busy ? 'disabled' : ''}>Delete</button>
+      </div>
+    </div>
+  `;
+}
+
+function recurringUpcomingRunsDetails(nextRuns: string[]): string {
+  if (!nextRuns.length) return '';
+  return `
+    <details class="recurring-upcoming-runs">
+      <summary>Upcoming runs</summary>
+      <ol>${nextRuns.map((run) => `<li>${escapeHtml(formatDateTime(run))}</li>`).join('')}</ol>
+    </details>
+  `;
+}
+
+function recurringOccurrenceCountLabel(payment: RecurringPayment): string {
+  const created = payment.occurrencesCreated ?? 0;
+  return payment.maxOccurrences ? `${created} of ${payment.maxOccurrences}` : `${created} created`;
+}
+
+function recurringSourceLabel(source: WorkflowRecordSource): string {
+  switch (source) {
+    case 'cloud':
+      return 'Cloud schedule';
+    case 'local-bridge':
+      return 'Local bridge';
+    default:
+      return 'Browser schedule';
+  }
+}
+
+function recurringScheduleShortLabel(payment: RecurringPayment): string {
+  if (payment.cadence === 'weekly') {
+    const days = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+    return `${days[payment.dayOfWeek ?? -1] ?? 'Weekly'} ${payment.localTime ?? '?'}`;
+  }
+  if (payment.cadence === 'monthly') {
+    return `Day ${payment.dayOfMonth ?? '?'} ${payment.localTime ?? '?'}`;
+  }
+  if (payment.cadence === 'interval_hours') {
+    return `Every ${payment.intervalHours ?? '?'} hr`;
+  }
+  if (payment.cadence === 'interval_minutes') {
+    return `Every ${payment.intervalMinutes ?? '?'} min`;
+  }
+  return `Every ${payment.intervalDays ?? '?'} day`;
+}
+
+function recurringLimitShortLabel(payment: RecurringPayment): string {
+  const created = payment.occurrencesCreated ?? 0;
+  const count = payment.maxOccurrences ? `${created} of ${payment.maxOccurrences}` : 'Indefinite';
+  return payment.expiresAt ? `${count} - expires ${formatDateTime(payment.expiresAt)}` : count;
+}
+
+function recurringRateShortLabel(spend: LifetimeSpend, token: string): string {
+  return `${spend.perWeek} ${token}/week - ${spend.perMonth} ${token}/month`;
 }
 
 function recurringHistoryPanel(
@@ -14265,8 +15325,8 @@ function recurringHistoryPanel(
   if (!history) {
     return `
       <div class="recurring-history-strip">
-        <strong>Occurrence history</strong>
-        <span>Load completed and pending runs for this schedule.</span>
+        <strong>History not loaded</strong>
+        <span>Use Load history to fetch completed and pending runs.</span>
       </div>
     `;
   }

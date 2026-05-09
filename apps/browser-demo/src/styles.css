@@ -2081,6 +2081,10 @@ code {
   padding: 13px 14px;
 }
 
+.first-run-band.no-action {
+  grid-template-columns: minmax(210px, 0.9fr) minmax(360px, 1.35fr);
+}
+
 .first-run-band.complete {
   background: rgba(8, 10, 9, 0.92);
   border-color: var(--line);
@@ -2271,6 +2275,10 @@ code {
 @media (max-width: 1240px) {
   .first-run-band {
     align-items: stretch;
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .first-run-band.no-action {
     grid-template-columns: minmax(0, 1fr);
   }
 
@@ -3062,6 +3070,12 @@ code {
 .status-pill.tx-pending {
   border-color: rgba(214, 168, 79, 0.32);
   color: #e1c178;
+}
+
+.status-pill.needs-review {
+  background: rgba(214, 168, 79, 0.1);
+  border-color: rgba(214, 168, 79, 0.36);
+  color: #f0c875;
 }
 
 .status-pill.tx-failed {
@@ -4462,7 +4476,7 @@ code {
 .wallet-action-grid {
   display: grid;
   gap: 8px;
-  grid-template-columns: minmax(120px, 0.8fr) minmax(130px, 0.9fr) minmax(160px, 1.1fr) minmax(220px, 1.5fr);
+  grid-template-columns: minmax(240px, 1.3fr) minmax(150px, 0.8fr) minmax(180px, 1fr);
   margin: 0;
 }
 
@@ -4489,8 +4503,45 @@ code {
   font-weight: 820;
   line-height: 1.22;
   margin: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
+  overflow-wrap: anywhere;
+}
+
+.wallet-action-grid dd.has-copy,
+.review-plan-summary-grid dd.has-copy {
+  align-items: center;
+  display: grid;
+  gap: 8px;
+  grid-template-columns: minmax(0, 1fr) auto;
+}
+
+.wallet-action-value {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.wallet-action-copy {
+  align-self: center;
+  background: rgba(37, 122, 82, 0.18);
+  border-color: rgba(139, 205, 170, 0.28);
+  border-radius: 999px;
+  color: #d7f7e6;
+  font-size: 0.66rem;
+  font-weight: 900;
+  justify-self: end;
+  min-height: 24px;
+  min-width: 0;
+  padding: 0 9px;
+  width: auto;
+}
+
+.wallet-action-copy:hover:not(:disabled) {
+  background: rgba(63, 189, 131, 0.22);
+  border-color: rgba(139, 205, 170, 0.44);
+}
+
+.wallet-action-grid .wallet-action-wallet dd {
+  font-size: 0.78rem;
+  line-height: 1.28;
 }
 
 .wallet-action-grid .wallet-action-amount {
@@ -4806,10 +4857,19 @@ button.danger:hover:not(:disabled) {
   padding: 0 13px;
 }
 
+.one-time-plan-control-row {
+  align-items: center;
+  display: grid;
+  gap: 10px;
+  grid-template-columns: auto minmax(0, 1fr);
+  margin-bottom: 12px;
+  min-width: 0;
+}
+
 .one-time-plan-tabs {
   justify-content: flex-start;
-  margin-bottom: 12px;
-  width: 100%;
+  min-width: 0;
+  width: fit-content;
 }
 
 .one-time-plan-tabs button {
@@ -4822,8 +4882,15 @@ button.danger:hover:not(:disabled) {
   gap: 12px;
 }
 
-.completed-filter-row {
+.template-filter-row.completed-filter-row {
+  grid-template-columns: repeat(5, minmax(0, 1fr));
   margin-bottom: 12px;
+}
+
+.template-filter-row.completed-filter-row button {
+  min-width: 0;
+  padding-inline: 6px;
+  white-space: nowrap;
 }
 
 .completed-plan-grid {
@@ -4907,6 +4974,10 @@ button.danger:hover:not(:disabled) {
   padding: 0;
 }
 
+.approval-ticket.inbox-approval-card {
+  display: block;
+}
+
 .ticket-status-rail {
   align-self: stretch;
   background: var(--dim);
@@ -4933,12 +5004,213 @@ button.danger:hover:not(:disabled) {
   padding: 14px 14px 14px 0;
 }
 
+.inbox-approval-body {
+  display: grid;
+  gap: 8px;
+  width: 100%;
+}
+
+.inbox-approval-head {
+  align-items: center;
+  display: grid;
+  gap: 10px 14px;
+  grid-template-areas:
+    "title value actions";
+  grid-template-columns: minmax(0, 1fr) minmax(170px, auto) minmax(340px, auto);
+}
+
+.inbox-approval-title-block {
+  display: grid;
+  gap: 5px;
+  grid-area: title;
+  min-width: 0;
+}
+
+.inbox-approval-meta {
+  align-items: center;
+  color: var(--muted);
+  display: flex;
+  flex-wrap: wrap;
+  font-size: 0.76rem;
+  gap: 5px;
+}
+
+.inbox-approval-meta > span:not(.status-pill) {
+  background: rgba(255, 255, 255, 0.032);
+  border: 1px solid rgba(224, 230, 226, 0.08);
+  border-radius: 999px;
+  color: rgba(196, 205, 202, 0.72);
+  display: inline-flex;
+  font-size: 0.68rem;
+  font-weight: 860;
+  line-height: 1;
+  padding: 4px 7px;
+}
+
+.inbox-approval-meta-title {
+  color: #f4f7f5;
+  font-size: 1.04rem;
+  font-weight: 900;
+  line-height: 1.2;
+  overflow-wrap: anywhere;
+}
+
+.inbox-approval-title-block h3 {
+  color: var(--text);
+  font-size: 1.08rem;
+  line-height: 1.22;
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
+.inbox-approval-value {
+  display: grid;
+  gap: 3px;
+  grid-area: value;
+  justify-self: end;
+  min-width: 0;
+  text-align: right;
+}
+
+.inbox-approval-value strong {
+  color: #f4f7f5;
+  font-size: clamp(1.42rem, 2.35vw, 2rem);
+  font-weight: 900;
+  letter-spacing: 0;
+  line-height: 1;
+  white-space: nowrap;
+}
+
+.inbox-approval-value span {
+  color: var(--accent);
+  font-size: 0.86rem;
+  font-weight: 820;
+  line-height: 1.2;
+  overflow-wrap: anywhere;
+}
+
+.inbox-approval-actions {
+  grid-area: actions;
+  justify-self: end;
+}
+
+.inbox-approval-actions button {
+  font-weight: 900;
+  min-height: 40px;
+  min-width: 0;
+  padding: 0 12px;
+  white-space: nowrap;
+}
+
+.inbox-approval-summary-grid {
+  display: grid;
+  gap: 8px;
+  grid-template-columns: minmax(230px, 1.15fr) minmax(230px, 1.15fr) minmax(150px, 0.75fr) minmax(190px, 0.95fr);
+  margin: 0;
+  width: 100%;
+}
+
+.inbox-approval-summary-grid div {
+  background: rgba(255, 255, 255, 0.024);
+  border: 1px solid rgba(224, 230, 226, 0.09);
+  border-radius: 8px;
+  min-height: 48px;
+  min-width: 0;
+  padding: 8px 9px;
+}
+
+.inbox-approval-summary-grid dt {
+  color: var(--dim);
+  font-size: 0.62rem;
+  font-weight: 900;
+  letter-spacing: 0.08em;
+  margin-bottom: 5px;
+  text-transform: uppercase;
+}
+
+.inbox-approval-summary-grid dd {
+  color: var(--text);
+  font-size: 0.88rem;
+  font-weight: 860;
+  line-height: 1.24;
+  margin: 0;
+  overflow: visible;
+  overflow-wrap: anywhere;
+  white-space: normal;
+}
+
+.inbox-approval-summary-grid dd.has-copy {
+  align-items: center;
+  display: grid;
+  gap: 8px;
+  grid-template-columns: minmax(0, 1fr) auto;
+}
+
+.inbox-approval-summary-grid dd.has-copy > span {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.inbox-approval-note {
+  margin: 0;
+}
+
+.inbox-approval-drawers {
+  align-items: start;
+  display: grid;
+  gap: 8px;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.inbox-approval-drawers > details {
+  align-self: start;
+  height: auto;
+  min-height: 32px;
+  padding: 5px 9px;
+}
+
+.inbox-approval-drawers > details > summary {
+  min-height: 100%;
+}
+
+.inbox-approval-drawers .inline-receipt-actions > summary span {
+  display: none;
+}
+
+.inbox-approval-card .approval-effect {
+  background: rgba(255, 255, 255, 0.024);
+  border-color: rgba(224, 230, 226, 0.09);
+  margin-top: 0;
+}
+
+.inbox-approval-footer-row {
+  border-top: 1px solid rgba(224, 230, 226, 0.07);
+  display: flex;
+  flex-wrap: wrap;
+  gap: 7px;
+  justify-content: flex-end;
+  padding-top: 6px;
+}
+
+.inbox-footer-action {
+  font-size: 0.74rem;
+  min-height: 28px;
+  min-width: 0;
+  padding: 0 10px;
+  width: auto;
+}
+
 .approval-ticket h3,
 .recurring-item h3 {
   color: var(--text);
   font-size: 1rem;
   line-height: 1.35;
   margin: 9px 0;
+}
+
+.approval-ticket .inbox-approval-title-block h3,
+.recurring-card-title-block h3 {
+  margin: 0;
 }
 
 .approval-ticket p,
@@ -5162,6 +5434,183 @@ button.danger:hover:not(:disabled) {
   padding: 14px;
 }
 
+.recurring-card {
+  overflow: hidden;
+}
+
+.recurring-card-main {
+  display: grid;
+  gap: 12px;
+  min-width: 0;
+}
+
+.recurring-card-head {
+  align-items: center;
+  display: grid;
+  gap: 14px;
+  grid-template-columns: minmax(0, 1fr) minmax(170px, auto) minmax(220px, auto);
+}
+
+.recurring-card-title-block {
+  display: grid;
+  gap: 7px;
+  min-width: 0;
+}
+
+.recurring-card-meta {
+  align-items: center;
+  color: var(--muted);
+  display: flex;
+  flex-wrap: wrap;
+  font-size: 0.76rem;
+  gap: 7px;
+}
+
+.recurring-card-meta > span:not(.status-pill) {
+  color: rgba(196, 205, 202, 0.64);
+}
+
+.recurring-card-title-block h3 {
+  color: var(--text);
+  font-size: 1.08rem;
+  line-height: 1.22;
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
+.recurring-card-title-block p {
+  color: rgba(224, 230, 226, 0.76);
+  font-size: 0.9rem;
+  line-height: 1.32;
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
+.recurring-card-value {
+  display: grid;
+  gap: 3px;
+  justify-self: end;
+  min-width: 0;
+  text-align: right;
+}
+
+.recurring-card-value strong {
+  color: #f4f7f5;
+  font-size: clamp(1.42rem, 2.35vw, 2rem);
+  font-weight: 900;
+  letter-spacing: 0;
+  line-height: 1;
+  white-space: nowrap;
+}
+
+.recurring-card-value span {
+  color: var(--accent);
+  font-size: 0.86rem;
+  font-weight: 820;
+  line-height: 1.2;
+  overflow-wrap: anywhere;
+}
+
+.recurring-card-actions {
+  justify-self: end;
+}
+
+.recurring-card-actions button {
+  flex: 0 1 auto;
+  font-weight: 900;
+  min-height: 40px;
+  min-width: 0;
+  padding: 0 12px;
+  white-space: nowrap;
+}
+
+.recurring-card-summary-grid {
+  display: grid;
+  gap: 8px;
+  grid-template-columns: minmax(190px, 1.1fr) minmax(160px, 0.9fr) minmax(126px, 0.7fr) minmax(118px, 0.64fr) minmax(190px, 1fr) minmax(118px, 0.64fr);
+  margin: 0;
+}
+
+.recurring-card-summary-grid div {
+  background: rgba(255, 255, 255, 0.024);
+  border: 1px solid rgba(224, 230, 226, 0.09);
+  border-radius: 8px;
+  min-height: 48px;
+  min-width: 0;
+  padding: 8px 9px;
+}
+
+.recurring-card-summary-grid dt {
+  color: var(--dim);
+  font-size: 0.62rem;
+  font-weight: 900;
+  letter-spacing: 0.08em;
+  margin-bottom: 5px;
+  text-transform: uppercase;
+}
+
+.recurring-card-summary-grid dd {
+  color: var(--text);
+  font-size: 0.88rem;
+  font-weight: 860;
+  line-height: 1.24;
+  margin: 0;
+  overflow: visible;
+  overflow-wrap: anywhere;
+  text-overflow: clip;
+  white-space: normal;
+}
+
+.recurring-card-summary-grid dd.has-copy {
+  align-items: center;
+  display: grid;
+  gap: 8px;
+  grid-template-columns: minmax(0, 1fr) auto;
+}
+
+.recurring-card-summary-grid dd.has-copy > span {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.recurring-card-summary-grid .recurring-card-summary-amount dd {
+  color: #c9f4dc;
+}
+
+.recurring-card-note {
+  margin: 0;
+}
+
+.recurring-card-footer-row {
+  border-top: 1px solid rgba(224, 230, 226, 0.07);
+  display: grid;
+  gap: 10px;
+  grid-template-columns: minmax(0, 1fr) auto;
+  padding-top: 7px;
+}
+
+.recurring-card-footer-stack {
+  display: grid;
+  gap: 8px;
+  min-width: 0;
+}
+
+.recurring-card-footer-actions {
+  align-items: start;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 7px;
+  justify-content: flex-end;
+}
+
+.recurring-delete-mini {
+  font-size: 0.74rem;
+  min-height: 28px;
+  min-width: 0;
+  padding: 0 10px;
+  width: auto;
+}
+
 .lab-workbench {
   background: transparent;
   border: 0;
@@ -5173,6 +5622,14 @@ button.danger:hover:not(:disabled) {
 
 .lab-select-field {
   max-width: 460px;
+}
+
+.artifact-proof-group-tabs {
+  max-width: 460px;
+}
+
+.artifact-proof-group-tabs button {
+  flex: 1 1 0;
 }
 
 .lab-select-field select {
@@ -5331,14 +5788,45 @@ button.danger:hover:not(:disabled) {
   gap: 8px;
 }
 
-.artifact-archive-controls {
+.artifact-archive-control-panel {
   display: grid;
-  gap: 10px;
-  grid-template-columns: minmax(0, 1fr) minmax(160px, 0.36fr) minmax(220px, 0.52fr);
+  gap: 4px;
+  padding-bottom: 4px;
+}
+
+.artifact-archive-primary-row {
+  align-items: center;
+  display: grid;
+  gap: 8px;
+  grid-template-columns: auto minmax(360px, 1fr) minmax(170px, 0.42fr) minmax(260px, 0.68fr) auto;
+}
+
+.artifact-visible-count {
+  align-self: center;
+  white-space: nowrap;
+}
+
+.artifact-archive-primary-row .field {
+  margin: 0;
+}
+
+.artifact-archive-primary-row .field.compact > span {
+  font-size: 0.58rem;
+  margin-bottom: 2px;
 }
 
 .artifact-filter-row {
-  align-self: end;
+  align-self: center;
+  display: grid;
+  gap: 8px;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  margin: 0;
+}
+
+.artifact-refresh-button {
+  align-self: center;
+  min-height: 40px;
+  white-space: nowrap;
 }
 
 .receipt-copy-helper {
@@ -5550,18 +6038,18 @@ button.danger:hover:not(:disabled) {
 
 .signed-artifacts-panel {
   display: grid;
-  gap: 12px;
+  gap: 10px;
 }
 
 .artifact-archive-status {
   align-items: center;
   border-bottom: 1px solid rgba(224, 230, 226, 0.065);
+  border-top: 1px solid rgba(224, 230, 226, 0.055);
   color: var(--muted);
-  display: flex;
-  flex-wrap: wrap;
-  gap: 8px 14px;
-  justify-content: space-between;
-  padding-bottom: 12px;
+  display: grid;
+  gap: 4px 12px;
+  grid-template-columns: minmax(160px, 0.45fr) minmax(240px, 1fr) minmax(170px, 0.5fr);
+  padding: 4px 0 5px;
 }
 
 .artifact-archive-status span,
@@ -5609,7 +6097,7 @@ button.danger:hover:not(:disabled) {
   font-size: 0.66rem;
   font-weight: 700;
   letter-spacing: 0.05em;
-  margin-left: 6px;
+  margin-left: 0;
   padding: 2px 8px;
   text-transform: uppercase;
 }
@@ -5640,6 +6128,12 @@ button.danger:hover:not(:disabled) {
 .receipt-storage-badge.bridge.off {
   background: transparent;
   color: rgba(196, 205, 202, 0.45);
+}
+
+.receipt-storage-badge.receipt-type {
+  background: rgba(255, 255, 255, 0.045);
+  border-color: rgba(224, 230, 226, 0.09);
+  color: rgba(213, 223, 219, 0.82);
 }
 
 .signed-artifact-list {
@@ -5736,28 +6230,209 @@ button.danger:hover:not(:disabled) {
 }
 
 .signed-artifact-row.receipt-proof-card {
+  gap: 8px;
   grid-template-columns: minmax(0, 1fr);
+  padding: 10px 12px;
 }
 
-.receipt-proof-head {
-  align-items: start;
-  display: flex;
-  gap: 12px;
-  justify-content: space-between;
+.receipt-proof-card-head {
+  align-items: center;
+  display: grid;
+  gap: 10px 14px;
+  grid-template-columns: minmax(0, 1fr) minmax(210px, auto) minmax(226px, auto);
   min-width: 0;
 }
 
-.receipt-proof-head h3 {
-  color: var(--text);
-  font-size: 1.04rem;
-  line-height: 1.24;
-  margin: 7px 0 6px;
+.receipt-proof-title-block {
+  display: grid;
+  gap: 5px;
+  min-width: 0;
 }
 
-.receipt-proof-head p {
+.receipt-proof-meta {
+  align-items: center;
   color: var(--muted);
-  line-height: 1.42;
+  display: flex;
+  flex-wrap: wrap;
+  font-size: 0.76rem;
+  gap: 7px;
+}
+
+.receipt-proof-meta > span:not(.status-pill):not(.receipt-storage-badge):not(.receipt-proof-type-label) {
+  background: rgba(255, 255, 255, 0.045);
+  border: 1px solid rgba(224, 230, 226, 0.09);
+  border-radius: 999px;
+  color: rgba(213, 223, 219, 0.82);
+  display: inline-flex;
+  font-size: 0.68rem;
+  font-weight: 860;
+  line-height: 1;
+  min-height: 22px;
+  padding: 4px 7px;
+}
+
+.receipt-proof-type-label {
+  color: #f4f7f5;
+  font-size: clamp(1.36rem, 2.1vw, 1.85rem);
+  font-weight: 900;
+  letter-spacing: 0.04em;
+  line-height: 1.2;
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+
+.receipt-proof-meta-title {
+  color: #f4f7f5;
+  font-size: 1.02rem;
+  font-weight: 900;
+  line-height: 1.2;
+  overflow-wrap: anywhere;
+}
+
+.receipt-proof-title-block h3 {
+  color: var(--text);
+  font-size: 1.08rem;
+  line-height: 1.22;
   margin: 0;
+  overflow-wrap: anywhere;
+}
+
+.receipt-proof-date {
+  color: rgba(213, 223, 219, 0.82);
+  font-size: 0.78rem;
+  font-weight: 880;
+  line-height: 1.2;
+  white-space: nowrap;
+}
+
+.receipt-proof-title-block p {
+  color: var(--muted);
+  font-size: 0.9rem;
+  line-height: 1.32;
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
+.receipt-proof-value {
+  display: grid;
+  gap: 3px;
+  justify-self: end;
+  margin-right: 22px;
+  min-width: 0;
+  text-align: right;
+}
+
+.receipt-proof-value strong {
+  color: #f4f7f5;
+  font-size: clamp(1.36rem, 2.1vw, 1.85rem);
+  font-weight: 900;
+  letter-spacing: 0;
+  line-height: 1;
+  text-transform: lowercase;
+  white-space: nowrap;
+}
+
+.receipt-proof-value span {
+  color: var(--accent);
+  font-size: 0.8rem;
+  font-weight: 820;
+  line-height: 1.2;
+  overflow-wrap: anywhere;
+}
+
+.receipt-proof-summary-grid {
+  display: grid;
+  gap: 8px;
+  grid-template-columns: minmax(210px, 1fr) minmax(250px, 1.15fr) minmax(220px, 1fr) minmax(150px, 0.72fr);
+  margin: 0;
+}
+
+.receipt-proof-summary-grid > div {
+  background: rgba(255, 255, 255, 0.024);
+  border: 1px solid rgba(224, 230, 226, 0.09);
+  border-radius: 8px;
+  min-height: 48px;
+  min-width: 0;
+  padding: 8px 9px;
+}
+
+.receipt-proof-summary-grid dt {
+  color: var(--dim);
+  font-size: 0.62rem;
+  font-weight: 900;
+  letter-spacing: 0.08em;
+  margin-bottom: 5px;
+  text-transform: uppercase;
+}
+
+.receipt-proof-summary-grid dd {
+  color: var(--text);
+  font-size: 0.86rem;
+  font-weight: 860;
+  line-height: 1.24;
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
+.receipt-proof-summary-grid dd.has-copy {
+  align-items: center;
+  display: grid;
+  gap: 8px;
+  grid-template-columns: minmax(0, 1fr) auto;
+}
+
+.receipt-proof-summary-grid dd.has-copy > span {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.receipt-proof-storage-row {
+  align-items: center;
+  display: grid;
+  gap: 8px;
+  grid-template-columns: minmax(0, 1fr) auto;
+  min-width: 0;
+}
+
+.receipt-proof-storage-badges {
+  align-items: center;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  justify-content: flex-start;
+  min-width: 0;
+}
+
+.receipt-proof-delete-button {
+  font-size: 0.8rem;
+  font-weight: 900;
+  justify-self: end;
+  min-height: 32px;
+  padding: 0 10px;
+  white-space: nowrap;
+}
+
+.receipt-proof-card .receipt-proof-actions {
+  align-content: center;
+  justify-content: flex-end;
+}
+
+.receipt-proof-card .receipt-proof-actions button,
+.receipt-proof-card .receipt-proof-actions summary {
+  font-size: 0.8rem;
+  font-weight: 900;
+  min-height: 32px;
+  padding: 0 10px;
+  white-space: nowrap;
+}
+
+.receipt-proof-card .signed-artifact-more {
+  min-width: 0;
+}
+
+.receipt-proof-card .artifact-technical-details {
+  margin-top: 0;
+  padding-top: 7px;
 }
 
 .receipt-proof-grid {
@@ -5875,6 +6550,24 @@ button.danger:hover:not(:disabled) {
   font-size: 0.78rem;
 }
 
+.inbox-approval-drawers .inline-receipt-actions,
+.inbox-approval-drawers .record-activity {
+  align-content: center;
+  gap: 0;
+  min-height: 32px;
+  padding: 5px 9px;
+}
+
+.inbox-approval-drawers .inline-receipt-actions > summary,
+.inbox-approval-drawers .record-activity > summary {
+  align-items: center;
+  min-height: 20px;
+}
+
+.inbox-approval-drawers .inline-receipt-actions > summary span {
+  display: none;
+}
+
 .inline-receipt-actions p,
 .activity-note {
   color: var(--muted);
@@ -5969,15 +6662,15 @@ button.danger:hover:not(:disabled) {
   min-height: 18px;
 }
 
-.record-activity-actions {
-  display: flex;
-  justify-content: flex-end;
+.record-activity-refresh {
+  display: none;
+  font-size: 0.72rem;
+  min-height: 24px;
+  padding: 3px 8px;
 }
 
-.record-activity-actions button {
-  font-size: 0.78rem;
-  min-height: 32px;
-  padding: 6px 10px;
+.record-activity[open] .record-activity-refresh {
+  display: inline-flex;
 }
 
 .signed-artifact-details > div,
@@ -5993,6 +6686,80 @@ button.danger:hover:not(:disabled) {
   display: grid;
   gap: 8px;
   padding: 12px;
+}
+
+.receipt-tech-detail {
+  display: grid;
+  gap: 8px;
+  margin-top: 8px;
+}
+
+.receipt-tech-detail .artifact-detail-grid,
+.receipt-tech-detail .artifact-evidence-row,
+.receipt-tech-detail .artifact-evidence-list,
+.receipt-tech-detail .hash-grid {
+  gap: 7px;
+}
+
+.receipt-tech-id-grid {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+.receipt-tech-evidence-list {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+.receipt-tech-detail .artifact-detail-grid div,
+.receipt-tech-detail .artifact-evidence-row div,
+.receipt-tech-detail .artifact-evidence-list div,
+.receipt-tech-detail .hash-grid div,
+.receipt-tech-detail .artifact-intent-block {
+  gap: 4px;
+  margin-top: 0;
+  min-height: 0;
+  padding: 7px 9px;
+}
+
+.receipt-tech-detail .artifact-detail-grid span,
+.receipt-tech-detail .artifact-intent-block span,
+.receipt-tech-detail .artifact-evidence-list span,
+.receipt-tech-detail .hash-grid span {
+  font-size: 0.62rem;
+  line-height: 1.1;
+}
+
+.receipt-tech-detail .artifact-detail-grid strong,
+.receipt-tech-detail .artifact-evidence-row strong,
+.receipt-tech-detail .artifact-evidence-list code,
+.receipt-tech-detail .hash-grid strong,
+.receipt-tech-detail .artifact-intent-block p {
+  font-size: 0.82rem;
+  line-height: 1.22;
+}
+
+.artifact-signed-message-block pre {
+  background: rgba(0, 0, 0, 0.28);
+  border: 1px solid rgba(224, 230, 226, 0.065);
+  border-radius: 6px;
+  color: var(--text);
+  font-size: 0.78rem;
+  line-height: 1.22;
+  margin: 0;
+  max-height: 132px;
+  overflow: auto;
+  padding: 8px;
+  white-space: pre-wrap;
+}
+
+.receipt-tech-actions {
+  order: -1;
+}
+
+.receipt-tech-actions button {
+  font-size: 0.8rem;
+  font-weight: 900;
+  min-height: 32px;
+  padding: 0 10px;
 }
 
 .advanced-evidence-picker {
@@ -6392,6 +7159,8 @@ button.danger:hover:not(:disabled) {
   .proof-preview,
   .approval-ticket,
   .signed-artifact-row,
+  .receipt-proof-card-head,
+  .receipt-proof-summary-grid,
   .lab-workbench-grid,
   .terminal-try-panel,
   .artifact-evidence-row,
@@ -6687,7 +7456,8 @@ button.danger:hover:not(:disabled) {
 }
 
 @media (max-width: 900px) {
-  .artifact-archive-controls,
+  .artifact-archive-primary-row,
+  .artifact-archive-status,
   .bridge-required-notice,
   .recurring-next-preview {
     align-items: stretch;
@@ -6890,6 +7660,53 @@ button.danger:hover:not(:disabled) {
   grid-template-columns: repeat(4, minmax(0, 1fr));
 }
 
+.one-time-method-control {
+  align-items: center;
+  display: grid;
+  gap: 10px;
+  grid-template-columns: auto minmax(0, 1fr);
+  justify-self: stretch;
+  margin-left: auto;
+  min-width: 0;
+}
+
+.one-time-method-label {
+  border-right: 1px solid rgba(224, 230, 226, 0.11);
+  display: grid;
+  gap: 2px;
+  min-width: 112px;
+  padding-right: 10px;
+}
+
+.one-time-method-label strong {
+  color: rgba(196, 205, 202, 0.76);
+  font-size: 0.68rem;
+  font-weight: 900;
+  letter-spacing: 0.1em;
+  line-height: 1;
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+
+.one-time-method-label em {
+  color: var(--dim);
+  font-size: 0.74rem;
+  font-style: normal;
+  font-weight: 760;
+  line-height: 1.12;
+  white-space: nowrap;
+}
+
+.one-time-method-filter {
+  background: rgba(255, 255, 255, 0.028);
+  border: 1px solid rgba(224, 230, 226, 0.11);
+  border-radius: 8px;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.035);
+  gap: 0;
+  overflow: hidden;
+  padding: 3px;
+}
+
 .template-filter-row button {
   background: rgba(255, 255, 255, 0.035);
   border: 1px solid rgba(224, 230, 226, 0.09);
@@ -6900,10 +7717,53 @@ button.danger:hover:not(:disabled) {
   padding: 7px 8px;
 }
 
+.one-time-method-filter button {
+  background: transparent;
+  border: 0;
+  border-radius: 5px;
+  color: rgba(224, 230, 226, 0.72);
+  font-weight: 880;
+  min-height: 32px;
+  position: relative;
+  white-space: nowrap;
+}
+
+.one-time-method-filter button + button::before {
+  background: rgba(224, 230, 226, 0.09);
+  bottom: 7px;
+  content: "";
+  left: -1px;
+  position: absolute;
+  top: 7px;
+  width: 1px;
+}
+
+.one-time-method-filter button.active {
+  background: linear-gradient(180deg, rgba(70, 196, 136, 0.42), rgba(36, 119, 80, 0.34));
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.1),
+    0 8px 18px rgba(13, 71, 44, 0.18);
+  color: #f4fff8;
+}
+
+.one-time-method-filter button.active::before,
+.one-time-method-filter button.active + button::before {
+  opacity: 0;
+}
+
 .template-filter-row button.active {
   background: rgba(63, 189, 131, 0.16);
   border-color: rgba(139, 205, 170, 0.34);
   color: #dcffe9;
+}
+
+.template-filter-row.one-time-method-filter button.active {
+  background: linear-gradient(180deg, rgba(70, 196, 136, 0.42), rgba(36, 119, 80, 0.34));
+  border-color: transparent;
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.1),
+    0 8px 18px rgba(13, 71, 44, 0.18);
+  color: #f4fff8;
 }
 
 .template-outcome-badge {
@@ -7733,8 +8593,8 @@ button.danger:hover:not(:disabled) {
 }
 
 .rail-ai-settings .ai-settings-card {
-  gap: 10px;
-  padding: 12px;
+  gap: 8px;
+  padding: 10px;
 }
 
 .rail-ai-settings .ai-settings-card h3 {
@@ -7750,7 +8610,27 @@ button.danger:hover:not(:disabled) {
 
 .rail-ai-settings .ai-actions {
   display: grid;
-  grid-template-columns: 1fr;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.rail-ai-settings .ai-actions button {
+  min-height: 34px;
+  padding-inline: 8px;
+}
+
+.rail-ai-settings .field.compact {
+  gap: 5px;
+  margin: 0;
+}
+
+.rail-ai-settings .select-picker-trigger,
+.rail-ai-settings .field.compact input {
+  min-height: 36px;
+}
+
+.rail-ai-settings .ai-security-note.compact {
+  line-height: 1.3;
+  margin: 0;
 }
 
 .rail-ai-settings .ai-status-line {
@@ -9065,6 +9945,16 @@ button.danger:hover:not(:disabled) {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 
+  .template-filter-row.completed-filter-row {
+    gap: 4px;
+    grid-template-columns: repeat(5, minmax(0, 1fr));
+  }
+
+  .template-filter-row.completed-filter-row button {
+    font-size: 0.68rem;
+    padding-inline: 2px;
+  }
+
   .draft-ready-panel {
     align-items: stretch;
     grid-template-columns: 1fr;
@@ -10305,21 +11195,6 @@ button.danger:hover:not(:disabled) {
   --app-nav-h: 64px;
   --app-panel-pad: 16px;
   --app-card-radius: 8px;
-  --app-terminal-bg: #050606;
-  --app-terminal-bg-2: #080a09;
-  --app-terminal-surface: rgba(5, 6, 6, 0.94);
-  --app-terminal-surface-2: rgba(8, 10, 9, 0.9);
-  --app-terminal-line: rgba(224, 230, 226, 0.13);
-  --app-terminal-line-strong: rgba(139, 205, 170, 0.28);
-  --app-terminal-text: #dfe8e4;
-  --app-terminal-muted: #8d9995;
-  --app-terminal-dim: #65706d;
-  --app-terminal-green: #3fbd83;
-  --app-terminal-green-bright: #49e37c;
-  --app-terminal-amber: #e1c178;
-  --app-terminal-red: #ef6f78;
-  --app-terminal-caret: #8bcdaa;
-  --app-terminal-mono: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
   gap: var(--app-gap);
   max-width: min(var(--app-shell-max), 100vw);
   overflow-x: hidden;
@@ -10625,23 +11500,29 @@ button.danger:hover:not(:disabled) {
 
 .route-app .one-time-create-panel,
 .route-app .one-time-review-panel {
-  gap: 10px;
+  gap: 14px;
+}
+
+.route-app .one-time-plan-control-row {
+  margin: 2px 0 14px;
 }
 
 .route-app .one-time-plan-tabs {
-  margin-bottom: 8px;
+  margin-bottom: 0;
 }
 
 .route-app .one-time-plan-tabs button,
 .route-app .recurring-view-tabs button,
 .route-app .artifact-view-tabs button,
+.route-app .artifact-proof-group-tabs button,
 .route-app .template-filter-row button {
   min-height: 34px;
 }
 
 .route-app .one-time-plan-tabs,
 .route-app .recurring-view-tabs,
-.route-app .artifact-view-tabs {
+.route-app .artifact-view-tabs,
+.route-app .artifact-proof-group-tabs {
   background: rgba(255, 255, 255, 0.026);
   border: 1px solid rgba(224, 230, 226, 0.09);
   border-radius: 8px;
@@ -10650,7 +11531,8 @@ button.danger:hover:not(:disabled) {
 
 .route-app .one-time-plan-tabs button,
 .route-app .recurring-view-tabs button,
-.route-app .artifact-view-tabs button {
+.route-app .artifact-view-tabs button,
+.route-app .artifact-proof-group-tabs button {
   background: transparent;
   border-color: transparent;
   color: rgba(224, 230, 226, 0.78);
@@ -10659,16 +11541,24 @@ button.danger:hover:not(:disabled) {
 
 .route-app .one-time-plan-tabs button.active,
 .route-app .recurring-view-tabs button.active,
-.route-app .artifact-view-tabs button.active {
-  background: linear-gradient(180deg, rgba(70, 196, 136, 0.38), rgba(37, 122, 82, 0.32));
-  border-color: rgba(139, 205, 170, 0.35);
-  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.08);
+.route-app .artifact-view-tabs button.active,
+.route-app .artifact-proof-group-tabs button.active {
+  background: rgba(125, 231, 176, 0.1);
+  border-color: rgba(139, 205, 170, 0.18);
+  box-shadow: none;
   color: #f2fff7;
 }
 
 .route-app .intent-document-card.planner-card {
-  gap: 8px;
-  padding: 12px;
+  display: grid;
+  gap: 14px;
+  padding: 14px;
+}
+
+.route-app .planner-template-block,
+.route-app .planner-form-body {
+  display: grid;
+  gap: 11px;
 }
 
 .route-app .planner-template-select {
@@ -10682,10 +11572,74 @@ button.danger:hover:not(:disabled) {
 .route-app .template-description {
   font-size: 0.86rem;
   line-height: 1.34;
+  margin: 0;
 }
 
 .route-app .planner-fields {
+  align-items: start;
+  gap: 12px 10px;
+}
+
+.route-app .planner-fields:empty {
+  display: none;
+}
+
+.route-app .planner-field,
+.route-app .planner-prompt {
+  margin: 0;
+}
+
+.route-app .token-choice-field {
+  gap: 6px;
+}
+
+.route-app .token-choice-head {
+  align-items: center;
+  display: flex;
   gap: 8px;
+  justify-content: space-between;
+  min-width: 0;
+}
+
+.route-app .token-choice-head > span:first-child {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.route-app .token-choice-mode {
+  background: rgba(255, 255, 255, 0.028);
+  border: 1px solid rgba(224, 230, 226, 0.1);
+  border-radius: 999px;
+  display: inline-grid;
+  flex: 0 0 auto;
+  gap: 0;
+  grid-template-columns: repeat(2, minmax(42px, 1fr));
+  overflow: hidden;
+  padding: 2px;
+}
+
+.route-app .token-choice-mode button {
+  background: transparent;
+  border: 0;
+  border-radius: 999px;
+  color: rgba(196, 205, 202, 0.72);
+  font-size: 0.64rem;
+  font-weight: 900;
+  letter-spacing: 0.04em;
+  min-height: 22px;
+  padding: 0 8px;
+  text-transform: uppercase;
+}
+
+.route-app .token-choice-mode button.active {
+  background: rgba(63, 189, 131, 0.22);
+  color: #dcffe9;
+}
+
+.route-app .token-choice-field input {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  font-size: 0.86rem;
 }
 
 .route-app .planner-field input,
@@ -10701,11 +11655,13 @@ button.danger:hover:not(:disabled) {
 
 .route-app .agent-actions {
   gap: 8px;
-  margin-top: 8px;
+  margin-top: 0;
 }
 
 .route-app .agent-actions.intent-document-actions {
   border-top: 0;
+  justify-content: flex-end;
+  margin-top: 0;
   padding-top: 0;
 }
 
@@ -10714,6 +11670,7 @@ button.danger:hover:not(:disabled) {
 }
 
 .route-app .rail-ai-settings[data-layout="ai-setup-panel"] {
+  font-size: 0.78rem;
   scroll-margin-top: 24px;
 }
 
@@ -10751,8 +11708,122 @@ button.danger:hover:not(:disabled) {
   opacity: 0.48;
 }
 
+.route-app .rail-ai-settings[data-layout="ai-setup-panel"] > summary {
+  gap: 6px;
+  min-height: 38px;
+  padding: 8px;
+}
+
+.route-app .rail-ai-settings .ai-summary-copy {
+  gap: 2px;
+}
+
+.route-app .rail-ai-settings .ai-summary-copy > span,
+.route-app .rail-ai-settings .field.compact > span {
+  font-size: 0.56rem;
+  line-height: 1.1;
+}
+
+.route-app .rail-ai-settings .ai-summary-copy em {
+  font-size: 0.68rem;
+  line-height: 1.18;
+}
+
+.route-app .rail-ai-settings > summary strong {
+  font-size: 0.64rem;
+  padding: 4px 7px;
+}
+
+.route-app .rail-ai-settings > summary::after {
+  font-size: 0.82rem;
+}
+
+.route-app .rail-ai-settings .ai-settings-card {
+  gap: 7px;
+  padding: 8px;
+}
+
+.route-app .rail-ai-settings .ai-settings-card p,
+.route-app .rail-ai-settings .ai-security-note {
+  font-size: 0.72rem;
+  line-height: 1.26;
+}
+
+.route-app .rail-ai-settings .field.compact {
+  gap: 4px;
+}
+
+.route-app .rail-ai-settings .select-picker-trigger,
+.route-app .rail-ai-settings .field.compact input {
+  font-size: 0.76rem;
+  min-height: 34px;
+  padding: 6px 8px;
+}
+
+.route-app .rail-ai-settings .select-picker-trigger {
+  gap: 6px;
+}
+
+.route-app .rail-ai-settings .template-picker-current strong {
+  font-size: 0.76rem;
+  line-height: 1.12;
+  overflow: visible;
+  overflow-wrap: anywhere;
+  text-overflow: clip;
+  white-space: normal;
+}
+
+.route-app .rail-ai-settings .template-picker-category {
+  font-size: 0.54rem;
+  line-height: 1.1;
+}
+
+.route-app .rail-ai-settings .template-picker-menu {
+  gap: 3px;
+  padding: 4px;
+}
+
+.route-app .rail-ai-settings .template-picker-option {
+  gap: 3px;
+  min-height: 38px;
+  padding: 7px 8px;
+}
+
+.route-app .rail-ai-settings .template-picker-option strong {
+  font-size: 0.74rem;
+  line-height: 1.14;
+}
+
+.route-app .rail-ai-settings .template-picker-option span {
+  font-size: 0.54rem;
+  line-height: 1.1;
+}
+
+.route-app .rail-ai-settings .template-picker-option em {
+  font-size: 0.68rem;
+  line-height: 1.2;
+}
+
+.route-app .rail-ai-settings .ai-actions {
+  gap: 6px;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.route-app .rail-ai-settings .ai-actions button {
+  font-size: 0.72rem;
+  line-height: 1.1;
+  min-height: 32px;
+  overflow-wrap: anywhere;
+  padding: 0 6px;
+  white-space: normal;
+}
+
 .route-app .workflow-status-band[data-layout="workflow-status"].compact {
   grid-template-columns: minmax(176px, 0.5fr) minmax(430px, 1fr) minmax(132px, auto);
+}
+
+.route-app .workflow-status-band[data-layout="workflow-status"].compact.no-action {
+  grid-template-columns: minmax(176px, 0.5fr) minmax(430px, 1fr);
 }
 
 .route-app .workflow-status-band.compact .first-run-progress {
@@ -10815,13 +11886,13 @@ button.danger:hover:not(:disabled) {
 }
 
 .route-app .intent-document-head {
-  margin-bottom: 8px;
-  padding-bottom: 9px;
+  margin: 0;
+  padding-bottom: 12px;
 }
 
 .route-app .intent-policy-strip {
-  margin-top: 8px;
-  padding-top: 9px;
+  margin-top: 2px;
+  padding-top: 13px;
 }
 
 .route-app .signature-placeholder {
@@ -10851,8 +11922,7 @@ button.danger:hover:not(:disabled) {
 }
 
 .draft-flow-hint span {
-  color: #49e37c;
-  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  color: var(--accent);
   font-size: 0.78rem;
   font-weight: 900;
   white-space: nowrap;
@@ -10867,6 +11937,10 @@ button.danger:hover:not(:disabled) {
 
 .route-app .template-filter-row {
   gap: 8px;
+}
+
+.route-app .one-time-method-filter {
+  gap: 0;
 }
 
 .route-app .generated-plan-card,
@@ -10898,22 +11972,6 @@ button.danger:hover:not(:disabled) {
   align-items: center;
 }
 
-.route-app .workbench-kicker,
-.route-app .generated-plan-card-top,
-.route-app .command-loop span,
-.route-app .command-center-card > span,
-.route-app .wallet-action-summary-head span,
-.route-app .contract-head span,
-.route-app .contract-section > div:first-child span,
-.route-app .receipt-explainer-stack span,
-.route-app .artifact-summary-head > span,
-.route-app .status-pill,
-.route-app .recurring-count,
-.route-app .draft-flow-hint span {
-  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
-  letter-spacing: 0;
-}
-
 .route-app .generated-plan-card-chips span,
 .route-app .generated-plan-outcomes span,
 .route-app .status-pill,
@@ -10924,6 +11982,63 @@ button.danger:hover:not(:disabled) {
 
 .command-center-head {
   align-items: start;
+}
+
+.command-shell,
+.command-overview-stack {
+  display: grid;
+  gap: 12px;
+}
+
+.command-subtab-row {
+  background: rgba(255, 255, 255, 0.024);
+  border: 1px solid rgba(224, 230, 226, 0.09);
+  border-radius: 8px;
+  display: grid;
+  gap: 4px;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  padding: 4px;
+}
+
+.command-subtab-row button {
+  align-items: center;
+  background: transparent;
+  border-color: transparent;
+  color: rgba(196, 205, 202, 0.8);
+  display: grid;
+  gap: 2px;
+  min-height: 46px;
+  min-width: 0;
+  padding: 7px 10px;
+}
+
+.command-subtab-row button.active {
+  background: rgba(125, 231, 176, 0.1);
+  border-color: rgba(139, 205, 170, 0.18);
+  color: #f2fff7;
+}
+
+.command-subtab-row strong {
+  color: inherit;
+  font-size: 0.9rem;
+  line-height: 1.1;
+}
+
+.command-subtab-row span {
+  color: rgba(196, 205, 202, 0.72);
+  font-size: 0.72rem;
+  font-weight: 760;
+  line-height: 1.15;
+}
+
+.command-detail-stack {
+  display: grid;
+  gap: 12px;
+}
+
+.command-page-card {
+  display: grid;
+  gap: 12px;
 }
 
 .stage-overview .workflow-status-band,
@@ -11017,8 +12132,186 @@ button.danger:hover:not(:disabled) {
   justify-self: start;
 }
 
-.review-plan-card {
+.command-wallet-card {
+  align-content: stretch;
+}
+
+.command-wallet-actions {
+  align-self: end;
+  display: grid;
+  gap: 7px;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 0.86fr);
+  min-width: 0;
+}
+
+.command-wallet-actions.single {
+  grid-template-columns: minmax(0, 1fr);
+}
+
+.command-wallet-actions button {
+  font-size: 0.76rem;
+  font-weight: 900;
+  justify-self: stretch;
+  min-height: 34px;
+  min-width: 0;
+  padding: 0 8px;
+  width: 100%;
+}
+
+.command-wallet-actions .command-wallet-discover {
+  font-size: 0.72rem;
+}
+
+.command-route-grid,
+.command-storage-grid {
+  display: grid;
+  gap: 10px;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+.command-route-card,
+.command-storage-card {
+  background:
+    linear-gradient(180deg, rgba(28, 34, 32, 0.88), rgba(17, 21, 20, 0.95)),
+    rgba(17, 21, 20, 0.94);
+  border: 1px solid rgba(224, 230, 226, 0.11);
+  border-radius: var(--app-card-radius);
+  display: grid;
+  gap: 10px;
+  min-width: 0;
+  padding: 12px;
+}
+
+.command-route-card.active,
+.command-storage-card.active {
+  background:
+    linear-gradient(180deg, rgba(21, 60, 43, 0.48), rgba(17, 28, 24, 0.94)),
+    rgba(17, 21, 20, 0.94);
+  border-color: rgba(94, 231, 158, 0.32);
+}
+
+.command-route-card > div {
+  display: grid;
+  gap: 6px;
+}
+
+.command-route-card span,
+.command-storage-card-head span {
+  color: var(--dim);
+  font-size: 0.66rem;
+  font-weight: 900;
+  letter-spacing: 0.08em;
+  line-height: 1.1;
+  text-transform: uppercase;
+}
+
+.command-route-card strong,
+.command-storage-card-head strong {
+  color: var(--text);
+  font-size: 1rem;
+  line-height: 1.18;
+}
+
+.command-route-card p,
+.command-storage-card p {
+  color: var(--muted);
+  font-size: 0.84rem;
+  line-height: 1.34;
+  margin: 0;
+}
+
+.command-route-card button {
+  align-self: end;
+  justify-self: start;
+}
+
+.command-ai-boundary,
+.command-storage-note {
+  align-items: center;
+  background: rgba(63, 189, 131, 0.08);
+  border: 1px solid rgba(139, 205, 170, 0.16);
+  border-radius: var(--app-card-radius);
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 14px;
+  padding: 10px 12px;
+}
+
+.command-ai-boundary strong,
+.command-storage-note strong {
+  color: #d9ffea;
+  font-size: 0.9rem;
+  line-height: 1.2;
+}
+
+.command-ai-boundary span,
+.command-storage-note span {
+  color: rgba(218, 229, 224, 0.82);
+  font-size: 0.84rem;
+  line-height: 1.3;
+}
+
+.command-ai-panel .ai-settings-card {
+  background: rgba(255, 255, 255, 0.024);
+  border-color: rgba(224, 230, 226, 0.1);
+}
+
+.command-storage-card-head {
+  align-items: center;
+  display: flex;
+  gap: 10px;
+  justify-content: space-between;
+}
+
+.command-storage-card-head strong {
+  background: rgba(2, 8, 6, 0.38);
+  border: 1px solid rgba(224, 230, 226, 0.12);
+  border-radius: 999px;
+  font-size: 0.78rem;
+  padding: 5px 8px;
+  white-space: nowrap;
+}
+
+.command-storage-card.active .command-storage-card-head strong {
+  background: rgba(52, 211, 153, 0.14);
+  border-color: rgba(94, 231, 158, 0.28);
+}
+
+.command-storage-facts {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.command-storage-facts span {
+  background: rgba(255, 255, 255, 0.045);
+  border: 1px solid rgba(224, 230, 226, 0.08);
+  border-radius: 999px;
+  color: rgba(218, 229, 224, 0.82);
+  font-size: 0.72rem;
+  font-weight: 820;
+  line-height: 1.15;
+  padding: 5px 8px;
+}
+
+.command-storage-actions {
+  align-self: end;
+  display: flex;
+  flex-wrap: wrap;
   gap: 8px;
+}
+
+.command-storage-actions button {
+  min-height: 34px;
+}
+
+.command-storage-runtime {
+  border-top: 1px solid rgba(224, 230, 226, 0.08);
+  padding-top: 10px;
+}
+
+.review-plan-card {
+  gap: 12px;
 }
 
 .review-plan-list {
@@ -11030,40 +12323,41 @@ button.danger:hover:not(:disabled) {
 
 .review-plan-list .review-plan-card {
   overflow: hidden;
-  padding: 9px 10px;
+  padding: 14px;
   width: 100%;
 }
 
 .review-plan-card-head {
-  align-items: start;
+  align-items: center;
   display: grid;
-  gap: 12px;
-  grid-template-columns: minmax(0, 1fr) minmax(220px, auto);
+  gap: 14px;
+  grid-template-columns: minmax(0, 1fr) minmax(170px, auto) minmax(250px, auto);
 }
 
 .review-plan-list .review-plan-card-head {
   align-items: center;
   gap: 8px;
-  grid-template-columns: minmax(0, 1fr) auto;
+  grid-template-columns: minmax(0, 1fr) minmax(170px, auto) auto;
 }
 
 .review-plan-actions {
-  display: grid;
+  display: flex;
+  flex-wrap: wrap;
   gap: 8px;
-  grid-template-columns: repeat(2, minmax(112px, 1fr));
+  justify-content: flex-end;
   justify-self: end;
 }
 
 .review-plan-list .review-plan-actions {
-  display: flex;
-  flex-wrap: wrap;
   justify-self: end;
   max-width: 560px;
   width: auto;
 }
 
 .review-plan-actions button {
-  min-height: 38px;
+  flex: 0 1 156px;
+  font-weight: 900;
+  min-height: 40px;
   min-width: 0;
   padding: 0 11px;
   white-space: nowrap;
@@ -11073,9 +12367,74 @@ button.danger:hover:not(:disabled) {
   flex: 0 1 auto;
 }
 
-.review-plan-main {
+.review-plan-title-block {
   display: grid;
-  gap: 5px;
+  gap: 7px;
+  min-width: 0;
+}
+
+.review-plan-title-block h3 {
+  color: var(--text);
+  font-size: 1.08rem;
+  line-height: 1.22;
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
+.review-plan-title-block p {
+  color: rgba(224, 230, 226, 0.78);
+  font-size: 0.92rem;
+  line-height: 1.36;
+  margin: 0;
+}
+
+.review-plan-meta {
+  align-items: center;
+  color: var(--muted);
+  display: flex;
+  flex-wrap: wrap;
+  font-size: 0.76rem;
+  gap: 7px;
+}
+
+.review-plan-meta > span:not(.status-pill):not(.review-plan-meta-pill) {
+  color: rgba(196, 205, 202, 0.64);
+}
+
+.review-plan-meta .review-plan-meta-pill {
+  background: rgba(255, 255, 255, 0.026);
+  border: 1px solid transparent;
+  border-radius: 999px;
+  color: var(--accent-2);
+  font-size: 0.66rem;
+  font-weight: 800;
+  letter-spacing: 0;
+  padding: 2px 7px;
+}
+
+.review-plan-value {
+  display: grid;
+  gap: 3px;
+  justify-self: end;
+  min-width: 0;
+  text-align: right;
+}
+
+.review-plan-value strong {
+  color: #f4f7f5;
+  font-size: clamp(1.42rem, 2.35vw, 2rem);
+  font-weight: 900;
+  letter-spacing: 0;
+  line-height: 1;
+  white-space: nowrap;
+}
+
+.review-plan-value span {
+  color: var(--accent);
+  font-size: 0.86rem;
+  font-weight: 820;
+  line-height: 1.2;
+  overflow-wrap: anywhere;
 }
 
 .review-plan-facts {
@@ -11086,19 +12445,140 @@ button.danger:hover:not(:disabled) {
   grid-template-columns: repeat(4, minmax(0, 1fr));
 }
 
-.review-plan-list .wallet-action-summary {
-  overflow: hidden;
+.review-plan-summary {
+  border-top: 1px solid rgba(224, 230, 226, 0.07);
+  padding-top: 2px;
 }
 
-.review-plan-list .wallet-action-grid {
-  grid-template-columns: 1fr 0.85fr 1.12fr 1.45fr;
+.review-plan-summary-grid {
+  display: grid;
+  gap: 8px;
+  grid-template-columns: minmax(260px, 1.2fr) minmax(150px, 0.72fr) minmax(180px, 0.86fr) minmax(96px, 0.44fr);
+  margin: 0;
 }
 
-.review-plan-list .wallet-action-grid dd {
+.review-plan-summary-grid div {
+  background: rgba(255, 255, 255, 0.024);
+  border: 1px solid rgba(224, 230, 226, 0.09);
+  border-radius: 8px;
+  min-height: 48px;
+  min-width: 0;
+  padding: 8px 9px;
+}
+
+.review-plan-summary-grid dt {
+  color: var(--dim);
+  font-size: 0.62rem;
+  font-weight: 900;
+  letter-spacing: 0.08em;
+  margin-bottom: 5px;
+  text-transform: uppercase;
+}
+
+.review-plan-summary-grid dd {
+  color: var(--text);
+  font-size: 0.9rem;
+  font-weight: 880;
+  line-height: 1.24;
+  margin: 0;
   overflow: visible;
   overflow-wrap: anywhere;
   text-overflow: clip;
   white-space: normal;
+}
+
+.review-plan-summary-grid .wallet-action-amount dd {
+  color: #c9f4dc;
+}
+
+.review-plan-summary-grid .wallet-action-wallet dd {
+  font-size: 0.78rem;
+  line-height: 1.28;
+}
+
+.review-plan-user-note {
+  align-items: start;
+  background: rgba(255, 255, 255, 0.024);
+  border: 1px solid rgba(224, 230, 226, 0.09);
+  border-radius: 8px;
+  display: grid;
+  gap: 9px;
+  grid-template-columns: auto minmax(0, 1fr);
+  padding: 8px 10px;
+}
+
+.review-plan-user-note span {
+  color: var(--dim);
+  font-size: 0.64rem;
+  font-weight: 930;
+  letter-spacing: 0.08em;
+  line-height: 1.35;
+  text-transform: uppercase;
+}
+
+.review-plan-user-note p {
+  color: rgba(224, 230, 226, 0.86);
+  display: -webkit-box;
+  font-size: 0.86rem;
+  font-weight: 680;
+  line-height: 1.34;
+  margin: 0;
+  overflow: hidden;
+  overflow-wrap: anywhere;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 3;
+}
+
+.review-action-proof,
+.review-action-inbox {
+  border-radius: 8px;
+}
+
+.review-action-proof {
+  background: rgba(63, 189, 131, 0.2);
+  border-color: rgba(139, 205, 170, 0.42);
+  color: #dfffee;
+}
+
+.review-action-proof:hover:not(:disabled) {
+  background: rgba(63, 189, 131, 0.28);
+  border-color: rgba(163, 226, 190, 0.62);
+  box-shadow: 0 10px 24px rgba(63, 189, 131, 0.16);
+}
+
+.review-action-inbox {
+  background: rgba(140, 164, 255, 0.12);
+  border-color: rgba(140, 164, 255, 0.34);
+  color: #d9e0ff;
+}
+
+.review-action-inbox:hover:not(:disabled) {
+  background: rgba(140, 164, 255, 0.18);
+  border-color: rgba(166, 185, 255, 0.5);
+  box-shadow: 0 10px 24px rgba(87, 107, 217, 0.16);
+}
+
+.review-action-proof:disabled {
+  background: rgba(255, 255, 255, 0.026);
+  border-color: rgba(224, 230, 226, 0.09);
+  color: rgba(196, 205, 202, 0.44);
+}
+
+.review-action-inbox:disabled {
+  background: rgba(255, 255, 255, 0.026);
+  border-color: rgba(224, 230, 226, 0.09);
+  color: rgba(196, 205, 202, 0.44);
+}
+
+.review-plan-note .generated-plan-action-helper {
+  background: rgba(255, 255, 255, 0.026);
+  border: 1px solid rgba(224, 230, 226, 0.085);
+  border-radius: 8px;
+  color: var(--muted);
+  font-size: 0.84rem;
+  line-height: 1.32;
+  margin: 0;
+  padding: 8px 10px;
 }
 
 .review-plan-list .generated-plan-card-actions {
@@ -11113,16 +12593,99 @@ button.danger:hover:not(:disabled) {
   flex: 1 1 138px;
 }
 
-.review-plan-details > div {
-  display: grid;
-  gap: 8px;
+.review-plan-detail-actions {
+  border-top: 1px solid rgba(224, 230, 226, 0.065);
+  padding-top: 8px;
 }
 
-.review-plan-details p {
-  color: var(--muted);
-  font-size: 0.86rem;
-  line-height: 1.4;
+.review-plan-footer-row {
+  border-top: 1px solid rgba(224, 230, 226, 0.07);
+  min-height: 38px;
+  padding-top: 7px;
+  position: relative;
+}
+
+.review-plan-footer-row .review-plan-details {
+  border-top: 0;
   margin: 0;
+  padding-top: 0;
+}
+
+.review-plan-details > div {
+  display: grid;
+  gap: 10px;
+}
+
+.review-plan-details summary {
+  align-items: center;
+  color: rgba(224, 230, 226, 0.82);
+  display: inline-flex;
+  font-size: 0.86rem;
+  gap: 6px;
+  justify-content: flex-start;
+  min-height: 34px;
+  padding-right: 96px;
+  padding-block: 8px;
+}
+
+.review-plan-details summary::after {
+  color: var(--accent-2);
+  font-size: 0.9rem;
+  line-height: 1;
+  position: static;
+}
+
+.review-plan-details-body {
+  border-top: 1px solid rgba(224, 230, 226, 0.06);
+  padding-top: 10px;
+}
+
+.review-delete-mini {
+  font-size: 0.74rem;
+  min-height: 28px;
+  min-width: 0;
+  padding: 0 10px;
+  position: absolute;
+  right: 0;
+  top: 7px;
+  width: auto;
+}
+
+.review-detail-list {
+  display: grid;
+  gap: 8px;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  margin: 0;
+}
+
+.review-detail-list div {
+  background: rgba(255, 255, 255, 0.018);
+  border: 1px solid rgba(224, 230, 226, 0.075);
+  border-radius: 8px;
+  min-width: 0;
+  padding: 8px 9px;
+}
+
+.review-detail-list dt {
+  color: rgba(139, 205, 170, 0.72);
+  font-size: 0.62rem;
+  font-weight: 900;
+  letter-spacing: 0.08em;
+  margin-bottom: 5px;
+  text-transform: uppercase;
+}
+
+.review-detail-list dd {
+  color: rgba(224, 230, 226, 0.82);
+  font-size: 0.84rem;
+  font-weight: 720;
+  line-height: 1.34;
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
+.review-detail-list.compact-extra {
+  grid-template-columns: minmax(0, 1fr);
 }
 
 .route-app .generated-plans-toolbar-row {
@@ -11135,7 +12698,7 @@ button.danger:hover:not(:disabled) {
 }
 
 .route-app .wallet-action-grid {
-  grid-template-columns: minmax(118px, 0.8fr) minmax(126px, 0.86fr) minmax(154px, 1.1fr) minmax(210px, 1.45fr);
+  grid-template-columns: minmax(270px, 1.35fr) minmax(150px, 0.75fr) minmax(180px, 0.9fr);
 }
 
 .route-app .wallet-action-grid dd {
@@ -11152,6 +12715,10 @@ button.danger:hover:not(:disabled) {
   grid-template-columns: repeat(4, minmax(0, 1fr));
 }
 
+.route-app .review-plan-detail-actions {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
 .route-app .generated-plan-card-actions button {
   min-height: 34px;
 }
@@ -11165,6 +12732,11 @@ button.danger:hover:not(:disabled) {
 
 .route-app .approval-ticket {
   grid-template-columns: 4px minmax(0, 1fr);
+}
+
+.route-app .approval-ticket.inbox-approval-card {
+  display: block;
+  grid-template-columns: minmax(0, 1fr);
 }
 
 .route-app .ticket-body {
@@ -11184,6 +12756,11 @@ button.danger:hover:not(:disabled) {
 .route-app .approval-ticket .inbox-actions button {
   min-height: 34px;
   padding: 0 11px;
+}
+
+.route-app .approval-ticket .inbox-approval-actions button,
+.route-app .recurring-card-actions button {
+  min-height: 38px;
 }
 
 .route-app .approval-ticket h3,
@@ -11240,8 +12817,82 @@ button.danger:hover:not(:disabled) {
   margin: 0;
 }
 
-.route-app .record-activity[open] .record-activity-actions {
+.route-app .record-activity[open] > summary {
+  gap: 8px;
+  justify-content: flex-start;
+}
+
+.route-app .record-activity[open] > summary::after {
+  order: 3;
+}
+
+.route-app .record-activity[open] .record-activity-refresh {
+  margin-left: auto;
+  order: 2;
+}
+
+.route-app .inbox-approval-drawers .inline-receipt-button-grid {
+  display: grid;
+  gap: 6px;
+  grid-template-columns: repeat(4, max-content);
+  justify-content: start;
+  padding-top: 4px;
+}
+
+.route-app .inbox-approval-drawers .inline-receipt-button-grid button {
+  font-size: 0.72rem;
+  line-height: 1;
+  min-height: 26px;
+  padding: 4px 7px;
+  white-space: nowrap;
+}
+
+.route-app .inbox-approval-drawers > details:not([open]) {
+  align-content: center;
   align-self: start;
+  gap: 0;
+  height: 26px;
+  min-height: 26px;
+  padding: 3px 9px;
+}
+
+.route-app .inbox-approval-drawers > details:not([open]) > summary {
+  align-items: center;
+  line-height: 1;
+  min-height: 18px;
+}
+
+.route-app .inbox-approval-drawers > details:not([open]) > summary strong,
+.route-app .inbox-approval-drawers > details:not([open]) > summary {
+  font-size: 0.82rem;
+}
+
+.route-app .inbox-approval-body {
+  gap: 8px;
+}
+
+.route-app .inbox-approval-note,
+.route-app .inbox-approval-card .approval-effect,
+.route-app .inbox-approval-drawers .inline-receipt-actions,
+.route-app .inbox-approval-drawers .record-activity {
+  margin: 0;
+}
+
+.route-app .inbox-approval-drawers {
+  align-items: start;
+}
+
+.route-app .inbox-approval-drawers .inline-receipt-actions:not([open]),
+.route-app .inbox-approval-drawers .record-activity:not([open]) {
+  align-content: center;
+  box-sizing: border-box;
+  height: 26px;
+  min-height: 26px;
+  padding: 3px 9px;
+}
+
+.route-app .inbox-approval-footer-row {
+  margin-top: 0;
 }
 
 .route-app .approval-effect {
@@ -11364,9 +13015,17 @@ button.danger:hover:not(:disabled) {
 }
 
 .route-app .recurring-item {
+  display: block;
   gap: 10px;
-  grid-template-columns: minmax(0, 1fr) auto;
   padding: 12px;
+}
+
+.route-app .recurring-card-head {
+  gap: 14px;
+}
+
+.route-app .recurring-card-summary-grid div {
+  min-height: 40px;
 }
 
 .route-app .recurring-card-metrics,
@@ -11383,8 +13042,14 @@ button.danger:hover:not(:disabled) {
 .route-app .recurring-upcoming-runs,
 .route-app .recurring-history-list,
 .route-app .recurring-notifications-panel {
-  margin-top: 8px;
-  padding-top: 8px;
+  margin-top: 0;
+  padding-top: 0;
+}
+
+.route-app .recurring-card .recurring-upcoming-runs,
+.route-app .recurring-card .recurring-history-list,
+.route-app .recurring-card .recurring-notifications-panel {
+  border-top: 0;
 }
 
 .route-app .recurring-actions {
@@ -11414,21 +13079,86 @@ button.danger:hover:not(:disabled) {
   padding: 10px 12px;
 }
 
-.route-app .completed-plan-card .generated-plan-card-title h3 {
-  min-height: 0;
+.completed-history-head {
+  align-items: center;
+  display: grid;
+  gap: 10px 14px;
+  grid-template-columns: minmax(0, 1fr) minmax(170px, auto) minmax(310px, auto);
 }
 
-.route-app .completed-plan-card .template-description {
-  font-size: 0.86rem;
-  line-height: 1.34;
+.completed-history-title-block {
+  display: grid;
+  gap: 5px;
+  min-width: 0;
+}
+
+.completed-history-title-block h3 {
+  color: var(--text);
+  font-size: 1.08rem;
+  line-height: 1.22;
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
+.completed-history-title-block p {
+  color: rgba(224, 230, 226, 0.74);
+  font-size: 0.84rem;
+  line-height: 1.25;
   margin: 0;
 }
 
-.completed-card-head {
-  align-items: start;
+.completed-history-meta {
+  align-items: center;
+  color: var(--muted);
+  display: flex;
+  flex-wrap: wrap;
+  font-size: 0.76rem;
+  gap: 7px;
+}
+
+.completed-history-meta > span:not(.status-pill) {
+  background: rgba(255, 255, 255, 0.045);
+  border: 1px solid rgba(224, 230, 226, 0.09);
+  border-radius: 999px;
+  color: rgba(213, 223, 219, 0.82);
+  display: inline-flex;
+  font-size: 0.68rem;
+  font-weight: 860;
+  line-height: 1;
+  min-height: 22px;
+  padding: 4px 7px;
+}
+
+.completed-history-meta-title {
+  color: #f4f7f5;
+  font-size: 1.02rem;
+  font-weight: 900;
+  line-height: 1.2;
+}
+
+.completed-history-value {
   display: grid;
-  gap: 12px;
-  grid-template-columns: minmax(0, 1fr) minmax(320px, auto);
+  gap: 3px;
+  justify-self: end;
+  min-width: 0;
+  text-align: right;
+}
+
+.completed-history-value strong {
+  color: #f4f7f5;
+  font-size: clamp(1.42rem, 2.35vw, 2rem);
+  font-weight: 900;
+  letter-spacing: 0;
+  line-height: 1;
+  white-space: nowrap;
+}
+
+.completed-history-value span {
+  color: var(--accent);
+  font-size: 0.86rem;
+  font-weight: 820;
+  line-height: 1.2;
+  overflow-wrap: anywhere;
 }
 
 .completed-header-actions {
@@ -11440,9 +13170,122 @@ button.danger:hover:not(:disabled) {
 }
 
 .completed-header-actions button {
+  font-weight: 900;
   min-height: 32px;
   padding: 0 10px;
   white-space: nowrap;
+}
+
+.completed-history-summary-grid {
+  display: grid;
+  gap: 8px;
+  grid-template-columns: minmax(230px, 1.15fr) minmax(210px, 1fr) minmax(170px, 0.82fr) minmax(180px, 0.86fr);
+  margin: 0;
+}
+
+.completed-history-summary-grid div {
+  background: rgba(255, 255, 255, 0.024);
+  border: 1px solid rgba(224, 230, 226, 0.09);
+  border-radius: 8px;
+  min-height: 48px;
+  min-width: 0;
+  padding: 8px 9px;
+}
+
+.completed-history-summary-grid dt {
+  color: var(--dim);
+  font-size: 0.62rem;
+  font-weight: 900;
+  letter-spacing: 0.08em;
+  margin-bottom: 5px;
+  text-transform: uppercase;
+}
+
+.completed-history-summary-grid dd {
+  color: var(--text);
+  font-size: 0.88rem;
+  font-weight: 860;
+  line-height: 1.24;
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
+.completed-history-summary-grid dd.has-copy {
+  align-items: center;
+  display: grid;
+  gap: 8px;
+  grid-template-columns: minmax(0, 1fr) auto;
+}
+
+.completed-history-summary-grid dd.has-copy > span {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.completed-history-summary-grid .completed-history-summary-amount dd {
+  color: #c9f4dc;
+}
+
+.completed-history-note {
+  align-items: start;
+  background: rgba(255, 255, 255, 0.024);
+  border: 1px solid rgba(224, 230, 226, 0.09);
+  border-radius: 8px;
+  display: grid;
+  gap: 9px;
+  grid-template-columns: auto minmax(0, 1fr);
+  padding: 7px 9px;
+}
+
+.completed-history-note span {
+  color: var(--dim);
+  font-size: 0.62rem;
+  font-weight: 900;
+  letter-spacing: 0.08em;
+  line-height: 1.4;
+  text-transform: uppercase;
+}
+
+.completed-history-note p {
+  color: rgba(224, 230, 226, 0.84);
+  font-size: 0.84rem;
+  line-height: 1.32;
+  margin: 0;
+}
+
+.completed-history-drawers {
+  align-items: start;
+  display: grid;
+  gap: 8px;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.completed-history-drawers .record-activity,
+.completed-history-details {
+  background: rgba(255, 255, 255, 0.022);
+  border: 1px solid rgba(224, 230, 226, 0.08);
+  border-radius: 8px;
+  box-sizing: border-box;
+  margin: 0;
+  min-height: 28px;
+  padding: 4px 9px;
+}
+
+.completed-history-drawers .record-activity:not([open]),
+.completed-history-details:not([open]) {
+  align-content: center;
+  height: 28px;
+  min-height: 28px;
+}
+
+.completed-history-drawers .record-activity > summary,
+.completed-history-details > summary {
+  align-items: center;
+  min-height: 18px;
+}
+
+.completed-history-details {
+  border-top: 1px solid rgba(224, 230, 226, 0.08);
 }
 
 .route-app .completed-plan-details .proof-grid.compact div {
@@ -11484,526 +13327,52 @@ button.danger:hover:not(:disabled) {
   min-height: 34px;
 }
 
-.route-app .workspace-tabs[data-layout="app-tabs"] {
-  background:
-    linear-gradient(180deg, rgba(255, 255, 255, 0.035), rgba(255, 255, 255, 0.01)),
-    var(--app-terminal-bg);
-  border: 1px solid var(--app-terminal-line);
-  border-radius: var(--app-card-radius);
-  box-shadow:
-    inset 0 1px 0 rgba(255, 255, 255, 0.04),
-    0 16px 34px rgba(0, 0, 0, 0.2);
-  font-family: var(--app-terminal-mono);
-  gap: 4px;
-  padding: 5px;
-}
-
-.route-app .workspace-tabs[data-layout="app-tabs"] button {
-  align-items: center;
-  background: transparent;
-  border: 1px solid transparent;
-  border-radius: 6px;
-  color: var(--app-terminal-muted);
-  display: inline-flex;
-  font-family: var(--app-terminal-mono);
-  font-size: 0.78rem;
-  font-weight: 760;
-  min-height: 38px;
-  padding: 0 9px;
-}
-
-.route-app .workspace-tabs[data-layout="app-tabs"] button:hover:not(:disabled) {
-  background: rgba(139, 205, 170, 0.06);
-  border-color: rgba(139, 205, 170, 0.16);
-  color: var(--app-terminal-text);
-  transform: none;
-}
-
-.route-app .workspace-tabs[data-layout="app-tabs"] button.active {
-  background:
-    linear-gradient(180deg, rgba(63, 189, 131, 0.12), rgba(63, 189, 131, 0.045)),
-    var(--app-terminal-surface);
-  border-color: var(--app-terminal-line-strong);
-  box-shadow:
-    inset 0 0 0 1px rgba(73, 227, 124, 0.055),
-    0 0 18px rgba(63, 189, 131, 0.08);
-  color: var(--app-terminal-text);
-}
-
-.route-app .workspace-tabs[data-layout="app-tabs"] button.active::before {
-  color: var(--app-terminal-green-bright);
-  content: "$";
-  font-weight: 860;
-  margin-right: 6px;
-}
-
-.route-app .workspace-tabs[data-layout="app-tabs"] button.active::after {
-  animation: commandCaret 1.15s steps(2, end) infinite;
-  background: var(--app-terminal-caret);
-  bottom: auto;
-  content: "";
-  display: inline-block;
-  height: 0.92em;
-  left: auto;
-  margin-left: 6px;
-  position: static;
-  right: auto;
-  width: 7px;
-}
-
-.route-app .workspace-tabs[data-layout="app-tabs"] button:disabled {
-  background: transparent;
-  border-color: transparent;
-  color: rgba(141, 153, 149, 0.42);
-}
-
-.route-app .one-time-plan-tabs,
-.route-app .recurring-view-tabs,
-.route-app .artifact-view-tabs,
-.route-app .template-filter-row {
-  background: rgba(5, 6, 6, 0.72);
-  border-color: var(--app-terminal-line);
-  font-family: var(--app-terminal-mono);
-}
-
-.route-app .one-time-plan-tabs button,
-.route-app .recurring-view-tabs button,
-.route-app .artifact-view-tabs button,
-.route-app .template-filter-row button {
-  border-radius: 6px;
-  color: var(--app-terminal-muted);
-  font-family: var(--app-terminal-mono);
-  font-size: 0.78rem;
-}
-
-.route-app .one-time-plan-tabs button.active,
-.route-app .recurring-view-tabs button.active,
-.route-app .artifact-view-tabs button.active,
-.route-app .template-filter-row button.active {
-  background:
-    linear-gradient(180deg, rgba(63, 189, 131, 0.14), rgba(63, 189, 131, 0.05)),
-    var(--app-terminal-surface);
-  border-color: var(--app-terminal-line-strong);
-  color: var(--app-terminal-text);
-}
-
-.route-app .generated-plan-card,
-.route-app .approval-ticket,
-.route-app .recurring-item,
-.route-app .recurring-contract,
-.route-app .artifact-summary-card,
-.route-app .signed-artifact-row.receipt-proof-card,
-.route-app .lab-history article,
-.route-app .command-center-card {
-  background:
-    linear-gradient(180deg, rgba(255, 255, 255, 0.028), rgba(255, 255, 255, 0.008)),
-    var(--app-terminal-surface);
-  border-color: var(--app-terminal-line);
-  box-shadow:
-    inset 0 1px 0 rgba(255, 255, 255, 0.035),
-    inset 0 -1px 0 rgba(0, 0, 0, 0.34),
-    0 18px 42px rgba(0, 0, 0, 0.24);
-  color: var(--app-terminal-text);
-  font-family: var(--app-terminal-mono);
-  position: relative;
-}
-
-.route-app .generated-plan-card::after,
-.route-app .approval-ticket::after,
-.route-app .recurring-item::after,
-.route-app .recurring-contract::after,
-.route-app .artifact-summary-card::after,
-.route-app .signed-artifact-row.receipt-proof-card::after,
-.route-app .command-center-card::after {
-  background: repeating-linear-gradient(
-    180deg,
-    rgba(255, 255, 255, 0.018) 0,
-    rgba(255, 255, 255, 0.018) 1px,
-    transparent 1px,
-    transparent 7px
-  );
-  content: "";
-  inset: 0;
-  opacity: 0.16;
-  pointer-events: none;
-  position: absolute;
-}
-
-.route-app .generated-plan-card > *,
-.route-app .approval-ticket > *,
-.route-app .recurring-item > *,
-.route-app .recurring-contract > *,
-.route-app .artifact-summary-card > *,
-.route-app .signed-artifact-row.receipt-proof-card > *,
-.route-app .command-center-card > * {
-  position: relative;
-  z-index: 1;
-}
-
-.route-app .generated-plan-card.selected,
-.route-app .approval-ticket.ready,
-.route-app .approval-ticket.overdue,
-.route-app .recurring-item {
-  border-color: rgba(73, 227, 124, 0.34);
-  box-shadow:
-    inset 3px 0 0 var(--app-terminal-green),
-    inset 0 1px 0 rgba(255, 255, 255, 0.04),
-    0 18px 42px rgba(0, 0, 0, 0.24);
-}
-
-.route-app .approval-ticket.overdue,
-.route-app .command-center-card.warn {
-  border-color: rgba(225, 193, 120, 0.34);
-  box-shadow:
-    inset 3px 0 0 var(--app-terminal-amber),
-    inset 0 1px 0 rgba(255, 255, 255, 0.04),
-    0 18px 42px rgba(0, 0, 0, 0.24);
-}
-
-.route-app .generated-plan-card.archived {
-  opacity: 0.58;
-}
-
-.route-app .generated-plan-card-top,
-.route-app .artifact-summary-head,
-.route-app .receipt-proof-head,
-.route-app .ticket-title-row,
-.route-app .contract-head,
-.route-app .recurring-history-head {
-  color: var(--app-terminal-muted);
-  font-family: var(--app-terminal-mono);
-}
-
-.route-app .generated-plan-card-title h3,
-.route-app .approval-ticket h3,
-.route-app .recurring-item h3,
-.route-app .artifact-summary-card h3,
-.route-app .receipt-proof-head h3,
-.route-app .command-center-card strong {
-  color: #f2f5f3;
-  font-family: var(--app-terminal-mono);
-  font-weight: 860;
-  letter-spacing: 0;
-}
-
-.route-app .generated-plan-card-title h3,
-.route-app .approval-ticket h3,
-.route-app .recurring-item h3,
-.route-app .receipt-proof-head h3 {
-  font-size: 0.98rem;
-}
-
-.route-app .generated-plan-action-helper,
-.route-app .review-plan-details p,
-.route-app .approval-ticket p,
-.route-app .recurring-item p,
-.route-app .artifact-summary-card p,
-.route-app .receipt-proof-head p,
-.route-app .command-center-card p,
-.route-app .contract-head p,
-.route-app .recurring-help,
-.route-app .receipt-copy-helper {
-  color: var(--app-terminal-muted);
-  font-family: var(--app-terminal-mono);
-}
-
-.route-app .workbench-kicker,
-.route-app .command-loop span,
-.route-app .command-center-card > span,
-.route-app .generated-plan-quick-facts span,
-.route-app .generated-plan-decision-grid span,
-.route-app .wallet-action-grid dt,
-.route-app .contract-summary dt,
-.route-app .receipt-proof-grid dt,
-.route-app .artifact-detail-grid span,
-.route-app .artifact-evidence-row span,
-.route-app .hash-grid span,
-.route-app .metric-grid span,
-.route-app .field.compact > span,
-.route-app .contract-section > div:first-child span,
-.route-app .artifact-technical-details summary span,
-.route-app .plan-guardrail-strip span {
-  color: var(--app-terminal-dim);
-  font-family: var(--app-terminal-mono);
-  font-size: 0.64rem;
-  font-weight: 860;
-  letter-spacing: 0;
-}
-
-.route-app .generated-plan-card-chips span,
-.route-app .generated-plan-outcomes span,
-.route-app .status-pill,
-.route-app .recurring-count,
-.route-app .receipt-storage-badge {
-  background: rgba(255, 255, 255, 0.035);
-  border-color: rgba(224, 230, 226, 0.12);
-  color: var(--app-terminal-text);
-  font-family: var(--app-terminal-mono);
-  font-weight: 820;
-}
-
-.route-app .status-pill.tx-confirmed,
-.route-app .status-pill.good,
-.route-app .status-pill.success,
-.route-app .status-pill.ready,
-.route-app .receipt-storage-badge.cloud.on {
-  background: rgba(73, 227, 124, 0.105);
-  border-color: rgba(73, 227, 124, 0.32);
-  color: var(--app-terminal-green-bright);
-}
-
-.route-app .status-pill.tx-pending,
-.route-app .status-pill.warn,
-.route-app .status-pill.warning,
-.route-app .status-pill.overdue {
-  background: rgba(225, 193, 120, 0.1);
-  border-color: rgba(225, 193, 120, 0.32);
-  color: var(--app-terminal-amber);
-}
-
-.route-app .status-pill.tx-failed,
-.route-app .status-pill.danger,
-.route-app .status-pill.error {
-  background: rgba(239, 111, 120, 0.1);
-  border-color: rgba(239, 111, 120, 0.34);
-  color: #ff9daa;
-}
-
-.route-app .generated-plan-quick-facts div,
-.route-app .generated-plan-decision-grid div,
-.route-app .wallet-action-grid div,
-.route-app .approval-ticket .action-preview div,
-.route-app .finalization-checklist div,
-.route-app .contract-summary div,
-.route-app .receipt-proof-grid > div,
-.route-app .artifact-detail-grid div,
-.route-app .artifact-evidence-row div,
-.route-app .hash-grid div,
-.route-app .metric-grid div,
-.route-app .receipt-explainer-stack div,
-.route-app .signed-artifact-request,
-.route-app .activity-event-row,
-.route-app .related-receipt-row,
-.route-app .recurring-history-row,
-.route-app .recurring-production-preview li {
-  background: rgba(0, 0, 0, 0.24);
-  border-color: rgba(224, 230, 226, 0.095);
-  border-radius: 7px;
-}
-
-.route-app .generated-plan-quick-facts strong,
-.route-app .wallet-action-grid dd,
-.route-app .contract-summary dd,
-.route-app .receipt-proof-grid p,
-.route-app .receipt-proof-grid code,
-.route-app .artifact-detail-grid strong,
-.route-app .hash-grid code,
-.route-app .activity-event-row strong,
-.route-app .recurring-history-row strong {
-  color: var(--app-terminal-text);
-  font-family: var(--app-terminal-mono);
-}
-
-.route-app .wallet-action-summary,
-.route-app .plan-guardrail-strip,
-.route-app .approval-effect,
-.route-app .inline-receipt-actions,
-.route-app .related-receipts,
-.route-app .record-activity,
-.route-app .recurring-card-metrics,
-.route-app .recurring-history-strip,
-.route-app .recurring-secret-reveal,
-.route-app .decision-proof-block,
-.route-app .action-note,
-.route-app .recurring-boundary-note,
-.route-app .artifact-intent-block {
-  background:
-    linear-gradient(180deg, rgba(63, 189, 131, 0.055), rgba(255, 255, 255, 0.012)),
-    rgba(0, 0, 0, 0.24);
-  border-color: rgba(139, 205, 170, 0.18);
-  color: var(--app-terminal-text);
-}
-
-.route-app .wallet-action-summary-head strong,
-.route-app .wallet-action-grid .wallet-action-amount dd,
-.route-app .plan-guardrail-strip.pass strong,
-.route-app .decision-proof-icon,
-.route-app .approval-effect strong {
-  color: var(--app-terminal-green-bright);
-}
-
-.route-app .wallet-action-grid .wallet-action-effect,
-.route-app .plan-guardrail-strip.warn,
-.route-app .finalization-checklist div.complete {
-  background: rgba(225, 193, 120, 0.07);
-  border-color: rgba(225, 193, 120, 0.26);
-}
-
-.route-app .wallet-action-grid .wallet-action-effect dd,
-.route-app .plan-guardrail-strip.warn strong,
-.route-app .finalization-checklist div.complete span {
-  color: var(--app-terminal-amber);
-}
-
-.route-app .plan-guardrail-strip.block,
-.route-app .generated-plan-action-helper.danger,
-.route-app .error-text,
-.route-app .field-error-text {
-  border-color: rgba(239, 111, 120, 0.34);
-  color: #ff9daa !important;
-}
-
-.route-app .command-loop {
-  background: var(--app-terminal-bg);
-  border-color: var(--app-terminal-line);
-}
-
-.route-app .command-loop div {
-  background: rgba(255, 255, 255, 0.012);
-  border-left-color: rgba(224, 230, 226, 0.08);
-}
-
-.route-app .command-loop div.complete {
-  background: rgba(63, 189, 131, 0.065);
-}
-
-.route-app .command-loop div.complete span {
-  color: var(--app-terminal-green-bright);
-}
-
-.route-app .ticket-status-rail {
-  background: var(--app-terminal-dim);
-}
-
-.route-app .ticket-status-rail.tx-confirmed,
-.route-app .ticket-status-rail.ready {
-  background: var(--app-terminal-green-bright);
-}
-
-.route-app .ticket-status-rail.tx-pending,
-.route-app .ticket-status-rail.overdue {
-  background: var(--app-terminal-amber);
-}
-
-.route-app .ticket-status-rail.tx-failed,
-.route-app .ticket-status-rail.failed {
-  background: var(--app-terminal-red);
-}
-
-.route-app .generated-plan-card button,
-.route-app .approval-ticket button,
-.route-app .recurring-item button,
-.route-app .recurring-contract button,
-.route-app .artifact-summary-card button,
-.route-app .signed-artifact-row.receipt-proof-card button,
-.route-app .command-center-card button,
-.route-app .command-center-actions button,
-.route-app .generated-plan-more summary,
-.route-app .signed-artifact-more summary {
-  background:
-    linear-gradient(180deg, rgba(255, 255, 255, 0.04), rgba(255, 255, 255, 0.012)),
-    rgba(0, 0, 0, 0.24);
-  border-color: rgba(224, 230, 226, 0.15);
-  color: var(--app-terminal-text);
-  font-family: var(--app-terminal-mono);
-  font-size: 0.78rem;
-  font-weight: 780;
-}
-
-.route-app .generated-plan-card button:hover:not(:disabled),
-.route-app .approval-ticket button:hover:not(:disabled),
-.route-app .recurring-item button:hover:not(:disabled),
-.route-app .recurring-contract button:hover:not(:disabled),
-.route-app .artifact-summary-card button:hover:not(:disabled),
-.route-app .signed-artifact-row.receipt-proof-card button:hover:not(:disabled),
-.route-app .command-center-card button:hover:not(:disabled),
-.route-app .command-center-actions button:hover:not(:disabled) {
-  background: rgba(139, 205, 170, 0.08);
-  border-color: rgba(139, 205, 170, 0.28);
-  box-shadow: 0 0 18px rgba(63, 189, 131, 0.08);
-  color: #f2fff7;
-  transform: translateY(-1px);
-}
-
-.route-app .generated-plan-card button.primary,
-.route-app .approval-ticket button.primary,
-.route-app .recurring-contract button.primary,
-.route-app .command-center-actions button.primary {
-  background:
-    linear-gradient(180deg, rgba(73, 227, 124, 0.92), rgba(63, 189, 131, 0.86));
-  border-color: rgba(139, 205, 170, 0.58);
-  color: #04110b;
-}
-
-.route-app .generated-plan-card button.danger,
-.route-app .approval-ticket button.danger,
-.route-app .recurring-item button[data-recurring-op="delete"],
-.route-app .signed-artifact-row.receipt-proof-card button[data-artifact-delete],
-.route-app .completed-plan-actions button.danger,
-.route-app .completed-header-actions button.danger {
-  background: rgba(239, 111, 120, 0.08);
-  border-color: rgba(239, 111, 120, 0.28);
-  color: #ff9daa;
-}
-
-.route-app .generated-plan-card button:disabled,
-.route-app .approval-ticket button:disabled,
-.route-app .recurring-item button:disabled,
-.route-app .recurring-contract button:disabled,
-.route-app .artifact-summary-card button:disabled,
-.route-app .signed-artifact-row.receipt-proof-card button:disabled,
-.route-app .command-center-card button:disabled,
-.route-app .command-center-actions button:disabled {
-  background: rgba(255, 255, 255, 0.018);
-  border-color: rgba(224, 230, 226, 0.075);
-  color: rgba(141, 153, 149, 0.44);
-}
-
-.route-app .generated-plan-inline-details,
-.route-app .generated-plan-more,
-.route-app .artifact-technical-details,
-.route-app .recurring-upcoming-runs,
-.route-app .recurring-history-list,
-.route-app .recurring-notifications-panel {
-  border-top-color: rgba(224, 230, 226, 0.095);
-}
-
-.route-app .generated-plan-inline-details summary,
-.route-app .generated-plan-more summary,
-.route-app .artifact-technical-details summary,
-.route-app .recurring-upcoming-runs summary,
-.route-app .record-activity > summary {
-  color: var(--app-terminal-text);
-  font-family: var(--app-terminal-mono);
-}
-
-.route-app .generated-plan-inline-details summary::after,
-.route-app .generated-plan-more summary::after,
-.route-app .artifact-technical-details summary::after {
-  color: var(--app-terminal-green-bright);
-}
-
-.route-app .decision-proof-grid dd,
-.route-app .decision-proof-text,
-.route-app .artifact-signed-message-block pre,
-.route-app .receipt-proof-grid pre,
-.route-app .recurring-secret-reveal code {
-  background: rgba(0, 0, 0, 0.32);
-  border: 1px solid rgba(224, 230, 226, 0.095);
-  color: var(--app-terminal-text);
-  font-family: var(--app-terminal-mono);
-}
-
 @media (max-width: 1120px) {
   .review-plan-list .review-plan-facts,
   .review-plan-list .wallet-action-grid {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 
-  .completed-card-head,
+  .recurring-card-head {
+    grid-template-columns: minmax(0, 1fr) minmax(170px, auto);
+  }
+
+  .inbox-approval-head {
+    grid-template-areas:
+      "title actions"
+      "title value";
+    grid-template-columns: minmax(0, 1fr) minmax(300px, auto);
+  }
+
+  .recurring-card-actions {
+    grid-column: 1 / -1;
+    justify-content: flex-end;
+    justify-self: stretch;
+  }
+
+  .inbox-approval-actions {
+    grid-area: actions;
+    grid-column: auto;
+    justify-content: flex-end;
+    justify-self: stretch;
+  }
+
+  .recurring-card-summary-grid {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+
+  .inbox-approval-summary-grid {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+
+  .completed-history-head,
   .route-app .ticket-title-row,
   .route-app .lab-workbench-grid {
     grid-template-columns: minmax(0, 1fr);
+  }
+
+  .completed-history-summary-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 
   .route-app .research-brief {
@@ -12041,11 +13410,17 @@ button.danger:hover:not(:disabled) {
     grid-template-columns: minmax(0, 1fr);
   }
 
+  .route-app .workflow-status-band[data-layout="workflow-status"].compact.no-action {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
   .route-app .first-run-actions {
     grid-template-columns: minmax(0, 220px);
   }
 
   .route-app .command-center-grid,
+  .route-app .command-route-grid,
+  .route-app .command-storage-grid,
   .route-app .command-loop {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
@@ -12164,21 +13539,89 @@ button.danger:hover:not(:disabled) {
   }
 
   .route-app .trust-layer-panel[data-layout="trust-strip"],
+  .route-app .command-subtab-row,
   .route-app .command-center-grid,
+  .route-app .command-route-grid,
+  .route-app .command-storage-grid,
   .route-app .command-loop {
     grid-template-columns: minmax(0, 1fr);
   }
 
   .review-plan-card-head,
   .review-plan-facts,
-  .completed-card-head,
+  .recurring-card-head,
+  .recurring-card-footer-row,
+  .inbox-approval-head,
+  .completed-history-head,
+  .completed-history-summary-grid,
+  .completed-history-drawers,
+  .receipt-proof-card-head,
+  .receipt-proof-summary-grid,
   .route-app .completed-plan-details .proof-grid.compact {
     grid-template-columns: minmax(0, 1fr);
   }
 
-  .review-plan-actions {
+  .receipt-proof-date,
+  .receipt-proof-storage-row {
+    justify-self: start;
+    text-align: left;
+  }
+
+  .receipt-proof-storage-row {
     grid-template-columns: minmax(0, 1fr);
+  }
+
+  .receipt-proof-delete-button {
+    justify-self: start;
+  }
+
+  .inbox-approval-head {
+    grid-template-areas:
+      "title"
+      "actions"
+      "value";
+  }
+
+  .recurring-card-value,
+  .inbox-approval-value,
+  .completed-history-value,
+  .receipt-proof-value {
+    margin-right: 0;
+    justify-self: start;
+    text-align: left;
+  }
+
+  .recurring-card-summary-grid,
+  .inbox-approval-summary-grid,
+  .completed-history-summary-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .review-plan-actions {
+    justify-content: stretch;
     justify-self: stretch;
+  }
+
+  .recurring-card-actions,
+  .recurring-card-footer-actions,
+  .inbox-approval-actions,
+  .completed-history-actions,
+  .receipt-proof-card .receipt-proof-actions {
+    justify-content: stretch;
+    justify-self: stretch;
+  }
+
+  .review-plan-actions button {
+    flex: 1 1 140px;
+  }
+
+  .recurring-card-actions button,
+  .recurring-card-footer-actions button,
+  .inbox-approval-actions button,
+  .completed-history-actions button,
+  .receipt-proof-card .receipt-proof-actions button,
+  .receipt-proof-card .receipt-proof-actions summary {
+    flex: 1 1 140px;
   }
 
   .completed-header-actions,
@@ -12203,49 +13646,71 @@ button.danger:hover:not(:disabled) {
     --app-nav-h: 54px;
   }
 
+  .recurring-card-summary-grid,
+  .inbox-approval-summary-grid,
+  .completed-history-summary-grid,
+  .receipt-proof-summary-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
   .route-app .workspace-tabs[data-layout="app-tabs"] button {
     font-size: 0.64rem;
     min-height: 32px;
   }
 }
 
-@media (max-width: 899px) {
-  .route-app .workspace-tabs[data-layout="app-tabs"] button.active::before {
-    margin-right: 3px;
-  }
-
-  .route-app .workspace-tabs[data-layout="app-tabs"] button.active::after {
-    margin-left: 3px;
-    width: 5px;
-  }
-}
-
-@media (max-width: 480px) {
-  .route-app,
-  .route-app .workspace-intro[data-layout="app-intro"],
-  .route-app .workspace.public-workspace[data-layout="app-shell"],
-  .route-app .custody-panel[data-layout="app-rail"],
-  .route-app .main-panel[data-layout="app-main"] {
+@media (max-width: 640px) {
+  .route-app {
     max-width: 100%;
     overflow-x: hidden;
   }
 
+  .route-app .workspace-intro[data-layout="app-intro"],
+  .route-app .workspace.public-workspace[data-layout="app-shell"],
+  .route-app .custody-panel[data-layout="app-rail"],
+  .route-app .main-panel[data-layout="app-main"] {
+    min-width: 0;
+    max-width: 100%;
+    overflow-x: visible;
+    width: 100%;
+  }
+
+  .route-app .workspace-intro[data-layout="app-intro"] {
+    display: block;
+  }
+
   .route-app .workspace-intro[data-layout="app-intro"] h2 {
     font-size: clamp(1.26rem, 5.6vw, 1.5rem);
-    max-width: calc(100vw - 24px);
+    max-width: 100%;
     overflow-wrap: anywhere;
     text-wrap: wrap;
     white-space: normal;
+    width: 100%;
     word-break: break-word;
   }
 
   .route-app .workspace-intro[data-layout="app-intro"] p {
-    max-width: calc(100vw - 24px);
+    max-width: 100%;
     overflow-wrap: anywhere;
+    width: 100%;
   }
 
   .route-app .public-wallet-actions {
     grid-template-columns: minmax(0, 1fr);
+    max-width: 100%;
+    width: 100%;
+  }
+
+  .route-app .custody-panel[data-layout="app-rail"] *,
+  .route-app .main-panel[data-layout="app-main"] * {
+    min-width: 0;
+  }
+
+  .route-app .connection-summary p,
+  .route-app .rail-cloud-card p,
+  .route-app .rail-bridge-card p,
+  .route-app .rail-ai-card p {
+    overflow-wrap: anywhere;
   }
 
   .route-app .rail-cloud-head,

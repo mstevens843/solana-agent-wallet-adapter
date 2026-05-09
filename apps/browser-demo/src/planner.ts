@@ -230,8 +230,8 @@ export const AGENT_PLAN_TEMPLATES: AgentPlanTemplate[] = [
   template('trading', 'swap', 'Swap tokens', 'Prepare a Jupiter-style swap request with explicit input, output, amount, and slippage cap.', 'swap', 'medium', [
     selectField('inputToken', 'Input token', ['SOL', 'USDC', 'JUP', 'BONK', 'WIF', 'PYUSD'], 'SOL'),
     selectField('outputToken', 'Output token', ['USDC', 'SOL', 'JUP', 'BONK', 'WIF', 'PYUSD'], 'USDC'),
-    field('amount', 'Input amount', '0.01', '0.01', true),
-    field('slippageBps', 'Max slippage bps', '50', '50'),
+    field('amount', 'Token amount', '0.01', '0.01', true),
+    field('slippageBps', 'Max slippage', '0.5%', '50'),
   ]),
   template('recurring', 'dca', 'DCA review proof', 'Sign a review proof for a recurring DCA strategy before using a swap-capable recurring engine.', 'manual_review', 'medium', [
     selectField('token', 'Spend token', ['SOL', 'USDC', 'PYUSD'], 'USDC'),
@@ -250,13 +250,13 @@ export const AGENT_PLAN_TEMPLATES: AgentPlanTemplate[] = [
   template('trading', 'limit-order', 'Limit order review', 'Prepare a limit-order intent that waits for explicit wallet approval at execution time.', 'manual_review', 'medium', [
     selectField('inputToken', 'Input token', ['SOL', 'USDC', 'JUP', 'BONK', 'WIF'], 'SOL'),
     selectField('outputToken', 'Output token', ['USDC', 'SOL', 'JUP', 'BONK', 'WIF'], 'USDC'),
-    field('amount', 'Input amount', '0.1', '0.1'),
+    field('amount', 'Token amount', '0.1', '0.1'),
     field('limitPrice', 'Limit price / condition', 'Only if SOL >= $250', ''),
   ]),
   template('trading', 'rebalance', 'Portfolio rebalance', 'Plan a rebalance while preserving final wallet approval for each action.', 'manual_review', 'high', [
     textareaField('target', 'Target allocation', 'Example: 60% SOL, 30% USDC, 10% JUP'),
     field('maxTradeSize', 'Max trade size', '100 USDC', '100 USDC'),
-    field('slippageBps', 'Max slippage bps', '50', '50'),
+    field('slippageBps', 'Max slippage', '0.5%', '50'),
   ]),
   template('portfolio', 'balances', 'Portfolio check', 'Read and summarize wallet balances before proposing any action.', 'read_only', 'low', [
     selectField('scope', 'Scope', ['SOL + configured tokens', 'All SPL tokens', 'NFTs', 'DeFi positions'], 'SOL + configured tokens'),
@@ -951,7 +951,7 @@ function routeFor(actionType: string): string {
     case 'transfer_spl':
       return 'Prepare a {token} transfer to {recipient} for {amount}. Queue through the local bridge when connected.';
     case 'swap':
-      return 'Prepare a swap from {amount} {inputToken} to {outputToken} with max slippage {slippageBps} bps.';
+      return 'Prepare a swap from {amount} {inputToken} to {outputToken} with max slippage {slippageBps}.';
     case 'recurring_payment':
       return 'Create a recurring review item for {amount} {token} on {cadence}. Every occurrence still requires wallet approval.';
     case 'read_only':
@@ -1003,7 +1003,9 @@ function readableParameters(template: AgentPlanTemplate, parameters: Record<stri
   return template.fields
     .map((fieldDef) => ({
       label: fieldDef.label,
-      value: (parameters[fieldDef.id] ?? '').trim(),
+      value: fieldDef.id === 'slippageBps'
+        ? formatSlippageBpsForDisplay(parameters[fieldDef.id] ?? '')
+        : (parameters[fieldDef.id] ?? '').trim(),
     }))
     .filter((entry) => entry.value.length > 0);
 }
@@ -1011,8 +1013,22 @@ function readableParameters(template: AgentPlanTemplate, parameters: Record<stri
 function interpolate(template: string, parameters: Record<string, string>): string {
   return template.replace(/\{([^}]+)\}/g, (_, key: string) => {
     const value = parameters[key]?.trim();
+    if (key === 'slippageBps') {
+      const formatted = formatSlippageBpsForDisplay(value ?? '');
+      return formatted || titleCase(key);
+    }
     return value || titleCase(key);
   });
+}
+
+function formatSlippageBpsForDisplay(value: string): string {
+  const bps = Number(value);
+  if (!Number.isFinite(bps) || bps <= 0) return value.trim();
+  const percent = bps / 100;
+  const formatted = Number.isInteger(percent)
+    ? String(percent)
+    : percent.toFixed(4).replace(/0+$/, '').replace(/\.$/, '');
+  return `${formatted}%`;
 }
 
 function normalizeBaseUrl(baseUrl: string, format: AiApiFormat): string {

@@ -175,13 +175,13 @@ async function verifyLayoutSmoke() {
             }
           }
         }
-        await verifyAppInteractionContracts(page, origin);
+        await verifyAppInteractionContracts(page, origin, wallet);
       });
     });
   });
 }
 
-async function verifyAppInteractionContracts(page, origin) {
+async function verifyAppInteractionContracts(page, origin, wallet) {
   await page.setViewport(1280, 900);
   await page.inspect(`${origin}/app`);
   const noWalletCloudCta = await page.evaluate(`(() => {
@@ -206,6 +206,39 @@ async function verifyAppInteractionContracts(page, origin) {
   if (report.errors.length) {
     throw new Error(`Layout failed for ${report.label}: ${report.errors.join('; ')}\n${formatLayoutRects(report)}`);
   }
+  const reviewContract = await page.evaluate(`(() => {
+    const walletAddress = ${JSON.stringify(wallet.walletAddress)};
+    const card = document.querySelector('[data-layout="review-plan-card"]');
+    if (!card) return { ok: false, reason: 'missing review card' };
+    const visibleText = Array.from(card.children)
+      .filter((child) => !child.matches('.generated-plan-inline-details'))
+      .map((child) => child.textContent || '')
+      .join('\n');
+    const buttons = Array.from(card.querySelectorAll('.review-plan-actions button')).map((button) => ({
+      action: button.dataset.generatedPlanAction || '',
+      primary: button.classList.contains('primary'),
+      text: (button.textContent || '').trim(),
+    }));
+    const labels = Array.from(card.querySelectorAll('.wallet-action-grid dt')).map((node) => (node.textContent || '').trim());
+    const walletValue = card.querySelector('.wallet-action-wallet dd')?.textContent?.trim() || '';
+    return {
+      buttons,
+      labels,
+      ok: true,
+      visibleHasActionQuickFact: /\\bAction\\b/.test(visibleText),
+      visibleHasNetworkQuickFact: /\\bNetwork\\b/.test(visibleText),
+      visibleHasRiskQuickFact: /\\bRisk\\b/.test(visibleText),
+      walletExpected: walletAddress,
+      walletValue,
+    };
+  })()`);
+  assert(reviewContract.ok, `review contract failed: ${reviewContract.reason || 'unknown'}`);
+  assert(reviewContract.buttons[0]?.action === 'sign-proof' && reviewContract.buttons[0]?.primary && reviewContract.buttons[0]?.text === 'Sign proof', `review card primary action is wrong: ${JSON.stringify(reviewContract.buttons)}`);
+  assert(!reviewContract.visibleHasNetworkQuickFact, 'review card still exposes Network in the visible summary');
+  assert(!reviewContract.visibleHasActionQuickFact, 'review card still exposes Action in the visible summary');
+  assert(!reviewContract.visibleHasRiskQuickFact, 'review card still exposes Risk in the visible summary');
+  assert(reviewContract.labels.join('|') === 'Wallet|Amount|Route or recipient', `review summary labels changed: ${reviewContract.labels.join('|')}`);
+  assert(reviewContract.walletValue === reviewContract.walletExpected, `review card wallet is not full length: ${reviewContract.walletValue}`);
   await clickAndWait(page, '[data-layout="app-tabs"] [data-tab="schedule"]', 'recurring tab for fold check');
   await page.evaluate('window.scrollTo(0, 0)');
   await page.waitFor('window.scrollY < 3');
@@ -305,14 +338,14 @@ async function appLayoutReport(page, label) {
     const reviewCards = Array.from(document.querySelectorAll('[data-layout="review-plan-card"]')).map((card, index) => {
       const rect = card.getBoundingClientRect();
       const actions = card.querySelector('.review-plan-actions')?.getBoundingClientRect();
-      const facts = card.querySelector('.review-plan-facts')?.getBoundingClientRect();
+      const summary = card.querySelector('.wallet-action-summary')?.getBoundingClientRect();
       return {
         actions: actions ? { bottom: actions.bottom, left: actions.left, right: actions.right, top: actions.top } : null,
         bottom: rect.bottom,
-        facts: facts ? { bottom: facts.bottom, left: facts.left, right: facts.right, top: facts.top } : null,
         index,
         left: rect.left,
         right: rect.right,
+        summary: summary ? { bottom: summary.bottom, left: summary.left, right: summary.right, top: summary.top } : null,
         top: rect.top,
         width: rect.width,
       };
@@ -323,7 +356,7 @@ async function appLayoutReport(page, label) {
       if (within && (card.left < within.left - 1 || card.right > within.right + 1)) {
         errors.push('review card ' + card.index + ' clips outside active panel');
       }
-      for (const [name, child] of [['actions', card.actions], ['facts', card.facts]]) {
+      for (const [name, child] of [['actions', card.actions], ['summary', card.summary]]) {
         if (!child) continue;
         if (child.left < card.left - 1 || child.right > card.right + 1) {
           errors.push('review card ' + card.index + ' ' + name + ' clips outside card');
