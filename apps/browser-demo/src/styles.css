@@ -10361,6 +10361,10 @@ button.danger:hover:not(:disabled) {
   margin-bottom: var(--app-gap);
 }
 
+.route-app .trust-layer-panel[data-layout="trust-strip"] div {
+  padding: 8px 10px;
+}
+
 .route-app [data-layout="active-panel"] {
   display: block;
   min-width: 0;
@@ -10481,6 +10485,95 @@ button.danger:hover:not(:disabled) {
   margin-top: 12px;
 }
 
+.route-app .approval-object.signature-stage {
+  padding: 14px;
+}
+
+.route-app .signature-object-head {
+  margin-bottom: 10px;
+  padding-bottom: 10px;
+}
+
+.route-app .signature-object-head h2 {
+  font-size: 1.16rem;
+  line-height: 1.16;
+}
+
+.route-app .signature-object-head p {
+  font-size: 0.9rem;
+  line-height: 1.34;
+}
+
+.route-app .one-time-create-panel,
+.route-app .one-time-review-panel {
+  gap: 10px;
+}
+
+.route-app .one-time-plan-tabs {
+  margin-bottom: 8px;
+}
+
+.route-app .one-time-plan-tabs button,
+.route-app .template-filter-row button {
+  min-height: 34px;
+}
+
+.route-app .intent-document-card.planner-card {
+  gap: 8px;
+  padding: 12px;
+}
+
+.route-app .planner-template-select {
+  margin: 0;
+}
+
+.route-app .template-picker-trigger {
+  min-height: 42px;
+}
+
+.route-app .template-description {
+  font-size: 0.86rem;
+  line-height: 1.34;
+}
+
+.route-app .planner-fields {
+  gap: 8px;
+}
+
+.route-app .planner-field input,
+.route-app .planner-field select,
+.route-app .field.compact input,
+.route-app .field.compact select {
+  min-height: 40px;
+}
+
+.route-app .planner-prompt textarea {
+  min-height: 66px;
+}
+
+.route-app .agent-actions {
+  gap: 8px;
+  margin-top: 8px;
+}
+
+.route-app .agent-actions.intent-document-actions {
+  border-top: 0;
+  padding-top: 0;
+}
+
+.route-app .planner-ai-setup-row {
+  margin-top: 8px;
+}
+
+.route-app .ai-settings-panel[data-layout="ai-setup-panel"] {
+  scroll-margin-top: 96px;
+}
+
+.route-app .ai-settings-panel[data-layout="ai-setup-panel"][open] {
+  border-color: rgba(139, 205, 170, 0.36);
+  box-shadow: inset 3px 0 0 rgba(125, 231, 176, 0.46);
+}
+
 .command-center-head {
   align-items: start;
 }
@@ -10575,11 +10668,28 @@ button.danger:hover:not(:disabled) {
   gap: 12px;
 }
 
+.review-plan-list {
+  display: grid;
+  gap: 12px;
+  grid-template-columns: minmax(0, 1fr);
+  width: 100%;
+}
+
+.review-plan-list .review-plan-card {
+  overflow: hidden;
+  width: 100%;
+}
+
 .review-plan-card-head {
   align-items: start;
   display: grid;
   gap: 12px;
   grid-template-columns: minmax(0, 1fr) minmax(220px, auto);
+}
+
+.review-plan-list .review-plan-card-head {
+  gap: 8px;
+  grid-template-columns: minmax(0, 1fr);
 }
 
 .review-plan-actions {
@@ -10589,11 +10699,23 @@ button.danger:hover:not(:disabled) {
   justify-self: end;
 }
 
+.review-plan-list .review-plan-actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-self: start;
+  max-width: 520px;
+  width: 100%;
+}
+
 .review-plan-actions button {
   min-height: 38px;
   min-width: 0;
   padding: 0 11px;
   white-space: nowrap;
+}
+
+.review-plan-list .review-plan-actions button {
+  flex: 1 1 154px;
 }
 
 .review-plan-main {
@@ -10603,6 +10725,29 @@ button.danger:hover:not(:disabled) {
 
 .review-plan-facts {
   grid-template-columns: repeat(4, minmax(120px, 1fr));
+}
+
+.review-plan-list .review-plan-facts {
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+}
+
+.review-plan-list .wallet-action-summary {
+  overflow: hidden;
+}
+
+.review-plan-list .wallet-action-grid {
+  grid-template-columns: 1fr 0.8fr 1.15fr 1.25fr;
+}
+
+.review-plan-list .wallet-action-grid dd {
+  overflow: visible;
+  overflow-wrap: anywhere;
+  text-overflow: clip;
+  white-space: normal;
+}
+
+.review-plan-list .generated-plan-card-actions {
+  max-width: 520px;
 }
 
 .review-plan-details > div {
@@ -10654,6 +10799,75 @@ button.danger:hover:not(:disabled) {
   font-size: 0.84rem;
   line-height: 1;
   padding: 7px 9px;
+}
+
+.route-app .recurring-contract {
+  gap: 10px;
+  padding: 14px;
+}
+
+.route-app .contract-head p,
+.route-app .recurring-help {
+  font-size: 0.9rem;
+  line-height: 1.34;
+}
+
+.route-app .contract-summary div {
+  min-height: 64px;
+  padding: 10px;
+}
+
+.route-app .recurring-boundary-note {
+  gap: 8px 12px;
+  padding: 9px 10px;
+}
+
+.route-app .contract-section {
+  gap: 14px;
+  grid-template-columns: 170px minmax(0, 1fr);
+  padding-top: 12px;
+}
+
+.route-app .recurring-preset-row {
+  margin: 8px 0;
+}
+
+.route-app .recurring-next-preview {
+  padding: 10px 0;
+}
+
+.route-app .recurring-form-actions.contract-actions,
+.route-app .lab-signature-action {
+  margin-top: 10px;
+  padding-top: 10px;
+}
+
+.route-app .completed-plan-details .proof-grid.compact {
+  display: grid;
+  gap: 8px;
+  grid-template-columns: repeat(auto-fit, minmax(210px, 1fr));
+}
+
+.artifact-detail-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.route-app .signed-artifact-actions.receipt-proof-actions {
+  gap: 7px;
+}
+
+.route-app .signed-artifact-actions.receipt-proof-actions button,
+.route-app .signed-artifact-actions.receipt-proof-actions summary {
+  min-height: 34px;
+}
+
+@media (max-width: 1120px) {
+  .review-plan-list .review-plan-facts,
+  .review-plan-list .wallet-action-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
 }
 
 @media (max-width: 1179px) {

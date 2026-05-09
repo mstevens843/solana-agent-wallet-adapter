@@ -130,6 +130,7 @@ type FirstRunStepId = 'wallet' | 'plan' | 'review' | 'decision' | 'receipt';
 type FirstRunActionId =
   | 'discover-wallets'
   | 'connect-wallet'
+  | 'open-ai-setup'
   | 'open-create-plan'
   | 'open-review'
   | 'open-inbox'
@@ -3145,7 +3146,7 @@ function firstRunActionBand(): string {
     ? 'Your latest approval proof or receipt is saved in History.'
     : action.detail;
   return `
-    <section class="first-run-band workflow-status-band ${complete ? 'complete compact' : state.address ? 'compact' : ''}" aria-label="First-time approval flow" data-layout="workflow-status">
+    <section class="first-run-band workflow-status-band ${complete ? 'complete compact' : 'compact'}" aria-label="First-time approval flow" data-layout="workflow-status">
       <div class="first-run-copy">
         <span>Approval loop</span>
         <h3>${escapeHtml(title)}</h3>
@@ -3547,6 +3548,7 @@ function cloudWorkspaceCard(): string {
   const matched = cloudSessionMatchesWallet();
   const mismatch = cloudSessionWalletMismatch();
   const unavailable = state.cloudSession.status === 'unavailable';
+  const noWalletCloudAction = firstRunNextAction();
   const status = unavailable
     ? 'Saved locally'
     : signedIn
@@ -3576,11 +3578,24 @@ function cloudWorkspaceCard(): string {
       <div class="rail-cloud-actions">
         ${signedIn ? `
           <button id="cloudLogout" class="utility" ${state.busy ? 'disabled' : ''}>Sign out</button>
+        ` : !state.address ? `
+          <button
+            type="button"
+            class="primary"
+            data-first-run-action="${escapeHtml(noWalletCloudAction.id)}"
+            ${state.busy ? 'disabled' : ''}
+            title="Connect a wallet before signing in to Agentic Cloud."
+          >
+            Connect wallet to sign in
+          </button>
+        ` : unavailable ? `
+          <button class="primary" disabled title="Cloud APIs are unavailable from this host.">Cloud unavailable</button>
         ` : `
-          <button id="cloudSignIn" class="primary" ${!state.address || state.busy || unavailable ? 'disabled' : ''} title="${!state.address ? 'Connect a wallet before signing in.' : unavailable ? 'Cloud APIs are unavailable from this host.' : 'Sign in with a wallet ownership proof.'}">Sign in</button>
+          <button id="cloudSignIn" class="primary" ${state.busy ? 'disabled' : ''} title="Sign in with a wallet ownership proof.">Sign in</button>
         `}
       </div>
       ${mismatch ? '<p class="rail-cloud-warning">Cloud sessions prove wallet ownership only. They do not grant spending authority.</p>' : ''}
+      ${!signedIn && !state.address ? '<p class="rail-cloud-warning">Cloud sign-in uses your wallet as identity only. It does not grant spending authority.</p>' : ''}
     </section>
   `;
 }
@@ -3605,7 +3620,7 @@ function aiPlannerRailCard(): string {
         <span>Route <strong>${escapeHtml(routeLabel)}</strong></span>
         <span>Impact <strong>Drafting only</strong></span>
       </div>
-      <button type="button" class="utility" data-first-run-action="open-create-plan">${configured ? 'Review AI setup' : 'Configure AI'}</button>
+      <button type="button" class="utility" data-first-run-action="open-ai-setup">${configured ? 'Review AI setup' : 'Configure AI'}</button>
     </section>
   `;
 }
@@ -4451,7 +4466,7 @@ function generatedPlansPanel(embedded = false): string {
       ${
         visiblePlans.length
           ? `
-            <div class="generated-plan-grid" aria-label="Review and finish plans">
+            <div class="${embedded ? 'review-plan-list' : 'generated-plan-grid'}" aria-label="Review and finish plans" data-layout="${embedded ? 'review-plan-list' : 'generated-plan-grid'}">
               ${visiblePlans.map((record) => generatedPlanCard(record)).join('')}
             </div>
           `
@@ -4499,7 +4514,7 @@ function generatedPlanCard(record: GeneratedPlanRecord): string {
   const actionHint = generatedPlanActionHint(record);
   const primaryIsQueue = queueable;
   return `
-    <article class="generated-plan-card review-plan-card ${selected ? 'selected' : ''} ${archived ? 'archived' : ''}">
+    <article class="generated-plan-card review-plan-card ${selected ? 'selected' : ''} ${archived ? 'archived' : ''}" data-layout="review-plan-card">
       <div class="review-plan-card-head">
         <div class="generated-plan-card-top">
           <span class="status-pill ${generatedPlanStatusTone(record)}">${escapeHtml(generatedPlanStatusLabel(record))}</span>
@@ -5115,6 +5130,10 @@ function agentPlannerWorkbench(): string {
           ${templatePicker(template)}
         </div>
         ${templateOutcomeSummary(template)}
+        <div class="agent-actions signature-actions intent-document-actions">
+          <button id="generatePlan" class="primary" ${state.busy ? 'disabled' : ''}>${templateGenerating ? `${buttonSpinner()}Drafting...` : 'Draft from template'}</button>
+          <button id="generateAiPlan" class="${canUseAi ? 'primary' : ''}" ${!canUseAi || state.busy ? 'disabled' : ''} title="${escapeHtml(canUseAi ? 'Draft through your configured AI planner.' : aiDisabledReason)}">${aiGenerating ? `${buttonSpinner()}Drafting...` : 'Draft with AI'}</button>
+        </div>
         <p class="template-description">${escapeHtml(template.description)}</p>
         <div class="planner-fields">
           ${template.fields.map(templateFieldInput).join('')}
@@ -5127,10 +5146,6 @@ function agentPlannerWorkbench(): string {
         <div class="intent-policy-strip">
           <span>Where this goes</span>
           <p>Drafts are saved in Review. Approval-ready drafts enter Inbox only after you choose to send them; finished work appears in History.</p>
-        </div>
-        <div class="agent-actions signature-actions intent-document-actions">
-          <button id="generatePlan" class="primary" ${state.busy ? 'disabled' : ''}>${templateGenerating ? `${buttonSpinner()}Drafting...` : 'Draft from template'}</button>
-          <button id="generateAiPlan" class="${canUseAi ? 'primary' : ''}" ${!canUseAi || state.busy ? 'disabled' : ''} title="${escapeHtml(canUseAi ? 'Draft through your configured AI planner.' : aiDisabledReason)}">${aiGenerating ? `${buttonSpinner()}Drafting...` : 'Draft with AI'}</button>
         </div>
       </div>
       <div class="planner-ai-setup-row">
@@ -5187,7 +5202,7 @@ function aiSettingsPanel(location: 'rail' | 'planner' = 'planner'): string {
       ? `${readinessLabel} - ${aiConfirmationLabel()}`
       : 'Optional AI planner; templates work without it.';
   return `
-    <details class="ai-settings-panel ${configured ? 'configured' : 'optional'} ${location === 'rail' ? 'rail-ai-settings' : ''}" ${open}>
+    <details class="ai-settings-panel ${configured ? 'configured' : 'optional'} ${location === 'rail' ? 'rail-ai-settings' : ''}" data-layout="ai-setup-panel" ${open}>
       <summary>
         <span class="ai-summary-copy">
           <span>AI drafting setup</span>
@@ -6678,8 +6693,6 @@ function signedArtifactRow(artifact: LabArtifact): string {
       <div class="signed-artifact-actions receipt-proof-actions">
         <button data-share-receipt="${escapeHtml(artifact.id)}">Share receipt</button>
         <button data-copy="${escapeHtml(stableJson(artifact))}" data-copy-name="Receipt JSON">Copy JSON</button>
-        <button data-copy="${escapeHtml(artifact.signingMessage)}" data-copy-name="Signed text">Copy signed text</button>
-        <button data-copy="${escapeHtml(artifact.signature)}" data-copy-name="Receipt signature">Copy signature</button>
         <details class="generated-plan-more signed-artifact-more">
           <summary>More</summary>
           <div>
@@ -6812,6 +6825,10 @@ function signedArtifactDetail(artifact: LabArtifact): string {
       ${hashTile('Receipt', artifact.artifactHash)}
       ${hashTile('Signature', artifact.signature)}
       ${hashTile('Wallet', artifact.walletAddress)}
+    </div>
+    <div class="artifact-detail-actions">
+      <button data-copy="${escapeHtml(artifact.signingMessage)}" data-copy-name="Signed text">Copy signed text</button>
+      <button data-copy="${escapeHtml(artifact.signature)}" data-copy-name="Receipt signature">Copy signature</button>
     </div>
   `;
 }
@@ -7925,6 +7942,15 @@ async function runFirstRunAction(action: FirstRunActionId): Promise<void> {
       state.error = '';
       render();
       return;
+    case 'open-ai-setup':
+      state.activeTab = 'agent';
+      state.oneTimePlanView = 'create';
+      state.aiSettingsPanelOpen = true;
+      state.generatedPlanAuditId = '';
+      state.error = '';
+      render();
+      focusLayoutTarget('ai-setup-panel');
+      return;
     case 'open-review':
       state.activeTab = 'agent';
       state.oneTimePlanView = 'review';
@@ -7945,6 +7971,21 @@ async function runFirstRunAction(action: FirstRunActionId): Promise<void> {
       render();
       return;
   }
+}
+
+function focusLayoutTarget(layoutName: string): void {
+  window.requestAnimationFrame(() => {
+    const target = document.querySelector<HTMLElement>(`[data-layout="${layoutName}"]`);
+    if (!target) return;
+    if (target instanceof HTMLDetailsElement) {
+      target.open = true;
+    }
+    target.scrollIntoView({
+      behavior: window.matchMedia('(prefers-reduced-motion: reduce)').matches ? 'auto' : 'smooth',
+      block: 'center',
+    });
+    target.focus?.({ preventScroll: true });
+  });
 }
 
 async function runDiscover(): Promise<void> {
@@ -12562,7 +12603,7 @@ function browserRecurringPaymentFromDraft(draft: RecurringDraft): RecurringPayme
         ...(typeof payload.notifications.webhookUrl === 'string' && { webhookUrl: payload.notifications.webhookUrl }),
       },
     }),
-    note: draft.note || 'Browser recurring schedule',
+    note: draft.note || 'Saved-on-device recurring schedule',
     createdAt: now,
     updatedAt: now,
     nextDueAt: recurringDraftNextRuns(draft)[0],
@@ -13556,6 +13597,11 @@ function recurringComposer(): string {
         <strong>Signing boundary</strong>
         <p>${escapeHtml(boundaryCopy)}</p>
       </div>
+      <div class="recurring-form-actions contract-actions">
+        <button id="createRecurring" class="primary" ${createDisabled ? 'disabled' : ''}>Create recurring request</button>
+        <button type="button" class="utility" data-recurring-action="dca-proof">Create DCA review proof instead</button>
+        <span class="contract-helper">${escapeHtml(actionHelper)}</span>
+      </div>
       <dl class="contract-summary">
         ${definitionRow('Asset', `${draft.amount || 'Amount'} ${draft.token || 'Token'}`)}
         ${definitionRow('Recipient', recipient)}
@@ -13612,11 +13658,6 @@ function recurringComposer(): string {
         </label>
       </details>
       ${recurringDraftPreviewPanel(draft)}
-      <div class="recurring-form-actions contract-actions">
-        <button id="createRecurring" class="primary" ${createDisabled ? 'disabled' : ''}>Create recurring request</button>
-        <button type="button" class="utility" data-recurring-action="dca-proof">Create DCA review proof instead</button>
-        <span class="contract-helper">${escapeHtml(actionHelper)}</span>
-      </div>
     </div>
   `;
 }

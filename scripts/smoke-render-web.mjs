@@ -175,9 +175,59 @@ async function verifyLayoutSmoke() {
             }
           }
         }
+        await verifyAppInteractionContracts(page, origin);
       });
     });
   });
+}
+
+async function verifyAppInteractionContracts(page, origin) {
+  await page.setViewport(1280, 900);
+  await page.inspect(`${origin}/app`);
+  const noWalletCloudCta = await page.evaluate(`(() => {
+    const buttons = Array.from(document.querySelectorAll('.rail-cloud-actions button'));
+    return buttons.some((button) => /Connect wallet to sign in/i.test(button.textContent || '') && button.dataset.firstRunAction);
+  })()`);
+  assert(noWalletCloudCta, 'cloud sign-in CTA did not route through wallet connect when no wallet is connected');
+
+  await connectFakeWallet(page);
+  await clickAndWait(page, '[data-first-run-action="open-ai-setup"]', 'open AI setup from sidebar');
+  await page.waitFor(`document.querySelector('[data-layout="ai-setup-panel"]')?.open === true`);
+  await clickAndWait(page, '[data-layout="ai-setup-panel"] > summary', 'collapse AI setup after open check');
+  await page.waitFor(`document.querySelector('[data-layout="ai-setup-panel"]')?.open === false`);
+  await ensureCreatePlanView(page);
+  await page.evaluate('window.scrollTo(0, 0)');
+  await page.waitFor('window.scrollY < 3');
+  await assertSelectorAboveFold(page, '#generatePlan', 'create draft primary action');
+  await clickAndWait(page, '#generatePlan', 'create draft for review layout');
+  await clickAndWait(page, '[data-one-time-view="review"]', 'review drafted plans');
+  await page.waitFor(`Boolean(document.querySelector('[data-layout="review-plan-card"]'))`);
+  const report = await appLayoutReport(page, '1280x900 agent review contract');
+  if (report.errors.length) {
+    throw new Error(`Layout failed for ${report.label}: ${report.errors.join('; ')}\n${formatLayoutRects(report)}`);
+  }
+  await clickAndWait(page, '[data-layout="app-tabs"] [data-tab="schedule"]', 'recurring tab for fold check');
+  await page.evaluate('window.scrollTo(0, 0)');
+  await page.waitFor('window.scrollY < 3');
+  await assertSelectorAboveFold(page, '#createRecurring', 'create recurring primary action');
+  console.log(`[smoke-render-web] PASS interaction contracts ${report.label} reviewCards=${report.reviewCards?.length ?? 0}`);
+}
+
+async function assertSelectorAboveFold(page, selector, label) {
+  const result = await page.evaluate(`(() => {
+    const selector = ${JSON.stringify(selector)};
+    const element = document.querySelector(selector);
+    if (!element) return { ok: false, reason: 'missing' };
+    const rect = element.getBoundingClientRect();
+    return {
+      bottom: rect.bottom,
+      innerHeight: window.innerHeight,
+      ok: rect.bottom <= window.innerHeight + 1 && rect.top >= -1,
+      reason: 'geometry',
+      top: rect.top,
+    };
+  })()`);
+  assert(result.ok, `${label} is not above the fold: ${JSON.stringify(result)}`);
 }
 
 async function appLayoutReport(page, label) {
@@ -252,7 +302,43 @@ async function appLayoutReport(page, label) {
         errors.push('nav overlaps active panel');
       }
     }
-    return { errors, innerWidth, label, rects, scrollWidth, scrollY: window.scrollY };
+    const reviewCards = Array.from(document.querySelectorAll('[data-layout="review-plan-card"]')).map((card, index) => {
+      const rect = card.getBoundingClientRect();
+      const actions = card.querySelector('.review-plan-actions')?.getBoundingClientRect();
+      const facts = card.querySelector('.review-plan-facts')?.getBoundingClientRect();
+      return {
+        actions: actions ? { bottom: actions.bottom, left: actions.left, right: actions.right, top: actions.top } : null,
+        bottom: rect.bottom,
+        facts: facts ? { bottom: facts.bottom, left: facts.left, right: facts.right, top: facts.top } : null,
+        index,
+        left: rect.left,
+        right: rect.right,
+        top: rect.top,
+        width: rect.width,
+      };
+    });
+    const within = activePanel ?? main;
+    for (const card of reviewCards) {
+      if (card.width <= 0) errors.push('review card ' + card.index + ' has empty geometry');
+      if (within && (card.left < within.left - 1 || card.right > within.right + 1)) {
+        errors.push('review card ' + card.index + ' clips outside active panel');
+      }
+      for (const [name, child] of [['actions', card.actions], ['facts', card.facts]]) {
+        if (!child) continue;
+        if (child.left < card.left - 1 || child.right > card.right + 1) {
+          errors.push('review card ' + card.index + ' ' + name + ' clips outside card');
+        }
+      }
+    }
+    for (let i = 0; i < reviewCards.length; i += 1) {
+      for (let j = i + 1; j < reviewCards.length; j += 1) {
+        const a = reviewCards[i];
+        const b = reviewCards[j];
+        const overlaps = a.left < b.right - 1 && a.right > b.left + 1 && a.top < b.bottom - 1 && a.bottom > b.top + 1;
+        if (overlaps) errors.push('review cards ' + i + ' and ' + j + ' overlap');
+      }
+    }
+    return { errors, innerWidth, label, rects, reviewCards, scrollWidth, scrollY: window.scrollY };
   })()`);
 }
 
