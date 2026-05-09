@@ -57,9 +57,11 @@ object AgentMwaLog {
         val metadata = mutableMapOf<String, Any?>(
             "${prefix}Bytes" to bytes.size,
             "${prefix}Sha256_8" to sha256First8(bytes),
-            "${prefix}Hex" to hex(bytes, if (BuildConfig.DEBUG || bytes.size <= 40) bytes.size else 40),
         )
-        if (includeUtf8) {
+        if (BuildConfig.DEBUG) {
+            metadata["${prefix}Hex"] = hex(bytes, bytes.size)
+        }
+        if (includeUtf8 && BuildConfig.DEBUG) {
             metadata["${prefix}Utf8"] = bytes.toString(Charsets.UTF_8)
         }
         return metadata
@@ -69,9 +71,9 @@ object AgentMwaLog {
         val metadata = mutableMapOf<String, Any?>(
             "${prefix}Bytes" to bytes.size,
             "${prefix}Sha256_8" to sha256First8(bytes),
-            "${prefix}HexPrefix" to hex(bytes, if (BuildConfig.DEBUG) 80 else 24),
         )
         if (BuildConfig.DEBUG) {
+            metadata["${prefix}HexPrefix"] = hex(bytes, 80)
             metadata["${prefix}Hex"] = hex(bytes, bytes.size)
         }
         return metadata
@@ -84,7 +86,7 @@ object AgentMwaLog {
             mapOf(
                 "class" to err.javaClass.simpleName,
                 "message" to err.message,
-                "stack" to err.stackTraceToString(),
+                "stack" to if (BuildConfig.DEBUG) err.stackTraceToString() else "[debug-only]",
                 "causeClass" to err.cause?.javaClass?.simpleName,
                 "causeMessage" to err.cause?.message,
             )
@@ -117,10 +119,26 @@ object AgentMwaLog {
         ) {
             return "[redacted]"
         }
+        if (!BuildConfig.DEBUG && isDebugOnlyValueKey(normalized)) {
+            return "[debug-only]"
+        }
         val raw = value?.toString() ?: ""
         val redacted = redactUrl(raw)
         return if (BuildConfig.DEBUG) redacted else redacted.take(RELEASE_VALUE_LIMIT)
     }
+
+    private fun isDebugOnlyValueKey(normalizedKey: String): Boolean =
+        normalizedKey.endsWith("payloadjson") ||
+            normalizedKey.endsWith("payloaddata") ||
+            normalizedKey == "payload" ||
+            normalizedKey == "body" ||
+            normalizedKey == "response" ||
+            normalizedKey == "transactions" ||
+            normalizedKey == "messages" ||
+            normalizedKey.contains("base64") ||
+            normalizedKey.endsWith("hex") ||
+            normalizedKey.endsWith("hexprefix") ||
+            normalizedKey.endsWith("utf8")
 
     private fun redactUrl(value: String): String =
         value.replace(Regex("([?&][^=&]*(?:api[-_]?key|token|secret)[^=&]*=)[^&\\s]+", RegexOption.IGNORE_CASE), "$1[redacted]")

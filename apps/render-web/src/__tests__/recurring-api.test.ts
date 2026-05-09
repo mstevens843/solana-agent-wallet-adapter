@@ -851,6 +851,24 @@ describe('cloud recurring scheduler API', () => {
       );
       expect(badWebhook.status).toBe(400);
       expect(badWebhook.body.error).toBe('invalid_notifications');
+
+      const localhostWebhook = await postJson(
+        port,
+        '/api/recurring',
+        { ...validCreateBody(), notifications: { webhookUrl: 'https://localhost/webhook' } },
+        walletA,
+      );
+      expect(localhostWebhook.status).toBe(400);
+      expect(localhostWebhook.body.error).toBe('invalid_notifications');
+
+      const privateIpWebhook = await postJson(
+        port,
+        '/api/recurring',
+        { ...validCreateBody(), notifications: { webhookUrl: 'https://127.0.0.1:9000/webhook' } },
+        walletA,
+      );
+      expect(privateIpWebhook.status).toBe(400);
+      expect(privateIpWebhook.body.error).toBe('invalid_notifications');
     });
   });
 

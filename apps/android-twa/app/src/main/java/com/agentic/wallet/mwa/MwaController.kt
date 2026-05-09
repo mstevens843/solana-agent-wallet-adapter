@@ -15,12 +15,15 @@ import com.solana.mobilewalletadapter.clientlib.TransactionResult
 import com.solana.mobilewalletadapter.clientlib.protocol.MobileWalletAdapterClient.AuthorizationResult
 import com.solana.mobilewalletadapter.common.signin.SignInWithSolana
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
 import org.json.JSONArray
 import org.json.JSONObject
+import java.io.IOException
 import java.io.OutputStreamWriter
 import java.net.HttpURLConnection
+import java.net.SocketTimeoutException
 import java.net.URL
 import java.security.MessageDigest
 
@@ -875,14 +878,49 @@ class MwaController(
         return result
     }
 
-    private suspend fun postJsonRpc(rpcUrl: String, method: String, paramsJson: String): JSONObject = withContext(Dispatchers.IO) {
+    private suspend fun postJsonRpc(rpcUrl: String, method: String, paramsJson: String): JSONObject {
         val body = """{"jsonrpc":"2.0","id":1,"method":"$method","params":$paramsJson}"""
+        var lastError: Exception? = null
+        for (attempt in 1..RPC_MAX_ATTEMPTS) {
+            try {
+                return postJsonRpcOnce(rpcUrl, method, body, attempt)
+            } catch (err: Exception) {
+                lastError = err
+                val retry = attempt < RPC_MAX_ATTEMPTS && isTransientRpcError(err)
+                AgentMwaLog.warn(
+                    "MwaController",
+                    "postJsonRpc",
+                    if (retry) "STEP_RETRY" else "FAIL_EXCEPTION",
+                    if (retry) "transient json rpc request failed; retrying" else "json rpc request failed",
+                    mapOf(
+                        "rpc" to rpcUrl,
+                        "method" to method,
+                        "attempt" to attempt,
+                        "maxAttempts" to RPC_MAX_ATTEMPTS,
+                        "retry" to retry,
+                    ) + AgentMwaLog.errorMetadata(err),
+                )
+                if (!retry) throw err
+                delay(RPC_RETRY_BASE_DELAY_MS * attempt)
+            }
+        }
+        throw lastError ?: IOException("JSON RPC request failed before an attempt was made.")
+    }
+
+    private suspend fun postJsonRpcOnce(rpcUrl: String, method: String, body: String, attempt: Int): JSONObject = withContext(Dispatchers.IO) {
         AgentMwaLog.info(
             "MwaController",
             "postJsonRpc",
             "START",
             "json rpc request starting",
-            mapOf("rpc" to rpcUrl, "method" to method, "body" to if (BuildConfig.DEBUG) body else "[debug-only]", "bodyBytes" to body.toByteArray(Charsets.UTF_8).size, "bodySha256_8" to sha256First8(body.toByteArray(Charsets.UTF_8))),
+            mapOf(
+                "rpc" to rpcUrl,
+                "method" to method,
+                "attempt" to attempt,
+                "body" to if (BuildConfig.DEBUG) body else "[debug-only]",
+                "bodyBytes" to body.toByteArray(Charsets.UTF_8).size,
+                "bodySha256_8" to sha256First8(body.toByteArray(Charsets.UTF_8)),
+            ),
         )
         val conn = (URL(rpcUrl).openConnection() as HttpURLConnection)
         try {
@@ -896,29 +934,40 @@ class MwaController(
             OutputStreamWriter(conn.outputStream, Charsets.UTF_8).use { it.write(body) }
             val status = conn.responseCode
             val stream = if (status in 200..299) conn.inputStream else conn.errorStream
-            val text = stream.bufferedReader(Charsets.UTF_8).use { it.readText() }
+            val text = stream?.bufferedReader(Charsets.UTF_8)?.use { it.readText() }.orEmpty()
             AgentMwaLog.info(
                 "MwaController",
                 "postJsonRpc",
                 if (status in 200..299) "SUCCESS" else "FAIL_HTTP_STATUS",
                 "json rpc response received",
-                mapOf("rpc" to rpcUrl, "method" to method, "status" to status, "response" to if (BuildConfig.DEBUG) text else "[debug-only]", "responseBytes" to text.toByteArray(Charsets.UTF_8).size, "responseSha256_8" to sha256First8(text.toByteArray(Charsets.UTF_8))),
+                mapOf(
+                    "rpc" to rpcUrl,
+                    "method" to method,
+                    "attempt" to attempt,
+                    "status" to status,
+                    "response" to if (BuildConfig.DEBUG) text else "[debug-only]",
+                    "responseBytes" to text.toByteArray(Charsets.UTF_8).size,
+                    "responseSha256_8" to sha256First8(text.toByteArray(Charsets.UTF_8)),
+                ),
             )
+            if (status !in 200..299) {
+                throw RpcHttpException(status, text.ifBlank { "HTTP $status from Solana RPC." })
+            }
             JSONObject(text)
         } catch (err: Exception) {
-            AgentMwaLog.failure(
-                "MwaController",
-                "postJsonRpc",
-                "FAIL_EXCEPTION",
-                "json rpc request failed",
-                err,
-                mapOf("rpc" to rpcUrl, "method" to method),
-            )
             throw err
         } finally {
             conn.disconnect()
         }
     }
+
+    private fun isTransientRpcError(err: Exception): Boolean =
+        when (err) {
+            is RpcHttpException -> err.isTransient
+            is SocketTimeoutException -> true
+            is IOException -> true
+            else -> false
+        }
 
     private fun decodePayload(data: String, encoding: String): ByteArray {
         AgentMwaLog.info(
@@ -1108,10 +1157,19 @@ class MwaController(
     }
 
     companion object {
-        private const val SIGN_MESSAGES_TIMEOUT_MS = 20_000L
-        private const val SIGN_AND_SEND_TIMEOUT_MS = 45_000L
+        private const val SIGN_MESSAGES_TIMEOUT_MS = 60_000L
+        private const val SIGN_AND_SEND_TIMEOUT_MS = 120_000L
         private const val MIN_FEE_PAYER_LAMPORTS = 1_000_000L
+        private const val RPC_MAX_ATTEMPTS = 3
+        private const val RPC_RETRY_BASE_DELAY_MS = 350L
     }
+}
+
+private class RpcHttpException(
+    val status: Int,
+    message: String,
+) : IOException(message) {
+    val isTransient: Boolean = status == 408 || status == 425 || status == 429 || status in 500..599
 }
 
 class MwaOperationException(

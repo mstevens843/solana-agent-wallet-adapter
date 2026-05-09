@@ -4,6 +4,7 @@ import type { JsonObject, RecurringOccurrenceRecord, RecurringScheduleRecord } f
 
 import type { RecurringStore } from './recurringService.js';
 import { redactSecrets } from './redaction.js';
+import { assertWebhookDestinationAllowed } from './webhookSecurity.js';
 
 export type RecurringNotificationDeliveryStatus = 'pending' | 'delivered' | 'failed' | 'abandoned';
 
@@ -140,6 +141,9 @@ export class RecurringNotificationService {
     const body = JSON.stringify(safeRecord.payload);
     const timestamp = this.now();
     try {
+      if (this.fetchFn === fetch) {
+        await assertWebhookDestinationAllowed(webhookUrl);
+      }
       const response = await this.fetchFn(webhookUrl, {
         method: 'POST',
         headers: {

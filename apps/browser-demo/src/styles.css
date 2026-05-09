@@ -2063,7 +2063,7 @@ code {
 }
 
 .public-request-context {
-  grid-column: 2;
+  grid-column: 1 / -1;
   padding: 14px 16px;
   position: static;
 }
@@ -2148,7 +2148,7 @@ code {
 
 .first-run-progress {
   display: grid;
-  gap: 0;
+  gap: 14px;
   grid-template-columns: repeat(5, minmax(0, 1fr));
   min-width: 0;
 }
@@ -2156,32 +2156,38 @@ code {
 .first-run-step {
   background: transparent;
   border: 0;
-  border-left: 1px solid var(--line);
   border-radius: 0;
   display: grid;
-  gap: 3px;
+  gap: 4px;
   grid-template-columns: auto minmax(0, 1fr);
-  min-height: 56px;
+  min-height: 62px;
   min-width: 0;
-  padding: 4px 10px;
+  padding: 10px 0 2px;
+  position: relative;
 }
 
-.first-run-step:first-child {
-  border-left: 0;
+.first-run-step::before {
+  background: var(--line);
+  content: "";
+  height: 1px;
+  left: 0;
+  position: absolute;
+  right: 0;
+  top: 0;
 }
 
 .first-run-step span {
   align-items: center;
   background: transparent;
-  border: 1px solid var(--line-strong);
+  border: 1px solid rgba(224, 230, 226, 0.22);
   border-radius: 999px;
-  color: var(--muted);
+  color: rgba(198, 207, 204, 0.86);
   display: inline-flex;
-  font-size: 0.68rem;
+  font-size: 0.7rem;
   font-weight: 900;
-  height: 20px;
+  height: 22px;
   justify-content: center;
-  width: 20px;
+  width: 22px;
 }
 
 .first-run-step strong,
@@ -2190,8 +2196,8 @@ code {
 }
 
 .first-run-step strong {
-  color: var(--text);
-  font-size: 0.78rem;
+  color: rgba(226, 232, 229, 0.92);
+  font-size: 0.8rem;
   line-height: 1.15;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -2199,33 +2205,56 @@ code {
 }
 
 .first-run-step p {
-  color: var(--dim);
+  color: rgba(165, 174, 171, 0.72);
   font-size: 0.72rem;
   grid-column: 1 / -1;
-  line-height: 1.22;
+  line-height: 1.25;
   margin: 0;
 }
 
 .first-run-step.active {
   background: transparent;
-  border-color: var(--line-strong);
+}
+
+.first-run-step.active::before {
+  background: rgba(139, 205, 170, 0.72);
+  height: 2px;
 }
 
 .first-run-step.active span {
   background: transparent;
-  border-color: rgba(242, 245, 243, 0.76);
+  border-color: rgba(139, 205, 170, 0.78);
   color: var(--text);
+}
+
+.first-run-step.active strong {
+  color: var(--text);
+}
+
+.first-run-step.active p {
+  color: var(--muted);
 }
 
 .first-run-step.complete {
   background: transparent;
-  border-color: var(--line);
+}
+
+.first-run-step.complete::before {
+  background: rgba(224, 230, 226, 0.22);
 }
 
 .first-run-step.complete span {
   background: transparent;
-  border-color: rgba(165, 174, 171, 0.46);
-  color: var(--muted);
+  border-color: rgba(224, 230, 226, 0.3);
+  color: rgba(224, 230, 226, 0.86);
+}
+
+.first-run-step.complete strong {
+  color: rgba(236, 242, 239, 0.94);
+}
+
+.first-run-step.complete p {
+  color: rgba(165, 174, 171, 0.78);
 }
 
 .first-run-actions {
@@ -4815,9 +4844,14 @@ button.danger:hover:not(:disabled) {
 .queue-empty {
   align-items: center;
   display: grid;
+  gap: 12px;
   justify-items: center;
   min-height: 118px;
   text-align: center;
+}
+
+.queue-empty button {
+  margin-top: 10px;
 }
 
 .approval-ticket {
@@ -6417,7 +6451,7 @@ button.danger:hover:not(:disabled) {
   }
 
   .public-request-context {
-    grid-column: 1;
+    grid-column: 1 / -1;
   }
 
   .public-request-context .evidence-rail {
@@ -10179,4 +10213,425 @@ button.danger:hover:not(:disabled) {
 .decision-proof-actions button {
   font-size: 0.78rem;
   padding: 4px 10px;
+}
+
+/* Deterministic /app layout contract. All new /app layout work should use these tokens. */
+.route-app {
+  --app-shell-max: 1480px;
+  --app-shell-pad-x: 22px;
+  --app-shell-pad-y: 16px;
+  --app-gap: 14px;
+  --app-rail-w: 316px;
+  --app-rail-min: 280px;
+  --app-nav-h: 64px;
+  --app-panel-pad: 16px;
+  --app-card-radius: 8px;
+  gap: var(--app-gap);
+  max-width: var(--app-shell-max);
+  padding: var(--app-shell-pad-y) var(--app-shell-pad-x) 48px;
+}
+
+.route-app [data-layout] {
+  min-width: 0;
+}
+
+.route-app .homepage-nav[data-layout="app-nav"] {
+  min-height: var(--app-nav-h);
+  overflow: visible;
+  top: var(--app-shell-pad-y);
+}
+
+.route-app .homepage-links {
+  flex-wrap: nowrap;
+  overflow: hidden;
+}
+
+.route-app .app-workspace-section.public-app {
+  padding-top: 0;
+}
+
+.route-app .workspace-intro[data-layout="app-intro"] {
+  margin-bottom: 0;
+}
+
+.route-app .workspace-intro[data-layout="app-intro"] h2 {
+  font-size: clamp(1.9rem, 2.3vw, 2.35rem);
+  line-height: 1.04;
+  max-width: 820px;
+}
+
+.route-app .workspace-intro[data-layout="app-intro"] p {
+  max-width: 760px;
+}
+
+.route-app .workspace.public-workspace[data-layout="app-shell"] {
+  align-items: start;
+  display: grid;
+  gap: var(--app-gap);
+  grid-template-columns: minmax(var(--app-rail-min), var(--app-rail-w)) minmax(0, 1fr);
+  overflow: visible;
+}
+
+.route-app .custody-panel[data-layout="app-rail"] {
+  align-content: start;
+  display: grid;
+  gap: 12px;
+  max-height: calc(100dvh - var(--app-nav-h) - 48px);
+  overflow-y: auto;
+  padding: var(--app-panel-pad);
+  scrollbar-color: rgba(139, 205, 170, 0.32) transparent;
+  scrollbar-width: thin;
+}
+
+.route-app .main-panel[data-layout="app-main"] {
+  overflow: visible;
+  padding: var(--app-panel-pad);
+}
+
+.route-app .surface-topbar[data-layout="app-tabs-row"] {
+  align-items: center;
+  display: grid;
+  gap: var(--app-gap);
+  grid-template-columns: minmax(160px, auto) minmax(0, 1fr);
+}
+
+.route-app .workspace-tabs[data-layout="app-tabs"] {
+  display: grid;
+  gap: 6px;
+  grid-template-columns: repeat(6, minmax(0, 1fr));
+  justify-content: stretch;
+  width: 100%;
+}
+
+.route-app .workspace-tabs[data-layout="app-tabs"] button {
+  border-radius: 7px;
+  justify-content: center;
+  min-width: 0;
+  padding: 0 8px;
+  width: 100%;
+}
+
+.route-app .workspace-tabs[data-layout="app-tabs"] button.active {
+  background: rgba(125, 231, 176, 0.1);
+}
+
+.route-app .workspace-tabs[data-layout="app-tabs"] button::after {
+  display: none;
+}
+
+.route-app .workflow-status-band[data-layout="workflow-status"] {
+  gap: 14px;
+  grid-template-columns: minmax(190px, 0.72fr) minmax(0, 1.4fr) minmax(160px, auto);
+  min-height: 72px;
+}
+
+.route-app .workflow-status-band .first-run-actions {
+  min-width: 0;
+}
+
+.route-app .workflow-status-band .first-run-actions button {
+  min-height: 42px;
+}
+
+.route-app .trust-layer-panel[data-layout="trust-strip"] {
+  margin-bottom: var(--app-gap);
+}
+
+.route-app [data-layout="active-panel"] {
+  display: block;
+  min-width: 0;
+}
+
+.rail-primary-stack {
+  display: grid;
+  gap: 10px;
+}
+
+.rail-advanced-details > summary,
+.recurring-advanced-details > summary {
+  align-items: center;
+  color: rgba(196, 205, 202, 0.88);
+  cursor: pointer;
+  display: flex;
+  font-size: 0.86rem;
+  font-weight: 820;
+  justify-content: space-between;
+  list-style: none;
+}
+
+.rail-advanced-details > summary::-webkit-details-marker,
+.recurring-advanced-details > summary::-webkit-details-marker {
+  display: none;
+}
+
+.rail-advanced-details > summary::after,
+.recurring-advanced-details > summary::after {
+  color: var(--accent-2);
+  content: "+";
+  font-weight: 900;
+}
+
+.rail-advanced-details[open] > summary::after,
+.recurring-advanced-details[open] > summary::after {
+  content: "-";
+}
+
+.recurring-advanced-details {
+  border-top: 1px solid rgba(224, 230, 226, 0.065);
+  display: grid;
+  gap: 12px;
+  padding-top: 14px;
+}
+
+.recurring-advanced-details[open] > .contract-section {
+  margin-top: 12px;
+}
+
+.command-center-head {
+  align-items: start;
+}
+
+.command-center-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  justify-content: flex-end;
+}
+
+.command-loop {
+  border: 1px solid rgba(224, 230, 226, 0.09);
+  border-radius: var(--app-card-radius);
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  margin-bottom: 14px;
+  overflow: hidden;
+}
+
+.command-loop div {
+  background: rgba(255, 255, 255, 0.02);
+  border-left: 1px solid rgba(224, 230, 226, 0.06);
+  display: grid;
+  gap: 5px;
+  min-height: 92px;
+  padding: 13px;
+}
+
+.command-loop div:first-child {
+  border-left: 0;
+}
+
+.command-loop div.complete {
+  background: rgba(63, 189, 131, 0.075);
+}
+
+.command-loop span,
+.command-center-card > span {
+  color: var(--dim);
+  font-size: 0.68rem;
+  font-weight: 900;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.command-loop p,
+.command-center-card p {
+  color: var(--muted);
+  font-size: 0.88rem;
+  line-height: 1.4;
+  margin: 0;
+}
+
+.command-center-grid {
+  display: grid;
+  gap: 10px;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+}
+
+.command-center-card {
+  background: rgba(255, 255, 255, 0.026);
+  border: 1px solid rgba(224, 230, 226, 0.09);
+  border-radius: var(--app-card-radius);
+  display: grid;
+  gap: 9px;
+  min-height: 164px;
+  padding: 14px;
+}
+
+.command-center-card.good {
+  border-color: rgba(139, 205, 170, 0.24);
+}
+
+.command-center-card.warn {
+  border-color: rgba(214, 168, 79, 0.28);
+}
+
+.command-center-card strong {
+  color: var(--text);
+  font-size: 1.02rem;
+  line-height: 1.24;
+  overflow-wrap: anywhere;
+}
+
+.command-center-card button {
+  align-self: end;
+  justify-self: start;
+}
+
+@media (max-width: 1179px) {
+  .route-app {
+    --app-shell-pad-x: 16px;
+  }
+
+  .route-app .workspace.public-workspace[data-layout="app-shell"] {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .route-app .custody-panel[data-layout="app-rail"] {
+    max-height: none;
+    overflow: visible;
+  }
+
+  .route-app .rail-primary-stack {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .route-app .workflow-status-band[data-layout="workflow-status"] {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .route-app .first-run-actions {
+    grid-template-columns: minmax(0, 220px);
+  }
+
+  .route-app .command-center-grid,
+  .route-app .command-loop {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+@media (max-width: 899px) {
+  .route-app {
+    --app-shell-pad-x: 12px;
+    --app-nav-h: 58px;
+    --native-toolbar-offset: env(safe-area-inset-top, 0px);
+    gap: 10px;
+    padding:
+      calc(var(--native-toolbar-offset) + var(--app-nav-h) + 14px)
+      calc(var(--app-shell-pad-x) + env(safe-area-inset-right, 0px))
+      calc(32px + env(safe-area-inset-bottom, 0px))
+      calc(var(--app-shell-pad-x) + env(safe-area-inset-left, 0px));
+  }
+
+  .route-app .homepage-nav[data-layout="app-nav"] {
+    display: grid;
+    grid-template-columns: minmax(42px, auto) minmax(0, 1fr);
+    height: var(--app-nav-h);
+    left: calc(var(--app-shell-pad-x) + env(safe-area-inset-left, 0px));
+    min-height: 0;
+    overflow: hidden;
+    position: fixed;
+    right: calc(var(--app-shell-pad-x) + env(safe-area-inset-right, 0px));
+    top: calc(var(--native-toolbar-offset) + 6px);
+  }
+
+  .route-app .homepage-brand {
+    max-width: 44px;
+    overflow: hidden;
+  }
+
+  .route-app .homepage-brand span:not(.brand-mark) {
+    display: none;
+  }
+
+  .route-app .homepage-links {
+    display: grid;
+    gap: 4px;
+    grid-template-columns: repeat(5, minmax(0, 1fr));
+    overflow: hidden;
+  }
+
+  .route-app .homepage-links a {
+    font-size: 0.76rem;
+    min-height: 42px;
+    min-width: 0;
+    padding: 0 6px;
+  }
+
+  .route-app .workspace-intro[data-layout="app-intro"] h2 {
+    font-size: clamp(1.42rem, 6vw, 1.82rem);
+  }
+
+  .route-app .workspace-intro[data-layout="app-intro"] p {
+    font-size: 0.92rem;
+    line-height: 1.42;
+  }
+
+  .route-app .panel,
+  .route-app .main-panel[data-layout="app-main"],
+  .route-app .custody-panel[data-layout="app-rail"] {
+    border-radius: 10px;
+    padding: 10px;
+  }
+
+  .route-app .rail-primary-stack {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .route-app .surface-topbar[data-layout="app-tabs-row"] {
+    display: block;
+  }
+
+  .route-app .surface-topbar[data-layout="app-tabs-row"] > div {
+    display: none;
+  }
+
+  .route-app .workspace-tabs[data-layout="app-tabs"] {
+    border: 1px solid var(--line);
+    border-radius: 9px;
+    gap: 3px;
+    grid-template-columns: repeat(6, minmax(0, 1fr));
+    padding: 3px;
+  }
+
+  .route-app .workspace-tabs[data-layout="app-tabs"] button {
+    font-size: 0.68rem;
+    min-height: 34px;
+    padding: 0 3px;
+  }
+
+  .route-app .workflow-status-band[data-layout="workflow-status"] {
+    padding: 11px;
+  }
+
+  .route-app .first-run-progress {
+    gap: 8px;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .route-app .first-run-actions {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .route-app .trust-layer-panel[data-layout="trust-strip"],
+  .route-app .command-center-grid,
+  .route-app .command-loop {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .command-center-actions,
+  .command-center-card button {
+    justify-content: stretch;
+    justify-self: stretch;
+  }
+}
+
+@media (max-width: 480px) {
+  .route-app {
+    --app-nav-h: 54px;
+  }
+
+  .route-app .workspace-tabs[data-layout="app-tabs"] button {
+    font-size: 0.64rem;
+    min-height: 32px;
+  }
 }

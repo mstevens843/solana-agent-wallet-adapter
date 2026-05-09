@@ -1,9 +1,11 @@
 # Build Agentic For Android
 
 Agentic's Android app defaults to the bundled app shell, so it opens the same Agentic Home, Docs, CLI, Desktop App,
-Launch Demo, and Launch App surfaces without a browser URL bar. The raw native Solana Mobile Wallet Adapter controls
-remain available as an optional `MWA` tab behind `AGENTIC_ANDROID_SHOW_EXAMPLE_TAB=true`, and the hosted web/TWA
-fallback remains disabled unless `AGENTIC_ANDROID_ENABLE_WEB_FALLBACK=true` is set for that APK build.
+Launch Demo, and Launch App surfaces without a browser URL bar. Production signing uses native Solana Mobile Wallet
+Adapter through the Android app bridge; browser wallet injection, desktop local bridge signing, and hosted web/TWA are
+fallback or development paths only. The raw native MWA controls remain available as an optional `MWA` tab behind
+`AGENTIC_ANDROID_SHOW_EXAMPLE_TAB=true`, and the hosted web/TWA fallback remains disabled unless
+`AGENTIC_ANDROID_ENABLE_WEB_FALLBACK=true` is set for that APK build.
 
 ## Prerequisites
 
@@ -103,7 +105,13 @@ fallback can still open the deployed HTTPS origin or the LAN URL in Android Chro
 `AGENTIC_ANDROID_ENABLE_WEB_FALLBACK=true` is set for the APK build.
 
 Android users can use the app planner without an AI key through templates. If they want AI planning without a
-desktop bridge, they can paste a provider or gateway key into the session-only BYOK field; see `docs/ai-byok.md`.
+desktop bridge, the bundled app defaults to Android session BYOK with browser-compatible providers such as OpenRouter
+or custom gateways. Hosted BYOK is disabled inside the bundled shell because there is no same-origin hosted API server;
+desktop local bridge AI remains an advanced opt-in path. See `docs/ai-byok.md`.
+
+MWA authorization records are stored in app-private encrypted storage backed by Android Keystore. Upgraded installs
+migrate the older plaintext cache on first read, delete the plaintext file after a successful encrypted write, and ask
+the user to reconnect if encrypted cache decryption fails.
 
 ## Store Listing
 
@@ -190,10 +198,10 @@ The workflow fails if it cannot produce a signed release APK and AAB.
 3. Install the native debug APK with `pnpm android:install`.
 4. Launch Agentic.
 5. Tap `Connect wallet` and approve in the installed wallet.
-6. Close and relaunch Agentic. It should restore the cached authorization automatically without a button press.
+6. Close and relaunch Agentic. It should restore the cached encrypted authorization automatically without a button press.
 7. Use `Disconnect` to return to a local idle state while keeping the cache, then `Reconnect cached` to restore it.
-   Cached records include the auth token and wallet URI so later operations can route back to the intended wallet when
-   the wallet supports endpoint-specific MWA links.
+   Cached records include the auth token and wallet URI inside Android Keystore-backed encrypted storage so later
+   operations can route back to the intended wallet when the wallet supports endpoint-specific MWA links.
 8. Use `Get capabilities`, `Connect + SIWS`, `Sign transaction`, and `Sign and send` with a devnet transaction payload.
 9. Connect the bridge with the LAN bridge URL and token, then request a signature from the agent host.
 10. Use `Clear transient`, `Full reset`, and `Clear all accounts` to verify state/cache semantics. `Full reset`

@@ -106,7 +106,7 @@ import './styles.css';
 
 type StepState = 'idle' | 'active' | 'done' | 'error';
 type StepName = 'discover' | 'connect' | 'sign' | 'transaction' | 'bridge' | 'inbox' | 'lab' | 'ai';
-type ActiveTab = 'wallet' | 'agent' | 'generated' | 'inbox' | 'completed' | 'schedule' | 'labs';
+type ActiveTab = 'overview' | 'wallet' | 'agent' | 'generated' | 'inbox' | 'completed' | 'schedule' | 'labs';
 type ArtifactView = 'create' | 'signed';
 type OneTimePlanView = 'create' | 'review';
 type ToastKind = 'success' | 'error' | 'pending';
@@ -204,9 +204,10 @@ const CLUSTERS: Cluster[] = ['mainnet-beta', 'devnet', 'testnet', 'localnet'];
 const DEMO_MESSAGE = 'Approve this Solana agent action with user custody.';
 const DEMO_MEMO = 'Solana Agent Wallet Adapter demo';
 const DEFAULT_BRIDGE_URL = 'http://127.0.0.1:8787';
-const DEFAULT_BRIDGE_TOKEN = 'local-agent-wallet';
+const DEFAULT_BRIDGE_TOKEN = '';
 const DEFAULT_AGENT_PROMPT = '';
 const STORAGE_KEY = 'solana-agent-wallet-demo-v2';
+const BRIDGE_TOKEN_SESSION_KEY = 'agentic-local-bridge-token';
 const GENERATED_PLANS_STORAGE_KEY = 'solana-agent-wallet-generated-plans-v1';
 const BROWSER_WORKFLOW_STORAGE_KEY = 'solana-agent-wallet-browser-workflow-v1';
 const GENERATED_PLANS_LIMIT = 100;
@@ -227,6 +228,8 @@ const OPENAI_BROWSER_SESSION_DISABLED_REASON =
   'OpenAI cannot be called directly from Browser Session. Use Hosted BYOK or Local bridge for OpenAI.';
 const HOSTED_CUSTOM_PROVIDER_DISABLED_REASON =
   'Hosted BYOK supports preset providers only. Use Local bridge or Browser Session for custom gateways.';
+const ANDROID_HOSTED_BYOK_DISABLED_REASON =
+  'Hosted BYOK needs the hosted web app API. The Android app is a bundled local shell; use Browser Session or Local bridge.';
 const BROWSER_AI_LIMITATIONS = [
   'Provider may block direct browser calls.',
   'Key lives only in the current browser runtime.',
@@ -236,6 +239,7 @@ const CUSTOM_AI_MODEL_VALUE = '__custom__';
 const ROUTE_PATHS = ['/', '/docs', '/app', '/cli', '/desktop', '/android', '/demo', '/mwa-test', '/privacy', '/terms'] as const;
 const ROUTE_PATH_SET = new Set<string>(ROUTE_PATHS);
 const SHOW_DEV_CONTROLS = resolveDevControls();
+const IS_ANDROID_APP = resolveAndroidAppSurface();
 const SHOW_ANDROID_EXAMPLE_TAB = resolveAndroidExampleTab();
 const HASH_ROUTE_MAP = new Map<string, AppRoute>([
   ['#top', '/'],
@@ -814,7 +818,6 @@ interface PersistedState {
   workflowModePreference?: WorkflowModePreference;
   cluster?: Cluster;
   bridgeUrl?: string;
-  bridgeToken?: string;
   aiMode?: AiSettings['mode'];
   aiProvider?: AiSettings['provider'];
   aiApiFormat?: AiSettings['apiFormat'];
@@ -920,7 +923,7 @@ interface AuditActivityState {
 const RECEIPT_LABS: LabDefinition[] = [
   {
     id: 'intent-receipt',
-    title: 'Proof of Intent',
+    title: 'Intent',
     kind: 'intent_receipt',
     category: 'receipt',
     defaultInput: '',
@@ -954,7 +957,7 @@ const RECEIPT_LABS: LabDefinition[] = [
   },
   {
     id: 'policy-receipt',
-    title: 'Proof of Policy',
+    title: 'Approval Decision',
     kind: 'policy_receipt',
     category: 'receipt',
     defaultInput: '',
@@ -988,7 +991,7 @@ const RECEIPT_LABS: LabDefinition[] = [
   },
   {
     id: 'risk-receipt',
-    title: 'Proof of Review',
+    title: 'Risk Review',
     kind: 'risk_review_receipt',
     category: 'receipt',
     defaultInput: '',
@@ -1022,7 +1025,7 @@ const RECEIPT_LABS: LabDefinition[] = [
   },
   {
     id: 'rejection-receipt',
-    title: 'Proof of Rejection',
+    title: 'Rejection',
     kind: 'rejection_receipt',
     category: 'receipt',
     defaultInput: '',
@@ -1056,7 +1059,7 @@ const RECEIPT_LABS: LabDefinition[] = [
   },
   {
     id: 'tool-trace-receipt',
-    title: 'Tool Trace Receipt',
+    title: 'Tool Trace',
     kind: 'tool_trace_receipt',
     category: 'receipt',
     defaultInput: '',
@@ -1262,9 +1265,11 @@ const ADVANCED_EVIDENCE_LABS: LabDefinition[] = [
 const LABS: LabDefinition[] = [...RECEIPT_LABS, ...ADVANCED_EVIDENCE_LABS];
 
 const persisted = loadPersistedState();
+const launchParams = readLaunchParams();
+clearSensitiveLaunchParams();
 const initialCluster = SHOW_DEV_CONTROLS ? (persisted.cluster ?? 'mainnet-beta') : 'mainnet-beta';
 const initialTemplate = templateById('swap');
-const defaultWorkspaceTab: ActiveTab = 'agent';
+const defaultWorkspaceTab: ActiveTab = 'overview';
 const initialAiSettings = persistedAiSettings(persisted);
 const initialBrowserWorkflow = loadBrowserWorkflowState();
 const RECURRING_TOKEN_OPTIONS = ['SOL', 'USDC', 'PYUSD'];
@@ -1473,8 +1478,8 @@ const state: DemoState = {
   busy: false,
   activeOperation: null,
   cluster: initialCluster,
-  bridgeUrl: persisted.bridgeUrl ?? DEFAULT_BRIDGE_URL,
-  bridgeToken: persisted.bridgeToken ?? DEFAULT_BRIDGE_TOKEN,
+  bridgeUrl: launchParams.bridgeUrl ?? persisted.bridgeUrl ?? DEFAULT_BRIDGE_URL,
+  bridgeToken: launchParams.bridgeToken ?? sessionBridgeToken() ?? DEFAULT_BRIDGE_TOKEN,
   bridgeActive: false,
   bridgeStatus: 'Bridge idle.',
   bridgeRpcUrl: '',
@@ -2138,7 +2143,7 @@ function termsPage(): string {
 
 function homepageNav(activeRoute: AppRoute | null): string {
   return `
-    <header class="homepage-nav" aria-label="Agentic navigation">
+    <header class="homepage-nav" aria-label="Agentic navigation" ${activeRoute === '/app' ? 'data-layout="app-nav"' : ''}>
       <a class="homepage-brand" href="/" aria-label="Agentic home" ${activeRoute === '/' ? 'aria-current="page"' : ''}>
         ${agenticMark()}
         <span>Agentic</span>
@@ -3059,12 +3064,12 @@ function appWorkspace(mode: 'app' | 'demo' = 'app'): string {
   const titleId = mode === 'demo' ? 'demo-workspace-title' : 'workspace-title';
   const modeClass = mode === 'demo' ? 'demo-workspace-mode' : 'launch-workspace-mode';
   return `
-    <section id="${workspaceId}" class="app-workspace-section ${appModeClass} ${modeClass}" aria-labelledby="${titleId}">
-      <div class="workspace-intro">
+    <section id="${workspaceId}" class="app-workspace-section ${appModeClass} ${modeClass}" aria-labelledby="${titleId}" data-layout="app-root">
+      <div class="workspace-intro" data-layout="app-intro">
         <div>
           ${mode === 'demo' ? '<p class="eyebrow mini">Interactive demo</p>' : '<!-- Launch App eyebrow intentionally hidden. -->'}
           <h2 id="${titleId}">${mode === 'demo' ? 'Live approval demo.' : 'Agentic approval workspace.'}</h2>
-          ${mode === 'demo' ? '' : '<p>Draft agent actions, route approvals through your real wallet, and keep signed receipts in one place.</p>'}
+          ${mode === 'demo' ? '' : '<p>Draft with AI or templates, review the wallet action, approve through your signer, and keep proof.</p>'}
         </div>
         ${SHOW_DEV_CONTROLS ? systemSpine() : ''}
       </div>
@@ -3080,28 +3085,29 @@ function appWorkspace(mode: 'app' | 'demo' = 'app'): string {
         ${systemSpine()}
       </header>` : ''}
 
-      <section class="workspace ${SHOW_DEV_CONTROLS ? 'dev-workspace' : 'public-workspace'}">
+      <section class="workspace ${SHOW_DEV_CONTROLS ? 'dev-workspace' : 'public-workspace'}" data-layout="app-shell">
         ${walletRail()}
-        <section class="panel main-panel">
-          <div class="surface-topbar">
+        <section class="panel main-panel" data-layout="app-main">
+          <div class="surface-topbar" data-layout="app-tabs-row">
             <div>
               <h2>${surfaceTitle()}</h2>
             </div>
-            <nav class="nav-cluster tabs workspace-tabs" aria-label="Workspace navigation">
+            <nav class="nav-cluster tabs workspace-tabs" aria-label="Workspace navigation" data-layout="app-tabs">
               ${/*
                 Wallet tab intentionally hidden across web, Android, and iOS app shells.
                 tabButton('wallet', 'Wallet')
               */ ''}
-              ${tabButton('agent', 'Create One-Time Plan', 'One-Time')}
-              ${tabButton('schedule', 'Create Recurring Plan', 'Recurring')}
-              ${tabButton('inbox', 'Approval Inbox', 'Inbox')}
-              ${tabButton('completed', 'Completed Plans', 'Completed')}
-              ${tabButton('labs', 'Receipt Proofs', 'Proofs')}
+              ${tabButton('overview', 'Command', 'Home')}
+              ${tabButton('agent', 'Create', 'Create')}
+              ${tabButton('schedule', 'Recurring', 'Repeat')}
+              ${tabButton('inbox', 'Inbox', 'Inbox')}
+              ${tabButton('completed', 'History', 'Done')}
+              ${tabButton('labs', 'Proofs', 'Proofs')}
             </nav>
           </div>
           ${SHOW_DEV_CONTROLS ? '' : firstRunActionBand()}
           ${SHOW_DEV_CONTROLS ? '' : trustLayerPanel()}
-          ${activePanel()}
+          <div data-layout="active-panel">${activePanel()}</div>
         </section>
         ${SHOW_DEV_CONTROLS ? contextPanel() : requestContextDetails()}
       </section>
@@ -3118,7 +3124,7 @@ function trustLayerPanel(): string {
     [mode === 'agentic-cloud' ? 'Cloud receipts' : 'Local receipts', 'Proofs persist after review'],
   ];
   return `
-    <section class="trust-layer-panel" aria-label="Agentic trust boundary">
+    <section class="trust-layer-panel" aria-label="Agentic trust boundary" data-layout="trust-strip">
       ${items.map(([label, detail]) => `
         <div>
           <strong>${escapeHtml(label)}</strong>
@@ -3133,16 +3139,15 @@ function firstRunActionBand(): string {
   const steps = firstRunSteps();
   const complete = firstRunComplete(steps);
   const action = firstRunNextAction();
-  const secondary = firstRunSecondaryAction(action.id);
   const currentStep = steps.find((step) => step.active) ?? steps[steps.length - 1]!;
-  const title = complete ? 'Receipt saved' : `Next: ${action.label}`;
+  const title = complete ? 'Proof saved' : `Next: ${action.label}`;
   const detail = complete
-    ? 'Your latest approval proof or receipt is saved in Completed Plans.'
+    ? 'Your latest approval proof or receipt is saved in History.'
     : action.detail;
   return `
-    <section class="first-run-band ${complete ? 'complete' : ''}" aria-label="First-time approval flow">
+    <section class="first-run-band workflow-status-band ${complete ? 'complete' : ''}" aria-label="First-time approval flow" data-layout="workflow-status">
       <div class="first-run-copy">
-        <span>First run</span>
+        <span>Approval loop</span>
         <h3>${escapeHtml(title)}</h3>
         <p>${escapeHtml(detail)}</p>
         <small>Active workflow: ${escapeHtml(activeWorkflowLabel())}</small>
@@ -3160,17 +3165,6 @@ function firstRunActionBand(): string {
         >
           ${escapeHtml(action.label)}
         </button>
-        ${secondary ? `
-          <button
-            type="button"
-            class="utility"
-            data-first-run-action="${escapeHtml(secondary.id)}"
-            ${secondary.disabled ? 'disabled' : ''}
-            title="${escapeHtml(secondary.detail)}"
-          >
-            ${escapeHtml(secondary.label)}
-          </button>
-        ` : ''}
       </div>
     </section>
   `;
@@ -3200,7 +3194,7 @@ function firstRunSteps(): FirstRunStep[] {
     {
       id: 'wallet',
       label: 'Connect',
-      detail: signals.hasWallet ? short(state.address) : 'Use your wallet signer.',
+      detail: signals.hasWallet ? shortFirstRunWallet(state.address) : 'Use your wallet signer.',
       complete: signals.hasWallet,
     },
     {
@@ -3294,27 +3288,27 @@ function firstRunNextAction(): FirstRunAction {
   if (!signals.hasPlan) {
     return {
       id: 'open-create-plan',
-      label: 'Open Create Plan',
+      label: 'Create Agent Action',
       detail: 'Use the default template path. AI setup is optional.',
     };
   }
   if (signals.activeApprovalCount > 0 && !signals.hasReceipt) {
     return {
       id: 'open-inbox',
-      label: 'Open Approval Inbox',
+      label: 'Open Inbox',
       detail: 'Approve or deny the queued request from your wallet boundary.',
     };
   }
   if (!signals.hasReceipt) {
     return {
       id: 'open-review',
-      label: 'Review & Finish',
+      label: 'Review',
       detail: 'Check the wallet action, route, limits, and destination before queueing.',
     };
   }
   return {
     id: 'open-completed',
-    label: 'Open Completed Plans',
+    label: 'Open History',
     detail: 'Review saved receipts and decision proofs.',
   };
 }
@@ -3475,7 +3469,7 @@ function walletRail(): string {
   const showPublicIosPicker = !SHOW_DEV_CONTROLS && !state.address && state.iosNativeEnvironment.isIosNative;
   const wallet = walletIdentity();
   return `
-    <aside class="panel custody-panel custody-module">
+    <aside class="panel custody-panel custody-module" data-layout="app-rail">
       <div class="rail-heading custody-heading">
         ${walletRailIcon(wallet)}
         <div>
@@ -3492,8 +3486,7 @@ function walletRail(): string {
         </div>
       </div>
 
-      ${SHOW_DEV_CONTROLS && state.address ? `<button id="disconnect" class="text-button" ${state.busy ? 'disabled' : ''}>Disconnect wallet</button>` : ''}
-      ${SHOW_DEV_CONTROLS ? '' : publicWalletActions()}
+      ${publicWalletActions()}
 
       ${showPublicWalletPicker ? `
       <details class="rail-details wallet-picker-details" open>
@@ -3517,9 +3510,16 @@ function walletRail(): string {
         </label>
       </details>` : ''}
 
-      ${cloudWorkspaceCard()}
-      ${aiSettingsPanel('rail')}
-      ${SHOW_DEV_CONTROLS ? '' : publicBridgeStatusCard()}
+      <div class="rail-primary-stack">
+        ${cloudWorkspaceCard()}
+        ${aiSettingsPanel('rail')}
+      </div>
+      ${SHOW_DEV_CONTROLS ? '' : `
+        <details class="rail-details rail-advanced-details">
+          <summary>Advanced local setup</summary>
+          ${publicBridgeStatusCard()}
+        </details>
+      `}
 
       ${SHOW_DEV_CONTROLS ? `
       <details class="rail-details developer-settings" ${showConnectionDetails ? 'open' : ''}>
@@ -3548,23 +3548,23 @@ function cloudWorkspaceCard(): string {
   const mismatch = cloudSessionWalletMismatch();
   const unavailable = state.cloudSession.status === 'unavailable';
   const status = unavailable
-    ? 'Browser fallback'
+    ? 'Saved locally'
     : signedIn
       ? matched
         ? 'Signed in'
         : 'Wallet mismatch'
       : 'Signed out';
   const detail = unavailable
-    ? 'Agentic Cloud is unavailable from this host, so browser workflow is active. No localhost or local bridge is required.'
+    ? 'Plans, approvals, and proofs are saved on this device. No localhost is required.'
     : signedIn
       ? matched
         ? 'One-time drafts, approvals, and completed history sync through Agentic Cloud.'
         : `Signed in as ${short(state.cloudSession.walletAddress)}. Connect that wallet to use cloud workflow.`
-      : 'Signed-out workflow data stays in this browser on this device.';
+      : 'Signed-out workflow data is saved on this device.';
   return `
     <section class="rail-cloud-card ${escapeHtml(mode)} ${signedIn ? 'signed-in' : ''}" aria-label="Cloud workspace status">
       <div class="rail-cloud-head">
-        <span>Cloud workspace</span>
+        <span>Workspace storage</span>
         <strong>${escapeHtml(status)}</strong>
       </div>
       <p>${escapeHtml(detail)}</p>
@@ -3593,12 +3593,12 @@ function publicBridgeStatusCard(): string {
   const detail = connected
     ? localMode
       ? 'Private local mode owns new workflow actions on this device.'
-      : 'Bridge is connected. Select private local mode only when you want local-only workflow storage.'
-    : 'Private local mode is optional. Start the local runtime only if you want local-only workflow storage.';
+      : 'Local connector is available. Use it only when you want local-only workflow storage.'
+    : 'Optional. Start the local connector only when you want private local workflow storage.';
   return `
     <section class="rail-bridge-card ${tone}" aria-label="Private local mode status">
       <div class="rail-bridge-head">
-        <span>Private local mode</span>
+        <span>Local connector</span>
         <strong>${escapeHtml(status)}</strong>
       </div>
       <p>${escapeHtml(detail)}</p>
@@ -4103,7 +4103,7 @@ function outcomeClass(outcome: TemplateOutcome): string {
 }
 
 function queueActionLabelForPlan(plan: AgentPlan): string {
-  return plan.actionType === 'recurring_payment' ? 'Create recurring schedule' : 'Send to Approval Inbox';
+  return plan.actionType === 'recurring_payment' ? 'Create recurring schedule' : 'Send to Inbox';
 }
 
 function templatesForOutcomeFilter(filter = state.templateOutcomeFilter): AgentPlanTemplate[] {
@@ -4122,6 +4122,8 @@ function oneTimePlanTemplates(): AgentPlanTemplate[] {
 
 function activePanel(): string {
   switch (state.activeTab) {
+    case 'overview':
+      return commandCenterPanel();
     case 'wallet':
       return walletFlowPanel();
     case 'agent':
@@ -4139,6 +4141,78 @@ function activePanel(): string {
     case 'labs':
       return labsPanel();
   }
+}
+
+function commandCenterPanel(): string {
+  const openApprovals = activeWorkflowPreparedActions().filter((action) => !action.archived && isActionInboxActive(action));
+  const recurringActive = activeWorkflowRecurringPayments().filter((payment) => payment.status === 'active' && !isRecurringPaymentCompleted(payment));
+  const completed = completedPlanRecords();
+  const latestProof = state.labArtifacts[0];
+  const latestHistory = completed[0];
+  const walletAction = state.address ? 'open-create-plan' : firstRunNextAction().id;
+  const proofLabel = latestProof
+    ? `${latestProof.title || receiptLabelForKind(latestProof.kind)} - ${short(latestProof.artifactHash)}`
+    : latestHistory
+      ? `${latestHistory.status} - ${short(latestHistory.actionId ?? latestHistory.signature ?? latestHistory.id)}`
+      : 'No proof yet';
+  return `
+    <section class="approval-object signature-stage stage-overview stage-anchor ${openApprovals.length ? 'stage-active' : 'stage-draft'}">
+      <div class="signature-object-head command-center-head">
+        <div>
+          <h2>Command center</h2>
+          <p>Draft, review, approve, and prove agent actions from one controlled workspace.</p>
+        </div>
+        <div class="command-center-actions">
+          <button type="button" class="primary" data-one-time-view="create">Create Agent Action</button>
+          <button type="button" class="utility" data-tab="labs">Sign Proof</button>
+        </div>
+      </div>
+
+      <div class="command-loop" aria-label="Agentic approval loop">
+        ${commandLoopStep('Draft', 'AI or templates prepare a bounded request.', Boolean(state.agentPlan) || state.generatedPlans.length > 0)}
+        ${commandLoopStep('Review', 'Check amount, route, recipient, risk, and rule.', state.generatedPlans.some(isGeneratedPlanActiveInReview))}
+        ${commandLoopStep('Approve', 'Wallet signs only the visible decision.', openApprovals.length > 0)}
+        ${commandLoopStep('Prove', 'Signed receipts stay attached to history.', completed.length > 0 || state.labArtifacts.length > 0)}
+      </div>
+
+      <div class="command-center-grid">
+        ${commandCenterCard('Wallet', state.address ? 'Connected' : 'Connect wallet', state.address ? short(state.address) : 'No signing authority granted', state.address ? 'good' : 'warn', walletAction)}
+        ${commandCenterCard('Inbox', `${openApprovals.length} pending`, openApprovals[0]?.summary ?? 'No approvals waiting', openApprovals.length ? 'warn' : 'idle', 'open-inbox')}
+        ${commandCenterCard('Recurring', `${recurringActive.length} active`, recurringActive[0] ? scheduleLabel(recurringActive[0]) : 'No active recurring schedules', recurringActive.length ? 'good' : 'idle', 'open-recurring')}
+        ${commandCenterCard('Latest proof', proofLabel, latestProof ? formatDateTime(latestProof.createdAt) : latestHistory ? formatDateTime(latestHistory.completedAt) : 'Create a receipt proof or complete an approval', latestProof || latestHistory ? 'good' : 'idle', 'open-proofs')}
+      </div>
+    </section>
+  `;
+}
+
+function commandLoopStep(label: string, detail: string, complete: boolean): string {
+  return `
+    <div class="${complete ? 'complete' : ''}">
+      <span>${escapeHtml(label)}</span>
+      <p>${escapeHtml(detail)}</p>
+    </div>
+  `;
+}
+
+function commandCenterCard(label: string, value: string, detail: string, tone: string, action: FirstRunActionId | 'open-recurring' | 'open-proofs'): string {
+  const disabled = action === 'connect-wallet'
+    ? !state.address && state.wallets.length === 0 && !state.androidNativeEnvironment.isAndroidNative && !state.iosNativeEnvironment.isIosNative
+    : false;
+  const targetTab = action === 'open-recurring'
+    ? 'schedule'
+    : action === 'open-proofs'
+      ? 'labs'
+      : '';
+  return `
+    <article class="command-center-card ${escapeHtml(tone)}">
+      <span>${escapeHtml(label)}</span>
+      <strong>${escapeHtml(value)}</strong>
+      <p>${escapeHtml(detail)}</p>
+      ${targetTab
+        ? `<button type="button" class="utility" data-tab="${escapeHtml(targetTab)}">Open</button>`
+        : `<button type="button" class="utility" data-first-run-action="${escapeHtml(action)}" ${disabled ? 'disabled' : ''}>Open</button>`}
+    </article>
+  `;
 }
 
 function walletFlowPanel(): string {
@@ -4221,10 +4295,10 @@ function agentPlanPanel(): string {
     <section class="approval-object signature-stage stage-agent ${state.agentSignature ? 'stage-complete' : state.agentPlan ? 'stage-active' : 'stage-draft'}">
       <div class="signature-object-head">
         <div>
-          <h2>Create one-time plan</h2>
-          <p>Create a bounded draft, review it, then either sign proof or send it to wallet review.</p>
+          <h2>Create agent action</h2>
+          <p>Draft a bounded request, review the wallet action, then send it to Inbox or sign proof.</p>
         </div>
-        <span class="signature-state ${state.agentSignature ? 'complete' : state.agentPlan ? 'active' : ''}">${state.oneTimePlanView === 'review' ? `${reviewCount} plan${reviewCount === 1 ? '' : 's'}` : 'create plan'}</span>
+        <span class="signature-state ${state.agentSignature ? 'complete' : state.agentPlan ? 'active' : ''}">${state.oneTimePlanView === 'review' ? `${reviewCount} plan${reviewCount === 1 ? '' : 's'}` : 'draft'}</span>
       </div>
 
       ${oneTimePlanTabs()}
@@ -4237,8 +4311,8 @@ function agentPlanPanel(): string {
 function oneTimePlanTabs(): string {
   return `
     <div class="tabs compact-tabs one-time-plan-tabs" role="tablist" aria-label="One-time plan steps">
-      ${oneTimePlanViewButton('create', 'Create Plan')}
-      ${oneTimePlanViewButton('review', 'Review & Finish')}
+      ${oneTimePlanViewButton('create', 'Draft')}
+      ${oneTimePlanViewButton('review', 'Review')}
     </div>
   `;
 }
@@ -4267,8 +4341,8 @@ function oneTimeCreatePlanPanel(): string {
       ${agentPlannerWorkbench()}
       ${agentPathExplainer()}
 
-      ${signaturePlaceholder('Create a plan first', 'Choose a one-time template or connect AI. New plans move to Review & Finish before anything can enter Approval Inbox.')}
-      ${hasOneTimePlans ? '<div class="notice">Existing one-time plans are available in Review & Finish.</div>' : ''}
+      ${signaturePlaceholder('Draft first', 'Choose a template or connect AI. New drafts move to Review before anything can enter Inbox.')}
+      ${hasOneTimePlans ? '<div class="notice">Existing one-time plans are available in Review.</div>' : ''}
       ${!walletReady ? '<div class="notice">You can create a plan without a wallet. Connect a wallet when you are ready to queue an approval or sign an optional review proof.</div>' : ''}
     </div>
   `;
@@ -4299,7 +4373,7 @@ function draftReadyPanel(plan: AgentPlan): string {
           class="utility"
           ${state.busy ? 'disabled' : ''}
         >
-          Review & Finish
+          Review
         </button>
         <button
           id="signAgentPlan"
@@ -4328,7 +4402,7 @@ function generatedPlansPanel(embedded = false): string {
       <div class="signature-object-head">
         <div>
           <h2>Review & finish</h2>
-          <p>Saved one-time plans. Queue an executable plan when you want it to wait in Approval Inbox; finished plans move to Completed Plans.</p>
+          <p>Saved drafts. Send executable work to Inbox when you want a wallet decision; finished work moves to History.</p>
         </div>
         <div class="generated-plans-toolbar signature-toolbar">
           <span class="signature-state">${escapeHtml(`${activeCount} active`)}</span>
@@ -4337,7 +4411,7 @@ function generatedPlansPanel(embedded = false): string {
             class="utility"
             ${state.busy ? 'disabled' : ''}
           >
-            Create another plan
+            Create another draft
           </button>
           <button
             id="toggleArchivedGeneratedPlans"
@@ -4908,12 +4982,12 @@ function generatedPlansEmptyState(oneTimeOnly = false): string {
   const movedCount = records.filter(hasGeneratedPlanMovedPastReview).length;
   const archivedCount = records.filter((record) => record.status === 'archived').length;
   const detail = records.length === 0
-    ? 'Create a plan from Create Plan. It stays here for review, then moves to Approval Inbox or Completed Plans.'
+    ? 'Create a draft first. It stays here for review, then moves to Inbox or History.'
     : activeCount === 0 && movedCount > 0
-      ? 'All active plans have moved forward. Open Approval Inbox for queued work or Completed Plans for signed proofs and receipts.'
+      ? 'All active drafts have moved forward. Open Inbox for queued work or History for signed proofs and receipts.'
       : archivedCount > 0
         ? 'Archived plans are hidden. Show archived to inspect or restore them.'
-        : 'Create another plan or check Approval Inbox and Completed Plans for work that already moved forward.';
+        : 'Create another draft or check Inbox and History for work that already moved forward.';
   return signaturePlaceholder('No plans visible', detail);
 }
 
@@ -4962,11 +5036,11 @@ function agentPlannerWorkbench(): string {
         </label>
         <div class="intent-policy-strip">
           <span>Where this goes</span>
-          <p>Plans are saved in Review & Finish. Queueable plans enter Approval Inbox only after you choose to queue them; finished plans appear in Completed Plans.</p>
+          <p>Drafts are saved in Review. Queueable drafts enter Inbox only after you choose to send them; finished work appears in History.</p>
         </div>
         <div class="agent-actions signature-actions intent-document-actions">
-          <button id="generatePlan" class="primary" ${state.busy ? 'disabled' : ''}>${templateGenerating ? `${buttonSpinner()}Creating...` : 'Create plan from template'}</button>
-          <button id="generateAiPlan" class="${canUseAi ? 'primary' : ''}" ${!canUseAi || state.busy ? 'disabled' : ''} title="${escapeHtml(canUseAi ? 'Create through your configured AI planner.' : aiDisabledReason)}">${aiGenerating ? `${buttonSpinner()}Creating...` : 'Create plan with AI'}</button>
+          <button id="generatePlan" class="primary" ${state.busy ? 'disabled' : ''}>${templateGenerating ? `${buttonSpinner()}Drafting...` : 'Draft from template'}</button>
+          <button id="generateAiPlan" class="${canUseAi ? 'primary' : ''}" ${!canUseAi || state.busy ? 'disabled' : ''} title="${escapeHtml(canUseAi ? 'Draft through your configured AI planner.' : aiDisabledReason)}">${aiGenerating ? `${buttonSpinner()}Drafting...` : 'Draft with AI'}</button>
         </div>
       </div>
     </div>
@@ -5040,10 +5114,10 @@ function isCompactMobileLayout(): boolean {
 function agentPathExplainer(): string {
   return `
     <aside class="agent-route-strip" aria-label="One-time plan route">
-      ${agentRouteStep('1', 'Create plan', 'Template or AI drafts a bounded request.')}
-      ${agentRouteStep('2', 'Review & Finish', 'Check limits, risk, route, and approval rule.')}
-      ${agentRouteStep('3', 'Send or sign', 'Send queueable work to Inbox or sign proof only.')}
-      ${agentRouteStep('4', 'Completed', 'Receipts and proofs stay in history.')}
+      ${agentRouteStep('1', 'Draft', 'Template or AI prepares a bounded request.')}
+      ${agentRouteStep('2', 'Review', 'Check limits, risk, route, and approval rule.')}
+      ${agentRouteStep('3', 'Approve', 'Send queueable work to Inbox or sign proof only.')}
+      ${agentRouteStep('4', 'Prove', 'Receipts and proofs stay in history.')}
     </aside>
   `;
 }
@@ -5185,12 +5259,14 @@ function aiSettingsCard(): string {
     ? 'Bridge session key'
     : state.aiSettings.mode === 'hosted'
       ? 'Hosted BYOK key'
-      : 'Browser session key';
+      : IS_ANDROID_APP
+        ? 'Android session key'
+        : 'Browser session key';
   const securityCopy = state.aiSettings.mode === 'hosted'
     ? 'Hosted BYOK relays this key only for AI draft requests. It cannot queue approvals, create recurring schedules, approve, submit, or sign.'
     : state.aiSettings.mode === 'bridge'
       ? 'Local bridge AI drafts from your machine only. Approval Inbox, recurring schedules, receipts, and wallet signatures remain separate workflow actions.'
-      : 'Browser session keys stay in this tab and draft plans only. Queueing, recurring schedules, approvals, submissions, and signatures use the active workflow, not the AI key.';
+      : `${IS_ANDROID_APP ? 'Android session' : 'Browser session'} keys stay in ${IS_ANDROID_APP ? 'this app runtime' : 'this tab'} and draft plans only. Queueing, recurring schedules, approvals, submissions, and signatures use the active workflow, not the AI key.`;
   return `
     <aside class="ai-settings-card">
       <div>
@@ -5280,11 +5356,17 @@ function aiSettingsCard(): string {
 }
 
 function aiModeOptions(): string {
-  const options: Array<{ id: AiSettings['mode']; label: string }> = [
-    { id: 'hosted', label: 'Hosted BYOK - drafts only' },
-    { id: 'bridge', label: 'Local bridge AI - draft via bridge' },
-    { id: 'session', label: 'Browser session - drafts only' },
-  ];
+  const options: Array<{ id: AiSettings['mode']; label: string }> = IS_ANDROID_APP
+    ? [
+        { id: 'session', label: 'Android session - drafts only' },
+        { id: 'bridge', label: 'Local bridge AI - optional' },
+        { id: 'hosted', label: 'Hosted BYOK - hosted web only' },
+      ]
+    : [
+        { id: 'hosted', label: 'Hosted BYOK - drafts only' },
+        { id: 'bridge', label: 'Local bridge AI - draft via bridge' },
+        { id: 'session', label: 'Browser session - drafts only' },
+      ];
   return options.map((option) => {
     const disabledReason = aiModeDisabledReason(option.id);
     return `
@@ -5315,6 +5397,9 @@ function aiProviderOptions(): string {
 }
 
 function aiModeDisabledReason(mode: AiSettings['mode']): string {
+  if (IS_ANDROID_APP && mode === 'hosted') {
+    return ANDROID_HOSTED_BYOK_DISABLED_REASON;
+  }
   if (mode === 'session' && state.aiSettings.provider === 'openai') {
     return OPENAI_BROWSER_SESSION_DISABLED_REASON;
   }
@@ -5339,9 +5424,14 @@ function aiModeHelperText(): string {
 
 function aiProviderHelperText(): string {
   if (state.aiSettings.mode === 'session') {
-    return OPENAI_BROWSER_SESSION_DISABLED_REASON;
+    return IS_ANDROID_APP
+      ? 'Android session AI drafts in the bundled app only. Use OpenRouter or a browser-compatible gateway.'
+      : OPENAI_BROWSER_SESSION_DISABLED_REASON;
   }
   if (state.aiSettings.mode === 'hosted') {
+    if (IS_ANDROID_APP) {
+      return ANDROID_HOSTED_BYOK_DISABLED_REASON;
+    }
     return HOSTED_CUSTOM_PROVIDER_DISABLED_REASON;
   }
   return '';
@@ -5699,6 +5789,15 @@ function aiRouteMismatchDiagnostic(err: unknown): AiDiagnosticEntry | undefined 
 }
 
 function ensureAiProviderAllowedForMode(): void {
+  if (IS_ANDROID_APP && state.aiSettings.mode === 'hosted') {
+    const preset = aiProviderPresetById(BROWSER_SESSION_DEFAULT_PROVIDER_ID);
+    state.aiSettings.mode = 'session';
+    state.aiSettings.provider = preset.id;
+    state.aiSettings.apiFormat = preset.apiFormat;
+    state.aiSettings.baseUrl = preset.baseUrl;
+    state.aiSettings.model = preset.model;
+    return;
+  }
   if (state.aiSettings.mode === 'session' && state.aiSettings.provider === 'openai') {
     const preset = aiProviderPresetById(BROWSER_SESSION_DEFAULT_PROVIDER_ID);
     state.aiSettings.provider = preset.id;
@@ -5842,7 +5941,7 @@ function completedPlansPanel(): string {
     <section class="approval-object signature-stage stage-completed stage-anchor ${plans.length ? 'stage-active' : 'stage-draft'}">
       <div class="signature-object-head">
         <div>
-          <h2>Completed plans</h2>
+          <h2>Completed work</h2>
           <p>Approved, rejected, cancelled, signed, and ended work stays here until you delete it.</p>
         </div>
         <div class="generated-plans-toolbar signature-toolbar">
@@ -6165,15 +6264,15 @@ function auditActivityKey(recordType: AuditRecordType, recordId: string): string
 
 function scheduledApprovalsPanel(): string {
   if (!state.address) {
-    return guidedStartPanel('Create recurring schedule', 'Connect a wallet before creating recurring schedules.');
+    return guidedStartPanel('Recurring', 'Connect a wallet before creating recurring requests.');
   }
   const recurringPayments = activeWorkflowRecurringPayments();
   return `
     <section class="approval-object signature-stage stage-schedule stage-anchor ${recurringPayments.length ? 'stage-active' : 'stage-draft'}">
       <div class="signature-object-head">
         <div>
-          <h2>Create recurring schedule</h2>
-          <p>Create a supported payment or subscription schedule. Each due occurrence appears in Approval Inbox for approve or deny.</p>
+          <h2>Recurring</h2>
+          <p>Create a supported payment or subscription request. Each due occurrence appears in Inbox for approve or deny.</p>
         </div>
         <button id="refreshInbox" class="utility" ${state.busy ? 'disabled' : ''}>Refresh</button>
       </div>
@@ -6194,12 +6293,12 @@ function labsPanel(): string {
   const detail =
     state.artifactView === 'signed'
       ? `Review wallet-signed receipts saved on this device${state.bridgeActive ? ' and mirrored to the local bridge archive' : ''}.`
-      : 'Create wallet-signed proofs for intent, policy, review, rejection, and tool traces. Receipts do not queue, approve, or submit transactions.';
+      : 'Create wallet-signed evidence for intent, risk review, approval decisions, rejections, and tool traces.';
   return `
     <section class="approval-object signature-stage stage-labs stage-anchor ${complete ? 'stage-complete' : 'stage-draft'}">
       <div class="signature-object-head artifact-workspace-head">
         <div>
-          <h2>Receipt proofs</h2>
+          <h2>Proofs</h2>
           <p>${escapeHtml(detail)}</p>
         </div>
         ${artifactWorkspaceTabs()}
@@ -6709,6 +6808,8 @@ function contextPanel(): string {
     ? 'Waiting on wallet response'
     : !state.address
       ? 'Connect a wallet'
+      : state.activeTab === 'overview'
+        ? 'Choose the next approval step'
       : state.activeTab === 'agent' && state.oneTimePlanView === 'review'
         ? 'Review and finish one-time plans'
         : state.activeTab === 'agent'
@@ -6773,7 +6874,7 @@ function requestContextDetails(): string {
   if (!hasRequestContext) return '';
 
   return `
-    <details class="panel public-request-context evidence-details">
+    <details class="panel public-request-context evidence-details" data-layout="request-context">
       <summary>Request context</summary>
       <div class="evidence-rail" aria-label="Approval evidence">
         ${evidenceStep('Intent', evidenceIntent(), evidenceTone('intent'))}
@@ -9229,10 +9330,14 @@ async function runSaveDirectAiKey(): Promise<void> {
     appendAiDiagnostic(aiRouteDiagnostic('/api/ai/generate-plan'));
     pushToast(
       'success',
-      state.aiSettings.mode === 'hosted' ? 'Hosted BYOK key entered' : 'Browser session key entered',
+      state.aiSettings.mode === 'hosted'
+        ? 'Hosted BYOK key entered'
+        : IS_ANDROID_APP
+          ? 'Android session key entered'
+          : 'Browser session key entered',
       state.aiSettings.mode === 'hosted'
         ? 'Hosted BYOK will relay only submitted AI draft requests. Queueing, schedules, and signing stay in the active workflow.'
-        : 'Browser session AI can draft plans in this tab. Queueing, schedules, and signing stay in the active workflow.',
+        : `${IS_ANDROID_APP ? 'Android session' : 'Browser session'} AI can draft plans in ${IS_ANDROID_APP ? 'this app runtime' : 'this tab'}. Queueing, schedules, and signing stay in the active workflow.`,
     );
   });
 }
@@ -9355,7 +9460,9 @@ function aiClearMessage(): string {
     return 'Hosted BYOK key removed from this browser session.';
   }
   if (state.aiSettings.mode === 'session') {
-    return 'Browser session key removed from this app.';
+    return IS_ANDROID_APP
+      ? 'Android session key removed from this app.'
+      : 'Browser session key removed from this app.';
   }
   return 'Session key removed from this app and local bridge memory.';
 }
@@ -9367,7 +9474,9 @@ function aiModeToastMessage(mode: AiSettings['mode']): string {
   if (mode === 'hosted') {
     return 'Hosted BYOK drafts plans only. Workflow actions still require explicit wallet review.';
   }
-  return 'Browser session AI drafts plans only and keeps the key in this tab.';
+  return IS_ANDROID_APP
+    ? 'Android session AI drafts plans only and keeps the key in this app runtime.'
+    : 'Browser session AI drafts plans only and keeps the key in this tab.';
 }
 
 function activeWorkflowMode(): ActiveWorkflowMode {
@@ -12500,6 +12609,9 @@ async function bridgeRequest<T = unknown>(path: string, init?: RequestInit): Pro
   if (!state.bridgeToken) {
     throw new Error('Bridge token is required.');
   }
+  if (!isLoopbackBridgeUrl(state.bridgeUrl)) {
+    throw new Error('Local bridge URL must use localhost, 127.0.0.1, or ::1.');
+  }
   const url = new URL(path, bridgeBaseUrl());
   const headers = new Headers(init?.headers);
   headers.set('x-agent-wallet-token', state.bridgeToken);
@@ -12883,7 +12995,7 @@ function capabilitySummary(capabilities: AdapterCapabilities): string {
 }
 
 function tabButton(tab: ActiveTab, label: string, mobileLabel?: string): string {
-  const locked = !state.address && tab !== 'wallet' && tab !== 'agent' && tab !== 'generated' && tab !== 'labs';
+  const locked = !state.address && (tab === 'schedule' || tab === 'inbox');
   const className = [
     state.activeTab === tab ? 'active' : '',
     mobileLabel ? 'has-mobile-label' : '',
@@ -13084,6 +13196,7 @@ function queueEmptyState(kind: 'bridge' | 'clear'): string {
         <span>${escapeHtml(chip)}</span>
         <h3>${escapeHtml(title)}</h3>
         <p>${escapeHtml(detail)}</p>
+        <button type="button" class="primary" data-tab="agent">Create a plan</button>
       </div>
     </div>
   `;
@@ -13326,22 +13439,22 @@ function recurringComposer(): string {
   const workflowMode = activeWorkflowMode();
   const browserWorkflow = workflowMode === 'browser-workflow';
   const recurringHelp = browserWorkflow
-    ? 'Define a device-local recurring fallback. It creates an immediate Approval Inbox item here, but does not run background schedules after this tab closes.'
+    ? 'Create a saved-on-this-device recurring request. It creates one Inbox item now; background scheduling needs Cloud or the local connector.'
     : 'Define a supported recurring payment or subscription. Each occurrence returns to Approval Inbox before wallet signing.';
   const boundaryCopy = browserWorkflow
-    ? 'Browser workflow stores this schedule on this device and creates one local approval item now. Use Agentic Cloud or Private local mode for background scheduling.'
+    ? 'Saved on this device. One local approval item is created now; use Cloud or the local connector for background scheduling.'
     : `${activeWorkflowLabel()} owns this schedule. No transaction signs until you approve an occurrence.`;
   const actionHelper = !state.address
     ? 'Connect a wallet before creating a recurring schedule.'
     : browserWorkflow
-      ? 'Creates one local Approval Inbox item now. No background scheduler runs after this tab closes.'
-      : 'Future occurrences will appear in Approval Inbox.';
+      ? 'Creates one local Inbox item now. No background scheduler runs after this tab closes.'
+      : 'Future occurrences will appear in Inbox.';
   return `
     <div class="recurring-panel recurring-contract">
       <div class="contract-head">
         <div>
           <span>Recurring setup</span>
-          <h3>Create recurring schedule</h3>
+          <h3>Create recurring request</h3>
           <p class="recurring-help">${escapeHtml(recurringHelp)}</p>
         </div>
         <strong>${escapeHtml(recurringCadenceLabel(draft.cadence))}</strong>
@@ -13371,7 +13484,7 @@ function recurringComposer(): string {
       <div class="contract-section">
         <div>
           <span>Schedule terms</span>
-          <p>When new requests should appear in Approval Inbox.</p>
+          <p>When new requests should appear in Inbox.</p>
         </div>
         <div class="recurring-grid schedule-grid">
           <label class="field compact">
@@ -13387,23 +13500,27 @@ function recurringComposer(): string {
           ${recurringScheduleFields(draft)}
         </div>
       </div>
-      <div class="contract-section">
-        <div>
-          <span>Caps and reminders</span>
-          <p>Optional stop time and webhook reminder path.</p>
+      <details class="recurring-advanced-details">
+        <summary>Advanced</summary>
+        <div class="contract-section">
+          <div>
+            <span>Caps and reminders</span>
+            <p>Optional stop time and webhook reminder path.</p>
+          </div>
+          <div class="recurring-grid">
+            ${fieldInput('recurringMaxOccurrences', 'Max occurrences', draft.maxOccurrences, 'empty for indefinite')}
+            ${fieldInput('recurringExpiresAt', 'Expires at', draft.expiresAt, '', 'datetime-local')}
+            ${fieldInput('recurringWebhookUrl', 'Webhook URL', draft.webhookUrl, 'https://example.com/agentic-webhook')}
+          </div>
         </div>
-        <div class="recurring-grid">
-          ${fieldInput('recurringExpiresAt', 'Expires at', draft.expiresAt, '', 'datetime-local')}
-          ${fieldInput('recurringWebhookUrl', 'Webhook URL', draft.webhookUrl, 'https://example.com/agentic-webhook')}
-        </div>
-      </div>
-      <label class="field compact approval-memo">
-        <span>Approval memo</span>
-        <input id="recurringNote" data-recurring-field="note" value="${escapeHtml(draft.note)}" placeholder="Reason shown when this appears in Approval Inbox" />
-      </label>
+        <label class="field compact approval-memo">
+          <span>Approval memo</span>
+          <input id="recurringNote" data-recurring-field="note" value="${escapeHtml(draft.note)}" placeholder="Reason shown when this appears in Inbox" />
+        </label>
+      </details>
       ${recurringDraftPreviewPanel(draft)}
       <div class="recurring-form-actions contract-actions">
-        <button id="createRecurring" class="primary" ${createDisabled ? 'disabled' : ''}>Create recurring schedule</button>
+        <button id="createRecurring" class="primary" ${createDisabled ? 'disabled' : ''}>Create recurring request</button>
         <button type="button" class="utility" data-recurring-action="dca-proof">Create DCA review proof instead</button>
         <span class="contract-helper">${escapeHtml(actionHelper)}</span>
       </div>
@@ -13841,7 +13958,6 @@ function recurringDraftScheduleLabel(draft: RecurringDraft): string {
 }
 
 function recurringScheduleFields(draft: RecurringDraft): string {
-  const max = fieldInput('recurringMaxOccurrences', 'Max occurrences', draft.maxOccurrences, 'empty for indefinite');
   if (draft.cadence === 'weekly') {
     return `
       <label class="field compact">
@@ -13854,34 +13970,29 @@ function recurringScheduleFields(draft: RecurringDraft): string {
         ${fieldError('recurringDayOfWeek')}
       </label>
       ${fieldInput('recurringLocalTime', 'Local time', draft.localTime, '09:00')}
-      ${max}
     `;
   }
   if (draft.cadence === 'monthly') {
     return `
       ${fieldInput('recurringDayOfMonth', 'Day of month', draft.dayOfMonth, '1-31')}
       ${fieldInput('recurringLocalTime', 'Local time', draft.localTime, '09:00')}
-      ${max}
     `;
   }
   if (draft.cadence === 'interval_hours') {
     return `
       ${fieldInput('recurringIntervalHours', 'Every hours', draft.intervalHours, '1')}
       ${fieldInput('recurringStartAt', 'Start at', draft.startAt, '', 'datetime-local')}
-      ${max}
     `;
   }
   if (draft.cadence === 'interval_minutes') {
     return `
       ${fieldInput('recurringIntervalMinutes', 'Every minutes', draft.intervalMinutes, '60')}
       ${fieldInput('recurringStartAt', 'Start at', draft.startAt, '', 'datetime-local')}
-      ${max}
     `;
   }
   return `
     ${fieldInput('recurringIntervalDays', 'Every days', draft.intervalDays, '1')}
     ${fieldInput('recurringStartAt', 'Start at', draft.startAt, '', 'datetime-local')}
-    ${max}
   `;
 }
 
@@ -14267,12 +14378,14 @@ function definitionRow(label: string, value: string): string {
 
 function surfaceEyebrow(): string {
   switch (state.activeTab) {
+    case 'overview':
+      return 'Command center';
     case 'wallet':
       return 'Direct signing';
     case 'agent':
       return 'One-time plans';
     case 'generated':
-      return 'Review & finish';
+      return 'Review';
     case 'inbox':
       return 'Approval inbox';
     case 'completed':
@@ -14286,20 +14399,22 @@ function surfaceEyebrow(): string {
 
 function surfaceTitle(): string {
   switch (state.activeTab) {
+    case 'overview':
+      return 'Command Center';
     case 'wallet':
       return 'Wallet signing';
     case 'agent':
-      return 'Create One-Time Plan';
+      return 'Create Agent Action';
     case 'generated':
-      return 'Review & Finish';
+      return 'Review';
     case 'inbox':
       return 'Approval Inbox';
     case 'completed':
-      return 'Completed Plans';
+      return 'History';
     case 'schedule':
-      return 'Create Recurring Plan';
+      return 'Recurring';
     case 'labs':
-      return 'Receipt Proofs';
+      return 'Proofs';
   }
 }
 
@@ -14505,15 +14620,15 @@ function isPublicReceiptLab(lab: LabDefinition): boolean {
 function receiptLabelForKind(kind: string): string {
   switch (kind) {
     case 'intent_receipt':
-      return 'Proof of Intent';
+      return 'Intent';
     case 'policy_receipt':
-      return 'Proof of Policy';
+      return 'Approval Decision';
     case 'risk_review_receipt':
-      return 'Proof of Review';
+      return 'Risk Review';
     case 'rejection_receipt':
-      return 'Proof of Rejection';
+      return 'Rejection';
     case 'tool_trace_receipt':
-      return 'Tool Trace Receipt';
+      return 'Tool Trace';
     default:
       return labKindLabel(kind);
   }
@@ -14912,6 +15027,17 @@ function bridgeBaseUrl(): string {
   return state.bridgeUrl.endsWith('/') ? state.bridgeUrl : `${state.bridgeUrl}/`;
 }
 
+function isLoopbackBridgeUrl(value: string): boolean {
+  try {
+    const url = new URL(value);
+    if (url.protocol !== 'http:') return false;
+    const host = url.hostname.toLowerCase().replace(/^\[/, '').replace(/\]$/, '');
+    return host === 'localhost' || host === '127.0.0.1' || host === '::1';
+  } catch {
+    return false;
+  }
+}
+
 function bridgeHostLabel(): string {
   try {
     return new URL(state.bridgeUrl).host;
@@ -14952,17 +15078,17 @@ function explorerUrl(txid: string, cluster: Cluster): string {
 function resolveDevControls(): boolean {
   const viteEnv = (import.meta as ImportMeta & {
     env?: {
-      DEV?: boolean;
+      VITE_AGENTIC_APP_SURFACE?: string;
       VITE_AGENTIC_DEV_CONTROLS?: string;
     };
   }).env;
+  const surface = String(viteEnv?.VITE_AGENTIC_APP_SURFACE ?? '').trim().toLowerCase();
+  if (surface === 'debug') return true;
+  if (surface === 'public') return false;
+
   const explicit = String(viteEnv?.VITE_AGENTIC_DEV_CONTROLS ?? '').trim().toLowerCase();
   if (['1', 'true', 'yes', 'on'].includes(explicit)) return true;
-  if (['0', 'false', 'no', 'off'].includes(explicit)) return false;
-  if (viteEnv?.DEV) return true;
-
-  const hostname = globalThis.location?.hostname ?? '';
-  return hostname === 'localhost' || hostname === '127.0.0.1' || hostname === '::1';
+  return false;
 }
 
 function shouldProbeBridgeOnStartup(): boolean {
@@ -14970,13 +15096,14 @@ function shouldProbeBridgeOnStartup(): boolean {
 }
 
 function defaultAiMode(): AiSettings['mode'] {
+  if (IS_ANDROID_APP) return 'session';
   return isLocalBrowserOrigin() ? 'bridge' : 'hosted';
 }
 
 function persistedAiSettings(persistedState: PersistedState): Omit<AiSettings, 'apiKey'> {
   const fallback = aiProviderPresetById(DEFAULT_AI_PROVIDER_ID);
   const provider = persistedState.aiProvider ? aiProviderPresetById(persistedState.aiProvider) : fallback;
-  const mode = persistedState.aiMode ?? defaultAiMode();
+  const mode = normalizeAiModeForSurface(persistedState.aiMode ?? defaultAiMode());
   const model = persistedState.aiModel?.trim() || provider.model;
   const settings = {
     mode,
@@ -15005,6 +15132,11 @@ function persistedAiSettings(persistedState: PersistedState): Omit<AiSettings, '
     };
   }
   return settings;
+}
+
+function normalizeAiModeForSurface(mode: AiSettings['mode']): AiSettings['mode'] {
+  if (IS_ANDROID_APP && mode === 'hosted') return 'session';
+  return mode;
 }
 
 function isLocalBrowserOrigin(): boolean {
@@ -15062,6 +15194,16 @@ function resolveAndroidExampleTab(): boolean {
     };
   }).env;
   const explicit = String(viteEnv?.VITE_AGENTIC_ANDROID_SHOW_EXAMPLE_TAB ?? '').trim().toLowerCase();
+  return ['1', 'true', 'yes', 'on'].includes(explicit);
+}
+
+function resolveAndroidAppSurface(): boolean {
+  const viteEnv = (import.meta as ImportMeta & {
+    env?: {
+      VITE_AGENTIC_ANDROID_APP?: string;
+    };
+  }).env;
+  const explicit = String(viteEnv?.VITE_AGENTIC_ANDROID_APP ?? '').trim().toLowerCase();
   return ['1', 'true', 'yes', 'on'].includes(explicit);
 }
 
@@ -15292,6 +15434,11 @@ function short(value: string): string {
   return `${value.slice(0, 8)}...${value.slice(-8)}`;
 }
 
+function shortFirstRunWallet(value: string): string {
+  if (value.length <= 12) return value;
+  return `${value.slice(0, 4)}...${value.slice(-4)}`;
+}
+
 function escapeHtml(value: string): string {
   return value
     .replaceAll('&', '&amp;')
@@ -15322,7 +15469,6 @@ function loadPersistedState(): PersistedState {
         isWorkflowModePreference(parsed.workflowModePreference) && { workflowModePreference: parsed.workflowModePreference }),
       ...(typeof parsed.cluster === 'string' && isCluster(parsed.cluster) && { cluster: parsed.cluster }),
       ...(typeof parsed.bridgeUrl === 'string' && { bridgeUrl: parsed.bridgeUrl }),
-      ...(typeof parsed.bridgeToken === 'string' && { bridgeToken: parsed.bridgeToken }),
       ...(typeof parsed.aiMode === 'string' && isAiMode(parsed.aiMode) && { aiMode: parsed.aiMode }),
       ...(typeof parsed.aiProvider === 'string' && isAiProviderId(parsed.aiProvider) && { aiProvider: parsed.aiProvider }),
       ...(typeof parsed.aiApiFormat === 'string' && isAiApiFormat(parsed.aiApiFormat) && { aiApiFormat: parsed.aiApiFormat }),
@@ -15344,7 +15490,6 @@ function savePersistedState(): void {
         workflowModePreference: state.workflowModePreference,
         cluster: state.cluster,
         bridgeUrl: state.bridgeUrl,
-        bridgeToken: state.bridgeToken,
         aiMode: state.aiSettings.mode,
         aiProvider: state.aiSettings.provider,
         aiApiFormat: state.aiSettings.apiFormat,
@@ -15355,6 +15500,23 @@ function savePersistedState(): void {
   } catch {
     // Best-effort browser persistence.
   }
+}
+
+function readLaunchParams(): { bridgeUrl?: string; bridgeToken?: string } {
+  const params = new URLSearchParams(window.location.search);
+  const bridgeUrl = params.get('bridgeUrl')?.trim();
+  const bridgeToken = params.get('token')?.trim();
+  return {
+    ...(bridgeUrl && isLoopbackBridgeUrl(bridgeUrl) ? { bridgeUrl } : {}),
+    ...(bridgeToken ? { bridgeToken } : {}),
+  };
+}
+
+function clearSensitiveLaunchParams(): void {
+  const url = new URL(window.location.href);
+  if (!url.searchParams.has('token')) return;
+  url.searchParams.delete('token');
+  window.history.replaceState(window.history.state, document.title, `${url.pathname}${url.search}${url.hash}`);
 }
 
 function loadGeneratedPlans(): GeneratedPlanRecord[] {

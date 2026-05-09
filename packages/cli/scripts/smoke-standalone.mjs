@@ -61,6 +61,8 @@ try {
     configPath,
     '--bridge-url',
     bridgeUrl,
+    '--token',
+    'local-agent-wallet',
     'bridge',
     'serve',
   ]);

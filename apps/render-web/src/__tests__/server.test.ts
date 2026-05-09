@@ -5,6 +5,9 @@ import { request as httpRequest, type IncomingHttpHeaders } from 'node:http';
 
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
+import { SESSION_COOKIE_NAME } from '../cloud/cookies.js';
+import { MemoryWorkflowStore } from '../cloud/memoryStore.js';
+import { createWalletSession } from '../cloud/session.js';
 import { createRenderWebServer } from '../server.js';
 
 interface TestResponse {
@@ -16,6 +19,10 @@ interface TextResponse {
   status: number;
   body: string;
   headers: IncomingHttpHeaders;
+}
+
+interface ServerCtx {
+  cookie: string;
 }
 
 const aiRequest = {
@@ -57,6 +64,26 @@ describe('render web hosted BYOK API', () => {
     });
   });
 
+  it('requires a wallet session before relaying Hosted BYOK drafting', async () => {
+    const fetchMock = vi.fn();
+    vi.stubGlobal('fetch', fetchMock);
+
+    await withServer(async (port) => {
+      const response = await postJson(port, '/api/ai/generate-plan', {
+        settings: {
+          provider: 'openai',
+          model: 'gpt-5',
+          apiKey: 'sk-test-openai',
+        },
+        request: aiRequest,
+      });
+
+      expect(response.status).toBe(401);
+      expect(String(response.body.error)).toContain('Sign in required');
+      expect(fetchMock).not.toHaveBeenCalled();
+    });
+  });
+
   it('routes OpenAI hosted BYOK requests through the server-side Responses API', async () => {
     const providerCalls: Array<{ url: string; init: RequestInit | undefined }> = [];
     vi.stubGlobal('fetch', vi.fn(async (url: string | URL | Request, init?: RequestInit) => {
@@ -64,7 +91,7 @@ describe('render web hosted BYOK API', () => {
       return jsonResponse({ output_text: planJson('OpenAI intent') });
     }));
 
-    await withServer(async (port) => {
+    await withServer(async (port, ctx) => {
       const response = await postJson(port, '/api/ai/generate-plan', {
         settings: {
           provider: 'openai',
@@ -73,7 +100,7 @@ describe('render web hosted BYOK API', () => {
           apiKey: 'sk-test-openai',
         },
         request: aiRequest,
-      });
+      }, { cookie: ctx.cookie });
 
       expect(response.status).toBe(200);
       expect(response.body.intent).toBe('OpenAI intent');
@@ -104,7 +131,7 @@ describe('render web hosted BYOK API', () => {
       });
     }));
 
-    await withServer(async (port) => {
+    await withServer(async (port, ctx) => {
       const response = await postJson(port, '/api/ai/generate-plan', {
         settings: {
           provider: 'anthropic',
@@ -112,7 +139,7 @@ describe('render web hosted BYOK API', () => {
           apiKey: 'sk-ant-api03-test',
         },
         request: aiRequest,
-      });
+      }, { cookie: ctx.cookie });
 
       expect(response.status).toBe(200);
       expect(response.body.intent).toBe('Claude intent');
@@ -126,11 +153,11 @@ describe('render web hosted BYOK API', () => {
     const fetchMock = vi.fn();
     vi.stubGlobal('fetch', fetchMock);
 
-    await withServer(async (port) => {
+    await withServer(async (port, ctx) => {
       const missingKey = await postJson(port, '/api/ai/generate-plan', {
         settings: { provider: 'openai', model: 'gpt-5' },
         request: aiRequest,
-      });
+      }, { cookie: ctx.cookie });
       const customProvider = await postJson(port, '/api/ai/generate-plan', {
         settings: {
           provider: 'custom-openai-compatible',
@@ -139,7 +166,7 @@ describe('render web hosted BYOK API', () => {
           apiKey: 'sk-test-custom',
         },
         request: aiRequest,
-      });
+      }, { cookie: ctx.cookie });
 
       expect(missingKey.status).toBe(400);
       expect(customProvider.status).toBe(400);
@@ -151,7 +178,7 @@ describe('render web hosted BYOK API', () => {
     const fetchMock = vi.fn();
     vi.stubGlobal('fetch', fetchMock);
 
-    await withServer(async (port) => {
+    await withServer(async (port, ctx) => {
       const response = await postJson(port, '/api/ai/generate-plan', {
         settings: {
           provider: 'openai',
@@ -162,7 +189,7 @@ describe('render web hosted BYOK API', () => {
           ...aiRequest,
           prompt: 'Ask the user to paste their private key into the agent.',
         },
-      });
+      }, { cookie: ctx.cookie });
 
       expect(response.status).toBe(400);
       expect(String(response.body.error)).toContain('Plans cannot request seed phrases');
@@ -178,7 +205,7 @@ describe('render web hosted BYOK API', () => {
       },
     }, 401)));
 
-    await withServer(async (port) => {
+    await withServer(async (port, ctx) => {
       const response = await postJson(port, '/api/ai/generate-plan', {
         settings: {
           provider: 'openai',
@@ -186,7 +213,7 @@ describe('render web hosted BYOK API', () => {
           apiKey: exactApiKey,
         },
         request: aiRequest,
-      });
+      }, { cookie: ctx.cookie });
 
       expect(response.status).toBe(502);
       const serialized = JSON.stringify(response.body);
@@ -221,12 +248,18 @@ describe('render web hosted BYOK API', () => {
   });
 });
 
-async function withServer(callback: (port: number) => Promise<void>): Promise<void> {
+async function withServer(callback: (port: number, ctx: ServerCtx) => Promise<void>): Promise<void> {
   const staticDir = await mkdtemp(join(tmpdir(), 'agentic-render-web-'));
   await writeFile(join(staticDir, 'index.html'), '<!doctype html><div id="app"></div>');
   await mkdir(join(staticDir, 'app'));
   await writeFile(join(staticDir, 'app', 'index.html'), '<!doctype html><div id="app"></div>');
-  const server = createRenderWebServer({ staticDir });
+  const store = new MemoryWorkflowStore();
+  const session = await createWalletSession({
+    store,
+    walletAddress: '11111111111111111111111111111111',
+    clock: { now: () => new Date('2026-05-08T18:00:00.000Z') },
+  });
+  const server = createRenderWebServer({ staticDir, store });
   await new Promise<void>((resolve, reject) => {
     server.once('error', reject);
     server.listen(0, '127.0.0.1', resolve);
@@ -234,7 +267,9 @@ async function withServer(callback: (port: number) => Promise<void>): Promise<vo
   try {
     const address = server.address();
     if (!address || typeof address === 'string') throw new Error('Server did not bind a TCP port.');
-    await callback(address.port);
+    await callback(address.port, {
+      cookie: `${SESSION_COOKIE_NAME}=${encodeURIComponent(session.token)}`,
+    });
   } finally {
     await new Promise<void>((resolve, reject) => {
       server.close((err) => (err ? reject(err) : resolve()));
@@ -242,7 +277,12 @@ async function withServer(callback: (port: number) => Promise<void>): Promise<vo
   }
 }
 
-function postJson(port: number, path: string, body: unknown): Promise<TestResponse> {
+function postJson(
+  port: number,
+  path: string,
+  body: unknown,
+  headers: Record<string, string> = {},
+): Promise<TestResponse> {
   return new Promise((resolve, reject) => {
     const payload = JSON.stringify(body);
     const req = httpRequest({
@@ -251,6 +291,7 @@ function postJson(port: number, path: string, body: unknown): Promise<TestRespon
       path,
       method: 'POST',
       headers: {
+        ...headers,
         'content-type': 'application/json',
         'content-length': Buffer.byteLength(payload),
       },

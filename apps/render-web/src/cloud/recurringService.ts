@@ -14,6 +14,7 @@ import {
 } from '@solana-agent-wallet-adapter/workflow';
 
 import { redactSecrets } from './redaction.js';
+import { assertWebhookUrlAllowed, WebhookSecurityError } from './webhookSecurity.js';
 import {
   scrubNotificationDeliveryForResponse,
   type RecurringNotificationDeliveryRecord,
@@ -346,7 +347,7 @@ export class RecurringService {
     assertCloudRecurringTokenSupported(input.token);
     const now = this.now();
     const notificationResult = input.notifications !== undefined
-      ? withWebhookSecret(input.notifications)
+      ? withWebhookSecret(assertSafeNotifications(input.notifications))
       : undefined;
     const record: RecurringScheduleRecord = {
       id: this.id('recurring'),
@@ -466,10 +467,11 @@ export class RecurringService {
     };
     let notificationResult: ReturnType<typeof withWebhookSecret> | undefined;
     if (input.notifications !== undefined) {
+      const safeNotifications = assertSafeNotifications(input.notifications);
       const existingSecret = input.notifications.webhookUrl === existing.notifications?.webhookUrl
         ? existing.notifications?.webhookSecret
         : undefined;
-      notificationResult = withWebhookSecret(input.notifications, existingSecret);
+      notificationResult = withWebhookSecret(safeNotifications, existingSecret);
       updated.notifications = notificationResult.notifications;
     }
     assertCloudRecurringTokenSupported(updated.token);
@@ -1012,6 +1014,21 @@ function withWebhookSecret(
     },
     ...(existingSecret ? {} : { webhookSecretOnce: webhookSecret }),
   };
+}
+
+function assertSafeNotifications(
+  notifications: NonNullable<RecurringScheduleRecord['notifications']>,
+): NonNullable<RecurringScheduleRecord['notifications']> {
+  if (!notifications.webhookUrl) return notifications;
+  try {
+    assertWebhookUrlAllowed(notifications.webhookUrl);
+  } catch (err) {
+    if (err instanceof WebhookSecurityError) {
+      throw new RecurringServiceError(400, 'invalid_notifications', err.message);
+    }
+    throw err;
+  }
+  return notifications;
 }
 
 function recurringRiskMetadata(

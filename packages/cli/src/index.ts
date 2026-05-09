@@ -38,7 +38,6 @@ type RiskLevel = 'low' | 'medium' | 'high';
 type JsonRecord = Record<string, unknown>;
 
 const DEFAULT_BRIDGE_URL = 'http://127.0.0.1:8787';
-const DEFAULT_BRIDGE_TOKEN = 'local-agent-wallet';
 const DEFAULT_WALLET_HOST_URL = 'http://127.0.0.1:5174';
 const REQUEST_TIMEOUT_MS = 120_000;
 const POLL_INTERVAL_MS = 750;
@@ -2293,7 +2292,7 @@ Usage:
 
 Global options:
   --bridge-url <url>         Default: ${DEFAULT_BRIDGE_URL}
-  --token <token>            Default: BRIDGE_TOKEN or ${DEFAULT_BRIDGE_TOKEN}
+  --token <token>            Default: BRIDGE_TOKEN or a generated per-run token
   --wallet-host-url <url>    Default: ${DEFAULT_WALLET_HOST_URL}
   --runtime-dir <path>       Installed config/data dir
   --repo-root <path>         Use repo-local config/data for development fallback
@@ -2360,7 +2359,7 @@ function parseArgs(argv: string[]): ParsedArgs {
     : repoRoot ?? defaultUserRuntimeDir();
   const options: GlobalOptions = {
     bridgeUrl: stripTrailingSlash(process.env.AGENT_WALLET_BRIDGE_URL ?? process.env.BRIDGE_URL ?? DEFAULT_BRIDGE_URL),
-    token: process.env.BRIDGE_TOKEN ?? DEFAULT_BRIDGE_TOKEN,
+    token: process.env.BRIDGE_TOKEN ?? randomBridgeToken(),
     walletHostUrl: stripTrailingSlash(process.env.AGENT_WALLET_WALLET_HOST_URL ?? DEFAULT_WALLET_HOST_URL),
     repoRoot,
     runtimeDir,
@@ -2477,6 +2476,10 @@ function parseArgs(argv: string[]): ParsedArgs {
   }
 
   return { options, positionals };
+}
+
+function randomBridgeToken(): string {
+  return randomBytes(24).toString('base64url');
 }
 
 function splitFlag(arg: string): [string, string | undefined] {

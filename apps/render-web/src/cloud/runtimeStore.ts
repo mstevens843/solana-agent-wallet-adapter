@@ -40,6 +40,10 @@ export function assertProductionConfig(env: NodeJS.ProcessEnv = process.env): vo
     throw new Error(`Missing required production environment variable(s): ${missing.join(', ')}.`);
   }
 
+  if (env.AGENTIC_MOCK_FINALIZATION === '1') {
+    throw new Error('AGENTIC_MOCK_FINALIZATION must not be enabled in production.');
+  }
+
   const sessionSecret = env.SESSION_SECRET?.trim() ?? '';
   if (sessionSecret.length < MIN_SESSION_SECRET_LENGTH) {
     throw new Error(`SESSION_SECRET must be at least ${MIN_SESSION_SECRET_LENGTH} characters in production.`);

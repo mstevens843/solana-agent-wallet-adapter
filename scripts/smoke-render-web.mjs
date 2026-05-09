@@ -30,6 +30,8 @@ async function main() {
       printUsage();
     } else if (options.mode === 'live') {
       await verifyLiveRender(options.liveOrigin);
+    } else if (options.mode === 'layout') {
+      await verifyLayoutSmoke();
     } else if (options.mode === 'workflow') {
       await verifyWorkflowSmoke({ requireLocalBridge: options.requireLocalBridge });
     } else {
@@ -63,6 +65,8 @@ function parseArgs(rawArgs) {
       parsed.help = true;
     } else if (arg === '--workflow') {
       setMode('workflow', arg);
+    } else if (arg === '--layout') {
+      setMode('layout', arg);
     } else if (arg === '--live') {
       setMode('live', arg);
       const candidate = normalized[index + 1];
@@ -86,12 +90,14 @@ function parseArgs(rawArgs) {
 function printUsage() {
   console.log(`Usage:
   pnpm smoke:render-web
+  pnpm smoke:render-web -- --layout
   pnpm smoke:render-web -- --workflow
   pnpm smoke:render-web -- --workflow --require-local-bridge
   pnpm smoke:render-web -- --live [origin]
 
 Modes:
   default                 Build-output route smoke against local Render server.
+  --layout                Browser geometry smoke for deterministic /app layout.
   --workflow              End-to-end cloud/browser workflow release smoke.
   --live [origin]         Content-type smoke against a deployed origin.
 
@@ -126,6 +132,118 @@ async function verifyLocalRender() {
       console.log('[smoke-render-web] PASS public-host startup did not request the local bridge.');
     });
   });
+}
+
+async function verifyLayoutSmoke() {
+  const viewports = [
+    { width: 1440, height: 1000 },
+    { width: 1280, height: 900 },
+    { width: 1024, height: 900 },
+    { width: 768, height: 900 },
+    { width: 430, height: 932 },
+    { width: 390, height: 844 },
+  ];
+  const tabs = ['overview', 'agent', 'schedule', 'inbox', 'completed', 'labs'];
+  await withLocalServer(async ({ origin }) => {
+    const wallet = createTestWallet();
+    await withWalletSigner(wallet, async ({ origin: signerOrigin }) => {
+      await withChrome(async (page) => {
+        await page.addInitScript(fakeWalletScript(wallet, signerOrigin));
+        for (const viewport of viewports) {
+          await page.setViewport(viewport.width, viewport.height);
+          await page.inspect(`${origin}/app`);
+          await connectFakeWallet(page);
+          for (const tab of tabs) {
+            await clickAndWait(page, `[data-tab="${tab}"]`, `layout tab ${tab}`);
+            await page.waitFor(`document.querySelector('[data-tab="${tab}"]')?.classList.contains('active')`);
+            const report = await appLayoutReport(page, `${viewport.width}x${viewport.height} ${tab}`);
+            if (report.errors.length) {
+              throw new Error(`Layout failed for ${report.label}: ${report.errors.join('; ')}\n${formatLayoutRects(report)}`);
+            }
+            console.log(`[smoke-render-web] PASS layout ${report.label} scroll=${report.scrollWidth}/${report.innerWidth}`);
+          }
+        }
+      });
+    });
+  });
+}
+
+async function appLayoutReport(page, label) {
+  return page.evaluate(`(() => {
+    const label = ${JSON.stringify(label)};
+    const required = {
+      nav: '[data-layout="app-nav"]',
+      intro: '[data-layout="app-intro"]',
+      shell: '[data-layout="app-shell"]',
+      rail: '[data-layout="app-rail"]',
+      main: '[data-layout="app-main"]',
+      tabs: '[data-layout="app-tabs"]',
+      workflow: '[data-layout="workflow-status"]',
+      trust: '[data-layout="trust-strip"]',
+      activePanel: '[data-layout="active-panel"]',
+    };
+    const rectFor = (selector) => {
+      const element = document.querySelector(selector);
+      if (!element) return null;
+      const rect = element.getBoundingClientRect();
+      const style = window.getComputedStyle(element);
+      return {
+        bottom: rect.bottom,
+        display: style.display,
+        height: rect.height,
+        left: rect.left,
+        position: style.position,
+        right: rect.right,
+        top: rect.top,
+        visibility: style.visibility,
+        width: rect.width,
+      };
+    };
+    const rects = Object.fromEntries(Object.entries(required).map(([key, selector]) => [key, rectFor(selector)]));
+    const errors = [];
+    const innerWidth = window.innerWidth;
+    const scrollWidth = document.documentElement.scrollWidth;
+    if (scrollWidth > innerWidth + 1) {
+      errors.push('document has horizontal overflow');
+    }
+    for (const [key, rect] of Object.entries(rects)) {
+      if (!rect) {
+        errors.push(key + ' missing');
+        continue;
+      }
+      if (rect.display === 'none' || rect.visibility === 'hidden') errors.push(key + ' hidden');
+      if (rect.width <= 0 || rect.height <= 0) errors.push(key + ' has empty geometry');
+      if (rect.left < -1) errors.push(key + ' starts offscreen left');
+      if (rect.right > innerWidth + 1) errors.push(key + ' clips offscreen right');
+    }
+    const nav = rects.nav;
+    const intro = rects.intro;
+    if (nav && intro && (nav.position === 'fixed' || nav.position === 'sticky') && nav.bottom > intro.top + 1) {
+      errors.push('nav overlaps intro');
+    }
+    const rail = rects.rail;
+    const main = rects.main;
+    if (rail && main) {
+      const verticalOverlap = rail.bottom > main.top + 1 && main.bottom > rail.top + 1;
+      const horizontalOverlap = rail.right > main.left + 1 && main.right > rail.left + 1;
+      if (verticalOverlap && horizontalOverlap) errors.push('rail overlaps main');
+    }
+    const tabs = rects.tabs;
+    if (tabs && main) {
+      if (tabs.left < main.left - 1) errors.push('tabs start outside main');
+      if (tabs.right > main.right + 1) errors.push('tabs end outside main');
+    }
+    return { errors, innerWidth, label, rects, scrollWidth };
+  })()`);
+}
+
+function formatLayoutRects(report) {
+  return Object.entries(report.rects)
+    .map(([key, rect]) => {
+      if (!rect) return `${key}: missing`;
+      return `${key}: x=${Math.round(rect.left)} y=${Math.round(rect.top)} w=${Math.round(rect.width)} h=${Math.round(rect.height)}`;
+    })
+    .join('\n');
 }
 
 async function verifyWorkflowSmoke({ requireLocalBridge: bridgeRequired }) {
@@ -1637,6 +1755,14 @@ async function connectPage(port) {
     },
     async setCookie(cookie) {
       await send('Network.setCookie', cookie);
+    },
+    async setViewport(width, height) {
+      await send('Emulation.setDeviceMetricsOverride', {
+        deviceScaleFactor: 1,
+        height,
+        mobile: width < 700,
+        width,
+      });
     },
     async inspect(url) {
       events = [];

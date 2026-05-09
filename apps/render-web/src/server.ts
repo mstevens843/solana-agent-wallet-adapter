@@ -35,7 +35,7 @@ async function handleRequest(
   apiRouter: CloudApiRouter,
 ): Promise<void> {
   const url = new URL(req.url ?? '/', `http://${req.headers.host ?? 'localhost'}`);
-  setCommonHeaders(res);
+  setCommonHeaders(req, res);
 
   try {
     if (url.pathname.startsWith('/api/')) {
@@ -111,8 +111,50 @@ function contentType(file: string): string {
   }
 }
 
-function setCommonHeaders(res: ServerResponse): void {
+function setCommonHeaders(req: IncomingMessage, res: ServerResponse): void {
   res.setHeader('x-content-type-options', 'nosniff');
+  res.setHeader('x-frame-options', 'DENY');
+  res.setHeader('referrer-policy', 'no-referrer');
+  res.setHeader(
+    'permissions-policy',
+    'camera=(), microphone=(), geolocation=(), payment=(), usb=(), serial=(), bluetooth=()',
+  );
+  res.setHeader(
+    'content-security-policy',
+    [
+      "default-src 'self'",
+      "base-uri 'self'",
+      "object-src 'none'",
+      "frame-ancestors 'none'",
+      "form-action 'self'",
+      "img-src 'self' data: https:",
+      "font-src 'self' https://fonts.gstatic.com",
+      "style-src 'self' https://fonts.googleapis.com 'unsafe-inline'",
+      "script-src 'self'",
+      "connect-src 'self' https: http://127.0.0.1:* http://localhost:* http://[::1]:*",
+    ].join('; '),
+  );
+  if (shouldSetStrictTransport(req)) {
+    res.setHeader('strict-transport-security', 'max-age=31536000; includeSubDomains; preload');
+  }
+}
+
+function shouldSetStrictTransport(req: IncomingMessage): boolean {
+  return (
+    req.headers['x-forwarded-proto'] === 'https' ||
+    process.env.NODE_ENV === 'production' ||
+    process.env.RENDER === 'true' ||
+    publicOriginUsesHttps()
+  );
+}
+
+function publicOriginUsesHttps(): boolean {
+  if (!process.env.AGENTIC_PUBLIC_ORIGIN) return false;
+  try {
+    return new URL(process.env.AGENTIC_PUBLIC_ORIGIN).protocol === 'https:';
+  } catch {
+    return false;
+  }
 }
 
 function writeJson(res: ServerResponse, status: number, payload: unknown): void {

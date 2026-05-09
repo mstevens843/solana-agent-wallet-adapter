@@ -75,6 +75,16 @@ describe('runtime workflow store configuration', () => {
       AGENTIC_PUBLIC_ORIGIN: 'https://agentic-signer.com',
     })).not.toThrow();
   });
+
+  it('blocks mock finalization in production', () => {
+    expect(() => assertProductionConfig({
+      NODE_ENV: 'production',
+      DATABASE_URL: 'postgres://db',
+      SESSION_SECRET: 'x'.repeat(32),
+      AGENTIC_PUBLIC_ORIGIN: 'https://agentic-signer.com',
+      AGENTIC_MOCK_FINALIZATION: '1',
+    })).toThrow(/AGENTIC_MOCK_FINALIZATION/);
+  });
 });
 
 function restoreEnvValue(key: string, value: string | undefined): void {

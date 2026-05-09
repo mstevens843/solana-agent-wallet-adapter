@@ -7,6 +7,7 @@ import android.app.Service
 import android.content.Intent
 import android.os.Build
 import android.os.IBinder
+import com.agentic.wallet.R
 
 class MwaKeepAliveService : Service() {
     override fun onBind(intent: Intent?): IBinder? = null
@@ -14,7 +15,9 @@ class MwaKeepAliveService : Service() {
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         try {
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-                val channel = NotificationChannel(CHANNEL_ID, "Agentic wallet approval", NotificationManager.IMPORTANCE_LOW)
+                val channel = NotificationChannel(CHANNEL_ID, "Agentic wallet approval", NotificationManager.IMPORTANCE_LOW).apply {
+                    description = "Keeps Agentic active while your wallet approval sheet is open."
+                }
                 getSystemService(NotificationManager::class.java).createNotificationChannel(channel)
             }
             startForeground(NOTIFICATION_ID, notification())
@@ -34,8 +37,9 @@ class MwaKeepAliveService : Service() {
         }
         return builder
             .setContentTitle("Agentic wallet approval")
-            .setContentText("Waiting for wallet approval")
-            .setSmallIcon(android.R.drawable.ic_dialog_info)
+            .setContentText("Approve or reject the pending wallet request.")
+            .setSmallIcon(R.drawable.ic_agentic_notification)
+            .setCategory(Notification.CATEGORY_SERVICE)
             .setOngoing(true)
             .build()
     }

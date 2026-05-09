@@ -252,23 +252,34 @@ export class AndroidNativeWalletBackend implements WalletBackend {
   private applyStatus(status: AndroidMwaStatus): void {
     this.activeStatus = {
       ...status,
-      capabilities: status.capabilities ?? androidCapabilities(this.cluster, status.address),
+      capabilities: normalizeAndroidCapabilities(status, this.cluster),
     };
   }
 }
 
 function androidCapabilities(cluster: Cluster, address?: string): AdapterCapabilities {
+  const connected = Boolean(address);
   return {
     backend: 'android-native-mwa',
     cluster: [cluster],
     supports: {
-      signMessage: true,
-      signTransaction: true,
-      signAndSendTransaction: true,
-      multiSign: true,
+      signMessage: false,
+      signTransaction: false,
+      signAndSendTransaction: connected,
+      multiSign: false,
       simulationPreview: false,
     },
     ...(address && { address }),
+  };
+}
+
+function normalizeAndroidCapabilities(status: AndroidMwaStatus, cluster: Cluster): AdapterCapabilities {
+  if (!status.capabilities) {
+    return androidCapabilities(cluster, status.address);
+  }
+  return {
+    ...status.capabilities,
+    ...(status.address && !status.capabilities.address && { address: status.address }),
   };
 }
 

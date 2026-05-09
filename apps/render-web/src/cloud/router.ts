@@ -42,6 +42,9 @@ import { createWorkflowApiHandler } from './workflowRoutes.js';
 const MAX_JSON_BYTES = 64 * 1024;
 const AUTH_RATE_LIMIT_WINDOW_MS = 5 * 60 * 1000;
 const AUTH_RATE_LIMIT_MAX_ATTEMPTS = 60;
+const WRITE_RATE_LIMIT_WINDOW_MS = 5 * 60 * 1000;
+const WRITE_RATE_LIMIT_MAX_ATTEMPTS = 180;
+const HOSTED_AI_RATE_LIMIT_MAX_ATTEMPTS = 30;
 
 const REGISTERED_API_ROUTES = [
   'GET /api/ai/status',
@@ -101,7 +104,7 @@ export interface CloudApiRouter {
 
 export interface AuthRateLimitInput {
   key: string;
-  route: '/api/auth/nonce' | '/api/auth/verify-wallet';
+  route: string;
   now: Date;
 }
 
@@ -116,11 +119,13 @@ class MemoryAuthRateLimiter implements AuthRateLimiter {
     const bucketKey = `${input.route}:${input.key}`;
     const now = input.now.getTime();
     const bucket = this.buckets.get(bucketKey);
-    if (!bucket || now - bucket.windowStart >= AUTH_RATE_LIMIT_WINDOW_MS) {
+    const windowMs = rateLimitWindowMs(input.route);
+    const maxAttempts = rateLimitMaxAttempts(input.route);
+    if (!bucket || now - bucket.windowStart >= windowMs) {
       this.buckets.set(bucketKey, { windowStart: now, count: 1 });
       return true;
     }
-    if (bucket.count >= AUTH_RATE_LIMIT_MAX_ATTEMPTS) {
+    if (bucket.count >= maxAttempts) {
       return false;
     }
     bucket.count += 1;
@@ -216,6 +221,7 @@ export function createCloudApiRouter(options: CloudApiRouterOptions = {}): Cloud
 
       try {
         enforceSameOrigin(req, url);
+        enforceJsonWriteRequest(req);
         await enforceAuthRateLimit(req, url, clock, authRateLimiter);
         await routeApiRequest(
           req,
@@ -244,15 +250,36 @@ export function createDefaultWorkflowStore(): WorkflowStore {
 function enforceSameOrigin(req: IncomingMessage, url: URL): void {
   if (!isStateChangingMethod(req.method)) return;
   const origin = firstHeaderValue(req.headers.origin);
-  if (!origin) return;
-  let originHost: string;
+  if (origin) {
+    assertSameHost(origin, requestDomain(req, url));
+    return;
+  }
+  if (!isProductionRequest()) return;
+  const referer = firstHeaderValue(req.headers.referer);
+  if (!referer) {
+    throw new ApiError(403, 'State-changing API requests require a same-origin browser context.');
+  }
+  assertSameHost(referer, requestDomain(req, url));
+}
+
+function assertSameHost(rawUrl: string, expectedHost: string): void {
+  let actualHost: string;
   try {
-    originHost = new URL(origin).host.toLowerCase();
+    actualHost = new URL(rawUrl).host.toLowerCase();
   } catch {
     throw new ApiError(403, 'Cross-origin requests are not allowed.');
   }
-  if (originHost !== requestDomain(req, url)) {
+  if (actualHost !== expectedHost) {
     throw new ApiError(403, 'Cross-origin requests are not allowed.');
+  }
+}
+
+function enforceJsonWriteRequest(req: IncomingMessage): void {
+  if (!isStateChangingMethod(req.method)) return;
+  if (req.method === 'DELETE') return;
+  const contentType = firstHeaderValue(req.headers['content-type']);
+  if (!contentType?.toLowerCase().includes('application/json')) {
+    throw new ApiError(415, 'State-changing API requests must use application/json.');
   }
 }
 
@@ -271,12 +298,34 @@ async function enforceAuthRateLimit(
     now: clock.now(),
   });
   if (!allowed) {
-    throw new ApiError(429, 'Too many wallet auth attempts. Try again later.');
+    throw new ApiError(429, route === '/api/ai/generate-plan'
+      ? 'Too many hosted AI drafting attempts. Try again later.'
+      : route === '/api/auth/nonce' || route === '/api/auth/verify-wallet'
+        ? 'Too many wallet auth attempts. Try again later.'
+        : 'Too many workflow requests. Try again later.');
   }
 }
 
 function authRateLimitedRoute(pathname: string): AuthRateLimitInput['route'] | undefined {
-  return pathname === '/api/auth/nonce' || pathname === '/api/auth/verify-wallet' ? pathname : undefined;
+  if (pathname === '/api/auth/nonce' || pathname === '/api/auth/verify-wallet') return pathname;
+  if (pathname === '/api/ai/generate-plan') return pathname;
+  if (pathname.startsWith('/api/plans')) return '/api/plans:*';
+  if (pathname.startsWith('/api/approvals')) return '/api/approvals:*';
+  if (pathname.startsWith('/api/recurring')) return '/api/recurring:*';
+  if (pathname.startsWith('/api/evidence')) return '/api/evidence:*';
+  if (pathname === '/api/auth/logout') return pathname;
+  return undefined;
+}
+
+function rateLimitWindowMs(route: string): number {
+  if (route === '/api/auth/nonce' || route === '/api/auth/verify-wallet') return AUTH_RATE_LIMIT_WINDOW_MS;
+  return WRITE_RATE_LIMIT_WINDOW_MS;
+}
+
+function rateLimitMaxAttempts(route: string): number {
+  if (route === '/api/auth/nonce' || route === '/api/auth/verify-wallet') return AUTH_RATE_LIMIT_MAX_ATTEMPTS;
+  if (route === '/api/ai/generate-plan') return HOSTED_AI_RATE_LIMIT_MAX_ATTEMPTS;
+  return WRITE_RATE_LIMIT_MAX_ATTEMPTS;
 }
 
 function isStateChangingMethod(method: string | undefined): boolean {
@@ -315,7 +364,7 @@ async function routeApiRequest(
 
   if (url.pathname === '/api/ai/generate-plan') {
     requireMethod(req, 'POST');
-    await handleHostedAiRequest(req, res);
+    await handleHostedAiRequest(req, res, store, clock);
     return;
   }
 
@@ -519,7 +568,16 @@ async function handleListAuditEvents(
   writeJson(res, 200, { events: filtered.slice(0, limit) });
 }
 
-async function handleHostedAiRequest(req: IncomingMessage, res: ServerResponse): Promise<void> {
+async function handleHostedAiRequest(
+  req: IncomingMessage,
+  res: ServerResponse,
+  store: WorkflowStore,
+  clock: Clock,
+): Promise<void> {
+  const session = await sessionFromRequest({ req, store, clock });
+  if (!session) {
+    throw new ApiError(401, 'Sign in required for Hosted BYOK drafting.');
+  }
   const body = await readJsonBody(req) as HostedAiBody;
   const settings = hostedSettings(body.settings);
   const request = hostedPlanRequest(body.request);
@@ -614,9 +672,12 @@ function rateLimitKey(req: IncomingMessage): string {
 
 function shouldSetSecureCookie(req: IncomingMessage): boolean {
   return isSecureRequest(req) ||
-    process.env.NODE_ENV === 'production' ||
-    process.env.RENDER === 'true' ||
+    isProductionRequest() ||
     publicOriginUsesHttps();
+}
+
+function isProductionRequest(): boolean {
+  return process.env.NODE_ENV === 'production' || process.env.RENDER === 'true';
 }
 
 function publicOriginUsesHttps(): boolean {

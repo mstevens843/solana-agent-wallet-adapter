@@ -61,23 +61,58 @@ describe('bridge lab artifact routes', () => {
     }
   });
 
+  it('rejects the legacy default bridge token when a different token is configured', async () => {
+    const handle = await startTestBridge();
+    try {
+      const response = await fetch(new URL('/bridge/lab-artifacts', handle.url), {
+        headers: {
+          'x-agent-wallet-token': 'local-agent-wallet',
+        },
+      });
+      expect(response.status).toBe(401);
+    } finally {
+      await handle.stop();
+    }
+  });
+
   it('allows browser private-network preflight requests', async () => {
     const handle = await startTestBridge();
     try {
+      const origin = 'https://agenticwalletadapter.com';
       const response = await fetch(new URL('/bridge/ai/status', handle.url), {
         method: 'OPTIONS',
         headers: {
-          origin: 'https://agenticwalletadapter.com',
+          origin,
           'access-control-request-method': 'POST',
           'access-control-request-private-network': 'true',
         },
       });
 
       expect(response.status).toBe(204);
-      expect(response.headers.get('access-control-allow-origin')).toBe('*');
+      expect(response.headers.get('access-control-allow-origin')).toBe(origin);
       expect(response.headers.get('access-control-allow-private-network')).toBe('true');
       expect(response.headers.get('access-control-allow-headers')).toContain('x-agent-wallet-token');
       expect(response.headers.get('vary')).toContain('Access-Control-Request-Private-Network');
+    } finally {
+      await handle.stop();
+    }
+  });
+
+  it('does not grant CORS access to untrusted browser origins', async () => {
+    const handle = await startTestBridge();
+    try {
+      const response = await fetch(new URL('/bridge/ai/status', handle.url), {
+        method: 'OPTIONS',
+        headers: {
+          origin: 'https://evil.example',
+          'access-control-request-method': 'POST',
+          'access-control-request-private-network': 'true',
+        },
+      });
+
+      expect(response.status).toBe(204);
+      expect(response.headers.get('access-control-allow-origin')).toBeNull();
+      expect(response.headers.get('access-control-allow-private-network')).toBe('true');
     } finally {
       await handle.stop();
     }

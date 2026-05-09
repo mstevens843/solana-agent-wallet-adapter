@@ -9,6 +9,7 @@ const preparedActionsPath = new URL('../.agent-wallet/prepared-actions.json', im
 const children = new Set();
 const mobileMode = process.argv.includes('--mobile');
 const host = mobileMode ? '0.0.0.0' : '127.0.0.1';
+const browserEnv = browserDevEnv();
 
 if (!existsSync(new URL('../.env', import.meta.url))) {
   console.error('[dev] Missing .env. Copy .env.example to .env first.');
@@ -49,7 +50,7 @@ const browser = start('browser', 'pnpm', [
   '--port',
   '5174',
   '--strictPort',
-]);
+], browserEnv);
 
 printUrls();
 
@@ -72,10 +73,10 @@ browser.on('exit', (code, signal) => {
   shutdown(code ?? 1);
 });
 
-function start(label, command, args) {
+function start(label, command, args, env = process.env) {
   const child = spawn(command, args, {
     cwd: root,
-    env: process.env,
+    env,
     stdio: ['ignore', 'pipe', 'pipe'],
   });
   children.add(child);
@@ -85,6 +86,14 @@ function start(label, command, args) {
     children.delete(child);
   });
   return child;
+}
+
+function browserDevEnv() {
+  const env = { ...process.env };
+  if (!env.VITE_AGENTIC_APP_SURFACE && !env.VITE_AGENTIC_DEV_CONTROLS) {
+    env.VITE_AGENTIC_APP_SURFACE = 'public';
+  }
+  return env;
 }
 
 function run(command, args) {

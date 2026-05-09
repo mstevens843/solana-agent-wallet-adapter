@@ -12,17 +12,21 @@ async function main(): Promise<void> {
   const args = parseArgs(process.argv.slice(2));
   loadDotEnv(args.env);
   const config = await loadConfig(args.config);
-  const backend =
-    args.bridge || args.bridgeUrl
-      ? new RemoteBridgeBackend({
-          bridgeUrl: args.bridgeUrl ?? 'http://127.0.0.1:8787',
-          token: args.bridgeToken ?? process.env.BRIDGE_TOKEN ?? 'local-agent-wallet',
-        })
-      : createMockBackend();
+  const usesBridge = args.bridge || Boolean(args.bridgeUrl);
+  const bridgeToken = args.bridgeToken ?? process.env.BRIDGE_TOKEN;
+  if (usesBridge && !bridgeToken) {
+    throw new Error('Local bridge mode requires --bridge-token or BRIDGE_TOKEN.');
+  }
+  const backend = usesBridge
+    ? new RemoteBridgeBackend({
+        bridgeUrl: args.bridgeUrl ?? 'http://127.0.0.1:8787',
+        token: bridgeToken!,
+      })
+    : createMockBackend();
   const server = createServer({
     backend,
-    ...((args.bridge || args.bridgeUrl) && { actionConfig: config }),
-    ...((args.bridge || args.bridgeUrl) && {
+    ...(usesBridge && { actionConfig: config }),
+    ...(usesBridge && {
       preparedActions: new JsonPreparedActionStore(
         args.preparedActions ?? process.env.AGENT_WALLET_PREPARED_ACTIONS ?? defaultPreparedActionStorePath(),
       ),

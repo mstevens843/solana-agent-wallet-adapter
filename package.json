@@ -43,15 +43,25 @@
     "demo:web": "pnpm demo:browser",
     "smoke:web": "vite",
     "smoke:render-web": "node scripts/smoke-render-web.mjs",
+    "smoke:render-web:layout": "node scripts/smoke-render-web.mjs --layout",
     "smoke:render-web:workflow": "node scripts/smoke-render-web.mjs --workflow",
     "smoke:render-web:live": "node scripts/smoke-render-web.mjs --live",
-    "demo:browser": "pnpm -F @solana-agent-wallet-adapter/browser-demo dev",
+    "demo:browser": "VITE_AGENTIC_APP_SURFACE=public pnpm -F @solana-agent-wallet-adapter/browser-demo dev",
+    "demo:browser:debug": "VITE_AGENTIC_APP_SURFACE=debug pnpm -F @solana-agent-wallet-adapter/browser-demo dev",
     "demo:browser:build": "pnpm --filter @solana-agent-wallet-adapter/browser-demo^... build && pnpm -F @solana-agent-wallet-adapter/browser-demo typecheck && pnpm -F @solana-agent-wallet-adapter/browser-demo build && node scripts/verify-browser-dist.mjs && node scripts/write-spa-route-fallbacks.mjs",
     "demo:agent": "pnpm -F reference-agent dev",
     "demo:agent:build": "pnpm -F reference-agent build",
     "verify:release-links": "node scripts/verify-release-links.mjs",
     "verify:release-links:live": "node scripts/verify-release-links.mjs --live",
+    "security:audit": "pnpm audit --prod",
     "clean": "pnpm -r exec rm -rf dist .turbo node_modules/.cache"
+  },
+  "pnpm": {
+    "overrides": {
+      "fast-uri": "^3.1.2",
+      "hono": "^4.12.18",
+      "ip-address": "^10.1.1"
+    }
   },
   "devDependencies": {
     "@types/node": "^22.7.0",

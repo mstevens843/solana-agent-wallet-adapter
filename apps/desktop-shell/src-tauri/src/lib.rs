@@ -16,7 +16,7 @@ use url::Url;
 type SharedRuntime = Arc<Mutex<RuntimeState>>;
 
 const DEFAULT_BRIDGE_URL: &str = "http://127.0.0.1:8787";
-const DEFAULT_BRIDGE_TOKEN: &str = "local-agent-wallet";
+const LEGACY_BRIDGE_TOKEN: &str = "local-agent-wallet";
 const DEFAULT_WALLET_HOST_URL: &str = "http://127.0.0.1:5174";
 const SIDECAR_BASENAME: &str = "agentic-cli-sidecar";
 const MAX_LOG_LINES: usize = 600;
@@ -947,8 +947,8 @@ fn normalize_config(mut config: DesktopConfig) -> DesktopConfig {
     if config.bridge_url.trim().is_empty() {
         config.bridge_url = DEFAULT_BRIDGE_URL.into();
     }
-    if config.bridge_token.trim().is_empty() {
-        config.bridge_token = DEFAULT_BRIDGE_TOKEN.into();
+    if config.bridge_token.trim().is_empty() || config.bridge_token == LEGACY_BRIDGE_TOKEN {
+        config.bridge_token = generated_bridge_token();
     }
     if config.wallet_host_url.trim().is_empty() {
         config.wallet_host_url = DEFAULT_WALLET_HOST_URL.into();
@@ -971,7 +971,7 @@ fn default_config() -> DesktopConfig {
     DesktopConfig {
         repo_root: display_path(&repo_root),
         bridge_url: DEFAULT_BRIDGE_URL.into(),
-        bridge_token: DEFAULT_BRIDGE_TOKEN.into(),
+        bridge_token: generated_bridge_token(),
         env_path: data_dir.join(".env").display().to_string(),
         action_config_path: data_dir
             .join("agent-wallet.config.json")
@@ -1133,6 +1133,12 @@ fn now_isoish() -> String {
     format!("{seconds}")
 }
 
+fn generated_bridge_token() -> String {
+    let mut bytes = [0u8; 24];
+    getrandom::fill(&mut bytes).expect("OS randomness is required for the bridge token");
+    bytes.iter().map(|byte| format!("{byte:02x}")).collect()
+}
+
 fn sidecar_filename() -> &'static str {
     if cfg!(target_os = "windows") {
         "agentic-cli-sidecar.exe"
@@ -1199,6 +1205,24 @@ mod tests {
     fn has_arg_pair(args: &[String], key: &str, value: &str) -> bool {
         args.windows(2)
             .any(|pair| pair[0] == key && pair[1] == value)
+    }
+
+    #[test]
+    fn default_config_generates_private_bridge_token() {
+        let config = default_config();
+        assert_ne!(config.bridge_token, LEGACY_BRIDGE_TOKEN);
+        assert_eq!(config.bridge_token.len(), 48);
+    }
+
+    #[test]
+    fn normalize_config_rotates_legacy_bridge_token() {
+        let mut config = fixture_config();
+        config.bridge_token = LEGACY_BRIDGE_TOKEN.into();
+
+        let normalized = normalize_config(config);
+
+        assert_ne!(normalized.bridge_token, LEGACY_BRIDGE_TOKEN);
+        assert_eq!(normalized.bridge_token.len(), 48);
     }
 
     #[test]

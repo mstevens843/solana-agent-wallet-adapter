@@ -238,6 +238,53 @@ describe('render web cloud wallet auth', () => {
     });
   });
 
+  it('sets browser hardening headers on app responses', async () => {
+    await withServer(async (port) => {
+      const response = await requestRaw(port, '/app/', 'GET');
+
+      expect(response.status).toBe(200);
+      expect(response.headers['x-content-type-options']).toBe('nosniff');
+      expect(response.headers['x-frame-options']).toBe('DENY');
+      expect(response.headers['referrer-policy']).toBe('no-referrer');
+      expect(String(response.headers['permissions-policy'])).toContain('camera=()');
+      expect(String(response.headers['content-security-policy'])).toContain("frame-ancestors 'none'");
+    });
+  });
+
+  it('rejects state-changing JSON APIs without a JSON content type', async () => {
+    await withServer(async (port) => {
+      const wallet = createTestWallet();
+      const response = await requestRaw(port, '/api/auth/nonce', 'POST', JSON.stringify({
+        walletAddress: wallet.walletAddress,
+      }), {
+        'content-type': 'text/plain',
+      });
+
+      expect(response.status).toBe(415);
+      expect(String(response.body.error)).toContain('application/json');
+    });
+  });
+
+  it('requires same-origin referer for production state-changing requests without Origin', async () => {
+    await withEnv({ RENDER: 'true' }, async () => {
+      await withServer(async (port) => {
+        const wallet = createTestWallet();
+        const missingReferer = await postJson(port, '/api/auth/nonce', {
+          walletAddress: wallet.walletAddress,
+        });
+        expect(missingReferer.status).toBe(403);
+        expect(String(missingReferer.body.error)).toContain('same-origin');
+
+        const withReferer = await postJson(port, '/api/auth/nonce', {
+          walletAddress: wallet.walletAddress,
+        }, {
+          referer: `http://127.0.0.1:${port}/app/`,
+        });
+        expect(withReferer.status).toBe(200);
+      });
+    });
+  });
+
   it('rate limits wallet auth endpoints', async () => {
     const authRateLimiter: AuthRateLimiter = {
       allow: () => false,
@@ -307,8 +354,12 @@ describe('render web cloud wallet auth', () => {
     await withEnv({ RENDER: 'true' }, async () => {
       await withServer(async (port) => {
         const wallet = createTestWallet();
-        const nonce = await createNonce(port, wallet);
-        const verify = await postJson(port, '/api/auth/verify-wallet', signedVerifyBody(wallet, nonce.body));
+        const headers = { referer: `http://127.0.0.1:${port}/app/` };
+        const nonce = await postJson(port, '/api/auth/nonce', {
+          walletAddress: wallet.walletAddress,
+        }, headers);
+        expect(nonce.status).toBe(200);
+        const verify = await postJson(port, '/api/auth/verify-wallet', signedVerifyBody(wallet, nonce.body), headers);
 
         expect(verify.status).toBe(200);
         expect(firstSetCookie(verify)).toContain('Secure');
@@ -598,6 +649,51 @@ function postJson(
 
 function getJson(port: number, path: string, headers: Record<string, string> = {}): Promise<JsonResponse> {
   return requestJson(port, path, 'GET', undefined, headers);
+}
+
+function requestRaw(
+  port: number,
+  path: string,
+  method: 'GET' | 'POST',
+  body?: string,
+  headers: Record<string, string> = {},
+): Promise<JsonResponse> {
+  return new Promise((resolve, reject) => {
+    const req = httpRequest({
+      hostname: '127.0.0.1',
+      port,
+      path,
+      method,
+      headers: {
+        ...headers,
+        ...(body === undefined
+          ? {}
+          : {
+              'content-length': Buffer.byteLength(body),
+            }),
+      },
+    }, (res) => {
+      const chunks: Buffer[] = [];
+      res.on('data', (chunk) => chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk)));
+      res.on('error', reject);
+      res.on('end', () => {
+        const raw = Buffer.concat(chunks).toString('utf8');
+        let parsed: Record<string, unknown> = {};
+        try {
+          parsed = raw ? JSON.parse(raw) as Record<string, unknown> : {};
+        } catch {
+          parsed = { raw };
+        }
+        resolve({
+          status: res.statusCode ?? 0,
+          body: parsed,
+          headers: res.headers,
+        });
+      });
+    });
+    req.on('error', reject);
+    req.end(body);
+  });
 }
 
 function requestJson(

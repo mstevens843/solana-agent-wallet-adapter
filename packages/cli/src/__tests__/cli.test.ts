@@ -83,6 +83,8 @@ test('bridge start self-spawns a reachable bridge serve process', async () => {
     configPath,
     '--bridge-url',
     bridgeUrl,
+    '--token',
+    'local-agent-wallet',
     'bridge',
     'start',
     '--json',

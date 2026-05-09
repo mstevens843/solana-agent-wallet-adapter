@@ -1,4 +1,6 @@
 #!/usr/bin/env node
+import { randomBytes } from 'node:crypto';
+
 import { createBridgeServer } from '../bridgeServer.js';
 import { loadConfig } from '../config.js';
 import { loadDotEnv } from '../env.js';
@@ -11,7 +13,7 @@ async function main(): Promise<void> {
   const args = parseArgs(process.argv.slice(2));
   loadDotEnv(args.env);
   const config = await loadConfig(args.config);
-  const token = args.token ?? process.env.BRIDGE_TOKEN ?? 'local-agent-wallet';
+  const token = args.token ?? process.env.BRIDGE_TOKEN ?? randomBytes(24).toString('base64url');
   const preparedActionsPath =
     args.preparedActions ?? process.env.AGENT_WALLET_PREPARED_ACTIONS ?? defaultPreparedActionStorePath();
   const labArtifactsPath =

@@ -89,7 +89,7 @@ async function handleRequest(
   aiPlanner: BridgeAiPlanner,
 ): Promise<void> {
   const url = new URL(req.url ?? '/', `http://${req.headers.host ?? '127.0.0.1'}`);
-  setCors(res);
+  setCors(req, res);
   if (req.method === 'OPTIONS') {
     res.statusCode = 204;
     res.end();
@@ -517,10 +517,7 @@ function isAuthorized(req: IncomingMessage, url: URL, backend: LocalBridgeBacken
     ? req.headers['x-agent-wallet-token'][0]
     : req.headers['x-agent-wallet-token'];
   const token = url.searchParams.get('token') ?? headerToken;
-  return (
-    token === backend.token ||
-    (backend.token === 'local-agent-wallet' && token === 'solana-agent-wallet')
-  );
+  return token === backend.token;
 }
 
 function requireActionService(actionService: AgentWalletActionService | undefined): AgentWalletActionService {
@@ -580,12 +577,57 @@ async function readJson(req: IncomingMessage): Promise<unknown> {
   return raw ? JSON.parse(raw) : {};
 }
 
-function setCors(res: ServerResponse): void {
-  res.setHeader('access-control-allow-origin', '*');
+function setCors(req: IncomingMessage, res: ServerResponse): void {
+  const origin = headerValue(req.headers.origin);
+  const allowedOrigin = allowedBridgeOrigin(origin);
+  if (allowedOrigin) {
+    res.setHeader('access-control-allow-origin', allowedOrigin);
+  }
   res.setHeader('access-control-allow-methods', 'GET,POST,OPTIONS');
   res.setHeader('access-control-allow-headers', 'content-type,x-agent-wallet-token');
   res.setHeader('access-control-allow-private-network', 'true');
-  res.setHeader('vary', 'Access-Control-Request-Private-Network');
+  res.setHeader('vary', 'Origin, Access-Control-Request-Private-Network');
+}
+
+function allowedBridgeOrigin(origin: string | undefined): string | undefined {
+  if (!origin) return undefined;
+  let parsed: URL;
+  try {
+    parsed = new URL(origin);
+  } catch {
+    return undefined;
+  }
+  const host = parsed.hostname.toLowerCase();
+  if (isLoopbackHost(host)) return origin;
+  const allowed = bridgeAllowedOrigins();
+  return allowed.has(origin) ? origin : undefined;
+}
+
+function bridgeAllowedOrigins(): Set<string> {
+  const configured = (process.env.BRIDGE_ALLOWED_ORIGINS ?? '')
+    .split(',')
+    .map((entry) => entry.trim())
+    .filter(Boolean);
+  return new Set([
+    'https://agentic-signer.com',
+    'https://www.agentic-signer.com',
+    'https://agenticwalletadapter.com',
+    'https://www.agenticwalletadapter.com',
+    ...configured,
+  ]);
+}
+
+function isLoopbackHost(hostname: string): boolean {
+  return hostname === 'localhost' ||
+    hostname === '127.0.0.1' ||
+    hostname === '::1' ||
+    hostname === '[::1]';
+}
+
+function headerValue(value: string | string[] | undefined): string | undefined {
+  const header = Array.isArray(value) ? value[0] : value;
+  const trimmed = header?.trim();
+  return trimmed || undefined;
 }
 
 function writeJson(res: ServerResponse, status: number, payload: unknown): void {

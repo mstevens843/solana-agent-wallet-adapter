@@ -262,6 +262,7 @@ class MainActivity : ComponentActivity() {
         fun mwaRequest(requestId: String, method: String, payloadJson: String) {
             activity.lifecycleScope.launch {
                 try {
+                    validateNativeRequest(requestId, method, payloadJson)
                     AgentMwaLog.info(
                         "MainActivity",
                         "mwaRequest",
@@ -297,6 +298,18 @@ class MainActivity : ComponentActivity() {
                     )
                     activity.rejectMwaRequest(requestId, err)
                 }
+            }
+        }
+
+        private fun validateNativeRequest(requestId: String, method: String, payloadJson: String) {
+            if (!REQUEST_ID_PATTERN.matches(requestId)) {
+                throw MwaOperationException("INVALID_REQUEST", "Invalid Android MWA bridge request id.")
+            }
+            if (method !in ALLOWED_METHODS) {
+                throw MwaOperationException("UNSUPPORTED_METHOD", "Unsupported Android MWA bridge method: $method")
+            }
+            if (payloadJson.length > MAX_PAYLOAD_CHARS) {
+                throw MwaOperationException("INVALID_REQUEST", "Android MWA bridge payload is too large.")
             }
         }
 
@@ -437,6 +450,22 @@ class MainActivity : ComponentActivity() {
                 "payloadSha256_8" to sha256First8(request.payloadData.toByteArray(Charsets.UTF_8)),
                 "payloadData" to if (BuildConfig.DEBUG) request.payloadData else "[debug-only]",
             )
+
+        private companion object {
+            private val REQUEST_ID_PATTERN = Regex("^[A-Za-z0-9_.:-]{1,160}$")
+            private val ALLOWED_METHODS = setOf(
+                "status",
+                "connect",
+                "reconnectLatest",
+                "capabilities",
+                "sign",
+                "disconnect",
+                "clearTransient",
+                "fullReset",
+                "clearAllAccounts",
+            )
+            private const val MAX_PAYLOAD_CHARS = 2_000_000
+        }
     }
 
     private class BundledAppPathHandler(private val context: Context) : WebViewAssetLoader.PathHandler {
