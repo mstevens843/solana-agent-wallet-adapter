@@ -11,6 +11,7 @@
     "build": "pnpm -F @solana-agent-wallet-adapter/workflow build && pnpm -F @solana-agent-wallet-adapter/mcp-server build && tsc -p tsconfig.json",
     "db:migrate": "node dist/cloud/cli.js migrate",
     "recurring:materialize": "node dist/cloud/cli.js materialize-due",
+    "notifications:deliver": "node dist/cloud/cli.js notifications-deliver",
     "start": "node dist/server.js",
     "typecheck": "pnpm -F @solana-agent-wallet-adapter/workflow build && tsc -p tsconfig.json --noEmit",
     "test": "pnpm -F @solana-agent-wallet-adapter/workflow build && vitest run"
@@ -18,6 +19,7 @@
   "dependencies": {
     "@solana-agent-wallet-adapter/mcp-server": "workspace:*",
     "@solana-agent-wallet-adapter/workflow": "workspace:*",
+    "@solana/web3.js": "^1.95.0",
     "pg": "^8.20.0"
   },
   "devDependencies": {

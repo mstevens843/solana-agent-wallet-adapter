@@ -5,6 +5,24 @@ export interface JsonObject {
   [key: string]: JsonValue;
 }
 
+export {
+  clampedMonthlyDate,
+  exhaustionReason,
+  intervalKey,
+  latestDueOccurrence,
+  lifetimeSpendEstimate,
+  monthlyKey,
+  multiplyDecimalString,
+  nextFutureOccurrence,
+  parseLocalTime,
+  previewUpcoming,
+  recurringStartAt,
+} from './cadence.js';
+export type { CadenceFields, ExhaustionReason, LifetimeSpend, OccurrenceInfo } from './cadence.js';
+
+export { formatOccurrenceStatus, formatScheduleStatus } from './labels.js';
+export type { ApprovalSummaryHint, LabelTone, StatusLabel } from './labels.js';
+
 export const WORKFLOW_MODES = ['agentic_cloud', 'browser_fallback', 'local_bridge'] as const;
 export type WorkflowMode = (typeof WORKFLOW_MODES)[number];
 
@@ -55,6 +73,21 @@ export type ApprovalDecision = Extract<ApprovalStatus, 'approved' | 'rejected' |
 export const TX_STATUSES = ['pending', 'confirmed', 'failed'] as const;
 export type TxStatus = (typeof TX_STATUSES)[number];
 
+export const TRANSACTION_FINALIZATION_STATUSES = [
+  'not_started',
+  'prepared',
+  'preview_ready',
+  'simulation_passed',
+  'wallet_pending',
+  'submitted',
+  'confirmed',
+  'failed',
+  'aborted',
+  'expired',
+  'blocked',
+] as const;
+export type TransactionFinalizationStatus = (typeof TRANSACTION_FINALIZATION_STATUSES)[number];
+
 export const RECURRING_CADENCES = ['weekly', 'monthly', 'interval_days', 'interval_hours', 'interval_minutes'] as const;
 export type RecurringCadence = (typeof RECURRING_CADENCES)[number];
 
@@ -90,6 +123,95 @@ export type EvidenceReceiptKind = (typeof EVIDENCE_RECEIPT_KINDS)[number];
 
 export const AUDIT_ACTORS = ['user', 'wallet', 'server', 'system'] as const;
 export type AuditActor = (typeof AUDIT_ACTORS)[number];
+
+export const AI_GUARDRAIL_VERDICTS = ['pass', 'warn', 'block'] as const;
+export type AiGuardrailVerdict = (typeof AI_GUARDRAIL_VERDICTS)[number];
+export type AiGuardrailViolationSeverity = 'warn' | 'block';
+
+export type FinalizationRequirement =
+  | 'none'
+  | 'wallet_decision_proof'
+  | 'transaction_preview';
+
+export const FINALIZATION_REQUIREMENTS = ['none', 'wallet_decision_proof', 'transaction_preview'] as const;
+
+export const EXECUTION_MODES = ['proof_only', 'wallet_execute', 'unsupported'] as const;
+export type ExecutionMode = (typeof EXECUTION_MODES)[number];
+
+export interface FinalizationSupport {
+  required: boolean;
+  supported: boolean;
+  reason?: string;
+}
+
+export interface AiGuardrailViolation {
+  code: string;
+  severity: AiGuardrailViolationSeverity;
+  message: string;
+  path?: string;
+}
+
+export interface PlanConstraintSnapshot {
+  source: string;
+  category: string;
+  actionType: string;
+  templateId: string;
+  templateTitle: string;
+  cluster: string;
+  parameters: Record<string, string>;
+  fields: PlanDraftField[];
+  userNotes?: string;
+}
+
+export interface AiGuardrailReport {
+  verdict: AiGuardrailVerdict;
+  source: string;
+  actionType: string;
+  finalizationRequirement: FinalizationRequirement;
+  constraintFingerprint: string;
+  constraintHash?: string;
+  violations: AiGuardrailViolation[];
+  summary: string;
+}
+
+export interface FinalizationPreviewRecord {
+  id: string;
+  approvalRequestId: string;
+  walletAddress: string;
+  cluster: WorkflowCluster;
+  actionType: string;
+  status: 'ready' | 'blocked' | 'expired';
+  createdAt: string;
+  expiresAt: string;
+  constraintFingerprint: string;
+  transactionFingerprint?: string;
+  transactionBase64?: string;
+  simulationSummary?: JsonObject;
+  quoteSummary?: JsonObject;
+  walletActionRows: Array<[string, string]>;
+  guardrailReport?: AiGuardrailReport;
+  metadata?: JsonObject;
+}
+
+export interface FinalizationReceipt {
+  previewId: string;
+  approvalRequestId: string;
+  walletAddress: string;
+  cluster: WorkflowCluster;
+  actionType: string;
+  status: TxStatus | 'signed';
+  constraintFingerprint: string;
+  transactionFingerprint?: string;
+  signature?: string;
+  txid?: string;
+  explorerUrl?: string;
+  simulationSummary?: JsonObject;
+  quoteSummary?: JsonObject;
+  walletActionRows: Array<[string, string]>;
+  guardrailReport?: AiGuardrailReport;
+  createdAt: string;
+  metadata?: JsonObject;
+}
 
 export interface WorkflowCapabilities {
   mode: WorkflowMode;
@@ -195,6 +317,9 @@ export interface ApprovalRequestRecord {
   error?: string;
   note?: string;
   decisionNote?: string;
+  finalizationRequirement?: FinalizationRequirement;
+  executionMode?: ExecutionMode;
+  finalizationSupport?: FinalizationSupport;
   proofSignature?: string;
   decisionProofSignature?: string;
   decisionProofMessage?: string;
@@ -202,6 +327,81 @@ export interface ApprovalRequestRecord {
   archived?: boolean;
   archivedAt?: string;
   riskMetadata?: JsonObject;
+  metadata?: JsonObject;
+}
+
+export interface WalletActionPreview {
+  kind: string;
+  walletAddress: string;
+  cluster: WorkflowCluster;
+  summary: string;
+  sender?: string;
+  recipient?: string;
+  amount?: string;
+  token?: string;
+  mint?: string;
+  feePayer?: string;
+  estimatedFeeLamports?: string;
+  memo?: string;
+  instructionSummary: string[];
+  touchedPrograms: string[];
+  metadata?: JsonObject;
+}
+
+export interface QuoteSnapshot {
+  provider: string;
+  fetchedAt: string;
+  requestId?: string;
+  inputToken?: string;
+  inputMint?: string;
+  inputAmount?: string;
+  outputToken?: string;
+  outputMint?: string;
+  expectedOutputAmount?: string;
+  minimumOutputAmount?: string;
+  slippageBps?: number;
+  priceImpact?: string;
+  routeLabel?: string;
+  quoteHash: string;
+  metadata?: JsonObject;
+}
+
+export interface SimulationSnapshot {
+  status: 'ok' | 'failed' | 'unsupported';
+  simulatedAt: string;
+  err?: JsonValue;
+  logs: string[];
+  unitsConsumed?: number;
+  simulationHash: string;
+  metadata?: JsonObject;
+}
+
+export interface TransactionFinalizationRecord {
+  id: string;
+  walletAddress: string;
+  approvalRequestId: string;
+  planDraftId?: string;
+  kind: string;
+  status: TransactionFinalizationStatus;
+  cluster: WorkflowCluster;
+  walletAction: WalletActionPreview;
+  transactionHash: string;
+  messageHash?: string;
+  quote?: QuoteSnapshot;
+  simulation?: SimulationSnapshot;
+  txid?: string;
+  txStatus?: TxStatus;
+  confirmationStatus?: string;
+  explorerUrl?: string;
+  error?: string;
+  createdAt: string;
+  updatedAt: string;
+  expiresAt: string;
+  submittedAt?: string;
+  confirmedAt?: string;
+  recurringScheduleId?: string;
+  recurringOccurrenceId?: string;
+  occurrenceKey?: string;
   metadata?: JsonObject;
 }
 
@@ -230,8 +430,16 @@ export interface RecurringScheduleRecord {
   slippageBps?: number;
   memo?: string;
   note?: string;
+  expiresAt?: string;
+  notifications?: RecurringNotificationsConfig;
   riskMetadata?: JsonObject;
   metadata?: JsonObject;
+}
+
+export interface RecurringNotificationsConfig {
+  inApp?: boolean;
+  webhookUrl?: string;
+  webhookSecret?: string;
 }
 
 export interface RecurringOccurrenceRecord {
@@ -266,6 +474,13 @@ export interface CompletedRecord {
   signature?: string;
   proofSignature?: string;
   txid?: string;
+  txStatus?: TxStatus;
+  confirmationStatus?: string;
+  finalizationId?: string;
+  transactionHash?: string;
+  messageHash?: string;
+  quoteHash?: string;
+  simulationHash?: string;
   explorerUrl?: string;
   planId?: string;
   planDraftId?: string;
@@ -433,6 +648,15 @@ export interface ApprovalDecisionInput {
   txid?: string;
   explorerUrl?: string;
   error?: string;
+  txStatus?: TxStatus;
+  confirmationStatus?: string;
+  finalizationId?: string;
+  transactionHash?: string;
+  messageHash?: string;
+  quoteHash?: string;
+  simulationHash?: string;
+  finalizationStatus?: TransactionFinalizationStatus;
+  metadata?: JsonObject;
 }
 
 export interface ApprovalListResponse {
@@ -456,6 +680,8 @@ export interface CreateRecurringRequest {
   slippageBps?: number;
   memo?: string;
   note?: string;
+  expiresAt?: string;
+  notifications?: RecurringNotificationsConfig;
   riskMetadata?: JsonObject;
   metadata?: JsonObject;
 }
@@ -478,6 +704,8 @@ export interface UpdateRecurringRequest {
   slippageBps?: number;
   memo?: string;
   note?: string;
+  expiresAt?: string;
+  notifications?: RecurringNotificationsConfig;
   riskMetadata?: JsonObject;
   metadata?: JsonObject;
 }
@@ -501,6 +729,28 @@ export interface MaterializeResponse {
 export interface CompletedListResponse {
   completed: CompletedRecord[];
 }
+
+export interface TransactionFinalizationListResponse {
+  finalizations: TransactionFinalizationRecord[];
+}
+
+export interface CreateTransactionFinalizationPreviewRequest {
+  status?: Extract<TransactionFinalizationStatus, 'prepared' | 'preview_ready' | 'simulation_passed' | 'blocked' | 'expired'>;
+  walletAction: WalletActionPreview;
+  transactionHash: string;
+  messageHash?: string;
+  quote?: QuoteSnapshot;
+  simulation?: SimulationSnapshot;
+  expiresAt?: string;
+  metadata?: JsonObject;
+}
+export type CreateTransactionFinalizationPreviewInput = CreateTransactionFinalizationPreviewRequest;
+
+export interface RecordTransactionFinalizationResultRequest extends ApprovalDecisionInput {
+  finalizationId: string;
+  finalizationStatus?: Extract<TransactionFinalizationStatus, 'wallet_pending' | 'submitted' | 'confirmed' | 'failed' | 'aborted' | 'expired' | 'blocked'>;
+}
+export type RecordTransactionFinalizationResultInput = RecordTransactionFinalizationResultRequest;
 
 export interface CreateEvidenceReceiptRequest {
   title: string;
@@ -538,6 +788,224 @@ export class RecurringValidationError extends WorkflowValidationError {
     super(code, message, path);
     this.name = 'RecurringValidationError';
   }
+}
+
+export function evaluatePlanGuardrails(input: {
+  plan?: JsonObject | Record<string, unknown>;
+  source?: string;
+  category?: string;
+  actionType?: string;
+  templateId?: string;
+  templateTitle?: string;
+  cluster?: string;
+  parameters?: Record<string, string>;
+  fields?: PlanDraftField[];
+  userNotes?: string;
+  prompt?: string;
+}): AiGuardrailReport {
+  const plan = isPlainRecord(input.plan) ? input.plan : {};
+  const parameters = normalizeStringRecord(input.parameters ?? valueRecord(plan.parameters));
+  const fields = normalizePlanFields(input.fields ?? plan.fields);
+  const source = stringValue(input.source) ?? stringValue(plan.source) ?? 'template';
+  const category = stringValue(input.category) ?? stringValue(plan.category) ?? 'custom';
+  const actionType = stringValue(input.actionType) ?? stringValue(plan.actionType) ?? 'manual_review';
+  const templateId = stringValue(input.templateId) ?? stringValue(plan.templateId) ?? '';
+  const templateTitle = stringValue(input.templateTitle) ?? stringValue(plan.templateTitle) ?? '';
+  const cluster = stringValue(input.cluster) ?? stringValue(plan.cluster) ?? 'devnet';
+  const userNotes = stringValue(input.userNotes) ?? stringValue(plan.userNotes) ?? '';
+  const prompt = stringValue(input.prompt) ?? stringValue(plan.prompt) ?? '';
+  const violations: AiGuardrailViolation[] = [];
+
+  collectForbiddenGuardrailViolations({
+    value: {
+      ...plan,
+      ...(input.prompt !== undefined ? { prompt } : {}),
+      ...(input.userNotes !== undefined ? { userNotes } : {}),
+    },
+    path: '$.plan',
+    violations,
+  });
+
+  collectUnsafeAiClaimViolations({
+    value: {
+      intent: plan.intent,
+      route: plan.route,
+      risk: plan.risk,
+      approval: plan.approval,
+      safeguards: plan.safeguards,
+      prompt,
+      userNotes,
+      parameters,
+      fields,
+    },
+    path: '$.plan',
+    source,
+    violations,
+  });
+
+  if (isQueueableWorkflowAction(actionType)) {
+    collectMissingConstraintViolations(actionType, parameters, violations);
+  }
+
+  if (source === 'ai') {
+    collectAiWarningViolations(plan, actionType, parameters, violations);
+  }
+
+  const finalizationRequirement = finalizationRequirementForAction(actionType);
+  const constraintSnapshot = planConstraintSnapshot({
+    source,
+    category,
+    actionType,
+    templateId,
+    templateTitle,
+    cluster,
+    parameters,
+    fields,
+    userNotes,
+  });
+  const constraintFingerprint = stableWorkflowFingerprint(constraintSnapshot);
+  const constraintHash = stableWorkflowHash(constraintSnapshot);
+  const verdict: AiGuardrailVerdict = violations.some((violation) => violation.severity === 'block')
+    ? 'block'
+    : violations.some((violation) => violation.severity === 'warn')
+      ? 'warn'
+      : 'pass';
+
+  return {
+    verdict,
+    source,
+    actionType,
+    finalizationRequirement,
+    constraintFingerprint,
+    constraintHash,
+    violations,
+    summary: guardrailSummary(verdict, finalizationRequirement, violations),
+  };
+}
+
+export function assertPlanGuardrails(
+  input: Parameters<typeof evaluatePlanGuardrails>[0],
+): AiGuardrailReport {
+  const report = evaluatePlanGuardrails(input);
+  if (report.verdict === 'block') {
+    const first = report.violations.find((violation) => violation.severity === 'block');
+    throw new WorkflowValidationError(
+      'ai_guardrail_blocked',
+      first?.message ?? 'Plan is blocked by Agentic AI guardrails.',
+      first?.path,
+    );
+  }
+  return report;
+}
+
+export function planConstraintSnapshot(input: {
+  source?: string;
+  category?: string;
+  actionType?: string;
+  templateId?: string;
+  templateTitle?: string;
+  cluster?: string;
+  parameters?: Record<string, string>;
+  fields?: PlanDraftField[];
+  userNotes?: string;
+}): PlanConstraintSnapshot {
+  return {
+    source: input.source ?? 'template',
+    category: input.category ?? 'custom',
+    actionType: input.actionType ?? 'manual_review',
+    templateId: input.templateId ?? '',
+    templateTitle: input.templateTitle ?? '',
+    cluster: input.cluster ?? 'devnet',
+    parameters: normalizeStringRecord(input.parameters),
+    fields: normalizePlanFields(input.fields),
+    ...(input.userNotes ? { userNotes: input.userNotes } : {}),
+  };
+}
+
+export function stableWorkflowFingerprint(value: unknown): string {
+  const serialized = stableJson(value);
+  let hash = 0x811c9dc5;
+  for (let index = 0; index < serialized.length; index += 1) {
+    hash ^= serialized.charCodeAt(index);
+    hash = Math.imul(hash, 0x01000193);
+  }
+  return `wf_${(hash >>> 0).toString(16).padStart(8, '0')}`;
+}
+
+export function stableWorkflowHash(value: unknown): string {
+  return sha256Hex(stableJson(value));
+}
+
+export function isQueueableWorkflowAction(actionType: string): boolean {
+  return actionType === 'transfer_sol' ||
+    actionType === 'transfer_spl' ||
+    actionType === 'swap' ||
+    actionType === 'recurring_payment';
+}
+
+export function finalizationRequirementForAction(actionType: string): FinalizationRequirement {
+  if (
+    actionType === 'transfer_sol' ||
+    actionType === 'transfer_spl' ||
+    actionType === 'swap'
+  ) {
+    return 'transaction_preview';
+  }
+  if (actionType === 'recurring_payment') {
+    return 'wallet_decision_proof';
+  }
+  if (actionType === 'manual_review' || actionType === 'custom_transaction') {
+    return 'wallet_decision_proof';
+  }
+  return 'none';
+}
+
+export function requiresTransactionFinalization(kind: string): boolean {
+  return finalizationRequirementForAction(kind) === 'transaction_preview';
+}
+
+export function workflowDecisionProofMessage(input: {
+  approval: Pick<ApprovalRequestRecord, 'id' | 'walletAddress' | 'cluster' | 'summary' | 'kind' | 'params'>;
+  decision: Extract<ApprovalDecision, 'approved' | 'rejected'>;
+}): string {
+  return [
+    'Agentic Cloud workflow decision',
+    `Decision: ${input.decision}`,
+    `Approval: ${input.approval.id}`,
+    `Wallet: ${input.approval.walletAddress}`,
+    `Cluster: ${input.approval.cluster ?? 'devnet'}`,
+    `Summary: ${input.approval.summary}`,
+    `Kind: ${input.approval.kind}`,
+    `Params: ${stableJson(input.approval.params)}`,
+    'This signature records a cloud workflow decision only. It does not submit a transaction or grant spending authority.',
+  ].join('\n');
+}
+
+export function workflowFinalizationProofMessage(input: {
+  approval: Pick<ApprovalRequestRecord, 'id' | 'walletAddress' | 'cluster' | 'summary' | 'kind' | 'params'>;
+  finalization: Pick<TransactionFinalizationRecord, 'id' | 'transactionHash' | 'messageHash' | 'quote' | 'simulation' | 'walletAction' | 'metadata'>;
+}): string {
+  const quoteHash = input.finalization.quote?.quoteHash ?? '';
+  const simulationHash = input.finalization.simulation?.simulationHash ?? '';
+  const constraintHash = stringFromJson(input.finalization.metadata, 'constraintHash') ?? '';
+  return [
+    'Agentic Cloud transaction finalization',
+    'Decision: approved',
+    `Approval: ${input.approval.id}`,
+    `Finalization: ${input.finalization.id}`,
+    `Wallet: ${input.approval.walletAddress}`,
+    `Cluster: ${input.approval.cluster ?? 'devnet'}`,
+    `Summary: ${input.approval.summary}`,
+    `Kind: ${input.approval.kind}`,
+    `Params: ${stableJson(input.approval.params)}`,
+    `Transaction hash: ${input.finalization.transactionHash}`,
+    `Message hash: ${input.finalization.messageHash ?? ''}`,
+    `Quote hash: ${quoteHash}`,
+    `Simulation hash: ${simulationHash}`,
+    `Constraint hash: ${constraintHash}`,
+    `Wallet action: ${stableJson(input.finalization.walletAction)}`,
+    'This signature approves only this reviewed transaction boundary. It does not grant custody, delegated authority, or unlimited signing rights.',
+  ].join('\n');
 }
 
 export function isTerminalApprovalStatus(status: ApprovalStatus): boolean {
@@ -584,8 +1052,38 @@ export function completedRecordFromApproval(
     : firstStringParam(approval.params, ['token', 'inputToken', 'outputToken']));
   const proofSignature = approval.proofSignature ?? approval.decisionProofSignature;
   const planDraftId = approval.planDraftId ?? approval.planId;
+  const finalization = jsonObjectFromJson(approval.metadata, 'finalization');
+  const finalizationMetadata = jsonObjectFromJson(finalization, 'metadata');
+  const finalizationId = stringFromJson(finalization, 'id') ?? stringFromJson(finalization, 'finalizationId');
+  const transactionHash = stringFromJson(finalization, 'transactionHash');
+  const messageHash = stringFromJson(finalization, 'messageHash');
+  const quote = jsonObjectFromJson(finalization, 'quote');
+  const simulation = jsonObjectFromJson(finalization, 'simulation');
+  const quoteHash = stringFromJson(finalization, 'quoteHash') ?? stringFromJson(quote, 'quoteHash');
+  const simulationHash = stringFromJson(finalization, 'simulationHash') ?? stringFromJson(simulation, 'simulationHash');
+  const confirmationStatus = stringFromJson(finalization, 'confirmationStatus');
+  const txStatus = workflowTxStatus(stringFromJson(finalization, 'txStatus') ?? approval.txStatus);
+  const aiGuardrails = jsonObjectFromJson(finalizationMetadata, 'aiGuardrails') ?? jsonObjectFromJson(approval.riskMetadata, 'aiGuardrails');
+  const guardrailVerdict = stringFromJson(finalizationMetadata, 'guardrailVerdict') ?? stringFromJson(approval.riskMetadata, 'guardrailVerdict');
+  const finalizationRequirement = stringFromJson(finalizationMetadata, 'finalizationRequirement') ??
+    stringFromJson(approval.riskMetadata, 'finalizationRequirement');
+  const constraintFingerprint = stringFromJson(finalizationMetadata, 'constraintFingerprint') ??
+    stringFromJson(approval.riskMetadata, 'constraintFingerprint');
+  const constraintHash = stringFromJson(finalizationMetadata, 'constraintHash') ?? stringFromJson(approval.riskMetadata, 'constraintHash');
+  const receiptMetadata: JsonObject = {
+    ...(finalization ? { finalization } : {}),
+    ...(aiGuardrails ? { aiGuardrails } : {}),
+    ...(guardrailVerdict ? { guardrailVerdict } : {}),
+    ...(finalizationRequirement ? { finalizationRequirement } : {}),
+    ...(constraintFingerprint ? { constraintFingerprint } : {}),
+    ...(constraintHash ? { constraintHash } : {}),
+    ...(approval.decisionProofMessage ? { decisionProofMessage: approval.decisionProofMessage } : {}),
+    ...(approval.decisionProofVerified !== undefined ? { decisionProofVerified: approval.decisionProofVerified } : {}),
+  };
   const copyPayload: JsonObject = {
-    type: recurring ? 'completed_recurring_occurrence' : 'completed_one_time_approval',
+    type: finalizationId
+      ? recurring ? 'completed_recurring_transaction' : 'completed_one_time_transaction'
+      : recurring ? 'completed_recurring_occurrence' : 'completed_one_time_approval',
     approvalRequestId: approval.id,
     status: approval.status,
     summary: approval.summary,
@@ -596,6 +1094,17 @@ export function completedRecordFromApproval(
     ...(approval.recurringOccurrenceId ? { recurringOccurrenceId: approval.recurringOccurrenceId } : {}),
     ...(approval.occurrenceKey ? { occurrenceKey: approval.occurrenceKey } : {}),
     ...(approval.txid ? { txid: approval.txid } : {}),
+    ...(txStatus ? { txStatus } : {}),
+    ...(confirmationStatus ? { confirmationStatus } : {}),
+    ...(finalizationId ? { finalizationId } : {}),
+    ...(transactionHash ? { transactionHash } : {}),
+    ...(messageHash ? { messageHash } : {}),
+    ...(quoteHash ? { quoteHash } : {}),
+    ...(simulationHash ? { simulationHash } : {}),
+    ...(guardrailVerdict ? { guardrailVerdict } : {}),
+    ...(finalizationRequirement ? { finalizationRequirement } : {}),
+    ...(constraintFingerprint ? { constraintFingerprint } : {}),
+    ...(constraintHash ? { constraintHash } : {}),
     ...(proofSignature ? { proofSignature } : {}),
     ...(approval.decisionProofMessage ? { decisionProofMessage: approval.decisionProofMessage } : {}),
     ...(approval.decisionProofVerified !== undefined ? { decisionProofVerified: approval.decisionProofVerified } : {}),
@@ -615,13 +1124,15 @@ export function completedRecordFromApproval(
     ...(token !== undefined && { token }),
     ...(recipient !== undefined && { recipient }),
     ...(proofSignature !== undefined && { proofSignature, signature: proofSignature }),
-    ...(approval.decisionProofMessage !== undefined && {
-      metadata: {
-        decisionProofMessage: approval.decisionProofMessage,
-        ...(approval.decisionProofVerified !== undefined && { decisionProofVerified: approval.decisionProofVerified }),
-      },
-    }),
+    ...(Object.keys(receiptMetadata).length ? { metadata: receiptMetadata } : {}),
     ...(approval.txid !== undefined && { txid: approval.txid }),
+    ...(txStatus !== undefined && { txStatus }),
+    ...(confirmationStatus !== undefined && { confirmationStatus }),
+    ...(finalizationId !== undefined && { finalizationId }),
+    ...(transactionHash !== undefined && { transactionHash }),
+    ...(messageHash !== undefined && { messageHash }),
+    ...(quoteHash !== undefined && { quoteHash }),
+    ...(simulationHash !== undefined && { simulationHash }),
     ...(approval.explorerUrl !== undefined
       ? { explorerUrl: approval.explorerUrl }
       : approval.txid !== undefined && approval.cluster !== undefined
@@ -648,14 +1159,32 @@ export function completedRecordFromApproval(
       ['Completed', options.completedAt],
       proofSignature ? ['Decision proof', proofSignature] : undefined,
       approval.decisionProofVerified !== undefined ? ['Decision proof verified', String(approval.decisionProofVerified)] : undefined,
+      finalizationId ? ['Finalization id', finalizationId] : undefined,
+      transactionHash ? ['Transaction hash', transactionHash] : undefined,
+      quoteHash ? ['Quote hash', quoteHash] : undefined,
+      simulationHash ? ['Simulation hash', simulationHash] : undefined,
+      guardrailVerdict ? ['Guardrail verdict', guardrailVerdict] : undefined,
+      finalizationRequirement ? ['Finalization requirement', finalizationRequirement] : undefined,
+      constraintHash ? ['Constraint hash', constraintHash] : undefined,
+      !constraintHash && constraintFingerprint ? ['Constraint fingerprint', constraintFingerprint] : undefined,
       approval.txid ? ['Transaction', approval.txid] : undefined,
+      txStatus ? ['Transaction status', txStatus] : undefined,
+      confirmationStatus ? ['Confirmation status', confirmationStatus] : undefined,
       approval.error ? ['Error', approval.error] : undefined,
     ]),
     payload: {
-      type: recurring ? 'recurring_occurrence' : 'one_time',
+      type: finalizationId
+        ? recurring ? 'recurring_transaction' : 'one_time_transaction'
+        : recurring ? 'recurring_occurrence' : 'one_time',
       approvalRequestId: approval.id,
       status: approval.status,
       params: approval.params,
+      ...(finalization ? { finalization } : {}),
+      ...(aiGuardrails ? { aiGuardrails } : {}),
+      ...(guardrailVerdict ? { guardrailVerdict } : {}),
+      ...(finalizationRequirement ? { finalizationRequirement } : {}),
+      ...(constraintFingerprint ? { constraintFingerprint } : {}),
+      ...(constraintHash ? { constraintHash } : {}),
     },
   };
 }
@@ -877,6 +1406,9 @@ export function parseApprovalRequestRecord(input: unknown, path = '$'): Approval
     ...optionalStringProp(record, 'error', path),
     ...optionalStringProp(record, 'note', path),
     ...optionalStringProp(record, 'decisionNote', path),
+    ...optionalEnumProp(record, 'finalizationRequirement', FINALIZATION_REQUIREMENTS, path),
+    ...optionalEnumProp(record, 'executionMode', EXECUTION_MODES, path),
+    ...optionalFinalizationSupportProp(record, 'finalizationSupport', path),
     ...optionalStringProp(record, 'proofSignature', path),
     ...optionalStringProp(record, 'decisionProofSignature', path),
     ...optionalStringProp(record, 'decisionProofMessage', path),
@@ -884,6 +1416,93 @@ export function parseApprovalRequestRecord(input: unknown, path = '$'): Approval
     ...optionalBooleanProp(record, 'archived', path),
     ...optionalStringProp(record, 'archivedAt', path),
     ...optionalJsonObjectProp(record, 'riskMetadata', path),
+    ...optionalJsonObjectProp(record, 'metadata', path),
+  };
+}
+
+export function parseWalletActionPreview(input: unknown, path = '$'): WalletActionPreview {
+  const record = expectRecord(input, path);
+  return {
+    kind: expectString(record, 'kind', path),
+    walletAddress: expectString(record, 'walletAddress', path),
+    cluster: expectEnum(record, 'cluster', WORKFLOW_CLUSTERS, path),
+    summary: expectString(record, 'summary', path),
+    ...optionalStringProp(record, 'sender', path),
+    ...optionalStringProp(record, 'recipient', path),
+    ...optionalStringProp(record, 'amount', path),
+    ...optionalStringProp(record, 'token', path),
+    ...optionalStringProp(record, 'mint', path),
+    ...optionalStringProp(record, 'feePayer', path),
+    ...optionalStringProp(record, 'estimatedFeeLamports', path),
+    ...optionalStringProp(record, 'memo', path),
+    instructionSummary: record.instructionSummary === undefined ? [] : expectStringArray(record, 'instructionSummary', path),
+    touchedPrograms: record.touchedPrograms === undefined ? [] : expectStringArray(record, 'touchedPrograms', path),
+    ...optionalJsonObjectProp(record, 'metadata', path),
+  };
+}
+
+export function parseQuoteSnapshot(input: unknown, path = '$'): QuoteSnapshot {
+  const record = expectRecord(input, path);
+  return {
+    provider: expectString(record, 'provider', path),
+    fetchedAt: expectString(record, 'fetchedAt', path),
+    ...optionalStringProp(record, 'requestId', path),
+    ...optionalStringProp(record, 'inputToken', path),
+    ...optionalStringProp(record, 'inputMint', path),
+    ...optionalStringProp(record, 'inputAmount', path),
+    ...optionalStringProp(record, 'outputToken', path),
+    ...optionalStringProp(record, 'outputMint', path),
+    ...optionalStringProp(record, 'expectedOutputAmount', path),
+    ...optionalStringProp(record, 'minimumOutputAmount', path),
+    ...optionalIntegerProp(record, 'slippageBps', path),
+    ...optionalStringProp(record, 'priceImpact', path),
+    ...optionalStringProp(record, 'routeLabel', path),
+    quoteHash: expectString(record, 'quoteHash', path),
+    ...optionalJsonObjectProp(record, 'metadata', path),
+  };
+}
+
+export function parseSimulationSnapshot(input: unknown, path = '$'): SimulationSnapshot {
+  const record = expectRecord(input, path);
+  return {
+    status: expectEnum(record, 'status', ['ok', 'failed', 'unsupported'] as const, path),
+    simulatedAt: expectString(record, 'simulatedAt', path),
+    ...(record.err === undefined ? {} : { err: parseJsonValue(record.err, `${path}.err`) }),
+    logs: record.logs === undefined ? [] : expectStringArray(record, 'logs', path),
+    ...optionalIntegerProp(record, 'unitsConsumed', path),
+    simulationHash: expectString(record, 'simulationHash', path),
+    ...optionalJsonObjectProp(record, 'metadata', path),
+  };
+}
+
+export function parseTransactionFinalizationRecord(input: unknown, path = '$'): TransactionFinalizationRecord {
+  const record = expectRecord(input, path);
+  return {
+    id: expectString(record, 'id', path),
+    walletAddress: expectString(record, 'walletAddress', path),
+    approvalRequestId: expectString(record, 'approvalRequestId', path),
+    ...optionalStringProp(record, 'planDraftId', path),
+    kind: expectString(record, 'kind', path),
+    status: expectEnum(record, 'status', TRANSACTION_FINALIZATION_STATUSES, path),
+    cluster: expectEnum(record, 'cluster', WORKFLOW_CLUSTERS, path),
+    walletAction: parseWalletActionPreview(expectRequired(record, 'walletAction', path), `${path}.walletAction`),
+    transactionHash: expectString(record, 'transactionHash', path),
+    ...optionalStringProp(record, 'messageHash', path),
+    ...(record.quote === undefined ? {} : { quote: parseQuoteSnapshot(record.quote, `${path}.quote`) }),
+    ...(record.simulation === undefined ? {} : { simulation: parseSimulationSnapshot(record.simulation, `${path}.simulation`) }),
+    ...optionalStringProp(record, 'txid', path),
+    ...optionalEnumProp(record, 'txStatus', TX_STATUSES, path),
+    ...optionalStringProp(record, 'confirmationStatus', path),
+    ...optionalStringProp(record, 'explorerUrl', path),
+    ...optionalStringProp(record, 'error', path),
+    createdAt: expectString(record, 'createdAt', path),
+    updatedAt: expectString(record, 'updatedAt', path),
+    expiresAt: expectString(record, 'expiresAt', path),
+    ...optionalStringProp(record, 'submittedAt', path),
+    ...optionalStringProp(record, 'confirmedAt', path),
+    ...optionalStringProp(record, 'recurringScheduleId', path),
+    ...optionalStringProp(record, 'recurringOccurrenceId', path),
+    ...optionalStringProp(record, 'occurrenceKey', path),
     ...optionalJsonObjectProp(record, 'metadata', path),
   };
 }
@@ -915,6 +1534,8 @@ export function parseRecurringScheduleRecord(input: unknown, path = '$'): Recurr
     ...optionalIntegerProp(record, 'slippageBps', path),
     ...optionalStringProp(record, 'memo', path),
     ...optionalStringProp(record, 'note', path),
+    ...optionalStringProp(record, 'expiresAt', path),
+    ...optionalNotificationsProp(record, 'notifications', path),
     ...optionalJsonObjectProp(record, 'riskMetadata', path),
     ...optionalJsonObjectProp(record, 'metadata', path),
   };
@@ -961,6 +1582,13 @@ export function parseCompletedRecord(input: unknown, path = '$'): CompletedRecor
     ...optionalStringProp(record, 'signature', path),
     ...optionalStringProp(record, 'proofSignature', path),
     ...optionalStringProp(record, 'txid', path),
+    ...optionalEnumProp(record, 'txStatus', TX_STATUSES, path),
+    ...optionalStringProp(record, 'confirmationStatus', path),
+    ...optionalStringProp(record, 'finalizationId', path),
+    ...optionalStringProp(record, 'transactionHash', path),
+    ...optionalStringProp(record, 'messageHash', path),
+    ...optionalStringProp(record, 'quoteHash', path),
+    ...optionalStringProp(record, 'simulationHash', path),
     ...optionalStringProp(record, 'explorerUrl', path),
     ...(planDraftId ? { planDraftId } : {}),
     ...(approvalRequestId ? { approvalRequestId } : {}),
@@ -1150,6 +1778,8 @@ export function parseCreateRecurringRequest(input: unknown, path = '$'): CreateR
     ...optionalIntegerProp(record, 'slippageBps', path),
     ...optionalStringProp(record, 'memo', path),
     ...optionalStringProp(record, 'note', path),
+    ...optionalStringProp(record, 'expiresAt', path),
+    ...optionalNotificationsProp(record, 'notifications', path),
     ...optionalJsonObjectProp(record, 'riskMetadata', path),
     ...optionalJsonObjectProp(record, 'metadata', path),
   };
@@ -1340,6 +1970,66 @@ export function validateApprovalDecisionRequest(body: unknown): ApprovalDecision
     ...(optionalString(input.txid, 'txid') ? { txid: optionalString(input.txid, 'txid') } : {}),
     ...(optionalString(input.explorerUrl, 'explorerUrl') ? { explorerUrl: optionalString(input.explorerUrl, 'explorerUrl') } : {}),
     ...(optionalString(input.error, 'error') ? { error: optionalString(input.error, 'error') } : {}),
+    ...(input.txStatus !== undefined ? { txStatus: requireTxStatus(input.txStatus, 'txStatus') } : {}),
+    ...(optionalString(input.confirmationStatus, 'confirmationStatus') ? { confirmationStatus: optionalString(input.confirmationStatus, 'confirmationStatus') } : {}),
+    ...(optionalString(input.finalizationId, 'finalizationId') ? { finalizationId: optionalString(input.finalizationId, 'finalizationId') } : {}),
+    ...(optionalString(input.transactionHash, 'transactionHash') ? { transactionHash: optionalString(input.transactionHash, 'transactionHash') } : {}),
+    ...(optionalString(input.messageHash, 'messageHash') ? { messageHash: optionalString(input.messageHash, 'messageHash') } : {}),
+    ...(optionalString(input.quoteHash, 'quoteHash') ? { quoteHash: optionalString(input.quoteHash, 'quoteHash') } : {}),
+    ...(optionalString(input.simulationHash, 'simulationHash') ? { simulationHash: optionalString(input.simulationHash, 'simulationHash') } : {}),
+    ...(input.finalizationStatus !== undefined ? { finalizationStatus: requireTransactionFinalizationStatus(input.finalizationStatus, 'finalizationStatus') } : {}),
+    ...(input.metadata === undefined ? {} : { metadata: requireJsonObject(input.metadata, 'metadata') }),
+  };
+}
+
+export function validateCreateTransactionFinalizationPreviewRequest(
+  body: unknown,
+): CreateTransactionFinalizationPreviewInput {
+  assertNoForbiddenWorkflowSecrets(body);
+  const input = requireObject(body ?? {}, '$');
+  const status = input.status === undefined
+    ? 'prepared'
+    : requireTransactionFinalizationStatus(input.status, 'status');
+  if (!['prepared', 'preview_ready', 'simulation_passed', 'blocked', 'expired'].includes(status)) {
+    throw new WorkflowValidationError(
+      'invalid_finalization_status',
+      'status must be one of: prepared, preview_ready, simulation_passed, blocked, expired.',
+      '$.status',
+    );
+  }
+  return {
+    status: status as CreateTransactionFinalizationPreviewInput['status'],
+    walletAction: parseWalletActionPreview(input.walletAction, '$.walletAction'),
+    transactionHash: requireWorkflowNonEmptyString(input.transactionHash, 'transactionHash'),
+    ...(optionalString(input.messageHash, 'messageHash') ? { messageHash: optionalString(input.messageHash, 'messageHash') } : {}),
+    ...(input.quote === undefined ? {} : { quote: parseQuoteSnapshot(input.quote, '$.quote') }),
+    ...(input.simulation === undefined ? {} : { simulation: parseSimulationSnapshot(input.simulation, '$.simulation') }),
+    ...(optionalString(input.expiresAt, 'expiresAt') ? { expiresAt: optionalString(input.expiresAt, 'expiresAt') } : {}),
+    ...(input.metadata === undefined ? {} : { metadata: requireJsonObject(input.metadata, 'metadata') }),
+  };
+}
+
+export function validateRecordTransactionFinalizationResultRequest(
+  body: unknown,
+): RecordTransactionFinalizationResultInput {
+  const input = validateApprovalDecisionRequest(body);
+  if (!input.finalizationId) {
+    throw new WorkflowValidationError('missing_finalization_id', 'finalizationId is required.', '$.finalizationId');
+  }
+  const finalizationStatus = input.finalizationStatus === undefined
+    ? txStatusToFinalizationStatus(input.txStatus)
+    : requireTransactionFinalizationStatus(input.finalizationStatus, 'finalizationStatus');
+  if (!['wallet_pending', 'submitted', 'confirmed', 'failed', 'aborted', 'expired', 'blocked'].includes(finalizationStatus)) {
+    throw new WorkflowValidationError(
+      'invalid_finalization_status',
+      'finalizationStatus must be one of: wallet_pending, submitted, confirmed, failed, aborted, expired, blocked.',
+      '$.finalizationStatus',
+    );
+  }
+  return {
+    ...input,
+    finalizationId: input.finalizationId,
+    finalizationStatus: finalizationStatus as RecordTransactionFinalizationResultInput['finalizationStatus'],
   };
 }
 
@@ -1376,6 +2066,8 @@ export function validateCreateRecurringRequest(body: unknown, path = '$'): Creat
     ...optionalIntegerField(input.slippageBps, 'slippageBps'),
     ...optionalStringField(input.memo, 'memo'),
     ...optionalStringField(input.note, 'note'),
+    ...optionalIsoTimestampField(input.expiresAt, 'expiresAt'),
+    ...optionalUserNotificationsField(input.notifications, 'notifications'),
     ...optionalJsonObjectField(input.riskMetadata, 'riskMetadata'),
     ...optionalJsonObjectField(input.metadata, 'metadata'),
   };
@@ -1405,6 +2097,8 @@ export function validateUpdateRecurringRequest(body: unknown): UpdateRecurringRe
   if (input.slippageBps !== undefined) patch.slippageBps = requireInteger(input.slippageBps, 'slippageBps');
   if (input.memo !== undefined) patch.memo = requireNonEmptyString(input.memo, 'memo');
   if (input.note !== undefined) patch.note = requireNonEmptyString(input.note, 'note');
+  if (input.expiresAt !== undefined) patch.expiresAt = requireIsoTimestamp(input.expiresAt, 'expiresAt');
+  if (input.notifications !== undefined) patch.notifications = requireUserNotifications(input.notifications, 'notifications');
   if (input.riskMetadata !== undefined) patch.riskMetadata = requireJsonObject(input.riskMetadata, 'riskMetadata');
   if (input.metadata !== undefined) patch.metadata = requireJsonObject(input.metadata, 'metadata');
 
@@ -1481,6 +2175,444 @@ export function assertNoForbiddenWorkflowSecrets(value: unknown, path = '$'): vo
   }
 }
 
+function collectForbiddenGuardrailViolations(input: {
+  value: unknown;
+  path: string;
+  violations: AiGuardrailViolation[];
+}): void {
+  if (!input.value || typeof input.value !== 'object') {
+    if (typeof input.value === 'string') {
+      collectForbiddenTextViolations(input.value, input.path, input.violations);
+    }
+    return;
+  }
+  if (Array.isArray(input.value)) {
+    input.value.forEach((entry, index) => collectForbiddenGuardrailViolations({
+      value: entry,
+      path: `${input.path}[${index}]`,
+      violations: input.violations,
+    }));
+    return;
+  }
+
+  for (const [key, entry] of Object.entries(input.value as Record<string, unknown>)) {
+    const normalized = key.replace(/[^a-z0-9]/gi, '').toLowerCase();
+    const path = `${input.path}.${key}`;
+    if (FORBIDDEN_EXACT_KEYS.has(normalized) || normalized.includes('privatekey') || normalized.includes('secretkey')) {
+      input.violations.push({
+        code: 'forbidden_secret',
+        severity: 'block',
+        message: `${path} is not accepted by Agentic workflow guardrails.`,
+        path,
+      });
+    }
+    if (
+      (normalized.includes('approvalauthority') || normalized.includes('signingauthority') || normalized.includes('authority')) &&
+      indicatesUnlimitedAuthority(entry)
+    ) {
+      input.violations.push({
+        code: 'forbidden_authority',
+        severity: 'block',
+        message: `${path} cannot grant unlimited approval authority.`,
+        path,
+      });
+    }
+    collectForbiddenGuardrailViolations({ value: entry, path, violations: input.violations });
+  }
+}
+
+function collectForbiddenTextViolations(text: string, path: string, violations: AiGuardrailViolation[]): void {
+  const normalized = normalizeGuardrailText(text);
+  const secretRequest =
+    /\b(share|send|enter|paste|provide|export|store|upload|reveal|recover)\b.{0,60}\b(seed phrase|recovery phrase|mnemonic|private key|secret key)\b/.test(normalized) ||
+    /\b(seed phrase|recovery phrase|mnemonic|private key|secret key)\b.{0,60}\b(ai|agent|server|cloud|provider)\b/.test(normalized);
+  if (secretRequest) {
+    violations.push({
+      code: 'forbidden_secret_request',
+      severity: 'block',
+      message: 'Plans cannot request seed phrases, private keys, recovery phrases, or secret keys.',
+      path,
+    });
+  }
+  const authorityRequest =
+    /\b(grant|give|create|use|authorize|allow|enable)\b.{0,60}\b(delegated signer|delegate signer|server signer|unlimited approval|unrestricted authority|unlimited authority)\b/.test(normalized) ||
+    /\b(unlimited approval|unrestricted authority|server signer|delegated signer)\b/.test(normalized);
+  if (authorityRequest && !/\b(no|never|without|cannot|must not|do not|reject|block|forbid|forbidden|disallow)\b.{0,60}\b(unlimited approval|unrestricted authority|server signer|delegated signer)\b/.test(normalized)) {
+    violations.push({
+      code: 'forbidden_authority_request',
+      severity: 'block',
+      message: 'Plans cannot create delegated signers, server signers, or unlimited approval authority.',
+      path,
+    });
+  }
+}
+
+function collectUnsafeAiClaimViolations(input: {
+  value: unknown;
+  path: string;
+  source: string;
+  violations: AiGuardrailViolation[];
+}): void {
+  if (typeof input.value === 'string') {
+    if (input.source === 'ai') {
+      collectUnsafeAiTextClaims(input.value, input.path, input.violations);
+    }
+    return;
+  }
+  if (!input.value || typeof input.value !== 'object') return;
+  if (Array.isArray(input.value)) {
+    input.value.forEach((entry, index) => collectUnsafeAiClaimViolations({
+      value: entry,
+      path: `${input.path}[${index}]`,
+      source: input.source,
+      violations: input.violations,
+    }));
+    return;
+  }
+  for (const [key, entry] of Object.entries(input.value as Record<string, unknown>)) {
+    collectUnsafeAiClaimViolations({
+      value: entry,
+      path: `${input.path}.${key}`,
+      source: input.source,
+      violations: input.violations,
+    });
+  }
+}
+
+function collectUnsafeAiTextClaims(text: string, path: string, violations: AiGuardrailViolation[]): void {
+  const normalized = normalizeGuardrailText(text);
+  const claims = [
+    {
+      code: 'ai_claims_approved',
+      pattern: /\b(already|pre|auto)[-\s]?(approved|approval)\b|\bapproved automatically\b/,
+      message: 'AI drafts cannot claim that wallet approval has already happened.',
+    },
+    {
+      code: 'ai_claims_signed',
+      pattern: /\b(already|pre|auto)[-\s]?(signed|signing)\b|\bsigned automatically\b/,
+      message: 'AI drafts cannot claim that a wallet signature has already happened.',
+    },
+    {
+      code: 'ai_claims_submitted',
+      pattern: /\b(already|pre|auto)[-\s]?(submitted|executed|broadcast|sent)\b|\bsubmitted automatically\b/,
+      message: 'AI drafts cannot claim that a transaction has already been submitted or executed.',
+    },
+    {
+      code: 'ai_bypasses_wallet',
+      pattern: /\b(no|without|skip|bypass)\b.{0,40}\b(wallet|approval|signature|signing)\b|\bdoes not require\b.{0,40}\b(wallet|approval|signature|signing)\b/,
+      message: 'AI drafts cannot bypass wallet approval or signing.',
+    },
+    {
+      code: 'ai_claims_safe',
+      pattern: /\b(guaranteed safe|risk[-\s]?free|100%\s+safe|safe to sign|guaranteed profit|guaranteed return|cannot fail|fully reversible)\b/,
+      message: 'AI drafts cannot claim that a transaction is guaranteed safe, profitable, reversible, or risk-free.',
+    },
+  ];
+  for (const claim of claims) {
+    if (claim.pattern.test(normalized)) {
+      violations.push({
+        code: claim.code,
+        severity: 'block',
+        message: claim.message,
+        path,
+      });
+    }
+  }
+}
+
+function collectMissingConstraintViolations(
+  actionType: string,
+  parameters: Record<string, string>,
+  violations: AiGuardrailViolation[],
+): void {
+  const required = requiredConstraintGroups(actionType);
+  for (const group of required) {
+    if (!group.keys.some((key) => hasStringParam(parameters, key))) {
+      violations.push({
+        code: 'missing_executable_constraint',
+        severity: 'block',
+        message: `${group.label} is required before this plan can enter Approval Inbox.`,
+        path: `$.parameters.${group.keys[0]}`,
+      });
+    }
+  }
+  const amount = firstPresentParam(parameters, ['amount', 'amountSol', 'inputAmount', 'plannedAmount']);
+  if (amount !== undefined && !(Number(amount) > 0)) {
+    violations.push({
+      code: 'invalid_amount_constraint',
+      severity: 'block',
+      message: 'Amount must be a positive number before this plan can enter Approval Inbox.',
+      path: '$.parameters.amount',
+    });
+  }
+}
+
+function collectAiWarningViolations(
+  plan: Record<string, unknown>,
+  actionType: string,
+  parameters: Record<string, string>,
+  violations: AiGuardrailViolation[],
+): void {
+  for (const key of ['route', 'risk', 'approval'] as const) {
+    const value = stringValue(plan[key]);
+    if (!value || value.length < 12) {
+      violations.push({
+        code: 'vague_ai_review_text',
+        severity: 'warn',
+        message: `AI ${key} text should be explicit before review.`,
+        path: `$.plan.${key}`,
+      });
+    }
+  }
+  if (isQueueableWorkflowAction(actionType) && !firstPresentParam(parameters, ['memo', 'note', 'reason'])) {
+    violations.push({
+      code: 'missing_context_note',
+      severity: 'warn',
+      message: 'A memo or reason is recommended for queueable AI plans.',
+      path: '$.parameters.memo',
+    });
+  }
+}
+
+function requiredConstraintGroups(actionType: string): Array<{ label: string; keys: string[] }> {
+  if (actionType === 'transfer_sol') {
+    return [
+      { label: 'Recipient', keys: ['recipient', 'recipientAddress'] },
+      { label: 'Amount', keys: ['amount', 'amountSol'] },
+    ];
+  }
+  if (actionType === 'transfer_spl') {
+    return [
+      { label: 'Token', keys: ['token'] },
+      { label: 'Recipient', keys: ['recipient', 'recipientAddress'] },
+      { label: 'Amount', keys: ['amount'] },
+    ];
+  }
+  if (actionType === 'swap') {
+    return [
+      { label: 'Input token', keys: ['inputToken'] },
+      { label: 'Output token', keys: ['outputToken'] },
+      { label: 'Amount', keys: ['amount', 'inputAmount'] },
+      { label: 'Slippage cap', keys: ['slippageBps'] },
+    ];
+  }
+  if (actionType === 'recurring_payment') {
+    return [
+      { label: 'Token', keys: ['token'] },
+      { label: 'Recipient', keys: ['recipient', 'recipientAddress'] },
+      { label: 'Amount', keys: ['amount'] },
+      { label: 'Cadence', keys: ['cadence'] },
+    ];
+  }
+  return [];
+}
+
+function guardrailSummary(
+  verdict: AiGuardrailVerdict,
+  finalizationRequirement: FinalizationRequirement,
+  violations: AiGuardrailViolation[],
+): string {
+  if (verdict === 'block') {
+    return violations.find((violation) => violation.severity === 'block')?.message ?? 'Plan is blocked by guardrails.';
+  }
+  if (verdict === 'warn') {
+    return violations.find((violation) => violation.severity === 'warn')?.message ?? 'Plan has guardrail warnings.';
+  }
+  if (finalizationRequirement === 'transaction_preview') {
+    return 'Plan passed guardrails and requires transaction preview before wallet approval.';
+  }
+  if (finalizationRequirement === 'wallet_decision_proof') {
+    return 'Plan passed guardrails and requires explicit wallet decision proof.';
+  }
+  return 'Plan passed guardrails.';
+}
+
+function normalizeGuardrailText(value: string): string {
+  return value.toLowerCase().replace(/\s+/g, ' ').trim();
+}
+
+function hasStringParam(parameters: Record<string, string>, key: string): boolean {
+  return Boolean(parameters[key]?.trim());
+}
+
+function firstPresentParam(parameters: Record<string, string>, keys: string[]): string | undefined {
+  for (const key of keys) {
+    const value = parameters[key]?.trim();
+    if (value) return value;
+  }
+  return undefined;
+}
+
+function normalizeStringRecord(value: unknown): Record<string, string> {
+  if (!isPlainRecord(value)) return {};
+  const output: Record<string, string> = {};
+  for (const [key, entry] of Object.entries(value)) {
+    if (typeof entry === 'string') output[key] = entry;
+  }
+  return output;
+}
+
+function normalizePlanFields(value: unknown): PlanDraftField[] {
+  if (!Array.isArray(value)) return [];
+  return value.filter((entry): entry is PlanDraftField => {
+    return Boolean(isPlainRecord(entry) && typeof entry.label === 'string' && typeof entry.value === 'string');
+  }).map((entry) => ({ label: entry.label, value: entry.value }));
+}
+
+function valueRecord(value: unknown): Record<string, unknown> | undefined {
+  return isPlainRecord(value) ? value : undefined;
+}
+
+function stringValue(value: unknown): string | undefined {
+  return typeof value === 'string' && value.trim() ? value.trim() : undefined;
+}
+
+function isPlainRecord(input: unknown): input is Record<string, unknown> {
+  return isPlainObject(input);
+}
+
+function stableJson(value: unknown): string {
+  return JSON.stringify(sortJson(value));
+}
+
+const SHA256_K = [
+  0x428a2f98, 0x71374491, 0xb5c0fbcf, 0xe9b5dba5, 0x3956c25b, 0x59f111f1, 0x923f82a4, 0xab1c5ed5,
+  0xd807aa98, 0x12835b01, 0x243185be, 0x550c7dc3, 0x72be5d74, 0x80deb1fe, 0x9bdc06a7, 0xc19bf174,
+  0xe49b69c1, 0xefbe4786, 0x0fc19dc6, 0x240ca1cc, 0x2de92c6f, 0x4a7484aa, 0x5cb0a9dc, 0x76f988da,
+  0x983e5152, 0xa831c66d, 0xb00327c8, 0xbf597fc7, 0xc6e00bf3, 0xd5a79147, 0x06ca6351, 0x14292967,
+  0x27b70a85, 0x2e1b2138, 0x4d2c6dfc, 0x53380d13, 0x650a7354, 0x766a0abb, 0x81c2c92e, 0x92722c85,
+  0xa2bfe8a1, 0xa81a664b, 0xc24b8b70, 0xc76c51a3, 0xd192e819, 0xd6990624, 0xf40e3585, 0x106aa070,
+  0x19a4c116, 0x1e376c08, 0x2748774c, 0x34b0bcb5, 0x391c0cb3, 0x4ed8aa4a, 0x5b9cca4f, 0x682e6ff3,
+  0x748f82ee, 0x78a5636f, 0x84c87814, 0x8cc70208, 0x90befffa, 0xa4506ceb, 0xbef9a3f7, 0xc67178f2,
+] as const;
+
+function sha256Hex(value: string): string {
+  const bytes = utf8Bytes(value);
+  const bitLength = bytes.length * 8;
+  bytes.push(0x80);
+  while (bytes.length % 64 !== 56) bytes.push(0);
+  const high = Math.floor(bitLength / 0x100000000);
+  const low = bitLength >>> 0;
+  for (const word of [high, low]) {
+    bytes.push((word >>> 24) & 0xff, (word >>> 16) & 0xff, (word >>> 8) & 0xff, word & 0xff);
+  }
+
+  let h0 = 0x6a09e667;
+  let h1 = 0xbb67ae85;
+  let h2 = 0x3c6ef372;
+  let h3 = 0xa54ff53a;
+  let h4 = 0x510e527f;
+  let h5 = 0x9b05688c;
+  let h6 = 0x1f83d9ab;
+  let h7 = 0x5be0cd19;
+  const w = new Array<number>(64);
+
+  for (let offset = 0; offset < bytes.length; offset += 64) {
+    for (let i = 0; i < 16; i += 1) {
+      const index = offset + i * 4;
+      w[i] = ((bytes[index] ?? 0) << 24) |
+        ((bytes[index + 1] ?? 0) << 16) |
+        ((bytes[index + 2] ?? 0) << 8) |
+        (bytes[index + 3] ?? 0);
+    }
+    for (let i = 16; i < 64; i += 1) {
+      const s0 = rotr(w[i - 15]!, 7) ^ rotr(w[i - 15]!, 18) ^ (w[i - 15]! >>> 3);
+      const s1 = rotr(w[i - 2]!, 17) ^ rotr(w[i - 2]!, 19) ^ (w[i - 2]! >>> 10);
+      w[i] = (w[i - 16]! + s0 + w[i - 7]! + s1) >>> 0;
+    }
+
+    let a = h0;
+    let b = h1;
+    let c = h2;
+    let d = h3;
+    let e = h4;
+    let f = h5;
+    let g = h6;
+    let h = h7;
+
+    for (let i = 0; i < 64; i += 1) {
+      const s1 = rotr(e, 6) ^ rotr(e, 11) ^ rotr(e, 25);
+      const ch = (e & f) ^ (~e & g);
+      const temp1 = (h + s1 + ch + SHA256_K[i]! + w[i]!) >>> 0;
+      const s0 = rotr(a, 2) ^ rotr(a, 13) ^ rotr(a, 22);
+      const maj = (a & b) ^ (a & c) ^ (b & c);
+      const temp2 = (s0 + maj) >>> 0;
+      h = g;
+      g = f;
+      f = e;
+      e = (d + temp1) >>> 0;
+      d = c;
+      c = b;
+      b = a;
+      a = (temp1 + temp2) >>> 0;
+    }
+
+    h0 = (h0 + a) >>> 0;
+    h1 = (h1 + b) >>> 0;
+    h2 = (h2 + c) >>> 0;
+    h3 = (h3 + d) >>> 0;
+    h4 = (h4 + e) >>> 0;
+    h5 = (h5 + f) >>> 0;
+    h6 = (h6 + g) >>> 0;
+    h7 = (h7 + h) >>> 0;
+  }
+
+  return [h0, h1, h2, h3, h4, h5, h6, h7].map((word) => word.toString(16).padStart(8, '0')).join('');
+}
+
+function rotr(value: number, bits: number): number {
+  return (value >>> bits) | (value << (32 - bits));
+}
+
+function utf8Bytes(value: string): number[] {
+  const bytes: number[] = [];
+  for (let index = 0; index < value.length; index += 1) {
+    let codePoint = value.charCodeAt(index);
+    if (codePoint >= 0xd800 && codePoint <= 0xdbff) {
+      const next = value.charCodeAt(index + 1);
+      if (next >= 0xdc00 && next <= 0xdfff) {
+        codePoint = 0x10000 + ((codePoint - 0xd800) << 10) + (next - 0xdc00);
+        index += 1;
+      } else {
+        codePoint = 0xfffd;
+      }
+    } else if (codePoint >= 0xdc00 && codePoint <= 0xdfff) {
+      codePoint = 0xfffd;
+    }
+
+    if (codePoint < 0x80) {
+      bytes.push(codePoint);
+    } else if (codePoint < 0x800) {
+      bytes.push(0xc0 | (codePoint >> 6), 0x80 | (codePoint & 0x3f));
+    } else if (codePoint < 0x10000) {
+      bytes.push(0xe0 | (codePoint >> 12), 0x80 | ((codePoint >> 6) & 0x3f), 0x80 | (codePoint & 0x3f));
+    } else {
+      bytes.push(
+        0xf0 | (codePoint >> 18),
+        0x80 | ((codePoint >> 12) & 0x3f),
+        0x80 | ((codePoint >> 6) & 0x3f),
+        0x80 | (codePoint & 0x3f),
+      );
+    }
+  }
+  return bytes;
+}
+
+function sortJson(value: unknown): unknown {
+  if (Array.isArray(value)) {
+    return value.map(sortJson);
+  }
+  if (value && typeof value === 'object') {
+    const output: Record<string, unknown> = {};
+    for (const key of Object.keys(value as Record<string, unknown>).sort()) {
+      const entry = (value as Record<string, unknown>)[key];
+      if (entry !== undefined) output[key] = sortJson(entry);
+    }
+    return output;
+  }
+  return value;
+}
+
 function explorerUrl(txid: string, cluster: WorkflowCluster): string {
   const clusterParam = cluster === 'mainnet-beta' ? '' : `?cluster=${cluster}`;
   return `https://solscan.io/tx/${txid}${clusterParam}`;
@@ -1492,6 +2624,15 @@ function firstStringParam(params: JsonObject, keys: string[]): string | undefine
     if (typeof value === 'string' && value.trim()) return value;
   }
   return undefined;
+}
+
+function jsonObjectFromJson(object: JsonObject | undefined, key: string): JsonObject | undefined {
+  const value = object?.[key];
+  return value && typeof value === 'object' && !Array.isArray(value) ? value as JsonObject : undefined;
+}
+
+function workflowTxStatus(value: unknown): TxStatus | undefined {
+  return TX_STATUSES.includes(value as TxStatus) ? value as TxStatus : undefined;
 }
 
 function parseJsonValue(input: unknown, path: string): JsonValue {
@@ -1652,6 +2793,22 @@ function optionalJsonObjectProp<T extends string>(
   return { [key]: parseJsonObject(value, `${path}.${key}`) } as Partial<Record<T, JsonObject>>;
 }
 
+function optionalFinalizationSupportProp<T extends string>(
+  record: Record<string, unknown>,
+  key: T,
+  path: string,
+): Partial<Record<T, FinalizationSupport>> {
+  const value = record[key];
+  if (value === undefined) return {};
+  const support = expectRecord(value, `${path}.${key}`);
+  const parsed: FinalizationSupport = {
+    required: expectBoolean(support, 'required', `${path}.${key}`),
+    supported: expectBoolean(support, 'supported', `${path}.${key}`),
+    ...optionalStringProp(support, 'reason', `${path}.${key}`),
+  };
+  return { [key]: parsed } as Partial<Record<T, FinalizationSupport>>;
+}
+
 function optionalStringArrayProp<T extends string>(
   record: Record<string, unknown>,
   key: T,
@@ -1735,6 +2892,38 @@ function requireRiskLevel(value: unknown, label: string): WorkflowRiskLevel {
     throw new WorkflowValidationError('invalid_risk_level', `${label} must be one of: ${WORKFLOW_RISK_LEVELS.join(', ')}.`);
   }
   return riskLevel as WorkflowRiskLevel;
+}
+
+function requireTxStatus(value: unknown, label: string): TxStatus {
+  const status = requiredString(value, label);
+  if (!TX_STATUSES.includes(status as TxStatus)) {
+    throw new WorkflowValidationError('invalid_tx_status', `${label} must be one of: ${TX_STATUSES.join(', ')}.`);
+  }
+  return status as TxStatus;
+}
+
+function requireTransactionFinalizationStatus(value: unknown, label: string): TransactionFinalizationStatus {
+  const status = requiredString(value, label);
+  if (!TRANSACTION_FINALIZATION_STATUSES.includes(status as TransactionFinalizationStatus)) {
+    throw new WorkflowValidationError(
+      'invalid_finalization_status',
+      `${label} must be one of: ${TRANSACTION_FINALIZATION_STATUSES.join(', ')}.`,
+    );
+  }
+  return status as TransactionFinalizationStatus;
+}
+
+function txStatusToFinalizationStatus(status: TxStatus | undefined): NonNullable<RecordTransactionFinalizationResultInput['finalizationStatus']> {
+  if (status === 'confirmed') return 'confirmed';
+  if (status === 'failed') return 'failed';
+  return 'submitted';
+}
+
+function requireWorkflowNonEmptyString(value: unknown, label: string): string {
+  if (typeof value !== 'string' || !value.trim()) {
+    throw new WorkflowValidationError('invalid_string', `${label} must be a non-empty string.`);
+  }
+  return value.trim();
 }
 
 function optionalSource(value: unknown, fallback: PlanDraftSource | undefined): PlanDraftSource {
@@ -1997,6 +3186,87 @@ function optionalIntegerField<K extends string>(value: unknown, key: K): Partial
 function optionalJsonObjectField<K extends string>(value: unknown, key: K): Partial<Record<K, JsonObject>> {
   if (value === undefined) return {};
   return { [key]: requireJsonObject(value, key) } as Partial<Record<K, JsonObject>>;
+}
+
+function requireIsoTimestamp(value: unknown, label: string): string {
+  if (typeof value !== 'string' || !value.trim()) {
+    throw new RecurringValidationError('invalid_string', `${label} must be a non-empty ISO timestamp string.`);
+  }
+  const trimmed = value.trim();
+  const parsed = new Date(trimmed);
+  if (Number.isNaN(parsed.getTime())) {
+    throw new RecurringValidationError('invalid_iso_timestamp', `${label} must be a valid ISO timestamp.`);
+  }
+  return trimmed;
+}
+
+function optionalIsoTimestampField<K extends string>(value: unknown, key: K): Partial<Record<K, string>> {
+  if (value === undefined || value === null || value === '') return {};
+  return { [key]: requireIsoTimestamp(value, key) } as Partial<Record<K, string>>;
+}
+
+function requireUserNotifications(value: unknown, label: string): RecurringNotificationsConfig {
+  if (value === null || typeof value !== 'object' || Array.isArray(value)) {
+    throw new RecurringValidationError('invalid_notifications', `${label} must be an object.`);
+  }
+  const obj = value as Record<string, unknown>;
+  if ('webhookSecret' in obj) {
+    throw new RecurringValidationError(
+      'invalid_notifications',
+      `${label}.webhookSecret cannot be set by the client; secrets are server-generated.`,
+    );
+  }
+  const config: RecurringNotificationsConfig = {};
+  if (obj.inApp !== undefined) {
+    if (typeof obj.inApp !== 'boolean') {
+      throw new RecurringValidationError('invalid_notifications', `${label}.inApp must be a boolean.`);
+    }
+    config.inApp = obj.inApp;
+  }
+  if (obj.webhookUrl !== undefined && obj.webhookUrl !== null && obj.webhookUrl !== '') {
+    if (typeof obj.webhookUrl !== 'string') {
+      throw new RecurringValidationError('invalid_notifications', `${label}.webhookUrl must be a string.`);
+    }
+    try {
+      const parsed = new URL(obj.webhookUrl);
+      if (parsed.protocol !== 'https:' && parsed.protocol !== 'http:') {
+        throw new Error('protocol');
+      }
+    } catch {
+      throw new RecurringValidationError(
+        'invalid_notifications',
+        `${label}.webhookUrl must be a valid http(s) URL.`,
+      );
+    }
+    config.webhookUrl = obj.webhookUrl;
+  }
+  return config;
+}
+
+function optionalUserNotificationsField<K extends string>(
+  value: unknown,
+  key: K,
+): Partial<Record<K, RecurringNotificationsConfig>> {
+  if (value === undefined || value === null) return {};
+  return { [key]: requireUserNotifications(value, key) } as Partial<Record<K, RecurringNotificationsConfig>>;
+}
+
+function optionalNotificationsProp<K extends string>(
+  record: Record<string, unknown>,
+  key: K,
+  path: string,
+): Partial<Record<K, RecurringNotificationsConfig>> {
+  const value = record[key];
+  if (value === undefined || value === null) return {};
+  if (typeof value !== 'object' || Array.isArray(value)) {
+    throw new WorkflowValidationError('invalid_notifications', `${path}.${key} must be an object.`);
+  }
+  const obj = value as Record<string, unknown>;
+  const config: RecurringNotificationsConfig = {};
+  if (typeof obj.inApp === 'boolean') config.inApp = obj.inApp;
+  if (typeof obj.webhookUrl === 'string' && obj.webhookUrl) config.webhookUrl = obj.webhookUrl;
+  if (typeof obj.webhookSecret === 'string' && obj.webhookSecret) config.webhookSecret = obj.webhookSecret;
+  return { [key]: config } as Partial<Record<K, RecurringNotificationsConfig>>;
 }
 
 function assertCadenceFields(request: CreateRecurringRequest | UpdateRecurringRequest): void {

@@ -1,3 +1,8 @@
+import {
+  assertPlanGuardrails,
+  type AiGuardrailReport,
+} from '@solana-agent-wallet-adapter/workflow';
+
 export type AgentPlanSource = 'template' | 'ai';
 export type TemplateRisk = 'low' | 'medium' | 'high';
 export type TemplateFieldType = 'text' | 'number' | 'textarea' | 'select' | 'datetime-local';
@@ -22,6 +27,9 @@ export interface AgentPlan {
   parameters: Record<string, string>;
   fields: AgentPlanField[];
   safeguards: string[];
+  guardrailReport?: AiGuardrailReport;
+  constraintFingerprint?: string;
+  constraintHash?: string;
 }
 
 export interface AgentPlanTemplateField {
@@ -364,7 +372,7 @@ export function buildTemplatePlan(
     ? readableParams.map((entry) => `${entry.label}: ${entry.value}`).join('; ')
     : template.prompt;
   const notes = userNotes.trim();
-  return {
+  const plan: AgentPlan = {
     intent: source === 'ai'
       ? template.prompt
       : `${template.title}: ${actionSummary}`,
@@ -380,6 +388,7 @@ export function buildTemplatePlan(
     fields: readableParams,
     safeguards: [...SHARED_SAFEGUARDS, ...template.safeguards],
   };
+  return withGuardrailReport(plan, { templateId: template.id, prompt: notes || template.description });
 }
 
 export function aiProviderPresetById(id: string): AiProviderPreset {
@@ -428,6 +437,7 @@ export async function generateSessionAiPlan(
   if (!settings.apiKey.trim()) {
     throw new Error('Session AI key is required.');
   }
+  assertAiDraftRequestAllowed(request);
   if (settings.provider === 'openai') {
     throw new Error('OpenAI keys cannot be called directly from browser session mode. Select Hosted BYOK or Local bridge.');
   }
@@ -444,6 +454,7 @@ export async function generateHostedAiPlan(
   if (!settings.apiKey.trim()) {
     throw new Error('Hosted BYOK key is required.');
   }
+  assertAiDraftRequestAllowed(request);
   const diagnostics: AiDiagnosticEntry[] = [
     {
       code: 'AI_ROUTE',
@@ -720,7 +731,7 @@ function normalizeHostedAiPlan(payload: unknown, request: AiPlanRequest): AgentP
   const safeguards = Array.isArray(record.safeguards)
     ? record.safeguards.filter((entry): entry is string => typeof entry === 'string' && entry.trim().length > 0)
     : SHARED_SAFEGUARDS;
-  return {
+  const plan: AgentPlan = {
     intent: stringOr(record.intent, `${request.template.title}: ${request.prompt}`),
     route: stringOr(record.route, `Prepare ${request.template.actionType} request and show route details before wallet approval.`),
     risk: stringOr(record.risk, `Risk level ${request.template.risk}. Verify all visible fields before signing.`),
@@ -734,6 +745,10 @@ function normalizeHostedAiPlan(payload: unknown, request: AiPlanRequest): AgentP
     fields,
     safeguards,
   };
+  return withGuardrailReport(plan, {
+    templateId: request.template.id,
+    prompt: request.prompt,
+  });
 }
 
 function isHostedPlanPayload(payload: unknown): payload is Partial<AgentPlan> {
@@ -806,7 +821,7 @@ export function normalizeAiPlan(payload: unknown, request: AiPlanRequest): Agent
   const parsed = parsePlanJson(content);
   const template = templateById(request.template.id);
   const fallback = buildTemplatePlan(template, request.parameters, 'ai');
-  return {
+  const plan: AgentPlan = {
     ...fallback,
     intent: stringOr(parsed.intent, fallback.intent),
     route: stringOr(parsed.route, fallback.route),
@@ -815,6 +830,61 @@ export function normalizeAiPlan(payload: unknown, request: AiPlanRequest): Agent
     source: 'ai',
     userNotes: request.userNotes?.trim() || request.prompt.trim() || undefined,
     safeguards: normalizeSafeguards(parsed.safeguards, fallback.safeguards),
+  };
+  return withGuardrailReport(plan, {
+    templateId: template.id,
+    prompt: request.prompt,
+  });
+}
+
+function assertAiDraftRequestAllowed(request: AiPlanRequest): void {
+  assertPlanGuardrails({
+    source: 'ai',
+    category: request.template.category,
+    actionType: request.template.actionType,
+    templateId: request.template.id,
+    templateTitle: request.template.title,
+    parameters: request.parameters,
+    userNotes: request.userNotes,
+    prompt: request.prompt,
+    plan: {
+      source: 'ai',
+      category: request.template.category,
+      actionType: request.template.actionType,
+      templateId: request.template.id,
+      templateTitle: request.template.title,
+      parameters: request.parameters,
+      prompt: request.prompt,
+      userNotes: request.userNotes,
+      intent: request.prompt,
+      route: 'AI draft only. Wallet approval is required later.',
+      risk: `Requested risk level ${request.template.risk}.`,
+      approval: 'Wallet approval is required before signing or submitting.',
+    },
+  });
+}
+
+function withGuardrailReport(
+  plan: AgentPlan,
+  context: { templateId?: string; prompt?: string } = {},
+): AgentPlan {
+  const report = assertPlanGuardrails({
+    plan: { ...plan },
+    source: plan.source,
+    category: plan.category,
+    actionType: plan.actionType,
+    templateId: context.templateId,
+    templateTitle: plan.templateTitle,
+    parameters: plan.parameters,
+    fields: plan.fields,
+    userNotes: plan.userNotes,
+    prompt: context.prompt,
+  });
+  return {
+    ...plan,
+    guardrailReport: report,
+    constraintFingerprint: report.constraintFingerprint,
+    ...(report.constraintHash ? { constraintHash: report.constraintHash } : {}),
   };
 }
 

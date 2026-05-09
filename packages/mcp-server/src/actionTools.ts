@@ -399,6 +399,14 @@ function recurringInputSchema() {
     startAt: z.string().datetime().optional().describe('ISO start time for interval schedules. Defaults to creation time.'),
     maxOccurrences: z.number().int().min(1).max(1000).optional().describe('Omit for indefinite recurring approvals.'),
     note: z.string().max(500).optional(),
+    expiresAt: z.string().datetime().optional().describe('Optional ISO timestamp; the schedule auto-completes when reached.'),
+    notifications: z
+      .object({
+        inApp: z.boolean().optional(),
+        webhookUrl: z.string().url().optional().describe('Optional http(s) URL notified when each occurrence becomes ready for approval.'),
+      })
+      .optional()
+      .describe('Optional notification preferences for this schedule.'),
   };
 }
 

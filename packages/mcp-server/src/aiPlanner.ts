@@ -1,4 +1,8 @@
 import { ProtocolError } from '@solana-agent-wallet-adapter/core';
+import {
+  assertPlanGuardrails,
+  type AiGuardrailReport,
+} from '@solana-agent-wallet-adapter/workflow';
 
 import { redactSecrets } from './trace.js';
 
@@ -33,6 +37,9 @@ export interface AiPlan {
   parameters: Record<string, string>;
   fields: Array<{ label: string; value: string }>;
   safeguards: string[];
+  guardrailReport?: AiGuardrailReport;
+  constraintFingerprint?: string;
+  constraintHash?: string;
 }
 
 interface AiRuntimeConfig {
@@ -136,6 +143,7 @@ export class BridgeAiPlanner {
       throw new ProtocolError('unsupported_method', 'Bridge AI is not configured. Set AGENTIC_AI_API_KEY or provide a bridge session key.');
     }
     const normalizedRequest = normalizeRequest(request);
+    assertAiDraftRequestAllowed(normalizedRequest);
     if (config.apiFormat === 'anthropic') {
       return this.generateAnthropicPlan(config, normalizedRequest);
     }
@@ -350,7 +358,7 @@ function normalizeStrictAiPlan(
 
 function aiPlanFromParsed(parsed: Record<string, unknown>, request: Required<AiPlanRequest>): AiPlan {
   const parameters = request.parameters;
-  return {
+  const plan: AiPlan = {
     intent: stringOr(parsed.intent, `${request.template.title}: ${request.prompt}`),
     route: stringOr(parsed.route, `Draft ${request.template.actionType} request and show route details before wallet approval.`),
     risk: stringOr(parsed.risk, `Risk level ${request.template.risk}. Verify all visible fields before signing.`),
@@ -366,6 +374,69 @@ function aiPlanFromParsed(parsed: Record<string, unknown>, request: Required<AiP
       .map(([key, value]) => ({ label: titleCase(key), value })),
     safeguards: normalizeSafeguards(parsed.safeguards),
   };
+  return withGuardrailReport(plan, request);
+}
+
+function assertAiDraftRequestAllowed(request: Required<AiPlanRequest>): void {
+  try {
+    assertPlanGuardrails({
+      source: 'ai',
+      category: request.template.category,
+      actionType: request.template.actionType,
+      templateId: request.template.id,
+      templateTitle: request.template.title,
+      parameters: request.parameters,
+      userNotes: request.userNotes,
+      prompt: request.prompt,
+      plan: {
+        source: 'ai',
+        category: request.template.category,
+        actionType: request.template.actionType,
+        templateId: request.template.id,
+        templateTitle: request.template.title,
+        parameters: request.parameters,
+        prompt: request.prompt,
+        userNotes: request.userNotes,
+        intent: request.prompt,
+        route: 'AI draft only. Wallet approval is required later.',
+        risk: `Requested risk level ${request.template.risk}.`,
+        approval: 'Wallet approval is required before signing or submitting.',
+      },
+    });
+  } catch (err) {
+    if (err instanceof Error) {
+      throw new ProtocolError('invalid_request', err.message);
+    }
+    throw err;
+  }
+}
+
+function withGuardrailReport(plan: AiPlan, request: Required<AiPlanRequest>): AiPlan {
+  try {
+    const report = assertPlanGuardrails({
+      plan: { ...plan },
+      source: plan.source,
+      category: plan.category,
+      actionType: plan.actionType,
+      templateId: request.template.id,
+      templateTitle: plan.templateTitle,
+      parameters: plan.parameters,
+      fields: plan.fields,
+      userNotes: plan.userNotes,
+      prompt: request.prompt,
+    });
+    return {
+      ...plan,
+      guardrailReport: report,
+      constraintFingerprint: report.constraintFingerprint,
+      ...(report.constraintHash ? { constraintHash: report.constraintHash } : {}),
+    };
+  } catch (err) {
+    if (err instanceof Error) {
+      throw new ProtocolError('invalid_request', err.message);
+    }
+    throw err;
+  }
 }
 
 function isPlanJson(value: Record<string, unknown>): boolean {

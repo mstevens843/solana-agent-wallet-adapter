@@ -13,12 +13,15 @@ import {
   type WalletBackend,
 } from '@solana-agent-wallet-adapter/core';
 
+import { lifetimeSpendEstimate } from '@solana-agent-wallet-adapter/workflow';
+
 import { assertMaxAmount, formatRawAmount, parseDecimalAmount } from './amounts.js';
 import {
   requireMainnetEnabled,
   USDC_MINT,
   WSOL_MINT,
   type AgentWalletConfig,
+  type RecurringPolicyConfig,
   type TokenLimitConfig,
 } from './config.js';
 import type {
@@ -80,6 +83,8 @@ export interface RecurringPaymentInput {
   startAt?: string;
   maxOccurrences?: number;
   note?: string;
+  expiresAt?: string;
+  notifications?: { inApp?: boolean; webhookUrl?: string };
 }
 
 export interface UpdateRecurringPaymentInput extends RecurringPaymentInput {
@@ -625,6 +630,23 @@ function buildRecurringPaymentInput(
     assertMaxAmount(rawAmount, tokenConfig.maxTransfer, tokenConfig.decimals, `${tokenConfig.symbol} recurring payment amount`);
   }
 
+  const expiresAt = normalizeExpiresAt(input.expiresAt);
+  const notifications = normalizeNotifications(input.notifications);
+
+  enforceRecurringPolicy(config.recurring, token, amount, {
+    cadence: schedule.cadence,
+    dayOfWeek: schedule.dayOfWeek,
+    dayOfMonth: schedule.dayOfMonth,
+    intervalDays: schedule.intervalDays,
+    intervalHours: schedule.intervalHours,
+    intervalMinutes: schedule.intervalMinutes,
+    localTime: schedule.localTime,
+    startAt: schedule.startAt,
+    maxOccurrences: schedule.maxOccurrences,
+    createdAt: new Date().toISOString(),
+    expiresAt,
+  });
+
   return {
     walletAddress,
     cluster: config.cluster,
@@ -633,7 +655,94 @@ function buildRecurringPaymentInput(
     amount,
     ...schedule,
     ...(note !== undefined && { note }),
+    ...(expiresAt !== undefined && { expiresAt }),
+    ...(notifications !== undefined && { notifications }),
   };
+}
+
+function enforceRecurringPolicy(
+  policy: RecurringPolicyConfig | undefined,
+  token: string,
+  amount: string,
+  cadenceFields: Parameters<typeof lifetimeSpendEstimate>[0],
+): void {
+  if (!policy) return;
+  const lifetime = policy.maxLifetimeAmount?.[token];
+  const perWeek = policy.maxPerWeekAmount?.[token];
+  const perMonth = policy.maxPerMonthAmount?.[token];
+  if (!lifetime && !perWeek && !perMonth) return;
+
+  const estimate = lifetimeSpendEstimate(cadenceFields, amount, new Date());
+  if (lifetime && estimate.bounded && estimate.totalAmount && compareDecimal(estimate.totalAmount, lifetime) > 0) {
+    throw new ProtocolError(
+      'invalid_request',
+      `This schedule would spend up to ${estimate.totalAmount} ${token} total, exceeding your configured lifetime cap of ${lifetime} ${token}.`,
+    );
+  }
+  if (perWeek && compareDecimal(estimate.perWeek, perWeek) > 0) {
+    throw new ProtocolError(
+      'invalid_request',
+      `This schedule would spend up to ${estimate.perWeek} ${token} per week, exceeding your configured cap of ${perWeek} ${token} per week.`,
+    );
+  }
+  if (perMonth && compareDecimal(estimate.perMonth, perMonth) > 0) {
+    throw new ProtocolError(
+      'invalid_request',
+      `This schedule would spend up to ${estimate.perMonth} ${token} per month, exceeding your configured cap of ${perMonth} ${token} per month.`,
+    );
+  }
+}
+
+function compareDecimal(left: string, right: string): number {
+  const a = Number(left);
+  const b = Number(right);
+  if (!Number.isFinite(a) || !Number.isFinite(b)) return 0;
+  if (a < b) return -1;
+  if (a > b) return 1;
+  return 0;
+}
+
+function normalizeNotifications(
+  value: unknown,
+): { inApp?: boolean; webhookUrl?: string } | undefined {
+  if (value === undefined || value === null) return undefined;
+  if (typeof value !== 'object' || Array.isArray(value)) {
+    throw new ProtocolError('invalid_request', 'notifications must be an object.');
+  }
+  const obj = value as Record<string, unknown>;
+  const result: { inApp?: boolean; webhookUrl?: string } = {};
+  if (obj.inApp !== undefined) {
+    if (typeof obj.inApp !== 'boolean') {
+      throw new ProtocolError('invalid_request', 'notifications.inApp must be a boolean.');
+    }
+    result.inApp = obj.inApp;
+  }
+  if (obj.webhookUrl !== undefined && obj.webhookUrl !== null && obj.webhookUrl !== '') {
+    if (typeof obj.webhookUrl !== 'string') {
+      throw new ProtocolError('invalid_request', 'notifications.webhookUrl must be a string.');
+    }
+    try {
+      const parsed = new URL(obj.webhookUrl);
+      if (parsed.protocol !== 'https:' && parsed.protocol !== 'http:') throw new Error('protocol');
+    } catch {
+      throw new ProtocolError('invalid_request', 'notifications.webhookUrl must be a valid http(s) URL.');
+    }
+    result.webhookUrl = obj.webhookUrl;
+  }
+  return Object.keys(result).length > 0 ? result : undefined;
+}
+
+function normalizeExpiresAt(value: unknown): string | undefined {
+  if (value === undefined || value === null || value === '') return undefined;
+  if (typeof value !== 'string') {
+    throw new ProtocolError('invalid_request', 'expiresAt must be an ISO timestamp string.');
+  }
+  const trimmed = value.trim();
+  const parsed = new Date(trimmed);
+  if (Number.isNaN(parsed.getTime())) {
+    throw new ProtocolError('invalid_request', 'expiresAt must be a valid ISO timestamp.');
+  }
+  return trimmed;
 }
 
 function normalizeRecurringSchedule(input: {

@@ -374,13 +374,13 @@ class FakePgClient implements PgClient {
       }
 
       case 'recurring.schedule.upsert': {
-        const record = JSON.parse(String(values[6])) as ReturnType<typeof scheduleRecord>;
+        const record = JSON.parse(String(values[7])) as ReturnType<typeof scheduleRecord>;
         this.schedules.set(record.id, {
           id: record.id,
           wallet_address: String(values[1]),
           status: String(values[2]),
-          created_at: String(values[4]),
-          updated_at: String(values[5]),
+          created_at: String(values[5]),
+          updated_at: String(values[6]),
           record,
         });
         return result([]);

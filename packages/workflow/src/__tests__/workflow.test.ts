@@ -2,8 +2,12 @@ import { describe, expect, it } from 'vitest';
 
 import {
   capabilitiesForWorkflowMode,
+  assertPlanGuardrails,
   completedFromApproval,
+  evaluatePlanGuardrails,
+  finalizationRequirementForAction,
   isActiveApprovalStatus,
+  isQueueableWorkflowAction,
   isTerminalApprovalStatus,
   parseApprovalListResponse,
   parseApprovalRequestRecord,
@@ -28,6 +32,8 @@ import {
   parseWalletSession,
   parseWorkflowCapabilities,
   parseWorkflowUser,
+  stableWorkflowFingerprint,
+  stableWorkflowHash,
   validateApprovalDecisionRequest,
   validateCreateApprovalRequest,
   validateCreateEvidenceReceiptRequest,
@@ -76,6 +82,135 @@ describe('approval status helpers', () => {
     )).toBe(true);
     expect(isActiveApprovalStatus('approved')).toBe(false);
     expect(isTerminalApprovalStatus('ready')).toBe(false);
+  });
+});
+
+describe('AI product guardrails', () => {
+  it('passes a constrained AI transfer while preserving a stable fingerprint', () => {
+    const plan = {
+      source: 'ai',
+      category: 'payments',
+      actionType: 'transfer_sol',
+      templateId: 'transfer-sol',
+      templateTitle: 'Send SOL',
+      intent: 'Send 0.1 SOL to a recipient',
+      route: 'Prepare a SOL transfer and show wallet approval before signing.',
+      risk: 'Medium risk. Check recipient, amount, fees, and memo before approval.',
+      approval: 'Wallet approval is required before signing or submitting.',
+      parameters: {
+        recipient: 'Recipient111111111111111111111111111111111',
+        amount: '0.1',
+        memo: 'Invoice payment',
+      },
+      fields: [{ label: 'Amount SOL', value: '0.1' }],
+      safeguards: ['Wallet approval is required.'],
+      cluster: 'devnet',
+    };
+
+    const report = evaluatePlanGuardrails({ plan });
+
+    expect(report).toMatchObject({
+      verdict: 'pass',
+      source: 'ai',
+      actionType: 'transfer_sol',
+      finalizationRequirement: 'transaction_preview',
+    });
+    expect(report.constraintFingerprint).toBe(stableWorkflowFingerprint({
+      source: 'ai',
+      category: 'payments',
+      actionType: 'transfer_sol',
+      templateId: 'transfer-sol',
+      templateTitle: 'Send SOL',
+      cluster: 'devnet',
+      parameters: plan.parameters,
+      fields: plan.fields,
+    }));
+    expect(report.constraintHash).toBe(stableWorkflowHash({
+      source: 'ai',
+      category: 'payments',
+      actionType: 'transfer_sol',
+      templateId: 'transfer-sol',
+      templateTitle: 'Send SOL',
+      cluster: 'devnet',
+      parameters: plan.parameters,
+      fields: plan.fields,
+    }));
+    expect(assertPlanGuardrails({ plan })).toEqual(report);
+  });
+
+  it('blocks AI drafts that claim approval, signing, or safety has already happened', () => {
+    const blocked = evaluatePlanGuardrails({
+      plan: {
+        source: 'ai',
+        actionType: 'transfer_sol',
+        intent: 'This transfer is already approved and safe to sign.',
+        route: 'No wallet approval required.',
+        risk: 'Risk-free.',
+        approval: 'Already signed.',
+        parameters: {
+          recipient: 'Recipient111111111111111111111111111111111',
+          amount: '0.1',
+        },
+      },
+    });
+
+    expect(blocked.verdict).toBe('block');
+    expect(blocked.violations.map((violation) => violation.code)).toEqual(expect.arrayContaining([
+      'ai_claims_approved',
+      'ai_bypasses_wallet',
+      'ai_claims_safe',
+      'ai_claims_signed',
+    ]));
+    expect(() => assertPlanGuardrails({ plan: blockedPlan() })).toThrow(WorkflowValidationError);
+  });
+
+  it('blocks secrets, delegated signers, and missing executable constraints', () => {
+    expect(evaluatePlanGuardrails({
+      plan: {
+        source: 'ai',
+        actionType: 'transfer_spl',
+        intent: 'Send token after user enters private key',
+        route: 'Ask user to paste private key.',
+        risk: 'High.',
+        approval: 'Wallet approval required.',
+        parameters: {
+          token: 'USDC',
+          amount: '10',
+        },
+      },
+    })).toMatchObject({
+      verdict: 'block',
+      violations: expect.arrayContaining([
+        expect.objectContaining({ code: 'forbidden_secret_request' }),
+        expect.objectContaining({ code: 'missing_executable_constraint' }),
+      ]),
+    });
+
+    expect(evaluatePlanGuardrails({
+      plan: {
+        source: 'ai',
+        actionType: 'manual_review',
+        intent: 'Use delegated signer',
+        route: 'Create delegated signer with unlimited approval.',
+        risk: 'Medium.',
+        approval: 'User reviews.',
+        metadata: { approvalAuthority: 'unlimited' },
+      },
+    })).toMatchObject({
+      verdict: 'block',
+      violations: expect.arrayContaining([
+        expect.objectContaining({ code: 'forbidden_authority' }),
+      ]),
+    });
+  });
+
+  it('classifies queueable actions and finalization requirements', () => {
+    expect(isQueueableWorkflowAction('swap')).toBe(true);
+    expect(isQueueableWorkflowAction('read_only')).toBe(false);
+    expect(finalizationRequirementForAction('swap')).toBe('transaction_preview');
+    expect(finalizationRequirementForAction('custom_transaction')).toBe('wallet_decision_proof');
+    expect(finalizationRequirementForAction('recurring_payment')).toBe('wallet_decision_proof');
+    expect(finalizationRequirementForAction('read_only')).toBe('none');
   });
 });
 
@@ -379,6 +514,21 @@ function planRecord() {
     templateId: '',
     templateTitle: '',
     prompt: '',
+  } as const;
+}
+
+function blockedPlan() {
+  return {
+    source: 'ai',
+    actionType: 'transfer_sol',
+    intent: 'This transfer is already approved.',
+    route: 'No wallet approval required.',
+    risk: 'Risk-free.',
+    approval: 'Already signed.',
+    parameters: {
+      recipient: 'Recipient111111111111111111111111111111111',
+      amount: '0.1',
+    },
   } as const;
 }
 

@@ -202,6 +202,25 @@ Expected:
 
 Status: supported through manual Approval Inbox.
 
+### Production recurring payment
+
+Prompt:
+
+```text
+Create a weekly 10 USDC payment to <recipient> for manual approval, expire it on 2026-12-31T00:00:00.000Z, and notify https://example.com/agentic-webhook when each run is ready.
+```
+
+Expected:
+
+- Creates a recurring schedule with `expiresAt` and webhook notification settings.
+- Shows the next run preview and recurring spend estimate.
+- Each due run appears in Approval Inbox and still requires wallet approval.
+- Pause/resume stops and restarts future materialization.
+- Occurrence history shows plain-English status labels and linked approval/receipt metadata.
+- Configured spend caps reject over-limit schedules with a plain-English error.
+
+Status: supported in Agentic Cloud and MCP/local bridge field surface; webhook retries are cloud-only.
+
 ### Portfolio rebalance
 
 Prompt:

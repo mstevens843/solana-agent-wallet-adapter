@@ -21,3 +21,4 @@ apps/**/src-tauri/gen/schemas/
 apps/android-twa/local.properties
 *.jks
 *.keystore
+FUTUREMOAT.MD

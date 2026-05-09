@@ -142,6 +142,15 @@ The local Phase 9 gate is passing for the hosted Agentic Cloud, browser fallback
 
 Remaining release-only checks require external services: run render-web tests with `TEST_DATABASE_URL`, then re-run `pnpm smoke:render-web:live` after deployment. The live link verifier passes, but the current live smoke still fails because `https://agentic-signer.com/api/session` returns 404. Also run the real local bridge workflow smoke with `--require-local-bridge` before marking the public deployment fully released.
 
+## Recurring Production Upgrade (2026-05-09)
+
+- `plan.md` and `RECURRING_PLANS_PRODUCTION_PLAN.md` now track the production-grade recurring plan.
+- Cloud occurrence history now exposes plain-English status labels plus linked approval and completed receipt summaries.
+- Browser recurring setup supports expiry, webhook URL input, next-run previews, next-5 upcoming runs, lifetime or rate spend estimates, one-tap pause/resume, and loadable occurrence history.
+- Cloud recurring spend caps are wired through the public router and recurring cron path using `agent-wallet.config.json` recurring policy fields when present.
+- Webhook reminder delivery has a Postgres-backed delivery queue, HMAC signature header, retry worker command, and Render cron.
+- Smoke guide: [`docs/smoke/recurring-production.md`](docs/smoke/recurring-production.md).
+
 ## Current product milestone
 
 The project has crossed the main proof point:

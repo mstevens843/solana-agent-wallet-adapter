@@ -382,6 +382,9 @@ Backend endpoints:
 - `PATCH /api/recurring/:id`
 - `DELETE /api/recurring/:id`
 - `POST /api/recurring/materialize-due`
+- `GET /api/recurring/:id/occurrences`
+- `POST /api/recurring/:id/pause`
+- `POST /api/recurring/:id/resume`
 
 Behavior:
 
@@ -391,13 +394,16 @@ Behavior:
 - Every occurrence appears in Approval Inbox before any wallet action.
 - No recurring schedule auto-signs or auto-submits.
 - User can pause, resume, edit, cancel, or delete schedules.
+- Schedules can carry expiry, notification settings, next-run previews, lifetime spend views, and policy cap enforcement.
+- Webhook reminder delivery is queued separately from materialization and signed with an HMAC header.
 - Ended schedules remain visible in Completed Plans.
 
 Frontend behavior:
 
 - Recurring tab uses cloud schedule APIs when signed in.
 - Browser recurring fallback remains available when signed out.
-- Next occurrence preview remains visible before creation.
+- Next occurrence and next-5 preview remain visible before creation.
+- Occurrence history uses plain-English statuses and linked approval/receipt summaries.
 - Recurring templates remain visible in recurring UI.
 - Copy says each run returns for wallet review.
 

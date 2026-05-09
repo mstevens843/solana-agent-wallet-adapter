@@ -8,6 +8,11 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 
+import {
+  workflowDecisionProofMessage as sharedWorkflowDecisionProofMessage,
+  workflowFinalizationProofMessage as sharedWorkflowFinalizationProofMessage,
+} from '../packages/workflow/dist/index.js';
+
 import { publicAppRoutes } from './public-routes.mjs';
 
 const DEFAULT_RENDER_ORIGIN = 'https://agentic-signer.com';
@@ -139,7 +144,7 @@ async function verifyWorkflowSmoke({ requireLocalBridge: bridgeRequired }) {
       const plan = await apiJson(origin, '/api/plans', {
         method: 'POST',
         cookie: session.cookie,
-        body: createPlanBody('Approve smoke transfer'),
+        body: createManualReviewPlanBody('Approve smoke review'),
       }).then((payload) => requiredObject(payload.plan, 'plan'));
       const approval = await apiJson(origin, '/api/approvals', {
         method: 'POST',
@@ -308,15 +313,22 @@ async function verifyWorkflowSmoke({ requireLocalBridge: bridgeRequired }) {
             await page.inspect(`${browserOrigin}/app`);
             await resetBrowserWorkflow(page);
             await page.inspect(`${browserOrigin}/app`);
+            await assertFirstRunSteps(page);
             await connectFakeWallet(page);
+            await waitForFirstRunStep(page, 'wallet', 'complete');
             await ensureCreatePlanView(page);
             await clickAndWait(page, '#generatePlan');
+            await waitForFirstRunStep(page, 'plan', 'complete');
             const actionId = await queueCurrentPlan(page);
+            await waitForFirstRunStep(page, 'decision', 'active');
             assert(actionId, 'browser fallback did not expose a queued action id');
             let snapshot = await browserWorkflowSnapshot(page);
             assert(snapshot.activeActions.some((entry) => entry.id === actionId), 'browser fallback did not persist an active prepared action');
             await clickAndWait(page, `[data-action-op="execute"][data-action-id="${actionId}"]`, 'browser fallback approval action');
             await waitForBrowserReceipt(page, actionId, 'approved');
+            await waitForFirstRunStep(page, 'receipt', 'complete');
+            const completedVisible = await page.evaluate(`document.body.innerText.includes('Completed Plans') && Boolean(document.querySelector('[data-completed-focus="true"]'))`);
+            assert(completedVisible, 'completed receipt history was not shown after browser approval');
             snapshot = await browserWorkflowSnapshot(page);
             assert(!snapshot.activeActions.some((entry) => entry.id === actionId), 'approved browser workflow action remained active');
             assert(snapshot.completedActions.some((entry) => entry.id === actionId && entry.status === 'approved'), 'approved browser workflow action was not terminal');
@@ -401,14 +413,22 @@ async function verifyWorkflowSmoke({ requireLocalBridge: bridgeRequired }) {
             const beforeApprovals = await apiJson(origin, '/api/approvals', { cookie: session.cookie });
             const beforeApprovalIds = new Set(arrayPayload(beforeApprovals.approvals).map((entry) => entry.id).filter(Boolean));
             await page.inspect(`${browserOrigin}/app`);
+            await resetBrowserWorkflow(page);
+            await page.inspect(`${browserOrigin}/app`);
             await connectFakeWallet(page);
             await ensureCloudSignedIn(page);
             await ensureCreatePlanView(page);
+            await selectPlanTemplate(page, 'transfer-sol');
+            await setTemplateField(page, 'recipient', wallet.walletAddress);
+            await setTemplateField(page, 'amount', '0.000001');
+            await setTemplateField(page, 'memo', 'Signed-in cloud browser workflow smoke');
             await clickAndWait(page, '#generatePlan');
             await queueCurrentPlan(page, { waitForInboxAction: false });
             const approvalId = await waitForNewApproval(origin, session.cookie, beforeApprovalIds);
-            await page.waitFor(`Boolean(document.querySelector('[data-action-op="execute"][data-action-id="${approvalId}"]'))`);
-            await clickAndWait(page, `[data-action-op="execute"][data-action-id="${approvalId}"]`, 'new cloud approval action');
+            const inbox = await apiJson(origin, '/api/approvals', { cookie: session.cookie });
+            const approval = arrayPayload(inbox.approvals).find((entry) => entry.id === approvalId);
+            assert(approval, `queued cloud approval ${approvalId} was not found`);
+            await finalizeApprovalViaApi(origin, session.cookie, approval, wallet, 'tx_browser_cloud_finalized');
             await waitForCompletedApproval(origin, session.cookie, approvalId, 'approved');
           });
 
@@ -438,6 +458,7 @@ async function verifyWorkflowSmoke({ requireLocalBridge: bridgeRequired }) {
           await report.check('Public-host startup does not require localhost for the default web app', async () => {
             await configureBridgeStorage(page, { bridgeOrigin, bridgeToken, workflowModePreference: 'auto' });
             const publicHostResult = await page.inspect(`${browserOrigin}/app`);
+            await assertFirstRunSteps(page);
             const bridgeProbe = publicHostResult.events.find(isLocalBridgeConfigRequest);
             assert(!bridgeProbe, `public-host startup requested local bridge: ${eventSummary(bridgeProbe)}`);
             assert(!/local bridge required|bridge required|localhost is required|required.*localhost/i.test(publicHostResult.page.bodyText), 'UI says local bridge or localhost is required for the default app');
@@ -498,21 +519,24 @@ function decisionProofBody(approval, decision, wallet) {
 }
 
 function workflowDecisionProofMessage(approval, decision) {
-  return [
-    'Agentic Cloud workflow decision',
-    `Decision: ${decision}`,
-    `Approval: ${approval.id}`,
-    `Wallet: ${approval.walletAddress}`,
-    `Cluster: ${approval.cluster ?? 'devnet'}`,
-    `Summary: ${approval.summary}`,
-    `Kind: ${approval.kind}`,
-    `Params: ${stableJson(approval.params)}`,
-    'This signature records a cloud workflow decision only. It does not submit a transaction or grant spending authority.',
-  ].join('\n');
+  return sharedWorkflowDecisionProofMessage({ approval, decision });
+}
+
+function finalizationProofBody(approval, finalization, wallet) {
+  const message = workflowFinalizationProofMessage(approval, finalization);
+  return {
+    proofSignature: encodeBase58(signDetached(null, Buffer.from(message, 'utf8'), wallet.privateKey)),
+    decisionProofMessage: message,
+    signatureEncoding: 'base58',
+  };
+}
+
+function workflowFinalizationProofMessage(approval, finalization) {
+  return sharedWorkflowFinalizationProofMessage({ approval, finalization });
 }
 
 function stableJson(value) {
-  return JSON.stringify(sortJson(value), null, 2);
+  return JSON.stringify(sortJson(value));
 }
 
 function sortJson(value) {
@@ -560,8 +584,38 @@ async function ensureCreatePlanView(page) {
   await page.waitFor(`Boolean(document.querySelector('#generatePlan'))`);
 }
 
+async function selectPlanTemplate(page, templateId) {
+  const selector = `[data-template-option="${templateId}"]`;
+  await clickAndWait(page, '#templatePickerButton', 'template picker');
+  await page.waitFor(`Boolean(document.querySelector(${JSON.stringify(selector)}))`);
+  await clickAndWait(page, selector, `template option ${templateId}`);
+}
+
+async function setTemplateField(page, fieldId, value) {
+  const selector = `[data-template-field="${fieldId}"]`;
+  await page.waitFor(`Boolean(document.querySelector(${JSON.stringify(selector)}))`);
+  await page.evaluate(`(() => {
+    const input = document.querySelector(${JSON.stringify(selector)});
+    if (!(input instanceof HTMLInputElement || input instanceof HTMLTextAreaElement || input instanceof HTMLSelectElement)) {
+      throw new Error('Template field not found: ${fieldId}');
+    }
+    input.value = ${JSON.stringify(value)};
+    input.dispatchEvent(new Event('input', { bubbles: true }));
+    input.dispatchEvent(new Event('change', { bubbles: true }));
+  })()`);
+  await sleep(100);
+}
+
 async function queueCurrentPlan(page, { waitForInboxAction = true } = {}) {
-  await page.waitFor(`Boolean(document.querySelector('#queueAgentPlan, [data-generated-plan-action="queue"]'))`);
+  await page.waitFor(`(() => {
+    const elements = Array.from(document.querySelectorAll('#queueAgentPlan, [data-generated-plan-action="queue"]'));
+    const isDisabled = (el) => Boolean(el.disabled || el.getAttribute('aria-disabled') === 'true');
+    const isVisible = (el) => {
+      const style = window.getComputedStyle(el);
+      return el.getClientRects().length > 0 && style.display !== 'none' && style.visibility !== 'hidden';
+    };
+    return elements.some((el) => !isDisabled(el) && isVisible(el));
+  })()`);
   await clickAndWait(page, '#queueAgentPlan, [data-generated-plan-action="queue"]', 'queue plan action');
   if (!waitForInboxAction) return '';
   await page.waitFor(`Boolean(document.querySelector('[data-action-op="execute"]'))`);
@@ -574,6 +628,18 @@ async function resetBrowserWorkflow(page) {
       localStorage.removeItem(key);
     }
   })()`);
+}
+
+async function assertFirstRunSteps(page) {
+  const steps = await page.evaluate(`Array.from(document.querySelectorAll('[data-first-run-step]')).map((el) => el.dataset.firstRunStep)`);
+  const expected = ['wallet', 'plan', 'review', 'decision', 'receipt'];
+  assert(expected.every((step) => steps.includes(step)), `first-run steps missing; found=${steps.join(',')}`);
+  const action = await page.evaluate(`document.querySelector('[data-first-run-action]')?.dataset.firstRunAction ?? ''`);
+  assert(Boolean(action), 'first-run primary action is missing');
+}
+
+async function waitForFirstRunStep(page, step, className) {
+  await page.waitFor(`document.querySelector('[data-first-run-step="${step}"]')?.classList.contains('${className}')`);
 }
 
 async function browserWorkflowSnapshot(page) {
@@ -779,6 +845,12 @@ async function verifyLiveRender(origin) {
   const base = origin.replace(/\/+$/, '');
   await verifyHostedAiStatus(`${base}/api/ai/status`);
   await verifyJsonSession(`${base}/api/session`);
+  await verifyJsonApiRoute(`${base}/api/plans`, [401]);
+  await verifyJsonApiRoute(`${base}/api/approvals`, [401]);
+  await verifyJsonApiRoute(`${base}/api/completed`, [401]);
+  await verifyJsonApiRoute(`${base}/api/recurring`, [401]);
+  await verifyJsonApiRoute(`${base}/api/evidence`, [401]);
+  await verifyJson404(`${base}/api/not-a-real-route`);
   for (const route of ['/app', '/demo']) {
     await verifyHtmlRoute(`${base}${route}`, route);
   }
@@ -824,6 +896,20 @@ async function verifyJson404(url) {
   if (payload?.error !== 'not_found') throw new Error(`${url} returned unexpected 404 JSON: ${JSON.stringify(payload)}`);
 }
 
+async function verifyJsonApiRoute(url, allowedStatuses) {
+  const response = await fetch(url);
+  const contentType = response.headers.get('content-type') ?? '';
+  const raw = await response.text();
+  if (!allowedStatuses.includes(response.status)) {
+    throw new Error(`${url} returned HTTP ${response.status}; expected ${allowedStatuses.join(' or ')}: ${snippet(raw)}`);
+  }
+  if (!/application\/json/i.test(contentType)) {
+    throw new Error(`${url} returned ${contentType || 'missing content-type'} instead of application/json: ${snippet(raw)}`);
+  }
+  parseJson(raw, url);
+  console.log(`[smoke-render-web] PASS ${url} returned JSON HTTP ${response.status}.`);
+}
+
 async function verifyHtmlRoute(url, route) {
   const response = await fetch(url);
   const contentType = response.headers.get('content-type') ?? '';
@@ -862,6 +948,95 @@ function createPlanBody(intent) {
     prompt: intent,
     cluster: 'devnet',
   };
+}
+
+function createManualReviewPlanBody(intent) {
+  return {
+    plan: {
+      intent,
+      route: 'Decision proof only.',
+      risk: 'Low risk.',
+      approval: 'Wallet signs a review decision proof.',
+      source: 'template',
+      category: 'custom',
+      actionType: 'manual_review',
+      templateTitle: 'Manual Review',
+      parameters: {
+        reason: 'Workflow smoke proof-only approval.',
+      },
+      fields: [
+        { label: 'Reason', value: 'Workflow smoke proof-only approval.' },
+      ],
+      safeguards: ['No transaction is submitted by this approval proof.'],
+    },
+    source: 'template',
+    templateId: 'manual-review',
+    templateTitle: 'Manual Review',
+    prompt: intent,
+    cluster: 'devnet',
+  };
+}
+
+function finalizationPreviewBody(approval) {
+  return {
+    status: 'simulation_passed',
+    walletAction: {
+      kind: approval.kind,
+      walletAddress: approval.walletAddress,
+      cluster: approval.cluster ?? 'devnet',
+      summary: approval.summary,
+      sender: approval.walletAddress,
+      recipient: approval.params?.recipient ?? 'Recipient111111111111111111111111111111111',
+      amount: approval.params?.amountSol ?? approval.params?.amount ?? '0.01',
+      token: 'SOL',
+      feePayer: approval.walletAddress,
+      instructionSummary: ['Smoke transfer finalization'],
+      touchedPrograms: ['11111111111111111111111111111111'],
+    },
+    transactionHash: 'smoke_tx_hash',
+    messageHash: 'smoke_message_hash',
+    quote: {
+      provider: 'smoke-fixed-transfer',
+      fetchedAt: new Date().toISOString(),
+      inputToken: 'SOL',
+      inputAmount: approval.params?.amountSol ?? approval.params?.amount ?? '0.01',
+      routeLabel: 'SystemProgram.transfer',
+      quoteHash: 'smoke_quote_hash',
+    },
+    simulation: {
+      status: 'ok',
+      simulatedAt: new Date().toISOString(),
+      logs: [],
+      unitsConsumed: 500,
+      simulationHash: 'smoke_simulation_hash',
+    },
+    expiresAt: new Date(Date.now() + 5 * 60_000).toISOString(),
+  };
+}
+
+async function finalizeApprovalViaApi(origin, cookie, approval, wallet, txid) {
+  const preview = await apiJson(origin, `/api/approvals/${encodeURIComponent(approval.id)}/finalization/preview`, {
+    method: 'POST',
+    cookie,
+    body: finalizationPreviewBody(approval),
+  }).then((payload) => requiredObject(payload.finalization, 'finalization'));
+  await apiJson(origin, `/api/approvals/${encodeURIComponent(approval.id)}/finalization/result`, {
+    method: 'POST',
+    cookie,
+    body: {
+      ...finalizationProofBody(approval, preview, wallet),
+      finalizationId: preview.id,
+      finalizationStatus: 'confirmed',
+      txStatus: 'confirmed',
+      txid,
+      transactionHash: 'smoke_tx_hash',
+      messageHash: 'smoke_message_hash',
+      quoteHash: 'smoke_quote_hash',
+      simulationHash: 'smoke_simulation_hash',
+      explorerUrl: `https://explorer.solana.com/tx/${encodeURIComponent(txid)}?cluster=${encodeURIComponent(approval.cluster ?? 'devnet')}`,
+      note: 'Finalized in workflow smoke.',
+    },
+  });
 }
 
 function recurringSmokeBody() {

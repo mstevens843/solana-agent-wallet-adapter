@@ -8,6 +8,10 @@ import type {
 } from './evidenceService.js';
 import { postgresMigrations } from './migrations/index.js';
 import type {
+  RecurringNotificationDeliveryRecord,
+  RecurringNotificationStore,
+} from './notificationService.js';
+import type {
   RecurringAuditEvent,
   RecurringOccurrenceClaim,
   RecurringOccurrenceRecord,
@@ -28,6 +32,7 @@ import type {
   CompletedRecord,
   JsonObject,
   PlanDraftRecord,
+  TransactionFinalizationRecord,
 } from './workflowValidation.js';
 
 const { Pool } = pg;
@@ -94,7 +99,8 @@ export class PostgresWorkflowStore implements
   SessionWorkflowStore,
   OneTimeWorkflowStore,
   EvidenceStore,
-  RecurringStore {
+  RecurringStore,
+  RecurringNotificationStore {
   private readonly client: PgClient;
   private readonly ownsClient: boolean;
 
@@ -422,6 +428,62 @@ export class PostgresWorkflowStore implements
     return this.deleteByOwner('completed.delete', 'completed_records', walletAddress, id);
   }
 
+  async listFinalizations(walletAddress: string, approvalRequestId?: string): Promise<TransactionFinalizationRecord[]> {
+    if (!approvalRequestId) {
+      return this.listJsonRecords<TransactionFinalizationRecord>(
+        'finalization.list',
+        'transaction_finalizations',
+        walletAddress,
+        'updated_at DESC, created_at DESC',
+      );
+    }
+    const result = await this.query<JsonRecordRow<TransactionFinalizationRecord>>({
+      name: 'finalization.listForApproval',
+      text: `
+        SELECT record
+        FROM transaction_finalizations
+        WHERE wallet_address = $1 AND approval_request_id = $2
+        ORDER BY updated_at DESC, created_at DESC
+      `,
+      values: [walletAddress, approvalRequestId],
+    });
+    return result.rows.map((row) => jsonRecord(row.record));
+  }
+
+  async getFinalization(walletAddress: string, id: string): Promise<TransactionFinalizationRecord | undefined> {
+    return this.getJsonRecord<TransactionFinalizationRecord>('finalization.get', 'transaction_finalizations', walletAddress, id);
+  }
+
+  async saveFinalization(walletAddress: string, record: TransactionFinalizationRecord): Promise<void> {
+    const normalized = { ...record, walletAddress };
+    await this.ensureUser(walletAddress, normalized.createdAt);
+    await this.query({
+      name: 'finalization.upsert',
+      text: `
+        INSERT INTO transaction_finalizations (
+          id, wallet_address, approval_request_id, status, expires_at, created_at, updated_at, record
+        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8::jsonb)
+        ON CONFLICT (id) DO UPDATE SET
+          approval_request_id = EXCLUDED.approval_request_id,
+          status = EXCLUDED.status,
+          expires_at = EXCLUDED.expires_at,
+          updated_at = EXCLUDED.updated_at,
+          record = EXCLUDED.record
+        WHERE transaction_finalizations.wallet_address = EXCLUDED.wallet_address
+      `,
+      values: [
+        normalized.id,
+        walletAddress,
+        normalized.approvalRequestId,
+        normalized.status,
+        normalized.expiresAt,
+        normalized.createdAt,
+        normalized.updatedAt,
+        jsonParam(normalized),
+      ],
+    });
+  }
+
   async appendAuditEvent(walletAddress: string, record: WorkflowAuditEventRecord | RecurringAuditEvent): Promise<void> {
     if ('scheduleId' in record) {
       await this.insertAuditEvent({
@@ -519,11 +581,12 @@ export class PostgresWorkflowStore implements
     await this.query({
       name: 'recurring.schedule.upsert',
       text: `
-        INSERT INTO recurring_schedules (id, wallet_address, status, next_due_at, created_at, updated_at, record)
-        VALUES ($1, $2, $3, $4, $5, $6, $7::jsonb)
+        INSERT INTO recurring_schedules (id, wallet_address, status, next_due_at, expires_at, created_at, updated_at, record)
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8::jsonb)
         ON CONFLICT (id) DO UPDATE SET
           status = EXCLUDED.status,
           next_due_at = EXCLUDED.next_due_at,
+          expires_at = EXCLUDED.expires_at,
           updated_at = EXCLUDED.updated_at,
           record = EXCLUDED.record
         WHERE recurring_schedules.wallet_address = EXCLUDED.wallet_address
@@ -533,6 +596,7 @@ export class PostgresWorkflowStore implements
         walletAddress,
         normalized.status,
         normalized.nextDueAt ?? null,
+        normalized.expiresAt ?? null,
         normalized.createdAt,
         normalized.updatedAt,
         jsonParam(normalized),
@@ -653,6 +717,73 @@ export class PostgresWorkflowStore implements
       `,
     });
     return result.rows.map((row) => row.wallet_address);
+  }
+
+  async saveNotificationDelivery(record: RecurringNotificationDeliveryRecord): Promise<void> {
+    await this.ensureUser(record.walletAddress, record.createdAt);
+    await this.query({
+      name: 'recurring.notification.upsert',
+      text: `
+        INSERT INTO recurring_notification_deliveries (
+          id, wallet_address, type, schedule_id, occurrence_id, status,
+          attempts, next_attempt_at, created_at, updated_at, record
+        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11::jsonb)
+        ON CONFLICT (id) DO UPDATE SET
+          status = EXCLUDED.status,
+          attempts = EXCLUDED.attempts,
+          next_attempt_at = EXCLUDED.next_attempt_at,
+          updated_at = EXCLUDED.updated_at,
+          record = EXCLUDED.record
+        WHERE recurring_notification_deliveries.wallet_address = EXCLUDED.wallet_address
+      `,
+      values: [
+        record.id,
+        record.walletAddress,
+        record.type,
+        record.scheduleId,
+        record.occurrenceId,
+        record.status,
+        record.attempts,
+        record.nextAttemptAt,
+        record.createdAt,
+        record.updatedAt,
+        jsonParam(record),
+      ],
+    });
+  }
+
+  async findNotificationDelivery(
+    walletAddress: string,
+    occurrenceId: string,
+    type: RecurringNotificationDeliveryRecord['type'],
+  ): Promise<RecurringNotificationDeliveryRecord | undefined> {
+    const result = await this.query<JsonRecordRow<RecurringNotificationDeliveryRecord>>({
+      name: 'recurring.notification.findByOccurrence',
+      text: `
+        SELECT record
+        FROM recurring_notification_deliveries
+        WHERE wallet_address = $1 AND occurrence_id = $2 AND type = $3
+        LIMIT 1
+      `,
+      values: [walletAddress, occurrenceId, type],
+    });
+    return result.rows[0] ? jsonRecord(result.rows[0].record) : undefined;
+  }
+
+  async listDueNotificationDeliveries(nowIso: string, limit: number): Promise<RecurringNotificationDeliveryRecord[]> {
+    const result = await this.query<JsonRecordRow<RecurringNotificationDeliveryRecord>>({
+      name: 'recurring.notification.listDue',
+      text: `
+        SELECT record
+        FROM recurring_notification_deliveries
+        WHERE status IN ('pending', 'failed')
+          AND next_attempt_at <= $1
+        ORDER BY next_attempt_at ASC, created_at ASC
+        LIMIT $2
+      `,
+      values: [nowIso, limit],
+    });
+    return result.rows.map((row) => jsonRecord(row.record));
   }
 
   private async insertAuditEvent(record: AuditEventRecord): Promise<void> {

@@ -19,7 +19,17 @@ import { isSecureRequest, serializeClearSessionCookie, serializeSessionCookie } 
 import { createEvidenceApiHandler, evidenceStoreAdapterForCloudStore } from './evidenceRoutes.js';
 import type { EvidenceStore } from './evidenceService.js';
 import { MemoryWorkflowStore } from './memoryStore.js';
-import { createRecurringApprovalSink, createRecurringApprovalStatusReader } from './recurringApprovalSink.js';
+import { isRecurringNotificationStore, RecurringNotificationService } from './notificationService.js';
+import {
+  createRecurringApprovalSink,
+  createRecurringApprovalStatusReader,
+  createRecurringOccurrenceHistoryHydrator,
+} from './recurringApprovalSink.js';
+import {
+  createRecurringPolicyEnforcer,
+  loadRecurringPolicyFromEnv,
+  type RecurringPolicyConfig,
+} from './recurringPolicy.js';
 import { createRecurringApiHandler, recurringStoreAdapterForCloudStore } from './recurringRoutes.js';
 import { RecurringService, type RecurringStore } from './recurringService.js';
 import { redactSecrets } from './redaction.js';
@@ -32,6 +42,25 @@ import { createWorkflowApiHandler } from './workflowRoutes.js';
 const MAX_JSON_BYTES = 64 * 1024;
 const AUTH_RATE_LIMIT_WINDOW_MS = 5 * 60 * 1000;
 const AUTH_RATE_LIMIT_MAX_ATTEMPTS = 60;
+
+const REGISTERED_API_ROUTES = [
+  'GET /api/ai/status',
+  'POST /api/ai/generate-plan',
+  'POST /api/auth/nonce',
+  'POST /api/auth/verify-wallet',
+  'POST /api/auth/logout',
+  'GET /api/session',
+  'GET /api/audit',
+  '/api/plans',
+  '/api/approvals',
+  'POST /api/approvals/:id/finalization/prepare',
+  'POST /api/approvals/:id/finalization/:finalizationId/submit',
+  'POST /api/approvals/:id/finalization/:finalizationId/fail',
+  'GET /api/approvals/:id/finalization',
+  '/api/completed',
+  '/api/recurring',
+  '/api/evidence',
+] as const;
 
 type HostedProviderId = 'openai' | 'anthropic' | 'gemini' | 'openrouter';
 
@@ -56,6 +85,7 @@ export interface CloudApiRouterOptions {
   store?: WorkflowStore;
   clock?: Clock;
   authRateLimiter?: AuthRateLimiter | false;
+  recurringPolicy?: RecurringPolicyConfig;
 }
 
 export interface CloudApiRouter {
@@ -145,9 +175,20 @@ export function createCloudApiRouter(options: CloudApiRouterOptions = {}): Cloud
     getSession: sessionResolver,
   });
   const recurringStore = isRecurringStore(store) ? store : recurringStoreAdapterForCloudStore(store);
+  const recurringPolicy = options.recurringPolicy ?? loadRecurringPolicyFromEnv();
+  const notificationStore = isRecurringNotificationStore(recurringStore) ? recurringStore : undefined;
+  const notificationService = notificationStore
+    ? new RecurringNotificationService(notificationStore)
+    : undefined;
   const recurringService = new RecurringService(recurringStore, {
     approvalSink: createRecurringApprovalSink(workflowService),
     approvalStatusReader: createRecurringApprovalStatusReader(workflowStore),
+    occurrenceHistoryHydrator: createRecurringOccurrenceHistoryHydrator(workflowStore),
+    policyEnforcer: createRecurringPolicyEnforcer(recurringPolicy),
+    notificationSink: notificationService
+      ? ({ walletAddress, schedule, occurrence }) =>
+          notificationService.enqueueOccurrenceReady(walletAddress, schedule.id, occurrence.id).then(() => undefined)
+      : undefined,
   });
   const recurringApiHandler = createRecurringApiHandler({
     service: recurringService,
@@ -257,6 +298,11 @@ async function routeApiRequest(
         apiFormat,
         defaultModel,
       })),
+      build: {
+        commit: process.env.RENDER_GIT_COMMIT?.slice(0, 12) ?? process.env.AGENTIC_BUILD_ID ?? 'unknown',
+        deployedAt: process.env.RENDER_DEPLOY_TIMESTAMP ?? null,
+        routes: REGISTERED_API_ROUTES,
+      },
     });
     return;
   }
@@ -289,6 +335,12 @@ async function routeApiRequest(
     requireMethod(req, 'GET');
     const session = await sessionFromRequest({ req, store, clock });
     writeJson(res, 200, sessionResponse(session));
+    return;
+  }
+
+  if (url.pathname === '/api/audit') {
+    requireMethod(req, 'GET');
+    await handleListAuditEvents(req, res, url, store, clock);
     return;
   }
 
@@ -412,6 +464,53 @@ async function handleLogout(
   }
   res.setHeader('set-cookie', serializeClearSessionCookie(shouldSetSecureCookie(req)));
   writeJson(res, 200, sessionResponse(undefined));
+}
+
+async function handleListAuditEvents(
+  req: IncomingMessage,
+  res: ServerResponse,
+  url: URL,
+  store: WorkflowStore,
+  clock: Clock,
+): Promise<void> {
+  const session = await sessionFromRequest({ req, store, clock });
+  if (!session) {
+    throw new ApiError(401, 'Sign in required.');
+  }
+  const recordType = url.searchParams.get('recordType');
+  const recordId = url.searchParams.get('recordId');
+  const limitParam = url.searchParams.get('limit');
+  const limit = limitParam ? Math.max(1, Math.min(500, Number(limitParam) || 100)) : 100;
+  const events = await store.forWallet(session.walletAddress).listAuditEvents();
+  const filtered = events.filter((event) => {
+    const meta = event.metadata as Record<string, unknown> | undefined;
+    if (recordType) {
+      const metaRecordType = typeof meta?.recordType === 'string' ? meta.recordType : undefined;
+      const sourceRecordType = typeof meta?.sourceRecordType === 'string' ? meta.sourceRecordType : undefined;
+      const subjectType = typeof meta?.subjectType === 'string' ? meta.subjectType : undefined;
+      if (
+        metaRecordType !== recordType &&
+        sourceRecordType !== recordType &&
+        subjectType !== recordType &&
+        !event.type.startsWith(`${recordType}.`)
+      ) return false;
+    }
+    if (recordId) {
+      const metaRecordId = typeof meta?.recordId === 'string' ? meta.recordId : undefined;
+      const sourceRecordId = typeof meta?.sourceRecordId === 'string' ? meta.sourceRecordId : undefined;
+      const subjectId = typeof meta?.subjectId === 'string' ? meta.subjectId : undefined;
+      const approvalId = typeof meta?.approvalId === 'string' ? meta.approvalId : undefined;
+      if (
+        metaRecordId !== recordId &&
+        sourceRecordId !== recordId &&
+        subjectId !== recordId &&
+        approvalId !== recordId
+      ) return false;
+    }
+    return true;
+  });
+  filtered.sort((left, right) => right.createdAt.localeCompare(left.createdAt));
+  writeJson(res, 200, { events: filtered.slice(0, limit) });
 }
 
 async function handleHostedAiRequest(req: IncomingMessage, res: ServerResponse): Promise<void> {

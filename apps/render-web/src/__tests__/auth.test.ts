@@ -349,6 +349,46 @@ describe('render web cloud wallet auth', () => {
     expect(await store.forWallet(walletA).listAuditEvents()).toHaveLength(1);
     expect(await store.forWallet(walletB).listAuditEvents()).toEqual([]);
   });
+
+  it('lists audit events by related source record metadata', async () => {
+    const store = new MemoryWorkflowStore();
+    const clock = fixedClock('2026-05-08T18:00:00.000Z');
+    const wallet = createTestWallet();
+    const session = await createWalletSession({ store, walletAddress: wallet.walletAddress, clock });
+    await store.forWallet(wallet.walletAddress).insertAuditEvent({
+      id: 'audit_evidence_1',
+      type: 'evidence.created',
+      createdAt: '2026-05-08T18:00:01.000Z',
+      metadata: {
+        recordType: 'evidence',
+        recordId: 'evidence_1',
+        sourceRecordType: 'approval',
+        sourceRecordId: 'approval_1',
+        approvalId: 'approval_1',
+      },
+    });
+    await store.forWallet(wallet.walletAddress).insertAuditEvent({
+      id: 'audit_evidence_2',
+      type: 'evidence.created',
+      createdAt: '2026-05-08T18:00:02.000Z',
+      metadata: {
+        recordType: 'evidence',
+        recordId: 'evidence_2',
+        sourceRecordType: 'approval',
+        sourceRecordId: 'approval_2',
+        approvalId: 'approval_2',
+      },
+    });
+
+    await withServer(async (port) => {
+      const response = await getJson(port, '/api/audit?recordType=approval&recordId=approval_1', {
+        cookie: `agentic_session=${session.token}`,
+      });
+
+      expect(response.status).toBe(200);
+      expect((response.body.events as Array<Record<string, unknown>>).map((event) => event.id)).toEqual(['audit_evidence_1']);
+    }, { store, clock });
+  });
 });
 
 async function withServer(

@@ -44,3 +44,17 @@ services:
         fromDatabase:
           name: agentic-postgres
           property: connectionString
+
+  - type: cron
+    name: agentic-recurring-notifications
+    runtime: node
+    schedule: "* * * * *"
+    buildCommand: pnpm install --frozen-lockfile --ignore-scripts && pnpm -F @solana-agent-wallet-adapter/render-web build
+    startCommand: pnpm -F @solana-agent-wallet-adapter/render-web notifications:deliver
+    envVars:
+      - key: SKIP_INSTALL_DEPS
+        value: "true"
+      - key: DATABASE_URL
+        fromDatabase:
+          name: agentic-postgres
+          property: connectionString

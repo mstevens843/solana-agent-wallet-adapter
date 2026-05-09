@@ -24,6 +24,13 @@ export interface AgentWalletConfig {
     baseUrl: string;
     apiKeyEnv: string;
   };
+  recurring?: RecurringPolicyConfig;
+}
+
+export interface RecurringPolicyConfig {
+  maxLifetimeAmount?: Record<string, string>;
+  maxPerWeekAmount?: Record<string, string>;
+  maxPerMonthAmount?: Record<string, string>;
 }
 
 export const WSOL_MINT = 'So11111111111111111111111111111111111111112';
@@ -73,7 +80,8 @@ export function normalizeConfig(input: Partial<AgentWalletConfig>): AgentWalletC
     ...DEFAULT_CONFIG.jupiter,
     ...(input.jupiter ?? {}),
   };
-  return { cluster, rpcUrl, mainnet, tokens, jupiter };
+  const recurring = input.recurring;
+  return { cluster, rpcUrl, mainnet, tokens, jupiter, ...(recurring !== undefined && { recurring }) };
 }
 
 export function requireMainnetEnabled(config: AgentWalletConfig): void {

@@ -1,15 +1,22 @@
 import type { IncomingMessage, ServerResponse } from 'node:http';
 
+import type {
+  RecurringNotificationDeliveryRecord,
+  RecurringNotificationStore,
+} from './notificationService.js';
 import {
   RecurringService,
   RecurringServiceError,
   RecurringValidationError,
+  RECURRING_OCCURRENCE_STATUSES,
   WorkflowValidationError,
+  buildScheduleView,
   validateCreateRecurringRequest,
   validateRecurringId,
   validateUpdateRecurringRequest,
   type RecurringAuditEvent,
   type RecurringOccurrenceRecord,
+  type RecurringOccurrenceStatus,
   type RecurringScheduleRecord,
   type RecurringSession,
   type RecurringStore,
@@ -23,6 +30,7 @@ const cloudStoreRecurringState = new WeakMap<CloudSessionStore, RecurringStoreSt
 interface RecurringStoreState {
   schedules: Map<string, RecurringScheduleRecord>;
   occurrences: Map<string, RecurringOccurrenceRecord>;
+  notificationDeliveries: Map<string, RecurringNotificationDeliveryRecord>;
 }
 
 export interface RecurringRouteContext {
@@ -44,12 +52,13 @@ export function createRecurringApiHandler(context: RecurringRouteContext): Recur
   });
 }
 
-export function recurringStoreAdapterForCloudStore(store: CloudSessionStore): RecurringStore {
+export function recurringStoreAdapterForCloudStore(store: CloudSessionStore): RecurringStore & RecurringNotificationStore {
   let state = cloudStoreRecurringState.get(store);
   if (!state) {
     state = {
       schedules: new Map(),
       occurrences: new Map(),
+      notificationDeliveries: new Map(),
     };
     cloudStoreRecurringState.set(store, state);
   }
@@ -132,6 +141,30 @@ export function recurringStoreAdapterForCloudStore(store: CloudSessionStore): Re
       for (const record of state.schedules.values()) wallets.add(record.walletAddress);
       return [...wallets];
     },
+    async saveNotificationDelivery(record) {
+      state.notificationDeliveries.set(record.id, clone(record));
+    },
+    async findNotificationDelivery(walletAddress, occurrenceId, type) {
+      for (const record of state.notificationDeliveries.values()) {
+        if (
+          record.walletAddress === walletAddress &&
+          record.occurrenceId === occurrenceId &&
+          record.type === type
+        ) {
+          return clone(record);
+        }
+      }
+      return undefined;
+    },
+    async listDueNotificationDeliveries(nowIso, limit) {
+      const now = Date.parse(nowIso);
+      return [...state.notificationDeliveries.values()]
+        .filter((record) => record.status === 'pending' || record.status === 'failed')
+        .filter((record) => Date.parse(record.nextAttemptAt) <= now)
+        .sort((left, right) => left.nextAttemptAt.localeCompare(right.nextAttemptAt))
+        .slice(0, limit)
+        .map(clone);
+    },
   };
 }
 
@@ -151,7 +184,7 @@ export async function handleRecurringApiRequest(
 ): Promise<boolean> {
   try {
     const url = new URL(req.url ?? '/', `http://${req.headers.host ?? 'localhost'}`);
-    const route = matchRecurringRoute(url.pathname);
+    const route = matchRecurringRoute(url.pathname, url);
     if (!route) return false;
 
     const session = await context.getSession(req);
@@ -170,6 +203,15 @@ export async function handleRecurringApiRequest(
       case 'materialize':
         await handleMaterialize(req, res, context.service, session);
         return true;
+      case 'occurrences':
+        await handleOccurrences(req, res, context.service, session, route.id, route.url);
+        return true;
+      case 'pause':
+        await handlePauseResume(req, res, context.service, session, route.id, 'paused');
+        return true;
+      case 'resume':
+        await handlePauseResume(req, res, context.service, session, route.id, 'active');
+        return true;
     }
   } catch (err) {
     writeRouteError(res, err);
@@ -180,11 +222,22 @@ export async function handleRecurringApiRequest(
 type RecurringRoute =
   | { name: 'collection' }
   | { name: 'item'; id: string }
-  | { name: 'materialize' };
+  | { name: 'materialize' }
+  | { name: 'occurrences'; id: string; url: URL }
+  | { name: 'pause'; id: string }
+  | { name: 'resume'; id: string };
 
-function matchRecurringRoute(pathname: string): RecurringRoute | undefined {
+function matchRecurringRoute(pathname: string, url?: URL): RecurringRoute | undefined {
   if (pathname === '/api/recurring') return { name: 'collection' };
   if (pathname === '/api/recurring/materialize-due') return { name: 'materialize' };
+  const occurrencesMatch = /^\/api\/recurring\/([^/]+)\/occurrences$/.exec(pathname);
+  if (occurrencesMatch?.[1] && url) {
+    return { name: 'occurrences', id: validateRecurringId(occurrencesMatch[1]), url };
+  }
+  const pauseMatch = /^\/api\/recurring\/([^/]+)\/pause$/.exec(pathname);
+  if (pauseMatch?.[1]) return { name: 'pause', id: validateRecurringId(pauseMatch[1]) };
+  const resumeMatch = /^\/api\/recurring\/([^/]+)\/resume$/.exec(pathname);
+  if (resumeMatch?.[1]) return { name: 'resume', id: validateRecurringId(resumeMatch[1]) };
   const match = /^\/api\/recurring\/([^/]+)$/.exec(pathname);
   if (match?.[1]) return { name: 'item', id: validateRecurringId(match[1]) };
   return undefined;
@@ -198,12 +251,25 @@ async function handleCollection(
 ): Promise<void> {
   if (req.method === 'POST') {
     const schedule = await service.createSchedule(session, validateCreateRecurringRequest(await readJsonBody(req)));
-    writeJson(res, 201, { schedule });
+    const view = buildScheduleView(schedule);
+    writeJson(res, 201, {
+      schedule: view.schedule,
+      lifetimeSpend: view.lifetimeSpend,
+      nextRuns: view.nextRuns,
+    });
     return;
   }
   if (req.method === 'GET') {
     await service.materializeDueOccurrences(session);
-    writeJson(res, 200, await service.listSchedules(session));
+    const list = await service.listSchedules(session);
+    const views = list.schedules.map((s) => buildScheduleView(s));
+    writeJson(res, 200, {
+      schedules: views.map((v) => v.schedule),
+      occurrences: list.occurrences,
+      views: Object.fromEntries(
+        views.map((v) => [v.schedule.id, { lifetimeSpend: v.lifetimeSpend, nextRuns: v.nextRuns }]),
+      ),
+    });
     return;
   }
   methodNotAllowed(res);
@@ -218,7 +284,12 @@ async function handleItem(
 ): Promise<void> {
   if (req.method === 'PATCH') {
     const schedule = await service.updateSchedule(session, id, validateUpdateRecurringRequest(await readJsonBody(req)));
-    writeJson(res, 200, { schedule });
+    const view = buildScheduleView(schedule);
+    writeJson(res, 200, {
+      schedule: view.schedule,
+      lifetimeSpend: view.lifetimeSpend,
+      nextRuns: view.nextRuns,
+    });
     return;
   }
   if (req.method === 'DELETE') {
@@ -227,7 +298,12 @@ async function handleItem(
     return;
   }
   if (req.method === 'GET') {
-    writeJson(res, 200, { schedule: await service.getSchedule(session, id) });
+    const view = buildScheduleView(await service.getSchedule(session, id));
+    writeJson(res, 200, {
+      schedule: view.schedule,
+      lifetimeSpend: view.lifetimeSpend,
+      nextRuns: view.nextRuns,
+    });
     return;
   }
   methodNotAllowed(res);
@@ -245,6 +321,62 @@ async function handleMaterialize(
   }
   const results = await service.materializeDueOccurrences(session);
   writeJson(res, 200, { results });
+}
+
+async function handleOccurrences(
+  req: IncomingMessage,
+  res: ServerResponse,
+  service: RecurringService,
+  session: RecurringSession,
+  scheduleId: string,
+  url: URL,
+): Promise<void> {
+  if (req.method !== 'GET') {
+    methodNotAllowed(res);
+    return;
+  }
+  const statusParam = parseOccurrenceStatusParam(url.searchParams.get('status'));
+  const cursor = url.searchParams.get('cursor') ?? undefined;
+  const limitParam = url.searchParams.get('limit');
+  const limit = limitParam ? Math.min(Math.max(parseInt(limitParam, 10) || 0, 1), 200) : 50;
+  const result = await service.listScheduleOccurrences(session, scheduleId, {
+    ...(statusParam ? { status: statusParam as RecurringOccurrenceRecord['status'] } : {}),
+    cursor,
+    limit,
+  });
+  writeJson(res, 200, result);
+}
+
+function parseOccurrenceStatusParam(value: string | null): RecurringOccurrenceStatus | undefined {
+  if (!value) return undefined;
+  if ((RECURRING_OCCURRENCE_STATUSES as readonly string[]).includes(value)) {
+    return value as RecurringOccurrenceStatus;
+  }
+  throw new RecurringValidationError(
+    'invalid_occurrence_status',
+    `status must be one of ${RECURRING_OCCURRENCE_STATUSES.join(', ')}.`,
+  );
+}
+
+async function handlePauseResume(
+  req: IncomingMessage,
+  res: ServerResponse,
+  service: RecurringService,
+  session: RecurringSession,
+  scheduleId: string,
+  nextStatus: 'paused' | 'active',
+): Promise<void> {
+  if (req.method !== 'POST') {
+    methodNotAllowed(res);
+    return;
+  }
+  const schedule = await service.updateSchedule(session, scheduleId, { status: nextStatus });
+  const view = buildScheduleView(schedule);
+  writeJson(res, 200, {
+    schedule: view.schedule,
+    lifetimeSpend: view.lifetimeSpend,
+    nextRuns: view.nextRuns,
+  });
 }
 
 async function readJsonBody(req: IncomingMessage): Promise<unknown> {

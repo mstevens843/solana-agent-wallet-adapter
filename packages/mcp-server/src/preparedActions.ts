@@ -2,10 +2,15 @@ import { mkdir, readFile, rename, writeFile } from 'node:fs/promises';
 import { dirname, resolve } from 'node:path';
 
 import type { Cluster } from '@solana-agent-wallet-adapter/core';
+import {
+  latestDueOccurrence,
+  nextFutureOccurrence,
+  type RecurringCadence as WorkflowRecurringCadence,
+} from '@solana-agent-wallet-adapter/workflow';
 
 export type PreparedActionKind = 'transfer_sol' | 'transfer_spl' | 'swap';
 export type PreparedActionTxStatus = 'pending' | 'confirmed' | 'failed';
-export type RecurringCadence = 'weekly' | 'monthly' | 'interval_days' | 'interval_hours' | 'interval_minutes';
+export type RecurringCadence = WorkflowRecurringCadence;
 
 export type PreparedActionStatus =
   | 'scheduled'
@@ -60,8 +65,15 @@ export interface RecurringPayment {
   maxOccurrences?: number;
   occurrencesCreated?: number;
   note?: string;
+  expiresAt?: string;
+  notifications?: RecurringPaymentNotifications;
   createdAt: string;
   updatedAt: string;
+}
+
+export interface RecurringPaymentNotifications {
+  inApp?: boolean;
+  webhookUrl?: string;
 }
 
 export interface RecurringPaymentView extends RecurringPayment {
@@ -234,10 +246,13 @@ export class JsonPreparedActionStore implements PreparedActionStore {
   async listRecurringPaymentViews(now = new Date()): Promise<RecurringPaymentView[]> {
     const state = await this.read();
     return state.recurringPayments
-      .map((payment) => ({
-        ...payment,
-        ...(nextRecurringOccurrence(payment, now) ? { nextDueAt: nextRecurringOccurrence(payment, now)!.dueAt.toISOString() } : {}),
-      }))
+      .map((payment) => {
+        const nextDueAt = nextRecurringDueAt(payment, now);
+        return {
+          ...payment,
+          ...(nextDueAt ? { nextDueAt } : {}),
+        };
+      })
       .sort((left, right) => {
         const leftDue = left.nextDueAt ?? '9999-12-31T23:59:59.999Z';
         const rightDue = right.nextDueAt ?? '9999-12-31T23:59:59.999Z';
@@ -282,7 +297,13 @@ export class JsonPreparedActionStore implements PreparedActionStore {
         if (payment.maxOccurrences !== undefined && (payment.occurrencesCreated ?? 0) >= payment.maxOccurrences) {
           continue;
         }
-        const occurrence = latestRecurringOccurrence(payment, now);
+        if (payment.expiresAt) {
+          const expiry = new Date(payment.expiresAt);
+          if (!Number.isNaN(expiry.getTime()) && now.getTime() >= expiry.getTime()) {
+            continue;
+          }
+        }
+        const occurrence = latestDueOccurrence(payment, now);
         if (!occurrence || occurrence.dueAt.getTime() > now.getTime()) continue;
         const exists = state.actions.some(
           (action) => action.recurringId === payment.id && action.occurrenceKey === occurrence.key,
@@ -398,124 +419,15 @@ export function defaultPreparedActionStorePath(): string {
   return resolve(process.cwd(), '.agent-wallet', 'prepared-actions.json');
 }
 
-function latestRecurringOccurrence(
-  payment: RecurringPayment,
-  now: Date,
-): { dueAt: Date; key: string } | null {
-  const startAt = recurringStartAt(payment);
-  if (!startAt) {
-    return null;
-  }
-  let occurrence: { dueAt: Date; key: string } | null;
-  switch (payment.cadence) {
-    case 'weekly':
-      occurrence = latestWeeklyOccurrence(payment, now);
-      break;
-    case 'monthly':
-      occurrence = latestMonthlyOccurrence(payment, now);
-      break;
-    case 'interval_days':
-      occurrence = latestIntervalOccurrence(payment, now, payment.intervalDays, 24 * 60 * 60 * 1000);
-      break;
-    case 'interval_hours':
-      occurrence = latestIntervalOccurrence(payment, now, payment.intervalHours, 60 * 60 * 1000);
-      break;
-    case 'interval_minutes':
-      occurrence = latestIntervalOccurrence(payment, now, payment.intervalMinutes, 60 * 1000);
-      break;
-  }
-  if (!occurrence || occurrence.dueAt.getTime() < startAt.getTime()) {
-    return null;
-  }
-  return occurrence;
-}
-
 export function nextRecurringDueAt(payment: RecurringPayment, now = new Date()): string | null {
-  return nextRecurringOccurrence(payment, now)?.dueAt.toISOString() ?? null;
-}
-
-function nextRecurringOccurrence(
-  payment: RecurringPayment,
-  now: Date,
-): { dueAt: Date; key: string } | null {
-  const startAt = recurringStartAt(payment);
-  if (!startAt) return null;
   if (payment.status !== 'active') return null;
-  if (payment.maxOccurrences !== undefined && (payment.occurrencesCreated ?? 0) >= payment.maxOccurrences) {
+  if (
+    payment.maxOccurrences !== undefined &&
+    (payment.occurrencesCreated ?? 0) >= payment.maxOccurrences
+  ) {
     return null;
   }
-  switch (payment.cadence) {
-    case 'weekly':
-      return nextWeeklyOccurrence(payment, now, startAt);
-    case 'monthly':
-      return nextMonthlyOccurrence(payment, now, startAt);
-    case 'interval_days':
-      return nextIntervalOccurrence(payment, now, payment.intervalDays, 24 * 60 * 60 * 1000);
-    case 'interval_hours':
-      return nextIntervalOccurrence(payment, now, payment.intervalHours, 60 * 60 * 1000);
-    case 'interval_minutes':
-      return nextIntervalOccurrence(payment, now, payment.intervalMinutes, 60 * 1000);
-  }
-}
-
-function nextWeeklyOccurrence(
-  payment: RecurringPayment,
-  now: Date,
-  startAt: Date,
-): { dueAt: Date; key: string } | null {
-  if (!payment.localTime || !Number.isInteger(payment.dayOfWeek) || payment.dayOfWeek === undefined) return null;
-  const time = parseLocalTime(payment.localTime);
-  if (!time) return null;
-  const dueAt = new Date(now);
-  dueAt.setHours(time.hour, time.minute, 0, 0);
-  const daysForward = (payment.dayOfWeek - dueAt.getDay() + 7) % 7;
-  dueAt.setDate(dueAt.getDate() + daysForward);
-  if (dueAt.getTime() <= now.getTime()) {
-    dueAt.setDate(dueAt.getDate() + 7);
-  }
-  while (dueAt.getTime() < startAt.getTime()) {
-    dueAt.setDate(dueAt.getDate() + 7);
-  }
-  return { dueAt, key: dueAt.toISOString().slice(0, 10) };
-}
-
-function nextMonthlyOccurrence(
-  payment: RecurringPayment,
-  now: Date,
-  startAt: Date,
-): { dueAt: Date; key: string } | null {
-  if (!payment.localTime || !Number.isInteger(payment.dayOfMonth) || payment.dayOfMonth === undefined) return null;
-  const time = parseLocalTime(payment.localTime);
-  if (!time) return null;
-  let dueAt = clampedMonthlyDate(now.getFullYear(), now.getMonth(), payment.dayOfMonth, time.hour, time.minute);
-  if (dueAt.getTime() <= now.getTime()) {
-    dueAt = clampedMonthlyDate(now.getFullYear(), now.getMonth() + 1, payment.dayOfMonth, time.hour, time.minute);
-  }
-  while (dueAt.getTime() < startAt.getTime()) {
-    dueAt = clampedMonthlyDate(dueAt.getFullYear(), dueAt.getMonth() + 1, payment.dayOfMonth, time.hour, time.minute);
-  }
-  return { dueAt, key: dueAt.toISOString().slice(0, 10) };
-}
-
-function nextIntervalOccurrence(
-  payment: RecurringPayment,
-  now: Date,
-  interval: number | undefined,
-  intervalMs: number,
-): { dueAt: Date; key: string } | null {
-  if (!Number.isInteger(interval) || interval === undefined || interval < 1) return null;
-  const anchor = recurringStartAt(payment);
-  if (!anchor) return null;
-  const totalIntervalMs = interval * intervalMs;
-  const dueAt = new Date(anchor);
-  if (dueAt.getTime() <= now.getTime()) {
-    const elapsedMs = now.getTime() - dueAt.getTime();
-    dueAt.setTime(dueAt.getTime() + (Math.floor(elapsedMs / totalIntervalMs) + 1) * totalIntervalMs);
-  }
-  return {
-    dueAt,
-    key: payment.cadence === 'interval_days' ? dueAt.toISOString().slice(0, 10) : dueAt.toISOString(),
-  };
+  return nextFutureOccurrence(payment, now)?.dueAt.toISOString() ?? null;
 }
 
 function actionReceipt(action: PreparedAction): ActionReceipt {
@@ -561,103 +473,6 @@ function actionReceipt(action: PreparedAction): ActionReceipt {
 function explorerUrl(txid: string, cluster: Cluster): string {
   const clusterParam = cluster === 'mainnet-beta' ? '' : `?cluster=${cluster}`;
   return `https://solscan.io/tx/${txid}${clusterParam}`;
-}
-
-function latestWeeklyOccurrence(
-  payment: RecurringPayment,
-  now: Date,
-): { dueAt: Date; key: string } | null {
-  if (!payment.localTime) {
-    return null;
-  }
-  const [hourRaw, minuteRaw] = payment.localTime.split(':');
-  const hour = Number(hourRaw);
-  const minute = Number(minuteRaw);
-  if (!Number.isInteger(hour) || !Number.isInteger(minute) || hour < 0 || hour > 23 || minute < 0 || minute > 59) {
-    return null;
-  }
-  if (!Number.isInteger(payment.dayOfWeek) || payment.dayOfWeek === undefined) {
-    return null;
-  }
-  const dueAt = new Date(now);
-  dueAt.setHours(hour, minute, 0, 0);
-  const daysBack = (dueAt.getDay() - payment.dayOfWeek + 7) % 7;
-  dueAt.setDate(dueAt.getDate() - daysBack);
-  if (dueAt.getTime() > now.getTime()) {
-    dueAt.setDate(dueAt.getDate() - 7);
-  }
-  return { dueAt, key: dueAt.toISOString().slice(0, 10) };
-}
-
-function latestMonthlyOccurrence(
-  payment: RecurringPayment,
-  now: Date,
-): { dueAt: Date; key: string } | null {
-  if (!payment.localTime) {
-    return null;
-  }
-  const time = parseLocalTime(payment.localTime);
-  if (!time || !Number.isInteger(payment.dayOfMonth) || payment.dayOfMonth === undefined) {
-    return null;
-  }
-  const dueAt = clampedMonthlyDate(now.getFullYear(), now.getMonth(), payment.dayOfMonth, time.hour, time.minute);
-  if (dueAt.getTime() > now.getTime()) {
-    dueAt.setMonth(dueAt.getMonth() - 1);
-    const previous = clampedMonthlyDate(dueAt.getFullYear(), dueAt.getMonth(), payment.dayOfMonth, time.hour, time.minute);
-    return { dueAt: previous, key: previous.toISOString().slice(0, 10) };
-  }
-  return { dueAt, key: dueAt.toISOString().slice(0, 10) };
-}
-
-function latestIntervalOccurrence(
-  payment: RecurringPayment,
-  now: Date,
-  interval: number | undefined,
-  intervalMs: number,
-): { dueAt: Date; key: string } | null {
-  if (!Number.isInteger(interval) || interval === undefined || interval < 1) {
-    return null;
-  }
-  const anchor = new Date(payment.startAt ?? payment.createdAt);
-  if (Number.isNaN(anchor.getTime())) {
-    return null;
-  }
-  const dueAt = new Date(anchor);
-  const time = payment.localTime ? parseLocalTime(payment.localTime) : null;
-  if (time && payment.cadence === 'interval_days') {
-    dueAt.setHours(time.hour, time.minute, 0, 0);
-  }
-  if (dueAt.getTime() > now.getTime()) {
-    return null;
-  }
-  const elapsedMs = now.getTime() - dueAt.getTime();
-  const totalIntervalMs = interval * intervalMs;
-  const intervalsElapsed = Math.floor(elapsedMs / totalIntervalMs);
-  dueAt.setTime(dueAt.getTime() + intervalsElapsed * totalIntervalMs);
-  return {
-    dueAt,
-    key: payment.cadence === 'interval_days' ? dueAt.toISOString().slice(0, 10) : dueAt.toISOString(),
-  };
-}
-
-function recurringStartAt(payment: RecurringPayment): Date | null {
-  const startAt = new Date(payment.startAt ?? payment.createdAt);
-  return Number.isNaN(startAt.getTime()) ? null : startAt;
-}
-
-function parseLocalTime(localTime: string): { hour: number; minute: number } | null {
-  const [hourRaw, minuteRaw] = localTime.split(':');
-  const hour = Number(hourRaw);
-  const minute = Number(minuteRaw);
-  if (!Number.isInteger(hour) || !Number.isInteger(minute) || hour < 0 || hour > 23 || minute < 0 || minute > 59) {
-    return null;
-  }
-  return { hour, minute };
-}
-
-function clampedMonthlyDate(year: number, month: number, dayOfMonth: number, hour: number, minute: number): Date {
-  const lastDay = new Date(year, month + 1, 0).getDate();
-  return new Date(year, month, Math.min(dayOfMonth, lastDay), hour, minute, 0, 0);
 }
 
 function statusForDueAt(dueAt: string, now: Date): PreparedActionStatus {

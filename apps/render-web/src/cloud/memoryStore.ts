@@ -10,6 +10,7 @@ import type {
   AuditEventRecord as WorkflowAuditEventRecord,
   CompletedRecord,
   PlanDraftRecord,
+  TransactionFinalizationRecord,
 } from '@solana-agent-wallet-adapter/workflow';
 import type { WorkflowStore as OneTimeWorkflowStore } from './workflowService.js';
 
@@ -20,6 +21,7 @@ export class MemoryWorkflowStore implements SessionWorkflowStore, OneTimeWorkflo
   private readonly plans = new Map<string, PlanDraftRecord>();
   private readonly approvals = new Map<string, ApprovalRequestRecord>();
   private readonly completed = new Map<string, CompletedRecord>();
+  private readonly finalizations = new Map<string, TransactionFinalizationRecord>();
 
   async createAuthNonce(record: AuthNonceRecord): Promise<void> {
     await this.cleanupExpired(record.createdAt);
@@ -145,6 +147,21 @@ export class MemoryWorkflowStore implements SessionWorkflowStore, OneTimeWorkflo
     const record = this.completed.get(id);
     if (!record || record.walletAddress !== walletAddress) return false;
     return this.completed.delete(id);
+  }
+
+  async listFinalizations(walletAddress: string, approvalRequestId?: string): Promise<TransactionFinalizationRecord[]> {
+    return [...this.finalizations.values()]
+      .filter((record) => record.walletAddress === walletAddress)
+      .filter((record) => approvalRequestId === undefined || record.approvalRequestId === approvalRequestId)
+      .map(clone);
+  }
+
+  async getFinalization(walletAddress: string, id: string): Promise<TransactionFinalizationRecord | undefined> {
+    return ownerClone(this.finalizations.get(id), walletAddress);
+  }
+
+  async saveFinalization(walletAddress: string, record: TransactionFinalizationRecord): Promise<void> {
+    this.finalizations.set(record.id, clone({ ...record, walletAddress }));
   }
 
   async appendAuditEvent(walletAddress: string, record: WorkflowAuditEventRecord): Promise<void> {

@@ -1,17 +1,51 @@
-import { randomUUID } from 'node:crypto';
+import { randomBytes, randomUUID } from 'node:crypto';
 
+import * as workflowCadence from '@solana-agent-wallet-adapter/workflow';
 import {
+  formatOccurrenceStatus,
   type CreateRecurringRequest,
   type JsonObject,
   type MaterializeResult,
-  type RecurringCadence,
   type RecurringListResponse,
   type RecurringOccurrenceRecord,
   type RecurringScheduleRecord,
   type UpdateRecurringRequest,
+  type StatusLabel,
 } from '@solana-agent-wallet-adapter/workflow';
 
 import { redactSecrets } from './redaction.js';
+
+export function scrubScheduleForResponse(record: RecurringScheduleRecord): RecurringScheduleRecord {
+  if (!record.notifications?.webhookSecret) return record;
+  const { webhookSecret, ...safeNotifications } = record.notifications;
+  return { ...record, notifications: safeNotifications };
+}
+
+export function scrubSchedulesForResponse(records: RecurringScheduleRecord[]): RecurringScheduleRecord[] {
+  return records.map(scrubScheduleForResponse);
+}
+
+const NEXT_RUNS_PREVIEW_COUNT = 5;
+
+export interface ScheduleView {
+  schedule: RecurringScheduleRecord;
+  lifetimeSpend: workflowCadence.LifetimeSpend;
+  nextRuns: string[];
+}
+
+export function buildScheduleView(
+  record: RecurringScheduleRecord,
+  now: Date = new Date(),
+): ScheduleView {
+  const safe = scrubScheduleForResponse(record);
+  return {
+    schedule: safe,
+    lifetimeSpend: workflowCadence.lifetimeSpendEstimate(safe, safe.amount, now),
+    nextRuns: workflowCadence.previewUpcoming(safe, now, NEXT_RUNS_PREVIEW_COUNT).map((o) =>
+      o.dueAt.toISOString(),
+    ),
+  };
+}
 
 const RECOVERABLE_OCCURRENCE_AGE_MS = 30_000;
 
@@ -75,6 +109,40 @@ export interface RecurringOccurrenceClaim {
   created: boolean;
   occurrence: RecurringOccurrenceRecord;
 }
+
+export interface RecurringOccurrenceApprovalSummary {
+  id: string;
+  status: string;
+  decidedAt?: string;
+  txid?: string;
+  txStatus?: string;
+  explorerUrl?: string;
+}
+
+export interface RecurringOccurrenceCompletedSummary {
+  id: string;
+  status: string;
+  completedAt: string;
+  txid?: string;
+  explorerUrl?: string;
+}
+
+export interface RecurringOccurrenceHydration {
+  occurrenceId: string;
+  approval?: RecurringOccurrenceApprovalSummary;
+  completed?: RecurringOccurrenceCompletedSummary;
+}
+
+export interface RecurringOccurrenceView extends RecurringOccurrenceRecord {
+  statusLabel: StatusLabel;
+  approval?: RecurringOccurrenceApprovalSummary;
+  completed?: RecurringOccurrenceCompletedSummary;
+}
+
+export type RecurringOccurrenceHistoryHydrator = (
+  walletAddress: string,
+  occurrences: RecurringOccurrenceRecord[],
+) => Promise<RecurringOccurrenceHydration[]>;
 
 export class MemoryRecurringStore implements RecurringStore {
   private readonly schedules = new Map<string, RecurringScheduleRecord>();
@@ -196,11 +264,24 @@ export type ApprovalStatusReader = (
   approvalId: string,
 ) => Promise<{ status: string } | undefined>;
 
+export type RecurringPolicyEnforcer = (
+  schedule: RecurringScheduleRecord,
+) => { code: string; message: string } | null;
+
+export type RecurringNotificationSink = (input: {
+  walletAddress: string;
+  schedule: RecurringScheduleRecord;
+  occurrence: RecurringOccurrenceRecord;
+}) => Promise<void>;
+
 interface RecurringServiceOptions {
   clock?: () => Date;
   idFactory?: () => string;
   approvalSink?: ApprovalSink;
   approvalStatusReader?: ApprovalStatusReader;
+  policyEnforcer?: RecurringPolicyEnforcer;
+  occurrenceHistoryHydrator?: RecurringOccurrenceHistoryHydrator;
+  notificationSink?: RecurringNotificationSink;
 }
 
 export class RecurringService {
@@ -208,6 +289,9 @@ export class RecurringService {
   private readonly idFactory: () => string;
   private readonly approvalSink: ApprovalSink | undefined;
   private readonly approvalStatusReader: ApprovalStatusReader | undefined;
+  private readonly policyEnforcer: RecurringPolicyEnforcer | undefined;
+  private readonly occurrenceHistoryHydrator: RecurringOccurrenceHistoryHydrator | undefined;
+  private readonly notificationSink: RecurringNotificationSink | undefined;
 
   constructor(
     private readonly store: RecurringStore,
@@ -217,6 +301,17 @@ export class RecurringService {
     this.idFactory = options.idFactory ?? (() => randomUUID());
     this.approvalSink = options.approvalSink;
     this.approvalStatusReader = options.approvalStatusReader;
+    this.policyEnforcer = options.policyEnforcer;
+    this.occurrenceHistoryHydrator = options.occurrenceHistoryHydrator;
+    this.notificationSink = options.notificationSink;
+  }
+
+  private enforcePolicy(schedule: RecurringScheduleRecord): void {
+    if (!this.policyEnforcer) return;
+    const violation = this.policyEnforcer(schedule);
+    if (violation) {
+      throw new RecurringServiceError(409, violation.code, violation.message);
+    }
   }
 
   async createSchedule(session: RecurringSession, input: CreateRecurringRequest): Promise<RecurringScheduleRecord> {
@@ -244,10 +339,14 @@ export class RecurringService {
       ...(input.slippageBps !== undefined ? { slippageBps: input.slippageBps } : {}),
       ...(input.memo !== undefined ? { memo: input.memo } : {}),
       ...(input.note !== undefined ? { note: input.note } : {}),
+      ...(input.expiresAt !== undefined ? { expiresAt: input.expiresAt } : {}),
+      ...(input.notifications !== undefined ? { notifications: withWebhookSecret(input.notifications) } : {}),
       ...(input.riskMetadata !== undefined ? { riskMetadata: input.riskMetadata } : {}),
       ...(input.metadata !== undefined ? { metadata: input.metadata } : {}),
     };
     record.nextDueAt = this.computeNextDueAtIso(record) ?? undefined;
+
+    this.enforcePolicy(record);
 
     await this.store.saveSchedule(session.walletAddress, record);
     await this.audit(session, 'recurring.schedule.created', record.id);
@@ -262,6 +361,46 @@ export class RecurringService {
 
   async getSchedule(session: RecurringSession, id: string): Promise<RecurringScheduleRecord> {
     return this.requireSchedule(session, id);
+  }
+
+  async listScheduleOccurrences(
+    session: RecurringSession,
+    scheduleId: string,
+    opts: { status?: RecurringOccurrenceRecord['status']; cursor?: string; limit?: number } = {},
+  ): Promise<{ occurrences: RecurringOccurrenceView[]; nextCursor?: string }> {
+    await this.requireSchedule(session, scheduleId);
+    const all = await this.store.listOccurrences(session.walletAddress, scheduleId);
+    const filtered = opts.status ? all.filter((o) => o.status === opts.status) : all;
+    const sorted = [...filtered].sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+    const limit = opts.limit ?? 50;
+    const startIndex = opts.cursor ? sorted.findIndex((o) => o.id === opts.cursor) + 1 : 0;
+    const page = sorted.slice(startIndex, startIndex + limit);
+    const nextCursor = startIndex + limit < sorted.length ? page[page.length - 1]?.id : undefined;
+    return {
+      occurrences: await this.hydrateOccurrenceViews(session.walletAddress, page),
+      ...(nextCursor ? { nextCursor } : {}),
+    };
+  }
+
+  private async hydrateOccurrenceViews(
+    walletAddress: string,
+    occurrences: RecurringOccurrenceRecord[],
+  ): Promise<RecurringOccurrenceView[]> {
+    const hydrationByOccurrence = new Map<string, RecurringOccurrenceHydration>();
+    if (this.occurrenceHistoryHydrator && occurrences.length > 0) {
+      for (const hydration of await this.occurrenceHistoryHydrator(walletAddress, occurrences)) {
+        hydrationByOccurrence.set(hydration.occurrenceId, hydration);
+      }
+    }
+    return occurrences.map((occurrence) => {
+      const hydration = hydrationByOccurrence.get(occurrence.id);
+      return {
+        ...occurrence,
+        statusLabel: formatOccurrenceStatus(occurrence.status, hydration?.approval),
+        ...(hydration?.approval ? { approval: hydration.approval } : {}),
+        ...(hydration?.completed ? { completed: hydration.completed } : {}),
+      };
+    });
   }
 
   async updateSchedule(
@@ -282,8 +421,13 @@ export class RecurringService {
       createdAt: existing.createdAt,
       updatedAt: this.now(),
     };
+    if (input.notifications !== undefined) {
+      updated.notifications = withWebhookSecret(input.notifications, existing.notifications?.webhookSecret);
+    }
     assertCadenceFieldsForUpdate(updated);
     updated.nextDueAt = this.computeNextDueAtIso(updated) ?? undefined;
+
+    this.enforcePolicy(updated);
 
     await this.store.saveSchedule(session.walletAddress, updated);
     await this.audit(session, `recurring.schedule.updated`, updated.id, undefined, undefined, {
@@ -374,7 +518,22 @@ export class RecurringService {
       return { scheduleId: schedule.id, reason: 'completed' };
     }
 
-    const dueOccurrence = computeDueOccurrence(schedule, this.clock());
+    if (schedule.expiresAt) {
+      const expiry = new Date(schedule.expiresAt);
+      if (!Number.isNaN(expiry.getTime()) && this.clock().getTime() >= expiry.getTime()) {
+        const ended: RecurringScheduleRecord = {
+          ...schedule,
+          status: 'completed',
+          updatedAt: this.now(),
+          nextDueAt: undefined,
+        };
+        await this.store.saveSchedule(session.walletAddress, ended);
+        await this.audit(session, 'recurring.schedule.expired', schedule.id);
+        return { scheduleId: schedule.id, reason: 'completed' };
+      }
+    }
+
+    const dueOccurrence = workflowCadence.latestDueOccurrence(schedule, this.clock());
     if (!dueOccurrence) {
       return { scheduleId: schedule.id, reason: 'invalid' };
     }
@@ -450,6 +609,13 @@ export class RecurringService {
     }
     await this.store.saveSchedule(session.walletAddress, nextSchedule);
     await this.audit(session, 'recurring.materialized', schedule.id, occurrence.id, occurrenceKey);
+    if (this.notificationSink && (occurrence.status === 'ready' || occurrence.status === 'approval_pending')) {
+      await this.notificationSink({
+        walletAddress: session.walletAddress,
+        schedule: nextSchedule,
+        occurrence,
+      });
+    }
 
     return {
       scheduleId: schedule.id,
@@ -544,7 +710,7 @@ export class RecurringService {
     after?: Date,
   ): string | null {
     const referenceNow = after ?? this.clock();
-    const next = nextFutureOccurrence(schedule, referenceNow);
+    const next = workflowCadence.nextFutureOccurrence(schedule, referenceNow);
     return next ? next.dueAt.toISOString() : null;
   }
 
@@ -581,221 +747,6 @@ export class RecurringService {
   private id(prefix: string): string {
     return `${prefix}_${this.idFactory()}`;
   }
-}
-
-function computeDueOccurrence(
-  schedule: RecurringScheduleRecord,
-  now: Date,
-): { dueAt: Date; key: string } | null {
-  return computeNextOccurrence(schedule, now);
-}
-
-function nextFutureOccurrence(
-  schedule: RecurringScheduleRecord,
-  now: Date,
-): { dueAt: Date; key: string } | null {
-  const startAt = recurringStartAt(schedule);
-  if (!startAt) return null;
-  switch (schedule.cadence) {
-    case 'weekly':
-      return nextFutureWeekly(schedule, now, startAt);
-    case 'monthly':
-      return nextFutureMonthly(schedule, now, startAt);
-    case 'interval_days':
-      return nextFutureInterval(schedule, now, schedule.intervalDays, 24 * 60 * 60 * 1000);
-    case 'interval_hours':
-      return nextFutureInterval(schedule, now, schedule.intervalHours, 60 * 60 * 1000);
-    case 'interval_minutes':
-      return nextFutureInterval(schedule, now, schedule.intervalMinutes, 60 * 1000);
-    default:
-      return assertNeverCadence(schedule.cadence);
-  }
-}
-
-function nextFutureWeekly(
-  schedule: RecurringScheduleRecord,
-  now: Date,
-  startAt: Date,
-): { dueAt: Date; key: string } | null {
-  const time = parseLocalTime(schedule.localTime);
-  if (!time) return null;
-  if (!Number.isInteger(schedule.dayOfWeek) || schedule.dayOfWeek === undefined) return null;
-  const candidate = new Date(now.getTime());
-  candidate.setHours(time.hour, time.minute, 0, 0);
-  const daysForward = (schedule.dayOfWeek - candidate.getDay() + 7) % 7;
-  candidate.setDate(candidate.getDate() + daysForward);
-  if (candidate.getTime() <= now.getTime()) {
-    candidate.setDate(candidate.getDate() + 7);
-  }
-  while (candidate.getTime() < startAt.getTime()) {
-    candidate.setDate(candidate.getDate() + 7);
-  }
-  return { dueAt: candidate, key: candidate.toISOString().slice(0, 10) };
-}
-
-function nextFutureMonthly(
-  schedule: RecurringScheduleRecord,
-  now: Date,
-  startAt: Date,
-): { dueAt: Date; key: string } | null {
-  const time = parseLocalTime(schedule.localTime);
-  if (!time) return null;
-  if (!Number.isInteger(schedule.dayOfMonth) || schedule.dayOfMonth === undefined) return null;
-  let candidate = clampedMonthlyDate(now.getFullYear(), now.getMonth(), schedule.dayOfMonth, time.hour, time.minute);
-  if (candidate.getTime() <= now.getTime()) {
-    candidate = clampedMonthlyDate(candidate.getFullYear(), candidate.getMonth() + 1, schedule.dayOfMonth, time.hour, time.minute);
-  }
-  while (candidate.getTime() < startAt.getTime()) {
-    candidate = clampedMonthlyDate(candidate.getFullYear(), candidate.getMonth() + 1, schedule.dayOfMonth, time.hour, time.minute);
-  }
-  return { dueAt: candidate, key: monthlyKey(candidate) };
-}
-
-function nextFutureInterval(
-  schedule: RecurringScheduleRecord,
-  now: Date,
-  interval: number | undefined,
-  intervalMs: number,
-): { dueAt: Date; key: string } | null {
-  if (!Number.isInteger(interval) || interval === undefined || interval < 1) return null;
-  const anchor = recurringStartAt(schedule);
-  if (!anchor) return null;
-  const time = schedule.cadence === 'interval_days' ? parseLocalTime(schedule.localTime) : null;
-  const dueAt = new Date(anchor.getTime());
-  if (time) dueAt.setHours(time.hour, time.minute, 0, 0);
-  const totalIntervalMs = interval * intervalMs;
-  if (dueAt.getTime() > now.getTime()) {
-    return { dueAt, key: intervalKey(dueAt, schedule.cadence) };
-  }
-  const elapsedMs = now.getTime() - dueAt.getTime();
-  const intervalsToAdvance = Math.floor(elapsedMs / totalIntervalMs) + 1;
-  dueAt.setTime(dueAt.getTime() + intervalsToAdvance * totalIntervalMs);
-  return { dueAt, key: intervalKey(dueAt, schedule.cadence) };
-}
-
-function computeNextOccurrence(
-  schedule: RecurringScheduleRecord,
-  now: Date,
-): { dueAt: Date; key: string } | null {
-  const startAt = recurringStartAt(schedule);
-  if (!startAt) return null;
-  switch (schedule.cadence) {
-    case 'weekly':
-      return nextWeeklyOccurrence(schedule, now, startAt);
-    case 'monthly':
-      return nextMonthlyOccurrence(schedule, now, startAt);
-    case 'interval_days':
-      return nextIntervalOccurrence(schedule, now, schedule.intervalDays, 24 * 60 * 60 * 1000);
-    case 'interval_hours':
-      return nextIntervalOccurrence(schedule, now, schedule.intervalHours, 60 * 60 * 1000);
-    case 'interval_minutes':
-      return nextIntervalOccurrence(schedule, now, schedule.intervalMinutes, 60 * 1000);
-    default:
-      return assertNeverCadence(schedule.cadence);
-  }
-}
-
-function nextWeeklyOccurrence(
-  schedule: RecurringScheduleRecord,
-  now: Date,
-  startAt: Date,
-): { dueAt: Date; key: string } | null {
-  const time = parseLocalTime(schedule.localTime);
-  if (!time) return null;
-  if (!Number.isInteger(schedule.dayOfWeek) || schedule.dayOfWeek === undefined) return null;
-  const candidate = new Date(now.getTime());
-  candidate.setHours(time.hour, time.minute, 0, 0);
-  const daysBack = (candidate.getDay() - schedule.dayOfWeek + 7) % 7;
-  candidate.setDate(candidate.getDate() - daysBack);
-  if (candidate.getTime() < startAt.getTime()) {
-    while (candidate.getTime() < startAt.getTime()) {
-      candidate.setDate(candidate.getDate() + 7);
-    }
-  } else if (candidate.getTime() > now.getTime()) {
-    candidate.setDate(candidate.getDate() - 7);
-  }
-  if (candidate.getTime() < startAt.getTime()) return null;
-  if (candidate.getTime() > now.getTime()) {
-    return { dueAt: candidate, key: candidate.toISOString().slice(0, 10) };
-  }
-  return { dueAt: candidate, key: candidate.toISOString().slice(0, 10) };
-}
-
-function nextMonthlyOccurrence(
-  schedule: RecurringScheduleRecord,
-  now: Date,
-  startAt: Date,
-): { dueAt: Date; key: string } | null {
-  const time = parseLocalTime(schedule.localTime);
-  if (!time) return null;
-  if (!Number.isInteger(schedule.dayOfMonth) || schedule.dayOfMonth === undefined) return null;
-  let candidate = clampedMonthlyDate(now.getFullYear(), now.getMonth(), schedule.dayOfMonth, time.hour, time.minute);
-  if (candidate.getTime() > now.getTime()) {
-    candidate = clampedMonthlyDate(candidate.getFullYear(), candidate.getMonth() - 1, schedule.dayOfMonth, time.hour, time.minute);
-  }
-  while (candidate.getTime() < startAt.getTime()) {
-    candidate = clampedMonthlyDate(candidate.getFullYear(), candidate.getMonth() + 1, schedule.dayOfMonth, time.hour, time.minute);
-  }
-  if (candidate.getTime() > now.getTime()) {
-    return { dueAt: candidate, key: monthlyKey(candidate) };
-  }
-  return { dueAt: candidate, key: monthlyKey(candidate) };
-}
-
-function nextIntervalOccurrence(
-  schedule: RecurringScheduleRecord,
-  now: Date,
-  interval: number | undefined,
-  intervalMs: number,
-): { dueAt: Date; key: string } | null {
-  if (!Number.isInteger(interval) || interval === undefined || interval < 1) return null;
-  const anchor = recurringStartAt(schedule);
-  if (!anchor) return null;
-  const time = schedule.cadence === 'interval_days' ? parseLocalTime(schedule.localTime) : null;
-  const dueAt = new Date(anchor.getTime());
-  if (time) dueAt.setHours(time.hour, time.minute, 0, 0);
-  const totalIntervalMs = interval * intervalMs;
-  if (dueAt.getTime() > now.getTime()) {
-    return { dueAt, key: intervalKey(dueAt, schedule.cadence) };
-  }
-  const elapsedMs = now.getTime() - dueAt.getTime();
-  const intervalsElapsed = Math.floor(elapsedMs / totalIntervalMs);
-  dueAt.setTime(dueAt.getTime() + intervalsElapsed * totalIntervalMs);
-  return { dueAt, key: intervalKey(dueAt, schedule.cadence) };
-}
-
-function recurringStartAt(schedule: RecurringScheduleRecord): Date | null {
-  const value = new Date(schedule.startAt ?? schedule.createdAt);
-  return Number.isNaN(value.getTime()) ? null : value;
-}
-
-function parseLocalTime(value: string | undefined): { hour: number; minute: number } | null {
-  if (!value) return null;
-  const [hourRaw, minuteRaw] = value.split(':');
-  const hour = Number(hourRaw);
-  const minute = Number(minuteRaw);
-  if (!Number.isInteger(hour) || !Number.isInteger(minute) || hour < 0 || hour > 23 || minute < 0 || minute > 59) {
-    return null;
-  }
-  return { hour, minute };
-}
-
-function clampedMonthlyDate(year: number, month: number, dayOfMonth: number, hour: number, minute: number): Date {
-  const lastDay = new Date(year, month + 1, 0).getDate();
-  return new Date(year, month, Math.min(dayOfMonth, lastDay), hour, minute, 0, 0);
-}
-
-function monthlyKey(date: Date): string {
-  const month = String(date.getMonth() + 1).padStart(2, '0');
-  const day = String(date.getDate()).padStart(2, '0');
-  return `${date.getFullYear()}-${month}-${day}`;
-}
-
-function intervalKey(dueAt: Date, cadence: RecurringCadence): string {
-  if (cadence === 'interval_days') {
-    return monthlyKey(dueAt);
-  }
-  return dueAt.toISOString();
 }
 
 function sortByCreatedAt<T extends { createdAt: string }>(records: T[]): T[] {
@@ -891,4 +842,15 @@ function assertNeverCadence(cadence: never): never {
 
 function clone<T>(value: T): T {
   return JSON.parse(JSON.stringify(value)) as T;
+}
+
+function withWebhookSecret(
+  notifications: NonNullable<RecurringScheduleRecord['notifications']>,
+  existingSecret?: string,
+): NonNullable<RecurringScheduleRecord['notifications']> {
+  if (!notifications.webhookUrl) return { ...notifications };
+  return {
+    ...notifications,
+    webhookSecret: existingSecret ?? randomBytes(32).toString('hex'),
+  };
 }

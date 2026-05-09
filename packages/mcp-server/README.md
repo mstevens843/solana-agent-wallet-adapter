@@ -95,6 +95,16 @@ pnpm demo:browser
 
 Prepared actions use `.agent-wallet/prepared-actions.json` by default when started through `pnpm dev` and `pnpm mcp:codex:add`. Override with `AGENT_WALLET_PREPARED_ACTIONS` or `--prepared-actions`.
 
+Recurring payments are manual-approval schedules. Each due run becomes an Approval Inbox item; the bridge never signs or submits future runs by itself.
+
+Example MCP prompt:
+
+```text
+Use solana-agent-wallet to create a weekly Friday 10 USDC recurring payment to <recipient> for manual approval. Stop after 2026-12-31T00:00:00.000Z and notify https://example.com/agentic-webhook.
+```
+
+Supported recurring fields include `expiresAt`, `maxOccurrences`, and `notifications.inApp` / `notifications.webhookUrl`. Spend caps can be configured in `agent-wallet.config.json` under `recurring.maxLifetimeAmount`, `recurring.maxPerWeekAmount`, and `recurring.maxPerMonthAmount`.
+
 ## Claude Bridge Registration
 
 For Claude Code or Claude Desktop with a running bridge:

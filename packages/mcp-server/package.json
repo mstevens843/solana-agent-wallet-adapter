@@ -23,8 +23,8 @@
     "README.md"
   ],
   "scripts": {
-    "build": "pnpm -F @solana-agent-wallet-adapter/core build && pnpm -F @solana-agent-wallet-adapter/ios-link build && tsc -p tsconfig.json",
-    "typecheck": "pnpm -F @solana-agent-wallet-adapter/core build && pnpm -F @solana-agent-wallet-adapter/ios-link build && tsc -p tsconfig.json --noEmit",
+    "build": "pnpm -F @solana-agent-wallet-adapter/workflow build && pnpm -F @solana-agent-wallet-adapter/core build && pnpm -F @solana-agent-wallet-adapter/ios-link build && tsc -p tsconfig.json",
+    "typecheck": "pnpm -F @solana-agent-wallet-adapter/workflow build && pnpm -F @solana-agent-wallet-adapter/core build && pnpm -F @solana-agent-wallet-adapter/ios-link build && tsc -p tsconfig.json --noEmit",
     "test": "vitest run",
     "test:watch": "vitest",
     "clean": "rm -rf dist"
@@ -33,6 +33,7 @@
     "@modelcontextprotocol/sdk": "^1.0.0",
     "@solana-agent-wallet-adapter/core": "workspace:*",
     "@solana-agent-wallet-adapter/ios-link": "workspace:*",
+    "@solana-agent-wallet-adapter/workflow": "workspace:*",
     "@solana/web3.js": "^1.95.0",
     "zod": "^3.23.0"
   },

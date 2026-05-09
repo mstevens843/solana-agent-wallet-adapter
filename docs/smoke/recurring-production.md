@@ -1,0 +1,62 @@
+# Recurring Production Smoke
+
+Use this checklist against a local Render-web server or staging deployment with Postgres enabled.
+
+## Preconditions
+
+- Wallet can sign into Agentic Cloud.
+- `DATABASE_URL` and `SESSION_SECRET` are configured.
+- Run migrations before testing:
+
+```bash
+pnpm -F @solana-agent-wallet-adapter/render-web db:migrate
+```
+
+## Checklist
+
+1. Sign in to `/app` with a wallet.
+2. Open Recurring and create a weekly SOL or USDC schedule with:
+   - `maxOccurrences=3`
+   - `expiresAt` about ten days in the future
+   - optional webhook URL from a request inspector such as webhook.site
+3. Confirm the create form shows:
+   - next-run preview
+   - next-5 run list
+   - lifetime or rate spend estimate
+   - wallet-signature trust boundary
+4. Force materialization:
+
+```bash
+pnpm -F @solana-agent-wallet-adapter/render-web recurring:materialize
+```
+
+5. Refresh Approval Inbox and confirm one recurring approval appears.
+6. Approve or deny the occurrence from the wallet flow.
+7. Open Recurring history for the schedule and confirm:
+   - plain-English status label
+   - approval id summary
+   - completed receipt or txid when available
+8. Pause the schedule, run materialization again, and confirm no new occurrence is created.
+9. Resume the schedule and confirm future materialization resumes.
+10. If webhook URL was set, run:
+
+```bash
+pnpm -F @solana-agent-wallet-adapter/render-web notifications:deliver
+```
+
+11. Confirm webhook payload includes `type=recurring.occurrence.ready`, schedule id, occurrence id, amount, token, recipient, and signature header `x-agentic-signature`.
+12. Configure a low cap in `agent-wallet.config.json`:
+
+```json
+{
+  "recurring": {
+    "maxPerWeekAmount": { "SOL": "0.01" }
+  }
+}
+```
+
+13. Restart the server and confirm an over-cap weekly SOL schedule is rejected with `recurring_exceeds_policy`.
+
+## Expected Result
+
+Recurring plans feel inspectable and bounded: users can see upcoming runs, pause/resume, expiry, spend estimates, occurrence history, and webhook reminders while every occurrence still returns to the wallet for approval.

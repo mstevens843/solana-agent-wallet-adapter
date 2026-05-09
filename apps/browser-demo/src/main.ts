@@ -14,22 +14,35 @@ import {
 import {
   EVIDENCE_RECEIPT_KINDS,
   parseApprovalListResponse,
+  parseAuditEventRecord,
   parseApprovalRequestRecord,
   parseAuthNonceResponse,
   parseCompletedListResponse,
   parsePlanDraftRecord,
   parsePlanListResponse,
   parseRecurringListResponse,
+  parseRecurringOccurrenceRecord,
   parseRecurringScheduleRecord,
   parseSessionResponse,
+  formatOccurrenceStatus,
+  lifetimeSpendEstimate,
+  previewUpcoming,
+  type AiGuardrailReport,
   type ApprovalRequestRecord as WorkflowApprovalRequestRecord,
+  type AuditEventRecord as WorkflowAuditEventRecord,
   type AuthNonceResponse as WorkflowAuthNonceResponse,
+  type CadenceFields,
   type CompletedRecord as WorkflowCompletedRecord,
   type EvidenceReceiptKind,
+  type LifetimeSpend,
   type PlanDraftRecord as WorkflowPlanDraftRecord,
   type RecurringOccurrenceRecord as WorkflowRecurringOccurrenceRecord,
   type RecurringScheduleRecord as WorkflowRecurringScheduleRecord,
   type SessionResponse as WorkflowSessionResponse,
+  type StatusLabel,
+  type TransactionFinalizationRecord as WorkflowTransactionFinalizationRecord,
+  workflowDecisionProofMessage,
+  workflowFinalizationProofMessage,
 } from '@solana-agent-wallet-adapter/workflow';
 import {
   detectMwaEnvironment,
@@ -42,7 +55,7 @@ import {
   WalletStandardWebBackend,
   type DiscoveredWallet,
 } from '@solana-agent-wallet-adapter/wallet-standard-web';
-import { Connection, PublicKey, Transaction, TransactionInstruction } from '@solana/web3.js';
+import { Connection, PublicKey, SystemProgram, Transaction, TransactionInstruction } from '@solana/web3.js';
 
 import {
   AndroidNativeWalletBackend,
@@ -106,10 +119,21 @@ type TemplateOutcome = 'queueable' | 'proof' | 'audit';
 type TemplateOutcomeFilter = TemplateOutcome | 'all';
 type AiPlannerConfirmationStatus = 'untested' | 'confirmed' | 'failed';
 type RecurringPresetId = 'scheduled-transfer' | 'subscription';
-type PreparedActionKind = 'transfer_sol' | 'transfer_spl' | 'swap';
+type InlineReceiptKind = 'intent' | 'rejection' | 'policy' | 'review';
+type AuditRecordType = 'plan' | 'approval' | 'completed' | 'evidence';
+type PreparedActionKind = 'transfer_sol' | 'transfer_spl' | 'swap' | 'manual_review' | 'read_only' | 'custom_transaction' | 'custom';
 type GuidedDemoScenarioId = 'transfer' | 'swap' | 'dca' | 'payouts';
 type GuidedDemoStage = 'request' | 'prepared' | 'queued' | 'receipt';
 type GuidedDemoDecision = 'pending' | 'approved' | 'denied';
+type FirstRunStepId = 'wallet' | 'plan' | 'review' | 'decision' | 'receipt';
+type FirstRunActionId =
+  | 'discover-wallets'
+  | 'connect-wallet'
+  | 'open-create-plan'
+  | 'open-review'
+  | 'open-inbox'
+  | 'open-completed'
+  | 'cloud-sign-in';
 type PreparedActionStatus =
   | 'scheduled'
   | 'ready'
@@ -425,6 +449,7 @@ type CloudAuthNonceResponse = WorkflowAuthNonceResponse;
 type CloudPlanDraftRecord = WorkflowPlanDraftRecord;
 type CloudApprovalRequestRecord = WorkflowApprovalRequestRecord;
 type CloudCompletedRecord = WorkflowCompletedRecord;
+type CloudTransactionFinalizationRecord = WorkflowTransactionFinalizationRecord;
 
 interface GeneratedPlanRecord {
   id: string;
@@ -474,6 +499,14 @@ interface PreparedAction {
   activeRequestId?: string;
   txid?: string;
   txStatus?: PreparedActionTxStatus;
+  confirmationStatus?: string;
+  finalizationId?: string;
+  finalizationStatus?: string;
+  transactionHash?: string;
+  messageHash?: string;
+  quoteHash?: string;
+  simulationHash?: string;
+  finalization?: CloudTransactionFinalizationRecord;
   confirmedAt?: string;
   txError?: string;
   error?: string;
@@ -503,11 +536,44 @@ interface RecurringPayment {
   startAt?: string;
   maxOccurrences?: number;
   occurrencesCreated?: number;
+  expiresAt?: string;
+  notifications?: {
+    inApp?: boolean;
+    webhookUrl?: string;
+  };
+  lifetimeSpend?: LifetimeSpend;
+  nextRuns?: string[];
   note?: string;
   createdAt: string;
   updatedAt: string;
   nextDueAt?: string;
   workflowSource?: WorkflowRecordSource;
+}
+
+interface RecurringOccurrenceHistoryItem extends WorkflowRecurringOccurrenceRecord {
+  statusLabel?: StatusLabel;
+  approval?: {
+    id: string;
+    status: string;
+    decidedAt?: string;
+    txid?: string;
+    txStatus?: string;
+    explorerUrl?: string;
+  };
+  completed?: {
+    id: string;
+    status: string;
+    completedAt: string;
+    txid?: string;
+    explorerUrl?: string;
+  };
+}
+
+interface RecurringOccurrenceHistoryState {
+  occurrences: RecurringOccurrenceHistoryItem[];
+  nextCursor?: string;
+  loadedAt?: string;
+  error?: string;
 }
 
 interface ActionReceipt {
@@ -559,8 +625,11 @@ interface CompletedPlanRecord {
   recurringId?: string;
   occurrenceKey?: string;
   copyPayload: string;
+  trustBundlePayload?: string;
   detailRows: Array<[string, string]>;
   workflowSource?: WorkflowRecordSource;
+  decisionProofVerified?: boolean;
+  decisionProofMessage?: string;
 }
 
 interface BridgeHealth {
@@ -622,6 +691,7 @@ interface LabArtifact {
   signature: string;
   verified: boolean;
   artifactHash: string;
+  metadata?: JsonObject;
   cloudReceiptId?: string;
   bridgeArchived?: boolean;
 }
@@ -654,6 +724,8 @@ interface RecurringDraft {
   intervalMinutes: string;
   startAt: string;
   maxOccurrences: string;
+  expiresAt: string;
+  webhookUrl: string;
   note: string;
 }
 
@@ -689,6 +761,21 @@ interface GuidedDemoState {
   receiptCreatedAt: string;
   receiptJson: string;
   signedReceipt: string;
+}
+
+interface FirstRunStep {
+  id: FirstRunStepId;
+  label: string;
+  detail: string;
+  complete: boolean;
+  active: boolean;
+}
+
+interface FirstRunAction {
+  id: FirstRunActionId;
+  label: string;
+  detail: string;
+  disabled?: boolean;
 }
 
 interface PersistedState {
@@ -768,9 +855,11 @@ interface DemoState {
   receipts: ActionReceipt[];
   cloudCompletedPlans: CompletedPlanRecord[];
   cloudLastSync: string;
+  lastCompletedFocusId: string;
   recurringDraft: RecurringDraft;
   recurringPreset: RecurringPresetId;
   recurringErrors: Record<string, string>;
+  recurringOccurrenceHistory: Record<string, RecurringOccurrenceHistoryState>;
   mwaEnvironment: MwaEnvironment;
   mwaRegistration: RegisterAgentMobileWalletAdapterResult | null;
   activeLab: string;
@@ -784,20 +873,29 @@ interface DemoState {
   artifactFilter: ArtifactFilter;
   artifactTypeFilter: string;
   artifactSearch: string;
+  auditOpen: Record<string, boolean>;
+  auditActivity: Record<string, AuditActivityState>;
   steps: Record<StepName, StepState>;
+}
+
+interface AuditActivityState {
+  status: 'idle' | 'loading' | 'loaded' | 'error';
+  events: WorkflowAuditEventRecord[];
+  error?: string;
+  loadedAt?: string;
 }
 
 const RECEIPT_LABS: LabDefinition[] = [
   {
     id: 'intent-receipt',
-    title: 'Intent Receipt',
+    title: 'Proof of Intent',
     kind: 'intent_receipt',
     category: 'receipt',
     defaultInput: '',
-    description: 'Sign the requested action and the constraints that must be true before any future wallet approval.',
-    summary: 'A wallet-signed record of what the agent or user intended to do.',
+    description: 'Sign the requested action and the constraints that must stay true before any wallet approval.',
+    summary: 'A wallet-signed proof of what you intended to review or do.',
     whatThisProves: 'The action, limits, and review context existed before any transaction approval.',
-    recommendedUse: 'Attach it to an agent run, support thread, or personal audit trail before approving a related wallet request.',
+    recommendedUse: 'Use it before approval when you want a record of the exact request and constraints.',
     fields: [
       {
         id: 'request',
@@ -824,14 +922,14 @@ const RECEIPT_LABS: LabDefinition[] = [
   },
   {
     id: 'policy-receipt',
-    title: 'Policy Receipt',
+    title: 'Proof of Policy',
     kind: 'policy_receipt',
     category: 'receipt',
     defaultInput: '',
-    description: 'Sign that a wallet policy or personal rule was checked before approving or rejecting a request.',
-    summary: 'A wallet-signed policy check for a specific request.',
+    description: 'Sign that a wallet rule or personal policy was checked for this request.',
+    summary: 'A wallet-signed proof that a policy check happened.',
     whatThisProves: 'The user had a stated rule and checked the request against it before taking action.',
-    recommendedUse: 'Use it when you want repeatable wallet rules around approvals, spend limits, custody, or allowed actions.',
+    recommendedUse: 'Use it for spend caps, slippage rules, recipient checks, custody rules, or allowed actions.',
     fields: [
       {
         id: 'policy',
@@ -858,14 +956,14 @@ const RECEIPT_LABS: LabDefinition[] = [
   },
   {
     id: 'risk-receipt',
-    title: 'Risk Review Receipt',
+    title: 'Proof of Review',
     kind: 'risk_review_receipt',
     category: 'receipt',
     defaultInput: '',
     description: 'Sign the risks reviewed before a wallet decision.',
-    summary: 'A wallet-signed risk review for an agent action.',
+    summary: 'A wallet-signed proof that specific risks were reviewed.',
     whatThisProves: 'Specific risks were reviewed before a later approval, rejection, or support/audit discussion.',
-    recommendedUse: 'Use it before swaps, transfers, new protocols, links, or any action where the route needs review.',
+    recommendedUse: 'Use it before swaps, transfers, new protocols, links, or any route that needs review.',
     fields: [
       {
         id: 'request',
@@ -892,14 +990,14 @@ const RECEIPT_LABS: LabDefinition[] = [
   },
   {
     id: 'rejection-receipt',
-    title: 'Rejection Receipt',
+    title: 'Proof of Rejection',
     kind: 'rejection_receipt',
     category: 'receipt',
     defaultInput: '',
     description: 'Sign why a request was refused without exposing private wallet data.',
-    summary: 'A wallet-signed refusal record for a rejected request.',
+    summary: 'A wallet-signed proof that you rejected a request.',
     whatThisProves: 'The user intentionally rejected a request for a stated reason at a specific time.',
-    recommendedUse: 'Use it to document unsafe agent requests, support disputes, policy violations, or blocked approvals.',
+    recommendedUse: 'Use it to document unsafe agent requests, policy violations, support disputes, or blocked approvals.',
     fields: [
       {
         id: 'request',
@@ -1356,9 +1454,11 @@ const state: DemoState = {
   receipts: initialBrowserWorkflow.receipts,
   cloudCompletedPlans: [],
   cloudLastSync: '',
+  lastCompletedFocusId: '',
   recurringDraft: defaultRecurringDraft(),
   recurringPreset: 'scheduled-transfer',
   recurringErrors: {},
+  recurringOccurrenceHistory: {},
   mwaEnvironment: detectMwaEnvironment(),
   mwaRegistration: null,
   activeLab: LABS[0]!.id,
@@ -1372,6 +1472,8 @@ const state: DemoState = {
   artifactFilter: 'all',
   artifactTypeFilter: 'all',
   artifactSearch: '',
+  auditOpen: {},
+  auditActivity: {},
   steps: {
     discover: 'idle',
     connect: 'idle',
@@ -2290,10 +2392,16 @@ function gapSection(): string {
       <div class="gap-copy">
         <p class="eyebrow mini">The gap</p>
         <h2 id="gap-title">
-          <span>Solana agents can plan actions.</span>
-          <span class="gap-title-danger">Most stacks ask for the wrong signer.</span>
+          <span>Solana agents need wallet approval.</span>
+          <span>Solana lacked a universal agent-to-wallet approval layer.</span>
         </h2>
-        <p class="gap-accent">The missing layer is user-wallet approval.</p>
+        <p class="gap-risks">
+          Private keys inside agents are unsafe.<br>
+          Funded agent wallets fragment users.<br>
+          Single-wallet flows do not scale.
+        </p>
+        <p class="gap-accent">Agentic is the multi-wallet approval layer.</p>
+        <p class="gap-close">Agents prepare.<br><strong>Your wallet signs.</strong></p>
       </div>
       <div class="gap-body">
         <div class="gap-proof-grid" aria-label="Current signing models">
@@ -2548,7 +2656,7 @@ function guidedDemoWalkthroughPage(): string {
       <div class="guided-demo-footer-cta">
         <div>
           <span>Ready for the real workspace?</span>
-          <strong>Create plans, connect optional AI, review inbox items, and keep signed evidence in /app.</strong>
+          <strong>Create plans, connect optional AI, review inbox items, and keep signed receipts in /app.</strong>
         </div>
         <a class="button-link launch-app-link mobile-redundant-nav" href="/app">Launch full app</a>
         <a class="button-link mobile-redundant-nav" href="/docs">Read docs</a>
@@ -2923,7 +3031,7 @@ function appWorkspace(mode: 'app' | 'demo' = 'app'): string {
         <div>
           ${mode === 'demo' ? '<p class="eyebrow mini">Interactive demo</p>' : '<!-- Launch App eyebrow intentionally hidden. -->'}
           <h2 id="${titleId}">${mode === 'demo' ? 'Live approval demo.' : 'Agentic approval workspace.'}</h2>
-          ${mode === 'demo' ? '' : '<p>Draft agent actions, route approvals through your real wallet, and keep signed evidence in one place.</p>'}
+          ${mode === 'demo' ? '' : '<p>Draft agent actions, route approvals through your real wallet, and keep signed receipts in one place.</p>'}
         </div>
         ${SHOW_DEV_CONTROLS ? systemSpine() : ''}
       </div>
@@ -2955,15 +3063,243 @@ function appWorkspace(mode: 'app' | 'demo' = 'app'): string {
               ${tabButton('schedule', 'Create Recurring Plan', 'Recurring')}
               ${tabButton('inbox', 'Approval Inbox', 'Inbox')}
               ${tabButton('completed', 'Completed Plans', 'Completed')}
-              ${tabButton('labs', 'Evidence Receipts', 'Evidence')}
+              ${tabButton('labs', 'Receipt Proofs', 'Proofs')}
             </nav>
           </div>
+          ${SHOW_DEV_CONTROLS ? '' : firstRunActionBand()}
+          ${SHOW_DEV_CONTROLS ? '' : trustLayerPanel()}
           ${activePanel()}
         </section>
         ${SHOW_DEV_CONTROLS ? contextPanel() : requestContextDetails()}
       </section>
     </section>
   `;
+}
+
+function trustLayerPanel(): string {
+  const mode = activeWorkflowMode();
+  const items: Array<[string, string]> = [
+    ['No key custody', 'Wallet keeps private keys'],
+    ['No unlimited signer', 'Every action has a boundary'],
+    ['AI drafts only', 'Wallet decides approve or deny'],
+    [mode === 'agentic-cloud' ? 'Cloud receipts' : 'Local receipts', 'Proofs persist after review'],
+  ];
+  return `
+    <section class="trust-layer-panel" aria-label="Agentic trust boundary">
+      ${items.map(([label, detail]) => `
+        <div>
+          <strong>${escapeHtml(label)}</strong>
+          <span>${escapeHtml(detail)}</span>
+        </div>
+      `).join('')}
+    </section>
+  `;
+}
+
+function firstRunActionBand(): string {
+  const steps = firstRunSteps();
+  const complete = firstRunComplete(steps);
+  const action = firstRunNextAction();
+  const secondary = firstRunSecondaryAction(action.id);
+  const currentStep = steps.find((step) => step.active) ?? steps[steps.length - 1]!;
+  const title = complete ? 'Receipt saved' : `Next: ${action.label}`;
+  const detail = complete
+    ? 'Your latest approval proof or receipt is saved in Completed Plans.'
+    : action.detail;
+  return `
+    <section class="first-run-band ${complete ? 'complete' : ''}" aria-label="First-time approval flow">
+      <div class="first-run-copy">
+        <span>First run</span>
+        <h3>${escapeHtml(title)}</h3>
+        <p>${escapeHtml(detail)}</p>
+        <small>Active workflow: ${escapeHtml(activeWorkflowLabel())}</small>
+      </div>
+      <div class="first-run-progress" role="list" aria-label="First-time progress">
+        ${steps.map((stepItem, index) => firstRunStepItem(stepItem, index, currentStep.id)).join('')}
+      </div>
+      <div class="first-run-actions">
+        <button
+          type="button"
+          class="primary"
+          data-first-run-action="${escapeHtml(action.id)}"
+          ${action.disabled ? 'disabled' : ''}
+          title="${escapeHtml(action.detail)}"
+        >
+          ${escapeHtml(action.label)}
+        </button>
+        ${secondary ? `
+          <button
+            type="button"
+            class="utility"
+            data-first-run-action="${escapeHtml(secondary.id)}"
+            ${secondary.disabled ? 'disabled' : ''}
+            title="${escapeHtml(secondary.detail)}"
+          >
+            ${escapeHtml(secondary.label)}
+          </button>
+        ` : ''}
+      </div>
+    </section>
+  `;
+}
+
+function firstRunStepItem(stepItem: FirstRunStep, index: number, currentStepId: FirstRunStepId): string {
+  const status = stepItem.complete ? 'complete' : stepItem.id === currentStepId ? 'active' : 'idle';
+  return `
+    <div
+      class="first-run-step ${status}"
+      data-first-run-step="${escapeHtml(stepItem.id)}"
+      role="listitem"
+      aria-current="${stepItem.id === currentStepId ? 'step' : 'false'}"
+      title="${escapeHtml(stepItem.detail)}"
+    >
+      <span>${index + 1}</span>
+      <strong>${escapeHtml(stepItem.label)}</strong>
+      <p>${escapeHtml(stepItem.detail)}</p>
+    </div>
+  `;
+}
+
+function firstRunSteps(): FirstRunStep[] {
+  const signals = firstRunSignals();
+  const currentStepId = firstRunCurrentStepId(signals);
+  const steps: Array<Omit<FirstRunStep, 'active'>> = [
+    {
+      id: 'wallet',
+      label: 'Connect',
+      detail: signals.hasWallet ? short(state.address) : 'Use your wallet signer.',
+      complete: signals.hasWallet,
+    },
+    {
+      id: 'plan',
+      label: 'Create',
+      detail: signals.hasPlan ? 'Plan saved for review.' : 'Draft from template.',
+      complete: signals.hasPlan,
+    },
+    {
+      id: 'review',
+      label: 'Review',
+      detail: signals.hasReview ? 'Wallet action is visible.' : 'Check route and limits.',
+      complete: signals.hasReview,
+    },
+    {
+      id: 'decision',
+      label: 'Approve / Deny',
+      detail: signals.hasReceipt ? 'Decision recorded.' : signals.activeApprovalCount ? 'Inbox item waiting.' : 'Send to Inbox.',
+      complete: signals.hasReceipt,
+    },
+    {
+      id: 'receipt',
+      label: 'Receipt',
+      detail: signals.hasReceipt ? 'Saved in history.' : 'Saved after decision.',
+      complete: signals.hasReceipt,
+    },
+  ];
+  return steps.map((stepItem) => ({
+    ...stepItem,
+    active: stepItem.id === currentStepId,
+  }));
+}
+
+function firstRunSignals(): {
+  hasWallet: boolean;
+  hasPlan: boolean;
+  hasReview: boolean;
+  hasReceipt: boolean;
+  activeApprovalCount: number;
+} {
+  const oneTimePlans = generatedPlansForPanel(true).filter((record) => record.status !== 'archived');
+  const selected = selectedGeneratedPlan();
+  const activeApprovalCount = activeWorkflowPreparedActions().filter((action) => !action.archived && isActionInboxActive(action)).length;
+  const completedCount = completedPlanRecords().length;
+  const hasMovedPlan = oneTimePlans.some(hasGeneratedPlanMovedPastReview);
+  const hasReview = Boolean(
+    completedCount > 0 ||
+      activeApprovalCount > 0 ||
+      hasMovedPlan ||
+      (selected && isOneTimeGeneratedPlan(selected) && state.oneTimePlanView === 'review'),
+  );
+  return {
+    hasWallet: Boolean(state.address),
+    hasPlan: Boolean(state.agentPlan || oneTimePlans.length > 0 || completedCount > 0 || activeApprovalCount > 0),
+    hasReview,
+    hasReceipt: completedCount > 0,
+    activeApprovalCount,
+  };
+}
+
+function firstRunCurrentStepId(signals = firstRunSignals()): FirstRunStepId {
+  if (!signals.hasWallet) return 'wallet';
+  if (!signals.hasPlan) return 'plan';
+  if (signals.activeApprovalCount > 0 && !signals.hasReceipt) return 'decision';
+  if (!signals.hasReview || !signals.hasReceipt) return 'review';
+  return 'receipt';
+}
+
+function firstRunComplete(steps = firstRunSteps()): boolean {
+  return steps.every((stepItem) => stepItem.complete);
+}
+
+function firstRunNextAction(): FirstRunAction {
+  const signals = firstRunSignals();
+  if (!signals.hasWallet) {
+    const nativeWallet = state.androidNativeEnvironment.isAndroidNative || state.iosNativeEnvironment.isIosNative;
+    const selectedProvider = discoveredSelectedWalletName();
+    if (nativeWallet || (state.wallets.length > 0 && selectedProvider)) {
+      return {
+        id: 'connect-wallet',
+        label: 'Connect wallet',
+        detail: 'Authorize Agentic in your wallet. This grants no spending authority.',
+      };
+    }
+    return {
+      id: 'discover-wallets',
+      label: 'Discover wallets',
+      detail: 'Find installed Solana wallet providers in this browser.',
+    };
+  }
+  if (!signals.hasPlan) {
+    return {
+      id: 'open-create-plan',
+      label: 'Open Create Plan',
+      detail: 'Use the default template path. AI setup is optional.',
+    };
+  }
+  if (signals.activeApprovalCount > 0 && !signals.hasReceipt) {
+    return {
+      id: 'open-inbox',
+      label: 'Open Approval Inbox',
+      detail: 'Approve or deny the queued request from your wallet boundary.',
+    };
+  }
+  if (!signals.hasReceipt) {
+    return {
+      id: 'open-review',
+      label: 'Review & Finish',
+      detail: 'Check the wallet action, route, limits, and destination before queueing.',
+    };
+  }
+  return {
+    id: 'open-completed',
+    label: 'Open Completed Plans',
+    detail: 'Review saved receipts and decision proofs.',
+  };
+}
+
+function firstRunSecondaryAction(primaryId: FirstRunActionId): FirstRunAction | null {
+  if (
+    state.address &&
+    primaryId !== 'cloud-sign-in' &&
+    state.cloudSession.status === 'signed-out' &&
+    !cloudSessionMatchesWallet()
+  ) {
+    return {
+      id: 'cloud-sign-in',
+      label: 'Sign in to Cloud',
+      detail: 'Optional sync for plans, approvals, recurring schedules, and receipts.',
+    };
+  }
+  return null;
 }
 
 function gapProof(title: string, detail: string, stamp: string): string {
@@ -3179,14 +3515,14 @@ function cloudWorkspaceCard(): string {
   const mismatch = cloudSessionWalletMismatch();
   const unavailable = state.cloudSession.status === 'unavailable';
   const status = unavailable
-    ? 'Unavailable'
+    ? 'Browser fallback'
     : signedIn
       ? matched
         ? 'Signed in'
         : 'Wallet mismatch'
       : 'Signed out';
   const detail = unavailable
-    ? (state.cloudSession.error || 'Cloud APIs are not available from this host.')
+    ? 'Agentic Cloud is unavailable from this host, so browser workflow is active. No localhost or local bridge is required.'
     : signedIn
       ? matched
         ? 'One-time drafts, approvals, and completed history sync through Agentic Cloud.'
@@ -3246,11 +3582,34 @@ function publicBridgeStatusCard(): string {
       ` : `
         <div class="rail-bridge-actions">
           <button type="button" class="utility" data-bridge-action="connect" ${!state.address || state.busy ? 'disabled' : ''}>Check local bridge</button>
-          <button type="button" data-copy="${escapeHtml(NPM_EXEC_COMMAND)}" data-copy-name="local bridge command">Copy command</button>
+          ${optionalPrivateLocalModeDetails()}
         </div>
       `}
-      ${connected ? '' : localRuntimeGuide('rail-runtime-guide')}
     </section>
+  `;
+}
+
+function optionalPrivateLocalModeDetails(): string {
+  return `
+    <details class="bridge-setup-details optional-local-runtime">
+      <summary>Use private local mode</summary>
+      <div class="local-runtime-guide rail-runtime-guide optional-runtime-guide">
+        <div class="local-runtime-guide-head">
+          <span>Optional on this computer</span>
+          <strong>${escapeHtml(compactEndpoint(state.bridgeUrl))}</strong>
+        </div>
+        <p>Use the local runtime only when you want workflow storage to stay on this machine. The normal web app can use Agentic Cloud or browser workflow without localhost.</p>
+        <ol class="local-runtime-steps">
+          <li>Run the one-shot command in Terminal.</li>
+          <li>Connect the same wallet in the local browser tab.</li>
+          <li>Return here and check the local bridge.</li>
+        </ol>
+        <div class="bridge-command-row primary-runtime-command">
+          <code>${escapeHtml(NPM_EXEC_COMMAND)}</code>
+          <button type="button" data-copy="${escapeHtml(NPM_EXEC_COMMAND)}" data-copy-name="local runtime command">Copy</button>
+        </div>
+      </div>
+    </details>
   `;
 }
 
@@ -3475,7 +3834,7 @@ function guidedStartPanel(title: string, detail: string): string {
         <button data-start-action="discover" class="${state.wallets.length ? '' : 'primary'}" ${state.busy ? 'disabled' : ''}>Discover wallets</button>
         <button data-start-action="connect" class="${state.wallets.length ? 'primary' : ''}" ${(state.wallets.length === 0 || !selectedProvider) || state.busy ? 'disabled' : ''} title="${!selectedProvider ? 'Discover and select a wallet provider first.' : ''}">Connect wallet</button>`}
       </div>
-      <p class="guided-note">Bridge review, recurring plans, evidence receipts, and transaction tools unlock after a wallet is connected.</p>
+      <p class="guided-note">Approval Inbox, recurring plans, evidence receipts, and transaction tools unlock after a wallet is connected.</p>
     </section>
   `;
 }
@@ -3884,7 +4243,7 @@ function oneTimeCreatePlanPanel(): string {
 
 function draftReadyPanel(plan: AgentPlan): string {
   const outcome = planOutcome(plan);
-  const queueable = canQueueAgentPlan(plan);
+  const queueable = canQueueGuardedPlan(plan);
   return `
     <section class="draft-ready-panel ${escapeHtml(outcomeClass(outcome))}">
       <div>
@@ -3892,6 +4251,7 @@ function draftReadyPanel(plan: AgentPlan): string {
         <h3>${escapeHtml(outcomeLabel(outcome))}</h3>
         <p>${escapeHtml(outcomeDetailForPlan(plan))}</p>
       </div>
+      ${planGuardrailStrip(plan)}
       <div class="draft-ready-actions">
         <button
           id="queueAgentPlan"
@@ -3914,7 +4274,7 @@ function draftReadyPanel(plan: AgentPlan): string {
           ${!state.address || state.busy ? 'disabled' : ''}
           title="${!state.address ? 'Connect a wallet before signing review evidence.' : 'Creates audit evidence only. It does not queue, approve, or submit a transaction.'}"
         >
-          Sign proof & complete
+          Sign review proof
         </button>
       </div>
     </section>
@@ -3998,7 +4358,7 @@ function generatedPlanStatusLine(totalCount: number, visibleCount: number, archi
 
 function generatedPlanCard(record: GeneratedPlanRecord): string {
   const plan = record.plan;
-  const queueable = canQueueAgentPlan(plan);
+  const queueable = canQueueGeneratedPlan(record);
   const archived = record.status === 'archived';
   const signDisabled = !state.address || state.busy || archived ? 'disabled' : '';
   const queueDisabled = !state.address || !queueable || state.busy || archived ? 'disabled' : '';
@@ -4021,6 +4381,7 @@ function generatedPlanCard(record: GeneratedPlanRecord): string {
         <span>${escapeHtml(titleCase(plan.category))}</span>
         <span>${escapeHtml(outcomeShortLabel(outcome))}</span>
       </div>
+      ${planGuardrailStrip(plan)}
       <div class="generated-plan-quick-facts">
         ${generatedPlanFact('Network', titleCaseCluster(record.cluster))}
         ${generatedPlanFact('Wallet', record.walletAddress ? short(record.walletAddress) : 'No wallet')}
@@ -4029,6 +4390,7 @@ function generatedPlanCard(record: GeneratedPlanRecord): string {
       <div class="generated-plan-decision-grid">
         ${generatedPlanDecisionRows(plan).map(([label, value]) => generatedPlanDecisionItem(label, value)).join('')}
       </div>
+      ${generatedPlanWalletActionSummary(record)}
       ${generatedPlanInlineDetails(plan, detailsCount)}
       ${generatedPlanOutcomeStrip(record)}
       ${actionHint}
@@ -4047,7 +4409,7 @@ function generatedPlanCard(record: GeneratedPlanRecord): string {
           ${signDisabled}
           title="${escapeHtml(signProofTitle(record))}"
         >
-          Sign proof & complete
+          Sign review proof
         </button>
         <button
           class="${queueable ? 'primary' : 'utility'}"
@@ -4109,6 +4471,146 @@ function generatedPlanDecisionItem(label: string, value: string): string {
   `;
 }
 
+function generatedPlanWalletActionSummary(record: GeneratedPlanRecord): string {
+  const rows: Array<[string, string]> = [
+    ['Wallet action', walletActionLabelForPlan(record.plan)],
+    ['Amount', planAmountSummary(record.plan)],
+    ['Recipient / route', planRecipientOrRoute(record.plan)],
+    ['Destination', generatedPlanDestinationLabel(record)],
+    ['Effect', generatedPlanEffectLabel(record)],
+  ];
+  return `
+    <section class="wallet-action-summary" aria-label="Wallet action summary">
+      <div class="wallet-action-summary-head">
+        <span>Wallet action</span>
+        <strong>${escapeHtml(canQueueAgentPlan(record.plan) ? 'Review before queueing' : 'Evidence only')}</strong>
+      </div>
+      <dl class="wallet-action-grid">
+        ${rows.map(([label, value]) => definitionRow(label, value)).join('')}
+      </dl>
+    </section>
+  `;
+}
+
+function planGuardrailStrip(plan: AgentPlan): string {
+  const report = planGuardrailReport(plan);
+  if (!report) return '';
+  const tone = report.verdict === 'block' ? 'block' : report.verdict === 'warn' ? 'warn' : 'pass';
+  const label = report.verdict === 'block'
+    ? 'Blocked'
+    : report.verdict === 'warn'
+      ? 'Warnings'
+      : 'Passed';
+  return `
+    <section class="plan-guardrail-strip ${tone}" aria-label="Plan guardrails">
+      <div>
+        <span>Guardrails</span>
+        <strong>${escapeHtml(label)}</strong>
+      </div>
+      <p>${escapeHtml(report.summary)}</p>
+      <dl>
+        ${definitionRow('Final step', finalizationRequirementLabel(report.finalizationRequirement))}
+        ${definitionRow(report.constraintHash ? 'Constraint hash' : 'Constraint fingerprint', report.constraintHash ?? report.constraintFingerprint)}
+      </dl>
+    </section>
+  `;
+}
+
+function finalizationRequirementLabel(value: string): string {
+  switch (value) {
+    case 'transaction_preview':
+      return 'Refresh quote, simulate, wallet approve, receipt';
+    case 'wallet_decision_proof':
+      return 'Wallet decision proof';
+    case 'none':
+      return 'No wallet action';
+    default:
+      return value.replace(/_/g, ' ');
+  }
+}
+
+function walletActionLabelForPlan(plan: AgentPlan): string {
+  switch (plan.actionType) {
+    case 'transfer_sol':
+      return 'SOL transfer';
+    case 'transfer_spl':
+      return 'SPL token transfer';
+    case 'swap':
+      return 'Swap review';
+    case 'recurring_payment':
+      return 'Recurring schedule';
+    case 'read_only':
+      return 'Read-only review';
+    case 'manual_review':
+      return 'Review proof';
+    default:
+      return plan.actionType.replace(/_/g, ' ');
+  }
+}
+
+function planAmountSummary(plan: AgentPlan): string {
+  if (plan.actionType === 'swap') {
+    const input = plan.parameters.inputToken || planParameter(plan, ['token']) || 'Input token';
+    const output = plan.parameters.outputToken || 'Output token';
+    const amount = planParameter(plan, ['amount', 'inputAmount', 'plannedAmount']) || 'Amount';
+    return `${amount} ${input} -> ${output}`;
+  }
+  const amount = planParameter(plan, ['amountSol', 'amount', 'plannedAmount', 'maxAmount']) || 'n/a';
+  const token = planParameter(plan, ['token', 'inputToken']) || (plan.actionType === 'transfer_sol' ? 'SOL' : '');
+  return token ? `${amount} ${token}` : amount;
+}
+
+function planRecipientOrRoute(plan: AgentPlan): string {
+  const recipient = planParameter(plan, ['recipient', 'recipientAddress', 'settlementWallet']);
+  if (recipient) return short(recipient);
+  if (plan.actionType === 'swap') {
+    return `${plan.parameters.inputToken || 'input'} -> ${plan.parameters.outputToken || 'output'}`;
+  }
+  return plan.route;
+}
+
+function generatedPlanDestinationLabel(record: GeneratedPlanRecord): string {
+  if (record.preparedActionId) {
+    return workflowSourceLabel(record.workflowSource);
+  }
+  return activeWorkflowLabel();
+}
+
+function workflowSourceLabel(source: WorkflowRecordSource | undefined): string {
+  switch (source) {
+    case 'cloud':
+      return 'Agentic Cloud workspace';
+    case 'local-bridge':
+      return 'Private local mode';
+    case 'browser':
+      return 'Browser workflow';
+    default:
+      return activeWorkflowLabel();
+  }
+}
+
+function generatedPlanEffectLabel(record: GeneratedPlanRecord): string {
+  const plan = record.plan;
+  const report = planGuardrailReport(plan);
+  if (report?.verdict === 'block') {
+    return 'Blocked by guardrails. Recreate or edit the plan before queueing.';
+  }
+  if (!canQueueAgentPlan(plan)) {
+    return 'Signs review evidence only. No approval, transaction, or funds movement.';
+  }
+  if (plan.actionType === 'recurring_payment') {
+    return 'Creates a recurring schedule. Each occurrence still needs wallet review.';
+  }
+  const source = record.workflowSource ?? (activeWorkflowMode() === 'agentic-cloud' ? 'cloud' : activeWorkflowMode() === 'local-bridge' ? 'local-bridge' : 'browser');
+  if (source === 'local-bridge') {
+    return 'Queues a local prepared action. The wallet still approves the final request.';
+  }
+  if (source === 'cloud') {
+    return 'Queues a cloud approval request. A later wallet proof records approve or deny.';
+  }
+  return 'Queues a browser-local approval request. A later wallet proof records approve or deny.';
+}
+
 function generatedPlanFact(label: string, value: string): string {
   return `
     <div title="${escapeHtml(value)}">
@@ -4155,6 +4657,10 @@ function generatedPlanOutcomeStrip(record: GeneratedPlanRecord): string {
 
 function generatedPlanActionHint(record: GeneratedPlanRecord): string {
   if (record.status === 'archived') return '';
+  const report = planGuardrailReport(record.plan);
+  if (report?.verdict === 'block') {
+    return `<p class="generated-plan-action-helper danger">${escapeHtml(report.summary)}</p>`;
+  }
   if (!state.address) {
     return '<p class="generated-plan-action-helper">Connect a wallet to sign a review proof or send this plan to Approval Inbox.</p>';
   }
@@ -4232,7 +4738,7 @@ function localRuntimeGuide(extraClass = ''): string {
 
 function generatedPlanAuditModal(record: GeneratedPlanRecord): string {
   const plan = record.plan;
-  const queueable = canQueueAgentPlan(plan);
+  const queueable = canQueueGeneratedPlan(record);
   return `
     <div class="generated-plan-modal-backdrop" role="presentation">
       <section class="generated-plan-modal" role="dialog" aria-modal="true" aria-labelledby="generated-plan-audit-title">
@@ -4259,7 +4765,7 @@ function generatedPlanAuditModal(record: GeneratedPlanRecord): string {
             ${!state.address || state.busy || record.status === 'archived' ? 'disabled' : ''}
             title="${escapeHtml(signProofTitle(record))}"
           >
-            Sign proof & complete
+            Sign review proof
           </button>
           <button
             class="${queueable ? 'primary' : 'utility'}"
@@ -4282,6 +4788,8 @@ function generatedPlanAuditModal(record: GeneratedPlanRecord): string {
               ${generatedPlanAuditRow('Risk', plan.risk)}
               ${generatedPlanAuditRow('Approval', plan.approval)}
             </dl>
+            ${generatedPlanWalletActionSummary(record)}
+            ${planGuardrailStrip(plan)}
           </section>
           <section class="generated-plan-audit-section">
             <div class="generated-plan-audit-section-head">
@@ -5245,6 +5753,10 @@ function syncRecurringPreview(): void {
   if (preview) {
     preview.textContent = recurringNextOccurrenceLabel(state.recurringDraft);
   }
+  const panel = document.querySelector<HTMLElement>('.recurring-production-preview');
+  if (panel) {
+    panel.outerHTML = recurringDraftPreviewPanel(state.recurringDraft);
+  }
 }
 
 function syncArtifactSearchResults(): void {
@@ -5390,6 +5902,42 @@ function completedPlansEmptyState(totalCount: number): string {
   return signaturePlaceholder('No completed plans', detail);
 }
 
+function decisionProofRow(plan: CompletedPlanRecord): string {
+  if (!plan.signature && plan.decisionProofVerified === undefined) return '';
+  const verified = plan.decisionProofVerified === true;
+  const sigShort = plan.signature ? short(plan.signature) : '';
+  const when = formatDateTime(plan.completedAt);
+  const walletShort = plan.walletAddress ? short(plan.walletAddress) : 'unknown wallet';
+  const headline = verified
+    ? 'Decision signed by your wallet'
+    : plan.signature
+      ? 'Decision signature recorded'
+      : '';
+  if (!headline) return '';
+  const proofMessageBlock = plan.decisionProofMessage
+    ? `<details class="decision-proof-message"><summary>What you signed</summary><pre class="decision-proof-text">${escapeHtml(plan.decisionProofMessage)}</pre></details>`
+    : '';
+  const copyButtons = [
+    plan.signature ? `<button data-copy="${escapeHtml(plan.signature)}" data-copy-name="Decision signature">Copy signature</button>` : '',
+    plan.decisionProofMessage ? `<button data-copy="${escapeHtml(plan.decisionProofMessage)}" data-copy-name="Signed text">Copy signed text</button>` : '',
+  ].filter(Boolean).join('');
+  return `
+    <div class="decision-proof-block ${verified ? 'verified' : ''}" aria-label="Decision proof">
+      <div class="decision-proof-headline">
+        <span class="decision-proof-icon" aria-hidden="true">${verified ? '✓' : '⚠'}</span>
+        <strong>${escapeHtml(headline)}</strong>
+      </div>
+      <dl class="decision-proof-grid">
+        <div><dt>Wallet</dt><dd title="${escapeHtml(plan.walletAddress)}">${escapeHtml(walletShort)}</dd></div>
+        <div><dt>When</dt><dd>${escapeHtml(when)}</dd></div>
+        ${sigShort ? `<div><dt>Signature</dt><dd title="${escapeHtml(plan.signature ?? '')}">${escapeHtml(sigShort)}</dd></div>` : ''}
+      </dl>
+      ${proofMessageBlock}
+      ${copyButtons ? `<div class="decision-proof-actions">${copyButtons}</div>` : ''}
+    </div>
+  `;
+}
+
 function completedPlanCard(plan: CompletedPlanRecord): string {
   const deleteRequiresBridge = Boolean(
     plan.workflowSource !== 'cloud' &&
@@ -5399,8 +5947,10 @@ function completedPlanCard(plan: CompletedPlanRecord): string {
   );
   const evidenceLabel = plan.txid ? 'Transaction' : plan.signature ? 'Review proof' : plan.actionId ? 'Receipt' : 'Schedule';
   const copyLabel = plan.actionId ? 'Copy receipt JSON' : plan.signature ? 'Copy proof JSON' : 'Copy schedule JSON';
+  const focused = state.lastCompletedFocusId === plan.id || Boolean(plan.actionId && state.lastCompletedFocusId === plan.actionId);
+  const decisionProofBlock = decisionProofRow(plan);
   return `
-    <article class="generated-plan-card completed-plan-card">
+    <article class="generated-plan-card completed-plan-card ${focused ? 'focused' : ''}" ${focused ? 'data-completed-focus="true"' : ''}>
       <div class="generated-plan-card-top">
         <span class="status-pill ${escapeHtml(plan.tone)}">${escapeHtml(plan.status)}</span>
         <span>${escapeHtml(formatDateTime(plan.completedAt))}</span>
@@ -5420,6 +5970,9 @@ function completedPlanCard(plan: CompletedPlanRecord): string {
         ${generatedPlanFact('Completed', formatDateTime(plan.completedAt))}
       </div>
       ${plan.summary ? `<p class="template-description">${escapeHtml(plan.summary)}</p>` : ''}
+      ${decisionProofBlock}
+      ${plan.actionId ? relatedReceiptBlockForApproval(plan.actionId) : ''}
+      ${plan.actionId ? recordActivityDetails('approval', plan.actionId) : recordActivityDetails('completed', plan.id)}
       <div class="generated-plan-outcomes">
         ${plan.signature ? `<span title="${escapeHtml(plan.signature)}">Proof ${escapeHtml(short(plan.signature))}</span>` : ''}
         ${plan.txid ? `<span title="${escapeHtml(plan.txid)}">Tx ${escapeHtml(short(plan.txid))}</span>` : ''}
@@ -5428,6 +5981,7 @@ function completedPlanCard(plan: CompletedPlanRecord): string {
       </div>
       <div class="generated-plan-card-actions completed-plan-actions">
         <button data-copy="${escapeHtml(plan.copyPayload)}" data-copy-name="Completed plan">${escapeHtml(copyLabel)}</button>
+        ${plan.trustBundlePayload ? `<button data-copy="${escapeHtml(plan.trustBundlePayload)}" data-copy-name="Trust bundle">Copy trust bundle</button>` : ''}
         ${plan.txid ? `<button data-copy="${escapeHtml(plan.txid)}" data-copy-name="Transaction id">Copy transaction id</button>` : ''}
       </div>
       <details class="generated-plan-inline-details completed-plan-details">
@@ -5452,6 +6006,112 @@ function completedPlanCard(plan: CompletedPlanRecord): string {
       </details>
     </article>
   `;
+}
+
+function relatedReceiptBlockForApproval(approvalId: string): string {
+  const receipts = relatedEvidenceReceiptsForApproval(approvalId);
+  if (receipts.length === 0) return '';
+  return `
+    <div class="related-receipts" aria-label="Related evidence receipts">
+      <div class="related-receipts-head">
+        <strong>Related receipts</strong>
+        <span>${receipts.length} wallet-signed</span>
+      </div>
+      <div class="related-receipt-list">
+        ${receipts.map(relatedReceiptRow).join('')}
+      </div>
+    </div>
+  `;
+}
+
+function relatedReceiptRow(artifact: LabArtifact): string {
+  return `
+    <div class="related-receipt-row">
+      <div>
+        <strong>${escapeHtml(artifact.title || receiptLabelForKind(artifact.kind))}</strong>
+        <span>${escapeHtml(formatDateTime(artifact.createdAt))} · ${escapeHtml(short(artifact.signature))}</span>
+      </div>
+      <div>
+        <button data-copy="${escapeHtml(artifact.signingMessage)}" data-copy-name="Related receipt signed text">Copy text</button>
+        <button data-copy="${escapeHtml(stableJson(artifact))}" data-copy-name="Related receipt JSON">Copy JSON</button>
+      </div>
+    </div>
+  `;
+}
+
+function relatedEvidenceReceiptsForApproval(approvalId: string): LabArtifact[] {
+  return state.labArtifacts
+    .filter((artifact) => {
+      const metadata = artifact.metadata ?? {};
+      return metadata.recordType === 'approval' && metadata.recordId === approvalId;
+    })
+    .sort((left, right) => right.createdAt.localeCompare(left.createdAt));
+}
+
+function recordActivityDetails(recordType: AuditRecordType, recordId: string): string {
+  const key = auditActivityKey(recordType, recordId);
+  const activity: AuditActivityState = state.auditActivity[key] ?? { status: 'idle', events: [] };
+  const open = state.auditOpen[key] === true;
+  const body = cloudSessionMatchesWallet()
+    ? auditActivityBody(activity)
+    : '<p class="activity-note">Cloud activity appears here after you sign in to Agentic Cloud. Browser receipts remain visible in this workspace.</p>';
+  return `
+    <details
+      class="record-activity"
+      data-audit-record-type="${escapeHtml(recordType)}"
+      data-audit-record-id="${escapeHtml(recordId)}"
+      ${open ? 'open' : ''}
+    >
+      <summary>Activity</summary>
+      ${body}
+    </details>
+  `;
+}
+
+function auditActivityBody(activity: AuditActivityState): string {
+  if (activity.status === 'loading') {
+    return '<p class="activity-note">Loading cloud activity...</p>';
+  }
+  if (activity.status === 'error') {
+    return `<p class="activity-note error-text">${escapeHtml(activity.error ?? 'Activity could not be loaded.')}</p>`;
+  }
+  if (activity.status !== 'loaded') {
+    return '<p class="activity-note">Open to load cloud activity for this record.</p>';
+  }
+  if (activity.events.length === 0) {
+    return '<p class="activity-note">No cloud activity found for this record yet.</p>';
+  }
+  return `
+    <div class="activity-event-list">
+      ${activity.events.map(auditActivityRow).join('')}
+    </div>
+  `;
+}
+
+function auditActivityRow(event: WorkflowAuditEventRecord): string {
+  const metadata = event.metadata ?? {};
+  const summary = auditMetadataSummary(metadata);
+  return `
+    <div class="activity-event-row">
+      <span>${escapeHtml(formatDateTime(event.createdAt))}</span>
+      <strong>${escapeHtml(event.eventType ?? event.type)}</strong>
+      ${summary ? `<p>${escapeHtml(summary)}</p>` : ''}
+    </div>
+  `;
+}
+
+function auditMetadataSummary(metadata: JsonObject): string {
+  const pairs = ['status', 'kind', 'txid', 'finalizationId', 'completedId', 'recordType', 'recordId']
+    .map((key) => {
+      const value = metadata[key];
+      return typeof value === 'string' && value ? `${key}: ${value}` : '';
+    })
+    .filter(Boolean);
+  return pairs.slice(0, 4).join(' · ');
+}
+
+function auditActivityKey(recordType: AuditRecordType, recordId: string): string {
+  return `${recordType}:${recordId}`;
 }
 
 function scheduledApprovalsPanel(): string {
@@ -5485,12 +6145,12 @@ function labsPanel(): string {
   const detail =
     state.artifactView === 'signed'
       ? `Review wallet-signed receipts saved on this device${state.bridgeActive ? ' and mirrored to the local bridge archive' : ''}.`
-      : 'Create wallet-signed receipts for intent, policy, risk, rejection, and tool evidence. Receipts do not queue, approve, or submit transactions.';
+      : 'Create wallet-signed proofs for intent, policy, review, rejection, and tool traces. Receipts do not queue, approve, or submit transactions.';
   return `
     <section class="approval-object signature-stage stage-labs stage-anchor ${complete ? 'stage-complete' : 'stage-draft'}">
       <div class="signature-object-head artifact-workspace-head">
         <div>
-          <h2>Evidence receipts</h2>
+          <h2>Receipt proofs</h2>
           <p>${escapeHtml(detail)}</p>
         </div>
         ${artifactWorkspaceTabs()}
@@ -5504,8 +6164,8 @@ function labsPanel(): string {
 
 function artifactWorkspaceTabs(): string {
   return `
-    <div class="tabs compact-tabs artifact-view-tabs" role="tablist" aria-label="Evidence receipt views">
-      ${artifactViewButton('create', 'Create Receipt')}
+    <div class="tabs compact-tabs artifact-view-tabs" role="tablist" aria-label="Receipt proof views">
+      ${artifactViewButton('create', 'Create Proof')}
       ${artifactViewButton('signed', 'Receipt Archive')}
     </div>
   `;
@@ -5528,7 +6188,7 @@ function artifactViewButton(view: ArtifactView, label: string): string {
 
 function createArtifactPanel(): string {
   if (!state.address) {
-    return guidedStartPanel('Create receipt', 'Connect a wallet before creating signed evidence receipts.');
+    return guidedStartPanel('Create receipt', 'Connect a wallet before creating signed receipt proofs.');
   }
   const lab = activeLab();
   const artifact = latestLabArtifact(lab.id);
@@ -5564,7 +6224,7 @@ function createArtifactPanel(): string {
         </div>
 
         <div class="lab-actions lab-signature-action">
-          <button id="createLabArtifact" class="primary" ${!state.address || state.busy ? 'disabled' : ''}>${publicReceipt ? 'Sign evidence receipt' : 'Sign evidence lab'}</button>
+          <button id="createLabArtifact" class="primary" ${!state.address || state.busy ? 'disabled' : ''}>${publicReceipt ? 'Sign receipt proof' : 'Sign advanced evidence'}</button>
           <span>Your wallet signs this record only. No transaction is submitted.</span>
         </div>
 
@@ -5636,8 +6296,8 @@ function signedArtifactsPanel(): string {
         <button id="refreshLabArtifacts" class="utility" ${state.busy ? 'disabled' : ''}>Refresh</button>
       </div>
       ${artifactArchiveControls()}
-      <p class="receipt-copy-helper">Evidence receipts only sign a record — they do not queue, approve, submit, or move funds.</p>
-      <p class="receipt-copy-helper">Receipt JSON is for sharing or verification. Signed message is the exact text your wallet signed.</p>
+      <p class="receipt-copy-helper">Receipt proofs only sign a record. They do not queue, approve, submit, or move funds.</p>
+      <p class="receipt-copy-helper">Signed text is exactly what your wallet signed. JSON is for sharing or later verification.</p>
       ${artifactArchiveStatusLine()}
       ${artifacts.length ? signedArtifactList(artifacts) : signedArtifactsEmptyState()}
     </div>
@@ -5675,7 +6335,7 @@ function artifactArchiveControls(): string {
       </label>
       <label class="field compact artifact-search-field">
         <span>Search</span>
-        <input id="artifactSearch" value="${escapeHtml(state.artifactSearch)}" placeholder="Search evidence, type, wallet, hash, or intent" ${state.busy ? 'disabled' : ''} />
+        <input id="artifactSearch" value="${escapeHtml(state.artifactSearch)}" placeholder="Search receipts, type, wallet, hash, or intent" ${state.busy ? 'disabled' : ''} />
       </label>
     </div>
   `;
@@ -5702,7 +6362,7 @@ function signedArtifactsEmptyState(): string {
     <div class="empty lab-empty-state">
       <span>No signed receipts</span>
       <h3>Archive is empty</h3>
-      <p>Use Create Receipt to add the first wallet-bound evidence record.</p>
+      <p>Use Create Proof to add the first wallet-bound receipt.</p>
     </div>
   `;
 }
@@ -5741,9 +6401,10 @@ function filteredLabArtifacts(): LabArtifact[] {
 function signedArtifactRow(artifact: LabArtifact): string {
   const lab = labById(artifact.labId);
   const legacy = !lab || lab.category === 'advanced';
-  const summary = legacy
-    ? 'Older signed evidence record. The signed request and receipt JSON are preserved.'
-    : artifact.payload.summary ?? artifact.payload.thesis;
+  const receiptLabel = legacy ? 'Legacy receipt' : receiptLabelForKind(artifact.kind);
+  const requested = receiptRequestedText(artifact);
+  const proves = receiptProvesText(artifact);
+  const signatureHash = `${short(artifact.signature)} / ${short(artifact.artifactHash)}`;
   const searchText = [
     artifact.title,
     artifact.kind,
@@ -5757,29 +6418,31 @@ function signedArtifactRow(artifact: LabArtifact): string {
     artifact.payload.recommendedUse ?? '',
   ].join(' ').toLowerCase();
   return `
-    <article class="signed-artifact-row" data-artifact-search-text="${escapeHtml(searchText)}">
-      <div class="signed-artifact-main">
-        <div class="artifact-meta-line">
-          <span class="status-pill ${artifact.verified ? 'tx-confirmed' : 'tx-pending'}">${artifact.verified ? 'verified' : 'signed'}</span>
-          <span>${escapeHtml(legacy ? 'Legacy receipt' : labKindLabel(artifact.kind))}</span>
-          ${receiptStorageBadges(artifact)}
-        </div>
-        <h3>${escapeHtml(artifact.title)}</h3>
-        <p>${escapeHtml(summary)}</p>
-        <div class="signed-artifact-request">
-          <span>Signed request</span>
-          <p>${escapeHtml(artifact.input)}</p>
+    <article class="signed-artifact-row receipt-proof-card ${legacy ? 'legacy' : ''}" data-artifact-search-text="${escapeHtml(searchText)}">
+      <div class="receipt-proof-head">
+        <div>
+          <div class="artifact-meta-line">
+            <span class="status-pill ${artifact.verified ? 'tx-confirmed' : 'tx-pending'}">${artifact.verified ? 'wallet verified' : 'signed'}</span>
+            <span>${escapeHtml(receiptLabel)}</span>
+            ${receiptStorageBadges(artifact)}
+          </div>
+          <h3>${escapeHtml(artifact.title || receiptLabel)}</h3>
+          <p>${escapeHtml(artifact.payload.summary ?? artifact.payload.thesis)}</p>
         </div>
       </div>
-      <div class="signed-artifact-facts">
-        ${archiveFact('Created', formatDateTime(artifact.createdAt))}
-        ${archiveFact('Wallet', short(artifact.walletAddress))}
-        ${archiveFact('Cluster', titleCaseCluster(artifact.cluster))}
-        ${archiveFact('Receipt', short(artifact.artifactHash))}
-      </div>
-      <div class="signed-artifact-actions">
-        <button data-copy="${escapeHtml(stableJson(artifact))}" data-copy-name="Receipt JSON">Copy receipt JSON</button>
-        <button data-copy="${escapeHtml(artifact.signingMessage)}" data-copy-name="Signed message">Copy signed message</button>
+      <dl class="receipt-proof-grid">
+        ${receiptProofRow('What was requested', requested)}
+        ${receiptProofRow('What the wallet signed', artifact.signingMessage, 'pre')}
+        ${receiptProofRow('What this proves', proves)}
+        ${receiptProofRow('Signed by', artifact.walletAddress)}
+        ${receiptProofRow('When', formatDateTime(artifact.createdAt))}
+        ${receiptProofRow('Signature / hash', signatureHash, 'code', `${artifact.signature} / ${artifact.artifactHash}`)}
+      </dl>
+      <div class="signed-artifact-actions receipt-proof-actions">
+        <button data-copy="${escapeHtml(artifact.signingMessage)}" data-copy-name="Signed text">Copy signed text</button>
+        <button data-copy="${escapeHtml(artifact.signature)}" data-copy-name="Receipt signature">Copy signature</button>
+        <button data-copy="${escapeHtml(stableJson(artifact))}" data-copy-name="Receipt JSON">Copy JSON</button>
+        <button data-share-receipt="${escapeHtml(artifact.id)}">Share receipt</button>
         <details class="generated-plan-more signed-artifact-more">
           <summary>More</summary>
           <div>
@@ -5796,6 +6459,56 @@ function signedArtifactRow(artifact: LabArtifact): string {
       </details>
     </article>
   `;
+}
+
+function receiptProofRow(
+  label: string,
+  value: string,
+  mode: 'text' | 'pre' | 'code' = 'text',
+  title = value,
+): string {
+  const content = mode === 'pre'
+    ? `<pre>${escapeHtml(value)}</pre>`
+    : mode === 'code'
+      ? `<code title="${escapeHtml(title)}">${escapeHtml(value)}</code>`
+      : `<p title="${escapeHtml(title)}">${escapeHtml(value)}</p>`;
+  return `
+    <div class="${mode === 'pre' ? 'wide' : ''}">
+      <dt>${escapeHtml(label)}</dt>
+      <dd>${content}</dd>
+    </div>
+  `;
+}
+
+function receiptRequestedText(artifact: LabArtifact): string {
+  const fields = artifact.payload.fieldValues ?? {};
+  return (
+    fields.request ||
+    fields.task ||
+    fields.policy ||
+    fields.risks ||
+    artifact.input ||
+    artifact.payload.summary ||
+    artifact.payload.thesis ||
+    'Signed receipt request'
+  );
+}
+
+function receiptProvesText(artifact: LabArtifact): string {
+  return artifact.payload.whatThisProves ||
+    labById(artifact.labId)?.whatThisProves ||
+    'This wallet signed the displayed receipt text at the recorded time.';
+}
+
+function receiptShareText(artifact: LabArtifact): string {
+  return [
+    `${artifact.title || receiptLabelForKind(artifact.kind)}`,
+    `Requested: ${receiptRequestedText(artifact)}`,
+    `Signed by: ${artifact.walletAddress}`,
+    `When: ${formatDateTime(artifact.createdAt)}`,
+    `Signature: ${artifact.signature}`,
+    `Receipt hash: ${artifact.artifactHash}`,
+  ].join('\n');
 }
 
 function archiveFact(label: string, value: string): string {
@@ -5869,7 +6582,7 @@ function signedArtifactDetail(artifact: LabArtifact): string {
 function labCommandMenu(lab: LabDefinition): string {
   return `
     <div class="field compact lab-select-field planner-template-select">
-      <span id="artifactPickerLabel">Receipt type</span>
+          <span id="artifactPickerLabel">Proof type</span>
       ${artifactPicker(lab)}
     </div>
   `;
@@ -5902,7 +6615,7 @@ function artifactPicker(lab: LabDefinition): string {
         hidden
       >
         <div class="template-picker-group">
-          <span>Evidence receipts</span>
+          <span>Receipt proofs</span>
           ${RECEIPT_LABS.map((candidate) => artifactPickerOption(candidate, lab)).join('')}
         </div>
         <details class="template-picker-group advanced-evidence-picker">
@@ -5963,9 +6676,9 @@ function contextPanel(): string {
                 : state.activeTab === 'completed'
                   ? 'Review completed plans'
                   : state.activeTab === 'labs' && state.artifactView === 'signed'
-                    ? 'Review signed evidence'
+                    ? 'Review signed receipts'
                     : state.activeTab === 'labs'
-                      ? 'Create an artifact'
+                      ? 'Create a receipt proof'
                       : 'Review current request';
   return `
     <aside class="panel context-panel evidence-panel">
@@ -5988,7 +6701,7 @@ function contextPanel(): string {
           ${contextRow('Workflow inbox', `${activeWorkflowPreparedActions().filter((action) => !action.archived).length} action(s)`, activeWorkflowPreparedActions().length ? 'warn' : '')}
           ${contextRow('Agent proof', state.agentSignature ? short(state.agentSignature) : 'Unsigned')}
           ${contextRow('Last tx', state.txid ? short(state.txid) : latestConfirmedTx())}
-          ${contextRow('Latest lab', latestLab ? short(latestLab.artifactHash) : 'No artifact')}
+          ${contextRow('Latest receipt', latestLab ? short(latestLab.artifactHash) : 'No receipt')}
         </div>
       </details>
       <div class="custody-manifest">
@@ -6080,6 +6793,14 @@ function bind(): void {
         return;
       }
       runGuidedDemoAction(action);
+    });
+  }
+
+  for (const button of document.querySelectorAll<HTMLButtonElement>('[data-first-run-action]')) {
+    button.addEventListener('click', () => {
+      const action = button.dataset.firstRunAction as FirstRunActionId | undefined;
+      if (!action) return;
+      void runFirstRunAction(action);
     });
   }
 
@@ -6409,6 +7130,14 @@ function bind(): void {
     });
   }
 
+  for (const button of document.querySelectorAll<HTMLButtonElement>('[data-share-receipt]')) {
+    button.addEventListener('click', () => {
+      const artifactId = button.dataset.shareReceipt;
+      if (!artifactId) return;
+      void runShareLabArtifact(artifactId);
+    });
+  }
+
   document.querySelector<HTMLTextAreaElement>('#txInput')?.addEventListener('input', (event) => {
     state.customTransactionBase64 = (event.currentTarget as HTMLTextAreaElement).value.trim();
     state.txSignature = '';
@@ -6465,12 +7194,34 @@ function bind(): void {
     });
   }
 
+  for (const button of document.querySelectorAll<HTMLButtonElement>('[data-inline-receipt-kind]')) {
+    button.addEventListener('click', () => {
+      const actionId = button.dataset.inlineReceiptActionId;
+      const proofKind = button.dataset.inlineReceiptKind as InlineReceiptKind | undefined;
+      if (!actionId || !proofKind) return;
+      void runInlineReceiptProof(actionId, proofKind);
+    });
+  }
+
+  for (const details of document.querySelectorAll<HTMLDetailsElement>('[data-audit-record-type][data-audit-record-id]')) {
+    details.addEventListener('toggle', () => {
+      const recordType = details.dataset.auditRecordType as AuditRecordType | undefined;
+      const recordId = details.dataset.auditRecordId;
+      if (!recordType || !recordId) return;
+      const key = auditActivityKey(recordType, recordId);
+      state.auditOpen[key] = details.open;
+      if (details.open) {
+        void loadAuditEventsForRecord(recordType, recordId);
+      }
+    });
+  }
+
   for (const button of document.querySelectorAll<HTMLButtonElement>('[data-recurring-op]')) {
     button.addEventListener('click', () => {
       const recurringId = button.dataset.recurringId;
       const op = button.dataset.recurringOp;
       if (!recurringId || !op) return;
-      void runRecurringOp(recurringId, op);
+      void runRecurringOp(recurringId, op, button.dataset.recurringCursor);
     });
   }
 
@@ -6899,6 +7650,46 @@ function focusAdjacentTemplateOption(options: HTMLButtonElement[], direction: 1 
     ? 0
     : (currentIndex + direction + options.length) % options.length;
   setActiveTemplateOption(options, options[nextIndex]!, true);
+}
+
+async function runFirstRunAction(action: FirstRunActionId): Promise<void> {
+  switch (action) {
+    case 'discover-wallets':
+      await runDiscover();
+      return;
+    case 'connect-wallet':
+      await runConnect();
+      return;
+    case 'cloud-sign-in':
+      await runCloudSignIn();
+      return;
+    case 'open-create-plan':
+      state.activeTab = 'agent';
+      state.oneTimePlanView = 'create';
+      state.generatedPlanAuditId = '';
+      state.error = '';
+      render();
+      return;
+    case 'open-review':
+      state.activeTab = 'agent';
+      state.oneTimePlanView = 'review';
+      selectFallbackGeneratedPlan();
+      state.error = '';
+      render();
+      return;
+    case 'open-inbox':
+      state.activeTab = 'inbox';
+      state.inboxFilter = 'ready';
+      state.error = '';
+      render();
+      return;
+    case 'open-completed':
+      state.activeTab = 'completed';
+      state.completedPlanFilter = 'receipts';
+      state.error = '';
+      render();
+      return;
+  }
 }
 
 async function runDiscover(): Promise<void> {
@@ -7663,9 +8454,7 @@ async function runQueueGeneratedPlan(planId: string): Promise<void> {
     if (record.status === 'archived') {
       throw new Error('Restore this plan before queueing it.');
     }
-    if (!canQueueAgentPlan(record.plan)) {
-      throw new Error('Only transfer, swap, and recurring schedules can be queued.');
-    }
+    assertPlanCanQueue(record.plan);
     const response = await queuePlanThroughActiveWorkflow(record.plan, record);
     if (response.mode === 'agentic-cloud' && response.planRecordId) {
       state.selectedGeneratedPlanId = response.planRecordId;
@@ -7931,6 +8720,16 @@ function completedPlanRecords(): CompletedPlanRecord[] {
   return records.sort((left, right) => right.completedAt.localeCompare(left.completedAt));
 }
 
+function showCompletedHistoryForAction(actionId?: string): void {
+  const records = completedPlanRecords();
+  const focused = actionId
+    ? records.find((record) => record.actionId === actionId || record.id.includes(actionId))
+    : records[0];
+  state.activeTab = 'completed';
+  state.completedPlanFilter = 'receipts';
+  state.lastCompletedFocusId = focused?.id ?? actionId ?? records[0]?.id ?? '';
+}
+
 function filteredCompletedPlans(records = completedPlanRecords()): CompletedPlanRecord[] {
   switch (state.completedPlanFilter) {
     case 'one-time':
@@ -7963,7 +8762,7 @@ function completedPlanFromGeneratedPlan(
   const completedAt = receipt?.completedAt ?? actionCompletedAt(action) ?? record.updatedAt;
   const amount = receipt?.amount ?? (action ? amountLabel(action) : planParameter(record.plan, ['amountSol', 'amount', 'inputAmount', 'plannedAmount']));
   const token = receipt?.token ?? (action ? tokenLabel(action) : planParameter(record.plan, ['token', 'inputToken', 'outputToken']));
-  const recipient = receipt?.recipient ?? (action ? stringParam(action, 'recipient') : planParameter(record.plan, ['recipient', 'recipientAddress']));
+  const recipient = receipt?.recipient ?? (action ? recipientParam(action) : planParameter(record.plan, ['recipient', 'recipientAddress']));
   const workflowSource = record.workflowSource ?? action?.workflowSource ?? (actionId && isBrowserWorkflowId(actionId) ? 'browser' : undefined);
   const payload = {
     type: 'completed_one_time_plan',
@@ -8068,7 +8867,7 @@ function completedPlanFromAction(action: PreparedAction): CompletedPlanRecord {
   const kind: CompletedPlanRecord['kind'] = action.recurringId ? 'recurring' : 'one-time';
   const status = action.archived ? 'cancelled' : completedActionStatusLabel(action.status, action.txStatus);
   const completedAt = actionCompletedAt(action) ?? action.updatedAt;
-  const recipient = stringParam(action, 'recipient');
+  const recipient = recipientParam(action);
   const amount = amountLabel(action);
   const token = tokenLabel(action);
   return {
@@ -8279,6 +9078,8 @@ function generatedQueuePlanTitle(record: GeneratedPlanRecord): string {
   if (record.status === 'archived') return 'Restore this plan before queueing it.';
   if (!state.address) return 'Connect a wallet before queueing.';
   if (!canQueueAgentPlan(record.plan)) return 'Only transfers, swaps, and recurring schedules can be queued.';
+  const report = planGuardrailReport(record.plan);
+  if (report?.verdict === 'block') return report.summary;
   const mode = activeWorkflowMode();
   if (record.plan.actionType === 'recurring_payment') {
     if (mode === 'agentic-cloud') return 'Create an Agentic Cloud recurring schedule. Each due occurrence appears in Approval Inbox.';
@@ -8664,10 +9465,14 @@ async function refreshCloudWorkspaceData(): Promise<void> {
   if (state.cloudSession.status !== 'signed-in') {
     throw new Error('Sign in to Agentic Cloud before loading cloud workflow data.');
   }
-  const recurringResponse = await cloudRecurringList().catch((err) => {
+  const recurringResponse: Awaited<ReturnType<typeof cloudRecurringList>> = await cloudRecurringList().catch((err) => {
     // eslint-disable-next-line no-console
     console.warn('Cloud recurring API unavailable:', err);
-    return { schedules: [] as CloudRecurringScheduleRecord[], occurrences: [] as CloudRecurringOccurrenceRecord[] };
+    return {
+      schedules: [] as CloudRecurringScheduleRecord[],
+      occurrences: [] as CloudRecurringOccurrenceRecord[],
+      views: undefined,
+    };
   });
   const [plansResponse, approvalsResponse, completedResponse] = await Promise.all([
     cloudRequest('/api/plans', { method: 'GET' }).then((payload) => parsePlanListResponse(payload)),
@@ -8684,16 +9489,12 @@ async function refreshCloudWorkspaceData(): Promise<void> {
       scheduleIndex.set(schedule.id, schedule);
     }
   }
-  const cloudOccurrences = recurringResponse.occurrences
-    .filter((occurrence) => !occurrence.approvalRequestId)
-    .map((occurrence) => cloudOccurrenceToPreparedAction(occurrence, scheduleIndex))
-    .filter(isPreparedAction);
   const cloudApprovals = approvalsResponse.approvals.map(cloudApprovalToPreparedAction).filter(isPreparedAction);
-  state.preparedActions = mergePreparedActions(cloudApprovals, cloudOccurrences);
+  state.preparedActions = mergePreparedActions(cloudApprovals);
   state.materializedActions = state.preparedActions;
   state.recurringPayments = recurringResponse.schedules
     .filter((schedule) => schedule.status === 'active' || schedule.status === 'paused')
-    .map(cloudRecurringScheduleToPayment)
+    .map((schedule) => cloudRecurringScheduleToPayment(schedule, recurringResponse.views?.[schedule.id]))
     .filter((payment): payment is RecurringPayment => Boolean(payment));
   const cloudCompletedFromApprovals = completedResponse.completed
     .map(cloudCompletedToCompletedPlan)
@@ -8740,6 +9541,36 @@ async function cloudRequest<T = unknown>(path: string, init: RequestInit = {}): 
     throw new Error('Agentic Cloud did not return JSON. Use the same-origin Render app for cloud workflow APIs.');
   }
   return payload as T;
+}
+
+async function loadAuditEventsForRecord(recordType: AuditRecordType, recordId: string): Promise<void> {
+  if (!cloudSessionMatchesWallet()) return;
+  const key = auditActivityKey(recordType, recordId);
+  const current = state.auditActivity[key];
+  if (current?.status === 'loading' || current?.status === 'loaded') return;
+  state.auditActivity[key] = { status: 'loading', events: [] };
+  render();
+  try {
+    const payload = await cloudRequest<{ events?: unknown[] }>(
+      `/api/audit?recordType=${encodeURIComponent(recordType)}&recordId=${encodeURIComponent(recordId)}&limit=25`,
+      { method: 'GET' },
+    );
+    const events = Array.isArray(payload.events)
+      ? payload.events.map((event, index) => parseAuditEventRecord(event, `$.events[${index}]`))
+      : [];
+    state.auditActivity[key] = {
+      status: 'loaded',
+      events,
+      loadedAt: new Date().toISOString(),
+    };
+  } catch (err) {
+    state.auditActivity[key] = {
+      status: 'error',
+      events: [],
+      error: err instanceof Error ? err.message : String(err),
+    };
+  }
+  render();
 }
 
 function cloudSessionFromResponse(response: CloudSessionResponse): CloudSessionState {
@@ -8828,9 +9659,10 @@ function cloudPlanToGeneratedPlan(value: unknown): GeneratedPlanRecord | null {
     return null;
   }
   const cluster = typeof record.cluster === 'string' && isCluster(record.cluster) ? record.cluster : state.cluster;
+  const plan = planWithCloudGuardrails(record.plan, record.riskMetadata);
   return {
     id: record.id,
-    plan: record.plan,
+    plan,
     createdAt: record.createdAt,
     updatedAt: record.updatedAt,
     source: record.source,
@@ -8844,6 +9676,28 @@ function cloudPlanToGeneratedPlan(value: unknown): GeneratedPlanRecord | null {
     ...(typeof record.approvalRequestId === 'string' && { preparedActionId: record.approvalRequestId }),
     workflowSource: 'cloud',
   };
+}
+
+function planWithCloudGuardrails(plan: AgentPlan, riskMetadata: unknown): AgentPlan {
+  const report = guardrailReportFromRiskMetadata(riskMetadata);
+  const constraintFingerprint = isJsonObject(riskMetadata) && typeof riskMetadata.constraintFingerprint === 'string'
+    ? riskMetadata.constraintFingerprint
+    : report?.constraintFingerprint;
+  const constraintHash = isJsonObject(riskMetadata) && typeof riskMetadata.constraintHash === 'string'
+    ? riskMetadata.constraintHash
+    : report?.constraintHash;
+  if (!report && !constraintFingerprint && !constraintHash) return plan;
+  return {
+    ...plan,
+    ...(report ? { guardrailReport: report } : {}),
+    ...(constraintFingerprint ? { constraintFingerprint } : {}),
+    ...(constraintHash ? { constraintHash } : {}),
+  };
+}
+
+function guardrailReportFromRiskMetadata(riskMetadata: unknown): AiGuardrailReport | undefined {
+  if (!isJsonObject(riskMetadata)) return undefined;
+  return isAiGuardrailReport(riskMetadata.aiGuardrails) ? riskMetadata.aiGuardrails : undefined;
 }
 
 function cloudApprovalToPreparedAction(value: unknown): PreparedAction | null {
@@ -8869,6 +9723,7 @@ function cloudApprovalToPreparedAction(value: unknown): PreparedAction | null {
     : typeof record.planId === 'string'
       ? record.planId
       : undefined;
+  const finalization = cloudFinalizationFromMetadata(record.metadata);
   return {
     id: record.id,
     kind,
@@ -8885,6 +9740,15 @@ function cloudApprovalToPreparedAction(value: unknown): PreparedAction | null {
     ...(typeof record.recurringScheduleId === 'string' && { recurringId: record.recurringScheduleId }),
     ...(typeof record.occurrenceKey === 'string' && { occurrenceKey: record.occurrenceKey }),
     ...(typeof record.txid === 'string' && { txid: record.txid }),
+    ...(typeof record.txStatus === 'string' && isPreparedActionTxStatus(record.txStatus) && { txStatus: record.txStatus }),
+    ...(finalization && { finalization }),
+    ...(finalization?.id && { finalizationId: finalization.id }),
+    ...(finalization?.status && { finalizationStatus: finalization.status }),
+    ...(finalization?.transactionHash && { transactionHash: finalization.transactionHash }),
+    ...(finalization?.messageHash && { messageHash: finalization.messageHash }),
+    ...(finalization?.quote?.quoteHash && { quoteHash: finalization.quote.quoteHash }),
+    ...(finalization?.simulation?.simulationHash && { simulationHash: finalization.simulation.simulationHash }),
+    ...(finalization?.confirmationStatus && { confirmationStatus: finalization.confirmationStatus }),
     ...(typeof record.error === 'string' && { error: record.error }),
     ...(typeof record.note === 'string' && { note: record.note }),
     ...(record.status === 'cancelled' && { archived: true }),
@@ -8923,6 +9787,16 @@ function cloudCompletedToCompletedPlan(value: unknown): CompletedPlanRecord | nu
       ? record.approvalId
       : undefined;
   const kind: CompletedPlanRecord['kind'] = record.kind === 'recurring_occurrence' ? 'recurring' : 'one-time';
+  const metadata = record.metadata && typeof record.metadata === 'object' && !Array.isArray(record.metadata)
+    ? record.metadata as Record<string, unknown>
+    : undefined;
+  const decisionProofVerified = typeof metadata?.decisionProofVerified === 'boolean'
+    ? metadata.decisionProofVerified
+    : undefined;
+  const decisionProofMessage = typeof metadata?.decisionProofMessage === 'string'
+    ? metadata.decisionProofMessage
+    : undefined;
+  const trustBundlePayload = cloudTrustBundlePayload(record, metadata, signature, decisionProofMessage);
   return {
     id: record.id,
     kind,
@@ -8944,7 +9818,10 @@ function cloudCompletedToCompletedPlan(value: unknown): CompletedPlanRecord | nu
     ...(actionId && { actionId }),
     ...(typeof record.recurringScheduleId === 'string' && { recurringId: record.recurringScheduleId }),
     ...(typeof record.occurrenceKey === 'string' && { occurrenceKey: record.occurrenceKey }),
+    ...(decisionProofVerified !== undefined && { decisionProofVerified }),
+    ...(decisionProofMessage !== undefined && { decisionProofMessage }),
     copyPayload: stableJson(record.payload ?? record.copyPayload ?? record),
+    ...(trustBundlePayload ? { trustBundlePayload } : {}),
     detailRows: Array.isArray(record.detailRows) && record.detailRows.every(isDetailRow)
       ? record.detailRows
       : completedRows([
@@ -8964,6 +9841,12 @@ function cloudCompletedToCompletedPlan(value: unknown): CompletedPlanRecord | nu
 
 type CloudRecurringScheduleRecord = WorkflowRecurringScheduleRecord;
 type CloudRecurringOccurrenceRecord = WorkflowRecurringOccurrenceRecord;
+type CloudRecurringOccurrenceView = RecurringOccurrenceHistoryItem;
+
+interface CloudRecurringScheduleView {
+  lifetimeSpend?: LifetimeSpend;
+  nextRuns?: string[];
+}
 
 function cloudEndedScheduleToCompletedPlan(value: unknown): CompletedPlanRecord | null {
   if (!value || typeof value !== 'object') return null;
@@ -9019,8 +9902,50 @@ function cloudEndedScheduleToCompletedPlan(value: unknown): CompletedPlanRecord 
   };
 }
 
+function cloudTrustBundlePayload(
+  record: Partial<CloudCompletedRecord>,
+  metadata: Record<string, unknown> | undefined,
+  signature: string | undefined,
+  decisionProofMessage: string | undefined,
+): string | undefined {
+  const payload = isJsonObject(record.payload) ? record.payload : {};
+  const finalization = isJsonObject(payload.finalization)
+    ? payload.finalization
+    : isJsonObject(metadata?.finalization)
+      ? metadata.finalization
+      : undefined;
+  const hasTrustEvidence = Boolean(signature || decisionProofMessage || finalization || record.txid);
+  if (!hasTrustEvidence) return undefined;
+  const bundle = {
+    receiptType: 'agentic_trust_bundle_v1',
+    approvalRequestId: record.approvalRequestId,
+    planDraftId: record.planDraftId ?? record.planId,
+    completedRecordId: record.id,
+    walletAddress: record.walletAddress,
+    cluster: record.cluster,
+    kind: record.kind,
+    status: record.status,
+    executionMode: finalization ? 'wallet_execute' : 'proof_only',
+    finalizationId: isJsonObject(finalization) ? finalization.id : undefined,
+    transactionHash: isJsonObject(finalization) ? finalization.transactionHash : record.transactionHash,
+    messageHash: isJsonObject(finalization) ? finalization.messageHash : record.messageHash,
+    quoteHash: isJsonObject(finalization) && isJsonObject(finalization.quote) ? finalization.quote.quoteHash : record.quoteHash,
+    simulationHash: isJsonObject(finalization) && isJsonObject(finalization.simulation) ? finalization.simulation.simulationHash : record.simulationHash,
+    txid: record.txid,
+    explorerUrl: record.explorerUrl,
+    decisionProofSignature: signature,
+    decisionProofMessage,
+    decisionProofVerified: metadata?.decisionProofVerified,
+    finalization,
+  };
+  return stableJson(stripUndefined(bundle));
+}
 
-function cloudRecurringScheduleToPayment(value: unknown): RecurringPayment | null {
+
+function cloudRecurringScheduleToPayment(
+  value: unknown,
+  view?: CloudRecurringScheduleView,
+): RecurringPayment | null {
   if (!value || typeof value !== 'object') return null;
   const record = value as Partial<CloudRecurringScheduleRecord>;
   if (
@@ -9055,6 +9980,15 @@ function cloudRecurringScheduleToPayment(value: unknown): RecurringPayment | nul
     ...(typeof record.startAt === 'string' && { startAt: record.startAt }),
     ...(typeof record.maxOccurrences === 'number' && { maxOccurrences: record.maxOccurrences }),
     ...(typeof record.occurrencesCreated === 'number' && { occurrencesCreated: record.occurrencesCreated }),
+    ...(typeof record.expiresAt === 'string' && { expiresAt: record.expiresAt }),
+    ...(isJsonObject(record.notifications) && {
+      notifications: {
+        ...(typeof record.notifications.inApp === 'boolean' && { inApp: record.notifications.inApp }),
+        ...(typeof record.notifications.webhookUrl === 'string' && { webhookUrl: record.notifications.webhookUrl }),
+      },
+    }),
+    ...(view?.lifetimeSpend && { lifetimeSpend: view.lifetimeSpend }),
+    ...(view?.nextRuns && { nextRuns: view.nextRuns }),
     ...(typeof record.note === 'string' && { note: record.note }),
     createdAt: record.createdAt,
     updatedAt: record.updatedAt,
@@ -9120,8 +10054,39 @@ function cloudOccurrenceToPreparedAction(
 async function cloudRecurringList(): Promise<{
   schedules: CloudRecurringScheduleRecord[];
   occurrences: CloudRecurringOccurrenceRecord[];
+  views?: Record<string, CloudRecurringScheduleView>;
 }> {
-  return parseRecurringListResponse(await cloudRequest('/api/recurring', { method: 'GET' }));
+  const payload = await cloudRequest('/api/recurring', { method: 'GET' });
+  const parsed = parseRecurringListResponse(payload);
+  return {
+    ...parsed,
+    views: cloudRecurringViewsFromPayload(payload),
+  };
+}
+
+function cloudRecurringViewsFromPayload(payload: unknown): Record<string, CloudRecurringScheduleView> | undefined {
+  if (!isJsonObject(payload) || !isJsonObject(payload.views)) return undefined;
+  const views: Record<string, CloudRecurringScheduleView> = {};
+  for (const [id, raw] of Object.entries(payload.views)) {
+    if (!isJsonObject(raw)) continue;
+    const view: CloudRecurringScheduleView = {};
+    if (Array.isArray(raw.nextRuns) && raw.nextRuns.every((entry) => typeof entry === 'string')) {
+      view.nextRuns = raw.nextRuns;
+    }
+    if (isLifetimeSpend(raw.lifetimeSpend)) {
+      view.lifetimeSpend = raw.lifetimeSpend;
+    }
+    views[id] = view;
+  }
+  return views;
+}
+
+function isLifetimeSpend(value: unknown): value is LifetimeSpend {
+  if (!isJsonObject(value) || typeof value.bounded !== 'boolean') return false;
+  if (typeof value.perWeek !== 'string' || typeof value.perMonth !== 'string') return false;
+  if (value.totalRuns !== undefined && typeof value.totalRuns !== 'number') return false;
+  if (value.totalAmount !== undefined && typeof value.totalAmount !== 'string') return false;
+  return true;
 }
 
 async function cloudCreateRecurring(body: Record<string, unknown>): Promise<void> {
@@ -9138,12 +10103,82 @@ async function cloudPatchRecurring(id: string, patch: Record<string, unknown>): 
   });
 }
 
+async function cloudPauseRecurring(id: string): Promise<void> {
+  await cloudRequest(`/api/recurring/${encodeURIComponent(id)}/pause`, {
+    method: 'POST',
+    body: '{}',
+  });
+}
+
+async function cloudResumeRecurring(id: string): Promise<void> {
+  await cloudRequest(`/api/recurring/${encodeURIComponent(id)}/resume`, {
+    method: 'POST',
+    body: '{}',
+  });
+}
+
 async function cloudDeleteRecurring(id: string): Promise<void> {
   await cloudRequest(`/api/recurring/${encodeURIComponent(id)}`, { method: 'DELETE' });
 }
 
 async function cloudMaterializeRecurring(): Promise<void> {
   await cloudRequest('/api/recurring/materialize-due', { method: 'POST', body: '{}' });
+}
+
+async function cloudRecurringOccurrences(
+  id: string,
+  cursor?: string,
+): Promise<{ occurrences: CloudRecurringOccurrenceView[]; nextCursor?: string }> {
+  const params = new URLSearchParams({ limit: '25' });
+  if (cursor) params.set('cursor', cursor);
+  const payload = await cloudRequest(`/api/recurring/${encodeURIComponent(id)}/occurrences?${params.toString()}`, {
+    method: 'GET',
+  });
+  if (!isJsonObject(payload) || !Array.isArray(payload.occurrences)) {
+    throw new Error('Agentic Cloud returned invalid recurring occurrence history.');
+  }
+  const occurrences = payload.occurrences
+    .map(cloudRecurringOccurrenceView)
+    .filter((entry): entry is CloudRecurringOccurrenceView => Boolean(entry));
+  return {
+    occurrences,
+    ...(typeof payload.nextCursor === 'string' && { nextCursor: payload.nextCursor }),
+  };
+}
+
+function cloudRecurringOccurrenceView(value: unknown): CloudRecurringOccurrenceView | null {
+  if (!isJsonObject(value)) return null;
+  const parsed = parseRecurringOccurrenceRecord(value);
+  const approval = isJsonObject(value.approval)
+    ? {
+        id: typeof value.approval.id === 'string' ? value.approval.id : '',
+        status: typeof value.approval.status === 'string' ? value.approval.status : '',
+        ...(typeof value.approval.decidedAt === 'string' && { decidedAt: value.approval.decidedAt }),
+        ...(typeof value.approval.txid === 'string' && { txid: value.approval.txid }),
+        ...(typeof value.approval.txStatus === 'string' && { txStatus: value.approval.txStatus }),
+        ...(typeof value.approval.explorerUrl === 'string' && { explorerUrl: value.approval.explorerUrl }),
+      }
+    : undefined;
+  const completed = isJsonObject(value.completed)
+    ? {
+        id: typeof value.completed.id === 'string' ? value.completed.id : '',
+        status: typeof value.completed.status === 'string' ? value.completed.status : '',
+        completedAt: typeof value.completed.completedAt === 'string' ? value.completed.completedAt : '',
+        ...(typeof value.completed.txid === 'string' && { txid: value.completed.txid }),
+        ...(typeof value.completed.explorerUrl === 'string' && { explorerUrl: value.completed.explorerUrl }),
+      }
+    : undefined;
+  const statusLabel = isJsonObject(value.statusLabel) &&
+    typeof value.statusLabel.label === 'string' &&
+    typeof value.statusLabel.tone === 'string'
+    ? { label: value.statusLabel.label, tone: value.statusLabel.tone as StatusLabel['tone'] }
+    : formatOccurrenceStatus(parsed.status, approval);
+  return {
+    ...parsed,
+    statusLabel,
+    ...(approval?.id && approval.status ? { approval } : {}),
+    ...(completed?.id && completed.status && completed.completedAt ? { completed } : {}),
+  };
 }
 
 function isDetailRow(value: unknown): value is [string, string] {
@@ -9154,9 +10189,43 @@ function isJsonObject(value: unknown): value is JsonObject {
   return Boolean(value && typeof value === 'object' && !Array.isArray(value));
 }
 
+function isAiGuardrailReport(value: unknown): value is AiGuardrailReport {
+  if (!isJsonObject(value)) return false;
+  return (
+    (value.verdict === 'pass' || value.verdict === 'warn' || value.verdict === 'block') &&
+    typeof value.source === 'string' &&
+    typeof value.actionType === 'string' &&
+    typeof value.finalizationRequirement === 'string' &&
+    typeof value.constraintFingerprint === 'string' &&
+    Array.isArray(value.violations) &&
+    typeof value.summary === 'string'
+  );
+}
+
+function cloudFinalizationFromMetadata(metadata: unknown): CloudTransactionFinalizationRecord | undefined {
+  if (!isJsonObject(metadata) || !isJsonObject(metadata.finalization)) return undefined;
+  const value = metadata.finalization as Partial<CloudTransactionFinalizationRecord>;
+  if (
+    typeof value.id !== 'string' ||
+    typeof value.approvalRequestId !== 'string' ||
+    typeof value.walletAddress !== 'string' ||
+    typeof value.kind !== 'string' ||
+    typeof value.status !== 'string' ||
+    typeof value.cluster !== 'string' ||
+    typeof value.transactionHash !== 'string' ||
+    typeof value.createdAt !== 'string' ||
+    typeof value.updatedAt !== 'string' ||
+    typeof value.expiresAt !== 'string' ||
+    !isJsonObject(value.walletAction)
+  ) {
+    return undefined;
+  }
+  return value as CloudTransactionFinalizationRecord;
+}
+
 function preparedActionKindFromCloud(value: string): PreparedActionKind {
-  if (value === 'transfer_sol' || value === 'transfer_spl' || value === 'swap') return value;
-  return 'transfer_sol';
+  if (isPreparedActionKind(value)) return value;
+  return 'custom';
 }
 
 function preparedActionStatusFromCloud(status: CloudApprovalRequestRecord['status'] | undefined): PreparedActionStatus {
@@ -9309,6 +10378,8 @@ async function runPreparedActionOp(actionId: string, op: string): Promise<void> 
           method: 'POST',
           body: JSON.stringify({ actionId }),
         });
+        await refreshInboxData();
+        showCompletedHistoryForAction(actionId);
         pushToast('success', 'Approval completed', 'Receipt saved in Completed Plans.');
         break;
       case 'reject':
@@ -9316,6 +10387,8 @@ async function runPreparedActionOp(actionId: string, op: string): Promise<void> 
           method: 'POST',
           body: JSON.stringify({ actionId, reason: 'Rejected in browser wallet UI.' }),
         });
+        await refreshInboxData();
+        showCompletedHistoryForAction(actionId);
         pushToast('success', 'Request rejected', 'Saved in Completed Plans.');
         break;
       case 'archive':
@@ -9323,6 +10396,8 @@ async function runPreparedActionOp(actionId: string, op: string): Promise<void> 
           method: 'POST',
           body: JSON.stringify({ actionId }),
         });
+        await refreshInboxData();
+        showCompletedHistoryForAction(actionId);
         pushToast('success', 'Request cancelled', 'Saved in Completed Plans.');
         break;
       case 'delete':
@@ -9335,13 +10410,23 @@ async function runPreparedActionOp(actionId: string, op: string): Promise<void> 
       default:
         throw new Error(`Unknown action operation: ${op}`);
     }
-    await refreshInboxData();
+    if (state.activeTab !== 'completed') {
+      await refreshInboxData();
+    }
   });
 }
 
 async function runCloudPreparedActionOp(action: PreparedAction, op: string): Promise<void> {
   switch (op) {
     case 'execute': {
+      if (canFinalizeCloudSolTransfer(action)) {
+        await runCloudSolTransferFinalization(action);
+        return;
+      }
+      const blockReason = cloudExecutionBlockReason(action);
+      if (blockReason) {
+        throw new Error(blockReason);
+      }
       const decisionProof = await signCloudWorkflowDecision(action, 'approved');
       await cloudRequest(`/api/approvals/${encodeURIComponent(action.id)}/approve`, {
         method: 'POST',
@@ -9349,10 +10434,11 @@ async function runCloudPreparedActionOp(action: PreparedAction, op: string): Pro
           proofSignature: decisionProof.signature,
           decisionProofMessage: decisionProof.message,
           signatureEncoding: 'base58',
-          note: 'Approved in Agentic Cloud workspace.',
+          note: 'Proof-only approval recorded in Agentic Cloud workspace. No transaction was submitted.',
         }),
       });
       await refreshCloudWorkspaceData();
+      showCompletedHistoryForAction(action.id);
       pushToast('success', 'Approval recorded', 'Cloud receipt saved in Completed Plans.');
       return;
     }
@@ -9368,6 +10454,7 @@ async function runCloudPreparedActionOp(action: PreparedAction, op: string): Pro
         }),
       });
       await refreshCloudWorkspaceData();
+      showCompletedHistoryForAction(action.id);
       pushToast('success', 'Request denied', 'Cloud denial receipt saved in Completed Plans.');
       return;
     }
@@ -9378,11 +10465,268 @@ async function runCloudPreparedActionOp(action: PreparedAction, op: string): Pro
         body: JSON.stringify({ note: 'Cancelled in Agentic Cloud workspace.' }),
       });
       await refreshCloudWorkspaceData();
+      showCompletedHistoryForAction(action.id);
       pushToast('success', 'Request cancelled', 'Cloud cancellation receipt saved in Completed Plans.');
       return;
     default:
       throw new Error(`Unknown action operation: ${op}`);
   }
+}
+
+async function runCloudSolTransferFinalization(action: PreparedAction): Promise<void> {
+  const prepareResponse = await cloudRequest(`/api/approvals/${encodeURIComponent(action.id)}/finalization/prepare`, {
+    method: 'POST',
+    body: '{}',
+  });
+  const { finalization, transactionBase64 } = cloudPreparedFinalizationFromResponse(prepareResponse);
+  const finalizationId = finalization.id;
+  const decisionProof = await signCloudFinalizationProof(action, finalization);
+  const signingClient = requireClient();
+  let txid = '';
+  try {
+    const result = await signingClient.signAndSendTransaction(
+      transactionBase64,
+      { cluster: action.cluster, summary: finalization.walletAction.summary },
+    );
+    txid = result.txid ?? result.signature;
+  } catch (err) {
+    await cloudRequest(`/api/approvals/${encodeURIComponent(action.id)}/finalization/${encodeURIComponent(finalizationId)}/fail`, {
+      method: 'POST',
+      body: JSON.stringify({
+        error: err instanceof Error ? err.message : String(err),
+        note: 'Wallet approval did not complete.',
+      }),
+    }).catch(() => undefined);
+    await refreshCloudWorkspaceData().catch(() => undefined);
+    throw err;
+  }
+
+  let confirmed = true;
+  let confirmationError = '';
+  const connection = new Connection(action.cluster === state.cluster ? activeRpcUrl() : defaultRpcUrl(action.cluster), 'confirmed');
+  const walletActionMetadata = isJsonObject(finalization.walletAction.metadata) ? finalization.walletAction.metadata : {};
+  const blockhash = typeof walletActionMetadata.blockhash === 'string' ? walletActionMetadata.blockhash : '';
+  const lastValidBlockHeight = typeof walletActionMetadata.lastValidBlockHeight === 'number'
+    ? walletActionMetadata.lastValidBlockHeight
+    : undefined;
+  try {
+    if (blockhash && lastValidBlockHeight) {
+      await connection.confirmTransaction({ signature: txid, blockhash, lastValidBlockHeight }, 'confirmed');
+    } else {
+      await connection.confirmTransaction(txid, 'confirmed');
+    }
+  } catch (err) {
+    confirmed = false;
+    confirmationError = err instanceof Error ? err.message : String(err);
+  }
+
+  await cloudRequest(`/api/approvals/${encodeURIComponent(action.id)}/finalization/${encodeURIComponent(finalizationId)}/submit`, {
+    method: 'POST',
+    body: JSON.stringify({
+      finalizationStatus: confirmed ? 'confirmed' : 'submitted',
+      txStatus: confirmed ? 'confirmed' : 'pending',
+      txid,
+      transactionHash: finalization.transactionHash,
+      ...(finalization.messageHash ? { messageHash: finalization.messageHash } : {}),
+      ...(finalization.quote?.quoteHash ? { quoteHash: finalization.quote.quoteHash } : {}),
+      ...(finalization.simulation?.simulationHash ? { simulationHash: finalization.simulation.simulationHash } : {}),
+      explorerUrl: explorerUrl(txid, action.cluster),
+      proofSignature: decisionProof.signature,
+      decisionProofMessage: decisionProof.message,
+      signatureEncoding: 'base58',
+      note: confirmed
+        ? 'Wallet approved and transaction finalization receipt was saved.'
+        : 'Wallet submitted a transaction and confirmation is still pending.',
+      ...(confirmationError ? { error: confirmationError } : {}),
+      metadata: {
+        transactionBoundary: 'server_wallet_finalization_v1',
+        transactionHash: finalization.transactionHash,
+      },
+    }),
+  });
+
+  await refreshCloudWorkspaceData();
+  showCompletedHistoryForAction(action.id);
+  if (!confirmed) {
+    pushToast('pending', 'Transaction submitted', `Confirmation is still pending: ${short(txid)}`);
+    return;
+  }
+  pushToast('success', 'Transaction finalized', 'Wallet receipt saved in Completed Plans.');
+}
+
+function cloudPreparedFinalizationFromResponse(payload: unknown): {
+  finalization: CloudTransactionFinalizationRecord;
+  transactionBase64: string;
+} {
+  const response = cloudResponseObject(payload, 'finalization prepare response');
+  const finalization = cloudFinalizationFromRecord(response.finalization);
+  if (!finalization) {
+    throw new Error('Finalization prepare response was missing finalization.');
+  }
+  return {
+    finalization,
+    transactionBase64: stringPayload(response.transactionBase64, 'Prepared transaction'),
+  };
+}
+
+async function buildCloudSolTransferPreview(action: PreparedAction): Promise<{
+  amountSol: string;
+  connection: Connection;
+  blockhash: string;
+  lastValidBlockHeight: number;
+  quoteHash: string;
+  request: Record<string, unknown>;
+  simulationHash: string;
+  transactionHash: string;
+  transactionBase64: string;
+}> {
+  if (!state.address || state.address !== action.walletAddress) {
+    throw new Error('Connect the approval wallet before finalizing this transaction.');
+  }
+  const recipient = stringParam(action, 'recipient');
+  const amountSol = stringParam(action, 'amountSol') || stringParam(action, 'amount');
+  if (!recipient) throw new Error('SOL transfer recipient is missing.');
+  if (!amountSol) throw new Error('SOL transfer amount is missing.');
+
+  const from = publicKeyFromConnectedWallet();
+  const to = new PublicKey(recipient);
+  const lamports = parseSolLamports(amountSol);
+  const rpcUrl = action.cluster === state.cluster ? activeRpcUrl() : defaultRpcUrl(action.cluster);
+  const connection = new Connection(rpcUrl, 'confirmed');
+  const balance = await connection.getBalance(from, 'confirmed');
+
+  const { blockhash, lastValidBlockHeight } = await connection.getLatestBlockhash('confirmed');
+  const tx = new Transaction({
+    feePayer: from,
+    recentBlockhash: blockhash,
+  }).add(SystemProgram.transfer({ fromPubkey: from, toPubkey: to, lamports }));
+  const memo = stringParam(action, 'memo');
+  if (memo) {
+    tx.add(new TransactionInstruction({
+      keys: [{ pubkey: from, isSigner: true, isWritable: false }],
+      programId: MEMO_PROGRAM_ID,
+      data: new TextEncoder().encode(memo) as unknown as InstructionData,
+    }));
+  }
+  const fee = await connection.getFeeForMessage(tx.compileMessage(), 'confirmed');
+  const estimatedFeeLamports = fee.value ?? 5_000;
+  if (BigInt(balance) < BigInt(lamports) + BigInt(estimatedFeeLamports)) {
+    throw new Error(`Insufficient SOL balance for ${amountSol} SOL plus estimated fees.`);
+  }
+  const simulation = await connection.simulateTransaction(tx, {
+    sigVerify: false,
+    replaceRecentBlockhash: false,
+  } as never);
+  const logs = simulation.value.logs ?? [];
+  const simulationHash = await sha256(stableJson({
+    err: simulation.value.err ?? null,
+    logs,
+    unitsConsumed: simulation.value.unitsConsumed ?? null,
+  }));
+  if (simulation.value.err) {
+    throw new Error(`Simulation failed: ${stableJson(simulation.value.err)}`);
+  }
+
+  const transactionBase64 = encodeBase64(tx.serialize({
+    requireAllSignatures: false,
+    verifySignatures: false,
+  }));
+  const transactionHash = await sha256(transactionBase64);
+  const quoteHash = await sha256(stableJson({
+    kind: 'fixed_sol_transfer',
+    amountSol,
+    recipient: to.toBase58(),
+    cluster: action.cluster,
+  }));
+  const constraintFingerprint = await sha256(stableJson({
+    approval: action.id,
+    walletAddress: action.walletAddress,
+    cluster: action.cluster,
+    kind: action.kind,
+    params: action.decisionProofParams ?? action.params,
+  }));
+
+  return {
+    amountSol,
+    connection,
+    blockhash,
+    lastValidBlockHeight,
+    quoteHash,
+    transactionBase64,
+    simulationHash,
+    transactionHash,
+    request: {
+      status: 'simulation_passed',
+      walletAction: {
+        kind: action.kind,
+        walletAddress: action.walletAddress,
+        cluster: action.cluster,
+        summary: `Transfer ${amountSol} SOL to ${to.toBase58()}`,
+        sender: from.toBase58(),
+        recipient: to.toBase58(),
+        amount: amountSol,
+        token: 'SOL',
+        feePayer: from.toBase58(),
+        estimatedFeeLamports: String(estimatedFeeLamports),
+        ...(memo ? { memo } : {}),
+        instructionSummary: memo ? [`Transfer ${amountSol} SOL`, `Memo: ${memo}`] : [`Transfer ${amountSol} SOL`],
+        touchedPrograms: memo ? [SystemProgram.programId.toBase58(), MEMO_PROGRAM_ID.toBase58()] : [SystemProgram.programId.toBase58()],
+        metadata: {
+          walletMethod: 'signAndSendTransaction',
+          lastValidBlockHeight,
+          rpcUrl,
+        },
+      },
+      transactionHash,
+      quote: {
+        provider: 'browser-fixed-transfer',
+        fetchedAt: new Date().toISOString(),
+        inputToken: 'SOL',
+        inputAmount: amountSol,
+        routeLabel: 'SystemProgram.transfer',
+        quoteHash,
+      },
+      simulation: {
+        status: 'ok',
+        simulatedAt: new Date().toISOString(),
+        logs,
+        ...(simulation.value.unitsConsumed !== undefined && { unitsConsumed: simulation.value.unitsConsumed }),
+        simulationHash,
+      },
+      metadata: {
+        constraintFingerprint,
+        transactionBoundary: 'browser_wallet_finalization_v1',
+      },
+    },
+  };
+}
+
+function cloudFinalizationFromResponse(payload: unknown): CloudTransactionFinalizationRecord {
+  const response = cloudResponseObject(payload, 'finalization response');
+  const finalization = cloudFinalizationFromRecord(response.finalization);
+  if (!finalization) {
+    throw new Error('Finalization response was missing finalization.');
+  }
+  return finalization;
+}
+
+function cloudFinalizationFromRecord(value: unknown): CloudTransactionFinalizationRecord | undefined {
+  if (!isJsonObject(value)) return undefined;
+  return cloudFinalizationFromMetadata({ finalization: value });
+}
+
+function parseSolLamports(value: string): number {
+  const normalized = value.trim();
+  const match = /^(\d+)(?:\.(\d{1,9}))?$/.exec(normalized);
+  if (!match) throw new Error('SOL amount must be a positive decimal with at most 9 decimal places.');
+  const whole = BigInt(match[1] ?? '0');
+  const fractional = BigInt((match[2] ?? '').padEnd(9, '0'));
+  const lamports = whole * 1_000_000_000n + fractional;
+  if (lamports <= 0n) throw new Error('SOL amount must be greater than zero.');
+  if (lamports > BigInt(Number.MAX_SAFE_INTEGER)) {
+    throw new Error('SOL amount is too large for this browser finalizer.');
+  }
+  return Number(lamports);
 }
 
 async function runBrowserPreparedActionOp(actionId: string, op: string): Promise<void> {
@@ -9394,12 +10738,14 @@ async function runBrowserPreparedActionOp(actionId: string, op: string): Promise
     case 'execute': {
       const proofSignature = await signBrowserWorkflowDecision(action, 'approved');
       completeBrowserPreparedAction(action, 'approved', proofSignature);
+      showCompletedHistoryForAction(action.id);
       pushToast('success', 'Approval recorded', 'Wallet proof saved in Completed Plans.');
       return;
     }
     case 'reject': {
       const proofSignature = await signBrowserWorkflowDecision(action, 'rejected');
       completeBrowserPreparedAction(action, 'rejected', proofSignature);
+      showCompletedHistoryForAction(action.id);
       pushToast('success', 'Request rejected', 'Wallet rejection proof saved in Completed Plans.');
       return;
     }
@@ -9411,6 +10757,7 @@ async function runBrowserPreparedActionOp(actionId: string, op: string): Promise
       );
       state.materializedActions = state.preparedActions;
       saveBrowserWorkflowState();
+      showCompletedHistoryForAction(action.id);
       pushToast('success', 'Request cancelled', 'Saved in Completed Plans.');
       return;
     case 'delete':
@@ -9430,19 +10777,43 @@ async function signCloudWorkflowDecision(
   decision: 'approved' | 'rejected',
 ): Promise<{ signature: string; message: string }> {
   const signingClient = requireClient();
-  const signingMessage = [
-    'Agentic Cloud workflow decision',
-    `Decision: ${decision}`,
-    `Approval: ${action.id}`,
-    `Wallet: ${action.walletAddress}`,
-    `Cluster: ${action.cluster ?? 'devnet'}`,
-    `Summary: ${action.summary}`,
-    `Kind: ${action.kind}`,
-    `Params: ${stableJson(action.decisionProofParams ?? action.params)}`,
-    'This signature records a cloud workflow decision only. It does not submit a transaction or grant spending authority.',
-  ].join('\n');
+  const signingMessage = workflowDecisionProofMessage({
+    approval: {
+      id: action.id,
+      walletAddress: action.walletAddress,
+      cluster: action.cluster,
+      summary: action.summary,
+      kind: action.kind,
+      params: workflowProofParams(action),
+    },
+    decision,
+  });
   const result = await signingClient.signMessage(signingMessage, signOptions(`Agentic Cloud ${decision}`));
   return { signature: result.signature, message: signingMessage };
+}
+
+async function signCloudFinalizationProof(
+  action: PreparedAction,
+  finalization: CloudTransactionFinalizationRecord,
+): Promise<{ signature: string; message: string }> {
+  const signingClient = requireClient();
+  const signingMessage = workflowFinalizationProofMessage({
+    approval: {
+      id: action.id,
+      walletAddress: action.walletAddress,
+      cluster: action.cluster,
+      summary: action.summary,
+      kind: action.kind,
+      params: workflowProofParams(action),
+    },
+    finalization,
+  });
+  const result = await signingClient.signMessage(signingMessage, { cluster: action.cluster, summary: 'Agentic Cloud transaction finalization' });
+  return { signature: result.signature, message: signingMessage };
+}
+
+function workflowProofParams(action: PreparedAction): JsonObject {
+  return stripUndefined(action.decisionProofParams ?? action.params) as JsonObject;
 }
 
 async function signBrowserWorkflowDecision(
@@ -9500,7 +10871,57 @@ function completeBrowserPreparedAction(
   saveBrowserWorkflowState();
 }
 
-async function runRecurringOp(recurringId: string, op: string): Promise<void> {
+async function loadCloudRecurringHistory(recurringId: string, cursor?: string): Promise<void> {
+  const current = state.recurringOccurrenceHistory[recurringId];
+  const response = await cloudRecurringOccurrences(recurringId, cursor);
+  state.recurringOccurrenceHistory[recurringId] = {
+    occurrences: cursor
+      ? [...(current?.occurrences ?? []), ...response.occurrences]
+      : response.occurrences,
+    ...(response.nextCursor ? { nextCursor: response.nextCursor } : {}),
+    loadedAt: new Date().toISOString(),
+  };
+}
+
+function browserRecurringHistory(recurringId: string): RecurringOccurrenceHistoryItem[] {
+  return state.preparedActions
+    .filter((action) => action.recurringId === recurringId)
+    .map((action) => {
+      const status: WorkflowRecurringOccurrenceRecord['status'] = action.status === 'approved'
+        ? 'completed'
+        : action.status === 'rejected' || action.status === 'cancelled'
+          ? 'cancelled'
+          : action.status === 'failed' || action.status === 'blocked' || action.status === 'expired'
+            ? 'failed'
+            : 'approval_pending';
+      return {
+        id: action.id,
+        recurringScheduleId: recurringId,
+        walletAddress: action.walletAddress,
+        cluster: action.cluster,
+        status,
+        occurrenceKey: action.occurrenceKey ?? action.id,
+        dueAt: action.dueAt,
+        createdAt: action.createdAt,
+        updatedAt: action.updatedAt,
+        ...(action.error ? { error: action.error } : {}),
+        statusLabel: formatOccurrenceStatus(status, {
+          status: action.status,
+          ...(action.txStatus ? { txStatus: action.txStatus } : {}),
+        }),
+        approval: {
+          id: action.id,
+          status: action.status,
+          ...(action.confirmedAt ? { decidedAt: action.confirmedAt } : {}),
+          ...(action.txid ? { txid: action.txid } : {}),
+          ...(action.txStatus ? { txStatus: action.txStatus } : {}),
+        },
+      } satisfies RecurringOccurrenceHistoryItem;
+    })
+    .sort((left, right) => right.createdAt.localeCompare(left.createdAt));
+}
+
+async function runRecurringOp(recurringId: string, op: string, cursor?: string): Promise<void> {
   const payment = state.recurringPayments.find((candidate) => candidate.id === recurringId);
   const source = payment
     ? recurringPaymentWorkflowSource(payment)
@@ -9512,6 +10933,14 @@ async function runRecurringOp(recurringId: string, op: string): Promise<void> {
 
   if (source === 'browser') {
     await run('inbox', async () => {
+      if (op === 'history' || op === 'history-more') {
+        state.recurringOccurrenceHistory[recurringId] = {
+          occurrences: browserRecurringHistory(recurringId),
+          loadedAt: new Date().toISOString(),
+        };
+        pushToast('success', 'Recurring history loaded', recurringId);
+        return;
+      }
       runBrowserRecurringOp(recurringId, op);
     });
     return;
@@ -9521,10 +10950,16 @@ async function runRecurringOp(recurringId: string, op: string): Promise<void> {
     await run('inbox', async () => {
       switch (op) {
         case 'pause':
-          await cloudPatchRecurring(recurringId, { status: 'paused' });
+          await cloudPauseRecurring(recurringId);
           break;
         case 'resume':
-          await cloudPatchRecurring(recurringId, { status: 'active' });
+          await cloudResumeRecurring(recurringId);
+          break;
+        case 'history':
+          await loadCloudRecurringHistory(recurringId);
+          break;
+        case 'history-more':
+          await loadCloudRecurringHistory(recurringId, cursor);
           break;
         case 'delete':
           await cloudDeleteRecurring(recurringId);
@@ -9532,13 +10967,27 @@ async function runRecurringOp(recurringId: string, op: string): Promise<void> {
         default:
           throw new Error(`Unknown recurring operation: ${op}`);
       }
-      await refreshCloudWorkspaceData();
-      pushToast('success', op === 'delete' ? 'Deleted permanently' : `Recurring ${op}`, recurringId);
+      if (op !== 'history' && op !== 'history-more') {
+        await refreshCloudWorkspaceData();
+      }
+      pushToast(
+        'success',
+        op === 'delete' ? 'Deleted permanently' : op.startsWith('history') ? 'Recurring history loaded' : `Recurring ${op}`,
+        recurringId,
+      );
     });
     return;
   }
 
   await run('inbox', async () => {
+    if (op === 'history' || op === 'history-more') {
+      state.recurringOccurrenceHistory[recurringId] = {
+        occurrences: browserRecurringHistory(recurringId),
+        loadedAt: new Date().toISOString(),
+      };
+      pushToast('success', 'Recurring history loaded', recurringId);
+      return;
+    }
     const path =
       op === 'pause'
         ? '/bridge/recurring-payments/pause'
@@ -9592,55 +11041,196 @@ function runBrowserRecurringOp(recurringId: string, op: string): void {
 
 async function runCreateLabArtifact(): Promise<void> {
   await run('lab', async () => {
-    const signingClient = requireClient();
     const lab = activeLab();
     const fieldValues = isPublicReceiptLab(lab) ? readReceiptFieldValues(lab) : {};
     validateLabForSigning(lab, fieldValues);
     const input = isPublicReceiptLab(lab) ? receiptInputSummary(lab, fieldValues) : labInput(lab.id).trim();
-    const createdAt = new Date().toISOString();
-    const payload = await labPayload(lab.id, input, createdAt, fieldValues);
-    const id = newId(lab.id.slice(0, 3).replace(/[^a-z]/g, '') || 'lab');
-    const unsigned = {
-      version: 'labs-ui-v1',
-      id,
-      labId: lab.id,
-      kind: lab.kind,
-      createdAt,
-      walletAddress: state.address,
-      cluster: state.cluster,
-      title: lab.title,
+    const { archiveResult } = await signAndArchiveEvidenceReceipt({
+      lab,
       input,
-      payload,
-    };
-    const preSignatureHash = await sha256(stableJson(unsigned));
-    const signingMessage = [
-      'Solana Agent Wallet Adapter',
-      `Evidence receipt: ${lab.title}`,
-      `Receipt: ${id}`,
-      `Wallet: ${state.address}`,
-      `Cluster: ${state.cluster}`,
-      `Hash: ${preSignatureHash}`,
-    ].join('\n');
-    const result = await signingClient.signMessage(signingMessage, signOptions(`${lab.title} artifact`));
-    const verified = verifyMessageSignature(signingMessage, result.signature);
-    const artifactBase = {
-      ...unsigned,
-      preSignatureHash,
-      signingMessage,
-      signature: result.signature,
-      verified,
-    };
-    const artifact: LabArtifact = {
-      ...artifactBase,
-      artifactHash: await sha256(stableJson(artifactBase)),
-    };
-    const archiveResult = await archiveLabArtifact(artifact);
+      fieldValues,
+      signSummary: isPublicReceiptLab(lab) ? lab.title : `${lab.title} evidence`,
+    });
     pushToast(
       'success',
       isPublicReceiptLab(lab) ? 'Receipt signed' : 'Evidence signed',
       archiveLabArtifactToastDetail(archiveResult, lab),
     );
   });
+}
+
+async function signAndArchiveEvidenceReceipt(input: {
+  lab: LabDefinition;
+  input: string;
+  fieldValues: Record<string, string>;
+  metadata?: JsonObject;
+  signSummary?: string;
+}): Promise<{ artifact: LabArtifact; archiveResult: ArchiveLabArtifactResult }> {
+  const signingClient = requireClient();
+  const createdAt = new Date().toISOString();
+  const payload = await labPayload(input.lab.id, input.input, createdAt, input.fieldValues);
+  const id = newId(input.lab.id.slice(0, 3).replace(/[^a-z]/g, '') || 'lab');
+  const unsigned = {
+    version: 'labs-ui-v1',
+    id,
+    labId: input.lab.id,
+    kind: input.lab.kind,
+    createdAt,
+    walletAddress: state.address,
+    cluster: state.cluster,
+    title: input.lab.title,
+    input: input.input,
+    payload,
+    ...(input.metadata ? { metadata: input.metadata } : {}),
+  };
+  const preSignatureHash = await sha256(stableJson(unsigned));
+  const signingMessage = [
+    'Solana Agent Wallet Adapter',
+    `Receipt proof: ${input.lab.title}`,
+    `Receipt: ${id}`,
+    `Wallet: ${state.address}`,
+    `Cluster: ${state.cluster}`,
+    `Hash: ${preSignatureHash}`,
+  ].join('\n');
+  const result = await signingClient.signMessage(signingMessage, signOptions(input.signSummary ?? input.lab.title));
+  const verified = verifyMessageSignature(signingMessage, result.signature);
+  const artifactBase = {
+    ...unsigned,
+    preSignatureHash,
+    signingMessage,
+    signature: result.signature,
+    verified,
+  };
+  const artifact: LabArtifact = {
+    ...artifactBase,
+    artifactHash: await sha256(stableJson(artifactBase)),
+  };
+  const archiveResult = await archiveLabArtifact(artifact);
+  return { artifact, archiveResult };
+}
+
+async function runInlineReceiptProof(actionId: string, proofKind: InlineReceiptKind): Promise<void> {
+  const action = state.preparedActions.find((candidate) => candidate.id === actionId);
+  if (!action) {
+    pushToast('error', 'Approval not found', actionId);
+    return;
+  }
+  await run('lab', async () => {
+    if (!state.address || state.address !== action.walletAddress) {
+      throw new Error('Connect the approval wallet before signing this receipt.');
+    }
+    const lab = labById(receiptLabIdForInlineKind(proofKind));
+    if (!lab) throw new Error('Receipt type is not available.');
+    const fieldValues = inlineReceiptFieldValues(action, proofKind);
+    const receiptInput = receiptInputSummary(lab, fieldValues);
+    const { archiveResult } = await signAndArchiveEvidenceReceipt({
+      lab,
+      input: receiptInput,
+      fieldValues,
+      metadata: inlineReceiptMetadata(action, proofKind),
+      signSummary: `${lab.title} for ${short(action.id)}`,
+    });
+    delete state.auditActivity[auditActivityKey('approval', action.id)];
+    pushToast('success', `${lab.title} signed`, archiveLabArtifactToastDetail(archiveResult, lab));
+  });
+}
+
+function inlineReceiptFieldValues(action: PreparedAction, proofKind: InlineReceiptKind): Record<string, string> {
+  const request = actionReceiptRequestText(action);
+  const constraints = actionReceiptConstraintText(action);
+  switch (proofKind) {
+    case 'intent':
+      return {
+        request,
+        constraints,
+        context: action.recurringId
+          ? `Approval ${action.id}; recurring schedule ${action.recurringId}${action.occurrenceKey ? `; occurrence ${action.occurrenceKey}` : ''}`
+          : `Approval ${action.id}`,
+      };
+    case 'rejection':
+      return {
+        request,
+        reason: action.error || cloudExecutionBlockReason(action) || 'User rejected this wallet request before approval.',
+        policy: 'No wallet action should proceed unless the request matches the visible constraints and the user approves in-wallet.',
+      };
+    case 'policy':
+      return {
+        policy: 'Check recipient, amount, token, cluster, finalization requirement, and no delegated or unlimited signing authority.',
+        request,
+        result: 'Pass',
+      };
+    case 'review':
+      return {
+        request,
+        risks: actionReviewRiskText(action),
+        verdict: cloudExecutionBlockReason(action) ? 'Warning' : 'Recorded',
+      };
+  }
+}
+
+function inlineReceiptMetadata(action: PreparedAction, proofKind: InlineReceiptKind): JsonObject {
+  const metadata: JsonObject = {
+    source: 'inline-proof',
+    recordType: 'approval',
+    recordId: action.id,
+    sourceRecordType: 'approval',
+    sourceRecordId: action.id,
+    approvalId: action.id,
+    proofUseCase: proofKind,
+    approvalKind: action.kind,
+    workflowSource: action.workflowSource ?? (isBrowserWorkflowId(action.id) ? 'browser' : 'local-bridge'),
+  };
+  if (action.planDraftId) metadata.planDraftId = action.planDraftId;
+  if (action.recurringId) metadata.recurringScheduleId = action.recurringId;
+  if (action.occurrenceKey) metadata.occurrenceKey = action.occurrenceKey;
+  if (action.finalizationId) metadata.finalizationId = action.finalizationId;
+  return metadata;
+}
+
+function actionReceiptRequestText(action: PreparedAction): string {
+  const rows = [
+    action.summary,
+    `Approval: ${action.id}`,
+    `Kind: ${action.kind.replace(/_/g, ' ')}`,
+    `Cluster: ${titleCaseCluster(action.cluster)}`,
+    recipientParam(action) ? `Recipient: ${recipientParam(action)}` : '',
+    amountLabel(action) !== 'n/a' ? `Amount: ${amountLabel(action)}` : '',
+    tokenLabel(action) !== 'n/a' ? `Token: ${tokenLabel(action)}` : '',
+    action.recurringId ? `Recurring schedule: ${action.recurringId}` : '',
+    action.occurrenceKey ? `Occurrence: ${action.occurrenceKey}` : '',
+  ].filter(Boolean);
+  return rows.join('\n');
+}
+
+function actionReceiptConstraintText(action: PreparedAction): string {
+  const constraints = [
+    recipientParam(action) ? `Recipient must match ${recipientParam(action)}.` : '',
+    amountLabel(action) !== 'n/a' ? `Amount must match ${amountLabel(action)}.` : '',
+    tokenLabel(action) !== 'n/a' ? `Token route must match ${tokenLabel(action)}.` : '',
+    `Cluster must be ${titleCaseCluster(action.cluster)}.`,
+    requiresCloudTransactionFinalization(action)
+      ? 'Fresh quote/fixed transfer preview, successful simulation, wallet approval, and final receipt are required before funds move.'
+      : 'This proof alone does not submit a transaction or grant spending authority.',
+    'No private key, delegated signer, server signer, or unlimited approval is granted.',
+  ].filter(Boolean);
+  return constraints.join('\n');
+}
+
+function actionReviewRiskText(action: PreparedAction): string {
+  const risks = [
+    'Recipient mismatch',
+    'Amount/token mismatch',
+    'Wrong cluster',
+    'Unexpected authority grant',
+    'Route or quote drift',
+    'Simulation failure',
+    'Wallet capability mismatch',
+  ];
+  const blockReason = cloudExecutionBlockReason(action);
+  if (blockReason) risks.push(`Current blocker: ${blockReason}`);
+  if (action.finalization?.simulation?.status) risks.push(`Simulation status: ${action.finalization.simulation.status}`);
+  if (action.finalization?.quote?.quoteHash || action.quoteHash) risks.push(`Quote hash: ${action.finalization?.quote?.quoteHash ?? action.quoteHash}`);
+  return risks.join('\n');
 }
 
 function archiveLabArtifactToastDetail(result: ArchiveLabArtifactResult, lab: LabDefinition): string {
@@ -9667,7 +11257,7 @@ async function runRefreshLabArtifacts(): Promise<void> {
     if (activeWorkflowMode() === 'agentic-cloud') {
       await syncLabArtifactsWithCloud();
     }
-    pushToast('success', 'Artifacts refreshed', `${state.labArtifacts.length} artifact(s) loaded.`);
+    pushToast('success', 'Receipts refreshed', `${state.labArtifacts.length} receipt${state.labArtifacts.length === 1 ? '' : 's'} loaded.`);
   });
 }
 
@@ -9685,7 +11275,7 @@ async function runDeleteLabArtifact(artifactId: string): Promise<void> {
     if (activeWorkflowMode() === 'agentic-cloud') {
       cloudResult = await deleteCloudEvidenceArtifact(artifact);
     }
-    pushToast('success', 'Evidence deleted', artifact.title);
+    pushToast('success', 'Receipt deleted', artifact.title);
     if (cloudResult.kind === 'failed') {
       pushToast(
         'error',
@@ -9700,6 +11290,27 @@ async function runDeleteLabArtifact(artifactId: string): Promise<void> {
       );
     }
   });
+}
+
+async function runShareLabArtifact(artifactId: string): Promise<void> {
+  const artifact = state.labArtifacts.find((candidate) => candidate.id === artifactId);
+  if (!artifact) return;
+  const text = receiptShareText(artifact);
+  try {
+    if (navigator.share) {
+      await navigator.share({
+        title: artifact.title || receiptLabelForKind(artifact.kind),
+        text,
+      });
+      pushToast('success', 'Receipt shared', short(artifact.artifactHash));
+      return;
+    }
+    await navigator.clipboard.writeText(text);
+    pushToast('success', 'Receipt share text copied', short(artifact.artifactHash));
+  } catch (err) {
+    const message = err instanceof Error ? err.message : 'Share was cancelled or blocked.';
+    pushToast('error', 'Share failed', message);
+  }
 }
 
 function deleteEvidenceConfirmCopy(artifact: LabArtifact): string {
@@ -9770,7 +11381,7 @@ async function archiveLabArtifact(artifact: LabArtifact): Promise<ArchiveLabArti
       working = { ...working, bridgeArchived: true };
       result.savedToBridge = true;
     } catch (err) {
-      state.bridgeStatus = `Artifact bridge archive failed: ${err instanceof Error ? err.message : String(err)}`;
+      state.bridgeStatus = `Receipt bridge archive failed: ${err instanceof Error ? err.message : String(err)}`;
     }
   }
   if (working !== artifact) {
@@ -9796,6 +11407,7 @@ function cloudEvidenceCreateBody(artifact: LabArtifact): Record<string, unknown>
     verdict: artifact.payload.verdict,
     effect: artifact.payload.effect,
     metadata: {
+      ...(artifact.metadata ?? {}),
       labId: artifact.labId,
       browserArtifactId: artifact.id,
       input: artifact.input,
@@ -9880,6 +11492,7 @@ function cloudEvidenceRecordToLabArtifact(value: unknown): LabArtifact | null {
     verified,
     artifactHash: stringField(record.artifactHash) ?? stringField(record.preSignatureHash) ?? '',
     ...(cloudId ? { cloudReceiptId: cloudId } : {}),
+    ...(isJsonObject(metadata) ? { metadata } : {}),
   };
   return isLabArtifact(candidate) ? candidate : null;
 }
@@ -9948,7 +11561,7 @@ async function syncLabArtifactsWithBridge(): Promise<void> {
     await saveLabArtifacts();
     state.labArchiveStatus = 'Browser archive synced with bridge.';
   } catch (err) {
-    state.bridgeStatus = `Artifact bridge archive unavailable: ${err instanceof Error ? err.message : String(err)}`;
+    state.bridgeStatus = `Receipt bridge archive unavailable: ${err instanceof Error ? err.message : String(err)}`;
   }
 }
 
@@ -10270,15 +11883,53 @@ function assertRequiredUserNotes(template: AgentPlanTemplate, userNotes: string)
   }
 }
 
+function planGuardrailReport(plan: AgentPlan): AiGuardrailReport | undefined {
+  return isAiGuardrailReport(plan.guardrailReport) ? plan.guardrailReport : undefined;
+}
+
+function planGuardrailVerdict(plan: AgentPlan): AiGuardrailReport['verdict'] | 'unknown' {
+  return planGuardrailReport(plan)?.verdict ?? 'unknown';
+}
+
 function canQueueAgentPlan(plan: AgentPlan): boolean {
   return ['transfer_sol', 'transfer_spl', 'swap', 'recurring_payment'].includes(plan.actionType);
+}
+
+function canQueueGuardedPlan(plan: AgentPlan): boolean {
+  return canQueueAgentPlan(plan) &&
+    planGuardrailVerdict(plan) !== 'block' &&
+    !(activeWorkflowMode() === 'agentic-cloud' && cloudQueueUnsupportedReason(plan));
+}
+
+function canQueueGeneratedPlan(record: GeneratedPlanRecord): boolean {
+  return record.status !== 'archived' && canQueueGuardedPlan(record.plan);
+}
+
+function assertPlanCanQueue(plan: AgentPlan): void {
+  if (!canQueueAgentPlan(plan)) {
+    throw new Error('Only transfer, swap, and recurring schedules can be queued.');
+  }
+  const report = planGuardrailReport(plan);
+  if (report?.verdict === 'block') {
+    throw new Error(report.summary || 'This plan is blocked by Agentic guardrails.');
+  }
+  if (activeWorkflowMode() === 'agentic-cloud') {
+    const unsupported = cloudQueueUnsupportedReason(plan);
+    if (unsupported) throw new Error(unsupported);
+  }
 }
 
 function queuePlanTitle(): string {
   if (!state.address) return 'Connect a wallet before queueing.';
   if (!state.agentPlan) return 'Create a plan before queueing.';
   if (!canQueueAgentPlan(state.agentPlan)) return 'Only transfer, swap, and recurring schedules can be queued.';
+  const report = planGuardrailReport(state.agentPlan);
+  if (report?.verdict === 'block') return report.summary;
   const mode = activeWorkflowMode();
+  if (mode === 'agentic-cloud') {
+    const unsupported = cloudQueueUnsupportedReason(state.agentPlan);
+    if (unsupported) return unsupported;
+  }
   if (state.agentPlan.actionType === 'recurring_payment') {
     if (mode === 'agentic-cloud') return 'Create an Agentic Cloud recurring schedule. Each due occurrence appears in Approval Inbox.';
     return mode === 'local-bridge'
@@ -10353,12 +12004,15 @@ async function queuePlanThroughActiveWorkflow(
   plan: AgentPlan,
   sourceRecord?: GeneratedPlanRecord,
 ): Promise<QueueWorkflowResult> {
+  assertPlanCanQueue(plan);
   const mode = activeWorkflowMode();
   if (mode === 'local-bridge') {
     const response = await queuePlanThroughBridge(plan);
     return { ...response, mode: 'local-bridge' };
   }
   if (mode === 'agentic-cloud') {
+    const unsupported = cloudQueueUnsupportedReason(plan);
+    if (unsupported) throw new Error(unsupported);
     const response = plan.actionType === 'recurring_payment'
       ? await queueRecurringPlanThroughCloud(plan)
       : await queuePlanThroughCloud(plan, sourceRecord);
@@ -10372,6 +12026,8 @@ async function queuePlanThroughCloud(plan: AgentPlan, sourceRecord?: GeneratedPl
   if (!cloudSessionMatchesWallet()) {
     throw new Error('Sign in to Agentic Cloud with the connected wallet before queueing to cloud.');
   }
+  const unsupported = cloudQueueUnsupportedReason(plan);
+  if (unsupported) throw new Error(unsupported);
   const cloudRecord = sourceRecord?.workflowSource === 'cloud' && samePlan(sourceRecord.plan, plan)
     ? sourceRecord
     : state.generatedPlans.find((record) =>
@@ -10400,6 +12056,21 @@ async function queuePlanThroughCloud(plan: AgentPlan, sourceRecord?: GeneratedPl
     throw new Error('Agentic Cloud did not return a valid approval request.');
   }
   return { id: approval.id, planRecordId: planId };
+}
+
+function cloudQueueUnsupportedReason(plan: AgentPlan): string | undefined {
+  if (plan.actionType === 'transfer_sol') return undefined;
+  if (plan.actionType === 'recurring_payment' && (plan.parameters.token ?? 'SOL').toUpperCase() === 'SOL') return undefined;
+  if (plan.actionType === 'transfer_spl' || plan.actionType === 'swap') {
+    return 'Agentic Cloud currently finalizes SOL transfers only. Use Private local mode for SPL transfers and swaps.';
+  }
+  if (plan.actionType === 'custom_transaction') {
+    return 'Agentic Cloud does not accept custom executable transactions yet. Use a proof-only review or Private local mode.';
+  }
+  if (plan.actionType === 'recurring_payment') {
+    return 'Agentic Cloud recurring execution currently supports SOL payments only. Use Private local mode for token schedules.';
+  }
+  return undefined;
 }
 
 async function queueRecurringPlanThroughCloud(plan: AgentPlan): Promise<{ id: string }> {
@@ -10489,11 +12160,16 @@ function browserActionParams(plan: AgentPlan, kind: PreparedActionKind): Record<
       memo: plan.parameters.memo ?? '',
     };
   }
+  if (kind === 'swap') {
+    return {
+      inputToken: plan.parameters.inputToken || 'SOL',
+      outputToken: plan.parameters.outputToken || 'USDC',
+      amount: requiredPlanParam(plan, 'amount'),
+      slippageBps: plan.parameters.slippageBps || '50',
+    };
+  }
   return {
-    inputToken: plan.parameters.inputToken || 'SOL',
-    outputToken: plan.parameters.outputToken || 'USDC',
-    amount: requiredPlanParam(plan, 'amount'),
-    slippageBps: plan.parameters.slippageBps || '50',
+    reason: plan.userNotes || plan.intent,
   };
 }
 
@@ -10522,7 +12198,8 @@ function browserRecurringPaymentFromPlan(plan: AgentPlan): RecurringPayment {
 
 function browserRecurringPaymentFromDraft(draft: RecurringDraft): RecurringPayment {
   const now = new Date().toISOString();
-  const payload = recurringBody(draft) as ReturnType<typeof recurringSchedulePayload>;
+  const payload = recurringBody(draft);
+  const schedulePayload = payload as ReturnType<typeof recurringSchedulePayload>;
   const maxOccurrences = Number(draft.maxOccurrences);
   return {
     id: newId('browser-recurring'),
@@ -10532,9 +12209,16 @@ function browserRecurringPaymentFromDraft(draft: RecurringDraft): RecurringPayme
     token: draft.token,
     recipient: draft.recipient,
     amount: draft.amount,
-    ...payload,
+    ...schedulePayload,
     ...(Number.isInteger(maxOccurrences) && maxOccurrences > 0 ? { maxOccurrences } : {}),
     occurrencesCreated: 1,
+    ...(typeof payload.expiresAt === 'string' && { expiresAt: payload.expiresAt }),
+    ...(isJsonObject(payload.notifications) && {
+      notifications: {
+        ...(typeof payload.notifications.inApp === 'boolean' && { inApp: payload.notifications.inApp }),
+        ...(typeof payload.notifications.webhookUrl === 'string' && { webhookUrl: payload.notifications.webhookUrl }),
+      },
+    }),
     note: draft.note || 'Browser recurring schedule',
     createdAt: now,
     updatedAt: now,
@@ -11268,6 +12952,13 @@ function preparedActionCard(action: PreparedAction): string {
   const executable = ['ready', 'overdue', 'failed'].includes(action.status);
   const browserWorkflow = isBrowserWorkflowId(action.id);
   const cloudWorkflow = action.workflowSource === 'cloud';
+  const decisionLabels = preparedActionDecisionLabels(action);
+  const effectCopy = approvalEffectCopy(action);
+  const executionBlockReason = cloudExecutionBlockReason(action);
+  const executeDisabled = (!state.bridgeActive && !browserWorkflow && !cloudWorkflow) ||
+    state.busy ||
+    !executable ||
+    Boolean(executionBlockReason);
   return `
     <article class="inbox-item approval-ticket ${action.status}">
       <div class="ticket-status-rail ${statusTone(action.status)}"></div>
@@ -11281,14 +12972,23 @@ function preparedActionCard(action: PreparedAction): string {
         <h3>${escapeHtml(action.summary)}</h3>
         ${action.note ? `<p class="action-note">${escapeHtml(action.note)}</p>` : ''}
         ${actionPreview(action)}
+        ${finalizationChecklist(action)}
+        ${inlineReceiptActions(action)}
+        ${relatedReceiptBlockForApproval(action.id)}
+        ${recordActivityDetails('approval', action.id)}
         <p>${escapeHtml(action.kind)} on ${escapeHtml(action.cluster)} - due ${formatDateTime(action.dueAt)}</p>
         ${action.error ? `<p class="error-text">${escapeHtml(action.error)}</p>` : ''}
         ${action.txError ? `<p class="error-text">${escapeHtml(action.txError)}</p>` : ''}
         ${action.txid ? txBlock(action.txid, action.cluster) : ''}
+        <div class="approval-effect" data-approval-effect="${escapeHtml(action.workflowSource ?? (browserWorkflow ? 'browser' : 'local-bridge'))}">
+          <strong>What this decision does</strong>
+          <p>${escapeHtml(effectCopy)}</p>
+        </div>
+        ${executionBlockReason ? `<p class="error-text">${escapeHtml(executionBlockReason)}</p>` : ''}
       </div>
       <div class="inbox-actions">
-        <button data-action-op="execute" data-action-id="${action.id}" class="primary" ${(!state.bridgeActive && !browserWorkflow && !cloudWorkflow) || state.busy || !executable ? 'disabled' : ''}>Approve</button>
-        <button data-action-op="reject" data-action-id="${action.id}" ${state.busy || isTerminalPreparedAction(action) ? 'disabled' : ''}>Reject</button>
+        <button data-action-op="execute" data-action-id="${action.id}" class="primary" ${executeDisabled ? 'disabled' : ''} ${executionBlockReason ? `title="${escapeHtml(executionBlockReason)}"` : ''}>${escapeHtml(decisionLabels.approve)}</button>
+        <button data-action-op="reject" data-action-id="${action.id}" ${state.busy || isTerminalPreparedAction(action) ? 'disabled' : ''}>${escapeHtml(decisionLabels.reject)}</button>
         <button data-action-op="copy" data-action-id="${action.id}">Copy request</button>
         <details class="generated-plan-more inbox-more-actions">
           <summary>More</summary>
@@ -11302,10 +13002,160 @@ function preparedActionCard(action: PreparedAction): string {
   `;
 }
 
+function inlineReceiptActions(action: PreparedAction): string {
+  const disabled = !state.address || state.address !== action.walletAddress || state.busy;
+  const alreadySigned = relatedEvidenceReceiptsForApproval(action.id);
+  const signedKinds = new Set(alreadySigned.map((artifact) => artifact.kind));
+  const actions: Array<[InlineReceiptKind, string, string]> = [
+    ['intent', 'Sign proof of intent', 'Record the exact request before deciding.'],
+    ['policy', 'Sign proof of policy', 'Record the caps and wallet rules checked.'],
+    ['review', 'Sign proof of review', 'Record the risks reviewed before the wallet opens.'],
+    ['rejection', 'Sign proof of rejection', 'Record why this request should not proceed.'],
+  ];
+  return `
+    <div class="inline-receipt-actions" aria-label="Receipt proof actions">
+      <div>
+        <strong>Receipt proofs</strong>
+        <p>Optional wallet-signed records for this approval. They do not approve, submit, or move funds.</p>
+      </div>
+      <div class="inline-receipt-button-grid">
+        ${actions.map(([kind, label, title]) => {
+          const lab = labById(receiptLabIdForInlineKind(kind));
+          const signed = lab ? signedKinds.has(lab.kind) : false;
+          return `
+            <button
+              type="button"
+              data-inline-receipt-kind="${escapeHtml(kind)}"
+              data-inline-receipt-action-id="${escapeHtml(action.id)}"
+              title="${escapeHtml(title)}"
+              ${disabled || signed ? 'disabled' : ''}
+            >
+              ${escapeHtml(signed ? label.replace('Sign ', 'Signed ') : label)}
+            </button>
+          `;
+        }).join('')}
+      </div>
+    </div>
+  `;
+}
+
+function preparedActionDecisionLabels(action: PreparedAction): { approve: string; reject: string } {
+  if (canFinalizeCloudSolTransfer(action)) {
+    return {
+      approve: 'Review and send',
+      reject: 'Deny request',
+    };
+  }
+  if (requiresCloudTransactionFinalization(action)) {
+    return {
+      approve: 'Use private local mode',
+      reject: 'Deny request',
+    };
+  }
+  if (action.workflowSource === 'cloud' || isBrowserWorkflowId(action.id)) {
+    return {
+      approve: 'Sign approval proof',
+      reject: 'Deny request',
+    };
+  }
+  return {
+    approve: 'Approve in wallet',
+    reject: 'Reject',
+  };
+}
+
+function approvalEffectCopy(action: PreparedAction): string {
+  if (canFinalizeCloudSolTransfer(action)) {
+    return 'Agentic Cloud prepares and simulates the exact SOL transfer, your browser opens your wallet for that transaction only, then Agentic saves a finalization receipt. Agentic never receives signing authority.';
+  }
+  if (requiresCloudTransactionFinalization(action)) {
+    return action.kind === 'transfer_sol'
+      ? 'This cloud transfer requires transaction finalization, but the connected wallet cannot sign and send it from this browser session.'
+      : 'This money-moving request requires transaction finalization. Cloud finalization for this action type is not live yet, so proof-only approval is blocked.';
+  }
+  if (action.workflowSource === 'cloud') {
+    return 'Your wallet signs a decision proof bound to this approval. Agentic Cloud saves the receipt; this proof does not submit a transaction.';
+  }
+  if (isBrowserWorkflowId(action.id)) {
+    return 'Your wallet signs a browser-local decision proof. The receipt stays on this device; no transaction is submitted by this proof.';
+  }
+  return 'Private local mode sends the prepared action to your local runtime. The connected wallet still controls the final signature or send request.';
+}
+
+const CLOUD_TRANSACTION_FINALIZATION_KINDS = new Set<PreparedActionKind>([
+  'transfer_sol',
+  'transfer_spl',
+  'swap',
+]);
+
+function canFinalizeCloudSolTransfer(action: PreparedAction): boolean {
+  return action.workflowSource === 'cloud' &&
+    action.kind === 'transfer_sol' &&
+    state.capabilities?.supports.signAndSendTransaction === true &&
+    Boolean(state.address && state.address === action.walletAddress);
+}
+
+function requiresCloudTransactionFinalization(action: PreparedAction): boolean {
+  return action.workflowSource === 'cloud' && CLOUD_TRANSACTION_FINALIZATION_KINDS.has(action.kind);
+}
+
+function cloudExecutionBlockReason(action: PreparedAction): string | null {
+  if (!requiresCloudTransactionFinalization(action)) return null;
+  if (action.kind === 'transfer_sol') {
+    if (!state.address || state.address !== action.walletAddress) {
+      return 'Connect the approval wallet before finalizing this cloud SOL transfer.';
+    }
+    if (state.capabilities?.supports.signAndSendTransaction !== true) {
+      return 'This wallet cannot sign and send transactions from the browser. Use private local mode or reject this request.';
+    }
+    return null;
+  }
+  return 'Cloud transaction finalization for this action is not live yet. Use private local mode or reject this request.';
+}
+
+function finalizationChecklist(action: PreparedAction): string {
+  const requiresWalletFinalization = requiresCloudTransactionFinalization(action);
+  if (!requiresWalletFinalization && !action.finalization) return '';
+  const status = action.finalization?.status ?? action.finalizationStatus ?? 'not_started';
+  const rows: Array<{ label: string; complete: boolean; detail: string }> = [
+    {
+      label: 'Constraints locked',
+      complete: true,
+      detail: action.transactionHash ? short(action.transactionHash) : 'Approval parameters are bound to this request.',
+    },
+    {
+      label: 'Quote refreshed',
+      complete: Boolean(action.finalization?.quote || status === 'simulation_passed' || status === 'submitted' || status === 'confirmed'),
+      detail: action.quoteHash ? short(action.quoteHash) : 'Refreshed at final review.',
+    },
+    {
+      label: 'Simulation passed',
+      complete: action.finalization?.simulation?.status === 'ok' || status === 'simulation_passed' || status === 'submitted' || status === 'confirmed',
+      detail: action.simulationHash ? short(action.simulationHash) : 'Required before wallet opens.',
+    },
+    {
+      label: 'Receipt saved',
+      complete: Boolean(action.txid || status === 'confirmed'),
+      detail: action.txid ? short(action.txid) : 'Saved after wallet approval.',
+    },
+  ];
+  return `
+    <div class="finalization-checklist" aria-label="Transaction finalization checklist">
+      ${rows.map((row) => `
+        <div class="${row.complete ? 'complete' : ''}">
+          <span>${row.complete ? 'ok' : ''}</span>
+          <strong>${escapeHtml(row.label)}</strong>
+          <p>${escapeHtml(row.detail)}</p>
+        </div>
+      `).join('')}
+    </div>
+  `;
+}
+
 function actionPreview(action: PreparedAction): string {
   const rows: Array<[string, string]> = [
     ['Wallet', short(action.walletAddress)],
-    ['Recipient', stringParam(action, 'recipient') ? short(stringParam(action, 'recipient')) : 'n/a'],
+    ['Recipient', recipientParam(action) ? short(recipientParam(action)) : 'n/a'],
     ['Amount', amountLabel(action)],
     ['Token', tokenLabel(action)],
     ['Caps', 'Checked before wallet opens'],
@@ -11321,9 +13171,8 @@ function actionPreview(action: PreparedAction): string {
 function recurringComposer(): string {
   const draft = state.recurringDraft;
   const recipient = draft.recipient ? short(draft.recipient) : 'Recipient required';
-  const limit = draft.maxOccurrences ? `${draft.maxOccurrences} occurrence${draft.maxOccurrences === '1' ? '' : 's'}` : 'Manual review every time';
+  const limit = recurringDraftLimitLabel(draft);
   const createDisabled = !state.address || state.busy;
-  const nextOccurrence = recurringNextOccurrenceLabel(draft);
   const workflowMode = activeWorkflowMode();
   const browserWorkflow = workflowMode === 'browser-workflow';
   const recurringHelp = browserWorkflow
@@ -11388,14 +13237,21 @@ function recurringComposer(): string {
           ${recurringScheduleFields(draft)}
         </div>
       </div>
+      <div class="contract-section">
+        <div>
+          <span>Caps and reminders</span>
+          <p>Optional stop time and webhook reminder path.</p>
+        </div>
+        <div class="recurring-grid">
+          ${fieldInput('recurringExpiresAt', 'Expires at', draft.expiresAt, '', 'datetime-local')}
+          ${fieldInput('recurringWebhookUrl', 'Webhook URL', draft.webhookUrl, 'https://example.com/agentic-webhook')}
+        </div>
+      </div>
       <label class="field compact approval-memo">
         <span>Approval memo</span>
         <input id="recurringNote" data-recurring-field="note" value="${escapeHtml(draft.note)}" placeholder="Reason shown when this appears in Approval Inbox" />
       </label>
-      <div class="recurring-next-preview">
-        <span>Next occurrence</span>
-        <strong id="recurringNextOccurrence">${escapeHtml(nextOccurrence)}</strong>
-      </div>
+      ${recurringDraftPreviewPanel(draft)}
       <div class="recurring-form-actions contract-actions">
         <button id="createRecurring" class="primary" ${createDisabled ? 'disabled' : ''}>Create recurring schedule</button>
         <button type="button" class="utility" data-recurring-action="dca-proof">Create DCA review proof instead</button>
@@ -11403,6 +13259,41 @@ function recurringComposer(): string {
       </div>
     </div>
   `;
+}
+
+function recurringDraftLimitLabel(draft: RecurringDraft): string {
+  const parts: string[] = [];
+  if (draft.maxOccurrences.trim()) {
+    parts.push(`${draft.maxOccurrences.trim()} occurrence${draft.maxOccurrences.trim() === '1' ? '' : 's'}`);
+  }
+  if (draft.expiresAt.trim()) {
+    const expiresAt = optionalLocalDateTimeToIso(draft.expiresAt);
+    parts.push(expiresAt ? `expires ${formatDateTime(expiresAt)}` : 'expiry needs a valid date');
+  }
+  return parts.length ? parts.join(' · ') : 'Manual review every time';
+}
+
+function recurringDraftPreviewPanel(draft: RecurringDraft): string {
+  const runs = recurringDraftNextRuns(draft);
+  const spend = recurringDraftLifetimeSpend(draft);
+  return `
+    <div class="recurring-next-preview recurring-production-preview">
+      <div>
+        <span>Next runs</span>
+        <strong id="recurringNextOccurrence">${escapeHtml(runs[0] ? formatDateTime(runs[0]) : recurringNextOccurrenceLabel(draft))}</strong>
+      </div>
+      ${runs.length ? `<ol>${runs.map((run) => `<li>${escapeHtml(formatDateTime(run))}</li>`).join('')}</ol>` : ''}
+      ${spend ? `<p>${escapeHtml(lifetimeSpendCopy(spend, draft.token))}</p>` : ''}
+    </div>
+  `;
+}
+
+function lifetimeSpendCopy(spend: LifetimeSpend, token: string): string {
+  const rate = `${spend.perWeek} ${token}/week · ${spend.perMonth} ${token}/month`;
+  if (spend.bounded && spend.totalAmount !== undefined && spend.totalRuns !== undefined) {
+    return `Runs up to ${spend.totalRuns} time${spend.totalRuns === 1 ? '' : 's'} and spends up to ${spend.totalAmount} ${token}. ${rate}.`;
+  }
+  return `No lifetime cap set. Current rate estimate: ${rate}.`;
 }
 
 function recurringPresetControls(): string {
@@ -11451,6 +13342,10 @@ function recurringList(): string {
 function recurringCard(payment: RecurringPayment): string {
   const completed = isRecurringPaymentCompleted(payment);
   const status = completed ? 'completed' : payment.status;
+  const nextRuns = recurringPaymentNextRuns(payment);
+  const spend = recurringPaymentLifetimeSpend(payment);
+  const flipOp = payment.status === 'active' ? 'pause' : 'resume';
+  const history = state.recurringOccurrenceHistory[payment.id];
   return `
     <article class="recurring-item">
       <div>
@@ -11461,15 +13356,84 @@ function recurringCard(payment: RecurringPayment): string {
         </div>
         <h3>${escapeHtml(payment.amount)} ${escapeHtml(payment.token)} to ${escapeHtml(short(payment.recipient))}</h3>
         <p>${escapeHtml(scheduleLabel(payment))}</p>
+        <div class="recurring-card-metrics">
+          <span>${escapeHtml(nextRuns[0] ? `Next ${formatDateTime(nextRuns[0])}` : 'No future run preview')}</span>
+          <span>${escapeHtml(lifetimeSpendCopy(spend, payment.token))}</span>
+          ${payment.expiresAt ? `<span>${escapeHtml(`Expires ${formatDateTime(payment.expiresAt)}`)}</span>` : ''}
+          ${payment.notifications?.webhookUrl ? `<span>${escapeHtml(`Webhook ${short(payment.notifications.webhookUrl)}`)}</span>` : ''}
+        </div>
+        ${nextRuns.length ? `
+          <details class="recurring-upcoming-runs">
+            <summary>Upcoming runs</summary>
+            <ol>${nextRuns.map((run) => `<li>${escapeHtml(formatDateTime(run))}</li>`).join('')}</ol>
+          </details>
+        ` : ''}
+        ${recurringHistoryPanel(payment, history)}
         ${payment.note ? `<p class="action-note">${escapeHtml(payment.note)}</p>` : ''}
       </div>
       <div class="recurring-actions">
-        <button data-recurring-op="pause" data-recurring-id="${payment.id}" ${completed || payment.status !== 'active' || state.busy ? 'disabled' : ''}>Pause</button>
-        <button data-recurring-op="resume" data-recurring-id="${payment.id}" ${completed || payment.status !== 'paused' || state.busy ? 'disabled' : ''}>Resume</button>
+        <button data-recurring-op="${flipOp}" data-recurring-id="${payment.id}" ${completed || state.busy ? 'disabled' : ''}>${payment.status === 'active' ? 'Pause' : 'Resume'}</button>
+        <button data-recurring-op="history" data-recurring-id="${payment.id}" ${state.busy ? 'disabled' : ''}>${history ? 'Refresh history' : 'Load history'}</button>
         <button data-recurring-op="delete" data-recurring-id="${payment.id}" ${state.busy ? 'disabled' : ''}>Delete</button>
       </div>
     </article>
   `;
+}
+
+function recurringHistoryPanel(
+  payment: RecurringPayment,
+  history: RecurringOccurrenceHistoryState | undefined,
+): string {
+  if (!history) {
+    return `
+      <div class="recurring-history-strip">
+        <strong>Occurrence history</strong>
+        <span>Load completed and pending runs for this schedule.</span>
+      </div>
+    `;
+  }
+  if (history.error) {
+    return `<div class="recurring-history-strip error-text">${escapeHtml(history.error)}</div>`;
+  }
+  if (history.occurrences.length === 0) {
+    return `
+      <div class="recurring-history-strip">
+        <strong>No runs yet</strong>
+        <span>${escapeHtml(payment.nextDueAt ? `First run is scheduled for ${formatDateTime(payment.nextDueAt)}.` : 'Runs appear here after they materialize.')}</span>
+      </div>
+    `;
+  }
+  return `
+    <div class="recurring-history-list">
+      <div class="recurring-history-head">
+        <strong>Occurrence history</strong>
+        ${history.loadedAt ? `<span>Updated ${escapeHtml(formatDateTime(history.loadedAt))}</span>` : ''}
+      </div>
+      ${history.occurrences.map(recurringHistoryRow).join('')}
+      ${history.nextCursor ? `<button data-recurring-op="history-more" data-recurring-id="${payment.id}" data-recurring-cursor="${escapeHtml(history.nextCursor)}" ${state.busy ? 'disabled' : ''}>Show older</button>` : ''}
+    </div>
+  `;
+}
+
+function recurringHistoryRow(occurrence: RecurringOccurrenceHistoryItem): string {
+  const label = occurrence.statusLabel ?? formatOccurrenceStatus(occurrence.status, occurrence.approval);
+  const txid = occurrence.completed?.txid ?? occurrence.approval?.txid;
+  return `
+    <div class="recurring-history-row">
+      <span class="status-pill ${statusLabelToneClass(label.tone)}">${escapeHtml(label.label)}</span>
+      <strong>${escapeHtml(formatDateTime(occurrence.dueAt))}</strong>
+      ${occurrence.approval ? `<span>${escapeHtml(`Approval ${short(occurrence.approval.id)}`)}</span>` : ''}
+      ${txid ? `<button data-copy="${escapeHtml(txid)}" data-copy-name="Transaction id">Copy txid</button>` : ''}
+      ${occurrence.error ? `<p class="error-text">${escapeHtml(occurrence.error)}</p>` : ''}
+    </div>
+  `;
+}
+
+function statusLabelToneClass(tone: StatusLabel['tone']): string {
+  if (tone === 'success') return 'tx-confirmed';
+  if (tone === 'danger') return 'tx-failed';
+  if (tone === 'warning' || tone === 'info') return 'tx-pending';
+  return 'neutral';
 }
 
 function labArtifactCard(artifact: LabArtifact): string {
@@ -11800,15 +13764,15 @@ function evidenceIntent(): { status: string; detail: string; meta?: string } {
       return {
       status: state.labArtifacts.length ? 'Archived' : 'Empty',
       detail: state.labArtifacts.length
-          ? `${state.labArtifacts.length} signed evidence record(s) are available for review.`
-          : 'No signed evidence records have been created yet.',
+          ? `${state.labArtifacts.length} signed receipt${state.labArtifacts.length === 1 ? '' : 's'} are available for review.`
+          : 'No signed receipts have been created yet.',
         meta: state.labArtifacts[0] ? short(state.labArtifacts[0].artifactHash) : undefined,
       };
     }
     const lab = activeLab();
     return {
-      status: 'Artifact',
-      detail: lab.defaultInput,
+      status: 'Receipt proof',
+      detail: lab.summary,
       meta: lab.title,
     };
   }
@@ -11873,8 +13837,8 @@ function evidencePolicy(): { status: string; detail: string; meta?: string } {
     }
     return {
       status: 'Local verification',
-      detail: 'Evidence receipts bind payload hash, wallet, cluster, and signature for review.',
-      meta: state.labArtifacts.length ? `${state.labArtifacts.length} artifact(s)` : 'No artifacts yet',
+      detail: 'Receipt proofs bind payload hash, wallet, cluster, and signature for review.',
+      meta: state.labArtifacts.length ? `${state.labArtifacts.length} receipt${state.labArtifacts.length === 1 ? '' : 's'}` : 'No receipts yet',
     };
   }
   if (openApprovals > 0) {
@@ -11988,8 +13952,8 @@ function evidenceReceipt(latestLab: LabArtifact | undefined): { status: string; 
   }
   if (state.activeTab === 'labs' && latestLab) {
     return {
-      status: 'Artifact',
-      detail: 'A signed audit artifact is available for review.',
+      status: 'Receipt proof',
+      detail: 'A signed receipt proof is available for review.',
       meta: short(latestLab.artifactHash),
     };
   }
@@ -11998,7 +13962,7 @@ function evidenceReceipt(latestLab: LabArtifact | undefined): { status: string; 
     detail:
       state.activeTab === 'inbox' || state.activeTab === 'schedule'
         ? 'Receipts appear after an approval is approved, rejected, or archived.'
-        : 'Receipts appear after wallet approval or signed artifact creation.',
+        : 'Receipts appear after wallet approval or receipt proof signing.',
   };
 }
 
@@ -12096,7 +14060,7 @@ function surfaceEyebrow(): string {
     case 'schedule':
       return 'Recurring plans';
     case 'labs':
-      return state.artifactView === 'signed' ? 'Receipt archive' : 'Evidence receipt';
+      return state.artifactView === 'signed' ? 'Receipt archive' : 'Receipt proof';
   }
 }
 
@@ -12115,7 +14079,7 @@ function surfaceTitle(): string {
     case 'schedule':
       return 'Create Recurring Plan';
     case 'labs':
-      return 'Evidence Receipts';
+      return 'Receipt Proofs';
   }
 }
 
@@ -12149,29 +14113,96 @@ function stringParam(action: PreparedAction, key: string): string {
   return typeof value === 'string' ? value : '';
 }
 
+function recipientParam(action: PreparedAction): string {
+  return stringParam(action, 'recipient') || stringParam(action, 'recipientAddress');
+}
+
 function scheduleLabel(payment: RecurringPayment): string {
   const count = payment.maxOccurrences
     ? `, ${payment.occurrencesCreated ?? 0} of ${payment.maxOccurrences} created`
     : ', indefinite';
+  const expiry = payment.expiresAt ? `, expires ${formatDateTime(payment.expiresAt)}` : '';
   if (payment.cadence === 'weekly') {
     const days = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
-    return `Weekly on ${days[payment.dayOfWeek ?? -1] ?? 'unknown day'} at ${payment.localTime ?? '?'}${count}.`;
+    return `Weekly on ${days[payment.dayOfWeek ?? -1] ?? 'unknown day'} at ${payment.localTime ?? '?'}${count}${expiry}.`;
   }
   if (payment.cadence === 'monthly') {
-    return `Monthly on day ${payment.dayOfMonth ?? '?'} at ${payment.localTime ?? '?'}${count}.`;
+    return `Monthly on day ${payment.dayOfMonth ?? '?'} at ${payment.localTime ?? '?'}${count}${expiry}.`;
   }
   if (payment.cadence === 'interval_hours') {
-    return `Every ${payment.intervalHours ?? '?'} hour(s) starting ${formatDateTime(payment.startAt ?? '')}${count}.`;
+    return `Every ${payment.intervalHours ?? '?'} hour(s) starting ${formatDateTime(payment.startAt ?? '')}${count}${expiry}.`;
   }
   if (payment.cadence === 'interval_minutes') {
-    return `Every ${payment.intervalMinutes ?? '?'} minute(s) starting ${formatDateTime(payment.startAt ?? '')}${count}.`;
+    return `Every ${payment.intervalMinutes ?? '?'} minute(s) starting ${formatDateTime(payment.startAt ?? '')}${count}${expiry}.`;
   }
-  return `Every ${payment.intervalDays ?? '?'} day(s) starting ${formatDateTime(payment.startAt ?? '')}${count}.`;
+  return `Every ${payment.intervalDays ?? '?'} day(s) starting ${formatDateTime(payment.startAt ?? '')}${count}${expiry}.`;
 }
 
 function recurringNextOccurrenceLabel(draft: RecurringDraft): string {
   const next = recurringNextOccurrence(draft);
   return next ? formatDateTime(next.toISOString()) : 'Complete schedule fields to preview';
+}
+
+function recurringDraftNextRuns(draft: RecurringDraft): string[] {
+  const fields = recurringDraftCadenceFields(draft);
+  if (!fields) return [];
+  return previewUpcoming(fields, new Date(), 5).map((occurrence) => occurrence.dueAt.toISOString());
+}
+
+function recurringDraftLifetimeSpend(draft: RecurringDraft): LifetimeSpend | null {
+  const fields = recurringDraftCadenceFields(draft);
+  if (!fields || !(Number(draft.amount) > 0)) return null;
+  return lifetimeSpendEstimate(fields, draft.amount, new Date());
+}
+
+function recurringDraftCadenceFields(draft: RecurringDraft): CadenceFields | null {
+  const now = new Date().toISOString();
+  const maxOccurrences = Number(draft.maxOccurrences);
+  const expiresAt = optionalLocalDateTimeToIso(draft.expiresAt);
+  const base: CadenceFields = {
+    cadence: draft.cadence,
+    createdAt: now,
+    occurrencesCreated: 0,
+    ...(Number.isInteger(maxOccurrences) && maxOccurrences > 0 ? { maxOccurrences } : {}),
+    ...(expiresAt ? { expiresAt } : {}),
+  };
+  if (draft.cadence === 'weekly') {
+    const dayOfWeek = Number(draft.dayOfWeek);
+    if (!Number.isInteger(dayOfWeek) || !isValidLocalTime(draft.localTime)) return null;
+    return { ...base, dayOfWeek, localTime: draft.localTime };
+  }
+  if (draft.cadence === 'monthly') {
+    const dayOfMonth = Number(draft.dayOfMonth);
+    if (!Number.isInteger(dayOfMonth) || !isValidLocalTime(draft.localTime)) return null;
+    return { ...base, dayOfMonth, localTime: draft.localTime };
+  }
+  const startAt = optionalLocalDateTimeToIso(draft.startAt);
+  if (!startAt) return null;
+  if (draft.cadence === 'interval_hours') {
+    const intervalHours = Number(draft.intervalHours);
+    return Number.isInteger(intervalHours) && intervalHours > 0 ? { ...base, intervalHours, startAt } : null;
+  }
+  if (draft.cadence === 'interval_minutes') {
+    const intervalMinutes = Number(draft.intervalMinutes);
+    return Number.isInteger(intervalMinutes) && intervalMinutes > 0 ? { ...base, intervalMinutes, startAt } : null;
+  }
+  const intervalDays = Number(draft.intervalDays);
+  return Number.isInteger(intervalDays) && intervalDays > 0 ? { ...base, intervalDays, startAt } : null;
+}
+
+function recurringPaymentNextRuns(payment: RecurringPayment): string[] {
+  if (payment.nextRuns?.length) return payment.nextRuns;
+  return previewUpcoming(payment, new Date(), 5).map((occurrence) => occurrence.dueAt.toISOString());
+}
+
+function recurringPaymentLifetimeSpend(payment: RecurringPayment): LifetimeSpend {
+  return payment.lifetimeSpend ?? lifetimeSpendEstimate(payment, payment.amount, new Date());
+}
+
+function optionalLocalDateTimeToIso(value: string): string | undefined {
+  if (!value.trim()) return undefined;
+  const date = new Date(value);
+  return Number.isNaN(date.getTime()) ? undefined : date.toISOString();
 }
 
 function recurringNextOccurrence(draft: RecurringDraft, from = new Date()): Date | null {
@@ -12287,6 +14318,36 @@ function activeLab(): LabDefinition {
 
 function isPublicReceiptLab(lab: LabDefinition): boolean {
   return lab.category === 'receipt';
+}
+
+function receiptLabelForKind(kind: string): string {
+  switch (kind) {
+    case 'intent_receipt':
+      return 'Proof of Intent';
+    case 'policy_receipt':
+      return 'Proof of Policy';
+    case 'risk_review_receipt':
+      return 'Proof of Review';
+    case 'rejection_receipt':
+      return 'Proof of Rejection';
+    case 'tool_trace_receipt':
+      return 'Tool Trace Receipt';
+    default:
+      return labKindLabel(kind);
+  }
+}
+
+function receiptLabIdForInlineKind(kind: InlineReceiptKind): string {
+  switch (kind) {
+    case 'intent':
+      return 'intent-receipt';
+    case 'rejection':
+      return 'rejection-receipt';
+    case 'policy':
+      return 'policy-receipt';
+    case 'review':
+      return 'risk-receipt';
+  }
 }
 
 function labInput(labId: string): string {
@@ -12483,6 +14544,8 @@ function readRecurringDraft(): RecurringDraft {
     intervalMinutes: inputValue('#recurringIntervalMinutes') || state.recurringDraft.intervalMinutes,
     startAt: inputValue('#recurringStartAt') || state.recurringDraft.startAt,
     maxOccurrences: inputValue('#recurringMaxOccurrences') || state.recurringDraft.maxOccurrences,
+    expiresAt: inputValue('#recurringExpiresAt') || state.recurringDraft.expiresAt,
+    webhookUrl: inputValue('#recurringWebhookUrl') || state.recurringDraft.webhookUrl,
     note: inputValue('#recurringNote') || state.recurringDraft.note,
   };
 }
@@ -12509,6 +14572,20 @@ function assertValidRecurringDraft(draft: RecurringDraft): void {
   if (draft.maxOccurrences.trim()) {
     const max = Number(draft.maxOccurrences);
     if (!Number.isInteger(max) || max <= 0) errors.recurringMaxOccurrences = 'Use a positive whole number or leave empty.';
+  }
+  if (draft.expiresAt.trim()) {
+    const expiry = new Date(draft.expiresAt);
+    if (Number.isNaN(expiry.getTime())) errors.recurringExpiresAt = 'Expiry must be a valid local date and time.';
+  }
+  if (draft.webhookUrl.trim()) {
+    try {
+      const url = new URL(draft.webhookUrl);
+      if (url.protocol !== 'https:' && url.protocol !== 'http:') {
+        errors.recurringWebhookUrl = 'Webhook URL must start with http:// or https://.';
+      }
+    } catch {
+      errors.recurringWebhookUrl = 'Webhook URL must be valid.';
+    }
   }
   if (draft.cadence === 'weekly') {
     const day = Number(draft.dayOfWeek);
@@ -12560,6 +14637,15 @@ function recurringBody(draft: RecurringDraft): Record<string, unknown> {
   if (Number.isInteger(maxOccurrences) && maxOccurrences > 0) {
     body.maxOccurrences = maxOccurrences;
   }
+  if (draft.expiresAt.trim()) {
+    body.expiresAt = localDateTimeToIso(draft.expiresAt);
+  }
+  if (draft.webhookUrl.trim()) {
+    body.notifications = {
+      inApp: true,
+      webhookUrl: draft.webhookUrl.trim(),
+    };
+  }
   if (draft.cadence === 'weekly') {
     body.dayOfWeek = Number(draft.dayOfWeek);
     body.localTime = draft.localTime;
@@ -12593,6 +14679,8 @@ function defaultRecurringDraft(): RecurringDraft {
     intervalMinutes: '60',
     startAt: localDateTime(new Date(Date.now() + 60_000)),
     maxOccurrences: '',
+    expiresAt: '',
+    webhookUrl: '',
     note: '',
   };
 }
@@ -12655,6 +14743,18 @@ function titleCaseCluster(cluster: Cluster): string {
 }
 
 function labKindLabel(kind: string): string {
+  switch (kind) {
+    case 'intent_receipt':
+      return 'Proof of Intent';
+    case 'policy_receipt':
+      return 'Proof of Policy';
+    case 'risk_review_receipt':
+      return 'Proof of Review';
+    case 'rejection_receipt':
+      return 'Proof of Rejection';
+    case 'tool_trace_receipt':
+      return 'Tool Trace Receipt';
+  }
   return kind
     .split('_')
     .filter(Boolean)
@@ -12800,6 +14900,10 @@ function isCluster(value: string): value is Cluster {
   return value === 'mainnet-beta' || value === 'devnet' || value === 'testnet' || value === 'localnet';
 }
 
+function isPreparedActionTxStatus(value: string): value is PreparedActionTxStatus {
+  return value === 'pending' || value === 'confirmed' || value === 'failed';
+}
+
 function isAiMode(value: string): value is AiSettings['mode'] {
   return value === 'hosted' || value === 'session' || value === 'bridge';
 }
@@ -12882,6 +14986,18 @@ async function sha256(value: string): Promise<string> {
 
 function stableJson(value: unknown): string {
   return JSON.stringify(sortJson(value), null, 2);
+}
+
+function stripUndefined(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(stripUndefined);
+  if (value && typeof value === 'object') {
+    const output: Record<string, unknown> = {};
+    for (const [key, entry] of Object.entries(value as Record<string, unknown>)) {
+      if (entry !== undefined) output[key] = stripUndefined(entry);
+    }
+    return output;
+  }
+  return value;
 }
 
 function sortJson(value: unknown): unknown {
@@ -13184,7 +15300,7 @@ function isPreparedAction(value: unknown): value is PreparedAction {
   const action = value as Partial<PreparedAction>;
   return (
     typeof action.id === 'string' &&
-    (action.kind === 'transfer_sol' || action.kind === 'transfer_spl' || action.kind === 'swap') &&
+    isPreparedActionKind(action.kind) &&
     isPreparedActionStatus(action.status) &&
     typeof action.walletAddress === 'string' &&
     isCluster(action.cluster ?? '') &&
@@ -13196,6 +15312,16 @@ function isPreparedAction(value: unknown): value is PreparedAction {
     typeof action.createdAt === 'string' &&
     typeof action.updatedAt === 'string'
   );
+}
+
+function isPreparedActionKind(value: unknown): value is PreparedActionKind {
+  return value === 'transfer_sol' ||
+    value === 'transfer_spl' ||
+    value === 'swap' ||
+    value === 'manual_review' ||
+    value === 'read_only' ||
+    value === 'custom_transaction' ||
+    value === 'custom';
 }
 
 function isRecurringPayment(value: unknown): value is RecurringPayment {
@@ -13400,6 +15526,7 @@ function isLabArtifact(value: unknown): value is LabArtifact {
   const artifact = value as Partial<LabArtifact>;
   if (artifact.cloudReceiptId !== undefined && (typeof artifact.cloudReceiptId !== 'string' || artifact.cloudReceiptId.length === 0)) return false;
   if (artifact.bridgeArchived !== undefined && typeof artifact.bridgeArchived !== 'boolean') return false;
+  if (artifact.metadata !== undefined && !isJsonObject(artifact.metadata)) return false;
   return (
     typeof artifact.id === 'string' &&
     typeof artifact.labId === 'string' &&

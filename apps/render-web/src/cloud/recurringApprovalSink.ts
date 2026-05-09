@@ -1,4 +1,10 @@
-import type { ApprovalSink, ApprovalStatusReader } from './recurringService.js';
+import type {
+  ApprovalSink,
+  ApprovalStatusReader,
+  RecurringOccurrenceApprovalSummary,
+  RecurringOccurrenceCompletedSummary,
+  RecurringOccurrenceHistoryHydrator,
+} from './recurringService.js';
 import type { WorkflowService, WorkflowStore } from './workflowService.js';
 
 export function createRecurringApprovalStatusReader(
@@ -43,5 +49,71 @@ export function createRecurringApprovalSink(workflowService: WorkflowService): A
       },
     );
     return { approvalId: approval.id };
+  };
+}
+
+export function createRecurringOccurrenceHistoryHydrator(
+  workflowStore: WorkflowStore,
+): RecurringOccurrenceHistoryHydrator {
+  return async (walletAddress, occurrences) => {
+    const occurrenceIds = new Set(occurrences.map((occurrence) => occurrence.id));
+    const approvalIds = new Set(
+      occurrences
+        .map((occurrence) => occurrence.approvalRequestId)
+        .filter((id): id is string => Boolean(id)),
+    );
+    const completedIds = new Set(
+      occurrences
+        .map((occurrence) => occurrence.completedRecordId)
+        .filter((id): id is string => Boolean(id)),
+    );
+    const [approvals, completedRecords] = await Promise.all([
+      workflowStore.listApprovals(walletAddress),
+      workflowStore.listCompleted(walletAddress),
+    ]);
+    const hydration = new Map<string, {
+      occurrenceId: string;
+      approval?: RecurringOccurrenceApprovalSummary;
+      completed?: RecurringOccurrenceCompletedSummary;
+    }>();
+
+    for (const approval of approvals) {
+      const occurrenceId = approval.recurringOccurrenceId;
+      if (!occurrenceId || !occurrenceIds.has(occurrenceId)) {
+        if (!approvalIds.has(approval.id)) continue;
+      }
+      const id = occurrenceId ?? occurrences.find((entry) => entry.approvalRequestId === approval.id)?.id;
+      if (!id) continue;
+      const existing = hydration.get(id) ?? { occurrenceId: id };
+      existing.approval = {
+        id: approval.id,
+        status: approval.status,
+        ...(approval.decidedAt ? { decidedAt: approval.decidedAt } : {}),
+        ...(approval.txid ? { txid: approval.txid } : {}),
+        ...(approval.txStatus ? { txStatus: approval.txStatus } : {}),
+        ...(approval.explorerUrl ? { explorerUrl: approval.explorerUrl } : {}),
+      };
+      hydration.set(id, existing);
+    }
+
+    for (const completed of completedRecords) {
+      const occurrenceId = completed.recurringOccurrenceId;
+      if (!occurrenceId || !occurrenceIds.has(occurrenceId)) {
+        if (!completedIds.has(completed.id)) continue;
+      }
+      const id = occurrenceId ?? occurrences.find((entry) => entry.completedRecordId === completed.id)?.id;
+      if (!id) continue;
+      const existing = hydration.get(id) ?? { occurrenceId: id };
+      existing.completed = {
+        id: completed.id,
+        status: completed.status,
+        completedAt: completed.completedAt,
+        ...(completed.txid ? { txid: completed.txid } : {}),
+        ...(completed.explorerUrl ? { explorerUrl: completed.explorerUrl } : {}),
+      };
+      hydration.set(id, existing);
+    }
+
+    return [...hydration.values()];
   };
 }

@@ -35,6 +35,7 @@ This repo is a real-wallet signing bridge for Solana AI agents. Agents can ask f
 - `apps/browser-demo`: primary public command center. Runs on `127.0.0.1:5174`, discovers Wallet Standard providers, connects, signs a message, creates a devnet memo transaction, signs transaction bytes, sign-and-sends on devnet, connects the local bridge, manages the Approval Inbox, and queues a capped Agent Plan into the inbox.
 - `apps/reference-agent`: richer agent-plan demo. The Vite dev server exposes `/api/agent-plan`, uses `OPENAI_API_KEY` and `OPENAI_MODEL` when present, and falls back to deterministic demo output when absent.
 - `apps/desktop-shell`: Tauri bridge orchestrator for local bridge lifecycle, diagnostics, logs, health, wallet-host launch, Approval Inbox, and receipts.
+- Recurring production upgrade is in progress: cloud schedules now have expiry, spend views, occurrence-history hydration, pause/resume routes, policy caps, and webhook delivery queue support. See `plan.md` and `docs/smoke/recurring-production.md`.
 
 ## Build, test, run
 

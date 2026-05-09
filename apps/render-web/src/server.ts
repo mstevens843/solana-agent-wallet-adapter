@@ -21,6 +21,7 @@ export function createRenderWebServer(options: RenderWebServerOptions = {}): Ser
     store: options.store,
     clock: options.clock,
     authRateLimiter: options.authRateLimiter,
+    recurringPolicy: options.recurringPolicy,
   });
   return createServer((req, res) => {
     void handleRequest(req, res, staticDir, apiRouter);
@@ -138,7 +139,9 @@ async function start(): Promise<void> {
     server.once('error', reject);
     server.listen(port, host, resolve);
   });
+  const commit = process.env.RENDER_GIT_COMMIT?.slice(0, 12) ?? process.env.AGENTIC_BUILD_ID ?? 'unknown';
   console.log(`Agentic web server listening on http://${host}:${port}`);
+  console.log(`Agentic build commit=${commit} workflow_routes=enabled`);
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
