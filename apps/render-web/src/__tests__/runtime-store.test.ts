@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
 import { MemoryWorkflowStore } from '../cloud/memoryStore.js';
+import { createCloudApiRouter } from '../cloud/router.js';
 import {
   assertProductionConfig,
   createRuntimeWorkflowStore,
@@ -39,6 +40,19 @@ describe('runtime workflow store configuration', () => {
     })).resolves.toBeUndefined();
   });
 
+  it('keeps the API router default memory-backed even when DATABASE_URL is configured', () => {
+    const previousDatabaseUrl = process.env.DATABASE_URL;
+    const previousNodeEnv = process.env.NODE_ENV;
+    process.env.DATABASE_URL = 'postgres://db';
+    process.env.NODE_ENV = 'production';
+    try {
+      expect(createCloudApiRouter().store).toBeInstanceOf(MemoryWorkflowStore);
+    } finally {
+      restoreEnvValue('DATABASE_URL', previousDatabaseUrl);
+      restoreEnvValue('NODE_ENV', previousNodeEnv);
+    }
+  });
+
   it('requires strong production environment values', () => {
     expect(() => assertProductionConfig({
       NODE_ENV: 'production',
@@ -62,3 +76,11 @@ describe('runtime workflow store configuration', () => {
     })).not.toThrow();
   });
 });
+
+function restoreEnvValue(key: string, value: string | undefined): void {
+  if (value === undefined) {
+    delete process.env[key];
+  } else {
+    process.env[key] = value;
+  }
+}

@@ -146,9 +146,12 @@ describe('render web cloud wallet auth', () => {
   });
 
   it('rejects a nonce that expires before the atomic consume step', async () => {
+    // Auth endpoints also read the clock for rate limiting before route handlers run.
     const clock = queuedClock([
+      '2026-05-08T17:59:58.000Z',
       '2026-05-08T17:59:59.000Z',
       '2026-05-08T18:00:00.000Z',
+      '2026-05-08T18:04:59.998Z',
       '2026-05-08T18:04:59.999Z',
       '2026-05-08T18:05:00.000Z',
     ]);
@@ -248,6 +251,28 @@ describe('render web cloud wallet auth', () => {
       expect(response.status).toBe(429);
       expect(String(response.body.error)).toContain('Too many');
     }, { authRateLimiter });
+  });
+
+  it('passes the injected clock to the wallet auth rate limiter', async () => {
+    const clock = fixedClock('2026-05-08T19:00:00.000Z');
+    const seen: string[] = [];
+    const authRateLimiter: AuthRateLimiter = {
+      allow: (input) => {
+        seen.push(input.now.toISOString());
+        return true;
+      },
+    };
+
+    await withServer(async (port) => {
+      const wallet = createTestWallet();
+      const response = await postJson(port, '/api/auth/nonce', {
+        walletAddress: wallet.walletAddress,
+      });
+
+      expect(response.status).toBe(200);
+    }, { authRateLimiter, clock });
+
+    expect(seen).toEqual(['2026-05-08T19:00:00.000Z']);
   });
 
   it('clears the session on logout', async () => {
@@ -418,10 +443,13 @@ function fixedClock(value: string): Clock {
 }
 
 function queuedClock(values: string[]): Clock {
+  if (values.length === 0) {
+    throw new Error('queuedClock requires at least one timestamp.');
+  }
   let index = 0;
   return {
     now: () => {
-      const value = values[Math.min(index, values.length - 1)];
+      const value = values[Math.min(index, values.length - 1)]!;
       index += 1;
       return new Date(value);
     },

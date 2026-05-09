@@ -23,6 +23,7 @@ import {
   normalizeCompletedRecord,
   stringFromJson,
 } from './workflowValidation.js';
+import { verifyWalletSignature } from './auth.js';
 
 export interface WorkflowStore {
   listPlans(walletAddress: string): Promise<PlanDraftRecord[]>;
@@ -144,6 +145,16 @@ export class WorkflowService {
     if (linkedPlan && await this.activeApprovalForPlan(session, linkedPlan.id)) {
       throw new WorkflowServiceError(409, 'approval_exists', 'This plan already has an active approval request.');
     }
+    const existingRecurringApproval = input.recurringOccurrenceId
+      ? await this.activeApprovalForRecurringOccurrence(
+        session,
+        input.recurringOccurrenceId,
+        input.recurringScheduleId,
+      )
+      : undefined;
+    if (existingRecurringApproval) {
+      return existingRecurringApproval;
+    }
 
     const plan = input.plan;
     const kind = input.kind ?? linkedPlan?.actionType ?? stringFromJson(plan, 'actionType') ?? 'manual_review';
@@ -173,7 +184,22 @@ export class WorkflowService {
       ...(input.metadata ? { metadata: input.metadata } : {}),
     };
 
-    await this.store.saveApproval(session.walletAddress, record);
+    try {
+      await this.store.saveApproval(session.walletAddress, record);
+    } catch (err) {
+      if (input.recurringOccurrenceId && isApprovalExistsStoreError(err)) {
+        const existing = await this.activeApprovalForRecurringOccurrence(
+          session,
+          input.recurringOccurrenceId,
+          input.recurringScheduleId,
+        );
+        if (existing) return existing;
+      }
+      if (isApprovalExistsStoreError(err)) {
+        throw new WorkflowServiceError(409, 'approval_exists', 'This plan already has an active approval request.');
+      }
+      throw err;
+    }
     if (linkedPlan) {
       await this.store.savePlan(session.walletAddress, {
         ...linkedPlan,
@@ -207,16 +233,24 @@ export class WorkflowService {
     if ((decision === 'approved' || decision === 'rejected') && !input.decisionProofSignature) {
       throw new WorkflowServiceError(400, 'missing_decision_proof', 'Approve and deny decisions require a wallet decision proof signature.');
     }
+    const decisionProofMessage = (decision === 'approved' || decision === 'rejected')
+      ? this.requireVerifiedDecisionProof(session, existing, decision, input)
+      : undefined;
 
     const completedAt = this.now();
+    const existingForDecision: ApprovalRequestRecord = { ...existing };
+    delete existingForDecision.confirmedAt;
     const approval: ApprovalRequestRecord = {
-      ...existing,
+      ...existingForDecision,
       status: decision,
       updatedAt: completedAt,
-      confirmedAt: completedAt,
+      decidedAt: completedAt,
+      ...(decision === 'approved' && input.txid ? { confirmedAt: completedAt } : {}),
       ...(input.decisionProofSignature ? { decisionProofSignature: input.decisionProofSignature } : {}),
+      ...(decisionProofMessage ? { decisionProofMessage, decisionProofVerified: true } : {}),
       ...(input.note ? { note: input.note } : {}),
       ...(input.txid ? { txid: input.txid } : {}),
+      ...(input.explorerUrl ? { explorerUrl: input.explorerUrl } : {}),
       ...(input.error ? { error: input.error } : {}),
       metadata: {
         ...(existing.metadata ?? {}),
@@ -227,6 +261,7 @@ export class WorkflowService {
 
     await this.store.saveApproval(session.walletAddress, approval);
     await this.store.saveCompleted(session.walletAddress, completed);
+    await this.archiveLinkedPlanForTerminalApproval(session, approval, completed, completedAt);
     await this.audit(session, `approval.${decision}`, 'approval', approval.id, {
       completedId: completed.id,
       status: decision,
@@ -259,9 +294,72 @@ export class WorkflowService {
     return normalizeApprovalRecord(record);
   }
 
+  private requireVerifiedDecisionProof(
+    session: WorkflowSession,
+    approval: ApprovalRequestRecord,
+    decision: Extract<ApprovalDecision, 'approved' | 'rejected'>,
+    input: ApprovalDecisionInput,
+  ): string {
+    const expectedMessage = workflowDecisionProofMessage({ approval, decision });
+    if (!input.decisionProofMessage) {
+      throw new WorkflowServiceError(400, 'missing_decision_proof_message', 'Approve and deny decisions require the exact wallet decision proof message.');
+    }
+    if (input.decisionProofMessage !== expectedMessage) {
+      throw new WorkflowServiceError(400, 'invalid_decision_proof_message', 'Decision proof message does not match the approval request.');
+    }
+    if (!input.decisionProofSignature || !verifyWalletSignature({
+      walletAddress: session.walletAddress,
+      message: expectedMessage,
+      signature: input.decisionProofSignature,
+      signatureEncoding: input.signatureEncoding ?? 'base58',
+    })) {
+      throw new WorkflowServiceError(400, 'invalid_decision_proof', 'Decision proof signature could not be verified for this wallet.');
+    }
+    return expectedMessage;
+  }
+
   private async activeApprovalForPlan(session: WorkflowSession, planDraftId: string): Promise<ApprovalRequestRecord | undefined> {
     const approvals = (await this.store.listApprovals(session.walletAddress)).map(normalizeApprovalRecord);
     return approvals.find((approval) => approval.planDraftId === planDraftId && isActiveApprovalStatus(approval.status));
+  }
+
+  private async activeApprovalForRecurringOccurrence(
+    session: WorkflowSession,
+    recurringOccurrenceId: string,
+    recurringScheduleId?: string,
+  ): Promise<ApprovalRequestRecord | undefined> {
+    const approvals = (await this.store.listApprovals(session.walletAddress)).map(normalizeApprovalRecord);
+    return approvals.find((approval) => {
+      return approval.recurringOccurrenceId === recurringOccurrenceId &&
+        (!recurringScheduleId || approval.recurringScheduleId === recurringScheduleId) &&
+        isActiveApprovalStatus(approval.status);
+    });
+  }
+
+  private async archiveLinkedPlanForTerminalApproval(
+    session: WorkflowSession,
+    approval: ApprovalRequestRecord,
+    completed: CompletedRecord,
+    terminalAt: string,
+  ): Promise<void> {
+    if (!approval.planDraftId) return;
+    const plan = await this.store.getPlan(session.walletAddress, approval.planDraftId);
+    if (!plan) return;
+    const normalized = normalizePlanRecord(plan);
+    if (normalized.status !== 'queued' || normalized.approvalRequestId !== approval.id) return;
+
+    await this.store.savePlan(session.walletAddress, {
+      ...normalized,
+      status: 'archived',
+      approvalRequestId: approval.id,
+      updatedAt: terminalAt,
+      metadata: {
+        ...(normalized.metadata ?? {}),
+        terminalApprovalStatus: approval.status,
+        terminalApprovalAt: terminalAt,
+        completedRecordId: completed.id,
+      },
+    });
   }
 
   private assertPlanPatchAllowed(existing: PlanDraftRecord, input: UpdatePlanInput): void {
@@ -344,8 +442,29 @@ export function normalizeApprovalRecord(record: ApprovalRequestRecord): Approval
   };
 }
 
+export function workflowDecisionProofMessage(input: {
+  approval: Pick<ApprovalRequestRecord, 'id' | 'walletAddress' | 'cluster' | 'summary' | 'kind' | 'params'>;
+  decision: Extract<ApprovalDecision, 'approved' | 'rejected'>;
+}): string {
+  return [
+    'Agentic Cloud workflow decision',
+    `Decision: ${input.decision}`,
+    `Approval: ${input.approval.id}`,
+    `Wallet: ${input.approval.walletAddress}`,
+    `Cluster: ${input.approval.cluster ?? 'devnet'}`,
+    `Summary: ${input.approval.summary}`,
+    `Kind: ${input.approval.kind}`,
+    `Params: ${stableJson(input.approval.params)}`,
+    'This signature records a cloud workflow decision only. It does not submit a transaction or grant spending authority.',
+  ].join('\n');
+}
+
 function notFound(message: string): WorkflowServiceError {
   return new WorkflowServiceError(404, 'not_found', message);
+}
+
+function isApprovalExistsStoreError(err: unknown): boolean {
+  return Boolean(err && typeof err === 'object' && (err as { code?: unknown }).code === 'approval_exists');
 }
 
 function sortByUpdatedAt<T extends { updatedAt: string; createdAt: string }>(records: T[]): T[] {
@@ -392,6 +511,25 @@ function stringRecordFromJson(value: unknown): Record<string, string> {
     if (typeof entry === 'string') output[key] = entry;
   }
   return output;
+}
+
+function stableJson(value: unknown): string {
+  return JSON.stringify(sortJson(value), null, 2);
+}
+
+function sortJson(value: unknown): unknown {
+  if (Array.isArray(value)) {
+    return value.map(sortJson);
+  }
+  if (value && typeof value === 'object') {
+    const sorted: Record<string, unknown> = {};
+    for (const key of Object.keys(value as Record<string, unknown>).sort()) {
+      const entry = (value as Record<string, unknown>)[key];
+      if (entry !== undefined) sorted[key] = sortJson(entry);
+    }
+    return sorted;
+  }
+  return value;
 }
 
 function arrayFromJson(value: unknown): Array<{ label: string; value: string }> {

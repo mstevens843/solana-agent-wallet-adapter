@@ -1,6 +1,6 @@
 # Project Progress
 
-Last updated: 2026-05-07
+Last updated: 2026-05-09
 
 ## Current working state
 
@@ -113,6 +113,34 @@ Detailed scenario prompts and expected trace events are tracked in [`docs/SCENAR
 - Tauri native packaging after installing the Tauri CLI.
 - Codex mainnet transfer flow after restart, using the same bridge.
 - Longer-running bridge stability with multiple sequential requests.
+
+## Phase 6: Cloud Evidence Receipt Archive (2026-05-08)
+
+Cloud-backed archive for the five public evidence receipt kinds (Intent, Policy, Risk Review, Rejection, Tool Trace) is live behind wallet sign-in:
+
+- New endpoints on `apps/render-web`: `POST /api/evidence`, `GET /api/evidence`, `DELETE /api/evidence/:id`. Wallet-scoped and reject sessions without a verified wallet.
+- Validation reuses the Phase 1 contract `validateCreateEvidenceReceiptRequest` from `@solana-agent-wallet-adapter/workflow` — strict cluster enum, evidence kind/status enums, signing-message and signature length caps, secret/forbidden-key rejection.
+- Storage: `MemoryEvidenceStore` for dev/test. `PostgresWorkflowStore` (Phase 8) implements `EvidenceStore` directly when `DATABASE_URL` is set, so receipts persist across restarts. Router auto-detects which one to wire.
+- Browser-demo `/app` now mirrors archived receipts to Agentic Cloud when the active workflow mode is `agentic-cloud`. Browser-only fallback remains when signed-out. Private local mode (`local-bridge`) keeps receipts off the cloud.
+- Per-receipt storage badges (`Browser` / `Cloud` / `Bridge`) with `aria-label`s, an "Exact signed text" block visible in receipt details, an "Evidence receipts only sign a record — they do not queue, approve, submit, or move funds" disclaimer in the panel intro, and a multi-destination delete confirm.
+- Cloud delete failure surfaces a follow-up toast so receipts never silently orphan in the cloud. Receipt round-trips preserve the exact `input`, `verified`, and `cloudReceiptId` through cloud → browser refresh.
+- Tests: `apps/render-web/src/__tests__/evidence-api.test.ts` (14 cases incl. cluster enum, missing-cluster, malformed JSON, body-too-large, metadata round-trip, listReceipts ordering, audit recordType + recordId).
+
+Eager evidence sync is throttled to a 60s window inside `refreshCloudWorkspaceData` so frequent cloud refreshes (post-decision, post-recurring) do not re-fetch the entire receipts list.
+
+## Phase 9: End-To-End QA And Release Hardening (2026-05-09)
+
+The local Phase 9 gate is passing for the hosted Agentic Cloud, browser fallback, and mocked private local bridge paths:
+
+- `scripts/smoke-render-web.mjs --workflow` now covers signed-out browser fallback approve/reject, completed history refresh, browser recurring fallback, browser/local recurring isolation, signed-in cloud one-time approve/deny, signed-in recurring materialization into Approval Inbox, evidence archive/delete, hosted BYOK success and redaction, browser AI template fallback, mocked private local bridge approval, and API JSON vs SPA shell routing.
+- Recurring materialization is duplicate-safe across race windows: active approvals are unique by plan draft or recurring occurrence, interrupted stale ready occurrences can be repaired once, and existing approval-backed occurrences are not re-registered.
+- BYOK and server error paths use shared secret redaction for exact provider keys, bearer tokens, OpenAI-style keys, JWT-like tokens, and generic `api-key`/`token`/`secret` fields.
+- Terminal approval states now consistently leave active inbox views and move into completed history.
+- Cloud approve/deny decisions now require a wallet-verifiable decision proof bound to the exact approval request; cancel remains proofless.
+- Cloud evidence receipts now verify the submitted signed message against the signed-in wallet before storing the receipt as verified.
+- Postgres migrations now use a transaction-scoped advisory lock to prevent concurrent deployment races.
+
+Remaining release-only checks require external services: run render-web tests with `TEST_DATABASE_URL`, then re-run `pnpm smoke:render-web:live` after deployment. The live link verifier passes, but the current live smoke still fails because `https://agentic-signer.com/api/session` returns 404. Also run the real local bridge workflow smoke with `--require-local-bridge` before marking the public deployment fully released.
 
 ## Current product milestone
 

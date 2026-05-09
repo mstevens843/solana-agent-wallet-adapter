@@ -15,6 +15,7 @@ import {
   validateUpdatePlanRequest,
   type WorkflowSession,
 } from './workflowValidation.js';
+import { redactSecrets } from './redaction.js';
 
 const MAX_JSON_BYTES = 64 * 1024;
 
@@ -250,14 +251,14 @@ function methodNotAllowed(res: ServerResponse): void {
 
 function writeRouteError(res: ServerResponse, err: unknown): void {
   if (err instanceof WorkflowValidationError) {
-    writeJson(res, 400, { error: err.code, message: err.message });
+    writeJson(res, err.code === 'body_too_large' ? 413 : 400, { error: err.code, message: err.message });
     return;
   }
   if (err instanceof WorkflowServiceError) {
     writeJson(res, err.status, { error: err.code, message: err.message });
     return;
   }
-  const message = err instanceof Error ? err.message : 'Unexpected workflow API error.';
+  const message = err instanceof Error ? redactSecrets(err.message) : 'Unexpected workflow API error.';
   writeJson(res, 500, { error: 'internal_error', message });
 }
 

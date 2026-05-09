@@ -31,6 +31,8 @@ import type {
 } from './workflowValidation.js';
 
 const { Pool } = pg;
+const ACTIVE_APPROVAL_PLAN_DRAFT_INDEX = 'approval_requests_active_plan_draft_idx';
+const ACTIVE_APPROVAL_RECURRING_OCCURRENCE_INDEX = 'approval_requests_active_recurring_occurrence_idx';
 
 export interface PgClient {
   query<R extends QueryResultRow = QueryResultRow>(query: QueryConfig): Promise<QueryResult<R>>;
@@ -117,19 +119,20 @@ export class PostgresWorkflowStore implements
   }
 
   async migrate(): Promise<void> {
-    await this.query({
-      text: `
-        CREATE TABLE IF NOT EXISTS agentic_migrations (
-          id TEXT PRIMARY KEY,
-          applied_at TIMESTAMPTZ NOT NULL DEFAULT now()
-        )
-      `,
-    });
+    const client = await this.checkoutClient();
+    await client.query({ text: 'BEGIN' });
+    try {
+      await client.query({ text: 'SELECT pg_advisory_xact_lock(1788732421, 424242)' });
+      await client.query({
+        text: `
+          CREATE TABLE IF NOT EXISTS agentic_migrations (
+            id TEXT PRIMARY KEY,
+            applied_at TIMESTAMPTZ NOT NULL DEFAULT now()
+          )
+        `,
+      });
 
-    for (const migration of postgresMigrations) {
-      const client = await this.checkoutClient();
-      await client.query({ text: 'BEGIN' });
-      try {
+      for (const migration of postgresMigrations) {
         const existing = await client.query({
           name: 'migration.get',
           text: 'SELECT id FROM agentic_migrations WHERE id = $1',
@@ -143,13 +146,13 @@ export class PostgresWorkflowStore implements
             values: [migration.id],
           });
         }
-        await client.query({ text: 'COMMIT' });
-      } catch (err) {
-        await client.query({ text: 'ROLLBACK' });
-        throw err;
-      } finally {
-        client.release?.();
       }
+      await client.query({ text: 'COMMIT' });
+    } catch (err) {
+      await client.query({ text: 'ROLLBACK' });
+      throw err;
+    } finally {
+      client.release?.();
     }
   }
 
@@ -346,28 +349,38 @@ export class PostgresWorkflowStore implements
   async saveApproval(walletAddress: string, record: ApprovalRequestRecord): Promise<void> {
     const normalized = { ...record, walletAddress };
     await this.ensureUser(walletAddress, normalized.createdAt);
-    await this.query({
-      name: 'approval.upsert',
-      text: `
-        INSERT INTO approval_requests (id, wallet_address, status, due_at, created_at, updated_at, record)
-        VALUES ($1, $2, $3, $4, $5, $6, $7::jsonb)
-        ON CONFLICT (id) DO UPDATE SET
-          status = EXCLUDED.status,
-          due_at = EXCLUDED.due_at,
-          updated_at = EXCLUDED.updated_at,
-          record = EXCLUDED.record
-        WHERE approval_requests.wallet_address = EXCLUDED.wallet_address
-      `,
-      values: [
-        normalized.id,
-        walletAddress,
-        normalized.status,
-        normalized.dueAt,
-        normalized.createdAt,
-        normalized.updatedAt,
-        jsonParam(normalized),
-      ],
-    });
+    try {
+      await this.query({
+        name: 'approval.upsert',
+        text: `
+          INSERT INTO approval_requests (id, wallet_address, status, due_at, created_at, updated_at, record)
+          VALUES ($1, $2, $3, $4, $5, $6, $7::jsonb)
+          ON CONFLICT (id) DO UPDATE SET
+            status = EXCLUDED.status,
+            due_at = EXCLUDED.due_at,
+            updated_at = EXCLUDED.updated_at,
+            record = EXCLUDED.record
+          WHERE approval_requests.wallet_address = EXCLUDED.wallet_address
+        `,
+        values: [
+          normalized.id,
+          walletAddress,
+          normalized.status,
+          normalized.dueAt,
+          normalized.createdAt,
+          normalized.updatedAt,
+          jsonParam(normalized),
+        ],
+      });
+    } catch (err) {
+      if (
+        isPgUniqueViolation(err, ACTIVE_APPROVAL_PLAN_DRAFT_INDEX) ||
+        isPgUniqueViolation(err, ACTIVE_APPROVAL_RECURRING_OCCURRENCE_INDEX)
+      ) {
+        throw approvalExistsError();
+      }
+      throw err;
+    }
   }
 
   async listCompleted(walletAddress: string): Promise<CompletedRecord[]> {
@@ -738,6 +751,19 @@ export class PostgresWorkflowStore implements
     }
     return this.client;
   }
+}
+
+function isPgUniqueViolation(err: unknown, name: string): boolean {
+  if (!err || typeof err !== 'object') return false;
+  const pgError = err as { code?: unknown; constraint?: unknown; message?: unknown; detail?: unknown };
+  return pgError.code === '23505' &&
+    (pgError.constraint === name || String(pgError.message ?? '').includes(name) || String(pgError.detail ?? '').includes(name));
+}
+
+function approvalExistsError(): Error {
+  const err = new Error('This item already has an active approval request.');
+  (err as { code?: string }).code = 'approval_exists';
+  return err;
 }
 
 function nonceFromRow(row: AuthNonceRow): AuthNonceRecord {

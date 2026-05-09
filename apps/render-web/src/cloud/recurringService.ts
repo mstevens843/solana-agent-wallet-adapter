@@ -11,6 +11,10 @@ import {
   type UpdateRecurringRequest,
 } from '@solana-agent-wallet-adapter/workflow';
 
+import { redactSecrets } from './redaction.js';
+
+const RECOVERABLE_OCCURRENCE_AGE_MS = 30_000;
+
 export {
   RECURRING_CADENCES,
   RECURRING_OCCURRENCE_STATUSES,
@@ -393,6 +397,7 @@ export class RecurringService {
       occurrenceKey,
     );
     if (existing) {
+      await this.repairExistingOccurrence(session, schedule, existing, dueOccurrence.dueAt);
       return {
         scheduleId: schedule.id,
         occurrenceKey,
@@ -415,6 +420,7 @@ export class RecurringService {
     };
     const claim = await this.store.claimOccurrence(session.walletAddress, occurrence);
     if (!claim.created) {
+      await this.repairExistingOccurrence(session, schedule, claim.occurrence, dueOccurrence.dueAt);
       return {
         scheduleId: schedule.id,
         occurrenceKey,
@@ -424,24 +430,7 @@ export class RecurringService {
     }
     occurrence = claim.occurrence;
 
-    if (this.approvalSink) {
-      try {
-        const result = await this.approvalSink({
-          walletAddress: session.walletAddress,
-          schedule,
-          occurrence,
-        });
-        if (result?.approvalId) {
-          occurrence.approvalRequestId = result.approvalId;
-          occurrence.status = 'approval_pending';
-        }
-      } catch (err) {
-        occurrence.error = err instanceof Error ? err.message : 'Failed to register approval request.';
-        occurrence.status = 'failed';
-      }
-      occurrence.updatedAt = this.now();
-      await this.store.saveOccurrence(session.walletAddress, occurrence);
-    }
+    occurrence = await this.attachApprovalRequest(session, schedule, occurrence);
 
     const occurrencesCreated = (schedule.occurrencesCreated ?? 0) + 1;
     const nextSchedule: RecurringScheduleRecord = {
@@ -468,6 +457,86 @@ export class RecurringService {
       occurrenceId: occurrence.id,
       reason: 'created',
     };
+  }
+
+  private async repairExistingOccurrence(
+    session: RecurringSession,
+    schedule: RecurringScheduleRecord,
+    occurrence: RecurringOccurrenceRecord,
+    dueAt: Date,
+  ): Promise<void> {
+    if (!this.isRecoverableInterruptedOccurrence(occurrence)) return;
+    const repaired = await this.attachApprovalRequest(session, schedule, occurrence);
+    await this.repairScheduleMaterializationState(session, schedule, repaired, dueAt);
+  }
+
+  private async attachApprovalRequest(
+    session: RecurringSession,
+    schedule: RecurringScheduleRecord,
+    occurrence: RecurringOccurrenceRecord,
+  ): Promise<RecurringOccurrenceRecord> {
+    if (!this.approvalSink || occurrence.approvalRequestId || occurrence.status !== 'ready') {
+      return occurrence;
+    }
+
+    const updated: RecurringOccurrenceRecord = { ...occurrence };
+    try {
+      const result = await this.approvalSink({
+        walletAddress: session.walletAddress,
+        schedule,
+        occurrence: updated,
+      });
+      if (result?.approvalId) {
+        updated.approvalRequestId = result.approvalId;
+        updated.status = 'approval_pending';
+        delete updated.error;
+      }
+    } catch (err) {
+      updated.error = err instanceof Error ? redactSecrets(err.message) : 'Failed to register approval request.';
+      updated.status = 'failed';
+    }
+    updated.updatedAt = this.now();
+    await this.store.saveOccurrence(session.walletAddress, updated);
+    return updated;
+  }
+
+  private async repairScheduleMaterializationState(
+    session: RecurringSession,
+    schedule: RecurringScheduleRecord,
+    occurrence: RecurringOccurrenceRecord,
+    dueAt: Date,
+  ): Promise<void> {
+    const occurrences = await this.store.listOccurrences(session.walletAddress, schedule.id);
+    const occurrencesCreated = Math.max(schedule.occurrencesCreated ?? 0, occurrences.length);
+    if (occurrencesCreated <= (schedule.occurrencesCreated ?? 0)) return;
+
+    const now = this.now();
+    const nextSchedule: RecurringScheduleRecord = {
+      ...schedule,
+      occurrencesCreated,
+      lastMaterializedAt: now,
+      updatedAt: now,
+    };
+    nextSchedule.nextDueAt =
+      this.computeNextDueAtIso({ ...nextSchedule }, dueAt) ?? undefined;
+    if (
+      nextSchedule.maxOccurrences !== undefined &&
+      occurrencesCreated >= nextSchedule.maxOccurrences
+    ) {
+      nextSchedule.status = 'completed';
+      nextSchedule.nextDueAt = undefined;
+    }
+    await this.store.saveSchedule(session.walletAddress, nextSchedule);
+    await this.audit(session, 'recurring.materialized', schedule.id, occurrence.id, occurrence.occurrenceKey, {
+      recovered: true,
+    });
+  }
+
+  private isRecoverableInterruptedOccurrence(occurrence: RecurringOccurrenceRecord): boolean {
+    if (occurrence.status !== 'ready' || occurrence.approvalRequestId) return false;
+    const updatedAt = Date.parse(occurrence.updatedAt);
+    if (!Number.isFinite(updatedAt)) return false;
+    return this.clock().getTime() - updatedAt >= RECOVERABLE_OCCURRENCE_AGE_MS;
   }
 
   private computeNextDueAtIso(
@@ -538,6 +607,8 @@ function nextFutureOccurrence(
       return nextFutureInterval(schedule, now, schedule.intervalHours, 60 * 60 * 1000);
     case 'interval_minutes':
       return nextFutureInterval(schedule, now, schedule.intervalMinutes, 60 * 1000);
+    default:
+      return assertNeverCadence(schedule.cadence);
   }
 }
 
@@ -619,6 +690,8 @@ function computeNextOccurrence(
       return nextIntervalOccurrence(schedule, now, schedule.intervalHours, 60 * 60 * 1000);
     case 'interval_minutes':
       return nextIntervalOccurrence(schedule, now, schedule.intervalMinutes, 60 * 1000);
+    default:
+      return assertNeverCadence(schedule.cadence);
   }
 }
 
@@ -803,7 +876,17 @@ function assertCadenceFieldsForUpdate(schedule: RecurringScheduleRecord): void {
         throw new RecurringServiceError(400, 'invalid_cadence_fields', 'interval_minutes requires intervalMinutes >= 1.');
       }
       break;
+    default:
+      assertNeverCadence(schedule.cadence);
   }
+}
+
+function assertNeverCadence(cadence: never): never {
+  throw new RecurringServiceError(
+    500,
+    'unhandled_cadence',
+    `Unhandled recurring cadence: ${String(cadence)}`,
+  );
 }
 
 function clone<T>(value: T): T {

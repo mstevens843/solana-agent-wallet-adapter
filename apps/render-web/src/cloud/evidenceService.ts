@@ -9,6 +9,8 @@ import type {
   WorkflowSession,
 } from '@solana-agent-wallet-adapter/workflow';
 
+import { verifyWalletSignature } from './auth.js';
+
 export {
   EVIDENCE_RECEIPT_KINDS,
   EVIDENCE_RECEIPT_STATUSES,
@@ -72,6 +74,15 @@ export class EvidenceService {
     session: WorkflowSession,
     input: CreateEvidenceReceiptInput,
   ): Promise<EvidenceReceiptRecord> {
+    if (!verifyWalletSignature({
+      walletAddress: session.walletAddress,
+      message: input.signingMessage,
+      signature: input.signature,
+      signatureEncoding: 'base58',
+    })) {
+      throw new EvidenceServiceError(400, 'invalid_signature', 'Evidence receipt signature could not be verified for this wallet.');
+    }
+
     const now = this.now();
     const record: EvidenceReceiptRecord = {
       id: `evidence_${this.idFactory()}`,
@@ -84,7 +95,7 @@ export class EvidenceService {
       preSignatureHash: input.preSignatureHash,
       signingMessage: input.signingMessage,
       signature: input.signature,
-      verified: false,
+      verified: true,
       artifactHash: input.artifactHash ?? input.preSignatureHash,
       createdAt: now,
       updatedAt: now,

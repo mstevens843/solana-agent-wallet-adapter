@@ -22,6 +22,7 @@ import { MemoryWorkflowStore } from './memoryStore.js';
 import { createRecurringApprovalSink, createRecurringApprovalStatusReader } from './recurringApprovalSink.js';
 import { createRecurringApiHandler, recurringStoreAdapterForCloudStore } from './recurringRoutes.js';
 import { RecurringService, type RecurringStore } from './recurringService.js';
+import { redactSecrets } from './redaction.js';
 import { RecurringScheduler } from './scheduler.js';
 import { createWalletSession, deleteSessionFromRequest, SESSION_TTL_MS, sessionFromRequest } from './session.js';
 import { sessionResponse, systemClock, type Clock, type WorkflowStore } from './store.js';
@@ -70,6 +71,25 @@ export interface AuthRateLimitInput {
 
 export interface AuthRateLimiter {
   allow(input: AuthRateLimitInput): boolean | Promise<boolean>;
+}
+
+class MemoryAuthRateLimiter implements AuthRateLimiter {
+  private readonly buckets = new Map<string, { windowStart: number; count: number }>();
+
+  allow(input: AuthRateLimitInput): boolean {
+    const bucketKey = `${input.route}:${input.key}`;
+    const now = input.now.getTime();
+    const bucket = this.buckets.get(bucketKey);
+    if (!bucket || now - bucket.windowStart >= AUTH_RATE_LIMIT_WINDOW_MS) {
+      this.buckets.set(bucketKey, { windowStart: now, count: 1 });
+      return true;
+    }
+    if (bucket.count >= AUTH_RATE_LIMIT_MAX_ATTEMPTS) {
+      return false;
+    }
+    bucket.count += 1;
+    return true;
+  }
 }
 
 const HOSTED_PROVIDER_PRESETS: Record<HostedProviderId, HostedProviderPreset> = {
@@ -172,25 +192,6 @@ export function createCloudApiRouter(options: CloudApiRouterOptions = {}): Cloud
 
 export function createDefaultWorkflowStore(): WorkflowStore {
   return new MemoryWorkflowStore();
-}
-
-class MemoryAuthRateLimiter implements AuthRateLimiter {
-  private readonly buckets = new Map<string, { windowStart: number; count: number }>();
-
-  allow(input: AuthRateLimitInput): boolean {
-    const bucketKey = `${input.route}:${input.key}`;
-    const now = input.now.getTime();
-    const bucket = this.buckets.get(bucketKey);
-    if (!bucket || now - bucket.windowStart >= AUTH_RATE_LIMIT_WINDOW_MS) {
-      this.buckets.set(bucketKey, { windowStart: now, count: 1 });
-      return true;
-    }
-    if (bucket.count >= AUTH_RATE_LIMIT_MAX_ATTEMPTS) {
-      return false;
-    }
-    bucket.count += 1;
-    return true;
-  }
 }
 
 function enforceSameOrigin(req: IncomingMessage, url: URL): void {
@@ -543,17 +544,6 @@ function writeJson(res: ServerResponse, status: number, payload: unknown): void 
   res.end(JSON.stringify(payload));
 }
 
-function redactSecrets(value: string, exactSecret = ''): string {
-  const secret = exactSecret.trim();
-  const exactRedacted = secret ? value.split(secret).join('[redacted]') : value;
-  return exactRedacted
-    .replace(/Bearer\s+[A-Za-z0-9._~+/=-]+/gi, 'Bearer [redacted]')
-    .replace(/sk-proj-[A-Za-z0-9._-]{8,}/g, '[redacted]')
-    .replace(/sk-[A-Za-z0-9._-]{8,}/g, '[redacted]')
-    .replace(/\b[A-Za-z0-9_-]{20,}\.[A-Za-z0-9_-]{20,}\.[A-Za-z0-9_-]{20,}\b/g, '[redacted-token]')
-    .replace(/(api[-_ ]?key|token|secret)(["':=\s]+)([^"',\s]{8,})/gi, '$1$2[redacted]');
-}
-
 class ApiError extends Error {
   constructor(readonly status: number, message: string) {
     super(message);
@@ -561,8 +551,24 @@ class ApiError extends Error {
   }
 }
 
+const ONE_TIME_WORKFLOW_METHODS: Array<keyof OneTimeWorkflowStore> = [
+  'listPlans',
+  'getPlan',
+  'savePlan',
+  'deletePlan',
+  'listApprovals',
+  'getApproval',
+  'saveApproval',
+  'listCompleted',
+  'getCompleted',
+  'saveCompleted',
+  'deleteCompleted',
+  'appendAuditEvent',
+];
+
 function isOneTimeWorkflowStore(store: WorkflowStore): store is WorkflowStore & OneTimeWorkflowStore {
-  return typeof (store as Partial<OneTimeWorkflowStore>).listPlans === 'function';
+  const candidate = store as Partial<Record<keyof OneTimeWorkflowStore, unknown>>;
+  return ONE_TIME_WORKFLOW_METHODS.every((method) => typeof candidate[method] === 'function');
 }
 
 function requireOneTimeWorkflowStore(store: WorkflowStore): WorkflowStore & OneTimeWorkflowStore {

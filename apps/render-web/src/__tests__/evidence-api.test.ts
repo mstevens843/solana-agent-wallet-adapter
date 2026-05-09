@@ -1,3 +1,4 @@
+import { generateKeyPairSync, sign as signDetached, type KeyObject } from 'node:crypto';
 import { createServer, request as httpRequest, type IncomingHttpHeaders } from 'node:http';
 import type { Server } from 'node:http';
 
@@ -9,6 +10,7 @@ import {
   MemoryEvidenceStore,
   type EvidenceReceiptRecord,
 } from '../cloud/evidenceService.js';
+import { encodeBase58 } from '../cloud/auth.js';
 import type { WorkflowSession } from '../cloud/workflowValidation.js';
 
 interface TestResponse {
@@ -17,8 +19,15 @@ interface TestResponse {
   headers: IncomingHttpHeaders;
 }
 
-const walletA = 'WalletAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA';
-const walletB = 'WalletBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB';
+interface TestWallet {
+  walletAddress: string;
+  privateKey: KeyObject;
+}
+
+const testWalletA = createTestWallet();
+const testWalletB = createTestWallet();
+const walletA = testWalletA.walletAddress;
+const walletB = testWalletB.walletAddress;
 
 describe('cloud evidence receipt API', () => {
   it('rejects evidence requests without a wallet session', async () => {
@@ -39,7 +48,8 @@ describe('cloud evidence receipt API', () => {
       expect(receipt.walletAddress).toBe(walletA);
       expect(receipt.kind).toBe('intent_receipt');
       expect(receipt.status).toBe('approved');
-      expect(receipt.signature).toBe('sig_intent_receipt');
+      expect(receipt.signature).toEqual(expect.any(String));
+      expect(receipt.verified).toBe(true);
       expect(receipt.signingMessage).toContain('Evidence receipt: Intent Receipt');
 
       const listed = await getJson(port, '/api/evidence', walletA);
@@ -69,6 +79,14 @@ describe('cloud evidence receipt API', () => {
 
       const ownerList = await getJson(port, '/api/evidence', walletA);
       expect((ownerList.body.receipts as EvidenceReceiptRecord[]).length).toBe(1);
+    });
+  });
+
+  it('rejects malformed evidence ids as validation errors', async () => {
+    await withEvidenceServer(async ({ port }) => {
+      const response = await deleteJson(port, '/api/evidence/%E0%A4%A', walletA);
+      expect(response.status).toBe(400);
+      expect(response.body.error).toBe('invalid_id');
     });
   });
 
@@ -132,6 +150,18 @@ describe('cloud evidence receipt API', () => {
       const noTitle = await postJson(port, '/api/evidence', { ...sampleReceiptBody(), title: '   ' }, walletA);
       expect(noTitle.status).toBe(400);
       expect(noTitle.body.error).toBe('missing_field');
+    });
+  });
+
+  it('rejects evidence receipts signed by a different wallet', async () => {
+    await withEvidenceServer(async ({ port }) => {
+      const body = sampleReceiptBody();
+      body.signature = signMessage(String(body.signingMessage), testWalletB.privateKey);
+
+      const response = await postJson(port, '/api/evidence', body, walletA);
+
+      expect(response.status).toBe(400);
+      expect(response.body.error).toBe('invalid_signature');
     });
   });
 
@@ -219,28 +249,40 @@ describe('cloud evidence receipt API', () => {
   });
 });
 
-function sampleReceiptBody(overrides: Record<string, unknown> = {}): Record<string, unknown> {
-  return {
+function sampleReceiptBody(overrides: Record<string, unknown> = {}, wallet: TestWallet = testWalletA): Record<string, unknown> {
+  const preSignatureHash = typeof overrides.preSignatureHash === 'string'
+    ? overrides.preSignatureHash
+    : '0x' + 'a'.repeat(64);
+  const title = typeof overrides.title === 'string' ? overrides.title : 'Intent Receipt';
+  const cluster = typeof overrides.cluster === 'string' ? overrides.cluster : 'mainnet-beta';
+  const signingMessage = typeof overrides.signingMessage === 'string'
+    ? overrides.signingMessage
+    : [
+      'Solana Agent Wallet Adapter',
+      `Evidence receipt: ${title}`,
+      'Receipt: int_demo',
+      'Wallet: ' + wallet.walletAddress,
+      `Cluster: ${cluster}`,
+      `Hash: ${preSignatureHash}`,
+    ].join('\n');
+  const body: Record<string, unknown> = {
     title: 'Intent Receipt',
     kind: 'intent_receipt',
     status: 'approved',
     cluster: 'mainnet-beta',
     payload: samplePayload(),
-    preSignatureHash: '0x' + 'a'.repeat(64),
-    signingMessage: [
-      'Solana Agent Wallet Adapter',
-      'Evidence receipt: Intent Receipt',
-      'Receipt: int_demo',
-      'Wallet: ' + walletA,
-      'Cluster: mainnet-beta',
-      'Hash: 0x' + 'a'.repeat(64),
-    ].join('\n'),
-    signature: 'sig_intent_receipt',
+    preSignatureHash,
+    signingMessage,
+    signature: signMessage(signingMessage, wallet.privateKey),
     artifactHash: '0x' + 'b'.repeat(64),
     receiptType: 'intent_receipt_v1',
     summary: 'Intent receipt summary.',
     ...overrides,
   };
+  if (!Object.prototype.hasOwnProperty.call(overrides, 'signature')) {
+    body.signature = signMessage(String(body.signingMessage), wallet.privateKey);
+  }
+  return body;
 }
 
 function samplePayload(): Record<string, unknown> {
@@ -252,6 +294,20 @@ function samplePayload(): Record<string, unknown> {
     evidence: [{ title: 'Constraints', detail: 'Max 0.05 SOL', tone: 'good', hash: 'h1' }],
     receiptType: 'intent_receipt_v1',
   };
+}
+
+function createTestWallet(): TestWallet {
+  const { publicKey, privateKey } = generateKeyPairSync('ed25519');
+  const publicKeyDer = publicKey.export({ format: 'der', type: 'spki' });
+  const publicKeyBytes = Buffer.from(publicKeyDer).subarray(-32);
+  return {
+    walletAddress: encodeBase58(publicKeyBytes),
+    privateKey,
+  };
+}
+
+function signMessage(message: string, privateKey: KeyObject): string {
+  return encodeBase58(signDetached(null, Buffer.from(message, 'utf8'), privateKey));
 }
 
 async function withEvidenceServer(

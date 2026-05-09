@@ -197,6 +197,8 @@ export interface ApprovalRequestRecord {
   decisionNote?: string;
   proofSignature?: string;
   decisionProofSignature?: string;
+  decisionProofMessage?: string;
+  decisionProofVerified?: boolean;
   archived?: boolean;
   archivedAt?: string;
   riskMetadata?: JsonObject;
@@ -425,6 +427,8 @@ export type CreateApprovalInput = CreateApprovalRequest;
 export interface ApprovalDecisionInput {
   proofSignature?: string;
   decisionProofSignature?: string;
+  decisionProofMessage?: string;
+  signatureEncoding?: 'base58' | 'base64';
   note?: string;
   txid?: string;
   explorerUrl?: string;
@@ -593,6 +597,8 @@ export function completedRecordFromApproval(
     ...(approval.occurrenceKey ? { occurrenceKey: approval.occurrenceKey } : {}),
     ...(approval.txid ? { txid: approval.txid } : {}),
     ...(proofSignature ? { proofSignature } : {}),
+    ...(approval.decisionProofMessage ? { decisionProofMessage: approval.decisionProofMessage } : {}),
+    ...(approval.decisionProofVerified !== undefined ? { decisionProofVerified: approval.decisionProofVerified } : {}),
   };
 
   return {
@@ -609,6 +615,12 @@ export function completedRecordFromApproval(
     ...(token !== undefined && { token }),
     ...(recipient !== undefined && { recipient }),
     ...(proofSignature !== undefined && { proofSignature, signature: proofSignature }),
+    ...(approval.decisionProofMessage !== undefined && {
+      metadata: {
+        decisionProofMessage: approval.decisionProofMessage,
+        ...(approval.decisionProofVerified !== undefined && { decisionProofVerified: approval.decisionProofVerified }),
+      },
+    }),
     ...(approval.txid !== undefined && { txid: approval.txid }),
     ...(approval.explorerUrl !== undefined
       ? { explorerUrl: approval.explorerUrl }
@@ -635,6 +647,7 @@ export function completedRecordFromApproval(
       ['Created', approval.createdAt],
       ['Completed', options.completedAt],
       proofSignature ? ['Decision proof', proofSignature] : undefined,
+      approval.decisionProofVerified !== undefined ? ['Decision proof verified', String(approval.decisionProofVerified)] : undefined,
       approval.txid ? ['Transaction', approval.txid] : undefined,
       approval.error ? ['Error', approval.error] : undefined,
     ]),
@@ -866,6 +879,8 @@ export function parseApprovalRequestRecord(input: unknown, path = '$'): Approval
     ...optionalStringProp(record, 'decisionNote', path),
     ...optionalStringProp(record, 'proofSignature', path),
     ...optionalStringProp(record, 'decisionProofSignature', path),
+    ...optionalStringProp(record, 'decisionProofMessage', path),
+    ...optionalBooleanProp(record, 'decisionProofVerified', path),
     ...optionalBooleanProp(record, 'archived', path),
     ...optionalStringProp(record, 'archivedAt', path),
     ...optionalJsonObjectProp(record, 'riskMetadata', path),
@@ -1207,7 +1222,7 @@ const EVIDENCE_SIGNING_MESSAGE_MAX_LENGTH = 8192;
 const EVIDENCE_SIGNATURE_MAX_LENGTH = 1024;
 
 export function validateCreatePlanRequest(body: unknown, path = '$'): CreatePlanInput {
-  assertNoForbiddenWorkflowSecrets(body);
+  assertNoForbiddenWorkflowSecrets(body, path);
   const input = requireObject(body, path);
   const plan = input.plan === undefined ? coerceJsonObject(input, path) : requireJsonObject(input.plan, `${path}.plan`);
   const planSource = stringFromJson(plan, 'source');
@@ -1278,7 +1293,7 @@ export function validateUpdatePlanRequest(body: unknown): UpdatePlanInput {
 }
 
 export function validateCreateApprovalRequest(body: unknown, path = '$'): CreateApprovalInput {
-  assertNoForbiddenWorkflowSecrets(body);
+  assertNoForbiddenWorkflowSecrets(body, path);
   const input = requireObject(body, path);
   const planId = optionalString(input.planId, 'planId');
   const planDraftId = optionalString(input.planDraftId, 'planDraftId');
@@ -1315,8 +1330,12 @@ export function validateApprovalDecisionRequest(body: unknown): ApprovalDecision
   const input = requireObject(body ?? {}, '$');
   const proofSignature = optionalString(input.proofSignature, 'proofSignature')
     ?? optionalString(input.decisionProofSignature, 'decisionProofSignature');
+  const decisionProofMessage = optionalString(input.decisionProofMessage, 'decisionProofMessage');
+  const signatureEncoding = optionalEnumProp(input, 'signatureEncoding', ['base58', 'base64'] as const, '$').signatureEncoding;
   return {
     ...(proofSignature ? { proofSignature, decisionProofSignature: proofSignature } : {}),
+    ...(decisionProofMessage ? { decisionProofMessage } : {}),
+    ...(signatureEncoding ? { signatureEncoding } : {}),
     ...(optionalString(input.note, 'note') ? { note: optionalString(input.note, 'note') } : {}),
     ...(optionalString(input.txid, 'txid') ? { txid: optionalString(input.txid, 'txid') } : {}),
     ...(optionalString(input.explorerUrl, 'explorerUrl') ? { explorerUrl: optionalString(input.explorerUrl, 'explorerUrl') } : {}),
@@ -1325,7 +1344,12 @@ export function validateApprovalDecisionRequest(body: unknown): ApprovalDecision
 }
 
 export function validateRecordId(value: string, label = 'id'): string {
-  const decoded = decodeURIComponent(value).trim();
+  let decoded: string;
+  try {
+    decoded = decodeURIComponent(value).trim();
+  } catch {
+    throw new WorkflowValidationError('invalid_id', `${label} is invalid.`);
+  }
   if (!decoded || decoded.includes('/')) {
     throw new WorkflowValidationError('invalid_id', `${label} is invalid.`);
   }
@@ -1333,7 +1357,7 @@ export function validateRecordId(value: string, label = 'id'): string {
 }
 
 export function validateCreateRecurringRequest(body: unknown, path = '$'): CreateRecurringRequest {
-  assertNoForbiddenWorkflowSecrets(body);
+  assertNoForbiddenWorkflowSecrets(body, path);
   const input = requireObject(body, path);
   const request: CreateRecurringRequest = {
     cluster: requireCluster(input.cluster, 'cluster'),
@@ -1391,7 +1415,12 @@ export function validateUpdateRecurringRequest(body: unknown): UpdateRecurringRe
 }
 
 export function validateRecurringId(value: string): string {
-  const decoded = decodeURIComponent(value).trim();
+  let decoded: string;
+  try {
+    decoded = decodeURIComponent(value).trim();
+  } catch {
+    throw new RecurringValidationError('invalid_id', 'Recurring schedule id is invalid.');
+  }
   if (!decoded || decoded.includes('/')) {
     throw new RecurringValidationError('invalid_id', 'Recurring schedule id is invalid.');
   }
@@ -1399,8 +1428,13 @@ export function validateRecurringId(value: string): string {
 }
 
 export function validateCreateEvidenceReceiptRequest(body: unknown, path = '$'): CreateEvidenceReceiptRequest {
-  assertNoForbiddenWorkflowSecrets(body);
+  assertNoForbiddenWorkflowSecrets(body, path);
   const input = requireObject(body, path);
+  const artifactHash = optionalEvidenceHash(input.artifactHash, 'artifactHash');
+  const receiptType = optionalEvidenceShortString(input.receiptType, 'receiptType');
+  const summary = optionalEvidenceShortString(input.summary, 'summary');
+  const verdict = optionalEvidenceShortString(input.verdict, 'verdict');
+  const effect = optionalEvidenceShortString(input.effect, 'effect');
 
   return {
     title: requiredEvidenceShortString(input.title, 'title'),
@@ -1411,11 +1445,11 @@ export function validateCreateEvidenceReceiptRequest(body: unknown, path = '$'):
     preSignatureHash: requiredEvidenceHash(input.preSignatureHash, 'preSignatureHash'),
     signingMessage: requiredEvidenceSigningMessage(input.signingMessage),
     signature: requiredEvidenceSignature(input.signature),
-    ...(optionalEvidenceHash(input.artifactHash, 'artifactHash') ? { artifactHash: optionalEvidenceHash(input.artifactHash, 'artifactHash') } : {}),
-    ...(optionalEvidenceShortString(input.receiptType, 'receiptType') ? { receiptType: optionalEvidenceShortString(input.receiptType, 'receiptType') } : {}),
-    ...(optionalEvidenceShortString(input.summary, 'summary') ? { summary: optionalEvidenceShortString(input.summary, 'summary') } : {}),
-    ...(optionalEvidenceShortString(input.verdict, 'verdict') ? { verdict: optionalEvidenceShortString(input.verdict, 'verdict') } : {}),
-    ...(optionalEvidenceShortString(input.effect, 'effect') ? { effect: optionalEvidenceShortString(input.effect, 'effect') } : {}),
+    ...(artifactHash ? { artifactHash } : {}),
+    ...(receiptType ? { receiptType } : {}),
+    ...(summary ? { summary } : {}),
+    ...(verdict ? { verdict } : {}),
+    ...(effect ? { effect } : {}),
     ...(input.metadata === undefined ? {} : { metadata: requireJsonObject(input.metadata, 'metadata') }),
   };
 }
@@ -1808,13 +1842,109 @@ function optionalCluster(value: unknown, fallback: string): WorkflowCluster {
 }
 
 function requireCluster(value: unknown, label: string): WorkflowCluster {
-  if (typeof value !== 'string' || !WORKFLOW_CLUSTERS.includes(value as WorkflowCluster)) {
+  const cluster = typeof value === 'string' ? value.trim() : value;
+  if (typeof cluster !== 'string' || !WORKFLOW_CLUSTERS.includes(cluster as WorkflowCluster)) {
     throw new WorkflowValidationError(
       'invalid_cluster',
       `${label} must be one of: ${WORKFLOW_CLUSTERS.join(', ')}.`,
     );
   }
-  return value as WorkflowCluster;
+  return cluster as WorkflowCluster;
+}
+
+function requireRequiredCluster(value: unknown): WorkflowCluster {
+  if (value === undefined || value === null || (typeof value === 'string' && !value.trim())) {
+    throw new WorkflowValidationError('missing_field', 'cluster is required.');
+  }
+  return requireCluster(value, 'cluster');
+}
+
+function requiredEvidenceString(value: unknown, label: string): string {
+  if (typeof value !== 'string') {
+    throw new WorkflowValidationError('invalid_string', `${label} must be a string.`);
+  }
+  return value;
+}
+
+function requiredEvidenceShortString(value: unknown, label: string): string {
+  const trimmed = requiredEvidenceString(value, label).trim();
+  if (!trimmed) {
+    throw new WorkflowValidationError('missing_field', `${label} is required.`);
+  }
+  if (trimmed.length > EVIDENCE_SHORT_FIELD_MAX_LENGTH) {
+    throw new WorkflowValidationError('field_too_long', `${label} must be at most ${EVIDENCE_SHORT_FIELD_MAX_LENGTH} characters.`);
+  }
+  return trimmed;
+}
+
+function optionalEvidenceShortString(value: unknown, label: string): string | undefined {
+  if (value === undefined || value === null) return undefined;
+  const trimmed = requiredEvidenceString(value, label).trim();
+  if (!trimmed) return undefined;
+  if (trimmed.length > EVIDENCE_SHORT_FIELD_MAX_LENGTH) {
+    throw new WorkflowValidationError('field_too_long', `${label} must be at most ${EVIDENCE_SHORT_FIELD_MAX_LENGTH} characters.`);
+  }
+  return trimmed;
+}
+
+function requiredEvidenceHash(value: unknown, label: string): string {
+  const trimmed = requiredEvidenceString(value, label).trim();
+  if (!trimmed) {
+    throw new WorkflowValidationError('missing_field', `${label} is required.`);
+  }
+  if (trimmed.length > EVIDENCE_HASH_MAX_LENGTH) {
+    throw new WorkflowValidationError('field_too_long', `${label} must be at most ${EVIDENCE_HASH_MAX_LENGTH} characters.`);
+  }
+  return trimmed;
+}
+
+function optionalEvidenceHash(value: unknown, label: string): string | undefined {
+  if (value === undefined || value === null) return undefined;
+  return requiredEvidenceHash(value, label);
+}
+
+function requiredEvidenceSigningMessage(value: unknown): string {
+  const text = requiredEvidenceString(value, 'signingMessage');
+  if (!text.trim()) {
+    throw new WorkflowValidationError('missing_field', 'signingMessage is required.');
+  }
+  if (text.length > EVIDENCE_SIGNING_MESSAGE_MAX_LENGTH) {
+    throw new WorkflowValidationError('field_too_long', `signingMessage must be at most ${EVIDENCE_SIGNING_MESSAGE_MAX_LENGTH} characters.`);
+  }
+  return text;
+}
+
+function requiredEvidenceSignature(value: unknown): string {
+  const trimmed = requiredEvidenceString(value, 'signature').trim();
+  if (!trimmed) {
+    throw new WorkflowValidationError('missing_field', 'signature is required.');
+  }
+  if (trimmed.length > EVIDENCE_SIGNATURE_MAX_LENGTH) {
+    throw new WorkflowValidationError('field_too_long', `signature must be at most ${EVIDENCE_SIGNATURE_MAX_LENGTH} characters.`);
+  }
+  return trimmed;
+}
+
+function requireEvidenceReceiptKind(value: unknown): EvidenceReceiptKind {
+  const kind = requiredEvidenceString(value, 'kind').trim();
+  if (!EVIDENCE_RECEIPT_KINDS.includes(kind as EvidenceReceiptKind)) {
+    throw new WorkflowValidationError(
+      'invalid_kind',
+      `kind must be one of ${EVIDENCE_RECEIPT_KINDS.join(', ')}.`,
+    );
+  }
+  return kind as EvidenceReceiptKind;
+}
+
+function requireEvidenceReceiptStatus(value: unknown): EvidenceReceiptStatus {
+  const status = requiredEvidenceString(value, 'status').trim();
+  if (!EVIDENCE_RECEIPT_STATUSES.includes(status as EvidenceReceiptStatus)) {
+    throw new WorkflowValidationError(
+      'invalid_status',
+      `status must be one of ${EVIDENCE_RECEIPT_STATUSES.join(', ')}.`,
+    );
+  }
+  return status as EvidenceReceiptStatus;
 }
 
 function requireNonEmptyString(value: unknown, label: string): string {

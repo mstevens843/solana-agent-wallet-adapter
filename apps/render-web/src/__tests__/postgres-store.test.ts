@@ -7,7 +7,7 @@ import { describe, expect, it } from 'vitest';
 import { PostgresWorkflowStore, type PgClient, type PgConnection } from '../cloud/postgresStore.js';
 import { RecurringService, type RecurringOccurrenceRecord } from '../cloud/recurringService.js';
 import type { AuthNonceRecord, WalletSessionRecord } from '../cloud/store.js';
-import type { PlanDraftRecord } from '../cloud/workflowValidation.js';
+import type { ApprovalRequestRecord, PlanDraftRecord } from '../cloud/workflowValidation.js';
 
 const { Pool } = pg;
 const walletA = 'WalletAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA';
@@ -21,12 +21,15 @@ describe('postgres workflow store', () => {
     await store.migrate();
 
     expect(client.poolQueries.some((name) => name === 'BEGIN' || name === 'COMMIT' || name === 'ROLLBACK')).toBe(false);
-    expect(client.connections).toHaveLength(2);
-    for (const connection of client.connections) {
-      expect(connection.queries[0]).toBe('BEGIN');
-      expect(connection.queries.at(-1)).toBe('COMMIT');
-      expect(connection.released).toBe(true);
-    }
+    expect(client.connections).toHaveLength(1);
+    expect(client.connections[0]?.queries[0]).toBe('BEGIN');
+    expect(client.connections[0]?.queries[1]).toBe('SELECT pg_advisory_xact_lock(1788732421, 424242)');
+    expect(client.connections.at(-1)?.queries.some((query) => query.includes('approval_requests_active_plan_draft_idx'))).toBe(true);
+    expect(client.connections.at(-1)?.queries.some((query) => query.includes('duplicate_active_plan_approval'))).toBe(true);
+    expect(client.connections.at(-1)?.queries.some((query) => query.includes('approval_requests_active_recurring_occurrence_idx'))).toBe(true);
+    expect(client.connections.at(-1)?.queries.some((query) => query.includes('duplicate_active_recurring_occurrence_approval'))).toBe(true);
+    expect(client.connections[0]?.queries.at(-1)).toBe('COMMIT');
+    expect(client.connections[0]?.released).toBe(true);
   });
 
   it('persists workflow records across store instances and keeps wallet scope', async () => {
@@ -41,6 +44,42 @@ describe('postgres workflow store', () => {
     expect(await second.getPlan(walletB, 'plan_a')).toBeUndefined();
   });
 
+  it('maps active approval plan uniqueness conflicts to approval_exists', async () => {
+    const store = new PostgresWorkflowStore({ client: new FakePgClient() });
+
+    await store.saveApproval(walletA, sampleApproval('approval_1', walletA, { planDraftId: 'plan_a' }));
+
+    await expect(store.saveApproval(walletA, sampleApproval('approval_2', walletA, { planDraftId: 'plan_a' })))
+      .rejects.toMatchObject({ code: 'approval_exists' });
+    await expect(store.saveApproval(walletB, sampleApproval('approval_3', walletB, { planDraftId: 'plan_a' })))
+      .resolves.toBeUndefined();
+    await expect(store.saveApproval(walletA, sampleApproval('approval_4', walletA, {
+      planDraftId: 'plan_a',
+      status: 'approved',
+    }))).resolves.toBeUndefined();
+  });
+
+  it('maps active recurring occurrence approval conflicts to approval_exists', async () => {
+    const store = new PostgresWorkflowStore({ client: new FakePgClient() });
+
+    await store.saveApproval(walletA, sampleApproval('approval_1', walletA, {
+      planDraftId: undefined,
+      recurringScheduleId: 'recurring_1',
+      recurringOccurrenceId: 'occurrence_1',
+    }));
+
+    await expect(store.saveApproval(walletA, sampleApproval('approval_2', walletA, {
+      planDraftId: undefined,
+      recurringScheduleId: 'recurring_1',
+      recurringOccurrenceId: 'occurrence_1',
+    }))).rejects.toMatchObject({ code: 'approval_exists' });
+    await expect(store.saveApproval(walletB, sampleApproval('approval_3', walletB, {
+      planDraftId: undefined,
+      recurringScheduleId: 'recurring_1',
+      recurringOccurrenceId: 'occurrence_1',
+    }))).resolves.toBeUndefined();
+  });
+
   it('atomically consumes auth nonces so replayed wallet sign-ins fail', async () => {
     const store = new PostgresWorkflowStore({ client: new FakePgClient() });
     const nonce = sampleNonce();
@@ -53,6 +92,16 @@ describe('postgres workflow store', () => {
 
     expect(consumed).toMatchObject({ nonce: nonce.nonce, consumedAt: '2026-05-08T20:01:00.000Z' });
     expect(replay).toBeUndefined();
+  });
+
+  it('does not atomically consume expired auth nonces', async () => {
+    const store = new PostgresWorkflowStore({ client: new FakePgClient() });
+    const nonce = sampleNonce({ expiresAt: '2026-05-08T20:01:00.000Z' });
+
+    await store.createAuthNonce(nonce);
+
+    expect(await store.consumeAuthNonce(nonce.nonce, '2026-05-08T20:01:00.000Z')).toBeUndefined();
+    expect(await store.getAuthNonce(nonce.nonce)).not.toHaveProperty('consumedAt');
   });
 
   it('stores an auth nonce before the wallet has a verified user row', async () => {
@@ -144,11 +193,14 @@ describePostgres('postgres workflow store integration', () => {
       const consumed = await first.consumeAuthNonce('nonce_1', '2026-05-08T20:01:00.000Z');
       const replay = await first.consumeAuthNonce('nonce_1', '2026-05-08T20:02:00.000Z');
       await first.savePlan(walletA, samplePlan('plan_a', walletA));
+      await first.saveApproval(walletA, sampleApproval('approval_a', walletA, { planDraftId: 'plan_a' }));
 
       expect(consumed).toMatchObject({ nonce: 'nonce_1' });
       expect(replay).toBeUndefined();
       expect((await second.listPlans(walletA)).map((plan) => plan.id)).toEqual(['plan_a']);
       expect(await second.listPlans(walletB)).toEqual([]);
+      await expect(second.saveApproval(walletA, sampleApproval('approval_b', walletA, { planDraftId: 'plan_a' })))
+        .rejects.toMatchObject({ code: 'approval_exists' });
     } finally {
       await pool.end();
       await admin.query(`DROP SCHEMA IF EXISTS ${schema} CASCADE`);
@@ -173,6 +225,7 @@ class FakePgClient implements PgClient {
   readonly nonces = new Map<string, Record<string, unknown>>();
   readonly sessions = new Map<string, Record<string, unknown>>();
   readonly plans = new Map<string, JsonRow<PlanDraftRecord>>();
+  readonly approvals = new Map<string, JsonRow<ApprovalRequestRecord>>();
   readonly schedules = new Map<string, JsonRow<ReturnType<typeof scheduleRecord>>>();
   readonly occurrences = new Map<string, JsonRow<RecurringOccurrenceRecord>>();
   userUpserts = 0;
@@ -210,6 +263,7 @@ class FakePgClient implements PgClient {
       case 'nonce.consume': {
         const row = this.nonces.get(String(values[0]));
         if (!row || row.consumed_at) return result([]);
+        if (Date.parse(String(row.expires_at)) <= Date.parse(String(values[1]))) return result([]);
         row.consumed_at = values[1];
         return result([row]);
       }
@@ -265,6 +319,57 @@ class FakePgClient implements PgClient {
 
       case 'plan.get': {
         const row = this.plans.get(String(values[1]));
+        return result(row && row.wallet_address === values[0] ? [{ record: row.record }] : []);
+      }
+
+      case 'approval.upsert': {
+        const record = JSON.parse(String(values[6])) as ApprovalRequestRecord;
+        const planDraftId = approvalPlanDraftId(record);
+        const duplicatePlan = planDraftId && isActiveApprovalStatusForIndex(record.status)
+          ? [...this.approvals.values()].find((entry) => {
+            return entry.wallet_address === values[1] &&
+              entry.id !== record.id &&
+              approvalPlanDraftId(entry.record) === planDraftId &&
+              isActiveApprovalStatusForIndex(entry.record.status);
+          })
+          : undefined;
+        if (duplicatePlan) {
+          throw Object.assign(new Error('duplicate key value violates unique constraint "approval_requests_active_plan_draft_idx"'), {
+            code: '23505',
+            constraint: 'approval_requests_active_plan_draft_idx',
+          });
+        }
+        const duplicateRecurring = record.recurringOccurrenceId && isActiveApprovalStatusForIndex(record.status)
+          ? [...this.approvals.values()].find((entry) => {
+            return entry.wallet_address === values[1] &&
+              entry.id !== record.id &&
+              entry.record.recurringOccurrenceId === record.recurringOccurrenceId &&
+              isActiveApprovalStatusForIndex(entry.record.status);
+          })
+          : undefined;
+        if (duplicateRecurring) {
+          throw Object.assign(new Error('duplicate key value violates unique constraint "approval_requests_active_recurring_occurrence_idx"'), {
+            code: '23505',
+            constraint: 'approval_requests_active_recurring_occurrence_idx',
+          });
+        }
+        this.approvals.set(record.id, {
+          id: record.id,
+          wallet_address: String(values[1]),
+          status: String(values[2]),
+          due_at: String(values[3]),
+          created_at: String(values[4]),
+          updated_at: String(values[5]),
+          record,
+        });
+        return result([]);
+      }
+
+      case 'approval.list':
+        return result([...this.approvals.values()].filter((row) => row.wallet_address === values[0]).map((row) => ({ record: row.record })));
+
+      case 'approval.get': {
+        const row = this.approvals.get(String(values[1]));
         return result(row && row.wallet_address === values[0] ? [{ record: row.record }] : []);
       }
 
@@ -448,6 +553,35 @@ function samplePlan(id: string, walletAddress: string): PlanDraftRecord {
     cluster: 'devnet',
     status: 'draft',
   };
+}
+
+function sampleApproval(
+  id: string,
+  walletAddress: string,
+  overrides: Partial<ApprovalRequestRecord> = {},
+): ApprovalRequestRecord {
+  return {
+    id,
+    walletAddress,
+    planDraftId: 'plan_a',
+    kind: 'transfer_sol',
+    status: 'ready',
+    summary: 'Approve SOL transfer',
+    params: { amount: '0.1' },
+    cluster: 'devnet',
+    dueAt: '2026-05-08T20:00:00.000Z',
+    createdAt: '2026-05-08T20:00:00.000Z',
+    updatedAt: '2026-05-08T20:00:00.000Z',
+    ...overrides,
+  };
+}
+
+function approvalPlanDraftId(record: ApprovalRequestRecord): string | undefined {
+  return record.planDraftId ?? record.planId;
+}
+
+function isActiveApprovalStatusForIndex(status: string): boolean {
+  return status === 'pending' || status === 'scheduled' || status === 'ready' || status === 'overdue' || status === 'approval_pending';
 }
 
 function scheduleRecord() {

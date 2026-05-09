@@ -1,3 +1,4 @@
+import { generateKeyPairSync, sign as signDetached, type KeyObject } from 'node:crypto';
 import { mkdir, mkdtemp, writeFile } from 'node:fs/promises';
 import { createServer, request as httpRequest, type IncomingHttpHeaders } from 'node:http';
 import type { Server } from 'node:http';
@@ -7,6 +8,7 @@ import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 
 import { SESSION_COOKIE_NAME } from '../cloud/cookies.js';
+import { encodeBase58 } from '../cloud/auth.js';
 import { MemoryWorkflowStore } from '../cloud/memoryStore.js';
 import { createRecurringApiHandler } from '../cloud/recurringRoutes.js';
 import {
@@ -20,6 +22,8 @@ import {
 import { RecurringScheduler } from '../cloud/scheduler.js';
 import { createWalletSession } from '../cloud/session.js';
 import { createRenderWebServer } from '../server.js';
+import { workflowDecisionProofMessage } from '../cloud/workflowService.js';
+import type { ApprovalRequestRecord } from '../cloud/workflowValidation.js';
 
 interface TestResponse {
   status: number;
@@ -34,8 +38,15 @@ interface ServerCtx {
   setNow(now: Date): void;
 }
 
-const walletA = 'WalletAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA';
-const walletB = 'WalletBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB';
+interface TestWallet {
+  walletAddress: string;
+  privateKey: KeyObject;
+}
+
+const testWalletA = createTestWallet();
+const testWalletB = createTestWallet();
+const walletA = testWalletA.walletAddress;
+const walletB = testWalletB.walletAddress;
 
 describe('cloud recurring scheduler API', () => {
   it('rejects every recurring endpoint without a wallet session', async () => {
@@ -49,6 +60,14 @@ describe('cloud recurring scheduler API', () => {
         expect(response.status).toBe(401);
         expect(response.body).toEqual({ error: 'unauthorized' });
       }
+    });
+  });
+
+  it('rejects malformed recurring ids as validation errors', async () => {
+    await withRecurringServer(async ({ port }) => {
+      const response = await patchJson(port, '/api/recurring/%E0%A4%A', { status: 'paused' }, walletA);
+      expect(response.status).toBe(400);
+      expect(response.body.error).toBe('invalid_id');
     });
   });
 
@@ -286,6 +305,93 @@ describe('cloud recurring scheduler API', () => {
     expect(materializedAuditEvents).toHaveLength(1);
   });
 
+  it('repairs a claimed occurrence that was saved before approval registration completed', async () => {
+    const store = new TestRecurringStore();
+    let now = new Date('2026-05-01T12:00:00Z');
+    const sinkCalls: Array<{ scheduleId: string; occurrenceId: string }> = [];
+    const service = new RecurringService(store, {
+      clock: () => now,
+      approvalSink: async ({ schedule, occurrence }) => {
+        sinkCalls.push({ scheduleId: schedule.id, occurrenceId: occurrence.id });
+        return { approvalId: `approval_for_${occurrence.id}` };
+      },
+    });
+
+    const schedule = await service.createSchedule({ walletAddress: walletA }, parseCreate(validIntervalMinutesBody()));
+    await store.saveOccurrence(walletA, {
+      id: 'occurrence_interrupted',
+      recurringScheduleId: schedule.id,
+      walletAddress: walletA,
+      cluster: 'devnet',
+      status: 'ready',
+      occurrenceKey: '2026-05-01T12:10:00.000Z',
+      dueAt: '2026-05-01T12:10:00.000Z',
+      createdAt: '2026-05-01T12:10:00.000Z',
+      updatedAt: '2026-05-01T12:10:00.000Z',
+    });
+
+    now = new Date('2026-05-01T12:11:00Z');
+    const first = await service.materializeDueOccurrences({ walletAddress: walletA });
+    const second = await service.materializeDueOccurrences({ walletAddress: walletA });
+
+    const occurrences = await store.listOccurrences(walletA, schedule.id);
+    const reloaded = await store.getSchedule(walletA, schedule.id);
+    const materializedAuditEvents = store.auditEventsFor(walletA)
+      .filter((event) => event.type === 'recurring.materialized');
+
+    expect(first[0]?.reason).toBe('duplicate');
+    expect(second[0]?.reason).toBe('duplicate');
+    expect(sinkCalls).toEqual([{ scheduleId: schedule.id, occurrenceId: 'occurrence_interrupted' }]);
+    expect(occurrences).toHaveLength(1);
+    expect(occurrences[0]?.approvalRequestId).toBe('approval_for_occurrence_interrupted');
+    expect(occurrences[0]?.status).toBe('approval_pending');
+    expect(reloaded?.occurrencesCreated).toBe(1);
+    expect(reloaded?.nextDueAt).toBeDefined();
+    expect(materializedAuditEvents).toHaveLength(1);
+    expect(materializedAuditEvents[0]?.metadata).toMatchObject({ recovered: true });
+  });
+
+  it('does not repair stale occurrences that already have approval state', async () => {
+    const store = new TestRecurringStore();
+    let now = new Date('2026-05-01T12:00:00Z');
+    const sinkCalls: Array<{ scheduleId: string; occurrenceId: string }> = [];
+    const service = new RecurringService(store, {
+      clock: () => now,
+      approvalSink: async ({ schedule, occurrence }) => {
+        sinkCalls.push({ scheduleId: schedule.id, occurrenceId: occurrence.id });
+        return { approvalId: `approval_for_${occurrence.id}` };
+      },
+    });
+
+    const schedule = await service.createSchedule({ walletAddress: walletA }, parseCreate(validIntervalMinutesBody()));
+    await store.saveOccurrence(walletA, {
+      id: 'occurrence_existing_approval',
+      recurringScheduleId: schedule.id,
+      walletAddress: walletA,
+      cluster: 'devnet',
+      status: 'approval_pending',
+      approvalRequestId: 'approval_existing',
+      occurrenceKey: '2026-05-01T12:10:00.000Z',
+      dueAt: '2026-05-01T12:10:00.000Z',
+      createdAt: '2026-05-01T12:10:00.000Z',
+      updatedAt: '2026-05-01T12:10:00.000Z',
+    });
+
+    now = new Date('2026-05-01T12:11:00Z');
+    const result = await service.materializeDueOccurrences({ walletAddress: walletA });
+
+    const occurrences = await store.listOccurrences(walletA, schedule.id);
+    const materializedAuditEvents = store.auditEventsFor(walletA)
+      .filter((event) => event.type === 'recurring.materialized');
+
+    expect(result[0]?.reason).toBe('duplicate');
+    expect(sinkCalls).toEqual([]);
+    expect(occurrences).toHaveLength(1);
+    expect(occurrences[0]?.approvalRequestId).toBe('approval_existing');
+    expect(occurrences[0]?.status).toBe('approval_pending');
+    expect(materializedAuditEvents).toHaveLength(0);
+  });
+
   it('runs the in-process scheduler tick across all known wallets', async () => {
     const store = new TestRecurringStore();
     let now = new Date('2026-05-01T12:00:00Z');
@@ -412,14 +518,14 @@ describe('cloud recurring scheduler API', () => {
       expect((materialized.body.results as Array<{ reason: string }>)[0]?.reason).toBe('created');
 
       const inboxBefore = await requestJsonWithHeaders(port, 'GET', '/api/approvals', undefined, headers);
-      const approval = (inboxBefore.body.approvals as Array<{ id: string }>)[0];
+      const approval = (inboxBefore.body.approvals as ApprovalRequestRecord[])[0];
       expect(approval?.id).toBeDefined();
 
       const decision = await requestJsonWithHeaders(
         port,
         'POST',
         `/api/approvals/${encodeURIComponent(approval!.id)}/approve`,
-        { proofSignature: 'sig_recurring_approve' },
+        decisionProofBody(approval!, 'approved'),
         headers,
       );
       expect(decision.status).toBe(200);
@@ -428,6 +534,133 @@ describe('cloud recurring scheduler API', () => {
       const occurrences = recurringAfter.body.occurrences as RecurringOccurrenceRecord[];
       const synced = occurrences.find((entry) => entry.recurringScheduleId === schedule.id);
       expect(synced?.status).toBe('completed');
+    });
+  });
+
+  it('syncs occurrence status to cancelled when the linked approval is denied', async () => {
+    const store = new MemoryWorkflowStore();
+    const session = await createWalletSession({
+      store,
+      walletAddress: walletA,
+      clock: { now: () => new Date('2026-05-08T20:00:00.000Z') },
+    });
+
+    await withRenderRecurringServer(store, async (port) => {
+      const headers = {
+        cookie: `${SESSION_COOKIE_NAME}=${encodeURIComponent(session.token)}`,
+      };
+
+      const created = await requestJsonWithHeaders(port, 'POST', '/api/recurring', {
+        ...validIntervalMinutesBody(),
+        startAt: '2020-01-01T00:00:00.000Z',
+      }, headers);
+      const schedule = created.body.schedule as RecurringScheduleRecord;
+
+      await requestJsonWithHeaders(port, 'POST', '/api/recurring/materialize-due', {}, headers);
+      const inbox = await requestJsonWithHeaders(port, 'GET', '/api/approvals', undefined, headers);
+      const approval = (inbox.body.approvals as ApprovalRequestRecord[])[0];
+
+      const denied = await requestJsonWithHeaders(
+        port,
+        'POST',
+        `/api/approvals/${encodeURIComponent(approval!.id)}/deny`,
+        decisionProofBody(approval!, 'rejected'),
+        headers,
+      );
+      expect(denied.status).toBe(200);
+
+      const recurringAfter = await requestJsonWithHeaders(port, 'GET', '/api/recurring', undefined, headers);
+      const synced = (recurringAfter.body.occurrences as RecurringOccurrenceRecord[]).find(
+        (entry) => entry.recurringScheduleId === schedule.id,
+      );
+      expect(synced?.status).toBe('cancelled');
+    });
+  });
+
+  it('does not change occurrence status while the linked approval is still pending', async () => {
+    const store = new MemoryWorkflowStore();
+    const session = await createWalletSession({
+      store,
+      walletAddress: walletA,
+      clock: { now: () => new Date('2026-05-08T20:00:00.000Z') },
+    });
+
+    await withRenderRecurringServer(store, async (port) => {
+      const headers = {
+        cookie: `${SESSION_COOKIE_NAME}=${encodeURIComponent(session.token)}`,
+      };
+
+      const created = await requestJsonWithHeaders(port, 'POST', '/api/recurring', {
+        ...validIntervalMinutesBody(),
+        startAt: '2020-01-01T00:00:00.000Z',
+      }, headers);
+      const schedule = created.body.schedule as RecurringScheduleRecord;
+
+      await requestJsonWithHeaders(port, 'POST', '/api/recurring/materialize-due', {}, headers);
+      const before = await requestJsonWithHeaders(port, 'GET', '/api/recurring', undefined, headers);
+      const occurrenceBefore = (before.body.occurrences as RecurringOccurrenceRecord[]).find(
+        (entry) => entry.recurringScheduleId === schedule.id,
+      );
+      expect(occurrenceBefore?.status).toBe('approval_pending');
+
+      // Force a re-sync by calling materialize-due again without changing the approval.
+      await requestJsonWithHeaders(port, 'POST', '/api/recurring/materialize-due', {}, headers);
+
+      const after = await requestJsonWithHeaders(port, 'GET', '/api/recurring', undefined, headers);
+      const occurrenceAfter = (after.body.occurrences as RecurringOccurrenceRecord[]).find(
+        (entry) => entry.recurringScheduleId === schedule.id,
+      );
+      expect(occurrenceAfter?.status).toBe('approval_pending');
+    });
+  });
+
+  it('rejects PATCH cadence: weekly without dayOfWeek', async () => {
+    await withRecurringServer(async ({ port }) => {
+      const created = await postJson(port, '/api/recurring', validIntervalMinutesBody(), walletA);
+      const schedule = created.body.schedule as RecurringScheduleRecord;
+
+      const broken = await patchJson(
+        port,
+        `/api/recurring/${schedule.id}`,
+        { cadence: 'weekly', localTime: '09:30' },
+        walletA,
+      );
+      expect(broken.status).toBe(400);
+      expect((broken.body as { error?: string }).error).toBe('invalid_cadence_fields');
+
+      const ok = await patchJson(
+        port,
+        `/api/recurring/${schedule.id}`,
+        { cadence: 'weekly', dayOfWeek: 1, localTime: '09:30' },
+        walletA,
+      );
+      expect(ok.status).toBe(200);
+      expect((ok.body.schedule as RecurringScheduleRecord).cadence).toBe('weekly');
+    });
+  });
+
+  it('rejects PATCH cadence: interval_days without intervalDays', async () => {
+    await withRecurringServer(async ({ port }) => {
+      const created = await postJson(port, '/api/recurring', validCreateBody(), walletA);
+      const schedule = created.body.schedule as RecurringScheduleRecord;
+
+      const broken = await patchJson(
+        port,
+        `/api/recurring/${schedule.id}`,
+        { cadence: 'interval_days' },
+        walletA,
+      );
+      expect(broken.status).toBe(400);
+      expect((broken.body as { error?: string }).error).toBe('invalid_cadence_fields');
+
+      const ok = await patchJson(
+        port,
+        `/api/recurring/${schedule.id}`,
+        { cadence: 'interval_days', intervalDays: 3 },
+        walletA,
+      );
+      expect(ok.status).toBe(200);
+      expect((ok.body.schedule as RecurringScheduleRecord).cadence).toBe('interval_days');
     });
   });
 });
@@ -458,6 +691,33 @@ function validIntervalMinutesBody(): Record<string, unknown> {
 
 function parseCreate(body: Record<string, unknown>): Parameters<RecurringService['createSchedule']>[1] {
   return body as unknown as Parameters<RecurringService['createSchedule']>[1];
+}
+
+function decisionProofBody(
+  approval: ApprovalRequestRecord,
+  decision: 'approved' | 'rejected',
+  wallet: TestWallet = testWalletA,
+): Record<string, unknown> {
+  const message = workflowDecisionProofMessage({ approval, decision });
+  return {
+    proofSignature: signMessage(message, wallet.privateKey),
+    decisionProofMessage: message,
+    signatureEncoding: 'base58',
+  };
+}
+
+function createTestWallet(): TestWallet {
+  const { publicKey, privateKey } = generateKeyPairSync('ed25519');
+  const publicKeyDer = publicKey.export({ format: 'der', type: 'spki' });
+  const publicKeyBytes = Buffer.from(publicKeyDer).subarray(-32);
+  return {
+    walletAddress: encodeBase58(publicKeyBytes),
+    privateKey,
+  };
+}
+
+function signMessage(message: string, privateKey: KeyObject): string {
+  return encodeBase58(signDetached(null, Buffer.from(message, 'utf8'), privateKey));
 }
 
 async function withRecurringServer(callback: (ctx: ServerCtx) => Promise<void>): Promise<void> {

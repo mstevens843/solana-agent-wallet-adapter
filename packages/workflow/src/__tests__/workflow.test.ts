@@ -30,9 +30,11 @@ import {
   parseWorkflowUser,
   validateApprovalDecisionRequest,
   validateCreateApprovalRequest,
+  validateCreateEvidenceReceiptRequest,
   validateCreatePlanRequest,
   validateCreateRecurringRequest,
   validateRecordId,
+  validateRecurringId,
   validateUpdatePlanRequest,
   validateUpdateRecurringRequest,
   WorkflowValidationError,
@@ -66,10 +68,10 @@ describe('workflow capabilities', () => {
 
 describe('approval status helpers', () => {
   it('separates active and terminal approval statuses', () => {
-    expect(['scheduled', 'ready', 'overdue', 'approval_pending'].every((status) =>
+    expect(['pending', 'scheduled', 'ready', 'overdue', 'approval_pending'].every((status) =>
       isActiveApprovalStatus(status as ApprovalStatus),
     )).toBe(true);
-    expect(['approved', 'rejected', 'blocked', 'failed', 'expired', 'cancelled'].every((status) =>
+    expect(['approved', 'denied', 'rejected', 'blocked', 'failed', 'expired', 'cancelled'].every((status) =>
       isTerminalApprovalStatus(status as ApprovalStatus),
     )).toBe(true);
     expect(isActiveApprovalStatus('approved')).toBe(false);
@@ -190,6 +192,7 @@ describe('runtime validators', () => {
       occurrences: [occurrence],
     });
     expect(parseCompletedListResponse({ completed: [completed] }).completed).toHaveLength(1);
+    expect(parseCompletedRecord({ ...completed, kind: 'one-time' })).toMatchObject({ kind: 'one_time' });
     expect(parseCreateEvidenceReceiptRequest(createEvidenceReceiptRequest())).toMatchObject({ status: 'approved' });
     expect(parseEvidenceReceiptListResponse({ receipts: [evidence] }).receipts).toHaveLength(1);
   });
@@ -198,7 +201,10 @@ describe('runtime validators', () => {
     const createPlan = createPlanRequest();
     const { title: _title, ...missingTitle } = createPlan;
 
-    expect(() => parseCreatePlanRequest(missingTitle)).toThrow(WorkflowValidationError);
+    expect(workflowError(() => parseCreatePlanRequest(missingTitle))).toMatchObject({
+      code: 'missing_field',
+      path: '$.title',
+    });
     expect(() => parseCreatePlanRequest({ ...createPlan, actionType: 'stake' })).toThrow(WorkflowValidationError);
     expect(() => parseCreateApprovalRequest({
       ...createApprovalRequest(),
@@ -253,9 +259,16 @@ describe('Agentic Cloud validators', () => {
       kind: 'custom_action',
       params: { amount: '1' },
     });
-    expect(validateApprovalDecisionRequest({ decisionProofSignature: 'proof_1', txid: 'tx_1' })).toEqual({
+    expect(validateApprovalDecisionRequest({
+      decisionProofSignature: 'proof_1',
+      decisionProofMessage: 'decision message',
+      signatureEncoding: 'base64',
+      txid: 'tx_1',
+    })).toEqual({
       proofSignature: 'proof_1',
       decisionProofSignature: 'proof_1',
+      decisionProofMessage: 'decision message',
+      signatureEncoding: 'base64',
       txid: 'tx_1',
     });
     expect(() => validateCreateApprovalRequest({ kind: 'transfer_sol' })).toThrow(WorkflowValidationError);
@@ -271,9 +284,13 @@ describe('Agentic Cloud validators', () => {
       note: 'Hold until review',
     });
     expect(validateRecordId('recurring_1')).toBe('recurring_1');
+    expect(validateRecurringId('recurring_1')).toBe('recurring_1');
 
     expect(() => validateUpdatePlanRequest({})).toThrow(WorkflowValidationError);
     expect(() => validateRecordId('bad/id')).toThrow(WorkflowValidationError);
+    expect(() => validateRecordId('%E0%A4%A')).toThrow(WorkflowValidationError);
+    expect(() => validateRecurringId('bad/id')).toThrow(WorkflowValidationError);
+    expect(() => validateRecurringId('%E0%A4%A')).toThrow(WorkflowValidationError);
     expect(() => validateCreateRecurringRequest({
       ...createRecurringRequest(),
       cadence: 'weekly',
@@ -283,9 +300,61 @@ describe('Agentic Cloud validators', () => {
       ...createPlanRequest(),
       metadata: { privateKey: 'not accepted' },
     })).toThrow(WorkflowValidationError);
-    expect(() => parseJsonObject(new Date())).toThrow(WorkflowValidationError);
+    expect(workflowError(() => parseJsonObject(new Date()))).toMatchObject({
+      code: 'invalid_object',
+      path: '$',
+    });
+  });
+
+  it('validates evidence receipt requests with shared workflow rules', () => {
+    expect(validateCreateEvidenceReceiptRequest({
+      ...createEvidenceReceiptRequest(),
+      cluster: ' devnet ',
+      summary: '  Safe to archive  ',
+    })).toMatchObject({
+      cluster: 'devnet',
+      kind: 'review_proof',
+      status: 'approved',
+      summary: 'Safe to archive',
+    });
+
+    const missingCluster = { ...createEvidenceReceiptRequest() } as Record<string, unknown>;
+    delete missingCluster.cluster;
+    expect(workflowError(() => validateCreateEvidenceReceiptRequest(missingCluster))).toMatchObject({
+      code: 'missing_field',
+    });
+    expect(workflowError(() => validateCreateEvidenceReceiptRequest({
+      ...createEvidenceReceiptRequest(),
+      cluster: 'mainnet-fake',
+    }))).toMatchObject({ code: 'invalid_cluster' });
+    expect(workflowError(() => validateCreateEvidenceReceiptRequest({
+      ...createEvidenceReceiptRequest(),
+      title: '   ',
+    }))).toMatchObject({ code: 'missing_field' });
+    expect(workflowError(() => validateCreateEvidenceReceiptRequest({
+      ...createEvidenceReceiptRequest(),
+      artifactHash: 'x'.repeat(257),
+    }))).toMatchObject({ code: 'field_too_long' });
+    expect(workflowError(() => validateCreateEvidenceReceiptRequest({
+      ...createEvidenceReceiptRequest(),
+      payload: { delegatedSigner: 'server-wallet' },
+    }))).toMatchObject({ code: 'forbidden_secret' });
+    expect(workflowError(() => validateCreateEvidenceReceiptRequest({
+      ...createEvidenceReceiptRequest(),
+      metadata: { approvalAuthority: 'unlimited' },
+    }))).toMatchObject({ code: 'forbidden_authority' });
   });
 });
+
+function workflowError(action: () => unknown): WorkflowValidationError {
+  try {
+    action();
+  } catch (err) {
+    expect(err).toBeInstanceOf(WorkflowValidationError);
+    return err as WorkflowValidationError;
+  }
+  throw new Error('Expected WorkflowValidationError.');
+}
 
 function planRecord() {
   return {

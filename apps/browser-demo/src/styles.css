@@ -21,6 +21,8 @@
   --warn: #d6a84f;
   --warn-soft: rgba(214, 168, 79, 0.11);
   --danger: #ef6f78;
+  --danger-strong: #d95d66;
+  --danger-muted: #b66a70;
   --danger-soft: rgba(239, 111, 120, 0.105);
   --radius: 8px;
   --shadow: 0 18px 58px rgba(0, 0, 0, 0.22);
@@ -2136,6 +2138,27 @@ code {
   max-width: 760px;
 }
 
+.gap-copy h2 span {
+  display: block;
+}
+
+.gap-copy h2 .gap-title-danger {
+  color: var(--danger-strong);
+}
+
+.gap-section .eyebrow.mini {
+  color: var(--danger-muted);
+}
+
+.gap-accent {
+  color: var(--danger);
+  font-size: clamp(1.55rem, 2.2vw, 2.05rem);
+  font-weight: 760;
+  line-height: 1.12;
+  margin: 18px 0 0;
+  max-width: 620px;
+}
+
 .gap-body {
   align-content: start;
   display: grid;
@@ -2150,27 +2173,44 @@ code {
 }
 
 .gap-proof-grid {
-  border-top: 1px solid rgba(224, 230, 226, 0.065);
   display: grid;
-  gap: 0;
-  margin-top: 4px;
+  gap: 10px;
 }
 
 .gap-proof {
-  border-bottom: 1px solid rgba(224, 230, 226, 0.055);
+  background:
+    linear-gradient(180deg, rgba(63, 189, 131, 0.058), rgba(255, 255, 255, 0.012)),
+    rgba(4, 7, 6, 0.58);
+  border: 1px solid rgba(224, 230, 226, 0.08);
+  border-radius: var(--radius);
   display: grid;
-  gap: 6px;
-  padding: 13px 0;
+  gap: 10px;
+  min-height: 112px;
+  padding: 14px;
 }
 
-.gap-proof:last-child {
-  border-bottom: 0;
-  padding-bottom: 0;
+.gap-proof-header {
+  align-items: start;
+  display: flex;
+  gap: 10px;
+  justify-content: space-between;
 }
 
 .gap-proof strong {
   color: var(--text);
   font-size: 0.96rem;
+  text-transform: uppercase;
+}
+
+.gap-proof-header span {
+  border: 1px solid rgba(239, 111, 120, 0.42);
+  border-radius: 4px;
+  color: rgba(239, 111, 120, 0.86);
+  flex: 0 0 auto;
+  font-size: 0.68rem;
+  font-weight: 760;
+  padding: 4px 6px;
+  text-transform: uppercase;
 }
 
 .gap-proof p {
@@ -2178,6 +2218,14 @@ code {
   font-size: 0.9rem;
   line-height: 1.45;
   margin: 0;
+}
+
+.gap-answer {
+  background: var(--accent-soft);
+  border: 1px solid rgba(63, 189, 131, 0.22);
+  border-radius: var(--radius);
+  color: rgba(218, 239, 230, 0.94);
+  padding: 14px;
 }
 
 .panel {

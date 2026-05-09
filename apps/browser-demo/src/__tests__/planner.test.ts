@@ -1,10 +1,12 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import {
+  aiDiagnosticsFromError,
   aiRouteDiagnosticForSettings,
   confirmHostedAiPlanner,
   generateSessionAiPlan,
   redactSecrets,
+  type AiDiagnosticEntry,
   type AiPlanRequest,
   type AiSettings,
 } from '../planner.js';
@@ -81,6 +83,41 @@ describe('planner AI setup helpers', () => {
     ]));
   });
 
+  it('reports Hosted BYOK route mismatches when the status route returns HTML', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => new Response('<!doctype html><div id="app"></div>', {
+      status: 200,
+      headers: {
+        'content-type': 'text/html; charset=utf-8',
+      },
+    })));
+
+    let diagnostics: AiDiagnosticEntry[] = [];
+    let message = '';
+    try {
+      await confirmHostedAiPlanner({
+        ...sessionSettings,
+        mode: 'hosted',
+        provider: 'openai',
+        model: 'gpt-5',
+      });
+    } catch (err) {
+      message = err instanceof Error ? err.message : String(err);
+      diagnostics = aiDiagnosticsFromError(err);
+    }
+
+    expect(message).toContain('Hosted AI API routed to frontend shell');
+    expect(message).not.toContain(sessionSettings.apiKey);
+    expect(diagnostics).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        code: 'AI_ROUTE_MISMATCH',
+        method: 'GET',
+        path: '/api/ai/status',
+        contentType: 'text/html; charset=utf-8',
+      }),
+    ]));
+    expect(JSON.stringify(diagnostics)).not.toContain(sessionSettings.apiKey);
+  });
+
   it('reports bridge planner confirmation as the status route', () => {
     expect(aiRouteDiagnosticForSettings(
       { mode: 'bridge', provider: 'openai', model: 'gpt-5' },
@@ -97,6 +134,7 @@ describe('planner AI setup helpers', () => {
     const apiKey = 'provider-secret-value-abcdef123456';
 
     expect(redactSecrets(`bad ${apiKey}`, apiKey)).toBe('bad [redacted]');
+    expect(redactSecrets('error api-key=providerSecret123456')).toBe('error api-key=[redacted]');
   });
 });
 

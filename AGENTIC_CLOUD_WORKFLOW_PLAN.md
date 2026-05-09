@@ -14,16 +14,22 @@ Implemented or currently in review in this checkout:
 - The `/app` page supports Agentic Cloud, browser workflow fallback, and private local mode through workflow capabilities instead of hardcoded bridge blockers.
 - Browser workflow fallback can queue one-time plans, approve/deny requests, create a device-local recurring fallback occurrence, show completed history, and keep evidence-style proofs.
 - Hosted BYOK planning has same-origin API routes and remains a drafting path only.
-- Smoke coverage exists for cloud auth, approvals, recurring materialization, evidence archive, hosted BYOK status, and browser fallback.
+- Persistent Postgres storage, migrations, runtime store selection, production scheduler hooks, and deployment docs exist.
+- Smoke coverage exists for cloud auth, approvals, recurring materialization, evidence archive, hosted BYOK status, browser fallback, and private local mode.
+- Cloud approve/deny now requires a wallet-verifiable decision proof bound to the exact approval id, wallet, cluster, summary, kind, and params.
+- Cloud evidence receipts now verify the submitted signed message against the signed-in wallet before storing `verified: true`.
+- Postgres migrations are guarded by a transaction-scoped advisory lock so concurrent startup does not race migration application.
+- Route-local unknown 500 errors are redacted before returning JSON to the browser.
 
-Remaining gaps before production release:
+Final verification before production release:
 
-- Replace in-memory Render workflow storage with a persistent production database and migrations.
-- Add production scheduler execution for recurring cloud schedules.
-- Harden wallet auth, CSRF, cookie, rate-limit, and audit-event behavior for public traffic.
-- Finish environment/deployment documentation for Render Cloud plus optional private local mode.
-- Expand end-to-end coverage for browser workflow completion, browser recurring fallback semantics, and stale local-bridge blocker copy.
-- Finalize UX copy so “local bridge required” only appears inside explicit private local mode or bridge-backed record deletion.
+- Run the Phase 9 gate in CI/local and against the target Render/Postgres environment before public release.
+- Configure production `DATABASE_URL`, `SESSION_SECRET`, `AGENTIC_PUBLIC_ORIGIN`, and recurring materialization cron in Render.
+- Deploy the latest Render web service before public launch. As of 2026-05-09, the live `https://agentic-signer.com/api/ai/status`
+  endpoint is reachable, but the live Cloud workflow endpoints `/api/session`, `/api/auth/nonce`, and `/api/plans` still return 404,
+  which means production is not yet serving the cloud workflow API build.
+- Monitor wallet auth, rate-limit, audit-event, and smoke output after deployment. No known local checkout blockers remain;
+  deployment blockers are tracked in the Phase 9 handoff below.
 
 ## Product Rule
 
@@ -101,16 +107,16 @@ Current phase status:
 - Phase 4, Frontend Cloud Workspace Adapter: implemented/currently in review.
 - Phase 5, Cloud Recurring Scheduler: implemented/currently in review.
 - Phase 6, Cloud Evidence Receipt Archive: implemented/currently in review.
-- Phase 7, AI Setup And Drafting Cleanup: partially implemented; remaining work is copy, provider setup polish, and hardening.
-- Phase 8, Persistent Database And Deployment: remaining production phase.
-- Phase 9, End-To-End QA And Release Hardening: remaining production phase.
+- Phase 7, AI Setup And Drafting Cleanup: implemented/currently in review.
+- Phase 8, Persistent Database And Deployment: implemented/currently in review.
+- Phase 9, End-To-End QA And Release Hardening: implemented/currently in review.
 
 Dependency rules for new agent assignments:
 
 - Do not reimplement Phases 1-6 from scratch in this checkout. Review and patch gaps within the phase write scope.
-- Phase 7 polish can run after the current frontend and hosted BYOK code is stable.
-- Phase 8 depends on the current store interfaces from Phases 2, 3, 5, and 6.
-- Phase 9 depends on all product phases and should verify both Agentic Cloud default mode and optional private local mode.
+- Future polish should patch the existing implementations instead of restarting any phase from scratch.
+- Persistent storage remains owned by the runtime server path; the router default stays memory-backed for unit tests and explicit embeds.
+- Release QA should continue to verify both Agentic Cloud default mode and optional private local mode.
 
 ## Phase 1: Shared Workflow Contracts
 
@@ -292,6 +298,7 @@ Acceptance criteria:
 - Signed-in user can create/list/update/delete plans.
 - Signed-in user can create/list approvals.
 - Signed-in user can approve/deny/cancel an approval.
+- Approve and deny require a verified wallet decision proof; cancel remains proofless.
 - Terminal decisions appear in completed history.
 - User A cannot read or mutate User B records.
 - `pnpm -F @solana-agent-wallet-adapter/render-web test` passes.
@@ -451,6 +458,7 @@ Behavior:
 Acceptance criteria:
 
 - Signed-in user can create and archive an evidence receipt.
+- Server verifies the evidence receipt signature against the signed-in wallet before storing it as verified.
 - Browser-only user can still create and archive local evidence.
 - Created receipt appears immediately.
 - The exact signed text is visible.
@@ -625,8 +633,15 @@ Phase 9 implementation handoff:
 - README handoff lives in `apps/browser-demo/README.md` and `apps/render-web/README.md`, including default Agentic Cloud
   workflow, browser fallback, private local mode, production env vars, and recurring materialization options.
 - Narrow product fixes made during QA: recurring occurrences now carry schedule metadata into approval/completed records;
-  cloud recurring approvals are de-duplicated in the browser inbox; evidence receipts archive to Agentic Cloud when the
-  signed-in wallet matches; and the recurring cron command uses the same Approval Inbox sink as the web API.
+  cloud recurring approvals are de-duplicated across browser and server paths; interrupted recurring occurrence repair is
+  limited to stale ready occurrences without an approval request; evidence receipts archive to Agentic Cloud when the
+  signed-in wallet matches; server and browser BYOK diagnostics use shared redaction coverage; and the recurring cron
+  command uses the same Approval Inbox sink as the web API.
+- Final sweep status: the local Phase 9 gate passes, including workflow package tests, render-web tests/build/typecheck,
+  browser-demo tests/typecheck, smoke workflow, release-link verification, full build, and whitespace checks.
+- Release-only blockers that still require the target environment: run render-web tests with `TEST_DATABASE_URL`, fix the
+  live Render smoke failure where `https://agentic-signer.com/api/session` currently returns 404, and run
+  `--require-local-bridge` only with a real private bridge. The live release-link verifier is passing.
 
 Recommended Phase 9 gate:
 
@@ -635,12 +650,22 @@ pnpm build
 pnpm render:build
 pnpm -F @solana-agent-wallet-adapter/render-web build
 pnpm -F @solana-agent-wallet-adapter/render-web typecheck
+pnpm -F @solana-agent-wallet-adapter/workflow test
 pnpm -F @solana-agent-wallet-adapter/render-web test
 pnpm -F @solana-agent-wallet-adapter/browser-demo typecheck
 pnpm -F @solana-agent-wallet-adapter/browser-demo test
 pnpm smoke:render-web
 pnpm smoke:render-web:workflow
 pnpm verify:release-links
+```
+
+Production-target Phase 9 gate:
+
+```sh
+TEST_DATABASE_URL=... pnpm -F @solana-agent-wallet-adapter/render-web test
+pnpm smoke:render-web:live
+pnpm verify:release-links:live
+pnpm smoke:render-web:workflow -- --require-local-bridge
 ```
 
 ## Recommended Parallelization

@@ -14,6 +14,7 @@ import {
   type RecurringSession,
   type RecurringStore,
 } from './recurringService.js';
+import { redactSecrets } from './redaction.js';
 import type { WorkflowStore as CloudSessionStore } from './store.js';
 
 const MAX_JSON_BYTES = 64 * 1024;
@@ -148,11 +149,11 @@ export async function handleRecurringApiRequest(
   res: ServerResponse,
   context: Required<Pick<RecurringRouteContext, 'service' | 'getSession'>>,
 ): Promise<boolean> {
-  const url = new URL(req.url ?? '/', `http://${req.headers.host ?? 'localhost'}`);
-  const route = matchRecurringRoute(url.pathname);
-  if (!route) return false;
-
   try {
+    const url = new URL(req.url ?? '/', `http://${req.headers.host ?? 'localhost'}`);
+    const route = matchRecurringRoute(url.pathname);
+    if (!route) return false;
+
     const session = await context.getSession(req);
     if (!session?.walletAddress) {
       writeJson(res, 401, { error: 'unauthorized' });
@@ -279,7 +280,7 @@ function writeRouteError(res: ServerResponse, err: unknown): void {
     writeJson(res, err.status, { error: err.code, message: err.message });
     return;
   }
-  const message = err instanceof Error ? err.message : 'Unexpected recurring API error.';
+  const message = err instanceof Error ? redactSecrets(err.message) : 'Unexpected recurring API error.';
   writeJson(res, 500, { error: 'internal_error', message });
 }
 

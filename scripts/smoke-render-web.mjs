@@ -13,7 +13,10 @@ import { publicAppRoutes } from './public-routes.mjs';
 const DEFAULT_RENDER_ORIGIN = 'https://agentic-signer.com';
 const DEFAULT_BRIDGE_TOKEN = 'local-agent-wallet';
 const RENDER_SERVER_ENTRY = 'apps/render-web/dist/server.js';
+const DEMO_STORAGE_KEY = 'solana-agent-wallet-demo-v2';
+const GENERATED_PLANS_STORAGE_KEY = 'solana-agent-wallet-generated-plans-v1';
 const BROWSER_WORKFLOW_STORAGE_KEY = 'solana-agent-wallet-browser-workflow-v1';
+const TERMINAL_WORKFLOW_STATUSES = ['approved', 'rejected', 'cancelled', 'blocked', 'failed', 'expired'];
 const options = parseArgs(process.argv.slice(2));
 
 async function main() {
@@ -146,7 +149,10 @@ async function verifyWorkflowSmoke({ requireLocalBridge: bridgeRequired }) {
       await apiJson(origin, `/api/approvals/${encodeURIComponent(approval.id)}/approve`, {
         method: 'POST',
         cookie: session.cookie,
-        body: { proofSignature: 'sig_cloud_approve_smoke', note: 'Approved in workflow smoke.' },
+        body: {
+          ...decisionProofBody(approval, 'approved', wallet),
+          note: 'Approved in workflow smoke.',
+        },
       });
       const inbox = await apiJson(origin, '/api/approvals', { cookie: session.cookie });
       const completed = await apiJson(origin, '/api/completed', { cookie: session.cookie });
@@ -168,7 +174,10 @@ async function verifyWorkflowSmoke({ requireLocalBridge: bridgeRequired }) {
       await apiJson(origin, `/api/approvals/${encodeURIComponent(approval.id)}/deny`, {
         method: 'POST',
         cookie: session.cookie,
-        body: { proofSignature: 'sig_cloud_deny_smoke', note: 'Denied in workflow smoke.' },
+        body: {
+          ...decisionProofBody(approval, 'rejected', wallet),
+          note: 'Denied in workflow smoke.',
+        },
       });
       const completed = await apiJson(origin, '/api/completed', { cookie: session.cookie });
       assert(arrayPayload(completed.completed).some((entry) => entry.approvalRequestId === approval.id && entry.status === 'rejected'), 'denied item missing from completed history');
@@ -217,7 +226,7 @@ async function verifyWorkflowSmoke({ requireLocalBridge: bridgeRequired }) {
       const created = await apiJson(origin, '/api/evidence', {
         method: 'POST',
         cookie: session.cookie,
-        body: createEvidenceBody(wallet.walletAddress),
+        body: createEvidenceBody(wallet),
       });
       const receipt = requiredObject(created.receipt, 'receipt');
       const listed = await apiJson(origin, '/api/evidence', { cookie: session.cookie });
@@ -248,11 +257,11 @@ async function verifyWorkflowSmoke({ requireLocalBridge: bridgeRequired }) {
           approvalAuthority: 'unlimited',
         }],
         ['evidence private key', '/api/evidence', {
-          ...createEvidenceBody(wallet.walletAddress),
+          ...createEvidenceBody(wallet),
           privateKey: 'not-allowed',
         }],
         ['evidence unlimited authority', '/api/evidence', {
-          ...createEvidenceBody(wallet.walletAddress),
+          ...createEvidenceBody(wallet),
           metadata: { approvalAuthority: 'unlimited' },
         }],
       ];
@@ -325,6 +334,7 @@ async function verifyWorkflowSmoke({ requireLocalBridge: bridgeRequired }) {
             await waitForBrowserReceipt(page, actionId, 'rejected');
             const snapshot = await browserWorkflowSnapshot(page);
             assert(!snapshot.activeActions.some((entry) => entry.id === actionId), 'rejected browser workflow action remained active');
+            assert(snapshot.completedActions.some((entry) => entry.id === actionId && entry.status === 'rejected'), 'rejected browser workflow action was not terminal');
           });
 
           await report.check('Browser recurring fallback creates one local occurrence and explains scheduler limits', async () => {
@@ -340,6 +350,32 @@ async function verifyWorkflowSmoke({ requireLocalBridge: bridgeRequired }) {
             assert(browserRecurring.length === 1, `expected one browser recurring schedule, found ${browserRecurring.length}`);
             assert(recurringActions.length === 1, `expected one browser recurring occurrence, found ${recurringActions.length}`);
             assert(/does not run background schedules after this tab closes/i.test(bodyText), 'browser recurring fallback did not explain the scheduler limitation');
+          });
+
+          await report.check('Browser recurring schedules do not leak into private local mode', async () => {
+            await page.inspect(`${browserOrigin}/app`);
+            await resetBrowserWorkflow(page);
+            await page.inspect(`${browserOrigin}/app`);
+            await connectFakeWallet(page);
+            await createBrowserRecurringViaUi(page, wallet.walletAddress);
+            const snapshot = await browserWorkflowSnapshot(page);
+            const browserRecurring = snapshot.recurringPayments.filter((entry) => String(entry.id).startsWith('browser-recurring'));
+            assert(browserRecurring.length === 1, `expected one browser recurring seed, found ${browserRecurring.length}`);
+
+            await configureBridgeStorage(page, { bridgeOrigin, bridgeToken });
+            await page.inspect(`${browserOrigin}/app`);
+            await connectFakeWallet(page);
+            await clickAndWait(page, '[data-bridge-action="connect"]', 'check mocked local bridge for recurring isolation');
+            await page.waitFor(`Boolean(document.querySelector('[data-workflow-mode="local-bridge"]:not([disabled])')) || document.body.innerText.includes('Bridge connected')`);
+            await clickAndWait(page, '[data-workflow-mode="local-bridge"]', 'use private local mode for recurring isolation');
+            await clickAndWait(page, '[data-tab="schedule"]', 'private local recurring schedule tab');
+            const localCount = await recurringCardCount(page);
+            assert(localCount === 0, `browser recurring schedule leaked into private local mode; visible cards=${localCount}`);
+
+            await clickAndWait(page, '[data-workflow-mode="auto"]', 'return to browser workflow mode');
+            await clickAndWait(page, '[data-tab="schedule"]', 'browser recurring schedule tab');
+            const browserCount = await recurringCardCount(page);
+            assert(browserCount === 1, `browser recurring schedule was not restored after leaving private local mode; visible cards=${browserCount}`);
           });
 
           await report.check('Browser AI unavailable does not block template workflow', async () => {
@@ -452,6 +488,46 @@ async function createSignedSession(origin, wallet) {
   return { cookie, token };
 }
 
+function decisionProofBody(approval, decision, wallet) {
+  const message = workflowDecisionProofMessage(approval, decision);
+  return {
+    proofSignature: encodeBase58(signDetached(null, Buffer.from(message, 'utf8'), wallet.privateKey)),
+    decisionProofMessage: message,
+    signatureEncoding: 'base58',
+  };
+}
+
+function workflowDecisionProofMessage(approval, decision) {
+  return [
+    'Agentic Cloud workflow decision',
+    `Decision: ${decision}`,
+    `Approval: ${approval.id}`,
+    `Wallet: ${approval.walletAddress}`,
+    `Cluster: ${approval.cluster ?? 'devnet'}`,
+    `Summary: ${approval.summary}`,
+    `Kind: ${approval.kind}`,
+    `Params: ${stableJson(approval.params)}`,
+    'This signature records a cloud workflow decision only. It does not submit a transaction or grant spending authority.',
+  ].join('\n');
+}
+
+function stableJson(value) {
+  return JSON.stringify(sortJson(value), null, 2);
+}
+
+function sortJson(value) {
+  if (Array.isArray(value)) return value.map(sortJson);
+  if (value && typeof value === 'object') {
+    const sorted = {};
+    for (const key of Object.keys(value).sort()) {
+      const entry = value[key];
+      if (entry !== undefined) sorted[key] = sortJson(entry);
+    }
+    return sorted;
+  }
+  return value;
+}
+
 async function connectFakeWallet(page) {
   const connected = await page.evaluate(`document.body.innerText.includes('Wallet connected') || document.body.innerText.includes('Agentic Smoke Wallet')`);
   if (!connected) {
@@ -493,7 +569,11 @@ async function queueCurrentPlan(page, { waitForInboxAction = true } = {}) {
 }
 
 async function resetBrowserWorkflow(page) {
-  await page.evaluate(`localStorage.removeItem(${JSON.stringify(BROWSER_WORKFLOW_STORAGE_KEY)})`);
+  await page.evaluate(`(() => {
+    for (const key of ${JSON.stringify([DEMO_STORAGE_KEY, GENERATED_PLANS_STORAGE_KEY, BROWSER_WORKFLOW_STORAGE_KEY])}) {
+      localStorage.removeItem(key);
+    }
+  })()`);
 }
 
 async function browserWorkflowSnapshot(page) {
@@ -503,11 +583,12 @@ async function browserWorkflowSnapshot(page) {
     const preparedActions = Array.isArray(parsed.preparedActions) ? parsed.preparedActions : [];
     const receipts = Array.isArray(parsed.receipts) ? parsed.receipts : [];
     const recurringPayments = Array.isArray(parsed.recurringPayments) ? parsed.recurringPayments : [];
+    const terminalStatuses = new Set(${JSON.stringify(TERMINAL_WORKFLOW_STATUSES)});
     const activeActions = preparedActions.filter((entry) =>
-      !entry.archived && !['approved', 'rejected', 'failed', 'blocked'].includes(entry.status)
+      !entry.archived && !terminalStatuses.has(entry.status)
     );
     const completedActions = preparedActions.filter((entry) =>
-      Boolean(entry.archived) || ['approved', 'rejected', 'failed', 'blocked'].includes(entry.status)
+      Boolean(entry.archived) || terminalStatuses.has(entry.status)
     );
     return { activeActions, completedActions, receipts, recurringPayments };
   })()`);
@@ -547,7 +628,7 @@ async function waitForMockBridgeReceipt(bridgeOrigin, bridgeToken, actionId) {
 
 async function configureBridgeStorage(page, { bridgeOrigin, bridgeToken, workflowModePreference = 'auto' }) {
   await page.evaluate(`(() => {
-    const storageKey = 'solana-agent-wallet-demo-v2';
+    const storageKey = ${JSON.stringify(DEMO_STORAGE_KEY)};
     const raw = localStorage.getItem(storageKey);
     const parsed = raw ? JSON.parse(raw) : {};
     localStorage.setItem(storageKey, JSON.stringify({
@@ -603,6 +684,10 @@ async function createBrowserRecurringViaUi(page, recipient) {
   })()`);
   await clickAndWait(page, '#createRecurring', 'create browser recurring schedule');
   await page.waitFor(`document.body.innerText.includes('Recurring schedule created')`);
+}
+
+async function recurringCardCount(page) {
+  return page.evaluate(`document.querySelectorAll('.recurring-item').length`);
 }
 
 async function clickAndWait(page, selector, label = selector) {
@@ -790,8 +875,16 @@ function recurringSmokeBody() {
   };
 }
 
-function createEvidenceBody(walletAddress) {
+function createEvidenceBody(wallet) {
   const hash = `0x${'a'.repeat(64)}`;
+  const signingMessage = [
+    'Solana Agent Wallet Adapter',
+    'Evidence receipt: Intent Receipt',
+    'Receipt: smoke',
+    `Wallet: ${wallet.walletAddress}`,
+    'Cluster: devnet',
+    `Hash: ${hash}`,
+  ].join('\n');
   return {
     title: 'Intent Receipt',
     kind: 'intent_receipt',
@@ -806,15 +899,8 @@ function createEvidenceBody(walletAddress) {
       receiptType: 'intent_receipt_v1',
     },
     preSignatureHash: hash,
-    signingMessage: [
-      'Solana Agent Wallet Adapter',
-      'Evidence receipt: Intent Receipt',
-      'Receipt: smoke',
-      `Wallet: ${walletAddress}`,
-      'Cluster: devnet',
-      `Hash: ${hash}`,
-    ].join('\n'),
-    signature: 'sig_evidence_smoke',
+    signingMessage,
+    signature: encodeBase58(signDetached(null, Buffer.from(signingMessage, 'utf8'), wallet.privateKey)),
     artifactHash: `0x${'b'.repeat(64)}`,
     receiptType: 'intent_receipt_v1',
     summary: 'Workflow smoke receipt.',

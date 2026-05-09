@@ -3,6 +3,7 @@ import { readFile, stat } from 'node:fs/promises';
 import { extname, isAbsolute, join, relative, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
+import { redactSecrets } from './cloud/redaction.js';
 import { createCloudApiRouter, type CloudApiRouter, type CloudApiRouterOptions } from './cloud/router.js';
 import { assertProductionConfig, createRuntimeWorkflowStore } from './cloud/runtimeStore.js';
 
@@ -19,6 +20,7 @@ export function createRenderWebServer(options: RenderWebServerOptions = {}): Ser
   const apiRouter = createCloudApiRouter({
     store: options.store,
     clock: options.clock,
+    authRateLimiter: options.authRateLimiter,
   });
   return createServer((req, res) => {
     void handleRequest(req, res, staticDir, apiRouter);
@@ -117,12 +119,6 @@ function writeJson(res: ServerResponse, status: number, payload: unknown): void 
   res.setHeader('content-type', 'application/json; charset=utf-8');
   res.setHeader('cache-control', 'no-store');
   res.end(JSON.stringify(payload));
-}
-
-function redactSecrets(value: string): string {
-  return value
-    .replace(/sk-[A-Za-z0-9._-]{8,}/g, '[redacted]')
-    .replace(/(api[-_ ]?key|token|secret)(["':=\s]+)([^"',\s]{8,})/gi, '$1$2[redacted]');
 }
 
 class HttpError extends Error {

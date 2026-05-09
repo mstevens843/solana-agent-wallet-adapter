@@ -1,3 +1,4 @@
+import { generateKeyPairSync, sign as signDetached, type KeyObject } from 'node:crypto';
 import { mkdir, mkdtemp, writeFile } from 'node:fs/promises';
 import { createServer, request as httpRequest, type IncomingHttpHeaders } from 'node:http';
 import type { Server } from 'node:http';
@@ -7,11 +8,12 @@ import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 
 import { SESSION_COOKIE_NAME } from '../cloud/cookies.js';
+import { encodeBase58 } from '../cloud/auth.js';
 import { MemoryWorkflowStore } from '../cloud/memoryStore.js';
 import { createWalletSession } from '../cloud/session.js';
 import type { Clock } from '../cloud/store.js';
 import { createWorkflowApiHandler } from '../cloud/workflowRoutes.js';
-import type { WorkflowStore } from '../cloud/workflowService.js';
+import { workflowDecisionProofMessage, type WorkflowStore } from '../cloud/workflowService.js';
 import type {
   ApprovalRequestRecord,
   AuditEventRecord,
@@ -28,8 +30,15 @@ interface TestResponse {
   headers: IncomingHttpHeaders;
 }
 
-const walletA = 'WalletAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA';
-const walletB = 'WalletBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB';
+interface TestWallet {
+  walletAddress: string;
+  privateKey: KeyObject;
+}
+
+const testWalletA = createTestWallet();
+const testWalletB = createTestWallet();
+const walletA = testWalletA.walletAddress;
+const walletB = testWalletB.walletAddress;
 
 describe('cloud one-time workflow API', () => {
   it('is registered on the render server behind the wallet session cookie', async () => {
@@ -56,6 +65,18 @@ describe('cloud one-time workflow API', () => {
 
       expect(response.status).toBe(401);
       expect(response.body).toEqual({ error: 'unauthorized' });
+    });
+  });
+
+  it('returns precise validation errors for malformed ids and oversized JSON bodies', async () => {
+    await withWorkflowServer(async ({ port }) => {
+      const malformedId = await patchJson(port, '/api/plans/%E0%A4%A', {}, walletA);
+      expect(malformedId.status).toBe(400);
+      expect(malformedId.body.error).toBe('invalid_id');
+
+      const oversized = await postJson(port, '/api/plans', { value: 'x'.repeat(70 * 1024) }, walletA);
+      expect(oversized.status).toBe(413);
+      expect(oversized.body.error).toBe('body_too_large');
     });
   });
 
@@ -125,6 +146,34 @@ describe('cloud one-time workflow API', () => {
     });
   });
 
+  it('returns the existing active approval for duplicate recurring occurrences', async () => {
+    await withWorkflowServer(async ({ port }) => {
+      const body = {
+        summary: 'Recurring payout',
+        kind: 'transfer_sol',
+        params: {
+          recurringScheduleId: 'recurring_1',
+          recurringOccurrenceId: 'occurrence_1',
+          occurrenceKey: '2026-05-08T20:10:00.000Z',
+        },
+        recurringScheduleId: 'recurring_1',
+        recurringOccurrenceId: 'occurrence_1',
+        occurrenceKey: '2026-05-08T20:10:00.000Z',
+      };
+
+      const first = await postJson(port, '/api/approvals', body, walletA);
+      const second = await postJson(port, '/api/approvals', body, walletA);
+
+      expect(first.status).toBe(201);
+      expect(second.status).toBe(201);
+      expect((second.body.approval as ApprovalRequestRecord).id)
+        .toBe((first.body.approval as ApprovalRequestRecord).id);
+
+      const inbox = await getJson(port, '/api/approvals', walletA);
+      expect(inbox.body.approvals).toHaveLength(1);
+    });
+  });
+
   it('records approve, deny, and cancel decisions as completed history', async () => {
     await withWorkflowServer(async ({ port }) => {
       const decisionRoutes = [
@@ -142,12 +191,15 @@ describe('cloud one-time workflow API', () => {
         const approval = created.body.approval as ApprovalRequestRecord;
 
         const decided = await postJson(port, `/api/approvals/${approval.id}${route}`, {
-          proofSignature: `sig_${status}`,
+          ...(status === 'cancelled' ? {} : decisionProofBody(approval, status)),
           note: `${status} in wallet`,
         }, walletA);
 
         expect(decided.status).toBe(200);
-        expect((decided.body.approval as ApprovalRequestRecord).status).toBe(status);
+        const terminalApproval = decided.body.approval as ApprovalRequestRecord;
+        expect(terminalApproval.status).toBe(status);
+        expect(terminalApproval.decidedAt).toBeDefined();
+        expect(terminalApproval.confirmedAt).toBeUndefined();
         const completed = decided.body.completed as CompletedRecord;
         expect(completed.status).toBe(status);
         expect(completed.kind).toBe('one_time');
@@ -168,6 +220,34 @@ describe('cloud one-time workflow API', () => {
         'cancelled',
         'rejected',
       ]);
+    });
+  });
+
+  it('persists explicit explorer URLs and terminal decision timestamps', async () => {
+    await withWorkflowServer(async ({ port }) => {
+      const created = await postJson(port, '/api/approvals', {
+        summary: 'Explorer URL decision',
+        kind: 'transfer_sol',
+        params: { recipient: 'Recipient111', amount: '0.25' },
+      }, walletA);
+      const approval = created.body.approval as ApprovalRequestRecord;
+
+      const decided = await postJson(port, `/api/approvals/${approval.id}/approve`, {
+        ...decisionProofBody(approval, 'approved'),
+        txid: 'tx_explorer_url',
+        explorerUrl: 'https://explorer.solana.com/tx/tx_explorer_url?cluster=devnet',
+      }, walletA);
+
+      expect(decided.status).toBe(200);
+      const terminalApproval = decided.body.approval as ApprovalRequestRecord;
+      const completed = decided.body.completed as CompletedRecord;
+      expect(terminalApproval.explorerUrl).toBe('https://explorer.solana.com/tx/tx_explorer_url?cluster=devnet');
+      expect(terminalApproval.metadata).toMatchObject({
+        explorerUrl: 'https://explorer.solana.com/tx/tx_explorer_url?cluster=devnet',
+      });
+      expect(terminalApproval.decidedAt).toBe(terminalApproval.updatedAt);
+      expect(terminalApproval.confirmedAt).toBe(terminalApproval.decidedAt);
+      expect(completed.explorerUrl).toBe('https://explorer.solana.com/tx/tx_explorer_url?cluster=devnet');
     });
   });
 
@@ -194,6 +274,55 @@ describe('cloud one-time workflow API', () => {
     });
   });
 
+  it('archives the linked queued plan when its current approval becomes terminal', async () => {
+    await withWorkflowServer(async ({ port }) => {
+      const createdPlan = await postJson(port, '/api/plans', createPlanBody(), walletA);
+      const plan = createdPlan.body.plan as PlanDraftRecord;
+      const createdApproval = await postJson(port, '/api/approvals', { planDraftId: plan.id }, walletA);
+      const approval = createdApproval.body.approval as ApprovalRequestRecord;
+
+      const decided = await postJson(port, `/api/approvals/${approval.id}/approve`, {
+        ...decisionProofBody(approval, 'approved'),
+        txid: 'tx_archived_plan',
+      }, walletA);
+      const completed = decided.body.completed as CompletedRecord;
+
+      const plans = await getJson(port, '/api/plans', walletA);
+      const archived = (plans.body.plans as PlanDraftRecord[]).find((entry) => entry.id === plan.id);
+      expect(archived?.status).toBe('archived');
+      expect(archived?.approvalRequestId).toBe(approval.id);
+      expect(archived?.metadata).toMatchObject({
+        terminalApprovalStatus: 'approved',
+        terminalApprovalAt: (decided.body.approval as ApprovalRequestRecord).decidedAt,
+        completedRecordId: completed.id,
+      });
+    });
+  });
+
+  it('does not archive a queued plan if the terminal approval is no longer linked', async () => {
+    await withWorkflowServer(async ({ port, store }) => {
+      const createdPlan = await postJson(port, '/api/plans', createPlanBody(), walletA);
+      const plan = createdPlan.body.plan as PlanDraftRecord;
+      const createdApproval = await postJson(port, '/api/approvals', { planDraftId: plan.id }, walletA);
+      const approval = createdApproval.body.approval as ApprovalRequestRecord;
+      const queuedPlan = await store.getPlan(walletA, plan.id);
+      if (!queuedPlan) throw new Error('Expected queued plan.');
+      await store.savePlan(walletA, {
+        ...queuedPlan,
+        status: 'queued',
+        approvalRequestId: 'approval_newer',
+      });
+
+      const decided = await postJson(port, `/api/approvals/${approval.id}/cancel`, {}, walletA);
+      expect(decided.status).toBe(200);
+
+      const current = await store.getPlan(walletA, plan.id);
+      expect(current?.status).toBe('queued');
+      expect(current?.approvalRequestId).toBe('approval_newer');
+      expect(current?.metadata).toBeUndefined();
+    });
+  });
+
   it('requires wallet proof for approve and deny decisions but permits proofless cancel', async () => {
     await withWorkflowServer(async ({ port }) => {
       for (const route of ['/approve', '/deny'] as const) {
@@ -208,6 +337,18 @@ describe('cloud one-time workflow API', () => {
         expect(missingProof.status).toBe(400);
         expect(missingProof.body.error).toBe('missing_decision_proof');
       }
+
+      const invalidCreated = await postJson(port, '/api/approvals', {
+        summary: 'Invalid proof',
+        kind: 'transfer_sol',
+        params: {},
+      }, walletA);
+      const invalidApproval = invalidCreated.body.approval as ApprovalRequestRecord;
+      const invalidProof = await postJson(port, `/api/approvals/${invalidApproval.id}/approve`, {
+        ...decisionProofBody(invalidApproval, 'approved', testWalletB),
+      }, walletA);
+      expect(invalidProof.status).toBe(400);
+      expect(invalidProof.body.error).toBe('invalid_decision_proof');
 
       const cancellable = await postJson(port, '/api/approvals', {
         summary: 'Proofless cancel',
@@ -228,7 +369,7 @@ describe('cloud one-time workflow API', () => {
       const createdApproval = await postJson(port, '/api/approvals', { planId: plan.id }, walletA);
       const approval = createdApproval.body.approval as ApprovalRequestRecord;
       const decided = await postJson(port, `/api/approvals/${approval.id}/approve`, {
-        proofSignature: 'sig_wallet_a',
+        ...decisionProofBody(approval, 'approved'),
       }, walletA);
       const completed = decided.body.completed as CompletedRecord;
 
@@ -314,6 +455,33 @@ function samplePlan(): JsonObject {
     ],
     safeguards: ['Wallet approval is required.'],
   };
+}
+
+function decisionProofBody(
+  approval: ApprovalRequestRecord,
+  decision: 'approved' | 'rejected',
+  wallet: TestWallet = testWalletA,
+): Record<string, unknown> {
+  const message = workflowDecisionProofMessage({ approval, decision });
+  return {
+    proofSignature: signMessage(message, wallet.privateKey),
+    decisionProofMessage: message,
+    signatureEncoding: 'base58',
+  };
+}
+
+function createTestWallet(): TestWallet {
+  const { publicKey, privateKey } = generateKeyPairSync('ed25519');
+  const publicKeyDer = publicKey.export({ format: 'der', type: 'spki' });
+  const publicKeyBytes = Buffer.from(publicKeyDer).subarray(-32);
+  return {
+    walletAddress: encodeBase58(publicKeyBytes),
+    privateKey,
+  };
+}
+
+function signMessage(message: string, privateKey: KeyObject): string {
+  return encodeBase58(signDetached(null, Buffer.from(message, 'utf8'), privateKey));
 }
 
 async function withWorkflowServer(

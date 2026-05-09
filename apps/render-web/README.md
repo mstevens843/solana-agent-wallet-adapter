@@ -10,6 +10,10 @@ Agentic Cloud is the default signed-in web path. The wallet signs a login messag
 unsigned plans, approval requests, recurring schedule rules, completed records, evidence receipts, and audit events.
 Every money-moving action still requires explicit wallet approval.
 
+Cloud approve and deny decisions require a wallet-verifiable decision proof bound to the exact approval request. Evidence
+receipts are stored as verified only after the submitted signed message verifies against the signed-in wallet. Cancelled
+approvals remain proofless because they do not approve or deny a wallet action.
+
 Browser workflow is the signed-out fallback. Drafts, queued approvals, recurring fallback data, completed records, and
 receipts stay in local browser storage on the current device.
 
@@ -46,6 +50,9 @@ Postgres store. Migrations create:
 - `plans`, `approval_requests`, `completed_records`
 - `recurring_schedules`, `recurring_occurrences`
 - `evidence_receipts`, `audit_events`
+
+Migrations run under a Postgres transaction-scoped advisory lock so parallel Render startups do not apply the same
+migration concurrently.
 
 Run migrations after building the package:
 
@@ -88,7 +95,23 @@ session/nonce cleanup.
 
 Agentic Cloud must not store seed phrases, private keys, delegated signers, unlimited approval authority, executable
 transactions, or hosted BYOK provider keys. The workflow smoke rejects representative secret/authority payloads across
-workflow routes and checks hosted BYOK success/error paths for provider-key redaction.
+workflow routes and checks hosted BYOK success/error paths for provider-key redaction. Route-local unexpected 500
+messages are redacted before JSON responses are returned.
+
+## Production Release Gate
+
+Local implementation can pass while production is still serving an older Render build. Before public launch, verify the
+actual public origin after deployment:
+
+```sh
+curl -i https://agentic-signer.com/api/session
+curl -i -X POST https://agentic-signer.com/api/auth/nonce
+curl -i https://agentic-signer.com/api/plans
+```
+
+Expected result is Agentic Cloud JSON, not `404`. On 2026-05-09, `/api/ai/status` was reachable on the live domain while
+`/api/session`, `/api/auth/nonce`, and `/api/plans` still returned `404`, which indicates the live service had not yet
+deployed the cloud workflow API build.
 
 ## Local Verification
 
@@ -97,6 +120,7 @@ pnpm build
 pnpm render:build
 pnpm -F @solana-agent-wallet-adapter/render-web build
 pnpm -F @solana-agent-wallet-adapter/render-web typecheck
+pnpm -F @solana-agent-wallet-adapter/workflow test
 pnpm -F @solana-agent-wallet-adapter/render-web test
 pnpm -F @solana-agent-wallet-adapter/browser-demo typecheck
 pnpm -F @solana-agent-wallet-adapter/browser-demo test
@@ -107,4 +131,13 @@ pnpm verify:release-links
 
 Add `--require-local-bridge` to the workflow smoke only when a local bridge is intentionally running and private local
 mode must be part of the gate. The default workflow smoke uses a mocked local bridge for CI-safe private local mode
-coverage. Set `TEST_DATABASE_URL` to run optional real Postgres integration tests.
+coverage.
+
+Production release checks need external services:
+
+```sh
+TEST_DATABASE_URL=... pnpm -F @solana-agent-wallet-adapter/render-web test
+pnpm smoke:render-web:live
+pnpm verify:release-links:live
+pnpm smoke:render-web:workflow -- --require-local-bridge
+```
