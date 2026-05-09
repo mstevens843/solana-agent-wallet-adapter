@@ -14,7 +14,7 @@ import { MemoryWorkflowStore } from '../cloud/memoryStore.js';
 import { createWalletSession } from '../cloud/session.js';
 import type { Clock } from '../cloud/store.js';
 import { createWorkflowApiHandler } from '../cloud/workflowRoutes.js';
-import { workflowDecisionProofMessage, type WorkflowStore } from '../cloud/workflowService.js';
+import { WorkflowService, workflowDecisionProofMessage, type TransactionVerifier, type WorkflowStore } from '../cloud/workflowService.js';
 import type {
   ApprovalRequestRecord,
   AuditEventRecord,
@@ -147,6 +147,14 @@ describe('cloud one-time workflow API', () => {
             constraintHash: expect.any(String),
           }),
         }),
+        expect.objectContaining({
+          type: 'plan.created',
+          metadata: expect.objectContaining({
+            guardrailVerdict: 'pass',
+            finalizationRequirement: 'transaction_preview',
+            constraintHash: expect.any(String),
+          }),
+        }),
       ]));
 
       const updated = await patchJson(port, `/api/plans/${plan.id}`, {
@@ -157,6 +165,19 @@ describe('cloud one-time workflow API', () => {
       expect(updatedPlan.riskMetadata?.constraintHash).toEqual(expect.any(String));
       expect(updatedPlan.riskMetadata?.constraintHash).not.toBe(originalConstraintHash);
       expect(store.auditEvents.filter((event) => event.type === 'plan.guardrail.checked').length).toBeGreaterThanOrEqual(2);
+
+      const queued = await postJson(port, '/api/approvals', { planDraftId: plan.id }, walletA);
+      expect(queued.status).toBe(201);
+      expect(store.auditEvents).toEqual(expect.arrayContaining([
+        expect.objectContaining({
+          type: 'approval.created',
+          metadata: expect.objectContaining({
+            guardrailVerdict: 'pass',
+            finalizationRequirement: 'transaction_preview',
+            constraintHash: expect.any(String),
+          }),
+        }),
+      ]));
 
       const unsafeAiPlan = await postJson(port, '/api/plans', {
         ...createPlanBody(),
@@ -183,7 +204,7 @@ describe('cloud one-time workflow API', () => {
     });
   });
 
-  it('rejects unsupported executable cloud approvals but allows custom transactions as proof-only', async () => {
+  it('rejects unsupported executable cloud approvals before they enter the inbox', async () => {
     await withWorkflowServer(async ({ port }) => {
       const splApproval = await postJson(port, '/api/approvals', {
         summary: 'Unsupported token transfer',
@@ -198,12 +219,8 @@ describe('cloud one-time workflow API', () => {
         kind: 'custom_transaction',
         params: { transactionBase64: 'AAAA' },
       }, walletA);
-      expect(customApproval.status).toBe(201);
-      expect(customApproval.body.approval).toMatchObject({
-        kind: 'custom_transaction',
-        finalizationRequirement: 'wallet_decision_proof',
-        executionMode: 'proof_only',
-      });
+      expect(customApproval.status).toBe(409);
+      expect(customApproval.body.error).toBe('unsupported_cloud_finalization_kind');
     });
   });
 
@@ -351,66 +368,96 @@ describe('cloud one-time workflow API', () => {
   });
 
   it('records transaction finalization preview and confirmed wallet receipt', async () => {
+    await withMockServerFinalization(async () => {
+      await withWorkflowServer(async ({ port }) => {
+        const created = await postJson(port, '/api/approvals', {
+          summary: 'Finalize SOL transfer',
+          kind: 'transfer_sol',
+          params: { recipient: walletB, amountSol: '0.000001' },
+        }, walletA);
+        const approval = created.body.approval as ApprovalRequestRecord;
+
+        const preview = await postJson(port, `/api/approvals/${approval.id}/finalization/prepare`, {}, walletA);
+        expect(preview.status).toBe(201);
+        const finalization = preview.body.finalization as TransactionFinalizationRecord;
+        expect(finalization.id).toMatch(/^finalization_/);
+        expect(finalization.approvalRequestId).toBe(approval.id);
+        expect(finalization.status).toBe('simulation_passed');
+
+        const listed = await getJson(port, `/api/approvals/${approval.id}/finalization`, walletA);
+        expect((listed.body.finalizations as TransactionFinalizationRecord[]).map((entry) => entry.id)).toEqual([finalization.id]);
+
+        const result = await postJson(port, `/api/approvals/${approval.id}/finalization/${finalization.id}/submit`, {
+          ...finalizationProofBody(approval, finalization),
+          finalizationId: finalization.id,
+          finalizationStatus: 'confirmed',
+          txStatus: 'confirmed',
+          txid: 'tx_finalized',
+          transactionHash: finalization.transactionHash,
+          messageHash: finalization.messageHash,
+          quoteHash: finalization.quote?.quoteHash,
+          simulationHash: finalization.simulation?.simulationHash,
+          explorerUrl: 'https://explorer.solana.com/tx/tx_finalized?cluster=devnet',
+        }, walletA);
+
+        expect(result.status).toBe(200);
+        const terminalApproval = result.body.approval as ApprovalRequestRecord;
+        const completed = result.body.completed as CompletedRecord;
+        expect(terminalApproval.status).toBe('approved');
+        expect(terminalApproval.decisionProofVerified).toBe(true);
+        expect(terminalApproval.metadata).toMatchObject({
+          finalization: {
+            id: finalization.id,
+            status: 'confirmed',
+            txid: 'tx_finalized',
+            metadata: {
+              verification: {
+                status: 'confirmed',
+                source: 'server_rpc',
+              },
+            },
+          },
+        });
+        expect(completed.status).toBe('approved');
+        expect(completed.finalizationId).toBe(finalization.id);
+        expect(completed.txStatus).toBe('confirmed');
+        expect(completed.quoteHash).toBe(finalization.quote?.quoteHash);
+        expect(completed.simulationHash).toBe(finalization.simulation?.simulationHash);
+        expect(completed.metadata).toMatchObject({
+          constraintHash: expect.any(String),
+          finalizationRequirement: 'transaction_preview',
+        });
+        expect(completed.payload).toMatchObject({
+          type: 'one_time_transaction',
+          finalization: {
+            id: finalization.id,
+            status: 'confirmed',
+          },
+          constraintHash: expect.any(String),
+        });
+      });
+    });
+  });
+
+  it('rejects client-spoofed server-prepared previews for money-moving approvals', async () => {
     await withWorkflowServer(async ({ port }) => {
       const created = await postJson(port, '/api/approvals', {
-        summary: 'Finalize SOL transfer',
+        summary: 'Spoof server preparation',
         kind: 'transfer_sol',
         params: { recipient: 'Recipient111', amountSol: '0.25' },
       }, walletA);
       const approval = created.body.approval as ApprovalRequestRecord;
 
-      const preview = await postJson(port, `/api/approvals/${approval.id}/finalization/preview`, finalizationPreviewBody(approval), walletA);
-      expect(preview.status).toBe(201);
-      const finalization = preview.body.finalization as TransactionFinalizationRecord;
-      expect(finalization.id).toMatch(/^finalization_/);
-      expect(finalization.approvalRequestId).toBe(approval.id);
-      expect(finalization.status).toBe('simulation_passed');
-
-      const listed = await getJson(port, `/api/approvals/${approval.id}/finalization`, walletA);
-      expect((listed.body.finalizations as TransactionFinalizationRecord[]).map((entry) => entry.id)).toEqual([finalization.id]);
-
-      const result = await postJson(port, `/api/approvals/${approval.id}/finalization/result`, {
-        ...finalizationProofBody(approval, finalization),
-        finalizationId: finalization.id,
-        finalizationStatus: 'confirmed',
-        txStatus: 'confirmed',
-        txid: 'tx_finalized',
-        transactionHash: 'tx_hash_123',
-        messageHash: 'message_hash_123',
-        quoteHash: 'quote_hash_123',
-        simulationHash: 'simulation_hash_123',
-        explorerUrl: 'https://explorer.solana.com/tx/tx_finalized?cluster=devnet',
+      const preview = await postJson(port, `/api/approvals/${approval.id}/finalization/preview`, {
+        ...finalizationPreviewBody(approval),
+        metadata: {
+          serverPrepared: true,
+          preparedBy: 'client',
+        },
       }, walletA);
 
-      expect(result.status).toBe(200);
-      const terminalApproval = result.body.approval as ApprovalRequestRecord;
-      const completed = result.body.completed as CompletedRecord;
-      expect(terminalApproval.status).toBe('approved');
-      expect(terminalApproval.decisionProofVerified).toBe(true);
-      expect(terminalApproval.metadata).toMatchObject({
-        finalization: {
-          id: finalization.id,
-          status: 'confirmed',
-          txid: 'tx_finalized',
-        },
-      });
-      expect(completed.status).toBe('approved');
-      expect(completed.finalizationId).toBe(finalization.id);
-      expect(completed.txStatus).toBe('confirmed');
-      expect(completed.quoteHash).toBe('quote_hash_123');
-      expect(completed.simulationHash).toBe('simulation_hash_123');
-      expect(completed.metadata).toMatchObject({
-        constraintHash: expect.any(String),
-        finalizationRequirement: 'transaction_preview',
-      });
-      expect(completed.payload).toMatchObject({
-        type: 'one_time_transaction',
-        finalization: {
-          id: finalization.id,
-          status: 'confirmed',
-        },
-        constraintHash: expect.any(String),
-      });
+      expect(preview.status).toBe(409);
+      expect(preview.body.error).toBe('server_prepared_finalization_required');
     });
   });
 
@@ -422,19 +469,77 @@ describe('cloud one-time workflow API', () => {
         params: { recipient: 'Recipient111', amountSol: '0.25' },
       }, walletA);
       const approval = created.body.approval as ApprovalRequestRecord;
-      const previewBody = finalizationPreviewBody(approval);
-      const walletAction = previewBody.walletAction as Record<string, unknown>;
-
-      const preview = await postJson(port, `/api/approvals/${approval.id}/finalization/preview`, {
-        ...previewBody,
-        walletAction: {
-          ...walletAction,
-          recipient: 'Recipient222',
+      const cases: Array<{
+        patch: (body: Record<string, unknown>) => Record<string, unknown>;
+        error: string;
+      }> = [
+        {
+          patch: (body) => ({ ...body, walletAction: { ...(body.walletAction as Record<string, unknown>), sender: walletB } }),
+          error: 'finalization_sender_mismatch',
         },
-      }, walletA);
+        {
+          patch: (body) => ({ ...body, walletAction: { ...(body.walletAction as Record<string, unknown>), recipient: 'Recipient222' } }),
+          error: 'finalization_recipient_mismatch',
+        },
+        {
+          patch: (body) => ({ ...body, walletAction: { ...(body.walletAction as Record<string, unknown>), amount: '0.26' } }),
+          error: 'finalization_amount_mismatch',
+        },
+        {
+          patch: (body) => ({ ...body, walletAction: { ...(body.walletAction as Record<string, unknown>), token: 'USDC' } }),
+          error: 'finalization_token_mismatch',
+        },
+        {
+          patch: (body) => ({ ...body, quote: { ...(body.quote as Record<string, unknown>), inputToken: 'USDC' } }),
+          error: 'finalization_token_mismatch',
+        },
+        {
+          patch: (body) => ({ ...body, quote: { ...(body.quote as Record<string, unknown>), inputAmount: '0.26' } }),
+          error: 'finalization_amount_mismatch',
+        },
+      ];
 
+      for (const entry of cases) {
+        const untrustedServerPreparedBody = {
+          ...finalizationPreviewBody(approval),
+          metadata: { serverPrepared: true },
+        };
+        const preview = await postJson(
+          port,
+          `/api/approvals/${approval.id}/finalization/preview`,
+          entry.patch(untrustedServerPreparedBody),
+          walletA,
+        );
+        expect(preview.status).toBe(409);
+        expect(preview.body.error).toBe(entry.error);
+      }
+    });
+  });
+
+  it('rejects finalization previews when legacy approvals are missing locked constraints', async () => {
+    await withWorkflowServer(async ({ port, store }) => {
+      const created = await postJson(port, '/api/approvals', {
+        summary: 'Legacy missing constraints',
+        kind: 'transfer_sol',
+        params: { recipient: 'Recipient111', amountSol: '0.25' },
+      }, walletA);
+      const approval = created.body.approval as ApprovalRequestRecord;
+      const legacy = { ...approval, params: {} } as ApprovalRequestRecord;
+      delete (legacy as { recipient?: string }).recipient;
+      delete (legacy as { amount?: string }).amount;
+      await store.saveApproval(walletA, legacy);
+
+      const preview = await postJson(
+        port,
+        `/api/approvals/${approval.id}/finalization/preview`,
+        {
+          ...finalizationPreviewBody(approval),
+          metadata: { serverPrepared: true },
+        },
+        walletA,
+      );
       expect(preview.status).toBe(409);
-      expect(preview.body.error).toBe('finalization_recipient_mismatch');
+      expect(preview.body.error).toBe('finalization_constraint_missing');
     });
   });
 
@@ -462,6 +567,7 @@ describe('cloud one-time workflow API', () => {
         expect(finalization.metadata).toMatchObject({
           serverPrepared: true,
           transactionBoundary: 'server_wallet_finalization_v1',
+          transactionBoundaryHash: expect.any(String),
         });
 
         const submitted = await postJson(port, `/api/approvals/${approval.id}/finalization/${finalization.id}/submit`, {
@@ -482,31 +588,146 @@ describe('cloud one-time workflow API', () => {
     });
   });
 
+  it('keeps submitted finalizations pending until server confirmation succeeds', async () => {
+    await withMockServerFinalization(async () => {
+      let verifierCalls = 0;
+      const statefulVerifier: TransactionVerifier = async (request) => {
+        verifierCalls += 1;
+        return verifierCalls === 1 ? pendingVerifier(request) : confirmedVerifier(request);
+      };
+
+      await withWorkflowServer(async ({ port }) => {
+        const created = await postJson(port, '/api/approvals', {
+          summary: 'Pending server confirmation',
+          kind: 'transfer_sol',
+          params: { recipient: walletB, amountSol: '0.000001' },
+        }, walletA);
+        const approval = created.body.approval as ApprovalRequestRecord;
+        const prepared = await postJson(port, `/api/approvals/${approval.id}/finalization/prepare`, {}, walletA);
+        const finalization = prepared.body.finalization as TransactionFinalizationRecord;
+
+        const submitted = await postJson(port, `/api/approvals/${approval.id}/finalization/${finalization.id}/submit`, {
+          ...finalizationProofBody(approval, finalization),
+          finalizationId: finalization.id,
+          finalizationStatus: 'confirmed',
+          txStatus: 'confirmed',
+          txid: 'tx_pending_then_confirmed',
+          transactionHash: finalization.transactionHash,
+          messageHash: finalization.messageHash,
+          quoteHash: finalization.quote?.quoteHash,
+          simulationHash: finalization.simulation?.simulationHash,
+        }, walletA);
+
+        expect(submitted.status).toBe(200);
+        expect((submitted.body.approval as ApprovalRequestRecord).status).toBe('approval_pending');
+        expect((submitted.body.approval as ApprovalRequestRecord).decisionProofVerified).toBe(true);
+        expect(submitted.body.completed).toBeUndefined();
+        expect(submitted.body.finalization).toMatchObject({
+          status: 'submitted',
+          txStatus: 'pending',
+          txid: 'tx_pending_then_confirmed',
+          metadata: {
+            verification: {
+              status: 'pending',
+              confirmationStatus: 'processed',
+            },
+          },
+        });
+
+        const confirmed = await postJson(
+          port,
+          `/api/approvals/${approval.id}/finalization/${finalization.id}/confirm`,
+          {},
+          walletA,
+        );
+
+        expect(confirmed.status).toBe(200);
+        expect((confirmed.body.approval as ApprovalRequestRecord).status).toBe('approved');
+        expect((confirmed.body.completed as CompletedRecord).finalizationId).toBe(finalization.id);
+        expect(confirmed.body.finalization).toMatchObject({
+          status: 'confirmed',
+          txStatus: 'confirmed',
+          txid: 'tx_pending_then_confirmed',
+          metadata: {
+            verification: {
+              status: 'confirmed',
+            },
+          },
+        });
+      }, { transactionVerifier: statefulVerifier });
+    });
+  });
+
+  it('fails submitted finalizations whose on-chain message does not match the prepared review', async () => {
+    await withMockServerFinalization(async () => {
+      await withWorkflowServer(async ({ port }) => {
+        const created = await postJson(port, '/api/approvals', {
+          summary: 'Server message mismatch',
+          kind: 'transfer_sol',
+          params: { recipient: walletB, amountSol: '0.000001' },
+        }, walletA);
+        const approval = created.body.approval as ApprovalRequestRecord;
+        const prepared = await postJson(port, `/api/approvals/${approval.id}/finalization/prepare`, {}, walletA);
+        const finalization = prepared.body.finalization as TransactionFinalizationRecord;
+
+        const submitted = await postJson(port, `/api/approvals/${approval.id}/finalization/${finalization.id}/submit`, {
+          ...finalizationProofBody(approval, finalization),
+          finalizationId: finalization.id,
+          finalizationStatus: 'confirmed',
+          txStatus: 'confirmed',
+          txid: 'tx_message_mismatch',
+          transactionHash: finalization.transactionHash,
+          messageHash: finalization.messageHash,
+          quoteHash: finalization.quote?.quoteHash,
+          simulationHash: finalization.simulation?.simulationHash,
+        }, walletA);
+
+        expect(submitted.status).toBe(200);
+        expect((submitted.body.approval as ApprovalRequestRecord).status).toBe('ready');
+        expect(submitted.body.completed).toBeUndefined();
+        expect(submitted.body.finalization).toMatchObject({
+          status: 'failed',
+          txStatus: 'failed',
+          txid: 'tx_message_mismatch',
+          error: 'Submitted transaction message did not match the prepared finalization.',
+          metadata: {
+            verification: {
+              status: 'message_mismatch',
+              messageHash: 'wrong_message_hash_from_chain',
+            },
+          },
+        });
+      }, { transactionVerifier: mismatchVerifier });
+    });
+  });
+
   it('rejects transaction finalization results that do not match the prepared review', async () => {
-    await withWorkflowServer(async ({ port }) => {
-      const created = await postJson(port, '/api/approvals', {
-        summary: 'Finalize SOL transfer mismatch',
-        kind: 'transfer_sol',
-        params: { recipient: 'Recipient111', amountSol: '0.25' },
-      }, walletA);
-      const approval = created.body.approval as ApprovalRequestRecord;
-      const preview = await postJson(port, `/api/approvals/${approval.id}/finalization/preview`, finalizationPreviewBody(approval), walletA);
-      const finalization = preview.body.finalization as TransactionFinalizationRecord;
+    await withMockServerFinalization(async () => {
+      await withWorkflowServer(async ({ port }) => {
+        const created = await postJson(port, '/api/approvals', {
+          summary: 'Finalize SOL transfer mismatch',
+          kind: 'transfer_sol',
+          params: { recipient: walletB, amountSol: '0.000001' },
+        }, walletA);
+        const approval = created.body.approval as ApprovalRequestRecord;
+        const preview = await postJson(port, `/api/approvals/${approval.id}/finalization/prepare`, {}, walletA);
+        const finalization = preview.body.finalization as TransactionFinalizationRecord;
 
-      const result = await postJson(port, `/api/approvals/${approval.id}/finalization/result`, {
-        ...finalizationProofBody(approval, finalization),
-        finalizationId: finalization.id,
-        finalizationStatus: 'confirmed',
-        txStatus: 'confirmed',
-        txid: 'tx_wrong_hash',
-        transactionHash: 'wrong_tx_hash',
-        messageHash: 'message_hash_123',
-        quoteHash: 'quote_hash_123',
-        simulationHash: 'simulation_hash_123',
-      }, walletA);
+        const result = await postJson(port, `/api/approvals/${approval.id}/finalization/${finalization.id}/submit`, {
+          ...finalizationProofBody(approval, finalization),
+          finalizationId: finalization.id,
+          finalizationStatus: 'confirmed',
+          txStatus: 'confirmed',
+          txid: 'tx_wrong_hash',
+          transactionHash: 'wrong_tx_hash',
+          messageHash: finalization.messageHash,
+          quoteHash: finalization.quote?.quoteHash,
+          simulationHash: finalization.simulation?.simulationHash,
+        }, walletA);
 
-      expect(result.status).toBe(409);
-      expect(result.body.error).toBe('transaction_hash_mismatch');
+        expect(result.status).toBe(409);
+        expect(result.body.error).toBe('transaction_hash_mismatch');
+      });
     });
   });
 
@@ -534,36 +755,38 @@ describe('cloud one-time workflow API', () => {
   });
 
   it('archives the linked queued plan when its current approval becomes terminal', async () => {
-    await withWorkflowServer(async ({ port }) => {
-      const createdPlan = await postJson(port, '/api/plans', createPlanBody(), walletA);
-      const plan = createdPlan.body.plan as PlanDraftRecord;
-      const createdApproval = await postJson(port, '/api/approvals', { planDraftId: plan.id }, walletA);
-      const approval = createdApproval.body.approval as ApprovalRequestRecord;
+    await withMockServerFinalization(async () => {
+      await withWorkflowServer(async ({ port }) => {
+        const createdPlan = await postJson(port, '/api/plans', createPlanBody(), walletA);
+        const plan = createdPlan.body.plan as PlanDraftRecord;
+        const createdApproval = await postJson(port, '/api/approvals', { planDraftId: plan.id }, walletA);
+        const approval = createdApproval.body.approval as ApprovalRequestRecord;
 
-      const preview = await postJson(port, `/api/approvals/${approval.id}/finalization/preview`, finalizationPreviewBody(approval), walletA);
-      const finalization = preview.body.finalization as TransactionFinalizationRecord;
-      const decided = await postJson(port, `/api/approvals/${approval.id}/finalization/result`, {
-        ...finalizationProofBody(approval, finalization),
-        finalizationId: finalization.id,
-        finalizationStatus: 'confirmed',
-        txStatus: 'confirmed',
-        txid: 'tx_archived_plan',
-        transactionHash: 'tx_hash_123',
-        messageHash: 'message_hash_123',
-        quoteHash: 'quote_hash_123',
-        simulationHash: 'simulation_hash_123',
-      }, walletA);
-      expect(decided.status).toBe(200);
-      const completed = decided.body.completed as CompletedRecord;
+        const preview = await postJson(port, `/api/approvals/${approval.id}/finalization/prepare`, {}, walletA);
+        const finalization = preview.body.finalization as TransactionFinalizationRecord;
+        const decided = await postJson(port, `/api/approvals/${approval.id}/finalization/${finalization.id}/submit`, {
+          ...finalizationProofBody(approval, finalization),
+          finalizationId: finalization.id,
+          finalizationStatus: 'confirmed',
+          txStatus: 'confirmed',
+          txid: 'tx_archived_plan',
+          transactionHash: finalization.transactionHash,
+          messageHash: finalization.messageHash,
+          quoteHash: finalization.quote?.quoteHash,
+          simulationHash: finalization.simulation?.simulationHash,
+        }, walletA);
+        expect(decided.status).toBe(200);
+        const completed = decided.body.completed as CompletedRecord;
 
-      const plans = await getJson(port, '/api/plans', walletA);
-      const archived = (plans.body.plans as PlanDraftRecord[]).find((entry) => entry.id === plan.id);
-      expect(archived?.status).toBe('archived');
-      expect(archived?.approvalRequestId).toBe(approval.id);
-      expect(archived?.metadata).toMatchObject({
-        terminalApprovalStatus: 'approved',
-        terminalApprovalAt: (decided.body.approval as ApprovalRequestRecord).decidedAt,
-        completedRecordId: completed.id,
+        const plans = await getJson(port, '/api/plans', walletA);
+        const archived = (plans.body.plans as PlanDraftRecord[]).find((entry) => entry.id === plan.id);
+        expect(archived?.status).toBe('archived');
+        expect(archived?.approvalRequestId).toBe(approval.id);
+        expect(archived?.metadata).toMatchObject({
+          terminalApprovalStatus: 'approved',
+          terminalApprovalAt: (decided.body.approval as ApprovalRequestRecord).decidedAt,
+          completedRecordId: completed.id,
+        });
       });
     });
   });
@@ -724,12 +947,12 @@ function samplePlan(): JsonObject {
     actionType: 'transfer_sol',
     templateTitle: 'Send SOL',
     parameters: {
-      recipient: 'Recipient111111111111111111111111111111111',
+      recipient: walletB,
       amount: '0.25',
       memo: 'Test payment',
     },
     fields: [
-      { label: 'Recipient address', value: 'Recipient111111111111111111111111111111111' },
+      { label: 'Recipient address', value: walletB },
       { label: 'Amount SOL', value: '0.25' },
     ],
     safeguards: ['Wallet approval is required.'],
@@ -825,6 +1048,29 @@ function signMessage(message: string, privateKey: KeyObject): string {
   return encodeBase58(signDetached(null, Buffer.from(message, 'utf8'), privateKey));
 }
 
+const confirmedVerifier: TransactionVerifier = async ({ finalization }) => ({
+  status: 'confirmed',
+  txStatus: 'confirmed',
+  confirmationStatus: 'confirmed',
+  ...(finalization.messageHash ? { messageHash: finalization.messageHash } : {}),
+  slot: 1,
+});
+
+const pendingVerifier: TransactionVerifier = async ({ finalization }) => ({
+  status: 'pending',
+  txStatus: 'pending',
+  confirmationStatus: 'processed',
+  ...(finalization.messageHash ? { messageHash: finalization.messageHash } : {}),
+});
+
+const mismatchVerifier: TransactionVerifier = async () => ({
+  status: 'message_mismatch',
+  txStatus: 'failed',
+  confirmationStatus: 'message_mismatch',
+  messageHash: 'wrong_message_hash_from_chain',
+  error: 'Submitted transaction message did not match the prepared finalization.',
+});
+
 async function withMockServerFinalization(callback: () => Promise<void>): Promise<void> {
   const previous = process.env.AGENTIC_MOCK_FINALIZATION;
   process.env.AGENTIC_MOCK_FINALIZATION = '1';
@@ -841,10 +1087,13 @@ async function withMockServerFinalization(callback: () => Promise<void>): Promis
 
 async function withWorkflowServer(
   callback: (server: { port: number; store: TestWorkflowStore }) => Promise<void>,
+  options: { transactionVerifier?: TransactionVerifier } = {},
 ): Promise<void> {
   const store = new TestWorkflowStore();
   const handler = createWorkflowApiHandler({
-    store,
+    service: new WorkflowService(store, {
+      ...(options.transactionVerifier ? { transactionVerifier: options.transactionVerifier } : {}),
+    }),
     getSession(req): WorkflowSession | null {
       const wallet = req.headers['x-test-wallet'];
       return typeof wallet === 'string' && wallet ? { walletAddress: wallet } : null;

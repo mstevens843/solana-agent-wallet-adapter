@@ -67,10 +67,22 @@ export function createRecurringOccurrenceHistoryHydrator(
         .map((occurrence) => occurrence.completedRecordId)
         .filter((id): id is string => Boolean(id)),
     );
-    const [approvals, completedRecords] = await Promise.all([
-      workflowStore.listApprovals(walletAddress),
-      workflowStore.listCompleted(walletAddress),
+    const [approvalsById, approvalsByOccurrence, completedById, completedByOccurrence] = await Promise.all([
+      workflowStore.listApprovalsByIds
+        ? workflowStore.listApprovalsByIds(walletAddress, [...approvalIds])
+        : workflowStore.listApprovals(walletAddress),
+      workflowStore.listApprovalsByRecurringOccurrenceIds
+        ? workflowStore.listApprovalsByRecurringOccurrenceIds(walletAddress, [...occurrenceIds])
+        : Promise.resolve([]),
+      workflowStore.listCompletedByIds
+        ? workflowStore.listCompletedByIds(walletAddress, [...completedIds])
+        : workflowStore.listCompleted(walletAddress),
+      workflowStore.listCompletedByRecurringOccurrenceIds
+        ? workflowStore.listCompletedByRecurringOccurrenceIds(walletAddress, [...occurrenceIds])
+        : Promise.resolve([]),
     ]);
+    const approvals = uniqueById([...approvalsById, ...approvalsByOccurrence]);
+    const completedRecords = uniqueById([...completedById, ...completedByOccurrence]);
     const hydration = new Map<string, {
       occurrenceId: string;
       approval?: RecurringOccurrenceApprovalSummary;
@@ -116,4 +128,15 @@ export function createRecurringOccurrenceHistoryHydrator(
 
     return [...hydration.values()];
   };
+}
+
+function uniqueById<T extends { id: string }>(records: T[]): T[] {
+  const seen = new Set<string>();
+  const unique: T[] = [];
+  for (const record of records) {
+    if (seen.has(record.id)) continue;
+    seen.add(record.id);
+    unique.push(record);
+  }
+  return unique;
 }

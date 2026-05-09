@@ -947,14 +947,15 @@ export function finalizationRequirementForAction(actionType: string): Finalizati
   if (
     actionType === 'transfer_sol' ||
     actionType === 'transfer_spl' ||
-    actionType === 'swap'
+    actionType === 'swap' ||
+    actionType === 'custom_transaction'
   ) {
     return 'transaction_preview';
   }
   if (actionType === 'recurring_payment') {
     return 'wallet_decision_proof';
   }
-  if (actionType === 'manual_review' || actionType === 'custom_transaction') {
+  if (actionType === 'manual_review') {
     return 'wallet_decision_proof';
   }
   return 'none';

@@ -7,6 +7,7 @@ import {
   isActiveApprovalStatus,
   isTerminalApprovalStatus,
   requiresTransactionFinalization as workflowRequiresTransactionFinalization,
+  stableWorkflowHash,
   type AiGuardrailReport,
   type ApprovalRequestRecord,
   type AuditEventRecord,
@@ -45,9 +46,13 @@ export interface WorkflowStore {
   savePlan(walletAddress: string, record: PlanDraftRecord): Promise<void>;
   deletePlan(walletAddress: string, id: string): Promise<boolean>;
   listApprovals(walletAddress: string): Promise<ApprovalRequestRecord[]>;
+  listApprovalsByIds?(walletAddress: string, ids: string[]): Promise<ApprovalRequestRecord[]>;
+  listApprovalsByRecurringOccurrenceIds?(walletAddress: string, occurrenceIds: string[]): Promise<ApprovalRequestRecord[]>;
   getApproval(walletAddress: string, id: string): Promise<ApprovalRequestRecord | undefined>;
   saveApproval(walletAddress: string, record: ApprovalRequestRecord): Promise<void>;
   listCompleted(walletAddress: string): Promise<CompletedRecord[]>;
+  listCompletedByIds?(walletAddress: string, ids: string[]): Promise<CompletedRecord[]>;
+  listCompletedByRecurringOccurrenceIds?(walletAddress: string, occurrenceIds: string[]): Promise<CompletedRecord[]>;
   getCompleted(walletAddress: string, id: string): Promise<CompletedRecord | undefined>;
   saveCompleted(walletAddress: string, record: CompletedRecord): Promise<void>;
   deleteCompleted(walletAddress: string, id: string): Promise<boolean>;
@@ -60,11 +65,36 @@ export interface WorkflowStore {
 interface WorkflowServiceOptions {
   clock?: () => Date;
   idFactory?: () => string;
+  transactionVerifier?: TransactionVerifier;
 }
+
+export type TransactionVerificationStatus = 'confirmed' | 'pending' | 'failed' | 'message_mismatch';
+
+export interface TransactionVerificationRequest {
+  finalization: TransactionFinalizationRecord;
+  txid: string;
+  cluster: WorkflowCluster;
+}
+
+export interface TransactionVerificationResult {
+  status: TransactionVerificationStatus;
+  txStatus?: TxStatus;
+  confirmationStatus?: string;
+  messageHash?: string;
+  slot?: number;
+  error?: string;
+  metadata?: JsonObject;
+}
+
+export type TransactionVerifier = (request: TransactionVerificationRequest) => Promise<TransactionVerificationResult>;
 
 interface PreparedTransactionFinalizationPreview {
   transactionBase64: string;
   preview: CreateTransactionFinalizationPreviewInput;
+}
+
+interface CreateFinalizationPreviewOptions {
+  trustedServerPrepared?: boolean;
 }
 
 interface RecordTransactionFinalizationFailureInput {
@@ -91,6 +121,7 @@ export class WorkflowServiceError extends Error {
 export class WorkflowService {
   private readonly clock: () => Date;
   private readonly idFactory: () => string;
+  private readonly transactionVerifier: TransactionVerifier;
 
   constructor(
     private readonly store: WorkflowStore,
@@ -98,6 +129,7 @@ export class WorkflowService {
   ) {
     this.clock = options.clock ?? (() => new Date());
     this.idFactory = options.idFactory ?? (() => randomUUID());
+    this.transactionVerifier = options.transactionVerifier ?? verifySolanaTransactionFinalization;
   }
 
   async createPlan(session: WorkflowSession, input: CreatePlanInput): Promise<PlanDraftRecord> {
@@ -139,6 +171,7 @@ export class WorkflowService {
       guardrailVerdict: guardrailReport.verdict,
       finalizationRequirement: guardrailReport.finalizationRequirement,
       constraintFingerprint: guardrailReport.constraintFingerprint,
+      ...(guardrailReport.constraintHash ? { constraintHash: guardrailReport.constraintHash } : {}),
     });
     return record;
   }
@@ -269,6 +302,7 @@ export class WorkflowService {
       guardrailVerdict: guardrailReport.verdict,
       finalizationRequirement: guardrailReport.finalizationRequirement,
       constraintFingerprint: guardrailReport.constraintFingerprint,
+      ...(guardrailReport.constraintHash ? { constraintHash: guardrailReport.constraintHash } : {}),
     });
     await this.audit(session, 'approval.guardrail.checked', 'approval', record.id, guardrailAuditMetadata(guardrailReport));
     return record;
@@ -323,7 +357,9 @@ export class WorkflowService {
       );
     }
 
-    const result = await this.createFinalizationPreview(session, approvalRequestId, prepared.preview);
+    const result = await this.createFinalizationPreview(session, approvalRequestId, prepared.preview, {
+      trustedServerPrepared: true,
+    });
     await this.audit(session, 'approval.finalization.prepared', 'approval', approval.id, {
       finalizationId: result.finalization.id,
       transactionHash: result.finalization.transactionHash,
@@ -364,10 +400,51 @@ export class WorkflowService {
     return { approval: result.approval, finalization: result.finalization };
   }
 
+  async confirmTransactionFinalization(
+    session: WorkflowSession,
+    approvalRequestId: string,
+    finalizationId: string,
+  ): Promise<{ approval: ApprovalRequestRecord; finalization: TransactionFinalizationRecord; completed?: CompletedRecord }> {
+    const approval = await this.requireApproval(session, approvalRequestId);
+    if (isTerminalApprovalStatus(approval.status)) {
+      throw new WorkflowServiceError(409, 'approval_terminal', 'Approval request is already terminal.');
+    }
+    const finalization = await this.store.getFinalization(session.walletAddress, finalizationId);
+    if (!finalization || finalization.approvalRequestId !== approval.id) {
+      throw new WorkflowServiceError(404, 'not_found', 'Finalization record was not found.');
+    }
+    if (!finalization.txid) {
+      throw new WorkflowServiceError(400, 'missing_txid', 'Finalization has no submitted transaction id to confirm.');
+    }
+    if (!approval.decisionProofSignature || !approval.decisionProofMessage) {
+      throw new WorkflowServiceError(400, 'missing_decision_proof', 'Submitted finalization is missing its wallet proof.');
+    }
+    return this.recordFinalizationResult(session, approvalRequestId, {
+      finalizationId,
+      finalizationStatus: 'confirmed',
+      txStatus: 'confirmed',
+      txid: finalization.txid,
+      transactionHash: finalization.transactionHash,
+      ...(finalization.messageHash ? { messageHash: finalization.messageHash } : {}),
+      ...(finalization.quote?.quoteHash ? { quoteHash: finalization.quote.quoteHash } : {}),
+      ...(finalization.simulation?.simulationHash ? { simulationHash: finalization.simulation.simulationHash } : {}),
+      ...(finalization.explorerUrl ? { explorerUrl: finalization.explorerUrl } : {}),
+      proofSignature: approval.decisionProofSignature,
+      decisionProofSignature: approval.decisionProofSignature,
+      decisionProofMessage: approval.decisionProofMessage,
+      signatureEncoding: 'base58',
+      note: approval.note,
+      metadata: {
+        confirmationSource: 'server_retry',
+      },
+    });
+  }
+
   async createFinalizationPreview(
     session: WorkflowSession,
     approvalRequestId: string,
     input: CreateTransactionFinalizationPreviewInput,
+    options: CreateFinalizationPreviewOptions = {},
   ): Promise<{ approval: ApprovalRequestRecord; finalization: TransactionFinalizationRecord }> {
     const approval = await this.requireApproval(session, approvalRequestId);
     if (isTerminalApprovalStatus(approval.status)) {
@@ -381,7 +458,11 @@ export class WorkflowService {
       throw new WorkflowServiceError(400, 'cluster_mismatch', 'Finalization preview cluster must match the approval cluster.');
     }
     const finalizationStatus = input.status ?? 'prepared';
-    if (requiresTransactionFinalization(approval.kind) && finalizationStatus !== 'blocked' && finalizationStatus !== 'expired') {
+    const executableFinalizationPreview =
+      requiresTransactionFinalization(approval.kind) &&
+      finalizationStatus !== 'blocked' &&
+      finalizationStatus !== 'expired';
+    if (executableFinalizationPreview) {
       if (!input.simulation || input.simulation.status !== 'ok') {
         throw new WorkflowServiceError(
           400,
@@ -397,6 +478,13 @@ export class WorkflowService {
         );
       }
       assertFinalizationMatchesApproval(approval, input);
+      if (options.trustedServerPrepared !== true) {
+        throw new WorkflowServiceError(
+          409,
+          'server_prepared_finalization_required',
+          'Money-moving cloud finalizations must be prepared by the server.',
+        );
+      }
     }
     const now = this.now();
     const expiresAt = finalizationExpiry(input.expiresAt, now);
@@ -424,7 +512,10 @@ export class WorkflowService {
       ...(approval.recurringScheduleId ? { recurringScheduleId: approval.recurringScheduleId } : {}),
       ...(approval.recurringOccurrenceId ? { recurringOccurrenceId: approval.recurringOccurrenceId } : {}),
       ...(approval.occurrenceKey ? { occurrenceKey: approval.occurrenceKey } : {}),
-      metadata: finalizationMetadata(input.metadata, approval),
+      metadata: finalizationMetadata(
+        trustedFinalizationMetadata(input.metadata, options.trustedServerPrepared === true),
+        approval,
+      ),
     };
 
     const updatedApproval: ApprovalRequestRecord = {
@@ -461,12 +552,23 @@ export class WorkflowService {
       throw new WorkflowServiceError(404, 'not_found', 'Finalization record was not found.');
     }
     const now = this.now();
-    const finalizationStatus = input.finalizationStatus ?? finalizationStatusFromTxStatus(input.txStatus);
+    let finalizationStatus = input.finalizationStatus ?? finalizationStatusFromTxStatus(input.txStatus);
     if ((finalizationStatus === 'confirmed' || finalizationStatus === 'submitted') && !input.txid) {
       throw new WorkflowServiceError(400, 'missing_txid', 'Submitted or confirmed finalization requires a transaction id.');
     }
+    if (
+      requiresTransactionFinalization(existing.kind) &&
+      requiresSubmittedFinalizationChecks(finalizationStatus) &&
+      !isServerPreparedFinalization(finalization)
+    ) {
+      throw new WorkflowServiceError(
+        409,
+        'server_prepared_finalization_required',
+        'Money-moving cloud finalization receipts must use a server-prepared finalization.',
+      );
+    }
     if (requiresFinalizationIntegrityChecks(finalizationStatus, input)) {
-      if (Date.parse(finalization.expiresAt) <= Date.parse(now)) {
+      if (finalizationSubmissionExpired(finalization, input, now)) {
         throw new WorkflowServiceError(409, 'finalization_expired', 'Finalization has expired. Prepare a fresh transaction review.');
       }
       if (finalization.status === 'blocked' || finalization.status === 'expired') {
@@ -492,18 +594,24 @@ export class WorkflowService {
       }
     }
     const finalizationProofMessage = requiresFinalizationProof(finalizationStatus, input)
-      ? this.requireVerifiedDecisionProof(session, existing, 'approved', input, finalization)
+      ? this.finalizationProofMessageForResult(session, existing, input, finalization)
       : undefined;
-    const txStatus = txStatusFromFinalizationStatus(finalizationStatus, input.txStatus);
+    const verification = await this.verifySubmittedFinalization(finalization, finalizationStatus, input);
+    if (verification) {
+      finalizationStatus = finalizationStatusFromVerification(verification);
+    }
+    const txStatus = txStatusFromFinalizationStatus(finalizationStatus, verification ? verification.txStatus : input.txStatus);
+    const confirmationStatus = verification?.confirmationStatus ?? input.confirmationStatus;
+    const finalizationError = verificationErrorMessage(verification) ?? input.error;
     const updatedFinalization: TransactionFinalizationRecord = {
       ...finalization,
       status: finalizationStatus,
       updatedAt: now,
       ...(input.txid ? { txid: input.txid } : {}),
       ...(txStatus ? { txStatus } : {}),
-      ...(input.confirmationStatus ? { confirmationStatus: input.confirmationStatus } : {}),
+      ...(confirmationStatus ? { confirmationStatus } : {}),
       ...(input.explorerUrl ? { explorerUrl: input.explorerUrl } : {}),
-      ...(input.error ? { error: input.error } : {}),
+      ...(finalizationError ? { error: finalizationError } : {}),
       ...(finalizationStatus === 'wallet_pending' ? { submittedAt: now } : {}),
       ...(finalizationStatus === 'submitted' ? { submittedAt: now } : {}),
       ...(finalizationStatus === 'confirmed' ? { submittedAt: finalization.submittedAt ?? now, confirmedAt: now } : {}),
@@ -511,6 +619,7 @@ export class WorkflowService {
         ...(finalization.metadata ?? {}),
         ...(input.metadata ?? {}),
         ...(finalizationProofMessage ? { finalizationProofMessage } : {}),
+        ...(verification ? { verification: jsonObject(verificationMetadata(verification, now)) } : {}),
       },
     };
 
@@ -522,7 +631,7 @@ export class WorkflowService {
       ...(input.txid ? { txid: input.txid } : {}),
       ...(txStatus ? { txStatus } : {}),
       ...(input.explorerUrl ? { explorerUrl: input.explorerUrl } : {}),
-      ...(input.error ? { error: input.error } : {}),
+      ...(finalizationError ? { error: finalizationError } : {}),
       metadata: {
         ...(existing.metadata ?? {}),
         finalization: jsonObject(updatedFinalization),
@@ -556,9 +665,7 @@ export class WorkflowService {
 
     const activeApproval: ApprovalRequestRecord = {
       ...baseApproval,
-      status: finalizationStatus === 'submitted' || finalizationStatus === 'wallet_pending'
-        ? 'approval_pending'
-        : existing.status,
+      status: activeApprovalStatusForFinalization(finalizationStatus, existing.status),
       ...(input.decisionProofSignature ? { decisionProofSignature: input.decisionProofSignature } : {}),
       ...(finalizationProofMessage ? { decisionProofMessage: finalizationProofMessage, decisionProofVerified: true } : {}),
       ...(input.note ? { note: input.note } : {}),
@@ -738,6 +845,40 @@ export class WorkflowService {
       throw new WorkflowServiceError(400, 'invalid_decision_proof', 'Decision proof signature could not be verified for this wallet.');
     }
     return expectedMessage;
+  }
+
+  private finalizationProofMessageForResult(
+    session: WorkflowSession,
+    approval: ApprovalRequestRecord,
+    input: ApprovalDecisionInput,
+    finalization: TransactionFinalizationRecord,
+  ): string {
+    const inputProofSignature = input.decisionProofSignature ?? input.proofSignature;
+    if (
+      approval.decisionProofVerified &&
+      approval.decisionProofSignature &&
+      approval.decisionProofMessage &&
+      inputProofSignature === approval.decisionProofSignature &&
+      input.decisionProofMessage === approval.decisionProofMessage
+    ) {
+      return approval.decisionProofMessage;
+    }
+    return this.requireVerifiedDecisionProof(session, approval, 'approved', input, finalization);
+  }
+
+  private async verifySubmittedFinalization(
+    finalization: TransactionFinalizationRecord,
+    finalizationStatus: TransactionFinalizationStatus,
+    input: RecordTransactionFinalizationResultInput,
+  ): Promise<TransactionVerificationResult | undefined> {
+    if (!input.txid || !requiresSubmittedFinalizationChecks(finalizationStatus)) {
+      return undefined;
+    }
+    return this.transactionVerifier({
+      finalization,
+      txid: input.txid,
+      cluster: finalization.cluster,
+    });
   }
 
   private async activeApprovalForPlan(session: WorkflowSession, planDraftId: string): Promise<ApprovalRequestRecord | undefined> {
@@ -1099,13 +1240,13 @@ async function prepareSolTransferFinalizationPreview(
     recipient: to.toBase58(),
     cluster,
   });
-  const constraintFingerprint = sha256Hex(stableJson({
+  const transactionBoundaryHash = stableWorkflowHash({
     approval: approval.id,
     walletAddress: approval.walletAddress,
     cluster,
     kind: approval.kind,
     params: approval.params,
-  }));
+  });
 
   return {
     transactionBase64,
@@ -1154,7 +1295,7 @@ async function prepareSolTransferFinalizationPreview(
       },
       expiresAt: new Date(Date.parse(nowIso) + FINALIZATION_PREVIEW_TTL_MS).toISOString(),
       metadata: {
-        constraintFingerprint,
+        transactionBoundaryHash,
         preparedBy: 'agentic-render-web',
         serverPrepared: true,
         transactionBoundary: 'server_wallet_finalization_v1',
@@ -1236,13 +1377,13 @@ function mockSolTransferFinalizationPreview(input: {
       },
       expiresAt: new Date(Date.parse(input.nowIso) + FINALIZATION_PREVIEW_TTL_MS).toISOString(),
       metadata: {
-        constraintFingerprint: sha256Hex(stableJson({
+        transactionBoundaryHash: stableWorkflowHash({
           approval: input.approval.id,
           walletAddress: input.approval.walletAddress,
           cluster: input.cluster,
           kind: input.approval.kind,
           params: input.approval.params,
-        })),
+        }),
         preparedBy: 'agentic-render-web',
         serverPrepared: true,
         mocked: true,
@@ -1278,6 +1419,93 @@ function txToBase64(tx: Transaction): string {
     requireAllSignatures: false,
     verifySignatures: false,
   })).toString('base64');
+}
+
+async function verifySolanaTransactionFinalization(
+  input: TransactionVerificationRequest,
+): Promise<TransactionVerificationResult> {
+  if (process.env.AGENTIC_MOCK_FINALIZATION === '1') {
+    return mockSolanaTransactionVerification(input);
+  }
+  const connection = new Connection(defaultRpcUrl(input.cluster), 'confirmed');
+  try {
+    const response = await connection.getTransaction(input.txid, {
+      commitment: 'confirmed',
+      maxSupportedTransactionVersion: 0,
+    });
+    if (!response) {
+      const status = await connection.getSignatureStatus(input.txid, { searchTransactionHistory: true });
+      if (status.value?.err) {
+        return {
+          status: 'failed',
+          txStatus: 'failed',
+          confirmationStatus: status.value.confirmationStatus ?? 'failed',
+          error: stableJson(status.value.err),
+        };
+      }
+      return {
+        status: 'pending',
+        txStatus: 'pending',
+        ...(status.value?.confirmationStatus ? { confirmationStatus: status.value.confirmationStatus } : {}),
+      };
+    }
+
+    if (response.meta?.err) {
+      return {
+        status: 'failed',
+        txStatus: 'failed',
+        confirmationStatus: 'failed',
+        slot: response.slot,
+        error: stableJson(response.meta.err),
+      };
+    }
+
+    const messageHash = transactionMessageHash(response.transaction.message);
+    if (input.finalization.messageHash && messageHash !== input.finalization.messageHash) {
+      return {
+        status: 'message_mismatch',
+        txStatus: 'failed',
+        confirmationStatus: 'message_mismatch',
+        messageHash,
+        slot: response.slot,
+        error: 'Submitted transaction message did not match the prepared finalization.',
+      };
+    }
+
+    return {
+      status: 'confirmed',
+      txStatus: 'confirmed',
+      confirmationStatus: 'confirmed',
+      messageHash,
+      slot: response.slot,
+    };
+  } catch (err) {
+    return {
+      status: 'pending',
+      txStatus: 'pending',
+      confirmationStatus: 'verification_unavailable',
+      error: err instanceof Error ? err.message : String(err),
+    };
+  }
+}
+
+function mockSolanaTransactionVerification(input: TransactionVerificationRequest): TransactionVerificationResult {
+  return {
+    status: 'confirmed',
+    txStatus: 'confirmed',
+    confirmationStatus: 'confirmed',
+    ...(input.finalization.messageHash ? { messageHash: input.finalization.messageHash } : {}),
+    slot: 0,
+    metadata: { mocked: true },
+  };
+}
+
+function transactionMessageHash(message: unknown): string {
+  const serializable = message as { serialize?: () => Uint8Array | number[] };
+  if (typeof serializable.serialize !== 'function') {
+    throw new Error('RPC transaction message was not serializable.');
+  }
+  return sha256Hex(Buffer.from(serializable.serialize()).toString('base64'));
 }
 
 function solTransferQuoteHash(input: {
@@ -1329,6 +1557,55 @@ function txStatusFromFinalizationStatus(
   return undefined;
 }
 
+function finalizationStatusFromVerification(result: TransactionVerificationResult): TransactionFinalizationStatus {
+  if (result.status === 'confirmed') return 'confirmed';
+  if (result.status === 'pending') return 'submitted';
+  return 'failed';
+}
+
+function verificationErrorMessage(result: TransactionVerificationResult | undefined): string | undefined {
+  if (!result) return undefined;
+  if (result.status === 'message_mismatch') {
+    return result.error ?? 'Submitted transaction message did not match the prepared finalization.';
+  }
+  if (result.status === 'failed') {
+    return result.error ?? 'Submitted transaction failed verification.';
+  }
+  return undefined;
+}
+
+function verificationMetadata(result: TransactionVerificationResult, checkedAt: string): JsonObject {
+  return {
+    ...(result.metadata ?? {}),
+    status: result.status,
+    checkedAt,
+    source: 'server_rpc',
+    ...(result.txStatus ? { txStatus: result.txStatus } : {}),
+    ...(result.confirmationStatus ? { confirmationStatus: result.confirmationStatus } : {}),
+    ...(result.messageHash ? { messageHash: result.messageHash } : {}),
+    ...(result.slot !== undefined ? { slot: result.slot } : {}),
+    ...(result.error ? { error: redactVerifierError(result.error) } : {}),
+  };
+}
+
+function redactVerifierError(message: string): string {
+  return message.replace(/https?:\/\/\S+/g, '[url]').slice(0, 500);
+}
+
+function activeApprovalStatusForFinalization(
+  status: TransactionFinalizationStatus,
+  existingStatus: ApprovalRequestRecord['status'],
+): ApprovalRequestRecord['status'] {
+  if (status === 'submitted' || status === 'wallet_pending') return 'approval_pending';
+  if (
+    existingStatus === 'approval_pending' &&
+    (status === 'failed' || status === 'aborted' || status === 'expired' || status === 'blocked')
+  ) {
+    return 'ready';
+  }
+  return existingStatus;
+}
+
 function requiresSubmittedFinalizationChecks(status: TransactionFinalizationStatus): boolean {
   return status === 'wallet_pending' || status === 'submitted' || status === 'confirmed';
 }
@@ -1345,6 +1622,19 @@ function requiresFinalizationProof(
   input: RecordTransactionFinalizationResultInput,
 ): boolean {
   return status === 'submitted' || status === 'confirmed' || (status === 'failed' && Boolean(input.txid));
+}
+
+function isServerPreparedFinalization(finalization: TransactionFinalizationRecord): boolean {
+  return finalization.metadata?.serverPrepared === true;
+}
+
+function finalizationSubmissionExpired(
+  finalization: TransactionFinalizationRecord,
+  input: RecordTransactionFinalizationResultInput,
+  nowIso: string,
+): boolean {
+  if (Date.parse(finalization.expiresAt) > Date.parse(nowIso)) return false;
+  return !finalization.submittedAt || !finalization.txid || finalization.txid !== input.txid;
 }
 
 function proofOnlyDecisionCarriesTransactionFields(input: ApprovalDecisionInput): boolean {
@@ -1400,6 +1690,14 @@ function finalizationMetadata(
       ? { constraintHash: stringFromJson(approval.riskMetadata, 'constraintHash') }
       : {}),
   };
+}
+
+function trustedFinalizationMetadata(metadata: JsonObject | undefined, trustedServerPrepared: boolean): JsonObject | undefined {
+  if (trustedServerPrepared || !metadata) return metadata;
+  const sanitized = { ...metadata };
+  delete sanitized.serverPrepared;
+  delete sanitized.preparedBy;
+  return sanitized;
 }
 
 function jsonObject(value: unknown): JsonObject {

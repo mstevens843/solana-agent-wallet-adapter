@@ -348,6 +348,40 @@ export class PostgresWorkflowStore implements
     return this.listJsonRecords<ApprovalRequestRecord>('approval.list', 'approval_requests', walletAddress, 'updated_at DESC, created_at DESC');
   }
 
+  async listApprovalsByIds(walletAddress: string, ids: string[]): Promise<ApprovalRequestRecord[]> {
+    if (ids.length === 0) return [];
+    const result = await this.query<JsonRecordRow<ApprovalRequestRecord>>({
+      name: 'approval.listByIds',
+      text: `
+        SELECT record
+        FROM approval_requests
+        WHERE wallet_address = $1 AND id = ANY($2::text[])
+        ORDER BY updated_at DESC, created_at DESC
+      `,
+      values: [walletAddress, ids],
+    });
+    return result.rows.map((row) => jsonRecord(row.record));
+  }
+
+  async listApprovalsByRecurringOccurrenceIds(
+    walletAddress: string,
+    occurrenceIds: string[],
+  ): Promise<ApprovalRequestRecord[]> {
+    if (occurrenceIds.length === 0) return [];
+    const result = await this.query<JsonRecordRow<ApprovalRequestRecord>>({
+      name: 'approval.listByRecurringOccurrenceIds',
+      text: `
+        SELECT record
+        FROM approval_requests
+        WHERE wallet_address = $1
+          AND record->>'recurringOccurrenceId' = ANY($2::text[])
+        ORDER BY updated_at DESC, created_at DESC
+      `,
+      values: [walletAddress, occurrenceIds],
+    });
+    return result.rows.map((row) => jsonRecord(row.record));
+  }
+
   async getApproval(walletAddress: string, id: string): Promise<ApprovalRequestRecord | undefined> {
     return this.getJsonRecord<ApprovalRequestRecord>('approval.get', 'approval_requests', walletAddress, id);
   }
@@ -391,6 +425,40 @@ export class PostgresWorkflowStore implements
 
   async listCompleted(walletAddress: string): Promise<CompletedRecord[]> {
     return this.listJsonRecords<CompletedRecord>('completed.list', 'completed_records', walletAddress, 'completed_at DESC, created_at DESC');
+  }
+
+  async listCompletedByIds(walletAddress: string, ids: string[]): Promise<CompletedRecord[]> {
+    if (ids.length === 0) return [];
+    const result = await this.query<JsonRecordRow<CompletedRecord>>({
+      name: 'completed.listByIds',
+      text: `
+        SELECT record
+        FROM completed_records
+        WHERE wallet_address = $1 AND id = ANY($2::text[])
+        ORDER BY completed_at DESC, created_at DESC
+      `,
+      values: [walletAddress, ids],
+    });
+    return result.rows.map((row) => jsonRecord(row.record));
+  }
+
+  async listCompletedByRecurringOccurrenceIds(
+    walletAddress: string,
+    occurrenceIds: string[],
+  ): Promise<CompletedRecord[]> {
+    if (occurrenceIds.length === 0) return [];
+    const result = await this.query<JsonRecordRow<CompletedRecord>>({
+      name: 'completed.listByRecurringOccurrenceIds',
+      text: `
+        SELECT record
+        FROM completed_records
+        WHERE wallet_address = $1
+          AND record->>'recurringOccurrenceId' = ANY($2::text[])
+        ORDER BY completed_at DESC, created_at DESC
+      `,
+      values: [walletAddress, occurrenceIds],
+    });
+    return result.rows.map((row) => jsonRecord(row.record));
   }
 
   async getCompleted(walletAddress: string, id: string): Promise<CompletedRecord | undefined> {
@@ -728,7 +796,7 @@ export class PostgresWorkflowStore implements
           id, wallet_address, type, schedule_id, occurrence_id, status,
           attempts, next_attempt_at, created_at, updated_at, record
         ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11::jsonb)
-        ON CONFLICT (id) DO UPDATE SET
+        ON CONFLICT (occurrence_id, type) DO UPDATE SET
           status = EXCLUDED.status,
           attempts = EXCLUDED.attempts,
           next_attempt_at = EXCLUDED.next_attempt_at,
@@ -768,6 +836,25 @@ export class PostgresWorkflowStore implements
       values: [walletAddress, occurrenceId, type],
     });
     return result.rows[0] ? jsonRecord(result.rows[0].record) : undefined;
+  }
+
+  async listNotificationDeliveries(
+    walletAddress: string,
+    scheduleId: string,
+    limit: number,
+  ): Promise<RecurringNotificationDeliveryRecord[]> {
+    const result = await this.query<JsonRecordRow<RecurringNotificationDeliveryRecord>>({
+      name: 'recurring.notification.listForSchedule',
+      text: `
+        SELECT record
+        FROM recurring_notification_deliveries
+        WHERE wallet_address = $1 AND schedule_id = $2
+        ORDER BY updated_at DESC, created_at DESC
+        LIMIT $3
+      `,
+      values: [walletAddress, scheduleId, limit],
+    });
+    return result.rows.map((row) => jsonRecord(row.record));
   }
 
   async listDueNotificationDeliveries(nowIso: string, limit: number): Promise<RecurringNotificationDeliveryRecord[]> {

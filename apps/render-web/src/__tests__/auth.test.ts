@@ -389,6 +389,55 @@ describe('render web cloud wallet auth', () => {
       expect((response.body.events as Array<Record<string, unknown>>).map((event) => event.id)).toEqual(['audit_evidence_1']);
     }, { store, clock });
   });
+
+  it('lists real evidence-created audit events by related approval metadata', async () => {
+    const store = new MemoryWorkflowStore();
+    const clock = fixedClock('2026-05-08T18:00:00.000Z');
+    const wallet = createTestWallet();
+    const session = await createWalletSession({ store, walletAddress: wallet.walletAddress, clock });
+    const signingMessage = [
+      'Evidence receipt: Proof of Intent',
+      `Wallet: ${wallet.walletAddress}`,
+      'Approval: approval_1',
+    ].join('\n');
+
+    await withServer(async (port) => {
+      const cookie = `agentic_session=${session.token}`;
+      const created = await postJson(port, '/api/evidence', {
+        title: 'Proof of Intent',
+        kind: 'intent_receipt',
+        status: 'approved',
+        cluster: 'devnet',
+        payload: { status: 'approved', summary: 'Intent proof for approval_1' },
+        preSignatureHash: '0x' + 'a'.repeat(64),
+        signingMessage,
+        signature: signMessage(signingMessage, wallet.privateKey),
+        metadata: {
+          recordType: 'approval',
+          recordId: 'approval_1',
+          sourceRecordType: 'approval',
+          sourceRecordId: 'approval_1',
+          approvalId: 'approval_1',
+          proofUseCase: 'intent',
+          labId: 'intent-receipt',
+        },
+      }, { cookie });
+      expect(created.status).toBe(201);
+
+      const response = await getJson(port, '/api/audit?recordType=approval&recordId=approval_1', { cookie });
+      expect(response.status).toBe(200);
+      const events = response.body.events as Array<Record<string, unknown>>;
+      expect(events.map((event) => event.type)).toEqual(['evidence.created']);
+      expect(events[0]?.metadata).toMatchObject({
+        recordType: 'evidence',
+        recordId: (created.body.receipt as Record<string, unknown>).id,
+        sourceRecordType: 'approval',
+        sourceRecordId: 'approval_1',
+        approvalId: 'approval_1',
+        proofUseCase: 'intent',
+      });
+    }, { store, clock });
+  });
 });
 
 async function withServer(

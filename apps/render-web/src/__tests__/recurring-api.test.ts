@@ -527,83 +527,85 @@ describe('cloud recurring scheduler API', () => {
       clock: { now: () => new Date('2026-05-08T20:00:00.000Z') },
     });
 
-    await withRenderRecurringServer(store, async (port) => {
-      const headers = {
-        cookie: `${SESSION_COOKIE_NAME}=${encodeURIComponent(session.token)}`,
-      };
+    await withMockServerFinalization(async () => {
+      await withRenderRecurringServer(store, async (port) => {
+        const headers = {
+          cookie: `${SESSION_COOKIE_NAME}=${encodeURIComponent(session.token)}`,
+        };
 
-      const created = await requestJsonWithHeaders(port, 'POST', '/api/recurring', {
-        ...validIntervalMinutesBody(),
-        startAt: '2020-01-01T00:00:00.000Z',
-      }, headers);
-      const schedule = created.body.schedule as RecurringScheduleRecord;
+        const created = await requestJsonWithHeaders(port, 'POST', '/api/recurring', {
+          ...validIntervalMinutesBody(),
+          startAt: '2020-01-01T00:00:00.000Z',
+        }, headers);
+        const schedule = created.body.schedule as RecurringScheduleRecord;
 
-      const materialized = await requestJsonWithHeaders(port, 'POST', '/api/recurring/materialize-due', {}, headers);
-      expect((materialized.body.results as Array<{ reason: string }>)[0]?.reason).toBe('created');
+        const materialized = await requestJsonWithHeaders(port, 'POST', '/api/recurring/materialize-due', {}, headers);
+        expect((materialized.body.results as Array<{ reason: string }>)[0]?.reason).toBe('created');
 
-      const inboxBefore = await requestJsonWithHeaders(port, 'GET', '/api/approvals', undefined, headers);
-      const approval = (inboxBefore.body.approvals as ApprovalRequestRecord[])[0];
-      expect(approval?.id).toBeDefined();
+        const inboxBefore = await requestJsonWithHeaders(port, 'GET', '/api/approvals', undefined, headers);
+        const approval = (inboxBefore.body.approvals as ApprovalRequestRecord[])[0];
+        expect(approval?.id).toBeDefined();
 
-      const preview = await requestJsonWithHeaders(
-        port,
-        'POST',
-        `/api/approvals/${encodeURIComponent(approval!.id)}/finalization/preview`,
-        finalizationPreviewBody(approval!),
-        headers,
-      );
-      expect(preview.status).toBe(201);
-      const finalization = preview.body.finalization as TransactionFinalizationRecord;
+        const preview = await requestJsonWithHeaders(
+          port,
+          'POST',
+          `/api/approvals/${encodeURIComponent(approval!.id)}/finalization/prepare`,
+          {},
+          headers,
+        );
+        expect(preview.status).toBe(201);
+        const finalization = preview.body.finalization as TransactionFinalizationRecord;
 
-      const decision = await requestJsonWithHeaders(
-        port,
-        'POST',
-        `/api/approvals/${encodeURIComponent(approval!.id)}/finalization/result`,
-        {
-          ...finalizationProofBody(approval!, finalization),
-          finalizationId: finalization.id,
-          finalizationStatus: 'confirmed',
-          txStatus: 'confirmed',
+        const decision = await requestJsonWithHeaders(
+          port,
+          'POST',
+          `/api/approvals/${encodeURIComponent(approval!.id)}/finalization/${encodeURIComponent(finalization.id)}/submit`,
+          {
+            ...finalizationProofBody(approval!, finalization),
+            finalizationId: finalization.id,
+            finalizationStatus: 'confirmed',
+            txStatus: 'confirmed',
+            txid: 'tx_recurring_finalized',
+            transactionHash: finalization.transactionHash,
+            messageHash: finalization.messageHash,
+            quoteHash: finalization.quote?.quoteHash,
+            simulationHash: finalization.simulation?.simulationHash,
+          },
+          headers,
+        );
+        expect(decision.status).toBe(200);
+
+        const recurringAfter = await requestJsonWithHeaders(port, 'GET', '/api/recurring', undefined, headers);
+        const occurrences = recurringAfter.body.occurrences as RecurringOccurrenceRecord[];
+        const synced = occurrences.find((entry) => entry.recurringScheduleId === schedule.id);
+        expect(synced?.status).toBe('completed');
+
+        const history = await requestJsonWithHeaders(
+          port,
+          'GET',
+          `/api/recurring/${encodeURIComponent(schedule.id)}/occurrences?limit=1`,
+          undefined,
+          headers,
+        );
+        expect(history.status).toBe(200);
+        const historyOccurrence = (history.body.occurrences as Array<{
+          id: string;
+          statusLabel?: { label: string; tone: string };
+          approval?: { id: string; status: string; txid?: string; txStatus?: string };
+          completed?: { id: string; txid?: string; status: string };
+        }>)[0];
+        expect(historyOccurrence?.approval).toMatchObject({
+          id: approval!.id,
+          status: 'approved',
           txid: 'tx_recurring_finalized',
-          transactionHash: 'tx_hash_123',
-          messageHash: 'message_hash_123',
-          quoteHash: 'quote_hash_123',
-          simulationHash: 'simulation_hash_123',
-        },
-        headers,
-      );
-      expect(decision.status).toBe(200);
-
-      const recurringAfter = await requestJsonWithHeaders(port, 'GET', '/api/recurring', undefined, headers);
-      const occurrences = recurringAfter.body.occurrences as RecurringOccurrenceRecord[];
-      const synced = occurrences.find((entry) => entry.recurringScheduleId === schedule.id);
-      expect(synced?.status).toBe('completed');
-
-      const history = await requestJsonWithHeaders(
-        port,
-        'GET',
-        `/api/recurring/${encodeURIComponent(schedule.id)}/occurrences?limit=1`,
-        undefined,
-        headers,
-      );
-      expect(history.status).toBe(200);
-      const historyOccurrence = (history.body.occurrences as Array<{
-        id: string;
-        statusLabel?: { label: string; tone: string };
-        approval?: { id: string; status: string; txid?: string; txStatus?: string };
-        completed?: { id: string; txid?: string; status: string };
-      }>)[0];
-      expect(historyOccurrence?.approval).toMatchObject({
-        id: approval!.id,
-        status: 'approved',
-        txid: 'tx_recurring_finalized',
-        txStatus: 'confirmed',
+          txStatus: 'confirmed',
+        });
+        expect(historyOccurrence?.completed).toMatchObject({
+          status: 'approved',
+          txid: 'tx_recurring_finalized',
+        });
+        expect(historyOccurrence?.statusLabel).toEqual({ label: 'Executed', tone: 'success' });
       });
-      expect(historyOccurrence?.completed).toMatchObject({
-        status: 'approved',
-        txid: 'tx_recurring_finalized',
-      });
-      expect(historyOccurrence?.statusLabel).toEqual({ label: 'Executed', tone: 'success' });
     });
   });
 
@@ -794,9 +796,23 @@ describe('cloud recurring scheduler API', () => {
         walletA,
       );
       expect(patched.status).toBe(200);
+      expect(typeof patched.body.webhookSecretOnce).toBe('string');
       const patchedSchedule = patched.body.schedule as RecurringScheduleRecord;
       expect(patchedSchedule.notifications?.webhookUrl).toBe('https://example.test/webhook2');
       expect((patchedSchedule.notifications as Record<string, unknown> | undefined)?.webhookSecret).toBeUndefined();
+
+      const rotate = await postJson(port, `/api/recurring/${schedule.id}/notifications/rotate`, {}, walletA);
+      expect(rotate.status).toBe(200);
+      expect(typeof rotate.body.webhookSecretOnce).toBe('string');
+      expect(rotate.body.webhookSecretOnce).not.toBe(patched.body.webhookSecretOnce);
+
+      const notifications = await getJson(port, `/api/recurring/${schedule.id}/notifications`, walletA);
+      expect(notifications.status).toBe(200);
+      expect(notifications.body).toMatchObject({
+        enabled: true,
+        webhookUrl: 'https://example.test/webhook2',
+        deliveries: [],
+      });
     });
   });
 
@@ -837,13 +853,38 @@ describe('cloud recurring scheduler API', () => {
       expect(badWebhook.body.error).toBe('invalid_notifications');
     });
   });
+
+  it('rejects non-SOL cloud recurring schedules at create and update time', async () => {
+    await withRecurringServer(async ({ port }) => {
+      const unsupportedCreate = await postJson(
+        port,
+        '/api/recurring',
+        { ...validCreateBody(), token: 'USDC' },
+        walletA,
+      );
+      expect(unsupportedCreate.status).toBe(409);
+      expect(unsupportedCreate.body.error).toBe('unsupported_cloud_recurring_token');
+
+      const created = await postJson(port, '/api/recurring', validCreateBody(), walletA);
+      expect(created.status).toBe(201);
+      const schedule = created.body.schedule as RecurringScheduleRecord;
+      const unsupportedUpdate = await patchJson(
+        port,
+        `/api/recurring/${schedule.id}`,
+        { token: 'USDC' },
+        walletA,
+      );
+      expect(unsupportedUpdate.status).toBe(409);
+      expect(unsupportedUpdate.body.error).toBe('unsupported_cloud_recurring_token');
+    });
+  });
 });
 
 function validCreateBody(): Record<string, unknown> {
   return {
     cluster: 'devnet',
     token: 'SOL',
-    recipient: 'Recipient111111111111111111111111111111111',
+    recipient: walletB,
     amount: '0.25',
     cadence: 'weekly',
     dayOfWeek: 1,
@@ -856,7 +897,7 @@ function validIntervalMinutesBody(): Record<string, unknown> {
   return {
     cluster: 'devnet',
     token: 'SOL',
-    recipient: 'Recipient111111111111111111111111111111111',
+    recipient: walletB,
     amount: '0.10',
     cadence: 'interval_minutes',
     intervalMinutes: 10,
@@ -893,43 +934,6 @@ function finalizationProofBody(
   };
 }
 
-function finalizationPreviewBody(approval: ApprovalRequestRecord): Record<string, unknown> {
-  return {
-    status: 'simulation_passed',
-    walletAction: {
-      kind: approval.kind,
-      walletAddress: approval.walletAddress,
-      cluster: approval.cluster ?? 'devnet',
-      summary: approval.summary,
-      sender: approval.walletAddress,
-      recipient: 'Recipient111111111111111111111111111111111',
-      amount: '0.10',
-      token: 'SOL',
-      feePayer: approval.walletAddress,
-      instructionSummary: ['Transfer 0.10 SOL'],
-      touchedPrograms: ['11111111111111111111111111111111'],
-    },
-    transactionHash: 'tx_hash_123',
-    messageHash: 'message_hash_123',
-    quote: {
-      provider: 'test-fixed-transfer',
-      fetchedAt: '2026-05-08T20:00:00.000Z',
-      inputToken: 'SOL',
-      inputAmount: '0.10',
-      routeLabel: 'SystemProgram.transfer',
-      quoteHash: 'quote_hash_123',
-    },
-    simulation: {
-      status: 'ok',
-      simulatedAt: '2026-05-08T20:00:01.000Z',
-      logs: [],
-      unitsConsumed: 500,
-      simulationHash: 'simulation_hash_123',
-    },
-    expiresAt: new Date(Date.now() + 5 * 60_000).toISOString(),
-  };
-}
-
 function createTestWallet(): TestWallet {
   const { publicKey, privateKey } = generateKeyPairSync('ed25519');
   const publicKeyDer = publicKey.export({ format: 'der', type: 'spki' });
@@ -942,6 +946,20 @@ function createTestWallet(): TestWallet {
 
 function signMessage(message: string, privateKey: KeyObject): string {
   return encodeBase58(signDetached(null, Buffer.from(message, 'utf8'), privateKey));
+}
+
+async function withMockServerFinalization(callback: () => Promise<void>): Promise<void> {
+  const previous = process.env.AGENTIC_MOCK_FINALIZATION;
+  process.env.AGENTIC_MOCK_FINALIZATION = '1';
+  try {
+    await callback();
+  } finally {
+    if (previous === undefined) {
+      delete process.env.AGENTIC_MOCK_FINALIZATION;
+    } else {
+      process.env.AGENTIC_MOCK_FINALIZATION = previous;
+    }
+  }
 }
 
 async function withRecurringServer(callback: (ctx: ServerCtx) => Promise<void>): Promise<void> {

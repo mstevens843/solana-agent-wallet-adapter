@@ -121,6 +121,24 @@ export class MemoryWorkflowStore implements SessionWorkflowStore, OneTimeWorkflo
       .map(clone);
   }
 
+  async listApprovalsByIds(walletAddress: string, ids: string[]): Promise<ApprovalRequestRecord[]> {
+    const idSet = new Set(ids);
+    return [...this.approvals.values()]
+      .filter((record) => record.walletAddress === walletAddress && idSet.has(record.id))
+      .map(clone);
+  }
+
+  async listApprovalsByRecurringOccurrenceIds(
+    walletAddress: string,
+    occurrenceIds: string[],
+  ): Promise<ApprovalRequestRecord[]> {
+    const idSet = new Set(occurrenceIds);
+    return [...this.approvals.values()]
+      .filter((record) => record.walletAddress === walletAddress)
+      .filter((record) => Boolean(record.recurringOccurrenceId && idSet.has(record.recurringOccurrenceId)))
+      .map(clone);
+  }
+
   async getApproval(walletAddress: string, id: string): Promise<ApprovalRequestRecord | undefined> {
     return ownerClone(this.approvals.get(id), walletAddress);
   }
@@ -132,6 +150,24 @@ export class MemoryWorkflowStore implements SessionWorkflowStore, OneTimeWorkflo
   async listCompleted(walletAddress: string): Promise<CompletedRecord[]> {
     return [...this.completed.values()]
       .filter((record) => record.walletAddress === walletAddress)
+      .map(clone);
+  }
+
+  async listCompletedByIds(walletAddress: string, ids: string[]): Promise<CompletedRecord[]> {
+    const idSet = new Set(ids);
+    return [...this.completed.values()]
+      .filter((record) => record.walletAddress === walletAddress && idSet.has(record.id))
+      .map(clone);
+  }
+
+  async listCompletedByRecurringOccurrenceIds(
+    walletAddress: string,
+    occurrenceIds: string[],
+  ): Promise<CompletedRecord[]> {
+    const idSet = new Set(occurrenceIds);
+    return [...this.completed.values()]
+      .filter((record) => record.walletAddress === walletAddress)
+      .filter((record) => Boolean(record.recurringOccurrenceId && idSet.has(record.recurringOccurrenceId)))
       .map(clone);
   }
 

@@ -55,10 +55,16 @@ const REGISTERED_API_ROUTES = [
   '/api/approvals',
   'POST /api/approvals/:id/finalization/prepare',
   'POST /api/approvals/:id/finalization/:finalizationId/submit',
+  'POST /api/approvals/:id/finalization/:finalizationId/confirm',
   'POST /api/approvals/:id/finalization/:finalizationId/fail',
   'GET /api/approvals/:id/finalization',
   '/api/completed',
   '/api/recurring',
+  'GET /api/recurring/:id/occurrences',
+  'GET /api/recurring/:id/notifications',
+  'POST /api/recurring/:id/notifications/rotate',
+  'POST /api/recurring/:id/pause',
+  'POST /api/recurring/:id/resume',
   '/api/evidence',
 ] as const;
 

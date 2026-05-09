@@ -1,5 +1,5 @@
 import { existsSync, readFileSync } from 'node:fs';
-import { resolve } from 'node:path';
+import { dirname, resolve } from 'node:path';
 
 import { lifetimeSpendEstimate, type RecurringScheduleRecord } from '@solana-agent-wallet-adapter/workflow';
 
@@ -13,7 +13,7 @@ export interface RecurringPolicyConfig {
 
 export function loadRecurringPolicyFromEnv(): RecurringPolicyConfig | undefined {
   const configPath = process.env.AGENTIC_RECURRING_CONFIG ?? process.env.AGENT_WALLET_CONFIG;
-  const candidates = configPath ? [configPath] : ['agent-wallet.config.json'];
+  const candidates = configPath ? [configPath] : recurringConfigCandidates();
   for (const candidate of candidates) {
     const path = resolve(candidate);
     if (!existsSync(path)) continue;
@@ -25,6 +25,18 @@ export function loadRecurringPolicyFromEnv(): RecurringPolicyConfig | undefined 
     }
   }
   return undefined;
+}
+
+function recurringConfigCandidates(): string[] {
+  const candidates: string[] = [];
+  let cursor = process.cwd();
+  while (true) {
+    candidates.push(resolve(cursor, 'agent-wallet.config.json'));
+    const parent = dirname(cursor);
+    if (parent === cursor) break;
+    cursor = parent;
+  }
+  return [...new Set(candidates)];
 }
 
 export function createRecurringPolicyEnforcer(
@@ -92,10 +104,23 @@ function normalizeAmountMap(map: Record<string, string>): Record<string, string>
 }
 
 function compareDecimal(left: string, right: string): number {
-  const a = Number(left);
-  const b = Number(right);
-  if (!Number.isFinite(a) || !Number.isFinite(b)) return 0;
-  if (a < b) return -1;
-  if (a > b) return 1;
-  return 0;
+  const a = decimalParts(left);
+  const b = decimalParts(right);
+  if (!a || !b) return 0;
+  if (a.whole.length !== b.whole.length) return a.whole.length < b.whole.length ? -1 : 1;
+  if (a.whole !== b.whole) return a.whole < b.whole ? -1 : 1;
+  const fractionLength = Math.max(a.fraction.length, b.fraction.length);
+  const af = a.fraction.padEnd(fractionLength, '0');
+  const bf = b.fraction.padEnd(fractionLength, '0');
+  if (af === bf) return 0;
+  return af < bf ? -1 : 1;
+}
+
+function decimalParts(value: string): { whole: string; fraction: string } | null {
+  const match = /^0*(\d+)(?:\.(\d+))?$/.exec(value.trim());
+  if (!match) return null;
+  return {
+    whole: match[1]!.replace(/^0+(?=\d)/, '') || '0',
+    fraction: (match[2] ?? '').replace(/0+$/, ''),
+  };
 }

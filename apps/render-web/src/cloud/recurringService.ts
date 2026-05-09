@@ -14,6 +14,10 @@ import {
 } from '@solana-agent-wallet-adapter/workflow';
 
 import { redactSecrets } from './redaction.js';
+import {
+  scrubNotificationDeliveryForResponse,
+  type RecurringNotificationDeliveryRecord,
+} from './notificationService.js';
 
 export function scrubScheduleForResponse(record: RecurringScheduleRecord): RecurringScheduleRecord {
   if (!record.notifications?.webhookSecret) return record;
@@ -31,6 +35,18 @@ export interface ScheduleView {
   schedule: RecurringScheduleRecord;
   lifetimeSpend: workflowCadence.LifetimeSpend;
   nextRuns: string[];
+}
+
+export interface ScheduleMutationResult {
+  schedule: RecurringScheduleRecord;
+  webhookSecretOnce?: string;
+}
+
+export interface RecurringNotificationStatusView {
+  enabled: boolean;
+  webhookUrl?: string;
+  lastDelivery?: RecurringNotificationDeliveryRecord;
+  deliveries: RecurringNotificationDeliveryRecord[];
 }
 
 export function buildScheduleView(
@@ -102,6 +118,11 @@ export interface RecurringStore {
   saveOccurrence(walletAddress: string, record: RecurringOccurrenceRecord): Promise<void>;
   findOccurrenceByKey(walletAddress: string, scheduleId: string, occurrenceKey: string): Promise<RecurringOccurrenceRecord | undefined>;
   appendAuditEvent(walletAddress: string, record: RecurringAuditEvent): Promise<void>;
+  listNotificationDeliveries?(
+    walletAddress: string,
+    scheduleId: string,
+    limit: number,
+  ): Promise<RecurringNotificationDeliveryRecord[]>;
   listKnownWallets?(): Promise<string[]>;
 }
 
@@ -315,7 +336,18 @@ export class RecurringService {
   }
 
   async createSchedule(session: RecurringSession, input: CreateRecurringRequest): Promise<RecurringScheduleRecord> {
+    return (await this.createScheduleWithResult(session, input)).schedule;
+  }
+
+  async createScheduleWithResult(
+    session: RecurringSession,
+    input: CreateRecurringRequest,
+  ): Promise<ScheduleMutationResult> {
+    assertCloudRecurringTokenSupported(input.token);
     const now = this.now();
+    const notificationResult = input.notifications !== undefined
+      ? withWebhookSecret(input.notifications)
+      : undefined;
     const record: RecurringScheduleRecord = {
       id: this.id('recurring'),
       status: 'active',
@@ -340,17 +372,20 @@ export class RecurringService {
       ...(input.memo !== undefined ? { memo: input.memo } : {}),
       ...(input.note !== undefined ? { note: input.note } : {}),
       ...(input.expiresAt !== undefined ? { expiresAt: input.expiresAt } : {}),
-      ...(input.notifications !== undefined ? { notifications: withWebhookSecret(input.notifications) } : {}),
-      ...(input.riskMetadata !== undefined ? { riskMetadata: input.riskMetadata } : {}),
+      ...(notificationResult ? { notifications: notificationResult.notifications } : {}),
       ...(input.metadata !== undefined ? { metadata: input.metadata } : {}),
     };
     record.nextDueAt = this.computeNextDueAtIso(record) ?? undefined;
+    record.riskMetadata = recurringRiskMetadata(record, this.clock(), input.riskMetadata);
 
     this.enforcePolicy(record);
 
     await this.store.saveSchedule(session.walletAddress, record);
     await this.audit(session, 'recurring.schedule.created', record.id);
-    return record;
+    return {
+      schedule: record,
+      ...(notificationResult?.webhookSecretOnce ? { webhookSecretOnce: notificationResult.webhookSecretOnce } : {}),
+    };
   }
 
   async listSchedules(session: RecurringSession): Promise<RecurringListResponse> {
@@ -408,6 +443,14 @@ export class RecurringService {
     id: string,
     input: UpdateRecurringRequest,
   ): Promise<RecurringScheduleRecord> {
+    return (await this.updateScheduleWithResult(session, id, input)).schedule;
+  }
+
+  async updateScheduleWithResult(
+    session: RecurringSession,
+    id: string,
+    input: UpdateRecurringRequest,
+  ): Promise<ScheduleMutationResult> {
     const existing = await this.requireSchedule(session, id);
     if (existing.status === 'cancelled' || existing.status === 'completed') {
       throw new RecurringServiceError(409, 'recurring_terminal', 'Schedule is no longer active.');
@@ -421,11 +464,18 @@ export class RecurringService {
       createdAt: existing.createdAt,
       updatedAt: this.now(),
     };
+    let notificationResult: ReturnType<typeof withWebhookSecret> | undefined;
     if (input.notifications !== undefined) {
-      updated.notifications = withWebhookSecret(input.notifications, existing.notifications?.webhookSecret);
+      const existingSecret = input.notifications.webhookUrl === existing.notifications?.webhookUrl
+        ? existing.notifications?.webhookSecret
+        : undefined;
+      notificationResult = withWebhookSecret(input.notifications, existingSecret);
+      updated.notifications = notificationResult.notifications;
     }
+    assertCloudRecurringTokenSupported(updated.token);
     assertCadenceFieldsForUpdate(updated);
     updated.nextDueAt = this.computeNextDueAtIso(updated) ?? undefined;
+    updated.riskMetadata = recurringRiskMetadata(updated, this.clock(), input.riskMetadata ?? existing.riskMetadata);
 
     this.enforcePolicy(updated);
 
@@ -433,7 +483,69 @@ export class RecurringService {
     await this.audit(session, `recurring.schedule.updated`, updated.id, undefined, undefined, {
       status: updated.status,
     });
-    return updated;
+    return {
+      schedule: updated,
+      ...(notificationResult?.webhookSecretOnce ? { webhookSecretOnce: notificationResult.webhookSecretOnce } : {}),
+    };
+  }
+
+  async pauseSchedule(session: RecurringSession, id: string): Promise<RecurringScheduleRecord> {
+    const result = await this.updateScheduleWithResult(session, id, { status: 'paused' });
+    await this.audit(session, 'recurring.schedule.paused', id);
+    return result.schedule;
+  }
+
+  async resumeSchedule(session: RecurringSession, id: string): Promise<RecurringScheduleRecord> {
+    const result = await this.updateScheduleWithResult(session, id, { status: 'active' });
+    await this.audit(session, 'recurring.schedule.resumed', id);
+    return result.schedule;
+  }
+
+  async rotateNotificationSecret(
+    session: RecurringSession,
+    id: string,
+  ): Promise<ScheduleMutationResult> {
+    const existing = await this.requireSchedule(session, id);
+    if (!existing.notifications?.webhookUrl) {
+      throw new RecurringServiceError(
+        409,
+        'notifications_disabled',
+        'Webhook notifications are not enabled for this schedule.',
+      );
+    }
+    const webhookSecretOnce = randomBytes(32).toString('hex');
+    const updated: RecurringScheduleRecord = {
+      ...existing,
+      notifications: {
+        ...existing.notifications,
+        webhookSecret: webhookSecretOnce,
+      },
+      updatedAt: this.now(),
+    };
+    updated.riskMetadata = recurringRiskMetadata(updated, this.clock(), existing.riskMetadata);
+    await this.store.saveSchedule(session.walletAddress, updated);
+    await this.audit(session, 'recurring.notification.secret_rotated', id);
+    return { schedule: updated, webhookSecretOnce };
+  }
+
+  async notificationStatus(
+    session: RecurringSession,
+    id: string,
+    limit = 10,
+  ): Promise<RecurringNotificationStatusView> {
+    const schedule = await this.requireSchedule(session, id);
+    const deliveries = this.store.listNotificationDeliveries
+      ? await this.store.listNotificationDeliveries(session.walletAddress, id, limit)
+      : [];
+    const sorted = [...deliveries]
+      .map(scrubNotificationDeliveryForResponse)
+      .sort((left, right) => right.updatedAt.localeCompare(left.updatedAt));
+    return {
+      enabled: Boolean(schedule.notifications?.webhookUrl),
+      ...(schedule.notifications?.webhookUrl ? { webhookUrl: schedule.notifications.webhookUrl } : {}),
+      ...(sorted[0] ? { lastDelivery: sorted[0] } : {}),
+      deliveries: sorted,
+    };
   }
 
   async deleteSchedule(session: RecurringSession, id: string): Promise<void> {
@@ -535,6 +647,19 @@ export class RecurringService {
 
     const dueOccurrence = workflowCadence.latestDueOccurrence(schedule, this.clock());
     if (!dueOccurrence) {
+      if (schedule.expiresAt && !workflowCadence.nextFutureOccurrence(schedule, this.clock())) {
+        const ended: RecurringScheduleRecord = {
+          ...schedule,
+          status: 'completed',
+          updatedAt: this.now(),
+          nextDueAt: undefined,
+        };
+        await this.store.saveSchedule(session.walletAddress, ended);
+        await this.audit(session, 'recurring.schedule.completed', schedule.id, undefined, undefined, {
+          reason: 'no_future_runs_before_expiry',
+        });
+        return { scheduleId: schedule.id, reason: 'completed' };
+      }
       return { scheduleId: schedule.id, reason: 'invalid' };
     }
     if (dueOccurrence.dueAt.getTime() > this.clock().getTime()) {
@@ -557,6 +682,7 @@ export class RecurringService {
     );
     if (existing) {
       await this.repairExistingOccurrence(session, schedule, existing, dueOccurrence.dueAt);
+      await this.ensureNotificationDelivery(session, schedule, existing);
       return {
         scheduleId: schedule.id,
         occurrenceKey,
@@ -580,6 +706,7 @@ export class RecurringService {
     const claim = await this.store.claimOccurrence(session.walletAddress, occurrence);
     if (!claim.created) {
       await this.repairExistingOccurrence(session, schedule, claim.occurrence, dueOccurrence.dueAt);
+      await this.ensureNotificationDelivery(session, schedule, claim.occurrence);
       return {
         scheduleId: schedule.id,
         occurrenceKey,
@@ -609,13 +736,7 @@ export class RecurringService {
     }
     await this.store.saveSchedule(session.walletAddress, nextSchedule);
     await this.audit(session, 'recurring.materialized', schedule.id, occurrence.id, occurrenceKey);
-    if (this.notificationSink && (occurrence.status === 'ready' || occurrence.status === 'approval_pending')) {
-      await this.notificationSink({
-        walletAddress: session.walletAddress,
-        schedule: nextSchedule,
-        occurrence,
-      });
-    }
+    await this.ensureNotificationDelivery(session, nextSchedule, occurrence);
 
     return {
       scheduleId: schedule.id,
@@ -696,6 +817,28 @@ export class RecurringService {
     await this.audit(session, 'recurring.materialized', schedule.id, occurrence.id, occurrence.occurrenceKey, {
       recovered: true,
     });
+    await this.ensureNotificationDelivery(session, nextSchedule, occurrence);
+  }
+
+  private async ensureNotificationDelivery(
+    session: RecurringSession,
+    schedule: RecurringScheduleRecord,
+    occurrence: RecurringOccurrenceRecord,
+  ): Promise<void> {
+    if (!this.notificationSink || (occurrence.status !== 'ready' && occurrence.status !== 'approval_pending')) {
+      return;
+    }
+    try {
+      await this.notificationSink({
+        walletAddress: session.walletAddress,
+        schedule,
+        occurrence,
+      });
+    } catch (err) {
+      await this.audit(session, 'recurring.notification.enqueue_failed', schedule.id, occurrence.id, occurrence.occurrenceKey, {
+        error: err instanceof Error ? redactSecrets(err.message) : 'Failed to enqueue recurring notification.',
+      });
+    }
   }
 
   private isRecoverableInterruptedOccurrence(occurrence: RecurringOccurrenceRecord): boolean {
@@ -759,6 +902,15 @@ function sortByDueAt<T extends { dueAt: string }>(records: T[]): T[] {
 
 function notFound(message: string): RecurringServiceError {
   return new RecurringServiceError(404, 'not_found', message);
+}
+
+function assertCloudRecurringTokenSupported(token: string): void {
+  if (token.toUpperCase() === 'SOL') return;
+  throw new RecurringServiceError(
+    409,
+    'unsupported_cloud_recurring_token',
+    'Agentic Cloud recurring execution currently supports SOL schedules only.',
+  );
 }
 
 function mapApprovalStatusToOccurrence(
@@ -847,10 +999,42 @@ function clone<T>(value: T): T {
 function withWebhookSecret(
   notifications: NonNullable<RecurringScheduleRecord['notifications']>,
   existingSecret?: string,
-): NonNullable<RecurringScheduleRecord['notifications']> {
-  if (!notifications.webhookUrl) return { ...notifications };
+): {
+  notifications: NonNullable<RecurringScheduleRecord['notifications']>;
+  webhookSecretOnce?: string;
+} {
+  if (!notifications.webhookUrl) return { notifications: { ...notifications } };
+  const webhookSecret = existingSecret ?? randomBytes(32).toString('hex');
   return {
-    ...notifications,
-    webhookSecret: existingSecret ?? randomBytes(32).toString('hex'),
+    notifications: {
+      ...notifications,
+      webhookSecret,
+    },
+    ...(existingSecret ? {} : { webhookSecretOnce: webhookSecret }),
   };
+}
+
+function recurringRiskMetadata(
+  schedule: RecurringScheduleRecord,
+  now: Date,
+  current?: JsonObject,
+): JsonObject {
+  const lifetimeSpend = workflowCadence.lifetimeSpendEstimate(schedule, schedule.amount, now);
+  const nextRuns = workflowCadence.previewUpcoming(schedule, now, 5).map((entry) => entry.dueAt.toISOString());
+  return {
+    ...(current ?? {}),
+    recurring: {
+      lifetimeSpend: jsonObject(lifetimeSpend),
+      nextRuns,
+      nextRunCount: nextRuns.length,
+      hasExpiry: Boolean(schedule.expiresAt),
+      hasMaxOccurrences: schedule.maxOccurrences !== undefined,
+      notificationsEnabled: Boolean(schedule.notifications?.webhookUrl),
+      perRunWalletApproval: true,
+    },
+  };
+}
+
+function jsonObject(value: unknown): JsonObject {
+  return JSON.parse(JSON.stringify(value)) as JsonObject;
 }

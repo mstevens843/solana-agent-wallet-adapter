@@ -142,6 +142,16 @@ export function recurringStoreAdapterForCloudStore(store: CloudSessionStore): Re
       return [...wallets];
     },
     async saveNotificationDelivery(record) {
+      for (const [id, existing] of state.notificationDeliveries) {
+        if (
+          existing.walletAddress === record.walletAddress &&
+          existing.occurrenceId === record.occurrenceId &&
+          existing.type === record.type
+        ) {
+          state.notificationDeliveries.set(id, clone({ ...record, id: existing.id }));
+          return;
+        }
+      }
       state.notificationDeliveries.set(record.id, clone(record));
     },
     async findNotificationDelivery(walletAddress, occurrenceId, type) {
@@ -155,6 +165,13 @@ export function recurringStoreAdapterForCloudStore(store: CloudSessionStore): Re
         }
       }
       return undefined;
+    },
+    async listNotificationDeliveries(walletAddress, scheduleId, limit) {
+      return [...state.notificationDeliveries.values()]
+        .filter((record) => record.walletAddress === walletAddress && record.scheduleId === scheduleId)
+        .sort((left, right) => right.updatedAt.localeCompare(left.updatedAt))
+        .slice(0, limit)
+        .map(clone);
     },
     async listDueNotificationDeliveries(nowIso, limit) {
       const now = Date.parse(nowIso);
@@ -206,6 +223,12 @@ export async function handleRecurringApiRequest(
       case 'occurrences':
         await handleOccurrences(req, res, context.service, session, route.id, route.url);
         return true;
+      case 'notifications':
+        await handleNotifications(req, res, context.service, session, route.id, route.url);
+        return true;
+      case 'rotateNotifications':
+        await handleRotateNotifications(req, res, context.service, session, route.id);
+        return true;
       case 'pause':
         await handlePauseResume(req, res, context.service, session, route.id, 'paused');
         return true;
@@ -224,6 +247,8 @@ type RecurringRoute =
   | { name: 'item'; id: string }
   | { name: 'materialize' }
   | { name: 'occurrences'; id: string; url: URL }
+  | { name: 'notifications'; id: string; url: URL }
+  | { name: 'rotateNotifications'; id: string }
   | { name: 'pause'; id: string }
   | { name: 'resume'; id: string };
 
@@ -233,6 +258,14 @@ function matchRecurringRoute(pathname: string, url?: URL): RecurringRoute | unde
   const occurrencesMatch = /^\/api\/recurring\/([^/]+)\/occurrences$/.exec(pathname);
   if (occurrencesMatch?.[1] && url) {
     return { name: 'occurrences', id: validateRecurringId(occurrencesMatch[1]), url };
+  }
+  const notificationsMatch = /^\/api\/recurring\/([^/]+)\/notifications$/.exec(pathname);
+  if (notificationsMatch?.[1] && url) {
+    return { name: 'notifications', id: validateRecurringId(notificationsMatch[1]), url };
+  }
+  const rotateNotificationsMatch = /^\/api\/recurring\/([^/]+)\/notifications\/rotate$/.exec(pathname);
+  if (rotateNotificationsMatch?.[1]) {
+    return { name: 'rotateNotifications', id: validateRecurringId(rotateNotificationsMatch[1]) };
   }
   const pauseMatch = /^\/api\/recurring\/([^/]+)\/pause$/.exec(pathname);
   if (pauseMatch?.[1]) return { name: 'pause', id: validateRecurringId(pauseMatch[1]) };
@@ -250,12 +283,16 @@ async function handleCollection(
   session: RecurringSession,
 ): Promise<void> {
   if (req.method === 'POST') {
-    const schedule = await service.createSchedule(session, validateCreateRecurringRequest(await readJsonBody(req)));
-    const view = buildScheduleView(schedule);
+    const result = await service.createScheduleWithResult(
+      session,
+      validateCreateRecurringRequest(await readJsonBody(req)),
+    );
+    const view = buildScheduleView(result.schedule);
     writeJson(res, 201, {
       schedule: view.schedule,
       lifetimeSpend: view.lifetimeSpend,
       nextRuns: view.nextRuns,
+      ...(result.webhookSecretOnce ? { webhookSecretOnce: result.webhookSecretOnce } : {}),
     });
     return;
   }
@@ -283,12 +320,17 @@ async function handleItem(
   id: string,
 ): Promise<void> {
   if (req.method === 'PATCH') {
-    const schedule = await service.updateSchedule(session, id, validateUpdateRecurringRequest(await readJsonBody(req)));
-    const view = buildScheduleView(schedule);
+    const result = await service.updateScheduleWithResult(
+      session,
+      id,
+      validateUpdateRecurringRequest(await readJsonBody(req)),
+    );
+    const view = buildScheduleView(result.schedule);
     writeJson(res, 200, {
       schedule: view.schedule,
       lifetimeSpend: view.lifetimeSpend,
       nextRuns: view.nextRuns,
+      ...(result.webhookSecretOnce ? { webhookSecretOnce: result.webhookSecretOnce } : {}),
     });
     return;
   }
@@ -347,6 +389,44 @@ async function handleOccurrences(
   writeJson(res, 200, result);
 }
 
+async function handleNotifications(
+  req: IncomingMessage,
+  res: ServerResponse,
+  service: RecurringService,
+  session: RecurringSession,
+  scheduleId: string,
+  url: URL,
+): Promise<void> {
+  if (req.method !== 'GET') {
+    methodNotAllowed(res);
+    return;
+  }
+  const limitParam = url.searchParams.get('limit');
+  const limit = limitParam ? Math.min(Math.max(parseInt(limitParam, 10) || 0, 1), 50) : 10;
+  writeJson(res, 200, await service.notificationStatus(session, scheduleId, limit));
+}
+
+async function handleRotateNotifications(
+  req: IncomingMessage,
+  res: ServerResponse,
+  service: RecurringService,
+  session: RecurringSession,
+  scheduleId: string,
+): Promise<void> {
+  if (req.method !== 'POST') {
+    methodNotAllowed(res);
+    return;
+  }
+  const result = await service.rotateNotificationSecret(session, scheduleId);
+  const view = buildScheduleView(result.schedule);
+  writeJson(res, 200, {
+    schedule: view.schedule,
+    lifetimeSpend: view.lifetimeSpend,
+    nextRuns: view.nextRuns,
+    webhookSecretOnce: result.webhookSecretOnce,
+  });
+}
+
 function parseOccurrenceStatusParam(value: string | null): RecurringOccurrenceStatus | undefined {
   if (!value) return undefined;
   if ((RECURRING_OCCURRENCE_STATUSES as readonly string[]).includes(value)) {
@@ -370,7 +450,9 @@ async function handlePauseResume(
     methodNotAllowed(res);
     return;
   }
-  const schedule = await service.updateSchedule(session, scheduleId, { status: nextStatus });
+  const schedule = nextStatus === 'paused'
+    ? await service.pauseSchedule(session, scheduleId)
+    : await service.resumeSchedule(session, scheduleId);
   const view = buildScheduleView(schedule);
   writeJson(res, 200, {
     schedule: view.schedule,

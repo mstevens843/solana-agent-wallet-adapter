@@ -177,8 +177,50 @@ describe('cloud evidence receipt API', () => {
         expect(event.recordId).toBe(receipt.id);
         expect(event.walletAddress).toBe(walletA);
       }
-      expect(events[0]?.metadata).toEqual({ kind: receipt.kind, status: receipt.status });
-      expect(events[1]?.metadata).toEqual({ kind: receipt.kind });
+      expect(events[0]?.metadata).toMatchObject({
+        kind: receipt.kind,
+        status: receipt.status,
+        recordType: 'evidence',
+        recordId: receipt.id,
+        receiptType: receipt.receiptType ?? receipt.kind,
+        artifactHash: receipt.artifactHash,
+      });
+      expect(events[1]?.metadata).toMatchObject({
+        kind: receipt.kind,
+        recordType: 'evidence',
+        recordId: receipt.id,
+        receiptType: receipt.receiptType ?? receipt.kind,
+        artifactHash: receipt.artifactHash,
+      });
+    });
+  });
+
+  it('records audit metadata that links receipts back to approval sources', async () => {
+    await withEvidenceServer(async ({ port, store }) => {
+      const metadata = {
+        recordType: 'approval',
+        recordId: 'approval_1',
+        sourceRecordType: 'approval',
+        sourceRecordId: 'approval_1',
+        approvalId: 'approval_1',
+        proofUseCase: 'intent',
+        labId: 'intent-receipt',
+        browserArtifactId: 'browser_receipt_1',
+      };
+
+      const created = await postJson(port, '/api/evidence', sampleReceiptBody({ metadata }), walletA);
+      expect(created.status).toBe(201);
+      const [event] = store.snapshotAuditEvents();
+      expect(event?.metadata).toMatchObject({
+        recordType: 'evidence',
+        recordId: (created.body.receipt as EvidenceReceiptRecord).id,
+        sourceRecordType: 'approval',
+        sourceRecordId: 'approval_1',
+        approvalId: 'approval_1',
+        proofUseCase: 'intent',
+        labId: 'intent-receipt',
+        browserArtifactId: 'browser_receipt_1',
+      });
     });
   });
 

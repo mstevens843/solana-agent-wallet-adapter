@@ -14,8 +14,6 @@ export interface RecurringNotificationDeliveryRecord {
   scheduleId: string;
   occurrenceId: string;
   payload: JsonObject;
-  webhookUrl: string;
-  webhookSecret: string;
   status: RecurringNotificationDeliveryStatus;
   attempts: number;
   nextAttemptAt: string;
@@ -32,6 +30,11 @@ export interface RecurringNotificationStore {
     occurrenceId: string,
     type: RecurringNotificationDeliveryRecord['type'],
   ): Promise<RecurringNotificationDeliveryRecord | undefined>;
+  listNotificationDeliveries?(
+    walletAddress: string,
+    scheduleId: string,
+    limit: number,
+  ): Promise<RecurringNotificationDeliveryRecord[]>;
   listDueNotificationDeliveries(nowIso: string, limit: number): Promise<RecurringNotificationDeliveryRecord[]>;
 }
 
@@ -51,6 +54,8 @@ const BACKOFF_MS = [
   6 * 60 * 60_000,
   24 * 60 * 60_000,
 ];
+const DELIVERY_TIMEOUT_MS = 10_000;
+const OCCURRENCE_READY_TYPE = 'recurring.occurrence.ready' as const;
 
 export class RecurringNotificationService {
   private readonly clock: () => Date;
@@ -71,7 +76,7 @@ export class RecurringNotificationService {
     scheduleId: string,
     occurrenceId: string,
   ): Promise<RecurringNotificationDeliveryRecord | undefined> {
-    const existing = await this.store.findNotificationDelivery(walletAddress, occurrenceId, 'recurring.occurrence.ready');
+    const existing = await this.store.findNotificationDelivery(walletAddress, occurrenceId, OCCURRENCE_READY_TYPE);
     if (existing) return existing;
 
     const schedule = await this.store.getSchedule(walletAddress, scheduleId);
@@ -83,14 +88,12 @@ export class RecurringNotificationService {
 
     const now = this.now();
     const record: RecurringNotificationDeliveryRecord = {
-      id: `delivery_${this.idFactory()}`,
+      id: deliveryId(occurrenceId, OCCURRENCE_READY_TYPE),
       walletAddress,
-      type: 'recurring.occurrence.ready',
+      type: OCCURRENCE_READY_TYPE,
       scheduleId,
       occurrenceId,
       payload: occurrenceReadyPayload(schedule, occurrence),
-      webhookUrl,
-      webhookSecret,
       status: 'pending',
       attempts: 0,
       nextAttemptAt: now,
@@ -114,44 +117,56 @@ export class RecurringNotificationService {
   private async deliver(
     record: RecurringNotificationDeliveryRecord,
   ): Promise<'delivered' | 'failed' | 'abandoned'> {
-    if (record.status === 'delivered' || record.status === 'abandoned') return record.status;
-    if (record.attempts >= BACKOFF_MS.length) {
-      await this.store.saveNotificationDelivery({
-        ...record,
+    const safeRecord = scrubNotificationDeliveryForResponse(record);
+    if (safeRecord.status === 'delivered' || safeRecord.status === 'abandoned') return safeRecord.status;
+    const schedule = await this.store.getSchedule(safeRecord.walletAddress, safeRecord.scheduleId);
+    const webhookUrl = schedule?.notifications?.webhookUrl;
+    const webhookSecret = schedule?.notifications?.webhookSecret;
+    if (!webhookUrl || !webhookSecret) {
+      return this.recordFailure(safeRecord, 'Webhook notifications are disabled for this recurring schedule.');
+    }
+    if (safeRecord.attempts >= BACKOFF_MS.length) {
+      const abandoned = {
+        ...safeRecord,
         status: 'abandoned',
         updatedAt: this.now(),
-        lastError: record.lastError ?? 'Delivery attempts exhausted.',
-      });
+        lastError: safeRecord.lastError ?? 'Delivery attempts exhausted.',
+      } satisfies RecurringNotificationDeliveryRecord;
+      await this.store.saveNotificationDelivery(abandoned);
+      await this.auditAbandoned(abandoned);
       return 'abandoned';
     }
 
-    const body = JSON.stringify(record.payload);
+    const body = JSON.stringify(safeRecord.payload);
+    const timestamp = this.now();
     try {
-      const response = await this.fetchFn(record.webhookUrl, {
+      const response = await this.fetchFn(webhookUrl, {
         method: 'POST',
         headers: {
           'content-type': 'application/json',
-          'x-agentic-delivery-id': record.id,
-          'x-agentic-signature': `sha256=${hmacSha256(record.webhookSecret, body)}`,
+          'x-agentic-delivery-id': safeRecord.id,
+          'x-agentic-signature': `sha256=${hmacSha256(webhookSecret, `${timestamp}.${body}`)}`,
+          'x-agentic-timestamp': timestamp,
         },
         body,
+        signal: timeoutSignal(DELIVERY_TIMEOUT_MS),
       });
       if (response.ok) {
         const now = this.now();
+        const { lastError: _lastError, ...recordWithoutLastError } = safeRecord;
         await this.store.saveNotificationDelivery({
-          ...record,
+          ...recordWithoutLastError,
           status: 'delivered',
-          attempts: record.attempts + 1,
+          attempts: safeRecord.attempts + 1,
           deliveredAt: now,
           updatedAt: now,
-          lastError: undefined,
         });
         return 'delivered';
       }
-      return this.recordFailure(record, `Webhook returned HTTP ${response.status}.`);
+      return this.recordFailure(safeRecord, `Webhook returned HTTP ${response.status}.`);
     } catch (err) {
       const message = err instanceof Error ? err.message : 'Webhook delivery failed.';
-      return this.recordFailure(record, message);
+      return this.recordFailure(safeRecord, message);
     }
   }
 
@@ -165,15 +180,33 @@ export class RecurringNotificationService {
     const nextAttemptAt = abandoned
       ? now
       : new Date(now.getTime() + BACKOFF_MS[Math.max(0, attempts - 1)]!).toISOString();
-    await this.store.saveNotificationDelivery({
-      ...record,
+    const updated: RecurringNotificationDeliveryRecord = {
+      ...scrubNotificationDeliveryForResponse(record),
       status: abandoned ? 'abandoned' : 'failed',
       attempts,
       nextAttemptAt: typeof nextAttemptAt === 'string' ? nextAttemptAt : nextAttemptAt.toISOString(),
       updatedAt: now.toISOString(),
       lastError: redactSecrets(error),
-    });
+    };
+    await this.store.saveNotificationDelivery(updated);
+    if (abandoned) await this.auditAbandoned(updated);
     return abandoned ? 'abandoned' : 'failed';
+  }
+
+  private async auditAbandoned(record: RecurringNotificationDeliveryRecord): Promise<void> {
+    await this.store.appendAuditEvent(record.walletAddress, {
+      id: `audit_${this.idFactory()}`,
+      walletAddress: record.walletAddress,
+      type: 'recurring.notification.abandoned',
+      scheduleId: record.scheduleId,
+      occurrenceId: record.occurrenceId,
+      createdAt: this.now(),
+      metadata: {
+        deliveryId: record.id,
+        attempts: record.attempts,
+        ...(record.lastError ? { lastError: record.lastError } : {}),
+      },
+    });
   }
 
   private now(): string {
@@ -189,6 +222,20 @@ export function isRecurringNotificationStore(value: unknown): value is Recurring
     typeof candidate.findNotificationDelivery === 'function' &&
     typeof candidate.listDueNotificationDeliveries === 'function',
   );
+}
+
+export function scrubNotificationDeliveryForResponse(
+  record: RecurringNotificationDeliveryRecord,
+): RecurringNotificationDeliveryRecord {
+  const {
+    webhookSecret: _webhookSecret,
+    webhookUrl: _webhookUrl,
+    ...safe
+  } = record as RecurringNotificationDeliveryRecord & {
+    webhookSecret?: string;
+    webhookUrl?: string;
+  };
+  return { ...safe };
 }
 
 function occurrenceReadyPayload(
@@ -211,4 +258,24 @@ function occurrenceReadyPayload(
 
 function hmacSha256(secret: string, body: string): string {
   return createHmac('sha256', secret).update(body).digest('hex');
+}
+
+function deliveryId(
+  occurrenceId: string,
+  type: RecurringNotificationDeliveryRecord['type'],
+): string {
+  const safeOccurrenceId = occurrenceId.replace(/[^a-zA-Z0-9_-]/g, '_');
+  const safeType = type.replace(/[^a-zA-Z0-9_-]/g, '_');
+  return `delivery_${safeType}_${safeOccurrenceId}`;
+}
+
+function timeoutSignal(timeoutMs: number): AbortSignal | undefined {
+  if (typeof AbortSignal === 'undefined') return undefined;
+  const maybeTimeout = AbortSignal as typeof AbortSignal & {
+    timeout?: (milliseconds: number) => AbortSignal;
+  };
+  if (typeof maybeTimeout.timeout === 'function') return maybeTimeout.timeout(timeoutMs);
+  const controller = new AbortController();
+  setTimeout(() => controller.abort(), timeoutMs);
+  return controller.signal;
 }

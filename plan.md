@@ -1,315 +1,97 @@
-# First-Time User Flow And Transaction Finalization Plan
+# Recurring Plans Production Completion Plan
 
-## Objective
+## Summary
 
-Bring Agentic from a strong engineering foundation into a launch-ready web product flow where a normal first-time user understands the product in under 60 seconds:
+Recurring plans are now treated as a production workflow, not just persisted schedule data. The remaining completion work from the sweep focuses on secret-safe webhook reminders, reliable delivery, scalable occurrence history, explicit pause/resume auditing, robust policy loading, browser visibility, and smoke coverage.
 
-- Connect wallet.
-- Create or draft a plan.
-- Review the exact request.
-- Approve, deny, or cancel with the wallet.
-- Save a durable receipt.
-- Understand that Agentic never holds keys, never gets unlimited signing authority, and cannot approve silently.
+The product boundary stays unchanged:
 
-The critical product boundary is:
+- AI can draft a schedule.
+- Cloud can queue due occurrences.
+- Each occurrence still returns to the Approval Inbox.
+- The wallet is the only signer.
+- Receipts and audit events persist.
 
-> AI drafts. Cloud queues. Wallet approves. Receipts persist. Local bridge is optional.
+## Implemented In This Sweep
 
-This plan focuses on the first-time user flow polish and the tightened real transaction finalization layer that makes that boundary credible.
+- Webhook secrets are generated server-side and are revealed only once on create or rotate as `webhookSecretOnce`.
+- Notification delivery records no longer persist webhook secrets.
+- Webhook delivery signs `timestamp.body` and sends `X-Agentic-Delivery-Id`, `X-Agentic-Timestamp`, and `X-Agentic-Signature`.
+- Notification delivery has a fetch timeout, retry state, abandoned audit events, and deterministic occurrence/type delivery ids.
+- Materialization no longer depends on notification enqueue success; enqueue failures become audit events.
+- Duplicate/recovery materialization paths attempt to repair missing notification deliveries.
+- Recurring APIs expose notification status and secret rotation:
+  - `GET /api/recurring/:id/notifications`
+  - `POST /api/recurring/:id/notifications/rotate`
+- Occurrence history hydration can use batch approval/completed lookups instead of scanning all wallet records.
+- Pause/resume routes emit explicit audit events in addition to the underlying schedule update.
+- Recurring policy config discovery searches up from the current working directory and compares decimal amounts without floating-point conversion.
+- Recurring schedules compute `riskMetadata.recurring` with spend estimates, next-run preview, expiry/cap flags, notification enabled flag, and `perRunWalletApproval=true`.
+- Browser recurring cards show notification status, secret reveal, rotate-secret controls, and shared cadence previews.
 
-## Product Gaps Found
+## Public Interfaces
 
-### 1. First-Time Flow Was Not Obvious Enough
+- `POST /api/recurring` may return `webhookSecretOnce` when a webhook URL is supplied.
+- `PATCH /api/recurring/:id` may return `webhookSecretOnce` when a webhook URL is newly enabled or changed.
+- `GET /api/recurring/:id/notifications` returns the scrubbed notification status and recent deliveries.
+- `POST /api/recurring/:id/notifications/rotate` rotates the webhook secret and returns the new secret once.
+- MCP/local bridge supports recurring metadata fields but does not run the cloud webhook delivery cron.
 
-The app had the right primitives, but a first-time user could still land in `/app` and miss the actual path:
+## Verification Plan
 
-- Wallet connection, cloud sign-in, plan creation, review, approval, and receipt were spread across multiple surfaces.
-- Private local bridge language competed with cloud/browser modes and made the default path feel unclear.
-- The app did not continuously explain what the current decision actually does.
-- Completion did not strongly pull the user toward the saved receipt.
+- Workflow tests: cadence, expiry, spend estimates, labels, and validation.
+- Render-web tests: recurring API, notification service, policy enforcement, Postgres store, and route registration.
+- Browser tests/typecheck: recurring UI parsing, shared preview behavior, and notification controls.
+- Manual smoke: create recurring schedule with webhook, copy one-time secret, materialize, deliver notification, rotate secret, pause/resume, inspect occurrence history, verify every run still requires wallet approval.
 
-Implementation target:
+## Non-Recurring Test Drift
 
-- A first-run band that shows the live journey: Wallet, Plan, Review, Decision, Receipt.
-- Primary action changes based on the current state.
-- Approval cards state the exact effect of approval or rejection.
-- Completed receipts become a visible end state, not a hidden archive.
+The evidence receipt audit expectation has been aligned with the current `intent_receipt_v1` schema. The full render-web suite now passes for this phase.
 
-### 2. Transaction Finalization Was Too Client-Supplied
+# Evidence Receipts Completion Sweep
 
-The previous cloud API could store a finalization preview/result, but the browser could provide too much of that preview. For a money-moving transaction, this is not good enough. The server needs to own the review boundary.
+## Summary
 
-Required final step:
+Evidence Receipts now need to behave like concrete wallet-bound proof objects, not an abstract lab feature. The completion target is:
 
-- Refresh or construct the action from locked approval constraints.
-- Simulate the transaction.
-- Store transaction hash, message hash, quote hash, and simulation hash.
-- Show the wallet only that exact transaction.
-- Require a wallet proof bound to that finalization record.
-- Save the confirmed receipt.
+- A user can sign proof of intent, policy, review, or rejection from the exact approval card.
+- The wallet message explains the request, the proof use case, the receipt fields, and the evidence-only boundary.
+- Receipt archives are searchable by request, policy, signed text, metadata, and linked approval.
+- Cloud audit events can be filtered by the approval that caused the receipt.
+- Activity panels load reliably and can be refreshed without requiring a full workspace sync.
 
-Implementation target:
+## Implementation Decisions
 
-- Add server-owned finalization endpoints:
-  - `POST /api/approvals/:id/finalization/prepare`
-  - `POST /api/approvals/:id/finalization/:finalizationId/submit`
-  - `POST /api/approvals/:id/finalization/:finalizationId/fail`
-- Keep the legacy preview/result route for compatibility, but make the browser use server prepare/submit.
-- Require finalization-bound proof messages for submitted/confirmed transaction receipts.
+- Keep the public `POST /api/evidence`, `GET /api/evidence`, and `GET /api/audit` shapes backward-compatible.
+- Store source linkage in optional metadata only. Older receipts remain readable.
+- Treat rejection as an action: `Deny with proof` signs a rejection receipt and then denies the approval. The standard `Deny request` button remains available for users who do not want an extra receipt.
+- Canonical receipt types use stable values such as `intent_receipt_v1` rather than display titles.
+- Server audit metadata records evidence identity separately from source identity:
+  - `recordType=evidence`, `recordId=<receipt id>`
+  - `sourceRecordType=approval`, `sourceRecordId=<approval id>`
+  - `approvalId`, `proofUseCase`, `labId`, `browserArtifactId` when present
 
-### 3. Proof-Only And Wallet-Execute Paths Needed Hard Separation
+## Completed Hardening
 
-The app must never make proof-only approval look like transaction execution.
+- Evidence service audit events now preserve safe receipt/source metadata for `evidence.created` and `evidence.deleted`.
+- Real evidence-created audit events are queryable through `/api/audit?recordType=approval&recordId=<approval id>`.
+- Related receipt matching accepts `recordType/recordId`, `sourceRecordType/sourceRecordId`, `subjectType/subjectId`, and `approvalId`.
+- Related receipt rows now support sharing, not only copy text/JSON.
+- Receipt archive search includes signing messages, receipt type, field values, and metadata.
+- Activity panels auto-load when rendered open and expose a manual refresh control.
+- Inline rejection now reads as `Deny with proof` and performs the denial after signing the receipt.
+- Receipt signing messages now include the use case, wallet, cluster, request text, receipt fields, proof statement, effect boundary, and pre-signature hash.
 
-Final policy:
+## Verification Plan
 
-- `transfer_sol`, `transfer_spl`, and `swap` require transaction preview/finalization.
-- `custom_transaction` is proof-only until a concrete, server-owned builder exists.
-- `manual_review` and recurring schedule creation use wallet decision proof.
-- Browser-local fallback can sign proof-only receipts, but must say that no transaction is submitted by that proof.
-
-Implementation target:
-
-- Direct `/approve` is blocked for money-moving cloud approvals.
-- Unsupported cloud money-moving kinds cannot be proof-only approved.
-- Unsupported cloud finalization buttons are disabled and tell the user to use private local mode or reject.
-
-### 4. Trust Layer Needed To Become The Product
-
-The trust boundary is Agentic's moat. It needed visible proof, not only implementation details.
-
-Implementation target:
-
-- Show no custody, no unlimited signer, AI drafts only, receipts persist.
-- Store signed decision proof messages.
-- Store transaction finalization records with hashes and simulation/quote evidence.
-- Add clearer trust bundle copy for completed receipts.
-
-### 5. AI Guardrails Needed Product-Level Boundaries
-
-The planner needed to feel powerful but bounded:
-
-- AI can draft.
-- AI can explain risk.
-- AI can summarize and fill forms.
-- AI cannot approve.
-- AI cannot silently change locked constraints.
-- AI cannot request delegated/unlimited signing.
-
-Implementation target:
-
-- Guardrail metadata on plans and approvals.
-- Block unsafe authority language.
-- Preserve finalization requirements and constraint fingerprints.
-
-## Implementation Phases
-
-### Phase 1: First-Time User Orientation
-
-Implemented:
-
-- Added a first-run progress surface for Wallet, Plan, Review, Decision, Receipt.
-- Added state-aware first-run primary actions.
-- Clarified cloud/browser/local mode language.
-- Added approval effect panels on inbox cards.
-- Improved completion focus toward saved receipts.
-
-Acceptance criteria:
-
-- `/app` explains the normal route without requiring docs.
-- A signed-out user can still understand template flow.
-- A signed-in cloud user sees cloud queue and receipt behavior clearly.
-- Local bridge is positioned as private local mode, not a requirement for the public app.
-
-### Phase 2: Finalization Policy Contract
-
-Implemented:
-
-- Shared workflow contract now classifies:
-  - `transfer_sol`, `transfer_spl`, `swap`: `transaction_preview`
-  - `recurring_payment`: `wallet_decision_proof`
-  - `manual_review`, `custom_transaction`: `wallet_decision_proof`
-- Direct approval is rejected for finalization-required actions.
-- Proof-only decisions cannot carry txid, explorer URL, finalization id, transaction hash, message hash, quote hash, or simulation hash.
-- Finalization result proof must match the finalization-specific message, not the generic approval message.
-
-Acceptance criteria:
-
-- A SOL transfer cannot be approved through proof-only `/approve`.
-- A custom transaction does not pretend to have server transaction finalization.
-- Submitted/confirmed finalization receipts are cryptographically bound to the stored review record.
-
-### Phase 3: Server-Owned SOL Transfer Finalization
-
-Implemented:
-
-- Added `prepareTransactionFinalization`.
-- Server validates locked constraints from approval params:
-  - sender wallet
-  - recipient or `recipientAddress`
-  - `amountSol` or `amount`
-  - SOL token boundary
-- Server builds a `SystemProgram.transfer` transaction.
-- Server simulates the transaction.
-- Server stores:
-  - transaction hash
-  - message hash
-  - quote hash
-  - simulation hash
-  - wallet action preview
-  - expiry
-  - trust metadata
-- Server returns transaction bytes separately as `transactionBase64`.
-- Added mock finalization path for deterministic server tests via `AGENTIC_MOCK_FINALIZATION=1`.
-
-Acceptance criteria:
-
-- Browser no longer constructs the cloud SOL finalization preview.
-- Wallet approval is bound to server-prepared transaction bytes.
-- Receipt stores enough evidence to audit exactly what was approved.
-
-### Phase 4: Submit And Failure Routes
-
-Implemented:
-
-- Added `submitTransactionFinalization`.
-- Added `failTransactionFinalization`.
-- Added route matching and validation for:
-  - `/finalization/prepare`
-  - `/finalization/:finalizationId/submit`
-  - `/finalization/:finalizationId/fail`
-- Registered new routes in hosted API status metadata.
-
-Acceptance criteria:
-
-- Wallet aborts are recorded without completing approval.
-- Confirmed submissions complete approval and archive linked queued plans.
-- Route finalization id must match the body/path boundary.
-
-### Phase 5: Browser Flow Wiring
-
-Implemented:
-
-- Browser cloud SOL flow calls server `/prepare`.
-- Browser signs the finalization-specific proof message.
-- Browser sends wallet transaction bytes through `signAndSendTransaction`.
-- Browser submits `/submit` with stored transaction/message/quote/simulation hashes.
-- Browser calls `/fail` if wallet approval is aborted.
-- Cloud money-moving approvals that cannot be finalized are disabled.
-- Unsupported cloud action label is `Use private local mode`.
-- Browser fallback copy says approval proof does not submit a transaction.
-- `recipientAddress` is treated as an alias for `recipient`.
-
-Acceptance criteria:
-
-- No cloud money-moving approval falls through to generic proof-only approval.
-- Wallet action copy tells the truth about execution.
-- Browser path and server path agree on finalization proof message format.
-
-### Phase 6: Trust, Recurring, And Receipts
-
-Implemented as part of broader flow polish:
-
-- Clearer receipt use cases:
-  - proof of intent
-  - proof of rejection
-  - proof of policy
-  - proof of review
-- Completed receipts include trust bundle data when available.
-- Recurring plans gained stronger production surfaces:
-  - occurrence preview/history
-  - pause/resume
-  - expiry/policy fields
-  - notification service path
-  - policy cap enforcement passed through server options
-- Recurring approvals still return to the wallet per run.
-
-Acceptance criteria:
-
-- Recurring feels like a product workflow, not just a stored schedule.
-- Evidence receipts have concrete names and use cases.
-- Trust/audit data is easy to copy or inspect.
-
-## Files Touched In This Implementation
-
-Primary implementation:
-
-- `packages/workflow/src/index.ts`
-- `apps/render-web/src/cloud/workflowService.ts`
-- `apps/render-web/src/cloud/workflowRoutes.ts`
-- `apps/render-web/src/cloud/router.ts`
-- `apps/render-web/src/server.ts`
-- `apps/browser-demo/src/main.ts`
-- `apps/browser-demo/src/styles.css`
-- `scripts/smoke-render-web.mjs`
-
-Tests and support:
-
-- `packages/workflow/src/__tests__/workflow.test.ts`
-- `apps/render-web/src/__tests__/workflow-api.test.ts`
-- `apps/render-web/src/__tests__/recurring-api.test.ts`
-- `apps/browser-demo/src/__tests__/planner.test.ts`
-- `pnpm-lock.yaml`
-- `apps/render-web/package.json`
-
-## Verification Completed
-
-Passed locally:
-
-- `pnpm -F @solana-agent-wallet-adapter/workflow test`
 - `pnpm -F @solana-agent-wallet-adapter/render-web typecheck`
 - `pnpm -F @solana-agent-wallet-adapter/render-web test`
 - `pnpm -F @solana-agent-wallet-adapter/browser-demo typecheck`
 - `pnpm -F @solana-agent-wallet-adapter/browser-demo test`
-- `pnpm -F @solana-agent-wallet-adapter/browser-demo build`
-- `pnpm -F @solana-agent-wallet-adapter/render-web build`
-- `pnpm -F @solana-agent-wallet-adapter/mcp-server test`
-- `pnpm smoke:render-web:workflow`
-
-Known warning:
-
-- Browser production build still warns that one JS chunk is over 500 kB. This is not a correctness blocker, but code splitting should be a later performance task.
-
-## Remaining Work After This Phase
-
-### Deployment
-
-Local code is implemented and verified. Public launch still requires deploying the latest Render build and confirming:
-
-- `GET https://agentic-signer.com/api/session`
-- `GET https://agentic-signer.com/api/ai/status`
-- authenticated `/api/plans`
-- authenticated `/api/approvals`
-- finalization prepare/submit routes
-
-### Future Finalizers
-
-Cloud browser finalization currently supports server-owned SOL transfer finalization. These should remain disabled or private-local until real builders exist:
-
-- SPL transfer finalizer
-- swap finalizer
-- arbitrary/custom transaction finalizer
-
-### Chain Verification Hardening
-
-Current browser submit path confirms in the browser and submits the confirmed status to the server. A later hardening pass should add server-side signature status verification before marking confirmed.
-
-### Performance
-
-The browser bundle should be split after product behavior stabilizes:
-
-- wallet runtimes
-- AI planner code
-- recurring dashboard
-- evidence receipt lab
-
-## Product Quality Target
-
-After this phase, the product should feel materially closer to launch-ready:
-
-- First-time user flow: clear.
-- Trust boundary: explicit.
-- Cloud transaction finalization: server-owned for SOL transfers.
-- Proof-only path: separated from transaction execution.
-- Recurring: stronger and more credible.
-- Smoke coverage: covers signed-in cloud, signed-out browser fallback, recurring, evidence, and private local mode.
+- Manual smoke:
+  - create a cloud approval
+  - sign intent/policy/review receipts
+  - use `Deny with proof`
+  - verify the related receipt block appears
+  - open and refresh Activity
+  - confirm `/api/audit?recordType=approval&recordId=<id>` includes `evidence.created`

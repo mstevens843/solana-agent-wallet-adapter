@@ -25,6 +25,7 @@ import {
   parseRecurringScheduleRecord,
   parseSessionResponse,
   formatOccurrenceStatus,
+  formatScheduleStatus,
   lifetimeSpendEstimate,
   previewUpcoming,
   type AiGuardrailReport,
@@ -55,7 +56,7 @@ import {
   WalletStandardWebBackend,
   type DiscoveredWallet,
 } from '@solana-agent-wallet-adapter/wallet-standard-web';
-import { Connection, PublicKey, SystemProgram, Transaction, TransactionInstruction } from '@solana/web3.js';
+import { Connection, PublicKey, Transaction, TransactionInstruction } from '@solana/web3.js';
 
 import {
   AndroidNativeWalletBackend,
@@ -576,6 +577,35 @@ interface RecurringOccurrenceHistoryState {
   error?: string;
 }
 
+interface RecurringNotificationDelivery {
+  id: string;
+  type: string;
+  scheduleId: string;
+  occurrenceId: string;
+  status: 'pending' | 'delivered' | 'failed' | 'abandoned';
+  attempts: number;
+  nextAttemptAt: string;
+  lastError?: string;
+  deliveredAt?: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+interface RecurringNotificationStatusState {
+  enabled: boolean;
+  webhookUrl?: string;
+  lastDelivery?: RecurringNotificationDelivery;
+  deliveries: RecurringNotificationDelivery[];
+  loadedAt?: string;
+  error?: string;
+}
+
+interface RecurringWebhookSecretReveal {
+  scheduleId: string;
+  secret: string;
+  createdAt: string;
+}
+
 interface ActionReceipt {
   actionId: string;
   status: PreparedActionStatus;
@@ -860,6 +890,8 @@ interface DemoState {
   recurringPreset: RecurringPresetId;
   recurringErrors: Record<string, string>;
   recurringOccurrenceHistory: Record<string, RecurringOccurrenceHistoryState>;
+  recurringNotificationStatus: Record<string, RecurringNotificationStatusState>;
+  recurringWebhookSecretOnce: RecurringWebhookSecretReveal | null;
   mwaEnvironment: MwaEnvironment;
   mwaRegistration: RegisterAgentMobileWalletAdapterResult | null;
   activeLab: string;
@@ -1459,6 +1491,8 @@ const state: DemoState = {
   recurringPreset: 'scheduled-transfer',
   recurringErrors: {},
   recurringOccurrenceHistory: {},
+  recurringNotificationStatus: {},
+  recurringWebhookSecretOnce: null,
   mwaEnvironment: detectMwaEnvironment(),
   mwaRegistration: null,
   activeLab: LABS[0]!.id,
@@ -6034,6 +6068,7 @@ function relatedReceiptRow(artifact: LabArtifact): string {
       <div>
         <button data-copy="${escapeHtml(artifact.signingMessage)}" data-copy-name="Related receipt signed text">Copy text</button>
         <button data-copy="${escapeHtml(stableJson(artifact))}" data-copy-name="Related receipt JSON">Copy JSON</button>
+        <button data-share-receipt="${escapeHtml(artifact.id)}">Share</button>
       </div>
     </div>
   `;
@@ -6043,7 +6078,12 @@ function relatedEvidenceReceiptsForApproval(approvalId: string): LabArtifact[] {
   return state.labArtifacts
     .filter((artifact) => {
       const metadata = artifact.metadata ?? {};
-      return metadata.recordType === 'approval' && metadata.recordId === approvalId;
+      return (
+        (metadata.recordType === 'approval' && metadata.recordId === approvalId) ||
+        (metadata.sourceRecordType === 'approval' && metadata.sourceRecordId === approvalId) ||
+        (metadata.subjectType === 'approval' && metadata.subjectId === approvalId) ||
+        metadata.approvalId === approvalId
+      );
     })
     .sort((left, right) => right.createdAt.localeCompare(left.createdAt));
 }
@@ -6064,6 +6104,16 @@ function recordActivityDetails(recordType: AuditRecordType, recordId: string): s
     >
       <summary>Activity</summary>
       ${body}
+      <div class="record-activity-actions">
+        <button
+          type="button"
+          data-audit-refresh-record-type="${escapeHtml(recordType)}"
+          data-audit-refresh-record-id="${escapeHtml(recordId)}"
+          ${state.busy || !cloudSessionMatchesWallet() ? 'disabled' : ''}
+        >
+          Refresh activity
+        </button>
+      </div>
     </details>
   `;
 }
@@ -6383,19 +6433,27 @@ function filteredLabArtifacts(): LabArtifact[] {
     if (state.artifactFilter === 'blocked' && artifact.payload.status !== 'blocked') return false;
     if (state.artifactTypeFilter !== 'all' && artifact.labId !== state.artifactTypeFilter) return false;
     if (!search) return true;
-    return [
-      artifact.title,
-      artifact.kind,
-      artifact.walletAddress,
-      artifact.artifactHash,
-      artifact.signature,
-      artifact.input,
-      artifact.payload.thesis,
-      artifact.payload.summary ?? '',
-      artifact.payload.whatThisProves ?? '',
-      artifact.payload.recommendedUse ?? '',
-    ].some((value) => value.toLowerCase().includes(search));
+    return artifactSearchText(artifact).includes(search);
   });
+}
+
+function artifactSearchText(artifact: LabArtifact): string {
+  return [
+    artifact.title,
+    artifact.kind,
+    artifact.walletAddress,
+    artifact.artifactHash,
+    artifact.signature,
+    artifact.signingMessage,
+    artifact.input,
+    artifact.payload.receiptType ?? '',
+    artifact.payload.thesis,
+    artifact.payload.summary ?? '',
+    artifact.payload.whatThisProves ?? '',
+    artifact.payload.recommendedUse ?? '',
+    stableJson(artifact.payload.fieldValues ?? {}),
+    stableJson(artifact.metadata ?? {}),
+  ].join(' ').toLowerCase();
 }
 
 function signedArtifactRow(artifact: LabArtifact): string {
@@ -6405,18 +6463,7 @@ function signedArtifactRow(artifact: LabArtifact): string {
   const requested = receiptRequestedText(artifact);
   const proves = receiptProvesText(artifact);
   const signatureHash = `${short(artifact.signature)} / ${short(artifact.artifactHash)}`;
-  const searchText = [
-    artifact.title,
-    artifact.kind,
-    artifact.walletAddress,
-    artifact.artifactHash,
-    artifact.signature,
-    artifact.input,
-    artifact.payload.thesis,
-    artifact.payload.summary ?? '',
-    artifact.payload.whatThisProves ?? '',
-    artifact.payload.recommendedUse ?? '',
-  ].join(' ').toLowerCase();
+  const searchText = artifactSearchText(artifact);
   return `
     <article class="signed-artifact-row receipt-proof-card ${legacy ? 'legacy' : ''}" data-artifact-search-text="${escapeHtml(searchText)}">
       <div class="receipt-proof-head">
@@ -7204,15 +7251,30 @@ function bind(): void {
   }
 
   for (const details of document.querySelectorAll<HTMLDetailsElement>('[data-audit-record-type][data-audit-record-id]')) {
+    const recordType = details.dataset.auditRecordType as AuditRecordType | undefined;
+    const recordId = details.dataset.auditRecordId;
     details.addEventListener('toggle', () => {
-      const recordType = details.dataset.auditRecordType as AuditRecordType | undefined;
-      const recordId = details.dataset.auditRecordId;
       if (!recordType || !recordId) return;
       const key = auditActivityKey(recordType, recordId);
       state.auditOpen[key] = details.open;
       if (details.open) {
         void loadAuditEventsForRecord(recordType, recordId);
       }
+    });
+    if (details.open && recordType && recordId) {
+      void loadAuditEventsForRecord(recordType, recordId);
+    }
+  }
+
+  for (const button of document.querySelectorAll<HTMLButtonElement>('[data-audit-refresh-record-type][data-audit-refresh-record-id]')) {
+    button.addEventListener('click', (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      const recordType = button.dataset.auditRefreshRecordType as AuditRecordType | undefined;
+      const recordId = button.dataset.auditRefreshRecordId;
+      if (!recordType || !recordId) return;
+      state.auditOpen[auditActivityKey(recordType, recordId)] = true;
+      void loadAuditEventsForRecord(recordType, recordId, { force: true });
     });
   }
 
@@ -9543,11 +9605,15 @@ async function cloudRequest<T = unknown>(path: string, init: RequestInit = {}): 
   return payload as T;
 }
 
-async function loadAuditEventsForRecord(recordType: AuditRecordType, recordId: string): Promise<void> {
+async function loadAuditEventsForRecord(
+  recordType: AuditRecordType,
+  recordId: string,
+  options: { force?: boolean } = {},
+): Promise<void> {
   if (!cloudSessionMatchesWallet()) return;
   const key = auditActivityKey(recordType, recordId);
   const current = state.auditActivity[key];
-  if (current?.status === 'loading' || current?.status === 'loaded') return;
+  if (current?.status === 'loading' || (current?.status === 'loaded' && !options.force)) return;
   state.auditActivity[key] = { status: 'loading', events: [] };
   render();
   try {
@@ -9848,6 +9914,13 @@ interface CloudRecurringScheduleView {
   nextRuns?: string[];
 }
 
+interface CloudRecurringMutationResponse {
+  schedule: CloudRecurringScheduleRecord;
+  lifetimeSpend?: LifetimeSpend;
+  nextRuns?: string[];
+  webhookSecretOnce?: string;
+}
+
 function cloudEndedScheduleToCompletedPlan(value: unknown): CompletedPlanRecord | null {
   if (!value || typeof value !== 'object') return null;
   const record = value as Partial<CloudRecurringScheduleRecord>;
@@ -9936,6 +10009,16 @@ function cloudTrustBundlePayload(
     decisionProofSignature: signature,
     decisionProofMessage,
     decisionProofVerified: metadata?.decisionProofVerified,
+    verification: isJsonObject(finalization) && isJsonObject(finalization.metadata) && isJsonObject(finalization.metadata.verification)
+      ? finalization.metadata.verification
+      : undefined,
+    trustBoundary: {
+      noKeyCustody: true,
+      noUnlimitedSigner: true,
+      aiCannotApprove: true,
+      walletApprovalRequiredForExecution: true,
+      serverVerificationRequiredForTransactionReceipt: Boolean(finalization),
+    },
     finalization,
   };
   return stableJson(stripUndefined(bundle));
@@ -10089,18 +10172,20 @@ function isLifetimeSpend(value: unknown): value is LifetimeSpend {
   return true;
 }
 
-async function cloudCreateRecurring(body: Record<string, unknown>): Promise<void> {
-  await cloudRequest('/api/recurring', {
+async function cloudCreateRecurring(body: Record<string, unknown>): Promise<CloudRecurringMutationResponse> {
+  const payload = await cloudRequest('/api/recurring', {
     method: 'POST',
     body: JSON.stringify(body),
   });
+  return cloudRecurringMutationResponse(payload);
 }
 
-async function cloudPatchRecurring(id: string, patch: Record<string, unknown>): Promise<void> {
-  await cloudRequest(`/api/recurring/${encodeURIComponent(id)}`, {
+async function cloudPatchRecurring(id: string, patch: Record<string, unknown>): Promise<CloudRecurringMutationResponse> {
+  const payload = await cloudRequest(`/api/recurring/${encodeURIComponent(id)}`, {
     method: 'PATCH',
     body: JSON.stringify(patch),
   });
+  return cloudRecurringMutationResponse(payload);
 }
 
 async function cloudPauseRecurring(id: string): Promise<void> {
@@ -10115,6 +10200,74 @@ async function cloudResumeRecurring(id: string): Promise<void> {
     method: 'POST',
     body: '{}',
   });
+}
+
+async function cloudRotateRecurringWebhookSecret(id: string): Promise<CloudRecurringMutationResponse> {
+  const payload = await cloudRequest(`/api/recurring/${encodeURIComponent(id)}/notifications/rotate`, {
+    method: 'POST',
+    body: '{}',
+  });
+  return cloudRecurringMutationResponse(payload);
+}
+
+async function cloudRecurringNotifications(id: string): Promise<RecurringNotificationStatusState> {
+  const payload = await cloudRequest(`/api/recurring/${encodeURIComponent(id)}/notifications?limit=10`, {
+    method: 'GET',
+  });
+  if (!isJsonObject(payload)) throw new Error('Agentic Cloud returned invalid notification status.');
+  const deliveries = Array.isArray(payload.deliveries)
+    ? payload.deliveries.map(recurringNotificationDelivery).filter((entry): entry is RecurringNotificationDelivery => Boolean(entry))
+    : [];
+  const lastDelivery = recurringNotificationDelivery(payload.lastDelivery);
+  return {
+    enabled: payload.enabled === true,
+    ...(typeof payload.webhookUrl === 'string' && { webhookUrl: payload.webhookUrl }),
+    ...(lastDelivery && { lastDelivery }),
+    deliveries,
+    loadedAt: new Date().toISOString(),
+  };
+}
+
+function cloudRecurringMutationResponse(payload: unknown): CloudRecurringMutationResponse {
+  const record = cloudResponseObject(payload, 'recurring schedule response');
+  const schedule = parseRecurringScheduleRecord(record.schedule, '$.schedule');
+  return {
+    schedule,
+    ...(isLifetimeSpend(record.lifetimeSpend) && { lifetimeSpend: record.lifetimeSpend }),
+    ...(Array.isArray(record.nextRuns) && record.nextRuns.every((entry) => typeof entry === 'string') && { nextRuns: record.nextRuns }),
+    ...(typeof record.webhookSecretOnce === 'string' && { webhookSecretOnce: record.webhookSecretOnce }),
+  };
+}
+
+function recurringNotificationDelivery(value: unknown): RecurringNotificationDelivery | null {
+  if (!isJsonObject(value)) return null;
+  if (
+    typeof value.id !== 'string' ||
+    typeof value.type !== 'string' ||
+    typeof value.scheduleId !== 'string' ||
+    typeof value.occurrenceId !== 'string' ||
+    typeof value.status !== 'string' ||
+    typeof value.attempts !== 'number' ||
+    typeof value.nextAttemptAt !== 'string' ||
+    typeof value.createdAt !== 'string' ||
+    typeof value.updatedAt !== 'string'
+  ) {
+    return null;
+  }
+  if (!['pending', 'delivered', 'failed', 'abandoned'].includes(value.status)) return null;
+  return {
+    id: value.id,
+    type: value.type,
+    scheduleId: value.scheduleId,
+    occurrenceId: value.occurrenceId,
+    status: value.status as RecurringNotificationDelivery['status'],
+    attempts: value.attempts,
+    nextAttemptAt: value.nextAttemptAt,
+    createdAt: value.createdAt,
+    updatedAt: value.updatedAt,
+    ...(typeof value.lastError === 'string' && { lastError: value.lastError }),
+    ...(typeof value.deliveredAt === 'string' && { deliveredAt: value.deliveredAt }),
+  };
 }
 
 async function cloudDeleteRecurring(id: string): Promise<void> {
@@ -10323,7 +10476,14 @@ async function runCreateRecurring(): Promise<void> {
       });
       await refreshInboxData();
     } else if (mode === 'agentic-cloud') {
-      await cloudCreateRecurring({ ...body, cluster: state.cluster });
+      const response = await cloudCreateRecurring({ ...body, cluster: state.cluster });
+      if (response.webhookSecretOnce) {
+        state.recurringWebhookSecretOnce = {
+          scheduleId: response.schedule.id,
+          secret: response.webhookSecretOnce,
+          createdAt: new Date().toISOString(),
+        };
+      }
       await refreshCloudWorkspaceData();
     } else {
       const payment = browserRecurringPaymentFromDraft(state.recurringDraft);
@@ -10418,6 +10578,13 @@ async function runPreparedActionOp(actionId: string, op: string): Promise<void> 
 
 async function runCloudPreparedActionOp(action: PreparedAction, op: string): Promise<void> {
   switch (op) {
+    case 'confirm': {
+      if (!canConfirmCloudFinalization(action)) {
+        throw new Error('This request does not have a submitted cloud transaction to confirm.');
+      }
+      await runCloudFinalizationConfirm(action);
+      return;
+    }
     case 'execute': {
       if (canFinalizeCloudSolTransfer(action)) {
         await runCloudSolTransferFinalization(action);
@@ -10520,7 +10687,7 @@ async function runCloudSolTransferFinalization(action: PreparedAction): Promise<
     confirmationError = err instanceof Error ? err.message : String(err);
   }
 
-  await cloudRequest(`/api/approvals/${encodeURIComponent(action.id)}/finalization/${encodeURIComponent(finalizationId)}/submit`, {
+  const submitResponse = await cloudRequest(`/api/approvals/${encodeURIComponent(action.id)}/finalization/${encodeURIComponent(finalizationId)}/submit`, {
     method: 'POST',
     body: JSON.stringify({
       finalizationStatus: confirmed ? 'confirmed' : 'submitted',
@@ -10544,13 +10711,40 @@ async function runCloudSolTransferFinalization(action: PreparedAction): Promise<
       },
     }),
   });
+  const submitObject = cloudResponseObject(submitResponse, 'finalization submit response');
+  const submittedFinalization = cloudFinalizationFromRecord(submitObject.finalization);
 
   await refreshCloudWorkspaceData();
-  showCompletedHistoryForAction(action.id);
-  if (!confirmed) {
-    pushToast('pending', 'Transaction submitted', `Confirmation is still pending: ${short(txid)}`);
+  if (submittedFinalization?.status === 'failed') {
+    throw new Error(submittedFinalization.error ?? 'Submitted transaction failed server verification.');
+  }
+  if (!isJsonObject(submitObject.completed)) {
+    pushToast('pending', 'Transaction submitted', `Server verification is still pending: ${short(txid)}`);
     return;
   }
+  showCompletedHistoryForAction(action.id);
+  pushToast('success', 'Transaction finalized', 'Wallet receipt saved in Completed Plans.');
+}
+
+async function runCloudFinalizationConfirm(action: PreparedAction): Promise<void> {
+  if (!action.finalizationId) {
+    throw new Error('Finalization id is missing.');
+  }
+  const response = await cloudRequest(`/api/approvals/${encodeURIComponent(action.id)}/finalization/${encodeURIComponent(action.finalizationId)}/confirm`, {
+    method: 'POST',
+    body: '{}',
+  });
+  const responseObject = cloudResponseObject(response, 'finalization confirm response');
+  const finalization = cloudFinalizationFromRecord(responseObject.finalization);
+  await refreshCloudWorkspaceData();
+  if (finalization?.status === 'failed') {
+    throw new Error(finalization.error ?? 'Submitted transaction failed server verification.');
+  }
+  if (!isJsonObject(responseObject.completed)) {
+    pushToast('pending', 'Still confirming', action.txid ? `Server verification is still pending: ${short(action.txid)}` : action.id);
+    return;
+  }
+  showCompletedHistoryForAction(action.id);
   pushToast('success', 'Transaction finalized', 'Wallet receipt saved in Completed Plans.');
 }
 
@@ -10569,138 +10763,6 @@ function cloudPreparedFinalizationFromResponse(payload: unknown): {
   };
 }
 
-async function buildCloudSolTransferPreview(action: PreparedAction): Promise<{
-  amountSol: string;
-  connection: Connection;
-  blockhash: string;
-  lastValidBlockHeight: number;
-  quoteHash: string;
-  request: Record<string, unknown>;
-  simulationHash: string;
-  transactionHash: string;
-  transactionBase64: string;
-}> {
-  if (!state.address || state.address !== action.walletAddress) {
-    throw new Error('Connect the approval wallet before finalizing this transaction.');
-  }
-  const recipient = stringParam(action, 'recipient');
-  const amountSol = stringParam(action, 'amountSol') || stringParam(action, 'amount');
-  if (!recipient) throw new Error('SOL transfer recipient is missing.');
-  if (!amountSol) throw new Error('SOL transfer amount is missing.');
-
-  const from = publicKeyFromConnectedWallet();
-  const to = new PublicKey(recipient);
-  const lamports = parseSolLamports(amountSol);
-  const rpcUrl = action.cluster === state.cluster ? activeRpcUrl() : defaultRpcUrl(action.cluster);
-  const connection = new Connection(rpcUrl, 'confirmed');
-  const balance = await connection.getBalance(from, 'confirmed');
-
-  const { blockhash, lastValidBlockHeight } = await connection.getLatestBlockhash('confirmed');
-  const tx = new Transaction({
-    feePayer: from,
-    recentBlockhash: blockhash,
-  }).add(SystemProgram.transfer({ fromPubkey: from, toPubkey: to, lamports }));
-  const memo = stringParam(action, 'memo');
-  if (memo) {
-    tx.add(new TransactionInstruction({
-      keys: [{ pubkey: from, isSigner: true, isWritable: false }],
-      programId: MEMO_PROGRAM_ID,
-      data: new TextEncoder().encode(memo) as unknown as InstructionData,
-    }));
-  }
-  const fee = await connection.getFeeForMessage(tx.compileMessage(), 'confirmed');
-  const estimatedFeeLamports = fee.value ?? 5_000;
-  if (BigInt(balance) < BigInt(lamports) + BigInt(estimatedFeeLamports)) {
-    throw new Error(`Insufficient SOL balance for ${amountSol} SOL plus estimated fees.`);
-  }
-  const simulation = await connection.simulateTransaction(tx, {
-    sigVerify: false,
-    replaceRecentBlockhash: false,
-  } as never);
-  const logs = simulation.value.logs ?? [];
-  const simulationHash = await sha256(stableJson({
-    err: simulation.value.err ?? null,
-    logs,
-    unitsConsumed: simulation.value.unitsConsumed ?? null,
-  }));
-  if (simulation.value.err) {
-    throw new Error(`Simulation failed: ${stableJson(simulation.value.err)}`);
-  }
-
-  const transactionBase64 = encodeBase64(tx.serialize({
-    requireAllSignatures: false,
-    verifySignatures: false,
-  }));
-  const transactionHash = await sha256(transactionBase64);
-  const quoteHash = await sha256(stableJson({
-    kind: 'fixed_sol_transfer',
-    amountSol,
-    recipient: to.toBase58(),
-    cluster: action.cluster,
-  }));
-  const constraintFingerprint = await sha256(stableJson({
-    approval: action.id,
-    walletAddress: action.walletAddress,
-    cluster: action.cluster,
-    kind: action.kind,
-    params: action.decisionProofParams ?? action.params,
-  }));
-
-  return {
-    amountSol,
-    connection,
-    blockhash,
-    lastValidBlockHeight,
-    quoteHash,
-    transactionBase64,
-    simulationHash,
-    transactionHash,
-    request: {
-      status: 'simulation_passed',
-      walletAction: {
-        kind: action.kind,
-        walletAddress: action.walletAddress,
-        cluster: action.cluster,
-        summary: `Transfer ${amountSol} SOL to ${to.toBase58()}`,
-        sender: from.toBase58(),
-        recipient: to.toBase58(),
-        amount: amountSol,
-        token: 'SOL',
-        feePayer: from.toBase58(),
-        estimatedFeeLamports: String(estimatedFeeLamports),
-        ...(memo ? { memo } : {}),
-        instructionSummary: memo ? [`Transfer ${amountSol} SOL`, `Memo: ${memo}`] : [`Transfer ${amountSol} SOL`],
-        touchedPrograms: memo ? [SystemProgram.programId.toBase58(), MEMO_PROGRAM_ID.toBase58()] : [SystemProgram.programId.toBase58()],
-        metadata: {
-          walletMethod: 'signAndSendTransaction',
-          lastValidBlockHeight,
-          rpcUrl,
-        },
-      },
-      transactionHash,
-      quote: {
-        provider: 'browser-fixed-transfer',
-        fetchedAt: new Date().toISOString(),
-        inputToken: 'SOL',
-        inputAmount: amountSol,
-        routeLabel: 'SystemProgram.transfer',
-        quoteHash,
-      },
-      simulation: {
-        status: 'ok',
-        simulatedAt: new Date().toISOString(),
-        logs,
-        ...(simulation.value.unitsConsumed !== undefined && { unitsConsumed: simulation.value.unitsConsumed }),
-        simulationHash,
-      },
-      metadata: {
-        constraintFingerprint,
-        transactionBoundary: 'browser_wallet_finalization_v1',
-      },
-    },
-  };
-}
-
 function cloudFinalizationFromResponse(payload: unknown): CloudTransactionFinalizationRecord {
   const response = cloudResponseObject(payload, 'finalization response');
   const finalization = cloudFinalizationFromRecord(response.finalization);
@@ -10713,20 +10775,6 @@ function cloudFinalizationFromResponse(payload: unknown): CloudTransactionFinali
 function cloudFinalizationFromRecord(value: unknown): CloudTransactionFinalizationRecord | undefined {
   if (!isJsonObject(value)) return undefined;
   return cloudFinalizationFromMetadata({ finalization: value });
-}
-
-function parseSolLamports(value: string): number {
-  const normalized = value.trim();
-  const match = /^(\d+)(?:\.(\d{1,9}))?$/.exec(normalized);
-  if (!match) throw new Error('SOL amount must be a positive decimal with at most 9 decimal places.');
-  const whole = BigInt(match[1] ?? '0');
-  const fractional = BigInt((match[2] ?? '').padEnd(9, '0'));
-  const lamports = whole * 1_000_000_000n + fractional;
-  if (lamports <= 0n) throw new Error('SOL amount must be greater than zero.');
-  if (lamports > BigInt(Number.MAX_SAFE_INTEGER)) {
-    throw new Error('SOL amount is too large for this browser finalizer.');
-  }
-  return Number(lamports);
 }
 
 async function runBrowserPreparedActionOp(actionId: string, op: string): Promise<void> {
@@ -10883,6 +10931,10 @@ async function loadCloudRecurringHistory(recurringId: string, cursor?: string): 
   };
 }
 
+async function loadCloudRecurringNotifications(recurringId: string): Promise<void> {
+  state.recurringNotificationStatus[recurringId] = await cloudRecurringNotifications(recurringId);
+}
+
 function browserRecurringHistory(recurringId: string): RecurringOccurrenceHistoryItem[] {
   return state.preparedActions
     .filter((action) => action.recurringId === recurringId)
@@ -10961,18 +11013,41 @@ async function runRecurringOp(recurringId: string, op: string, cursor?: string):
         case 'history-more':
           await loadCloudRecurringHistory(recurringId, cursor);
           break;
+        case 'notifications':
+          await loadCloudRecurringNotifications(recurringId);
+          break;
+        case 'rotate-secret': {
+          const response = await cloudRotateRecurringWebhookSecret(recurringId);
+          if (response.webhookSecretOnce) {
+            state.recurringWebhookSecretOnce = {
+              scheduleId: response.schedule.id,
+              secret: response.webhookSecretOnce,
+              createdAt: new Date().toISOString(),
+            };
+          }
+          await loadCloudRecurringNotifications(recurringId).catch(() => undefined);
+          break;
+        }
         case 'delete':
           await cloudDeleteRecurring(recurringId);
           break;
         default:
           throw new Error(`Unknown recurring operation: ${op}`);
       }
-      if (op !== 'history' && op !== 'history-more') {
+      if (op !== 'history' && op !== 'history-more' && op !== 'notifications') {
         await refreshCloudWorkspaceData();
       }
       pushToast(
         'success',
-        op === 'delete' ? 'Deleted permanently' : op.startsWith('history') ? 'Recurring history loaded' : `Recurring ${op}`,
+        op === 'delete'
+          ? 'Deleted permanently'
+          : op.startsWith('history')
+            ? 'Recurring history loaded'
+            : op === 'notifications'
+              ? 'Notifications loaded'
+              : op === 'rotate-secret'
+                ? 'Webhook secret rotated'
+                : `Recurring ${op}`,
         recurringId,
       );
     });
@@ -11084,14 +11159,7 @@ async function signAndArchiveEvidenceReceipt(input: {
     ...(input.metadata ? { metadata: input.metadata } : {}),
   };
   const preSignatureHash = await sha256(stableJson(unsigned));
-  const signingMessage = [
-    'Solana Agent Wallet Adapter',
-    `Receipt proof: ${input.lab.title}`,
-    `Receipt: ${id}`,
-    `Wallet: ${state.address}`,
-    `Cluster: ${state.cluster}`,
-    `Hash: ${preSignatureHash}`,
-  ].join('\n');
+  const signingMessage = receiptProofSigningMessage(input, id, preSignatureHash);
   const result = await signingClient.signMessage(signingMessage, signOptions(input.signSummary ?? input.lab.title));
   const verified = verifyMessageSignature(signingMessage, result.signature);
   const artifactBase = {
@@ -11107,6 +11175,43 @@ async function signAndArchiveEvidenceReceipt(input: {
   };
   const archiveResult = await archiveLabArtifact(artifact);
   return { artifact, archiveResult };
+}
+
+function receiptProofSigningMessage(
+  input: {
+    lab: LabDefinition;
+    input: string;
+    fieldValues: Record<string, string>;
+    metadata?: JsonObject;
+  },
+  id: string,
+  preSignatureHash: string,
+): string {
+  const proofUseCase = typeof input.metadata?.proofUseCase === 'string'
+    ? input.metadata.proofUseCase.replace(/_/g, ' ')
+    : input.lab.title;
+  const fieldLines = (input.lab.fields ?? [])
+    .map((field) => {
+      const value = input.fieldValues[field.id]?.trim();
+      return value ? `${field.label}: ${value}` : '';
+    })
+    .filter(Boolean);
+  return [
+    'Solana Agent Wallet Adapter',
+    `Receipt proof: ${input.lab.title}`,
+    `Use case: ${proofUseCase}`,
+    `Receipt: ${id}`,
+    `Wallet: ${state.address}`,
+    `Cluster: ${state.cluster}`,
+    'What was requested:',
+    input.input || '(no request text)',
+    'Receipt fields:',
+    ...(fieldLines.length ? fieldLines : ['(no receipt fields)']),
+    'What this proves:',
+    input.lab.whatThisProves ?? input.lab.summary ?? 'Wallet signed this evidence receipt.',
+    'Effect: evidence only; no transaction submitted; no custody or delegated authority granted.',
+    `Pre-signature hash: ${preSignatureHash}`,
+  ].join('\n');
 }
 
 async function runInlineReceiptProof(actionId: string, proofKind: InlineReceiptKind): Promise<void> {
@@ -11131,8 +11236,43 @@ async function runInlineReceiptProof(actionId: string, proofKind: InlineReceiptK
       signSummary: `${lab.title} for ${short(action.id)}`,
     });
     delete state.auditActivity[auditActivityKey('approval', action.id)];
+    if (proofKind === 'rejection' && !isTerminalPreparedAction(action)) {
+      await rejectPreparedActionAfterReceiptProof(action);
+      pushToast('success', 'Request denied with proof', archiveLabArtifactToastDetail(archiveResult, lab));
+      return;
+    }
     pushToast('success', `${lab.title} signed`, archiveLabArtifactToastDetail(archiveResult, lab));
   });
+}
+
+async function rejectPreparedActionAfterReceiptProof(action: PreparedAction): Promise<void> {
+  if (action.workflowSource === 'cloud') {
+    const decisionProof = await signCloudWorkflowDecision(action, 'rejected');
+    await cloudRequest(`/api/approvals/${encodeURIComponent(action.id)}/deny`, {
+      method: 'POST',
+      body: JSON.stringify({
+        proofSignature: decisionProof.signature,
+        decisionProofMessage: decisionProof.message,
+        signatureEncoding: 'base58',
+        note: 'Denied with a wallet-signed rejection receipt.',
+      }),
+    });
+    await refreshCloudWorkspaceData();
+    showCompletedHistoryForAction(action.id);
+    return;
+  }
+  if (isBrowserWorkflowId(action.id)) {
+    const proofSignature = await signBrowserWorkflowDecision(action, 'rejected');
+    completeBrowserPreparedAction(action, 'rejected', proofSignature);
+    showCompletedHistoryForAction(action.id);
+    return;
+  }
+  await bridgeRequest('/bridge/prepared-actions/reject', {
+    method: 'POST',
+    body: JSON.stringify({ actionId: action.id, reason: 'Denied with a wallet-signed rejection receipt.' }),
+  });
+  await refreshInboxData();
+  showCompletedHistoryForAction(action.id);
 }
 
 function inlineReceiptFieldValues(action: PreparedAction, proofKind: InlineReceiptKind): Record<string, string> {
@@ -11150,7 +11290,7 @@ function inlineReceiptFieldValues(action: PreparedAction, proofKind: InlineRecei
     case 'rejection':
       return {
         request,
-        reason: action.error || cloudExecutionBlockReason(action) || 'User rejected this wallet request before approval.',
+        reason: action.error || cloudExecutionBlockReason(action) || 'User chose Deny with proof for this wallet request.',
         policy: 'No wallet action should proceed unless the request matches the visible constraints and the user approves in-wallet.',
       };
     case 'policy':
@@ -11175,6 +11315,8 @@ function inlineReceiptMetadata(action: PreparedAction, proofKind: InlineReceiptK
     recordId: action.id,
     sourceRecordType: 'approval',
     sourceRecordId: action.id,
+    subjectType: 'approval',
+    subjectId: action.id,
     approvalId: action.id,
     proofUseCase: proofKind,
     approvalKind: action.kind,
@@ -12222,7 +12364,7 @@ function browserRecurringPaymentFromDraft(draft: RecurringDraft): RecurringPayme
     note: draft.note || 'Browser recurring schedule',
     createdAt: now,
     updatedAt: now,
-    nextDueAt: recurringNextOccurrence(draft)?.toISOString(),
+    nextDueAt: recurringDraftNextRuns(draft)[0],
     workflowSource: 'browser',
   };
 }
@@ -12261,7 +12403,6 @@ function browserOccurrenceFromRecurring(payment: RecurringPayment, summary?: str
 }
 
 function recurringNextDueFromPayload(payload: ReturnType<typeof recurringSchedulePayload>): string | undefined {
-  if (payload.startAt) return payload.startAt;
   const draft: RecurringDraft = {
     ...defaultRecurringDraft(),
     cadence: payload.cadence,
@@ -12271,8 +12412,9 @@ function recurringNextDueFromPayload(payload: ReturnType<typeof recurringSchedul
     intervalHours: payload.intervalHours === undefined ? '' : String(payload.intervalHours),
     intervalMinutes: payload.intervalMinutes === undefined ? '' : String(payload.intervalMinutes),
     localTime: payload.localTime ?? '09:00',
+    startAt: payload.startAt ? localDateTime(new Date(payload.startAt)) : defaultRecurringDraft().startAt,
   };
-  return recurringNextOccurrence(draft)?.toISOString();
+  return recurringDraftNextRuns(draft)[0];
 }
 
 function recurringSchedulePayload(plan: AgentPlan): {
@@ -12955,6 +13097,7 @@ function preparedActionCard(action: PreparedAction): string {
   const decisionLabels = preparedActionDecisionLabels(action);
   const effectCopy = approvalEffectCopy(action);
   const executionBlockReason = cloudExecutionBlockReason(action);
+  const confirmable = canConfirmCloudFinalization(action);
   const executeDisabled = (!state.bridgeActive && !browserWorkflow && !cloudWorkflow) ||
     state.busy ||
     !executable ||
@@ -12988,6 +13131,7 @@ function preparedActionCard(action: PreparedAction): string {
       </div>
       <div class="inbox-actions">
         <button data-action-op="execute" data-action-id="${action.id}" class="primary" ${executeDisabled ? 'disabled' : ''} ${executionBlockReason ? `title="${escapeHtml(executionBlockReason)}"` : ''}>${escapeHtml(decisionLabels.approve)}</button>
+        ${confirmable ? `<button data-action-op="confirm" data-action-id="${action.id}" class="primary" ${state.busy ? 'disabled' : ''}>Check confirmation</button>` : ''}
         <button data-action-op="reject" data-action-id="${action.id}" ${state.busy || isTerminalPreparedAction(action) ? 'disabled' : ''}>${escapeHtml(decisionLabels.reject)}</button>
         <button data-action-op="copy" data-action-id="${action.id}">Copy request</button>
         <details class="generated-plan-more inbox-more-actions">
@@ -13006,11 +13150,11 @@ function inlineReceiptActions(action: PreparedAction): string {
   const disabled = !state.address || state.address !== action.walletAddress || state.busy;
   const alreadySigned = relatedEvidenceReceiptsForApproval(action.id);
   const signedKinds = new Set(alreadySigned.map((artifact) => artifact.kind));
-  const actions: Array<[InlineReceiptKind, string, string]> = [
-    ['intent', 'Sign proof of intent', 'Record the exact request before deciding.'],
-    ['policy', 'Sign proof of policy', 'Record the caps and wallet rules checked.'],
-    ['review', 'Sign proof of review', 'Record the risks reviewed before the wallet opens.'],
-    ['rejection', 'Sign proof of rejection', 'Record why this request should not proceed.'],
+  const actions: Array<[InlineReceiptKind, string, string, string]> = [
+    ['intent', 'Sign proof of intent', 'Record the exact request before deciding.', 'Proof of intent signed'],
+    ['policy', 'Sign proof of policy', 'Record the caps and wallet rules checked.', 'Proof of policy signed'],
+    ['review', 'Sign proof of review', 'Record the risks reviewed before the wallet opens.', 'Proof of review signed'],
+    ['rejection', 'Deny with proof', 'Sign a rejection receipt, then deny this request.', 'Rejection proof signed'],
   ];
   return `
     <div class="inline-receipt-actions" aria-label="Receipt proof actions">
@@ -13019,7 +13163,7 @@ function inlineReceiptActions(action: PreparedAction): string {
         <p>Optional wallet-signed records for this approval. They do not approve, submit, or move funds.</p>
       </div>
       <div class="inline-receipt-button-grid">
-        ${actions.map(([kind, label, title]) => {
+        ${actions.map(([kind, label, title, signedLabel]) => {
           const lab = labById(receiptLabIdForInlineKind(kind));
           const signed = lab ? signedKinds.has(lab.kind) : false;
           return `
@@ -13030,7 +13174,7 @@ function inlineReceiptActions(action: PreparedAction): string {
               title="${escapeHtml(title)}"
               ${disabled || signed ? 'disabled' : ''}
             >
-              ${escapeHtml(signed ? label.replace('Sign ', 'Signed ') : label)}
+              ${escapeHtml(signed ? signedLabel : label)}
             </button>
           `;
         }).join('')}
@@ -13086,6 +13230,7 @@ const CLOUD_TRANSACTION_FINALIZATION_KINDS = new Set<PreparedActionKind>([
   'transfer_sol',
   'transfer_spl',
   'swap',
+  'custom_transaction',
 ]);
 
 function canFinalizeCloudSolTransfer(action: PreparedAction): boolean {
@@ -13093,6 +13238,12 @@ function canFinalizeCloudSolTransfer(action: PreparedAction): boolean {
     action.kind === 'transfer_sol' &&
     state.capabilities?.supports.signAndSendTransaction === true &&
     Boolean(state.address && state.address === action.walletAddress);
+}
+
+function canConfirmCloudFinalization(action: PreparedAction): boolean {
+  return action.workflowSource === 'cloud' &&
+    Boolean(action.finalizationId && action.txid) &&
+    (action.status === 'approval_pending' || action.finalizationStatus === 'submitted' || action.txStatus === 'pending');
 }
 
 function requiresCloudTransactionFinalization(action: PreparedAction): boolean {
@@ -13341,16 +13492,18 @@ function recurringList(): string {
 
 function recurringCard(payment: RecurringPayment): string {
   const completed = isRecurringPaymentCompleted(payment);
-  const status = completed ? 'completed' : payment.status;
+  const status = completed ? formatScheduleStatus('completed') : formatScheduleStatus(payment.status);
   const nextRuns = recurringPaymentNextRuns(payment);
   const spend = recurringPaymentLifetimeSpend(payment);
   const flipOp = payment.status === 'active' ? 'pause' : 'resume';
   const history = state.recurringOccurrenceHistory[payment.id];
+  const notifications = state.recurringNotificationStatus[payment.id];
+  const source = recurringPaymentWorkflowSource(payment);
   return `
     <article class="recurring-item">
       <div>
         <div class="pill-row">
-          <span class="status-pill ${completed || payment.status === 'active' ? 'tx-confirmed' : 'neutral'}">${escapeHtml(status)}</span>
+          <span class="status-pill ${statusLabelToneClass(status.tone)}">${escapeHtml(status.label)}</span>
           <span class="status-pill neutral">${escapeHtml(payment.cadence)}</span>
           <span class="recurring-count">${payment.occurrencesCreated ?? 0}${payment.maxOccurrences ? ` of ${payment.maxOccurrences}` : ''}</span>
         </div>
@@ -13369,11 +13522,13 @@ function recurringCard(payment: RecurringPayment): string {
           </details>
         ` : ''}
         ${recurringHistoryPanel(payment, history)}
+        ${recurringNotificationsPanel(payment, notifications, source)}
         ${payment.note ? `<p class="action-note">${escapeHtml(payment.note)}</p>` : ''}
       </div>
       <div class="recurring-actions">
         <button data-recurring-op="${flipOp}" data-recurring-id="${payment.id}" ${completed || state.busy ? 'disabled' : ''}>${payment.status === 'active' ? 'Pause' : 'Resume'}</button>
         <button data-recurring-op="history" data-recurring-id="${payment.id}" ${state.busy ? 'disabled' : ''}>${history ? 'Refresh history' : 'Load history'}</button>
+        ${source === 'cloud' && payment.notifications?.webhookUrl ? `<button data-recurring-op="notifications" data-recurring-id="${payment.id}" ${state.busy ? 'disabled' : ''}>${notifications ? 'Refresh notifications' : 'Notifications'}</button>` : ''}
         <button data-recurring-op="delete" data-recurring-id="${payment.id}" ${state.busy ? 'disabled' : ''}>Delete</button>
       </div>
     </article>
@@ -13413,6 +13568,72 @@ function recurringHistoryPanel(
       ${history.nextCursor ? `<button data-recurring-op="history-more" data-recurring-id="${payment.id}" data-recurring-cursor="${escapeHtml(history.nextCursor)}" ${state.busy ? 'disabled' : ''}>Show older</button>` : ''}
     </div>
   `;
+}
+
+function recurringNotificationsPanel(
+  payment: RecurringPayment,
+  notifications: RecurringNotificationStatusState | undefined,
+  source: WorkflowRecordSource,
+): string {
+  if (source !== 'cloud' || !payment.notifications?.webhookUrl) return '';
+  const reveal = state.recurringWebhookSecretOnce?.scheduleId === payment.id
+    ? state.recurringWebhookSecretOnce
+    : null;
+  const latest = notifications?.lastDelivery;
+  return `
+    <div class="recurring-notifications-panel">
+      <div class="recurring-history-head">
+        <strong>Notifications</strong>
+        <span>${escapeHtml(short(payment.notifications.webhookUrl))}</span>
+      </div>
+      ${reveal ? `
+        <div class="recurring-secret-reveal">
+          <span>Webhook secret shown once</span>
+          <code>${escapeHtml(reveal.secret)}</code>
+          <button data-copy="${escapeHtml(reveal.secret)}" data-copy-name="Webhook secret">Copy secret</button>
+        </div>
+      ` : ''}
+      ${notifications?.error ? `<p class="error-text">${escapeHtml(notifications.error)}</p>` : ''}
+      ${latest ? `
+        <div class="recurring-history-strip">
+          <strong>${escapeHtml(notificationDeliveryLabel(latest))}</strong>
+          <span>${escapeHtml(notificationDeliveryDetail(latest))}</span>
+        </div>
+      ` : `
+        <div class="recurring-history-strip">
+          <strong>Delivery status not loaded</strong>
+          <span>Refresh notifications to see webhook attempts and retries.</span>
+        </div>
+      `}
+      <div class="recurring-actions inline-actions">
+        <button data-recurring-op="notifications" data-recurring-id="${payment.id}" ${state.busy ? 'disabled' : ''}>Refresh</button>
+        <button data-recurring-op="rotate-secret" data-recurring-id="${payment.id}" ${state.busy ? 'disabled' : ''}>Rotate secret</button>
+      </div>
+    </div>
+  `;
+}
+
+function notificationDeliveryLabel(delivery: RecurringNotificationDelivery): string {
+  switch (delivery.status) {
+    case 'delivered':
+      return 'Webhook delivered';
+    case 'pending':
+      return 'Webhook pending';
+    case 'failed':
+      return 'Webhook retry scheduled';
+    case 'abandoned':
+      return 'Webhook abandoned';
+  }
+}
+
+function notificationDeliveryDetail(delivery: RecurringNotificationDelivery): string {
+  if (delivery.status === 'delivered') {
+    return `Delivered ${delivery.deliveredAt ? formatDateTime(delivery.deliveredAt) : formatDateTime(delivery.updatedAt)} after ${delivery.attempts} attempt${delivery.attempts === 1 ? '' : 's'}.`;
+  }
+  const retry = delivery.status === 'pending' || delivery.status === 'failed'
+    ? ` Next attempt ${formatDateTime(delivery.nextAttemptAt)}.`
+    : '';
+  return `${delivery.attempts} attempt${delivery.attempts === 1 ? '' : 's'}.${retry}${delivery.lastError ? ` ${delivery.lastError}` : ''}`;
 }
 
 function recurringHistoryRow(occurrence: RecurringOccurrenceHistoryItem): string {
@@ -14139,8 +14360,8 @@ function scheduleLabel(payment: RecurringPayment): string {
 }
 
 function recurringNextOccurrenceLabel(draft: RecurringDraft): string {
-  const next = recurringNextOccurrence(draft);
-  return next ? formatDateTime(next.toISOString()) : 'Complete schedule fields to preview';
+  const [next] = recurringDraftNextRuns(draft);
+  return next ? formatDateTime(next) : 'Complete schedule fields to preview';
 }
 
 function recurringDraftNextRuns(draft: RecurringDraft): string[] {
@@ -14203,44 +14424,6 @@ function optionalLocalDateTimeToIso(value: string): string | undefined {
   if (!value.trim()) return undefined;
   const date = new Date(value);
   return Number.isNaN(date.getTime()) ? undefined : date.toISOString();
-}
-
-function recurringNextOccurrence(draft: RecurringDraft, from = new Date()): Date | null {
-  if (draft.cadence === 'weekly') {
-    if (!isValidLocalTime(draft.localTime)) return null;
-    const day = Number(draft.dayOfWeek);
-    if (!Number.isInteger(day) || day < 0 || day > 6) return null;
-    const next = dateWithLocalTime(from, draft.localTime);
-    const delta = (day - next.getDay() + 7) % 7;
-    next.setDate(next.getDate() + delta);
-    if (next.getTime() <= from.getTime()) next.setDate(next.getDate() + 7);
-    return next;
-  }
-  if (draft.cadence === 'monthly') {
-    if (!isValidLocalTime(draft.localTime)) return null;
-    const day = Number(draft.dayOfMonth);
-    if (!Number.isInteger(day) || day < 1 || day > 31) return null;
-    const next = dateWithLocalTime(from, draft.localTime);
-    next.setDate(Math.min(day, daysInMonth(next.getFullYear(), next.getMonth())));
-    if (next.getTime() <= from.getTime()) {
-      next.setMonth(next.getMonth() + 1, 1);
-      next.setDate(Math.min(day, daysInMonth(next.getFullYear(), next.getMonth())));
-    }
-    return next;
-  }
-  const start = new Date(draft.startAt);
-  return Number.isNaN(start.getTime()) ? null : start;
-}
-
-function dateWithLocalTime(from: Date, localTime: string): Date {
-  const [hours = '0', minutes = '0'] = localTime.split(':');
-  const next = new Date(from);
-  next.setHours(Number(hours), Number(minutes), 0, 0);
-  return next;
-}
-
-function daysInMonth(year: number, month: number): number {
-  return new Date(year, month + 1, 0).getDate();
 }
 
 function statusTone(status: PreparedActionStatus): string {
@@ -14444,7 +14627,7 @@ async function labPayload(labId: string, input: string, createdAt: string, field
     nextSignatureGate: status === 'blocked'
       ? 'Receipt complete. Use it to explain why matching requests should be rejected.'
       : 'Receipt complete. Compare future wallet requests against this signed record before approving.',
-    receiptType: lab?.title,
+    receiptType: lab ? `${lab.kind}_v1` : labId,
     summary: lab?.summary,
     verdict,
     effect: 'evidence only, no transaction',

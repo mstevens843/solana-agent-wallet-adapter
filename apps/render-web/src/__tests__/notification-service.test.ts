@@ -22,9 +22,12 @@ describe('RecurringNotificationService', () => {
 
     let body = '';
     let signature = '';
+    let timestamp = '';
     const fetchFn = vi.fn(async (_url: string | URL | Request, init?: RequestInit) => {
       body = String(init?.body ?? '');
-      signature = new Headers(init?.headers).get('x-agentic-signature') ?? '';
+      const headers = new Headers(init?.headers);
+      signature = headers.get('x-agentic-signature') ?? '';
+      timestamp = headers.get('x-agentic-timestamp') ?? '';
       return new Response('{}', { status: 200 });
     }) as unknown as typeof fetch;
     const service = new RecurringNotificationService(store, {
@@ -38,8 +41,10 @@ describe('RecurringNotificationService', () => {
 
     expect(result).toEqual({ delivered: 1, failed: 0, abandoned: 0 });
     expect(fetchFn).toHaveBeenCalledTimes(1);
-    expect(signature).toBe(`sha256=${createHmac('sha256', 'secret').update(body).digest('hex')}`);
+    expect(timestamp).toBe('2026-05-09T12:00:00.000Z');
+    expect(signature).toBe(`sha256=${createHmac('sha256', 'secret').update(`${timestamp}.${body}`).digest('hex')}`);
     expect(store.deliveries[0]?.status).toBe('delivered');
+    expect(store.deliveries[0]).not.toHaveProperty('webhookSecret');
   });
 
   it('does not enqueue duplicate occurrence-ready deliveries', async () => {
@@ -61,7 +66,10 @@ class TestNotificationStore extends MemoryRecurringStore {
   readonly deliveries: RecurringNotificationDeliveryRecord[] = [];
 
   async saveNotificationDelivery(record: RecurringNotificationDeliveryRecord): Promise<void> {
-    const index = this.deliveries.findIndex((entry) => entry.id === record.id);
+    const index = this.deliveries.findIndex((entry) => (
+      entry.id === record.id ||
+      (entry.occurrenceId === record.occurrenceId && entry.type === record.type)
+    ));
     if (index >= 0) this.deliveries[index] = structuredClone(record);
     else this.deliveries.push(structuredClone(record));
   }
@@ -83,6 +91,17 @@ class TestNotificationStore extends MemoryRecurringStore {
     return this.deliveries
       .filter((entry) => entry.status === 'pending' || entry.status === 'failed')
       .filter((entry) => Date.parse(entry.nextAttemptAt) <= now)
+      .slice(0, limit)
+      .map((entry) => structuredClone(entry));
+  }
+
+  async listNotificationDeliveries(
+    walletAddress: string,
+    scheduleId: string,
+    limit: number,
+  ): Promise<RecurringNotificationDeliveryRecord[]> {
+    return this.deliveries
+      .filter((entry) => entry.walletAddress === walletAddress && entry.scheduleId === scheduleId)
       .slice(0, limit)
       .map((entry) => structuredClone(entry));
   }

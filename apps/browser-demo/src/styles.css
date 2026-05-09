@@ -5170,7 +5170,8 @@ button.danger:hover:not(:disabled) {
 }
 
 .recurring-upcoming-runs,
-.recurring-history-list {
+.recurring-history-list,
+.recurring-notifications-panel {
   border-top: 1px solid rgba(224, 230, 226, 0.065);
   margin-top: 10px;
   padding-top: 10px;
@@ -5206,6 +5207,40 @@ button.danger:hover:not(:disabled) {
 .recurring-history-row strong,
 .recurring-history-row span {
   min-width: 0;
+}
+
+.recurring-notifications-panel {
+  display: grid;
+  gap: 8px;
+}
+
+.recurring-secret-reveal {
+  background: rgba(11, 18, 17, 0.42);
+  border: 1px solid rgba(93, 214, 170, 0.24);
+  border-radius: 8px;
+  display: grid;
+  gap: 8px;
+  padding: 10px;
+}
+
+.recurring-secret-reveal span {
+  color: var(--muted);
+  font-size: 0.82rem;
+  font-weight: 800;
+}
+
+.recurring-secret-reveal code {
+  color: var(--text);
+  font-size: 0.78rem;
+  overflow-wrap: anywhere;
+  white-space: normal;
+}
+
+.inline-actions {
+  align-items: center;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
 }
 
 .artifact-archive-controls {
@@ -5810,6 +5845,17 @@ button.danger:hover:not(:disabled) {
 .record-activity > summary {
   cursor: pointer;
   list-style-position: inside;
+}
+
+.record-activity-actions {
+  display: flex;
+  justify-content: flex-end;
+}
+
+.record-activity-actions button {
+  font-size: 0.78rem;
+  min-height: 32px;
+  padding: 6px 10px;
 }
 
 .signed-artifact-details > div,

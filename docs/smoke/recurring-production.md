@@ -24,28 +24,35 @@ pnpm -F @solana-agent-wallet-adapter/render-web db:migrate
    - next-5 run list
    - lifetime or rate spend estimate
    - wallet-signature trust boundary
-4. Force materialization:
+4. If a webhook URL was set, confirm the app shows a one-time webhook secret. Copy it now; later schedule reads must not show it.
+5. Force materialization:
 
 ```bash
 pnpm -F @solana-agent-wallet-adapter/render-web recurring:materialize
 ```
 
-5. Refresh Approval Inbox and confirm one recurring approval appears.
-6. Approve or deny the occurrence from the wallet flow.
-7. Open Recurring history for the schedule and confirm:
+6. Refresh Approval Inbox and confirm one recurring approval appears.
+7. Approve or deny the occurrence from the wallet flow.
+8. Open Recurring history for the schedule and confirm:
    - plain-English status label
    - approval id summary
    - completed receipt or txid when available
-8. Pause the schedule, run materialization again, and confirm no new occurrence is created.
-9. Resume the schedule and confirm future materialization resumes.
-10. If webhook URL was set, run:
+9. Pause the schedule, run materialization again, and confirm no new occurrence is created.
+10. Resume the schedule and confirm future materialization resumes.
+11. If webhook URL was set, run:
 
 ```bash
 pnpm -F @solana-agent-wallet-adapter/render-web notifications:deliver
 ```
 
-11. Confirm webhook payload includes `type=recurring.occurrence.ready`, schedule id, occurrence id, amount, token, recipient, and signature header `x-agentic-signature`.
-12. Configure a low cap in `agent-wallet.config.json`:
+12. Confirm webhook payload includes `type=recurring.occurrence.ready`, schedule id, occurrence id, amount, token, recipient, and headers:
+   - `X-Agentic-Delivery-Id`
+   - `X-Agentic-Timestamp`
+   - `X-Agentic-Signature`
+13. Verify the signature by computing HMAC-SHA256 over `<timestamp>.<raw JSON body>` with the one-time secret.
+14. Open the schedule Notifications panel and confirm the latest delivery status, attempts, and retry/last-delivery timestamp are visible.
+15. Rotate the webhook secret, copy the newly shown one-time secret, and confirm later reads do not reveal it.
+16. Configure a low cap in `agent-wallet.config.json`:
 
 ```json
 {
@@ -55,7 +62,7 @@ pnpm -F @solana-agent-wallet-adapter/render-web notifications:deliver
 }
 ```
 
-13. Restart the server and confirm an over-cap weekly SOL schedule is rejected with `recurring_exceeds_policy`.
+17. Restart the server and confirm an over-cap weekly SOL schedule is rejected with `recurring_exceeds_policy`.
 
 ## Expected Result
 

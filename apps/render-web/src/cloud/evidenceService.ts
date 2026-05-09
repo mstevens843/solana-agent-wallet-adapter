@@ -107,10 +107,10 @@ export class EvidenceService {
     };
 
     await this.store.saveEvidence(session.walletAddress, record);
-    await this.audit(session, 'evidence.created', record.id, {
+    await this.audit(session, 'evidence.created', record.id, evidenceAuditMetadata(record, {
       kind: record.kind,
       status: record.status,
-    });
+    }));
     return record;
   }
 
@@ -127,7 +127,7 @@ export class EvidenceService {
     if (!existing) throw notFound('Evidence receipt was not found.');
     const deleted = await this.store.deleteEvidence(session.walletAddress, id);
     if (!deleted) throw notFound('Evidence receipt was not found.');
-    await this.audit(session, 'evidence.deleted', id, { kind: existing.kind });
+    await this.audit(session, 'evidence.deleted', id, evidenceAuditMetadata(existing, { kind: existing.kind }));
   }
 
   private async audit(session: WorkflowSession, type: string, recordId: string, metadata: JsonObject): Promise<void> {
@@ -149,6 +149,46 @@ export class EvidenceService {
 
 function notFound(message: string): EvidenceServiceError {
   return new EvidenceServiceError(404, 'not_found', message);
+}
+
+function evidenceAuditMetadata(
+  record: EvidenceReceiptRecord,
+  base: JsonObject,
+): JsonObject {
+  const source = auditSourceMetadata(record.metadata);
+  return {
+    ...base,
+    recordType: 'evidence',
+    recordId: record.id,
+    receiptType: record.receiptType ?? record.kind,
+    artifactHash: record.artifactHash,
+    ...source,
+  };
+}
+
+function auditSourceMetadata(metadata: JsonObject | undefined): JsonObject {
+  if (!metadata) return {};
+  const output: JsonObject = {};
+  copyString(metadata, output, 'recordType', 'sourceRecordType');
+  copyString(metadata, output, 'recordId', 'sourceRecordId');
+  copyString(metadata, output, 'sourceRecordType');
+  copyString(metadata, output, 'sourceRecordId');
+  copyString(metadata, output, 'subjectType');
+  copyString(metadata, output, 'subjectId');
+  copyString(metadata, output, 'approvalId');
+  copyString(metadata, output, 'proofUseCase');
+  copyString(metadata, output, 'labId');
+  copyString(metadata, output, 'browserArtifactId');
+  copyString(metadata, output, 'recurringScheduleId');
+  copyString(metadata, output, 'occurrenceKey');
+  copyString(metadata, output, 'finalizationId');
+  copyString(metadata, output, 'planDraftId');
+  return output;
+}
+
+function copyString(source: JsonObject, target: JsonObject, from: string, to = from): void {
+  const value = source[from];
+  if (typeof value === 'string' && value.trim()) target[to] = value;
 }
 
 export class MemoryEvidenceStore implements EvidenceStore {

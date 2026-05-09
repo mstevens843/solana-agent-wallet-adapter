@@ -80,6 +80,9 @@ export async function handleWorkflowApiRequest(
       case 'approval-finalization-submit':
         await handleApprovalFinalizationSubmit(req, res, context.service, session, route.id, route.finalizationId);
         return true;
+      case 'approval-finalization-confirm':
+        await handleApprovalFinalizationConfirm(req, res, context.service, session, route.id, route.finalizationId);
+        return true;
       case 'approval-finalization-fail':
         await handleApprovalFinalizationFail(req, res, context.service, session, route.id, route.finalizationId);
         return true;
@@ -110,6 +113,7 @@ type WorkflowRoute =
   | { name: 'approval-finalizations'; id: string }
   | { name: 'approval-finalization-prepare'; id: string }
   | { name: 'approval-finalization-submit'; id: string; finalizationId: string }
+  | { name: 'approval-finalization-confirm'; id: string; finalizationId: string }
   | { name: 'approval-finalization-fail'; id: string; finalizationId: string }
   | { name: 'approval-finalization-preview'; id: string }
   | { name: 'approval-finalization-result'; id: string }
@@ -135,6 +139,14 @@ function matchWorkflowRoute(pathname: string): WorkflowRoute | undefined {
       name: 'approval-finalization-submit',
       id: validateRecordId(finalizationSubmit[1], 'approval id'),
       finalizationId: validateRecordId(finalizationSubmit[2], 'finalization id'),
+    };
+  }
+  const finalizationConfirm = /^\/api\/approvals\/([^/]+)\/finalization\/([^/]+)\/confirm$/.exec(pathname);
+  if (finalizationConfirm?.[1] && finalizationConfirm[2]) {
+    return {
+      name: 'approval-finalization-confirm',
+      id: validateRecordId(finalizationConfirm[1], 'approval id'),
+      finalizationId: validateRecordId(finalizationConfirm[2], 'finalization id'),
     };
   }
   const finalizationFail = /^\/api\/approvals\/([^/]+)\/finalization\/([^/]+)\/fail$/.exec(pathname);
@@ -305,6 +317,23 @@ async function handleApprovalFinalizationSubmit(
     finalizationId,
     validateRecordTransactionFinalizationResultRequest(bodyWithRouteFinalizationId(await readJsonBody(req), finalizationId)),
   );
+  writeJson(res, 200, result);
+}
+
+async function handleApprovalFinalizationConfirm(
+  req: IncomingMessage,
+  res: ServerResponse,
+  service: WorkflowService,
+  session: WorkflowSession,
+  id: string,
+  finalizationId: string,
+): Promise<void> {
+  if (req.method !== 'POST') {
+    methodNotAllowed(res);
+    return;
+  }
+  await readJsonBody(req);
+  const result = await service.confirmTransactionFinalization(session, id, finalizationId);
   writeJson(res, 200, result);
 }
 

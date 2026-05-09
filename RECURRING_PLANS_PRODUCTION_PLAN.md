@@ -28,6 +28,22 @@ The end state: a Solana wallet holder can create a weekly recurring payment, see
 
 ---
 
+## Completion Sweep Addendum
+
+The follow-up production sweep found and closed the remaining gaps that mattered most for a launch-grade recurring workflow:
+
+- Webhook secrets now have one-time reveal semantics on create/rotate and are never returned from normal schedule reads.
+- Delivery records no longer store webhook secrets; webhook delivery signs `timestamp.body` with the current schedule secret.
+- Notification enqueue is best-effort and duplicate/recovery materialization paths repair missing delivery records.
+- Notification status and secret rotation are exposed through schedule-specific cloud APIs and browser controls.
+- Occurrence history hydration can use batch approval/completed lookups instead of scanning entire wallet history.
+- Pause/resume routes now emit explicit audit event names.
+- Policy config lookup is robust to package-vs-root current working directories, and decimal cap checks avoid floating-point comparison.
+- Browser fallback preview uses the shared cadence helper instead of the old local interval helper.
+- `plan.md` is now the short source-of-truth completion plan; this file remains the deep historical implementation plan.
+
+---
+
 ## Current State (audited, line-grounded)
 
 ### Data model (what exists)

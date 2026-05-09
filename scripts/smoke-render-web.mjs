@@ -977,50 +977,13 @@ function createManualReviewPlanBody(intent) {
   };
 }
 
-function finalizationPreviewBody(approval) {
-  return {
-    status: 'simulation_passed',
-    walletAction: {
-      kind: approval.kind,
-      walletAddress: approval.walletAddress,
-      cluster: approval.cluster ?? 'devnet',
-      summary: approval.summary,
-      sender: approval.walletAddress,
-      recipient: approval.params?.recipient ?? 'Recipient111111111111111111111111111111111',
-      amount: approval.params?.amountSol ?? approval.params?.amount ?? '0.01',
-      token: 'SOL',
-      feePayer: approval.walletAddress,
-      instructionSummary: ['Smoke transfer finalization'],
-      touchedPrograms: ['11111111111111111111111111111111'],
-    },
-    transactionHash: 'smoke_tx_hash',
-    messageHash: 'smoke_message_hash',
-    quote: {
-      provider: 'smoke-fixed-transfer',
-      fetchedAt: new Date().toISOString(),
-      inputToken: 'SOL',
-      inputAmount: approval.params?.amountSol ?? approval.params?.amount ?? '0.01',
-      routeLabel: 'SystemProgram.transfer',
-      quoteHash: 'smoke_quote_hash',
-    },
-    simulation: {
-      status: 'ok',
-      simulatedAt: new Date().toISOString(),
-      logs: [],
-      unitsConsumed: 500,
-      simulationHash: 'smoke_simulation_hash',
-    },
-    expiresAt: new Date(Date.now() + 5 * 60_000).toISOString(),
-  };
-}
-
 async function finalizeApprovalViaApi(origin, cookie, approval, wallet, txid) {
-  const preview = await apiJson(origin, `/api/approvals/${encodeURIComponent(approval.id)}/finalization/preview`, {
+  const preview = await apiJson(origin, `/api/approvals/${encodeURIComponent(approval.id)}/finalization/prepare`, {
     method: 'POST',
     cookie,
-    body: finalizationPreviewBody(approval),
+    body: {},
   }).then((payload) => requiredObject(payload.finalization, 'finalization'));
-  await apiJson(origin, `/api/approvals/${encodeURIComponent(approval.id)}/finalization/result`, {
+  await apiJson(origin, `/api/approvals/${encodeURIComponent(approval.id)}/finalization/${encodeURIComponent(preview.id)}/submit`, {
     method: 'POST',
     cookie,
     body: {
@@ -1029,10 +992,10 @@ async function finalizeApprovalViaApi(origin, cookie, approval, wallet, txid) {
       finalizationStatus: 'confirmed',
       txStatus: 'confirmed',
       txid,
-      transactionHash: 'smoke_tx_hash',
-      messageHash: 'smoke_message_hash',
-      quoteHash: 'smoke_quote_hash',
-      simulationHash: 'smoke_simulation_hash',
+      transactionHash: preview.transactionHash,
+      messageHash: preview.messageHash,
+      quoteHash: preview.quote?.quoteHash,
+      simulationHash: preview.simulation?.simulationHash,
       explorerUrl: `https://explorer.solana.com/tx/${encodeURIComponent(txid)}?cluster=${encodeURIComponent(approval.cluster ?? 'devnet')}`,
       note: 'Finalized in workflow smoke.',
     },
@@ -1195,6 +1158,7 @@ async function withLocalServer(callback, { mockHostedAi = false } = {}) {
     env: {
       ...process.env,
       ...(nodeOptions ? { NODE_OPTIONS: nodeOptions } : {}),
+      AGENTIC_MOCK_FINALIZATION: process.env.AGENTIC_MOCK_FINALIZATION ?? '1',
       HOST: '127.0.0.1',
       PORT: String(serverPort),
     },

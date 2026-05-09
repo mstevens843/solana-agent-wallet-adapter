@@ -208,7 +208,7 @@ describe('AI product guardrails', () => {
     expect(isQueueableWorkflowAction('swap')).toBe(true);
     expect(isQueueableWorkflowAction('read_only')).toBe(false);
     expect(finalizationRequirementForAction('swap')).toBe('transaction_preview');
-    expect(finalizationRequirementForAction('custom_transaction')).toBe('wallet_decision_proof');
+    expect(finalizationRequirementForAction('custom_transaction')).toBe('transaction_preview');
     expect(finalizationRequirementForAction('recurring_payment')).toBe('wallet_decision_proof');
     expect(finalizationRequirementForAction('read_only')).toBe('none');
   });
