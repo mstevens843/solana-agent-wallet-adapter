@@ -5603,6 +5603,16 @@ button.danger:hover:not(:disabled) {
   padding-top: 14px;
 }
 
+.recurring-note-section .approval-memo {
+  border-top: 0;
+  padding-top: 0;
+}
+
+.recurring-note-field textarea {
+  min-height: 74px;
+  resize: vertical;
+}
+
 .recurring-item {
   align-items: start;
   display: grid;
@@ -11629,6 +11639,25 @@ button.danger:hover:not(:disabled) {
   list-style: none;
 }
 
+.recurring-advanced-details > summary {
+  background: rgba(255, 255, 255, 0.04);
+  border: 1px solid rgba(224, 230, 226, 0.16);
+  border-radius: var(--app-card-radius);
+  color: rgba(235, 241, 238, 0.92);
+  gap: 10px;
+  justify-content: center;
+  min-height: 36px;
+  padding: 0 13px;
+  width: fit-content;
+}
+
+.recurring-advanced-details > summary:hover,
+.recurring-advanced-details[open] > summary {
+  background: rgba(139, 205, 170, 0.11);
+  border-color: rgba(139, 205, 170, 0.36);
+  color: var(--text);
+}
+
 .rail-advanced-details > summary::-webkit-details-marker,
 .recurring-advanced-details > summary::-webkit-details-marker {
   display: none;
@@ -11647,10 +11676,10 @@ button.danger:hover:not(:disabled) {
 }
 
 .recurring-advanced-details {
-  border-top: 1px solid rgba(224, 230, 226, 0.065);
+  border-top: 0;
   display: grid;
   gap: 12px;
-  padding-top: 14px;
+  padding-top: 2px;
 }
 
 .recurring-advanced-details[open] > .contract-section {

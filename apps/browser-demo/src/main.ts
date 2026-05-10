@@ -8841,7 +8841,7 @@ function bind(): void {
     });
   }
 
-  for (const recurringInput of document.querySelectorAll<HTMLInputElement | HTMLSelectElement>('[data-recurring-field]')) {
+  for (const recurringInput of document.querySelectorAll<HTMLInputElement | HTMLSelectElement | HTMLTextAreaElement>('[data-recurring-field]')) {
     recurringInput.addEventListener('input', () => {
       const field = recurringInput.dataset.recurringField;
       state.recurringDraft = readRecurringDraft();
@@ -15692,6 +15692,20 @@ function recurringComposer(): string {
           ${recurringScheduleFields(draft)}
         </div>
       </div>
+      <div class="contract-section recurring-create-section recurring-note-section">
+        <div>
+          <span>Notes for approval</span>
+          <p>Purpose shown when this needs approval.</p>
+        </div>
+        <label class="field compact approval-memo recurring-note-field">
+          <span>What is this for?</span>
+          <textarea
+            id="recurringNote"
+            data-recurring-field="note"
+            placeholder="Example: rent, payroll, DCA, subscription, or invoice #42"
+          >${escapeHtml(draft.note)}</textarea>
+        </label>
+      </div>
       <details class="recurring-advanced-details">
         <summary>Advanced</summary>
         <div class="contract-section">
@@ -15705,10 +15719,6 @@ function recurringComposer(): string {
             ${fieldInput('recurringWebhookUrl', 'Webhook URL', draft.webhookUrl, 'https://example.com/agentic-webhook')}
           </div>
         </div>
-        <label class="field compact approval-memo">
-          <span>Approval memo</span>
-          <input id="recurringNote" data-recurring-field="note" value="${escapeHtml(draft.note)}" placeholder="Reason shown when this needs approval" />
-        </label>
       </details>
       ${recurringDraftPreviewPanel(draft)}
     </div>
@@ -17175,7 +17185,7 @@ function readRecurringDraft(): RecurringDraft {
     maxOccurrences: inputValue('#recurringMaxOccurrences') || state.recurringDraft.maxOccurrences,
     expiresAt: inputValue('#recurringExpiresAt') || state.recurringDraft.expiresAt,
     webhookUrl: inputValue('#recurringWebhookUrl') || state.recurringDraft.webhookUrl,
-    note: inputValue('#recurringNote') || state.recurringDraft.note,
+    note: inputValue('#recurringNote'),
   };
 }
 
