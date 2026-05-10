@@ -2745,6 +2745,111 @@ code {
   border-color: rgba(185, 196, 214, 0.18);
 }
 
+.workspace-storage-panel {
+  min-width: 0;
+}
+
+.workspace-storage-panel > summary {
+  align-items: center;
+  background:
+    linear-gradient(135deg, rgba(112, 170, 229, 0.14), rgba(255, 255, 255, 0.034)),
+    rgba(17, 28, 39, 0.42);
+  border: 1px solid rgba(112, 170, 229, 0.24);
+  border-radius: 8px;
+  box-shadow:
+    0 0 0 1px rgba(112, 170, 229, 0.055),
+    0 14px 32px rgba(0, 0, 0, 0.18);
+  cursor: pointer;
+  display: grid;
+  gap: 8px;
+  grid-template-columns: minmax(0, 1fr) auto auto;
+  list-style: none;
+  min-height: 44px;
+  padding: 10px;
+  transition:
+    background 140ms ease,
+    border-color 140ms ease,
+    box-shadow 140ms ease;
+}
+
+.workspace-storage-panel > summary:hover,
+.workspace-storage-panel[open] > summary {
+  background:
+    linear-gradient(135deg, rgba(112, 170, 229, 0.2), rgba(94, 231, 158, 0.06)),
+    rgba(17, 28, 39, 0.52);
+  border-color: rgba(112, 170, 229, 0.38);
+  box-shadow:
+    0 0 0 1px rgba(112, 170, 229, 0.1),
+    0 16px 34px rgba(0, 0, 0, 0.22);
+}
+
+.workspace-storage-panel > summary::-webkit-details-marker {
+  display: none;
+}
+
+.workspace-storage-summary-copy {
+  display: grid;
+  gap: 3px;
+  min-width: 0;
+}
+
+.workspace-storage-summary-copy > span {
+  color: var(--dim);
+  font-size: 0.72rem;
+  font-weight: 900;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.workspace-storage-summary-copy em {
+  color: rgba(218, 229, 224, 0.82);
+  font-size: 0.82rem;
+  font-style: normal;
+  font-weight: 650;
+  line-height: 1.25;
+  overflow-wrap: anywhere;
+}
+
+.workspace-storage-panel > summary strong {
+  align-items: center;
+  align-self: center;
+  background: rgba(112, 170, 229, 0.12);
+  border: 1px solid rgba(112, 170, 229, 0.22);
+  border-radius: 999px;
+  color: #dbeeff;
+  display: inline-flex;
+  font-size: 0.76rem;
+  justify-content: center;
+  line-height: 1.1;
+  min-height: 30px;
+  min-width: max-content;
+  padding: 5px 10px;
+  text-align: center;
+  white-space: nowrap;
+}
+
+.workspace-storage-panel.signed-in > summary strong {
+  background: rgba(52, 211, 153, 0.14);
+  border-color: rgba(94, 231, 158, 0.3);
+  color: #d9ffea;
+}
+
+.workspace-storage-panel > summary::after {
+  align-self: center;
+  color: var(--accent-2);
+  content: "+";
+  font-weight: 900;
+  line-height: 1;
+}
+
+.workspace-storage-panel[open] > summary::after {
+  content: "-";
+}
+
+.workspace-storage-panel > .rail-cloud-card {
+  margin: 10px 0 0;
+}
+
 .rail-cloud-card {
   background: rgba(17, 28, 39, 0.38);
   border: 1px solid rgba(112, 170, 229, 0.2);
@@ -3018,6 +3123,12 @@ code {
 .bridge-advanced-settings[open] summary::after,
 .artifact-technical-details[open] summary::after {
   content: "-";
+}
+
+.wallet-picker-details {
+  border-top: 0;
+  margin-top: 10px;
+  padding-top: 0;
 }
 
 .artifact-technical-details summary::after {
@@ -11358,10 +11469,10 @@ button.danger:hover:not(:disabled) {
   display: grid;
   gap: 12px;
   max-height: calc(100dvh - var(--app-nav-h) - 48px);
-  overflow-y: auto;
+  overflow: visible;
   padding: var(--app-panel-pad);
-  scrollbar-color: rgba(139, 205, 170, 0.32) transparent;
-  scrollbar-width: thin;
+  position: relative;
+  z-index: 30;
 }
 
 .route-app .main-panel[data-layout="app-main"] {
@@ -11774,6 +11885,11 @@ button.danger:hover:not(:disabled) {
   scroll-margin-top: 24px;
 }
 
+.route-app .workspace-storage-panel[data-layout="workspace-storage-panel"] {
+  font-size: 0.78rem;
+  scroll-margin-top: 24px;
+}
+
 .route-app .ai-settings-panel[data-layout="ai-setup-panel"][open] {
   border-color: rgba(139, 205, 170, 0.36);
   box-shadow: inset 3px 0 0 rgba(125, 231, 176, 0.46);
@@ -11831,6 +11947,16 @@ button.danger:hover:not(:disabled) {
   z-index: 180;
 }
 
+.route-app .wallet-picker-details {
+  position: relative;
+  z-index: 220;
+}
+
+.route-app .wallet-picker-details .select-picker.open,
+.route-app .wallet-picker-details .select-picker-menu {
+  z-index: 260;
+}
+
 .route-app .select-picker-option[disabled] {
   cursor: not-allowed;
   opacity: 0.48;
@@ -11842,27 +11968,42 @@ button.danger:hover:not(:disabled) {
   padding: 8px;
 }
 
+.route-app .workspace-storage-panel[data-layout="workspace-storage-panel"] > summary {
+  gap: 6px;
+  min-height: 38px;
+  padding: 8px;
+}
+
 .route-app .rail-ai-settings .ai-summary-copy {
   gap: 2px;
 }
 
+.route-app .workspace-storage-summary-copy {
+  gap: 2px;
+}
+
 .route-app .rail-ai-settings .ai-summary-copy > span,
+.route-app .workspace-storage-summary-copy > span,
 .route-app .rail-ai-settings .field.compact > span {
   font-size: 0.56rem;
   line-height: 1.1;
 }
 
-.route-app .rail-ai-settings .ai-summary-copy em {
+.route-app .rail-ai-settings .ai-summary-copy em,
+.route-app .workspace-storage-summary-copy em {
   font-size: 0.68rem;
   line-height: 1.18;
 }
 
-.route-app .rail-ai-settings > summary strong {
+.route-app .rail-ai-settings > summary strong,
+.route-app .workspace-storage-panel > summary strong {
   font-size: 0.64rem;
+  min-height: 22px;
   padding: 4px 7px;
 }
 
-.route-app .rail-ai-settings > summary::after {
+.route-app .rail-ai-settings > summary::after,
+.route-app .workspace-storage-panel > summary::after {
   font-size: 0.82rem;
 }
 
@@ -14265,12 +14406,7 @@ button.danger:hover:not(:disabled) {
 .route-app .one-time-plan-tabs button,
 .route-app .recurring-view-tabs button,
 .route-app .artifact-view-tabs button,
-.route-app .artifact-proof-group-tabs button,
-.route-app .token-choice-mode button,
-.route-app .wallet-action-copy,
-.route-app .review-delete-mini,
-.route-app .recurring-delete-mini,
-.route-app .receipt-proof-delete-button {
+.route-app .artifact-proof-group-tabs button {
   min-height: var(--app-control-h-sm);
 }
 
@@ -14436,7 +14572,7 @@ button.danger:hover:not(:disabled) {
 }
 
 .generated-plan-modal {
-  border-radius: 10px;
+  border-radius: var(--app-card-radius, 10px);
   gap: 14px;
   padding: 16px;
 }
@@ -14457,13 +14593,222 @@ button.danger:hover:not(:disabled) {
 }
 
 .generated-plan-modal-actions button {
-  min-height: var(--app-control-h);
+  min-height: var(--app-control-h, 38px);
 }
 
 .toast {
-  border-radius: var(--app-card-radius);
+  border-radius: var(--app-card-radius, 8px);
   gap: 10px;
   padding: 10px 12px;
+}
+
+/* /app card, form, and responsive polish pass. */
+.route-app .connection-summary,
+.route-app .rail-cloud-card,
+.route-app .rail-bridge-card,
+.route-app .rail-ai-card,
+.route-app .rail-ai-settings .ai-settings-card,
+.route-app .command-ai-panel .ai-settings-card,
+.route-app .local-bridge-connection-card,
+.route-app .command-bridge-prereq,
+.route-app .command-storage-danger-zone,
+.route-app .recurring-production-preview,
+.route-app .artifact-archive-control-panel,
+.route-app .lab-intent-document,
+.route-app .receipt-fields,
+.route-app .queue-empty,
+.route-app .signature-placeholder,
+.route-app .empty,
+.route-app .notice,
+.route-app .error {
+  background: var(--app-card-bg);
+  border: 1px solid var(--app-card-border);
+  border-radius: var(--app-card-radius);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.028);
+}
+
+.route-app .rail-cloud-card.signed-in,
+.route-app .workspace-storage-panel.signed-in > summary,
+.route-app .rail-bridge-card.connected,
+.route-app .rail-ai-card.configured,
+.route-app .command-route-card.active,
+.route-app .command-storage-card.active {
+  background:
+    linear-gradient(180deg, rgba(21, 60, 43, 0.42), rgba(17, 28, 24, 0.94)),
+    rgba(17, 21, 20, 0.94);
+  border-color: rgba(94, 231, 158, 0.32);
+}
+
+.route-app .connection-summary,
+.route-app .rail-cloud-card,
+.route-app .rail-bridge-card,
+.route-app .rail-ai-card,
+.route-app .rail-ai-settings .ai-settings-card,
+.route-app .local-bridge-connection-card,
+.route-app .recurring-production-preview,
+.route-app .artifact-archive-control-panel,
+.route-app .lab-intent-document,
+.route-app .receipt-fields {
+  padding: var(--app-card-pad);
+}
+
+.route-app .connection-summary > div,
+.route-app .rail-cloud-facts span,
+.route-app .rail-bridge-facts span,
+.route-app .command-storage-facts span,
+.route-app .command-ai-panel .ai-status-line,
+.route-app .command-ai-panel .ai-limitations,
+.route-app .command-ai-panel .ai-confirmation-line,
+.route-app .command-ai-panel .ai-security-note,
+.route-app .local-runtime-guide,
+.route-app .bridge-setup-card,
+.route-app .optional-local-runtime,
+.route-app .template-picker-option,
+.route-app .select-picker-option,
+.route-app .receipt-explainer-stack div {
+  background: var(--app-cell-bg);
+  border: 1px solid var(--app-cell-border);
+  border-radius: var(--app-card-radius);
+}
+
+.route-app .rail-cloud-head,
+.route-app .workspace-storage-panel > summary,
+.route-app .rail-bridge-head,
+.route-app .rail-ai-card-head,
+.route-app .command-storage-card-head,
+.route-app .generated-plan-modal-head {
+  gap: 10px;
+}
+
+.route-app .rail-cloud-facts span,
+.route-app .rail-bridge-facts span {
+  align-items: center;
+  line-height: 1.2;
+  min-height: 30px;
+  padding: 5px 8px;
+}
+
+.route-app .field,
+.route-app .field.compact,
+.route-app .planner-field,
+.route-app .planner-prompt,
+.route-app .receipt-field,
+.route-app .token-choice-field {
+  display: grid;
+  gap: 6px;
+}
+
+.route-app .field > span,
+.route-app .field.compact > span,
+.route-app .receipt-field > span,
+.route-app .token-choice-head > span:first-child,
+.route-app .ai-settings-card label > span,
+.route-app .local-runtime-guide-head span {
+  color: var(--dim);
+  font-size: var(--app-label-size);
+  font-weight: 900;
+  letter-spacing: var(--app-label-tracking);
+  line-height: 1.15;
+  text-transform: uppercase;
+}
+
+.route-app input,
+.route-app select,
+.route-app textarea,
+.route-app .select-picker-trigger,
+.route-app .template-picker-trigger {
+  background: rgba(2, 8, 6, 0.58);
+  border: 1px solid rgba(224, 230, 226, 0.13);
+  border-radius: var(--app-card-radius);
+  color: var(--text);
+  font-size: 0.88rem;
+  line-height: 1.25;
+  min-width: 0;
+}
+
+.route-app input,
+.route-app select,
+.route-app .select-picker-trigger,
+.route-app .template-picker-trigger {
+  min-height: var(--app-control-h);
+  padding: 0 12px;
+}
+
+.route-app textarea {
+  padding: 11px 12px;
+}
+
+.route-app input::placeholder,
+.route-app textarea::placeholder {
+  color: rgba(196, 205, 202, 0.52);
+}
+
+.route-app input:focus,
+.route-app select:focus,
+.route-app textarea:focus,
+.route-app .select-picker-trigger:focus-visible,
+.route-app .template-picker-trigger:focus-visible,
+.route-app .token-choice-mode button:focus-visible,
+.route-app button:focus-visible,
+.route-app summary:focus-visible {
+  border-color: rgba(125, 231, 176, 0.48);
+  box-shadow:
+    0 0 0 1px rgba(125, 231, 176, 0.18),
+    0 0 0 4px rgba(63, 189, 131, 0.08);
+  outline: none;
+}
+
+.route-app .field.field-error input,
+.route-app .field.field-error select,
+.route-app .field.field-error textarea,
+.route-app input[aria-invalid="true"],
+.route-app textarea[aria-invalid="true"] {
+  border-color: rgba(239, 111, 120, 0.48);
+  box-shadow: 0 0 0 1px rgba(239, 111, 120, 0.12);
+}
+
+.route-app .field-error-text,
+.route-app .error-text,
+.route-app .ai-route-helper {
+  font-size: 0.74rem;
+  font-weight: 820;
+  line-height: 1.28;
+}
+
+.route-app .generated-plan-card,
+.route-app .approval-ticket,
+.route-app .recurring-item,
+.route-app .completed-plan-card,
+.route-app .signed-artifact-row.receipt-proof-card {
+  overflow: hidden;
+}
+
+.route-app .generated-plan-card *,
+.route-app .approval-ticket *,
+.route-app .recurring-item *,
+.route-app .completed-plan-card *,
+.route-app .signed-artifact-row.receipt-proof-card *,
+.route-app .command-page-card *,
+.route-app .command-detail-stack * {
+  min-width: 0;
+}
+
+.route-app .review-plan-summary-grid dd,
+.route-app .recurring-card-summary-grid dd,
+.route-app .completed-history-summary-grid dd,
+.route-app .receipt-proof-summary-grid dd,
+.route-app .wallet-action-grid dd,
+.route-app .proof-grid.compact dd,
+.route-app .template-picker-current strong,
+.route-app .select-picker-option-copy strong,
+.route-app .command-bridge-endpoint,
+.route-app code {
+  overflow-wrap: anywhere;
+}
+
+.route-app .generated-plan-modal {
+  max-width: min(720px, calc(100vw - 32px));
+  width: 100%;
 }
 
 @media (max-width: 1120px) {
@@ -14568,10 +14913,20 @@ button.danger:hover:not(:disabled) {
   .route-app .command-ai-panel .ai-settings-card[data-ai-settings-scope="command"] {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
+
+  .route-app .command-ai-panel .ai-readiness-summary {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .route-app .command-ai-panel .ai-readiness-summary > div:first-child {
+    grid-column: 1 / -1;
+  }
 }
 
 @media (max-width: 899px) {
   .route-app {
+    --app-card-pad: 10px;
+    --app-cell-pad: 8px;
     --app-shell-pad-x: 12px;
     --app-nav-h: 58px;
     --native-toolbar-offset: env(safe-area-inset-top, 0px);
@@ -14709,6 +15064,40 @@ button.danger:hover:not(:disabled) {
     width: 100%;
   }
 
+  .route-app .generated-plan-modal {
+    max-height: calc(100dvh - 24px);
+    overflow-y: auto;
+  }
+
+  .route-app .template-picker-menu,
+  .route-app .select-picker-menu {
+    max-width: calc(100vw - 32px);
+  }
+
+  .route-app .command-ai-panel .ai-settings-card[data-ai-settings-scope="command"] > .ai-actions,
+  .route-app .command-storage-actions,
+  .route-app .command-wallet-actions,
+  .route-app .agent-actions.intent-document-actions,
+  .route-app .generated-plan-card-actions,
+  .route-app .review-plan-detail-actions,
+  .route-app .recurring-form-actions.contract-actions {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .route-app .command-bridge-prereq-head,
+  .route-app .recurring-create-primary-row,
+  .route-app .recurring-create-summary,
+  .route-app .recurring-create-section,
+  .route-app .artifact-archive-primary-row,
+  .route-app .proof-signing-preview {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .route-app .recurring-composer-meta {
+    align-items: start;
+    justify-items: start;
+  }
+
   .review-plan-card-head,
   .review-plan-facts,
   .recurring-card-head,
@@ -14806,6 +15195,8 @@ button.danger:hover:not(:disabled) {
 @media (max-width: 480px) {
   .route-app {
     --app-nav-h: 54px;
+    --app-control-h: 40px;
+    --app-control-h-sm: 36px;
   }
 
   .recurring-card-summary-grid,
@@ -14817,7 +15208,15 @@ button.danger:hover:not(:disabled) {
 
   .route-app .workspace-tabs[data-layout="app-tabs"] button {
     font-size: 0.64rem;
-    min-height: 32px;
+    min-height: 36px;
+  }
+
+  .route-app input,
+  .route-app select,
+  .route-app textarea,
+  .route-app .select-picker-trigger,
+  .route-app .template-picker-trigger {
+    font-size: 16px;
   }
 }
 
@@ -14904,5 +15303,34 @@ button.danger:hover:not(:disabled) {
     justify-self: start;
     max-width: 100%;
     white-space: normal;
+  }
+
+  .route-app .command-subtab-row button {
+    min-height: 42px;
+  }
+
+  .route-app .command-ai-info-grid,
+  .route-app .command-center-grid,
+  .route-app .command-route-grid,
+  .route-app .command-storage-grid,
+  .route-app .command-loop {
+    gap: 8px;
+  }
+
+  .route-app .receipt-proof-card .receipt-proof-actions,
+  .route-app .completed-header-actions,
+  .route-app .recurring-card-actions,
+  .route-app .inbox-approval-actions,
+  .route-app .review-plan-actions {
+    gap: 6px;
+  }
+
+  .route-app .receipt-proof-card .receipt-proof-actions button,
+  .route-app .receipt-proof-card .receipt-proof-actions summary,
+  .route-app .completed-header-actions button,
+  .route-app .recurring-card-actions button,
+  .route-app .inbox-approval-actions button,
+  .route-app .review-plan-actions button {
+    min-height: 40px;
   }
 }

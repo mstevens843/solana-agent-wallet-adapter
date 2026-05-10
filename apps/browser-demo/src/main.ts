@@ -176,6 +176,7 @@ interface SelectPickerOption {
   detail?: string;
   logoId?: BrandLogoId;
   disabled?: boolean;
+  hiddenFromMenu?: boolean;
   title?: string;
 }
 
@@ -891,6 +892,7 @@ interface DemoState {
   cloudWorkspaceDeleteModalOpen: boolean;
   wallets: DiscoveredWallet[];
   selectedWalletName: string;
+  browserWalletPickerOpen: boolean;
   browserWalletSession?: BrowserWalletSession;
   androidNativeEnvironment: AndroidNativeEnvironment;
   androidAuthCacheCount: number;
@@ -918,6 +920,7 @@ interface DemoState {
   selectedGeneratedPlanId: string;
   generatedPlanAuditId: string;
   showArchivedGeneratedPlans: boolean;
+  workspaceStoragePanelOpen: boolean | null;
   aiSettings: AiSettings;
   aiSettingsPanelOpen: boolean | null;
   aiStatus: BridgeAiStatus | null;
@@ -1490,6 +1493,7 @@ const state: DemoState = {
   cloudWorkspaceDeleteModalOpen: false,
   wallets: [],
   selectedWalletName: persisted.browserWalletSession?.cluster === initialCluster ? persisted.browserWalletSession.walletName : '',
+  browserWalletPickerOpen: false,
   browserWalletSession: persisted.browserWalletSession,
   androidNativeEnvironment: detectAndroidNativeEnvironment(),
   androidAuthCacheCount: 0,
@@ -1517,6 +1521,7 @@ const state: DemoState = {
   selectedGeneratedPlanId: '',
   generatedPlanAuditId: '',
   showArchivedGeneratedPlans: false,
+  workspaceStoragePanelOpen: null,
   aiSettings: {
     ...initialAiSettings,
     apiKey: '',
@@ -2577,8 +2582,8 @@ function walletDirectorySection(): string {
         )}
       </div>
       <div class="wallet-directory-action">
-        <button data-start-action="discover" class="${state.wallets.length ? '' : 'primary'}" ${state.busy ? 'disabled' : ''}>
-          ${state.wallets.length ? 'Refresh Wallet Directory' : 'Discover Wallets'}
+        <button data-start-action="discover" class="primary" ${state.busy ? 'disabled' : ''}>
+          Discover Wallets
         </button>
         <span>${state.wallets.length ? `${state.wallets.length} provider(s) discovered in this browser.` : 'Provider icons appear after discovery.'}</span>
       </div>
@@ -3563,11 +3568,9 @@ function walletRail(): string {
         </div>
       </div>
 
-      ${publicWalletActions()}
-
       ${showPublicWalletPicker ? `
       <details class="rail-details wallet-picker-details" open>
-        <summary>Choose wallet</summary>
+        <summary>Wallet choices</summary>
         <label class="field">
           <span>Selected wallet</span>
           ${selectPicker({
@@ -3575,9 +3578,12 @@ function walletRail(): string {
             value: state.selectedWalletName,
             options: walletSelectOptions(),
             disabled: state.wallets.length === 0 || state.busy,
+            open: state.browserWalletPickerOpen,
           })}
         </label>
       </details>` : ''}
+
+      ${publicWalletActions()}
 
       ${showPublicIosPicker ? `
       <details class="rail-details wallet-picker-details" open>
@@ -3645,40 +3651,53 @@ function cloudWorkspaceCard(): string {
         ? 'One-time drafts, approvals, and completed history sync through Agentic Cloud.'
         : `Signed in as ${short(state.cloudSession.walletAddress)}. Connect that wallet to use cloud workflow.`
       : 'Signed-out workflow data is saved on this device.';
+  const summaryDetail = unavailable
+    ? 'Saved on this device - no localhost required'
+    : signedIn
+      ? matched
+        ? 'Cloud workspace connected'
+        : `Signed in as ${short(state.cloudSession.walletAddress)}`
+      : 'Browser-local workflow storage';
+  const open = state.workspaceStoragePanelOpen === true ? 'open' : '';
   return `
-    <section class="rail-cloud-card ${escapeHtml(mode)} ${signedIn ? 'signed-in' : ''}" aria-label="Cloud workspace status">
-      <div class="rail-cloud-head">
-        <span>Workspace storage</span>
+    <details class="workspace-storage-panel ${escapeHtml(mode)} ${signedIn ? 'signed-in' : ''}" data-layout="workspace-storage-panel" aria-label="Workspace storage status" ${open}>
+      <summary>
+        <span class="workspace-storage-summary-copy">
+          <span>Workspace storage</span>
+          <em>${escapeHtml(summaryDetail)}</em>
+        </span>
         <strong>${escapeHtml(status)}</strong>
-      </div>
-      <p>${escapeHtml(detail)}</p>
-      <div class="rail-cloud-facts">
-        <span>Active <strong>${escapeHtml(activeWorkflowLabel())}</strong></span>
-        ${matched ? `<span>Wallet <strong>${escapeHtml(short(state.cloudSession.walletAddress))}</strong></span>` : ''}
-        ${state.cloudLastSync && matched ? `<span>Synced <strong>${escapeHtml(formatDateTime(state.cloudLastSync))}</strong></span>` : ''}
-      </div>
-      <div class="rail-cloud-actions">
-        ${signedIn ? `
-          <button id="cloudLogout" class="utility" ${state.busy ? 'disabled' : ''}>Sign out</button>
-        ` : !state.address ? `
-          <button
-            type="button"
-            class="rail-cloud-button"
-            data-first-run-action="${escapeHtml(noWalletCloudAction.id)}"
-            ${state.busy ? 'disabled' : ''}
-            title="Connect a wallet before signing in to Agentic Cloud."
-          >
-            Connect wallet to sign in
-          </button>
-        ` : unavailable ? `
-          <button class="rail-cloud-button" disabled title="Cloud APIs are unavailable from this host.">Cloud unavailable</button>
-        ` : `
-          <button id="cloudSignIn" class="rail-cloud-button" ${state.busy ? 'disabled' : ''} title="Sign in with a wallet ownership proof.">Sign in</button>
-        `}
-      </div>
-      ${mismatch ? '<p class="rail-cloud-warning">Cloud sessions prove wallet ownership only. They do not grant spending authority.</p>' : ''}
-      ${!signedIn && !state.address ? '<p class="rail-cloud-warning">Cloud sign-in uses your wallet as identity only. It does not grant spending authority.</p>' : ''}
-    </section>
+      </summary>
+      <section class="rail-cloud-card ${escapeHtml(mode)} ${signedIn ? 'signed-in' : ''}" aria-label="Workspace storage details">
+        <p>${escapeHtml(detail)}</p>
+        <div class="rail-cloud-facts">
+          <span>Active <strong>${escapeHtml(activeWorkflowLabel())}</strong></span>
+          ${matched ? `<span>Wallet <strong>${escapeHtml(short(state.cloudSession.walletAddress))}</strong></span>` : ''}
+          ${state.cloudLastSync && matched ? `<span>Synced <strong>${escapeHtml(formatDateTime(state.cloudLastSync))}</strong></span>` : ''}
+        </div>
+        <div class="rail-cloud-actions">
+          ${signedIn ? `
+            <button id="cloudLogout" class="utility" ${state.busy ? 'disabled' : ''}>Sign out</button>
+          ` : !state.address ? `
+            <button
+              type="button"
+              class="rail-cloud-button"
+              data-first-run-action="${escapeHtml(noWalletCloudAction.id)}"
+              ${state.busy ? 'disabled' : ''}
+              title="Connect a wallet before signing in to Agentic Cloud."
+            >
+              Connect wallet to sign in
+            </button>
+          ` : unavailable ? `
+            <button class="rail-cloud-button" disabled title="Cloud APIs are unavailable from this host.">Cloud unavailable</button>
+          ` : `
+            <button id="cloudSignIn" class="rail-cloud-button" ${state.busy ? 'disabled' : ''} title="Sign in with a wallet ownership proof.">Sign in</button>
+          `}
+        </div>
+        ${mismatch ? '<p class="rail-cloud-warning">Cloud sessions prove wallet ownership only. They do not grant spending authority.</p>' : ''}
+        ${!signedIn && !state.address ? '<p class="rail-cloud-warning">Cloud sign-in uses your wallet as identity only. It does not grant spending authority.</p>' : ''}
+      </section>
+    </details>
   `;
 }
 
@@ -3779,8 +3798,8 @@ function publicWalletActions(): string {
   }
   return `
     <div class="wallet-actions public-wallet-actions">
-      <button data-start-action="discover" class="${state.wallets.length ? '' : 'primary'}" ${state.busy ? 'disabled' : ''}>
-        ${state.wallets.length ? 'Refresh' : 'Discover'}
+      <button data-start-action="discover" class="primary" ${state.busy ? 'disabled' : ''}>
+        Discover
       </button>
       <button data-start-action="connect" class="${state.wallets.length ? 'primary' : ''}" ${(state.wallets.length === 0 || !selectedProvider) || state.busy ? 'disabled' : ''} title="${!selectedProvider ? 'Discover and select a wallet provider first.' : ''}">
         Connect wallet
@@ -3976,7 +3995,7 @@ function guidedStartPanel(title: string, detail: string): string {
           ${walletButtonIcon()}
           <span>Connect wallet</span>
         </button>` : `
-        <button data-start-action="discover" class="${state.wallets.length ? '' : 'primary'}" ${state.busy ? 'disabled' : ''}>Discover wallets</button>
+        <button data-start-action="discover" class="primary" ${state.busy ? 'disabled' : ''}>Discover wallets</button>
         <button data-start-action="connect" class="${state.wallets.length ? 'primary' : ''}" ${(state.wallets.length === 0 || !selectedProvider) || state.busy ? 'disabled' : ''} title="${!selectedProvider ? 'Discover and select a wallet provider first.' : ''}">Connect wallet</button>`}
       </div>
       <p class="guided-note">Approval Inbox, recurring plans, evidence receipts, and transaction tools unlock after a wallet is connected.</p>
@@ -4699,7 +4718,6 @@ function commandCenterWalletCard(): string {
   }
   const selectedProvider = discoveredSelectedWalletName();
   const hasDiscoveredWallet = state.wallets.length > 0 && Boolean(selectedProvider);
-  const discoverLabel = state.wallets.length ? 'Refresh' : 'Discover';
   const detail = hasDiscoveredWallet
     ? `${state.wallets.length} provider${state.wallets.length === 1 ? '' : 's'} discovered - ${selectedProvider}`
     : state.wallets.length
@@ -4717,7 +4735,7 @@ function commandCenterWalletCard(): string {
           data-first-run-action="discover-wallets"
           ${state.busy ? 'disabled' : ''}
         >
-          ${escapeHtml(discoverLabel)}
+          Discover
         </button>
         <button
           type="button"
@@ -8330,6 +8348,11 @@ function bind(): void {
       state.aiSettingsPanelOpen = (event.currentTarget as HTMLDetailsElement).open;
     });
   }
+  for (const details of document.querySelectorAll<HTMLDetailsElement>('.workspace-storage-panel')) {
+    details.addEventListener('toggle', (event) => {
+      state.workspaceStoragePanelOpen = (event.currentTarget as HTMLDetailsElement).open;
+    });
+  }
   document.querySelector<HTMLButtonElement>('#cloudSignIn')?.addEventListener('click', runCloudSignIn);
   document.querySelector<HTMLButtonElement>('#cloudLogout')?.addEventListener('click', runCloudLogout);
   for (const button of document.querySelectorAll<HTMLButtonElement>('[data-cloud-action]')) {
@@ -8409,6 +8432,7 @@ function bind(): void {
     clearBrowserWalletSession();
     if (isBrowserWalletSurface()) {
       state.selectedWalletName = '';
+      state.browserWalletPickerOpen = false;
     }
     resetWalletConnection();
     state.error = '';
@@ -8418,6 +8442,7 @@ function bind(): void {
 
   document.querySelector<HTMLSelectElement>('#walletSelect')?.addEventListener('change', (event) => {
     state.selectedWalletName = (event.currentTarget as HTMLSelectElement).value;
+    state.browserWalletPickerOpen = false;
     clearBrowserWalletSession();
     resetWalletConnection();
     state.error = '';
@@ -9440,11 +9465,13 @@ async function runDiscover(): Promise<void> {
     }
     state.wallets = [...listAvailableWallets()];
     state.selectedWalletName = reconcileBrowserWalletSelection(state.wallets, state.selectedWalletName);
+    state.browserWalletPickerOpen = state.wallets.length > 0 && !state.selectedWalletName;
     if (!browserWalletRestoreName(state.wallets, state.browserWalletSession, state.cluster)) {
       clearBrowserWalletSession();
     }
     if (state.wallets.length === 0) {
       state.selectedWalletName = '';
+      state.browserWalletPickerOpen = false;
       clearBrowserWalletSession();
       savePersistedState();
       throw new Error('No Wallet Standard Solana wallets are registered in this browser.');
@@ -9495,6 +9522,7 @@ async function runConnect(): Promise<void> {
       return;
     }
     const selected = selectedWallet();
+    state.browserWalletPickerOpen = false;
     walletBackend = new WalletStandardWebBackend({
       wallet: selected,
       cluster: state.cluster,
@@ -9526,6 +9554,7 @@ async function runDisconnect(): Promise<void> {
     resetWalletConnection();
     if (browserWallet) {
       state.selectedWalletName = '';
+      state.browserWalletPickerOpen = false;
       clearBrowserWalletSession();
     }
     await refreshAndroidNativeCacheState();
@@ -14399,6 +14428,7 @@ function clearBrowserWalletSession(): void {
 async function restoreBrowserWalletSession(): Promise<void> {
   state.wallets = [...listAvailableWallets()];
   state.selectedWalletName = reconcileBrowserWalletSelection(state.wallets, state.selectedWalletName);
+  state.browserWalletPickerOpen = false;
   const restoreName = browserWalletRestoreName(state.wallets, state.browserWalletSession, state.cluster);
   if (!restoreName) {
     if (state.browserWalletSession) {
@@ -14439,6 +14469,7 @@ async function restoreBrowserWalletSession(): Promise<void> {
     state.transactionStatus = '';
     state.steps.connect = 'idle';
     state.selectedWalletName = '';
+    state.browserWalletPickerOpen = state.wallets.length > 0;
     clearBrowserWalletSession();
     savePersistedState();
     console.info('Browser wallet silent restore skipped.', err);
@@ -14712,6 +14743,7 @@ function walletOptions(): string {
 function walletSelectOptions(): SelectPickerOption[] {
   return browserWalletPickerOptions(state.wallets).map((option) => ({
     ...option,
+    ...(option.value ? {} : { hiddenFromMenu: state.wallets.length > 0 }),
     ...(option.value ? { logoId: walletLogoIdForName(option.value) } : {}),
   }));
 }
@@ -14748,6 +14780,7 @@ function selectPicker(input: {
   options: SelectPickerOption[];
   attrs?: Record<string, string | boolean | undefined>;
   disabled?: boolean;
+  open?: boolean;
   labelId?: string;
   className?: string;
   title?: string;
@@ -14755,6 +14788,8 @@ function selectPicker(input: {
   const selected = input.options.find((option) => option.value === input.value) ??
     input.options.find((option) => !option.disabled) ??
     input.options[0];
+  const menuOptions = input.options.filter((option) => !option.hiddenFromMenu);
+  const menuOpen = Boolean(input.open && !input.disabled && menuOptions.some((option) => !option.disabled));
   const baseId = selectPickerBaseId(input);
   const selectedLabel = selected?.label ?? 'Select';
   const selectedMeta = selected?.meta ?? '';
@@ -14778,13 +14813,13 @@ function selectPicker(input: {
           </option>
         `).join('')}
       </select>
-      <div class="template-picker select-picker" data-select-picker>
+      <div class="template-picker select-picker ${menuOpen ? 'open' : ''}" data-select-picker>
         <button
           id="${escapeHtml(`${baseId}-button`)}"
           class="template-picker-trigger select-picker-trigger"
           type="button"
           aria-haspopup="listbox"
-          aria-expanded="false"
+          aria-expanded="${menuOpen ? 'true' : 'false'}"
           aria-controls="${escapeHtml(`${baseId}-menu`)}"
           aria-labelledby="${escapeHtml(labelledBy)}"
           ${input.disabled ? 'disabled' : ''}
@@ -14802,10 +14837,10 @@ function selectPicker(input: {
           class="template-picker-menu select-picker-menu"
           role="listbox"
           aria-labelledby="${escapeHtml(labelledBy)}"
-          hidden
+          ${menuOpen ? '' : 'hidden'}
         >
           <div class="template-picker-group select-picker-group">
-            ${input.options.map((option) => selectPickerOption(option, option.value === input.value)).join('')}
+            ${menuOptions.map((option) => selectPickerOption(option, option.value === input.value)).join('')}
           </div>
         </div>
       </div>
