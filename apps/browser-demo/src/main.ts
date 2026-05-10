@@ -128,6 +128,7 @@ type AppRoute = (typeof ROUTE_PATHS)[number];
 type InboxFilter = 'all' | 'ready' | 'scheduled' | 'attention' | 'one-time' | 'recurring';
 type CompletedPlanFilter = 'all' | 'one-time' | 'recurring' | 'proofs' | 'receipts';
 type ArtifactFilter = 'all' | 'verified' | 'warnings' | 'blocked';
+type AppListPageKey = 'review' | 'inbox' | 'recurring' | 'receiptArchive';
 type TemplateOutcome = 'queueable' | 'proof' | 'audit';
 type TemplateOutcomeFilter = TemplateOutcome | 'all';
 type AiPlannerConfirmationStatus = 'untested' | 'confirmed' | 'failed';
@@ -887,6 +888,7 @@ interface DemoState {
   recentCopyId: string;
   guidedDemo: GuidedDemoState;
   inboxFilter: InboxFilter;
+  listPages: Record<AppListPageKey, number>;
   workflowModePreference: WorkflowModePreference;
   cloudSession: CloudSessionState;
   cloudWorkspaceDeleteModalOpen: boolean;
@@ -1483,6 +1485,12 @@ const state: DemoState = {
   recentCopyId: '',
   guidedDemo: defaultGuidedDemoState(),
   inboxFilter: 'all',
+  listPages: {
+    review: 1,
+    inbox: 1,
+    recurring: 1,
+    receiptArchive: 1,
+  },
   workflowModePreference: persisted.workflowModePreference ?? 'auto',
   cloudSession: {
     status: 'unknown',
@@ -5003,6 +5011,7 @@ function draftReadyPanel(plan: AgentPlan): string {
 function generatedPlansPanel(embedded = false): string {
   const allPlans = generatedPlansForPanel(embedded);
   const visiblePlans = visibleGeneratedPlans(embedded);
+  const paginatedPlans = paginateList(visiblePlans, 'review');
   const archivedCount = allPlans.filter((record) => record.status === 'archived').length;
   const activeCount = allPlans.filter(isGeneratedPlanActiveInReview).length;
   const movedCount = allPlans.filter(hasGeneratedPlanMovedPastReview).length;
@@ -5043,8 +5052,9 @@ function generatedPlansPanel(embedded = false): string {
         visiblePlans.length
           ? `
             <div class="${embedded ? 'review-plan-list' : 'generated-plan-grid'}" aria-label="Review and finish plans" data-layout="${embedded ? 'review-plan-list' : 'generated-plan-grid'}">
-              ${visiblePlans.map((record) => generatedPlanCard(record)).join('')}
+              ${paginatedPlans.items.map((record) => generatedPlanCard(record)).join('')}
             </div>
+            ${listPagination('review', paginatedPlans, 'Review drafts')}
           `
           : generatedPlansEmptyState(embedded)
       }
@@ -6967,6 +6977,84 @@ function syncArtifactSearchResults(): void {
   }
 }
 
+const LIST_PAGE_SIZES: Record<AppListPageKey, number> = {
+  review: 4,
+  inbox: 3,
+  recurring: 3,
+  receiptArchive: 4,
+};
+
+interface PaginatedList<T> {
+  items: T[];
+  page: number;
+  pageSize: number;
+  totalPages: number;
+  total: number;
+  start: number;
+  end: number;
+}
+
+function isAppListPageKey(value: string | undefined): value is AppListPageKey {
+  return value === 'review' || value === 'inbox' || value === 'recurring' || value === 'receiptArchive';
+}
+
+function paginateList<T>(items: T[], pageKey: AppListPageKey): PaginatedList<T> {
+  const pageSize = LIST_PAGE_SIZES[pageKey];
+  const total = items.length;
+  const totalPages = Math.max(1, Math.ceil(total / pageSize));
+  const rawPage = Math.trunc(state.listPages[pageKey] || 1);
+  const page = Math.min(Math.max(rawPage, 1), totalPages);
+  if (state.listPages[pageKey] !== page) {
+    state.listPages[pageKey] = page;
+  }
+  const startIndex = (page - 1) * pageSize;
+  const endIndex = Math.min(startIndex + pageSize, total);
+  return {
+    items: items.slice(startIndex, endIndex),
+    page,
+    pageSize,
+    totalPages,
+    total,
+    start: total ? startIndex + 1 : 0,
+    end: endIndex,
+  };
+}
+
+function listPagination(pageKey: AppListPageKey, pagination: PaginatedList<unknown>, label: string): string {
+  if (pagination.total <= pagination.pageSize) return '';
+  const previousPage = Math.max(1, pagination.page - 1);
+  const nextPage = Math.min(pagination.totalPages, pagination.page + 1);
+  return `
+    <nav class="list-pagination" aria-label="${escapeHtml(label)} pagination">
+      <span class="list-pagination-summary">
+        <strong>${escapeHtml(label)}</strong>
+        <span>Showing ${pagination.start}-${pagination.end} of ${pagination.total}</span>
+      </span>
+      <div class="list-pagination-actions">
+        <button
+          type="button"
+          class="utility"
+          data-list-page-key="${pageKey}"
+          data-list-page="${previousPage}"
+          ${pagination.page <= 1 ? 'disabled' : ''}
+        >
+          Previous
+        </button>
+        <span class="list-pagination-page">Page ${pagination.page} / ${pagination.totalPages}</span>
+        <button
+          type="button"
+          class="utility"
+          data-list-page-key="${pageKey}"
+          data-list-page="${nextPage}"
+          ${pagination.page >= pagination.totalPages ? 'disabled' : ''}
+        >
+          Next
+        </button>
+      </div>
+    </nav>
+  `;
+}
+
 function approvalInboxPanel(): string {
   if (!state.address) {
     return guidedStartPanel('Approval inbox', 'Connect a wallet before approving or denying queued requests.');
@@ -7525,7 +7613,7 @@ function createArtifactPanel(): string {
   const artifact = latestLabArtifact(lab.id);
   const publicReceipt = isPublicReceiptLab(lab);
   return `
-      <div class="lab-panel lab-workbench">
+      <div class="lab-panel lab-workbench ${publicReceipt ? 'common-proof-workbench' : 'advanced-proof-workbench'}">
         <div class="artifact-create-status">
           <span class="signature-state">${escapeHtml(labIndexLabel())}</span>
         </div>
@@ -7762,10 +7850,12 @@ function signedArtifactsEmptyState(): string {
 }
 
 function signedArtifactList(artifacts: LabArtifact[]): string {
+  const paginatedArtifacts = paginateList(artifacts, 'receiptArchive');
   return `
     <div class="signed-artifact-list">
-      ${artifacts.map((artifact) => signedArtifactRow(artifact)).join('')}
+      ${paginatedArtifacts.items.map((artifact) => signedArtifactRow(artifact)).join('')}
     </div>
+    ${listPagination('receiptArchive', paginatedArtifacts, 'Receipt archive')}
   `;
 }
 
@@ -8198,6 +8288,8 @@ function bind(): void {
       state.oneTimePlanView = view;
       if (view === 'create') {
         state.generatedPlanAuditId = '';
+      } else {
+        state.listPages.review = 1;
       }
       trackNavClick(`${currentRoute() ?? '/app'}#one-time-${view}`, 'one_time_plan');
       render();
@@ -8210,6 +8302,9 @@ function bind(): void {
       if (!view) return;
       state.activeTab = 'schedule';
       state.recurringView = view;
+      if (view === 'active') {
+        state.listPages.recurring = 1;
+      }
       state.error = '';
       render();
     });
@@ -8268,6 +8363,17 @@ function bind(): void {
     });
   }
 
+  for (const button of document.querySelectorAll<HTMLButtonElement>('[data-list-page-key]')) {
+    button.addEventListener('click', () => {
+      const pageKey = button.dataset.listPageKey;
+      const nextPage = Number(button.dataset.listPage);
+      if (!isAppListPageKey(pageKey) || !Number.isFinite(nextPage)) return;
+      state.listPages[pageKey] = nextPage;
+      state.error = '';
+      render();
+    });
+  }
+
   document.querySelector<HTMLButtonElement>('#discover')?.addEventListener('click', runDiscover);
   document.querySelector<HTMLButtonElement>('#connect')?.addEventListener('click', runConnect);
   document.querySelector<HTMLButtonElement>('#disconnect')?.addEventListener('click', runDisconnect);
@@ -8291,6 +8397,7 @@ function bind(): void {
   document.querySelector<HTMLButtonElement>('#refreshCompletedPlans')?.addEventListener('click', runRefreshInbox);
   document.querySelector<HTMLButtonElement>('#toggleArchivedGeneratedPlans')?.addEventListener('click', () => {
     state.showArchivedGeneratedPlans = !state.showArchivedGeneratedPlans;
+    state.listPages.review = 1;
     const auditRecord = generatedPlanById(state.generatedPlanAuditId);
     if (!state.showArchivedGeneratedPlans && auditRecord?.status === 'archived') {
       state.generatedPlanAuditId = '';
@@ -8638,6 +8745,9 @@ function bind(): void {
       const view = button.dataset.artifactView;
       if (view !== 'create' && view !== 'signed') return;
       state.artifactView = view;
+      if (view === 'signed') {
+        state.listPages.receiptArchive = 1;
+      }
       state.error = '';
       render();
     });
@@ -8660,6 +8770,7 @@ function bind(): void {
       const filter = button.dataset.artifactFilter as ArtifactFilter | undefined;
       if (!filter) return;
       state.artifactFilter = filter;
+      state.listPages.receiptArchive = 1;
       state.error = '';
       render();
     });
@@ -8667,16 +8778,19 @@ function bind(): void {
 
   document.querySelector<HTMLSelectElement>('#artifactTypeFilter')?.addEventListener('change', (event) => {
     state.artifactTypeFilter = (event.currentTarget as HTMLSelectElement).value;
+    state.listPages.receiptArchive = 1;
     state.error = '';
     render();
   });
 
   document.querySelector<HTMLInputElement>('#artifactSearch')?.addEventListener('input', (event) => {
     state.artifactSearch = (event.currentTarget as HTMLInputElement).value;
+    state.listPages.receiptArchive = 1;
     syncArtifactSearchResults();
   });
   document.querySelector<HTMLInputElement>('#artifactSearch')?.addEventListener('change', (event) => {
     state.artifactSearch = (event.currentTarget as HTMLInputElement).value;
+    state.listPages.receiptArchive = 1;
     state.error = '';
     render();
   });
@@ -8705,6 +8819,7 @@ function bind(): void {
 
   document.querySelector<HTMLSelectElement>('#inboxFilter')?.addEventListener('change', (event) => {
     state.inboxFilter = (event.currentTarget as HTMLSelectElement).value as InboxFilter;
+    state.listPages.inbox = 1;
     render();
   });
 
@@ -12952,6 +13067,7 @@ async function runCreateLabArtifact(): Promise<void> {
     state.artifactFilter = 'all';
     state.artifactTypeFilter = 'all';
     state.artifactSearch = '';
+    state.listPages.receiptArchive = 1;
     state.artifactView = 'signed';
     pushToast(
       'success',
@@ -15120,10 +15236,12 @@ function preparedActionsList(actions = filteredPreparedActions()): string {
   if (actions.length === 0) {
     return queueEmptyState('clear');
   }
+  const paginatedActions = paginateList(actions, 'inbox');
   return `
     <div class="inbox-list">
-      ${actions.map(preparedActionCard).join('')}
+      ${paginatedActions.items.map(preparedActionCard).join('')}
     </div>
+    ${listPagination('inbox', paginatedActions, 'Inbox approvals')}
   `;
 }
 
@@ -15674,10 +15792,12 @@ function recurringList(): string {
   if (payments.length === 0) {
     return '';
   }
+  const paginatedPayments = paginateList(payments, 'recurring');
   return `
     <div class="recurring-list">
-      ${payments.map(recurringCard).join('')}
+      ${paginatedPayments.items.map(recurringCard).join('')}
     </div>
+    ${listPagination('recurring', paginatedPayments, 'Active recurring')}
   `;
 }
 

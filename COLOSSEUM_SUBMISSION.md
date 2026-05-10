@@ -25,7 +25,7 @@ Open-source Solana signing infrastructure plus a working approval app. The durab
 Canonical live URL:
 
 ```text
-https://agent-signer.com/
+https://agentic-signer.com/
 ```
 
 Repository:
@@ -119,7 +119,7 @@ Upload a public or unlisted YouTube, Loom, or Vimeo link. Keep it under 3 minute
 Recommended demo flow:
 
 ```text
-0:00 - Open agent-signer.com and show the app/workspace.
+0:00 - Open agentic-signer.com and show the app/workspace.
 0:15 - Connect a Solana wallet or show wallet connection state.
 0:30 - Create a plan from a template, for example SOL to USDC swap or capped SOL transfer.
 0:55 - Show optional BYOK provider choices: OpenAI, Claude / Anthropic, Gemini, OpenRouter, custom OpenAI-compatible.
@@ -134,13 +134,13 @@ Recommended demo flow:
 ### Live Product Link
 
 ```text
-https://agent-signer.com/
+https://agentic-signer.com/
 ```
 
 ### Access Instructions
 
 ```text
-Open https://agent-signer.com/. Use templates without an AI key, or use BYOK with OpenAI, Claude / Anthropic, Gemini, OpenRouter, or a custom OpenAI-compatible provider. AI only drafts plans. It cannot sign, submit, or approve.
+Open https://agentic-signer.com/. Use templates without an AI key, or use BYOK with OpenAI, Claude / Anthropic, Gemini, OpenRouter, or a custom OpenAI-compatible provider. AI only drafts plans. It cannot sign, submit, or approve.
 
 For local approvals, use the CLI or Desktop App from the site. Connect a Solana wallet, create a plan, queue an approval, and sign from the wallet. Wallet approvals run locally; the user's wallet remains the signer.
 
@@ -243,7 +243,7 @@ No, unless you want to reposition Agentic as a venture-backed company. The stron
 
 - Replace the old Cocos logo with the Agentic x Solana project graphic.
 - Replace the GitHub link with `https://github.com/mstevens843/solana-agent-wallet-adapter`.
-- Replace the live product link with `https://agent-signer.com/`.
+- Replace the live product link with `https://agentic-signer.com/`.
 - Replace Cocos repo context with the Agentic repo context above.
 - Upload a new demo video focused on the live Agentic app.
 - Upload a new 2-minute pitch video with current Agentic positioning.

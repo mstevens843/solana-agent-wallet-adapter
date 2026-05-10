@@ -61,9 +61,7 @@ See [PROGRESS.md](./PROGRESS.md) for confirmed mainnet transfers, safety caps, a
 
 ## Launch Positioning
 
-Buy `agenticwalletadapter.com` first. If budget allows, also buy `agenticapprove.com` and redirect it to the same site.
-
-- Domain: `agenticwalletadapter.com`
+- Canonical live URL: `https://agentic-signer.com/`
 - Hero copy: "Agentic approval for Solana wallets"
 - Product name: `Agentic`
 - Technical phrase: `Agentic Wallet Adapter` or `Solana Agent Wallet Adapter`
@@ -267,7 +265,7 @@ Avoid broad "first" or "only" claims. The detailed competitive scan lives in [ST
 
 The architecture avoids key custody, but the product also includes workflow controls:
 
-- mainnet is disabled by default in the example config
+- mainnet is disabled by default in the checked-in config and example config
 - capped SOL transfers and swaps
 - SPL transfer allowlists
 - arbitrary mainnet transaction signing disabled unless explicitly enabled
