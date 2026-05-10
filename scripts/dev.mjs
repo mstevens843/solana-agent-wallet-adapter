@@ -134,7 +134,10 @@ function assertPortFree(port, listenHost) {
 }
 
 function printUrls() {
-  console.log(`[dev] browser: http://127.0.0.1:5174/`);
+  const localBrowserUrl = new URL('http://127.0.0.1:5174/');
+  localBrowserUrl.searchParams.set('bridgeUrl', 'http://127.0.0.1:8787');
+  localBrowserUrl.searchParams.set('token', 'local-agent-wallet');
+  console.log(`[dev] browser: ${localBrowserUrl.toString()}`);
   console.log(`[dev] bridge:  http://127.0.0.1:8787/?token=local-agent-wallet`);
   if (!mobileMode) return;
   for (const address of lanAddresses()) {

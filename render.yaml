@@ -14,6 +14,7 @@ services:
     startCommand: pnpm -F @solana-agent-wallet-adapter/render-web start
     healthCheckPath: /api/ai/status
     domains:
+      - agentic-seeker.com
       - agentic-signer.com
     envVars:
       - key: SKIP_INSTALL_DEPS
@@ -25,7 +26,7 @@ services:
       - key: SESSION_SECRET
         generateValue: true
       - key: AGENTIC_PUBLIC_ORIGIN
-        value: "https://agentic-signer.com"
+        value: "https://agentic-seeker.com"
       - key: VITE_AGENTIC_DEV_CONTROLS
         value: "false"
       - key: VITE_AGENTIC_GA_MEASUREMENT_ID

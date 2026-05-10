@@ -15048,7 +15048,7 @@ button.danger:hover:not(:disabled) {
   box-shadow:
     inset 0 1px 0 rgba(255, 255, 255, 0.028),
     0 10px 24px rgba(0, 0, 0, 0.16);
-  overflow: hidden;
+  overflow: visible;
   padding: 14px;
   position: relative;
 }
@@ -15070,6 +15070,10 @@ button.danger:hover:not(:disabled) {
 
 .route-app .common-proof-workbench .artifact-proof-group-tabs {
   max-width: 470px;
+}
+
+.route-app .common-proof-workbench > .lab-select-field {
+  z-index: 30;
 }
 
 .route-app .common-proof-workbench .lab-workbench-grid {

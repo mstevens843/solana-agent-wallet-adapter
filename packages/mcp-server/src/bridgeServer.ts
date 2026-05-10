@@ -609,6 +609,8 @@ function bridgeAllowedOrigins(): Set<string> {
     .map((entry) => entry.trim())
     .filter(Boolean);
   return new Set([
+    'https://agentic-seeker.com',
+    'https://www.agentic-seeker.com',
     'https://agentic-signer.com',
     'https://www.agentic-signer.com',
     'https://agenticwalletadapter.com',
