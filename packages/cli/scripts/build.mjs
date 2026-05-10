@@ -36,7 +36,10 @@ await build({
 
 await chmod(join(distDir, 'index.js'), 0o755);
 await rm(walletHostDist, { recursive: true, force: true });
-await cp(browserDist, walletHostDist, { recursive: true });
+await cp(browserDist, walletHostDist, {
+  recursive: true,
+  filter: (source) => !source.endsWith('.bak'),
+});
 
 console.log(`[cli-build] bundled CLI: ${join(distDir, 'index.js')}`);
 console.log(`[cli-build] copied wallet host: ${walletHostDist}`);

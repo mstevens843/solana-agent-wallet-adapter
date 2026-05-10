@@ -1,6 +1,6 @@
 # Public Release
 
-Use this process to make every public installer shown on `agenticwalletadapter.com` resolve for users.
+Use this process to make every public installer shown on `agentic-signer.com` resolve for users.
 
 ## Prerequisites
 
@@ -17,12 +17,12 @@ Use this process to make every public installer shown on `agenticwalletadapter.c
   - `AGENTIC_ANDROID_SHA256_CERT_FINGERPRINTS`
   - `AGENTIC_ANDROID_REQUIRE_TRUST=1`
 
-## First Public Tag
+## Current Public Tag
 
 The CLI npm version, desktop app version, and tag must match. The repository is prepared for:
 
 ```sh
-v0.1.0
+v0.2.1
 ```
 
 Before choosing a different tag, update `packages/cli/package.json`, `apps/desktop-shell/package.json`,
@@ -44,8 +44,8 @@ without the leading `v`.
 2. Push the release commit, then tag it:
 
    ```sh
-   git tag v0.1.0
-   git push origin master v0.1.0
+   git tag v0.2.1
+   git push origin master v0.2.1
    ```
 
 3. Confirm the tag starts these workflows:
@@ -83,9 +83,9 @@ https://github.com/mstevens843/solana-agent-wallet-adapter/releases/latest/downl
 After Actions finishes, run:
 
 ```sh
-pnpm verify:release-links:live -- --tag v0.1.0
-npm view @solana-agent-wallet-adapter/cli@0.1.0 version
-npm exec @solana-agent-wallet-adapter/cli -- --help
+pnpm verify:release-links:live -- --tag v0.2.1
+npm view @solana-agent-wallet-adapter/cli@0.2.1 version
+npm exec @solana-agent-wallet-adapter/cli@0.2.1 -- --help
 ```
 
 The live verifier fails if npm is unpublished, the tagged GitHub release is missing an advertised asset, or any

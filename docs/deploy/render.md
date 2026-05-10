@@ -165,7 +165,7 @@ pnpm verify:release-links
 After publishing a public release, run the live verifier against the tag:
 
 ```sh
-pnpm verify:release-links:live -- --tag v0.1.0
+pnpm verify:release-links:live -- --tag v0.2.1
 ```
 
 ## Android Trust File
@@ -190,9 +190,9 @@ active.
 Set `AGENTIC_ANDROID_REQUIRE_TRUST=1` for production Render builds that back an Android release. With that guard
 enabled, `pnpm render:prepare` fails instead of deploying the placeholder trust file.
 
-The native Android APK still defaults to `https://agenticwalletadapter.com/#app` unless it is built with
-`AGENTIC_ANDROID_LAUNCH_URL=https://agentic-signer.com/app`. The Node web service handles direct browser visits to
-client-side routes such as `/app` and `/demo`.
+The native Android release workflow builds with `AGENTIC_ANDROID_LAUNCH_URL=https://agentic-signer.com/app`. Local
+Android builds still use the bundled fallback default unless that environment variable is provided. The Node web
+service handles direct browser visits to client-side routes such as `/app` and `/demo`.
 
 ## Local Verification
 

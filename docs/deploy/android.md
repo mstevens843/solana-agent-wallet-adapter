@@ -60,7 +60,7 @@ export AGENTIC_ANDROID_STORE_PASSWORD=...
 export AGENTIC_ANDROID_KEY_PASSWORD=...
 export AGENTIC_ANDROID_REQUIRE_SIGNING=1
 export AGENTIC_ANDROID_VERSION_CODE=2
-export AGENTIC_ANDROID_VERSION_NAME=0.1.0
+export AGENTIC_ANDROID_VERSION_NAME=0.2.1
 pnpm android:release
 ```
 
@@ -72,11 +72,11 @@ staged.
 Override the hosted fallback URL for a build:
 
 ```sh
-pnpm android:debug -- -PagenticLaunchUrl=https://agenticwalletadapter.com/#app
+pnpm android:debug -- -PagenticLaunchUrl=https://agentic-signer.com/app
 ```
 
-The fallback URL defaults to `https://agenticwalletadapter.com/#app`. It is used only when web fallback is explicitly
-enabled, not as the default Android launcher.
+The release workflow builds with `AGENTIC_ANDROID_LAUNCH_URL=https://agentic-signer.com/app`. The fallback URL is used
+only when web fallback is explicitly enabled, not as the default Android launcher.
 
 Enable the hosted web/TWA fallback for a debug build:
 
@@ -127,7 +127,7 @@ live in `assets/agentic`:
 The optional TWA fallback reaches full trusted mode only when the deployed origin serves:
 
 ```text
-https://agenticwalletadapter.com/.well-known/assetlinks.json
+https://agentic-signer.com/.well-known/assetlinks.json
 ```
 
 The checked-in browser-demo file contains a safe placeholder fingerprint. Replace it with the release signing certificate before production deployment.

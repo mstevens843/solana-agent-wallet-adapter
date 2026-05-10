@@ -109,6 +109,7 @@ import {
   hasDiscoveredBrowserWalletSelection,
   isPersistedBrowserWalletSession,
   reconcileBrowserWalletSelection,
+  visibleBrowserWallets,
   type BrowserWalletSession,
 } from './walletSelection.js';
 import './styles.css';
@@ -9578,7 +9579,7 @@ async function runDiscover(): Promise<void> {
       pushToast('success', 'iOS wallets ready', `${state.iosWallets.length} wallet path(s) available.`);
       return;
     }
-    state.wallets = [...listAvailableWallets()];
+    state.wallets = visibleBrowserWallets(listAvailableWallets());
     state.selectedWalletName = reconcileBrowserWalletSelection(state.wallets, state.selectedWalletName);
     state.browserWalletPickerOpen = state.wallets.length > 0 && !state.selectedWalletName;
     if (!browserWalletRestoreName(state.wallets, state.browserWalletSession, state.cluster)) {
@@ -14542,7 +14543,7 @@ function clearBrowserWalletSession(): void {
 }
 
 async function restoreBrowserWalletSession(): Promise<void> {
-  state.wallets = [...listAvailableWallets()];
+  state.wallets = visibleBrowserWallets(listAvailableWallets());
   state.selectedWalletName = reconcileBrowserWalletSelection(state.wallets, state.selectedWalletName);
   state.browserWalletPickerOpen = false;
   const restoreName = browserWalletRestoreName(state.wallets, state.browserWalletSession, state.cluster);

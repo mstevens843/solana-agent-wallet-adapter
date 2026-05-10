@@ -21,6 +21,8 @@ export interface BrowserWalletPickerOption {
   disabled?: boolean;
 }
 
+const HIDDEN_BROWSER_WALLET_NAMES = new Set(['leap', 'leapwallet', 'metamask']);
+
 export function createBrowserWalletSession(
   walletName: string,
   cluster: string,
@@ -105,6 +107,14 @@ export function browserWalletPickerOptions(
   ];
 }
 
+export function visibleBrowserWallets<T extends BrowserWalletCandidate>(wallets: ReadonlyArray<T>): T[] {
+  return wallets.filter((wallet) => !isHiddenBrowserWallet(wallet.name));
+}
+
+function isHiddenBrowserWallet(walletName: string): boolean {
+  return HIDDEN_BROWSER_WALLET_NAMES.has(normalizeHiddenWalletName(walletName));
+}
+
 function findWalletByName(
   wallets: ReadonlyArray<BrowserWalletCandidate>,
   walletName: string,
@@ -116,6 +126,10 @@ function findWalletByName(
 
 function normalizeWalletName(value: string): string {
   return value.trim().toLowerCase();
+}
+
+function normalizeHiddenWalletName(value: string): string {
+  return value.trim().toLowerCase().replace(/[^a-z0-9]/g, '');
 }
 
 function nonEmptyString(value: unknown): value is string {

@@ -8,9 +8,17 @@ import {
   hasDiscoveredBrowserWalletSelection,
   isPersistedBrowserWalletSession,
   reconcileBrowserWalletSelection,
+  visibleBrowserWallets,
 } from '../walletSelection.js';
 
 const discoveredWallets = [{ name: 'Backpack' }, { name: 'Phantom' }, { name: 'Solflare' }];
+const mixedDiscoveredWallets = [
+  { name: 'Backpack' },
+  { name: 'MetaMask' },
+  { name: 'Phantom' },
+  { name: 'Solflare' },
+  { name: 'Leap Wallet' },
+];
 
 describe('browser wallet selection helpers', () => {
   it('does not auto-select the first discovered wallet', () => {
@@ -37,6 +45,14 @@ describe('browser wallet selection helpers', () => {
       disabled: true,
     });
     expect(options.slice(1).map((option) => option.label)).toEqual(['Backpack', 'Phantom', 'Solflare']);
+  });
+
+  it('hides unsupported browser wallet providers', () => {
+    expect(visibleBrowserWallets(mixedDiscoveredWallets).map((wallet) => wallet.name)).toEqual([
+      'Backpack',
+      'Phantom',
+      'Solflare',
+    ]);
   });
 
   it('uses only explicit connected wallet sessions for restore', () => {

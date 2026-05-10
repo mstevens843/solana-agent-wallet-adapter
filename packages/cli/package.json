@@ -1,6 +1,6 @@
 {
   "name": "@solana-agent-wallet-adapter/cli",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "Terminal CLI for the Solana Agent Wallet Adapter local bridge.",
   "license": "Apache-2.0",
   "type": "module",

@@ -158,19 +158,27 @@ Upload a separate public YouTube, Loom, or Vimeo link. Keep it under 2 minutes. 
 Recommended pitch script:
 
 ```text
-Hi, I'm Matt. I built Agentic, the first multi-wallet Agent Signer on Solana.
+I'm Mathew Stevens.
 
-The gap is simple: onchain agents have signing models for autonomy, like env-var signers, hot wallets, funded agent wallets, and delegated vaults. Those are useful, but user-owned actions need a different layer.
+I build Solana wallet infrastructure.
 
-Agentic adds that layer. Agents prepare Solana actions. The user's existing wallet signs.
+So I built Agentic: open-source signing infrastructure for AI agents on Solana.
 
-The repo includes a shared WalletBackend protocol, MCP tools, CLI, Wallet Standard web backend, Android MWA path, iOS wallet-link path, Vercel AI tools, Solana Agent Kit adapter, browser app, desktop shell, approval inbox, caps, BYOK planning, signed artifacts, and receipts.
+Right now, agents are being handed private keys.
 
-The proof is live: an AI agent requested a real mainnet SOL transfer, the user approved in an existing browser wallet, the wallet signed and broadcasted, and the agent received the confirmed transaction id. The private key never left the wallet.
+That works for agent-owned autonomy.
 
-Agentic is for users who want AI help without giving up keys, and for builders who need agent signing without becoming custodians.
+But for user-owned actions, the wallet should stay the signer.
+
+Agentic flips the boundary.
 
 Agents prepare. Your wallet signs.
+```
+
+Animation voiceover source:
+
+```text
+docs/handoff/colosseum-pitch-voiceover.md
 ```
 
 ## Page 3: Team

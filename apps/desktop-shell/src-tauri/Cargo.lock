@@ -2776,7 +2776,7 @@ dependencies = [
 
 [[package]]
 name = "solana-agent-wallet-desktop"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "getrandom 0.3.4",
  "serde",
