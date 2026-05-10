@@ -119,17 +119,17 @@ Upload a public or unlisted YouTube, Loom, or Vimeo link. Keep it under 3 minute
 Recommended demo flow:
 
 ```text
-0:00 - Open agentic-signer.com and show the app/workspace.
-0:15 - Connect a Solana wallet or show wallet connection state.
-0:30 - Create a plan from a template, for example SOL to USDC swap or capped SOL transfer.
-0:55 - Show optional BYOK provider choices: OpenAI, Claude / Anthropic, Gemini, OpenRouter, custom OpenAI-compatible.
-1:10 - Show that AI output is only a draft plan and cannot sign, submit, or approve.
-1:25 - Queue the plan into Approval Inbox.
-1:45 - Open the wallet approval flow or show the wallet-gated signing step.
-2:05 - Show a signed artifact, receipt, or transaction confirmation.
-2:25 - Show CLI/Desktop install surface briefly.
-2:45 - End on the line: Agents prepare. Your wallet signs.
+0:00 - Open agentic-signer.com, show the hero promise, then click Launch App.
+0:12 - Show the real /app Command Center and wallet/sidebar trust boundary.
+0:35 - Open Connect AI and show Hosted BYOK, Local Bridge AI, and Browser Session. Make clear AI drafts only.
+0:58 - Create a bounded Swap tokens draft: 0.01 SOL to USDC, 0.5% max slippage.
+1:28 - Review the saved plan, send it to Approval Inbox, and show the wallet-gated approval card.
+1:58 - Show Recurring: a weekly 0.01 SOL schedule where each due run returns to Inbox.
+2:25 - Show Proofs or a non-empty receipt state, then a 3-5 second CLI/Desktop install surface.
+2:45 - End on the line: Open-source Solana signing infrastructure. Agents prepare. Your wallet signs.
 ```
+
+Recording direction: silent live-product walkthrough with short captions, hard cuts only, no slides, no code walkthrough, and the real app as the main proof. Use `/demo` only as a fallback or user-facing preview; the submitted demo should primarily show `/app`.
 
 ### Live Product Link
 
