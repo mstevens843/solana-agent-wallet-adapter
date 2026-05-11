@@ -68,7 +68,7 @@ const TITLE_BY_KIND: Record<TransactionFailureKind, string> = {
 };
 
 const AMBIGUOUS_TITLE = 'Submitted status unknown';
-const AMBIGUOUS_MESSAGE = 'The app is checking the original transaction before allowing another approval.';
+const AMBIGUOUS_MESSAGE = 'Checking the signed transaction status.';
 const RETRY_MESSAGE = 'Retrying only the same signed transaction. Do not approve this request again.';
 const CONFIG_MESSAGE = 'Transaction execution is not configured. Add RPC/Jupiter setup before trying again.';
 const ONCHAIN_MESSAGE = 'The transaction reached chain status and failed. Review the error before retrying.';

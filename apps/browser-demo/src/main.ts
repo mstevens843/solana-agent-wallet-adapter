@@ -18416,25 +18416,44 @@ async function executeBrowserPreparedAction(action: PreparedAction): Promise<voi
   if (policyError) {
     throw new Error(policyError);
   }
+  const priorStatus: PreparedActionStatus = action.status === 'overdue' ? 'overdue' : 'ready';
 
-  // Pre-flight: if a signed/submitted/ambiguous ledger entry already exists,
-  // never re-open the wallet. Route to confirmation/reconciliation instead.
+  // Pre-flight only resumes a transaction the UI already treats as pending.
+  // Stale localStorage from an earlier failed attempt must not block a ready
+  // wallet approval.
   const existingLedger = findPendingTransactionByAction(action.id);
   if (existingLedger && PENDING_LEDGER_PHASES.has(existingLedger.phase)) {
-    if (existingLedger.txid) {
+    if (!actionHasActiveTransaction(action, existingLedger)) {
+      removePendingTransaction(existingLedger.id);
+      syncPendingTransactionsFromLedger();
+    } else if (existingLedger.txid) {
       await runBrowserTransactionConfirm({ ...action, txid: existingLedger.txid });
+      return;
+    } else if (existingLedger.signedTransactionBase64) {
+      const toastId = pushToast('pending', 'Sending signed transaction', 'Broadcasting the already signed transaction to Solana RPC.');
+      const toastContext: TransactionToastContext = { toastId, actionId: action.id, cluster: action.cluster };
+      try {
+        const txid = await broadcastSignedBrowserTransactionWithRetry(
+          action.cluster,
+          existingLedger.signedTransactionBase64,
+          toastContext,
+        );
+        markTransactionPhase(existingLedger.id, 'submitted', {
+          submittedAt: new Date().toISOString(),
+          txid,
+        });
+        syncPendingTransactionsFromLedger();
+        await runBrowserTransactionConfirm({ ...action, txid });
+      } catch (err) {
+        await handleClassifiedExecutionFailure({ action, toastId, priorStatus, err });
+      }
+      return;
     } else {
-      pushToast(
-        'pending',
-        'Submitted status unknown',
-        'The app is checking the original transaction before allowing another approval.',
-      );
-      await reconcilePendingTransactions({ trigger: 'check-confirmation', userInitiated: true, targetActionId: action.id });
+      removePendingTransaction(existingLedger.id);
+      syncPendingTransactionsFromLedger();
     }
-    return;
   }
 
-  const priorStatus: PreparedActionStatus = action.status === 'overdue' ? 'overdue' : 'ready';
   const toastId = pushToast('pending', 'Opening wallet', browserExecutionStartMessage(action));
   const toastContext: TransactionToastContext = { toastId, actionId: action.id, cluster: action.cluster };
   updateBrowserPreparedAction(action.id, {
@@ -18753,7 +18772,7 @@ async function reconcilePendingTransactions(opts: {
         pushToast(
           'pending',
           'Submitted status unknown',
-          'The app is checking the original transaction before allowing another approval.',
+          'Checking the signed transaction status.',
           record.txid
             ? { linkHref: explorerUrl(record.txid, cluster), linkLabel: 'Open Solscan' }
             : {},
@@ -21434,7 +21453,7 @@ function swapQuoteNeedsAutoHydration(action: PreparedAction, now: number): boole
   if (!isActionInboxActive(action) || action.kind !== 'swap') return false;
   if (action.workflowSource === 'cloud') return false;
   if (!shouldAutoHydrateSwapQuote(action)) return false;
-  if (action.status === 'approval_pending' || Boolean(action.txid) || hasPendingExecutionLedgerEntry(action.id)) return false;
+  if (action.status === 'approval_pending' || Boolean(action.txid) || hasPendingExecutionLedgerEntry(action)) return false;
   const lastAttempt = swapQuoteHydrationAttemptedAt.get(action.id) ?? 0;
   if (now - lastAttempt < QUOTE_AUTO_HYDRATE_RETRY_MS) return false;
   if (!hasUsableSwapQuote(action)) return true;
@@ -23570,7 +23589,7 @@ function preparedActionCard(action: PreparedAction): string {
   const effectCopy = approvalEffectCopy(action);
   const executionBlockReason = cloudExecutionBlockReason(action) ?? actionRecipientPolicyBlockReason(action);
   const confirmable = canConfirmCloudFinalization(action) || canConfirmBrowserTransaction(action);
-  const pendingLedgerExecution = hasPendingExecutionLedgerEntry(action.id);
+  const pendingLedgerExecution = hasPendingExecutionLedgerEntry(action);
   const executeDisabled = (!state.bridgeActive && !browserWorkflow && !cloudWorkflow) ||
     state.busy ||
     !executable ||
@@ -23624,7 +23643,7 @@ function preparedActionCard(action: PreparedAction): string {
         </div>
         ${executionBlockReason ? `<p class="error-text">${escapeHtml(executionBlockReason)}</p>` : ''}
         <div class="inbox-approval-footer-row">
-          ${hasPendingExecutionLedgerEntry(action.id) || action.txid || action.status === 'failed' ? `<button class="utility inbox-footer-action" data-attach-tx-action="open" data-action-id="${escapeHtml(action.id)}">Attach existing transaction</button>` : ''}
+          ${hasPendingExecutionLedgerEntry(action) || action.txid || action.status === 'failed' ? `<button class="utility inbox-footer-action" data-attach-tx-action="open" data-action-id="${escapeHtml(action.id)}">Attach existing transaction</button>` : ''}
           ${action.status === 'failed' || action.txError ? `<button class="utility inbox-footer-action" data-debug-export data-action-id="${escapeHtml(action.id)}">Copy debug log</button>` : ''}
           <button class="utility inbox-footer-action" data-action-op="archive" data-action-id="${action.id}" ${state.busy ? 'disabled' : ''} title="Remove from Needs Approval without signing a denial proof.">Archive</button>
           <button class="utility danger recurring-delete-mini" data-action-op="delete" data-action-id="${action.id}" ${state.busy ? 'disabled' : ''}>Delete</button>
@@ -24515,7 +24534,7 @@ function preSignReviewBlock(action: PreparedAction): string {
   }
   if (!isExecutableBrowserAction(action) && action.workflowSource !== 'local-bridge') return '';
   // Suppress review once the action is in flight — the Check-confirmation flow takes over.
-  if (hasPendingExecutionLedgerEntry(action.id)) return '';
+  if (hasPendingExecutionLedgerEntry(action)) return '';
   if (action.txStatus === 'pending' && action.txid) return '';
 
   const model = buildPreSignReviewModelForAction(action);
@@ -24820,7 +24839,7 @@ function canConfirmBrowserTransaction(action: PreparedAction): boolean {
     return true;
   }
   const ledger = findPendingActionLedgerEntry(action.id);
-  return Boolean(ledger && ledger.txid && PENDING_LEDGER_PHASES.has(ledger.phase));
+  return Boolean(ledger && ledger.txid && actionHasActiveTransaction(action, ledger));
 }
 
 function findPendingActionLedgerEntry(actionId: string): PendingTransactionRecord | undefined {
@@ -24828,9 +24847,18 @@ function findPendingActionLedgerEntry(actionId: string): PendingTransactionRecor
   return state.pendingTransactions.find((record) => record.actionId === actionId);
 }
 
-function hasPendingExecutionLedgerEntry(actionId: string): boolean {
-  const ledger = findPendingActionLedgerEntry(actionId);
-  return Boolean(ledger && PENDING_LEDGER_PHASES.has(ledger.phase));
+function actionHasActiveTransaction(
+  action: PreparedAction,
+  ledger: PendingTransactionRecord | undefined = findPendingActionLedgerEntry(action.id),
+): boolean {
+  if (!ledger || !PENDING_LEDGER_PHASES.has(ledger.phase)) return false;
+  return action.status === 'approval_pending' ||
+    action.txStatus === 'pending' ||
+    Boolean(action.txid);
+}
+
+function hasPendingExecutionLedgerEntry(action: PreparedAction): boolean {
+  return actionHasActiveTransaction(action);
 }
 
 function requiresCloudTransactionFinalization(action: PreparedAction): boolean {
@@ -26463,7 +26491,7 @@ function evidenceBadgeForAction(action: PreparedAction): EvidenceBadgeView {
     return { tone: 'pending', label: 'Pending confirmation' };
   }
   const ledgerEntry = findPendingActionLedgerEntry(action.id);
-  if (ledgerEntry?.txid) {
+  if (ledgerEntry?.txid && actionHasActiveTransaction(action, ledgerEntry)) {
     return ledgerEntry.phase === 'confirmed'
       ? { tone: 'live', label: 'On-chain transaction' }
       : { tone: 'pending', label: 'Pending confirmation' };
@@ -26576,19 +26604,20 @@ function actionStatusToTimelinePhase(action: PreparedAction): {
 
 function actionTimelineSteps(action: PreparedAction): TimelineStep[] {
   const ledger = findPendingActionLedgerEntry(action.id);
-  const mapped = ledger
-    ? ledgerPhaseToTimelinePhase(ledger.phase)
+  const activeLedger = ledger && actionHasActiveTransaction(action, ledger) ? ledger : undefined;
+  const mapped = activeLedger
+    ? ledgerPhaseToTimelinePhase(activeLedger.phase)
     : actionStatusToTimelinePhase(action);
   const currentIndex = TIMELINE_PHASE_ORDER.indexOf(mapped.current);
-  const confirmed = ledger?.phase === 'confirmed' || action.txStatus === 'confirmed';
+  const confirmed = activeLedger?.phase === 'confirmed' || action.txStatus === 'confirmed';
   const allDone = confirmed || ('allDone' in mapped && Boolean(mapped.allDone));
   const timestamps: Partial<Record<TimelinePhaseId, string>> = {
     drafted: action.createdAt,
-    queued: ledger?.createdAt ?? action.updatedAt ?? action.createdAt,
-    wallet: ledger?.lastAttemptAt,
-    signed: ledger?.signedAt,
-    sent: ledger?.submittedAt,
-    confirmed: ledger?.confirmedAt ?? action.confirmedAt,
+    queued: activeLedger?.createdAt ?? action.updatedAt ?? action.createdAt,
+    wallet: activeLedger?.lastAttemptAt,
+    signed: activeLedger?.signedAt,
+    sent: activeLedger?.submittedAt,
+    confirmed: activeLedger?.confirmedAt ?? action.confirmedAt,
   };
   return TIMELINE_PHASE_ORDER.map((id, index): TimelineStep => {
     let stepState: TimelineStepState;

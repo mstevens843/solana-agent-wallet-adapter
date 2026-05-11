@@ -548,7 +548,7 @@ describe('transactionFailureToastCopy', () => {
     const result = classify('already processed');
     const copy = transactionFailureToastCopy(result);
     expect(copy.title).toBe('Submitted status unknown');
-    expect(copy.message).toBe('The app is checking the original transaction before allowing another approval.');
+    expect(copy.message).toBe('Checking the signed transaction status.');
   });
 
   it('renders retry message for retryable signed broadcast (e.g. timeout with signed bytes)', () => {
