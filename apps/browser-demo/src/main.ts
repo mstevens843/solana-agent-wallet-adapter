@@ -56,7 +56,7 @@ import {
   WalletStandardWebBackend,
   type DiscoveredWallet,
 } from '@solana-agent-wallet-adapter/wallet-standard-web';
-import { Connection, PublicKey, SystemProgram, Transaction, TransactionInstruction } from '@solana/web3.js';
+import { Connection, PublicKey, SystemProgram, Transaction, TransactionInstruction, VersionedTransaction } from '@solana/web3.js';
 
 import {
   AndroidNativeWalletBackend,
@@ -127,7 +127,7 @@ type ArtifactView = 'create' | 'signed';
 type OneTimePlanView = 'create' | 'review';
 type RecurringView = 'create' | 'active';
 type ToastKind = 'success' | 'error' | 'pending';
-type GeneratedPlanStatus = 'draft' | 'signed' | 'queued' | 'archived';
+type GeneratedPlanStatus = 'draft' | 'signed' | 'queued' | 'archived' | 'failed';
 type RuntimePathId = 'exec' | 'install' | 'desktop';
 type AppRoute = (typeof ROUTE_PATHS)[number];
 type InboxFilter = 'all' | 'ready' | 'scheduled' | 'attention' | 'one-time' | 'recurring';
@@ -242,6 +242,10 @@ const BRIDGE_TOKEN_SESSION_KEY = 'agentic-local-bridge-token';
 const GENERATED_PLANS_STORAGE_KEY = 'solana-agent-wallet-generated-plans-v1';
 const BROWSER_WORKFLOW_STORAGE_KEY = 'solana-agent-wallet-browser-workflow-v1';
 const GENERATED_PLANS_LIMIT = 100;
+const TX_CONFIRMATION_POLL_TIMEOUT_MS = 30_000;
+const TX_CONFIRMATION_POLL_INTERVAL_MS = 1_500;
+const TX_RETRY_MAX_ATTEMPTS = 2;
+const TX_RETRY_DELAY_MS = 2_500;
 const LAB_STORAGE_KEY = 'solana-agent-wallet-lab-artifacts-v1';
 const LAB_ARCHIVE_DB_NAME = 'solana-agent-wallet-lab-artifacts';
 const LAB_ARCHIVE_DB_VERSION = 1;
@@ -545,6 +549,8 @@ interface GeneratedPlanRecord {
   status: GeneratedPlanStatus;
   signature?: string;
   preparedActionId?: string;
+  error?: string;
+  failureLabel?: string;
   workflowSource?: WorkflowRecordSource;
 }
 
@@ -711,6 +717,12 @@ interface BrowserTransactionExecution {
   txStatus: PreparedActionTxStatus;
   explorerUrl: string;
   result?: Record<string, unknown>;
+}
+
+interface TransactionToastContext {
+  toastId: number;
+  actionId?: string;
+  cluster: Cluster;
 }
 
 interface BrowserLatestBlockhash {
@@ -4404,13 +4416,43 @@ function commandCenterOverviewPanel(): string {
 
         <div class="command-center-grid">
           ${commandCenterWalletCard()}
-          ${commandCenterCard('Approvals', `${openApprovals.length} pending`, openApprovals[0]?.summary ?? 'No approvals waiting', openApprovals.length ? 'warn' : 'idle', 'open-inbox', openApprovals.length ? 'Review' : 'Open', 'approvals')}
+          ${commandCenterCard('Approvals', `${openApprovals.length} pending`, approvalsCardDetail(openApprovals), openApprovals.length ? 'warn' : 'idle', 'open-inbox', openApprovals.length ? 'Review' : 'Open', 'approvals')}
           ${commandCenterCard('Repeat Payments', `${recurringActive.length} active`, recurringActive[0] ? scheduleLabel(recurringActive[0]) : 'No active repeat payments', recurringActive.length ? 'good' : 'idle', 'open-recurring', 'Open', 'recurring')}
           ${commandCenterCard('Save Proof', proofLabel, latestProof ? formatDateTime(latestProof.createdAt) : latestHistory ? formatDateTime(latestHistory.completedAt) : 'Save a proof or complete an approval', latestProof || latestHistory ? 'good' : 'idle', 'open-proofs', latestProof || latestHistory ? 'View' : 'Save', 'proofs')}
         </div>
       </section>
     </div>
   `;
+}
+
+function approvalsCardDetail(openApprovals: PreparedAction[]): string {
+  const next = openApprovals[0];
+  if (!next) return 'No approvals waiting';
+  const recipient = recipientParam(next);
+  const recipientShort = recipient ? short(recipient) : '';
+  let base: string;
+  if (next.kind === 'transfer_sol') {
+    const amount = stringParam(next, 'amountSol') || stringParam(next, 'amount');
+    const amountText = amount ? `${amount} SOL` : 'SOL';
+    base = recipientShort ? `Send ${amountText} to ${recipientShort}` : `Send ${amountText}`;
+  } else if (next.kind === 'transfer_spl') {
+    const amount = stringParam(next, 'amount');
+    const token = stringParam(next, 'token') || 'token';
+    const tokenText = looksLikeMintAddress(token) ? tokenDisplayLabel(token) : token;
+    const amountText = amount ? `${amount} ${tokenText}` : tokenText;
+    base = recipientShort ? `Send ${amountText} to ${recipientShort}` : `Send ${amountText}`;
+  } else if (next.kind === 'swap') {
+    const input = stringParam(next, 'inputToken') || 'input';
+    const output = stringParam(next, 'outputToken') || 'output';
+    const amount = stringParam(next, 'amount') || stringParam(next, 'amountIn');
+    const inputLabel = looksLikeMintAddress(input) ? tokenDisplayLabel(input) : input;
+    const outputLabel = looksLikeMintAddress(output) ? tokenDisplayLabel(output) : output;
+    base = amount ? `Swap ${amount} ${inputLabel} to ${outputLabel}` : `Swap ${inputLabel} to ${outputLabel}`;
+  } else {
+    base = preparedActionCardTitle(next);
+  }
+  const extra = openApprovals.length - 1;
+  return extra > 0 ? `${base} (+${extra} more)` : base;
 }
 
 function commandCenterAiPanel(): string {
@@ -5162,6 +5204,7 @@ function generatedPlanCard(record: GeneratedPlanRecord): string {
           <div class="review-plan-meta">
             <span class="status-pill ${generatedPlanStatusTone(record)}">${escapeHtml(generatedPlanStatusLabel(record))}</span>
             <span>${escapeHtml(record.source === 'ai' ? 'AI draft' : 'Template draft')}</span>
+            ${generatedPlanFailurePill(record)}
             <span>${escapeHtml(formatDateTime(record.createdAt))}</span>
             ${metaHint ? `<span class="review-plan-meta-pill">${escapeHtml(metaHint)}</span>` : ''}
           </div>
@@ -5195,6 +5238,7 @@ function generatedPlanCard(record: GeneratedPlanRecord): string {
 
       ${generatedPlanReviewSummaryGrid(record)}
       ${generatedPlanUserNote(plan)}
+      ${record.error ? `<p class="error-text">${escapeHtml(record.error)}</p>` : ''}
       ${guardrailBlocked ? actionHint : ''}
 
       <div class="review-plan-footer-row">
@@ -5225,6 +5269,17 @@ function generatedPlanCard(record: GeneratedPlanRecord): string {
 
 function generatedPlanReviewTitle(record: GeneratedPlanRecord): string {
   return record.plan.templateTitle || record.plan.intent;
+}
+
+function generatedPlanFailurePill(record: GeneratedPlanRecord): string {
+  if (record.status !== 'failed' && !record.error && !record.failureLabel) return '';
+  const label = record.failureLabel ||
+    (record.plan.actionType === 'swap'
+      ? 'Swap failed - try again'
+      : record.plan.actionType === 'transfer_sol' || record.plan.actionType === 'transfer_spl'
+        ? 'Send failed - try again'
+        : 'Action failed - try again');
+  return `<span class="status-pill tx-failed">${escapeHtml(label)}</span>`;
 }
 
 function generatedPlanReviewSummary(record: GeneratedPlanRecord): string {
@@ -7308,7 +7363,6 @@ function completedPlanCard(plan: CompletedPlanRecord): string {
   const focused = state.lastCompletedFocusId === plan.id || Boolean(plan.actionId && state.lastCompletedFocusId === plan.actionId);
   const decisionProofBlock = decisionProofRow(plan);
   const historyLabel = plan.kind === 'recurring' ? 'Repeat payment done' : 'One-time done';
-  const txUrl = plan.txid ? (plan.explorerUrl ?? explorerUrl(plan.txid, plan.cluster)) : '';
   return `
     <article class="generated-plan-card completed-plan-card ${focused ? 'focused' : ''}" ${focused ? 'data-completed-focus="true"' : ''}>
       <div class="completed-history-head">
@@ -7327,9 +7381,6 @@ function completedPlanCard(plan: CompletedPlanRecord): string {
         <div class="completed-header-actions completed-history-actions">
           <button data-copy="${escapeHtml(plan.copyPayload)}" data-copy-name="Done item">${escapeHtml(copyLabel)}</button>
           ${plan.trustBundlePayload ? `<button data-copy="${escapeHtml(plan.trustBundlePayload)}" data-copy-name="Trust bundle">Copy trust bundle</button>` : ''}
-          ${plan.txid ? `<button data-copy="${escapeHtml(plan.txid)}" data-copy-name="Transaction id">Copy txid</button>` : ''}
-          ${txUrl ? `<button data-copy="${escapeHtml(txUrl)}" data-copy-name="Solscan transaction link">Copy Solscan link</button>` : ''}
-          ${txUrl ? `<a class="button-link utility" href="${escapeHtml(txUrl)}" target="_blank" rel="noreferrer">Open Solscan</a>` : ''}
           <button
             class="utility danger"
             data-completed-delete="${escapeHtml(plan.id)}"
@@ -7409,8 +7460,27 @@ function parseCompletedSwapAmount(value: string): { primary: string; from: strin
   };
 }
 
-function completedPlanRecordRef(plan: CompletedPlanRecord): { label: string; value: string; copyValue?: string } {
-  if (plan.txid) return { label: 'Tx', value: short(plan.txid), copyValue: plan.txid };
+type CompletedPlanRecordRef = {
+  label: string;
+  value: string;
+  title?: string;
+  copyValue?: string;
+  copyLabel?: string;
+  copyName?: string;
+};
+
+function completedPlanRecordRef(plan: CompletedPlanRecord): CompletedPlanRecordRef {
+  if (plan.txid) {
+    const url = plan.explorerUrl ?? explorerUrl(plan.txid, plan.cluster);
+    return {
+      label: 'Tx',
+      value: shortFirstRunWallet(plan.txid),
+      title: plan.txid,
+      copyValue: url,
+      copyLabel: 'Copy tx link',
+      copyName: 'Solscan transaction link',
+    };
+  }
   if (plan.signature) return { label: 'Proof', value: short(plan.signature), copyValue: plan.signature };
   if (plan.actionId) return { label: 'Receipt', value: short(plan.actionId), copyValue: plan.actionId };
   if (plan.recurringId) return { label: 'Repeat', value: short(plan.recurringId), copyValue: plan.recurringId };
@@ -7419,11 +7489,18 @@ function completedPlanRecordRef(plan: CompletedPlanRecord): { label: string; val
 
 function completedPlanSummaryGrid(plan: CompletedPlanRecord): string {
   const record = completedPlanRecordRef(plan);
-  const rows: Array<{ label: string; value: string; title?: string; copyValue?: string; tone?: 'amount' }> = [
+  const rows: Array<{ label: string; value: string; title?: string; copyValue?: string; tone?: 'amount'; copyLabel?: string; copyName?: string }> = [
     { label: 'Wallet', value: plan.walletAddress ? short(plan.walletAddress) : 'No wallet', title: plan.walletAddress || 'No wallet', copyValue: plan.walletAddress || undefined },
     { label: 'Amount', value: completedPlanAmountLabel(plan), tone: 'amount' },
     { label: 'Completed', value: formatDateTime(plan.completedAt) },
-    { label: record.label, value: record.value, title: record.copyValue || record.value, copyValue: record.copyValue },
+    {
+      label: record.label,
+      value: record.value,
+      title: record.title ?? record.copyValue ?? record.value,
+      copyValue: record.copyValue,
+      copyLabel: record.copyLabel,
+      copyName: record.copyName,
+    },
   ];
   return `
     <dl class="completed-history-summary-grid" aria-label="Done work summary">
@@ -7432,8 +7509,10 @@ function completedPlanSummaryGrid(plan: CompletedPlanRecord): string {
   `;
 }
 
-function completedPlanSummaryItem(row: { label: string; value: string; title?: string; copyValue?: string; tone?: 'amount' }): string {
+function completedPlanSummaryItem(row: { label: string; value: string; title?: string; copyValue?: string; tone?: 'amount'; copyLabel?: string; copyName?: string }): string {
   const title = row.title ?? row.value;
+  const copyLabel = row.copyLabel ?? 'Copy';
+  const copyName = row.copyName ?? row.label;
   return `
     <div class="${row.tone ? `completed-history-summary-${row.tone}` : ''}" title="${escapeHtml(title)}">
       <dt>${escapeHtml(row.label)}</dt>
@@ -7444,9 +7523,10 @@ function completedPlanSummaryItem(row: { label: string; value: string; title?: s
             type="button"
             class="wallet-action-copy"
             data-copy="${escapeHtml(row.copyValue)}"
-            data-copy-name="${escapeHtml(row.label)}"
+            data-copy-name="${escapeHtml(copyName)}"
           >
-            Copy
+            <svg class="wallet-action-copy-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M16 1H6a2 2 0 0 0-2 2v12h2V3h10V1Zm3 4H10a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h9a2 2 0 0 0 2-2V7a2 2 0 0 0-2-2Zm0 16H10V7h9v14Z"/></svg>
+            ${escapeHtml(copyLabel)}
           </button>
         ` : ''}
       </dd>
@@ -9022,8 +9102,10 @@ function bind(): void {
       const value = button.dataset.copy ?? '';
       const label = button.dataset.copyName ?? 'Value';
       const copyId = button.dataset.copyId ?? commandCopyId('copy', label, value);
-      const toastTitle = button.dataset.copyToast ?? `${label} copied`;
-      const toastMessage = button.dataset.copyMessage ?? value;
+      const isJson = button.dataset.copyKind === 'json' || looksLikeJsonValue(value);
+      const toastTitle = button.dataset.copyToast ?? (isJson ? 'JSON copied' : `${label} copied`);
+      const toastMessage = button.dataset.copyMessage
+        ?? (isJson ? '' : formatCopyToastMessage(value));
       try {
         await navigator.clipboard.writeText(value);
         markCopied(copyId);
@@ -10219,7 +10301,7 @@ async function runSignAgentPlan(): Promise<void> {
     const signature = await signAgentPlanProof(state.agentPlan, 'Plan review proof');
     const activeRecord = generatedPlanById(state.selectedGeneratedPlanId);
     state.agentSignature = signature;
-    await updateActiveGeneratedPlanRecord({ signature, status: 'signed' });
+    await updateActiveGeneratedPlanRecord({ signature, status: 'signed', error: undefined, failureLabel: undefined });
     if (activeRecord && samePlan(activeRecord.plan, state.agentPlan)) {
       if (state.generatedPlanAuditId === activeRecord.id) {
         state.generatedPlanAuditId = '';
@@ -10227,6 +10309,17 @@ async function runSignAgentPlan(): Promise<void> {
       selectFallbackGeneratedPlan();
     }
     pushToast('success', 'Plan completed', 'Review proof saved in Done.');
+  }, {
+    onError: async (message) => {
+      if (state.selectedGeneratedPlanId) {
+        await updateGeneratedPlan(state.selectedGeneratedPlanId, {
+          status: 'failed',
+          error: message,
+          failureLabel: 'Sign failed - try again',
+        }).catch(() => undefined);
+      }
+      pushToast('error', 'Sign proof failed', message);
+    },
   });
 }
 
@@ -10241,7 +10334,7 @@ async function runQueueAgentPlan(): Promise<void> {
     if (response.mode === 'agentic-cloud' && response.planRecordId) {
       state.selectedGeneratedPlanId = response.planRecordId;
     } else {
-      await updateActiveGeneratedPlanRecord({ preparedActionId: response.id, status: 'queued' });
+      await updateActiveGeneratedPlanRecord({ preparedActionId: response.id, status: 'queued', error: undefined, failureLabel: undefined });
     }
     const queuedRecordId = response.planRecordId ?? activeRecord?.id ?? '';
     if (queuedRecordId && activeRecord && samePlan(activeRecord.plan, state.agentPlan)) {
@@ -10275,6 +10368,17 @@ async function runQueueAgentPlan(): Promise<void> {
             ? 'Saved on this device.'
             : response.id,
     );
+  }, {
+    onError: async (message) => {
+      if (state.selectedGeneratedPlanId) {
+        await updateGeneratedPlan(state.selectedGeneratedPlanId, {
+          status: 'failed',
+          error: message,
+          failureLabel: 'Send failed - try again',
+        }).catch(() => undefined);
+      }
+      pushToast('error', 'Send for approval failed', message);
+    },
   });
 }
 
@@ -10415,7 +10519,7 @@ async function runSignGeneratedPlan(planId: string): Promise<void> {
       throw new Error('Restore this plan before signing a review proof.');
     }
     const signature = await signAgentPlanProof(record.plan, 'Plan review proof');
-    await updateGeneratedPlan(planId, { signature, status: 'signed' });
+    await updateGeneratedPlan(planId, { signature, status: 'signed', error: undefined, failureLabel: undefined });
     if (state.generatedPlanAuditId === planId) {
       state.generatedPlanAuditId = '';
     }
@@ -10424,6 +10528,15 @@ async function runSignGeneratedPlan(planId: string): Promise<void> {
       state.agentSignature = signature;
     }
     pushToast('success', 'Plan completed', 'Review proof saved in Done.');
+  }, {
+    onError: async (message) => {
+      await updateGeneratedPlan(planId, {
+        status: 'failed',
+        error: message,
+        failureLabel: 'Sign failed - try again',
+      });
+      pushToast('error', 'Sign proof failed', message);
+    },
   });
 }
 
@@ -10438,7 +10551,7 @@ async function runQueueGeneratedPlan(planId: string): Promise<void> {
     if (response.mode === 'agentic-cloud' && response.planRecordId) {
       state.selectedGeneratedPlanId = response.planRecordId;
     } else {
-      await updateGeneratedPlan(planId, { preparedActionId: response.id, status: 'queued' });
+      await updateGeneratedPlan(planId, { preparedActionId: response.id, status: 'queued', error: undefined, failureLabel: undefined });
     }
     if (state.generatedPlanAuditId === planId || (response.planRecordId && state.generatedPlanAuditId === response.planRecordId)) {
       state.generatedPlanAuditId = '';
@@ -10472,6 +10585,15 @@ async function runQueueGeneratedPlan(planId: string): Promise<void> {
             ? 'Saved on this device.'
             : response.id,
     );
+  }, {
+    onError: async (message) => {
+      await updateGeneratedPlan(planId, {
+        status: 'failed',
+        error: message,
+        failureLabel: 'Send failed - try again',
+      });
+      pushToast('error', 'Send for approval failed', message);
+    },
   });
 }
 
@@ -10518,10 +10640,10 @@ async function saveGeneratedPlan(plan: AgentPlan, template: AgentPlanTemplate, p
 
 async function updateGeneratedPlan(
   planId: string,
-  patch: Partial<Pick<GeneratedPlanRecord, 'status' | 'signature' | 'preparedActionId'>>,
+  patch: Partial<Pick<GeneratedPlanRecord, 'status' | 'signature' | 'preparedActionId' | 'error' | 'failureLabel'>>,
 ): Promise<void> {
   const existing = generatedPlanById(planId);
-  if (existing?.workflowSource === 'cloud') {
+  if (existing?.workflowSource === 'cloud' && patch.error === undefined && patch.failureLabel === undefined && patch.status !== 'failed') {
     const cloudPlan = parseCloudPlanResponse(await cloudRequest(`/api/plans/${encodeURIComponent(planId)}`, {
       method: 'PATCH',
       body: JSON.stringify({
@@ -10550,7 +10672,7 @@ async function updateGeneratedPlan(
 }
 
 async function updateActiveGeneratedPlanRecord(
-  patch: Partial<Pick<GeneratedPlanRecord, 'status' | 'signature' | 'preparedActionId'>>,
+  patch: Partial<Pick<GeneratedPlanRecord, 'status' | 'signature' | 'preparedActionId' | 'error' | 'failureLabel'>>,
 ): Promise<void> {
   if (!state.agentPlan) return;
   const record = generatedPlanById(state.selectedGeneratedPlanId);
@@ -11030,6 +11152,7 @@ function generatedPlanStatusLabel(record: GeneratedPlanRecord): string {
 
 function generatedPlanStatusTone(record: GeneratedPlanRecord): string {
   if (record.status === 'archived') return 'neutral';
+  if (record.status === 'failed') return 'needs-review';
   if (record.preparedActionId || record.status === 'queued') return 'tx-pending';
   if (record.signature || record.status === 'signed') return 'tx-confirmed';
   return 'needs-review';
@@ -11817,6 +11940,7 @@ function cloudPlanToGeneratedPlan(value: unknown): GeneratedPlanRecord | null {
   }
   const cluster = typeof record.cluster === 'string' && isCluster(record.cluster) ? record.cluster : state.cluster;
   const plan = planWithCloudGuardrails(record.plan, record.riskMetadata);
+  const localFields = record as Partial<GeneratedPlanRecord>;
   return {
     id: record.id,
     plan,
@@ -11831,6 +11955,8 @@ function cloudPlanToGeneratedPlan(value: unknown): GeneratedPlanRecord | null {
     status: record.status,
     ...(typeof record.signature === 'string' && { signature: record.signature }),
     ...(typeof record.approvalRequestId === 'string' && { preparedActionId: record.approvalRequestId }),
+    ...(typeof localFields.error === 'string' && { error: localFields.error }),
+    ...(typeof localFields.failureLabel === 'string' && { failureLabel: localFields.failureLabel }),
     workflowSource: 'cloud',
   };
 }
@@ -12733,9 +12859,19 @@ async function runCloudPreparedActionOp(action: PreparedAction, op: string): Pro
 }
 
 async function runCloudSolTransferFinalization(action: PreparedAction): Promise<void> {
-  const prepareResponse = await cloudRequest(`/api/approvals/${encodeURIComponent(action.id)}/finalization/prepare`, {
-    method: 'POST',
-    body: '{}',
+  const toastId = pushToast('pending', 'Preparing transaction', 'Building the wallet transaction.');
+  const toastContext: TransactionToastContext = { toastId, actionId: action.id, cluster: action.cluster };
+  const prepareResponse = await runTransactionToastStep(
+    toastContext,
+    'Preparing transaction',
+    'Building the wallet transaction.',
+    () => cloudRequest(`/api/approvals/${encodeURIComponent(action.id)}/finalization/prepare`, {
+      method: 'POST',
+      body: '{}',
+    }),
+  ).catch((err) => {
+    replaceToast(toastId, 'error', 'Transaction failed', redactSecrets(err instanceof Error ? err.message : String(err)));
+    throw err;
   });
   const { finalization, transactionBase64 } = cloudPreparedFinalizationFromResponse(prepareResponse);
   const finalizationId = finalization.id;
@@ -12743,12 +12879,23 @@ async function runCloudSolTransferFinalization(action: PreparedAction): Promise<
   const signingClient = requireClient();
   let txid = '';
   try {
-    const signed = await signingClient.signTransaction(
-      transactionBase64,
-      { cluster: action.cluster, summary: finalization.walletAction.summary },
+    const signed = await runTransactionToastStep(
+      toastContext,
+      'Signing transaction',
+      finalization.walletAction.summary,
+      () => signingClient.signTransaction(
+        transactionBase64,
+        { cluster: action.cluster, summary: finalization.walletAction.summary },
+      ),
     );
-    txid = await broadcastSignedBrowserTransaction(action.cluster, signed.signature);
+    txid = await runTransactionToastStep(
+      toastContext,
+      'Sending transaction',
+      'Broadcasting the signed transaction to Solana RPC.',
+      () => broadcastSignedBrowserTransactionWithRetry(action.cluster, signed.signature, toastContext),
+    );
   } catch (err) {
+    replaceToast(toastId, 'error', 'Transaction failed', redactSecrets(err instanceof Error ? err.message : String(err)));
     await cloudRequest(`/api/approvals/${encodeURIComponent(action.id)}/finalization/${encodeURIComponent(finalizationId)}/fail`, {
       method: 'POST',
       body: JSON.stringify({
@@ -12763,7 +12910,7 @@ async function runCloudSolTransferFinalization(action: PreparedAction): Promise<
   let confirmed = true;
   let confirmationError = '';
   try {
-    confirmed = await resolveSubmittedTransactionStatus(action.cluster, txid) === 'confirmed';
+    confirmed = await resolveSubmittedTransactionStatus(action.cluster, txid, toastContext) === 'confirmed';
   } catch (err) {
     confirmed = false;
     confirmationError = err instanceof Error ? err.message : String(err);
@@ -12798,14 +12945,21 @@ async function runCloudSolTransferFinalization(action: PreparedAction): Promise<
 
   await refreshCloudWorkspaceData();
   if (submittedFinalization?.status === 'failed') {
+    replaceToast(toastId, 'error', 'Transaction failed', submittedFinalization.error ?? 'Submitted transaction failed server verification.');
     throw new Error(submittedFinalization.error ?? 'Submitted transaction failed server verification.');
   }
   if (!isJsonObject(submitObject.completed)) {
-    pushToast('pending', 'Transaction submitted', `Server verification is still pending: ${short(txid)}`);
+    replaceToast(toastId, 'pending', 'Transaction submitted', `Server verification is still pending: ${short(txid)}`, {
+      linkHref: explorerUrl(txid, action.cluster),
+      linkLabel: 'Open Solscan',
+    });
     return;
   }
   showCompletedHistoryForAction(action.id);
-  pushToast('success', 'Transaction finalized', 'Wallet receipt saved in Done.');
+  replaceToast(toastId, 'success', 'Transaction finalized', 'Wallet receipt saved in Done.', {
+    linkHref: explorerUrl(txid, action.cluster),
+    linkLabel: 'Open Solscan',
+  });
 }
 
 async function runCloudFinalizationConfirm(action: PreparedAction): Promise<void> {
@@ -12865,6 +13019,9 @@ async function runBrowserPreparedActionOp(actionId: string, op: string): Promise
     throw new Error('Approval request was not found.');
   }
   switch (op) {
+    case 'confirm':
+      await runBrowserTransactionConfirm(action);
+      return;
     case 'execute': {
       if (isExecutableBrowserAction(action)) {
         await executeBrowserPreparedAction(action);
@@ -12904,6 +13061,49 @@ async function runBrowserPreparedActionOp(actionId: string, op: string): Promise
     default:
       throw new Error(`Unknown action operation: ${op}`);
   }
+}
+
+async function runBrowserTransactionConfirm(action: PreparedAction): Promise<void> {
+  if (!canConfirmBrowserTransaction(action)) {
+    throw new Error('This request does not have a submitted browser transaction to confirm.');
+  }
+  const txid = action.txid!;
+  const toastId = pushToast('pending', 'Checking transaction', short(txid), {
+    linkHref: explorerUrl(txid, action.cluster),
+    linkLabel: 'Open Solscan',
+  });
+  const toastContext: TransactionToastContext = { toastId, actionId: action.id, cluster: action.cluster };
+  const txStatus = await resolveSubmittedTransactionStatus(action.cluster, txid, toastContext);
+  if (txStatus !== 'confirmed') {
+    updateBrowserPreparedAction(action.id, {
+      status: 'approval_pending',
+      txStatus: 'pending',
+      txid,
+      txError: undefined,
+      error: undefined,
+    });
+    replaceToast(toastId, 'pending', 'Transaction submitted', short(txid), {
+      linkHref: explorerUrl(txid, action.cluster),
+      linkLabel: 'Open Solscan',
+    });
+    render();
+    return;
+  }
+  completeBrowserExecutedAction(action, {
+    txid,
+    txStatus,
+    explorerUrl: explorerUrl(txid, action.cluster),
+  });
+  recordBrowserActionActivity(action.id, 'browser.transaction.saved', {
+    kind: action.kind,
+    status: txStatus,
+    txid,
+  });
+  showCompletedHistoryForAction(action.id);
+  replaceToast(toastId, 'success', 'Transaction finalized', short(txid), {
+    linkHref: explorerUrl(txid, action.cluster),
+    linkLabel: 'Open Solscan',
+  });
 }
 
 async function signCloudWorkflowDecision(
@@ -12980,6 +13180,7 @@ async function executeBrowserPreparedAction(action: PreparedAction): Promise<voi
   assertBrowserActionWalletReady(action);
   const priorStatus: PreparedActionStatus = action.status === 'overdue' ? 'overdue' : 'ready';
   const toastId = pushToast('pending', 'Opening wallet', browserExecutionStartMessage(action));
+  const toastContext: TransactionToastContext = { toastId, actionId: action.id, cluster: action.cluster };
   updateBrowserPreparedAction(action.id, {
     status: 'approval_pending',
     txStatus: 'pending',
@@ -12995,7 +13196,31 @@ async function executeBrowserPreparedAction(action: PreparedAction): Promise<voi
 
   try {
     const current = state.preparedActions.find((candidate) => candidate.id === action.id) ?? action;
-    const execution = await executeBrowserPreparedActionRecord(current);
+    const execution = await executeBrowserPreparedActionRecord(current, toastContext);
+    if (execution.txStatus === 'pending') {
+      updateBrowserPreparedAction(action.id, {
+        status: 'approval_pending',
+        txStatus: 'pending',
+        txid: execution.txid,
+        txError: undefined,
+        error: undefined,
+      });
+      recordBrowserActionActivity(action.id, 'browser.transaction.pending', {
+        kind: action.kind,
+        status: 'pending',
+        txid: execution.txid,
+      });
+      state.activeTab = 'inbox';
+      replaceToast(
+        toastId,
+        'pending',
+        'Transaction submitted',
+        short(execution.txid),
+        { linkHref: execution.explorerUrl, linkLabel: 'Open Solscan' },
+      );
+      render();
+      return;
+    }
     completeBrowserExecutedAction(current, execution);
     recordBrowserActionActivity(action.id, 'browser.transaction.saved', {
       kind: action.kind,
@@ -13055,25 +13280,35 @@ function assertBrowserActionWalletReady(action: PreparedAction): void {
   }
 }
 
-async function executeBrowserPreparedActionRecord(action: PreparedAction): Promise<BrowserTransactionExecution> {
-  const bridgeExecution = await executeBrowserPreparedActionThroughBridge(action);
+async function executeBrowserPreparedActionRecord(
+  action: PreparedAction,
+  toastContext: TransactionToastContext,
+): Promise<BrowserTransactionExecution> {
+  const bridgeExecution = await executeBrowserPreparedActionThroughBridge(action, toastContext);
   if (bridgeExecution) return bridgeExecution;
   switch (action.kind) {
     case 'transfer_sol':
-      return executeBrowserSolTransfer(action);
+      return executeBrowserSolTransfer(action, toastContext);
     case 'transfer_spl':
-      return executeBrowserSplTransfer(action);
+      return executeBrowserSplTransfer(action, toastContext);
     case 'swap':
-      return executeBrowserSwap(action);
+      return executeBrowserSwap(action, toastContext);
     case 'custom_transaction':
-      return executeBrowserCustomTransaction(action);
+      return executeBrowserCustomTransaction(action, toastContext);
     default:
       throw new Error(`Browser workflow cannot broadcast ${action.kind}.`);
   }
 }
 
-async function executeBrowserPreparedActionThroughBridge(action: PreparedAction): Promise<BrowserTransactionExecution | undefined> {
-  if (!state.bridgeActive || action.cluster !== state.cluster) return undefined;
+async function executeBrowserPreparedActionThroughBridge(
+  action: PreparedAction,
+  toastContext: TransactionToastContext,
+): Promise<BrowserTransactionExecution | undefined> {
+  if (!canAttemptLocalBridgeForCluster(action.cluster)) return undefined;
+  if (!state.bridgeActive && !(await activateBridgeForTransaction(action.cluster))) {
+    return undefined;
+  }
+  if (action.cluster !== state.cluster) return undefined;
   let path = '';
   let body: Record<string, unknown> = {};
   switch (action.kind) {
@@ -13105,13 +13340,18 @@ async function executeBrowserPreparedActionThroughBridge(action: PreparedAction)
       return undefined;
   }
 
-  const result = await bridgeRequest<Record<string, unknown>>(path, {
-    method: 'POST',
-    body: JSON.stringify(body),
-  });
+  const result = await runTransactionToastStep(
+    toastContext,
+    'Sending transaction',
+    'Submitting through the local bridge. Do not approve this request twice.',
+    () => bridgeRequest<Record<string, unknown>>(path, {
+      method: 'POST',
+      body: JSON.stringify(body),
+    }),
+  );
   const txid = requiredResponseString(result.txid ?? result.signature, 'Bridge transaction signature');
   markBrowserTransactionSubmitted(action, txid);
-  const txStatus = await resolveSubmittedTransactionStatus(action.cluster, txid);
+  const txStatus = await resolveSubmittedTransactionStatus(action.cluster, txid, toastContext);
   return {
     txid,
     txStatus,
@@ -13120,7 +13360,10 @@ async function executeBrowserPreparedActionThroughBridge(action: PreparedAction)
   };
 }
 
-async function executeBrowserSolTransfer(action: PreparedAction): Promise<BrowserTransactionExecution> {
+async function executeBrowserSolTransfer(
+  action: PreparedAction,
+  toastContext: TransactionToastContext,
+): Promise<BrowserTransactionExecution> {
   const from = publicKeyFromConnectedWallet();
   const recipient = publicKeyParam(requiredActionParam(action, 'recipient'), 'recipient');
   const amountSol = requiredActionParam(action, 'amountSol');
@@ -13137,9 +13380,10 @@ async function executeBrowserSolTransfer(action: PreparedAction): Promise<Browse
     action,
     transaction,
     `Transfer ${amountSol} SOL to ${recipient.toBase58()}`,
+    toastContext,
   );
   markBrowserTransactionSubmitted(action, txid);
-  const txStatus = await resolveSubmittedTransactionStatus(action.cluster, txid);
+  const txStatus = await resolveSubmittedTransactionStatus(action.cluster, txid, toastContext);
   return {
     txid,
     txStatus,
@@ -13147,7 +13391,10 @@ async function executeBrowserSolTransfer(action: PreparedAction): Promise<Browse
   };
 }
 
-async function executeBrowserSplTransfer(action: PreparedAction): Promise<BrowserTransactionExecution> {
+async function executeBrowserSplTransfer(
+  action: PreparedAction,
+  toastContext: TransactionToastContext,
+): Promise<BrowserTransactionExecution> {
   const token = requiredActionParam(action, 'token');
   const amount = requiredActionParam(action, 'amount');
   if (isNativeSolToken(token)) {
@@ -13159,7 +13406,7 @@ async function executeBrowserSplTransfer(action: PreparedAction): Promise<Browse
         amountSol: amount,
         memo: stringParam(action, 'memo'),
       },
-    });
+    }, toastContext);
   }
 
   const owner = publicKeyFromConnectedWallet();
@@ -13194,9 +13441,10 @@ async function executeBrowserSplTransfer(action: PreparedAction): Promise<Browse
     action,
     transaction,
     `Transfer ${amount} ${tokenMetadata.symbol} to ${recipientOwner.toBase58()}`,
+    toastContext,
   );
   markBrowserTransactionSubmitted(action, txid);
-  const txStatus = await resolveSubmittedTransactionStatus(action.cluster, txid);
+  const txStatus = await resolveSubmittedTransactionStatus(action.cluster, txid, toastContext);
   return {
     txid,
     txStatus,
@@ -13209,7 +13457,10 @@ async function executeBrowserSplTransfer(action: PreparedAction): Promise<Browse
   };
 }
 
-async function executeBrowserSwap(action: PreparedAction): Promise<BrowserTransactionExecution> {
+async function executeBrowserSwap(
+  action: PreparedAction,
+  toastContext: TransactionToastContext,
+): Promise<BrowserTransactionExecution> {
   const signingClient = requireClient();
   if (state.capabilities?.supports.signTransaction !== true) {
     throw new Error('Selected wallet cannot sign swap transactions from this browser.');
@@ -13226,38 +13477,37 @@ async function executeBrowserSwap(action: PreparedAction): Promise<BrowserTransa
     amount: amountRaw.toString(),
     slippageBps: String(slippageBps),
   });
-  const order = await hostedSwapRequest('/api/swap/order', {
-    inputMint: inputToken.mintText,
-    outputMint: outputToken.mintText,
-    amount: amountRaw.toString(),
-    taker,
-    slippageBps,
-  });
+  const order = await runTransactionToastStep(
+    toastContext,
+    'Preparing swap',
+    'Fetching the Jupiter transaction for wallet review.',
+    () => hostedSwapRequest('/api/swap/order', {
+      inputMint: inputToken.mintText,
+      outputMint: outputToken.mintText,
+      amount: amountRaw.toString(),
+      taker,
+      slippageBps,
+    }),
+  );
   const transactionBase64 = requiredResponseString(order.transaction, 'Jupiter order transaction');
   const requestId = requiredResponseString(order.requestId, 'Jupiter request id');
   recordBrowserActionActivity(action.id, 'browser.swap.order_ready', {
     requestId,
     status: 'ready_to_sign',
   });
-  pushToast('pending', 'Wallet sign swap', `Sign Jupiter swap ${short(requestId)}.`);
-  const signed = await signingClient.signTransaction(transactionBase64, {
-    cluster: action.cluster,
-    summary: `Swap ${requiredActionParam(action, 'amount')} ${inputToken.symbol} to ${outputToken.symbol}`,
-  });
-  pushToast('success', 'Swap transaction signed', `Signed Jupiter request ${short(requestId)}.`);
-  pushToast('pending', 'Sending swap transaction', 'Submitting the signed swap through Jupiter.');
-  const executed = await hostedSwapRequest('/api/swap/execute', {
-    signedTransaction: signed.signature,
-    requestId,
-    ...(typeof order.lastValidBlockHeight === 'string' || typeof order.lastValidBlockHeight === 'number'
-      ? { lastValidBlockHeight: order.lastValidBlockHeight }
-      : {}),
-  });
-  assertJupiterExecutionSucceeded(executed);
+  const signed = await runTransactionToastStep(
+    toastContext,
+    'Signing swap',
+    `Sign Jupiter swap ${short(requestId)} in your wallet.`,
+    () => signingClient.signTransaction(transactionBase64, {
+      cluster: action.cluster,
+      summary: `Swap ${requiredActionParam(action, 'amount')} ${inputToken.symbol} to ${outputToken.symbol}`,
+    }),
+  );
+  const executed = await executeSignedJupiterSwapWithRetry(action, signed.signature, order, requestId, toastContext);
   const txid = requiredResponseString(executed.signature ?? executed.txid, 'Jupiter execution signature');
-  pushTransactionToast('success', 'Swap transaction submitted', txid, action.cluster);
   markBrowserTransactionSubmitted(action, txid);
-  const txStatus = await resolveSubmittedTransactionStatus(action.cluster, txid);
+  const txStatus = await resolveSubmittedTransactionStatus(action.cluster, txid, toastContext);
   return {
     txid,
     txStatus,
@@ -13269,7 +13519,10 @@ async function executeBrowserSwap(action: PreparedAction): Promise<BrowserTransa
   };
 }
 
-async function executeBrowserCustomTransaction(action: PreparedAction): Promise<BrowserTransactionExecution> {
+async function executeBrowserCustomTransaction(
+  action: PreparedAction,
+  toastContext: TransactionToastContext,
+): Promise<BrowserTransactionExecution> {
   const transactionBase64 = stringParam(action, 'transactionBase64') ||
     stringParam(action, 'transaction') ||
     stringParam(action, 'base64') ||
@@ -13281,9 +13534,10 @@ async function executeBrowserCustomTransaction(action: PreparedAction): Promise<
     action,
     transactionBase64,
     action.summary || 'Custom wallet transaction',
+    toastContext,
   );
   markBrowserTransactionSubmitted(action, txid);
-  const txStatus = await resolveSubmittedTransactionStatus(action.cluster, txid);
+  const txStatus = await resolveSubmittedTransactionStatus(action.cluster, txid, toastContext);
   return {
     txid,
     txStatus,
@@ -13295,6 +13549,7 @@ async function signAndBroadcastBrowserTransaction(
   action: PreparedAction,
   transaction: Transaction,
   summary: string,
+  toastContext: TransactionToastContext,
 ): Promise<string> {
   const feePayer = publicKeyFromConnectedWallet();
   const latest = await browserLatestBlockhash(action.cluster);
@@ -13306,52 +13561,174 @@ async function signAndBroadcastBrowserTransaction(
       verifySignatures: false,
     }),
   );
-  return signAndBroadcastBrowserTransactionBase64(action, transactionBase64, summary);
+  return signAndBroadcastBrowserTransactionBase64(action, transactionBase64, summary, toastContext);
 }
 
 async function signAndBroadcastBrowserTransactionBase64(
   action: PreparedAction,
   transactionBase64: string,
   summary: string,
+  toastContext: TransactionToastContext,
 ): Promise<string> {
   const signingClient = requireClient();
   if (state.capabilities?.supports.signTransaction === true) {
-    pushToast('pending', 'Wallet sign transaction', summary);
-    const signed = await signingClient.signTransaction(transactionBase64, {
-      cluster: action.cluster,
+    const signed = await runTransactionToastStep(
+      toastContext,
+      'Signing transaction',
       summary,
-    });
-    pushToast('success', 'Transaction signed', 'Signed bytes returned by wallet.');
-    pushToast('pending', 'Sending transaction', 'Broadcasting the signed transaction to Solana RPC.');
-    const txid = await broadcastSignedBrowserTransaction(action.cluster, signed.signature);
-    pushTransactionToast('success', 'Transaction broadcast', txid, action.cluster);
-    return txid;
+      () => signingClient.signTransaction(transactionBase64, {
+        cluster: action.cluster,
+        summary,
+      }),
+    );
+    return broadcastSignedBrowserTransactionWithRetry(action.cluster, signed.signature, toastContext);
   }
   if (state.capabilities?.supports.signAndSendTransaction === true) {
-    pushToast('pending', 'Wallet sign and send', summary);
-    const result = await signingClient.signAndSendTransaction(transactionBase64, {
-      cluster: action.cluster,
-      summary,
-    });
+    const result = await runTransactionToastStep(
+      toastContext,
+      'Signing and sending transaction',
+      `${summary}. This wallet path cannot be safely retried without a returned transaction id.`,
+      () => signingClient.signAndSendTransaction(transactionBase64, {
+        cluster: action.cluster,
+        summary,
+      }),
+    );
     const txid = result.txid ?? result.signature;
-    pushTransactionToast('success', 'Wallet submitted transaction', txid, action.cluster);
+    updateTransactionToast(toastContext, 'pending', 'Confirming transaction', short(txid), txid);
     return txid;
   }
   throw new Error('Selected wallet cannot sign and send transactions from this browser.');
 }
 
-async function resolveSubmittedTransactionStatus(cluster: Cluster, txid: string): Promise<PreparedActionTxStatus> {
-  const status = await browserSignatureStatus(cluster, txid);
-  if (status.txStatus === 'pending' || !status.txStatus) {
-    throw new Error(`Transaction ${short(txid)} was submitted but did not confirm yet. Open Solscan from the toast and retry confirmation later.`);
+async function executeSignedJupiterSwapWithRetry(
+  action: PreparedAction,
+  signedTransactionBase64: string,
+  order: Record<string, unknown>,
+  requestId: string,
+  toastContext: TransactionToastContext,
+): Promise<Record<string, unknown>> {
+  const signedTxid = signedTransactionId(signedTransactionBase64);
+  let lastError: unknown;
+  for (let attempt = 1; attempt <= TX_RETRY_MAX_ATTEMPTS; attempt += 1) {
+    const knownStatus = await transactionStatusSeenForRetry(action.cluster, signedTxid);
+    if (knownStatus) {
+      updateTransactionToast(toastContext, 'pending', 'Transaction already submitted', short(signedTxid), signedTxid);
+      return { signature: signedTxid, status: knownStatus };
+    }
+
+    updateTransactionToast(
+      toastContext,
+      'pending',
+      attempt === 1 ? 'Sending swap transaction' : 'Retrying swap transaction',
+      attempt === 1
+        ? 'Submitting the signed swap through Jupiter.'
+        : `Retry ${attempt} of ${TX_RETRY_MAX_ATTEMPTS} with the same signed transaction.`,
+      signedTxid,
+    );
+
+    try {
+      const executed = await hostedSwapRequest('/api/swap/execute', {
+        signedTransaction: signedTransactionBase64,
+        requestId,
+        ...(typeof order.lastValidBlockHeight === 'string' || typeof order.lastValidBlockHeight === 'number'
+          ? { lastValidBlockHeight: order.lastValidBlockHeight }
+          : {}),
+      });
+      assertJupiterExecutionSucceeded(executed);
+      const txid = requiredResponseString(executed.signature ?? executed.txid, 'Jupiter execution signature');
+      updateTransactionToast(toastContext, 'pending', 'Confirming swap transaction', short(txid), txid);
+      return executed;
+    } catch (err) {
+      lastError = err;
+      const landedStatus = await transactionStatusSeenForRetry(action.cluster, signedTxid);
+      if (landedStatus) {
+        updateTransactionToast(toastContext, 'pending', 'Transaction already submitted', short(signedTxid), signedTxid);
+        return { signature: signedTxid, status: landedStatus };
+      }
+      if (attempt >= TX_RETRY_MAX_ATTEMPTS || !shouldRetryTransactionSend(err)) {
+        break;
+      }
+      await waitBeforeTransactionRetry(toastContext, err, attempt, signedTxid);
+    }
   }
-  if (status.txStatus === 'failed') {
-    throw new Error(`Transaction ${short(txid)} failed on-chain: ${status.error ?? status.confirmationStatus ?? 'failed'}`);
+
+  if (lastError && isPossiblySubmittedTransactionError(lastError)) {
+    await waitBeforeTransactionRetry(toastContext, lastError, TX_RETRY_MAX_ATTEMPTS, signedTxid);
+    return { signature: signedTxid, status: await finalTransactionStatusOrPending(action.cluster, signedTxid) };
   }
-  if (status.txStatus === 'confirmed') {
-    return 'confirmed';
+  throw lastError instanceof Error ? lastError : new Error(String(lastError ?? 'Jupiter swap execution failed.'));
+}
+
+async function broadcastSignedBrowserTransactionWithRetry(
+  cluster: Cluster,
+  signedTransactionBase64: string,
+  toastContext: TransactionToastContext,
+): Promise<string> {
+  const signedTxid = signedTransactionId(signedTransactionBase64);
+  let lastError: unknown;
+  for (let attempt = 1; attempt <= TX_RETRY_MAX_ATTEMPTS; attempt += 1) {
+    const knownStatus = await transactionStatusSeenForRetry(cluster, signedTxid);
+    if (knownStatus) {
+      updateTransactionToast(toastContext, 'pending', 'Transaction already submitted', short(signedTxid), signedTxid);
+      return signedTxid;
+    }
+
+    updateTransactionToast(
+      toastContext,
+      'pending',
+      attempt === 1 ? 'Sending transaction' : 'Retrying transaction send',
+      attempt === 1
+        ? 'Broadcasting the signed transaction to Solana RPC.'
+        : `Retry ${attempt} of ${TX_RETRY_MAX_ATTEMPTS} with the same signed transaction.`,
+      signedTxid,
+    );
+
+    try {
+      const txid = await broadcastSignedBrowserTransaction(cluster, signedTransactionBase64);
+      updateTransactionToast(toastContext, 'pending', 'Confirming transaction', short(txid), txid);
+      return txid;
+    } catch (err) {
+      lastError = err;
+      const landedStatus = await transactionStatusSeenForRetry(cluster, signedTxid);
+      if (landedStatus) {
+        updateTransactionToast(toastContext, 'pending', 'Transaction already submitted', short(signedTxid), signedTxid);
+        return signedTxid;
+      }
+      if (attempt >= TX_RETRY_MAX_ATTEMPTS || !shouldRetryTransactionSend(err)) {
+        break;
+      }
+      await waitBeforeTransactionRetry(toastContext, err, attempt, signedTxid);
+    }
   }
-  throw new Error(`Transaction ${short(txid)} is still ${status.confirmationStatus ?? 'pending'} and was not moved to Done.`);
+
+  if (lastError && isPossiblySubmittedTransactionError(lastError)) {
+    await waitBeforeTransactionRetry(toastContext, lastError, TX_RETRY_MAX_ATTEMPTS, signedTxid);
+    await finalTransactionStatusOrPending(cluster, signedTxid);
+    return signedTxid;
+  }
+  throw lastError instanceof Error ? lastError : new Error('Transaction broadcast failed.');
+}
+
+async function resolveSubmittedTransactionStatus(
+  cluster: Cluster,
+  txid: string,
+  toastContext?: TransactionToastContext,
+): Promise<PreparedActionTxStatus> {
+  const deadline = Date.now() + TX_CONFIRMATION_POLL_TIMEOUT_MS;
+  void toastContext;
+  while (true) {
+    const status = await browserSignatureStatus(cluster, txid);
+    if (status.txStatus === 'failed') {
+      throw new Error(`Transaction ${short(txid)} failed on-chain: ${status.error ?? status.confirmationStatus ?? 'failed'}`);
+    }
+    if (status.txStatus === 'confirmed') {
+      return 'confirmed';
+    }
+    if (Date.now() >= deadline) {
+      return 'pending';
+    }
+    await sleep(Math.min(TX_CONFIRMATION_POLL_INTERVAL_MS, Math.max(0, deadline - Date.now())));
+  }
 }
 
 function completeBrowserExecutedAction(action: PreparedAction, execution: BrowserTransactionExecution): void {
@@ -13448,12 +13825,137 @@ function markBrowserTransactionSubmitted(action: PreparedAction, txid: string): 
   });
 }
 
+async function runTransactionToastStep<T>(
+  toastContext: TransactionToastContext,
+  title: string,
+  message: string,
+  task: () => Promise<T>,
+): Promise<T> {
+  updateTransactionToast(toastContext, 'pending', title, message);
+  return task();
+}
+
+function updateTransactionToast(
+  toastContext: TransactionToastContext,
+  kind: ToastKind,
+  title: string,
+  message: string,
+  txid?: string,
+): void {
+  replaceToast(toastContext.toastId, kind, title, message, {
+    linkHref: txid ? explorerUrl(txid, toastContext.cluster) : undefined,
+    linkLabel: txid ? 'Open Solscan' : undefined,
+  });
+}
+
+async function waitBeforeTransactionRetry(
+  toastContext: TransactionToastContext,
+  err: unknown,
+  attempt: number,
+  txid: string,
+): Promise<void> {
+  const message = redactSecrets(err instanceof Error ? err.message : String(err));
+  updateTransactionToast(
+    toastContext,
+    'pending',
+    attempt >= TX_RETRY_MAX_ATTEMPTS ? 'Checking transaction status' : 'Send retry queued',
+    attempt >= TX_RETRY_MAX_ATTEMPTS
+      ? `Checking ${short(txid)} before reporting the final status.`
+      : `First send failed: ${message}. Retrying in ${Math.round(TX_RETRY_DELAY_MS / 1000)} seconds with the same signed transaction.`,
+    txid,
+  );
+  await sleep(TX_RETRY_DELAY_MS);
+}
+
+async function transactionStatusSeenForRetry(
+  cluster: Cluster,
+  txid: string,
+): Promise<PreparedActionTxStatus | null> {
+  const status = await browserSignatureStatus(cluster, txid).catch(() => null);
+  if (!status) return null;
+  if (status.txStatus === 'failed') {
+    throw new Error(`Transaction ${short(txid)} failed on-chain: ${status.error ?? status.confirmationStatus ?? 'failed'}`);
+  }
+  if (status.txStatus === 'confirmed') {
+    return 'confirmed';
+  }
+  return status.confirmationStatus ? 'pending' : null;
+}
+
+async function finalTransactionStatusOrPending(
+  cluster: Cluster,
+  txid: string,
+): Promise<PreparedActionTxStatus> {
+  const deadline = Date.now() + TX_RETRY_DELAY_MS;
+  while (Date.now() < deadline) {
+    const status = await browserSignatureStatus(cluster, txid).catch(() => null);
+    if (status?.txStatus === 'failed') {
+      throw new Error(`Transaction ${short(txid)} failed on-chain: ${status.error ?? status.confirmationStatus ?? 'failed'}`);
+    }
+    if (status?.txStatus === 'confirmed') {
+      return 'confirmed';
+    }
+    if (status?.txStatus === 'pending' && status.confirmationStatus) {
+      return 'pending';
+    }
+    await sleep(500);
+  }
+  return 'pending';
+}
+
+function signedTransactionId(signedTransactionBase64: string): string {
+  const bytes = decodeBase64(signedTransactionBase64);
+  try {
+    const transaction = Transaction.from(bytes);
+    const signature = transaction.signatures.find((entry) => entry.signature)?.signature;
+    if (signature && !isZeroSignature(signature)) {
+      return bs58.encode(signature);
+    }
+  } catch {
+    // Try versioned transaction parsing below.
+  }
+  try {
+    const transaction = VersionedTransaction.deserialize(bytes);
+    const signature = transaction.signatures.find((entry) => !isZeroSignature(entry));
+    if (signature) {
+      return bs58.encode(signature);
+    }
+  } catch {
+    // Fall through to a clear error.
+  }
+  throw new Error('Wallet returned signed transaction bytes without a readable transaction signature.');
+}
+
+function isZeroSignature(signature: Uint8Array): boolean {
+  return signature.every((byte) => byte === 0);
+}
+
+function shouldRetryTransactionSend(err: unknown): boolean {
+  return isPossiblySubmittedTransactionError(err) && !isDefiniteTransactionFailure(err);
+}
+
+function isPossiblySubmittedTransactionError(err: unknown): boolean {
+  const message = (err instanceof Error ? err.message : String(err)).toLowerCase();
+  return /timeout|timed out|network|failed to fetch|fetch failed|temporar|rate|429|500|502|503|504|gateway|service unavailable|block height|confirmation|not confirmed|node is behind|already processed|already been processed/.test(message);
+}
+
+function isDefiniteTransactionFailure(err: unknown): boolean {
+  const message = (err instanceof Error ? err.message : String(err)).toLowerCase();
+  return /user rejected|rejected|denied|cancelled|canceled|insufficient|invalid|malformed|signature verification failed|blockhash not found|expired|slippage|unauthorized|not configured|missing .*key|simulation failed|custom program error/.test(message);
+}
+
 async function browserLatestBlockhash(cluster: Cluster): Promise<BrowserLatestBlockhash> {
-  if (state.bridgeActive && cluster === state.cluster) {
-    return bridgeRequest<BrowserLatestBlockhash>('/bridge/solana/latest-blockhash', {
-      method: 'POST',
-      body: JSON.stringify({ cluster }),
-    });
+  let bridgeError: unknown;
+  if (canAttemptLocalBridgeForCluster(cluster)) {
+    try {
+      return await bridgeRequest<BrowserLatestBlockhash>('/bridge/solana/latest-blockhash', {
+        method: 'POST',
+        body: JSON.stringify({ cluster }),
+      });
+    } catch (err) {
+      bridgeError = err;
+      if (state.bridgeActive) throw err;
+    }
   }
   try {
     return await sameOriginTransactionRequest<BrowserLatestBlockhash>('/api/solana/latest-blockhash', { cluster });
@@ -13461,18 +13963,25 @@ async function browserLatestBlockhash(cluster: Cluster): Promise<BrowserLatestBl
     if (canUseDirectBrowserRpc(cluster)) {
       return browserActionConnection(cluster).getLatestBlockhash('confirmed');
     }
+    if (bridgeError) throw transactionApiUnavailableError(bridgeError);
     throw transactionApiUnavailableError(err);
   }
 }
 
 async function broadcastSignedBrowserTransaction(cluster: Cluster, signedTransactionBase64: string): Promise<string> {
   const request = { cluster, signedTransactionBase64 };
-  if (state.bridgeActive && cluster === state.cluster) {
-    const response = await bridgeRequest<BrowserSendTransactionResponse>('/bridge/solana/send-transaction', {
-      method: 'POST',
-      body: JSON.stringify(request),
-    });
-    return requiredResponseString(response.txid ?? response.signature, 'Bridge transaction signature');
+  let bridgeError: unknown;
+  if (canAttemptLocalBridgeForCluster(cluster)) {
+    try {
+      const response = await bridgeRequest<BrowserSendTransactionResponse>('/bridge/solana/send-transaction', {
+        method: 'POST',
+        body: JSON.stringify(request),
+      });
+      return requiredResponseString(response.txid ?? response.signature, 'Bridge transaction signature');
+    } catch (err) {
+      bridgeError = err;
+      if (state.bridgeActive) throw err;
+    }
   }
   try {
     const response = await sameOriginTransactionRequest<BrowserSendTransactionResponse>('/api/solana/send-transaction', request);
@@ -13484,17 +13993,24 @@ async function broadcastSignedBrowserTransaction(cluster: Cluster, signedTransac
         maxRetries: 5,
       });
     }
+    if (bridgeError) throw transactionApiUnavailableError(bridgeError);
     throw transactionApiUnavailableError(err);
   }
 }
 
 async function browserSignatureStatus(cluster: Cluster, txid: string): Promise<BrowserSignatureStatusResponse> {
   const request = { cluster, txid };
-  if (state.bridgeActive && cluster === state.cluster) {
-    return bridgeRequest<BrowserSignatureStatusResponse>('/bridge/solana/signature-status', {
-      method: 'POST',
-      body: JSON.stringify(request),
-    });
+  let bridgeError: unknown;
+  if (canAttemptLocalBridgeForCluster(cluster)) {
+    try {
+      return await bridgeRequest<BrowserSignatureStatusResponse>('/bridge/solana/signature-status', {
+        method: 'POST',
+        body: JSON.stringify(request),
+      });
+    } catch (err) {
+      bridgeError = err;
+      if (state.bridgeActive) throw err;
+    }
   }
   try {
     return await sameOriginTransactionRequest<BrowserSignatureStatusResponse>('/api/solana/signature-status', request);
@@ -13510,6 +14026,7 @@ async function browserSignatureStatus(cluster: Cluster, txid: string): Promise<B
       }
       return { txStatus: 'pending', confirmationStatus: status.confirmationStatus ?? undefined };
     }
+    if (bridgeError) throw transactionApiUnavailableError(bridgeError);
     throw transactionApiUnavailableError(err);
   }
 }
@@ -13541,6 +14058,27 @@ function canUseDirectBrowserRpc(cluster: Cluster): boolean {
   return cluster !== 'mainnet-beta';
 }
 
+function canAttemptLocalBridgeForCluster(cluster: Cluster): boolean {
+  return Boolean(state.bridgeToken) &&
+    isLoopbackBridgeUrl(state.bridgeUrl) &&
+    cluster === state.cluster;
+}
+
+async function activateBridgeForTransaction(cluster: Cluster): Promise<boolean> {
+  if (!state.address || !state.capabilities || !canAttemptLocalBridgeForCluster(cluster)) {
+    return false;
+  }
+  try {
+    await activateBridgeConnection({ refreshConfig: true, strictSync: false });
+    return state.bridgeActive && state.cluster === cluster;
+  } catch (err) {
+    state.bridgeActive = false;
+    stopBridgePolling();
+    state.bridgeStatus = err instanceof Error ? err.message : String(err);
+    return false;
+  }
+}
+
 function transactionApiUnavailableError(err: unknown): Error {
   const message = err instanceof Error ? err.message : String(err);
   if (/not_found|not available|not reachable|transaction APIs/i.test(message)) {
@@ -13550,7 +14088,22 @@ function transactionApiUnavailableError(err: unknown): Error {
 }
 
 function transactionApiUnavailableMessage(): string {
-  return 'Transaction RPC requires Agentic same-origin APIs or a connected local bridge. Start the local runtime, open the printed bridge URL, click Check local bridge, then approve again.';
+  if (isLocalBrowserHost()) {
+    return `Local transaction RPC is not connected. Start ${NPM_EXEC_COMMAND}, keep the bridge terminal open, open the printed local app URL, then approve again.`;
+  }
+  return 'Transaction RPC requires the hosted transaction API or a connected local bridge. This is separate from AI sign-in.';
+}
+
+function swapApiUnavailableMessage(): string {
+  if (isLocalBrowserHost()) {
+    return `Local swap execution is not connected. Start ${NPM_EXEC_COMMAND}, keep the bridge terminal open, open the printed local app URL, then approve again.`;
+  }
+  return 'Swap execution requires the hosted swap API or a connected local bridge. This is separate from AI sign-in.';
+}
+
+function isLocalBrowserHost(): boolean {
+  const host = window.location.hostname.toLowerCase();
+  return host === 'localhost' || host === '127.0.0.1' || host === '::1';
 }
 
 function browserActionConnection(cluster: Cluster): Connection {
@@ -13690,7 +14243,7 @@ async function hostedSwapRequest(path: '/api/swap/order' | '/api/swap/execute', 
   });
   const contentType = response.headers.get('content-type') ?? '';
   if (!contentType.toLowerCase().includes('application/json')) {
-    throw new Error('Swap execution requires Agentic same-origin APIs or a connected local bridge. Start the local runtime, click Check local bridge, then approve again.');
+    throw new Error(swapApiUnavailableMessage());
   }
   const payload = await response.json().catch(() => ({})) as unknown;
   if (!response.ok) {
@@ -14793,6 +15346,8 @@ async function pollBridge(): Promise<void> {
 
 async function handleBridgeSigningRequest(request: SigningRequest): Promise<void> {
   const signingClient = requireClient();
+  const toastId = pushToast('pending', bridgeSigningToastTitle(request.kind), request.display?.summary ?? request.id);
+  const toastContext: TransactionToastContext = { toastId, cluster: request.cluster };
   state.bridgeStatus = `Opening wallet for ${request.kind}: ${request.display?.summary ?? request.id}`;
   await bridgeTrace('browser.approval.start', {
     requestId: request.id,
@@ -14806,18 +15361,38 @@ async function handleBridgeSigningRequest(request: SigningRequest): Promise<void
     let result: SigningResult;
     switch (request.kind) {
       case 'sign_message':
-        result = await signingClient.signMessage(request.payload.data, requestSignOptions(request));
+        result = await runTransactionToastStep(
+          toastContext,
+          'Signing message',
+          request.display?.summary ?? request.id,
+          () => signingClient.signMessage(request.payload.data, requestSignOptions(request)),
+        );
         break;
       case 'sign_transaction':
-        result = await signingClient.signTransaction(request.payload.data, requestSignOptions(request));
+        result = await runTransactionToastStep(
+          toastContext,
+          'Signing transaction',
+          request.display?.summary ?? request.id,
+          () => signingClient.signTransaction(request.payload.data, requestSignOptions(request)),
+        );
         break;
       case 'sign_and_send_transaction':
         if (state.capabilities?.supports.signTransaction === true) {
-          const signed = await signingClient.signTransaction(request.payload.data, requestSignOptions(request));
-          const txid = await broadcastSignedBrowserTransaction(request.cluster, signed.signature);
+          const signed = await runTransactionToastStep(
+            toastContext,
+            'Signing transaction',
+            request.display?.summary ?? request.id,
+            () => signingClient.signTransaction(request.payload.data, requestSignOptions(request)),
+          );
+          const txid = await broadcastSignedBrowserTransactionWithRetry(request.cluster, signed.signature, toastContext);
           result = { signature: txid, txid };
         } else {
-          result = await signingClient.signAndSendTransaction(request.payload.data, requestSignOptions(request));
+          result = await runTransactionToastStep(
+            toastContext,
+            'Signing and sending transaction',
+            `${request.display?.summary ?? request.id}. This wallet path cannot be safely retried without a returned transaction id.`,
+            () => signingClient.signAndSendTransaction(request.payload.data, requestSignOptions(request)),
+          );
         }
         break;
     }
@@ -14837,7 +15412,15 @@ async function handleBridgeSigningRequest(request: SigningRequest): Promise<void
       signature: result.signature,
       txid: result.txid,
     });
-    pushToast('success', 'Bridge request approved', short(result.txid ?? result.signature));
+    const submittedTxid = request.kind === 'sign_and_send_transaction' ? result.txid ?? result.signature : result.txid;
+    if (submittedTxid) {
+      replaceToast(toastId, 'success', 'Transaction submitted', short(submittedTxid), {
+        linkHref: explorerUrl(submittedTxid, request.cluster),
+        linkLabel: 'Open Solscan',
+      });
+    } else {
+      replaceToast(toastId, 'success', 'Bridge request approved', short(result.signature));
+    }
   } catch (err) {
     const error = toProtocolErrorPayload(err);
     await bridgeRequest('/bridge/reject', {
@@ -14851,11 +15434,17 @@ async function handleBridgeSigningRequest(request: SigningRequest): Promise<void
       code: error.code,
       message: error.message,
     });
-    pushToast('error', 'Bridge request failed', error.message);
+    replaceToast(toastId, 'error', 'Bridge request failed', error.message);
   } finally {
     await refreshInboxData().catch(() => undefined);
     render();
   }
+}
+
+function bridgeSigningToastTitle(kind: SigningRequest['kind']): string {
+  if (kind === 'sign_and_send_transaction') return 'Signing and sending transaction';
+  if (kind === 'sign_transaction') return 'Signing transaction';
+  return 'Signing message';
 }
 
 async function bridgeTrace(event: string, payload: Record<string, unknown>): Promise<void> {
@@ -15501,6 +16090,12 @@ async function canReachLocalEndpoint(url: string): Promise<boolean> {
   } finally {
     window.clearTimeout(timeout);
   }
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => {
+    window.setTimeout(resolve, ms);
+  });
 }
 
 function isBrowserWalletSurface(): boolean {
@@ -16243,7 +16838,7 @@ function preparedActionCard(action: PreparedAction): string {
   const decisionLabels = preparedActionDecisionLabels(action);
   const effectCopy = approvalEffectCopy(action);
   const executionBlockReason = cloudExecutionBlockReason(action);
-  const confirmable = canConfirmCloudFinalization(action);
+  const confirmable = canConfirmCloudFinalization(action) || canConfirmBrowserTransaction(action);
   const executeDisabled = (!state.bridgeActive && !browserWorkflow && !cloudWorkflow) ||
     state.busy ||
     !executable ||
@@ -16258,7 +16853,8 @@ function preparedActionCard(action: PreparedAction): string {
               <strong class="inbox-approval-meta-title">${escapeHtml(preparedActionCardTitle(action))}</strong>
               <span>${escapeHtml(action.kind.replace(/_/g, ' '))}</span>
               ${action.recurringId ? '<span>Repeat</span>' : ''}
-              ${action.txStatus ? `<span class="status-pill ${txTone(action.txStatus)}">tx ${escapeHtml(action.txStatus)}</span>` : ''}
+              ${inboxActionFailurePill(action)}
+              ${action.txStatus && action.txStatus !== 'failed' ? `<span class="status-pill ${txTone(action.txStatus)}">tx ${escapeHtml(action.txStatus)}</span>` : ''}
               <span>${escapeHtml(inboxApprovalSourceLabel(action))}</span>
             </div>
             <p class="ticket-meta-line">${escapeHtml(action.kind)} on ${escapeHtml(action.cluster)} - due ${formatDateTime(action.dueAt)}</p>
@@ -16303,6 +16899,19 @@ function preparedActionCardTitle(action: PreparedAction): string {
   return action.summary;
 }
 
+function inboxActionFailurePill(action: PreparedAction): string {
+  const failed = action.txStatus === 'failed' ||
+    action.status === 'failed' ||
+    Boolean((action.txError || action.error) && EXECUTABLE_BROWSER_ACTION_KINDS.has(action.kind));
+  if (!failed) return '';
+  const label = action.kind === 'swap'
+    ? 'Swap failed - try again'
+    : action.kind === 'transfer_sol' || action.kind === 'transfer_spl'
+      ? 'Send failed - try again'
+      : 'Tx failed - try again';
+  return `<span class="status-pill tx-failed">${escapeHtml(label)}</span>`;
+}
+
 function inboxApprovalHero(action: PreparedAction): string {
   const primary = amountLabel(action);
   const secondary = recipientParam(action)
@@ -16318,11 +16927,11 @@ function inboxApprovalHero(action: PreparedAction): string {
 
 function inboxApprovalTokenSummary(action: PreparedAction): { value: string; title: string; copyValue?: string } {
   if (action.kind === 'transfer_sol') {
-    return { value: 'SOL', title: 'SOL', copyValue: 'SOL' };
+    return { value: 'SOL', title: 'SOL', copyValue: WSOL_MINT };
   }
   const token = stringParam(action, 'token');
   if (token) {
-    return { value: tokenDisplayLabel(token), title: token, copyValue: token };
+    return { value: tokenDisplayLabel(token), title: token, copyValue: resolveTokenMintForCopy(token) };
   }
   const inputToken = stringParam(action, 'inputToken');
   const outputToken = stringParam(action, 'outputToken');
@@ -16332,10 +16941,18 @@ function inboxApprovalTokenSummary(action: PreparedAction): { value: string; tit
     return {
       value: `${tokenDisplayLabel(input)} -> ${tokenDisplayLabel(output)}`,
       title: `${input} -> ${output}`,
-      copyValue: `${input} -> ${output}`,
+      copyValue: `${resolveTokenMintForCopy(input)} -> ${resolveTokenMintForCopy(output)}`,
     };
   }
   return { value: 'n/a', title: 'n/a' };
+}
+
+function resolveTokenMintForCopy(value: string): string {
+  const trimmed = value.trim();
+  if (!trimmed) return trimmed;
+  if (looksLikeMintAddress(trimmed)) return trimmed;
+  const known = KNOWN_BROWSER_TOKENS[trimmed.toUpperCase()];
+  return known?.mint ?? trimmed;
 }
 
 function tokenDisplayLabel(value: string): string {
@@ -16486,9 +17103,9 @@ function approvalEffectCopy(action: PreparedAction): string {
   }
   if (isExecutableBrowserAction(action)) {
     if (action.kind === 'swap') {
-      return 'Your wallet signs the swap transaction, the signed transaction is submitted, and Done appears only after a transaction id is returned.';
+      return 'Your wallet signs the swap transaction. Pending transactions stay here with a Solscan link; Done appears after confirmation.';
     }
-    return 'Your wallet signs and submits the transaction. Done appears only after a transaction id is returned; failures stay here with the error.';
+    return 'Your wallet signs and submits the transaction. Pending transactions stay here with a Solscan link; Done appears after confirmation.';
   }
   if (isBrowserWorkflowId(action.id)) {
     return 'Your wallet signs a browser-local decision proof. The receipt stays on this device; no transaction is submitted by this proof.';
@@ -16514,6 +17131,12 @@ function canConfirmCloudFinalization(action: PreparedAction): boolean {
   return action.workflowSource === 'cloud' &&
     Boolean(action.finalizationId && action.txid) &&
     (action.status === 'approval_pending' || action.finalizationStatus === 'submitted' || action.txStatus === 'pending');
+}
+
+function canConfirmBrowserTransaction(action: PreparedAction): boolean {
+  return isExecutableBrowserAction(action) &&
+    Boolean(action.txid) &&
+    (action.status === 'approval_pending' || action.txStatus === 'pending');
 }
 
 function requiresCloudTransactionFinalization(action: PreparedAction): boolean {
@@ -17181,7 +17804,7 @@ function filteredPreparedActions(): PreparedAction[] {
     case 'recurring':
       return actions.filter((action) => Boolean(action.recurringId));
     case 'ready':
-      return actions.filter((action) => action.status === 'ready' || action.status === 'overdue');
+      return actions.filter((action) => action.status === 'ready' || action.status === 'overdue' || action.status === 'approval_pending');
     case 'scheduled':
       return actions.filter((action) => action.status === 'scheduled');
     case 'attention':
@@ -18687,6 +19310,20 @@ function newId(prefix: string): string {
   return `${prefix}_${hex}`;
 }
 
+function formatCopyToastMessage(value: string): string {
+  const trimmed = value.trim();
+  if (!trimmed) return '';
+  if (trimmed.length > 12) {
+    return `${trimmed.slice(0, 4)}....${trimmed.slice(-4)}`;
+  }
+  return trimmed;
+}
+
+function looksLikeJsonValue(value: string): boolean {
+  const head = value.trimStart()[0];
+  return head === '{' || head === '[';
+}
+
 function toastStack(): string {
   if (state.toasts.length === 0) return '';
   return `
@@ -18698,7 +19335,7 @@ function toastStack(): string {
               <span class="toast-icon" aria-hidden="true">${toastIcon(toast.kind)}</span>
               <div>
                 <strong>${escapeHtml(toast.title)}</strong>
-                <p>${escapeHtml(toast.message)}</p>
+                ${toast.message ? `<p>${escapeHtml(toast.message)}</p>` : ''}
                 ${toast.linkHref ? `<a href="${escapeHtml(toast.linkHref)}" target="_blank" rel="noreferrer">${escapeHtml(toast.linkLabel ?? 'Open link')}</a>` : ''}
               </div>
               <button data-toast-dismiss="${toast.id}" aria-label="Dismiss notification">x</button>
@@ -19128,7 +19765,9 @@ function isGeneratedPlanRecord(value: unknown): value is GeneratedPlanRecord {
     isCluster(record.cluster ?? '') &&
     isGeneratedPlanStatus(record.status) &&
     (record.signature === undefined || typeof record.signature === 'string') &&
-    (record.preparedActionId === undefined || typeof record.preparedActionId === 'string')
+    (record.preparedActionId === undefined || typeof record.preparedActionId === 'string') &&
+    (record.error === undefined || typeof record.error === 'string') &&
+    (record.failureLabel === undefined || typeof record.failureLabel === 'string')
   );
 }
 
@@ -19163,7 +19802,7 @@ function isAgentPlanField(value: unknown): value is AgentPlan['fields'][number] 
 }
 
 function isGeneratedPlanStatus(value: unknown): value is GeneratedPlanStatus {
-  return value === 'draft' || value === 'signed' || value === 'queued' || value === 'archived';
+  return value === 'draft' || value === 'signed' || value === 'queued' || value === 'archived' || value === 'failed';
 }
 
 function loadLabArtifacts(): LabArtifact[] {

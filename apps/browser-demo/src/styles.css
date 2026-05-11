@@ -4679,6 +4679,16 @@ code {
   min-width: 0;
   padding: 0 9px;
   width: auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.wallet-action-copy-icon {
+  width: 11px;
+  height: 11px;
+  fill: currentColor;
+  flex-shrink: 0;
 }
 
 .wallet-action-copy:hover:not(:disabled) {
@@ -7139,7 +7149,9 @@ button.danger:hover:not(:disabled) {
   display: grid;
   gap: 10px;
   grid-template-columns: auto 1fr auto;
+  max-height: 160px;
   min-width: 0;
+  overflow: hidden;
   padding: 12px;
 }
 
@@ -7187,9 +7199,14 @@ button.danger:hover:not(:disabled) {
 
 .toast p {
   color: var(--muted);
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 3;
   font-size: 0.84rem;
   line-height: 1.35;
   margin: 2px 0 0;
+  overflow: hidden;
+  overflow-wrap: anywhere;
 }
 
 .toast a {
@@ -12420,6 +12437,11 @@ button.danger:hover:not(:disabled) {
   font-size: 0.88rem;
   line-height: 1.4;
   margin: 0;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  overflow-wrap: anywhere;
 }
 
 .command-center-grid {
