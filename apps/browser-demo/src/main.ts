@@ -7402,14 +7402,14 @@ function commandCloudStorageDangerZone(): string {
   if (state.cloudSession.status !== 'signed-in') return '';
   const matched = cloudSessionMatchesWallet();
   const reason = matched
-    ? 'Permanently delete this wallet\'s Agentic Cloud drafts, approvals, repeat payments, proofs, done work, and app audit events.'
+    ? 'Deletes cloud drafts, approvals, schedules, proofs, done work, and audit events for this wallet.'
     : `Connect ${short(state.cloudSession.walletAddress)} to delete this cloud workspace.`;
   return `
     <div class="command-storage-danger-zone">
       <div>
         <span>Danger zone</span>
-        <strong>Delete Cloud Workspace Data</strong>
-        <p>${escapeHtml(reason)} Saved-on-device data and on-chain history remain unchanged.</p>
+        <strong>Delete cloud data</strong>
+        <p>${escapeHtml(reason)} Device data and on-chain history stay.</p>
       </div>
       <button
         type="button"
@@ -7418,7 +7418,7 @@ function commandCloudStorageDangerZone(): string {
         ${!matched || state.busy ? 'disabled' : ''}
         title="${escapeHtml(matched ? 'Requires a wallet signature before deletion.' : reason)}"
       >
-        Delete Cloud Workspace Data
+        Delete cloud data
       </button>
     </div>
   `;
@@ -7766,7 +7766,7 @@ function draftReadyPanel(plan: AgentPlan): string {
           <button
             id="queueAgentPlan"
             class="${queueable ? 'primary' : 'utility'}"
-            ${!state.address || !queueable || state.busy ? 'disabled' : ''}
+            ${!state.address || !queueable ? 'disabled' : ''}
             title="${escapeHtml(queuePlanTitle())}"
           >
             ${escapeHtml(queueActionLabelForPlan(plan))}
@@ -7897,7 +7897,7 @@ function generatedPlanCard(record: GeneratedPlanRecord): string {
   const queueable = canQueueGeneratedPlan(record);
   const archived = record.status === 'archived';
   const proofDisabled = !state.address || state.busy || archived ? 'disabled' : '';
-  const queueDisabled = !state.address || !queueable || state.busy || archived ? 'disabled' : '';
+  const queueDisabled = !state.address || !queueable || archived ? 'disabled' : '';
   const selected = state.selectedGeneratedPlanId === record.id;
   const actionHint = generatedPlanActionHint(record);
   const guardrailBlocked = planGuardrailVerdict(plan) === 'block';
@@ -14919,6 +14919,7 @@ function completedPlanFromGeneratedPlan(
   receipt: ActionReceipt | undefined,
   action: PreparedAction | undefined,
 ): CompletedPlanRecord {
+  const note = completedPlanUserNote(record.plan.userNotes, receipt?.note, action?.note);
   const terminalStatus = receipt?.status ?? (action && isTerminalPreparedAction(action) ? action.status : undefined);
   const txStatus = receipt?.txStatus ?? action?.txStatus;
   const txid = receipt?.txid ?? action?.txid;
@@ -14948,7 +14949,7 @@ function completedPlanFromGeneratedPlan(
     status,
     tone: terminalStatus ? completedActionTone(terminalStatus, txStatus) : record.status === 'archived' ? 'neutral' : 'tx-confirmed',
     title: record.plan.intent,
-    summary: record.plan.risk,
+    summary: note,
     completedAt,
     createdAt: record.createdAt,
     walletAddress: receipt?.walletAddress ?? action?.walletAddress ?? record.walletAddress,
@@ -14992,6 +14993,7 @@ function completedPlanFromReceipt(receipt: ActionReceipt, action: PreparedAction
   if (receipt.evidenceKind === 'agent_override_receipt' && receipt.agentOverride) {
     return completedPlanFromAgentOverride(receipt);
   }
+  const note = completedPlanUserNote(receipt.note, action?.note);
   const kind: CompletedPlanRecord['kind'] = receipt.recurringId || action?.recurringId ? 'recurring' : 'one-time';
   const status = completedActionStatusLabel(receipt.status, receipt.txStatus);
   const recurringId = receipt.recurringId ?? action?.recurringId;
@@ -15008,7 +15010,7 @@ function completedPlanFromReceipt(receipt: ActionReceipt, action: PreparedAction
     status,
     tone: completedActionTone(receipt.status, receipt.txStatus),
     title: receipt.summary,
-    summary: receipt.note ?? receipt.summary,
+    summary: note,
     completedAt: receipt.completedAt,
     createdAt: receipt.createdAt,
     walletAddress: receipt.walletAddress,
@@ -15095,7 +15097,7 @@ function completedPlanFromAction(action: PreparedAction): CompletedPlanRecord {
     status,
     tone: action.archived ? 'neutral' : completedActionTone(action.status, action.txStatus),
     title: action.summary,
-    summary: action.note ?? action.summary,
+    summary: completedPlanUserNote(action.note),
     completedAt,
     createdAt: action.createdAt,
     walletAddress: action.walletAddress,
@@ -21680,6 +21682,10 @@ async function queuePlanThroughActiveWorkflow(
   sourceRecord?: GeneratedPlanRecord,
 ): Promise<QueueWorkflowResult> {
   assertPlanCanQueue(plan);
+  if (plan.actionType === 'swap') {
+    const response = await queuePlanThroughBrowserWorkflow(plan, sourceRecord);
+    return { ...response, mode: 'browser-workflow' };
+  }
   const mode = activeWorkflowMode();
   if (plan.actionType === 'blink_action') {
     const response = await queuePlanThroughBrowserWorkflow(plan, sourceRecord);
@@ -21962,12 +21968,35 @@ function browserRecurringPaymentFromPlan(plan: AgentPlan): RecurringPayment {
     ...payload,
     ...(Number.isInteger(maxOccurrences) && maxOccurrences > 0 ? { maxOccurrences } : {}),
     occurrencesCreated: 1,
-    note: plan.userNotes || plan.intent,
+    note: plan.userNotes || '',
     createdAt: now,
     updatedAt: now,
     nextDueAt: recurringNextDueFromPayload(payload),
     workflowSource: 'browser',
   };
+}
+
+function completedPlanUserNote(...candidates: Array<string | undefined>): string {
+  for (const candidate of candidates) {
+    const note = candidate?.trim();
+    if (!note) continue;
+    if (isSyntheticApprovalNote(note)) continue;
+    return note;
+  }
+  return '';
+}
+
+function isSyntheticApprovalNote(note: string): boolean {
+  const normalized = note.trim().toLowerCase();
+  if (!normalized) return true;
+  return (
+    normalized.startsWith('medium risk.') ||
+    normalized.startsWith('low risk.') ||
+    normalized.startsWith('high risk.') ||
+    normalized.includes('defi swap involves smart contract interaction') ||
+    normalized.includes('price slippage capped at 50 basis points') ||
+    normalized.includes('the route through established dex aggregators')
+  );
 }
 
 function browserRecurringPaymentFromDraft(draft: RecurringDraft): RecurringPayment {
