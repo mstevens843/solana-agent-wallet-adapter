@@ -78,6 +78,13 @@ import {
   trackWalletConnectSuccess,
 } from './analytics.js';
 import {
+  evidenceEntryTone,
+  isTokenMismatchEvidenceKey,
+  swapTokenTextMismatchWarning,
+  tokenMismatchEvidenceRows,
+  type AgentEvidenceTone,
+} from './agentReviewPresentation.js';
+import {
   hostedByokCloudSessionBlockReason,
   shouldAutoSignOutCloudSession,
 } from './cloudSessionPolicy.js';
@@ -217,6 +224,7 @@ type AppListPageKey = 'review' | 'inbox' | 'recurring' | 'receiptArchive';
 type TemplateOutcome = 'queueable' | 'proof' | 'audit';
 type TemplateOutcomeFilter = TemplateOutcome | 'all';
 type AiPlannerConfirmationStatus = 'untested' | 'confirmed' | 'failed';
+type TokenInputMode = 'preset' | 'custom';
 type AgentPlanReviewStatus = 'checking' | 'approved' | 'denied' | 'needs_input' | 'error';
 type RecurringPresetId = 'scheduled-transfer' | 'recurring-swap';
 type RecurringActionKind = 'transfer' | 'swap';
@@ -1562,6 +1570,7 @@ interface DemoState {
   selectedTemplateId: string;
   templateOutcomeFilter: TemplateOutcomeFilter;
   templateFields: Record<string, string>;
+  templateTokenModes: Record<string, TokenInputMode>;
   templateFieldErrors: Record<string, string>;
   agentPlan: AgentPlan | null;
   agentSignature: string;
@@ -1612,6 +1621,7 @@ interface DemoState {
   lastCompletedFocusId: string;
   recurringDraft: RecurringDraft;
   recurringPreset: RecurringPresetId;
+  recurringTokenModes: Record<string, TokenInputMode>;
   recurringErrors: Record<string, string>;
   recipientRules: RecipientRulesState;
   recipientDraft: RecipientDraft;
@@ -2281,6 +2291,7 @@ const state: DemoState = {
   selectedTemplateId: initialTemplate.id,
   templateOutcomeFilter: 'queueable',
   templateFields: defaultTemplateFieldValues(initialTemplate),
+  templateTokenModes: defaultTemplateTokenModes(initialTemplate),
   templateFieldErrors: {},
   agentPlan: null,
   agentSignature: '',
@@ -2339,6 +2350,7 @@ const state: DemoState = {
   lastCompletedFocusId: '',
   recurringDraft: defaultRecurringDraft(),
   recurringPreset: 'scheduled-transfer',
+  recurringTokenModes: defaultRecurringTokenModes(),
   recurringErrors: {},
   recipientRules: initialRecipientRules,
   recipientDraft: defaultRecipientDraft(),
@@ -8010,6 +8022,7 @@ function generatedPlanCard(record: GeneratedPlanRecord): string {
 
       ${generatedPlanReviewSummaryGrid(record)}
       ${generatedPlanUserNote(plan)}
+      ${generatedPlanConsistencyWarning(record)}
       ${generatedPlanAgentReviewStrip(record)}
       ${agentOverrideStrip(record.agentOverride)}
       ${record.error ? `<p class="error-text">${escapeHtml(record.error)}</p>` : ''}
@@ -8174,6 +8187,17 @@ function generatedPlanUserNote(plan: AgentPlan): string {
   `;
 }
 
+function generatedPlanConsistencyWarning(record: GeneratedPlanRecord): string {
+  const warning = swapTokenTextMismatchWarning(record.plan, tokenDisplayLabel);
+  if (!warning) return '';
+  return `
+    <section class="review-plan-consistency-warning" aria-label="Draft consistency warning">
+      <span>Check token mismatch</span>
+      <p>${escapeHtml(warning.message)} Fix the output token or update the draft text before asking the agent or sending for approval.</p>
+    </section>
+  `;
+}
+
 function agentReviewButton(record: GeneratedPlanRecord): string {
   if (!hasDetectedAgentReviewPath()) return '';
   const review = record.agentReview;
@@ -8219,11 +8243,23 @@ function generatedPlanAgentReviewStrip(record: GeneratedPlanRecord): string {
         ${badge}
         ${watchBadge}
       </div>
-      <p>${escapeHtml(review.reason || 'Agent review is available for context. Sending for approval is still your decision.')}</p>
+      ${agentReviewBlockingReasonPanel(review) || `<p>${escapeHtml(review.reason || 'Agent review is available for context. Sending for approval is still your decision.')}</p>`}
       ${review.status === 'needs_input' ? agentReviewQuestionsForm(record) : ''}
       ${agentEvidenceDrawer(review)}
       ${agentDenialActions(record)}
       ${agentAskAnythingPanel(record)}
+    </section>
+  `;
+}
+
+function agentReviewBlockingReasonPanel(review: AgentPlanReviewState): string {
+  if (review.status !== 'denied' && review.status !== 'error') return '';
+  const reason = review.reason?.trim();
+  if (!reason) return '';
+  return `
+    <section class="agent-review-blocking-reason" aria-label="Agent blocking reason">
+      <span>Blocking reason</span>
+      <p>${escapeHtml(reason)}</p>
     </section>
   `;
 }
@@ -8340,8 +8376,9 @@ function agentEvidenceDrawer(review: AgentPlanReviewState): string {
   `;
 }
 
-function agentEvidenceRows(review: AgentPlanReviewState): Array<{ label: string; value: string; tone?: 'good' | 'warn' | 'neutral' | 'fail' }> {
-  const rows: Array<{ label: string; value: string; tone?: 'good' | 'warn' | 'neutral' | 'fail' }> = [];
+function agentEvidenceRows(review: AgentPlanReviewState): Array<{ label: string; value: string; tone?: AgentEvidenceTone }> {
+  const rows: Array<{ label: string; value: string; tone?: AgentEvidenceTone }> = [];
+  rows.push(...tokenMismatchEvidenceRows(review.evidence));
   const facts = review.facts;
   if (facts) {
     const factSlots: Array<{ key: keyof AgentReviewFactSet; label: string }> = [
@@ -8398,6 +8435,7 @@ function agentEvidenceRows(review: AgentPlanReviewState): Array<{ label: string;
     const seenKeys = new Set(rows.map((row) => row.label.toLowerCase()));
     for (const [key, raw] of Object.entries(evidence)) {
       if (raw === undefined || raw === null) continue;
+      if (isTokenMismatchEvidenceKey(key)) continue;
       const label = humanizeEvidenceKey(key);
       if (seenKeys.has(label.toLowerCase())) continue;
       const value = typeof raw === 'string'
@@ -8405,7 +8443,7 @@ function agentEvidenceRows(review: AgentPlanReviewState): Array<{ label: string;
         : typeof raw === 'number' || typeof raw === 'boolean'
           ? String(raw)
           : stableJson(raw as JsonValue);
-      rows.push({ label, value, tone: 'neutral' });
+      rows.push({ label, value, tone: evidenceEntryTone(label, value) });
     }
   }
   return rows;
@@ -9610,7 +9648,9 @@ function isTokenSelectField(fieldDef: AgentPlanTemplateField): boolean {
 
 function tokenFieldInput(fieldDef: AgentPlanTemplateField, value: string, label: string, error: string): string {
   const options = fieldDef.options ?? [];
-  const presetMode = options.includes(value);
+  const mode = templateTokenMode(fieldDef, value);
+  const presetMode = mode === 'preset';
+  const selectValue = options.includes(value) ? value : fieldDef.defaultValue || options[0] || '';
   const customValue = presetMode ? '' : value;
   const disabled = state.busy;
   return `
@@ -9639,7 +9679,7 @@ function tokenFieldInput(fieldDef: AgentPlanTemplateField, value: string, label:
         </span>
       </span>
       ${presetMode ? selectPicker({
-        value,
+        value: selectValue,
         options: options.map((option) => ({
           value: option,
           label: option,
@@ -9666,6 +9706,25 @@ function tokenFieldInput(fieldDef: AgentPlanTemplateField, value: string, label:
       ${error}
     </div>
   `;
+}
+
+function templateTokenMode(fieldDef: AgentPlanTemplateField, value: string): TokenInputMode {
+  const explicit = state.templateTokenModes[fieldDef.id];
+  if (explicit) return explicit;
+  return (fieldDef.options ?? []).includes(value) ? 'preset' : 'custom';
+}
+
+function defaultTemplateTokenModes(
+  template: AgentPlanTemplate,
+  values = defaultTemplateFieldValues(template),
+): Record<string, TokenInputMode> {
+  const modes: Record<string, TokenInputMode> = {};
+  for (const fieldDef of template.fields) {
+    if (!isTokenSelectField(fieldDef)) continue;
+    const value = values[fieldDef.id] ?? fieldDef.defaultValue ?? '';
+    modes[fieldDef.id] = (fieldDef.options ?? []).includes(value) ? 'preset' : 'custom';
+  }
+  return modes;
 }
 
 function isRecipientTemplateField(fieldDef: AgentPlanTemplateField): boolean {
@@ -12322,6 +12381,7 @@ function bind(): void {
     fieldInput.addEventListener('input', () => {
       const fieldId = fieldInput.dataset.templateField;
       if (!fieldId) return;
+      updateTemplateTokenModeFromControl(fieldInput);
       state.templateFields[fieldId] = fieldInput.value;
       delete state.templateFieldErrors[fieldId];
       state.agentPlan = null;
@@ -12331,6 +12391,7 @@ function bind(): void {
     fieldInput.addEventListener('change', () => {
       const fieldId = fieldInput.dataset.templateField;
       if (!fieldId) return;
+      updateTemplateTokenModeFromControl(fieldInput);
       state.templateFields[fieldId] = fieldInput.value;
     });
   }
@@ -12375,6 +12436,7 @@ function bind(): void {
       if (!fieldId || !fieldDef || !isTokenSelectField(fieldDef)) return;
       const options = fieldDef.options ?? [];
       const current = state.templateFields[fieldId] ?? defaultTemplateFieldValues(selectedTemplate())[fieldId] ?? '';
+      state.templateTokenModes[fieldId] = mode === 'custom' ? 'custom' : 'preset';
       if (mode === 'custom') {
         state.templateFields[fieldId] = options.includes(current) ? '' : current;
       } else {
@@ -12625,6 +12687,7 @@ function bind(): void {
       const nextValue = mode === 'custom'
         ? RECURRING_TOKEN_OPTIONS.includes(current) ? '' : current
         : RECURRING_TOKEN_OPTIONS.includes(current) ? current : RECURRING_TOKEN_OPTIONS[0]!;
+      state.recurringTokenModes[field] = mode === 'custom' ? 'custom' : 'preset';
       if (mode === 'custom') {
         setRecurringDraftTokenFieldValue(state.recurringDraft, field, nextValue);
       } else if (mode === 'preset') {
@@ -12638,6 +12701,7 @@ function bind(): void {
   for (const recurringInput of document.querySelectorAll<HTMLInputElement | HTMLSelectElement | HTMLTextAreaElement>('[data-recurring-field]')) {
     recurringInput.addEventListener('input', () => {
       const field = recurringInput.dataset.recurringField;
+      updateRecurringTokenModeFromControl(recurringInput);
       state.recurringDraft = readRecurringDraft();
       if (field) {
         delete state.recurringErrors[`recurring${field.charAt(0).toUpperCase()}${field.slice(1)}`];
@@ -12646,6 +12710,7 @@ function bind(): void {
     });
     recurringInput.addEventListener('change', () => {
       const field = recurringInput.dataset.recurringField;
+      updateRecurringTokenModeFromControl(recurringInput);
       state.recurringDraft = readRecurringDraft();
       if (field) {
         delete state.recurringErrors[`recurring${field.charAt(0).toUpperCase()}${field.slice(1)}`];
@@ -13438,6 +13503,7 @@ function selectAgentTemplate(templateId: string): boolean {
     ...defaultTemplateFieldValues(template),
     ...state.templateFields,
   };
+  state.templateTokenModes = defaultTemplateTokenModes(template, state.templateFields);
   state.templateFieldErrors = {};
   state.agentPlan = null;
   state.agentSignature = '';
@@ -14934,6 +15000,7 @@ function useGeneratedPlanAsStartingPoint(record: GeneratedPlanRecord): void {
     ...defaultTemplateFieldValues(template),
     ...record.plan.parameters,
   };
+  state.templateTokenModes = defaultTemplateTokenModes(template, state.templateFields);
   state.templateFieldErrors = {};
   state.agentPrompt = record.plan.userNotes || record.prompt || template.description;
   state.agentPlan = null;
@@ -14958,6 +15025,7 @@ function openDcaReviewProofTemplate(): void {
     cadence: state.recurringDraft.cadence || defaultTemplateFieldValues(template).cadence || 'weekly',
     memo: state.recurringDraft.note || defaultTemplateFieldValues(template).memo || 'Repeat DCA approval',
   };
+  state.templateTokenModes = defaultTemplateTokenModes(template, state.templateFields);
   state.templateFieldErrors = {};
   state.agentPrompt = 'Create a review proof for this recurring DCA strategy before any active schedule is created.';
   state.agentPlan = null;
@@ -21973,6 +22041,7 @@ function readTemplateFields(template = selectedTemplate()): Record<string, strin
   for (const input of document.querySelectorAll<HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement>('[data-template-field]')) {
     const fieldId = input.dataset.templateField;
     if (fieldId) {
+      updateTemplateTokenModeFromControl(input);
       current[fieldId] = input.value;
     }
   }
@@ -24215,6 +24284,24 @@ function handleTokenSearchInput(fieldId: string, query: string): void {
   tokenSearchTimers.set(fieldId, timer);
 }
 
+function updateTemplateTokenModeFromControl(
+  control: HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement,
+): void {
+  const fieldId = control.dataset.templateField;
+  if (!fieldId) return;
+  const fieldDef = selectedTemplate().fields.find((field) => field.id === fieldId);
+  if (!fieldDef || !isTokenSelectField(fieldDef)) return;
+  state.templateTokenModes[fieldId] = control instanceof HTMLSelectElement ? 'preset' : 'custom';
+}
+
+function updateRecurringTokenModeFromControl(
+  control: HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement,
+): void {
+  const field = control.dataset.recurringField;
+  if (field !== 'token' && field !== 'inputToken' && field !== 'outputToken') return;
+  state.recurringTokenModes[field] = control instanceof HTMLSelectElement ? 'preset' : 'custom';
+}
+
 function clearTokenSearchTimer(fieldId: string): void {
   const timer = tokenSearchTimers.get(fieldId);
   if (timer !== undefined) {
@@ -24344,6 +24431,7 @@ function bindTokenSearchSelectButtons(root: ParentNode = document): void {
       const mint = button.dataset.tokenSearchMint;
       if (!fieldId || !mint) return;
       state.templateFields[fieldId] = mint;
+      state.templateTokenModes[fieldId] = 'custom';
       delete state.templateFieldErrors[fieldId];
       state.agentPlan = null;
       state.agentSignature = '';
@@ -25164,7 +25252,9 @@ function recurringTokenSelectField(field: RecurringTokenField, label: string, va
   const errorKey = recurringTokenFieldErrorKey(field);
   const error = fieldError(errorKey);
   const options = RECURRING_TOKEN_OPTIONS;
-  const presetMode = options.includes(value);
+  const mode = recurringTokenMode(field, value);
+  const presetMode = mode === 'preset';
+  const selectValue = options.includes(value) ? value : options[0]!;
   const customValue = presetMode ? '' : value;
   const disabled = state.busy;
   return `
@@ -25194,7 +25284,7 @@ function recurringTokenSelectField(field: RecurringTokenField, label: string, va
       </span>
       ${presetMode ? selectPicker({
         id,
-        value,
+        value: selectValue,
         attrs: { 'data-recurring-field': field },
         disabled,
         options: options.map((token) => ({
@@ -25238,6 +25328,20 @@ function recurringSlippageInput(value: string): string {
 
 function recurringTokenFieldFromDataset(value: string | undefined): RecurringTokenField {
   return value === 'inputToken' || value === 'outputToken' ? value : 'token';
+}
+
+function recurringTokenMode(field: RecurringTokenField, value: string): TokenInputMode {
+  const explicit = state.recurringTokenModes[field];
+  if (explicit) return explicit;
+  return RECURRING_TOKEN_OPTIONS.includes(value) ? 'preset' : 'custom';
+}
+
+function defaultRecurringTokenModes(draft = defaultRecurringDraft()): Record<string, TokenInputMode> {
+  return {
+    token: RECURRING_TOKEN_OPTIONS.includes(draft.token) ? 'preset' : 'custom',
+    inputToken: RECURRING_TOKEN_OPTIONS.includes(draft.inputToken) ? 'preset' : 'custom',
+    outputToken: RECURRING_TOKEN_OPTIONS.includes(draft.outputToken) ? 'preset' : 'custom',
+  };
 }
 
 function recurringTokenFieldInputId(field: RecurringTokenField): string {
@@ -27077,6 +27181,7 @@ function applyRecurringPreset(presetId: RecurringPresetId): void {
     ...state.recurringDraft,
     ...preset.draft,
   };
+  state.recurringTokenModes = defaultRecurringTokenModes(state.recurringDraft);
   state.recurringErrors = {};
   state.error = '';
 }

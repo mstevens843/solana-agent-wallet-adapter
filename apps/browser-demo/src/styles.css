@@ -5238,6 +5238,31 @@ code {
   overflow-wrap: anywhere;
 }
 
+.agent-review-blocking-reason,
+.review-plan-consistency-warning {
+  background: rgba(239, 111, 120, 0.105);
+  border: 1px solid rgba(239, 111, 120, 0.34);
+  border-radius: 8px;
+  display: grid;
+  gap: 5px;
+  padding: 10px 12px;
+}
+
+.agent-review-blocking-reason span,
+.review-plan-consistency-warning span {
+  color: #ffc9ce;
+}
+
+.agent-review-blocking-reason p,
+.review-plan-consistency-warning p {
+  color: #f6d6d9;
+  font-size: 0.9rem;
+  font-weight: 760;
+  line-height: 1.35;
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
 .agent-review-strip.needs_input {
   background: rgba(246, 194, 107, 0.075);
   border-color: rgba(246, 194, 107, 0.28);
