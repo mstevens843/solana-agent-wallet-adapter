@@ -85,6 +85,7 @@ export interface AiPlanRequest {
   template: Pick<AgentPlanTemplate, 'id' | 'category' | 'title' | 'description' | 'actionType' | 'risk'>;
   parameters: Record<string, string>;
   userNotes?: string;
+  connectorContext?: Array<Record<string, unknown>>;
 }
 
 export type AgentPlanReviewMode = 'single' | 'multi';
@@ -362,12 +363,12 @@ export const AGENT_PLAN_TEMPLATES: AgentPlanTemplate[] = [
     field('amount', 'Amount', '100 USDC', '100 USDC'),
     field('ltv', 'Max LTV / rule', 'Stay below 50% LTV', 'Stay below 50% LTV'),
   ]),
-  template('defi', 'kamino-deposit', 'Kamino deposit', "Supply SOL or an SPL token to a Kamino Lend reserve. Natural prompts: 'stake on Kamino', 'supply to Kamino', 'earn yield on Kamino'. Requires Kamino enabled in Connected dApps.", 'kamino_deposit', 'medium', [
+  template('defi', 'kamino-deposit', 'Kamino deposit', "Supply SOL or an SPL token to a Kamino Lend reserve. Natural prompts: 'stake on Kamino', 'supply to Kamino', 'earn yield on Kamino'. Requires Kamino enabled in Protocol Connectors.", 'kamino_deposit', 'medium', [
     selectField('token', 'Token', ['SOL', 'USDC', 'JitoSOL', 'mSOL', 'bSOL'], 'SOL'),
     field('amount', 'Amount', '0.1', '0.1', true),
     field('memo', 'Reason', 'Earn yield on idle SOL', 'Kamino deposit review'),
   ]),
-  template('defi', 'kamino-withdraw', 'Kamino withdraw', 'Redeem some or all of a Kamino Lend supply position. Requires Kamino enabled in Connected dApps.', 'kamino_withdraw', 'medium', [
+  template('defi', 'kamino-withdraw', 'Kamino withdraw', 'Redeem some or all of a Kamino Lend supply position. Requires Kamino enabled in Protocol Connectors.', 'kamino_withdraw', 'medium', [
     selectField('token', 'Token', ['SOL', 'USDC', 'JitoSOL', 'mSOL', 'bSOL'], 'SOL'),
     field('amount', 'Amount (or "all")', '0.05', '0.05'),
     field('memo', 'Reason', 'Need liquidity for payments', 'Kamino withdraw review'),
@@ -380,6 +381,20 @@ export const AGENT_PLAN_TEMPLATES: AgentPlanTemplate[] = [
     field('pool', 'Pool / protocol', 'Orca, Raydium, Meteora, custom', ''),
     field('amounts', 'Amounts', '0.1 SOL + 20 USDC', ''),
     field('range', 'Price range / condition', 'Optional range', ''),
+  ]),
+  template('defi', 'protocol-position-check', 'Protocol position check', 'Read a connected protocol position or market before proposing any action. The agent must report missing connector facts honestly.', 'read_only', 'low', [
+    selectField('protocol', 'Protocol', ['Kamino', 'Jupiter', 'Raydium', 'Orca', 'Meteora', 'MarginFi', 'Drift', 'Lulo', 'Save'], 'Meteora'),
+    field('position', 'Position / market', 'Pool, market, vault, or position address', ''),
+    selectField('question', 'Question', ['Status', 'Rewards', 'Fees', 'Unlock timing', 'Available actions'], 'Status'),
+    textareaField('memo', 'Instructions', 'Check my position and show evidence before proposing anything executable.'),
+  ]),
+  template('defi', 'protocol-blink-action', 'Protocol connector action', 'Prepare an executable protocol action through an enabled connector. Requires a Blink or Solana Action URL; transaction bytes are fetched only when sent for approval.', 'blink_action', 'high', [
+    selectField('protocol', 'Protocol', ['Kamino', 'Jupiter', 'Raydium', 'Orca', 'Meteora', 'MarginFi', 'Drift', 'Lulo', 'Save'], 'Meteora'),
+    selectField('operation', 'Operation', ['Claim rewards', 'Claim fees', 'Withdraw liquidity', 'Close position', 'Deposit', 'Borrow', 'Repay', 'Swap'], 'Claim fees'),
+    field('blinkUrl', 'Blink / Action URL', 'blink:https://... or solana-action:https://...', '', true),
+    field('position', 'Position / market', 'Pool, market, vault, or position address', ''),
+    field('amount', 'Amount / cap', 'all, 0.1 SOL, 100 USDC', ''),
+    textareaField('memo', 'Agent instructions', 'Check connector facts first. Prepare only if amount, protocol, route, and policy match my instructions.'),
   ]),
   template('nft', 'nft-transfer', 'NFT transfer', 'Prepare an NFT transfer with recipient, collection, and anti-phishing checks.', 'manual_review', 'medium', [
     field('mint', 'NFT mint', 'Mint address', '', true),
@@ -404,7 +419,7 @@ export const AGENT_PLAN_TEMPLATES: AgentPlanTemplate[] = [
     field('action', 'Action', 'Connect wallet and approve request', 'Connect wallet and approve request'),
     field('deviceNote', 'Device note', 'Seeker / Android Chrome / TWA', 'Android Chrome / TWA'),
   ]),
-  template('integration', 'dapp-interaction', 'dApp interaction review', 'Prepare a review for a third-party dApp request before the user signs. For first-class protocols (Kamino), enable the adapter in the Connected dApps panel and use the dedicated template instead of this catch-all.', 'manual_review', 'high', [
+  template('integration', 'dapp-interaction', 'dApp interaction review', 'Prepare a review for a third-party dApp request before the user signs. For first-class protocols (Kamino), enable the adapter in Protocol Connectors and use the dedicated template instead of this catch-all.', 'manual_review', 'high', [
     field('dapp', 'dApp / URL', 'Jupiter, Meteora, Tensor, Kamino, custom URL', ''),
     textareaField('request', 'Request details', 'What the dApp asks the wallet to sign'),
     field('policy', 'Policy cap', 'No unknown programs or authority grants', 'No unknown programs or authority grants'),
@@ -1274,6 +1289,8 @@ export function aiMessages(request: AiPlanRequest): Array<{ role: 'system' | 'us
         userNotes: request.userNotes,
         template: request.template,
         parameters: request.parameters,
+        protocolConnectors: request.connectorContext ?? [],
+        connectorRule: 'Only propose first-class or Blink executable actions for enabled connectors with matching capabilities. If a requested protocol/action is not present, make the plan proof/read-only and state what connector fact or action URL is missing.',
         requiredBoundary: 'AI prepares a plan only. Wallet approval and signing happen later in the user wallet.',
       }),
     },

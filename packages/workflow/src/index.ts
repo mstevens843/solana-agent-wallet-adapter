@@ -40,6 +40,7 @@ export const WORKFLOW_ACTION_KINDS = [
   'read_only',
   'recurring_payment',
   'custom_transaction',
+  'blink_action',
   'custom',
 ] as const;
 export type WorkflowActionKind = (typeof WORKFLOW_ACTION_KINDS)[number];
@@ -941,7 +942,8 @@ export function isQueueableWorkflowAction(actionType: string): boolean {
   return actionType === 'transfer_sol' ||
     actionType === 'transfer_spl' ||
     actionType === 'swap' ||
-    actionType === 'recurring_payment';
+    actionType === 'recurring_payment' ||
+    actionType === 'blink_action';
 }
 
 export function finalizationRequirementForAction(actionType: string): FinalizationRequirement {
@@ -949,7 +951,8 @@ export function finalizationRequirementForAction(actionType: string): Finalizati
     actionType === 'transfer_sol' ||
     actionType === 'transfer_spl' ||
     actionType === 'swap' ||
-    actionType === 'custom_transaction'
+    actionType === 'custom_transaction' ||
+    actionType === 'blink_action'
   ) {
     return 'transaction_preview';
   }

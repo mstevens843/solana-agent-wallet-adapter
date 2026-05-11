@@ -318,7 +318,7 @@ export function buildKaminoDepositPreSignReview(
   if (!reserve) warnings.push('Reserve is missing.');
   if (!nonEmptyString(input.amount)) warnings.push('Deposit amount is missing.');
   if (input.adapterEnabled === false) {
-    warnings.push('Kamino is not connected in Connected dApps. Reconnect before approving.');
+    warnings.push('Kamino is not enabled in Protocol Connectors. Re-enable it before approving.');
   }
   if (typeof input.utilization === 'number' && Number.isFinite(input.utilization) && input.utilization > KAMINO_HIGH_UTILIZATION_PCT) {
     warnings.push('Withdrawals may be delayed when utilization is high.');
@@ -379,7 +379,7 @@ export function buildKaminoWithdrawPreSignReview(
     warnings.push('Withdraw amount is missing.');
   }
   if (input.adapterEnabled === false) {
-    warnings.push('Kamino is not connected in Connected dApps. Reconnect before approving.');
+    warnings.push('Kamino is not enabled in Protocol Connectors. Re-enable it before approving.');
   }
   if (typeof input.utilization === 'number' && Number.isFinite(input.utilization) && input.utilization > KAMINO_HIGH_UTILIZATION_PCT) {
     warnings.push('Withdrawals may be delayed when utilization is high.');

@@ -152,20 +152,28 @@ import {
   type PreSignReviewSection,
 } from './preSignReview.js';
 import {
-  CONNECTED_DAPPS_STORAGE_KEY,
-  KNOWN_CONNECTED_DAPPS,
-  checkDappForKind,
   connectedDappsSummary,
+  connectorHasCapability,
+  disabledProtocolConnectors,
+  enabledProtocolConnectors,
+  findProtocolConnectorByInput,
   getAdapterMeta,
   isClusterSupported,
   isDappEnabled,
   loadConnectedDapps,
+  protocolConnectorPlannerContext,
   saveConnectedDapps,
   setConnectedDappEnabled,
   type ConnectedDappAdapter,
   type ConnectedDappId,
   type ConnectedDappsState,
+  type ProtocolConnector,
 } from './connectedDapps.js';
+import {
+  normalizeBlinkUrl,
+  prepareBlinkAction,
+  type BlinkPreparedAction,
+} from './protocolActions.js';
 import {
   runHealthCheck as runSystemHealthProbe,
   statusFlipped as systemHealthStatusFlipped,
@@ -335,6 +343,8 @@ interface AgentReviewFactSet {
   policy?: AgentReviewFact;
   simulation?: AgentReviewFact;
   protocol?: AgentReviewFact;
+  protocolConnector?: AgentReviewFact;
+  blinkAction?: AgentReviewFact;
   tokenMint?: AgentReviewFact;
   recipient?: AgentReviewFact;
   limits?: AgentReviewFact;
@@ -468,6 +478,7 @@ const DEFAULT_BRIDGE_TOKEN = 'local-agent-wallet';
 const DEFAULT_AGENT_PROMPT = '';
 const STORAGE_KEY = 'solana-agent-wallet-demo-v2';
 const BRIDGE_TOKEN_SESSION_KEY = 'agentic-local-bridge-token';
+const AI_API_KEYS_SESSION_STORAGE_KEY = 'solana-agent-wallet-ai-api-keys-v1';
 const GENERATED_PLANS_STORAGE_KEY = 'solana-agent-wallet-generated-plans-v1';
 const BROWSER_WORKFLOW_STORAGE_KEY = 'solana-agent-wallet-browser-workflow-v1';
 const RECIPIENT_RULES_STORAGE_KEY = 'solana-agent-wallet-recipient-rules-v1';
@@ -475,6 +486,7 @@ const AGENT_POLICIES_STORAGE_KEY = 'solana-agent-wallet-agent-policies-v1';
 const CUSTOM_TOKENS_STORAGE_KEY = 'solana-agent-wallet-custom-tokens-v1';
 const AGENTS_STORAGE_KEY = 'solana-agent-wallet-agents-v1';
 const PLANNER_PREFS_STORAGE_KEY = 'solana-agent-wallet-planner-prefs-v1';
+const PROTOCOL_CONNECTOR_PREFS_STORAGE_KEY = 'solana-agent-wallet-protocol-connector-prefs-v1';
 const PLANNER_HOUSE_RULES_MAX = 1000;
 const FAILURE_POLICIES_STORAGE_KEY = 'solana-agent-wallet-failure-policies-v1';
 const PROGRAM_RULES_STORAGE_KEY = 'solana-agent-wallet-program-rules-v1';
@@ -644,9 +656,17 @@ type BrandLogoId =
   | 'backpack'
   | 'claude'
   | 'codex'
+  | 'drift'
   | 'gemini'
   | 'jupiter'
+  | 'kamino'
+  | 'lulo'
+  | 'marginfi'
+  | 'meteora'
+  | 'orca'
   | 'phantom'
+  | 'raydium'
+  | 'save'
   | 'solana'
   | 'solanaMobile'
   | 'solflare'
@@ -657,9 +677,17 @@ const BRAND_LOGOS: Record<BrandLogoId, string> = {
   backpack: new URL('./assets/logos/backpack.svg', import.meta.url).href,
   claude: new URL('./assets/logos/claude.svg', import.meta.url).href,
   codex: new URL('./assets/logos/codex.svg', import.meta.url).href,
+  drift: new URL('./assets/logos/drift.svg', import.meta.url).href,
   gemini: new URL('./assets/logos/gemini.svg', import.meta.url).href,
   jupiter: new URL('./assets/logos/jupiter.svg', import.meta.url).href,
+  kamino: new URL('./assets/logos/kamino.svg', import.meta.url).href,
+  lulo: new URL('./assets/logos/lulo.svg', import.meta.url).href,
+  marginfi: new URL('./assets/logos/marginfi.svg', import.meta.url).href,
+  meteora: new URL('./assets/logos/meteora.svg', import.meta.url).href,
+  orca: new URL('./assets/logos/orca.svg', import.meta.url).href,
   phantom: new URL('./assets/logos/phantom.svg', import.meta.url).href,
+  raydium: new URL('./assets/logos/raydium.svg', import.meta.url).href,
+  save: new URL('./assets/logos/save.svg', import.meta.url).href,
   solana: new URL('./assets/logos/solana.svg', import.meta.url).href,
   solanaMobile: new URL('./assets/logos/solana-mobile.svg', import.meta.url).href,
   solflare: new URL('./assets/logos/solflare.svg', import.meta.url).href,
@@ -785,6 +813,10 @@ interface CloudWorkspaceDeleteResponse {
   ok: boolean;
   signedOut: boolean;
   deleted: CloudWorkspaceDeleteCounts;
+}
+
+interface ProtocolConnectorPrefs {
+  dialectClientKey: string;
 }
 
 interface GeneratedPlanRecord {
@@ -1445,6 +1477,7 @@ interface DemoState {
   activeTab: ActiveTab;
   commandCenterView: CommandCenterView;
   oneTimePlanView: OneTimePlanView;
+  askAgentAfterDraft: boolean;
   recurringView: RecurringView;
   artifactView: ArtifactView;
   completedPlanFilter: CompletedPlanFilter;
@@ -1535,6 +1568,7 @@ interface DemoState {
   recipientDraft: RecipientDraft;
   recipientErrors: Record<string, string>;
   connectedDapps: ConnectedDappsState;
+  protocolConnectorPrefs: ProtocolConnectorPrefs;
   agentPolicies: UserAgentPolicy[];
   agentPolicyDraft: AgentPolicyDraft;
   agentPolicyErrors: Record<string, string>;
@@ -1993,6 +2027,7 @@ const initialAiSettings = persistedAiSettings(persisted);
 const initialBrowserWorkflow = loadBrowserWorkflowState();
 const initialRecipientRules = loadRecipientRules();
 const initialConnectedDapps = loadConnectedDapps();
+const initialProtocolConnectorPrefs = loadProtocolConnectorPrefs();
 const initialAgentPolicies = loadAgentPolicies();
 const initialCustomTokens = loadCustomTokens();
 const initialAgents = loadAgents();
@@ -2150,6 +2185,7 @@ const state: DemoState = {
   activeTab: defaultWorkspaceTab,
   commandCenterView: 'center',
   oneTimePlanView: 'create',
+  askAgentAfterDraft: false,
   recurringView: 'create',
   artifactView: 'create',
   completedPlanFilter: 'all',
@@ -2206,7 +2242,7 @@ const state: DemoState = {
   workspaceStoragePanelOpen: null,
   aiSettings: {
     ...initialAiSettings,
-    apiKey: '',
+    apiKey: loadSessionAiApiKey(initialAiSettings),
   },
   aiSettingsPanelOpen: null,
   aiStatus: null,
@@ -2258,6 +2294,7 @@ const state: DemoState = {
   recipientDraft: defaultRecipientDraft(),
   recipientErrors: {},
   connectedDapps: initialConnectedDapps,
+  protocolConnectorPrefs: initialProtocolConnectorPrefs,
   agentPolicies: initialAgentPolicies,
   agentPolicyDraft: defaultAgentPolicyDraft(),
   agentPolicyErrors: {},
@@ -4171,7 +4208,7 @@ function agenticMark(extraClass = ''): string {
 
 function brandLogo(logoId: BrandLogoId, className: string): string {
   return `
-    <span class="${escapeHtml(className)} brand-logo" aria-hidden="true">
+    <span class="${escapeHtml(className)} brand-logo brand-logo-${escapeHtml(logoId)}" aria-hidden="true">
       <img src="${escapeHtml(BRAND_LOGOS[logoId])}" alt="" />
     </span>
   `;
@@ -4516,7 +4553,7 @@ function preferencesPanel(): string {
       <nav class="preferences-subtabs" role="tablist" aria-label="Preferences sections">
         ${preferencesViewButton('workspace', 'Workspace', 'Backup & alerts')}
         ${preferencesViewButton('ai', 'AI Drafting', 'Prompts & review')}
-        ${preferencesViewButton('access', 'Agent Access', 'Agents & dApps')}
+        ${preferencesViewButton('access', 'Agent Access', 'Agents & connectors')}
         ${preferencesViewButton('rules', 'Review Rules', 'Recipients & policy')}
         ${preferencesViewButton('tokens', 'Tokens & Retry', 'Labels & failures')}
       </nav>
@@ -4600,10 +4637,8 @@ function preferencesViewSummary(view: PreferencesView): string {
     }
     case 'access': {
       const enabledAgents = state.agents.filter((agent) => agent.enabled).length;
-      const enabledDapps = KNOWN_CONNECTED_DAPPS.filter((adapter) =>
-        isDappEnabled(adapter.id, state.connectedDapps, state.cluster),
-      ).length;
-      return `${enabledAgents}/${state.agents.length} agents · ${enabledDapps} dApps on`;
+      const enabledConnectors = enabledProtocolConnectors(state.connectedDapps, state.cluster).length;
+      return `${enabledAgents}/${state.agents.length} agents · ${enabledConnectors} connectors on`;
     }
     case 'rules': {
       const enabledPolicies = state.agentPolicies.filter((policy) => policy.enabled).length;
@@ -5002,24 +5037,57 @@ function recipientRulesPanel(): string {
 
 function connectedDappsPanel(): string {
   const dapps = state.connectedDapps;
-  const enabledCount = KNOWN_CONNECTED_DAPPS.filter((adapter) =>
-    isDappEnabled(adapter.id, dapps, state.cluster),
-  ).length;
+  const enabledConnectors = enabledProtocolConnectors(dapps, state.cluster);
+  const disabledConnectors = disabledProtocolConnectors(dapps, state.cluster);
+  const enabledCount = enabledConnectors.length;
   const summary = connectedDappsSummary(dapps, state.cluster);
-  const open = enabledCount === 0 ? 'open' : '';
+  const open = 'open';
   return `
     <details class="connected-dapps-panel rail-details ${enabledCount ? 'enabled' : 'disabled'}" data-layout="connected-dapps-panel" ${open}>
       <summary>
         <span class="connected-dapps-summary-copy">
-          <span>Connected dApps</span>
+          <span>Protocol Connectors</span>
           <em>${escapeHtml(summary)}</em>
         </span>
         <strong>${enabledCount ? `${enabledCount} on` : 'off'}</strong>
       </summary>
-      <section class="connected-dapps-card" aria-label="Connected dApps">
-        <p class="connected-dapps-intro">Turn on a protocol so the agent can prepare actions against it. You still approve every transaction.</p>
+      <section class="connected-dapps-card" aria-label="Protocol Connectors">
+        <p class="connected-dapps-intro">Add a protocol so the agent can read facts or prepare Blink actions against it. You still approve every transaction.</p>
+        <div class="connected-dapps-catalog">
+          <label class="field compact">
+            <span id="protocolConnectorCatalogLabel">Add protocol</span>
+            ${selectPicker({
+              id: 'protocolConnectorCatalog',
+              value: disabledConnectors[0]?.id ?? '',
+              options: protocolConnectorSelectOptions(disabledConnectors),
+              attrs: { 'data-connected-dapp-catalog': true },
+              disabled: disabledConnectors.length === 0 || state.busy,
+              labelId: 'protocolConnectorCatalogLabel',
+              className: 'protocol-connector-picker',
+            })}
+          </label>
+          <button
+            type="button"
+            class="primary"
+            data-connected-dapp-action="add-selected"
+            ${state.busy || disabledConnectors.length === 0 ? 'disabled' : ''}
+          >+ Add protocol</button>
+        </div>
+        <label class="field compact protocol-connector-key-field">
+          <span>Dialect client key</span>
+          <input
+            data-protocol-connector-pref="dialectClientKey"
+            value="${escapeHtml(state.protocolConnectorPrefs.dialectClientKey)}"
+            placeholder="Optional key for read positions/rewards"
+            autocomplete="off"
+            ${state.busy ? 'disabled' : ''}
+          />
+          <em>Only needed for connectors that read positions, rewards, or markets through Dialect. Blink action URLs can still be reviewed without it.</em>
+        </label>
         <div class="connected-dapps-list">
-          ${KNOWN_CONNECTED_DAPPS.map((adapter) => connectedDappRow(adapter)).join('')}
+          ${enabledConnectors.length
+            ? enabledConnectors.map((adapter) => connectedDappRow(adapter)).join('')
+            : '<div class="connected-dapps-empty">No protocol connectors enabled. Add one from the catalog when you want the agent to inspect or prepare protocol work.</div>'}
         </div>
       </section>
     </details>
@@ -5032,9 +5100,15 @@ function connectedDappRow(adapter: ConnectedDappAdapter): string {
   const enabled = clusterOk && entry?.enabled === true;
   const clusterChip = clusterOk
     ? ''
-    : `<span class="connected-dapp-cluster-chip cluster-mismatch" title="Switch cluster to use this dApp">${escapeHtml(adapter.supportedClusters.join(', '))} only</span>`;
+    : `<span class="connected-dapp-cluster-chip cluster-mismatch" title="Switch cluster to use this connector">${escapeHtml(adapter.supportedClusters.join(', '))} only</span>`;
   const actionChips = adapter.supportedActions
-    .map((label) => `<span class="connected-dapp-action-chip">${escapeHtml(label)}</span>`)
+    .map((label) => `<span class="connected-dapp-action-chip" title="${escapeHtml(label)}">${escapeHtml(compactConnectorActionLabel(label))}</span>`)
+    .join('');
+  const capabilityChips = adapter.capabilities
+    .map((capability) => {
+      const fullLabel = connectorCapabilityLabel(capability);
+      return `<span class="connected-dapp-capability-chip" title="${escapeHtml(fullLabel)}">${escapeHtml(compactConnectorCapabilityLabel(capability))}</span>`;
+    })
     .join('');
   const toggleLabel = enabled ? 'Disconnect' : 'Connect';
   const toggleTitle = clusterOk
@@ -5045,7 +5119,7 @@ function connectedDappRow(adapter: ConnectedDappAdapter): string {
   return `
     <article class="connected-dapp-row ${enabled ? 'enabled' : 'disabled'} ${clusterOk ? '' : 'cluster-blocked'}" data-connected-dapp="${escapeHtml(adapter.id)}">
       <div class="connected-dapp-row-head">
-        <span class="connected-dapp-logo" aria-hidden="true">${escapeHtml(adapter.initials)}</span>
+        ${connectedDappLogo(adapter)}
         <div class="connected-dapp-row-copy">
           <strong>${escapeHtml(adapter.name)}</strong>
           <p>${escapeHtml(adapter.description)}</p>
@@ -5056,6 +5130,7 @@ function connectedDappRow(adapter: ConnectedDappAdapter): string {
           <span class="connected-dapp-state-pill ${enabled ? 'connected' : 'disconnected'}">${enabled ? 'Connected' : 'Off'}</span>
         </div>
       </div>
+      <div class="connected-dapp-capability-chips">${capabilityChips}</div>
       <div class="connected-dapp-action-chips">${actionChips}</div>
       <div class="connected-dapp-row-actions">
         <button
@@ -5070,6 +5145,86 @@ function connectedDappRow(adapter: ConnectedDappAdapter): string {
       </div>
     </article>
   `;
+}
+
+function protocolConnectorSelectOptions(connectors: ProtocolConnector[]): SelectPickerOption[] {
+  if (connectors.length === 0) {
+    return [{ value: '', label: 'All protocols enabled', meta: 'Catalog', disabled: true }];
+  }
+  return connectors.map((connector) => ({
+    value: connector.id,
+    label: connector.name,
+    meta: connector.actionSource === 'first-class-adapter' ? 'First-class' : 'Blink connector',
+    detail: connector.supportedActions.slice(0, 4).join(' · '),
+    logoId: protocolConnectorLogoId(connector.id),
+  }));
+}
+
+function protocolConnectorLogoId(id: ConnectedDappId): BrandLogoId {
+  const logos: Record<ConnectedDappId, BrandLogoId> = {
+    drift: 'drift',
+    jupiter: 'jupiter',
+    kamino: 'kamino',
+    lulo: 'lulo',
+    marginfi: 'marginfi',
+    meteora: 'meteora',
+    orca: 'orca',
+    raydium: 'raydium',
+    save: 'save',
+  };
+  return logos[id];
+}
+
+function connectedDappLogo(adapter: ConnectedDappAdapter): string {
+  const logoId = protocolConnectorLogoId(adapter.id);
+  return `
+    ${brandLogo(logoId, 'connected-dapp-logo')}
+  `;
+}
+
+function connectorCapabilityLabel(capability: ConnectedDappAdapter['capabilities'][number]): string {
+  switch (capability) {
+    case 'first_class_adapter':
+      return 'First-class adapter';
+    case 'read_positions':
+      return 'Read positions';
+    case 'read_rewards':
+      return 'Read rewards';
+    case 'read_markets':
+      return 'Read markets';
+    case 'blink_actions':
+      return 'Blink actions';
+  }
+}
+
+function compactConnectorCapabilityLabel(capability: ConnectedDappAdapter['capabilities'][number]): string {
+  switch (capability) {
+    case 'first_class_adapter':
+      return 'First-class';
+    case 'read_positions':
+      return 'Positions';
+    case 'read_rewards':
+      return 'Rewards';
+    case 'read_markets':
+      return 'Markets';
+    case 'blink_actions':
+      return 'Blinks';
+  }
+}
+
+function compactConnectorActionLabel(label: string): string {
+  const normalized = label.trim().toLowerCase();
+  if (normalized === 'earnings proof') return 'Proof';
+  if (normalized === 'claim rewards') return 'Claim';
+  if (normalized === 'claim fees') return 'Fees';
+  if (normalized === 'withdraw liquidity') return 'Withdraw';
+  if (normalized === 'close position') return 'Close';
+  if (normalized === 'dlmm positions') return 'DLMM';
+  if (normalized === 'lend borrow') return 'Borrow';
+  if (normalized === 'lend earn') return 'Earn';
+  if (normalized === 'strategy vaults') return 'Vaults';
+  if (normalized === 'stake ray') return 'Stake';
+  return label;
 }
 
 function formatConnectedDappHostname(url: string): string {
@@ -6055,11 +6210,14 @@ function handleRecipientAction(button: HTMLButtonElement): void {
 
 function handleConnectedDappAction(button: HTMLButtonElement): void {
   const action = button.dataset.connectedDappAction;
-  const id = button.dataset.connectedDappId as ConnectedDappId | undefined;
-  if (!action || !id) return;
+  if (!action) return;
+  const id = action === 'add-selected'
+    ? (document.querySelector<HTMLSelectElement>('[data-connected-dapp-catalog]')?.value as ConnectedDappId | undefined)
+    : button.dataset.connectedDappId as ConnectedDappId | undefined;
+  if (!id) return;
   const adapter = getAdapterMeta(id);
   if (!adapter) return;
-  if (action === 'toggle') {
+  if (action === 'toggle' || action === 'add-selected') {
     if (!isClusterSupported(adapter, state.cluster)) {
       pushToast(
         'error',
@@ -6068,18 +6226,26 @@ function handleConnectedDappAction(button: HTMLButtonElement): void {
       );
       return;
     }
-    const next = button.dataset.connectedDappNext === 'on';
+    const next = action === 'add-selected' ? true : button.dataset.connectedDappNext === 'on';
     const updated = setConnectedDappEnabled(state.connectedDapps, id, next);
     state.connectedDapps = updated;
     saveConnectedDapps(updated);
     pushToast(
       'success',
-      next ? `${adapter.name} connected` : `${adapter.name} disconnected`,
+      next ? `${adapter.name} enabled` : `${adapter.name} disabled`,
       next
-        ? `Agent can now prepare ${adapter.supportedActions.join(' / ')} actions. You still approve every transaction.`
-        : `Agent will refuse ${adapter.name} actions until reconnected.`,
+        ? `Agent can now use ${adapter.capabilities.map((capability) => capability.replace(/_/g, ' ')).join(' / ')} when available.`
+        : `Agent will refuse ${adapter.name} connector actions until re-enabled.`,
     );
     render();
+  }
+}
+
+function updateProtocolConnectorPref(field: HTMLInputElement): void {
+  const key = field.dataset.protocolConnectorPref;
+  if (key === 'dialectClientKey') {
+    state.protocolConnectorPrefs.dialectClientKey = field.value.slice(0, 160);
+    saveProtocolConnectorPrefs();
   }
 }
 
@@ -7718,7 +7884,7 @@ function aiDraftPendingCard(): string {
       <div>
         <span>AI draft</span>
         <h3>${escapeHtml(template.title)} is being drafted</h3>
-        <p>${escapeHtml(prompt || 'Checking route, amount, protocol, slippage, and wallet approval boundary before this reaches Check.')}</p>
+        <p>${escapeHtml(prompt || 'Building the request for Check. Optional agent review stays off unless you enable it.')}</p>
       </div>
       <strong>${buttonSpinner()}Working</strong>
     </section>
@@ -7975,23 +8141,20 @@ function generatedPlanAgentReviewStrip(record: GeneratedPlanRecord): string {
     ? `${agentReviewSourceLabel(review)} - ${formatDateTime(review.checkedAt)}`
     : agentReviewSourceLabel(review);
   const badge = agentReviewPathBadge(review.source);
-  const stale = isAgentReviewStale(record);
-  const staleBadge = stale ? '<span class="agent-review-stale-pill" title="The draft has changed since the agent reviewed it. Ask the agent again.">Stale</span>' : '';
   const watching = isPlanWatchActive(record);
   const watchBadge = watching
     ? `<span class="agent-review-watch-pill" title="Background watch on. Re-checks each draft once an hour while the tab is open.">Watching</span>`
     : '';
   return `
-    <section class="agent-review-strip ${escapeHtml(review.status)}${stale ? ' stale' : ''}${watching ? ' watching' : ''}" aria-label="Agent review">
+    <section class="agent-review-strip ${escapeHtml(review.status)}${watching ? ' watching' : ''}" aria-label="Agent review">
       <div>
         <span>Agent review</span>
         <strong>${escapeHtml(label)}</strong>
         <em>${escapeHtml(detail)}</em>
         ${badge}
-        ${staleBadge}
         ${watchBadge}
       </div>
-      <p>${escapeHtml(review.reason || 'Agent review is required before this draft can move forward.')}</p>
+      <p>${escapeHtml(review.reason || 'Agent review is available for context. Sending for approval is still your decision.')}</p>
       ${review.status === 'needs_input' ? agentReviewQuestionsForm(record) : ''}
       ${agentEvidenceDrawer(review)}
       ${agentDenialActions(record)}
@@ -9057,6 +9220,16 @@ function agentPlannerWorkbench(): string {
               </button>
             ` : ''}
           </div>
+          ${aiPathConnected ? `
+            <label class="ask-agent-after-draft ${state.askAgentAfterDraft ? 'checked' : ''}">
+              <input type="checkbox" data-ask-agent-after-draft ${state.askAgentAfterDraft ? 'checked' : ''} ${state.busy ? 'disabled' : ''} />
+              <span class="ask-agent-check" aria-hidden="true">${checkIcon()}</span>
+              <span>
+                <strong>Ask agent after draft</strong>
+                <em>Optional review runs in Check. Sending for approval stays manual.</em>
+              </span>
+            </label>
+          ` : ''}
         </div>
       </div>
     </div>
@@ -9486,6 +9659,7 @@ function aiSettingsCard(location: 'rail' | 'planner' = 'planner'): string {
   const confirmationLabel = aiConfirmationLabel();
   const confirmationDetail = aiConfirmationDetail();
   const confirming = state.activeOperation === 'confirm-ai-planner';
+  const hideKeyEntry = shouldHideAiKeyEntry(status);
   const keyLabel = state.aiSettings.mode === 'bridge'
     ? 'Bridge session key'
     : state.aiSettings.mode === 'hosted'
@@ -9499,6 +9673,9 @@ function aiSettingsCard(location: 'rail' | 'planner' = 'planner'): string {
       ? 'Local bridge AI drafts from your machine only. Needs Approval, repeat payments, proofs, and wallet signatures remain separate workflow actions.'
         : `${IS_ANDROID_APP ? 'Android session' : 'Browser session'} keys stay in ${IS_ANDROID_APP ? 'this app runtime' : 'this tab'} and draft plans only. Queueing, repeat payments, approvals, submissions, and signatures use the active workflow, not the AI key.`;
   const keyHint = aiProviderKeyHint(providerPreset.id);
+  const bridgeKeyConfiguredDetail = status
+    ? `${status.provider ?? status.apiFormat ?? 'AI'} - ${status.model ?? 'model configured'}`
+    : 'Local bridge AI key configured';
   return `
     <aside class="ai-settings-card" data-ai-settings-scope="${escapeHtml(scope)}">
       ${isRail ? '' : `<div class="ai-settings-intro">
@@ -9564,14 +9741,24 @@ function aiSettingsCard(location: 'rail' | 'planner' = 'planner'): string {
           ${setupHelperMessages.map((message) => `<em class="ai-route-helper">${escapeHtml(message)}</em>`).join('')}
         </div>
       ` : ''}
-      <label class="field compact ai-setting-field ai-setting-key">
-        <span>${escapeHtml(keyLabel)}</span>
-        <input id="aiApiKey-${escapeHtml(scope)}" data-ai-control="api-key" type="password" value="${escapeHtml(state.aiSettings.apiKey)}" placeholder="Not saved by default" autocomplete="off" ${state.busy ? 'disabled' : ''} />
-        ${!isRail && keyHint ? `<em class="ai-route-helper">${escapeHtml(keyHint)}</em>` : ''}
-      </label>
+      ${hideKeyEntry ? `
+        <div class="ai-key-configured-note" aria-live="polite">
+          <span>Bridge key</span>
+          <strong>Configured in local bridge</strong>
+          <em>${escapeHtml(bridgeKeyConfiguredDetail)}</em>
+        </div>
+      ` : `
+        <label class="field compact ai-setting-field ai-setting-key">
+          <span>${escapeHtml(keyLabel)}</span>
+          <input id="aiApiKey-${escapeHtml(scope)}" data-ai-control="api-key" type="password" value="${escapeHtml(state.aiSettings.apiKey)}" placeholder="${state.aiSettings.mode === 'bridge' ? 'Held for this tab until configured' : 'Held for this tab'}" autocomplete="off" ${state.busy ? 'disabled' : ''} />
+          ${!isRail && keyHint ? `<em class="ai-route-helper">${escapeHtml(keyHint)}</em>` : ''}
+        </label>
+      `}
       <div class="ai-actions">
         ${state.aiSettings.mode === 'bridge'
-          ? `<button id="saveBridgeAiKey-${escapeHtml(scope)}" data-ai-action="save-bridge-key" ${!canSaveBridgeAiKey() ? 'disabled' : ''}>Set bridge key</button>`
+          ? hideKeyEntry
+            ? ''
+            : `<button id="saveBridgeAiKey-${escapeHtml(scope)}" data-ai-action="save-bridge-key" ${!canSaveBridgeAiKey() ? 'disabled' : ''}>Set bridge key</button>`
           : `<button id="saveDirectAiKey-${escapeHtml(scope)}" data-ai-action="save-direct-key" ${!canSaveDirectAiKey() ? 'disabled' : ''}>Use key for drafts</button>`}
         <button id="confirmAiPlanner-${escapeHtml(scope)}" data-ai-action="confirm-planner" class="utility" ${!canConfirmAiPlanner() ? 'disabled' : ''} title="${escapeHtml(canConfirmAiPlanner() ? 'Confirm planner readiness without creating a plan.' : aiConfirmDisabledReason())}">
           ${confirming ? `${buttonSpinner()}Confirming...` : 'Confirm planner'}
@@ -9792,7 +9979,7 @@ function aiModeLimitations(): string {
 
 function localBridgeConnectionCard(status: BridgeAiStatus | null): string {
   const connected = state.bridgeActive;
-  const aiConfigured = Boolean(status?.available);
+  const aiConfigured = isBridgeAiConfigured(status);
   const tone = connected ? 'connected' : aiConfigured ? 'partial' : 'offline';
   const title = connected
     ? 'Local bridge connected'
@@ -9979,7 +10166,7 @@ function canSaveDirectAiKey(): boolean {
 }
 
 function canClearAiKey(): boolean {
-  return Boolean(state.aiSettings.apiKey.trim() || (state.aiSettings.mode === 'bridge' && state.aiStatus?.available));
+  return Boolean(state.aiSettings.apiKey.trim() || (state.aiSettings.mode === 'bridge' && isBridgeAiConfigured()));
 }
 
 function canGenerateAiPlanFromSettings(): boolean {
@@ -10053,6 +10240,14 @@ function isAiConfiguredForCurrentMode(): boolean {
   }
   if (hostedByokCloudSessionReason()) return false;
   return Boolean(state.aiSettings.apiKey.trim() && modelReady && aiProviderReadyForCurrentMode());
+}
+
+function isBridgeAiConfigured(status: BridgeAiStatus | null = state.aiStatus): boolean {
+  return Boolean(status?.configured || status?.available);
+}
+
+function shouldHideAiKeyEntry(status: BridgeAiStatus | null = state.aiStatus): boolean {
+  return state.aiSettings.mode === 'bridge' && isBridgeAiConfigured(status);
 }
 
 function aiProviderReadyForCurrentMode(): boolean {
@@ -11746,6 +11941,10 @@ function bind(): void {
   document.querySelector<HTMLButtonElement>('#sendTx')?.addEventListener('click', runSignAndSendTransaction);
   document.querySelector<HTMLButtonElement>('#generatePlan')?.addEventListener('click', runGenerateAgentPlan);
   document.querySelector<HTMLButtonElement>('#generateAiPlan')?.addEventListener('click', runGenerateAiPlan);
+  document.querySelector<HTMLInputElement>('[data-ask-agent-after-draft]')?.addEventListener('change', (event) => {
+    state.askAgentAfterDraft = (event.currentTarget as HTMLInputElement).checked;
+    render();
+  });
   document.querySelector<HTMLButtonElement>('#signAgentPlan')?.addEventListener('click', runSignAgentPlan);
   document.querySelector<HTMLButtonElement>('#queueAgentPlan')?.addEventListener('click', runQueueAgentPlan);
   document.querySelector<HTMLButtonElement>('#refreshCompletedPlans')?.addEventListener('click', runRefreshInbox);
@@ -12069,10 +12268,15 @@ function bind(): void {
         render();
         return;
       }
+      saveCurrentSessionAiApiKey();
       state.aiSettings.provider = preset.id;
       state.aiSettings.apiFormat = preset.apiFormat;
       state.aiSettings.baseUrl = preset.baseUrl;
       state.aiSettings.model = preset.model;
+      state.aiSettings.apiKey = shouldHideAiKeyEntry() ? '' : loadSessionAiApiKey(state.aiSettings);
+      if (shouldHideAiKeyEntry()) {
+        clearCurrentSessionAiApiKey();
+      }
       resetAiPlannerConfirmation('AI provider changed. Confirm planner again if needed.');
       savePersistedState();
       render();
@@ -12084,6 +12288,7 @@ function bind(): void {
       state.aiSettings.baseUrl = (event.currentTarget as HTMLInputElement).value.trim();
       resetAiPlannerConfirmation('Gateway changed. Confirm planner again if needed.');
       savePersistedState();
+      saveCurrentSessionAiApiKey();
       syncAiActionButtons();
     });
   }
@@ -12094,6 +12299,7 @@ function bind(): void {
       state.aiSettings.model = value === CUSTOM_AI_MODEL_VALUE ? '' : value;
       resetAiPlannerConfirmation('Model changed. Confirm planner again if needed.');
       savePersistedState();
+      saveCurrentSessionAiApiKey();
       render();
     });
   }
@@ -12103,6 +12309,7 @@ function bind(): void {
       state.aiSettings.model = (event.currentTarget as HTMLInputElement).value.trim();
       resetAiPlannerConfirmation('Model changed. Confirm planner again if needed.');
       savePersistedState();
+      saveCurrentSessionAiApiKey();
       syncAiActionButtons();
     });
   }
@@ -12110,6 +12317,7 @@ function bind(): void {
   for (const control of document.querySelectorAll<HTMLInputElement>('[data-ai-control="api-key"]')) {
     control.addEventListener('input', (event) => {
       state.aiSettings.apiKey = (event.currentTarget as HTMLInputElement).value;
+      saveCurrentSessionAiApiKey();
       resetAiPlannerConfirmation('AI key changed. Confirm planner again if needed.');
       syncAiActionButtons();
     });
@@ -12345,6 +12553,11 @@ function bind(): void {
     button.addEventListener('click', () => {
       handleConnectedDappAction(button);
     });
+  }
+
+  for (const field of document.querySelectorAll<HTMLInputElement>('[data-protocol-connector-pref]')) {
+    field.addEventListener('input', () => updateProtocolConnectorPref(field));
+    field.addEventListener('change', () => updateProtocolConnectorPref(field));
   }
 
   for (const field of document.querySelectorAll<HTMLInputElement>('[data-custom-token-field]')) {
@@ -13665,6 +13878,7 @@ async function runGenerateAgentPlan(): Promise<void> {
   trackGenerateTemplatePlan(template.id);
   state.activeOperation = 'generate-template-plan';
   const toastId = pushToast('pending', 'Creating template plan', 'Preparing a saved plan for review.');
+  let reviewAfterDraftId = '';
   try {
     await run(
       'sign',
@@ -13679,6 +13893,9 @@ async function runGenerateAgentPlan(): Promise<void> {
         const record = await saveGeneratedPlan(plan, template, userNotes || template.description);
         state.selectedGeneratedPlanId = record.id;
         state.oneTimePlanView = 'review';
+        if (state.askAgentAfterDraft && hasDetectedAgentReviewPath()) {
+          reviewAfterDraftId = record.id;
+        }
         replaceToast(toastId, 'success', 'Plan created', `${template.title} is ready in Check request.`);
       },
       { onError: (message) => replaceToast(toastId, 'error', 'Template plan failed', message) },
@@ -13686,6 +13903,9 @@ async function runGenerateAgentPlan(): Promise<void> {
   } finally {
     state.activeOperation = null;
     render();
+  }
+  if (reviewAfterDraftId) {
+    await runReviewGeneratedPlan(reviewAfterDraftId);
   }
 }
 
@@ -13699,6 +13919,7 @@ async function runGenerateAiPlan(): Promise<void> {
   trackGenerateAiPlan(template.id, state.aiSettings.mode, state.aiSettings.provider);
   state.activeOperation = 'generate-ai-plan';
   const toastId = pushToast('pending', 'Creating AI plan', 'Preparing through your configured AI Planner.');
+  let reviewAfterDraftId = '';
   try {
     await run(
       'ai',
@@ -13721,6 +13942,9 @@ async function runGenerateAiPlan(): Promise<void> {
             risk: template.risk,
           },
           parameters,
+          connectorContext: protocolConnectorPlannerContext(state.connectedDapps, state.cluster, {
+            dialectClientKeyConfigured: Boolean(state.protocolConnectorPrefs.dialectClientKey.trim()),
+          }),
         };
         state.aiDiagnostics = [
           aiRouteDiagnostic(state.aiSettings.mode === 'bridge' ? '/bridge/ai/generate-plan' : '/api/ai/generate-plan'),
@@ -13740,6 +13964,9 @@ async function runGenerateAiPlan(): Promise<void> {
         const record = await saveGeneratedPlan(plan, template, request.prompt);
         state.selectedGeneratedPlanId = record.id;
         state.oneTimePlanView = 'review';
+        if (state.askAgentAfterDraft && hasDetectedAgentReviewPath()) {
+          reviewAfterDraftId = record.id;
+        }
         appendAiDiagnostic({
           code: 'AI_PLAN_READY',
           message: 'AI Planner returned a valid plan.',
@@ -13757,6 +13984,9 @@ async function runGenerateAiPlan(): Promise<void> {
   } finally {
     state.activeOperation = null;
     render();
+  }
+  if (reviewAfterDraftId) {
+    await runReviewGeneratedPlan(reviewAfterDraftId);
   }
 }
 
@@ -13796,18 +14026,12 @@ async function runQueueAgentPlan(): Promise<void> {
       throw new Error('Create a plan before sending it for approval.');
     }
     const activeRecord = generatedPlanById(state.selectedGeneratedPlanId);
-    const override = confirmAgentReviewQueueOverride(activeRecord);
-    if (!override.proceed) {
-      pushToast('pending', 'Send cancelled', 'Agent review did not approve this draft yet.');
-      return;
-    }
-    if (activeRecord && agentReviewQueueOverrideMessage(activeRecord)) {
-      await recordAgentOverrideReceipt(activeRecord, override.userReason);
-    }
     const response = await queuePlanThroughActiveWorkflow(state.agentPlan, activeRecord);
     state.agentPreparedActionId = response.id;
     if (response.mode === 'agentic-cloud' && response.planRecordId) {
       state.selectedGeneratedPlanId = response.planRecordId;
+    } else if (activeRecord?.workflowSource === 'cloud') {
+      markGeneratedPlanQueuedLocally(activeRecord.id, response.id, response.mode === 'local-bridge' ? 'local-bridge' : 'browser');
     } else {
       await updateActiveGeneratedPlanRecord({ preparedActionId: response.id, status: 'queued', error: undefined, failureLabel: undefined });
     }
@@ -14340,17 +14564,11 @@ async function runQueueGeneratedPlan(planId: string): Promise<void> {
       throw new Error('Restore this plan before sending it for approval.');
     }
     assertPlanCanQueue(record.plan);
-    const override = confirmAgentReviewQueueOverride(record);
-    if (!override.proceed) {
-      pushToast('pending', 'Send cancelled', 'Agent review did not approve this draft yet.');
-      return;
-    }
-    if (agentReviewQueueOverrideMessage(record)) {
-      await recordAgentOverrideReceipt(record, override.userReason);
-    }
     const response = await queuePlanThroughActiveWorkflow(record.plan, record);
     if (response.mode === 'agentic-cloud' && response.planRecordId) {
       state.selectedGeneratedPlanId = response.planRecordId;
+    } else if (record.workflowSource === 'cloud') {
+      markGeneratedPlanQueuedLocally(planId, response.id, response.mode === 'local-bridge' ? 'local-bridge' : 'browser');
     } else {
       await updateGeneratedPlan(planId, { preparedActionId: response.id, status: 'queued', error: undefined, failureLabel: undefined });
     }
@@ -14476,6 +14694,29 @@ async function updateGeneratedPlan(
     };
   });
   saveGeneratedPlans();
+}
+
+function updateGeneratedPlanLocalOnly(planId: string, patch: Partial<GeneratedPlanRecord>): void {
+  const updatedAt = new Date().toISOString();
+  state.generatedPlans = state.generatedPlans.map((record) => {
+    if (record.id !== planId) return record;
+    return {
+      ...record,
+      ...patch,
+      updatedAt,
+    };
+  });
+  saveGeneratedPlans();
+}
+
+function markGeneratedPlanQueuedLocally(planId: string, preparedActionId: string, workflowSource: WorkflowRecordSource): void {
+  updateGeneratedPlanLocalOnly(planId, {
+    preparedActionId,
+    status: 'queued',
+    error: undefined,
+    failureLabel: undefined,
+    workflowSource,
+  });
 }
 
 async function updateActiveGeneratedPlanRecord(
@@ -15039,7 +15280,7 @@ function signProofTitle(record: GeneratedPlanRecord): string {
 function generatedQueuePlanTitle(record: GeneratedPlanRecord): string {
   if (record.status === 'archived') return 'Restore this plan before sending it for approval.';
   if (!state.address) return 'Connect a wallet before sending for approval.';
-  if (!canQueueAgentPlan(record.plan)) return 'Only transfers, swaps, and repeat payments can be queued.';
+  if (!canQueueAgentPlan(record.plan)) return 'Only transfers, swaps, Blink actions, custom transactions, and repeat payments can be queued.';
   const reviewBlock = agentReviewQueueBlockReason(record);
   if (reviewBlock) return `${reviewBlock} Click to confirm if you still want to send.`;
   const report = planGuardrailReport(record.plan);
@@ -15050,6 +15291,9 @@ function generatedQueuePlanTitle(record: GeneratedPlanRecord): string {
     return mode === 'local-bridge'
       ? 'Create a local repeat payment. Each due payment appears in Needs Approval.'
       : 'Create one browser-local repeat approval now. Background repeats need Agentic Cloud or Private local mode.';
+  }
+  if (record.plan.actionType === 'blink_action') {
+    return 'Resolve the Blink/Solana Action into a browser-local transaction draft before wallet approval.';
   }
   if (mode === 'agentic-cloud') return 'Send this plan to Agentic Cloud Needs Approval for wallet review.';
   return mode === 'local-bridge'
@@ -15463,6 +15707,34 @@ function gatherDeterministicFacts(record: GeneratedPlanRecord): AgentReviewFactS
     };
   }
 
+  if (plan.actionType === 'blink_action' || plan.parameters.blinkUrl || plan.parameters.actionUrl) {
+    const connector = findProtocolConnectorByInput(plan.parameters.protocol || plan.parameters.dapp || plan.route);
+    facts.protocolConnector = {
+      state: connector && isDappEnabled(connector.id, state.connectedDapps, state.cluster) ? 'ok' : 'warn',
+      source: 'deterministic',
+      checkedAt,
+      message: connector
+        ? `${connector.name} connector ${isDappEnabled(connector.id, state.connectedDapps, state.cluster) ? 'is enabled' : 'is not enabled'} for ${state.cluster}.`
+        : 'No matching Protocol Connector was found for this draft.',
+      detail: connector
+        ? {
+            id: connector.id,
+            capabilities: connector.capabilities,
+            readSource: connector.readSource ?? null,
+            actionSource: connector.actionSource ?? null,
+          }
+        : {},
+    };
+    facts.blinkAction = {
+      state: plan.parameters.blinkUrl || plan.parameters.actionUrl ? 'ok' : 'missing',
+      source: 'deterministic',
+      checkedAt,
+      message: plan.parameters.blinkUrl || plan.parameters.actionUrl
+        ? 'Blink/Solana Action URL is present. Transaction bytes are fetched only when sent for approval.'
+        : 'No Blink/Solana Action URL was provided for this executable connector plan.',
+    };
+  }
+
   if (plan.actionType !== 'read_only' && plan.actionType !== 'manual_review') {
     facts.simulation = {
       state: 'missing',
@@ -15477,6 +15749,7 @@ function gatherDeterministicFacts(record: GeneratedPlanRecord): AgentReviewFactS
 
 async function runSaveBridgeAiKey(): Promise<void> {
   await run('ai', async () => {
+    saveCurrentSessionAiApiKey();
     await bridgeRequest('/bridge/ai/session-key', {
       method: 'POST',
       body: JSON.stringify({
@@ -15516,6 +15789,7 @@ async function runSaveDirectAiKey(): Promise<void> {
     return;
   }
   await run('ai', async () => {
+    saveCurrentSessionAiApiKey();
     resetAiPlannerConfirmation('AI draft key saved. Confirm planner before generating if you want a route or config check.');
     appendAiDiagnostic(aiRouteDiagnostic('/api/ai/generate-plan'));
     pushToast(
@@ -15608,6 +15882,7 @@ async function runConfirmAiPlanner(): Promise<void> {
 async function runClearAiKey(): Promise<void> {
   await run('ai', async () => {
     state.aiSettings.apiKey = '';
+    clearAllSessionAiApiKeys();
     resetAiPlannerConfirmation('AI key cleared.');
     if (state.aiSettings.mode === 'bridge') {
       await bridgeRequest('/bridge/ai/session-key', {
@@ -15623,7 +15898,6 @@ async function runClearAiKey(): Promise<void> {
 async function runRefreshAiStatus(): Promise<void> {
   await run('ai', async () => {
     await refreshBridgeAiStatus(true);
-    state.aiSettings.apiKey = '';
     resetAiPlannerConfirmation('Bridge AI status refreshed. Confirm planner again if needed.');
     const connected = await ensureBridgeConnectedAfterLocalCall();
     pushToast(
@@ -15679,8 +15953,13 @@ function setAiPlannerMode(mode: AiSettings['mode']): void {
   if (state.aiSettings.mode === mode) {
     return;
   }
+  saveCurrentSessionAiApiKey();
   state.aiSettings.mode = mode;
   ensureAiProviderAllowedForMode();
+  state.aiSettings.apiKey = shouldHideAiKeyEntry() ? '' : loadSessionAiApiKey(state.aiSettings);
+  if (shouldHideAiKeyEntry()) {
+    clearCurrentSessionAiApiKey();
+  }
   resetAiPlannerConfirmation('AI path changed. Workflow capability is unchanged.');
   savePersistedState();
   pushToast('success', 'AI Planner path changed', aiModeToastMessage(mode));
@@ -16891,6 +17170,9 @@ async function runConnectBridge(): Promise<void> {
     state.bridgeUrl = inputValue('#bridgeUrl') || state.bridgeUrl;
     state.bridgeToken = inputValue('#bridgeToken') || state.bridgeToken;
     await activateBridgeConnection({ refreshConfig: true, strictSync: true });
+    if (state.aiSettings.mode === 'bridge') {
+      await refreshBridgeAiStatus(false);
+    }
     if (activeWorkflowMode() !== 'local-bridge') {
       await refreshActiveWorkflowData();
     }
@@ -21088,6 +21370,10 @@ async function bridgeTrace(event: string, payload: Record<string, unknown>): Pro
 async function refreshBridgeAiStatus(strict: boolean): Promise<void> {
   try {
     state.aiStatus = await bridgeRequest<BridgeAiStatus>('/bridge/ai/status');
+    if (shouldHideAiKeyEntry(state.aiStatus)) {
+      state.aiSettings.apiKey = '';
+      clearCurrentSessionAiApiKey();
+    }
   } catch (err) {
     state.aiStatus = null;
     if (strict) {
@@ -21171,7 +21457,7 @@ function planGuardrailVerdict(plan: AgentPlan): AiGuardrailReport['verdict'] | '
 }
 
 function canQueueAgentPlan(plan: AgentPlan): boolean {
-  return ['transfer_sol', 'transfer_spl', 'swap', 'recurring_payment', 'custom_transaction'].includes(plan.actionType);
+  return ['transfer_sol', 'transfer_spl', 'swap', 'recurring_payment', 'custom_transaction', 'blink_action'].includes(plan.actionType);
 }
 
 function canQueueGuardedPlan(plan: AgentPlan): boolean {
@@ -21185,7 +21471,7 @@ function canQueueGeneratedPlan(record: GeneratedPlanRecord): boolean {
 
 function assertPlanCanQueue(plan: AgentPlan): void {
   if (!canQueueAgentPlan(plan)) {
-    throw new Error('Only transfer, swap, custom transaction, and repeat payments can be queued.');
+    throw new Error('Only transfer, swap, Blink action, custom transaction, and repeat payments can be queued.');
   }
   const report = planGuardrailReport(plan);
   if (report?.verdict === 'block') {
@@ -21196,6 +21482,36 @@ function assertPlanCanQueue(plan: AgentPlan): void {
   if (recipientPolicyError) {
     throw new Error(recipientPolicyError);
   }
+  const connectorError = protocolConnectorQueueBlockReason(plan);
+  if (connectorError) {
+    throw new Error(connectorError);
+  }
+}
+
+function protocolConnectorQueueBlockReason(plan: AgentPlan): string {
+  if (plan.actionType !== 'blink_action' && !plan.parameters.blinkUrl && !plan.parameters.actionUrl) {
+    return '';
+  }
+  const protocol = plan.parameters.protocol || plan.parameters.dapp || plan.parameters.provider || plan.route;
+  const connector = findProtocolConnectorByInput(protocol);
+  if (!connector) {
+    return 'Choose one enabled Protocol Connector before preparing a Blink action.';
+  }
+  if (!connectorHasCapability(connector, 'blink_actions')) {
+    return `${connector.name} does not expose Blink actions in this connector catalog.`;
+  }
+  if (!isClusterSupported(connector, state.cluster)) {
+    return `${connector.name} is only available on ${connector.supportedClusters.join(', ')}; current cluster is ${state.cluster}.`;
+  }
+  if (!isDappEnabled(connector.id, state.connectedDapps, state.cluster)) {
+    return `${connector.name} is not enabled. Enable it in Protocol Connectors before sending.`;
+  }
+  try {
+    normalizeBlinkUrl(plan.parameters.blinkUrl || plan.parameters.actionUrl || '');
+  } catch (err) {
+    return err instanceof Error ? err.message : 'Blink/Solana Action URL is invalid.';
+  }
+  return '';
 }
 
 function agentReviewQueueBlockReason(record: GeneratedPlanRecord | undefined): string {
@@ -21257,7 +21573,7 @@ function agentReviewQueueOverrideMessage(record: GeneratedPlanRecord | undefined
 function queuePlanTitle(): string {
   if (!state.address) return 'Connect a wallet before sending for approval.';
   if (!state.agentPlan) return 'Create a plan before sending for approval.';
-  if (!canQueueAgentPlan(state.agentPlan)) return 'Only transfer, swap, custom transaction, and repeat payments can be queued.';
+  if (!canQueueAgentPlan(state.agentPlan)) return 'Only transfer, swap, Blink action, custom transaction, and repeat payments can be queued.';
   const reviewBlock = agentReviewQueueBlockReason(generatedPlanById(state.selectedGeneratedPlanId));
   if (reviewBlock) return `${reviewBlock} Click to confirm if you still want to send.`;
   const report = planGuardrailReport(state.agentPlan);
@@ -21272,6 +21588,9 @@ function queuePlanTitle(): string {
     return mode === 'local-bridge'
       ? 'Create a local repeat payment. Each due payment appears in Needs Approval.'
       : 'Create one browser-local repeat approval now. Background repeats need Agentic Cloud or Private local mode.';
+  }
+  if (state.agentPlan.actionType === 'blink_action') {
+    return 'Resolve the Blink/Solana Action into a browser-local transaction draft before wallet approval.';
   }
   if (mode === 'agentic-cloud') return 'Send this plan to Agentic Cloud Needs Approval for wallet review.';
   return mode === 'local-bridge'
@@ -21349,6 +21668,10 @@ async function queuePlanThroughActiveWorkflow(
 ): Promise<QueueWorkflowResult> {
   assertPlanCanQueue(plan);
   const mode = activeWorkflowMode();
+  if (plan.actionType === 'blink_action') {
+    const response = await queuePlanThroughBrowserWorkflow(plan, sourceRecord);
+    return { ...response, mode: 'browser-workflow' };
+  }
   if (mode === 'local-bridge') {
     const response = await queuePlanThroughBridge(plan, sourceRecord);
     return { ...response, mode: 'local-bridge' };
@@ -21356,7 +21679,7 @@ async function queuePlanThroughActiveWorkflow(
   if (mode === 'agentic-cloud') {
     const unsupported = cloudQueueUnsupportedReason(plan);
     if (unsupported) {
-      const response = queuePlanThroughBrowserWorkflow(plan, sourceRecord);
+      const response = await queuePlanThroughBrowserWorkflow(plan, sourceRecord);
       return { ...response, mode: 'browser-workflow' };
     }
     const response = plan.actionType === 'recurring_payment'
@@ -21364,7 +21687,7 @@ async function queuePlanThroughActiveWorkflow(
       : await queuePlanThroughCloud(plan, sourceRecord);
     return { ...response, mode: 'agentic-cloud' };
   }
-  const response = queuePlanThroughBrowserWorkflow(plan, sourceRecord);
+  const response = await queuePlanThroughBrowserWorkflow(plan, sourceRecord);
   return { ...response, mode: 'browser-workflow' };
 }
 
@@ -21417,6 +21740,9 @@ function cloudQueueUnsupportedReason(plan: AgentPlan): string | undefined {
   if (plan.actionType === 'custom_transaction') {
     return 'Agentic Cloud does not accept custom executable transactions yet. Use a proof-only review or Private local mode.';
   }
+  if (plan.actionType === 'blink_action') {
+    return 'Agentic Cloud does not resolve Blink actions yet. Browser-local workflow will prepare the transaction draft.';
+  }
   if (plan.actionType === 'recurring_payment') {
     return 'Agentic Cloud recurring execution currently supports SOL payments only. Use Private local mode for token schedules.';
   }
@@ -21447,7 +21773,7 @@ async function queueRecurringPlanThroughCloud(plan: AgentPlan): Promise<{ id: st
   return { id: schedule.id };
 }
 
-function queuePlanThroughBrowserWorkflow(plan: AgentPlan, sourceRecord?: GeneratedPlanRecord): { id: string } {
+async function queuePlanThroughBrowserWorkflow(plan: AgentPlan, sourceRecord?: GeneratedPlanRecord): Promise<{ id: string }> {
   if (!state.address) {
     throw new Error('Connect a wallet before sending for approval.');
   }
@@ -21460,7 +21786,9 @@ function queuePlanThroughBrowserWorkflow(plan: AgentPlan, sourceRecord?: Generat
     saveBrowserWorkflowState();
     return { id: recurring.id };
   }
-  const action = browserPreparedActionFromPlan(plan, sourceRecord);
+  const action = plan.actionType === 'blink_action'
+    ? await browserPreparedBlinkActionFromPlan(plan, sourceRecord)
+    : browserPreparedActionFromPlan(plan, sourceRecord);
   state.preparedActions = mergePreparedActions([action], state.preparedActions);
   state.materializedActions = state.preparedActions;
   saveBrowserWorkflowState();
@@ -21495,6 +21823,54 @@ function browserPreparedActionFromPlan(plan: AgentPlan, sourceRecord?: Generated
   };
 }
 
+async function browserPreparedBlinkActionFromPlan(
+  plan: AgentPlan,
+  sourceRecord?: GeneratedPlanRecord,
+): Promise<PreparedAction> {
+  const blinkUrl = plan.parameters.blinkUrl || plan.parameters.actionUrl || '';
+  const prepared = await prepareBlinkAction({
+    url: blinkUrl,
+    account: state.address,
+    parameters: blinkPlanParameters(plan),
+  });
+  const transactionBase64 = blinkSingleTransaction(prepared);
+  const now = new Date().toISOString();
+  const id = newId('browser-action');
+  const protocol = plan.parameters.protocol || plan.parameters.dapp || 'Protocol connector';
+  const operation = plan.parameters.operation || prepared.label || 'Blink action';
+  const reviewNote = sourceRecord?.agentReview?.required
+    ? `Agent ${sourceRecord.agentReview.status}: ${sourceRecord.agentReview.reason}`
+    : '';
+  const overrideNote = sourceRecord?.agentOverride
+    ? `Override: ${overrideShortLabel(sourceRecord.agentOverride)}`
+    : '';
+  return {
+    id,
+    kind: 'custom_transaction',
+    status: 'ready',
+    walletAddress: state.address,
+    cluster: state.cluster,
+    summary: `${protocol}: ${operation}`.slice(0, 140),
+    params: {
+      transactionBase64,
+      blinkUrl: prepared.actionUrl,
+      protocol,
+      operation,
+      connectorActionSource: 'blink',
+      ...(prepared.title ? { blinkTitle: prepared.title } : {}),
+      ...(prepared.label ? { blinkLabel: prepared.label } : {}),
+      ...(prepared.message ? { blinkMessage: prepared.message } : {}),
+    },
+    dueAt: now,
+    createdAt: now,
+    updatedAt: now,
+    note: [plan.userNotes || plan.approval, prepared.message, reviewNote, overrideNote].filter(Boolean).join(' | '),
+    ...(sourceRecord?.agentReview ? { agentReview: sourceRecord.agentReview } : {}),
+    ...(sourceRecord?.agentOverride ? { agentOverride: sourceRecord.agentOverride } : {}),
+    workflowSource: 'browser',
+  };
+}
+
 function overrideShortLabel(override: AgentReviewOverride): string {
   const verdict = override.agentStatus === 'denied'
     ? 'agent denied'
@@ -21513,7 +21889,8 @@ function browserActionKindForPlan(plan: AgentPlan): PreparedActionKind {
   if (plan.actionType === 'transfer_spl') return 'transfer_spl';
   if (plan.actionType === 'swap') return 'swap';
   if (plan.actionType === 'custom_transaction') return 'custom_transaction';
-  throw new Error('Only transfers, swaps, custom transactions, and repeat payments can be queued.');
+  if (plan.actionType === 'blink_action') return 'custom_transaction';
+  throw new Error('Only transfers, swaps, Blink actions, custom transactions, and repeat payments can be queued.');
 }
 
 function browserActionParams(plan: AgentPlan, kind: PreparedActionKind): Record<string, unknown> {
@@ -21549,6 +21926,27 @@ function browserActionParams(plan: AgentPlan, kind: PreparedActionKind): Record<
   return {
     reason: plan.userNotes || plan.intent,
   };
+}
+
+function blinkPlanParameters(plan: AgentPlan): Record<string, string> {
+  const omitted = new Set(['blinkUrl', 'actionUrl', 'transactionBase64']);
+  const entries: Array<[string, string]> = [];
+  for (const [key, value] of Object.entries(plan.parameters)) {
+    if (omitted.has(key)) continue;
+    if (!value.trim()) continue;
+    entries.push([key, value.trim()]);
+  }
+  return Object.fromEntries(entries);
+}
+
+function blinkSingleTransaction(prepared: BlinkPreparedAction): string {
+  if (prepared.transactionBase64?.trim()) return prepared.transactionBase64.trim();
+  const transactions = prepared.transactions?.filter((transaction) => transaction.trim());
+  if (transactions?.length === 1) return transactions[0]!.trim();
+  if (transactions?.length && transactions.length > 1) {
+    throw new Error('This Blink returned multiple transactions. V1 supports reviewing one prepared transaction at a time.');
+  }
+  throw new Error('Blink action did not return transaction bytes.');
 }
 
 function browserRecurringPaymentFromPlan(plan: AgentPlan): RecurringPayment {
@@ -25645,6 +26043,10 @@ function emptyPlannerPrefs(): PlannerPrefs {
   return { houseRules: '', savedPrompts: [] };
 }
 
+function emptyProtocolConnectorPrefs(): ProtocolConnectorPrefs {
+  return { dialectClientKey: '' };
+}
+
 function defaultLabInputs(): Record<string, string> {
   return Object.fromEntries(LABS.map((lab) => [lab.id, isPublicReceiptLab(lab) ? '' : lab.defaultInput]));
 }
@@ -25820,6 +26222,67 @@ function persistedAiSettings(persistedState: PersistedState): Omit<AiSettings, '
     };
   }
   return settings;
+}
+
+function aiApiKeySessionEntryKey(settings: Pick<AiSettings, 'mode' | 'provider' | 'apiFormat' | 'baseUrl'>): string {
+  return [
+    settings.mode,
+    settings.provider,
+    settings.apiFormat,
+    settings.baseUrl.trim(),
+  ].join('|');
+}
+
+function loadSessionAiApiKeyEntries(): Record<string, string> {
+  try {
+    const raw = window.sessionStorage.getItem(AI_API_KEYS_SESSION_STORAGE_KEY);
+    if (!raw) return {};
+    const parsed = JSON.parse(raw) as Record<string, unknown>;
+    return Object.fromEntries(
+      Object.entries(parsed).filter((entry): entry is [string, string] => typeof entry[1] === 'string'),
+    );
+  } catch {
+    return {};
+  }
+}
+
+function loadSessionAiApiKey(settings: Pick<AiSettings, 'mode' | 'provider' | 'apiFormat' | 'baseUrl'>): string {
+  return loadSessionAiApiKeyEntries()[aiApiKeySessionEntryKey(settings)] ?? '';
+}
+
+function saveSessionAiApiKey(settings: Pick<AiSettings, 'mode' | 'provider' | 'apiFormat' | 'baseUrl' | 'apiKey'>): void {
+  try {
+    const entries = loadSessionAiApiKeyEntries();
+    const key = aiApiKeySessionEntryKey(settings);
+    if (settings.apiKey.trim()) {
+      entries[key] = settings.apiKey;
+    } else {
+      delete entries[key];
+    }
+    if (Object.keys(entries).length) {
+      window.sessionStorage.setItem(AI_API_KEYS_SESSION_STORAGE_KEY, JSON.stringify(entries));
+    } else {
+      window.sessionStorage.removeItem(AI_API_KEYS_SESSION_STORAGE_KEY);
+    }
+  } catch {
+    // Best-effort browser-session BYOK persistence across reloads.
+  }
+}
+
+function saveCurrentSessionAiApiKey(): void {
+  saveSessionAiApiKey(state.aiSettings);
+}
+
+function clearCurrentSessionAiApiKey(): void {
+  saveSessionAiApiKey({ ...state.aiSettings, apiKey: '' });
+}
+
+function clearAllSessionAiApiKeys(): void {
+  try {
+    window.sessionStorage.removeItem(AI_API_KEYS_SESSION_STORAGE_KEY);
+  } catch {
+    // Best-effort browser-session cleanup.
+  }
 }
 
 function normalizeAiModeForSurface(mode: AiSettings['mode']): AiSettings['mode'] {
@@ -26487,6 +26950,31 @@ function savePlannerPrefs(): void {
   }
 }
 
+function loadProtocolConnectorPrefs(): ProtocolConnectorPrefs {
+  try {
+    const raw = window.localStorage.getItem(PROTOCOL_CONNECTOR_PREFS_STORAGE_KEY);
+    if (!raw) return emptyProtocolConnectorPrefs();
+    const parsed = JSON.parse(raw);
+    if (!parsed || typeof parsed !== 'object') return emptyProtocolConnectorPrefs();
+    const rawObj = parsed as { dialectClientKey?: unknown };
+    return {
+      dialectClientKey: typeof rawObj.dialectClientKey === 'string'
+        ? rawObj.dialectClientKey.slice(0, 160)
+        : '',
+    };
+  } catch {
+    return emptyProtocolConnectorPrefs();
+  }
+}
+
+function saveProtocolConnectorPrefs(): void {
+  try {
+    window.localStorage.setItem(PROTOCOL_CONNECTOR_PREFS_STORAGE_KEY, JSON.stringify(state.protocolConnectorPrefs));
+  } catch {
+    // Best-effort browser persistence.
+  }
+}
+
 function parseSavedPrompt(value: unknown): SavedPrompt | null {
   if (!value || typeof value !== 'object') return null;
   const raw = value as Partial<SavedPrompt>;
@@ -26947,7 +27435,9 @@ function isPreparedActionKind(value: unknown): value is PreparedActionKind {
     value === 'manual_review' ||
     value === 'read_only' ||
     value === 'custom_transaction' ||
-    value === 'custom';
+    value === 'custom' ||
+    value === 'kamino_deposit' ||
+    value === 'kamino_withdraw';
 }
 
 function isRecurringPayment(value: unknown): value is RecurringPayment {

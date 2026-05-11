@@ -3,11 +3,15 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import {
   CONNECTED_DAPPS_STORAGE_KEY,
   KNOWN_CONNECTED_DAPPS,
+  PROTOCOL_CONNECTORS_STORAGE_KEY,
   checkDappForKind,
+  checkProtocolConnector,
   connectedDappsSummary,
+  enabledProtocolConnectors,
   emptyConnectedDapps,
   findAdapterByActionKind,
   findAdapterByReadTool,
+  findProtocolConnectorByInput,
   isDappEnabled,
   loadConnectedDapps,
   normalizeConnectedDapps,
@@ -49,7 +53,25 @@ describe('KNOWN_CONNECTED_DAPPS', () => {
     expect(kamino?.supportedClusters).toEqual(['mainnet-beta']);
     expect(kamino?.actionKinds).toEqual(['kamino_deposit', 'kamino_withdraw']);
     expect(kamino?.readTools).toContain('solana_kamino_get_positions');
+    expect(kamino?.capabilities).toContain('first_class_adapter');
     expect(kamino?.enabledByDefault).toBe(false);
+  });
+
+  it('seeds the major protocol connector catalog with Blink-capable protocols', () => {
+    expect(KNOWN_CONNECTED_DAPPS.map((adapter) => adapter.id)).toEqual([
+      'kamino',
+      'jupiter',
+      'raydium',
+      'orca',
+      'meteora',
+      'marginfi',
+      'drift',
+      'lulo',
+      'save',
+    ]);
+    expect(KNOWN_CONNECTED_DAPPS.find((adapter) => adapter.id === 'meteora')?.capabilities).toEqual(
+      expect.arrayContaining(['read_positions', 'read_rewards', 'blink_actions']),
+    );
   });
 });
 
@@ -66,12 +88,23 @@ describe('emptyConnectedDapps + persistence round-trip', () => {
   it('falls back to empty defaults when storage is empty', () => {
     const loaded = loadConnectedDapps();
     expect(loaded.entries.kamino?.enabled).toBe(false);
+    expect(loaded.entries.meteora?.enabled).toBe(false);
   });
 
   it('normalizes unexpected payloads to the empty state without throwing', () => {
     expect(normalizeConnectedDapps(null).entries.kamino).toBeDefined();
     expect(normalizeConnectedDapps({ entries: 'oops' }).entries.kamino).toBeDefined();
     expect(normalizeConnectedDapps({ entries: { kamino: { enabled: 'truthy-string' } } }).entries.kamino?.enabled).toBe(true);
+  });
+
+  it('migrates legacy connected dApps storage when v2 connector storage is absent', () => {
+    window.localStorage.setItem(CONNECTED_DAPPS_STORAGE_KEY, JSON.stringify({
+      entries: { kamino: { enabled: true, enabledAt: '2026-05-11T00:00:00.000Z' } },
+    }));
+    const loaded = loadConnectedDapps();
+    expect(loaded.schemaVersion).toBe(2);
+    expect(loaded.entries.kamino?.enabled).toBe(true);
+    expect(loaded.entries.jupiter?.enabled).toBe(false);
   });
 });
 
@@ -99,7 +132,7 @@ describe('cluster gating', () => {
     expect(result.ok).toBe(false);
     if (!result.ok) {
       expect(result.reason).toBe('disabled');
-      expect(result.message).toMatch(/Enable it in Connected dApps/);
+      expect(result.message).toMatch(/Enable it in Protocol Connectors/);
     }
   });
 
@@ -123,17 +156,31 @@ describe('cluster gating', () => {
       expect(result.reason).toBe('unknown_adapter');
     }
   });
+
+  it('checkProtocolConnector can require a specific capability', () => {
+    const state = setConnectedDappEnabled(emptyConnectedDapps(), 'raydium', true);
+    const result = checkProtocolConnector('raydium', state, 'mainnet-beta', 'read_positions');
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.reason).toBe('missing_capability');
+    }
+  });
 });
 
 describe('summary copy', () => {
   it('reads "Kamino connected" when only Kamino is on', () => {
     const state = setConnectedDappEnabled(emptyConnectedDapps(), 'kamino', true);
-    expect(connectedDappsSummary(state, 'mainnet-beta')).toBe('Kamino Finance connected');
+    expect(connectedDappsSummary(state, 'mainnet-beta')).toBe('Kamino Finance connector enabled');
   });
 
-  it('reads "No dApps connected" with adapter count when nothing is on', () => {
+  it('reads "No protocol connectors enabled" with catalog count when nothing is on', () => {
     const state = emptyConnectedDapps();
-    expect(connectedDappsSummary(state, 'mainnet-beta')).toMatch(/No dApps connected/);
+    expect(connectedDappsSummary(state, 'mainnet-beta')).toMatch(/No protocol connectors enabled/);
+  });
+
+  it('lists enabled connectors for planner context', () => {
+    const state = setConnectedDappEnabled(emptyConnectedDapps(), 'meteora', true);
+    expect(enabledProtocolConnectors(state, 'mainnet-beta').map((connector) => connector.id)).toEqual(['meteora']);
   });
 });
 
@@ -147,7 +194,14 @@ describe('helper lookups', () => {
     expect(findAdapterByReadTool('solana_kamino_reserve_snapshot')?.id).toBe('kamino');
   });
 
+  it('findProtocolConnectorByInput resolves common aliases', () => {
+    expect(findProtocolConnectorByInput('Meteora DLMM')?.id).toBe('meteora');
+    expect(findProtocolConnectorByInput('go check my Meteora account')?.id).toBe('meteora');
+    expect(findProtocolConnectorByInput('jup')?.id).toBe('jupiter');
+  });
+
   it('exposes the storage key as a stable constant', () => {
     expect(CONNECTED_DAPPS_STORAGE_KEY).toBe('solana-agent-wallet-connected-dapps-v1');
+    expect(PROTOCOL_CONNECTORS_STORAGE_KEY).toBe('solana-agent-wallet-protocol-connectors-v2');
   });
 });

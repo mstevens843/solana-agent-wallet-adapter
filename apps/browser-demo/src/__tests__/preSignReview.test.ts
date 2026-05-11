@@ -620,7 +620,7 @@ describe('buildKaminoDepositPreSignReview', () => {
       adapterEnabled: false,
     });
     expect(model.warnings).toContain('Withdrawals may be delayed when utilization is high.');
-    expect(model.warnings).toContain('Kamino is not connected in Connected dApps. Reconnect before approving.');
+    expect(model.warnings).toContain('Kamino is not enabled in Protocol Connectors. Re-enable it before approving.');
     expect(model.riskTone).toBe('danger');
     const healthSection = model.sections.find((section) => section.title === 'Pool health');
     const utilizationRow = healthSection?.rows.find((row) => row.label === 'Utilization');

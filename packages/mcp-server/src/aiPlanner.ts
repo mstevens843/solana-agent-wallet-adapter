@@ -22,6 +22,7 @@ export interface AiPlanRequest {
   template?: AiPlanTemplateContext;
   parameters?: Record<string, string>;
   userNotes?: string;
+  connectorContext?: Array<Record<string, unknown>>;
 }
 
 export interface AiPlan {
@@ -633,6 +634,7 @@ function normalizeRequest(request: AiPlanRequest): Required<AiPlanRequest> {
     template,
     parameters: request.parameters ?? {},
     userNotes: request.userNotes?.trim() || request.prompt?.trim() || template.description,
+    connectorContext: Array.isArray(request.connectorContext) ? request.connectorContext : [],
   };
 }
 
@@ -732,6 +734,8 @@ function aiMessages(request: Required<AiPlanRequest>): Array<{ role: 'system' | 
         userNotes: request.userNotes,
         template: request.template,
         parameters: request.parameters,
+        protocolConnectors: request.connectorContext,
+        connectorRule: 'Only propose first-class or Blink executable actions for enabled connectors with matching capabilities. If a requested protocol/action is not present, make the plan proof/read-only and state what connector fact or action URL is missing.',
         requiredBoundary: 'AI drafts a plan only. Wallet approval and signing happen later in the user wallet.',
       }),
     },

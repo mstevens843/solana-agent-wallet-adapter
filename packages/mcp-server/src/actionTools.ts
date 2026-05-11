@@ -580,7 +580,7 @@ function usefulPrompts(config: AgentWalletConfig) {
         ],
       },
       {
-        category: 'Kamino (connected dApp)',
+        category: 'Kamino (Protocol Connector)',
         prompts: [
           'Use solana-agent-wallet to deposit 0.1 SOL into Kamino, then list my prepared approval inbox actions.',
           'Use solana-agent-wallet to show my Kamino positions and how much SOL I have earned.',
