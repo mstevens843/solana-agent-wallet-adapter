@@ -41,5 +41,7 @@ export type {
   AiPlan,
   AiPlanRequest,
   AiPlanTemplateContext,
+  AiReviewRequest,
+  AiReviewResult,
   AiStatus,
 } from './aiPlanner.js';

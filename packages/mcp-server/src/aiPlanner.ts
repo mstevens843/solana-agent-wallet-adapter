@@ -29,7 +29,7 @@ export interface AiPlan {
   route: string;
   risk: string;
   approval: string;
-  source: 'ai';
+  source: 'template' | 'ai';
   category: string;
   actionType: string;
   templateTitle: string;
@@ -40,6 +40,61 @@ export interface AiPlan {
   guardrailReport?: AiGuardrailReport;
   constraintFingerprint?: string;
   constraintHash?: string;
+}
+
+export interface AiReviewRequest {
+  plan: AiPlan;
+  instruction?: string;
+  walletAddress?: string;
+  cluster?: string;
+  context?: Record<string, unknown>;
+}
+
+export type AiReviewDecision = 'approve' | 'deny' | 'needs_input';
+
+export interface AiReviewQuestion {
+  id: string;
+  prompt: string;
+  inputKind: 'text' | 'select' | 'number';
+  options?: string[];
+  required: boolean;
+  hint?: string;
+}
+
+export interface AiReviewerEntry {
+  id: string;
+  label: string;
+  decision: AiReviewDecision;
+  reason: string;
+  summary?: string;
+  errored?: { message: string };
+  checkedAt: string;
+}
+
+export interface AiReviewResult {
+  decision: AiReviewDecision;
+  reason: string;
+  summary: string;
+  evidence: Record<string, unknown>;
+  checkedAt: string;
+  source: 'ai';
+  questions?: AiReviewQuestion[];
+  reviewers?: AiReviewerEntry[];
+}
+
+export interface AiAskRequest {
+  plan: AiPlan;
+  question: string;
+  walletAddress?: string;
+  cluster?: string;
+  context?: Record<string, unknown>;
+}
+
+export interface AiAskResult {
+  answer: string;
+  citations?: Array<{ kind: string; ref: string }>;
+  checkedAt: string;
+  source: 'ai';
 }
 
 interface AiRuntimeConfig {
@@ -88,6 +143,39 @@ const PLAN_JSON_SCHEMA = {
     },
   },
   required: ['intent', 'route', 'risk', 'approval', 'safeguards'],
+} as const;
+
+const REVIEW_JSON_SCHEMA = {
+  type: 'object',
+  additionalProperties: false,
+  properties: {
+    decision: { type: 'string', enum: ['approve', 'deny', 'needs_input'] },
+    reason: { type: 'string' },
+    summary: { type: 'string' },
+    evidence: {
+      type: 'object',
+      additionalProperties: true,
+      properties: {},
+    },
+    questions: {
+      type: 'array',
+      maxItems: 3,
+      items: {
+        type: 'object',
+        additionalProperties: false,
+        properties: {
+          id: { type: 'string' },
+          prompt: { type: 'string' },
+          inputKind: { type: 'string', enum: ['text', 'select', 'number'] },
+          options: { type: 'array', items: { type: 'string' } },
+          required: { type: 'boolean' },
+          hint: { type: 'string' },
+        },
+        required: ['id', 'prompt', 'inputKind'],
+      },
+    },
+  },
+  required: ['decision', 'reason', 'summary', 'evidence'],
 } as const;
 
 export class BridgeAiPlanner {
@@ -151,6 +239,104 @@ export class BridgeAiPlanner {
       return this.generateOpenAiResponsesPlan(config, normalizedRequest);
     }
     return this.generateOpenAiCompatiblePlan(config, normalizedRequest);
+  }
+
+  async reviewPlan(request: AiReviewRequest): Promise<AiReviewResult> {
+    const config = this.config();
+    if (!config) {
+      throw new ProtocolError('unsupported_method', 'Bridge AI is not configured. Set AGENTIC_AI_API_KEY or provide a bridge session key.');
+    }
+    const normalizedRequest = normalizeReviewRequest(request);
+    assertAiReviewRequestAllowed(normalizedRequest);
+    if (config.apiFormat === 'anthropic') {
+      return this.generateAnthropicReview(config, normalizedRequest);
+    }
+    if (shouldUseOpenAiResponses(config)) {
+      return this.generateOpenAiResponsesReview(config, normalizedRequest);
+    }
+    return this.generateOpenAiCompatibleReview(config, normalizedRequest);
+  }
+
+  async askAboutPlan(request: AiAskRequest): Promise<AiAskResult> {
+    const config = this.config();
+    if (!config) {
+      throw new ProtocolError('unsupported_method', 'Bridge AI is not configured. Set AGENTIC_AI_API_KEY or provide a bridge session key.');
+    }
+    const normalizedRequest = normalizeAskRequest(request);
+    assertAiAskRequestAllowed(normalizedRequest);
+    if (config.apiFormat === 'anthropic') {
+      return this.generateAnthropicAsk(config, normalizedRequest);
+    }
+    return this.generateOpenAiCompatibleAsk(config, normalizedRequest);
+  }
+
+  private async generateOpenAiCompatibleAsk(
+    config: AiRuntimeConfig,
+    normalizedRequest: Required<AiAskRequest>,
+  ): Promise<AiAskResult> {
+    const body = {
+      model: config.model,
+      messages: aiAskMessages(normalizedRequest),
+      ...(!isDefaultTemperatureOnlyModel(config.model) && { temperature: 0.3 }),
+    };
+    const response = await fetch(`${normalizeBaseUrl(config.baseUrl, 'openai-compatible')}/chat/completions`, {
+      method: 'POST',
+      headers: {
+        authorization: `Bearer ${config.apiKey}`,
+        'content-type': 'application/json',
+      },
+      body: JSON.stringify(body),
+    }).catch((err) => {
+      throw new ProtocolError(
+        'wallet_unreachable',
+        `AI provider ask request failed. ${redactText(err instanceof Error ? err.message : String(err))}`,
+      );
+    });
+    const payload = await response.json().catch(() => ({})) as unknown;
+    if (!response.ok) {
+      throw new ProtocolError(
+        'wallet_unreachable',
+        providerFailureMessage(payload, response.status),
+      );
+    }
+    return aiAskFromPayload(payload);
+  }
+
+  private async generateAnthropicAsk(
+    config: AiRuntimeConfig,
+    normalizedRequest: Required<AiAskRequest>,
+  ): Promise<AiAskResult> {
+    const messages = aiAskMessages(normalizedRequest);
+    const systemMessage = messages[0]?.content ?? '';
+    const userMessage = messages[1]?.content ?? JSON.stringify(normalizedRequest);
+    const response = await fetch(`${normalizeBaseUrl(config.baseUrl, 'anthropic')}/messages`, {
+      method: 'POST',
+      headers: {
+        'anthropic-version': '2023-06-01',
+        'content-type': 'application/json',
+        'x-api-key': config.apiKey,
+      },
+      body: JSON.stringify({
+        model: config.model,
+        max_tokens: 800,
+        system: systemMessage,
+        messages: [{ role: 'user', content: userMessage }],
+        temperature: 0.3,
+      }),
+    }).catch((err) => {
+      throw new ProtocolError(
+        'wallet_unreachable',
+        `AI provider ask request failed. ${redactText(err instanceof Error ? err.message : String(err))}`,
+      );
+    });
+    const payload = await response.json().catch(() => ({})) as unknown;
+    if (!response.ok) {
+      throw new ProtocolError(
+        'wallet_unreachable',
+        providerFailureMessage(payload, response.status),
+      );
+    }
+    return aiAskFromPayload(payload);
   }
 
   private async generateOpenAiResponsesPlan(
@@ -235,6 +421,125 @@ export class BridgeAiPlanner {
     return normalizeAiPlan(payload, normalizedRequest);
   }
 
+  private async generateOpenAiResponsesReview(
+    config: AiRuntimeConfig,
+    normalizedRequest: Required<AiReviewRequest>,
+  ): Promise<AiReviewResult> {
+    const messages = aiReviewMessages(normalizedRequest);
+    const systemMessage = messages[0]?.content ?? '';
+    const userMessage = messages[1]?.content ?? JSON.stringify(normalizedRequest);
+    const response = await fetch(`${normalizeBaseUrl(config.baseUrl, 'openai-compatible')}/responses`, {
+      method: 'POST',
+      headers: {
+        authorization: `Bearer ${config.apiKey}`,
+        'content-type': 'application/json',
+      },
+      body: JSON.stringify({
+        model: config.model,
+        instructions: systemMessage,
+        input: userMessage,
+        max_output_tokens: OPENAI_MAX_OUTPUT_TOKENS,
+        store: false,
+        text: {
+          verbosity: OPENAI_TEXT_VERBOSITY,
+          format: {
+            type: 'json_schema',
+            name: 'agentic_ai_review',
+            strict: true,
+            schema: REVIEW_JSON_SCHEMA,
+          },
+        },
+        ...(isReasoningModel(config.model) && {
+          reasoning: { effort: OPENAI_REASONING_EFFORT },
+        }),
+      }),
+    }).catch((err) => {
+      throw new ProtocolError(
+        'wallet_unreachable',
+        `AI provider request failed. ${redactText(err instanceof Error ? err.message : String(err))}`,
+      );
+    });
+    const payload = await response.json().catch(() => ({})) as unknown;
+    if (!response.ok) {
+      throw new ProtocolError(
+        'wallet_unreachable',
+        providerFailureMessage(payload, response.status),
+      );
+    }
+    assertCompleteOpenAiResponse(payload);
+    return normalizeStrictAiReview(payload, normalizedRequest, 'OpenAI');
+  }
+
+  private async generateOpenAiCompatibleReview(
+    config: AiRuntimeConfig,
+    normalizedRequest: Required<AiReviewRequest>,
+  ): Promise<AiReviewResult> {
+    const body = {
+      model: config.model,
+      response_format: { type: 'json_object' },
+      messages: aiReviewMessages(normalizedRequest),
+      ...(!isDefaultTemperatureOnlyModel(config.model) && { temperature: 0.2 }),
+    };
+    const response = await fetch(`${normalizeBaseUrl(config.baseUrl, 'openai-compatible')}/chat/completions`, {
+      method: 'POST',
+      headers: {
+        authorization: `Bearer ${config.apiKey}`,
+        'content-type': 'application/json',
+      },
+      body: JSON.stringify(body),
+    }).catch((err) => {
+      throw new ProtocolError(
+        'wallet_unreachable',
+        `AI provider request failed. ${redactText(err instanceof Error ? err.message : String(err))}`,
+      );
+    });
+    const payload = await response.json().catch(() => ({})) as unknown;
+    if (!response.ok) {
+      throw new ProtocolError(
+        'wallet_unreachable',
+        providerFailureMessage(payload, response.status),
+      );
+    }
+    return normalizeAiReview(payload, normalizedRequest);
+  }
+
+  private async generateAnthropicReview(
+    config: AiRuntimeConfig,
+    normalizedRequest: Required<AiReviewRequest>,
+  ): Promise<AiReviewResult> {
+    const messages = aiReviewMessages(normalizedRequest);
+    const systemMessage = messages[0]?.content ?? '';
+    const userMessage = messages[1]?.content ?? JSON.stringify(normalizedRequest);
+    const response = await fetch(`${normalizeBaseUrl(config.baseUrl, 'anthropic')}/messages`, {
+      method: 'POST',
+      headers: {
+        'anthropic-version': '2023-06-01',
+        'content-type': 'application/json',
+        'x-api-key': config.apiKey,
+      },
+      body: JSON.stringify({
+        model: config.model,
+        max_tokens: 1024,
+        system: systemMessage,
+        messages: [{ role: 'user', content: userMessage }],
+        temperature: 0.2,
+      }),
+    }).catch((err) => {
+      throw new ProtocolError(
+        'wallet_unreachable',
+        `AI provider request failed. ${redactText(err instanceof Error ? err.message : String(err))}`,
+      );
+    });
+    const payload = await response.json().catch(() => ({})) as unknown;
+    if (!response.ok) {
+      throw new ProtocolError(
+        'wallet_unreachable',
+        providerFailureMessage(payload, response.status),
+      );
+    }
+    return normalizeAiReview(payload, normalizedRequest);
+  }
+
   private async generateAnthropicPlan(
     config: AiRuntimeConfig,
     normalizedRequest: Required<AiPlanRequest>,
@@ -309,6 +614,87 @@ function normalizeRequest(request: AiPlanRequest): Required<AiPlanRequest> {
   };
 }
 
+function normalizeReviewRequest(request: AiReviewRequest): Required<AiReviewRequest> {
+  return {
+    plan: request.plan,
+    instruction: request.instruction?.trim() || 'Review this draft before it is sent for wallet approval. Decide approve or deny.',
+    walletAddress: request.walletAddress?.trim() || '',
+    cluster: request.cluster?.trim() || '',
+    context: request.context ?? {},
+  };
+}
+
+function normalizeAskRequest(request: AiAskRequest): Required<AiAskRequest> {
+  const question = request.question?.trim() ?? '';
+  if (!question) {
+    throw new ProtocolError('invalid_request', 'Ask agent: a question is required.');
+  }
+  return {
+    plan: request.plan,
+    question: question.slice(0, 600),
+    walletAddress: request.walletAddress?.trim() || '',
+    cluster: request.cluster?.trim() || '',
+    context: request.context ?? {},
+  };
+}
+
+function aiAskMessages(request: Required<AiAskRequest>): Array<{ role: 'system' | 'user'; content: string }> {
+  return [
+    {
+      role: 'system',
+      content:
+        'You answer the user\'s question about a Solana wallet action plan. Be concise: 1 to 3 sentences, plain English. Cite plan fields you reference by name (e.g., recipient, amount, slippageBps). Never claim anything is signed, submitted, guaranteed safe, or already approved. Never request private keys. If the question cannot be answered from the plan, say so plainly.',
+    },
+    {
+      role: 'user',
+      content: JSON.stringify({
+        question: request.question,
+        plan: request.plan,
+        walletAddress: request.walletAddress || 'not_connected',
+        cluster: request.cluster || 'unknown',
+        context: request.context,
+        requiredBoundary: 'This is conversational Q&A about a draft. It cannot sign or submit a transaction.',
+      }),
+    },
+  ];
+}
+
+function aiAskFromPayload(payload: unknown): AiAskResult {
+  const text = extractModelText(payload).trim();
+  if (!text) {
+    throw new ProtocolError('wallet_unreachable', 'Agent did not return any answer text. Try again.');
+  }
+  return {
+    answer: compactReviewText(text, 800),
+    checkedAt: new Date().toISOString(),
+    source: 'ai',
+  };
+}
+
+function assertAiAskRequestAllowed(request: Required<AiAskRequest>): void {
+  try {
+    assertPlanGuardrails({
+      source: request.plan.source,
+      category: request.plan.category,
+      actionType: request.plan.actionType,
+      templateTitle: request.plan.templateTitle,
+      parameters: request.plan.parameters,
+      fields: request.plan.fields,
+      userNotes: request.plan.userNotes,
+      prompt: request.question,
+      plan: {
+        ...request.plan,
+        userQuestion: request.question,
+      },
+    });
+  } catch (err) {
+    if (err instanceof Error) {
+      throw new ProtocolError('invalid_request', err.message);
+    }
+    throw err;
+  }
+}
+
 function aiMessages(request: Required<AiPlanRequest>): Array<{ role: 'system' | 'user'; content: string }> {
   return [
     {
@@ -324,6 +710,27 @@ function aiMessages(request: Required<AiPlanRequest>): Array<{ role: 'system' | 
         template: request.template,
         parameters: request.parameters,
         requiredBoundary: 'AI drafts a plan only. Wallet approval and signing happen later in the user wallet.',
+      }),
+    },
+  ];
+}
+
+function aiReviewMessages(request: Required<AiReviewRequest>): Array<{ role: 'system' | 'user'; content: string }> {
+  return [
+    {
+      role: 'system',
+      content:
+        'You review a Solana wallet action draft before it is sent for wallet approval. Return only JSON with: decision ("approve", "deny", or "needs_input"); reason as one or two concise sentences; summary as one short sentence; evidence as an object. When you cannot decide because user intent is genuinely ambiguous, return decision "needs_input" plus a "questions" array with 1-3 short, specific questions answerable in under 20 words. Each question is an object with id (short slug), prompt (the question text), inputKind ("text" | "select" | "number"), and required (true/false). Use "needs_input" only when the missing information is something the user must supply — not when you could derive it. If the context includes "userPolicies", treat each as a soft rule the user wants you to honor: factor them into your decision and cite the relevant policy id in evidence.policiesApplied when one influences the outcome. Be flexible: use the user instruction and available facts, not a fixed checklist. Never claim anything is signed, submitted, guaranteed safe, or already approved. Never request private keys. The wallet user must still approve separately.',
+    },
+    {
+      role: 'user',
+      content: JSON.stringify({
+        instruction: request.instruction,
+        walletAddress: request.walletAddress || 'not_connected',
+        cluster: request.cluster || 'unknown',
+        plan: request.plan,
+        context: request.context,
+        requiredBoundary: 'This AI review can approve, deny, or request more input. It cannot sign or submit a transaction.',
       }),
     },
   ];
@@ -356,6 +763,33 @@ function normalizeStrictAiPlan(
   return aiPlanFromParsed(parsed, request);
 }
 
+function normalizeAiReview(payload: unknown, request: Required<AiReviewRequest>): AiReviewResult {
+  const parsed = parsePlanJson(extractModelText(payload));
+  return aiReviewFromParsed(parsed, request);
+}
+
+function normalizeStrictAiReview(
+  payload: unknown,
+  request: Required<AiReviewRequest>,
+  providerLabel: string,
+): AiReviewResult {
+  const content = extractModelText(payload).trim();
+  if (!content) {
+    throw new ProtocolError(
+      'wallet_unreachable',
+      `${providerLabel} returned no review text. Try again or choose a model with enough output tokens for structured JSON.`,
+    );
+  }
+  const parsed = parsePlanJson(content);
+  if (!isReviewJson(parsed)) {
+    throw new ProtocolError(
+      'wallet_unreachable',
+      `${providerLabel} returned a response that was not a valid Agentic review JSON.`,
+    );
+  }
+  return aiReviewFromParsed(parsed, request);
+}
+
 function aiPlanFromParsed(parsed: Record<string, unknown>, request: Required<AiPlanRequest>): AiPlan {
   const parameters = request.parameters;
   const plan: AiPlan = {
@@ -375,6 +809,31 @@ function aiPlanFromParsed(parsed: Record<string, unknown>, request: Required<AiP
     safeguards: normalizeSafeguards(parsed.safeguards),
   };
   return withGuardrailReport(plan, request);
+}
+
+function aiReviewFromParsed(parsed: Record<string, unknown>, request: Required<AiReviewRequest>): AiReviewResult {
+  const decision = normalizeReviewDecision(parsed.decision);
+  const questions = normalizeReviewQuestions(parsed.questions);
+  const reason = stringOr(
+    parsed.reason,
+    decision === 'approve'
+      ? 'Approved by the configured agent review. Wallet approval is still required before anything signs.'
+      : decision === 'needs_input'
+        ? 'Agent needs clarifying answers before deciding. Answer the questions or send anyway.'
+        : 'Denied by the configured agent review. Review the draft or ask the agent again.',
+  );
+  return {
+    decision,
+    reason: compactReviewText(reason, 280),
+    summary: compactReviewText(stringOr(parsed.summary, reason), 160),
+    evidence: jsonObjectOr(parsed.evidence, {
+      actionType: request.plan.actionType,
+      templateTitle: request.plan.templateTitle,
+    }),
+    checkedAt: new Date().toISOString(),
+    source: 'ai',
+    ...(questions ? { questions } : {}),
+  };
 }
 
 function assertAiDraftRequestAllowed(request: Required<AiPlanRequest>): void {
@@ -401,6 +860,31 @@ function assertAiDraftRequestAllowed(request: Required<AiPlanRequest>): void {
         route: 'AI draft only. Wallet approval is required later.',
         risk: `Requested risk level ${request.template.risk}.`,
         approval: 'Wallet approval is required before signing or submitting.',
+      },
+    });
+  } catch (err) {
+    if (err instanceof Error) {
+      throw new ProtocolError('invalid_request', err.message);
+    }
+    throw err;
+  }
+}
+
+function assertAiReviewRequestAllowed(request: Required<AiReviewRequest>): void {
+  try {
+    assertPlanGuardrails({
+      source: request.plan.source,
+      category: request.plan.category,
+      actionType: request.plan.actionType,
+      templateTitle: request.plan.templateTitle,
+      parameters: request.plan.parameters,
+      fields: request.plan.fields,
+      userNotes: request.plan.userNotes,
+      prompt: request.instruction,
+      plan: {
+        ...request.plan,
+        reviewInstruction: request.instruction,
+        reviewContext: request.context,
       },
     });
   } catch (err) {
@@ -448,6 +932,76 @@ function isPlanJson(value: Record<string, unknown>): boolean {
     Array.isArray(value.safeguards) &&
     value.safeguards.every((entry) => typeof entry === 'string')
   );
+}
+
+function isReviewJson(value: Record<string, unknown>): boolean {
+  return (
+    (value.decision === 'approve' || value.decision === 'deny' || value.decision === 'needs_input') &&
+    typeof value.reason === 'string' &&
+    typeof value.summary === 'string' &&
+    Boolean(value.evidence) &&
+    typeof value.evidence === 'object' &&
+    !Array.isArray(value.evidence)
+  );
+}
+
+function normalizeReviewDecision(value: unknown): AiReviewDecision {
+  const normalized = typeof value === 'string' ? value.trim().toLowerCase() : '';
+  if (['approve', 'approved', 'allow', 'allowed', 'pass', 'passed', 'ok'].includes(normalized)) {
+    return 'approve';
+  }
+  if (['needs_input', 'needs-input', 'need_input', 'need-input', 'ask', 'clarify', 'needs_clarification'].includes(normalized)) {
+    return 'needs_input';
+  }
+  return 'deny';
+}
+
+function normalizeReviewQuestions(value: unknown): AiReviewQuestion[] | undefined {
+  if (!Array.isArray(value)) return undefined;
+  const questions: AiReviewQuestion[] = [];
+  for (let index = 0; index < value.length && questions.length < 3; index += 1) {
+    const entry = value[index];
+    if (!entry || typeof entry !== 'object') continue;
+    const record = entry as Record<string, unknown>;
+    const prompt = typeof record.prompt === 'string'
+      ? record.prompt
+      : typeof record.question === 'string'
+        ? record.question
+        : '';
+    if (!prompt.trim()) continue;
+    const inputKind = record.inputKind === 'select' || record.inputKind === 'number'
+      ? (record.inputKind as AiReviewQuestion['inputKind'])
+      : 'text';
+    const id = typeof record.id === 'string' && record.id.trim()
+      ? record.id.trim()
+      : `q${questions.length + 1}`;
+    const options = Array.isArray(record.options)
+      ? record.options.filter((value): value is string => typeof value === 'string' && value.trim().length > 0).slice(0, 8)
+      : undefined;
+    const hint = typeof record.hint === 'string' && record.hint.trim() ? record.hint.trim() : undefined;
+    questions.push({
+      id,
+      prompt: compactReviewText(prompt, 200),
+      inputKind,
+      required: record.required !== false,
+      ...(options?.length ? { options } : {}),
+      ...(hint ? { hint } : {}),
+    });
+  }
+  return questions.length ? questions : undefined;
+}
+
+function jsonObjectOr(value: unknown, fallback: Record<string, unknown>): Record<string, unknown> {
+  if (value && typeof value === 'object' && !Array.isArray(value)) {
+    return value as Record<string, unknown>;
+  }
+  return fallback;
+}
+
+function compactReviewText(value: string, maxLength: number): string {
+  const normalized = value.replace(/\s+/g, ' ').trim();
+  if (normalized.length <= maxLength) return normalized;
+  return `${normalized.slice(0, maxLength - 1).trimEnd()}...`;
 }
 
 function normalizeSafeguards(value: unknown): string[] {

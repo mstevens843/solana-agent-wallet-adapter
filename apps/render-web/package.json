@@ -13,7 +13,7 @@
     "recurring:materialize": "node dist/cloud/cli.js materialize-due",
     "notifications:deliver": "node dist/cloud/cli.js notifications-deliver",
     "start": "node dist/server.js",
-    "typecheck": "pnpm -F @solana-agent-wallet-adapter/workflow build && tsc -p tsconfig.json --noEmit",
+    "typecheck": "pnpm -F @solana-agent-wallet-adapter/workflow build && pnpm -F @solana-agent-wallet-adapter/mcp-server build && tsc -p tsconfig.json --noEmit",
     "test": "pnpm -F @solana-agent-wallet-adapter/workflow build && vitest run"
   },
   "dependencies": {

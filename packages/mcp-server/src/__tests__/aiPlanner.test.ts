@@ -184,6 +184,222 @@ describe('BridgeAiPlanner', () => {
     expect(calls[0]?.body.temperature).toBeUndefined();
   });
 
+  it('reviews plans with an approve or deny decision', async () => {
+    const calls: Array<{ url: string; body: Record<string, unknown> }> = [];
+    vi.stubGlobal('fetch', vi.fn(async (url: string | URL | Request, init?: RequestInit) => {
+      calls.push({
+        url: String(url),
+        body: JSON.parse(String(init?.body ?? '{}')) as Record<string, unknown>,
+      });
+      return jsonResponse({
+        choices: [{
+          message: {
+            content: JSON.stringify({
+              decision: 'deny',
+              reason: 'Denied: requested slippage is higher than the user policy.',
+              summary: 'Slippage policy did not pass.',
+              evidence: {},
+            }),
+          },
+        }],
+      });
+    }));
+    const planner = new BridgeAiPlanner();
+    planner.setSessionKey({
+      apiKey: 'sk-test-openrouter',
+      provider: 'openrouter',
+      apiFormat: 'openai-compatible',
+      baseUrl: 'https://openrouter.ai/api/v1',
+      model: 'openai/gpt-5',
+    });
+
+    const review = await planner.reviewPlan({
+      plan: {
+        intent: 'Swap SOL to USDC',
+        route: 'SOL -> USDC',
+        risk: 'Medium',
+        approval: 'Wallet approval required.',
+        source: 'template',
+        category: 'trading',
+        actionType: 'swap',
+        templateTitle: 'Swap tokens',
+        parameters: { inputToken: 'SOL', outputToken: 'USDC', amount: '0.01', slippageBps: '50' },
+        fields: [{ label: 'Amount', value: '0.01' }],
+        safeguards: ['Check quote.'],
+      },
+      instruction: 'Check route and slippage before approval.',
+    });
+
+    expect(review).toMatchObject({
+      decision: 'deny',
+      reason: 'Denied: requested slippage is higher than the user policy.',
+      summary: 'Slippage policy did not pass.',
+      source: 'ai',
+    });
+    expect(calls[0]?.url).toBe('https://openrouter.ai/api/v1/chat/completions');
+    expect(calls[0]?.body.messages).toEqual(expect.arrayContaining([
+      expect.objectContaining({ role: 'system' }),
+      expect.objectContaining({ role: 'user' }),
+    ]));
+  });
+
+  it('returns needs_input with questions when the model asks for clarification', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => jsonResponse({
+      choices: [{
+        message: {
+          content: JSON.stringify({
+            decision: 'needs_input',
+            reason: 'I need to know which recipient you mean before approving.',
+            summary: 'Agent has follow-up questions.',
+            evidence: { recipientAmbiguous: true },
+            questions: [
+              { id: 'recipient', prompt: 'Which recipient is correct?', inputKind: 'text', required: true },
+              { id: 'amount', prompt: 'Is the amount in SOL or USDC?', inputKind: 'select', options: ['SOL', 'USDC'], required: true },
+            ],
+          }),
+        },
+      }],
+    })));
+    const planner = new BridgeAiPlanner();
+    planner.setSessionKey({
+      apiKey: 'sk-test-needs-input',
+      provider: 'openrouter',
+      apiFormat: 'openai-compatible',
+      baseUrl: 'https://openrouter.ai/api/v1',
+      model: 'openai/gpt-5',
+    });
+
+    const review = await planner.reviewPlan({
+      plan: {
+        intent: 'Send SOL to alice',
+        route: 'Send 1 SOL.',
+        risk: 'Medium',
+        approval: 'Wallet approval required.',
+        source: 'ai',
+        category: 'payments',
+        actionType: 'transfer_sol',
+        templateTitle: 'Send SOL',
+        parameters: { recipient: 'alice', amount: '1' },
+        fields: [{ label: 'Recipient', value: 'alice' }],
+        safeguards: ['Confirm recipient.'],
+      },
+      instruction: 'Review this send before approval.',
+    });
+
+    expect(review.decision).toBe('needs_input');
+    expect(review.summary).toBe('Agent has follow-up questions.');
+    expect(review.questions).toHaveLength(2);
+    expect(review.questions?.[0]).toMatchObject({ id: 'recipient', inputKind: 'text', required: true });
+    expect(review.questions?.[1]).toMatchObject({ id: 'amount', inputKind: 'select', options: ['SOL', 'USDC'] });
+  });
+
+  it('forwards user policies in the review request context to the provider', async () => {
+    const calls: Array<{ body: Record<string, unknown> }> = [];
+    vi.stubGlobal('fetch', vi.fn(async (_url: string | URL | Request, init?: RequestInit) => {
+      calls.push({ body: JSON.parse(String(init?.body ?? '{}')) as Record<string, unknown> });
+      return jsonResponse({
+        choices: [{
+          message: {
+            content: JSON.stringify({
+              decision: 'approve',
+              reason: 'Approved with policy in mind.',
+              summary: 'Within slippage policy.',
+              evidence: { policiesApplied: ['policy-slip'] },
+            }),
+          },
+        }],
+      });
+    }));
+    const planner = new BridgeAiPlanner();
+    planner.setSessionKey({
+      apiKey: 'sk-test-policies',
+      provider: 'openrouter',
+      apiFormat: 'openai-compatible',
+      baseUrl: 'https://openrouter.ai/api/v1',
+      model: 'openai/gpt-5',
+    });
+
+    const review = await planner.reviewPlan({
+      plan: {
+        intent: 'Swap SOL to USDC',
+        route: 'SOL -> USDC',
+        risk: 'Medium',
+        approval: 'Wallet approval required.',
+        source: 'template',
+        category: 'trading',
+        actionType: 'swap',
+        templateTitle: 'Swap tokens',
+        parameters: { inputToken: 'SOL', outputToken: 'USDC', amount: '0.01', slippageBps: '50' },
+        fields: [{ label: 'Amount', value: '0.01' }],
+        safeguards: ['Check quote.'],
+      },
+      instruction: 'Review swap with active user policies.',
+      context: {
+        userPolicies: [
+          { id: 'policy-slip', label: 'No swaps over 1% slippage', kind: 'slippage_max', detail: '', params: { value: '1' } },
+        ],
+      },
+    });
+
+    expect(review.decision).toBe('approve');
+    const messages = (calls[0]?.body.messages ?? []) as Array<{ role: string; content: string }>;
+    const userMessage = messages.find((entry) => entry.role === 'user');
+    expect(userMessage).toBeDefined();
+    expect(userMessage?.content).toContain('userPolicies');
+    expect(userMessage?.content).toContain('policy-slip');
+    expect(userMessage?.content).toContain('slippage_max');
+  });
+
+  it('caps questions at three and drops malformed entries', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => jsonResponse({
+      choices: [{
+        message: {
+          content: JSON.stringify({
+            decision: 'needs_input',
+            reason: 'Several open questions.',
+            summary: 'Multiple clarifications needed.',
+            evidence: {},
+            questions: [
+              { id: 'q1', prompt: 'Question one?', inputKind: 'text', required: true },
+              { id: 'q2', prompt: 'Question two?', inputKind: 'text', required: false },
+              { id: 'q3', prompt: 'Question three?', inputKind: 'text', required: true },
+              { id: 'q4', prompt: 'Question four?', inputKind: 'text', required: true },
+              { id: 'bad' /* missing prompt */ },
+            ],
+          }),
+        },
+      }],
+    })));
+    const planner = new BridgeAiPlanner();
+    planner.setSessionKey({
+      apiKey: 'sk-test-multi',
+      provider: 'openrouter',
+      apiFormat: 'openai-compatible',
+      baseUrl: 'https://openrouter.ai/api/v1',
+      model: 'openai/gpt-5',
+    });
+
+    const review = await planner.reviewPlan({
+      plan: {
+        intent: 'Generic transfer review',
+        route: 'Review and decide.',
+        risk: 'Medium',
+        approval: 'Wallet approval required.',
+        source: 'ai',
+        category: 'payments',
+        actionType: 'transfer_sol',
+        templateTitle: 'Send SOL',
+        parameters: { recipient: 'x', amount: '1' },
+        fields: [{ label: 'Recipient', value: 'x' }],
+        safeguards: ['Confirm.'],
+      },
+      instruction: 'Review before approval.',
+    });
+
+    expect(review.questions).toHaveLength(3);
+    expect(review.questions?.map((q) => q.id)).toEqual(['q1', 'q2', 'q3']);
+  });
+
   it('adds context to unsupported temperature provider errors', async () => {
     vi.stubGlobal('fetch', vi.fn(async () => jsonResponse({
       error: {

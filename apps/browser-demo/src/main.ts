@@ -95,11 +95,15 @@ import {
   confirmHostedAiPlanner,
   defaultTemplateFieldValues,
   generateHostedAiPlan,
+  generateHostedAiReview,
   generateSessionAiPlan,
+  generateSessionAiReview,
   redactSecrets,
   templateById,
   templateFieldLabel,
   type AgentPlan,
+  type AgentPlanReviewRequest,
+  type AgentPlanReviewResult,
   type AgentPlanTemplate,
   type AgentPlanTemplateField,
   type AiDiagnosticEntry,
@@ -116,6 +120,53 @@ import {
   visibleBrowserWallets,
   type BrowserWalletSession,
 } from './walletSelection.js';
+import {
+  findPendingTransactionByAction,
+  loadTransactionLedger,
+  markTransactionPhase,
+  pendingTransactionsNeedingReconciliation,
+  removePendingTransaction,
+  signedTransactionHashFromBase64,
+  upsertPendingTransaction,
+  type ExecutionFailureKind,
+  type ExecutionPhase,
+  type PendingTransactionRecord,
+  type WorkflowSource as LedgerWorkflowSource,
+} from './transactionLedger.js';
+import {
+  classifyTransactionFailure,
+  transactionFailureToastCopy,
+  type TransactionFailureKind,
+} from './transactionFailure.js';
+import {
+  buildCustomTransactionPreSignReview,
+  buildSendPreSignReview,
+  buildSwapPreSignReview,
+  type PreSignReviewModel,
+  type PreSignReviewRow,
+  type PreSignReviewSection,
+} from './preSignReview.js';
+import {
+  runHealthCheck as runSystemHealthProbe,
+  statusFlipped as systemHealthStatusFlipped,
+  type AiHealthMode,
+  type HealthCheck,
+  type HealthCheckId,
+  type HealthStatus,
+  type SystemHealth,
+} from './systemHealth.js';
+import {
+  WORKSPACE_BACKUP_KEYS,
+  backupFilename,
+  exportWorkspace,
+  parseBackup,
+  restoreWorkspace,
+  serializeBackup,
+  summarizeBackup,
+  unresolvedPendingTransactions,
+  type BackupSectionSummary,
+  type WorkspaceBackup,
+} from './workspaceBackup.js';
 import './styles.css';
 
 type StepState = 'idle' | 'active' | 'done' | 'error';
@@ -137,6 +188,7 @@ type AppListPageKey = 'review' | 'inbox' | 'recurring' | 'receiptArchive';
 type TemplateOutcome = 'queueable' | 'proof' | 'audit';
 type TemplateOutcomeFilter = TemplateOutcome | 'all';
 type AiPlannerConfirmationStatus = 'untested' | 'confirmed' | 'failed';
+type AgentPlanReviewStatus = 'checking' | 'approved' | 'denied' | 'needs_input' | 'error';
 type RecurringPresetId = 'scheduled-transfer' | 'subscription';
 type InlineReceiptKind = 'intent' | 'rejection' | 'policy' | 'review';
 type AuditRecordType = 'plan' | 'approval' | 'completed' | 'evidence';
@@ -175,6 +227,138 @@ type WorkflowRecordSource = 'cloud' | 'browser' | 'local-bridge';
 type CloudSessionStatus = 'unknown' | 'signed-out' | 'signed-in' | 'unavailable';
 type CloudSessionLogoutReason = 'wallet-disconnected' | 'wallet-changed' | 'wallet-mismatch' | 'startup';
 type QueueWorkflowResult = { id: string; mode: ActiveWorkflowMode; planRecordId?: string };
+
+const AGENT_REVIEW_SCHEMA_VERSION = 2 as const;
+
+interface AgentReviewQuestion {
+  id: string;
+  prompt: string;
+  inputKind: 'text' | 'select' | 'number';
+  options?: string[];
+  required: boolean;
+  hint?: string;
+}
+
+interface AgentReviewStalenessTrigger {
+  field: string;
+  changedAt: string;
+  before?: string;
+  after?: string;
+}
+
+interface AgentReviewStaleness {
+  staleSince: string;
+  triggers: AgentReviewStalenessTrigger[];
+}
+
+interface AgentReviewOverride {
+  overriddenAt: string;
+  agentStatus: AgentPlanReviewStatus;
+  agentDecision?: AgentPlanReviewResult['decision'];
+  agentReason: string;
+  agentSummary?: string;
+  userReason?: string;
+  provider?: string;
+  model?: string;
+  source?: AiSettings['mode'];
+}
+
+interface AgentReviewerEntry {
+  id: string;
+  label: string;
+  decision: 'approve' | 'deny' | 'needs_input';
+  reason: string;
+  summary?: string;
+  errored?: { message: string };
+  checkedAt: string;
+}
+
+interface AgentReviewPolicySnapshot {
+  id: string;
+  label: string;
+  ruleText: string;
+  outcome: 'pass' | 'warn' | 'block' | 'not_applicable';
+}
+
+interface AgentReviewAttempt {
+  attemptId: string;
+  startedAt: string;
+  finishedAt?: string;
+  decision?: 'approve' | 'deny' | 'needs_input';
+  reason?: string;
+  followUpQuestionIds?: string[];
+  answersSnapshot?: Record<string, string>;
+}
+
+interface AgentReviewFact<TDetail = Record<string, unknown>> {
+  state: 'checked' | 'missing' | 'warn' | 'ok' | 'fail';
+  source: 'deterministic' | 'ai';
+  checkedAt: string;
+  message?: string;
+  detail?: TDetail;
+}
+
+interface AgentReviewFactSet {
+  quote?: AgentReviewFact;
+  route?: AgentReviewFact;
+  policy?: AgentReviewFact;
+  simulation?: AgentReviewFact;
+  protocol?: AgentReviewFact;
+  tokenMint?: AgentReviewFact;
+  recipient?: AgentReviewFact;
+  limits?: AgentReviewFact;
+}
+
+interface AgentPlanReviewState {
+  schemaVersion?: typeof AGENT_REVIEW_SCHEMA_VERSION;
+  required: boolean;
+  status: AgentPlanReviewStatus;
+  decision?: AgentPlanReviewResult['decision'];
+  reason: string;
+  summary?: string;
+  checkedAt?: string;
+  provider?: string;
+  model?: string;
+  source?: AiSettings['mode'];
+  evidence?: Record<string, unknown>;
+  questions?: AgentReviewQuestion[];
+  answers?: Record<string, string>;
+  staleness?: AgentReviewStaleness;
+  reviewers?: AgentReviewerEntry[];
+  policies?: AgentReviewPolicySnapshot[];
+  history?: AgentReviewAttempt[];
+  facts?: AgentReviewFactSet;
+  reviewedPlanFingerprint?: string;
+  appliedUserPolicyIds?: string[];
+}
+
+type AgentPolicyKind =
+  | 'slippage_max'
+  | 'amount_max'
+  | 'token_allow'
+  | 'token_block'
+  | 'require_known_recipient'
+  | 'flag_unknown_mint'
+  | 'custom';
+
+interface UserAgentPolicy {
+  id: string;
+  label: string;
+  kind: AgentPolicyKind;
+  enabled: boolean;
+  detail: string;
+  params?: Record<string, string>;
+  createdAt: string;
+  updatedAt: string;
+}
+
+interface AgentPolicyDraft {
+  label: string;
+  kind: AgentPolicyKind;
+  detail: string;
+  paramValue: string;
+}
+type RecipientPolicy = 'known' | 'allow' | 'block';
 
 interface SelectPickerOption {
   value: string;
@@ -241,6 +425,8 @@ const STORAGE_KEY = 'solana-agent-wallet-demo-v2';
 const BRIDGE_TOKEN_SESSION_KEY = 'agentic-local-bridge-token';
 const GENERATED_PLANS_STORAGE_KEY = 'solana-agent-wallet-generated-plans-v1';
 const BROWSER_WORKFLOW_STORAGE_KEY = 'solana-agent-wallet-browser-workflow-v1';
+const RECIPIENT_RULES_STORAGE_KEY = 'solana-agent-wallet-recipient-rules-v1';
+const AGENT_POLICIES_STORAGE_KEY = 'solana-agent-wallet-agent-policies-v1';
 const GENERATED_PLANS_LIMIT = 100;
 const TX_CONFIRMATION_POLL_TIMEOUT_MS = 30_000;
 const TX_CONFIRMATION_POLL_INTERVAL_MS = 1_500;
@@ -559,6 +745,8 @@ interface GeneratedPlanRecord {
   preparedActionId?: string;
   error?: string;
   failureLabel?: string;
+  agentReview?: AgentPlanReviewState;
+  agentOverride?: AgentReviewOverride;
   workflowSource?: WorkflowRecordSource;
 }
 
@@ -608,6 +796,8 @@ interface PreparedAction {
   planDraftId?: string;
   recurringId?: string;
   occurrenceKey?: string;
+  agentReview?: AgentPlanReviewState;
+  agentOverride?: AgentReviewOverride;
   archived?: boolean;
   workflowSource?: WorkflowRecordSource;
 }
@@ -718,6 +908,17 @@ interface ActionReceipt {
   error?: string;
   recurringId?: string;
   occurrenceKey?: string;
+  evidenceKind?: EvidenceReceiptKind;
+  agentOverride?: AgentOverrideRecord;
+}
+
+interface AgentOverrideRecord {
+  reviewSnapshot: AgentPlanReviewState;
+  userReason?: string;
+  overriddenAt: string;
+  blockReason: string;
+  planSummary: string;
+  planId: string;
 }
 
 interface BrowserTransactionExecution {
@@ -889,6 +1090,41 @@ interface RecurringDraft {
   note: string;
 }
 
+interface SavedRecipient {
+  id: string;
+  name: string;
+  address: string;
+  policy: RecipientPolicy;
+  note?: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+interface RecipientRulesState {
+  enabled: boolean;
+  allowListEnabled: boolean;
+  blockListEnabled: boolean;
+  recipients: SavedRecipient[];
+}
+
+interface RecipientDraft {
+  name: string;
+  address: string;
+  policy: RecipientPolicy;
+  note: string;
+}
+
+interface RecipientPolicyStatus {
+  address: string;
+  recipient?: SavedRecipient;
+  known: boolean;
+  allowed: boolean;
+  blocked: boolean;
+  allowRequired: boolean;
+  label: string;
+  title: string;
+}
+
 interface RecurringPreset {
   id: RecurringPresetId;
   title: string;
@@ -952,6 +1188,14 @@ interface PersistedState {
   aiModel?: string;
 }
 
+interface WorkspaceBackupConfirmState {
+  bundle: WorkspaceBackup;
+  summaries: BackupSectionSummary[];
+  unresolvedCount: number;
+  awaitingOverride: boolean;
+  busy: boolean;
+}
+
 interface DemoState {
   activeTab: ActiveTab;
   commandCenterView: CommandCenterView;
@@ -1007,7 +1251,7 @@ interface DemoState {
   capabilities: AdapterCapabilities | null;
   error: string;
   busy: boolean;
-  activeOperation: 'generate-template-plan' | 'generate-ai-plan' | 'confirm-ai-planner' | null;
+  activeOperation: 'generate-template-plan' | 'generate-ai-plan' | 'confirm-ai-planner' | 'review-agent-plan' | null;
   cluster: Cluster;
   bridgeUrl: string;
   bridgeToken: string;
@@ -1015,17 +1259,30 @@ interface DemoState {
   bridgeStatus: string;
   bridgeRpcUrl: string;
   health: BridgeHealth | null;
+  systemHealth: SystemHealth | null;
+  systemHealthDrawerOpen: boolean;
+  systemHealthChecking: boolean;
+  workspaceBackupStatus: string;
+  workspaceBackupConfirm: WorkspaceBackupConfirmState | null;
   balances: BalanceView | null;
   preparedActions: PreparedAction[];
   materializedActions: PreparedAction[];
   recurringPayments: RecurringPayment[];
   receipts: ActionReceipt[];
+  pendingTransactions: PendingTransactionRecord[];
+  lastReconciliationAt: string;
   cloudCompletedPlans: CompletedPlanRecord[];
   cloudLastSync: string;
   lastCompletedFocusId: string;
   recurringDraft: RecurringDraft;
   recurringPreset: RecurringPresetId;
   recurringErrors: Record<string, string>;
+  recipientRules: RecipientRulesState;
+  recipientDraft: RecipientDraft;
+  recipientErrors: Record<string, string>;
+  agentPolicies: UserAgentPolicy[];
+  agentPolicyDraft: AgentPolicyDraft;
+  agentPolicyErrors: Record<string, string>;
   recurringOccurrenceHistory: Record<string, RecurringOccurrenceHistoryState>;
   recurringNotificationStatus: Record<string, RecurringNotificationStatusState>;
   recurringWebhookSecretOnce: RecurringWebhookSecretReveal | null;
@@ -1071,21 +1328,21 @@ const RECEIPT_LABS: LabDefinition[] = [
         label: 'Requested action',
         type: 'textarea',
         required: true,
-        placeholder: 'Swap 0.05 SOL to USDC, send 10 USDC, review this Blink, etc.',
+        placeholder: 'Swap 0.01 SOL to USDC to rebalance after a price move.',
       },
       {
         id: 'constraints',
         label: 'Required constraints',
         type: 'textarea',
         required: true,
-        placeholder: 'Max slippage, allowed programs, recipient, deadline, no authority grants, or other caps.',
+        placeholder: 'Route must stay SOL -> USDC. Max slippage 0.5%. No private-key handoff. No authority grants. User wallet must approve.',
       },
       {
         id: 'context',
         label: 'Context / source',
         type: 'text',
         required: false,
-        placeholder: 'Optional app, agent, ticket, or reason.',
+        placeholder: 'Personal trading and portfolio rebalancing workflow.',
       },
     ],
   },
@@ -1139,14 +1396,14 @@ const RECEIPT_LABS: LabDefinition[] = [
         label: 'Request reviewed',
         type: 'textarea',
         required: true,
-        placeholder: 'Describe the payment, swap, app interaction, link, or agent action.',
+        placeholder: 'New DeFi swap review. AI prepares the request; I review route, amount, protocol, and slippage before my wallet approves.',
       },
       {
         id: 'risks',
         label: 'Risks checked',
         type: 'textarea',
         required: true,
-        placeholder: 'Unknown programs, authority changes, slippage, route drift, fees, recipient, simulation result.',
+        placeholder: 'Route, amount, protocol, slippage, transaction authority, fees, and unknown programs.',
       },
       {
         id: 'verdict',
@@ -1406,31 +1663,33 @@ const initialTemplate = templateById('swap');
 const defaultWorkspaceTab: ActiveTab = 'overview';
 const initialAiSettings = persistedAiSettings(persisted);
 const initialBrowserWorkflow = loadBrowserWorkflowState();
+const initialRecipientRules = loadRecipientRules();
+const initialAgentPolicies = loadAgentPolicies();
 const RECURRING_TOKEN_OPTIONS = ['SOL', 'USDC', 'PYUSD'];
 
 const RECURRING_PRESETS: RecurringPreset[] = [
   {
     id: 'scheduled-transfer',
-    title: 'Scheduled transfer',
-    badge: 'Payment',
-    description: 'Send the same token amount to one recipient on a repeat schedule. Each due item still needs approval.',
+    title: 'Contractor payout',
+    badge: 'Payout',
+    description: 'Weekly contractor payout after completed work is reviewed. Each run requires founder approval before funds move.',
     draft: {
-      token: 'SOL',
-      amount: '0.01',
+      token: 'USDC',
+      amount: '10',
       cadence: 'weekly',
-      note: 'Repeat scheduled transfer',
+      note: 'Weekly contractor payout after completed work is reviewed. Each run requires founder approval before funds move.',
     },
   },
   {
     id: 'subscription',
-    title: 'Subscription / allowance',
-    badge: 'Allowance',
-    description: 'Create a capped recurring payment without granting unlimited authority.',
+    title: 'Vendor invoice',
+    badge: 'Ops',
+    description: 'Monthly RPC provider payment after invoice review. Each run requires finance approval before funds move.',
     draft: {
       token: 'USDC',
       amount: '5',
       cadence: 'monthly',
-      note: 'Repeat user-approved payment',
+      note: 'Monthly RPC provider payment after invoice review. Each run requires finance approval before funds move.',
     },
   },
 ];
@@ -1464,23 +1723,23 @@ const GUIDED_DEMO_SCENARIOS: ReadonlyArray<GuidedDemoScenario> = [
     id: 'swap',
     eyebrow: 'Swap review',
     title: 'SOL to USDC swap',
-    prompt: 'Swap SOL to USDC if slippage stays under 1%.',
-    detail: 'The agent turns a plain-English swap into a route, limits, and wallet approval boundary.',
-    planTitle: 'Prepared Jupiter-style swap review',
+    prompt: 'Prepare a SOL to USDC swap review before signing. Amount: 0.01 SOL. Max slippage: 0.5%. Do not submit anything.',
+    detail: 'AI prepares the review summary; the wallet owner checks route, amount, protocol, and slippage before approval.',
+    planTitle: 'Prepared SOL to USDC swap review',
     route: 'New Request -> Needs Approval',
     risk: 'Review price impact, route programs, minimum output, and final quote before approving.',
-    approvalBoundary: 'The agent can prepare route context, but only the wallet can approve the swap signature.',
+    approvalBoundary: 'AI prepares the request. The wallet owner approves only after checking the wallet action.',
     receiptType: 'swap_review_receipt',
     receiptSummary: 'A swap request was constrained by a 1% slippage cap before review.',
     constraints: [
-      'Maximum slippage is 100 bps.',
+      'Maximum slippage is 50 bps.',
       'Final wallet quote must show the actual minimum output.',
       'Unexpected authority grants should be rejected.',
       'Route changes require a fresh wallet review.',
     ],
     facts: [
       { label: 'Route', value: 'SOL -> USDC' },
-      { label: 'Limit', value: '1% slippage' },
+      { label: 'Limit', value: '0.5% slippage' },
       { label: 'Signer', value: 'Wallet only' },
     ],
   },
@@ -1630,17 +1889,30 @@ const state: DemoState = {
   bridgeStatus: 'Bridge idle.',
   bridgeRpcUrl: '',
   health: null,
+  systemHealth: null,
+  systemHealthDrawerOpen: false,
+  systemHealthChecking: false,
+  workspaceBackupStatus: '',
+  workspaceBackupConfirm: null,
   balances: null,
   preparedActions: initialBrowserWorkflow.preparedActions,
   materializedActions: initialBrowserWorkflow.preparedActions,
   recurringPayments: initialBrowserWorkflow.recurringPayments,
   receipts: initialBrowserWorkflow.receipts,
+  pendingTransactions: loadTransactionLedger(),
+  lastReconciliationAt: '',
   cloudCompletedPlans: [],
   cloudLastSync: '',
   lastCompletedFocusId: '',
   recurringDraft: defaultRecurringDraft(),
   recurringPreset: 'scheduled-transfer',
   recurringErrors: {},
+  recipientRules: initialRecipientRules,
+  recipientDraft: defaultRecipientDraft(),
+  recipientErrors: {},
+  agentPolicies: initialAgentPolicies,
+  agentPolicyDraft: defaultAgentPolicyDraft(),
+  agentPolicyErrors: {},
   recurringOccurrenceHistory: {},
   recurringNotificationStatus: {},
   recurringWebhookSecretOnce: null,
@@ -1681,6 +1953,9 @@ let copyResetTimer: number | null = null;
 let templatePickerController: AbortController | null = null;
 let artifactPickerController: AbortController | null = null;
 let selectPickerController: AbortController | null = null;
+let systemHealthTimer: number | null = null;
+let systemHealthRunController: AbortController | null = null;
+const SYSTEM_HEALTH_INTERVAL_MS = 30_000;
 
 const appRoot = document.querySelector<HTMLDivElement>('#app');
 
@@ -1695,6 +1970,7 @@ async function startApp(): Promise<void> {
     normalizeInitialRoute();
     hydrateGeneratedPlansForStartup();
     render();
+    startSystemHealthPolling();
     window.addEventListener('popstate', () => render());
     window.addEventListener('keydown', handleGlobalKeydown);
     await bootstrap();
@@ -1806,6 +2082,7 @@ async function bootstrap(): Promise<void> {
     }
   }
   render();
+  void reconcilePendingTransactions({ trigger: 'bootstrap' });
 }
 
 function render(): void {
@@ -3223,11 +3500,13 @@ function appWorkspace(mode: 'app' | 'demo' = 'app'): string {
   const modeClass = mode === 'demo' ? 'demo-workspace-mode' : 'launch-workspace-mode';
   return `
     <section id="${workspaceId}" class="app-workspace-section ${appModeClass} ${modeClass}" aria-labelledby="${titleId}" data-layout="app-root">
+      ${systemHealthStrip()}
+      ${systemHealthDrawer()}
       <div class="workspace-intro" data-layout="app-intro">
         <div>
           ${mode === 'demo' ? '<p class="eyebrow mini">Interactive demo</p>' : '<!-- Launch App eyebrow intentionally hidden. -->'}
           <h2 id="${titleId}">${mode === 'demo' ? 'Live approval demo.' : 'Agentic approval workspace.'}</h2>
-          ${mode === 'demo' ? '' : '<p>Draft with AI or templates, review the wallet action, approve through your signer, and keep proof.</p>'}
+          ${mode === 'demo' ? '' : '<p>AI or templates prepare review items. You check the route, recipient, amount, policy, and wallet action before signing.</p>'}
         </div>
         ${SHOW_DEV_CONTROLS ? systemSpine() : ''}
       </div>
@@ -3276,7 +3555,7 @@ function trustLayerPanel(): string {
   const items: Array<[string, string]> = [
     ['No key custody', 'Wallet keeps private keys'],
     ['No unlimited signer', 'Every action has a boundary'],
-    ['AI drafts only', 'Wallet decides approve or deny'],
+    ['AI prepares review', 'Wallet owner reviews and signs'],
     [mode === 'agentic-cloud' ? 'Cloud receipts' : 'Local receipts', 'Saved proofs stay available'],
   ];
   return `
@@ -3624,6 +3903,124 @@ function metric(label: string, value: string, tone = ''): string {
   `;
 }
 
+const SYSTEM_HEALTH_ORDER: HealthCheckId[] = ['rpc', 'jupiter', 'wallet', 'cluster', 'ai'];
+
+function systemHealthStrip(): string {
+  const health = state.systemHealth;
+  const worst = health?.worstStatus ?? 'unknown';
+  const checks = health?.checks;
+  return `
+    <section class="system-health-strip ${worst}" aria-label="System health">
+      <button
+        type="button"
+        class="system-health-strip-toggle"
+        data-health-action="toggle-drawer"
+        aria-expanded="${state.systemHealthDrawerOpen ? 'true' : 'false'}"
+      >
+        <span class="system-health-strip-label">System health</span>
+        <span class="system-health-dots">
+          ${SYSTEM_HEALTH_ORDER.map((id) => {
+            const check = checks?.[id];
+            const status = check?.status ?? 'unknown';
+            const label = check?.label ?? healthCheckLabel(id);
+            const message = check?.message ?? 'Checking…';
+            return `
+              <span class="system-health-dot ${status}" title="${escapeHtml(label)}: ${escapeHtml(message)}">
+                <i class="health-dot" aria-hidden="true"></i>
+                <span class="health-dot-label">${escapeHtml(label)}</span>
+                <span class="health-dot-status">${escapeHtml(healthStatusShort(status))}</span>
+              </span>
+            `;
+          }).join('')}
+        </span>
+        <span class="system-health-strip-cta">${state.systemHealthDrawerOpen ? 'Close' : 'Details'}</span>
+      </button>
+    </section>
+  `;
+}
+
+function systemHealthDrawer(): string {
+  if (!state.systemHealthDrawerOpen) return '';
+  const health = state.systemHealth;
+  const lastCheckedAt = health?.lastCheckedAt;
+  return `
+    <div class="system-health-drawer-scrim" data-health-action="close-drawer" aria-hidden="true"></div>
+    <aside class="system-health-drawer open" role="dialog" aria-label="System health detail">
+      <header class="system-health-drawer-header">
+        <div>
+          <p class="system-health-drawer-eyebrow">System health</p>
+          <h2>What is connected right now</h2>
+          ${
+            lastCheckedAt
+              ? `<small>Last checked ${escapeHtml(formatDateTime(lastCheckedAt))}</small>`
+              : '<small>Checking…</small>'
+          }
+        </div>
+        <button
+          type="button"
+          class="system-health-drawer-close"
+          data-health-action="close-drawer"
+          aria-label="Close system health"
+        >&times;</button>
+      </header>
+      <div class="system-health-drawer-body">
+        ${SYSTEM_HEALTH_ORDER.map((id) => systemHealthDetailRow(id, health?.checks[id])).join('')}
+      </div>
+      <footer class="system-health-drawer-footer">
+        <button type="button" class="primary" data-health-action="recheck" ${state.systemHealthChecking ? 'disabled' : ''}>${state.systemHealthChecking ? 'Checking…' : 'Recheck all'}</button>
+        <button type="button" class="utility" data-health-action="copy-debug">Copy debug snapshot</button>
+      </footer>
+    </aside>
+  `;
+}
+
+function systemHealthDetailRow(id: HealthCheckId, check: HealthCheck | undefined): string {
+  const status = check?.status ?? 'unknown';
+  const label = check?.label ?? healthCheckLabel(id);
+  const message = check?.message ?? 'Checking…';
+  const detail = check?.detail ?? '';
+  const checkedAt = check?.checkedAt ?? '';
+  const remediation = check?.remediation;
+  return `
+    <article class="system-health-row ${status}" data-health-row="${escapeHtml(id)}">
+      <div class="system-health-row-head">
+        <span class="system-health-dot ${status}"><i class="health-dot" aria-hidden="true"></i></span>
+        <div class="system-health-row-copy">
+          <strong>${escapeHtml(label)}</strong>
+          <p>${escapeHtml(message)}</p>
+        </div>
+        <span class="system-health-row-status">${escapeHtml(healthStatusShort(status))}</span>
+      </div>
+      ${detail ? `<p class="system-health-row-detail">${escapeHtml(detail)}</p>` : ''}
+      ${checkedAt ? `<small class="system-health-row-time">${escapeHtml(formatDateTime(checkedAt))}</small>` : ''}
+      ${
+        remediation
+          ? `<button type="button" class="utility system-health-row-remediation" data-health-action="remediate" data-health-intent="${escapeHtml(remediation.intent)}">${escapeHtml(remediation.label)}</button>`
+          : ''
+      }
+    </article>
+  `;
+}
+
+function healthCheckLabel(id: HealthCheckId): string {
+  switch (id) {
+    case 'rpc': return 'RPC';
+    case 'jupiter': return 'Jupiter';
+    case 'wallet': return 'Wallet';
+    case 'cluster': return 'Cluster';
+    case 'ai': return 'AI';
+  }
+}
+
+function healthStatusShort(status: HealthStatus): string {
+  switch (status) {
+    case 'ok': return 'ok';
+    case 'warn': return 'slow';
+    case 'fail': return 'down';
+    case 'unknown': return '…';
+  }
+}
+
 function walletRail(): string {
   const showConnectionDetails = SHOW_DEV_CONTROLS && !state.address;
   const showPublicWalletPicker =
@@ -3685,6 +4082,8 @@ function walletRail(): string {
 
       <div class="rail-primary-stack">
         ${cloudWorkspaceCard()}
+        ${recipientRulesPanel()}
+        ${agentPoliciesPanel()}
         ${aiSettingsPanel('rail')}
       </div>
       ${SHOW_DEV_CONTROLS ? '' : `
@@ -3783,6 +4182,685 @@ function cloudWorkspaceCard(): string {
       </section>
     </details>
   `;
+}
+
+function recipientRulesPanel(): string {
+  const rules = state.recipientRules;
+  const savedCount = rules.recipients.length;
+  const open = rules.enabled || savedCount === 0 ? 'open' : '';
+  const summary = recipientRulesSummary();
+  return `
+    <details class="recipient-rules-panel rail-details ${rules.enabled ? 'enabled' : 'disabled'}" data-layout="recipient-rules-panel" ${open}>
+      <summary>
+        <span class="recipient-rules-summary-copy">
+          <span>Recipient rules</span>
+          <em>${escapeHtml(summary)}</em>
+        </span>
+        <strong>${rules.enabled ? 'on' : 'off'}</strong>
+      </summary>
+      <section class="recipient-rules-card" aria-label="Recipient rules">
+        <div class="recipient-rule-toggles" role="group" aria-label="Recipient rule toggles">
+          ${recipientToggleButton('enabled', 'Checks', rules.enabled, 'Recipient checks')}
+          ${recipientToggleButton('allowListEnabled', 'Allow list', rules.allowListEnabled, 'Require trusted recipients')}
+          ${recipientToggleButton('blockListEnabled', 'Block list', rules.blockListEnabled, 'Reject blocked recipients')}
+        </div>
+        <div class="recipient-save-form">
+          <label class="field compact">
+            <span>Name</span>
+            <input data-recipient-field="name" value="${escapeHtml(state.recipientDraft.name)}" placeholder="Jeremy" autocomplete="off" ${state.busy ? 'disabled' : ''} />
+            ${recipientFieldError('name')}
+          </label>
+          <label class="field compact">
+            <span>Address</span>
+            <input data-recipient-field="address" value="${escapeHtml(state.recipientDraft.address)}" placeholder="Solana address" autocomplete="off" spellcheck="false" ${state.busy ? 'disabled' : ''} />
+            ${recipientFieldError('address')}
+          </label>
+          <label class="field compact">
+            <span>List</span>
+            ${selectPicker({
+              id: 'recipientDraftPolicy',
+              value: state.recipientDraft.policy,
+              attrs: { 'data-recipient-field': 'policy' },
+              disabled: state.busy,
+              options: recipientPolicyOptions(),
+            })}
+          </label>
+          <label class="field compact recipient-note-field">
+            <span>Note</span>
+            <input data-recipient-field="note" value="${escapeHtml(state.recipientDraft.note)}" placeholder="Invoice, contractor, savings" autocomplete="off" ${state.busy ? 'disabled' : ''} />
+          </label>
+          <div class="recipient-save-actions">
+            <button type="button" class="primary" data-recipient-action="save" ${state.busy ? 'disabled' : ''}>Save</button>
+            <button type="button" class="utility" data-recipient-action="reset" ${state.busy ? 'disabled' : ''}>Clear</button>
+          </div>
+        </div>
+        ${savedCount ? savedRecipientList(rules.recipients) : '<div class="recipient-empty">No saved recipients</div>'}
+      </section>
+    </details>
+  `;
+}
+
+function agentPoliciesPanel(): string {
+  const policies = state.agentPolicies;
+  const enabledCount = policies.filter((policy) => policy.enabled).length;
+  const open = policies.length === 0 ? 'open' : '';
+  const summary = policies.length
+    ? `${enabledCount} of ${policies.length} on`
+    : 'No saved policies yet';
+  const draft = state.agentPolicyDraft;
+  const errors = state.agentPolicyErrors;
+  return `
+    <details class="agent-policies-panel rail-details" data-layout="agent-policies-panel" ${open}>
+      <summary>
+        <span class="agent-policies-summary-copy">
+          <span>Agent policies</span>
+          <em>${escapeHtml(summary)}</em>
+        </span>
+        <strong>${enabledCount ? `${enabledCount} on` : 'off'}</strong>
+      </summary>
+      <section class="agent-policies-card" aria-label="Agent policies">
+        <p class="agent-policies-intro">Saved policies are sent to the agent every time it reviews a draft. They guide its decision but never block you from sending.</p>
+        <div class="agent-policy-save-form">
+          <label class="field compact">
+            <span>Label</span>
+            <input data-agent-policy-field="label" value="${escapeHtml(draft.label)}" placeholder="No swaps over 1% slippage" autocomplete="off" ${state.busy ? 'disabled' : ''} />
+            ${agentPolicyFieldError('label')}
+          </label>
+          <label class="field compact">
+            <span>Kind</span>
+            ${selectPicker({
+              id: 'agentPolicyDraftKind',
+              value: draft.kind,
+              attrs: { 'data-agent-policy-field': 'kind' },
+              disabled: state.busy,
+              options: agentPolicyKindOptions(),
+            })}
+          </label>
+          <label class="field compact">
+            <span>${escapeHtml(agentPolicyParamLabel(draft.kind))}</span>
+            <input data-agent-policy-field="paramValue" value="${escapeHtml(draft.paramValue)}" placeholder="${escapeHtml(agentPolicyParamPlaceholder(draft.kind))}" autocomplete="off" ${state.busy ? 'disabled' : ''} />
+            ${agentPolicyFieldError('paramValue')}
+          </label>
+          <label class="field compact agent-policy-detail-field">
+            <span>Detail</span>
+            <input data-agent-policy-field="detail" value="${escapeHtml(draft.detail)}" placeholder="Extra context for the agent (optional)" autocomplete="off" ${state.busy ? 'disabled' : ''} />
+          </label>
+          <div class="agent-policy-save-actions">
+            <button type="button" class="primary" data-agent-policy-action="save" ${state.busy ? 'disabled' : ''}>Save policy</button>
+            <button type="button" class="utility" data-agent-policy-action="reset" ${state.busy ? 'disabled' : ''}>Clear</button>
+          </div>
+          ${errors._form ? `<p class="error-text">${escapeHtml(errors._form)}</p>` : ''}
+        </div>
+        ${policies.length ? savedAgentPolicyList(policies) : '<div class="agent-policy-empty">No saved agent policies yet</div>'}
+      </section>
+    </details>
+  `;
+}
+
+function agentPolicyFieldError(key: string): string {
+  const message = state.agentPolicyErrors[key];
+  return message ? `<small class="error-text">${escapeHtml(message)}</small>` : '';
+}
+
+function agentPolicyKindOptions(): SelectPickerOption[] {
+  return [
+    { value: 'slippage_max', label: 'Max swap slippage', detail: 'Deny or warn when slippage is over a percentage you set.' },
+    { value: 'amount_max', label: 'Max transfer amount', detail: 'Flag transfers above an amount.' },
+    { value: 'token_allow', label: 'Only these tokens', detail: 'Restrict to a comma-separated list of token symbols.' },
+    { value: 'token_block', label: 'Block these tokens', detail: 'Comma-separated tokens to never touch.' },
+    { value: 'require_known_recipient', label: 'Require known recipient', detail: 'Flag transfers to recipients not in your allow list.' },
+    { value: 'flag_unknown_mint', label: 'Flag unknown mints', detail: 'Ask the agent to inspect mints outside a known list.' },
+    { value: 'custom', label: 'Custom rule', detail: 'Free-text rule the agent should consider.' },
+  ];
+}
+
+function agentPolicyParamLabel(kind: AgentPolicyKind): string {
+  switch (kind) {
+    case 'slippage_max': return 'Max slippage (%)';
+    case 'amount_max': return 'Max amount';
+    case 'token_allow': return 'Allowed tokens';
+    case 'token_block': return 'Blocked tokens';
+    case 'require_known_recipient': return 'Threshold above which to require (optional)';
+    case 'flag_unknown_mint': return 'Known mints (optional)';
+    case 'custom': return 'Rule text';
+    default: return 'Value';
+  }
+}
+
+function agentPolicyParamPlaceholder(kind: AgentPolicyKind): string {
+  switch (kind) {
+    case 'slippage_max': return '1';
+    case 'amount_max': return '500';
+    case 'token_allow': return 'USDC, SOL, JUP';
+    case 'token_block': return 'SCAM, RUG';
+    case 'require_known_recipient': return '100';
+    case 'flag_unknown_mint': return 'USDC, SOL, JUP, BONK';
+    case 'custom': return 'Deny if the route uses more than 2 hops';
+    default: return '';
+  }
+}
+
+function savedAgentPolicyList(policies: UserAgentPolicy[]): string {
+  return `
+    <div class="agent-policy-list">
+      ${policies.map(agentPolicyRow).join('')}
+    </div>
+  `;
+}
+
+function agentPolicyRow(policy: UserAgentPolicy): string {
+  const paramSummary = agentPolicySummaryLine(policy);
+  return `
+    <div class="agent-policy-row ${policy.enabled ? 'enabled' : 'disabled'}" data-agent-policy-id="${escapeHtml(policy.id)}">
+      <div class="agent-policy-row-head">
+        <strong>${escapeHtml(policy.label)}</strong>
+        <button
+          type="button"
+          class="agent-policy-toggle ${policy.enabled ? 'active' : ''}"
+          data-agent-policy-action="toggle"
+          data-agent-policy-id="${escapeHtml(policy.id)}"
+          aria-pressed="${policy.enabled ? 'true' : 'false'}"
+          ${state.busy ? 'disabled' : ''}
+        >${policy.enabled ? 'On' : 'Off'}</button>
+        <button
+          type="button"
+          class="utility danger"
+          data-agent-policy-action="delete"
+          data-agent-policy-id="${escapeHtml(policy.id)}"
+          ${state.busy ? 'disabled' : ''}
+        >Delete</button>
+      </div>
+      <p class="agent-policy-row-detail">${escapeHtml(paramSummary)}</p>
+      ${policy.detail ? `<p class="agent-policy-row-detail muted">${escapeHtml(policy.detail)}</p>` : ''}
+    </div>
+  `;
+}
+
+function agentPolicySummaryLine(policy: UserAgentPolicy): string {
+  const value = policy.params?.value?.trim();
+  switch (policy.kind) {
+    case 'slippage_max':
+      return value ? `Warn or deny when slippage is over ${value}%` : 'Warn when slippage is high';
+    case 'amount_max':
+      return value ? `Flag when amount is over ${value}` : 'Flag large transfers';
+    case 'token_allow':
+      return value ? `Only allow: ${value}` : 'Only allow saved tokens';
+    case 'token_block':
+      return value ? `Never touch: ${value}` : 'Block listed tokens';
+    case 'require_known_recipient':
+      return value ? `Require known recipient over ${value}` : 'Require known recipient';
+    case 'flag_unknown_mint':
+      return value ? `Flag mints outside: ${value}` : 'Flag unknown mints';
+    case 'custom':
+    default:
+      return value || 'Custom rule for the agent to consider';
+  }
+}
+
+function recipientToggleButton(
+  key: 'enabled' | 'allowListEnabled' | 'blockListEnabled',
+  label: string,
+  active: boolean,
+  title: string,
+): string {
+  return `
+    <button
+      type="button"
+      data-recipient-toggle="${escapeHtml(key)}"
+      class="${active ? 'active' : ''}"
+      aria-pressed="${active ? 'true' : 'false'}"
+      title="${escapeHtml(title)}"
+      ${state.busy ? 'disabled' : ''}
+    >
+      ${escapeHtml(label)}
+    </button>
+  `;
+}
+
+function recipientRulesSummary(): string {
+  const rules = state.recipientRules;
+  const saved = `${rules.recipients.length} saved`;
+  if (!rules.enabled) return `${saved} - checks off`;
+  const active = [
+    rules.allowListEnabled ? 'allow list' : '',
+    rules.blockListEnabled ? 'block list' : '',
+  ].filter(Boolean);
+  return `${saved} - ${active.length ? active.join(' + ') : 'checks on'}`;
+}
+
+function recipientPolicyOptions(): SelectPickerOption[] {
+  return [
+    { value: 'allow', label: 'Allow', meta: 'Trusted recipient' },
+    { value: 'known', label: 'Known', meta: 'Saved recipient' },
+    { value: 'block', label: 'Block', meta: 'Rejected recipient' },
+  ];
+}
+
+function savedRecipientList(recipients: SavedRecipient[]): string {
+  return `
+    <div class="recipient-list" aria-label="Saved recipients">
+      ${recipients.map(savedRecipientRow).join('')}
+    </div>
+  `;
+}
+
+function savedRecipientRow(recipient: SavedRecipient): string {
+  const policy = recipientPolicyDisplay(recipient.policy);
+  return `
+    <article class="recipient-row ${escapeHtml(recipient.policy)}">
+      <div>
+        <strong>${escapeHtml(recipient.name)}</strong>
+        <span title="${escapeHtml(recipient.address)}">${escapeHtml(short(recipient.address))}</span>
+        ${recipient.note ? `<em>${escapeHtml(recipient.note)}</em>` : ''}
+      </div>
+      <span class="recipient-policy-pill ${escapeHtml(recipient.policy)}">${escapeHtml(policy)}</span>
+      <div class="recipient-row-actions">
+        <button type="button" data-recipient-action="use" data-recipient-id="${escapeHtml(recipient.id)}" title="Use recipient" ${state.busy ? 'disabled' : ''}>Use</button>
+        <button type="button" data-recipient-action="policy" data-recipient-id="${escapeHtml(recipient.id)}" data-recipient-policy="allow" title="Move to allow list" ${state.busy ? 'disabled' : ''}>Allow</button>
+        <button type="button" data-recipient-action="policy" data-recipient-id="${escapeHtml(recipient.id)}" data-recipient-policy="block" title="Move to block list" ${state.busy ? 'disabled' : ''}>Block</button>
+        <button type="button" class="utility danger" data-recipient-action="delete" data-recipient-id="${escapeHtml(recipient.id)}" title="Delete recipient" ${state.busy ? 'disabled' : ''}>Delete</button>
+      </div>
+    </article>
+  `;
+}
+
+function recipientPolicyDisplay(policy: RecipientPolicy): string {
+  switch (policy) {
+    case 'allow':
+      return 'Allowed';
+    case 'block':
+      return 'Blocked';
+    case 'known':
+      return 'Known';
+  }
+}
+
+function savedRecipientById(id: string): SavedRecipient | undefined {
+  return state.recipientRules.recipients.find((recipient) => recipient.id === id);
+}
+
+function savedRecipientForAddress(address: string): SavedRecipient | undefined {
+  const normalized = address.trim();
+  if (!normalized) return undefined;
+  return state.recipientRules.recipients.find((recipient) => recipient.address === normalized);
+}
+
+function recipientDisplayLabel(address: string): string {
+  const normalized = address.trim();
+  if (!normalized) return 'n/a';
+  const recipient = savedRecipientForAddress(normalized);
+  return recipient ? `${recipient.name} (${short(normalized)})` : short(normalized);
+}
+
+function recipientPolicyStatus(address: string): RecipientPolicyStatus {
+  const normalized = address.trim();
+  const recipient = savedRecipientForAddress(normalized);
+  const blocked = Boolean(recipient && recipient.policy === 'block' && state.recipientRules.blockListEnabled);
+  const allowed = Boolean(recipient && recipient.policy === 'allow');
+  const allowRequired = Boolean(
+    state.recipientRules.allowListEnabled &&
+      normalized &&
+      (!recipient || recipient.policy !== 'allow'),
+  );
+  const name = recipient?.name ?? short(normalized);
+  if (!normalized) {
+    return {
+      address: '',
+      known: false,
+      allowed: false,
+      blocked: false,
+      allowRequired: false,
+      label: 'Recipient not set',
+      title: 'Recipient not set',
+    };
+  }
+  if (blocked) {
+    return {
+      address: normalized,
+      ...(recipient && { recipient }),
+      known: Boolean(recipient),
+      allowed,
+      blocked,
+      allowRequired: false,
+      label: `${name} is blocked`,
+      title: recipientPolicyBlockReason(normalized) ?? `${name} is blocked.`,
+    };
+  }
+  if (allowRequired) {
+    return {
+      address: normalized,
+      ...(recipient && { recipient }),
+      known: Boolean(recipient),
+      allowed,
+      blocked: false,
+      allowRequired,
+      label: `${name} not on allow list`,
+      title: recipientPolicyBlockReason(normalized) ?? `${name} is not on allow list.`,
+    };
+  }
+  if (recipient && allowed) {
+    return {
+      address: normalized,
+      recipient,
+      known: true,
+      allowed,
+      blocked: false,
+      allowRequired: false,
+      label: `${recipient.name} allowed`,
+      title: `${recipient.name} is on the allow list.`,
+    };
+  }
+  if (recipient) {
+    return {
+      address: normalized,
+      recipient,
+      known: true,
+      allowed: false,
+      blocked: false,
+      allowRequired: false,
+      label: `${recipient.name} saved`,
+      title: `${recipient.name} is saved as a known recipient.`,
+    };
+  }
+  return {
+    address: normalized,
+    known: false,
+    allowed: false,
+    blocked: false,
+    allowRequired: false,
+    label: 'Unsaved recipient',
+    title: 'This recipient is not saved.',
+  };
+}
+
+function recipientPolicyBlockReason(address: string): string | null {
+  const normalized = address.trim();
+  if (!normalized || !state.recipientRules.enabled) return null;
+  const recipient = savedRecipientForAddress(normalized);
+  if (state.recipientRules.blockListEnabled && recipient?.policy === 'block') {
+    return `${recipient.name} is on your block list. Remove or allow this recipient before approving.`;
+  }
+  if (state.recipientRules.allowListEnabled && recipient?.policy !== 'allow') {
+    return recipient
+      ? `${recipient.name} is saved but not on your allow list. Move it to allow list or turn off allow-list checks.`
+      : `${short(normalized)} is not on your allow list. Save it as allowed or turn off allow-list checks.`;
+  }
+  return null;
+}
+
+function actionRecipientPolicyBlockReason(action: PreparedAction): string | null {
+  return recipientPolicyBlockReason(recipientParam(action));
+}
+
+function isRecipientFieldId(fieldId: string): boolean {
+  return fieldId === 'recipient' || fieldId === 'recipientAddress' || fieldId === 'settlementWallet';
+}
+
+function updateRecipientDraftField(field: HTMLInputElement | HTMLSelectElement): void {
+  const key = field.dataset.recipientField;
+  if (key === 'name' || key === 'address' || key === 'note') {
+    state.recipientDraft[key] = field.value;
+    delete state.recipientErrors[key];
+    return;
+  }
+  if (key === 'policy' && isRecipientPolicy(field.value)) {
+    state.recipientDraft.policy = field.value;
+  }
+}
+
+function applyRecipientSelection(select: HTMLSelectElement): void {
+  const recipientId = select.value;
+  if (recipientId === '__manual__') return;
+  const recipient = savedRecipientById(recipientId);
+  if (!recipient) return;
+  const target = select.dataset.recipientSelect;
+  const fieldId = select.dataset.recipientTargetField || 'recipient';
+  if (target === 'template') {
+    state.templateFields[fieldId] = recipient.address;
+    delete state.templateFieldErrors[fieldId];
+    state.agentPlan = null;
+    state.agentSignature = '';
+    state.agentPreparedActionId = '';
+    render();
+    return;
+  }
+  if (target === 'recurring') {
+    state.recurringDraft = readRecurringDraft();
+    state.recurringDraft.recipient = recipient.address;
+    delete state.recurringErrors.recurringRecipient;
+    render();
+  }
+}
+
+function updateAgentPolicyDraftField(field: HTMLInputElement | HTMLSelectElement): void {
+  const key = field.dataset.agentPolicyField;
+  if (key === 'label' || key === 'detail' || key === 'paramValue') {
+    state.agentPolicyDraft[key] = field.value;
+    delete state.agentPolicyErrors[key];
+    delete state.agentPolicyErrors._form;
+    return;
+  }
+  if (key === 'kind' && isAgentPolicyKind(field.value)) {
+    state.agentPolicyDraft.kind = field.value;
+    state.agentPolicyDraft.paramValue = '';
+    delete state.agentPolicyErrors.paramValue;
+    delete state.agentPolicyErrors._form;
+    render();
+  }
+}
+
+function handleAgentPolicyAction(button: HTMLButtonElement): void {
+  const action = button.dataset.agentPolicyAction;
+  if (action === 'save') {
+    saveAgentPolicyDraft();
+    return;
+  }
+  if (action === 'reset') {
+    state.agentPolicyDraft = defaultAgentPolicyDraft();
+    state.agentPolicyErrors = {};
+    render();
+    return;
+  }
+  const policyId = button.dataset.agentPolicyId;
+  if (!policyId) return;
+  if (action === 'toggle') {
+    toggleAgentPolicy(policyId);
+    return;
+  }
+  if (action === 'delete') {
+    deleteAgentPolicy(policyId);
+  }
+}
+
+function saveAgentPolicyDraft(): void {
+  const draft = {
+    ...state.agentPolicyDraft,
+    label: state.agentPolicyDraft.label.trim(),
+    detail: state.agentPolicyDraft.detail.trim(),
+    paramValue: state.agentPolicyDraft.paramValue.trim(),
+  };
+  const errors: Record<string, string> = {};
+  if (!draft.label) errors.label = 'A short label is required.';
+  if ((draft.kind === 'slippage_max' || draft.kind === 'amount_max') && draft.paramValue && Number.isNaN(Number(draft.paramValue))) {
+    errors.paramValue = 'Use a number for this rule.';
+  }
+  if ((draft.kind === 'token_allow' || draft.kind === 'token_block' || draft.kind === 'slippage_max' || draft.kind === 'amount_max' || draft.kind === 'custom') && !draft.paramValue) {
+    errors.paramValue = 'Add a value the agent should reason about.';
+  }
+  state.agentPolicyErrors = errors;
+  if (Object.keys(errors).length > 0) {
+    render();
+    return;
+  }
+  const now = new Date().toISOString();
+  const policy: UserAgentPolicy = {
+    id: newId('agent-policy'),
+    label: draft.label,
+    kind: draft.kind,
+    enabled: true,
+    detail: draft.detail,
+    ...(draft.paramValue ? { params: { value: draft.paramValue } } : {}),
+    createdAt: now,
+    updatedAt: now,
+  };
+  state.agentPolicies = [policy, ...state.agentPolicies];
+  state.agentPolicyDraft = defaultAgentPolicyDraft();
+  state.agentPolicyErrors = {};
+  saveAgentPolicies();
+  pushToast('success', 'Agent policy saved', `Saved "${policy.label}".`);
+  render();
+}
+
+function toggleAgentPolicy(policyId: string): void {
+  const now = new Date().toISOString();
+  let toggled = false;
+  state.agentPolicies = state.agentPolicies.map((policy) => {
+    if (policy.id !== policyId) return policy;
+    toggled = true;
+    return { ...policy, enabled: !policy.enabled, updatedAt: now };
+  });
+  if (toggled) {
+    saveAgentPolicies();
+    render();
+  }
+}
+
+function deleteAgentPolicy(policyId: string): void {
+  const before = state.agentPolicies.length;
+  state.agentPolicies = state.agentPolicies.filter((policy) => policy.id !== policyId);
+  if (state.agentPolicies.length === before) return;
+  saveAgentPolicies();
+  pushToast('success', 'Agent policy deleted', 'The policy will no longer be sent to the agent.');
+  render();
+}
+
+function handleRecipientAction(button: HTMLButtonElement): void {
+  const action = button.dataset.recipientAction;
+  if (action === 'save') {
+    saveRecipientDraft();
+    return;
+  }
+  if (action === 'reset') {
+    state.recipientDraft = defaultRecipientDraft();
+    state.recipientErrors = {};
+    render();
+    return;
+  }
+  const recipientId = button.dataset.recipientId;
+  if (!recipientId) return;
+  if (action === 'delete') {
+    deleteSavedRecipient(recipientId);
+    return;
+  }
+  if (action === 'policy') {
+    const policy = button.dataset.recipientPolicy;
+    if (isRecipientPolicy(policy)) {
+      updateSavedRecipientPolicy(recipientId, policy);
+    }
+    return;
+  }
+  if (action === 'use') {
+    useSavedRecipient(recipientId);
+  }
+}
+
+function saveRecipientDraft(): void {
+  const draft = {
+    ...state.recipientDraft,
+    name: state.recipientDraft.name.trim(),
+    address: state.recipientDraft.address.trim(),
+    note: state.recipientDraft.note.trim(),
+  };
+  const errors: Record<string, string> = {};
+  if (!draft.name) errors.name = 'Name is required.';
+  if (!draft.address) {
+    errors.address = 'Address is required.';
+  } else if (!isSolanaPublicKeyText(draft.address)) {
+    errors.address = 'Use a valid Solana address.';
+  }
+  state.recipientErrors = errors;
+  if (Object.keys(errors).length > 0) {
+    render();
+    return;
+  }
+  const now = new Date().toISOString();
+  const existing = savedRecipientForAddress(draft.address);
+  const recipient: SavedRecipient = {
+    id: existing?.id ?? newId('recipient'),
+    name: draft.name.slice(0, 48),
+    address: draft.address,
+    policy: draft.policy,
+    ...(draft.note ? { note: draft.note.slice(0, 140) } : {}),
+    createdAt: existing?.createdAt ?? now,
+    updatedAt: now,
+  };
+  state.recipientRules = {
+    ...state.recipientRules,
+    enabled: true,
+    allowListEnabled: state.recipientRules.allowListEnabled || recipient.policy === 'allow',
+    blockListEnabled: state.recipientRules.blockListEnabled || recipient.policy === 'block',
+    recipients: mergeSavedRecipients([recipient, ...state.recipientRules.recipients.filter((entry) => entry.id !== recipient.id)]),
+  };
+  state.recipientDraft = defaultRecipientDraft();
+  state.recipientErrors = {};
+  saveRecipientRules();
+  pushToast('success', 'Recipient saved', `${recipient.name} - ${recipientPolicyDisplay(recipient.policy)}`);
+  render();
+}
+
+function deleteSavedRecipient(recipientId: string): void {
+  const recipient = savedRecipientById(recipientId);
+  state.recipientRules.recipients = state.recipientRules.recipients.filter((entry) => entry.id !== recipientId);
+  saveRecipientRules();
+  pushToast('success', 'Recipient removed', recipient?.name ?? recipientId);
+  render();
+}
+
+function updateSavedRecipientPolicy(recipientId: string, policy: RecipientPolicy): void {
+  const now = new Date().toISOString();
+  const recipient = savedRecipientById(recipientId);
+  if (!recipient) return;
+  state.recipientRules = {
+    ...state.recipientRules,
+    enabled: true,
+    allowListEnabled: state.recipientRules.allowListEnabled || policy === 'allow',
+    blockListEnabled: state.recipientRules.blockListEnabled || policy === 'block',
+    recipients: mergeSavedRecipients(state.recipientRules.recipients.map((entry) =>
+      entry.id === recipientId ? { ...entry, policy, updatedAt: now } : entry,
+    )),
+  };
+  saveRecipientRules();
+  pushToast('success', 'Recipient updated', `${recipient.name} - ${recipientPolicyDisplay(policy)}`);
+  render();
+}
+
+function useSavedRecipient(recipientId: string): void {
+  const recipient = savedRecipientById(recipientId);
+  if (!recipient) return;
+  if (state.activeTab === 'schedule') {
+    state.recurringDraft.recipient = recipient.address;
+    state.recurringView = 'create';
+    delete state.recurringErrors.recurringRecipient;
+  } else {
+    const template = selectedTemplate();
+    const field = template.fields.find((candidate) => isRecipientFieldId(candidate.id));
+    if (field) {
+      state.templateFields[field.id] = recipient.address;
+      delete state.templateFieldErrors[field.id];
+      state.activeTab = 'agent';
+      state.oneTimePlanView = 'create';
+      state.agentPlan = null;
+      state.agentSignature = '';
+      state.agentPreparedActionId = '';
+    }
+  }
+  pushToast('success', 'Recipient selected', recipient.name);
+  render();
+}
+
+function recipientFieldError(field: keyof RecipientDraft): string {
+  const message = state.recipientErrors[field];
+  return message ? `<em class="field-error-text">${escapeHtml(message)}</em>` : '';
 }
 
 function publicBridgeStatusCard(): string {
@@ -4408,7 +5486,7 @@ function commandCenterOverviewPanel(): string {
       ${SHOW_DEV_CONTROLS ? '' : trustLayerPanel()}
       <section class="approval-object signature-stage stage-overview stage-anchor ${openApprovals.length ? 'stage-active' : 'stage-draft'}">
         <div class="signature-object-head command-center-head">
-          ${sectionTitleLine('Approval workspace', 'Draft, review, approve, and prove agent actions from one controlled workspace.')}
+          ${sectionTitleLine('Approval workspace', 'AI prepares the review item; the wallet owner checks the details and signs only after review.')}
           <div class="command-center-actions">
             <button type="button" class="primary" data-one-time-view="create">New Request</button>
             <button type="button" class="utility" data-tab="labs">Sign Proof</button>
@@ -4416,8 +5494,8 @@ function commandCenterOverviewPanel(): string {
         </div>
 
         <div class="command-loop" aria-label="Agentic approval loop">
-          ${commandLoopStep('Draft', 'AI or templates prepare a bounded request.', Boolean(state.agentPlan) || state.generatedPlans.length > 0)}
-          ${commandLoopStep('Check', 'Check amount, route, recipient, risk, and rule.', state.generatedPlans.some(isGeneratedPlanActiveInReview))}
+          ${commandLoopStep('Draft', 'AI or templates prepare a bounded review item.', Boolean(state.agentPlan) || state.generatedPlans.length > 0)}
+          ${commandLoopStep('Check', 'Review amount, route, recipient, risk, and rule.', state.generatedPlans.some(isGeneratedPlanActiveInReview))}
           ${commandLoopStep('Approve', 'Wallet signs only the visible decision.', openApprovals.length > 0)}
           ${commandLoopStep('Prove', 'Saved proofs stay attached to Done.', completed.length > 0 || state.labArtifacts.length > 0)}
         </div>
@@ -4437,7 +5515,7 @@ function approvalsCardDetail(openApprovals: PreparedAction[]): string {
   const next = openApprovals[0];
   if (!next) return 'No approvals waiting';
   const recipient = recipientParam(next);
-  const recipientShort = recipient ? short(recipient) : '';
+  const recipientShort = recipient ? recipientDisplayLabel(recipient) : '';
   let base: string;
   if (next.kind === 'transfer_sol') {
     const amount = stringParam(next, 'amountSol') || stringParam(next, 'amount');
@@ -4657,9 +5735,85 @@ function commandCenterStoragePanel(): string {
           <span>Signed-out plans, approvals, and proofs stay on this device. No localhost is required.</span>
         </div>
 
+        ${workspaceBackupPanel()}
+
         ${commandCloudStorageDangerZone()}
       </section>
     </div>
+    ${workspaceBackupRestoreModal()}
+  `;
+}
+
+function workspaceBackupPanel(): string {
+  const pendingCount = state.pendingTransactions.length;
+  const unresolved = unresolvedPendingTransactions().length;
+  const statusLine = state.workspaceBackupStatus
+    ? `<p class="workspace-backup-status">${escapeHtml(state.workspaceBackupStatus)}</p>`
+    : '';
+  return `
+    <section class="workspace-backup-panel" aria-label="Workspace backup">
+      <div class="workspace-backup-header">
+        <div>
+          <strong>Workspace backup</strong>
+          <p>Export your drafts, repeat payments, proofs, and pending tx ledger to a JSON file. Restore it on another browser or after a reset.</p>
+        </div>
+      </div>
+      <div class="workspace-backup-stats">
+        <span><em>Pending tx records</em><strong>${pendingCount}</strong></span>
+        <span class="${unresolved > 0 ? 'warn' : ''}"><em>Unresolved on-chain</em><strong>${unresolved}</strong></span>
+        <span><em>Sections</em><strong>${WORKSPACE_BACKUP_KEYS.length}</strong></span>
+      </div>
+      <div class="workspace-backup-actions">
+        <button type="button" class="primary" data-workspace-backup-action="export">Export workspace</button>
+        <label class="workspace-backup-import">
+          <input type="file" accept="application/json,.json" data-workspace-backup-file hidden />
+          <span class="utility-button">Import workspace</span>
+        </label>
+      </div>
+      <ul class="workspace-backup-notes">
+        <li>API key in AI settings is included in the file. Treat the export as sensitive.</li>
+        <li>Bridge session token and desktop token are never exported.</li>
+        ${unresolved > 0 ? '<li class="warn">Resolve unresolved transactions before restoring on another device.</li>' : ''}
+      </ul>
+      ${statusLine}
+    </section>
+  `;
+}
+
+function workspaceBackupRestoreModal(): string {
+  const pending = state.workspaceBackupConfirm;
+  if (!pending) return '';
+  const summaries = pending.summaries;
+  return `
+    <div class="workspace-backup-modal-scrim" data-workspace-backup-action="restore-cancel" aria-hidden="true"></div>
+    <aside class="workspace-backup-modal" role="dialog" aria-label="Restore workspace">
+      <header>
+        <h3>Restore workspace from backup?</h3>
+        <button type="button" class="workspace-backup-modal-close" data-workspace-backup-action="restore-cancel" aria-label="Cancel restore">&times;</button>
+      </header>
+      <p>Restoring replaces the matching sections in this browser. Other browsers and devices are unaffected.</p>
+      <ul class="workspace-backup-modal-list">
+        ${summaries.map((summary) => `
+          <li>
+            <span>${escapeHtml(summary.key)}</span>
+            <strong>${summary.present ? `${summary.bytes.toLocaleString()} bytes` : 'cleared'}</strong>
+          </li>
+        `).join('')}
+      </ul>
+      ${pending.unresolvedCount > 0 ? `
+        <div class="workspace-backup-modal-warning">
+          <strong>${pending.unresolvedCount} pending transaction${pending.unresolvedCount === 1 ? '' : 's'} unresolved</strong>
+          <p>Restoring now may lose recovery state for transactions waiting on confirmation. Resolve them first, or override to continue anyway.</p>
+          ${pending.awaitingOverride
+            ? '<button type="button" class="utility danger" data-workspace-backup-action="restore-override">Override and continue</button>'
+            : '<p class="workspace-backup-modal-warning-ack">Override acknowledged.</p>'}
+        </div>
+      ` : ''}
+      <footer>
+        <button type="button" class="utility" data-workspace-backup-action="restore-cancel" ${pending.busy ? 'disabled' : ''}>Cancel</button>
+        <button type="button" class="primary" data-workspace-backup-action="restore-confirm" ${pending.busy || pending.awaitingOverride ? 'disabled' : ''}>${pending.busy ? 'Restoring…' : 'Restore workspace'}</button>
+      </footer>
+    </aside>
   `;
 }
 
@@ -5077,6 +6231,7 @@ function draftFlowHint(hasOneTimePlans: boolean, walletReady: boolean): string {
 function draftReadyPanel(plan: AgentPlan): string {
   const outcome = planOutcome(plan);
   const approvalCapable = canQueueAgentPlan(plan);
+  const activeRecord = generatedPlanById(state.selectedGeneratedPlanId);
   const queueable = canQueueGuardedPlan(plan);
   return `
     <section class="draft-ready-panel ${escapeHtml(outcomeClass(outcome))}">
@@ -5226,6 +6381,7 @@ function generatedPlanCard(record: GeneratedPlanRecord): string {
         </div>
         ${generatedPlanHeroValue(record)}
         <div class="review-plan-actions">
+          ${agentReviewButton(record)}
           ${approvalCapable ? `
             <button
               class="review-action-inbox"
@@ -5252,6 +6408,8 @@ function generatedPlanCard(record: GeneratedPlanRecord): string {
 
       ${generatedPlanReviewSummaryGrid(record)}
       ${generatedPlanUserNote(plan)}
+      ${generatedPlanAgentReviewStrip(record)}
+      ${agentOverrideStrip(record.agentOverride)}
       ${record.error ? `<p class="error-text">${escapeHtml(record.error)}</p>` : ''}
       ${guardrailBlocked ? actionHint : ''}
 
@@ -5306,7 +6464,7 @@ function generatedPlanReviewSummary(record: GeneratedPlanRecord): string {
   }
   if (plan.actionType === 'transfer_sol' || plan.actionType === 'transfer_spl' || plan.actionType === 'recurring_payment') {
     const recipient = planParameter(plan, ['recipient', 'recipientAddress', 'settlementWallet']);
-    const recipientCopy = recipient ? ` to ${short(recipient)}` : '';
+    const recipientCopy = recipient ? ` to ${recipientDisplayLabel(recipient)}` : '';
     return `${planAmountSummary(plan)}${recipientCopy}.`;
   }
   return compactSentence(plan.route || plan.intent);
@@ -5400,6 +6558,316 @@ function generatedPlanUserNote(plan: AgentPlan): string {
     <section class="review-plan-user-note" aria-label="User note" title="${escapeHtml(note)}">
       <span>Note</span>
       <p>${escapeHtml(note)}</p>
+    </section>
+  `;
+}
+
+function agentReviewButton(record: GeneratedPlanRecord): string {
+  if (!hasDetectedAgentReviewPath()) return '';
+  const review = record.agentReview;
+  const checking = state.activeOperation === 'review-agent-plan' && review?.status === 'checking';
+  const label = checking
+    ? 'Asking agent...'
+    : review?.status === 'needs_input'
+      ? 'Answer or ask again'
+      : review?.status === 'approved' || review?.status === 'denied' || review?.status === 'error'
+        ? 'Ask agent again'
+        : 'Ask agent';
+  return `
+    <button
+      class="utility review-action-agent ${review ? `agent-${escapeHtml(review.status)}` : ''}"
+      data-generated-plan-action="agent-review"
+      data-generated-plan-id="${escapeHtml(record.id)}"
+      ${!canRunAgentReview() || record.status === 'archived' ? 'disabled' : ''}
+      title="${escapeHtml(canRunAgentReview() ? 'Ask the configured agent to approve, deny, or ask questions about this draft.' : agentReviewUnavailableReason())}"
+    >
+      ${checking ? buttonSpinner() : ''}${escapeHtml(label)}
+    </button>
+  `;
+}
+
+function generatedPlanAgentReviewStrip(record: GeneratedPlanRecord): string {
+  const review = record.agentReview;
+  if (!review?.required) return '';
+  const label = agentReviewStripLabel(review.status);
+  const detail = review.checkedAt
+    ? `${agentReviewSourceLabel(review)} - ${formatDateTime(review.checkedAt)}`
+    : agentReviewSourceLabel(review);
+  const badge = agentReviewPathBadge(review.source);
+  const stale = isAgentReviewStale(record);
+  const staleBadge = stale ? '<span class="agent-review-stale-pill" title="The draft has changed since the agent reviewed it. Ask the agent again.">Stale</span>' : '';
+  return `
+    <section class="agent-review-strip ${escapeHtml(review.status)}${stale ? ' stale' : ''}" aria-label="Agent review">
+      <div>
+        <span>Agent review</span>
+        <strong>${escapeHtml(label)}</strong>
+        <em>${escapeHtml(detail)}</em>
+        ${badge}
+        ${staleBadge}
+      </div>
+      <p>${escapeHtml(review.reason || 'Agent review is required before this draft can move forward.')}</p>
+      ${review.status === 'needs_input' ? agentReviewQuestionsForm(record) : ''}
+      ${agentEvidenceDrawer(review)}
+      ${agentDenialActions(record)}
+    </section>
+  `;
+}
+
+function agentDenialActions(record: GeneratedPlanRecord): string {
+  const review = record.agentReview;
+  if (!review || review.status !== 'denied') return '';
+  if (record.status === 'archived' || record.status === 'failed') return '';
+  const disabled = state.busy;
+  return `
+    <div class="agent-denial-actions">
+      <button
+        type="button"
+        class="utility danger agent-denial-action"
+        data-generated-plan-action="agent-deny"
+        data-generated-plan-id="${escapeHtml(record.id)}"
+        ${disabled ? 'disabled' : ''}
+        title="Save a rejection proof using the agent's reason and archive this draft."
+      >
+        Deny with agent reason
+      </button>
+    </div>
+  `;
+}
+
+function agentEvidenceDrawer(review: AgentPlanReviewState): string {
+  const rows = agentEvidenceRows(review);
+  if (!rows.length) return '';
+  return `
+    <details class="agent-evidence-drawer">
+      <summary>What the agent checked (${rows.length})</summary>
+      <dl class="agent-evidence-rows">
+        ${rows.map((row) => `
+          <div class="agent-evidence-row ${row.tone ? escapeHtml(row.tone) : ''}">
+            <dt>${escapeHtml(row.label)}</dt>
+            <dd>${escapeHtml(row.value)}</dd>
+          </div>
+        `).join('')}
+      </dl>
+    </details>
+  `;
+}
+
+function agentEvidenceRows(review: AgentPlanReviewState): Array<{ label: string; value: string; tone?: 'good' | 'warn' | 'neutral' | 'fail' }> {
+  const rows: Array<{ label: string; value: string; tone?: 'good' | 'warn' | 'neutral' | 'fail' }> = [];
+  const facts = review.facts;
+  if (facts) {
+    const factSlots: Array<{ key: keyof AgentReviewFactSet; label: string }> = [
+      { key: 'route', label: 'Route' },
+      { key: 'quote', label: 'Quote' },
+      { key: 'protocol', label: 'Protocol' },
+      { key: 'simulation', label: 'Simulation' },
+      { key: 'tokenMint', label: 'Token mint' },
+      { key: 'recipient', label: 'Recipient' },
+      { key: 'policy', label: 'Policy' },
+      { key: 'limits', label: 'Limits' },
+    ];
+    for (const { key, label } of factSlots) {
+      const fact = facts[key];
+      if (!fact) continue;
+      const tone = agentEvidenceFactTone(fact.state);
+      const value = fact.message?.trim() || agentEvidenceFactStateLabel(fact.state);
+      rows.push({ label, value, tone });
+    }
+  }
+  if (review.policies?.length) {
+    for (const snapshot of review.policies) {
+      const tone: 'good' | 'warn' | 'neutral' | 'fail' = snapshot.outcome === 'pass'
+        ? 'good'
+        : snapshot.outcome === 'warn'
+          ? 'warn'
+          : snapshot.outcome === 'block'
+            ? 'fail'
+            : 'neutral';
+      rows.push({ label: `Policy: ${snapshot.label}`, value: snapshot.ruleText, tone });
+    }
+  }
+  const evidence = review.evidence;
+  if (isJsonObject(evidence)) {
+    const seenKeys = new Set(rows.map((row) => row.label.toLowerCase()));
+    for (const [key, raw] of Object.entries(evidence)) {
+      if (raw === undefined || raw === null) continue;
+      const label = humanizeEvidenceKey(key);
+      if (seenKeys.has(label.toLowerCase())) continue;
+      const value = typeof raw === 'string'
+        ? raw
+        : typeof raw === 'number' || typeof raw === 'boolean'
+          ? String(raw)
+          : stableJson(raw as JsonValue);
+      rows.push({ label, value, tone: 'neutral' });
+    }
+  }
+  return rows;
+}
+
+function agentEvidenceFactTone(state: AgentReviewFact['state']): 'good' | 'warn' | 'neutral' | 'fail' {
+  switch (state) {
+    case 'ok':
+    case 'checked':
+      return 'good';
+    case 'warn':
+      return 'warn';
+    case 'fail':
+      return 'fail';
+    case 'missing':
+    default:
+      return 'neutral';
+  }
+}
+
+function agentEvidenceFactStateLabel(state: AgentReviewFact['state']): string {
+  switch (state) {
+    case 'ok':
+      return 'OK';
+    case 'checked':
+      return 'Checked';
+    case 'warn':
+      return 'Warning noted';
+    case 'fail':
+      return 'Failed';
+    case 'missing':
+    default:
+      return 'Not checked';
+  }
+}
+
+function humanizeEvidenceKey(key: string): string {
+  const trimmed = key.trim();
+  if (!trimmed) return key;
+  const spaced = trimmed.replace(/[_-]+/g, ' ').replace(/([a-z])([A-Z])/g, '$1 $2');
+  return spaced.charAt(0).toUpperCase() + spaced.slice(1);
+}
+
+function agentReviewStripLabel(status: AgentPlanReviewStatus): string {
+  switch (status) {
+    case 'approved':
+      return 'Agent approved';
+    case 'denied':
+      return 'Agent denied';
+    case 'checking':
+      return 'Agent checking';
+    case 'needs_input':
+      return 'Agent needs input';
+    case 'error':
+    default:
+      return 'Agent review failed';
+  }
+}
+
+function agentReviewPathBadge(source: AiSettings['mode'] | undefined): string {
+  const label = agentReviewPathLabel(source);
+  const modifier = source ?? 'none';
+  return `<span class="agent-path-pill ${escapeHtml(modifier)}" title="Agent review path">${escapeHtml(label)}</span>`;
+}
+
+function agentReviewPathLabel(source: AiSettings['mode'] | undefined): string {
+  switch (source) {
+    case 'hosted':
+      return 'Hosted BYOK';
+    case 'bridge':
+      return 'Local bridge';
+    case 'session':
+      return 'Browser session';
+    default:
+      return 'No agent';
+  }
+}
+
+function agentReviewQuestionsForm(record: GeneratedPlanRecord): string {
+  const review = record.agentReview;
+  if (!review || review.status !== 'needs_input' || !review.questions?.length) return '';
+  const disabled = !canRunAgentReview() || record.status === 'archived';
+  const inputs = review.questions.map((question, index) => {
+    const value = review.answers?.[question.id] ?? '';
+    const safeId = `agent-review-q-${escapeHtml(record.id)}-${escapeHtml(question.id)}`;
+    const labelHtml = `<label for="${safeId}"><strong>${index + 1}.</strong> ${escapeHtml(question.prompt)}${question.required ? ' <em class="agent-review-required">*</em>' : ''}</label>`;
+    if (question.inputKind === 'select' && question.options?.length) {
+      const options = question.options.map((option) => `<option value="${escapeHtml(option)}" ${option === value ? 'selected' : ''}>${escapeHtml(option)}</option>`).join('');
+      return `
+        <div class="agent-review-question">
+          ${labelHtml}
+          <select
+            id="${safeId}"
+            data-agent-review-answer-input
+            data-generated-plan-id="${escapeHtml(record.id)}"
+            data-question-id="${escapeHtml(question.id)}"
+            ${disabled ? 'disabled' : ''}
+          >
+            <option value="" disabled ${value ? '' : 'selected'}>Choose...</option>
+            ${options}
+          </select>
+          ${question.hint ? `<small>${escapeHtml(question.hint)}</small>` : ''}
+        </div>
+      `;
+    }
+    const inputType = question.inputKind === 'number' ? 'number' : 'text';
+    return `
+      <div class="agent-review-question">
+        ${labelHtml}
+        <input
+          id="${safeId}"
+          type="${inputType}"
+          data-agent-review-answer-input
+          data-generated-plan-id="${escapeHtml(record.id)}"
+          data-question-id="${escapeHtml(question.id)}"
+          value="${escapeHtml(value)}"
+          placeholder="Type your answer..."
+          ${question.required ? 'required' : ''}
+          ${disabled ? 'disabled' : ''}
+        />
+        ${question.hint ? `<small>${escapeHtml(question.hint)}</small>` : ''}
+      </div>
+    `;
+  }).join('');
+  return `
+    <form
+      class="agent-review-questions"
+      data-generated-plan-action="agent-answer"
+      data-generated-plan-id="${escapeHtml(record.id)}"
+    >
+      <p class="agent-review-questions-intro">Answer to continue the agent review.</p>
+      ${inputs}
+      <div class="agent-review-questions-actions">
+        <button type="submit" class="primary" ${disabled ? 'disabled' : ''}>Send answers</button>
+        <button
+          type="button"
+          class="utility"
+          data-generated-plan-action="agent-review"
+          data-generated-plan-id="${escapeHtml(record.id)}"
+          ${disabled ? 'disabled' : ''}
+        >Ask agent again</button>
+      </div>
+    </form>
+  `;
+}
+
+function agentReviewSourceLabel(review: AgentPlanReviewState): string {
+  const parts = [
+    review.provider || (review.source ? `${review.source} AI` : 'Agent'),
+    review.model,
+  ].filter(Boolean);
+  return parts.join(' - ') || 'Agent';
+}
+
+function agentOverrideStrip(override: AgentReviewOverride | undefined): string {
+  if (!override) return '';
+  const verdict = overrideShortLabel(override);
+  const userReason = override.userReason?.trim();
+  const agentReason = override.agentReason?.trim();
+  const pathLabel = agentReviewPathLabel(override.source);
+  return `
+    <section class="agent-override-strip" aria-label="Agent override receipt">
+      <div>
+        <span>Override</span>
+        <strong>User sent despite ${escapeHtml(verdict)}</strong>
+        <em>${escapeHtml(formatDateTime(override.overriddenAt))} - ${escapeHtml(pathLabel)}</em>
+      </div>
+      ${agentReason ? `<p><strong>Agent said:</strong> ${escapeHtml(agentReason)}</p>` : ''}
+      ${userReason ? `<p><strong>User reason:</strong> ${escapeHtml(userReason)}</p>` : ''}
     </section>
   `;
 }
@@ -5664,7 +7132,7 @@ function planAmountTokenCopyActions(plan: AgentPlan): SummaryCopyAction[] {
 
 function planRecipientOrRoute(plan: AgentPlan): string {
   const recipient = planParameter(plan, ['recipient', 'recipientAddress', 'settlementWallet']);
-  if (recipient) return recipient;
+  if (recipient) return recipientDisplayLabel(recipient);
   if (plan.actionType === 'swap') {
     return tokenRouteDisplaySummary(plan.parameters.inputToken || 'input', plan.parameters.outputToken || 'output').value;
   }
@@ -5888,6 +7356,7 @@ function generatedPlanAuditModal(record: GeneratedPlanRecord): string {
           <button class="utility" data-generated-plan-modal-close aria-label="Close plan details">Close</button>
         </div>
         <div class="generated-plan-modal-actions">
+          ${agentReviewButton(record)}
           <button
             data-generated-plan-action="reuse"
             data-generated-plan-id="${escapeHtml(record.id)}"
@@ -5929,6 +7398,7 @@ function generatedPlanAuditModal(record: GeneratedPlanRecord): string {
               ${generatedPlanAuditRow('Approval', plan.approval)}
             </dl>
             ${generatedPlanWalletActionSummary(record)}
+            ${generatedPlanAgentReviewStrip(record)}
             ${planGuardrailStrip(plan)}
           </section>
           <section class="generated-plan-audit-section">
@@ -6258,6 +7728,9 @@ function templateFieldInput(fieldDef: AgentPlanTemplateField): string {
   if (isTokenSelectField(fieldDef)) {
     return tokenFieldInput(fieldDef, value, label, error);
   }
+  if (isRecipientTemplateField(fieldDef)) {
+    return recipientTemplateFieldInput(fieldDef, value, label, error);
+  }
   if (fieldDef.type === 'textarea' || fieldDef.id === 'policy') {
     return `
       <label class="field compact planner-field ${state.templateFieldErrors[fieldDef.id] ? 'field-error' : ''}">
@@ -6389,6 +7862,92 @@ function tokenFieldInput(fieldDef: AgentPlanTemplateField, value: string, label:
       `}
       ${error}
     </div>
+  `;
+}
+
+function isRecipientTemplateField(fieldDef: AgentPlanTemplateField): boolean {
+  return isRecipientFieldId(fieldDef.id);
+}
+
+function recipientTemplateFieldInput(
+  fieldDef: AgentPlanTemplateField,
+  value: string,
+  label: string,
+  error: string,
+): string {
+  const disabled = state.busy;
+  const policy = recipientPolicyStatus(value);
+  return `
+    <label class="field compact planner-field recipient-field ${state.templateFieldErrors[fieldDef.id] ? 'field-error' : ''}">
+      <span>${escapeHtml(label)}</span>
+      ${recipientSelectForField('template', fieldDef.id, value, disabled)}
+      <input
+        data-template-field="${escapeHtml(fieldDef.id)}"
+        value="${escapeHtml(value)}"
+        placeholder="${escapeHtml(fieldDef.placeholder ?? 'Recipient public key')}"
+        autocomplete="off"
+        spellcheck="false"
+        ${disabled ? 'disabled' : ''}
+      />
+      ${recipientPolicyHint(policy)}
+      ${error}
+    </label>
+  `;
+}
+
+function recipientSelectForField(
+  target: 'template' | 'recurring',
+  fieldId: string,
+  value: string,
+  disabled: boolean,
+): string {
+  if (state.recipientRules.recipients.length === 0) return '';
+  const selected = savedRecipientForAddress(value);
+  return selectPicker({
+    id: `${target}-${fieldId}-recipient-picker`,
+    value: selected?.id ?? '__manual__',
+    attrs: {
+      'data-recipient-select': target,
+      'data-recipient-target-field': fieldId,
+    },
+    disabled,
+    options: recipientSelectOptions(value),
+  });
+}
+
+function recipientSelectOptions(currentValue: string): SelectPickerOption[] {
+  const current = currentValue.trim();
+  const manualLabel = current ? `Manual ${short(current)}` : 'Manual address';
+  return [
+    { value: '__manual__', label: manualLabel, meta: 'Recipient' },
+    ...state.recipientRules.recipients.map((recipient) => {
+      const blocked = recipientOptionDisabled(recipient);
+      return {
+        value: recipient.id,
+        label: recipient.name,
+        meta: recipientPolicyDisplay(recipient.policy),
+        detail: short(recipient.address),
+        disabled: blocked,
+        title: blocked ? recipientPolicyBlockReason(recipient.address) ?? recipient.address : recipient.address,
+      };
+    }),
+  ];
+}
+
+function recipientOptionDisabled(recipient: SavedRecipient): boolean {
+  if (!state.recipientRules.enabled) return false;
+  if (state.recipientRules.blockListEnabled && recipient.policy === 'block') return true;
+  if (state.recipientRules.allowListEnabled && recipient.policy !== 'allow') return true;
+  return false;
+}
+
+function recipientPolicyHint(status: RecipientPolicyStatus): string {
+  if (!state.recipientRules.enabled || !status.address) return '';
+  const tone = status.blocked || status.allowRequired ? 'block' : status.allowed ? 'allow' : status.known ? 'known' : 'neutral';
+  return `
+    <span class="recipient-policy-hint ${tone}" title="${escapeHtml(status.title)}">
+      ${escapeHtml(status.label)}
+    </span>
   `;
 }
 
@@ -6919,6 +8478,29 @@ function canGenerateAiPlanFromSettings(): boolean {
   return Boolean(state.aiSettings.apiKey.trim() && modelReady && aiProviderReadyForCurrentMode() && !state.busy);
 }
 
+function hasDetectedAgentReviewPath(): boolean {
+  if (state.aiSettings.mode === 'bridge') {
+    return Boolean(state.aiStatus?.available);
+  }
+  return isAiConfiguredForCurrentMode();
+}
+
+function canRunAgentReview(): boolean {
+  return hasDetectedAgentReviewPath() && !state.busy;
+}
+
+function agentReviewUnavailableReason(): string {
+  if (state.busy) return 'Wait for the current action to finish.';
+  if (state.aiSettings.mode === 'bridge') {
+    return state.aiStatus?.available
+      ? 'Agent review is ready through the local bridge.'
+      : 'No local bridge agent detected.';
+  }
+  return isAiConfiguredForCurrentMode()
+    ? 'Agent review is ready.'
+    : aiGenerateDisabledReason();
+}
+
 function aiGenerateDisabledReason(): string {
   const modelReady = Boolean(state.aiSettings.model.trim());
   if (state.busy) {
@@ -7409,7 +8991,7 @@ function completedPlanCard(plan: CompletedPlanRecord): string {
     ((plan.actionId && !isBrowserWorkflowId(plan.actionId)) ||
       (completedPlanIsEndedSchedule(plan) && plan.recurringId && !isBrowserWorkflowId(plan.recurringId))),
   );
-  const evidenceLabel = plan.txid ? 'Transaction' : plan.signature ? 'Review proof' : plan.actionId ? 'Receipt' : 'Repeat';
+  const evidenceBadge = evidenceBadgeForCompletedPlan(plan);
   const copyLabel = plan.actionId ? 'Copy receipt JSON' : plan.signature ? 'Copy proof JSON' : 'Copy schedule JSON';
   const focused = state.lastCompletedFocusId === plan.id || Boolean(plan.actionId && state.lastCompletedFocusId === plan.actionId);
   const decisionProofBlock = decisionProofRow(plan);
@@ -7421,10 +9003,11 @@ function completedPlanCard(plan: CompletedPlanRecord): string {
           <div class="completed-history-meta">
             <span class="status-pill ${escapeHtml(plan.tone)}">${escapeHtml(plan.status)}</span>
             <strong class="completed-history-meta-title">${escapeHtml(historyLabel)}</strong>
+            ${evidenceBadgeHtml(evidenceBadge)}
             <span>${escapeHtml(plan.kind === 'recurring' ? 'Repeat' : 'One-time')}</span>
-            <span>${escapeHtml(evidenceLabel)}</span>
             <span>${escapeHtml(titleCaseCluster(plan.cluster))}</span>
           </div>
+          ${completedPlanTimelineHtml(plan)}
           <h3 title="${escapeHtml(plan.title)}">${escapeHtml(completedPlanDisplayTitle(plan))}</h3>
           <p>${escapeHtml(formatDateTime(plan.completedAt))}</p>
         </div>
@@ -7490,7 +9073,7 @@ function completedPlanMetric(plan: CompletedPlanRecord): { primary: string; seco
   }
   return {
     primary: amount,
-    secondary: plan.recipient ? `To ${short(plan.recipient)}` : formatDateTime(plan.completedAt),
+    secondary: plan.recipient ? `To ${recipientDisplayLabel(plan.recipient)}` : formatDateTime(plan.completedAt),
   };
 }
 
@@ -7564,7 +9147,13 @@ function completedPlanRecordRef(plan: CompletedPlanRecord): CompletedPlanRecordR
       copyName: 'Solscan transaction link',
     };
   }
-  if (plan.signature) return { label: 'Proof', value: short(plan.signature), copyValue: plan.signature };
+  if (plan.signature) return {
+    label: 'Proof only',
+    value: short(plan.signature),
+    copyValue: plan.signature,
+    copyLabel: 'Copy proof',
+    copyName: 'Proof signature',
+  };
   if (plan.actionId) return { label: 'Receipt', value: short(plan.actionId), copyValue: plan.actionId };
   if (plan.recurringId) return { label: 'Repeat', value: short(plan.recurringId), copyValue: plan.recurringId };
   return { label: 'Record', value: 'Local done work' };
@@ -8500,6 +10089,9 @@ function bind(): void {
       }
       state.error = '';
       render();
+      if (tab === 'inbox') {
+        void reconcilePendingTransactions({ trigger: 'tab-entry' });
+      }
     });
   }
 
@@ -8640,13 +10232,26 @@ function bind(): void {
     state.error = '';
     render();
   });
-  for (const button of document.querySelectorAll<HTMLButtonElement>('[data-generated-plan-action]')) {
+  for (const button of document.querySelectorAll<HTMLButtonElement>('button[data-generated-plan-action]')) {
     button.addEventListener('click', () => {
       const action = button.dataset.generatedPlanAction;
       const planId = button.dataset.generatedPlanId;
       if (!action || !planId) return;
       void runGeneratedPlanAction(planId, action);
     });
+  }
+  for (const form of document.querySelectorAll<HTMLFormElement>('form.agent-review-questions')) {
+    form.addEventListener('submit', (event) => {
+      event.preventDefault();
+      const planId = form.dataset.generatedPlanId;
+      if (!planId) return;
+      void runGeneratedPlanAction(planId, 'agent-answer');
+    });
+    for (const input of form.querySelectorAll<HTMLInputElement | HTMLSelectElement>('[data-agent-review-answer-input]')) {
+      input.addEventListener('change', () => {
+        cacheAgentReviewAnswerInputs(form);
+      });
+    }
   }
   for (const button of document.querySelectorAll<HTMLButtonElement>('[data-completed-delete]')) {
     button.addEventListener('click', () => {
@@ -9116,6 +10721,46 @@ function bind(): void {
     });
   }
 
+  for (const button of document.querySelectorAll<HTMLButtonElement>('[data-recipient-toggle]')) {
+    button.addEventListener('click', () => {
+      const key = button.dataset.recipientToggle;
+      if (key !== 'enabled' && key !== 'allowListEnabled' && key !== 'blockListEnabled') return;
+      state.recipientRules[key] = !state.recipientRules[key];
+      if ((key === 'allowListEnabled' || key === 'blockListEnabled') && state.recipientRules[key]) {
+        state.recipientRules.enabled = true;
+      }
+      saveRecipientRules();
+      render();
+    });
+  }
+
+  for (const field of document.querySelectorAll<HTMLInputElement | HTMLSelectElement>('[data-recipient-field]')) {
+    field.addEventListener('input', () => updateRecipientDraftField(field));
+    field.addEventListener('change', () => updateRecipientDraftField(field));
+  }
+
+  for (const select of document.querySelectorAll<HTMLSelectElement>('[data-recipient-select]')) {
+    select.addEventListener('input', () => applyRecipientSelection(select));
+    select.addEventListener('change', () => applyRecipientSelection(select));
+  }
+
+  for (const button of document.querySelectorAll<HTMLButtonElement>('[data-recipient-action]')) {
+    button.addEventListener('click', () => {
+      handleRecipientAction(button);
+    });
+  }
+
+  for (const field of document.querySelectorAll<HTMLInputElement | HTMLSelectElement>('[data-agent-policy-field]')) {
+    field.addEventListener('input', () => updateAgentPolicyDraftField(field));
+    field.addEventListener('change', () => updateAgentPolicyDraftField(field));
+  }
+
+  for (const button of document.querySelectorAll<HTMLButtonElement>('[data-agent-policy-action]')) {
+    button.addEventListener('click', () => {
+      handleAgentPolicyAction(button);
+    });
+  }
+
   for (const button of document.querySelectorAll<HTMLButtonElement>('[data-action-op]')) {
     button.addEventListener('click', () => {
       const actionId = button.dataset.actionId;
@@ -9226,6 +10871,33 @@ function bind(): void {
         link.dataset.downloadPlatform ?? 'unknown',
         link.dataset.downloadAsset ?? 'unknown',
       );
+    });
+  }
+
+  for (const button of document.querySelectorAll<HTMLElement>('[data-health-action]')) {
+    button.addEventListener('click', (event) => {
+      event.preventDefault();
+      const action = button.dataset.healthAction;
+      if (!action) return;
+      handleHealthAction(action, button.dataset.healthIntent);
+    });
+  }
+
+  for (const button of document.querySelectorAll<HTMLButtonElement>('[data-workspace-backup-action]')) {
+    button.addEventListener('click', (event) => {
+      event.preventDefault();
+      const op = button.dataset.workspaceBackupAction;
+      if (!op) return;
+      void handleWorkspaceBackupAction(op);
+    });
+  }
+
+  for (const input of document.querySelectorAll<HTMLInputElement>('[data-workspace-backup-file]')) {
+    input.addEventListener('change', () => {
+      const file = input.files?.[0];
+      if (!file) return;
+      void handleWorkspaceBackupFile(file);
+      input.value = '';
     });
   }
 }
@@ -10422,6 +12094,14 @@ async function runQueueAgentPlan(): Promise<void> {
       throw new Error('Create a plan before sending it for approval.');
     }
     const activeRecord = generatedPlanById(state.selectedGeneratedPlanId);
+    const override = confirmAgentReviewQueueOverride(activeRecord);
+    if (!override.proceed) {
+      pushToast('pending', 'Send cancelled', 'Agent review did not approve this draft yet.');
+      return;
+    }
+    if (activeRecord && agentReviewQueueOverrideMessage(activeRecord)) {
+      await recordAgentOverrideReceipt(activeRecord, override.userReason);
+    }
     const response = await queuePlanThroughActiveWorkflow(state.agentPlan, activeRecord);
     state.agentPreparedActionId = response.id;
     if (response.mode === 'agentic-cloud' && response.planRecordId) {
@@ -10528,9 +12208,205 @@ async function runGeneratedPlanAction(planId: string, action: string): Promise<v
     await runSignGeneratedPlan(planId);
     return;
   }
+  if (action === 'agent-review') {
+    await runReviewGeneratedPlan(planId);
+    return;
+  }
+  if (action === 'agent-answer') {
+    await runReviewGeneratedPlanWithAnswers(planId);
+    return;
+  }
+  if (action === 'agent-deny') {
+    await runDenyGeneratedPlanWithAgentReason(planId);
+    return;
+  }
   if (action === 'queue') {
     await runQueueGeneratedPlan(planId);
   }
+}
+
+async function runDenyGeneratedPlanWithAgentReason(planId: string): Promise<void> {
+  const record = generatedPlanById(planId);
+  if (!record) return;
+  const review = record.agentReview;
+  if (!review || review.status !== 'denied') {
+    pushToast('error', 'Cannot deny', 'Agent has not denied this draft yet.');
+    return;
+  }
+  const confirmMessage = `Deny this draft using the agent's reason?\n\nAgent said: ${review.reason || 'No reason recorded.'}`;
+  if (!window.confirm(confirmMessage)) return;
+  const blockingPolicies = review.policies?.filter((policy) => policy.outcome === 'block') ?? [];
+  const deniedAt = new Date().toISOString();
+  const actionId = `browser-agent-denial-${record.id}-${Date.now().toString(36)}`;
+  const planSummary = compactSentence(record.plan.intent || record.plan.templateTitle || 'Agent draft', 132);
+  const policyLabels = blockingPolicies.map((policy) => policy.label).filter(Boolean);
+  const policyClause = policyLabels.length ? ` Policies that flagged: ${policyLabels.join(', ')}.` : '';
+  const summary = compactSentence(
+    `Denied based on agent review. Agent reason: ${review.reason || 'No reason recorded.'}.${policyClause}`,
+    240,
+  );
+  const note = compactSentence(
+    `Agent path: ${agentReviewPathLabel(review.source)}. Agent denied at ${formatDateTime(review.checkedAt ?? deniedAt)}.`,
+    240,
+  );
+  const receipt: ActionReceipt = {
+    actionId,
+    status: 'rejected',
+    summary,
+    note,
+    walletAddress: state.address || record.walletAddress,
+    cluster: record.cluster,
+    createdAt: deniedAt,
+    completedAt: deniedAt,
+    evidenceKind: 'rejection_receipt',
+  };
+  state.receipts = mergeActionReceipts([receipt], state.receipts);
+  saveBrowserWorkflowState();
+  await updateGeneratedPlan(planId, {
+    status: 'archived',
+    error: undefined,
+    failureLabel: 'Denied by agent review',
+  }).catch(() => undefined);
+  pushToast(
+    'success',
+    'Agent denial saved',
+    `${planSummary} archived. Proof saved in Done.`,
+  );
+  if (state.generatedPlanAuditId === planId) {
+    state.generatedPlanAuditId = '';
+  }
+  selectFallbackGeneratedPlan();
+  render();
+}
+
+async function runReviewGeneratedPlan(planId: string): Promise<void> {
+  const record = requireGeneratedPlanRecord(planId);
+  if (record.status === 'archived') {
+    pushToast('error', 'Restore plan first', 'Archived drafts cannot be reviewed by the agent.');
+    render();
+    return;
+  }
+  if (!canRunAgentReview()) {
+    pushToast('error', 'Agent not detected', agentReviewUnavailableReason());
+    render();
+    return;
+  }
+
+  const previousReview = record.agentReview;
+  const checkingReview: AgentPlanReviewState = {
+    schemaVersion: AGENT_REVIEW_SCHEMA_VERSION,
+    required: true,
+    status: 'checking',
+    reason: 'Agent is reviewing this draft before it can move forward.',
+    provider: agentReviewProviderLabel(),
+    model: agentReviewModelLabel(),
+    source: state.aiSettings.mode,
+    ...(previousReview?.history?.length ? { history: previousReview.history } : {}),
+  };
+  state.activeOperation = 'review-agent-plan';
+  const toastId = pushToast('pending', 'Asking agent', 'Reviewing this draft before approval.');
+  try {
+    await updateGeneratedPlan(planId, { agentReview: checkingReview, error: undefined, failureLabel: undefined });
+    if (state.agentPlan && samePlan(state.agentPlan, record.plan)) {
+      state.selectedGeneratedPlanId = planId;
+    }
+    await run('ai', async () => {
+      const refreshed = generatedPlanById(planId) ?? record;
+      const appliedPolicyIds = enabledUserAgentPolicies().map((policy) => policy.id);
+      const result = await runAgentReview(refreshed);
+      const review = agentReviewStateFromResult(result, previousReview, refreshed.plan, appliedPolicyIds);
+      review.facts = mergeReviewFacts(gatherDeterministicFacts(refreshed), result.evidence);
+      await updateGeneratedPlan(planId, { agentReview: review, error: undefined, failureLabel: undefined });
+      if (state.agentPlan && samePlan(state.agentPlan, refreshed.plan)) {
+        state.selectedGeneratedPlanId = planId;
+      }
+      const toastKind: ToastKind = review.status === 'approved'
+        ? 'success'
+        : review.status === 'needs_input'
+          ? 'pending'
+          : 'error';
+      const toastTitle = review.status === 'approved'
+        ? 'Agent approved'
+        : review.status === 'needs_input'
+          ? 'Agent needs input'
+          : 'Agent denied';
+      replaceToast(toastId, toastKind, toastTitle, review.reason);
+    }, {
+      onError: async (message, err) => {
+        const toastMessage = applyAiErrorDiagnostics(err, message);
+        const failedReview: AgentPlanReviewState = {
+          ...checkingReview,
+          status: 'error',
+          reason: toastMessage,
+          checkedAt: new Date().toISOString(),
+        };
+        await updateGeneratedPlan(planId, { agentReview: failedReview });
+        replaceToast(toastId, 'error', 'Agent review failed', toastMessage);
+      },
+    });
+  } catch (err) {
+    const message = redactSecrets(err instanceof Error ? err.message : String(err));
+    replaceToast(toastId, 'error', 'Agent review failed', message);
+  } finally {
+    state.activeOperation = null;
+    render();
+  }
+}
+
+async function runReviewGeneratedPlanWithAnswers(planId: string): Promise<void> {
+  const record = generatedPlanById(planId);
+  if (!record) return;
+  const review = record.agentReview;
+  if (!review || review.status !== 'needs_input' || !review.questions?.length) {
+    await runReviewGeneratedPlan(planId);
+    return;
+  }
+  const answers: Record<string, string> = {};
+  const form = document.querySelector<HTMLFormElement>(
+    `form.agent-review-questions[data-generated-plan-id="${cssEscape(planId)}"]`,
+  );
+  if (form) {
+    for (const input of form.querySelectorAll<HTMLInputElement | HTMLSelectElement>('[data-agent-review-answer-input]')) {
+      const questionId = input.dataset.questionId;
+      if (!questionId) continue;
+      answers[questionId] = input.value.trim();
+    }
+  } else {
+    for (const question of review.questions) {
+      answers[question.id] = review.answers?.[question.id] ?? '';
+    }
+  }
+  const missing = review.questions.filter((question) => question.required && !answers[question.id]?.trim());
+  if (missing.length) {
+    pushToast('error', 'Answer required', `Answer ${missing.length} question${missing.length === 1 ? '' : 's'} before sending.`);
+    return;
+  }
+  await updateGeneratedPlan(planId, {
+    agentReview: { ...review, answers },
+  });
+  await runReviewGeneratedPlan(planId);
+}
+
+function cssEscape(value: string): string {
+  if (typeof CSS !== 'undefined' && typeof CSS.escape === 'function') {
+    return CSS.escape(value);
+  }
+  return value.replace(/[^a-zA-Z0-9_-]/g, (char) => `\\${char}`);
+}
+
+function cacheAgentReviewAnswerInputs(form: HTMLFormElement): void {
+  const planId = form.dataset.generatedPlanId;
+  if (!planId) return;
+  const record = generatedPlanById(planId);
+  const review = record?.agentReview;
+  if (!review || review.status !== 'needs_input') return;
+  const answers: Record<string, string> = { ...(review.answers ?? {}) };
+  for (const input of form.querySelectorAll<HTMLInputElement | HTMLSelectElement>('[data-agent-review-answer-input]')) {
+    const questionId = input.dataset.questionId;
+    if (!questionId) continue;
+    answers[questionId] = input.value;
+  }
+  void updateGeneratedPlan(planId, { agentReview: { ...review, answers } });
 }
 
 async function runDeleteCompletedPlan(completedId: string): Promise<void> {
@@ -10640,6 +12516,14 @@ async function runQueueGeneratedPlan(planId: string): Promise<void> {
       throw new Error('Restore this plan before sending it for approval.');
     }
     assertPlanCanQueue(record.plan);
+    const override = confirmAgentReviewQueueOverride(record);
+    if (!override.proceed) {
+      pushToast('pending', 'Send cancelled', 'Agent review did not approve this draft yet.');
+      return;
+    }
+    if (agentReviewQueueOverrideMessage(record)) {
+      await recordAgentOverrideReceipt(record, override.userReason);
+    }
     const response = await queuePlanThroughActiveWorkflow(record.plan, record);
     if (response.mode === 'agentic-cloud' && response.planRecordId) {
       state.selectedGeneratedPlanId = response.planRecordId;
@@ -10733,16 +12617,22 @@ async function saveGeneratedPlan(plan: AgentPlan, template: AgentPlanTemplate, p
 
 async function updateGeneratedPlan(
   planId: string,
-  patch: Partial<Pick<GeneratedPlanRecord, 'status' | 'signature' | 'preparedActionId' | 'error' | 'failureLabel'>>,
+  patch: Partial<Pick<GeneratedPlanRecord, 'status' | 'signature' | 'preparedActionId' | 'error' | 'failureLabel' | 'agentReview' | 'agentOverride'>>,
 ): Promise<void> {
   const existing = generatedPlanById(planId);
   if (existing?.workflowSource === 'cloud' && patch.error === undefined && patch.failureLabel === undefined && patch.status !== 'failed') {
+    const metadata = patch.agentReview !== undefined
+      ? {
+          agentReview: patch.agentReview,
+        }
+      : undefined;
     const cloudPlan = parseCloudPlanResponse(await cloudRequest(`/api/plans/${encodeURIComponent(planId)}`, {
       method: 'PATCH',
       body: JSON.stringify({
         ...(patch.status !== undefined && { status: patch.status }),
         ...(patch.signature !== undefined && { signature: patch.signature }),
         ...(patch.preparedActionId !== undefined && { approvalRequestId: patch.preparedActionId }),
+        ...(metadata !== undefined && { metadata }),
       }),
     }));
     const record = cloudPlanToGeneratedPlan(cloudPlan);
@@ -10765,7 +12655,7 @@ async function updateGeneratedPlan(
 }
 
 async function updateActiveGeneratedPlanRecord(
-  patch: Partial<Pick<GeneratedPlanRecord, 'status' | 'signature' | 'preparedActionId' | 'error' | 'failureLabel'>>,
+  patch: Partial<Pick<GeneratedPlanRecord, 'status' | 'signature' | 'preparedActionId' | 'error' | 'failureLabel' | 'agentReview' | 'agentOverride'>>,
 ): Promise<void> {
   if (!state.agentPlan) return;
   const record = generatedPlanById(state.selectedGeneratedPlanId);
@@ -11013,6 +12903,9 @@ function completedPlanTokenFromPlan(plan: AgentPlan): string {
 }
 
 function completedPlanFromReceipt(receipt: ActionReceipt, action: PreparedAction | undefined): CompletedPlanRecord {
+  if (receipt.evidenceKind === 'agent_override_receipt' && receipt.agentOverride) {
+    return completedPlanFromAgentOverride(receipt);
+  }
   const kind: CompletedPlanRecord['kind'] = receipt.recurringId || action?.recurringId ? 'recurring' : 'one-time';
   const status = completedActionStatusLabel(receipt.status, receipt.txStatus);
   const recurringId = receipt.recurringId ?? action?.recurringId;
@@ -11059,6 +12952,46 @@ function completedPlanFromReceipt(receipt: ActionReceipt, action: PreparedAction
       receipt.proofSignature ? ['Decision proof', receipt.proofSignature] : undefined,
       receipt.txid ? ['Transaction', receipt.txid] : undefined,
       receipt.error ? ['Error', receipt.error] : undefined,
+    ]),
+  };
+}
+
+function completedPlanFromAgentOverride(receipt: ActionReceipt): CompletedPlanRecord {
+  const override = receipt.agentOverride!;
+  const review = override.reviewSnapshot;
+  const status = 'agent override';
+  const payload = {
+    type: 'agent_override_receipt',
+    receipt,
+    override,
+  };
+  return {
+    id: `override:${receipt.actionId}`,
+    kind: 'one-time',
+    status,
+    tone: 'warn',
+    title: 'Overrode agent warning',
+    summary: receipt.summary,
+    completedAt: receipt.completedAt,
+    createdAt: receipt.createdAt,
+    walletAddress: receipt.walletAddress,
+    cluster: receipt.cluster,
+    actionId: receipt.actionId,
+    workflowSource: 'browser',
+    copyPayload: stableJson(payload),
+    detailRows: completedRows([
+      ['Type', 'Agent override proof'],
+      ['Status', status],
+      ['Plan', override.planSummary],
+      ['Agent path', agentReviewPathLabel(review.source)],
+      ['Agent said', review.reason || 'No reason recorded.'],
+      review.summary ? ['Agent summary', review.summary] : undefined,
+      review.provider ? ['Agent provider', review.provider] : undefined,
+      review.model ? ['Agent model', review.model] : undefined,
+      ['Agent decided', review.checkedAt ? formatDateTime(review.checkedAt) : 'not recorded'],
+      ['User overrode', formatDateTime(override.overriddenAt)],
+      override.userReason ? ['User reason', override.userReason] : ['User reason', 'No reason given'],
+      ['Wallet', receipt.walletAddress || 'No wallet at override'],
     ]),
   };
 }
@@ -11279,6 +13212,8 @@ function generatedQueuePlanTitle(record: GeneratedPlanRecord): string {
   if (record.status === 'archived') return 'Restore this plan before sending it for approval.';
   if (!state.address) return 'Connect a wallet before sending for approval.';
   if (!canQueueAgentPlan(record.plan)) return 'Only transfers, swaps, and repeat payments can be queued.';
+  const reviewBlock = agentReviewQueueBlockReason(record);
+  if (reviewBlock) return `${reviewBlock} Click to confirm if you still want to send.`;
   const report = planGuardrailReport(record.plan);
   if (report?.verdict === 'block') return report.summary;
   const mode = activeWorkflowMode();
@@ -11322,6 +13257,358 @@ function agentPlanApprovalMessage(plan: AgentPlan): string {
     `Safeguards: ${plan.safeguards.join(' | ')}`,
     `Time: ${new Date().toISOString()}`,
   ].join('\n');
+}
+
+async function runAgentReview(record: GeneratedPlanRecord): Promise<AgentPlanReviewResult> {
+  const request = agentReviewRequest(record);
+  state.aiDiagnostics = [
+    aiRouteDiagnostic(state.aiSettings.mode === 'bridge' ? '/bridge/ai/review-plan' : '/api/ai/review-plan'),
+  ];
+  render();
+  if (state.aiSettings.mode === 'bridge') {
+    return bridgeRequest<AgentPlanReviewResult>('/bridge/ai/review-plan', {
+      method: 'POST',
+      body: JSON.stringify(request),
+    });
+  }
+  if (state.aiSettings.mode === 'hosted') {
+    return generateHostedAiReview(state.aiSettings, request);
+  }
+  return generateSessionAiReview(state.aiSettings, request);
+}
+
+function agentReviewRequest(record: GeneratedPlanRecord): AgentPlanReviewRequest {
+  const review = record.agentReview;
+  const priorAnswers = review?.answers;
+  const priorQuestions = review?.questions;
+  const instruction = [
+    record.plan.userNotes,
+    record.prompt && record.prompt !== record.plan.userNotes ? record.prompt : '',
+  ]
+    .filter((entry): entry is string => Boolean(entry?.trim()))
+    .join('\n')
+    .trim() || 'Review this draft before it is sent for wallet approval. Decide approve, deny, or needs_input and explain why.';
+  const priorHistorySnippet = review?.history?.slice(-2).map((attempt) => ({
+    decision: attempt.decision,
+    reason: attempt.reason,
+    questionIds: attempt.followUpQuestionIds,
+  })).filter((entry) => entry.decision || entry.reason);
+  const userPolicies = enabledUserAgentPolicies().map((policy) => ({
+    id: policy.id,
+    label: policy.label,
+    kind: policy.kind,
+    detail: policy.detail,
+    ...(policy.params && Object.keys(policy.params).length ? { params: policy.params } : {}),
+  }));
+  const deterministicFacts = gatherDeterministicFacts(record);
+  const factsForContext = factSetForContext(deterministicFacts);
+  return {
+    plan: record.plan,
+    instruction,
+    walletAddress: state.address || record.walletAddress,
+    cluster: record.cluster,
+    context: {
+      activeWorkflow: activeWorkflowLabel(),
+      connectedWallet: state.address || '',
+      draftCreatedAt: record.createdAt,
+      route: record.plan.route,
+      amount: planAmountSummary(record.plan),
+      risk: record.plan.risk,
+      approval: record.plan.approval,
+      ...(userPolicies.length ? { userPolicies } : {}),
+      ...(priorAnswers && Object.keys(priorAnswers).length
+        ? {
+            priorAnswers,
+            priorQuestions: priorQuestions?.map((question) => ({ id: question.id, prompt: question.prompt })) ?? [],
+          }
+        : {}),
+      ...(priorHistorySnippet?.length ? { priorAttempts: priorHistorySnippet } : {}),
+    },
+  };
+}
+
+function agentReviewStateFromResult(
+  result: AgentPlanReviewResult,
+  previous?: AgentPlanReviewState | undefined,
+  reviewedPlan?: AgentPlan | undefined,
+  appliedUserPolicyIds?: string[],
+): AgentPlanReviewState {
+  const status: AgentPlanReviewStatus = result.decision === 'approve'
+    ? 'approved'
+    : result.decision === 'needs_input'
+      ? 'needs_input'
+      : 'denied';
+  const history = appendReviewAttempt(previous?.history, {
+    attemptId: `attempt_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 7)}`,
+    startedAt: result.checkedAt,
+    finishedAt: new Date().toISOString(),
+    decision: result.decision,
+    reason: result.reason,
+    ...(result.questions?.length ? { followUpQuestionIds: result.questions.map((q) => q.id) } : {}),
+    ...(previous?.answers && Object.keys(previous.answers).length ? { answersSnapshot: previous.answers } : {}),
+  });
+  const carriedAnswers = result.decision === 'needs_input' ? previous?.answers : undefined;
+  const fingerprint = reviewedPlan ? planFingerprint(reviewedPlan) : previous?.reviewedPlanFingerprint;
+  return {
+    schemaVersion: AGENT_REVIEW_SCHEMA_VERSION,
+    required: true,
+    status,
+    decision: result.decision,
+    reason: result.reason,
+    summary: result.summary,
+    checkedAt: result.checkedAt,
+    provider: agentReviewProviderLabel(),
+    model: agentReviewModelLabel(),
+    source: state.aiSettings.mode,
+    evidence: result.evidence,
+    ...(result.questions?.length ? { questions: result.questions } : {}),
+    ...(carriedAnswers ? { answers: carriedAnswers } : {}),
+    ...(history.length ? { history } : {}),
+    ...(fingerprint ? { reviewedPlanFingerprint: fingerprint } : {}),
+    ...(appliedUserPolicyIds && appliedUserPolicyIds.length ? { appliedUserPolicyIds } : {}),
+  };
+}
+
+function enabledUserAgentPolicies(): UserAgentPolicy[] {
+  return state.agentPolicies.filter((policy) => policy.enabled);
+}
+
+function planFingerprint(plan: AgentPlan): string {
+  return stableJson({
+    intent: plan.intent,
+    route: plan.route,
+    risk: plan.risk,
+    approval: plan.approval,
+    actionType: plan.actionType,
+    templateId: (plan as { templateId?: string }).templateId ?? '',
+    parameters: plan.parameters,
+    userNotes: plan.userNotes ?? '',
+  });
+}
+
+function isAgentReviewStale(record: GeneratedPlanRecord | undefined): boolean {
+  const review = record?.agentReview;
+  if (!review?.reviewedPlanFingerprint) return false;
+  if (review.status !== 'approved' && review.status !== 'needs_input' && review.status !== 'denied') return false;
+  return planFingerprint(record!.plan) !== review.reviewedPlanFingerprint;
+}
+
+function appendReviewAttempt(prev: AgentReviewAttempt[] | undefined, attempt: AgentReviewAttempt): AgentReviewAttempt[] {
+  const next = [...(prev ?? []), attempt];
+  return next.slice(-5);
+}
+
+async function recordAgentOverrideReceipt(record: GeneratedPlanRecord, userReason: string | undefined): Promise<void> {
+  const review = record.agentReview;
+  if (!review) return;
+  const blockReason = agentReviewQueueOverrideMessage(record) || 'Agent did not approve this draft.';
+  const overriddenAt = new Date().toISOString();
+  const actionId = `browser-override-${record.id}-${Date.now().toString(36)}`;
+  const walletAddress = state.address || record.walletAddress;
+  const cluster = record.cluster;
+  const planSummary = compactSentence(record.plan.intent || record.plan.templateTitle || 'Agent draft', 132);
+  const summary = overrideReceiptSummary(review, userReason, planSummary);
+  const note = overrideReceiptNote(review, userReason);
+  const overrideEntry: AgentReviewOverride = {
+    overriddenAt,
+    agentStatus: review.status,
+    agentReason: review.reason || blockReason,
+    ...(review.decision ? { agentDecision: review.decision } : {}),
+    ...(review.summary ? { agentSummary: review.summary } : {}),
+    ...(userReason && userReason.trim() ? { userReason: userReason.trim() } : {}),
+    ...(review.provider ? { provider: review.provider } : {}),
+    ...(review.model ? { model: review.model } : {}),
+    ...(review.source ? { source: review.source } : {}),
+  };
+  await updateGeneratedPlan(record.id, { agentOverride: overrideEntry }).catch(() => undefined);
+  const receipt: ActionReceipt = {
+    actionId,
+    status: 'approved',
+    summary,
+    note,
+    walletAddress,
+    cluster,
+    createdAt: overriddenAt,
+    completedAt: overriddenAt,
+    evidenceKind: 'agent_override_receipt',
+    agentOverride: {
+      reviewSnapshot: review,
+      ...(userReason ? { userReason } : {}),
+      overriddenAt,
+      blockReason,
+      planSummary,
+      planId: record.id,
+    },
+  };
+  state.receipts = mergeActionReceipts([receipt], state.receipts);
+  saveBrowserWorkflowState();
+}
+
+function overrideReceiptSummary(
+  review: AgentPlanReviewState,
+  userReason: string | undefined,
+  planSummary: string,
+): string {
+  const status = review.status;
+  const verdict = status === 'denied'
+    ? 'agent denied'
+    : status === 'checking'
+      ? 'agent still checking'
+      : status === 'needs_input'
+        ? 'agent needed input'
+        : status === 'error'
+          ? 'agent review failed'
+          : 'agent not approved';
+  const reasonPart = userReason ? ` User reason: ${userReason}.` : '';
+  return compactSentence(`Overrode ${verdict}. Sent ${planSummary} for approval anyway.${reasonPart}`, 240);
+}
+
+function overrideReceiptNote(review: AgentPlanReviewState, userReason: string | undefined): string {
+  const agentSaid = review.reason?.trim() || 'No reason recorded.';
+  const userPart = userReason?.trim()
+    ? `User reason: ${userReason.trim()}`
+    : 'User did not give a reason.';
+  return compactSentence(`Agent said: ${agentSaid}. ${userPart}`, 360);
+}
+
+function agentReviewProviderLabel(): string {
+  if (state.aiSettings.mode === 'bridge') {
+    return state.aiStatus?.provider ?? state.aiStatus?.apiFormat ?? 'Local bridge AI';
+  }
+  return aiProviderPresetById(state.aiSettings.provider).label;
+}
+
+function agentReviewModelLabel(): string {
+  if (state.aiSettings.mode === 'bridge') {
+    return state.aiStatus?.model ?? 'model configured';
+  }
+  return state.aiSettings.model || aiProviderPresetById(state.aiSettings.provider).model;
+}
+
+function factSetForContext(facts: AgentReviewFactSet): Record<string, unknown> | undefined {
+  const entries = Object.entries(facts).filter(([, fact]) => Boolean(fact));
+  if (!entries.length) return undefined;
+  return Object.fromEntries(entries.map(([key, fact]) => [key, {
+    state: fact!.state,
+    source: fact!.source,
+    ...(fact!.message ? { message: fact!.message } : {}),
+    ...(fact!.detail ? { detail: fact!.detail } : {}),
+  }]));
+}
+
+function mergeReviewFacts(
+  deterministic: AgentReviewFactSet,
+  aiEvidence: Record<string, unknown> | undefined,
+): AgentReviewFactSet {
+  const merged: AgentReviewFactSet = { ...deterministic };
+  const aiFacts = aiEvidence?.facts;
+  if (!aiFacts || typeof aiFacts !== 'object' || Array.isArray(aiFacts)) return merged;
+  const checkedAt = new Date().toISOString();
+  const slots: Array<keyof AgentReviewFactSet> = ['quote', 'route', 'policy', 'simulation', 'protocol', 'tokenMint', 'recipient', 'limits'];
+  for (const slot of slots) {
+    const existing = merged[slot];
+    if (existing && existing.source === 'deterministic' && existing.state !== 'missing') {
+      continue;
+    }
+    const aiSlot = (aiFacts as Record<string, unknown>)[slot];
+    if (!aiSlot || typeof aiSlot !== 'object' || Array.isArray(aiSlot)) continue;
+    const slotRecord = aiSlot as Record<string, unknown>;
+    const stateValue = slotRecord.state;
+    const validState = stateValue === 'checked' || stateValue === 'missing' || stateValue === 'warn' || stateValue === 'ok' || stateValue === 'fail'
+      ? stateValue
+      : 'checked';
+    merged[slot] = {
+      state: validState,
+      source: 'ai',
+      checkedAt,
+      ...(typeof slotRecord.message === 'string' ? { message: slotRecord.message } : {}),
+      ...(slotRecord.detail && typeof slotRecord.detail === 'object' && !Array.isArray(slotRecord.detail)
+        ? { detail: slotRecord.detail as Record<string, unknown> }
+        : {}),
+    };
+  }
+  return merged;
+}
+
+function gatherDeterministicFacts(record: GeneratedPlanRecord): AgentReviewFactSet {
+  const facts: AgentReviewFactSet = {};
+  const checkedAt = new Date().toISOString();
+  const plan = record.plan;
+
+  const recipientAddress = (planParameter(plan, ['recipient', 'recipientAddress']) || '').trim();
+  if (recipientAddress) {
+    const policyStatus = recipientPolicyStatus(recipientAddress);
+    facts.recipient = {
+      state: policyStatus.blocked ? 'fail' : policyStatus.allowRequired ? 'warn' : policyStatus.known ? 'ok' : 'checked',
+      source: 'deterministic',
+      checkedAt,
+      message: policyStatus.label,
+      detail: {
+        address: recipientAddress,
+        known: policyStatus.known,
+        allowed: policyStatus.allowed,
+        blocked: policyStatus.blocked,
+        allowRequired: policyStatus.allowRequired,
+        ...(policyStatus.recipient?.name ? { name: policyStatus.recipient.name } : {}),
+      },
+    };
+  }
+
+  const tokenSymbol = (planParameter(plan, ['token', 'inputToken', 'outputToken']) || '').trim().toUpperCase();
+  if (tokenSymbol) {
+    const knownEntry = KNOWN_BROWSER_TOKENS[tokenSymbol];
+    const known = Boolean(knownEntry);
+    facts.tokenMint = {
+      state: known ? 'ok' : 'warn',
+      source: 'deterministic',
+      checkedAt,
+      message: known ? `${tokenSymbol} is a known token` : `${tokenSymbol} is not in the known token list`,
+      detail: known && knownEntry
+        ? { symbol: knownEntry.symbol, mint: knownEntry.mint, decimals: knownEntry.decimals }
+        : { symbol: tokenSymbol, recognized: false },
+    };
+  }
+
+  const slippageBpsRaw = planParameter(plan, ['slippageBps']);
+  if (slippageBpsRaw) {
+    const slippageBps = Number(slippageBpsRaw);
+    const valid = Number.isFinite(slippageBps) && slippageBps > 0;
+    facts.limits = {
+      state: !valid ? 'warn' : slippageBps > 200 ? 'warn' : 'ok',
+      source: 'deterministic',
+      checkedAt,
+      message: valid
+        ? `Max slippage ${slippageBps} bps (${(slippageBps / 100).toFixed(2)}%)`
+        : 'Slippage value could not be parsed',
+      detail: { slippageBps: valid ? slippageBps : null },
+    };
+  }
+
+  if (plan.actionType === 'swap') {
+    facts.route = {
+      state: 'missing',
+      source: 'deterministic',
+      checkedAt,
+      message: 'Quote not requested yet. Route resolves when a quote is fetched.',
+    };
+    facts.quote = {
+      state: 'missing',
+      source: 'deterministic',
+      checkedAt,
+      message: 'No quote fetched in the browser yet for this draft.',
+    };
+  }
+
+  if (plan.actionType !== 'read_only' && plan.actionType !== 'manual_review') {
+    facts.simulation = {
+      state: 'missing',
+      source: 'deterministic',
+      checkedAt,
+      message: 'Transaction simulation runs after the wallet signs and broadcasts.',
+    };
+  }
+
+  return facts;
 }
 
 async function runSaveBridgeAiKey(): Promise<void> {
@@ -12041,6 +14328,8 @@ function cloudPlanToGeneratedPlan(value: unknown): GeneratedPlanRecord | null {
   const cluster = typeof record.cluster === 'string' && isCluster(record.cluster) ? record.cluster : state.cluster;
   const plan = planWithCloudGuardrails(record.plan, record.riskMetadata);
   const localFields = record as Partial<GeneratedPlanRecord>;
+  const metadata = isJsonObject(record.metadata) ? record.metadata : {};
+  const agentReview = parseAgentPlanReviewState(metadata.agentReview);
   return {
     id: record.id,
     plan,
@@ -12057,6 +14346,7 @@ function cloudPlanToGeneratedPlan(value: unknown): GeneratedPlanRecord | null {
     ...(typeof record.approvalRequestId === 'string' && { preparedActionId: record.approvalRequestId }),
     ...(typeof localFields.error === 'string' && { error: localFields.error }),
     ...(typeof localFields.failureLabel === 'string' && { failureLabel: localFields.failureLabel }),
+    ...(agentReview && { agentReview }),
     workflowSource: 'cloud',
   };
 }
@@ -12106,6 +14396,8 @@ function cloudApprovalToPreparedAction(value: unknown): PreparedAction | null {
     : typeof record.planId === 'string'
       ? record.planId
       : undefined;
+  const metadata = isJsonObject(record.metadata) ? record.metadata : {};
+  const agentReview = parseAgentPlanReviewState(metadata.agentReview);
   const finalization = cloudFinalizationFromMetadata(record.metadata);
   return {
     id: record.id,
@@ -12134,6 +14426,7 @@ function cloudApprovalToPreparedAction(value: unknown): PreparedAction | null {
     ...(finalization?.confirmationStatus && { confirmationStatus: finalization.confirmationStatus }),
     ...(typeof record.error === 'string' && { error: record.error }),
     ...(typeof record.note === 'string' && { note: record.note }),
+    ...(agentReview && { agentReview }),
     ...(record.status === 'cancelled' && { archived: true }),
     workflowSource: 'cloud',
   };
@@ -12776,6 +15069,7 @@ async function runRefreshInbox(): Promise<void> {
     } else {
       await refreshActiveWorkflowData();
     }
+    await reconcilePendingTransactions({ trigger: 'refresh' });
     pushToast('success', 'Workspace refreshed', `${activeWorkflowPreparedActions().length} approval request(s) loaded from ${activeWorkflowLabel()}.`);
   });
 }
@@ -12849,9 +15143,17 @@ async function runPreparedActionOp(actionId: string, op: string): Promise<void> 
     return;
   }
 
+  if (!action) {
+    throw new Error('Approval request was not found.');
+  }
+
   await run('inbox', async () => {
     switch (op) {
       case 'execute':
+        {
+          const policyError = actionRecipientPolicyBlockReason(action);
+          if (policyError) throw new Error(policyError);
+        }
         await bridgeRequest('/bridge/prepared-actions/execute', {
           method: 'POST',
           body: JSON.stringify({ actionId }),
@@ -12904,6 +15206,10 @@ async function runCloudPreparedActionOp(action: PreparedAction, op: string): Pro
       return;
     }
     case 'execute': {
+      const policyError = actionRecipientPolicyBlockReason(action);
+      if (policyError) {
+        throw new Error(policyError);
+      }
       if (canFinalizeCloudSolTransfer(action)) {
         await runCloudSolTransferFinalization(action);
         return;
@@ -12959,6 +15265,10 @@ async function runCloudPreparedActionOp(action: PreparedAction, op: string): Pro
 }
 
 async function runCloudSolTransferFinalization(action: PreparedAction): Promise<void> {
+  const policyError = actionRecipientPolicyBlockReason(action);
+  if (policyError) {
+    throw new Error(policyError);
+  }
   const toastId = pushToast('pending', 'Preparing transaction', 'Building the wallet transaction.');
   const toastContext: TransactionToastContext = { toastId, actionId: action.id, cluster: action.cluster };
   const prepareResponse = await runTransactionToastStep(
@@ -13123,6 +15433,10 @@ async function runBrowserPreparedActionOp(actionId: string, op: string): Promise
       await runBrowserTransactionConfirm(action);
       return;
     case 'execute': {
+      const policyError = actionRecipientPolicyBlockReason(action);
+      if (policyError) {
+        throw new Error(policyError);
+      }
       if (isExecutableBrowserAction(action)) {
         await executeBrowserPreparedAction(action);
         return;
@@ -13168,42 +15482,84 @@ async function runBrowserTransactionConfirm(action: PreparedAction): Promise<voi
     throw new Error('This request does not have a submitted browser transaction to confirm.');
   }
   const txid = action.txid!;
-  const toastId = pushToast('pending', 'Checking transaction', short(txid), {
+  const toastId = pushToast('pending', 'Checking confirmation', short(txid), {
     linkHref: explorerUrl(txid, action.cluster),
     linkLabel: 'Open Solscan',
   });
   const toastContext: TransactionToastContext = { toastId, actionId: action.id, cluster: action.cluster };
-  const txStatus = await resolveSubmittedTransactionStatus(action.cluster, txid, toastContext);
-  if (txStatus !== 'confirmed') {
-    updateBrowserPreparedAction(action.id, {
-      status: 'approval_pending',
-      txStatus: 'pending',
+  try {
+    const txStatus = await resolveSubmittedTransactionStatus(action.cluster, txid, toastContext);
+    if (txStatus !== 'confirmed') {
+      updateBrowserPreparedAction(action.id, {
+        status: 'approval_pending',
+        txStatus: 'pending',
+        txid,
+        txError: undefined,
+        error: undefined,
+      });
+      const ledger = findPendingTransactionByAction(action.id);
+      if (ledger) {
+        markTransactionPhase(ledger.id, 'submitted', { txid });
+        syncPendingTransactionsFromLedger();
+      }
+      replaceToast(toastId, 'pending', 'Transaction submitted', short(txid), {
+        linkHref: explorerUrl(txid, action.cluster),
+        linkLabel: 'Open Solscan',
+      });
+      render();
+      return;
+    }
+    completeBrowserExecutedAction(action, {
       txid,
-      txError: undefined,
-      error: undefined,
+      txStatus,
+      explorerUrl: explorerUrl(txid, action.cluster),
     });
-    replaceToast(toastId, 'pending', 'Transaction submitted', short(txid), {
+    recordBrowserActionActivity(action.id, 'browser.transaction.saved', {
+      kind: action.kind,
+      status: txStatus,
+      txid,
+    });
+    showCompletedHistoryForAction(action.id);
+    replaceToast(toastId, 'success', 'Transaction confirmed', `${short(txid)} - Solscan link saved in Done.`, {
       linkHref: explorerUrl(txid, action.cluster),
       linkLabel: 'Open Solscan',
     });
-    render();
-    return;
+  } catch (err) {
+    const ledger = findPendingTransactionByAction(action.id);
+    const classification = classifyTransactionFailure(err, {
+      hasSignedBytes: Boolean(ledger?.signedTransactionBase64),
+      txid,
+    });
+    const technicalMessage = redactSecrets(classification.technicalMessage);
+    const toastCopy = transactionFailureToastCopy(classification);
+    if (classification.kind === 'onchain_failed') {
+      const priorStatus: PreparedActionStatus = action.status === 'overdue' ? 'overdue' : 'ready';
+      updateBrowserPreparedAction(action.id, {
+        status: priorStatus,
+        txStatus: 'failed',
+        txid,
+        txError: technicalMessage,
+        error: technicalMessage,
+      });
+      if (ledger) {
+        markTransactionPhase(ledger.id, 'failed', {
+          failedAt: new Date().toISOString(),
+          failureKind: 'onchain_failed',
+          lastError: technicalMessage,
+        });
+        syncPendingTransactionsFromLedger();
+      }
+      replaceToast(toastId, 'error', toastCopy.title, toastCopy.message, {
+        linkHref: explorerUrl(txid, action.cluster),
+        linkLabel: 'Open Solscan',
+      });
+      return;
+    }
+    replaceToast(toastId, 'pending', toastCopy.title, toastCopy.message, {
+      linkHref: explorerUrl(txid, action.cluster),
+      linkLabel: 'Open Solscan',
+    });
   }
-  completeBrowserExecutedAction(action, {
-    txid,
-    txStatus,
-    explorerUrl: explorerUrl(txid, action.cluster),
-  });
-  recordBrowserActionActivity(action.id, 'browser.transaction.saved', {
-    kind: action.kind,
-    status: txStatus,
-    txid,
-  });
-  showCompletedHistoryForAction(action.id);
-  replaceToast(toastId, 'success', 'Transaction finalized', short(txid), {
-    linkHref: explorerUrl(txid, action.cluster),
-    linkLabel: 'Open Solscan',
-  });
 }
 
 async function signCloudWorkflowDecision(
@@ -13278,6 +15634,28 @@ function isExecutableBrowserAction(action: PreparedAction): boolean {
 
 async function executeBrowserPreparedAction(action: PreparedAction): Promise<void> {
   assertBrowserActionWalletReady(action);
+  const policyError = actionRecipientPolicyBlockReason(action);
+  if (policyError) {
+    throw new Error(policyError);
+  }
+
+  // Pre-flight: if a signed/submitted/ambiguous ledger entry already exists,
+  // never re-open the wallet. Route to confirmation/reconciliation instead.
+  const existingLedger = findPendingTransactionByAction(action.id);
+  if (existingLedger && PENDING_LEDGER_PHASES.has(existingLedger.phase)) {
+    if (existingLedger.txid) {
+      await runBrowserTransactionConfirm({ ...action, txid: existingLedger.txid });
+    } else {
+      pushToast(
+        'pending',
+        'Submitted status unknown',
+        'The app is checking the original transaction before allowing another approval.',
+      );
+      await reconcilePendingTransactions({ trigger: 'check-confirmation', userInitiated: true, targetActionId: action.id });
+    }
+    return;
+  }
+
   const priorStatus: PreparedActionStatus = action.status === 'overdue' ? 'overdue' : 'ready';
   const toastId = pushToast('pending', 'Opening wallet', browserExecutionStartMessage(action));
   const toastContext: TransactionToastContext = { toastId, actionId: action.id, cluster: action.cluster };
@@ -13322,6 +15700,12 @@ async function executeBrowserPreparedAction(action: PreparedAction): Promise<voi
       return;
     }
     completeBrowserExecutedAction(current, execution);
+    // Confirmed: drop the ledger record — the receipt now lives in Done.
+    const finalLedger = findPendingTransactionByAction(action.id);
+    if (finalLedger) {
+      removePendingTransaction(finalLedger.id);
+      syncPendingTransactionsFromLedger();
+    }
     recordBrowserActionActivity(action.id, 'browser.transaction.saved', {
       kind: action.kind,
       status: execution.txStatus,
@@ -13331,26 +15715,256 @@ async function executeBrowserPreparedAction(action: PreparedAction): Promise<voi
     replaceToast(
       toastId,
       execution.txStatus === 'confirmed' ? 'success' : 'pending',
-      execution.txStatus === 'confirmed' ? 'Transaction finalized' : 'Transaction submitted',
+      execution.txStatus === 'confirmed' ? 'Transaction confirmed' : 'Transaction submitted',
       `${short(execution.txid)} - Solscan link saved in Done.`,
       { linkHref: execution.explorerUrl, linkLabel: 'Open Solscan' },
     );
   } catch (err) {
-    const message = redactSecrets(err instanceof Error ? err.message : String(err));
+    await handleClassifiedExecutionFailure({ action, toastId, priorStatus, err });
+  }
+}
+
+const PENDING_LEDGER_PHASES: ReadonlySet<ExecutionPhase> = new Set<ExecutionPhase>([
+  'wallet_signed',
+  'broadcasting',
+  'submitted',
+  'confirming',
+  'ambiguous',
+]);
+
+async function handleClassifiedExecutionFailure(opts: {
+  action: PreparedAction;
+  toastId: number;
+  priorStatus: PreparedActionStatus;
+  err: unknown;
+}): Promise<void> {
+  const { action, toastId, priorStatus, err } = opts;
+  const ledger = findPendingTransactionByAction(action.id);
+  const classification = classifyTransactionFailure(err, {
+    hasSignedBytes: Boolean(ledger?.signedTransactionBase64),
+    txid: ledger?.txid,
+  });
+  const technicalMessage = redactSecrets(classification.technicalMessage);
+  const toastCopy = transactionFailureToastCopy(classification);
+  const linkOptions = ledger?.txid
+    ? { linkHref: explorerUrl(ledger.txid, action.cluster), linkLabel: 'Open Solscan' }
+    : {};
+
+  recordBrowserActionActivity(action.id, 'browser.transaction.failed', {
+    kind: action.kind,
+    status: classification.kind,
+    failureKind: classification.kind,
+    error: technicalMessage,
+  });
+
+  // Branch 1 — on-chain failed: keep visible with Solscan + failure detail.
+  if (classification.kind === 'onchain_failed') {
     updateBrowserPreparedAction(action.id, {
       status: priorStatus,
       txStatus: 'failed',
-      txError: message,
-      error: message,
+      txid: ledger?.txid ?? action.txid,
+      txError: technicalMessage,
+      error: technicalMessage,
     });
-    recordBrowserActionActivity(action.id, 'browser.transaction.failed', {
-      kind: action.kind,
-      status: 'failed',
-      error: message,
-    });
+    if (ledger) {
+      markTransactionPhase(ledger.id, 'failed', {
+        failedAt: new Date().toISOString(),
+        failureKind: 'onchain_failed',
+        lastError: technicalMessage,
+      });
+      syncPendingTransactionsFromLedger();
+    }
     state.activeTab = 'inbox';
     state.auditOpen[auditActivityKey('approval', action.id)] = true;
-    replaceToast(toastId, 'error', 'Transaction failed', message);
+    replaceToast(toastId, 'error', toastCopy.title, toastCopy.message, linkOptions);
+    return;
+  }
+
+  // Branch 2 — ambiguous (may have submitted): keep pending, never re-prompt wallet.
+  if (classification.maybeSubmitted) {
+    updateBrowserPreparedAction(action.id, {
+      status: 'approval_pending',
+      txStatus: 'pending',
+      txid: ledger?.txid ?? action.txid,
+      txError: undefined,
+      error: undefined,
+    });
+    if (ledger) {
+      markTransactionPhase(ledger.id, 'ambiguous', {
+        lastError: technicalMessage,
+        failureKind: failureKindForLedger(classification.kind),
+      });
+      syncPendingTransactionsFromLedger();
+    }
+    state.activeTab = 'inbox';
+    replaceToast(toastId, 'pending', toastCopy.title, toastCopy.message, linkOptions);
+    void reconcilePendingTransactions({ trigger: 'post-ambiguous', targetActionId: action.id });
+    return;
+  }
+
+  // Branch 3 — wallet rejection or pre-signature retryable error: restore approve.
+  if (classification.safeToAskWalletAgain) {
+    updateBrowserPreparedAction(action.id, {
+      status: priorStatus,
+      txStatus: undefined,
+      txid: undefined,
+      txError: undefined,
+      error: undefined,
+    });
+    if (ledger) {
+      removePendingTransaction(ledger.id);
+      syncPendingTransactionsFromLedger();
+    }
+    replaceToast(toastId, classification.kind === 'wallet_rejected' ? 'pending' : 'error', toastCopy.title, toastCopy.message);
+    return;
+  }
+
+  // Branch 4 — config/invalid/insufficient (non-retryable, no wallet re-prompt warranted).
+  updateBrowserPreparedAction(action.id, {
+    status: priorStatus,
+    txStatus: 'failed',
+    txError: technicalMessage,
+    error: technicalMessage,
+  });
+  if (ledger) {
+    removePendingTransaction(ledger.id);
+    syncPendingTransactionsFromLedger();
+  }
+  state.activeTab = 'inbox';
+  state.auditOpen[auditActivityKey('approval', action.id)] = true;
+  replaceToast(toastId, 'error', toastCopy.title, toastCopy.message);
+}
+
+type ReconciliationTrigger =
+  | 'bootstrap'
+  | 'refresh'
+  | 'tab-entry'
+  | 'check-confirmation'
+  | 'post-ambiguous';
+
+const RECONCILIATION_DEBOUNCE_MS = 5_000;
+
+async function reconcilePendingTransactions(opts: {
+  trigger: ReconciliationTrigger;
+  userInitiated?: boolean;
+  targetActionId?: string;
+}): Promise<void> {
+  const now = new Date();
+  const isUserInitiated =
+    opts.userInitiated || opts.trigger === 'refresh' || opts.trigger === 'check-confirmation';
+
+  // Debounce non-user-driven triggers so re-renders or tab churn don't stampede RPC.
+  if (!isUserInitiated && state.lastReconciliationAt) {
+    const last = Date.parse(state.lastReconciliationAt);
+    if (Number.isFinite(last) && now.getTime() - last < RECONCILIATION_DEBOUNCE_MS) {
+      return;
+    }
+  }
+  state.lastReconciliationAt = now.toISOString();
+
+  const candidates = pendingTransactionsNeedingReconciliation(state.pendingTransactions, now);
+  const targets = opts.targetActionId
+    ? candidates.filter((record) => record.actionId === opts.targetActionId)
+    : candidates;
+  if (targets.length === 0) return;
+
+  let mutated = false;
+  for (const record of targets) {
+    if (!record.txid) continue; // Records with only signed bytes wait for explicit user retry.
+    const cluster = record.cluster as Cluster;
+    if (!isCluster(record.cluster)) continue;
+    try {
+      const status = await browserSignatureStatus(cluster, record.txid);
+      if (status.txStatus === 'confirmed') {
+        const action = state.preparedActions.find((candidate) => candidate.id === record.actionId);
+        markTransactionPhase(record.id, 'confirmed', {
+          confirmedAt: now.toISOString(),
+          txid: record.txid,
+        });
+        if (action) {
+          completeBrowserExecutedAction(action, {
+            txid: record.txid,
+            txStatus: 'confirmed',
+            explorerUrl: explorerUrl(record.txid, cluster),
+          });
+          recordBrowserActionActivity(action.id, 'browser.transaction.reconciled', {
+            kind: action.kind,
+            status: 'confirmed',
+            txid: record.txid,
+            trigger: opts.trigger,
+          });
+          showCompletedHistoryForAction(action.id);
+        }
+        removePendingTransaction(record.id);
+        mutated = true;
+        if (isUserInitiated) {
+          pushToast(
+            'success',
+            'Transaction confirmed',
+            `${short(record.txid)} - Solscan link saved in Done.`,
+            { linkHref: explorerUrl(record.txid, cluster), linkLabel: 'Open Solscan' },
+          );
+        }
+      } else if (status.txStatus === 'failed') {
+        const failureDetail = status.error ?? status.confirmationStatus ?? 'failed';
+        markTransactionPhase(record.id, 'failed', {
+          failedAt: now.toISOString(),
+          failureKind: 'onchain_failed',
+          lastError: failureDetail,
+        });
+        const action = state.preparedActions.find((candidate) => candidate.id === record.actionId);
+        if (action) {
+          const priorStatus: PreparedActionStatus = action.status === 'overdue' ? 'overdue' : 'ready';
+          updateBrowserPreparedAction(action.id, {
+            status: priorStatus,
+            txStatus: 'failed',
+            txid: record.txid,
+            txError: failureDetail,
+            error: failureDetail,
+          });
+          recordBrowserActionActivity(action.id, 'browser.transaction.reconciled', {
+            kind: action.kind,
+            status: 'failed',
+            txid: record.txid,
+            trigger: opts.trigger,
+            error: failureDetail,
+          });
+        }
+        mutated = true;
+        if (isUserInitiated) {
+          pushToast(
+            'error',
+            'Transaction failed on-chain',
+            short(record.txid),
+            { linkHref: explorerUrl(record.txid, cluster), linkLabel: 'Open Solscan' },
+          );
+        }
+      } else if (isUserInitiated) {
+        // Still pending — keep the record, but surface status if user initiated.
+        pushToast(
+          'pending',
+          'Transaction submitted',
+          `${short(record.txid)} is still confirming.`,
+          { linkHref: explorerUrl(record.txid, cluster), linkLabel: 'Open Solscan' },
+        );
+      }
+    } catch {
+      if (isUserInitiated) {
+        pushToast(
+          'pending',
+          'Submitted status unknown',
+          'The app is checking the original transaction before allowing another approval.',
+          record.txid
+            ? { linkHref: explorerUrl(record.txid, cluster), linkLabel: 'Open Solscan' }
+            : {},
+        );
+      }
+    }
+  }
+
+  if (mutated) {
+    syncPendingTransactionsFromLedger();
+    render();
   }
 }
 
@@ -13450,6 +16064,18 @@ async function executeBrowserPreparedActionThroughBridge(
     }),
   );
   const txid = requiredResponseString(result.txid ?? result.signature, 'Bridge transaction signature');
+  upsertPendingTransaction({
+    actionId: action.id,
+    cluster: action.cluster,
+    workflowSource: 'local-bridge',
+    kind: action.kind,
+    phase: 'submitted',
+    walletAddress: action.walletAddress,
+    txid,
+    submittedAt: new Date().toISOString(),
+    attemptCount: 1,
+  });
+  syncPendingTransactionsFromLedger();
   markBrowserTransactionSubmitted(action, txid);
   const txStatus = await resolveSubmittedTransactionStatus(action.cluster, txid, toastContext);
   return {
@@ -13604,8 +16230,30 @@ async function executeBrowserSwap(
       summary: `Swap ${requiredActionParam(action, 'amount')} ${inputToken.symbol} to ${outputToken.symbol}`,
     }),
   );
+  const signedSwapTxid = signedTransactionId(signed.signature);
+  const signedSwapHash = await signedTransactionHashFromBase64(signed.signature).catch(() => undefined);
+  const swapLedgerEntry = upsertPendingTransaction({
+    actionId: action.id,
+    cluster: action.cluster,
+    workflowSource: ledgerWorkflowSource(action),
+    kind: action.kind,
+    phase: 'wallet_signed',
+    walletAddress: action.walletAddress,
+    txid: signedSwapTxid,
+    signedTransactionBase64: signed.signature,
+    signedTransactionHash: signedSwapHash,
+    jupiterRequestId: requestId,
+    signedAt: new Date().toISOString(),
+    attemptCount: 0,
+  });
+  syncPendingTransactionsFromLedger();
   const executed = await executeSignedJupiterSwapWithRetry(action, signed.signature, order, requestId, toastContext);
   const txid = requiredResponseString(executed.signature ?? executed.txid, 'Jupiter execution signature');
+  markTransactionPhase(swapLedgerEntry.id, 'submitted', {
+    submittedAt: new Date().toISOString(),
+    txid,
+  });
+  syncPendingTransactionsFromLedger();
   markBrowserTransactionSubmitted(action, txid);
   const txStatus = await resolveSubmittedTransactionStatus(action.cluster, txid, toastContext);
   return {
@@ -13681,7 +16329,29 @@ async function signAndBroadcastBrowserTransactionBase64(
         summary,
       }),
     );
-    return broadcastSignedBrowserTransactionWithRetry(action.cluster, signed.signature, toastContext);
+    const signedTxid = signedTransactionId(signed.signature);
+    const signedHash = await signedTransactionHashFromBase64(signed.signature).catch(() => undefined);
+    const ledgerEntry = upsertPendingTransaction({
+      actionId: action.id,
+      cluster: action.cluster,
+      workflowSource: ledgerWorkflowSource(action),
+      kind: action.kind,
+      phase: 'wallet_signed',
+      walletAddress: action.walletAddress,
+      txid: signedTxid,
+      signedTransactionBase64: signed.signature,
+      signedTransactionHash: signedHash,
+      signedAt: new Date().toISOString(),
+      attemptCount: 0,
+    });
+    syncPendingTransactionsFromLedger();
+    const txid = await broadcastSignedBrowserTransactionWithRetry(action.cluster, signed.signature, toastContext);
+    markTransactionPhase(ledgerEntry.id, 'submitted', {
+      submittedAt: new Date().toISOString(),
+      txid,
+    });
+    syncPendingTransactionsFromLedger();
+    return txid;
   }
   if (state.capabilities?.supports.signAndSendTransaction === true) {
     const result = await runTransactionToastStep(
@@ -13694,6 +16364,18 @@ async function signAndBroadcastBrowserTransactionBase64(
       }),
     );
     const txid = result.txid ?? result.signature;
+    upsertPendingTransaction({
+      actionId: action.id,
+      cluster: action.cluster,
+      workflowSource: ledgerWorkflowSource(action),
+      kind: action.kind,
+      phase: 'submitted',
+      walletAddress: action.walletAddress,
+      txid,
+      submittedAt: new Date().toISOString(),
+      attemptCount: 1,
+    });
+    syncPendingTransactionsFromLedger();
     updateTransactionToast(toastContext, 'pending', 'Confirming transaction', short(txid), txid);
     return txid;
   }
@@ -13745,14 +16427,14 @@ async function executeSignedJupiterSwapWithRetry(
         updateTransactionToast(toastContext, 'pending', 'Transaction already submitted', short(signedTxid), signedTxid);
         return { signature: signedTxid, status: landedStatus };
       }
-      if (attempt >= TX_RETRY_MAX_ATTEMPTS || !shouldRetryTransactionSend(err)) {
+      if (attempt >= TX_RETRY_MAX_ATTEMPTS || !shouldRetryTransactionSend(err, signedTxid)) {
         break;
       }
       await waitBeforeTransactionRetry(toastContext, err, attempt, signedTxid);
     }
   }
 
-  if (lastError && isPossiblySubmittedTransactionError(lastError)) {
+  if (lastError && classifyTransactionFailure(lastError, { hasSignedBytes: true, txid: signedTxid }).maybeSubmitted) {
     await waitBeforeTransactionRetry(toastContext, lastError, TX_RETRY_MAX_ATTEMPTS, signedTxid);
     return { signature: signedTxid, status: await finalTransactionStatusOrPending(action.cluster, signedTxid) };
   }
@@ -13794,14 +16476,14 @@ async function broadcastSignedBrowserTransactionWithRetry(
         updateTransactionToast(toastContext, 'pending', 'Transaction already submitted', short(signedTxid), signedTxid);
         return signedTxid;
       }
-      if (attempt >= TX_RETRY_MAX_ATTEMPTS || !shouldRetryTransactionSend(err)) {
+      if (attempt >= TX_RETRY_MAX_ATTEMPTS || !shouldRetryTransactionSend(err, signedTxid)) {
         break;
       }
       await waitBeforeTransactionRetry(toastContext, err, attempt, signedTxid);
     }
   }
 
-  if (lastError && isPossiblySubmittedTransactionError(lastError)) {
+  if (lastError && classifyTransactionFailure(lastError, { hasSignedBytes: true, txid: signedTxid }).maybeSubmitted) {
     await waitBeforeTransactionRetry(toastContext, lastError, TX_RETRY_MAX_ATTEMPTS, signedTxid);
     await finalTransactionStatusOrPending(cluster, signedTxid);
     return signedTxid;
@@ -13865,6 +16547,13 @@ function completeBrowserExecutedAction(action: PreparedAction, execution: Browse
   state.materializedActions = state.preparedActions;
   state.receipts = mergeActionReceipts([receipt], state.receipts);
   saveBrowserWorkflowState();
+  if (execution.txStatus === 'confirmed') {
+    const ledgerEntry = findPendingTransactionByAction(action.id);
+    if (ledgerEntry) {
+      removePendingTransaction(ledgerEntry.id);
+      syncPendingTransactionsFromLedger();
+    }
+  }
 }
 
 function updateBrowserPreparedAction(actionId: string, patch: Partial<PreparedAction>): PreparedAction {
@@ -13923,6 +16612,39 @@ function markBrowserTransactionSubmitted(action: PreparedAction, txid: string): 
     status: 'pending',
     txid,
   });
+}
+
+function syncPendingTransactionsFromLedger(): void {
+  state.pendingTransactions = loadTransactionLedger();
+}
+
+function ledgerWorkflowSource(action: PreparedAction): LedgerWorkflowSource {
+  if (action.workflowSource === 'cloud') return 'cloud';
+  if (action.workflowSource === 'local-bridge') return 'local-bridge';
+  return 'browser';
+}
+
+function failureKindForLedger(kind: TransactionFailureKind): ExecutionFailureKind {
+  switch (kind) {
+    case 'wallet_rejected':
+    case 'wallet_unavailable':
+    case 'config_missing':
+    case 'rpc_timeout':
+    case 'network_unreachable':
+    case 'onchain_failed':
+    case 'expired_blockhash':
+    case 'slippage_or_quote_failed':
+    case 'unknown_maybe_submitted':
+      return kind;
+    case 'rate_limited':
+      return 'rpc_timeout';
+    case 'simulation_failed':
+    case 'insufficient_funds':
+    case 'invalid_transaction':
+      return 'unknown_maybe_submitted';
+    default:
+      return 'unknown_maybe_submitted';
+  }
 }
 
 async function runTransactionToastStep<T>(
@@ -14030,18 +16752,12 @@ function isZeroSignature(signature: Uint8Array): boolean {
   return signature.every((byte) => byte === 0);
 }
 
-function shouldRetryTransactionSend(err: unknown): boolean {
-  return isPossiblySubmittedTransactionError(err) && !isDefiniteTransactionFailure(err);
-}
-
-function isPossiblySubmittedTransactionError(err: unknown): boolean {
-  const message = (err instanceof Error ? err.message : String(err)).toLowerCase();
-  return /timeout|timed out|network|failed to fetch|fetch failed|temporar|rate|429|500|502|503|504|gateway|service unavailable|block height|confirmation|not confirmed|node is behind|already processed|already been processed/.test(message);
-}
-
-function isDefiniteTransactionFailure(err: unknown): boolean {
-  const message = (err instanceof Error ? err.message : String(err)).toLowerCase();
-  return /user rejected|rejected|denied|cancelled|canceled|insufficient|invalid|malformed|signature verification failed|blockhash not found|expired|slippage|unauthorized|not configured|missing .*key|simulation failed|custom program error/.test(message);
+function shouldRetryTransactionSend(err: unknown, signedTxid?: string): boolean {
+  const classification = classifyTransactionFailure(err, {
+    hasSignedBytes: true,
+    txid: signedTxid,
+  });
+  return classification.retryableSignedBroadcast;
 }
 
 async function browserLatestBlockhash(cluster: Cluster): Promise<BrowserLatestBlockhash> {
@@ -15308,6 +18024,286 @@ async function refreshHealth(): Promise<void> {
   state.health = await bridgeRequest<BridgeHealth>('/bridge/health');
 }
 
+function systemHealthInputs(): {
+  rpcUrl: string;
+  cluster: string;
+  walletAddress: string | null;
+  walletConnected: boolean;
+  aiMode: AiHealthMode;
+  bridgeUrl: string | null;
+  bridgeToken: string | null;
+  bridgeActive: boolean;
+} {
+  const aiMode: AiHealthMode = state.aiSettings.mode === 'session'
+    ? 'session'
+    : state.aiSettings.mode === 'bridge'
+      ? 'bridge'
+      : 'hosted';
+  return {
+    rpcUrl: activeRpcUrl(),
+    cluster: state.cluster,
+    walletAddress: state.address || null,
+    walletConnected: Boolean(state.address),
+    aiMode,
+    bridgeUrl: state.bridgeUrl || null,
+    bridgeToken: state.bridgeToken || null,
+    bridgeActive: state.bridgeActive,
+  };
+}
+
+async function runSystemHealthCheck(options: { silent?: boolean } = {}): Promise<void> {
+  if (systemHealthRunController) {
+    systemHealthRunController.abort();
+  }
+  const controller = new AbortController();
+  systemHealthRunController = controller;
+  state.systemHealthChecking = true;
+  if (!options.silent) {
+    render();
+  }
+  let next: SystemHealth | null = null;
+  try {
+    next = await runSystemHealthProbe({
+      ...systemHealthInputs(),
+      signal: controller.signal,
+    });
+  } catch (err) {
+    if (controller.signal.aborted) return;
+    console.warn('System health probe failed.', err);
+  } finally {
+    if (systemHealthRunController === controller) {
+      systemHealthRunController = null;
+    }
+    state.systemHealthChecking = false;
+  }
+  if (!next) {
+    if (!options.silent) render();
+    return;
+  }
+  const flipped = systemHealthStatusFlipped(state.systemHealth, next);
+  state.systemHealth = next;
+  if (flipped || !options.silent) {
+    render();
+  }
+}
+
+function startSystemHealthPolling(): void {
+  stopSystemHealthPolling();
+  void runSystemHealthCheck({ silent: true });
+  systemHealthTimer = window.setInterval(() => {
+    void runSystemHealthCheck({ silent: true });
+  }, SYSTEM_HEALTH_INTERVAL_MS);
+}
+
+function stopSystemHealthPolling(): void {
+  if (systemHealthTimer !== null) {
+    window.clearInterval(systemHealthTimer);
+    systemHealthTimer = null;
+  }
+}
+
+async function handleHealthAction(action: string, intent?: string): Promise<void> {
+  switch (action) {
+    case 'toggle-drawer':
+      state.systemHealthDrawerOpen = !state.systemHealthDrawerOpen;
+      render();
+      if (state.systemHealthDrawerOpen) {
+        void runSystemHealthCheck({ silent: true });
+      }
+      return;
+    case 'close-drawer':
+      state.systemHealthDrawerOpen = false;
+      render();
+      return;
+    case 'recheck':
+      await runSystemHealthCheck();
+      return;
+    case 'remediate':
+      handleHealthRemediation(intent);
+      return;
+    case 'copy-debug':
+      await copyHealthDebugSnapshot();
+      return;
+  }
+}
+
+function handleHealthRemediation(intent?: string): void {
+  switch (intent) {
+    case 'connect-wallet':
+      state.systemHealthDrawerOpen = false;
+      state.activeTab = 'overview';
+      state.commandCenterView = 'center';
+      render();
+      window.setTimeout(() => {
+        const rail = document.querySelector<HTMLElement>('.wallet-rail');
+        rail?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+      }, 80);
+      return;
+    case 'open-settings':
+      state.systemHealthDrawerOpen = false;
+      state.activeTab = 'overview';
+      state.commandCenterView = 'storage';
+      render();
+      return;
+    case 'switch-cluster':
+      state.systemHealthDrawerOpen = false;
+      state.activeTab = 'overview';
+      state.commandCenterView = 'storage';
+      render();
+      pushToast('pending', 'Cluster mismatch', 'Pick a cluster that matches your wallet.');
+      return;
+    case 'reload':
+      window.location.reload();
+      return;
+  }
+}
+
+async function copyHealthDebugSnapshot(): Promise<void> {
+  try {
+    const text = buildHealthDebugSnapshot();
+    await navigator.clipboard.writeText(text);
+    pushToast('success', 'Debug log copied', 'System health snapshot is on your clipboard.');
+  } catch (err) {
+    const message = err instanceof Error ? err.message : 'Could not copy debug log.';
+    pushToast('error', 'Copy failed', message);
+  }
+}
+
+function buildHealthDebugSnapshot(): string {
+  const snapshot = {
+    capturedAt: new Date().toISOString(),
+    cluster: state.cluster,
+    bridgeActive: state.bridgeActive,
+    rpcHost: rpcHostFromUrl(activeRpcUrl()),
+    walletAddress: state.address ? short(state.address) : null,
+    aiMode: state.aiSettings.mode,
+    systemHealth: state.systemHealth,
+    pendingLedger: state.pendingTransactions.map((record) => ({
+      id: record.id,
+      actionId: record.actionId,
+      cluster: record.cluster,
+      kind: record.kind,
+      phase: record.phase,
+      txid: record.txid,
+      failureKind: record.failureKind,
+      attemptCount: record.attemptCount,
+      signedAt: record.signedAt,
+      submittedAt: record.submittedAt,
+      confirmedAt: record.confirmedAt,
+      failedAt: record.failedAt,
+      lastError: record.lastError,
+    })),
+    aiDiagnostics: state.aiDiagnostics,
+  };
+  return redactSecrets(JSON.stringify(snapshot, null, 2), state.aiSettings.apiKey);
+}
+
+function rpcHostFromUrl(url: string): string {
+  try {
+    return new URL(url).host;
+  } catch {
+    return url;
+  }
+}
+
+function downloadJsonBlob(content: string, filename: string): void {
+  const blob = new Blob([content], { type: 'application/json' });
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement('a');
+  link.href = url;
+  link.download = filename;
+  document.body.appendChild(link);
+  link.click();
+  document.body.removeChild(link);
+  window.setTimeout(() => URL.revokeObjectURL(url), 2000);
+}
+
+async function handleWorkspaceBackupAction(op: string): Promise<void> {
+  switch (op) {
+    case 'export':
+      runWorkspaceExport();
+      return;
+    case 'restore-confirm':
+      await runWorkspaceRestoreConfirm();
+      return;
+    case 'restore-cancel':
+      state.workspaceBackupConfirm = null;
+      state.workspaceBackupStatus = '';
+      render();
+      return;
+    case 'restore-override':
+      if (state.workspaceBackupConfirm) {
+        state.workspaceBackupConfirm = { ...state.workspaceBackupConfirm, awaitingOverride: false };
+        render();
+      }
+      return;
+  }
+}
+
+function runWorkspaceExport(): void {
+  try {
+    const bundle = exportWorkspace();
+    const text = serializeBackup(bundle);
+    downloadJsonBlob(text, backupFilename());
+    state.workspaceBackupStatus = `Exported ${WORKSPACE_BACKUP_KEYS.length} sections at ${formatDateTime(bundle.exportedAt)}.`;
+    pushToast('success', 'Workspace exported', 'Your local state is saved to a JSON file.');
+    render();
+  } catch (err) {
+    const message = err instanceof Error ? err.message : 'Export failed.';
+    state.workspaceBackupStatus = `Export failed: ${message}`;
+    pushToast('error', 'Export failed', message);
+    render();
+  }
+}
+
+async function handleWorkspaceBackupFile(file: File): Promise<void> {
+  try {
+    const text = await file.text();
+    const bundle = parseBackup(text);
+    const summaries = summarizeBackup(bundle);
+    const unresolved = unresolvedPendingTransactions();
+    state.workspaceBackupConfirm = {
+      bundle,
+      summaries,
+      unresolvedCount: unresolved.length,
+      awaitingOverride: unresolved.length > 0,
+      busy: false,
+    };
+    state.workspaceBackupStatus = `Loaded ${file.name}.`;
+    render();
+  } catch (err) {
+    const message = err instanceof Error ? err.message : 'Backup file is invalid.';
+    state.workspaceBackupConfirm = null;
+    state.workspaceBackupStatus = `Import failed: ${message}`;
+    pushToast('error', 'Import failed', message);
+    render();
+  }
+}
+
+async function runWorkspaceRestoreConfirm(): Promise<void> {
+  const pending = state.workspaceBackupConfirm;
+  if (!pending) return;
+  if (pending.awaitingOverride) {
+    pushToast('error', 'Restore blocked', 'Resolve pending transactions or override before restoring.');
+    return;
+  }
+  state.workspaceBackupConfirm = { ...pending, busy: true };
+  render();
+  try {
+    const result = restoreWorkspace({ bundle: pending.bundle, mode: 'replace' });
+    state.workspaceBackupConfirm = null;
+    state.workspaceBackupStatus = `Restored ${result.applied.length} sections.${result.warnings.length ? ' Warnings: ' + result.warnings.join(' · ') : ''}`;
+    pushToast('success', 'Workspace restored', 'Reloading to apply restored state.');
+    window.setTimeout(() => window.location.reload(), 600);
+  } catch (err) {
+    const message = err instanceof Error ? err.message : 'Restore failed.';
+    state.workspaceBackupConfirm = pending;
+    state.workspaceBackupStatus = `Restore failed: ${message}`;
+    pushToast('error', 'Restore failed', message);
+    render();
+  }
+}
+
 async function refreshBalances(): Promise<void> {
   state.balances = await bridgeRequest<BalanceView>('/bridge/action/balances');
 }
@@ -15608,6 +18604,10 @@ function assertValidTemplatePlanInput(template: AgentPlanTemplate, parameters: R
     if (fieldDef.required && !parameters[fieldDef.id]?.trim()) {
       errors[fieldDef.id] = `${fieldDef.label} is required.`;
     }
+    if (isRecipientFieldId(fieldDef.id)) {
+      const policyError = recipientPolicyBlockReason(parameters[fieldDef.id] ?? '');
+      if (policyError) errors[fieldDef.id] = policyError;
+    }
   }
   if (templateRequiresUserNotes(template) && !userNotes.trim()) {
     errors.__notes = 'Describe the custom request before creating this plan.';
@@ -15657,12 +18657,75 @@ function assertPlanCanQueue(plan: AgentPlan): void {
   if (report?.verdict === 'block') {
     throw new Error(report.summary || 'This plan is blocked by Agentic guardrails.');
   }
+  const recipient = planParameter(plan, ['recipient', 'recipientAddress', 'settlementWallet']);
+  const recipientPolicyError = recipientPolicyBlockReason(recipient);
+  if (recipientPolicyError) {
+    throw new Error(recipientPolicyError);
+  }
+}
+
+function agentReviewQueueBlockReason(record: GeneratedPlanRecord | undefined): string {
+  if (!record?.agentReview?.required) return '';
+  const review = record.agentReview;
+  if (review.status === 'approved' && review.decision === 'approve') {
+    if (isAgentReviewStale(record)) {
+      return 'Agent review is outdated since you edited this draft. Ask the agent again or send anyway.';
+    }
+    return '';
+  }
+  if (review.status === 'checking') return 'Agent is still reviewing this draft.';
+  if (review.status === 'denied') return review.reason || 'Agent denied this draft. Edit it or ask again before sending.';
+  if (review.status === 'needs_input') return review.reason || 'Agent has questions before approving. Answer them or send anyway.';
+  if (review.status === 'error') return review.reason || 'Agent review failed. Ask again before sending.';
+  return 'Ask agent before sending this agentic draft for approval.';
+}
+
+interface AgentOverrideOutcome {
+  proceed: boolean;
+  userReason?: string;
+}
+
+function confirmAgentReviewQueueOverride(record: GeneratedPlanRecord | undefined): AgentOverrideOutcome {
+  const message = agentReviewQueueOverrideMessage(record);
+  if (!message) return { proceed: true };
+  const confirmed = window.confirm(message);
+  if (!confirmed) return { proceed: false };
+  const promptMessage = 'Why are you sending anyway? (Optional. Saved in your override proof.)';
+  const rawReason = window.prompt(promptMessage, '') ?? '';
+  const reason = rawReason.trim();
+  return reason ? { proceed: true, userReason: reason } : { proceed: true };
+}
+
+function agentReviewQueueOverrideMessage(record: GeneratedPlanRecord | undefined): string {
+  if (!record?.agentReview?.required) return '';
+  const review = record.agentReview;
+  if (review.status === 'approved' && review.decision === 'approve') {
+    if (isAgentReviewStale(record)) {
+      return 'Agent review is outdated since you edited this draft. Send for approval anyway?';
+    }
+    return '';
+  }
+  if (review.status === 'checking') {
+    return 'Agent is not done searching for an answer yet. Send for approval anyway?';
+  }
+  if (review.status === 'denied') {
+    return `Agent said No${review.reason ? `: ${review.reason}` : ''}\n\nSend for approval anyway?`;
+  }
+  if (review.status === 'needs_input') {
+    return `Agent has questions before approving${review.reason ? `: ${review.reason}` : ''}\n\nSend for approval anyway?`;
+  }
+  if (review.status === 'error') {
+    return `Agent review failed${review.reason ? `: ${review.reason}` : ''}\n\nSend for approval anyway?`;
+  }
+  return 'Agent review has not approved this draft yet. Send for approval anyway?';
 }
 
 function queuePlanTitle(): string {
   if (!state.address) return 'Connect a wallet before sending for approval.';
   if (!state.agentPlan) return 'Create a plan before sending for approval.';
   if (!canQueueAgentPlan(state.agentPlan)) return 'Only transfer, swap, custom transaction, and repeat payments can be queued.';
+  const reviewBlock = agentReviewQueueBlockReason(generatedPlanById(state.selectedGeneratedPlanId));
+  if (reviewBlock) return `${reviewBlock} Click to confirm if you still want to send.`;
   const report = planGuardrailReport(state.agentPlan);
   if (report?.verdict === 'block') return report.summary;
   const mode = activeWorkflowMode();
@@ -15682,8 +18745,14 @@ function queuePlanTitle(): string {
     : 'Send this plan to browser Needs Approval. It stays local to this device.';
 }
 
-async function queuePlanThroughBridge(plan: AgentPlan): Promise<{ id: string }> {
-  const note = plan.intent.slice(0, 500);
+async function queuePlanThroughBridge(plan: AgentPlan, sourceRecord?: GeneratedPlanRecord): Promise<{ id: string }> {
+  const reviewNote = sourceRecord?.agentReview?.required
+    ? `Agent ${sourceRecord.agentReview.status}: ${sourceRecord.agentReview.reason}`
+    : '';
+  const overrideNote = sourceRecord?.agentOverride
+    ? `Override: ${overrideShortLabel(sourceRecord.agentOverride)}`
+    : '';
+  const note = [plan.intent, reviewNote, overrideNote].filter(Boolean).join(' | ').slice(0, 500);
   switch (plan.actionType) {
     case 'transfer_sol': {
       const response = await bridgeRequest<{ preparedAction: PreparedAction }>('/bridge/action/prepare-transfer-sol', {
@@ -15747,13 +18816,13 @@ async function queuePlanThroughActiveWorkflow(
   assertPlanCanQueue(plan);
   const mode = activeWorkflowMode();
   if (mode === 'local-bridge') {
-    const response = await queuePlanThroughBridge(plan);
+    const response = await queuePlanThroughBridge(plan, sourceRecord);
     return { ...response, mode: 'local-bridge' };
   }
   if (mode === 'agentic-cloud') {
     const unsupported = cloudQueueUnsupportedReason(plan);
     if (unsupported) {
-      const response = queuePlanThroughBrowserWorkflow(plan);
+      const response = queuePlanThroughBrowserWorkflow(plan, sourceRecord);
       return { ...response, mode: 'browser-workflow' };
     }
     const response = plan.actionType === 'recurring_payment'
@@ -15761,7 +18830,7 @@ async function queuePlanThroughActiveWorkflow(
       : await queuePlanThroughCloud(plan, sourceRecord);
     return { ...response, mode: 'agentic-cloud' };
   }
-  const response = queuePlanThroughBrowserWorkflow(plan);
+  const response = queuePlanThroughBrowserWorkflow(plan, sourceRecord);
   return { ...response, mode: 'browser-workflow' };
 }
 
@@ -15780,6 +18849,9 @@ async function queuePlanThroughCloud(plan: AgentPlan, sourceRecord?: GeneratedPl
   const planId = cloudRecord
     ? cloudRecord.id
     : (await saveGeneratedPlan(plan, template, sourceRecord?.prompt || plan.userNotes || plan.intent)).id;
+  const reviewNote = sourceRecord?.agentReview?.required
+    ? `Agent ${sourceRecord.agentReview.status}: ${sourceRecord.agentReview.reason}`
+    : '';
   const approvalRecord = parseCloudApprovalResponse(await cloudRequest('/api/approvals', {
     method: 'POST',
     body: JSON.stringify({
@@ -15788,10 +18860,11 @@ async function queuePlanThroughCloud(plan: AgentPlan, sourceRecord?: GeneratedPl
       summary: plan.intent,
       params: plan.parameters,
       cluster: state.cluster,
-      note: plan.userNotes || plan.approval,
+      note: [plan.userNotes || plan.approval, reviewNote].filter(Boolean).join(' | '),
       amount: planParameter(plan, ['amountSol', 'amount', 'inputAmount', 'plannedAmount']),
       token: planParameter(plan, ['token', 'inputToken']),
       recipient: planParameter(plan, ['recipient', 'recipientAddress']),
+      ...(sourceRecord?.agentReview ? { metadata: { agentReview: sourceRecord.agentReview } } : {}),
     }),
   }));
   const approval = cloudApprovalToPreparedAction(approvalRecord);
@@ -15840,7 +18913,7 @@ async function queueRecurringPlanThroughCloud(plan: AgentPlan): Promise<{ id: st
   return { id: schedule.id };
 }
 
-function queuePlanThroughBrowserWorkflow(plan: AgentPlan): { id: string } {
+function queuePlanThroughBrowserWorkflow(plan: AgentPlan, sourceRecord?: GeneratedPlanRecord): { id: string } {
   if (!state.address) {
     throw new Error('Connect a wallet before sending for approval.');
   }
@@ -15853,17 +18926,23 @@ function queuePlanThroughBrowserWorkflow(plan: AgentPlan): { id: string } {
     saveBrowserWorkflowState();
     return { id: recurring.id };
   }
-  const action = browserPreparedActionFromPlan(plan);
+  const action = browserPreparedActionFromPlan(plan, sourceRecord);
   state.preparedActions = mergePreparedActions([action], state.preparedActions);
   state.materializedActions = state.preparedActions;
   saveBrowserWorkflowState();
   return { id: action.id };
 }
 
-function browserPreparedActionFromPlan(plan: AgentPlan): PreparedAction {
+function browserPreparedActionFromPlan(plan: AgentPlan, sourceRecord?: GeneratedPlanRecord): PreparedAction {
   const now = new Date().toISOString();
   const id = newId('browser-action');
   const kind = browserActionKindForPlan(plan);
+  const reviewNote = sourceRecord?.agentReview?.required
+    ? `Agent ${sourceRecord.agentReview.status}: ${sourceRecord.agentReview.reason}`
+    : '';
+  const overrideNote = sourceRecord?.agentOverride
+    ? `Override: ${overrideShortLabel(sourceRecord.agentOverride)}`
+    : '';
   return {
     id,
     kind,
@@ -15875,9 +18954,24 @@ function browserPreparedActionFromPlan(plan: AgentPlan): PreparedAction {
     dueAt: now,
     createdAt: now,
     updatedAt: now,
-    note: plan.userNotes || plan.approval,
+    note: [plan.userNotes || plan.approval, reviewNote, overrideNote].filter(Boolean).join(' | '),
+    ...(sourceRecord?.agentReview ? { agentReview: sourceRecord.agentReview } : {}),
+    ...(sourceRecord?.agentOverride ? { agentOverride: sourceRecord.agentOverride } : {}),
     workflowSource: 'browser',
   };
+}
+
+function overrideShortLabel(override: AgentReviewOverride): string {
+  const verdict = override.agentStatus === 'denied'
+    ? 'agent denied'
+    : override.agentStatus === 'checking'
+      ? 'agent still checking'
+      : override.agentStatus === 'needs_input'
+        ? 'agent needed input'
+        : override.agentStatus === 'error'
+          ? 'agent review failed'
+          : 'agent did not approve';
+  return override.userReason ? `${verdict}; user: ${override.userReason}` : verdict;
 }
 
 function browserActionKindForPlan(plan: AgentPlan): PreparedActionKind {
@@ -16937,11 +20031,13 @@ function preparedActionCard(action: PreparedAction): string {
   const cloudWorkflow = action.workflowSource === 'cloud';
   const decisionLabels = preparedActionDecisionLabels(action);
   const effectCopy = approvalEffectCopy(action);
-  const executionBlockReason = cloudExecutionBlockReason(action);
+  const executionBlockReason = cloudExecutionBlockReason(action) ?? actionRecipientPolicyBlockReason(action);
   const confirmable = canConfirmCloudFinalization(action) || canConfirmBrowserTransaction(action);
+  const pendingLedgerExecution = hasPendingExecutionLedgerEntry(action.id);
   const executeDisabled = (!state.bridgeActive && !browserWorkflow && !cloudWorkflow) ||
     state.busy ||
     !executable ||
+    pendingLedgerExecution ||
     Boolean(executionBlockReason);
   return `
     <article class="inbox-item approval-ticket inbox-approval-card ${action.status}">
@@ -16951,23 +20047,29 @@ function preparedActionCard(action: PreparedAction): string {
             <div class="inbox-approval-meta">
               <span class="status-pill ${statusTone(action.status)}">${escapeHtml(action.status)}</span>
               <strong class="inbox-approval-meta-title">${escapeHtml(preparedActionCardTitle(action))}</strong>
+              ${evidenceBadgeHtml(evidenceBadgeForAction(action))}
               <span>${escapeHtml(action.kind.replace(/_/g, ' '))}</span>
               ${action.recurringId ? '<span>Repeat</span>' : ''}
               ${inboxActionFailurePill(action)}
               ${action.txStatus && action.txStatus !== 'failed' ? `<span class="status-pill ${txTone(action.txStatus)}">tx ${escapeHtml(action.txStatus)}</span>` : ''}
               <span>${escapeHtml(inboxApprovalSourceLabel(action))}</span>
             </div>
+            ${actionTimelineHtml(action)}
             <p class="ticket-meta-line">${escapeHtml(action.kind)} on ${escapeHtml(action.cluster)} - due ${formatDateTime(action.dueAt)}</p>
           </div>
           ${inboxApprovalHero(action)}
           <div class="inbox-actions inbox-approval-actions">
-            <button data-action-op="execute" data-action-id="${action.id}" class="primary" ${executeDisabled ? 'disabled' : ''} ${executionBlockReason ? `title="${escapeHtml(executionBlockReason)}"` : ''}>${escapeHtml(decisionLabels.approve)}</button>
-            ${confirmable ? `<button data-action-op="confirm" data-action-id="${action.id}" class="primary" ${state.busy ? 'disabled' : ''}>Check confirmation</button>` : ''}
+            ${confirmable
+              ? `<button data-action-op="confirm" data-action-id="${action.id}" class="primary" ${state.busy ? 'disabled' : ''}>Check confirmation</button>`
+              : `<button data-action-op="execute" data-action-id="${action.id}" class="primary" ${executeDisabled ? 'disabled' : ''} ${executionBlockReason ? `title="${escapeHtml(executionBlockReason)}"` : ''}>${escapeHtml(decisionLabels.approve)}</button>`}
             <button class="utility danger" data-action-op="reject" data-action-id="${action.id}" ${state.busy || isTerminalPreparedAction(action) ? 'disabled' : ''}>${escapeHtml(decisionLabels.reject)}</button>
           </div>
         </div>
         ${inboxApprovalSummaryGrid(action)}
+        ${preSignReviewBlock(action)}
         ${inboxApprovalNote(action)}
+        ${preparedActionAgentReviewStrip(action)}
+        ${agentOverrideStrip(action.agentOverride)}
         ${finalizationChecklist(action)}
         <div class="inbox-approval-drawers">
           ${inlineReceiptActions(action)}
@@ -17015,7 +20117,7 @@ function inboxActionFailurePill(action: PreparedAction): string {
 function inboxApprovalHero(action: PreparedAction): string {
   const primary = amountLabel(action);
   const secondary = recipientParam(action)
-    ? `To ${short(recipientParam(action))}`
+    ? `To ${recipientDisplayLabel(recipientParam(action))}`
     : formatDateTime(action.dueAt);
   return `
     <div class="inbox-approval-value" title="${escapeHtml(`${primary} ${secondary}`.trim())}">
@@ -17159,12 +20261,12 @@ function inboxApprovalSummaryGrid(action: PreparedAction): string {
   const tokenSummary = inboxApprovalTokenSummary(action);
   const rows: Array<{ label: string; value: string; title?: string; copyValue?: string; copyName?: string; copyLabel?: string; copyActions?: SummaryCopyAction[]; tone?: 'amount' }> = [
     { label: 'Wallet', value: short(action.walletAddress), title: action.walletAddress, copyValue: action.walletAddress },
-    { label: 'Recipient', value: recipient ? short(recipient) : 'n/a', title: recipient || 'n/a', copyValue: recipient || undefined },
+    ...(recipient ? [{ label: 'Recipient', value: recipientDisplayLabel(recipient), title: recipient, copyValue: recipient }] : []),
     { label: 'Token', value: tokenSummary.value, title: tokenSummary.title, copyActions: tokenSummary.copyActions },
     { label: 'Due', value: formatDateTime(action.dueAt) },
   ];
   return `
-    <dl class="inbox-approval-summary-grid" aria-label="Approval summary">
+    <dl class="inbox-approval-summary-grid rows-${rows.length}" aria-label="Approval summary">
       ${rows.map((row) => inboxApprovalSummaryItem(row)).join('')}
     </dl>
   `;
@@ -17173,12 +20275,136 @@ function inboxApprovalSummaryGrid(action: PreparedAction): string {
 function inboxApprovalSummaryItem(row: { label: string; value: string; title?: string; copyValue?: string; copyName?: string; copyLabel?: string; copyActions?: SummaryCopyAction[]; tone?: 'amount' }): string {
   const title = row.title ?? row.value;
   const copyActions = summaryCopyActions(row);
+  const ddClass = [
+    copyActions.length ? 'has-copy' : '',
+    copyActions.length > 1 ? 'has-copy-multi' : '',
+  ].filter(Boolean).join(' ');
   return `
     <div class="${row.tone ? `inbox-approval-summary-${row.tone}` : ''}" title="${escapeHtml(title)}">
       <dt>${escapeHtml(row.label)}</dt>
-      <dd class="${copyActions.length ? 'has-copy' : ''}">
+      <dd class="${ddClass}">
         <span>${escapeHtml(row.value)}</span>
         ${summaryCopyActionsHtml(copyActions, row.label)}
+      </dd>
+    </div>
+  `;
+}
+
+function preSignReviewBlock(action: PreparedAction): string {
+  if (!isExecutableBrowserAction(action) && action.workflowSource !== 'local-bridge') return '';
+  // Suppress review once the action is in flight — the Check-confirmation flow takes over.
+  if (hasPendingExecutionLedgerEntry(action.id)) return '';
+  if (action.txStatus === 'pending' && action.txid) return '';
+
+  const model = buildPreSignReviewModelForAction(action);
+  if (!model) return '';
+  return renderPreSignReviewModel(model);
+}
+
+function buildPreSignReviewModelForAction(action: PreparedAction): PreSignReviewModel | undefined {
+  const mainnet = action.cluster === 'mainnet-beta';
+  if (action.kind === 'transfer_sol' || action.kind === 'transfer_spl') {
+    const recipient = recipientParam(action);
+    const amount = preSignAmount(action);
+    const token = preSignTokenLabel(action);
+    return buildSendPreSignReview({
+      cluster: action.cluster,
+      sender: action.walletAddress || undefined,
+      recipient: recipient || undefined,
+      amount,
+      token,
+      memo: stringParam(action, 'memo') || undefined,
+      mainnetWarning: mainnet,
+    });
+  }
+  if (action.kind === 'swap') {
+    const slippageBps = browserSlippageBpsFromParams(action);
+    return buildSwapPreSignReview({
+      cluster: action.cluster,
+      taker: action.walletAddress || undefined,
+      inputToken: stringParam(action, 'inputToken') || undefined,
+      inputAmount: stringParam(action, 'amount') || stringParam(action, 'inputAmount') || undefined,
+      outputToken: stringParam(action, 'outputToken') || undefined,
+      slippageBps,
+      jupiterRequestId: stringParam(action, 'jupiterRequestId') || undefined,
+      priceImpactWarnPct: 1.5,
+    });
+  }
+  if (action.kind === 'custom_transaction') {
+    const transactionHash = stringParam(action, 'transactionHash') || stringParam(action, 'fingerprint') || undefined;
+    return buildCustomTransactionPreSignReview({
+      cluster: action.cluster,
+      transactionHash,
+    });
+  }
+  return undefined;
+}
+
+function preSignAmount(action: PreparedAction): string | undefined {
+  if (action.kind === 'transfer_sol') {
+    const amountSol = stringParam(action, 'amountSol');
+    return amountSol || undefined;
+  }
+  const amount = stringParam(action, 'amount');
+  return amount || undefined;
+}
+
+function preSignTokenLabel(action: PreparedAction): string | undefined {
+  if (action.kind === 'transfer_sol') return 'SOL';
+  const token = stringParam(action, 'token');
+  return token || undefined;
+}
+
+function browserSlippageBpsFromParams(action: PreparedAction): number | undefined {
+  const raw = action.params.slippageBps;
+  if (typeof raw === 'number' && Number.isFinite(raw)) return Math.max(0, Math.floor(raw));
+  if (typeof raw === 'string' && raw.trim().length > 0) {
+    const parsed = Number(raw);
+    if (Number.isFinite(parsed)) return Math.max(0, Math.floor(parsed));
+  }
+  return undefined;
+}
+
+function renderPreSignReviewModel(model: PreSignReviewModel): string {
+  const warnings = model.warnings.length
+    ? `<ul class="pre-sign-review-warnings">${model.warnings.map((warning) => `<li>${escapeHtml(warning)}</li>`).join('')}</ul>`
+    : '';
+  return `
+    <section class="pre-sign-review tone-${escapeHtml(model.riskTone)}" aria-label="${escapeHtml(model.title)}">
+      <header>
+        <strong>${escapeHtml(model.title)}</strong>
+        ${model.subtitle ? `<p>${escapeHtml(model.subtitle)}</p>` : ''}
+      </header>
+      ${warnings}
+      <div class="pre-sign-review-sections">
+        ${model.sections.map(renderPreSignReviewSection).join('')}
+      </div>
+    </section>
+  `;
+}
+
+function renderPreSignReviewSection(section: PreSignReviewSection): string {
+  return `
+    <div class="pre-sign-review-section">
+      <h4>${escapeHtml(section.title)}</h4>
+      <dl>${section.rows.map(renderPreSignReviewRow).join('')}</dl>
+      ${section.note ? `<p class="pre-sign-review-section-note">${escapeHtml(section.note)}</p>` : ''}
+    </div>
+  `;
+}
+
+function renderPreSignReviewRow(row: PreSignReviewRow): string {
+  const toneClass = row.tone ? ` tone-${escapeHtml(row.tone)}` : '';
+  const titleAttr = row.title ? ` title="${escapeHtml(row.title)}"` : '';
+  const copyButton = row.copyValue
+    ? `<button type="button" class="wallet-action-copy" data-copy="${escapeHtml(row.copyValue)}" data-copy-name="${escapeHtml(row.label)}">Copy</button>`
+    : '';
+  return `
+    <div class="pre-sign-review-row${toneClass}"${titleAttr}>
+      <dt>${escapeHtml(row.label)}</dt>
+      <dd>
+        <span>${escapeHtml(row.value)}</span>
+        ${copyButton}
       </dd>
     </div>
   `;
@@ -17193,6 +20419,36 @@ function inboxApprovalNote(action: PreparedAction): string {
       <p>${escapeHtml(note)}</p>
     </section>
   `;
+}
+
+function preparedActionAgentReviewStrip(action: PreparedAction): string {
+  if (!action.agentReview?.required) return '';
+  return generatedPlanAgentReviewStrip({
+    id: action.planDraftId ?? action.id,
+    plan: {
+      intent: action.summary,
+      route: action.summary,
+      risk: '',
+      approval: '',
+      source: 'template',
+      category: 'approval',
+      actionType: action.kind,
+      templateTitle: preparedActionCardTitle(action),
+      parameters: {},
+      fields: [],
+      safeguards: [],
+    },
+    createdAt: action.createdAt,
+    updatedAt: action.updatedAt,
+    source: 'template',
+    templateId: '',
+    templateTitle: preparedActionCardTitle(action),
+    prompt: '',
+    walletAddress: action.walletAddress,
+    cluster: action.cluster,
+    status: 'queued',
+    agentReview: action.agentReview,
+  });
 }
 
 function inboxApprovalSourceLabel(action: PreparedAction): string {
@@ -17315,9 +20571,22 @@ function canConfirmCloudFinalization(action: PreparedAction): boolean {
 }
 
 function canConfirmBrowserTransaction(action: PreparedAction): boolean {
-  return isExecutableBrowserAction(action) &&
-    Boolean(action.txid) &&
-    (action.status === 'approval_pending' || action.txStatus === 'pending');
+  if (!isExecutableBrowserAction(action)) return false;
+  if (Boolean(action.txid) && (action.status === 'approval_pending' || action.txStatus === 'pending')) {
+    return true;
+  }
+  const ledger = findPendingActionLedgerEntry(action.id);
+  return Boolean(ledger && ledger.txid && PENDING_LEDGER_PHASES.has(ledger.phase));
+}
+
+function findPendingActionLedgerEntry(actionId: string): PendingTransactionRecord | undefined {
+  // Prefer the in-memory cache to avoid localStorage parsing on every render.
+  return state.pendingTransactions.find((record) => record.actionId === actionId);
+}
+
+function hasPendingExecutionLedgerEntry(actionId: string): boolean {
+  const ledger = findPendingActionLedgerEntry(actionId);
+  return Boolean(ledger && PENDING_LEDGER_PHASES.has(ledger.phase));
 }
 
 function requiresCloudTransactionFinalization(action: PreparedAction): boolean {
@@ -17378,9 +20647,10 @@ function finalizationChecklist(action: PreparedAction): string {
 }
 
 function actionPreview(action: PreparedAction): string {
+  const recipient = recipientParam(action);
   const rows: Array<[string, string]> = [
     ['Wallet', short(action.walletAddress)],
-    ['Recipient', recipientParam(action) ? short(recipientParam(action)) : 'n/a'],
+    ...(recipient ? [['Recipient', recipientDisplayLabel(recipient)] as [string, string]] : []),
     ['Amount', amountLabel(action)],
     ['Token', tokenLabel(action)],
     ['Caps', 'Checked before wallet opens'],
@@ -17395,7 +20665,7 @@ function actionPreview(action: PreparedAction): string {
 
 function recurringComposer(): string {
   const draft = state.recurringDraft;
-  const recipient = draft.recipient ? short(draft.recipient) : 'Recipient required';
+  const recipient = draft.recipient ? recipientDisplayLabel(draft.recipient) : 'Recipient required';
   const limit = recurringDraftLimitLabel(draft);
   const createDisabled = !state.address || state.busy;
   const workflowMode = activeWorkflowMode();
@@ -17450,7 +20720,7 @@ function recurringComposer(): string {
         <div class="recurring-grid">
           ${recurringTokenSelect(draft.token)}
           ${fieldInput('recurringAmount', 'Amount *', draft.amount)}
-          ${fieldInput('recurringRecipient', 'Recipient *', draft.recipient)}
+          ${recurringRecipientInput(draft.recipient)}
         </div>
       </div>
       <div class="contract-section recurring-create-section">
@@ -17619,6 +20889,27 @@ function recurringTokenSelect(value: string): string {
   `;
 }
 
+function recurringRecipientInput(value: string): string {
+  const policy = recipientPolicyStatus(value);
+  return `
+    <label class="field compact recipient-field ${state.recurringErrors.recurringRecipient ? 'field-error' : ''}">
+      <span>Recipient *</span>
+      ${recipientSelectForField('recurring', 'recipient', value, state.busy)}
+      <input
+        id="recurringRecipient"
+        data-recurring-field="recipient"
+        value="${escapeHtml(value)}"
+        placeholder="Recipient public key"
+        autocomplete="off"
+        spellcheck="false"
+        ${state.busy ? 'disabled' : ''}
+      />
+      ${recipientPolicyHint(policy)}
+      ${fieldError('recurringRecipient')}
+    </label>
+  `;
+}
+
 function recurringList(): string {
   const payments = activeWorkflowRecurringPayments();
   if (payments.length === 0) {
@@ -17654,7 +20945,7 @@ function recurringCard(payment: RecurringPayment): string {
               <span>${escapeHtml(recurringSourceLabel(source))}</span>
             </div>
             <h3>${escapeHtml(recurringPaymentTitle(payment))}</h3>
-            <p title="${escapeHtml(payment.recipient)}">To ${escapeHtml(short(payment.recipient))}</p>
+            <p title="${escapeHtml(payment.recipient)}">To ${escapeHtml(recipientDisplayLabel(payment.recipient))}</p>
           </div>
           ${recurringCardHero(payment, nextRuns)}
           <div class="recurring-actions recurring-card-actions">
@@ -17695,7 +20986,7 @@ function recurringCardSummaryGrid(
   const nextRun = nextRuns[0] ? formatDateTime(nextRuns[0]) : 'No preview';
   const tokenSummary = tokenDisplaySummary(payment.token, { copyLabel: 'Copy token', copyName: 'Token mint' });
   const rows: Array<{ label: string; value: string; title?: string; copyValue?: string; copyName?: string; copyLabel?: string; copyActions?: SummaryCopyAction[]; tone?: 'amount' }> = [
-    { label: 'Recipient', value: short(payment.recipient), title: payment.recipient, copyValue: payment.recipient },
+    { label: 'Recipient', value: recipientDisplayLabel(payment.recipient), title: payment.recipient, copyValue: payment.recipient },
     { label: 'Token', value: tokenSummary.value, title: tokenSummary.title, copyActions: tokenSummary.copyActions },
     { label: 'Next run', value: nextRun },
     { label: 'Cadence', value: recurringScheduleShortLabel(payment) },
@@ -17935,6 +21226,7 @@ function labArtifactCard(artifact: LabArtifact): string {
       <div class="artifact-summary-head">
         <div class="artifact-meta-line">
           <span class="status-pill ${artifact.verified ? 'tx-confirmed' : 'tx-pending'}">${artifact.verified ? 'verified' : 'signed'}</span>
+          ${evidenceBadgeHtml(evidenceBadgeForLabArtifact(artifact))}
           <span>${escapeHtml(labKindLabel(artifact.kind))}</span>
         </div>
         <span>${escapeHtml(formatDateTime(artifact.createdAt))}</span>
@@ -18717,6 +22009,219 @@ function txTone(status: PreparedActionTxStatus): string {
   return 'tx-pending';
 }
 
+type EvidenceTone = 'live' | 'pending' | 'proof' | 'draft';
+
+interface EvidenceBadgeView {
+  tone: EvidenceTone;
+  label: string;
+}
+
+function evidenceBadgeForAction(action: PreparedAction): EvidenceBadgeView {
+  if (action.txid && action.txStatus === 'confirmed') {
+    return { tone: 'live', label: 'On-chain transaction' };
+  }
+  if (action.txid) {
+    return { tone: 'pending', label: 'Pending confirmation' };
+  }
+  const ledgerEntry = findPendingActionLedgerEntry(action.id);
+  if (ledgerEntry?.txid) {
+    return ledgerEntry.phase === 'confirmed'
+      ? { tone: 'live', label: 'On-chain transaction' }
+      : { tone: 'pending', label: 'Pending confirmation' };
+  }
+  if (action.status === 'rejected' || action.status === 'blocked' || action.status === 'failed') {
+    return { tone: 'proof', label: 'Proof only' };
+  }
+  if (action.status === 'approved' && !action.txid) {
+    return { tone: 'proof', label: 'Proof only' };
+  }
+  return { tone: 'draft', label: 'Draft only' };
+}
+
+function evidenceBadgeForCompletedPlan(plan: CompletedPlanRecord): EvidenceBadgeView {
+  if (plan.txid) {
+    return { tone: 'live', label: 'On-chain transaction' };
+  }
+  if (plan.signature) {
+    return { tone: 'proof', label: 'Proof only' };
+  }
+  if (plan.actionId) {
+    return { tone: 'draft', label: 'Receipt only' };
+  }
+  return { tone: 'draft', label: 'Schedule only' };
+}
+
+function evidenceBadgeForLabArtifact(artifact: LabArtifact): EvidenceBadgeView {
+  const txSignature = (artifact as { txSignature?: string }).txSignature;
+  if (typeof txSignature === 'string' && txSignature.length > 0) {
+    return { tone: 'live', label: 'On-chain transaction' };
+  }
+  return { tone: 'proof', label: 'Proof only' };
+}
+
+function evidenceBadgeHtml(badge: EvidenceBadgeView): string {
+  return `<span class="evidence-badge ${badge.tone}" role="img" aria-label="${escapeHtml(badge.label)}">${escapeHtml(badge.label)}</span>`;
+}
+
+type TimelinePhaseId = 'drafted' | 'queued' | 'wallet' | 'signed' | 'sent' | 'confirmed';
+type TimelineStepState = 'pending' | 'current' | 'done' | 'failed';
+
+interface TimelineStep {
+  id: TimelinePhaseId;
+  label: string;
+  state: TimelineStepState;
+  timestamp?: string;
+}
+
+const TIMELINE_PHASE_LABELS: Record<TimelinePhaseId, string> = {
+  drafted: 'Drafted',
+  queued: 'Queued',
+  wallet: 'Wallet',
+  signed: 'Signed',
+  sent: 'Sent',
+  confirmed: 'Confirmed',
+};
+
+const TIMELINE_PHASE_ORDER: TimelinePhaseId[] = ['drafted', 'queued', 'wallet', 'signed', 'sent', 'confirmed'];
+
+function ledgerPhaseToTimelinePhase(phase: ExecutionPhase): { current: TimelinePhaseId; failed?: boolean } {
+  switch (phase) {
+    case 'prepared':
+      return { current: 'queued' };
+    case 'wallet_opening':
+      return { current: 'wallet' };
+    case 'wallet_signed':
+      return { current: 'signed' };
+    case 'broadcasting':
+    case 'submitted':
+      return { current: 'sent' };
+    case 'confirming':
+      return { current: 'confirmed' };
+    case 'confirmed':
+      return { current: 'confirmed' };
+    case 'failed':
+    case 'ambiguous':
+      return { current: 'sent', failed: true };
+  }
+}
+
+function actionStatusToTimelinePhase(action: PreparedAction): {
+  current: TimelinePhaseId;
+  failed?: boolean;
+  allDone?: boolean;
+} {
+  switch (action.status) {
+    case 'scheduled':
+    case 'ready':
+    case 'overdue':
+      return { current: 'queued' };
+    case 'approval_pending':
+      return { current: 'wallet' };
+    case 'approved':
+      if (action.txid && action.txStatus === 'confirmed') {
+        return { current: 'confirmed', allDone: true };
+      }
+      if (action.txid) return { current: 'sent' };
+      return { current: 'signed' };
+    case 'rejected':
+    case 'blocked':
+    case 'cancelled':
+    case 'expired':
+      return { current: 'queued', failed: true };
+    case 'failed':
+      return { current: action.txid ? 'sent' : 'wallet', failed: true };
+    default:
+      return { current: 'queued' };
+  }
+}
+
+function actionTimelineSteps(action: PreparedAction): TimelineStep[] {
+  const ledger = findPendingActionLedgerEntry(action.id);
+  const mapped = ledger
+    ? ledgerPhaseToTimelinePhase(ledger.phase)
+    : actionStatusToTimelinePhase(action);
+  const currentIndex = TIMELINE_PHASE_ORDER.indexOf(mapped.current);
+  const confirmed = ledger?.phase === 'confirmed' || action.txStatus === 'confirmed';
+  const allDone = confirmed || ('allDone' in mapped && Boolean(mapped.allDone));
+  const timestamps: Partial<Record<TimelinePhaseId, string>> = {
+    drafted: action.createdAt,
+    queued: ledger?.createdAt ?? action.updatedAt ?? action.createdAt,
+    wallet: ledger?.lastAttemptAt,
+    signed: ledger?.signedAt,
+    sent: ledger?.submittedAt,
+    confirmed: ledger?.confirmedAt ?? action.confirmedAt,
+  };
+  return TIMELINE_PHASE_ORDER.map((id, index): TimelineStep => {
+    let stepState: TimelineStepState;
+    if (allDone) {
+      stepState = 'done';
+    } else if (index < currentIndex) {
+      stepState = 'done';
+    } else if (index === currentIndex) {
+      stepState = mapped.failed ? 'failed' : 'current';
+    } else {
+      stepState = 'pending';
+    }
+    return {
+      id,
+      label: TIMELINE_PHASE_LABELS[id],
+      state: stepState,
+      timestamp: timestamps[id] ?? undefined,
+    };
+  });
+}
+
+function actionTimelineHtml(action: PreparedAction): string {
+  if (isTerminalPreparedAction(action) && !findPendingActionLedgerEntry(action.id)) {
+    const reference = action.updatedAt ?? action.createdAt;
+    if (reference) {
+      const ageMs = Date.now() - new Date(reference).getTime();
+      if (!Number.isNaN(ageMs) && ageMs > 7 * 24 * 60 * 60 * 1000) {
+        return '';
+      }
+    }
+  }
+  return renderTimelineSteps(actionTimelineSteps(action));
+}
+
+function completedPlanTimelineHtml(plan: CompletedPlanRecord): string {
+  const reference = plan.completedAt || plan.createdAt;
+  if (reference) {
+    const ageMs = Date.now() - new Date(reference).getTime();
+    if (!Number.isNaN(ageMs) && ageMs > 7 * 24 * 60 * 60 * 1000) {
+      return '';
+    }
+  }
+  const status = plan.status?.toLowerCase() ?? '';
+  const failed = status.includes('fail') || status.includes('block') || status.includes('reject');
+  const steps: TimelineStep[] = TIMELINE_PHASE_ORDER.map((id): TimelineStep => {
+    if (id === 'confirmed') {
+      if (failed) return { id, label: TIMELINE_PHASE_LABELS[id], state: 'failed', timestamp: plan.completedAt };
+      if (plan.txid) return { id, label: TIMELINE_PHASE_LABELS[id], state: 'done', timestamp: plan.completedAt };
+      return { id, label: TIMELINE_PHASE_LABELS[id], state: 'pending' };
+    }
+    if (id === 'sent') {
+      const state: TimelineStepState = plan.txid ? 'done' : failed ? 'failed' : 'done';
+      return { id, label: TIMELINE_PHASE_LABELS[id], state, timestamp: plan.txid ? plan.completedAt : undefined };
+    }
+    return { id, label: TIMELINE_PHASE_LABELS[id], state: 'done', timestamp: id === 'drafted' ? plan.createdAt : undefined };
+  });
+  return renderTimelineSteps(steps);
+}
+
+function renderTimelineSteps(steps: TimelineStep[]): string {
+  return `
+    <ol class="tx-timeline" aria-label="Execution phases">
+      ${steps.map((step) => `
+        <li class="tx-timeline-step ${step.state}" data-tx-timeline-step="${escapeHtml(step.id)}" title="${escapeHtml(step.label)}${step.timestamp ? ' · ' + escapeHtml(formatDateTime(step.timestamp)) : ''}">
+          <span class="tx-timeline-dot" aria-hidden="true"></span>
+          <span class="tx-timeline-label">${escapeHtml(step.label)}</span>
+        </li>
+      `).join('')}
+    </ol>
+  `;
+}
+
 function titleCase(value: string): string {
   return value
     .replace(/[-_]+/g, ' ')
@@ -19025,6 +22530,8 @@ function applyRecurringPreset(presetId: RecurringPresetId): void {
 function assertValidRecurringDraft(draft: RecurringDraft): void {
   const errors: Record<string, string> = {};
   if (!draft.recipient.trim()) errors.recurringRecipient = 'Recipient is required.';
+  const recipientPolicyError = recipientPolicyBlockReason(draft.recipient);
+  if (recipientPolicyError) errors.recurringRecipient = recipientPolicyError;
   if (!draft.amount.trim()) {
     errors.recurringAmount = 'Amount is required.';
   } else if (!(Number(draft.amount) > 0)) {
@@ -19142,6 +22649,15 @@ function defaultRecurringDraft(): RecurringDraft {
     maxOccurrences: '',
     expiresAt: '',
     webhookUrl: '',
+    note: '',
+  };
+}
+
+function defaultRecipientDraft(): RecipientDraft {
+  return {
+    name: '',
+    address: '',
+    policy: 'allow',
     note: '',
   };
 }
@@ -19694,6 +23210,173 @@ function savePersistedState(): void {
   }
 }
 
+function loadRecipientRules(): RecipientRulesState {
+  try {
+    const raw = window.localStorage.getItem(RECIPIENT_RULES_STORAGE_KEY);
+    if (!raw) return emptyRecipientRules();
+    return normalizeRecipientRules(JSON.parse(raw));
+  } catch {
+    return emptyRecipientRules();
+  }
+}
+
+function saveRecipientRules(): void {
+  try {
+    state.recipientRules.recipients = mergeSavedRecipients(state.recipientRules.recipients);
+    window.localStorage.setItem(RECIPIENT_RULES_STORAGE_KEY, JSON.stringify(state.recipientRules));
+  } catch {
+    // Best-effort browser persistence.
+  }
+}
+
+function loadAgentPolicies(): UserAgentPolicy[] {
+  try {
+    const raw = window.localStorage.getItem(AGENT_POLICIES_STORAGE_KEY);
+    if (!raw) return [];
+    const parsed = JSON.parse(raw);
+    if (!Array.isArray(parsed)) return [];
+    return parsed
+      .map(parseUserAgentPolicy)
+      .filter((entry): entry is UserAgentPolicy => Boolean(entry));
+  } catch {
+    return [];
+  }
+}
+
+function saveAgentPolicies(): void {
+  try {
+    window.localStorage.setItem(AGENT_POLICIES_STORAGE_KEY, JSON.stringify(state.agentPolicies));
+  } catch {
+    // Best-effort browser persistence.
+  }
+}
+
+function parseUserAgentPolicy(value: unknown): UserAgentPolicy | null {
+  if (!isJsonObject(value)) return null;
+  if (typeof value.id !== 'string' || typeof value.label !== 'string') return null;
+  if (!isAgentPolicyKind(value.kind)) return null;
+  const params = isJsonObject(value.params)
+    ? Object.fromEntries(
+        Object.entries(value.params).filter(([, entry]) => typeof entry === 'string'),
+      ) as Record<string, string>
+    : undefined;
+  return {
+    id: value.id,
+    label: value.label,
+    kind: value.kind,
+    enabled: value.enabled !== false,
+    detail: typeof value.detail === 'string' ? value.detail : '',
+    ...(params && Object.keys(params).length ? { params } : {}),
+    createdAt: typeof value.createdAt === 'string' ? value.createdAt : new Date().toISOString(),
+    updatedAt: typeof value.updatedAt === 'string' ? value.updatedAt : new Date().toISOString(),
+  };
+}
+
+function isAgentPolicyKind(value: unknown): value is AgentPolicyKind {
+  return value === 'slippage_max' ||
+    value === 'amount_max' ||
+    value === 'token_allow' ||
+    value === 'token_block' ||
+    value === 'require_known_recipient' ||
+    value === 'flag_unknown_mint' ||
+    value === 'custom';
+}
+
+function defaultAgentPolicyDraft(): AgentPolicyDraft {
+  return {
+    label: '',
+    kind: 'slippage_max',
+    detail: '',
+    paramValue: '',
+  };
+}
+
+function emptyRecipientRules(): RecipientRulesState {
+  return {
+    enabled: false,
+    allowListEnabled: false,
+    blockListEnabled: true,
+    recipients: [],
+  };
+}
+
+function normalizeRecipientRules(value: unknown): RecipientRulesState {
+  if (!isJsonObject(value)) return emptyRecipientRules();
+  const recipients = Array.isArray(value.recipients)
+    ? value.recipients.map(savedRecipientFromUnknown).filter((entry): entry is SavedRecipient => Boolean(entry))
+    : [];
+  return {
+    enabled: value.enabled === true,
+    allowListEnabled: value.allowListEnabled === true,
+    blockListEnabled: value.blockListEnabled !== false,
+    recipients: mergeSavedRecipients(recipients),
+  };
+}
+
+function savedRecipientFromUnknown(value: unknown): SavedRecipient | null {
+  if (!isJsonObject(value)) return null;
+  const address = typeof value.address === 'string' ? value.address.trim() : '';
+  const name = typeof value.name === 'string' ? value.name.trim() : '';
+  if (!name || !isSolanaPublicKeyText(address)) return null;
+  const now = new Date().toISOString();
+  const policy = isRecipientPolicy(value.policy) ? value.policy : 'known';
+  return {
+    id: typeof value.id === 'string' && value.id ? value.id : newId('recipient'),
+    name: name.slice(0, 48),
+    address,
+    policy,
+    ...(typeof value.note === 'string' && value.note.trim() ? { note: value.note.trim().slice(0, 140) } : {}),
+    createdAt: typeof value.createdAt === 'string' ? value.createdAt : now,
+    updatedAt: typeof value.updatedAt === 'string' ? value.updatedAt : now,
+  };
+}
+
+function mergeSavedRecipients(recipients: SavedRecipient[]): SavedRecipient[] {
+  const byAddress = new Map<string, SavedRecipient>();
+  for (const recipient of recipients) {
+    const key = recipient.address.trim();
+    if (!key) continue;
+    const current = byAddress.get(key);
+    if (!current || recipient.updatedAt.localeCompare(current.updatedAt) >= 0) {
+      byAddress.set(key, {
+        ...recipient,
+        name: recipient.name.trim().slice(0, 48),
+        address: key,
+        ...(recipient.note?.trim() ? { note: recipient.note.trim().slice(0, 140) } : { note: undefined }),
+      });
+    }
+  }
+  return [...byAddress.values()].sort((left, right) => {
+    const policyRank = recipientPolicyRank(left.policy) - recipientPolicyRank(right.policy);
+    if (policyRank !== 0) return policyRank;
+    return left.name.localeCompare(right.name);
+  });
+}
+
+function recipientPolicyRank(policy: RecipientPolicy): number {
+  switch (policy) {
+    case 'allow':
+      return 0;
+    case 'known':
+      return 1;
+    case 'block':
+      return 2;
+  }
+}
+
+function isRecipientPolicy(value: unknown): value is RecipientPolicy {
+  return value === 'known' || value === 'allow' || value === 'block';
+}
+
+function isSolanaPublicKeyText(value: string): boolean {
+  try {
+    new PublicKey(value.trim());
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 function readLaunchParams(): { bridgeUrl?: string; bridgeToken?: string } {
   const params = new URLSearchParams(window.location.search);
   const bridgeUrl = params.get('bridgeUrl')?.trim();
@@ -19981,8 +23664,243 @@ function isGeneratedPlanRecord(value: unknown): value is GeneratedPlanRecord {
     (record.signature === undefined || typeof record.signature === 'string') &&
     (record.preparedActionId === undefined || typeof record.preparedActionId === 'string') &&
     (record.error === undefined || typeof record.error === 'string') &&
-    (record.failureLabel === undefined || typeof record.failureLabel === 'string')
+    (record.failureLabel === undefined || typeof record.failureLabel === 'string') &&
+    (record.agentReview === undefined || Boolean(parseAgentPlanReviewState(record.agentReview))) &&
+    (record.agentOverride === undefined || Boolean(parseAgentReviewOverride(record.agentOverride)))
   );
+}
+
+function parseAgentPlanReviewState(value: unknown): AgentPlanReviewState | undefined {
+  if (!isJsonObject(value)) return undefined;
+  if (
+    value.status !== 'checking' &&
+    value.status !== 'approved' &&
+    value.status !== 'denied' &&
+    value.status !== 'needs_input' &&
+    value.status !== 'error'
+  ) {
+    return undefined;
+  }
+  const decision = value.decision === 'approve' || value.decision === 'deny' || value.decision === 'needs_input'
+    ? value.decision
+    : undefined;
+  const questions = parseAgentReviewQuestions(value.questions);
+  const answers = parseAgentReviewAnswers(value.answers);
+  const staleness = parseAgentReviewStaleness(value.staleness);
+  const reviewers = parseAgentReviewerEntries(value.reviewers);
+  const policies = parseAgentReviewPolicySnapshots(value.policies);
+  const history = parseAgentReviewAttempts(value.history);
+  const facts = parseAgentReviewFactSet(value.facts);
+  const appliedUserPolicyIds = Array.isArray(value.appliedUserPolicyIds)
+    ? value.appliedUserPolicyIds.filter((entry): entry is string => typeof entry === 'string')
+    : undefined;
+  return {
+    schemaVersion: AGENT_REVIEW_SCHEMA_VERSION,
+    required: value.required !== false,
+    status: value.status,
+    ...(decision ? { decision } : {}),
+    reason: typeof value.reason === 'string' ? value.reason : '',
+    ...(typeof value.summary === 'string' && { summary: value.summary }),
+    ...(typeof value.checkedAt === 'string' && { checkedAt: value.checkedAt }),
+    ...(typeof value.provider === 'string' && { provider: value.provider }),
+    ...(typeof value.model === 'string' && { model: value.model }),
+    ...(value.source === 'hosted' || value.source === 'session' || value.source === 'bridge' ? { source: value.source } : {}),
+    ...(isJsonObject(value.evidence) && { evidence: value.evidence }),
+    ...(questions && { questions }),
+    ...(answers && { answers }),
+    ...(staleness && { staleness }),
+    ...(reviewers && { reviewers }),
+    ...(policies && { policies }),
+    ...(history && { history }),
+    ...(facts && { facts }),
+    ...(typeof value.reviewedPlanFingerprint === 'string' && { reviewedPlanFingerprint: value.reviewedPlanFingerprint }),
+    ...(appliedUserPolicyIds && appliedUserPolicyIds.length ? { appliedUserPolicyIds } : {}),
+  };
+}
+
+function parseAgentReviewOverride(value: unknown): AgentReviewOverride | undefined {
+  if (!isJsonObject(value)) return undefined;
+  if (typeof value.overriddenAt !== 'string') return undefined;
+  if (typeof value.agentReason !== 'string') return undefined;
+  const status = value.agentStatus;
+  if (
+    status !== 'checking' &&
+    status !== 'approved' &&
+    status !== 'denied' &&
+    status !== 'needs_input' &&
+    status !== 'error'
+  ) {
+    return undefined;
+  }
+  const decision = value.agentDecision === 'approve' || value.agentDecision === 'deny' || value.agentDecision === 'needs_input'
+    ? value.agentDecision
+    : undefined;
+  return {
+    overriddenAt: value.overriddenAt,
+    agentStatus: status,
+    agentReason: value.agentReason,
+    ...(decision ? { agentDecision: decision } : {}),
+    ...(typeof value.agentSummary === 'string' && { agentSummary: value.agentSummary }),
+    ...(typeof value.userReason === 'string' && value.userReason.trim() && { userReason: value.userReason }),
+    ...(typeof value.provider === 'string' && { provider: value.provider }),
+    ...(typeof value.model === 'string' && { model: value.model }),
+    ...(value.source === 'hosted' || value.source === 'session' || value.source === 'bridge' ? { source: value.source } : {}),
+  };
+}
+
+function parseAgentReviewQuestions(value: unknown): AgentReviewQuestion[] | undefined {
+  if (!Array.isArray(value)) return undefined;
+  const questions: AgentReviewQuestion[] = [];
+  for (const entry of value) {
+    if (!isJsonObject(entry)) continue;
+    const prompt = typeof entry.prompt === 'string' ? entry.prompt.trim() : '';
+    if (!prompt) continue;
+    const id = typeof entry.id === 'string' && entry.id.trim()
+      ? entry.id.trim()
+      : `q${questions.length + 1}`;
+    const inputKind = entry.inputKind === 'select' || entry.inputKind === 'number'
+      ? (entry.inputKind as AgentReviewQuestion['inputKind'])
+      : 'text';
+    const options = Array.isArray(entry.options)
+      ? entry.options.filter((value): value is string => typeof value === 'string' && value.trim().length > 0).slice(0, 8)
+      : undefined;
+    const hint = typeof entry.hint === 'string' && entry.hint.trim() ? entry.hint.trim() : undefined;
+    questions.push({
+      id,
+      prompt,
+      inputKind,
+      required: entry.required !== false,
+      ...(options?.length ? { options } : {}),
+      ...(hint ? { hint } : {}),
+    });
+    if (questions.length >= 3) break;
+  }
+  return questions.length ? questions : undefined;
+}
+
+function parseAgentReviewAnswers(value: unknown): Record<string, string> | undefined {
+  if (!isJsonObject(value)) return undefined;
+  const answers: Record<string, string> = {};
+  for (const [key, raw] of Object.entries(value)) {
+    if (typeof key === 'string' && typeof raw === 'string') {
+      answers[key] = raw;
+    }
+  }
+  return Object.keys(answers).length ? answers : undefined;
+}
+
+function parseAgentReviewStaleness(value: unknown): AgentReviewStaleness | undefined {
+  if (!isJsonObject(value)) return undefined;
+  if (typeof value.staleSince !== 'string') return undefined;
+  if (!Array.isArray(value.triggers)) return undefined;
+  const triggers: AgentReviewStalenessTrigger[] = [];
+  for (const entry of value.triggers) {
+    if (!isJsonObject(entry)) continue;
+    if (typeof entry.field !== 'string' || typeof entry.changedAt !== 'string') continue;
+    triggers.push({
+      field: entry.field,
+      changedAt: entry.changedAt,
+      ...(typeof entry.before === 'string' ? { before: entry.before } : {}),
+      ...(typeof entry.after === 'string' ? { after: entry.after } : {}),
+    });
+  }
+  return triggers.length ? { staleSince: value.staleSince, triggers } : undefined;
+}
+
+function parseAgentReviewerEntries(value: unknown): AgentReviewerEntry[] | undefined {
+  if (!Array.isArray(value)) return undefined;
+  const entries: AgentReviewerEntry[] = [];
+  for (const entry of value) {
+    if (!isJsonObject(entry)) continue;
+    if (typeof entry.id !== 'string' || typeof entry.label !== 'string') continue;
+    if (entry.decision !== 'approve' && entry.decision !== 'deny' && entry.decision !== 'needs_input') continue;
+    if (typeof entry.reason !== 'string' || typeof entry.checkedAt !== 'string') continue;
+    entries.push({
+      id: entry.id,
+      label: entry.label,
+      decision: entry.decision,
+      reason: entry.reason,
+      checkedAt: entry.checkedAt,
+      ...(typeof entry.summary === 'string' ? { summary: entry.summary } : {}),
+      ...(isJsonObject(entry.errored) && typeof entry.errored.message === 'string'
+        ? { errored: { message: entry.errored.message } }
+        : {}),
+    });
+    if (entries.length >= 4) break;
+  }
+  return entries.length ? entries : undefined;
+}
+
+function parseAgentReviewPolicySnapshots(value: unknown): AgentReviewPolicySnapshot[] | undefined {
+  if (!Array.isArray(value)) return undefined;
+  const snapshots: AgentReviewPolicySnapshot[] = [];
+  for (const entry of value) {
+    if (!isJsonObject(entry)) continue;
+    if (typeof entry.id !== 'string' || typeof entry.label !== 'string' || typeof entry.ruleText !== 'string') continue;
+    if (entry.outcome !== 'pass' && entry.outcome !== 'warn' && entry.outcome !== 'block' && entry.outcome !== 'not_applicable') continue;
+    snapshots.push({ id: entry.id, label: entry.label, ruleText: entry.ruleText, outcome: entry.outcome });
+  }
+  return snapshots.length ? snapshots : undefined;
+}
+
+function parseAgentReviewAttempts(value: unknown): AgentReviewAttempt[] | undefined {
+  if (!Array.isArray(value)) return undefined;
+  const attempts: AgentReviewAttempt[] = [];
+  for (const entry of value) {
+    if (!isJsonObject(entry)) continue;
+    if (typeof entry.attemptId !== 'string' || typeof entry.startedAt !== 'string') continue;
+    const decision = entry.decision === 'approve' || entry.decision === 'deny' || entry.decision === 'needs_input'
+      ? entry.decision
+      : undefined;
+    const followUpQuestionIds = Array.isArray(entry.followUpQuestionIds)
+      ? entry.followUpQuestionIds.filter((value): value is string => typeof value === 'string')
+      : undefined;
+    const answersSnapshot = parseAgentReviewAnswers(entry.answersSnapshot);
+    attempts.push({
+      attemptId: entry.attemptId,
+      startedAt: entry.startedAt,
+      ...(typeof entry.finishedAt === 'string' ? { finishedAt: entry.finishedAt } : {}),
+      ...(decision ? { decision } : {}),
+      ...(typeof entry.reason === 'string' ? { reason: entry.reason } : {}),
+      ...(followUpQuestionIds?.length ? { followUpQuestionIds } : {}),
+      ...(answersSnapshot ? { answersSnapshot } : {}),
+    });
+    if (attempts.length >= 5) break;
+  }
+  return attempts.length ? attempts : undefined;
+}
+
+function parseAgentReviewFact(value: unknown): AgentReviewFact | undefined {
+  if (!isJsonObject(value)) return undefined;
+  if (
+    value.state !== 'checked' &&
+    value.state !== 'missing' &&
+    value.state !== 'warn' &&
+    value.state !== 'ok' &&
+    value.state !== 'fail'
+  ) {
+    return undefined;
+  }
+  if (value.source !== 'deterministic' && value.source !== 'ai') return undefined;
+  if (typeof value.checkedAt !== 'string') return undefined;
+  return {
+    state: value.state,
+    source: value.source,
+    checkedAt: value.checkedAt,
+    ...(typeof value.message === 'string' ? { message: value.message } : {}),
+    ...(isJsonObject(value.detail) ? { detail: value.detail } : {}),
+  };
+}
+
+function parseAgentReviewFactSet(value: unknown): AgentReviewFactSet | undefined {
+  if (!isJsonObject(value)) return undefined;
+  const slots: Array<keyof AgentReviewFactSet> = ['quote', 'route', 'policy', 'simulation', 'protocol', 'tokenMint', 'recipient', 'limits'];
+  const facts: AgentReviewFactSet = {};
+  for (const slot of slots) {
+    const fact = parseAgentReviewFact(value[slot]);
+    if (fact) facts[slot] = fact;
+  }
+  return Object.keys(facts).length ? facts : undefined;
 }
 
 function isAgentPlan(value: unknown): value is AgentPlan {

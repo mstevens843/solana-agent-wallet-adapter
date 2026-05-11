@@ -85,6 +85,46 @@ export interface AiPlanRequest {
   userNotes?: string;
 }
 
+export interface AgentPlanReviewRequest {
+  plan: AgentPlan;
+  instruction?: string;
+  walletAddress?: string;
+  cluster?: string;
+  context?: Record<string, unknown>;
+}
+
+export type AgentPlanReviewDecision = 'approve' | 'deny' | 'needs_input';
+
+export interface AgentReviewQuestion {
+  id: string;
+  prompt: string;
+  inputKind: 'text' | 'select' | 'number';
+  options?: string[];
+  required: boolean;
+  hint?: string;
+}
+
+export interface AgentReviewerEntry {
+  id: string;
+  label: string;
+  decision: AgentPlanReviewDecision;
+  reason: string;
+  summary?: string;
+  errored?: { message: string };
+  checkedAt: string;
+}
+
+export interface AgentPlanReviewResult {
+  decision: AgentPlanReviewDecision;
+  reason: string;
+  summary: string;
+  evidence: Record<string, unknown>;
+  checkedAt: string;
+  source: 'ai';
+  questions?: AgentReviewQuestion[];
+  reviewers?: AgentReviewerEntry[];
+}
+
 export type AiDiagnosticCode =
   | 'AI_ROUTE'
   | 'AI_HTTP'
@@ -116,7 +156,7 @@ export class AiPlanConnectionError extends Error {
 const SHARED_SAFEGUARDS = [
   'Wallet approval is required before any signature or transaction leaves the device.',
   'The agent never receives the wallet private key or seed phrase.',
-  'Amounts, recipients, routes, and policy notes must be visible before signing.',
+  'AI prepares the review item; the wallet owner checks amount, recipient, route, protocol, slippage, and policy before signing.',
 ];
 
 export const DEFAULT_AI_BASE_URL = 'https://api.openai.com/v1';
@@ -227,7 +267,7 @@ export const AGENT_PLAN_TEMPLATES: AgentPlanTemplate[] = [
     field('amount', 'Token amount', '10', '10', true),
     field('memo', 'Memo / reason', 'Payment reason', 'User-approved token payment'),
   ]),
-  template('trading', 'swap', 'Swap tokens', 'Prepare a Jupiter-style swap request with explicit input, output, amount, and slippage cap.', 'swap', 'medium', [
+  template('trading', 'swap', 'Swap tokens', 'Prepare a DeFi swap review with explicit input, output, amount, protocol route, and slippage cap.', 'swap', 'medium', [
     selectField('inputToken', 'Input token', ['SOL', 'USDC', 'JUP', 'BONK', 'WIF', 'PYUSD'], 'SOL'),
     selectField('outputToken', 'Output token', ['USDC', 'SOL', 'JUP', 'BONK', 'WIF', 'PYUSD'], 'USDC'),
     field('amount', 'Token amount', '0.01', '0.01', true),
@@ -240,7 +280,7 @@ export const AGENT_PLAN_TEMPLATES: AgentPlanTemplate[] = [
     selectField('cadence', 'Cadence', ['weekly', 'monthly', 'interval_days'], 'weekly'),
     field('memo', 'Strategy note', 'Buy SOL weekly if route stays under cap', 'Recurring DCA approval'),
   ]),
-  template('recurring', 'subscription', 'Subscription / allowance', 'Prepare a recurring payment review without granting unlimited authority.', 'recurring_payment', 'medium', [
+  template('recurring', 'subscription', 'Vendor / recurring payment', 'Prepare a recurring vendor or service payment review without granting unlimited authority.', 'recurring_payment', 'medium', [
     selectField('token', 'Token', ['USDC', 'SOL', 'PYUSD'], 'USDC'),
     field('recipient', 'Recipient address', 'Recipient public key', '', true),
     field('amount', 'Max amount per payment', '5', '5', true),
@@ -447,6 +487,23 @@ export async function generateSessionAiPlan(
   return generateOpenAiCompatiblePlan(settings, request);
 }
 
+export async function generateSessionAiReview(
+  settings: AiSettings,
+  request: AgentPlanReviewRequest,
+): Promise<AgentPlanReviewResult> {
+  if (!settings.apiKey.trim()) {
+    throw new Error('Session AI key is required.');
+  }
+  assertAiReviewRequestAllowed(request);
+  if (settings.provider === 'openai') {
+    throw new Error('OpenAI keys cannot be called directly from browser session mode. Select Hosted BYOK or Local bridge.');
+  }
+  if (settings.apiFormat === 'anthropic') {
+    return generateAnthropicReview(settings, request);
+  }
+  return generateOpenAiCompatibleReview(settings, request);
+}
+
 export async function generateHostedAiPlan(
   settings: AiSettings,
   request: AiPlanRequest,
@@ -519,6 +576,80 @@ export async function generateHostedAiPlan(
     contentType: response.headers.get('content-type') ?? '',
   });
   return normalizeHostedAiPlan(payload, request);
+}
+
+export async function generateHostedAiReview(
+  settings: AiSettings,
+  request: AgentPlanReviewRequest,
+): Promise<AgentPlanReviewResult> {
+  if (!settings.apiKey.trim()) {
+    throw new Error('Hosted BYOK key is required.');
+  }
+  assertAiReviewRequestAllowed(request);
+  const diagnostics: AiDiagnosticEntry[] = [
+    {
+      code: 'AI_ROUTE',
+      message: 'Hosted BYOK review route selected.',
+      detail: `provider=${settings.provider}; model=${settings.model.trim() || aiProviderPresetById(settings.provider).model}`,
+      method: 'POST',
+      path: '/api/ai/review-plan',
+    },
+  ];
+  await assertHostedAiAvailable(diagnostics);
+  const response = await fetch('/api/ai/review-plan', {
+    method: 'POST',
+    headers: {
+      'content-type': 'application/json',
+    },
+    body: JSON.stringify({
+      settings: {
+        apiKey: settings.apiKey,
+        provider: settings.provider,
+        apiFormat: settings.apiFormat,
+        baseUrl: settings.baseUrl,
+        model: settings.model,
+      },
+      request,
+    }),
+  }).catch((err) => {
+    throw aiPlanConnectionError(
+      `Hosted AI review request failed. ${redactSecrets(err instanceof Error ? err.message : String(err), settings.apiKey)}`,
+      diagnostics,
+      {
+        code: 'AI_PROVIDER_ERROR',
+        message: 'Hosted BYOK review request could not reach the same-origin API.',
+        detail: redactSecrets(err instanceof Error ? err.message : String(err), settings.apiKey),
+        method: 'POST',
+        path: '/api/ai/review-plan',
+      },
+    );
+  });
+  const payload = await readHostedJson(
+    response,
+    'Hosted BYOK API returned a non-JSON response. Serve Agentic through the Render Node service or use Local bridge.',
+    diagnostics,
+    { method: 'POST', path: '/api/ai/review-plan' },
+  );
+  if (!response.ok) {
+    const message = redactSecrets(extractProviderError(payload) || `Hosted AI returned HTTP ${response.status}.`, settings.apiKey);
+    throw aiPlanConnectionError(message, diagnostics, {
+      code: 'AI_PROVIDER_ERROR',
+      message,
+      method: 'POST',
+      path: '/api/ai/review-plan',
+      status: response.status,
+      contentType: response.headers.get('content-type') ?? '',
+    });
+  }
+  diagnostics.push({
+    code: 'AI_PLAN_READY',
+    message: 'Hosted BYOK returned a valid agent review.',
+    method: 'POST',
+    path: '/api/ai/review-plan',
+    status: response.status,
+    contentType: response.headers.get('content-type') ?? '',
+  });
+  return normalizeHostedAiReview(payload);
 }
 
 export async function confirmHostedAiPlanner(settings: AiSettings): Promise<AiDiagnosticEntry[]> {
@@ -713,6 +844,34 @@ async function generateOpenAiCompatiblePlan(settings: AiSettings, request: AiPla
   return normalizeAiPlan(payload, request);
 }
 
+async function generateOpenAiCompatibleReview(settings: AiSettings, request: AgentPlanReviewRequest): Promise<AgentPlanReviewResult> {
+  const baseUrl = normalizeBaseUrl(settings.baseUrl, 'openai-compatible');
+  const body = {
+    model: settings.model.trim() || DEFAULT_AI_MODEL,
+    response_format: { type: 'json_object' },
+    messages: aiReviewMessages(request),
+    ...(!isDefaultTemperatureOnlyModel(settings.model.trim() || DEFAULT_AI_MODEL) && { temperature: 0.2 }),
+  };
+  const response = await fetch(`${baseUrl}/chat/completions`, {
+    method: 'POST',
+    headers: {
+      authorization: `Bearer ${settings.apiKey.trim()}`,
+      'content-type': 'application/json',
+    },
+    body: JSON.stringify(body),
+  }).catch((err) => {
+    throw new Error(
+      `AI provider review failed. Use the local bridge or a browser-compatible gateway. ${redactSecrets(err instanceof Error ? err.message : String(err), settings.apiKey)}`,
+    );
+  });
+
+  const payload = await response.json().catch(() => ({})) as unknown;
+  if (!response.ok) {
+    throw new Error(providerFailureMessage(payload, response.status, settings.apiKey));
+  }
+  return normalizeAiReview(payload, request);
+}
+
 function normalizeHostedAiPlan(payload: unknown, request: AiPlanRequest): AgentPlan {
   if (!isHostedPlanPayload(payload)) {
     throw new Error('Hosted AI returned an invalid plan.');
@@ -763,6 +922,33 @@ function isHostedPlanPayload(payload: unknown): payload is Partial<AgentPlan> {
   );
 }
 
+function normalizeHostedAiReview(payload: unknown): AgentPlanReviewResult {
+  if (!isHostedReviewPayload(payload)) {
+    throw new Error('Hosted AI returned an invalid agent review.');
+  }
+  const record = payload as Partial<AgentPlanReviewResult>;
+  const decision = normalizeReviewDecision(record.decision);
+  const questions = normalizeReviewQuestions((record as Record<string, unknown>).questions);
+  return {
+    decision,
+    reason: compactReviewText(stringOr(record.reason, 'Agent review did not return a reason.'), 280),
+    summary: compactReviewText(stringOr(record.summary, record.reason ?? 'Agent review completed.'), 160),
+    evidence: jsonObjectOr(record.evidence, {}),
+    checkedAt: stringOr(record.checkedAt, new Date().toISOString()),
+    source: 'ai',
+    ...(questions ? { questions } : {}),
+  };
+}
+
+function isHostedReviewPayload(payload: unknown): payload is Partial<AgentPlanReviewResult> {
+  if (!payload || typeof payload !== 'object') return false;
+  const record = payload as Partial<AgentPlanReviewResult>;
+  return (
+    (record.decision === 'approve' || record.decision === 'deny' || record.decision === 'needs_input') &&
+    typeof record.reason === 'string'
+  );
+}
+
 async function generateAnthropicPlan(settings: AiSettings, request: AiPlanRequest): Promise<AgentPlan> {
   const baseUrl = normalizeBaseUrl(settings.baseUrl, 'anthropic');
   const messages = aiMessages(request);
@@ -796,6 +982,39 @@ async function generateAnthropicPlan(settings: AiSettings, request: AiPlanReques
   return normalizeAiPlan(payload, request);
 }
 
+async function generateAnthropicReview(settings: AiSettings, request: AgentPlanReviewRequest): Promise<AgentPlanReviewResult> {
+  const baseUrl = normalizeBaseUrl(settings.baseUrl, 'anthropic');
+  const messages = aiReviewMessages(request);
+  const systemMessage = messages[0]?.content ?? '';
+  const userMessage = messages[1]?.content ?? JSON.stringify(request);
+  const response = await fetch(`${baseUrl}/messages`, {
+    method: 'POST',
+    headers: {
+      'anthropic-dangerous-direct-browser-access': 'true',
+      'anthropic-version': '2023-06-01',
+      'content-type': 'application/json',
+      'x-api-key': settings.apiKey.trim(),
+    },
+    body: JSON.stringify({
+      model: settings.model.trim() || aiProviderPresetById('anthropic').model,
+      max_tokens: 1024,
+      system: systemMessage,
+      messages: [{ role: 'user', content: userMessage }],
+      temperature: 0.2,
+    }),
+  }).catch((err) => {
+    throw new Error(
+      `AI provider review failed. Use the local bridge or a browser-compatible gateway. ${redactSecrets(err instanceof Error ? err.message : String(err), settings.apiKey)}`,
+    );
+  });
+
+  const payload = await response.json().catch(() => ({})) as unknown;
+  if (!response.ok) {
+    throw new Error(providerFailureMessage(payload, response.status, settings.apiKey));
+  }
+  return normalizeAiReview(payload, request);
+}
+
 export function aiMessages(request: AiPlanRequest): Array<{ role: 'system' | 'user'; content: string }> {
   return [
     {
@@ -811,6 +1030,27 @@ export function aiMessages(request: AiPlanRequest): Array<{ role: 'system' | 'us
         template: request.template,
         parameters: request.parameters,
         requiredBoundary: 'AI prepares a plan only. Wallet approval and signing happen later in the user wallet.',
+      }),
+    },
+  ];
+}
+
+export function aiReviewMessages(request: AgentPlanReviewRequest): Array<{ role: 'system' | 'user'; content: string }> {
+  return [
+    {
+      role: 'system',
+      content:
+        'You review a Solana wallet action draft before it is sent for wallet approval. Return only JSON with: decision ("approve", "deny", or "needs_input"); reason as one or two concise sentences; summary as one short sentence; evidence as an object. When you cannot decide because user intent is genuinely ambiguous, return decision "needs_input" plus a "questions" array with 1-3 short, specific questions answerable in under 20 words. Each question is an object with id (short slug), prompt (the question text), inputKind ("text" | "select" | "number"), and required (true/false). Use "needs_input" only when the missing information is something the user must supply — not when you could derive it. If the context includes "userPolicies", treat each as a soft rule the user wants you to honor: factor them into your decision and cite the relevant policy id in evidence.policiesApplied when one influences the outcome. Be flexible: use the user instruction and available facts, not a fixed checklist. Never claim anything is signed, submitted, guaranteed safe, or already approved. Never request private keys. The wallet user must still approve separately.',
+    },
+    {
+      role: 'user',
+      content: JSON.stringify({
+        instruction: request.instruction?.trim() || 'Review this draft before it is sent for wallet approval. Decide approve, deny, or needs_input.',
+        walletAddress: request.walletAddress || 'not_connected',
+        cluster: request.cluster || 'unknown',
+        plan: request.plan,
+        context: request.context ?? {},
+        requiredBoundary: 'This AI review can approve, deny, or request more input. It cannot sign or submit a transaction.',
       }),
     },
   ];
@@ -837,6 +1077,33 @@ export function normalizeAiPlan(payload: unknown, request: AiPlanRequest): Agent
   });
 }
 
+export function normalizeAiReview(payload: unknown, request: AgentPlanReviewRequest): AgentPlanReviewResult {
+  const content = extractModelText(payload);
+  const parsed = parsePlanJson(content);
+  const decision = normalizeReviewDecision(parsed.decision);
+  const questions = normalizeReviewQuestions(parsed.questions);
+  const reason = stringOr(
+    parsed.reason,
+    decision === 'approve'
+      ? 'Approved by the configured agent review. Wallet approval is still required before anything signs.'
+      : decision === 'needs_input'
+        ? 'Agent needs clarifying answers before deciding. Answer the questions or send anyway.'
+        : 'Denied by the configured agent review. Review the draft or ask the agent again.',
+  );
+  return {
+    decision,
+    reason: compactReviewText(reason, 280),
+    summary: compactReviewText(stringOr(parsed.summary, reason), 160),
+    evidence: jsonObjectOr(parsed.evidence, {
+      actionType: request.plan.actionType,
+      templateTitle: request.plan.templateTitle,
+    }),
+    checkedAt: new Date().toISOString(),
+    source: 'ai',
+    ...(questions ? { questions } : {}),
+  };
+}
+
 function assertAiDraftRequestAllowed(request: AiPlanRequest): void {
   assertPlanGuardrails({
     source: 'ai',
@@ -861,6 +1128,24 @@ function assertAiDraftRequestAllowed(request: AiPlanRequest): void {
       risk: `Requested risk level ${request.template.risk}.`,
       approval: 'Wallet approval is required before signing or submitting.',
     },
+  });
+}
+
+function assertAiReviewRequestAllowed(request: AgentPlanReviewRequest): void {
+  assertPlanGuardrails({
+    plan: {
+      ...request.plan,
+      reviewInstruction: request.instruction,
+      reviewContext: request.context,
+    },
+    source: request.plan.source,
+    category: request.plan.category,
+    actionType: request.plan.actionType,
+    templateTitle: request.plan.templateTitle,
+    parameters: request.plan.parameters,
+    fields: request.plan.fields,
+    userNotes: request.plan.userNotes,
+    prompt: request.instruction,
   });
 }
 
@@ -951,7 +1236,7 @@ function routeFor(actionType: string): string {
     case 'transfer_spl':
       return 'Prepare a {token} transfer to {recipient} for {amount}. Queue through the local bridge when connected.';
     case 'swap':
-      return 'Prepare a swap from {amount} {inputToken} to {outputToken} with max slippage {slippageBps}.';
+      return 'Prepare a {inputToken} to {outputToken} swap review before signing. Amount: {amount}. Max slippage bps: {slippageBps}. Do not submit anything until the wallet owner approves.';
     case 'recurring_payment':
       return 'Create a recurring review item for {amount} {token} on {cadence}. Every occurrence still requires wallet approval.';
     case 'read_only':
@@ -979,7 +1264,7 @@ function approvalFor(actionType: string): string {
     case 'manual_review':
       return 'Wallet can sign an off-chain review proof after the user reviews the structured draft.';
     default:
-      return 'The local bridge can queue this action, but the wallet must still approve the final signature.';
+      return 'AI prepares the review item only. The wallet owner reviews the visible action and approves the final signature.';
   }
 }
 
@@ -1129,6 +1414,65 @@ function parsePlanJson(content: string): Record<string, unknown> {
 
 function stringOr(value: unknown, fallback: string): string {
   return typeof value === 'string' && value.trim() ? value.trim() : fallback;
+}
+
+function normalizeReviewDecision(value: unknown): AgentPlanReviewDecision {
+  const normalized = typeof value === 'string' ? value.trim().toLowerCase() : '';
+  if (['approve', 'approved', 'allow', 'allowed', 'pass', 'passed', 'ok'].includes(normalized)) {
+    return 'approve';
+  }
+  if (['needs_input', 'needs-input', 'need_input', 'need-input', 'ask', 'clarify', 'needs_clarification'].includes(normalized)) {
+    return 'needs_input';
+  }
+  return 'deny';
+}
+
+function normalizeReviewQuestions(value: unknown): AgentReviewQuestion[] | undefined {
+  if (!Array.isArray(value)) return undefined;
+  const questions: AgentReviewQuestion[] = [];
+  for (let index = 0; index < value.length && questions.length < 3; index += 1) {
+    const entry = value[index];
+    if (!entry || typeof entry !== 'object') continue;
+    const record = entry as Record<string, unknown>;
+    const prompt = typeof record.prompt === 'string'
+      ? record.prompt
+      : typeof record.question === 'string'
+        ? record.question
+        : '';
+    if (!prompt.trim()) continue;
+    const inputKind = record.inputKind === 'select' || record.inputKind === 'number'
+      ? record.inputKind
+      : 'text';
+    const id = typeof record.id === 'string' && record.id.trim()
+      ? record.id.trim()
+      : `q${questions.length + 1}`;
+    const options = Array.isArray(record.options)
+      ? record.options.filter((value): value is string => typeof value === 'string' && value.trim().length > 0).slice(0, 8)
+      : undefined;
+    const hint = typeof record.hint === 'string' && record.hint.trim() ? record.hint.trim() : undefined;
+    questions.push({
+      id,
+      prompt: compactReviewText(prompt, 200),
+      inputKind: inputKind as AgentReviewQuestion['inputKind'],
+      required: record.required !== false,
+      ...(options?.length ? { options } : {}),
+      ...(hint ? { hint } : {}),
+    });
+  }
+  return questions.length ? questions : undefined;
+}
+
+function jsonObjectOr(value: unknown, fallback: Record<string, unknown>): Record<string, unknown> {
+  if (value && typeof value === 'object' && !Array.isArray(value)) {
+    return value as Record<string, unknown>;
+  }
+  return fallback;
+}
+
+function compactReviewText(value: string, maxLength: number): string {
+  const normalized = value.replace(/\s+/g, ' ').trim();
+  if (normalized.length <= maxLength) return normalized;
+  return `${normalized.slice(0, maxLength - 1).trimEnd()}...`;
 }
 
 function normalizeSafeguards(value: unknown, fallback: string[]): string[] {

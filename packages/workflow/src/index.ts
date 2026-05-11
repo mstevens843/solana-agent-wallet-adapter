@@ -118,6 +118,7 @@ export const EVIDENCE_RECEIPT_KINDS = [
   'risk_review_receipt',
   'rejection_receipt',
   'tool_trace_receipt',
+  'agent_override_receipt',
 ] as const;
 export type EvidenceReceiptKind = (typeof EVIDENCE_RECEIPT_KINDS)[number];
 

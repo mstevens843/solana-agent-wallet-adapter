@@ -14,7 +14,7 @@ import { Connection, PublicKey } from '@solana/web3.js';
 import {
   AgentWalletActionService,
 } from './actionService.js';
-import { BridgeAiPlanner, type AiPlanRequest } from './aiPlanner.js';
+import { BridgeAiPlanner, type AiPlanRequest, type AiReviewRequest, type AiAskRequest } from './aiPlanner.js';
 import { type AgentWalletConfig } from './config.js';
 import { parseDecimalAmount } from './amounts.js';
 import { LocalBridgeBackend } from './localBridgeBackend.js';
@@ -323,6 +323,14 @@ async function handleRequest(
     }
     if (req.method === 'POST' && url.pathname === '/bridge/ai/generate-plan') {
       writeJson(res, 200, await aiPlanner.generatePlan((await readJson(req)) as AiPlanRequest));
+      return;
+    }
+    if (req.method === 'POST' && url.pathname === '/bridge/ai/review-plan') {
+      writeJson(res, 200, await aiPlanner.reviewPlan((await readJson(req)) as AiReviewRequest));
+      return;
+    }
+    if (req.method === 'POST' && url.pathname === '/bridge/ai/ask-about-plan') {
+      writeJson(res, 200, await aiPlanner.askAboutPlan((await readJson(req)) as AiAskRequest));
       return;
     }
     if (req.method === 'GET' && url.pathname === '/bridge/action/status') {

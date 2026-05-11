@@ -58,6 +58,7 @@ describe('render web hosted BYOK API', () => {
         mode: 'hosted-byok',
         build: {
           routes: expect.arrayContaining([
+            'POST /api/ai/review-plan',
             'POST /api/solana/latest-blockhash',
             'POST /api/solana/send-transaction',
             'POST /api/solana/signature-status',
@@ -125,6 +126,59 @@ describe('render web hosted BYOK API', () => {
         format: {
           type: 'json_schema',
           name: 'agentic_ai_plan',
+          strict: true,
+        },
+      });
+    });
+  });
+
+  it('routes hosted BYOK agent review requests through the same-origin API', async () => {
+    const providerCalls: Array<{ url: string; init: RequestInit | undefined }> = [];
+    vi.stubGlobal('fetch', vi.fn(async (url: string | URL | Request, init?: RequestInit) => {
+      providerCalls.push({ url: String(url), init });
+      return jsonResponse({
+        output_text: JSON.stringify({
+          decision: 'approve',
+          reason: 'Approved: route and amount match the user instruction.',
+          summary: 'Agent review passed.',
+          evidence: {},
+        }),
+      });
+    }));
+
+    await withServer(async (port, ctx) => {
+      const response = await postJson(port, '/api/ai/review-plan', {
+        settings: {
+          provider: 'openai',
+          model: 'gpt-5',
+          apiKey: 'sk-test-openai',
+        },
+        request: {
+          plan: {
+            intent: 'Swap SOL to USDC',
+            route: 'SOL -> USDC',
+            risk: 'Medium',
+            approval: 'Wallet approval required.',
+            source: 'template',
+            category: 'trading',
+            actionType: 'swap',
+            templateTitle: 'Swap tokens',
+            parameters: { inputToken: 'SOL', outputToken: 'USDC', amount: '0.01', slippageBps: '50' },
+            fields: [{ label: 'Amount', value: '0.01' }],
+            safeguards: ['Check quote.'],
+          },
+          instruction: 'Review before approval.',
+        },
+      }, { cookie: ctx.cookie });
+
+      expect(response.status).toBe(200);
+      expect(response.body.decision).toBe('approve');
+      expect(response.body.reason).toContain('Approved');
+      expect(providerCalls[0]?.url).toBe('https://api.openai.com/v1/responses');
+      const body = JSON.parse(String(providerCalls[0]?.init?.body ?? '{}')) as Record<string, unknown>;
+      expect(body.text).toMatchObject({
+        format: {
+          name: 'agentic_ai_review',
           strict: true,
         },
       });

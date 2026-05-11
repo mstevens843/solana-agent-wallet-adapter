@@ -5,6 +5,7 @@ import {
   BridgeAiPlanner,
   type AiApiFormat,
   type AiPlanRequest,
+  type AiReviewRequest,
 } from '@solana-agent-wallet-adapter/mcp-server';
 import { Connection } from '@solana/web3.js';
 
@@ -59,6 +60,7 @@ const HOSTED_AI_RATE_LIMIT_MAX_ATTEMPTS = 30;
 const REGISTERED_API_ROUTES = [
   'GET /api/ai/status',
   'POST /api/ai/generate-plan',
+  'POST /api/ai/review-plan',
   'POST /api/auth/nonce',
   'POST /api/auth/verify-wallet',
   'POST /api/auth/logout',
@@ -104,6 +106,11 @@ interface HostedAiBody {
     provider?: unknown;
     model?: unknown;
   };
+  request?: unknown;
+}
+
+interface HostedAiReviewBody {
+  settings?: HostedAiBody['settings'];
   request?: unknown;
 }
 
@@ -318,7 +325,7 @@ async function enforceAuthRateLimit(
     now: clock.now(),
   });
   if (!allowed) {
-    throw new ApiError(429, route === '/api/ai/generate-plan'
+    throw new ApiError(429, route === '/api/ai/generate-plan' || route === '/api/ai/review-plan'
       ? 'Too many hosted AI drafting attempts. Try again later.'
       : route === '/api/auth/nonce' || route === '/api/auth/verify-wallet'
         ? 'Too many wallet auth attempts. Try again later.'
@@ -329,6 +336,7 @@ async function enforceAuthRateLimit(
 function authRateLimitedRoute(pathname: string): AuthRateLimitInput['route'] | undefined {
   if (pathname === '/api/auth/nonce' || pathname === '/api/auth/verify-wallet') return pathname;
   if (pathname === '/api/ai/generate-plan') return pathname;
+  if (pathname === '/api/ai/review-plan') return pathname;
   if (pathname.startsWith('/api/plans')) return '/api/plans:*';
   if (pathname.startsWith('/api/approvals')) return '/api/approvals:*';
   if (pathname.startsWith('/api/recurring')) return '/api/recurring:*';
@@ -346,7 +354,7 @@ function rateLimitWindowMs(route: string): number {
 
 function rateLimitMaxAttempts(route: string): number {
   if (route === '/api/auth/nonce' || route === '/api/auth/verify-wallet') return AUTH_RATE_LIMIT_MAX_ATTEMPTS;
-  if (route === '/api/ai/generate-plan') return HOSTED_AI_RATE_LIMIT_MAX_ATTEMPTS;
+  if (route === '/api/ai/generate-plan' || route === '/api/ai/review-plan') return HOSTED_AI_RATE_LIMIT_MAX_ATTEMPTS;
   return WRITE_RATE_LIMIT_MAX_ATTEMPTS;
 }
 
@@ -390,6 +398,12 @@ async function routeApiRequest(
   if (url.pathname === '/api/ai/generate-plan') {
     requireMethod(req, 'POST');
     await handleHostedAiRequest(req, res, store, clock);
+    return;
+  }
+
+  if (url.pathname === '/api/ai/review-plan') {
+    requireMethod(req, 'POST');
+    await handleHostedAiReviewRequest(req, res, store, clock);
     return;
   }
 
@@ -756,6 +770,38 @@ async function handleHostedAiRequest(
   }
 }
 
+async function handleHostedAiReviewRequest(
+  req: IncomingMessage,
+  res: ServerResponse,
+  store: WorkflowStore,
+  clock: Clock,
+): Promise<void> {
+  const session = await sessionFromRequest({ req, store, clock });
+  if (!session) {
+    throw new ApiError(401, 'Sign in required for Hosted BYOK agent review.');
+  }
+  const body = await readJsonBody(req) as HostedAiReviewBody;
+  const settings = hostedSettings(body.settings);
+  const request = hostedReviewRequest(body.request);
+  const planner = new BridgeAiPlanner();
+
+  try {
+    planner.setSessionKey({
+      apiKey: settings.apiKey,
+      provider: settings.provider.id,
+      apiFormat: settings.provider.apiFormat,
+      baseUrl: settings.provider.baseUrl,
+      model: settings.model,
+    });
+    writeJson(res, 200, await planner.reviewPlan(request));
+  } catch (err) {
+    const code = typeof err === 'object' && err !== null && 'code' in err ? String((err as { code?: unknown }).code) : '';
+    const status = code === 'invalid_request' ? 400 : 502;
+    const message = err instanceof Error ? redactSecrets(err.message, settings.apiKey) : 'AI provider request failed.';
+    writeJson(res, status, { error: message });
+  }
+}
+
 async function handleJupiterSwapOrder(req: IncomingMessage, res: ServerResponse): Promise<void> {
   const body = asJsonRecord(await readJsonBody(req), 'swap order body');
   const inputMint = requiredBodyString(body, 'inputMint');
@@ -963,6 +1009,13 @@ function hostedPlanRequest(input: unknown): AiPlanRequest {
     throw new ApiError(400, 'Missing AI plan request.');
   }
   return input as AiPlanRequest;
+}
+
+function hostedReviewRequest(input: unknown): AiReviewRequest {
+  if (!input || typeof input !== 'object') {
+    throw new ApiError(400, 'Missing AI review request.');
+  }
+  return input as AiReviewRequest;
 }
 
 interface CloudWorkspaceDeleteRequest {
