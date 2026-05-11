@@ -35,6 +35,43 @@ export interface RecurringPolicyConfig {
 
 export const WSOL_MINT = 'So11111111111111111111111111111111111111112';
 export const USDC_MINT = 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v';
+export const JUP_MINT = 'JUPyiwrYJFskUPiHa7hkeR8VUtAeFoSYbKedZNsDvCN';
+export const BONK_MINT = 'DezXAZ8z7PnrnRJjz3wXBoRgixCa6xjnB7YaB1pPB263';
+export const WIF_MINT = 'EKpQGSJtjMFqKZ9KQanSqYXRcF8fBopzLHYxdM65zcjm';
+export const PYUSD_MINT = '2b1kV6DkPAnxd5ixfnxCpjxmKwqjjaYmCZfHsFu24GXo';
+
+export const DEFAULT_TOKEN_REGISTRY: TokenLimitConfig[] = [
+  {
+    symbol: 'USDC',
+    mint: USDC_MINT,
+    decimals: 6,
+    maxTransfer: '25',
+  },
+  {
+    symbol: 'JUP',
+    mint: JUP_MINT,
+    decimals: 6,
+    maxTransfer: '25',
+  },
+  {
+    symbol: 'BONK',
+    mint: BONK_MINT,
+    decimals: 5,
+    maxTransfer: '1000000',
+  },
+  {
+    symbol: 'WIF',
+    mint: WIF_MINT,
+    decimals: 6,
+    maxTransfer: '25',
+  },
+  {
+    symbol: 'PYUSD',
+    mint: PYUSD_MINT,
+    decimals: 6,
+    maxTransfer: '25',
+  },
+];
 
 export const DEFAULT_CONFIG: AgentWalletConfig = {
   cluster: 'mainnet-beta',
@@ -46,14 +83,7 @@ export const DEFAULT_CONFIG: AgentWalletConfig = {
     maxSlippageBps: 100,
     allowArbitraryTransactions: true,
   },
-  tokens: [
-    {
-      symbol: 'USDC',
-      mint: USDC_MINT,
-      decimals: 6,
-      maxTransfer: '25',
-    },
-  ],
+  tokens: DEFAULT_TOKEN_REGISTRY,
   jupiter: {
     baseUrl: 'https://api.jup.ag/ultra/v1',
     apiKeyEnv: 'JUPITER_API_KEY',

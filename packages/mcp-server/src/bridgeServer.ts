@@ -15,7 +15,7 @@ import {
   AgentWalletActionService,
 } from './actionService.js';
 import { BridgeAiPlanner, type AiPlanRequest } from './aiPlanner.js';
-import { type AgentWalletConfig, type TokenLimitConfig } from './config.js';
+import { type AgentWalletConfig } from './config.js';
 import { parseDecimalAmount } from './amounts.js';
 import { LocalBridgeBackend } from './localBridgeBackend.js';
 import type { LabArtifact, LabArtifactStore } from './labArtifacts.js';
@@ -948,7 +948,7 @@ function buildRecurringPaymentInput(
   walletAddress: string,
   config: AgentWalletConfig,
 ): Omit<Awaited<ReturnType<PreparedActionStore['listRecurringPayments']>>[number], 'id' | 'status' | 'createdAt' | 'updatedAt' | 'occurrencesCreated'> {
-  const token = requireString(body.token, 'token').toUpperCase();
+  const token = normalizeTokenIdentifier(requireString(body.token, 'token'));
   const amount = requireString(body.amount, 'amount');
   const recipient = new PublicKey(requireString(body.recipient, 'recipient')).toBase58();
   const note = typeof body.note === 'string' && body.note.trim() ? body.note.trim().slice(0, 500) : undefined;
@@ -970,8 +970,7 @@ function buildRecurringPaymentInput(
   if (token === 'SOL') {
     parseDecimalAmount(amount, 9, 'SOL recurring payment amount');
   } else {
-    const tokenConfig = requireTokenConfig(config, token);
-    parseDecimalAmount(amount, tokenConfig.decimals, `${tokenConfig.symbol} recurring payment amount`);
+    parseDecimalAmount(amount, 9, `${tokenDisplayLabel(token)} recurring payment amount`);
   }
   return {
     walletAddress,
@@ -1076,14 +1075,18 @@ function requireString(value: unknown, label: string): string {
   return value.trim();
 }
 
-function requireTokenConfig(config: AgentWalletConfig, token: string): TokenLimitConfig {
-  const match = config.tokens.find(
-    (entry) => entry.symbol.toUpperCase() === token.toUpperCase() || entry.mint === token,
-  );
-  if (!match) {
-    throw new ProtocolError('unauthorized', `${token} is not allowlisted in agent-wallet.config.json.`);
-  }
-  return match;
+function normalizeTokenIdentifier(token: string): string {
+  const trimmed = token.trim();
+  return looksLikeMintAddress(trimmed) ? trimmed : trimmed.toUpperCase();
+}
+
+function tokenDisplayLabel(token: string): string {
+  const trimmed = token.trim();
+  return looksLikeMintAddress(trimmed) ? `${trimmed.slice(0, 4)}...${trimmed.slice(-4)}` : trimmed;
+}
+
+function looksLikeMintAddress(value: string): boolean {
+  return /^[1-9A-HJ-NP-Za-km-z]{32,44}$/.test(value);
 }
 
 function escapeHtml(value: string): string {

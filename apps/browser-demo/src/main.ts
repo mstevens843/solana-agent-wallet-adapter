@@ -253,6 +253,10 @@ const LAB_ARCHIVE_STORE_NAME = 'artifacts';
 const MEMO_PROGRAM_ID = new PublicKey('MemoSq4gqABAXKb96qnH8TysNcWxMyWCqXgDLGmfcHr');
 const WSOL_MINT = 'So11111111111111111111111111111111111111112';
 const USDC_MINT = 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v';
+const JUP_MINT = 'JUPyiwrYJFskUPiHa7hkeR8VUtAeFoSYbKedZNsDvCN';
+const BONK_MINT = 'DezXAZ8z7PnrnRJjz3wXBoRgixCa6xjnB7YaB1pPB263';
+const WIF_MINT = 'EKpQGSJtjMFqKZ9KQanSqYXRcF8fBopzLHYxdM65zcjm';
+const PYUSD_MINT = '2b1kV6DkPAnxd5ixfnxCpjxmKwqjjaYmCZfHsFu24GXo';
 const TOKEN_PROGRAM_ID = new PublicKey('TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA');
 const TOKEN_2022_PROGRAM_ID = new PublicKey('TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb');
 const ASSOCIATED_TOKEN_PROGRAM_ID = new PublicKey('ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL');
@@ -260,6 +264,10 @@ const KNOWN_BROWSER_TOKENS: Record<string, { symbol: string; mint: string; decim
   SOL: { symbol: 'SOL', mint: WSOL_MINT, decimals: 9 },
   WSOL: { symbol: 'SOL', mint: WSOL_MINT, decimals: 9 },
   USDC: { symbol: 'USDC', mint: USDC_MINT, decimals: 6 },
+  JUP: { symbol: 'JUP', mint: JUP_MINT, decimals: 6 },
+  BONK: { symbol: 'BONK', mint: BONK_MINT, decimals: 5 },
+  WIF: { symbol: 'WIF', mint: WIF_MINT, decimals: 6 },
+  PYUSD: { symbol: 'PYUSD', mint: PYUSD_MINT, decimals: 6 },
 };
 const EXECUTABLE_BROWSER_ACTION_KINDS = new Set<PreparedActionKind>([
   'transfer_sol',
@@ -5320,10 +5328,11 @@ function reviewPlanMetric(plan: AgentPlan): { primary: string; secondary: string
     const amount = planParameter(plan, ['amount', 'inputAmount', 'plannedAmount']) || 'Amount';
     const input = plan.parameters.inputToken || planParameter(plan, ['token']) || 'Input';
     const output = plan.parameters.outputToken || 'Output';
+    const route = tokenRouteDisplaySummary(input, output);
     const slippage = plan.parameters.slippageBps ? `${slippageBpsToPercentInput(plan.parameters.slippageBps)} max` : '';
     return {
-      primary: `${amount} ${input}`,
-      secondary: `${input} -> ${output}${slippage ? ` · ${slippage}` : ''}`,
+      primary: `${amount} ${tokenDisplayLabel(input)}`,
+      secondary: `${route.value}${slippage ? ` · ${slippage}` : ''}`,
     };
   }
   if (plan.actionType === 'transfer_sol' || plan.actionType === 'transfer_spl' || plan.actionType === 'recurring_payment') {
@@ -5347,6 +5356,12 @@ function reviewPlanMetric(plan: AgentPlan): { primary: string; secondary: string
 
 function generatedPlanReviewSummaryGrid(record: GeneratedPlanRecord): string {
   const plan = record.plan;
+  const routeSummary = plan.actionType === 'swap'
+    ? tokenRouteDisplaySummary(plan.parameters.inputToken || 'input', plan.parameters.outputToken || 'output')
+    : undefined;
+  const amountCopyActions = plan.actionType === 'swap'
+    ? undefined
+    : planAmountTokenCopyActions(plan);
   const rows: WalletActionSummaryRow[] = [
     {
       label: 'Wallet',
@@ -5355,8 +5370,18 @@ function generatedPlanReviewSummaryGrid(record: GeneratedPlanRecord): string {
       copyValue: record.walletAddress,
       copyName: 'Wallet address',
     },
-    { label: plan.actionType === 'swap' ? 'Slippage' : 'Amount', value: plan.actionType === 'swap' ? planSlippageSummary(plan) : planAmountSummary(plan), tone: 'amount' },
-    { label: 'Route', value: planRecipientOrRoute(plan) },
+    {
+      label: plan.actionType === 'swap' ? 'Slippage' : 'Amount',
+      value: plan.actionType === 'swap' ? planSlippageSummary(plan) : planAmountSummary(plan),
+      tone: 'amount',
+      copyActions: amountCopyActions,
+    },
+    {
+      label: 'Route',
+      value: routeSummary?.value ?? planRecipientOrRoute(plan),
+      title: routeSummary?.title,
+      copyActions: routeSummary?.copyActions,
+    },
     { label: 'Risk', value: compactRiskLabel(plan.risk) },
   ];
   return `
@@ -5514,16 +5539,32 @@ function generatedPlanDecisionItem(label: string, value: string): string {
 type WalletActionSummaryRow = {
   label: string;
   value: string;
+  title?: string;
   tone?: 'amount' | 'effect' | 'wallet';
   copyName?: string;
   copyValue?: string;
+  copyLabel?: string;
+  copyActions?: SummaryCopyAction[];
 };
 
 function generatedPlanWalletActionSummary(record: GeneratedPlanRecord): string {
+  const routeSummary = record.plan.actionType === 'swap'
+    ? tokenRouteDisplaySummary(record.plan.parameters.inputToken || 'input', record.plan.parameters.outputToken || 'output')
+    : undefined;
   const rows: WalletActionSummaryRow[] = [
     { label: 'Wallet', value: record.walletAddress || 'No wallet at creation', tone: 'wallet' },
-    { label: 'Amount', value: planAmountSummary(record.plan), tone: 'amount' },
-    { label: 'Route or recipient', value: planRecipientOrRoute(record.plan) },
+    {
+      label: 'Amount',
+      value: planAmountSummary(record.plan),
+      tone: 'amount',
+      copyActions: record.plan.actionType === 'swap' ? undefined : planAmountTokenCopyActions(record.plan),
+    },
+    {
+      label: 'Route or recipient',
+      value: routeSummary?.value ?? planRecipientOrRoute(record.plan),
+      title: routeSummary?.title,
+      copyActions: routeSummary?.copyActions,
+    },
   ];
   return `
     <section class="wallet-action-summary" aria-label="Wallet action summary">
@@ -5535,21 +5576,14 @@ function generatedPlanWalletActionSummary(record: GeneratedPlanRecord): string {
 }
 
 function walletActionSummaryRow(row: WalletActionSummaryRow): string {
+  const copyActions = summaryCopyActions(row);
+  const title = row.title ?? row.value;
   return `
-    <div class="${row.tone ? `wallet-action-${row.tone}` : ''}" title="${escapeHtml(row.value)}">
+    <div class="${row.tone ? `wallet-action-${row.tone}` : ''}" title="${escapeHtml(title)}">
       <dt>${escapeHtml(row.label)}</dt>
-      <dd class="${row.copyValue ? 'has-copy' : ''}">
+      <dd class="${copyActions.length ? 'has-copy' : ''}">
         <span class="wallet-action-value">${escapeHtml(row.value)}</span>
-        ${row.copyValue ? `
-          <button
-            type="button"
-            class="wallet-action-copy"
-            data-copy="${escapeHtml(row.copyValue)}"
-            data-copy-name="${escapeHtml(row.copyName ?? row.label)}"
-          >
-            Copy
-          </button>
-        ` : ''}
+        ${summaryCopyActionsHtml(copyActions, row.label)}
       </dd>
     </div>
   `;
@@ -5616,18 +5650,23 @@ function planAmountSummary(plan: AgentPlan): string {
     const input = plan.parameters.inputToken || planParameter(plan, ['token']) || 'Input token';
     const output = plan.parameters.outputToken || 'Output token';
     const amount = planParameter(plan, ['amount', 'inputAmount', 'plannedAmount']) || 'Amount';
-    return `${amount} ${input} -> ${output}`;
+    return `${amount} ${tokenDisplayLabel(input)} -> ${tokenDisplayLabel(output)}`;
   }
   const amount = planParameter(plan, ['amountSol', 'amount', 'plannedAmount', 'maxAmount']) || 'n/a';
   const token = planParameter(plan, ['token', 'inputToken']) || (plan.actionType === 'transfer_sol' ? 'SOL' : '');
-  return token ? `${amount} ${token}` : amount;
+  return token ? `${amount} ${tokenDisplayLabel(token)}` : amount;
+}
+
+function planAmountTokenCopyActions(plan: AgentPlan): SummaryCopyAction[] {
+  const token = planParameter(plan, ['token', 'inputToken']) || (plan.actionType === 'transfer_sol' ? 'SOL' : '');
+  return token ? tokenCopyActions(token, 'Copy token', 'Token mint') : [];
 }
 
 function planRecipientOrRoute(plan: AgentPlan): string {
   const recipient = planParameter(plan, ['recipient', 'recipientAddress', 'settlementWallet']);
   if (recipient) return recipient;
   if (plan.actionType === 'swap') {
-    return `${plan.parameters.inputToken || 'input'} -> ${plan.parameters.outputToken || 'output'}`;
+    return tokenRouteDisplaySummary(plan.parameters.inputToken || 'input', plan.parameters.outputToken || 'output').value;
   }
   return plan.route;
 }
@@ -7445,8 +7484,8 @@ function completedPlanMetric(plan: CompletedPlanRecord): { primary: string; seco
   const swap = parseCompletedSwapAmount(amount);
   if (swap) {
     return {
-      primary: swap.primary,
-      secondary: `${swap.from} -> ${swap.to}`,
+      primary: `${swap.amount} ${tokenDisplayLabel(swap.from)}`,
+      secondary: `${tokenDisplayLabel(swap.from)} -> ${tokenDisplayLabel(swap.to)}`,
     };
   }
   return {
@@ -7458,18 +7497,49 @@ function completedPlanMetric(plan: CompletedPlanRecord): { primary: string; seco
 function completedPlanAmountLabel(plan: CompletedPlanRecord): string {
   if (!plan.amount) return plan.txid ? `Tx ${short(plan.txid)}` : plan.signature ? `Proof ${short(plan.signature)}` : 'Completed';
   const token = plan.token?.trim();
-  if (!token || plan.amount.includes(token)) return plan.amount;
-  return `${plan.amount} ${token}`;
+  const formattedAmount = formatCompletedAmountText(plan.amount);
+  if (!token) return formattedAmount;
+  if (plan.amount.includes(token)) return formattedAmount;
+  const route = parseTokenRoute(token);
+  if (route) return `${formattedAmount} ${tokenDisplayLabel(route.from)} to ${tokenDisplayLabel(route.to)}`;
+  return `${formattedAmount} ${tokenDisplayLabel(token)}`;
 }
 
-function parseCompletedSwapAmount(value: string): { primary: string; from: string; to: string } | null {
-  const match = value.match(/^(.+?\s+([A-Za-z0-9]{2,12}))\s+to\s+(.+)$/i);
-  if (!match || !match[1] || !match[2] || !match[3]) return null;
+function formatCompletedAmountText(value: string): string {
+  const swap = parseCompletedSwapAmount(value);
+  if (swap) {
+    return `${swap.amount} ${tokenDisplayLabel(swap.from)} to ${tokenDisplayLabel(swap.to)}`;
+  }
+  return value;
+}
+
+function parseCompletedSwapAmount(value: string): { amount: string; from: string; to: string } | null {
+  const route = value.match(/^(.+)\s+to\s+(\S+)$/i);
+  if (!route || !route[1] || !route[2]) return null;
+  const left = route[1].trim();
+  const leftMatch = left.match(/^(.+)\s+(\S+)$/);
+  if (!leftMatch || !leftMatch[1] || !leftMatch[2]) return null;
   return {
-    primary: match[1].trim(),
-    from: match[2].trim(),
-    to: match[3].trim(),
+    amount: leftMatch[1].trim(),
+    from: leftMatch[2].trim(),
+    to: route[2].trim(),
   };
+}
+
+function parseTokenRoute(value: string): { from: string; to: string } | null {
+  const match = value.match(/^(.+?)\s+(?:to|->)\s+(.+)$/i);
+  if (!match || !match[1] || !match[2]) return null;
+  return { from: match[1].trim(), to: match[2].trim() };
+}
+
+function completedPlanTokenCopyActions(plan: CompletedPlanRecord): SummaryCopyAction[] {
+  const token = plan.token?.trim();
+  if (!token) return [];
+  const route = parseTokenRoute(token) ?? parseCompletedSwapAmount(completedPlanAmountLabel(plan));
+  if (route) {
+    return tokenRouteCopyActions(route.from, route.to);
+  }
+  return tokenCopyActions(token, 'Copy token', 'Token mint');
 }
 
 type CompletedPlanRecordRef = {
@@ -7479,6 +7549,7 @@ type CompletedPlanRecordRef = {
   copyValue?: string;
   copyLabel?: string;
   copyName?: string;
+  copyActions?: SummaryCopyAction[];
 };
 
 function completedPlanRecordRef(plan: CompletedPlanRecord): CompletedPlanRecordRef {
@@ -7501,9 +7572,15 @@ function completedPlanRecordRef(plan: CompletedPlanRecord): CompletedPlanRecordR
 
 function completedPlanSummaryGrid(plan: CompletedPlanRecord): string {
   const record = completedPlanRecordRef(plan);
-  const rows: Array<{ label: string; value: string; title?: string; copyValue?: string; tone?: 'amount'; copyLabel?: string; copyName?: string }> = [
+  const rows: Array<{ label: string; value: string; title?: string; copyValue?: string; tone?: 'amount'; copyLabel?: string; copyName?: string; copyActions?: SummaryCopyAction[] }> = [
     { label: 'Wallet', value: plan.walletAddress ? short(plan.walletAddress) : 'No wallet', title: plan.walletAddress || 'No wallet', copyValue: plan.walletAddress || undefined },
-    { label: 'Amount', value: completedPlanAmountLabel(plan), tone: 'amount' },
+    {
+      label: 'Amount',
+      value: completedPlanAmountLabel(plan),
+      title: plan.token ? `${plan.amount ?? ''} ${plan.token}`.trim() : completedPlanAmountLabel(plan),
+      tone: 'amount',
+      copyActions: completedPlanTokenCopyActions(plan),
+    },
     { label: 'Completed', value: formatDateTime(plan.completedAt) },
     {
       label: record.label,
@@ -7512,6 +7589,7 @@ function completedPlanSummaryGrid(plan: CompletedPlanRecord): string {
       copyValue: record.copyValue,
       copyLabel: record.copyLabel,
       copyName: record.copyName,
+      copyActions: record.copyActions,
     },
   ];
   return `
@@ -7521,26 +7599,15 @@ function completedPlanSummaryGrid(plan: CompletedPlanRecord): string {
   `;
 }
 
-function completedPlanSummaryItem(row: { label: string; value: string; title?: string; copyValue?: string; tone?: 'amount'; copyLabel?: string; copyName?: string }): string {
+function completedPlanSummaryItem(row: { label: string; value: string; title?: string; copyValue?: string; tone?: 'amount'; copyLabel?: string; copyName?: string; copyActions?: SummaryCopyAction[] }): string {
   const title = row.title ?? row.value;
-  const copyLabel = row.copyLabel ?? 'Copy';
-  const copyName = row.copyName ?? row.label;
+  const copyActions = summaryCopyActions(row);
   return `
     <div class="${row.tone ? `completed-history-summary-${row.tone}` : ''}" title="${escapeHtml(title)}">
       <dt>${escapeHtml(row.label)}</dt>
-      <dd class="${row.copyValue ? 'has-copy' : ''}">
+      <dd class="${copyActions.length ? 'has-copy' : ''}">
         <span>${escapeHtml(row.value)}</span>
-        ${row.copyValue ? `
-          <button
-            type="button"
-            class="wallet-action-copy"
-            data-copy="${escapeHtml(row.copyValue)}"
-            data-copy-name="${escapeHtml(copyName)}"
-          >
-            <svg class="wallet-action-copy-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M16 1H6a2 2 0 0 0-2 2v12h2V3h10V1Zm3 4H10a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h9a2 2 0 0 0 2-2V7a2 2 0 0 0-2-2Zm0 16H10V7h9v14Z"/></svg>
-            ${escapeHtml(copyLabel)}
-          </button>
-        ` : ''}
+        ${summaryCopyActionsHtml(copyActions, row.label)}
       </dd>
     </div>
   `;
@@ -9013,6 +9080,20 @@ function bind(): void {
       if (button.dataset.recurringAction === 'dca-proof') {
         openDcaReviewProofTemplate();
       }
+    });
+  }
+
+  for (const button of document.querySelectorAll<HTMLButtonElement>('[data-recurring-token-mode]')) {
+    button.addEventListener('click', () => {
+      const mode = button.dataset.recurringTokenMode;
+      const current = state.recurringDraft.token || RECURRING_TOKEN_OPTIONS[0]!;
+      if (mode === 'custom') {
+        state.recurringDraft.token = RECURRING_TOKEN_OPTIONS.includes(current) ? '' : current;
+      } else {
+        state.recurringDraft.token = RECURRING_TOKEN_OPTIONS.includes(current) ? current : RECURRING_TOKEN_OPTIONS[0]!;
+      }
+      delete state.recurringErrors.recurringToken;
+      render();
     });
   }
 
@@ -10873,7 +10954,7 @@ function completedPlanFromGeneratedPlan(
       : 'proof signed';
   const completedAt = receipt?.completedAt ?? actionCompletedAt(action) ?? record.updatedAt;
   const amount = receipt?.amount ?? (action ? amountLabel(action) : planParameter(record.plan, ['amountSol', 'amount', 'inputAmount', 'plannedAmount']));
-  const token = receipt?.token ?? (action ? tokenLabel(action) : planParameter(record.plan, ['token', 'inputToken', 'outputToken']));
+  const token = receipt?.token ?? (action ? tokenLabel(action) : completedPlanTokenFromPlan(record.plan));
   const recipient = receipt?.recipient ?? (action ? recipientParam(action) : planParameter(record.plan, ['recipient', 'recipientAddress']));
   const workflowSource = record.workflowSource ?? action?.workflowSource ?? (actionId && isBrowserWorkflowId(actionId) ? 'browser' : undefined);
   const payload = {
@@ -10922,6 +11003,13 @@ function completedPlanFromGeneratedPlan(
       ['Route', record.plan.route],
     ]),
   };
+}
+
+function completedPlanTokenFromPlan(plan: AgentPlan): string {
+  if (plan.actionType === 'swap') {
+    return `${plan.parameters.inputToken || 'input'} to ${plan.parameters.outputToken || 'output'}`;
+  }
+  return planParameter(plan, ['token', 'inputToken', 'outputToken']);
 }
 
 function completedPlanFromReceipt(receipt: ActionReceipt, action: PreparedAction | undefined): CompletedPlanRecord {
@@ -16937,53 +17025,142 @@ function inboxApprovalHero(action: PreparedAction): string {
   `;
 }
 
-function inboxApprovalTokenSummary(action: PreparedAction): { value: string; title: string; copyValue?: string } {
+type SummaryCopyAction = {
+  label: string;
+  value: string;
+  name?: string;
+};
+
+type TokenDisplaySummary = {
+  value: string;
+  title: string;
+  mint?: string;
+};
+
+function inboxApprovalTokenSummary(action: PreparedAction): { value: string; title: string; copyActions?: SummaryCopyAction[] } {
   if (action.kind === 'transfer_sol') {
-    return { value: 'SOL', title: 'SOL', copyValue: WSOL_MINT };
+    return tokenDisplaySummary('SOL', { copyLabel: 'Copy token' });
   }
   const token = stringParam(action, 'token');
   if (token) {
-    return { value: tokenDisplayLabel(token), title: token, copyValue: resolveTokenMintForCopy(token) };
+    return tokenDisplaySummary(token, { copyLabel: 'Copy token' });
   }
   const inputToken = stringParam(action, 'inputToken');
   const outputToken = stringParam(action, 'outputToken');
   if (inputToken || outputToken) {
-    const input = inputToken || 'input';
-    const output = outputToken || 'output';
-    return {
-      value: `${tokenDisplayLabel(input)} -> ${tokenDisplayLabel(output)}`,
-      title: `${input} -> ${output}`,
-      copyValue: `${resolveTokenMintForCopy(input)} -> ${resolveTokenMintForCopy(output)}`,
-    };
+    return tokenRouteDisplaySummary(inputToken || 'input', outputToken || 'output');
   }
   return { value: 'n/a', title: 'n/a' };
 }
 
-function resolveTokenMintForCopy(value: string): string {
+function tokenDisplaySummary(
+  value: string,
+  options: { copyLabel?: string; copyName?: string } = {},
+): TokenDisplaySummary & { copyActions?: SummaryCopyAction[] } {
+  const mint = resolveTokenMintForCopy(value);
+  return {
+    value: tokenDisplayLabel(value),
+    title: tokenDisplayTitle(value),
+    ...(mint ? { mint, copyActions: [{
+      label: options.copyLabel ?? 'Copy',
+      value: mint,
+      name: options.copyName ?? 'Token mint',
+    }] } : {}),
+  };
+}
+
+function tokenRouteDisplaySummary(
+  inputToken: string,
+  outputToken: string,
+): { value: string; title: string; copyActions?: SummaryCopyAction[] } {
+  const input = tokenDisplaySummary(inputToken, { copyLabel: 'Copy input', copyName: 'Input token mint' });
+  const output = tokenDisplaySummary(outputToken, { copyLabel: 'Copy output', copyName: 'Output token mint' });
+  return {
+    value: `${input.value} -> ${output.value}`,
+    title: `${input.title} -> ${output.title}`,
+    copyActions: [...(input.copyActions ?? []), ...(output.copyActions ?? [])],
+  };
+}
+
+function tokenCopyActions(value: string, copyLabel = 'Copy token', copyName = 'Token mint'): SummaryCopyAction[] {
+  const mint = resolveTokenMintForCopy(value);
+  return mint ? [{ label: copyLabel, value: mint, name: copyName }] : [];
+}
+
+function tokenRouteCopyActions(inputToken: string, outputToken: string): SummaryCopyAction[] {
+  return [
+    ...tokenCopyActions(inputToken, 'Copy input', 'Input token mint'),
+    ...tokenCopyActions(outputToken, 'Copy output', 'Output token mint'),
+  ];
+}
+
+function resolveTokenMintForCopy(value: string): string | undefined {
   const trimmed = value.trim();
-  if (!trimmed) return trimmed;
+  if (!trimmed) return undefined;
   if (looksLikeMintAddress(trimmed)) return trimmed;
   const known = KNOWN_BROWSER_TOKENS[trimmed.toUpperCase()];
-  return known?.mint ?? trimmed;
+  return known?.mint;
 }
 
 function tokenDisplayLabel(value: string): string {
   const trimmed = value.trim();
+  const known = KNOWN_BROWSER_TOKENS[trimmed.toUpperCase()];
+  if (known) return known.symbol;
   if (!looksLikeMintAddress(trimmed)) return trimmed;
   return `${trimmed.slice(0, 4)}...${trimmed.slice(-4)}`;
+}
+
+function tokenDisplayTitle(value: string): string {
+  const trimmed = value.trim();
+  const known = KNOWN_BROWSER_TOKENS[trimmed.toUpperCase()];
+  if (known) return `${known.symbol} mint ${known.mint}`;
+  return trimmed || 'n/a';
 }
 
 function looksLikeMintAddress(value: string): boolean {
   return /^[1-9A-HJ-NP-Za-km-z]{32,44}$/.test(value);
 }
 
+function summaryCopyActions(row: {
+  label: string;
+  copyValue?: string;
+  copyName?: string;
+  copyLabel?: string;
+  copyActions?: SummaryCopyAction[];
+}): SummaryCopyAction[] {
+  if (row.copyActions?.length) return row.copyActions;
+  return row.copyValue ? [{
+    label: row.copyLabel ?? 'Copy',
+    value: row.copyValue,
+    name: row.copyName ?? row.label,
+  }] : [];
+}
+
+function summaryCopyActionsHtml(actions: SummaryCopyAction[], fallbackName: string): string {
+  if (!actions.length) return '';
+  return `
+    <span class="summary-copy-actions">
+      ${actions.map((action) => `
+        <button
+          type="button"
+          class="wallet-action-copy"
+          data-copy="${escapeHtml(action.value)}"
+          data-copy-name="${escapeHtml(action.name ?? fallbackName)}"
+        >
+          ${escapeHtml(action.label)}
+        </button>
+      `).join('')}
+    </span>
+  `;
+}
+
 function inboxApprovalSummaryGrid(action: PreparedAction): string {
   const recipient = recipientParam(action);
   const tokenSummary = inboxApprovalTokenSummary(action);
-  const rows: Array<{ label: string; value: string; title?: string; copyValue?: string; tone?: 'amount' }> = [
+  const rows: Array<{ label: string; value: string; title?: string; copyValue?: string; copyName?: string; copyLabel?: string; copyActions?: SummaryCopyAction[]; tone?: 'amount' }> = [
     { label: 'Wallet', value: short(action.walletAddress), title: action.walletAddress, copyValue: action.walletAddress },
     { label: 'Recipient', value: recipient ? short(recipient) : 'n/a', title: recipient || 'n/a', copyValue: recipient || undefined },
-    { label: 'Token', value: tokenSummary.value, title: tokenSummary.title, copyValue: tokenSummary.copyValue },
+    { label: 'Token', value: tokenSummary.value, title: tokenSummary.title, copyActions: tokenSummary.copyActions },
     { label: 'Due', value: formatDateTime(action.dueAt) },
   ];
   return `
@@ -16993,23 +17170,15 @@ function inboxApprovalSummaryGrid(action: PreparedAction): string {
   `;
 }
 
-function inboxApprovalSummaryItem(row: { label: string; value: string; title?: string; copyValue?: string; tone?: 'amount' }): string {
+function inboxApprovalSummaryItem(row: { label: string; value: string; title?: string; copyValue?: string; copyName?: string; copyLabel?: string; copyActions?: SummaryCopyAction[]; tone?: 'amount' }): string {
   const title = row.title ?? row.value;
+  const copyActions = summaryCopyActions(row);
   return `
     <div class="${row.tone ? `inbox-approval-summary-${row.tone}` : ''}" title="${escapeHtml(title)}">
       <dt>${escapeHtml(row.label)}</dt>
-      <dd class="${row.copyValue ? 'has-copy' : ''}">
+      <dd class="${copyActions.length ? 'has-copy' : ''}">
         <span>${escapeHtml(row.value)}</span>
-        ${row.copyValue ? `
-          <button
-            type="button"
-            class="wallet-action-copy"
-            data-copy="${escapeHtml(row.copyValue)}"
-            data-copy-name="${escapeHtml(row.label)}"
-          >
-            Copy
-          </button>
-        ` : ''}
+        ${summaryCopyActionsHtml(copyActions, row.label)}
       </dd>
     </div>
   `;
@@ -17267,7 +17436,7 @@ function recurringComposer(): string {
         </div>
       </div>
       <dl class="contract-summary recurring-create-summary">
-        ${definitionRow('Asset', `${draft.amount || 'Amount'} ${draft.token || 'Token'}`)}
+        ${definitionRow('Asset', `${draft.amount || 'Amount'} ${draft.token ? tokenDisplayLabel(draft.token) : 'Token'}`)}
         ${definitionRow('Recipient', recipient)}
         ${definitionRow('Cadence', recurringDraftScheduleLabel(draft))}
         ${definitionRow('Limit', limit)}
@@ -17369,9 +17538,10 @@ function recurringDraftPreviewPanel(draft: RecurringDraft): string {
 }
 
 function lifetimeSpendCopy(spend: LifetimeSpend, token: string): string {
-  const rate = `${spend.perWeek} ${token}/week · ${spend.perMonth} ${token}/month`;
+  const tokenLabel = tokenDisplayLabel(token);
+  const rate = `${spend.perWeek} ${tokenLabel}/week · ${spend.perMonth} ${tokenLabel}/month`;
   if (spend.bounded && spend.totalAmount !== undefined && spend.totalRuns !== undefined) {
-    return `Runs up to ${spend.totalRuns} time${spend.totalRuns === 1 ? '' : 's'} and spends up to ${spend.totalAmount} ${token}. ${rate}.`;
+    return `Runs up to ${spend.totalRuns} time${spend.totalRuns === 1 ? '' : 's'} and spends up to ${spend.totalAmount} ${tokenLabel}. ${rate}.`;
   }
   return `No lifetime cap set. Current rate estimate: ${rate}.`;
 }
@@ -17396,21 +17566,56 @@ function recurringPresetControls(): string {
 
 function recurringTokenSelect(value: string): string {
   const error = fieldError('recurringToken');
+  const options = RECURRING_TOKEN_OPTIONS;
+  const presetMode = options.includes(value);
+  const customValue = presetMode ? '' : value;
+  const disabled = state.busy;
   return `
-    <label class="field compact ${state.recurringErrors.recurringToken ? 'field-error' : ''}">
-      <span>Token</span>
-      ${selectPicker({
+    <div class="field compact token-choice-field ${state.recurringErrors.recurringToken ? 'field-error' : ''}">
+      <span class="token-choice-head">
+        <span>Token</span>
+        <span class="token-choice-mode" role="group" aria-label="Repeat token input mode">
+          <button
+            type="button"
+            data-recurring-token-mode="preset"
+            class="${presetMode ? 'active' : ''}"
+            ${disabled ? 'disabled' : ''}
+          >
+            List
+          </button>
+          <button
+            type="button"
+            data-recurring-token-mode="custom"
+            class="${presetMode ? '' : 'active'}"
+            ${disabled ? 'disabled' : ''}
+          >
+            Mint
+          </button>
+        </span>
+      </span>
+      ${presetMode ? selectPicker({
         id: 'recurringToken',
         value,
         attrs: { 'data-recurring-field': 'token' },
-        options: RECURRING_TOKEN_OPTIONS.map((token) => ({
+        disabled,
+        options: options.map((token) => ({
           value: token,
           label: token,
           meta: 'Token',
         })),
-      })}
+      }) : `
+        <input
+          id="recurringToken"
+          data-recurring-field="token"
+          value="${escapeHtml(customValue)}"
+          placeholder="Paste token mint address"
+          autocomplete="off"
+          spellcheck="false"
+          ${disabled ? 'disabled' : ''}
+        />
+      `}
       ${error}
-    </label>
+    </div>
   `;
 }
 
@@ -17466,14 +17671,16 @@ function recurringCard(payment: RecurringPayment): string {
 }
 
 function recurringPaymentTitle(payment: RecurringPayment): string {
-  return payment.token === 'SOL' ? 'Repeat SOL transfer' : `Repeat ${payment.token} transfer`;
+  const tokenLabel = tokenDisplayLabel(payment.token);
+  return payment.token === 'SOL' ? 'Repeat SOL transfer' : `Repeat ${tokenLabel} transfer`;
 }
 
 function recurringCardHero(payment: RecurringPayment, nextRuns: string[]): string {
   const nextRun = nextRuns[0] ? `Next ${formatDateTime(nextRuns[0])}` : 'No future run preview';
+  const tokenLabel = tokenDisplayLabel(payment.token);
   return `
-    <div class="recurring-card-value" title="${escapeHtml(`${payment.amount} ${payment.token} - ${nextRun}`)}">
-      <strong>${escapeHtml(`${payment.amount} ${payment.token}`)}</strong>
+    <div class="recurring-card-value" title="${escapeHtml(`${payment.amount} ${tokenDisplayTitle(payment.token)} - ${nextRun}`)}">
+      <strong>${escapeHtml(`${payment.amount} ${tokenLabel}`)}</strong>
       <span>${escapeHtml(nextRun)}</span>
     </div>
   `;
@@ -17486,8 +17693,10 @@ function recurringCardSummaryGrid(
   source: WorkflowRecordSource,
 ): string {
   const nextRun = nextRuns[0] ? formatDateTime(nextRuns[0]) : 'No preview';
-  const rows: Array<{ label: string; value: string; title?: string; copyValue?: string; tone?: 'amount' }> = [
+  const tokenSummary = tokenDisplaySummary(payment.token, { copyLabel: 'Copy token', copyName: 'Token mint' });
+  const rows: Array<{ label: string; value: string; title?: string; copyValue?: string; copyName?: string; copyLabel?: string; copyActions?: SummaryCopyAction[]; tone?: 'amount' }> = [
     { label: 'Recipient', value: short(payment.recipient), title: payment.recipient, copyValue: payment.recipient },
+    { label: 'Token', value: tokenSummary.value, title: tokenSummary.title, copyActions: tokenSummary.copyActions },
     { label: 'Next run', value: nextRun },
     { label: 'Cadence', value: recurringScheduleShortLabel(payment) },
     { label: 'Limit', value: recurringLimitShortLabel(payment) },
@@ -17501,23 +17710,15 @@ function recurringCardSummaryGrid(
   `;
 }
 
-function recurringCardSummaryItem(row: { label: string; value: string; title?: string; copyValue?: string; tone?: 'amount' }): string {
+function recurringCardSummaryItem(row: { label: string; value: string; title?: string; copyValue?: string; copyName?: string; copyLabel?: string; copyActions?: SummaryCopyAction[]; tone?: 'amount' }): string {
   const title = row.title ?? row.value;
+  const copyActions = summaryCopyActions(row);
   return `
     <div class="${row.tone ? `recurring-card-summary-${row.tone}` : ''}" title="${escapeHtml(title)}">
       <dt>${escapeHtml(row.label)}</dt>
-      <dd class="${row.copyValue ? 'has-copy' : ''}">
+      <dd class="${copyActions.length ? 'has-copy' : ''}">
         <span>${escapeHtml(row.value)}</span>
-        ${row.copyValue ? `
-          <button
-            type="button"
-            class="wallet-action-copy"
-            data-copy="${escapeHtml(row.copyValue)}"
-            data-copy-name="${escapeHtml(row.label)}"
-          >
-            Copy
-          </button>
-        ` : ''}
+        ${summaryCopyActionsHtml(copyActions, row.label)}
       </dd>
     </div>
   `;
@@ -17606,7 +17807,8 @@ function recurringLimitShortLabel(payment: RecurringPayment): string {
 }
 
 function recurringRateShortLabel(spend: LifetimeSpend, token: string): string {
-  return `${spend.perWeek} ${token}/week - ${spend.perMonth} ${token}/month`;
+  const tokenLabel = tokenDisplayLabel(token);
+  return `${spend.perWeek} ${tokenLabel}/week - ${spend.perMonth} ${tokenLabel}/month`;
 }
 
 function recurringHistoryPanel(

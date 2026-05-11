@@ -17,6 +17,7 @@ import { lifetimeSpendEstimate } from '@solana-agent-wallet-adapter/workflow';
 
 import { formatRawAmount, parseDecimalAmount } from './amounts.js';
 import {
+  DEFAULT_TOKEN_REGISTRY,
   USDC_MINT,
   WSOL_MINT,
   type AgentWalletConfig,
@@ -31,6 +32,7 @@ import type {
 } from './preparedActions.js';
 
 const TOKEN_PROGRAM_ID = new PublicKey('TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA');
+const TOKEN_2022_PROGRAM_ID = new PublicKey('TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb');
 const ASSOCIATED_TOKEN_PROGRAM_ID = new PublicKey('ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL');
 
 export interface AgentWalletActionServiceOptions {
@@ -212,7 +214,7 @@ export class AgentWalletActionService {
 
   async prepareTransferSpl(input: PrepareTransferSplInput): Promise<Record<string, unknown>> {
     requireActionAllowed(this.config);
-    const tokenConfig = requireToken(this.config, input.token);
+    const tokenConfig = await resolveToken(this.config, this.connection, input.token);
     parseDecimalAmount(input.amount, tokenConfig.decimals, `${tokenConfig.symbol} amount`);
     const from = await this.backend.getAddress();
     const to = new PublicKey(input.recipient).toBase58();
@@ -221,7 +223,7 @@ export class AgentWalletActionService {
       walletAddress: from,
       cluster: this.config.cluster,
       summary: `Transfer ${input.amount} ${tokenConfig.symbol} to ${to}`,
-      params: { token: tokenConfig.symbol, recipient: to, amount: input.amount },
+      params: { token: tokenConfig.requestToken, recipient: to, amount: input.amount },
       ...(input.dueAt !== undefined && { dueAt: input.dueAt }),
       ...(input.note !== undefined && { note: input.note }),
     });
@@ -230,7 +232,7 @@ export class AgentWalletActionService {
 
   async prepareSwap(input: PrepareSwapInput): Promise<Record<string, unknown>> {
     requireActionAllowed(this.config);
-    const swap = normalizeSwapInput(this.config, input);
+    const swap = await normalizeSwapInput(this.config, this.connection, input);
     const from = await this.backend.getAddress();
     const action = await this.store().addAction({
       kind: 'swap',
@@ -353,7 +355,7 @@ export class AgentWalletActionService {
   async createRecurringPayment(input: RecurringPaymentInput): Promise<Record<string, unknown>> {
     const store = this.store();
     const recurringPayment = await store.addRecurringPayment(
-      buildRecurringPaymentInput(input, await this.backend.getAddress(), this.config),
+      await buildRecurringPaymentInput(input, await this.backend.getAddress(), this.config, this.connection),
     );
     const materialized = await store.materializeDueRecurring();
     return { recurringPayment, materialized, actions: await store.listActions() };
@@ -376,7 +378,7 @@ export class AgentWalletActionService {
     }
     const recurringPayment = await store.updateRecurringPayment(
       input.recurringId,
-      buildRecurringPaymentInput(input, current.walletAddress, this.config),
+      await buildRecurringPaymentInput(input, current.walletAddress, this.config, this.connection),
     );
     const materialized = await store.materializeDueRecurring();
     return { recurringPayment, materialized, actions: await store.listActions() };
@@ -424,23 +426,23 @@ export class AgentWalletActionService {
 
   async transferSpl(input: { token: string; recipient: string; amount: string }): Promise<Record<string, unknown>> {
     requireActionAllowed(this.config);
-    const tokenConfig = requireToken(this.config, input.token);
+    const tokenConfig = await resolveToken(this.config, this.connection, input.token);
     const rawAmount = parseDecimalAmount(input.amount, tokenConfig.decimals, `${tokenConfig.symbol} amount`);
     const owner = new PublicKey(await this.backend.getAddress());
     const recipientOwner = new PublicKey(input.recipient);
     const mint = new PublicKey(tokenConfig.mint);
-    const sourceAta = await getAssociatedTokenAddress(mint, owner);
+    const sourceAta = await getAssociatedTokenAddress(mint, owner, tokenConfig.tokenProgramId);
     const sourceBalance = await this.connection.getTokenAccountBalance(sourceAta).catch(() => null);
     if (!sourceBalance || BigInt(sourceBalance.value.amount) < rawAmount) {
       throw new ProtocolError('unauthorized', `Insufficient ${tokenConfig.symbol} balance for ${input.amount} transfer.`);
     }
-    const destinationAta = await getAssociatedTokenAddress(mint, recipientOwner);
+    const destinationAta = await getAssociatedTokenAddress(mint, recipientOwner, tokenConfig.tokenProgramId);
     const tx = new Transaction();
     const destinationAccount = await this.connection.getAccountInfo(destinationAta, 'confirmed');
     if (!destinationAccount) {
-      tx.add(createAssociatedTokenAccountInstruction(owner, destinationAta, recipientOwner, mint));
+      tx.add(createAssociatedTokenAccountInstruction(owner, destinationAta, recipientOwner, mint, tokenConfig.tokenProgramId));
     }
-    tx.add(createTransferCheckedInstruction(sourceAta, mint, destinationAta, owner, rawAmount, tokenConfig.decimals));
+    tx.add(createTransferCheckedInstruction(sourceAta, mint, destinationAta, owner, rawAmount, tokenConfig.decimals, tokenConfig.tokenProgramId));
     await prepareTransaction(this.connection, tx, owner);
     const txid = await this.signAndBroadcastTransaction(
       tx,
@@ -460,14 +462,14 @@ export class AgentWalletActionService {
 
   async getSwapQuote(input: SwapInput): Promise<Record<string, unknown>> {
     requireActionAllowed(this.config);
-    const order = await fetchJupiterOrder(this.config, await this.backend.getAddress(), normalizeSwapInput(this.config, input));
+    const order = await fetchJupiterOrder(this.config, await this.backend.getAddress(), await normalizeSwapInput(this.config, this.connection, input));
     return orderSummary(order);
   }
 
   async swap(input: SwapInput): Promise<Record<string, unknown>> {
     requireActionAllowed(this.config);
     const taker = await this.backend.getAddress();
-    const swap = normalizeSwapInput(this.config, input);
+    const swap = await normalizeSwapInput(this.config, this.connection, input);
     const order = await fetchJupiterOrder(this.config, taker, swap);
     if (!order.transaction || typeof order.transaction !== 'string') {
       throw new ProtocolError(
@@ -596,13 +598,14 @@ function requireActionAllowed(config: AgentWalletConfig): void {
   void config;
 }
 
-function buildRecurringPaymentInput(
+async function buildRecurringPaymentInput(
   input: RecurringPaymentInput,
   walletAddress: string,
   config: AgentWalletConfig,
+  connection: Connection,
 ) {
   requireActionAllowed(config);
-  const token = requireString(input.token, 'token').toUpperCase();
+  const token = normalizeTokenIdentifier(requireString(input.token, 'token'));
   const amount = requireString(input.amount, 'amount');
   const recipient = new PublicKey(requireString(input.recipient, 'recipient')).toBase58();
   const note = typeof input.note === 'string' && input.note.trim() ? input.note.trim().slice(0, 500) : undefined;
@@ -625,7 +628,7 @@ function buildRecurringPaymentInput(
   if (token === 'SOL') {
     parseDecimalAmount(amount, 9, 'SOL recurring payment amount');
   } else {
-    const tokenConfig = requireToken(config, token);
+    const tokenConfig = await resolveToken(config, connection, token);
     parseDecimalAmount(amount, tokenConfig.decimals, `${tokenConfig.symbol} recurring payment amount`);
   }
 
@@ -885,9 +888,18 @@ interface NormalizedSwapInput {
   slippageBps: number;
 }
 
-function normalizeSwapInput(config: AgentWalletConfig, input: SwapInput): NormalizedSwapInput {
-  const inputToken = resolveSwapToken(config, input.inputToken ?? 'SOL');
-  const outputToken = resolveSwapToken(config, input.outputToken ?? 'USDC');
+interface ResolvedTokenConfig extends TokenLimitConfig {
+  requestToken: string;
+  tokenProgramId: PublicKey;
+}
+
+async function normalizeSwapInput(
+  config: AgentWalletConfig,
+  connection: Connection,
+  input: SwapInput,
+): Promise<NormalizedSwapInput> {
+  const inputToken = await resolveSwapToken(config, connection, input.inputToken ?? 'SOL');
+  const outputToken = await resolveSwapToken(config, connection, input.outputToken ?? 'USDC');
   const slippageBps = input.slippageBps ?? config.mainnet.maxSlippageBps;
   const amountRaw = parseDecimalAmount(input.amount, inputToken.decimals, `${inputToken.symbol} swap amount`);
   return {
@@ -900,22 +912,87 @@ function normalizeSwapInput(config: AgentWalletConfig, input: SwapInput): Normal
   };
 }
 
-function resolveSwapToken(config: AgentWalletConfig, token: string): TokenLimitConfig {
-  if (token.toUpperCase() === 'SOL' || token === WSOL_MINT) {
-    return { symbol: 'SOL', mint: WSOL_MINT, decimals: 9, maxTransfer: config.mainnet.maxSwapInput };
+async function resolveSwapToken(
+  config: AgentWalletConfig,
+  connection: Connection,
+  token: string,
+): Promise<ResolvedTokenConfig> {
+  if (isNativeSolToken(token)) {
+    return {
+      symbol: 'SOL',
+      mint: WSOL_MINT,
+      decimals: 9,
+      maxTransfer: config.mainnet.maxSwapInput,
+      requestToken: 'SOL',
+      tokenProgramId: TOKEN_PROGRAM_ID,
+    };
   }
-  return requireToken(config, token);
+  return resolveToken(config, connection, token);
 }
 
-function requireToken(config: AgentWalletConfig, token: string): TokenLimitConfig {
+async function resolveToken(
+  config: AgentWalletConfig,
+  connection: Connection,
+  token: string,
+): Promise<ResolvedTokenConfig> {
+  const trimmed = token.trim();
+  const known = findKnownToken(config, trimmed);
+  const mintText = known?.mint ?? trimmed;
+  let mint: PublicKey;
+  try {
+    mint = new PublicKey(mintText);
+  } catch {
+    throw new ProtocolError(
+      'invalid_request',
+      `Token ${token} is not a known symbol. Paste the token mint address.`,
+    );
+  }
+  const account = await connection.getParsedAccountInfo(mint, 'confirmed').catch(() => null);
+  const owner = account?.value?.owner;
+  const tokenProgramId = owner?.equals(TOKEN_2022_PROGRAM_ID) ? TOKEN_2022_PROGRAM_ID : TOKEN_PROGRAM_ID;
+  const parsedData = account?.value?.data;
+  const parsed = parsedData && typeof parsedData === 'object' && 'parsed' in parsedData
+    ? parsedData.parsed as { info?: { decimals?: unknown } }
+    : undefined;
+  const decimals = known?.decimals ?? (typeof parsed?.info?.decimals === 'number' ? parsed.info.decimals : undefined);
+  if (typeof decimals !== 'number' || !Number.isInteger(decimals) || decimals < 0) {
+    throw new ProtocolError('invalid_request', `Could not read decimals for token mint ${shortToken(mint.toBase58())}.`);
+  }
+  const rawMint = mint.toBase58();
+  const requestToken = known && known.symbol.toLowerCase() === trimmed.toLowerCase() ? known.symbol : rawMint;
+  return {
+    symbol: known?.symbol ?? shortToken(rawMint),
+    mint: rawMint,
+    decimals,
+    maxTransfer: known?.maxTransfer ?? '',
+    requestToken,
+    tokenProgramId,
+  };
+}
+
+function findKnownToken(config: AgentWalletConfig, token: string): TokenLimitConfig | undefined {
   const normalized = token.toLowerCase();
-  const found = config.tokens.find(
+  return [...config.tokens, ...DEFAULT_TOKEN_REGISTRY].find(
     (entry) => entry.symbol.toLowerCase() === normalized || entry.mint.toLowerCase() === normalized,
   );
-  if (!found) {
-    throw new ProtocolError('unauthorized', `Token ${token} is not allowlisted in agent-wallet.config.json.`);
-  }
-  return found;
+}
+
+function isNativeSolToken(token: string): boolean {
+  const trimmed = token.trim();
+  return trimmed.toUpperCase() === 'SOL' || trimmed === WSOL_MINT;
+}
+
+function normalizeTokenIdentifier(token: string): string {
+  const trimmed = token.trim();
+  return looksLikeMintAddress(trimmed) ? trimmed : trimmed.toUpperCase();
+}
+
+function looksLikeMintAddress(value: string): boolean {
+  return /^[1-9A-HJ-NP-Za-km-z]{32,44}$/.test(value);
+}
+
+function shortToken(value: string): string {
+  return value.length > 8 ? `${value.slice(0, 4)}...${value.slice(-4)}` : value;
 }
 
 async function fetchJupiterOrder(
@@ -1005,9 +1082,13 @@ function txToBase64(transaction: Transaction): string {
   return transaction.serialize({ requireAllSignatures: false, verifySignatures: false }).toString('base64');
 }
 
-async function getAssociatedTokenAddress(mint: PublicKey, owner: PublicKey): Promise<PublicKey> {
+async function getAssociatedTokenAddress(
+  mint: PublicKey,
+  owner: PublicKey,
+  tokenProgramId = TOKEN_PROGRAM_ID,
+): Promise<PublicKey> {
   const [address] = await PublicKey.findProgramAddress(
-    [owner.toBuffer(), TOKEN_PROGRAM_ID.toBuffer(), mint.toBuffer()],
+    [owner.toBuffer(), tokenProgramId.toBuffer(), mint.toBuffer()],
     ASSOCIATED_TOKEN_PROGRAM_ID,
   );
   return address;
@@ -1018,6 +1099,7 @@ function createAssociatedTokenAccountInstruction(
   associatedToken: PublicKey,
   owner: PublicKey,
   mint: PublicKey,
+  tokenProgramId = TOKEN_PROGRAM_ID,
 ): TransactionInstruction {
   return new TransactionInstruction({
     programId: ASSOCIATED_TOKEN_PROGRAM_ID,
@@ -1027,7 +1109,7 @@ function createAssociatedTokenAccountInstruction(
       { pubkey: owner, isSigner: false, isWritable: false },
       { pubkey: mint, isSigner: false, isWritable: false },
       { pubkey: SystemProgram.programId, isSigner: false, isWritable: false },
-      { pubkey: TOKEN_PROGRAM_ID, isSigner: false, isWritable: false },
+      { pubkey: tokenProgramId, isSigner: false, isWritable: false },
     ],
     data: Buffer.alloc(0),
   });
@@ -1040,13 +1122,14 @@ function createTransferCheckedInstruction(
   owner: PublicKey,
   amount: bigint,
   decimals: number,
+  tokenProgramId = TOKEN_PROGRAM_ID,
 ): TransactionInstruction {
   const data = Buffer.alloc(10);
   data.writeUInt8(12, 0);
   data.writeBigUInt64LE(amount, 1);
   data.writeUInt8(decimals, 9);
   return new TransactionInstruction({
-    programId: TOKEN_PROGRAM_ID,
+    programId: tokenProgramId,
     keys: [
       { pubkey: source, isSigner: false, isWritable: true },
       { pubkey: mint, isSigner: false, isWritable: false },

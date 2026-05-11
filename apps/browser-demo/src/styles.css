@@ -4666,6 +4666,15 @@ code {
   overflow-wrap: anywhere;
 }
 
+.summary-copy-actions {
+  align-items: center;
+  display: inline-flex;
+  flex-wrap: wrap;
+  gap: 5px;
+  justify-content: flex-end;
+  min-width: 0;
+}
+
 .wallet-action-copy {
   align-self: center;
   background: rgba(37, 122, 82, 0.18);
