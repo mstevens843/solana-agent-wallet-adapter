@@ -18361,48 +18361,6 @@ button.danger:hover:not(:disabled) {
   overflow-y: auto;
 }
 
-.quote-freshness-strip {
-  display: inline-flex;
-  align-items: center;
-  gap: 10px;
-  margin: 10px 0 6px;
-  padding: 6px 12px;
-  border-radius: 999px;
-  font-size: 0.78rem;
-  border: 1px solid var(--line);
-  background: var(--surface-soft);
-}
-
-.quote-freshness-strip.fresh {
-  border-color: rgba(63, 189, 131, 0.35);
-}
-
-.quote-freshness-strip.aging {
-  border-color: rgba(214, 168, 79, 0.45);
-}
-
-.quote-freshness-strip.stale {
-  background: var(--danger-soft);
-  border-color: rgba(239, 111, 120, 0.5);
-  color: var(--danger);
-}
-
-.quote-freshness-label {
-  color: var(--muted);
-  text-transform: uppercase;
-  letter-spacing: 0.05em;
-  font-size: 0.7rem;
-}
-
-.quote-freshness-value {
-  font-variant-numeric: tabular-nums;
-}
-
-.quote-freshness-refresh {
-  font-size: 0.74rem;
-  padding: 4px 10px;
-}
-
 .policy-warnings-strip {
   margin: 10px 0 6px;
   padding: 0;

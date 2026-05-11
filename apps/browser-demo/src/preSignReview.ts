@@ -75,6 +75,7 @@ export interface SwapPreSignReviewInput {
   priceImpactPct?: number;
   priceImpactWarnPct?: number;
   platformFee?: string;
+  quoteRequired?: boolean;
   touchedPrograms?: TouchedProgramInput[];
 }
 
@@ -267,8 +268,9 @@ export function buildSwapPreSignReview(input: SwapPreSignReviewInput): PreSignRe
   pushProgramsSection(sections, input.touchedPrograms);
 
   const warnings: string[] = [];
-  if (!nonEmptyString(input.expectedOutput)) warnings.push('Expected output is missing.');
-  if (!nonEmptyString(input.routeLabel)) warnings.push('Route label is missing.');
+  const quoteRequired = input.quoteRequired !== false;
+  if (quoteRequired && !nonEmptyString(input.expectedOutput)) warnings.push('Expected output is missing.');
+  if (quoteRequired && !nonEmptyString(input.routeLabel)) warnings.push('Route label is missing.');
   if (typeof input.slippageBps === 'number' && Number.isFinite(input.slippageBps) && input.slippageBps > 100) {
     warnings.push(`Slippage is high at ${formatBps(input.slippageBps)}.`);
   }

@@ -494,6 +494,7 @@ const LAB_ARCHIVE_STORE_NAME = 'artifacts';
 const MEMO_PROGRAM_ID = new PublicKey('MemoSq4gqABAXKb96qnH8TysNcWxMyWCqXgDLGmfcHr');
 const WSOL_MINT = 'So11111111111111111111111111111111111111112';
 const USDC_MINT = 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v';
+const USDT_MINT = 'Es9vMFrzaCERmJfrF4H2FYD4KCoNkYt99x7nEJfrPnk';
 const JUP_MINT = 'JUPyiwrYJFskUPiHa7hkeR8VUtAeFoSYbKedZNsDvCN';
 const BONK_MINT = 'DezXAZ8z7PnrnRJjz3wXBoRgixCa6xjnB7YaB1pPB263';
 const WIF_MINT = 'EKpQGSJtjMFqKZ9KQanSqYXRcF8fBopzLHYxdM65zcjm';
@@ -505,11 +506,13 @@ const KNOWN_BROWSER_TOKENS: Record<string, { symbol: string; mint: string; decim
   SOL: { symbol: 'SOL', mint: WSOL_MINT, decimals: 9 },
   WSOL: { symbol: 'SOL', mint: WSOL_MINT, decimals: 9 },
   USDC: { symbol: 'USDC', mint: USDC_MINT, decimals: 6 },
+  USDT: { symbol: 'USDT', mint: USDT_MINT, decimals: 6 },
   JUP: { symbol: 'JUP', mint: JUP_MINT, decimals: 6 },
   BONK: { symbol: 'BONK', mint: BONK_MINT, decimals: 5 },
   WIF: { symbol: 'WIF', mint: WIF_MINT, decimals: 6 },
   PYUSD: { symbol: 'PYUSD', mint: PYUSD_MINT, decimals: 6 },
 };
+const STABLECOIN_SYMBOLS = new Set(['USDC', 'USDT', 'PYUSD', 'USDP', 'USDS', 'DAI']);
 const EXECUTABLE_BROWSER_ACTION_KINDS = new Set<PreparedActionKind>([
   'transfer_sol',
   'transfer_spl',
@@ -2293,7 +2296,6 @@ async function startApp(): Promise<void> {
     if (SHOW_DEV_CONTROLS) {
       startSystemHealthPolling();
     }
-    startQuoteCountdownTicker();
     startNotificationTicker();
     startAgentBackgroundWatch();
     window.addEventListener('popstate', () => render());
@@ -2430,6 +2432,7 @@ function render(): void {
   appRoot.innerHTML = pageShell(pageContent(route), route);
   bind();
   updateTabTitleBadge();
+  scheduleInboxSwapQuoteHydration();
 }
 
 function normalizeInitialRoute(): void {
@@ -8364,7 +8367,7 @@ function planGuardrailStrip(plan: AgentPlan): string {
 function finalizationRequirementLabel(value: string): string {
   switch (value) {
     case 'transaction_preview':
-      return 'Refresh quote, simulate, wallet approve, receipt';
+      return 'Fresh quote, simulate, wallet approve, receipt';
     case 'wallet_decision_proof':
       return 'Wallet decision proof';
     case 'none':
@@ -16801,11 +16804,6 @@ async function runPreparedActionOp(actionId: string, op: string): Promise<void> 
     return;
   }
 
-  if (op === 'refresh-quote') {
-    await refreshSwapQuoteForAction(actionId);
-    return;
-  }
-
   const action = state.preparedActions.find((candidate) => candidate.id === actionId);
   if (action?.workflowSource === 'cloud') {
     await run('inbox', async () => {
@@ -20150,30 +20148,11 @@ function stringifySimulationError(err: unknown): string {
   return String(err);
 }
 
-interface QuoteFreshnessView {
-  label: string;
-  ageSeconds: number;
-  stale: boolean;
-  aging: boolean;
-}
-
-const QUOTE_AGING_THRESHOLD_S = 15;
-const QUOTE_STALE_THRESHOLD_S = 30;
-
-function quoteFreshness(action: PreparedAction): QuoteFreshnessView | null {
-  if (action.kind !== 'swap') return null;
-  const quotedAt = stringParam(action, 'quotedAt') || action.updatedAt || action.createdAt;
-  if (!quotedAt) return null;
-  const ts = new Date(quotedAt).getTime();
-  if (Number.isNaN(ts)) return null;
-  const ageSeconds = Math.max(0, Math.floor((Date.now() - ts) / 1000));
-  const stale = ageSeconds >= QUOTE_STALE_THRESHOLD_S;
-  const aging = !stale && ageSeconds >= QUOTE_AGING_THRESHOLD_S;
-  const label = stale
-    ? `Stale · ${ageSeconds}s old`
-    : `${ageSeconds}s old · refreshes in ${QUOTE_STALE_THRESHOLD_S - ageSeconds}s`;
-  return { label, ageSeconds, stale, aging };
-}
+const QUOTE_AUTO_HYDRATE_THRESHOLD_MS = 2 * 60 * 1000;
+const QUOTE_AUTO_HYDRATE_RETRY_MS = 2 * 60 * 1000;
+let inboxSwapQuoteHydrationScheduled = false;
+let inboxSwapQuoteHydrationInFlight = false;
+const swapQuoteHydrationAttemptedAt = new Map<string, number>();
 
 interface PolicyWarning {
   severity: 'warn' | 'block';
@@ -20392,64 +20371,241 @@ function handleSafetyRailsAction(op: string, el: HTMLElement): void {
   }
 }
 
-async function refreshSwapQuoteForAction(actionId: string): Promise<void> {
-  const action = state.preparedActions.find((candidate) => candidate.id === actionId);
-  if (!action || action.kind !== 'swap') return;
+function scheduleInboxSwapQuoteHydration(): void {
+  const route = currentRoute();
+  if (state.activeTab !== 'inbox' || (route !== '/app' && route !== '/demo')) return;
+  if (inboxSwapQuoteHydrationScheduled || inboxSwapQuoteHydrationInFlight) return;
+  inboxSwapQuoteHydrationScheduled = true;
+  window.setTimeout(() => {
+    inboxSwapQuoteHydrationScheduled = false;
+    void hydrateInboxSwapQuotes();
+  }, 0);
+}
+
+async function hydrateInboxSwapQuotes(): Promise<void> {
+  if (inboxSwapQuoteHydrationInFlight || state.activeTab !== 'inbox' || state.busy) return;
+  const now = Date.now();
+  const candidates = activeWorkflowPreparedActions().filter((action) => swapQuoteNeedsAutoHydration(action, now));
+  if (candidates.length === 0) return;
+
+  inboxSwapQuoteHydrationInFlight = true;
+  let changed = false;
   try {
-    const toastId = pushToast('pending', 'Refreshing quote', 'Asking Jupiter for a new quote…');
-    if (state.bridgeActive && action.workflowSource === 'local-bridge') {
-      await bridgeRequest('/bridge/swap/refresh-quote', {
-        method: 'POST',
-        body: JSON.stringify({ actionId }),
-      }).catch(() => undefined);
-      await refreshInboxData();
-    } else {
-      const next = { ...action, params: { ...action.params, quotedAt: new Date().toISOString() }, updatedAt: new Date().toISOString() };
-      state.preparedActions = state.preparedActions.map((candidate) => candidate.id === actionId ? next : candidate);
-      state.materializedActions = state.preparedActions;
-      saveBrowserWorkflowState();
+    for (const action of candidates) {
+      swapQuoteHydrationAttemptedAt.set(action.id, Date.now());
+      try {
+        changed = (await hydrateSwapQuoteForAction(action)) || changed;
+      } catch (err) {
+        console.warn('Swap quote auto-refresh failed.', err);
+      }
     }
-    replaceToast(toastId, 'success', 'Quote refreshed', 'New quote stored on this approval.');
+  } finally {
+    inboxSwapQuoteHydrationInFlight = false;
+  }
+
+  if (changed && state.activeTab === 'inbox') {
     render();
-  } catch (err) {
-    const message = err instanceof Error ? err.message : 'Could not refresh quote.';
-    pushToast('error', 'Refresh failed', message);
   }
 }
 
-let quoteCountdownTimer: number | null = null;
+function swapQuoteNeedsAutoHydration(action: PreparedAction, now: number): boolean {
+  if (!isActionInboxActive(action) || action.kind !== 'swap') return false;
+  if (action.workflowSource === 'cloud') return false;
+  if (!shouldAutoHydrateSwapQuote(action)) return false;
+  if (action.status === 'approval_pending' || Boolean(action.txid) || hasPendingExecutionLedgerEntry(action.id)) return false;
+  const lastAttempt = swapQuoteHydrationAttemptedAt.get(action.id) ?? 0;
+  if (now - lastAttempt < QUOTE_AUTO_HYDRATE_RETRY_MS) return false;
+  if (!hasUsableSwapQuote(action)) return true;
+  const quotedAtMs = Date.parse(stringParam(action, 'quotedAt'));
+  return !Number.isFinite(quotedAtMs) || now - quotedAtMs >= QUOTE_AUTO_HYDRATE_THRESHOLD_MS;
+}
 
-function startQuoteCountdownTicker(): void {
-  stopQuoteCountdownTicker();
-  quoteCountdownTimer = window.setInterval(() => {
-    const nodes = document.querySelectorAll<HTMLElement>('[data-quote-countdown]');
-    let needsRender = false;
-    for (const node of nodes) {
-      const actionId = node.dataset.quoteCountdown;
-      if (!actionId) continue;
-      const action = state.preparedActions.find((candidate) => candidate.id === actionId);
-      if (!action) continue;
-      const fresh = quoteFreshness(action);
-      if (!fresh) continue;
-      node.textContent = fresh.label;
-      const strip = node.closest<HTMLElement>('.quote-freshness-strip');
-      if (strip) {
-        strip.classList.remove('fresh', 'aging', 'stale');
-        strip.classList.add(fresh.stale ? 'stale' : fresh.aging ? 'aging' : 'fresh');
-      }
-      if (fresh.stale && !strip?.querySelector('.quote-freshness-refresh')) {
-        needsRender = true;
-      }
+function hasUsableSwapQuote(action: PreparedAction): boolean {
+  return Boolean(stringParam(action, 'expectedOutput') && stringParam(action, 'routeLabel'));
+}
+
+function shouldAutoHydrateSwapQuote(action: PreparedAction): boolean {
+  return action.kind === 'swap' && !isSolStableOrStableStableSwap(action);
+}
+
+function isSolStableOrStableStableSwap(action: PreparedAction): boolean {
+  const input = normalizedSwapTokenSymbol(stringParam(action, 'inputToken'));
+  const output = normalizedSwapTokenSymbol(stringParam(action, 'outputToken'));
+  if (!input || !output) return false;
+  const inputSol = input === 'SOL';
+  const outputSol = output === 'SOL';
+  const inputStable = STABLECOIN_SYMBOLS.has(input);
+  const outputStable = STABLECOIN_SYMBOLS.has(output);
+  return (inputSol && outputStable) || (outputSol && inputStable) || (inputStable && outputStable);
+}
+
+function normalizedSwapTokenSymbol(value: string): string {
+  const trimmed = value.trim();
+  if (!trimmed) return '';
+  const upper = trimmed.toUpperCase();
+  const knownBySymbol = KNOWN_BROWSER_TOKENS[upper];
+  if (knownBySymbol) return knownBySymbol.symbol.toUpperCase();
+  const knownByMint = Object.values(KNOWN_BROWSER_TOKENS).find((token) => token.mint === trimmed);
+  if (knownByMint) return knownByMint.symbol.toUpperCase();
+  const customByMint = customTokenByMint(trimmed);
+  if (customByMint) return customByMint.symbol.toUpperCase();
+  const customBySymbol = customTokenBySymbol(trimmed);
+  if (customBySymbol) return customBySymbol.symbol.toUpperCase();
+  return upper;
+}
+
+async function hydrateSwapQuoteForAction(action: PreparedAction): Promise<boolean> {
+  const current = state.preparedActions.find((candidate) => candidate.id === action.id);
+  if (!current || current.kind !== 'swap' || !shouldAutoHydrateSwapQuote(current)) return false;
+  const quote = await fetchSwapQuoteForAction(current);
+  const params = swapQuoteParamsFromOrder(current, quote.order, quote.outputToken);
+  updatePreparedActionQuoteParams(current.id, params);
+  recordBrowserActionActivity(current.id, 'browser.swap.quote_refreshed', {
+    routeLabel: typeof params.routeLabel === 'string' ? params.routeLabel : '',
+    expectedOutput: typeof params.expectedOutput === 'string' ? params.expectedOutput : '',
+    jupiterRequestId: typeof params.jupiterRequestId === 'string' ? params.jupiterRequestId : '',
+  });
+  return true;
+}
+
+async function fetchSwapQuoteForAction(action: PreparedAction): Promise<{
+  order: Record<string, unknown>;
+  inputToken: BrowserTokenMetadata;
+  outputToken: BrowserTokenMetadata;
+}> {
+  const connection = browserActionConnection(action.cluster);
+  const inputTokenParam = requiredActionParam(action, 'inputToken');
+  const outputTokenParam = requiredActionParam(action, 'outputToken');
+  const amount = requiredActionParam(action, 'amount');
+  const inputToken = await resolveBrowserTokenMetadata(connection, inputTokenParam);
+  const outputToken = await resolveBrowserTokenMetadata(connection, outputTokenParam);
+  const amountRaw = parseDecimalAmountToRaw(amount, inputToken.decimals, `${inputToken.symbol} swap amount`);
+  const slippageBps = browserSlippageBps(action);
+
+  if (action.workflowSource === 'local-bridge' || (state.bridgeActive && canAttemptLocalBridgeForCluster(action.cluster))) {
+    try {
+      const order = await bridgeRequest<Record<string, unknown>>('/bridge/action/swap-quote', {
+        method: 'POST',
+        body: JSON.stringify({
+          inputToken: inputTokenParam,
+          outputToken: outputTokenParam,
+          amount,
+          slippageBps,
+        }),
+      });
+      return { order, inputToken, outputToken };
+    } catch (err) {
+      if (action.workflowSource === 'local-bridge') throw err;
     }
-    if (needsRender) render();
-  }, 1000);
+  }
+
+  const order = await hostedSwapRequest('/api/swap/order', {
+    inputMint: inputToken.mintText,
+    outputMint: outputToken.mintText,
+    amount: amountRaw.toString(),
+    taker: action.walletAddress,
+    slippageBps,
+  });
+  return { order, inputToken, outputToken };
 }
 
-function stopQuoteCountdownTicker(): void {
-  if (quoteCountdownTimer !== null) {
-    window.clearInterval(quoteCountdownTimer);
-    quoteCountdownTimer = null;
+function swapQuoteParamsFromOrder(
+  action: PreparedAction,
+  order: Record<string, unknown>,
+  outputToken: BrowserTokenMetadata,
+): Record<string, unknown> {
+  const params: Record<string, unknown> = {
+    quotedAt: new Date().toISOString(),
+    quoteSource: 'jupiter',
+  };
+  const expectedOutput = decimalTokenAmount(order.outAmount ?? order.outputAmount, outputToken.decimals);
+  const minimumReceived = decimalTokenAmount(order.otherAmountThreshold ?? order.minimumReceived, outputToken.decimals);
+  const routeLabel = swapRouteLabelFromOrder(order, action);
+  const requestId = stringField(order.requestId);
+  const priceImpactPct = numberField(order.priceImpactPct ?? order.priceImpact);
+  if (expectedOutput) params.expectedOutput = expectedOutput;
+  if (minimumReceived) params.minimumReceived = minimumReceived;
+  if (routeLabel) params.routeLabel = routeLabel;
+  if (requestId) params.jupiterRequestId = requestId;
+  if (priceImpactPct !== undefined) params.priceImpactPct = priceImpactPct;
+  return params;
+}
+
+function updatePreparedActionQuoteParams(actionId: string, params: Record<string, unknown>): void {
+  const updatedAt = new Date().toISOString();
+  let updated: PreparedAction | undefined;
+  const update = (candidate: PreparedAction): PreparedAction => {
+    if (candidate.id !== actionId) return candidate;
+    updated = {
+      ...candidate,
+      params: {
+        ...candidate.params,
+        ...params,
+      },
+      updatedAt,
+    };
+    return updated;
+  };
+  state.preparedActions = state.preparedActions.map(update);
+  state.materializedActions = state.materializedActions.map(update);
+  if (updated && isBrowserWorkflowId(updated.id)) {
+    saveBrowserWorkflowState();
   }
+}
+
+function decimalTokenAmount(value: unknown, decimals: number): string | undefined {
+  const raw = typeof value === 'number'
+    ? String(Math.trunc(value))
+    : typeof value === 'string'
+      ? value.trim()
+      : '';
+  if (!raw) return undefined;
+  if (raw.includes('.')) return raw.replace(/\.?0+$/, '');
+  if (!/^\d+$/.test(raw)) return undefined;
+  try {
+    const amount = BigInt(raw);
+    if (decimals <= 0) return amount.toString();
+    const scale = 10n ** BigInt(decimals);
+    const whole = amount / scale;
+    const fraction = amount % scale;
+    if (fraction === 0n) return whole.toString();
+    const fractionText = fraction.toString().padStart(decimals, '0').replace(/0+$/, '');
+    return `${whole.toString()}.${fractionText}`;
+  } catch {
+    return undefined;
+  }
+}
+
+function swapRouteLabelFromOrder(order: Record<string, unknown>, action: PreparedAction): string {
+  const routePlan = Array.isArray(order.routePlan) ? order.routePlan : [];
+  const labels = routePlan
+    .map(routePlanStepLabel)
+    .filter((label) => label.length > 0);
+  if (labels.length) return labels.slice(0, 3).join(' -> ');
+  const router = stringField(order.router) || stringField(order.mode);
+  if (router) return `Jupiter ${router}`;
+  const input = resolveTokenDisplay(stringParam(action, 'inputToken')) || tokenDisplayLabel(stringParam(action, 'inputToken'));
+  const output = resolveTokenDisplay(stringParam(action, 'outputToken')) || tokenDisplayLabel(stringParam(action, 'outputToken'));
+  return `Jupiter ${input} -> ${output}`;
+}
+
+function routePlanStepLabel(value: unknown): string {
+  if (!isJsonObject(value)) return '';
+  const swapInfo = isJsonObject(value.swapInfo) ? value.swapInfo : value;
+  return stringField(swapInfo.label) ||
+    stringField(swapInfo.ammLabel) ||
+    stringField(value.label) ||
+    stringField(value.ammLabel) ||
+    '';
+}
+
+function numberField(value: unknown): number | undefined {
+  if (typeof value === 'number' && Number.isFinite(value)) return value;
+  if (typeof value === 'string' && value.trim()) {
+    const parsed = Number(value);
+    if (Number.isFinite(parsed)) return parsed;
+  }
+  return undefined;
 }
 
 const AGENT_BACKGROUND_WATCH_INTERVAL_MS = 5 * 60 * 1000;
@@ -22524,7 +22680,6 @@ function preSignReviewBlock(action: PreparedAction): string {
   if (!model) return '';
   return renderPreSignReviewModel(model)
     + preflightSimulationStrip(action)
-    + quoteFreshnessStrip(action)
     + policyWarningsStrip(action);
 }
 
@@ -22568,19 +22723,6 @@ function preflightSimulationStrip(action: PreparedAction): string {
 
 function preflightSupports(kind: PreparedActionKind): boolean {
   return kind === 'transfer_sol' || kind === 'transfer_spl';
-}
-
-function quoteFreshnessStrip(action: PreparedAction): string {
-  if (action.kind !== 'swap') return '';
-  const fresh = quoteFreshness(action);
-  if (!fresh) return '';
-  return `
-    <div class="quote-freshness-strip ${fresh.stale ? 'stale' : fresh.aging ? 'aging' : 'fresh'}">
-      <span class="quote-freshness-label">Quote age</span>
-      <span class="quote-freshness-value" data-quote-countdown="${escapeHtml(action.id)}">${escapeHtml(fresh.label)}</span>
-      ${fresh.stale ? `<button type="button" class="utility quote-freshness-refresh" data-action-op="refresh-quote" data-action-id="${escapeHtml(action.id)}">Refresh quote</button>` : ''}
-    </div>
-  `;
 }
 
 function policyWarningsStrip(action: PreparedAction): string {
@@ -22627,9 +22769,14 @@ function buildPreSignReviewModelForAction(action: PreparedAction): PreSignReview
       inputToken: resolveTokenDisplay(stringParam(action, 'inputToken') || undefined) || undefined,
       inputAmount: stringParam(action, 'amount') || stringParam(action, 'inputAmount') || undefined,
       outputToken: resolveTokenDisplay(stringParam(action, 'outputToken') || undefined) || undefined,
+      expectedOutput: stringParam(action, 'expectedOutput') || undefined,
+      minimumReceived: stringParam(action, 'minimumReceived') || undefined,
       slippageBps,
+      routeLabel: stringParam(action, 'routeLabel') || undefined,
       jupiterRequestId: stringParam(action, 'jupiterRequestId') || undefined,
+      priceImpactPct: numberParam(action, 'priceImpactPct'),
       priceImpactWarnPct: 1.5,
+      quoteRequired: shouldAutoHydrateSwapQuote(action),
     });
   }
   if (action.kind === 'custom_transaction') {

@@ -423,6 +423,21 @@ describe('buildSwapPreSignReview', () => {
     expect(model.warnings).toContain('Route label is missing.');
   });
 
+  it('does not require quote details when quoteRequired is false', () => {
+    const model = buildSwapPreSignReview({
+      cluster: 'mainnet-beta',
+      taker: TAKER,
+      inputToken: 'SOL',
+      inputAmount: '1',
+      outputToken: 'USDC',
+      slippageBps: 50,
+      quoteRequired: false,
+    });
+
+    expect(model.warnings).not.toContain('Expected output is missing.');
+    expect(model.warnings).not.toContain('Route label is missing.');
+  });
+
   it('does not render n/a rows when optional swap fields are missing', () => {
     const model = buildSwapPreSignReview({
       cluster: 'devnet',
