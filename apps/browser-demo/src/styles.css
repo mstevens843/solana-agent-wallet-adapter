@@ -7344,6 +7344,28 @@ button.danger:hover:not(:disabled) {
   grid-template-columns: minmax(160px, 1fr) minmax(220px, 1.4fr) minmax(110px, 0.7fr);
 }
 
+.recurring-time-field {
+  min-width: 0;
+}
+
+.recurring-time-controls {
+  align-items: center;
+  display: grid;
+  gap: 6px;
+  grid-template-columns: minmax(48px, 0.7fr) auto minmax(48px, 0.7fr) minmax(72px, 0.9fr);
+}
+
+.recurring-time-controls input,
+.recurring-time-controls select {
+  min-width: 0;
+  text-align: center;
+}
+
+.recurring-time-separator {
+  color: var(--dim);
+  font-weight: 900;
+}
+
 .approval-memo {
   border-top: 1px solid rgba(224, 230, 226, 0.065);
   padding-top: 14px;

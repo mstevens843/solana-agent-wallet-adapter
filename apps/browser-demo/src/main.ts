@@ -25495,10 +25495,10 @@ function recurringSourceLabel(source: WorkflowRecordSource): string {
 function recurringScheduleShortLabel(payment: RecurringPayment): string {
   if (payment.cadence === 'weekly') {
     const days = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
-    return `${days[payment.dayOfWeek ?? -1] ?? 'Weekly'} ${payment.localTime ?? '?'}`;
+    return `${days[payment.dayOfWeek ?? -1] ?? 'Weekly'} ${displayLocalTime(payment.localTime)}`;
   }
   if (payment.cadence === 'monthly') {
-    return `Day ${payment.dayOfMonth ?? '?'} ${payment.localTime ?? '?'}`;
+    return `Day ${payment.dayOfMonth ?? '?'} ${displayLocalTime(payment.localTime)}`;
   }
   if (payment.cadence === 'interval_hours') {
     return `Every ${payment.intervalHours ?? '?'} hr`;
@@ -25817,10 +25817,10 @@ function recurringCadenceLabel(cadence: RecurringCadence): string {
 function recurringDraftScheduleLabel(draft: RecurringDraft): string {
   const days = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
   if (draft.cadence === 'weekly') {
-    return `${days[Number(draft.dayOfWeek)] ?? 'Selected day'} at ${draft.localTime || '09:00'}`;
+    return `${days[Number(draft.dayOfWeek)] ?? 'Selected day'} at ${displayLocalTime(draft.localTime || '09:00')}`;
   }
   if (draft.cadence === 'monthly') {
-    return `Day ${draft.dayOfMonth || '1'} at ${draft.localTime || '09:00'}`;
+    return `Day ${draft.dayOfMonth || '1'} at ${displayLocalTime(draft.localTime || '09:00')}`;
   }
   if (draft.cadence === 'interval_hours') {
     return `Every ${draft.intervalHours || '1'} hour(s)`;
@@ -25829,6 +25829,48 @@ function recurringDraftScheduleLabel(draft: RecurringDraft): string {
     return `Every ${draft.intervalMinutes || '60'} minute(s)`;
   }
   return `Every ${draft.intervalDays || '1'} day(s)`;
+}
+
+function displayLocalTime(value: string | undefined): string {
+  const parts = localTimeToTwelveHourParts(value);
+  return parts ? `${parts.hour12}:${parts.minute} ${parts.meridiem}` : value || '?';
+}
+
+function localTimeToTwelveHourParts(value: string | undefined): {
+  hour12: string;
+  minute: string;
+  meridiem: 'AM' | 'PM';
+} | null {
+  const match = /^([01]\d|2[0-3]):([0-5]\d)$/.exec(value ?? '');
+  if (!match) return null;
+  const hour24 = Number(match[1] ?? '0');
+  const hour12 = hour24 % 12 || 12;
+  return {
+    hour12: String(hour12),
+    minute: match[2] ?? '00',
+    meridiem: hour24 >= 12 ? 'PM' : 'AM',
+  };
+}
+
+function localTimeFromTwelveHourParts(hourValue: string, minuteValue: string, meridiemValue: string): string {
+  const hour = Number(hourValue);
+  const minute = Number(minuteValue);
+  const meridiem = meridiemValue.toUpperCase();
+  if (
+    !Number.isInteger(hour) ||
+    hour < 1 ||
+    hour > 12 ||
+    !Number.isInteger(minute) ||
+    minute < 0 ||
+    minute > 59 ||
+    (meridiem !== 'AM' && meridiem !== 'PM')
+  ) {
+    return '';
+  }
+  const hour24 = meridiem === 'PM'
+    ? hour === 12 ? 12 : hour + 12
+    : hour === 12 ? 0 : hour;
+  return `${String(hour24).padStart(2, '0')}:${String(minute).padStart(2, '0')}`;
 }
 
 function recurringScheduleFields(draft: RecurringDraft): string {
@@ -25849,13 +25891,13 @@ function recurringScheduleFields(draft: RecurringDraft): string {
         })}
         ${fieldError('recurringDayOfWeek')}
       </label>
-      ${fieldInput('recurringLocalTime', 'Local time', draft.localTime, '09:00')}
+      ${recurringLocalTimeField(draft)}
     `;
   }
   if (draft.cadence === 'monthly') {
     return `
       ${fieldInput('recurringDayOfMonth', 'Day of month', draft.dayOfMonth, '1-31')}
-      ${fieldInput('recurringLocalTime', 'Local time', draft.localTime, '09:00')}
+      ${recurringLocalTimeField(draft)}
     `;
   }
   if (draft.cadence === 'interval_hours') {
@@ -25873,6 +25915,28 @@ function recurringScheduleFields(draft: RecurringDraft): string {
   return `
     ${fieldInput('recurringIntervalDays', 'Every days', draft.intervalDays, '1')}
     ${fieldInput('recurringStartAt', 'Start at', draft.startAt, '', 'datetime-local')}
+  `;
+}
+
+function recurringLocalTimeField(draft: RecurringDraft): string {
+  const parts = localTimeToTwelveHourParts(draft.localTime) ?? localTimeToTwelveHourParts('09:00')!;
+  const meridiemOptions = ['AM', 'PM'].map((value) => `
+    <option value="${value}" ${parts.meridiem === value ? 'selected' : ''}>${value}</option>
+  `).join('');
+  return `
+    <div class="field compact recurring-time-field ${state.recurringErrors.recurringLocalTime ? 'field-error' : ''}">
+      <span>Local time</span>
+      <input id="recurringLocalTime" data-recurring-field="localTime" type="hidden" value="${escapeHtml(draft.localTime)}" />
+      <div class="recurring-time-controls">
+        <input id="recurringLocalHour" data-recurring-field="localTime" type="text" inputmode="numeric" pattern="[0-9]*" maxlength="2" value="${escapeHtml(parts.hour12)}" aria-label="Hour" />
+        <b class="recurring-time-separator" aria-hidden="true">:</b>
+        <input id="recurringLocalMinute" data-recurring-field="localTime" type="text" inputmode="numeric" pattern="[0-9]*" maxlength="2" value="${escapeHtml(parts.minute)}" aria-label="Minute" />
+        <select id="recurringLocalMeridiem" data-recurring-field="localTime" aria-label="AM or PM">
+          ${meridiemOptions}
+        </select>
+      </div>
+      ${fieldError('recurringLocalTime')}
+    </div>
   `;
 }
 
@@ -26382,10 +26446,10 @@ function scheduleLabel(payment: RecurringPayment): string {
   const expiry = payment.expiresAt ? `, expires ${formatDateTime(payment.expiresAt)}` : '';
   if (payment.cadence === 'weekly') {
     const days = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
-    return `Weekly on ${days[payment.dayOfWeek ?? -1] ?? 'unknown day'} at ${payment.localTime ?? '?'}${count}${expiry}.`;
+    return `Weekly on ${days[payment.dayOfWeek ?? -1] ?? 'unknown day'} at ${displayLocalTime(payment.localTime)}${count}${expiry}.`;
   }
   if (payment.cadence === 'monthly') {
-    return `Monthly on day ${payment.dayOfMonth ?? '?'} at ${payment.localTime ?? '?'}${count}${expiry}.`;
+    return `Monthly on day ${payment.dayOfMonth ?? '?'} at ${displayLocalTime(payment.localTime)}${count}${expiry}.`;
   }
   if (payment.cadence === 'interval_hours') {
     return `Every ${payment.intervalHours ?? '?'} hour(s) starting ${formatDateTime(payment.startAt ?? '')}${count}${expiry}.`;
@@ -26981,7 +27045,7 @@ function readRecurringDraft(): RecurringDraft {
     amount: inputValue('#recurringAmount') || state.recurringDraft.amount,
     slippageBps: slippageInput ? slippagePercentInputToBps(slippageInput) : state.recurringDraft.slippageBps,
     cadence: (inputValue('#recurringCadence') || state.recurringDraft.cadence) as RecurringCadence,
-    localTime: inputValue('#recurringLocalTime') || state.recurringDraft.localTime,
+    localTime: readRecurringLocalTime(),
     dayOfWeek: inputValue('#recurringDayOfWeek') || state.recurringDraft.dayOfWeek,
     dayOfMonth: inputValue('#recurringDayOfMonth') || state.recurringDraft.dayOfMonth,
     intervalDays: inputValue('#recurringIntervalDays') || state.recurringDraft.intervalDays,
@@ -26993,6 +27057,17 @@ function readRecurringDraft(): RecurringDraft {
     webhookUrl: inputValue('#recurringWebhookUrl') || state.recurringDraft.webhookUrl,
     note: inputValue('#recurringNote'),
   };
+}
+
+function readRecurringLocalTime(): string {
+  if (document.querySelector('#recurringLocalHour, #recurringLocalMinute, #recurringLocalMeridiem')) {
+    return localTimeFromTwelveHourParts(
+      inputValue('#recurringLocalHour'),
+      inputValue('#recurringLocalMinute'),
+      inputValue('#recurringLocalMeridiem'),
+    );
+  }
+  return inputValue('#recurringLocalTime') || state.recurringDraft.localTime;
 }
 
 function applyRecurringPreset(presetId: RecurringPresetId): void {
@@ -27057,11 +27132,11 @@ function assertValidRecurringDraft(draft: RecurringDraft): void {
   if (draft.cadence === 'weekly') {
     const day = Number(draft.dayOfWeek);
     if (!Number.isInteger(day) || day < 0 || day > 6) errors.recurringDayOfWeek = 'Choose a valid weekday.';
-    if (!isValidLocalTime(draft.localTime)) errors.recurringLocalTime = 'Use HH:MM local time.';
+    if (!isValidLocalTime(draft.localTime)) errors.recurringLocalTime = 'Choose a valid local time.';
   } else if (draft.cadence === 'monthly') {
     const day = Number(draft.dayOfMonth);
     if (!Number.isInteger(day) || day < 1 || day > 31) errors.recurringDayOfMonth = 'Use a day from 1 to 31.';
-    if (!isValidLocalTime(draft.localTime)) errors.recurringLocalTime = 'Use HH:MM local time.';
+    if (!isValidLocalTime(draft.localTime)) errors.recurringLocalTime = 'Choose a valid local time.';
   } else if (draft.cadence === 'interval_hours') {
     validatePositiveInteger(errors, 'recurringIntervalHours', draft.intervalHours, 'Hours must be a positive whole number.');
     validateStartAt(errors, draft.startAt);
