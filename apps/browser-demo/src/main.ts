@@ -8149,7 +8149,7 @@ function generatedPlanAgentReviewStrip(record: GeneratedPlanRecord): string {
     <section class="agent-review-strip ${escapeHtml(review.status)}${watching ? ' watching' : ''}" aria-label="Agent review">
       <div>
         <span>Agent review</span>
-        <strong>${escapeHtml(label)}</strong>
+        <strong class="agent-review-state ${escapeHtml(review.status)}">${escapeHtml(label)}</strong>
         <em>${escapeHtml(detail)}</em>
         ${badge}
         ${watchBadge}
@@ -8245,9 +8245,24 @@ function agentDenialActions(record: GeneratedPlanRecord): string {
 function agentEvidenceDrawer(review: AgentPlanReviewState): string {
   const rows = agentEvidenceRows(review);
   if (!rows.length) return '';
+  const statusTone = review.status === 'approved'
+    ? 'pass'
+    : review.status === 'denied' || review.status === 'error'
+      ? 'fail'
+      : 'neutral';
+  const statusLabel = review.status === 'approved'
+    ? 'Pass'
+    : review.status === 'denied' || review.status === 'error'
+      ? 'Fail'
+      : 'Review';
   return `
     <details class="agent-evidence-drawer">
-      <summary>What the agent checked (${rows.length})</summary>
+      <summary>
+        <span class="agent-evidence-summary-left">
+          <span class="agent-evidence-summary-label">What the agent checked (${rows.length})</span>
+          <span class="agent-evidence-summary-state ${statusTone}">${escapeHtml(statusLabel)}</span>
+        </span>
+      </summary>
       <dl class="agent-evidence-rows">
         ${rows.map((row) => `
           <div class="agent-evidence-row ${row.tone ? escapeHtml(row.tone) : ''}">
@@ -9213,23 +9228,25 @@ function agentPlannerWorkbench(): string {
             </div>
           ` : ''}
           <div class="agent-actions signature-actions intent-document-actions">
-            <button id="generatePlan" class="primary" ${state.busy ? 'disabled' : ''}>${templateGenerating ? `${buttonSpinner()}Drafting...` : 'Draft from template'}</button>
+            <div class="agent-actions-row">
+              <button id="generatePlan" class="primary" ${state.busy ? 'disabled' : ''}>${templateGenerating ? `${buttonSpinner()}Drafting...` : 'Draft from template'}</button>
+              ${aiPathConnected ? `
+                <button id="generateAiPlan" class="primary ai-draft-button" ${!canUseAi || state.busy ? 'disabled' : ''} title="${escapeHtml(canUseAi ? 'Draft through your configured AI planner.' : aiDisabledReason)}">
+                  ${aiGenerating ? `${buttonSpinner()}AI drafting...` : 'Draft with AI'}
+                </button>
+              ` : ''}
+            </div>
             ${aiPathConnected ? `
-              <button id="generateAiPlan" class="primary ai-draft-button" ${!canUseAi || state.busy ? 'disabled' : ''} title="${escapeHtml(canUseAi ? 'Draft through your configured AI planner.' : aiDisabledReason)}">
-                ${aiGenerating ? `${buttonSpinner()}AI drafting...` : 'Draft with AI'}
-              </button>
+              <label class="ask-agent-after-draft ${state.askAgentAfterDraft ? 'checked' : ''}">
+                <input type="checkbox" data-ask-agent-after-draft ${state.askAgentAfterDraft ? 'checked' : ''} ${state.busy ? 'disabled' : ''} />
+                <span class="ask-agent-check" aria-hidden="true">${checkIcon()}</span>
+                <span class="ask-agent-copy">
+                  <strong>Ask agent after draft</strong>
+                  <em>Optional. Runs the review in Check after drafting. Sending for approval stays manual.</em>
+                </span>
+              </label>
             ` : ''}
           </div>
-          ${aiPathConnected ? `
-            <label class="ask-agent-after-draft ${state.askAgentAfterDraft ? 'checked' : ''}">
-              <input type="checkbox" data-ask-agent-after-draft ${state.askAgentAfterDraft ? 'checked' : ''} ${state.busy ? 'disabled' : ''} />
-              <span class="ask-agent-check" aria-hidden="true">${checkIcon()}</span>
-              <span>
-                <strong>Ask agent after draft</strong>
-                <em>Optional review runs in Check. Sending for approval stays manual.</em>
-              </span>
-            </label>
-          ` : ''}
         </div>
       </div>
     </div>
@@ -15281,8 +15298,6 @@ function generatedQueuePlanTitle(record: GeneratedPlanRecord): string {
   if (record.status === 'archived') return 'Restore this plan before sending it for approval.';
   if (!state.address) return 'Connect a wallet before sending for approval.';
   if (!canQueueAgentPlan(record.plan)) return 'Only transfers, swaps, Blink actions, custom transactions, and repeat payments can be queued.';
-  const reviewBlock = agentReviewQueueBlockReason(record);
-  if (reviewBlock) return `${reviewBlock} Click to confirm if you still want to send.`;
   const report = planGuardrailReport(record.plan);
   if (report?.verdict === 'block') return report.summary;
   const mode = activeWorkflowMode();
@@ -21574,8 +21589,6 @@ function queuePlanTitle(): string {
   if (!state.address) return 'Connect a wallet before sending for approval.';
   if (!state.agentPlan) return 'Create a plan before sending for approval.';
   if (!canQueueAgentPlan(state.agentPlan)) return 'Only transfer, swap, Blink action, custom transaction, and repeat payments can be queued.';
-  const reviewBlock = agentReviewQueueBlockReason(generatedPlanById(state.selectedGeneratedPlanId));
-  if (reviewBlock) return `${reviewBlock} Click to confirm if you still want to send.`;
   const report = planGuardrailReport(state.agentPlan);
   if (report?.verdict === 'block') return report.summary;
   const mode = activeWorkflowMode();
@@ -21706,9 +21719,6 @@ async function queuePlanThroughCloud(plan: AgentPlan, sourceRecord?: GeneratedPl
   const planId = cloudRecord
     ? cloudRecord.id
     : (await saveGeneratedPlan(plan, template, sourceRecord?.prompt || plan.userNotes || plan.intent)).id;
-  const reviewNote = sourceRecord?.agentReview?.required
-    ? `Agent ${sourceRecord.agentReview.status}: ${sourceRecord.agentReview.reason}`
-    : '';
   const approvalRecord = parseCloudApprovalResponse(await cloudRequest('/api/approvals', {
     method: 'POST',
     body: JSON.stringify({
@@ -21717,7 +21727,7 @@ async function queuePlanThroughCloud(plan: AgentPlan, sourceRecord?: GeneratedPl
       summary: plan.intent,
       params: plan.parameters,
       cluster: state.cluster,
-      note: [plan.userNotes || plan.approval, reviewNote].filter(Boolean).join(' | '),
+      note: plan.userNotes || '',
       amount: planParameter(plan, ['amountSol', 'amount', 'inputAmount', 'plannedAmount']),
       token: planParameter(plan, ['token', 'inputToken']),
       recipient: planParameter(plan, ['recipient', 'recipientAddress']),
@@ -21759,7 +21769,7 @@ async function queueRecurringPlanThroughCloud(plan: AgentPlan): Promise<{ id: st
     recipient: requiredPlanParam(plan, 'recipient'),
     amount: requiredPlanParam(plan, 'amount'),
     ...recurringSchedulePayload(plan),
-    note: plan.userNotes || plan.intent,
+    note: plan.userNotes || '',
   };
   const cloudSchedule = parseCloudRecurringScheduleResponse(await cloudRequest('/api/recurring', {
     method: 'POST',
@@ -21799,12 +21809,6 @@ function browserPreparedActionFromPlan(plan: AgentPlan, sourceRecord?: Generated
   const now = new Date().toISOString();
   const id = newId('browser-action');
   const kind = browserActionKindForPlan(plan);
-  const reviewNote = sourceRecord?.agentReview?.required
-    ? `Agent ${sourceRecord.agentReview.status}: ${sourceRecord.agentReview.reason}`
-    : '';
-  const overrideNote = sourceRecord?.agentOverride
-    ? `Override: ${overrideShortLabel(sourceRecord.agentOverride)}`
-    : '';
   return {
     id,
     kind,
@@ -21816,7 +21820,7 @@ function browserPreparedActionFromPlan(plan: AgentPlan, sourceRecord?: Generated
     dueAt: now,
     createdAt: now,
     updatedAt: now,
-    note: [plan.userNotes || plan.approval, reviewNote, overrideNote].filter(Boolean).join(' | '),
+    note: plan.userNotes || '',
     ...(sourceRecord?.agentReview ? { agentReview: sourceRecord.agentReview } : {}),
     ...(sourceRecord?.agentOverride ? { agentOverride: sourceRecord.agentOverride } : {}),
     workflowSource: 'browser',
@@ -21838,12 +21842,6 @@ async function browserPreparedBlinkActionFromPlan(
   const id = newId('browser-action');
   const protocol = plan.parameters.protocol || plan.parameters.dapp || 'Protocol connector';
   const operation = plan.parameters.operation || prepared.label || 'Blink action';
-  const reviewNote = sourceRecord?.agentReview?.required
-    ? `Agent ${sourceRecord.agentReview.status}: ${sourceRecord.agentReview.reason}`
-    : '';
-  const overrideNote = sourceRecord?.agentOverride
-    ? `Override: ${overrideShortLabel(sourceRecord.agentOverride)}`
-    : '';
   return {
     id,
     kind: 'custom_transaction',
@@ -21864,7 +21862,7 @@ async function browserPreparedBlinkActionFromPlan(
     dueAt: now,
     createdAt: now,
     updatedAt: now,
-    note: [plan.userNotes || plan.approval, prepared.message, reviewNote, overrideNote].filter(Boolean).join(' | '),
+    note: plan.userNotes || '',
     ...(sourceRecord?.agentReview ? { agentReview: sourceRecord.agentReview } : {}),
     ...(sourceRecord?.agentOverride ? { agentOverride: sourceRecord.agentOverride } : {}),
     workflowSource: 'browser',
@@ -23324,8 +23322,14 @@ function swapQuoteSummaryRow(action: PreparedAction): ApprovalSummaryRow {
     value: title,
     html: `
       <span class="swap-quote-summary">
-        <span class="swap-quote-expected"><em>Expected</em><strong>${escapeHtml(expected)} ${escapeHtml(token)}</strong></span>
-        ${detailRows.map((row) => `<span><em>${escapeHtml(row.label)}</em>${escapeHtml(row.value)}</span>`).join('')}
+        <span class="swap-quote-row swap-quote-primary">
+          <span class="swap-quote-expected"><em>Expected</em><strong>${escapeHtml(expected)} ${escapeHtml(token)}</strong></span>
+          ${minimum ? `<span class="swap-quote-min"><em>Min</em><strong>${escapeHtml(minimum)} ${escapeHtml(token)}</strong></span>` : ''}
+        </span>
+        <span class="swap-quote-row swap-quote-secondary">
+          ${slippage ? `<span class="swap-quote-stat slippage"><em>Slippage</em><strong>${escapeHtml(slippage)}</strong></span>` : ''}
+          ${priceImpact ? `<span class="swap-quote-stat impact"><em>Impact</em><strong>${escapeHtml(priceImpact)}</strong></span>` : ''}
+        </span>
       </span>
     `,
     title,
