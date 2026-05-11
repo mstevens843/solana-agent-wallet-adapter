@@ -14,6 +14,14 @@ import { Connection, PublicKey } from '@solana/web3.js';
 import {
   AgentWalletActionService,
 } from './actionService.js';
+import {
+  AgentRegistry,
+  isAgentTier,
+  publicizeAgent,
+  tierMeetsMinimum,
+  type AgentTier,
+  type RegisteredAgent,
+} from './agentRegistry.js';
 import { BridgeAiPlanner, type AiPlanRequest, type AiReviewRequest, type AiAskRequest } from './aiPlanner.js';
 import { type AgentWalletConfig } from './config.js';
 import { parseDecimalAmount } from './amounts.js';
@@ -35,6 +43,8 @@ export interface CreateBridgeServerOptions {
   labArtifacts?: LabArtifactStore;
   host?: string;
   port?: number;
+  agentRegistry?: AgentRegistry;
+  agentsPersistPath?: string;
 }
 
 export function createBridgeServer(options: CreateBridgeServerOptions): BridgeServerHandle {
@@ -52,6 +62,10 @@ export function createBridgeServer(options: CreateBridgeServerOptions): BridgeSe
       })
     : undefined;
   const aiPlanner = new BridgeAiPlanner();
+  const agentRegistry = options.agentRegistry ?? new AgentRegistry({
+    ...(options.agentsPersistPath ? { persistPath: options.agentsPersistPath } : {}),
+    fallbackToken: backend.token,
+  });
   const url = `http://${host}:${port}/`;
   backend.setApprovalBaseUrl(url);
 
@@ -60,9 +74,10 @@ export function createBridgeServer(options: CreateBridgeServerOptions): BridgeSe
   return {
     url,
     async start() {
+      await agentRegistry.load().catch(() => undefined);
       await new Promise<void>((resolve, reject) => {
         server = createServer((req, res) => {
-          void handleRequest(req, res, backend, actionConfig, preparedActions, labArtifacts, actionService, aiPlanner);
+          void handleRequest(req, res, backend, actionConfig, preparedActions, labArtifacts, actionService, aiPlanner, agentRegistry);
         });
         server.once('error', reject);
         server.listen(port, host, () => resolve());
@@ -87,6 +102,7 @@ async function handleRequest(
   labArtifacts: LabArtifactStore | undefined,
   actionService: AgentWalletActionService | undefined,
   aiPlanner: BridgeAiPlanner,
+  agentRegistry: AgentRegistry,
 ): Promise<void> {
   const url = new URL(req.url ?? '/', `http://${req.headers.host ?? '127.0.0.1'}`);
   setCors(req, res);
@@ -95,10 +111,28 @@ async function handleRequest(
     res.end();
     return;
   }
-  if (!isAuthorized(req, url, backend)) {
+  const agent = authorize(req, url, backend, agentRegistry);
+  if (!agent) {
     writeJson(res, 401, { error: 'unauthorized' });
     return;
   }
+  if (!agent.enabled) {
+    writeJson(res, 401, { error: 'unauthorized', message: 'Agent disabled.' });
+    return;
+  }
+  if (req.method && req.method !== 'OPTIONS') {
+    const tierRequired = requiredTier(req.method, url.pathname);
+    if (tierRequired && !tierMeetsMinimum(agent.tier, tierRequired)) {
+      writeJson(res, 403, {
+        error: 'forbidden',
+        message: `Agent "${agent.label}" tier (${agent.tier}) cannot access ${req.method} ${url.pathname}.`,
+        requiredTier: tierRequired,
+        actualTier: agent.tier,
+      });
+      return;
+    }
+  }
+  agentRegistry.markSeen(agent.token);
   try {
     if (req.method === 'GET' && url.pathname === '/') {
       writeHtml(res, bridgeHtml(backend.token, bridgeOrigin(url)));
@@ -125,6 +159,47 @@ async function handleRequest(
     }
     if (req.method === 'GET' && url.pathname === '/bridge/status') {
       writeJson(res, 200, await backend.capabilities());
+      return;
+    }
+    if (req.method === 'GET' && url.pathname === '/bridge/agents') {
+      const reveal = url.searchParams.get('reveal') === '1';
+      const agents = agentRegistry.list();
+      const payload = reveal
+        ? agents.map((a) => ({ ...publicizeAgent(a), token: a.token }))
+        : agents.map(publicizeAgent);
+      writeJson(res, 200, { agents: payload });
+      return;
+    }
+    if (req.method === 'POST' && url.pathname === '/bridge/agents') {
+      const body = (await readJson(req)) as { agents?: unknown };
+      if (!Array.isArray(body.agents)) {
+        throw new ProtocolError('invalid_request', 'Missing agents array.');
+      }
+      const replaced = agentRegistry.replaceAll(body.agents as Array<Partial<RegisteredAgent>>);
+      writeJson(res, 200, { agents: replaced.map(publicizeAgent) });
+      return;
+    }
+    if (req.method === 'POST' && url.pathname === '/bridge/agents/issue') {
+      const body = (await readJson(req)) as { label?: string; tier?: string; notes?: string };
+      if (!body.label || typeof body.label !== 'string' || !body.label.trim()) {
+        throw new ProtocolError('invalid_request', 'Missing agent label.');
+      }
+      const tier = isAgentTier(body.tier) ? body.tier : 'capped';
+      const issued = agentRegistry.issueAgent({
+        label: body.label,
+        tier,
+        ...(typeof body.notes === 'string' && body.notes ? { notes: body.notes } : {}),
+      });
+      writeJson(res, 200, { agent: { ...publicizeAgent(issued), token: issued.token } });
+      return;
+    }
+    if (req.method === 'POST' && url.pathname === '/bridge/agents/delete') {
+      const body = (await readJson(req)) as { agentId?: string };
+      if (!body.agentId) {
+        throw new ProtocolError('invalid_request', 'Missing agentId.');
+      }
+      const removed = agentRegistry.remove(body.agentId);
+      writeJson(res, 200, { removed });
       return;
     }
     if (req.method === 'GET' && url.pathname === '/bridge/config') {
@@ -547,12 +622,69 @@ async function handleRequest(
   }
 }
 
-function isAuthorized(req: IncomingMessage, url: URL, backend: LocalBridgeBackend | IosLinkBackend): boolean {
+function authorize(
+  req: IncomingMessage,
+  url: URL,
+  backend: LocalBridgeBackend | IosLinkBackend,
+  registry: AgentRegistry,
+): RegisteredAgent | null {
   const headerToken = Array.isArray(req.headers['x-agent-wallet-token'])
     ? req.headers['x-agent-wallet-token'][0]
     : req.headers['x-agent-wallet-token'];
-  const token = url.searchParams.get('token') ?? headerToken;
-  return token === backend.token;
+  const token = url.searchParams.get('token') ?? headerToken ?? '';
+  if (!token) return null;
+  const agent = registry.lookupByToken(token);
+  if (agent) return agent;
+  if (token === backend.token) {
+    return registry.buildFallbackAgent();
+  }
+  return null;
+}
+
+function requiredTier(method: string, pathname: string): AgentTier | null {
+  if (method === 'GET') {
+    if (pathname.startsWith('/bridge/agents')) return 'full';
+    return null;
+  }
+  if (method === 'POST') {
+    if (pathname === '/bridge/agents') return 'full';
+    if (pathname === '/bridge/agents/issue') return 'full';
+    if (pathname === '/bridge/agents/delete') return 'full';
+    if (pathname.startsWith('/bridge/action/prepare-')) return 'capped';
+    if (pathname === '/bridge/recurring-payments') return 'capped';
+    if (pathname === '/bridge/prepared-actions/reject') return 'capped';
+    if (pathname === '/bridge/prepared-actions/archive') return 'capped';
+    if (pathname === '/bridge/prepared-actions/delete') return 'capped';
+    if (pathname === '/bridge/ai/generate-plan') return 'capped';
+    if (pathname === '/bridge/ai/review-plan') return 'capped';
+    if (pathname === '/bridge/ai/ask-about-plan') return 'capped';
+    if (pathname === '/bridge/ai/session-key') return 'full';
+    if (pathname === '/bridge/recurring-payments/update') return 'full';
+    if (pathname === '/bridge/recurring-payments/pause') return 'full';
+    if (pathname === '/bridge/recurring-payments/resume') return 'full';
+    if (pathname === '/bridge/recurring-payments/delete') return 'full';
+    if (pathname === '/bridge/prepared-actions/execute') return 'full';
+    if (pathname === '/bridge/prepared-actions/tx-status') return 'full';
+    if (pathname === '/bridge/action/transfer-sol') return 'full';
+    if (pathname === '/bridge/action/transfer-spl') return 'full';
+    if (pathname === '/bridge/action/swap') return 'full';
+    if (pathname === '/bridge/action/swap-quote') return 'capped';
+    if (pathname === '/bridge/solana/latest-blockhash') return 'full';
+    if (pathname === '/bridge/solana/send-transaction') return 'full';
+    if (pathname === '/bridge/solana/signature-status') return null;
+    if (pathname === '/bridge/submit') return 'full';
+    if (pathname === '/bridge/connect-wallet') return null;
+    if (pathname === '/bridge/cancel') return 'capped';
+    if (pathname === '/bridge/connect') return null;
+    if (pathname === '/bridge/disconnect') return null;
+    if (pathname === '/bridge/trace') return null;
+    if (pathname === '/bridge/resolve') return null;
+    if (pathname === '/bridge/reject') return null;
+    if (pathname === '/bridge/lab-artifacts') return 'capped';
+    if (pathname === '/bridge/lab-artifacts/delete') return 'capped';
+    return 'full';
+  }
+  return null;
 }
 
 function requireActionService(actionService: AgentWalletActionService | undefined): AgentWalletActionService {

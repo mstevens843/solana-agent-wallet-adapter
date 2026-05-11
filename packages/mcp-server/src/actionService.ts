@@ -15,6 +15,18 @@ import {
 
 import { lifetimeSpendEstimate } from '@solana-agent-wallet-adapter/workflow';
 
+import {
+  AdapterError,
+  actionForKind,
+  assertSupportedCluster,
+  requireAdapter,
+  type DAppAdapter,
+  type DAppAdapterContext,
+} from './adapters/index.js';
+import type {
+  KaminoDepositInput,
+  KaminoWithdrawInput,
+} from './adapters/kamino/index.js';
 import { formatRawAmount, parseDecimalAmount } from './amounts.js';
 import {
   DEFAULT_TOKEN_REGISTRY,
@@ -200,6 +212,7 @@ export class AgentWalletActionService {
     parseDecimalAmount(input.amountSol, 9, 'SOL transfer amount');
     const from = await this.backend.getAddress();
     const to = new PublicKey(input.recipient).toBase58();
+    await this.enforceRecipientCap(to, 'SOL', input.amountSol);
     const action = await this.store().addAction({
       kind: 'transfer_sol',
       walletAddress: from,
@@ -218,6 +231,7 @@ export class AgentWalletActionService {
     parseDecimalAmount(input.amount, tokenConfig.decimals, `${tokenConfig.symbol} amount`);
     const from = await this.backend.getAddress();
     const to = new PublicKey(input.recipient).toBase58();
+    await this.enforceRecipientCap(to, tokenConfig.symbol, input.amount);
     const action = await this.store().addAction({
       kind: 'transfer_spl',
       walletAddress: from,
@@ -228,6 +242,97 @@ export class AgentWalletActionService {
       ...(input.note !== undefined && { note: input.note }),
     });
     return { preparedAction: action };
+  }
+
+  private async enforceRecipientCap(recipient: string, token: string, amount: string): Promise<void> {
+    const config = this.config.recipients?.[recipient];
+    if (!config) return;
+    const lifetimeMax = config.lifetimeMax?.[token];
+    const perMonthMax = config.perMonthMax?.[token];
+    if (!lifetimeMax && !perMonthMax) return;
+
+    const receipts = await this.store().listReceipts();
+    const matchingApproved = receipts.filter(
+      (receipt) =>
+        receipt.status === 'approved' &&
+        typeof receipt.recipient === 'string' &&
+        receipt.recipient === recipient &&
+        typeof receipt.token === 'string' &&
+        receipt.token === token &&
+        typeof receipt.amount === 'string',
+    );
+    if (lifetimeMax) {
+      const lifetimeSpend = matchingApproved.reduce(
+        (sum, receipt) => sum + Number(receipt.amount ?? '0'),
+        0,
+      );
+      const proposedTotal = lifetimeSpend + Number(amount);
+      if (Number.isFinite(proposedTotal) && proposedTotal > Number(lifetimeMax)) {
+        const label = config.label ?? recipient;
+        throw new ProtocolError(
+          'invalid_request',
+          `Per-recipient lifetime cap exceeded for ${label}: already spent ${lifetimeSpend} ${token}, lifetime cap is ${lifetimeMax} ${token}.`,
+        );
+      }
+    }
+    if (perMonthMax) {
+      const since = monthWindowStart();
+      const monthSpend = matchingApproved
+        .filter((receipt) => receipt.completedAt >= since)
+        .reduce((sum, receipt) => sum + Number(receipt.amount ?? '0'), 0);
+      const proposedTotal = monthSpend + Number(amount);
+      if (Number.isFinite(proposedTotal) && proposedTotal > Number(perMonthMax)) {
+        const label = config.label ?? recipient;
+        throw new ProtocolError(
+          'invalid_request',
+          `Per-recipient monthly cap exceeded for ${label}: already spent ${monthSpend} ${token} this month, monthly cap is ${perMonthMax} ${token}.`,
+        );
+      }
+    }
+  }
+
+  async prepareKaminoDeposit(input: KaminoDepositInput): Promise<Record<string, unknown>> {
+    requireActionAllowed(this.config);
+    const adapter = requireAdapter('kamino');
+    assertSupportedCluster(adapter, this.config.cluster);
+    const action = requireAdapterAction(adapter, 'deposit');
+    const result = await action.prepare(input, this.adapterContext(adapter));
+    const stored = await this.store().addAction(result.addInput);
+    return { preparedAction: stored, preview: result.preview };
+  }
+
+  async prepareKaminoWithdraw(input: KaminoWithdrawInput): Promise<Record<string, unknown>> {
+    requireActionAllowed(this.config);
+    const adapter = requireAdapter('kamino');
+    assertSupportedCluster(adapter, this.config.cluster);
+    const action = requireAdapterAction(adapter, 'withdraw');
+    const result = await action.prepare(input, this.adapterContext(adapter));
+    const stored = await this.store().addAction(result.addInput);
+    return { preparedAction: stored, preview: result.preview };
+  }
+
+  async kaminoReserveSnapshot(input: { token?: string; reserveMint?: string }): Promise<Record<string, unknown>> {
+    const adapter = requireAdapter('kamino');
+    assertSupportedCluster(adapter, this.config.cluster);
+    const read = adapter.reads.reserve_snapshot;
+    if (!read) throw new AdapterError('kamino', 'unsupported_method', 'Kamino reserve snapshot read is not registered.');
+    return { snapshot: await read.read(input, this.adapterContext(adapter)) };
+  }
+
+  async kaminoGetPositions(input: { walletAddress?: string }): Promise<Record<string, unknown>> {
+    const adapter = requireAdapter('kamino');
+    assertSupportedCluster(adapter, this.config.cluster);
+    const read = adapter.reads.positions;
+    if (!read) throw new AdapterError('kamino', 'unsupported_method', 'Kamino positions read is not registered.');
+    return (await read.read(input, this.adapterContext(adapter))) as Record<string, unknown>;
+  }
+
+  async kaminoPrepareEarningsProof(input: { walletAddress?: string; reserveMint?: string }): Promise<Record<string, unknown>> {
+    const adapter = requireAdapter('kamino');
+    assertSupportedCluster(adapter, this.config.cluster);
+    const read = adapter.reads.earnings_proof;
+    if (!read) throw new AdapterError('kamino', 'unsupported_method', 'Kamino earnings proof read is not registered.');
+    return (await read.read(input, this.adapterContext(adapter))) as Record<string, unknown>;
   }
 
   async prepareSwap(input: PrepareSwapInput): Promise<Record<string, unknown>> {
@@ -514,7 +619,51 @@ export class AgentWalletActionService {
         return this.executePreparedSplTransfer(action);
       case 'swap':
         return this.executePreparedSwap(action);
+      case 'kamino_deposit':
+      case 'kamino_withdraw':
+        return this.executePreparedAdapterAction(action);
     }
+  }
+
+  private async executePreparedAdapterAction(action: PreparedAction): Promise<Record<string, unknown> & { txid: string }> {
+    const match = actionForKind(action.kind);
+    if (!match) {
+      throw new ProtocolError(
+        'unsupported_method',
+        `No adapter is registered for prepared action kind ${action.kind}.`,
+      );
+    }
+    assertSupportedCluster(match.adapter, this.config.cluster);
+    const result = await match.action.execute(action, this.adapterContext(match.adapter));
+    return {
+      adapter: match.adapter.id,
+      action: match.action.id,
+      txid: result.txid,
+      signedAt: result.signedAt,
+      explorerUrl: explorerUrl(result.txid, this.config.cluster),
+      ...(result.preview ? { preview: result.preview } : {}),
+    };
+  }
+
+  private adapterContext(adapter: DAppAdapter): DAppAdapterContext {
+    void adapter;
+    const signAndBroadcast = async (transactionBase64: string, summary: string): Promise<string> => {
+      const signed = await this.client.signTransaction(transactionBase64, {
+        cluster: this.config.cluster,
+        summary,
+      });
+      return this.connection.sendRawTransaction(Buffer.from(signed.signature, 'base64'), {
+        preflightCommitment: 'confirmed',
+        maxRetries: 5,
+      });
+    };
+    return {
+      backend: this.backend,
+      config: this.config,
+      connection: this.connection,
+      signAndBroadcast,
+      store: this.store(),
+    };
   }
 
   private store(): PreparedActionStore {
@@ -564,6 +713,17 @@ export class AgentWalletActionService {
       maxRetries: 5,
     });
   }
+}
+
+function requireAdapterAction(adapter: DAppAdapter, id: string) {
+  const action = adapter.actions[id];
+  if (!action) {
+    throw new ProtocolError(
+      'unsupported_method',
+      `Adapter ${adapter.id} does not expose action ${id}.`,
+    );
+  }
+  return action;
 }
 
 export function assertPreparedActionExecutable(action: PreparedAction, now = new Date()): void {
@@ -702,6 +862,10 @@ function compareDecimal(left: string, right: string): number {
   if (a < b) return -1;
   if (a > b) return 1;
   return 0;
+}
+
+function monthWindowStart(now: Date = new Date()): string {
+  return new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 1)).toISOString();
 }
 
 function normalizeNotifications(

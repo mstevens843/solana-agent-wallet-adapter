@@ -66,6 +66,8 @@ export interface AiSettings {
   baseUrl: string;
   model: string;
   apiKey: string;
+  multiReviewer?: boolean;
+  autoBackgroundWatch?: boolean;
 }
 
 export interface BridgeAiStatus {
@@ -85,12 +87,30 @@ export interface AiPlanRequest {
   userNotes?: string;
 }
 
+export type AgentPlanReviewMode = 'single' | 'multi';
+
 export interface AgentPlanReviewRequest {
   plan: AgentPlan;
   instruction?: string;
   walletAddress?: string;
   cluster?: string;
   context?: Record<string, unknown>;
+  mode?: AgentPlanReviewMode;
+}
+
+export interface AgentPlanAskRequest {
+  plan: AgentPlan;
+  question: string;
+  walletAddress?: string;
+  cluster?: string;
+  context?: Record<string, unknown>;
+}
+
+export interface AgentPlanAskResult {
+  answer: string;
+  citations?: Array<{ kind: string; ref: string }>;
+  checkedAt: string;
+  source: 'ai';
 }
 
 export type AgentPlanReviewDecision = 'approve' | 'deny' | 'needs_input';
@@ -340,6 +360,20 @@ export const AGENT_PLAN_TEMPLATES: AgentPlanTemplate[] = [
     field('amount', 'Amount', '100 USDC', '100 USDC'),
     field('ltv', 'Max LTV / rule', 'Stay below 50% LTV', 'Stay below 50% LTV'),
   ]),
+  template('defi', 'kamino-deposit', 'Kamino deposit', "Supply SOL or an SPL token to a Kamino Lend reserve. Natural prompts: 'stake on Kamino', 'supply to Kamino', 'earn yield on Kamino'. Requires Kamino enabled in Connected dApps.", 'kamino_deposit', 'medium', [
+    selectField('token', 'Token', ['SOL', 'USDC', 'JitoSOL', 'mSOL', 'bSOL'], 'SOL'),
+    field('amount', 'Amount', '0.1', '0.1', true),
+    field('memo', 'Reason', 'Earn yield on idle SOL', 'Kamino deposit review'),
+  ]),
+  template('defi', 'kamino-withdraw', 'Kamino withdraw', 'Redeem some or all of a Kamino Lend supply position. Requires Kamino enabled in Connected dApps.', 'kamino_withdraw', 'medium', [
+    selectField('token', 'Token', ['SOL', 'USDC', 'JitoSOL', 'mSOL', 'bSOL'], 'SOL'),
+    field('amount', 'Amount (or "all")', '0.05', '0.05'),
+    field('memo', 'Reason', 'Need liquidity for payments', 'Kamino withdraw review'),
+  ]),
+  template('defi', 'kamino-earnings-proof', 'Kamino earnings proof', "Build a signable receipt that proves how much you've earned by supplying to Kamino. Read-only; signing creates a shareable verification.", 'read_only', 'low', [
+    selectField('token', 'Reserve', ['All reserves', 'SOL', 'USDC', 'JitoSOL', 'mSOL', 'bSOL'], 'All reserves'),
+    field('memo', 'Reason', 'Tax / accounting record', 'Kamino earnings receipt'),
+  ]),
   template('defi', 'liquidity', 'Liquidity position review', 'Review LP deposits, withdrawals, fees, and impermanent loss before wallet approval.', 'manual_review', 'high', [
     field('pool', 'Pool / protocol', 'Orca, Raydium, Meteora, custom', ''),
     field('amounts', 'Amounts', '0.1 SOL + 20 USDC', ''),
@@ -368,8 +402,8 @@ export const AGENT_PLAN_TEMPLATES: AgentPlanTemplate[] = [
     field('action', 'Action', 'Connect wallet and approve request', 'Connect wallet and approve request'),
     field('deviceNote', 'Device note', 'Seeker / Android Chrome / TWA', 'Android Chrome / TWA'),
   ]),
-  template('integration', 'dapp-interaction', 'dApp interaction review', 'Prepare a review for a third-party dApp request before the user signs.', 'manual_review', 'high', [
-    field('dapp', 'dApp / URL', 'Jupiter, Meteora, Tensor, custom URL', ''),
+  template('integration', 'dapp-interaction', 'dApp interaction review', 'Prepare a review for a third-party dApp request before the user signs. For first-class protocols (Kamino), enable the adapter in the Connected dApps panel and use the dedicated template instead of this catch-all.', 'manual_review', 'high', [
+    field('dapp', 'dApp / URL', 'Jupiter, Meteora, Tensor, Kamino, custom URL', ''),
     textareaField('request', 'Request details', 'What the dApp asks the wallet to sign'),
     field('policy', 'Policy cap', 'No unknown programs or authority grants', 'No unknown programs or authority grants'),
   ]),
@@ -652,6 +686,91 @@ export async function generateHostedAiReview(
   return normalizeHostedAiReview(payload);
 }
 
+export async function generateSessionAiAsk(
+  settings: AiSettings,
+  request: AgentPlanAskRequest,
+): Promise<AgentPlanAskResult> {
+  if (!settings.apiKey.trim()) {
+    throw new Error('Session AI key is required.');
+  }
+  if (!request.question?.trim()) {
+    throw new Error('Ask agent: a question is required.');
+  }
+  if (settings.provider === 'openai') {
+    throw new Error('OpenAI keys cannot be called directly from browser session mode. Select Hosted BYOK or Local bridge.');
+  }
+  if (settings.apiFormat === 'anthropic') {
+    return generateAnthropicAsk(settings, request);
+  }
+  return generateOpenAiCompatibleAsk(settings, request);
+}
+
+export async function generateHostedAiAsk(
+  settings: AiSettings,
+  request: AgentPlanAskRequest,
+): Promise<AgentPlanAskResult> {
+  if (!settings.apiKey.trim()) {
+    throw new Error('Hosted BYOK key is required.');
+  }
+  if (!request.question?.trim()) {
+    throw new Error('Ask agent: a question is required.');
+  }
+  const diagnostics: AiDiagnosticEntry[] = [
+    {
+      code: 'AI_ROUTE',
+      message: 'Hosted BYOK ask route selected.',
+      detail: `provider=${settings.provider}; model=${settings.model.trim() || aiProviderPresetById(settings.provider).model}`,
+      method: 'POST',
+      path: '/api/ai/ask-about-plan',
+    },
+  ];
+  await assertHostedAiAvailable(diagnostics);
+  const response = await fetch('/api/ai/ask-about-plan', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({
+      settings: {
+        apiKey: settings.apiKey,
+        provider: settings.provider,
+        apiFormat: settings.apiFormat,
+        baseUrl: settings.baseUrl,
+        model: settings.model,
+      },
+      request,
+    }),
+  }).catch((err) => {
+    throw aiPlanConnectionError(
+      `Hosted AI ask request failed. ${redactSecrets(err instanceof Error ? err.message : String(err), settings.apiKey)}`,
+      diagnostics,
+      {
+        code: 'AI_PROVIDER_ERROR',
+        message: 'Hosted BYOK ask request could not reach the same-origin API.',
+        detail: redactSecrets(err instanceof Error ? err.message : String(err), settings.apiKey),
+        method: 'POST',
+        path: '/api/ai/ask-about-plan',
+      },
+    );
+  });
+  const payload = await readHostedJson(
+    response,
+    'Hosted BYOK API returned a non-JSON response.',
+    diagnostics,
+    { method: 'POST', path: '/api/ai/ask-about-plan' },
+  );
+  if (!response.ok) {
+    const message = redactSecrets(extractProviderError(payload) || `Hosted AI returned HTTP ${response.status}.`, settings.apiKey);
+    throw aiPlanConnectionError(message, diagnostics, {
+      code: 'AI_PROVIDER_ERROR',
+      message,
+      method: 'POST',
+      path: '/api/ai/ask-about-plan',
+      status: response.status,
+      contentType: response.headers.get('content-type') ?? '',
+    });
+  }
+  return normalizeHostedAiAsk(payload);
+}
+
 export async function confirmHostedAiPlanner(settings: AiSettings): Promise<AiDiagnosticEntry[]> {
   if (!settings.apiKey.trim()) {
     throw new Error('Hosted BYOK key is required before confirming planner setup.');
@@ -870,6 +989,113 @@ async function generateOpenAiCompatibleReview(settings: AiSettings, request: Age
     throw new Error(providerFailureMessage(payload, response.status, settings.apiKey));
   }
   return normalizeAiReview(payload, request);
+}
+
+async function generateOpenAiCompatibleAsk(settings: AiSettings, request: AgentPlanAskRequest): Promise<AgentPlanAskResult> {
+  const baseUrl = normalizeBaseUrl(settings.baseUrl, 'openai-compatible');
+  const body = {
+    model: settings.model.trim() || DEFAULT_AI_MODEL,
+    messages: aiAskMessages(request),
+    ...(!isDefaultTemperatureOnlyModel(settings.model.trim() || DEFAULT_AI_MODEL) && { temperature: 0.3 }),
+  };
+  const response = await fetch(`${baseUrl}/chat/completions`, {
+    method: 'POST',
+    headers: {
+      authorization: `Bearer ${settings.apiKey.trim()}`,
+      'content-type': 'application/json',
+    },
+    body: JSON.stringify(body),
+  }).catch((err) => {
+    throw new Error(
+      `AI provider ask failed. ${redactSecrets(err instanceof Error ? err.message : String(err), settings.apiKey)}`,
+    );
+  });
+  const payload = await response.json().catch(() => ({})) as unknown;
+  if (!response.ok) {
+    throw new Error(providerFailureMessage(payload, response.status, settings.apiKey));
+  }
+  return normalizeAiAsk(payload);
+}
+
+async function generateAnthropicAsk(settings: AiSettings, request: AgentPlanAskRequest): Promise<AgentPlanAskResult> {
+  const baseUrl = normalizeBaseUrl(settings.baseUrl, 'anthropic');
+  const messages = aiAskMessages(request);
+  const systemMessage = messages[0]?.content ?? '';
+  const userMessage = messages[1]?.content ?? JSON.stringify(request);
+  const response = await fetch(`${baseUrl}/messages`, {
+    method: 'POST',
+    headers: {
+      'anthropic-dangerous-direct-browser-access': 'true',
+      'anthropic-version': '2023-06-01',
+      'content-type': 'application/json',
+      'x-api-key': settings.apiKey.trim(),
+    },
+    body: JSON.stringify({
+      model: settings.model.trim() || aiProviderPresetById('anthropic').model,
+      max_tokens: 800,
+      system: systemMessage,
+      messages: [{ role: 'user', content: userMessage }],
+      temperature: 0.3,
+    }),
+  }).catch((err) => {
+    throw new Error(
+      `AI provider ask failed. ${redactSecrets(err instanceof Error ? err.message : String(err), settings.apiKey)}`,
+    );
+  });
+  const payload = await response.json().catch(() => ({})) as unknown;
+  if (!response.ok) {
+    throw new Error(providerFailureMessage(payload, response.status, settings.apiKey));
+  }
+  return normalizeAiAsk(payload);
+}
+
+export function aiAskMessages(request: AgentPlanAskRequest): Array<{ role: 'system' | 'user'; content: string }> {
+  return [
+    {
+      role: 'system',
+      content:
+        'You answer the user\'s question about a Solana wallet action plan. Be concise: 1 to 3 sentences, plain English. Cite plan fields you reference by name (e.g., recipient, amount, slippageBps). Never claim anything is signed, submitted, guaranteed safe, or already approved. Never request private keys. If the question cannot be answered from the plan, say so plainly.',
+    },
+    {
+      role: 'user',
+      content: JSON.stringify({
+        question: request.question,
+        plan: request.plan,
+        walletAddress: request.walletAddress || 'not_connected',
+        cluster: request.cluster || 'unknown',
+        context: request.context ?? {},
+        requiredBoundary: 'This is conversational Q&A about a draft. It cannot sign or submit a transaction.',
+      }),
+    },
+  ];
+}
+
+export function normalizeAiAsk(payload: unknown): AgentPlanAskResult {
+  const text = extractModelText(payload).trim();
+  if (!text) {
+    throw new Error('Agent did not return an answer.');
+  }
+  return {
+    answer: compactReviewText(text, 800),
+    checkedAt: new Date().toISOString(),
+    source: 'ai',
+  };
+}
+
+function normalizeHostedAiAsk(payload: unknown): AgentPlanAskResult {
+  if (!payload || typeof payload !== 'object') {
+    throw new Error('Hosted AI returned an invalid ask response.');
+  }
+  const record = payload as Partial<AgentPlanAskResult>;
+  const answer = typeof record.answer === 'string' ? record.answer.trim() : '';
+  if (!answer) {
+    throw new Error('Hosted AI returned an empty answer.');
+  }
+  return {
+    answer: compactReviewText(answer, 800),
+    checkedAt: typeof record.checkedAt === 'string' ? record.checkedAt : new Date().toISOString(),
+    source: 'ai',
+  };
 }
 
 function normalizeHostedAiPlan(payload: unknown, request: AiPlanRequest): AgentPlan {

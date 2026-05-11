@@ -3,6 +3,9 @@ import { describe, expect, it } from 'vitest';
 import {
   PRE_SIGN_REVIEW_TITLE,
   buildCustomTransactionPreSignReview,
+  buildKaminoDepositPreSignReview,
+  buildKaminoEarningsProofPreSignReview,
+  buildKaminoWithdrawPreSignReview,
   buildSendPreSignReview,
   buildSwapPreSignReview,
   formatTouchedPrograms,
@@ -264,6 +267,43 @@ describe('buildSendPreSignReview', () => {
       token: 'SOL',
     });
     expect(model.warnings).toContain('Fee estimate is missing.');
+  });
+
+  it('attaches a recipient badge and tone when the caller marks the recipient as mine', () => {
+    const model = buildSendPreSignReview({
+      cluster: 'devnet',
+      sender: SENDER,
+      recipient: RECIPIENT,
+      recipientBadge: '→ your wallet',
+      recipientTone: 'good',
+      amount: '0.1',
+      token: 'SOL',
+      estimatedFee: '0.000005 SOL',
+    });
+    const transfer = model.sections.find((section) => section.title === 'Transfer');
+    const recipientRow = transfer?.rows.find((row) => row.label === 'Recipient');
+    expect(recipientRow).toMatchObject({
+      label: 'Recipient',
+      value: '7NUS…ekoF',
+      badge: '→ your wallet',
+      tone: 'good',
+    });
+  });
+
+  it('omits the badge when no badge text is supplied', () => {
+    const model = buildSendPreSignReview({
+      cluster: 'devnet',
+      sender: SENDER,
+      recipient: RECIPIENT,
+      amount: '0.1',
+      token: 'SOL',
+      estimatedFee: '0.000005 SOL',
+    });
+    const recipientRow = model.sections
+      .find((section) => section.title === 'Transfer')
+      ?.rows.find((row) => row.label === 'Recipient');
+    expect(recipientRow?.badge).toBeUndefined();
+    expect(recipientRow?.tone).toBeUndefined();
   });
 });
 
@@ -547,11 +587,162 @@ describe('buildCustomTransactionPreSignReview', () => {
   });
 });
 
+describe('buildKaminoDepositPreSignReview', () => {
+  it('produces a deposit review with pool, amount, APY, and pool health sections', () => {
+    const model = buildKaminoDepositPreSignReview({
+      cluster: 'mainnet-beta',
+      wallet: SENDER,
+      reserveSymbol: 'SOL',
+      reserveMint: 'So11111111111111111111111111111111111111112',
+      amount: '0.5',
+      supplyApy: 5.42,
+      utilization: 68,
+      withdrawalDelaySec: 0,
+      depositLimitRemaining: '12500',
+      withdrawAvailable: '8421.25',
+      adapterEnabled: true,
+      mainnetWarning: true,
+    });
+    expect(model.title).toBe(PRE_SIGN_REVIEW_TITLE);
+    expect(model.primaryAction).toBe('Open wallet to deposit');
+    const depositSection = model.sections.find((section) => section.title === 'Deposit');
+    expect(depositSection?.rows).toEqual<PreSignReviewRow[]>([
+      { label: 'Pool', value: 'SOL reserve · Kamino' },
+      { label: 'Amount', value: '0.5 SOL' },
+      { label: 'Est. APY', value: '5.42%' },
+    ]);
+    const healthSection = model.sections.find((section) => section.title === 'Pool health');
+    expect(healthSection?.rows).toEqual<PreSignReviewRow[]>([
+      { label: 'Utilization', value: '68%' },
+      { label: 'Withdraw delay', value: 'Instant' },
+      { label: 'Withdraw available', value: '8421.25 SOL' },
+      { label: 'Cap remaining', value: '12500 SOL' },
+    ]);
+    expect(model.warnings).toContain('This deposits on mainnet-beta with real funds.');
+    expect(model.riskTone).toBe('warn');
+  });
+
+  it('flags high utilization and surfaces a disabled adapter as a hard block', () => {
+    const model = buildKaminoDepositPreSignReview({
+      cluster: 'mainnet-beta',
+      wallet: SENDER,
+      reserveSymbol: 'SOL',
+      amount: '1',
+      supplyApy: 11.5,
+      utilization: 94,
+      withdrawalDelaySec: 600,
+      adapterEnabled: false,
+    });
+    expect(model.warnings).toContain('Withdrawals may be delayed when utilization is high.');
+    expect(model.warnings).toContain('Kamino is not connected in Connected dApps. Reconnect before approving.');
+    expect(model.riskTone).toBe('danger');
+    const healthSection = model.sections.find((section) => section.title === 'Pool health');
+    const utilizationRow = healthSection?.rows.find((row) => row.label === 'Utilization');
+    expect(utilizationRow?.tone).toBe('warn');
+    const delayRow = healthSection?.rows.find((row) => row.label === 'Withdraw delay');
+    expect(delayRow?.value).toBe('10 mins');
+  });
+
+  it('omits health rows that are missing', () => {
+    const model = buildKaminoDepositPreSignReview({
+      cluster: 'mainnet-beta',
+      reserveSymbol: 'SOL',
+      amount: '0.1',
+      adapterEnabled: true,
+    });
+    expect(model.sections.find((section) => section.title === 'Pool health')).toBeUndefined();
+    expect(model.warnings).not.toContain('Withdrawals may be delayed when utilization is high.');
+  });
+});
+
+describe('buildKaminoWithdrawPreSignReview', () => {
+  it('renders the supplied/earned context and labels full position withdrawals', () => {
+    const model = buildKaminoWithdrawPreSignReview({
+      cluster: 'mainnet-beta',
+      wallet: SENDER,
+      reserveSymbol: 'JitoSOL',
+      amount: '4.275',
+      withdrawAll: true,
+      suppliedBefore: '4.0',
+      earnedInterest: '0.275',
+      supplyApy: 6.81,
+      utilization: 55,
+      withdrawalDelaySec: 0,
+      withdrawAvailable: '120.55',
+      adapterEnabled: true,
+      mainnetWarning: true,
+    });
+    expect(model.primaryAction).toBe('Open wallet to withdraw');
+    const withdrawSection = model.sections.find((section) => section.title === 'Withdraw');
+    expect(withdrawSection?.rows).toEqual<PreSignReviewRow[]>([
+      { label: 'Pool', value: 'JitoSOL reserve · Kamino' },
+      { label: 'Amount', value: '4.275 JitoSOL' },
+      { label: 'Supplied before', value: '4.0 JitoSOL' },
+      { label: 'Earned', value: '0.275 JitoSOL' },
+    ]);
+    expect(model.warnings).toContain('This withdraws on mainnet-beta with real funds.');
+    expect(model.warnings).not.toContain('Withdraw amount is missing.');
+  });
+
+  it('warns when no amount is supplied and withdrawAll is false', () => {
+    const model = buildKaminoWithdrawPreSignReview({
+      cluster: 'mainnet-beta',
+      reserveSymbol: 'SOL',
+      adapterEnabled: true,
+    });
+    expect(model.warnings).toContain('Withdraw amount is missing.');
+  });
+});
+
+describe('buildKaminoEarningsProofPreSignReview', () => {
+  it('renders a verifiable receipt review for a single reserve', () => {
+    const model = buildKaminoEarningsProofPreSignReview({
+      cluster: 'mainnet-beta',
+      wallet: SENDER,
+      reserveSymbol: 'SOL',
+      suppliedAmount: '10',
+      currentValue: '10.421',
+      earnedInterest: '0.421',
+      supplyApy: 5.4,
+      asOfIso: '2026-05-11T12:00:00.000Z',
+      payloadByteLength: 412,
+    });
+    expect(model.primaryAction).toBe('Open wallet to sign proof');
+    expect(model.riskTone).toBe('neutral');
+    const earningsSection = model.sections.find((section) => section.title === 'Earnings');
+    expect(earningsSection?.rows.map((row) => row.label)).toEqual([
+      'Pool',
+      'Supplied',
+      'Current value',
+      'Earned',
+      'Est. APY',
+    ]);
+    const proofSection = model.sections.find((section) => section.title === 'Proof');
+    expect(proofSection?.rows).toEqual<PreSignReviewRow[]>([
+      { label: 'As of', value: '2026-05-11T12:00:00.000Z' },
+      { label: 'Payload', value: '412 bytes' },
+      { label: 'Schema', value: 'kamino-earnings-v1' },
+    ]);
+  });
+
+  it('warns when the wallet has no Kamino positions yet', () => {
+    const model = buildKaminoEarningsProofPreSignReview({
+      cluster: 'mainnet-beta',
+      wallet: SENDER,
+    });
+    expect(model.warnings).toContain('No supplied positions found for this wallet.');
+    expect(model.riskTone).toBe('warn');
+  });
+});
+
 describe('shared invariants', () => {
   it('always uses the canonical title across model builders', () => {
     expect(buildSendPreSignReview({ cluster: 'devnet' }).title).toBe(PRE_SIGN_REVIEW_TITLE);
     expect(buildSwapPreSignReview({ cluster: 'devnet' }).title).toBe(PRE_SIGN_REVIEW_TITLE);
     expect(buildCustomTransactionPreSignReview({ cluster: 'devnet' }).title).toBe(PRE_SIGN_REVIEW_TITLE);
+    expect(buildKaminoDepositPreSignReview({ cluster: 'mainnet-beta' }).title).toBe(PRE_SIGN_REVIEW_TITLE);
+    expect(buildKaminoWithdrawPreSignReview({ cluster: 'mainnet-beta' }).title).toBe(PRE_SIGN_REVIEW_TITLE);
+    expect(buildKaminoEarningsProofPreSignReview({ cluster: 'mainnet-beta' }).title).toBe(PRE_SIGN_REVIEW_TITLE);
   });
 
   it('never emits an n/a, empty, or placeholder row across all builders', () => {
@@ -559,6 +750,9 @@ describe('shared invariants', () => {
       buildSendPreSignReview({ cluster: 'devnet' }),
       buildSwapPreSignReview({ cluster: 'devnet' }),
       buildCustomTransactionPreSignReview({ cluster: 'devnet' }),
+      buildKaminoDepositPreSignReview({ cluster: 'mainnet-beta', reserveSymbol: 'SOL', amount: '0.1' }),
+      buildKaminoWithdrawPreSignReview({ cluster: 'mainnet-beta', reserveSymbol: 'SOL', amount: '0.05' }),
+      buildKaminoEarningsProofPreSignReview({ cluster: 'mainnet-beta', wallet: SENDER, suppliedAmount: '1' }),
     ];
     for (const model of models) {
       for (const section of model.sections) {

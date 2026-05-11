@@ -42,12 +42,15 @@ export interface AiPlan {
   constraintHash?: string;
 }
 
+export type AiReviewMode = 'single' | 'multi';
+
 export interface AiReviewRequest {
   plan: AiPlan;
   instruction?: string;
   walletAddress?: string;
   cluster?: string;
   context?: Record<string, unknown>;
+  mode?: AiReviewMode;
 }
 
 export type AiReviewDecision = 'approve' | 'deny' | 'needs_input';
@@ -172,6 +175,21 @@ const REVIEW_JSON_SCHEMA = {
           hint: { type: 'string' },
         },
         required: ['id', 'prompt', 'inputKind'],
+      },
+    },
+    reviewers: {
+      type: 'array',
+      maxItems: 4,
+      items: {
+        type: 'object',
+        additionalProperties: false,
+        properties: {
+          id: { type: 'string', enum: ['risk', 'quote', 'policy', 'protocol'] },
+          decision: { type: 'string', enum: ['approve', 'deny', 'needs_input'] },
+          reason: { type: 'string' },
+          summary: { type: 'string' },
+        },
+        required: ['id', 'decision', 'reason'],
       },
     },
   },
@@ -621,6 +639,7 @@ function normalizeReviewRequest(request: AiReviewRequest): Required<AiReviewRequ
     walletAddress: request.walletAddress?.trim() || '',
     cluster: request.cluster?.trim() || '',
     context: request.context ?? {},
+    mode: request.mode === 'multi' ? 'multi' : 'single',
   };
 }
 
@@ -716,11 +735,15 @@ function aiMessages(request: Required<AiPlanRequest>): Array<{ role: 'system' | 
 }
 
 function aiReviewMessages(request: Required<AiReviewRequest>): Array<{ role: 'system' | 'user'; content: string }> {
+  const multi = request.mode === 'multi';
+  const baseSystem = 'You review a Solana wallet action draft before it is sent for wallet approval. Return only JSON with: decision ("approve", "deny", or "needs_input"); reason as one or two concise sentences; summary as one short sentence; evidence as an object. When you cannot decide because user intent is genuinely ambiguous, return decision "needs_input" plus a "questions" array with 1-3 short, specific questions answerable in under 20 words. Each question is an object with id (short slug), prompt (the question text), inputKind ("text" | "select" | "number"), and required (true/false). Use "needs_input" only when the missing information is something the user must supply — not when you could derive it. If the context includes "userPolicies", treat each as a soft rule the user wants you to honor: factor them into your decision and cite the relevant policy id in evidence.policiesApplied when one influences the outcome. Be flexible: use the user instruction and available facts, not a fixed checklist. Never claim anything is signed, submitted, guaranteed safe, or already approved. Never request private keys. The wallet user must still approve separately.';
+  const multiSystem = multi
+    ? ' Additionally, fill the "reviewers" array with one entry per role (risk, quote, policy, protocol). Each reviewer evaluates the draft from their perspective independently and reports their own decision ("approve", "deny", or "needs_input") and a 1-sentence reason. The top-level decision should reflect the most severe verdict: any "deny" > any "needs_input" > all "approve". Risk inspects authority changes, unknown programs, and dangerous semantics. Quote checks slippage, output amount, and route freshness for swaps. Policy applies the user policies from context.userPolicies. Protocol identifies the protocol/aggregator and flags unknowns. Skip reviewers whose role does not apply (e.g., no quote role on a read-only plan).'
+    : '';
   return [
     {
       role: 'system',
-      content:
-        'You review a Solana wallet action draft before it is sent for wallet approval. Return only JSON with: decision ("approve", "deny", or "needs_input"); reason as one or two concise sentences; summary as one short sentence; evidence as an object. When you cannot decide because user intent is genuinely ambiguous, return decision "needs_input" plus a "questions" array with 1-3 short, specific questions answerable in under 20 words. Each question is an object with id (short slug), prompt (the question text), inputKind ("text" | "select" | "number"), and required (true/false). Use "needs_input" only when the missing information is something the user must supply — not when you could derive it. If the context includes "userPolicies", treat each as a soft rule the user wants you to honor: factor them into your decision and cite the relevant policy id in evidence.policiesApplied when one influences the outcome. Be flexible: use the user instruction and available facts, not a fixed checklist. Never claim anything is signed, submitted, guaranteed safe, or already approved. Never request private keys. The wallet user must still approve separately.',
+      content: `${baseSystem}${multiSystem}`,
     },
     {
       role: 'user',
@@ -730,6 +753,7 @@ function aiReviewMessages(request: Required<AiReviewRequest>): Array<{ role: 'sy
         cluster: request.cluster || 'unknown',
         plan: request.plan,
         context: request.context,
+        reviewMode: request.mode,
         requiredBoundary: 'This AI review can approve, deny, or request more input. It cannot sign or submit a transaction.',
       }),
     },
@@ -812,8 +836,12 @@ function aiPlanFromParsed(parsed: Record<string, unknown>, request: Required<AiP
 }
 
 function aiReviewFromParsed(parsed: Record<string, unknown>, request: Required<AiReviewRequest>): AiReviewResult {
-  const decision = normalizeReviewDecision(parsed.decision);
+  const rawDecision = normalizeReviewDecision(parsed.decision);
   const questions = normalizeReviewQuestions(parsed.questions);
+  const reviewers = normalizeReviewers(parsed.reviewers);
+  const decision = reviewers && reviewers.length
+    ? aggregateReviewerDecision(reviewers, rawDecision)
+    : rawDecision;
   const reason = stringOr(
     parsed.reason,
     decision === 'approve'
@@ -833,7 +861,52 @@ function aiReviewFromParsed(parsed: Record<string, unknown>, request: Required<A
     checkedAt: new Date().toISOString(),
     source: 'ai',
     ...(questions ? { questions } : {}),
+    ...(reviewers && reviewers.length ? { reviewers } : {}),
   };
+}
+
+function normalizeReviewers(value: unknown): AiReviewerEntry[] | undefined {
+  if (!Array.isArray(value)) return undefined;
+  const entries: AiReviewerEntry[] = [];
+  const seenIds = new Set<string>();
+  const roleLabels: Record<string, string> = {
+    risk: 'Risk reviewer',
+    quote: 'Quote reviewer',
+    policy: 'Policy reviewer',
+    protocol: 'Protocol reviewer',
+  };
+  for (const raw of value) {
+    if (!raw || typeof raw !== 'object') continue;
+    const record = raw as Record<string, unknown>;
+    const idRaw = typeof record.id === 'string' ? record.id.trim().toLowerCase() : '';
+    if (!['risk', 'quote', 'policy', 'protocol'].includes(idRaw)) continue;
+    if (seenIds.has(idRaw)) continue;
+    const decisionValue = normalizeReviewDecision(record.decision);
+    const reasonText = typeof record.reason === 'string' ? record.reason : '';
+    if (!reasonText.trim()) continue;
+    const summaryText = typeof record.summary === 'string' ? record.summary : '';
+    const label = typeof record.label === 'string' && record.label.trim()
+      ? record.label.trim()
+      : roleLabels[idRaw] ?? idRaw;
+    entries.push({
+      id: idRaw,
+      label,
+      decision: decisionValue,
+      reason: compactReviewText(reasonText, 220),
+      ...(summaryText ? { summary: compactReviewText(summaryText, 140) } : {}),
+      checkedAt: new Date().toISOString(),
+    });
+    seenIds.add(idRaw);
+    if (entries.length >= 4) break;
+  }
+  return entries.length ? entries : undefined;
+}
+
+function aggregateReviewerDecision(reviewers: AiReviewerEntry[], fallback: AiReviewDecision): AiReviewDecision {
+  if (reviewers.some((reviewer) => reviewer.decision === 'deny')) return 'deny';
+  if (reviewers.some((reviewer) => reviewer.decision === 'needs_input')) return 'needs_input';
+  if (reviewers.every((reviewer) => reviewer.decision === 'approve')) return 'approve';
+  return fallback;
 }
 
 function assertAiDraftRequestAllowed(request: Required<AiPlanRequest>): void {

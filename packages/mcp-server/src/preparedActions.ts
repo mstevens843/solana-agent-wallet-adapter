@@ -8,7 +8,12 @@ import {
   type RecurringCadence as WorkflowRecurringCadence,
 } from '@solana-agent-wallet-adapter/workflow';
 
-export type PreparedActionKind = 'transfer_sol' | 'transfer_spl' | 'swap';
+export type PreparedActionKind =
+  | 'transfer_sol'
+  | 'transfer_spl'
+  | 'swap'
+  | 'kamino_deposit'
+  | 'kamino_withdraw';
 export type PreparedActionTxStatus = 'pending' | 'confirmed' | 'failed';
 export type RecurringCadence = WorkflowRecurringCadence;
 

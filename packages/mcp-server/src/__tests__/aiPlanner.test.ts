@@ -417,6 +417,222 @@ describe('BridgeAiPlanner', () => {
 
     await expect(planner.generatePlan(request)).rejects.toThrow("Model does not support one of Agentic's request parameters.");
   });
+
+  it('captures reviewers and aggregates deny > needs_input > approve in multi-mode', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => jsonResponse({
+      choices: [{
+        message: {
+          content: JSON.stringify({
+            decision: 'approve',
+            reason: 'Aggregate not trustworthy; client should recompute.',
+            summary: 'Mixed reviewer verdicts.',
+            evidence: {},
+            reviewers: [
+              { id: 'risk', decision: 'approve', reason: 'No authority changes.' },
+              { id: 'quote', decision: 'approve', reason: 'Slippage looks fine.' },
+              { id: 'policy', decision: 'deny', reason: 'Slippage exceeds saved policy.' },
+              { id: 'protocol', decision: 'needs_input', reason: 'Unknown aggregator.' },
+            ],
+          }),
+        },
+      }],
+    })));
+    const planner = new BridgeAiPlanner();
+    planner.setSessionKey({
+      apiKey: 'sk-test-multi-agg',
+      provider: 'openrouter',
+      apiFormat: 'openai-compatible',
+      baseUrl: 'https://openrouter.ai/api/v1',
+      model: 'openai/gpt-5',
+    });
+
+    const review = await planner.reviewPlan({
+      plan: {
+        intent: 'Swap with mixed verdicts',
+        route: 'SOL -> USDC',
+        risk: 'Medium',
+        approval: 'Wallet approval required.',
+        source: 'template',
+        category: 'trading',
+        actionType: 'swap',
+        templateTitle: 'Swap tokens',
+        parameters: { inputToken: 'SOL', outputToken: 'USDC', amount: '0.01', slippageBps: '150' },
+        fields: [{ label: 'Amount', value: '0.01' }],
+        safeguards: ['Check quote.'],
+      },
+      instruction: 'Review with multi-agent perspectives.',
+      mode: 'multi',
+    });
+
+    expect(review.decision).toBe('deny');
+    expect(review.reviewers).toHaveLength(4);
+    expect(review.reviewers?.map((r) => r.id)).toEqual(['risk', 'quote', 'policy', 'protocol']);
+    expect(review.reviewers?.find((r) => r.id === 'policy')?.label).toBe('Policy reviewer');
+  });
+
+  it('drops duplicate and unknown reviewer roles', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => jsonResponse({
+      choices: [{
+        message: {
+          content: JSON.stringify({
+            decision: 'approve',
+            reason: 'All approved.',
+            summary: 'OK.',
+            evidence: {},
+            reviewers: [
+              { id: 'risk', decision: 'approve', reason: 'Looks safe.' },
+              { id: 'risk', decision: 'deny', reason: 'Duplicate role.' },
+              { id: 'unknown', decision: 'deny', reason: 'Bogus role.' },
+              { id: 'quote', decision: 'approve', reason: 'Quote fine.' },
+            ],
+          }),
+        },
+      }],
+    })));
+    const planner = new BridgeAiPlanner();
+    planner.setSessionKey({
+      apiKey: 'sk-test-multi-dedupe',
+      provider: 'openrouter',
+      apiFormat: 'openai-compatible',
+      baseUrl: 'https://openrouter.ai/api/v1',
+      model: 'openai/gpt-5',
+    });
+
+    const review = await planner.reviewPlan({
+      plan: {
+        intent: 'Generic',
+        route: 'A -> B',
+        risk: 'Low',
+        approval: 'Wallet approval required.',
+        source: 'template',
+        category: 'trading',
+        actionType: 'swap',
+        templateTitle: 'Swap tokens',
+        parameters: { inputToken: 'SOL', outputToken: 'USDC', amount: '0.1', slippageBps: '50' },
+        fields: [{ label: 'Amount', value: '0.1' }],
+        safeguards: ['Check.'],
+      },
+      mode: 'multi',
+    });
+
+    expect(review.reviewers?.map((r) => r.id)).toEqual(['risk', 'quote']);
+    expect(review.decision).toBe('approve');
+  });
+
+  it('returns a concise answer for askAboutPlan with OpenAI-compatible gateway', async () => {
+    const calls: Array<{ url: string; body: Record<string, unknown> }> = [];
+    vi.stubGlobal('fetch', vi.fn(async (url: string | URL | Request, init?: RequestInit) => {
+      calls.push({
+        url: String(url),
+        body: JSON.parse(String(init?.body ?? '{}')) as Record<string, unknown>,
+      });
+      return jsonResponse({
+        choices: [{
+          message: { content: 'This is a Jupiter v6 swap via the Phoenix aggregator. Slippage cap is 0.5%.' },
+        }],
+      });
+    }));
+    const planner = new BridgeAiPlanner();
+    planner.setSessionKey({
+      apiKey: 'sk-test-ask',
+      provider: 'openrouter',
+      apiFormat: 'openai-compatible',
+      baseUrl: 'https://openrouter.ai/api/v1',
+      model: 'openai/gpt-5',
+    });
+
+    const askResult = await planner.askAboutPlan({
+      plan: {
+        intent: 'Swap SOL to USDC',
+        route: 'SOL -> USDC',
+        risk: 'Medium',
+        approval: 'Wallet approval required.',
+        source: 'template',
+        category: 'trading',
+        actionType: 'swap',
+        templateTitle: 'Swap tokens',
+        parameters: { inputToken: 'SOL', outputToken: 'USDC', amount: '0.01', slippageBps: '50' },
+        fields: [{ label: 'Amount', value: '0.01' }],
+        safeguards: ['Check quote.'],
+      },
+      question: 'What protocol is this?',
+    });
+
+    expect(askResult.source).toBe('ai');
+    expect(askResult.answer).toContain('Jupiter');
+    expect(askResult.answer.length).toBeLessThanOrEqual(802);
+    expect(calls[0]?.url).toBe('https://openrouter.ai/api/v1/chat/completions');
+    const messages = calls[0]?.body.messages as Array<{ role: string; content: string }>;
+    expect(messages?.[0]?.role).toBe('system');
+    expect(messages?.[0]?.content).toContain('Solana wallet action plan');
+    expect(messages?.[1]?.content).toContain('What protocol is this?');
+  });
+
+  it('rejects askAboutPlan with an empty question', async () => {
+    const fetchMock = vi.fn();
+    vi.stubGlobal('fetch', fetchMock);
+    const planner = new BridgeAiPlanner();
+    planner.setSessionKey({
+      apiKey: 'sk-test-ask-empty',
+      provider: 'openrouter',
+      apiFormat: 'openai-compatible',
+      baseUrl: 'https://openrouter.ai/api/v1',
+      model: 'openai/gpt-5',
+    });
+
+    await expect(planner.askAboutPlan({
+      plan: {
+        intent: 'Anything',
+        route: 'A -> B',
+        risk: 'Low',
+        approval: 'Wallet approval required.',
+        source: 'template',
+        category: 'trading',
+        actionType: 'swap',
+        templateTitle: 'Swap tokens',
+        parameters: { amount: '0.01' },
+        fields: [{ label: 'Amount', value: '0.01' }],
+        safeguards: ['Check.'],
+      },
+      question: '   ',
+    })).rejects.toThrow('a question is required');
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it('caps askAboutPlan answers at 800 characters', async () => {
+    const longText = 'x '.repeat(1200);
+    vi.stubGlobal('fetch', vi.fn(async () => jsonResponse({
+      choices: [{ message: { content: longText } }],
+    })));
+    const planner = new BridgeAiPlanner();
+    planner.setSessionKey({
+      apiKey: 'sk-test-ask-cap',
+      provider: 'openrouter',
+      apiFormat: 'openai-compatible',
+      baseUrl: 'https://openrouter.ai/api/v1',
+      model: 'openai/gpt-5',
+    });
+
+    const askResult = await planner.askAboutPlan({
+      plan: {
+        intent: 'Swap SOL to USDC',
+        route: 'SOL -> USDC',
+        risk: 'Medium',
+        approval: 'Wallet approval required.',
+        source: 'template',
+        category: 'trading',
+        actionType: 'swap',
+        templateTitle: 'Swap tokens',
+        parameters: { inputToken: 'SOL', outputToken: 'USDC', amount: '0.01', slippageBps: '50' },
+        fields: [{ label: 'Amount', value: '0.01' }],
+        safeguards: ['Check quote.'],
+      },
+      question: 'Why is this risky?',
+    });
+
+    expect(askResult.answer.length).toBeLessThanOrEqual(802);
+    expect(askResult.answer.endsWith('...')).toBe(true);
+  });
 });
 
 function jsonResponse(body: unknown, status = 200): Response {

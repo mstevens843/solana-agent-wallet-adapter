@@ -4,6 +4,7 @@ import type { IncomingMessage, ServerResponse } from 'node:http';
 import {
   BridgeAiPlanner,
   type AiApiFormat,
+  type AiAskRequest,
   type AiPlanRequest,
   type AiReviewRequest,
 } from '@solana-agent-wallet-adapter/mcp-server';
@@ -37,6 +38,7 @@ import {
 import { createRecurringApiHandler, recurringStoreAdapterForCloudStore } from './recurringRoutes.js';
 import { RecurringService, type RecurringStore } from './recurringService.js';
 import { redactSecrets } from './redaction.js';
+import { createAgentBackgroundWatch } from './agentBackgroundWatch.js';
 import { RecurringScheduler } from './scheduler.js';
 import { createWalletSession, deleteSessionFromRequest, SESSION_TTL_MS, sessionFromRequest } from './session.js';
 import {
@@ -110,6 +112,11 @@ interface HostedAiBody {
 }
 
 interface HostedAiReviewBody {
+  settings?: HostedAiBody['settings'];
+  request?: unknown;
+}
+
+interface HostedAiAskBody {
   settings?: HostedAiBody['settings'];
   request?: unknown;
 }
@@ -230,9 +237,14 @@ export function createCloudApiRouter(options: CloudApiRouterOptions = {}): Cloud
     getSession: sessionResolver,
   });
   if (process.env.AGENTIC_ENABLE_WEB_SCHEDULER === '1') {
+    const agentWatch = createAgentBackgroundWatch({
+      workflowService,
+      recurringService,
+    });
     const recurringScheduler = new RecurringScheduler({
       service: recurringService,
       store: recurringStore,
+      ...(agentWatch ? { onAfterWalletTick: agentWatch } : {}),
     });
     recurringScheduler.start();
   }
@@ -404,6 +416,25 @@ async function routeApiRequest(
   if (url.pathname === '/api/ai/review-plan') {
     requireMethod(req, 'POST');
     await handleHostedAiReviewRequest(req, res, store, clock);
+    return;
+  }
+
+  if (url.pathname === '/api/ai/ask-about-plan') {
+    requireMethod(req, 'POST');
+    await handleHostedAiAskRequest(req, res, store, clock);
+    return;
+  }
+
+  if (url.pathname === '/api/preferences/agent-policies') {
+    if (req.method === 'GET') {
+      await handleGetAgentPolicies(req, res, store, clock);
+      return;
+    }
+    if (req.method === 'PUT') {
+      await handlePutAgentPolicies(req, res, store, clock);
+      return;
+    }
+    requireMethod(req, 'GET');
     return;
   }
 
@@ -1016,6 +1047,124 @@ function hostedReviewRequest(input: unknown): AiReviewRequest {
     throw new ApiError(400, 'Missing AI review request.');
   }
   return input as AiReviewRequest;
+}
+
+function hostedAskRequest(input: unknown): AiAskRequest {
+  if (!input || typeof input !== 'object') {
+    throw new ApiError(400, 'Missing AI ask request.');
+  }
+  const record = input as { question?: unknown; plan?: unknown };
+  if (typeof record.question !== 'string' || !record.question.trim()) {
+    throw new ApiError(400, 'Ask agent: a question is required.');
+  }
+  if (!record.plan || typeof record.plan !== 'object') {
+    throw new ApiError(400, 'Ask agent: a plan is required.');
+  }
+  return input as AiAskRequest;
+}
+
+async function handleHostedAiAskRequest(
+  req: IncomingMessage,
+  res: ServerResponse,
+  store: WorkflowStore,
+  clock: Clock,
+): Promise<void> {
+  const session = await sessionFromRequest({ req, store, clock });
+  if (!session) {
+    throw new ApiError(401, 'Sign in required for Hosted BYOK agent ask.');
+  }
+  const body = await readJsonBody(req) as HostedAiAskBody;
+  const settings = hostedSettings(body.settings);
+  const request = hostedAskRequest(body.request);
+  const planner = new BridgeAiPlanner();
+
+  try {
+    planner.setSessionKey({
+      apiKey: settings.apiKey,
+      provider: settings.provider.id,
+      apiFormat: settings.provider.apiFormat,
+      baseUrl: settings.provider.baseUrl,
+      model: settings.model,
+    });
+    writeJson(res, 200, await planner.askAboutPlan(request));
+  } catch (err) {
+    const code = typeof err === 'object' && err !== null && 'code' in err ? String((err as { code?: unknown }).code) : '';
+    const status = code === 'invalid_request' ? 400 : 502;
+    const message = err instanceof Error ? redactSecrets(err.message, settings.apiKey) : 'AI provider ask request failed.';
+    writeJson(res, status, { error: message });
+  }
+}
+
+async function handleGetAgentPolicies(
+  req: IncomingMessage,
+  res: ServerResponse,
+  store: WorkflowStore,
+  clock: Clock,
+): Promise<void> {
+  const session = await sessionFromRequest({ req, store, clock });
+  if (!session) {
+    throw new ApiError(401, 'Sign in required to read agent policies.');
+  }
+  const policyStore = isAgentPolicyStore(store) ? store : undefined;
+  if (!policyStore) {
+    writeJson(res, 200, { policies: [], version: 0, updatedAt: null });
+    return;
+  }
+  const state = await policyStore.getAgentPolicies(session.walletAddress);
+  if (!state) {
+    writeJson(res, 200, { policies: [], version: 0, updatedAt: null });
+    return;
+  }
+  writeJson(res, 200, {
+    policies: state.policies,
+    version: state.version,
+    updatedAt: state.updatedAt,
+  });
+}
+
+async function handlePutAgentPolicies(
+  req: IncomingMessage,
+  res: ServerResponse,
+  store: WorkflowStore,
+  clock: Clock,
+): Promise<void> {
+  const session = await sessionFromRequest({ req, store, clock });
+  if (!session) {
+    throw new ApiError(401, 'Sign in required to save agent policies.');
+  }
+  const policyStore = isAgentPolicyStore(store) ? store : undefined;
+  if (!policyStore) {
+    throw new ApiError(503, 'Agent policy storage is not configured on this server.');
+  }
+  const body = await readJsonBody(req);
+  if (!body || typeof body !== 'object' || Array.isArray(body)) {
+    throw new ApiError(400, 'Missing agent policies payload.');
+  }
+  const record = body as { policies?: unknown; version?: unknown };
+  if (!Array.isArray(record.policies)) {
+    throw new ApiError(400, 'Agent policies payload must include a "policies" array.');
+  }
+  if (record.policies.length > 50) {
+    throw new ApiError(400, 'Too many agent policies. Limit is 50.');
+  }
+  const existing = await policyStore.getAgentPolicies(session.walletAddress);
+  const nextVersion = (existing?.version ?? 0) + 1;
+  const saved = await policyStore.saveAgentPolicies(session.walletAddress, {
+    policies: record.policies,
+    updatedAt: clock().toISOString(),
+    version: nextVersion,
+  });
+  writeJson(res, 200, {
+    policies: saved.policies,
+    version: saved.version,
+    updatedAt: saved.updatedAt,
+  });
+}
+
+function isAgentPolicyStore(store: unknown): store is { getAgentPolicies: (wallet: string) => Promise<{ policies: unknown[]; updatedAt: string; version: number } | undefined>; saveAgentPolicies: (wallet: string, state: { policies: unknown[]; updatedAt: string; version: number }) => Promise<{ policies: unknown[]; updatedAt: string; version: number }> } {
+  if (!store || typeof store !== 'object') return false;
+  const record = store as Record<string, unknown>;
+  return typeof record.getAgentPolicies === 'function' && typeof record.saveAgentPolicies === 'function';
 }
 
 interface CloudWorkspaceDeleteRequest {

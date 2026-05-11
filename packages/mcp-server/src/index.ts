@@ -38,6 +38,8 @@ export type {
 export { BridgeAiPlanner } from './aiPlanner.js';
 export type {
   AiApiFormat,
+  AiAskRequest,
+  AiAskResult,
   AiPlan,
   AiPlanRequest,
   AiPlanTemplateContext,

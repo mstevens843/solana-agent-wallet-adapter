@@ -17,7 +17,18 @@ import type {
 import type { WorkflowStore as OneTimeWorkflowStore } from './workflowService.js';
 import { emptyCloudWorkspaceDeleteCounts } from './store.js';
 
-export class MemoryWorkflowStore implements SessionWorkflowStore, OneTimeWorkflowStore, CloudWorkspaceDeleteStore {
+export interface AgentPolicyStore {
+  getAgentPolicies(walletAddress: string): Promise<AgentPolicyState | undefined>;
+  saveAgentPolicies(walletAddress: string, state: AgentPolicyState): Promise<AgentPolicyState>;
+}
+
+export interface AgentPolicyState {
+  policies: unknown[];
+  updatedAt: string;
+  version: number;
+}
+
+export class MemoryWorkflowStore implements SessionWorkflowStore, OneTimeWorkflowStore, CloudWorkspaceDeleteStore, AgentPolicyStore {
   private readonly nonces = new Map<string, AuthNonceRecord>();
   private readonly sessions = new Map<string, WalletSessionRecord>();
   private readonly auditEvents = new Map<string, AuditEventRecord[]>();
@@ -25,6 +36,7 @@ export class MemoryWorkflowStore implements SessionWorkflowStore, OneTimeWorkflo
   private readonly approvals = new Map<string, ApprovalRequestRecord>();
   private readonly completed = new Map<string, CompletedRecord>();
   private readonly finalizations = new Map<string, TransactionFinalizationRecord>();
+  private readonly agentPolicies = new Map<string, AgentPolicyState>();
 
   async createAuthNonce(record: AuthNonceRecord): Promise<void> {
     await this.cleanupExpired(record.createdAt);
@@ -116,6 +128,21 @@ export class MemoryWorkflowStore implements SessionWorkflowStore, OneTimeWorkflo
     const record = this.plans.get(id);
     if (!record || record.walletAddress !== walletAddress) return false;
     return this.plans.delete(id);
+  }
+
+  async getAgentPolicies(walletAddress: string): Promise<AgentPolicyState | undefined> {
+    const record = this.agentPolicies.get(walletAddress);
+    return record ? clone(record) : undefined;
+  }
+
+  async saveAgentPolicies(walletAddress: string, state: AgentPolicyState): Promise<AgentPolicyState> {
+    const stored: AgentPolicyState = {
+      policies: state.policies,
+      updatedAt: state.updatedAt,
+      version: state.version,
+    };
+    this.agentPolicies.set(walletAddress, clone(stored));
+    return clone(stored);
   }
 
   async listApprovals(walletAddress: string): Promise<ApprovalRequestRecord[]> {

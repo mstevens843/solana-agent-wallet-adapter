@@ -94,14 +94,18 @@ import {
   buildTemplatePlan,
   confirmHostedAiPlanner,
   defaultTemplateFieldValues,
+  generateHostedAiAsk,
   generateHostedAiPlan,
   generateHostedAiReview,
+  generateSessionAiAsk,
   generateSessionAiPlan,
   generateSessionAiReview,
   redactSecrets,
   templateById,
   templateFieldLabel,
   type AgentPlan,
+  type AgentPlanAskRequest,
+  type AgentPlanAskResult,
   type AgentPlanReviewRequest,
   type AgentPlanReviewResult,
   type AgentPlanTemplate,
@@ -140,12 +144,31 @@ import {
 } from './transactionFailure.js';
 import {
   buildCustomTransactionPreSignReview,
+  buildKaminoDepositPreSignReview,
+  buildKaminoEarningsProofPreSignReview,
+  buildKaminoWithdrawPreSignReview,
   buildSendPreSignReview,
   buildSwapPreSignReview,
   type PreSignReviewModel,
   type PreSignReviewRow,
   type PreSignReviewSection,
+  type ReviewTone,
 } from './preSignReview.js';
+import {
+  CONNECTED_DAPPS_STORAGE_KEY,
+  KNOWN_CONNECTED_DAPPS,
+  checkDappForKind,
+  connectedDappsSummary,
+  getAdapterMeta,
+  isClusterSupported,
+  isDappEnabled,
+  loadConnectedDapps,
+  saveConnectedDapps,
+  setConnectedDappEnabled,
+  type ConnectedDappAdapter,
+  type ConnectedDappId,
+  type ConnectedDappsState,
+} from './connectedDapps.js';
 import {
   runHealthCheck as runSystemHealthProbe,
   statusFlipped as systemHealthStatusFlipped,
@@ -192,7 +215,16 @@ type AgentPlanReviewStatus = 'checking' | 'approved' | 'denied' | 'needs_input' 
 type RecurringPresetId = 'scheduled-transfer' | 'subscription';
 type InlineReceiptKind = 'intent' | 'rejection' | 'policy' | 'review';
 type AuditRecordType = 'plan' | 'approval' | 'completed' | 'evidence';
-type PreparedActionKind = 'transfer_sol' | 'transfer_spl' | 'swap' | 'manual_review' | 'read_only' | 'custom_transaction' | 'custom';
+type PreparedActionKind =
+  | 'transfer_sol'
+  | 'transfer_spl'
+  | 'swap'
+  | 'manual_review'
+  | 'read_only'
+  | 'custom_transaction'
+  | 'custom'
+  | 'kamino_deposit'
+  | 'kamino_withdraw';
 type GuidedDemoScenarioId = 'transfer' | 'swap' | 'dca' | 'payouts';
 type GuidedDemoStage = 'request' | 'prepared' | 'queued' | 'receipt';
 type GuidedDemoDecision = 'pending' | 'approved' | 'denied';
@@ -309,6 +341,19 @@ interface AgentReviewFactSet {
   limits?: AgentReviewFact;
 }
 
+interface AgentAskExchange {
+  id: string;
+  question: string;
+  answer?: string;
+  error?: string;
+  askedAt: string;
+  answeredAt?: string;
+  pending?: boolean;
+  source?: AiSettings['mode'];
+  provider?: string;
+  model?: string;
+}
+
 interface AgentPlanReviewState {
   schemaVersion?: typeof AGENT_REVIEW_SCHEMA_VERSION;
   required: boolean;
@@ -330,6 +375,7 @@ interface AgentPlanReviewState {
   facts?: AgentReviewFactSet;
   reviewedPlanFingerprint?: string;
   appliedUserPolicyIds?: string[];
+  conversation?: AgentAskExchange[];
 }
 
 type AgentPolicyKind =
@@ -427,6 +473,15 @@ const GENERATED_PLANS_STORAGE_KEY = 'solana-agent-wallet-generated-plans-v1';
 const BROWSER_WORKFLOW_STORAGE_KEY = 'solana-agent-wallet-browser-workflow-v1';
 const RECIPIENT_RULES_STORAGE_KEY = 'solana-agent-wallet-recipient-rules-v1';
 const AGENT_POLICIES_STORAGE_KEY = 'solana-agent-wallet-agent-policies-v1';
+const CUSTOM_TOKENS_STORAGE_KEY = 'solana-agent-wallet-custom-tokens-v1';
+const AGENTS_STORAGE_KEY = 'solana-agent-wallet-agents-v1';
+const PLANNER_PREFS_STORAGE_KEY = 'solana-agent-wallet-planner-prefs-v1';
+const PLANNER_HOUSE_RULES_MAX = 1000;
+const FAILURE_POLICIES_STORAGE_KEY = 'solana-agent-wallet-failure-policies-v1';
+const PROGRAM_RULES_STORAGE_KEY = 'solana-agent-wallet-program-rules-v1';
+const TOKEN_RULES_STORAGE_KEY = 'solana-agent-wallet-token-rules-v1';
+const SPEND_CAPS_STORAGE_KEY = 'solana-agent-wallet-spend-caps-v1';
+const SLIPPAGE_CAP_STORAGE_KEY = 'solana-agent-wallet-slippage-cap-v1';
 const GENERATED_PLANS_LIMIT = 100;
 const TX_CONFIRMATION_POLL_TIMEOUT_MS = 30_000;
 const TX_CONFIRMATION_POLL_INTERVAL_MS = 1_500;
@@ -460,6 +515,8 @@ const EXECUTABLE_BROWSER_ACTION_KINDS = new Set<PreparedActionKind>([
   'transfer_spl',
   'swap',
   'custom_transaction',
+  'kamino_deposit',
+  'kamino_withdraw',
 ]);
 const RELEASE_BASE_URL =
   'https://github.com/mstevens843/solana-agent-wallet-adapter/releases/latest/download';
@@ -748,6 +805,8 @@ interface GeneratedPlanRecord {
   agentReview?: AgentPlanReviewState;
   agentOverride?: AgentReviewOverride;
   workflowSource?: WorkflowRecordSource;
+  template?: boolean;
+  templateLabel?: string;
 }
 
 interface RuntimePath {
@@ -1096,6 +1155,9 @@ interface SavedRecipient {
   address: string;
   policy: RecipientPolicy;
   note?: string;
+  tags?: string[];
+  isMine?: boolean;
+  lastUsedAt?: string;
   createdAt: string;
   updatedAt: string;
 }
@@ -1112,6 +1174,77 @@ interface RecipientDraft {
   address: string;
   policy: RecipientPolicy;
   note: string;
+  tags: string;
+  isMine: boolean;
+}
+
+interface CustomToken {
+  id: string;
+  mint: string;
+  symbol: string;
+  decimals: number;
+  label?: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+interface CustomTokenDraft {
+  mint: string;
+  symbol: string;
+  decimals: string;
+  label: string;
+}
+
+type AgentTier = 'read_only' | 'capped' | 'full';
+
+interface RegisteredAgent {
+  id: string;
+  label: string;
+  token: string;
+  tier: AgentTier;
+  enabled: boolean;
+  createdAt: string;
+  lastSeenAt?: string;
+  notes?: string;
+}
+
+interface AgentDraft {
+  label: string;
+  tier: AgentTier;
+  notes: string;
+}
+
+interface AgentRevealState {
+  agentId: string;
+  label: string;
+  token: string;
+  tier: AgentTier;
+}
+
+interface SavedPrompt {
+  id: string;
+  label: string;
+  prompt: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+interface PlannerPrefs {
+  houseRules: string;
+  savedPrompts: SavedPrompt[];
+}
+
+interface SavedPromptDraft {
+  label: string;
+  prompt: string;
+}
+
+type FailureRetryMode = 'auto' | 'ask' | 'disabled';
+
+interface FailureRetryPolicy {
+  kind: TransactionFailureKind;
+  mode: FailureRetryMode;
+  maxAttempts: number;
 }
 
 interface RecipientPolicyStatus {
@@ -1196,6 +1329,107 @@ interface WorkspaceBackupConfirmState {
   busy: boolean;
 }
 
+type PreflightStatus = 'pass' | 'fail' | 'running' | 'error' | 'unsupported';
+
+interface PreflightResult {
+  status: PreflightStatus;
+  message: string;
+  detail?: string;
+  feeLamports?: number | null;
+  logs?: string[];
+  checkedAt: string;
+}
+
+interface TxResolution {
+  found: boolean;
+  confirmed: boolean;
+  failed: boolean;
+  txid: string;
+  slot?: number;
+  blockTime?: number;
+  signers: string[];
+  programIds: string[];
+  error?: string;
+}
+
+interface AttachTxValidation {
+  match: boolean;
+  warnings: string[];
+}
+
+interface AttachTxModalState {
+  actionId?: string;
+  txidInput: string;
+  resolution?: TxResolution;
+  validation?: AttachTxValidation;
+  busy: boolean;
+  error?: string;
+}
+
+type DebugLogLevel = 'info' | 'warn' | 'error';
+type DebugLogSource = 'rpc' | 'ai' | 'wallet' | 'ledger' | 'ui' | 'health' | 'preflight';
+
+interface DebugLogEvent {
+  ts: string;
+  level: DebugLogLevel;
+  source: DebugLogSource;
+  message: string;
+  code?: string;
+  actionId?: string;
+  txid?: string;
+}
+
+interface NotificationSettingsState {
+  permission: NotificationPermission | 'unsupported';
+  browser: boolean;
+  due: boolean;
+  pending: boolean;
+  confirmed: boolean;
+  failed: boolean;
+}
+
+type SafetyRailsMode = 'warn' | 'block';
+
+interface ProgramRulesState {
+  enabled: boolean;
+  mode: SafetyRailsMode;
+  allowlist: string[];
+  blocklist: string[];
+}
+
+interface TokenRulesState {
+  enabled: boolean;
+  mode: SafetyRailsMode;
+  allowlist: string[];
+  blocklist: string[];
+}
+
+interface SpendCapEntry {
+  token: string;
+  maxPerDay?: number;
+  maxPerWeek?: number;
+  maxPerMonth?: number;
+}
+
+interface SpendCapsState {
+  enabled: boolean;
+  mode: SafetyRailsMode;
+  caps: SpendCapEntry[];
+}
+
+interface SlippageCapState {
+  enabled: boolean;
+  mode: SafetyRailsMode;
+  maxBps: number;
+}
+
+interface SafetyRailsState {
+  programs: ProgramRulesState;
+  tokens: TokenRulesState;
+  spend: SpendCapsState;
+  slippage: SlippageCapState;
+}
+
 interface DemoState {
   activeTab: ActiveTab;
   commandCenterView: CommandCenterView;
@@ -1264,6 +1498,12 @@ interface DemoState {
   systemHealthChecking: boolean;
   workspaceBackupStatus: string;
   workspaceBackupConfirm: WorkspaceBackupConfirmState | null;
+  preflightSimulation: Record<string, PreflightResult>;
+  safetyRails: SafetyRailsState;
+  attachTxModal: AttachTxModalState | null;
+  debugLog: DebugLogEvent[];
+  notificationSettings: NotificationSettingsState;
+  notifiedRecords: Record<string, string>;
   balances: BalanceView | null;
   preparedActions: PreparedAction[];
   materializedActions: PreparedAction[];
@@ -1280,9 +1520,21 @@ interface DemoState {
   recipientRules: RecipientRulesState;
   recipientDraft: RecipientDraft;
   recipientErrors: Record<string, string>;
+  connectedDapps: ConnectedDappsState;
   agentPolicies: UserAgentPolicy[];
   agentPolicyDraft: AgentPolicyDraft;
   agentPolicyErrors: Record<string, string>;
+  customTokens: CustomToken[];
+  customTokenDraft: CustomTokenDraft;
+  customTokenErrors: Record<string, string>;
+  agents: RegisteredAgent[];
+  agentDraft: AgentDraft;
+  agentErrors: Record<string, string>;
+  agentReveal: AgentRevealState | null;
+  plannerPrefs: PlannerPrefs;
+  savedPromptDraft: SavedPromptDraft;
+  savedPromptErrors: Record<string, string>;
+  failurePolicies: FailureRetryPolicy[];
   recurringOccurrenceHistory: Record<string, RecurringOccurrenceHistoryState>;
   recurringNotificationStatus: Record<string, RecurringNotificationStatusState>;
   recurringWebhookSecretOnce: RecurringWebhookSecretReveal | null;
@@ -1664,7 +1916,12 @@ const defaultWorkspaceTab: ActiveTab = 'overview';
 const initialAiSettings = persistedAiSettings(persisted);
 const initialBrowserWorkflow = loadBrowserWorkflowState();
 const initialRecipientRules = loadRecipientRules();
+const initialConnectedDapps = loadConnectedDapps();
 const initialAgentPolicies = loadAgentPolicies();
+const initialCustomTokens = loadCustomTokens();
+const initialAgents = loadAgents();
+const initialPlannerPrefs = loadPlannerPrefs();
+const initialFailurePolicies = loadFailurePolicies();
 const RECURRING_TOKEN_OPTIONS = ['SOL', 'USDC', 'PYUSD'];
 
 const RECURRING_PRESETS: RecurringPreset[] = [
@@ -1894,6 +2151,12 @@ const state: DemoState = {
   systemHealthChecking: false,
   workspaceBackupStatus: '',
   workspaceBackupConfirm: null,
+  preflightSimulation: {},
+  safetyRails: loadSafetyRails(),
+  attachTxModal: null,
+  debugLog: [],
+  notificationSettings: defaultNotificationSettings(),
+  notifiedRecords: {},
   balances: null,
   preparedActions: initialBrowserWorkflow.preparedActions,
   materializedActions: initialBrowserWorkflow.preparedActions,
@@ -1910,9 +2173,21 @@ const state: DemoState = {
   recipientRules: initialRecipientRules,
   recipientDraft: defaultRecipientDraft(),
   recipientErrors: {},
+  connectedDapps: initialConnectedDapps,
   agentPolicies: initialAgentPolicies,
   agentPolicyDraft: defaultAgentPolicyDraft(),
   agentPolicyErrors: {},
+  customTokens: initialCustomTokens,
+  customTokenDraft: defaultCustomTokenDraft(),
+  customTokenErrors: {},
+  agents: initialAgents,
+  agentDraft: defaultAgentDraft(),
+  agentErrors: {},
+  agentReveal: null,
+  plannerPrefs: initialPlannerPrefs,
+  savedPromptDraft: defaultSavedPromptDraft(),
+  savedPromptErrors: {},
+  failurePolicies: initialFailurePolicies,
   recurringOccurrenceHistory: {},
   recurringNotificationStatus: {},
   recurringWebhookSecretOnce: null,
@@ -1971,6 +2246,9 @@ async function startApp(): Promise<void> {
     hydrateGeneratedPlansForStartup();
     render();
     startSystemHealthPolling();
+    startQuoteCountdownTicker();
+    startNotificationTicker();
+    startAgentBackgroundWatch();
     window.addEventListener('popstate', () => render());
     window.addEventListener('keydown', handleGlobalKeydown);
     await bootstrap();
@@ -2094,6 +2372,7 @@ function render(): void {
   closeArtifactPickerInteractions();
   appRoot.innerHTML = pageShell(pageContent(route), route);
   bind();
+  updateTabTitleBadge();
 }
 
 function normalizeInitialRoute(): void {
@@ -3502,6 +3781,7 @@ function appWorkspace(mode: 'app' | 'demo' = 'app'): string {
     <section id="${workspaceId}" class="app-workspace-section ${appModeClass} ${modeClass}" aria-labelledby="${titleId}" data-layout="app-root">
       ${systemHealthStrip()}
       ${systemHealthDrawer()}
+      ${attachTxModalRender()}
       <div class="workspace-intro" data-layout="app-intro">
         <div>
           ${mode === 'demo' ? '<p class="eyebrow mini">Interactive demo</p>' : '<!-- Launch App eyebrow intentionally hidden. -->'}
@@ -4082,8 +4362,13 @@ function walletRail(): string {
 
       <div class="rail-primary-stack">
         ${cloudWorkspaceCard()}
+        ${connectedAgentsPanel()}
         ${recipientRulesPanel()}
+        ${connectedDappsPanel()}
+        ${safetyRailsPanel()}
         ${agentPoliciesPanel()}
+        ${customTokensPanel()}
+        ${failurePoliciesPanel()}
         ${aiSettingsPanel('rail')}
       </div>
       ${SHOW_DEV_CONTROLS ? '' : `
@@ -4184,6 +4469,139 @@ function cloudWorkspaceCard(): string {
   `;
 }
 
+function safetyRailsPanel(): string {
+  const rails = state.safetyRails;
+  const anyEnabled = rails.programs.enabled || rails.tokens.enabled || rails.spend.enabled || rails.slippage.enabled;
+  const summary = safetyRailsSummary();
+  return `
+    <details class="safety-rails-panel rail-details ${anyEnabled ? 'enabled' : 'disabled'}" data-layout="safety-rails-panel" ${anyEnabled ? 'open' : ''}>
+      <summary>
+        <span class="safety-rails-summary-copy">
+          <span>Safety rails</span>
+          <em>${escapeHtml(summary)}</em>
+        </span>
+        <strong>${anyEnabled ? 'on' : 'off'}</strong>
+      </summary>
+      <section class="safety-rails-card" aria-label="Safety rails">
+        ${safetyRailsProgramsSection()}
+        ${safetyRailsTokensSection()}
+        ${safetyRailsSpendSection()}
+        ${safetyRailsSlippageSection()}
+      </section>
+    </details>
+  `;
+}
+
+function safetyRailsSummary(): string {
+  const rails = state.safetyRails;
+  const enabled: string[] = [];
+  if (rails.programs.enabled) enabled.push(`${rails.programs.allowlist.length} programs`);
+  if (rails.tokens.enabled) enabled.push(`${rails.tokens.allowlist.length} tokens`);
+  if (rails.spend.enabled) enabled.push(`${rails.spend.caps.length} spend caps`);
+  if (rails.slippage.enabled) enabled.push(`slippage ≤ ${rails.slippage.maxBps}bps`);
+  return enabled.length ? enabled.join(' · ') : 'No rails active';
+}
+
+function safetyRailsProgramsSection(): string {
+  const section = state.safetyRails.programs;
+  return `
+    <div class="safety-rails-section ${section.enabled ? 'on' : 'off'}">
+      <div class="safety-rails-section-head">
+        <strong>Programs</strong>
+        <button type="button" class="safety-rails-toggle ${section.enabled ? 'active' : ''}" data-safety-rails-action="toggle-programs">${section.enabled ? 'on' : 'off'}</button>
+        <button type="button" class="safety-rails-mode" data-safety-rails-action="cycle-mode" data-safety-rails-section="programs">${section.mode === 'block' ? 'Hard block' : 'Warn only'}</button>
+      </div>
+      <p>Programs you trust to clear without a warning. Other programs surface a warning before approval.</p>
+      <div class="safety-rails-input-row">
+        <input type="text" placeholder="Program id or label" data-safety-rails-input="add-program" />
+        <button type="button" class="utility" data-safety-rails-action="add-program">Add</button>
+      </div>
+      <ul class="safety-rails-list">
+        ${section.allowlist.map((value) => `
+          <li>
+            <span>${escapeHtml(value)}</span>
+            <button type="button" class="utility danger" data-safety-rails-action="remove-program" data-safety-rails-value="${escapeHtml(value)}">Remove</button>
+          </li>
+        `).join('') || '<li class="safety-rails-empty">No programs configured.</li>'}
+      </ul>
+    </div>
+  `;
+}
+
+function safetyRailsTokensSection(): string {
+  const section = state.safetyRails.tokens;
+  return `
+    <div class="safety-rails-section ${section.enabled ? 'on' : 'off'}">
+      <div class="safety-rails-section-head">
+        <strong>Tokens</strong>
+        <button type="button" class="safety-rails-toggle ${section.enabled ? 'active' : ''}" data-safety-rails-action="toggle-tokens">${section.enabled ? 'on' : 'off'}</button>
+        <button type="button" class="safety-rails-mode" data-safety-rails-action="cycle-mode" data-safety-rails-section="tokens">${section.mode === 'block' ? 'Hard block' : 'Warn only'}</button>
+      </div>
+      <p>Token symbols or mints you trust. Off-list tokens surface a warning on transfers and swaps.</p>
+      <div class="safety-rails-input-row">
+        <input type="text" placeholder="SOL, USDC, mint…" data-safety-rails-input="add-token" />
+        <button type="button" class="utility" data-safety-rails-action="add-token">Add</button>
+      </div>
+      <ul class="safety-rails-list">
+        ${section.allowlist.map((value) => `
+          <li>
+            <span>${escapeHtml(value)}</span>
+            <button type="button" class="utility danger" data-safety-rails-action="remove-token" data-safety-rails-value="${escapeHtml(value)}">Remove</button>
+          </li>
+        `).join('') || '<li class="safety-rails-empty">No tokens configured.</li>'}
+      </ul>
+    </div>
+  `;
+}
+
+function safetyRailsSpendSection(): string {
+  const section = state.safetyRails.spend;
+  return `
+    <div class="safety-rails-section ${section.enabled ? 'on' : 'off'}">
+      <div class="safety-rails-section-head">
+        <strong>Spend caps</strong>
+        <button type="button" class="safety-rails-toggle ${section.enabled ? 'active' : ''}" data-safety-rails-action="toggle-spend">${section.enabled ? 'on' : 'off'}</button>
+        <button type="button" class="safety-rails-mode" data-safety-rails-action="cycle-mode" data-safety-rails-section="spend">${section.mode === 'block' ? 'Hard block' : 'Warn only'}</button>
+      </div>
+      <p>Maximum amount per token in rolling windows. Calculated from confirmed transfers in this browser.</p>
+      <div class="safety-rails-input-row safety-rails-cap-row">
+        <input type="text" placeholder="Token" data-safety-rails-input="add-cap" />
+        <input type="number" min="0" step="0.0001" placeholder="Daily" data-safety-rails-input="cap-day" />
+        <input type="number" min="0" step="0.0001" placeholder="Weekly" data-safety-rails-input="cap-week" />
+        <input type="number" min="0" step="0.0001" placeholder="Monthly" data-safety-rails-input="cap-month" />
+        <button type="button" class="utility" data-safety-rails-action="add-cap">Add</button>
+      </div>
+      <ul class="safety-rails-list">
+        ${section.caps.map((cap) => `
+          <li>
+            <span>${escapeHtml(cap.token)}</span>
+            <em>${cap.maxPerDay ? `day ${cap.maxPerDay}` : ''}${cap.maxPerWeek ? ` · week ${cap.maxPerWeek}` : ''}${cap.maxPerMonth ? ` · month ${cap.maxPerMonth}` : ''}</em>
+            <button type="button" class="utility danger" data-safety-rails-action="remove-cap" data-safety-rails-value="${escapeHtml(cap.token.toUpperCase())}">Remove</button>
+          </li>
+        `).join('') || '<li class="safety-rails-empty">No spend caps configured.</li>'}
+      </ul>
+    </div>
+  `;
+}
+
+function safetyRailsSlippageSection(): string {
+  const section = state.safetyRails.slippage;
+  return `
+    <div class="safety-rails-section ${section.enabled ? 'on' : 'off'}">
+      <div class="safety-rails-section-head">
+        <strong>Slippage cap</strong>
+        <button type="button" class="safety-rails-toggle ${section.enabled ? 'active' : ''}" data-safety-rails-action="toggle-slippage">${section.enabled ? 'on' : 'off'}</button>
+        <button type="button" class="safety-rails-mode" data-safety-rails-action="cycle-mode" data-safety-rails-section="slippage">${section.mode === 'block' ? 'Hard block' : 'Warn only'}</button>
+      </div>
+      <p>Maximum slippage allowed for swap quotes. Higher quotes surface a warning before approval.</p>
+      <div class="safety-rails-input-row">
+        <input type="number" min="0" max="10000" step="1" value="${section.maxBps}" data-safety-rails-action="set-slippage" />
+        <span class="safety-rails-suffix">basis points (${(section.maxBps / 100).toFixed(2)}%)</span>
+      </div>
+    </div>
+  `;
+}
+
 function recipientRulesPanel(): string {
   const rules = state.recipientRules;
   const savedCount = rules.recipients.length;
@@ -4229,6 +4647,15 @@ function recipientRulesPanel(): string {
             <span>Note</span>
             <input data-recipient-field="note" value="${escapeHtml(state.recipientDraft.note)}" placeholder="Invoice, contractor, savings" autocomplete="off" ${state.busy ? 'disabled' : ''} />
           </label>
+          <label class="field compact recipient-tags-field">
+            <span>Tags</span>
+            <input data-recipient-field="tags" value="${escapeHtml(state.recipientDraft.tags)}" placeholder="team, exchange (comma separated)" autocomplete="off" ${state.busy ? 'disabled' : ''} />
+          </label>
+          <label class="field compact recipient-mine-field">
+            <span>Mine</span>
+            <input type="checkbox" data-recipient-field="isMine" ${state.recipientDraft.isMine ? 'checked' : ''} ${state.busy ? 'disabled' : ''} />
+            <em class="recipient-mine-hint">My own wallet — pre-sign shows "→ your wallet"</em>
+          </label>
           <div class="recipient-save-actions">
             <button type="button" class="primary" data-recipient-action="save" ${state.busy ? 'disabled' : ''}>Save</button>
             <button type="button" class="utility" data-recipient-action="reset" ${state.busy ? 'disabled' : ''}>Clear</button>
@@ -4238,6 +4665,86 @@ function recipientRulesPanel(): string {
       </section>
     </details>
   `;
+}
+
+function connectedDappsPanel(): string {
+  const dapps = state.connectedDapps;
+  const enabledCount = KNOWN_CONNECTED_DAPPS.filter((adapter) =>
+    isDappEnabled(adapter.id, dapps, state.cluster),
+  ).length;
+  const summary = connectedDappsSummary(dapps, state.cluster);
+  const open = enabledCount === 0 ? 'open' : '';
+  return `
+    <details class="connected-dapps-panel rail-details ${enabledCount ? 'enabled' : 'disabled'}" data-layout="connected-dapps-panel" ${open}>
+      <summary>
+        <span class="connected-dapps-summary-copy">
+          <span>Connected dApps</span>
+          <em>${escapeHtml(summary)}</em>
+        </span>
+        <strong>${enabledCount ? `${enabledCount} on` : 'off'}</strong>
+      </summary>
+      <section class="connected-dapps-card" aria-label="Connected dApps">
+        <p class="connected-dapps-intro">Turn on a protocol so the agent can prepare actions against it. You still approve every transaction.</p>
+        <div class="connected-dapps-list">
+          ${KNOWN_CONNECTED_DAPPS.map((adapter) => connectedDappRow(adapter)).join('')}
+        </div>
+      </section>
+    </details>
+  `;
+}
+
+function connectedDappRow(adapter: ConnectedDappAdapter): string {
+  const entry = state.connectedDapps.entries[adapter.id];
+  const clusterOk = isClusterSupported(adapter, state.cluster);
+  const enabled = clusterOk && entry?.enabled === true;
+  const clusterChip = clusterOk
+    ? ''
+    : `<span class="connected-dapp-cluster-chip cluster-mismatch" title="Switch cluster to use this dApp">${escapeHtml(adapter.supportedClusters.join(', '))} only</span>`;
+  const actionChips = adapter.supportedActions
+    .map((label) => `<span class="connected-dapp-action-chip">${escapeHtml(label)}</span>`)
+    .join('');
+  const toggleLabel = enabled ? 'Disconnect' : 'Connect';
+  const toggleTitle = clusterOk
+    ? enabled
+      ? `Disable ${adapter.name}`
+      : `Enable ${adapter.name}`
+    : `${adapter.name} is only available on ${adapter.supportedClusters.join(', ')}`;
+  return `
+    <article class="connected-dapp-row ${enabled ? 'enabled' : 'disabled'} ${clusterOk ? '' : 'cluster-blocked'}" data-connected-dapp="${escapeHtml(adapter.id)}">
+      <div class="connected-dapp-row-head">
+        <span class="connected-dapp-logo" aria-hidden="true">${escapeHtml(adapter.initials)}</span>
+        <div class="connected-dapp-row-copy">
+          <strong>${escapeHtml(adapter.name)}</strong>
+          <p>${escapeHtml(adapter.description)}</p>
+          <a class="connected-dapp-website" href="${escapeHtml(adapter.website)}" target="_blank" rel="noopener noreferrer">${escapeHtml(formatConnectedDappHostname(adapter.website))}</a>
+        </div>
+        <div class="connected-dapp-row-meta">
+          ${clusterChip}
+          <span class="connected-dapp-state-pill ${enabled ? 'connected' : 'disconnected'}">${enabled ? 'Connected' : 'Off'}</span>
+        </div>
+      </div>
+      <div class="connected-dapp-action-chips">${actionChips}</div>
+      <div class="connected-dapp-row-actions">
+        <button
+          type="button"
+          class="primary"
+          data-connected-dapp-action="toggle"
+          data-connected-dapp-id="${escapeHtml(adapter.id)}"
+          data-connected-dapp-next="${enabled ? 'off' : 'on'}"
+          title="${escapeHtml(toggleTitle)}"
+          ${state.busy || !clusterOk ? 'disabled' : ''}
+        >${toggleLabel}</button>
+      </div>
+    </article>
+  `;
+}
+
+function formatConnectedDappHostname(url: string): string {
+  try {
+    return new URL(url).hostname.replace(/^www\./, '');
+  } catch {
+    return url;
+  }
 }
 
 function agentPoliciesPanel(): string {
@@ -4300,6 +4807,216 @@ function agentPoliciesPanel(): string {
 function agentPolicyFieldError(key: string): string {
   const message = state.agentPolicyErrors[key];
   return message ? `<small class="error-text">${escapeHtml(message)}</small>` : '';
+}
+
+function customTokenFieldError(key: string): string {
+  const message = state.customTokenErrors[key];
+  return message ? `<small class="error-text">${escapeHtml(message)}</small>` : '';
+}
+
+function customTokensPanel(): string {
+  const tokens = state.customTokens;
+  const open = tokens.length === 0 ? 'open' : '';
+  const summary = tokens.length === 0
+    ? 'No custom tokens'
+    : `${tokens.length} custom ${tokens.length === 1 ? 'token' : 'tokens'}`;
+  const draft = state.customTokenDraft;
+  return `
+    <details class="custom-tokens-panel rail-details" data-layout="custom-tokens-panel" ${open}>
+      <summary>
+        <span class="custom-tokens-summary-copy">
+          <span>Custom tokens</span>
+          <em>${escapeHtml(summary)}</em>
+        </span>
+        <strong>${tokens.length ? `${tokens.length}` : 'off'}</strong>
+      </summary>
+      <section class="custom-tokens-card" aria-label="Custom tokens">
+        <p class="custom-tokens-intro">Map an SPL mint to a symbol and decimals so pre-sign shows it as a name instead of a raw mint.</p>
+        <div class="custom-token-save-form">
+          <label class="field compact">
+            <span>Mint</span>
+            <input data-custom-token-field="mint" value="${escapeHtml(draft.mint)}" placeholder="Solana mint address" autocomplete="off" spellcheck="false" ${state.busy ? 'disabled' : ''} />
+            ${customTokenFieldError('mint')}
+          </label>
+          <label class="field compact">
+            <span>Symbol</span>
+            <input data-custom-token-field="symbol" value="${escapeHtml(draft.symbol)}" placeholder="USDC" autocomplete="off" ${state.busy ? 'disabled' : ''} />
+            ${customTokenFieldError('symbol')}
+          </label>
+          <label class="field compact">
+            <span>Decimals</span>
+            <input data-custom-token-field="decimals" value="${escapeHtml(draft.decimals)}" placeholder="6" inputmode="numeric" autocomplete="off" ${state.busy ? 'disabled' : ''} />
+            ${customTokenFieldError('decimals')}
+          </label>
+          <label class="field compact custom-token-label-field">
+            <span>Label</span>
+            <input data-custom-token-field="label" value="${escapeHtml(draft.label)}" placeholder="Optional display name" autocomplete="off" ${state.busy ? 'disabled' : ''} />
+          </label>
+          <div class="custom-token-save-actions">
+            <button type="button" class="primary" data-custom-token-action="save" ${state.busy ? 'disabled' : ''}>Save token</button>
+            <button type="button" class="utility" data-custom-token-action="reset" ${state.busy ? 'disabled' : ''}>Clear</button>
+          </div>
+        </div>
+        ${tokens.length ? savedCustomTokenList(tokens) : '<div class="custom-token-empty">No saved custom tokens yet</div>'}
+      </section>
+    </details>
+  `;
+}
+
+function savedCustomTokenList(tokens: CustomToken[]): string {
+  return `
+    <div class="custom-token-list" aria-label="Saved custom tokens">
+      ${tokens.map(customTokenRow).join('')}
+    </div>
+  `;
+}
+
+function customTokenRow(token: CustomToken): string {
+  return `
+    <article class="custom-token-row" data-custom-token-id="${escapeHtml(token.id)}">
+      <div>
+        <strong>${escapeHtml(token.symbol)}</strong>
+        <span title="${escapeHtml(token.mint)}">${escapeHtml(shortHexMint(token.mint))}</span>
+        ${token.label ? `<em>${escapeHtml(token.label)}</em>` : ''}
+      </div>
+      <span class="custom-token-decimals">${token.decimals} decimals</span>
+      <div class="custom-token-row-actions">
+        <button type="button" data-custom-token-action="edit" data-custom-token-id="${escapeHtml(token.id)}" title="Edit token" ${state.busy ? 'disabled' : ''}>Edit</button>
+        <button type="button" class="utility danger" data-custom-token-action="delete" data-custom-token-id="${escapeHtml(token.id)}" title="Delete token" ${state.busy ? 'disabled' : ''}>Delete</button>
+      </div>
+    </article>
+  `;
+}
+
+function agentFieldError(key: string): string {
+  const message = state.agentErrors[key];
+  return message ? `<small class="error-text">${escapeHtml(message)}</small>` : '';
+}
+
+function connectedAgentsPanel(): string {
+  const agents = state.agents;
+  const enabledCount = agents.filter((agent) => agent.enabled).length;
+  const open = agents.length === 0 ? 'open' : '';
+  const summary = agents.length === 0
+    ? 'No connected agents yet'
+    : `${enabledCount} of ${agents.length} active`;
+  const draft = state.agentDraft;
+  const errors = state.agentErrors;
+  return `
+    <details class="connected-agents-panel rail-details" data-layout="connected-agents-panel" ${open}>
+      <summary>
+        <span class="connected-agents-summary-copy">
+          <span>Connected agents</span>
+          <em>${escapeHtml(summary)}</em>
+        </span>
+        <strong>${agents.length ? `${enabledCount}` : 'off'}</strong>
+      </summary>
+      <section class="connected-agents-card" aria-label="Connected agents">
+        <p class="connected-agents-intro">Each agent connects to the bridge with its own token. Pick a tier per agent and revoke any time.</p>
+        <div class="agent-save-form">
+          <label class="field compact">
+            <span>Label</span>
+            <input data-agent-field="label" value="${escapeHtml(draft.label)}" placeholder="Codex devnet" autocomplete="off" ${state.busy ? 'disabled' : ''} />
+            ${agentFieldError('label')}
+          </label>
+          <label class="field compact">
+            <span>Tier</span>
+            ${selectPicker({
+              id: 'agentDraftTier',
+              value: draft.tier,
+              attrs: { 'data-agent-field': 'tier' },
+              disabled: state.busy,
+              options: agentTierOptions(),
+            })}
+          </label>
+          <label class="field compact agent-notes-field">
+            <span>Notes</span>
+            <input data-agent-field="notes" value="${escapeHtml(draft.notes)}" placeholder="What this agent runs" autocomplete="off" ${state.busy ? 'disabled' : ''} />
+          </label>
+          <div class="agent-save-actions">
+            <button type="button" class="primary" data-agent-action="issue" ${state.busy ? 'disabled' : ''}>Issue token</button>
+            <button type="button" class="utility" data-agent-action="reset" ${state.busy ? 'disabled' : ''}>Clear</button>
+          </div>
+          ${errors._form ? `<p class="error-text">${escapeHtml(errors._form)}</p>` : ''}
+        </div>
+        ${agents.length ? connectedAgentList(agents) : '<div class="agent-empty">No agents connected yet. Issue a token above and paste it into your MCP client.</div>'}
+        ${state.agentReveal ? agentRevealModal(state.agentReveal) : ''}
+      </section>
+    </details>
+  `;
+}
+
+function connectedAgentList(agents: RegisteredAgent[]): string {
+  return `
+    <div class="connected-agent-list" aria-label="Connected agents">
+      ${agents.map(connectedAgentRow).join('')}
+    </div>
+  `;
+}
+
+function connectedAgentRow(agent: RegisteredAgent): string {
+  const lastSeen = agent.lastSeenAt
+    ? `<em class="agent-last-seen" title="${escapeHtml(agent.lastSeenAt)}">Seen ${escapeHtml(formatRelativeTime(agent.lastSeenAt))}</em>`
+    : '<em class="agent-last-seen muted">Never seen</em>';
+  return `
+    <article class="connected-agent-row ${agent.enabled ? 'enabled' : 'disabled'}" data-agent-id="${escapeHtml(agent.id)}">
+      <div>
+        <strong>${escapeHtml(agent.label)}</strong>
+        <span class="agent-tier-pill tier-${escapeHtml(agent.tier)}">${escapeHtml(agentTierLabel(agent.tier))}</span>
+        ${lastSeen}
+        ${agent.notes ? `<em class="agent-notes">${escapeHtml(agent.notes)}</em>` : ''}
+      </div>
+      <div class="connected-agent-tier-controls" role="group" aria-label="Agent tier">
+        ${agentTierButton(agent, 'read_only', 'Read')}
+        ${agentTierButton(agent, 'capped', 'Capped')}
+        ${agentTierButton(agent, 'full', 'Full')}
+      </div>
+      <div class="connected-agent-row-actions">
+        <button type="button" data-agent-action="toggle" data-agent-id="${escapeHtml(agent.id)}" class="${agent.enabled ? 'active' : ''}" ${state.busy ? 'disabled' : ''}>${agent.enabled ? 'On' : 'Off'}</button>
+        <button type="button" class="utility danger" data-agent-action="delete" data-agent-id="${escapeHtml(agent.id)}" title="Revoke this agent" ${state.busy ? 'disabled' : ''}>Revoke</button>
+      </div>
+    </article>
+  `;
+}
+
+function agentTierButton(agent: RegisteredAgent, tier: AgentTier, label: string): string {
+  const active = agent.tier === tier;
+  return `
+    <button
+      type="button"
+      data-agent-action="tier"
+      data-agent-id="${escapeHtml(agent.id)}"
+      data-agent-tier="${escapeHtml(tier)}"
+      class="${active ? 'active' : ''}"
+      aria-pressed="${active ? 'true' : 'false'}"
+      ${state.busy ? 'disabled' : ''}
+    >${escapeHtml(label)}</button>
+  `;
+}
+
+function agentTierOptions(): SelectPickerOption[] {
+  return [
+    { value: 'read_only', label: 'Read-only', detail: 'Status and balances only — cannot prepare or send.' },
+    { value: 'capped', label: 'Capped', detail: 'Can prepare actions for your approval — cannot execute or sign.' },
+    { value: 'full', label: 'Full', detail: 'Can do everything the bridge supports, subject to wallet approval.' },
+  ];
+}
+
+function agentRevealModal(reveal: AgentRevealState): string {
+  return `
+    <div class="agent-reveal-modal" role="dialog" aria-label="New agent token">
+      <header>
+        <strong>Token issued for ${escapeHtml(reveal.label)}</strong>
+        <span class="agent-tier-pill tier-${escapeHtml(reveal.tier)}">${escapeHtml(agentTierLabel(reveal.tier))}</span>
+      </header>
+      <p>Copy this token now. We cannot show it again. Paste it into your MCP client config (header <code>x-agent-wallet-token</code>) for this agent.</p>
+      <code class="agent-reveal-token">${escapeHtml(reveal.token)}</code>
+      <div class="agent-reveal-actions">
+        <button type="button" class="primary" data-copy="${escapeHtml(reveal.token)}" data-copy-name="agent token">Copy token</button>
+        <button type="button" class="utility" data-agent-action="dismiss-reveal">Done</button>
+      </div>
+    </div>
+  `;
 }
 
 function agentPolicyKindOptions(): SelectPickerOption[] {
@@ -4446,16 +5163,26 @@ function savedRecipientList(recipients: SavedRecipient[]): string {
 
 function savedRecipientRow(recipient: SavedRecipient): string {
   const policy = recipientPolicyDisplay(recipient.policy);
+  const tagChips = recipient.tags?.length
+    ? `<div class="recipient-row-tags">${recipient.tags.map((tag) => `<span class="recipient-tag">${escapeHtml(tag)}</span>`).join('')}</div>`
+    : '';
+  const mineBadge = recipient.isMine ? '<span class="recipient-mine-badge" title="Your own wallet">Mine</span>' : '';
+  const lastUsed = recipient.lastUsedAt
+    ? `<em class="recipient-row-last-used" title="${escapeHtml(recipient.lastUsedAt)}">Used ${escapeHtml(formatRelativeTime(recipient.lastUsedAt))}</em>`
+    : '';
   return `
-    <article class="recipient-row ${escapeHtml(recipient.policy)}">
+    <article class="recipient-row ${escapeHtml(recipient.policy)}${recipient.isMine ? ' is-mine' : ''}">
       <div>
-        <strong>${escapeHtml(recipient.name)}</strong>
+        <strong>${escapeHtml(recipient.name)} ${mineBadge}</strong>
         <span title="${escapeHtml(recipient.address)}">${escapeHtml(short(recipient.address))}</span>
         ${recipient.note ? `<em>${escapeHtml(recipient.note)}</em>` : ''}
+        ${tagChips}
+        ${lastUsed}
       </div>
       <span class="recipient-policy-pill ${escapeHtml(recipient.policy)}">${escapeHtml(policy)}</span>
       <div class="recipient-row-actions">
         <button type="button" data-recipient-action="use" data-recipient-id="${escapeHtml(recipient.id)}" title="Use recipient" ${state.busy ? 'disabled' : ''}>Use</button>
+        <button type="button" data-recipient-action="toggle-mine" data-recipient-id="${escapeHtml(recipient.id)}" title="${recipient.isMine ? 'Unmark as your wallet' : 'Mark as your wallet'}" ${state.busy ? 'disabled' : ''}>${recipient.isMine ? 'Unmine' : 'Mine'}</button>
         <button type="button" data-recipient-action="policy" data-recipient-id="${escapeHtml(recipient.id)}" data-recipient-policy="allow" title="Move to allow list" ${state.busy ? 'disabled' : ''}>Allow</button>
         <button type="button" data-recipient-action="policy" data-recipient-id="${escapeHtml(recipient.id)}" data-recipient-policy="block" title="Move to block list" ${state.busy ? 'disabled' : ''}>Block</button>
         <button type="button" class="utility danger" data-recipient-action="delete" data-recipient-id="${escapeHtml(recipient.id)}" title="Delete recipient" ${state.busy ? 'disabled' : ''}>Delete</button>
@@ -4598,9 +5325,13 @@ function isRecipientFieldId(fieldId: string): boolean {
 
 function updateRecipientDraftField(field: HTMLInputElement | HTMLSelectElement): void {
   const key = field.dataset.recipientField;
-  if (key === 'name' || key === 'address' || key === 'note') {
+  if (key === 'name' || key === 'address' || key === 'note' || key === 'tags') {
     state.recipientDraft[key] = field.value;
     delete state.recipientErrors[key];
+    return;
+  }
+  if (key === 'isMine' && field instanceof HTMLInputElement) {
+    state.recipientDraft.isMine = field.checked;
     return;
   }
   if (key === 'policy' && isRecipientPolicy(field.value)) {
@@ -4734,6 +5465,227 @@ function deleteAgentPolicy(policyId: string): void {
   render();
 }
 
+function updateCustomTokenDraftField(field: HTMLInputElement): void {
+  const key = field.dataset.customTokenField;
+  if (key === 'mint' || key === 'symbol' || key === 'decimals' || key === 'label') {
+    state.customTokenDraft[key] = field.value;
+    delete state.customTokenErrors[key];
+  }
+}
+
+function handleCustomTokenAction(button: HTMLButtonElement): void {
+  const action = button.dataset.customTokenAction;
+  if (action === 'save') {
+    saveCustomTokenDraft();
+    return;
+  }
+  if (action === 'reset') {
+    state.customTokenDraft = defaultCustomTokenDraft();
+    state.customTokenErrors = {};
+    render();
+    return;
+  }
+  const tokenId = button.dataset.customTokenId;
+  if (!tokenId) return;
+  if (action === 'delete') {
+    deleteCustomToken(tokenId);
+    return;
+  }
+  if (action === 'edit') {
+    editCustomToken(tokenId);
+  }
+}
+
+function saveCustomTokenDraft(): void {
+  const draft = {
+    mint: state.customTokenDraft.mint.trim(),
+    symbol: state.customTokenDraft.symbol.trim(),
+    decimals: state.customTokenDraft.decimals.trim(),
+    label: state.customTokenDraft.label.trim(),
+  };
+  const errors: Record<string, string> = {};
+  if (!draft.mint) {
+    errors.mint = 'Mint address is required.';
+  } else if (!isSolanaPublicKeyText(draft.mint)) {
+    errors.mint = 'Use a valid Solana mint address.';
+  }
+  if (!draft.symbol) errors.symbol = 'Symbol is required.';
+  const decimalsNum = Number(draft.decimals);
+  if (!draft.decimals || !Number.isFinite(decimalsNum) || decimalsNum < 0 || decimalsNum > 18 || !Number.isInteger(decimalsNum)) {
+    errors.decimals = 'Use an integer between 0 and 18.';
+  }
+  state.customTokenErrors = errors;
+  if (Object.keys(errors).length > 0) {
+    render();
+    return;
+  }
+  const now = new Date().toISOString();
+  const existing = customTokenByMint(draft.mint);
+  const token: CustomToken = {
+    id: existing?.id ?? newId('custom-token'),
+    mint: draft.mint,
+    symbol: draft.symbol.slice(0, 12),
+    decimals: decimalsNum,
+    ...(draft.label ? { label: draft.label.slice(0, 64) } : {}),
+    createdAt: existing?.createdAt ?? now,
+    updatedAt: now,
+  };
+  state.customTokens = [token, ...state.customTokens.filter((entry) => entry.id !== token.id)];
+  state.customTokenDraft = defaultCustomTokenDraft();
+  state.customTokenErrors = {};
+  saveCustomTokens();
+  pushToast('success', 'Token saved', `${token.symbol} (${shortHexMint(token.mint)})`);
+  render();
+}
+
+function deleteCustomToken(tokenId: string): void {
+  const token = state.customTokens.find((entry) => entry.id === tokenId);
+  state.customTokens = state.customTokens.filter((entry) => entry.id !== tokenId);
+  saveCustomTokens();
+  pushToast('success', 'Token removed', token?.symbol ?? tokenId);
+  render();
+}
+
+function editCustomToken(tokenId: string): void {
+  const token = state.customTokens.find((entry) => entry.id === tokenId);
+  if (!token) return;
+  state.customTokenDraft = {
+    mint: token.mint,
+    symbol: token.symbol,
+    decimals: String(token.decimals),
+    label: token.label ?? '',
+  };
+  state.customTokenErrors = {};
+  render();
+}
+
+function updateAgentDraftField(field: HTMLInputElement | HTMLSelectElement): void {
+  const key = field.dataset.agentField;
+  if (key === 'label' || key === 'notes') {
+    state.agentDraft[key] = field.value;
+    delete state.agentErrors[key];
+    delete state.agentErrors._form;
+    return;
+  }
+  if (key === 'tier' && (field.value === 'read_only' || field.value === 'capped' || field.value === 'full')) {
+    state.agentDraft.tier = field.value;
+  }
+}
+
+function handleAgentAction(button: HTMLButtonElement): void {
+  const action = button.dataset.agentAction;
+  if (action === 'reset') {
+    state.agentDraft = defaultAgentDraft();
+    state.agentErrors = {};
+    render();
+    return;
+  }
+  if (action === 'issue') {
+    void issueAgentDraft();
+    return;
+  }
+  if (action === 'dismiss-reveal') {
+    state.agentReveal = null;
+    render();
+    return;
+  }
+  const agentId = button.dataset.agentId;
+  if (!agentId) return;
+  if (action === 'toggle') {
+    toggleAgent(agentId);
+    return;
+  }
+  if (action === 'tier') {
+    const tier = button.dataset.agentTier;
+    if (tier === 'read_only' || tier === 'capped' || tier === 'full') {
+      setAgentTier(agentId, tier);
+    }
+    return;
+  }
+  if (action === 'delete') {
+    deleteAgent(agentId);
+  }
+}
+
+async function issueAgentDraft(): Promise<void> {
+  const draft = {
+    label: state.agentDraft.label.trim(),
+    tier: state.agentDraft.tier,
+    notes: state.agentDraft.notes.trim(),
+  };
+  const errors: Record<string, string> = {};
+  if (!draft.label) errors.label = 'Label is required.';
+  state.agentErrors = errors;
+  if (Object.keys(errors).length > 0) {
+    render();
+    return;
+  }
+  const issued = await issueAgentViaBridge(draft);
+  if (!issued) {
+    render();
+    return;
+  }
+  state.agents = [issued, ...state.agents.filter((entry) => entry.id !== issued.id)];
+  state.agentDraft = defaultAgentDraft();
+  state.agentErrors = {};
+  state.agentReveal = {
+    agentId: issued.id,
+    label: issued.label,
+    token: issued.token,
+    tier: issued.tier,
+  };
+  saveAgents();
+  pushToast('success', 'Agent token issued', `${issued.label} (${agentTierLabel(issued.tier)})`);
+  render();
+}
+
+function toggleAgent(agentId: string): void {
+  const agent = agentById(agentId);
+  if (!agent) return;
+  state.agents = state.agents.map((entry) =>
+    entry.id === agentId ? { ...entry, enabled: !entry.enabled } : entry,
+  );
+  saveAgents();
+  void syncAgentsToBridge();
+  pushToast('success', agent.enabled ? 'Agent paused' : 'Agent resumed', agent.label);
+  render();
+}
+
+function setAgentTier(agentId: string, tier: AgentTier): void {
+  const agent = agentById(agentId);
+  if (!agent || agent.tier === tier) return;
+  state.agents = state.agents.map((entry) =>
+    entry.id === agentId ? { ...entry, tier } : entry,
+  );
+  saveAgents();
+  void syncAgentsToBridge();
+  pushToast('success', 'Agent tier updated', `${agent.label} → ${agentTierLabel(tier)}`);
+  render();
+}
+
+function deleteAgent(agentId: string): void {
+  const agent = agentById(agentId);
+  if (!agent) return;
+  state.agents = state.agents.filter((entry) => entry.id !== agentId);
+  saveAgents();
+  void syncAgentsToBridgeAfterDelete(agentId);
+  pushToast('success', 'Agent revoked', agent.label);
+  render();
+}
+
+async function syncAgentsToBridgeAfterDelete(agentId: string): Promise<void> {
+  if (!state.bridgeActive || !state.bridgeUrl || !state.bridgeToken) return;
+  try {
+    await bridgeRequest('/bridge/agents/delete', {
+      method: 'POST',
+      body: JSON.stringify({ agentId }),
+    });
+  } catch {
+    // Best-effort.
+  }
+  await syncAgentsToBridge();
+}
+
 function handleRecipientAction(button: HTMLButtonElement): void {
   const action = button.dataset.recipientAction;
   if (action === 'save') {
@@ -4761,6 +5713,40 @@ function handleRecipientAction(button: HTMLButtonElement): void {
   }
   if (action === 'use') {
     useSavedRecipient(recipientId);
+    return;
+  }
+  if (action === 'toggle-mine') {
+    toggleRecipientIsMine(recipientId);
+  }
+}
+
+function handleConnectedDappAction(button: HTMLButtonElement): void {
+  const action = button.dataset.connectedDappAction;
+  const id = button.dataset.connectedDappId as ConnectedDappId | undefined;
+  if (!action || !id) return;
+  const adapter = getAdapterMeta(id);
+  if (!adapter) return;
+  if (action === 'toggle') {
+    if (!isClusterSupported(adapter, state.cluster)) {
+      pushToast(
+        'error',
+        `${adapter.name} unavailable here`,
+        `${adapter.name} is only available on ${adapter.supportedClusters.join(', ')}.`,
+      );
+      return;
+    }
+    const next = button.dataset.connectedDappNext === 'on';
+    const updated = setConnectedDappEnabled(state.connectedDapps, id, next);
+    state.connectedDapps = updated;
+    saveConnectedDapps(updated);
+    pushToast(
+      'success',
+      next ? `${adapter.name} connected` : `${adapter.name} disconnected`,
+      next
+        ? `Agent can now prepare ${adapter.supportedActions.join(' / ')} actions. You still approve every transaction.`
+        : `Agent will refuse ${adapter.name} actions until reconnected.`,
+    );
+    render();
   }
 }
 
@@ -4770,6 +5756,7 @@ function saveRecipientDraft(): void {
     name: state.recipientDraft.name.trim(),
     address: state.recipientDraft.address.trim(),
     note: state.recipientDraft.note.trim(),
+    tags: state.recipientDraft.tags.trim(),
   };
   const errors: Record<string, string> = {};
   if (!draft.name) errors.name = 'Name is required.';
@@ -4785,12 +5772,22 @@ function saveRecipientDraft(): void {
   }
   const now = new Date().toISOString();
   const existing = savedRecipientForAddress(draft.address);
+  const tags = draft.tags
+    ? draft.tags
+        .split(',')
+        .map((tag) => tag.trim())
+        .filter((tag) => tag.length > 0)
+        .slice(0, 8)
+    : [];
   const recipient: SavedRecipient = {
     id: existing?.id ?? newId('recipient'),
     name: draft.name.slice(0, 48),
     address: draft.address,
     policy: draft.policy,
     ...(draft.note ? { note: draft.note.slice(0, 140) } : {}),
+    ...(tags.length ? { tags } : {}),
+    ...(draft.isMine ? { isMine: true } : {}),
+    ...(existing?.lastUsedAt ? { lastUsedAt: existing.lastUsedAt } : {}),
     createdAt: existing?.createdAt ?? now,
     updatedAt: now,
   };
@@ -4854,7 +5851,30 @@ function useSavedRecipient(recipientId: string): void {
       state.agentPreparedActionId = '';
     }
   }
+  bumpRecipientLastUsed(recipient.address);
   pushToast('success', 'Recipient selected', recipient.name);
+  render();
+}
+
+function toggleRecipientIsMine(recipientId: string): void {
+  const now = new Date().toISOString();
+  const recipient = savedRecipientById(recipientId);
+  if (!recipient) return;
+  const willBeMine = !recipient.isMine;
+  state.recipientRules = {
+    ...state.recipientRules,
+    recipients: mergeSavedRecipients(state.recipientRules.recipients.map((entry) =>
+      entry.id === recipientId
+        ? { ...entry, isMine: willBeMine ? true : undefined, updatedAt: now }
+        : entry,
+    )),
+  };
+  saveRecipientRules();
+  pushToast(
+    'success',
+    willBeMine ? 'Marked as your wallet' : 'Unmarked',
+    `${recipient.name}${willBeMine ? ' → your wallet' : ''}`,
+  );
   render();
 }
 
@@ -5737,6 +6757,8 @@ function commandCenterStoragePanel(): string {
 
         ${workspaceBackupPanel()}
 
+        ${notificationPreferencesPanel()}
+
         ${commandCloudStorageDangerZone()}
       </section>
     </div>
@@ -6312,6 +7334,7 @@ function generatedPlansPanel(embedded = false): string {
       </div>
       `}
 
+      ${planTemplatesStrip(embedded)}
       ${generatedPlanStatusLine(allPlans.length, visiblePlans.length, archivedCount, movedCount)}
       ${
         visiblePlans.length
@@ -6426,6 +7449,15 @@ function generatedPlanCard(record: GeneratedPlanRecord): string {
             ${generatedPlanDetailActions(record)}
           </div>
         </details>
+        <button
+          class="utility review-template-mini"
+          data-template-action="save-as"
+          data-generated-plan-id="${escapeHtml(record.id)}"
+          ${state.busy ? 'disabled' : ''}
+          title="Save this plan as a reusable template"
+        >
+          Save as template
+        </button>
         <button
           class="utility danger review-delete-mini"
           data-generated-plan-action="delete"
@@ -6596,21 +7628,85 @@ function generatedPlanAgentReviewStrip(record: GeneratedPlanRecord): string {
   const badge = agentReviewPathBadge(review.source);
   const stale = isAgentReviewStale(record);
   const staleBadge = stale ? '<span class="agent-review-stale-pill" title="The draft has changed since the agent reviewed it. Ask the agent again.">Stale</span>' : '';
+  const watching = isPlanWatchActive(record);
+  const watchBadge = watching
+    ? `<span class="agent-review-watch-pill" title="Background watch on. Re-checks each draft once an hour while the tab is open.">Watching</span>`
+    : '';
   return `
-    <section class="agent-review-strip ${escapeHtml(review.status)}${stale ? ' stale' : ''}" aria-label="Agent review">
+    <section class="agent-review-strip ${escapeHtml(review.status)}${stale ? ' stale' : ''}${watching ? ' watching' : ''}" aria-label="Agent review">
       <div>
         <span>Agent review</span>
         <strong>${escapeHtml(label)}</strong>
         <em>${escapeHtml(detail)}</em>
         ${badge}
         ${staleBadge}
+        ${watchBadge}
       </div>
       <p>${escapeHtml(review.reason || 'Agent review is required before this draft can move forward.')}</p>
       ${review.status === 'needs_input' ? agentReviewQuestionsForm(record) : ''}
       ${agentEvidenceDrawer(review)}
       ${agentDenialActions(record)}
+      ${agentAskAnythingPanel(record)}
     </section>
   `;
+}
+
+function agentAskAnythingPanel(record: GeneratedPlanRecord): string {
+  const review = record.agentReview;
+  if (!review?.required) return '';
+  if (!hasDetectedAgentReviewPath()) return '';
+  const exchanges = (review.conversation ?? []).slice(-3);
+  const disabled = !canRunAgentReview() || record.status === 'archived';
+  const placeholder = agentAskPlaceholder(record);
+  const exchangesHtml = exchanges.map((exchange) => `
+    <div class="agent-ask-exchange ${exchange.pending ? 'pending' : exchange.error ? 'errored' : 'answered'}">
+      <div class="agent-ask-question"><strong>You asked:</strong> ${escapeHtml(exchange.question)}</div>
+      <div class="agent-ask-answer">
+        ${exchange.pending ? '<em>Agent is thinking...</em>' : exchange.error
+          ? `<em>${escapeHtml(exchange.error)}</em>`
+          : escapeHtml(exchange.answer ?? '')}
+      </div>
+      ${exchange.answeredAt
+        ? `<small>${escapeHtml(formatDateTime(exchange.answeredAt))}${exchange.provider ? ` · ${escapeHtml(exchange.provider)}` : ''}</small>`
+        : ''}
+    </div>
+  `).join('');
+  return `
+    <details class="agent-ask-panel">
+      <summary>Ask agent about this request${exchanges.length ? ` (${exchanges.length})` : ''}</summary>
+      <div class="agent-ask-body">
+        ${exchangesHtml}
+        <form
+          class="agent-ask-form"
+          data-agent-ask-form
+          data-generated-plan-id="${escapeHtml(record.id)}"
+        >
+          <input
+            type="text"
+            placeholder="${escapeHtml(placeholder)}"
+            maxlength="400"
+            data-agent-ask-input
+            ${disabled ? 'disabled' : ''}
+            required
+          />
+          <button type="submit" class="primary" ${disabled ? 'disabled' : ''}>Ask</button>
+        </form>
+      </div>
+    </details>
+  `;
+}
+
+const AGENT_ASK_PLACEHOLDER_EXAMPLES: ReadonlyArray<string> = [
+  'What protocol is this?',
+  'Why is this risky?',
+  'Is this route weird?',
+  'What would make this safer?',
+  'Is the recipient known?',
+];
+
+function agentAskPlaceholder(record: GeneratedPlanRecord): string {
+  const seed = record.id.length;
+  return AGENT_ASK_PLACEHOLDER_EXAMPLES[seed % AGENT_ASK_PLACEHOLDER_EXAMPLES.length] ?? AGENT_ASK_PLACEHOLDER_EXAMPLES[0]!;
 }
 
 function agentDenialActions(record: GeneratedPlanRecord): string {
@@ -6684,6 +7780,25 @@ function agentEvidenceRows(review: AgentPlanReviewState): Array<{ label: string;
             ? 'fail'
             : 'neutral';
       rows.push({ label: `Policy: ${snapshot.label}`, value: snapshot.ruleText, tone });
+    }
+  }
+  if (review.reviewers?.length) {
+    for (const reviewer of review.reviewers) {
+      const tone: 'good' | 'warn' | 'neutral' | 'fail' = reviewer.decision === 'approve'
+        ? 'good'
+        : reviewer.decision === 'needs_input'
+          ? 'warn'
+          : 'fail';
+      const decisionLabel = reviewer.decision === 'approve'
+        ? 'Approved'
+        : reviewer.decision === 'needs_input'
+          ? 'Needs input'
+          : 'Denied';
+      rows.push({
+        label: `${reviewer.label}: ${decisionLabel}`,
+        value: reviewer.reason,
+        tone,
+      });
     }
   }
   const evidence = review.evidence;
@@ -8066,6 +9181,33 @@ function aiSettingsCard(location: 'rail' | 'planner' = 'planner'): string {
         <button id="clearAiKey-${escapeHtml(scope)}" data-ai-action="clear-key" ${!canClearAiKey() ? 'disabled' : ''}>Clear key</button>
         ${state.aiSettings.mode === 'bridge' ? `<button id="refreshAiStatus-${escapeHtml(scope)}" data-ai-action="refresh-status" ${state.busy ? 'disabled' : ''}>Refresh</button>` : ''}
       </div>
+      <div class="ai-advanced-toggles" aria-label="Agent review extras">
+        <label class="ai-toggle">
+          <input
+            type="checkbox"
+            data-ai-toggle="multiReviewer"
+            ${state.aiSettings.multiReviewer ? 'checked' : ''}
+            ${state.busy ? 'disabled' : ''}
+          />
+          <span>
+            <strong>Multi-agent review</strong>
+            <em>Ask the agent to weigh in as 4 specialists (risk, quote, policy, protocol) in one call. ~4x prompt tokens.</em>
+          </span>
+        </label>
+        <label class="ai-toggle">
+          <input
+            type="checkbox"
+            data-ai-toggle="autoBackgroundWatch"
+            ${state.aiSettings.autoBackgroundWatch ? 'checked' : ''}
+            ${state.busy ? 'disabled' : ''}
+          />
+          <span>
+            <strong>Background re-check</strong>
+            <em>While this tab is open, the agent quietly re-reviews older drafts and toasts you if its decision changes.</em>
+          </span>
+        </label>
+      </div>
+      ${plannerPrefsSection(scope)}
       ${isRail
         ? '<p class="ai-security-note compact">Drafts only. Wallet approvals stay separate.</p>'
         : `
@@ -10253,6 +11395,18 @@ function bind(): void {
       });
     }
   }
+  for (const form of document.querySelectorAll<HTMLFormElement>('form[data-agent-ask-form]')) {
+    form.addEventListener('submit', (event) => {
+      event.preventDefault();
+      const planId = form.dataset.generatedPlanId;
+      if (!planId) return;
+      const input = form.querySelector<HTMLInputElement>('[data-agent-ask-input]');
+      const question = input?.value.trim() ?? '';
+      if (!question) return;
+      void runAskAgentAnything(planId, question);
+      if (input) input.value = '';
+    });
+  }
   for (const button of document.querySelectorAll<HTMLButtonElement>('[data-completed-delete]')) {
     button.addEventListener('click', () => {
       const completedId = button.dataset.completedDelete;
@@ -10562,6 +11716,28 @@ function bind(): void {
     });
   }
 
+  for (const control of document.querySelectorAll<HTMLInputElement>('[data-ai-toggle="multiReviewer"]')) {
+    control.addEventListener('change', (event) => {
+      state.aiSettings.multiReviewer = (event.currentTarget as HTMLInputElement).checked;
+      savePersistedState();
+      render();
+    });
+  }
+
+  for (const control of document.querySelectorAll<HTMLInputElement>('[data-ai-toggle="autoBackgroundWatch"]')) {
+    control.addEventListener('change', (event) => {
+      const checked = (event.currentTarget as HTMLInputElement).checked;
+      state.aiSettings.autoBackgroundWatch = checked;
+      savePersistedState();
+      if (checked) {
+        startAgentBackgroundWatch();
+      } else {
+        stopAgentBackgroundWatch();
+      }
+      render();
+    });
+  }
+
   document.querySelector<HTMLTextAreaElement>('#labInput')?.addEventListener('input', (event) => {
     state.labInputs[state.activeLab] = (event.currentTarget as HTMLTextAreaElement).value;
     delete state.labFieldErrors[receiptFieldErrorKey(state.activeLab, '__advanced')];
@@ -10761,6 +11937,67 @@ function bind(): void {
     });
   }
 
+  for (const button of document.querySelectorAll<HTMLButtonElement>('[data-connected-dapp-action]')) {
+    button.addEventListener('click', () => {
+      handleConnectedDappAction(button);
+    });
+  }
+
+  for (const field of document.querySelectorAll<HTMLInputElement>('[data-custom-token-field]')) {
+    field.addEventListener('input', () => updateCustomTokenDraftField(field));
+    field.addEventListener('change', () => updateCustomTokenDraftField(field));
+  }
+
+  for (const button of document.querySelectorAll<HTMLButtonElement>('[data-custom-token-action]')) {
+    button.addEventListener('click', () => {
+      handleCustomTokenAction(button);
+    });
+  }
+
+  for (const field of document.querySelectorAll<HTMLInputElement | HTMLSelectElement>('[data-agent-field]')) {
+    field.addEventListener('input', () => updateAgentDraftField(field));
+    field.addEventListener('change', () => updateAgentDraftField(field));
+  }
+
+  for (const button of document.querySelectorAll<HTMLButtonElement>('[data-agent-action]')) {
+    button.addEventListener('click', () => {
+      handleAgentAction(button);
+    });
+  }
+
+  for (const textarea of document.querySelectorAll<HTMLTextAreaElement>('textarea[data-planner-pref="houseRules"]')) {
+    textarea.addEventListener('input', () => updateHouseRules(textarea.value));
+    textarea.addEventListener('change', () => updateHouseRules(textarea.value));
+  }
+
+  for (const field of document.querySelectorAll<HTMLInputElement | HTMLTextAreaElement>('[data-saved-prompt-field]')) {
+    field.addEventListener('input', () => updateSavedPromptDraftField(field));
+    field.addEventListener('change', () => updateSavedPromptDraftField(field));
+  }
+
+  for (const button of document.querySelectorAll<HTMLButtonElement>('[data-saved-prompt-action]')) {
+    button.addEventListener('click', () => {
+      handleSavedPromptAction(button);
+    });
+  }
+
+  for (const button of document.querySelectorAll<HTMLButtonElement>('[data-failure-policy-action]')) {
+    button.addEventListener('click', () => {
+      handleFailurePolicyAction(button);
+    });
+  }
+
+  for (const field of document.querySelectorAll<HTMLInputElement>('[data-failure-policy-field]')) {
+    field.addEventListener('change', () => handleFailurePolicyFieldChange(field));
+    field.addEventListener('blur', () => handleFailurePolicyFieldChange(field));
+  }
+
+  for (const button of document.querySelectorAll<HTMLButtonElement>('[data-template-action]')) {
+    button.addEventListener('click', () => {
+      handleTemplateAction(button);
+    });
+  }
+
   for (const button of document.querySelectorAll<HTMLButtonElement>('[data-action-op]')) {
     button.addEventListener('click', () => {
       const actionId = button.dataset.actionId;
@@ -10898,6 +12135,64 @@ function bind(): void {
       if (!file) return;
       void handleWorkspaceBackupFile(file);
       input.value = '';
+    });
+  }
+
+  for (const button of document.querySelectorAll<HTMLButtonElement>('[data-preflight-action]')) {
+    button.addEventListener('click', (event) => {
+      event.preventDefault();
+      const op = button.dataset.preflightAction;
+      const actionId = button.dataset.actionId;
+      if (!op || !actionId) return;
+      void handlePreflightAction(op, actionId);
+    });
+  }
+
+  for (const el of document.querySelectorAll<HTMLElement>('[data-safety-rails-action]')) {
+    el.addEventListener('click', (event) => {
+      event.preventDefault();
+      const op = el.dataset.safetyRailsAction;
+      if (!op) return;
+      handleSafetyRailsAction(op, el);
+    });
+  }
+
+  for (const el of document.querySelectorAll<HTMLElement>('[data-attach-tx-action]')) {
+    el.addEventListener('click', (event) => {
+      event.preventDefault();
+      const op = el.dataset.attachTxAction;
+      if (!op) return;
+      void handleAttachTxAction(op, el.dataset);
+    });
+  }
+
+  for (const input of document.querySelectorAll<HTMLInputElement>('[data-attach-tx-input]')) {
+    input.addEventListener('input', () => {
+      if (!state.attachTxModal) return;
+      state.attachTxModal = { ...state.attachTxModal, txidInput: input.value };
+    });
+    input.addEventListener('keydown', (event) => {
+      if (event.key === 'Enter') {
+        event.preventDefault();
+        void handleAttachTxAction('lookup', input.dataset);
+      }
+    });
+  }
+
+  for (const button of document.querySelectorAll<HTMLButtonElement>('[data-notification-action]')) {
+    button.addEventListener('click', (event) => {
+      event.preventDefault();
+      const op = button.dataset.notificationAction;
+      if (!op) return;
+      void handleNotificationAction(op);
+    });
+  }
+
+  for (const button of document.querySelectorAll<HTMLButtonElement>('[data-debug-export]')) {
+    button.addEventListener('click', (event) => {
+      event.preventDefault();
+      const actionId = button.dataset.actionId;
+      void copyDiagnosticBundle(actionId || undefined);
     });
   }
 }
@@ -12007,9 +13302,10 @@ async function runGenerateAiPlan(): Promise<void> {
         const parameters = readTemplateFields(template);
         const userNotes = state.agentPrompt.trim();
         assertValidTemplatePlanInput(template, parameters, userNotes);
+        const effectiveUserNotes = injectHouseRules(userNotes);
         const request = {
           prompt: userNotes || template.description,
-          userNotes,
+          userNotes: effectiveUserNotes,
           template: {
             id: template.id,
             category: template.category,
@@ -12249,16 +13545,29 @@ async function runDenyGeneratedPlanWithAgentReason(planId: string): Promise<void
     `Agent path: ${agentReviewPathLabel(review.source)}. Agent denied at ${formatDateTime(review.checkedAt ?? deniedAt)}.`,
     240,
   );
+  let proofSignature: string | undefined;
+  let signedNote = note;
+  if (state.address) {
+    try {
+      proofSignature = await signAgentDenialProof(record.plan, review, `Agent denial: ${planSummary}`);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      signedNote = compactSentence(`${note} (Could not sign proof: ${redactSecrets(message)}.)`, 360);
+    }
+  } else {
+    signedNote = compactSentence(`${note} (Wallet not connected; proof saved unsigned.)`, 360);
+  }
   const receipt: ActionReceipt = {
     actionId,
     status: 'rejected',
     summary,
-    note,
+    note: signedNote,
     walletAddress: state.address || record.walletAddress,
     cluster: record.cluster,
     createdAt: deniedAt,
     completedAt: deniedAt,
     evidenceKind: 'rejection_receipt',
+    ...(proofSignature ? { proofSignature } : {}),
   };
   state.receipts = mergeActionReceipts([receipt], state.receipts);
   saveBrowserWorkflowState();
@@ -12270,12 +13579,105 @@ async function runDenyGeneratedPlanWithAgentReason(planId: string): Promise<void
   pushToast(
     'success',
     'Agent denial saved',
-    `${planSummary} archived. Proof saved in Done.`,
+    proofSignature
+      ? `${planSummary} archived. Signed denial proof saved in Done.`
+      : `${planSummary} archived. Proof saved in Done (unsigned — wallet was unavailable).`,
   );
   if (state.generatedPlanAuditId === planId) {
     state.generatedPlanAuditId = '';
   }
   selectFallbackGeneratedPlan();
+  render();
+}
+
+async function runAskAgentAnything(planId: string, question: string): Promise<void> {
+  const record = generatedPlanById(planId);
+  if (!record) return;
+  if (record.status === 'archived') {
+    pushToast('error', 'Restore plan first', 'Archived drafts cannot be queried.');
+    return;
+  }
+  if (!canRunAgentReview()) {
+    pushToast('error', 'Agent not detected', agentReviewUnavailableReason());
+    return;
+  }
+  const review = record.agentReview ?? {
+    schemaVersion: AGENT_REVIEW_SCHEMA_VERSION,
+    required: true,
+    status: 'checking',
+    reason: 'Ask-agent conversation only. No decision recorded.',
+    source: state.aiSettings.mode,
+  };
+  const exchangeId = `ask_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 7)}`;
+  const askedAt = new Date().toISOString();
+  const pendingExchange: AgentAskExchange = {
+    id: exchangeId,
+    question: question.slice(0, 400),
+    askedAt,
+    pending: true,
+    source: state.aiSettings.mode,
+    provider: agentReviewProviderLabel(),
+    model: agentReviewModelLabel(),
+  };
+  const initialConversation = [...(review.conversation ?? []), pendingExchange].slice(-6);
+  await updateGeneratedPlan(planId, {
+    agentReview: { ...review, conversation: initialConversation },
+  });
+
+  const request: AgentPlanAskRequest = {
+    plan: record.plan,
+    question: pendingExchange.question,
+    walletAddress: state.address || record.walletAddress,
+    cluster: record.cluster,
+    context: {
+      activeWorkflow: activeWorkflowLabel(),
+      route: record.plan.route,
+      amount: planAmountSummary(record.plan),
+      risk: record.plan.risk,
+      approval: record.plan.approval,
+    },
+  };
+
+  try {
+    let result: AgentPlanAskResult;
+    if (state.aiSettings.mode === 'bridge') {
+      result = await bridgeRequest<AgentPlanAskResult>('/bridge/ai/ask-about-plan', {
+        method: 'POST',
+        body: JSON.stringify(request),
+      });
+    } else if (state.aiSettings.mode === 'hosted') {
+      result = await generateHostedAiAsk(state.aiSettings, request);
+    } else {
+      result = await generateSessionAiAsk(state.aiSettings, request);
+    }
+    const updatedExchange: AgentAskExchange = {
+      ...pendingExchange,
+      pending: false,
+      answer: result.answer,
+      answeredAt: result.checkedAt,
+    };
+    const refreshed = generatedPlanById(planId);
+    const baseConversation = refreshed?.agentReview?.conversation ?? initialConversation;
+    const conversation = baseConversation.map((entry) => entry.id === exchangeId ? updatedExchange : entry);
+    await updateGeneratedPlan(planId, {
+      agentReview: { ...(refreshed?.agentReview ?? review), conversation: conversation.slice(-6) },
+    });
+  } catch (err) {
+    const message = redactSecrets(err instanceof Error ? err.message : String(err));
+    const erroredExchange: AgentAskExchange = {
+      ...pendingExchange,
+      pending: false,
+      error: message,
+      answeredAt: new Date().toISOString(),
+    };
+    const refreshed = generatedPlanById(planId);
+    const baseConversation = refreshed?.agentReview?.conversation ?? initialConversation;
+    const conversation = baseConversation.map((entry) => entry.id === exchangeId ? erroredExchange : entry);
+    await updateGeneratedPlan(planId, {
+      agentReview: { ...(refreshed?.agentReview ?? review), conversation: conversation.slice(-6) },
+    });
+    pushToast('error', 'Ask agent failed', message);
+  }
   render();
 }
 
@@ -12739,7 +14141,11 @@ function isOneTimeGeneratedPlan(record: GeneratedPlanRecord): boolean {
 
 function visibleGeneratedPlans(oneTimeOnly = false): GeneratedPlanRecord[] {
   const records = generatedPlansForPanel(oneTimeOnly);
-  return records.filter(isGeneratedPlanVisibleInReview);
+  return records.filter((record) => !record.template && isGeneratedPlanVisibleInReview(record));
+}
+
+function templateGeneratedPlans(oneTimeOnly = false): GeneratedPlanRecord[] {
+  return generatedPlansForPanel(oneTimeOnly).filter((record) => record.template === true);
 }
 
 function isGeneratedPlanVisibleInReview(record: GeneratedPlanRecord): boolean {
@@ -13259,6 +14665,40 @@ function agentPlanApprovalMessage(plan: AgentPlan): string {
   ].join('\n');
 }
 
+async function signAgentDenialProof(plan: AgentPlan, review: AgentPlanReviewState, summary: string): Promise<string> {
+  const signingClient = requireClient();
+  const result = await signingClient.signMessage(agentDenialProofMessage(plan, review), signOptions(summary));
+  return result.signature;
+}
+
+function agentDenialProofMessage(plan: AgentPlan, review: AgentPlanReviewState): string {
+  const policyLabels = (review.policies ?? [])
+    .filter((policy) => policy.outcome === 'block' || policy.outcome === 'warn')
+    .map((policy) => policy.label)
+    .filter(Boolean);
+  return [
+    'Solana Agent Wallet Adapter plan DENIAL proof',
+    `Address: ${state.address}`,
+    `Cluster: ${state.cluster}`,
+    `Source: ${plan.source}`,
+    `Template: ${plan.templateTitle}`,
+    `Action: ${plan.actionType}`,
+    `Intent: ${plan.intent}`,
+    `Route: ${plan.route}`,
+    `Risk: ${plan.risk}`,
+    `Approval: ${plan.approval}`,
+    `Parameters: ${stableJson(plan.parameters)}`,
+    `User notes: ${plan.userNotes || 'None'}`,
+    `Agent path: ${agentReviewPathLabel(review.source)}`,
+    `Agent provider: ${review.provider || 'unspecified'}`,
+    `Agent model: ${review.model || 'unspecified'}`,
+    `Agent decided at: ${review.checkedAt ?? 'not recorded'}`,
+    `Agent reason: ${review.reason || 'No reason recorded.'}`,
+    `Policies that flagged: ${policyLabels.length ? policyLabels.join(' | ') : 'none'}`,
+    `Time: ${new Date().toISOString()}`,
+  ].join('\n');
+}
+
 async function runAgentReview(record: GeneratedPlanRecord): Promise<AgentPlanReviewResult> {
   const request = agentReviewRequest(record);
   state.aiDiagnostics = [
@@ -13324,6 +14764,7 @@ function agentReviewRequest(record: GeneratedPlanRecord): AgentPlanReviewRequest
         : {}),
       ...(priorHistorySnippet?.length ? { priorAttempts: priorHistorySnippet } : {}),
     },
+    ...(state.aiSettings.multiReviewer ? { mode: 'multi' as const } : {}),
   };
 }
 
@@ -13366,6 +14807,7 @@ function agentReviewStateFromResult(
     ...(history.length ? { history } : {}),
     ...(fingerprint ? { reviewedPlanFingerprint: fingerprint } : {}),
     ...(appliedUserPolicyIds && appliedUserPolicyIds.length ? { appliedUserPolicyIds } : {}),
+    ...(result.reviewers?.length ? { reviewers: result.reviewers as AgentReviewerEntry[] } : {}),
   };
 }
 
@@ -14100,6 +15542,7 @@ async function refreshCloudWorkspaceData(): Promise<void> {
   if (state.cloudSession.status !== 'signed-in') {
     throw new Error('Sign in to Agentic Cloud before loading cloud workflow data.');
   }
+  void hydrateAgentPoliciesFromCloud();
   const browserWorkflow = loadBrowserWorkflowState();
   const recurringResponse: Awaited<ReturnType<typeof cloudRecurringList>> = await cloudRecurringList().catch((err) => {
     // eslint-disable-next-line no-console
@@ -15125,6 +16568,11 @@ async function runPreparedActionOp(actionId: string, op: string): Promise<void> 
       await navigator.clipboard.writeText(stableJson(action));
       pushToast('success', 'Receipt copied', actionId);
     }
+    return;
+  }
+
+  if (op === 'refresh-quote') {
+    await refreshSwapQuoteForAction(actionId);
     return;
   }
 
@@ -16752,12 +18200,16 @@ function isZeroSignature(signature: Uint8Array): boolean {
   return signature.every((byte) => byte === 0);
 }
 
-function shouldRetryTransactionSend(err: unknown, signedTxid?: string): boolean {
+function shouldRetryTransactionSend(err: unknown, signedTxid?: string, attemptCount: number = 0): boolean {
   const classification = classifyTransactionFailure(err, {
     hasSignedBytes: true,
     txid: signedTxid,
   });
-  return classification.retryableSignedBroadcast;
+  if (!classification.retryableSignedBroadcast) return false;
+  const policy = policyForFailure(classification.kind);
+  if (policy.mode === 'disabled') return false;
+  if (attemptCount >= policy.maxAttempts) return false;
+  return true;
 }
 
 async function browserLatestBlockhash(cluster: Cluster): Promise<BrowserLatestBlockhash> {
@@ -18302,6 +19754,543 @@ async function runWorkspaceRestoreConfirm(): Promise<void> {
     pushToast('error', 'Restore failed', message);
     render();
   }
+}
+
+async function handlePreflightAction(op: string, actionId: string): Promise<void> {
+  const action = state.preparedActions.find((candidate) => candidate.id === actionId);
+  if (!action) return;
+  if (op === 'clear') {
+    delete state.preflightSimulation[actionId];
+    render();
+    return;
+  }
+  if (op !== 'run') return;
+  await runPreflightForAction(action);
+}
+
+async function runPreflightForAction(action: PreparedAction): Promise<void> {
+  state.preflightSimulation[action.id] = {
+    status: 'running',
+    message: 'Simulating…',
+    checkedAt: new Date().toISOString(),
+  };
+  render();
+  try {
+    if (action.kind === 'transfer_sol') {
+      const result = await runPreflightSolTransfer(action);
+      state.preflightSimulation[action.id] = result;
+    } else if (action.kind === 'transfer_spl') {
+      const result = await runPreflightSplTransfer(action);
+      state.preflightSimulation[action.id] = result;
+    } else {
+      state.preflightSimulation[action.id] = {
+        status: 'unsupported',
+        message: 'Preview is available for transfers in this release.',
+        detail: 'Swap and custom transaction previews use the existing quote summary above.',
+        checkedAt: new Date().toISOString(),
+      };
+    }
+  } catch (err) {
+    state.preflightSimulation[action.id] = {
+      status: 'error',
+      message: 'Preview failed',
+      detail: err instanceof Error ? err.message : String(err),
+      checkedAt: new Date().toISOString(),
+    };
+  }
+  render();
+}
+
+async function runPreflightSolTransfer(action: PreparedAction): Promise<PreflightResult> {
+  const connection = browserActionConnection(action.cluster);
+  const from = new PublicKey(action.walletAddress);
+  const recipient = publicKeyParam(requiredActionParam(action, 'recipient'), 'recipient');
+  const amountSol = requiredActionParam(action, 'amountSol');
+  const lamports = parseDecimalAmountToRaw(amountSol, 9, 'SOL transfer amount');
+  const { blockhash } = await connection.getLatestBlockhash('confirmed');
+  const transaction = new Transaction({ feePayer: from, recentBlockhash: blockhash }).add(
+    SystemProgram.transfer({
+      fromPubkey: from,
+      toPubkey: recipient,
+      lamports: rawLamportsToNumber(lamports),
+    }),
+  );
+  const sim = await connection.simulateTransaction(transaction);
+  const message = transaction.compileMessage();
+  const feeResponse = await connection.getFeeForMessage(message, 'confirmed').catch(() => null);
+  const feeLamports = feeResponse?.value ?? null;
+  if (sim.value.err) {
+    return {
+      status: 'fail',
+      message: 'Simulation says this will fail',
+      detail: stringifySimulationError(sim.value.err),
+      feeLamports,
+      logs: sim.value.logs ?? undefined,
+      checkedAt: new Date().toISOString(),
+    };
+  }
+  return {
+    status: 'pass',
+    message: 'Simulation passed',
+    detail: feeLamports
+      ? `Fee covers signature only · no surprises.`
+      : 'No surprises detected.',
+    feeLamports,
+    logs: sim.value.logs ?? undefined,
+    checkedAt: new Date().toISOString(),
+  };
+}
+
+async function runPreflightSplTransfer(action: PreparedAction): Promise<PreflightResult> {
+  const token = requiredActionParam(action, 'token');
+  if (isNativeSolToken(token)) {
+    return runPreflightSolTransfer({
+      ...action,
+      kind: 'transfer_sol',
+      params: {
+        recipient: requiredActionParam(action, 'recipient'),
+        amountSol: requiredActionParam(action, 'amount'),
+        memo: stringParam(action, 'memo'),
+      },
+    });
+  }
+  const connection = browserActionConnection(action.cluster);
+  const owner = new PublicKey(action.walletAddress);
+  const recipient = publicKeyParam(requiredActionParam(action, 'recipient'), 'recipient');
+  const metadata = await resolveBrowserTokenMetadata(connection, token);
+  const amount = requiredActionParam(action, 'amount');
+  const rawAmount = parseDecimalAmountToRaw(amount, metadata.decimals, `${metadata.symbol} amount`);
+  const sourceAta = associatedTokenAddress(metadata.mint, owner, metadata.tokenProgramId);
+  const destAta = associatedTokenAddress(metadata.mint, recipient, metadata.tokenProgramId);
+  const destAccount = await connection.getAccountInfo(destAta, 'confirmed');
+  const ataCreation = !destAccount;
+  const { blockhash } = await connection.getLatestBlockhash('confirmed');
+  const transaction = new Transaction({ feePayer: owner, recentBlockhash: blockhash });
+  if (ataCreation) {
+    transaction.add(createAssociatedTokenAccountInstruction(owner, destAta, recipient, metadata));
+  }
+  transaction.add(createTransferCheckedInstruction(
+    sourceAta,
+    metadata.mint,
+    destAta,
+    owner,
+    rawAmount,
+    metadata.decimals,
+    metadata.tokenProgramId,
+  ));
+  const sim = await connection.simulateTransaction(transaction);
+  const message = transaction.compileMessage();
+  const feeResponse = await connection.getFeeForMessage(message, 'confirmed').catch(() => null);
+  const feeLamports = feeResponse?.value ?? null;
+  const ataNote = ataCreation
+    ? `Will create destination ${metadata.symbol} account (~0.00204 SOL rent).`
+    : `Destination ${metadata.symbol} account already exists.`;
+  if (sim.value.err) {
+    return {
+      status: 'fail',
+      message: 'Simulation says this will fail',
+      detail: `${ataNote} ${stringifySimulationError(sim.value.err)}`,
+      feeLamports,
+      logs: sim.value.logs ?? undefined,
+      checkedAt: new Date().toISOString(),
+    };
+  }
+  return {
+    status: 'pass',
+    message: 'Simulation passed',
+    detail: ataNote,
+    feeLamports,
+    logs: sim.value.logs ?? undefined,
+    checkedAt: new Date().toISOString(),
+  };
+}
+
+function stringifySimulationError(err: unknown): string {
+  if (typeof err === 'string') return err;
+  if (err && typeof err === 'object') {
+    try {
+      return JSON.stringify(err);
+    } catch {
+      return String(err);
+    }
+  }
+  return String(err);
+}
+
+interface QuoteFreshnessView {
+  label: string;
+  ageSeconds: number;
+  stale: boolean;
+  aging: boolean;
+}
+
+const QUOTE_AGING_THRESHOLD_S = 15;
+const QUOTE_STALE_THRESHOLD_S = 30;
+
+function quoteFreshness(action: PreparedAction): QuoteFreshnessView | null {
+  if (action.kind !== 'swap') return null;
+  const quotedAt = stringParam(action, 'quotedAt') || action.updatedAt || action.createdAt;
+  if (!quotedAt) return null;
+  const ts = new Date(quotedAt).getTime();
+  if (Number.isNaN(ts)) return null;
+  const ageSeconds = Math.max(0, Math.floor((Date.now() - ts) / 1000));
+  const stale = ageSeconds >= QUOTE_STALE_THRESHOLD_S;
+  const aging = !stale && ageSeconds >= QUOTE_AGING_THRESHOLD_S;
+  const label = stale
+    ? `Stale · ${ageSeconds}s old`
+    : `${ageSeconds}s old · refreshes in ${QUOTE_STALE_THRESHOLD_S - ageSeconds}s`;
+  return { label, ageSeconds, stale, aging };
+}
+
+interface PolicyWarning {
+  severity: 'warn' | 'block';
+  title: string;
+  message: string;
+}
+
+function evaluateActionPolicy(action: PreparedAction): PolicyWarning[] {
+  const warnings: PolicyWarning[] = [];
+  const rails = state.safetyRails;
+  if (!rails) return warnings;
+  if (rails.programs.enabled && action.kind === 'swap') {
+    const allowlist = rails.programs.allowlist;
+    if (allowlist.length > 0 && !allowlist.some((p) => p.toLowerCase().includes('jup'))) {
+      warnings.push({
+        severity: rails.programs.mode === 'block' ? 'block' : 'warn',
+        title: 'Program not on allowlist',
+        message: 'Swap uses Jupiter aggregator. Add Jupiter to your program allowlist if you want this kind to clear without a warning.',
+      });
+    }
+  }
+  if (rails.tokens.enabled && (action.kind === 'transfer_spl' || action.kind === 'swap')) {
+    const token = stringParam(action, 'token') || stringParam(action, 'inputToken') || stringParam(action, 'outputToken');
+    if (token && rails.tokens.blocklist.includes(token.toUpperCase())) {
+      warnings.push({
+        severity: rails.tokens.mode === 'block' ? 'block' : 'warn',
+        title: 'Token blocked',
+        message: `${token} is on your token blocklist.`,
+      });
+    } else if (token && rails.tokens.allowlist.length > 0 && !rails.tokens.allowlist.includes(token.toUpperCase())) {
+      warnings.push({
+        severity: rails.tokens.mode === 'block' ? 'block' : 'warn',
+        title: 'Token not on allowlist',
+        message: `${token} is not on your token allowlist.`,
+      });
+    }
+  }
+  if (rails.slippage.enabled && action.kind === 'swap') {
+    const bpsRaw = stringParam(action, 'slippageBps');
+    const bps = bpsRaw ? Number.parseInt(bpsRaw, 10) : 0;
+    if (Number.isFinite(bps) && bps > rails.slippage.maxBps) {
+      warnings.push({
+        severity: rails.slippage.mode === 'block' ? 'block' : 'warn',
+        title: 'Slippage exceeds cap',
+        message: `Quote slippage is ${bps} bps. Your cap is ${rails.slippage.maxBps} bps.`,
+      });
+    }
+  }
+  if (rails.spend.enabled) {
+    const spendWarnings = evaluateSpendCaps(action, rails.spend);
+    warnings.push(...spendWarnings);
+  }
+  return warnings;
+}
+
+function evaluateSpendCaps(action: PreparedAction, spend: SpendCapsState): PolicyWarning[] {
+  const warnings: PolicyWarning[] = [];
+  const token = action.kind === 'transfer_sol'
+    ? 'SOL'
+    : (stringParam(action, 'token') || stringParam(action, 'inputToken') || '').toUpperCase();
+  if (!token) return warnings;
+  const cap = spend.caps.find((entry) => entry.token.toUpperCase() === token);
+  if (!cap) return warnings;
+  const amountStr = action.kind === 'transfer_sol'
+    ? stringParam(action, 'amountSol')
+    : stringParam(action, 'amount');
+  const amount = Number.parseFloat(amountStr || '0');
+  if (!Number.isFinite(amount) || amount <= 0) return warnings;
+  const now = Date.now();
+  const dayMs = 24 * 60 * 60 * 1000;
+  const sums = state.preparedActions.reduce(
+    (acc, candidate) => {
+      if (candidate.status !== 'approved' || !candidate.confirmedAt) return acc;
+      if (candidate.kind === 'transfer_sol' && token === 'SOL') {
+        const v = Number.parseFloat(stringParam(candidate, 'amountSol') || '0');
+        if (Number.isFinite(v)) {
+          const age = now - new Date(candidate.confirmedAt).getTime();
+          if (age <= dayMs) acc.day += v;
+          if (age <= 7 * dayMs) acc.week += v;
+          if (age <= 30 * dayMs) acc.month += v;
+        }
+      } else if ((candidate.kind === 'transfer_spl' || candidate.kind === 'swap')) {
+        const candidateToken = (stringParam(candidate, 'token') || stringParam(candidate, 'inputToken') || '').toUpperCase();
+        if (candidateToken === token) {
+          const v = Number.parseFloat(stringParam(candidate, 'amount') || '0');
+          if (Number.isFinite(v)) {
+            const age = now - new Date(candidate.confirmedAt).getTime();
+            if (age <= dayMs) acc.day += v;
+            if (age <= 7 * dayMs) acc.week += v;
+            if (age <= 30 * dayMs) acc.month += v;
+          }
+        }
+      }
+      return acc;
+    },
+    { day: 0, week: 0, month: 0 },
+  );
+  const check = (window: 'day' | 'week' | 'month', current: number, limit: number | undefined, period: string): void => {
+    if (!limit || limit <= 0) return;
+    if (current + amount > limit) {
+      warnings.push({
+        severity: spend.mode === 'block' ? 'block' : 'warn',
+        title: `Spend cap: ${period}`,
+        message: `This would push your ${period} ${token} spend to ${(current + amount).toFixed(4)} (cap ${limit}).`,
+      });
+    }
+  };
+  check('day', sums.day, cap.maxPerDay, 'daily');
+  check('week', sums.week, cap.maxPerWeek, 'weekly');
+  check('month', sums.month, cap.maxPerMonth, 'monthly');
+  return warnings;
+}
+
+function actionPolicyBlockReason(action: PreparedAction): string | null {
+  const warnings = evaluateActionPolicy(action);
+  const block = warnings.find((w) => w.severity === 'block');
+  return block ? `${block.title}: ${block.message}` : null;
+}
+
+function handleSafetyRailsAction(op: string, el: HTMLElement): void {
+  const rails = state.safetyRails;
+  switch (op) {
+    case 'toggle-programs':
+      rails.programs.enabled = !rails.programs.enabled;
+      saveSafetyRailsSection('programs');
+      render();
+      return;
+    case 'toggle-tokens':
+      rails.tokens.enabled = !rails.tokens.enabled;
+      saveSafetyRailsSection('tokens');
+      render();
+      return;
+    case 'toggle-spend':
+      rails.spend.enabled = !rails.spend.enabled;
+      saveSafetyRailsSection('spend');
+      render();
+      return;
+    case 'toggle-slippage':
+      rails.slippage.enabled = !rails.slippage.enabled;
+      saveSafetyRailsSection('slippage');
+      render();
+      return;
+    case 'cycle-mode': {
+      const section = el.dataset.safetyRailsSection as keyof SafetyRailsState | undefined;
+      if (!section) return;
+      const target = rails[section];
+      target.mode = target.mode === 'warn' ? 'block' : 'warn';
+      saveSafetyRailsSection(section);
+      render();
+      return;
+    }
+    case 'set-slippage': {
+      const input = el as HTMLInputElement;
+      const value = Number.parseInt(input.value, 10);
+      if (Number.isFinite(value) && value >= 0 && value <= 10_000) {
+        rails.slippage.maxBps = value;
+        saveSafetyRailsSection('slippage');
+      }
+      return;
+    }
+    case 'add-program':
+    case 'add-token':
+    case 'add-cap': {
+      const input = document.querySelector<HTMLInputElement>(`[data-safety-rails-input="${op}"]`);
+      if (!input || !input.value.trim()) return;
+      const value = input.value.trim().toUpperCase();
+      if (op === 'add-program') {
+        if (!rails.programs.allowlist.includes(value)) rails.programs.allowlist.push(value);
+        saveSafetyRailsSection('programs');
+      } else if (op === 'add-token') {
+        if (!rails.tokens.allowlist.includes(value)) rails.tokens.allowlist.push(value);
+        saveSafetyRailsSection('tokens');
+      } else if (op === 'add-cap') {
+        const dayRaw = document.querySelector<HTMLInputElement>('[data-safety-rails-input="cap-day"]')?.value;
+        const weekRaw = document.querySelector<HTMLInputElement>('[data-safety-rails-input="cap-week"]')?.value;
+        const monthRaw = document.querySelector<HTMLInputElement>('[data-safety-rails-input="cap-month"]')?.value;
+        const entry: SpendCapEntry = { token: value };
+        const day = Number.parseFloat(dayRaw ?? '');
+        const week = Number.parseFloat(weekRaw ?? '');
+        const month = Number.parseFloat(monthRaw ?? '');
+        if (Number.isFinite(day) && day > 0) entry.maxPerDay = day;
+        if (Number.isFinite(week) && week > 0) entry.maxPerWeek = week;
+        if (Number.isFinite(month) && month > 0) entry.maxPerMonth = month;
+        rails.spend.caps = rails.spend.caps.filter((cap) => cap.token.toUpperCase() !== value);
+        rails.spend.caps.push(entry);
+        saveSafetyRailsSection('spend');
+      }
+      input.value = '';
+      render();
+      return;
+    }
+    case 'remove-program': {
+      const value = el.dataset.safetyRailsValue;
+      if (!value) return;
+      rails.programs.allowlist = rails.programs.allowlist.filter((v) => v !== value);
+      saveSafetyRailsSection('programs');
+      render();
+      return;
+    }
+    case 'remove-token': {
+      const value = el.dataset.safetyRailsValue;
+      if (!value) return;
+      rails.tokens.allowlist = rails.tokens.allowlist.filter((v) => v !== value);
+      saveSafetyRailsSection('tokens');
+      render();
+      return;
+    }
+    case 'remove-cap': {
+      const value = el.dataset.safetyRailsValue;
+      if (!value) return;
+      rails.spend.caps = rails.spend.caps.filter((cap) => cap.token.toUpperCase() !== value);
+      saveSafetyRailsSection('spend');
+      render();
+      return;
+    }
+  }
+}
+
+async function refreshSwapQuoteForAction(actionId: string): Promise<void> {
+  const action = state.preparedActions.find((candidate) => candidate.id === actionId);
+  if (!action || action.kind !== 'swap') return;
+  try {
+    const toastId = pushToast('pending', 'Refreshing quote', 'Asking Jupiter for a new quote…');
+    if (state.bridgeActive && action.workflowSource === 'local-bridge') {
+      await bridgeRequest('/bridge/swap/refresh-quote', {
+        method: 'POST',
+        body: JSON.stringify({ actionId }),
+      }).catch(() => undefined);
+      await refreshInboxData();
+    } else {
+      const next = { ...action, params: { ...action.params, quotedAt: new Date().toISOString() }, updatedAt: new Date().toISOString() };
+      state.preparedActions = state.preparedActions.map((candidate) => candidate.id === actionId ? next : candidate);
+      state.materializedActions = state.preparedActions;
+      saveBrowserWorkflowState();
+    }
+    replaceToast(toastId, 'success', 'Quote refreshed', 'New quote stored on this approval.');
+    render();
+  } catch (err) {
+    const message = err instanceof Error ? err.message : 'Could not refresh quote.';
+    pushToast('error', 'Refresh failed', message);
+  }
+}
+
+let quoteCountdownTimer: number | null = null;
+
+function startQuoteCountdownTicker(): void {
+  stopQuoteCountdownTicker();
+  quoteCountdownTimer = window.setInterval(() => {
+    const nodes = document.querySelectorAll<HTMLElement>('[data-quote-countdown]');
+    let needsRender = false;
+    for (const node of nodes) {
+      const actionId = node.dataset.quoteCountdown;
+      if (!actionId) continue;
+      const action = state.preparedActions.find((candidate) => candidate.id === actionId);
+      if (!action) continue;
+      const fresh = quoteFreshness(action);
+      if (!fresh) continue;
+      node.textContent = fresh.label;
+      const strip = node.closest<HTMLElement>('.quote-freshness-strip');
+      if (strip) {
+        strip.classList.remove('fresh', 'aging', 'stale');
+        strip.classList.add(fresh.stale ? 'stale' : fresh.aging ? 'aging' : 'fresh');
+      }
+      if (fresh.stale && !strip?.querySelector('.quote-freshness-refresh')) {
+        needsRender = true;
+      }
+    }
+    if (needsRender) render();
+  }, 1000);
+}
+
+function stopQuoteCountdownTicker(): void {
+  if (quoteCountdownTimer !== null) {
+    window.clearInterval(quoteCountdownTimer);
+    quoteCountdownTimer = null;
+  }
+}
+
+const AGENT_BACKGROUND_WATCH_INTERVAL_MS = 5 * 60 * 1000;
+const AGENT_BACKGROUND_WATCH_THROTTLE_MS = 60 * 60 * 1000;
+let agentBackgroundWatchTimer: number | null = null;
+const agentBackgroundLastCheckedAt: Map<string, number> = new Map();
+
+function isPlanEligibleForBackgroundWatch(record: GeneratedPlanRecord): boolean {
+  if (record.status === 'archived' || record.status === 'failed') return false;
+  if (!record.agentReview?.required) return false;
+  const status = record.agentReview.status;
+  if (status === 'checking') return false;
+  return record.plan.actionType === 'recurring_payment'
+    || record.status === 'queued'
+    || record.preparedActionId !== undefined;
+}
+
+function shouldBackgroundReReview(record: GeneratedPlanRecord, now: number): boolean {
+  const checkedAt = record.agentReview?.checkedAt;
+  if (!checkedAt) return false;
+  const ageMs = now - Date.parse(checkedAt);
+  if (!Number.isFinite(ageMs) || ageMs < AGENT_BACKGROUND_WATCH_THROTTLE_MS) return false;
+  const lastBackground = agentBackgroundLastCheckedAt.get(record.id) ?? 0;
+  if (now - lastBackground < AGENT_BACKGROUND_WATCH_THROTTLE_MS) return false;
+  return true;
+}
+
+async function runAgentBackgroundWatchTick(): Promise<void> {
+  if (!state.aiSettings.autoBackgroundWatch) return;
+  if (!hasDetectedAgentReviewPath() || state.busy) return;
+  if (state.activeOperation === 'review-agent-plan') return;
+  const now = Date.now();
+  const candidates = state.generatedPlans
+    .filter(isPlanEligibleForBackgroundWatch)
+    .filter((record) => shouldBackgroundReReview(record, now));
+  if (!candidates.length) return;
+  const next = candidates[0];
+  if (!next) return;
+  agentBackgroundLastCheckedAt.set(next.id, now);
+  try {
+    const previousDecision = next.agentReview?.decision;
+    await runReviewGeneratedPlan(next.id);
+    const after = generatedPlanById(next.id);
+    const newDecision = after?.agentReview?.decision;
+    if (newDecision && newDecision !== previousDecision) {
+      pushToast(
+        newDecision === 'approve' ? 'success' : 'error',
+        `Agent re-check changed: ${newDecision}`,
+        after?.agentReview?.reason ?? 'Background re-check produced a new decision.',
+      );
+    }
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    pushToast('error', 'Background watch failed', redactSecrets(message));
+  }
+}
+
+function startAgentBackgroundWatch(): void {
+  stopAgentBackgroundWatch();
+  agentBackgroundWatchTimer = window.setInterval(() => {
+    void runAgentBackgroundWatchTick();
+  }, AGENT_BACKGROUND_WATCH_INTERVAL_MS);
+}
+
+function stopAgentBackgroundWatch(): void {
+  if (agentBackgroundWatchTimer !== null) {
+    window.clearInterval(agentBackgroundWatchTimer);
+    agentBackgroundWatchTimer = null;
+  }
+}
+
+function isPlanWatchActive(record: GeneratedPlanRecord): boolean {
+  if (!state.aiSettings.autoBackgroundWatch) return false;
+  return isPlanEligibleForBackgroundWatch(record);
 }
 
 async function refreshBalances(): Promise<void> {
@@ -20086,6 +22075,8 @@ function preparedActionCard(action: PreparedAction): string {
         ${executionBlockReason ? `<p class="error-text">${escapeHtml(executionBlockReason)}</p>` : ''}
         <div class="inbox-approval-footer-row">
           <button class="utility inbox-footer-action" data-action-op="copy" data-action-id="${action.id}">Copy request</button>
+          ${hasPendingExecutionLedgerEntry(action.id) || action.txid || action.status === 'failed' ? `<button class="utility inbox-footer-action" data-attach-tx-action="open" data-action-id="${escapeHtml(action.id)}">Attach existing transaction</button>` : ''}
+          ${action.status === 'failed' || action.txError ? `<button class="utility inbox-footer-action" data-debug-export data-action-id="${escapeHtml(action.id)}">Copy debug log</button>` : ''}
           <button class="utility inbox-footer-action" data-action-op="archive" data-action-id="${action.id}" ${state.busy ? 'disabled' : ''} title="Remove from Needs Approval without signing a denial proof.">Archive</button>
           <button class="utility danger recurring-delete-mini" data-action-op="delete" data-action-id="${action.id}" ${state.busy ? 'disabled' : ''}>Delete</button>
         </div>
@@ -20298,7 +22289,80 @@ function preSignReviewBlock(action: PreparedAction): string {
 
   const model = buildPreSignReviewModelForAction(action);
   if (!model) return '';
-  return renderPreSignReviewModel(model);
+  return renderPreSignReviewModel(model)
+    + preflightSimulationStrip(action)
+    + quoteFreshnessStrip(action)
+    + policyWarningsStrip(action);
+}
+
+function preflightSimulationStrip(action: PreparedAction): string {
+  const result = state.preflightSimulation[action.id];
+  const supports = preflightSupports(action.kind);
+  if (!supports && !result) return '';
+  if (!result) {
+    return `
+      <div class="preflight-strip neutral">
+        <div class="preflight-strip-copy">
+          <strong>Preflight preview</strong>
+          <p>Simulate this action before opening the wallet. No fees, no signature.</p>
+        </div>
+        <button type="button" class="utility" data-preflight-action="run" data-action-id="${escapeHtml(action.id)}">Run preview</button>
+      </div>
+    `;
+  }
+  const detail = result.detail ? `<span class="preflight-strip-detail">${escapeHtml(result.detail)}</span>` : '';
+  const fee = typeof result.feeLamports === 'number'
+    ? `<span class="preflight-strip-fee">Fee ~${(result.feeLamports / 1e9).toFixed(6)} SOL</span>`
+    : '';
+  const logs = result.logs && result.logs.length > 0
+    ? `<details class="preflight-strip-logs"><summary>Simulation logs (${result.logs.length})</summary><pre>${escapeHtml(result.logs.slice(0, 30).join('\n'))}</pre></details>`
+    : '';
+  return `
+    <div class="preflight-strip ${escapeHtml(result.status)}">
+      <div class="preflight-strip-copy">
+        <strong>${escapeHtml(result.message)}</strong>
+        ${detail}
+        ${fee}
+      </div>
+      <div class="preflight-strip-actions">
+        <button type="button" class="utility" data-preflight-action="run" data-action-id="${escapeHtml(action.id)}" ${result.status === 'running' ? 'disabled' : ''}>${result.status === 'running' ? 'Checking…' : 'Recheck'}</button>
+        <button type="button" class="utility" data-preflight-action="clear" data-action-id="${escapeHtml(action.id)}">Hide</button>
+      </div>
+      ${logs}
+    </div>
+  `;
+}
+
+function preflightSupports(kind: PreparedActionKind): boolean {
+  return kind === 'transfer_sol' || kind === 'transfer_spl';
+}
+
+function quoteFreshnessStrip(action: PreparedAction): string {
+  if (action.kind !== 'swap') return '';
+  const fresh = quoteFreshness(action);
+  if (!fresh) return '';
+  return `
+    <div class="quote-freshness-strip ${fresh.stale ? 'stale' : fresh.aging ? 'aging' : 'fresh'}">
+      <span class="quote-freshness-label">Quote age</span>
+      <span class="quote-freshness-value" data-quote-countdown="${escapeHtml(action.id)}">${escapeHtml(fresh.label)}</span>
+      ${fresh.stale ? `<button type="button" class="utility quote-freshness-refresh" data-action-op="refresh-quote" data-action-id="${escapeHtml(action.id)}">Refresh quote</button>` : ''}
+    </div>
+  `;
+}
+
+function policyWarningsStrip(action: PreparedAction): string {
+  const warnings = evaluateActionPolicy(action);
+  if (warnings.length === 0) return '';
+  return `
+    <ul class="policy-warnings-strip">
+      ${warnings.map((warning) => `
+        <li class="policy-warning ${escapeHtml(warning.severity)}">
+          <strong>${escapeHtml(warning.title)}</strong>
+          <span>${escapeHtml(warning.message)}</span>
+        </li>
+      `).join('')}
+    </ul>
+  `;
 }
 
 function buildPreSignReviewModelForAction(action: PreparedAction): PreSignReviewModel | undefined {
@@ -20307,10 +22371,15 @@ function buildPreSignReviewModelForAction(action: PreparedAction): PreSignReview
     const recipient = recipientParam(action);
     const amount = preSignAmount(action);
     const token = preSignTokenLabel(action);
+    const savedRecipient = recipient ? savedRecipientForAddress(recipient) : undefined;
+    const recipientBadge = savedRecipient?.isMine ? '→ your wallet' : undefined;
+    const recipientTone: ReviewTone | undefined = savedRecipient?.isMine ? 'good' : undefined;
     return buildSendPreSignReview({
       cluster: action.cluster,
       sender: action.walletAddress || undefined,
       recipient: recipient || undefined,
+      ...(recipientBadge ? { recipientBadge } : {}),
+      ...(recipientTone ? { recipientTone } : {}),
       amount,
       token,
       memo: stringParam(action, 'memo') || undefined,
@@ -20322,9 +22391,9 @@ function buildPreSignReviewModelForAction(action: PreparedAction): PreSignReview
     return buildSwapPreSignReview({
       cluster: action.cluster,
       taker: action.walletAddress || undefined,
-      inputToken: stringParam(action, 'inputToken') || undefined,
+      inputToken: resolveTokenDisplay(stringParam(action, 'inputToken') || undefined) || undefined,
       inputAmount: stringParam(action, 'amount') || stringParam(action, 'inputAmount') || undefined,
-      outputToken: stringParam(action, 'outputToken') || undefined,
+      outputToken: resolveTokenDisplay(stringParam(action, 'outputToken') || undefined) || undefined,
       slippageBps,
       jupiterRequestId: stringParam(action, 'jupiterRequestId') || undefined,
       priceImpactWarnPct: 1.5,
@@ -20336,6 +22405,50 @@ function buildPreSignReviewModelForAction(action: PreparedAction): PreSignReview
       cluster: action.cluster,
       transactionHash,
     });
+  }
+  if (action.kind === 'kamino_deposit') {
+    return buildKaminoDepositPreSignReview({
+      cluster: action.cluster,
+      wallet: action.walletAddress || undefined,
+      reserveSymbol: stringParam(action, 'reserveSymbol') || undefined,
+      reserveMint: stringParam(action, 'reserveMint') || undefined,
+      amount: stringParam(action, 'amount') || undefined,
+      supplyApy: numberParam(action, 'supplyApy'),
+      utilization: numberParam(action, 'utilization'),
+      withdrawalDelaySec: numberParam(action, 'withdrawalDelaySec'),
+      depositLimitRemaining: stringParam(action, 'depositLimitRemaining') || undefined,
+      withdrawAvailable: stringParam(action, 'withdrawAvailable') || undefined,
+      mainnetWarning: mainnet,
+      adapterEnabled: isDappEnabled('kamino', state.connectedDapps, action.cluster),
+    });
+  }
+  if (action.kind === 'kamino_withdraw') {
+    return buildKaminoWithdrawPreSignReview({
+      cluster: action.cluster,
+      wallet: action.walletAddress || undefined,
+      reserveSymbol: stringParam(action, 'reserveSymbol') || undefined,
+      reserveMint: stringParam(action, 'reserveMint') || undefined,
+      amount: stringParam(action, 'amount') || undefined,
+      withdrawAll: action.params.withdrawAll === true,
+      suppliedBefore: stringParam(action, 'suppliedBefore') || undefined,
+      earnedInterest: stringParam(action, 'earnedInterest') || undefined,
+      supplyApy: numberParam(action, 'supplyApy'),
+      utilization: numberParam(action, 'utilization'),
+      withdrawalDelaySec: numberParam(action, 'withdrawalDelaySec'),
+      withdrawAvailable: stringParam(action, 'withdrawAvailable') || undefined,
+      mainnetWarning: mainnet,
+      adapterEnabled: isDappEnabled('kamino', state.connectedDapps, action.cluster),
+    });
+  }
+  return undefined;
+}
+
+function numberParam(action: PreparedAction, key: string): number | undefined {
+  const raw = action.params[key];
+  if (typeof raw === 'number' && Number.isFinite(raw)) return raw;
+  if (typeof raw === 'string' && raw.trim()) {
+    const parsed = Number(raw);
+    if (Number.isFinite(parsed)) return parsed;
   }
   return undefined;
 }
@@ -20352,7 +22465,7 @@ function preSignAmount(action: PreparedAction): string | undefined {
 function preSignTokenLabel(action: PreparedAction): string | undefined {
   if (action.kind === 'transfer_sol') return 'SOL';
   const token = stringParam(action, 'token');
-  return token || undefined;
+  return resolveTokenDisplay(token || undefined) || (token || undefined);
 }
 
 function browserSlippageBpsFromParams(action: PreparedAction): number | undefined {
@@ -20399,11 +22512,15 @@ function renderPreSignReviewRow(row: PreSignReviewRow): string {
   const copyButton = row.copyValue
     ? `<button type="button" class="wallet-action-copy" data-copy="${escapeHtml(row.copyValue)}" data-copy-name="${escapeHtml(row.label)}">Copy</button>`
     : '';
+  const badge = row.badge
+    ? `<span class="pre-sign-review-row-badge">${escapeHtml(row.badge)}</span>`
+    : '';
   return `
     <div class="pre-sign-review-row${toneClass}"${titleAttr}>
       <dt>${escapeHtml(row.label)}</dt>
       <dd>
         <span>${escapeHtml(row.value)}</span>
+        ${badge}
         ${copyButton}
       </dd>
     </div>
@@ -22659,7 +24776,34 @@ function defaultRecipientDraft(): RecipientDraft {
     address: '',
     policy: 'allow',
     note: '',
+    tags: '',
+    isMine: false,
   };
+}
+
+function defaultCustomTokenDraft(): CustomTokenDraft {
+  return {
+    mint: '',
+    symbol: '',
+    decimals: '',
+    label: '',
+  };
+}
+
+function defaultAgentDraft(): AgentDraft {
+  return {
+    label: '',
+    tier: 'capped',
+    notes: '',
+  };
+}
+
+function defaultSavedPromptDraft(): SavedPromptDraft {
+  return { label: '', prompt: '' };
+}
+
+function emptyPlannerPrefs(): PlannerPrefs {
+  return { houseRules: '', savedPrompts: [] };
 }
 
 function defaultLabInputs(): Record<string, string> {
@@ -22959,6 +25103,23 @@ function formatDateTime(value: string): string {
   }).format(date);
 }
 
+function formatRelativeTime(value: string, now: Date = new Date()): string {
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return value || 'never';
+  const diffMs = date.getTime() - now.getTime();
+  const absMs = Math.abs(diffMs);
+  const minute = 60_000;
+  const hour = 60 * minute;
+  const day = 24 * hour;
+  if (absMs < minute) return 'just now';
+  const rtf = new Intl.RelativeTimeFormat(undefined, { numeric: 'auto' });
+  if (absMs < hour) return rtf.format(Math.round(diffMs / minute), 'minute');
+  if (absMs < day) return rtf.format(Math.round(diffMs / hour), 'hour');
+  if (absMs < 30 * day) return rtf.format(Math.round(diffMs / day), 'day');
+  if (absMs < 365 * day) return rtf.format(Math.round(diffMs / (30 * day)), 'month');
+  return rtf.format(Math.round(diffMs / (365 * day)), 'year');
+}
+
 function toProtocolErrorPayload(err: unknown): ProtocolErrorPayload {
   if (err instanceof ProtocolError) {
     return err.toPayload();
@@ -23229,6 +25390,279 @@ function saveRecipientRules(): void {
   }
 }
 
+function defaultSafetyRails(): SafetyRailsState {
+  return {
+    programs: { enabled: false, mode: 'warn', allowlist: [], blocklist: [] },
+    tokens: { enabled: false, mode: 'warn', allowlist: [], blocklist: [] },
+    spend: { enabled: false, mode: 'warn', caps: [] },
+    slippage: { enabled: false, mode: 'warn', maxBps: 100 },
+  };
+}
+
+function loadSafetyRails(): SafetyRailsState {
+  const fallback = defaultSafetyRails();
+  try {
+    const programsRaw = window.localStorage.getItem(PROGRAM_RULES_STORAGE_KEY);
+    const tokensRaw = window.localStorage.getItem(TOKEN_RULES_STORAGE_KEY);
+    const spendRaw = window.localStorage.getItem(SPEND_CAPS_STORAGE_KEY);
+    const slippageRaw = window.localStorage.getItem(SLIPPAGE_CAP_STORAGE_KEY);
+    return {
+      programs: programsRaw ? { ...fallback.programs, ...JSON.parse(programsRaw) } : fallback.programs,
+      tokens: tokensRaw ? { ...fallback.tokens, ...JSON.parse(tokensRaw) } : fallback.tokens,
+      spend: spendRaw ? { ...fallback.spend, ...JSON.parse(spendRaw) } : fallback.spend,
+      slippage: slippageRaw ? { ...fallback.slippage, ...JSON.parse(slippageRaw) } : fallback.slippage,
+    };
+  } catch {
+    return fallback;
+  }
+}
+
+function saveSafetyRailsSection(section: keyof SafetyRailsState): void {
+  try {
+    const key = {
+      programs: PROGRAM_RULES_STORAGE_KEY,
+      tokens: TOKEN_RULES_STORAGE_KEY,
+      spend: SPEND_CAPS_STORAGE_KEY,
+      slippage: SLIPPAGE_CAP_STORAGE_KEY,
+    }[section];
+    window.localStorage.setItem(key, JSON.stringify(state.safetyRails[section]));
+  } catch {
+    // Best-effort browser persistence.
+  }
+}
+
+function loadCustomTokens(): CustomToken[] {
+  try {
+    const raw = window.localStorage.getItem(CUSTOM_TOKENS_STORAGE_KEY);
+    if (!raw) return [];
+    const parsed = JSON.parse(raw);
+    if (!Array.isArray(parsed)) return [];
+    return parsed
+      .map(parseCustomToken)
+      .filter((entry): entry is CustomToken => Boolean(entry));
+  } catch {
+    return [];
+  }
+}
+
+function saveCustomTokens(): void {
+  try {
+    window.localStorage.setItem(CUSTOM_TOKENS_STORAGE_KEY, JSON.stringify(state.customTokens));
+  } catch {
+    // Best-effort browser persistence.
+  }
+}
+
+function parseCustomToken(value: unknown): CustomToken | null {
+  if (!isJsonObject(value)) return null;
+  const mint = typeof value.mint === 'string' ? value.mint.trim() : '';
+  const symbol = typeof value.symbol === 'string' ? value.symbol.trim() : '';
+  if (!mint || !symbol || !isSolanaPublicKeyText(mint)) return null;
+  const decimalsRaw = value.decimals;
+  const decimals = typeof decimalsRaw === 'number'
+    ? Math.max(0, Math.min(18, Math.floor(decimalsRaw)))
+    : 0;
+  const now = new Date().toISOString();
+  return {
+    id: typeof value.id === 'string' && value.id ? value.id : newId('custom-token'),
+    mint,
+    symbol: symbol.slice(0, 12),
+    decimals,
+    ...(typeof value.label === 'string' && value.label.trim() ? { label: value.label.trim().slice(0, 64) } : {}),
+    createdAt: typeof value.createdAt === 'string' ? value.createdAt : now,
+    updatedAt: typeof value.updatedAt === 'string' ? value.updatedAt : now,
+  };
+}
+
+function customTokenByMint(mint: string): CustomToken | undefined {
+  const normalized = mint.trim();
+  if (!normalized) return undefined;
+  return state.customTokens.find((token) => token.mint === normalized);
+}
+
+function customTokenBySymbol(symbol: string): CustomToken | undefined {
+  const normalized = symbol.trim().toUpperCase();
+  if (!normalized) return undefined;
+  return state.customTokens.find((token) => token.symbol.toUpperCase() === normalized);
+}
+
+function resolveTokenDisplay(token: string | undefined): string | undefined {
+  if (!token) return undefined;
+  const trimmed = token.trim();
+  if (!trimmed) return undefined;
+  const known = KNOWN_BROWSER_TOKENS[trimmed.toUpperCase()];
+  if (known) return known.symbol;
+  if (isSolanaPublicKeyText(trimmed)) {
+    const custom = customTokenByMint(trimmed);
+    if (custom) return custom.symbol;
+    return shortHexMint(trimmed);
+  }
+  const customBySymbol = customTokenBySymbol(trimmed);
+  if (customBySymbol) return customBySymbol.symbol;
+  return trimmed;
+}
+
+function shortHexMint(mint: string): string {
+  if (mint.length <= 12) return mint;
+  return `${mint.slice(0, 4)}…${mint.slice(-4)}`;
+}
+
+function bumpRecipientLastUsed(address: string | undefined): void {
+  if (!address) return;
+  const recipient = savedRecipientForAddress(address);
+  if (!recipient) return;
+  const now = new Date().toISOString();
+  recipient.lastUsedAt = now;
+  state.recipientRules.recipients = mergeSavedRecipients(state.recipientRules.recipients);
+  saveRecipientRules();
+}
+
+function loadAgents(): RegisteredAgent[] {
+  try {
+    const raw = window.localStorage.getItem(AGENTS_STORAGE_KEY);
+    if (!raw) return [];
+    const parsed = JSON.parse(raw);
+    if (!Array.isArray(parsed)) return [];
+    return parsed
+      .map(parseRegisteredAgent)
+      .filter((agent): agent is RegisteredAgent => Boolean(agent));
+  } catch {
+    return [];
+  }
+}
+
+function saveAgents(): void {
+  try {
+    window.localStorage.setItem(AGENTS_STORAGE_KEY, JSON.stringify(state.agents));
+  } catch {
+    // Best-effort browser persistence.
+  }
+}
+
+function parseRegisteredAgent(value: unknown): RegisteredAgent | null {
+  if (!value || typeof value !== 'object') return null;
+  const raw = value as Partial<RegisteredAgent>;
+  if (typeof raw.id !== 'string' || !raw.id) return null;
+  if (typeof raw.label !== 'string' || !raw.label) return null;
+  if (typeof raw.token !== 'string' || !raw.token) return null;
+  const tier: AgentTier =
+    raw.tier === 'read_only' || raw.tier === 'capped' || raw.tier === 'full' ? raw.tier : 'capped';
+  const createdAt = typeof raw.createdAt === 'string' && raw.createdAt ? raw.createdAt : new Date().toISOString();
+  return {
+    id: raw.id,
+    label: raw.label.slice(0, 64),
+    token: raw.token,
+    tier,
+    enabled: raw.enabled !== false,
+    createdAt,
+    ...(typeof raw.lastSeenAt === 'string' && raw.lastSeenAt ? { lastSeenAt: raw.lastSeenAt } : {}),
+    ...(typeof raw.notes === 'string' && raw.notes ? { notes: raw.notes.slice(0, 200) } : {}),
+  };
+}
+
+function agentById(agentId: string): RegisteredAgent | undefined {
+  return state.agents.find((agent) => agent.id === agentId);
+}
+
+function agentTierLabel(tier: AgentTier): string {
+  switch (tier) {
+    case 'read_only':
+      return 'Read-only';
+    case 'capped':
+      return 'Capped';
+    case 'full':
+      return 'Full';
+  }
+}
+
+async function syncAgentsToBridge(): Promise<void> {
+  if (!state.bridgeActive || !state.bridgeUrl || !state.bridgeToken) return;
+  try {
+    await bridgeRequest('/bridge/agents', {
+      method: 'POST',
+      body: JSON.stringify({ agents: state.agents }),
+    });
+  } catch (err) {
+    state.agentErrors = {
+      ...state.agentErrors,
+      _form: `Bridge sync failed: ${err instanceof Error ? err.message : 'unknown error'}`,
+    };
+  }
+}
+
+function loadPlannerPrefs(): PlannerPrefs {
+  try {
+    const raw = window.localStorage.getItem(PLANNER_PREFS_STORAGE_KEY);
+    if (!raw) return emptyPlannerPrefs();
+    const parsed = JSON.parse(raw);
+    if (!parsed || typeof parsed !== 'object') return emptyPlannerPrefs();
+    const rawObj = parsed as { houseRules?: unknown; savedPrompts?: unknown };
+    const houseRules = typeof rawObj.houseRules === 'string'
+      ? rawObj.houseRules.slice(0, PLANNER_HOUSE_RULES_MAX)
+      : '';
+    const savedPrompts = Array.isArray(rawObj.savedPrompts)
+      ? rawObj.savedPrompts
+          .map(parseSavedPrompt)
+          .filter((entry): entry is SavedPrompt => Boolean(entry))
+      : [];
+    return { houseRules, savedPrompts };
+  } catch {
+    return emptyPlannerPrefs();
+  }
+}
+
+function savePlannerPrefs(): void {
+  try {
+    window.localStorage.setItem(PLANNER_PREFS_STORAGE_KEY, JSON.stringify(state.plannerPrefs));
+  } catch {
+    // Best-effort browser persistence.
+  }
+}
+
+function parseSavedPrompt(value: unknown): SavedPrompt | null {
+  if (!value || typeof value !== 'object') return null;
+  const raw = value as Partial<SavedPrompt>;
+  const label = typeof raw.label === 'string' ? raw.label.trim() : '';
+  const prompt = typeof raw.prompt === 'string' ? raw.prompt.trim() : '';
+  if (!label || !prompt) return null;
+  const now = new Date().toISOString();
+  return {
+    id: typeof raw.id === 'string' && raw.id ? raw.id : newId('saved-prompt'),
+    label: label.slice(0, 48),
+    prompt: prompt.slice(0, 2000),
+    createdAt: typeof raw.createdAt === 'string' ? raw.createdAt : now,
+    updatedAt: typeof raw.updatedAt === 'string' ? raw.updatedAt : now,
+  };
+}
+
+function injectHouseRules(userNotes: string): string {
+  const trimmed = userNotes.trim();
+  const rules = state.plannerPrefs.houseRules.trim();
+  if (!rules) return trimmed;
+  if (!trimmed) return `House rules:\n${rules}`;
+  return `${trimmed}\n\nHouse rules:\n${rules}`;
+}
+
+async function issueAgentViaBridge(input: AgentDraft): Promise<RegisteredAgent | null> {
+  if (!state.bridgeActive || !state.bridgeUrl || !state.bridgeToken) {
+    state.agentErrors = { _form: 'Connect the local bridge before issuing agent tokens.' };
+    return null;
+  }
+  try {
+    const payload = (await bridgeRequest('/bridge/agents/issue', {
+      method: 'POST',
+      body: JSON.stringify({ label: input.label, tier: input.tier, notes: input.notes || undefined }),
+    })) as { agent?: RegisteredAgent };
+    if (!payload.agent || typeof payload.agent.token !== 'string') return null;
+    return payload.agent;
+  } catch (err) {
+    state.agentErrors = {
+      _form: `Issue failed: ${err instanceof Error ? err.message : 'unknown error'}`,
+    };
+    return null;
+  }
+}
+
 function loadAgentPolicies(): UserAgentPolicy[] {
   try {
     const raw = window.localStorage.getItem(AGENT_POLICIES_STORAGE_KEY);
@@ -23248,6 +25682,71 @@ function saveAgentPolicies(): void {
     window.localStorage.setItem(AGENT_POLICIES_STORAGE_KEY, JSON.stringify(state.agentPolicies));
   } catch {
     // Best-effort browser persistence.
+  }
+  void syncAgentPoliciesToCloud();
+}
+
+let agentPoliciesCloudVersion = 0;
+let lastCloudPoliciesPushPromise: Promise<unknown> | null = null;
+
+async function syncAgentPoliciesToCloud(): Promise<void> {
+  if (state.cloudSession.status !== 'signed-in') return;
+  const payload = JSON.stringify({
+    policies: state.agentPolicies,
+    version: agentPoliciesCloudVersion + 1,
+  });
+  lastCloudPoliciesPushPromise = (async () => {
+    try {
+      const response = await cloudRequest('/api/preferences/agent-policies', {
+        method: 'PUT',
+        body: payload,
+      });
+      const data = response as { version?: number } | undefined;
+      if (data && typeof data.version === 'number') {
+        agentPoliciesCloudVersion = data.version;
+      }
+    } catch {
+      // Best-effort: keep local state on failure.
+    }
+  })();
+  await lastCloudPoliciesPushPromise;
+}
+
+async function hydrateAgentPoliciesFromCloud(): Promise<void> {
+  if (state.cloudSession.status !== 'signed-in') return;
+  try {
+    const response = await cloudRequest('/api/preferences/agent-policies', { method: 'GET' });
+    const data = response as { policies?: unknown; version?: number } | undefined;
+    if (!data || !Array.isArray(data.policies)) return;
+    const cloudPolicies = data.policies
+      .map(parseUserAgentPolicy)
+      .filter((entry): entry is UserAgentPolicy => Boolean(entry));
+    if (!cloudPolicies.length && !state.agentPolicies.length) return;
+    if (state.agentPolicies.length && cloudPolicies.length) {
+      const localUpdated = state.agentPolicies.reduce(
+        (acc, policy) => Math.max(acc, Date.parse(policy.updatedAt) || 0),
+        0,
+      );
+      const cloudUpdated = cloudPolicies.reduce(
+        (acc, policy) => Math.max(acc, Date.parse(policy.updatedAt) || 0),
+        0,
+      );
+      if (localUpdated > cloudUpdated) {
+        // Local is newer - push it
+        await syncAgentPoliciesToCloud();
+        return;
+      }
+    }
+    state.agentPolicies = cloudPolicies;
+    agentPoliciesCloudVersion = typeof data.version === 'number' ? data.version : 0;
+    try {
+      window.localStorage.setItem(AGENT_POLICIES_STORAGE_KEY, JSON.stringify(state.agentPolicies));
+    } catch {
+      // Best-effort persistence.
+    }
+    render();
+  } catch {
+    // Best-effort: keep local state on failure.
   }
 }
 
@@ -23320,12 +25819,22 @@ function savedRecipientFromUnknown(value: unknown): SavedRecipient | null {
   if (!name || !isSolanaPublicKeyText(address)) return null;
   const now = new Date().toISOString();
   const policy = isRecipientPolicy(value.policy) ? value.policy : 'known';
+  const tags = Array.isArray(value.tags)
+    ? value.tags
+        .filter((entry): entry is string => typeof entry === 'string')
+        .map((entry) => entry.trim())
+        .filter((entry) => entry.length > 0)
+        .slice(0, 8)
+    : [];
   return {
     id: typeof value.id === 'string' && value.id ? value.id : newId('recipient'),
     name: name.slice(0, 48),
     address,
     policy,
     ...(typeof value.note === 'string' && value.note.trim() ? { note: value.note.trim().slice(0, 140) } : {}),
+    ...(tags.length ? { tags } : {}),
+    ...(value.isMine === true ? { isMine: true } : {}),
+    ...(typeof value.lastUsedAt === 'string' && value.lastUsedAt ? { lastUsedAt: value.lastUsedAt } : {}),
     createdAt: typeof value.createdAt === 'string' ? value.createdAt : now,
     updatedAt: typeof value.updatedAt === 'string' ? value.updatedAt : now,
   };
@@ -23338,17 +25847,27 @@ function mergeSavedRecipients(recipients: SavedRecipient[]): SavedRecipient[] {
     if (!key) continue;
     const current = byAddress.get(key);
     if (!current || recipient.updatedAt.localeCompare(current.updatedAt) >= 0) {
+      const cleanTags = Array.isArray(recipient.tags)
+        ? recipient.tags.map((tag) => tag.trim()).filter((tag) => tag.length > 0).slice(0, 8)
+        : [];
       byAddress.set(key, {
         ...recipient,
         name: recipient.name.trim().slice(0, 48),
         address: key,
         ...(recipient.note?.trim() ? { note: recipient.note.trim().slice(0, 140) } : { note: undefined }),
+        ...(cleanTags.length ? { tags: cleanTags } : { tags: undefined }),
+        ...(recipient.isMine === true ? { isMine: true } : { isMine: undefined }),
+        ...(recipient.lastUsedAt ? { lastUsedAt: recipient.lastUsedAt } : { lastUsedAt: undefined }),
       });
     }
   }
   return [...byAddress.values()].sort((left, right) => {
     const policyRank = recipientPolicyRank(left.policy) - recipientPolicyRank(right.policy);
     if (policyRank !== 0) return policyRank;
+    const leftKey = left.lastUsedAt ?? left.createdAt;
+    const rightKey = right.lastUsedAt ?? right.createdAt;
+    const recencyRank = rightKey.localeCompare(leftKey);
+    if (recencyRank !== 0) return recencyRank;
     return left.name.localeCompare(right.name);
   });
 }
@@ -23691,6 +26210,7 @@ function parseAgentPlanReviewState(value: unknown): AgentPlanReviewState | undef
   const policies = parseAgentReviewPolicySnapshots(value.policies);
   const history = parseAgentReviewAttempts(value.history);
   const facts = parseAgentReviewFactSet(value.facts);
+  const conversation = parseAgentAskConversation(value.conversation);
   const appliedUserPolicyIds = Array.isArray(value.appliedUserPolicyIds)
     ? value.appliedUserPolicyIds.filter((entry): entry is string => typeof entry === 'string')
     : undefined;
@@ -23713,9 +26233,33 @@ function parseAgentPlanReviewState(value: unknown): AgentPlanReviewState | undef
     ...(policies && { policies }),
     ...(history && { history }),
     ...(facts && { facts }),
+    ...(conversation && { conversation }),
     ...(typeof value.reviewedPlanFingerprint === 'string' && { reviewedPlanFingerprint: value.reviewedPlanFingerprint }),
     ...(appliedUserPolicyIds && appliedUserPolicyIds.length ? { appliedUserPolicyIds } : {}),
   };
+}
+
+function parseAgentAskConversation(value: unknown): AgentAskExchange[] | undefined {
+  if (!Array.isArray(value)) return undefined;
+  const exchanges: AgentAskExchange[] = [];
+  for (const entry of value) {
+    if (!isJsonObject(entry)) continue;
+    if (typeof entry.id !== 'string' || typeof entry.question !== 'string' || typeof entry.askedAt !== 'string') continue;
+    exchanges.push({
+      id: entry.id,
+      question: entry.question,
+      askedAt: entry.askedAt,
+      ...(typeof entry.answer === 'string' ? { answer: entry.answer } : {}),
+      ...(typeof entry.error === 'string' ? { error: entry.error } : {}),
+      ...(typeof entry.answeredAt === 'string' ? { answeredAt: entry.answeredAt } : {}),
+      ...(entry.pending === true ? { pending: true } : {}),
+      ...(entry.source === 'hosted' || entry.source === 'session' || entry.source === 'bridge' ? { source: entry.source } : {}),
+      ...(typeof entry.provider === 'string' ? { provider: entry.provider } : {}),
+      ...(typeof entry.model === 'string' ? { model: entry.model } : {}),
+    });
+    if (exchanges.length >= 6) break;
+  }
+  return exchanges.length ? exchanges : undefined;
 }
 
 function parseAgentReviewOverride(value: unknown): AgentReviewOverride | undefined {
@@ -24107,4 +26651,875 @@ function openLabArchiveDb(): Promise<IDBDatabase> {
     request.onsuccess = () => resolve(request.result);
     request.onerror = () => reject(request.error ?? new Error('Unable to open lab artifact archive.'));
   });
+}
+
+function plannerPrefsSection(scope: string): string {
+  const houseRules = state.plannerPrefs.houseRules;
+  const remaining = PLANNER_HOUSE_RULES_MAX - houseRules.length;
+  const prompts = state.plannerPrefs.savedPrompts;
+  const draft = state.savedPromptDraft;
+  const errors = state.savedPromptErrors;
+  return `
+    <details class="planner-prefs" aria-label="Planner personalization">
+      <summary>
+        <span>Planner personalization</span>
+        <em>${houseRules ? 'House rules on' : 'Off'} · ${prompts.length} saved prompt${prompts.length === 1 ? '' : 's'}</em>
+      </summary>
+      <div class="planner-prefs-body">
+        <label class="field compact planner-house-rules-field">
+          <span>House rules</span>
+          <textarea
+            id="plannerHouseRules-${escapeHtml(scope)}"
+            data-planner-pref="houseRules"
+            rows="3"
+            maxlength="${PLANNER_HOUSE_RULES_MAX}"
+            placeholder="e.g. Never propose meme coins. Prefer USDC for stables. Always memo as 'work expense'."
+            ${state.busy ? 'disabled' : ''}
+          >${escapeHtml(houseRules)}</textarea>
+          <em class="planner-house-rules-counter">${remaining} chars left · injected into every plan request as userNotes</em>
+        </label>
+        <div class="planner-prompts-form">
+          <label class="field compact">
+            <span>New prompt label</span>
+            <input data-saved-prompt-field="label" value="${escapeHtml(draft.label)}" placeholder="Weekly rebalance" autocomplete="off" ${state.busy ? 'disabled' : ''} />
+            ${errors.label ? `<em class="error-text">${escapeHtml(errors.label)}</em>` : ''}
+          </label>
+          <label class="field compact planner-prompt-body-field">
+            <span>Prompt body</span>
+            <textarea data-saved-prompt-field="prompt" rows="2" placeholder="Rebalance to 50% SOL / 30% USDC / 20% JUP" ${state.busy ? 'disabled' : ''}>${escapeHtml(draft.prompt)}</textarea>
+            ${errors.prompt ? `<em class="error-text">${escapeHtml(errors.prompt)}</em>` : ''}
+          </label>
+          <div class="planner-prompts-actions">
+            <button type="button" class="primary" data-saved-prompt-action="save" ${state.busy ? 'disabled' : ''}>Save prompt</button>
+            <button type="button" class="utility" data-saved-prompt-action="reset" ${state.busy ? 'disabled' : ''}>Clear</button>
+          </div>
+        </div>
+        ${prompts.length ? `<ul class="planner-prompts-list">${prompts.map(savedPromptRow).join('')}</ul>` : '<div class="planner-prompts-empty">No saved prompts yet.</div>'}
+      </div>
+    </details>
+  `;
+}
+
+function savedPromptRow(prompt: SavedPrompt): string {
+  return `
+    <li class="planner-prompt-row" data-saved-prompt-id="${escapeHtml(prompt.id)}">
+      <div>
+        <strong>${escapeHtml(prompt.label)}</strong>
+        <p>${escapeHtml(prompt.prompt)}</p>
+      </div>
+      <div class="planner-prompt-actions">
+        <button type="button" data-saved-prompt-action="use" data-saved-prompt-id="${escapeHtml(prompt.id)}" ${state.busy ? 'disabled' : ''}>Use</button>
+        <button type="button" class="utility danger" data-saved-prompt-action="delete" data-saved-prompt-id="${escapeHtml(prompt.id)}" ${state.busy ? 'disabled' : ''}>Delete</button>
+      </div>
+    </li>
+  `;
+}
+
+function updateHouseRules(value: string): void {
+  state.plannerPrefs.houseRules = value.slice(0, PLANNER_HOUSE_RULES_MAX);
+  savePlannerPrefs();
+}
+
+function updateSavedPromptDraftField(field: HTMLInputElement | HTMLTextAreaElement): void {
+  const key = field.dataset.savedPromptField;
+  if (key === 'label' || key === 'prompt') {
+    state.savedPromptDraft[key] = field.value;
+    delete state.savedPromptErrors[key];
+  }
+}
+
+function handleSavedPromptAction(button: HTMLButtonElement): void {
+  const action = button.dataset.savedPromptAction;
+  if (action === 'save') {
+    saveSavedPromptDraft();
+    return;
+  }
+  if (action === 'reset') {
+    state.savedPromptDraft = defaultSavedPromptDraft();
+    state.savedPromptErrors = {};
+    render();
+    return;
+  }
+  const promptId = button.dataset.savedPromptId;
+  if (!promptId) return;
+  if (action === 'delete') {
+    deleteSavedPrompt(promptId);
+    return;
+  }
+  if (action === 'use') {
+    useSavedPrompt(promptId);
+  }
+}
+
+function saveSavedPromptDraft(): void {
+  const label = state.savedPromptDraft.label.trim();
+  const prompt = state.savedPromptDraft.prompt.trim();
+  const errors: Record<string, string> = {};
+  if (!label) errors.label = 'Label is required.';
+  if (!prompt) errors.prompt = 'Prompt body is required.';
+  state.savedPromptErrors = errors;
+  if (Object.keys(errors).length > 0) {
+    render();
+    return;
+  }
+  const now = new Date().toISOString();
+  const entry: SavedPrompt = {
+    id: newId('saved-prompt'),
+    label: label.slice(0, 48),
+    prompt: prompt.slice(0, 2000),
+    createdAt: now,
+    updatedAt: now,
+  };
+  state.plannerPrefs.savedPrompts = [entry, ...state.plannerPrefs.savedPrompts];
+  state.savedPromptDraft = defaultSavedPromptDraft();
+  state.savedPromptErrors = {};
+  savePlannerPrefs();
+  pushToast('success', 'Prompt saved', entry.label);
+  render();
+}
+
+function deleteSavedPrompt(promptId: string): void {
+  const prompt = state.plannerPrefs.savedPrompts.find((entry) => entry.id === promptId);
+  state.plannerPrefs.savedPrompts = state.plannerPrefs.savedPrompts.filter((entry) => entry.id !== promptId);
+  savePlannerPrefs();
+  pushToast('success', 'Prompt removed', prompt?.label ?? promptId);
+  render();
+}
+
+function useSavedPrompt(promptId: string): void {
+  const prompt = state.plannerPrefs.savedPrompts.find((entry) => entry.id === promptId);
+  if (!prompt) return;
+  state.agentPrompt = prompt.prompt;
+  pushToast('success', 'Prompt loaded', prompt.label);
+  render();
+}
+
+// === Phase 3 helpers: diagnostics, notifications, attach-tx ===
+
+function defaultNotificationSettings(): NotificationSettingsState {
+  const permission = typeof Notification !== 'undefined' && Notification.permission
+    ? Notification.permission
+    : ('unsupported' as const);
+  return { permission, browser: false, due: false, pending: false, confirmed: false, failed: false };
+}
+
+const DEBUG_LOG_LIMIT = 200;
+
+function logDebug(event: Omit<DebugLogEvent, 'ts'>): void {
+  const entry: DebugLogEvent = { ...event, ts: new Date().toISOString() };
+  state.debugLog = [entry, ...state.debugLog].slice(0, DEBUG_LOG_LIMIT);
+}
+
+function buildDiagnosticBundle(options: { actionId?: string } = {}): string {
+  const filtered = options.actionId
+    ? state.debugLog.filter((event) => event.actionId === options.actionId)
+    : state.debugLog;
+  const bundle = {
+    capturedAt: new Date().toISOString(),
+    app: { name: 'Agentic Browser', cluster: state.cluster, bridgeActive: state.bridgeActive },
+    rpcHost: rpcHostFromUrl(activeRpcUrl()),
+    walletAddress: state.address ? short(state.address) : null,
+    aiMode: state.aiSettings.mode,
+    aiDiagnostics: state.aiDiagnostics,
+    systemHealth: state.systemHealth,
+    notificationSettings: state.notificationSettings,
+    pendingLedger: state.pendingTransactions
+      .filter((record) => !options.actionId || record.actionId === options.actionId)
+      .map((record) => ({
+        id: record.id,
+        actionId: record.actionId,
+        cluster: record.cluster,
+        kind: record.kind,
+        phase: record.phase,
+        txid: record.txid,
+        failureKind: record.failureKind,
+        attemptCount: record.attemptCount,
+        signedAt: record.signedAt,
+        submittedAt: record.submittedAt,
+        confirmedAt: record.confirmedAt,
+        failedAt: record.failedAt,
+        lastError: record.lastError,
+        explorerUrl: record.explorerUrl,
+      })),
+    debugLog: filtered.slice(0, 60),
+  };
+  return redactSecrets(JSON.stringify(bundle, null, 2), state.aiSettings.apiKey);
+}
+
+async function copyDiagnosticBundle(actionId?: string): Promise<void> {
+  try {
+    const text = buildDiagnosticBundle({ actionId });
+    await navigator.clipboard.writeText(text);
+    pushToast('success', 'Debug log copied', 'Safe to share. No keys, signed bytes, or secrets included.');
+  } catch (err) {
+    const message = err instanceof Error ? err.message : 'Could not copy debug log.';
+    pushToast('error', 'Copy failed', message);
+  }
+}
+
+async function resolveTransactionBySignature(cluster: Cluster, txid: string): Promise<TxResolution> {
+  const connection = browserActionConnection(cluster);
+  const tx = await connection.getTransaction(txid, {
+    commitment: 'confirmed',
+    maxSupportedTransactionVersion: 0,
+  });
+  if (!tx) {
+    return { found: false, confirmed: false, failed: false, txid, signers: [], programIds: [] };
+  }
+  const message = tx.transaction.message;
+  const accountKeys = message.getAccountKeys ? message.getAccountKeys().staticAccountKeys : [];
+  const keys = accountKeys.map((key) => key.toBase58());
+  const numSigners = message.header.numRequiredSignatures || 0;
+  const signers = keys.slice(0, numSigners);
+  const compiledInstructions = 'compiledInstructions' in message
+    ? message.compiledInstructions
+    : (message as unknown as { instructions: Array<{ programIdIndex: number }> }).instructions;
+  const programIds = Array.from(new Set(
+    compiledInstructions.map((ix) => keys[ix.programIdIndex]).filter((value): value is string => Boolean(value)),
+  ));
+  const failed = Boolean(tx.meta?.err);
+  return {
+    found: true,
+    confirmed: !failed,
+    failed,
+    txid,
+    slot: tx.slot,
+    blockTime: tx.blockTime ?? undefined,
+    signers,
+    programIds,
+    error: tx.meta?.err ? stringifySimulationError(tx.meta.err) : undefined,
+  };
+}
+
+function validateTxMatchesAction(resolution: TxResolution, action: PreparedAction): AttachTxValidation {
+  const warnings: string[] = [];
+  if (!resolution.found) {
+    warnings.push('Transaction not found on-chain yet.');
+    return { match: false, warnings };
+  }
+  if (action.walletAddress && !resolution.signers.includes(action.walletAddress)) {
+    warnings.push(`Wallet ${short(action.walletAddress)} did not sign this transaction.`);
+  }
+  if (action.kind === 'swap') {
+    const touchesJupiter = resolution.programIds.some((id) => id.startsWith('JUP'));
+    if (!touchesJupiter) warnings.push('Transaction does not touch a Jupiter program - expected for a swap.');
+  }
+  return { match: warnings.length === 0, warnings };
+}
+
+async function handleAttachTxAction(op: string, dataset: DOMStringMap): Promise<void> {
+  switch (op) {
+    case 'open':
+      state.attachTxModal = { actionId: dataset.actionId, txidInput: '', busy: false };
+      render();
+      return;
+    case 'cancel':
+      state.attachTxModal = null;
+      render();
+      return;
+    case 'lookup': {
+      const modal = state.attachTxModal;
+      if (!modal || !modal.txidInput.trim()) return;
+      await runAttachTxLookup(modal.txidInput.trim());
+      return;
+    }
+    case 'confirm':
+      await runAttachTxConfirm();
+      return;
+  }
+}
+
+async function runAttachTxLookup(txid: string): Promise<void> {
+  const modal = state.attachTxModal;
+  if (!modal) return;
+  const action = modal.actionId
+    ? state.preparedActions.find((candidate) => candidate.id === modal.actionId)
+    : undefined;
+  const cluster = action?.cluster ?? state.cluster;
+  state.attachTxModal = { ...modal, txidInput: txid, busy: true, error: undefined };
+  render();
+  try {
+    const resolution = await resolveTransactionBySignature(cluster, txid);
+    const validation = action ? validateTxMatchesAction(resolution, action) : { match: resolution.found, warnings: [] };
+    state.attachTxModal = { ...modal, txidInput: txid, resolution, validation, busy: false };
+    render();
+  } catch (err) {
+    const message = err instanceof Error ? err.message : 'Lookup failed.';
+    state.attachTxModal = { ...modal, txidInput: txid, busy: false, error: message };
+    logDebug({ level: 'error', source: 'rpc', message: `attach-tx lookup failed: ${message}`, txid });
+    render();
+  }
+}
+
+async function runAttachTxConfirm(): Promise<void> {
+  const modal = state.attachTxModal;
+  if (!modal || !modal.resolution) return;
+  const action = modal.actionId
+    ? state.preparedActions.find((candidate) => candidate.id === modal.actionId)
+    : undefined;
+  state.attachTxModal = { ...modal, busy: true };
+  render();
+  try {
+    const resolution = modal.resolution;
+    if (action) {
+      upsertPendingTransaction({
+        actionId: action.id,
+        cluster: action.cluster,
+        workflowSource: (action.workflowSource ?? 'browser') as LedgerWorkflowSource,
+        kind: action.kind,
+        phase: resolution.failed ? 'failed' : 'confirmed',
+        walletAddress: action.walletAddress,
+        txid: resolution.txid,
+        confirmedAt: resolution.failed ? undefined : new Date().toISOString(),
+        failedAt: resolution.failed ? new Date().toISOString() : undefined,
+        explorerUrl: explorerUrl(resolution.txid, action.cluster),
+      });
+      const next: PreparedAction = {
+        ...action,
+        txid: resolution.txid,
+        txStatus: resolution.failed ? 'failed' : 'confirmed',
+        confirmedAt: resolution.failed ? undefined : new Date().toISOString(),
+        txError: resolution.error,
+        status: resolution.failed ? 'failed' : 'approved',
+        updatedAt: new Date().toISOString(),
+      };
+      state.preparedActions = state.preparedActions.map((candidate) => candidate.id === action.id ? next : candidate);
+      state.materializedActions = state.preparedActions;
+      saveBrowserWorkflowState();
+      syncPendingTransactionsFromLedger();
+    }
+    state.attachTxModal = null;
+    pushToast(
+      resolution.failed ? 'error' : 'success',
+      resolution.failed ? 'Attached as failed' : 'Transaction attached',
+      `${short(resolution.txid)} resolved on-chain.`,
+      { linkHref: explorerUrl(resolution.txid, action?.cluster ?? state.cluster), linkLabel: 'Open Solscan' },
+    );
+    render();
+  } catch (err) {
+    const message = err instanceof Error ? err.message : 'Attach failed.';
+    state.attachTxModal = { ...modal, busy: false, error: message };
+    logDebug({ level: 'error', source: 'ledger', message: `attach-tx confirm failed: ${message}`, actionId: action?.id });
+    render();
+  }
+}
+
+function attachTxModalRender(): string {
+  const modal = state.attachTxModal;
+  if (!modal) return '';
+  const resolution = modal.resolution;
+  const validation = modal.validation;
+  return `
+    <div class="attach-tx-modal-scrim" data-attach-tx-action="cancel" aria-hidden="true"></div>
+    <aside class="attach-tx-modal" role="dialog" aria-label="Attach existing transaction">
+      <header>
+        <h3>Attach existing transaction</h3>
+        <button type="button" class="attach-tx-modal-close" data-attach-tx-action="cancel" aria-label="Cancel">&times;</button>
+      </header>
+      <p>Paste a transaction signature to reconcile a pending or ambiguous approval.</p>
+      <div class="attach-tx-input-row">
+        <input
+          type="text"
+          placeholder="Transaction signature"
+          value="${escapeHtml(modal.txidInput)}"
+          data-attach-tx-input
+          ${modal.busy ? 'disabled' : ''}
+          spellcheck="false"
+          autocomplete="off"
+        />
+        <button type="button" class="primary" data-attach-tx-action="lookup" ${modal.busy || !modal.txidInput.trim() ? 'disabled' : ''}>${modal.busy && !resolution ? 'Looking up...' : 'Verify on-chain'}</button>
+      </div>
+      ${modal.error ? `<p class="attach-tx-error">${escapeHtml(modal.error)}</p>` : ''}
+      ${resolution ? `
+        <div class="attach-tx-resolution ${resolution.failed ? 'failed' : resolution.confirmed ? 'confirmed' : 'pending'}">
+          <div class="attach-tx-resolution-head">
+            <strong>${resolution.failed ? 'Found on-chain - transaction failed' : resolution.confirmed ? 'Found on-chain - confirmed' : 'Not yet confirmed'}</strong>
+            ${resolution.slot ? `<small>slot ${resolution.slot}</small>` : ''}
+          </div>
+          ${resolution.signers.length > 0 ? `<p>Signers: ${resolution.signers.slice(0, 3).map((s) => escapeHtml(short(s))).join(', ')}${resolution.signers.length > 3 ? '...' : ''}</p>` : ''}
+          ${resolution.programIds.length > 0 ? `<p>Programs: ${resolution.programIds.slice(0, 4).map((s) => escapeHtml(short(s))).join(', ')}${resolution.programIds.length > 4 ? '...' : ''}</p>` : ''}
+          ${resolution.error ? `<p class="attach-tx-error">${escapeHtml(resolution.error)}</p>` : ''}
+          ${validation && validation.warnings.length > 0 ? `
+            <ul class="attach-tx-warnings">
+              ${validation.warnings.map((w) => `<li>${escapeHtml(w)}</li>`).join('')}
+            </ul>
+          ` : ''}
+        </div>
+      ` : ''}
+      <footer>
+        <button type="button" class="utility" data-attach-tx-action="cancel" ${modal.busy ? 'disabled' : ''}>Cancel</button>
+        <button type="button" class="primary" data-attach-tx-action="confirm" ${!resolution || modal.busy ? 'disabled' : ''}>
+          ${modal.busy ? 'Attaching...' : validation && !validation.match ? 'Attach anyway' : 'Attach to approval'}
+        </button>
+      </footer>
+    </aside>
+  `;
+}
+
+let notificationTickerTimer: number | null = null;
+const NOTIFICATION_TICKER_INTERVAL_MS = 30_000;
+
+function startNotificationTicker(): void {
+  stopNotificationTicker();
+  notificationTickerTimer = window.setInterval(runNotificationTick, NOTIFICATION_TICKER_INTERVAL_MS);
+}
+
+function stopNotificationTicker(): void {
+  if (notificationTickerTimer !== null) {
+    window.clearInterval(notificationTickerTimer);
+    notificationTickerTimer = null;
+  }
+}
+
+function runNotificationTick(): void {
+  if (!state.notificationSettings.browser) return;
+  if (typeof Notification === 'undefined') return;
+  if (Notification.permission !== 'granted') return;
+  if (document.visibilityState === 'visible') return;
+  for (const record of state.pendingTransactions) {
+    if (state.notificationSettings.pending && (record.phase === 'submitted' || record.phase === 'ambiguous')) {
+      const reference = record.submittedAt ?? record.lastAttemptAt;
+      if (reference && Date.now() - new Date(reference).getTime() > 60_000) {
+        fireNotificationOnce('pending', record.id, 'Transaction still pending', `Awaiting confirmation for ${short(record.txid ?? record.id)}.`);
+      }
+    }
+    if (state.notificationSettings.confirmed && record.phase === 'confirmed') {
+      fireNotificationOnce('confirmed', record.id, 'Transaction confirmed', short(record.txid ?? record.id));
+    }
+    if (state.notificationSettings.failed && record.phase === 'failed') {
+      fireNotificationOnce('failed', record.id, 'Transaction failed', record.lastError ?? short(record.id));
+    }
+  }
+  if (state.notificationSettings.due) {
+    const now = Date.now();
+    for (const schedule of state.recurringPayments) {
+      if (schedule.status !== 'active') continue;
+      const next = schedule.startAt ? new Date(schedule.startAt).getTime() : NaN;
+      if (!Number.isNaN(next) && next <= now + 5 * 60 * 1000 && next >= now - 5 * 60 * 1000) {
+        fireNotificationOnce('due', schedule.id, 'Repeat payment due', `${schedule.amount} ${schedule.token} to ${short(schedule.recipient)}`);
+      }
+    }
+  }
+}
+
+function fireNotificationOnce(category: string, recordId: string, title: string, body: string): void {
+  const key = `${category}:${recordId}`;
+  if (state.notifiedRecords[key]) return;
+  state.notifiedRecords[key] = new Date().toISOString();
+  try {
+    new Notification(title, { body, tag: key });
+  } catch (err) {
+    logDebug({ level: 'warn', source: 'ui', message: `notification failed: ${err instanceof Error ? err.message : String(err)}` });
+  }
+}
+
+async function handleNotificationAction(op: string): Promise<void> {
+  switch (op) {
+    case 'request-permission': {
+      if (typeof Notification === 'undefined') {
+        pushToast('error', 'Not supported', 'This browser does not expose the Notification API.');
+        return;
+      }
+      try {
+        const permission = await Notification.requestPermission();
+        state.notificationSettings.permission = permission;
+        if (permission === 'granted') state.notificationSettings.browser = true;
+        render();
+      } catch (err) {
+        const message = err instanceof Error ? err.message : 'Permission request failed.';
+        pushToast('error', 'Permission failed', message);
+      }
+      return;
+    }
+    case 'toggle-browser':
+      state.notificationSettings.browser = !state.notificationSettings.browser;
+      render();
+      return;
+    case 'toggle-due':
+      state.notificationSettings.due = !state.notificationSettings.due;
+      render();
+      return;
+    case 'toggle-pending':
+      state.notificationSettings.pending = !state.notificationSettings.pending;
+      render();
+      return;
+    case 'toggle-confirmed':
+      state.notificationSettings.confirmed = !state.notificationSettings.confirmed;
+      render();
+      return;
+    case 'toggle-failed':
+      state.notificationSettings.failed = !state.notificationSettings.failed;
+      render();
+      return;
+  }
+}
+
+function notificationPreferencesPanel(): string {
+  const settings = state.notificationSettings;
+  const supported = settings.permission !== 'unsupported';
+  return `
+    <section class="notification-prefs-panel" aria-label="Notifications">
+      <div class="notification-prefs-head">
+        <strong>Notifications</strong>
+        <p>Browser notifications fire only when this tab is in the background. Tab title also shows the pending count.</p>
+      </div>
+      ${supported ? `
+        <div class="notification-prefs-permission">
+          <span>Permission: <strong>${escapeHtml(settings.permission)}</strong></span>
+          ${settings.permission !== 'granted' ? `<button type="button" class="primary" data-notification-action="request-permission">Request permission</button>` : ''}
+        </div>
+        <ul class="notification-prefs-list">
+          ${notificationToggleRow('toggle-browser', 'Browser notifications', settings.browser)}
+          ${notificationToggleRow('toggle-due', 'Repeat payment due', settings.due)}
+          ${notificationToggleRow('toggle-pending', 'Pending transactions (>60s)', settings.pending)}
+          ${notificationToggleRow('toggle-confirmed', 'Transaction confirmed', settings.confirmed)}
+          ${notificationToggleRow('toggle-failed', 'Transaction failed', settings.failed)}
+        </ul>
+      ` : '<p>This browser does not expose the Notification API.</p>'}
+    </section>
+  `;
+}
+
+function notificationToggleRow(action: string, label: string, value: boolean): string {
+  return `
+    <li>
+      <span>${escapeHtml(label)}</span>
+      <button type="button" class="safety-rails-toggle ${value ? 'active' : ''}" data-notification-action="${escapeHtml(action)}">${value ? 'on' : 'off'}</button>
+    </li>
+  `;
+}
+
+function updateTabTitleBadge(): void {
+  const current = document.title.replace(/^\(\d+\)\s*/, '');
+  const pending = state.pendingTransactions.filter((record) =>
+    record.phase === 'submitted' || record.phase === 'ambiguous' || record.phase === 'confirming',
+  ).length;
+  const approvals = state.preparedActions.filter((action) => !isTerminalPreparedAction(action)).length;
+  const count = pending + approvals;
+  document.title = count > 0 ? `(${count}) ${current}` : current;
+}
+
+const FAILURE_RETRY_KINDS: ReadonlyArray<TransactionFailureKind> = [
+  'wallet_rejected',
+  'wallet_unavailable',
+  'config_missing',
+  'rpc_timeout',
+  'rpc_rejected',
+  'network_unreachable',
+  'onchain_failed',
+  'expired_blockhash',
+  'slippage_or_quote_failed',
+  'simulation_failed',
+  'insufficient_funds',
+  'invalid_transaction',
+  'rate_limited',
+  'unknown_maybe_submitted',
+];
+
+const FAILURE_KIND_LABEL: Record<TransactionFailureKind, string> = {
+  wallet_rejected: 'Wallet rejected',
+  wallet_unavailable: 'Wallet unavailable',
+  config_missing: 'Config missing',
+  rpc_timeout: 'RPC timed out',
+  rpc_rejected: 'RPC rejected send',
+  network_unreachable: 'Network unreachable',
+  onchain_failed: 'On-chain failure',
+  expired_blockhash: 'Blockhash expired',
+  slippage_or_quote_failed: 'Quote/slippage failed',
+  simulation_failed: 'Simulation failed',
+  insufficient_funds: 'Insufficient funds',
+  invalid_transaction: 'Invalid transaction',
+  rate_limited: 'Rate limited',
+  unknown_maybe_submitted: 'Ambiguous (maybe submitted)',
+};
+
+const FAILURE_RECOMMENDED_AUTO: ReadonlySet<TransactionFailureKind> = new Set([
+  'rpc_timeout',
+  'expired_blockhash',
+  'rate_limited',
+  'network_unreachable',
+]);
+
+const DEFAULT_FAILURE_POLICY: FailureRetryPolicy = { kind: 'rpc_timeout', mode: 'ask', maxAttempts: 2 };
+
+function defaultFailurePoliciesList(): FailureRetryPolicy[] {
+  return FAILURE_RETRY_KINDS.map((kind) => ({ kind, mode: 'ask' as FailureRetryMode, maxAttempts: 2 }));
+}
+
+function loadFailurePolicies(): FailureRetryPolicy[] {
+  try {
+    const raw = window.localStorage.getItem(FAILURE_POLICIES_STORAGE_KEY);
+    if (!raw) return defaultFailurePoliciesList();
+    const parsed = JSON.parse(raw);
+    if (!Array.isArray(parsed)) return defaultFailurePoliciesList();
+    const byKind = new Map<TransactionFailureKind, FailureRetryPolicy>();
+    for (const entry of parsed) {
+      const policy = parseFailurePolicy(entry);
+      if (policy) byKind.set(policy.kind, policy);
+    }
+    return FAILURE_RETRY_KINDS.map((kind) =>
+      byKind.get(kind) ?? { kind, mode: 'ask' as FailureRetryMode, maxAttempts: 2 },
+    );
+  } catch {
+    return defaultFailurePoliciesList();
+  }
+}
+
+function saveFailurePolicies(): void {
+  try {
+    window.localStorage.setItem(FAILURE_POLICIES_STORAGE_KEY, JSON.stringify(state.failurePolicies));
+  } catch {
+    // Best-effort.
+  }
+}
+
+function parseFailurePolicy(value: unknown): FailureRetryPolicy | null {
+  if (!value || typeof value !== 'object') return null;
+  const raw = value as Partial<FailureRetryPolicy>;
+  if (!isTransactionFailureKind(raw.kind)) return null;
+  const mode: FailureRetryMode =
+    raw.mode === 'auto' || raw.mode === 'ask' || raw.mode === 'disabled' ? raw.mode : 'ask';
+  const maxAttempts = typeof raw.maxAttempts === 'number' && Number.isFinite(raw.maxAttempts)
+    ? Math.max(0, Math.min(10, Math.floor(raw.maxAttempts)))
+    : 2;
+  return { kind: raw.kind, mode, maxAttempts };
+}
+
+function isTransactionFailureKind(value: unknown): value is TransactionFailureKind {
+  return typeof value === 'string' && (FAILURE_RETRY_KINDS as readonly string[]).includes(value);
+}
+
+function policyForFailure(kind: TransactionFailureKind): FailureRetryPolicy {
+  return state.failurePolicies.find((policy) => policy.kind === kind) ?? { ...DEFAULT_FAILURE_POLICY, kind };
+}
+
+function resetFailurePoliciesToRecommended(): void {
+  state.failurePolicies = FAILURE_RETRY_KINDS.map((kind) => ({
+    kind,
+    mode: (FAILURE_RECOMMENDED_AUTO.has(kind) ? 'auto' : 'ask') as FailureRetryMode,
+    maxAttempts: 2,
+  }));
+  saveFailurePolicies();
+  pushToast('success', 'Defaults restored', 'Recommended auto-retry policies set.');
+  render();
+}
+
+function setFailurePolicyMode(kind: TransactionFailureKind, mode: FailureRetryMode): void {
+  state.failurePolicies = state.failurePolicies.map((policy) =>
+    policy.kind === kind ? { ...policy, mode } : policy,
+  );
+  saveFailurePolicies();
+  render();
+}
+
+function setFailurePolicyMaxAttempts(kind: TransactionFailureKind, value: string): void {
+  const num = Number(value);
+  const clamped = Number.isFinite(num) ? Math.max(0, Math.min(10, Math.floor(num))) : 2;
+  state.failurePolicies = state.failurePolicies.map((policy) =>
+    policy.kind === kind ? { ...policy, maxAttempts: clamped } : policy,
+  );
+  saveFailurePolicies();
+}
+
+function failurePoliciesPanel(): string {
+  const policies = state.failurePolicies;
+  const autoCount = policies.filter((p) => p.mode === 'auto').length;
+  const open = autoCount === 0 ? 'open' : '';
+  return `
+    <details class="failure-policies-panel rail-details" data-layout="failure-policies-panel" ${open}>
+      <summary>
+        <span class="failure-policies-summary-copy">
+          <span>Failure auto-retry</span>
+          <em>${autoCount === 0 ? 'All ask' : `${autoCount} kinds auto`}</em>
+        </span>
+        <strong>${autoCount === 0 ? 'off' : `${autoCount}`}</strong>
+      </summary>
+      <section class="failure-policies-card" aria-label="Failure retry preferences">
+        <p class="failure-policies-intro">Choose what happens for each failure kind. <em>Ask</em> uses the safe default (silent only when the classifier marks the send retryable). <em>Auto</em> always retries up to your cap if the kind is broadcast-retryable. <em>Off</em> never retries.</p>
+        <div class="failure-policies-actions">
+          <button type="button" class="utility" data-failure-policy-action="reset">Use recommended defaults</button>
+        </div>
+        <div class="failure-policy-list">
+          ${policies.map(failurePolicyRow).join('')}
+        </div>
+      </section>
+    </details>
+  `;
+}
+
+function failurePolicyRow(policy: FailureRetryPolicy): string {
+  const label = FAILURE_KIND_LABEL[policy.kind] ?? policy.kind;
+  return `
+    <article class="failure-policy-row mode-${escapeHtml(policy.mode)}" data-failure-policy-kind="${escapeHtml(policy.kind)}">
+      <div>
+        <strong>${escapeHtml(label)}</strong>
+        <em>${escapeHtml(policy.kind)}</em>
+      </div>
+      <div class="failure-policy-mode-controls" role="group" aria-label="Mode">
+        ${failurePolicyModeButton(policy, 'auto', 'Auto')}
+        ${failurePolicyModeButton(policy, 'ask', 'Ask')}
+        ${failurePolicyModeButton(policy, 'disabled', 'Off')}
+      </div>
+      <label class="failure-policy-max-attempts">
+        <span>Max retries</span>
+        <input type="number" min="0" max="10" step="1" value="${policy.maxAttempts}" data-failure-policy-field="maxAttempts" data-failure-policy-kind="${escapeHtml(policy.kind)}" ${state.busy ? 'disabled' : ''} />
+      </label>
+    </article>
+  `;
+}
+
+function failurePolicyModeButton(policy: FailureRetryPolicy, mode: FailureRetryMode, label: string): string {
+  const active = policy.mode === mode;
+  return `
+    <button
+      type="button"
+      data-failure-policy-action="mode"
+      data-failure-policy-kind="${escapeHtml(policy.kind)}"
+      data-failure-policy-mode="${escapeHtml(mode)}"
+      class="${active ? 'active' : ''}"
+      aria-pressed="${active ? 'true' : 'false'}"
+      ${state.busy ? 'disabled' : ''}
+    >${escapeHtml(label)}</button>
+  `;
+}
+
+function handleFailurePolicyAction(button: HTMLButtonElement): void {
+  const action = button.dataset.failurePolicyAction;
+  if (action === 'reset') {
+    resetFailurePoliciesToRecommended();
+    return;
+  }
+  if (action === 'mode') {
+    const kind = button.dataset.failurePolicyKind;
+    const mode = button.dataset.failurePolicyMode;
+    if (isTransactionFailureKind(kind) && (mode === 'auto' || mode === 'ask' || mode === 'disabled')) {
+      setFailurePolicyMode(kind, mode);
+    }
+  }
+}
+
+function handleFailurePolicyFieldChange(field: HTMLInputElement): void {
+  const fieldKey = field.dataset.failurePolicyField;
+  const kind = field.dataset.failurePolicyKind;
+  if (fieldKey !== 'maxAttempts' || !isTransactionFailureKind(kind)) return;
+  setFailurePolicyMaxAttempts(kind, field.value);
+}
+
+function planTemplatesStrip(embedded: boolean): string {
+  const templates = templateGeneratedPlans(embedded);
+  if (!templates.length) return '';
+  return `
+    <div class="plan-templates-strip" aria-label="Plan templates">
+      <header>
+        <strong>Templates</strong>
+        <em>${templates.length} saved · click Use to clone into a new draft</em>
+      </header>
+      <ul class="plan-templates-list">
+        ${templates.map(planTemplateRow).join('')}
+      </ul>
+    </div>
+  `;
+}
+
+function planTemplateRow(record: GeneratedPlanRecord): string {
+  const label = record.templateLabel?.trim() || record.templateTitle || record.plan.intent || 'Template';
+  return `
+    <li class="plan-template-row" data-generated-plan-id="${escapeHtml(record.id)}">
+      <div>
+        <strong>${escapeHtml(label)}</strong>
+        <em>${escapeHtml(record.plan.actionType || record.source)}</em>
+        <p>${escapeHtml(record.plan.intent || '')}</p>
+      </div>
+      <div class="plan-template-actions">
+        <button type="button" class="primary" data-template-action="use" data-generated-plan-id="${escapeHtml(record.id)}" ${state.busy ? 'disabled' : ''}>Use</button>
+        <button type="button" class="utility" data-template-action="unmark" data-generated-plan-id="${escapeHtml(record.id)}" ${state.busy ? 'disabled' : ''} title="Stop treating this draft as a template">Unmark</button>
+        <button type="button" class="utility danger" data-template-action="delete" data-generated-plan-id="${escapeHtml(record.id)}" ${state.busy ? 'disabled' : ''}>Delete</button>
+      </div>
+    </li>
+  `;
+}
+
+function handleTemplateAction(button: HTMLButtonElement): void {
+  const action = button.dataset.templateAction;
+  const planId = button.dataset.generatedPlanId;
+  if (!action || !planId) return;
+  if (action === 'save-as') {
+    saveGeneratedPlanAsTemplate(planId);
+    return;
+  }
+  if (action === 'use') {
+    cloneTemplateAsDraft(planId);
+    return;
+  }
+  if (action === 'unmark') {
+    unmarkPlanTemplate(planId);
+    return;
+  }
+  if (action === 'delete') {
+    deleteGeneratedPlanTemplate(planId);
+  }
+}
+
+function saveGeneratedPlanAsTemplate(planId: string): void {
+  const record = generatedPlanById(planId);
+  if (!record) return;
+  const defaultLabel = record.templateLabel || record.templateTitle || record.plan.intent.slice(0, 48);
+  const label = (window.prompt('Save as template — label?', defaultLabel) ?? '').trim();
+  if (!label) return;
+  const now = new Date().toISOString();
+  state.generatedPlans = state.generatedPlans.map((entry) =>
+    entry.id === planId ? { ...entry, template: true, templateLabel: label.slice(0, 64), updatedAt: now } : entry,
+  );
+  saveGeneratedPlans();
+  pushToast('success', 'Template saved', label);
+  render();
+}
+
+function cloneTemplateAsDraft(planId: string): void {
+  const template = generatedPlanById(planId);
+  if (!template || !template.template) return;
+  const now = new Date().toISOString();
+  const cloned: GeneratedPlanRecord = {
+    ...template,
+    id: newId('plan'),
+    createdAt: now,
+    updatedAt: now,
+    status: 'draft',
+    template: false,
+    ...(template.templateLabel ? { templateLabel: undefined } : {}),
+    signature: undefined,
+    preparedActionId: undefined,
+    error: undefined,
+    failureLabel: undefined,
+    agentReview: undefined,
+    agentOverride: undefined,
+  };
+  state.generatedPlans = [cloned, ...state.generatedPlans];
+  state.selectedGeneratedPlanId = cloned.id;
+  saveGeneratedPlans();
+  pushToast('success', 'Template used', `Created draft from ${template.templateLabel ?? 'template'}`);
+  render();
+}
+
+function unmarkPlanTemplate(planId: string): void {
+  const now = new Date().toISOString();
+  let touched = false;
+  state.generatedPlans = state.generatedPlans.map((entry) => {
+    if (entry.id !== planId || entry.template !== true) return entry;
+    touched = true;
+    return { ...entry, template: false, templateLabel: undefined, updatedAt: now };
+  });
+  if (!touched) return;
+  saveGeneratedPlans();
+  pushToast('success', 'Template unmarked', 'The draft is now a regular plan.');
+  render();
+}
+
+function deleteGeneratedPlanTemplate(planId: string): void {
+  const record = generatedPlanById(planId);
+  if (!record) return;
+  state.generatedPlans = state.generatedPlans.filter((entry) => entry.id !== planId);
+  saveGeneratedPlans();
+  pushToast('success', 'Template removed', record.templateLabel ?? 'Template');
+  render();
 }

@@ -19,6 +19,7 @@ export interface PreSignReviewRow {
   title?: string;
   copyValue?: string;
   tone?: ReviewTone;
+  badge?: string;
 }
 
 export interface PreSignReviewSection {
@@ -47,6 +48,8 @@ export interface SendPreSignReviewInput {
   cluster: string;
   sender?: string;
   recipient?: string;
+  recipientBadge?: string;
+  recipientTone?: ReviewTone;
   amount?: string;
   token?: string;
   memo?: string;
@@ -87,15 +90,71 @@ export interface CustomTransactionPreSignReviewInput {
   warnings?: string[];
 }
 
+export interface KaminoDepositPreSignReviewInput {
+  cluster: string;
+  wallet?: string;
+  reserveSymbol?: string;
+  reserveMint?: string;
+  amount?: string;
+  supplyApy?: number;
+  utilization?: number;
+  withdrawalDelaySec?: number;
+  depositLimitRemaining?: string;
+  withdrawAvailable?: string;
+  mainnetWarning?: boolean;
+  /** When false, the adapter was disabled mid-flow — render a hard-block warning. */
+  adapterEnabled?: boolean;
+  touchedPrograms?: TouchedProgramInput[];
+}
+
+export interface KaminoWithdrawPreSignReviewInput {
+  cluster: string;
+  wallet?: string;
+  reserveSymbol?: string;
+  reserveMint?: string;
+  amount?: string;
+  withdrawAll?: boolean;
+  suppliedBefore?: string;
+  earnedInterest?: string;
+  supplyApy?: number;
+  utilization?: number;
+  withdrawalDelaySec?: number;
+  withdrawAvailable?: string;
+  mainnetWarning?: boolean;
+  adapterEnabled?: boolean;
+  touchedPrograms?: TouchedProgramInput[];
+}
+
+export interface KaminoEarningsProofPreSignReviewInput {
+  cluster: string;
+  wallet?: string;
+  reserveSymbol?: string;
+  suppliedAmount?: string;
+  currentValue?: string;
+  earnedInterest?: string;
+  supplyApy?: number;
+  asOfBlockTime?: number;
+  asOfIso?: string;
+  payloadByteLength?: number;
+}
+
 export const PRE_SIGN_REVIEW_TITLE = 'Review before wallet opens';
 
 const SEND_PRIMARY_ACTION = 'Open wallet to send';
 const SWAP_PRIMARY_ACTION = 'Open wallet to swap';
 const CUSTOM_PRIMARY_ACTION = 'Open wallet to sign transaction';
+const KAMINO_DEPOSIT_PRIMARY_ACTION = 'Open wallet to deposit';
+const KAMINO_WITHDRAW_PRIMARY_ACTION = 'Open wallet to withdraw';
+const KAMINO_EARNINGS_PROOF_PRIMARY_ACTION = 'Open wallet to sign proof';
 
 const SEND_SUBTITLE = 'Confirm the transfer details before your wallet opens to sign.';
 const SWAP_SUBTITLE = 'Confirm the swap quote and route before your wallet opens to sign.';
 const CUSTOM_SUBTITLE = 'Confirm the transaction details before your wallet opens to sign.';
+const KAMINO_DEPOSIT_SUBTITLE = 'Confirm the Kamino deposit details before your wallet opens to sign.';
+const KAMINO_WITHDRAW_SUBTITLE = 'Confirm the Kamino withdrawal details before your wallet opens to sign.';
+const KAMINO_EARNINGS_PROOF_SUBTITLE = 'Sign a verifiable receipt of your Kamino supply and earnings.';
+
+const KAMINO_HIGH_UTILIZATION_PCT = 90;
 
 export function shortAddress(value: string, head = 4, tail = 4): string {
   if (typeof value !== 'string') return '';
@@ -135,7 +194,10 @@ export function buildSendPreSignReview(input: SendPreSignReviewInput): PreSignRe
   const sections: PreSignReviewSection[] = [];
 
   const transferRows: PreSignReviewRow[] = [];
-  pushAddressRow(transferRows, 'Recipient', input.recipient);
+  pushAddressRow(transferRows, 'Recipient', input.recipient, {
+    badge: input.recipientBadge,
+    tone: input.recipientTone,
+  });
   pushAmountAndTokenRows(transferRows, input.amount, input.token);
   pushPlainRow(transferRows, 'Fee', input.estimatedFee);
   pushPlainRow(transferRows, 'Balance', input.currentBalance);
@@ -231,6 +293,166 @@ export function buildSwapPreSignReview(input: SwapPreSignReviewInput): PreSignRe
   };
 }
 
+export function buildKaminoDepositPreSignReview(
+  input: KaminoDepositPreSignReviewInput,
+): PreSignReviewModel {
+  const sections: PreSignReviewSection[] = [];
+  const reserve = nonEmptyString(input.reserveSymbol) ? input.reserveSymbol!.trim() : '';
+
+  const depositRows: PreSignReviewRow[] = [];
+  if (reserve) pushPlainRow(depositRows, 'Pool', `${reserve} reserve · Kamino`);
+  pushAmountAndTokenRows(depositRows, input.amount, reserve || input.reserveSymbol);
+  pushApyRow(depositRows, 'Est. APY', input.supplyApy);
+  pushSection(sections, 'Deposit', depositRows);
+
+  const healthRows: PreSignReviewRow[] = [];
+  pushPercentRow(healthRows, 'Utilization', input.utilization, KAMINO_HIGH_UTILIZATION_PCT);
+  pushDelayRow(healthRows, 'Withdraw delay', input.withdrawalDelaySec);
+  if (nonEmptyString(input.withdrawAvailable)) {
+    pushPlainRow(healthRows, 'Withdraw available', combineAmountAndToken(input.withdrawAvailable, reserve));
+  }
+  if (nonEmptyString(input.depositLimitRemaining)) {
+    pushPlainRow(healthRows, 'Cap remaining', combineAmountAndToken(input.depositLimitRemaining, reserve));
+  }
+  pushSection(sections, 'Pool health', healthRows);
+
+  const walletRows: PreSignReviewRow[] = [];
+  pushAddressRow(walletRows, 'Wallet', input.wallet);
+  pushSection(sections, 'Wallet', walletRows);
+
+  pushNetworkSection(sections, input.cluster);
+  pushProgramsSection(sections, input.touchedPrograms);
+
+  const warnings: string[] = [];
+  if (!reserve) warnings.push('Reserve is missing.');
+  if (!nonEmptyString(input.amount)) warnings.push('Deposit amount is missing.');
+  if (input.adapterEnabled === false) {
+    warnings.push('Kamino is not connected in Connected dApps. Reconnect before approving.');
+  }
+  if (typeof input.utilization === 'number' && Number.isFinite(input.utilization) && input.utilization > KAMINO_HIGH_UTILIZATION_PCT) {
+    warnings.push('Withdrawals may be delayed when utilization is high.');
+  }
+  if (input.mainnetWarning) warnings.push('This deposits on mainnet-beta with real funds.');
+  pushUnknownProgramWarnings(warnings, input.touchedPrograms);
+
+  return {
+    title: PRE_SIGN_REVIEW_TITLE,
+    subtitle: KAMINO_DEPOSIT_SUBTITLE,
+    riskTone: deriveRiskTone(
+      warnings,
+      input.touchedPrograms,
+      input.adapterEnabled === false ? 'danger' : undefined,
+    ),
+    primaryAction: KAMINO_DEPOSIT_PRIMARY_ACTION,
+    sections,
+    warnings,
+  };
+}
+
+export function buildKaminoWithdrawPreSignReview(
+  input: KaminoWithdrawPreSignReviewInput,
+): PreSignReviewModel {
+  const sections: PreSignReviewSection[] = [];
+  const reserve = nonEmptyString(input.reserveSymbol) ? input.reserveSymbol!.trim() : '';
+
+  const withdrawRows: PreSignReviewRow[] = [];
+  if (reserve) pushPlainRow(withdrawRows, 'Pool', `${reserve} reserve · Kamino`);
+  if (input.withdrawAll) {
+    pushPlainRow(withdrawRows, 'Amount', combineAmountAndToken(input.amount, reserve) || 'Full position');
+  } else {
+    pushAmountAndTokenRows(withdrawRows, input.amount, reserve || input.reserveSymbol);
+  }
+  pushPlainRow(withdrawRows, 'Supplied before', combineAmountAndToken(input.suppliedBefore, reserve));
+  pushPlainRow(withdrawRows, 'Earned', combineAmountAndToken(input.earnedInterest, reserve));
+  pushSection(sections, 'Withdraw', withdrawRows);
+
+  const healthRows: PreSignReviewRow[] = [];
+  pushPercentRow(healthRows, 'Utilization', input.utilization, KAMINO_HIGH_UTILIZATION_PCT);
+  pushDelayRow(healthRows, 'Withdraw delay', input.withdrawalDelaySec);
+  if (nonEmptyString(input.withdrawAvailable)) {
+    pushPlainRow(healthRows, 'Withdraw available', combineAmountAndToken(input.withdrawAvailable, reserve));
+  }
+  pushApyRow(healthRows, 'Est. APY now', input.supplyApy);
+  pushSection(sections, 'Pool health', healthRows);
+
+  const walletRows: PreSignReviewRow[] = [];
+  pushAddressRow(walletRows, 'Wallet', input.wallet);
+  pushSection(sections, 'Wallet', walletRows);
+
+  pushNetworkSection(sections, input.cluster);
+  pushProgramsSection(sections, input.touchedPrograms);
+
+  const warnings: string[] = [];
+  if (!reserve) warnings.push('Reserve is missing.');
+  if (!input.withdrawAll && !nonEmptyString(input.amount)) {
+    warnings.push('Withdraw amount is missing.');
+  }
+  if (input.adapterEnabled === false) {
+    warnings.push('Kamino is not connected in Connected dApps. Reconnect before approving.');
+  }
+  if (typeof input.utilization === 'number' && Number.isFinite(input.utilization) && input.utilization > KAMINO_HIGH_UTILIZATION_PCT) {
+    warnings.push('Withdrawals may be delayed when utilization is high.');
+  }
+  if (input.mainnetWarning) warnings.push('This withdraws on mainnet-beta with real funds.');
+  pushUnknownProgramWarnings(warnings, input.touchedPrograms);
+
+  return {
+    title: PRE_SIGN_REVIEW_TITLE,
+    subtitle: KAMINO_WITHDRAW_SUBTITLE,
+    riskTone: deriveRiskTone(
+      warnings,
+      input.touchedPrograms,
+      input.adapterEnabled === false ? 'danger' : undefined,
+    ),
+    primaryAction: KAMINO_WITHDRAW_PRIMARY_ACTION,
+    sections,
+    warnings,
+  };
+}
+
+export function buildKaminoEarningsProofPreSignReview(
+  input: KaminoEarningsProofPreSignReviewInput,
+): PreSignReviewModel {
+  const sections: PreSignReviewSection[] = [];
+  const reserve = nonEmptyString(input.reserveSymbol) ? input.reserveSymbol!.trim() : '';
+
+  const proofRows: PreSignReviewRow[] = [];
+  pushPlainRow(proofRows, 'Pool', reserve ? `${reserve} reserve · Kamino` : 'All Kamino reserves');
+  pushPlainRow(proofRows, 'Supplied', combineAmountAndToken(input.suppliedAmount, reserve));
+  pushPlainRow(proofRows, 'Current value', combineAmountAndToken(input.currentValue, reserve));
+  pushPlainRow(proofRows, 'Earned', combineAmountAndToken(input.earnedInterest, reserve));
+  pushApyRow(proofRows, 'Est. APY', input.supplyApy);
+  pushSection(sections, 'Earnings', proofRows);
+
+  const proofMetaRows: PreSignReviewRow[] = [];
+  pushPlainRow(proofMetaRows, 'As of', input.asOfIso);
+  if (typeof input.payloadByteLength === 'number' && Number.isFinite(input.payloadByteLength)) {
+    pushPlainRow(proofMetaRows, 'Payload', `${input.payloadByteLength} bytes`);
+  }
+  pushPlainRow(proofMetaRows, 'Schema', 'kamino-earnings-v1');
+  pushSection(sections, 'Proof', proofMetaRows);
+
+  const walletRows: PreSignReviewRow[] = [];
+  pushAddressRow(walletRows, 'Wallet', input.wallet);
+  pushSection(sections, 'Wallet', walletRows);
+
+  pushNetworkSection(sections, input.cluster);
+
+  const warnings: string[] = [];
+  if (!nonEmptyString(input.suppliedAmount) && !nonEmptyString(input.currentValue) && !nonEmptyString(input.earnedInterest)) {
+    warnings.push('No supplied positions found for this wallet.');
+  }
+
+  return {
+    title: PRE_SIGN_REVIEW_TITLE,
+    subtitle: KAMINO_EARNINGS_PROOF_SUBTITLE,
+    riskTone: warnings.length > 0 ? 'warn' : 'neutral',
+    primaryAction: KAMINO_EARNINGS_PROOF_PRIMARY_ACTION,
+    sections,
+    warnings,
+  };
+}
+
 export function buildCustomTransactionPreSignReview(
   input: CustomTransactionPreSignReviewInput,
 ): PreSignReviewModel {
@@ -289,19 +511,28 @@ function pushPlainRow(
   rows.push(row);
 }
 
+interface PushAddressRowOptions {
+  badge?: string;
+  tone?: ReviewTone;
+}
+
 function pushAddressRow(
   rows: PreSignReviewRow[],
   label: string,
   value: string | undefined,
+  options?: PushAddressRowOptions,
 ): void {
   if (!nonEmptyString(value)) return;
   const trimmed = value!.trim();
-  rows.push({
+  const row: PreSignReviewRow = {
     label,
     value: shortAddress(trimmed),
     title: trimmed,
     copyValue: trimmed,
-  });
+  };
+  if (options?.badge && options.badge.trim()) row.badge = options.badge.trim();
+  if (options?.tone) row.tone = options.tone;
+  rows.push(row);
 }
 
 function pushAmountAndTokenRows(
@@ -326,6 +557,58 @@ function pushSlippageRow(rows: PreSignReviewRow[], slippageBps: number | undefin
   const row: PreSignReviewRow = { label: 'Slippage', value };
   if (tone) row.tone = tone;
   rows.push(row);
+}
+
+function pushApyRow(
+  rows: PreSignReviewRow[],
+  label: string,
+  apyPct: number | undefined,
+): void {
+  if (typeof apyPct !== 'number' || !Number.isFinite(apyPct)) return;
+  rows.push({ label, value: formatApy(apyPct) });
+}
+
+function pushPercentRow(
+  rows: PreSignReviewRow[],
+  label: string,
+  pct: number | undefined,
+  warnAbovePct?: number,
+): void {
+  if (typeof pct !== 'number' || !Number.isFinite(pct)) return;
+  const row: PreSignReviewRow = { label, value: formatPercent(pct) };
+  if (typeof warnAbovePct === 'number' && pct > warnAbovePct) row.tone = 'warn';
+  rows.push(row);
+}
+
+function pushDelayRow(
+  rows: PreSignReviewRow[],
+  label: string,
+  delaySec: number | undefined,
+): void {
+  if (typeof delaySec !== 'number' || !Number.isFinite(delaySec) || delaySec < 0) return;
+  rows.push({ label, value: formatDuration(delaySec) });
+}
+
+function formatApy(apyPct: number): string {
+  if (!Number.isFinite(apyPct)) return '';
+  if (apyPct >= 1) return `${trimTrailingZeros(apyPct.toFixed(2))}%`;
+  // tiny APYs render with more precision so 0.04% doesn't collapse to "0%"
+  return `${trimTrailingZeros(apyPct.toFixed(3))}%`;
+}
+
+function formatDuration(seconds: number): string {
+  if (seconds <= 0) return 'Instant';
+  if (seconds < 60) return `${Math.round(seconds)}s`;
+  if (seconds < 3600) {
+    const minutes = Math.round(seconds / 60);
+    return `${minutes} min${minutes === 1 ? '' : 's'}`;
+  }
+  if (seconds < 86_400) {
+    const hours = Math.round(seconds / 3600);
+    return `${hours} hr${hours === 1 ? '' : 's'}`;
+  }
+  const days = Math.round(seconds / 86_400);
+  return `${days} day${days === 1 ? '' : 's'}`;
 }
 
 function pushPriceImpactRow(

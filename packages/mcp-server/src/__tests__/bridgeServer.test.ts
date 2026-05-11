@@ -5,6 +5,7 @@ import { join } from 'node:path';
 
 import { describe, expect, it } from 'vitest';
 
+import { AgentRegistry, type PublicRegisteredAgent } from '../agentRegistry.js';
 import { createBridgeServer } from '../bridgeServer.js';
 import { DEFAULT_CONFIG, type AgentWalletConfig } from '../config.js';
 import { JsonLabArtifactStore, type LabArtifact } from '../labArtifacts.js';
@@ -119,6 +120,94 @@ describe('bridge lab artifact routes', () => {
     }
   });
 
+  it('issues, lists, and revokes registered agents', async () => {
+    const handle = await startTestBridge();
+    try {
+      const initial = await bridgeFetch<{ agents: PublicRegisteredAgent[] }>(handle.url, '/bridge/agents');
+      expect(initial.agents).toEqual([]);
+
+      const issued = await bridgeFetch<{ agent: PublicRegisteredAgent & { token: string } }>(
+        handle.url,
+        '/bridge/agents/issue',
+        {
+          method: 'POST',
+          body: JSON.stringify({ label: 'Codex devnet', tier: 'capped' }),
+        },
+      );
+      expect(issued.agent.label).toBe('Codex devnet');
+      expect(issued.agent.tier).toBe('capped');
+      expect(issued.agent.token).toMatch(/^[A-Za-z0-9_-]{20,}$/);
+      expect(issued.agent.tokenHint).toContain('…');
+
+      const listed = await bridgeFetch<{ agents: PublicRegisteredAgent[] }>(handle.url, '/bridge/agents');
+      expect(listed.agents).toHaveLength(1);
+      expect(listed.agents[0]?.label).toBe('Codex devnet');
+      expect(listed.agents[0]).not.toHaveProperty('token');
+
+      const removed = await bridgeFetch<{ removed: boolean }>(handle.url, '/bridge/agents/delete', {
+        method: 'POST',
+        body: JSON.stringify({ agentId: issued.agent.id }),
+      });
+      expect(removed.removed).toBe(true);
+    } finally {
+      await handle.stop();
+    }
+  });
+
+  it('enforces read-only tier on protected endpoints', async () => {
+    const registry = new AgentRegistry({ fallbackToken: 'test-token' });
+    const issued = registry.issueAgent({ label: 'Read-only Claude', tier: 'read_only' });
+    const handle = await startTestBridge({ agentRegistry: registry });
+    try {
+      const allowed = await fetch(new URL('/bridge/status', handle.url), {
+        headers: { 'x-agent-wallet-token': issued.token },
+      });
+      expect(allowed.status).toBe(200);
+
+      const denied = await fetch(new URL('/bridge/action/prepare-transfer-sol', handle.url), {
+        method: 'POST',
+        headers: {
+          'content-type': 'application/json',
+          'x-agent-wallet-token': issued.token,
+        },
+        body: JSON.stringify({ recipient: '11111111111111111111111111111111', amountSol: '0.01' }),
+      });
+      expect(denied.status).toBe(403);
+      const payload = (await denied.json()) as { error?: string; requiredTier?: string };
+      expect(payload.error).toBe('forbidden');
+      expect(payload.requiredTier).toBe('capped');
+    } finally {
+      await handle.stop();
+    }
+  });
+
+  it('rejects disabled agents with 401', async () => {
+    const registry = new AgentRegistry({ fallbackToken: 'test-token' });
+    const issued = registry.issueAgent({ label: 'Paused agent', tier: 'full' });
+    registry.upsert({ ...issued, enabled: false });
+    const handle = await startTestBridge({ agentRegistry: registry });
+    try {
+      const response = await fetch(new URL('/bridge/status', handle.url), {
+        headers: { 'x-agent-wallet-token': issued.token },
+      });
+      expect(response.status).toBe(401);
+    } finally {
+      await handle.stop();
+    }
+  });
+
+  it('falls back to the legacy single-token when the registry is empty', async () => {
+    const handle = await startTestBridge();
+    try {
+      const response = await fetch(new URL('/bridge/status', handle.url), {
+        headers: { 'x-agent-wallet-token': 'test-token' },
+      });
+      expect(response.status).toBe(200);
+    } finally {
+      await handle.stop();
+    }
+  });
+
   it('validates bridge Solana helper clusters before RPC calls', async () => {
     const handle = await startTestBridge({
       actionConfig: { ...DEFAULT_CONFIG, cluster: 'devnet', rpcUrl: 'http://127.0.0.1:1' },
@@ -143,7 +232,9 @@ describe('bridge lab artifact routes', () => {
   });
 });
 
-async function startTestBridge(options: { actionConfig?: AgentWalletConfig } = {}): Promise<{ url: string; stop(): Promise<void> }> {
+async function startTestBridge(
+  options: { actionConfig?: AgentWalletConfig; agentRegistry?: AgentRegistry } = {},
+): Promise<{ url: string; stop(): Promise<void> }> {
   const port = await freePort();
   const dir = await mkdtemp(join(tmpdir(), 'sawa-bridge-labs-'));
   const bridge = createBridgeServer({
@@ -155,6 +246,7 @@ async function startTestBridge(options: { actionConfig?: AgentWalletConfig } = {
       token: 'test-token',
     }),
     ...(options.actionConfig ? { actionConfig: options.actionConfig } : {}),
+    ...(options.agentRegistry ? { agentRegistry: options.agentRegistry } : {}),
     labArtifacts: new JsonLabArtifactStore(join(dir, 'lab-artifacts.json')),
   });
   await bridge.start();

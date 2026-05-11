@@ -151,6 +151,128 @@ export function registerActionTools(
   );
 
   server.registerTool(
+    'solana_prepare_kamino_deposit',
+    {
+      description:
+        "Create a manual-approval inbox item that deposits a token into a Kamino Lend reserve. Natural-language synonyms: 'stake on Kamino', 'supply to Kamino', 'lend on Kamino', 'earn yield on Kamino'. Mainnet-beta only.",
+      inputSchema: {
+        amount: z.string().min(1).describe('Human token amount, for example 0.5.'),
+        token: z.string().min(2).optional().describe('SOL, USDC, JitoSOL, mSOL, bSOL, or a known reserve symbol.'),
+        reserveMint: z.string().min(32).optional().describe('Reserve mint address (overrides token).'),
+        dueAt: z.string().datetime().optional(),
+        note: z.string().max(500).optional(),
+      },
+    },
+    async ({ amount, token, reserveMint, dueAt, note }) => traceTool(
+      'solana_prepare_kamino_deposit',
+      { cluster: options.config.cluster, amount, token, reserveMint, dueAt },
+      async () => jsonReply(
+        await service.prepareKaminoDeposit({
+          amount,
+          ...(token !== undefined && { token }),
+          ...(reserveMint !== undefined && { reserveMint }),
+          ...(dueAt !== undefined && { dueAt }),
+          ...(note !== undefined && { note }),
+        }),
+      ),
+    ),
+  );
+
+  server.registerTool(
+    'solana_prepare_kamino_withdraw',
+    {
+      description:
+        "Create a manual-approval inbox item that withdraws supplied tokens from a Kamino Lend reserve. Natural-language synonyms: 'unstake from Kamino', 'redeem from Kamino', 'withdraw on Kamino'. Mainnet-beta only.",
+      inputSchema: {
+        amount: z.string().min(1).optional().describe("Human token amount. Pass 'all' or set withdrawAll to true to redeem the full position."),
+        withdrawAll: z.boolean().optional(),
+        token: z.string().min(2).optional(),
+        reserveMint: z.string().min(32).optional(),
+        dueAt: z.string().datetime().optional(),
+        note: z.string().max(500).optional(),
+      },
+    },
+    async ({ amount, withdrawAll, token, reserveMint, dueAt, note }) => traceTool(
+      'solana_prepare_kamino_withdraw',
+      { cluster: options.config.cluster, amount, withdrawAll, token, reserveMint, dueAt },
+      async () => jsonReply(
+        await service.prepareKaminoWithdraw({
+          ...(amount !== undefined && { amount }),
+          ...(withdrawAll !== undefined && { withdrawAll }),
+          ...(token !== undefined && { token }),
+          ...(reserveMint !== undefined && { reserveMint }),
+          ...(dueAt !== undefined && { dueAt }),
+          ...(note !== undefined && { note }),
+        }),
+      ),
+    ),
+  );
+
+  server.registerTool(
+    'solana_kamino_reserve_snapshot',
+    {
+      description:
+        'Read a Kamino Lend reserve snapshot: supply APY, borrow APY, utilization, deposit cap, and withdraw availability. Read-only. Mainnet-beta only.',
+      inputSchema: {
+        token: z.string().min(2).optional().describe('Reserve symbol (defaults to SOL).'),
+        reserveMint: z.string().min(32).optional(),
+      },
+    },
+    async ({ token, reserveMint }) => traceTool(
+      'solana_kamino_reserve_snapshot',
+      { cluster: options.config.cluster, token, reserveMint },
+      async () => jsonReply(
+        await service.kaminoReserveSnapshot({
+          ...(token !== undefined && { token }),
+          ...(reserveMint !== undefined && { reserveMint }),
+        }),
+      ),
+    ),
+  );
+
+  server.registerTool(
+    'solana_kamino_get_positions',
+    {
+      description:
+        'List the connected wallet supplied positions on Kamino Lend, including supplied amount, current value, and earned interest per reserve. Read-only. Mainnet-beta only.',
+      inputSchema: {
+        walletAddress: z.string().min(32).optional().describe('Defaults to the connected wallet.'),
+      },
+    },
+    async ({ walletAddress }) => traceTool(
+      'solana_kamino_get_positions',
+      { cluster: options.config.cluster, walletAddress },
+      async () => jsonReply(
+        await service.kaminoGetPositions({
+          ...(walletAddress !== undefined && { walletAddress }),
+        }),
+      ),
+    ),
+  );
+
+  server.registerTool(
+    'solana_kamino_prepare_earnings_proof',
+    {
+      description:
+        "Build a deterministic earnings-proof payload (positions + supplied + earned interest) the user can sign via solana_sign_message to create a verifiable receipt of how much they have earned on Kamino. Read-only on chain. Mainnet-beta only.",
+      inputSchema: {
+        walletAddress: z.string().min(32).optional(),
+        reserveMint: z.string().min(32).optional().describe('Optional: scope the proof to a single reserve.'),
+      },
+    },
+    async ({ walletAddress, reserveMint }) => traceTool(
+      'solana_kamino_prepare_earnings_proof',
+      { cluster: options.config.cluster, walletAddress, reserveMint },
+      async () => jsonReply(
+        await service.kaminoPrepareEarningsProof({
+          ...(walletAddress !== undefined && { walletAddress }),
+          ...(reserveMint !== undefined && { reserveMint }),
+        }),
+      ),
+    ),
+  );
+
+  server.registerTool(
     'solana_list_prepared_actions',
     {
       description:
@@ -455,6 +577,15 @@ function usefulPrompts(config: AgentWalletConfig) {
         prompts: [
           'Use solana-agent-wallet to show my safety caps before doing anything.',
           'Use solana-agent-wallet to tell me whether this requested SOL transfer is within my configured cap.',
+        ],
+      },
+      {
+        category: 'Kamino (connected dApp)',
+        prompts: [
+          'Use solana-agent-wallet to deposit 0.1 SOL into Kamino, then list my prepared approval inbox actions.',
+          'Use solana-agent-wallet to show my Kamino positions and how much SOL I have earned.',
+          'Use solana-agent-wallet to prepare a Kamino earnings proof for my SOL supply, then ask me to sign it.',
+          'Use solana-agent-wallet to withdraw 0.05 SOL from Kamino for manual approval.',
         ],
       },
     ],

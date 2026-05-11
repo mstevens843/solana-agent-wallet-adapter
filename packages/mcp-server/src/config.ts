@@ -25,12 +25,19 @@ export interface AgentWalletConfig {
     apiKeyEnv: string;
   };
   recurring?: RecurringPolicyConfig;
+  recipients?: Record<string, RecipientCapConfig>;
 }
 
 export interface RecurringPolicyConfig {
   maxLifetimeAmount?: Record<string, string>;
   maxPerWeekAmount?: Record<string, string>;
   maxPerMonthAmount?: Record<string, string>;
+}
+
+export interface RecipientCapConfig {
+  label?: string;
+  lifetimeMax?: Record<string, string>;
+  perMonthMax?: Record<string, string>;
 }
 
 export const WSOL_MINT = 'So11111111111111111111111111111111111111112';
@@ -118,7 +125,16 @@ export function normalizeConfig(input: Partial<AgentWalletConfig>): AgentWalletC
     jupiter.apiKeyEnv = 'JUP_API_KEY';
   }
   const recurring = input.recurring;
-  return { cluster, rpcUrl, mainnet, tokens, jupiter, ...(recurring !== undefined && { recurring }) };
+  const recipients = input.recipients;
+  return {
+    cluster,
+    rpcUrl,
+    mainnet,
+    tokens,
+    jupiter,
+    ...(recurring !== undefined && { recurring }),
+    ...(recipients !== undefined && { recipients }),
+  };
 }
 
 function firstEnvValue(...names: string[]): string | undefined {

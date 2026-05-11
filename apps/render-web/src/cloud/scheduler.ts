@@ -1,5 +1,11 @@
 import type { MaterializeResult, RecurringService, RecurringStore } from './recurringService.js';
 
+export interface AgentBackgroundReviewContext {
+  walletAddress: string;
+  results: MaterializeResult[];
+  ranAt: string;
+}
+
 export interface RecurringSchedulerOptions {
   service: RecurringService;
   store: RecurringStore;
@@ -7,6 +13,7 @@ export interface RecurringSchedulerOptions {
   enabled?: boolean;
   onTick?: (results: TickResult) => void;
   onError?: (err: unknown, walletAddress?: string) => void;
+  onAfterWalletTick?: (context: AgentBackgroundReviewContext) => Promise<void>;
 }
 
 export interface TickResult {
@@ -55,6 +62,13 @@ export class RecurringScheduler {
         try {
           const results = await this.options.service.materializeDueOccurrences({ walletAddress });
           walletResults.push({ walletAddress, results });
+          if (this.options.onAfterWalletTick) {
+            try {
+              await this.options.onAfterWalletTick({ walletAddress, results, ranAt });
+            } catch (err) {
+              this.options.onError?.(err, walletAddress);
+            }
+          }
         } catch (err) {
           this.options.onError?.(err, walletAddress);
         }

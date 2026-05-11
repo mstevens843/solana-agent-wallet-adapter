@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 import { randomBytes } from 'node:crypto';
 
+import { defaultAgentsStorePath } from '../agentRegistry.js';
 import { createBridgeServer } from '../bridgeServer.js';
 import { loadConfig } from '../config.js';
 import { loadDotEnv } from '../env.js';
@@ -18,6 +19,8 @@ async function main(): Promise<void> {
     args.preparedActions ?? process.env.AGENT_WALLET_PREPARED_ACTIONS ?? defaultPreparedActionStorePath();
   const labArtifactsPath =
     args.labArtifacts ?? process.env.AGENT_WALLET_LAB_ARTIFACTS ?? defaultLabArtifactStorePath(preparedActionsPath);
+  const agentsPath =
+    args.agents ?? process.env.AGENT_WALLET_AGENTS ?? defaultAgentsStorePath();
   const fallbackCallbackBaseUrl = `http://${args.host ?? '127.0.0.1'}:${args.port ?? 8787}/`;
   const backend = args.iosProvider
     ? new IosLinkBackend({
@@ -42,6 +45,7 @@ async function main(): Promise<void> {
     actionConfig: config,
     preparedActions: new JsonPreparedActionStore(preparedActionsPath),
     labArtifacts: new JsonLabArtifactStore(labArtifactsPath),
+    agentsPersistPath: agentsPath,
     ...(args.host !== undefined && { host: args.host }),
     ...(args.port !== undefined && { port: args.port }),
   });
@@ -65,6 +69,7 @@ interface CliArgs {
   token?: string;
   preparedActions?: string;
   labArtifacts?: string;
+  agents?: string;
   iosProvider?: IosLinkWalletId;
   iosCallbackBaseUrl?: string;
   iosAppUrl?: string;
@@ -111,6 +116,11 @@ function parseArgs(args: string[]): CliArgs {
     }
     if (arg === '--lab-artifacts') {
       parsed.labArtifacts = requireValue(args, index, arg);
+      index += 1;
+      continue;
+    }
+    if (arg === '--agents') {
+      parsed.agents = requireValue(args, index, arg);
       index += 1;
       continue;
     }
