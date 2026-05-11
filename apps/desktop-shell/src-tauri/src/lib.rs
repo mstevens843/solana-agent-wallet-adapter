@@ -22,13 +22,16 @@ const SIDECAR_BASENAME: &str = "agentic-cli-sidecar";
 const MAX_LOG_LINES: usize = 600;
 const DEFAULT_JUPITER_ULTRA_BASE: &str = "https://api.jup.ag/ultra/v1";
 const DEFAULT_JUPITER_API_URL: &str = "https://quote-api.jup.ag";
-const SETUP_ENV_KEYS: [&str; 6] = [
+const DEFAULT_BIRDEYE_REST_BASE: &str = "https://public-api.birdeye.so";
+const SETUP_ENV_KEYS: [&str; 8] = [
     "SOLANA_RPC_URL",
     "HELIUS_RPC_URL",
     "JUPITER_API_KEY",
     "JUP_API_KEY",
     "JUP_ULTRA_BASE",
     "JUPITER_API_URL",
+    "BIRDEYE_API_KEY",
+    "BIRDEYE_REST_BASE",
 ];
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -50,6 +53,8 @@ struct RuntimeSetupInput {
     jupiter_api_key: Option<String>,
     jupiter_ultra_base: Option<String>,
     jupiter_api_url: Option<String>,
+    birdeye_api_key: Option<String>,
+    birdeye_rest_base: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -63,9 +68,13 @@ struct RuntimeSetup {
     jupiter_api_key_redacted: Option<String>,
     jupiter_ultra_base: String,
     jupiter_api_url: String,
+    birdeye_api_key_configured: bool,
+    birdeye_api_key_redacted: Option<String>,
+    birdeye_rest_base: String,
     sol_transfers_ready: bool,
     token_transfers_ready: bool,
     swaps_ready: bool,
+    market_data_ready: bool,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -1043,8 +1052,18 @@ fn runtime_setup_for_config(config: &DesktopConfig) -> Result<RuntimeSetup, Stri
         .filter(|value| !value.trim().is_empty())
         .cloned()
         .unwrap_or_else(|| DEFAULT_JUPITER_API_URL.into());
+    let birdeye_api_key = values
+        .get("BIRDEYE_API_KEY")
+        .filter(|value| !value.trim().is_empty())
+        .cloned();
+    let birdeye_rest_base = values
+        .get("BIRDEYE_REST_BASE")
+        .filter(|value| !value.trim().is_empty())
+        .cloned()
+        .unwrap_or_else(|| DEFAULT_BIRDEYE_REST_BASE.into());
     let rpc_url_configured = rpc_url.is_some();
     let jupiter_api_key_configured = jupiter_api_key.is_some();
+    let birdeye_api_key_configured = birdeye_api_key.is_some();
     Ok(RuntimeSetup {
         env_path: config.env_path.clone(),
         env_found,
@@ -1054,9 +1073,13 @@ fn runtime_setup_for_config(config: &DesktopConfig) -> Result<RuntimeSetup, Stri
         jupiter_api_key_redacted: jupiter_api_key.as_deref().map(redact_secret),
         jupiter_ultra_base,
         jupiter_api_url,
+        birdeye_api_key_configured,
+        birdeye_api_key_redacted: birdeye_api_key.as_deref().map(redact_secret),
+        birdeye_rest_base,
         sol_transfers_ready: rpc_url_configured,
         token_transfers_ready: rpc_url_configured,
         swaps_ready: rpc_url_configured && jupiter_api_key_configured,
+        market_data_ready: birdeye_api_key_configured,
     })
 }
 
@@ -1113,6 +1136,28 @@ fn save_runtime_setup_to_env(
     updates.insert(
         "JUPITER_API_URL".into(),
         normalize_setup_url(&jupiter_api_url, "Legacy Jupiter API URL")?,
+    );
+
+    if let Some(api_key) = input
+        .birdeye_api_key
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        updates.insert("BIRDEYE_API_KEY".into(), api_key.into());
+    }
+
+    let birdeye_rest_base = input
+        .birdeye_rest_base
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string)
+        .or_else(|| values.get("BIRDEYE_REST_BASE").cloned())
+        .unwrap_or_else(|| DEFAULT_BIRDEYE_REST_BASE.into());
+    updates.insert(
+        "BIRDEYE_REST_BASE".into(),
+        normalize_setup_url(&birdeye_rest_base, "BirdEye REST base URL")?,
     );
 
     if let Some(parent) = path.parent() {

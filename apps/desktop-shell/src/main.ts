@@ -31,9 +31,13 @@ interface RuntimeSetup {
   jupiterApiKeyRedacted: string | null;
   jupiterUltraBase: string;
   jupiterApiUrl: string;
+  birdeyeApiKeyConfigured: boolean;
+  birdeyeApiKeyRedacted: string | null;
+  birdeyeRestBase: string;
   solTransfersReady: boolean;
   tokenTransfersReady: boolean;
   swapsReady: boolean;
+  marketDataReady: boolean;
 }
 
 interface Diagnostic {
@@ -285,6 +289,9 @@ function runtimeSetupPanel(): string {
   const keyPlaceholder = setup?.jupiterApiKeyConfigured
     ? `Configured: ${setup.jupiterApiKeyRedacted ?? 'redacted'}`
     : 'Paste Jupiter API key';
+  const birdeyePlaceholder = setup?.birdeyeApiKeyConfigured
+    ? `Configured: ${setup.birdeyeApiKeyRedacted ?? 'redacted'}`
+    : 'Paste BirdEye API key';
   return `
     <section class="panel">
       <div class="panel-title">
@@ -308,11 +315,20 @@ function runtimeSetupPanel(): string {
           <span>Legacy Jupiter API</span>
           <input id="setupJupiterApiUrl" value="${escapeHtml(setup?.jupiterApiUrl ?? 'https://quote-api.jup.ag')}" />
         </label>
+        <label>
+          <span>BirdEye API key</span>
+          <input id="setupBirdeyeApiKey" type="password" placeholder="${escapeHtml(birdeyePlaceholder)}" autocomplete="off" />
+        </label>
+        <label>
+          <span>BirdEye REST base</span>
+          <input id="setupBirdeyeRestBase" value="${escapeHtml(setup?.birdeyeRestBase ?? 'https://public-api.birdeye.so')}" />
+        </label>
       </div>
       <div class="readiness">
         ${readinessPill('SOL sends', setup?.solTransfersReady ?? false)}
         ${readinessPill('Token sends', setup?.tokenTransfersReady ?? false)}
         ${readinessPill('Swaps', setup?.swapsReady ?? false)}
+        ${readinessPill('Market data', setup?.marketDataReady ?? false)}
       </div>
       <div class="actions">
         <button id="saveRuntimeSetup" class="primary" ${state.busy || !state.nativeAvailable ? 'disabled' : ''}>Save setup</button>
@@ -507,9 +523,9 @@ async function checkRuntimeSetup(): Promise<void> {
   await runNative('Checking transaction setup...', async () => {
     await refreshRuntimeSetup();
     await refreshHealth();
-    state.status = state.runtimeSetup?.swapsReady
-      ? 'Transaction setup is ready for sends and swaps.'
-      : 'Transaction setup is missing RPC or Jupiter credentials.';
+    state.status = state.runtimeSetup?.swapsReady && state.runtimeSetup?.marketDataReady
+      ? 'Transaction setup is ready for sends, swaps, token search, and prices.'
+      : 'Transaction setup is missing RPC, Jupiter, or BirdEye credentials.';
   });
 }
 
@@ -583,6 +599,8 @@ async function saveRuntimeSetup(): Promise<void> {
         jupiterApiKey: inputValue('#setupJupiterApiKey'),
         jupiterUltraBase: inputValue('#setupJupiterUltraBase'),
         jupiterApiUrl: inputValue('#setupJupiterApiUrl'),
+        birdeyeApiKey: inputValue('#setupBirdeyeApiKey'),
+        birdeyeRestBase: inputValue('#setupBirdeyeRestBase'),
       },
     });
     if (wasRunning) {

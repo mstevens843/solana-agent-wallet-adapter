@@ -3,6 +3,9 @@ import type { IncomingMessage, ServerResponse } from 'node:http';
 
 import {
   BridgeAiPlanner,
+  requestBirdeyePriceMulti,
+  requestBirdeyeSearch,
+  requestBirdeyeTokenMetadata,
   type AiApiFormat,
   type AiAskRequest,
   type AiPlanRequest,
@@ -90,6 +93,9 @@ const REGISTERED_API_ROUTES = [
   'POST /api/solana/signature-status',
   'POST /api/swap/order',
   'POST /api/swap/execute',
+  'POST /api/birdeye/price-multi',
+  'POST /api/birdeye/search',
+  'POST /api/birdeye/token-meta',
 ] as const;
 
 type HostedProviderId = 'openai' | 'anthropic' | 'gemini' | 'openrouter';
@@ -354,6 +360,7 @@ function authRateLimitedRoute(pathname: string): AuthRateLimitInput['route'] | u
   if (pathname.startsWith('/api/recurring')) return '/api/recurring:*';
   if (pathname.startsWith('/api/evidence')) return '/api/evidence:*';
   if (pathname.startsWith('/api/swap')) return '/api/swap:*';
+  if (pathname.startsWith('/api/birdeye')) return '/api/birdeye:*';
   if (pathname.startsWith('/api/cloud-workspace')) return '/api/cloud-workspace:*';
   if (pathname === '/api/auth/logout') return pathname;
   return undefined;
@@ -517,6 +524,24 @@ async function routeApiRequest(
   if (url.pathname === '/api/swap/execute') {
     requireMethod(req, 'POST');
     await handleJupiterSwapExecute(req, res);
+    return;
+  }
+
+  if (url.pathname === '/api/birdeye/price-multi') {
+    requireMethod(req, 'POST');
+    await handleBirdeyePriceMulti(req, res);
+    return;
+  }
+
+  if (url.pathname === '/api/birdeye/search') {
+    requireMethod(req, 'POST');
+    await handleBirdeyeSearch(req, res);
+    return;
+  }
+
+  if (url.pathname === '/api/birdeye/token-meta') {
+    requireMethod(req, 'POST');
+    await handleBirdeyeTokenMetadata(req, res);
     return;
   }
 
@@ -918,6 +943,36 @@ async function handleJupiterSwapExecute(req: IncomingMessage, res: ServerRespons
   }));
 }
 
+async function handleBirdeyePriceMulti(req: IncomingMessage, res: ServerResponse): Promise<void> {
+  const body = asJsonRecord(await readJsonBody(req), 'BirdEye price body');
+  const addresses = requiredStringArray(body.addresses, 'addresses');
+  const includeLiquidity = typeof body.includeLiquidity === 'boolean' ? body.includeLiquidity : true;
+  writeJson(res, 200, await requestBirdeyeForRender(() => requestBirdeyePriceMulti(addresses, { includeLiquidity })));
+}
+
+async function handleBirdeyeSearch(req: IncomingMessage, res: ServerResponse): Promise<void> {
+  const body = asJsonRecord(await readJsonBody(req), 'BirdEye search body');
+  const keyword = requiredBodyString(body.keyword ?? body.query, 'keyword');
+  const limit = optionalIntegerBodyField(body, 'limit');
+  writeJson(res, 200, await requestBirdeyeForRender(() => requestBirdeyeSearch(keyword, { limit })));
+}
+
+async function handleBirdeyeTokenMetadata(req: IncomingMessage, res: ServerResponse): Promise<void> {
+  const body = asJsonRecord(await readJsonBody(req), 'BirdEye token metadata body');
+  const addresses = requiredStringArray(body.addresses, 'addresses');
+  writeJson(res, 200, await requestBirdeyeForRender(() => requestBirdeyeTokenMetadata(addresses)));
+}
+
+async function requestBirdeyeForRender(callback: () => Promise<Record<string, unknown>>): Promise<Record<string, unknown>> {
+  try {
+    return await callback();
+  } catch (err) {
+    const message = err instanceof Error ? redactSecrets(err.message) : 'BirdEye request failed.';
+    const status = message.includes('Missing BirdEye API key') ? 501 : 502;
+    throw new ApiError(status, message);
+  }
+}
+
 async function requestJupiter(
   url: URL | string,
   init: { method?: 'POST'; body?: Record<string, unknown> } = {},
@@ -990,6 +1045,19 @@ function requiredBodyString(bodyOrValue: Record<string, unknown> | unknown, key:
     : bodyOrValue;
   if (typeof value === 'string' && value.trim()) return value.trim();
   throw new ApiError(400, `${key} is required.`);
+}
+
+function requiredStringArray(value: unknown, key: string): string[] {
+  if (!Array.isArray(value)) {
+    throw new ApiError(400, `${key} must be an array.`);
+  }
+  const entries = value
+    .map((entry) => typeof entry === 'string' ? entry.trim() : '')
+    .filter(Boolean);
+  if (!entries.length) {
+    throw new ApiError(400, `${key} must include at least one value.`);
+  }
+  return entries;
 }
 
 type WorkflowCluster = 'mainnet-beta' | 'devnet' | 'testnet' | 'localnet';

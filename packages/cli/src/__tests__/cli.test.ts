@@ -50,6 +50,7 @@ test('setup writes local runtime env aliases and redacts JSON status', async () 
   await writeFile(envPath, 'CUSTOM_VALUE=kept\n', 'utf8');
   const rpcUrl = 'https://mainnet.helius-rpc.com/?api-key=rpc-secret-value';
   const jupiterKey = 'jupiter-secret-value';
+  const birdeyeKey = 'birdeye-secret-value';
 
   const result = runCli([
     '--runtime-dir',
@@ -59,6 +60,8 @@ test('setup writes local runtime env aliases and redacts JSON status', async () 
     rpcUrl,
     '--jupiter-api-key',
     jupiterKey,
+    '--birdeye-api-key',
+    birdeyeKey,
     '--yes',
     '--json',
   ]);
@@ -69,13 +72,19 @@ test('setup writes local runtime env aliases and redacts JSON status', async () 
     rpcUrlRedacted?: string;
     jupiterApiKeyConfigured?: boolean;
     jupiterApiKeyRedacted?: string;
+    birdeyeApiKeyConfigured?: boolean;
+    birdeyeApiKeyRedacted?: string;
     swapsReady?: boolean;
+    marketDataReady?: boolean;
   };
   assert.equal(setup.rpcUrlConfigured, true);
   assert.equal(setup.jupiterApiKeyConfigured, true);
+  assert.equal(setup.birdeyeApiKeyConfigured, true);
   assert.equal(setup.swapsReady, true);
+  assert.equal(setup.marketDataReady, true);
   assert.ok(!setup.rpcUrlRedacted?.includes('rpc-secret-value'));
   assert.ok(!setup.jupiterApiKeyRedacted?.includes('secret-value'));
+  assert.ok(!setup.birdeyeApiKeyRedacted?.includes('secret-value'));
 
   const raw = await readFile(envPath, 'utf8');
   assert.match(raw, /CUSTOM_VALUE=kept/);
@@ -85,6 +94,8 @@ test('setup writes local runtime env aliases and redacts JSON status', async () 
   assert.match(raw, /JUP_API_KEY=jupiter-secret-value/);
   assert.match(raw, /JUP_ULTRA_BASE=https:\/\/api\.jup\.ag\/ultra\/v1/);
   assert.match(raw, /JUPITER_API_URL=https:\/\/quote-api\.jup\.ag/);
+  assert.match(raw, /BIRDEYE_API_KEY=birdeye-secret-value/);
+  assert.match(raw, /BIRDEYE_REST_BASE=https:\/\/public-api\.birdeye\.so/);
 });
 
 test('wallet-host serve exposes health, static assets, SPA fallback, and rejects traversal', async () => {

@@ -36,6 +36,15 @@ export type {
   UpdateRecurringPaymentInput,
 } from './actionService.js';
 export { BridgeAiPlanner } from './aiPlanner.js';
+export {
+  DEFAULT_BIRDEYE_REST_BASE,
+  birdeyeConfigFromEnv,
+  requestBirdeye,
+  requestBirdeyePriceMulti,
+  requestBirdeyeSearch,
+  requestBirdeyeTokenMetadata,
+} from './birdeye.js';
+export type { BirdeyeConfig, BirdeyeRequestInit } from './birdeye.js';
 export type {
   AiApiFormat,
   AiAskRequest,

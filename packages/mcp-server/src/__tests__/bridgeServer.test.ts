@@ -3,7 +3,7 @@ import { mkdtemp } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { AgentRegistry, type PublicRegisteredAgent } from '../agentRegistry.js';
 import { createBridgeServer } from '../bridgeServer.js';
@@ -12,6 +12,11 @@ import { JsonLabArtifactStore, type LabArtifact } from '../labArtifacts.js';
 import { LocalBridgeBackend } from '../localBridgeBackend.js';
 
 describe('bridge lab artifact routes', () => {
+  afterEach(() => {
+    vi.unstubAllEnvs();
+    vi.unstubAllGlobals();
+  });
+
   it('stores and lists signed lab artifacts through the bridge API', async () => {
     const handle = await startTestBridge();
     try {
@@ -230,6 +235,49 @@ describe('bridge lab artifact routes', () => {
       await handle.stop();
     }
   });
+
+  it('proxies BirdEye price requests with the configured API key', async () => {
+    const originalFetch = globalThis.fetch;
+    const upstreamCalls: Array<{ url: string; init: RequestInit | undefined }> = [];
+    vi.stubEnv('BIRDEYE_API_KEY', 'birdeye-test-key');
+    vi.stubGlobal('fetch', vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
+      const url = input instanceof Request ? new URL(input.url) : new URL(String(input));
+      if (url.hostname === 'public-api.birdeye.so') {
+        upstreamCalls.push({ url: url.toString(), init });
+        return jsonResponse({
+          data: {
+            So11111111111111111111111111111111111111112: {
+              value: 142.25,
+            },
+          },
+        });
+      }
+      return originalFetch(input, init);
+    }) as typeof fetch);
+
+    const handle = await startTestBridge();
+    try {
+      const body = await bridgeFetch<{ data: Record<string, unknown> }>(handle.url, '/bridge/birdeye/price-multi', {
+        method: 'POST',
+        body: JSON.stringify({
+          addresses: ['So11111111111111111111111111111111111111112'],
+          includeLiquidity: false,
+        }),
+      });
+
+      expect(body.data).toHaveProperty('So11111111111111111111111111111111111111112');
+      expect(upstreamCalls).toHaveLength(1);
+      const upstream = upstreamCalls[0];
+      expect(upstream?.url).toContain('/defi/multi_price');
+      expect(upstream?.url).toContain('include_liquidity=false');
+      expect(new Headers(upstream?.init?.headers).get('x-api-key')).toBe('birdeye-test-key');
+      expect(JSON.parse(String(upstream?.init?.body))).toEqual({
+        list_address: 'So11111111111111111111111111111111111111112',
+      });
+    } finally {
+      await handle.stop();
+    }
+  });
 });
 
 async function startTestBridge(
@@ -309,4 +357,11 @@ function sampleArtifact(): LabArtifact {
     verified: true,
     artifactHash: 'artifact_hash',
   };
+}
+
+function jsonResponse(body: unknown, status = 200): Response {
+  return new Response(JSON.stringify(body), {
+    status,
+    headers: { 'content-type': 'application/json' },
+  });
 }

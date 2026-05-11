@@ -44,6 +44,7 @@ const aiRequest = {
 describe('render web hosted BYOK API', () => {
   afterEach(() => {
     vi.unstubAllGlobals();
+    vi.unstubAllEnvs();
   });
 
   it('serves hosted BYOK status as JSON instead of the SPA shell', async () => {
@@ -71,6 +72,53 @@ describe('render web hosted BYOK API', () => {
           expect.objectContaining({ id: 'anthropic', apiFormat: 'anthropic' }),
         ]),
       });
+    });
+  });
+
+  it('proxies BirdEye market data through the hosted API', async () => {
+    const upstreamCalls: Array<{ url: string; init: RequestInit | undefined }> = [];
+    vi.stubEnv('BIRDEYE_API_KEY', 'birdeye-test-key');
+    vi.stubGlobal('fetch', vi.fn(async (url: string | URL | Request, init?: RequestInit) => {
+      upstreamCalls.push({ url: String(url), init });
+      return jsonResponse({
+        data: {
+          So11111111111111111111111111111111111111112: {
+            value: 142.25,
+          },
+        },
+      });
+    }));
+
+    await withServer(async (port) => {
+      const response = await postJson(port, '/api/birdeye/price-multi', {
+        addresses: ['So11111111111111111111111111111111111111112'],
+        includeLiquidity: false,
+      });
+
+      expect(response.status).toBe(200);
+      expect(response.body.data).toHaveProperty('So11111111111111111111111111111111111111112');
+      expect(upstreamCalls).toHaveLength(1);
+      expect(upstreamCalls[0]?.url).toContain('/defi/multi_price');
+      expect(upstreamCalls[0]?.url).toContain('include_liquidity=false');
+      expect(new Headers(upstreamCalls[0]?.init?.headers).get('x-api-key')).toBe('birdeye-test-key');
+      expect(JSON.parse(String(upstreamCalls[0]?.init?.body))).toEqual({
+        list_address: 'So11111111111111111111111111111111111111112',
+      });
+    });
+  });
+
+  it('reports BirdEye setup errors without calling upstream', async () => {
+    const fetchMock = vi.fn();
+    vi.stubGlobal('fetch', fetchMock);
+
+    await withServer(async (port) => {
+      const response = await postJson(port, '/api/birdeye/search', {
+        keyword: 'popcat',
+      });
+
+      expect(response.status).toBe(501);
+      expect(String(response.body.error)).toContain('Missing BirdEye API key');
+      expect(fetchMock).not.toHaveBeenCalled();
     });
   });
 

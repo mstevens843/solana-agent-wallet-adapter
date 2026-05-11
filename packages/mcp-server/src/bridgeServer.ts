@@ -23,6 +23,12 @@ import {
   type RegisteredAgent,
 } from './agentRegistry.js';
 import { BridgeAiPlanner, type AiPlanRequest, type AiReviewRequest, type AiAskRequest } from './aiPlanner.js';
+import {
+  birdeyeConfigFromEnv,
+  requestBirdeyePriceMulti,
+  requestBirdeyeSearch,
+  requestBirdeyeTokenMetadata,
+} from './birdeye.js';
 import { type AgentWalletConfig } from './config.js';
 import { parseDecimalAmount } from './amounts.js';
 import { LocalBridgeBackend } from './localBridgeBackend.js';
@@ -338,6 +344,7 @@ async function handleRequest(
       const rpcWritable = actionConfig
         ? await checkRpcWritable(actionConfig.rpcUrl)
         : { ok: false, message: 'Action config unavailable.' };
+      const birdeye = birdeyeConfigFromEnv();
       writeJson(res, 200, {
         walletConnected: Boolean(caps?.address),
         walletAddress: caps?.address ?? null,
@@ -346,6 +353,8 @@ async function handleRequest(
         cluster: actionConfig?.cluster ?? null,
         rpcUrl: actionConfig?.rpcUrl ?? null,
         rpcWritable,
+        marketDataReady: Boolean(birdeye.apiKey),
+        birdeyeRestBase: birdeye.restBase,
         mainnetEnabled: actionConfig?.mainnet.enabled ?? false,
         capsEnabled: Boolean(actionConfig?.mainnet.enabled),
         preparedActionStorePath: preparedActions?.getStoragePath?.() ?? null,
@@ -378,6 +387,25 @@ async function handleRequest(
         200,
         await bridgeSignatureStatus(requireActionConfig(actionConfig), body.cluster, body.txid ?? body.signature),
       );
+      return;
+    }
+    if (req.method === 'POST' && url.pathname === '/bridge/birdeye/price-multi') {
+      const body = (await readJson(req)) as { addresses?: unknown; includeLiquidity?: boolean };
+      writeJson(res, 200, await requestBirdeyePriceMulti(requireStringArray(body.addresses, 'addresses'), {
+        includeLiquidity: body.includeLiquidity,
+      }));
+      return;
+    }
+    if (req.method === 'POST' && url.pathname === '/bridge/birdeye/search') {
+      const body = (await readJson(req)) as { keyword?: string; query?: string; limit?: number };
+      writeJson(res, 200, await requestBirdeyeSearch(requireString(body.keyword ?? body.query, 'keyword'), {
+        limit: body.limit,
+      }));
+      return;
+    }
+    if (req.method === 'POST' && url.pathname === '/bridge/birdeye/token-meta') {
+      const body = (await readJson(req)) as { addresses?: unknown };
+      writeJson(res, 200, await requestBirdeyeTokenMetadata(requireStringArray(body.addresses, 'addresses')));
       return;
     }
     if (req.method === 'GET' && url.pathname === '/bridge/ai/status') {
@@ -672,6 +700,7 @@ function requiredTier(method: string, pathname: string): AgentTier | null {
     if (pathname === '/bridge/solana/latest-blockhash') return 'full';
     if (pathname === '/bridge/solana/send-transaction') return 'full';
     if (pathname === '/bridge/solana/signature-status') return null;
+    if (pathname.startsWith('/bridge/birdeye/')) return 'capped';
     if (pathname === '/bridge/submit') return 'full';
     if (pathname === '/bridge/connect-wallet') return null;
     if (pathname === '/bridge/cancel') return 'capped';
@@ -1213,6 +1242,19 @@ function requireString(value: unknown, label: string): string {
     throw new ProtocolError('invalid_request', `${label} is required.`);
   }
   return value.trim();
+}
+
+function requireStringArray(value: unknown, label: string): string[] {
+  if (!Array.isArray(value)) {
+    throw new ProtocolError('invalid_request', `${label} must be an array.`);
+  }
+  const entries = value
+    .map((entry) => typeof entry === 'string' ? entry.trim() : '')
+    .filter(Boolean);
+  if (!entries.length) {
+    throw new ProtocolError('invalid_request', `${label} must include at least one value.`);
+  }
+  return entries;
 }
 
 function normalizeTokenIdentifier(token: string): string {

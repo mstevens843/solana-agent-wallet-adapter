@@ -498,6 +498,11 @@ const TX_CONFIRMATION_POLL_TIMEOUT_MS = 30_000;
 const TX_CONFIRMATION_POLL_INTERVAL_MS = 1_500;
 const TX_RETRY_MAX_ATTEMPTS = 2;
 const TX_RETRY_DELAY_MS = 2_500;
+const TOKEN_PRICE_CACHE_MS = 60_000;
+const TOKEN_METADATA_CACHE_MS = 24 * 60 * 60_000;
+const TOKEN_MARKET_RETRY_BACKOFF_MS = 30_000;
+const TOKEN_SEARCH_DEBOUNCE_MS = 260;
+const TOKEN_SEARCH_VISIBLE_ROWS = 5;
 const LAB_STORAGE_KEY = 'solana-agent-wallet-lab-artifacts-v1';
 const LAB_ARCHIVE_DB_NAME = 'solana-agent-wallet-lab-artifacts';
 const LAB_ARCHIVE_DB_VERSION = 1;
@@ -510,6 +515,7 @@ const JUP_MINT = 'JUPyiwrYJFskUPiHa7hkeR8VUtAeFoSYbKedZNsDvCN';
 const BONK_MINT = 'DezXAZ8z7PnrnRJjz3wXBoRgixCa6xjnB7YaB1pPB263';
 const WIF_MINT = 'EKpQGSJtjMFqKZ9KQanSqYXRcF8fBopzLHYxdM65zcjm';
 const PYUSD_MINT = '2b1kV6DkPAnxd5ixfnxCpjxmKwqjjaYmCZfHsFu24GXo';
+const DEXSCREENER_SOLANA_TOKEN_URL = 'https://api.dexscreener.com/tokens/v1/solana';
 const TOKEN_PROGRAM_ID = new PublicKey('TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA');
 const TOKEN_2022_PROGRAM_ID = new PublicKey('TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb');
 const ASSOCIATED_TOKEN_PROGRAM_ID = new PublicKey('ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL');
@@ -1054,6 +1060,48 @@ interface BrowserTokenMetadata {
   tokenProgramId: PublicKey;
 }
 
+interface TokenMarketMetadata {
+  mint: string;
+  symbol: string;
+  name: string;
+  logoURI?: string;
+  decimals?: number;
+  source: 'birdeye' | 'known' | 'custom';
+  fetchedAt: number;
+}
+
+interface TokenMarketPrice {
+  mint: string;
+  value: number;
+  fetchedAt: number;
+  updateUnixTime?: number;
+  liquidity?: number;
+}
+
+interface TokenSearchResult {
+  mint: string;
+  symbol: string;
+  name: string;
+  logoURI?: string;
+  priceUsd?: number;
+  liquidity?: number;
+  marketCap?: number;
+  source: string;
+}
+
+interface TokenSearchState {
+  query: string;
+  status: 'idle' | 'loading' | 'loaded' | 'error';
+  results: TokenSearchResult[];
+  error?: string;
+}
+
+interface MarketAmountSubject {
+  amount: number;
+  mint: string;
+  token: string;
+}
+
 interface BrowserWorkflowState {
   preparedActions: PreparedAction[];
   recurringPayments: RecurringPayment[];
@@ -1097,6 +1145,8 @@ interface BridgeHealth {
   cluster?: Cluster | null;
   rpcUrl?: string | null;
   rpcWritable?: { ok: boolean; message: string };
+  marketDataReady?: boolean;
+  birdeyeRestBase?: string;
   mainnetEnabled?: boolean;
   capsEnabled?: boolean;
   preparedActionStorePath?: string | null;
@@ -1490,6 +1540,7 @@ interface DemoState {
   cloudSession: CloudSessionState;
   cloudWorkspaceDeleteModalOpen: boolean;
   completedDeleteModalId: string;
+  generatedPlanDeleteModalId: string;
   preferencesView: PreferencesView;
   wallets: DiscoveredWallet[];
   selectedWalletName: string;
@@ -2208,6 +2259,7 @@ const state: DemoState = {
   },
   cloudWorkspaceDeleteModalOpen: false,
   completedDeleteModalId: '',
+  generatedPlanDeleteModalId: '',
   preferencesView: persisted.preferencesView ?? 'workspace',
   wallets: [],
   selectedWalletName: persisted.browserWalletSession?.cluster === initialCluster ? persisted.browserWalletSession.walletName : '',
@@ -2352,6 +2404,13 @@ let selectPickerController: AbortController | null = null;
 let systemHealthTimer: number | null = null;
 let systemHealthRunController: AbortController | null = null;
 const SYSTEM_HEALTH_INTERVAL_MS = 30_000;
+const tokenMarketPrices = new Map<string, TokenMarketPrice>();
+const tokenMarketMetadata = new Map<string, TokenMarketMetadata>();
+const tokenSearchStates = new Map<string, TokenSearchState>();
+const tokenSearchTimers = new Map<string, number>();
+let tokenMarketUnavailableUntil = 0;
+let tokenMarketHydrationScheduled = false;
+let tokenMarketHydrationInFlight = false;
 
 const appRoot = document.querySelector<HTMLDivElement>('#app');
 
@@ -2386,6 +2445,11 @@ function handleGlobalKeydown(event: KeyboardEvent): void {
   if (event.key === 'Escape' && state.completedDeleteModalId) {
     event.preventDefault();
     closeCompletedDeleteModal();
+    return;
+  }
+  if (event.key === 'Escape' && state.generatedPlanDeleteModalId) {
+    event.preventDefault();
+    closeGeneratedPlanDeleteModal();
     return;
   }
   if (event.key === 'Escape' && state.generatedPlanAuditId) {
@@ -2503,6 +2567,7 @@ function render(): void {
   bind();
   updateTabTitleBadge();
   scheduleInboxSwapQuoteHydration();
+  scheduleVisibleTokenMarketHydration();
 }
 
 function normalizeInitialRoute(): void {
@@ -2565,6 +2630,7 @@ function pageShell(content: string, activeRoute: AppRoute | null): string {
       ${content}
       ${cloudWorkspaceDeleteModal()}
       ${completedDeleteModal()}
+      ${generatedPlanDeleteModal()}
       ${activeRoute === '/app' || activeRoute === '/demo' ? workspaceBackupRestoreModal() : ''}
       ${homepageFooter()}
     </section>
@@ -8020,9 +8086,10 @@ function generatedPlanReviewSummary(record: GeneratedPlanRecord): string {
 function generatedPlanHeroValue(record: GeneratedPlanRecord): string {
   const plan = record.plan;
   const metric = reviewPlanMetric(plan);
+  const subject = marketAmountSubjectForPlan(plan);
   return `
-    <div class="review-plan-value" title="${escapeHtml(`${metric.primary} ${metric.secondary}`.trim())}">
-      <strong>${escapeHtml(metric.primary)}</strong>
+    <div class="review-plan-value" title="${escapeHtml(marketHeroTitle(metric.primary, metric.secondary, subject))}">
+      ${marketAmountLineHtml(metric.primary, subject)}
       ${metric.secondary ? `<span>${escapeHtml(metric.secondary)}</span>` : ''}
     </div>
   `;
@@ -9020,6 +9087,35 @@ function completedDeleteModal(): string {
   `;
 }
 
+function generatedPlanDeleteModal(): string {
+  if (!state.generatedPlanDeleteModalId) return '';
+  const record = generatedPlanById(state.generatedPlanDeleteModalId);
+  if (!record) return '';
+  const status = record.status === 'archived' ? 'Archived draft' : generatedPlanStatusLabel(record);
+  return `
+    <div class="generated-plan-modal-backdrop generated-plan-delete-modal-backdrop" role="presentation">
+      <section class="generated-plan-modal generated-plan-delete-modal" role="dialog" aria-modal="true" aria-labelledby="generated-plan-delete-title">
+        <div class="generated-plan-modal-head">
+          <div>
+            <span class="workbench-kicker">Check deletion</span>
+            <h2 id="generated-plan-delete-title">Delete from Check?</h2>
+            <p>${escapeHtml(record.plan.templateTitle || record.plan.intent)}</p>
+          </div>
+          <button class="utility" data-generated-plan-delete-cancel aria-label="Close Check deletion confirmation">Close</button>
+        </div>
+        <div class="generated-plan-delete-warning">
+          <strong>${escapeHtml(status)}</strong>
+          <p>This removes the draft from Check and linked local planning state. If it already produced a receipt or approval, those records stay in Done.</p>
+        </div>
+        <div class="generated-plan-modal-actions generated-plan-delete-actions">
+          <button type="button" class="utility" data-generated-plan-delete-cancel ${state.busy ? 'disabled' : ''}>Cancel</button>
+          <button type="button" class="utility danger" data-generated-plan-delete-confirm="${escapeHtml(record.id)}" ${state.busy ? 'disabled' : ''}>Delete plan</button>
+        </div>
+      </section>
+    </div>
+  `;
+}
+
 function generatedPlanAuditModal(record: GeneratedPlanRecord): string {
   const plan = record.plan;
   const approvalCapable = canQueueAgentPlan(plan);
@@ -9554,14 +9650,20 @@ function tokenFieldInput(fieldDef: AgentPlanTemplateField, value: string, label:
         attrs: { 'data-template-field': fieldDef.id },
         disabled,
       }) : `
-        <input
-          data-template-field="${escapeHtml(fieldDef.id)}"
-          value="${escapeHtml(customValue)}"
-          placeholder="Paste token mint address"
-          autocomplete="off"
-          spellcheck="false"
-          ${disabled ? 'disabled' : ''}
-        />
+        <div class="token-search-shell">
+          <input
+            data-template-field="${escapeHtml(fieldDef.id)}"
+            data-token-search-input="${escapeHtml(fieldDef.id)}"
+            value="${escapeHtml(customValue)}"
+            placeholder="Search symbol/name or paste mint"
+            autocomplete="off"
+            spellcheck="false"
+            ${disabled ? 'disabled' : ''}
+          />
+          <div class="token-search-results" data-token-search-results="${escapeHtml(fieldDef.id)}">
+            ${tokenSearchDropdownHtml(fieldDef.id)}
+          </div>
+        </div>
       `}
       ${error}
     </div>
@@ -10781,9 +10883,10 @@ function completedPlanDisplayTitle(plan: CompletedPlanRecord): string {
 
 function completedPlanHero(plan: CompletedPlanRecord): string {
   const metric = completedPlanMetric(plan);
+  const subject = marketAmountSubjectForCompletedPlan(plan);
   return `
-    <div class="completed-history-value" title="${escapeHtml(`${metric.primary} ${metric.secondary}`.trim())}">
-      <strong>${escapeHtml(metric.primary)}</strong>
+    <div class="completed-history-value" title="${escapeHtml(marketHeroTitle(metric.primary, metric.secondary, subject))}">
+      ${marketAmountLineHtml(metric.primary, subject)}
       ${metric.secondary ? `<span>${escapeHtml(metric.secondary)}</span>` : ''}
     </div>
   `;
@@ -12029,6 +12132,19 @@ function bind(): void {
       closeCompletedDeleteModal();
     }
   });
+  for (const button of document.querySelectorAll<HTMLButtonElement>('[data-generated-plan-delete-cancel]')) {
+    button.addEventListener('click', closeGeneratedPlanDeleteModal);
+  }
+  document.querySelector<HTMLButtonElement>('[data-generated-plan-delete-confirm]')?.addEventListener('click', (event) => {
+    const planId = (event.currentTarget as HTMLButtonElement).dataset.generatedPlanDeleteConfirm;
+    if (!planId) return;
+    void runDeleteGeneratedPlan(planId);
+  });
+  document.querySelector<HTMLElement>('.generated-plan-delete-modal-backdrop')?.addEventListener('click', (event) => {
+    if (event.target === event.currentTarget) {
+      closeGeneratedPlanDeleteModal();
+    }
+  });
   for (const button of document.querySelectorAll<HTMLButtonElement>('[data-generated-plan-modal-close]')) {
     button.addEventListener('click', closeGeneratedPlanAuditModal);
   }
@@ -12220,6 +12336,20 @@ function bind(): void {
       state.templateFields[fieldId] = fieldInput.value;
     });
   }
+
+  for (const input of document.querySelectorAll<HTMLInputElement>('[data-token-search-input]')) {
+    input.addEventListener('focus', () => {
+      const fieldId = input.dataset.tokenSearchInput;
+      if (!fieldId) return;
+      handleTokenSearchInput(fieldId, input.value);
+    });
+    input.addEventListener('input', () => {
+      const fieldId = input.dataset.tokenSearchInput;
+      if (!fieldId) return;
+      handleTokenSearchInput(fieldId, input.value);
+    });
+  }
+  bindTokenSearchSelectButtons();
 
   for (const fieldInput of document.querySelectorAll<HTMLInputElement>('[data-template-slippage-field]')) {
     fieldInput.addEventListener('input', () => {
@@ -14133,18 +14263,7 @@ async function runGeneratedPlanAction(planId: string, action: string): Promise<v
     return;
   }
   if (action === 'delete') {
-    if (!window.confirm('Delete this plan permanently?')) return;
-    if (record.workflowSource === 'cloud') {
-      await cloudRequest(`/api/plans/${encodeURIComponent(planId)}`, { method: 'DELETE' });
-    }
-    state.generatedPlans = state.generatedPlans.filter((candidate) => candidate.id !== planId);
-    if (state.generatedPlanAuditId === planId) {
-      state.generatedPlanAuditId = '';
-    }
-    saveGeneratedPlans();
-    selectFallbackGeneratedPlan();
-    pushToast('success', 'Plan deleted', record.plan.templateTitle);
-    render();
+    openGeneratedPlanDeleteModal(planId);
     return;
   }
   if (action === 'sign-proof') {
@@ -14271,6 +14390,8 @@ async function runAskAgentAnything(planId: string, question: string): Promise<vo
     agentReview: { ...review, conversation: initialConversation },
   });
 
+  const deterministicFacts = await gatherAgentReviewFacts(record);
+  const factsForContext = factSetForContext(deterministicFacts);
   const request: AgentPlanAskRequest = {
     plan: record.plan,
     question: pendingExchange.question,
@@ -14282,6 +14403,17 @@ async function runAskAgentAnything(planId: string, question: string): Promise<vo
       amount: planAmountSummary(record.plan),
       risk: record.plan.risk,
       approval: record.plan.approval,
+      ...(factsForContext ? { facts: factsForContext } : {}),
+      ...(record.plan.actionType === 'swap'
+        ? {
+            executionPath: {
+              kind: 'swap',
+              aggregator: 'Jupiter',
+              routeSelection: 'Jupiter selects the executable route when the quote/order is fetched.',
+              userInputRequired: 'Do not ask the user which DEX/protocol to use unless their intent explicitly requires a specific venue.',
+            },
+          }
+        : {}),
     },
   };
 
@@ -14362,9 +14494,11 @@ async function runReviewGeneratedPlan(planId: string): Promise<void> {
     await run('ai', async () => {
       const refreshed = generatedPlanById(planId) ?? record;
       const appliedPolicyIds = enabledUserAgentPolicies().map((policy) => policy.id);
-      const result = await runAgentReview(refreshed);
+      const deterministicFacts = await gatherAgentReviewFacts(refreshed);
+      const rawResult = await runAgentReview(refreshed, deterministicFacts);
+      const result = normalizeAgentReviewResultForFacts(rawResult, refreshed.plan, deterministicFacts);
       const review = agentReviewStateFromResult(result, previousReview, refreshed.plan, appliedPolicyIds);
-      review.facts = mergeReviewFacts(gatherDeterministicFacts(refreshed), result.evidence);
+      review.facts = mergeReviewFacts(deterministicFacts, result.evidence);
       await updateGeneratedPlan(planId, { agentReview: review, error: undefined, failureLabel: undefined });
       if (state.agentPlan && samePlan(state.agentPlan, refreshed.plan)) {
         state.selectedGeneratedPlanId = planId;
@@ -14467,6 +14601,43 @@ function openCompletedDeleteModal(completedId: string): void {
 function closeCompletedDeleteModal(): void {
   if (!state.completedDeleteModalId) return;
   state.completedDeleteModalId = '';
+  render();
+}
+
+function openGeneratedPlanDeleteModal(planId: string): void {
+  const record = generatedPlanById(planId);
+  if (!record) return;
+  state.generatedPlanDeleteModalId = planId;
+  state.error = '';
+  render();
+}
+
+function closeGeneratedPlanDeleteModal(): void {
+  if (!state.generatedPlanDeleteModalId) return;
+  state.generatedPlanDeleteModalId = '';
+  render();
+}
+
+async function runDeleteGeneratedPlan(planId: string): Promise<void> {
+  const record = generatedPlanById(planId);
+  if (!record) {
+    state.generatedPlanDeleteModalId = '';
+    render();
+    return;
+  }
+  state.generatedPlanDeleteModalId = '';
+  if (record.workflowSource === 'cloud') {
+    await cloudRequest(`/api/plans/${encodeURIComponent(planId)}`, { method: 'DELETE' });
+  }
+  state.generatedPlans = state.generatedPlans.filter((candidate) => candidate.id !== planId);
+  if (state.generatedPlanAuditId === planId) {
+    state.generatedPlanAuditId = '';
+  }
+  if (state.selectedGeneratedPlanId === planId) {
+    selectFallbackGeneratedPlan();
+  }
+  saveGeneratedPlans();
+  pushToast('success', 'Plan deleted', record.plan.templateTitle);
   render();
 }
 
@@ -15382,8 +15553,11 @@ function agentDenialProofMessage(plan: AgentPlan, review: AgentPlanReviewState):
   ].join('\n');
 }
 
-async function runAgentReview(record: GeneratedPlanRecord): Promise<AgentPlanReviewResult> {
-  const request = agentReviewRequest(record);
+async function runAgentReview(
+  record: GeneratedPlanRecord,
+  deterministicFacts = gatherDeterministicFacts(record),
+): Promise<AgentPlanReviewResult> {
+  const request = agentReviewRequest(record, deterministicFacts);
   state.aiDiagnostics = [
     aiRouteDiagnostic(state.aiSettings.mode === 'bridge' ? '/bridge/ai/review-plan' : '/api/ai/review-plan'),
   ];
@@ -15400,7 +15574,10 @@ async function runAgentReview(record: GeneratedPlanRecord): Promise<AgentPlanRev
   return generateSessionAiReview(state.aiSettings, request);
 }
 
-function agentReviewRequest(record: GeneratedPlanRecord): AgentPlanReviewRequest {
+function agentReviewRequest(
+  record: GeneratedPlanRecord,
+  deterministicFacts = gatherDeterministicFacts(record),
+): AgentPlanReviewRequest {
   const review = record.agentReview;
   const priorAnswers = review?.answers;
   const priorQuestions = review?.questions;
@@ -15423,7 +15600,6 @@ function agentReviewRequest(record: GeneratedPlanRecord): AgentPlanReviewRequest
     detail: policy.detail,
     ...(policy.params && Object.keys(policy.params).length ? { params: policy.params } : {}),
   }));
-  const deterministicFacts = gatherDeterministicFacts(record);
   const factsForContext = factSetForContext(deterministicFacts);
   return {
     plan: record.plan,
@@ -15438,6 +15614,17 @@ function agentReviewRequest(record: GeneratedPlanRecord): AgentPlanReviewRequest
       amount: planAmountSummary(record.plan),
       risk: record.plan.risk,
       approval: record.plan.approval,
+      ...(factsForContext ? { facts: factsForContext } : {}),
+      ...(record.plan.actionType === 'swap'
+        ? {
+            executionPath: {
+              kind: 'swap',
+              aggregator: 'Jupiter',
+              routeSelection: 'Jupiter selects the executable route when the quote/order is fetched.',
+              userInputRequired: 'Do not ask the user which DEX/protocol to use unless their intent explicitly requires a specific venue.',
+            },
+          }
+        : {}),
       ...(userPolicies.length ? { userPolicies } : {}),
       ...(priorAnswers && Object.keys(priorAnswers).length
         ? {
@@ -15492,6 +15679,54 @@ function agentReviewStateFromResult(
     ...(appliedUserPolicyIds && appliedUserPolicyIds.length ? { appliedUserPolicyIds } : {}),
     ...(result.reviewers?.length ? { reviewers: result.reviewers as AgentReviewerEntry[] } : {}),
   };
+}
+
+function normalizeAgentReviewResultForFacts(
+  result: AgentPlanReviewResult,
+  plan: AgentPlan,
+  facts: AgentReviewFactSet,
+): AgentPlanReviewResult {
+  if (result.decision !== 'needs_input' || !result.questions?.length || plan.actionType !== 'swap') {
+    return result;
+  }
+  const unnecessaryQuestions = result.questions.filter((question) => isSwapQuestionAnsweredByFacts(question, facts));
+  if (unnecessaryQuestions.length !== result.questions.length) {
+    return result;
+  }
+  const hasFailedFact = Object.values(facts).some((fact) => fact?.state === 'fail');
+  const warnings = Object.values(facts)
+    .map((fact) => fact?.message)
+    .filter((message): message is string => Boolean(message?.trim()))
+    .slice(0, 3);
+  const reason = hasFailedFact
+    ? 'Agent review completed from available route, protocol, token, and limit facts, and found a blocking issue.'
+    : warnings.length
+      ? `Agent review completed from available route, protocol, token, and limit facts. ${warnings.join(' ')}`
+      : 'Agent review completed from available route, protocol, token, and limit facts.';
+  return {
+    ...result,
+    decision: hasFailedFact ? 'deny' : 'approve',
+    reason: compactSentence(reason, 280),
+    summary: hasFailedFact ? 'Agent review found a blocking issue.' : 'Agent review passed from available facts.',
+    questions: undefined,
+    evidence: {
+      ...result.evidence,
+      needsInputConverted: true,
+      convertedQuestionIds: unnecessaryQuestions.map((question) => question.id),
+      conversionReason: 'Questions were answerable from deterministic swap facts, market lookup, or app execution defaults.',
+    },
+  };
+}
+
+function isSwapQuestionAnsweredByFacts(question: AgentReviewQuestion, facts: AgentReviewFactSet): boolean {
+  const prompt = question.prompt.toLowerCase();
+  const asksProtocol = /\b(protocol|dex|jupiter|raydium|orca|aggregator|venue)\b/.test(prompt);
+  if (asksProtocol && facts.protocol && facts.protocol.state !== 'missing') return true;
+  const asksTokenIdentity = /\b(token|mint|symbol|name|address|verified|source|solscan|birdeye|dexscreener|coingecko)\b/.test(prompt);
+  if (asksTokenIdentity && facts.tokenMint && facts.tokenMint.state !== 'missing') return true;
+  const asksRoute = /\b(route|quote|slippage|output|minimum received|min received)\b/.test(prompt);
+  if (asksRoute && (facts.route || facts.quote || facts.limits)) return true;
+  return false;
 }
 
 function enabledUserAgentPolicies(): UserAgentPolicy[] {
@@ -15655,6 +15890,323 @@ function mergeReviewFacts(
   return merged;
 }
 
+async function gatherAgentReviewFacts(record: GeneratedPlanRecord): Promise<AgentReviewFactSet> {
+  const facts = gatherDeterministicFacts(record);
+  const enriched = await enrichTokenFactsFromBirdEye(record.plan, facts).catch(() => false);
+  if (!enriched) {
+    await enrichTokenFactsFromDexScreener(record.plan, facts).catch(() => undefined);
+  }
+  return facts;
+}
+
+interface PlanTokenCandidate {
+  role: 'input' | 'output' | 'token';
+  raw: string;
+  label: string;
+  mint?: string;
+  symbol?: string;
+  name?: string;
+  source: 'known' | 'custom' | 'mint' | 'unresolved';
+}
+
+interface DexScreenerTokenSummary {
+  mint: string;
+  symbol?: string;
+  name?: string;
+  dexId?: string;
+  pairAddress?: string;
+  pairUrl?: string;
+  priceUsd?: string;
+  marketCap?: number;
+  fdv?: number;
+  liquidityUsd?: number;
+  volumeH24?: number;
+}
+
+function tokenFactsForPlan(plan: AgentPlan, checkedAt: string): AgentReviewFact | undefined {
+  const tokens = planTokenCandidates(plan);
+  if (!tokens.length) return undefined;
+  const unresolved = tokens.filter((token) => token.source === 'unresolved');
+  return {
+    state: unresolved.length ? 'warn' : 'checked',
+    source: 'deterministic',
+    checkedAt,
+    message: tokens.map((token) => tokenCandidateLabel(token)).join('; '),
+    detail: {
+      tokens: tokens.map((token) => ({
+        role: token.role,
+        value: token.raw,
+        label: token.label,
+        ...(token.mint ? { mint: token.mint } : {}),
+        ...(token.symbol ? { symbol: token.symbol } : {}),
+        ...(token.name ? { name: token.name } : {}),
+        source: token.source,
+      })),
+    },
+  };
+}
+
+function planTokenCandidates(plan: AgentPlan): PlanTokenCandidate[] {
+  const entries: Array<{ role: PlanTokenCandidate['role']; value: string }> = plan.actionType === 'swap'
+    ? [
+        { role: 'input', value: planParameter(plan, ['inputToken']) },
+        { role: 'output', value: planParameter(plan, ['outputToken']) },
+      ]
+    : [
+        { role: 'token', value: planParameter(plan, ['token', 'inputToken', 'outputToken']) },
+      ];
+  const tokens: PlanTokenCandidate[] = [];
+  const seen = new Set<string>();
+  for (const entry of entries) {
+    const raw = entry.value.trim();
+    if (!raw) continue;
+    const key = `${entry.role}:${raw.toLowerCase()}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    tokens.push(planTokenCandidate(entry.role, raw));
+  }
+  return tokens;
+}
+
+function planTokenCandidate(role: PlanTokenCandidate['role'], raw: string): PlanTokenCandidate {
+  const normalized = raw.trim();
+  const known = KNOWN_BROWSER_TOKENS[normalized.toUpperCase()];
+  if (known) {
+    return {
+      role,
+      raw: normalized,
+      label: known.symbol,
+      mint: known.mint,
+      symbol: known.symbol,
+      source: 'known',
+    };
+  }
+  const customBySymbol = customTokenBySymbol(normalized);
+  if (customBySymbol) {
+    return {
+      role,
+      raw: normalized,
+      label: customBySymbol.symbol,
+      mint: customBySymbol.mint,
+      symbol: customBySymbol.symbol,
+      name: customBySymbol.label,
+      source: 'custom',
+    };
+  }
+  if (isSolanaPublicKeyText(normalized)) {
+    const customByMint = customTokenByMint(normalized);
+    return {
+      role,
+      raw: normalized,
+      label: customByMint?.symbol ?? shortHexMint(normalized),
+      mint: normalized,
+      ...(customByMint ? { symbol: customByMint.symbol, name: customByMint.label } : {}),
+      source: customByMint ? 'custom' : 'mint',
+    };
+  }
+  return {
+    role,
+    raw: normalized,
+    label: normalized,
+    source: 'unresolved',
+  };
+}
+
+function tokenCandidateLabel(token: PlanTokenCandidate): string {
+  const role = token.role === 'input' ? 'Input' : token.role === 'output' ? 'Output' : 'Token';
+  if (token.source === 'known') return `${role} ${token.symbol ?? token.label} is in the local token map`;
+  if (token.source === 'custom') return `${role} ${token.symbol ?? token.label} is saved locally`;
+  if (token.source === 'mint') return `${role} ${shortHexMint(token.mint ?? token.raw)} is a valid Solana mint address`;
+  return `${role} ${token.raw} is not resolved by local token metadata`;
+}
+
+async function enrichTokenFactsFromDexScreener(plan: AgentPlan, facts: AgentReviewFactSet): Promise<void> {
+  const candidates = planTokenCandidates(plan).filter((token) => Boolean(token.mint));
+  if (!candidates.length) return;
+  const uniqueMints = [...new Set(candidates.map((token) => token.mint!).filter(Boolean))];
+  const lookups = await Promise.all(uniqueMints.map((mint) => fetchDexScreenerTokenSummary(mint)));
+  const marketByMint = new Map(lookups.filter((item): item is DexScreenerTokenSummary => Boolean(item)).map((item) => [item.mint, item]));
+  if (!marketByMint.size) return;
+  const mergedTokens = candidates.map((token) => {
+    const market = token.mint ? marketByMint.get(token.mint) : undefined;
+    return {
+      role: token.role,
+      value: token.raw,
+      label: market?.symbol ?? token.symbol ?? token.label,
+      ...(token.mint ? { mint: token.mint } : {}),
+      ...(market?.symbol ?? token.symbol ? { symbol: market?.symbol ?? token.symbol } : {}),
+      ...(market?.name ?? token.name ? { name: market?.name ?? token.name } : {}),
+      source: market ? 'dexscreener' : token.source,
+      ...(market
+        ? {
+            market: {
+              ...(market.dexId ? { dexId: market.dexId } : {}),
+              ...(market.pairAddress ? { pairAddress: market.pairAddress } : {}),
+              ...(market.pairUrl ? { url: market.pairUrl } : {}),
+              ...(market.priceUsd ? { priceUsd: market.priceUsd } : {}),
+              ...(market.marketCap !== undefined ? { marketCap: market.marketCap } : {}),
+              ...(market.fdv !== undefined ? { fdv: market.fdv } : {}),
+              ...(market.liquidityUsd !== undefined ? { liquidityUsd: market.liquidityUsd } : {}),
+              ...(market.volumeH24 !== undefined ? { volumeH24: market.volumeH24 } : {}),
+            },
+          }
+        : {}),
+    };
+  });
+  const marketLabels = mergedTokens
+    .filter((token) => token.source === 'dexscreener')
+    .map((token) => {
+      const market = (token as { market?: { marketCap?: number; liquidityUsd?: number; dexId?: string } }).market;
+      const pieces = [
+        `${String(token.role).toUpperCase()} ${token.symbol ?? token.label}`,
+        market?.dexId ? `DEX ${market.dexId}` : '',
+        market?.marketCap !== undefined ? `market cap ${formatUsdCompact(market.marketCap)}` : '',
+        market?.liquidityUsd !== undefined ? `liquidity ${formatUsdCompact(market.liquidityUsd)}` : '',
+      ].filter(Boolean);
+      return pieces.join(' ');
+    });
+  facts.tokenMint = {
+    state: 'ok',
+    source: 'deterministic',
+    checkedAt: new Date().toISOString(),
+    message: marketLabels.length
+      ? `DEX Screener found ${marketLabels.join('; ')}`
+      : facts.tokenMint?.message ?? 'Token mint checked.',
+    detail: {
+      ...(facts.tokenMint?.detail ?? {}),
+      marketSource: 'dexscreener',
+      tokens: mergedTokens,
+    },
+  };
+}
+
+async function enrichTokenFactsFromBirdEye(plan: AgentPlan, facts: AgentReviewFactSet): Promise<boolean> {
+  const candidates = planTokenCandidates(plan).filter((token) => Boolean(token.mint));
+  if (!candidates.length) return false;
+  const uniqueMints = [...new Set(candidates.map((token) => token.mint!).filter(Boolean))];
+  await Promise.all([
+    fetchTokenMetadataForMints(uniqueMints),
+    fetchTokenPricesForMints(uniqueMints),
+  ]);
+  const mergedTokens = candidates.map((token) => {
+    const metadata = token.mint ? tokenMarketMetadata.get(token.mint) : undefined;
+    const price = token.mint ? tokenMarketPrices.get(token.mint) : undefined;
+    return {
+      role: token.role,
+      value: token.raw,
+      label: metadata?.symbol ?? token.symbol ?? token.label,
+      ...(token.mint ? { mint: token.mint } : {}),
+      ...(metadata?.symbol ?? token.symbol ? { symbol: metadata?.symbol ?? token.symbol } : {}),
+      ...(metadata?.name ?? token.name ? { name: metadata?.name ?? token.name } : {}),
+      source: metadata || price ? 'birdeye' : token.source,
+      ...(metadata || price
+        ? {
+            market: {
+              source: 'birdeye',
+              ...(price ? { priceUsd: price.value } : {}),
+              ...(price?.liquidity !== undefined ? { liquidityUsd: price.liquidity } : {}),
+              ...(metadata?.logoURI ? { logoURI: metadata.logoURI } : {}),
+            },
+          }
+        : {}),
+    };
+  });
+  if (!mergedTokens.some((token) => token.source === 'birdeye')) return false;
+  const marketLabels = mergedTokens
+    .filter((token) => token.source === 'birdeye')
+    .map((token) => {
+      const market = (token as { market?: { priceUsd?: number; liquidityUsd?: number } }).market;
+      const pieces = [
+        `${String(token.role).toUpperCase()} ${token.symbol ?? token.label}`,
+        market?.priceUsd !== undefined ? `price ${formatUsdEstimate(market.priceUsd)}` : '',
+        market?.liquidityUsd !== undefined ? `liquidity ${formatUsdCompact(market.liquidityUsd)}` : '',
+      ].filter(Boolean);
+      return pieces.join(' ');
+    });
+  facts.tokenMint = {
+    state: 'ok',
+    source: 'deterministic',
+    checkedAt: new Date().toISOString(),
+    message: marketLabels.length
+      ? `BirdEye found ${marketLabels.join('; ')}`
+      : facts.tokenMint?.message ?? 'Token mint checked.',
+    detail: {
+      ...(facts.tokenMint?.detail ?? {}),
+      marketSource: 'birdeye',
+      tokens: mergedTokens,
+    },
+  };
+  return true;
+}
+
+async function fetchDexScreenerTokenSummary(mint: string): Promise<DexScreenerTokenSummary | undefined> {
+  const controller = new AbortController();
+  const timeout = window.setTimeout(() => controller.abort(), 3_500);
+  try {
+    const response = await fetch(`${DEXSCREENER_SOLANA_TOKEN_URL}/${encodeURIComponent(mint)}`, {
+      headers: { accept: 'application/json' },
+      signal: controller.signal,
+    });
+    if (!response.ok) return undefined;
+    const payload = await response.json().catch(() => undefined) as unknown;
+    const pairs = Array.isArray(payload) ? payload.filter(isDexScreenerPair) : [];
+    const bestPair = pairs
+      .filter((pair) => pair.chainId === 'solana')
+      .sort((a, b) => dexScreenerPairScore(b) - dexScreenerPairScore(a))[0];
+    if (!bestPair) return undefined;
+    const base = bestPair.baseToken;
+    const quote = bestPair.quoteToken;
+    const matchedToken = base?.address === mint ? base : quote?.address === mint ? quote : base ?? quote;
+    return {
+      mint,
+      ...(matchedToken?.symbol ? { symbol: matchedToken.symbol } : {}),
+      ...(matchedToken?.name ? { name: matchedToken.name } : {}),
+      ...(bestPair.dexId ? { dexId: bestPair.dexId } : {}),
+      ...(bestPair.pairAddress ? { pairAddress: bestPair.pairAddress } : {}),
+      ...(bestPair.url ? { pairUrl: bestPair.url } : {}),
+      ...(bestPair.priceUsd ? { priceUsd: bestPair.priceUsd } : {}),
+      ...(typeof bestPair.marketCap === 'number' ? { marketCap: bestPair.marketCap } : {}),
+      ...(typeof bestPair.fdv === 'number' ? { fdv: bestPair.fdv } : {}),
+      ...(typeof bestPair.liquidity?.usd === 'number' ? { liquidityUsd: bestPair.liquidity.usd } : {}),
+      ...(typeof bestPair.volume?.h24 === 'number' ? { volumeH24: bestPair.volume.h24 } : {}),
+    };
+  } finally {
+    window.clearTimeout(timeout);
+  }
+}
+
+interface DexScreenerPair {
+  chainId?: string;
+  dexId?: string;
+  pairAddress?: string;
+  url?: string;
+  baseToken?: { address?: string; name?: string; symbol?: string };
+  quoteToken?: { address?: string; name?: string; symbol?: string };
+  priceUsd?: string;
+  marketCap?: number;
+  fdv?: number;
+  liquidity?: { usd?: number };
+  volume?: { h24?: number };
+}
+
+function isDexScreenerPair(value: unknown): value is DexScreenerPair {
+  return Boolean(value && typeof value === 'object' && !Array.isArray(value));
+}
+
+function dexScreenerPairScore(pair: DexScreenerPair): number {
+  return Number(pair.liquidity?.usd ?? 0) + Number(pair.volume?.h24 ?? 0) + Number(pair.marketCap ?? pair.fdv ?? 0) / 1000;
+}
+
+function formatUsdCompact(value: number): string {
+  if (!Number.isFinite(value)) return '$0';
+  return new Intl.NumberFormat('en-US', {
+    style: 'currency',
+    currency: 'USD',
+    notation: 'compact',
+    maximumFractionDigits: value >= 1_000_000 ? 1 : 0,
+  }).format(value);
+}
+
 function gatherDeterministicFacts(record: GeneratedPlanRecord): AgentReviewFactSet {
   const facts: AgentReviewFactSet = {};
   const checkedAt = new Date().toISOString();
@@ -15679,19 +16231,9 @@ function gatherDeterministicFacts(record: GeneratedPlanRecord): AgentReviewFactS
     };
   }
 
-  const tokenSymbol = (planParameter(plan, ['token', 'inputToken', 'outputToken']) || '').trim().toUpperCase();
-  if (tokenSymbol) {
-    const knownEntry = KNOWN_BROWSER_TOKENS[tokenSymbol];
-    const known = Boolean(knownEntry);
-    facts.tokenMint = {
-      state: known ? 'ok' : 'warn',
-      source: 'deterministic',
-      checkedAt,
-      message: known ? `${tokenSymbol} is a known token` : `${tokenSymbol} is not in the known token list`,
-      detail: known && knownEntry
-        ? { symbol: knownEntry.symbol, mint: knownEntry.mint, decimals: knownEntry.decimals }
-        : { symbol: tokenSymbol, recognized: false },
-    };
+  const tokenFacts = tokenFactsForPlan(plan, checkedAt);
+  if (tokenFacts) {
+    facts.tokenMint = tokenFacts;
   }
 
   const slippageBpsRaw = planParameter(plan, ['slippageBps']);
@@ -15710,17 +16252,35 @@ function gatherDeterministicFacts(record: GeneratedPlanRecord): AgentReviewFactS
   }
 
   if (plan.actionType === 'swap') {
-    facts.route = {
-      state: 'missing',
+    const inputToken = planParameter(plan, ['inputToken']).trim();
+    const outputToken = planParameter(plan, ['outputToken']).trim();
+    const routeLabel = [resolveTokenDisplay(inputToken) ?? inputToken, resolveTokenDisplay(outputToken) ?? outputToken]
+      .filter(Boolean)
+      .join(' -> ');
+    facts.protocol = {
+      state: 'ok',
       source: 'deterministic',
       checkedAt,
-      message: 'Quote not requested yet. Route resolves when a quote is fetched.',
+      message: 'Browser swaps execute through Jupiter; Jupiter chooses the venue route when the quote/order is fetched.',
+      detail: {
+        aggregator: 'Jupiter',
+        routeSelection: 'quote-time',
+        userInputRequired: false,
+      },
+    };
+    facts.route = {
+      state: routeLabel ? 'checked' : 'missing',
+      source: 'deterministic',
+      checkedAt,
+      message: routeLabel
+        ? `${routeLabel}; exact venue route resolves from the Jupiter quote.`
+        : 'Quote not requested yet. Route resolves when a quote is fetched.',
     };
     facts.quote = {
       state: 'missing',
       source: 'deterministic',
       checkedAt,
-      message: 'No quote fetched in the browser yet for this draft.',
+      message: 'No quote fetched in the browser yet for this draft; this is not user input.',
     };
   }
 
@@ -17436,12 +17996,35 @@ async function runCloudSolTransferFinalization(action: PreparedAction): Promise<
       body: '{}',
     }),
   ).catch((err) => {
-    replaceToast(toastId, 'error', 'Transaction failed', redactSecrets(err instanceof Error ? err.message : String(err)));
+    replaceToast(
+      toastId,
+      'error',
+      'Preparing transaction failed',
+      redactSecrets(err instanceof Error ? err.message : String(err)),
+    );
+    if (err instanceof Error) {
+      (err as Error & { toastShown?: boolean }).toastShown = true;
+    }
     throw err;
   });
   const { finalization, transactionBase64 } = cloudPreparedFinalizationFromResponse(prepareResponse);
   const finalizationId = finalization.id;
-  const decisionProof = await signCloudFinalizationProof(action, finalization);
+  const decisionProof = await (async (): Promise<{ signature: string; message: string }> => {
+    try {
+      return await signCloudFinalizationProof(action, finalization);
+    } catch (err) {
+      replaceToast(
+        toastId,
+        'error',
+        'Approval proof failed',
+        redactSecrets(err instanceof Error ? err.message : String(err)),
+      );
+      if (err instanceof Error) {
+        (err as Error & { toastShown?: boolean }).toastShown = true;
+      }
+      throw err;
+    }
+  })();
   const signingClient = requireClient();
   let txid = '';
   try {
@@ -17453,15 +18036,36 @@ async function runCloudSolTransferFinalization(action: PreparedAction): Promise<
         transactionBase64,
         { cluster: action.cluster, summary: finalization.walletAction.summary },
       ),
-    );
+    ).catch((err) => {
+      replaceToast(
+        toastId,
+        'error',
+        'Wallet signing failed',
+        redactSecrets(err instanceof Error ? err.message : String(err)),
+      );
+      if (err instanceof Error) {
+        (err as Error & { toastShown?: boolean }).toastShown = true;
+      }
+      throw err;
+    });
     txid = await runTransactionToastStep(
       toastContext,
       'Sending transaction',
       'Broadcasting the signed transaction to Solana RPC.',
       () => broadcastSignedBrowserTransactionWithRetry(action.cluster, signed.signature, toastContext),
-    );
+    ).catch((err) => {
+      replaceToast(
+        toastId,
+        'error',
+        'Transaction broadcast failed',
+        redactSecrets(err instanceof Error ? err.message : String(err)),
+      );
+      if (err instanceof Error) {
+        (err as Error & { toastShown?: boolean }).toastShown = true;
+      }
+      throw err;
+    });
   } catch (err) {
-    replaceToast(toastId, 'error', 'Transaction failed', redactSecrets(err instanceof Error ? err.message : String(err)));
     await cloudRequest(`/api/approvals/${encodeURIComponent(action.id)}/finalization/${encodeURIComponent(finalizationId)}/fail`, {
       method: 'POST',
       body: JSON.stringify({
@@ -19908,9 +20512,10 @@ async function run(
   } catch (err) {
     state.steps[stepName] = 'error';
     state.error = redactSecrets(err instanceof Error ? err.message : String(err));
+    const handledToast = Boolean((err as { toastShown?: boolean } | undefined)?.toastShown);
     if (options.onError) {
       await options.onError(state.error, err);
-    } else {
+    } else if (!handledToast) {
       pushToast('error', 'Action failed', state.error);
     }
   } finally {
@@ -21241,7 +21846,11 @@ function stopBridgePolling(): void {
 }
 
 async function pollBridge(): Promise<void> {
-  if (!state.bridgeActive || !client || bridgeRequestBusy) {
+  // Do not let background bridge polling interleave with an active wallet
+  // action. Cloud approval finalization and local-bridge signing both use the
+  // same connected wallet client, so concurrent requests can trip wallet-side
+  // validation or surface misleading argument errors.
+  if (!state.bridgeActive || !client || bridgeRequestBusy || state.busy) {
     return;
   }
   try {
@@ -23114,9 +23723,10 @@ function inboxApprovalHero(action: PreparedAction): string {
   const secondary = recipientParam(action)
     ? `To ${recipientDisplayLabel(recipientParam(action))}`
     : formatDateTime(action.dueAt);
+  const subject = marketAmountSubjectForAction(action);
   return `
-    <div class="inbox-approval-value" title="${escapeHtml(`${primary} ${secondary}`.trim())}">
-      <strong>${escapeHtml(primary)}</strong>
+    <div class="inbox-approval-value" title="${escapeHtml(marketHeroTitle(primary, secondary, subject))}">
+      ${marketAmountLineHtml(primary, subject)}
       <span>${escapeHtml(secondary)}</span>
     </div>
   `;
@@ -23239,6 +23849,554 @@ function tokenDisplayTitle(value: string): string {
 
 function looksLikeMintAddress(value: string): boolean {
   return /^[1-9A-HJ-NP-Za-km-z]{32,44}$/.test(value);
+}
+
+function marketMintForToken(value: string | undefined): string | undefined {
+  const trimmed = value?.trim();
+  if (!trimmed) return undefined;
+  if (looksLikeMintAddress(trimmed)) return trimmed;
+  const known = KNOWN_BROWSER_TOKENS[trimmed.toUpperCase()];
+  if (known) return known.mint;
+  const custom = customTokenBySymbol(trimmed) ?? customTokenByMint(trimmed);
+  return custom?.mint;
+}
+
+function marketAmountSubjectForPlan(plan: AgentPlan): MarketAmountSubject | undefined {
+  if (plan.actionType === 'swap') {
+    const amount = parsePositiveAmount(planParameter(plan, ['amount', 'inputAmount', 'plannedAmount']));
+    const token = plan.parameters.inputToken || planParameter(plan, ['token']);
+    const mint = marketMintForToken(token);
+    return amount !== undefined && mint && token ? { amount, mint, token } : undefined;
+  }
+  if (plan.actionType === 'transfer_sol') {
+    const amount = parsePositiveAmount(planParameter(plan, ['amountSol', 'amount', 'plannedAmount', 'maxAmount']));
+    return amount !== undefined ? { amount, mint: WSOL_MINT, token: 'SOL' } : undefined;
+  }
+  if (plan.actionType === 'transfer_spl' || plan.actionType === 'recurring_payment') {
+    const amount = parsePositiveAmount(planParameter(plan, ['amount', 'plannedAmount', 'maxAmount']));
+    const token = planParameter(plan, ['token', 'inputToken']);
+    const mint = marketMintForToken(token);
+    return amount !== undefined && mint && token ? { amount, mint, token } : undefined;
+  }
+  return undefined;
+}
+
+function marketAmountSubjectForAction(action: PreparedAction): MarketAmountSubject | undefined {
+  if (action.kind === 'swap') {
+    const amount = parsePositiveAmount(stringParam(action, 'amount') || stringParam(action, 'inputAmount'));
+    const token = stringParam(action, 'inputToken') || stringParam(action, 'token');
+    const mint = marketMintForToken(token);
+    return amount !== undefined && mint && token ? { amount, mint, token } : undefined;
+  }
+  if (action.kind === 'transfer_sol') {
+    const amount = parsePositiveAmount(stringParam(action, 'amountSol') || stringParam(action, 'amount'));
+    return amount !== undefined ? { amount, mint: WSOL_MINT, token: 'SOL' } : undefined;
+  }
+  if (action.kind === 'transfer_spl') {
+    const amount = parsePositiveAmount(stringParam(action, 'amount'));
+    const token = stringParam(action, 'token');
+    const mint = marketMintForToken(token);
+    return amount !== undefined && mint && token ? { amount, mint, token } : undefined;
+  }
+  return undefined;
+}
+
+function marketAmountSubjectForCompletedPlan(plan: CompletedPlanRecord): MarketAmountSubject | undefined {
+  const amountLabel = completedPlanAmountLabel(plan);
+  const swap = parseCompletedSwapAmount(amountLabel);
+  if (swap) {
+    const amount = parsePositiveAmount(swap.amount);
+    const mint = marketMintForToken(swap.from);
+    return amount !== undefined && mint ? { amount, mint, token: swap.from } : undefined;
+  }
+  const amount = parsePositiveAmount(plan.amount ?? amountLabel);
+  const token = plan.token?.trim();
+  if (!token || amount === undefined) return undefined;
+  const route = parseTokenRoute(token);
+  const priceToken = route?.from ?? token;
+  const mint = marketMintForToken(priceToken);
+  return mint ? { amount, mint, token: priceToken } : undefined;
+}
+
+function marketAmountSubjectForRecurringPayment(payment: RecurringPayment): MarketAmountSubject | undefined {
+  const amount = parsePositiveAmount(payment.amount);
+  const token = payment.actionKind === 'swap' ? payment.inputToken : payment.token;
+  const mint = marketMintForToken(token);
+  return amount !== undefined && mint && token ? { amount, mint, token } : undefined;
+}
+
+function parsePositiveAmount(value: string | undefined): number | undefined {
+  const match = value?.replace(/,/g, '').match(/\d+(?:\.\d+)?/);
+  if (!match) return undefined;
+  const amount = Number(match[0]);
+  return Number.isFinite(amount) && amount >= 0 ? amount : undefined;
+}
+
+function marketUsdLabel(subject: MarketAmountSubject | undefined): string {
+  if (!subject) return '';
+  const price = tokenMarketPrices.get(subject.mint);
+  if (!price || !Number.isFinite(price.value)) return '';
+  return formatUsdEstimate(subject.amount * price.value);
+}
+
+function marketAmountLineHtml(primary: string, subject: MarketAmountSubject | undefined): string {
+  const usd = marketUsdLabel(subject);
+  return `
+    <div class="market-amount-line">
+      ${usd ? `<span class="market-usd-estimate">${escapeHtml(usd)}</span>` : ''}
+      <strong>${escapeHtml(primary)}</strong>
+    </div>
+  `;
+}
+
+function marketHeroTitle(primary: string, secondary: string, subject: MarketAmountSubject | undefined): string {
+  const usd = marketUsdLabel(subject);
+  return [usd, primary, secondary].filter(Boolean).join(' ');
+}
+
+function formatUsdEstimate(value: number): string {
+  if (!Number.isFinite(value)) return '';
+  if (value >= 100_000) return formatUsdCompact(value);
+  return new Intl.NumberFormat('en-US', {
+    style: 'currency',
+    currency: 'USD',
+    minimumFractionDigits: value >= 10 ? 2 : 4,
+    maximumFractionDigits: value >= 10 ? 2 : 4,
+  }).format(value);
+}
+
+function scheduleVisibleTokenMarketHydration(): void {
+  const route = currentRoute();
+  if (route !== '/app' && route !== '/demo') return;
+  if (tokenMarketHydrationScheduled || tokenMarketHydrationInFlight) return;
+  const mints = visibleTokenMarketMints().filter(tokenPriceNeedsHydration);
+  if (!mints.length || Date.now() < tokenMarketUnavailableUntil) return;
+  tokenMarketHydrationScheduled = true;
+  window.setTimeout(() => {
+    tokenMarketHydrationScheduled = false;
+    void hydrateVisibleTokenMarketData();
+  }, 0);
+}
+
+async function hydrateVisibleTokenMarketData(): Promise<void> {
+  if (tokenMarketHydrationInFlight || state.busy || Date.now() < tokenMarketUnavailableUntil) return;
+  const mints = visibleTokenMarketMints();
+  const priceMints = mints.filter(tokenPriceNeedsHydration);
+  const metadataMints = mints.filter(tokenMetadataNeedsHydration);
+  if (!priceMints.length && !metadataMints.length) return;
+  tokenMarketHydrationInFlight = true;
+  let changed = false;
+  try {
+    if (priceMints.length) {
+      changed = (await fetchTokenPricesForMints(priceMints, { force: true })) || changed;
+    }
+    if (metadataMints.length) {
+      changed = (await fetchTokenMetadataForMints(metadataMints)) || changed;
+    }
+  } catch (err) {
+    tokenMarketUnavailableUntil = Date.now() + TOKEN_MARKET_RETRY_BACKOFF_MS;
+    console.warn('Token market hydration failed.', err);
+  } finally {
+    tokenMarketHydrationInFlight = false;
+  }
+  if (changed) render();
+}
+
+function visibleTokenMarketMints(): string[] {
+  const subjects: MarketAmountSubject[] = [];
+  if (state.activeTab === 'agent' && state.oneTimePlanView === 'review') {
+    subjects.push(...paginateList(visibleGeneratedPlans(true), 'review').items.map(marketAmountSubjectForGeneratedPlan).filter(isMarketAmountSubject));
+  }
+  if (state.activeTab === 'inbox') {
+    subjects.push(...paginateList(filteredPreparedActions(), 'inbox').items.map(marketAmountSubjectForAction).filter(isMarketAmountSubject));
+  }
+  if (state.activeTab === 'completed') {
+    subjects.push(...filteredCompletedPlans(completedPlanRecords()).map(marketAmountSubjectForCompletedPlan).filter(isMarketAmountSubject));
+  }
+  if (state.activeTab === 'schedule') {
+    subjects.push(...state.recurringPayments.map(marketAmountSubjectForRecurringPayment).filter(isMarketAmountSubject));
+  }
+  return [...new Set(subjects.map((subject) => subject.mint))];
+}
+
+function marketAmountSubjectForGeneratedPlan(record: GeneratedPlanRecord): MarketAmountSubject | undefined {
+  return marketAmountSubjectForPlan(record.plan);
+}
+
+function isMarketAmountSubject(value: MarketAmountSubject | undefined): value is MarketAmountSubject {
+  return Boolean(value);
+}
+
+function tokenPriceNeedsHydration(mint: string): boolean {
+  const price = tokenMarketPrices.get(mint);
+  return !price || Date.now() - price.fetchedAt > TOKEN_PRICE_CACHE_MS;
+}
+
+function tokenMetadataNeedsHydration(mint: string): boolean {
+  const metadata = tokenMarketMetadata.get(mint);
+  return !metadata || Date.now() - metadata.fetchedAt > TOKEN_METADATA_CACHE_MS;
+}
+
+async function fetchTokenPricesForMints(mints: string[], options: { force?: boolean } = {}): Promise<boolean> {
+  const addresses = [...new Set(mints.filter(Boolean))].filter((mint) => options.force || tokenPriceNeedsHydration(mint));
+  if (!addresses.length) return false;
+  const payload = await tokenMarketRequest('/price-multi', { addresses, includeLiquidity: true });
+  const prices = parseBirdeyePricePayload(payload);
+  let changed = false;
+  for (const price of prices) {
+    tokenMarketPrices.set(price.mint, price);
+    changed = true;
+  }
+  return changed;
+}
+
+async function fetchTokenMetadataForMints(mints: string[]): Promise<boolean> {
+  const addresses = [...new Set(mints.filter(Boolean))].filter(tokenMetadataNeedsHydration);
+  if (!addresses.length) return false;
+  const payload = await tokenMarketRequest('/token-meta', { addresses });
+  const metadata = parseTokenMetadataPayload(payload);
+  let changed = false;
+  for (const item of metadata) {
+    tokenMarketMetadata.set(item.mint, item);
+    changed = true;
+  }
+  return changed;
+}
+
+async function tokenMarketRequest(path: string, body: Record<string, unknown>): Promise<Record<string, unknown>> {
+  let bridgeError: unknown;
+  if (state.bridgeActive && state.bridgeToken && isLoopbackBridgeUrl(state.bridgeUrl)) {
+    try {
+      return await bridgeRequest<Record<string, unknown>>(`/bridge/birdeye${path}`, {
+        method: 'POST',
+        body: JSON.stringify(body),
+      });
+    } catch (err) {
+      bridgeError = err;
+    }
+  }
+  try {
+    const response = await fetch(`/api/birdeye${path}`, {
+      method: 'POST',
+      credentials: 'include',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+    const contentType = response.headers.get('content-type') ?? '';
+    if (!contentType.toLowerCase().includes('application/json')) {
+      throw new Error('BirdEye market data APIs are not reachable from this page.');
+    }
+    const payload = await response.json().catch(() => null) as unknown;
+    if (!response.ok) {
+      throw new Error(cloudErrorMessage(payload, response.status));
+    }
+    return asRecord(payload) ?? {};
+  } catch (err) {
+    if (bridgeError) throw bridgeError;
+    throw err;
+  }
+}
+
+function parseBirdeyePricePayload(payload: unknown): TokenMarketPrice[] {
+  const now = Date.now();
+  const root = asRecord(payload);
+  const data = asRecord(root?.data) ?? root;
+  const prices: TokenMarketPrice[] = [];
+  if (!data) return prices;
+  for (const [key, value] of Object.entries(data)) {
+    if (!looksLikeMintAddress(key)) continue;
+    const record = asRecord(value);
+    const price = typeof value === 'number' ? value : marketNumberField(record, ['value', 'price', 'priceUsd', 'price_usd']);
+    if (price === undefined) continue;
+    prices.push({
+      mint: key,
+      value: price,
+      fetchedAt: now,
+      ...(marketNumberField(record, ['updateUnixTime', 'update_unix_time']) !== undefined
+        ? { updateUnixTime: marketNumberField(record, ['updateUnixTime', 'update_unix_time']) }
+        : {}),
+      ...(marketNumberField(record, ['liquidity', 'liquidityUsd', 'liquidity_usd']) !== undefined
+        ? { liquidity: marketNumberField(record, ['liquidity', 'liquidityUsd', 'liquidity_usd']) }
+        : {}),
+    });
+  }
+  return prices;
+}
+
+function parseTokenMetadataPayload(payload: unknown): TokenMarketMetadata[] {
+  return collectTokenRecords(payload).map(tokenMetadataFromRecord).filter((item): item is TokenMarketMetadata => Boolean(item));
+}
+
+function collectTokenRecords(value: unknown, output: Record<string, unknown>[] = []): Record<string, unknown>[] {
+  if (Array.isArray(value)) {
+    for (const item of value) collectTokenRecords(item, output);
+    return output;
+  }
+  const record = asRecord(value);
+  if (!record) return output;
+  const mint = tokenAddressFromRecord(record);
+  const symbol = stringFieldFromRecord(record, ['symbol', 'tokenSymbol', 'token_symbol']);
+  const name = stringFieldFromRecord(record, ['name', 'tokenName', 'token_name']);
+  if (mint && (symbol || name)) {
+    output.push(record);
+    return output;
+  }
+  for (const key of ['data', 'items', 'result', 'results', 'tokens', 'list']) {
+    if (record[key] !== undefined) collectTokenRecords(record[key], output);
+  }
+  return output;
+}
+
+function tokenMetadataFromRecord(record: Record<string, unknown>): TokenMarketMetadata | undefined {
+  const mint = tokenAddressFromRecord(record);
+  if (!mint) return undefined;
+  const symbol = stringFieldFromRecord(record, ['symbol', 'tokenSymbol', 'token_symbol']) || tokenDisplayLabel(mint);
+  const name = stringFieldFromRecord(record, ['name', 'tokenName', 'token_name']) || symbol;
+  const logoURI = stringFieldFromRecord(record, ['logoURI', 'logo_uri', 'logoUrl', 'logo_url', 'logo']);
+  return {
+    mint,
+    symbol,
+    name,
+    ...(logoURI ? { logoURI } : {}),
+    ...(marketNumberField(record, ['decimals']) !== undefined ? { decimals: marketNumberField(record, ['decimals']) } : {}),
+    source: 'birdeye',
+    fetchedAt: Date.now(),
+  };
+}
+
+function tokenAddressFromRecord(record: Record<string, unknown>): string | undefined {
+  const value = stringFieldFromRecord(record, ['address', 'mint', 'tokenAddress', 'token_address']);
+  return value && looksLikeMintAddress(value) ? value : undefined;
+}
+
+function marketNumberField(record: Record<string, unknown> | undefined, keys: string[]): number | undefined {
+  if (!record) return undefined;
+  for (const key of keys) {
+    const value = record[key];
+    const parsed = typeof value === 'number' ? value : typeof value === 'string' ? Number(value) : NaN;
+    if (Number.isFinite(parsed)) return parsed;
+  }
+  return undefined;
+}
+
+function stringFieldFromRecord(record: Record<string, unknown>, keys: string[]): string {
+  for (const key of keys) {
+    const value = record[key];
+    if (typeof value === 'string' && value.trim()) return value.trim();
+  }
+  return '';
+}
+
+function asRecord(value: unknown): Record<string, unknown> | undefined {
+  return value && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : undefined;
+}
+
+function tokenSearchDropdownHtml(fieldId: string): string {
+  const stateForField = tokenSearchStates.get(fieldId);
+  if (!stateForField || (!stateForField.query && stateForField.status === 'idle')) return '';
+  if (stateForField.status === 'loading') {
+    return `<div class="token-search-menu loading">${buttonSpinner()}<span>Searching tokens</span></div>`;
+  }
+  if (stateForField.status === 'error') {
+    return `<div class="token-search-menu"><p class="token-search-empty">${escapeHtml(stateForField.error ?? 'Token search unavailable')}</p></div>`;
+  }
+  if (!stateForField.results.length) {
+    return `<div class="token-search-menu"><p class="token-search-empty">No token matches</p></div>`;
+  }
+  return `
+    <div class="token-search-menu" style="--token-search-visible-rows: ${TOKEN_SEARCH_VISIBLE_ROWS}">
+      ${stateForField.results.map((result) => tokenSearchResultRowHtml(fieldId, result)).join('')}
+    </div>
+  `;
+}
+
+function tokenSearchResultRowHtml(fieldId: string, result: TokenSearchResult): string {
+  const price = result.priceUsd !== undefined ? formatUsdEstimate(result.priceUsd) : '';
+  const subtitle = [
+    result.name && result.name !== result.symbol ? result.name : '',
+    shortHexMint(result.mint),
+  ].filter(Boolean).join(' - ');
+  const logo = result.logoURI || (result.mint === WSOL_MINT ? BRAND_LOGOS.solana : '');
+  return `
+    <button
+      type="button"
+      class="token-search-option"
+      data-token-search-select="${escapeHtml(fieldId)}"
+      data-token-search-mint="${escapeHtml(result.mint)}"
+      title="${escapeHtml(`${result.symbol} ${result.name} ${result.mint}`.trim())}"
+    >
+      <span class="token-search-logo">${logo
+        ? `<img src="${escapeHtml(logo)}" alt="" loading="lazy" />`
+        : `<span>${escapeHtml((result.symbol || '?').slice(0, 3).toUpperCase())}</span>`}
+      </span>
+      <span class="token-search-copy">
+        <strong>${escapeHtml(result.symbol || tokenDisplayLabel(result.mint))}</strong>
+        <em>${escapeHtml(subtitle)}</em>
+      </span>
+      ${price ? `<span class="token-search-price">${escapeHtml(price)}</span>` : ''}
+    </button>
+  `;
+}
+
+function handleTokenSearchInput(fieldId: string, query: string): void {
+  const normalized = query.trim();
+  if (!normalized) {
+    tokenSearchStates.set(fieldId, { query: '', status: 'idle', results: [] });
+    clearTokenSearchTimer(fieldId);
+    updateTokenSearchDropdown(fieldId);
+    return;
+  }
+  const cachedResult = tokenSearchResultFromMint(normalized);
+  if (cachedResult) {
+    tokenSearchStates.set(fieldId, { query: normalized, status: 'loaded', results: [cachedResult] });
+    updateTokenSearchDropdown(fieldId);
+  }
+  clearTokenSearchTimer(fieldId);
+  const timer = window.setTimeout(() => {
+    tokenSearchTimers.delete(fieldId);
+    void runTokenSearch(fieldId, normalized);
+  }, looksLikeMintAddress(normalized) ? 0 : TOKEN_SEARCH_DEBOUNCE_MS);
+  tokenSearchTimers.set(fieldId, timer);
+}
+
+function clearTokenSearchTimer(fieldId: string): void {
+  const timer = tokenSearchTimers.get(fieldId);
+  if (timer !== undefined) {
+    window.clearTimeout(timer);
+    tokenSearchTimers.delete(fieldId);
+  }
+}
+
+async function runTokenSearch(fieldId: string, query: string): Promise<void> {
+  if (!query.trim()) return;
+  tokenSearchStates.set(fieldId, { query, status: 'loading', results: tokenSearchStates.get(fieldId)?.results ?? [] });
+  updateTokenSearchDropdown(fieldId);
+  try {
+    const results = looksLikeMintAddress(query)
+      ? await tokenSearchResultsForMint(query)
+      : await searchTokens(query);
+    tokenSearchStates.set(fieldId, { query, status: 'loaded', results });
+  } catch (err) {
+    tokenSearchStates.set(fieldId, {
+      query,
+      status: 'error',
+      results: [],
+      error: redactSecrets(err instanceof Error ? err.message : String(err)),
+    });
+  }
+  updateTokenSearchDropdown(fieldId);
+}
+
+async function searchTokens(query: string): Promise<TokenSearchResult[]> {
+  const payload = await tokenMarketRequest('/search', { keyword: query, limit: 20 });
+  let results = parseTokenSearchPayload(payload);
+  const mints = results.map((result) => result.mint).slice(0, 10);
+  await Promise.all([
+    fetchTokenMetadataForMints(mints).catch(() => false),
+    fetchTokenPricesForMints(mints).catch(() => false),
+  ]);
+  results = results
+    .map((result) => enrichTokenSearchResult(result))
+    .filter((result, index, list) => list.findIndex((candidate) => candidate.mint === result.mint) === index)
+    .slice(0, 20);
+  return results;
+}
+
+async function tokenSearchResultsForMint(mint: string): Promise<TokenSearchResult[]> {
+  await Promise.all([
+    fetchTokenMetadataForMints([mint]).catch(() => false),
+    fetchTokenPricesForMints([mint]).catch(() => false),
+  ]);
+  const result = tokenSearchResultFromMint(mint);
+  return result ? [result] : [{
+    mint,
+    symbol: tokenDisplayLabel(mint),
+    name: shortHexMint(mint),
+    source: 'mint',
+  }];
+}
+
+function parseTokenSearchPayload(payload: unknown): TokenSearchResult[] {
+  return collectTokenRecords(payload)
+    .map(tokenSearchResultFromRecord)
+    .filter((item): item is TokenSearchResult => Boolean(item));
+}
+
+function tokenSearchResultFromRecord(record: Record<string, unknown>): TokenSearchResult | undefined {
+  const metadata = tokenMetadataFromRecord(record);
+  if (!metadata) return undefined;
+  const priceUsd = marketNumberField(record, ['price', 'priceUsd', 'price_usd', 'value']);
+  const result: TokenSearchResult = {
+    mint: metadata.mint,
+    symbol: metadata.symbol,
+    name: metadata.name,
+    ...(metadata.logoURI ? { logoURI: metadata.logoURI } : {}),
+    ...(priceUsd !== undefined ? { priceUsd } : {}),
+    ...(marketNumberField(record, ['liquidity', 'liquidityUsd', 'liquidity_usd']) !== undefined
+      ? { liquidity: marketNumberField(record, ['liquidity', 'liquidityUsd', 'liquidity_usd']) }
+      : {}),
+    ...(marketNumberField(record, ['marketCap', 'market_cap', 'mc']) !== undefined
+      ? { marketCap: marketNumberField(record, ['marketCap', 'market_cap', 'mc']) }
+      : {}),
+    source: 'birdeye',
+  };
+  tokenMarketMetadata.set(metadata.mint, metadata);
+  if (priceUsd !== undefined) {
+    tokenMarketPrices.set(metadata.mint, {
+      mint: metadata.mint,
+      value: priceUsd,
+      fetchedAt: Date.now(),
+    });
+  }
+  return result;
+}
+
+function tokenSearchResultFromMint(mint: string): TokenSearchResult | undefined {
+  if (!looksLikeMintAddress(mint)) return undefined;
+  return enrichTokenSearchResult({
+    mint,
+    symbol: tokenDisplayLabel(mint),
+    name: shortHexMint(mint),
+    source: 'mint',
+  });
+}
+
+function enrichTokenSearchResult(result: TokenSearchResult): TokenSearchResult {
+  const metadata = tokenMarketMetadata.get(result.mint);
+  const price = tokenMarketPrices.get(result.mint);
+  return {
+    ...result,
+    symbol: metadata?.symbol ?? result.symbol,
+    name: metadata?.name ?? result.name,
+    ...(metadata?.logoURI || result.logoURI ? { logoURI: metadata?.logoURI ?? result.logoURI } : {}),
+    ...(price ? { priceUsd: price.value } : result.priceUsd !== undefined ? { priceUsd: result.priceUsd } : {}),
+    ...(price?.liquidity !== undefined ? { liquidity: price.liquidity } : result.liquidity !== undefined ? { liquidity: result.liquidity } : {}),
+  };
+}
+
+function updateTokenSearchDropdown(fieldId: string): void {
+  const container = document.querySelector<HTMLElement>(`[data-token-search-results="${cssEscape(fieldId)}"]`);
+  if (!container) return;
+  container.innerHTML = tokenSearchDropdownHtml(fieldId);
+  bindTokenSearchSelectButtons(container);
+}
+
+function bindTokenSearchSelectButtons(root: ParentNode = document): void {
+  for (const button of root.querySelectorAll<HTMLButtonElement>('[data-token-search-select]')) {
+    button.addEventListener('click', () => {
+      const fieldId = button.dataset.tokenSearchSelect;
+      const mint = button.dataset.tokenSearchMint;
+      if (!fieldId || !mint) return;
+      state.templateFields[fieldId] = mint;
+      delete state.templateFieldErrors[fieldId];
+      state.agentPlan = null;
+      state.agentSignature = '';
+      state.agentPreparedActionId = '';
+      tokenSearchStates.delete(fieldId);
+      clearTokenSearchTimer(fieldId);
+      render();
+    });
+  }
 }
 
 function summaryCopyActions(row: {
@@ -25193,6 +26351,7 @@ function emptyInboxText(): string {
 function amountLabel(action: PreparedAction): string {
   if (typeof action.params.amountSol === 'string') return `${action.params.amountSol} SOL`;
   if (action.kind === 'swap') return swapAmountLabel(action);
+  if (action.kind === 'transfer_sol' && typeof action.params.amount === 'string') return `${action.params.amount} SOL`;
   if (typeof action.params.amount === 'string') return action.params.amount;
   return 'n/a';
 }

@@ -46,6 +46,7 @@ const WALLET_HOST_HEALTH_PATH = '/__agentic/health';
 const NO_OUTPUT = Symbol('no-output');
 const DEFAULT_JUPITER_ULTRA_BASE = 'https://api.jup.ag/ultra/v1';
 const DEFAULT_JUPITER_API_URL = 'https://quote-api.jup.ag';
+const DEFAULT_BIRDEYE_REST_BASE = 'https://public-api.birdeye.so';
 const SETUP_ENV_KEYS = [
   'SOLANA_RPC_URL',
   'HELIUS_RPC_URL',
@@ -53,6 +54,8 @@ const SETUP_ENV_KEYS = [
   'JUP_API_KEY',
   'JUP_ULTRA_BASE',
   'JUPITER_API_URL',
+  'BIRDEYE_API_KEY',
+  'BIRDEYE_REST_BASE',
 ] as const;
 
 interface ParsedArgs {
@@ -81,6 +84,8 @@ interface SetupCommandOptions {
   jupiterApiKey?: string;
   jupiterUltraBase?: string;
   jupiterApiUrl?: string;
+  birdeyeApiKey?: string;
+  birdeyeRestBase?: string;
   yes: boolean;
 }
 
@@ -93,9 +98,13 @@ interface RuntimeSetupStatus {
   jupiterApiKeyRedacted: string | null;
   jupiterUltraBase: string;
   jupiterApiUrl: string;
+  birdeyeApiKeyConfigured: boolean;
+  birdeyeApiKeyRedacted: string | null;
+  birdeyeRestBase: string;
   solTransfersReady: boolean;
   tokenTransfersReady: boolean;
   swapsReady: boolean;
+  marketDataReady: boolean;
 }
 
 interface PreparedAction {
@@ -510,6 +519,7 @@ async function setupUpdates(
   const env = await readEnvValues(options.envPath);
   const currentRpcUrl = firstValue(env.values, 'SOLANA_RPC_URL', 'HELIUS_RPC_URL') ?? '';
   const currentJupiterApiKey = firstValue(env.values, 'JUPITER_API_KEY', 'JUP_API_KEY') ?? '';
+  const currentBirdeyeApiKey = env.values.BIRDEYE_API_KEY ?? '';
   let rpcUrl = setupOptions.rpcUrl ?? currentRpcUrl;
   let jupiterApiKey = setupOptions.jupiterApiKey ?? currentJupiterApiKey;
   let jupiterUltraBase = setupOptions.jupiterUltraBase
@@ -518,11 +528,17 @@ async function setupUpdates(
   let jupiterApiUrl = setupOptions.jupiterApiUrl
     ?? env.values.JUPITER_API_URL
     ?? DEFAULT_JUPITER_API_URL;
+  let birdeyeApiKey = setupOptions.birdeyeApiKey ?? currentBirdeyeApiKey;
+  let birdeyeRestBase = setupOptions.birdeyeRestBase
+    ?? env.values.BIRDEYE_REST_BASE
+    ?? DEFAULT_BIRDEYE_REST_BASE;
 
   const hasExplicitValues = setupOptions.rpcUrl !== undefined
     || setupOptions.jupiterApiKey !== undefined
     || setupOptions.jupiterUltraBase !== undefined
-    || setupOptions.jupiterApiUrl !== undefined;
+    || setupOptions.jupiterApiUrl !== undefined
+    || setupOptions.birdeyeApiKey !== undefined
+    || setupOptions.birdeyeRestBase !== undefined;
   const shouldPrompt = rl !== null || (!setupOptions.yes && process.stdin.isTTY && !hasExplicitValues);
   if (shouldPrompt) {
     const setupRl = rl ?? readline.createInterface({ input: process.stdin, output: process.stdout });
@@ -533,6 +549,8 @@ async function setupUpdates(
       jupiterApiKey = await promptExistingSecret(setupRl, 'Jupiter API key', currentJupiterApiKey);
       jupiterUltraBase = await prompt(setupRl, 'Jupiter Ultra base URL', jupiterUltraBase);
       jupiterApiUrl = await prompt(setupRl, 'Legacy Jupiter API URL', jupiterApiUrl);
+      birdeyeApiKey = await promptExistingSecret(setupRl, 'BirdEye API key', currentBirdeyeApiKey);
+      birdeyeRestBase = await prompt(setupRl, 'BirdEye REST base URL', birdeyeRestBase);
     } finally {
       if (!rl) {
         setupRl.close();
@@ -552,6 +570,10 @@ async function setupUpdates(
   }
   updates.JUP_ULTRA_BASE = normalizeSetupUrl(jupiterUltraBase || DEFAULT_JUPITER_ULTRA_BASE, 'Jupiter Ultra base URL');
   updates.JUPITER_API_URL = normalizeSetupUrl(jupiterApiUrl || DEFAULT_JUPITER_API_URL, 'Legacy Jupiter API URL');
+  if (birdeyeApiKey.trim()) {
+    updates.BIRDEYE_API_KEY = birdeyeApiKey.trim();
+  }
+  updates.BIRDEYE_REST_BASE = normalizeSetupUrl(birdeyeRestBase || DEFAULT_BIRDEYE_REST_BASE, 'BirdEye REST base URL');
   return updates;
 }
 
@@ -585,6 +607,18 @@ function parseSetupCommandOptions(args: string[]): SetupCommandOptions {
     if (flag === '--jupiter-api-url') {
       const value = optionArgument(args, index, flag, inlineValue);
       options.jupiterApiUrl = value.value;
+      index = value.index;
+      continue;
+    }
+    if (flag === '--birdeye-api-key') {
+      const value = optionArgument(args, index, flag, inlineValue);
+      options.birdeyeApiKey = value.value;
+      index = value.index;
+      continue;
+    }
+    if (flag === '--birdeye-rest-base' || flag === '--birdeye-api-url') {
+      const value = optionArgument(args, index, flag, inlineValue);
+      options.birdeyeRestBase = value.value;
       index = value.index;
       continue;
     }
@@ -1777,8 +1811,11 @@ async function runtimeSetupStatus(options: GlobalOptions): Promise<RuntimeSetupS
   const jupiterApiKey = firstValue(env.values, 'JUPITER_API_KEY', 'JUP_API_KEY') ?? '';
   const jupiterUltraBase = env.values.JUP_ULTRA_BASE ?? DEFAULT_JUPITER_ULTRA_BASE;
   const jupiterApiUrl = env.values.JUPITER_API_URL ?? DEFAULT_JUPITER_API_URL;
+  const birdeyeApiKey = env.values.BIRDEYE_API_KEY ?? '';
+  const birdeyeRestBase = env.values.BIRDEYE_REST_BASE ?? DEFAULT_BIRDEYE_REST_BASE;
   const rpcUrlConfigured = Boolean(rpcUrl);
   const jupiterApiKeyConfigured = Boolean(jupiterApiKey);
+  const birdeyeApiKeyConfigured = Boolean(birdeyeApiKey);
   return {
     envPath: options.envPath,
     envFound: env.found,
@@ -1788,9 +1825,13 @@ async function runtimeSetupStatus(options: GlobalOptions): Promise<RuntimeSetupS
     jupiterApiKeyRedacted: jupiterApiKey ? redactSecret(jupiterApiKey) : null,
     jupiterUltraBase,
     jupiterApiUrl,
+    birdeyeApiKeyConfigured,
+    birdeyeApiKeyRedacted: birdeyeApiKey ? redactSecret(birdeyeApiKey) : null,
+    birdeyeRestBase,
     solTransfersReady: rpcUrlConfigured,
     tokenTransfersReady: rpcUrlConfigured,
     swapsReady: rpcUrlConfigured && jupiterApiKeyConfigured && Boolean(jupiterUltraBase),
+    marketDataReady: birdeyeApiKeyConfigured && Boolean(birdeyeRestBase),
   };
 }
 
@@ -2551,7 +2592,9 @@ function printDoctor(options: GlobalOptions, doctor: JsonRecord): void {
   console.log(`Browser wallet host: ${walletHost.reachable ? 'reachable' : 'offline'}`);
   console.log(`Setup RPC: ${setup.rpcUrlConfigured ? `configured (${String(setup.rpcUrlRedacted ?? '')})` : 'missing'}`);
   console.log(`Setup Jupiter: ${setup.jupiterApiKeyConfigured ? `configured (${String(setup.jupiterApiKeyRedacted ?? '')})` : 'missing'}`);
+  console.log(`Setup BirdEye: ${setup.birdeyeApiKeyConfigured ? `configured (${String(setup.birdeyeApiKeyRedacted ?? '')})` : 'missing'}`);
   console.log(`Setup swaps: ${setup.swapsReady ? 'ready' : 'not ready'}`);
+  console.log(`Setup market data: ${setup.marketDataReady ? 'ready' : 'not ready'}`);
   if (options.json) {
     console.log(stableJson(doctor));
   }
@@ -2564,11 +2607,17 @@ function printSetupStatus(options: GlobalOptions, status: RuntimeSetupStatus): v
   console.log(`Jupiter key: ${status.jupiterApiKeyConfigured ? `configured (${status.jupiterApiKeyRedacted ?? ''})` : 'missing'}`);
   console.log(`Jupiter Ultra: ${status.jupiterUltraBase}`);
   console.log(`Legacy Jupiter API: ${status.jupiterApiUrl}`);
+  console.log(`BirdEye key: ${status.birdeyeApiKeyConfigured ? `configured (${status.birdeyeApiKeyRedacted ?? ''})` : 'missing'}`);
+  console.log(`BirdEye REST: ${status.birdeyeRestBase}`);
   console.log(`SOL sends: ${status.solTransfersReady ? 'ready' : 'missing RPC'}`);
   console.log(`Token sends: ${status.tokenTransfersReady ? 'ready' : 'missing RPC'}`);
   console.log(`Swaps: ${status.swapsReady ? 'ready' : 'missing RPC or Jupiter key'}`);
+  console.log(`Market data: ${status.marketDataReady ? 'ready' : 'missing BirdEye key'}`);
   if (!status.swapsReady) {
     printWarn(options, 'Run setup again with --rpc-url and --jupiter-api-key before expecting swaps to execute.');
+  }
+  if (!status.marketDataReady) {
+    printWarn(options, 'Run setup again with --birdeye-api-key before expecting token search and card prices.');
   }
 }
 
@@ -2634,6 +2683,8 @@ Setup options:
   --jupiter-api-key <key>    JUPITER_API_KEY and JUP_API_KEY
   --jupiter-ultra-base <url> Default: ${DEFAULT_JUPITER_ULTRA_BASE}
   --jupiter-api-url <url>    Default: ${DEFAULT_JUPITER_API_URL}
+  --birdeye-api-key <key>    BIRDEYE_API_KEY for token search and prices
+  --birdeye-rest-base <url>  Default: ${DEFAULT_BIRDEYE_REST_BASE}
   --yes                     Do not prompt; only write provided values/default URLs
 
 Global options:
