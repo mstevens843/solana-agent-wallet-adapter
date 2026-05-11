@@ -409,6 +409,30 @@ export class AgentWalletActionService {
     }
   }
 
+  async recordPreparedActionTransaction(input: {
+    actionId: string;
+    txid?: string;
+    txStatus?: PreparedActionTxStatus;
+    error?: string;
+  }): Promise<Record<string, unknown>> {
+    const store = this.store();
+    const action = await store.getAction(input.actionId);
+    if (!action) {
+      throw new ProtocolError('invalid_request', `Unknown prepared action: ${input.actionId}`);
+    }
+    const txStatus = input.txStatus ?? 'pending';
+    const now = new Date().toISOString();
+    const updated = await store.updateAction(input.actionId, {
+      status: txStatus === 'failed' ? 'failed' : 'approved',
+      ...(input.txid !== undefined && { txid: input.txid }),
+      txStatus,
+      confirmedAt: txStatus === 'confirmed' ? now : undefined,
+      txError: txStatus === 'failed' ? input.error ?? 'Transaction failed.' : undefined,
+      error: txStatus === 'failed' ? input.error ?? 'Transaction failed.' : undefined,
+    });
+    return { preparedAction: updated };
+  }
+
   async refreshPreparedActionTxStatuses(): Promise<Record<string, unknown>> {
     const store = this.store();
     const actions = await store.listActions();

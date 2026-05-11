@@ -538,6 +538,27 @@ async function handleRequest(
       writeJson(res, 200, await requireActionService(actionService).executePreparedAction(body.actionId));
       return;
     }
+    if (req.method === 'POST' && url.pathname === '/bridge/prepared-actions/record-transaction') {
+      const body = (await readJson(req)) as { actionId?: string; txid?: string; txStatus?: string; error?: string };
+      if (!body.actionId) {
+        throw new ProtocolError('invalid_request', 'Missing actionId.');
+      }
+      if (
+        body.txStatus !== undefined &&
+        body.txStatus !== 'pending' &&
+        body.txStatus !== 'confirmed' &&
+        body.txStatus !== 'failed'
+      ) {
+        throw new ProtocolError('invalid_request', 'txStatus must be pending, confirmed, or failed.');
+      }
+      writeJson(res, 200, await requireActionService(actionService).recordPreparedActionTransaction({
+        actionId: body.actionId,
+        ...(body.txid !== undefined && { txid: body.txid }),
+        ...(body.txStatus !== undefined && { txStatus: body.txStatus }),
+        ...(body.error !== undefined && { error: body.error }),
+      }));
+      return;
+    }
     if (req.method === 'POST' && url.pathname === '/bridge/submit') {
       const body = (await readJson(req)) as { request?: SigningRequest };
       if (!body.request) {
@@ -683,6 +704,7 @@ function requiredTier(method: string, pathname: string): AgentTier | null {
     if (pathname === '/bridge/prepared-actions/reject') return 'capped';
     if (pathname === '/bridge/prepared-actions/archive') return 'capped';
     if (pathname === '/bridge/prepared-actions/delete') return 'capped';
+    if (pathname === '/bridge/prepared-actions/record-transaction') return 'capped';
     if (pathname === '/bridge/ai/generate-plan') return 'capped';
     if (pathname === '/bridge/ai/review-plan') return 'capped';
     if (pathname === '/bridge/ai/ask-about-plan') return 'capped';

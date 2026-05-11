@@ -10,6 +10,7 @@ import { createBridgeServer } from '../bridgeServer.js';
 import { DEFAULT_CONFIG, type AgentWalletConfig } from '../config.js';
 import { JsonLabArtifactStore, type LabArtifact } from '../labArtifacts.js';
 import { LocalBridgeBackend } from '../localBridgeBackend.js';
+import { JsonPreparedActionStore, type PreparedActionStore } from '../preparedActions.js';
 
 describe('bridge lab artifact routes', () => {
   afterEach(() => {
@@ -236,6 +237,51 @@ describe('bridge lab artifact routes', () => {
     }
   });
 
+  it('records externally signed prepared-action transactions without executing through the bridge', async () => {
+    const store = new JsonPreparedActionStore(join(await mkdtemp(join(tmpdir(), 'sawa-bridge-actions-')), 'actions.json'));
+    const action = await store.addAction({
+      kind: 'transfer_sol',
+      walletAddress: '11111111111111111111111111111111',
+      cluster: 'devnet',
+      summary: 'Transfer 0.01 SOL',
+      params: {
+        recipient: '22222222222222222222222222222222',
+        amountSol: '0.01',
+      },
+    });
+    const handle = await startTestBridge({
+      actionConfig: { ...DEFAULT_CONFIG, cluster: 'devnet', rpcUrl: 'http://127.0.0.1:1' },
+      preparedActions: store,
+    });
+    try {
+      const recorded = await bridgeFetch<{ preparedAction: { status: string; txid?: string; txStatus?: string } }>(
+        handle.url,
+        '/bridge/prepared-actions/record-transaction',
+        {
+          method: 'POST',
+          body: JSON.stringify({ actionId: action.id, txid: 'tx-browser-signed', txStatus: 'confirmed' }),
+        },
+      );
+      const receipts = await bridgeFetch<{ receipts: Array<{ actionId: string; txid?: string; txStatus?: string }> }>(
+        handle.url,
+        '/bridge/receipts',
+      );
+
+      expect(recorded.preparedAction.status).toBe('approved');
+      expect(recorded.preparedAction.txid).toBe('tx-browser-signed');
+      expect(recorded.preparedAction.txStatus).toBe('confirmed');
+      expect(receipts.receipts).toMatchObject([
+        {
+          actionId: action.id,
+          txid: 'tx-browser-signed',
+          txStatus: 'confirmed',
+        },
+      ]);
+    } finally {
+      await handle.stop();
+    }
+  });
+
   it('proxies BirdEye price requests with the configured API key', async () => {
     const originalFetch = globalThis.fetch;
     const upstreamCalls: Array<{ url: string; init: RequestInit | undefined }> = [];
@@ -281,7 +327,7 @@ describe('bridge lab artifact routes', () => {
 });
 
 async function startTestBridge(
-  options: { actionConfig?: AgentWalletConfig; agentRegistry?: AgentRegistry } = {},
+  options: { actionConfig?: AgentWalletConfig; agentRegistry?: AgentRegistry; preparedActions?: PreparedActionStore } = {},
 ): Promise<{ url: string; stop(): Promise<void> }> {
   const port = await freePort();
   const dir = await mkdtemp(join(tmpdir(), 'sawa-bridge-labs-'));
@@ -295,6 +341,7 @@ async function startTestBridge(
     }),
     ...(options.actionConfig ? { actionConfig: options.actionConfig } : {}),
     ...(options.agentRegistry ? { agentRegistry: options.agentRegistry } : {}),
+    ...(options.preparedActions ? { preparedActions: options.preparedActions } : {}),
     labArtifacts: new JsonLabArtifactStore(join(dir, 'lab-artifacts.json')),
   });
   await bridge.start();

@@ -534,8 +534,6 @@ const EXECUTABLE_BROWSER_ACTION_KINDS = new Set<PreparedActionKind>([
   'transfer_spl',
   'swap',
   'custom_transaction',
-  'kamino_deposit',
-  'kamino_withdraw',
 ]);
 const RELEASE_BASE_URL =
   'https://github.com/mstevens843/solana-agent-wallet-adapter/releases/latest/download';
@@ -17863,6 +17861,26 @@ async function runPreparedActionOp(actionId: string, op: string): Promise<void> 
     throw new Error('Approval request was not found.');
   }
 
+  if (op === 'execute' && isExecutableBrowserAction(action)) {
+    await run('inbox', async () => {
+      await executeBrowserPreparedAction(action);
+      if (action.workflowSource === 'local-bridge' && activeWorkflowMode() === 'local-bridge') {
+        await refreshInboxData().catch(() => undefined);
+      }
+    });
+    return;
+  }
+
+  if (op === 'confirm' && canConfirmBrowserTransaction(action)) {
+    await run('inbox', async () => {
+      await runBrowserTransactionConfirm(action);
+      if (action.workflowSource === 'local-bridge' && activeWorkflowMode() === 'local-bridge') {
+        await refreshInboxData().catch(() => undefined);
+      }
+    });
+    return;
+  }
+
   await run('inbox', async () => {
     switch (op) {
       case 'execute':
@@ -17870,14 +17888,7 @@ async function runPreparedActionOp(actionId: string, op: string): Promise<void> 
           const policyError = actionRecipientPolicyBlockReason(action);
           if (policyError) throw new Error(policyError);
         }
-        await bridgeRequest('/bridge/prepared-actions/execute', {
-          method: 'POST',
-          body: JSON.stringify({ actionId }),
-        });
-        await refreshInboxData();
-        showCompletedHistoryForAction(actionId);
-        pushToast('success', 'Approval completed', 'Receipt saved in Done.');
-        break;
+        throw new Error('This approval cannot be sent by the bridge. Use a browser-wallet supported request so the connected wallet signs and submits it.');
       case 'reject':
         await bridgeRequest('/bridge/prepared-actions/reject', {
           method: 'POST',
@@ -18262,6 +18273,7 @@ async function runBrowserTransactionConfirm(action: PreparedAction): Promise<voi
         markTransactionPhase(ledger.id, 'submitted', { txid });
         syncPendingTransactionsFromLedger();
       }
+      await syncBridgePreparedActionTransaction(action, { txid, txStatus: 'pending' });
       replaceToast(toastId, 'pending', 'Transaction submitted', short(txid), {
         linkHref: explorerUrl(txid, action.cluster),
         linkLabel: 'Open Solscan',
@@ -18274,6 +18286,7 @@ async function runBrowserTransactionConfirm(action: PreparedAction): Promise<voi
       txStatus,
       explorerUrl: explorerUrl(txid, action.cluster),
     });
+    await syncBridgePreparedActionTransaction(action, { txid, txStatus });
     recordBrowserActionActivity(action.id, 'browser.transaction.saved', {
       kind: action.kind,
       status: txStatus,
@@ -18309,6 +18322,11 @@ async function runBrowserTransactionConfirm(action: PreparedAction): Promise<voi
         });
         syncPendingTransactionsFromLedger();
       }
+      await syncBridgePreparedActionTransaction(action, {
+        txid,
+        txStatus: 'failed',
+        error: technicalMessage,
+      });
       replaceToast(toastId, 'error', toastCopy.title, toastCopy.message, {
         linkHref: explorerUrl(txid, action.cluster),
         linkLabel: 'Open Solscan',
@@ -18388,7 +18406,7 @@ async function signBrowserWorkflowDecision(
 }
 
 function isExecutableBrowserAction(action: PreparedAction): boolean {
-  return (action.workflowSource === 'browser' || isBrowserWorkflowId(action.id)) &&
+  return action.workflowSource !== 'cloud' &&
     EXECUTABLE_BROWSER_ACTION_KINDS.has(action.kind);
 }
 
@@ -18448,6 +18466,10 @@ async function executeBrowserPreparedAction(action: PreparedAction): Promise<voi
         status: 'pending',
         txid: execution.txid,
       });
+      await syncBridgePreparedActionTransaction(current, {
+        txid: execution.txid,
+        txStatus: execution.txStatus,
+      });
       state.activeTab = 'inbox';
       replaceToast(
         toastId,
@@ -18466,6 +18488,10 @@ async function executeBrowserPreparedAction(action: PreparedAction): Promise<voi
       removePendingTransaction(finalLedger.id);
       syncPendingTransactionsFromLedger();
     }
+    await syncBridgePreparedActionTransaction(current, {
+      txid: execution.txid,
+      txStatus: execution.txStatus,
+    });
     recordBrowserActionActivity(action.id, 'browser.transaction.saved', {
       kind: action.kind,
       status: execution.txStatus,
@@ -18536,6 +18562,11 @@ async function handleClassifiedExecutionFailure(opts: {
     }
     state.activeTab = 'inbox';
     state.auditOpen[auditActivityKey('approval', action.id)] = true;
+    await syncBridgePreparedActionTransaction(action, {
+      txid: ledger?.txid ?? action.txid,
+      txStatus: 'failed',
+      error: technicalMessage,
+    });
     replaceToast(toastId, 'error', toastCopy.title, toastCopy.message, linkOptions);
     return;
   }
@@ -18557,6 +18588,10 @@ async function handleClassifiedExecutionFailure(opts: {
       syncPendingTransactionsFromLedger();
     }
     state.activeTab = 'inbox';
+    await syncBridgePreparedActionTransaction(action, {
+      txid: ledger?.txid ?? action.txid,
+      txStatus: 'pending',
+    });
     replaceToast(toastId, 'pending', toastCopy.title, toastCopy.message, linkOptions);
     void reconcilePendingTransactions({ trigger: 'post-ambiguous', targetActionId: action.id });
     return;
@@ -18592,6 +18627,11 @@ async function handleClassifiedExecutionFailure(opts: {
   }
   state.activeTab = 'inbox';
   state.auditOpen[auditActivityKey('approval', action.id)] = true;
+  await syncBridgePreparedActionTransaction(action, {
+    txid: ledger?.txid ?? action.txid,
+    txStatus: 'failed',
+    error: technicalMessage,
+  });
   replaceToast(toastId, 'error', toastCopy.title, toastCopy.message);
 }
 
@@ -18758,8 +18798,6 @@ async function executeBrowserPreparedActionRecord(
   action: PreparedAction,
   toastContext: TransactionToastContext,
 ): Promise<BrowserTransactionExecution> {
-  const bridgeExecution = await executeBrowserPreparedActionThroughBridge(action, toastContext);
-  if (bridgeExecution) return bridgeExecution;
   switch (action.kind) {
     case 'transfer_sol':
       return executeBrowserSolTransfer(action, toastContext);
@@ -18772,78 +18810,6 @@ async function executeBrowserPreparedActionRecord(
     default:
       throw new Error(`Browser workflow cannot broadcast ${action.kind}.`);
   }
-}
-
-async function executeBrowserPreparedActionThroughBridge(
-  action: PreparedAction,
-  toastContext: TransactionToastContext,
-): Promise<BrowserTransactionExecution | undefined> {
-  if (!canAttemptLocalBridgeForCluster(action.cluster)) return undefined;
-  if (!state.bridgeActive && !(await activateBridgeForTransaction(action.cluster))) {
-    return undefined;
-  }
-  if (action.cluster !== state.cluster) return undefined;
-  let path = '';
-  let body: Record<string, unknown> = {};
-  switch (action.kind) {
-    case 'transfer_sol':
-      path = '/bridge/action/transfer-sol';
-      body = {
-        recipient: requiredActionParam(action, 'recipient'),
-        amountSol: requiredActionParam(action, 'amountSol'),
-      };
-      break;
-    case 'transfer_spl':
-      path = '/bridge/action/transfer-spl';
-      body = {
-        token: requiredActionParam(action, 'token'),
-        recipient: requiredActionParam(action, 'recipient'),
-        amount: requiredActionParam(action, 'amount'),
-      };
-      break;
-    case 'swap':
-      path = '/bridge/action/swap';
-      body = {
-        inputToken: requiredActionParam(action, 'inputToken'),
-        outputToken: requiredActionParam(action, 'outputToken'),
-        amount: requiredActionParam(action, 'amount'),
-        slippageBps: browserSlippageBps(action),
-      };
-      break;
-    default:
-      return undefined;
-  }
-
-  const result = await runTransactionToastStep(
-    toastContext,
-    'Sending transaction',
-    'Submitting through the local bridge. Do not approve this request twice.',
-    () => bridgeRequest<Record<string, unknown>>(path, {
-      method: 'POST',
-      body: JSON.stringify(body),
-    }),
-  );
-  const txid = requiredResponseString(result.txid ?? result.signature, 'Bridge transaction signature');
-  upsertPendingTransaction({
-    actionId: action.id,
-    cluster: action.cluster,
-    workflowSource: 'local-bridge',
-    kind: action.kind,
-    phase: 'submitted',
-    walletAddress: action.walletAddress,
-    txid,
-    submittedAt: new Date().toISOString(),
-    attemptCount: 1,
-  });
-  syncPendingTransactionsFromLedger();
-  markBrowserTransactionSubmitted(action, txid);
-  const txStatus = await resolveSubmittedTransactionStatus(action.cluster, txid, toastContext);
-  return {
-    txid,
-    txStatus,
-    explorerUrl: explorerUrl(txid, action.cluster),
-    result,
-  };
 }
 
 async function executeBrowserSolTransfer(
@@ -19374,6 +19340,31 @@ function markBrowserTransactionSubmitted(action: PreparedAction, txid: string): 
   });
 }
 
+async function syncBridgePreparedActionTransaction(
+  action: PreparedAction,
+  update: { txid?: string; txStatus: PreparedActionTxStatus; error?: string },
+): Promise<void> {
+  if (action.workflowSource !== 'local-bridge' || !state.bridgeActive) return;
+  if (!update.txid && update.txStatus !== 'failed') return;
+  try {
+    await bridgeRequest('/bridge/prepared-actions/record-transaction', {
+      method: 'POST',
+      body: JSON.stringify({
+        actionId: action.id,
+        ...(update.txid ? { txid: update.txid } : {}),
+        txStatus: update.txStatus,
+        ...(update.error ? { error: update.error } : {}),
+      }),
+    });
+  } catch (err) {
+    pushToast(
+      'error',
+      'Bridge receipt sync failed',
+      redactSecrets(err instanceof Error ? err.message : String(err)),
+    );
+  }
+}
+
 function syncPendingTransactionsFromLedger(): void {
   state.pendingTransactions = loadTransactionLedger();
 }
@@ -19525,44 +19516,18 @@ function shouldRetryTransactionSend(err: unknown, signedTxid?: string, attemptCo
 }
 
 async function browserLatestBlockhash(cluster: Cluster): Promise<BrowserLatestBlockhash> {
-  let bridgeError: unknown;
-  if (canAttemptLocalBridgeForCluster(cluster)) {
-    try {
-      return await bridgeRequest<BrowserLatestBlockhash>('/bridge/solana/latest-blockhash', {
-        method: 'POST',
-        body: JSON.stringify({ cluster }),
-      });
-    } catch (err) {
-      bridgeError = err;
-      if (state.bridgeActive) throw err;
-    }
-  }
   try {
     return await sameOriginTransactionRequest<BrowserLatestBlockhash>('/api/solana/latest-blockhash', { cluster });
   } catch (err) {
     if (canUseDirectBrowserRpc(cluster)) {
       return browserActionConnection(cluster).getLatestBlockhash('confirmed');
     }
-    if (bridgeError) throw transactionApiUnavailableError(bridgeError);
     throw transactionApiUnavailableError(err);
   }
 }
 
 async function broadcastSignedBrowserTransaction(cluster: Cluster, signedTransactionBase64: string): Promise<string> {
   const request = { cluster, signedTransactionBase64 };
-  let bridgeError: unknown;
-  if (canAttemptLocalBridgeForCluster(cluster)) {
-    try {
-      const response = await bridgeRequest<BrowserSendTransactionResponse>('/bridge/solana/send-transaction', {
-        method: 'POST',
-        body: JSON.stringify(request),
-      });
-      return requiredResponseString(response.txid ?? response.signature, 'Bridge transaction signature');
-    } catch (err) {
-      bridgeError = err;
-      if (state.bridgeActive) throw err;
-    }
-  }
   try {
     const response = await sameOriginTransactionRequest<BrowserSendTransactionResponse>('/api/solana/send-transaction', request);
     return requiredResponseString(response.txid ?? response.signature, 'Transaction signature');
@@ -19573,25 +19538,12 @@ async function broadcastSignedBrowserTransaction(cluster: Cluster, signedTransac
         maxRetries: 5,
       });
     }
-    if (bridgeError) throw transactionApiUnavailableError(bridgeError);
     throw transactionApiUnavailableError(err);
   }
 }
 
 async function browserSignatureStatus(cluster: Cluster, txid: string): Promise<BrowserSignatureStatusResponse> {
   const request = { cluster, txid };
-  let bridgeError: unknown;
-  if (canAttemptLocalBridgeForCluster(cluster)) {
-    try {
-      return await bridgeRequest<BrowserSignatureStatusResponse>('/bridge/solana/signature-status', {
-        method: 'POST',
-        body: JSON.stringify(request),
-      });
-    } catch (err) {
-      bridgeError = err;
-      if (state.bridgeActive) throw err;
-    }
-  }
   try {
     return await sameOriginTransactionRequest<BrowserSignatureStatusResponse>('/api/solana/signature-status', request);
   } catch (err) {
@@ -19606,7 +19558,6 @@ async function browserSignatureStatus(cluster: Cluster, txid: string): Promise<B
       }
       return { txStatus: 'pending', confirmationStatus: status.confirmationStatus ?? undefined };
     }
-    if (bridgeError) throw transactionApiUnavailableError(bridgeError);
     throw transactionApiUnavailableError(err);
   }
 }
@@ -19635,28 +19586,14 @@ async function sameOriginTransactionRequest<T>(path: string, body: Record<string
 }
 
 function canUseDirectBrowserRpc(cluster: Cluster): boolean {
-  return cluster !== 'mainnet-beta';
+  void cluster;
+  return true;
 }
 
 function canAttemptLocalBridgeForCluster(cluster: Cluster): boolean {
   return Boolean(state.bridgeToken) &&
     isLoopbackBridgeUrl(state.bridgeUrl) &&
     cluster === state.cluster;
-}
-
-async function activateBridgeForTransaction(cluster: Cluster): Promise<boolean> {
-  if (!state.address || !state.capabilities || !canAttemptLocalBridgeForCluster(cluster)) {
-    return false;
-  }
-  try {
-    await activateBridgeConnection({ refreshConfig: true, strictSync: false });
-    return state.bridgeActive && state.cluster === cluster;
-  } catch (err) {
-    state.bridgeActive = false;
-    stopBridgePolling();
-    state.bridgeStatus = err instanceof Error ? err.message : String(err);
-    return false;
-  }
 }
 
 function transactionApiUnavailableError(err: unknown): Error {
@@ -19669,16 +19606,16 @@ function transactionApiUnavailableError(err: unknown): Error {
 
 function transactionApiUnavailableMessage(): string {
   if (isLocalBrowserHost()) {
-    return `Local transaction RPC is not connected. Start ${NPM_EXEC_COMMAND}, keep the bridge terminal open, open the printed local app URL, then approve again.`;
+    return 'Transaction RPC is not reachable from this browser. Check the selected RPC endpoint or network connection, then approve again.';
   }
-  return 'Transaction RPC requires the hosted transaction API or a connected local bridge. This is separate from AI sign-in.';
+  return 'Transaction RPC is not reachable from this page. Check the selected RPC endpoint or network connection, then approve again.';
 }
 
 function swapApiUnavailableMessage(): string {
   if (isLocalBrowserHost()) {
-    return `Local swap execution is not connected. Start ${NPM_EXEC_COMMAND}, keep the bridge terminal open, open the printed local app URL, then approve again.`;
+    return 'Swap execution is not reachable from this browser. Check the hosted swap API or network connection, then approve again.';
   }
-  return 'Swap execution requires the hosted swap API or a connected local bridge. This is separate from AI sign-in.';
+  return 'Swap execution is not reachable from this page. Check the hosted swap API or network connection, then approve again.';
 }
 
 function isLocalBrowserHost(): boolean {
@@ -21541,7 +21478,7 @@ async function fetchSwapQuoteForAction(action: PreparedAction): Promise<{
   const amountRaw = parseDecimalAmountToRaw(amount, inputToken.decimals, `${inputToken.symbol} swap amount`);
   const slippageBps = browserSlippageBps(action);
 
-  if (action.workflowSource === 'local-bridge' || (state.bridgeActive && canAttemptLocalBridgeForCluster(action.cluster))) {
+  if (action.workflowSource === 'local-bridge' && state.bridgeActive && canAttemptLocalBridgeForCluster(action.cluster)) {
     try {
       const order = await bridgeRequest<Record<string, unknown>>('/bridge/action/swap-quote', {
         method: 'POST',
