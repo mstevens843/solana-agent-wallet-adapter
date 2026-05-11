@@ -1445,6 +1445,8 @@ interface DemoState {
   workflowModePreference: WorkflowModePreference;
   cloudSession: CloudSessionState;
   cloudWorkspaceDeleteModalOpen: boolean;
+  completedDeleteModalId: string;
+  preferencesOpen: boolean;
   wallets: DiscoveredWallet[];
   selectedWalletName: string;
   browserWalletPickerOpen: boolean;
@@ -1970,26 +1972,26 @@ const RECURRING_TOKEN_OPTIONS = ['SOL', 'USDC', 'PYUSD'];
 const RECURRING_PRESETS: RecurringPreset[] = [
   {
     id: 'scheduled-transfer',
-    title: 'Contractor payout',
-    badge: 'Payout',
-    description: 'Weekly contractor payout after completed work is reviewed. Each run requires founder approval before funds move.',
+    title: 'Scheduled transfer',
+    badge: 'Payment',
+    description: 'Send the same token amount to one recipient on a repeat schedule. Each due item still needs approval.',
     draft: {
-      token: 'USDC',
-      amount: '10',
+      token: 'SOL',
+      amount: '0.01',
       cadence: 'weekly',
-      note: 'Weekly contractor payout after completed work is reviewed. Each run requires founder approval before funds move.',
+      note: 'Repeat scheduled transfer',
     },
   },
   {
     id: 'subscription',
-    title: 'Vendor invoice',
-    badge: 'Ops',
-    description: 'Monthly RPC provider payment after invoice review. Each run requires finance approval before funds move.',
+    title: 'Subscription / allowance',
+    badge: 'Allowance',
+    description: 'Create a capped recurring payment without granting unlimited authority.',
     draft: {
       token: 'USDC',
       amount: '5',
       cadence: 'monthly',
-      note: 'Monthly RPC provider payment after invoice review. Each run requires finance approval before funds move.',
+      note: 'Repeat user-approved payment',
     },
   },
 ];
@@ -2133,6 +2135,8 @@ const state: DemoState = {
     error: '',
   },
   cloudWorkspaceDeleteModalOpen: false,
+  completedDeleteModalId: '',
+  preferencesOpen: false,
   wallets: [],
   selectedWalletName: persisted.browserWalletSession?.cluster === initialCluster ? persisted.browserWalletSession.walletName : '',
   browserWalletPickerOpen: false,
@@ -2286,7 +2290,9 @@ async function startApp(): Promise<void> {
     normalizeInitialRoute();
     hydrateGeneratedPlansForStartup();
     render();
-    startSystemHealthPolling();
+    if (SHOW_DEV_CONTROLS) {
+      startSystemHealthPolling();
+    }
     startQuoteCountdownTicker();
     startNotificationTicker();
     startAgentBackgroundWatch();
@@ -2304,9 +2310,19 @@ function handleGlobalKeydown(event: KeyboardEvent): void {
     closeCloudWorkspaceDeleteModal();
     return;
   }
+  if (event.key === 'Escape' && state.completedDeleteModalId) {
+    event.preventDefault();
+    closeCompletedDeleteModal();
+    return;
+  }
   if (event.key === 'Escape' && state.generatedPlanAuditId) {
     event.preventDefault();
     closeGeneratedPlanAuditModal();
+    return;
+  }
+  if (event.key === 'Escape' && state.preferencesOpen) {
+    event.preventDefault();
+    closePreferences();
   }
 }
 
@@ -2475,6 +2491,9 @@ function pageShell(content: string, activeRoute: AppRoute | null): string {
       ${homepageNav(activeRoute)}
       ${content}
       ${cloudWorkspaceDeleteModal()}
+      ${completedDeleteModal()}
+      ${preferencesDrawer(activeRoute)}
+      ${activeRoute === '/app' || activeRoute === '/demo' ? workspaceBackupRestoreModal() : ''}
       ${homepageFooter()}
     </section>
   `;
@@ -3820,8 +3839,8 @@ function appWorkspace(mode: 'app' | 'demo' = 'app'): string {
   const modeClass = mode === 'demo' ? 'demo-workspace-mode' : 'launch-workspace-mode';
   return `
     <section id="${workspaceId}" class="app-workspace-section ${appModeClass} ${modeClass}" aria-labelledby="${titleId}" data-layout="app-root">
-      ${systemHealthStrip()}
-      ${systemHealthDrawer()}
+      ${SHOW_DEV_CONTROLS ? systemHealthStrip() : ''}
+      ${SHOW_DEV_CONTROLS ? systemHealthDrawer() : ''}
       ${attachTxModalRender()}
       <div class="workspace-intro" data-layout="app-intro">
         <div>
@@ -3862,6 +3881,7 @@ function appWorkspace(mode: 'app' | 'demo' = 'app'): string {
               ${tabButton('completed', 'Done')}
               ${tabButton('labs', 'Save Proof', 'Proof')}
             </nav>
+            ${preferencesButton()}
           </div>
           <div data-layout="active-panel">${activePanel()}</div>
         </section>
@@ -4403,13 +4423,6 @@ function walletRail(): string {
 
       <div class="rail-primary-stack">
         ${cloudWorkspaceCard()}
-        ${connectedAgentsPanel()}
-        ${recipientRulesPanel()}
-        ${connectedDappsPanel()}
-        ${safetyRailsPanel()}
-        ${agentPoliciesPanel()}
-        ${customTokensPanel()}
-        ${failurePoliciesPanel()}
         ${aiSettingsPanel('rail')}
       </div>
       ${SHOW_DEV_CONTROLS ? '' : `
@@ -4436,6 +4449,122 @@ function walletRail(): string {
         ${mobileWalletBox()}
       </details>` : ''}
     </aside>
+  `;
+}
+
+function preferencesButton(): string {
+  return `
+    <button
+      type="button"
+      class="utility preferences-open-button"
+      data-preferences-action="open"
+      aria-haspopup="dialog"
+      aria-expanded="${state.preferencesOpen ? 'true' : 'false'}"
+    >
+      Preferences
+    </button>
+  `;
+}
+
+function preferencesDrawer(activeRoute: AppRoute | null): string {
+  if (!state.preferencesOpen || (activeRoute !== '/app' && activeRoute !== '/demo')) return '';
+  return `
+    <div class="preferences-drawer-scrim" data-preferences-action="close" aria-hidden="true"></div>
+    <aside class="preferences-drawer" role="dialog" aria-modal="true" aria-labelledby="preferences-title">
+      <header class="preferences-drawer-header">
+        <div>
+          <p class="preferences-eyebrow">Workspace</p>
+          <h2 id="preferences-title">Preferences</h2>
+          <p>Workspace storage, AI drafting preferences, agent access, review rules, tokens, and retry behavior.</p>
+        </div>
+        <button type="button" class="preferences-close-button" data-preferences-action="close" aria-label="Close preferences">Close</button>
+      </header>
+      <div class="preferences-drawer-body">
+        ${preferencesGroup('Workspace State', 'Backups and background alerts', `
+          ${workspaceBackupPanel()}
+          ${notificationPreferencesPanel()}
+        `)}
+        ${preferencesGroup('AI Drafting', 'Planner personalization and review extras', `
+          ${aiReviewPreferencesPanel()}
+        `)}
+        ${preferencesGroup('Agent Access', 'Bridge tokens and protocol connectors', `
+          ${connectedAgentsPanel()}
+          ${connectedDappsPanel()}
+        `)}
+        ${preferencesGroup('Review Rules', 'Recipient, policy, and preflight checks', `
+          ${recipientRulesPanel()}
+          ${safetyRailsPanel()}
+          ${agentPoliciesPanel()}
+        `)}
+        ${preferencesGroup('Tokens & Retry', 'Token labels and transaction retry defaults', `
+          ${customTokensPanel()}
+          ${failurePoliciesPanel()}
+        `)}
+      </div>
+    </aside>
+  `;
+}
+
+function preferencesGroup(title: string, detail: string, content: string): string {
+  return `
+    <section class="preferences-group" aria-label="${escapeHtml(title)}">
+      <div class="preferences-group-head">
+        <h3>${escapeHtml(title)}</h3>
+        <p>${escapeHtml(detail)}</p>
+      </div>
+      <div class="preferences-group-stack">
+        ${content}
+      </div>
+    </section>
+  `;
+}
+
+function aiReviewPreferencesPanel(): string {
+  const extras = [
+    state.aiSettings.multiReviewer ? 'Multi-agent review' : '',
+    state.aiSettings.autoBackgroundWatch ? 'Background re-check' : '',
+    state.plannerPrefs.houseRules.trim() ? 'House rules' : '',
+    state.plannerPrefs.savedPrompts.length ? `${state.plannerPrefs.savedPrompts.length} saved prompt${state.plannerPrefs.savedPrompts.length === 1 ? '' : 's'}` : '',
+  ].filter(Boolean);
+  const status = extras.length ? extras.join(' · ') : 'Defaults';
+  return `
+    <section class="ai-review-preferences-card" aria-label="AI drafting preferences">
+      <div class="ai-review-preferences-head">
+        <div>
+          <span>AI drafting</span>
+          <strong>Planner personalization</strong>
+          <p>Saved prompts and review extras change drafting only. Wallet approval, submission, and signing stay separate.</p>
+        </div>
+        <em>${escapeHtml(status)}</em>
+      </div>
+      <div class="ai-advanced-toggles" aria-label="Agent review extras">
+        <label class="ai-toggle">
+          <input
+            type="checkbox"
+            data-ai-toggle="multiReviewer"
+            ${state.aiSettings.multiReviewer ? 'checked' : ''}
+            ${state.busy ? 'disabled' : ''}
+          />
+          <span>
+            <strong>Multi-agent review</strong>
+            <em>Ask the agent to weigh in as risk, quote, policy, and protocol reviewers in one drafting call.</em>
+          </span>
+        </label>
+        <label class="ai-toggle">
+          <input
+            type="checkbox"
+            data-ai-toggle="autoBackgroundWatch"
+            ${state.aiSettings.autoBackgroundWatch ? 'checked' : ''}
+            ${state.busy ? 'disabled' : ''}
+          />
+          <span>
+            <strong>Background re-check</strong>
+            <em>While this tab is open, older drafts are re-reviewed and surfaced only if the recommendation changes.</em>
+          </span>
+        </label>
+      </div>
+      ${plannerPrefsSection('preferences')}
+    </section>
   `;
 }
 
@@ -6796,14 +6925,9 @@ function commandCenterStoragePanel(): string {
           <span>Signed-out plans, approvals, and proofs stay on this device. No localhost is required.</span>
         </div>
 
-        ${workspaceBackupPanel()}
-
-        ${notificationPreferencesPanel()}
-
         ${commandCloudStorageDangerZone()}
       </section>
     </div>
-    ${workspaceBackupRestoreModal()}
   `;
 }
 
@@ -8496,12 +8620,50 @@ function cloudWorkspaceDeleteModal(): string {
   `;
 }
 
+function completedDeleteModal(): string {
+  if (!state.completedDeleteModalId) return '';
+  const record = completedPlanRecords().find((candidate) => candidate.id === state.completedDeleteModalId);
+  if (!record) return '';
+  const source = record.workflowSource === 'cloud'
+    ? 'Agentic Cloud'
+    : record.workflowSource === 'local-bridge'
+      ? 'the local bridge archive'
+      : 'this browser';
+  const descriptor = [
+    record.kind === 'recurring' ? 'Repeat payment' : 'One-time approval',
+    record.status,
+    formatDateTime(record.completedAt),
+  ].join(' - ');
+  return `
+    <div class="generated-plan-modal-backdrop completed-delete-modal-backdrop" role="presentation">
+      <section class="generated-plan-modal completed-delete-modal" role="dialog" aria-modal="true" aria-labelledby="completed-delete-title">
+        <div class="generated-plan-modal-head">
+          <div>
+            <span class="workbench-kicker">Done deletion</span>
+            <h2 id="completed-delete-title">Delete from Done?</h2>
+            <p>${escapeHtml(record.title)}</p>
+          </div>
+          <button class="utility" data-completed-delete-cancel aria-label="Close Done deletion confirmation">Close</button>
+        </div>
+        <div class="completed-delete-warning">
+          <strong>${escapeHtml(descriptor)}</strong>
+          <p>This removes the saved Done card and linked local metadata from ${escapeHtml(source)}. On-chain history is not deleted.</p>
+        </div>
+        <div class="generated-plan-modal-actions completed-delete-actions">
+          <button type="button" class="utility" data-completed-delete-cancel ${state.busy ? 'disabled' : ''}>Cancel</button>
+          <button type="button" class="utility danger" data-completed-delete-confirm="${escapeHtml(record.id)}" ${state.busy ? 'disabled' : ''}>Delete item</button>
+        </div>
+      </section>
+    </div>
+  `;
+}
+
 function generatedPlanAuditModal(record: GeneratedPlanRecord): string {
   const plan = record.plan;
   const approvalCapable = canQueueAgentPlan(plan);
   const queueable = canQueueGeneratedPlan(record);
   return `
-    <div class="generated-plan-modal-backdrop" role="presentation">
+    <div class="generated-plan-modal-backdrop generated-plan-audit-modal-backdrop" role="presentation">
       <section class="generated-plan-modal" role="dialog" aria-modal="true" aria-labelledby="generated-plan-audit-title">
         <div class="generated-plan-modal-head">
           <div>
@@ -9222,33 +9384,6 @@ function aiSettingsCard(location: 'rail' | 'planner' = 'planner'): string {
         <button id="clearAiKey-${escapeHtml(scope)}" data-ai-action="clear-key" ${!canClearAiKey() ? 'disabled' : ''}>Clear key</button>
         ${state.aiSettings.mode === 'bridge' ? `<button id="refreshAiStatus-${escapeHtml(scope)}" data-ai-action="refresh-status" ${state.busy ? 'disabled' : ''}>Refresh</button>` : ''}
       </div>
-      <div class="ai-advanced-toggles" aria-label="Agent review extras">
-        <label class="ai-toggle">
-          <input
-            type="checkbox"
-            data-ai-toggle="multiReviewer"
-            ${state.aiSettings.multiReviewer ? 'checked' : ''}
-            ${state.busy ? 'disabled' : ''}
-          />
-          <span>
-            <strong>Multi-agent review</strong>
-            <em>Ask the agent to weigh in as 4 specialists (risk, quote, policy, protocol) in one call. ~4x prompt tokens.</em>
-          </span>
-        </label>
-        <label class="ai-toggle">
-          <input
-            type="checkbox"
-            data-ai-toggle="autoBackgroundWatch"
-            ${state.aiSettings.autoBackgroundWatch ? 'checked' : ''}
-            ${state.busy ? 'disabled' : ''}
-          />
-          <span>
-            <strong>Background re-check</strong>
-            <em>While this tab is open, the agent quietly re-reviews older drafts and toasts you if its decision changes.</em>
-          </span>
-        </label>
-      </div>
-      ${plannerPrefsSection(scope)}
       ${isRail
         ? '<p class="ai-security-note compact">Drafts only. Wallet approvals stay separate.</p>'
         : `
@@ -11348,6 +11483,18 @@ function bind(): void {
     });
   }
 
+  for (const button of document.querySelectorAll<HTMLElement>('[data-preferences-action]')) {
+    button.addEventListener('click', (event) => {
+      event.preventDefault();
+      const action = button.dataset.preferencesAction;
+      if (action === 'open') {
+        openPreferences();
+      } else if (action === 'close') {
+        closePreferences();
+      }
+    });
+  }
+
   for (const button of document.querySelectorAll<HTMLButtonElement>('[data-template-filter]')) {
     button.addEventListener('click', () => {
       const filter = button.dataset.templateFilter as TemplateOutcomeFilter | undefined;
@@ -11452,13 +11599,26 @@ function bind(): void {
     button.addEventListener('click', () => {
       const completedId = button.dataset.completedDelete;
       if (!completedId) return;
-      void runDeleteCompletedPlan(completedId);
+      openCompletedDeleteModal(completedId);
     });
   }
+  for (const button of document.querySelectorAll<HTMLButtonElement>('[data-completed-delete-cancel]')) {
+    button.addEventListener('click', closeCompletedDeleteModal);
+  }
+  document.querySelector<HTMLButtonElement>('[data-completed-delete-confirm]')?.addEventListener('click', (event) => {
+    const completedId = (event.currentTarget as HTMLButtonElement).dataset.completedDeleteConfirm;
+    if (!completedId) return;
+    void runDeleteCompletedPlan(completedId);
+  });
+  document.querySelector<HTMLElement>('.completed-delete-modal-backdrop')?.addEventListener('click', (event) => {
+    if (event.target === event.currentTarget) {
+      closeCompletedDeleteModal();
+    }
+  });
   for (const button of document.querySelectorAll<HTMLButtonElement>('[data-generated-plan-modal-close]')) {
     button.addEventListener('click', closeGeneratedPlanAuditModal);
   }
-  document.querySelector<HTMLElement>('.generated-plan-modal-backdrop')?.addEventListener('click', (event) => {
+  document.querySelector<HTMLElement>('.generated-plan-audit-modal-backdrop')?.addEventListener('click', (event) => {
     if (event.target === event.currentTarget) {
       closeGeneratedPlanAuditModal();
     }
@@ -13852,10 +14012,39 @@ function cacheAgentReviewAnswerInputs(form: HTMLFormElement): void {
   void updateGeneratedPlan(planId, { agentReview: { ...review, answers } });
 }
 
+function openCompletedDeleteModal(completedId: string): void {
+  state.completedDeleteModalId = completedId;
+  state.error = '';
+  render();
+}
+
+function closeCompletedDeleteModal(): void {
+  if (!state.completedDeleteModalId) return;
+  state.completedDeleteModalId = '';
+  render();
+}
+
+function openPreferences(): void {
+  if (state.preferencesOpen) return;
+  state.preferencesOpen = true;
+  state.error = '';
+  render();
+}
+
+function closePreferences(): void {
+  if (!state.preferencesOpen) return;
+  state.preferencesOpen = false;
+  render();
+}
+
 async function runDeleteCompletedPlan(completedId: string): Promise<void> {
   const record = completedPlanRecords().find((candidate) => candidate.id === completedId);
-  if (!record) return;
-  if (!window.confirm('Delete this item from Done?')) return;
+  if (!record) {
+    state.completedDeleteModalId = '';
+    render();
+    return;
+  }
+  state.completedDeleteModalId = '';
 
   await run('inbox', async () => {
     if (
@@ -19545,6 +19734,7 @@ function systemHealthInputs(): {
 }
 
 async function runSystemHealthCheck(options: { silent?: boolean } = {}): Promise<void> {
+  if (!SHOW_DEV_CONTROLS) return;
   if (systemHealthRunController) {
     systemHealthRunController.abort();
   }
@@ -19581,6 +19771,7 @@ async function runSystemHealthCheck(options: { silent?: boolean } = {}): Promise
 }
 
 function startSystemHealthPolling(): void {
+  if (!SHOW_DEV_CONTROLS) return;
   stopSystemHealthPolling();
   void runSystemHealthCheck({ silent: true });
   systemHealthTimer = window.setInterval(() => {
@@ -19596,6 +19787,7 @@ function stopSystemHealthPolling(): void {
 }
 
 async function handleHealthAction(action: string, intent?: string): Promise<void> {
+  if (!SHOW_DEV_CONTROLS) return;
   switch (action) {
     case 'toggle-drawer':
       state.systemHealthDrawerOpen = !state.systemHealthDrawerOpen;
@@ -22291,11 +22483,11 @@ function summaryCopyActionsHtml(actions: SummaryCopyAction[], fallbackName: stri
 function inboxApprovalSummaryGrid(action: PreparedAction): string {
   const recipient = recipientParam(action);
   const tokenSummary = inboxApprovalTokenSummary(action);
-  const rows: Array<{ label: string; value: string; title?: string; copyValue?: string; copyName?: string; copyLabel?: string; copyActions?: SummaryCopyAction[]; tone?: 'amount' }> = [
-    { label: 'Wallet', value: short(action.walletAddress), title: action.walletAddress, copyValue: action.walletAddress },
-    ...(recipient ? [{ label: 'Recipient', value: recipientDisplayLabel(recipient), title: recipient, copyValue: recipient }] : []),
-    { label: 'Token', value: tokenSummary.value, title: tokenSummary.title, copyActions: tokenSummary.copyActions },
-    { label: 'Due', value: formatDateTime(action.dueAt) },
+  const rows: Array<{ kind: 'wallet' | 'recipient' | 'token' | 'due'; label: string; value: string; title?: string; copyValue?: string; copyName?: string; copyLabel?: string; copyActions?: SummaryCopyAction[]; tone?: 'amount' }> = [
+    { kind: 'wallet', label: 'Wallet', value: short(action.walletAddress), title: action.walletAddress, copyValue: action.walletAddress },
+    ...(recipient ? [{ kind: 'recipient' as const, label: 'Recipient', value: recipientDisplayLabel(recipient), title: recipient, copyValue: recipient }] : []),
+    { kind: 'token', label: 'Token', value: tokenSummary.value, title: tokenSummary.title, copyActions: tokenSummary.copyActions },
+    { kind: 'due', label: 'Due', value: formatDateTime(action.dueAt) },
   ];
   return `
     <dl class="inbox-approval-summary-grid rows-${rows.length}" aria-label="Approval summary">
@@ -22304,7 +22496,7 @@ function inboxApprovalSummaryGrid(action: PreparedAction): string {
   `;
 }
 
-function inboxApprovalSummaryItem(row: { label: string; value: string; title?: string; copyValue?: string; copyName?: string; copyLabel?: string; copyActions?: SummaryCopyAction[]; tone?: 'amount' }): string {
+function inboxApprovalSummaryItem(row: { kind: 'wallet' | 'recipient' | 'token' | 'due'; label: string; value: string; title?: string; copyValue?: string; copyName?: string; copyLabel?: string; copyActions?: SummaryCopyAction[]; tone?: 'amount' }): string {
   const title = row.title ?? row.value;
   const copyActions = summaryCopyActions(row);
   const ddClass = [
@@ -22312,7 +22504,7 @@ function inboxApprovalSummaryItem(row: { label: string; value: string; title?: s
     copyActions.length > 1 ? 'has-copy-multi' : '',
   ].filter(Boolean).join(' ');
   return `
-    <div class="${row.tone ? `inbox-approval-summary-${row.tone}` : ''}" title="${escapeHtml(title)}">
+    <div class="inbox-approval-summary-${escapeHtml(row.kind)} ${row.tone ? `inbox-approval-summary-${row.tone}` : ''}" title="${escapeHtml(title)}">
       <dt>${escapeHtml(row.label)}</dt>
       <dd class="${ddClass}">
         <span>${escapeHtml(row.value)}</span>
@@ -24063,7 +24255,26 @@ function stringParam(action: PreparedAction, key: string): string {
 }
 
 function recipientParam(action: PreparedAction): string {
-  return stringParam(action, 'recipient') || stringParam(action, 'recipientAddress');
+  return normalizedRecipientParam(stringParam(action, 'recipient')) ||
+    normalizedRecipientParam(stringParam(action, 'recipientAddress'));
+}
+
+function normalizedRecipientParam(value: string): string {
+  const trimmed = value.trim();
+  if (!trimmed) return '';
+  const normalized = trimmed.toLowerCase();
+  if (
+    normalized === 'n/a' ||
+    normalized === 'na' ||
+    normalized === 'none' ||
+    normalized === 'null' ||
+    normalized === 'undefined' ||
+    normalized === '-' ||
+    normalized === '—'
+  ) {
+    return '';
+  }
+  return trimmed;
 }
 
 function scheduleLabel(payment: RecurringPayment): string {
