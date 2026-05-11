@@ -149,7 +149,7 @@ const KAMINO_WITHDRAW_PRIMARY_ACTION = 'Open wallet to withdraw';
 const KAMINO_EARNINGS_PROOF_PRIMARY_ACTION = 'Open wallet to sign proof';
 
 const SEND_SUBTITLE = 'Confirm the transfer details before your wallet opens to sign.';
-const SWAP_SUBTITLE = 'Confirm the swap quote and route before your wallet opens to sign.';
+const SWAP_SUBTITLE = 'Confirm the swap quote before your wallet opens to sign.';
 const CUSTOM_SUBTITLE = 'Confirm the transaction details before your wallet opens to sign.';
 const KAMINO_DEPOSIT_SUBTITLE = 'Confirm the Kamino deposit details before your wallet opens to sign.';
 const KAMINO_WITHDRAW_SUBTITLE = 'Confirm the Kamino withdrawal details before your wallet opens to sign.';
@@ -255,22 +255,11 @@ export function buildSwapPreSignReview(input: SwapPreSignReviewInput): PreSignRe
   pushPlainRow(swapRows, 'Fee', input.platformFee);
   pushSection(sections, 'Swap', swapRows);
 
-  const routeRows: PreSignReviewRow[] = [];
-  pushPlainRow(routeRows, 'Route', input.routeLabel);
-  pushJupiterIdRow(routeRows, input.jupiterRequestId);
-  pushSection(sections, 'Route', routeRows);
-
-  const walletRows: PreSignReviewRow[] = [];
-  pushAddressRow(walletRows, 'Wallet', input.taker);
-  pushSection(sections, 'Wallet', walletRows);
-
-  pushNetworkSection(sections, input.cluster);
   pushProgramsSection(sections, input.touchedPrograms);
 
   const warnings: string[] = [];
   const quoteRequired = input.quoteRequired !== false;
   if (quoteRequired && !nonEmptyString(input.expectedOutput)) warnings.push('Expected output is missing.');
-  if (quoteRequired && !nonEmptyString(input.routeLabel)) warnings.push('Route label is missing.');
   if (typeof input.slippageBps === 'number' && Number.isFinite(input.slippageBps) && input.slippageBps > 100) {
     warnings.push(`Slippage is high at ${formatBps(input.slippageBps)}.`);
   }
@@ -631,17 +620,6 @@ function pushPriceImpactRow(
   const row: PreSignReviewRow = { label: 'Price impact', value };
   if (tone) row.tone = tone;
   rows.push(row);
-}
-
-function pushJupiterIdRow(rows: PreSignReviewRow[], jupiterRequestId: string | undefined): void {
-  if (!nonEmptyString(jupiterRequestId)) return;
-  const value = jupiterRequestId!.trim();
-  rows.push({
-    label: 'Jupiter id',
-    value: shortAddress(value, 6, 6),
-    title: value,
-    copyValue: value,
-  });
 }
 
 function pushFingerprintRow(rows: PreSignReviewRow[], transactionHash: string | undefined): void {

@@ -6370,8 +6370,8 @@ button.danger:hover:not(:disabled) {
   display: grid;
   gap: 10px 14px;
   grid-template-areas:
-    "title value actions";
-  grid-template-columns: minmax(0, 1fr) minmax(170px, auto) minmax(340px, auto);
+    "title decision";
+  grid-template-columns: minmax(0, 1fr) minmax(0, auto);
 }
 
 .inbox-approval-title-block {
@@ -6421,7 +6421,6 @@ button.danger:hover:not(:disabled) {
 .inbox-approval-value {
   display: grid;
   gap: 3px;
-  grid-area: value;
   justify-self: end;
   min-width: 0;
   text-align: right;
@@ -6445,8 +6444,18 @@ button.danger:hover:not(:disabled) {
 }
 
 .inbox-approval-actions {
-  grid-area: actions;
+  flex: 0 0 auto;
   justify-self: end;
+}
+
+.inbox-approval-decision {
+  align-items: center;
+  display: flex;
+  gap: 14px;
+  grid-area: decision;
+  justify-content: flex-end;
+  justify-self: end;
+  min-width: 0;
 }
 
 .inbox-approval-actions button {
@@ -6471,6 +6480,10 @@ button.danger:hover:not(:disabled) {
 
 .inbox-approval-summary-grid.rows-3 {
   grid-template-columns: minmax(230px, 1.25fr) minmax(170px, 0.95fr) minmax(125px, 0.55fr);
+}
+
+.inbox-approval-summary-grid.swap-summary.rows-3 {
+  grid-template-columns: minmax(170px, 0.85fr) minmax(320px, 1.8fr) minmax(125px, 0.55fr);
 }
 
 .inbox-approval-summary-grid div {
@@ -6532,6 +6545,95 @@ button.danger:hover:not(:disabled) {
 
 .inbox-approval-summary-grid dd.has-copy.has-copy-multi > .summary-copy-actions {
   justify-content: flex-start;
+}
+
+.inbox-approval-summary-grid .wallet-action-copy.compact-copy {
+  border-radius: 7px;
+  height: 22px;
+  justify-content: center;
+  min-height: 22px;
+  padding: 0;
+  width: 22px;
+}
+
+.inbox-approval-summary-grid .wallet-action-copy.compact-copy .wallet-action-copy-icon {
+  height: 12px;
+  width: 12px;
+}
+
+.inbox-approval-summary-grid .inbox-approval-summary-token.has-detail {
+  align-items: end;
+  column-gap: 14px;
+  display: grid;
+  grid-template-areas:
+    "label label"
+    "token quote";
+  grid-template-columns: minmax(0, 1fr) minmax(105px, auto);
+  row-gap: 4px;
+}
+
+.inbox-approval-summary-grid .inbox-approval-summary-token.has-detail dt {
+  grid-area: label;
+  margin-bottom: 0;
+}
+
+.inbox-approval-summary-grid .inbox-approval-summary-token.has-detail dd {
+  grid-area: token;
+}
+
+.inbox-approval-summary-grid .inbox-approval-summary-token.has-detail dd.has-copy {
+  display: flex;
+  gap: 0;
+  grid-template-columns: none;
+  min-width: 0;
+}
+
+.inbox-approval-summary-grid .inbox-approval-summary-token.has-detail dd.has-copy.has-copy-multi {
+  row-gap: 0;
+}
+
+.inbox-approval-summary-grid .inbox-approval-summary-token.has-detail .summary-copy-actions {
+  flex-wrap: nowrap;
+  gap: 4px;
+  justify-content: flex-start;
+}
+
+.token-route-inline {
+  align-items: center;
+  display: inline-flex;
+  flex-wrap: wrap;
+  gap: 5px;
+  min-width: 0;
+}
+
+.token-route-leg {
+  align-items: center;
+  display: inline-flex;
+  gap: 4px;
+  min-width: 0;
+}
+
+.token-route-leg > span {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.token-route-arrow {
+  color: var(--dim);
+  font-size: 0.72rem;
+  font-weight: 900;
+}
+
+.inbox-approval-summary-detail {
+  color: var(--accent);
+  font-size: 0.82rem;
+  font-weight: 900;
+  grid-area: quote;
+  justify-self: end;
+  line-height: 1.2;
+  margin: 0;
+  overflow-wrap: anywhere;
+  text-align: right;
 }
 
 .inbox-approval-note {
@@ -12919,10 +13021,21 @@ button.danger:hover:not(:disabled) {
 }
 
 .route-app .preferences-open-button {
-  align-self: stretch;
+  align-self: center;
+  border-radius: 7px;
+  font-size: 0.72rem;
+  font-weight: 900;
   justify-self: end;
-  min-width: 118px;
+  min-height: 30px;
+  min-width: 88px;
+  padding: 0 8px;
   white-space: nowrap;
+}
+
+.route-app .preferences-open-button.active {
+  background: rgba(125, 231, 176, 0.115);
+  border-color: rgba(139, 205, 170, 0.24);
+  color: #f2fff7;
 }
 
 .route-app .workflow-status-band[data-layout="workflow-status"] {
@@ -15856,7 +15969,6 @@ button.danger:hover:not(:disabled) {
 .route-app .lab-actions button,
 .route-app .artifact-refresh-button,
 .route-app .bridge-command-row button,
-.route-app .preferences-open-button,
 .route-app .button-link.local-runtime-desktop-link {
   border-radius: var(--app-card-radius);
   font-size: 0.86rem;
@@ -16585,9 +16697,13 @@ button.danger:hover:not(:disabled) {
 
   .inbox-approval-head {
     grid-template-areas:
-      "title actions"
-      "title value";
-    grid-template-columns: minmax(0, 1fr) minmax(300px, auto);
+      "title"
+      "decision";
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .inbox-approval-decision {
+    justify-self: end;
   }
 
   .recurring-card-actions {
@@ -16597,10 +16713,8 @@ button.danger:hover:not(:disabled) {
   }
 
   .inbox-approval-actions {
-    grid-area: actions;
-    grid-column: auto;
     justify-content: flex-end;
-    justify-self: stretch;
+    justify-self: end;
   }
 
   .recurring-card-summary-grid {
@@ -16772,7 +16886,7 @@ button.danger:hover:not(:disabled) {
     border: 1px solid var(--line);
     border-radius: 9px;
     gap: 3px;
-    grid-template-columns: repeat(6, minmax(0, 1fr));
+    grid-template-columns: repeat(3, minmax(0, 1fr));
     padding: 3px;
   }
 
@@ -16784,6 +16898,7 @@ button.danger:hover:not(:disabled) {
 
   .route-app .preferences-open-button {
     margin-top: 8px;
+    min-height: 30px;
     width: 100%;
   }
 
@@ -16896,17 +17011,26 @@ button.danger:hover:not(:disabled) {
   .inbox-approval-head {
     grid-template-areas:
       "title"
-      "actions"
-      "value";
+      "decision";
+    grid-template-columns: minmax(0, 1fr);
   }
 
   .recurring-card-value,
-  .inbox-approval-value,
   .completed-history-value,
   .receipt-proof-value {
     margin-right: 0;
     justify-self: start;
     text-align: left;
+  }
+
+  .inbox-approval-decision {
+    justify-self: end;
+  }
+
+  .inbox-approval-value {
+    margin-right: 0;
+    justify-self: auto;
+    text-align: right;
   }
 
   .recurring-card-summary-grid,
@@ -16922,11 +17046,15 @@ button.danger:hover:not(:disabled) {
 
   .recurring-card-actions,
   .recurring-card-footer-actions,
-  .inbox-approval-actions,
   .completed-history-actions,
   .receipt-proof-card .receipt-proof-actions {
     justify-content: stretch;
     justify-self: stretch;
+  }
+
+  .inbox-approval-actions {
+    justify-content: flex-end;
+    justify-self: end;
   }
 
   .review-plan-actions button {
@@ -16935,20 +17063,23 @@ button.danger:hover:not(:disabled) {
 
   .recurring-card-actions button,
   .recurring-card-footer-actions button,
-  .inbox-approval-actions button,
   .completed-history-actions button,
   .receipt-proof-card .receipt-proof-actions button,
   .receipt-proof-card .receipt-proof-actions summary {
     flex: 1 1 140px;
   }
 
+  .inbox-approval-actions button {
+    flex: 0 0 auto;
+  }
+
   .completed-header-actions,
-  .route-app .approval-ticket .inbox-actions {
+  .route-app .approval-ticket .inbox-actions:not(.inbox-approval-actions) {
     justify-content: stretch;
   }
 
   .completed-header-actions button,
-  .route-app .approval-ticket .inbox-actions button {
+  .route-app .approval-ticket .inbox-actions:not(.inbox-approval-actions) button {
     flex: 1 1 140px;
   }
 
@@ -16971,6 +17102,32 @@ button.danger:hover:not(:disabled) {
   .completed-history-summary-grid,
   .receipt-proof-summary-grid {
     grid-template-columns: minmax(0, 1fr);
+  }
+
+  .inbox-approval-head {
+    grid-template-areas:
+      "title"
+      "decision";
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .inbox-approval-decision {
+    align-items: stretch;
+    flex-direction: column;
+    justify-self: stretch;
+  }
+
+  .inbox-approval-value {
+    text-align: left;
+  }
+
+  .inbox-approval-actions {
+    justify-content: stretch;
+    justify-self: stretch;
+  }
+
+  .inbox-approval-actions button {
+    flex: 1 1 130px;
   }
 
   .route-app .workspace-tabs[data-layout="app-tabs"] button {
@@ -17763,6 +17920,599 @@ button.danger:hover:not(:disabled) {
   .preferences-drawer .planner-prefs > summary em {
     justify-self: start;
     max-width: none;
+    text-align: left;
+  }
+}
+
+/* Preferences tab */
+.preferences-page {
+  display: grid;
+  gap: 14px;
+  min-width: 0;
+}
+
+.preferences-page-head {
+  align-items: end;
+  background:
+    linear-gradient(135deg, rgba(63, 189, 131, 0.08), rgba(255, 255, 255, 0.018)),
+    rgba(10, 17, 15, 0.72);
+  border: 1px solid rgba(224, 230, 226, 0.09);
+  border-radius: 8px;
+  display: flex;
+  gap: 18px;
+  justify-content: space-between;
+  min-width: 0;
+  padding: 16px;
+}
+
+.preferences-page-head > div {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+}
+
+.preferences-page-head h2 {
+  color: var(--text);
+  font-size: 1.28rem;
+  line-height: 1.14;
+  margin: 0;
+}
+
+.preferences-page-head p:not(.preferences-eyebrow) {
+  color: rgba(196, 205, 202, 0.82);
+  font-size: 0.86rem;
+  line-height: 1.38;
+  margin: 0;
+  max-width: 820px;
+}
+
+.preferences-storage-policy {
+  display: grid;
+  gap: 8px;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  min-width: 0;
+}
+
+.preferences-storage-policy article {
+  background: rgba(255, 255, 255, 0.026);
+  border: 1px solid rgba(224, 230, 226, 0.09);
+  border-radius: 8px;
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+  padding: 10px 12px;
+}
+
+.preferences-storage-policy strong {
+  color: var(--text);
+  font-size: 0.82rem;
+  font-weight: 900;
+  line-height: 1.15;
+}
+
+.preferences-storage-policy span {
+  color: rgba(196, 205, 202, 0.72);
+  font-size: 0.72rem;
+  font-weight: 720;
+  line-height: 1.3;
+}
+
+.preferences-subtabs {
+  display: grid;
+  gap: 8px;
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+  min-width: 0;
+}
+
+.preferences-subtabs button {
+  align-items: start;
+  border-radius: 8px;
+  display: grid;
+  gap: 3px;
+  justify-items: start;
+  min-height: 58px;
+  min-width: 0;
+  padding: 10px 12px;
+  text-align: left;
+}
+
+.preferences-subtabs button.active {
+  background:
+    linear-gradient(135deg, rgba(63, 189, 131, 0.18), rgba(255, 255, 255, 0.025)),
+    rgba(18, 45, 31, 0.52);
+  border-color: rgba(125, 231, 176, 0.32);
+  color: #f2fff7;
+}
+
+.preferences-subtabs span {
+  color: inherit;
+  font-size: 0.86rem;
+  font-weight: 900;
+  line-height: 1.12;
+  min-width: 0;
+}
+
+.preferences-subtabs em {
+  color: rgba(196, 205, 202, 0.72);
+  font-size: 0.72rem;
+  font-style: normal;
+  font-weight: 760;
+  line-height: 1.18;
+  min-width: 0;
+}
+
+.preferences-subtabs button.active em {
+  color: rgba(218, 245, 229, 0.82);
+}
+
+.preferences-view {
+  display: grid;
+  gap: 12px;
+  min-width: 0;
+}
+
+.preferences-page .preferences-group {
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.026), rgba(255, 255, 255, 0.012)),
+    rgba(8, 14, 12, 0.74);
+  border-color: rgba(224, 230, 226, 0.11);
+}
+
+.preferences-page .preferences-group-head {
+  align-items: start;
+}
+
+.preferences-page .preferences-group-head p {
+  max-width: 560px;
+}
+
+.preferences-page .preferences-card-grid {
+  align-items: start;
+  display: grid;
+  gap: 12px;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  min-width: 0;
+}
+
+.preferences-page .workspace-preferences-grid {
+  grid-template-columns: minmax(320px, 0.85fr) minmax(360px, 1.15fr);
+}
+
+.preferences-page .tokens-preferences-grid {
+  grid-template-columns: minmax(0, 1fr);
+}
+
+.preferences-page .workspace-backup-panel,
+.preferences-page .notification-prefs-panel,
+.preferences-page .ai-review-preferences-card {
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.034), rgba(255, 255, 255, 0.016)),
+    rgba(6, 13, 11, 0.68);
+  border: 1px solid rgba(224, 230, 226, 0.1);
+  border-radius: 8px;
+  margin: 0;
+  min-width: 0;
+  padding: 14px;
+}
+
+.preferences-page .workspace-backup-stats {
+  display: grid;
+  gap: 10px;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+.preferences-page .workspace-backup-stats span {
+  min-width: 0;
+}
+
+.preferences-page .notification-prefs-permission {
+  min-height: 52px;
+}
+
+.preferences-page .notification-prefs-list {
+  gap: 0;
+}
+
+.preferences-page .notification-prefs-list li {
+  padding: 9px 0;
+}
+
+.preferences-page .rail-details {
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.028), rgba(255, 255, 255, 0.014)),
+    rgba(5, 12, 10, 0.64);
+  border: 1px solid rgba(224, 230, 226, 0.095);
+  border-radius: 8px;
+  margin: 0;
+  min-width: 0;
+  overflow: hidden;
+  padding: 0;
+}
+
+.preferences-page .rail-details > summary {
+  align-items: center;
+  background:
+    linear-gradient(135deg, rgba(63, 189, 131, 0.12), rgba(255, 255, 255, 0.024)),
+    rgba(12, 24, 19, 0.72);
+  border: 0;
+  border-radius: 0;
+  display: grid;
+  gap: 10px;
+  grid-template-columns: minmax(0, 1fr) auto auto;
+  min-height: 52px;
+  padding: 10px 12px;
+}
+
+.preferences-page .rail-details[open] > summary {
+  border-bottom: 1px solid rgba(224, 230, 226, 0.08);
+}
+
+.preferences-page .rail-details > summary > span {
+  display: grid;
+  gap: 3px;
+  min-width: 0;
+}
+
+.preferences-page .rail-details > summary > span > span {
+  color: var(--dim);
+  font-size: 0.66rem;
+  font-weight: 900;
+  letter-spacing: 0.08em;
+  line-height: 1.1;
+  text-transform: uppercase;
+}
+
+.preferences-page .rail-details > summary > span em {
+  color: rgba(218, 229, 224, 0.84);
+  font-size: 0.8rem;
+  font-style: normal;
+  font-weight: 760;
+  line-height: 1.22;
+  overflow-wrap: anywhere;
+}
+
+.preferences-page .rail-details > summary strong {
+  align-items: center;
+  background: rgba(125, 231, 176, 0.1);
+  border: 1px solid rgba(125, 231, 176, 0.22);
+  border-radius: 999px;
+  color: #d8f9e6;
+  display: inline-flex;
+  font-size: 0.68rem;
+  font-weight: 900;
+  justify-content: center;
+  line-height: 1;
+  min-height: 24px;
+  padding: 4px 8px;
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+
+.preferences-page .rail-details > section {
+  background: transparent;
+  border: 0;
+  border-radius: 0;
+  margin: 0;
+  padding: 14px;
+}
+
+.preferences-page input[type="checkbox"] {
+  accent-color: var(--accent);
+  background: rgba(3, 5, 5, 0.78);
+  border: 1px solid rgba(224, 230, 226, 0.22);
+  border-radius: 4px;
+  flex: 0 0 auto;
+  height: 18px;
+  min-height: 18px;
+  padding: 0;
+  width: 18px;
+}
+
+.preferences-page .ai-review-preferences-card {
+  display: grid;
+  gap: 12px;
+}
+
+.preferences-page .ai-review-preferences-head {
+  align-items: start;
+  display: grid;
+  gap: 12px;
+  grid-template-columns: minmax(0, 1fr) auto;
+}
+
+.preferences-page .ai-advanced-toggles {
+  display: grid;
+  gap: 10px;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  margin: 0;
+}
+
+.preferences-page .ai-toggle {
+  align-items: start;
+  display: grid;
+  gap: 10px;
+  grid-template-columns: auto minmax(0, 1fr);
+  min-width: 0;
+}
+
+.preferences-page .ai-toggle > span {
+  min-width: 0;
+}
+
+.preferences-page .ai-toggle strong,
+.preferences-page .ai-toggle em {
+  overflow-wrap: normal;
+  word-break: normal;
+}
+
+.preferences-page .planner-prefs {
+  background: rgba(3, 9, 7, 0.44);
+  border: 1px solid rgba(224, 230, 226, 0.1);
+  border-radius: 8px;
+  margin: 0;
+  overflow: hidden;
+}
+
+.preferences-page .planner-prefs > summary {
+  align-items: center;
+  cursor: pointer;
+  display: grid;
+  gap: 12px;
+  grid-template-columns: minmax(0, 1fr) auto;
+  list-style: none;
+  min-height: 48px;
+  padding: 11px 12px;
+}
+
+.preferences-page .planner-prefs > summary::-webkit-details-marker {
+  display: none;
+}
+
+.preferences-page .planner-prefs > summary span {
+  color: var(--text);
+  font-size: 0.9rem;
+  font-weight: 900;
+}
+
+.preferences-page .planner-prefs > summary em {
+  color: rgba(196, 205, 202, 0.72);
+  font-size: 0.76rem;
+  font-style: normal;
+  font-weight: 780;
+  text-align: right;
+}
+
+.preferences-page .planner-prefs-body {
+  border-top: 1px solid rgba(224, 230, 226, 0.08);
+  display: grid;
+  gap: 12px;
+  padding: 12px;
+}
+
+.preferences-page .planner-house-rules-field textarea {
+  min-height: 96px;
+}
+
+.preferences-page .planner-prompts-form,
+.preferences-page .agent-save-form,
+.preferences-page .recipient-save-form,
+.preferences-page .custom-token-save-form,
+.preferences-page .agent-policy-save-form {
+  display: grid;
+  gap: 10px;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.preferences-page .planner-prompts-actions,
+.preferences-page .agent-save-actions,
+.preferences-page .recipient-save-actions,
+.preferences-page .custom-token-save-actions,
+.preferences-page .agent-policy-save-actions {
+  display: grid;
+  gap: 8px;
+  grid-column: 1 / -1;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.preferences-page .agent-notes-field,
+.preferences-page .recipient-note-field,
+.preferences-page .recipient-tags-field,
+.preferences-page .custom-token-label-field,
+.preferences-page .agent-policy-detail-field,
+.preferences-page .planner-prompt-body-field {
+  grid-column: 1 / -1;
+}
+
+.preferences-page .recipient-mine-field {
+  align-content: start;
+  grid-column: 1 / -1;
+  justify-items: start;
+}
+
+.preferences-page .recipient-mine-field input[type="checkbox"] {
+  margin-top: 2px;
+}
+
+.preferences-page .recipient-mine-hint,
+.preferences-page .planner-house-rules-counter {
+  color: rgba(196, 205, 202, 0.68);
+  font-size: 0.76rem;
+  font-style: normal;
+}
+
+.preferences-page .agent-empty,
+.preferences-page .custom-token-empty,
+.preferences-page .agent-policy-empty,
+.preferences-page .planner-prompts-empty {
+  background: rgba(255, 255, 255, 0.022);
+  border: 1px dashed rgba(224, 230, 226, 0.14);
+  border-radius: 8px;
+  color: rgba(196, 205, 202, 0.72);
+  font-size: 0.82rem;
+  font-weight: 760;
+  padding: 10px;
+}
+
+.preferences-page .safety-rails-card {
+  display: grid;
+  gap: 10px;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.preferences-page .safety-rails-section {
+  margin: 0;
+  min-width: 0;
+}
+
+.preferences-page .safety-rails-input-row {
+  align-items: stretch;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+}
+
+.preferences-page .safety-rails-cap-row {
+  grid-template-columns: minmax(88px, 1fr) repeat(3, minmax(82px, 0.75fr)) auto;
+}
+
+.preferences-page .failure-policies-card {
+  display: grid;
+  gap: 12px;
+}
+
+.preferences-page .failure-policies-intro {
+  color: rgba(196, 205, 202, 0.78);
+  font-size: 0.84rem;
+  line-height: 1.38;
+  margin: 0;
+}
+
+.preferences-page .failure-policy-list {
+  display: grid;
+  gap: 10px;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.preferences-page .failure-policy-row {
+  align-items: center;
+  background: rgba(255, 255, 255, 0.024);
+  border: 1px solid rgba(224, 230, 226, 0.09);
+  border-radius: 8px;
+  display: grid;
+  gap: 10px;
+  grid-template-columns: minmax(150px, 1fr) auto 82px;
+  padding: 10px;
+}
+
+.preferences-page .failure-policy-row > div:first-child {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+}
+
+.preferences-page .failure-policy-row strong {
+  color: var(--text);
+  font-size: 0.84rem;
+  line-height: 1.18;
+}
+
+.preferences-page .failure-policy-row em {
+  color: rgba(196, 205, 202, 0.62);
+  font-size: 0.68rem;
+  font-style: normal;
+  font-weight: 780;
+  line-height: 1.1;
+}
+
+.preferences-page .failure-policy-mode-controls {
+  display: grid;
+  gap: 4px;
+  grid-template-columns: repeat(3, minmax(40px, 1fr));
+}
+
+.preferences-page .failure-policy-mode-controls button {
+  font-size: 0.72rem;
+  min-height: 32px;
+  padding: 0 8px;
+}
+
+.preferences-page .failure-policy-mode-controls button.active {
+  background: rgba(125, 231, 176, 0.14);
+  border-color: rgba(125, 231, 176, 0.3);
+  color: #dcffe9;
+}
+
+.preferences-page .failure-policy-max-attempts {
+  display: grid;
+  gap: 4px;
+  margin: 0;
+  min-width: 0;
+}
+
+.preferences-page .failure-policy-max-attempts span {
+  color: var(--dim);
+  font-size: 0.62rem;
+  font-weight: 900;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.preferences-page .failure-policy-max-attempts input {
+  min-height: 34px;
+  padding: 6px 8px;
+}
+
+@media (max-width: 1180px) {
+  .preferences-page .preferences-card-grid,
+  .preferences-page .workspace-preferences-grid,
+  .preferences-page .failure-policy-list,
+  .preferences-page .safety-rails-card {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+@media (max-width: 760px) {
+  .preferences-page-head {
+    padding: 12px;
+  }
+
+  .preferences-subtabs {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .preferences-storage-policy {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .preferences-page .preferences-group-head {
+    display: grid;
+    gap: 4px;
+  }
+
+  .preferences-page .preferences-group-head p {
+    text-align: left;
+  }
+
+  .preferences-page .ai-review-preferences-head,
+  .preferences-page .ai-advanced-toggles,
+  .preferences-page .workspace-backup-stats,
+  .preferences-page .planner-prompts-form,
+  .preferences-page .agent-save-form,
+  .preferences-page .recipient-save-form,
+  .preferences-page .custom-token-save-form,
+  .preferences-page .agent-policy-save-form,
+  .preferences-page .planner-prompts-actions,
+  .preferences-page .agent-save-actions,
+  .preferences-page .recipient-save-actions,
+  .preferences-page .custom-token-save-actions,
+  .preferences-page .agent-policy-save-actions,
+  .preferences-page .safety-rails-input-row,
+  .preferences-page .safety-rails-cap-row,
+  .preferences-page .failure-policy-row {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .preferences-page .planner-prefs > summary em {
+    justify-self: start;
     text-align: left;
   }
 }

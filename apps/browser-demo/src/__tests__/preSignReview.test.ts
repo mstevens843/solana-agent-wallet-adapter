@@ -339,33 +339,6 @@ describe('buildSwapPreSignReview', () => {
           { label: 'Price impact', value: '0.12%' },
         ],
       },
-      {
-        title: 'Route',
-        rows: [
-          { label: 'Route', value: 'Jupiter v6 · Whirlpool' },
-          {
-            label: 'Jupiter id',
-            value: 'jup_re…8d9f12',
-            title: JUPITER_REQUEST_ID,
-            copyValue: JUPITER_REQUEST_ID,
-          },
-        ],
-      },
-      {
-        title: 'Wallet',
-        rows: [
-          {
-            label: 'Wallet',
-            value: '9wFF…ZmVc',
-            title: TAKER,
-            copyValue: TAKER,
-          },
-        ],
-      },
-      {
-        title: 'Network',
-        rows: [{ label: 'Cluster', value: 'mainnet-beta' }],
-      },
     ]);
   });
 
@@ -410,7 +383,7 @@ describe('buildSwapPreSignReview', () => {
     expect(model.warnings).toContain('Price impact is 3.5%.');
   });
 
-  it('warns about missing expected output and route label', () => {
+  it('warns about missing expected output', () => {
     const model = buildSwapPreSignReview({
       cluster: 'mainnet-beta',
       taker: TAKER,
@@ -420,7 +393,6 @@ describe('buildSwapPreSignReview', () => {
       slippageBps: 50,
     });
     expect(model.warnings).toContain('Expected output is missing.');
-    expect(model.warnings).toContain('Route label is missing.');
   });
 
   it('does not require quote details when quoteRequired is false', () => {
@@ -435,7 +407,6 @@ describe('buildSwapPreSignReview', () => {
     });
 
     expect(model.warnings).not.toContain('Expected output is missing.');
-    expect(model.warnings).not.toContain('Route label is missing.');
   });
 
   it('does not render n/a rows when optional swap fields are missing', () => {

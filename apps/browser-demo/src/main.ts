@@ -194,7 +194,8 @@ import './styles.css';
 
 type StepState = 'idle' | 'active' | 'done' | 'error';
 type StepName = 'discover' | 'connect' | 'sign' | 'transaction' | 'bridge' | 'inbox' | 'lab' | 'ai';
-type ActiveTab = 'overview' | 'wallet' | 'agent' | 'generated' | 'inbox' | 'completed' | 'schedule' | 'labs';
+type ActiveTab = 'overview' | 'wallet' | 'agent' | 'generated' | 'inbox' | 'completed' | 'schedule' | 'labs' | 'preferences';
+type PreferencesView = 'workspace' | 'ai' | 'access' | 'rules' | 'tokens';
 type CommandCenterView = 'center' | 'ai' | 'storage';
 type CommandCenterIconId = 'wallet' | 'approvals' | 'recurring' | 'proofs';
 type ArtifactView = 'create' | 'signed';
@@ -512,7 +513,6 @@ const KNOWN_BROWSER_TOKENS: Record<string, { symbol: string; mint: string; decim
   WIF: { symbol: 'WIF', mint: WIF_MINT, decimals: 6 },
   PYUSD: { symbol: 'PYUSD', mint: PYUSD_MINT, decimals: 6 },
 };
-const STABLECOIN_SYMBOLS = new Set(['USDC', 'USDT', 'PYUSD', 'USDP', 'USDS', 'DAI']);
 const EXECUTABLE_BROWSER_ACTION_KINDS = new Set<PreparedActionKind>([
   'transfer_sol',
   'transfer_spl',
@@ -1315,6 +1315,7 @@ interface PersistedState {
   browserWalletSession?: BrowserWalletSession;
   selectedIosWalletId?: IosNativeWalletId;
   workflowModePreference?: WorkflowModePreference;
+  preferencesView?: PreferencesView;
   cluster?: Cluster;
   bridgeUrl?: string;
   aiMode?: AiSettings['mode'];
@@ -1449,7 +1450,7 @@ interface DemoState {
   cloudSession: CloudSessionState;
   cloudWorkspaceDeleteModalOpen: boolean;
   completedDeleteModalId: string;
-  preferencesOpen: boolean;
+  preferencesView: PreferencesView;
   wallets: DiscoveredWallet[];
   selectedWalletName: string;
   browserWalletPickerOpen: boolean;
@@ -2139,7 +2140,7 @@ const state: DemoState = {
   },
   cloudWorkspaceDeleteModalOpen: false,
   completedDeleteModalId: '',
-  preferencesOpen: false,
+  preferencesView: persisted.preferencesView ?? 'workspace',
   wallets: [],
   selectedWalletName: persisted.browserWalletSession?.cluster === initialCluster ? persisted.browserWalletSession.walletName : '',
   browserWalletPickerOpen: false,
@@ -2322,10 +2323,6 @@ function handleGlobalKeydown(event: KeyboardEvent): void {
     closeGeneratedPlanAuditModal();
     return;
   }
-  if (event.key === 'Escape' && state.preferencesOpen) {
-    event.preventDefault();
-    closePreferences();
-  }
 }
 
 function hydrateGeneratedPlansForStartup(): void {
@@ -2495,7 +2492,6 @@ function pageShell(content: string, activeRoute: AppRoute | null): string {
       ${content}
       ${cloudWorkspaceDeleteModal()}
       ${completedDeleteModal()}
-      ${preferencesDrawer(activeRoute)}
       ${activeRoute === '/app' || activeRoute === '/demo' ? workspaceBackupRestoreModal() : ''}
       ${homepageFooter()}
     </section>
@@ -4456,56 +4452,124 @@ function walletRail(): string {
 }
 
 function preferencesButton(): string {
+  const active = state.activeTab === 'preferences';
   return `
     <button
       type="button"
-      class="utility preferences-open-button"
-      data-preferences-action="open"
-      aria-haspopup="dialog"
-      aria-expanded="${state.preferencesOpen ? 'true' : 'false'}"
+      data-tab="preferences"
+      class="utility preferences-open-button ${active ? 'active' : ''}"
+      aria-pressed="${active ? 'true' : 'false'}"
+      aria-label="Open Preferences"
     >
       Preferences
     </button>
   `;
 }
 
-function preferencesDrawer(activeRoute: AppRoute | null): string {
-  if (!state.preferencesOpen || (activeRoute !== '/app' && activeRoute !== '/demo')) return '';
+function preferencesPanel(): string {
   return `
-    <div class="preferences-drawer-scrim" data-preferences-action="close" aria-hidden="true"></div>
-    <aside class="preferences-drawer" role="dialog" aria-modal="true" aria-labelledby="preferences-title">
-      <header class="preferences-drawer-header">
+    <div class="preferences-page" data-layout="preferences-page">
+      <header class="preferences-page-head">
         <div>
           <p class="preferences-eyebrow">Workspace</p>
           <h2 id="preferences-title">Preferences</h2>
-          <p>Workspace storage, AI drafting preferences, agent access, review rules, tokens, and retry behavior.</p>
+          <p>Settings grouped by workflow area. Preferences save locally first; Cloud sync applies only to supported non-secret settings.</p>
         </div>
-        <button type="button" class="preferences-close-button" data-preferences-action="close" aria-label="Close preferences">Close</button>
       </header>
-      <div class="preferences-drawer-body">
-        ${preferencesGroup('Workspace State', 'Backups and background alerts', `
+      ${preferencesStoragePolicy()}
+      <nav class="preferences-subtabs" role="tablist" aria-label="Preferences sections">
+        ${preferencesViewButton('workspace', 'Workspace', 'Backup & alerts')}
+        ${preferencesViewButton('ai', 'AI Drafting', 'Prompts & review')}
+        ${preferencesViewButton('access', 'Agent Access', 'Agents & dApps')}
+        ${preferencesViewButton('rules', 'Review Rules', 'Recipients & policy')}
+        ${preferencesViewButton('tokens', 'Tokens & Retry', 'Labels & failures')}
+      </nav>
+      <div class="preferences-view">
+        ${preferencesActiveView()}
+      </div>
+    </div>
+  `;
+}
+
+function preferencesStoragePolicy(): string {
+  const cloudSynced = state.cloudSession.status === 'signed-in' && cloudSessionMatchesWallet();
+  const cloudTitle = state.cloudSession.status === 'unavailable'
+    ? 'Cloud unavailable'
+    : cloudSynced
+      ? 'Cloud sync on'
+      : 'Cloud sync off';
+  const cloudDetail = cloudSynced
+    ? 'Agent policies sync today. Other prefs stay local until Cloud APIs support them.'
+    : 'Sign in to Cloud Storage to sync supported non-secret prefs.';
+  return `
+    <section class="preferences-storage-policy" aria-label="Preferences save policy">
+      ${preferencesStoragePolicyItem('Local first', 'Every preference writes to this browser immediately.')}
+      ${preferencesStoragePolicyItem(cloudTitle, cloudDetail)}
+      ${preferencesStoragePolicyItem('AI paths draft only', 'Hosted, browser session, and local bridge AI are not storage backends.')}
+      ${preferencesStoragePolicyItem('Secrets stay local', 'AI keys, bridge tokens, wallet auth, and notification permission are device-only.')}
+    </section>
+  `;
+}
+
+function preferencesStoragePolicyItem(title: string, detail: string): string {
+  return `
+    <article>
+      <strong>${escapeHtml(title)}</strong>
+      <span>${escapeHtml(detail)}</span>
+    </article>
+  `;
+}
+
+function preferencesViewButton(view: PreferencesView, title: string, detail: string): string {
+  const active = state.preferencesView === view;
+  return `
+    <button
+      type="button"
+      class="${active ? 'active' : ''}"
+      data-preferences-view="${escapeHtml(view)}"
+      role="tab"
+      aria-selected="${active ? 'true' : 'false'}"
+    >
+      <span>${escapeHtml(title)}</span>
+      <em>${escapeHtml(detail)}</em>
+    </button>
+  `;
+}
+
+function preferencesActiveView(): string {
+  switch (state.preferencesView) {
+    case 'workspace':
+      return preferencesGroup('Workspace State', 'Export, restore, and background alerts for this browser workspace.', `
+        <div class="preferences-card-grid workspace-preferences-grid">
           ${workspaceBackupPanel()}
           ${notificationPreferencesPanel()}
-        `)}
-        ${preferencesGroup('AI Drafting', 'Planner personalization and review extras', `
-          ${aiReviewPreferencesPanel()}
-        `)}
-        ${preferencesGroup('Agent Access', 'Bridge tokens and protocol connectors', `
+        </div>
+      `);
+    case 'ai':
+      return preferencesGroup('AI Drafting', 'Personalize drafts and optional review behavior without changing signing authority.', aiReviewPreferencesPanel());
+    case 'access':
+      return preferencesGroup('Agent Access', 'Manage bridge agents and protocol connectors used to prepare actions.', `
+        <div class="preferences-card-grid">
           ${connectedAgentsPanel()}
           ${connectedDappsPanel()}
-        `)}
-        ${preferencesGroup('Review Rules', 'Recipient, policy, and preflight checks', `
+        </div>
+      `);
+    case 'rules':
+      return preferencesGroup('Review Rules', 'Recipient checks, hard safety rails, and agent review policies.', `
+        <div class="preferences-card-grid">
           ${recipientRulesPanel()}
           ${safetyRailsPanel()}
           ${agentPoliciesPanel()}
-        `)}
-        ${preferencesGroup('Tokens & Retry', 'Token labels and transaction retry defaults', `
+        </div>
+      `);
+    case 'tokens':
+      return preferencesGroup('Tokens & Retry', 'Token display names and failure retry defaults.', `
+        <div class="preferences-card-grid tokens-preferences-grid">
           ${customTokensPanel()}
           ${failurePoliciesPanel()}
-        `)}
-      </div>
-    </aside>
-  `;
+        </div>
+      `);
+  }
 }
 
 function preferencesGroup(title: string, detail: string, content: string): string {
@@ -6626,6 +6690,8 @@ function activePanel(): string {
       return scheduledApprovalsPanel();
     case 'labs':
       return labsPanel();
+    case 'preferences':
+      return preferencesPanel();
   }
 }
 
@@ -6961,8 +7027,8 @@ function workspaceBackupPanel(): string {
         </label>
       </div>
       <ul class="workspace-backup-notes">
-        <li>API key in AI settings is included in the file. Treat the export as sensitive.</li>
-        <li>Bridge session token and desktop token are never exported.</li>
+        <li>AI route/provider settings are included. AI keys, bridge tokens, and desktop tokens are never exported.</li>
+        <li>Cloud sync is separate from this manual browser-local export.</li>
         ${unresolved > 0 ? '<li class="warn">Resolve unresolved transactions before restoring on another device.</li>' : ''}
       </ul>
       ${statusLine}
@@ -11326,6 +11392,8 @@ function contextPanel(): string {
                 ? 'Create repeat payment'
                 : state.activeTab === 'completed'
                   ? 'Review done work'
+                  : state.activeTab === 'preferences'
+                    ? 'Adjust workspace preferences'
                   : state.activeTab === 'labs' && state.artifactView === 'signed'
                     ? 'Review saved proofs'
                     : state.activeTab === 'labs'
@@ -11486,15 +11554,14 @@ function bind(): void {
     });
   }
 
-  for (const button of document.querySelectorAll<HTMLElement>('[data-preferences-action]')) {
-    button.addEventListener('click', (event) => {
-      event.preventDefault();
-      const action = button.dataset.preferencesAction;
-      if (action === 'open') {
-        openPreferences();
-      } else if (action === 'close') {
-        closePreferences();
-      }
+  for (const button of document.querySelectorAll<HTMLButtonElement>('[data-preferences-view]')) {
+    button.addEventListener('click', () => {
+      const view = button.dataset.preferencesView as PreferencesView | undefined;
+      if (!view || !isPreferencesView(view)) return;
+      state.preferencesView = view;
+      state.error = '';
+      savePersistedState();
+      render();
     });
   }
 
@@ -14024,19 +14091,6 @@ function openCompletedDeleteModal(completedId: string): void {
 function closeCompletedDeleteModal(): void {
   if (!state.completedDeleteModalId) return;
   state.completedDeleteModalId = '';
-  render();
-}
-
-function openPreferences(): void {
-  if (state.preferencesOpen) return;
-  state.preferencesOpen = true;
-  state.error = '';
-  render();
-}
-
-function closePreferences(): void {
-  if (!state.preferencesOpen) return;
-  state.preferencesOpen = false;
   render();
 }
 
@@ -16795,15 +16849,6 @@ async function runCreateRecurring(): Promise<void> {
 }
 
 async function runPreparedActionOp(actionId: string, op: string): Promise<void> {
-  if (op === 'copy') {
-    const action = state.preparedActions.find((candidate) => candidate.id === actionId);
-    if (action) {
-      await navigator.clipboard.writeText(stableJson(action));
-      pushToast('success', 'Receipt copied', actionId);
-    }
-    return;
-  }
-
   const action = state.preparedActions.find((candidate) => candidate.id === actionId);
   if (action?.workflowSource === 'cloud') {
     await run('inbox', async () => {
@@ -17650,7 +17695,7 @@ function browserExecutionStartMessage(action: PreparedAction): string {
     case 'transfer_spl':
       return `Approve the wallet transaction to send ${amountLabel(action)}.`;
     case 'swap':
-      return `Approve the wallet transaction to swap ${amountLabel(action)} ${tokenLabel(action)}.`;
+      return `Approve the wallet transaction to swap ${swapAmountLabel(action)} to ${swapOutputTokenLabel(action)}.`;
     case 'custom_transaction':
       return 'Approve the wallet transaction to broadcast the provided transaction bytes.';
     default:
@@ -20421,37 +20466,11 @@ function swapQuoteNeedsAutoHydration(action: PreparedAction, now: number): boole
 }
 
 function hasUsableSwapQuote(action: PreparedAction): boolean {
-  return Boolean(stringParam(action, 'expectedOutput') && stringParam(action, 'routeLabel'));
+  return Boolean(stringParam(action, 'expectedOutput'));
 }
 
 function shouldAutoHydrateSwapQuote(action: PreparedAction): boolean {
-  return action.kind === 'swap' && !isSolStableOrStableStableSwap(action);
-}
-
-function isSolStableOrStableStableSwap(action: PreparedAction): boolean {
-  const input = normalizedSwapTokenSymbol(stringParam(action, 'inputToken'));
-  const output = normalizedSwapTokenSymbol(stringParam(action, 'outputToken'));
-  if (!input || !output) return false;
-  const inputSol = input === 'SOL';
-  const outputSol = output === 'SOL';
-  const inputStable = STABLECOIN_SYMBOLS.has(input);
-  const outputStable = STABLECOIN_SYMBOLS.has(output);
-  return (inputSol && outputStable) || (outputSol && inputStable) || (inputStable && outputStable);
-}
-
-function normalizedSwapTokenSymbol(value: string): string {
-  const trimmed = value.trim();
-  if (!trimmed) return '';
-  const upper = trimmed.toUpperCase();
-  const knownBySymbol = KNOWN_BROWSER_TOKENS[upper];
-  if (knownBySymbol) return knownBySymbol.symbol.toUpperCase();
-  const knownByMint = Object.values(KNOWN_BROWSER_TOKENS).find((token) => token.mint === trimmed);
-  if (knownByMint) return knownByMint.symbol.toUpperCase();
-  const customByMint = customTokenByMint(trimmed);
-  if (customByMint) return customByMint.symbol.toUpperCase();
-  const customBySymbol = customTokenBySymbol(trimmed);
-  if (customBySymbol) return customBySymbol.symbol.toUpperCase();
-  return upper;
+  return action.kind === 'swap';
 }
 
 async function hydrateSwapQuoteForAction(action: PreparedAction): Promise<boolean> {
@@ -22205,6 +22224,10 @@ function lockedTabReason(tab: ActiveTab): string {
   return '';
 }
 
+function isPreferencesView(value: string): value is PreferencesView {
+  return value === 'workspace' || value === 'ai' || value === 'access' || value === 'rules' || value === 'tokens';
+}
+
 function step(name: StepName, title: string, detail: string): string {
   return `
     <li class="${state.steps[name]}">
@@ -22435,12 +22458,14 @@ function preparedActionCard(action: PreparedAction): string {
             ${actionTimelineHtml(action)}
             <p class="ticket-meta-line">${escapeHtml(action.kind)} on ${escapeHtml(action.cluster)} - due ${formatDateTime(action.dueAt)}</p>
           </div>
-          ${inboxApprovalHero(action)}
-          <div class="inbox-actions inbox-approval-actions">
-            ${confirmable
-              ? `<button data-action-op="confirm" data-action-id="${action.id}" class="primary" ${state.busy ? 'disabled' : ''}>Check confirmation</button>`
-              : `<button data-action-op="execute" data-action-id="${action.id}" class="primary" ${executeDisabled ? 'disabled' : ''} ${executionBlockReason ? `title="${escapeHtml(executionBlockReason)}"` : ''}>${escapeHtml(decisionLabels.approve)}</button>`}
-            <button class="utility danger" data-action-op="reject" data-action-id="${action.id}" ${state.busy || isTerminalPreparedAction(action) ? 'disabled' : ''}>${escapeHtml(decisionLabels.reject)}</button>
+          <div class="inbox-approval-decision">
+            ${inboxApprovalHero(action)}
+            <div class="inbox-actions inbox-approval-actions">
+              ${confirmable
+                ? `<button data-action-op="confirm" data-action-id="${action.id}" class="primary" ${state.busy ? 'disabled' : ''}>Check confirmation</button>`
+                : `<button data-action-op="execute" data-action-id="${action.id}" class="primary" ${executeDisabled ? 'disabled' : ''} ${executionBlockReason ? `title="${escapeHtml(executionBlockReason)}"` : ''}>${escapeHtml(decisionLabels.approve)}</button>`}
+              <button class="utility danger" data-action-op="reject" data-action-id="${action.id}" ${state.busy || isTerminalPreparedAction(action) ? 'disabled' : ''}>${escapeHtml(decisionLabels.reject)}</button>
+            </div>
           </div>
         </div>
         ${inboxApprovalSummaryGrid(action)}
@@ -22463,7 +22488,6 @@ function preparedActionCard(action: PreparedAction): string {
         </div>
         ${executionBlockReason ? `<p class="error-text">${escapeHtml(executionBlockReason)}</p>` : ''}
         <div class="inbox-approval-footer-row">
-          <button class="utility inbox-footer-action" data-action-op="copy" data-action-id="${action.id}">Copy request</button>
           ${hasPendingExecutionLedgerEntry(action.id) || action.txid || action.status === 'failed' ? `<button class="utility inbox-footer-action" data-attach-tx-action="open" data-action-id="${escapeHtml(action.id)}">Attach existing transaction</button>` : ''}
           ${action.status === 'failed' || action.txError ? `<button class="utility inbox-footer-action" data-debug-export data-action-id="${escapeHtml(action.id)}">Copy debug log</button>` : ''}
           <button class="utility inbox-footer-action" data-action-op="archive" data-action-id="${action.id}" ${state.busy ? 'disabled' : ''} title="Remove from Needs Approval without signing a denial proof.">Archive</button>
@@ -22519,7 +22543,14 @@ type TokenDisplaySummary = {
   mint?: string;
 };
 
-function inboxApprovalTokenSummary(action: PreparedAction): { value: string; title: string; copyActions?: SummaryCopyAction[] } {
+type TokenRouteDisplaySummary = {
+  value: string;
+  title: string;
+  html: string;
+  copyActions?: SummaryCopyAction[];
+};
+
+function inboxApprovalTokenSummary(action: PreparedAction): { value: string; title: string; html?: string; copyActions?: SummaryCopyAction[] } {
   if (action.kind === 'transfer_sol') {
     return tokenDisplaySummary('SOL', { copyLabel: 'Copy token' });
   }
@@ -22554,14 +22585,30 @@ function tokenDisplaySummary(
 function tokenRouteDisplaySummary(
   inputToken: string,
   outputToken: string,
-): { value: string; title: string; copyActions?: SummaryCopyAction[] } {
+): TokenRouteDisplaySummary {
   const input = tokenDisplaySummary(inputToken, { copyLabel: 'Copy input', copyName: 'Input token mint' });
   const output = tokenDisplaySummary(outputToken, { copyLabel: 'Copy output', copyName: 'Output token mint' });
   return {
     value: `${input.value} -> ${output.value}`,
     title: `${input.title} -> ${output.title}`,
     copyActions: [...(input.copyActions ?? []), ...(output.copyActions ?? [])],
+    html: `
+      <span class="token-route-inline">
+        ${tokenRouteLegHtml(input.value, input.copyActions?.[0])}
+        <span class="token-route-arrow" aria-hidden="true">-&gt;</span>
+        ${tokenRouteLegHtml(output.value, output.copyActions?.[0])}
+      </span>
+    `,
   };
+}
+
+function tokenRouteLegHtml(label: string, copyAction: SummaryCopyAction | undefined): string {
+  return `
+    <span class="token-route-leg">
+      <span>${escapeHtml(label)}</span>
+      ${copyAction ? copyActionButtonHtml(copyAction, label, true) : ''}
+    </span>
+  `;
 }
 
 function tokenCopyActions(value: string, copyLabel = 'Copy token', copyName = 'Token mint'): SummaryCopyAction[] {
@@ -22618,59 +22665,90 @@ function summaryCopyActions(row: {
   }] : [];
 }
 
-function summaryCopyActionsHtml(actions: SummaryCopyAction[], fallbackName: string): string {
+function summaryCopyActionsHtml(
+  actions: SummaryCopyAction[],
+  fallbackName: string,
+  options: { compact?: boolean } = {},
+): string {
   if (!actions.length) return '';
   return `
     <span class="summary-copy-actions">
-      ${actions.map((action) => `
-        <button
-          type="button"
-          class="wallet-action-copy"
-          data-copy="${escapeHtml(action.value)}"
-          data-copy-name="${escapeHtml(action.name ?? fallbackName)}"
-        >
-          ${escapeHtml(action.label)}
-        </button>
-      `).join('')}
+      ${actions.map((action) => copyActionButtonHtml(action, fallbackName, Boolean(options.compact))).join('')}
     </span>
   `;
+}
+
+function copyActionButtonHtml(action: SummaryCopyAction, fallbackName: string, compact = false): string {
+  return `
+    <button
+      type="button"
+      class="wallet-action-copy${compact ? ' compact-copy' : ''}"
+      data-copy="${escapeHtml(action.value)}"
+      data-copy-name="${escapeHtml(action.name ?? fallbackName)}"
+      aria-label="${escapeHtml(action.label)}"
+      title="${escapeHtml(action.label)}"
+    >
+      ${compact ? copyButtonIcon() : escapeHtml(action.label)}
+    </button>
+  `;
+}
+
+function copyButtonIcon(): string {
+  return '<svg class="wallet-action-copy-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M8 7h10v13H8V7Zm2 2v9h6V9h-6Z"></path><path d="M5 4h10v2H7v10H5V4Z"></path></svg>';
 }
 
 function inboxApprovalSummaryGrid(action: PreparedAction): string {
   const recipient = recipientParam(action);
   const tokenSummary = inboxApprovalTokenSummary(action);
-  const rows: Array<{ kind: 'wallet' | 'recipient' | 'token' | 'due'; label: string; value: string; title?: string; copyValue?: string; copyName?: string; copyLabel?: string; copyActions?: SummaryCopyAction[]; tone?: 'amount' }> = [
+  const expectedOutput = inboxApprovalExpectedOutputLabel(action);
+  const rows: Array<{ kind: 'wallet' | 'recipient' | 'token' | 'due'; label: string; value: string; html?: string; detail?: string; title?: string; copyValue?: string; copyName?: string; copyLabel?: string; copyActions?: SummaryCopyAction[]; tone?: 'amount' }> = [
     { kind: 'wallet', label: 'Wallet', value: short(action.walletAddress), title: action.walletAddress, copyValue: action.walletAddress },
     ...(recipient ? [{ kind: 'recipient' as const, label: 'Recipient', value: recipientDisplayLabel(recipient), title: recipient, copyValue: recipient }] : []),
-    { kind: 'token', label: 'Token', value: tokenSummary.value, title: tokenSummary.title, copyActions: tokenSummary.copyActions },
+    { kind: 'token', label: 'Token', value: tokenSummary.value, html: tokenSummary.html, detail: expectedOutput, title: tokenSummary.title, copyActions: tokenSummary.copyActions },
     { kind: 'due', label: 'Due', value: formatDateTime(action.dueAt) },
   ];
   return `
-    <dl class="inbox-approval-summary-grid rows-${rows.length}" aria-label="Approval summary">
+    <dl class="inbox-approval-summary-grid rows-${rows.length} ${action.kind === 'swap' ? 'swap-summary' : ''}" aria-label="Approval summary">
       ${rows.map((row) => inboxApprovalSummaryItem(row)).join('')}
     </dl>
   `;
 }
 
-function inboxApprovalSummaryItem(row: { kind: 'wallet' | 'recipient' | 'token' | 'due'; label: string; value: string; title?: string; copyValue?: string; copyName?: string; copyLabel?: string; copyActions?: SummaryCopyAction[]; tone?: 'amount' }): string {
+function inboxApprovalExpectedOutputLabel(action: PreparedAction): string | undefined {
+  if (action.kind !== 'swap') return undefined;
+  const expectedOutput = stringParam(action, 'expectedOutput');
+  const outputToken = swapOutputTokenLabel(action);
+  return expectedOutput
+    ? [expectedOutput, outputToken].filter(Boolean).join(' ')
+    : 'Fetching quote';
+}
+
+function inboxApprovalSummaryItem(row: { kind: 'wallet' | 'recipient' | 'token' | 'due'; label: string; value: string; html?: string; detail?: string; title?: string; copyValue?: string; copyName?: string; copyLabel?: string; copyActions?: SummaryCopyAction[]; tone?: 'amount' }): string {
   const title = row.title ?? row.value;
   const copyActions = summaryCopyActions(row);
   const ddClass = [
     copyActions.length ? 'has-copy' : '',
     copyActions.length > 1 ? 'has-copy-multi' : '',
   ].filter(Boolean).join(' ');
+  const itemClass = [
+    `inbox-approval-summary-${escapeHtml(row.kind)}`,
+    row.detail ? 'has-detail' : '',
+    row.tone ? `inbox-approval-summary-${row.tone}` : '',
+  ].filter(Boolean).join(' ');
   return `
-    <div class="inbox-approval-summary-${escapeHtml(row.kind)} ${row.tone ? `inbox-approval-summary-${row.tone}` : ''}" title="${escapeHtml(title)}">
+    <div class="${itemClass}" title="${escapeHtml(title)}">
       <dt>${escapeHtml(row.label)}</dt>
       <dd class="${ddClass}">
-        <span>${escapeHtml(row.value)}</span>
-        ${summaryCopyActionsHtml(copyActions, row.label)}
+        ${row.html ?? `<span>${escapeHtml(row.value)}</span>`}
+        ${row.html ? '' : summaryCopyActionsHtml(copyActions, row.label, { compact: true })}
       </dd>
+      ${row.detail ? `<p class="inbox-approval-summary-detail">${escapeHtml(row.detail)}</p>` : ''}
     </div>
   `;
 }
 
 function preSignReviewBlock(action: PreparedAction): string {
+  if (action.kind === 'swap') return policyWarningsStrip(action);
   if (!isExecutableBrowserAction(action) && action.workflowSource !== 'local-bridge') return '';
   // Suppress review once the action is in flight — the Check-confirmation flow takes over.
   if (hasPendingExecutionLedgerEntry(action.id)) return '';
@@ -24347,6 +24425,8 @@ function surfaceEyebrow(): string {
       return 'Repeat payments';
     case 'labs':
       return state.artifactView === 'signed' ? 'Saved proofs' : 'Save proof';
+    case 'preferences':
+      return 'Preferences';
   }
 }
 
@@ -24368,6 +24448,8 @@ function surfaceTitle(): string {
       return 'Repeat Payments';
     case 'labs':
       return 'Save Proof';
+    case 'preferences':
+      return 'Preferences';
   }
 }
 
@@ -24383,8 +24465,26 @@ function emptyInboxText(): string {
 
 function amountLabel(action: PreparedAction): string {
   if (typeof action.params.amountSol === 'string') return `${action.params.amountSol} SOL`;
+  if (action.kind === 'swap') return swapAmountLabel(action);
   if (typeof action.params.amount === 'string') return action.params.amount;
   return 'n/a';
+}
+
+function swapAmountLabel(action: PreparedAction): string {
+  const amount = stringParam(action, 'amount') || stringParam(action, 'inputAmount');
+  const input = swapInputTokenLabel(action);
+  if (amount && input) return `${amount} ${input}`;
+  return amount || 'n/a';
+}
+
+function swapInputTokenLabel(action: PreparedAction): string {
+  const input = stringParam(action, 'inputToken') || stringParam(action, 'token');
+  return resolveTokenDisplay(input || undefined) || tokenDisplayLabel(input || '');
+}
+
+function swapOutputTokenLabel(action: PreparedAction): string {
+  const output = stringParam(action, 'outputToken');
+  return resolveTokenDisplay(output || undefined) || tokenDisplayLabel(output || '');
 }
 
 function tokenLabel(action: PreparedAction): string {
@@ -25734,6 +25834,7 @@ function loadPersistedState(): PersistedState {
         isPersistedIosWalletId(parsed.selectedIosWalletId) && { selectedIosWalletId: parsed.selectedIosWalletId }),
       ...(typeof parsed.workflowModePreference === 'string' &&
         isWorkflowModePreference(parsed.workflowModePreference) && { workflowModePreference: parsed.workflowModePreference }),
+      ...(typeof parsed.preferencesView === 'string' && isPreferencesView(parsed.preferencesView) && { preferencesView: parsed.preferencesView }),
       ...(typeof parsed.cluster === 'string' && isCluster(parsed.cluster) && { cluster: parsed.cluster }),
       ...(typeof parsed.bridgeUrl === 'string' && { bridgeUrl: parsed.bridgeUrl }),
       ...(typeof parsed.aiMode === 'string' && isAiMode(parsed.aiMode) && { aiMode: parsed.aiMode }),
@@ -25756,6 +25857,7 @@ function savePersistedState(): void {
         browserWalletSession: state.browserWalletSession,
         selectedIosWalletId: state.selectedIosWalletId,
         workflowModePreference: state.workflowModePreference,
+        preferencesView: state.preferencesView,
         cluster: state.cluster,
         bridgeUrl: state.bridgeUrl,
         aiMode: state.aiSettings.mode,
