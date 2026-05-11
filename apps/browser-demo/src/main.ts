@@ -148,7 +148,6 @@ import {
   buildKaminoEarningsProofPreSignReview,
   buildKaminoWithdrawPreSignReview,
   buildSendPreSignReview,
-  buildSwapPreSignReview,
   type PreSignReviewModel,
   type PreSignReviewRow,
   type PreSignReviewSection,
@@ -10398,18 +10397,20 @@ function completedPlanCard(plan: CompletedPlanRecord): string {
           <h3 title="${escapeHtml(plan.title)}">${escapeHtml(completedPlanDisplayTitle(plan))}</h3>
           <p>${escapeHtml(formatDateTime(plan.completedAt))}</p>
         </div>
-        ${completedPlanHero(plan)}
-        <div class="completed-header-actions completed-history-actions">
-          <button data-copy="${escapeHtml(plan.copyPayload)}" data-copy-name="Done item">${escapeHtml(copyLabel)}</button>
-          ${plan.trustBundlePayload ? `<button data-copy="${escapeHtml(plan.trustBundlePayload)}" data-copy-name="Trust bundle">Copy trust bundle</button>` : ''}
-          <button
-            class="utility danger"
-            data-completed-delete="${escapeHtml(plan.id)}"
-            ${state.busy || deleteRequiresBridge ? 'disabled' : ''}
-            title="${deleteRequiresBridge ? 'Connect the local bridge before deleting bridge-backed done work.' : 'Delete this item from Done.'}"
-          >
-            Delete
-          </button>
+        <div class="completed-history-decision">
+          ${completedPlanHero(plan)}
+          <div class="completed-header-actions completed-history-actions">
+            <button data-copy="${escapeHtml(plan.copyPayload)}" data-copy-name="Done item">${escapeHtml(copyLabel)}</button>
+            ${plan.trustBundlePayload ? `<button data-copy="${escapeHtml(plan.trustBundlePayload)}" data-copy-name="Trust bundle">Copy trust bundle</button>` : ''}
+            <button
+              class="utility danger"
+              data-completed-delete="${escapeHtml(plan.id)}"
+              ${state.busy || deleteRequiresBridge ? 'disabled' : ''}
+              title="${deleteRequiresBridge ? 'Connect the local bridge before deleting bridge-backed done work.' : 'Delete this item from Done.'}"
+            >
+              Delete
+            </button>
+          </div>
         </div>
       </div>
       ${completedPlanSummaryGrid(plan)}
@@ -22700,13 +22701,13 @@ function copyButtonIcon(): string {
 function inboxApprovalSummaryGrid(action: PreparedAction): string {
   const recipient = recipientParam(action);
   const tokenSummary = inboxApprovalTokenSummary(action);
-  const expectedOutput = inboxApprovalExpectedOutputLabel(action);
-  const rows: Array<{ kind: 'wallet' | 'recipient' | 'token' | 'due'; label: string; value: string; html?: string; detail?: string; title?: string; copyValue?: string; copyName?: string; copyLabel?: string; copyActions?: SummaryCopyAction[]; tone?: 'amount' }> = [
+  const rows: ApprovalSummaryRow[] = [
     { kind: 'wallet', label: 'Wallet', value: short(action.walletAddress), title: action.walletAddress, copyValue: action.walletAddress },
     ...(recipient ? [{ kind: 'recipient' as const, label: 'Recipient', value: recipientDisplayLabel(recipient), title: recipient, copyValue: recipient }] : []),
-    { kind: 'token', label: 'Token', value: tokenSummary.value, html: tokenSummary.html, detail: expectedOutput, title: tokenSummary.title, copyActions: tokenSummary.copyActions },
-    { kind: 'due', label: 'Due', value: formatDateTime(action.dueAt) },
+    { kind: 'token', label: 'Token', value: tokenSummary.value, html: tokenSummary.html, title: tokenSummary.title, copyActions: tokenSummary.copyActions },
   ];
+  if (action.kind === 'swap') rows.push(swapQuoteSummaryRow(action));
+  rows.push({ kind: 'due', label: 'Due', value: formatDateTime(action.dueAt) });
   return `
     <dl class="inbox-approval-summary-grid rows-${rows.length} ${action.kind === 'swap' ? 'swap-summary' : ''}" aria-label="Approval summary">
       ${rows.map((row) => inboxApprovalSummaryItem(row)).join('')}
@@ -22714,16 +22715,86 @@ function inboxApprovalSummaryGrid(action: PreparedAction): string {
   `;
 }
 
-function inboxApprovalExpectedOutputLabel(action: PreparedAction): string | undefined {
-  if (action.kind !== 'swap') return undefined;
-  const expectedOutput = stringParam(action, 'expectedOutput');
+type ApprovalSummaryRow = {
+  kind: 'wallet' | 'recipient' | 'token' | 'quote' | 'due';
+  label: string;
+  value: string;
+  html?: string;
+  detail?: string;
+  title?: string;
+  copyValue?: string;
+  copyName?: string;
+  copyLabel?: string;
+  copyActions?: SummaryCopyAction[];
+  tone?: 'amount';
+};
+
+function swapQuoteSummaryRow(action: PreparedAction): ApprovalSummaryRow {
   const outputToken = swapOutputTokenLabel(action);
-  return expectedOutput
-    ? [expectedOutput, outputToken].filter(Boolean).join(' ')
-    : 'Fetching quote';
+  const expected = formatSwapQuoteAmount(stringParam(action, 'expectedOutput'));
+  const minimum = formatSwapQuoteAmount(stringParam(action, 'minimumReceived'));
+  const slippage = formatSwapSlippagePercent(browserSlippageBpsFromParams(action));
+  const priceImpact = formatSwapPriceImpactPercent(numberParam(action, 'priceImpactPct'));
+  const token = outputToken || 'output';
+  if (!expected) {
+    return {
+      kind: 'quote',
+      label: 'Quote',
+      value: 'Fetching quote',
+      html: '<span class="swap-quote-summary is-loading">Fetching quote</span>',
+      title: 'Fetching quote',
+    };
+  }
+
+  const detailRows = [
+    minimum ? { label: 'Min', value: `${minimum} ${token}` } : undefined,
+    slippage ? { label: 'Slippage', value: slippage } : undefined,
+    priceImpact ? { label: 'Impact', value: priceImpact } : undefined,
+  ].filter((row): row is { label: string; value: string } => Boolean(row));
+  const title = [
+    `Expected ${expected} ${token}`,
+    ...detailRows.map((row) => `${row.label} ${row.value}`),
+  ].join(' - ');
+  return {
+    kind: 'quote',
+    label: 'Quote',
+    value: title,
+    html: `
+      <span class="swap-quote-summary">
+        <span class="swap-quote-expected"><em>Expected</em><strong>${escapeHtml(expected)} ${escapeHtml(token)}</strong></span>
+        ${detailRows.map((row) => `<span><em>${escapeHtml(row.label)}</em>${escapeHtml(row.value)}</span>`).join('')}
+      </span>
+    `,
+    title,
+  };
 }
 
-function inboxApprovalSummaryItem(row: { kind: 'wallet' | 'recipient' | 'token' | 'due'; label: string; value: string; html?: string; detail?: string; title?: string; copyValue?: string; copyName?: string; copyLabel?: string; copyActions?: SummaryCopyAction[]; tone?: 'amount' }): string {
+function formatSwapQuoteAmount(value: string): string {
+  const trimmed = value.trim();
+  if (!trimmed) return '';
+  const parsed = Number(trimmed);
+  if (!Number.isFinite(parsed)) return trimmed;
+  return trimFixedDecimal(parsed, 2);
+}
+
+function formatSwapSlippagePercent(slippageBps: number | undefined): string {
+  if (typeof slippageBps !== 'number' || !Number.isFinite(slippageBps)) return '';
+  return `${trimFixedDecimal(slippageBps / 100, 2)}%`;
+}
+
+function formatSwapPriceImpactPercent(priceImpactPct: number | undefined): string {
+  if (typeof priceImpactPct !== 'number' || !Number.isFinite(priceImpactPct)) return '';
+  return `${trimFixedDecimal(priceImpactPct, 2)}%`;
+}
+
+function trimFixedDecimal(value: number, maxDecimals: number): string {
+  return value.toLocaleString('en-US', {
+    maximumFractionDigits: maxDecimals,
+    useGrouping: false,
+  });
+}
+
+function inboxApprovalSummaryItem(row: ApprovalSummaryRow): string {
   const title = row.title ?? row.value;
   const copyActions = summaryCopyActions(row);
   const ddClass = [
@@ -22837,24 +22908,6 @@ function buildPreSignReviewModelForAction(action: PreparedAction): PreSignReview
       token,
       memo: stringParam(action, 'memo') || undefined,
       mainnetWarning: mainnet,
-    });
-  }
-  if (action.kind === 'swap') {
-    const slippageBps = browserSlippageBpsFromParams(action);
-    return buildSwapPreSignReview({
-      cluster: action.cluster,
-      taker: action.walletAddress || undefined,
-      inputToken: resolveTokenDisplay(stringParam(action, 'inputToken') || undefined) || undefined,
-      inputAmount: stringParam(action, 'amount') || stringParam(action, 'inputAmount') || undefined,
-      outputToken: resolveTokenDisplay(stringParam(action, 'outputToken') || undefined) || undefined,
-      expectedOutput: stringParam(action, 'expectedOutput') || undefined,
-      minimumReceived: stringParam(action, 'minimumReceived') || undefined,
-      slippageBps,
-      routeLabel: stringParam(action, 'routeLabel') || undefined,
-      jupiterRequestId: stringParam(action, 'jupiterRequestId') || undefined,
-      priceImpactPct: numberParam(action, 'priceImpactPct'),
-      priceImpactWarnPct: 1.5,
-      quoteRequired: shouldAutoHydrateSwapQuote(action),
     });
   }
   if (action.kind === 'custom_transaction') {

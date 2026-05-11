@@ -6482,8 +6482,8 @@ button.danger:hover:not(:disabled) {
   grid-template-columns: minmax(230px, 1.25fr) minmax(170px, 0.95fr) minmax(125px, 0.55fr);
 }
 
-.inbox-approval-summary-grid.swap-summary.rows-3 {
-  grid-template-columns: minmax(170px, 0.85fr) minmax(320px, 1.8fr) minmax(125px, 0.55fr);
+.inbox-approval-summary-grid.swap-summary.rows-4 {
+  grid-template-columns: minmax(180px, 0.9fr) minmax(300px, 1.45fr) minmax(230px, 1fr) minmax(125px, 0.55fr);
 }
 
 .inbox-approval-summary-grid div {
@@ -6634,6 +6634,45 @@ button.danger:hover:not(:disabled) {
   margin: 0;
   overflow-wrap: anywhere;
   text-align: right;
+}
+
+.inbox-approval-summary-quote dd {
+  display: block;
+}
+
+.swap-quote-summary {
+  display: grid;
+  gap: 4px;
+  line-height: 1.16;
+}
+
+.swap-quote-summary.is-loading {
+  color: var(--accent);
+  font-weight: 900;
+}
+
+.swap-quote-summary span {
+  align-items: baseline;
+  display: flex;
+  gap: 7px;
+  min-width: 0;
+}
+
+.swap-quote-summary em {
+  color: var(--dim);
+  flex: 0 0 auto;
+  font-size: 0.62rem;
+  font-style: normal;
+  font-weight: 900;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.swap-quote-summary strong {
+  color: var(--accent);
+  font-size: 0.92rem;
+  line-height: 1.15;
+  overflow-wrap: anywhere;
 }
 
 .inbox-approval-note {
@@ -15231,12 +15270,15 @@ button.danger:hover:not(:disabled) {
   align-items: center;
   display: grid;
   gap: 10px 14px;
-  grid-template-columns: minmax(0, 1fr) minmax(170px, auto) minmax(310px, auto);
+  grid-template-areas:
+    "title decision";
+  grid-template-columns: minmax(0, 1fr) minmax(0, auto);
 }
 
 .completed-history-title-block {
   display: grid;
   gap: 5px;
+  grid-area: title;
   min-width: 0;
 }
 
@@ -15285,6 +15327,7 @@ button.danger:hover:not(:disabled) {
 }
 
 .completed-history-value {
+  flex: 0 0 auto;
   display: grid;
   gap: 3px;
   justify-self: end;
@@ -15312,9 +15355,21 @@ button.danger:hover:not(:disabled) {
 .completed-header-actions {
   align-content: start;
   display: flex;
+  flex: 0 0 auto;
   flex-wrap: wrap;
   gap: 7px;
   justify-content: flex-end;
+}
+
+.completed-history-decision {
+  align-items: center;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 14px;
+  grid-area: decision;
+  justify-content: flex-end;
+  justify-self: end;
+  min-width: 0;
 }
 
 .completed-header-actions button {
@@ -16725,10 +16780,24 @@ button.danger:hover:not(:disabled) {
     grid-template-columns: repeat(3, minmax(0, 1fr));
   }
 
+  .inbox-approval-summary-grid.swap-summary.rows-4 {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
   .completed-history-head,
   .route-app .ticket-title-row,
   .route-app .lab-workbench-grid {
     grid-template-columns: minmax(0, 1fr);
+  }
+
+  .completed-history-head {
+    grid-template-areas:
+      "title"
+      "decision";
+  }
+
+  .completed-history-decision {
+    justify-self: end;
   }
 
   .completed-history-summary-grid {
@@ -17016,7 +17085,6 @@ button.danger:hover:not(:disabled) {
   }
 
   .recurring-card-value,
-  .completed-history-value,
   .receipt-proof-value {
     margin-right: 0;
     justify-self: start;
@@ -17028,6 +17096,16 @@ button.danger:hover:not(:disabled) {
   }
 
   .inbox-approval-value {
+    margin-right: 0;
+    justify-self: auto;
+    text-align: right;
+  }
+
+  .completed-history-decision {
+    justify-self: end;
+  }
+
+  .completed-history-value {
     margin-right: 0;
     justify-self: auto;
     text-align: right;
@@ -17046,10 +17124,14 @@ button.danger:hover:not(:disabled) {
 
   .recurring-card-actions,
   .recurring-card-footer-actions,
-  .completed-history-actions,
   .receipt-proof-card .receipt-proof-actions {
     justify-content: stretch;
     justify-self: stretch;
+  }
+
+  .completed-history-actions {
+    justify-content: flex-end;
+    justify-self: end;
   }
 
   .inbox-approval-actions {
@@ -17063,22 +17145,23 @@ button.danger:hover:not(:disabled) {
 
   .recurring-card-actions button,
   .recurring-card-footer-actions button,
-  .completed-history-actions button,
   .receipt-proof-card .receipt-proof-actions button,
   .receipt-proof-card .receipt-proof-actions summary {
     flex: 1 1 140px;
+  }
+
+  .completed-history-actions button {
+    flex: 0 0 auto;
   }
 
   .inbox-approval-actions button {
     flex: 0 0 auto;
   }
 
-  .completed-header-actions,
   .route-app .approval-ticket .inbox-actions:not(.inbox-approval-actions) {
     justify-content: stretch;
   }
 
-  .completed-header-actions button,
   .route-app .approval-ticket .inbox-actions:not(.inbox-approval-actions) button {
     flex: 1 1 140px;
   }
@@ -17104,7 +17187,18 @@ button.danger:hover:not(:disabled) {
     grid-template-columns: minmax(0, 1fr);
   }
 
+  .inbox-approval-summary-grid.swap-summary.rows-4 {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
   .inbox-approval-head {
+    grid-template-areas:
+      "title"
+      "decision";
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .completed-history-head {
     grid-template-areas:
       "title"
       "decision";
@@ -17117,7 +17211,17 @@ button.danger:hover:not(:disabled) {
     justify-self: stretch;
   }
 
+  .completed-history-decision {
+    align-items: stretch;
+    flex-direction: column;
+    justify-self: stretch;
+  }
+
   .inbox-approval-value {
+    text-align: left;
+  }
+
+  .completed-history-value {
     text-align: left;
   }
 
@@ -17126,7 +17230,16 @@ button.danger:hover:not(:disabled) {
     justify-self: stretch;
   }
 
+  .completed-header-actions {
+    justify-content: stretch;
+    justify-self: stretch;
+  }
+
   .inbox-approval-actions button {
+    flex: 1 1 130px;
+  }
+
+  .completed-header-actions button {
     flex: 1 1 130px;
   }
 
