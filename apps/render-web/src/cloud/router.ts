@@ -1151,7 +1151,7 @@ async function handlePutAgentPolicies(
   const nextVersion = (existing?.version ?? 0) + 1;
   const saved = await policyStore.saveAgentPolicies(session.walletAddress, {
     policies: record.policies,
-    updatedAt: clock().toISOString(),
+    updatedAt: clock.now().toISOString(),
     version: nextVersion,
   });
   writeJson(res, 200, {

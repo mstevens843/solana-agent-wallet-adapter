@@ -1907,6 +1907,49 @@ const ADVANCED_EVIDENCE_LABS: LabDefinition[] = [
 
 const LABS: LabDefinition[] = [...RECEIPT_LABS, ...ADVANCED_EVIDENCE_LABS];
 
+const FAILURE_RETRY_KINDS: ReadonlyArray<TransactionFailureKind> = [
+  'wallet_rejected',
+  'wallet_unavailable',
+  'config_missing',
+  'rpc_timeout',
+  'rpc_rejected',
+  'network_unreachable',
+  'onchain_failed',
+  'expired_blockhash',
+  'slippage_or_quote_failed',
+  'simulation_failed',
+  'insufficient_funds',
+  'invalid_transaction',
+  'rate_limited',
+  'unknown_maybe_submitted',
+];
+
+const FAILURE_KIND_LABEL: Record<TransactionFailureKind, string> = {
+  wallet_rejected: 'Wallet rejected',
+  wallet_unavailable: 'Wallet unavailable',
+  config_missing: 'Config missing',
+  rpc_timeout: 'RPC timed out',
+  rpc_rejected: 'RPC rejected send',
+  network_unreachable: 'Network unreachable',
+  onchain_failed: 'On-chain failure',
+  expired_blockhash: 'Blockhash expired',
+  slippage_or_quote_failed: 'Quote/slippage failed',
+  simulation_failed: 'Simulation failed',
+  insufficient_funds: 'Insufficient funds',
+  invalid_transaction: 'Invalid transaction',
+  rate_limited: 'Rate limited',
+  unknown_maybe_submitted: 'Ambiguous (maybe submitted)',
+};
+
+const FAILURE_RECOMMENDED_AUTO: ReadonlySet<TransactionFailureKind> = new Set([
+  'rpc_timeout',
+  'expired_blockhash',
+  'rate_limited',
+  'network_unreachable',
+]);
+
+const DEFAULT_FAILURE_POLICY: FailureRetryPolicy = { kind: 'rpc_timeout', mode: 'ask', maxAttempts: 2 };
+
 const persisted = loadPersistedState();
 const launchParams = readLaunchParams();
 clearSensitiveLaunchParams();
@@ -2233,8 +2276,6 @@ let systemHealthRunController: AbortController | null = null;
 const SYSTEM_HEALTH_INTERVAL_MS = 30_000;
 
 const appRoot = document.querySelector<HTMLDivElement>('#app');
-
-void startApp();
 
 async function startApp(): Promise<void> {
   try {
@@ -27199,49 +27240,6 @@ function updateTabTitleBadge(): void {
   document.title = count > 0 ? `(${count}) ${current}` : current;
 }
 
-const FAILURE_RETRY_KINDS: ReadonlyArray<TransactionFailureKind> = [
-  'wallet_rejected',
-  'wallet_unavailable',
-  'config_missing',
-  'rpc_timeout',
-  'rpc_rejected',
-  'network_unreachable',
-  'onchain_failed',
-  'expired_blockhash',
-  'slippage_or_quote_failed',
-  'simulation_failed',
-  'insufficient_funds',
-  'invalid_transaction',
-  'rate_limited',
-  'unknown_maybe_submitted',
-];
-
-const FAILURE_KIND_LABEL: Record<TransactionFailureKind, string> = {
-  wallet_rejected: 'Wallet rejected',
-  wallet_unavailable: 'Wallet unavailable',
-  config_missing: 'Config missing',
-  rpc_timeout: 'RPC timed out',
-  rpc_rejected: 'RPC rejected send',
-  network_unreachable: 'Network unreachable',
-  onchain_failed: 'On-chain failure',
-  expired_blockhash: 'Blockhash expired',
-  slippage_or_quote_failed: 'Quote/slippage failed',
-  simulation_failed: 'Simulation failed',
-  insufficient_funds: 'Insufficient funds',
-  invalid_transaction: 'Invalid transaction',
-  rate_limited: 'Rate limited',
-  unknown_maybe_submitted: 'Ambiguous (maybe submitted)',
-};
-
-const FAILURE_RECOMMENDED_AUTO: ReadonlySet<TransactionFailureKind> = new Set([
-  'rpc_timeout',
-  'expired_blockhash',
-  'rate_limited',
-  'network_unreachable',
-]);
-
-const DEFAULT_FAILURE_POLICY: FailureRetryPolicy = { kind: 'rpc_timeout', mode: 'ask', maxAttempts: 2 };
-
 function defaultFailurePoliciesList(): FailureRetryPolicy[] {
   return FAILURE_RETRY_KINDS.map((kind) => ({ kind, mode: 'ask' as FailureRetryMode, maxAttempts: 2 }));
 }
@@ -27523,3 +27521,5 @@ function deleteGeneratedPlanTemplate(planId: string): void {
   pushToast('success', 'Template removed', record.templateLabel ?? 'Template');
   render();
 }
+
+void startApp();

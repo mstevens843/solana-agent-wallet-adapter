@@ -132,6 +132,15 @@ const RECONCILIATION_PHASES: ReadonlySet<ExecutionPhase> = new Set<ExecutionPhas
 ]);
 
 const MAINNET_CLUSTERS = new Set(['mainnet-beta', 'mainnet']);
+const NODE_CRYPTO_SPECIFIER = 'node:crypto';
+
+interface NodeCryptoSha256Module {
+  createHash(algorithm: string): {
+    update(input: string, encoding: string): {
+      digest(encoding: string): string;
+    };
+  };
+}
 
 /**
  * Resolve the storage backend, gracefully returning `undefined` when neither
@@ -697,12 +706,18 @@ function readWebCryptoSubtle(): SubtleCrypto | undefined {
 }
 
 async function tryNodeSha256Hex(input: string): Promise<string | undefined> {
+  if (!isNodeRuntime()) return undefined;
   try {
-    const mod = (await import('node:crypto')) as typeof import('node:crypto');
+    const mod = (await import(/* @vite-ignore */ NODE_CRYPTO_SPECIFIER)) as NodeCryptoSha256Module;
     return mod.createHash('sha256').update(input, 'utf8').digest('hex');
   } catch {
     return undefined;
   }
+}
+
+function isNodeRuntime(): boolean {
+  const processLike = (globalThis as { process?: { versions?: { node?: unknown } } }).process;
+  return typeof processLike?.versions?.node === 'string';
 }
 
 function bufferToHex(buffer: ArrayBuffer): string {
