@@ -6,6 +6,7 @@ import {
   type AiApiFormat,
   type AiPlanRequest,
 } from '@solana-agent-wallet-adapter/mcp-server';
+import { Connection } from '@solana/web3.js';
 
 import {
   AuthValidationError,
@@ -80,6 +81,9 @@ const REGISTERED_API_ROUTES = [
   'POST /api/recurring/:id/pause',
   'POST /api/recurring/:id/resume',
   '/api/evidence',
+  'POST /api/solana/latest-blockhash',
+  'POST /api/solana/send-transaction',
+  'POST /api/solana/signature-status',
   'POST /api/swap/order',
   'POST /api/swap/execute',
 ] as const;
@@ -441,6 +445,24 @@ async function routeApiRequest(
     return;
   }
 
+  if (url.pathname === '/api/solana/latest-blockhash') {
+    requireMethod(req, 'POST');
+    await handleSolanaLatestBlockhash(req, res);
+    return;
+  }
+
+  if (url.pathname === '/api/solana/send-transaction') {
+    requireMethod(req, 'POST');
+    await handleSolanaSendTransaction(req, res);
+    return;
+  }
+
+  if (url.pathname === '/api/solana/signature-status') {
+    requireMethod(req, 'POST');
+    await handleSolanaSignatureStatus(req, res);
+    return;
+  }
+
   if (url.pathname === '/api/swap/order') {
     requireMethod(req, 'POST');
     await handleJupiterSwapOrder(req, res);
@@ -755,6 +777,52 @@ async function handleJupiterSwapOrder(req: IncomingMessage, res: ServerResponse)
   writeJson(res, 200, await requestJupiter(url));
 }
 
+async function handleSolanaLatestBlockhash(req: IncomingMessage, res: ServerResponse): Promise<void> {
+  const body = asJsonRecord(await readJsonBody(req), 'Solana latest blockhash body');
+  const cluster = requiredCluster(body.cluster);
+  writeJson(res, 200, await solanaConnection(cluster).getLatestBlockhash('confirmed'));
+}
+
+async function handleSolanaSendTransaction(req: IncomingMessage, res: ServerResponse): Promise<void> {
+  const body = asJsonRecord(await readJsonBody(req), 'Solana send transaction body');
+  const cluster = requiredCluster(body.cluster);
+  const signedTransaction = requiredBodyString(
+    body.signedTransactionBase64 ?? body.signedTransaction,
+    'signedTransaction',
+  );
+  const txid = await solanaConnection(cluster).sendRawTransaction(Buffer.from(signedTransaction, 'base64'), {
+    preflightCommitment: 'confirmed',
+    maxRetries: 5,
+  });
+  writeJson(res, 200, { txid, signature: txid });
+}
+
+async function handleSolanaSignatureStatus(req: IncomingMessage, res: ServerResponse): Promise<void> {
+  const body = asJsonRecord(await readJsonBody(req), 'Solana signature status body');
+  const cluster = requiredCluster(body.cluster);
+  const txid = requiredBodyString(body.txid ?? body.signature, 'txid');
+  const status = (await solanaConnection(cluster).getSignatureStatuses([txid], {
+    searchTransactionHistory: true,
+  })).value[0];
+  if (!status) {
+    writeJson(res, 200, { txStatus: 'pending' });
+    return;
+  }
+  if (status.err) {
+    writeJson(res, 200, {
+      txStatus: 'failed',
+      confirmationStatus: status.confirmationStatus,
+      error: JSON.stringify(status.err),
+    });
+    return;
+  }
+  if (status.confirmationStatus === 'confirmed' || status.confirmationStatus === 'finalized') {
+    writeJson(res, 200, { txStatus: 'confirmed', confirmationStatus: status.confirmationStatus });
+    return;
+  }
+  writeJson(res, 200, { txStatus: 'pending', confirmationStatus: status.confirmationStatus });
+}
+
 async function handleJupiterSwapExecute(req: IncomingMessage, res: ServerResponse): Promise<void> {
   const body = asJsonRecord(await readJsonBody(req), 'swap execute body');
   const signedTransaction = requiredBodyString(body, 'signedTransaction');
@@ -812,6 +880,26 @@ function jupiterApiKey(): string | undefined {
   return process.env.JUPITER_API_KEY?.trim() || process.env.JUP_API_KEY?.trim() || undefined;
 }
 
+function solanaConnection(cluster: WorkflowCluster): Connection {
+  return new Connection(solanaRpcUrl(cluster), 'confirmed');
+}
+
+function solanaRpcUrl(cluster: WorkflowCluster): string {
+  if (process.env.SOLANA_RPC_URL?.trim()) return process.env.SOLANA_RPC_URL.trim();
+  if (process.env.HELIUS_RPC_URL?.trim()) return process.env.HELIUS_RPC_URL.trim();
+  switch (cluster) {
+    case 'mainnet-beta':
+      return 'https://api.mainnet-beta.solana.com';
+    case 'testnet':
+      return 'https://api.testnet.solana.com';
+    case 'localnet':
+      return 'http://127.0.0.1:8899';
+    case 'devnet':
+    default:
+      return 'https://api.devnet.solana.com';
+  }
+}
+
 function asJsonRecord(value: unknown, label: string): Record<string, unknown> {
   if (value && typeof value === 'object' && !Array.isArray(value)) {
     return value as Record<string, unknown>;
@@ -819,10 +907,21 @@ function asJsonRecord(value: unknown, label: string): Record<string, unknown> {
   throw new ApiError(400, `${label} must be a JSON object.`);
 }
 
-function requiredBodyString(body: Record<string, unknown>, key: string): string {
-  const value = body[key];
+function requiredBodyString(bodyOrValue: Record<string, unknown> | unknown, key: string): string {
+  const value = bodyOrValue && typeof bodyOrValue === 'object' && !Array.isArray(bodyOrValue)
+    ? (bodyOrValue as Record<string, unknown>)[key]
+    : bodyOrValue;
   if (typeof value === 'string' && value.trim()) return value.trim();
   throw new ApiError(400, `${key} is required.`);
+}
+
+type WorkflowCluster = 'mainnet-beta' | 'devnet' | 'testnet' | 'localnet';
+
+function requiredCluster(value: unknown): WorkflowCluster {
+  if (value === 'mainnet-beta' || value === 'devnet' || value === 'testnet' || value === 'localnet') {
+    return value;
+  }
+  throw new ApiError(400, 'cluster is required.');
 }
 
 function optionalIntegerBodyField(body: Record<string, unknown>, key: string): number | undefined {

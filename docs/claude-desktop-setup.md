@@ -88,6 +88,7 @@ The mock backend always stays pending, so it is safe for registration and render
 ```bash
 cp .env.example .env
 cp agent-wallet.config.example.json agent-wallet.config.json
+pnpm cli -- setup
 pnpm dev
 ```
 

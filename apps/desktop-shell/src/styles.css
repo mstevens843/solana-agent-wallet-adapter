@@ -177,6 +177,44 @@ button,
   cursor: pointer;
 }
 
+.setup-grid {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 2px;
+}
+
+.readiness {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin: 2px 0 14px;
+}
+
+.ready-pill {
+  display: inline-flex;
+  align-items: center;
+  min-height: 30px;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 999px;
+  padding: 0 10px;
+  color: #9fb4aa;
+  background: rgba(255, 255, 255, 0.05);
+  font-size: 0.78rem;
+  font-weight: 900;
+}
+
+.ready-pill.good {
+  color: #06100c;
+  background: #18f18b;
+  border-color: transparent;
+}
+
+.ready-pill.warn {
+  color: #ffd9df;
+  border-color: rgba(255, 108, 125, 0.42);
+  background: rgba(255, 108, 125, 0.1);
+}
+
 button:disabled {
   cursor: not-allowed;
   opacity: 0.45;

@@ -101,6 +101,7 @@ For local real-wallet use with Codex or Claude-style MCP clients:
 ```bash
 cp .env.example .env
 cp agent-wallet.config.example.json agent-wallet.config.json
+pnpm cli -- setup
 pnpm mcp:codex:add
 pnpm dev
 ```
@@ -114,6 +115,8 @@ pnpm cli -- app
 ```
 
 The terminal app checks or starts the local bridge, checks or starts the browser wallet host, opens the host with the bridge token, and gives slash commands for `/connect`, `/wallet`, `/inbox`, `/inspect`, `/approve`, `/schedule`, `/plan`, `/research`, `/receipts`, and `/doctor`. The terminal controls the approval flow; the real wallet popup still performs the signature.
+
+For downloaded CLI or desktop builds, run `solana-agent-wallet setup` or use the desktop Transaction Setup panel. This writes the local runtime `.env` with `SOLANA_RPC_URL`, `HELIUS_RPC_URL`, `JUPITER_API_KEY`, `JUP_API_KEY`, `JUP_ULTRA_BASE`, and `JUPITER_API_URL` so sends and swaps can execute after wallet approval.
 
 Optional AI planning uses BYOK. Agentic works without an AI key through templates; for smarter natural-language planning,
 set `AGENTIC_AI_API_KEY`, `AGENTIC_AI_MODEL`, and `AGENTIC_AI_BASE_URL` on the local bridge, use hosted BYOK on the

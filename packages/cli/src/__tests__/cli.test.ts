@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { spawn, spawnSync, type ChildProcessByStdio } from 'node:child_process';
-import { mkdtemp, writeFile } from 'node:fs/promises';
+import { mkdtemp, readFile, writeFile } from 'node:fs/promises';
 import { createServer } from 'node:net';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
@@ -42,6 +42,49 @@ test('doctor creates installed runtime config and reports packaged wallet host a
   assert.equal(doctor.files?.preparedActionsDir, true);
   assert.equal(doctor.files?.labArtifactsDir, true);
   assert.equal(doctor.files?.walletHostAssets, true);
+});
+
+test('setup writes local runtime env aliases and redacts JSON status', async () => {
+  const runtimeDir = await mkdtemp(join(tmpdir(), 'agentic-cli-test-setup-'));
+  const envPath = join(runtimeDir, '.env');
+  await writeFile(envPath, 'CUSTOM_VALUE=kept\n', 'utf8');
+  const rpcUrl = 'https://mainnet.helius-rpc.com/?api-key=rpc-secret-value';
+  const jupiterKey = 'jupiter-secret-value';
+
+  const result = runCli([
+    '--runtime-dir',
+    runtimeDir,
+    'setup',
+    '--rpc-url',
+    rpcUrl,
+    '--jupiter-api-key',
+    jupiterKey,
+    '--yes',
+    '--json',
+  ]);
+  assert.equal(result.status, 0, result.stderr);
+
+  const setup = JSON.parse(result.stdout) as {
+    rpcUrlConfigured?: boolean;
+    rpcUrlRedacted?: string;
+    jupiterApiKeyConfigured?: boolean;
+    jupiterApiKeyRedacted?: string;
+    swapsReady?: boolean;
+  };
+  assert.equal(setup.rpcUrlConfigured, true);
+  assert.equal(setup.jupiterApiKeyConfigured, true);
+  assert.equal(setup.swapsReady, true);
+  assert.ok(!setup.rpcUrlRedacted?.includes('rpc-secret-value'));
+  assert.ok(!setup.jupiterApiKeyRedacted?.includes('secret-value'));
+
+  const raw = await readFile(envPath, 'utf8');
+  assert.match(raw, /CUSTOM_VALUE=kept/);
+  assert.match(raw, /SOLANA_RPC_URL=https:\/\/mainnet\.helius-rpc\.com\/\?api-key=rpc-secret-value/);
+  assert.match(raw, /HELIUS_RPC_URL=https:\/\/mainnet\.helius-rpc\.com\/\?api-key=rpc-secret-value/);
+  assert.match(raw, /JUPITER_API_KEY=jupiter-secret-value/);
+  assert.match(raw, /JUP_API_KEY=jupiter-secret-value/);
+  assert.match(raw, /JUP_ULTRA_BASE=https:\/\/api\.jup\.ag\/ultra\/v1/);
+  assert.match(raw, /JUPITER_API_URL=https:\/\/quote-api\.jup\.ag/);
 });
 
 test('wallet-host serve exposes health, static assets, SPA fallback, and rejects traversal', async () => {

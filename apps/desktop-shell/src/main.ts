@@ -22,6 +22,20 @@ interface DesktopConfig {
   walletHostUrl: string;
 }
 
+interface RuntimeSetup {
+  envPath: string;
+  envFound: boolean;
+  rpcUrlConfigured: boolean;
+  rpcUrlRedacted: string | null;
+  jupiterApiKeyConfigured: boolean;
+  jupiterApiKeyRedacted: string | null;
+  jupiterUltraBase: string;
+  jupiterApiUrl: string;
+  solTransfersReady: boolean;
+  tokenTransfersReady: boolean;
+  swapsReady: boolean;
+}
+
 interface Diagnostic {
   level: 'ok' | 'info' | 'warning' | 'error';
   label: string;
@@ -74,6 +88,7 @@ interface Receipt {
 interface DesktopState {
   nativeAvailable: boolean;
   config: DesktopConfig | null;
+  runtimeSetup: RuntimeSetup | null;
   nativeStatus: BridgeStatus | null;
   bridgeUrl: string;
   bridgeToken: string;
@@ -102,6 +117,7 @@ declare global {
 const state: DesktopState = {
   nativeAvailable: false,
   config: null,
+  runtimeSetup: null,
   nativeStatus: null,
   bridgeUrl: localStorage.getItem('agent-wallet-desktop-bridge-url') ?? 'http://127.0.0.1:8787',
   bridgeToken: localStorage.getItem('agent-wallet-desktop-token') ?? 'local-agent-wallet',
@@ -130,6 +146,7 @@ async function bootstrap(): Promise<void> {
     localStorage.setItem('agent-wallet-desktop-bridge-url', state.bridgeUrl);
     localStorage.setItem('agent-wallet-desktop-token', state.bridgeToken);
     await refreshNativeStatus();
+    await refreshRuntimeSetup();
   } catch {
     state.nativeAvailable = false;
   }
@@ -188,6 +205,8 @@ function render(): void {
           ${metric('Mainnet', state.health?.mainnetEnabled ? 'Enabled' : 'Disabled')}
           ${metric('RPC', state.health?.rpcWritable?.ok ? 'Reachable' : state.health?.rpcWritable?.message ?? 'Unknown')}
         </section>
+
+        ${runtimeSetupPanel()}
 
         <section class="panel wide">
           <div class="panel-title">
@@ -256,6 +275,56 @@ function runtimeForm(): string {
       <button id="saveConfig" ${state.busy ? 'disabled' : ''}>Save runtime config</button>
     ` : ''}
   `;
+}
+
+function runtimeSetupPanel(): string {
+  const setup = state.runtimeSetup;
+  const rpcPlaceholder = setup?.rpcUrlConfigured
+    ? `Configured: ${setup.rpcUrlRedacted ?? 'redacted'}`
+    : 'https://mainnet.helius-rpc.com/?api-key=...';
+  const keyPlaceholder = setup?.jupiterApiKeyConfigured
+    ? `Configured: ${setup.jupiterApiKeyRedacted ?? 'redacted'}`
+    : 'Paste Jupiter API key';
+  return `
+    <section class="panel">
+      <div class="panel-title">
+        <h2>Transaction Setup</h2>
+        <span>${setup?.swapsReady ? 'ready' : 'needs setup'}</span>
+      </div>
+      <div class="setup-grid">
+        <label>
+          <span>Solana RPC URL</span>
+          <input id="setupRpcUrl" type="password" placeholder="${escapeHtml(rpcPlaceholder)}" autocomplete="off" />
+        </label>
+        <label>
+          <span>Jupiter API key</span>
+          <input id="setupJupiterApiKey" type="password" placeholder="${escapeHtml(keyPlaceholder)}" autocomplete="off" />
+        </label>
+        <label>
+          <span>Jupiter Ultra base</span>
+          <input id="setupJupiterUltraBase" value="${escapeHtml(setup?.jupiterUltraBase ?? 'https://api.jup.ag/ultra/v1')}" />
+        </label>
+        <label>
+          <span>Legacy Jupiter API</span>
+          <input id="setupJupiterApiUrl" value="${escapeHtml(setup?.jupiterApiUrl ?? 'https://quote-api.jup.ag')}" />
+        </label>
+      </div>
+      <div class="readiness">
+        ${readinessPill('SOL sends', setup?.solTransfersReady ?? false)}
+        ${readinessPill('Token sends', setup?.tokenTransfersReady ?? false)}
+        ${readinessPill('Swaps', setup?.swapsReady ?? false)}
+      </div>
+      <div class="actions">
+        <button id="saveRuntimeSetup" class="primary" ${state.busy || !state.nativeAvailable ? 'disabled' : ''}>Save setup</button>
+        <button id="checkRuntimeSetup" ${state.busy || !state.nativeAvailable ? 'disabled' : ''}>Check setup</button>
+      </div>
+      <p class="hint">${setup ? `Using ${escapeHtml(setup.envPath)}` : 'Setup is available in the native desktop app.'}</p>
+    </section>
+  `;
+}
+
+function readinessPill(label: string, ready: boolean): string {
+  return `<span class="ready-pill ${ready ? 'good' : 'warn'}">${escapeHtml(label)}: ${ready ? 'ready' : 'missing'}</span>`;
 }
 
 function diagnosticsHtml(): string {
@@ -338,6 +407,12 @@ function bind(): void {
   document.querySelector<HTMLButtonElement>('#saveConfig')?.addEventListener('click', () => {
     void saveNativeConfig();
   });
+  document.querySelector<HTMLButtonElement>('#saveRuntimeSetup')?.addEventListener('click', () => {
+    void saveRuntimeSetup();
+  });
+  document.querySelector<HTMLButtonElement>('#checkRuntimeSetup')?.addEventListener('click', () => {
+    void checkRuntimeSetup();
+  });
   document.querySelector<HTMLButtonElement>('#openWalletHost')?.addEventListener('click', () => {
     void openWalletHost();
   });
@@ -362,7 +437,10 @@ async function refreshAll(): Promise<void> {
   state.busy = true;
   render();
   try {
-    if (state.nativeAvailable) await refreshNativeStatus();
+    if (state.nativeAvailable) {
+      await refreshNativeStatus();
+      await refreshRuntimeSetup();
+    }
     await refreshHealth();
     if (state.health) {
       try {
@@ -405,6 +483,11 @@ async function refreshNativeStatus(): Promise<void> {
   }
 }
 
+async function refreshRuntimeSetup(): Promise<void> {
+  if (!state.nativeAvailable) return;
+  state.runtimeSetup = await tauriInvoke<RuntimeSetup>('read_runtime_setup');
+}
+
 async function refreshHealth(): Promise<void> {
   state.error = '';
   state.status = 'Checking local bridge...';
@@ -418,6 +501,16 @@ async function refreshHealth(): Promise<void> {
     state.error = errorMessage(err);
     state.status = state.nativeAvailable ? nativeOfflineStatus() : 'Start the local bridge, then refresh.';
   }
+}
+
+async function checkRuntimeSetup(): Promise<void> {
+  await runNative('Checking transaction setup...', async () => {
+    await refreshRuntimeSetup();
+    await refreshHealth();
+    state.status = state.runtimeSetup?.swapsReady
+      ? 'Transaction setup is ready for sends and swaps.'
+      : 'Transaction setup is missing RPC or Jupiter credentials.';
+  });
 }
 
 async function refreshInbox(): Promise<void> {
@@ -477,6 +570,29 @@ async function saveNativeConfig(): Promise<void> {
       },
     });
     await refreshNativeStatus();
+  });
+}
+
+async function saveRuntimeSetup(): Promise<void> {
+  if (!state.nativeAvailable) return;
+  await runNative('Saving transaction setup...', async () => {
+    const wasRunning = Boolean(state.nativeStatus?.running);
+    state.runtimeSetup = await tauriInvoke<RuntimeSetup>('save_runtime_setup', {
+      input: {
+        rpcUrl: inputValue('#setupRpcUrl'),
+        jupiterApiKey: inputValue('#setupJupiterApiKey'),
+        jupiterUltraBase: inputValue('#setupJupiterUltraBase'),
+        jupiterApiUrl: inputValue('#setupJupiterApiUrl'),
+      },
+    });
+    if (wasRunning) {
+      state.status = 'Setup saved. Restarting runtime...';
+      state.nativeStatus = await tauriInvoke<BridgeStatus>('restart_bridge');
+    } else {
+      await refreshNativeStatus();
+    }
+    await refreshRuntimeSetup();
+    await refreshHealth();
   });
 }
 

@@ -56,6 +56,15 @@ describe('render web hosted BYOK API', () => {
       expect(JSON.parse(response.body)).toMatchObject({
         available: true,
         mode: 'hosted-byok',
+        build: {
+          routes: expect.arrayContaining([
+            'POST /api/solana/latest-blockhash',
+            'POST /api/solana/send-transaction',
+            'POST /api/solana/signature-status',
+            'POST /api/swap/order',
+            'POST /api/swap/execute',
+          ]),
+        },
         providers: expect.arrayContaining([
           expect.objectContaining({ id: 'openai', apiFormat: 'openai-compatible' }),
           expect.objectContaining({ id: 'anthropic', apiFormat: 'anthropic' }),
@@ -244,6 +253,18 @@ describe('render web hosted BYOK API', () => {
       expect(response.status).toBe(404);
       expect(String(response.headers['content-type'])).toContain('application/json');
       expect(JSON.parse(response.body)).toEqual({ error: 'not_found' });
+    });
+  });
+
+  it('keeps Solana transaction helper routes on JSON validation paths', async () => {
+    await withServer(async (port) => {
+      const latest = await postJson(port, '/api/solana/latest-blockhash', { cluster: 'bogus' });
+      const send = await postJson(port, '/api/solana/send-transaction', { cluster: 'mainnet-beta' });
+
+      expect(latest.status).toBe(400);
+      expect(latest.body.error).toBe('cluster is required.');
+      expect(send.status).toBe(400);
+      expect(send.body.error).toBe('signedTransaction is required.');
     });
   });
 });

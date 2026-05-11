@@ -411,11 +411,7 @@ export class AgentWalletActionService {
       }),
     );
     await prepareTransaction(this.connection, tx, from);
-    const result = await this.client.signAndSendTransaction(txToBase64(tx), {
-      cluster: this.config.cluster,
-      summary: `Transfer ${input.amountSol} SOL to ${to.toBase58()}`,
-    });
-    const txid = result.txid ?? result.signature;
+    const txid = await this.signAndBroadcastTransaction(tx, `Transfer ${input.amountSol} SOL to ${to.toBase58()}`);
     return {
       cluster: this.config.cluster,
       from: from.toBase58(),
@@ -446,11 +442,10 @@ export class AgentWalletActionService {
     }
     tx.add(createTransferCheckedInstruction(sourceAta, mint, destinationAta, owner, rawAmount, tokenConfig.decimals));
     await prepareTransaction(this.connection, tx, owner);
-    const result = await this.client.signAndSendTransaction(txToBase64(tx), {
-      cluster: this.config.cluster,
-      summary: `Transfer ${input.amount} ${tokenConfig.symbol} to ${recipientOwner.toBase58()}`,
-    });
-    const txid = result.txid ?? result.signature;
+    const txid = await this.signAndBroadcastTransaction(
+      tx,
+      `Transfer ${input.amount} ${tokenConfig.symbol} to ${recipientOwner.toBase58()}`,
+    );
     return {
       cluster: this.config.cluster,
       from: owner.toBase58(),
@@ -555,6 +550,17 @@ export class AgentWalletActionService {
       throw new ProtocolError('wallet_unreachable', 'Swap execution did not return a transaction signature.');
     }
     return result as Record<string, unknown> & { txid: string };
+  }
+
+  private async signAndBroadcastTransaction(transaction: Transaction, summary: string): Promise<string> {
+    const signed = await this.client.signTransaction(txToBase64(transaction), {
+      cluster: this.config.cluster,
+      summary,
+    });
+    return this.connection.sendRawTransaction(Buffer.from(signed.signature, 'base64'), {
+      preflightCommitment: 'confirmed',
+      maxRetries: 5,
+    });
   }
 }
 

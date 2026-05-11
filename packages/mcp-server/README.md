@@ -67,9 +67,12 @@ Fast path:
 ```bash
 cp .env.example .env
 cp agent-wallet.config.example.json agent-wallet.config.json
+pnpm cli -- setup
 pnpm mcp:codex:add
 pnpm dev
 ```
+
+Downloaded CLI users can run `solana-agent-wallet setup` instead. Desktop users can use the Transaction Setup panel. Both write the runtime `.env` consumed by the bridge and MCP server.
 
 Open `http://127.0.0.1:5174`, discover wallets, connect the selected wallet, and click `Connect bridge`. Restart Codex after registration and ask:
 

@@ -278,6 +278,33 @@ async function handleRequest(
       });
       return;
     }
+    if (req.method === 'POST' && url.pathname === '/bridge/solana/latest-blockhash') {
+      const body = (await readJson(req)) as { cluster?: string };
+      writeJson(res, 200, await bridgeLatestBlockhash(requireActionConfig(actionConfig), body.cluster));
+      return;
+    }
+    if (req.method === 'POST' && url.pathname === '/bridge/solana/send-transaction') {
+      const body = (await readJson(req)) as { cluster?: string; signedTransaction?: string; signedTransactionBase64?: string };
+      writeJson(
+        res,
+        200,
+        await bridgeSendTransaction(
+          requireActionConfig(actionConfig),
+          body.cluster,
+          body.signedTransactionBase64 ?? body.signedTransaction,
+        ),
+      );
+      return;
+    }
+    if (req.method === 'POST' && url.pathname === '/bridge/solana/signature-status') {
+      const body = (await readJson(req)) as { cluster?: string; txid?: string; signature?: string };
+      writeJson(
+        res,
+        200,
+        await bridgeSignatureStatus(requireActionConfig(actionConfig), body.cluster, body.txid ?? body.signature),
+      );
+      return;
+    }
     if (req.method === 'GET' && url.pathname === '/bridge/ai/status') {
       writeJson(res, 200, aiPlanner.status());
       return;
@@ -568,6 +595,13 @@ function isIosBackend(backend: WalletBackend): backend is IosLinkBackend {
   return backend instanceof IosLinkBackend;
 }
 
+function requireActionConfig(config: AgentWalletConfig | undefined): AgentWalletConfig {
+  if (!config) {
+    throw new ProtocolError('unsupported_method', 'Bridge action config is not available.');
+  }
+  return config;
+}
+
 async function readJson(req: IncomingMessage): Promise<unknown> {
   const chunks: Buffer[] = [];
   for await (const chunk of req) {
@@ -642,6 +676,55 @@ function writeHtml(res: ServerResponse, body: string): void {
   res.statusCode = 200;
   res.setHeader('content-type', 'text/html; charset=utf-8');
   res.end(body);
+}
+
+async function bridgeLatestBlockhash(
+  config: AgentWalletConfig,
+  cluster: string | undefined,
+): Promise<{ blockhash: string; lastValidBlockHeight: number }> {
+  assertBridgeCluster(config, cluster);
+  return new Connection(config.rpcUrl, 'confirmed').getLatestBlockhash('confirmed');
+}
+
+async function bridgeSendTransaction(
+  config: AgentWalletConfig,
+  cluster: string | undefined,
+  signedTransaction: string | undefined,
+): Promise<{ txid: string; signature: string }> {
+  assertBridgeCluster(config, cluster);
+  const encoded = requireString(signedTransaction, 'signedTransaction');
+  const connection = new Connection(config.rpcUrl, 'confirmed');
+  const txid = await connection.sendRawTransaction(Buffer.from(encoded, 'base64'), {
+    preflightCommitment: 'confirmed',
+    maxRetries: 5,
+  });
+  return { txid, signature: txid };
+}
+
+async function bridgeSignatureStatus(
+  config: AgentWalletConfig,
+  cluster: string | undefined,
+  signature: string | undefined,
+): Promise<{ txStatus: PreparedActionTxStatus; confirmationStatus?: string; error?: string }> {
+  assertBridgeCluster(config, cluster);
+  const txid = requireString(signature, 'txid');
+  const status = (await new Connection(config.rpcUrl, 'confirmed').getSignatureStatuses([txid], {
+    searchTransactionHistory: true,
+  })).value[0];
+  if (!status) return { txStatus: 'pending' };
+  if (status.err) {
+    return { txStatus: 'failed', confirmationStatus: status.confirmationStatus ?? undefined, error: JSON.stringify(status.err) };
+  }
+  if (status.confirmationStatus === 'confirmed' || status.confirmationStatus === 'finalized') {
+    return { txStatus: 'confirmed', confirmationStatus: status.confirmationStatus };
+  }
+  return { txStatus: 'pending', confirmationStatus: status.confirmationStatus ?? undefined };
+}
+
+function assertBridgeCluster(config: AgentWalletConfig, cluster: string | undefined): void {
+  if (cluster && cluster !== config.cluster) {
+    throw new ProtocolError('cluster_mismatch', `Bridge is configured for ${config.cluster}; request targets ${cluster}.`);
+  }
 }
 
 function bridgeOrigin(url: URL): string {

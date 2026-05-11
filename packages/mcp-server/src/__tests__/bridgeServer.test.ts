@@ -6,6 +6,7 @@ import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 
 import { createBridgeServer } from '../bridgeServer.js';
+import { DEFAULT_CONFIG, type AgentWalletConfig } from '../config.js';
 import { JsonLabArtifactStore, type LabArtifact } from '../labArtifacts.js';
 import { LocalBridgeBackend } from '../localBridgeBackend.js';
 
@@ -117,9 +118,32 @@ describe('bridge lab artifact routes', () => {
       await handle.stop();
     }
   });
+
+  it('validates bridge Solana helper clusters before RPC calls', async () => {
+    const handle = await startTestBridge({
+      actionConfig: { ...DEFAULT_CONFIG, cluster: 'devnet', rpcUrl: 'http://127.0.0.1:1' },
+    });
+    try {
+      const response = await fetch(new URL('/bridge/solana/latest-blockhash', handle.url), {
+        method: 'POST',
+        headers: {
+          'content-type': 'application/json',
+          'x-agent-wallet-token': 'test-token',
+        },
+        body: JSON.stringify({ cluster: 'mainnet-beta' }),
+      });
+      const payload = await response.json() as { error?: { code?: string; message?: string } };
+
+      expect(response.status).toBe(400);
+      expect(payload.error?.code).toBe('cluster_mismatch');
+      expect(payload.error?.message).toContain('Bridge is configured for devnet');
+    } finally {
+      await handle.stop();
+    }
+  });
 });
 
-async function startTestBridge(): Promise<{ url: string; stop(): Promise<void> }> {
+async function startTestBridge(options: { actionConfig?: AgentWalletConfig } = {}): Promise<{ url: string; stop(): Promise<void> }> {
   const port = await freePort();
   const dir = await mkdtemp(join(tmpdir(), 'sawa-bridge-labs-'));
   const bridge = createBridgeServer({
@@ -130,6 +154,7 @@ async function startTestBridge(): Promise<{ url: string; stop(): Promise<void> }
       rpcUrl: 'https://api.devnet.solana.com',
       token: 'test-token',
     }),
+    ...(options.actionConfig ? { actionConfig: options.actionConfig } : {}),
     labArtifacts: new JsonLabArtifactStore(join(dir, 'lab-artifacts.json')),
   });
   await bridge.start();

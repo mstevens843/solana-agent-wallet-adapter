@@ -201,7 +201,7 @@ describe('mcp server tools', () => {
     expect(JSON.stringify(payload)).toContain('roadmapNotAutomatedYet');
   });
 
-  it('blocks arbitrary mainnet transaction signing when product caps are active', async () => {
+  it('allows arbitrary mainnet transaction signing through wallet approval', async () => {
     await closeServer?.();
     closeServer = undefined;
 
@@ -221,8 +221,8 @@ describe('mcp server tools', () => {
       cluster: 'mainnet-beta',
     });
 
-    expect(result.isError).toBe(true);
-    expect(textOf(result)).toContain('Arbitrary mainnet transaction signing is disabled');
+    expect(result.isError).not.toBe(true);
+    expect(textOf(result)).toContain('"status":"pending"');
   });
 
   it('prepares a capped transfer without submitting a wallet approval', async () => {

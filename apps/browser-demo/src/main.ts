@@ -713,6 +713,22 @@ interface BrowserTransactionExecution {
   result?: Record<string, unknown>;
 }
 
+interface BrowserLatestBlockhash {
+  blockhash: string;
+  lastValidBlockHeight?: number;
+}
+
+interface BrowserSendTransactionResponse {
+  txid?: string;
+  signature?: string;
+}
+
+interface BrowserSignatureStatusResponse {
+  txStatus?: string;
+  confirmationStatus?: string;
+  error?: string;
+}
+
 interface BrowserTokenMetadata {
   symbol: string;
   mint: PublicKey;
@@ -12727,11 +12743,11 @@ async function runCloudSolTransferFinalization(action: PreparedAction): Promise<
   const signingClient = requireClient();
   let txid = '';
   try {
-    const result = await signingClient.signAndSendTransaction(
+    const signed = await signingClient.signTransaction(
       transactionBase64,
       { cluster: action.cluster, summary: finalization.walletAction.summary },
     );
-    txid = result.txid ?? result.signature;
+    txid = await broadcastSignedBrowserTransaction(action.cluster, signed.signature);
   } catch (err) {
     await cloudRequest(`/api/approvals/${encodeURIComponent(action.id)}/finalization/${encodeURIComponent(finalizationId)}/fail`, {
       method: 'POST',
@@ -12746,18 +12762,8 @@ async function runCloudSolTransferFinalization(action: PreparedAction): Promise<
 
   let confirmed = true;
   let confirmationError = '';
-  const connection = new Connection(action.cluster === state.cluster ? activeRpcUrl() : defaultRpcUrl(action.cluster), 'confirmed');
-  const walletActionMetadata = isJsonObject(finalization.walletAction.metadata) ? finalization.walletAction.metadata : {};
-  const blockhash = typeof walletActionMetadata.blockhash === 'string' ? walletActionMetadata.blockhash : '';
-  const lastValidBlockHeight = typeof walletActionMetadata.lastValidBlockHeight === 'number'
-    ? walletActionMetadata.lastValidBlockHeight
-    : undefined;
   try {
-    if (blockhash && lastValidBlockHeight) {
-      await connection.confirmTransaction({ signature: txid, blockhash, lastValidBlockHeight }, 'confirmed');
-    } else {
-      await connection.confirmTransaction(txid, 'confirmed');
-    }
+    confirmed = await resolveSubmittedTransactionStatus(action.cluster, txid) === 'confirmed';
   } catch (err) {
     confirmed = false;
     confirmationError = err instanceof Error ? err.message : String(err);
@@ -13050,6 +13056,8 @@ function assertBrowserActionWalletReady(action: PreparedAction): void {
 }
 
 async function executeBrowserPreparedActionRecord(action: PreparedAction): Promise<BrowserTransactionExecution> {
+  const bridgeExecution = await executeBrowserPreparedActionThroughBridge(action);
+  if (bridgeExecution) return bridgeExecution;
   switch (action.kind) {
     case 'transfer_sol':
       return executeBrowserSolTransfer(action);
@@ -13062,6 +13070,54 @@ async function executeBrowserPreparedActionRecord(action: PreparedAction): Promi
     default:
       throw new Error(`Browser workflow cannot broadcast ${action.kind}.`);
   }
+}
+
+async function executeBrowserPreparedActionThroughBridge(action: PreparedAction): Promise<BrowserTransactionExecution | undefined> {
+  if (!state.bridgeActive || action.cluster !== state.cluster) return undefined;
+  let path = '';
+  let body: Record<string, unknown> = {};
+  switch (action.kind) {
+    case 'transfer_sol':
+      path = '/bridge/action/transfer-sol';
+      body = {
+        recipient: requiredActionParam(action, 'recipient'),
+        amountSol: requiredActionParam(action, 'amountSol'),
+      };
+      break;
+    case 'transfer_spl':
+      path = '/bridge/action/transfer-spl';
+      body = {
+        token: requiredActionParam(action, 'token'),
+        recipient: requiredActionParam(action, 'recipient'),
+        amount: requiredActionParam(action, 'amount'),
+      };
+      break;
+    case 'swap':
+      path = '/bridge/action/swap';
+      body = {
+        inputToken: requiredActionParam(action, 'inputToken'),
+        outputToken: requiredActionParam(action, 'outputToken'),
+        amount: requiredActionParam(action, 'amount'),
+        slippageBps: browserSlippageBps(action),
+      };
+      break;
+    default:
+      return undefined;
+  }
+
+  const result = await bridgeRequest<Record<string, unknown>>(path, {
+    method: 'POST',
+    body: JSON.stringify(body),
+  });
+  const txid = requiredResponseString(result.txid ?? result.signature, 'Bridge transaction signature');
+  markBrowserTransactionSubmitted(action, txid);
+  const txStatus = await resolveSubmittedTransactionStatus(action.cluster, txid);
+  return {
+    txid,
+    txStatus,
+    explorerUrl: explorerUrl(txid, action.cluster),
+    result,
+  };
 }
 
 async function executeBrowserSolTransfer(action: PreparedAction): Promise<BrowserTransactionExecution> {
@@ -13241,8 +13297,7 @@ async function signAndBroadcastBrowserTransaction(
   summary: string,
 ): Promise<string> {
   const feePayer = publicKeyFromConnectedWallet();
-  const connection = browserActionConnection(action.cluster);
-  const latest = await connection.getLatestBlockhash('confirmed');
+  const latest = await browserLatestBlockhash(action.cluster);
   transaction.feePayer = feePayer;
   transaction.recentBlockhash = latest.blockhash;
   const transactionBase64 = encodeBase64(
@@ -13260,7 +13315,18 @@ async function signAndBroadcastBrowserTransactionBase64(
   summary: string,
 ): Promise<string> {
   const signingClient = requireClient();
-  const connection = browserActionConnection(action.cluster);
+  if (state.capabilities?.supports.signTransaction === true) {
+    pushToast('pending', 'Wallet sign transaction', summary);
+    const signed = await signingClient.signTransaction(transactionBase64, {
+      cluster: action.cluster,
+      summary,
+    });
+    pushToast('success', 'Transaction signed', 'Signed bytes returned by wallet.');
+    pushToast('pending', 'Sending transaction', 'Broadcasting the signed transaction to Solana RPC.');
+    const txid = await broadcastSignedBrowserTransaction(action.cluster, signed.signature);
+    pushTransactionToast('success', 'Transaction broadcast', txid, action.cluster);
+    return txid;
+  }
   if (state.capabilities?.supports.signAndSendTransaction === true) {
     pushToast('pending', 'Wallet sign and send', summary);
     const result = await signingClient.signAndSendTransaction(transactionBase64, {
@@ -13271,36 +13337,18 @@ async function signAndBroadcastBrowserTransactionBase64(
     pushTransactionToast('success', 'Wallet submitted transaction', txid, action.cluster);
     return txid;
   }
-  if (state.capabilities?.supports.signTransaction === true) {
-    pushToast('pending', 'Wallet sign transaction', summary);
-    const signed = await signingClient.signTransaction(transactionBase64, {
-      cluster: action.cluster,
-      summary,
-    });
-    pushToast('success', 'Transaction signed', 'Signed bytes returned by wallet.');
-    pushToast('pending', 'Sending transaction', 'Broadcasting the signed transaction to Solana RPC.');
-    const txid = await connection.sendRawTransaction(decodeBase64(signed.signature), {
-      preflightCommitment: 'confirmed',
-      maxRetries: 5,
-    });
-    pushTransactionToast('success', 'Transaction broadcast', txid, action.cluster);
-    return txid;
-  }
   throw new Error('Selected wallet cannot sign and send transactions from this browser.');
 }
 
 async function resolveSubmittedTransactionStatus(cluster: Cluster, txid: string): Promise<PreparedActionTxStatus> {
-  const connection = browserActionConnection(cluster);
-  await connection.confirmTransaction(txid, 'confirmed').catch(() => undefined);
-  const statuses = await connection.getSignatureStatuses([txid], { searchTransactionHistory: true });
-  const status = statuses.value[0];
-  if (!status) {
+  const status = await browserSignatureStatus(cluster, txid);
+  if (status.txStatus === 'pending' || !status.txStatus) {
     throw new Error(`Transaction ${short(txid)} was submitted but did not confirm yet. Open Solscan from the toast and retry confirmation later.`);
   }
-  if (status.err) {
-    throw new Error(`Transaction ${short(txid)} failed on-chain: ${stableJson(status.err)}`);
+  if (status.txStatus === 'failed') {
+    throw new Error(`Transaction ${short(txid)} failed on-chain: ${status.error ?? status.confirmationStatus ?? 'failed'}`);
   }
-  if (status.confirmationStatus === 'confirmed' || status.confirmationStatus === 'finalized') {
+  if (status.txStatus === 'confirmed') {
     return 'confirmed';
   }
   throw new Error(`Transaction ${short(txid)} is still ${status.confirmationStatus ?? 'pending'} and was not moved to Done.`);
@@ -13398,6 +13446,111 @@ function markBrowserTransactionSubmitted(action: PreparedAction, txid: string): 
     status: 'pending',
     txid,
   });
+}
+
+async function browserLatestBlockhash(cluster: Cluster): Promise<BrowserLatestBlockhash> {
+  if (state.bridgeActive && cluster === state.cluster) {
+    return bridgeRequest<BrowserLatestBlockhash>('/bridge/solana/latest-blockhash', {
+      method: 'POST',
+      body: JSON.stringify({ cluster }),
+    });
+  }
+  try {
+    return await sameOriginTransactionRequest<BrowserLatestBlockhash>('/api/solana/latest-blockhash', { cluster });
+  } catch (err) {
+    if (canUseDirectBrowserRpc(cluster)) {
+      return browserActionConnection(cluster).getLatestBlockhash('confirmed');
+    }
+    throw transactionApiUnavailableError(err);
+  }
+}
+
+async function broadcastSignedBrowserTransaction(cluster: Cluster, signedTransactionBase64: string): Promise<string> {
+  const request = { cluster, signedTransactionBase64 };
+  if (state.bridgeActive && cluster === state.cluster) {
+    const response = await bridgeRequest<BrowserSendTransactionResponse>('/bridge/solana/send-transaction', {
+      method: 'POST',
+      body: JSON.stringify(request),
+    });
+    return requiredResponseString(response.txid ?? response.signature, 'Bridge transaction signature');
+  }
+  try {
+    const response = await sameOriginTransactionRequest<BrowserSendTransactionResponse>('/api/solana/send-transaction', request);
+    return requiredResponseString(response.txid ?? response.signature, 'Transaction signature');
+  } catch (err) {
+    if (canUseDirectBrowserRpc(cluster)) {
+      return browserActionConnection(cluster).sendRawTransaction(decodeBase64(signedTransactionBase64), {
+        preflightCommitment: 'confirmed',
+        maxRetries: 5,
+      });
+    }
+    throw transactionApiUnavailableError(err);
+  }
+}
+
+async function browserSignatureStatus(cluster: Cluster, txid: string): Promise<BrowserSignatureStatusResponse> {
+  const request = { cluster, txid };
+  if (state.bridgeActive && cluster === state.cluster) {
+    return bridgeRequest<BrowserSignatureStatusResponse>('/bridge/solana/signature-status', {
+      method: 'POST',
+      body: JSON.stringify(request),
+    });
+  }
+  try {
+    return await sameOriginTransactionRequest<BrowserSignatureStatusResponse>('/api/solana/signature-status', request);
+  } catch (err) {
+    if (canUseDirectBrowserRpc(cluster)) {
+      const status = (await browserActionConnection(cluster).getSignatureStatuses([txid], {
+        searchTransactionHistory: true,
+      })).value[0];
+      if (!status) return { txStatus: 'pending' };
+      if (status.err) return { txStatus: 'failed', confirmationStatus: status.confirmationStatus ?? undefined, error: stableJson(status.err) };
+      if (status.confirmationStatus === 'confirmed' || status.confirmationStatus === 'finalized') {
+        return { txStatus: 'confirmed', confirmationStatus: status.confirmationStatus };
+      }
+      return { txStatus: 'pending', confirmationStatus: status.confirmationStatus ?? undefined };
+    }
+    throw transactionApiUnavailableError(err);
+  }
+}
+
+async function sameOriginTransactionRequest<T>(path: string, body: Record<string, unknown>): Promise<T> {
+  const response = await fetch(path, {
+    method: 'POST',
+    credentials: 'include',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify(body),
+  }).catch(() => {
+    throw new Error('Agentic transaction APIs are not reachable from this page.');
+  });
+  const contentType = response.headers.get('content-type') ?? '';
+  if (!contentType.toLowerCase().includes('application/json')) {
+    throw new Error(transactionApiUnavailableMessage());
+  }
+  const payload = await response.json().catch(() => null) as unknown;
+  if (!response.ok) {
+    throw new Error(cloudErrorMessage(payload, response.status));
+  }
+  if (payload === null) {
+    throw new Error(transactionApiUnavailableMessage());
+  }
+  return payload as T;
+}
+
+function canUseDirectBrowserRpc(cluster: Cluster): boolean {
+  return cluster !== 'mainnet-beta';
+}
+
+function transactionApiUnavailableError(err: unknown): Error {
+  const message = err instanceof Error ? err.message : String(err);
+  if (/not_found|not available|not reachable|transaction APIs/i.test(message)) {
+    return new Error(transactionApiUnavailableMessage());
+  }
+  return new Error(message);
+}
+
+function transactionApiUnavailableMessage(): string {
+  return 'Transaction RPC requires Agentic same-origin APIs or a connected local bridge. Start the local runtime, open the printed bridge URL, click Check local bridge, then approve again.';
 }
 
 function browserActionConnection(cluster: Cluster): Connection {
@@ -13535,6 +13688,10 @@ async function hostedSwapRequest(path: '/api/swap/order' | '/api/swap/execute', 
     headers: { 'content-type': 'application/json' },
     body: JSON.stringify(body),
   });
+  const contentType = response.headers.get('content-type') ?? '';
+  if (!contentType.toLowerCase().includes('application/json')) {
+    throw new Error('Swap execution requires Agentic same-origin APIs or a connected local bridge. Start the local runtime, click Check local bridge, then approve again.');
+  }
   const payload = await response.json().catch(() => ({})) as unknown;
   if (!response.ok) {
     throw new Error(cloudErrorMessage(payload, response.status));
@@ -14655,7 +14812,13 @@ async function handleBridgeSigningRequest(request: SigningRequest): Promise<void
         result = await signingClient.signTransaction(request.payload.data, requestSignOptions(request));
         break;
       case 'sign_and_send_transaction':
-        result = await signingClient.signAndSendTransaction(request.payload.data, requestSignOptions(request));
+        if (state.capabilities?.supports.signTransaction === true) {
+          const signed = await signingClient.signTransaction(request.payload.data, requestSignOptions(request));
+          const txid = await broadcastSignedBrowserTransaction(request.cluster, signed.signature);
+          result = { signature: txid, txid };
+        } else {
+          result = await signingClient.signAndSendTransaction(request.payload.data, requestSignOptions(request));
+        }
         break;
     }
 
@@ -16315,7 +16478,7 @@ function approvalEffectCopy(action: PreparedAction): string {
   }
   if (requiresCloudTransactionFinalization(action)) {
     return action.kind === 'transfer_sol'
-      ? 'This cloud transfer requires transaction finalization, but the connected wallet cannot sign and send it from this browser session.'
+      ? 'This cloud transfer requires transaction finalization, but the connected wallet cannot sign this transaction from this browser session.'
       : 'This money-moving request requires transaction finalization. Cloud finalization for this action type is not live yet, so proof-only approval is blocked.';
   }
   if (action.workflowSource === 'cloud') {
@@ -16343,7 +16506,7 @@ const CLOUD_TRANSACTION_FINALIZATION_KINDS = new Set<PreparedActionKind>([
 function canFinalizeCloudSolTransfer(action: PreparedAction): boolean {
   return action.workflowSource === 'cloud' &&
     action.kind === 'transfer_sol' &&
-    state.capabilities?.supports.signAndSendTransaction === true &&
+    state.capabilities?.supports.signTransaction === true &&
     Boolean(state.address && state.address === action.walletAddress);
 }
 
@@ -16363,8 +16526,8 @@ function cloudExecutionBlockReason(action: PreparedAction): string | null {
     if (!state.address || state.address !== action.walletAddress) {
       return 'Connect the approval wallet before finalizing this cloud SOL transfer.';
     }
-    if (state.capabilities?.supports.signAndSendTransaction !== true) {
-      return 'This wallet cannot sign and send transactions from the browser. Use private local mode or reject this request.';
+    if (state.capabilities?.supports.signTransaction !== true) {
+      return 'This wallet cannot sign transactions from this browser. Use private local mode or reject this request.';
     }
     return null;
   }

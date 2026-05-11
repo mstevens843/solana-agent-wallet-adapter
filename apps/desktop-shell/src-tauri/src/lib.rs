@@ -1,6 +1,6 @@
 use serde::{Deserialize, Serialize};
 use std::{
-    collections::VecDeque,
+    collections::{HashMap, HashSet, VecDeque},
     fs,
     io::{BufRead, BufReader, Read},
     net::{TcpStream, ToSocketAddrs},
@@ -20,6 +20,16 @@ const LEGACY_BRIDGE_TOKEN: &str = "local-agent-wallet";
 const DEFAULT_WALLET_HOST_URL: &str = "http://127.0.0.1:5174";
 const SIDECAR_BASENAME: &str = "agentic-cli-sidecar";
 const MAX_LOG_LINES: usize = 600;
+const DEFAULT_JUPITER_ULTRA_BASE: &str = "https://api.jup.ag/ultra/v1";
+const DEFAULT_JUPITER_API_URL: &str = "https://quote-api.jup.ag";
+const SETUP_ENV_KEYS: [&str; 6] = [
+    "SOLANA_RPC_URL",
+    "HELIUS_RPC_URL",
+    "JUPITER_API_KEY",
+    "JUP_API_KEY",
+    "JUP_ULTRA_BASE",
+    "JUPITER_API_URL",
+];
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -31,6 +41,31 @@ struct DesktopConfig {
     action_config_path: String,
     prepared_actions_path: String,
     wallet_host_url: String,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct RuntimeSetupInput {
+    rpc_url: Option<String>,
+    jupiter_api_key: Option<String>,
+    jupiter_ultra_base: Option<String>,
+    jupiter_api_url: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct RuntimeSetup {
+    env_path: String,
+    env_found: bool,
+    rpc_url_configured: bool,
+    rpc_url_redacted: Option<String>,
+    jupiter_api_key_configured: bool,
+    jupiter_api_key_redacted: Option<String>,
+    jupiter_ultra_base: String,
+    jupiter_api_url: String,
+    sol_transfers_ready: bool,
+    token_transfers_ready: bool,
+    swaps_ready: bool,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -124,6 +159,8 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             read_config,
             save_config,
+            read_runtime_setup,
+            save_runtime_setup,
             bridge_status,
             start_bridge,
             stop_bridge,
@@ -165,6 +202,32 @@ fn save_config(
     ));
     trim_logs(&mut runtime.logs);
     Ok(normalized)
+}
+
+#[tauri::command]
+fn read_runtime_setup(state: tauri::State<'_, SharedRuntime>) -> Result<RuntimeSetup, String> {
+    let runtime = state.lock().map_err(lock_error)?;
+    runtime_setup_for_config(&runtime.config)
+}
+
+#[tauri::command]
+fn save_runtime_setup(
+    input: RuntimeSetupInput,
+    state: tauri::State<'_, SharedRuntime>,
+) -> Result<RuntimeSetup, String> {
+    let config = {
+        let runtime = state.lock().map_err(lock_error)?;
+        runtime.config.clone()
+    };
+    save_runtime_setup_to_env(&config, input)?;
+    let setup = runtime_setup_for_config(&config)?;
+    let mut runtime = state.lock().map_err(lock_error)?;
+    runtime.logs.push_back(format!(
+        "[desktop] saved runtime setup at {}",
+        config.env_path
+    ));
+    trim_logs(&mut runtime.logs);
+    Ok(setup)
 }
 
 #[tauri::command]
@@ -965,6 +1028,291 @@ fn normalize_config(mut config: DesktopConfig) -> DesktopConfig {
     config
 }
 
+fn runtime_setup_for_config(config: &DesktopConfig) -> Result<RuntimeSetup, String> {
+    let path = Path::new(&config.env_path);
+    let (env_found, values) = read_env_values(path)?;
+    let rpc_url = first_env_value(&values, &["SOLANA_RPC_URL", "HELIUS_RPC_URL"]);
+    let jupiter_api_key = first_env_value(&values, &["JUPITER_API_KEY", "JUP_API_KEY"]);
+    let jupiter_ultra_base = values
+        .get("JUP_ULTRA_BASE")
+        .filter(|value| !value.trim().is_empty())
+        .cloned()
+        .unwrap_or_else(|| DEFAULT_JUPITER_ULTRA_BASE.into());
+    let jupiter_api_url = values
+        .get("JUPITER_API_URL")
+        .filter(|value| !value.trim().is_empty())
+        .cloned()
+        .unwrap_or_else(|| DEFAULT_JUPITER_API_URL.into());
+    let rpc_url_configured = rpc_url.is_some();
+    let jupiter_api_key_configured = jupiter_api_key.is_some();
+    Ok(RuntimeSetup {
+        env_path: config.env_path.clone(),
+        env_found,
+        rpc_url_configured,
+        rpc_url_redacted: rpc_url.as_deref().map(redact_url_secret),
+        jupiter_api_key_configured,
+        jupiter_api_key_redacted: jupiter_api_key.as_deref().map(redact_secret),
+        jupiter_ultra_base,
+        jupiter_api_url,
+        sol_transfers_ready: rpc_url_configured,
+        token_transfers_ready: rpc_url_configured,
+        swaps_ready: rpc_url_configured && jupiter_api_key_configured,
+    })
+}
+
+fn save_runtime_setup_to_env(
+    config: &DesktopConfig,
+    input: RuntimeSetupInput,
+) -> Result<(), String> {
+    let path = Path::new(&config.env_path);
+    let raw = match fs::read_to_string(path) {
+        Ok(value) => value,
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => String::new(),
+        Err(err) => return Err(format!("Failed to read {}: {err}", path.display())),
+    };
+    let values = parse_env_values(&raw);
+    let mut updates = HashMap::new();
+
+    if let Some(rpc_url) = input.rpc_url.as_deref().map(str::trim).filter(|value| !value.is_empty()) {
+        let normalized = normalize_setup_url(rpc_url, "Solana RPC URL")?;
+        updates.insert("SOLANA_RPC_URL".into(), normalized.clone());
+        updates.insert("HELIUS_RPC_URL".into(), normalized);
+    }
+
+    if let Some(api_key) = input
+        .jupiter_api_key
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        updates.insert("JUPITER_API_KEY".into(), api_key.into());
+        updates.insert("JUP_API_KEY".into(), api_key.into());
+    }
+
+    let jupiter_ultra_base = input
+        .jupiter_ultra_base
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string)
+        .or_else(|| values.get("JUP_ULTRA_BASE").cloned())
+        .unwrap_or_else(|| DEFAULT_JUPITER_ULTRA_BASE.into());
+    updates.insert(
+        "JUP_ULTRA_BASE".into(),
+        normalize_setup_url(&jupiter_ultra_base, "Jupiter Ultra base URL")?,
+    );
+
+    let jupiter_api_url = input
+        .jupiter_api_url
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string)
+        .or_else(|| values.get("JUPITER_API_URL").cloned())
+        .unwrap_or_else(|| DEFAULT_JUPITER_API_URL.into());
+    updates.insert(
+        "JUPITER_API_URL".into(),
+        normalize_setup_url(&jupiter_api_url, "Legacy Jupiter API URL")?,
+    );
+
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)
+            .map_err(|err| format!("Failed to create {}: {err}", parent.display()))?;
+    }
+    let next = apply_env_updates(&raw, &updates)?;
+    let temp_path = temp_env_path(path);
+    fs::write(&temp_path, next)
+        .map_err(|err| format!("Failed to write {}: {err}", temp_path.display()))?;
+    fs::rename(&temp_path, path).map_err(|err| {
+        format!(
+            "Failed to replace {} with {}: {err}",
+            path.display(),
+            temp_path.display()
+        )
+    })?;
+    set_private_file_permissions(path);
+    Ok(())
+}
+
+fn read_env_values(path: &Path) -> Result<(bool, HashMap<String, String>), String> {
+    match fs::read_to_string(path) {
+        Ok(raw) => Ok((true, parse_env_values(&raw))),
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok((false, HashMap::new())),
+        Err(err) => Err(format!("Failed to read {}: {err}", path.display())),
+    }
+}
+
+fn parse_env_values(raw: &str) -> HashMap<String, String> {
+    let mut values = HashMap::new();
+    for line in raw.lines() {
+        let Some(key) = env_key_from_line(line) else {
+            continue;
+        };
+        let Some((_, value)) = line.split_once('=') else {
+            continue;
+        };
+        values.insert(key, unquote_env(value.trim()));
+    }
+    values
+}
+
+fn apply_env_updates(raw: &str, updates: &HashMap<String, String>) -> Result<String, String> {
+    let normalized = raw.replace("\r\n", "\n");
+    let mut lines = if normalized.is_empty() {
+        vec!["# Solana Agent Wallet local runtime setup".to_string()]
+    } else {
+        normalized.split('\n').map(str::to_string).collect::<Vec<_>>()
+    };
+    let mut seen = HashSet::new();
+    for line in &mut lines {
+        let Some(key) = env_key_from_line(line) else {
+            continue;
+        };
+        let Some(value) = updates.get(&key) else {
+            continue;
+        };
+        *line = format!("{key}={}", format_env_value(value)?);
+        seen.insert(key);
+    }
+    let missing = SETUP_ENV_KEYS
+        .iter()
+        .filter(|key| updates.contains_key(**key) && !seen.contains(**key))
+        .copied()
+        .collect::<Vec<_>>();
+    if !missing.is_empty() && lines.last().map(|line| !line.is_empty()).unwrap_or(false) {
+        lines.push(String::new());
+    }
+    for key in missing {
+        let value = updates.get(key).map(String::as_str).unwrap_or("");
+        lines.push(format!("{key}={}", format_env_value(value)?));
+    }
+    Ok(format!("{}\n", lines.join("\n").trim_end_matches('\n')))
+}
+
+fn env_key_from_line(line: &str) -> Option<String> {
+    let trimmed = line.trim();
+    if trimmed.is_empty() || trimmed.starts_with('#') {
+        return None;
+    }
+    let (key, _) = trimmed.split_once('=')?;
+    let key = key.trim();
+    let mut chars = key.chars();
+    let first = chars.next()?;
+    if !(first == '_' || first.is_ascii_alphabetic()) {
+        return None;
+    }
+    if !chars.all(|char| char == '_' || char.is_ascii_alphanumeric()) {
+        return None;
+    }
+    Some(key.into())
+}
+
+fn unquote_env(value: &str) -> String {
+    if value.len() >= 2
+        && ((value.starts_with('"') && value.ends_with('"'))
+            || (value.starts_with('\'') && value.ends_with('\'')))
+    {
+        return value[1..value.len() - 1].into();
+    }
+    value.into()
+}
+
+fn first_env_value(values: &HashMap<String, String>, keys: &[&str]) -> Option<String> {
+    keys.iter().find_map(|key| {
+        values
+            .get(*key)
+            .map(|value| value.trim())
+            .filter(|value| !value.is_empty())
+            .map(str::to_string)
+    })
+}
+
+fn normalize_setup_url(value: &str, label: &str) -> Result<String, String> {
+    let trimmed = value.trim();
+    let parsed = Url::parse(trimmed).map_err(|_| format!("{label} must be a valid URL."))?;
+    if parsed.scheme() != "http" && parsed.scheme() != "https" {
+        return Err(format!("{label} must use http or https."));
+    }
+    if parsed.query().is_some() || parsed.fragment().is_some() {
+        Ok(trimmed.into())
+    } else {
+        Ok(trimmed.trim_end_matches('/').into())
+    }
+}
+
+fn format_env_value(value: &str) -> Result<&str, String> {
+    if value.contains('\n') || value.contains('\r') {
+        return Err("Environment values cannot contain newlines.".into());
+    }
+    Ok(value)
+}
+
+fn redact_secret(value: &str) -> String {
+    let trimmed = value.trim();
+    if trimmed.len() <= 8 {
+        return "configured".into();
+    }
+    format!("{}...{}", &trimmed[..4], &trimmed[trimmed.len() - 4..])
+}
+
+fn redact_url_secret(value: &str) -> String {
+    let Ok(mut url) = Url::parse(value) else {
+        return redact_secret(value);
+    };
+    let pairs = url
+        .query_pairs()
+        .map(|(key, value)| {
+            let key_string = key.to_string();
+            let value_string = value.to_string();
+            if is_secret_query_key(&key_string) {
+                let suffix_start = value_string.len().saturating_sub(4);
+                (key_string, format!("...{}", &value_string[suffix_start..]))
+            } else {
+                (key_string, value_string)
+            }
+        })
+        .collect::<Vec<_>>();
+    if !pairs.is_empty() {
+        let mut query = url.query_pairs_mut();
+        query.clear();
+        for (key, value) in pairs {
+            query.append_pair(&key, &value);
+        }
+    }
+    let _ = url.set_username(if url.username().is_empty() { "" } else { "..." });
+    let _ = url.set_password(url.password().map(|_| "..."));
+    url.to_string()
+}
+
+fn is_secret_query_key(key: &str) -> bool {
+    let normalized = key.replace(['-', '_'], "").to_ascii_lowercase();
+    matches!(normalized.as_str(), "apikey" | "key" | "token")
+}
+
+fn temp_env_path(path: &Path) -> PathBuf {
+    let file_name = path
+        .file_name()
+        .and_then(|value| value.to_str())
+        .unwrap_or(".env");
+    let millis = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|value| value.as_millis())
+        .unwrap_or(0);
+    path.with_file_name(format!("{file_name}.{}.{}.tmp", std::process::id(), millis))
+}
+
+fn set_private_file_permissions(path: &Path) {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        if let Ok(metadata) = fs::metadata(path) {
+            let mut permissions = metadata.permissions();
+            permissions.set_mode(0o600);
+            let _ = fs::set_permissions(path, permissions);
+        }
+    }
+}
+
 fn default_config() -> DesktopConfig {
     let repo_root = default_repo_root();
     let data_dir = runtime_data_dir();
@@ -1265,5 +1613,40 @@ mod tests {
         assert!(url.starts_with("http://127.0.0.1:5174/?screen=connect&"));
         assert!(url.contains("bridgeUrl=http%3A%2F%2F127.0.0.1%3A8787"));
         assert!(url.contains("token=test-token"));
+    }
+
+    #[test]
+    fn env_updates_preserve_unrelated_values_and_write_aliases() {
+        let raw = "CUSTOM_VALUE=kept\nJUPITER_API_KEY=old\n";
+        let mut updates = HashMap::new();
+        updates.insert(
+            "SOLANA_RPC_URL".into(),
+            "https://mainnet.helius-rpc.com/?api-key=rpc-secret".into(),
+        );
+        updates.insert(
+            "HELIUS_RPC_URL".into(),
+            "https://mainnet.helius-rpc.com/?api-key=rpc-secret".into(),
+        );
+        updates.insert("JUPITER_API_KEY".into(), "jupiter-secret".into());
+        updates.insert("JUP_API_KEY".into(), "jupiter-secret".into());
+        updates.insert("JUP_ULTRA_BASE".into(), DEFAULT_JUPITER_ULTRA_BASE.into());
+        updates.insert("JUPITER_API_URL".into(), DEFAULT_JUPITER_API_URL.into());
+
+        let next = apply_env_updates(raw, &updates).expect("env update should succeed");
+
+        assert!(next.contains("CUSTOM_VALUE=kept"));
+        assert!(next.contains("JUPITER_API_KEY=jupiter-secret"));
+        assert!(next.contains("JUP_API_KEY=jupiter-secret"));
+        assert!(next.contains("SOLANA_RPC_URL=https://mainnet.helius-rpc.com/?api-key=rpc-secret"));
+        assert!(next.contains("HELIUS_RPC_URL=https://mainnet.helius-rpc.com/?api-key=rpc-secret"));
+    }
+
+    #[test]
+    fn setup_redaction_hides_keys() {
+        let rpc = redact_url_secret("https://mainnet.helius-rpc.com/?api-key=rpc-secret-value");
+        let key = redact_secret("jupiter-secret-value");
+
+        assert!(!rpc.contains("rpc-secret-value"));
+        assert!(!key.contains("secret-value"));
     }
 }

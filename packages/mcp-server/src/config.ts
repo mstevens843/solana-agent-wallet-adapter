@@ -55,7 +55,7 @@ export const DEFAULT_CONFIG: AgentWalletConfig = {
     },
   ],
   jupiter: {
-    baseUrl: 'https://api.jup.ag/swap/v2',
+    baseUrl: 'https://api.jup.ag/ultra/v1',
     apiKeyEnv: 'JUPITER_API_KEY',
   },
 };

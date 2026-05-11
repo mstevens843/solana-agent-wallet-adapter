@@ -2,7 +2,7 @@
 import { createHash, randomBytes } from 'node:crypto';
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
 import { existsSync } from 'node:fs';
-import { mkdir, readFile, stat, writeFile } from 'node:fs/promises';
+import { chmod, mkdir, readFile, rename, stat, writeFile } from 'node:fs/promises';
 import { dirname, extname, join, normalize, relative, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { spawn, type ChildProcess } from 'node:child_process';
@@ -44,6 +44,16 @@ const POLL_INTERVAL_MS = 750;
 const RUNTIME_DIR_NAME = 'solana-agent-wallet';
 const WALLET_HOST_HEALTH_PATH = '/__agentic/health';
 const NO_OUTPUT = Symbol('no-output');
+const DEFAULT_JUPITER_ULTRA_BASE = 'https://api.jup.ag/ultra/v1';
+const DEFAULT_JUPITER_API_URL = 'https://quote-api.jup.ag';
+const SETUP_ENV_KEYS = [
+  'SOLANA_RPC_URL',
+  'HELIUS_RPC_URL',
+  'JUPITER_API_KEY',
+  'JUP_API_KEY',
+  'JUP_ULTRA_BASE',
+  'JUPITER_API_URL',
+] as const;
 
 interface ParsedArgs {
   options: GlobalOptions;
@@ -64,6 +74,28 @@ interface GlobalOptions {
   json: boolean;
   color: boolean;
   help: boolean;
+}
+
+interface SetupCommandOptions {
+  rpcUrl?: string;
+  jupiterApiKey?: string;
+  jupiterUltraBase?: string;
+  jupiterApiUrl?: string;
+  yes: boolean;
+}
+
+interface RuntimeSetupStatus {
+  envPath: string;
+  envFound: boolean;
+  rpcUrlConfigured: boolean;
+  rpcUrlRedacted: string | null;
+  jupiterApiKeyConfigured: boolean;
+  jupiterApiKeyRedacted: string | null;
+  jupiterUltraBase: string;
+  jupiterApiUrl: string;
+  solTransfersReady: boolean;
+  tokenTransfersReady: boolean;
+  swapsReady: boolean;
 }
 
 interface PreparedAction {
@@ -356,6 +388,8 @@ async function main(): Promise<void> {
 async function dispatch(parsed: ParsedArgs): Promise<unknown> {
   const command = parsed.positionals[0];
   switch (command) {
+    case 'setup':
+      return runSetupCommand(parsed);
     case 'doctor':
       return runDoctor(parsed.options);
     case 'status':
@@ -442,6 +476,121 @@ async function dispatchWalletHost(parsed: ParsedArgs): Promise<unknown> {
     return NO_OUTPUT;
   }
   throw new Error(`Unknown wallet-host command: ${subcommand}`);
+}
+
+async function runSetupCommand(parsed: ParsedArgs): Promise<unknown> {
+  const setupOptions = parseSetupCommandOptions(parsed.positionals.slice(1));
+  await ensureRuntimeFiles(parsed.options);
+  const updates = await setupUpdates(parsed.options, setupOptions, null);
+  await writeEnvUpdates(parsed.options.envPath, updates);
+  const status = await runtimeSetupStatus(parsed.options);
+  if (parsed.options.json) {
+    return status;
+  }
+  printSetupStatus(parsed.options, status);
+  return NO_OUTPUT;
+}
+
+async function runSetupInteractive(state: TerminalAppState, rl: readline.Interface): Promise<void> {
+  await ensureRuntimeFiles(state.options);
+  const updates = await setupUpdates(state.options, { yes: false }, rl);
+  await writeEnvUpdates(state.options.envPath, updates);
+  const status = await runtimeSetupStatus(state.options);
+  printSetupStatus(state.options, status);
+  if (state.bridgeProcess) {
+    printWarn(state.options, 'Restart the terminal app or run /bridge again so the local bridge picks up the new .env values.');
+  }
+}
+
+async function setupUpdates(
+  options: GlobalOptions,
+  setupOptions: SetupCommandOptions,
+  rl: readline.Interface | null,
+): Promise<Record<string, string>> {
+  const env = await readEnvValues(options.envPath);
+  const currentRpcUrl = firstValue(env.values, 'SOLANA_RPC_URL', 'HELIUS_RPC_URL') ?? '';
+  const currentJupiterApiKey = firstValue(env.values, 'JUPITER_API_KEY', 'JUP_API_KEY') ?? '';
+  let rpcUrl = setupOptions.rpcUrl ?? currentRpcUrl;
+  let jupiterApiKey = setupOptions.jupiterApiKey ?? currentJupiterApiKey;
+  let jupiterUltraBase = setupOptions.jupiterUltraBase
+    ?? env.values.JUP_ULTRA_BASE
+    ?? DEFAULT_JUPITER_ULTRA_BASE;
+  let jupiterApiUrl = setupOptions.jupiterApiUrl
+    ?? env.values.JUPITER_API_URL
+    ?? DEFAULT_JUPITER_API_URL;
+
+  const hasExplicitValues = setupOptions.rpcUrl !== undefined
+    || setupOptions.jupiterApiKey !== undefined
+    || setupOptions.jupiterUltraBase !== undefined
+    || setupOptions.jupiterApiUrl !== undefined;
+  const shouldPrompt = rl !== null || (!setupOptions.yes && process.stdin.isTTY && !hasExplicitValues);
+  if (shouldPrompt) {
+    const setupRl = rl ?? readline.createInterface({ input: process.stdin, output: process.stdout });
+    try {
+      printSection('Local Runtime Setup');
+      console.log(`Writing setup to ${options.envPath}`);
+      rpcUrl = await promptExistingSecret(setupRl, 'Solana RPC URL', currentRpcUrl);
+      jupiterApiKey = await promptExistingSecret(setupRl, 'Jupiter API key', currentJupiterApiKey);
+      jupiterUltraBase = await prompt(setupRl, 'Jupiter Ultra base URL', jupiterUltraBase);
+      jupiterApiUrl = await prompt(setupRl, 'Legacy Jupiter API URL', jupiterApiUrl);
+    } finally {
+      if (!rl) {
+        setupRl.close();
+      }
+    }
+  }
+
+  const updates: Record<string, string> = {};
+  if (rpcUrl.trim()) {
+    const normalizedRpcUrl = normalizeSetupUrl(rpcUrl, 'Solana RPC URL');
+    updates.SOLANA_RPC_URL = normalizedRpcUrl;
+    updates.HELIUS_RPC_URL = normalizedRpcUrl;
+  }
+  if (jupiterApiKey.trim()) {
+    updates.JUPITER_API_KEY = jupiterApiKey.trim();
+    updates.JUP_API_KEY = jupiterApiKey.trim();
+  }
+  updates.JUP_ULTRA_BASE = normalizeSetupUrl(jupiterUltraBase || DEFAULT_JUPITER_ULTRA_BASE, 'Jupiter Ultra base URL');
+  updates.JUPITER_API_URL = normalizeSetupUrl(jupiterApiUrl || DEFAULT_JUPITER_API_URL, 'Legacy Jupiter API URL');
+  return updates;
+}
+
+function parseSetupCommandOptions(args: string[]): SetupCommandOptions {
+  const options: SetupCommandOptions = { yes: false };
+  for (let index = 0; index < args.length; index += 1) {
+    const arg = args[index]!;
+    const [flag, inlineValue] = splitFlag(arg);
+    if (flag === '--yes' || flag === '-y') {
+      options.yes = true;
+      continue;
+    }
+    if (flag === '--rpc-url' || flag === '--solana-rpc-url' || flag === '--helius-rpc-url') {
+      const value = optionArgument(args, index, flag, inlineValue);
+      options.rpcUrl = value.value;
+      index = value.index;
+      continue;
+    }
+    if (flag === '--jupiter-api-key' || flag === '--jup-api-key') {
+      const value = optionArgument(args, index, flag, inlineValue);
+      options.jupiterApiKey = value.value;
+      index = value.index;
+      continue;
+    }
+    if (flag === '--jupiter-ultra-base' || flag === '--jup-ultra-base' || flag === '--jupiter-base-url') {
+      const value = optionArgument(args, index, flag, inlineValue);
+      options.jupiterUltraBase = value.value;
+      index = value.index;
+      continue;
+    }
+    if (flag === '--jupiter-api-url') {
+      const value = optionArgument(args, index, flag, inlineValue);
+      options.jupiterApiUrl = value.value;
+      index = value.index;
+      continue;
+    }
+    throw new Error(`Unknown setup option: ${arg}`);
+  }
+  return options;
 }
 
 async function dispatchInbox(parsed: ParsedArgs): Promise<unknown> {
@@ -731,6 +880,9 @@ async function handleTerminalCommand(
         return true;
       case 'doctor':
         printDoctor(state.options, await runDoctor(state.options));
+        return false;
+      case 'setup':
+        await runSetupInteractive(state, rl);
         return false;
       case 'status':
       case 'wallet':
@@ -1619,6 +1771,107 @@ async function loadDotEnvFile(path: string): Promise<void> {
   }
 }
 
+async function runtimeSetupStatus(options: GlobalOptions): Promise<RuntimeSetupStatus> {
+  const env = await readEnvValues(options.envPath);
+  const rpcUrl = firstValue(env.values, 'SOLANA_RPC_URL', 'HELIUS_RPC_URL') ?? '';
+  const jupiterApiKey = firstValue(env.values, 'JUPITER_API_KEY', 'JUP_API_KEY') ?? '';
+  const jupiterUltraBase = env.values.JUP_ULTRA_BASE ?? DEFAULT_JUPITER_ULTRA_BASE;
+  const jupiterApiUrl = env.values.JUPITER_API_URL ?? DEFAULT_JUPITER_API_URL;
+  const rpcUrlConfigured = Boolean(rpcUrl);
+  const jupiterApiKeyConfigured = Boolean(jupiterApiKey);
+  return {
+    envPath: options.envPath,
+    envFound: env.found,
+    rpcUrlConfigured,
+    rpcUrlRedacted: rpcUrl ? redactUrlSecret(rpcUrl) : null,
+    jupiterApiKeyConfigured,
+    jupiterApiKeyRedacted: jupiterApiKey ? redactSecret(jupiterApiKey) : null,
+    jupiterUltraBase,
+    jupiterApiUrl,
+    solTransfersReady: rpcUrlConfigured,
+    tokenTransfersReady: rpcUrlConfigured,
+    swapsReady: rpcUrlConfigured && jupiterApiKeyConfigured && Boolean(jupiterUltraBase),
+  };
+}
+
+async function readEnvValues(path: string): Promise<{ found: boolean; raw: string; values: Record<string, string> }> {
+  try {
+    const raw = await readFile(path, 'utf8');
+    return { found: true, raw, values: parseEnvValues(raw) };
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code === 'ENOENT') {
+      return { found: false, raw: '', values: {} };
+    }
+    throw err;
+  }
+}
+
+function parseEnvValues(raw: string): Record<string, string> {
+  const values: Record<string, string> = {};
+  for (const line of raw.split(/\r?\n/)) {
+    const key = envKeyFromLine(line);
+    if (!key) {
+      continue;
+    }
+    const equals = line.indexOf('=');
+    values[key] = unquoteEnv(line.slice(equals + 1).trim());
+  }
+  return values;
+}
+
+async function writeEnvUpdates(path: string, updates: Record<string, string>): Promise<void> {
+  const env = await readEnvValues(path);
+  await mkdir(dirname(path), { recursive: true });
+  const next = applyEnvUpdates(env.raw, updates);
+  const tempPath = `${path}.${process.pid}.${Date.now()}.tmp`;
+  await writeFile(tempPath, next, 'utf8');
+  await rename(tempPath, path);
+  await chmod(path, 0o600).catch(() => undefined);
+}
+
+function applyEnvUpdates(raw: string, updates: Record<string, string>): string {
+  const normalized = raw.replace(/\r\n/g, '\n');
+  const lines = normalized ? normalized.split('\n') : ['# Solana Agent Wallet local runtime setup'];
+  const seen = new Set<string>();
+  const rewritten = lines.map((line) => {
+    const key = envKeyFromLine(line);
+    const value = key ? updates[key] : undefined;
+    if (!key || value === undefined) {
+      return line;
+    }
+    seen.add(key);
+    return `${key}=${formatEnvValue(value)}`;
+  });
+  const missing = SETUP_ENV_KEYS.filter((key) => updates[key] !== undefined && !seen.has(key));
+  if (missing.length > 0 && rewritten.length > 0 && rewritten[rewritten.length - 1] !== '') {
+    rewritten.push('');
+  }
+  for (const key of missing) {
+    rewritten.push(`${key}=${formatEnvValue(updates[key] ?? '')}`);
+  }
+  return `${rewritten.join('\n').replace(/\n+$/, '')}\n`;
+}
+
+function envKeyFromLine(line: string): string | null {
+  const trimmed = line.trim();
+  if (!trimmed || trimmed.startsWith('#')) {
+    return null;
+  }
+  const equals = trimmed.indexOf('=');
+  if (equals <= 0) {
+    return null;
+  }
+  const key = trimmed.slice(0, equals).trim();
+  return /^[A-Za-z_][A-Za-z0-9_]*$/.test(key) ? key : null;
+}
+
+function formatEnvValue(value: string): string {
+  if (/[\r\n]/.test(value)) {
+    throw new Error('Environment values cannot contain newlines.');
+  }
+  return value;
+}
+
 function unquoteEnv(value: string): string {
   if (
     (value.startsWith('"') && value.endsWith('"')) ||
@@ -1627,6 +1880,69 @@ function unquoteEnv(value: string): string {
     return value.slice(1, -1);
   }
   return value;
+}
+
+function firstValue(values: Record<string, string>, ...keys: string[]): string | undefined {
+  for (const key of keys) {
+    const value = values[key]?.trim();
+    if (value) {
+      return value;
+    }
+  }
+  return undefined;
+}
+
+function normalizeSetupUrl(value: string, label: string): string {
+  const trimmed = value.trim();
+  let parsed: URL;
+  try {
+    parsed = new URL(trimmed);
+  } catch {
+    throw new Error(`${label} must be a valid URL.`);
+  }
+  if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
+    throw new Error(`${label} must use http or https.`);
+  }
+  return parsed.search || parsed.hash ? trimmed : trimmed.replace(/\/+$/, '');
+}
+
+function redactSecret(value: string): string {
+  const trimmed = value.trim();
+  if (trimmed.length <= 8) {
+    return 'configured';
+  }
+  return `${trimmed.slice(0, 4)}...${trimmed.slice(-4)}`;
+}
+
+function redactUrlSecret(value: string): string {
+  try {
+    const url = new URL(value);
+    for (const key of [...url.searchParams.keys()]) {
+      if (/^(api[-_]?key|apikey|key|token)$/i.test(key)) {
+        const current = url.searchParams.get(key) ?? '';
+        url.searchParams.set(key, current ? `...${current.slice(-4)}` : '...');
+      }
+    }
+    if (url.username) {
+      url.username = '...';
+    }
+    if (url.password) {
+      url.password = '...';
+    }
+    return url.toString();
+  } catch {
+    return redactSecret(value);
+  }
+}
+
+async function promptExistingSecret(
+  rl: readline.Interface,
+  label: string,
+  currentValue: string,
+): Promise<string> {
+  const hint = currentValue ? ` [configured: ${redactUrlSecret(currentValue)}; blank keeps]` : '';
+  const answer = (await rl.question(`${label}${hint}: `)).trim();
+  return answer || currentValue;
 }
 
 function listenParts(url: string, defaultPort: number): { host: string; port: number } {
@@ -1798,6 +2114,7 @@ async function runDoctor(options: GlobalOptions): Promise<JsonRecord> {
   const bridgeHealth = await tryBridgeRequest<BridgeHealth>(options, '/bridge/health');
   const actionHealth = await tryBridgeRequest<BridgeHealth>(options, '/bridge/action/health');
   const walletHost = await isWalletHostReachable(options);
+  const setup = await runtimeSetupStatus(options);
   return {
     bridgeUrl: options.bridgeUrl,
     walletHostUrl: options.walletHostUrl,
@@ -1827,6 +2144,7 @@ async function runDoctor(options: GlobalOptions): Promise<JsonRecord> {
     walletHost: {
       reachable: walletHost,
     },
+    setup,
   };
 }
 
@@ -2218,6 +2536,7 @@ function padCell(value: string, width: number): string {
 function printDoctor(options: GlobalOptions, doctor: JsonRecord): void {
   printSection('Doctor');
   const files = isRecord(doctor.files) ? doctor.files : {};
+  const setup = isRecord(doctor.setup) ? doctor.setup : {};
   console.log(`Bridge URL: ${String(doctor.bridgeUrl ?? '')}`);
   console.log(`Wallet host: ${String(doctor.walletHostLaunchUrl ?? '')}`);
   console.log(`Runtime dir: ${String(doctor.runtimeDir ?? '')}`);
@@ -2230,8 +2549,26 @@ function printDoctor(options: GlobalOptions, doctor: JsonRecord): void {
   console.log(`Bridge: ${bridge.reachable ? 'reachable' : `offline (${String(bridge.error ?? 'unknown')})`}`);
   const walletHost = isRecord(doctor.walletHost) ? doctor.walletHost : {};
   console.log(`Browser wallet host: ${walletHost.reachable ? 'reachable' : 'offline'}`);
+  console.log(`Setup RPC: ${setup.rpcUrlConfigured ? `configured (${String(setup.rpcUrlRedacted ?? '')})` : 'missing'}`);
+  console.log(`Setup Jupiter: ${setup.jupiterApiKeyConfigured ? `configured (${String(setup.jupiterApiKeyRedacted ?? '')})` : 'missing'}`);
+  console.log(`Setup swaps: ${setup.swapsReady ? 'ready' : 'not ready'}`);
   if (options.json) {
     console.log(stableJson(doctor));
+  }
+}
+
+function printSetupStatus(options: GlobalOptions, status: RuntimeSetupStatus): void {
+  printSection('Setup');
+  console.log(`.env: ready at ${status.envPath}`);
+  console.log(`RPC: ${status.rpcUrlConfigured ? `configured (${status.rpcUrlRedacted ?? ''})` : 'missing'}`);
+  console.log(`Jupiter key: ${status.jupiterApiKeyConfigured ? `configured (${status.jupiterApiKeyRedacted ?? ''})` : 'missing'}`);
+  console.log(`Jupiter Ultra: ${status.jupiterUltraBase}`);
+  console.log(`Legacy Jupiter API: ${status.jupiterApiUrl}`);
+  console.log(`SOL sends: ${status.solTransfersReady ? 'ready' : 'missing RPC'}`);
+  console.log(`Token sends: ${status.tokenTransfersReady ? 'ready' : 'missing RPC'}`);
+  console.log(`Swaps: ${status.swapsReady ? 'ready' : 'missing RPC or Jupiter key'}`);
+  if (!status.swapsReady) {
+    printWarn(options, 'Run setup again with --rpc-url and --jupiter-api-key before expecting swaps to execute.');
   }
 }
 
@@ -2243,6 +2580,7 @@ function renderBanner(state: TerminalAppState): void {
 
 function printCommandMenu(): void {
   printSection('Commands');
+  console.log('/setup             Configure local RPC and Jupiter credentials');
   console.log('/connect           Open browser wallet host and wait for wallet bridge connection');
   console.log('/wallet            Wallet, network, RPC, custody state');
   console.log('/inbox [filter]    Prepared approvals. Filters: all, ready, scheduled, approved, failed, recurring');
@@ -2268,6 +2606,7 @@ function printHelp(): void {
   console.log(`Solana Agent Wallet CLI
 
 Usage:
+  solana-agent-wallet setup
   solana-agent-wallet app
   solana-agent-wallet doctor
   solana-agent-wallet status
@@ -2289,6 +2628,13 @@ Usage:
   solana-agent-wallet bridge serve
   solana-agent-wallet bridge start
   solana-agent-wallet wallet-host serve
+
+Setup options:
+  --rpc-url <url>            SOLANA_RPC_URL and HELIUS_RPC_URL
+  --jupiter-api-key <key>    JUPITER_API_KEY and JUP_API_KEY
+  --jupiter-ultra-base <url> Default: ${DEFAULT_JUPITER_ULTRA_BASE}
+  --jupiter-api-url <url>    Default: ${DEFAULT_JUPITER_API_URL}
+  --yes                     Do not prompt; only write provided values/default URLs
 
 Global options:
   --bridge-url <url>         Default: ${DEFAULT_BRIDGE_URL}
