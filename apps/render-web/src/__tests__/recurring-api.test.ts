@@ -436,6 +436,11 @@ describe('cloud recurring scheduler API', () => {
       expect((second.body.results as Array<{ reason: string }>)[0]?.reason).toBe('duplicate');
 
       const inbox = await requestJsonWithHeaders(port, 'GET', '/api/approvals', undefined, headers);
+      if ((inbox.body.approvals as unknown[]).length === 0) {
+        const recurring = await requestJsonWithHeaders(port, 'GET', '/api/recurring', undefined, headers);
+        // eslint-disable-next-line no-console
+        console.log(JSON.stringify(recurring.body, null, 2));
+      }
       const approvals = inbox.body.approvals as Array<{
         id: string;
         recurringScheduleId?: string;
@@ -446,6 +451,55 @@ describe('cloud recurring scheduler API', () => {
       expect(approvals[0]?.status).toBe('ready');
       expect(approvals[0]?.recurringScheduleId).toBe(schedule.id);
       expect(approvals[0]?.params?.recurringScheduleId).toBe(schedule.id);
+    });
+  });
+
+  it('persists recurring swaps and materializes them as swap approvals', async () => {
+    const store = new MemoryWorkflowStore();
+    const session = await createWalletSession({
+      store,
+      walletAddress: walletA,
+      clock: { now: () => new Date('2026-05-08T20:00:00.000Z') },
+    });
+
+    await withRenderRecurringServer(store, async (port) => {
+      const headers = {
+        cookie: `${SESSION_COOKIE_NAME}=${encodeURIComponent(session.token)}`,
+      };
+      const created = await requestJsonWithHeaders(port, 'POST', '/api/recurring', {
+        ...validSwapBody(),
+        startAt: '2020-01-01T00:00:00.000Z',
+      }, headers);
+      expect(created.status).toBe(201);
+      const schedule = created.body.schedule as RecurringScheduleRecord;
+      expect(schedule).toMatchObject({
+        actionKind: 'swap',
+        token: 'SOL',
+        inputToken: 'SOL',
+        outputToken: 'USDC',
+        slippageBps: 50,
+      });
+
+      const materialized = await requestJsonWithHeaders(port, 'POST', '/api/recurring/materialize-due', {}, headers);
+      expect((materialized.body.results as Array<{ reason: string }>)[0]?.reason).toBe('created');
+
+      const inbox = await requestJsonWithHeaders(port, 'GET', '/api/approvals', undefined, headers);
+      const approvals = inbox.body.approvals as Array<{
+        kind: string;
+        recurringScheduleId?: string;
+        params?: Record<string, unknown>;
+      }>;
+      expect(approvals).toHaveLength(1);
+      expect(approvals[0]).toMatchObject({
+        kind: 'swap',
+        recurringScheduleId: schedule.id,
+        params: {
+          inputToken: 'SOL',
+          outputToken: 'USDC',
+          amount: '0.10',
+          slippageBps: '50',
+        },
+      });
     });
   });
 
@@ -917,6 +971,21 @@ function validIntervalMinutesBody(): Record<string, unknown> {
     token: 'SOL',
     recipient: walletB,
     amount: '0.10',
+    cadence: 'interval_minutes',
+    intervalMinutes: 10,
+  };
+}
+
+function validSwapBody(): Record<string, unknown> {
+  return {
+    cluster: 'devnet',
+    actionKind: 'swap',
+    token: 'SOL',
+    inputToken: 'SOL',
+    outputToken: 'USDC',
+    recipient: '',
+    amount: '0.10',
+    slippageBps: 50,
     cadence: 'interval_minutes',
     intervalMinutes: 10,
   };

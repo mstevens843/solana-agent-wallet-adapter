@@ -65,6 +65,15 @@ describe('agent review presentation helpers', () => {
     }))).toBeUndefined();
   });
 
+  it('does not warn from stale prose when the route already uses the active output mint', () => {
+    expect(swapTokenTextMismatchWarning(swapPlan({
+      intent: 'Review DeFi swap of 0.1 SOL to USDC',
+      route: `SOL -> ${POPCAT_MINT}`,
+      userNotes: 'Review a new defi position before signing.',
+      parameters: { inputToken: 'SOL', outputToken: POPCAT_MINT, amount: '0.1', slippageBps: '50' },
+    }))).toBeUndefined();
+  });
+
   it('promotes token mismatch evidence into a fail row', () => {
     const rows = tokenMismatchEvidenceRows({
       tokenMismatch: true,

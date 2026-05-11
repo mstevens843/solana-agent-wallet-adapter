@@ -1732,6 +1732,7 @@ function finalizationSupportForKind(kind: string): { required: boolean; supporte
 }
 
 function assertCloudApprovalKindSupported(kind: string): void {
+  if (kind === 'swap') return;
   const support = finalizationSupportForKind(kind);
   if (support.required && !support.supported) {
     throw new WorkflowServiceError(

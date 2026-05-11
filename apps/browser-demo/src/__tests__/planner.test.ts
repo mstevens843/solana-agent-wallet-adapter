@@ -3,9 +3,12 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   aiDiagnosticsFromError,
   aiRouteDiagnosticForSettings,
+  buildTemplatePlan,
   confirmHostedAiPlanner,
   generateSessionAiPlan,
+  planWithStructuredSwapText,
   redactSecrets,
+  templateById,
   type AiDiagnosticEntry,
   type AiPlanRequest,
   type AiSettings,
@@ -123,6 +126,26 @@ describe('planner AI setup helpers', () => {
     })));
 
     await expect(generateSessionAiPlan(sessionSettings, planRequest)).rejects.toThrow('AI drafts cannot claim');
+  });
+
+  it('aligns stale swap prose to the structured output mint', () => {
+    const mint = '7GCihgDB8fe6KNjn2MYtkzZcRjQy3t9GHdC8uHYmW2hr';
+    const base = buildTemplatePlan(templateById('swap'), {
+      inputToken: 'SOL',
+      outputToken: mint,
+      amount: '0.1',
+      slippageBps: '50',
+    }, 'ai');
+
+    const plan = planWithStructuredSwapText({
+      ...base,
+      intent: 'Review DeFi swap of 0.1 SOL to USDC',
+      route: 'SOL -> USDC',
+    });
+
+    expect(plan.route).toBe(`SOL -> ${mint}`);
+    expect(plan.intent).toContain(mint);
+    expect(plan.intent).not.toContain('USDC');
   });
 
   it('confirms Hosted BYOK through the status route without generating a plan', async () => {

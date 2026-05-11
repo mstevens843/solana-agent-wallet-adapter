@@ -93,11 +93,10 @@ export function evidenceEntryTone(label: string, value: string): AgentEvidenceTo
 function expectedOutputTokenFromPlanText(
   plan: Pick<AgentPlan, 'intent' | 'route' | 'userNotes' | 'parameters'>,
 ): string | undefined {
-  const text = [
-    plan.intent,
-    plan.route,
-    plan.userNotes ?? '',
-  ].join('\n');
+  const outputTokenRaw = plan.parameters.outputToken?.trim();
+  if (!outputTokenRaw) return undefined;
+  if (textMentionsTokenValue(plan.route, outputTokenRaw)) return undefined;
+  const text = plan.route;
   const outputToken = plan.parameters.outputToken?.trim().toUpperCase();
   for (const token of KNOWN_OUTPUT_TOKENS) {
     if (token === outputToken) continue;
@@ -113,6 +112,12 @@ function mentionsOutputToken(text: string, token: string): boolean {
     new RegExp(`\\bto\\s+${escaped}\\b`, 'i'),
     new RegExp(`\\b(?:output|receive|buy|get|into)\\s+(?:token\\s+)?${escaped}\\b`, 'i'),
   ].some((pattern) => pattern.test(text));
+}
+
+function textMentionsTokenValue(text: string, token: string): boolean {
+  const trimmed = token.trim();
+  if (!trimmed) return false;
+  return text.toLowerCase().includes(trimmed.toLowerCase());
 }
 
 function outputMatchesExpectedToken(outputToken: string, expectedToken: string): boolean {

@@ -22,26 +22,42 @@ export function createRecurringApprovalStatusReader(
 
 export function createRecurringApprovalSink(workflowService: WorkflowService): ApprovalSink {
   return async ({ walletAddress, schedule, occurrence }) => {
+    const isSwap = schedule.actionKind === 'swap' || Boolean(schedule.outputToken);
+    const inputToken = schedule.inputToken || schedule.token;
+    const outputToken = schedule.outputToken || 'USDC';
     const isSol = schedule.token.toUpperCase() === 'SOL';
-    const summary = `${schedule.amount} ${schedule.token} recurring approval`;
+    const summary = isSwap
+      ? `${schedule.amount} ${inputToken} recurring swap to ${outputToken}`
+      : `${schedule.amount} ${schedule.token} recurring approval`;
     const approval = await workflowService.createApproval(
       { walletAddress },
       {
-        kind: isSol ? 'transfer_sol' : 'transfer_spl',
+        kind: isSwap ? 'swap' : isSol ? 'transfer_sol' : 'transfer_spl',
         summary,
-        params: {
-          recurringScheduleId: schedule.id,
-          recurringOccurrenceId: occurrence.id,
-          occurrenceKey: occurrence.occurrenceKey,
-          recipient: schedule.recipient,
-          ...(isSol ? { amountSol: schedule.amount } : { token: schedule.token, amount: schedule.amount }),
-          ...(schedule.memo ? { memo: schedule.memo } : {}),
-        },
+        params: isSwap
+          ? {
+              recurringScheduleId: schedule.id,
+              recurringOccurrenceId: occurrence.id,
+              occurrenceKey: occurrence.occurrenceKey,
+              inputToken,
+              outputToken,
+              amount: schedule.amount,
+              slippageBps: String(schedule.slippageBps ?? 50),
+              ...(schedule.memo ? { memo: schedule.memo } : {}),
+            }
+          : {
+              recurringScheduleId: schedule.id,
+              recurringOccurrenceId: occurrence.id,
+              occurrenceKey: occurrence.occurrenceKey,
+              recipient: schedule.recipient,
+              ...(isSol ? { amountSol: schedule.amount } : { token: schedule.token, amount: schedule.amount }),
+              ...(schedule.memo ? { memo: schedule.memo } : {}),
+            },
         cluster: schedule.cluster,
         dueAt: occurrence.dueAt,
         amount: schedule.amount,
-        token: schedule.token,
-        recipient: schedule.recipient,
+        token: inputToken,
+        ...(isSwap ? {} : { recipient: schedule.recipient }),
         recurringScheduleId: schedule.id,
         recurringOccurrenceId: occurrence.id,
         occurrenceKey: occurrence.occurrenceKey,

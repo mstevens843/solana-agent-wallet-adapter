@@ -83,7 +83,10 @@ export interface PrepareSwapInput extends SwapInput {
 }
 
 export interface RecurringPaymentInput {
+  actionKind?: 'transfer' | 'swap';
   token?: string;
+  inputToken?: string;
+  outputToken?: string;
   recipient?: string;
   amount?: string;
   cadence?: RecurringCadence;
@@ -95,6 +98,7 @@ export interface RecurringPaymentInput {
   localTime?: string;
   startAt?: string;
   maxOccurrences?: number;
+  slippageBps?: number;
   note?: string;
   expiresAt?: string;
   notifications?: { inApp?: boolean; webhookUrl?: string };
@@ -789,9 +793,14 @@ async function buildRecurringPaymentInput(
   connection: Connection,
 ) {
   requireActionAllowed(config);
-  const token = normalizeTokenIdentifier(requireString(input.token, 'token'));
+  const actionKind: 'transfer' | 'swap' = input.actionKind === 'swap' || input.outputToken ? 'swap' : 'transfer';
+  const token = normalizeTokenIdentifier(requireString(input.token ?? input.inputToken, 'token'));
   const amount = requireString(input.amount, 'amount');
-  const recipient = new PublicKey(requireString(input.recipient, 'recipient')).toBase58();
+  const inputToken = normalizeTokenIdentifier(input.inputToken ?? token);
+  const outputToken = actionKind === 'swap'
+    ? normalizeTokenIdentifier(requireString(input.outputToken, 'outputToken'))
+    : undefined;
+  const recipient = actionKind === 'swap' ? '' : new PublicKey(requireString(input.recipient, 'recipient')).toBase58();
   const note = typeof input.note === 'string' && input.note.trim() ? input.note.trim().slice(0, 500) : undefined;
   const localTime = typeof input.localTime === 'string' && input.localTime.trim() ? input.localTime.trim() : undefined;
   if (localTime !== undefined && !/^\d{2}:\d{2}$/.test(localTime)) {
@@ -809,7 +818,10 @@ async function buildRecurringPaymentInput(
     maxOccurrences: input.maxOccurrences,
   });
 
-  if (token === 'SOL') {
+  if (actionKind === 'swap') {
+    const inputTokenConfig = inputToken === 'SOL' ? { decimals: 9, symbol: 'SOL' } : await resolveToken(config, connection, inputToken);
+    parseDecimalAmount(amount, inputTokenConfig.decimals, `${inputTokenConfig.symbol} recurring swap amount`);
+  } else if (token === 'SOL') {
     parseDecimalAmount(amount, 9, 'SOL recurring payment amount');
   } else {
     const tokenConfig = await resolveToken(config, connection, token);
@@ -836,6 +848,7 @@ async function buildRecurringPaymentInput(
   return {
     walletAddress,
     cluster: config.cluster,
+    ...(actionKind === 'swap' ? { actionKind, inputToken, outputToken, slippageBps: input.slippageBps ?? config.mainnet.maxSlippageBps } : {}),
     token,
     recipient,
     amount,

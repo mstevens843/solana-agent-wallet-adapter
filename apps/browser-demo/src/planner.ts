@@ -479,7 +479,24 @@ export function buildTemplatePlan(
     fields: readableParams,
     safeguards: [...SHARED_SAFEGUARDS, ...template.safeguards],
   };
-  return withGuardrailReport(plan, { templateId: template.id, prompt: notes || template.description });
+  return withGuardrailReport(planWithStructuredSwapText(plan), { templateId: template.id, prompt: notes || template.description });
+}
+
+export function planWithStructuredSwapText(plan: AgentPlan): AgentPlan {
+  if (plan.actionType !== 'swap') return plan;
+  const inputToken = plan.parameters.inputToken?.trim();
+  const outputToken = plan.parameters.outputToken?.trim();
+  if (!inputToken || !outputToken) return plan;
+  const route = plan.route.trim() && textMentionsTokenValue(plan.route, outputToken)
+    ? plan.route
+    : `${inputToken} -> ${outputToken}`;
+  return {
+    ...plan,
+    intent: rewriteSwapOutputTokenText(plan.intent, outputToken),
+    route,
+    risk: rewriteSwapOutputTokenText(plan.risk, outputToken),
+    approval: rewriteSwapOutputTokenText(plan.approval, outputToken),
+  };
 }
 
 export function aiProviderPresetById(id: string): AiProviderPreset {
@@ -1333,7 +1350,7 @@ export function normalizeAiPlan(payload: unknown, request: AiPlanRequest): Agent
     userNotes: request.userNotes?.trim() || request.prompt.trim() || undefined,
     safeguards: normalizeSafeguards(parsed.safeguards, fallback.safeguards),
   };
-  return withGuardrailReport(plan, {
+  return withGuardrailReport(planWithStructuredSwapText(plan), {
     templateId: template.id,
     prompt: request.prompt,
   });
@@ -1518,6 +1535,36 @@ function textareaField(id: string, label: string, placeholder = '', defaultValue
 
 function selectField(id: string, label: string, options: string[], defaultValue: string): AgentPlanTemplateField {
   return { id, label, options, defaultValue, type: 'select' };
+}
+
+const SWAP_TEXT_TOKENS = ['USDC', 'SOL', 'JUP', 'BONK', 'WIF', 'PYUSD'];
+
+function rewriteSwapOutputTokenText(text: string, outputToken: string): string {
+  if (!text.trim() || textMentionsTokenValue(text, outputToken)) return text;
+  let next = text;
+  for (const token of SWAP_TEXT_TOKENS) {
+    if (token.toUpperCase() === outputToken.toUpperCase()) continue;
+    const escaped = escapeRegExp(token);
+    next = next
+      .replace(new RegExp(`(\\bto\\s+)${escaped}\\b`, 'gi'), `$1${outputToken}`)
+      .replace(new RegExp(`(\\binto\\s+)${escaped}\\b`, 'gi'), `$1${outputToken}`)
+      .replace(new RegExp(`(\\boutput\\s+token\\s+)${escaped}\\b`, 'gi'), `$1${outputToken}`)
+      .replace(new RegExp(`(\\breceive\\s+)${escaped}\\b`, 'gi'), `$1${outputToken}`)
+      .replace(new RegExp(`(\\bbuy\\s+)${escaped}\\b`, 'gi'), `$1${outputToken}`)
+      .replace(new RegExp(`(\\bget\\s+)${escaped}\\b`, 'gi'), `$1${outputToken}`)
+      .replace(new RegExp(`(->\\s*)${escaped}\\b`, 'gi'), `$1${outputToken}`)
+      .replace(new RegExp(`(→\\s*)${escaped}\\b`, 'gi'), `$1${outputToken}`);
+  }
+  return next;
+}
+
+function textMentionsTokenValue(text: string, token: string): boolean {
+  const trimmed = token.trim();
+  return Boolean(trimmed) && text.toLowerCase().includes(trimmed.toLowerCase());
+}
+
+function escapeRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
 
 function routeFor(actionType: string): string {

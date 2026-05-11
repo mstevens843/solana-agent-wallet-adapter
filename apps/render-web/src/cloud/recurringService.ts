@@ -373,7 +373,7 @@ export class RecurringService {
     session: RecurringSession,
     input: CreateRecurringRequest,
   ): Promise<ScheduleMutationResult> {
-    assertCloudRecurringTokenSupported(input.token);
+    assertCloudRecurringScheduleSupported(input);
     const now = this.now();
     const notificationResult = input.notifications !== undefined
       ? withWebhookSecret(assertSafeNotifications(input.notifications))
@@ -383,7 +383,10 @@ export class RecurringService {
       status: 'active',
       walletAddress: session.walletAddress,
       cluster: input.cluster,
+      ...(input.actionKind !== undefined ? { actionKind: input.actionKind } : {}),
       token: input.token,
+      ...(input.inputToken !== undefined ? { inputToken: input.inputToken } : {}),
+      ...(input.outputToken !== undefined ? { outputToken: input.outputToken } : {}),
       recipient: input.recipient,
       amount: input.amount,
       cadence: input.cadence,
@@ -503,7 +506,7 @@ export class RecurringService {
       notificationResult = withWebhookSecret(safeNotifications, existingSecret);
       updated.notifications = notificationResult.notifications;
     }
-    assertCloudRecurringTokenSupported(updated.token);
+    assertCloudRecurringScheduleSupported(updated);
     assertCadenceFieldsForUpdate(updated);
     updated.nextDueAt = this.computeNextDueAtIso(updated) ?? undefined;
     updated.riskMetadata = recurringRiskMetadata(updated, this.clock(), input.riskMetadata ?? existing.riskMetadata);
@@ -935,8 +938,9 @@ function notFound(message: string): RecurringServiceError {
   return new RecurringServiceError(404, 'not_found', message);
 }
 
-function assertCloudRecurringTokenSupported(token: string): void {
-  if (token.toUpperCase() === 'SOL') return;
+function assertCloudRecurringScheduleSupported(input: Pick<RecurringScheduleRecord | CreateRecurringRequest | UpdateRecurringRequest, 'actionKind' | 'token' | 'outputToken'>): void {
+  if (input.actionKind === 'swap' || input.outputToken) return;
+  if (input.token?.toUpperCase() === 'SOL') return;
   throw new RecurringServiceError(
     409,
     'unsupported_cloud_recurring_token',

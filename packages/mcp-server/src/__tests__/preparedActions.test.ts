@@ -99,6 +99,42 @@ describe('JsonPreparedActionStore', () => {
     await expect(store.listActions()).resolves.toHaveLength(1);
   });
 
+  it('materializes a recurring swap as a swap approval', async () => {
+    const store = new JsonPreparedActionStore(await tempStorePath());
+    await store.addRecurringPayment({
+      walletAddress: '11111111111111111111111111111111',
+      cluster: 'devnet',
+      actionKind: 'swap',
+      token: 'SOL',
+      inputToken: 'SOL',
+      outputToken: 'USDC',
+      recipient: '',
+      amount: '0.10',
+      slippageBps: 50,
+      cadence: 'weekly',
+      dayOfWeek: 5,
+      localTime: '00:00',
+      startAt: '2026-05-01T00:00:00.000Z',
+      note: 'Weekly DCA',
+    });
+
+    const due = await store.materializeDueRecurring(new Date('2026-05-08T20:00:00.000'));
+
+    expect(due).toHaveLength(1);
+    expect(due[0]).toMatchObject({
+      kind: 'swap',
+      status: 'overdue',
+      occurrenceKey: '2026-05-08',
+      params: {
+        inputToken: 'SOL',
+        outputToken: 'USDC',
+        amount: '0.10',
+        slippageBps: 50,
+      },
+      note: 'Weekly DCA',
+    });
+  });
+
   it('does not create a stale weekly occurrence before the schedule start time', async () => {
     const store = new JsonPreparedActionStore(await tempStorePath());
     await store.addRecurringPayment({

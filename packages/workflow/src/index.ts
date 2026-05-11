@@ -95,6 +95,9 @@ export type RecurringCadence = (typeof RECURRING_CADENCES)[number];
 export const RECURRING_SCHEDULE_STATUSES = ['active', 'paused', 'completed', 'cancelled'] as const;
 export type RecurringScheduleStatus = (typeof RECURRING_SCHEDULE_STATUSES)[number];
 
+export const RECURRING_ACTION_KINDS = ['transfer', 'swap'] as const;
+export type RecurringActionKind = (typeof RECURRING_ACTION_KINDS)[number];
+
 export const RECURRING_OCCURRENCE_STATUSES = [
   'scheduled',
   'ready',
@@ -412,7 +415,10 @@ export interface RecurringScheduleRecord {
   status: RecurringScheduleStatus;
   walletAddress: string;
   cluster: WorkflowCluster;
+  actionKind?: RecurringActionKind;
   token: string;
+  inputToken?: string;
+  outputToken?: string;
   recipient: string;
   amount: string;
   cadence: RecurringCadence;
@@ -667,7 +673,10 @@ export interface ApprovalListResponse {
 
 export interface CreateRecurringRequest {
   cluster: WorkflowCluster;
+  actionKind?: RecurringActionKind;
   token: string;
+  inputToken?: string;
+  outputToken?: string;
   recipient: string;
   amount: string;
   cadence: RecurringCadence;
@@ -691,7 +700,10 @@ export interface CreateRecurringRequest {
 export interface UpdateRecurringRequest {
   status?: RecurringScheduleStatus;
   cluster?: WorkflowCluster;
+  actionKind?: RecurringActionKind;
   token?: string;
+  inputToken?: string;
+  outputToken?: string;
   recipient?: string;
   amount?: string;
   cadence?: RecurringCadence;
@@ -1519,7 +1531,10 @@ export function parseRecurringScheduleRecord(input: unknown, path = '$'): Recurr
     status: expectEnum(record, 'status', RECURRING_SCHEDULE_STATUSES, path),
     walletAddress: expectString(record, 'walletAddress', path),
     cluster: expectEnum(record, 'cluster', WORKFLOW_CLUSTERS, path),
+    ...optionalEnumProp(record, 'actionKind', RECURRING_ACTION_KINDS, path),
     token: expectString(record, 'token', path),
+    ...optionalStringProp(record, 'inputToken', path),
+    ...optionalStringProp(record, 'outputToken', path),
     recipient: expectString(record, 'recipient', path),
     amount: expectString(record, 'amount', path),
     cadence: expectEnum(record, 'cadence', RECURRING_CADENCES, path),
@@ -1768,7 +1783,10 @@ export function parseCreateRecurringRequest(input: unknown, path = '$'): CreateR
   const record = expectRecord(input, path);
   return {
     cluster: expectEnum(record, 'cluster', WORKFLOW_CLUSTERS, path),
+    ...optionalEnumProp(record, 'actionKind', RECURRING_ACTION_KINDS, path),
     token: expectString(record, 'token', path),
+    ...optionalStringProp(record, 'inputToken', path),
+    ...optionalStringProp(record, 'outputToken', path),
     recipient: expectString(record, 'recipient', path),
     amount: expectString(record, 'amount', path),
     cadence: expectEnum(record, 'cadence', RECURRING_CADENCES, path),
@@ -2054,10 +2072,20 @@ export function validateRecordId(value: string, label = 'id'): string {
 export function validateCreateRecurringRequest(body: unknown, path = '$'): CreateRecurringRequest {
   assertNoForbiddenWorkflowSecrets(body, path);
   const input = requireObject(body, path);
+  const actionKind = input.actionKind === undefined ? recurringActionKindFromInput(input) : requireRecurringActionKind(input.actionKind);
+  const token = requireNonEmptyString(input.token ?? input.inputToken, 'token');
+  const inputToken = input.inputToken === undefined ? undefined : requireNonEmptyString(input.inputToken, 'inputToken');
+  const outputToken = input.outputToken === undefined ? undefined : requireNonEmptyString(input.outputToken, 'outputToken');
+  if (actionKind === 'swap' && !outputToken) {
+    throw new RecurringValidationError('missing_swap_output_token', 'outputToken is required for recurring swaps.');
+  }
   const request: CreateRecurringRequest = {
     cluster: requireCluster(input.cluster, 'cluster'),
-    token: requireNonEmptyString(input.token, 'token'),
-    recipient: requireNonEmptyString(input.recipient, 'recipient'),
+    ...(actionKind !== 'transfer' || input.actionKind !== undefined ? { actionKind } : {}),
+    token,
+    ...(inputToken ? { inputToken } : {}),
+    ...(outputToken ? { outputToken } : {}),
+    recipient: actionKind === 'swap' ? optionalString(input.recipient, 'recipient') ?? '' : requireNonEmptyString(input.recipient, 'recipient'),
     amount: requireNonEmptyString(input.amount, 'amount'),
     cadence: requireCadence(input.cadence),
     ...optionalIntegerField(input.dayOfWeek, 'dayOfWeek'),
@@ -2087,7 +2115,10 @@ export function validateUpdateRecurringRequest(body: unknown): UpdateRecurringRe
 
   if (input.status !== undefined) patch.status = requireScheduleStatus(input.status);
   if (input.cluster !== undefined) patch.cluster = requireCluster(input.cluster, 'cluster');
+  if (input.actionKind !== undefined) patch.actionKind = requireRecurringActionKind(input.actionKind);
   if (input.token !== undefined) patch.token = requireNonEmptyString(input.token, 'token');
+  if (input.inputToken !== undefined) patch.inputToken = requireNonEmptyString(input.inputToken, 'inputToken');
+  if (input.outputToken !== undefined) patch.outputToken = requireNonEmptyString(input.outputToken, 'outputToken');
   if (input.recipient !== undefined) patch.recipient = requireNonEmptyString(input.recipient, 'recipient');
   if (input.amount !== undefined) patch.amount = requireNonEmptyString(input.amount, 'amount');
   if (input.cadence !== undefined) patch.cadence = requireCadence(input.cadence);
@@ -3217,6 +3248,25 @@ function requireScheduleStatus(value: unknown): RecurringScheduleStatus {
     );
   }
   return value as RecurringScheduleStatus;
+}
+
+function requireRecurringActionKind(value: unknown): RecurringActionKind {
+  if (typeof value !== 'string' || !RECURRING_ACTION_KINDS.includes(value as RecurringActionKind)) {
+    throw new RecurringValidationError(
+      'invalid_action_kind',
+      `actionKind must be one of: ${RECURRING_ACTION_KINDS.join(', ')}.`,
+    );
+  }
+  return value as RecurringActionKind;
+}
+
+function recurringActionKindFromInput(input: Record<string, unknown>): RecurringActionKind {
+  if (typeof input.outputToken === 'string' && input.outputToken.trim()) return 'swap';
+  if (typeof input.metadata === 'object' && input.metadata && !Array.isArray(input.metadata)) {
+    const metadata = input.metadata as Record<string, unknown>;
+    if (metadata.actionKind === 'swap') return 'swap';
+  }
+  return 'transfer';
 }
 
 function optionalStringField<K extends string>(value: unknown, key: K): Partial<Record<K, string>> {

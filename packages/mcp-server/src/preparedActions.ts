@@ -56,9 +56,13 @@ export interface RecurringPayment {
   status: 'active' | 'paused';
   walletAddress: string;
   cluster: Cluster;
+  actionKind?: 'transfer' | 'swap';
   token: string;
+  inputToken?: string;
+  outputToken?: string;
   recipient: string;
   amount: string;
+  slippageBps?: number | string;
   cadence: RecurringCadence;
   dayOfWeek?: number;
   dayOfMonth?: number;
@@ -315,15 +319,26 @@ export class JsonPreparedActionStore implements PreparedActionStore {
         );
         if (exists) continue;
         const timestamp = new Date().toISOString();
+        const isSwap = payment.actionKind === 'swap' || Boolean(payment.outputToken);
+        const inputToken = payment.inputToken || payment.token;
+        const outputToken = payment.outputToken || 'USDC';
         const action: PreparedAction = {
           id: newId('pa'),
-          kind: payment.token.toUpperCase() === 'SOL' ? 'transfer_sol' : 'transfer_spl',
+          kind: isSwap ? 'swap' : payment.token.toUpperCase() === 'SOL' ? 'transfer_sol' : 'transfer_spl',
           status: occurrence.dueAt.getTime() < now.getTime() ? 'overdue' : 'ready',
           walletAddress: payment.walletAddress,
           cluster: payment.cluster,
-          summary: `Recurring ${payment.amount} ${payment.token} payment to ${payment.recipient}`,
-          params:
-            payment.token.toUpperCase() === 'SOL'
+          summary: isSwap
+            ? `Recurring ${payment.amount} ${inputToken} swap to ${outputToken}`
+            : `Recurring ${payment.amount} ${payment.token} payment to ${payment.recipient}`,
+          params: isSwap
+            ? {
+                inputToken,
+                outputToken,
+                amount: payment.amount,
+                slippageBps: payment.slippageBps ?? 50,
+              }
+            : payment.token.toUpperCase() === 'SOL'
               ? { recipient: payment.recipient, amountSol: payment.amount }
               : {
                   token: payment.token,
