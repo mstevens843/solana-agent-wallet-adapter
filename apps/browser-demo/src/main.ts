@@ -4256,7 +4256,7 @@ function planOutcome(plan: AgentPlan): TemplateOutcome {
 function outcomeLabel(outcome: TemplateOutcome): string {
   switch (outcome) {
     case 'queueable':
-      return 'Can request wallet approval';
+      return 'Request approval';
     case 'proof':
       return 'Proof only';
     case 'audit':
@@ -4286,7 +4286,7 @@ function outcomeDetailForTemplate(template: AgentPlanTemplate): string {
     case 'proof':
       return 'This can be signed as review evidence, but it cannot be queued as a transaction.';
     case 'audit':
-      return 'This records context or analysis only. It does not queue a wallet action.';
+      return 'This can be signed as evidence only. It does not queue an approval request.';
   }
 }
 
@@ -4301,7 +4301,7 @@ function outcomeDetailForPlan(plan: AgentPlan): string {
     case 'proof':
       return 'This plan is for review evidence. Sign a review proof if you want an audit record.';
     case 'audit':
-      return 'This plan records read-only context or audit notes. It does not move funds.';
+      return 'This plan records read-only context or audit notes. Sign proof only; it does not move funds.';
   }
 }
 
@@ -5068,6 +5068,7 @@ function draftFlowHint(hasOneTimePlans: boolean, walletReady: boolean): string {
 
 function draftReadyPanel(plan: AgentPlan): string {
   const outcome = planOutcome(plan);
+  const approvalCapable = canQueueAgentPlan(plan);
   const queueable = canQueueGuardedPlan(plan);
   return `
     <section class="draft-ready-panel ${escapeHtml(outcomeClass(outcome))}">
@@ -5078,28 +5079,31 @@ function draftReadyPanel(plan: AgentPlan): string {
       </div>
       ${planGuardrailStrip(plan)}
       <div class="draft-ready-actions">
-        <button
-          id="queueAgentPlan"
-          class="${queueable ? 'primary' : 'utility'}"
-          ${!state.address || !queueable || state.busy ? 'disabled' : ''}
-          title="${escapeHtml(queuePlanTitle())}"
-        >
-          ${escapeHtml(queueActionLabelForPlan(plan))}
-        </button>
+        ${approvalCapable ? `
+          <button
+            id="queueAgentPlan"
+            class="${queueable ? 'primary' : 'utility'}"
+            ${!state.address || !queueable || state.busy ? 'disabled' : ''}
+            title="${escapeHtml(queuePlanTitle())}"
+          >
+            ${escapeHtml(queueActionLabelForPlan(plan))}
+          </button>
+        ` : `
+          <button
+            id="signAgentPlan"
+            class="review-action-proof"
+            ${!state.address || state.busy ? 'disabled' : ''}
+            title="${!state.address ? 'Connect a wallet before signing review evidence.' : 'Creates audit evidence only. It does not queue, approve, or submit a transaction.'}"
+          >
+            Sign proof
+          </button>
+        `}
         <button
           data-one-time-view="review"
           class="utility"
           ${state.busy ? 'disabled' : ''}
         >
           Check
-        </button>
-        <button
-          id="signAgentPlan"
-          class="utility"
-          ${!state.address || state.busy ? 'disabled' : ''}
-          title="${!state.address ? 'Connect a wallet before signing review evidence.' : 'Creates audit evidence only. It does not queue, approve, or submit a transaction.'}"
-        >
-          Sign review proof
         </button>
       </div>
     </section>
@@ -5188,9 +5192,10 @@ function generatedPlanStatusLine(totalCount: number, visibleCount: number, archi
 
 function generatedPlanCard(record: GeneratedPlanRecord): string {
   const plan = record.plan;
+  const approvalCapable = canQueueAgentPlan(plan);
   const queueable = canQueueGeneratedPlan(record);
   const archived = record.status === 'archived';
-  const signDisabled = !state.address || state.busy || archived ? 'disabled' : '';
+  const proofDisabled = !state.address || state.busy || archived ? 'disabled' : '';
   const queueDisabled = !state.address || !queueable || state.busy || archived ? 'disabled' : '';
   const selected = state.selectedGeneratedPlanId === record.id;
   const actionHint = generatedPlanActionHint(record);
@@ -5213,7 +5218,7 @@ function generatedPlanCard(record: GeneratedPlanRecord): string {
         </div>
         ${generatedPlanHeroValue(record)}
         <div class="review-plan-actions">
-          ${queueable ? `
+          ${approvalCapable ? `
             <button
               class="review-action-inbox"
               data-generated-plan-action="queue"
@@ -5223,16 +5228,17 @@ function generatedPlanCard(record: GeneratedPlanRecord): string {
             >
               ${escapeHtml(queueActionLabelForPlan(plan))}
             </button>
-          ` : ''}
-          <button
-            class="review-action-proof"
-            data-generated-plan-action="sign-proof"
-            data-generated-plan-id="${escapeHtml(record.id)}"
-            ${signDisabled}
-            title="${escapeHtml(signProofTitle(record))}"
-          >
-            Sign proof
-          </button>
+          ` : `
+            <button
+              class="review-action-proof"
+              data-generated-plan-action="sign-proof"
+              data-generated-plan-id="${escapeHtml(record.id)}"
+              ${proofDisabled}
+              title="${escapeHtml(signProofTitle(record))}"
+            >
+              Sign proof
+            </button>
+          `}
         </div>
       </div>
 
@@ -5719,7 +5725,9 @@ function generatedPlanActionHint(record: GeneratedPlanRecord): string {
     return `<p class="generated-plan-action-helper danger">${escapeHtml(report.summary)}</p>`;
   }
   if (!state.address) {
-    return '<p class="generated-plan-action-helper">Connect a wallet to sign a review proof or send this plan for approval.</p>';
+    return canQueueAgentPlan(record.plan)
+      ? '<p class="generated-plan-action-helper">Connect a wallet to send this plan for approval.</p>'
+      : '<p class="generated-plan-action-helper">Connect a wallet to sign a review proof.</p>';
   }
   const mode = activeWorkflowMode();
   if (canQueueAgentPlan(record.plan) && mode === 'agentic-cloud') {
@@ -5827,6 +5835,7 @@ function cloudWorkspaceDeleteModal(): string {
 
 function generatedPlanAuditModal(record: GeneratedPlanRecord): string {
   const plan = record.plan;
+  const approvalCapable = canQueueAgentPlan(plan);
   const queueable = canQueueGeneratedPlan(record);
   return `
     <div class="generated-plan-modal-backdrop" role="presentation">
@@ -5847,24 +5856,27 @@ function generatedPlanAuditModal(record: GeneratedPlanRecord): string {
           >
             Use as starting point
           </button>
-          <button
-            class="utility"
-            data-generated-plan-action="sign-proof"
-            data-generated-plan-id="${escapeHtml(record.id)}"
-            ${!state.address || state.busy || record.status === 'archived' ? 'disabled' : ''}
-            title="${escapeHtml(signProofTitle(record))}"
-          >
-            Sign review proof
-          </button>
-          <button
-            class="${queueable ? 'primary' : 'utility'}"
-            data-generated-plan-action="queue"
-            data-generated-plan-id="${escapeHtml(record.id)}"
-            ${!state.address || !queueable || state.busy || record.status === 'archived' ? 'disabled' : ''}
-            title="${escapeHtml(generatedQueuePlanTitle(record))}"
-          >
-            ${escapeHtml(queueActionLabelForPlan(plan))}
-          </button>
+          ${approvalCapable ? `
+            <button
+              class="primary"
+              data-generated-plan-action="queue"
+              data-generated-plan-id="${escapeHtml(record.id)}"
+              ${!state.address || !queueable || state.busy || record.status === 'archived' ? 'disabled' : ''}
+              title="${escapeHtml(generatedQueuePlanTitle(record))}"
+            >
+              ${escapeHtml(queueActionLabelForPlan(plan))}
+            </button>
+          ` : `
+            <button
+              class="utility review-action-proof"
+              data-generated-plan-action="sign-proof"
+              data-generated-plan-id="${escapeHtml(record.id)}"
+              ${!state.address || state.busy || record.status === 'archived' ? 'disabled' : ''}
+              title="${escapeHtml(signProofTitle(record))}"
+            >
+              Sign proof
+            </button>
+          `}
         </div>
         <div class="generated-plan-audit-body">
           <section class="generated-plan-audit-section">
@@ -6031,7 +6043,7 @@ function agentPlannerWorkbench(): string {
 
 function templateOutcomeControls(placement: 'header' | 'inline' = 'inline'): string {
   const filters: Array<[TemplateOutcomeFilter, string]> = [
-    ['queueable', 'Can request approval'],
+    ['queueable', 'Request approval'],
     ['proof', 'Proof only'],
     ['audit', 'Evidence only'],
     ['all', 'All'],
@@ -6128,7 +6140,7 @@ function templatePicker(template: AgentPlanTemplate): string {
   const selectedLabel = templatePickerLabel(template);
   const visibleTemplates = templatesForOutcomeFilter();
   const groups: Array<[TemplateOutcome, string]> = [
-    ['queueable', 'Can request wallet approval'],
+    ['queueable', 'Request approval'],
     ['proof', 'Proof only'],
     ['audit', 'Evidence only'],
   ];
