@@ -7192,6 +7192,19 @@ button.danger:hover:not(:disabled) {
   margin: 2px 0 0;
 }
 
+.toast a {
+  color: var(--accent-2);
+  display: inline-flex;
+  font-size: 0.82rem;
+  font-weight: 800;
+  margin-top: 6px;
+  text-decoration: none;
+}
+
+.toast a:hover {
+  text-decoration: underline;
+}
+
 .toast button {
   background: transparent;
   border: 0;

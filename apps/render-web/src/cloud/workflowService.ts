@@ -1523,6 +1523,7 @@ function solTransferQuoteHash(input: {
 
 function defaultRpcUrl(cluster: WorkflowCluster): string {
   if (process.env.SOLANA_RPC_URL) return process.env.SOLANA_RPC_URL;
+  if (process.env.HELIUS_RPC_URL) return process.env.HELIUS_RPC_URL;
   switch (cluster) {
     case 'mainnet-beta':
       return 'https://api.mainnet-beta.solana.com';

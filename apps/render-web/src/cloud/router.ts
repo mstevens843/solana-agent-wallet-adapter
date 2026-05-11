@@ -80,6 +80,8 @@ const REGISTERED_API_ROUTES = [
   'POST /api/recurring/:id/pause',
   'POST /api/recurring/:id/resume',
   '/api/evidence',
+  'POST /api/swap/order',
+  'POST /api/swap/execute',
 ] as const;
 
 type HostedProviderId = 'openai' | 'anthropic' | 'gemini' | 'openrouter';
@@ -327,6 +329,7 @@ function authRateLimitedRoute(pathname: string): AuthRateLimitInput['route'] | u
   if (pathname.startsWith('/api/approvals')) return '/api/approvals:*';
   if (pathname.startsWith('/api/recurring')) return '/api/recurring:*';
   if (pathname.startsWith('/api/evidence')) return '/api/evidence:*';
+  if (pathname.startsWith('/api/swap')) return '/api/swap:*';
   if (pathname.startsWith('/api/cloud-workspace')) return '/api/cloud-workspace:*';
   if (pathname === '/api/auth/logout') return pathname;
   return undefined;
@@ -435,6 +438,18 @@ async function routeApiRequest(
   if (url.pathname === '/api/audit') {
     requireMethod(req, 'GET');
     await handleListAuditEvents(req, res, url, store, clock);
+    return;
+  }
+
+  if (url.pathname === '/api/swap/order') {
+    requireMethod(req, 'POST');
+    await handleJupiterSwapOrder(req, res);
+    return;
+  }
+
+  if (url.pathname === '/api/swap/execute') {
+    requireMethod(req, 'POST');
+    await handleJupiterSwapExecute(req, res);
     return;
   }
 
@@ -717,6 +732,107 @@ async function handleHostedAiRequest(
     const message = err instanceof Error ? redactSecrets(err.message, settings.apiKey) : 'AI provider request failed.';
     writeJson(res, status, { error: message });
   }
+}
+
+async function handleJupiterSwapOrder(req: IncomingMessage, res: ServerResponse): Promise<void> {
+  const body = asJsonRecord(await readJsonBody(req), 'swap order body');
+  const inputMint = requiredBodyString(body, 'inputMint');
+  const outputMint = requiredBodyString(body, 'outputMint');
+  const amount = requiredBodyString(body, 'amount');
+  const taker = requiredBodyString(body, 'taker');
+  const slippageBps = optionalIntegerBodyField(body, 'slippageBps');
+  if (!/^\d+$/.test(amount)) {
+    throw new ApiError(400, 'Swap order amount must be a raw integer string.');
+  }
+  const url = new URL(`${jupiterBaseUrl()}/order`);
+  url.searchParams.set('inputMint', inputMint);
+  url.searchParams.set('outputMint', outputMint);
+  url.searchParams.set('amount', amount);
+  url.searchParams.set('taker', taker);
+  if (slippageBps !== undefined) {
+    url.searchParams.set('slippageBps', String(slippageBps));
+  }
+  writeJson(res, 200, await requestJupiter(url));
+}
+
+async function handleJupiterSwapExecute(req: IncomingMessage, res: ServerResponse): Promise<void> {
+  const body = asJsonRecord(await readJsonBody(req), 'swap execute body');
+  const signedTransaction = requiredBodyString(body, 'signedTransaction');
+  const requestId = requiredBodyString(body, 'requestId');
+  const lastValidBlockHeight = body.lastValidBlockHeight;
+  const executeBody: Record<string, unknown> = {
+    signedTransaction,
+    requestId,
+  };
+  if (typeof lastValidBlockHeight === 'string' || typeof lastValidBlockHeight === 'number') {
+    executeBody.lastValidBlockHeight = lastValidBlockHeight;
+  }
+  writeJson(res, 200, await requestJupiter(`${jupiterBaseUrl()}/execute`, {
+    method: 'POST',
+    body: executeBody,
+  }));
+}
+
+async function requestJupiter(
+  url: URL | string,
+  init: { method?: 'POST'; body?: Record<string, unknown> } = {},
+): Promise<Record<string, unknown>> {
+  const apiKey = jupiterApiKey();
+  if (!apiKey) {
+    throw new ApiError(501, 'Jupiter swap execution is not configured. Set JUPITER_API_KEY or JUP_API_KEY on the Render service.');
+  }
+  const headers: Record<string, string> = {
+    'x-api-key': apiKey,
+  };
+  if (init.body) {
+    headers['content-type'] = 'application/json';
+  }
+  const response = await fetch(url, {
+    method: init.method ?? 'GET',
+    headers,
+    ...(init.body ? { body: JSON.stringify(init.body) } : {}),
+  });
+  const payload = await response.json().catch(() => ({})) as unknown;
+  const record = asJsonRecord(payload, 'Jupiter response');
+  if (!response.ok) {
+    throw new ApiError(502, `Jupiter request failed with HTTP ${response.status}: ${JSON.stringify(record)}`);
+  }
+  return record;
+}
+
+function jupiterBaseUrl(): string {
+  return (
+    process.env.JUP_ULTRA_BASE?.trim() ||
+    process.env.JUPITER_BASE_URL?.trim() ||
+    'https://api.jup.ag/ultra/v1'
+  ).replace(/\/+$/, '');
+}
+
+function jupiterApiKey(): string | undefined {
+  return process.env.JUPITER_API_KEY?.trim() || process.env.JUP_API_KEY?.trim() || undefined;
+}
+
+function asJsonRecord(value: unknown, label: string): Record<string, unknown> {
+  if (value && typeof value === 'object' && !Array.isArray(value)) {
+    return value as Record<string, unknown>;
+  }
+  throw new ApiError(400, `${label} must be a JSON object.`);
+}
+
+function requiredBodyString(body: Record<string, unknown>, key: string): string {
+  const value = body[key];
+  if (typeof value === 'string' && value.trim()) return value.trim();
+  throw new ApiError(400, `${key} is required.`);
+}
+
+function optionalIntegerBodyField(body: Record<string, unknown>, key: string): number | undefined {
+  const value = body[key];
+  if (value === undefined || value === null || value === '') return undefined;
+  const numeric = typeof value === 'number' ? value : Number(value);
+  if (!Number.isInteger(numeric) || numeric < 0) {
+    throw new ApiError(400, `${key} must be a non-negative integer.`);
+  }
+  return numeric;
 }
 
 function hostedSettings(input: HostedAiBody['settings']): {

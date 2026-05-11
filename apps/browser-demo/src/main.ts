@@ -56,7 +56,7 @@ import {
   WalletStandardWebBackend,
   type DiscoveredWallet,
 } from '@solana-agent-wallet-adapter/wallet-standard-web';
-import { Connection, PublicKey, Transaction, TransactionInstruction } from '@solana/web3.js';
+import { Connection, PublicKey, SystemProgram, Transaction, TransactionInstruction } from '@solana/web3.js';
 
 import {
   AndroidNativeWalletBackend,
@@ -77,6 +77,10 @@ import {
   trackWalletConnectClick,
   trackWalletConnectSuccess,
 } from './analytics.js';
+import {
+  hostedByokCloudSessionBlockReason,
+  shouldAutoSignOutCloudSession,
+} from './cloudSessionPolicy.js';
 import {
   AI_PROVIDER_PRESETS,
   AGENT_PLAN_TEMPLATES,
@@ -169,6 +173,7 @@ type WorkflowModePreference = 'auto' | 'local-bridge';
 type ActiveWorkflowMode = 'agentic-cloud' | 'browser-workflow' | 'local-bridge';
 type WorkflowRecordSource = 'cloud' | 'browser' | 'local-bridge';
 type CloudSessionStatus = 'unknown' | 'signed-out' | 'signed-in' | 'unavailable';
+type CloudSessionLogoutReason = 'wallet-disconnected' | 'wallet-changed' | 'wallet-mismatch' | 'startup';
 type QueueWorkflowResult = { id: string; mode: ActiveWorkflowMode; planRecordId?: string };
 
 interface SelectPickerOption {
@@ -242,6 +247,22 @@ const LAB_ARCHIVE_DB_NAME = 'solana-agent-wallet-lab-artifacts';
 const LAB_ARCHIVE_DB_VERSION = 1;
 const LAB_ARCHIVE_STORE_NAME = 'artifacts';
 const MEMO_PROGRAM_ID = new PublicKey('MemoSq4gqABAXKb96qnH8TysNcWxMyWCqXgDLGmfcHr');
+const WSOL_MINT = 'So11111111111111111111111111111111111111112';
+const USDC_MINT = 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v';
+const TOKEN_PROGRAM_ID = new PublicKey('TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA');
+const TOKEN_2022_PROGRAM_ID = new PublicKey('TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb');
+const ASSOCIATED_TOKEN_PROGRAM_ID = new PublicKey('ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL');
+const KNOWN_BROWSER_TOKENS: Record<string, { symbol: string; mint: string; decimals: number }> = {
+  SOL: { symbol: 'SOL', mint: WSOL_MINT, decimals: 9 },
+  WSOL: { symbol: 'SOL', mint: WSOL_MINT, decimals: 9 },
+  USDC: { symbol: 'USDC', mint: USDC_MINT, decimals: 6 },
+};
+const EXECUTABLE_BROWSER_ACTION_KINDS = new Set<PreparedActionKind>([
+  'transfer_sol',
+  'transfer_spl',
+  'swap',
+  'custom_transaction',
+]);
 const RELEASE_BASE_URL =
   'https://github.com/mstevens843/solana-agent-wallet-adapter/releases/latest/download';
 const RELEASE_PAGE_URL =
@@ -463,6 +484,8 @@ interface Toast {
   kind: ToastKind;
   title: string;
   message: string;
+  linkHref?: string;
+  linkLabel?: string;
 }
 
 interface AiPlannerConfirmationState {
@@ -681,6 +704,21 @@ interface ActionReceipt {
   error?: string;
   recurringId?: string;
   occurrenceKey?: string;
+}
+
+interface BrowserTransactionExecution {
+  txid: string;
+  txStatus: PreparedActionTxStatus;
+  explorerUrl: string;
+  result?: Record<string, unknown>;
+}
+
+interface BrowserTokenMetadata {
+  symbol: string;
+  mint: PublicKey;
+  mintText: string;
+  decimals: number;
+  tokenProgramId: PublicKey;
 }
 
 interface BrowserWorkflowState {
@@ -1720,6 +1758,7 @@ async function bootstrap(): Promise<void> {
     await restoreBrowserWalletSession();
   }
   await refreshCloudSession(false);
+  await signOutCloudSessionForWalletBoundary('startup');
   await hydrateLabArtifactArchive();
   if (cloudSessionMatchesWallet()) {
     await refreshCloudWorkspaceData().catch(() => undefined);
@@ -6480,6 +6519,8 @@ function aiProviderDisabledReason(providerId: string): string {
 }
 
 function aiModeHelperText(): string {
+  const hostedBlockReason = hostedByokCloudSessionReason();
+  if (hostedBlockReason) return hostedBlockReason;
   return state.aiSettings.mode === 'session' && state.aiSettings.provider === 'openai'
     ? OPENAI_BROWSER_SESSION_DISABLED_REASON
     : '';
@@ -6696,6 +6737,7 @@ function resetAiPlannerConfirmation(message = ''): void {
 function canConfirmAiPlanner(): boolean {
   if (state.busy) return false;
   if (state.aiSettings.mode === 'bridge') return true;
+  if (hostedByokCloudSessionReason()) return false;
   return Boolean(
     state.aiSettings.apiKey.trim()
       && state.aiSettings.model.trim()
@@ -6706,6 +6748,8 @@ function canConfirmAiPlanner(): boolean {
 function aiConfirmDisabledReason(): string {
   if (state.busy) return 'Wait for the current action to finish.';
   if (state.aiSettings.mode === 'bridge') return 'Start the local runtime, then confirm planner status.';
+  const hostedBlockReason = hostedByokCloudSessionReason();
+  if (hostedBlockReason) return hostedBlockReason;
   if (state.aiSettings.mode === 'session' && state.aiSettings.provider === 'openai') {
     return OPENAI_BROWSER_SESSION_DISABLED_REASON;
   }
@@ -6733,6 +6777,7 @@ function canSaveBridgeAiKey(): boolean {
 
 function canSaveDirectAiKey(): boolean {
   return state.aiSettings.mode !== 'bridge'
+    && !hostedByokCloudSessionReason()
     && Boolean(state.aiSettings.apiKey.trim())
     && Boolean(state.aiSettings.model.trim())
     && aiProviderReadyForCurrentMode()
@@ -6748,6 +6793,7 @@ function canGenerateAiPlanFromSettings(): boolean {
   if (state.aiSettings.mode === 'bridge') {
     return Boolean(state.aiStatus?.available && !state.busy);
   }
+  if (hostedByokCloudSessionReason()) return false;
   return Boolean(state.aiSettings.apiKey.trim() && modelReady && aiProviderReadyForCurrentMode() && !state.busy);
 }
 
@@ -6762,6 +6808,8 @@ function aiGenerateDisabledReason(): string {
     }
     return 'Bridge AI is ready.';
   }
+  const hostedBlockReason = hostedByokCloudSessionReason();
+  if (hostedBlockReason) return hostedBlockReason;
   if (state.aiSettings.mode === 'session' && state.aiSettings.provider === 'openai') {
     return OPENAI_BROWSER_SESSION_DISABLED_REASON;
   }
@@ -6786,6 +6834,7 @@ function isAiConfiguredForCurrentMode(): boolean {
   if (state.aiSettings.mode === 'bridge') {
     return Boolean(state.aiStatus?.available);
   }
+  if (hostedByokCloudSessionReason()) return false;
   return Boolean(state.aiSettings.apiKey.trim() && modelReady && aiProviderReadyForCurrentMode());
 }
 
@@ -6802,6 +6851,8 @@ function aiProviderReadyForCurrentMode(): boolean {
 
 function aiRouteStatusLabel(status: BridgeAiStatus | null): string {
   if (state.aiSettings.mode === 'hosted') {
+    const hostedBlockReason = hostedByokCloudSessionReason();
+    if (hostedBlockReason) return 'hosted draft - cloud sign-in required';
     return state.aiSettings.apiKey.trim() ? `hosted draft route - ${state.aiSettings.provider} - ${state.aiSettings.model || 'model configured'}` : 'hosted draft - key required';
   }
   if (state.aiSettings.mode === 'session') {
@@ -6821,6 +6872,10 @@ function aiReadinessLabel(status: BridgeAiStatus | null): string {
   }
   if (state.aiSettings.mode === 'session' && state.aiSettings.provider === 'openai') {
     return 'Use hosted or bridge for OpenAI';
+  }
+  const hostedBlockReason = hostedByokCloudSessionReason();
+  if (hostedBlockReason) {
+    return 'Cloud sign-in required';
   }
   if (!state.aiSettings.apiKey.trim()) {
     return state.aiSettings.mode === 'hosted' ? 'Hosted key required' : 'Browser key required';
@@ -7237,6 +7292,7 @@ function completedPlanCard(plan: CompletedPlanRecord): string {
   const focused = state.lastCompletedFocusId === plan.id || Boolean(plan.actionId && state.lastCompletedFocusId === plan.actionId);
   const decisionProofBlock = decisionProofRow(plan);
   const historyLabel = plan.kind === 'recurring' ? 'Repeat payment done' : 'One-time done';
+  const txUrl = plan.txid ? (plan.explorerUrl ?? explorerUrl(plan.txid, plan.cluster)) : '';
   return `
     <article class="generated-plan-card completed-plan-card ${focused ? 'focused' : ''}" ${focused ? 'data-completed-focus="true"' : ''}>
       <div class="completed-history-head">
@@ -7256,6 +7312,8 @@ function completedPlanCard(plan: CompletedPlanRecord): string {
           <button data-copy="${escapeHtml(plan.copyPayload)}" data-copy-name="Done item">${escapeHtml(copyLabel)}</button>
           ${plan.trustBundlePayload ? `<button data-copy="${escapeHtml(plan.trustBundlePayload)}" data-copy-name="Trust bundle">Copy trust bundle</button>` : ''}
           ${plan.txid ? `<button data-copy="${escapeHtml(plan.txid)}" data-copy-name="Transaction id">Copy txid</button>` : ''}
+          ${txUrl ? `<button data-copy="${escapeHtml(txUrl)}" data-copy-name="Solscan transaction link">Copy Solscan link</button>` : ''}
+          ${txUrl ? `<a class="button-link utility" href="${escapeHtml(txUrl)}" target="_blank" rel="noreferrer">Open Solscan</a>` : ''}
           <button
             class="utility danger"
             data-completed-delete="${escapeHtml(plan.id)}"
@@ -7441,7 +7499,7 @@ function recordActivityDetails(recordType: AuditRecordType, recordId: string): s
   const key = auditActivityKey(recordType, recordId);
   const activity: AuditActivityState = state.auditActivity[key] ?? { status: 'idle', events: [] };
   const open = state.auditOpen[key] === true;
-  const body = cloudSessionMatchesWallet()
+  const body = cloudSessionMatchesWallet() || activity.status === 'loaded'
     ? auditActivityBody(activity)
     : '<p class="activity-note">Cloud activity appears here after you sign in to Agentic Cloud. Browser receipts remain visible in this workspace.</p>';
   return `
@@ -8543,6 +8601,9 @@ function bind(): void {
       state.browserWalletPickerOpen = false;
     }
     resetWalletConnection();
+    void signOutCloudSessionForWalletBoundary('wallet-changed', { toast: true }).then((signedOut) => {
+      if (signedOut) render();
+    });
     state.error = '';
     savePersistedState();
     render();
@@ -8553,6 +8614,9 @@ function bind(): void {
     state.browserWalletPickerOpen = false;
     clearBrowserWalletSession();
     resetWalletConnection();
+    void signOutCloudSessionForWalletBoundary('wallet-changed', { toast: true }).then((signedOut) => {
+      if (signedOut) render();
+    });
     state.error = '';
     savePersistedState();
     render();
@@ -8564,6 +8628,9 @@ function bind(): void {
     state.selectedIosWalletId = walletId;
     state.selectedWalletName = iosWalletLabel(walletId);
     resetWalletConnection();
+    void signOutCloudSessionForWalletBoundary('wallet-changed', { toast: true }).then((signedOut) => {
+      if (signedOut) render();
+    });
     state.error = '';
     savePersistedState();
     render();
@@ -9668,6 +9735,7 @@ async function runDisconnect(): Promise<void> {
     }
     await disconnectWalletBackend().catch(() => undefined);
     resetWalletConnection();
+    const cloudSignedOut = await signOutCloudSessionForWalletBoundary('wallet-disconnected');
     if (browserWallet) {
       state.selectedWalletName = '';
       state.browserWalletPickerOpen = false;
@@ -9681,7 +9749,11 @@ async function runDisconnect(): Promise<void> {
     }
     await refreshIosNativeCacheState();
     savePersistedState();
-    pushToast('success', 'Wallet disconnected', 'Local signing session cleared.');
+    pushToast(
+      'success',
+      'Wallet disconnected',
+      cloudSignedOut ? 'Local signing and cloud workspace sessions cleared.' : 'Local signing session cleared.',
+    );
   });
 }
 
@@ -10056,6 +10128,11 @@ async function runGenerateAgentPlan(): Promise<void> {
 }
 
 async function runGenerateAiPlan(): Promise<void> {
+  if (!canGenerateAiPlanFromSettings()) {
+    pushToast('error', 'AI setup incomplete', aiGenerateDisabledReason());
+    render();
+    return;
+  }
   const template = selectedTemplate();
   trackGenerateAiPlan(template.id, state.aiSettings.mode, state.aiSettings.provider);
   state.activeOperation = 'generate-ai-plan';
@@ -10559,22 +10636,20 @@ function hasGeneratedPlanMovedPastReview(record: GeneratedPlanRecord): boolean {
 
 function completedPlanRecords(): CompletedPlanRecord[] {
   const mode = activeWorkflowMode();
-  if (mode === 'agentic-cloud') {
-    return [...state.cloudCompletedPlans].sort((left, right) => right.completedAt.localeCompare(left.completedAt));
-  }
-  const historyActions = mode === 'browser-workflow'
+  const includeBrowserHistory = mode === 'browser-workflow' || mode === 'agentic-cloud';
+  const historyActions = includeBrowserHistory
     ? state.preparedActions.filter((action) => isBrowserWorkflowId(action.id))
     : state.preparedActions.filter((action) => action.workflowSource === 'local-bridge');
-  const historyReceipts = mode === 'browser-workflow'
+  const historyReceipts = includeBrowserHistory
     ? state.receipts.filter((receipt) => isBrowserWorkflowId(receipt.actionId))
     : state.receipts.filter((receipt) => !isBrowserWorkflowId(receipt.actionId));
-  const historyPlans = mode === 'browser-workflow'
+  const historyPlans = includeBrowserHistory
     ? state.generatedPlans.filter((record) => record.workflowSource === 'browser' || !record.workflowSource)
     : state.generatedPlans.filter((record) => record.workflowSource === 'local-bridge');
   const receiptsByActionId = new Map(historyReceipts.map((receipt) => [receipt.actionId, receipt]));
   const actionsById = new Map(historyActions.map((action) => [action.id, action]));
   const usedActionIds = new Set<string>();
-  const records: CompletedPlanRecord[] = [];
+  const records: CompletedPlanRecord[] = mode === 'agentic-cloud' ? [...state.cloudCompletedPlans] : [];
 
   for (const record of historyPlans.filter(isOneTimeGeneratedPlan)) {
     const action = record.preparedActionId ? actionsById.get(record.preparedActionId) : undefined;
@@ -11103,6 +11178,8 @@ async function runConfirmAiPlanner(): Promise<void> {
       }
 
       if (state.aiSettings.mode === 'hosted') {
+        const hostedBlockReason = hostedByokCloudSessionReason();
+        if (hostedBlockReason) throw new Error(hostedBlockReason);
         state.aiDiagnostics = await confirmHostedAiPlanner(state.aiSettings);
         setAiPlannerConfirmation('confirmed', 'Hosted BYOK route is reachable for draft requests only. Provider key validity is checked on the first AI draft. Workflow capability is unchanged.');
         replaceToast(toastId, 'success', 'Planner confirmed', 'Hosted BYOK can draft plans only.');
@@ -11258,8 +11335,69 @@ function cloudSessionWalletMismatch(): boolean {
   );
 }
 
+function cloudSessionNeedsWalletBoundaryLogout(): boolean {
+  return shouldAutoSignOutCloudSession({
+    cloudStatus: state.cloudSession.status,
+    cloudWalletAddress: state.cloudSession.walletAddress,
+    connectedWalletAddress: state.address,
+  });
+}
+
+async function signOutCloudSession(): Promise<boolean> {
+  if (state.cloudSession.status !== 'signed-in' || !state.cloudSession.walletAddress) {
+    return false;
+  }
+  resetCloudWorkspaceState();
+  if (activeWorkflowMode() === 'browser-workflow') {
+    refreshBrowserWorkflowData();
+  }
+  await cloudRequest('/api/auth/logout', { method: 'POST' }).catch(() => undefined);
+  return true;
+}
+
+async function signOutCloudSessionForWalletBoundary(
+  reason: CloudSessionLogoutReason,
+  options: { toast?: boolean } = {},
+): Promise<boolean> {
+  if (!cloudSessionNeedsWalletBoundaryLogout()) return false;
+  const signedInWallet = state.cloudSession.walletAddress;
+  const connectedWallet = state.address;
+  const signedOut = await signOutCloudSession();
+  if (signedOut && options.toast) {
+    pushToast('success', 'Cloud workspace signed out', cloudBoundaryLogoutDetail(reason, signedInWallet, connectedWallet));
+  }
+  return signedOut;
+}
+
+function cloudBoundaryLogoutDetail(
+  reason: CloudSessionLogoutReason,
+  signedInWallet: string,
+  connectedWallet: string,
+): string {
+  if (reason === 'wallet-mismatch' && connectedWallet) {
+    return `Previous cloud workspace ${short(signedInWallet)} signed out. Sign in with ${short(connectedWallet)} to use cloud workflow.`;
+  }
+  if (reason === 'wallet-changed') {
+    return `Cloud workspace ${short(signedInWallet)} signed out because the wallet selection changed.`;
+  }
+  if (reason === 'startup') {
+    return `Cloud workspace ${short(signedInWallet)} signed out because no matching wallet session was restored.`;
+  }
+  return `Cloud workspace ${short(signedInWallet)} signed out because the wallet disconnected.`;
+}
+
+function hostedByokCloudSessionReason(): string {
+  return hostedByokCloudSessionBlockReason({
+    aiMode: state.aiSettings.mode,
+    cloudSessionMatchesWallet: cloudSessionMatchesWallet(),
+  });
+}
+
 async function afterWalletConnected(): Promise<void> {
   await refreshCloudSession(false);
+  if (await signOutCloudSessionForWalletBoundary('wallet-mismatch', { toast: true })) {
+    return;
+  }
   if (cloudSessionMatchesWallet()) {
     await refreshCloudWorkspaceData().catch((err) => {
       state.cloudSession = {
@@ -11308,9 +11446,7 @@ async function runCloudSignIn(): Promise<void> {
 
 async function runCloudLogout(): Promise<void> {
   await run('connect', async () => {
-    await cloudRequest('/api/auth/logout', { method: 'POST' }).catch(() => undefined);
-    resetCloudWorkspaceState();
-    refreshBrowserWorkflowData();
+    await signOutCloudSession();
     pushToast('success', 'Cloud workspace signed out', 'Saved-on-device workflow is active in this browser.');
   });
 }
@@ -11438,6 +11574,7 @@ async function refreshCloudWorkspaceData(): Promise<void> {
   if (state.cloudSession.status !== 'signed-in') {
     throw new Error('Sign in to Agentic Cloud before loading cloud workflow data.');
   }
+  const browserWorkflow = loadBrowserWorkflowState();
   const recurringResponse: Awaited<ReturnType<typeof cloudRecurringList>> = await cloudRecurringList().catch((err) => {
     // eslint-disable-next-line no-console
     console.warn('Cloud recurring API unavailable:', err);
@@ -11463,12 +11600,13 @@ async function refreshCloudWorkspaceData(): Promise<void> {
     }
   }
   const cloudApprovals = approvalsResponse.approvals.map(cloudApprovalToPreparedAction).filter(isPreparedAction);
-  state.preparedActions = mergePreparedActions(cloudApprovals);
+  state.preparedActions = mergePreparedActions(cloudApprovals, browserWorkflow.preparedActions);
   state.materializedActions = state.preparedActions;
-  state.recurringPayments = recurringResponse.schedules
+  state.recurringPayments = mergeRecurringPayments(recurringResponse.schedules
     .filter((schedule) => schedule.status === 'active' || schedule.status === 'paused')
     .map((schedule) => cloudRecurringScheduleToPayment(schedule, recurringResponse.views?.[schedule.id]))
-    .filter((payment): payment is RecurringPayment => Boolean(payment));
+    .filter((payment): payment is RecurringPayment => Boolean(payment)), browserWorkflow.recurringPayments);
+  state.receipts = mergeActionReceipts(state.receipts, browserWorkflow.receipts);
   const cloudCompletedFromApprovals = completedResponse.completed
     .map(cloudCompletedToCompletedPlan)
     .filter((record): record is CompletedPlanRecord => Boolean(record));
@@ -12722,6 +12860,10 @@ async function runBrowserPreparedActionOp(actionId: string, op: string): Promise
   }
   switch (op) {
     case 'execute': {
+      if (isExecutableBrowserAction(action)) {
+        await executeBrowserPreparedAction(action);
+        return;
+      }
       const proofSignature = await signBrowserWorkflowDecision(action, 'approved');
       completeBrowserPreparedAction(action, 'approved', proofSignature);
       showCompletedHistoryForAction(action.id);
@@ -12821,6 +12963,664 @@ async function signBrowserWorkflowDecision(
   ].join('\n');
   const result = await signingClient.signMessage(signingMessage, signOptions(`Browser workflow ${decision}`));
   return result.signature;
+}
+
+function isExecutableBrowserAction(action: PreparedAction): boolean {
+  return (action.workflowSource === 'browser' || isBrowserWorkflowId(action.id)) &&
+    EXECUTABLE_BROWSER_ACTION_KINDS.has(action.kind);
+}
+
+async function executeBrowserPreparedAction(action: PreparedAction): Promise<void> {
+  assertBrowserActionWalletReady(action);
+  const priorStatus: PreparedActionStatus = action.status === 'overdue' ? 'overdue' : 'ready';
+  const toastId = pushToast('pending', 'Opening wallet', browserExecutionStartMessage(action));
+  updateBrowserPreparedAction(action.id, {
+    status: 'approval_pending',
+    txStatus: 'pending',
+    txError: undefined,
+    error: undefined,
+  });
+  recordBrowserActionActivity(action.id, 'browser.transaction.start', {
+    kind: action.kind,
+    status: 'approval_pending',
+    summary: action.summary,
+  });
+  render();
+
+  try {
+    const current = state.preparedActions.find((candidate) => candidate.id === action.id) ?? action;
+    const execution = await executeBrowserPreparedActionRecord(current);
+    completeBrowserExecutedAction(current, execution);
+    recordBrowserActionActivity(action.id, 'browser.transaction.saved', {
+      kind: action.kind,
+      status: execution.txStatus,
+      txid: execution.txid,
+    });
+    showCompletedHistoryForAction(action.id);
+    replaceToast(
+      toastId,
+      execution.txStatus === 'confirmed' ? 'success' : 'pending',
+      execution.txStatus === 'confirmed' ? 'Transaction finalized' : 'Transaction submitted',
+      `${short(execution.txid)} - Solscan link saved in Done.`,
+      { linkHref: execution.explorerUrl, linkLabel: 'Open Solscan' },
+    );
+  } catch (err) {
+    const message = redactSecrets(err instanceof Error ? err.message : String(err));
+    updateBrowserPreparedAction(action.id, {
+      status: priorStatus,
+      txStatus: 'failed',
+      txError: message,
+      error: message,
+    });
+    recordBrowserActionActivity(action.id, 'browser.transaction.failed', {
+      kind: action.kind,
+      status: 'failed',
+      error: message,
+    });
+    state.activeTab = 'inbox';
+    state.auditOpen[auditActivityKey('approval', action.id)] = true;
+    replaceToast(toastId, 'error', 'Transaction failed', message);
+  }
+}
+
+function browserExecutionStartMessage(action: PreparedAction): string {
+  switch (action.kind) {
+    case 'transfer_sol':
+    case 'transfer_spl':
+      return `Approve the wallet transaction to send ${amountLabel(action)}.`;
+    case 'swap':
+      return `Approve the wallet transaction to swap ${amountLabel(action)} ${tokenLabel(action)}.`;
+    case 'custom_transaction':
+      return 'Approve the wallet transaction to broadcast the provided transaction bytes.';
+    default:
+      return 'Approve the wallet transaction.';
+  }
+}
+
+function assertBrowserActionWalletReady(action: PreparedAction): void {
+  if (!state.address) {
+    throw new Error('Connect the approval wallet before sending this transaction.');
+  }
+  if (state.address !== action.walletAddress) {
+    throw new Error(`Connect ${short(action.walletAddress)} before sending this transaction.`);
+  }
+  if (action.cluster !== state.cluster) {
+    throw new Error(`Switch to ${titleCaseCluster(action.cluster)} before sending this transaction.`);
+  }
+}
+
+async function executeBrowserPreparedActionRecord(action: PreparedAction): Promise<BrowserTransactionExecution> {
+  switch (action.kind) {
+    case 'transfer_sol':
+      return executeBrowserSolTransfer(action);
+    case 'transfer_spl':
+      return executeBrowserSplTransfer(action);
+    case 'swap':
+      return executeBrowserSwap(action);
+    case 'custom_transaction':
+      return executeBrowserCustomTransaction(action);
+    default:
+      throw new Error(`Browser workflow cannot broadcast ${action.kind}.`);
+  }
+}
+
+async function executeBrowserSolTransfer(action: PreparedAction): Promise<BrowserTransactionExecution> {
+  const from = publicKeyFromConnectedWallet();
+  const recipient = publicKeyParam(requiredActionParam(action, 'recipient'), 'recipient');
+  const amountSol = requiredActionParam(action, 'amountSol');
+  const lamports = parseDecimalAmountToRaw(amountSol, 9, 'SOL transfer amount');
+  const transaction = new Transaction().add(
+    SystemProgram.transfer({
+      fromPubkey: from,
+      toPubkey: recipient,
+      lamports: rawLamportsToNumber(lamports),
+    }),
+  );
+  addOptionalMemo(transaction, from, stringParam(action, 'memo'));
+  const txid = await signAndBroadcastBrowserTransaction(
+    action,
+    transaction,
+    `Transfer ${amountSol} SOL to ${recipient.toBase58()}`,
+  );
+  markBrowserTransactionSubmitted(action, txid);
+  const txStatus = await resolveSubmittedTransactionStatus(action.cluster, txid);
+  return {
+    txid,
+    txStatus,
+    explorerUrl: explorerUrl(txid, action.cluster),
+  };
+}
+
+async function executeBrowserSplTransfer(action: PreparedAction): Promise<BrowserTransactionExecution> {
+  const token = requiredActionParam(action, 'token');
+  const amount = requiredActionParam(action, 'amount');
+  if (isNativeSolToken(token)) {
+    return executeBrowserSolTransfer({
+      ...action,
+      kind: 'transfer_sol',
+      params: {
+        recipient: requiredActionParam(action, 'recipient'),
+        amountSol: amount,
+        memo: stringParam(action, 'memo'),
+      },
+    });
+  }
+
+  const owner = publicKeyFromConnectedWallet();
+  const recipientOwner = publicKeyParam(requiredActionParam(action, 'recipient'), 'recipient');
+  const connection = browserActionConnection(action.cluster);
+  const tokenMetadata = await resolveBrowserTokenMetadata(connection, token);
+  const rawAmount = parseDecimalAmountToRaw(amount, tokenMetadata.decimals, `${tokenMetadata.symbol} amount`);
+  const sourceAta = associatedTokenAddress(tokenMetadata.mint, owner, tokenMetadata.tokenProgramId);
+  const destinationAta = associatedTokenAddress(tokenMetadata.mint, recipientOwner, tokenMetadata.tokenProgramId);
+  const sourceBalance = await connection.getTokenAccountBalance(sourceAta, 'confirmed').catch(() => null);
+  if (!sourceBalance || BigInt(sourceBalance.value.amount) < rawAmount) {
+    throw new Error(`Insufficient ${tokenMetadata.symbol} balance for ${amount}.`);
+  }
+
+  const transaction = new Transaction();
+  const destinationAccount = await connection.getAccountInfo(destinationAta, 'confirmed');
+  if (!destinationAccount) {
+    transaction.add(createAssociatedTokenAccountInstruction(owner, destinationAta, recipientOwner, tokenMetadata));
+  }
+  transaction.add(createTransferCheckedInstruction(
+    sourceAta,
+    tokenMetadata.mint,
+    destinationAta,
+    owner,
+    rawAmount,
+    tokenMetadata.decimals,
+    tokenMetadata.tokenProgramId,
+  ));
+  addOptionalMemo(transaction, owner, stringParam(action, 'memo'));
+
+  const txid = await signAndBroadcastBrowserTransaction(
+    action,
+    transaction,
+    `Transfer ${amount} ${tokenMetadata.symbol} to ${recipientOwner.toBase58()}`,
+  );
+  markBrowserTransactionSubmitted(action, txid);
+  const txStatus = await resolveSubmittedTransactionStatus(action.cluster, txid);
+  return {
+    txid,
+    txStatus,
+    explorerUrl: explorerUrl(txid, action.cluster),
+    result: {
+      token: tokenMetadata.symbol,
+      mint: tokenMetadata.mintText,
+      recipient: recipientOwner.toBase58(),
+    },
+  };
+}
+
+async function executeBrowserSwap(action: PreparedAction): Promise<BrowserTransactionExecution> {
+  const signingClient = requireClient();
+  if (state.capabilities?.supports.signTransaction !== true) {
+    throw new Error('Selected wallet cannot sign swap transactions from this browser.');
+  }
+  const taker = state.address;
+  const connection = browserActionConnection(action.cluster);
+  const inputToken = await resolveBrowserTokenMetadata(connection, requiredActionParam(action, 'inputToken'));
+  const outputToken = await resolveBrowserTokenMetadata(connection, requiredActionParam(action, 'outputToken'));
+  const amountRaw = parseDecimalAmountToRaw(requiredActionParam(action, 'amount'), inputToken.decimals, `${inputToken.symbol} swap amount`);
+  const slippageBps = browserSlippageBps(action);
+  recordBrowserActionActivity(action.id, 'browser.swap.order_requested', {
+    inputMint: inputToken.mintText,
+    outputMint: outputToken.mintText,
+    amount: amountRaw.toString(),
+    slippageBps: String(slippageBps),
+  });
+  const order = await hostedSwapRequest('/api/swap/order', {
+    inputMint: inputToken.mintText,
+    outputMint: outputToken.mintText,
+    amount: amountRaw.toString(),
+    taker,
+    slippageBps,
+  });
+  const transactionBase64 = requiredResponseString(order.transaction, 'Jupiter order transaction');
+  const requestId = requiredResponseString(order.requestId, 'Jupiter request id');
+  recordBrowserActionActivity(action.id, 'browser.swap.order_ready', {
+    requestId,
+    status: 'ready_to_sign',
+  });
+  pushToast('pending', 'Wallet sign swap', `Sign Jupiter swap ${short(requestId)}.`);
+  const signed = await signingClient.signTransaction(transactionBase64, {
+    cluster: action.cluster,
+    summary: `Swap ${requiredActionParam(action, 'amount')} ${inputToken.symbol} to ${outputToken.symbol}`,
+  });
+  pushToast('success', 'Swap transaction signed', `Signed Jupiter request ${short(requestId)}.`);
+  pushToast('pending', 'Sending swap transaction', 'Submitting the signed swap through Jupiter.');
+  const executed = await hostedSwapRequest('/api/swap/execute', {
+    signedTransaction: signed.signature,
+    requestId,
+    ...(typeof order.lastValidBlockHeight === 'string' || typeof order.lastValidBlockHeight === 'number'
+      ? { lastValidBlockHeight: order.lastValidBlockHeight }
+      : {}),
+  });
+  assertJupiterExecutionSucceeded(executed);
+  const txid = requiredResponseString(executed.signature ?? executed.txid, 'Jupiter execution signature');
+  pushTransactionToast('success', 'Swap transaction submitted', txid, action.cluster);
+  markBrowserTransactionSubmitted(action, txid);
+  const txStatus = await resolveSubmittedTransactionStatus(action.cluster, txid);
+  return {
+    txid,
+    txStatus,
+    explorerUrl: explorerUrl(txid, action.cluster),
+    result: {
+      order: orderSummaryForReceipt(order),
+      execution: orderSummaryForReceipt(executed),
+    },
+  };
+}
+
+async function executeBrowserCustomTransaction(action: PreparedAction): Promise<BrowserTransactionExecution> {
+  const transactionBase64 = stringParam(action, 'transactionBase64') ||
+    stringParam(action, 'transaction') ||
+    stringParam(action, 'base64') ||
+    stringParam(action, 'tx');
+  if (!transactionBase64) {
+    throw new Error('Custom transaction is missing base64 transaction bytes.');
+  }
+  const txid = await signAndBroadcastBrowserTransactionBase64(
+    action,
+    transactionBase64,
+    action.summary || 'Custom wallet transaction',
+  );
+  markBrowserTransactionSubmitted(action, txid);
+  const txStatus = await resolveSubmittedTransactionStatus(action.cluster, txid);
+  return {
+    txid,
+    txStatus,
+    explorerUrl: explorerUrl(txid, action.cluster),
+  };
+}
+
+async function signAndBroadcastBrowserTransaction(
+  action: PreparedAction,
+  transaction: Transaction,
+  summary: string,
+): Promise<string> {
+  const feePayer = publicKeyFromConnectedWallet();
+  const connection = browserActionConnection(action.cluster);
+  const latest = await connection.getLatestBlockhash('confirmed');
+  transaction.feePayer = feePayer;
+  transaction.recentBlockhash = latest.blockhash;
+  const transactionBase64 = encodeBase64(
+    transaction.serialize({
+      requireAllSignatures: false,
+      verifySignatures: false,
+    }),
+  );
+  return signAndBroadcastBrowserTransactionBase64(action, transactionBase64, summary);
+}
+
+async function signAndBroadcastBrowserTransactionBase64(
+  action: PreparedAction,
+  transactionBase64: string,
+  summary: string,
+): Promise<string> {
+  const signingClient = requireClient();
+  const connection = browserActionConnection(action.cluster);
+  if (state.capabilities?.supports.signAndSendTransaction === true) {
+    pushToast('pending', 'Wallet sign and send', summary);
+    const result = await signingClient.signAndSendTransaction(transactionBase64, {
+      cluster: action.cluster,
+      summary,
+    });
+    const txid = result.txid ?? result.signature;
+    pushTransactionToast('success', 'Wallet submitted transaction', txid, action.cluster);
+    return txid;
+  }
+  if (state.capabilities?.supports.signTransaction === true) {
+    pushToast('pending', 'Wallet sign transaction', summary);
+    const signed = await signingClient.signTransaction(transactionBase64, {
+      cluster: action.cluster,
+      summary,
+    });
+    pushToast('success', 'Transaction signed', 'Signed bytes returned by wallet.');
+    pushToast('pending', 'Sending transaction', 'Broadcasting the signed transaction to Solana RPC.');
+    const txid = await connection.sendRawTransaction(decodeBase64(signed.signature), {
+      preflightCommitment: 'confirmed',
+      maxRetries: 5,
+    });
+    pushTransactionToast('success', 'Transaction broadcast', txid, action.cluster);
+    return txid;
+  }
+  throw new Error('Selected wallet cannot sign and send transactions from this browser.');
+}
+
+async function resolveSubmittedTransactionStatus(cluster: Cluster, txid: string): Promise<PreparedActionTxStatus> {
+  const connection = browserActionConnection(cluster);
+  await connection.confirmTransaction(txid, 'confirmed').catch(() => undefined);
+  const statuses = await connection.getSignatureStatuses([txid], { searchTransactionHistory: true });
+  const status = statuses.value[0];
+  if (!status) {
+    throw new Error(`Transaction ${short(txid)} was submitted but did not confirm yet. Open Solscan from the toast and retry confirmation later.`);
+  }
+  if (status.err) {
+    throw new Error(`Transaction ${short(txid)} failed on-chain: ${stableJson(status.err)}`);
+  }
+  if (status.confirmationStatus === 'confirmed' || status.confirmationStatus === 'finalized') {
+    return 'confirmed';
+  }
+  throw new Error(`Transaction ${short(txid)} is still ${status.confirmationStatus ?? 'pending'} and was not moved to Done.`);
+}
+
+function completeBrowserExecutedAction(action: PreparedAction, execution: BrowserTransactionExecution): void {
+  const completedAt = new Date().toISOString();
+  const updatedAction: PreparedAction = {
+    ...action,
+    status: 'approved',
+    txStatus: execution.txStatus,
+    txid: execution.txid,
+    txError: undefined,
+    error: undefined,
+    updatedAt: completedAt,
+    confirmedAt: execution.txStatus === 'confirmed' ? completedAt : undefined,
+  };
+  const receipt: ActionReceipt = {
+    actionId: action.id,
+    status: 'approved',
+    txStatus: execution.txStatus,
+    txid: execution.txid,
+    explorerUrl: execution.explorerUrl,
+    summary: action.summary,
+    note: action.note,
+    walletAddress: action.walletAddress,
+    recipient: recipientParam(action) || undefined,
+    amount: amountLabel(action) === 'n/a' ? undefined : amountLabel(action),
+    token: tokenLabel(action) === 'n/a' ? undefined : tokenLabel(action),
+    cluster: action.cluster,
+    createdAt: action.createdAt,
+    completedAt,
+    ...(action.recurringId && { recurringId: action.recurringId }),
+    ...(action.occurrenceKey && { occurrenceKey: action.occurrenceKey }),
+  };
+  state.preparedActions = mergePreparedActions([updatedAction], state.preparedActions);
+  state.materializedActions = state.preparedActions;
+  state.receipts = mergeActionReceipts([receipt], state.receipts);
+  saveBrowserWorkflowState();
+}
+
+function updateBrowserPreparedAction(actionId: string, patch: Partial<PreparedAction>): PreparedAction {
+  const updatedAt = new Date().toISOString();
+  let updated: PreparedAction | undefined;
+  state.preparedActions = state.preparedActions.map((candidate) => {
+    if (candidate.id !== actionId) return candidate;
+    updated = {
+      ...candidate,
+      ...patch,
+      updatedAt,
+    };
+    return updated;
+  });
+  state.materializedActions = state.preparedActions;
+  saveBrowserWorkflowState();
+  if (!updated) {
+    throw new Error(`Approval request ${actionId} was not found.`);
+  }
+  return updated;
+}
+
+function recordBrowserActionActivity(actionId: string, eventType: string, metadata: JsonObject): void {
+  const key = auditActivityKey('approval', actionId);
+  const now = new Date().toISOString();
+  const current = state.auditActivity[key];
+  const event: WorkflowAuditEventRecord = {
+    id: newId('browser-audit'),
+    walletAddress: state.address || state.preparedActions.find((action) => action.id === actionId)?.walletAddress || '',
+    type: eventType,
+    eventType,
+    recordType: 'approval',
+    recordId: actionId,
+    subjectType: 'approval',
+    subjectId: actionId,
+    createdAt: now,
+    metadata,
+  };
+  state.auditActivity[key] = {
+    status: 'loaded',
+    events: [event, ...(current?.events ?? [])].slice(0, 25),
+    loadedAt: now,
+  };
+}
+
+function markBrowserTransactionSubmitted(action: PreparedAction, txid: string): void {
+  updateBrowserPreparedAction(action.id, {
+    status: 'approval_pending',
+    txStatus: 'pending',
+    txid,
+    txError: undefined,
+    error: undefined,
+  });
+  recordBrowserActionActivity(action.id, 'browser.transaction.submitted', {
+    kind: action.kind,
+    status: 'pending',
+    txid,
+  });
+}
+
+function browserActionConnection(cluster: Cluster): Connection {
+  return new Connection(cluster === state.cluster ? activeRpcUrl() : defaultRpcUrl(cluster), 'confirmed');
+}
+
+function requiredActionParam(action: PreparedAction, key: string): string {
+  const value = stringParam(action, key).trim();
+  if (!value) {
+    throw new Error(`Approval ${short(action.id)} is missing ${key}.`);
+  }
+  return value;
+}
+
+function publicKeyParam(value: string, label: string): PublicKey {
+  try {
+    return new PublicKey(value);
+  } catch {
+    throw new Error(`${label} is not a valid Solana address.`);
+  }
+}
+
+function isNativeSolToken(token: string): boolean {
+  const normalized = token.trim();
+  return normalized.toUpperCase() === 'SOL' || normalized === WSOL_MINT;
+}
+
+async function resolveBrowserTokenMetadata(connection: Connection, token: string): Promise<BrowserTokenMetadata> {
+  const known = KNOWN_BROWSER_TOKENS[token.trim().toUpperCase()];
+  const mintText = known?.mint ?? token.trim();
+  const symbol = known?.symbol ?? tokenDisplayLabel(mintText);
+  if (isNativeSolToken(token)) {
+    return {
+      symbol: 'SOL',
+      mint: new PublicKey(WSOL_MINT),
+      mintText: WSOL_MINT,
+      decimals: 9,
+      tokenProgramId: TOKEN_PROGRAM_ID,
+    };
+  }
+  const mint = publicKeyParam(mintText, 'token mint');
+  const account = await connection.getParsedAccountInfo(mint, 'confirmed').catch(() => null);
+  const owner = account?.value?.owner;
+  const tokenProgramId = owner?.equals(TOKEN_2022_PROGRAM_ID) ? TOKEN_2022_PROGRAM_ID : TOKEN_PROGRAM_ID;
+  const parsedData = account?.value?.data;
+  const parsed = parsedData && typeof parsedData === 'object' && 'parsed' in parsedData
+    ? parsedData.parsed as { info?: { decimals?: unknown } }
+    : undefined;
+  const decimals = known?.decimals ?? (typeof parsed?.info?.decimals === 'number' ? parsed.info.decimals : undefined);
+  if (typeof decimals !== 'number' || !Number.isInteger(decimals) || decimals < 0) {
+    throw new Error(`Could not read decimals for token ${tokenDisplayLabel(mintText)}.`);
+  }
+  return {
+    symbol,
+    mint,
+    mintText: mint.toBase58(),
+    decimals,
+    tokenProgramId,
+  };
+}
+
+function associatedTokenAddress(mint: PublicKey, owner: PublicKey, tokenProgramId: PublicKey): PublicKey {
+  const [address] = PublicKey.findProgramAddressSync(
+    [owner.toBuffer(), tokenProgramId.toBuffer(), mint.toBuffer()],
+    ASSOCIATED_TOKEN_PROGRAM_ID,
+  );
+  return address;
+}
+
+function createAssociatedTokenAccountInstruction(
+  payer: PublicKey,
+  associatedToken: PublicKey,
+  owner: PublicKey,
+  token: BrowserTokenMetadata,
+): TransactionInstruction {
+  return new TransactionInstruction({
+    programId: ASSOCIATED_TOKEN_PROGRAM_ID,
+    keys: [
+      { pubkey: payer, isSigner: true, isWritable: true },
+      { pubkey: associatedToken, isSigner: false, isWritable: true },
+      { pubkey: owner, isSigner: false, isWritable: false },
+      { pubkey: token.mint, isSigner: false, isWritable: false },
+      { pubkey: SystemProgram.programId, isSigner: false, isWritable: false },
+      { pubkey: token.tokenProgramId, isSigner: false, isWritable: false },
+    ],
+    data: new Uint8Array() as unknown as InstructionData,
+  });
+}
+
+function createTransferCheckedInstruction(
+  source: PublicKey,
+  mint: PublicKey,
+  destination: PublicKey,
+  owner: PublicKey,
+  amount: bigint,
+  decimals: number,
+  tokenProgramId: PublicKey,
+): TransactionInstruction {
+  const data = new Uint8Array(10);
+  data[0] = 12;
+  writeBigUint64Le(data, amount, 1);
+  data[9] = decimals;
+  return new TransactionInstruction({
+    programId: tokenProgramId,
+    keys: [
+      { pubkey: source, isSigner: false, isWritable: true },
+      { pubkey: mint, isSigner: false, isWritable: false },
+      { pubkey: destination, isSigner: false, isWritable: true },
+      { pubkey: owner, isSigner: true, isWritable: false },
+    ],
+    data: data as unknown as InstructionData,
+  });
+}
+
+function addOptionalMemo(transaction: Transaction, signer: PublicKey, memo: string): void {
+  const trimmed = memo.trim();
+  if (!trimmed) return;
+  transaction.add(new TransactionInstruction({
+    keys: [{ pubkey: signer, isSigner: true, isWritable: false }],
+    programId: MEMO_PROGRAM_ID,
+    data: new TextEncoder().encode(trimmed.slice(0, 500)) as unknown as InstructionData,
+  }));
+}
+
+function browserSlippageBps(action: PreparedAction): number {
+  const raw = action.params.slippageBps;
+  const parsed = typeof raw === 'number' ? raw : Number(raw);
+  if (!Number.isFinite(parsed) || parsed < 0) return 50;
+  return Math.trunc(parsed);
+}
+
+async function hostedSwapRequest(path: '/api/swap/order' | '/api/swap/execute', body: Record<string, unknown>): Promise<Record<string, unknown>> {
+  const response = await fetch(path, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+  const payload = await response.json().catch(() => ({})) as unknown;
+  if (!response.ok) {
+    throw new Error(cloudErrorMessage(payload, response.status));
+  }
+  return cloudResponseObject(payload, 'swap response');
+}
+
+function requiredResponseString(value: unknown, label: string): string {
+  if (typeof value === 'string' && value.trim()) return value;
+  throw new Error(`${label} was missing.`);
+}
+
+function assertJupiterExecutionSucceeded(executed: Record<string, unknown>): void {
+  const status = typeof executed.status === 'string' ? executed.status.toLowerCase() : '';
+  const error = executed.error ?? executed.errorMessage ?? executed.message;
+  if (status && status !== 'success' && status !== 'succeeded' && status !== 'submitted') {
+    throw new Error(`Jupiter execute failed: ${typeof error === 'string' ? error : stableJson(executed)}`);
+  }
+  if (typeof error === 'string' && error.trim() && !executed.signature && !executed.txid) {
+    throw new Error(`Jupiter execute failed: ${error}`);
+  }
+}
+
+function orderSummaryForReceipt(value: Record<string, unknown>): Record<string, unknown> {
+  return stripUndefined({
+    status: value.status,
+    mode: value.mode,
+    router: value.router,
+    requestId: value.requestId,
+    inputMint: value.inputMint,
+    outputMint: value.outputMint,
+    inAmount: value.inAmount,
+    outAmount: value.outAmount,
+    slippageBps: value.slippageBps,
+    signature: value.signature ?? value.txid,
+    error: value.error ?? value.errorMessage,
+  }) as Record<string, unknown>;
+}
+
+function parseDecimalAmountToRaw(value: string, decimals: number, label: string): bigint {
+  const trimmed = value.trim();
+  if (!/^\d+(\.\d+)?$/.test(trimmed)) {
+    throw new Error(`${label} must be a positive decimal string.`);
+  }
+  const [wholeRaw = '0', fractionRaw = ''] = trimmed.split('.');
+  if (fractionRaw.length > decimals) {
+    throw new Error(`${label} has too many decimal places for a ${decimals}-decimal token.`);
+  }
+  const whole = BigInt(wholeRaw);
+  const fraction = BigInt((fractionRaw || '').padEnd(decimals, '0') || '0');
+  const amount = whole * (10n ** BigInt(decimals)) + fraction;
+  if (amount <= 0n) {
+    throw new Error(`${label} must be greater than zero.`);
+  }
+  return amount;
+}
+
+function rawLamportsToNumber(value: bigint): number {
+  if (value > BigInt(Number.MAX_SAFE_INTEGER)) {
+    throw new Error('SOL amount is too large for this browser transaction builder.');
+  }
+  return Number(value);
+}
+
+function writeBigUint64Le(target: Uint8Array, value: bigint, offset: number): void {
+  let remaining = value;
+  for (let index = 0; index < 8; index += 1) {
+    target[offset + index] = Number(remaining & 0xffn);
+    remaining >>= 8n;
+  }
+}
+
+function decodeBase64(value: string): Uint8Array {
+  const binary = atob(value);
+  const bytes = new Uint8Array(binary.length);
+  for (let index = 0; index < binary.length; index += 1) {
+    bytes[index] = binary.charCodeAt(index);
+  }
+  return bytes;
+}
+
+function pushTransactionToast(kind: ToastKind, title: string, txid: string, cluster: Cluster): number {
+  return pushToast(kind, title, short(txid), {
+    linkHref: explorerUrl(txid, cluster),
+    linkLabel: 'Open Solscan',
+  });
 }
 
 function completeBrowserPreparedAction(
@@ -13336,6 +14136,7 @@ function archiveLabArtifactToastDetail(result: ArchiveLabArtifactResult, lab: La
 async function runRefreshLabArtifacts(): Promise<void> {
   await run('lab', async () => {
     await refreshCloudSession(false);
+    await signOutCloudSessionForWalletBoundary('wallet-mismatch');
     await hydrateLabArtifactArchive();
     if (state.bridgeActive) {
       await syncLabArtifactsWithBridge();
@@ -13984,13 +14785,12 @@ function planGuardrailVerdict(plan: AgentPlan): AiGuardrailReport['verdict'] | '
 }
 
 function canQueueAgentPlan(plan: AgentPlan): boolean {
-  return ['transfer_sol', 'transfer_spl', 'swap', 'recurring_payment'].includes(plan.actionType);
+  return ['transfer_sol', 'transfer_spl', 'swap', 'recurring_payment', 'custom_transaction'].includes(plan.actionType);
 }
 
 function canQueueGuardedPlan(plan: AgentPlan): boolean {
   return canQueueAgentPlan(plan) &&
-    planGuardrailVerdict(plan) !== 'block' &&
-    !(activeWorkflowMode() === 'agentic-cloud' && cloudQueueUnsupportedReason(plan));
+    planGuardrailVerdict(plan) !== 'block';
 }
 
 function canQueueGeneratedPlan(record: GeneratedPlanRecord): boolean {
@@ -13999,28 +14799,24 @@ function canQueueGeneratedPlan(record: GeneratedPlanRecord): boolean {
 
 function assertPlanCanQueue(plan: AgentPlan): void {
   if (!canQueueAgentPlan(plan)) {
-    throw new Error('Only transfer, swap, and repeat payments can be queued.');
+    throw new Error('Only transfer, swap, custom transaction, and repeat payments can be queued.');
   }
   const report = planGuardrailReport(plan);
   if (report?.verdict === 'block') {
     throw new Error(report.summary || 'This plan is blocked by Agentic guardrails.');
-  }
-  if (activeWorkflowMode() === 'agentic-cloud') {
-    const unsupported = cloudQueueUnsupportedReason(plan);
-    if (unsupported) throw new Error(unsupported);
   }
 }
 
 function queuePlanTitle(): string {
   if (!state.address) return 'Connect a wallet before sending for approval.';
   if (!state.agentPlan) return 'Create a plan before sending for approval.';
-  if (!canQueueAgentPlan(state.agentPlan)) return 'Only transfer, swap, and repeat payments can be queued.';
+  if (!canQueueAgentPlan(state.agentPlan)) return 'Only transfer, swap, custom transaction, and repeat payments can be queued.';
   const report = planGuardrailReport(state.agentPlan);
   if (report?.verdict === 'block') return report.summary;
   const mode = activeWorkflowMode();
   if (mode === 'agentic-cloud') {
     const unsupported = cloudQueueUnsupportedReason(state.agentPlan);
-    if (unsupported) return unsupported;
+    if (unsupported) return 'Send this plan to browser-local Needs Approval for wallet review. Agentic Cloud does not finalize this action type yet.';
   }
   if (state.agentPlan.actionType === 'recurring_payment') {
     if (mode === 'agentic-cloud') return 'Create an Agentic Cloud repeat payment. Each due payment appears in Needs Approval.';
@@ -14104,7 +14900,10 @@ async function queuePlanThroughActiveWorkflow(
   }
   if (mode === 'agentic-cloud') {
     const unsupported = cloudQueueUnsupportedReason(plan);
-    if (unsupported) throw new Error(unsupported);
+    if (unsupported) {
+      const response = queuePlanThroughBrowserWorkflow(plan);
+      return { ...response, mode: 'browser-workflow' };
+    }
     const response = plan.actionType === 'recurring_payment'
       ? await queueRecurringPlanThroughCloud(plan)
       : await queuePlanThroughCloud(plan, sourceRecord);
@@ -14233,7 +15032,8 @@ function browserActionKindForPlan(plan: AgentPlan): PreparedActionKind {
   if (plan.actionType === 'transfer_sol') return 'transfer_sol';
   if (plan.actionType === 'transfer_spl') return 'transfer_spl';
   if (plan.actionType === 'swap') return 'swap';
-  throw new Error('Only transfers, swaps, and repeat payments can be queued.');
+  if (plan.actionType === 'custom_transaction') return 'custom_transaction';
+  throw new Error('Only transfers, swaps, custom transactions, and repeat payments can be queued.');
 }
 
 function browserActionParams(plan: AgentPlan, kind: PreparedActionKind): Record<string, unknown> {
@@ -14258,6 +15058,12 @@ function browserActionParams(plan: AgentPlan, kind: PreparedActionKind): Record<
       outputToken: plan.parameters.outputToken || 'USDC',
       amount: requiredPlanParam(plan, 'amount'),
       slippageBps: plan.parameters.slippageBps || '50',
+    };
+  }
+  if (kind === 'custom_transaction') {
+    return {
+      transactionBase64: requiredPlanParam(plan, 'transactionBase64'),
+      reason: plan.userNotes || plan.intent,
     };
   }
   return {
@@ -15479,6 +16285,12 @@ function preparedActionDecisionLabels(action: PreparedAction): { approve: string
       reject: 'Deny request',
     };
   }
+  if (isExecutableBrowserAction(action)) {
+    return {
+      approve: action.kind === 'swap' ? 'Approve swap' : 'Approve and send',
+      reject: 'Deny request',
+    };
+  }
   if (requiresCloudTransactionFinalization(action)) {
     return {
       approve: 'Use private local mode',
@@ -15508,6 +16320,12 @@ function approvalEffectCopy(action: PreparedAction): string {
   }
   if (action.workflowSource === 'cloud') {
     return 'Your wallet signs a decision proof bound to this approval. Agentic Cloud saves the receipt; this proof does not submit a transaction.';
+  }
+  if (isExecutableBrowserAction(action)) {
+    if (action.kind === 'swap') {
+      return 'Your wallet signs the swap transaction, the signed transaction is submitted, and Done appears only after a transaction id is returned.';
+    }
+    return 'Your wallet signs and submits the transaction. Done appears only after a transaction id is returned; failures stay here with the error.';
   }
   if (isBrowserWorkflowId(action.id)) {
     return 'Your wallet signs a browser-local decision proof. The receipt stays on this device; no transaction is submitted by this proof.';
@@ -16213,7 +17031,7 @@ function filteredPreparedActions(): PreparedAction[] {
 function activeWorkflowPreparedActions(): PreparedAction[] {
   switch (activeWorkflowMode()) {
     case 'agentic-cloud':
-      return state.preparedActions.filter((action) => action.workflowSource === 'cloud');
+      return state.preparedActions.filter((action) => action.workflowSource === 'cloud' || isBrowserWorkflowId(action.id));
     case 'browser-workflow':
       return state.preparedActions.filter((action) => isBrowserWorkflowId(action.id));
     case 'local-bridge':
@@ -16224,7 +17042,10 @@ function activeWorkflowPreparedActions(): PreparedAction[] {
 function activeWorkflowRecurringPayments(): RecurringPayment[] {
   switch (activeWorkflowMode()) {
     case 'agentic-cloud':
-      return state.recurringPayments.filter((payment) => recurringPaymentWorkflowSource(payment) === 'cloud');
+      return state.recurringPayments.filter((payment) => {
+        const source = recurringPaymentWorkflowSource(payment);
+        return source === 'cloud' || source === 'browser';
+      });
     case 'browser-workflow':
       return state.recurringPayments.filter((payment) => recurringPaymentWorkflowSource(payment) === 'browser');
     case 'local-bridge':
@@ -16694,8 +17515,9 @@ function txBlock(txid: string, cluster: Cluster): string {
   return `
     <div class="tx-block">
       <code>${escapeHtml(txid)}</code>
-      <a href="${escapeHtml(url)}" target="_blank" rel="noreferrer">Explorer</a>
-      <button data-copy="${escapeHtml(txid)}">Copy</button>
+      <a href="${escapeHtml(url)}" target="_blank" rel="noreferrer">Open Solscan</a>
+      <button data-copy="${escapeHtml(txid)}" data-copy-name="Transaction id">Copy txid</button>
+      <button data-copy="${escapeHtml(url)}" data-copy-name="Solscan transaction link">Copy Solscan link</button>
     </div>
   `;
 }
@@ -17714,6 +18536,7 @@ function toastStack(): string {
               <div>
                 <strong>${escapeHtml(toast.title)}</strong>
                 <p>${escapeHtml(toast.message)}</p>
+                ${toast.linkHref ? `<a href="${escapeHtml(toast.linkHref)}" target="_blank" rel="noreferrer">${escapeHtml(toast.linkLabel ?? 'Open link')}</a>` : ''}
               </div>
               <button data-toast-dismiss="${toast.id}" aria-label="Dismiss notification">x</button>
             </div>
@@ -17724,24 +18547,35 @@ function toastStack(): string {
   `;
 }
 
-function pushToast(kind: ToastKind, title: string, message: string): number {
-  const toast: Toast = { id: nextToastId, kind, title, message };
+function pushToast(
+  kind: ToastKind,
+  title: string,
+  message: string,
+  options: { linkHref?: string; linkLabel?: string } = {},
+): number {
+  const toast: Toast = { id: nextToastId, kind, title, message, ...options };
   nextToastId += 1;
-  state.toasts = [toast, ...state.toasts].slice(0, 2);
+  state.toasts = [toast, ...state.toasts].slice(0, 4);
   if (kind !== 'pending') {
     window.setTimeout(() => {
       dismissToast(toast.id);
-    }, 4000);
+    }, toast.linkHref ? 10_000 : 4000);
   }
   return toast.id;
 }
 
-function replaceToast(id: number, kind: ToastKind, title: string, message: string): void {
-  state.toasts = state.toasts.map((toast) => toast.id === id ? { ...toast, kind, title, message } : toast);
+function replaceToast(
+  id: number,
+  kind: ToastKind,
+  title: string,
+  message: string,
+  options: { linkHref?: string; linkLabel?: string } = {},
+): void {
+  state.toasts = state.toasts.map((toast) => toast.id === id ? { ...toast, kind, title, message, ...options } : toast);
   if (kind !== 'pending') {
     window.setTimeout(() => {
       dismissToast(id);
-    }, 4000);
+    }, options.linkHref ? 10_000 : 4000);
   }
   render();
 }

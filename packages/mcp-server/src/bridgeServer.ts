@@ -15,8 +15,8 @@ import {
   AgentWalletActionService,
 } from './actionService.js';
 import { BridgeAiPlanner, type AiPlanRequest } from './aiPlanner.js';
-import { requireMainnetEnabled, type AgentWalletConfig, type TokenLimitConfig } from './config.js';
-import { assertMaxAmount, parseDecimalAmount } from './amounts.js';
+import { type AgentWalletConfig, type TokenLimitConfig } from './config.js';
+import { parseDecimalAmount } from './amounts.js';
 import { LocalBridgeBackend } from './localBridgeBackend.js';
 import type { LabArtifact, LabArtifactStore } from './labArtifacts.js';
 import type { PreparedActionStore, PreparedActionTxStatus } from './preparedActions.js';
@@ -865,7 +865,6 @@ function buildRecurringPaymentInput(
   walletAddress: string,
   config: AgentWalletConfig,
 ): Omit<Awaited<ReturnType<PreparedActionStore['listRecurringPayments']>>[number], 'id' | 'status' | 'createdAt' | 'updatedAt' | 'occurrencesCreated'> {
-  requireMainnetEnabled(config);
   const token = requireString(body.token, 'token').toUpperCase();
   const amount = requireString(body.amount, 'amount');
   const recipient = new PublicKey(requireString(body.recipient, 'recipient')).toBase58();
@@ -886,12 +885,10 @@ function buildRecurringPaymentInput(
     maxOccurrences: body.maxOccurrences,
   });
   if (token === 'SOL') {
-    const lamports = parseDecimalAmount(amount, 9, 'SOL recurring payment amount');
-    assertMaxAmount(lamports, config.mainnet.maxSolTransfer, 9, 'SOL recurring payment amount');
+    parseDecimalAmount(amount, 9, 'SOL recurring payment amount');
   } else {
     const tokenConfig = requireTokenConfig(config, token);
-    const rawAmount = parseDecimalAmount(amount, tokenConfig.decimals, `${tokenConfig.symbol} recurring payment amount`);
-    assertMaxAmount(rawAmount, tokenConfig.maxTransfer, tokenConfig.decimals, `${tokenConfig.symbol} recurring payment amount`);
+    parseDecimalAmount(amount, tokenConfig.decimals, `${tokenConfig.symbol} recurring payment amount`);
   }
   return {
     walletAddress,

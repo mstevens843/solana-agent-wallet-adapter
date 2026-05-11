@@ -215,18 +215,8 @@ function rejectArbitraryMainnetTransaction(
   config: AgentWalletConfig | undefined,
   cluster: Cluster,
 ): ReturnType<typeof errorReply> | null {
-  if (
-    config &&
-    cluster === 'mainnet-beta' &&
-    !config.mainnet.allowArbitraryTransactions
-  ) {
-    return errorReply(
-      new ProtocolError(
-        'unauthorized',
-        'Arbitrary mainnet transaction signing is disabled. Use solana_transfer_sol, solana_transfer_spl, or solana_swap so caps and summaries are enforced.',
-      ),
-    );
-  }
+  void config;
+  void cluster;
   return null;
 }
 

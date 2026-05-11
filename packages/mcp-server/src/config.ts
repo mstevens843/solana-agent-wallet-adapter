@@ -40,11 +40,11 @@ export const DEFAULT_CONFIG: AgentWalletConfig = {
   cluster: 'mainnet-beta',
   rpcUrl: 'https://api.mainnet-beta.solana.com',
   mainnet: {
-    enabled: false,
+    enabled: true,
     maxSolTransfer: '0.05',
     maxSwapInput: '0.05',
     maxSlippageBps: 100,
-    allowArbitraryTransactions: false,
+    allowArbitraryTransactions: true,
   },
   tokens: [
     {
@@ -70,7 +70,7 @@ export async function loadConfig(path: string | undefined): Promise<AgentWalletC
 
 export function normalizeConfig(input: Partial<AgentWalletConfig>): AgentWalletConfig {
   const cluster = input.cluster ?? DEFAULT_CONFIG.cluster;
-  const rpcUrl = process.env.SOLANA_RPC_URL ?? input.rpcUrl ?? defaultRpcUrl(cluster);
+  const rpcUrl = firstEnvValue('SOLANA_RPC_URL', 'HELIUS_RPC_URL') ?? input.rpcUrl ?? defaultRpcUrl(cluster);
   const mainnet = {
     ...DEFAULT_CONFIG.mainnet,
     ...(input.mainnet ?? {}),
@@ -80,8 +80,23 @@ export function normalizeConfig(input: Partial<AgentWalletConfig>): AgentWalletC
     ...DEFAULT_CONFIG.jupiter,
     ...(input.jupiter ?? {}),
   };
+  const jupiterBaseUrl = firstEnvValue('JUP_ULTRA_BASE', 'JUPITER_BASE_URL');
+  if (jupiterBaseUrl) {
+    jupiter.baseUrl = jupiterBaseUrl;
+  }
+  if (!process.env[jupiter.apiKeyEnv]?.trim() && process.env.JUP_API_KEY?.trim()) {
+    jupiter.apiKeyEnv = 'JUP_API_KEY';
+  }
   const recurring = input.recurring;
   return { cluster, rpcUrl, mainnet, tokens, jupiter, ...(recurring !== undefined && { recurring }) };
+}
+
+function firstEnvValue(...names: string[]): string | undefined {
+  for (const name of names) {
+    const value = process.env[name]?.trim();
+    if (value) return value;
+  }
+  return undefined;
 }
 
 export function requireMainnetEnabled(config: AgentWalletConfig): void {

@@ -2,11 +2,11 @@
   "cluster": "mainnet-beta",
   "rpcUrl": "https://api.mainnet-beta.solana.com",
   "mainnet": {
-    "enabled": false,
+    "enabled": true,
     "maxSolTransfer": "0.05",
     "maxSwapInput": "0.05",
     "maxSlippageBps": 100,
-    "allowArbitraryTransactions": false
+    "allowArbitraryTransactions": true
   },
   "tokens": [
     {

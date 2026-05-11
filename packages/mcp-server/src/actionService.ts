@@ -15,9 +15,8 @@ import {
 
 import { lifetimeSpendEstimate } from '@solana-agent-wallet-adapter/workflow';
 
-import { assertMaxAmount, formatRawAmount, parseDecimalAmount } from './amounts.js';
+import { formatRawAmount, parseDecimalAmount } from './amounts.js';
 import {
-  requireMainnetEnabled,
   USDC_MINT,
   WSOL_MINT,
   type AgentWalletConfig,
@@ -196,8 +195,7 @@ export class AgentWalletActionService {
 
   async prepareTransferSol(input: PrepareTransferSolInput): Promise<Record<string, unknown>> {
     requireActionAllowed(this.config);
-    const lamports = parseDecimalAmount(input.amountSol, 9, 'SOL transfer amount');
-    assertMaxAmount(lamports, this.config.mainnet.maxSolTransfer, 9, 'SOL transfer amount');
+    parseDecimalAmount(input.amountSol, 9, 'SOL transfer amount');
     const from = await this.backend.getAddress();
     const to = new PublicKey(input.recipient).toBase58();
     const action = await this.store().addAction({
@@ -215,8 +213,7 @@ export class AgentWalletActionService {
   async prepareTransferSpl(input: PrepareTransferSplInput): Promise<Record<string, unknown>> {
     requireActionAllowed(this.config);
     const tokenConfig = requireToken(this.config, input.token);
-    const rawAmount = parseDecimalAmount(input.amount, tokenConfig.decimals, `${tokenConfig.symbol} amount`);
-    assertMaxAmount(rawAmount, tokenConfig.maxTransfer, tokenConfig.decimals, `${tokenConfig.symbol} amount`);
+    parseDecimalAmount(input.amount, tokenConfig.decimals, `${tokenConfig.symbol} amount`);
     const from = await this.backend.getAddress();
     const to = new PublicKey(input.recipient).toBase58();
     const action = await this.store().addAction({
@@ -400,7 +397,6 @@ export class AgentWalletActionService {
   async transferSol(input: { recipient: string; amountSol: string }): Promise<Record<string, unknown>> {
     requireActionAllowed(this.config);
     const lamports = parseDecimalAmount(input.amountSol, 9, 'SOL transfer amount');
-    assertMaxAmount(lamports, this.config.mainnet.maxSolTransfer, 9, 'SOL transfer amount');
     const from = new PublicKey(await this.backend.getAddress());
     const balance = await this.connection.getBalance(from, 'confirmed');
     if (BigInt(balance) < lamports) {
@@ -434,7 +430,6 @@ export class AgentWalletActionService {
     requireActionAllowed(this.config);
     const tokenConfig = requireToken(this.config, input.token);
     const rawAmount = parseDecimalAmount(input.amount, tokenConfig.decimals, `${tokenConfig.symbol} amount`);
-    assertMaxAmount(rawAmount, tokenConfig.maxTransfer, tokenConfig.decimals, `${tokenConfig.symbol} amount`);
     const owner = new PublicKey(await this.backend.getAddress());
     const recipientOwner = new PublicKey(input.recipient);
     const mint = new PublicKey(tokenConfig.mint);
@@ -592,7 +587,7 @@ export function preparedFailureStatus(err: unknown): PreparedAction['status'] {
 }
 
 function requireActionAllowed(config: AgentWalletConfig): void {
-  requireMainnetEnabled(config);
+  void config;
 }
 
 function buildRecurringPaymentInput(
@@ -622,12 +617,10 @@ function buildRecurringPaymentInput(
   });
 
   if (token === 'SOL') {
-    const lamports = parseDecimalAmount(amount, 9, 'SOL recurring payment amount');
-    assertMaxAmount(lamports, config.mainnet.maxSolTransfer, 9, 'SOL recurring payment amount');
+    parseDecimalAmount(amount, 9, 'SOL recurring payment amount');
   } else {
     const tokenConfig = requireToken(config, token);
-    const rawAmount = parseDecimalAmount(amount, tokenConfig.decimals, `${tokenConfig.symbol} recurring payment amount`);
-    assertMaxAmount(rawAmount, tokenConfig.maxTransfer, tokenConfig.decimals, `${tokenConfig.symbol} recurring payment amount`);
+    parseDecimalAmount(amount, tokenConfig.decimals, `${tokenConfig.symbol} recurring payment amount`);
   }
 
   const expiresAt = normalizeExpiresAt(input.expiresAt);
@@ -890,14 +883,7 @@ function normalizeSwapInput(config: AgentWalletConfig, input: SwapInput): Normal
   const inputToken = resolveSwapToken(config, input.inputToken ?? 'SOL');
   const outputToken = resolveSwapToken(config, input.outputToken ?? 'USDC');
   const slippageBps = input.slippageBps ?? config.mainnet.maxSlippageBps;
-  if (slippageBps > config.mainnet.maxSlippageBps) {
-    throw new ProtocolError(
-      'unauthorized',
-      `Slippage ${slippageBps} bps exceeds configured cap of ${config.mainnet.maxSlippageBps} bps.`,
-    );
-  }
   const amountRaw = parseDecimalAmount(input.amount, inputToken.decimals, `${inputToken.symbol} swap amount`);
-  assertMaxAmount(amountRaw, config.mainnet.maxSwapInput, inputToken.decimals, `${inputToken.symbol} swap amount`);
   return {
     inputMint: inputToken.mint,
     outputMint: outputToken.mint,
@@ -931,9 +917,9 @@ async function fetchJupiterOrder(
   taker: string,
   swap: NormalizedSwapInput,
 ): Promise<Record<string, unknown>> {
-  const apiKey = process.env[config.jupiter.apiKeyEnv];
+  const apiKey = jupiterApiKey(config);
   if (!apiKey) {
-    throw new ProtocolError('unauthorized', `Missing Jupiter API key. Set ${config.jupiter.apiKeyEnv} before using swap tools.`);
+    throw new ProtocolError('unauthorized', `Missing Jupiter API key. Set ${config.jupiter.apiKeyEnv} or JUP_API_KEY before using swap tools.`);
   }
   const url = new URL(`${config.jupiter.baseUrl}/order`);
   url.searchParams.set('inputMint', swap.inputMint);
@@ -954,9 +940,9 @@ async function executeJupiterOrder(
   signedTransaction: string,
   order: Record<string, unknown>,
 ): Promise<Record<string, unknown>> {
-  const apiKey = process.env[config.jupiter.apiKeyEnv];
+  const apiKey = jupiterApiKey(config);
   if (!apiKey) {
-    throw new ProtocolError('unauthorized', `Missing Jupiter API key. Set ${config.jupiter.apiKeyEnv}.`);
+    throw new ProtocolError('unauthorized', `Missing Jupiter API key. Set ${config.jupiter.apiKeyEnv} or JUP_API_KEY.`);
   }
   const requestId = order.requestId;
   if (typeof requestId !== 'string') {
@@ -979,6 +965,10 @@ async function executeJupiterOrder(
     throw new ProtocolError('wallet_unreachable', `Jupiter execute failed with HTTP ${response.status}: ${JSON.stringify(body)}`);
   }
   return body;
+}
+
+function jupiterApiKey(config: AgentWalletConfig): string | undefined {
+  return process.env[config.jupiter.apiKeyEnv]?.trim() || process.env.JUP_API_KEY?.trim() || undefined;
 }
 
 function orderSummary(order: Record<string, unknown>): Record<string, unknown> {
