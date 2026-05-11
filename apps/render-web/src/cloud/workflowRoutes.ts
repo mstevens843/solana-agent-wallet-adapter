@@ -71,6 +71,9 @@ export async function handleWorkflowApiRequest(
       case 'approval-decision':
         await handleApprovalDecision(req, res, context.service, session, route.id, route.decision);
         return true;
+      case 'approval-wallet-execution':
+        await handleApprovalWalletExecution(req, res, context.service, session, route.id);
+        return true;
       case 'approval-finalizations':
         await handleApprovalFinalizations(req, res, context.service, session, route.id);
         return true;
@@ -110,6 +113,7 @@ type WorkflowRoute =
   | { name: 'plan'; id: string }
   | { name: 'approvals' }
   | { name: 'approval-decision'; id: string; decision: 'approved' | 'rejected' | 'cancelled' }
+  | { name: 'approval-wallet-execution'; id: string }
   | { name: 'approval-finalizations'; id: string }
   | { name: 'approval-finalization-prepare'; id: string }
   | { name: 'approval-finalization-submit'; id: string; finalizationId: string }
@@ -126,6 +130,13 @@ function matchWorkflowRoute(pathname: string): WorkflowRoute | undefined {
   if (plan?.[1]) return { name: 'plan', id: validateRecordId(plan[1], 'plan id') };
 
   if (pathname === '/api/approvals') return { name: 'approvals' };
+  const walletExecution = /^\/api\/approvals\/([^/]+)\/wallet-execution$/.exec(pathname);
+  if (walletExecution?.[1]) {
+    return {
+      name: 'approval-wallet-execution',
+      id: validateRecordId(walletExecution[1], 'approval id'),
+    };
+  }
   const finalizationPrepare = /^\/api\/approvals\/([^/]+)\/finalization\/prepare$/.exec(pathname);
   if (finalizationPrepare?.[1]) {
     return {
@@ -266,6 +277,25 @@ async function handleApprovalDecision(
     session,
     id,
     decision,
+    validateApprovalDecisionRequest(await readJsonBody(req)),
+  );
+  writeJson(res, 200, result);
+}
+
+async function handleApprovalWalletExecution(
+  req: IncomingMessage,
+  res: ServerResponse,
+  service: WorkflowService,
+  session: WorkflowSession,
+  id: string,
+): Promise<void> {
+  if (req.method !== 'POST') {
+    methodNotAllowed(res);
+    return;
+  }
+  const result = await service.recordWalletExecution(
+    session,
+    id,
     validateApprovalDecisionRequest(await readJsonBody(req)),
   );
   writeJson(res, 200, result);

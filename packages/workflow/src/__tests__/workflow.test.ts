@@ -191,6 +191,34 @@ describe('AI product guardrails', () => {
     expect(report.violations.map((violation) => violation.code)).not.toContain('ai_bypasses_wallet');
   });
 
+  it('allows pre-approval review wording when it does not claim approval already happened', () => {
+    const report = evaluatePlanGuardrails({
+      plan: {
+        source: 'ai',
+        category: 'trading',
+        actionType: 'swap',
+        templateId: 'swap-tokens',
+        templateTitle: 'Swap tokens',
+        intent: 'Prepare a pre-approval review for this swap before my wallet approves.',
+        route: 'Check route, amount, protocol, and slippage before signing.',
+        risk: 'Medium risk. User must approve in the wallet before funds move.',
+        approval: 'Wallet approval is required; nothing has been approved yet.',
+        parameters: {
+          inputToken: 'SOL',
+          outputToken: 'USDC',
+          amount: '0.1',
+          slippageBps: '50',
+        },
+        fields: [{ label: 'Amount', value: '0.1 SOL' }],
+        safeguards: ['Wallet remains the only signer.'],
+        cluster: 'mainnet-beta',
+      },
+    });
+
+    expect(report.verdict).not.toBe('block');
+    expect(report.violations.map((violation) => violation.code)).not.toContain('ai_claims_approved');
+  });
+
   it('blocks secrets, delegated signers, and missing executable constraints', () => {
     expect(evaluatePlanGuardrails({
       plan: {

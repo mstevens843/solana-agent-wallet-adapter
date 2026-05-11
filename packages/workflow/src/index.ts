@@ -2324,12 +2324,12 @@ function collectUnsafeAiTextClaims(text: string, path: string, violations: AiGua
   }> = [
     {
       code: 'ai_claims_approved',
-      pattern: /\b(already|pre|auto)[-\s]?(approved|approval)\b|\bapproved automatically\b/,
+      pattern: /\balready[-\s]+approved\b|\bapproval(?:\s+has)?\s+already\s+(?:happened|occurred|completed|been\s+granted|been\s+approved)\b|\bpre[-\s]?approved\b|\bauto[-\s]?approved\b|\bapproved automatically\b/,
       message: 'AI drafts cannot claim that wallet approval has already happened.',
     },
     {
       code: 'ai_claims_signed',
-      pattern: /\b(already|pre|auto)[-\s]?(signed|signing)\b|\bsigned automatically\b/,
+      pattern: /\balready[-\s]+(?:signed|signing)\b|\bpre[-\s]?signed\b|\bauto[-\s]?(?:signed|signing)\b|\bsigned automatically\b/,
       message: 'AI drafts cannot claim that a wallet signature has already happened.',
     },
     {

@@ -741,6 +741,98 @@ export class WorkflowService {
     return { approval, completed };
   }
 
+  async recordWalletExecution(
+    session: WorkflowSession,
+    id: string,
+    input: ApprovalDecisionInput,
+  ): Promise<{ approval: ApprovalRequestRecord; completed?: CompletedRecord }> {
+    const existing = await this.requireApproval(session, id);
+    if (isTerminalApprovalStatus(existing.status)) {
+      throw new WorkflowServiceError(409, 'approval_terminal', 'Approval request is already terminal.');
+    }
+    if (existing.kind !== 'swap') {
+      throw new WorkflowServiceError(
+        409,
+        'wallet_execution_unsupported',
+        'Browser wallet execution is currently supported for Cloud swap approvals.',
+      );
+    }
+    if (!input.txid) {
+      throw new WorkflowServiceError(400, 'missing_txid', 'Wallet execution requires a transaction id.');
+    }
+
+    let decisionProofSignature = existing.decisionProofSignature;
+    let decisionProofMessage = existing.decisionProofMessage;
+    if (input.decisionProofSignature || input.decisionProofMessage) {
+      decisionProofMessage = this.requireVerifiedDecisionProof(session, existing, 'approved', input);
+      decisionProofSignature = input.decisionProofSignature;
+    } else if (!existing.decisionProofVerified || !decisionProofSignature || !decisionProofMessage) {
+      throw new WorkflowServiceError(
+        400,
+        'missing_decision_proof',
+        'The first wallet execution update requires a wallet decision proof signature.',
+      );
+    }
+
+    const now = this.now();
+    const txStatus = input.txStatus ?? 'pending';
+    const nextStatus = txStatus === 'confirmed'
+      ? 'approved'
+      : txStatus === 'failed'
+        ? existing.status === 'overdue' ? 'overdue' : 'ready'
+        : 'approval_pending';
+    const approval: ApprovalRequestRecord = {
+      ...existing,
+      status: nextStatus,
+      updatedAt: now,
+      ...(txStatus === 'confirmed' ? { decidedAt: now, confirmedAt: now } : {}),
+      txid: input.txid,
+      txStatus,
+      ...(input.explorerUrl ? { explorerUrl: input.explorerUrl } : {}),
+      ...(txStatus === 'failed' && input.error ? { txError: input.error, error: input.error } : { txError: undefined, error: undefined }),
+      note: input.note ?? existing.note,
+      ...(decisionProofSignature ? { decisionProofSignature } : {}),
+      ...(decisionProofMessage ? { decisionProofMessage, decisionProofVerified: true } : {}),
+      metadata: {
+        ...(existing.metadata ?? {}),
+        ...(input.metadata ?? {}),
+        executionMode: 'wallet_execute',
+        walletExecutionSource: 'browser_wallet_adapter',
+        ...(input.confirmationStatus ? { confirmationStatus: input.confirmationStatus } : {}),
+        ...(input.explorerUrl ? { explorerUrl: input.explorerUrl } : {}),
+      },
+    };
+
+    if (txStatus !== 'confirmed') {
+      await this.store.saveApproval(session.walletAddress, approval);
+      await this.audit(
+        session,
+        txStatus === 'failed' ? 'approval.wallet_execution.failed' : 'approval.wallet_execution.submitted',
+        'approval',
+        approval.id,
+        {
+          status: approval.status,
+          txStatus,
+          txid: input.txid,
+          ...(input.error ? { error: input.error } : {}),
+        },
+      );
+      return { approval };
+    }
+
+    const completed = completedRecordFromApproval(approval);
+    await this.store.saveApproval(session.walletAddress, approval);
+    await this.store.saveCompleted(session.walletAddress, completed);
+    await this.archiveLinkedPlanForTerminalApproval(session, approval, completed, now);
+    await this.audit(session, 'approval.wallet_execution.confirmed', 'approval', approval.id, {
+      completedId: completed.id,
+      status: approval.status,
+      txStatus,
+      txid: input.txid,
+    });
+    return { approval, completed };
+  }
+
   async finalizeApprovalTransaction(
     session: WorkflowSession,
     id: string,
@@ -1727,7 +1819,7 @@ function finalizationSupportForKind(kind: string): { required: boolean; supporte
   return {
     required: true,
     supported: false,
-    reason: 'Cloud browser finalization currently supports SOL transfers only. Use private local mode or reject this request.',
+    reason: 'Cloud server finalization currently supports SOL transfers only.',
   };
 }
 

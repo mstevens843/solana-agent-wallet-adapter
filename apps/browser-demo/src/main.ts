@@ -18012,6 +18012,10 @@ async function runPreparedActionOp(actionId: string, op: string): Promise<void> 
 async function runCloudPreparedActionOp(action: PreparedAction, op: string): Promise<void> {
   switch (op) {
     case 'confirm': {
+      if (canConfirmCloudBrowserTransaction(action)) {
+        await runCloudBrowserTransactionConfirm(action);
+        return;
+      }
       if (!canConfirmCloudFinalization(action)) {
         throw new Error('This request does not have a submitted cloud transaction to confirm.');
       }
@@ -18025,6 +18029,10 @@ async function runCloudPreparedActionOp(action: PreparedAction, op: string): Pro
       }
       if (canFinalizeCloudSolTransfer(action)) {
         await runCloudSolTransferFinalization(action);
+        return;
+      }
+      if (isCloudBrowserExecutableAction(action)) {
+        await executeCloudBrowserPreparedAction(action);
         return;
       }
       const blockReason = cloudExecutionBlockReason(action);
@@ -18249,6 +18257,389 @@ async function runCloudFinalizationConfirm(action: PreparedAction): Promise<void
   }
   showCompletedHistoryForAction(action.id);
   pushToast('success', 'Transaction finalized', 'Wallet receipt saved in Done.');
+}
+
+async function executeCloudBrowserPreparedAction(action: PreparedAction): Promise<void> {
+  assertBrowserActionWalletReady(action);
+  const policyError = actionRecipientPolicyBlockReason(action);
+  if (policyError) {
+    throw new Error(policyError);
+  }
+  const priorStatus: PreparedActionStatus = action.status === 'overdue' ? 'overdue' : 'ready';
+  let decisionProof: { signature: string; message: string } | undefined;
+
+  const existingLedger = findPendingTransactionByAction(action.id);
+  if (existingLedger && PENDING_LEDGER_PHASES.has(existingLedger.phase)) {
+    if (!actionHasActiveTransaction(action, existingLedger)) {
+      removePendingTransaction(existingLedger.id);
+      syncPendingTransactionsFromLedger();
+    } else if (existingLedger.txid) {
+      await runCloudBrowserTransactionConfirm({ ...action, txid: existingLedger.txid });
+      return;
+    } else if (existingLedger.signedTransactionBase64) {
+      const toastId = pushToast('pending', 'Sending signed transaction', 'Broadcasting the already signed transaction to Solana RPC.');
+      const toastContext: TransactionToastContext = { toastId, actionId: action.id, cluster: action.cluster };
+      try {
+        decisionProof = await signCloudWorkflowDecision(action, 'approved');
+        const txid = await broadcastSignedBrowserTransactionWithRetry(
+          action.cluster,
+          existingLedger.signedTransactionBase64,
+          toastContext,
+        );
+        markTransactionPhase(existingLedger.id, 'submitted', {
+          submittedAt: new Date().toISOString(),
+          txid,
+        });
+        syncPendingTransactionsFromLedger();
+        await recordCloudWalletExecution(action, {
+          txid,
+          txStatus: 'pending',
+          explorerUrl: explorerUrl(txid, action.cluster),
+          decisionProof,
+          note: 'Wallet submitted the transaction and confirmation is still pending.',
+        });
+        await runCloudBrowserTransactionConfirm({ ...action, txid, txStatus: 'pending' });
+      } catch (err) {
+        await handleClassifiedCloudExecutionFailure({ action, toastId, priorStatus, err, decisionProof });
+      }
+      return;
+    } else {
+      removePendingTransaction(existingLedger.id);
+      syncPendingTransactionsFromLedger();
+    }
+  }
+
+  const toastId = pushToast('pending', 'Opening wallet', browserExecutionStartMessage(action));
+  const toastContext: TransactionToastContext = { toastId, actionId: action.id, cluster: action.cluster };
+  updateBrowserPreparedAction(action.id, {
+    status: 'approval_pending',
+    txStatus: 'pending',
+    txError: undefined,
+    error: undefined,
+  });
+  recordBrowserActionActivity(action.id, 'cloud.browser_transaction.start', {
+    kind: action.kind,
+    status: 'approval_pending',
+    summary: action.summary,
+  });
+  render();
+
+  try {
+    const current = state.preparedActions.find((candidate) => candidate.id === action.id) ?? action;
+    updateTransactionToast(toastContext, 'pending', 'Signing approval proof', 'This proof binds the Cloud approval record; the next wallet prompt signs the transaction.');
+    decisionProof = await signCloudWorkflowDecision(current, 'approved');
+    const execution = await executeBrowserPreparedActionRecord(current, toastContext);
+    const response = await recordCloudWalletExecution(current, {
+      txid: execution.txid,
+      txStatus: execution.txStatus,
+      explorerUrl: execution.explorerUrl,
+      decisionProof,
+      note: execution.txStatus === 'confirmed'
+        ? 'Wallet approved the swap and the transaction confirmed.'
+        : 'Wallet submitted the swap transaction and confirmation is still pending.',
+      ...(execution.result ? { metadata: { browserExecution: stripUndefined(execution.result) as JsonObject } } : {}),
+    });
+    if (execution.txStatus === 'pending' || !isJsonObject(response.completed)) {
+      recordBrowserActionActivity(action.id, 'cloud.browser_transaction.pending', {
+        kind: action.kind,
+        status: 'pending',
+        txid: execution.txid,
+      });
+      await refreshCloudWorkspaceData();
+      state.activeTab = 'inbox';
+      replaceToast(toastId, 'pending', 'Transaction submitted', short(execution.txid), {
+        linkHref: execution.explorerUrl,
+        linkLabel: 'Open Solscan',
+      });
+      render();
+      return;
+    }
+
+    const finalLedger = findPendingTransactionByAction(action.id);
+    if (finalLedger) {
+      removePendingTransaction(finalLedger.id);
+      syncPendingTransactionsFromLedger();
+    }
+    recordBrowserActionActivity(action.id, 'cloud.browser_transaction.saved', {
+      kind: action.kind,
+      status: execution.txStatus,
+      txid: execution.txid,
+    });
+    await refreshCloudWorkspaceData();
+    showCompletedHistoryForAction(action.id);
+    replaceToast(toastId, 'success', 'Transaction confirmed', `${short(execution.txid)} - Solscan link saved in Done.`, {
+      linkHref: execution.explorerUrl,
+      linkLabel: 'Open Solscan',
+    });
+  } catch (err) {
+    await handleClassifiedCloudExecutionFailure({ action, toastId, priorStatus, err, decisionProof });
+  }
+}
+
+async function runCloudBrowserTransactionConfirm(action: PreparedAction): Promise<void> {
+  if (!canConfirmCloudBrowserTransaction(action)) {
+    throw new Error('This request does not have a submitted cloud wallet transaction to confirm.');
+  }
+  const txid = action.txid ?? findPendingActionLedgerEntry(action.id)?.txid;
+  if (!txid) {
+    throw new Error('Submitted transaction id is missing.');
+  }
+  const toastId = pushToast('pending', 'Checking confirmation', short(txid), {
+    linkHref: explorerUrl(txid, action.cluster),
+    linkLabel: 'Open Solscan',
+  });
+  const toastContext: TransactionToastContext = { toastId, actionId: action.id, cluster: action.cluster };
+  try {
+    const txStatus = await resolveSubmittedTransactionStatus(action.cluster, txid, toastContext);
+    const response = await recordCloudWalletExecution(action, {
+      txid,
+      txStatus,
+      explorerUrl: explorerUrl(txid, action.cluster),
+      note: txStatus === 'confirmed'
+        ? 'Wallet transaction confirmed and Cloud receipt was saved.'
+        : 'Wallet transaction is still confirming.',
+    });
+    if (txStatus !== 'confirmed' || !isJsonObject(response.completed)) {
+      const ledger = findPendingTransactionByAction(action.id);
+      if (ledger) {
+        markTransactionPhase(ledger.id, 'submitted', { txid });
+        syncPendingTransactionsFromLedger();
+      }
+      await refreshCloudWorkspaceData();
+      replaceToast(toastId, 'pending', 'Transaction submitted', short(txid), {
+        linkHref: explorerUrl(txid, action.cluster),
+        linkLabel: 'Open Solscan',
+      });
+      render();
+      return;
+    }
+    const ledger = findPendingTransactionByAction(action.id);
+    if (ledger) {
+      removePendingTransaction(ledger.id);
+      syncPendingTransactionsFromLedger();
+    }
+    await refreshCloudWorkspaceData();
+    showCompletedHistoryForAction(action.id);
+    replaceToast(toastId, 'success', 'Transaction confirmed', `${short(txid)} - Solscan link saved in Done.`, {
+      linkHref: explorerUrl(txid, action.cluster),
+      linkLabel: 'Open Solscan',
+    });
+  } catch (err) {
+    const ledger = findPendingTransactionByAction(action.id);
+    const classification = classifyTransactionFailure(err, {
+      hasSignedBytes: Boolean(ledger?.signedTransactionBase64),
+      txid,
+    });
+    const technicalMessage = redactSecrets(classification.technicalMessage);
+    const toastCopy = transactionFailureToastCopy(classification);
+    if (classification.kind === 'onchain_failed') {
+      const priorStatus: PreparedActionStatus = action.status === 'overdue' ? 'overdue' : 'ready';
+      updateBrowserPreparedAction(action.id, {
+        status: priorStatus,
+        txStatus: 'failed',
+        txid,
+        txError: technicalMessage,
+        error: technicalMessage,
+      });
+      if (ledger) {
+        markTransactionPhase(ledger.id, 'failed', {
+          failedAt: new Date().toISOString(),
+          failureKind: 'onchain_failed',
+          lastError: technicalMessage,
+        });
+        syncPendingTransactionsFromLedger();
+      }
+      await recordCloudWalletExecution(action, {
+        txid,
+        txStatus: 'failed',
+        explorerUrl: explorerUrl(txid, action.cluster),
+        error: technicalMessage,
+        note: 'Wallet transaction failed on-chain. The approval remains available for review.',
+      }).catch((syncErr) => {
+        pushToast('error', 'Cloud receipt sync failed', redactSecrets(syncErr instanceof Error ? syncErr.message : String(syncErr)));
+      });
+      await refreshCloudWorkspaceData().catch(() => undefined);
+      replaceToast(toastId, 'error', toastCopy.title, toastCopy.message, {
+        linkHref: explorerUrl(txid, action.cluster),
+        linkLabel: 'Open Solscan',
+      });
+      return;
+    }
+    replaceToast(toastId, 'pending', toastCopy.title, toastCopy.message, {
+      linkHref: explorerUrl(txid, action.cluster),
+      linkLabel: 'Open Solscan',
+    });
+  }
+}
+
+async function handleClassifiedCloudExecutionFailure(opts: {
+  action: PreparedAction;
+  toastId: number;
+  priorStatus: PreparedActionStatus;
+  err: unknown;
+  decisionProof?: { signature: string; message: string };
+}): Promise<void> {
+  const { action, toastId, priorStatus, err, decisionProof } = opts;
+  const ledger = findPendingTransactionByAction(action.id);
+  const classification = classifyTransactionFailure(err, {
+    hasSignedBytes: Boolean(ledger?.signedTransactionBase64),
+    txid: ledger?.txid,
+  });
+  const technicalMessage = redactSecrets(classification.technicalMessage);
+  const toastCopy = transactionFailureToastCopy(classification);
+  const txid = ledger?.txid ?? action.txid;
+  const linkOptions = txid
+    ? { linkHref: explorerUrl(txid, action.cluster), linkLabel: 'Open Solscan' }
+    : {};
+
+  recordBrowserActionActivity(action.id, 'cloud.browser_transaction.failed', {
+    kind: action.kind,
+    status: classification.kind,
+    failureKind: classification.kind,
+    error: technicalMessage,
+  });
+
+  if (classification.kind === 'onchain_failed') {
+    updateBrowserPreparedAction(action.id, {
+      status: priorStatus,
+      txStatus: 'failed',
+      txid,
+      txError: technicalMessage,
+      error: technicalMessage,
+    });
+    if (ledger) {
+      markTransactionPhase(ledger.id, 'failed', {
+        failedAt: new Date().toISOString(),
+        failureKind: 'onchain_failed',
+        lastError: technicalMessage,
+      });
+      syncPendingTransactionsFromLedger();
+    }
+    if (txid) {
+      await recordCloudWalletExecution(action, {
+        txid,
+        txStatus: 'failed',
+        explorerUrl: explorerUrl(txid, action.cluster),
+        error: technicalMessage,
+        decisionProof,
+        note: 'Wallet transaction failed on-chain. The approval remains available for review.',
+      }).catch((syncErr) => {
+        pushToast('error', 'Cloud receipt sync failed', redactSecrets(syncErr instanceof Error ? syncErr.message : String(syncErr)));
+      });
+      await refreshCloudWorkspaceData().catch(() => undefined);
+    }
+    state.activeTab = 'inbox';
+    state.auditOpen[auditActivityKey('approval', action.id)] = true;
+    replaceToast(toastId, 'error', toastCopy.title, toastCopy.message, linkOptions);
+    return;
+  }
+
+  if (classification.maybeSubmitted && txid) {
+    updateBrowserPreparedAction(action.id, {
+      status: 'approval_pending',
+      txStatus: 'pending',
+      txid,
+      txError: undefined,
+      error: undefined,
+    });
+    if (ledger) {
+      markTransactionPhase(ledger.id, 'ambiguous', {
+        lastError: technicalMessage,
+        failureKind: failureKindForLedger(classification.kind),
+      });
+      syncPendingTransactionsFromLedger();
+    }
+    await recordCloudWalletExecution(action, {
+      txid,
+      txStatus: 'pending',
+      explorerUrl: explorerUrl(txid, action.cluster),
+      decisionProof,
+      note: 'Wallet transaction may have been submitted. Confirm status before retrying.',
+    }).catch((syncErr) => {
+      pushToast('error', 'Cloud receipt sync failed', redactSecrets(syncErr instanceof Error ? syncErr.message : String(syncErr)));
+    });
+    await refreshCloudWorkspaceData().catch(() => undefined);
+    state.activeTab = 'inbox';
+    replaceToast(toastId, 'pending', toastCopy.title, toastCopy.message, linkOptions);
+    void reconcilePendingTransactions({ trigger: 'post-ambiguous', targetActionId: action.id });
+    return;
+  }
+
+  if (classification.safeToAskWalletAgain) {
+    updateBrowserPreparedAction(action.id, {
+      status: priorStatus,
+      txStatus: undefined,
+      txid: undefined,
+      txError: undefined,
+      error: undefined,
+    });
+    if (ledger) {
+      removePendingTransaction(ledger.id);
+      syncPendingTransactionsFromLedger();
+    }
+    replaceToast(toastId, classification.kind === 'wallet_rejected' ? 'pending' : 'error', toastCopy.title, toastCopy.message);
+    return;
+  }
+
+  updateBrowserPreparedAction(action.id, {
+    status: priorStatus,
+    txStatus: 'failed',
+    txid,
+    txError: technicalMessage,
+    error: technicalMessage,
+  });
+  if (ledger) {
+    removePendingTransaction(ledger.id);
+    syncPendingTransactionsFromLedger();
+  }
+  if (txid) {
+    await recordCloudWalletExecution(action, {
+      txid,
+      txStatus: 'failed',
+      explorerUrl: explorerUrl(txid, action.cluster),
+      error: technicalMessage,
+      decisionProof,
+      note: 'Wallet transaction could not be completed. The approval remains available for review.',
+    }).catch((syncErr) => {
+      pushToast('error', 'Cloud receipt sync failed', redactSecrets(syncErr instanceof Error ? syncErr.message : String(syncErr)));
+    });
+    await refreshCloudWorkspaceData().catch(() => undefined);
+  }
+  state.activeTab = 'inbox';
+  state.auditOpen[auditActivityKey('approval', action.id)] = true;
+  replaceToast(toastId, 'error', toastCopy.title, toastCopy.message, linkOptions);
+}
+
+async function recordCloudWalletExecution(action: PreparedAction, input: {
+  txid: string;
+  txStatus: PreparedActionTxStatus;
+  explorerUrl?: string;
+  error?: string;
+  note?: string;
+  decisionProof?: { signature: string; message: string };
+  metadata?: JsonObject;
+}): Promise<Record<string, unknown>> {
+  const payload = {
+    txid: input.txid,
+    txStatus: input.txStatus,
+    ...(input.explorerUrl ? { explorerUrl: input.explorerUrl } : {}),
+    ...(input.error ? { error: input.error } : {}),
+    ...(input.note ? { note: input.note } : {}),
+    ...(input.decisionProof ? {
+      proofSignature: input.decisionProof.signature,
+      decisionProofMessage: input.decisionProof.message,
+      signatureEncoding: 'base58',
+    } : {}),
+    metadata: {
+      transactionBoundary: 'browser_wallet_adapter_v1',
+      ...(input.metadata ?? {}),
+    },
+  };
+  const response = await cloudRequest(`/api/approvals/${encodeURIComponent(action.id)}/wallet-execution`, {
+    method: 'POST',
+    body: JSON.stringify(payload),
+  });
+  return cloudResponseObject(response, 'wallet execution response');
 }
 
 function cloudPreparedFinalizationFromResponse(payload: unknown): {
@@ -18493,6 +18884,12 @@ async function signBrowserWorkflowDecision(
 
 function isExecutableBrowserAction(action: PreparedAction): boolean {
   return action.workflowSource !== 'cloud' &&
+    EXECUTABLE_BROWSER_ACTION_KINDS.has(action.kind);
+}
+
+function isCloudBrowserExecutableAction(action: PreparedAction): boolean {
+  return action.workflowSource === 'cloud' &&
+    action.kind === 'swap' &&
     EXECUTABLE_BROWSER_ACTION_KINDS.has(action.kind);
 }
 
@@ -23675,7 +24072,7 @@ function preparedActionCard(action: PreparedAction): string {
   const decisionLabels = preparedActionDecisionLabels(action);
   const effectCopy = approvalEffectCopy(action);
   const executionBlockReason = cloudExecutionBlockReason(action) ?? actionRecipientPolicyBlockReason(action);
-  const confirmable = canConfirmCloudFinalization(action) || canConfirmBrowserTransaction(action);
+  const confirmable = canConfirmCloudFinalization(action) || canConfirmCloudBrowserTransaction(action) || canConfirmBrowserTransaction(action);
   const pendingLedgerExecution = hasPendingExecutionLedgerEntry(action);
   const executeDisabled = (!state.bridgeActive && !browserWorkflow && !cloudWorkflow) ||
     state.busy ||
@@ -24898,9 +25295,15 @@ function preparedActionDecisionLabels(action: PreparedAction): { approve: string
       reject: 'Deny request',
     };
   }
+  if (isCloudBrowserExecutableAction(action)) {
+    return {
+      approve: action.kind === 'swap' ? 'Approve swap' : 'Approve and send',
+      reject: 'Deny request',
+    };
+  }
   if (requiresCloudTransactionFinalization(action)) {
     return {
-      approve: 'Use private local mode',
+      approve: 'Unavailable',
       reject: 'Deny request',
     };
   }
@@ -24923,7 +25326,10 @@ function approvalEffectCopy(action: PreparedAction): string {
   if (requiresCloudTransactionFinalization(action)) {
     return action.kind === 'transfer_sol'
       ? 'This cloud transfer requires transaction finalization, but the connected wallet cannot sign this transaction from this browser session.'
-      : 'This money-moving request requires transaction finalization. Cloud finalization for this action type is not live yet, so proof-only approval is blocked.';
+      : 'This Cloud request type is not executable from this browser yet. Deny it and recreate the request as a browser wallet action.';
+  }
+  if (isCloudBrowserExecutableAction(action)) {
+    return 'Your wallet signs the swap transaction. Agentic Cloud saves the status and receipt; it never receives signing authority.';
   }
   if (action.workflowSource === 'cloud') {
     return 'Your wallet signs a decision proof bound to this approval. Agentic Cloud saves the receipt; this proof does not submit a transaction.';
@@ -24969,6 +25375,15 @@ function canConfirmBrowserTransaction(action: PreparedAction): boolean {
   return Boolean(ledger && ledger.txid && actionHasActiveTransaction(action, ledger));
 }
 
+function canConfirmCloudBrowserTransaction(action: PreparedAction): boolean {
+  if (!isCloudBrowserExecutableAction(action)) return false;
+  if (Boolean(action.txid) && (action.status === 'approval_pending' || action.txStatus === 'pending')) {
+    return true;
+  }
+  const ledger = findPendingActionLedgerEntry(action.id);
+  return Boolean(ledger && ledger.txid && actionHasActiveTransaction(action, ledger));
+}
+
 function findPendingActionLedgerEntry(actionId: string): PendingTransactionRecord | undefined {
   // Prefer the in-memory cache to avoid localStorage parsing on every render.
   return state.pendingTransactions.find((record) => record.actionId === actionId);
@@ -24989,21 +25404,35 @@ function hasPendingExecutionLedgerEntry(action: PreparedAction): boolean {
 }
 
 function requiresCloudTransactionFinalization(action: PreparedAction): boolean {
-  return action.workflowSource === 'cloud' && CLOUD_TRANSACTION_FINALIZATION_KINDS.has(action.kind);
+  return action.workflowSource === 'cloud' &&
+    CLOUD_TRANSACTION_FINALIZATION_KINDS.has(action.kind) &&
+    !isCloudBrowserExecutableAction(action);
 }
 
 function cloudExecutionBlockReason(action: PreparedAction): string | null {
+  if (isCloudBrowserExecutableAction(action)) {
+    if (!state.address || state.address !== action.walletAddress) {
+      return 'Connect the approval wallet before approving this cloud swap.';
+    }
+    if (action.cluster !== state.cluster) {
+      return `Switch to ${titleCaseCluster(action.cluster)} before approving this cloud swap.`;
+    }
+    if (state.capabilities?.supports.signTransaction !== true) {
+      return 'This wallet cannot sign swap transactions from this browser.';
+    }
+    return null;
+  }
   if (!requiresCloudTransactionFinalization(action)) return null;
   if (action.kind === 'transfer_sol') {
     if (!state.address || state.address !== action.walletAddress) {
       return 'Connect the approval wallet before finalizing this cloud SOL transfer.';
     }
     if (state.capabilities?.supports.signTransaction !== true) {
-      return 'This wallet cannot sign transactions from this browser. Use private local mode or reject this request.';
+      return 'This wallet cannot sign transactions from this browser. Connect a wallet that supports transaction signing or reject this request.';
     }
     return null;
   }
-  return 'Cloud transaction finalization for this action is not live yet. Use private local mode or reject this request.';
+  return 'This Cloud request type is not executable from this browser yet. Reject this request and recreate it as a browser wallet action.';
 }
 
 function finalizationChecklist(action: PreparedAction): string {

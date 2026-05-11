@@ -367,6 +367,102 @@ describe('cloud one-time workflow API', () => {
     });
   });
 
+  it('records browser-wallet Cloud swap execution without a bridge signer', async () => {
+    await withWorkflowServer(async ({ port }) => {
+      const created = await postJson(port, '/api/approvals', {
+        summary: 'Swap SOL to USDC',
+        kind: 'swap',
+        params: {
+          inputToken: 'SOL',
+          outputToken: 'USDC',
+          amount: '0.1',
+          slippageBps: '50',
+        },
+        cluster: 'mainnet-beta',
+      }, walletA);
+      const approval = created.body.approval as ApprovalRequestRecord;
+
+      const directApprove = await postJson(port, `/api/approvals/${approval.id}/approve`, {
+        ...decisionProofBody(approval, 'approved'),
+      }, walletA);
+      expect(directApprove.status).toBe(409);
+      expect(directApprove.body.error).toBe('transaction_finalization_required');
+
+      const pending = await postJson(port, `/api/approvals/${approval.id}/wallet-execution`, {
+        ...decisionProofBody(approval, 'approved'),
+        txid: 'swap_tx_pending',
+        txStatus: 'pending',
+        explorerUrl: 'https://solscan.io/tx/swap_tx_pending',
+        metadata: { transactionBoundary: 'browser_wallet_adapter_v1' },
+      }, walletA);
+
+      expect(pending.status).toBe(200);
+      expect(pending.body.completed).toBeUndefined();
+      expect(pending.body.approval).toMatchObject({
+        id: approval.id,
+        status: 'approval_pending',
+        txid: 'swap_tx_pending',
+        txStatus: 'pending',
+        decisionProofVerified: true,
+        metadata: expect.objectContaining({
+          executionMode: 'wallet_execute',
+          walletExecutionSource: 'browser_wallet_adapter',
+        }),
+      });
+
+      const inbox = await getJson(port, '/api/approvals', walletA);
+      expect((inbox.body.approvals as ApprovalRequestRecord[]).map((entry) => entry.id)).toEqual([approval.id]);
+
+      const confirmed = await postJson(port, `/api/approvals/${approval.id}/wallet-execution`, {
+        txid: 'swap_tx_pending',
+        txStatus: 'confirmed',
+        explorerUrl: 'https://solscan.io/tx/swap_tx_pending',
+      }, walletA);
+
+      expect(confirmed.status).toBe(200);
+      expect(confirmed.body.approval).toMatchObject({
+        id: approval.id,
+        status: 'approved',
+        txid: 'swap_tx_pending',
+        txStatus: 'confirmed',
+      });
+      expect(confirmed.body.completed).toMatchObject({
+        approvalRequestId: approval.id,
+        status: 'approved',
+        txid: 'swap_tx_pending',
+        txStatus: 'confirmed',
+      });
+
+      const failedCreated = await postJson(port, '/api/approvals', {
+        summary: 'Retryable swap failure',
+        kind: 'swap',
+        params: {
+          inputToken: 'SOL',
+          outputToken: 'USDC',
+          amount: '0.1',
+          slippageBps: '50',
+        },
+      }, walletA);
+      const failedApproval = failedCreated.body.approval as ApprovalRequestRecord;
+      const failed = await postJson(port, `/api/approvals/${failedApproval.id}/wallet-execution`, {
+        ...decisionProofBody(failedApproval, 'approved'),
+        txid: 'swap_tx_failed',
+        txStatus: 'failed',
+        error: 'Transaction failed on-chain.',
+      }, walletA);
+
+      expect(failed.status).toBe(200);
+      expect(failed.body.completed).toBeUndefined();
+      expect(failed.body.approval).toMatchObject({
+        id: failedApproval.id,
+        status: 'ready',
+        txid: 'swap_tx_failed',
+        txStatus: 'failed',
+        error: 'Transaction failed on-chain.',
+      });
+    });
+  });
+
   it('records transaction finalization preview and confirmed wallet receipt', async () => {
     await withMockServerFinalization(async () => {
       await withWorkflowServer(async ({ port }) => {
