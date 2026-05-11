@@ -2283,7 +2283,11 @@ function collectUnsafeAiClaimViolations(input: {
 
 function collectUnsafeAiTextClaims(text: string, path: string, violations: AiGuardrailViolation[]): void {
   const normalized = normalizeGuardrailText(text);
-  const claims = [
+  const claims: Array<{
+    code: string;
+    pattern: RegExp | ((value: string) => boolean);
+    message: string;
+  }> = [
     {
       code: 'ai_claims_approved',
       pattern: /\b(already|pre|auto)[-\s]?(approved|approval)\b|\bapproved automatically\b/,
@@ -2301,7 +2305,7 @@ function collectUnsafeAiTextClaims(text: string, path: string, violations: AiGua
     },
     {
       code: 'ai_bypasses_wallet',
-      pattern: /\b(no|without|skip|bypass)\b.{0,40}\b(wallet|approval|signature|signing)\b|\bdoes not require\b.{0,40}\b(wallet|approval|signature|signing)\b/,
+      pattern: hasUnsafeWalletBypassClaim,
       message: 'AI drafts cannot bypass wallet approval or signing.',
     },
     {
@@ -2311,7 +2315,10 @@ function collectUnsafeAiTextClaims(text: string, path: string, violations: AiGua
     },
   ];
   for (const claim of claims) {
-    if (claim.pattern.test(normalized)) {
+    const matched = typeof claim.pattern === 'function'
+      ? claim.pattern(normalized)
+      : claim.pattern.test(normalized);
+    if (matched) {
       violations.push({
         code: claim.code,
         severity: 'block',
@@ -2320,6 +2327,43 @@ function collectUnsafeAiTextClaims(text: string, path: string, violations: AiGua
       });
     }
   }
+}
+
+function hasUnsafeWalletBypassClaim(normalized: string): boolean {
+  const directBypassClaims = [
+    /\b(?:no|zero)\s+(?:wallet\s+)?(?:approval|signature|signing)\s+(?:is\s+)?(?:required|needed|necessary)\b/,
+    /\b(?:wallet\s+)?(?:approval|signature|signing)\s+(?:is|are)\s+not\s+(?:required|needed|necessary)\b/,
+    /\bdoes(?:\s+not|n't)\s+require\s+(?:a\s+)?(?:wallet\s+)?(?:approval|signature|signing)\b/,
+  ];
+  if (directBypassClaims.some((pattern) => pattern.test(normalized))) {
+    return true;
+  }
+  return hasUnnegatedWalletBypassVerb(normalized) || hasUnnegatedWithoutWalletApproval(normalized);
+}
+
+function hasUnnegatedWalletBypassVerb(normalized: string): boolean {
+  const pattern = /\b(?:skip|bypass)\b.{0,40}\b(?:wallet|approval|signature|signing)\b/g;
+  for (const match of normalized.matchAll(pattern)) {
+    if (match.index === undefined || !hasSafeNegationBefore(normalized, match.index, 45)) {
+      return true;
+    }
+  }
+  return false;
+}
+
+function hasUnnegatedWithoutWalletApproval(normalized: string): boolean {
+  const pattern = /\bwithout\b.{0,40}\b(?:wallet|approval|signature|signing)\b/g;
+  for (const match of normalized.matchAll(pattern)) {
+    if (match.index === undefined || !hasSafeNegationBefore(normalized, match.index, 70)) {
+      return true;
+    }
+  }
+  return false;
+}
+
+function hasSafeNegationBefore(normalized: string, index: number, distance: number): boolean {
+  const prefix = normalized.slice(Math.max(0, index - distance), index);
+  return /\b(?:cannot|can't|can not|must not|should not|will not|won't|never|do not|does not|doesn't|not allowed to|not able to|not possible to|nothing|none|no\s+(?:transaction|funds|request|signing|signature|action|execution))\b.{0,50}$/.test(prefix);
 }
 
 function collectMissingConstraintViolations(

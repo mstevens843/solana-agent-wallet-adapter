@@ -59,6 +59,42 @@ describe('BridgeAiPlanner', () => {
     });
   });
 
+  it('removes hidden separators from bridge session keys before building provider headers', async () => {
+    const calls: Array<{ headers: Record<string, string> }> = [];
+    vi.stubGlobal('fetch', vi.fn(async (_url: string | URL | Request, init?: RequestInit) => {
+      calls.push({ headers: init?.headers as Record<string, string> });
+      return jsonResponse({ output_text: planJson('Sanitized key intent') });
+    }));
+    const planner = new BridgeAiPlanner();
+    planner.setSessionKey({
+      apiKey: 'sk-test\u2028-openai',
+      provider: 'openai',
+      apiFormat: 'openai-compatible',
+      baseUrl: 'https://api.openai.com/v1',
+      model: 'gpt-5',
+    });
+
+    const plan = await planner.generatePlan(request);
+
+    expect(plan.intent).toBe('Sanitized key intent');
+    expect(calls[0]?.headers.authorization).toBe('Bearer sk-test-openai');
+  });
+
+  it('rejects non-ASCII bridge session keys before provider fetch can throw a ByteString error', async () => {
+    const fetchMock = vi.fn();
+    vi.stubGlobal('fetch', fetchMock);
+    const planner = new BridgeAiPlanner();
+
+    expect(() => planner.setSessionKey({
+      apiKey: 'sk-test-é-openai',
+      provider: 'openai',
+      apiFormat: 'openai-compatible',
+      baseUrl: 'https://api.openai.com/v1',
+      model: 'gpt-5',
+    })).toThrow('AI API key contains unsupported characters');
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
   it('parses OpenAI Responses output array text content', async () => {
     vi.stubGlobal('fetch', vi.fn(async () => jsonResponse({
       output: [{

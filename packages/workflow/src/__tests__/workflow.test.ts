@@ -164,6 +164,33 @@ describe('AI product guardrails', () => {
     expect(() => assertPlanGuardrails({ plan: blockedPlan() })).toThrow(WorkflowValidationError);
   });
 
+  it('allows protective wording that says AI cannot bypass wallet approval', () => {
+    const plan = {
+      source: 'ai',
+      category: 'payments',
+      actionType: 'transfer_sol',
+      templateId: 'transfer-sol',
+      templateTitle: 'Send SOL',
+      intent: 'Prepare a SOL transfer review.',
+      route: 'AI drafts cannot bypass wallet approval or signing. No transaction can be submitted without wallet approval.',
+      risk: 'Medium risk. Check recipient and amount before approval.',
+      approval: 'Wallet approval is required before signing or submitting.',
+      parameters: {
+        recipient: 'Recipient111111111111111111111111111111111',
+        amount: '0.1',
+        memo: 'Invoice payment',
+      },
+      fields: [{ label: 'Amount SOL', value: '0.1' }],
+      safeguards: ['Cannot bypass wallet approval.'],
+      cluster: 'devnet',
+    };
+
+    const report = evaluatePlanGuardrails({ plan });
+
+    expect(report.verdict).toBe('pass');
+    expect(report.violations.map((violation) => violation.code)).not.toContain('ai_bypasses_wallet');
+  });
+
   it('blocks secrets, delegated signers, and missing executable constraints', () => {
     expect(evaluatePlanGuardrails({
       plan: {

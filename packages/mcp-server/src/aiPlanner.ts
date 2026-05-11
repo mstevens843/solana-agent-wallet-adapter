@@ -131,6 +131,7 @@ const SHARED_SAFEGUARDS = [
   'The agent never receives the wallet private key or seed phrase.',
   'Amounts, recipients, routes, and policy notes must be visible before signing.',
 ];
+const AI_KEY_COPY_PASTE_ARTIFACTS = /[\s\u200B-\u200D\u2060\uFEFF]+/gu;
 
 const PLAN_JSON_SCHEMA = {
   type: 'object',
@@ -227,9 +228,11 @@ export class BridgeAiPlanner {
       this.#sessionConfig = null;
       return this.status();
     }
-    if (!input.apiKey?.trim()) {
+    const apiKey = normalizeAiApiKey(input.apiKey ?? '');
+    if (!apiKey) {
       throw new ProtocolError('invalid_request', 'Missing AI API key.');
     }
+    assertAiApiKeyHeaderSafe(apiKey);
     const provider = input.provider?.trim() || 'openai-compatible';
     const apiFormat = normalizeApiFormat(input.apiFormat, provider);
     this.#sessionConfig = {
@@ -237,7 +240,7 @@ export class BridgeAiPlanner {
       apiFormat,
       baseUrl: normalizeBaseUrl(input.baseUrl || defaultBaseUrl(apiFormat), apiFormat),
       model: input.model?.trim() || defaultModel(apiFormat),
-      apiKey: input.apiKey.trim(),
+      apiKey,
       source: 'session',
     };
     return this.status();
@@ -601,8 +604,9 @@ export class BridgeAiPlanner {
 }
 
 function envConfig(): AiRuntimeConfig | null {
-  const apiKey = process.env.AGENTIC_AI_API_KEY?.trim();
+  const apiKey = normalizeAiApiKey(process.env.AGENTIC_AI_API_KEY ?? '');
   if (!apiKey) return null;
+  assertAiApiKeyHeaderSafe(apiKey);
   const provider = process.env.AGENTIC_AI_PROVIDER?.trim() || 'openai-compatible';
   const apiFormat = normalizeApiFormat(process.env.AGENTIC_AI_API_FORMAT, provider);
   return {
@@ -1088,6 +1092,33 @@ function normalizeApiFormat(value: string | undefined, provider: string): AiApiF
   if (normalized === 'anthropic') return 'anthropic';
   if (/anthropic|claude/i.test(provider)) return 'anthropic';
   return 'openai-compatible';
+}
+
+export function normalizeAiApiKey(value: string): string {
+  return value.replace(AI_KEY_COPY_PASTE_ARTIFACTS, '');
+}
+
+function assertAiApiKeyHeaderSafe(value: string): void {
+  const invalid = firstInvalidAiApiKeyCharacter(value);
+  if (!invalid) return;
+  throw new ProtocolError(
+    'invalid_request',
+    `AI API key contains unsupported characters at index ${invalid.index}. Paste the key again as plain text and remove hidden separators or non-ASCII characters.`,
+  );
+}
+
+function firstInvalidAiApiKeyCharacter(value: string): { index: number; codePoint: number } | null {
+  for (let index = 0; index < value.length; index += 1) {
+    const codePoint = value.codePointAt(index);
+    if (codePoint === undefined) continue;
+    if (codePoint < 0x21 || codePoint > 0x7e) {
+      return { index, codePoint };
+    }
+    if (codePoint > 0xffff) {
+      index += 1;
+    }
+  }
+  return null;
 }
 
 function defaultBaseUrl(format: AiApiFormat): string {

@@ -5,12 +5,14 @@ export interface CloudSessionBoundaryInput {
   cloudStatus: string;
   cloudWalletAddress: string;
   connectedWalletAddress: string;
+  reason?: 'startup' | 'wallet-disconnected' | 'wallet-changed' | 'wallet-mismatch';
 }
 
 export function shouldAutoSignOutCloudSession(input: CloudSessionBoundaryInput): boolean {
-  return input.cloudStatus === 'signed-in'
-    && Boolean(input.cloudWalletAddress)
-    && input.cloudWalletAddress !== input.connectedWalletAddress;
+  if (input.cloudStatus !== 'signed-in' || !input.cloudWalletAddress) return false;
+  if (input.cloudWalletAddress === input.connectedWalletAddress) return false;
+  if (!input.connectedWalletAddress && input.reason === 'startup') return false;
+  return true;
 }
 
 export function hostedByokCloudSessionBlockReason(input: {

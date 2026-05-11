@@ -147,11 +147,9 @@ import {
   buildKaminoDepositPreSignReview,
   buildKaminoEarningsProofPreSignReview,
   buildKaminoWithdrawPreSignReview,
-  buildSendPreSignReview,
   type PreSignReviewModel,
   type PreSignReviewRow,
   type PreSignReviewSection,
-  type ReviewTone,
 } from './preSignReview.js';
 import {
   CONNECTED_DAPPS_STORAGE_KEY,
@@ -212,7 +210,8 @@ type TemplateOutcome = 'queueable' | 'proof' | 'audit';
 type TemplateOutcomeFilter = TemplateOutcome | 'all';
 type AiPlannerConfirmationStatus = 'untested' | 'confirmed' | 'failed';
 type AgentPlanReviewStatus = 'checking' | 'approved' | 'denied' | 'needs_input' | 'error';
-type RecurringPresetId = 'scheduled-transfer' | 'subscription';
+type RecurringPresetId = 'scheduled-transfer' | 'recurring-swap';
+type RecurringActionKind = 'transfer' | 'swap';
 type InlineReceiptKind = 'intent' | 'rejection' | 'policy' | 'review';
 type AuditRecordType = 'plan' | 'approval' | 'completed' | 'evidence';
 type PreparedActionKind =
@@ -868,9 +867,13 @@ interface RecurringPayment {
   status: 'active' | 'paused';
   walletAddress: string;
   cluster: Cluster;
+  actionKind?: RecurringActionKind;
   token: string;
+  inputToken?: string;
+  outputToken?: string;
   recipient: string;
   amount: string;
+  slippageBps?: string;
   cadence: RecurringCadence;
   dayOfWeek?: number;
   dayOfMonth?: number;
@@ -1134,9 +1137,13 @@ interface LabPayload {
 }
 
 interface RecurringDraft {
+  actionKind: RecurringActionKind;
   token: string;
+  inputToken: string;
+  outputToken: string;
   recipient: string;
   amount: string;
+  slippageBps: string;
   cadence: RecurringCadence;
   localTime: string;
   dayOfWeek: string;
@@ -1317,6 +1324,7 @@ interface PersistedState {
   preferencesView?: PreferencesView;
   cluster?: Cluster;
   bridgeUrl?: string;
+  bridgeAutoReconnect?: boolean;
   aiMode?: AiSettings['mode'];
   aiProvider?: AiSettings['provider'];
   aiApiFormat?: AiSettings['apiFormat'];
@@ -1495,6 +1503,7 @@ interface DemoState {
   bridgeUrl: string;
   bridgeToken: string;
   bridgeActive: boolean;
+  bridgeAutoReconnect: boolean;
   bridgeStatus: string;
   bridgeRpcUrl: string;
   health: BridgeHealth | null;
@@ -1946,12 +1955,31 @@ const FAILURE_KIND_LABEL: Record<TransactionFailureKind, string> = {
   unknown_maybe_submitted: 'Ambiguous (maybe submitted)',
 };
 
+const FAILURE_KIND_HELP: Record<TransactionFailureKind, string> = {
+  wallet_rejected: 'The signer declined the request.',
+  wallet_unavailable: 'The wallet disconnected or could not respond.',
+  config_missing: 'A required app, token, route, or wallet setting is missing.',
+  rpc_timeout: 'The network did not answer before the send timed out.',
+  rpc_rejected: 'The RPC endpoint refused the submitted transaction.',
+  network_unreachable: 'The browser could not reach the network endpoint.',
+  onchain_failed: 'The transaction landed but failed during execution.',
+  expired_blockhash: 'The transaction expired before confirmation.',
+  slippage_or_quote_failed: 'The quote changed or failed its price checks.',
+  simulation_failed: 'Preflight simulation failed before sending.',
+  insufficient_funds: 'The signer does not have enough SOL or token balance.',
+  invalid_transaction: 'The transaction is malformed or unsupported.',
+  rate_limited: 'The provider asked this browser to slow down.',
+  unknown_maybe_submitted: 'The app cannot tell whether the transaction reached the network.',
+};
+
 const FAILURE_RECOMMENDED_AUTO: ReadonlySet<TransactionFailureKind> = new Set([
   'rpc_timeout',
   'expired_blockhash',
   'rate_limited',
   'network_unreachable',
 ]);
+
+const AI_DRAFT_EXAMPLE_PROMPT = 'Review a new DeFi position before signing. Check route, amount, protocol, and slippage before my wallet approves.';
 
 const DEFAULT_FAILURE_POLICY: FailureRetryPolicy = { kind: 'rpc_timeout', mode: 'ask', maxAttempts: 2 };
 
@@ -1979,6 +2007,7 @@ const RECURRING_PRESETS: RecurringPreset[] = [
     badge: 'Payment',
     description: 'Send the same token amount to one recipient on a repeat schedule. Each due item still needs approval.',
     draft: {
+      actionKind: 'transfer',
       token: 'SOL',
       amount: '0.01',
       cadence: 'weekly',
@@ -1986,15 +2015,19 @@ const RECURRING_PRESETS: RecurringPreset[] = [
     },
   },
   {
-    id: 'subscription',
-    title: 'Subscription / allowance',
-    badge: 'Allowance',
-    description: 'Create a capped recurring payment without granting unlimited authority.',
+    id: 'recurring-swap',
+    title: 'Recurring swap',
+    badge: 'Swap',
+    description: 'Create a recurring swap/DCA approval without granting delegated trading authority.',
     draft: {
-      token: 'USDC',
-      amount: '5',
-      cadence: 'monthly',
-      note: 'Repeat user-approved payment',
+      actionKind: 'swap',
+      token: 'SOL',
+      inputToken: 'SOL',
+      outputToken: 'USDC',
+      amount: '0.01',
+      slippageBps: '50',
+      cadence: 'weekly',
+      note: 'Recurring SOL to USDC swap',
     },
   },
 ];
@@ -2193,6 +2226,7 @@ const state: DemoState = {
   bridgeUrl: launchParams.bridgeUrl ?? persisted.bridgeUrl ?? DEFAULT_BRIDGE_URL,
   bridgeToken: launchParams.bridgeToken ?? sessionBridgeToken() ?? DEFAULT_BRIDGE_TOKEN,
   bridgeActive: false,
+  bridgeAutoReconnect: persisted.bridgeAutoReconnect ?? Boolean(launchParams.bridgeUrl || launchParams.bridgeToken),
   bridgeStatus: 'Bridge idle.',
   bridgeRpcUrl: '',
   health: null,
@@ -2410,6 +2444,9 @@ async function bootstrap(): Promise<void> {
   }
   if (shouldProbeBridgeOnStartup()) {
     await loadBridgeConfig(false);
+    if (shouldReconnectBridgeOnStartup()) {
+      await reconnectBridgeOnStartup();
+    }
     if (state.aiSettings.mode === 'bridge') {
       await refreshBridgeAiStatus(false);
     }
@@ -4472,7 +4509,7 @@ function preferencesPanel(): string {
         <div>
           <p class="preferences-eyebrow">Workspace</p>
           <h2 id="preferences-title">Preferences</h2>
-          <p>Settings grouped by workflow area. Preferences save locally first; Cloud sync applies only to supported non-secret settings.</p>
+          <p>Configure the browser workspace. These settings shape drafting, review, labels, alerts, and retries without changing wallet authority.</p>
         </div>
       </header>
       ${preferencesStoragePolicy()}
@@ -4498,14 +4535,13 @@ function preferencesStoragePolicy(): string {
       ? 'Cloud sync on'
       : 'Cloud sync off';
   const cloudDetail = cloudSynced
-    ? 'Agent policies sync today. Other prefs stay local until Cloud APIs support them.'
-    : 'Sign in to Cloud Storage to sync supported non-secret prefs.';
+    ? 'Supported non-secret preferences can sync.'
+    : 'Sign in from Cloud Storage to sync supported non-secret preferences.';
   return `
     <section class="preferences-storage-policy" aria-label="Preferences save policy">
-      ${preferencesStoragePolicyItem('Local first', 'Every preference writes to this browser immediately.')}
+      ${preferencesStoragePolicyItem('Local first', 'Changes apply in this browser immediately.')}
       ${preferencesStoragePolicyItem(cloudTitle, cloudDetail)}
-      ${preferencesStoragePolicyItem('AI paths draft only', 'Hosted, browser session, and local bridge AI are not storage backends.')}
-      ${preferencesStoragePolicyItem('Secrets stay local', 'AI keys, bridge tokens, wallet auth, and notification permission are device-only.')}
+      ${preferencesStoragePolicyItem('Secrets stay local', 'AI keys, bridge tokens, wallet auth, and notification permission never sync.')}
     </section>
   `;
 }
@@ -4513,10 +4549,18 @@ function preferencesStoragePolicy(): string {
 function preferencesStoragePolicyItem(title: string, detail: string): string {
   return `
     <article>
-      <strong>${escapeHtml(title)}</strong>
+      <span>${escapeHtml(title)}</span>
+      <strong>${escapeHtml(preferencesStoragePolicyShortTitle(title))}</strong>
       <span>${escapeHtml(detail)}</span>
     </article>
   `;
+}
+
+function preferencesStoragePolicyShortTitle(title: string): string {
+  if (title === 'Local first') return 'Saved in this browser';
+  if (title.startsWith('Cloud')) return title;
+  if (title === 'Secrets stay local') return 'Secrets never sync';
+  return title;
 }
 
 function preferencesViewButton(view: PreferencesView, title: string, detail: string): string {
@@ -4529,16 +4573,66 @@ function preferencesViewButton(view: PreferencesView, title: string, detail: str
       role="tab"
       aria-selected="${active ? 'true' : 'false'}"
     >
-      <span>${escapeHtml(title)}</span>
-      <em>${escapeHtml(detail)}</em>
+      <span>${escapeHtml(detail)}</span>
+      <strong>${escapeHtml(title)}</strong>
+      <em>${escapeHtml(preferencesViewSummary(view))}</em>
     </button>
   `;
+}
+
+function preferencesViewSummary(view: PreferencesView): string {
+  switch (view) {
+    case 'workspace': {
+      const pending = state.pendingTransactions.length;
+      const unresolved = unresolvedPendingTransactions().length;
+      const alertsOn = notificationEnabledCount();
+      if (unresolved > 0) return `${unresolved} unresolved tx · ${alertsOn} alerts on`;
+      return `${pending} pending tx · ${alertsOn} alerts on`;
+    }
+    case 'ai': {
+      const extras = [
+        state.aiSettings.multiReviewer ? 'multi-review' : '',
+        state.aiSettings.autoBackgroundWatch ? 'background watch' : '',
+        state.plannerPrefs.houseRules.trim() ? 'house rules' : '',
+        state.plannerPrefs.savedPrompts.length ? `${state.plannerPrefs.savedPrompts.length} prompts` : '',
+      ].filter(Boolean);
+      return extras.length ? extras.join(' · ') : 'draft defaults';
+    }
+    case 'access': {
+      const enabledAgents = state.agents.filter((agent) => agent.enabled).length;
+      const enabledDapps = KNOWN_CONNECTED_DAPPS.filter((adapter) =>
+        isDappEnabled(adapter.id, state.connectedDapps, state.cluster),
+      ).length;
+      return `${enabledAgents}/${state.agents.length} agents · ${enabledDapps} dApps on`;
+    }
+    case 'rules': {
+      const enabledPolicies = state.agentPolicies.filter((policy) => policy.enabled).length;
+      const railsOn = safetyRailsEnabledCount();
+      return `${state.recipientRules.recipients.length} recipients · ${railsOn} rails · ${enabledPolicies} policies`;
+    }
+    case 'tokens': {
+      const autoRetries = state.failurePolicies.filter((policy) => policy.mode === 'auto').length;
+      return `${state.customTokens.length} custom tokens · ${autoRetries} auto retries`;
+    }
+  }
+}
+
+function notificationEnabledCount(): number {
+  const settings = state.notificationSettings;
+  return [settings.browser, settings.due, settings.pending, settings.confirmed, settings.failed]
+    .filter(Boolean).length;
+}
+
+function safetyRailsEnabledCount(): number {
+  const rails = state.safetyRails;
+  return [rails.programs.enabled, rails.tokens.enabled, rails.spend.enabled, rails.slippage.enabled]
+    .filter(Boolean).length;
 }
 
 function preferencesActiveView(): string {
   switch (state.preferencesView) {
     case 'workspace':
-      return preferencesGroup('Workspace State', 'Export, restore, and background alerts for this browser workspace.', `
+      return preferencesGroup('Workspace', 'Export, restore, and run background alerts for this browser workspace.', `
         <div class="preferences-card-grid workspace-preferences-grid">
           ${workspaceBackupPanel()}
           ${notificationPreferencesPanel()}
@@ -4548,14 +4642,14 @@ function preferencesActiveView(): string {
       return preferencesGroup('AI Drafting', 'Personalize drafts and optional review behavior without changing signing authority.', aiReviewPreferencesPanel());
     case 'access':
       return preferencesGroup('Agent Access', 'Manage bridge agents and protocol connectors used to prepare actions.', `
-        <div class="preferences-card-grid">
+        <div class="preferences-card-grid access-preferences-grid">
           ${connectedAgentsPanel()}
           ${connectedDappsPanel()}
         </div>
       `);
     case 'rules':
-      return preferencesGroup('Review Rules', 'Recipient checks, hard safety rails, and agent review policies.', `
-        <div class="preferences-card-grid">
+      return preferencesGroup('Review Rules', 'Optional checks that help the signer review recipients, routes, and agent advice.', `
+        <div class="preferences-card-grid rules-preferences-stack">
           ${recipientRulesPanel()}
           ${safetyRailsPanel()}
           ${agentPoliciesPanel()}
@@ -4639,6 +4733,7 @@ function cloudWorkspaceCard(): string {
   const signedIn = state.cloudSession.status === 'signed-in';
   const matched = cloudSessionMatchesWallet();
   const mismatch = cloudSessionWalletMismatch();
+  const reconnectNeeded = signedIn && !matched && !mismatch;
   const unavailable = state.cloudSession.status === 'unavailable';
   const noWalletCloudAction = firstRunNextAction();
   const status = unavailable
@@ -4646,14 +4741,16 @@ function cloudWorkspaceCard(): string {
     : signedIn
       ? matched
         ? 'Signed in'
-        : 'Wallet mismatch'
+        : reconnectNeeded
+          ? 'Reconnect wallet'
+          : 'Wallet mismatch'
       : 'Signed out';
   const detail = unavailable
     ? 'Plans, approvals, and proofs stay on this device. No localhost required.'
     : signedIn
       ? matched
         ? 'One-time drafts, approvals, and done work sync through Agentic Cloud.'
-        : `Signed in as ${short(state.cloudSession.walletAddress)}. Connect that wallet to use cloud workflow.`
+        : `Signed in as ${short(state.cloudSession.walletAddress)}. ${reconnectNeeded ? 'Reconnect that wallet to use cloud workflow.' : 'Connect that wallet to use cloud workflow.'}`
       : 'Signed-out workflow data is saved on this device.';
   const summaryDetail = unavailable
     ? 'Saved on this device - no localhost required'
@@ -4841,7 +4938,7 @@ function safetyRailsSlippageSection(): string {
 function recipientRulesPanel(): string {
   const rules = state.recipientRules;
   const savedCount = rules.recipients.length;
-  const open = rules.enabled || savedCount === 0 ? 'open' : '';
+  const open = rules.enabled || savedCount > 0 ? 'open' : '';
   const summary = recipientRulesSummary();
   return `
     <details class="recipient-rules-panel rail-details ${rules.enabled ? 'enabled' : 'disabled'}" data-layout="recipient-rules-panel" ${open}>
@@ -4986,7 +5083,7 @@ function formatConnectedDappHostname(url: string): string {
 function agentPoliciesPanel(): string {
   const policies = state.agentPolicies;
   const enabledCount = policies.filter((policy) => policy.enabled).length;
-  const open = policies.length === 0 ? 'open' : '';
+  const open = policies.length > 0 ? 'open' : '';
   const summary = policies.length
     ? `${enabledCount} of ${policies.length} on`
     : 'No saved policies yet';
@@ -5052,7 +5149,7 @@ function customTokenFieldError(key: string): string {
 
 function customTokensPanel(): string {
   const tokens = state.customTokens;
-  const open = tokens.length === 0 ? 'open' : '';
+  const open = tokens.length > 0 ? 'open' : '';
   const summary = tokens.length === 0
     ? 'No custom tokens'
     : `${tokens.length} custom ${tokens.length === 1 ? 'token' : 'tokens'}`;
@@ -7166,6 +7263,8 @@ function commandStorageCloudCard(): string {
   const signedIn = state.cloudSession.status === 'signed-in';
   const unavailable = state.cloudSession.status === 'unavailable';
   const matched = cloudSessionMatchesWallet();
+  const mismatch = cloudSessionWalletMismatch();
+  const reconnectNeeded = signedIn && !matched && !mismatch;
   const selectedProvider = discoveredSelectedWalletName();
   const hasDiscoveredWallet = state.wallets.length > 0 && Boolean(selectedProvider);
   const status = unavailable
@@ -7173,10 +7272,10 @@ function commandStorageCloudCard(): string {
     : active
       ? 'Active'
       : signedIn
-        ? matched ? 'Signed in' : 'Wallet mismatch'
+        ? matched ? 'Signed in' : reconnectNeeded ? 'Reconnect wallet' : 'Wallet mismatch'
         : 'Signed out';
   const detail = signedIn && !matched
-    ? `Signed in as ${short(state.cloudSession.walletAddress)}. Connect that wallet to use cloud workflow.`
+    ? `Signed in as ${short(state.cloudSession.walletAddress)}. ${reconnectNeeded ? 'Reconnect that wallet to use cloud workflow.' : 'Connect that wallet to use cloud workflow.'}`
     : 'Optional sync for one-time drafts, approvals, repeat payments, proofs, and done work.';
   return `
     <article class="command-storage-card ${active ? 'active' : ''}">
@@ -7532,6 +7631,7 @@ function generatedPlansPanel(embedded = false): string {
   const allPlans = generatedPlansForPanel(embedded);
   const visiblePlans = visibleGeneratedPlans(embedded);
   const paginatedPlans = paginateList(visiblePlans, 'review');
+  const aiDraftPending = embedded && state.activeOperation === 'generate-ai-plan';
   const archivedCount = allPlans.filter((record) => record.status === 'archived').length;
   const activeCount = allPlans.filter(isGeneratedPlanActiveInReview).length;
   const movedCount = allPlans.filter(hasGeneratedPlanMovedPastReview).length;
@@ -7569,6 +7669,7 @@ function generatedPlansPanel(embedded = false): string {
 
       ${planTemplatesStrip(embedded)}
       ${generatedPlanStatusLine(allPlans.length, visiblePlans.length, archivedCount, movedCount)}
+      ${aiDraftPending ? aiDraftPendingCard() : ''}
       ${
         visiblePlans.length
           ? `
@@ -7577,7 +7678,7 @@ function generatedPlansPanel(embedded = false): string {
             </div>
             ${listPagination('review', paginatedPlans, 'Check drafts')}
           `
-          : generatedPlansEmptyState(embedded)
+          : aiDraftPending ? '' : generatedPlansEmptyState(embedded)
       }
       ${state.error ? `<div class="error">${escapeHtml(state.error)}</div>` : ''}
   `;
@@ -7606,6 +7707,21 @@ function generatedPlanStatusLine(totalCount: number, visibleCount: number, archi
       <span>${archivedCount} archived</span>
       <span>Newest first</span>
     </div>
+  `;
+}
+
+function aiDraftPendingCard(): string {
+  const template = selectedTemplate();
+  const prompt = state.agentPrompt.trim();
+  return `
+    <section class="ai-draft-pending-card" aria-label="AI draft in progress">
+      <div>
+        <span>AI draft</span>
+        <h3>${escapeHtml(template.title)} is being drafted</h3>
+        <p>${escapeHtml(prompt || 'Checking route, amount, protocol, slippage, and wallet approval boundary before this reaches Check.')}</p>
+      </div>
+      <strong>${buttonSpinner()}Working</strong>
+    </section>
   `;
 }
 
@@ -8883,6 +8999,7 @@ function generatedPlansEmptyState(oneTimeOnly = false): string {
 function agentPlannerWorkbench(): string {
   const template = selectedTemplate();
   const notesRequired = templateRequiresUserNotes(template);
+  const aiPathConnected = hasDetectedAgentReviewPath();
   const canUseAi = canGenerateAiPlanFromSettings();
   const aiDisabledReason = aiGenerateDisabledReason();
   const templateGenerating = state.activeOperation === 'generate-template-plan';
@@ -8890,13 +9007,13 @@ function agentPlannerWorkbench(): string {
   const outcome = templateOutcome(template);
   const notesLabel = notesRequired
     ? 'Custom request / notes'
-    : canUseAi
-      ? 'Notes / AI instructions'
+    : aiPathConnected
+      ? 'AI instruction / notes'
       : 'Notes for review record';
   const notesPlaceholder = notesRequired
     ? 'Describe what you want prepared or reviewed.'
-    : canUseAi
-      ? 'Optional context, reason, policy note, or AI instruction for this plan.'
+    : aiPathConnected
+      ? AI_DRAFT_EXAMPLE_PROMPT
       : 'Optional context, reason, or policy note saved with this plan.';
   return `
     <div class="agent-planner-grid planner-single-column">
@@ -8926,9 +9043,19 @@ function agentPlannerWorkbench(): string {
             <textarea id="agentPrompt" placeholder="${escapeHtml(notesPlaceholder)}" ${state.busy ? 'disabled' : ''}>${escapeHtml(state.agentPrompt)}</textarea>
             ${fieldError('__notes')}
           </label>
+          ${aiPathConnected ? `
+            <div class="ai-draft-assist-note" aria-label="AI draft guidance">
+              <span>Optional AI draft</span>
+              <p>Describe the request in plain English, or fill the fields yourself and let AI structure the draft for Check.</p>
+            </div>
+          ` : ''}
           <div class="agent-actions signature-actions intent-document-actions">
             <button id="generatePlan" class="primary" ${state.busy ? 'disabled' : ''}>${templateGenerating ? `${buttonSpinner()}Drafting...` : 'Draft from template'}</button>
-            <button id="generateAiPlan" class="${canUseAi ? 'primary' : ''}" ${!canUseAi || state.busy ? 'disabled' : ''} title="${escapeHtml(canUseAi ? 'Draft through your configured AI planner.' : aiDisabledReason)}">${aiGenerating ? `${buttonSpinner()}Drafting...` : 'Draft with AI'}</button>
+            ${aiPathConnected ? `
+              <button id="generateAiPlan" class="primary ai-draft-button" ${!canUseAi || state.busy ? 'disabled' : ''} title="${escapeHtml(canUseAi ? 'Draft through your configured AI planner.' : aiDisabledReason)}">
+                ${aiGenerating ? `${buttonSpinner()}AI drafting...` : 'Draft with AI'}
+              </button>
+            ` : ''}
           </div>
         </div>
       </div>
@@ -12139,13 +12266,18 @@ function bind(): void {
   for (const button of document.querySelectorAll<HTMLButtonElement>('[data-recurring-token-mode]')) {
     button.addEventListener('click', () => {
       const mode = button.dataset.recurringTokenMode;
-      const current = state.recurringDraft.token || RECURRING_TOKEN_OPTIONS[0]!;
+      const field = recurringTokenFieldFromDataset(button.dataset.recurringTokenField);
+      state.recurringDraft = readRecurringDraft();
+      const current = recurringDraftTokenFieldValue(state.recurringDraft, field) || RECURRING_TOKEN_OPTIONS[0]!;
+      const nextValue = mode === 'custom'
+        ? RECURRING_TOKEN_OPTIONS.includes(current) ? '' : current
+        : RECURRING_TOKEN_OPTIONS.includes(current) ? current : RECURRING_TOKEN_OPTIONS[0]!;
       if (mode === 'custom') {
-        state.recurringDraft.token = RECURRING_TOKEN_OPTIONS.includes(current) ? '' : current;
-      } else {
-        state.recurringDraft.token = RECURRING_TOKEN_OPTIONS.includes(current) ? current : RECURRING_TOKEN_OPTIONS[0]!;
+        setRecurringDraftTokenFieldValue(state.recurringDraft, field, nextValue);
+      } else if (mode === 'preset') {
+        setRecurringDraftTokenFieldValue(state.recurringDraft, field, nextValue);
       }
-      delete state.recurringErrors.recurringToken;
+      delete state.recurringErrors[recurringTokenFieldErrorKey(field)];
       render();
     });
   }
@@ -13575,6 +13707,8 @@ async function runGenerateAiPlan(): Promise<void> {
         const userNotes = state.agentPrompt.trim();
         assertValidTemplatePlanInput(template, parameters, userNotes);
         const effectiveUserNotes = injectHouseRules(userNotes);
+        state.oneTimePlanView = 'review';
+        render();
         const request = {
           prompt: userNotes || template.description,
           userNotes: effectiveUserNotes,
@@ -15591,14 +15725,6 @@ function cloudSessionWalletMismatch(): boolean {
   );
 }
 
-function cloudSessionNeedsWalletBoundaryLogout(): boolean {
-  return shouldAutoSignOutCloudSession({
-    cloudStatus: state.cloudSession.status,
-    cloudWalletAddress: state.cloudSession.walletAddress,
-    connectedWalletAddress: state.address,
-  });
-}
-
 async function signOutCloudSession(): Promise<boolean> {
   if (state.cloudSession.status !== 'signed-in' || !state.cloudSession.walletAddress) {
     return false;
@@ -15615,7 +15741,12 @@ async function signOutCloudSessionForWalletBoundary(
   reason: CloudSessionLogoutReason,
   options: { toast?: boolean } = {},
 ): Promise<boolean> {
-  if (!cloudSessionNeedsWalletBoundaryLogout()) return false;
+  if (!shouldAutoSignOutCloudSession({
+    cloudStatus: state.cloudSession.status,
+    cloudWalletAddress: state.cloudSession.walletAddress,
+    connectedWalletAddress: state.address,
+    reason,
+  })) return false;
   const signedInWallet = state.cloudSession.walletAddress;
   const connectedWallet = state.address;
   const signedOut = await signOutCloudSession();
@@ -16783,11 +16914,12 @@ async function runDisconnectBridge(): Promise<void> {
   await run('bridge', async () => {
     await disconnectBridgeHost();
     state.bridgeActive = false;
+    state.bridgeAutoReconnect = false;
     state.bridgeStatus = 'Bridge disconnected.';
     if (state.workflowModePreference === 'local-bridge') {
       state.workflowModePreference = 'auto';
-      savePersistedState();
     }
+    savePersistedState();
     stopBridgePolling();
     pushToast('success', 'Bridge disconnected', 'Local approval host stopped polling.');
   });
@@ -16810,6 +16942,9 @@ async function runCreateRecurring(): Promise<void> {
     state.recurringDraft = readRecurringDraft();
     assertValidRecurringDraft(state.recurringDraft);
     const mode = activeWorkflowMode();
+    if (recurringDraftIsSwap(state.recurringDraft) && mode !== 'browser-workflow') {
+      throw new Error('Recurring swaps are saved-on-device only in this build. Use browser storage to create one local swap approval.');
+    }
     const body = recurringBody(state.recurringDraft);
     if (mode === 'local-bridge') {
       await bridgeRequest('/bridge/recurring-payments', {
@@ -16839,7 +16974,7 @@ async function runCreateRecurring(): Promise<void> {
     state.recurringView = 'active';
     pushToast(
       'success',
-      'Repeat payment created',
+      recurringDraftIsSwap(state.recurringDraft) ? 'Recurring swap created' : 'Repeat payment created',
       mode === 'local-bridge'
         ? 'Future payments will appear in Needs Approval.'
         : mode === 'agentic-cloud'
@@ -20751,6 +20886,7 @@ async function activateBridgeConnection(
   }
   await connectBridgeHost();
   state.bridgeActive = true;
+  state.bridgeAutoReconnect = true;
   state.bridgeStatus = 'Connected to local bridge. Waiting for agent requests.';
   startBridgePolling();
   await refreshConnectedBridgeState(Boolean(options.strictSync));
@@ -21443,15 +21579,18 @@ function browserRecurringPaymentFromDraft(draft: RecurringDraft): RecurringPayme
   const payload = recurringBody(draft);
   const schedulePayload = payload as ReturnType<typeof recurringSchedulePayload>;
   const maxOccurrences = Number(draft.maxOccurrences);
+  const isSwap = recurringDraftIsSwap(draft);
   return {
     id: newId('browser-recurring'),
     status: 'active',
     walletAddress: state.address,
     cluster: state.cluster,
-    token: draft.token,
-    recipient: draft.recipient,
-    amount: draft.amount,
     ...schedulePayload,
+    actionKind: isSwap ? 'swap' : 'transfer',
+    token: isSwap ? draft.inputToken : draft.token,
+    recipient: isSwap ? '' : draft.recipient,
+    amount: draft.amount,
+    ...(isSwap ? { inputToken: draft.inputToken, outputToken: draft.outputToken, slippageBps: draft.slippageBps } : {}),
     ...(Number.isInteger(maxOccurrences) && maxOccurrences > 0 ? { maxOccurrences } : {}),
     occurrencesCreated: 1,
     ...(typeof payload.expiresAt === 'string' && { expiresAt: payload.expiresAt }),
@@ -21473,6 +21612,31 @@ function browserOccurrenceFromRecurring(payment: RecurringPayment, summary?: str
   const now = new Date().toISOString();
   const actionId = newId('browser-action');
   const token = payment.token || 'SOL';
+  if (recurringPaymentIsSwap(payment)) {
+    const inputToken = payment.inputToken || payment.token || 'SOL';
+    const outputToken = payment.outputToken || 'USDC';
+    return {
+      id: actionId,
+      kind: 'swap',
+      status: 'ready',
+      walletAddress: payment.walletAddress,
+      cluster: payment.cluster,
+      summary: summary || `${payment.amount} ${tokenDisplayLabel(inputToken)} recurring swap`,
+      params: {
+        inputToken,
+        outputToken,
+        amount: payment.amount,
+        slippageBps: payment.slippageBps || '50',
+      },
+      dueAt: now,
+      createdAt: now,
+      updatedAt: now,
+      note: payment.note,
+      recurringId: payment.id,
+      occurrenceKey: `browser-${now}`,
+      workflowSource: 'browser',
+    };
+  }
   return {
     id: actionId,
     kind: token.toUpperCase() === 'SOL' ? 'transfer_sol' : 'transfer_spl',
@@ -22500,6 +22664,7 @@ function preparedActionCard(action: PreparedAction): string {
 }
 
 function preparedActionCardTitle(action: PreparedAction): string {
+  if (action.recurringId && action.kind === 'swap') return 'Recurring swap approval';
   if (action.recurringId) return 'Repeat payment approval';
   if (action.kind === 'transfer_sol' || action.kind === 'transfer_spl') return 'Transfer approval';
   if (action.kind === 'swap') return 'Swap approval';
@@ -22819,7 +22984,9 @@ function inboxApprovalSummaryItem(row: ApprovalSummaryRow): string {
 }
 
 function preSignReviewBlock(action: PreparedAction): string {
-  if (action.kind === 'swap') return policyWarningsStrip(action);
+  if (action.kind === 'swap' || action.kind === 'transfer_sol' || action.kind === 'transfer_spl') {
+    return policyWarningsStrip(action);
+  }
   if (!isExecutableBrowserAction(action) && action.workflowSource !== 'local-bridge') return '';
   // Suppress review once the action is in flight — the Check-confirmation flow takes over.
   if (hasPendingExecutionLedgerEntry(action.id)) return '';
@@ -22828,50 +22995,7 @@ function preSignReviewBlock(action: PreparedAction): string {
   const model = buildPreSignReviewModelForAction(action);
   if (!model) return '';
   return renderPreSignReviewModel(model)
-    + preflightSimulationStrip(action)
     + policyWarningsStrip(action);
-}
-
-function preflightSimulationStrip(action: PreparedAction): string {
-  const result = state.preflightSimulation[action.id];
-  const supports = preflightSupports(action.kind);
-  if (!supports && !result) return '';
-  if (!result) {
-    return `
-      <div class="preflight-strip neutral">
-        <div class="preflight-strip-copy">
-          <strong>Preflight preview</strong>
-          <p>Simulate this action before opening the wallet. No fees, no signature.</p>
-        </div>
-        <button type="button" class="utility" data-preflight-action="run" data-action-id="${escapeHtml(action.id)}">Run preview</button>
-      </div>
-    `;
-  }
-  const detail = result.detail ? `<span class="preflight-strip-detail">${escapeHtml(result.detail)}</span>` : '';
-  const fee = typeof result.feeLamports === 'number'
-    ? `<span class="preflight-strip-fee">Fee ~${(result.feeLamports / 1e9).toFixed(6)} SOL</span>`
-    : '';
-  const logs = result.logs && result.logs.length > 0
-    ? `<details class="preflight-strip-logs"><summary>Simulation logs (${result.logs.length})</summary><pre>${escapeHtml(result.logs.slice(0, 30).join('\n'))}</pre></details>`
-    : '';
-  return `
-    <div class="preflight-strip ${escapeHtml(result.status)}">
-      <div class="preflight-strip-copy">
-        <strong>${escapeHtml(result.message)}</strong>
-        ${detail}
-        ${fee}
-      </div>
-      <div class="preflight-strip-actions">
-        <button type="button" class="utility" data-preflight-action="run" data-action-id="${escapeHtml(action.id)}" ${result.status === 'running' ? 'disabled' : ''}>${result.status === 'running' ? 'Checking…' : 'Recheck'}</button>
-        <button type="button" class="utility" data-preflight-action="clear" data-action-id="${escapeHtml(action.id)}">Hide</button>
-      </div>
-      ${logs}
-    </div>
-  `;
-}
-
-function preflightSupports(kind: PreparedActionKind): boolean {
-  return kind === 'transfer_sol' || kind === 'transfer_spl';
 }
 
 function policyWarningsStrip(action: PreparedAction): string {
@@ -22891,25 +23015,6 @@ function policyWarningsStrip(action: PreparedAction): string {
 
 function buildPreSignReviewModelForAction(action: PreparedAction): PreSignReviewModel | undefined {
   const mainnet = action.cluster === 'mainnet-beta';
-  if (action.kind === 'transfer_sol' || action.kind === 'transfer_spl') {
-    const recipient = recipientParam(action);
-    const amount = preSignAmount(action);
-    const token = preSignTokenLabel(action);
-    const savedRecipient = recipient ? savedRecipientForAddress(recipient) : undefined;
-    const recipientBadge = savedRecipient?.isMine ? '→ your wallet' : undefined;
-    const recipientTone: ReviewTone | undefined = savedRecipient?.isMine ? 'good' : undefined;
-    return buildSendPreSignReview({
-      cluster: action.cluster,
-      sender: action.walletAddress || undefined,
-      recipient: recipient || undefined,
-      ...(recipientBadge ? { recipientBadge } : {}),
-      ...(recipientTone ? { recipientTone } : {}),
-      amount,
-      token,
-      memo: stringParam(action, 'memo') || undefined,
-      mainnetWarning: mainnet,
-    });
-  }
   if (action.kind === 'custom_transaction') {
     const transactionHash = stringParam(action, 'transactionHash') || stringParam(action, 'fingerprint') || undefined;
     return buildCustomTransactionPreSignReview({
@@ -22962,21 +23067,6 @@ function numberParam(action: PreparedAction, key: string): number | undefined {
     if (Number.isFinite(parsed)) return parsed;
   }
   return undefined;
-}
-
-function preSignAmount(action: PreparedAction): string | undefined {
-  if (action.kind === 'transfer_sol') {
-    const amountSol = stringParam(action, 'amountSol');
-    return amountSol || undefined;
-  }
-  const amount = stringParam(action, 'amount');
-  return amount || undefined;
-}
-
-function preSignTokenLabel(action: PreparedAction): string | undefined {
-  if (action.kind === 'transfer_sol') return 'SOL';
-  const token = stringParam(action, 'token');
-  return resolveTokenDisplay(token || undefined) || (token || undefined);
 }
 
 function browserSlippageBpsFromParams(action: PreparedAction): number | undefined {
@@ -23293,28 +23383,39 @@ function actionPreview(action: PreparedAction): string {
 
 function recurringComposer(): string {
   const draft = state.recurringDraft;
+  const isSwap = recurringDraftIsSwap(draft);
   const recipient = draft.recipient ? recipientDisplayLabel(draft.recipient) : 'Recipient required';
   const limit = recurringDraftLimitLabel(draft);
-  const createDisabled = !state.address || state.busy;
   const workflowMode = activeWorkflowMode();
   const browserWorkflow = workflowMode === 'browser-workflow';
-  const recurringHelp = browserWorkflow
-    ? 'Creates one local approval item now. Use Cloud or the local connector for background repeats.'
-    : 'Every payment returns to Needs Approval before wallet signing.';
-  const boundaryCopy = browserWorkflow
-    ? 'One local approval item is created now; background repeats need Cloud or local connector.'
-    : `${activeWorkflowLabel()} owns this repeat payment. No transaction signs until you approve a payment.`;
+  const createDisabled = !state.address || state.busy || (isSwap && !browserWorkflow);
+  const composerTitle = isSwap ? 'Create recurring swap' : 'Create repeat payment';
+  const createLabel = isSwap ? 'Create recurring swap' : 'Create repeat payment';
+  const recurringHelp = isSwap
+    ? browserWorkflow
+      ? 'Creates one local recurring swap approval now. Use Cloud or the local connector for background repeats.'
+      : 'Recurring swaps are saved-on-device only in this build.'
+    : browserWorkflow
+      ? 'Creates one local approval item now. Use Cloud or the local connector for background repeats.'
+      : 'Every payment returns to Needs Approval before wallet signing.';
+  const boundaryCopy = isSwap
+    ? 'Each due swap opens wallet review. No delegated trading authority or token allowance is created.'
+    : browserWorkflow
+      ? 'One local approval item is created now; background repeats need Cloud or local connector.'
+      : `${activeWorkflowLabel()} owns this repeat payment. No transaction signs until you approve a payment.`;
   const actionHelper = !state.address
     ? 'Connect a wallet before creating a repeat payment.'
-    : browserWorkflow
-      ? 'Creates one local approval item now.'
-      : 'Future payments will appear in Needs Approval.';
+    : isSwap && !browserWorkflow
+      ? 'Use browser storage to create recurring swap approvals for now.'
+      : browserWorkflow
+        ? 'Creates one local approval item now.'
+        : 'Future payments will appear in Needs Approval.';
   return `
     <div class="recurring-panel recurring-contract">
       <div class="contract-head app-inline-head recurring-composer-head">
         <div>
           <span>Repeat setup</span>
-          <h3>Create repeat payment</h3>
+          <h3>${escapeHtml(composerTitle)}</h3>
           <p class="recurring-help">${escapeHtml(recurringHelp)}</p>
         </div>
         <div class="recurring-composer-meta">
@@ -23328,27 +23429,37 @@ function recurringComposer(): string {
           <p>${escapeHtml(boundaryCopy)}</p>
         </div>
         <div class="recurring-form-actions contract-actions">
-          <button id="createRecurring" class="primary" ${createDisabled ? 'disabled' : ''}>Create repeat payment</button>
-          <button type="button" class="utility" data-recurring-action="dca-proof">Create DCA review proof</button>
+          <button id="createRecurring" class="primary" ${createDisabled ? 'disabled' : ''}>${escapeHtml(createLabel)}</button>
           <span class="contract-helper accent-note">${escapeHtml(actionHelper)}</span>
         </div>
       </div>
       <dl class="contract-summary recurring-create-summary">
-        ${definitionRow('Asset', `${draft.amount || 'Amount'} ${draft.token ? tokenDisplayLabel(draft.token) : 'Token'}`)}
-        ${definitionRow('Recipient', recipient)}
+        ${definitionRow('Asset', recurringDraftAssetLabel(draft))}
+        ${isSwap
+          ? definitionRow('Swap', recurringDraftSwapRouteLabel(draft))
+          : definitionRow('Recipient', recipient)}
         ${definitionRow('Cadence', recurringDraftScheduleLabel(draft))}
         ${definitionRow('Limit', limit)}
       </dl>
       ${recurringPresetControls()}
       <div class="contract-section recurring-create-section">
         <div>
-          <span>Payment terms</span>
-          <p>Token, amount, recipient.</p>
+          <span>${escapeHtml(isSwap ? 'Swap terms' : 'Payment terms')}</span>
+          <p>${escapeHtml(isSwap ? 'Input token, output token, amount, slippage.' : 'Token, amount, recipient.')}</p>
         </div>
-        <div class="recurring-grid">
-          ${recurringTokenSelect(draft.token)}
-          ${fieldInput('recurringAmount', 'Amount *', draft.amount)}
-          ${recurringRecipientInput(draft.recipient)}
+        <div class="recurring-grid ${isSwap ? 'recurring-swap-grid' : ''}">
+          ${isSwap
+            ? `
+              ${recurringTokenSelectField('inputToken', 'Input token *', draft.inputToken)}
+              ${recurringTokenSelectField('outputToken', 'Output token *', draft.outputToken)}
+              ${fieldInput('recurringAmount', 'Token amount *', draft.amount)}
+              ${recurringSlippageInput(draft.slippageBps)}
+            `
+            : `
+              ${recurringTokenSelect(draft.token)}
+              ${fieldInput('recurringAmount', 'Amount *', draft.amount)}
+              ${recurringRecipientInput(draft.recipient)}
+            `}
         </div>
       </div>
       <div class="contract-section recurring-create-section">
@@ -23420,9 +23531,35 @@ function recurringDraftLimitLabel(draft: RecurringDraft): string {
   return parts.length ? parts.join(' · ') : 'Manual review every time';
 }
 
+function recurringDraftIsSwap(draft: RecurringDraft): boolean {
+  return draft.actionKind === 'swap';
+}
+
+function recurringDraftSpendToken(draft: RecurringDraft): string {
+  return recurringDraftIsSwap(draft) ? draft.inputToken : draft.token;
+}
+
+function recurringDraftAssetLabel(draft: RecurringDraft): string {
+  const amount = draft.amount || 'Amount';
+  if (recurringDraftIsSwap(draft)) {
+    const input = draft.inputToken ? tokenDisplayLabel(draft.inputToken) : 'Input';
+    const output = draft.outputToken ? tokenDisplayLabel(draft.outputToken) : 'Output';
+    return `${amount} ${input} -> ${output}`;
+  }
+  return `${amount} ${draft.token ? tokenDisplayLabel(draft.token) : 'Token'}`;
+}
+
+function recurringDraftSwapRouteLabel(draft: RecurringDraft): string {
+  const input = draft.inputToken ? tokenDisplayLabel(draft.inputToken) : 'Input token';
+  const output = draft.outputToken ? tokenDisplayLabel(draft.outputToken) : 'Output token';
+  const slippage = draft.slippageBps.trim() ? formatSwapSlippagePercent(Number(draft.slippageBps)) : '';
+  return `${input} -> ${output}${slippage ? `, ${slippage} max` : ''}`;
+}
+
 function recurringDraftPreviewPanel(draft: RecurringDraft): string {
   const runs = recurringDraftNextRuns(draft);
   const spend = recurringDraftLifetimeSpend(draft);
+  const spendToken = recurringDraftSpendToken(draft);
   return `
     <div class="recurring-next-preview recurring-production-preview">
       <div>
@@ -23430,7 +23567,7 @@ function recurringDraftPreviewPanel(draft: RecurringDraft): string {
         <strong id="recurringNextOccurrence">${escapeHtml(runs[0] ? formatDateTime(runs[0]) : recurringNextOccurrenceLabel(draft))}</strong>
       </div>
       ${runs.length ? `<ol>${runs.map((run) => `<li>${escapeHtml(formatDateTime(run))}</li>`).join('')}</ol>` : ''}
-      ${spend ? `<p>${escapeHtml(lifetimeSpendCopy(spend, draft.token))}</p>` : ''}
+      ${spend ? `<p>${escapeHtml(lifetimeSpendCopy(spend, spendToken))}</p>` : ''}
     </div>
   `;
 }
@@ -23462,20 +23599,29 @@ function recurringPresetControls(): string {
   `;
 }
 
+type RecurringTokenField = 'token' | 'inputToken' | 'outputToken';
+
 function recurringTokenSelect(value: string): string {
-  const error = fieldError('recurringToken');
+  return recurringTokenSelectField('token', 'Token', value);
+}
+
+function recurringTokenSelectField(field: RecurringTokenField, label: string, value: string): string {
+  const id = recurringTokenFieldInputId(field);
+  const errorKey = recurringTokenFieldErrorKey(field);
+  const error = fieldError(errorKey);
   const options = RECURRING_TOKEN_OPTIONS;
   const presetMode = options.includes(value);
   const customValue = presetMode ? '' : value;
   const disabled = state.busy;
   return `
-    <div class="field compact token-choice-field ${state.recurringErrors.recurringToken ? 'field-error' : ''}">
+    <div class="field compact token-choice-field ${state.recurringErrors[errorKey] ? 'field-error' : ''}">
       <span class="token-choice-head">
-        <span>Token</span>
+        <span>${escapeHtml(label)}</span>
         <span class="token-choice-mode" role="group" aria-label="Repeat token input mode">
           <button
             type="button"
             data-recurring-token-mode="preset"
+            data-recurring-token-field="${escapeHtml(field)}"
             class="${presetMode ? 'active' : ''}"
             ${disabled ? 'disabled' : ''}
           >
@@ -23484,6 +23630,7 @@ function recurringTokenSelect(value: string): string {
           <button
             type="button"
             data-recurring-token-mode="custom"
+            data-recurring-token-field="${escapeHtml(field)}"
             class="${presetMode ? '' : 'active'}"
             ${disabled ? 'disabled' : ''}
           >
@@ -23492,19 +23639,19 @@ function recurringTokenSelect(value: string): string {
         </span>
       </span>
       ${presetMode ? selectPicker({
-        id: 'recurringToken',
+        id,
         value,
-        attrs: { 'data-recurring-field': 'token' },
+        attrs: { 'data-recurring-field': field },
         disabled,
         options: options.map((token) => ({
           value: token,
           label: token,
-          meta: 'Token',
+          meta: label.replace(/\s+\*$/, ''),
         })),
       }) : `
         <input
-          id="recurringToken"
-          data-recurring-field="token"
+          id="${escapeHtml(id)}"
+          data-recurring-field="${escapeHtml(field)}"
           value="${escapeHtml(customValue)}"
           placeholder="Paste token mint address"
           autocomplete="off"
@@ -23515,6 +23662,64 @@ function recurringTokenSelect(value: string): string {
       ${error}
     </div>
   `;
+}
+
+function recurringSlippageInput(value: string): string {
+  const error = fieldError('recurringSlippageBps');
+  return `
+    <label class="field compact ${state.recurringErrors.recurringSlippageBps ? 'field-error' : ''}">
+      <span>Max slippage</span>
+      <input
+        id="recurringSlippageBps"
+        data-recurring-field="slippageBps"
+        value="${escapeHtml(slippageBpsToPercentInput(value))}"
+        placeholder="0.5%"
+        inputmode="decimal"
+        ${state.busy ? 'disabled' : ''}
+      />
+      ${error}
+    </label>
+  `;
+}
+
+function recurringTokenFieldFromDataset(value: string | undefined): RecurringTokenField {
+  return value === 'inputToken' || value === 'outputToken' ? value : 'token';
+}
+
+function recurringTokenFieldInputId(field: RecurringTokenField): string {
+  if (field === 'inputToken') return 'recurringInputToken';
+  if (field === 'outputToken') return 'recurringOutputToken';
+  return 'recurringToken';
+}
+
+function recurringTokenFieldErrorKey(field: RecurringTokenField): keyof RecurringDraftErrorMap {
+  if (field === 'inputToken') return 'recurringInputToken';
+  if (field === 'outputToken') return 'recurringOutputToken';
+  return 'recurringToken';
+}
+
+type RecurringDraftErrorMap = Record<
+  'recurringToken' | 'recurringInputToken' | 'recurringOutputToken' | 'recurringSlippageBps',
+  string
+>;
+
+function recurringDraftTokenFieldValue(draft: RecurringDraft, field: RecurringTokenField): string {
+  if (field === 'inputToken') return draft.inputToken;
+  if (field === 'outputToken') return draft.outputToken;
+  return draft.token;
+}
+
+function setRecurringDraftTokenFieldValue(draft: RecurringDraft, field: RecurringTokenField, value: string): void {
+  if (field === 'inputToken') {
+    draft.inputToken = value;
+    draft.token = value || draft.token;
+    return;
+  }
+  if (field === 'outputToken') {
+    draft.outputToken = value;
+    return;
+  }
+  draft.token = value;
 }
 
 function recurringRecipientInput(value: string): string {
@@ -23570,10 +23775,9 @@ function recurringCard(payment: RecurringPayment): string {
               <span class="status-pill ${statusLabelToneClass(status.tone)}">${escapeHtml(status.label)}</span>
               <span>${escapeHtml(recurringCadenceLabel(payment.cadence))}</span>
               <span>${escapeHtml(recurringOccurrenceCountLabel(payment))}</span>
-              <span>${escapeHtml(recurringSourceLabel(source))}</span>
             </div>
             <h3>${escapeHtml(recurringPaymentTitle(payment))}</h3>
-            <p title="${escapeHtml(payment.recipient)}">To ${escapeHtml(recipientDisplayLabel(payment.recipient))}</p>
+            ${recurringCardSubtitle(payment)}
           </div>
           ${recurringCardHero(payment, nextRuns)}
           <div class="recurring-actions recurring-card-actions">
@@ -23581,7 +23785,7 @@ function recurringCard(payment: RecurringPayment): string {
             <button data-recurring-op="history" data-recurring-id="${payment.id}" ${state.busy ? 'disabled' : ''}>${history ? 'Refresh past payments' : 'Load past payments'}</button>
           </div>
         </div>
-        ${recurringCardSummaryGrid(payment, nextRuns, spend, source)}
+        ${recurringCardSummaryGrid(payment, nextRuns, spend)}
         ${recurringCardNote(payment)}
         ${recurringCardFooter(payment, history, notifications, source, nextRuns)}
       </div>
@@ -23589,16 +23793,35 @@ function recurringCard(payment: RecurringPayment): string {
   `;
 }
 
+function recurringCardSubtitle(payment: RecurringPayment): string {
+  if (recurringPaymentIsSwap(payment)) {
+    const input = payment.inputToken || payment.token || 'SOL';
+    const output = payment.outputToken || 'USDC';
+    const label = `${payment.amount} ${tokenDisplayLabel(input)} -> ${tokenDisplayLabel(output)}`;
+    return `<p title="${escapeHtml(`${payment.amount} ${tokenDisplayTitle(input)} to ${tokenDisplayTitle(output)}`)}">${escapeHtml(label)}</p>`;
+  }
+  return `<p title="${escapeHtml(payment.recipient)}">To ${escapeHtml(recipientDisplayLabel(payment.recipient))}</p>`;
+}
+
 function recurringPaymentTitle(payment: RecurringPayment): string {
+  if (recurringPaymentIsSwap(payment)) {
+    const input = tokenDisplayLabel(payment.inputToken || payment.token || 'SOL');
+    const output = tokenDisplayLabel(payment.outputToken || 'USDC');
+    return `Recurring ${input} -> ${output} swap`;
+  }
   const tokenLabel = tokenDisplayLabel(payment.token);
   return payment.token === 'SOL' ? 'Repeat SOL transfer' : `Repeat ${tokenLabel} transfer`;
 }
 
+function recurringPaymentIsSwap(payment: RecurringPayment): boolean {
+  return payment.actionKind === 'swap' || Boolean(payment.outputToken);
+}
+
 function recurringCardHero(payment: RecurringPayment, nextRuns: string[]): string {
   const nextRun = nextRuns[0] ? `Next ${formatDateTime(nextRuns[0])}` : 'No future run preview';
-  const tokenLabel = tokenDisplayLabel(payment.token);
+  const tokenLabel = tokenDisplayLabel(recurringPaymentSpendToken(payment));
   return `
-    <div class="recurring-card-value" title="${escapeHtml(`${payment.amount} ${tokenDisplayTitle(payment.token)} - ${nextRun}`)}">
+    <div class="recurring-card-value" title="${escapeHtml(`${payment.amount} ${tokenDisplayTitle(recurringPaymentSpendToken(payment))} - ${nextRun}`)}">
       <strong>${escapeHtml(`${payment.amount} ${tokenLabel}`)}</strong>
       <span>${escapeHtml(nextRun)}</span>
     </div>
@@ -23609,24 +23832,37 @@ function recurringCardSummaryGrid(
   payment: RecurringPayment,
   nextRuns: string[],
   spend: LifetimeSpend,
-  source: WorkflowRecordSource,
 ): string {
   const nextRun = nextRuns[0] ? formatDateTime(nextRuns[0]) : 'No preview';
-  const tokenSummary = tokenDisplaySummary(payment.token, { copyLabel: 'Copy token', copyName: 'Token mint' });
+  const isSwap = recurringPaymentIsSwap(payment);
+  const spendToken = recurringPaymentSpendToken(payment);
+  const tokenSummary = isSwap
+    ? tokenRouteDisplaySummary(spendToken, payment.outputToken || 'USDC')
+    : tokenDisplaySummary(payment.token, { copyLabel: 'Copy token', copyName: 'Token mint' });
   const rows: Array<{ label: string; value: string; title?: string; copyValue?: string; copyName?: string; copyLabel?: string; copyActions?: SummaryCopyAction[]; tone?: 'amount' }> = [
-    { label: 'Recipient', value: recipientDisplayLabel(payment.recipient), title: payment.recipient, copyValue: payment.recipient },
+    ...(isSwap ? [] : [{ label: 'Recipient', value: recipientDisplayLabel(payment.recipient), title: payment.recipient, copyValue: payment.recipient }]),
     { label: 'Token', value: tokenSummary.value, title: tokenSummary.title, copyActions: tokenSummary.copyActions },
+    ...(isSwap ? [{ label: 'Slippage', value: recurringPaymentSlippageLabel(payment) }] : []),
     { label: 'Next run', value: nextRun },
     { label: 'Cadence', value: recurringScheduleShortLabel(payment) },
     { label: 'Limit', value: recurringLimitShortLabel(payment) },
-    { label: 'Rate', value: recurringRateShortLabel(spend, payment.token), tone: 'amount' },
-    { label: 'Source', value: recurringSourceLabel(source) },
+    { label: 'Rate', value: recurringRateShortLabel(spend, spendToken), tone: 'amount' },
   ];
   return `
     <dl class="recurring-card-summary-grid" aria-label="Repeat payment summary">
       ${rows.map((row) => recurringCardSummaryItem(row)).join('')}
     </dl>
   `;
+}
+
+function recurringPaymentSpendToken(payment: RecurringPayment): string {
+  return recurringPaymentIsSwap(payment) ? payment.inputToken || payment.token || 'SOL' : payment.token;
+}
+
+function recurringPaymentSlippageLabel(payment: RecurringPayment): string {
+  const value = payment.slippageBps?.trim();
+  if (!value) return 'Default';
+  return formatSwapSlippagePercent(Number(value)) || value;
 }
 
 function recurringCardSummaryItem(row: { label: string; value: string; title?: string; copyValue?: string; copyName?: string; copyLabel?: string; copyActions?: SummaryCopyAction[]; tone?: 'amount' }): string {
@@ -23727,7 +23963,14 @@ function recurringLimitShortLabel(payment: RecurringPayment): string {
 
 function recurringRateShortLabel(spend: LifetimeSpend, token: string): string {
   const tokenLabel = tokenDisplayLabel(token);
-  return `${spend.perWeek} ${tokenLabel}/week - ${spend.perMonth} ${tokenLabel}/month`;
+  return `${recurringRateAmountLabel(spend.perWeek)} ${tokenLabel}/week - ${recurringRateAmountLabel(spend.perMonth)} ${tokenLabel}/month`;
+}
+
+function recurringRateAmountLabel(value: string): string {
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed)) return value;
+  if (parsed > 0 && parsed < 0.01) return '<0.01';
+  return trimFixedDecimal(parsed, 2);
 }
 
 function recurringHistoryPanel(
@@ -25166,10 +25409,21 @@ function labThesis(labId: string, status: LabPayload['status']): string {
 }
 
 function readRecurringDraft(): RecurringDraft {
+  const actionKind = state.recurringDraft.actionKind;
+  const inputToken = inputValue('#recurringInputToken') || state.recurringDraft.inputToken;
+  const outputToken = inputValue('#recurringOutputToken') || state.recurringDraft.outputToken;
+  const token = actionKind === 'swap'
+    ? inputToken
+    : inputValue('#recurringToken') || state.recurringDraft.token || inputToken;
+  const slippageInput = inputValue('#recurringSlippageBps');
   return {
-    token: inputValue('#recurringToken') || state.recurringDraft.token,
+    actionKind,
+    token,
+    inputToken,
+    outputToken,
     recipient: inputValue('#recurringRecipient') || state.recurringDraft.recipient,
     amount: inputValue('#recurringAmount') || state.recurringDraft.amount,
+    slippageBps: slippageInput ? slippagePercentInputToBps(slippageInput) : state.recurringDraft.slippageBps,
     cadence: (inputValue('#recurringCadence') || state.recurringDraft.cadence) as RecurringCadence,
     localTime: inputValue('#recurringLocalTime') || state.recurringDraft.localTime,
     dayOfWeek: inputValue('#recurringDayOfWeek') || state.recurringDraft.dayOfWeek,
@@ -25198,9 +25452,29 @@ function applyRecurringPreset(presetId: RecurringPresetId): void {
 
 function assertValidRecurringDraft(draft: RecurringDraft): void {
   const errors: Record<string, string> = {};
-  if (!draft.recipient.trim()) errors.recurringRecipient = 'Recipient is required.';
-  const recipientPolicyError = recipientPolicyBlockReason(draft.recipient);
-  if (recipientPolicyError) errors.recurringRecipient = recipientPolicyError;
+  const isSwap = recurringDraftIsSwap(draft);
+  if (isSwap) {
+    if (!draft.inputToken.trim()) errors.recurringInputToken = 'Input token is required.';
+    if (!draft.outputToken.trim()) errors.recurringOutputToken = 'Output token is required.';
+    if (
+      draft.inputToken.trim() &&
+      draft.outputToken.trim() &&
+      draft.inputToken.trim().toUpperCase() === draft.outputToken.trim().toUpperCase()
+    ) {
+      errors.recurringOutputToken = 'Choose a different output token.';
+    }
+    const slippage = Number(draft.slippageBps);
+    if (!draft.slippageBps.trim()) {
+      errors.recurringSlippageBps = 'Max slippage is required.';
+    } else if (!Number.isFinite(slippage) || slippage < 0) {
+      errors.recurringSlippageBps = 'Use a valid max slippage.';
+    }
+  } else {
+    if (!draft.token.trim()) errors.recurringToken = 'Token is required.';
+    if (!draft.recipient.trim()) errors.recurringRecipient = 'Recipient is required.';
+    const recipientPolicyError = recipientPolicyBlockReason(draft.recipient);
+    if (recipientPolicyError) errors.recurringRecipient = recipientPolicyError;
+  }
   if (!draft.amount.trim()) {
     errors.recurringAmount = 'Amount is required.';
   } else if (!(Number(draft.amount) > 0)) {
@@ -25263,12 +25537,21 @@ function isValidLocalTime(value: string): boolean {
 }
 
 function recurringBody(draft: RecurringDraft): Record<string, unknown> {
+  const isSwap = recurringDraftIsSwap(draft);
   const body: Record<string, unknown> = {
-    token: draft.token,
-    recipient: draft.recipient,
+    token: isSwap ? draft.inputToken : draft.token,
+    recipient: isSwap ? '' : draft.recipient,
     amount: draft.amount,
     cadence: draft.cadence,
   };
+  if (isSwap) {
+    body.slippageBps = Number(draft.slippageBps);
+    body.metadata = {
+      actionKind: 'swap',
+      inputToken: draft.inputToken,
+      outputToken: draft.outputToken,
+    };
+  }
   if (draft.note) body.note = draft.note;
   const maxOccurrences = Number(draft.maxOccurrences);
   if (Number.isInteger(maxOccurrences) && maxOccurrences > 0) {
@@ -25304,9 +25587,13 @@ function recurringBody(draft: RecurringDraft): Record<string, unknown> {
 
 function defaultRecurringDraft(): RecurringDraft {
   return {
+    actionKind: 'transfer',
     token: 'SOL',
+    inputToken: 'SOL',
+    outputToken: 'USDC',
     recipient: '',
     amount: '0.01',
+    slippageBps: '50',
     cadence: 'weekly',
     localTime: '09:00',
     dayOfWeek: '1',
@@ -25468,7 +25755,32 @@ function resolveDevControls(): boolean {
 }
 
 function shouldProbeBridgeOnStartup(): boolean {
-  return isLocalOrPrivateHostname(globalThis.location?.hostname ?? '');
+  return isLocalOrPrivateHostname(globalThis.location?.hostname ?? '')
+    || state.aiSettings.mode === 'bridge'
+    || state.workflowModePreference === 'local-bridge'
+    || state.bridgeAutoReconnect
+    || Boolean(launchParams.bridgeUrl || launchParams.bridgeToken);
+}
+
+function shouldReconnectBridgeOnStartup(): boolean {
+  return Boolean(
+    state.address &&
+      state.capabilities &&
+      (state.bridgeAutoReconnect ||
+        state.workflowModePreference === 'local-bridge' ||
+        launchParams.bridgeUrl ||
+        launchParams.bridgeToken),
+  );
+}
+
+async function reconnectBridgeOnStartup(): Promise<void> {
+  try {
+    await activateBridgeConnection({ refreshConfig: false, strictSync: false });
+  } catch (err) {
+    state.bridgeActive = false;
+    stopBridgePolling();
+    state.bridgeStatus = err instanceof Error ? err.message : String(err);
+  }
 }
 
 function defaultAiMode(): AiSettings['mode'] {
@@ -25890,6 +26202,7 @@ function loadPersistedState(): PersistedState {
       ...(typeof parsed.preferencesView === 'string' && isPreferencesView(parsed.preferencesView) && { preferencesView: parsed.preferencesView }),
       ...(typeof parsed.cluster === 'string' && isCluster(parsed.cluster) && { cluster: parsed.cluster }),
       ...(typeof parsed.bridgeUrl === 'string' && { bridgeUrl: parsed.bridgeUrl }),
+      ...(typeof parsed.bridgeAutoReconnect === 'boolean' && { bridgeAutoReconnect: parsed.bridgeAutoReconnect }),
       ...(typeof parsed.aiMode === 'string' && isAiMode(parsed.aiMode) && { aiMode: parsed.aiMode }),
       ...(typeof parsed.aiProvider === 'string' && isAiProviderId(parsed.aiProvider) && { aiProvider: parsed.aiProvider }),
       ...(typeof parsed.aiApiFormat === 'string' && isAiApiFormat(parsed.aiApiFormat) && { aiApiFormat: parsed.aiApiFormat }),
@@ -25913,6 +26226,7 @@ function savePersistedState(): void {
         preferencesView: state.preferencesView,
         cluster: state.cluster,
         bridgeUrl: state.bridgeUrl,
+        bridgeAutoReconnect: state.bridgeAutoReconnect,
         aiMode: state.aiSettings.mode,
         aiProvider: state.aiSettings.provider,
         aiApiFormat: state.aiSettings.apiFormat,
@@ -27835,7 +28149,7 @@ function setFailurePolicyMaxAttempts(kind: TransactionFailureKind, value: string
 function failurePoliciesPanel(): string {
   const policies = state.failurePolicies;
   const autoCount = policies.filter((p) => p.mode === 'auto').length;
-  const open = autoCount === 0 ? 'open' : '';
+  const open = autoCount > 0 ? 'open' : '';
   return `
     <details class="failure-policies-panel rail-details" data-layout="failure-policies-panel" ${open}>
       <summary>
@@ -27846,7 +28160,7 @@ function failurePoliciesPanel(): string {
         <strong>${autoCount === 0 ? 'off' : `${autoCount}`}</strong>
       </summary>
       <section class="failure-policies-card" aria-label="Failure retry preferences">
-        <p class="failure-policies-intro">Choose what happens for each failure kind. <em>Ask</em> uses the safe default (silent only when the classifier marks the send retryable). <em>Auto</em> always retries up to your cap if the kind is broadcast-retryable. <em>Off</em> never retries.</p>
+        <p class="failure-policies-intro">Most failures should stop and ask. Use auto-retry only for network conditions you are comfortable replaying up to the cap.</p>
         <div class="failure-policies-actions">
           <button type="button" class="utility" data-failure-policy-action="reset">Use recommended defaults</button>
         </div>
@@ -27860,11 +28174,12 @@ function failurePoliciesPanel(): string {
 
 function failurePolicyRow(policy: FailureRetryPolicy): string {
   const label = FAILURE_KIND_LABEL[policy.kind] ?? policy.kind;
+  const help = FAILURE_KIND_HELP[policy.kind] ?? 'Choose whether this failure should retry.';
   return `
     <article class="failure-policy-row mode-${escapeHtml(policy.mode)}" data-failure-policy-kind="${escapeHtml(policy.kind)}">
       <div>
         <strong>${escapeHtml(label)}</strong>
-        <em>${escapeHtml(policy.kind)}</em>
+        <em>${escapeHtml(help)}</em>
       </div>
       <div class="failure-policy-mode-controls" role="group" aria-label="Mode">
         ${failurePolicyModeButton(policy, 'auto', 'Auto')}

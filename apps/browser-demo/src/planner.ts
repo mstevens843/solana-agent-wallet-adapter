@@ -179,6 +179,8 @@ const SHARED_SAFEGUARDS = [
   'AI prepares the review item; the wallet owner checks amount, recipient, route, protocol, slippage, and policy before signing.',
 ];
 
+const AI_KEY_COPY_PASTE_ARTIFACTS = /[\s\u200B-\u200D\u2060\uFEFF]+/gu;
+
 export const DEFAULT_AI_BASE_URL = 'https://api.openai.com/v1';
 export const DEFAULT_AI_MODEL = 'gpt-5';
 export const DEFAULT_AI_PROVIDER_ID: AiProviderId = 'openai';
@@ -508,43 +510,51 @@ export async function generateSessionAiPlan(
   settings: AiSettings,
   request: AiPlanRequest,
 ): Promise<AgentPlan> {
-  if (!settings.apiKey.trim()) {
+  const apiKey = normalizeAiApiKey(settings.apiKey);
+  if (!apiKey) {
     throw new Error('Session AI key is required.');
   }
+  assertAiApiKeyHeaderSafe(apiKey);
   assertAiDraftRequestAllowed(request);
+  const normalizedSettings = { ...settings, apiKey };
   if (settings.provider === 'openai') {
     throw new Error('OpenAI keys cannot be called directly from browser session mode. Select Hosted BYOK or Local bridge.');
   }
   if (settings.apiFormat === 'anthropic') {
-    return generateAnthropicPlan(settings, request);
+    return generateAnthropicPlan(normalizedSettings, request);
   }
-  return generateOpenAiCompatiblePlan(settings, request);
+  return generateOpenAiCompatiblePlan(normalizedSettings, request);
 }
 
 export async function generateSessionAiReview(
   settings: AiSettings,
   request: AgentPlanReviewRequest,
 ): Promise<AgentPlanReviewResult> {
-  if (!settings.apiKey.trim()) {
+  const apiKey = normalizeAiApiKey(settings.apiKey);
+  if (!apiKey) {
     throw new Error('Session AI key is required.');
   }
+  assertAiApiKeyHeaderSafe(apiKey);
   assertAiReviewRequestAllowed(request);
+  const normalizedSettings = { ...settings, apiKey };
   if (settings.provider === 'openai') {
     throw new Error('OpenAI keys cannot be called directly from browser session mode. Select Hosted BYOK or Local bridge.');
   }
   if (settings.apiFormat === 'anthropic') {
-    return generateAnthropicReview(settings, request);
+    return generateAnthropicReview(normalizedSettings, request);
   }
-  return generateOpenAiCompatibleReview(settings, request);
+  return generateOpenAiCompatibleReview(normalizedSettings, request);
 }
 
 export async function generateHostedAiPlan(
   settings: AiSettings,
   request: AiPlanRequest,
 ): Promise<AgentPlan> {
-  if (!settings.apiKey.trim()) {
+  const apiKey = normalizeAiApiKey(settings.apiKey);
+  if (!apiKey) {
     throw new Error('Hosted BYOK key is required.');
   }
+  assertAiApiKeyHeaderSafe(apiKey);
   assertAiDraftRequestAllowed(request);
   const diagnostics: AiDiagnosticEntry[] = [
     {
@@ -563,7 +573,7 @@ export async function generateHostedAiPlan(
     },
     body: JSON.stringify({
       settings: {
-        apiKey: settings.apiKey,
+        apiKey,
         provider: settings.provider,
         apiFormat: settings.apiFormat,
         baseUrl: settings.baseUrl,
@@ -616,9 +626,11 @@ export async function generateHostedAiReview(
   settings: AiSettings,
   request: AgentPlanReviewRequest,
 ): Promise<AgentPlanReviewResult> {
-  if (!settings.apiKey.trim()) {
+  const apiKey = normalizeAiApiKey(settings.apiKey);
+  if (!apiKey) {
     throw new Error('Hosted BYOK key is required.');
   }
+  assertAiApiKeyHeaderSafe(apiKey);
   assertAiReviewRequestAllowed(request);
   const diagnostics: AiDiagnosticEntry[] = [
     {
@@ -637,7 +649,7 @@ export async function generateHostedAiReview(
     },
     body: JSON.stringify({
       settings: {
-        apiKey: settings.apiKey,
+        apiKey,
         provider: settings.provider,
         apiFormat: settings.apiFormat,
         baseUrl: settings.baseUrl,
@@ -690,28 +702,33 @@ export async function generateSessionAiAsk(
   settings: AiSettings,
   request: AgentPlanAskRequest,
 ): Promise<AgentPlanAskResult> {
-  if (!settings.apiKey.trim()) {
+  const apiKey = normalizeAiApiKey(settings.apiKey);
+  if (!apiKey) {
     throw new Error('Session AI key is required.');
   }
+  assertAiApiKeyHeaderSafe(apiKey);
   if (!request.question?.trim()) {
     throw new Error('Ask agent: a question is required.');
   }
+  const normalizedSettings = { ...settings, apiKey };
   if (settings.provider === 'openai') {
     throw new Error('OpenAI keys cannot be called directly from browser session mode. Select Hosted BYOK or Local bridge.');
   }
   if (settings.apiFormat === 'anthropic') {
-    return generateAnthropicAsk(settings, request);
+    return generateAnthropicAsk(normalizedSettings, request);
   }
-  return generateOpenAiCompatibleAsk(settings, request);
+  return generateOpenAiCompatibleAsk(normalizedSettings, request);
 }
 
 export async function generateHostedAiAsk(
   settings: AiSettings,
   request: AgentPlanAskRequest,
 ): Promise<AgentPlanAskResult> {
-  if (!settings.apiKey.trim()) {
+  const apiKey = normalizeAiApiKey(settings.apiKey);
+  if (!apiKey) {
     throw new Error('Hosted BYOK key is required.');
   }
+  assertAiApiKeyHeaderSafe(apiKey);
   if (!request.question?.trim()) {
     throw new Error('Ask agent: a question is required.');
   }
@@ -730,7 +747,7 @@ export async function generateHostedAiAsk(
     headers: { 'content-type': 'application/json' },
     body: JSON.stringify({
       settings: {
-        apiKey: settings.apiKey,
+        apiKey,
         provider: settings.provider,
         apiFormat: settings.apiFormat,
         baseUrl: settings.baseUrl,
@@ -772,9 +789,11 @@ export async function generateHostedAiAsk(
 }
 
 export async function confirmHostedAiPlanner(settings: AiSettings): Promise<AiDiagnosticEntry[]> {
-  if (!settings.apiKey.trim()) {
+  const apiKey = normalizeAiApiKey(settings.apiKey);
+  if (!apiKey) {
     throw new Error('Hosted BYOK key is required before confirming planner setup.');
   }
+  assertAiApiKeyHeaderSafe(apiKey);
   if (settings.provider === 'custom-openai-compatible') {
     throw new Error('Hosted BYOK supports preset providers only. Use Local bridge or Browser Session for custom gateways.');
   }
@@ -1401,13 +1420,42 @@ function withGuardrailReport(
 
 export function redactSecrets(value: string, exactSecret = ''): string {
   const secret = exactSecret.trim();
-  const exactRedacted = secret ? value.split(secret).join('[redacted]') : value;
+  const normalizedSecret = secret ? normalizeAiApiKey(secret) : '';
+  const exactRedacted = [secret, normalizedSecret]
+    .filter((entry, index, entries) => entry && entries.indexOf(entry) === index)
+    .reduce((current, entry) => current.split(entry).join('[redacted]'), value);
   return exactRedacted
     .replace(/Bearer\s+[A-Za-z0-9._~+/=-]+/gi, 'Bearer [redacted]')
     .replace(/\bsk-proj-[A-Za-z0-9_-]{8,}\b/g, 'sk-proj-[redacted]')
     .replace(/\bsk-[A-Za-z0-9_-]{8,}\b/g, 'sk-[redacted]')
     .replace(/\b[A-Za-z0-9_-]{20,}\.[A-Za-z0-9_-]{20,}\.[A-Za-z0-9_-]{20,}\b/g, '[redacted-token]')
     .replace(/(api[-_ ]?key|token|secret)(["':=\s]+)([^"',\s]{8,})/gi, '$1$2[redacted]');
+}
+
+export function normalizeAiApiKey(value: string): string {
+  return value.replace(AI_KEY_COPY_PASTE_ARTIFACTS, '');
+}
+
+function assertAiApiKeyHeaderSafe(value: string): void {
+  const invalid = firstInvalidAiApiKeyCharacter(value);
+  if (!invalid) return;
+  throw new Error(
+    `AI API key contains unsupported characters at index ${invalid.index}. Paste the key again as plain text and remove hidden separators or non-ASCII characters.`,
+  );
+}
+
+function firstInvalidAiApiKeyCharacter(value: string): { index: number; codePoint: number } | null {
+  for (let index = 0; index < value.length; index += 1) {
+    const codePoint = value.codePointAt(index);
+    if (codePoint === undefined) continue;
+    if (codePoint < 0x21 || codePoint > 0x7e) {
+      return { index, codePoint };
+    }
+    if (codePoint > 0xffff) {
+      index += 1;
+    }
+  }
+  return null;
 }
 
 function template(

@@ -20,7 +20,26 @@ describe('cloud session policy helpers', () => {
       cloudStatus: 'signed-in',
       cloudWalletAddress: 'wallet-a',
       connectedWalletAddress: '',
+      reason: 'wallet-disconnected',
     })).toBe(true);
+  });
+
+  it('auto signs out a cloud session when wallet selection is cleared by the user', () => {
+    expect(shouldAutoSignOutCloudSession({
+      cloudStatus: 'signed-in',
+      cloudWalletAddress: 'wallet-a',
+      connectedWalletAddress: '',
+      reason: 'wallet-changed',
+    })).toBe(true);
+  });
+
+  it('keeps a signed-in cloud session during startup when no wallet restored yet', () => {
+    expect(shouldAutoSignOutCloudSession({
+      cloudStatus: 'signed-in',
+      cloudWalletAddress: 'wallet-a',
+      connectedWalletAddress: '',
+      reason: 'startup',
+    })).toBe(false);
   });
 
   it('auto signs out a stale cloud session when another wallet connects', () => {
@@ -28,6 +47,7 @@ describe('cloud session policy helpers', () => {
       cloudStatus: 'signed-in',
       cloudWalletAddress: 'wallet-a',
       connectedWalletAddress: 'wallet-b',
+      reason: 'wallet-mismatch',
     })).toBe(true);
   });
 

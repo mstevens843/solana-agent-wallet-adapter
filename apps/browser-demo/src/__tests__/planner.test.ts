@@ -59,6 +59,43 @@ describe('planner AI setup helpers', () => {
     expect(message).not.toContain(sessionSettings.apiKey);
   });
 
+  it('removes hidden separators from browser-session keys before building provider headers', async () => {
+    const fetchMock = vi.fn(async (_input: RequestInfo | URL, _init?: RequestInit) => jsonResponse({
+      choices: [{
+        message: {
+          content: JSON.stringify({
+            intent: 'Transfer review',
+            route: 'Draft only',
+            risk: 'Verify amount.',
+            approval: 'Wallet approval remains required.',
+            safeguards: ['Check recipient.'],
+          }),
+        },
+      }],
+    }));
+    vi.stubGlobal('fetch', fetchMock);
+
+    await generateSessionAiPlan({
+      ...sessionSettings,
+      apiKey: 'provider-secret-value-123\u2028456789',
+    }, planRequest);
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    const [, init] = fetchMock.mock.calls[0] as [string | URL | Request, RequestInit];
+    expect((init.headers as Record<string, string>).authorization).toBe('Bearer provider-secret-value-123456789');
+  });
+
+  it('rejects non-ASCII browser-session keys before provider fetch can throw a ByteString error', async () => {
+    const fetchMock = vi.fn();
+    vi.stubGlobal('fetch', fetchMock);
+
+    await expect(generateSessionAiPlan({
+      ...sessionSettings,
+      apiKey: 'provider-secret-value-123é456789',
+    }, planRequest)).rejects.toThrow('AI API key contains unsupported characters');
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
   it('blocks forbidden AI prompts before browser-session provider calls', async () => {
     const fetchMock = vi.fn();
     vi.stubGlobal('fetch', fetchMock);
