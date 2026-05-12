@@ -49,8 +49,9 @@ export function swapTokenTextMismatchWarning(
   const outputToken = plan.parameters.outputToken?.trim();
   if (!outputToken) return undefined;
   const expectedToken = expectedOutputTokenFromPlanText(plan);
-  if (!expectedToken || outputMatchesExpectedToken(outputToken, expectedToken)) return undefined;
-  const actualToken = displayToken(outputToken);
+  const outputLabel = plan.parameters.outputTokenLabel?.trim();
+  if (!expectedToken || outputMatchesExpectedToken(outputToken, outputLabel, expectedToken)) return undefined;
+  const actualToken = outputLabel || displayToken(outputToken);
   return {
     expectedToken,
     actualToken,
@@ -96,6 +97,8 @@ function expectedOutputTokenFromPlanText(
   const outputTokenRaw = plan.parameters.outputToken?.trim();
   if (!outputTokenRaw) return undefined;
   if (textMentionsTokenValue(plan.route, outputTokenRaw)) return undefined;
+  const outputTokenLabel = plan.parameters.outputTokenLabel?.trim();
+  if (outputTokenLabel && textMentionsTokenValue(plan.route, outputTokenLabel)) return undefined;
   const text = plan.route;
   const outputToken = plan.parameters.outputToken?.trim().toUpperCase();
   for (const token of KNOWN_OUTPUT_TOKENS) {
@@ -120,9 +123,10 @@ function textMentionsTokenValue(text: string, token: string): boolean {
   return text.toLowerCase().includes(trimmed.toLowerCase());
 }
 
-function outputMatchesExpectedToken(outputToken: string, expectedToken: string): boolean {
+function outputMatchesExpectedToken(outputToken: string, outputLabel: string | undefined, expectedToken: string): boolean {
   const normalized = outputToken.trim();
   return normalized.toUpperCase() === expectedToken ||
+    outputLabel?.trim().toUpperCase() === expectedToken ||
     normalized === KNOWN_OUTPUT_TOKEN_MINTS[expectedToken];
 }
 

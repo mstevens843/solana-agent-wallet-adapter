@@ -148,6 +148,29 @@ describe('planner AI setup helpers', () => {
     expect(plan.intent).not.toContain('USDC');
   });
 
+  it('uses selected token labels for prose while preserving execution mints', () => {
+    const mint = '7GCihgDB8fe6KNjn2MYtkzZcRjQy3t9GHdC8uHYmW2hr';
+    const plan = buildTemplatePlan(templateById('swap'), {
+      inputToken: 'SOL',
+      outputToken: mint,
+      outputTokenLabel: 'POPCAT',
+      outputTokenMint: mint,
+      amount: '0.1',
+      slippageBps: '50',
+    }, 'template');
+
+    expect(plan.parameters.outputToken).toBe(mint);
+    expect(plan.parameters.outputTokenLabel).toBe('POPCAT');
+    expect(plan.route).toContain('POPCAT');
+    expect(plan.route).not.toContain('USDC');
+    expect(plan.intent).toContain('POPCAT');
+    expect(plan.intent).not.toContain('USDC');
+    expect(plan.fields).toEqual(expect.arrayContaining([
+      { label: 'Output token', value: 'POPCAT' },
+      { label: 'Output token mint', value: mint },
+    ]));
+  });
+
   it('confirms Hosted BYOK through the status route without generating a plan', async () => {
     const fetchMock = vi.fn(async (url: string | URL | Request) => {
       expect(String(url)).toBe('/api/ai/status');

@@ -512,6 +512,26 @@ async function handleRequest(
       }));
       return;
     }
+    if (req.method === 'POST' && url.pathname === '/bridge/action/swap-order') {
+      const body = (await readJson(req)) as { inputToken?: string; outputToken?: string; amount?: string; slippageBps?: number; taker?: string };
+      writeJson(res, 200, await requireActionService(actionService).getSwapOrder({
+        ...(body.inputToken !== undefined && { inputToken: body.inputToken }),
+        ...(body.outputToken !== undefined && { outputToken: body.outputToken }),
+        amount: requireString(body.amount, 'amount'),
+        ...(body.slippageBps !== undefined && { slippageBps: body.slippageBps }),
+        ...(body.taker !== undefined && { taker: body.taker }),
+      }));
+      return;
+    }
+    if (req.method === 'POST' && url.pathname === '/bridge/action/swap-execute') {
+      const body = (await readJson(req)) as { signedTransaction?: string; requestId?: string; lastValidBlockHeight?: string | number };
+      writeJson(res, 200, await requireActionService(actionService).executeSignedSwap({
+        signedTransaction: requireString(body.signedTransaction, 'signedTransaction'),
+        requestId: requireString(body.requestId, 'requestId'),
+        ...(body.lastValidBlockHeight !== undefined && { lastValidBlockHeight: body.lastValidBlockHeight }),
+      }));
+      return;
+    }
     if (req.method === 'POST' && url.pathname === '/bridge/action/swap') {
       const body = (await readJson(req)) as { inputToken?: string; outputToken?: string; amount?: string; slippageBps?: number };
       writeJson(res, 200, await requireActionService(actionService).swap({
@@ -718,6 +738,8 @@ function requiredTier(method: string, pathname: string): AgentTier | null {
     if (pathname === '/bridge/action/transfer-sol') return 'full';
     if (pathname === '/bridge/action/transfer-spl') return 'full';
     if (pathname === '/bridge/action/swap') return 'full';
+    if (pathname === '/bridge/action/swap-order') return 'capped';
+    if (pathname === '/bridge/action/swap-execute') return 'full';
     if (pathname === '/bridge/action/swap-quote') return 'capped';
     if (pathname === '/bridge/solana/latest-blockhash') return 'full';
     if (pathname === '/bridge/solana/send-transaction') return 'full';

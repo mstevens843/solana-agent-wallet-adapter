@@ -65,6 +65,22 @@ describe('agent review presentation helpers', () => {
     }))).toBeUndefined();
   });
 
+  it('does not warn when the active mint has a selected token label', () => {
+    expect(swapTokenTextMismatchWarning(swapPlan({
+      intent: 'Review DeFi swap of 0.1 SOL to POPCAT',
+      route: 'SOL -> POPCAT',
+      userNotes: 'Swap to POPCAT for the demo.',
+      parameters: {
+        inputToken: 'SOL',
+        outputToken: POPCAT_MINT,
+        outputTokenLabel: 'POPCAT',
+        outputTokenMint: POPCAT_MINT,
+        amount: '0.1',
+        slippageBps: '50',
+      },
+    }))).toBeUndefined();
+  });
+
   it('does not warn from stale prose when the route already uses the active output mint', () => {
     expect(swapTokenTextMismatchWarning(swapPlan({
       intent: 'Review DeFi swap of 0.1 SOL to USDC',

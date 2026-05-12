@@ -487,15 +487,17 @@ export function planWithStructuredSwapText(plan: AgentPlan): AgentPlan {
   const inputToken = plan.parameters.inputToken?.trim();
   const outputToken = plan.parameters.outputToken?.trim();
   if (!inputToken || !outputToken) return plan;
-  const route = plan.route.trim() && textMentionsTokenValue(plan.route, outputToken)
+  const inputLabel = plan.parameters.inputTokenLabel?.trim() || inputToken;
+  const outputLabel = plan.parameters.outputTokenLabel?.trim() || outputToken;
+  const route = plan.route.trim() && textMentionsTokenValue(plan.route, outputLabel)
     ? plan.route
-    : `${inputToken} -> ${outputToken}`;
+    : `${inputLabel} -> ${outputLabel}`;
   return {
     ...plan,
-    intent: rewriteSwapOutputTokenText(plan.intent, outputToken),
+    intent: rewriteSwapOutputTokenText(plan.intent, outputLabel, [outputToken]),
     route,
-    risk: rewriteSwapOutputTokenText(plan.risk, outputToken),
-    approval: rewriteSwapOutputTokenText(plan.approval, outputToken),
+    risk: rewriteSwapOutputTokenText(plan.risk, outputLabel, [outputToken]),
+    approval: rewriteSwapOutputTokenText(plan.approval, outputLabel, [outputToken]),
   };
 }
 
@@ -1539,10 +1541,10 @@ function selectField(id: string, label: string, options: string[], defaultValue:
 
 const SWAP_TEXT_TOKENS = ['USDC', 'SOL', 'JUP', 'BONK', 'WIF', 'PYUSD'];
 
-function rewriteSwapOutputTokenText(text: string, outputToken: string): string {
+function rewriteSwapOutputTokenText(text: string, outputToken: string, staleAliases: string[] = []): string {
   if (!text.trim() || textMentionsTokenValue(text, outputToken)) return text;
   let next = text;
-  for (const token of SWAP_TEXT_TOKENS) {
+  for (const token of [...SWAP_TEXT_TOKENS, ...staleAliases.filter(Boolean)]) {
     if (token.toUpperCase() === outputToken.toUpperCase()) continue;
     const escaped = escapeRegExp(token);
     next = next
@@ -1623,14 +1625,23 @@ function safeguardsFor(actionType: string, risk: TemplateRisk): string[] {
 }
 
 function readableParameters(template: AgentPlanTemplate, parameters: Record<string, string>): AgentPlanField[] {
-  return template.fields
-    .map((fieldDef) => ({
-      label: fieldDef.label,
-      value: fieldDef.id === 'slippageBps'
-        ? formatSlippageBpsForDisplay(parameters[fieldDef.id] ?? '')
-        : (parameters[fieldDef.id] ?? '').trim(),
-    }))
-    .filter((entry) => entry.value.length > 0);
+  const rows: AgentPlanField[] = [];
+  for (const fieldDef of template.fields) {
+    const rawValue = (parameters[fieldDef.id] ?? '').trim();
+    const value = fieldDef.id === 'slippageBps'
+      ? formatSlippageBpsForDisplay(rawValue)
+      : displayParameterValue(fieldDef.id, rawValue, parameters);
+    if (value.length > 0) {
+      rows.push({ label: fieldDef.label, value });
+    }
+    const mint = parameters[`${fieldDef.id}Mint`]?.trim();
+    if (mint && mint !== value && mint !== rawValue) {
+      rows.push({ label: `${fieldDef.label} mint`, value: mint });
+    } else if (mint && value && rawValue && value !== rawValue) {
+      rows.push({ label: `${fieldDef.label} mint`, value: rawValue });
+    }
+  }
+  return rows;
 }
 
 function interpolate(template: string, parameters: Record<string, string>): string {
@@ -1640,8 +1651,14 @@ function interpolate(template: string, parameters: Record<string, string>): stri
       const formatted = formatSlippageBpsForDisplay(value ?? '');
       return formatted || titleCase(key);
     }
-    return value || titleCase(key);
+    return displayParameterValue(key, value ?? '', parameters) || titleCase(key);
   });
+}
+
+function displayParameterValue(key: string, value: string, parameters: Record<string, string>): string {
+  const label = parameters[`${key}Label`]?.trim();
+  if (label) return label;
+  return value;
 }
 
 function formatSlippageBpsForDisplay(value: string): string {

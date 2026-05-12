@@ -109,7 +109,7 @@ describe('classifyTransactionFailure — retryable RPC/network', () => {
     expect(result.retryableSignedBroadcast).toBe(true);
     expect(result.safeToAskWalletAgain).toBe(false);
     expect(result.shouldCheckChainBeforeFailing).toBe(true);
-    expect(result.title).toBe('Submitted status unknown');
+    expect(result.title).toBe('Transaction status pending');
   });
 
   it('classifies Failed to fetch as network_unreachable', () => {
@@ -547,15 +547,15 @@ describe('transactionFailureToastCopy', () => {
   it('renders ambiguous title and message for unknown_maybe_submitted (no retry)', () => {
     const result = classify('already processed');
     const copy = transactionFailureToastCopy(result);
-    expect(copy.title).toBe('Submitted status unknown');
-    expect(copy.message).toBe('Checking the signed transaction status.');
+    expect(copy.title).toBe('Transaction status pending');
+    expect(copy.message).toBe('The signed transaction is being checked. Use Check confirmation or Solscan before retrying.');
   });
 
   it('renders retry message for retryable signed broadcast (e.g. timeout with signed bytes)', () => {
     const result = classify('Request timed out', { hasSignedBytes: true });
     const copy = transactionFailureToastCopy(result);
-    expect(copy.title).toBe('Submitted status unknown');
-    expect(copy.message).toBe('Retrying only the same signed transaction. Do not approve this request again.');
+    expect(copy.title).toBe('Transaction status pending');
+    expect(copy.message).toBe('Retrying only the same signed transaction. No second wallet approval is needed.');
   });
 
   it('renders on-chain failure copy', () => {

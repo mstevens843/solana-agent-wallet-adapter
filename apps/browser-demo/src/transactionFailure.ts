@@ -64,12 +64,12 @@ const TITLE_BY_KIND: Record<TransactionFailureKind, string> = {
   insufficient_funds: 'Insufficient funds',
   invalid_transaction: 'Invalid transaction',
   rate_limited: 'Rate limited',
-  unknown_maybe_submitted: 'Submitted status unknown',
+  unknown_maybe_submitted: 'Transaction status pending',
 };
 
-const AMBIGUOUS_TITLE = 'Submitted status unknown';
-const AMBIGUOUS_MESSAGE = 'Checking the signed transaction status.';
-const RETRY_MESSAGE = 'Retrying only the same signed transaction. Do not approve this request again.';
+const AMBIGUOUS_TITLE = 'Transaction status pending';
+const AMBIGUOUS_MESSAGE = 'The signed transaction is being checked. Use Check confirmation or Solscan before retrying.';
+const RETRY_MESSAGE = 'Retrying only the same signed transaction. No second wallet approval is needed.';
 const CONFIG_MESSAGE = 'Transaction execution is not configured. Add RPC/Jupiter setup before trying again.';
 const ONCHAIN_MESSAGE = 'The transaction reached chain status and failed. Review the error before retrying.';
 
@@ -465,9 +465,9 @@ export function shouldCheckChainBeforeFailing(err: unknown): boolean {
 }
 
 /**
- * Produce toast copy that exactly matches the spec. Ambiguous outcomes must
- * always read as "Submitted status unknown" and explain the check, never as
- * a generic failure.
+ * Produce toast copy for user-facing execution errors. Ambiguous outcomes
+ * must stay in pending status and point the user at confirmation/Solscan
+ * instead of sounding like a hard failure.
  */
 export function transactionFailureToastCopy(result: ClassifiedTransactionFailure): {
   title: string;

@@ -112,6 +112,7 @@ import {
   templateById,
   templateFieldLabel,
   type AgentPlan,
+  type AgentPlanField,
   type AgentPlanAskRequest,
   type AgentPlanAskResult,
   type AgentPlanReviewRequest,
@@ -226,6 +227,18 @@ type TemplateOutcome = 'queueable' | 'proof' | 'audit';
 type TemplateOutcomeFilter = TemplateOutcome | 'all';
 type AiPlannerConfirmationStatus = 'untested' | 'confirmed' | 'failed';
 type TokenInputMode = 'preset' | 'custom';
+type TokenSelectionSource = 'preset' | 'search' | 'manual';
+
+interface TokenFieldSelection {
+  mode: TokenInputMode;
+  value: string;
+  label: string;
+  source: TokenSelectionSource;
+  mint?: string;
+  name?: string;
+  logoURI?: string;
+  priceUsd?: number;
+}
 type AgentPlanReviewStatus = 'checking' | 'approved' | 'denied' | 'needs_input' | 'error';
 type RecurringPresetId = 'scheduled-transfer' | 'recurring-swap';
 type RecurringActionKind = 'transfer' | 'swap';
@@ -266,6 +279,7 @@ type PreparedActionStatus =
   | 'failed'
   | 'expired';
 type PreparedActionTxStatus = 'pending' | 'confirmed' | 'failed';
+type SubmittedTransactionStatusKind = PreparedActionTxStatus | 'status_unreachable';
 type RecurringCadence = 'weekly' | 'monthly' | 'interval_days' | 'interval_hours' | 'interval_minutes';
 type InstructionData = ConstructorParameters<typeof TransactionInstruction>[0]['data'];
 type IosNativeWalletId = 'phantom' | 'solflare' | 'backpack' | 'jupiter';
@@ -538,6 +552,10 @@ const KNOWN_BROWSER_TOKENS: Record<string, { symbol: string; mint: string; decim
   WIF: { symbol: 'WIF', mint: WIF_MINT, decimals: 6 },
   PYUSD: { symbol: 'PYUSD', mint: PYUSD_MINT, decimals: 6 },
 };
+const tokenMarketPrices = new Map<string, TokenMarketPrice>();
+const tokenMarketMetadata = new Map<string, TokenMarketMetadata>();
+const tokenSearchStates = new Map<string, TokenSearchState>();
+const tokenSearchTimers = new Map<string, number>();
 const EXECUTABLE_BROWSER_ACTION_KINDS = new Set<PreparedActionKind>([
   'transfer_sol',
   'transfer_spl',
@@ -1059,6 +1077,12 @@ interface BrowserSignatureStatusResponse {
   error?: string;
 }
 
+interface SubmittedTransactionStatusResult {
+  txStatus: SubmittedTransactionStatusKind;
+  confirmationStatus?: string;
+  error?: string;
+}
+
 interface BrowserTokenMetadata {
   symbol: string;
   mint: PublicKey;
@@ -1572,6 +1596,7 @@ interface DemoState {
   templateOutcomeFilter: TemplateOutcomeFilter;
   templateFields: Record<string, string>;
   templateTokenModes: Record<string, TokenInputMode>;
+  templateTokenSelections: Record<string, TokenFieldSelection>;
   templateFieldErrors: Record<string, string>;
   agentPlan: AgentPlan | null;
   agentSignature: string;
@@ -1623,6 +1648,7 @@ interface DemoState {
   recurringDraft: RecurringDraft;
   recurringPreset: RecurringPresetId;
   recurringTokenModes: Record<string, TokenInputMode>;
+  recurringTokenSelections: Record<string, TokenFieldSelection>;
   recurringErrors: Record<string, string>;
   recipientRules: RecipientRulesState;
   recipientDraft: RecipientDraft;
@@ -2293,6 +2319,7 @@ const state: DemoState = {
   templateOutcomeFilter: 'queueable',
   templateFields: defaultTemplateFieldValues(initialTemplate),
   templateTokenModes: defaultTemplateTokenModes(initialTemplate),
+  templateTokenSelections: defaultTemplateTokenSelections(initialTemplate),
   templateFieldErrors: {},
   agentPlan: null,
   agentSignature: '',
@@ -2352,6 +2379,7 @@ const state: DemoState = {
   recurringDraft: defaultRecurringDraft(),
   recurringPreset: 'scheduled-transfer',
   recurringTokenModes: defaultRecurringTokenModes(),
+  recurringTokenSelections: defaultRecurringTokenSelections(),
   recurringErrors: {},
   recipientRules: initialRecipientRules,
   recipientDraft: defaultRecipientDraft(),
@@ -2415,10 +2443,6 @@ let selectPickerController: AbortController | null = null;
 let systemHealthTimer: number | null = null;
 let systemHealthRunController: AbortController | null = null;
 const SYSTEM_HEALTH_INTERVAL_MS = 30_000;
-const tokenMarketPrices = new Map<string, TokenMarketPrice>();
-const tokenMarketMetadata = new Map<string, TokenMarketMetadata>();
-const tokenSearchStates = new Map<string, TokenSearchState>();
-const tokenSearchTimers = new Map<string, number>();
 let tokenMarketUnavailableUntil = 0;
 let tokenMarketHydrationScheduled = false;
 let tokenMarketHydrationInFlight = false;
@@ -7969,17 +7993,18 @@ function aiDraftPendingCard(): string {
 }
 
 function generatedPlanCard(record: GeneratedPlanRecord): string {
-  const plan = record.plan;
+  const displayRecord = generatedPlanRecordWithRuntimeTokenLabels(record);
+  const plan = displayRecord.plan;
   const approvalCapable = canQueueAgentPlan(plan);
-  const queueable = canQueueGeneratedPlan(record);
+  const queueable = canQueueGeneratedPlan(displayRecord);
   const archived = record.status === 'archived';
   const proofDisabled = !state.address || state.busy || archived ? 'disabled' : '';
   const queueDisabled = !state.address || !queueable || archived ? 'disabled' : '';
   const selected = state.selectedGeneratedPlanId === record.id;
-  const actionHint = generatedPlanActionHint(record);
+  const actionHint = generatedPlanActionHint(displayRecord);
   const guardrailBlocked = planGuardrailVerdict(plan) === 'block';
-  const reviewSummary = generatedPlanReviewSummary(record);
-  const metaHint = generatedPlanMetaHint(record, guardrailBlocked);
+  const reviewSummary = generatedPlanReviewSummary(displayRecord);
+  const metaHint = generatedPlanMetaHint(displayRecord, guardrailBlocked);
   return `
     <article class="generated-plan-card review-plan-card ${selected ? 'selected' : ''} ${archived ? 'archived' : ''}" data-layout="review-plan-card">
       <div class="review-plan-card-head">
@@ -7994,7 +8019,7 @@ function generatedPlanCard(record: GeneratedPlanRecord): string {
           <h3>${escapeHtml(generatedPlanReviewTitle(record))}</h3>
           ${reviewSummary ? `<p>${escapeHtml(reviewSummary)}</p>` : ''}
         </div>
-        ${generatedPlanHeroValue(record)}
+        ${generatedPlanHeroValue(displayRecord)}
         <div class="review-plan-actions">
           ${agentReviewButton(record)}
           ${approvalCapable ? `
@@ -8003,7 +8028,7 @@ function generatedPlanCard(record: GeneratedPlanRecord): string {
               data-generated-plan-action="queue"
               data-generated-plan-id="${escapeHtml(record.id)}"
               ${queueDisabled}
-              title="${escapeHtml(generatedQueuePlanTitle(record))}"
+              title="${escapeHtml(generatedQueuePlanTitle(displayRecord))}"
             >
               ${escapeHtml(queueActionLabelForPlan(plan))}
             </button>
@@ -8013,7 +8038,7 @@ function generatedPlanCard(record: GeneratedPlanRecord): string {
               data-generated-plan-action="sign-proof"
               data-generated-plan-id="${escapeHtml(record.id)}"
               ${proofDisabled}
-              title="${escapeHtml(signProofTitle(record))}"
+              title="${escapeHtml(signProofTitle(displayRecord))}"
             >
               Sign proof
             </button>
@@ -8021,10 +8046,10 @@ function generatedPlanCard(record: GeneratedPlanRecord): string {
         </div>
       </div>
 
-      ${generatedPlanReviewSummaryGrid(record)}
+      ${generatedPlanReviewSummaryGrid(displayRecord)}
       ${generatedPlanUserNote(plan)}
-      ${generatedPlanConsistencyWarning(record)}
-      ${generatedPlanAgentReviewStrip(record)}
+      ${generatedPlanConsistencyWarning(displayRecord)}
+      ${generatedPlanAgentReviewStrip(displayRecord)}
       ${agentOverrideStrip(record.agentOverride)}
       ${record.error ? `<p class="error-text">${escapeHtml(record.error)}</p>` : ''}
       ${guardrailBlocked ? actionHint : ''}
@@ -8034,12 +8059,12 @@ function generatedPlanCard(record: GeneratedPlanRecord): string {
           <summary>Details</summary>
           <div class="review-plan-details-body">
             <dl class="review-detail-list">
-              ${reviewPlanDetailRows(record).map(([label, value]) => reviewPlanDetailRow(label, value)).join('')}
+              ${reviewPlanDetailRows(displayRecord).map(([label, value]) => reviewPlanDetailRow(label, value)).join('')}
             </dl>
             ${planGuardrailStrip(plan)}
             ${generatedPlanCompactExtras(plan)}
-            ${generatedPlanOutcomeStrip(record)}
-            ${generatedPlanDetailActions(record)}
+            ${generatedPlanOutcomeStrip(displayRecord)}
+            ${generatedPlanDetailActions(displayRecord)}
           </div>
         </details>
         <button
@@ -8189,7 +8214,7 @@ function generatedPlanUserNote(plan: AgentPlan): string {
 }
 
 function generatedPlanConsistencyWarning(record: GeneratedPlanRecord): string {
-  const warning = swapTokenTextMismatchWarning(record.plan, tokenDisplayLabel);
+  const warning = swapTokenTextMismatchWarning(planWithRuntimeTokenLabels(record.plan), tokenDisplayLabel);
   if (!warning) return '';
   return `
     <section class="review-plan-consistency-warning" aria-label="Draft consistency warning">
@@ -9652,7 +9677,10 @@ function tokenFieldInput(fieldDef: AgentPlanTemplateField, value: string, label:
   const mode = templateTokenMode(fieldDef, value);
   const presetMode = mode === 'preset';
   const selectValue = options.includes(value) ? value : fieldDef.defaultValue || options[0] || '';
-  const customValue = presetMode ? '' : value;
+  const selection = templateTokenSelection(fieldDef, value);
+  const customValue = presetMode ? '' : tokenSelectionInputValue(selection, value);
+  const executionValue = !presetMode && selection.value && selection.value !== customValue ? selection.value : '';
+  const selectionHint = !presetMode ? tokenSelectionHint(selection) : '';
   const disabled = state.busy;
   return `
     <div class="field compact planner-field token-choice-field ${state.templateFieldErrors[fieldDef.id] ? 'field-error' : ''}">
@@ -9693,12 +9721,14 @@ function tokenFieldInput(fieldDef: AgentPlanTemplateField, value: string, label:
           <input
             data-template-field="${escapeHtml(fieldDef.id)}"
             data-token-search-input="${escapeHtml(fieldDef.id)}"
+            ${executionValue ? `data-token-execution-value="${escapeHtml(executionValue)}"` : ''}
             value="${escapeHtml(customValue)}"
             placeholder="Search symbol/name or paste mint"
             autocomplete="off"
             spellcheck="false"
             ${disabled ? 'disabled' : ''}
           />
+          ${selectionHint}
           <div class="token-search-results" data-token-search-results="${escapeHtml(fieldDef.id)}">
             ${tokenSearchDropdownHtml(fieldDef.id)}
           </div>
@@ -9726,6 +9756,34 @@ function defaultTemplateTokenModes(
     modes[fieldDef.id] = (fieldDef.options ?? []).includes(value) ? 'preset' : 'custom';
   }
   return modes;
+}
+
+function defaultTemplateTokenSelections(
+  template: AgentPlanTemplate,
+  values = defaultTemplateFieldValues(template),
+): Record<string, TokenFieldSelection> {
+  const selections: Record<string, TokenFieldSelection> = {};
+  const modes = defaultTemplateTokenModes(template, values);
+  for (const fieldDef of template.fields) {
+    if (!isTokenSelectField(fieldDef)) continue;
+    const value = values[fieldDef.id] ?? fieldDef.defaultValue ?? '';
+    const selection = tokenSelectionFromValue(value, modes[fieldDef.id] ?? 'preset', 'preset');
+    const label = values[`${fieldDef.id}Label`]?.trim();
+    const mint = values[`${fieldDef.id}Mint`]?.trim();
+    selections[fieldDef.id] = {
+      ...selection,
+      ...(label ? { label, source: selection.mode === 'custom' ? 'search' : selection.source } : {}),
+      ...(mint ? { mint } : {}),
+    };
+  }
+  return selections;
+}
+
+function templateTokenSelection(fieldDef: AgentPlanTemplateField, value: string): TokenFieldSelection {
+  const mode = templateTokenMode(fieldDef, value);
+  const current = state.templateTokenSelections[fieldDef.id];
+  if (current && current.mode === mode && current.value === value) return current;
+  return tokenSelectionFromValue(value, mode, mode === 'preset' ? 'preset' : 'manual');
 }
 
 function isRecipientTemplateField(fieldDef: AgentPlanTemplateField): boolean {
@@ -12382,8 +12440,7 @@ function bind(): void {
     fieldInput.addEventListener('input', () => {
       const fieldId = fieldInput.dataset.templateField;
       if (!fieldId) return;
-      updateTemplateTokenModeFromControl(fieldInput);
-      state.templateFields[fieldId] = fieldInput.value;
+      state.templateFields[fieldId] = syncTemplateFieldFromControl(fieldInput);
       delete state.templateFieldErrors[fieldId];
       state.agentPlan = null;
       state.agentSignature = '';
@@ -12392,8 +12449,7 @@ function bind(): void {
     fieldInput.addEventListener('change', () => {
       const fieldId = fieldInput.dataset.templateField;
       if (!fieldId) return;
-      updateTemplateTokenModeFromControl(fieldInput);
-      state.templateFields[fieldId] = fieldInput.value;
+      state.templateFields[fieldId] = syncTemplateFieldFromControl(fieldInput);
     });
   }
 
@@ -12437,14 +12493,20 @@ function bind(): void {
       if (!fieldId || !fieldDef || !isTokenSelectField(fieldDef)) return;
       const options = fieldDef.options ?? [];
       const current = state.templateFields[fieldId] ?? defaultTemplateFieldValues(selectedTemplate())[fieldId] ?? '';
-      state.templateTokenModes[fieldId] = mode === 'custom' ? 'custom' : 'preset';
+      const nextMode: TokenInputMode = mode === 'custom' ? 'custom' : 'preset';
+      state.templateTokenModes[fieldId] = nextMode;
+      let nextValue = '';
       if (mode === 'custom') {
-        state.templateFields[fieldId] = options.includes(current) ? '' : current;
+        nextValue = options.includes(current) ? '' : current;
       } else {
-        state.templateFields[fieldId] = options.includes(current)
+        nextValue = options.includes(current)
           ? current
           : fieldDef.defaultValue || options[0] || '';
       }
+      state.templateFields[fieldId] = nextValue;
+      state.templateTokenSelections[fieldId] = tokenSelectionFromValue(nextValue, nextMode, nextMode === 'preset' ? 'preset' : 'manual');
+      tokenSearchStates.delete(fieldId);
+      clearTokenSearchTimer(fieldId);
       delete state.templateFieldErrors[fieldId];
       state.agentPlan = null;
       state.agentSignature = '';
@@ -12688,12 +12750,16 @@ function bind(): void {
       const nextValue = mode === 'custom'
         ? RECURRING_TOKEN_OPTIONS.includes(current) ? '' : current
         : RECURRING_TOKEN_OPTIONS.includes(current) ? current : RECURRING_TOKEN_OPTIONS[0]!;
-      state.recurringTokenModes[field] = mode === 'custom' ? 'custom' : 'preset';
+      const nextMode: TokenInputMode = mode === 'custom' ? 'custom' : 'preset';
+      state.recurringTokenModes[field] = nextMode;
       if (mode === 'custom') {
         setRecurringDraftTokenFieldValue(state.recurringDraft, field, nextValue);
       } else if (mode === 'preset') {
         setRecurringDraftTokenFieldValue(state.recurringDraft, field, nextValue);
       }
+      state.recurringTokenSelections[field] = tokenSelectionFromValue(nextValue, nextMode, nextMode === 'preset' ? 'preset' : 'manual');
+      tokenSearchStates.delete(recurringTokenSearchKey(field));
+      clearTokenSearchTimer(recurringTokenSearchKey(field));
       delete state.recurringErrors[recurringTokenFieldErrorKey(field)];
       render();
     });
@@ -12702,7 +12768,7 @@ function bind(): void {
   for (const recurringInput of document.querySelectorAll<HTMLInputElement | HTMLSelectElement | HTMLTextAreaElement>('[data-recurring-field]')) {
     recurringInput.addEventListener('input', () => {
       const field = recurringInput.dataset.recurringField;
-      updateRecurringTokenModeFromControl(recurringInput);
+      syncRecurringTokenFieldFromControl(recurringInput);
       state.recurringDraft = readRecurringDraft();
       if (field) {
         delete state.recurringErrors[`recurring${field.charAt(0).toUpperCase()}${field.slice(1)}`];
@@ -12711,7 +12777,7 @@ function bind(): void {
     });
     recurringInput.addEventListener('change', () => {
       const field = recurringInput.dataset.recurringField;
-      updateRecurringTokenModeFromControl(recurringInput);
+      syncRecurringTokenFieldFromControl(recurringInput);
       state.recurringDraft = readRecurringDraft();
       if (field) {
         delete state.recurringErrors[`recurring${field.charAt(0).toUpperCase()}${field.slice(1)}`];
@@ -13505,6 +13571,7 @@ function selectAgentTemplate(templateId: string): boolean {
     ...state.templateFields,
   };
   state.templateTokenModes = defaultTemplateTokenModes(template, state.templateFields);
+  state.templateTokenSelections = defaultTemplateTokenSelections(template, state.templateFields);
   state.templateFieldErrors = {};
   state.agentPlan = null;
   state.agentSignature = '';
@@ -14098,7 +14165,7 @@ async function runGenerateAgentPlan(): Promise<void> {
         const parameters = readTemplateFields(template);
         const userNotes = state.agentPrompt.trim();
         assertValidTemplatePlanInput(template, parameters, userNotes);
-        const plan = buildTemplatePlan(template, parameters, 'template', userNotes);
+        const plan = planWithRuntimeTokenLabels(buildTemplatePlan(template, parameters, 'template', userNotes));
         state.agentPlan = plan;
         state.agentSignature = '';
         state.agentPreparedActionId = '';
@@ -14170,7 +14237,7 @@ async function runGenerateAiPlan(): Promise<void> {
           : state.aiSettings.mode === 'hosted'
             ? await generateHostedAiPlan(state.aiSettings, request)
             : await generateSessionAiPlan(state.aiSettings, request);
-        const plan = planWithStructuredSwapText(generatedPlan);
+        const plan = planWithRuntimeTokenLabels(generatedPlan);
         state.agentPlan = plan;
         state.agentSignature = '';
         state.agentPreparedActionId = '';
@@ -14208,11 +14275,13 @@ async function runSignAgentPlan(): Promise<void> {
     if (!state.agentPlan) {
       throw new Error('Create a plan before signing a review proof.');
     }
-    const signature = await signAgentPlanProof(state.agentPlan, 'Plan review proof');
+    const plan = planWithRuntimeTokenLabels(state.agentPlan);
+    state.agentPlan = plan;
+    const signature = await signAgentPlanProof(plan, 'Plan review proof');
     const activeRecord = generatedPlanById(state.selectedGeneratedPlanId);
     state.agentSignature = signature;
     await updateActiveGeneratedPlanRecord({ signature, status: 'signed', error: undefined, failureLabel: undefined });
-    if (activeRecord && samePlan(activeRecord.plan, state.agentPlan)) {
+    if (activeRecord && samePlan(planWithRuntimeTokenLabels(activeRecord.plan), plan)) {
       if (state.generatedPlanAuditId === activeRecord.id) {
         state.generatedPlanAuditId = '';
       }
@@ -14238,8 +14307,10 @@ async function runQueueAgentPlan(): Promise<void> {
     if (!state.agentPlan) {
       throw new Error('Create a plan before sending it for approval.');
     }
+    const plan = planWithRuntimeTokenLabels(state.agentPlan);
+    state.agentPlan = plan;
     const activeRecord = generatedPlanById(state.selectedGeneratedPlanId);
-    const response = await queuePlanThroughActiveWorkflow(state.agentPlan, activeRecord);
+    const response = await queuePlanThroughActiveWorkflow(plan, activeRecord);
     state.agentPreparedActionId = response.id;
     if (response.mode === 'agentic-cloud' && response.planRecordId) {
       state.selectedGeneratedPlanId = response.planRecordId;
@@ -14249,13 +14320,13 @@ async function runQueueAgentPlan(): Promise<void> {
       await updateActiveGeneratedPlanRecord({ preparedActionId: response.id, status: 'queued', error: undefined, failureLabel: undefined });
     }
     const queuedRecordId = response.planRecordId ?? activeRecord?.id ?? '';
-    if (queuedRecordId && activeRecord && samePlan(activeRecord.plan, state.agentPlan)) {
+    if (queuedRecordId && activeRecord && samePlan(planWithRuntimeTokenLabels(activeRecord.plan), plan)) {
       if (state.generatedPlanAuditId === queuedRecordId || state.generatedPlanAuditId === activeRecord.id) {
         state.generatedPlanAuditId = '';
       }
       selectFallbackGeneratedPlan();
     }
-    if (state.agentPlan.actionType === 'recurring_payment') {
+    if (plan.actionType === 'recurring_payment') {
       state.activeTab = 'schedule';
       state.recurringView = 'active';
     } else {
@@ -14269,8 +14340,8 @@ async function runQueueAgentPlan(): Promise<void> {
     }
     pushToast(
       'success',
-      state.agentPlan.actionType === 'recurring_payment' ? 'Repeat payment created' : 'Sent for approval',
-      state.agentPlan.actionType === 'recurring_payment'
+      plan.actionType === 'recurring_payment' ? 'Repeat payment created' : 'Sent for approval',
+      plan.actionType === 'recurring_payment'
         ? response.mode === 'browser-workflow'
           ? 'Created one local approval now. Saved-on-device workflow does not run background repeats after this tab closes.'
           : 'Future payments will appear in Needs Approval.'
@@ -14554,12 +14625,12 @@ async function runReviewGeneratedPlan(planId: string): Promise<void> {
   const toastId = pushToast('pending', 'Asking agent', 'Reviewing this draft before approval.');
   try {
     await updateGeneratedPlan(planId, { agentReview: checkingReview, error: undefined, failureLabel: undefined });
-    if (state.agentPlan && samePlan(state.agentPlan, record.plan)) {
+    if (state.agentPlan && samePlan(planWithRuntimeTokenLabels(state.agentPlan), planWithRuntimeTokenLabels(record.plan))) {
       state.selectedGeneratedPlanId = planId;
     }
     await run('ai', async () => {
       const refreshed = generatedPlanById(planId) ?? record;
-      const reviewPlan = planWithStructuredSwapText(refreshed.plan);
+      const reviewPlan = planWithRuntimeTokenLabels(refreshed.plan);
       const appliedPolicyIds = enabledUserAgentPolicies().map((policy) => policy.id);
       const deterministicFacts = await gatherAgentReviewFacts(refreshed);
       const rawResult = await runAgentReview(refreshed, deterministicFacts);
@@ -14567,7 +14638,7 @@ async function runReviewGeneratedPlan(planId: string): Promise<void> {
       const review = agentReviewStateFromResult(result, previousReview, reviewPlan, appliedPolicyIds);
       review.facts = mergeReviewFacts(deterministicFacts, result.evidence);
       await updateGeneratedPlan(planId, { agentReview: review, error: undefined, failureLabel: undefined });
-      if (state.agentPlan && samePlan(state.agentPlan, refreshed.plan)) {
+      if (state.agentPlan && samePlan(planWithRuntimeTokenLabels(state.agentPlan), reviewPlan)) {
         state.selectedGeneratedPlanId = planId;
       }
       const toastKind: ToastKind = review.status === 'approved'
@@ -14790,13 +14861,14 @@ async function runSignGeneratedPlan(planId: string): Promise<void> {
     if (record.status === 'archived') {
       throw new Error('Restore this plan before signing a review proof.');
     }
-    const signature = await signAgentPlanProof(record.plan, 'Plan review proof');
+    const plan = planWithRuntimeTokenLabels(record.plan);
+    const signature = await signAgentPlanProof(plan, 'Plan review proof');
     await updateGeneratedPlan(planId, { signature, status: 'signed', error: undefined, failureLabel: undefined });
     if (state.generatedPlanAuditId === planId) {
       state.generatedPlanAuditId = '';
     }
     selectFallbackGeneratedPlan();
-    if (state.agentPlan && samePlan(state.agentPlan, record.plan)) {
+    if (state.agentPlan && samePlan(planWithRuntimeTokenLabels(state.agentPlan), plan)) {
       state.agentSignature = signature;
     }
     pushToast('success', 'Plan completed', 'Review proof saved in Done.');
@@ -14818,8 +14890,9 @@ async function runQueueGeneratedPlan(planId: string): Promise<void> {
     if (record.status === 'archived') {
       throw new Error('Restore this plan before sending it for approval.');
     }
-    assertPlanCanQueue(record.plan);
-    const response = await queuePlanThroughActiveWorkflow(record.plan, record);
+    const plan = planWithRuntimeTokenLabels(record.plan);
+    assertPlanCanQueue(plan);
+    const response = await queuePlanThroughActiveWorkflow(plan, record);
     if (response.mode === 'agentic-cloud' && response.planRecordId) {
       state.selectedGeneratedPlanId = response.planRecordId;
     } else if (record.workflowSource === 'cloud') {
@@ -14831,10 +14904,10 @@ async function runQueueGeneratedPlan(planId: string): Promise<void> {
       state.generatedPlanAuditId = '';
     }
     selectFallbackGeneratedPlan();
-    if (state.agentPlan && samePlan(state.agentPlan, record.plan)) {
+    if (state.agentPlan && samePlan(planWithRuntimeTokenLabels(state.agentPlan), plan)) {
       state.agentPreparedActionId = response.id;
     }
-    if (record.plan.actionType === 'recurring_payment') {
+    if (plan.actionType === 'recurring_payment') {
       state.activeTab = 'schedule';
       state.recurringView = 'active';
     } else {
@@ -14848,8 +14921,8 @@ async function runQueueGeneratedPlan(planId: string): Promise<void> {
     }
     pushToast(
       'success',
-      record.plan.actionType === 'recurring_payment' ? 'Repeat payment created' : 'Sent for approval',
-      record.plan.actionType === 'recurring_payment'
+      plan.actionType === 'recurring_payment' ? 'Repeat payment created' : 'Sent for approval',
+      plan.actionType === 'recurring_payment'
         ? response.mode === 'browser-workflow'
           ? 'Created one local approval now. Saved-on-device workflow does not run background repeats after this tab closes.'
           : 'Future payments will appear in Needs Approval.'
@@ -14872,6 +14945,7 @@ async function runQueueGeneratedPlan(planId: string): Promise<void> {
 }
 
 async function saveGeneratedPlan(plan: AgentPlan, template: AgentPlanTemplate, prompt: string): Promise<GeneratedPlanRecord> {
+  plan = planWithRuntimeTokenLabels(plan);
   if (activeWorkflowMode() === 'agentic-cloud' && plan.actionType !== 'recurring_payment') {
     const cloudPlan = parseCloudPlanResponse(await cloudRequest('/api/plans', {
       method: 'POST',
@@ -14979,13 +15053,13 @@ async function updateActiveGeneratedPlanRecord(
 ): Promise<void> {
   if (!state.agentPlan) return;
   const record = generatedPlanById(state.selectedGeneratedPlanId);
-  if (record && samePlan(record.plan, state.agentPlan)) {
+  if (record && samePlan(planWithRuntimeTokenLabels(record.plan), planWithRuntimeTokenLabels(state.agentPlan))) {
     await updateGeneratedPlan(record.id, patch);
   }
 }
 
 function makeGeneratedPlanActive(record: GeneratedPlanRecord): void {
-  state.agentPlan = record.plan;
+  state.agentPlan = planWithRuntimeTokenLabels(record.plan);
   state.agentSignature = record.signature ?? '';
   state.agentPreparedActionId = record.preparedActionId ?? '';
   state.selectedGeneratedPlanId = record.id;
@@ -14997,15 +15071,17 @@ function makeGeneratedPlanActive(record: GeneratedPlanRecord): void {
 
 function useGeneratedPlanAsStartingPoint(record: GeneratedPlanRecord): void {
   const template = templateById(record.templateId);
+  const plan = planWithRuntimeTokenLabels(record.plan);
   state.selectedTemplateId = template.id;
   state.templateOutcomeFilter = templateOutcome(template);
   state.templateFields = {
     ...defaultTemplateFieldValues(template),
-    ...record.plan.parameters,
+    ...plan.parameters,
   };
   state.templateTokenModes = defaultTemplateTokenModes(template, state.templateFields);
+  state.templateTokenSelections = defaultTemplateTokenSelections(template, state.templateFields);
   state.templateFieldErrors = {};
-  state.agentPrompt = record.plan.userNotes || record.prompt || template.description;
+  state.agentPrompt = plan.userNotes || record.prompt || template.description;
   state.agentPlan = null;
   state.agentSignature = '';
   state.agentPreparedActionId = '';
@@ -15029,6 +15105,7 @@ function openDcaReviewProofTemplate(): void {
     memo: state.recurringDraft.note || defaultTemplateFieldValues(template).memo || 'Repeat DCA approval',
   };
   state.templateTokenModes = defaultTemplateTokenModes(template, state.templateFields);
+  state.templateTokenSelections = defaultTemplateTokenSelections(template, state.templateFields);
   state.templateFieldErrors = {};
   state.agentPrompt = 'Create a review proof for this recurring DCA strategy before any active schedule is created.';
   state.agentPlan = null;
@@ -15647,7 +15724,7 @@ function agentReviewRequest(
   record: GeneratedPlanRecord,
   deterministicFacts = gatherDeterministicFacts(record),
 ): AgentPlanReviewRequest {
-  const reviewPlan = planWithStructuredSwapText(record.plan);
+  const reviewPlan = planWithRuntimeTokenLabels(record.plan);
   const review = record.agentReview;
   const priorAnswers = review?.answers;
   const priorQuestions = review?.questions;
@@ -15820,7 +15897,7 @@ function isAgentReviewStale(record: GeneratedPlanRecord | undefined): boolean {
   const review = record?.agentReview;
   if (!review?.reviewedPlanFingerprint) return false;
   if (review.status !== 'approved' && review.status !== 'needs_input' && review.status !== 'denied') return false;
-  return planFingerprint(planWithStructuredSwapText(record!.plan)) !== review.reviewedPlanFingerprint;
+  return planFingerprint(planWithRuntimeTokenLabels(record!.plan)) !== review.reviewedPlanFingerprint;
 }
 
 function appendReviewAttempt(prev: AgentReviewAttempt[] | undefined, attempt: AgentReviewAttempt): AgentReviewAttempt[] {
@@ -15962,7 +16039,7 @@ function mergeReviewFacts(
 
 async function gatherAgentReviewFacts(record: GeneratedPlanRecord): Promise<AgentReviewFactSet> {
   const facts = gatherDeterministicFacts(record);
-  const plan = planWithStructuredSwapText(record.plan);
+  const plan = planWithRuntimeTokenLabels(record.plan);
   const enriched = await enrichTokenFactsFromBirdEye(plan, facts).catch(() => false);
   if (!enriched) {
     await enrichTokenFactsFromDexScreener(plan, facts).catch(() => undefined);
@@ -16281,7 +16358,7 @@ function formatUsdCompact(value: number): string {
 function gatherDeterministicFacts(record: GeneratedPlanRecord): AgentReviewFactSet {
   const facts: AgentReviewFactSet = {};
   const checkedAt = new Date().toISOString();
-  const plan = planWithStructuredSwapText(record.plan);
+  const plan = planWithRuntimeTokenLabels(record.plan);
 
   const recipientAddress = (planParameter(plan, ['recipient', 'recipientAddress']) || '').trim();
   if (recipientAddress) {
@@ -17967,6 +18044,16 @@ async function runPreparedActionOp(actionId: string, op: string): Promise<void> 
     return;
   }
 
+  if (op === 'clear-pending' && isExecutableBrowserAction(action)) {
+    await run('inbox', async () => {
+      await clearStaleBrowserPendingTransaction(action);
+      if (action.workflowSource === 'local-bridge' && activeWorkflowMode() === 'local-bridge') {
+        await refreshInboxData().catch(() => undefined);
+      }
+    });
+    return;
+  }
+
   await run('inbox', async () => {
     switch (op) {
       case 'execute':
@@ -18680,6 +18767,9 @@ async function runBrowserPreparedActionOp(actionId: string, op: string): Promise
     case 'confirm':
       await runBrowserTransactionConfirm(action);
       return;
+    case 'clear-pending':
+      await clearStaleBrowserPendingTransaction(action);
+      return;
     case 'execute': {
       const policyError = actionRecipientPolicyBlockReason(action);
       if (policyError) {
@@ -18729,7 +18819,10 @@ async function runBrowserTransactionConfirm(action: PreparedAction): Promise<voi
   if (!canConfirmBrowserTransaction(action)) {
     throw new Error('This request does not have a submitted browser transaction to confirm.');
   }
-  const txid = action.txid!;
+  const txid = action.txid ?? findPendingActionLedgerEntry(action.id)?.txid;
+  if (!txid) {
+    throw new Error('Submitted transaction id is missing.');
+  }
   const toastId = pushToast('pending', 'Checking confirmation', short(txid), {
     linkHref: explorerUrl(txid, action.cluster),
     linkLabel: 'Open Solscan',
@@ -18815,6 +18908,115 @@ async function runBrowserTransactionConfirm(action: PreparedAction): Promise<voi
       linkLabel: 'Open Solscan',
     });
   }
+}
+
+async function clearStaleBrowserPendingTransaction(action: PreparedAction): Promise<void> {
+  if (!isExecutableBrowserAction(action)) {
+    throw new Error('Only browser-wallet transactions can clear local pending state here.');
+  }
+  const ledger = findPendingTransactionByAction(action.id);
+  const txid = action.txid ?? ledger?.txid;
+  if (!txid) {
+    if (ledger?.signedTransactionBase64) {
+      const confirmed = window.confirm(
+        'This request has signed transaction bytes but no submitted signature. Clear the local pending state so the approval can be tried again?',
+      );
+      if (!confirmed) return;
+      restoreBrowserActionAfterClearingPending(action, ledger.id);
+      pushToast('success', 'Pending cleared', 'The approval is ready again. Wallet approval was not opened.');
+      render();
+      return;
+    }
+    throw new Error('No pending transaction id was found for this request.');
+  }
+
+  const toastId = pushToast('pending', 'Checking transaction', short(txid), {
+    linkHref: explorerUrl(txid, action.cluster),
+    linkLabel: 'Open Solscan',
+  });
+  const status = await submittedTransactionStatus(action.cluster, txid);
+  if (status.txStatus === 'confirmed') {
+    completeBrowserExecutedAction(action, {
+      txid,
+      txStatus: 'confirmed',
+      explorerUrl: explorerUrl(txid, action.cluster),
+    });
+    await syncBridgePreparedActionTransaction(action, { txid, txStatus: 'confirmed' });
+    showCompletedHistoryForAction(action.id);
+    replaceToast(toastId, 'success', 'Transaction confirmed', `${short(txid)} - Solscan link saved in Done.`, {
+      linkHref: explorerUrl(txid, action.cluster),
+      linkLabel: 'Open Solscan',
+    });
+    return;
+  }
+  if (status.txStatus === 'failed') {
+    const failureDetail = status.error ?? status.confirmationStatus ?? 'failed';
+    const priorStatus: PreparedActionStatus = action.status === 'overdue' ? 'overdue' : 'ready';
+    updateBrowserPreparedAction(action.id, {
+      status: priorStatus,
+      txStatus: 'failed',
+      txid,
+      txError: failureDetail,
+      error: failureDetail,
+    });
+    if (ledger) {
+      markTransactionPhase(ledger.id, 'failed', {
+        failedAt: new Date().toISOString(),
+        failureKind: 'onchain_failed',
+        lastError: failureDetail,
+      });
+      syncPendingTransactionsFromLedger();
+    }
+    await syncBridgePreparedActionTransaction(action, {
+      txid,
+      txStatus: 'failed',
+      error: failureDetail,
+    });
+    replaceToast(toastId, 'error', 'Transaction failed on-chain', short(txid), {
+      linkHref: explorerUrl(txid, action.cluster),
+      linkLabel: 'Open Solscan',
+    });
+    render();
+    return;
+  }
+
+  const prompt = status.txStatus === 'status_unreachable'
+    ? `Status check could not reach RPC for ${short(txid)}. Clear the local pending state so the approval can be tried again? Check Solscan first if you are unsure.`
+    : `${short(txid)} is not confirmed yet. Clear the local pending state so the approval can be tried again? Check Solscan first if you are unsure.`;
+  const confirmed = window.confirm(prompt);
+  if (!confirmed) {
+    replaceToast(toastId, 'pending', 'Transaction still pending', short(txid), {
+      linkHref: explorerUrl(txid, action.cluster),
+      linkLabel: 'Open Solscan',
+    });
+    return;
+  }
+  restoreBrowserActionAfterClearingPending(action, ledger?.id);
+  replaceToast(toastId, 'success', 'Pending cleared', 'The approval is ready again. Wallet approval was not opened.', {
+    linkHref: explorerUrl(txid, action.cluster),
+    linkLabel: 'Open Solscan',
+  });
+  render();
+}
+
+function restoreBrowserActionAfterClearingPending(action: PreparedAction, ledgerId?: string): void {
+  const priorStatus: PreparedActionStatus = action.status === 'overdue' ? 'overdue' : 'ready';
+  if (ledgerId) {
+    removePendingTransaction(ledgerId);
+    syncPendingTransactionsFromLedger();
+  }
+  updateBrowserPreparedAction(action.id, {
+    status: priorStatus,
+    txStatus: undefined,
+    txid: undefined,
+    txError: undefined,
+    error: undefined,
+    confirmationStatus: undefined,
+  });
+  recordBrowserActionActivity(action.id, 'browser.transaction.pending_cleared', {
+    kind: action.kind,
+    status: 'ready',
+  });
 }
 
 async function signCloudWorkflowDecision(
@@ -19254,8 +19456,8 @@ async function reconcilePendingTransactions(opts: {
       if (isUserInitiated) {
         pushToast(
           'pending',
-          'Submitted status unknown',
-          'Checking the signed transaction status.',
+          'Transaction status pending',
+          'Status check could not reach RPC yet. Use Check confirmation or Solscan before retrying.',
           record.txid
             ? { linkHref: explorerUrl(record.txid, cluster), linkLabel: 'Open Solscan' }
             : {},
@@ -19435,10 +19637,16 @@ async function executeBrowserSwap(
     toastContext,
     'Preparing swap',
     'Fetching the Jupiter transaction for wallet review.',
-    () => hostedSwapRequest('/api/swap/order', {
+    () => browserSwapOrderRequest(action, {
       inputMint: inputToken.mintText,
       outputMint: outputToken.mintText,
       amount: amountRaw.toString(),
+      taker,
+      slippageBps,
+    }, {
+      inputToken: requiredActionParam(action, 'inputToken'),
+      outputToken: requiredActionParam(action, 'outputToken'),
+      amount: requiredActionParam(action, 'amount'),
       taker,
       slippageBps,
     }),
@@ -19637,7 +19845,7 @@ async function executeSignedJupiterSwapWithRetry(
     );
 
     try {
-      const executed = await hostedSwapRequest('/api/swap/execute', {
+      const executed = await browserSwapExecuteRequest(action, {
         signedTransaction: signedTransactionBase64,
         requestId,
         ...(typeof order.lastValidBlockHeight === 'string' || typeof order.lastValidBlockHeight === 'number'
@@ -19725,9 +19933,10 @@ async function resolveSubmittedTransactionStatus(
   toastContext?: TransactionToastContext,
 ): Promise<PreparedActionTxStatus> {
   const deadline = Date.now() + TX_CONFIRMATION_POLL_TIMEOUT_MS;
-  void toastContext;
+  let lastStatus: SubmittedTransactionStatusResult | undefined;
   while (true) {
-    const status = await browserSignatureStatus(cluster, txid);
+    const status = await submittedTransactionStatus(cluster, txid);
+    lastStatus = status;
     if (status.txStatus === 'failed') {
       throw new Error(`Transaction ${short(txid)} failed on-chain: ${status.error ?? status.confirmationStatus ?? 'failed'}`);
     }
@@ -19735,9 +19944,53 @@ async function resolveSubmittedTransactionStatus(
       return 'confirmed';
     }
     if (Date.now() >= deadline) {
+      if (toastContext) {
+        updateTransactionToast(
+          toastContext,
+          'pending',
+          'Transaction submitted',
+          lastStatus.txStatus === 'status_unreachable'
+            ? 'Status check could not reach RPC yet. Use Check confirmation or Solscan before retrying.'
+            : `${short(txid)} is still confirming.`,
+          txid,
+        );
+      }
       return 'pending';
     }
     await sleep(Math.min(TX_CONFIRMATION_POLL_INTERVAL_MS, Math.max(0, deadline - Date.now())));
+  }
+}
+
+async function submittedTransactionStatus(
+  cluster: Cluster,
+  txid: string,
+): Promise<SubmittedTransactionStatusResult> {
+  try {
+    const status = await browserSignatureStatus(cluster, txid);
+    if (status.txStatus === 'failed') {
+      return {
+        txStatus: 'failed',
+        confirmationStatus: status.confirmationStatus,
+        error: status.error,
+      };
+    }
+    if (status.txStatus === 'confirmed') {
+      return {
+        txStatus: 'confirmed',
+        confirmationStatus: status.confirmationStatus,
+        error: status.error,
+      };
+    }
+    return {
+      txStatus: 'pending',
+      confirmationStatus: status.confirmationStatus,
+      error: status.error,
+    };
+  } catch (err) {
+    return {
+      txStatus: 'status_unreachable',
+      error: redactSecrets(err instanceof Error ? err.message : String(err)),
+    };
   }
 }
 
@@ -20021,6 +20274,8 @@ async function browserLatestBlockhash(cluster: Cluster): Promise<BrowserLatestBl
   try {
     return await sameOriginTransactionRequest<BrowserLatestBlockhash>('/api/solana/latest-blockhash', { cluster });
   } catch (err) {
+    const bridgeResponse = await bridgeSolanaRequest<BrowserLatestBlockhash>('/bridge/solana/latest-blockhash', { cluster }, cluster);
+    if (bridgeResponse) return bridgeResponse;
     if (canUseDirectBrowserRpc(cluster)) {
       return browserActionConnection(cluster).getLatestBlockhash('confirmed');
     }
@@ -20034,6 +20289,10 @@ async function broadcastSignedBrowserTransaction(cluster: Cluster, signedTransac
     const response = await sameOriginTransactionRequest<BrowserSendTransactionResponse>('/api/solana/send-transaction', request);
     return requiredResponseString(response.txid ?? response.signature, 'Transaction signature');
   } catch (err) {
+    const bridgeResponse = await bridgeSolanaRequest<BrowserSendTransactionResponse>('/bridge/solana/send-transaction', request, cluster);
+    if (bridgeResponse) {
+      return requiredResponseString(bridgeResponse.txid ?? bridgeResponse.signature, 'Transaction signature');
+    }
     if (canUseDirectBrowserRpc(cluster)) {
       return browserActionConnection(cluster).sendRawTransaction(decodeBase64(signedTransactionBase64), {
         preflightCommitment: 'confirmed',
@@ -20049,6 +20308,8 @@ async function browserSignatureStatus(cluster: Cluster, txid: string): Promise<B
   try {
     return await sameOriginTransactionRequest<BrowserSignatureStatusResponse>('/api/solana/signature-status', request);
   } catch (err) {
+    const bridgeResponse = await bridgeSolanaRequest<BrowserSignatureStatusResponse>('/bridge/solana/signature-status', request, cluster);
+    if (bridgeResponse) return bridgeResponse;
     if (canUseDirectBrowserRpc(cluster)) {
       const status = (await browserActionConnection(cluster).getSignatureStatuses([txid], {
         searchTransactionHistory: true,
@@ -20062,6 +20323,18 @@ async function browserSignatureStatus(cluster: Cluster, txid: string): Promise<B
     }
     throw transactionApiUnavailableError(err);
   }
+}
+
+async function bridgeSolanaRequest<T>(
+  path: '/bridge/solana/latest-blockhash' | '/bridge/solana/send-transaction' | '/bridge/solana/signature-status',
+  body: Record<string, unknown>,
+  cluster: Cluster,
+): Promise<T | undefined> {
+  if (!canAttemptLocalBridgeForCluster(cluster)) return undefined;
+  return bridgeRequest<T>(path, {
+    method: 'POST',
+    body: JSON.stringify(body),
+  }).catch(() => undefined);
 }
 
 async function sameOriginTransactionRequest<T>(path: string, body: Record<string, unknown>): Promise<T> {
@@ -20252,6 +20525,53 @@ function browserSlippageBps(action: PreparedAction): number {
   const parsed = typeof raw === 'number' ? raw : Number(raw);
   if (!Number.isFinite(parsed) || parsed < 0) return 50;
   return Math.trunc(parsed);
+}
+
+async function browserSwapOrderRequest(
+  action: PreparedAction,
+  hostedBody: Record<string, unknown>,
+  bridgeBody: Record<string, unknown>,
+): Promise<Record<string, unknown>> {
+  try {
+    return await hostedSwapRequest('/api/swap/order', hostedBody);
+  } catch (hostedErr) {
+    const bridgeOrder = await bridgeSwapRequest('/bridge/action/swap-order', bridgeBody, action.cluster)
+      .catch((bridgeErr) => {
+        if (action.workflowSource === 'local-bridge') throw bridgeErr;
+        return undefined;
+      });
+    if (bridgeOrder) return bridgeOrder;
+    throw hostedErr;
+  }
+}
+
+async function browserSwapExecuteRequest(
+  action: PreparedAction,
+  body: Record<string, unknown>,
+): Promise<Record<string, unknown>> {
+  try {
+    return await hostedSwapRequest('/api/swap/execute', body);
+  } catch (hostedErr) {
+    const executed = await bridgeSwapRequest('/bridge/action/swap-execute', body, action.cluster)
+      .catch((bridgeErr) => {
+        if (action.workflowSource === 'local-bridge') throw bridgeErr;
+        return undefined;
+      });
+    if (executed) return executed;
+    throw hostedErr;
+  }
+}
+
+async function bridgeSwapRequest(
+  path: '/bridge/action/swap-order' | '/bridge/action/swap-execute',
+  body: Record<string, unknown>,
+  cluster: Cluster,
+): Promise<Record<string, unknown> | undefined> {
+  if (!canAttemptLocalBridgeForCluster(cluster)) return undefined;
+  return bridgeRequest<Record<string, unknown>>(path, {
+    method: 'POST',
+    body: JSON.stringify(body),
+  });
 }
 
 async function hostedSwapRequest(path: '/api/swap/order' | '/api/swap/execute', body: Record<string, unknown>): Promise<Record<string, unknown>> {
@@ -21980,27 +22300,16 @@ async function fetchSwapQuoteForAction(action: PreparedAction): Promise<{
   const amountRaw = parseDecimalAmountToRaw(amount, inputToken.decimals, `${inputToken.symbol} swap amount`);
   const slippageBps = browserSlippageBps(action);
 
-  if (action.workflowSource === 'local-bridge' && state.bridgeActive && canAttemptLocalBridgeForCluster(action.cluster)) {
-    try {
-      const order = await bridgeRequest<Record<string, unknown>>('/bridge/action/swap-quote', {
-        method: 'POST',
-        body: JSON.stringify({
-          inputToken: inputTokenParam,
-          outputToken: outputTokenParam,
-          amount,
-          slippageBps,
-        }),
-      });
-      return { order, inputToken, outputToken };
-    } catch (err) {
-      if (action.workflowSource === 'local-bridge') throw err;
-    }
-  }
-
-  const order = await hostedSwapRequest('/api/swap/order', {
+  const order = await browserSwapOrderRequest(action, {
     inputMint: inputToken.mintText,
     outputMint: outputToken.mintText,
     amount: amountRaw.toString(),
+    taker: action.walletAddress,
+    slippageBps,
+  }, {
+    inputToken: inputTokenParam,
+    outputToken: outputTokenParam,
+    amount,
     taker: action.walletAddress,
     slippageBps,
   });
@@ -22456,8 +22765,7 @@ function readTemplateFields(template = selectedTemplate()): Record<string, strin
   for (const input of document.querySelectorAll<HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement>('[data-template-field]')) {
     const fieldId = input.dataset.templateField;
     if (fieldId) {
-      updateTemplateTokenModeFromControl(input);
-      current[fieldId] = input.value;
+      current[fieldId] = syncTemplateFieldFromControl(input);
     }
   }
   for (const input of document.querySelectorAll<HTMLInputElement>('[data-template-slippage-field]')) {
@@ -22466,8 +22774,24 @@ function readTemplateFields(template = selectedTemplate()): Record<string, strin
       current[fieldId] = slippagePercentInputToBps(input.value);
     }
   }
-  state.templateFields = current;
-  return current;
+  const withDisplay = withTemplateTokenDisplayParameters(template, current);
+  state.templateFields = withDisplay;
+  return withDisplay;
+}
+
+function withTemplateTokenDisplayParameters(
+  template: AgentPlanTemplate,
+  parameters: Record<string, string>,
+): Record<string, string> {
+  const next = { ...parameters };
+  for (const fieldDef of template.fields) {
+    if (!isTokenSelectField(fieldDef)) continue;
+    const value = next[fieldDef.id] ?? '';
+    const selection = state.templateTokenSelections[fieldDef.id] ??
+      tokenSelectionFromValue(value, templateTokenMode(fieldDef, value), 'manual');
+    Object.assign(next, tokenDisplayParametersForField(fieldDef.id, selection));
+  }
+  return next;
 }
 
 function templateFieldValue(fieldId: string): string {
@@ -22765,10 +23089,10 @@ async function queuePlanThroughCloud(plan: AgentPlan, sourceRecord?: GeneratedPl
   }
   const unsupported = cloudQueueUnsupportedReason(plan);
   if (unsupported) throw new Error(unsupported);
-  const cloudRecord = sourceRecord?.workflowSource === 'cloud' && samePlan(sourceRecord.plan, plan)
+  const cloudRecord = sourceRecord?.workflowSource === 'cloud' && samePlan(planWithRuntimeTokenLabels(sourceRecord.plan), plan)
     ? sourceRecord
     : state.generatedPlans.find((record) =>
-        record.workflowSource === 'cloud' && record.status !== 'archived' && samePlan(record.plan, plan),
+        record.workflowSource === 'cloud' && record.status !== 'archived' && samePlan(planWithRuntimeTokenLabels(record.plan), plan),
       );
   const template = sourceRecord ? templateById(sourceRecord.templateId) : templateById(state.selectedTemplateId);
   const planId = cloudRecord
@@ -24074,6 +24398,9 @@ function preparedActionCard(action: PreparedAction): string {
   const executionBlockReason = cloudExecutionBlockReason(action) ?? actionRecipientPolicyBlockReason(action);
   const confirmable = canConfirmCloudFinalization(action) || canConfirmCloudBrowserTransaction(action) || canConfirmBrowserTransaction(action);
   const pendingLedgerExecution = hasPendingExecutionLedgerEntry(action);
+  const clearablePending = !cloudWorkflow &&
+    isExecutableBrowserAction(action) &&
+    (pendingLedgerExecution || Boolean(action.txid && action.txStatus === 'pending'));
   const executeDisabled = (!state.bridgeActive && !browserWorkflow && !cloudWorkflow) ||
     state.busy ||
     !executable ||
@@ -24127,6 +24454,7 @@ function preparedActionCard(action: PreparedAction): string {
         </div>
         ${executionBlockReason ? `<p class="error-text">${escapeHtml(executionBlockReason)}</p>` : ''}
         <div class="inbox-approval-footer-row">
+          ${clearablePending ? `<button class="utility inbox-footer-action" data-action-op="clear-pending" data-action-id="${escapeHtml(action.id)}" ${state.busy ? 'disabled' : ''} title="Checks chain status first, then restores this approval if no confirmed or failed transaction is found.">Clear stale pending</button>` : ''}
           ${hasPendingExecutionLedgerEntry(action) || action.txid || action.status === 'failed' ? `<button class="utility inbox-footer-action" data-attach-tx-action="open" data-action-id="${escapeHtml(action.id)}">Attach existing transaction</button>` : ''}
           ${action.status === 'failed' || action.txError ? `<button class="utility inbox-footer-action" data-debug-export data-action-id="${escapeHtml(action.id)}">Copy debug log</button>` : ''}
           <button class="utility inbox-footer-action" data-action-op="archive" data-action-id="${action.id}" ${state.busy ? 'disabled' : ''} title="Remove from Needs Approval without signing a denial proof.">Archive</button>
@@ -24276,6 +24604,8 @@ function tokenDisplayLabel(value: string): string {
   const trimmed = value.trim();
   const known = KNOWN_BROWSER_TOKENS[trimmed.toUpperCase()];
   if (known) return known.symbol;
+  const metadata = tokenMarketMetadata.get(trimmed);
+  if (metadata?.symbol) return metadata.symbol;
   if (!looksLikeMintAddress(trimmed)) return trimmed;
   return `${trimmed.slice(0, 4)}...${trimmed.slice(-4)}`;
 }
@@ -24631,6 +24961,142 @@ function asRecord(value: unknown): Record<string, unknown> | undefined {
   return value && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : undefined;
 }
 
+function tokenSelectionFromValue(
+  value: string,
+  mode: TokenInputMode,
+  source: TokenSelectionSource = mode === 'preset' ? 'preset' : 'manual',
+): TokenFieldSelection {
+  const trimmed = value.trim();
+  const metadata = tokenMarketMetadata.get(trimmed);
+  const known = KNOWN_BROWSER_TOKENS[trimmed.toUpperCase()];
+  const label = metadata?.symbol || known?.symbol || tokenDisplayLabel(trimmed);
+  return {
+    mode,
+    value: trimmed,
+    label,
+    source,
+    ...(looksLikeMintAddress(trimmed) ? { mint: trimmed } : known?.mint ? { mint: known.mint } : {}),
+    ...(metadata?.name ? { name: metadata.name } : {}),
+    ...(metadata?.logoURI ? { logoURI: metadata.logoURI } : {}),
+  };
+}
+
+function tokenSelectionFromSearchResult(result: TokenSearchResult): TokenFieldSelection {
+  return {
+    mode: 'custom',
+    value: result.mint,
+    label: result.symbol || result.name || tokenDisplayLabel(result.mint),
+    source: 'search',
+    mint: result.mint,
+    name: result.name,
+    ...(result.logoURI ? { logoURI: result.logoURI } : {}),
+    ...(result.priceUsd !== undefined ? { priceUsd: result.priceUsd } : {}),
+  };
+}
+
+function tokenSelectionInputValue(selection: TokenFieldSelection, fallback: string): string {
+  if (selection.source === 'search' && selection.label.trim()) return selection.label;
+  if (selection.value && looksLikeMintAddress(selection.value)) return tokenDisplayLabel(selection.value);
+  return selection.value || fallback;
+}
+
+function tokenSelectionHint(selection: TokenFieldSelection): string {
+  const mint = selection.mint || (looksLikeMintAddress(selection.value) ? selection.value : '');
+  if (!mint || tokenSelectionInputValue(selection, selection.value) === mint) return '';
+  const pieces = [
+    selection.name && selection.name !== selection.label ? selection.name : '',
+    shortHexMint(mint),
+  ].filter(Boolean).join(' - ');
+  return `<em class="token-selection-hint">${escapeHtml(pieces || shortHexMint(mint))}</em>`;
+}
+
+function findTokenSearchResult(fieldId: string, mint: string): TokenSearchResult | undefined {
+  return tokenSearchStates.get(fieldId)?.results.find((result) => result.mint === mint) ??
+    tokenSearchResultFromMint(mint);
+}
+
+function tokenDisplayParametersForField(fieldId: string, selection: TokenFieldSelection): Record<string, string> {
+  if (!selection.value.trim()) return {};
+  const label = selection.label.trim();
+  const params: Record<string, string> = {};
+  if (label && label !== selection.value) params[`${fieldId}Label`] = label;
+  if (selection.mint && selection.mint !== selection.value) params[`${fieldId}Mint`] = selection.mint;
+  if (selection.mint && selection.label && selection.value === selection.mint) params[`${fieldId}Mint`] = selection.mint;
+  return params;
+}
+
+function planWithRuntimeTokenLabels(plan: AgentPlan): AgentPlan {
+  if (plan.actionType !== 'swap') return planWithStructuredSwapText(plan);
+  const parameters = { ...plan.parameters };
+  for (const fieldId of ['inputToken', 'outputToken'] as const) {
+    const value = parameters[fieldId]?.trim();
+    if (!value) continue;
+    const mode: TokenInputMode = looksLikeMintAddress(value) ? 'custom' : 'preset';
+    const selection = tokenSelectionFromValue(value, mode, 'manual');
+    const displayParams = tokenDisplayParametersForField(fieldId, selection);
+    const labelKey = `${fieldId}Label`;
+    const mintKey = `${fieldId}Mint`;
+    if (!parameters[labelKey]?.trim() && displayParams[labelKey]) {
+      parameters[labelKey] = displayParams[labelKey];
+    }
+    if (!parameters[mintKey]?.trim() && displayParams[mintKey]) {
+      parameters[mintKey] = displayParams[mintKey];
+    }
+  }
+  return planWithStructuredSwapText({
+    ...plan,
+    parameters,
+    fields: planFieldsWithRuntimeTokenLabels(plan.fields, parameters),
+  });
+}
+
+function planFieldsWithRuntimeTokenLabels(
+  fields: AgentPlanField[],
+  parameters: Record<string, string>,
+): AgentPlanField[] {
+  const rows: AgentPlanField[] = [];
+  const seenMintLabels = new Set<string>();
+  for (const field of fields) {
+    const tokenFieldId = planTokenFieldIdFromLabel(field.label);
+    if (!tokenFieldId) {
+      if (seenMintLabels.has(field.label.trim().toLowerCase())) continue;
+      rows.push(field);
+      continue;
+    }
+    const label = parameters[`${tokenFieldId}Label`]?.trim();
+    const value = parameters[tokenFieldId]?.trim();
+    const mint = parameters[`${tokenFieldId}Mint`]?.trim() || (value && looksLikeMintAddress(value) ? value : '');
+    rows.push({ ...field, value: label || field.value });
+    if (mint && label && label !== mint) {
+      const mintLabel = `${field.label} mint`;
+      rows.push({ label: mintLabel, value: mint });
+      seenMintLabels.add(mintLabel.toLowerCase());
+    }
+  }
+  for (const fieldId of ['inputToken', 'outputToken'] as const) {
+    const label = parameters[`${fieldId}Label`]?.trim();
+    const mint = parameters[`${fieldId}Mint`]?.trim();
+    if (!label || !mint || label === mint) continue;
+    const mintLabel = `${fieldId === 'inputToken' ? 'Input token' : 'Output token'} mint`;
+    if (seenMintLabels.has(mintLabel.toLowerCase())) continue;
+    if (rows.some((row) => row.label.toLowerCase() === mintLabel.toLowerCase())) continue;
+    rows.push({ label: mintLabel, value: mint });
+  }
+  return rows;
+}
+
+function planTokenFieldIdFromLabel(label: string): 'inputToken' | 'outputToken' | undefined {
+  const normalized = label.trim().toLowerCase();
+  if (normalized === 'input token') return 'inputToken';
+  if (normalized === 'output token') return 'outputToken';
+  return undefined;
+}
+
+function generatedPlanRecordWithRuntimeTokenLabels(record: GeneratedPlanRecord): GeneratedPlanRecord {
+  const plan = planWithRuntimeTokenLabels(record.plan);
+  return samePlan(plan, record.plan) ? record : { ...record, plan };
+}
+
 function tokenSearchDropdownHtml(fieldId: string): string {
   const stateForField = tokenSearchStates.get(fieldId);
   if (!stateForField || (!stateForField.query && stateForField.status === 'idle')) return '';
@@ -24699,22 +25165,72 @@ function handleTokenSearchInput(fieldId: string, query: string): void {
   tokenSearchTimers.set(fieldId, timer);
 }
 
-function updateTemplateTokenModeFromControl(
+function syncTemplateFieldFromControl(
   control: HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement,
-): void {
+): string {
   const fieldId = control.dataset.templateField;
-  if (!fieldId) return;
+  if (!fieldId) return control.value;
   const fieldDef = selectedTemplate().fields.find((field) => field.id === fieldId);
-  if (!fieldDef || !isTokenSelectField(fieldDef)) return;
-  state.templateTokenModes[fieldId] = control instanceof HTMLSelectElement ? 'preset' : 'custom';
+  if (!fieldDef || !isTokenSelectField(fieldDef)) return control.value;
+  const mode: TokenInputMode = control instanceof HTMLSelectElement ? 'preset' : 'custom';
+  state.templateTokenModes[fieldId] = mode;
+  if (mode === 'preset') {
+    const selection = tokenSelectionFromValue(control.value, 'preset', 'preset');
+    state.templateTokenSelections[fieldId] = selection;
+    state.templateFields[fieldId] = selection.value;
+    return selection.value;
+  }
+  const previous = state.templateTokenSelections[fieldId];
+  const executionValue = control.dataset.tokenExecutionValue?.trim();
+  const displayValue = control.value.trim();
+  const previousDisplay = previous ? tokenSelectionInputValue(previous, previous.value) : '';
+  const shouldKeepExecutionValue = Boolean(
+    previous &&
+    previous.mode === 'custom' &&
+    previous.value &&
+    (displayValue === previousDisplay || displayValue === previous.label || displayValue === tokenDisplayLabel(previous.value)) &&
+    (!executionValue || executionValue === previous.value),
+  );
+  const value = shouldKeepExecutionValue ? previous!.value : displayValue;
+  const selection = shouldKeepExecutionValue
+    ? previous!
+    : tokenSelectionFromValue(value, 'custom', 'manual');
+  state.templateTokenSelections[fieldId] = selection;
+  state.templateFields[fieldId] = selection.value;
+  return selection.value;
 }
 
-function updateRecurringTokenModeFromControl(
+function syncRecurringTokenFieldFromControl(
   control: HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement,
-): void {
+): string {
   const field = control.dataset.recurringField;
-  if (field !== 'token' && field !== 'inputToken' && field !== 'outputToken') return;
-  state.recurringTokenModes[field] = control instanceof HTMLSelectElement ? 'preset' : 'custom';
+  if (field !== 'token' && field !== 'inputToken' && field !== 'outputToken') return control.value;
+  const mode: TokenInputMode = control instanceof HTMLSelectElement ? 'preset' : 'custom';
+  state.recurringTokenModes[field] = mode;
+  if (mode === 'preset') {
+    const selection = tokenSelectionFromValue(control.value, 'preset', 'preset');
+    state.recurringTokenSelections[field] = selection;
+    setRecurringDraftTokenFieldValue(state.recurringDraft, field, selection.value);
+    return selection.value;
+  }
+  const previous = state.recurringTokenSelections[field];
+  const executionValue = control.dataset.tokenExecutionValue?.trim();
+  const displayValue = control.value.trim();
+  const previousDisplay = previous ? tokenSelectionInputValue(previous, previous.value) : '';
+  const shouldKeepExecutionValue = Boolean(
+    previous &&
+    previous.mode === 'custom' &&
+    previous.value &&
+    (displayValue === previousDisplay || displayValue === previous.label || displayValue === tokenDisplayLabel(previous.value)) &&
+    (!executionValue || executionValue === previous.value),
+  );
+  const value = shouldKeepExecutionValue ? previous!.value : displayValue;
+  const selection = shouldKeepExecutionValue
+    ? previous!
+    : tokenSelectionFromValue(value, 'custom', 'manual');
+  state.recurringTokenSelections[field] = selection;
+  setRecurringDraftTokenFieldValue(state.recurringDraft, field, selection.value);
+  return selection.value;
 }
 
 function recurringTokenSearchKey(field: RecurringTokenField): string {
@@ -24855,19 +25371,28 @@ function bindTokenSearchSelectButtons(root: ParentNode = document): void {
       const fieldId = button.dataset.tokenSearchSelect;
       const mint = button.dataset.tokenSearchMint;
       if (!fieldId || !mint) return;
+      const result = findTokenSearchResult(fieldId, mint) ?? {
+        mint,
+        symbol: tokenDisplayLabel(mint),
+        name: shortHexMint(mint),
+        source: 'mint',
+      };
+      const selection = tokenSelectionFromSearchResult(result);
       const recurringField = recurringFieldFromTokenSearchKey(fieldId);
       if (recurringField) {
         state.recurringDraft = readRecurringDraft();
-        setRecurringDraftTokenFieldValue(state.recurringDraft, recurringField, mint);
+        setRecurringDraftTokenFieldValue(state.recurringDraft, recurringField, selection.value);
         state.recurringTokenModes[recurringField] = 'custom';
+        state.recurringTokenSelections[recurringField] = selection;
         delete state.recurringErrors[recurringTokenFieldErrorKey(recurringField)];
         tokenSearchStates.delete(fieldId);
         clearTokenSearchTimer(fieldId);
         render();
         return;
       }
-      state.templateFields[fieldId] = mint;
+      state.templateFields[fieldId] = selection.value;
       state.templateTokenModes[fieldId] = 'custom';
+      state.templateTokenSelections[fieldId] = selection;
       delete state.templateFieldErrors[fieldId];
       state.agentPlan = null;
       state.agentSignature = '';
@@ -25723,7 +26248,10 @@ function recurringTokenSelectField(field: RecurringTokenField, label: string, va
   const mode = recurringTokenMode(field, value);
   const presetMode = mode === 'preset';
   const selectValue = options.includes(value) ? value : options[0]!;
-  const customValue = presetMode ? '' : value;
+  const selection = recurringTokenSelection(field, value);
+  const customValue = presetMode ? '' : tokenSelectionInputValue(selection, value);
+  const executionValue = !presetMode && selection.value && selection.value !== customValue ? selection.value : '';
+  const selectionHint = !presetMode ? tokenSelectionHint(selection) : '';
   const disabled = state.busy;
   return `
     <div class="field compact token-choice-field ${state.recurringErrors[errorKey] ? 'field-error' : ''}">
@@ -25766,12 +26294,14 @@ function recurringTokenSelectField(field: RecurringTokenField, label: string, va
             id="${escapeHtml(id)}"
             data-recurring-field="${escapeHtml(field)}"
             data-token-search-input="${escapeHtml(recurringTokenSearchKey(field))}"
+            ${executionValue ? `data-token-execution-value="${escapeHtml(executionValue)}"` : ''}
             value="${escapeHtml(customValue)}"
             placeholder="Search symbol/name or paste mint"
             autocomplete="off"
             spellcheck="false"
             ${disabled ? 'disabled' : ''}
           />
+          ${selectionHint}
           <div class="token-search-results" data-token-search-results="${escapeHtml(recurringTokenSearchKey(field))}">
             ${tokenSearchDropdownHtml(recurringTokenSearchKey(field))}
           </div>
@@ -25816,6 +26346,22 @@ function defaultRecurringTokenModes(draft = defaultRecurringDraft()): Record<str
     inputToken: RECURRING_TOKEN_OPTIONS.includes(draft.inputToken) ? 'preset' : 'custom',
     outputToken: RECURRING_TOKEN_OPTIONS.includes(draft.outputToken) ? 'preset' : 'custom',
   };
+}
+
+function defaultRecurringTokenSelections(draft = defaultRecurringDraft()): Record<string, TokenFieldSelection> {
+  const modes = defaultRecurringTokenModes(draft);
+  return {
+    token: tokenSelectionFromValue(draft.token, modes.token ?? 'preset', 'preset'),
+    inputToken: tokenSelectionFromValue(draft.inputToken, modes.inputToken ?? 'preset', 'preset'),
+    outputToken: tokenSelectionFromValue(draft.outputToken, modes.outputToken ?? 'preset', 'preset'),
+  };
+}
+
+function recurringTokenSelection(field: RecurringTokenField, value: string): TokenFieldSelection {
+  const mode = recurringTokenMode(field, value);
+  const current = state.recurringTokenSelections[field];
+  if (current && current.mode === mode && current.value === value) return current;
+  return tokenSelectionFromValue(value, mode, mode === 'preset' ? 'preset' : 'manual');
 }
 
 function recurringTokenFieldInputId(field: RecurringTokenField): string {
@@ -27608,11 +28154,11 @@ function labThesis(labId: string, status: LabPayload['status']): string {
 
 function readRecurringDraft(): RecurringDraft {
   const actionKind = state.recurringDraft.actionKind;
-  const inputToken = inputValue('#recurringInputToken') || state.recurringDraft.inputToken;
-  const outputToken = inputValue('#recurringOutputToken') || state.recurringDraft.outputToken;
+  const inputToken = readRecurringTokenField('inputToken') || state.recurringDraft.inputToken;
+  const outputToken = readRecurringTokenField('outputToken') || state.recurringDraft.outputToken;
   const token = actionKind === 'swap'
     ? inputToken
-    : inputValue('#recurringToken') || state.recurringDraft.token || inputToken;
+    : readRecurringTokenField('token') || state.recurringDraft.token || inputToken;
   const slippageInput = inputValue('#recurringSlippageBps');
   return {
     actionKind,
@@ -27637,6 +28183,15 @@ function readRecurringDraft(): RecurringDraft {
   };
 }
 
+function readRecurringTokenField(field: RecurringTokenField): string {
+  const id = recurringTokenFieldInputId(field);
+  const control = document.getElementById(id);
+  if (control instanceof HTMLInputElement || control instanceof HTMLSelectElement || control instanceof HTMLTextAreaElement) {
+    return syncRecurringTokenFieldFromControl(control);
+  }
+  return recurringDraftTokenFieldValue(state.recurringDraft, field);
+}
+
 function readRecurringLocalTime(): string {
   if (document.querySelector('#recurringLocalHour, #recurringLocalMinute, #recurringLocalMeridiem')) {
     return localTimeFromTwelveHourParts(
@@ -27656,6 +28211,7 @@ function applyRecurringPreset(presetId: RecurringPresetId): void {
     ...preset.draft,
   };
   state.recurringTokenModes = defaultRecurringTokenModes(state.recurringDraft);
+  state.recurringTokenSelections = defaultRecurringTokenSelections(state.recurringDraft);
   state.recurringErrors = {};
   state.error = '';
 }
@@ -27756,6 +28312,8 @@ function recurringBody(draft: RecurringDraft): Record<string, unknown> {
     cadence: draft.cadence,
   };
   if (isSwap) {
+    const inputSelection = state.recurringTokenSelections.inputToken ?? tokenSelectionFromValue(draft.inputToken, recurringTokenMode('inputToken', draft.inputToken), 'manual');
+    const outputSelection = state.recurringTokenSelections.outputToken ?? tokenSelectionFromValue(draft.outputToken, recurringTokenMode('outputToken', draft.outputToken), 'manual');
     body.inputToken = draft.inputToken;
     body.outputToken = draft.outputToken;
     body.slippageBps = Number(draft.slippageBps);
@@ -27763,6 +28321,8 @@ function recurringBody(draft: RecurringDraft): Record<string, unknown> {
       actionKind: 'swap',
       inputToken: draft.inputToken,
       outputToken: draft.outputToken,
+      ...tokenDisplayParametersForField('inputToken', inputSelection),
+      ...tokenDisplayParametersForField('outputToken', outputSelection),
     };
   }
   if (draft.note) body.note = draft.note;
@@ -28639,6 +29199,8 @@ function resolveTokenDisplay(token: string | undefined): string | undefined {
   const known = KNOWN_BROWSER_TOKENS[trimmed.toUpperCase()];
   if (known) return known.symbol;
   if (isSolanaPublicKeyText(trimmed)) {
+    const metadata = tokenMarketMetadata.get(trimmed);
+    if (metadata?.symbol) return metadata.symbol;
     const custom = customTokenByMint(trimmed);
     if (custom) return custom.symbol;
     return shortHexMint(trimmed);

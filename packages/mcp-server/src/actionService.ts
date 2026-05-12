@@ -62,6 +62,10 @@ export interface SwapInput {
   slippageBps?: number;
 }
 
+export interface SwapOrderInput extends SwapInput {
+  taker?: string;
+}
+
 export interface PrepareTransferSolInput {
   recipient: string;
   amountSol: string;
@@ -595,8 +599,26 @@ export class AgentWalletActionService {
 
   async getSwapQuote(input: SwapInput): Promise<Record<string, unknown>> {
     requireActionAllowed(this.config);
-    const order = await fetchJupiterOrder(this.config, await this.backend.getAddress(), await normalizeSwapInput(this.config, this.connection, input));
+    const order = await this.getSwapOrder(input);
     return orderSummary(order);
+  }
+
+  async getSwapOrder(input: SwapOrderInput): Promise<Record<string, unknown>> {
+    requireActionAllowed(this.config);
+    const taker = input.taker ? new PublicKey(input.taker).toBase58() : await this.backend.getAddress();
+    return fetchJupiterOrder(this.config, taker, await normalizeSwapInput(this.config, this.connection, input));
+  }
+
+  async executeSignedSwap(input: {
+    signedTransaction: string;
+    requestId: string;
+    lastValidBlockHeight?: string | number;
+  }): Promise<Record<string, unknown>> {
+    requireActionAllowed(this.config);
+    return executeJupiterOrder(this.config, input.signedTransaction, {
+      requestId: input.requestId,
+      ...(input.lastValidBlockHeight !== undefined && { lastValidBlockHeight: input.lastValidBlockHeight }),
+    });
   }
 
   async swap(input: SwapInput): Promise<Record<string, unknown>> {
@@ -1241,7 +1263,9 @@ async function executeJupiterOrder(
     body: JSON.stringify({
       signedTransaction,
       requestId,
-      ...(typeof order.lastValidBlockHeight === 'string' && { lastValidBlockHeight: order.lastValidBlockHeight }),
+      ...(typeof order.lastValidBlockHeight === 'string' || typeof order.lastValidBlockHeight === 'number'
+        ? { lastValidBlockHeight: order.lastValidBlockHeight }
+        : {}),
     }),
   });
   const body = (await response.json().catch(() => ({}))) as Record<string, unknown>;
