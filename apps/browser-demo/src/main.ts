@@ -24607,6 +24607,8 @@ function tokenDisplayLabel(value: string): string {
   const metadata = tokenMarketMetadata.get(trimmed);
   if (metadata?.symbol) return metadata.symbol;
   if (!looksLikeMintAddress(trimmed)) return trimmed;
+  const custom = customTokenByMint(trimmed);
+  if (custom?.symbol) return custom.symbol;
   return `${trimmed.slice(0, 4)}...${trimmed.slice(-4)}`;
 }
 

@@ -492,12 +492,15 @@ export function planWithStructuredSwapText(plan: AgentPlan): AgentPlan {
   const route = plan.route.trim() && textMentionsTokenValue(plan.route, outputLabel)
     ? plan.route
     : `${inputLabel} -> ${outputLabel}`;
+  const staleAliases = [outputToken];
+  const preservedTokens = [inputToken, inputLabel];
   return {
     ...plan,
-    intent: rewriteSwapOutputTokenText(plan.intent, outputLabel, [outputToken]),
+    intent: rewriteSwapOutputTokenText(plan.intent, outputLabel, staleAliases, preservedTokens),
     route,
-    risk: rewriteSwapOutputTokenText(plan.risk, outputLabel, [outputToken]),
-    approval: rewriteSwapOutputTokenText(plan.approval, outputLabel, [outputToken]),
+    risk: rewriteSwapOutputTokenText(plan.risk, outputLabel, staleAliases, preservedTokens),
+    approval: rewriteSwapOutputTokenText(plan.approval, outputLabel, staleAliases, preservedTokens),
+    safeguards: plan.safeguards.map((entry) => rewriteSwapOutputTokenText(entry, outputLabel, staleAliases, preservedTokens)),
   };
 }
 
@@ -1299,7 +1302,7 @@ export function aiMessages(request: AiPlanRequest): Array<{ role: 'system' | 'us
     {
       role: 'system',
       content:
-        'You convert Solana wallet user requests into structured approval plans. Return only JSON with string fields intent, route, risk, approval, and safeguards as an array of short strings. Never claim a transaction is signed, submitted, approved, or safe. Never request private keys. The wallet user must approve separately.',
+        'You convert Solana wallet user requests into structured approval plans. Return only JSON with string fields intent, route, risk, approval, and safeguards as an array of short strings. When parameters include `inputTokenLabel`, `outputTokenLabel`, or `tokenLabel`, ALWAYS use those resolved symbols (for example "POPCAT") in the prose fields (intent, route, risk, approval, safeguards). Never substitute a different ticker for one provided in the parameter labels, and never invent a symbol when only a mint address is present. If a label is missing, refer to the token by its short mint form (first 4 + last 4 characters). Never claim a transaction is signed, submitted, approved, or safe. Never request private keys. The wallet user must approve separately.',
     },
     {
       role: 'user',
@@ -1541,21 +1544,32 @@ function selectField(id: string, label: string, options: string[], defaultValue:
 
 const SWAP_TEXT_TOKENS = ['USDC', 'SOL', 'JUP', 'BONK', 'WIF', 'PYUSD'];
 
-function rewriteSwapOutputTokenText(text: string, outputToken: string, staleAliases: string[] = []): string {
+function rewriteSwapOutputTokenText(
+  text: string,
+  outputToken: string,
+  staleAliases: string[] = [],
+  preservedTokens: string[] = [],
+): string {
   if (!text.trim() || textMentionsTokenValue(text, outputToken)) return text;
+  const preserved = new Set(
+    preservedTokens
+      .map((entry) => entry.trim().toUpperCase())
+      .filter(Boolean),
+  );
   let next = text;
   for (const token of [...SWAP_TEXT_TOKENS, ...staleAliases.filter(Boolean)]) {
-    if (token.toUpperCase() === outputToken.toUpperCase()) continue;
+    const upper = token.toUpperCase();
+    if (upper === outputToken.toUpperCase()) continue;
+    if (preserved.has(upper)) continue;
     const escaped = escapeRegExp(token);
     next = next
-      .replace(new RegExp(`(\\bto\\s+)${escaped}\\b`, 'gi'), `$1${outputToken}`)
-      .replace(new RegExp(`(\\binto\\s+)${escaped}\\b`, 'gi'), `$1${outputToken}`)
+      .replace(new RegExp(`(\\b(?:to|into|for|receive|buy|get|target(?:\\s+token)?|in\\s+exchange\\s+for)\\s+)${escaped}\\b`, 'gi'), `$1${outputToken}`)
       .replace(new RegExp(`(\\boutput\\s+token\\s+)${escaped}\\b`, 'gi'), `$1${outputToken}`)
-      .replace(new RegExp(`(\\breceive\\s+)${escaped}\\b`, 'gi'), `$1${outputToken}`)
-      .replace(new RegExp(`(\\bbuy\\s+)${escaped}\\b`, 'gi'), `$1${outputToken}`)
-      .replace(new RegExp(`(\\bget\\s+)${escaped}\\b`, 'gi'), `$1${outputToken}`)
       .replace(new RegExp(`(->\\s*)${escaped}\\b`, 'gi'), `$1${outputToken}`)
-      .replace(new RegExp(`(→\\s*)${escaped}\\b`, 'gi'), `$1${outputToken}`);
+      .replace(new RegExp(`(→\\s*)${escaped}\\b`, 'gi'), `$1${outputToken}`)
+      .replace(new RegExp(`\\bthe\\s+${escaped}\\b`, 'gi'), `the ${outputToken}`)
+      .replace(new RegExp(`\\b${escaped}\\s+(token|stablecoin|coin|amount|side|leg|swap|trade)\\b`, 'gi'), `${outputToken} $1`)
+      .replace(new RegExp(`\\b${escaped}-(denominated|based)\\b`, 'gi'), `${outputToken}-$1`);
   }
   return next;
 }

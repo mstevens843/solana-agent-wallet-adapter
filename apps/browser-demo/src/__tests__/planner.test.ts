@@ -171,6 +171,56 @@ describe('planner AI setup helpers', () => {
     ]));
   });
 
+  it('rewrites stale ticker mentions across all common AI phrasings', () => {
+    const mint = '7GCihgDB8fe6KNjn2MYtkzZcRjQy3t9GHdC8uHYmW2hr';
+    const base = buildTemplatePlan(templateById('swap'), {
+      inputToken: 'SOL',
+      outputToken: mint,
+      outputTokenLabel: 'POPCAT',
+      amount: '0.1',
+      slippageBps: '50',
+    }, 'ai');
+
+    const plan = planWithStructuredSwapText({
+      ...base,
+      intent: 'Swap 0.1 SOL for USDC stablecoin via Jupiter',
+      route: 'SOL -> USDC',
+      risk: 'Slippage cap protects USDC-denominated proceeds.',
+      approval: 'Confirm the USDC token amount before signing.',
+      safeguards: ['Confirm the USDC amount matches the quote'],
+    });
+
+    expect(plan.intent).not.toContain('USDC');
+    expect(plan.intent).toContain('POPCAT');
+    expect(plan.route).toBe('SOL -> POPCAT');
+    expect(plan.risk).toContain('POPCAT-denominated');
+    expect(plan.approval).toContain('POPCAT token');
+    expect(plan.safeguards[0]).toContain('POPCAT');
+    expect(plan.safeguards[0]).not.toContain('USDC');
+  });
+
+  it('is idempotent and a no-op when prose already mentions the resolved label', () => {
+    const mint = '7GCihgDB8fe6KNjn2MYtkzZcRjQy3t9GHdC8uHYmW2hr';
+    const base = buildTemplatePlan(templateById('swap'), {
+      inputToken: 'SOL',
+      outputToken: mint,
+      outputTokenLabel: 'POPCAT',
+      amount: '0.1',
+      slippageBps: '50',
+    }, 'ai');
+    const obedient = {
+      ...base,
+      intent: 'Swap 0.1 SOL to POPCAT via Jupiter',
+      route: 'SOL -> POPCAT',
+    };
+
+    const once = planWithStructuredSwapText(obedient);
+    const twice = planWithStructuredSwapText(once);
+    expect(once.intent).toBe(obedient.intent);
+    expect(twice.intent).toBe(once.intent);
+    expect(twice.route).toBe(once.route);
+  });
+
   it('confirms Hosted BYOK through the status route without generating a plan', async () => {
     const fetchMock = vi.fn(async (url: string | URL | Request) => {
       expect(String(url)).toBe('/api/ai/status');

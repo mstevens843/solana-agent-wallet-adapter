@@ -725,7 +725,7 @@ function aiMessages(request: Required<AiPlanRequest>): Array<{ role: 'system' | 
     {
       role: 'system',
       content:
-        'You convert Solana wallet user requests into structured approval plans. Return only JSON with string fields intent, route, risk, approval, and safeguards as an array of short strings. Never claim a transaction is signed, submitted, approved, or safe. Never request private keys. The wallet user must approve separately.',
+        'You convert Solana wallet user requests into structured approval plans. Return only JSON with string fields intent, route, risk, approval, and safeguards as an array of short strings. When parameters include `inputTokenLabel`, `outputTokenLabel`, or `tokenLabel`, ALWAYS use those resolved symbols (for example "POPCAT") in the prose fields (intent, route, risk, approval, safeguards). Never substitute a different ticker for one provided in the parameter labels, and never invent a symbol when only a mint address is present. If a label is missing, refer to the token by its short mint form (first 4 + last 4 characters). Never claim a transaction is signed, submitted, approved, or safe. Never request private keys. The wallet user must approve separately.',
     },
     {
       role: 'user',
