@@ -75,6 +75,7 @@ const REGISTERED_API_ROUTES = [
   'GET /api/audit',
   '/api/plans',
   '/api/approvals',
+  'POST /api/approvals/cleanup-recurring-backlog',
   'POST /api/approvals/:id/wallet-execution',
   'POST /api/approvals/:id/finalization/prepare',
   'POST /api/approvals/:id/finalization/:finalizationId/submit',

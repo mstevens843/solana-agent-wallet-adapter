@@ -88,6 +88,20 @@ export interface TransactionVerificationResult {
 
 export type TransactionVerifier = (request: TransactionVerificationRequest) => Promise<TransactionVerificationResult>;
 
+export interface RecurringBacklogCleanupInput {
+  dryRun?: boolean;
+}
+
+export interface RecurringBacklogCleanupResult {
+  dryRun: boolean;
+  scanned: number;
+  schedulesAffected: number;
+  kept: number;
+  cancelled: number;
+  keptApprovalIds: string[];
+  cancelledApprovalIds: string[];
+}
+
 interface PreparedTransactionFinalizationPreview {
   transactionBase64: string;
   preview: CreateTransactionFinalizationPreviewInput;
@@ -311,6 +325,77 @@ export class WorkflowService {
   async listActiveApprovals(session: WorkflowSession): Promise<ApprovalRequestRecord[]> {
     const approvals = (await this.store.listApprovals(session.walletAddress)).map(normalizeApprovalRecord);
     return sortByUpdatedAt(approvals.filter((approval) => isActiveApprovalStatus(approval.status)));
+  }
+
+  async cleanupRecurringApprovalBacklog(
+    session: WorkflowSession,
+    input: RecurringBacklogCleanupInput = {},
+  ): Promise<RecurringBacklogCleanupResult> {
+    const dryRun = input.dryRun !== false;
+    const approvals = (await this.store.listApprovals(session.walletAddress)).map(normalizeApprovalRecord);
+    const activeRecurringApprovals = approvals.filter((approval) =>
+      Boolean(approval.recurringScheduleId) && isActiveApprovalStatus(approval.status),
+    );
+    const bySchedule = new Map<string, ApprovalRequestRecord[]>();
+    for (const approval of activeRecurringApprovals) {
+      const scheduleId = approval.recurringScheduleId;
+      if (!scheduleId) continue;
+      bySchedule.set(scheduleId, [...(bySchedule.get(scheduleId) ?? []), approval]);
+    }
+
+    const keptApprovalIds: string[] = [];
+    const cancelledApprovalIds: string[] = [];
+    const duplicateGroups: Array<{ scheduleId: string; keep: ApprovalRequestRecord; cancel: ApprovalRequestRecord[] }> = [];
+    for (const [scheduleId, group] of bySchedule) {
+      if (group.length <= 1) continue;
+      const sorted = [...group].sort(compareApprovalsNewestFirst);
+      const keep = sorted[0];
+      if (!keep) continue;
+      const cancel = sorted.slice(1);
+      keptApprovalIds.push(keep.id);
+      cancelledApprovalIds.push(...cancel.map((approval) => approval.id));
+      duplicateGroups.push({ scheduleId, keep, cancel });
+    }
+
+    if (!dryRun) {
+      const now = this.now();
+      for (const group of duplicateGroups) {
+        for (const approval of group.cancel) {
+          const updated: ApprovalRequestRecord = {
+            ...approval,
+            status: 'cancelled',
+            decidedAt: approval.decidedAt ?? now,
+            updatedAt: now,
+            decisionNote: approval.decisionNote ?? 'Cancelled by recurring backlog cleanup.',
+            metadata: {
+              ...(approval.metadata ?? {}),
+              recurringBacklogCleanup: {
+                reason: 'duplicate_active_recurring_schedule_approval',
+                keptApprovalId: group.keep.id,
+                recurringScheduleId: group.scheduleId,
+                cleanedAt: now,
+              },
+            },
+          };
+          await this.store.saveApproval(session.walletAddress, updated);
+          await this.audit(session, 'approval.recurring_backlog.cancelled', 'approval', approval.id, {
+            recurringScheduleId: group.scheduleId,
+            keptApprovalId: group.keep.id,
+            cleanupReason: 'duplicate_active_recurring_schedule_approval',
+          });
+        }
+      }
+    }
+
+    return {
+      dryRun,
+      scanned: activeRecurringApprovals.length,
+      schedulesAffected: duplicateGroups.length,
+      kept: keptApprovalIds.length,
+      cancelled: cancelledApprovalIds.length,
+      keptApprovalIds,
+      cancelledApprovalIds,
+    };
   }
 
   async listFinalizationsForApproval(
@@ -1234,6 +1319,19 @@ function sortByUpdatedAt<T extends { updatedAt: string; createdAt: string }>(rec
     const updated = right.updatedAt.localeCompare(left.updatedAt);
     return updated === 0 ? right.createdAt.localeCompare(left.createdAt) : updated;
   });
+}
+
+function compareApprovalsNewestFirst(left: ApprovalRequestRecord, right: ApprovalRequestRecord): number {
+  return dateSortValue(right.dueAt) - dateSortValue(left.dueAt) ||
+    dateSortValue(right.createdAt) - dateSortValue(left.createdAt) ||
+    dateSortValue(right.updatedAt) - dateSortValue(left.updatedAt) ||
+    right.id.localeCompare(left.id);
+}
+
+function dateSortValue(value: string | undefined): number {
+  if (!value) return 0;
+  const time = Date.parse(value);
+  return Number.isFinite(time) ? time : 0;
 }
 
 function jsonObjectFromPlan(plan: JsonObject | undefined, key: string): JsonObject | undefined {

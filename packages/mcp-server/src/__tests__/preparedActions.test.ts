@@ -253,6 +253,32 @@ describe('JsonPreparedActionStore', () => {
     expect(second).toHaveLength(0);
   });
 
+  it('does not materialize another recurring payment while a prior action is unresolved', async () => {
+    const store = new JsonPreparedActionStore(await tempStorePath());
+    const recurring = await store.addRecurringPayment({
+      walletAddress: '11111111111111111111111111111111',
+      cluster: 'devnet',
+      token: 'USDC',
+      recipient: '22222222222222222222222222222222',
+      amount: '10',
+      cadence: 'interval_minutes',
+      intervalMinutes: 15,
+      startAt: '2026-05-01T09:00:00.000Z',
+    });
+
+    const first = await store.materializeDueRecurring(new Date('2026-05-01T09:46:00.000Z'));
+    const blocked = await store.materializeDueRecurring(new Date('2026-05-01T10:01:00.000Z'));
+    await store.updateAction(first[0]!.id, { status: 'approved' });
+    const next = await store.materializeDueRecurring(new Date('2026-05-01T10:16:00.000Z'));
+
+    expect(first).toHaveLength(1);
+    expect(first[0]).toMatchObject({ recurringId: recurring.id, occurrenceKey: '2026-05-01T09:45:00.000Z' });
+    expect(blocked).toHaveLength(0);
+    expect(next).toHaveLength(1);
+    expect(next[0]).toMatchObject({ recurringId: recurring.id, occurrenceKey: '2026-05-01T10:15:00.000Z' });
+    await expect(store.listActions()).resolves.toHaveLength(2);
+  });
+
   it('promotes scheduled actions to overdue when their due time passes', async () => {
     const store = new JsonPreparedActionStore(await tempStorePath());
     const action = await store.addAction({

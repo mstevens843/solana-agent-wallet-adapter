@@ -68,6 +68,9 @@ export async function handleWorkflowApiRequest(
       case 'approvals':
         await handleApprovals(req, res, context.service, session);
         return true;
+      case 'approval-cleanup-recurring-backlog':
+        await handleApprovalRecurringBacklogCleanup(req, res, context.service, session);
+        return true;
       case 'approval-decision':
         await handleApprovalDecision(req, res, context.service, session, route.id, route.decision);
         return true;
@@ -112,6 +115,7 @@ type WorkflowRoute =
   | { name: 'plans' }
   | { name: 'plan'; id: string }
   | { name: 'approvals' }
+  | { name: 'approval-cleanup-recurring-backlog' }
   | { name: 'approval-decision'; id: string; decision: 'approved' | 'rejected' | 'cancelled' }
   | { name: 'approval-wallet-execution'; id: string }
   | { name: 'approval-finalizations'; id: string }
@@ -130,6 +134,7 @@ function matchWorkflowRoute(pathname: string): WorkflowRoute | undefined {
   if (plan?.[1]) return { name: 'plan', id: validateRecordId(plan[1], 'plan id') };
 
   if (pathname === '/api/approvals') return { name: 'approvals' };
+  if (pathname === '/api/approvals/cleanup-recurring-backlog') return { name: 'approval-cleanup-recurring-backlog' };
   const walletExecution = /^\/api\/approvals\/([^/]+)\/wallet-execution$/.exec(pathname);
   if (walletExecution?.[1]) {
     return {
@@ -259,6 +264,23 @@ async function handleApprovals(
     return;
   }
   methodNotAllowed(res);
+}
+
+async function handleApprovalRecurringBacklogCleanup(
+  req: IncomingMessage,
+  res: ServerResponse,
+  service: WorkflowService,
+  session: WorkflowSession,
+): Promise<void> {
+  if (req.method !== 'POST') {
+    methodNotAllowed(res);
+    return;
+  }
+  const result = await service.cleanupRecurringApprovalBacklog(
+    session,
+    validateRecurringBacklogCleanupRequest(await readJsonBody(req)),
+  );
+  writeJson(res, 200, result);
 }
 
 async function handleApprovalDecision(
@@ -480,6 +502,18 @@ function bodyWithRouteFinalizationId(body: unknown, finalizationId: string): Rec
     return { finalizationId };
   }
   return { ...(body as Record<string, unknown>), finalizationId };
+}
+
+function validateRecurringBacklogCleanupRequest(body: unknown): { dryRun: boolean } {
+  if (!body || typeof body !== 'object' || Array.isArray(body)) {
+    throw new WorkflowValidationError('invalid_body', 'Request body must be a JSON object.');
+  }
+  const raw = (body as Record<string, unknown>).dryRun;
+  if (raw === undefined) return { dryRun: true };
+  if (typeof raw !== 'boolean') {
+    throw new WorkflowValidationError('invalid_boolean', 'dryRun must be a boolean.');
+  }
+  return { dryRun: raw };
 }
 
 function validateFinalizationFailureRequest(body: unknown): { error?: string; note?: string; metadata?: JsonObject } {

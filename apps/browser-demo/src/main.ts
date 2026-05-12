@@ -846,6 +846,14 @@ interface CloudWorkspaceDeleteResponse {
   deleted: CloudWorkspaceDeleteCounts;
 }
 
+interface CloudRecurringBacklogCleanupResponse {
+  dryRun: boolean;
+  scanned: number;
+  schedulesAffected: number;
+  kept: number;
+  cancelled: number;
+}
+
 interface ProtocolConnectorPrefs {
   dialectClientKey: string;
 }
@@ -7505,7 +7513,26 @@ function commandCloudStorageDangerZone(): string {
   const reason = matched
     ? 'Deletes cloud drafts, approvals, schedules, proofs, done work, and audit events for this wallet.'
     : `Connect ${short(state.cloudSession.walletAddress)} to delete this cloud workspace.`;
+  const cleanupReason = matched
+    ? 'Cancels older duplicate active approvals for each recurring schedule while keeping the newest one.'
+    : `Connect ${short(state.cloudSession.walletAddress)} to clean up recurring approval backlog.`;
   return `
+    <div class="command-storage-danger-zone">
+      <div>
+        <span>Recurring approvals</span>
+        <strong>Clean up backlog</strong>
+        <p>${escapeHtml(cleanupReason)} Drafts, schedules, proofs, and one-time approvals stay.</p>
+      </div>
+      <button
+        type="button"
+        class="utility"
+        data-cloud-action="cleanup-recurring-backlog"
+        ${!matched || state.busy ? 'disabled' : ''}
+        title="${escapeHtml(matched ? 'Dry-runs first, then asks before cancelling duplicates.' : cleanupReason)}"
+      >
+        Clean backlog
+      </button>
+    </div>
     <div class="command-storage-danger-zone">
       <div>
         <span>Danger zone</span>
@@ -12313,6 +12340,9 @@ function bind(): void {
       if (button.dataset.cloudAction === 'delete-workspace') {
         openCloudWorkspaceDeleteModal();
       }
+      if (button.dataset.cloudAction === 'cleanup-recurring-backlog') {
+        void runCleanupRecurringBacklog();
+      }
     });
   }
   for (const button of document.querySelectorAll<HTMLButtonElement>('[data-cloud-delete-cancel]')) {
@@ -16891,6 +16921,51 @@ async function runConfirmCloudWorkspaceDelete(): Promise<void> {
       `${cloudDeleteCount(result.deleted)} cloud record${cloudDeleteCount(result.deleted) === 1 ? '' : 's'} removed. Browser storage is still available.`,
     );
   });
+}
+
+async function runCleanupRecurringBacklog(): Promise<void> {
+  await run('connect', async () => {
+    if (!cloudSessionMatchesWallet()) {
+      throw new Error('Connect the signed-in wallet before cleaning recurring approvals.');
+    }
+    const preview = await cloudCleanupRecurringBacklog(true);
+    if (preview.cancelled === 0) {
+      pushToast(
+        'success',
+        'No recurring backlog found',
+        `${preview.scanned} active recurring approval${preview.scanned === 1 ? '' : 's'} scanned.`,
+      );
+      return;
+    }
+    const confirmed = window.confirm(
+      `Cancel ${preview.cancelled} duplicate recurring approval${preview.cancelled === 1 ? '' : 's'} across ${preview.schedulesAffected} schedule${preview.schedulesAffected === 1 ? '' : 's'}? The newest approval for each schedule stays open.`,
+    );
+    if (!confirmed) {
+      pushToast('pending', 'Cleanup cancelled', 'No cloud approvals were changed.');
+      return;
+    }
+    const result = await cloudCleanupRecurringBacklog(false);
+    await refreshCloudWorkspaceData();
+    pushToast(
+      'success',
+      'Recurring backlog cleaned',
+      `Cancelled ${result.cancelled} duplicate approval${result.cancelled === 1 ? '' : 's'} and kept ${result.kept}.`,
+    );
+  });
+}
+
+async function cloudCleanupRecurringBacklog(dryRun: boolean): Promise<CloudRecurringBacklogCleanupResponse> {
+  const result = await cloudRequest<CloudRecurringBacklogCleanupResponse>('/api/approvals/cleanup-recurring-backlog', {
+    method: 'POST',
+    body: JSON.stringify({ dryRun }),
+  });
+  return {
+    dryRun: Boolean(result.dryRun),
+    scanned: Number(result.scanned) || 0,
+    schedulesAffected: Number(result.schedulesAffected) || 0,
+    kept: Number(result.kept) || 0,
+    cancelled: Number(result.cancelled) || 0,
+  };
 }
 
 function resetCloudWorkspaceState(): void {

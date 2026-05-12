@@ -725,6 +725,19 @@ export class RecurringService {
       };
     }
 
+    const unresolved = await this.findUnresolvedOccurrence(session, schedule.id);
+    if (unresolved) {
+      if (this.isRecoverableInterruptedOccurrence(unresolved)) {
+        await this.repairExistingOccurrence(session, schedule, unresolved, new Date(unresolved.dueAt));
+      }
+      return {
+        scheduleId: schedule.id,
+        occurrenceKey: unresolved.occurrenceKey,
+        occurrenceId: unresolved.id,
+        reason: 'pending_approval',
+      };
+    }
+
     const now = this.now();
     let occurrence: RecurringOccurrenceRecord = {
       id: this.id('occurrence'),
@@ -789,6 +802,16 @@ export class RecurringService {
     if (!this.isRecoverableInterruptedOccurrence(occurrence)) return;
     const repaired = await this.attachApprovalRequest(session, schedule, occurrence);
     await this.repairScheduleMaterializationState(session, schedule, repaired, dueAt);
+  }
+
+  private async findUnresolvedOccurrence(
+    session: RecurringSession,
+    scheduleId: string,
+  ): Promise<RecurringOccurrenceRecord | undefined> {
+    const occurrences = await this.store.listOccurrences(session.walletAddress, scheduleId);
+    return occurrences
+      .filter((occurrence) => isUnresolvedOccurrence(occurrence))
+      .sort((left, right) => left.dueAt.localeCompare(right.dueAt) || left.createdAt.localeCompare(right.createdAt))[0];
   }
 
   private async attachApprovalRequest(
@@ -965,6 +988,12 @@ function mapApprovalStatusToOccurrence(
     default:
       return undefined;
   }
+}
+
+function isUnresolvedOccurrence(occurrence: RecurringOccurrenceRecord): boolean {
+  return occurrence.status === 'scheduled' ||
+    occurrence.status === 'ready' ||
+    occurrence.status === 'approval_pending';
 }
 
 function assertCadenceFieldsForUpdate(schedule: RecurringScheduleRecord): void {

@@ -733,7 +733,7 @@ export interface MaterializeResult {
   scheduleId: string;
   occurrenceKey?: string;
   occurrenceId?: string;
-  reason: 'created' | 'duplicate' | 'paused' | 'completed' | 'cancelled' | 'not_due' | 'invalid';
+  reason: 'created' | 'duplicate' | 'pending_approval' | 'paused' | 'completed' | 'cancelled' | 'not_due' | 'invalid';
 }
 
 export interface MaterializeResponse {

@@ -303,6 +303,10 @@ export class JsonPreparedActionStore implements PreparedActionStore {
       const created: PreparedAction[] = [];
       for (const payment of state.recurringPayments) {
         if (payment.status !== 'active') continue;
+        const unresolved = state.actions.some((action) =>
+          action.recurringId === payment.id && isUnresolvedPreparedAction(action),
+        );
+        if (unresolved) continue;
         if (payment.maxOccurrences !== undefined && (payment.occurrencesCreated ?? 0) >= payment.maxOccurrences) {
           continue;
         }
@@ -497,6 +501,14 @@ function explorerUrl(txid: string, cluster: Cluster): string {
 
 function statusForDueAt(dueAt: string, now: Date): PreparedActionStatus {
   return new Date(dueAt).getTime() > now.getTime() ? 'scheduled' : 'ready';
+}
+
+function isUnresolvedPreparedAction(action: PreparedAction): boolean {
+  return !action.archived &&
+    action.status !== 'approved' &&
+    action.status !== 'rejected' &&
+    action.status !== 'blocked' &&
+    action.status !== 'failed';
 }
 
 function newId(prefix: string): string {

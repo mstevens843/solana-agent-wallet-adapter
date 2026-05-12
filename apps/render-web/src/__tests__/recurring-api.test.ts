@@ -193,7 +193,7 @@ describe('cloud recurring scheduler API', () => {
   });
 
   it('completes the schedule when maxOccurrences is reached', async () => {
-    await withRecurringServer(async ({ port, setNow }) => {
+    await withRecurringServer(async ({ port, setNow, store }) => {
       setNow(new Date('2026-05-01T12:00:00Z'));
       const created = await postJson(port, '/api/recurring', {
         ...validIntervalMinutesBody(),
@@ -204,6 +204,12 @@ describe('cloud recurring scheduler API', () => {
       setNow(new Date('2026-05-01T12:11:00Z'));
       const first = await postJson(port, '/api/recurring/materialize-due', {}, walletA);
       expect((first.body as { results: { reason: string }[] }).results[0]?.reason).toBe('created');
+      const [firstOccurrence] = await store.listOccurrences(walletA, schedule.id);
+      await store.saveOccurrence(walletA, {
+        ...firstOccurrence!,
+        status: 'completed',
+        updatedAt: new Date('2026-05-01T12:12:00Z').toISOString(),
+      });
 
       setNow(new Date('2026-05-01T12:21:00Z'));
       const second = await postJson(port, '/api/recurring/materialize-due', {}, walletA);
@@ -304,6 +310,46 @@ describe('cloud recurring scheduler API', () => {
     expect(occurrences[0]?.approvalRequestId).toBe(`approval_for_${sinkCalls[0]?.occurrenceId}`);
     expect(reloaded?.occurrencesCreated).toBe(1);
     expect(materializedAuditEvents).toHaveLength(1);
+  });
+
+  it('does not materialize another recurring occurrence while the previous approval is unresolved', async () => {
+    const store = new TestRecurringStore();
+    let now = new Date('2026-05-01T12:00:00Z');
+    const approvalStatuses = new Map<string, string>();
+    const sinkCalls: Array<{ scheduleId: string; occurrenceId: string }> = [];
+    const service = new RecurringService(store, {
+      clock: () => now,
+      approvalSink: async ({ schedule, occurrence }) => {
+        const approvalId = `approval_for_${occurrence.id}`;
+        approvalStatuses.set(approvalId, 'ready');
+        sinkCalls.push({ scheduleId: schedule.id, occurrenceId: occurrence.id });
+        return { approvalId };
+      },
+      approvalStatusReader: async (_walletAddress, approvalId) => ({
+        status: approvalStatuses.get(approvalId) ?? 'ready',
+      }),
+    });
+
+    const schedule = await service.createSchedule({ walletAddress: walletA }, parseCreate(validIntervalMinutesBody()));
+    now = new Date('2026-05-01T12:11:00Z');
+    const first = await service.materializeDueOccurrences({ walletAddress: walletA });
+    expect(first[0]?.reason).toBe('created');
+
+    now = new Date('2026-05-01T12:21:00Z');
+    const blocked = await service.materializeDueOccurrences({ walletAddress: walletA });
+    expect(blocked[0]?.reason).toBe('pending_approval');
+    expect(sinkCalls).toHaveLength(1);
+    await expect(store.listOccurrences(walletA, schedule.id)).resolves.toHaveLength(1);
+
+    const approvalId = (await store.listOccurrences(walletA, schedule.id))[0]?.approvalRequestId;
+    expect(approvalId).toBeDefined();
+    approvalStatuses.set(approvalId!, 'approved');
+
+    now = new Date('2026-05-01T12:31:00Z');
+    const next = await service.materializeDueOccurrences({ walletAddress: walletA });
+    expect(next[0]?.reason).toBe('created');
+    expect(sinkCalls).toHaveLength(2);
+    await expect(store.listOccurrences(walletA, schedule.id)).resolves.toHaveLength(2);
   });
 
   it('repairs a claimed occurrence that was saved before approval registration completed', async () => {
@@ -451,6 +497,80 @@ describe('cloud recurring scheduler API', () => {
       expect(approvals[0]?.status).toBe('ready');
       expect(approvals[0]?.recurringScheduleId).toBe(schedule.id);
       expect(approvals[0]?.params?.recurringScheduleId).toBe(schedule.id);
+    });
+  });
+
+  it('dry-runs and applies recurring approval backlog cleanup', async () => {
+    const store = new MemoryWorkflowStore();
+    const session = await createWalletSession({
+      store,
+      walletAddress: walletA,
+      clock: { now: () => new Date('2026-05-08T20:00:00.000Z') },
+    });
+    await store.saveApproval(walletA, testApproval('approval_old', {
+      recurringScheduleId: 'recurring_cleanup',
+      recurringOccurrenceId: 'occurrence_old',
+      occurrenceKey: '2026-05-01T12:10:00.000Z',
+      dueAt: '2026-05-01T12:10:00.000Z',
+      createdAt: '2026-05-01T12:10:10.000Z',
+      updatedAt: '2026-05-01T12:10:10.000Z',
+    }));
+    await store.saveApproval(walletA, testApproval('approval_new', {
+      recurringScheduleId: 'recurring_cleanup',
+      recurringOccurrenceId: 'occurrence_new',
+      occurrenceKey: '2026-05-01T12:20:00.000Z',
+      dueAt: '2026-05-01T12:20:00.000Z',
+      createdAt: '2026-05-01T12:20:10.000Z',
+      updatedAt: '2026-05-01T12:20:10.000Z',
+    }));
+    await store.saveApproval(walletA, testApproval('approval_one_time'));
+    await store.saveApproval(walletA, testApproval('approval_terminal', {
+      recurringScheduleId: 'recurring_cleanup',
+      recurringOccurrenceId: 'occurrence_done',
+      status: 'approved',
+      dueAt: '2026-05-01T12:00:00.000Z',
+    }));
+
+    await withRenderRecurringServer(store, async (port) => {
+      const headers = {
+        cookie: `${SESSION_COOKIE_NAME}=${encodeURIComponent(session.token)}`,
+      };
+      const dryRun = await requestJsonWithHeaders(
+        port,
+        'POST',
+        '/api/approvals/cleanup-recurring-backlog',
+        { dryRun: true },
+        headers,
+      );
+      expect(dryRun.body).toMatchObject({
+        dryRun: true,
+        scanned: 2,
+        schedulesAffected: 1,
+        kept: 1,
+        cancelled: 1,
+      });
+      expect((await store.getApproval(walletA, 'approval_old'))?.status).toBe('ready');
+
+      const applied = await requestJsonWithHeaders(
+        port,
+        'POST',
+        '/api/approvals/cleanup-recurring-backlog',
+        { dryRun: false },
+        headers,
+      );
+      expect(applied.body).toMatchObject({
+        dryRun: false,
+        scanned: 2,
+        schedulesAffected: 1,
+        kept: 1,
+        cancelled: 1,
+      });
+
+      const inbox = await requestJsonWithHeaders(port, 'GET', '/api/approvals', undefined, headers);
+      const approvals = inbox.body.approvals as ApprovalRequestRecord[];
+      expect(approvals.map((approval) => approval.id).sort()).toEqual(['approval_new', 'approval_one_time']);
+      expect((await store.getApproval(walletA, 'approval_old'))?.status).toBe('cancelled');
+      expect((await store.getApproval(walletA, 'approval_terminal'))?.status).toBe('approved');
     });
   });
 
@@ -1018,6 +1138,26 @@ function finalizationProofBody(
     proofSignature: signMessage(message, wallet.privateKey),
     decisionProofMessage: message,
     signatureEncoding: 'base58',
+  };
+}
+
+function testApproval(
+  id: string,
+  overrides: Partial<ApprovalRequestRecord> = {},
+): ApprovalRequestRecord {
+  const now = '2026-05-01T12:00:00.000Z';
+  return {
+    id,
+    walletAddress: walletA,
+    kind: 'transfer_sol',
+    status: 'ready',
+    summary: 'Recurring approval cleanup test',
+    params: {},
+    cluster: 'devnet',
+    dueAt: now,
+    createdAt: now,
+    updatedAt: now,
+    ...overrides,
   };
 }
 
