@@ -59,12 +59,22 @@ The project has crossed the main product milestone:
 
 See [PROGRESS.md](./PROGRESS.md) for confirmed mainnet transfers, safety caps, and remaining release-gate smokes.
 
+The current app also includes the public workflow layer around that signing boundary:
+
+- agent plan reviews with approve, deny, or needs-input decisions
+- Approval Inbox queues for one-time and recurring actions
+- recurring transfer and recurring swap setup, with each due occurrence returning to the inbox for wallet review
+- local, browser, and Agentic Cloud workflow storage modes
+- connector preferences for hosted BYOK, local bridge AI, browser session keys, and provider presets
+- receipts, signed artifacts, and rejection/review proofs for audit trails
+
 ## Launch Positioning
 
 - Canonical live URL: `https://agentic-signer.com/`
 - Hero copy: "Agentic approval for Solana wallets"
 - Product name: `Agentic`
 - Technical phrase: `Agentic Wallet Adapter` or `Solana Agent Wallet Adapter`
+- Public positioning: open Solana-native multi-wallet approval infrastructure for AI agents
 
 ## Quick Start
 
@@ -120,7 +130,9 @@ For downloaded CLI or desktop builds, run `solana-agent-wallet setup` or use the
 
 Optional AI planning uses BYOK. Agentic works without an AI key through templates; for smarter natural-language planning,
 set `AGENTIC_AI_API_KEY`, `AGENTIC_AI_MODEL`, and `AGENTIC_AI_BASE_URL` on the local bridge, use hosted BYOK on the
-deployed app, or use the browser session key field for browser-compatible providers. See [docs/ai-byok.md](./docs/ai-byok.md).
+deployed app, or use the browser session key field for browser-compatible providers. The connector surface supports
+OpenAI, Claude / Anthropic, Gemini, OpenRouter, and OpenAI-compatible endpoints. AI drafts plans only; it cannot approve,
+sign, submit, or bypass wallet review. See [docs/ai-byok.md](./docs/ai-byok.md).
 
 Restart Codex after MCP registration and ask:
 
@@ -163,7 +175,9 @@ The MCP package exposes the low-level signing tools:
 - `solana_simulate_transaction`
 - `solana_check_approval`
 
-When connected to the local bridge, it also exposes product-level tools for wallet status, balances, capped transfers, SPL transfers, swap quotes, swaps, prepared actions, recurring payments, receipts, and approval inbox management.
+When connected to the local bridge, it also exposes product-level tools for wallet status, balances, capped transfers,
+SPL transfers, swap quotes, swaps, prepared actions, recurring transfers and swaps, receipts, and approval inbox
+management.
 
 See [`packages/mcp-server`](./packages/mcp-server).
 
@@ -256,7 +270,7 @@ The defensible difference is the combination:
 - iOS wallet-link compatibility path
 - one reusable `WalletBackend` protocol
 - MCP, Vercel AI, Solana Agent Kit, CLI, local bridge, and demo surfaces on top of the same signing boundary
-- local approval inbox, caps, receipts, and confirmed mainnet transfer proof
+- local approval inbox, approve/deny reviews, caps, receipts, recurring actions, and confirmed mainnet transfer proof
 
 Use this positioning:
 
@@ -273,7 +287,9 @@ The architecture avoids key custody, but the product also includes workflow cont
 - SPL transfer allowlists
 - arbitrary mainnet transaction signing disabled unless explicitly enabled
 - approval inbox for prepared and recurring actions
+- explicit denial and needs-input review states before wallet signing
 - receipts for executed actions
+- rejection, review, policy, and signed-artifact proofs for audit trails
 - direct balance preflight before wallet approval
 - optional transaction simulation through backends that support it
 - explicit protocol errors for rejection, timeout, cluster mismatch, unsupported methods, and unreachable wallets
@@ -346,7 +362,7 @@ Done:
 - Solana Agent Kit `BaseWallet` adapter
 - CLI surface and desktop bridge orchestrator
 - browser command center
-- approval inbox, caps, receipts, transfers, and swaps
+- approval inbox, approve/deny reviews, caps, receipts, transfers, swaps, and recurring swap/payment setup
 - unit tests and CI
 - confirmed mainnet SOL transfer through an agent request
 

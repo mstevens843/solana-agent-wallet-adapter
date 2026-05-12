@@ -6,6 +6,7 @@ This directory keeps product guides, smoke procedures, dated research, and outre
 
 - [Claude Desktop setup](./claude-desktop-setup.md): register and smoke the MCP server in Claude Desktop.
 - [Scenario tests](./SCENARIO_TESTS.md): prompt catalog and expected behavior for wallet status, balances, payments, swaps, inbox actions, schedules, and assistant workflows.
+- [Agentic AI planning and BYOK](./ai-byok.md): keyless templates, hosted BYOK, local bridge BYOK, browser session keys, and provider connector safety rules.
 - [Protocol spec](../spec/protocol.md): draft `SigningRequest`, `ApprovalResource`, `WalletBackend`, and MCP tool contract.
 - [Standout features](../STANDOUT_FEATURES.MD): current competitive positioning and differentiation.
 
@@ -15,6 +16,7 @@ This directory keeps product guides, smoke procedures, dated research, and outre
 - [Android MWA mobile web smoke](./smoke/android-mwa-web.md): Android Chrome and Mobile Wallet Adapter web path.
 - [Android native MWA smoke](./smoke/android-native-mwa.md): Android app connect, cached reconnect, signing, clear state, and bridge approval path.
 - [iOS wallet web smoke](./smoke/ios-wallet-web.md): iOS Wallet Standard host fallback plus iOS link bridge path.
+- [Recurring production smoke](./smoke/recurring-production.md): Agentic Cloud recurring schedules, due inbox items, pause/resume, occurrence history, and webhook notifications.
 
 ## Deploy Guides
 

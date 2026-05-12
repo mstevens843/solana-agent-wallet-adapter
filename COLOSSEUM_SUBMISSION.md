@@ -7,7 +7,7 @@ Copy-paste source for submitting Agentic, the Solana Agent Wallet Adapter, to Co
 Primary line:
 
 ```text
-Agentic is the first multi-wallet Agent Signer on Solana.
+Agentic is open Solana-native approval infrastructure for AI agents.
 ```
 
 Slogan:
@@ -45,7 +45,7 @@ Agentic
 ### Brief Description
 
 ```text
-Agentic is the first multi-wallet Agent Signer on Solana: an open-source wallet approval layer that lets AI agents prepare actions while the user's existing wallet signs. It routes MCP, CLI, Vercel AI, Solana Agent Kit, and app requests through Phantom, Solflare, Backpack, Jupiter, Wallet Standard, MWA, and iOS wallet paths. Includes a live approval workspace with templates, BYOK planning, caps, inbox, receipts, and mainnet transfer proof.
+Agentic is an open-source multi-wallet Agent Signer for Solana: a wallet approval layer that lets AI agents prepare actions while the user's existing wallet signs. It routes MCP, CLI, Vercel AI, Solana Agent Kit, and app requests through Phantom, Solflare, Backpack, Jupiter, Wallet Standard, MWA, and iOS wallet paths. Includes a live approval workspace with templates, BYOK connectors, approve/deny reviews, recurring swap and payment setup, caps, inbox, receipts, and mainnet transfer proof.
 ```
 
 ### What Are You Building, And Who Is It For?
@@ -53,7 +53,7 @@ Agentic is the first multi-wallet Agent Signer on Solana: an open-source wallet 
 ```text
 Agentic is open-source signing infrastructure plus a working app. At the core is a shared WalletBackend protocol: agents create signing requests, wallet transports open an approval surface, users approve or reject in their existing wallet, and agents receive only the approved result.
 
-The repo includes MCP tools, CLI, Wallet Standard web backend, Android MWA path, iOS wallet-link path, Vercel AI tools, Solana Agent Kit adapter, browser app, desktop shell, approval inbox, caps, BYOK planning, signed artifacts, and receipts.
+The repo includes MCP tools, CLI, Wallet Standard web backend, Android MWA path, iOS wallet-link path, Vercel AI tools, Solana Agent Kit adapter, browser app, desktop shell, approval inbox, caps, BYOK connectors, signed artifacts, rejection/review proofs, recurring swap/payment setup, and receipts.
 
 It is for Solana users who want AI help without giving agents keys, and for builders who need agent signing without custody.
 ```
@@ -63,7 +63,7 @@ It is for Solana users who want AI help without giving agents keys, and for buil
 ```text
 Onchain agents have signing models for autonomy: env-var signers, hot wallets, funded agent wallets, and delegated vaults. Those are useful, but user-owned actions need a different layer.
 
-Solana users already trust Phantom, Solflare, Backpack, Jupiter, and mobile wallets. Agentic lets agents prepare transfers, swaps, DCA requests, reviews, and app approvals while the existing wallet remains the signer.
+Solana users already trust Phantom, Solflare, Backpack, Jupiter, and mobile wallets. Agentic lets agents prepare transfers, swaps, DCA requests, recurring preferences, reviews, denials, and app approvals while the existing wallet remains the signer.
 
 The timing is now because MCP and AI app stacks are becoming the interface for onchain workflows, but Solana still lacked a multi-wallet approval layer for agents.
 ```
@@ -71,7 +71,7 @@ The timing is now because MCP and AI app stacks are becoming the interface for o
 ### Technologies
 
 ```text
-TypeScript, Node, Vite, Solana web3.js, Wallet Standard, Solana Mobile Wallet Adapter, iOS wallet links, WalletConnect/Reown for Jupiter mobile, MCP stdio/HTTP, Vercel AI SDK, Solana Agent Kit BaseWallet, Tauri desktop shell, Android TWA, Capacitor iOS, BYOK AI planning, Render Node service, Vitest, GitHub Actions.
+TypeScript, Node, Vite, Solana web3.js, Wallet Standard, Solana Mobile Wallet Adapter, iOS wallet links, WalletConnect/Reown for Jupiter mobile, MCP stdio/HTTP, Vercel AI SDK, Solana Agent Kit BaseWallet, Tauri desktop shell, Android TWA, Capacitor iOS, BYOK AI connectors, Render Node service, Vitest, GitHub Actions.
 ```
 
 ### Category
@@ -97,7 +97,7 @@ project-logo.png
 Visual rationale:
 
 ```text
-It communicates the full moat in one image: Agentic x Solana, first multi-wallet Agent Signer, and the wallet set across Phantom, Solflare, Backpack, Jupiter, and MWA.
+It communicates the full moat in one image: Agentic x Solana, multi-wallet agent signing, and the wallet set across Phantom, Solflare, Backpack, Jupiter, and MWA.
 ```
 
 ### GitHub Link
@@ -109,7 +109,7 @@ https://github.com/mstevens843/solana-agent-wallet-adapter
 ### Important Context About The Repo
 
 ```text
-Monorepo for Agentic: core WalletBackend protocol, MCP server, Wallet Standard web backend, Android MWA path, iOS wallet links, Vercel AI tools, Solana Agent Kit adapter, CLI, browser app, desktop shell, Android/iOS shells, BYOK planning, approval inbox, caps, signed artifacts, and receipts. Main proof: real mainnet SOL transfer requested by an agent, approved in an existing wallet, confirmed on-chain, with no private key exposure.
+Monorepo for Agentic: core WalletBackend protocol, MCP server, Wallet Standard web backend, Android MWA path, iOS wallet links, Vercel AI tools, Solana Agent Kit adapter, CLI, browser app, desktop shell, Android/iOS shells, BYOK connectors, approval inbox, caps, approve/deny reviews, recurring swap/payment setup, signed artifacts, rejection/review proofs, and receipts. Main proof: real mainnet SOL transfer requested by an agent, approved in an existing wallet, confirmed on-chain, with no private key exposure.
 ```
 
 ### Demo Video Link
@@ -124,8 +124,8 @@ Recommended demo flow:
 0:35 - Open Connect AI and show Hosted BYOK, Local Bridge AI, and Browser Session. Make clear AI drafts only.
 0:58 - Create a bounded Swap tokens draft: 0.01 SOL to USDC, 0.5% max slippage.
 1:28 - Review the saved plan, send it to Approval Inbox, and show the wallet-gated approval card.
-1:58 - Show Recurring: a weekly 0.01 SOL schedule where each due run returns to Inbox.
-2:25 - Show Proofs or a non-empty receipt state, then a 3-5 second CLI/Desktop install surface.
+1:58 - Show Recurring: a weekly SOL-to-USDC swap or payment schedule where each due run returns to Inbox.
+2:25 - Show Proofs or a non-empty receipt/rejection state, then a 3-5 second CLI/Desktop install surface.
 2:45 - End on the line: Open-source Solana signing infrastructure. Agents prepare. Your wallet signs.
 ```
 
@@ -140,9 +140,9 @@ https://agentic-signer.com/
 ### Access Instructions
 
 ```text
-Open https://agentic-signer.com/. Use templates without an AI key, or use BYOK with OpenAI, Claude / Anthropic, Gemini, OpenRouter, or a custom OpenAI-compatible provider. AI only drafts plans. It cannot sign, submit, or approve.
+Open https://agentic-signer.com/. Use templates without an AI key, or use BYOK with OpenAI, Claude / Anthropic, Gemini, OpenRouter, or a custom OpenAI-compatible provider. AI only drafts plans and reviews. It cannot sign, submit, approve, or bypass wallet review.
 
-For local approvals, use the CLI or Desktop App from the site. Connect a Solana wallet, create a plan, queue an approval, and sign from the wallet. Wallet approvals run locally; the user's wallet remains the signer.
+For local approvals, use the CLI or Desktop App from the site. Connect a Solana wallet, create a plan, queue an approval, approve or deny from the inbox, and sign from the wallet only when ready. Wallet approvals run locally; the user's wallet remains the signer.
 
 If repo access fails, contact @mattinfra.
 ```
@@ -218,7 +218,7 @@ Agentic: this submission, the agent signing layer built from that wallet-infra b
 ### Did Anyone Not Listed On The Team Do Meaningful Work?
 
 ```text
-No. Solo project. No contributors outside @mattinfra did meaningful work on Agentic. I built the architecture, protocol, MCP server, wallet backends, CLI, browser app, desktop shell, AI planning flow, approval inbox, receipts, documentation, and real-wallet testing. Prior Cocos, Unreal, Capacitor, Unity, and Godot wallet-adapter work is my background only, not outside contribution to this repo.
+No. Solo project. No contributors outside @mattinfra did meaningful work on Agentic. I built the architecture, protocol, MCP server, wallet backends, CLI, browser app, desktop shell, AI planning/review flow, approval inbox, recurring workflows, receipts, documentation, and real-wallet testing. Prior Cocos, Unreal, Capacitor, Unity, and Godot wallet-adapter work is my background only, not outside contribution to this repo.
 ```
 
 ### Team Telegram Contact
@@ -236,7 +236,7 @@ mattinfra
 ### Anything Else Judges Should Know?
 
 ```text
-This project builds on my prior Solana wallet infrastructure work: Cocos Creator MWA SDK, Unreal Solana MWA plugin, Capacitor MWA plugin, plus Unity/Godot MWA grant work. That background matters because Agentic generalizes the same wallet-approval problem from mobile apps to AI agents. Open source, Apache-2.0, with a live website, local CLI/Desktop runtimes, and verified mainnet transfer proof.
+This project builds on my prior Solana wallet infrastructure work: Cocos Creator MWA SDK, Unreal Solana MWA plugin, Capacitor MWA plugin, plus Unity/Godot MWA grant work. That background matters because Agentic generalizes the same wallet-approval problem from mobile apps to AI agents. Open source, Apache-2.0, with a live website, local CLI/Desktop runtimes, BYOK connectors, recurring approval workflows, and verified mainnet transfer proof.
 ```
 
 ### Accelerator Program

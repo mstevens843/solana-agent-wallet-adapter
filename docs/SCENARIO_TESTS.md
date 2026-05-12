@@ -45,7 +45,7 @@ Use solana-agent-wallet to show me useful prompts.
 
 Expected result:
 
-- A stable list of prompts for wallet status, balances, SOL transfer, SPL transfer, swap quote, swap execution, approval inbox workflows, scheduled payments, treasury/payment workflows, and safety checks.
+- A stable list of prompts for wallet status, balances, SOL transfer, SPL transfer, swap quote, swap execution, approval inbox workflows, recurring payments/swaps, approval denials, connector/BYOK planning, treasury/payment workflows, and safety checks.
 - A separate section for roadmap or partial workflows that are not automated yet.
 
 ## Scenario matrix
@@ -184,6 +184,23 @@ Expected:
 
 Status: supported.
 
+### Approval denial
+
+Prompt:
+
+```text
+Use solana-agent-wallet to prepare a 0.01 SOL payment to <recipient wallet>, then reject it from the approval inbox because the recipient is wrong.
+```
+
+Expected:
+
+- Preparing the action does not open a wallet approval prompt.
+- Rejecting the inbox item records a rejected action without signing or submitting a transaction.
+- Trace includes `bridge.request.rejected` or an inbox rejection event, depending on the surface used.
+- The rejected item remains inspectable as evidence of the denied request.
+
+Status: supported.
+
 ### Scheduled payment
 
 Prompt:
@@ -201,6 +218,24 @@ Expected:
 - Missed weekly payments create one overdue inbox item, not a batch of catch-up payments.
 
 Status: supported through manual Approval Inbox.
+
+### Recurring swap preference
+
+Prompt:
+
+```text
+Create a recurring SOL to USDC swap preference for 0.01 SOL weekly with 0.5% max slippage. Each occurrence should wait for manual approval.
+```
+
+Expected:
+
+- Creates a recurring swap schedule or draft with action kind `swap`.
+- Stores input token, output token, amount, cadence, and slippage limit.
+- Does not grant delegated trading authority or request an unlimited token approval.
+- Each due occurrence materializes as an Approval Inbox item and still requires wallet review.
+- Rejecting an occurrence records the denial without signing or submitting.
+
+Status: supported through recurring swap setup; execute with tiny amounts only.
 
 ### Production recurring payment
 
@@ -220,6 +255,24 @@ Expected:
 - Configured spend caps reject over-limit schedules with a plain-English error.
 
 Status: supported in Agentic Cloud and MCP/local bridge field surface; webhook retries are cloud-only.
+
+### Connector and BYOK planning
+
+Prompt:
+
+```text
+Use Agentic's Connect AI settings to draft a SOL to USDC swap plan with my selected provider. Do not sign or submit anything.
+```
+
+Expected:
+
+- Works with keyless templates, hosted BYOK, local bridge BYOK, or browser session BYOK depending on the selected connector.
+- Provider presets include OpenAI, Claude / Anthropic, Gemini, OpenRouter, and OpenAI-compatible endpoints.
+- The provider returns only a draft plan or review. It cannot approve, sign, submit, or bypass the wallet boundary.
+- API keys are not written to prepared-action notes, receipts, trace logs, URLs, or checked-in config.
+- Sending the plan to Approval Inbox still requires a separate wallet review before any transaction can move funds.
+
+Status: supported for planning/review; signing remains wallet-gated.
 
 ### Portfolio rebalance
 
