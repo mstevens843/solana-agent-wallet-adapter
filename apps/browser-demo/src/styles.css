@@ -4603,8 +4603,22 @@ code {
 }
 
 .protocol-connector-picker .select-picker-menu {
-  max-height: 300px;
+  max-height: var(--template-menu-max-height, 420px);
   z-index: 260;
+}
+
+.protocol-connector-picker .select-picker-option {
+  min-height: 62px;
+  padding: 7px 9px;
+}
+
+.protocol-connector-picker .select-picker-option-copy {
+  gap: 2px;
+}
+
+.protocol-connector-picker .select-picker-option-copy em {
+  font-size: 0.72rem;
+  line-height: 1.22;
 }
 
 .protocol-connector-key-field {
@@ -7843,6 +7857,10 @@ button.danger:hover:not(:disabled) {
   min-width: 190px;
 }
 
+.top-connector-control .select-picker-meta {
+  display: none;
+}
+
 .top-connector-control.active .select-picker-trigger {
   border-color: rgba(139, 205, 170, 0.26);
 }
@@ -7853,6 +7871,16 @@ button.danger:hover:not(:disabled) {
   flex-wrap: wrap;
   gap: 10px;
   margin-bottom: 12px;
+}
+
+.recurring-control-row .recurring-connector-control {
+  flex: 0 1 320px;
+  max-width: 100%;
+  width: 320px;
+}
+
+.recurring-control-row .recurring-connector-control .select-picker-shell {
+  width: 100%;
 }
 
 .one-time-create-panel,
@@ -11170,10 +11198,12 @@ button.danger:hover:not(:disabled) {
   align-items: center;
   display: grid;
   gap: 10px;
-  grid-template-columns: auto minmax(0, 1fr);
-  justify-self: stretch;
+  grid-template-columns: auto max-content;
+  justify-content: end;
+  justify-self: end;
   margin-left: auto;
   min-width: 0;
+  width: max-content;
 }
 
 .one-time-method-label {
@@ -11209,8 +11239,12 @@ button.danger:hover:not(:disabled) {
   border-radius: 8px;
   box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.035);
   gap: 0;
+  grid-auto-columns: max-content;
+  grid-auto-flow: column;
+  grid-template-columns: none;
   overflow: hidden;
   padding: 3px;
+  width: max-content;
 }
 
 .template-filter-row button {
@@ -16649,6 +16683,58 @@ button.danger:hover:not(:disabled) {
   border-color: rgba(214, 168, 79, 0.26);
 }
 
+.command-preference-card.has-ai-path-visual > :not(.command-ai-path-visual) {
+  position: relative;
+  z-index: 1;
+}
+
+.command-ai-path-visual {
+  color: rgba(111, 222, 164, 0.78);
+  height: 76px;
+  opacity: 0.68;
+  pointer-events: none;
+  position: absolute;
+  right: 4px;
+  top: 9px;
+  width: 132px;
+  z-index: 0;
+}
+
+.command-ai-path-visual-halo,
+.command-ai-path-visual-line,
+.command-ai-path-visual-node path {
+  fill: none;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.command-ai-path-visual-halo {
+  stroke: rgba(111, 222, 164, 0.13);
+  stroke-width: 10;
+}
+
+.command-ai-path-visual-line {
+  stroke: currentColor;
+  stroke-dasharray: 4 6;
+  stroke-width: 2.2;
+}
+
+.command-ai-path-visual-node circle {
+  fill: rgba(10, 22, 18, 0.9);
+  stroke: rgba(111, 222, 164, 0.62);
+  stroke-width: 2;
+}
+
+.command-ai-path-visual-node.main circle {
+  fill: rgba(21, 46, 35, 0.94);
+  stroke: rgba(148, 246, 191, 0.84);
+}
+
+.command-ai-path-visual-node path {
+  stroke: rgba(238, 255, 245, 0.9);
+  stroke-width: 2;
+}
+
 .command-preference-card-label {
   align-items: center;
   display: inline-flex;
@@ -18380,35 +18466,42 @@ button.danger:hover:not(:disabled) {
   align-items: stretch;
   display: grid;
   gap: 8px;
-  grid-template-columns: minmax(0, 1fr) minmax(330px, 0.74fr);
+  grid-template-columns: minmax(0, 0.78fr) minmax(430px, 0.92fr);
 }
 
 .route-app .recurring-boundary-note {
   align-items: center;
   border-left: 0;
   border-radius: 8px;
-  gap: 8px 12px;
+  gap: 6px 10px;
   grid-template-columns: auto minmax(0, 1fr);
-  padding: 8px 10px;
+  min-height: 42px;
+  padding: 7px 9px;
+}
+
+.route-app .recurring-boundary-note strong {
+  font-size: 0.64rem;
+  line-height: 1.12;
+  white-space: nowrap;
 }
 
 .route-app .recurring-boundary-note p {
   color: rgba(224, 230, 226, 0.84);
-  font-size: 0.82rem;
-  line-height: 1.28;
+  font-size: 0.78rem;
+  line-height: 1.2;
 }
 
 .route-app .recurring-form-actions.contract-actions {
   align-items: center;
   display: grid;
   gap: 7px;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
+  grid-template-columns: repeat(2, minmax(180px, 1fr));
   margin: 0;
   padding: 0;
 }
 
 .route-app .recurring-form-actions.contract-actions button {
-  min-height: 38px;
+  min-height: 42px;
   width: 100%;
 }
 
@@ -18418,7 +18511,8 @@ button.danger:hover:not(:disabled) {
 }
 
 .route-app .recurring-agent-after-draft {
-  margin-top: 8px;
+  margin-top: 0;
+  order: 21;
 }
 
 .route-app .recurring-create-summary {
@@ -19519,7 +19613,7 @@ button.danger:hover:not(:disabled) {
 .route-app .common-proof-workbench .proof-signing-preview {
   background: rgba(255, 255, 255, 0.024);
   border-color: rgba(224, 230, 226, 0.1);
-  box-shadow: inset 2px 0 0 rgba(125, 231, 176, 0.22);
+  box-shadow: none;
 }
 
 @media (max-width: 1120px) {
@@ -21099,6 +21193,16 @@ button.danger:hover:not(:disabled) {
   padding: 0;
 }
 
+.preferences-page .connected-dapps-panel {
+  overflow: visible;
+  position: relative;
+  z-index: 30;
+}
+
+.preferences-page .connected-dapps-panel:has(.select-picker.open) {
+  z-index: 80;
+}
+
 .preferences-page .rail-details > summary {
   align-items: center;
   background:
@@ -22515,6 +22619,24 @@ button.danger:hover:not(:disabled) {
   .route-app .one-time-plan-control-row,
   .route-app .one-time-plan-control-row.has-connector {
     grid-template-columns: minmax(0, 1fr);
+  }
+
+  .route-app .one-time-method-control {
+    grid-template-columns: minmax(0, 1fr);
+    justify-self: stretch;
+    width: 100%;
+  }
+
+  .route-app .one-time-method-label {
+    border-right: 0;
+    padding-right: 0;
+  }
+
+  .route-app .one-time-method-filter {
+    grid-auto-columns: initial;
+    grid-auto-flow: initial;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    width: 100%;
   }
 
   .route-app .top-connector-control .select-picker-shell,

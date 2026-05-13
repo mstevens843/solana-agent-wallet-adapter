@@ -231,7 +231,16 @@ type StepName = 'discover' | 'connect' | 'sign' | 'transaction' | 'bridge' | 'in
 type ActiveTab = 'overview' | 'wallet' | 'agent' | 'generated' | 'inbox' | 'completed' | 'schedule' | 'labs' | 'preferences';
 type PreferencesView = 'workspace' | 'ai' | 'access' | 'rules' | 'tokens';
 type CommandCenterView = 'center' | 'ai' | 'storage';
-type CommandCenterIconId = 'wallet' | 'approvals' | 'recurring' | 'proofs' | 'ai' | 'cloud' | 'connectors' | 'guardrails';
+type CommandCenterIconId =
+  | 'wallet'
+  | 'approvals'
+  | 'recurring'
+  | 'proofs'
+  | 'ai'
+  | 'aiConnected'
+  | 'cloud'
+  | 'connectors'
+  | 'guardrails';
 type CommandPreferenceSnapshotAction =
   | { type: 'command'; view: CommandCenterView }
   | { type: 'preferences'; view: PreferencesView };
@@ -2232,8 +2241,6 @@ const FAILURE_RECOMMENDED_AUTO: ReadonlySet<TransactionFailureKind> = new Set([
   'rate_limited',
   'network_unreachable',
 ]);
-
-const AI_DRAFT_EXAMPLE_PROMPT = 'Review a new DeFi position before signing. Check route, amount, protocol, and slippage before my wallet approves.';
 
 const DEFAULT_FAILURE_POLICY: FailureRetryPolicy = { kind: 'rpc_timeout', mode: 'ask', maxAttempts: 2 };
 
@@ -8131,7 +8138,7 @@ function commandAiPreferenceSnapshotCard(): CommandPreferenceSnapshotCard {
     detail: `${provider} - ${model}`,
     meta: readiness,
     tone: configured ? 'good' : 'warn',
-    icon: 'ai',
+    icon: configured ? 'aiConnected' : 'ai',
     actionLabel: configured ? 'Open' : 'Connect',
     action: { type: 'command', view: 'ai' },
   };
@@ -8217,8 +8224,10 @@ function commandGuardrailsPreferenceSnapshotCard(): CommandPreferenceSnapshotCar
 }
 
 function commandPreferenceSnapshotCard(card: CommandPreferenceSnapshotCard): string {
+  const connectedAiPath = card.icon === 'aiConnected';
   return `
-    <article class="command-preference-card ${escapeHtml(card.tone)}">
+    <article class="command-preference-card ${escapeHtml(card.tone)}${connectedAiPath ? ' has-ai-path-visual' : ''}">
+      ${connectedAiPath ? commandConnectedAiPathVisual() : ''}
       <div class="command-preference-card-label">
         ${commandCenterIcon(card.icon)}
         <span>${escapeHtml(card.label)}</span>
@@ -8835,6 +8844,7 @@ function commandCenterIcon(icon: CommandCenterIconId): string {
     recurring: '<path d="M17.25 7.25h-7.5a4 4 0 0 0-3.63 2.31" /><path d="m14.75 4.75 2.5 2.5-2.5 2.5" /><path d="M6.75 16.75h7.5a4 4 0 0 0 3.63-2.31" /><path d="m9.25 19.25-2.5-2.5 2.5-2.5" />',
     proofs: '<path d="M7.25 3.75h6.9l3.6 3.6v10.9a2 2 0 0 1-2 2h-8.5a2 2 0 0 1-2-2V5.75a2 2 0 0 1 2-2Z" /><path d="M14 3.95V7.5h3.55" /><path d="m8.5 13.85 2.15 2.15 4.85-5" />',
     ai: '<path d="M12 3.75v2.5" /><path d="M12 17.75v2.5" /><path d="M3.75 12h2.5" /><path d="M17.75 12h2.5" /><path d="m6.35 6.35 1.77 1.77" /><path d="m15.88 15.88 1.77 1.77" /><path d="m17.65 6.35-1.77 1.77" /><path d="m8.12 15.88-1.77 1.77" /><circle cx="12" cy="12" r="3.25" />',
+    aiConnected: '<path d="M5.25 14.25c2.25-6.4 11.25-6.4 13.5 0" /><circle cx="5.25" cy="14.25" r="2" /><circle cx="12" cy="7.75" r="2.35" /><circle cx="18.75" cy="14.25" r="2" /><path d="m8.9 17.8 2.15 2.15 4.85-5.1" />',
     cloud: '<path d="M7.25 17.75h9.25a4 4 0 0 0 .62-7.95 5.25 5.25 0 0 0-9.97-1.66 3.75 3.75 0 0 0 .1 9.61Z" /><path d="m9.25 13.25 1.85 1.85 3.9-4.1" />',
     connectors: '<path d="M8.25 7.25h-1.5a3 3 0 0 0 0 6h1.5" /><path d="M15.75 7.25h1.5a3 3 0 0 1 0 6h-1.5" /><path d="M8.75 10.25h6.5" /><path d="M6.5 16.75h11" /><path d="M9.5 19.25h5" />',
     guardrails: '<path d="M12 3.75 18.25 6v5.25c0 4.05-2.44 7.25-6.25 9-3.81-1.75-6.25-4.95-6.25-9V6L12 3.75Z" /><path d="m8.85 12.35 2.05 2.05 4.25-4.65" />',
@@ -8842,6 +8852,27 @@ function commandCenterIcon(icon: CommandCenterIconId): string {
   return `
     <svg class="command-center-card-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
       ${paths[icon]}
+    </svg>
+  `;
+}
+
+function commandConnectedAiPathVisual(): string {
+  return `
+    <svg class="command-ai-path-visual" viewBox="0 0 132 76" aria-hidden="true" focusable="false">
+      <path class="command-ai-path-visual-halo" d="M17 49c18-35 38-35 49-12s35 27 49-10" />
+      <path class="command-ai-path-visual-line" d="M17 49c18-35 38-35 49-12s35 27 49-10" />
+      <g class="command-ai-path-visual-node">
+        <circle cx="17" cy="49" r="9" />
+        <path d="M17 44.8v8.4M12.8 49h8.4" />
+      </g>
+      <g class="command-ai-path-visual-node main">
+        <circle cx="66" cy="37" r="12" />
+        <path d="M66 29.8v3.4M66 40.8v3.4M58.8 37h3.4M69.8 37h3.4M61 32l2.4 2.4M68.6 39.6 71 42M71 32l-2.4 2.4M63.4 39.6 61 42" />
+      </g>
+      <g class="command-ai-path-visual-node">
+        <circle cx="115" cy="27" r="9" />
+        <path d="m111.2 27.2 2.4 2.4 5.1-5.6" />
+      </g>
     </svg>
   `;
 }
@@ -10395,14 +10426,10 @@ function agentPlannerWorkbench(): string {
   const outcome = templateOutcome(template);
   const notesLabel = notesRequired
     ? 'Custom request / notes'
-    : aiPathConnected
-      ? 'AI instruction / notes'
-      : 'Notes for review record';
+    : 'Notes for review record';
   const notesPlaceholder = notesRequired
     ? 'Describe what you want prepared or reviewed.'
-    : aiPathConnected
-      ? AI_DRAFT_EXAMPLE_PROMPT
-      : 'Optional context, reason, or policy note saved with this plan.';
+    : 'Optional context, reason, or policy note saved with this plan.';
   return `
     <div class="agent-planner-grid planner-single-column">
       <div class="intent-capsule intent-document-card planner-card ${state.agentPlan ? 'plan-linked' : 'draft'}">
@@ -10431,12 +10458,6 @@ function agentPlannerWorkbench(): string {
             <textarea id="agentPrompt" placeholder="${escapeHtml(notesPlaceholder)}" ${state.busy ? 'disabled' : ''}>${escapeHtml(state.agentPrompt)}</textarea>
             ${fieldError('__notes')}
           </label>
-          ${aiPathConnected ? `
-            <div class="ai-draft-assist-note" aria-label="AI draft guidance">
-              <span>Optional AI draft</span>
-              <p>Describe the request in plain English, or fill the fields yourself and let AI structure the draft for Check.</p>
-            </div>
-          ` : ''}
           <div class="agent-actions signature-actions intent-document-actions">
             <div class="agent-actions-row">
               <button id="generatePlan" class="primary" ${state.busy ? 'disabled' : ''}>${templateGenerating ? `${buttonSpinner()}Drafting...` : 'Draft from template'}</button>
@@ -10491,8 +10512,7 @@ function connectorCreatePickerOptions(
     {
       value: '',
       label: 'Use connector',
-      meta: 'Template only',
-      detail: 'Use the selected template without a protocol connector.',
+      detail: 'Clear connector selection.',
     },
     ...connectors.map((connector) => {
       const status = connectorCreateStatus(connector, env);
@@ -10535,7 +10555,7 @@ function templateOutcomeControls(placement: 'header' | 'inline' = 'inline'): str
     ['queueable', 'Request approval'],
     ['proof', 'Proof only'],
     ['audit', 'Evidence only'],
-    ['all', 'All'],
+    // ['all', 'All'],
   ];
   const buttons = filters.map(([filter, label]) => `
     <button
@@ -14751,7 +14771,7 @@ function bindSelectPickers(): void {
 
     const chooseOption = (option: HTMLButtonElement): void => {
       const value = option.dataset.selectPickerOption;
-      if (!value || option.disabled) return;
+      if (value === undefined || option.disabled) return;
       const changed = select.value !== value;
       select.value = value;
       updateSelectPickerView(picker, value);
@@ -28152,36 +28172,6 @@ function recurringComposer(): string {
           <em class="accent-note">${browserWorkflow ? 'Local now; Cloud for background' : `${activeWorkflowLabel()} scheduler`}</em>
         </div>
       </div>
-      <div class="recurring-create-primary-row">
-        <div class="recurring-boundary-note">
-          <strong>Signing boundary</strong>
-          <p>${escapeHtml(boundaryCopy)}</p>
-        </div>
-        <div class="recurring-form-actions contract-actions">
-          <button id="createRecurring" class="primary" ${createDisabled ? 'disabled' : ''}>${escapeHtml(createLabel)}</button>
-          ${aiPathConnected ? `
-            <button
-              id="draftRecurringWithAi"
-              class="primary ai-draft-button"
-              ${aiDraftDisabled ? 'disabled' : ''}
-              title="${escapeHtml(aiDraftDisabledReason)}"
-            >
-              Draft repeat payment with AI
-            </button>
-          ` : ''}
-          <span class="contract-helper accent-note">${escapeHtml(actionHelper)}</span>
-        </div>
-      </div>
-      ${aiPathConnected ? `
-        <label class="ask-agent-after-draft recurring-agent-after-draft ${state.askAgentAfterDraft ? 'checked' : ''}">
-          <input type="checkbox" data-ask-agent-after-draft ${state.askAgentAfterDraft ? 'checked' : ''} ${state.busy ? 'disabled' : ''} />
-          <span class="ask-agent-check" aria-hidden="true">${checkIcon()}</span>
-          <span class="ask-agent-copy">
-            <strong>Ask agent before start</strong>
-            <em>Optional. Agent denial or missing information creates the repeat paused.</em>
-          </span>
-        </label>
-      ` : ''}
       <dl class="contract-summary recurring-create-summary">
         ${definitionRow('Asset', recurringDraftAssetLabel(draft))}
         ${isSwap
@@ -28264,6 +28254,36 @@ function recurringComposer(): string {
         </div>
       </details>
       ${recurringDraftPreviewPanel(draft)}
+      <div class="recurring-create-primary-row">
+        <div class="recurring-boundary-note">
+          <strong>Signing boundary</strong>
+          <p>${escapeHtml(boundaryCopy)}</p>
+        </div>
+        <div class="recurring-form-actions contract-actions">
+          <button id="createRecurring" class="primary" ${createDisabled ? 'disabled' : ''}>${escapeHtml(createLabel)}</button>
+          ${aiPathConnected ? `
+            <button
+              id="draftRecurringWithAi"
+              class="primary ai-draft-button"
+              ${aiDraftDisabled ? 'disabled' : ''}
+              title="${escapeHtml(aiDraftDisabledReason)}"
+            >
+              Draft repeat payment with AI
+            </button>
+          ` : ''}
+          <span class="contract-helper accent-note">${escapeHtml(actionHelper)}</span>
+        </div>
+      </div>
+      ${aiPathConnected ? `
+        <label class="ask-agent-after-draft recurring-agent-after-draft ${state.askAgentAfterDraft ? 'checked' : ''}">
+          <input type="checkbox" data-ask-agent-after-draft ${state.askAgentAfterDraft ? 'checked' : ''} ${state.busy ? 'disabled' : ''} />
+          <span class="ask-agent-check" aria-hidden="true">${checkIcon()}</span>
+          <span class="ask-agent-copy">
+            <strong>Ask agent before start</strong>
+            <em>Optional. Agent denial or missing information creates the repeat paused.</em>
+          </span>
+        </label>
+      ` : ''}
     </div>
   `;
 }
