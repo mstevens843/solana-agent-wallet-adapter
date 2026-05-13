@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import type { Connection } from '@solana/web3.js';
+import type { SolanaSigningClient } from '@solana-agent-wallet-adapter/core';
 
 import { AgentWalletActionService } from '../actionService.js';
 import { DEFAULT_CONFIG, type AgentWalletConfig } from '../config.js';
@@ -115,6 +116,57 @@ describe('AgentWalletActionService connector runtime', () => {
     })).rejects.toMatchObject({
       code: 'unsupported_method',
       message: expect.stringContaining('Meteora does not expose positions read capability'),
+    });
+  });
+
+  it('executes Blink prepared actions through wallet signing and RPC broadcast', async () => {
+    vi.stubEnv('AGENT_WALLET_SKIP_SIMULATION', '1');
+    const store = inMemoryStore();
+    const signedInputs: string[] = [];
+    const sentTransactions: string[] = [];
+    const client = {
+      async signTransaction(transactionBase64: string, options: { cluster: string; summary?: string }) {
+        signedInputs.push(transactionBase64);
+        expect(options).toMatchObject({
+          cluster: 'mainnet-beta',
+          summary: 'Meteora: Claim fees',
+        });
+        return { signature: Buffer.from('signed-blink-transaction').toString('base64') };
+      },
+    } as unknown as SolanaSigningClient;
+    const connection = {
+      async sendRawTransaction(bytes: Buffer) {
+        sentTransactions.push(bytes.toString('utf8'));
+        return 'txid_blink';
+      },
+    } as unknown as Connection;
+    const service = new AgentWalletActionService({
+      backend: createMockBackend(),
+      config: fakeConfig(),
+      connection,
+      client,
+      preparedActions: store,
+    });
+    const action = await store.addAction({
+      kind: 'blink_action',
+      walletAddress: '11111111111111111111111111111111',
+      cluster: 'mainnet-beta',
+      summary: 'Meteora: Claim fees',
+      params: {
+        blinkUrl: 'https://example.com/action',
+        transactionBase64: 'base64-blink-transaction',
+        connectorActionSource: 'blink',
+      },
+    });
+
+    const result = await service.executePreparedAction(action.id);
+
+    expect(signedInputs).toEqual(['base64-blink-transaction']);
+    expect(sentTransactions).toEqual(['signed-blink-transaction']);
+    expect(result.preparedAction).toMatchObject({
+      id: action.id,
+      status: 'approved',
+      txid: 'txid_blink',
     });
   });
 });
