@@ -148,11 +148,30 @@ export {
   DEFAULT_BIRDEYE_REST_BASE,
   birdeyeConfigFromEnv,
   requestBirdeye,
+  requestBirdeyeExitLiquidityMulti,
+  requestBirdeyeHistoryPrice,
+  requestBirdeyeNewListings,
+  requestBirdeyeOhlcv,
+  requestBirdeyePrice,
   requestBirdeyePriceMulti,
+  requestBirdeyePriceVolumeMulti,
+  requestBirdeyePriceVolumeSingle,
   requestBirdeyeSearch,
+  requestBirdeyeTokenCreationInfo,
+  requestBirdeyeTokenHolders,
+  requestBirdeyeTokenListV3,
   requestBirdeyeTokenMetadata,
+  requestBirdeyeTokenMetadataSingle,
   requestBirdeyeTokenSecurity,
+  requestBirdeyeTrendingTokens,
+  requestBirdeyeWalletTokenList,
 } from './birdeye.js';
+export {
+  birdeyeWebSocketManager,
+  getBirdeyeWebSocketSnapshot,
+  resetBirdeyeWebSocketFactory,
+  setBirdeyeWebSocketFactory,
+} from './birdeyeWebSocket.js';
 export {
   DEFAULT_COINGECKO_PUBLIC_BASE,
   DEFAULT_COINGECKO_PRO_BASE,
@@ -161,7 +180,57 @@ export {
   requestCoinGeckoGlobal,
 } from './coingecko.js';
 export type { CoinGeckoConfig, CoinGeckoGlobalSnapshot, CoinGeckoRequestInit } from './coingecko.js';
-export type { BirdeyeConfig, BirdeyeRequestInit } from './birdeye.js';
+export type {
+  BirdeyeConfig,
+  BirdeyeHistoryPriceType,
+  BirdeyeOhlcvType,
+  BirdeyePriceVolumeType,
+  BirdeyeRequestInit,
+  BirdeyeTokenListSortBy,
+} from './birdeye.js';
+export type {
+  BirdeyeWebSocketFactory,
+  BirdeyeWsSnapshot,
+  BirdeyeWsSnapshotOptions,
+  BirdeyeWsTopic,
+} from './birdeyeWebSocket.js';
+export {
+  DEFAULT_HELIUS_HISTORY_TTL_MS,
+  DEFAULT_HELIUS_PARSE_BASE,
+  DEFAULT_HELIUS_RPC_BASE,
+  DEFAULT_PRIORITY_FEE_MICRO_LAMPORTS,
+  analyzeLpPatternFromTxs,
+  checkHeliusMintAuthorities,
+  estimateHeliusPriorityFee,
+  getAuthorityTimeline,
+  getHeliusTransactionHistory,
+  getMintCreationTxForMint,
+  getRecentEnrichedTxsForMint,
+  hasHistoryBeforeTs,
+  heliusConfigFromEnv,
+  parseHeliusTransactions,
+  sendViaHeliusSender,
+} from './helius.js';
+export type {
+  HeliusAuthorityCheck,
+  HeliusAuthorityTimeline,
+  HeliusConfig,
+  HeliusRecentTxsResult,
+  HeliusRequestOptions,
+  HeliusTransactionHistoryOptions,
+} from './helius.js';
+export {
+  readSolanaHeliusHistory,
+  readSolanaMarketData,
+  readSolanaTokenLists,
+  readSolanaTokenSafetyEvidence,
+} from './marketInstruments.js';
+export type {
+  SolanaHeliusHistoryInput,
+  SolanaMarketDataInput,
+  SolanaTokenListsInput,
+  SolanaTokenSafetyEvidenceInput,
+} from './marketInstruments.js';
 export type {
   AiApiFormat,
   AiAskRequest,

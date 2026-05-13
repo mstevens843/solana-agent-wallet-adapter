@@ -203,6 +203,16 @@ import {
   type BlinkActionMetadata,
 } from './blinkActions.js';
 import {
+  readSolanaHeliusHistory,
+  readSolanaMarketData,
+  readSolanaTokenLists,
+  readSolanaTokenSafetyEvidence,
+  type SolanaHeliusHistoryInput,
+  type SolanaMarketDataInput,
+  type SolanaTokenListsInput,
+  type SolanaTokenSafetyEvidenceInput,
+} from './marketInstruments.js';
+import {
   DEFAULT_TOKEN_REGISTRY,
   USDC_MINT,
   WSOL_MINT,
@@ -1773,6 +1783,22 @@ export class AgentWalletActionService {
     assertConnectorCluster(requireRuntimeConnector('jupiter'), this.config.cluster);
     const evidence = await getJupiterTokenRiskEvidence(this.config, input);
     return { evidence, facts: factsFromJupiterTokenRiskEvidence(evidence) };
+  }
+
+  async solanaMarketData(input: SolanaMarketDataInput): Promise<Record<string, unknown>> {
+    return readSolanaMarketData(input);
+  }
+
+  async solanaTokenLists(input: SolanaTokenListsInput): Promise<Record<string, unknown>> {
+    return readSolanaTokenLists(input);
+  }
+
+  async solanaTokenSafetyEvidence(input: SolanaTokenSafetyEvidenceInput): Promise<Record<string, unknown>> {
+    return readSolanaTokenSafetyEvidence(input);
+  }
+
+  async solanaHeliusHistory(input: SolanaHeliusHistoryInput): Promise<Record<string, unknown>> {
+    return readSolanaHeliusHistory(input);
   }
 
   private async jupiterSwapTokenEvidence(input: {

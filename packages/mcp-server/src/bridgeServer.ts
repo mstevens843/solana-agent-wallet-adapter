@@ -26,12 +26,17 @@ import {
 import { BridgeAiPlanner, type AiPlanRequest, type AiReviewRequest, type AiAskRequest } from './aiPlanner.js';
 import {
   birdeyeConfigFromEnv,
+  requestBirdeyeNewListings,
   requestBirdeyePriceMulti,
   requestBirdeyeSearch,
+  requestBirdeyeTokenListV3,
   requestBirdeyeTokenMetadata,
   requestBirdeyeTokenSecurity,
+  requestBirdeyeTrendingTokens,
 } from './birdeye.js';
+import { getBirdeyeWebSocketSnapshot } from './birdeyeWebSocket.js';
 import { requestCoinGeckoGlobal } from './coingecko.js';
+import { heliusConfigFromEnv } from './helius.js';
 import { type AgentWalletConfig } from './config.js';
 import { parseDecimalAmount } from './amounts.js';
 import { LocalBridgeBackend } from './localBridgeBackend.js';
@@ -393,6 +398,7 @@ async function handleRequest(
         ? await checkRpcWritable(actionConfig.rpcUrl)
         : { ok: false, message: 'Action config unavailable.' };
       const birdeye = birdeyeConfigFromEnv();
+      const helius = heliusConfigFromEnv();
       writeJson(res, 200, {
         walletConnected: Boolean(caps?.address),
         walletAddress: caps?.address ?? null,
@@ -403,6 +409,9 @@ async function handleRequest(
         rpcWritable,
         marketDataReady: Boolean(birdeye.apiKey),
         birdeyeRestBase: birdeye.restBase,
+        birdeyeWebSocketReady: birdeye.wsEnabled,
+        heliusReady: Boolean(helius.apiKey || helius.rpcUrl),
+        heliusEnhancedReady: Boolean(helius.parseTransactionHistoryUrl && helius.parseTransactionsUrl),
         mainnetEnabled: actionConfig?.mainnet.enabled ?? false,
         capsEnabled: Boolean(actionConfig?.mainnet.enabled),
         preparedActionStorePath: preparedActions?.getStoragePath?.() ?? null,
@@ -459,6 +468,61 @@ async function handleRequest(
     if (req.method === 'POST' && url.pathname === '/bridge/birdeye/token-security') {
       const body = (await readJson(req)) as { address?: unknown };
       writeJson(res, 200, await requestBirdeyeTokenSecurity(requireString(body.address, 'address')));
+      return;
+    }
+    if (req.method === 'POST' && url.pathname === '/bridge/birdeye/trending') {
+      const body = (await readJson(req)) as { limit?: number; offset?: number };
+      writeJson(res, 200, await requestBirdeyeTrendingTokens({
+        limit: body.limit,
+        offset: body.offset,
+      }));
+      return;
+    }
+    if (req.method === 'POST' && url.pathname === '/bridge/birdeye/new-listings') {
+      const body = (await readJson(req)) as { limit?: number; timeTo?: number; includeMeme?: boolean };
+      writeJson(res, 200, await requestBirdeyeNewListings({
+        limit: body.limit,
+        timeTo: body.timeTo,
+        includeMeme: body.includeMeme,
+      }));
+      return;
+    }
+    if (req.method === 'POST' && url.pathname === '/bridge/birdeye/token-list-v3') {
+      const body = (await readJson(req)) as {
+        limit?: number;
+        offset?: number;
+        sortBy?: 'liquidity' | 'market_cap' | 'fdv' | 'v24hUSD' | 'v24hChangePercent' | 'price' | 'priceChange24h' | 'trade24h' | 'uniqueWallet24h' | 'last_trade_unix_time' | 'recent_listing_time';
+        sortType?: 'asc' | 'desc';
+        minLiquidity?: number;
+        minVolume24hUsd?: number;
+        includeMeme?: boolean;
+      };
+      writeJson(res, 200, await requestBirdeyeTokenListV3({
+        limit: body.limit,
+        offset: body.offset,
+        sortBy: body.sortBy,
+        sortType: body.sortType,
+        minLiquidity: body.minLiquidity,
+        minVolume24hUsd: body.minVolume24hUsd,
+        includeMeme: body.includeMeme,
+      }));
+      return;
+    }
+    if (req.method === 'POST' && url.pathname === '/bridge/birdeye/ws-snapshot') {
+      const body = (await readJson(req)) as {
+        start?: boolean;
+        topics?: Array<'new_listings' | 'new_pairs' | 'large_trades'>;
+        limit?: number;
+        minVolumeUsd?: number;
+        maxVolumeUsd?: number;
+      };
+      writeJson(res, 200, getBirdeyeWebSocketSnapshot({
+        start: body.start,
+        topics: body.topics,
+        limit: body.limit,
+        minVolumeUsd: body.minVolumeUsd,
+        maxVolumeUsd: body.maxVolumeUsd,
+      }));
       return;
     }
     if (req.method === 'GET' && url.pathname === '/bridge/coingecko/global') {
@@ -570,6 +634,72 @@ async function handleRequest(
         ...(body.positionMint !== undefined && { positionMint: body.positionMint }),
         ...(body.poolAddress !== undefined && { poolAddress: body.poolAddress }),
         ...(body.positionAddress !== undefined && { positionAddress: body.positionAddress }),
+      }));
+      return;
+    }
+    if (req.method === 'POST' && url.pathname === '/bridge/action/market-data') {
+      writeJson(res, 200, await requireActionService(actionService).solanaMarketData((await readJson(req)) as {
+        mint?: string;
+        mints?: string[];
+        includePrice?: boolean;
+        includeLiquidity?: boolean;
+        includePriceVolume?: boolean;
+        includeMetadata?: boolean;
+        includeOhlcv?: boolean;
+        priceVolumeType?: '1h' | '2h' | '4h' | '8h' | '24h';
+        ohlcvType?: '1m' | '3m' | '5m' | '15m' | '30m' | '1H' | '2H' | '4H' | '6H' | '8H' | '12H' | '1D' | '1W';
+        lookbackSeconds?: number;
+      }));
+      return;
+    }
+    if (req.method === 'POST' && url.pathname === '/bridge/action/token-lists') {
+      writeJson(res, 200, await requireActionService(actionService).solanaTokenLists((await readJson(req)) as {
+        list: 'trending' | 'new_listings' | 'token_list_v3' | 'ws_snapshot';
+        limit?: number;
+        offset?: number;
+        includeMeme?: boolean;
+        sortBy?: 'liquidity' | 'market_cap' | 'fdv' | 'v24hUSD' | 'v24hChangePercent' | 'price' | 'priceChange24h' | 'trade24h' | 'uniqueWallet24h' | 'last_trade_unix_time' | 'recent_listing_time';
+        sortType?: 'asc' | 'desc';
+        minLiquidity?: number;
+        minVolume24hUsd?: number;
+        timeTo?: number;
+        startWebSocket?: boolean;
+        wsTopics?: Array<'new_listings' | 'new_pairs' | 'large_trades'>;
+        minVolumeUsd?: number;
+        maxVolumeUsd?: number;
+      }));
+      return;
+    }
+    if (req.method === 'POST' && url.pathname === '/bridge/action/token-safety-evidence') {
+      writeJson(res, 200, await requireActionService(actionService).solanaTokenSafetyEvidence((await readJson(req)) as {
+        mint: string;
+        minLiquidityUsd?: number;
+        maxStalenessSec?: number | null;
+        includeHolders?: boolean;
+        includeHelius?: boolean;
+        includeTimeline?: boolean;
+        holderLimit?: number;
+        top1MaxPct?: number;
+        top5MaxPct?: number;
+        top10MaxPct?: number;
+      }));
+      return;
+    }
+    if (req.method === 'POST' && url.pathname === '/bridge/action/helius-history') {
+      writeJson(res, 200, await requireActionService(actionService).solanaHeliusHistory((await readJson(req)) as {
+        operation: 'transaction_history' | 'parse_transactions' | 'recent_mint_txs' | 'mint_creation' | 'has_history_before' | 'authority';
+        address?: string;
+        mint?: string;
+        signatures?: string[];
+        before?: string;
+        until?: string;
+        commitment?: string;
+        source?: string;
+        type?: string;
+        lookbackMinutes?: number;
+        limit?: number;
+        maxPages?: number;
+        cutoffTs?: number;
       }));
       return;
     }
@@ -917,6 +1047,10 @@ function requiredTier(method: string, pathname: string): AgentTier | null {
     if (pathname === '/bridge/action/swap-execute') return 'full';
     if (pathname === '/bridge/action/swap-quote') return 'capped';
     if (pathname === '/bridge/action/connector-read-facts') return 'capped';
+    if (pathname === '/bridge/action/market-data') return 'capped';
+    if (pathname === '/bridge/action/token-lists') return 'capped';
+    if (pathname === '/bridge/action/token-safety-evidence') return 'capped';
+    if (pathname === '/bridge/action/helius-history') return 'capped';
     if (pathname === '/bridge/solana/latest-blockhash') return 'full';
     if (pathname === '/bridge/solana/send-transaction') return 'full';
     if (pathname === '/bridge/solana/signature-status') return null;

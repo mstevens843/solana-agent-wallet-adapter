@@ -100,6 +100,29 @@ describe('planner AI setup helpers', () => {
     expect(message).not.toContain(sessionSettings.apiKey);
   });
 
+  it('adds plain-English help for common provider HTTP status failures', async () => {
+    const cases: Array<[number, string]> = [
+      [400, 'provider rejected the request before drafting'],
+      [404, 'model or endpoint was not found'],
+      [429, 'too many requests or quota is exhausted'],
+      [503, 'temporarily unavailable or overloaded'],
+    ];
+
+    for (const [status, expected] of cases) {
+      vi.stubGlobal('fetch', vi.fn(async () => jsonResponse({}, status)));
+
+      let message = '';
+      try {
+        await generateSessionAiPlan(sessionSettings, planRequest);
+      } catch (err) {
+        message = err instanceof Error ? err.message : String(err);
+      }
+
+      expect(message).toContain(`AI provider returned HTTP ${status}.`);
+      expect(message).toContain(expected);
+    }
+  });
+
   it('removes hidden separators from browser-session keys before building provider headers', async () => {
     const fetchMock = vi.fn(async (_input: RequestInfo | URL, _init?: RequestInit) => jsonResponse({
       choices: [{

@@ -2,7 +2,7 @@ import { randomUUID } from 'node:crypto';
 
 export type TracePayload = Record<string, unknown>;
 
-const SECRET_QUERY_KEYS = new Set(['api-key', 'apikey', 'key', 'token']);
+const SECRET_QUERY_KEYS = new Set(['api-key', 'apikey', 'x-api-key', 'key', 'token']);
 
 export function newTraceId(prefix = 'trace'): string {
   return `${prefix}_${randomUUID()}`;

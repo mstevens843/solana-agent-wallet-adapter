@@ -175,6 +175,20 @@ describe('BridgeAiPlanner', () => {
     });
   });
 
+  it('adds plain-English help for bridge provider HTTP status failures', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => jsonResponse({}, 503)));
+    const planner = new BridgeAiPlanner();
+    planner.setSessionKey({
+      apiKey: 'sk-test-openrouter',
+      provider: 'openrouter',
+      apiFormat: 'openai-compatible',
+      baseUrl: 'https://openrouter.ai/api/v1',
+      model: 'openai/gpt-4o-mini',
+    });
+
+    await expect(planner.generatePlan(request)).rejects.toThrow('AI provider returned HTTP 503. That means the provider is temporarily unavailable or overloaded.');
+  });
+
   it('rejects non-ASCII bridge session keys before provider fetch can throw a ByteString error', async () => {
     const fetchMock = vi.fn();
     vi.stubGlobal('fetch', fetchMock);

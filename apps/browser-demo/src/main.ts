@@ -9689,16 +9689,22 @@ function generatedPlanCard(record: GeneratedPlanRecord): string {
       ${generatedPlanConsistencyWarning(displayRecord)}
       ${generatedPlanAgentReviewStrip(displayRecord)}
       ${agentOverrideStrip(record.agentOverride)}
-      ${record.error ? `<p class="error-text">${escapeHtml(record.error)}</p>` : ''}
+      ${record.error ? generatedPlanErrorNotice(record.error) : ''}
       ${guardrailBlocked ? actionHint : ''}
 
       <div class="review-plan-footer-row">
         <details class="generated-plan-inline-details review-plan-details">
-          <summary>Details</summary>
+          <summary><span>Details</span></summary>
           <div class="review-plan-details-body">
-            <dl class="review-detail-list">
-              ${reviewPlanDetailRows(displayRecord).map(([label, value]) => reviewPlanDetailRow(label, value)).join('')}
-            </dl>
+            <section class="review-plan-detail-section">
+              <div class="review-plan-detail-section-head">
+                <span>Review details</span>
+                <strong>${escapeHtml(generatedPlanStatusLabel(record))}</strong>
+              </div>
+              <dl class="review-detail-list">
+                ${reviewPlanDetailRows(displayRecord).map(([label, value]) => reviewPlanDetailRow(label, value)).join('')}
+              </dl>
+            </section>
             ${planGuardrailStrip(plan)}
             ${generatedPlanCompactExtras(plan)}
             ${generatedPlanOutcomeStrip(displayRecord)}
@@ -9707,6 +9713,15 @@ function generatedPlanCard(record: GeneratedPlanRecord): string {
         ${generatedPlanCardFooterActions(displayRecord)}
       </div>
     </article>
+  `;
+}
+
+function generatedPlanErrorNotice(message: string): string {
+  return `
+    <section class="review-plan-error" aria-label="AI draft issue">
+      <span>AI draft issue</span>
+      <p>${escapeHtml(message)}</p>
+    </section>
   `;
 }
 
@@ -10161,12 +10176,44 @@ function agentEvidenceDrawer(
         ${rows.map((row) => `
           <div class="agent-evidence-row ${row.tone ? escapeHtml(row.tone) : ''}">
             <dt>${escapeHtml(row.label)}</dt>
-            <dd>${escapeHtml(row.value)}</dd>
+            <dd>${agentEvidenceValueHtml(row)}</dd>
           </div>
         `).join('')}
       </dl>
     </details>
   `;
+}
+
+function agentEvidenceValueHtml(row: { value: string; tone?: AgentEvidenceTone }): string {
+  if (!row.tone || row.tone === 'neutral') return escapeHtml(row.value);
+  const sourceSuffix = splitAgentEvidenceSourceSuffix(row.value);
+  if (!sourceSuffix) {
+    return `<span class="agent-evidence-value-tone">${escapeHtml(row.value)}</span>`;
+  }
+  return [
+    `<span class="agent-evidence-value-tone">${escapeHtml(sourceSuffix.value)}</span>`,
+    `<span class="agent-evidence-value-source">${escapeHtml(sourceSuffix.separator)}${escapeHtml(sourceSuffix.source)}</span>`,
+  ].join('');
+}
+
+function splitAgentEvidenceSourceSuffix(value: string): { value: string; separator: string; source: string } | null {
+  const separators = [' — ', ' - '] as const;
+  for (const separator of separators) {
+    const index = value.lastIndexOf(separator);
+    if (index <= 0) continue;
+    const source = value.slice(index + separator.length).trim();
+    if (!isAgentEvidenceSourceSuffix(source)) continue;
+    return {
+      value: value.slice(0, index),
+      separator,
+      source,
+    };
+  }
+  return null;
+}
+
+function isAgentEvidenceSourceSuffix(value: string): boolean {
+  return /^(?:BirdEye|Jupiter|CoinGecko|alternative\.me|DEX Screener|https?:\/\/|www\.)/i.test(value);
 }
 
 function agentEvidenceRows(
@@ -10315,7 +10362,6 @@ function reviewPlanDetailRows(record: GeneratedPlanRecord): Array<[string, strin
   return [
     ['Intent', compactSentence(plan.intent)],
     ['Template', plan.templateTitle],
-    ['Network', titleCaseCluster(record.cluster)],
     ['Action', plan.actionType.replace(/_/g, ' ')],
     ['Route', compactSentence(plan.route)],
     ['Rule', compactSentence(plan.approval)],
@@ -10324,8 +10370,9 @@ function reviewPlanDetailRows(record: GeneratedPlanRecord): Array<[string, strin
 }
 
 function reviewPlanDetailRow(label: string, value: string): string {
+  const wide = /^(Rule|Effect|Fields|Safeguards)$/i.test(label) || value.length > 88;
   return `
-    <div title="${escapeHtml(value)}">
+    <div class="${wide ? 'wide' : ''}" title="${escapeHtml(value)}">
       <dt>${escapeHtml(label)}</dt>
       <dd>${escapeHtml(value)}</dd>
     </div>
@@ -10360,9 +10407,14 @@ function generatedPlanCompactExtras(plan: AgentPlan): string {
   }
   if (!rows.length) return '';
   return `
-    <dl class="review-detail-list compact-extra">
-      ${rows.map(([label, value]) => reviewPlanDetailRow(label, compactSentence(value, 180))).join('')}
-    </dl>
+    <section class="review-plan-detail-section review-plan-detail-section-extra">
+      <div class="review-plan-detail-section-head">
+        <span>Extra context</span>
+      </div>
+      <dl class="review-detail-list compact-extra">
+        ${rows.map(([label, value]) => reviewPlanDetailRow(label, compactSentence(value, 180))).join('')}
+      </dl>
+    </section>
   `;
 }
 
@@ -10910,7 +10962,7 @@ function generatedPlanAuditModal(record: GeneratedPlanRecord): string {
           `}
         </div>
         <div class="generated-plan-audit-body">
-          <section class="generated-plan-audit-section">
+          <section class="generated-plan-audit-section generated-plan-audit-decision">
             <div class="generated-plan-audit-section-head">
               <h3>Decision</h3>
               <span class="status-pill ${generatedPlanStatusTone(record)}">${escapeHtml(generatedPlanStatusLabel(record))}</span>
@@ -10924,7 +10976,7 @@ function generatedPlanAuditModal(record: GeneratedPlanRecord): string {
             ${generatedPlanAgentReviewStrip(record)}
             ${planGuardrailStrip(plan)}
           </section>
-          <section class="generated-plan-audit-section">
+          <section class="generated-plan-audit-section generated-plan-audit-facts">
             <div class="generated-plan-audit-section-head">
               <h3>Plan facts</h3>
             </div>
@@ -10946,8 +10998,9 @@ function generatedPlanAuditModal(record: GeneratedPlanRecord): string {
 }
 
 function generatedPlanAuditRow(label: string, value: string): string {
+  const wide = /^(Route|Approval|Outcome)$/i.test(label) || value.length > 88;
   return `
-    <div>
+    <div class="${wide ? 'wide' : ''}">
       <dt>${escapeHtml(label)}</dt>
       <dd>${escapeHtml(value)}</dd>
     </div>
@@ -10956,7 +11009,7 @@ function generatedPlanAuditRow(label: string, value: string): string {
 
 function generatedPlanAuditTextSection(label: string, value: string): string {
   return `
-    <section class="generated-plan-audit-section">
+    <section class="generated-plan-audit-section generated-plan-audit-text-section">
       <div class="generated-plan-audit-section-head">
         <h3>${escapeHtml(label)}</h3>
       </div>
@@ -10967,7 +11020,7 @@ function generatedPlanAuditTextSection(label: string, value: string): string {
 
 function generatedPlanAuditListSection(label: string, values: string[]): string {
   return `
-    <section class="generated-plan-audit-section">
+    <section class="generated-plan-audit-section generated-plan-audit-text-section">
       <div class="generated-plan-audit-section-head">
         <h3>${escapeHtml(label)}</h3>
       </div>
@@ -18681,23 +18734,23 @@ function deterministicSourcesFromFacts(facts: AgentReviewFactSet, plan: AgentPla
     ? (facts.tokenMint.detail.marketSource as string)
     : undefined;
   if (tokenSource === 'birdeye') {
-    sources.push({ url: 'https://birdeye.so/', title: 'BirdEye — Solana token prices' });
+    sources.push({ url: 'https://birdeye.so/', title: 'BirdEye - Solana token prices' });
   } else if (tokenSource === 'dexscreener') {
-    sources.push({ url: 'https://dexscreener.com/solana', title: 'DEX Screener — Solana markets' });
+    sources.push({ url: 'https://dexscreener.com/solana', title: 'DEX Screener - Solana markets' });
   }
   if (planBehavesLikeSwap(plan)) {
-    sources.push({ url: 'https://jup.ag/', title: 'Jupiter — Solana swap aggregator' });
+    sources.push({ url: 'https://jup.ag/', title: 'Jupiter - Solana swap aggregator' });
   }
   if (facts.marketSentiment?.state === 'ok') {
     sources.push({
       url: 'https://alternative.me/crypto/fear-and-greed-index/',
-      title: 'alternative.me — Crypto Fear & Greed Index',
+      title: 'alternative.me - Crypto Fear & Greed Index',
     });
   }
   if (facts.marketConditions?.state === 'ok') {
     sources.push({
       url: 'https://www.coingecko.com/en/global-charts',
-      title: 'CoinGecko — Global market dominance & volume',
+      title: 'CoinGecko - Global market dominance & volume',
     });
   }
   return sources;
@@ -18784,7 +18837,7 @@ function questionAwareFindingsFromFacts(
     }
     findings.push({
       label: 'BTC Fear & Greed Index',
-      value: `${fearGreed.value} (${fearGreed.classification}) — alternative.me`,
+      value: `${fearGreed.value} (${fearGreed.classification}) - alternative.me`,
       tone,
     });
   }
@@ -18800,21 +18853,21 @@ function questionAwareFindingsFromFacts(
       }
       findings.push({
         label: 'BTC dominance',
-        value: `${conditions.btcDominancePct.toFixed(2)}% — CoinGecko`,
+        value: `${conditions.btcDominancePct.toFixed(2)}% - CoinGecko`,
         tone,
       });
     }
     if (conditions.totalMarketCapUsd !== undefined && /total\s+market\s+cap|crypto\s+market\s+cap/i.test(instruction)) {
       findings.push({
         label: 'Total crypto market cap',
-        value: `${formatUsdCompact(conditions.totalMarketCapUsd)} — CoinGecko`,
+        value: `${formatUsdCompact(conditions.totalMarketCapUsd)} - CoinGecko`,
         tone: 'neutral',
       });
     }
     if (conditions.marketCapChangePct24hUsd !== undefined && /24h\s+(?:market|change)|market\s+cap\s+change/i.test(instruction)) {
       findings.push({
         label: '24h market cap change',
-        value: `${conditions.marketCapChangePct24hUsd >= 0 ? '+' : ''}${conditions.marketCapChangePct24hUsd.toFixed(2)}% — CoinGecko`,
+        value: `${conditions.marketCapChangePct24hUsd >= 0 ? '+' : ''}${conditions.marketCapChangePct24hUsd.toFixed(2)}% - CoinGecko`,
         tone: 'neutral',
       });
     }
@@ -18837,6 +18890,8 @@ function parseDominanceThreshold(instruction: string): number | undefined {
 
 interface TokenSecurityRow extends QuestionAwareFinding {}
 
+const KNOWN_STABLECOIN_SYMBOLS = new Set(['USDC', 'USDT', 'PYUSD', 'USDS', 'USDE', 'DAI', 'FDUSD']);
+
 function tokenSecurityRows(facts: AgentReviewFactSet, instruction: string): TokenSecurityRow[] {
   const tokenList = facts.tokenMint?.detail?.tokens;
   if (!Array.isArray(tokenList)) return [];
@@ -18854,28 +18909,32 @@ function tokenSecurityRows(facts: AgentReviewFactSet, instruction: string): Toke
     const role = typeof entry.role === 'string' ? entry.role.toUpperCase() : 'TOKEN';
     const symbol = typeof entry.symbol === 'string' ? entry.symbol : (typeof entry.label === 'string' ? entry.label : '');
     const prefix = symbol ? `${role} ${symbol}` : role;
-    if (wantMintAuth) {
+    // Established stablecoins (USDC, USDT, etc.) intentionally keep their freeze authority
+    // for compliance. Skip mint/freeze authority rows for them so the findings grid
+    // doesn't surface expected, non-actionable behavior.
+    const isStable = KNOWN_STABLECOIN_SYMBOLS.has(symbol.toUpperCase());
+    if (wantMintAuth && !isStable) {
       const mintAuth = security.mintAuthority;
       const disabled = mintAuth === null;
       rows.push({
         label: `${prefix} mint authority`,
         value: disabled
-          ? 'disabled (null) — BirdEye'
+          ? 'disabled (null) - BirdEye'
           : typeof mintAuth === 'string' && mintAuth
-            ? `enabled: ${short(mintAuth)} — BirdEye`
+            ? `enabled: ${short(mintAuth)} - BirdEye`
             : 'unknown',
         tone: disabled ? 'good' : typeof mintAuth === 'string' ? 'fail' : 'warn',
       });
     }
-    if (wantFreezeAuth) {
+    if (wantFreezeAuth && !isStable) {
       const freezeAuth = security.freezeAuthority;
       const disabled = freezeAuth === null;
       rows.push({
         label: `${prefix} freeze authority`,
         value: disabled
-          ? 'disabled (null) — BirdEye'
+          ? 'disabled (null) - BirdEye'
           : typeof freezeAuth === 'string' && freezeAuth
-            ? `enabled: ${short(freezeAuth)} — BirdEye`
+            ? `enabled: ${short(freezeAuth)} - BirdEye`
             : 'unknown',
         tone: disabled ? 'good' : typeof freezeAuth === 'string' ? 'fail' : 'warn',
       });
@@ -18888,7 +18947,7 @@ function tokenSecurityRows(facts: AgentReviewFactSet, instruction: string): Toke
         const passes = minAgeSeconds === undefined ? undefined : ageSeconds >= minAgeSeconds;
         rows.push({
           label: `${prefix} token age`,
-          value: `${formatTokenAge(ageSeconds)} — BirdEye`,
+          value: `${formatTokenAge(ageSeconds)} - BirdEye`,
           tone: passes === undefined ? 'neutral' : passes ? 'good' : 'fail',
         });
       }

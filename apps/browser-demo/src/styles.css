@@ -6919,15 +6919,15 @@ code {
 }
 
 .agent-evidence-summary-state.pass {
-  background: rgba(63, 189, 131, 0.14);
-  border-color: rgba(139, 205, 170, 0.3);
-  color: #d7f6e5;
+  background: rgba(44, 151, 99, 0.14);
+  border-color: rgba(111, 181, 143, 0.3);
+  color: #b9dfc9;
 }
 
 .agent-evidence-summary-state.fail {
-  background: rgba(239, 111, 120, 0.14);
-  border-color: rgba(239, 111, 120, 0.32);
-  color: #f4c1c6;
+  background: rgba(199, 79, 88, 0.14);
+  border-color: rgba(211, 103, 112, 0.32);
+  color: #e09aa2;
 }
 
 .agent-evidence-summary-state.neutral {
@@ -6964,16 +6964,20 @@ code {
   overflow-wrap: anywhere;
 }
 
-.agent-evidence-row.warn dd {
+.agent-evidence-row.warn .agent-evidence-value-tone {
   color: rgba(244, 224, 188, 0.98);
 }
 
-.agent-evidence-row.good dd {
-  color: rgba(189, 232, 213, 0.98);
+.agent-evidence-row.good .agent-evidence-value-tone {
+  color: rgba(150, 207, 174, 0.98);
 }
 
-.agent-evidence-row.fail dd {
-  color: rgba(239, 188, 192, 0.98);
+.agent-evidence-row.fail .agent-evidence-value-tone {
+  color: rgba(216, 141, 149, 0.98);
+}
+
+.agent-evidence-value-source {
+  color: rgba(224, 230, 226, 0.95);
 }
 
 .agent-policies-panel summary {
@@ -7793,6 +7797,7 @@ code {
 .generated-plan-audit-body {
   display: grid;
   gap: 12px;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
 }
 
 .generated-plan-audit-section {
@@ -7804,6 +7809,10 @@ code {
   padding: 12px;
 }
 
+.generated-plan-audit-decision {
+  grid-column: 1 / -1;
+}
+
 .generated-plan-audit-section-head h3 {
   color: var(--text);
   font-size: 0.95rem;
@@ -7812,7 +7821,7 @@ code {
 
 .generated-plan-audit-grid {
   display: grid;
-  gap: 0;
+  gap: 8px;
   grid-template-columns: repeat(3, minmax(0, 1fr));
   margin: 0;
 }
@@ -7822,15 +7831,21 @@ code {
 }
 
 .generated-plan-audit-grid div {
-  border-top: 1px solid rgba(224, 230, 226, 0.065);
+  background: rgba(255, 255, 255, 0.018);
+  border: 1px solid rgba(224, 230, 226, 0.07);
+  border-radius: 8px;
   display: grid;
   gap: 5px;
   min-width: 0;
-  padding: 9px 10px 9px 0;
+  padding: 9px 10px;
 }
 
 .generated-plan-audit-grid div:nth-child(-n + 3) {
-  border-top: 0;
+  border-top: 1px solid rgba(224, 230, 226, 0.07);
+}
+
+.generated-plan-audit-grid div.wide {
+  grid-column: 1 / -1;
 }
 
 .generated-plan-audit-grid dt {
@@ -7858,6 +7873,7 @@ code {
 @media (max-width: 760px) {
   .generated-plan-grid,
   .generated-plan-modal-actions,
+  .generated-plan-audit-body,
   .generated-plan-audit-grid,
   .generated-plan-audit-grid.compact {
     grid-template-columns: 1fr;
@@ -17793,6 +17809,33 @@ button.danger:hover:not(:disabled) {
   -webkit-line-clamp: 3;
 }
 
+.review-plan-error {
+  background: rgba(239, 111, 120, 0.08);
+  border: 1px solid rgba(239, 111, 120, 0.24);
+  border-radius: 8px;
+  display: grid;
+  gap: 6px;
+  padding: 10px 12px;
+}
+
+.review-plan-error span {
+  color: #ffc3c9;
+  font-size: 0.66rem;
+  font-weight: 930;
+  letter-spacing: 0.08em;
+  line-height: 1.2;
+  text-transform: uppercase;
+}
+
+.review-plan-error p {
+  color: #ffd8dc;
+  font-size: 0.86rem;
+  font-weight: 780;
+  line-height: 1.36;
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
 .review-action-proof,
 .review-action-inbox,
 .review-action-agent {
@@ -17893,16 +17936,19 @@ button.danger:hover:not(:disabled) {
   align-items: start;
   border-top: 1px solid rgba(224, 230, 226, 0.07);
   display: grid;
-  gap: 8px;
-  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 10px;
+  grid-template-columns: minmax(0, 1fr);
   min-height: 38px;
-  padding-top: 7px;
+  padding-top: 10px;
 }
 
 .review-plan-footer-row .review-plan-details {
-  border-top: 0;
+  background: rgba(255, 255, 255, 0.014);
+  border: 1px solid rgba(224, 230, 226, 0.07);
+  border-radius: 8px;
   margin: 0;
-  padding-top: 0;
+  padding: 0;
+  width: 100%;
 }
 
 .review-plan-details > div {
@@ -17913,12 +17959,19 @@ button.danger:hover:not(:disabled) {
 .review-plan-details summary {
   align-items: center;
   color: rgba(224, 230, 226, 0.82);
-  display: inline-flex;
+  display: flex;
   font-size: 0.86rem;
   gap: 6px;
-  justify-content: flex-start;
-  min-height: 34px;
-  padding-block: 8px;
+  justify-content: space-between;
+  min-height: 38px;
+  padding: 0 12px;
+  width: 100%;
+}
+
+.review-plan-details summary span {
+  align-items: center;
+  display: inline-flex;
+  gap: 6px;
 }
 
 .review-plan-details summary::after {
@@ -17930,7 +17983,42 @@ button.danger:hover:not(:disabled) {
 
 .review-plan-details-body {
   border-top: 1px solid rgba(224, 230, 226, 0.06);
-  padding-top: 10px;
+  display: grid;
+  gap: 10px;
+  padding: 10px;
+}
+
+.review-plan-detail-section {
+  background: rgba(255, 255, 255, 0.018);
+  border: 1px solid rgba(224, 230, 226, 0.07);
+  border-radius: 8px;
+  display: grid;
+  gap: 10px;
+  padding: 10px;
+}
+
+.review-plan-detail-section-head {
+  align-items: center;
+  display: flex;
+  gap: 10px;
+  justify-content: space-between;
+  min-width: 0;
+}
+
+.review-plan-detail-section-head span {
+  color: rgba(139, 205, 170, 0.78);
+  font-size: 0.66rem;
+  font-weight: 930;
+  letter-spacing: 0.08em;
+  line-height: 1.2;
+  text-transform: uppercase;
+}
+
+.review-plan-detail-section-head strong {
+  color: rgba(224, 230, 226, 0.74);
+  font-size: 0.74rem;
+  font-weight: 820;
+  line-height: 1.2;
 }
 
 .review-plan-footer-actions {
@@ -17967,7 +18055,7 @@ button.danger:hover:not(:disabled) {
 .review-detail-list {
   display: grid;
   gap: 8px;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
   margin: 0;
 }
 
@@ -17977,6 +18065,10 @@ button.danger:hover:not(:disabled) {
   border-radius: 8px;
   min-width: 0;
   padding: 8px 9px;
+}
+
+.review-detail-list div.wide {
+  grid-column: 1 / -1;
 }
 
 .review-detail-list dt {
@@ -19333,6 +19425,7 @@ button.danger:hover:not(:disabled) {
 .route-app .completed-history-summary-grid div,
 .route-app .receipt-proof-summary-grid > div,
 .route-app .review-detail-list div,
+.route-app .generated-plan-audit-grid div,
 .route-app .contract-summary div,
 .route-app .action-preview div,
 .route-app .wallet-action-grid div,
@@ -19349,6 +19442,7 @@ button.danger:hover:not(:disabled) {
 .route-app .completed-history-summary-grid dd,
 .route-app .receipt-proof-summary-grid dd,
 .route-app .review-detail-list dd,
+.route-app .generated-plan-audit-grid dd,
 .route-app .contract-summary dd,
 .route-app .action-preview dd,
 .route-app .wallet-action-grid dd,
@@ -19362,6 +19456,7 @@ button.danger:hover:not(:disabled) {
 .route-app .review-plan-user-note,
 .route-app .completed-history-note,
 .route-app .review-plan-note .generated-plan-action-helper,
+.route-app .review-plan-detail-section,
 .route-app .recurring-card-note,
 .route-app .inbox-approval-note,
 .route-app .proof-signing-preview,
@@ -19425,6 +19520,11 @@ button.danger:hover:not(:disabled) {
 .route-app .field-error-text,
 .route-app .error-text {
   color: #f2a3aa;
+}
+
+.route-app .review-plan-error {
+  background: rgba(239, 111, 120, 0.075);
+  border-color: rgba(239, 111, 120, 0.25);
 }
 
 .route-app .notice {
@@ -19655,6 +19755,8 @@ button.danger:hover:not(:disabled) {
 .route-app .recurring-card-summary-grid dd,
 .route-app .completed-history-summary-grid dd,
 .route-app .receipt-proof-summary-grid dd,
+.route-app .review-detail-list dd,
+.route-app .generated-plan-audit-grid dd,
 .route-app .wallet-action-grid dd,
 .route-app .proof-grid.compact dd,
 .route-app .template-picker-current strong,
@@ -19665,7 +19767,7 @@ button.danger:hover:not(:disabled) {
 }
 
 .route-app .generated-plan-modal {
-  max-width: min(720px, calc(100vw - 32px));
+  max-width: min(960px, calc(100vw - 32px));
   width: 100%;
 }
 

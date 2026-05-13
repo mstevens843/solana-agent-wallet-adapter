@@ -4482,6 +4482,112 @@ export function registerActionTools(
   );
 
   server.registerTool(
+    'solana_market_data',
+    {
+      description:
+        'Read optional live Solana token market data from Birdeye: price, liquidity, price-volume, metadata, and OHLCV. Read-only; use when current market evidence is helpful.',
+      inputSchema: {
+        mint: z.string().min(32).max(44).optional(),
+        mints: z.array(z.string().min(32).max(44)).min(1).max(100).optional(),
+        includePrice: z.boolean().optional().describe('Defaults to true.'),
+        includeLiquidity: z.boolean().optional().describe('Defaults to true when reading price.'),
+        includePriceVolume: z.boolean().optional(),
+        includeMetadata: z.boolean().optional(),
+        includeOhlcv: z.boolean().optional().describe('Requires exactly one mint.'),
+        priceVolumeType: z.enum(['1h', '2h', '4h', '8h', '24h']).optional(),
+        ohlcvType: birdeyeOhlcvTypeSchema().optional(),
+        lookbackSeconds: z.number().int().min(60).max(30 * 24 * 60 * 60).optional(),
+      },
+    },
+    async (input) => traceTool(
+      'solana_market_data',
+      { cluster: options.config.cluster, input },
+      async () => jsonReply(await service.solanaMarketData(input)),
+    ),
+  );
+
+  server.registerTool(
+    'solana_token_lists',
+    {
+      description:
+        'Read optional Solana token discovery lists from Birdeye: trending, new listings, token list v3, or the local Birdeye WebSocket snapshot. Read-only.',
+      inputSchema: {
+        list: z.enum(['trending', 'new_listings', 'token_list_v3', 'ws_snapshot']),
+        limit: z.number().int().min(1).max(100).optional(),
+        offset: z.number().int().min(0).optional(),
+        includeMeme: z.boolean().optional(),
+        sortBy: birdeyeTokenListSortSchema().optional(),
+        sortType: z.enum(['asc', 'desc']).optional(),
+        minLiquidity: z.number().min(0).optional(),
+        minVolume24hUsd: z.number().min(0).optional(),
+        timeTo: z.number().int().min(0).optional(),
+        startWebSocket: z.boolean().optional().describe('Defaults to true for ws_snapshot.'),
+        wsTopics: z.array(z.enum(['new_listings', 'new_pairs', 'large_trades'])).min(1).max(3).optional(),
+        minVolumeUsd: z.number().min(0).optional(),
+        maxVolumeUsd: z.number().min(0).optional(),
+      },
+    },
+    async (input) => traceTool(
+      'solana_token_lists',
+      { cluster: options.config.cluster, input },
+      async () => jsonReply(await service.solanaTokenLists(input)),
+    ),
+  );
+
+  server.registerTool(
+    'solana_token_safety_evidence',
+    {
+      description:
+        'Read optional token safety evidence from Birdeye and Helius: liquidity freshness, verified metadata, token security, holder concentration, mint/freeze authority, and authority timeline. Read-only evidence, not a safety guarantee.',
+      inputSchema: {
+        mint: z.string().min(32).max(44),
+        minLiquidityUsd: z.number().min(0).optional(),
+        maxStalenessSec: z.number().int().min(0).nullable().optional().describe('Set null to disable freshness gating. Defaults to 600 seconds.'),
+        includeHolders: z.boolean().optional(),
+        includeHelius: z.boolean().optional(),
+        includeTimeline: z.boolean().optional(),
+        holderLimit: z.number().int().min(1).max(1000).optional(),
+        top1MaxPct: z.number().min(0).max(100).optional(),
+        top5MaxPct: z.number().min(0).max(100).optional(),
+        top10MaxPct: z.number().min(0).max(100).optional(),
+      },
+    },
+    async (input) => traceTool(
+      'solana_token_safety_evidence',
+      { cluster: options.config.cluster, mint: input.mint },
+      async () => jsonReply(await service.solanaTokenSafetyEvidence(input)),
+    ),
+  );
+
+  server.registerTool(
+    'solana_helius_history',
+    {
+      description:
+        'Read optional Helius on-chain history evidence: enhanced transaction history, parse transactions, recent mint transactions, mint creation, older-history checks, or mint authority. Read-only.',
+      inputSchema: {
+        operation: z.enum(['transaction_history', 'parse_transactions', 'recent_mint_txs', 'mint_creation', 'has_history_before', 'authority']),
+        address: z.string().min(32).max(44).optional(),
+        mint: z.string().min(32).max(44).optional(),
+        signatures: z.array(z.string().min(32)).min(1).max(100).optional(),
+        before: z.string().min(1).optional(),
+        until: z.string().min(1).optional(),
+        commitment: z.string().min(1).optional(),
+        source: z.string().min(1).optional(),
+        type: z.string().min(1).optional(),
+        lookbackMinutes: z.number().int().min(1).max(30 * 24 * 60).optional(),
+        limit: z.number().int().min(1).max(500).optional(),
+        maxPages: z.number().int().min(1).max(20).optional(),
+        cutoffTs: z.number().int().min(0).optional(),
+      },
+    },
+    async (input) => traceTool(
+      'solana_helius_history',
+      { cluster: options.config.cluster, operation: input.operation },
+      async () => jsonReply(await service.solanaHeliusHistory(input)),
+    ),
+  );
+
+  server.registerTool(
     'solana_get_swap_quote',
     {
       description:
@@ -5286,6 +5392,26 @@ function jupiterTokenCategorySchema() {
 
 function jupiterTokenCategoryIntervalSchema() {
   return z.enum(['5m', '1h', '6h', '24h']);
+}
+
+function birdeyeOhlcvTypeSchema() {
+  return z.enum(['1m', '3m', '5m', '15m', '30m', '1H', '2H', '4H', '6H', '8H', '12H', '1D', '1W']);
+}
+
+function birdeyeTokenListSortSchema() {
+  return z.enum([
+    'liquidity',
+    'market_cap',
+    'fdv',
+    'v24hUSD',
+    'v24hChangePercent',
+    'price',
+    'priceChange24h',
+    'trade24h',
+    'uniqueWallet24h',
+    'last_trade_unix_time',
+    'recent_listing_time',
+  ]);
 }
 
 function wormholeQuoteInputSchema() {
