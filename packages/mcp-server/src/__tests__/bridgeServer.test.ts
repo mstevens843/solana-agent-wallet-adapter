@@ -292,14 +292,14 @@ describe('bridge lab artifact routes', () => {
         upstreamCalls.push({ url: url.toString(), init });
         if (init?.method === 'GET') {
           return jsonResponse({
-            title: 'Claim Meteora fees',
-            description: 'Claim fees from a DLMM position',
-            label: 'Claim',
+            title: 'Harvest Raydium farm',
+            description: 'Harvest rewards from a farm position',
+            label: 'Harvest',
           });
         }
         return jsonResponse({
           transaction: 'base64-bridge-blink-transaction',
-          label: 'Claim fees',
+          label: 'Harvest',
           message: 'Review before signing',
         });
       }
@@ -318,9 +318,8 @@ describe('bridge lab artifact routes', () => {
         {
           method: 'POST',
           body: JSON.stringify({
-            connector: 'meteora',
-            protocol: 'Meteora',
-            operation: 'Claim fees',
+            protocol: 'Raydium',
+            operation: 'Harvest',
             blinkUrl: 'https://example.com/action',
             parameters: { position: 'Position111' },
             expectedToken: 'SOL',
@@ -331,9 +330,8 @@ describe('bridge lab artifact routes', () => {
       expect(upstreamCalls).toHaveLength(2);
       expect(body.preparedAction).toMatchObject({
         kind: 'blink_action',
-        summary: 'Meteora: Claim fees',
+        summary: 'Raydium: Harvest',
         params: {
-          connectorId: 'meteora',
           transactionBase64: 'base64-bridge-blink-transaction',
           connectorActionSource: 'blink',
           expectedToken: 'SOL',

@@ -1,0 +1,296 @@
+{
+  "$schema": "./connector-pack.schema.json",
+  "id": "realms",
+  "name": "Realms",
+  "status": "first_class",
+  "aliases": ["realms", "spl governance", "spl-governance", "realms.today"],
+  "supportedClusters": ["mainnet-beta"],
+  "requiredConfig": [
+    {
+      "name": "RPC connection",
+      "scope": "env",
+      "required": true,
+      "description": "Mainnet RPC the bridge or browser planner uses to query SPL Governance accounts. Cluster mismatches must be rejected with safety.action_not_exposed."
+    },
+    {
+      "name": "Realms / SPL Governance client wiring",
+      "scope": "runtime",
+      "required": true,
+      "description": "@solana/spl-governance must be installed by the host and a Realms client factory must be registered via setRealmsClientFactory(). Without the factory, reads and prepares return an explicit unavailable error."
+    }
+  ],
+  "readCapabilities": [
+    {
+      "toolName": "solana_realms_wallet_governance",
+      "source": "first-class-adapter",
+      "implemented": true,
+      "requiresClientKey": false,
+      "returns": "Token-owner-records for the wallet across realms: deposit amount, outstanding proposals, unrelinquished votes, governance delegate, and plugin-detection flags.",
+      "facts": ["realmAddress", "governingTokenMint", "mintRole", "governingTokenDepositAmount", "outstandingProposalCount", "unrelinquishedVotesCount", "governanceDelegate", "pluginsDetected", "pluginNames"]
+    },
+    {
+      "toolName": "solana_realms_realm_snapshot",
+      "source": "first-class-adapter",
+      "implemented": true,
+      "requiresClientKey": false,
+      "returns": "Realm snapshot: name, community and council mints with decimals, governances, and plugin detection.",
+      "facts": ["realmAddress", "name", "communityMint", "councilMint", "governanceCount", "pluginsDetected", "pluginNames"]
+    },
+    {
+      "toolName": "solana_realms_governance_snapshot",
+      "source": "first-class-adapter",
+      "implemented": true,
+      "requiresClientKey": false,
+      "returns": "Governance snapshot: vote threshold type and pct, voting base seconds, cool-off seconds, and proposal headers.",
+      "facts": ["governanceAddress", "realmAddress", "governedAccount", "voteThresholdType", "voteThresholdPct", "votingBaseSec", "votingCoolOffSec", "proposalCount"]
+    },
+    {
+      "toolName": "solana_realms_proposal_list",
+      "source": "first-class-adapter",
+      "implemented": true,
+      "requiresClientKey": false,
+      "returns": "Proposal list for a realm filtered by state (default 'voting').",
+      "facts": ["proposalAddress", "governanceAddress", "name", "state", "governingTokenMint", "voteType"]
+    },
+    {
+      "toolName": "solana_realms_proposal_snapshot",
+      "source": "first-class-adapter",
+      "implemented": true,
+      "requiresClientKey": false,
+      "returns": "Proposal snapshot: state, vote type, choices with tipped flag, vote tally, voting expiry, cool-off, and instructions (decoded where known, marked unknown otherwise).",
+      "facts": ["proposalAddress", "state", "voteType", "voteTally", "votingExpiresAt", "inCoolOff", "pluginsDetected", "pluginNames"]
+    },
+    {
+      "toolName": "solana_realms_vote_record",
+      "source": "first-class-adapter",
+      "implemented": true,
+      "requiresClientKey": false,
+      "returns": "Wallet's vote record for a proposal, including kind, weight, choiceIndex, and whether it has been relinquished. Returns { exists: false } when none.",
+      "facts": ["voteKind", "weight", "choiceIndex", "isRelinquished"]
+    }
+  ],
+  "writeCapabilities": [
+    {
+      "actionKind": "realms_cast_vote",
+      "executionMode": "first_class_adapter",
+      "implemented": true,
+      "prepares": "An inbox-bound PreparedAction that captures proposal, realm, governance, governing mint (derived from the proposal), vote kind, choice (when multi-choice), proposal state, voting expiry, cool-off state, wallet weight, current vote tally, and plugin detection flags. No transaction is signed at prepare time.",
+      "executesVia": "solana_execute_prepared_action",
+      "userApproves": "A cast-vote transaction built at execute time after re-fetching proposal state, wallet voting power, and plugin detection. Refused if proposal moved out of voting, cool-off changed for approve, mint changed, weight dropped to zero, or plugins were enabled between prepare and execute."
+    },
+    {
+      "actionKind": "realms_relinquish_vote",
+      "executionMode": "first_class_adapter",
+      "implemented": true,
+      "prepares": "An inbox-bound PreparedAction that relinquishes the wallet's existing vote on a proposal. Captures pre/post-finalization effect in the preview. Rejected when no relinquishable record exists.",
+      "executesVia": "solana_execute_prepared_action",
+      "userApproves": "A relinquish-vote transaction built at execute time. Re-checks vote record presence and governing mint before signing."
+    },
+    {
+      "actionKind": "realms_deposit_governance_tokens",
+      "executionMode": "first_class_adapter",
+      "implemented": true,
+      "prepares": "An inbox-bound PreparedAction that deposits the requested amount of community or council governance tokens into a realm's token owner record. Refused when the mint is neither the community nor the council mint.",
+      "executesVia": "solana_execute_prepared_action",
+      "userApproves": "A deposit transaction built at execute time after re-fetching the realm and confirming the mint role is still valid."
+    },
+    {
+      "actionKind": "realms_withdraw_governance_tokens",
+      "executionMode": "first_class_adapter",
+      "implemented": true,
+      "prepares": "An inbox-bound PreparedAction that withdraws community or council governance tokens from a realm. Refused when the wallet has outstanding proposals, unrelinquished votes, or a third-party governance delegate. Supports withdrawAll for releasing the full deposit.",
+      "executesVia": "solana_execute_prepared_action",
+      "userApproves": "A withdraw transaction built at execute time. Re-runs all withdraw locks before signing. Plugin lockups (e.g., VSR vesting) may still cause the on-chain program to reject the transaction."
+    }
+  ],
+  "requiredUserInputs": [
+    {
+      "name": "proposalAddress",
+      "kind": "text",
+      "required": true,
+      "appliesTo": ["realms_cast_vote", "realms_relinquish_vote"],
+      "prompt": "Which Realms proposal?"
+    },
+    {
+      "name": "vote",
+      "kind": "select",
+      "required": true,
+      "appliesTo": ["realms_cast_vote"],
+      "options": ["approve", "deny", "abstain", "veto"],
+      "prompt": "Approve, deny, abstain, or veto?"
+    },
+    {
+      "name": "choiceIndex",
+      "kind": "number",
+      "required": false,
+      "appliesTo": ["realms_cast_vote"],
+      "prompt": "For multi-choice proposals, which choice (0-indexed)?"
+    },
+    {
+      "name": "realmAddress",
+      "kind": "text",
+      "required": true,
+      "appliesTo": ["realms_deposit_governance_tokens", "realms_withdraw_governance_tokens"],
+      "prompt": "Which realm?"
+    },
+    {
+      "name": "governingTokenMint",
+      "kind": "text",
+      "required": true,
+      "appliesTo": ["realms_deposit_governance_tokens", "realms_withdraw_governance_tokens"],
+      "prompt": "Community mint or council mint?"
+    },
+    {
+      "name": "amount",
+      "kind": "number",
+      "required": false,
+      "appliesTo": ["realms_deposit_governance_tokens", "realms_withdraw_governance_tokens"],
+      "prompt": "How much (in mint units)?"
+    },
+    {
+      "name": "withdrawAll",
+      "kind": "toggle",
+      "required": false,
+      "appliesTo": ["realms_withdraw_governance_tokens"],
+      "prompt": "Withdraw the full deposit?"
+    },
+    {
+      "name": "beneficiaryAddress",
+      "kind": "text",
+      "required": false,
+      "appliesTo": ["realms_relinquish_vote"],
+      "prompt": "Where should the relinquish refund go? (defaults to wallet)"
+    },
+    {
+      "name": "dueAt",
+      "kind": "text",
+      "required": false,
+      "appliesTo": [
+        "realms_cast_vote",
+        "realms_relinquish_vote",
+        "realms_deposit_governance_tokens",
+        "realms_withdraw_governance_tokens"
+      ],
+      "prompt": "Should this action wait until a specific time? (ISO 8601, optional)"
+    }
+  ],
+  "requiredConnectorFacts": [
+    "Realm address, name, community mint, council mint, and governance count",
+    "Governance address, vote threshold, voting base seconds, and cool-off seconds",
+    "Proposal address, name, state, vote type, vote tally, voting expiry, and cool-off status",
+    "Wallet token owner record: deposit amount, outstanding proposals, unrelinquished votes, governance delegate",
+    "Plugin detection (program ids and human-readable plugin names)"
+  ],
+  "unsupportedRequests": [
+    "Construct or submit a treasury, program-upgrade, or governance-config proposal.",
+    "Change a realm's council, community mint, or member configuration.",
+    "Cast a vote when the realm uses a voting power plugin (e.g., VSR).",
+    "Cast an approve vote during a governance's cool-off window.",
+    "Withdraw governance tokens while the wallet has outstanding proposals, unrelinquished votes, or a third-party governance delegate.",
+    "Auto-vote based on an AI recommendation.",
+    "Set or change a governance delegate.",
+    "Operate on any cluster other than mainnet-beta.",
+    "Move funds or change voting state without wallet approval.",
+    "Treat a tipped vote as if the proposal had executed."
+  ],
+  "actionPreparationNotes": "Resolve proposalAddress to a proposal snapshot at prepare time and derive governingTokenMint from the proposal itself (not the user input). For cast vote, also resolve the wallet's token owner record for that mint and check existing vote records. Store proposalStateAtPrepare, votingExpiresAt, inCoolOffAtPrepare, walletWeightAtPrepare, voteTallyAtPrepare, and pluginsDetectedAtPrepare in params so execute can detect drift. For withdraw, store outstandingProposalsAtPrepare, unrelinquishedVotesAtPrepare, and delegateAtPrepare. The execute path always rebuilds the transaction and re-checks all gating state.",
+  "riskNotes": "Voting is not execution: a tipped vote does not mean the proposal will execute. Voting power can be plugin-controlled; the raw token-owner-record balance is not always authoritative. Withdraw locks (outstanding proposals, unrelinquished votes, delegate) and plugin lockups can change between prepare and execute. Surface all of these in the review card before approval.",
+  "approvalBoundary": {
+    "readGated": false,
+    "writeGated": true,
+    "blinkBacked": false,
+    "summary": "safety.prepare_only"
+  },
+  "walletApprovalBoundary": "Reads return facts without wallet involvement. Cast vote, relinquish vote, deposit, and withdraw build transactions at execute time that the wallet must sign and broadcast. The agent never signs and never auto-votes.",
+  "examples": {
+    "requests": [
+      {
+        "user": "show my Realms voting power",
+        "classification": "read_only_answer",
+        "readTool": "solana_realms_wallet_governance",
+        "agentResponse": "Read your token-owner-records across realms with deposit amounts, outstanding proposals, unrelinquished votes, and plugin detection. The connector reads facts; the wallet still controls approval."
+      },
+      {
+        "user": "summarize this Realms proposal and current vote breakdown",
+        "classification": "read_only_answer",
+        "readTool": "solana_realms_proposal_snapshot",
+        "agentResponse": "Read the proposal snapshot with state, vote type, current tally, voting expiry, cool-off status, and decoded-or-marked-unknown instructions."
+      },
+      {
+        "user": "show proposals currently open for voting in this realm",
+        "classification": "read_only_answer",
+        "readTool": "solana_realms_proposal_list",
+        "agentResponse": "Read the realm's voting proposals."
+      },
+      {
+        "user": "prepare voting approve on this proposal. Do not sign.",
+        "classification": "prepare_approval_action",
+        "writeAction": "realms_cast_vote",
+        "agentResponse": "Prepared a cast-vote approval with the current proposal state, your voting power, and the tally. This prepares a wallet approval request; it does not sign."
+      },
+      {
+        "user": "prepare depositing governance tokens into this realm",
+        "classification": "prepare_approval_action",
+        "writeAction": "realms_deposit_governance_tokens",
+        "agentResponse": "Prepared a governance-token deposit approval after confirming the mint is the realm's community or council mint."
+      },
+      {
+        "user": "prepare relinquishing my vote if it is safe",
+        "classification": "prepare_approval_action",
+        "writeAction": "realms_relinquish_vote",
+        "agentResponse": "Prepared a relinquish-vote approval with the proposal finalization status and the relinquish effect surfaced."
+      },
+      {
+        "user": "withdraw my governance tokens from this realm",
+        "classification": "needs_input",
+        "needsInputQuestions": [
+          "Which realm?",
+          "Which governing mint (community or council)?",
+          "Withdraw a specific amount, or all of it?"
+        ],
+        "agentResponse": "The agent is missing facts needed to decide. I can read your token-owner-record first to surface what is withdrawable and what is locked."
+      },
+      {
+        "user": "auto-vote on every Realms proposal that mentions treasury",
+        "classification": "unsupported",
+        "denialReason": "safety.no_safety_guarantee",
+        "agentResponse": "The agent denied this because autonomous voting based on AI recommendation is not supported. Each vote must reach the wallet approval boundary."
+      },
+      {
+        "user": "vote on this proposal — the realm uses VSR",
+        "classification": "unsupported",
+        "denialReason": "safety.action_not_exposed",
+        "agentResponse": "The agent denied this because the realm uses a voting power plugin (e.g., VSR). Plugin-controlled voting power is not supported in v1."
+      },
+      {
+        "user": "create a treasury transfer proposal",
+        "classification": "unsupported",
+        "denialReason": "safety.action_not_exposed",
+        "agentResponse": "The agent denied this because v1 does not construct treasury, program-upgrade, or config proposals."
+      },
+      {
+        "user": "withdraw my governance tokens while I have an active vote",
+        "classification": "unsupported",
+        "denialReason": "safety.action_not_exposed",
+        "agentResponse": "The agent denied this because withdraw is blocked while the wallet has outstanding proposals or unrelinquished votes. Relinquish or finalize them first."
+      },
+      {
+        "user": "set my governance delegate to this address",
+        "classification": "unsupported",
+        "denialReason": "safety.action_not_exposed",
+        "agentResponse": "The agent denied this because SetGovernanceDelegate is not exposed in v1."
+      },
+      {
+        "user": "Realms action on devnet",
+        "classification": "unsupported",
+        "denialReason": "safety.action_not_exposed",
+        "agentResponse": "The agent denied this because Realms connector actions are cataloged for mainnet-beta only."
+      }
+    ]
+  },
+  "mirrorsCanonical": {
+    "file": "apps/browser-demo/src/connectedDapps.ts",
+    "entry": "realms",
+    "note": "PROTOCOL_CONNECTORS entry at id 'realms'. Update this pack when capabilities, aliases, readTools, or actionKinds change."
+  }
+}

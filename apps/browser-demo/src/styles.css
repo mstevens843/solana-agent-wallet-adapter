@@ -14607,6 +14607,51 @@ button.danger:hover:not(:disabled) {
   margin: 0;
 }
 
+.route-app .connector-draft-field {
+  gap: 7px;
+}
+
+.route-app .connector-draft-status,
+.route-app .connector-draft-empty {
+  background: rgba(255, 255, 255, 0.026);
+  border: 1px solid rgba(224, 230, 226, 0.09);
+  border-radius: 8px;
+  display: grid;
+  gap: 6px;
+  padding: 9px;
+}
+
+.route-app .connector-draft-status.ready {
+  background: rgba(63, 189, 131, 0.075);
+  border-color: rgba(139, 205, 170, 0.18);
+}
+
+.route-app .connector-draft-status.blocked,
+.route-app .connector-draft-empty {
+  background: rgba(214, 168, 79, 0.075);
+  border-color: rgba(214, 168, 79, 0.18);
+}
+
+.route-app .connector-draft-status span {
+  color: var(--text);
+  font-size: 0.72rem;
+  font-weight: 820;
+  text-transform: uppercase;
+}
+
+.route-app .connector-draft-status p,
+.route-app .connector-draft-empty p {
+  color: var(--muted);
+  font-size: 0.82rem;
+  line-height: 1.34;
+  margin: 0;
+}
+
+.route-app .connector-draft-empty button,
+.route-app .connector-draft-status button {
+  justify-self: start;
+}
+
 .route-app .ai-draft-button {
   background:
     linear-gradient(135deg, rgba(84, 224, 164, 0.92), rgba(52, 184, 129, 0.94)),

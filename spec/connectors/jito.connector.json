@@ -1,0 +1,248 @@
+{
+  "$schema": "./connector-pack.schema.json",
+  "id": "jito",
+  "name": "Jito",
+  "status": "first_class",
+  "aliases": ["jito", "jitosol", "jito sol", "jito stake pool", "jito liquid staking"],
+  "supportedClusters": ["mainnet-beta"],
+  "requiredConfig": [
+    {
+      "name": "@solana/spl-stake-pool",
+      "scope": "env",
+      "required": true,
+      "description": "Optional MCP server dependency required for Jito stake-pool reads, stake SOL, unstake JitoSOL, and inactive stake-account SOL withdrawal."
+    },
+    {
+      "name": "@jito-foundation/stake-deposit-interceptor-sdk",
+      "scope": "env",
+      "required": false,
+      "description": "Optional MCP server dependency required only for depositing an existing stake account into Jito through the interceptor."
+    },
+    {
+      "name": "JITO_CONNECTOR_ENABLED",
+      "scope": "env",
+      "required": false,
+      "description": "Set to false to force-disable Jito readiness. Undefined or any other value uses installed SDK readiness."
+    }
+  ],
+  "readCapabilities": [
+    {
+      "toolName": "solana_jito_stake_pool_snapshot",
+      "source": "first-class-adapter",
+      "implemented": true,
+      "requiresClientKey": false,
+      "returns": "JitoSOL mint, stake pool address, exchange rates, total lamports, pool token supply, fees, and optional validator list.",
+      "facts": ["jitoSolMint", "stakePoolAddress", "exchangeRateSolPerJitoSol", "exchangeRateJitoSolPerSol", "totalLamports", "poolTokenSupply", "fees"]
+    },
+    {
+      "toolName": "solana_jito_wallet_positions",
+      "source": "first-class-adapter",
+      "implemented": true,
+      "requiresClientKey": false,
+      "returns": "Wallet JitoSOL token balance and optional stake accounts with Jito deposit eligibility.",
+      "facts": ["walletAddress", "jitoSolAmount", "jitoSolAmountRaw", "tokenAccounts", "stakeAccounts", "eligibleStakeAccounts"]
+    },
+    {
+      "toolName": "solana_jito_wallet_stake_accounts",
+      "source": "first-class-adapter",
+      "implemented": true,
+      "requiresClientKey": false,
+      "returns": "Stake accounts controlled by the wallet, including withdraw authority, validator vote account, lockup, deactivation state, and Jito deposit eligibility.",
+      "facts": ["stakeAccount", "withdrawer", "voter", "delegatedStakeLamports", "locked", "deactivating", "eligibleForJitoDeposit"]
+    },
+    {
+      "toolName": "solana_jito_quote",
+      "source": "first-class-adapter",
+      "implemented": true,
+      "requiresClientKey": false,
+      "returns": "Read-only quote for stake SOL, deposit stake account, unstake JitoSOL, or withdraw SOL from a deactivated stake account.",
+      "facts": ["operation", "amountRaw", "expectedJitoSolRaw", "expectedSolRaw", "exchangeRateSnapshot", "warnings"]
+    }
+  ],
+  "writeCapabilities": [
+    {
+      "actionKind": "jito_stake_sol",
+      "executionMode": "first_class_adapter",
+      "implemented": true,
+      "prepares": "An inbox-bound PreparedAction that captures SOL amount, quote, exchange rate, and optional minimum JitoSOL output.",
+      "executesVia": "solana_execute_prepared_action",
+      "userApproves": "A Jito stake-pool deposit SOL transaction rebuilt at execution time."
+    },
+    {
+      "actionKind": "jito_deposit_stake_account",
+      "executionMode": "first_class_adapter",
+      "implemented": true,
+      "prepares": "An inbox-bound PreparedAction that validates an existing delegated stake account and records the expected claimable JitoSOL output.",
+      "executesVia": "solana_execute_prepared_action",
+      "userApproves": "A Jito stake-deposit interceptor transaction that creates a deposit receipt; JitoSOL may be claimable after cooldown rather than immediately delivered."
+    },
+    {
+      "actionKind": "jito_unstake_jitosol",
+      "executionMode": "first_class_adapter",
+      "implemented": true,
+      "prepares": "An inbox-bound PreparedAction that captures JitoSOL amount, withdraw mode, quote, and optional minimum SOL output.",
+      "executesVia": "solana_execute_prepared_action",
+      "userApproves": "A Jito stake-pool withdrawal rebuilt at execution time, either to a stake account or reserve SOL when available."
+    },
+    {
+      "actionKind": "jito_withdraw_sol",
+      "executionMode": "first_class_adapter",
+      "implemented": true,
+      "prepares": "An inbox-bound PreparedAction for withdrawing SOL from an inactive or deactivated stake account.",
+      "executesVia": "solana_execute_prepared_action",
+      "userApproves": "A native stake-program withdraw instruction. Execution refuses stake accounts that are still active."
+    }
+  ],
+  "requiredUserInputs": [
+    {
+      "name": "solAmount",
+      "kind": "number",
+      "required": true,
+      "appliesTo": ["jito_stake_sol"],
+      "prompt": "How much SOL do you want to stake into Jito?"
+    },
+    {
+      "name": "stakeAccount",
+      "kind": "text",
+      "required": true,
+      "appliesTo": ["jito_deposit_stake_account", "jito_withdraw_sol"],
+      "prompt": "Which stake account should Jito use?"
+    },
+    {
+      "name": "jitoSolAmount",
+      "kind": "number",
+      "required": true,
+      "appliesTo": ["jito_unstake_jitosol"],
+      "prompt": "How much JitoSOL do you want to unstake?"
+    },
+    {
+      "name": "withdrawMode",
+      "kind": "select",
+      "required": false,
+      "appliesTo": ["jito_unstake_jitosol"],
+      "options": ["stake_account", "reserve_sol"],
+      "prompt": "Should unstaking return a stake account or reserve SOL when available?"
+    },
+    {
+      "name": "minJitoSolAmount",
+      "kind": "number",
+      "required": false,
+      "appliesTo": ["jito_stake_sol", "jito_deposit_stake_account"],
+      "prompt": "Optional minimum JitoSOL output."
+    },
+    {
+      "name": "minSolAmount",
+      "kind": "number",
+      "required": false,
+      "appliesTo": ["jito_unstake_jitosol"],
+      "prompt": "Optional minimum SOL output."
+    }
+  ],
+  "requiredConnectorFacts": [
+    "Current Jito stake pool exchange rate",
+    "Current deposit and withdrawal fee schedule",
+    "Connected wallet JitoSOL balance for unstake",
+    "Stake account withdraw authority and validator vote account for stake-account deposit",
+    "Stake account activation/deactivation state before SOL withdrawal",
+    "Min-output guard result immediately before wallet approval when a minimum is supplied"
+  ],
+  "unsupportedRequests": [
+    "Restake JitoSOL or interact with restaking protocols through Jito.",
+    "Run MEV/searcher/bundle workflows.",
+    "Manage Jito validator set, stake-pool governance, or authorities.",
+    "Trade, stake, vote, or govern with JTO.",
+    "Deposit an existing stake account without the Jito stake-deposit interceptor SDK installed.",
+    "Operate on any cluster other than mainnet-beta.",
+    "Move funds without wallet approval."
+  ],
+  "actionPreparationNotes": "Use the official JitoSOL mint J1toso1uCk3RLmjorhTtrVwY9HJ7X8V9yYac6Y7kGCPn and stake pool Jito4APyf642JPZPx3hGc6WWJ8zPKtRbRs4P815Awbb. Stake and unstake paths use @solana/spl-stake-pool. Existing stake-account deposits use @jito-foundation/stake-deposit-interceptor-sdk and create an interceptor receipt. Minimum output is rechecked immediately before the wallet prompt as an execution-time off-chain guard.",
+  "riskNotes": "JitoSOL exchange rate, fees, reserve SOL availability, and stake activation state can change before approval. Existing stake-account deposits may create a claimable receipt rather than immediately delivering JitoSOL. Unstaking to a stake account may require stake deactivation before SOL can be withdrawn.",
+  "approvalBoundary": {
+    "readGated": false,
+    "writeGated": true,
+    "blinkBacked": false,
+    "summary": "safety.prepare_only"
+  },
+  "walletApprovalBoundary": "Reads return facts without wallet involvement. Stake, deposit-stake-account, unstake, and stake-account SOL withdrawal actions rebuild a transaction at execute time that the wallet must sign and broadcast. The agent never signs.",
+  "examples": {
+    "requests": [
+      {
+        "user": "show my JitoSOL balance",
+        "classification": "read_only_answer",
+        "readTool": "solana_jito_wallet_positions",
+        "agentResponse": "Read the wallet JitoSOL balance and token accounts without signing."
+      },
+      {
+        "user": "what is the JitoSOL exchange rate?",
+        "classification": "read_only_answer",
+        "readTool": "solana_jito_stake_pool_snapshot",
+        "agentResponse": "Read the Jito stake pool exchange rate, fees, and pool totals."
+      },
+      {
+        "user": "quote staking 1 SOL into Jito",
+        "classification": "read_only_answer",
+        "readTool": "solana_jito_quote",
+        "agentResponse": "Quoted expected JitoSOL output from the current stake pool snapshot without signing."
+      },
+      {
+        "user": "stake 0.5 SOL for JitoSOL",
+        "classification": "prepare_approval_action",
+        "writeAction": "jito_stake_sol",
+        "agentResponse": "Prepared a Jito SOL stake action with the current exchange rate. This prepares a wallet approval request; it does not sign."
+      },
+      {
+        "user": "deposit this stake account into Jito",
+        "classification": "needs_input",
+        "needsInputQuestions": ["Which stake account should Jito deposit?"],
+        "agentResponse": "The agent needs the stake account address before checking eligibility and preparing."
+      },
+      {
+        "user": "unstake 0.1 JitoSOL to SOL if I get at least 0.1 SOL",
+        "classification": "prepare_approval_action",
+        "writeAction": "jito_unstake_jitosol",
+        "agentResponse": "Prepared a JitoSOL unstake action and will recheck the minimum SOL output before wallet approval."
+      },
+      {
+        "user": "withdraw SOL from my deactivated stake account",
+        "classification": "needs_input",
+        "needsInputQuestions": ["Which stake account should I withdraw from?"],
+        "agentResponse": "The agent needs the stake account address and will refuse execution if it is still active."
+      },
+      {
+        "user": "restake my JitoSOL through Jito",
+        "classification": "unsupported",
+        "denialReason": "safety.action_not_exposed",
+        "agentResponse": "The agent denied this because Jito restaking flows are not exposed by this connector."
+      },
+      {
+        "user": "send a Jito MEV bundle",
+        "classification": "unsupported",
+        "denialReason": "safety.action_not_exposed",
+        "agentResponse": "The agent denied this because MEV/searcher/bundle workflows are not exposed by the Jito connector."
+      },
+      {
+        "user": "manage Jito validators",
+        "classification": "unsupported",
+        "denialReason": "safety.action_not_exposed",
+        "agentResponse": "The agent denied this because validator set and stake-pool authority management are not exposed."
+      },
+      {
+        "user": "stake JTO in Jito governance",
+        "classification": "unsupported",
+        "denialReason": "safety.action_not_exposed",
+        "agentResponse": "The agent denied this because JTO token and governance flows are not exposed by this connector."
+      },
+      {
+        "user": "move my SOL into Jito without asking my wallet",
+        "classification": "unsupported",
+        "denialReason": "safety.no_autonomous_funds",
+        "agentResponse": "The agent denied this because Jito writes require wallet approval and the agent never signs."
+      }
+    ]
+  },
+  "mirrorsCanonical": {
+    "file": "apps/browser-demo/src/connectedDapps.ts",
+    "entry": "jito",
+    "note": "PROTOCOL_CONNECTORS entry at id 'jito'. Update this pack when capabilities, aliases, readTools, or actionKinds change."
+  }
+}

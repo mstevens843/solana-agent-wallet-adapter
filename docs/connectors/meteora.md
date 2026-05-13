@@ -1,49 +1,46 @@
 # Meteora Connector
 
-Meteora is documented as Blink-backed. The browser catalog knows about DLMM positions, fee/reward reads, and liquidity actions, but the MCP runtime does not yet expose a first-class Meteora adapter or generic Blink prepare helper.
+Meteora is a first-class MCP connector for DLMM pool and position reads plus prepare-only position actions. It does not use Blink URLs for the exposed DLMM flow.
 
 ## What It Can Read
 
-Planned reads:
-
-- `meteora_dlmm_position` for wallet-specific DLMM position facts.
-- `dialect_positions` for generic position facts.
-- `dialect_markets` for market and action URL facts.
-
-Do not claim these reads work in MCP until the runtime helper exists.
+- `solana_meteora_dlmm_pool_snapshot` for pool token mints, active bin, bin step, fees, liquidity, and program id.
+- `solana_meteora_wallet_positions` for wallet-owned DLMM positions, optionally filtered to one pool.
+- `solana_meteora_position_detail` for one position's bin range, liquidity, fees, rewards, and in-range status.
 
 ## What It Can Prepare
 
-Planned Blink-backed actions:
+- `solana_prepare_meteora_claim_fees`
+- `solana_prepare_meteora_claim_rewards`
+- `solana_prepare_meteora_add_liquidity`
+- `solana_prepare_meteora_remove_liquidity`
+- `solana_prepare_meteora_close_position`
 
-- Add liquidity.
-- Withdraw liquidity.
-- Claim fees.
-- Close position.
-
-The agent needs action metadata from a Meteora Blink or Solana Action URL before it can review any write.
+Prepared actions become manual Approval Inbox items and execute through `solana_execute_prepared_action`. The adapter refreshes DLMM state at execution time before asking the wallet to sign.
 
 ## Required Inputs
 
-- Pool or position address.
-- Token amounts or liquidity amount.
-- Blink/Solana Action URL.
+- Pool address.
+- Position address for position-specific reads and writes.
+- Token X or token Y amount for add-liquidity.
+- Bin range and strategy for add-liquidity.
+- Liquidity percent or bps for remove-liquidity.
 
 Ask:
 
-- "Which Meteora pool or DLMM position should I use?"
-- "What token amounts should I prepare?"
-- "Paste the Meteora Blink or Solana Action URL."
+- "Which Meteora DLMM pool should I use?"
+- "Which Meteora DLMM position should I use?"
+- "What amount and bin range should I prepare?"
 
 ## Required Facts
 
-- Pool and token pair.
-- Position address.
-- Current bin or range.
+- Pool token pair.
+- Active bin and selected bin range.
+- Position liquidity and in-range status.
 - Unclaimed fees and rewards.
-- Action metadata.
+- Slippage cap and strategy type.
 - Wallet token balances.
 
 ## Deny Or Ask
 
-Deny requests to close a position without reading position facts, requests to guarantee range safety or yield, non-mainnet requests, and any request to move funds without wallet approval. Ask for pool, position, amount, and action URL when absent.
+Deny new DLMM position creation, close-position requests for non-empty positions, non-mainnet requests, profitability or APY guarantees, and any request to move funds without wallet approval. Ask for missing pool, position, amount, bin range, or liquidity percentage before preparing an action.

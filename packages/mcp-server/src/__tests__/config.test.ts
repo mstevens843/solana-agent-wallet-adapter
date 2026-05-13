@@ -7,6 +7,7 @@ const ENV_KEYS = [
   'HELIUS_RPC_URL',
   'JUPITER_API_KEY',
   'JUP_API_KEY',
+  'JUPITER_SWAP_BASE_URL',
   'JUP_ULTRA_BASE',
   'JUPITER_BASE_URL',
 ] as const;
@@ -44,13 +45,25 @@ describe('config env aliases', () => {
     expect(config.rpcUrl).toBe('https://solana.example');
     expect(config.jupiter.apiKeyEnv).toBe('JUP_API_KEY');
     expect(config.jupiter.baseUrl).toBe('https://api.jup.ag/ultra/v1');
+    expect(config.jupiter.swapBaseUrl).toBe('https://api.jup.ag/ultra/v1');
   });
 
-  it('defaults Jupiter execution to Ultra', () => {
+  it('defaults Jupiter execution to Swap API v2', () => {
     const config = normalizeConfig({});
 
-    expect(config.jupiter.baseUrl).toBe('https://api.jup.ag/ultra/v1');
+    expect(config.jupiter.baseUrl).toBe('https://api.jup.ag/swap/v2');
+    expect(config.jupiter.swapBaseUrl).toBe('https://api.jup.ag/swap/v2');
     expect(config.jupiter.apiKeyEnv).toBe('JUPITER_API_KEY');
+  });
+
+  it('prefers the Swap API v2 base URL env over legacy aliases', () => {
+    setEnv('JUPITER_SWAP_BASE_URL', 'https://swap.example/v2/');
+    setEnv('JUP_ULTRA_BASE', 'https://legacy.example/ultra/v1');
+
+    const config = normalizeConfig({});
+
+    expect(config.jupiter.baseUrl).toBe('https://swap.example/v2');
+    expect(config.jupiter.swapBaseUrl).toBe('https://swap.example/v2');
   });
 });
 

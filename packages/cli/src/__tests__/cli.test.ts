@@ -93,7 +93,8 @@ test('setup writes local runtime env aliases and redacts JSON status', async () 
   assert.match(raw, /HELIUS_RPC_URL=https:\/\/mainnet\.helius-rpc\.com\/\?api-key=rpc-secret-value/);
   assert.match(raw, /JUPITER_API_KEY=jupiter-secret-value/);
   assert.match(raw, /JUP_API_KEY=jupiter-secret-value/);
-  assert.match(raw, /JUP_ULTRA_BASE=https:\/\/api\.jup\.ag\/ultra\/v1/);
+  assert.match(raw, /JUPITER_SWAP_BASE_URL=https:\/\/api\.jup\.ag\/swap\/v2/);
+  assert.match(raw, /JUP_ULTRA_BASE=https:\/\/api\.jup\.ag\/swap\/v2/);
   assert.match(raw, /JUPITER_API_URL=https:\/\/quote-api\.jup\.ag/);
   assert.match(raw, /BIRDEYE_API_KEY=birdeye-secret-value/);
   assert.match(raw, /BIRDEYE_REST_BASE=https:\/\/public-api\.birdeye\.so/);

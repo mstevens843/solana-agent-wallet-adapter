@@ -28,7 +28,105 @@ import type {
   KaminoDepositInput,
   KaminoWithdrawInput,
 } from './adapters/kamino/index.js';
-import { formatRawAmount, parseDecimalAmount } from './amounts.js';
+import type {
+  MeteoraAddLiquidityPrepareInput,
+  MeteoraClaimPrepareInput,
+  MeteoraClosePositionPrepareInput,
+  MeteoraRemoveLiquidityPrepareInput,
+} from './adapters/meteora/index.js';
+import type {
+  OrcaCollectPrepareInput,
+  OrcaDecreaseLiquidityPrepareInput,
+  OrcaIncreaseLiquidityPrepareInput,
+} from './adapters/orca/index.js';
+import type {
+  RaydiumAddLiquidityPrepareInput,
+  RaydiumCollectFeesPrepareInput,
+  RaydiumFarmPrepareInput,
+  RaydiumRemoveLiquidityPrepareInput,
+} from './adapters/raydium/index.js';
+import type { MarginfiActionInput } from './adapters/marginfi/index.js';
+import { marginfiMinHealthRatio } from './adapters/marginfi/actions.js';
+import type {
+  DriftVaultCancelWithdrawInput,
+  DriftVaultCompleteWithdrawInput,
+  DriftVaultDepositInput,
+  DriftVaultRequestWithdrawInput,
+} from './adapters/drift/index.js';
+import type {
+  LuloCompleteWithdrawInput,
+  LuloDepositInput,
+  LuloWithdrawInput,
+} from './adapters/lulo/index.js';
+import type {
+  MagicedenBidPrepareInput,
+  MagicedenBuyPrepareInput,
+  MagicedenCancelBidPrepareInput,
+  MagicedenCancelListingPrepareInput,
+  MagicedenListPrepareInput,
+} from './adapters/magiceden/index.js';
+import type {
+  SanctumAddInfinityLiquidityInput,
+  SanctumRemoveInfinityLiquidityInput,
+  SanctumStakeSolToLstInput,
+  SanctumSwapLstInput,
+  SanctumUnstakeLstToSolInput,
+} from './adapters/sanctum/index.js';
+import { SANCTUM_INF_MINT } from './adapters/sanctum/constants.js';
+import type {
+  SaveBorrowInput,
+  SaveDepositInput,
+  SaveHealthPreviewInput,
+  SaveHealthPreviewResult,
+  SaveRepayInput,
+  SaveWithdrawInput,
+} from './adapters/save/index.js';
+import type {
+  JitoDepositStakeAccountInput,
+  JitoQuoteInput,
+  JitoStakeSolInput,
+  JitoUnstakeJitosolInput,
+  JitoWithdrawSolInput,
+} from './adapters/jito/index.js';
+import type {
+  MarinadeClaimDelayedUnstakeInput,
+  MarinadeDelayedUnstakeInput,
+  MarinadeLiquidStakeInput,
+  MarinadeLiquidUnstakeInput,
+  MarinadeQuoteReadInput,
+} from './adapters/marinade/index.js';
+import type {
+  SquadsCreateTransferProposalInput,
+  SquadsExecuteProposalInput,
+  SquadsVoteInput,
+} from './adapters/squads/index.js';
+import type {
+  TensorBidPrepareInput,
+  TensorBuyPrepareInput,
+  TensorCancelBidPrepareInput,
+  TensorCancelListingPrepareInput,
+  TensorListPrepareInput,
+  TensorSweepPrepareInput,
+} from './adapters/tensor/index.js';
+import type {
+  RealmsCastVoteInput,
+  RealmsDepositGovernanceTokensInput,
+  RealmsRelinquishVoteInput,
+  RealmsWithdrawGovernanceTokensInput,
+} from './adapters/realms/index.js';
+import type {
+  GetPythOnchainAccountInput,
+  GetPythOracleEvidenceInput,
+  GetPythPriceFeedInput,
+  GetPythPriceFeedsBatchInput,
+  PythFeedSearchInput,
+  PythPostPriceUpdateInput,
+} from './adapters/pyth/index.js';
+import { assertMaxAmount, formatRawAmount, parseDecimalAmount } from './amounts.js';
+import {
+  jupiterApiHost,
+  jupiterFetchJson,
+} from './adapters/jupiter/index.js';
 import {
   fetchBlinkMetadata,
   prepareBlinkAction as prepareBlinkActionRequest,
@@ -38,6 +136,7 @@ import {
   DEFAULT_TOKEN_REGISTRY,
   USDC_MINT,
   WSOL_MINT,
+  requireMainnetEnabled,
   type AgentWalletConfig,
   type RecurringPolicyConfig,
   type TokenLimitConfig,
@@ -59,9 +158,62 @@ import {
 } from './connectorRegistry.js';
 import {
   factsFromJupiterOrderPreview,
+  factsFromJitoQuote,
+  factsFromJitoStakeAccounts,
+  factsFromJitoStakePoolSnapshot,
+  factsFromJitoWalletPositions,
+  factsFromMarinadeQuote,
+  factsFromMarinadeStakeAccounts,
+  factsFromMarinadeStateSnapshot,
+  factsFromMarinadeUnstakeTickets,
+  factsFromMarinadeWalletPositions,
   factsFromKaminoEarningsProof,
   factsFromKaminoPositions,
   factsFromKaminoReserveSnapshot,
+  factsFromMarginfiAccountDetail,
+  factsFromMarginfiAccountSummaries,
+  factsFromMarginfiBankSnapshot,
+  factsFromMarginfiHealthPreview,
+  factsFromLuloBalances,
+  factsFromLuloPoolMeta,
+  factsFromLuloRates,
+  factsFromMagicedenApiHealth,
+  factsFromMagicedenCollectionBids,
+  factsFromMagicedenCollectionListings,
+  factsFromMagicedenCollectionSnapshot,
+  factsFromMagicedenNftDetail,
+  factsFromMagicedenRecentActivity,
+  factsFromMagicedenWalletNfts,
+  factsFromMeteoraPoolSnapshot,
+  factsFromMeteoraPositionDetail,
+  factsFromMeteoraPositions,
+  factsFromOrcaPositionDetail,
+  factsFromOrcaPositions,
+  factsFromOrcaWhirlpoolSnapshot,
+  factsFromRaydiumPoolSnapshot,
+  factsFromRaydiumPositionDetail,
+  factsFromRaydiumPositions,
+  factsFromSaveHealthPreview,
+  factsFromSaveMarketSnapshot,
+  factsFromSaveObligation,
+  factsFromSaveReserveSnapshot,
+  factsFromTensorCollectionBids,
+  factsFromTensorCollectionListings,
+  factsFromTensorCollectionSnapshot,
+  factsFromTensorNftDetail,
+  factsFromTensorRecentSales,
+  factsFromTensorWalletMarketplaceExposure,
+  factsFromTensorWalletNfts,
+  factsFromPythPriceFeed,
+  factsFromPythBatch,
+  factsFromPythFeedSearch,
+  factsFromPythOnchainAccount,
+  factsFromPythEvidence,
+  factsFromSanctumInfinityPoolSnapshot,
+  factsFromSanctumLstList,
+  factsFromSanctumLstSnapshot,
+  factsFromSanctumQuote,
+  factsFromSanctumWalletPositions,
   type ConnectorFactReadInput,
 } from './connectorFacts.js';
 import { redactSecrets } from './trace.js';
@@ -359,6 +511,906 @@ export class AgentWalletActionService {
     return { preparedAction: stored, preview: result.preview };
   }
 
+  async prepareMeteoraClaimFees(input: MeteoraClaimPrepareInput): Promise<Record<string, unknown>> {
+    return this.prepareMeteoraAction('claim_fees', input);
+  }
+
+  async prepareMeteoraClaimRewards(input: MeteoraClaimPrepareInput): Promise<Record<string, unknown>> {
+    return this.prepareMeteoraAction('claim_rewards', input);
+  }
+
+  async prepareMeteoraAddLiquidity(input: MeteoraAddLiquidityPrepareInput): Promise<Record<string, unknown>> {
+    return this.prepareMeteoraAction('add_liquidity', input);
+  }
+
+  async prepareMeteoraRemoveLiquidity(input: MeteoraRemoveLiquidityPrepareInput): Promise<Record<string, unknown>> {
+    return this.prepareMeteoraAction('remove_liquidity', input);
+  }
+
+  async prepareMeteoraClosePosition(input: MeteoraClosePositionPrepareInput): Promise<Record<string, unknown>> {
+    return this.prepareMeteoraAction('close_position', input);
+  }
+
+  private async prepareMeteoraAction(
+    operation: 'claim_fees' | 'claim_rewards' | 'add_liquidity' | 'remove_liquidity' | 'close_position',
+    input: MeteoraClaimPrepareInput | MeteoraAddLiquidityPrepareInput | MeteoraRemoveLiquidityPrepareInput | MeteoraClosePositionPrepareInput,
+  ): Promise<Record<string, unknown>> {
+    requireActionAllowed(this.config);
+    const adapter = requireAdapter('meteora');
+    assertSupportedCluster(adapter, this.config.cluster);
+    const action = requireAdapterAction(adapter, operation);
+    const result = await action.prepare(input, this.adapterContext(adapter));
+    const stored = await this.store().addAction(result.addInput);
+    return { preparedAction: stored, preview: result.preview };
+  }
+
+  async prepareOrcaIncreaseLiquidity(input: OrcaIncreaseLiquidityPrepareInput): Promise<Record<string, unknown>> {
+    requireActionAllowed(this.config);
+    const adapter = requireAdapter('orca');
+    assertSupportedCluster(adapter, this.config.cluster);
+    const action = requireAdapterAction(adapter, 'increase_liquidity');
+    const result = await action.prepare(input, this.adapterContext(adapter));
+    const stored = await this.store().addAction(result.addInput);
+    return { preparedAction: stored, preview: result.preview };
+  }
+
+  async prepareOrcaDecreaseLiquidity(input: OrcaDecreaseLiquidityPrepareInput): Promise<Record<string, unknown>> {
+    requireActionAllowed(this.config);
+    const adapter = requireAdapter('orca');
+    assertSupportedCluster(adapter, this.config.cluster);
+    const action = requireAdapterAction(adapter, 'decrease_liquidity');
+    const result = await action.prepare(input, this.adapterContext(adapter));
+    const stored = await this.store().addAction(result.addInput);
+    return { preparedAction: stored, preview: result.preview };
+  }
+
+  async prepareOrcaCollectFees(input: OrcaCollectPrepareInput): Promise<Record<string, unknown>> {
+    requireActionAllowed(this.config);
+    const adapter = requireAdapter('orca');
+    assertSupportedCluster(adapter, this.config.cluster);
+    const action = requireAdapterAction(adapter, 'collect_fees');
+    const result = await action.prepare(input, this.adapterContext(adapter));
+    const stored = await this.store().addAction(result.addInput);
+    return { preparedAction: stored, preview: result.preview };
+  }
+
+  async prepareOrcaCollectRewards(input: OrcaCollectPrepareInput): Promise<Record<string, unknown>> {
+    requireActionAllowed(this.config);
+    const adapter = requireAdapter('orca');
+    assertSupportedCluster(adapter, this.config.cluster);
+    const action = requireAdapterAction(adapter, 'collect_rewards');
+    const result = await action.prepare(input, this.adapterContext(adapter));
+    const stored = await this.store().addAction(result.addInput);
+    return { preparedAction: stored, preview: result.preview };
+  }
+
+  async prepareRaydiumAddLiquidity(input: RaydiumAddLiquidityPrepareInput): Promise<Record<string, unknown>> {
+    return this.prepareRaydiumAction('add_liquidity', input);
+  }
+
+  async prepareRaydiumRemoveLiquidity(input: RaydiumRemoveLiquidityPrepareInput): Promise<Record<string, unknown>> {
+    return this.prepareRaydiumAction('remove_liquidity', input);
+  }
+
+  async prepareRaydiumCollectFees(input: RaydiumCollectFeesPrepareInput): Promise<Record<string, unknown>> {
+    return this.prepareRaydiumAction('collect_fees', input);
+  }
+
+  async prepareRaydiumFarmStake(input: RaydiumFarmPrepareInput): Promise<Record<string, unknown>> {
+    return this.prepareRaydiumAction('farm_stake', input);
+  }
+
+  async prepareRaydiumFarmUnstake(input: RaydiumFarmPrepareInput): Promise<Record<string, unknown>> {
+    return this.prepareRaydiumAction('farm_unstake', input);
+  }
+
+  async prepareRaydiumHarvest(input: Omit<RaydiumFarmPrepareInput, 'amount'>): Promise<Record<string, unknown>> {
+    return this.prepareRaydiumAction('harvest', input);
+  }
+
+  private async prepareRaydiumAction(
+    operation: 'add_liquidity' | 'remove_liquidity' | 'collect_fees' | 'farm_stake' | 'farm_unstake' | 'harvest',
+    input: RaydiumAddLiquidityPrepareInput | RaydiumRemoveLiquidityPrepareInput | RaydiumCollectFeesPrepareInput | RaydiumFarmPrepareInput | Omit<RaydiumFarmPrepareInput, 'amount'>,
+  ): Promise<Record<string, unknown>> {
+    requireActionAllowed(this.config);
+    const adapter = requireAdapter('raydium');
+    assertSupportedCluster(adapter, this.config.cluster);
+    const action = requireAdapterAction(adapter, operation);
+    const result = await action.prepare(input, this.adapterContext(adapter));
+    const stored = await this.store().addAction(result.addInput);
+    return { preparedAction: stored, preview: result.preview };
+  }
+
+  async prepareMarginfiDeposit(input: MarginfiActionInput): Promise<Record<string, unknown>> {
+    return this.prepareMarginfiAction('deposit', input);
+  }
+
+  async prepareMarginfiWithdraw(input: MarginfiActionInput): Promise<Record<string, unknown>> {
+    return this.prepareMarginfiAction('withdraw', input);
+  }
+
+  async prepareMarginfiBorrow(input: MarginfiActionInput): Promise<Record<string, unknown>> {
+    return this.prepareMarginfiAction('borrow', input);
+  }
+
+  async prepareMarginfiRepay(input: MarginfiActionInput): Promise<Record<string, unknown>> {
+    return this.prepareMarginfiAction('repay', input);
+  }
+
+  private async prepareMarginfiAction(
+    operation: 'deposit' | 'withdraw' | 'borrow' | 'repay',
+    input: MarginfiActionInput,
+  ): Promise<Record<string, unknown>> {
+    requireActionAllowed(this.config);
+    const adapter = requireAdapter('marginfi');
+    assertSupportedCluster(adapter, this.config.cluster);
+    const action = requireAdapterAction(adapter, operation);
+    const result = await action.prepare(input, this.adapterContext(adapter));
+    const stored = await this.store().addAction(result.addInput);
+    return { preparedAction: stored, preview: result.preview };
+  }
+
+  async prepareDriftVaultDeposit(input: DriftVaultDepositInput): Promise<Record<string, unknown>> {
+    requireActionAllowed(this.config);
+    const adapter = requireAdapter('drift');
+    assertSupportedCluster(adapter, this.config.cluster);
+    const action = requireAdapterAction(adapter, 'vault_deposit');
+    const result = await action.prepare(input, this.adapterContext(adapter));
+    const stored = await this.store().addAction(result.addInput);
+    return { preparedAction: stored, preview: result.preview };
+  }
+
+  async prepareDriftVaultRequestWithdraw(
+    input: DriftVaultRequestWithdrawInput,
+  ): Promise<Record<string, unknown>> {
+    requireActionAllowed(this.config);
+    const adapter = requireAdapter('drift');
+    assertSupportedCluster(adapter, this.config.cluster);
+    const action = requireAdapterAction(adapter, 'vault_request_withdraw');
+    const result = await action.prepare(input, this.adapterContext(adapter));
+    const stored = await this.store().addAction(result.addInput);
+    return { preparedAction: stored, preview: result.preview };
+  }
+
+  async prepareDriftVaultCancelWithdraw(
+    input: DriftVaultCancelWithdrawInput,
+  ): Promise<Record<string, unknown>> {
+    requireActionAllowed(this.config);
+    const adapter = requireAdapter('drift');
+    assertSupportedCluster(adapter, this.config.cluster);
+    const action = requireAdapterAction(adapter, 'vault_cancel_withdraw');
+    const result = await action.prepare(input, this.adapterContext(adapter));
+    const stored = await this.store().addAction(result.addInput);
+    return { preparedAction: stored, preview: result.preview };
+  }
+
+  async prepareDriftVaultCompleteWithdraw(
+    input: DriftVaultCompleteWithdrawInput,
+  ): Promise<Record<string, unknown>> {
+    requireActionAllowed(this.config);
+    const adapter = requireAdapter('drift');
+    assertSupportedCluster(adapter, this.config.cluster);
+    const action = requireAdapterAction(adapter, 'vault_complete_withdraw');
+    const result = await action.prepare(input, this.adapterContext(adapter));
+    const stored = await this.store().addAction(result.addInput);
+    return { preparedAction: stored, preview: result.preview };
+  }
+
+  async prepareSquadsCreateTransferProposal(
+    input: SquadsCreateTransferProposalInput,
+  ): Promise<Record<string, unknown>> {
+    requireActionAllowed(this.config);
+    const adapter = requireAdapter('squads');
+    assertSupportedCluster(adapter, this.config.cluster);
+    const action = requireAdapterAction(adapter, 'create_transfer_proposal');
+    const result = await action.prepare(input, this.adapterContext(adapter));
+    const stored = await this.store().addAction(result.addInput);
+    return { preparedAction: stored, preview: result.preview };
+  }
+
+  async prepareSquadsApproveProposal(input: SquadsVoteInput): Promise<Record<string, unknown>> {
+    requireActionAllowed(this.config);
+    const adapter = requireAdapter('squads');
+    assertSupportedCluster(adapter, this.config.cluster);
+    const action = requireAdapterAction(adapter, 'approve_proposal');
+    const result = await action.prepare(input, this.adapterContext(adapter));
+    const stored = await this.store().addAction(result.addInput);
+    return { preparedAction: stored, preview: result.preview };
+  }
+
+  async prepareSquadsRejectProposal(input: SquadsVoteInput): Promise<Record<string, unknown>> {
+    requireActionAllowed(this.config);
+    const adapter = requireAdapter('squads');
+    assertSupportedCluster(adapter, this.config.cluster);
+    const action = requireAdapterAction(adapter, 'reject_proposal');
+    const result = await action.prepare(input, this.adapterContext(adapter));
+    const stored = await this.store().addAction(result.addInput);
+    return { preparedAction: stored, preview: result.preview };
+  }
+
+  async prepareSquadsCancelProposal(input: SquadsVoteInput): Promise<Record<string, unknown>> {
+    requireActionAllowed(this.config);
+    const adapter = requireAdapter('squads');
+    assertSupportedCluster(adapter, this.config.cluster);
+    const action = requireAdapterAction(adapter, 'cancel_proposal');
+    const result = await action.prepare(input, this.adapterContext(adapter));
+    const stored = await this.store().addAction(result.addInput);
+    return { preparedAction: stored, preview: result.preview };
+  }
+
+  async prepareSquadsExecuteProposal(
+    input: SquadsExecuteProposalInput,
+  ): Promise<Record<string, unknown>> {
+    requireActionAllowed(this.config);
+    const adapter = requireAdapter('squads');
+    assertSupportedCluster(adapter, this.config.cluster);
+    const action = requireAdapterAction(adapter, 'execute_proposal');
+    const result = await action.prepare(input, this.adapterContext(adapter));
+    const stored = await this.store().addAction(result.addInput);
+    return { preparedAction: stored, preview: result.preview };
+  }
+
+  async prepareRealmsCastVote(input: RealmsCastVoteInput): Promise<Record<string, unknown>> {
+    requireActionAllowed(this.config);
+    const adapter = requireAdapter('realms');
+    assertSupportedCluster(adapter, this.config.cluster);
+    const action = requireAdapterAction(adapter, 'cast_vote');
+    const result = await action.prepare(input, this.adapterContext(adapter));
+    const stored = await this.store().addAction(result.addInput);
+    return { preparedAction: stored, preview: result.preview };
+  }
+
+  async prepareRealmsRelinquishVote(
+    input: RealmsRelinquishVoteInput,
+  ): Promise<Record<string, unknown>> {
+    requireActionAllowed(this.config);
+    const adapter = requireAdapter('realms');
+    assertSupportedCluster(adapter, this.config.cluster);
+    const action = requireAdapterAction(adapter, 'relinquish_vote');
+    const result = await action.prepare(input, this.adapterContext(adapter));
+    const stored = await this.store().addAction(result.addInput);
+    return { preparedAction: stored, preview: result.preview };
+  }
+
+  async prepareRealmsDepositGovernanceTokens(
+    input: RealmsDepositGovernanceTokensInput,
+  ): Promise<Record<string, unknown>> {
+    requireActionAllowed(this.config);
+    const adapter = requireAdapter('realms');
+    assertSupportedCluster(adapter, this.config.cluster);
+    const action = requireAdapterAction(adapter, 'deposit_governance_tokens');
+    const result = await action.prepare(input, this.adapterContext(adapter));
+    const stored = await this.store().addAction(result.addInput);
+    return { preparedAction: stored, preview: result.preview };
+  }
+
+  async prepareRealmsWithdrawGovernanceTokens(
+    input: RealmsWithdrawGovernanceTokensInput,
+  ): Promise<Record<string, unknown>> {
+    requireActionAllowed(this.config);
+    const adapter = requireAdapter('realms');
+    assertSupportedCluster(adapter, this.config.cluster);
+    const action = requireAdapterAction(adapter, 'withdraw_governance_tokens');
+    const result = await action.prepare(input, this.adapterContext(adapter));
+    const stored = await this.store().addAction(result.addInput);
+    return { preparedAction: stored, preview: result.preview };
+  }
+
+  async prepareLuloDeposit(input: LuloDepositInput): Promise<Record<string, unknown>> {
+    requireActionAllowed(this.config);
+    const adapter = requireAdapter('lulo');
+    assertSupportedCluster(adapter, this.config.cluster);
+    const action = requireAdapterAction(adapter, 'deposit');
+    const result = await action.prepare(input, this.adapterContext(adapter));
+    const stored = await this.store().addAction(result.addInput);
+    return { preparedAction: stored, preview: result.preview };
+  }
+
+  async prepareLuloWithdraw(input: LuloWithdrawInput): Promise<Record<string, unknown>> {
+    requireActionAllowed(this.config);
+    const adapter = requireAdapter('lulo');
+    assertSupportedCluster(adapter, this.config.cluster);
+    const action = requireAdapterAction(adapter, 'withdraw');
+    const result = await action.prepare(input, this.adapterContext(adapter));
+    const stored = await this.store().addAction(result.addInput);
+    return { preparedAction: stored, preview: result.preview };
+  }
+
+  async prepareLuloCompleteWithdraw(input: LuloCompleteWithdrawInput): Promise<Record<string, unknown>> {
+    requireActionAllowed(this.config);
+    const adapter = requireAdapter('lulo');
+    assertSupportedCluster(adapter, this.config.cluster);
+    const action = requireAdapterAction(adapter, 'complete_withdraw');
+    const result = await action.prepare(input, this.adapterContext(adapter));
+    const stored = await this.store().addAction(result.addInput);
+    return { preparedAction: stored, preview: result.preview };
+  }
+
+  async prepareSaveDeposit(input: SaveDepositInput): Promise<Record<string, unknown>> {
+    requireActionAllowed(this.config);
+    const adapter = requireAdapter('save');
+    assertSupportedCluster(adapter, this.config.cluster);
+    const action = requireAdapterAction(adapter, 'deposit');
+    const result = await action.prepare(input, this.adapterContext(adapter));
+    const stored = await this.store().addAction(result.addInput);
+    return { preparedAction: stored, preview: result.preview };
+  }
+
+  async prepareSaveWithdraw(input: SaveWithdrawInput): Promise<Record<string, unknown>> {
+    requireActionAllowed(this.config);
+    const adapter = requireAdapter('save');
+    assertSupportedCluster(adapter, this.config.cluster);
+    const action = requireAdapterAction(adapter, 'withdraw');
+    const result = await action.prepare(input, this.adapterContext(adapter));
+    const stored = await this.store().addAction(result.addInput);
+    return { preparedAction: stored, preview: result.preview };
+  }
+
+  async prepareSaveBorrow(input: SaveBorrowInput): Promise<Record<string, unknown>> {
+    requireActionAllowed(this.config);
+    const adapter = requireAdapter('save');
+    assertSupportedCluster(adapter, this.config.cluster);
+    const action = requireAdapterAction(adapter, 'borrow');
+    const result = await action.prepare(input, this.adapterContext(adapter));
+    const stored = await this.store().addAction(result.addInput);
+    return { preparedAction: stored, preview: result.preview };
+  }
+
+  async prepareSaveRepay(input: SaveRepayInput): Promise<Record<string, unknown>> {
+    requireActionAllowed(this.config);
+    const adapter = requireAdapter('save');
+    assertSupportedCluster(adapter, this.config.cluster);
+    const action = requireAdapterAction(adapter, 'repay');
+    const result = await action.prepare(input, this.adapterContext(adapter));
+    const stored = await this.store().addAction(result.addInput);
+    return { preparedAction: stored, preview: result.preview };
+  }
+
+  async prepareJitoStakeSol(input: JitoStakeSolInput): Promise<Record<string, unknown>> {
+    return this.prepareJitoAction('stake_sol', input);
+  }
+
+  async prepareJitoDepositStakeAccount(input: JitoDepositStakeAccountInput): Promise<Record<string, unknown>> {
+    return this.prepareJitoAction('deposit_stake_account', input);
+  }
+
+  async prepareJitoUnstakeJitosol(input: JitoUnstakeJitosolInput): Promise<Record<string, unknown>> {
+    return this.prepareJitoAction('unstake_jitosol', input);
+  }
+
+  async prepareJitoWithdrawSol(input: JitoWithdrawSolInput): Promise<Record<string, unknown>> {
+    return this.prepareJitoAction('withdraw_sol', input);
+  }
+
+  async prepareMarinadeLiquidStake(input: MarinadeLiquidStakeInput): Promise<Record<string, unknown>> {
+    return this.prepareMarinadeAction('liquid_stake', input);
+  }
+
+  async prepareMarinadeLiquidUnstake(input: MarinadeLiquidUnstakeInput): Promise<Record<string, unknown>> {
+    return this.prepareMarinadeAction('liquid_unstake', input);
+  }
+
+  async prepareMarinadeDelayedUnstake(input: MarinadeDelayedUnstakeInput): Promise<Record<string, unknown>> {
+    return this.prepareMarinadeAction('delayed_unstake', input);
+  }
+
+  async prepareMarinadeClaimDelayedUnstake(input: MarinadeClaimDelayedUnstakeInput): Promise<Record<string, unknown>> {
+    return this.prepareMarinadeAction('claim_delayed_unstake', input);
+  }
+
+  private async prepareJitoAction(
+    operation: 'stake_sol' | 'deposit_stake_account' | 'unstake_jitosol' | 'withdraw_sol',
+    input: JitoStakeSolInput | JitoDepositStakeAccountInput | JitoUnstakeJitosolInput | JitoWithdrawSolInput,
+  ): Promise<Record<string, unknown>> {
+    requireActionAllowed(this.config);
+    const adapter = requireAdapter('jito');
+    assertSupportedCluster(adapter, this.config.cluster);
+    const action = requireAdapterAction(adapter, operation);
+    const result = await action.prepare(input, this.adapterContext(adapter));
+    const stored = await this.store().addAction(result.addInput);
+    return { preparedAction: stored, preview: result.preview };
+  }
+
+  private async prepareMarinadeAction(
+    operation: 'liquid_stake' | 'liquid_unstake' | 'delayed_unstake' | 'claim_delayed_unstake',
+    input:
+      | MarinadeLiquidStakeInput
+      | MarinadeLiquidUnstakeInput
+      | MarinadeDelayedUnstakeInput
+      | MarinadeClaimDelayedUnstakeInput,
+  ): Promise<Record<string, unknown>> {
+    requireActionAllowed(this.config);
+    const adapter = requireAdapter('marinade');
+    assertSupportedCluster(adapter, this.config.cluster);
+    const action = requireAdapterAction(adapter, operation);
+    const result = await action.prepare(input, this.adapterContext(adapter));
+    const stored = await this.store().addAction(result.addInput);
+    return { preparedAction: stored, preview: result.preview };
+  }
+
+  async luloRates(input: { mintAddress?: string; depositType?: 'protected' | 'boost' | 'regular' }): Promise<Record<string, unknown>> {
+    const adapter = requireAdapter('lulo');
+    assertSupportedCluster(adapter, this.config.cluster);
+    const read = adapter.reads.rates;
+    if (!read) throw new AdapterError('lulo', 'unsupported_method', 'Lulo rates read is not registered.');
+    const snapshot = (await read.read(input, this.adapterContext(adapter))) as Parameters<typeof factsFromLuloRates>[0];
+    return {
+      snapshot,
+      facts: factsFromLuloRates(snapshot),
+    };
+  }
+
+  async luloPoolMeta(input: { mintAddress?: string }): Promise<Record<string, unknown>> {
+    const adapter = requireAdapter('lulo');
+    assertSupportedCluster(adapter, this.config.cluster);
+    const read = adapter.reads.pool_meta;
+    if (!read) throw new AdapterError('lulo', 'unsupported_method', 'Lulo pool metadata read is not registered.');
+    const snapshot = (await read.read(input, this.adapterContext(adapter))) as Parameters<typeof factsFromLuloPoolMeta>[0];
+    return {
+      snapshot,
+      facts: factsFromLuloPoolMeta(snapshot),
+    };
+  }
+
+  async luloWalletBalances(input: { walletAddress?: string }): Promise<Record<string, unknown>> {
+    const adapter = requireAdapter('lulo');
+    assertSupportedCluster(adapter, this.config.cluster);
+    const read = adapter.reads.wallet_balances;
+    if (!read) throw new AdapterError('lulo', 'unsupported_method', 'Lulo balances read is not registered.');
+    const snapshot = (await read.read(input, this.adapterContext(adapter))) as Parameters<typeof factsFromLuloBalances>[0];
+    return {
+      snapshot,
+      facts: factsFromLuloBalances(snapshot),
+    };
+  }
+
+  async magicedenApiHealth(input: { includeTradingEndpoints?: boolean }): Promise<Record<string, unknown>> {
+    const adapter = requireAdapter('magiceden');
+    assertSupportedCluster(adapter, this.config.cluster);
+    const read = adapter.reads.api_health;
+    if (!read) throw new AdapterError('magiceden', 'unsupported_method', 'Magic Eden api_health read is not registered.');
+    const snapshot = (await read.read(input, this.adapterContext(adapter))) as Parameters<typeof factsFromMagicedenApiHealth>[0];
+    return { snapshot, facts: factsFromMagicedenApiHealth(snapshot) };
+  }
+
+  async magicedenCollectionSnapshot(input: {
+    collectionSymbol?: string;
+    collectionId?: string;
+    includeListings?: boolean;
+    includeBids?: boolean;
+    limit?: number;
+  }): Promise<Record<string, unknown>> {
+    const adapter = requireAdapter('magiceden');
+    assertSupportedCluster(adapter, this.config.cluster);
+    const read = adapter.reads.collection_snapshot;
+    if (!read) throw new AdapterError('magiceden', 'unsupported_method', 'Magic Eden collection_snapshot read is not registered.');
+    const snapshot = (await read.read(input, this.adapterContext(adapter))) as Parameters<typeof factsFromMagicedenCollectionSnapshot>[0];
+    return { snapshot, facts: factsFromMagicedenCollectionSnapshot(snapshot) };
+  }
+
+  async magicedenCollectionListings(input: {
+    collectionSymbol?: string;
+    collectionId?: string;
+    limit?: number;
+  }): Promise<Record<string, unknown>> {
+    const adapter = requireAdapter('magiceden');
+    assertSupportedCluster(adapter, this.config.cluster);
+    const read = adapter.reads.collection_listings;
+    if (!read) throw new AdapterError('magiceden', 'unsupported_method', 'Magic Eden collection_listings read is not registered.');
+    const snapshot = (await read.read(input, this.adapterContext(adapter))) as Parameters<typeof factsFromMagicedenCollectionListings>[0];
+    return { snapshot, facts: factsFromMagicedenCollectionListings(snapshot) };
+  }
+
+  async magicedenCollectionBids(input: {
+    collectionSymbol?: string;
+    collectionId?: string;
+    limit?: number;
+  }): Promise<Record<string, unknown>> {
+    const adapter = requireAdapter('magiceden');
+    assertSupportedCluster(adapter, this.config.cluster);
+    const read = adapter.reads.collection_bids;
+    if (!read) throw new AdapterError('magiceden', 'unsupported_method', 'Magic Eden collection_bids read is not registered.');
+    const snapshot = (await read.read(input, this.adapterContext(adapter))) as Parameters<typeof factsFromMagicedenCollectionBids>[0];
+    return { snapshot, facts: factsFromMagicedenCollectionBids(snapshot) };
+  }
+
+  async magicedenRecentActivity(input: {
+    collectionSymbol?: string;
+    collectionId?: string;
+    limit?: number;
+  }): Promise<Record<string, unknown>> {
+    const adapter = requireAdapter('magiceden');
+    assertSupportedCluster(adapter, this.config.cluster);
+    const read = adapter.reads.recent_activity;
+    if (!read) throw new AdapterError('magiceden', 'unsupported_method', 'Magic Eden recent_activity read is not registered.');
+    const snapshot = (await read.read(input, this.adapterContext(adapter))) as Parameters<typeof factsFromMagicedenRecentActivity>[0];
+    return { snapshot, facts: factsFromMagicedenRecentActivity(snapshot) };
+  }
+
+  async magicedenWalletNfts(input: {
+    walletAddress?: string;
+    collectionSymbol?: string;
+    collectionId?: string;
+    listedOnly?: boolean;
+  }): Promise<Record<string, unknown>> {
+    const adapter = requireAdapter('magiceden');
+    assertSupportedCluster(adapter, this.config.cluster);
+    const read = adapter.reads.wallet_nfts;
+    if (!read) throw new AdapterError('magiceden', 'unsupported_method', 'Magic Eden wallet_nfts read is not registered.');
+    const snapshot = (await read.read(input, this.adapterContext(adapter))) as Parameters<typeof factsFromMagicedenWalletNfts>[0];
+    return { snapshot, facts: factsFromMagicedenWalletNfts(snapshot) };
+  }
+
+  async magicedenNftDetail(input: {
+    mintAddress: string;
+    includeListing?: boolean;
+    includeBids?: boolean;
+  }): Promise<Record<string, unknown>> {
+    const adapter = requireAdapter('magiceden');
+    assertSupportedCluster(adapter, this.config.cluster);
+    const read = adapter.reads.nft_detail;
+    if (!read) throw new AdapterError('magiceden', 'unsupported_method', 'Magic Eden nft_detail read is not registered.');
+    const snapshot = (await read.read(input, this.adapterContext(adapter))) as Parameters<typeof factsFromMagicedenNftDetail>[0];
+    return { snapshot, facts: factsFromMagicedenNftDetail(snapshot) };
+  }
+
+  async prepareMagicedenBuy(input: MagicedenBuyPrepareInput): Promise<Record<string, unknown>> {
+    requireActionAllowed(this.config);
+    const adapter = requireAdapter('magiceden');
+    assertSupportedCluster(adapter, this.config.cluster);
+    const action = requireAdapterAction(adapter, 'buy');
+    const result = await action.prepare(input, this.adapterContext(adapter));
+    const stored = await this.store().addAction(result.addInput);
+    return { preparedAction: stored, preview: result.preview };
+  }
+
+  async prepareMagicedenList(input: MagicedenListPrepareInput): Promise<Record<string, unknown>> {
+    requireActionAllowed(this.config);
+    const adapter = requireAdapter('magiceden');
+    assertSupportedCluster(adapter, this.config.cluster);
+    const action = requireAdapterAction(adapter, 'list');
+    const result = await action.prepare(input, this.adapterContext(adapter));
+    const stored = await this.store().addAction(result.addInput);
+    return { preparedAction: stored, preview: result.preview };
+  }
+
+  async prepareMagicedenCancelListing(
+    input: MagicedenCancelListingPrepareInput,
+  ): Promise<Record<string, unknown>> {
+    requireActionAllowed(this.config);
+    const adapter = requireAdapter('magiceden');
+    assertSupportedCluster(adapter, this.config.cluster);
+    const action = requireAdapterAction(adapter, 'cancel_listing');
+    const result = await action.prepare(input, this.adapterContext(adapter));
+    const stored = await this.store().addAction(result.addInput);
+    return { preparedAction: stored, preview: result.preview };
+  }
+
+  async prepareMagicedenBid(input: MagicedenBidPrepareInput): Promise<Record<string, unknown>> {
+    requireActionAllowed(this.config);
+    const adapter = requireAdapter('magiceden');
+    assertSupportedCluster(adapter, this.config.cluster);
+    const action = requireAdapterAction(adapter, 'bid');
+    const result = await action.prepare(input, this.adapterContext(adapter));
+    const stored = await this.store().addAction(result.addInput);
+    return { preparedAction: stored, preview: result.preview };
+  }
+
+  async prepareMagicedenCancelBid(
+    input: MagicedenCancelBidPrepareInput,
+  ): Promise<Record<string, unknown>> {
+    requireActionAllowed(this.config);
+    const adapter = requireAdapter('magiceden');
+    assertSupportedCluster(adapter, this.config.cluster);
+    const action = requireAdapterAction(adapter, 'cancel_bid');
+    const result = await action.prepare(input, this.adapterContext(adapter));
+    const stored = await this.store().addAction(result.addInput);
+    return { preparedAction: stored, preview: result.preview };
+  }
+
+  async tensorCollectionSnapshot(input: {
+    collectionId: string;
+    includeListings?: boolean;
+    includeBids?: boolean;
+    maxListings?: number;
+    maxBids?: number;
+  }): Promise<Record<string, unknown>> {
+    const adapter = requireAdapter('tensor');
+    assertSupportedCluster(adapter, this.config.cluster);
+    const read = adapter.reads.collection_snapshot;
+    if (!read) throw new AdapterError('tensor', 'unsupported_method', 'Tensor collection_snapshot read is not registered.');
+    const snapshot = (await read.read(input, this.adapterContext(adapter))) as Parameters<typeof factsFromTensorCollectionSnapshot>[0];
+    return { snapshot, facts: factsFromTensorCollectionSnapshot(snapshot) };
+  }
+
+  async tensorCollectionListings(input: { collectionId: string; limit?: number }): Promise<Record<string, unknown>> {
+    const adapter = requireAdapter('tensor');
+    assertSupportedCluster(adapter, this.config.cluster);
+    const read = adapter.reads.collection_listings;
+    if (!read) throw new AdapterError('tensor', 'unsupported_method', 'Tensor collection_listings read is not registered.');
+    const snapshot = (await read.read(input, this.adapterContext(adapter))) as Parameters<typeof factsFromTensorCollectionListings>[0];
+    return { snapshot, facts: factsFromTensorCollectionListings(snapshot) };
+  }
+
+  async tensorCollectionBids(input: { collectionId: string; limit?: number }): Promise<Record<string, unknown>> {
+    const adapter = requireAdapter('tensor');
+    assertSupportedCluster(adapter, this.config.cluster);
+    const read = adapter.reads.collection_bids;
+    if (!read) throw new AdapterError('tensor', 'unsupported_method', 'Tensor collection_bids read is not registered.');
+    const snapshot = (await read.read(input, this.adapterContext(adapter))) as Parameters<typeof factsFromTensorCollectionBids>[0];
+    return { snapshot, facts: factsFromTensorCollectionBids(snapshot) };
+  }
+
+  async tensorRecentSales(input: { collectionId: string; limit?: number }): Promise<Record<string, unknown>> {
+    const adapter = requireAdapter('tensor');
+    assertSupportedCluster(adapter, this.config.cluster);
+    const read = adapter.reads.recent_sales;
+    if (!read) throw new AdapterError('tensor', 'unsupported_method', 'Tensor recent_sales read is not registered.');
+    const snapshot = (await read.read(input, this.adapterContext(adapter))) as Parameters<typeof factsFromTensorRecentSales>[0];
+    return { snapshot, facts: factsFromTensorRecentSales(snapshot) };
+  }
+
+  async tensorWalletNfts(input: {
+    walletAddress?: string;
+    collectionId?: string;
+    includeCompressed?: boolean;
+  }): Promise<Record<string, unknown>> {
+    const adapter = requireAdapter('tensor');
+    assertSupportedCluster(adapter, this.config.cluster);
+    const read = adapter.reads.wallet_nfts;
+    if (!read) throw new AdapterError('tensor', 'unsupported_method', 'Tensor wallet_nfts read is not registered.');
+    const snapshot = (await read.read(input, this.adapterContext(adapter))) as Parameters<typeof factsFromTensorWalletNfts>[0];
+    return { snapshot, facts: factsFromTensorWalletNfts(snapshot) };
+  }
+
+  async tensorNftDetail(input: { mintAddress?: string; assetId?: string }): Promise<Record<string, unknown>> {
+    const adapter = requireAdapter('tensor');
+    assertSupportedCluster(adapter, this.config.cluster);
+    const read = adapter.reads.nft_detail;
+    if (!read) throw new AdapterError('tensor', 'unsupported_method', 'Tensor nft_detail read is not registered.');
+    const snapshot = (await read.read(input, this.adapterContext(adapter))) as Parameters<typeof factsFromTensorNftDetail>[0];
+    return { snapshot, facts: factsFromTensorNftDetail(snapshot) };
+  }
+
+  async tensorWalletMarketplaceExposure(input: { walletAddress?: string }): Promise<Record<string, unknown>> {
+    const adapter = requireAdapter('tensor');
+    assertSupportedCluster(adapter, this.config.cluster);
+    const read = adapter.reads.wallet_marketplace_exposure;
+    if (!read) throw new AdapterError('tensor', 'unsupported_method', 'Tensor wallet_marketplace_exposure read is not registered.');
+    const snapshot = (await read.read(input, this.adapterContext(adapter))) as Parameters<typeof factsFromTensorWalletMarketplaceExposure>[0];
+    return { snapshot, facts: factsFromTensorWalletMarketplaceExposure(snapshot) };
+  }
+
+  async prepareTensorBuy(input: TensorBuyPrepareInput): Promise<Record<string, unknown>> {
+    requireActionAllowed(this.config);
+    const adapter = requireAdapter('tensor');
+    assertSupportedCluster(adapter, this.config.cluster);
+    const action = requireAdapterAction(adapter, 'buy');
+    const result = await action.prepare(input, this.adapterContext(adapter));
+    const stored = await this.store().addAction(result.addInput);
+    return { preparedAction: stored, preview: result.preview };
+  }
+
+  async prepareTensorList(input: TensorListPrepareInput): Promise<Record<string, unknown>> {
+    requireActionAllowed(this.config);
+    const adapter = requireAdapter('tensor');
+    assertSupportedCluster(adapter, this.config.cluster);
+    const action = requireAdapterAction(adapter, 'list');
+    const result = await action.prepare(input, this.adapterContext(adapter));
+    const stored = await this.store().addAction(result.addInput);
+    return { preparedAction: stored, preview: result.preview };
+  }
+
+  async prepareTensorCancelListing(input: TensorCancelListingPrepareInput): Promise<Record<string, unknown>> {
+    requireActionAllowed(this.config);
+    const adapter = requireAdapter('tensor');
+    assertSupportedCluster(adapter, this.config.cluster);
+    const action = requireAdapterAction(adapter, 'cancel_listing');
+    const result = await action.prepare(input, this.adapterContext(adapter));
+    const stored = await this.store().addAction(result.addInput);
+    return { preparedAction: stored, preview: result.preview };
+  }
+
+  async prepareTensorBid(input: TensorBidPrepareInput): Promise<Record<string, unknown>> {
+    requireActionAllowed(this.config);
+    const adapter = requireAdapter('tensor');
+    assertSupportedCluster(adapter, this.config.cluster);
+    const action = requireAdapterAction(adapter, 'bid');
+    const result = await action.prepare(input, this.adapterContext(adapter));
+    const stored = await this.store().addAction(result.addInput);
+    return { preparedAction: stored, preview: result.preview };
+  }
+
+  async prepareTensorCancelBid(input: TensorCancelBidPrepareInput): Promise<Record<string, unknown>> {
+    requireActionAllowed(this.config);
+    const adapter = requireAdapter('tensor');
+    assertSupportedCluster(adapter, this.config.cluster);
+    const action = requireAdapterAction(adapter, 'cancel_bid');
+    const result = await action.prepare(input, this.adapterContext(adapter));
+    const stored = await this.store().addAction(result.addInput);
+    return { preparedAction: stored, preview: result.preview };
+  }
+
+  async prepareTensorSweep(input: TensorSweepPrepareInput): Promise<Record<string, unknown>> {
+    requireActionAllowed(this.config);
+    const adapter = requireAdapter('tensor');
+    assertSupportedCluster(adapter, this.config.cluster);
+    const action = requireAdapterAction(adapter, 'sweep');
+    const result = await action.prepare(input, this.adapterContext(adapter));
+    const stored = await this.store().addAction(result.addInput);
+    return { preparedAction: stored, preview: result.preview };
+  }
+
+  async pythPriceFeed(input: GetPythPriceFeedInput): Promise<Record<string, unknown>> {
+    const adapter = requireAdapter('pyth');
+    assertSupportedCluster(adapter, this.config.cluster);
+    const read = adapter.reads.price_feed;
+    if (!read) throw new AdapterError('pyth', 'unsupported_method', 'Pyth price feed read is not registered.');
+    const result = (await read.read(input, this.adapterContext(adapter))) as Parameters<typeof factsFromPythPriceFeed>[0];
+    return { snapshot: result.snapshot, facts: factsFromPythPriceFeed(result) };
+  }
+
+  async pythPriceFeedsBatch(input: GetPythPriceFeedsBatchInput): Promise<Record<string, unknown>> {
+    const adapter = requireAdapter('pyth');
+    assertSupportedCluster(adapter, this.config.cluster);
+    const read = adapter.reads.price_feeds_batch;
+    if (!read) throw new AdapterError('pyth', 'unsupported_method', 'Pyth batch read is not registered.');
+    const result = (await read.read(input, this.adapterContext(adapter))) as Parameters<typeof factsFromPythBatch>[0];
+    return { batch: result, facts: factsFromPythBatch(result) };
+  }
+
+  async pythFeedSearch(input: PythFeedSearchInput): Promise<Record<string, unknown>> {
+    const adapter = requireAdapter('pyth');
+    assertSupportedCluster(adapter, this.config.cluster);
+    const read = adapter.reads.feed_search;
+    if (!read) throw new AdapterError('pyth', 'unsupported_method', 'Pyth feed search is not registered.');
+    const result = (await read.read(input, this.adapterContext(adapter))) as Parameters<typeof factsFromPythFeedSearch>[0];
+    return { search: result, facts: factsFromPythFeedSearch(result) };
+  }
+
+  async pythOnchainPriceAccount(input: GetPythOnchainAccountInput): Promise<Record<string, unknown>> {
+    const adapter = requireAdapter('pyth');
+    assertSupportedCluster(adapter, this.config.cluster);
+    const read = adapter.reads.onchain_price_account;
+    if (!read) throw new AdapterError('pyth', 'unsupported_method', 'Pyth on-chain account read is not registered.');
+    const result = (await read.read(input, this.adapterContext(adapter))) as Parameters<typeof factsFromPythOnchainAccount>[0];
+    return { snapshot: result, facts: factsFromPythOnchainAccount(result) };
+  }
+
+  async pythOracleEvidence(input: GetPythOracleEvidenceInput): Promise<Record<string, unknown>> {
+    const adapter = requireAdapter('pyth');
+    assertSupportedCluster(adapter, this.config.cluster);
+    const read = adapter.reads.oracle_evidence;
+    if (!read) throw new AdapterError('pyth', 'unsupported_method', 'Pyth oracle evidence read is not registered.');
+    const result = (await read.read(input, this.adapterContext(adapter))) as Parameters<typeof factsFromPythEvidence>[0];
+    return { evidence: result, facts: factsFromPythEvidence(result) };
+  }
+
+  async preparePythPostPriceUpdate(input: PythPostPriceUpdateInput): Promise<Record<string, unknown>> {
+    requireActionAllowed(this.config);
+    const adapter = requireAdapter('pyth');
+    assertSupportedCluster(adapter, this.config.cluster);
+    const action = requireAdapterAction(adapter, 'post_price_update');
+    const result = await action.prepare(input, this.adapterContext(adapter));
+    const stored = await this.store().addAction(result.addInput);
+    return { preparedAction: stored, preview: result.preview };
+  }
+
+  async sanctumLstList(input: { includeDisabled?: boolean } = {}): Promise<Record<string, unknown>> {
+    const adapter = requireAdapter('sanctum');
+    assertSupportedCluster(adapter, this.config.cluster);
+    const read = adapter.reads.lst_list;
+    if (!read) throw new AdapterError('sanctum', 'unsupported_method', 'Sanctum LST list read is not registered.');
+    const snapshot = (await read.read(input, this.adapterContext(adapter))) as Parameters<typeof factsFromSanctumLstList>[0];
+    return { snapshot, facts: factsFromSanctumLstList(snapshot) };
+  }
+
+  async sanctumLstSnapshot(input: {
+    lstMint?: string;
+    mintOrSymbol?: string;
+    includeApy?: boolean;
+    apyLimit?: number;
+  }): Promise<Record<string, unknown>> {
+    const adapter = requireAdapter('sanctum');
+    assertSupportedCluster(adapter, this.config.cluster);
+    const read = adapter.reads.lst_snapshot;
+    if (!read) throw new AdapterError('sanctum', 'unsupported_method', 'Sanctum LST snapshot read is not registered.');
+    const snapshot = (await read.read(input, this.adapterContext(adapter))) as Parameters<typeof factsFromSanctumLstSnapshot>[0];
+    return { snapshot, facts: factsFromSanctumLstSnapshot(snapshot) };
+  }
+
+  async sanctumInfinityPoolSnapshot(input: { includeComposition?: boolean } = {}): Promise<Record<string, unknown>> {
+    const adapter = requireAdapter('sanctum');
+    assertSupportedCluster(adapter, this.config.cluster);
+    const read = adapter.reads.infinity_pool_snapshot;
+    if (!read) throw new AdapterError('sanctum', 'unsupported_method', 'Sanctum Infinity pool snapshot read is not registered.');
+    const snapshot = (await read.read(input, this.adapterContext(adapter))) as Parameters<typeof factsFromSanctumInfinityPoolSnapshot>[0];
+    return { snapshot, facts: factsFromSanctumInfinityPoolSnapshot(snapshot) };
+  }
+
+  async sanctumWalletPositions(input: {
+    walletAddress?: string;
+    includeSmallBalances?: boolean;
+  }): Promise<Record<string, unknown>> {
+    const adapter = requireAdapter('sanctum');
+    assertSupportedCluster(adapter, this.config.cluster);
+    const read = adapter.reads.wallet_positions;
+    if (!read) throw new AdapterError('sanctum', 'unsupported_method', 'Sanctum wallet positions read is not registered.');
+    const snapshot = (await read.read(input, this.adapterContext(adapter))) as Parameters<typeof factsFromSanctumWalletPositions>[0];
+    return { snapshot, facts: factsFromSanctumWalletPositions(snapshot) };
+  }
+
+  async sanctumQuote(input: {
+    inputMint: string;
+    outputMint: string;
+    amount: string;
+    slippageBps?: number;
+  }): Promise<Record<string, unknown>> {
+    const adapter = requireAdapter('sanctum');
+    assertSupportedCluster(adapter, this.config.cluster);
+    const read = adapter.reads.quote;
+    if (!read) throw new AdapterError('sanctum', 'unsupported_method', 'Sanctum quote read is not registered.');
+    const inputDecimals = await this.sanctumTokenDecimals(input.inputMint);
+    const amountRaw = parseDecimalAmount(input.amount, inputDecimals, 'Sanctum quote amount');
+    const quote = (await read.read({
+      inputMint: input.inputMint,
+      outputMint: input.outputMint,
+      amountRaw: amountRaw.toString(),
+      ...(input.slippageBps !== undefined && { slippageBps: input.slippageBps }),
+    }, this.adapterContext(adapter))) as Parameters<typeof factsFromSanctumQuote>[0];
+    return { quote, facts: factsFromSanctumQuote(quote) };
+  }
+
+  async prepareSanctumSwapLst(input: SanctumSwapLstInput): Promise<Record<string, unknown>> {
+    return this.prepareSanctumAction('swap_lst', input);
+  }
+
+  async prepareSanctumAddInfinityLiquidity(
+    input: SanctumAddInfinityLiquidityInput,
+  ): Promise<Record<string, unknown>> {
+    return this.prepareSanctumAction('add_infinity_liquidity', input);
+  }
+
+  async prepareSanctumRemoveInfinityLiquidity(
+    input: SanctumRemoveInfinityLiquidityInput,
+  ): Promise<Record<string, unknown>> {
+    return this.prepareSanctumAction('remove_infinity_liquidity', input);
+  }
+
+  async prepareSanctumStakeSolToLst(input: SanctumStakeSolToLstInput): Promise<Record<string, unknown>> {
+    return this.prepareSanctumAction('stake_sol_to_lst', input);
+  }
+
+  async prepareSanctumUnstakeLstToSol(input: SanctumUnstakeLstToSolInput): Promise<Record<string, unknown>> {
+    return this.prepareSanctumAction('unstake_lst_to_sol', input);
+  }
+
+  private async prepareSanctumAction(
+    operation: 'swap_lst' | 'add_infinity_liquidity' | 'remove_infinity_liquidity' | 'stake_sol_to_lst' | 'unstake_lst_to_sol',
+    input: SanctumSwapLstInput
+      | SanctumAddInfinityLiquidityInput
+      | SanctumRemoveInfinityLiquidityInput
+      | SanctumStakeSolToLstInput
+      | SanctumUnstakeLstToSolInput,
+  ): Promise<Record<string, unknown>> {
+    requireActionAllowed(this.config);
+    const adapter = requireAdapter('sanctum');
+    assertSupportedCluster(adapter, this.config.cluster);
+    const action = requireAdapterAction(adapter, operation);
+    const result = await action.prepare(input, this.adapterContext(adapter));
+    const stored = await this.store().addAction(result.addInput);
+    return { preparedAction: stored, preview: result.preview };
+  }
+
+  private async sanctumTokenDecimals(mint: string): Promise<number> {
+    if (mint === WSOL_MINT || mint === SANCTUM_INF_MINT) return 9;
+    const snapshotResult = await this.sanctumLstSnapshot({ lstMint: mint });
+    const snapshot = snapshotResult.snapshot as { decimals?: unknown };
+    return typeof snapshot.decimals === 'number' && Number.isFinite(snapshot.decimals)
+      ? snapshot.decimals
+      : 9;
+  }
+
   async prepareBlinkAction(input: PrepareBlinkActionInput): Promise<Record<string, unknown>> {
     requireActionAllowed(this.config);
     const connector = input.connector ? getConnector(input.connector) : undefined;
@@ -439,11 +1491,101 @@ export class AgentWalletActionService {
       if (connector.id === 'jupiter') {
         return await this.jupiterConnectorFacts(input);
       }
+      if (connector.id === 'meteora') {
+        return await this.meteoraConnectorFacts(input);
+      }
+      if (connector.id === 'orca') {
+        return await this.orcaConnectorFacts(input);
+      }
+      if (connector.id === 'raydium') {
+        return await this.raydiumConnectorFacts(input);
+      }
+      if (connector.id === 'marginfi') {
+        return await this.marginfiConnectorFacts(input);
+      }
+      if (connector.id === 'lulo') {
+        return await this.luloConnectorFacts(input);
+      }
+      if (connector.id === 'save') {
+        return await this.saveConnectorFacts(input);
+      }
+      if (connector.id === 'jito') {
+        return await this.jitoConnectorFacts(input);
+      }
+      if (connector.id === 'marinade') {
+        return await this.marinadeConnectorFacts(input);
+      }
+      if (connector.id === 'sanctum') {
+        return await this.sanctumConnectorFacts(input);
+      }
+      if (connector.id === 'pyth') {
+        return await this.pythConnectorFacts(input);
+      }
       throw missingConnectorCapability(connector, input.capability, 'read');
     } catch (err) {
       if (err instanceof ProtocolError) throw err;
       throw connectorReadProtocolError(connector, err);
     }
+  }
+
+  private async pythConnectorFacts(input: ConnectorFactReadInput): Promise<Record<string, unknown>> {
+    const connector = requireRuntimeConnector('pyth');
+    const capability = input.capability ?? (input.query ? 'markets' : 'oracle');
+    if (capability === 'oracle') {
+      const result = await this.pythOracleEvidence({
+        ...(input.priceFeedId !== undefined ? { priceFeedId: input.priceFeedId } : {}),
+        ...(input.symbol !== undefined ? { symbol: input.symbol } : {}),
+        ...(input.consumerProtocol !== undefined ? { consumerProtocol: input.consumerProtocol } : {}),
+        ...(input.maxAgeSeconds !== undefined ? { maxAgeSeconds: input.maxAgeSeconds } : {}),
+        ...(input.maxConfidenceBps !== undefined ? { maxConfidenceBps: input.maxConfidenceBps } : {}),
+      });
+      return {
+        connector: connectorCapabilityView(connector, this.config),
+        capability,
+        evidence: result.evidence,
+        facts: result.facts,
+      };
+    }
+    if (capability === 'markets') {
+      if (input.priceFeedIds && input.priceFeedIds.length > 0) {
+        const result = await this.pythPriceFeedsBatch({
+          priceFeedIds: input.priceFeedIds,
+          ...(input.maxAgeSeconds !== undefined ? { maxAgeSeconds: input.maxAgeSeconds } : {}),
+          ...(input.includeEma !== undefined ? { includeEma: input.includeEma } : {}),
+        });
+        return {
+          connector: connectorCapabilityView(connector, this.config),
+          capability,
+          batch: result.batch,
+          facts: result.facts,
+        };
+      }
+      if (input.query?.trim()) {
+        const result = await this.pythFeedSearch({
+          query: input.query,
+          ...(input.assetType !== undefined ? { assetType: input.assetType } : {}),
+        });
+        return {
+          connector: connectorCapabilityView(connector, this.config),
+          capability,
+          search: result.search,
+          facts: result.facts,
+        };
+      }
+      const result = await this.pythPriceFeed({
+        ...(input.priceFeedId !== undefined ? { priceFeedId: input.priceFeedId } : {}),
+        ...(input.symbol !== undefined ? { symbol: input.symbol } : {}),
+        ...(input.maxAgeSeconds !== undefined ? { maxAgeSeconds: input.maxAgeSeconds } : {}),
+        ...(input.includeEma !== undefined ? { includeEma: input.includeEma } : {}),
+      });
+      return {
+        connector: connectorCapabilityView(connector, this.config),
+        capability,
+        snapshot: result.snapshot,
+        facts: result.facts,
+      };
+    }
+    throw missingConnectorCapability(connector, capability, 'read');
   }
 
   private async kaminoConnectorFacts(input: ConnectorFactReadInput): Promise<Record<string, unknown>> {
@@ -516,6 +1658,518 @@ export class AgentWalletActionService {
     };
   }
 
+  private async meteoraConnectorFacts(input: ConnectorFactReadInput): Promise<Record<string, unknown>> {
+    const connector = requireRuntimeConnector('meteora');
+    const capability = input.capability ?? (input.positionAddress ? 'positions' : input.poolAddress ? 'markets' : 'positions');
+    if (capability === 'markets') {
+      if (!input.poolAddress?.trim()) {
+        throw new ProtocolError('invalid_request', 'poolAddress is required to read Meteora DLMM market facts.');
+      }
+      const result = await this.meteoraPoolSnapshot({ poolAddress: input.poolAddress });
+      return {
+        connector: connectorCapabilityView(connector, this.config),
+        capability,
+        snapshot: result.snapshot,
+        facts: result.facts,
+      };
+    }
+    if (capability === 'positions') {
+      if (input.positionAddress?.trim()) {
+        if (!input.poolAddress?.trim()) {
+          throw new ProtocolError('invalid_request', 'poolAddress is required with positionAddress to read Meteora position detail facts.');
+        }
+        const result = await this.meteoraPositionDetail({
+          poolAddress: input.poolAddress,
+          positionAddress: input.positionAddress,
+        });
+        return {
+          connector: connectorCapabilityView(connector, this.config),
+          capability,
+          position: result.position,
+          facts: result.facts,
+        };
+      }
+      const result = await this.meteoraWalletPositions({
+        ...(input.walletAddress !== undefined && { walletAddress: input.walletAddress }),
+        ...(input.poolAddress !== undefined && { poolAddress: input.poolAddress }),
+      });
+      return {
+        connector: connectorCapabilityView(connector, this.config),
+        capability,
+        walletAddress: result.walletAddress,
+        positions: result.positions,
+        totals: result.totals,
+        facts: result.facts,
+      };
+    }
+    if (capability === 'rewards') {
+      if (!input.poolAddress?.trim() || !input.positionAddress?.trim()) {
+        throw new ProtocolError('invalid_request', 'poolAddress and positionAddress are required to read Meteora fee and reward facts.');
+      }
+      const result = await this.meteoraPositionDetail({
+        poolAddress: input.poolAddress,
+        positionAddress: input.positionAddress,
+      });
+      return {
+        connector: connectorCapabilityView(connector, this.config),
+        capability,
+        position: result.position,
+        facts: result.facts,
+      };
+    }
+    throw missingConnectorCapability(connector, capability, 'read');
+  }
+
+  private async orcaConnectorFacts(input: ConnectorFactReadInput): Promise<Record<string, unknown>> {
+    const connector = requireRuntimeConnector('orca');
+    const capability = input.capability ?? (input.positionMint ? 'positions' : input.whirlpoolAddress ? 'markets' : 'positions');
+    if (capability === 'markets') {
+      if (!input.whirlpoolAddress?.trim()) {
+        throw new ProtocolError('invalid_request', 'whirlpoolAddress is required to read Orca Whirlpool market facts.');
+      }
+      const result = await this.orcaWhirlpoolSnapshot({
+        whirlpoolAddress: input.whirlpoolAddress,
+      });
+      return {
+        connector: connectorCapabilityView(connector, this.config),
+        capability,
+        snapshot: result.snapshot,
+        facts: result.facts,
+      };
+    }
+    if (capability === 'positions') {
+      if (input.positionMint?.trim()) {
+        const result = await this.orcaPositionDetail({
+          positionMint: input.positionMint,
+          ...(input.whirlpoolAddress !== undefined && { whirlpoolAddress: input.whirlpoolAddress }),
+        });
+        return {
+          connector: connectorCapabilityView(connector, this.config),
+          capability,
+          position: result.position,
+          facts: result.facts,
+        };
+      }
+      const result = await this.orcaWalletPositions({
+        ...(input.walletAddress !== undefined && { walletAddress: input.walletAddress }),
+        ...(input.whirlpoolAddress !== undefined && { whirlpoolAddress: input.whirlpoolAddress }),
+      });
+      return {
+        connector: connectorCapabilityView(connector, this.config),
+        capability,
+        walletAddress: result.walletAddress,
+        positions: result.positions,
+        totals: result.totals,
+        facts: result.facts,
+      };
+    }
+    if (capability === 'rewards') {
+      if (!input.positionMint?.trim()) {
+        throw new ProtocolError('invalid_request', 'positionMint is required to read Orca fee and reward facts.');
+      }
+      const result = await this.orcaPositionDetail({
+        positionMint: input.positionMint,
+        ...(input.whirlpoolAddress !== undefined && { whirlpoolAddress: input.whirlpoolAddress }),
+      });
+      return {
+        connector: connectorCapabilityView(connector, this.config),
+        capability,
+        position: result.position,
+        facts: result.facts,
+      };
+    }
+    throw missingConnectorCapability(connector, capability, 'read');
+  }
+
+  private async raydiumConnectorFacts(input: ConnectorFactReadInput): Promise<Record<string, unknown>> {
+    const connector = requireRuntimeConnector('raydium');
+    const capability = input.capability ?? (input.positionMint ? 'positions' : input.poolId ? 'markets' : 'positions');
+    if (capability === 'markets') {
+      if (!input.poolId?.trim()) {
+        throw new ProtocolError('invalid_request', 'poolId is required to read Raydium market facts.');
+      }
+      const result = await this.raydiumPoolSnapshot({
+        poolId: input.poolId,
+        ...(input.poolType !== undefined && { poolType: input.poolType }),
+      });
+      return {
+        connector: connectorCapabilityView(connector, this.config),
+        capability,
+        snapshot: result.snapshot,
+        facts: result.facts,
+      };
+    }
+    if (capability === 'positions') {
+      if (input.positionMint?.trim()) {
+        const result = await this.raydiumPositionDetail({
+          positionMint: input.positionMint,
+          ...(input.walletAddress !== undefined && { walletAddress: input.walletAddress }),
+          ...(input.poolId !== undefined && { poolId: input.poolId }),
+        });
+        return {
+          connector: connectorCapabilityView(connector, this.config),
+          capability,
+          position: result.position,
+          facts: result.facts,
+        };
+      }
+      const result = await this.raydiumWalletPositions({
+        ...(input.walletAddress !== undefined && { walletAddress: input.walletAddress }),
+        ...(input.poolId !== undefined && { poolId: input.poolId }),
+        ...(input.poolType !== undefined && { poolType: input.poolType }),
+        ...(input.farmId !== undefined && { farmId: input.farmId }),
+      });
+      return {
+        connector: connectorCapabilityView(connector, this.config),
+        capability,
+        walletAddress: result.walletAddress,
+        positions: result.positions,
+        totals: result.totals,
+        facts: result.facts,
+      };
+    }
+    if (capability === 'rewards') {
+      if (input.positionMint?.trim()) {
+        const result = await this.raydiumPositionDetail({
+          positionMint: input.positionMint,
+          ...(input.walletAddress !== undefined && { walletAddress: input.walletAddress }),
+          ...(input.poolId !== undefined && { poolId: input.poolId }),
+        });
+        return {
+          connector: connectorCapabilityView(connector, this.config),
+          capability,
+          position: result.position,
+          facts: result.facts,
+        };
+      }
+      const result = await this.raydiumWalletPositions({
+        ...(input.walletAddress !== undefined && { walletAddress: input.walletAddress }),
+        ...(input.poolId !== undefined && { poolId: input.poolId }),
+        ...(input.poolType !== undefined && { poolType: input.poolType }),
+        ...(input.farmId !== undefined && { farmId: input.farmId }),
+      });
+      return {
+        connector: connectorCapabilityView(connector, this.config),
+        capability,
+        walletAddress: result.walletAddress,
+        positions: result.positions,
+        totals: result.totals,
+        facts: result.facts,
+      };
+    }
+    throw missingConnectorCapability(connector, capability, 'read');
+  }
+
+  private async marginfiConnectorFacts(input: ConnectorFactReadInput): Promise<Record<string, unknown>> {
+    const connector = requireRuntimeConnector('marginfi');
+    const capability = input.capability ?? marginfiDefaultCapability(input);
+    if (capability === 'markets') {
+      const result = await this.marginfiBankSnapshot({
+        ...(input.bankAddress !== undefined && { bankAddress: input.bankAddress }),
+        ...(input.bankMint !== undefined && { bankMint: input.bankMint }),
+        token: input.token ?? 'SOL',
+      });
+      return {
+        connector: connectorCapabilityView(connector, this.config),
+        capability,
+        snapshot: result.snapshot,
+        facts: result.facts,
+      };
+    }
+    if (capability === 'positions') {
+      if (input.marginfiAccount?.trim()) {
+        const result = await this.marginfiAccountDetail({
+          ...(input.walletAddress !== undefined && { walletAddress: input.walletAddress }),
+          marginfiAccount: input.marginfiAccount,
+        });
+        return {
+          connector: connectorCapabilityView(connector, this.config),
+          capability,
+          account: result.account,
+          facts: result.facts,
+        };
+      }
+      const result = await this.marginfiWalletAccounts({
+        ...(input.walletAddress !== undefined && { walletAddress: input.walletAddress }),
+      });
+      return {
+        connector: connectorCapabilityView(connector, this.config),
+        capability,
+        walletAddress: result.walletAddress,
+        accounts: result.accounts,
+        facts: result.facts,
+      };
+    }
+    if (capability === 'earn' && !input.amount?.trim()) {
+      const result = await this.marginfiBankSnapshot({
+        ...(input.bankAddress !== undefined && { bankAddress: input.bankAddress }),
+        ...(input.bankMint !== undefined && { bankMint: input.bankMint }),
+        token: input.token ?? 'SOL',
+      });
+      return {
+        connector: connectorCapabilityView(connector, this.config),
+        capability: 'markets',
+        snapshot: result.snapshot,
+        facts: result.facts,
+      };
+    }
+    if (capability === 'earn' || capability === 'borrow' || capability === 'withdraw' || capability === 'repay') {
+      const operation = capability === 'earn' ? 'deposit' : capability;
+      const result = await this.marginfiHealthPreview({
+        operation,
+        ...(input.walletAddress !== undefined && { walletAddress: input.walletAddress }),
+        ...(input.bankAddress !== undefined && { bankAddress: input.bankAddress }),
+        ...(input.bankMint !== undefined && { bankMint: input.bankMint }),
+        token: input.token ?? 'SOL',
+        ...(input.amount !== undefined && { amount: input.amount }),
+        ...(input.marginfiAccount !== undefined && { marginfiAccount: input.marginfiAccount }),
+        ...(input.withdrawAll !== undefined && { withdrawAll: input.withdrawAll }),
+        ...(input.repayAll !== undefined && { repayAll: input.repayAll }),
+        ...(input.createAccountIfMissing !== undefined && { createAccountIfMissing: input.createAccountIfMissing }),
+      });
+      return {
+        connector: connectorCapabilityView(connector, this.config),
+        capability,
+        preview: result.preview,
+        facts: result.facts,
+      };
+    }
+    throw missingConnectorCapability(connector, capability, 'read');
+  }
+
+  private async luloConnectorFacts(input: ConnectorFactReadInput): Promise<Record<string, unknown>> {
+    const connector = requireRuntimeConnector('lulo');
+    const capability = input.capability ?? (input.walletAddress ? 'positions' : 'markets');
+    if (capability === 'markets' || capability === 'earn') {
+      const result = await this.luloRates({
+        ...(input.reserveMint !== undefined ? { mintAddress: input.reserveMint } : {}),
+      });
+      return {
+        connector: connectorCapabilityView(connector, this.config),
+        capability: 'markets',
+        snapshot: result.snapshot,
+        facts: result.facts,
+      };
+    }
+    if (capability === 'positions') {
+      const result = await this.luloWalletBalances({
+        ...(input.walletAddress !== undefined ? { walletAddress: input.walletAddress } : {}),
+      });
+      return {
+        connector: connectorCapabilityView(connector, this.config),
+        capability,
+        snapshot: result.snapshot,
+        facts: result.facts,
+      };
+    }
+    throw missingConnectorCapability(connector, capability, 'read');
+  }
+
+  private async saveConnectorFacts(input: ConnectorFactReadInput): Promise<Record<string, unknown>> {
+    const connector = requireRuntimeConnector('save');
+    const capability = input.capability ?? (input.walletAddress ? 'positions' : 'markets');
+    if (capability === 'markets' || capability === 'earn') {
+      const result = await this.saveReserveSnapshot({
+        ...(input.token !== undefined && { token: input.token }),
+        ...(input.reserveMint !== undefined && { reserveMint: input.reserveMint }),
+      });
+      return {
+        connector: connectorCapabilityView(connector, this.config),
+        capability: 'markets',
+        snapshot: result.snapshot,
+        facts: result.facts,
+      };
+    }
+    if (capability === 'positions') {
+      const result = await this.saveWalletObligation({
+        ...(input.walletAddress !== undefined && { walletAddress: input.walletAddress }),
+      });
+      return {
+        connector: connectorCapabilityView(connector, this.config),
+        capability,
+        walletAddress: result.walletAddress,
+        obligation: result.obligation,
+        facts: result.facts,
+      };
+    }
+    if (capability === 'borrow' || capability === 'withdraw' || capability === 'repay') {
+      if (!input.amount?.trim()) {
+        throw new ProtocolError('invalid_request', 'amount is required to preview a Save health impact.');
+      }
+      const operation = capability === 'borrow' ? 'borrow' : capability === 'withdraw' ? 'withdraw' : 'repay';
+      const result = await this.saveHealthPreview({
+        operation,
+        amount: input.amount,
+        ...(input.token !== undefined && { token: input.token }),
+        ...(input.reserveMint !== undefined && { reserveMint: input.reserveMint }),
+        ...(input.walletAddress !== undefined && { walletAddress: input.walletAddress }),
+      });
+      return {
+        connector: connectorCapabilityView(connector, this.config),
+        capability,
+        preview: result.preview,
+        facts: result.facts,
+      };
+    }
+    throw missingConnectorCapability(connector, capability, 'read');
+  }
+
+  private async jitoConnectorFacts(input: ConnectorFactReadInput): Promise<Record<string, unknown>> {
+    const connector = requireRuntimeConnector('jito');
+    const capability = input.capability ?? (input.walletAddress ? 'positions' : input.amount || input.solAmount || input.jitoSolAmount ? 'earn' : 'markets');
+    if (capability === 'markets') {
+      const result = await this.jitoStakePoolSnapshot({
+        ...(input.includeValidators !== undefined && { includeValidators: input.includeValidators }),
+      });
+      return {
+        connector: connectorCapabilityView(connector, this.config),
+        capability,
+        snapshot: result.snapshot,
+        facts: result.facts,
+      };
+    }
+    if (capability === 'positions') {
+      const result = await this.jitoWalletPositions({
+        ...(input.walletAddress !== undefined && { walletAddress: input.walletAddress }),
+        includeStakeAccounts: input.includeStakeAccounts ?? true,
+        ...(input.delegatedOnly !== undefined && { delegatedOnly: input.delegatedOnly }),
+        ...(input.eligibleForJitoDepositOnly !== undefined && { eligibleForJitoDepositOnly: input.eligibleForJitoDepositOnly }),
+      });
+      return {
+        connector: connectorCapabilityView(connector, this.config),
+        capability,
+        walletAddress: result.walletAddress,
+        jitoSol: result.jitoSol,
+        stakeAccounts: result.stakeAccounts,
+        totals: result.totals,
+        facts: result.facts,
+      };
+    }
+    if (capability === 'earn' || capability === 'withdraw') {
+      const operation = input.jitoOperation ?? (capability === 'earn' ? 'stake_sol' : 'unstake_jitosol');
+      const result = await this.jitoQuote({
+        operation,
+        ...(input.solAmount !== undefined ? { solAmount: input.solAmount } : input.amount !== undefined && operation === 'stake_sol' ? { solAmount: input.amount } : {}),
+        ...(input.jitoSolAmount !== undefined ? { jitoSolAmount: input.jitoSolAmount } : input.amount !== undefined && operation === 'unstake_jitosol' ? { jitoSolAmount: input.amount } : {}),
+        ...(input.stakeAccount !== undefined && { stakeAccount: input.stakeAccount }),
+        ...(input.withdrawMode !== undefined && { withdrawMode: input.withdrawMode }),
+      });
+      return {
+        connector: connectorCapabilityView(connector, this.config),
+        capability,
+        quote: result.quote,
+        facts: result.facts,
+      };
+    }
+    throw missingConnectorCapability(connector, capability, 'read');
+  }
+
+  private async marinadeConnectorFacts(input: ConnectorFactReadInput): Promise<Record<string, unknown>> {
+    const connector = requireRuntimeConnector('marinade');
+    const capability = input.capability ?? (input.walletAddress ? 'positions' : input.amount || input.solAmount || input.msolAmount ? 'earn' : 'markets');
+    if (capability === 'markets') {
+      const result = await this.marinadeStateSnapshot();
+      return {
+        connector: connectorCapabilityView(connector, this.config),
+        capability,
+        snapshot: result.snapshot,
+        facts: result.facts,
+      };
+    }
+    if (capability === 'positions') {
+      const result = await this.marinadeWalletPositions({
+        ...(input.walletAddress !== undefined && { walletAddress: input.walletAddress }),
+      });
+      return {
+        connector: connectorCapabilityView(connector, this.config),
+        capability,
+        snapshot: result.snapshot,
+        facts: result.facts,
+      };
+    }
+    if (capability === 'earn' || capability === 'withdraw' || capability === 'swap') {
+      const operation = input.marinadeOperation ?? (capability === 'earn' ? 'liquid_stake' : 'liquid_unstake');
+      const result = await this.marinadeQuote({
+        operation,
+        ...(input.walletAddress !== undefined && { walletAddress: input.walletAddress }),
+        ...(input.solAmount !== undefined ? { solAmount: input.solAmount } : input.amount !== undefined && operation === 'liquid_stake' ? { solAmount: input.amount } : {}),
+        ...(input.msolAmount !== undefined ? { msolAmount: input.msolAmount } : input.amount !== undefined && operation !== 'liquid_stake' ? { msolAmount: input.amount } : {}),
+        ...(input.minSolAmount !== undefined && { minSolAmount: input.minSolAmount }),
+        ...(input.minMsolAmount !== undefined && { minMsolAmount: input.minMsolAmount }),
+        ...(input.ticketAccount !== undefined && { ticketAccount: input.ticketAccount }),
+        ...(input.slippageBps !== undefined && { slippageBps: input.slippageBps }),
+      });
+      return {
+        connector: connectorCapabilityView(connector, this.config),
+        capability,
+        quote: result.quote,
+        facts: result.facts,
+      };
+    }
+    throw missingConnectorCapability(connector, capability, 'read');
+  }
+
+  private async sanctumConnectorFacts(input: ConnectorFactReadInput): Promise<Record<string, unknown>> {
+    const connector = requireRuntimeConnector('sanctum');
+    const capability = input.capability ?? (input.walletAddress ? 'positions' : input.amount ? 'swap' : 'markets');
+    if (capability === 'markets' || capability === 'earn') {
+      const mintOrSymbol = input.lstMint ?? input.reserveMint ?? input.token;
+      if (mintOrSymbol?.trim()) {
+        const result = await this.sanctumLstSnapshot({
+          lstMint: mintOrSymbol,
+          includeApy: true,
+        });
+        return {
+          connector: connectorCapabilityView(connector, this.config),
+          capability: 'markets',
+          snapshot: result.snapshot,
+          facts: result.facts,
+        };
+      }
+      const result = await this.sanctumInfinityPoolSnapshot({ includeComposition: true });
+      return {
+        connector: connectorCapabilityView(connector, this.config),
+        capability: 'markets',
+        snapshot: result.snapshot,
+        facts: result.facts,
+      };
+    }
+    if (capability === 'positions') {
+      const result = await this.sanctumWalletPositions({
+        ...(input.walletAddress !== undefined && { walletAddress: input.walletAddress }),
+      });
+      return {
+        connector: connectorCapabilityView(connector, this.config),
+        capability,
+        snapshot: result.snapshot,
+        facts: result.facts,
+      };
+    }
+    if (capability === 'swap' || capability === 'withdraw' || capability === 'add_liquidity') {
+      const inputMint = input.inputMint ?? input.reserveMint ?? input.token;
+      const outputMint = input.outputMint ?? input.lstMint ?? input.outputToken;
+      if (!inputMint?.trim() || !outputMint?.trim() || !input.amount?.trim()) {
+        throw new ProtocolError(
+          'invalid_request',
+          'inputMint, outputMint, and amount are required to read Sanctum quote facts.',
+        );
+      }
+      const result = await this.sanctumQuote({
+        inputMint,
+        outputMint,
+        amount: input.amount,
+        ...(input.slippageBps !== undefined && { slippageBps: input.slippageBps }),
+      });
+      return {
+        connector: connectorCapabilityView(connector, this.config),
+        capability,
+        quote: result.quote,
+        facts: result.facts,
+      };
+    }
+    throw missingConnectorCapability(connector, capability, 'read');
+  }
+
   async kaminoReserveSnapshot(input: { token?: string; reserveMint?: string }): Promise<Record<string, unknown>> {
     const adapter = requireAdapter('kamino');
     assertSupportedCluster(adapter, this.config.cluster);
@@ -560,6 +2214,571 @@ export class AgentWalletActionService {
     };
   }
 
+  async meteoraPoolSnapshot(input: { poolAddress: string }): Promise<Record<string, unknown>> {
+    const adapter = requireAdapter('meteora');
+    assertSupportedCluster(adapter, this.config.cluster);
+    const read = adapter.reads.pool_snapshot;
+    if (!read) throw new AdapterError('meteora', 'unsupported_method', 'Meteora DLMM pool snapshot read is not registered.');
+    const snapshot = await read.read(input, this.adapterContext(adapter));
+    return {
+      snapshot,
+      facts: factsFromMeteoraPoolSnapshot(snapshot as Parameters<typeof factsFromMeteoraPoolSnapshot>[0]),
+    };
+  }
+
+  async meteoraWalletPositions(input: { walletAddress?: string; poolAddress?: string }): Promise<Record<string, unknown>> {
+    const adapter = requireAdapter('meteora');
+    assertSupportedCluster(adapter, this.config.cluster);
+    const read = adapter.reads.wallet_positions;
+    if (!read) throw new AdapterError('meteora', 'unsupported_method', 'Meteora wallet positions read is not registered.');
+    const result = (await read.read(input, this.adapterContext(adapter))) as {
+      walletAddress: string;
+      poolAddress?: string;
+      positions: Parameters<typeof factsFromMeteoraPositions>[0]['positions'];
+      totals?: Parameters<typeof factsFromMeteoraPositions>[0]['totals'];
+    } & Record<string, unknown>;
+    return {
+      ...result,
+      facts: factsFromMeteoraPositions({
+        walletAddress: result.walletAddress,
+        positions: result.positions,
+        ...(result.poolAddress !== undefined && { poolAddress: result.poolAddress }),
+        ...(result.totals !== undefined && { totals: result.totals }),
+      }),
+    };
+  }
+
+  async meteoraPositionDetail(input: { poolAddress: string; positionAddress: string }): Promise<Record<string, unknown>> {
+    const adapter = requireAdapter('meteora');
+    assertSupportedCluster(adapter, this.config.cluster);
+    const read = adapter.reads.position_detail;
+    if (!read) throw new AdapterError('meteora', 'unsupported_method', 'Meteora position detail read is not registered.');
+    const position = await read.read(input, this.adapterContext(adapter));
+    return {
+      position,
+      facts: factsFromMeteoraPositionDetail(position as Parameters<typeof factsFromMeteoraPositionDetail>[0]),
+    };
+  }
+
+  async orcaWhirlpoolSnapshot(input: { whirlpoolAddress: string }): Promise<Record<string, unknown>> {
+    const adapter = requireAdapter('orca');
+    assertSupportedCluster(adapter, this.config.cluster);
+    const read = adapter.reads.whirlpool_snapshot;
+    if (!read) throw new AdapterError('orca', 'unsupported_method', 'Orca Whirlpool snapshot read is not registered.');
+    const snapshot = await read.read(input, this.adapterContext(adapter));
+    return {
+      snapshot,
+      facts: factsFromOrcaWhirlpoolSnapshot(snapshot as Parameters<typeof factsFromOrcaWhirlpoolSnapshot>[0]),
+    };
+  }
+
+  async orcaWalletPositions(input: { walletAddress?: string; whirlpoolAddress?: string }): Promise<Record<string, unknown>> {
+    const adapter = requireAdapter('orca');
+    assertSupportedCluster(adapter, this.config.cluster);
+    const read = adapter.reads.wallet_positions;
+    if (!read) throw new AdapterError('orca', 'unsupported_method', 'Orca wallet positions read is not registered.');
+    const result = (await read.read(input, this.adapterContext(adapter))) as Parameters<typeof factsFromOrcaPositions>[0];
+    return {
+      ...result,
+      facts: factsFromOrcaPositions(result),
+    };
+  }
+
+  async orcaPositionDetail(input: { positionMint: string; whirlpoolAddress?: string }): Promise<Record<string, unknown>> {
+    const adapter = requireAdapter('orca');
+    assertSupportedCluster(adapter, this.config.cluster);
+    const read = adapter.reads.position_detail;
+    if (!read) throw new AdapterError('orca', 'unsupported_method', 'Orca position detail read is not registered.');
+    const position = await read.read(input, this.adapterContext(adapter));
+    return {
+      position,
+      facts: factsFromOrcaPositionDetail(position as Parameters<typeof factsFromOrcaPositionDetail>[0]),
+    };
+  }
+
+  async raydiumPoolSnapshot(input: { poolId: string; poolType?: string }): Promise<Record<string, unknown>> {
+    const adapter = requireAdapter('raydium');
+    assertSupportedCluster(adapter, this.config.cluster);
+    const read = adapter.reads.pool_snapshot;
+    if (!read) throw new AdapterError('raydium', 'unsupported_method', 'Raydium pool snapshot read is not registered.');
+    const snapshot = await read.read(input, this.adapterContext(adapter));
+    return {
+      snapshot,
+      facts: factsFromRaydiumPoolSnapshot(snapshot as Parameters<typeof factsFromRaydiumPoolSnapshot>[0]),
+    };
+  }
+
+  async raydiumWalletPositions(input: {
+    walletAddress?: string;
+    poolId?: string;
+    poolType?: string;
+    farmId?: string;
+  }): Promise<Record<string, unknown>> {
+    const adapter = requireAdapter('raydium');
+    assertSupportedCluster(adapter, this.config.cluster);
+    const read = adapter.reads.wallet_positions;
+    if (!read) throw new AdapterError('raydium', 'unsupported_method', 'Raydium wallet positions read is not registered.');
+    const result = (await read.read(input, this.adapterContext(adapter))) as Parameters<typeof factsFromRaydiumPositions>[0];
+    return {
+      ...result,
+      facts: factsFromRaydiumPositions(result),
+    };
+  }
+
+  async raydiumPositionDetail(input: {
+    walletAddress?: string;
+    positionMint: string;
+    poolId?: string;
+  }): Promise<Record<string, unknown>> {
+    const adapter = requireAdapter('raydium');
+    assertSupportedCluster(adapter, this.config.cluster);
+    const read = adapter.reads.position_detail;
+    if (!read) throw new AdapterError('raydium', 'unsupported_method', 'Raydium position detail read is not registered.');
+    const position = await read.read(input, this.adapterContext(adapter));
+    return {
+      position,
+      facts: factsFromRaydiumPositionDetail(position as Parameters<typeof factsFromRaydiumPositionDetail>[0]),
+    };
+  }
+
+  async marginfiBankSnapshot(input: {
+    bankAddress?: string;
+    bankMint?: string;
+    token?: string;
+  }): Promise<Record<string, unknown>> {
+    const adapter = requireAdapter('marginfi');
+    assertSupportedCluster(adapter, this.config.cluster);
+    const read = adapter.reads.bank_snapshot;
+    if (!read) throw new AdapterError('marginfi', 'unsupported_method', 'MarginFi bank snapshot read is not registered.');
+    const snapshot = await read.read(input, this.adapterContext(adapter));
+    return {
+      snapshot,
+      facts: factsFromMarginfiBankSnapshot(snapshot as Parameters<typeof factsFromMarginfiBankSnapshot>[0]),
+    };
+  }
+
+  async marginfiWalletAccounts(input: { walletAddress?: string }): Promise<Record<string, unknown>> {
+    const adapter = requireAdapter('marginfi');
+    assertSupportedCluster(adapter, this.config.cluster);
+    const read = adapter.reads.wallet_accounts;
+    if (!read) throw new AdapterError('marginfi', 'unsupported_method', 'MarginFi wallet account read is not registered.');
+    const result = (await read.read(input, this.adapterContext(adapter))) as {
+      walletAddress: string;
+      accounts: Parameters<typeof factsFromMarginfiAccountSummaries>[0]['accounts'];
+    } & Record<string, unknown>;
+    return {
+      ...result,
+      facts: factsFromMarginfiAccountSummaries({
+        walletAddress: result.walletAddress,
+        accounts: result.accounts,
+      }),
+    };
+  }
+
+  async marginfiAccountDetail(input: {
+    walletAddress?: string;
+    marginfiAccount?: string;
+  }): Promise<Record<string, unknown>> {
+    const adapter = requireAdapter('marginfi');
+    assertSupportedCluster(adapter, this.config.cluster);
+    const read = adapter.reads.account_detail;
+    if (!read) throw new AdapterError('marginfi', 'unsupported_method', 'MarginFi account detail read is not registered.');
+    const account = await read.read(input, this.adapterContext(adapter));
+    return {
+      account,
+      facts: factsFromMarginfiAccountDetail(account as Parameters<typeof factsFromMarginfiAccountDetail>[0]),
+    };
+  }
+
+  async marginfiHealthPreview(
+    input: MarginfiActionInput & {
+      operation: 'deposit' | 'withdraw' | 'borrow' | 'repay';
+      walletAddress?: string;
+    },
+  ): Promise<Record<string, unknown>> {
+    const adapter = requireAdapter('marginfi');
+    assertSupportedCluster(adapter, this.config.cluster);
+    const read = adapter.reads.health_preview;
+    if (!read) throw new AdapterError('marginfi', 'unsupported_method', 'MarginFi health preview read is not registered.');
+    const preview = await read.read(
+      {
+        ...input,
+        minHealthRatio: marginfiMinHealthRatio(this.config),
+      },
+      this.adapterContext(adapter),
+    );
+    return {
+      preview,
+      facts: factsFromMarginfiHealthPreview(preview as Parameters<typeof factsFromMarginfiHealthPreview>[0]),
+    };
+  }
+
+  async driftUserSnapshot(
+    input: { walletAddress?: string; subAccountId?: number },
+  ): Promise<Record<string, unknown>> {
+    const adapter = requireAdapter('drift');
+    assertSupportedCluster(adapter, this.config.cluster);
+    const read = adapter.reads.user_snapshot;
+    if (!read) throw new AdapterError('drift', 'unsupported_method', 'Drift user snapshot read is not registered.');
+    return (await read.read(input, this.adapterContext(adapter))) as Record<string, unknown>;
+  }
+
+  async driftVaultSnapshot(input: { vaultAddress: string }): Promise<Record<string, unknown>> {
+    const adapter = requireAdapter('drift');
+    assertSupportedCluster(adapter, this.config.cluster);
+    const read = adapter.reads.vault_snapshot;
+    if (!read) throw new AdapterError('drift', 'unsupported_method', 'Drift vault snapshot read is not registered.');
+    return (await read.read(input, this.adapterContext(adapter))) as Record<string, unknown>;
+  }
+
+  async driftWalletVaultPositions(
+    input: { walletAddress?: string; vaultAddress?: string },
+  ): Promise<Record<string, unknown>> {
+    const adapter = requireAdapter('drift');
+    assertSupportedCluster(adapter, this.config.cluster);
+    const read = adapter.reads.wallet_vault_positions;
+    if (!read) throw new AdapterError('drift', 'unsupported_method', 'Drift wallet vault positions read is not registered.');
+    return (await read.read(input, this.adapterContext(adapter))) as Record<string, unknown>;
+  }
+
+  async driftWithdrawStatus(
+    input: { walletAddress?: string; vaultAddress: string },
+  ): Promise<Record<string, unknown>> {
+    const adapter = requireAdapter('drift');
+    assertSupportedCluster(adapter, this.config.cluster);
+    const read = adapter.reads.withdraw_status;
+    if (!read) throw new AdapterError('drift', 'unsupported_method', 'Drift withdraw status read is not registered.');
+    return (await read.read(input, this.adapterContext(adapter))) as Record<string, unknown>;
+  }
+
+  async squadsWalletAuthority(
+    input: { walletAddress?: string; includeProposals?: boolean },
+  ): Promise<Record<string, unknown>> {
+    const adapter = requireAdapter('squads');
+    assertSupportedCluster(adapter, this.config.cluster);
+    const read = adapter.reads.wallet_authority;
+    if (!read) throw new AdapterError('squads', 'unsupported_method', 'Squads wallet authority read is not registered.');
+    return (await read.read(input, this.adapterContext(adapter))) as Record<string, unknown>;
+  }
+
+  async squadsMultisigSnapshot(
+    input: {
+      multisigAddress: string;
+      includeMembers?: boolean;
+      includeVaults?: boolean;
+      includeProposals?: boolean;
+    },
+  ): Promise<Record<string, unknown>> {
+    const adapter = requireAdapter('squads');
+    assertSupportedCluster(adapter, this.config.cluster);
+    const read = adapter.reads.multisig_snapshot;
+    if (!read) throw new AdapterError('squads', 'unsupported_method', 'Squads multisig snapshot read is not registered.');
+    return (await read.read(input, this.adapterContext(adapter))) as Record<string, unknown>;
+  }
+
+  async squadsVaultSnapshot(
+    input: {
+      multisigAddress: string;
+      vaultIndex?: number;
+      vaultAddress?: string;
+      includeBalances?: boolean;
+    },
+  ): Promise<Record<string, unknown>> {
+    const adapter = requireAdapter('squads');
+    assertSupportedCluster(adapter, this.config.cluster);
+    const read = adapter.reads.vault_snapshot;
+    if (!read) throw new AdapterError('squads', 'unsupported_method', 'Squads vault snapshot read is not registered.');
+    return (await read.read(input, this.adapterContext(adapter))) as Record<string, unknown>;
+  }
+
+  async squadsProposalSnapshot(
+    input: {
+      multisigAddress: string;
+      proposalAddress?: string;
+      transactionIndex?: number;
+      includeInstructions?: boolean;
+    },
+  ): Promise<Record<string, unknown>> {
+    const adapter = requireAdapter('squads');
+    assertSupportedCluster(adapter, this.config.cluster);
+    const read = adapter.reads.proposal_snapshot;
+    if (!read) throw new AdapterError('squads', 'unsupported_method', 'Squads proposal snapshot read is not registered.');
+    return (await read.read(input, this.adapterContext(adapter))) as Record<string, unknown>;
+  }
+
+  async squadsProposalList(
+    input: {
+      multisigAddress: string;
+      status?: 'draft' | 'active' | 'approved' | 'rejected' | 'executed' | 'cancelled' | 'expired' | 'all';
+      limit?: number;
+    },
+  ): Promise<Record<string, unknown>> {
+    const adapter = requireAdapter('squads');
+    assertSupportedCluster(adapter, this.config.cluster);
+    const read = adapter.reads.proposal_list;
+    if (!read) throw new AdapterError('squads', 'unsupported_method', 'Squads proposal list read is not registered.');
+    return (await read.read(input, this.adapterContext(adapter))) as Record<string, unknown>;
+  }
+
+  async realmsWalletGovernance(
+    input: { walletAddress?: string; realmAddress?: string; includeInactive?: boolean },
+  ): Promise<Record<string, unknown>> {
+    const adapter = requireAdapter('realms');
+    assertSupportedCluster(adapter, this.config.cluster);
+    const read = adapter.reads.wallet_governance;
+    if (!read) throw new AdapterError('realms', 'unsupported_method', 'Realms wallet governance read is not registered.');
+    return (await read.read(input, this.adapterContext(adapter))) as Record<string, unknown>;
+  }
+
+  async realmsRealmSnapshot(
+    input: { realmAddress: string; includeGovernances?: boolean; includeTokenMints?: boolean },
+  ): Promise<Record<string, unknown>> {
+    const adapter = requireAdapter('realms');
+    assertSupportedCluster(adapter, this.config.cluster);
+    const read = adapter.reads.realm_snapshot;
+    if (!read) throw new AdapterError('realms', 'unsupported_method', 'Realms realm snapshot read is not registered.');
+    return (await read.read(input, this.adapterContext(adapter))) as Record<string, unknown>;
+  }
+
+  async realmsGovernanceSnapshot(
+    input: { governanceAddress: string; includeConfig?: boolean; includeProposals?: boolean },
+  ): Promise<Record<string, unknown>> {
+    const adapter = requireAdapter('realms');
+    assertSupportedCluster(adapter, this.config.cluster);
+    const read = adapter.reads.governance_snapshot;
+    if (!read) throw new AdapterError('realms', 'unsupported_method', 'Realms governance snapshot read is not registered.');
+    return (await read.read(input, this.adapterContext(adapter))) as Record<string, unknown>;
+  }
+
+  async realmsProposalList(
+    input: {
+      realmAddress: string;
+      governanceAddress?: string;
+      state?: 'draft' | 'signing_off' | 'voting' | 'succeeded' | 'defeated' | 'executing' | 'completed' | 'cancelled' | 'executing_with_errors' | 'vetoed' | 'all';
+      limit?: number;
+    },
+  ): Promise<Record<string, unknown>> {
+    const adapter = requireAdapter('realms');
+    assertSupportedCluster(adapter, this.config.cluster);
+    const read = adapter.reads.proposal_list;
+    if (!read) throw new AdapterError('realms', 'unsupported_method', 'Realms proposal list read is not registered.');
+    return (await read.read(input, this.adapterContext(adapter))) as Record<string, unknown>;
+  }
+
+  async realmsProposalSnapshot(
+    input: { proposalAddress: string; includeInstructions?: boolean; includeVoteBreakdown?: boolean },
+  ): Promise<Record<string, unknown>> {
+    const adapter = requireAdapter('realms');
+    assertSupportedCluster(adapter, this.config.cluster);
+    const read = adapter.reads.proposal_snapshot;
+    if (!read) throw new AdapterError('realms', 'unsupported_method', 'Realms proposal snapshot read is not registered.');
+    return (await read.read(input, this.adapterContext(adapter))) as Record<string, unknown>;
+  }
+
+  async realmsVoteRecord(
+    input: { proposalAddress: string; walletAddress?: string },
+  ): Promise<Record<string, unknown>> {
+    const adapter = requireAdapter('realms');
+    assertSupportedCluster(adapter, this.config.cluster);
+    const read = adapter.reads.vote_record;
+    if (!read) throw new AdapterError('realms', 'unsupported_method', 'Realms vote record read is not registered.');
+    return (await read.read(input, this.adapterContext(adapter))) as Record<string, unknown>;
+  }
+
+  async saveReserveSnapshot(input: { token?: string; reserveMint?: string; marketAddress?: string }): Promise<Record<string, unknown>> {
+    const adapter = requireAdapter('save');
+    assertSupportedCluster(adapter, this.config.cluster);
+    const read = adapter.reads.reserve_snapshot;
+    if (!read) throw new AdapterError('save', 'unsupported_method', 'Save reserve snapshot read is not registered.');
+    const snapshot = await read.read(input, this.adapterContext(adapter));
+    return {
+      snapshot,
+      facts: factsFromSaveReserveSnapshot(snapshot as Parameters<typeof factsFromSaveReserveSnapshot>[0]),
+    };
+  }
+
+  async saveListReserves(input: { marketAddress?: string } = {}): Promise<Record<string, unknown>> {
+    const adapter = requireAdapter('save');
+    assertSupportedCluster(adapter, this.config.cluster);
+    const read = adapter.reads.list_reserves;
+    if (!read) throw new AdapterError('save', 'unsupported_method', 'Save list reserves read is not registered.');
+    const reserves = (await read.read(input, this.adapterContext(adapter))) as Parameters<typeof factsFromSaveReserveSnapshot>[0][];
+    return {
+      reserves,
+      facts: reserves.flatMap((reserve) => factsFromSaveReserveSnapshot(reserve)),
+    };
+  }
+
+  async saveMarketSnapshot(input: { marketAddress?: string } = {}): Promise<Record<string, unknown>> {
+    const adapter = requireAdapter('save');
+    assertSupportedCluster(adapter, this.config.cluster);
+    const read = adapter.reads.market_snapshot;
+    if (!read) throw new AdapterError('save', 'unsupported_method', 'Save market snapshot read is not registered.');
+    const snapshot = (await read.read(input, this.adapterContext(adapter))) as Parameters<typeof factsFromSaveMarketSnapshot>[0];
+    return {
+      snapshot,
+      facts: factsFromSaveMarketSnapshot(snapshot),
+    };
+  }
+
+  async saveWalletObligation(input: { walletAddress?: string; marketAddress?: string }): Promise<Record<string, unknown>> {
+    const adapter = requireAdapter('save');
+    assertSupportedCluster(adapter, this.config.cluster);
+    const read = adapter.reads.wallet_obligation;
+    if (!read) throw new AdapterError('save', 'unsupported_method', 'Save wallet obligation read is not registered.');
+    const result = (await read.read(input, this.adapterContext(adapter))) as {
+      walletAddress: string;
+      cluster: Cluster;
+      obligation: Parameters<typeof factsFromSaveObligation>[0]['obligation'];
+    };
+    return {
+      ...result,
+      facts: factsFromSaveObligation({
+        walletAddress: result.walletAddress,
+        obligation: result.obligation,
+      }),
+    };
+  }
+
+  async saveHealthPreview(input: SaveHealthPreviewInput): Promise<Record<string, unknown>> {
+    const adapter = requireAdapter('save');
+    assertSupportedCluster(adapter, this.config.cluster);
+    const read = adapter.reads.health_preview;
+    if (!read) throw new AdapterError('save', 'unsupported_method', 'Save health preview read is not registered.');
+    const result = (await read.read(input, this.adapterContext(adapter))) as SaveHealthPreviewResult;
+    return {
+      preview: result,
+      facts: factsFromSaveHealthPreview(result.preview, {
+        operation: result.operation,
+        reserveSymbol: result.reserveSymbol,
+      }),
+    };
+  }
+
+  async jitoStakePoolSnapshot(input: { includeValidators?: boolean } = {}): Promise<Record<string, unknown>> {
+    const adapter = requireAdapter('jito');
+    assertSupportedCluster(adapter, this.config.cluster);
+    const read = adapter.reads.stake_pool_snapshot;
+    if (!read) throw new AdapterError('jito', 'unsupported_method', 'Jito stake pool snapshot read is not registered.');
+    const snapshot = (await read.read(input, this.adapterContext(adapter))) as Parameters<typeof factsFromJitoStakePoolSnapshot>[0];
+    return {
+      snapshot,
+      facts: factsFromJitoStakePoolSnapshot(snapshot),
+    };
+  }
+
+  async jitoWalletPositions(input: {
+    walletAddress?: string;
+    includeStakeAccounts?: boolean;
+    delegatedOnly?: boolean;
+    eligibleForJitoDepositOnly?: boolean;
+  } = {}): Promise<Record<string, unknown>> {
+    const adapter = requireAdapter('jito');
+    assertSupportedCluster(adapter, this.config.cluster);
+    const read = adapter.reads.wallet_positions;
+    if (!read) throw new AdapterError('jito', 'unsupported_method', 'Jito wallet positions read is not registered.');
+    const snapshot = (await read.read(input, this.adapterContext(adapter))) as Parameters<typeof factsFromJitoWalletPositions>[0];
+    return {
+      ...snapshot,
+      facts: factsFromJitoWalletPositions(snapshot),
+    };
+  }
+
+  async jitoWalletStakeAccounts(input: {
+    walletAddress?: string;
+    delegatedOnly?: boolean;
+    eligibleForJitoDepositOnly?: boolean;
+  } = {}): Promise<Record<string, unknown>> {
+    const adapter = requireAdapter('jito');
+    assertSupportedCluster(adapter, this.config.cluster);
+    const read = adapter.reads.wallet_stake_accounts;
+    if (!read) throw new AdapterError('jito', 'unsupported_method', 'Jito wallet stake accounts read is not registered.');
+    const result = (await read.read(input, this.adapterContext(adapter))) as {
+      walletAddress: string;
+      stakeAccounts: Parameters<typeof factsFromJitoStakeAccounts>[0]['stakeAccounts'];
+    };
+    return {
+      ...result,
+      facts: factsFromJitoStakeAccounts(result),
+    };
+  }
+
+  async jitoQuote(input: JitoQuoteInput): Promise<Record<string, unknown>> {
+    const adapter = requireAdapter('jito');
+    assertSupportedCluster(adapter, this.config.cluster);
+    const read = adapter.reads.quote;
+    if (!read) throw new AdapterError('jito', 'unsupported_method', 'Jito quote read is not registered.');
+    const quote = (await read.read(input, this.adapterContext(adapter))) as Parameters<typeof factsFromJitoQuote>[0];
+    return {
+      quote,
+      facts: factsFromJitoQuote(quote),
+    };
+  }
+
+  async marinadeStateSnapshot(): Promise<Record<string, unknown>> {
+    const adapter = requireAdapter('marinade');
+    assertSupportedCluster(adapter, this.config.cluster);
+    const read = adapter.reads.state_snapshot;
+    if (!read) throw new AdapterError('marinade', 'unsupported_method', 'Marinade state snapshot read is not registered.');
+    const snapshot = (await read.read({}, this.adapterContext(adapter))) as Parameters<typeof factsFromMarinadeStateSnapshot>[0];
+    return {
+      snapshot,
+      facts: factsFromMarinadeStateSnapshot(snapshot),
+    };
+  }
+
+  async marinadeWalletPositions(input: { walletAddress?: string } = {}): Promise<Record<string, unknown>> {
+    const adapter = requireAdapter('marinade');
+    assertSupportedCluster(adapter, this.config.cluster);
+    const read = adapter.reads.wallet_positions;
+    if (!read) throw new AdapterError('marinade', 'unsupported_method', 'Marinade wallet positions read is not registered.');
+    const snapshot = (await read.read(input, this.adapterContext(adapter))) as Parameters<typeof factsFromMarinadeWalletPositions>[0];
+    return {
+      snapshot,
+      facts: factsFromMarinadeWalletPositions(snapshot),
+    };
+  }
+
+  async marinadeWalletStakeAccounts(input: { walletAddress?: string } = {}): Promise<Record<string, unknown>> {
+    const adapter = requireAdapter('marinade');
+    assertSupportedCluster(adapter, this.config.cluster);
+    const read = adapter.reads.wallet_stake_accounts;
+    if (!read) throw new AdapterError('marinade', 'unsupported_method', 'Marinade wallet stake accounts read is not registered.');
+    const stakeAccounts = (await read.read(input, this.adapterContext(adapter))) as Parameters<typeof factsFromMarinadeStakeAccounts>[0]['stakeAccounts'];
+    const walletAddress = input.walletAddress ?? await this.backend.getAddress();
+    const result = { walletAddress, stakeAccounts };
+    return {
+      ...result,
+      facts: factsFromMarinadeStakeAccounts(result),
+    };
+  }
+
+  async marinadeUnstakeTickets(input: { walletAddress?: string; claimableOnly?: boolean } = {}): Promise<Record<string, unknown>> {
+    const adapter = requireAdapter('marinade');
+    assertSupportedCluster(adapter, this.config.cluster);
+    const read = adapter.reads.unstake_tickets;
+    if (!read) throw new AdapterError('marinade', 'unsupported_method', 'Marinade unstake tickets read is not registered.');
+    const tickets = (await read.read(input, this.adapterContext(adapter))) as Parameters<typeof factsFromMarinadeUnstakeTickets>[0]['tickets'];
+    const walletAddress = input.walletAddress ?? await this.backend.getAddress();
+    const result = { walletAddress, tickets };
+    return {
+      ...result,
+      facts: factsFromMarinadeUnstakeTickets(result),
+    };
+  }
+
+  async marinadeQuote(input: MarinadeQuoteReadInput): Promise<Record<string, unknown>> {
+    const adapter = requireAdapter('marinade');
+    assertSupportedCluster(adapter, this.config.cluster);
+    const read = adapter.reads.quote;
+    if (!read) throw new AdapterError('marinade', 'unsupported_method', 'Marinade quote read is not registered.');
+    const quote = (await read.read(input, this.adapterContext(adapter))) as Parameters<typeof factsFromMarinadeQuote>[0];
+    return {
+      quote,
+      facts: factsFromMarinadeQuote(quote),
+    };
+  }
+
   async prepareSwap(input: PrepareSwapInput): Promise<Record<string, unknown>> {
     requireActionAllowed(this.config);
     const swap = await normalizeSwapInput(this.config, this.connection, input);
@@ -571,12 +2790,20 @@ export class AgentWalletActionService {
       summary: `Swap ${input.amount} ${swap.inputSymbol} to ${swap.outputSymbol}`,
       params: {
         connectorId: 'jupiter',
+        product: 'swap',
         operation: 'swap',
         approvalBoundary: CONNECTOR_APPROVAL_BOUNDARY,
         inputToken: swap.inputSymbol,
         outputToken: swap.outputSymbol,
+        inputMint: swap.inputMint,
+        outputMint: swap.outputMint,
         amount: input.amount,
+        amountRaw: swap.amountRaw.toString(),
         slippageBps: swap.slippageBps,
+        maxSwapInput: this.config.mainnet.maxSwapInput,
+        apiBaseUrlHost: jupiterApiHost(this.config, 'swap'),
+        preparedAt: new Date().toISOString(),
+        refreshAtExecution: true,
       },
       ...(input.dueAt !== undefined && { dueAt: input.dueAt }),
       ...(input.note !== undefined && { note: input.note }),
@@ -858,6 +3085,15 @@ export class AgentWalletActionService {
     requireActionAllowed(this.config);
     const taker = await this.backend.getAddress();
     const swap = await normalizeSwapInput(this.config, this.connection, input);
+    return this.signAndExecuteJupiterSwap(input, taker, swap);
+  }
+
+  private async signAndExecuteJupiterSwap(
+    input: SwapInput,
+    taker: string,
+    swap: NormalizedSwapInput,
+    minimumOutputRaw?: string,
+  ): Promise<Record<string, unknown> & { txid: string }> {
     const order = await fetchJupiterOrder(this.config, taker, swap);
     if (!order.transaction || typeof order.transaction !== 'string') {
       throw new ProtocolError(
@@ -867,6 +3103,7 @@ export class AgentWalletActionService {
           : 'Jupiter did not return a transaction for this order.',
       );
     }
+    enforceMinimumPreparedOutput(order, minimumOutputRaw);
     const swapSummary = `Swap ${input.amount} ${swap.inputSymbol} to ${swap.outputSymbol}`;
     await this.simulateBeforeSign(order.transaction, swapSummary);
     const signed = await this.client.signTransaction(order.transaction, {
@@ -874,12 +3111,13 @@ export class AgentWalletActionService {
       summary: swapSummary,
     });
     const executed = await executeJupiterOrder(this.config, signed.signature, order);
+    const txid = executionSignature(executed);
     return {
       ...orderSummary(order),
       status: executed.status,
-      txid: executed.signature,
-      explorerUrl: typeof executed.signature === 'string' ? explorerUrl(executed.signature, this.config.cluster) : null,
-      execution: executed,
+      txid,
+      explorerUrl: explorerUrl(txid, this.config.cluster),
+      execution: executionSummary(executed),
     };
   }
 
@@ -906,9 +3144,73 @@ export class AgentWalletActionService {
         return this.executePreparedSwap(action);
       case 'kamino_deposit':
       case 'kamino_withdraw':
+      case 'meteora_claim_fees':
+      case 'meteora_claim_rewards':
+      case 'meteora_add_liquidity':
+      case 'meteora_remove_liquidity':
+      case 'meteora_close_position':
+      case 'orca_increase_liquidity':
+      case 'orca_decrease_liquidity':
+      case 'orca_collect_fees':
+      case 'orca_collect_rewards':
+      case 'marginfi_deposit':
+      case 'marginfi_withdraw':
+      case 'marginfi_borrow':
+      case 'marginfi_repay':
+      case 'drift_vault_deposit':
+      case 'drift_vault_request_withdraw':
+      case 'drift_vault_cancel_withdraw':
+      case 'drift_vault_complete_withdraw':
+      case 'save_deposit':
+      case 'save_withdraw':
+      case 'save_borrow':
+      case 'save_repay':
+      case 'jito_stake_sol':
+      case 'jito_deposit_stake_account':
+      case 'jito_unstake_jitosol':
+      case 'jito_withdraw_sol':
+      case 'marinade_liquid_stake':
+      case 'marinade_liquid_unstake':
+      case 'marinade_delayed_unstake':
+      case 'marinade_claim_delayed_unstake':
+      case 'lulo_deposit':
+      case 'lulo_withdraw':
+      case 'lulo_complete_withdraw':
+      case 'raydium_add_liquidity':
+      case 'raydium_remove_liquidity':
+      case 'raydium_collect_fees':
+      case 'raydium_farm_stake':
+      case 'raydium_farm_unstake':
+      case 'raydium_harvest':
+      case 'tensor_buy':
+      case 'tensor_list':
+      case 'tensor_cancel_listing':
+      case 'tensor_bid':
+      case 'tensor_cancel_bid':
+      case 'tensor_sweep':
+      case 'sanctum_swap_lst':
+      case 'sanctum_add_infinity_liquidity':
+      case 'sanctum_remove_infinity_liquidity':
+      case 'sanctum_stake_sol_to_lst':
+      case 'sanctum_unstake_lst_to_sol':
+      case 'realms_cast_vote':
+      case 'realms_relinquish_vote':
+      case 'realms_deposit_governance_tokens':
+      case 'realms_withdraw_governance_tokens':
+      case 'pyth_post_price_update':
+      case 'squads_create_transfer_proposal':
+      case 'squads_approve_proposal':
+      case 'squads_reject_proposal':
+      case 'squads_cancel_proposal':
+      case 'squads_execute_proposal':
         return this.executePreparedAdapterAction(action);
       case 'blink_action':
         return this.executePreparedBlinkAction(action);
+      default:
+        throw new ProtocolError(
+          'unsupported_method',
+          `Unsupported prepared action kind ${action.kind}.`,
+        );
     }
   }
 
@@ -934,6 +3236,14 @@ export class AgentWalletActionService {
 
   private adapterContext(adapter: DAppAdapter): DAppAdapterContext {
     void adapter;
+    const signTransaction = async (transactionBase64: string, summary: string): Promise<string> => {
+      await this.simulateBeforeSign(transactionBase64, summary);
+      const signed = await this.client.signTransaction(transactionBase64, {
+        cluster: this.config.cluster,
+        summary,
+      });
+      return signed.signature;
+    };
     const signAndBroadcast = async (transactionBase64: string, summary: string): Promise<string> => {
       await this.simulateBeforeSign(transactionBase64, summary);
       const signed = await this.client.signTransaction(transactionBase64, {
@@ -949,6 +3259,7 @@ export class AgentWalletActionService {
       backend: this.backend,
       config: this.config,
       connection: this.connection,
+      signTransaction,
       signAndBroadcast,
       store: this.store(),
     };
@@ -984,11 +3295,9 @@ export class AgentWalletActionService {
           ? action.params.slippageBps
           : this.config.mainnet.maxSlippageBps,
     };
-    const result = await this.swap(input);
-    if (typeof result.txid !== 'string') {
-      throw new ProtocolError('wallet_unreachable', 'Swap execution did not return a transaction signature.');
-    }
-    return result as Record<string, unknown> & { txid: string };
+    const taker = await this.backend.getAddress();
+    const swap = await normalizeSwapInput(this.config, this.connection, input);
+    return this.signAndExecuteJupiterSwap(input, taker, swap, preparedMinimumOutputRaw(action));
   }
 
   private async executePreparedBlinkAction(action: PreparedAction): Promise<Record<string, unknown> & { txid: string }> {
@@ -1092,6 +3401,19 @@ function assertConnectorCluster(connector: ConnectorRegistryEntry, cluster: Clus
       `${connector.name} is only available on ${connector.supportedClusters.join(', ')}; current cluster is ${cluster}.`,
     );
   }
+}
+
+function marginfiDefaultCapability(input: ConnectorFactReadInput): ConnectorCapability {
+  if (input.operation) {
+    return input.operation === 'deposit' ? 'earn' : input.operation;
+  }
+  if (input.marginfiAccount || input.walletAddress) {
+    return 'positions';
+  }
+  if (input.amount) {
+    return 'earn';
+  }
+  return 'markets';
 }
 
 function missingConnectorCapability(
@@ -1489,6 +3811,8 @@ interface NormalizedSwapInput {
   outputMint: string;
   inputSymbol: string;
   outputSymbol: string;
+  inputDecimals: number;
+  outputDecimals: number;
   amountRaw: bigint;
   slippageBps: number;
 }
@@ -1498,20 +3822,43 @@ interface ResolvedTokenConfig extends TokenLimitConfig {
   tokenProgramId: PublicKey;
 }
 
+function assertJupiterSwapCluster(config: AgentWalletConfig): void {
+  if (config.cluster !== 'mainnet-beta') {
+    throw new ProtocolError(
+      'cluster_mismatch',
+      `Jupiter swaps are only available on mainnet-beta; current cluster is ${config.cluster}.`,
+    );
+  }
+  requireMainnetEnabled(config);
+}
+
 async function normalizeSwapInput(
   config: AgentWalletConfig,
   connection: Connection,
   input: SwapInput,
 ): Promise<NormalizedSwapInput> {
+  assertJupiterSwapCluster(config);
   const inputToken = await resolveSwapToken(config, connection, input.inputToken ?? 'SOL');
   const outputToken = await resolveSwapToken(config, connection, input.outputToken ?? 'USDC');
   const slippageBps = input.slippageBps ?? config.mainnet.maxSlippageBps;
+  if (!Number.isInteger(slippageBps) || slippageBps < 1) {
+    throw new ProtocolError('invalid_request', 'Jupiter swap slippageBps must be a positive integer.');
+  }
+  if (slippageBps > config.mainnet.maxSlippageBps) {
+    throw new ProtocolError(
+      'unauthorized',
+      `Jupiter swap slippage ${slippageBps} bps exceeds configured cap of ${config.mainnet.maxSlippageBps} bps.`,
+    );
+  }
   const amountRaw = parseDecimalAmount(input.amount, inputToken.decimals, `${inputToken.symbol} swap amount`);
+  assertMaxAmount(amountRaw, config.mainnet.maxSwapInput, inputToken.decimals, `${inputToken.symbol} swap amount`);
   return {
     inputMint: inputToken.mint,
     outputMint: outputToken.mint,
     inputSymbol: inputToken.symbol,
     outputSymbol: outputToken.symbol,
+    inputDecimals: inputToken.decimals,
+    outputDecimals: outputToken.decimals,
     amountRaw,
     slippageBps,
   };
@@ -1605,22 +3952,15 @@ async function fetchJupiterOrder(
   taker: string,
   swap: NormalizedSwapInput,
 ): Promise<Record<string, unknown>> {
-  const apiKey = jupiterApiKey(config);
-  if (!apiKey) {
-    throw new ProtocolError('unauthorized', `Missing Jupiter API key. Set ${config.jupiter.apiKeyEnv} or JUP_API_KEY before using swap tools.`);
-  }
-  const url = new URL(`${config.jupiter.baseUrl}/order`);
-  url.searchParams.set('inputMint', swap.inputMint);
-  url.searchParams.set('outputMint', swap.outputMint);
-  url.searchParams.set('amount', swap.amountRaw.toString());
-  url.searchParams.set('taker', taker);
-  url.searchParams.set('slippageBps', swap.slippageBps.toString());
-  const response = await fetch(url, { headers: { 'x-api-key': apiKey } });
-  const body = (await response.json().catch(() => ({}))) as Record<string, unknown>;
-  if (!response.ok) {
-    throw new ProtocolError('wallet_unreachable', `Jupiter order failed with HTTP ${response.status}: ${JSON.stringify(body)}`);
-  }
-  return body;
+  return jupiterFetchJson(config, 'swap', '/order', {
+    searchParams: {
+      inputMint: swap.inputMint,
+      outputMint: swap.outputMint,
+      amount: swap.amountRaw.toString(),
+      taker,
+      slippageBps: swap.slippageBps,
+    },
+  });
 }
 
 async function executeJupiterOrder(
@@ -1628,37 +3968,22 @@ async function executeJupiterOrder(
   signedTransaction: string,
   order: Record<string, unknown>,
 ): Promise<Record<string, unknown>> {
-  const apiKey = jupiterApiKey(config);
-  if (!apiKey) {
-    throw new ProtocolError('unauthorized', `Missing Jupiter API key. Set ${config.jupiter.apiKeyEnv} or JUP_API_KEY.`);
-  }
   const requestId = order.requestId;
   if (typeof requestId !== 'string') {
     throw new ProtocolError('invalid_request', 'Jupiter order did not include requestId.');
   }
-  const response = await fetch(`${config.jupiter.baseUrl}/execute`, {
+  const body = await jupiterFetchJson(config, 'swap', '/execute', {
     method: 'POST',
-    headers: {
-      'content-type': 'application/json',
-      'x-api-key': apiKey,
-    },
-    body: JSON.stringify({
+    body: {
       signedTransaction,
       requestId,
       ...(typeof order.lastValidBlockHeight === 'string' || typeof order.lastValidBlockHeight === 'number'
         ? { lastValidBlockHeight: order.lastValidBlockHeight }
         : {}),
-    }),
+    },
   });
-  const body = (await response.json().catch(() => ({}))) as Record<string, unknown>;
-  if (!response.ok) {
-    throw new ProtocolError('wallet_unreachable', `Jupiter execute failed with HTTP ${response.status}: ${JSON.stringify(body)}`);
-  }
+  assertJupiterExecutionSucceeded(body);
   return body;
-}
-
-function jupiterApiKey(config: AgentWalletConfig): string | undefined {
-  return process.env[config.jupiter.apiKeyEnv]?.trim() || process.env.JUP_API_KEY?.trim() || undefined;
 }
 
 function orderSummary(order: Record<string, unknown>): Record<string, unknown> {
@@ -1668,15 +3993,116 @@ function orderSummary(order: Record<string, unknown>): Record<string, unknown> {
     inputMint: order.inputMint,
     outputMint: order.outputMint,
     inAmount: order.inAmount,
+    inUsdValue: order.inUsdValue,
     outAmount: order.outAmount,
+    outUsdValue: order.outUsdValue,
+    swapUsdValue: order.swapUsdValue,
     otherAmountThreshold: order.otherAmountThreshold,
+    swapMode: order.swapMode,
     slippageBps: order.slippageBps,
     priceImpact: order.priceImpact,
+    priceImpactPct: order.priceImpactPct,
+    routePlan: summarizeJupiterRoutePlan(order.routePlan),
+    feeMint: order.feeMint,
+    feeBps: order.feeBps,
+    platformFee: safeRecord(order.platformFee),
+    signatureFeeLamports: order.signatureFeeLamports,
+    signatureFeePayer: order.signatureFeePayer,
+    prioritizationFeeLamports: order.prioritizationFeeLamports,
+    prioritizationFeePayer: order.prioritizationFeePayer,
+    rentFeeLamports: order.rentFeeLamports,
+    rentFeePayer: order.rentFeePayer,
+    swapType: order.swapType,
+    gasless: order.gasless,
+    taker: order.taker,
+    quoteId: order.quoteId,
+    maker: order.maker,
+    expireAt: order.expireAt,
     requestId: order.requestId,
+    lastValidBlockHeight: order.lastValidBlockHeight,
+    totalTime: order.totalTime,
     hasTransaction: Boolean(order.transaction),
     errorCode: order.errorCode,
     errorMessage: order.errorMessage ?? order.error,
   };
+}
+
+function assertJupiterExecutionSucceeded(executed: Record<string, unknown>): void {
+  const status = typeof executed.status === 'string' ? executed.status : '';
+  const code = typeof executed.code === 'number' || typeof executed.code === 'string' ? executed.code : undefined;
+  if (status.toLowerCase() === 'failed' || (typeof code === 'number' && code !== 0) || (typeof code === 'string' && code && code !== '0')) {
+    const signature = typeof executed.signature === 'string' ? ` signature ${executed.signature}` : '';
+    const error = typeof executed.error === 'string' && executed.error ? `: ${executed.error}` : '';
+    throw new ProtocolError(
+      'wallet_unreachable',
+      `Jupiter execute failed${code !== undefined ? ` with code ${code}` : ''}${signature}${error}`,
+    );
+  }
+}
+
+function executionSignature(executed: Record<string, unknown>): string {
+  const signature = typeof executed.signature === 'string' ? executed.signature : typeof executed.txid === 'string' ? executed.txid : '';
+  if (!signature) {
+    throw new ProtocolError('wallet_unreachable', 'Jupiter execution did not return a transaction signature.');
+  }
+  return signature;
+}
+
+function executionSummary(executed: Record<string, unknown>): Record<string, unknown> {
+  return {
+    status: executed.status,
+    signature: executed.signature,
+    slot: executed.slot,
+    code: executed.code,
+    totalInputAmount: executed.totalInputAmount,
+    totalOutputAmount: executed.totalOutputAmount,
+    inputAmountResult: executed.inputAmountResult,
+    outputAmountResult: executed.outputAmountResult,
+    swapEvents: Array.isArray(executed.swapEvents) ? executed.swapEvents : undefined,
+    error: executed.error,
+  };
+}
+
+function summarizeJupiterRoutePlan(value: unknown): unknown {
+  if (!Array.isArray(value)) return undefined;
+  return value.map((entry) => {
+    const record = safeRecord(entry);
+    const swapInfo = safeRecord(record?.swapInfo);
+    return {
+      label: swapInfo?.label,
+      ammKey: swapInfo?.ammKey,
+      inputMint: swapInfo?.inputMint,
+      outputMint: swapInfo?.outputMint,
+      inAmount: swapInfo?.inAmount,
+      outAmount: swapInfo?.outAmount,
+      percent: record?.percent,
+      bps: record?.bps,
+      usdValue: record?.usdValue,
+    };
+  });
+}
+
+function safeRecord(value: unknown): Record<string, unknown> | undefined {
+  return value && typeof value === 'object' && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : undefined;
+}
+
+function preparedMinimumOutputRaw(action: PreparedAction): string | undefined {
+  const snapshot = safeRecord(action.params.quoteSnapshot);
+  const threshold = snapshot?.otherAmountThreshold ?? action.params.otherAmountThreshold;
+  return typeof threshold === 'string' && /^\d+$/.test(threshold) ? threshold : undefined;
+}
+
+function enforceMinimumPreparedOutput(order: Record<string, unknown>, minimumOutputRaw: string | undefined): void {
+  if (!minimumOutputRaw) return;
+  const outAmount = typeof order.outAmount === 'string' && /^\d+$/.test(order.outAmount) ? BigInt(order.outAmount) : undefined;
+  if (outAmount !== undefined && outAmount < BigInt(minimumOutputRaw)) {
+    throw new ProtocolError(
+      'unauthorized',
+      `Refreshed Jupiter output ${outAmount.toString()} is below the prepared minimum output ${minimumOutputRaw}.`,
+    );
+  }
 }
 
 async function prepareTransaction(connection: Connection, transaction: Transaction, feePayer: PublicKey): Promise<void> {

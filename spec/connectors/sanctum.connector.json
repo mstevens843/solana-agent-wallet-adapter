@@ -1,0 +1,298 @@
+{
+  "$schema": "./connector-pack.schema.json",
+  "id": "sanctum",
+  "name": "Sanctum",
+  "status": "first_class",
+  "aliases": ["sanctum", "sanctum infinity", "infinity", "inf", "lst", "liquid staking"],
+  "supportedClusters": ["mainnet-beta"],
+  "requiredConfig": [
+    {
+      "name": "SANCTUM_API_KEY",
+      "scope": "env",
+      "required": true,
+      "description": "Sanctum API key. Required for live LST reads, Token Swap quotes, and prepared actions. Must never be persisted in receipts, prepared-action params, notes, warnings, or browser state."
+    },
+    {
+      "name": "SANCTUM_API_BASE_URL",
+      "scope": "env",
+      "required": false,
+      "description": "Override the Sanctum API base URL. Defaults to https://sanctum-api.ironforge.network."
+    },
+    {
+      "name": "SANCTUM_CONNECTOR_ENABLED",
+      "scope": "env",
+      "required": false,
+      "description": "Optional feature flag. Values false, 0, or off disable the connector."
+    }
+  ],
+  "readCapabilities": [
+    {
+      "toolName": "solana_sanctum_lst_list",
+      "source": "first-class-adapter",
+      "implemented": true,
+      "requiresClientKey": false,
+      "returns": "Sanctum LST catalog metadata, including mint, symbol, decimals, disabled status, and validator or pool metadata where the API exposes it.",
+      "facts": ["mint", "symbol", "decimals", "disabled", "validatorVoteAccount"]
+    },
+    {
+      "toolName": "solana_sanctum_lst_snapshot",
+      "source": "first-class-adapter",
+      "implemented": true,
+      "requiresClientKey": false,
+      "returns": "One Sanctum LST metadata snapshot by mint or symbol, with optional APY rows.",
+      "facts": ["mint", "symbol", "decimals", "name", "apy", "apyTimestamp"]
+    },
+    {
+      "toolName": "solana_sanctum_infinity_pool_snapshot",
+      "source": "first-class-adapter",
+      "implemented": true,
+      "requiresClientKey": false,
+      "returns": "Infinity pool metadata, INF mint, known Sanctum program ids, supported LST count, and optional catalog-derived composition.",
+      "facts": ["infMint", "programIds", "supportedLstCount", "composition"]
+    },
+    {
+      "toolName": "solana_sanctum_wallet_positions",
+      "source": "first-class-adapter",
+      "implemented": true,
+      "requiresClientKey": false,
+      "returns": "Wallet LST and INF balances found in SPL Token and Token-2022 accounts.",
+      "facts": ["walletAddress", "mint", "symbol", "uiAmount", "rawAmount", "programId"]
+    },
+    {
+      "toolName": "solana_sanctum_quote",
+      "source": "first-class-adapter",
+      "implemented": true,
+      "requiresClientKey": false,
+      "returns": "Sanctum Token Swap order preview for a supported input mint, output mint, amount, and slippage.",
+      "facts": ["inputMint", "outputMint", "inputAmountRaw", "outputAmountRaw", "minOutputAmountRaw", "feeBps", "routeSources"]
+    }
+  ],
+  "writeCapabilities": [
+    {
+      "actionKind": "sanctum_swap_lst",
+      "executionMode": "first_class_adapter",
+      "implemented": true,
+      "prepares": "An inbox-bound PreparedAction that records input/output mints, human and raw amount, minimum output, slippage cap, fee cap, requested Sanctum sources, and quote facts. No reusable transaction is persisted.",
+      "executesVia": "solana_execute_prepared_action",
+      "userApproves": "A freshly refreshed Sanctum Token Swap transaction routed through Sanctum Router/Infinity sources."
+    },
+    {
+      "actionKind": "sanctum_add_infinity_liquidity",
+      "executionMode": "first_class_adapter",
+      "implemented": true,
+      "prepares": "An inbox-bound PreparedAction that deposits a supported LST/SOL token into Infinity for INF, with minimum INF and fee/slippage caps.",
+      "executesVia": "solana_execute_prepared_action",
+      "userApproves": "A freshly refreshed Sanctum Token Swap transaction using Infinity sources only."
+    },
+    {
+      "actionKind": "sanctum_remove_infinity_liquidity",
+      "executionMode": "first_class_adapter",
+      "implemented": true,
+      "prepares": "An inbox-bound PreparedAction that redeems INF into a supported LST/SOL token, with minimum output and fee/slippage caps.",
+      "executesVia": "solana_execute_prepared_action",
+      "userApproves": "A freshly refreshed Sanctum Token Swap transaction using Infinity sources only."
+    },
+    {
+      "actionKind": "sanctum_stake_sol_to_lst",
+      "executionMode": "first_class_adapter",
+      "implemented": true,
+      "prepares": "An inbox-bound PreparedAction that stakes SOL into a Sanctum-supported LST through Router/Infinity sources.",
+      "executesVia": "solana_execute_prepared_action",
+      "userApproves": "A freshly refreshed Sanctum Token Swap transaction from wrapped SOL into the requested LST."
+    },
+    {
+      "actionKind": "sanctum_unstake_lst_to_sol",
+      "executionMode": "first_class_adapter",
+      "implemented": true,
+      "prepares": "An inbox-bound PreparedAction that swaps or unstakes a Sanctum-supported LST into SOL, refusing delayed unstake routes unless explicitly allowed.",
+      "executesVia": "solana_execute_prepared_action",
+      "userApproves": "A freshly refreshed Sanctum Token Swap transaction from the requested LST into wrapped SOL/SOL."
+    }
+  ],
+  "requiredUserInputs": [
+    {
+      "name": "inputMint",
+      "kind": "text",
+      "required": true,
+      "appliesTo": ["sanctum_swap_lst", "sanctum_add_infinity_liquidity", "solana_sanctum_quote"],
+      "prompt": "Which input token mint should Sanctum use?"
+    },
+    {
+      "name": "outputMint",
+      "kind": "text",
+      "required": true,
+      "appliesTo": ["sanctum_swap_lst", "sanctum_remove_infinity_liquidity", "solana_sanctum_quote"],
+      "prompt": "Which output token mint should Sanctum return?"
+    },
+    {
+      "name": "amount",
+      "kind": "number",
+      "required": true,
+      "appliesTo": ["sanctum_swap_lst", "sanctum_add_infinity_liquidity", "solana_sanctum_quote"],
+      "prompt": "How much should Sanctum route?"
+    },
+    {
+      "name": "infAmount",
+      "kind": "number",
+      "required": true,
+      "appliesTo": ["sanctum_remove_infinity_liquidity"],
+      "prompt": "How much INF should Sanctum redeem?"
+    },
+    {
+      "name": "lstMint",
+      "kind": "text",
+      "required": true,
+      "appliesTo": ["sanctum_stake_sol_to_lst", "sanctum_unstake_lst_to_sol"],
+      "prompt": "Which LST mint should Sanctum use?"
+    },
+    {
+      "name": "solAmount",
+      "kind": "number",
+      "required": true,
+      "appliesTo": ["sanctum_stake_sol_to_lst"],
+      "prompt": "How much SOL should be staked?"
+    },
+    {
+      "name": "lstAmount",
+      "kind": "number",
+      "required": true,
+      "appliesTo": ["sanctum_unstake_lst_to_sol"],
+      "prompt": "How much of the LST should be unstaked?"
+    },
+    {
+      "name": "allowDelayedUnstake",
+      "kind": "select",
+      "required": false,
+      "appliesTo": ["sanctum_unstake_lst_to_sol"],
+      "options": ["false", "true"],
+      "prompt": "Should delayed unstake routes be allowed?"
+    }
+  ],
+  "requiredConnectorFacts": [
+    "Sanctum LST metadata and decimals for every non-SOL, non-INF mint.",
+    "Sanctum Token Swap quote before storing a prepared action.",
+    "Route sources from the quote; Jupiter sources are refused.",
+    "Minimum output and fee cap checks before prepare and again at execution.",
+    "Fresh Token Swap order at execution time; prepared transactions are not reused.",
+    "Wallet LST/INF positions before answering position or exposure questions."
+  ],
+  "unsupportedRequests": [
+    "Move funds without wallet approval or with autonomous signing.",
+    "Use Sanctum on devnet, testnet, or localnet.",
+    "Use Sanctum when SANCTUM_API_KEY is not configured.",
+    "Promise guaranteed APY, guaranteed liquidity, risk-free staking, or instant unstake.",
+    "Route through Jupiter as a fallback when Sanctum cannot produce a valid quote.",
+    "Manage validators, create custom LST pools, perform LST issuer admin actions, or automate recurring LST rebalances.",
+    "Accept a delayed unstake path unless the user explicitly sets allowDelayedUnstake true."
+  ],
+  "actionPreparationNotes": "Use the Sanctum Token Swap order endpoint for quotes and execution refreshes. Add/remove Infinity liquidity must request only the Inf source. LST swaps and SOL stake/unstake may request Inf plus SanctumRouter. Store quote facts and route constraints, not the transaction. Execution refreshes the order, repeats route/min-output/fee checks, asks the wallet to sign, and submits via Sanctum execute.",
+  "riskNotes": "LST routes can include slippage, fees, pool liquidity constraints, stale APY data, and delayed unstake paths. Surface those facts as current-state facts, not guarantees. Missing API data is a warning or refusal, never a silent zero.",
+  "approvalBoundary": {
+    "readGated": true,
+    "writeGated": true,
+    "blinkBacked": false,
+    "summary": "safety.prepare_only"
+  },
+  "walletApprovalBoundary": "Sanctum writes are prepare-only. The Sanctum API returns the transaction, the adapter refreshes and validates it at execution time, and only the wallet signs.",
+  "examples": {
+    "requests": [
+      {
+        "user": "show Sanctum LSTs",
+        "classification": "read_only_answer",
+        "readTool": "solana_sanctum_lst_list",
+        "agentResponse": "Returned the Sanctum LST catalog from the live API."
+      },
+      {
+        "user": "show me my Sanctum INF and LST positions",
+        "classification": "read_only_answer",
+        "readTool": "solana_sanctum_wallet_positions",
+        "agentResponse": "Returned wallet LST and INF token balances for the connected wallet."
+      },
+      {
+        "user": "quote 1 JitoSOL to mSOL on Sanctum",
+        "classification": "read_only_answer",
+        "readTool": "solana_sanctum_quote",
+        "agentResponse": "Returned a Sanctum Token Swap quote without signing or submitting."
+      },
+      {
+        "user": "swap 1 JitoSOL to mSOL through Sanctum",
+        "classification": "prepare_approval_action",
+        "writeAction": "sanctum_swap_lst",
+        "agentResponse": "Prepared a Sanctum LST swap. The quote will be refreshed before the wallet approves."
+      },
+      {
+        "user": "deposit 2 mSOL into Sanctum Infinity",
+        "classification": "prepare_approval_action",
+        "writeAction": "sanctum_add_infinity_liquidity",
+        "agentResponse": "Prepared an Infinity add-liquidity action for wallet approval."
+      },
+      {
+        "user": "redeem 10 INF to JitoSOL",
+        "classification": "prepare_approval_action",
+        "writeAction": "sanctum_remove_infinity_liquidity",
+        "agentResponse": "Prepared an Infinity remove-liquidity action for wallet approval."
+      },
+      {
+        "user": "stake 0.5 SOL into JitoSOL on Sanctum",
+        "classification": "prepare_approval_action",
+        "writeAction": "sanctum_stake_sol_to_lst",
+        "agentResponse": "Prepared a Sanctum SOL-to-LST action. The wallet still signs."
+      },
+      {
+        "user": "unstake 0.5 JitoSOL to SOL instantly",
+        "classification": "prepare_approval_action",
+        "writeAction": "sanctum_unstake_lst_to_sol",
+        "agentResponse": "Prepared a Sanctum LST-to-SOL action if the refreshed route is not delayed; delayed routes are refused unless explicitly allowed."
+      },
+      {
+        "user": "swap my LST on Sanctum",
+        "classification": "needs_input",
+        "needsInputQuestions": [
+          "Which input token mint should Sanctum use?",
+          "Which output token mint should Sanctum return?",
+          "How much should Sanctum route?"
+        ],
+        "agentResponse": "Input mint, output mint, and amount are required before preparing a Sanctum swap."
+      },
+      {
+        "user": "unstake my LST slowly if needed",
+        "classification": "needs_input",
+        "needsInputQuestions": [
+          "Which LST mint should Sanctum use?",
+          "How much of the LST should be unstaked?",
+          "Should delayed unstake routes be allowed?"
+        ],
+        "agentResponse": "The LST mint, amount, and delayed-unstake preference are required."
+      },
+      {
+        "user": "auto-rebalance my LSTs every day through Sanctum",
+        "classification": "unsupported",
+        "denialReason": "safety.no_autonomous_funds",
+        "agentResponse": "Recurring autonomous Sanctum rebalances are not exposed. Sanctum writes require explicit prepared wallet approval."
+      },
+      {
+        "user": "use Sanctum on devnet",
+        "classification": "unsupported",
+        "denialReason": "safety.action_not_exposed",
+        "agentResponse": "Sanctum connector actions are mainnet-beta only."
+      },
+      {
+        "user": "guarantee this Sanctum LST yield",
+        "classification": "unsupported",
+        "denialReason": "safety.no_safety_guarantee",
+        "agentResponse": "The agent will not describe LST yield, liquidity, or principal safety as guaranteed."
+      },
+      {
+        "user": "fall back to Jupiter if Sanctum cannot quote",
+        "classification": "unsupported",
+        "denialReason": "safety.action_not_exposed",
+        "agentResponse": "The Sanctum connector does not silently use Jupiter fallback routes."
+      }
+    ]
+  },
+  "mirrorsCanonical": {
+    "file": "apps/browser-demo/src/connectedDapps.ts",
+    "entry": "sanctum",
+    "note": "Mirrors the Sanctum browser catalog entry. Update both when capabilities, aliases, readTools, or actionKinds change."
+  }
+}

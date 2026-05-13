@@ -1004,9 +1004,10 @@ async function requestJupiter(
 
 function jupiterBaseUrl(): string {
   return (
+    process.env.JUPITER_SWAP_BASE_URL?.trim() ||
     process.env.JUP_ULTRA_BASE?.trim() ||
     process.env.JUPITER_BASE_URL?.trim() ||
-    'https://api.jup.ag/ultra/v1'
+    'https://api.jup.ag/swap/v2'
   ).replace(/\/+$/, '');
 }
 

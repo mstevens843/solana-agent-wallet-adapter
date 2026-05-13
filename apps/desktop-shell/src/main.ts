@@ -314,8 +314,8 @@ function runtimeSetupPanel(): string {
           <input id="setupJupiterApiKey" type="password" placeholder="${escapeHtml(keyPlaceholder)}" autocomplete="off" />
         </label>
         <label>
-          <span>Jupiter Ultra base</span>
-          <input id="setupJupiterUltraBase" value="${escapeHtml(setup?.jupiterUltraBase ?? 'https://api.jup.ag/ultra/v1')}" />
+          <span>Jupiter Swap API v2 base</span>
+          <input id="setupJupiterUltraBase" value="${escapeHtml(setup?.jupiterUltraBase ?? 'https://api.jup.ag/swap/v2')}" />
         </label>
         <label>
           <span>Legacy Jupiter API</span>

@@ -7,14 +7,21 @@ These playbooks explain what the agent may read, what it may prepare for wallet 
 | Connector | Runtime status | Reads | Writes | Notes |
 | --- | --- | --- | --- | --- |
 | Kamino | First-class | Positions, rewards proof, reserve snapshots | Deposit, withdraw | Implemented by the MCP Kamino adapter. |
-| Jupiter | First-class for swaps | Ultra order preview, swap quote | Prepared swap, direct wallet swap | Lend/borrow paths remain Blink-backed and need action URLs. |
-| Meteora | Blink-backed planned | DLMM positions and markets planned | Add/withdraw liquidity, claim fees, close via Blink planned | No first-class MCP helper yet. |
+| Jupiter | First-class for swaps | Swap API v2 order preview, swap quote | Prepared swap, direct wallet swap | Lend, Trigger, Recurring, Token/Price, Prediction, and Perps remain roadmap surfaces. |
+| Orca | First-class | Whirlpool snapshots, positions, fees, rewards | Increase liquidity, decrease liquidity, collect fees, collect rewards | Implemented by the MCP Orca adapter; Whirlpools only. |
+| Meteora | First-class | DLMM pool snapshots, wallet positions, position detail, fees, rewards | Add liquidity, remove liquidity, claim fees, claim rewards, close empty position | Implemented by the MCP Meteora adapter; existing positions only. |
 | Raydium | Blink-backed planned | Markets planned | AMM, CLMM, farm, Stake RAY via Blink planned | Requires pool/action URL facts. |
-| Orca | Blink-backed planned | Whirlpool markets planned | Liquidity and fee actions via Blink planned | Requires Whirlpool/action URL facts. |
 | MarginFi | Blink-backed planned | Positions and markets planned | Deposit, withdraw, borrow, repay via Blink planned | Borrow/withdraw must include account-health facts. |
 | Drift | Blink-backed planned | Strategy vault markets planned | Vault deposit/withdraw via Blink planned | Does not cover perp order placement. |
 | Lulo | Blink-backed planned | Positions, rewards, markets planned | Deposit, withdraw, rewards via Blink planned | Requires exact asset and action URL. |
-| Save | Blink-backed planned | Positions, rewards, markets planned | Deposit, withdraw, rewards via Blink planned | Treat like Lulo until first-class code lands. |
+| Save | First-class | Reserve snapshots, market snapshots, wallet obligation, health preview | Deposit, withdraw, borrow, repay | Implemented by the MCP Save (Solend) adapter; borrow/withdraw gated by projected health factor. |
+| Jito | First-class | Stake pool snapshot, wallet JitoSOL position, stake accounts, quotes | Stake SOL, deposit existing stake account, unstake JitoSOL, withdraw SOL from inactive stake account | Implemented by the MCP Jito adapter. Existing stake-account deposits require the Jito stake-deposit interceptor SDK and create a claimable receipt. Restaking, MEV/searcher/bundle, validator management, governance, and JTO flows are not exposed. |
+| Sanctum | First-class | LST catalog, LST snapshot, Infinity pool snapshot, wallet LST/INF positions, quotes | Swap LST, add Infinity liquidity, remove Infinity liquidity, stake SOL to LST, unstake LST to SOL | Implemented by the MCP Sanctum adapter. Requires `SANCTUM_API_KEY`; `SANCTUM_API_BASE_URL` defaults to `https://sanctum-api.ironforge.network`. Execution refreshes Sanctum Token Swap orders before wallet approval. |
+| Magic Eden | First-class (feature-flagged) | API health, collection snapshot, listings, bids, recent activity, wallet NFTs, NFT detail | Buy, list, cancel listing, bid, cancel bid | Implemented by the MCP Magic Eden adapter. Requires `MAGICEDEN_API_KEY` and `MAGICEDEN_CONNECTOR_ENABLED=true`. Solana NFTs only; gated by API health and the 2026-02-27 API transition notice. |
+| Tensor | First-class | Collection snapshot, listings, bids, recent sales, wallet NFTs, NFT detail, wallet marketplace exposure | Buy, list, cancel listing, bid, cancel bid, capped sweep | Implemented by the MCP Tensor adapter. Requires `TENSOR_API_KEY` and a host-wired Tensor client (legacy `@tensor-oss/tensorswap-sdk`, compressed `@tensor-oss/tcomp-sdk`). Sweep is capped to 10 itemized listings and refuses mixed legacy/compressed batches. |
+| Realms | First-class | Wallet governance, realm snapshot, governance snapshot, proposal list, proposal snapshot, vote record | Cast vote, relinquish vote, deposit governance tokens, withdraw governance tokens | Implemented by the MCP Realms (SPL Governance) adapter. Requires `@solana/spl-governance` wired via `setRealmsClientFactory()`. Cast vote is refused when the realm uses a voting power plugin (e.g., VSR). Voting is not execution. No treasury/upgrade/config proposals in v1. |
+| Pyth | First-class oracle | Price feed, batch prices, feed search, on-chain price account, oracle evidence | Post price update | Implemented by the MCP Pyth adapter via the public Hermes API. Posting price updates requires the optional `@pythnetwork/pyth-solana-receiver` dependency and is capped to two feeds per transaction in v1. |
+| Squads | First-class multisig | Wallet authority, multisig snapshot, vault snapshot, proposal snapshot, proposal list (with decoded instruction preview) | Create transfer proposal (SOL/SPL), approve, reject, cancel, execute | Implemented by the MCP Squads adapter. Requires `@sqds/multisig` wired via `setSquadsMultisigClientFactory()`. V1 prepare paths cover transfer-only proposal creation and vote/execute on existing proposals; member/threshold admin changes are not exposed. Execute is permission- and time-lock-gated; the adapter never auto-executes after approval. |
 
 ## Shared Rules
 
@@ -28,8 +35,15 @@ These playbooks explain what the agent may read, what it may prepare for wallet 
 
 - `kamino.md` - first-class lending connector.
 - `jupiter.md` - first-class swap connector and planned Blink lend/borrow notes.
-- `meteora.md` - DLMM-specific Blink-backed playbook.
-- `planned-connectors.md` - Raydium, Orca, MarginFi, Drift, Lulo, and Save.
+- `orca.md` - first-class Whirlpool connector.
+- `meteora.md` - first-class DLMM connector.
+- `jito.connector.json` - machine-readable first-class JitoSOL liquid staking connector pack.
+- `sanctum.md` - first-class Sanctum LST, Router, and Infinity connector.
+- `magiceden.md` - first-class NFT marketplace connector (feature-flagged).
+- `tensor.md` - first-class Tensor NFT marketplace connector with capped sweep.
+- `squads.md` - first-class multisig + treasury connector.
+- `realms.md` - first-class SPL Governance connector (cast vote, relinquish, deposit/withdraw governance tokens).
+- `planned-connectors.md` - Raydium and Lulo (Blink-backed planned).
 - `safety-language.md` - canonical required and forbidden phrasing.
 
 ## How Agents Should Use This

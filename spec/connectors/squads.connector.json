@@ -1,0 +1,334 @@
+{
+  "$schema": "./connector-pack.schema.json",
+  "id": "squads",
+  "name": "Squads Multisig",
+  "status": "first_class",
+  "aliases": ["squads", "squads multisig", "squads protocol", "sqds", "multisig"],
+  "supportedClusters": ["mainnet-beta"],
+  "requiredConfig": [
+    {
+      "name": "RPC connection",
+      "scope": "env",
+      "required": true,
+      "description": "Mainnet RPC the bridge or browser planner uses to query Squads multisig, vault, and proposal accounts. Cluster mismatches must be rejected with safety.action_not_exposed."
+    },
+    {
+      "name": "Squads SDK wiring",
+      "scope": "user_setting",
+      "required": true,
+      "description": "@sqds/multisig must be installed by the host and a Squads multisig client factory must be registered via setSquadsMultisigClientFactory(). Without the factory, reads and prepares return an explicit unavailable error. The production factory MUST validate that multisig.PROGRAM_ID matches SQUADS_PROGRAM_ID at boot."
+    }
+  ],
+  "readCapabilities": [
+    {
+      "toolName": "solana_squads_wallet_authority",
+      "source": "first-class-adapter",
+      "implemented": true,
+      "requiresClientKey": false,
+      "returns": "Per-multisig role (none, proposer, voter, executor, voter_executor, all) for a wallet, threshold, member count, and optional active-proposal attachment where the wallet has a vote.",
+      "facts": ["walletAddress", "multisigAddress", "role", "threshold", "memberCount", "activeProposalCount"]
+    },
+    {
+      "toolName": "solana_squads_multisig_snapshot",
+      "source": "first-class-adapter",
+      "implemented": true,
+      "requiresClientKey": false,
+      "returns": "Multisig members and permissions, threshold, time-lock seconds, config authority, rent collector, transaction index, vault count.",
+      "facts": ["multisigAddress", "threshold", "memberCount", "timeLockSec", "vaultCount", "configAuthority", "transactionIndex"]
+    },
+    {
+      "toolName": "solana_squads_vault_snapshot",
+      "source": "first-class-adapter",
+      "implemented": true,
+      "requiresClientKey": false,
+      "returns": "Vault PDA, vault index, lamports balance, SOL UI amount, and SPL token account list (mint, symbol, decimals, balance).",
+      "facts": ["multisigAddress", "vaultIndex", "vaultAddress", "lamports", "solUi", "tokenAccounts"]
+    },
+    {
+      "toolName": "solana_squads_proposal_snapshot",
+      "source": "first-class-adapter",
+      "implemented": true,
+      "requiresClientKey": false,
+      "returns": "Proposal status, approvals, rejections, cancellations, threshold progress, time-lock readiness, decoded instruction preview (SOL transfer, SPL transfer, memo, Squads admin, compute-budget) with per-instruction risk tier.",
+      "facts": ["proposalAddress", "transactionIndex", "status", "approvalCount", "rejectionCount", "threshold", "lockoutExpiresAt", "executableAt", "instructionCount", "unknownInstructions", "warnings"]
+    },
+    {
+      "toolName": "solana_squads_proposal_list",
+      "source": "first-class-adapter",
+      "implemented": true,
+      "requiresClientKey": false,
+      "returns": "Paged list of proposals for a multisig filtered by status (default active, max 100).",
+      "facts": ["multisigAddress", "transactionIndex", "status", "approvalCount", "threshold", "createdAt"]
+    }
+  ],
+  "writeCapabilities": [
+    {
+      "actionKind": "squads_create_transfer_proposal",
+      "executionMode": "first_class_adapter",
+      "implemented": true,
+      "prepares": "An inbox-bound PreparedAction that captures multisig, vault, recipient, mint, amount, threshold, member role, projected transaction index, decoded instruction preview, and refreshAtExecution: true. V1 builds exactly one inner SOL or SPL transfer instruction.",
+      "executesVia": "solana_execute_prepared_action",
+      "userApproves": "A Squads vaultTransactionCreate + proposalCreate transaction built at execute time. Refuses to sign if vault balance, member role, or the projected transaction index changed since prepare."
+    },
+    {
+      "actionKind": "squads_approve_proposal",
+      "executionMode": "first_class_adapter",
+      "implemented": true,
+      "prepares": "An inbox-bound PreparedAction that approves a Squads proposal in 'active' state. Captures threshold, current approval count, member role, instruction preview, and refreshAtExecution: true.",
+      "executesVia": "solana_execute_prepared_action",
+      "userApproves": "A Squads proposalApprove transaction. Refuses to sign if the proposal left active state or the wallet lost vote permission."
+    },
+    {
+      "actionKind": "squads_reject_proposal",
+      "executionMode": "first_class_adapter",
+      "implemented": true,
+      "prepares": "An inbox-bound PreparedAction that rejects a Squads proposal in 'active' state. Captures threshold, member role, instruction preview, and refreshAtExecution: true.",
+      "executesVia": "solana_execute_prepared_action",
+      "userApproves": "A Squads proposalReject transaction. Refuses to sign if the proposal left active state."
+    },
+    {
+      "actionKind": "squads_cancel_proposal",
+      "executionMode": "first_class_adapter",
+      "implemented": true,
+      "prepares": "An inbox-bound PreparedAction that cancels a Squads proposal that has reached 'approved' state. Captures approval count, member role, instruction preview, and refreshAtExecution: true.",
+      "executesVia": "solana_execute_prepared_action",
+      "userApproves": "A Squads proposalCancel transaction. Refuses to sign if the proposal state changed."
+    },
+    {
+      "actionKind": "squads_execute_proposal",
+      "executionMode": "first_class_adapter",
+      "implemented": true,
+      "prepares": "An inbox-bound PreparedAction that executes an 'approved' Squads proposal once the threshold is met and the time-lock has elapsed. Captures approvals, executableAt, decoded instruction preview, and refreshAtExecution: true.",
+      "executesVia": "solana_execute_prepared_action",
+      "userApproves": "A Squads vaultTransactionExecute transaction that moves treasury funds. Refuses to sign if approvals dropped below threshold, the time-lock has not elapsed, or the proposal status changed."
+    }
+  ],
+  "requiredUserInputs": [
+    {
+      "name": "multisigAddress",
+      "kind": "text",
+      "required": true,
+      "appliesTo": [
+        "squads_create_transfer_proposal",
+        "squads_approve_proposal",
+        "squads_reject_proposal",
+        "squads_cancel_proposal",
+        "squads_execute_proposal"
+      ],
+      "prompt": "Which Squads multisig?"
+    },
+    {
+      "name": "recipient",
+      "kind": "text",
+      "required": true,
+      "appliesTo": ["squads_create_transfer_proposal"],
+      "prompt": "Who should receive the transfer?"
+    },
+    {
+      "name": "amount",
+      "kind": "number",
+      "required": true,
+      "appliesTo": ["squads_create_transfer_proposal"],
+      "prompt": "How much should the proposal transfer (in token units)?"
+    },
+    {
+      "name": "mintAddress",
+      "kind": "text",
+      "required": false,
+      "appliesTo": ["squads_create_transfer_proposal"],
+      "prompt": "Which SPL mint should the proposal transfer? Omit for native SOL."
+    },
+    {
+      "name": "vaultIndex",
+      "kind": "number",
+      "required": false,
+      "appliesTo": ["squads_create_transfer_proposal"],
+      "prompt": "Which vault index should the proposal spend from? Provide vaultIndex or vaultAddress."
+    },
+    {
+      "name": "vaultAddress",
+      "kind": "text",
+      "required": false,
+      "appliesTo": ["squads_create_transfer_proposal"],
+      "prompt": "Which vault PDA? Provide vaultAddress or vaultIndex."
+    },
+    {
+      "name": "title",
+      "kind": "text",
+      "required": true,
+      "appliesTo": ["squads_create_transfer_proposal"],
+      "prompt": "Short title for the proposal."
+    },
+    {
+      "name": "proposalAddress",
+      "kind": "text",
+      "required": false,
+      "appliesTo": [
+        "squads_approve_proposal",
+        "squads_reject_proposal",
+        "squads_cancel_proposal",
+        "squads_execute_proposal"
+      ],
+      "prompt": "Which proposal PDA? Provide proposalAddress or transactionIndex."
+    },
+    {
+      "name": "transactionIndex",
+      "kind": "number",
+      "required": false,
+      "appliesTo": [
+        "squads_approve_proposal",
+        "squads_reject_proposal",
+        "squads_cancel_proposal",
+        "squads_execute_proposal"
+      ],
+      "prompt": "Which proposal transactionIndex inside the multisig?"
+    },
+    {
+      "name": "reason",
+      "kind": "text",
+      "required": false,
+      "appliesTo": ["squads_reject_proposal", "squads_cancel_proposal"],
+      "prompt": "Optional reason to attach to the rejection or cancellation."
+    },
+    {
+      "name": "dueAt",
+      "kind": "text",
+      "required": false,
+      "appliesTo": [
+        "squads_create_transfer_proposal",
+        "squads_approve_proposal",
+        "squads_reject_proposal",
+        "squads_cancel_proposal",
+        "squads_execute_proposal"
+      ],
+      "prompt": "Should this action wait until a specific time before becoming ready? (ISO 8601, optional)"
+    }
+  ],
+  "requiredConnectorFacts": [
+    "Multisig threshold, time-lock, and member list",
+    "Connected wallet's member role (proposer / voter / executor)",
+    "Vault PDA, lamports balance, and SPL token-account balances",
+    "Proposal status, approvals vs threshold, rejection count",
+    "Proposal executableAt and lockoutExpiresAt",
+    "Decoded instruction preview (transfer details or admin warnings)",
+    "Current transactionIndex on the multisig (for create-proposal index gating)"
+  ],
+  "unsupportedRequests": [
+    "Add or remove Squads multisig members. Not exposed in V1 prepare paths.",
+    "Change the Squads multisig threshold or time-lock. Not exposed in V1 prepare paths.",
+    "Transfer the Squads configAuthority or upgrade the multisig program. Not exposed in V1.",
+    "Move vault funds outside the Squads proposal flow. Always goes through vaultTransactionCreate + proposalCreate.",
+    "Swap, lend, or stake from the Squads vault. Not exposed in V1.",
+    "Automatically execute a Squads proposal as soon as it is approved. Execution is always a separate wallet-approval inbox item.",
+    "Execute a Squads proposal before approvals reach the threshold or before the time-lock elapses.",
+    "Prepare a Squads action on devnet or testnet. Mainnet-beta only.",
+    "Initiate a Squads proposal from a wallet that is not a member with proposer permission.",
+    "Sign or broadcast a Squads transaction without the wallet's explicit approval."
+  ],
+  "actionPreparationNotes": "Resolve multisigAddress and either vaultIndex or vaultAddress at prepare time. Refresh the multisig snapshot to compute the projected transactionIndex (current + 1) and store it in params. Resolve the connected wallet's member permissions and refuse if the operation requires a permission the wallet does not have. For create-transfer-proposal, parse the human amount with the resolved mint decimals (SOL = 9), refuse if vault balance is short, and emit exactly one inner SOL or SPL transfer instruction. For approve/reject/cancel/execute, fetch the proposal snapshot and refuse if its status does not allow the operation; cancel additionally requires status = 'approved'. The execute path re-fetches multisig and proposal at execute time and refuses if approvals dropped, the status changed, the time-lock is not elapsed, or the projected transactionIndex moved.",
+  "riskNotes": "Execution moves treasury funds. Vault balance can move between prepare and execute. Proposal approvals can shift while a request is queued; cancel and execute interact via the time-lock. Squads admin instructions (Add/RemoveMember, ChangeThreshold, SetTimeLock, SetConfigAuthority) inside a proposal are decoded for review but cannot be PREPARED by V1 tools. The instruction decoder is conservative — unknown instructions surface a warning that the wallet review must show.",
+  "approvalBoundary": {
+    "readGated": false,
+    "writeGated": true,
+    "blinkBacked": false,
+    "summary": "safety.prepare_only"
+  },
+  "walletApprovalBoundary": "Reads return facts without wallet involvement. Writes prepare inbox items that build Squads program transactions at execute time, which the wallet must sign and broadcast. The agent never signs and never bypasses the Squads threshold or time-lock.",
+  "examples": {
+    "requests": [
+      {
+        "user": "show my Squads multisigs and roles",
+        "classification": "read_only_answer",
+        "readTool": "solana_squads_wallet_authority",
+        "agentResponse": "Read your Squads multisig membership and per-multisig role. The connector reads facts; the wallet still controls approval."
+      },
+      {
+        "user": "show this Squads vault balance",
+        "classification": "read_only_answer",
+        "readTool": "solana_squads_vault_snapshot",
+        "agentResponse": "Read the Squads vault snapshot and SPL token balances. Read-only."
+      },
+      {
+        "user": "summarize this Squads proposal and threshold progress",
+        "classification": "read_only_answer",
+        "readTool": "solana_squads_proposal_snapshot",
+        "agentResponse": "Read the Squads proposal snapshot, status, approval/rejection counts vs threshold, and decoded instruction preview."
+      },
+      {
+        "user": "prepare a Squads transfer proposal for 100 USDC to <addr>",
+        "classification": "prepare_approval_action",
+        "writeAction": "squads_create_transfer_proposal",
+        "agentResponse": "Prepared a Squads transfer proposal for 100 USDC with the current vault balance and projected transaction index. This prepares a wallet approval request; it does not sign."
+      },
+      {
+        "user": "approve this Squads proposal",
+        "classification": "prepare_approval_action",
+        "writeAction": "squads_approve_proposal",
+        "agentResponse": "Prepared a Squads approve transaction against this proposal in active state. The wallet still controls approval."
+      },
+      {
+        "user": "execute this approved Squads proposal",
+        "classification": "prepare_approval_action",
+        "writeAction": "squads_execute_proposal",
+        "agentResponse": "Prepared a Squads execute transaction. Refused immediately if approvals are below threshold or the time-lock has not elapsed."
+      },
+      {
+        "user": "add a new member to this Squads multisig",
+        "classification": "unsupported",
+        "denialReason": "safety.action_not_exposed",
+        "agentResponse": "The agent denied this because Squads member/threshold/time-lock admin changes are not exposed in V1 prepare paths."
+      },
+      {
+        "user": "change the Squads threshold to 1 of 5",
+        "classification": "unsupported",
+        "denialReason": "safety.action_not_exposed",
+        "agentResponse": "The agent denied this because Squads threshold changes are not exposed in V1."
+      },
+      {
+        "user": "auto-execute this Squads proposal once it has enough approvals",
+        "classification": "unsupported",
+        "denialReason": "safety.no_safety_guarantee",
+        "agentResponse": "The agent denied this because execute is always a separate wallet-approval inbox item; the agent does not auto-execute proposals."
+      },
+      {
+        "user": "execute this Squads proposal before the time-lock elapses",
+        "classification": "unsupported",
+        "denialReason": "safety.action_not_exposed",
+        "agentResponse": "The agent denied this because Squads execution is blocked until the time-lock has elapsed. Wait until executableAt and re-prepare."
+      },
+      {
+        "user": "propose a Squads transfer from a wallet that is not a member",
+        "classification": "unsupported",
+        "denialReason": "safety.action_not_exposed",
+        "agentResponse": "The agent denied this because only multisig members with proposer permission can initiate a Squads proposal."
+      },
+      {
+        "user": "Squads action on devnet",
+        "classification": "unsupported",
+        "denialReason": "safety.action_not_exposed",
+        "agentResponse": "The agent denied this because the Squads connector is cataloged for mainnet-beta only."
+      },
+      {
+        "user": "propose a Squads transfer for 50 percent of the vault",
+        "classification": "needs_input",
+        "needsInputQuestions": [
+          "Which vault index or address?",
+          "Should I read the current vault balance so '50 percent' resolves to a concrete token amount?",
+          "Which mint should the proposal transfer? Native SOL or an SPL token?"
+        ],
+        "agentResponse": "The agent is missing facts needed to decide. I can read the vault snapshot and then prepare a transfer proposal with the exact amount."
+      },
+      {
+        "user": "prepare a Squads transfer proposal while the connector is disabled",
+        "classification": "unsupported",
+        "denialReason": "safety.connector_disabled",
+        "agentResponse": "The agent denied this because the Squads connector is not enabled. Enable Squads Multisig in Protocol Connectors before continuing."
+      }
+    ]
+  },
+  "mirrorsCanonical": {
+    "file": "apps/browser-demo/src/connectedDapps.ts",
+    "entry": "squads",
+    "note": "PROTOCOL_CONNECTORS entry at id 'squads'. Update this pack when capabilities, aliases, readTools, or actionKinds change."
+  }
+}

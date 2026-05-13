@@ -3,34 +3,34 @@
   "id": "jupiter",
   "name": "Jupiter",
   "status": "first_class",
-  "aliases": ["jupiter", "jup", "jupiter swap", "jupiter ultra", "jupiter lend"],
+  "aliases": ["jupiter", "jup", "jupiter swap", "jupiter swap api v2", "jupiter ultra", "jupiter lend"],
   "supportedClusters": ["mainnet-beta"],
   "requiredConfig": [
     {
       "name": "JUPITER_API_KEY or JUP_API_KEY",
       "scope": "env",
       "required": true,
-      "description": "Required for Jupiter Ultra order previews, prepared swaps, and swap execution."
+      "description": "Required for Jupiter Swap API v2 order previews, prepared swaps, and swap execution."
     },
     {
       "name": "Dialect client key",
       "scope": "dialect_client_key",
       "required": false,
-      "description": "Required only for browser-level Jupiter lend/borrow market reads. MCP runtime does not expose those reads yet."
+      "description": "Not used by MCP Jupiter Swap API v2 support. Jupiter Lend remains planned."
     }
   ],
   "readCapabilities": [
     {
       "toolName": "solana_jupiter_order_preview",
-      "source": "jupiter-ultra",
+      "source": "jupiter-swap-v2",
       "implemented": true,
       "requiresClientKey": false,
-      "returns": "Read-only Jupiter Ultra order preview with output amount, minimum output threshold, slippage, price impact, router metadata, and request id.",
-      "facts": ["inputMint", "outputMint", "inAmount", "outAmount", "otherAmountThreshold", "slippageBps", "priceImpact", "requestId", "hasTransaction"]
+      "returns": "Read-only Jupiter Swap API v2 order preview with output amount, minimum output threshold, slippage, price impact, route plan, router/mode metadata, fee fields, and request id.",
+      "facts": ["inputMint", "outputMint", "inAmount", "outAmount", "otherAmountThreshold", "slippageBps", "priceImpact", "routePlan", "router", "mode", "feeBps", "feeMint", "requestId", "hasTransaction"]
     },
     {
       "toolName": "solana_get_swap_quote",
-      "source": "jupiter-ultra",
+      "source": "jupiter-swap-v2",
       "implemented": true,
       "requiresClientKey": false,
       "returns": "Compatibility alias for Jupiter order preview. Returns the same normalized connector facts.",
@@ -41,7 +41,7 @@
       "source": "dialect-markets",
       "implemented": false,
       "requiresClientKey": true,
-      "returns": "Planned browser-level Jupiter lend/borrow positions when Dialect connector reads are wired.",
+      "returns": "Planned Jupiter Lend positions. Not implemented in this Swap API v2 pass.",
       "facts": ["positionBalance", "borrowBalance", "collateralToken", "healthFactor"]
     },
     {
@@ -49,7 +49,7 @@
       "source": "dialect-markets",
       "implemented": false,
       "requiresClientKey": true,
-      "returns": "Planned market facts for Jupiter lend/borrow Blink routes.",
+      "returns": "Planned Jupiter Lend market facts. Not implemented in this Swap API v2 pass.",
       "facts": ["marketApy", "borrowApy", "liquidity", "actionUrl"]
     }
   ],
@@ -66,9 +66,9 @@
       "actionKind": "blink_action",
       "executionMode": "blink",
       "implemented": false,
-      "prepares": "Planned browser-level Jupiter lend, borrow, withdraw, and repay action URL review. MCP runtime does not expose a generic Blink prepare helper yet.",
+      "prepares": "Planned Jupiter Lend, Trigger, or Recurring action review. MCP runtime does not expose those Jupiter product surfaces in this pass.",
       "executesVia": "solana_execute_prepared_action",
-      "userApproves": "A Solana Action transaction returned by the Jupiter Blink endpoint after the user confirms the visible action."
+      "userApproves": "A future Jupiter product transaction after explicit wallet approval. Not implemented in this pass."
     }
   ],
   "requiredUserInputs": [
@@ -105,12 +105,13 @@
       "kind": "text",
       "required": true,
       "appliesTo": ["blink_action"],
-      "prompt": "Paste the Jupiter Blink or Solana Action URL for this lend, borrow, withdraw, or repay request."
+      "prompt": "Jupiter non-swap product support is not implemented in this runtime yet."
     }
   ],
   "requiredConnectorFacts": [
-    "Jupiter order preview before review",
+    "Jupiter Swap API v2 order preview before review",
     "Output amount and minimum output threshold",
+    "Router, mode, route plan, and fee fields when reported",
     "Slippage cap in basis points",
     "Price impact when reported",
     "Token mint and decimals for any mint not in the allowlist",
@@ -120,11 +121,11 @@
     "Swap without an amount, input token, or output token.",
     "Use a slippage cap above the configured wallet limit.",
     "Guarantee an exact output after the quote is shown. Jupiter routes can change before signing.",
-    "Lend, borrow, withdraw, or repay through Jupiter without a supplied Blink/Solana Action URL and generic Blink prepare support.",
+    "Lend, borrow, withdraw, repay, Trigger, Recurring, Prediction, or Perps through Jupiter in this Swap API v2 pass.",
     "Operate on any cluster other than mainnet-beta.",
     "Claim that Jupiter or the agent can sign or submit without the user's wallet."
   ],
-  "actionPreparationNotes": "Normalize SOL to wrapped SOL for Jupiter Ultra, resolve allowlisted symbols or mint decimals, enforce maxSwapInput and maxSlippageBps, then prepare a swap inbox item. For previews, call Jupiter Ultra order with taker, inputMint, outputMint, amount, and slippageBps. Do not store or expose raw transaction bytes in findings unless a wallet approval flow explicitly needs them.",
+  "actionPreparationNotes": "Normalize SOL to wrapped SOL for Jupiter Swap API v2, resolve allowlisted symbols or mint decimals, enforce maxSwapInput and maxSlippageBps, then prepare a swap inbox item with refreshAtExecution=true. For previews, call Jupiter /order with taker, inputMint, outputMint, amount, and slippageBps. Do not store raw transaction bytes in prepared actions or expose them in findings.",
   "riskNotes": "Quotes can expire or change before approval. Price impact, minimum output, and slippage must be shown. Unknown token mints should be displayed as short mints unless metadata is available.",
   "approvalBoundary": {
     "readGated": true,
@@ -145,7 +146,7 @@
         "user": "quote 1 SOL to JUP before I sign",
         "classification": "read_only_answer",
         "readTool": "solana_jupiter_order_preview",
-        "agentResponse": "Read a Jupiter Ultra order preview and returned expected output, minimum output, slippage, and price impact. The connector can read facts, but the wallet still controls approval."
+        "agentResponse": "Read a Jupiter Swap API v2 order preview and returned expected output, minimum output, slippage, route, fee, and price impact facts. The connector can read facts, but the wallet still controls approval."
       },
       {
         "user": "swap SOL to USDC",
@@ -173,15 +174,15 @@
       },
       {
         "user": "lend 5 USDC on Jupiter",
-        "classification": "needs_input",
-        "needsInputQuestions": ["Paste the Jupiter lend Blink or Solana Action URL."],
-        "agentResponse": "The agent is missing facts needed to decide. Jupiter lend routes are Blink-backed and this runtime needs an action URL before review."
+        "classification": "unsupported",
+        "denialReason": "safety.action_not_exposed",
+        "agentResponse": "The agent cannot prepare Jupiter Lend yet because this pass only implements Jupiter Swap API v2."
       },
       {
         "user": "repay my Jupiter loan automatically every week",
         "classification": "unsupported",
         "denialReason": "safety.no_autopay_claim",
-        "agentResponse": "The agent denied this because recurring payments still need wallet approval each time and Jupiter repay is not first-class in MCP runtime."
+        "agentResponse": "The agent denied this because Jupiter Lend and Jupiter-native recurring automation are not first-class in MCP runtime yet."
       },
       {
         "user": "borrow on Jupiter without opening my wallet",
@@ -205,13 +206,13 @@
         "user": "swap on devnet through Jupiter",
         "classification": "unsupported",
         "denialReason": "safety.action_not_exposed",
-        "agentResponse": "The agent denied this because Jupiter Ultra swaps are only supported on mainnet-beta in this runtime."
+        "agentResponse": "The agent denied this because Jupiter Swap API v2 swaps are only supported on mainnet-beta in this runtime."
       }
     ]
   },
   "mirrorsCanonical": {
     "file": "apps/browser-demo/src/connectedDapps.ts",
     "entry": "jupiter",
-    "note": "Browser catalog lists Jupiter as Blink-backed for lend/borrow actions; MCP runtime additionally owns first-class swap preview and swap preparation."
+    "note": "Browser catalog lists Jupiter as first-class for Swap API v2. Parent-roadmap product surfaces remain planned until their child plans land."
   }
 }

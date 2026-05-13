@@ -179,6 +179,17 @@ import {
   type ProtocolConnector,
 } from './connectedDapps.js';
 import {
+  connectorAiPlannerContext,
+  connectorAiUserNotes,
+  connectorDraftConnectors,
+  connectorDraftStatus,
+  isConnectorCapableTemplate,
+  normalizeConnectorDraftParameters,
+  selectedConnectorForDraftParameters,
+  stripConnectorDraftExtras,
+  validateConnectorDraftParameters,
+} from './connectorDrafting.js';
+import {
   normalizeBlinkUrl,
   prepareBlinkAction,
   type BlinkPreparedAction,
@@ -253,7 +264,41 @@ type PreparedActionKind =
   | 'custom_transaction'
   | 'custom'
   | 'kamino_deposit'
-  | 'kamino_withdraw';
+  | 'kamino_withdraw'
+  | 'meteora_claim_fees'
+  | 'meteora_claim_rewards'
+  | 'meteora_add_liquidity'
+  | 'meteora_remove_liquidity'
+  | 'meteora_close_position'
+  | 'orca_increase_liquidity'
+  | 'orca_decrease_liquidity'
+  | 'orca_collect_fees'
+  | 'orca_collect_rewards'
+  | 'marginfi_deposit'
+  | 'marginfi_withdraw'
+  | 'marginfi_borrow'
+  | 'marginfi_repay'
+  | 'drift_vault_deposit'
+  | 'drift_vault_request_withdraw'
+  | 'drift_vault_cancel_withdraw'
+  | 'drift_vault_complete_withdraw'
+  | 'save_deposit'
+  | 'save_withdraw'
+  | 'save_borrow'
+  | 'save_repay'
+  | 'jito_stake_sol'
+  | 'jito_deposit_stake_account'
+  | 'jito_unstake_jitosol'
+  | 'jito_withdraw_sol'
+  | 'lulo_deposit'
+  | 'lulo_withdraw'
+  | 'lulo_complete_withdraw'
+  | 'raydium_add_liquidity'
+  | 'raydium_remove_liquidity'
+  | 'raydium_collect_fees'
+  | 'raydium_farm_stake'
+  | 'raydium_farm_unstake'
+  | 'raydium_harvest';
 type GuidedDemoScenarioId = 'transfer' | 'swap' | 'dca' | 'payouts';
 type GuidedDemoStage = 'request' | 'prepared' | 'queued' | 'receipt';
 type GuidedDemoDecision = 'pending' | 'approved' | 'denied';
@@ -5500,14 +5545,21 @@ function protocolConnectorSelectOptions(connectors: ProtocolConnector[]): Select
 function protocolConnectorLogoId(id: ConnectedDappId): BrandLogoId {
   const logos: Record<ConnectedDappId, BrandLogoId> = {
     drift: 'drift',
+    jito: 'solana',
     jupiter: 'jupiter',
     kamino: 'kamino',
     lulo: 'lulo',
+    magiceden: 'solana',
     marginfi: 'marginfi',
     meteora: 'meteora',
     orca: 'orca',
     raydium: 'raydium',
     save: 'save',
+    tensor: 'solana',
+    sanctum: 'solana',
+    realms: 'solana',
+    pyth: 'solana',
+    squads: 'solana',
   };
   return logos[id];
 }
@@ -7186,7 +7238,7 @@ function templateOutcome(template: AgentPlanTemplate): TemplateOutcome {
 }
 
 function templateCanQueue(template: AgentPlanTemplate): boolean {
-  return ['transfer_sol', 'transfer_spl', 'swap', 'recurring_payment'].includes(template.actionType);
+  return ['transfer_sol', 'transfer_spl', 'swap', 'recurring_payment', 'blink_action'].includes(template.actionType);
 }
 
 function planOutcome(plan: AgentPlan): TemplateOutcome {
@@ -9739,10 +9791,17 @@ function templatePickerOption(candidate: AgentPlanTemplate, selectedTemplate: Ag
 }
 
 function templateFieldInput(fieldDef: AgentPlanTemplateField): string {
+  const template = selectedTemplate();
   const value = templateFieldValue(fieldDef.id);
   const disabled = state.busy ? 'disabled' : '';
   const label = `${fieldDef.label}${fieldDef.required ? ' *' : ''}`;
   const error = fieldError(fieldDef.id);
+  if (isConnectorCapableTemplate(template) && fieldDef.id === 'protocol') {
+    return connectorProtocolFieldInput(fieldDef, value, label, error);
+  }
+  if (isConnectorCapableTemplate(template) && fieldDef.id === 'operation') {
+    return connectorOperationFieldInput(fieldDef, value, label, error);
+  }
   if (fieldDef.id === 'slippageBps') {
     return slippageFieldInput(fieldDef, value, label, error);
   }
@@ -9785,6 +9844,125 @@ function templateFieldInput(fieldDef: AgentPlanTemplateField): string {
       <input data-template-field="${escapeHtml(fieldDef.id)}" value="${escapeHtml(value)}" placeholder="${escapeHtml(fieldDef.placeholder ?? '')}" ${disabled} />
       ${error}
     </label>
+  `;
+}
+
+function connectorProtocolFieldInput(
+  fieldDef: AgentPlanTemplateField,
+  value: string,
+  label: string,
+  error: string,
+): string {
+  const env = connectorDraftEnvironment();
+  const connectors = connectorDraftConnectors(env);
+  const connector = selectedConnectorForDraftParameters({
+    ...state.templateFields,
+    protocol: value,
+  }) ?? connectors.find((candidate) => connectorDraftStatus(candidate, env).selectable);
+  const selectedValue = connector?.id ?? '';
+  const hasSelectableConnector = connectors.some((candidate) => connectorDraftStatus(candidate, env).selectable);
+  const options: SelectPickerOption[] = connectors.length
+    ? connectors.map((candidate) => {
+      const status = connectorDraftStatus(candidate, env);
+      return {
+        value: candidate.id,
+        label: candidate.name,
+        meta: status.meta,
+        detail: connectorPickerDetail(candidate, status.detail),
+        disabled: !status.selectable,
+        title: status.detail,
+        logoId: protocolConnectorLogoId(candidate.id),
+      };
+    })
+    : [{ value: '', label: 'No connector available', meta: 'Protocol Connector', disabled: true }];
+  return `
+    <div class="field compact planner-field connector-draft-field connector-protocol-field ${state.templateFieldErrors[fieldDef.id] ? 'field-error' : ''}">
+      <span>${escapeHtml(label)}</span>
+      ${selectPicker({
+        value: selectedValue,
+        options,
+        attrs: {
+          'data-template-field': fieldDef.id,
+          'data-connector-picker': true,
+        },
+        disabled: state.busy || !hasSelectableConnector,
+        className: 'connector-draft-picker',
+      })}
+      ${connectorDraftStatusPanel(connector, hasSelectableConnector)}
+      ${error}
+    </div>
+  `;
+}
+
+function connectorOperationFieldInput(
+  fieldDef: AgentPlanTemplateField,
+  value: string,
+  label: string,
+  error: string,
+): string {
+  const env = connectorDraftEnvironment();
+  const connector = selectedConnectorForDraftParameters({
+    ...state.templateFields,
+    protocol: state.templateFields.protocol || templateFieldValue('protocol'),
+  });
+  const actions = connector?.supportedActions.length ? connector.supportedActions : fieldDef.options ?? [];
+  const selectedValue = actions.includes(value) ? value : actions[0] ?? '';
+  const connectorSelectable = connector ? connectorDraftStatus(connector, env).selectable : false;
+  return `
+    <div class="field compact planner-field connector-draft-field ${state.templateFieldErrors[fieldDef.id] ? 'field-error' : ''}">
+      <span>${escapeHtml(label)}</span>
+      ${selectPicker({
+        value: selectedValue,
+        options: actions.length
+          ? actions.map((action) => ({ value: action, label: action, meta: connector?.name ?? fieldDef.label }))
+          : [{ value: '', label: 'Choose a connector first', meta: 'Operation', disabled: true }],
+        attrs: {
+          'data-template-field': fieldDef.id,
+          'data-connector-operation': true,
+        },
+        disabled: state.busy || !connectorSelectable || actions.length === 0,
+      })}
+      ${error}
+    </div>
+  `;
+}
+
+function connectorDraftEnvironment(): {
+  connectedDapps: ConnectedDappsState;
+  cluster: string;
+  dialectClientKeyConfigured: boolean;
+} {
+  return {
+    connectedDapps: state.connectedDapps,
+    cluster: state.cluster,
+    dialectClientKeyConfigured: Boolean(state.protocolConnectorPrefs.dialectClientKey.trim()),
+  };
+}
+
+function connectorPickerDetail(connector: ProtocolConnector, statusDetail: string): string {
+  const actions = connector.supportedActions.slice(0, 3).join(' · ');
+  return actions ? `${statusDetail} ${actions}` : statusDetail;
+}
+
+function connectorDraftStatusPanel(connector: ProtocolConnector | undefined, hasSelectableConnector: boolean): string {
+  if (!connector) {
+    return `
+      <div class="connector-draft-empty">
+        <p>No Blink-capable connector is enabled.</p>
+        <button type="button" class="utility" data-tab="preferences" data-preferences-view="access" ${state.busy ? 'disabled' : ''}>Open Protocol Connectors</button>
+      </div>
+    `;
+  }
+  const status = connectorDraftStatus(connector, connectorDraftEnvironment());
+  const stateClass = status.selectable ? 'ready' : 'blocked';
+  return `
+    <div class="connector-draft-status ${stateClass}">
+      <span>${escapeHtml(status.label)}</span>
+      <p>${escapeHtml(status.detail)}</p>
+      ${hasSelectableConnector ? '' : `
+        <button type="button" class="utility" data-tab="preferences" data-preferences-view="access" ${state.busy ? 'disabled' : ''}>Open Protocol Connectors</button>
+      `}
+    </div>
   `;
 }
 
@@ -12610,14 +12788,19 @@ function bind(): void {
       if (!fieldId) return;
       state.templateFields[fieldId] = syncTemplateFieldFromControl(fieldInput);
       delete state.templateFieldErrors[fieldId];
+      delete state.templateFieldErrors.protocol;
+      delete state.templateFieldErrors.blinkUrl;
+      const shouldRerender = syncConnectorTemplateFieldChange(fieldId);
       state.agentPlan = null;
       state.agentSignature = '';
       state.agentPreparedActionId = '';
+      if (shouldRerender) render();
     });
     fieldInput.addEventListener('change', () => {
       const fieldId = fieldInput.dataset.templateField;
       if (!fieldId) return;
       state.templateFields[fieldId] = syncTemplateFieldFromControl(fieldInput);
+      syncConnectorTemplateFieldChange(fieldId);
     });
   }
 
@@ -13734,10 +13917,10 @@ function selectAgentTemplate(templateId: string): boolean {
     return false;
   }
   state.selectedTemplateId = template.id;
-  state.templateFields = {
+  state.templateFields = normalizeTemplateFieldsForTemplate(template, {
     ...defaultTemplateFieldValues(template),
     ...state.templateFields,
-  };
+  });
   state.templateTokenModes = defaultTemplateTokenModes(template, state.templateFields);
   state.templateTokenSelections = defaultTemplateTokenSelections(template, state.templateFields);
   state.templateFieldErrors = {};
@@ -13746,6 +13929,38 @@ function selectAgentTemplate(templateId: string): boolean {
   state.agentPreparedActionId = '';
   render();
   return true;
+}
+
+function normalizeTemplateFieldsForTemplate(
+  template: AgentPlanTemplate,
+  fields: Record<string, string>,
+): Record<string, string> {
+  if (!isConnectorCapableTemplate(template)) {
+    return stripConnectorDraftExtras(template, fields);
+  }
+  const env = connectorDraftEnvironment();
+  const selectable = connectorDraftConnectors(env).find((connector) => connectorDraftStatus(connector, env).selectable);
+  const connector = selectedConnectorForDraftParameters(fields) ?? selectable;
+  const next = connector
+    ? normalizeConnectorDraftParameters(template, {
+      ...fields,
+      protocol: connector.id,
+      connectorId: connector.id,
+    })
+    : normalizeConnectorDraftParameters(template, fields);
+  const selected = selectedConnectorForDraftParameters(next);
+  if (selected && !selected.supportedActions.includes(next.operation ?? '')) {
+    next.operation = selected.supportedActions[0] ?? '';
+  }
+  return next;
+}
+
+function syncConnectorTemplateFieldChange(fieldId: string): boolean {
+  const template = selectedTemplate();
+  if (!isConnectorCapableTemplate(template)) return false;
+  if (fieldId !== 'protocol' && fieldId !== 'operation') return false;
+  state.templateFields = normalizeTemplateFieldsForTemplate(template, state.templateFields);
+  return fieldId === 'protocol';
 }
 
 function positionTemplatePickerMenu(trigger: HTMLElement, menu: HTMLElement): void {
@@ -14330,9 +14545,11 @@ async function runGenerateAgentPlan(): Promise<void> {
     await run(
       'sign',
       async () => {
-        const parameters = readTemplateFields(template);
+        const parameters = normalizeConnectorDraftParameters(template, readTemplateFields(template));
+        state.templateFields = parameters;
         const userNotes = state.agentPrompt.trim();
-        assertValidTemplatePlanInput(template, parameters, userNotes);
+        assertValidTemplatePlanInput(template, parameters, userNotes, { mode: 'template' });
+        state.templateFields = parameters;
         const plan = planWithRuntimeTokenLabels(buildTemplatePlan(template, parameters, 'template', userNotes));
         state.agentPlan = plan;
         state.agentSignature = '';
@@ -14371,20 +14588,34 @@ async function runGenerateAiPlan(): Promise<void> {
     await run(
       'ai',
       async () => {
-        const selectedParameters = readTemplateFields(selectedTemplateForUi);
+        const selectedParameters = normalizeConnectorDraftParameters(
+          selectedTemplateForUi,
+          readTemplateFields(selectedTemplateForUi),
+        );
         const userNotes = state.agentPrompt.trim();
-        const inferredTemplateId = inferTemplateIdForPrompt(userNotes, selectedTemplateForUi.id);
+        const connectorLocked = isConnectorCapableTemplate(selectedTemplateForUi) &&
+          Boolean(selectedConnectorForDraftParameters(selectedParameters));
+        const inferredTemplateId = connectorLocked
+          ? selectedTemplateForUi.id
+          : inferTemplateIdForPrompt(userNotes, selectedTemplateForUi.id);
         const template = templateById(inferredTemplateId);
         const inferredFromPrompt = template.id !== selectedTemplateForUi.id;
-        const parameters = inferredFromPrompt
-          ? inferredTemplateParameters(template, userNotes, selectedParameters)
-          : selectedParameters;
+        const parameters = normalizeConnectorDraftParameters(
+          template,
+          inferredFromPrompt
+            ? inferredTemplateParameters(template, userNotes, selectedParameters)
+            : selectedParameters,
+        );
         if (inferredFromPrompt) {
           state.templateFieldErrors = {};
+          if (isConnectorCapableTemplate(template)) {
+            assertValidTemplatePlanInput(template, parameters, userNotes, { mode: 'ai' });
+          }
         } else {
-          assertValidTemplatePlanInput(template, parameters, userNotes);
+          assertValidTemplatePlanInput(template, parameters, userNotes, { mode: 'ai' });
         }
-        const effectiveUserNotes = injectHouseRules(userNotes);
+        state.templateFields = parameters;
+        const effectiveUserNotes = injectHouseRules(connectorAiUserNotes(template, parameters, userNotes));
         state.oneTimePlanView = 'review';
         render();
         const request = {
@@ -14399,10 +14630,7 @@ async function runGenerateAiPlan(): Promise<void> {
             risk: template.risk,
           },
           parameters,
-          connectorContext: protocolConnectorPlannerContext(state.connectedDapps, state.cluster, {
-            dialectClientKeyConfigured: Boolean(state.protocolConnectorPrefs.dialectClientKey.trim()),
-            includeDisabled: true,
-          }),
+          connectorContext: connectorAiPlannerContext(template, parameters, connectorDraftEnvironment()),
         };
         state.aiDiagnostics = [
           aiRouteDiagnostic(state.aiSettings.mode === 'bridge' ? '/bridge/ai/generate-plan' : '/api/ai/generate-plan'),
@@ -15802,6 +16030,8 @@ function generatedQueuePlanTitle(record: GeneratedPlanRecord): string {
   if (!canQueueAgentPlan(record.plan)) return 'Only transfers, swaps, Blink actions, custom transactions, and repeat payments can be queued.';
   const report = planGuardrailReport(record.plan);
   if (report?.verdict === 'block') return report.summary;
+  const connectorError = protocolConnectorQueueBlockReason(record.plan);
+  if (connectorError) return connectorError;
   const mode = activeWorkflowMode();
   if (record.plan.actionType === 'recurring_payment') {
     if (mode === 'agentic-cloud') return 'Create an Agentic Cloud repeat payment. Each due payment appears in Needs Approval.';
@@ -16667,7 +16897,8 @@ function gatherDeterministicFacts(record: GeneratedPlanRecord): AgentReviewFactS
   }
 
   if (plan.actionType === 'blink_action' || plan.parameters.blinkUrl || plan.parameters.actionUrl) {
-    const connector = findProtocolConnectorByInput(plan.parameters.protocol || plan.parameters.dapp || plan.route);
+    const connector = selectedConnectorForDraftParameters(plan.parameters) ??
+      findProtocolConnectorByInput(plan.parameters.protocol || plan.parameters.dapp || plan.route);
     facts.protocolConnector = {
       state: connector && isDappEnabled(connector.id, state.connectedDapps, state.cluster) ? 'ok' : 'warn',
       source: 'deterministic',
@@ -23464,8 +23695,11 @@ function readTemplateFields(template = selectedTemplate()): Record<string, strin
     }
   }
   const withDisplay = withTemplateTokenDisplayParameters(template, current);
-  state.templateFields = withDisplay;
-  return withDisplay;
+  const normalized = isConnectorCapableTemplate(template)
+    ? normalizeConnectorDraftParameters(template, withDisplay)
+    : stripConnectorDraftExtras(template, withDisplay);
+  state.templateFields = normalized;
+  return normalized;
 }
 
 function withTemplateTokenDisplayParameters(
@@ -23497,10 +23731,19 @@ function assertRequiredTemplateFields(template: AgentPlanTemplate, parameters: R
   }
 }
 
-function assertValidTemplatePlanInput(template: AgentPlanTemplate, parameters: Record<string, string>, userNotes: string): void {
+function assertValidTemplatePlanInput(
+  template: AgentPlanTemplate,
+  parameters: Record<string, string>,
+  userNotes: string,
+  opts: { mode?: 'template' | 'ai' } = {},
+): void {
+  const mode = opts.mode ?? 'template';
   const errors: Record<string, string> = {};
   for (const fieldDef of template.fields) {
-    if (fieldDef.required && !parameters[fieldDef.id]?.trim()) {
+    const aiConnectorMissingFact = mode === 'ai' &&
+      isConnectorCapableTemplate(template) &&
+      (fieldDef.id === 'blinkUrl' || fieldDef.id === 'actionUrl');
+    if (fieldDef.required && !parameters[fieldDef.id]?.trim() && !aiConnectorMissingFact) {
       errors[fieldDef.id] = `${fieldDef.label} is required.`;
     }
     if (isRecipientFieldId(fieldDef.id)) {
@@ -23511,9 +23754,12 @@ function assertValidTemplatePlanInput(template: AgentPlanTemplate, parameters: R
   if (templateRequiresUserNotes(template) && !userNotes.trim()) {
     errors.__notes = 'Describe the custom request before creating this plan.';
   }
+  const connectorValidation = validateConnectorDraftParameters(template, parameters, connectorDraftEnvironment(), mode);
+  Object.assign(parameters, connectorValidation.parameters);
+  Object.assign(errors, connectorValidation.errors);
   state.templateFieldErrors = errors;
   if (Object.keys(errors).length > 0) {
-    throw new Error('Complete required fields before creating this plan.');
+    throw new Error(Object.values(errors)[0] ?? 'Complete required fields before creating this plan.');
   }
 }
 
@@ -23541,7 +23787,8 @@ function canQueueAgentPlan(plan: AgentPlan): boolean {
 
 function canQueueGuardedPlan(plan: AgentPlan): boolean {
   return canQueueAgentPlan(plan) &&
-    planGuardrailVerdict(plan) !== 'block';
+    planGuardrailVerdict(plan) !== 'block' &&
+    !protocolConnectorQueueBlockReason(plan);
 }
 
 function canQueueGeneratedPlan(record: GeneratedPlanRecord): boolean {
@@ -23571,8 +23818,8 @@ function protocolConnectorQueueBlockReason(plan: AgentPlan): string {
   if (plan.actionType !== 'blink_action' && !plan.parameters.blinkUrl && !plan.parameters.actionUrl) {
     return '';
   }
-  const protocol = plan.parameters.protocol || plan.parameters.dapp || plan.parameters.provider || plan.route;
-  const connector = findProtocolConnectorByInput(protocol);
+  const connector = selectedConnectorForDraftParameters(plan.parameters) ??
+    findProtocolConnectorByInput(plan.parameters.protocol || plan.parameters.dapp || plan.parameters.provider || plan.route);
   if (!connector) {
     return 'Choose one enabled Protocol Connector before preparing a Blink action.';
   }
@@ -23655,6 +23902,8 @@ function queuePlanTitle(): string {
   if (!canQueueAgentPlan(state.agentPlan)) return 'Only transfer, swap, Blink action, custom transaction, and repeat payments can be queued.';
   const report = planGuardrailReport(state.agentPlan);
   if (report?.verdict === 'block') return report.summary;
+  const connectorError = protocolConnectorQueueBlockReason(state.agentPlan);
+  if (connectorError) return connectorError;
   const mode = activeWorkflowMode();
   if (mode === 'agentic-cloud') {
     const unsupported = cloudQueueUnsupportedReason(state.agentPlan);
@@ -23951,7 +24200,8 @@ async function browserPreparedBlinkActionFromPlan(
   const transactionBase64 = blinkSingleTransaction(prepared);
   const now = new Date().toISOString();
   const id = newId('browser-action');
-  const protocol = plan.parameters.protocol || plan.parameters.dapp || 'Protocol connector';
+  const connector = selectedConnectorForDraftParameters(plan.parameters);
+  const protocol = connector?.name || plan.parameters.protocol || plan.parameters.dapp || 'Protocol connector';
   const operation = plan.parameters.operation || prepared.label || 'Blink action';
   return {
     id,
@@ -23964,6 +24214,7 @@ async function browserPreparedBlinkActionFromPlan(
       transactionBase64,
       blinkUrl: prepared.actionUrl,
       protocol,
+      ...(connector ? { connectorId: connector.id } : {}),
       operation,
       connectorActionSource: 'blink',
       ...(prepared.title ? { blinkTitle: prepared.title } : {}),
@@ -30669,7 +30920,41 @@ function isPreparedActionKind(value: unknown): value is PreparedActionKind {
     value === 'custom_transaction' ||
     value === 'custom' ||
     value === 'kamino_deposit' ||
-    value === 'kamino_withdraw';
+    value === 'kamino_withdraw' ||
+    value === 'meteora_claim_fees' ||
+    value === 'meteora_claim_rewards' ||
+    value === 'meteora_add_liquidity' ||
+    value === 'meteora_remove_liquidity' ||
+    value === 'meteora_close_position' ||
+    value === 'orca_increase_liquidity' ||
+    value === 'orca_decrease_liquidity' ||
+    value === 'orca_collect_fees' ||
+    value === 'orca_collect_rewards' ||
+    value === 'marginfi_deposit' ||
+    value === 'marginfi_withdraw' ||
+    value === 'marginfi_borrow' ||
+    value === 'marginfi_repay' ||
+    value === 'drift_vault_deposit' ||
+    value === 'drift_vault_request_withdraw' ||
+    value === 'drift_vault_cancel_withdraw' ||
+    value === 'drift_vault_complete_withdraw' ||
+    value === 'save_deposit' ||
+    value === 'save_withdraw' ||
+    value === 'save_borrow' ||
+    value === 'save_repay' ||
+    value === 'jito_stake_sol' ||
+    value === 'jito_deposit_stake_account' ||
+    value === 'jito_unstake_jitosol' ||
+    value === 'jito_withdraw_sol' ||
+    value === 'lulo_deposit' ||
+    value === 'lulo_withdraw' ||
+    value === 'lulo_complete_withdraw' ||
+    value === 'raydium_add_liquidity' ||
+    value === 'raydium_remove_liquidity' ||
+    value === 'raydium_collect_fees' ||
+    value === 'raydium_farm_stake' ||
+    value === 'raydium_farm_unstake' ||
+    value === 'raydium_harvest';
 }
 
 function isRecurringPayment(value: unknown): value is RecurringPayment {

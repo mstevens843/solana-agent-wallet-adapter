@@ -176,6 +176,8 @@ describe('mcp server tools', () => {
     expect(result.tools.map((tool) => tool.name)).toContain('solana_prepare_transfer_sol');
     expect(result.tools.map((tool) => tool.name)).toContain('solana_prepare_blink_action');
     expect(result.tools.map((tool) => tool.name)).toContain('solana_prepare_kamino_deposit');
+    expect(result.tools.map((tool) => tool.name)).toContain('solana_marginfi_health_preview');
+    expect(result.tools.map((tool) => tool.name)).toContain('solana_prepare_marginfi_borrow');
     expect(result.tools.map((tool) => tool.name)).toContain('solana_list_prepared_actions');
     expect(result.tools.map((tool) => tool.name)).toContain('solana_execute_prepared_action');
     expect(result.tools.map((tool) => tool.name)).toContain('solana_create_recurring_payment');
@@ -201,10 +203,13 @@ describe('mcp server tools', () => {
 
     const result = await client.listTools();
     const kaminoDeposit = result.tools.find((tool) => tool.name === 'solana_prepare_kamino_deposit');
+    const marginfiBorrow = result.tools.find((tool) => tool.name === 'solana_prepare_marginfi_borrow');
     const prepareSwap = result.tools.find((tool) => tool.name === 'solana_prepare_swap');
 
     expect(kaminoDeposit?.description).toContain('Prepares wallet approval work only');
     expect(kaminoDeposit?.description).toContain('does not sign, submit, or grant delegated authority');
+    expect(marginfiBorrow?.description).toContain('Prepares wallet approval work only');
+    expect(marginfiBorrow?.description).toContain('does not sign, submit, or grant delegated authority');
     expect(prepareSwap?.description).toContain('does not sign');
     expect(prepareSwap?.description).toContain('delegated authority');
   });
@@ -247,16 +252,16 @@ describe('mcp server tools', () => {
       await Promise.all([client.close(), server.close()]);
     };
 
-    const result = await callTool('solana_connector_capabilities', { connectorId: 'meteora' });
+    const result = await callTool('solana_connector_capabilities', { connectorId: 'raydium' });
     const payload = JSON.parse(textOf(result));
 
     expect(payload.connectors).toHaveLength(1);
     expect(payload.connectors[0]).toMatchObject({
-      id: 'meteora',
-      executionMode: 'wallet_approval',
-      actionTools: expect.arrayContaining(['solana_prepare_blink_action']),
+      id: 'raydium',
+      executionMode: 'first_class_prepare',
+      actionTools: expect.arrayContaining(['solana_prepare_raydium_add_liquidity']),
       readiness: {
-        reads: { ready: false },
+        reads: { ready: true },
         actions: { ready: true },
       },
     });
@@ -347,14 +352,14 @@ describe('mcp server tools', () => {
     const fetchImpl = vi.fn(async (_input: unknown, init?: RequestInit) => {
       if (init?.method === 'GET') {
         return jsonResponse({
-          title: 'Claim Meteora fees',
-          description: 'Claim fees from a DLMM position',
-          label: 'Claim',
+          title: 'Harvest Raydium farm',
+          description: 'Harvest rewards from a farm position',
+          label: 'Harvest',
         });
       }
       return jsonResponse({
         transaction: 'base64-blink-transaction',
-        label: 'Claim fees',
+        label: 'Harvest',
         message: 'Review before signing',
       });
     });
@@ -373,9 +378,8 @@ describe('mcp server tools', () => {
     };
 
     const result = await callTool('solana_prepare_blink_action', {
-      connector: 'meteora',
-      protocol: 'Meteora',
-      operation: 'Claim fees',
+      protocol: 'Raydium',
+      operation: 'Harvest',
       blinkUrl: 'blink:https://example.com/action',
       parameters: { position: 'Position111' },
       expectedAmount: '0.01',
@@ -388,16 +392,15 @@ describe('mcp server tools', () => {
     expect(payload.preparedAction).toMatchObject({
       kind: 'blink_action',
       status: 'ready',
-      summary: 'Meteora: Claim fees',
+      summary: 'Raydium: Harvest',
       params: {
-        connectorId: 'meteora',
-        protocol: 'Meteora',
-        operation: 'Claim fees',
+        protocol: 'Raydium',
+        operation: 'Harvest',
         blinkUrl: 'https://example.com/action',
         actionUrl: 'https://example.com/action',
         transactionBase64: 'base64-blink-transaction',
         connectorActionSource: 'blink',
-        blinkLabel: 'Claim fees',
+        blinkLabel: 'Harvest',
         blinkMessage: 'Review before signing',
         expectedAmount: '0.01',
         expectedToken: 'SOL',

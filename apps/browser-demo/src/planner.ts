@@ -2,6 +2,9 @@ import {
   assertPlanGuardrails,
   type AiGuardrailReport,
 } from '@solana-agent-wallet-adapter/workflow';
+import type {
+  ProtocolConnectorCapabilityId,
+} from './connectedDapps.js';
 
 export type AgentPlanSource = 'template' | 'ai';
 export type TemplateRisk = 'low' | 'medium' | 'high';
@@ -56,6 +59,8 @@ export interface AgentPlanTemplate {
   safeguards: string[];
   requiresWallet: boolean;
   requiresBridge: boolean;
+  connectorCapability?: ProtocolConnectorCapabilityId;
+  connectorActionSource?: 'blink' | 'first-class-adapter';
   fields: AgentPlanTemplateField[];
 }
 
@@ -377,6 +382,28 @@ export const AGENT_PLAN_TEMPLATES: AgentPlanTemplate[] = [
     selectField('token', 'Reserve', ['All reserves', 'SOL', 'USDC', 'JitoSOL', 'mSOL', 'bSOL'], 'All reserves'),
     field('memo', 'Reason', 'Tax / accounting record', 'Kamino earnings receipt'),
   ]),
+  template('defi', 'drift-vault-deposit', 'Drift vault deposit', "Deposit a token into a Drift strategy vault. Prepares wallet approval work only and does not sign. Requires Drift Vaults enabled in Protocol Connectors. V1 covers vault deposit/withdraw lifecycle only; no perp or spot order placement.", 'drift_vault_deposit', 'medium', [
+    field('vaultAddress', 'Vault address', 'Drift vault account address', '', true),
+    field('amount', 'Amount', '25', '25', true),
+    field('mint', 'Deposit mint (optional)', 'Vault deposit mint address', ''),
+    selectField('initializeDepositorIfMissing', 'Create depositor if missing', ['no', 'yes'], 'no'),
+    field('memo', 'Reason', 'Earn yield in a Drift strategy vault', 'Drift vault deposit review'),
+  ]),
+  template('defi', 'drift-vault-request-withdraw', 'Drift vault request withdraw', 'Request a Drift strategy vault withdraw. Rejected if a pending request already exists. Prepares wallet approval work only; the redeem period must elapse before completing.', 'drift_vault_request_withdraw', 'medium', [
+    field('vaultAddress', 'Vault address', 'Drift vault account address', '', true),
+    selectField('withdrawUnit', 'Withdraw unit', ['token', 'shares'], 'token'),
+    field('amount', 'Token amount', '10', ''),
+    field('shares', 'Share amount', '5', ''),
+    field('memo', 'Reason', 'Need liquidity, exit strategy', 'Drift vault withdraw request review'),
+  ]),
+  template('defi', 'drift-vault-cancel-withdraw', 'Drift vault cancel withdraw', 'Cancel a pending Drift vault withdraw request. Rejected if no pending request exists.', 'drift_vault_cancel_withdraw', 'medium', [
+    field('vaultAddress', 'Vault address', 'Drift vault account address', '', true),
+    field('memo', 'Reason', 'Changed my mind, stay deposited', 'Drift vault cancel withdraw review'),
+  ]),
+  template('defi', 'drift-vault-complete-withdraw', 'Drift vault complete withdraw', 'Complete a Drift vault withdraw after the redeem period has elapsed. Rejected if not yet ready.', 'drift_vault_complete_withdraw', 'medium', [
+    field('vaultAddress', 'Vault address', 'Drift vault account address', '', true),
+    field('memo', 'Reason', 'Redeem period elapsed, finalize exit', 'Drift vault complete withdraw review'),
+  ]),
   template('defi', 'liquidity', 'Liquidity position review', 'Review LP deposits, withdrawals, fees, and impermanent loss before wallet approval.', 'manual_review', 'high', [
     field('pool', 'Pool / protocol', 'Orca, Raydium, Meteora, custom', ''),
     field('amounts', 'Amounts', '0.1 SOL + 20 USDC', ''),
@@ -395,7 +422,7 @@ export const AGENT_PLAN_TEMPLATES: AgentPlanTemplate[] = [
     field('position', 'Position / market', 'Pool, market, vault, or position address', ''),
     field('amount', 'Amount / cap', 'all, 0.1 SOL, 100 USDC', ''),
     textareaField('memo', 'Agent instructions', 'Check connector facts first. Prepare only if amount, protocol, route, and policy match my instructions.'),
-  ]),
+  ], { connectorCapability: 'blink_actions', connectorActionSource: 'blink' }),
   template('nft', 'nft-transfer', 'NFT transfer', 'Prepare an NFT transfer with recipient, collection, and anti-phishing checks.', 'manual_review', 'medium', [
     field('mint', 'NFT mint', 'Mint address', '', true),
     field('recipient', 'Recipient address', 'Recipient public key', '', true),
@@ -458,6 +485,12 @@ export function inferTemplateIdForPrompt(prompt: string, fallbackTemplateId = 'c
     if (/\b(?:withdraw|redeem|remove|take\s+out)\b/.test(text)) return 'kamino-withdraw';
     if (/\b(?:stake|supply|deposit|lend|earn)\b/.test(text)) return 'kamino-deposit';
     if (/\b(?:earning|earnings|reward|rewards|yield|interest|show|check|proof)\b/.test(text)) return 'kamino-earnings-proof';
+  }
+  if (/\bdrift\b/.test(text)) {
+    if (/\bcancel\b/.test(text)) return 'drift-vault-cancel-withdraw';
+    if (/\b(?:complete|finish|finalize|claim)\b/.test(text)) return 'drift-vault-complete-withdraw';
+    if (/\b(?:request|withdraw|redeem|exit)\b/.test(text)) return 'drift-vault-request-withdraw';
+    if (/\b(?:deposit|supply|stake|earn|invest)\b/.test(text)) return 'drift-vault-deposit';
   }
   if (/\b(?:meteora|dlmm)\b/.test(text) && /\b(?:position|positions|fee|fees|reward|rewards|check|show|status)\b/.test(text)) {
     return 'protocol-position-check';
@@ -530,6 +563,27 @@ export function inferredTemplateParameters(
       break;
     case 'kamino-earnings-proof':
       if (amountToken?.token) next.token = amountToken.token;
+      next.memo = promptText || next.memo || '';
+      break;
+    case 'drift-vault-deposit':
+      if (position) next.vaultAddress = position;
+      if (amountToken?.amount) next.amount = amountToken.amount;
+      next.memo = promptText || next.memo || '';
+      break;
+    case 'drift-vault-request-withdraw':
+      if (position) next.vaultAddress = position;
+      if (/\bshares?\b/.test(prompt) && amountToken?.amount) {
+        next.shares = amountToken.amount;
+        next.withdrawUnit = 'shares';
+      } else if (amountToken?.amount) {
+        next.amount = amountToken.amount;
+        next.withdrawUnit = 'token';
+      }
+      next.memo = promptText || next.memo || '';
+      break;
+    case 'drift-vault-cancel-withdraw':
+    case 'drift-vault-complete-withdraw':
+      if (position) next.vaultAddress = position;
       next.memo = promptText || next.memo || '';
       break;
     case 'protocol-position-check':
@@ -1400,11 +1454,21 @@ async function generateAnthropicReview(settings: AiSettings, request: AgentPlanR
 }
 
 export function aiMessages(request: AiPlanRequest): Array<{ role: 'system' | 'user'; content: string }> {
+  const selectedConnector = selectedConnectorContext(request.connectorContext);
+  const connectorRule = selectedConnector
+    ? [
+      `Use the selected protocol connector only: ${selectedConnector.name || selectedConnector.id || 'selected connector'}.`,
+      'Do not switch protocols.',
+      'If required connector facts are missing, ask for missing facts instead of inventing execution.',
+      'Do not claim the action is signed, submitted, approved, or safe.',
+      'The wallet owner must approve separately.',
+    ].join(' ')
+    : 'Only propose first-class or Blink executable actions for enabled connectors with matching capabilities. If a requested protocol/action is disabled, unsupported, or missing an action URL/client key, make the plan proof/read-only and state which connector fact, key, or action URL is missing.';
   return [
     {
       role: 'system',
       content:
-        'You convert Solana wallet user requests into structured approval plans. Return only JSON with string fields intent, route, risk, approval, and safeguards as an array of short strings. Support swaps, DCA/repeat instructions, scheduled payments, Kamino supply/withdraw/earnings, Meteora position checks, Blink actions, connector capability questions, denial reasons, and missing-fact questions. Use protocol connector context to explain which enabled reads can inform the plan and which enabled write actions can only prepare wallet approval work. If a requested connector is disabled or missing, state the connector name and make the plan read-only/proof-only instead of inventing execution. When parameters include `inputTokenLabel`, `outputTokenLabel`, or `tokenLabel`, ALWAYS use those resolved symbols (for example "POPCAT") in the prose fields (intent, route, risk, approval, safeguards). Never substitute a different ticker for one provided in the parameter labels, and never invent a symbol when only a mint address is present. If a label is missing, refer to the token by its short mint form (first 4 + last 4 characters). Never claim a transaction is signed, submitted, approved, or safe. Never request private keys. The wallet user must approve separately.',
+        'You convert Solana wallet user requests into structured approval plans. Return only JSON with string fields intent, route, risk, approval, and safeguards as an array of short strings. Support swaps, DCA/repeat instructions, scheduled payments, Kamino supply/withdraw/earnings, Meteora position checks, Blink actions, connector capability questions, denial reasons, and missing-fact questions. Use protocol connector context to explain which enabled reads can inform the plan and which enabled write actions can only prepare wallet approval work. If protocolConnectors includes selected=true or selectedOnly=true, use that selected connector only and do not switch protocols. If a requested connector is disabled or missing, state the connector name and make the plan read-only/proof-only instead of inventing execution. When parameters include `inputTokenLabel`, `outputTokenLabel`, or `tokenLabel`, ALWAYS use those resolved symbols (for example "POPCAT") in the prose fields (intent, route, risk, approval, safeguards). Never substitute a different ticker for one provided in the parameter labels, and never invent a symbol when only a mint address is present. If a label is missing, refer to the token by its short mint form (first 4 + last 4 characters). Never claim a transaction is signed, submitted, approved, or safe. Never request private keys. The wallet user must approve separately.',
     },
     {
       role: 'user',
@@ -1414,11 +1478,17 @@ export function aiMessages(request: AiPlanRequest): Array<{ role: 'system' | 'us
         template: request.template,
         parameters: request.parameters,
         protocolConnectors: request.connectorContext ?? [],
-        connectorRule: 'Only propose first-class or Blink executable actions for enabled connectors with matching capabilities. If a requested protocol/action is disabled, unsupported, or missing an action URL/client key, make the plan proof/read-only and state which connector fact, key, or action URL is missing.',
+        connectorRule,
         requiredBoundary: 'AI prepares a plan only. Wallet approval and signing happen later in the user wallet.',
       }),
     },
   ];
+}
+
+function selectedConnectorContext(
+  context: Array<Record<string, unknown>> | undefined,
+): Record<string, unknown> | undefined {
+  return context?.find((entry) => entry.selected === true || entry.selectedOnly === true);
 }
 
 export function aiReviewMessages(request: AgentPlanReviewRequest): Array<{ role: 'system' | 'user'; content: string }> {
@@ -1607,6 +1677,7 @@ function template(
   actionType: string,
   risk: TemplateRisk,
   fields: AgentPlanTemplateField[],
+  options: Pick<AgentPlanTemplate, 'connectorCapability' | 'connectorActionSource'> = {},
 ): AgentPlanTemplate {
   return {
     id,
@@ -1623,6 +1694,7 @@ function template(
     requiresBridge: ['transfer_sol', 'transfer_spl', 'swap', 'recurring_payment'].includes(actionType),
     fields,
     prompt: description,
+    ...options,
   };
 }
 
@@ -1802,6 +1874,8 @@ function routeFor(actionType: string): string {
       return 'Prepare a {inputToken} to {outputToken} swap review before signing. Amount: {amount}. Max slippage bps: {slippageBps}. Do not submit anything until the wallet owner approves.';
     case 'recurring_payment':
       return 'Create a recurring review item for {amount} {token} on {cadence}. Every occurrence still requires wallet approval.';
+    case 'blink_action':
+      return 'Prepare a {protocol} {operation} Blink/Solana Action from {blinkUrl}. Transaction bytes are fetched only when sent for approval.';
     case 'read_only':
       return 'Read or review wallet context only. No transaction should be produced unless the user creates a separate approval.';
     default:
@@ -1824,6 +1898,8 @@ function approvalFor(actionType: string): string {
   switch (actionType) {
     case 'read_only':
       return 'No wallet signature is required unless the user chooses to sign an audit proof.';
+    case 'blink_action':
+      return 'AI or templates prepare the connector draft only. The wallet owner reviews the Blink transaction and approves the final signature separately.';
     case 'manual_review':
       return 'Wallet can sign an off-chain review proof after the user reviews the structured draft.';
     default:
@@ -1840,6 +1916,9 @@ function safeguardsFor(actionType: string, risk: TemplateRisk): string[] {
   }
   if (actionType === 'swap') {
     safeguards.push('Confirm quote, output token, route, and slippage cap before signing.');
+  }
+  if (actionType === 'blink_action') {
+    safeguards.push('Confirm the connector, action URL, protocol operation, and prepared transaction bytes before signing.');
   }
   if (actionType.includes('transfer')) {
     safeguards.push('Confirm recipient address and amount character by character before signing.');

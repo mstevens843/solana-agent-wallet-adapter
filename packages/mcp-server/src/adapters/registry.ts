@@ -1,12 +1,44 @@
+import { driftAdapter } from './drift/index.js';
+import { jitoAdapter } from './jito/index.js';
 import { kaminoAdapter } from './kamino/index.js';
+import { luloAdapter } from './lulo/index.js';
+import { magicedenAdapter } from './magiceden/index.js';
+import { marinadeAdapter } from './marinade/index.js';
+import { marginfiAdapter } from './marginfi/index.js';
+import { meteoraAdapter } from './meteora/index.js';
+import { orcaAdapter } from './orca/index.js';
+import { pythAdapter } from './pyth/index.js';
+import { raydiumAdapter } from './raydium/index.js';
+import { realmsAdapter } from './realms/index.js';
+import { saveAdapter } from './save/index.js';
+import { sanctumAdapter } from './sanctum/index.js';
+import { squadsAdapter } from './squads/index.js';
+import { tensorAdapter } from './tensor/index.js';
+import { wormholeAdapter } from './wormhole/index.js';
 import type { DAppAdapter, DAppAdapterId } from './types.js';
 
-const ADAPTERS: Record<DAppAdapterId, DAppAdapter> = {
+const ADAPTERS: Partial<Record<DAppAdapterId, DAppAdapter>> = {
   kamino: kaminoAdapter,
+  meteora: meteoraAdapter,
+  orca: orcaAdapter,
+  raydium: raydiumAdapter,
+  marginfi: marginfiAdapter,
+  drift: driftAdapter,
+  save: saveAdapter,
+  jito: jitoAdapter,
+  marinade: marinadeAdapter,
+  lulo: luloAdapter,
+  magiceden: magicedenAdapter,
+  tensor: tensorAdapter,
+  sanctum: sanctumAdapter,
+  pyth: pythAdapter,
+  realms: realmsAdapter,
+  squads: squadsAdapter,
+  wormhole: wormholeAdapter,
 };
 
 export function listAdapters(): DAppAdapter[] {
-  return Object.values(ADAPTERS);
+  return Object.values(ADAPTERS).filter((adapter): adapter is DAppAdapter => adapter !== undefined);
 }
 
 export function getAdapter(id: string): DAppAdapter | undefined {
@@ -22,7 +54,7 @@ export function requireAdapter(id: string): DAppAdapter {
 }
 
 export function adapterForActionKind(kind: string): DAppAdapter | undefined {
-  for (const adapter of Object.values(ADAPTERS)) {
+  for (const adapter of listAdapters()) {
     for (const action of Object.values(adapter.actions)) {
       if (action.kind === kind) return adapter;
     }
@@ -31,7 +63,7 @@ export function adapterForActionKind(kind: string): DAppAdapter | undefined {
 }
 
 export function actionForKind(kind: string): { adapter: DAppAdapter; action: { execute: DAppAdapter['actions'][string]['execute']; id: string } } | undefined {
-  for (const adapter of Object.values(ADAPTERS)) {
+  for (const adapter of listAdapters()) {
     for (const action of Object.values(adapter.actions)) {
       if (action.kind === kind) {
         return { adapter, action: { execute: action.execute, id: action.id } };

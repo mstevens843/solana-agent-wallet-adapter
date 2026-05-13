@@ -59,6 +59,13 @@ export {
   factsFromKaminoEarningsProof,
   factsFromKaminoPositions,
   factsFromKaminoReserveSnapshot,
+  factsFromMarginfiAccountDetail,
+  factsFromMarginfiAccountSummaries,
+  factsFromMarginfiBankSnapshot,
+  factsFromMarginfiHealthPreview,
+  factsFromMeteoraPoolSnapshot,
+  factsFromMeteoraPositionDetail,
+  factsFromMeteoraPositions,
 } from './connectorFacts.js';
 export type {
   ConnectorFact,

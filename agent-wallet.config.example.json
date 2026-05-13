@@ -18,7 +18,13 @@
   ],
   "jupiter": {
     "baseUrl": "https://api.jup.ag/swap/v2",
+    "swapBaseUrl": "https://api.jup.ag/swap/v2",
     "apiKeyEnv": "JUPITER_API_KEY"
+  },
+  "connectors": {
+    "marginfi": {
+      "minHealthRatio": 1.1
+    }
   },
   "recurring": {
     "maxLifetimeAmount": { "SOL": "10", "USDC": "1000" },

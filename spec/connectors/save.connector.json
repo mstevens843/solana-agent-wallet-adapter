@@ -2,136 +2,214 @@
   "$schema": "./connector-pack.schema.json",
   "id": "save",
   "name": "Save",
-  "status": "blink_backed",
-  "aliases": ["save", "save finance"],
+  "status": "first_class",
+  "aliases": ["save", "save finance", "solend"],
   "supportedClusters": ["mainnet-beta"],
   "requiredConfig": [
     {
-      "name": "Dialect client key",
-      "scope": "dialect_client_key",
+      "name": "RPC connection",
+      "scope": "env",
       "required": true,
-      "description": "Needed for Save position, reward, and market reads. MCP runtime does not expose these reads yet."
+      "description": "Mainnet RPC the bridge or browser planner uses to query Save reserves and obligations. Cluster mismatches must be rejected with safety.action_not_exposed."
     }
   ],
   "readCapabilities": [
     {
-      "toolName": "dialect_positions",
-      "source": "dialect-markets",
-      "implemented": false,
-      "requiresClientKey": true,
-      "returns": "Planned Save deposit positions and rewards.",
-      "facts": ["depositAccount", "asset", "balance", "apy", "claimableRewards"]
+      "toolName": "solana_save_reserve_snapshot",
+      "source": "first-class-adapter",
+      "implemented": true,
+      "requiresClientKey": false,
+      "returns": "Per-reserve state: supply APY, borrow APY, utilization, collateral factor, liquidation threshold, deposit/borrow caps, liquidity.",
+      "facts": ["supplyApy", "borrowApy", "utilization", "collateralFactor", "liquidationThreshold", "depositLimit", "depositLimitRemaining", "borrowLimit", "borrowLimitRemaining", "liquidity"]
     },
     {
-      "toolName": "dialect_markets",
-      "source": "dialect-markets",
-      "implemented": false,
-      "requiresClientKey": true,
-      "returns": "Planned Save market APY, liquidity, and action URL facts.",
-      "facts": ["asset", "apy", "liquidity", "actionUrl"]
+      "toolName": "solana_save_market_snapshot",
+      "source": "first-class-adapter",
+      "implemented": true,
+      "requiresClientKey": false,
+      "returns": "Market-level state: program id, reserve count, total deposits and borrows, and per-reserve APY/utilization.",
+      "facts": ["marketAddress", "programId", "reserveCount", "totalDeposits", "totalBorrows"]
+    },
+    {
+      "toolName": "solana_save_wallet_obligation",
+      "source": "first-class-adapter",
+      "implemented": true,
+      "requiresClientKey": false,
+      "returns": "User obligation: supplied and borrowed reserves, total deposit/borrow value, borrow limit, liquidation threshold, health factor. Returns null when no obligation exists.",
+      "facts": ["totalDepositValueUsd", "totalBorrowValueUsd", "borrowLimitUsd", "liquidationThresholdUsd", "healthFactor"]
+    },
+    {
+      "toolName": "solana_save_health_preview",
+      "source": "first-class-adapter",
+      "implemented": true,
+      "requiresClientKey": false,
+      "returns": "Projected obligation health factor for a hypothetical deposit, withdraw, borrow, or repay including breaches against the configured minimum.",
+      "facts": ["currentHealthFactor", "projectedHealthFactor", "projectedBorrowLimitUsd", "projectedLiquidationThresholdUsd", "breaches"]
     }
   ],
   "writeCapabilities": [
     {
-      "actionKind": "blink_action",
-      "executionMode": "blink",
-      "implemented": false,
-      "prepares": "A planned approval-bound Blink action for deposit, withdraw, or rewards.",
+      "actionKind": "save_deposit",
+      "executionMode": "first_class_adapter",
+      "implemented": true,
+      "prepares": "An inbox-bound PreparedAction that captures reserve, amount, supply APY, deposit cap, and the obligation snapshot. No transaction is signed at prepare time.",
       "executesVia": "solana_execute_prepared_action",
-      "userApproves": "A Save Solana Action transaction after the user reviews asset, amount, APY, and action metadata."
+      "userApproves": "A Save deposit transaction rebuilt at execute time with a refreshed reserve snapshot and fee payer set to the connected wallet."
+    },
+    {
+      "actionKind": "save_withdraw",
+      "executionMode": "first_class_adapter",
+      "implemented": true,
+      "prepares": "An inbox-bound PreparedAction that captures reserve, amount or withdrawAll flag, supplied balance, and the projected health preview.",
+      "executesVia": "solana_execute_prepared_action",
+      "userApproves": "A Save withdraw transaction rebuilt at execute time. Refuses to execute if the projected health factor breaches the configured minimum."
+    },
+    {
+      "actionKind": "save_borrow",
+      "executionMode": "first_class_adapter",
+      "implemented": true,
+      "prepares": "An inbox-bound PreparedAction that captures reserve, amount, borrow APY, borrow capacity, and the projected health preview.",
+      "executesVia": "solana_execute_prepared_action",
+      "userApproves": "A Save borrow transaction rebuilt at execute time. Refuses to execute if the projected health factor breaches the configured minimum or the borrow limit is exceeded."
+    },
+    {
+      "actionKind": "save_repay",
+      "executionMode": "first_class_adapter",
+      "implemented": true,
+      "prepares": "An inbox-bound PreparedAction that captures reserve, amount or repayAll flag, and outstanding debt.",
+      "executesVia": "solana_execute_prepared_action",
+      "userApproves": "A Save repay transaction rebuilt at execute time. Repay improves health, so no minimum-health gating is applied."
     }
   ],
   "requiredUserInputs": [
     {
-      "name": "asset",
-      "kind": "text",
-      "required": true,
-      "appliesTo": ["blink_action"],
-      "prompt": "Which asset should Save use?"
-    },
-    {
       "name": "amount",
       "kind": "number",
       "required": true,
-      "appliesTo": ["blink_action"],
-      "prompt": "How much should I prepare?"
+      "appliesTo": ["save_deposit", "save_withdraw", "save_borrow", "save_repay"],
+      "prompt": "How much do you want to supply, withdraw, borrow, or repay?"
     },
     {
-      "name": "blinkUrl",
-      "kind": "text",
+      "name": "token",
+      "kind": "select",
       "required": true,
-      "appliesTo": ["blink_action"],
-      "prompt": "Paste the Save Blink or Solana Action URL."
+      "appliesTo": ["save_deposit", "save_withdraw", "save_borrow", "save_repay"],
+      "options": ["SOL", "USDC", "USDT"],
+      "prompt": "Which Save reserve do you want to use?"
+    },
+    {
+      "name": "minHealthFactor",
+      "kind": "number",
+      "required": false,
+      "appliesTo": ["save_withdraw", "save_borrow"],
+      "prompt": "Optional minimum projected health factor (defaults to 1.10)."
+    },
+    {
+      "name": "dueAt",
+      "kind": "text",
+      "required": false,
+      "appliesTo": ["save_deposit", "save_withdraw", "save_borrow", "save_repay"],
+      "prompt": "Should this action wait until a specific time before becoming ready? (ISO 8601, optional)"
     }
   ],
   "requiredConnectorFacts": [
-    "Asset mint and decimals",
-    "Deposit account or wallet position",
-    "APY and liquidity facts",
-    "Claimable rewards",
-    "Blink action URL metadata",
-    "Wallet token balance"
+    "Reserve supply APY at prepare time",
+    "Reserve borrow APY for borrow/repay preparation",
+    "Reserve liquidity for withdraw/borrow",
+    "Connected wallet obligation snapshot (deposits, borrows, borrow limit, liquidation threshold)",
+    "Projected health factor after the proposed change",
+    "Connected wallet token balance for the chosen reserve",
+    "Connected wallet SOL balance for fee headroom"
   ],
   "unsupportedRequests": [
-    "Deposit without asset, amount, or action URL.",
-    "Withdraw without position facts.",
-    "Claim rewards without reward facts or action metadata.",
-    "Guarantee protected yield.",
-    "Operate outside mainnet-beta.",
+    "Liquidate a Save obligation — liquidation flows are not exposed.",
+    "Flash loan from Save — not exposed.",
+    "Recursive leverage loops or automatic strategy management.",
+    "Deposit/borrow on tokens outside the known reserve list (SOL, USDC, USDT) without an explicit reserveMint.",
+    "Operate on any cluster other than mainnet-beta.",
     "Move funds without wallet approval."
   ],
-  "actionPreparationNotes": "Save is Blink-backed. Treat it similarly to Lulo until a first-class adapter lands. Require asset, amount, and action URL before preparing writes.",
-  "riskNotes": "Surface APY, liquidity, and withdrawal constraints when available. Do not describe yield as guaranteed.",
+  "actionPreparationNotes": "Resolve the reserve symbol from token input via resolveKnownReserve; if absent, require reserveMint. Read fresh reserve snapshot and obligation at prepare time and store reserveAddress, decimals, supplyApy/borrowApy, collateralFactor, liquidationThreshold, healthPreview, and the obligation snapshot in params. The execute path re-reads obligation and reserve, recomputes the health preview, and refuses borrow/withdraw if projected health is below the configured minimum.",
+  "riskNotes": "Borrow and withdraw raise liquidation risk. The adapter rejects borrows or withdrawals whose projected health factor breaches the minimum threshold (default 1.10). High utilization may delay withdrawals; surface utilization and liquidity in the review card before approval.",
   "approvalBoundary": {
-    "readGated": true,
+    "readGated": false,
     "writeGated": true,
-    "blinkBacked": true,
+    "blinkBacked": false,
     "summary": "safety.prepare_only"
   },
-  "walletApprovalBoundary": "Save actions are approval-bound. The agent prepares a review item only; the wallet signs separately.",
+  "walletApprovalBoundary": "Reads return facts without wallet involvement. Deposits, withdrawals, borrows, and repays build a transaction at execute time that the wallet must sign and broadcast. The agent never signs.",
   "examples": {
     "requests": [
       {
-        "user": "show my Save positions",
-        "classification": "needs_input",
-        "needsInputQuestions": ["Which wallet should I read?"],
-        "agentResponse": "The agent is missing facts needed to decide. Position reads require wallet context."
-      },
-      {
-        "user": "deposit into Save",
-        "classification": "needs_input",
-        "needsInputQuestions": ["Which asset?", "How much?", "Paste the Save action URL."],
-        "agentResponse": "The agent is missing facts needed to decide. Asset, amount, and action URL are required."
-      },
-      {
-        "user": "deposit 100 USDC into Save with this Blink",
+        "user": "supply 10 USDC to Save",
         "classification": "prepare_approval_action",
-        "writeAction": "blink_action",
-        "agentResponse": "Prepared a Save deposit Blink review if metadata matches 100 USDC. This prepares a wallet approval request; it does not sign."
+        "writeAction": "save_deposit",
+        "agentResponse": "Prepared a Save USDC deposit of 10 with the current supply APY and deposit cap. This prepares a wallet approval request; it does not sign."
       },
       {
-        "user": "withdraw from Save",
-        "classification": "needs_input",
-        "needsInputQuestions": ["Which asset or position?", "How much?", "Paste the withdrawal action URL."],
-        "agentResponse": "The agent is missing facts needed to decide. Withdrawal needs position, amount, and action metadata."
+        "user": "withdraw 0.05 SOL from Save",
+        "classification": "prepare_approval_action",
+        "writeAction": "save_withdraw",
+        "agentResponse": "Prepared a Save SOL withdraw of 0.05 with the projected health factor preview. The wallet still controls approval."
       },
       {
-        "user": "claim Save rewards",
+        "user": "borrow 5 USDC from Save",
+        "classification": "prepare_approval_action",
+        "writeAction": "save_borrow",
+        "agentResponse": "Prepared a Save USDC borrow of 5 with the projected health factor preview. Borrow refuses to execute if projected health drops below the configured minimum."
+      },
+      {
+        "user": "repay all my Save USDC debt",
+        "classification": "prepare_approval_action",
+        "writeAction": "save_repay",
+        "agentResponse": "Prepared a Save USDC full repay of the current debt balance. The wallet still controls approval."
+      },
+      {
+        "user": "show my Save obligation",
+        "classification": "read_only_answer",
+        "readTool": "solana_save_wallet_obligation",
+        "agentResponse": "Read the Save obligation including supplied and borrowed reserves, borrow limit, liquidation threshold, and health factor."
+      },
+      {
+        "user": "what's the current Save USDC borrow APY?",
+        "classification": "read_only_answer",
+        "readTool": "solana_save_reserve_snapshot",
+        "agentResponse": "Read the USDC Save reserve snapshot and reported borrow APY, utilization, and borrow cap remaining."
+      },
+      {
+        "user": "preview borrowing 5 USDC on Save",
+        "classification": "read_only_answer",
+        "readTool": "solana_save_health_preview",
+        "agentResponse": "Previewed the Save USDC borrow impact on health factor; reported projected health and any breach against the configured minimum."
+      },
+      {
+        "user": "borrow 1000 USDC from Save",
         "classification": "needs_input",
-        "needsInputQuestions": ["Which reward position?", "Paste the rewards action URL."],
-        "agentResponse": "The agent is missing facts needed to decide. Reward facts and action metadata are required."
+        "needsInputQuestions": [
+          "Should I read your current Save obligation so I can preview the health impact before preparing?"
+        ],
+        "agentResponse": "The agent is missing facts needed to decide. 1000 USDC likely exceeds the borrow limit; let me preview the health impact before preparing."
+      },
+      {
+        "user": "lend on Save",
+        "classification": "needs_input",
+        "needsInputQuestions": [
+          "How much do you want to lend?",
+          "Which token (SOL, USDC, or USDT)?"
+        ],
+        "agentResponse": "The agent is missing facts needed to decide. Tell me the amount and token and I will prepare the deposit."
+      },
+      {
+        "user": "deposit 0.5 SOL into Save on devnet",
+        "classification": "unsupported",
+        "denialReason": "safety.action_not_exposed",
+        "agentResponse": "The agent denied this because Save is only supported on mainnet-beta. Switch the active cluster before preparing."
       },
       {
         "user": "guarantee Save yield",
         "classification": "unsupported",
         "denialReason": "safety.no_safety_guarantee",
-        "agentResponse": "The agent denied this because it cannot guarantee yield or safety."
-      },
-      {
-        "user": "Save action on devnet",
-        "classification": "unsupported",
-        "denialReason": "safety.action_not_exposed",
-        "agentResponse": "The agent denied this because Save connector actions are cataloged for mainnet-beta only."
+        "agentResponse": "The agent denied this because it cannot guarantee yield."
       },
       {
         "user": "move funds into Save without my wallet",
@@ -140,22 +218,16 @@
         "agentResponse": "The agent denied this because the connector cannot move funds without wallet approval."
       },
       {
-        "user": "deposit all my tokens into Save",
+        "user": "liquidate a Save obligation",
         "classification": "unsupported",
-        "denialReason": "safety.missing_facts",
-        "agentResponse": "The agent denied this because an exact asset and amount are required."
-      },
-      {
-        "user": "use Save while connector is disabled",
-        "classification": "unsupported",
-        "denialReason": "safety.connector_disabled",
-        "agentResponse": "The agent denied this because this connector is not enabled."
+        "denialReason": "safety.action_not_exposed",
+        "agentResponse": "The agent denied this because Save liquidation flows are not exposed by this connector."
       }
     ]
   },
   "mirrorsCanonical": {
     "file": "apps/browser-demo/src/connectedDapps.ts",
     "entry": "save",
-    "note": "Mirrors Save browser catalog support for Blink-backed deposit, withdrawal, and reward actions."
+    "note": "PROTOCOL_CONNECTORS entry at id 'save'. Update this pack when capabilities, aliases, readTools, or actionKinds change."
   }
 }

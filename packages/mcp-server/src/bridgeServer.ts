@@ -505,6 +505,10 @@ async function handleRequest(
         amount?: string;
         slippageBps?: number;
         taker?: string;
+        whirlpoolAddress?: string;
+        positionMint?: string;
+        poolAddress?: string;
+        positionAddress?: string;
       };
       writeJson(res, 200, await requireActionService(actionService).connectorReadFacts({
         connectorId: requireString(body.connectorId, 'connectorId'),
@@ -517,6 +521,10 @@ async function handleRequest(
         ...(body.amount !== undefined && { amount: body.amount }),
         ...(body.slippageBps !== undefined && { slippageBps: body.slippageBps }),
         ...(body.taker !== undefined && { taker: body.taker }),
+        ...(body.whirlpoolAddress !== undefined && { whirlpoolAddress: body.whirlpoolAddress }),
+        ...(body.positionMint !== undefined && { positionMint: body.positionMint }),
+        ...(body.poolAddress !== undefined && { poolAddress: body.poolAddress }),
+        ...(body.positionAddress !== undefined && { positionAddress: body.positionAddress }),
       }));
       return;
     }

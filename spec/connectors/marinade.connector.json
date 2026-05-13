@@ -1,0 +1,254 @@
+{
+  "$schema": "./connector-pack.schema.json",
+  "id": "marinade",
+  "name": "Marinade",
+  "status": "first_class",
+  "aliases": ["marinade", "marinade finance", "msol", "marinade liquid staking", "marinade native"],
+  "supportedClusters": ["mainnet-beta"],
+  "requiredConfig": [
+    {
+      "name": "@marinade.finance/marinade-ts-sdk",
+      "scope": "env",
+      "required": true,
+      "description": "Optional MCP server dependency or injected Marinade client required for state reads, wallet reads, liquid stake, delayed unstake, and delayed-unstake claim transaction construction."
+    },
+    {
+      "name": "JUPITER_API_KEY",
+      "scope": "env",
+      "required": false,
+      "description": "Required for instant mSOL to SOL unstake because that path refreshes and executes a Jupiter Ultra route at wallet approval time."
+    }
+  ],
+  "readCapabilities": [
+    {
+      "toolName": "solana_marinade_state_snapshot",
+      "source": "first-class-adapter",
+      "implemented": true,
+      "requiresClientKey": false,
+      "returns": "Marinade state address, program id, mSOL mint, mSOL price, total virtual staked SOL, circulating mSOL, reserve SOL, reward fee, delayed-unstake cooldown, optional validators, and warnings.",
+      "facts": ["stateAddress", "programId", "msolMint", "msolPrice", "totalVirtualStakedSol", "circulatingMsol", "availableReserveSol", "rewardFeeBps"]
+    },
+    {
+      "toolName": "solana_marinade_wallet_positions",
+      "source": "first-class-adapter",
+      "implemented": true,
+      "requiresClientKey": false,
+      "returns": "Wallet mSOL balance, estimated SOL value, native stake-account summaries, delayed unstake tickets, and warnings.",
+      "facts": ["walletAddress", "msolBalance", "msolBalanceRaw", "estimatedSolValue", "nativeStakeAccounts", "unstakeTickets"]
+    },
+    {
+      "toolName": "solana_marinade_wallet_stake_accounts",
+      "source": "first-class-adapter",
+      "implemented": true,
+      "requiresClientKey": false,
+      "returns": "Native stake accounts controlled by the wallet for read-only planning context.",
+      "facts": ["stakeAccount", "lamports", "solAmount", "state", "delegated", "validatorVoteAccount", "activationEpoch", "deactivationEpoch"]
+    },
+    {
+      "toolName": "solana_marinade_unstake_tickets",
+      "source": "first-class-adapter",
+      "implemented": true,
+      "requiresClientKey": false,
+      "returns": "Delayed unstake ticket accounts, beneficiary, SOL value, mSOL amount, claimable time, status, and reason.",
+      "facts": ["ticketAccount", "beneficiary", "lamports", "solAmount", "msolAmount", "claimableAt", "status"]
+    },
+    {
+      "toolName": "solana_marinade_quote",
+      "source": "first-class-adapter",
+      "implemented": true,
+      "requiresClientKey": false,
+      "returns": "Read-only quote for SOL to mSOL liquid stake, instant mSOL to SOL unstake through Jupiter, delayed unstake, or claimable ticket value.",
+      "facts": ["operation", "inputAmountRaw", "outputAmountRaw", "minOutputAmountRaw", "feeBps", "price", "route", "warnings"]
+    }
+  ],
+  "writeCapabilities": [
+    {
+      "actionKind": "marinade_liquid_stake",
+      "executionMode": "first_class_adapter",
+      "implemented": true,
+      "prepares": "An inbox-bound PreparedAction that captures SOL amount, quote, and optional minimum mSOL output.",
+      "executesVia": "solana_execute_prepared_action",
+      "userApproves": "A Marinade liquid-stake transaction rebuilt at execution time."
+    },
+    {
+      "actionKind": "marinade_liquid_unstake",
+      "executionMode": "first_class_adapter",
+      "implemented": true,
+      "prepares": "An inbox-bound PreparedAction that captures mSOL amount, Jupiter route metadata, slippage, and optional minimum SOL output.",
+      "executesVia": "solana_execute_prepared_action",
+      "userApproves": "A fresh Jupiter Ultra transaction that swaps mSOL to SOL. The route is refreshed immediately before wallet approval and the minimum output is enforced."
+    },
+    {
+      "actionKind": "marinade_delayed_unstake",
+      "executionMode": "first_class_adapter",
+      "implemented": true,
+      "prepares": "An inbox-bound PreparedAction that captures mSOL amount, quote, and optional delayed-unstake SOL value guard.",
+      "executesVia": "solana_execute_prepared_action",
+      "userApproves": "A Marinade delayed-unstake order transaction rebuilt at execution time."
+    },
+    {
+      "actionKind": "marinade_claim_delayed_unstake",
+      "executionMode": "first_class_adapter",
+      "implemented": true,
+      "prepares": "An inbox-bound PreparedAction for a claimable delayed-unstake ticket. The ticket must be claimable during prepare and execution.",
+      "executesVia": "solana_execute_prepared_action",
+      "userApproves": "A Marinade delayed-unstake claim transaction rebuilt at execution time."
+    }
+  ],
+  "requiredUserInputs": [
+    {
+      "name": "solAmount",
+      "kind": "number",
+      "required": true,
+      "appliesTo": ["marinade_liquid_stake"],
+      "prompt": "How much SOL do you want to stake into Marinade?"
+    },
+    {
+      "name": "msolAmount",
+      "kind": "number",
+      "required": true,
+      "appliesTo": ["marinade_liquid_unstake", "marinade_delayed_unstake"],
+      "prompt": "How much mSOL do you want to unstake?"
+    },
+    {
+      "name": "ticketAccount",
+      "kind": "text",
+      "required": true,
+      "appliesTo": ["marinade_claim_delayed_unstake"],
+      "prompt": "Which Marinade delayed-unstake ticket should be claimed?"
+    },
+    {
+      "name": "minMsolAmount",
+      "kind": "number",
+      "required": false,
+      "appliesTo": ["marinade_liquid_stake"],
+      "prompt": "Optional minimum mSOL output."
+    },
+    {
+      "name": "minSolAmount",
+      "kind": "number",
+      "required": false,
+      "appliesTo": ["marinade_liquid_unstake", "marinade_delayed_unstake"],
+      "prompt": "Optional minimum SOL output."
+    },
+    {
+      "name": "slippageBps",
+      "kind": "number",
+      "required": false,
+      "appliesTo": ["marinade_liquid_unstake"],
+      "prompt": "Optional Jupiter route slippage in basis points."
+    }
+  ],
+  "requiredConnectorFacts": [
+    "Current Marinade mSOL price and pool totals before stake or delayed unstake.",
+    "Connected wallet mSOL balance before unstake.",
+    "Delayed unstake ticket status before claim preparation.",
+    "Delayed unstake ticket status again immediately before wallet approval.",
+    "Fresh Jupiter route and minimum SOL output guard before instant unstake wallet approval.",
+    "Mainnet-beta cluster check before every read and prepared action."
+  ],
+  "unsupportedRequests": [
+    "Edit validator delegation or rebalance Marinade validator allocations.",
+    "Liquidate native stake accounts into SOL or mSOL through Marinade.",
+    "Manage Marinade governance, validator manager, treasury, or authorities.",
+    "Claim a delayed unstake ticket that is not claimable.",
+    "Operate on any cluster other than mainnet-beta.",
+    "Move funds without wallet approval."
+  ],
+  "actionPreparationNotes": "Use the official mSOL mint mSoLzYCxHdYgdzU16g5QSh3KZK7ytfqcJm7So, Marinade program MarBmsSgKXdrN1egZf5sqe1TMai9K1rChYNDJgjq7aD, and state account 8szGkuLTAuxqvFV8fYCoDxN8XrJLK9u2kjuYKxE6V5V. SOL to mSOL stake, delayed unstake, and claim actions use the injected Marinade client. Instant unstake is intentionally a Jupiter Ultra mSOL to SOL route and refreshes the route before wallet approval.",
+  "riskNotes": "mSOL price, reserve liquidity, ticket status, Jupiter route, fees, and slippage can change between preparation and approval. Prepared actions re-read or requote before signing boundaries where applicable. Delayed unstake claims are blocked unless the ticket is claimable.",
+  "approvalBoundary": {
+    "readGated": false,
+    "writeGated": true,
+    "blinkBacked": false,
+    "summary": "safety.prepare_only"
+  },
+  "walletApprovalBoundary": "Reads return facts without wallet involvement. Liquid stake, instant unstake, delayed unstake, and claim actions rebuild or refresh a transaction at execute time that the wallet must sign. The agent never signs.",
+  "examples": {
+    "requests": [
+      {
+        "user": "show my mSOL balance",
+        "classification": "read_only_answer",
+        "readTool": "solana_marinade_wallet_positions",
+        "agentResponse": "Read the wallet mSOL balance, native stake accounts, and delayed unstake tickets without signing."
+      },
+      {
+        "user": "what is the Marinade mSOL price?",
+        "classification": "read_only_answer",
+        "readTool": "solana_marinade_state_snapshot",
+        "agentResponse": "Read Marinade state, mSOL price, pool totals, and reserve liquidity."
+      },
+      {
+        "user": "list my Marinade unstake tickets",
+        "classification": "read_only_answer",
+        "readTool": "solana_marinade_unstake_tickets",
+        "agentResponse": "Read delayed unstake tickets and their claimable status."
+      },
+      {
+        "user": "quote staking 1 SOL into mSOL",
+        "classification": "read_only_answer",
+        "readTool": "solana_marinade_quote",
+        "agentResponse": "Quoted expected mSOL output from the current Marinade state without signing."
+      },
+      {
+        "user": "stake 0.5 SOL into Marinade",
+        "classification": "prepare_approval_action",
+        "writeAction": "marinade_liquid_stake",
+        "agentResponse": "Prepared a Marinade liquid-stake action. This prepares a wallet approval request; it does not sign."
+      },
+      {
+        "user": "stake 1 SOL only if I get at least 0.95 mSOL",
+        "classification": "prepare_approval_action",
+        "writeAction": "marinade_liquid_stake",
+        "agentResponse": "Prepared a Marinade liquid-stake action with a minimum mSOL guard that is rechecked before approval."
+      },
+      {
+        "user": "instant unstake 0.1 mSOL to SOL",
+        "classification": "prepare_approval_action",
+        "writeAction": "marinade_liquid_unstake",
+        "agentResponse": "Prepared an instant unstake through Jupiter. The route refreshes before wallet approval."
+      },
+      {
+        "user": "instant unstake 0.1 mSOL if I receive at least 0.1 SOL",
+        "classification": "prepare_approval_action",
+        "writeAction": "marinade_liquid_unstake",
+        "agentResponse": "Prepared a Jupiter-backed instant unstake and will enforce the minimum SOL output before wallet approval."
+      },
+      {
+        "user": "request delayed unstake for 0.25 mSOL",
+        "classification": "prepare_approval_action",
+        "writeAction": "marinade_delayed_unstake",
+        "agentResponse": "Prepared a Marinade delayed-unstake order for wallet approval."
+      },
+      {
+        "user": "claim my Marinade delayed unstake ticket",
+        "classification": "needs_input",
+        "needsInputQuestions": ["Which ticket account should be claimed?"],
+        "agentResponse": "The agent needs the ticket account before checking whether it is claimable."
+      },
+      {
+        "user": "claim this delayed unstake ticket",
+        "classification": "prepare_approval_action",
+        "writeAction": "marinade_claim_delayed_unstake",
+        "agentResponse": "Prepared a claim only after confirming the ticket is claimable."
+      },
+      {
+        "user": "move my SOL into Marinade without asking my wallet",
+        "classification": "unsupported",
+        "denialReason": "safety.no_autonomous_funds",
+        "agentResponse": "The agent denied this because Marinade writes require wallet approval and the agent never signs."
+      },
+      {
+        "user": "change my Marinade validator delegation",
+        "classification": "unsupported",
+        "denialReason": "safety.action_not_exposed",
+        "agentResponse": "The agent denied this because validator delegation editing is not exposed by this connector."
+      }
+    ]
+  },
+  "mirrorsCanonical": {
+    "file": "apps/browser-demo/src/connectedDapps.ts",
+    "entry": "marinade",
+    "note": "PROTOCOL_CONNECTORS entry at id 'marinade'. Update this pack when capabilities, aliases, readTools, or actionKinds change."
+  }
+}

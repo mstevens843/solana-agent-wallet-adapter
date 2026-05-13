@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import {
   aiDiagnosticsFromError,
+  aiMessages,
   aiRouteDiagnosticForSettings,
   buildTemplatePlan,
   confirmHostedAiPlanner,
@@ -334,6 +335,43 @@ describe('planner AI setup helpers', () => {
       question: 'Fees',
       position: '11111111111111111111111111111111',
     });
+  });
+
+  it('includes selected-only connector constraints in AI plan messages', () => {
+    const messages = aiMessages({
+      ...planRequest,
+      template: {
+        id: 'protocol-blink-action',
+        category: 'defi',
+        title: 'Protocol connector action',
+        description: 'Prepare connector work.',
+        actionType: 'blink_action',
+        risk: 'high',
+      },
+      parameters: {
+        connectorId: 'meteora',
+        protocol: 'Meteora',
+        operation: 'Claim fees',
+      },
+      connectorContext: [{
+        selected: true,
+        selectedOnly: true,
+        id: 'meteora',
+        name: 'Meteora',
+        strictInstruction: 'Use the selected protocol connector only. Do not switch protocols.',
+      }],
+    });
+
+    expect(messages[0]?.content).toContain('use that selected connector only');
+    const userPayload = JSON.parse(messages[1]?.content ?? '{}') as { connectorRule?: string; protocolConnectors?: unknown[] };
+    expect(userPayload.connectorRule).toContain('Meteora');
+    expect(userPayload.connectorRule).toContain('Do not switch protocols');
+    expect(userPayload.protocolConnectors).toEqual([
+      expect.objectContaining({
+        selectedOnly: true,
+        id: 'meteora',
+      }),
+    ]);
   });
 });
 

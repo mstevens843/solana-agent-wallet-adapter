@@ -2,35 +2,75 @@
   "$schema": "./connector-pack.schema.json",
   "id": "orca",
   "name": "Orca",
-  "status": "blink_backed",
+  "status": "first_class",
   "aliases": ["orca", "whirlpools", "orca whirlpools"],
   "supportedClusters": ["mainnet-beta"],
   "requiredConfig": [
     {
-      "name": "Dialect client key",
-      "scope": "dialect_client_key",
+      "name": "Orca Whirlpools client",
+      "scope": "runtime_optional_dependency",
       "required": true,
-      "description": "Needed for Whirlpool market facts and action URL discovery. MCP runtime does not expose these reads yet."
+      "description": "Needed for Whirlpool pool/position reads and prepare-only liquidity, fee, and reward actions."
     }
   ],
   "readCapabilities": [
     {
-      "toolName": "dialect_markets",
-      "source": "dialect-markets",
-      "implemented": false,
-      "requiresClientKey": true,
-      "returns": "Planned Orca Whirlpool pool facts, fee facts, and action URLs.",
-      "facts": ["whirlpoolAddress", "tokenPair", "tickRange", "liquidity", "feeApr", "actionUrl"]
+      "toolName": "solana_orca_whirlpool_snapshot",
+      "source": "first-class-adapter",
+      "implemented": true,
+      "requiresClientKey": false,
+      "returns": "Orca Whirlpool token mints, vaults, tick spacing, current tick/price, liquidity, fee tier, reward mints, and program id.",
+      "facts": ["whirlpoolAddress", "tokenMints", "tickSpacing", "currentTick", "liquidity", "feeRate", "programId"]
+    },
+    {
+      "toolName": "solana_orca_wallet_positions",
+      "source": "first-class-adapter",
+      "implemented": true,
+      "requiresClientKey": false,
+      "returns": "Wallet-owned Orca Whirlpool tokenized positions with range, liquidity, fee, and reward facts.",
+      "facts": ["walletAddress", "positionMint", "whirlpoolAddress", "tickRange", "inRange", "liquidity", "feesOwed", "rewardsOwed"]
+    },
+    {
+      "toolName": "solana_orca_position_detail",
+      "source": "first-class-adapter",
+      "implemented": true,
+      "requiresClientKey": false,
+      "returns": "One Orca position by position mint, including range status, fees, rewards, and warning flags.",
+      "facts": ["positionMint", "positionAddress", "whirlpoolAddress", "tickRange", "feesOwed", "rewardsOwed"]
     }
   ],
   "writeCapabilities": [
     {
-      "actionKind": "blink_action",
-      "executionMode": "blink",
-      "implemented": false,
-      "prepares": "A planned approval-bound Blink action for pools, liquidity, and fees.",
+      "actionKind": "orca_increase_liquidity",
+      "executionMode": "first_class_adapter",
+      "implemented": true,
+      "prepares": "A prepared action to increase liquidity in an existing Orca Whirlpool position or open a new ranged position.",
       "executesVia": "solana_execute_prepared_action",
-      "userApproves": "An Orca Whirlpool Solana Action transaction after the user reviews pool, range, and token amount facts."
+      "userApproves": "The user reviews Whirlpool, position/range, token amount, slippage, and warning facts before wallet signing."
+    },
+    {
+      "actionKind": "orca_decrease_liquidity",
+      "executionMode": "first_class_adapter",
+      "implemented": true,
+      "prepares": "A prepared action to decrease liquidity from an Orca Whirlpool position.",
+      "executesVia": "solana_execute_prepared_action",
+      "userApproves": "The user reviews position, range, liquidity amount or percent, token minimums, slippage, and warning facts before wallet signing."
+    },
+    {
+      "actionKind": "orca_collect_fees",
+      "executionMode": "first_class_adapter",
+      "implemented": true,
+      "prepares": "A prepared action to collect trading fees from one Orca Whirlpool position.",
+      "executesVia": "solana_execute_prepared_action",
+      "userApproves": "The user reviews position and fee facts before wallet signing."
+    },
+    {
+      "actionKind": "orca_collect_rewards",
+      "executionMode": "first_class_adapter",
+      "implemented": true,
+      "prepares": "A prepared action to collect rewards from one Orca Whirlpool position.",
+      "executesVia": "solana_execute_prepared_action",
+      "userApproves": "The user reviews position and reward mint facts before wallet signing."
     }
   ],
   "requiredUserInputs": [
@@ -38,49 +78,68 @@
       "name": "whirlpoolAddress",
       "kind": "text",
       "required": true,
-      "appliesTo": ["blink_action"],
-      "prompt": "Which Orca Whirlpool or position should I use?"
+      "appliesTo": ["orca_increase_liquidity", "orca_decrease_liquidity", "solana_orca_whirlpool_snapshot"],
+      "prompt": "Which Orca Whirlpool should I use?"
     },
     {
-      "name": "amount",
-      "kind": "number",
-      "required": true,
-      "appliesTo": ["blink_action"],
-      "prompt": "How much liquidity or token amount should I prepare?"
-    },
-    {
-      "name": "blinkUrl",
+      "name": "positionMint",
       "kind": "text",
       "required": true,
-      "appliesTo": ["blink_action"],
-      "prompt": "Paste the Orca Blink or Solana Action URL."
+      "appliesTo": ["orca_decrease_liquidity", "orca_collect_fees", "orca_collect_rewards", "solana_orca_position_detail"],
+      "prompt": "Which Orca position mint should I use?"
+    },
+    {
+      "name": "tokenAmount",
+      "kind": "number",
+      "required": true,
+      "appliesTo": ["orca_increase_liquidity"],
+      "prompt": "What token amount should I add?"
+    },
+    {
+      "name": "tickRange",
+      "kind": "text",
+      "required": true,
+      "appliesTo": ["orca_increase_liquidity"],
+      "prompt": "What lower and upper ticks should the new position use?"
+    },
+    {
+      "name": "liquidityAmount",
+      "kind": "number",
+      "required": true,
+      "appliesTo": ["orca_decrease_liquidity"],
+      "prompt": "How much liquidity should I remove, as a percent or exact liquidity amount?"
     }
   ],
   "requiredConnectorFacts": [
     "Whirlpool address and token pair",
-    "Position address for wallet-specific actions",
-    "Tick range",
-    "Unclaimed fees",
-    "Blink action URL metadata",
-    "Wallet token balances"
+    "Whirlpool program id",
+    "Tick spacing and current tick",
+    "Position mint and range for position-specific actions",
+    "Current in-range or out-of-range status",
+    "Claimable fees and rewards for collect actions",
+    "Wallet token balances and fee headroom"
   ],
   "unsupportedRequests": [
-    "Prepare Orca actions without a Whirlpool, position, or Blink URL.",
-    "Claim fees without a position address.",
-    "Guarantee range profitability.",
+    "Prepare Orca actions without a Whirlpool or position when required.",
+    "Claim fees or rewards without a position mint.",
+    "Open a new position without lower and upper ticks.",
+    "Use invalid tick ordering or ticks not aligned to the Whirlpool tick spacing.",
+    "Guarantee range profitability or that a range will remain active.",
     "Operate outside mainnet-beta.",
+    "Use Orca legacy pools, vault products, or automated LP strategy management in v1.",
+    "Create delegated managers or recurring LP automation.",
     "Move funds without wallet approval.",
     "Claim the agent signed or submitted the Orca transaction."
   ],
-  "actionPreparationNotes": "Orca is Blink-backed in the browser catalog. Ask for Whirlpool/position/action URL data when missing. Do not infer tick range or token amounts from a vague request.",
-  "riskNotes": "Whirlpool liquidity can go out of range and has impermanent-loss exposure. Show pool, range, and fee facts before approval.",
+  "actionPreparationNotes": "Orca is first-class for Whirlpools. Read pool or position facts first, prepare only approval-bound actions, and refresh Whirlpool state at execution time.",
+  "riskNotes": "Whirlpool liquidity can go out of range and has impermanent-loss exposure. Show pool, range, fee/reward, slippage, and warning facts before approval.",
   "approvalBoundary": {
     "readGated": true,
     "writeGated": true,
-    "blinkBacked": true,
+    "blinkBacked": false,
     "summary": "safety.prepare_only"
   },
-  "walletApprovalBoundary": "Orca writes are approval-bound Blink actions. The agent reviews and prepares; the user's wallet signs separately.",
+  "walletApprovalBoundary": "Orca writes create prepared actions. The agent reviews and prepares; the user's wallet signs separately.",
   "examples": {
     "requests": [
       {
@@ -90,28 +149,33 @@
         "agentResponse": "The agent is missing facts needed to decide. Provide the Whirlpool address."
       },
       {
-        "user": "add liquidity to Orca",
-        "classification": "needs_input",
-        "needsInputQuestions": ["Which Whirlpool?", "What token amounts?", "Paste the Orca action URL."],
-        "agentResponse": "The agent is missing facts needed to decide. Whirlpool, amounts, and action URL are required."
+        "user": "show my Orca Whirlpool positions",
+        "classification": "read_only",
+        "agentResponse": "Read Orca Whirlpool positions for the connected wallet. The connector can read facts, but the wallet still controls approval."
       },
       {
-        "user": "claim Orca fees with this Blink",
-        "classification": "needs_input",
-        "needsInputQuestions": ["Which position should I claim fees from?"],
-        "agentResponse": "The agent is missing facts needed to decide. A position id is required."
-      },
-      {
-        "user": "add 0.5 SOL and 50 USDC to this Orca Whirlpool using this action URL",
+        "user": "prepare increasing liquidity on this Orca position by 0.01 SOL. Do not sign.",
         "classification": "prepare_approval_action",
-        "writeAction": "blink_action",
-        "agentResponse": "Prepared an Orca liquidity Blink review if action metadata matches the Whirlpool and amounts. This prepares a wallet approval request; it does not sign."
+        "writeAction": "orca_increase_liquidity",
+        "agentResponse": "Prepared an Orca increase-liquidity review with position, range, token amount, and slippage facts. This prepares a wallet approval request; it does not sign."
       },
       {
-        "user": "show fees for my Orca position",
-        "classification": "needs_input",
-        "needsInputQuestions": ["Which Orca position address should I read?"],
-        "agentResponse": "The agent is missing facts needed to decide. Fee reads need a position address."
+        "user": "prepare removing 25 percent of this Orca position.",
+        "classification": "prepare_approval_action",
+        "writeAction": "orca_decrease_liquidity",
+        "agentResponse": "Prepared an Orca decrease-liquidity review with position, range, liquidity percent, and slippage facts. This prepares a wallet approval request; it does not sign."
+      },
+      {
+        "user": "claim Orca fees for this position",
+        "classification": "prepare_approval_action",
+        "writeAction": "orca_collect_fees",
+        "agentResponse": "Prepared an Orca fee-collection review for this position. This prepares a wallet approval request; it does not sign."
+      },
+      {
+        "user": "claim Orca rewards for this position",
+        "classification": "prepare_approval_action",
+        "writeAction": "orca_collect_rewards",
+        "agentResponse": "Prepared an Orca reward-collection review for this position. This prepares a wallet approval request; it does not sign."
       },
       {
         "user": "guarantee this Orca range will stay active",
@@ -123,19 +187,13 @@
         "user": "Orca Whirlpool action on devnet",
         "classification": "unsupported",
         "denialReason": "safety.action_not_exposed",
-        "agentResponse": "The agent denied this because Orca connector actions are cataloged for mainnet-beta only."
+        "agentResponse": "The agent denied this because Orca first-class actions are cataloged for mainnet-beta only."
       },
       {
         "user": "move my Orca liquidity without wallet approval",
         "classification": "unsupported",
         "denialReason": "safety.no_autonomous_funds",
         "agentResponse": "The agent denied this because the connector cannot move funds without the user's wallet."
-      },
-      {
-        "user": "withdraw Orca liquidity from an unknown position",
-        "classification": "needs_input",
-        "needsInputQuestions": ["Which position should I withdraw from?", "Paste the Orca action URL."],
-        "agentResponse": "The agent is missing facts needed to decide. Position and action URL are required."
       },
       {
         "user": "use Orca while the connector is disabled",
@@ -148,6 +206,6 @@
   "mirrorsCanonical": {
     "file": "apps/browser-demo/src/connectedDapps.ts",
     "entry": "orca",
-    "note": "Mirrors Orca browser catalog support for Whirlpool Blink-backed actions."
+    "note": "Mirrors Orca browser catalog support for first-class Whirlpool reads and prepared actions."
   }
 }

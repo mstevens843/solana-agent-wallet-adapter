@@ -10,12 +10,30 @@ import type {
   PreparedActionStore,
 } from '../preparedActions.js';
 
-export type DAppAdapterId = 'kamino';
+export type DAppAdapterId =
+  | 'kamino'
+  | 'meteora'
+  | 'orca'
+  | 'marginfi'
+  | 'drift'
+  | 'save'
+  | 'jito'
+  | 'marinade'
+  | 'lulo'
+  | 'raydium'
+  | 'magiceden'
+  | 'tensor'
+  | 'sanctum'
+  | 'pyth'
+  | 'realms'
+  | 'squads'
+  | 'wormhole';
 
 export interface DAppAdapterContext {
   backend: WalletBackend;
   config: AgentWalletConfig;
   connection: Connection;
+  signTransaction?: (transactionBase64: string, summary: string) => Promise<string>;
   signAndBroadcast: (transactionBase64: string, summary: string) => Promise<string>;
   store: PreparedActionStore;
 }
@@ -56,9 +74,9 @@ export interface DAppAdapter {
 
 export class AdapterError extends Error {
   readonly code: string;
-  readonly adapterId: DAppAdapterId;
+  readonly adapterId: string;
 
-  constructor(adapterId: DAppAdapterId, code: string, message: string) {
+  constructor(adapterId: string, code: string, message: string) {
     super(message);
     this.name = 'AdapterError';
     this.code = code;

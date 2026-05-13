@@ -35,10 +35,29 @@
     "@solana-agent-wallet-adapter/ios-link": "workspace:*",
     "@solana-agent-wallet-adapter/workflow": "workspace:*",
     "@solana/web3.js": "^1.95.0",
+    "decimal.js": "^10.6.0",
     "zod": "^3.23.0"
   },
   "optionalDependencies": {
-    "@kamino-finance/klend-sdk": "*"
+    "@coral-xyz/anchor": "*",
+    "@drift-labs/sdk": "*",
+    "@drift-labs/vaults-sdk": "*",
+    "@jito-foundation/stake-deposit-interceptor-sdk": "^1.7.1",
+    "@kamino-finance/klend-sdk": "*",
+    "@marinade.finance/marinade-ts-sdk": "*",
+    "@meteora-ag/dlmm": "*",
+    "@mrgnlabs/marginfi-client-v2": "^6.4.1",
+    "@mrgnlabs/mrgn-common": "^2.0.7",
+    "@orca-so/whirlpools": "^2.2.0",
+    "@pythnetwork/hermes-client": "*",
+    "@pythnetwork/pyth-solana-receiver": "*",
+    "@raydium-io/raydium-sdk-v2": "0.1.126-alpha",
+    "@solana/kit": "^2.3.0",
+    "@solana/spl-governance": "*",
+    "@solana/spl-stake-pool": "^1.1.8",
+    "@solana/spl-token": "^0.4.14",
+    "@solendprotocol/solend-sdk": "*",
+    "@sqds/multisig": "*"
   },
   "devDependencies": {
     "typescript": "^5.6.0"

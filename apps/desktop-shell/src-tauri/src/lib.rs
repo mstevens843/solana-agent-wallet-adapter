@@ -20,14 +20,15 @@ const LEGACY_BRIDGE_TOKEN: &str = "local-agent-wallet";
 const DEFAULT_WALLET_HOST_URL: &str = "http://127.0.0.1:5174";
 const SIDECAR_BASENAME: &str = "agentic-cli-sidecar";
 const MAX_LOG_LINES: usize = 600;
-const DEFAULT_JUPITER_ULTRA_BASE: &str = "https://api.jup.ag/ultra/v1";
+const DEFAULT_JUPITER_ULTRA_BASE: &str = "https://api.jup.ag/swap/v2";
 const DEFAULT_JUPITER_API_URL: &str = "https://quote-api.jup.ag";
 const DEFAULT_BIRDEYE_REST_BASE: &str = "https://public-api.birdeye.so";
-const SETUP_ENV_KEYS: [&str; 8] = [
+const SETUP_ENV_KEYS: [&str; 9] = [
     "SOLANA_RPC_URL",
     "HELIUS_RPC_URL",
     "JUPITER_API_KEY",
     "JUP_API_KEY",
+    "JUPITER_SWAP_BASE_URL",
     "JUP_ULTRA_BASE",
     "JUPITER_API_URL",
     "BIRDEYE_API_KEY",
@@ -1042,10 +1043,7 @@ fn runtime_setup_for_config(config: &DesktopConfig) -> Result<RuntimeSetup, Stri
     let (env_found, values) = read_env_values(path)?;
     let rpc_url = first_env_value(&values, &["SOLANA_RPC_URL", "HELIUS_RPC_URL"]);
     let jupiter_api_key = first_env_value(&values, &["JUPITER_API_KEY", "JUP_API_KEY"]);
-    let jupiter_ultra_base = values
-        .get("JUP_ULTRA_BASE")
-        .filter(|value| !value.trim().is_empty())
-        .cloned()
+    let jupiter_ultra_base = first_env_value(&values, &["JUPITER_SWAP_BASE_URL", "JUP_ULTRA_BASE"])
         .unwrap_or_else(|| DEFAULT_JUPITER_ULTRA_BASE.into());
     let jupiter_api_url = values
         .get("JUPITER_API_URL")
@@ -1118,11 +1116,18 @@ fn save_runtime_setup_to_env(
         .map(str::trim)
         .filter(|value| !value.is_empty())
         .map(str::to_string)
+        .or_else(|| values.get("JUPITER_SWAP_BASE_URL").cloned())
         .or_else(|| values.get("JUP_ULTRA_BASE").cloned())
         .unwrap_or_else(|| DEFAULT_JUPITER_ULTRA_BASE.into());
+    let normalized_jupiter_swap_base =
+        normalize_setup_url(&jupiter_ultra_base, "Jupiter Swap API v2 base URL")?;
+    updates.insert(
+        "JUPITER_SWAP_BASE_URL".into(),
+        normalized_jupiter_swap_base.clone(),
+    );
     updates.insert(
         "JUP_ULTRA_BASE".into(),
-        normalize_setup_url(&jupiter_ultra_base, "Jupiter Ultra base URL")?,
+        normalized_jupiter_swap_base,
     );
 
     let jupiter_api_url = input
@@ -1674,6 +1679,7 @@ mod tests {
         );
         updates.insert("JUPITER_API_KEY".into(), "jupiter-secret".into());
         updates.insert("JUP_API_KEY".into(), "jupiter-secret".into());
+        updates.insert("JUPITER_SWAP_BASE_URL".into(), DEFAULT_JUPITER_ULTRA_BASE.into());
         updates.insert("JUP_ULTRA_BASE".into(), DEFAULT_JUPITER_ULTRA_BASE.into());
         updates.insert("JUPITER_API_URL".into(), DEFAULT_JUPITER_API_URL.into());
 

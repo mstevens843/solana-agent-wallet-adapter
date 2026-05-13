@@ -1,0 +1,310 @@
+{
+  "$schema": "./connector-pack.schema.json",
+  "id": "tensor",
+  "name": "Tensor",
+  "status": "first_class",
+  "aliases": ["tensor", "tensor trade", "tensor nft", "tensor marketplace", "tcomp"],
+  "supportedClusters": ["mainnet-beta"],
+  "requiredConfig": [
+    {
+      "name": "TENSOR_API_KEY",
+      "scope": "env",
+      "required": true,
+      "description": "Server-side Tensor API key used by the host-wired Tensor client for collection, listing, bid, and wallet reads. Redacted from errors and receipts."
+    },
+    {
+      "name": "Tensor client factory",
+      "scope": "env",
+      "required": true,
+      "description": "Host must call setTensorClientFactory(buildTensorClient) at boot. Optional SDKs @tensor-oss/tensorswap-sdk and @tensor-oss/tcomp-sdk back legacy and compressed transaction builds."
+    }
+  ],
+  "readCapabilities": [
+    {
+      "toolName": "solana_tensor_collection_snapshot",
+      "source": "first-class-adapter",
+      "implemented": true,
+      "requiresClientKey": false,
+      "returns": "Tensor collection floor, listed count, total supply, 24h volume, top bid, verification, optional listings and bids.",
+      "facts": ["collectionId", "floorPriceSol", "listedCount", "topBidPriceSol", "verified", "warnings"]
+    },
+    {
+      "toolName": "solana_tensor_collection_listings",
+      "source": "first-class-adapter",
+      "implemented": true,
+      "requiresClientKey": false,
+      "returns": "Active Tensor listings for a collection (price, seller, listingId, compressed flag, marketplace).",
+      "facts": ["priceSol", "seller", "compressed", "marketplace"]
+    },
+    {
+      "toolName": "solana_tensor_collection_bids",
+      "source": "first-class-adapter",
+      "implemented": true,
+      "requiresClientKey": false,
+      "returns": "Active Tensor bids for a collection (bidder, bidPriceSol, quantity, escrow).",
+      "facts": ["bidId", "bidPriceSol", "bidder", "escrowLamports"]
+    },
+    {
+      "toolName": "solana_tensor_recent_sales",
+      "source": "first-class-adapter",
+      "implemented": true,
+      "requiresClientKey": false,
+      "returns": "Recent Tensor marketplace sales for a collection (signature, mint, priceSol, buyer/seller, marketplace).",
+      "facts": ["priceSol", "marketplace", "signature", "blockTime"]
+    },
+    {
+      "toolName": "solana_tensor_wallet_nfts",
+      "source": "first-class-adapter",
+      "implemented": true,
+      "requiresClientKey": false,
+      "returns": "Wallet-owned NFTs tracked by Tensor with listed status, compressed flag, and listing price.",
+      "facts": ["walletAddress", "mintAddress", "assetId", "compressed", "listed", "listingPriceSol"]
+    },
+    {
+      "toolName": "solana_tensor_nft_detail",
+      "source": "first-class-adapter",
+      "implemented": true,
+      "requiresClientKey": false,
+      "returns": "One Tensor NFT detail including owner, top listing, top bids, royalty, frozen flag, and warnings.",
+      "facts": ["mintAddress", "assetId", "owner", "compressed", "topListing", "topBids", "warnings"]
+    },
+    {
+      "toolName": "solana_tensor_wallet_marketplace_exposure",
+      "source": "first-class-adapter",
+      "implemented": true,
+      "requiresClientKey": false,
+      "returns": "Wallet exposure across Tensor: owned collections, open listings, open bids, margin escrow balance.",
+      "facts": ["walletAddress", "openListings", "openBids", "marginBalanceSol"]
+    }
+  ],
+  "writeCapabilities": [
+    {
+      "actionKind": "tensor_buy",
+      "executionMode": "first_class_adapter",
+      "implemented": true,
+      "prepares": "A prepared action to buy a Tensor NFT at or below maxPriceSol. Stores listing snapshot and rebuilds the transaction at execute time.",
+      "executesVia": "solana_execute_prepared_action",
+      "userApproves": "The user reviews mint, current price, max price cap, seller, marketplace, compressed flag, fee, and royalty facts before wallet signing."
+    },
+    {
+      "actionKind": "tensor_list",
+      "executionMode": "first_class_adapter",
+      "implemented": true,
+      "prepares": "A prepared action to list a Tensor NFT at priceSol. Validates wallet ownership at prepare and re-checks at execute.",
+      "executesVia": "solana_execute_prepared_action",
+      "userApproves": "The user reviews mint, list price, expiry, royalty, and warning facts before wallet signing."
+    },
+    {
+      "actionKind": "tensor_cancel_listing",
+      "executionMode": "first_class_adapter",
+      "implemented": true,
+      "prepares": "A prepared action to cancel a Tensor listing for a wallet-owned NFT. Requires listingId when multiple open listings exist.",
+      "executesVia": "solana_execute_prepared_action",
+      "userApproves": "The user reviews listing id, current price, and seller facts before wallet signing."
+    },
+    {
+      "actionKind": "tensor_bid",
+      "executionMode": "first_class_adapter",
+      "implemented": true,
+      "prepares": "A prepared action to place a Tensor item or collection bid. Enforces maxEscrowSol against existing margin balance plus delta at prepare and execute.",
+      "executesVia": "solana_execute_prepared_action",
+      "userApproves": "The user reviews collection, mint (if any), bid price, quantity, current escrow, and total escrow facts before wallet signing."
+    },
+    {
+      "actionKind": "tensor_cancel_bid",
+      "executionMode": "first_class_adapter",
+      "implemented": true,
+      "prepares": "A prepared action to cancel a Tensor bid by bidId. Requires bidId when multiple open bids exist for the wallet.",
+      "executesVia": "solana_execute_prepared_action",
+      "userApproves": "The user reviews bid id, bid price, escrow, and collection facts before wallet signing."
+    },
+    {
+      "actionKind": "tensor_sweep",
+      "executionMode": "first_class_adapter",
+      "implemented": true,
+      "prepares": "A prepared action to sweep up to ten Tensor listings under maxTotalSol and maxPricePerItemSol caps. Stores exact items; execute refreshes each listing and blocks any item that is delisted, sold, or repriced.",
+      "executesVia": "solana_execute_prepared_action",
+      "userApproves": "The user reviews exact items, per-item caps, total cap, fee, royalty, and compressed flag before wallet signing."
+    }
+  ],
+  "requiredUserInputs": [
+    {
+      "name": "collectionId",
+      "kind": "text",
+      "required": true,
+      "appliesTo": ["solana_tensor_collection_snapshot", "solana_tensor_collection_listings", "solana_tensor_collection_bids", "solana_tensor_recent_sales", "tensor_bid", "tensor_sweep"],
+      "prompt": "Which Tensor collection should I use? Paste the collection id or verified collection mint."
+    },
+    {
+      "name": "mintAddress",
+      "kind": "text",
+      "required": false,
+      "appliesTo": ["tensor_buy", "tensor_list", "tensor_cancel_listing", "solana_tensor_nft_detail"],
+      "prompt": "Which NFT mint address should I use? (Compressed NFTs may use assetId instead.)"
+    },
+    {
+      "name": "maxPriceSol",
+      "kind": "number",
+      "required": true,
+      "appliesTo": ["tensor_buy"],
+      "prompt": "What is the maximum SOL price you will pay for this NFT?"
+    },
+    {
+      "name": "priceSol",
+      "kind": "number",
+      "required": true,
+      "appliesTo": ["tensor_list"],
+      "prompt": "What list price in SOL should I prepare?"
+    },
+    {
+      "name": "bidPriceSol",
+      "kind": "number",
+      "required": true,
+      "appliesTo": ["tensor_bid"],
+      "prompt": "What bid price in SOL should I prepare?"
+    },
+    {
+      "name": "maxEscrowSol",
+      "kind": "number",
+      "required": true,
+      "appliesTo": ["tensor_bid"],
+      "prompt": "What is the maximum SOL the wallet may lock in Tensor escrow for this bid?"
+    },
+    {
+      "name": "maxItems",
+      "kind": "number",
+      "required": true,
+      "appliesTo": ["tensor_sweep"],
+      "prompt": "How many Tensor listings should I sweep at most? (Max 10.)"
+    },
+    {
+      "name": "maxTotalSol",
+      "kind": "number",
+      "required": true,
+      "appliesTo": ["tensor_sweep"],
+      "prompt": "What is the maximum total SOL the sweep may spend?"
+    }
+  ],
+  "requiredConnectorFacts": [
+    "Tensor collection id, floor price, and listed count",
+    "Current listing price, seller, and marketplace for buy and cancel-listing actions",
+    "Wallet NFT ownership and compressed flag for list actions",
+    "Wallet margin escrow balance for bid actions",
+    "Exact sweep items with per-item expected price and compressed flag",
+    "Royalty and fee preview from the Tensor SDK build"
+  ],
+  "unsupportedRequests": [
+    "Autonomous NFT trading or bots that buy/list/bid without wallet approval.",
+    "Unlimited bid escrows or delegated escrow authorities.",
+    "Wash-trading detection, rarity claims, or guaranteed-profit claims.",
+    "Token launches or launchpad administration.",
+    "NFT-collateralized leverage, loans, or price-lock derivatives.",
+    "Operate Tensor on devnet, testnet, or localnet (mainnet-beta only).",
+    "Mix legacy and compressed NFTs in one sweep prepared action.",
+    "Sweep more than 10 items in one prepared action.",
+    "Buy when the current Tensor listing price exceeds the user-supplied maxPriceSol cap.",
+    "List an NFT the connected wallet does not currently own.",
+    "Cancel a Tensor listing or bid that the connected wallet does not own.",
+    "Bid when the required escrow plus existing margin balance exceeds maxEscrowSol.",
+    "Sign, submit, or claim ownership of the on-chain transaction (only the wallet signs)."
+  ],
+  "actionPreparationNotes": "Tensor is first-class. Every prepare reads the current listing or bid snapshot, validates caps and ownership, and stores exact item state. Every execute refreshes the listing or bid, re-validates caps, rebuilds the unsigned transaction via the host-wired TensorClient (legacy via tensorswap-sdk, compressed via tcomp-sdk), and routes through signAndBroadcast. Sweep transactions are rebuilt at execute; the prepared transactionBase64 is never reused.",
+  "riskNotes": "Tensor listings and bids drift between prepare and execute. The adapter rebuilds transactions at execute, refuses changed price or seller, and homogenizes compressed/legacy items per sweep. Show floor, listing seller, compressed flag, royalty, fee, and escrow facts before approval. Tensor API access is gated and TENSOR_API_KEY must be redacted from receipts.",
+  "approvalBoundary": {
+    "readGated": true,
+    "writeGated": true,
+    "blinkBacked": false,
+    "summary": "safety.prepare_only"
+  },
+  "walletApprovalBoundary": "Tensor writes create prepared actions. The agent reviews and prepares; the user's wallet signs and broadcasts separately.",
+  "examples": {
+    "requests": [
+      {
+        "user": "show the Tensor floor and top bids for this collection",
+        "classification": "read_only_answer",
+        "readTool": "solana_tensor_collection_snapshot",
+        "agentResponse": "Read Tensor collection floor, top listings, and top bids. The connector can read facts, but the wallet still controls approval."
+      },
+      {
+        "user": "show my Tensor-listed NFTs",
+        "classification": "read_only_answer",
+        "readTool": "solana_tensor_wallet_nfts",
+        "agentResponse": "Read Tensor-tracked NFTs for the connected wallet, including listed status and compressed flag. The connector can read facts, but the wallet still controls approval."
+      },
+      {
+        "user": "show my Tensor marketplace exposure",
+        "classification": "read_only_answer",
+        "readTool": "solana_tensor_wallet_marketplace_exposure",
+        "agentResponse": "Read open Tensor listings, open bids, owned collections, and margin escrow balance for the connected wallet."
+      },
+      {
+        "user": "prepare buying this NFT on Tensor for no more than 1.2 SOL. Do not sign.",
+        "classification": "prepare_approval_action",
+        "writeAction": "tensor_buy",
+        "agentResponse": "Prepared a Tensor buy review with mint, current price, max price cap, seller, compressed flag, fee, and royalty facts. This prepares a wallet approval request; it does not sign."
+      },
+      {
+        "user": "prepare listing this NFT on Tensor for 2 SOL",
+        "classification": "prepare_approval_action",
+        "writeAction": "tensor_list",
+        "agentResponse": "Prepared a Tensor list review with mint, price, expiry, royalty, and ownership facts. This prepares a wallet approval request; it does not sign."
+      },
+      {
+        "user": "prepare a Tensor collection bid capped at 5 SOL escrow",
+        "classification": "prepare_approval_action",
+        "writeAction": "tensor_bid",
+        "agentResponse": "Prepared a Tensor collection bid review with collection, bid price, quantity, current escrow, and total escrow facts. This prepares a wallet approval request; it does not sign."
+      },
+      {
+        "user": "prepare sweeping the three cheapest listed items under 0.3 SOL each",
+        "classification": "prepare_approval_action",
+        "writeAction": "tensor_sweep",
+        "agentResponse": "Prepared a Tensor sweep review with the exact items, per-item cap, total cap, and compressed flag. Execution will refresh each listing before any signature. This prepares a wallet approval request; it does not sign."
+      },
+      {
+        "user": "buy on Tensor",
+        "classification": "needs_input",
+        "needsInputQuestions": [
+          "Which NFT mint or compressed asset id should I buy?",
+          "What is the maximum SOL price you will pay?"
+        ],
+        "agentResponse": "The agent is missing facts needed to decide. Provide the NFT id and a maximum SOL price cap."
+      },
+      {
+        "user": "guarantee my Tensor sweep will be profitable",
+        "classification": "unsupported",
+        "denialReason": "safety.no_safety_guarantee",
+        "agentResponse": "The agent denied this because it cannot guarantee profitability or price movement."
+      },
+      {
+        "user": "Tensor action on devnet",
+        "classification": "unsupported",
+        "denialReason": "safety.action_not_exposed",
+        "agentResponse": "The agent denied this because Tensor first-class actions are cataloged for mainnet-beta only."
+      },
+      {
+        "user": "auto-sweep Tensor for me without wallet approval",
+        "classification": "unsupported",
+        "denialReason": "safety.no_autonomous_funds",
+        "agentResponse": "The agent denied this because the connector cannot move funds without the user's wallet."
+      },
+      {
+        "user": "sweep 30 Tensor listings in one prepared action",
+        "classification": "unsupported",
+        "denialReason": "safety.action_not_exposed",
+        "agentResponse": "The agent denied this because Tensor sweep is capped at 10 itemized listings per prepared action in v1."
+      },
+      {
+        "user": "use Tensor while the connector is disabled",
+        "classification": "unsupported",
+        "denialReason": "safety.connector_disabled",
+        "agentResponse": "The agent denied this because this connector is not enabled."
+      }
+    ]
+  },
+  "mirrorsCanonical": {
+    "file": "apps/browser-demo/src/connectedDapps.ts",
+    "entry": "tensor",
+    "note": "Mirrors Tensor browser catalog support for first-class marketplace reads and prepared actions."
+  }
+}

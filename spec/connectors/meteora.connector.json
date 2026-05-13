@@ -2,57 +2,89 @@
   "$schema": "./connector-pack.schema.json",
   "id": "meteora",
   "name": "Meteora",
-  "status": "blink_backed",
+  "status": "first_class",
   "aliases": ["meteora", "dlmm", "meteora dlmm"],
   "supportedClusters": ["mainnet-beta"],
   "requiredConfig": [
     {
-      "name": "Dialect client key",
-      "scope": "dialect_client_key",
-      "required": true,
-      "description": "Needed for generic position and market reads until a first-class Meteora adapter exists."
-    },
-    {
-      "name": "Meteora DLMM position endpoint",
+      "name": "Solana RPC endpoint",
       "scope": "env",
       "required": true,
-      "description": "Planned endpoint for wallet-specific DLMM position status. Not implemented in MCP runtime yet."
+      "description": "Used by the MCP adapter to read DLMM pool and position accounts and refresh state at approval time."
+    },
+    {
+      "name": "Meteora DLMM client",
+      "scope": "env",
+      "required": true,
+      "description": "Host process must wire the Meteora DLMM client factory backed by @meteora-ag/dlmm, or inject an equivalent client for tests."
     }
   ],
   "readCapabilities": [
     {
-      "toolName": "meteora_dlmm_position",
-      "source": "meteora-api",
-      "implemented": false,
-      "requiresClientKey": true,
-      "returns": "Planned DLMM position facts: pool, bins/range, token balances, fees, rewards, and position health.",
-      "facts": ["poolAddress", "positionAddress", "binRange", "tokenBalances", "unclaimedFees", "unclaimedRewards"]
+      "toolName": "solana_meteora_dlmm_pool_snapshot",
+      "source": "first-class-adapter",
+      "implemented": true,
+      "requiresClientKey": false,
+      "returns": "DLMM pool snapshot with token mints, active bin, bin step, fee fields, liquidity, status flags, program id, and slot metadata.",
+      "facts": ["poolAddress", "tokenMintX", "tokenMintY", "activeBinId", "binStep", "feeBps", "liquidity", "programId"]
     },
     {
-      "toolName": "dialect_positions",
-      "source": "dialect-markets",
-      "implemented": false,
-      "requiresClientKey": true,
-      "returns": "Planned generic wallet positions when Dialect connector reads are configured.",
-      "facts": ["positionAddress", "poolAddress", "liquidity", "fees"]
+      "toolName": "solana_meteora_wallet_positions",
+      "source": "first-class-adapter",
+      "implemented": true,
+      "requiresClientKey": false,
+      "returns": "Wallet-owned DLMM positions, optionally filtered to one pool, with bin ranges, liquidity, token amounts, fees, rewards, and in-range status.",
+      "facts": ["walletAddress", "positionAddress", "poolAddress", "binRange", "liquidity", "tokenAmounts", "feesOwed", "rewardsOwed", "inRange"]
     },
     {
-      "toolName": "dialect_markets",
-      "source": "dialect-markets",
-      "implemented": false,
-      "requiresClientKey": true,
-      "returns": "Planned market and action URL facts for Meteora pools.",
-      "facts": ["poolAddress", "liquidity", "volume24h", "feeApr", "actionUrl"]
+      "toolName": "solana_meteora_position_detail",
+      "source": "first-class-adapter",
+      "implemented": true,
+      "requiresClientKey": false,
+      "returns": "One DLMM position with owner, pool, bin range, active-bin comparison, liquidity, token amounts, unclaimed fees, and rewards.",
+      "facts": ["positionAddress", "owner", "poolAddress", "binRange", "activeBinId", "liquidity", "feesOwed", "rewardsOwed"]
     }
   ],
   "writeCapabilities": [
     {
-      "actionKind": "blink_action",
-      "executionMode": "blink",
-      "implemented": false,
-      "prepares": "A planned approval-bound Blink action for add liquidity, withdraw liquidity, claim fees, or close position. MCP runtime does not expose the generic Blink helper yet.",
+      "actionKind": "meteora_claim_fees",
+      "executionMode": "first_class_adapter",
+      "implemented": true,
+      "prepares": "A manual-approval inbox item to claim swap fees for one DLMM position, or all positions in a pool when claimAll is true.",
       "executesVia": "solana_execute_prepared_action",
-      "userApproves": "A Meteora Solana Action transaction after the user reviews pool, position, token amounts, and fee facts."
+      "userApproves": "A freshly rebuilt Meteora DLMM claim-fees transaction."
+    },
+    {
+      "actionKind": "meteora_claim_rewards",
+      "executionMode": "first_class_adapter",
+      "implemented": true,
+      "prepares": "A manual-approval inbox item to claim liquidity mining rewards for one DLMM position, or all positions in a pool when claimAll is true.",
+      "executesVia": "solana_execute_prepared_action",
+      "userApproves": "A freshly rebuilt Meteora DLMM claim-rewards transaction."
+    },
+    {
+      "actionKind": "meteora_add_liquidity",
+      "executionMode": "first_class_adapter",
+      "implemented": true,
+      "prepares": "A manual-approval inbox item to add liquidity to an existing DLMM position with explicit token amounts, bin range, strategy, and slippage cap.",
+      "executesVia": "solana_execute_prepared_action",
+      "userApproves": "A freshly rebuilt Meteora DLMM add-liquidity transaction."
+    },
+    {
+      "actionKind": "meteora_remove_liquidity",
+      "executionMode": "first_class_adapter",
+      "implemented": true,
+      "prepares": "A manual-approval inbox item to remove a bounded percentage of liquidity from a DLMM position over a validated bin range.",
+      "executesVia": "solana_execute_prepared_action",
+      "userApproves": "A freshly rebuilt Meteora DLMM remove-liquidity transaction."
+    },
+    {
+      "actionKind": "meteora_close_position",
+      "executionMode": "first_class_adapter",
+      "implemented": true,
+      "prepares": "A manual-approval inbox item to close an empty DLMM position after the adapter confirms no liquidity remains.",
+      "executesVia": "solana_execute_prepared_action",
+      "userApproves": "A freshly rebuilt Meteora DLMM close-position transaction."
     }
   ],
   "requiredUserInputs": [
@@ -60,116 +92,143 @@
       "name": "poolAddress",
       "kind": "text",
       "required": true,
-      "appliesTo": ["blink_action"],
-      "prompt": "Which Meteora pool or DLMM position should I use?"
+      "appliesTo": ["meteora_claim_fees", "meteora_claim_rewards", "meteora_add_liquidity", "meteora_remove_liquidity", "meteora_close_position"],
+      "prompt": "Which Meteora DLMM pool should I use?"
     },
     {
-      "name": "amount",
-      "kind": "number",
-      "required": true,
-      "appliesTo": ["blink_action"],
-      "prompt": "How much liquidity or token amount should I prepare?"
-    },
-    {
-      "name": "blinkUrl",
+      "name": "positionAddress",
       "kind": "text",
       "required": true,
-      "appliesTo": ["blink_action"],
-      "prompt": "Paste the Meteora Blink or Solana Action URL for this action."
+      "appliesTo": ["meteora_claim_fees", "meteora_claim_rewards", "meteora_add_liquidity", "meteora_remove_liquidity", "meteora_close_position"],
+      "prompt": "Which Meteora DLMM position should I use?"
+    },
+    {
+      "name": "tokenXAmount or tokenYAmount",
+      "kind": "number",
+      "required": true,
+      "appliesTo": ["meteora_add_liquidity"],
+      "prompt": "What token X or token Y amount should I add?"
+    },
+    {
+      "name": "minBinId and maxBinId",
+      "kind": "number",
+      "required": true,
+      "appliesTo": ["meteora_add_liquidity"],
+      "prompt": "What bin range should I add liquidity across?"
+    },
+    {
+      "name": "liquidityPercent",
+      "kind": "number",
+      "required": true,
+      "appliesTo": ["meteora_remove_liquidity"],
+      "prompt": "What percent of the Meteora liquidity should I remove?"
     }
   ],
   "requiredConnectorFacts": [
     "Pool address and token pair",
     "Position address for wallet-specific actions",
-    "Current bin range or liquidity range",
-    "Unclaimed fees and rewards",
-    "Blink action URL and action metadata",
-    "Wallet token balances for both pool tokens"
+    "Current active bin and selected bin range",
+    "Position liquidity and whether the position is in range",
+    "Unclaimed fees and rewards before claim or close",
+    "Wallet token balances for both pool tokens",
+    "Slippage cap and strategy type for add/remove liquidity"
   ],
   "unsupportedRequests": [
-    "Prepare Meteora actions without a pool, position, or Blink URL.",
-    "Claim fees when no position address is supplied.",
-    "Close a position without first reading position facts.",
-    "Guarantee profitability or impermanent-loss safety.",
+    "Create a brand-new Meteora DLMM position.",
+    "Prepare Meteora actions without a pool or required position address.",
+    "Close a position that still has liquidity.",
+    "Guarantee profitability, APY, or impermanent-loss safety.",
     "Operate outside mainnet-beta.",
     "Move funds without a wallet signature."
   ],
-  "actionPreparationNotes": "Until a first-class adapter lands, treat Meteora actions as Blink-backed. The agent may review supplied action metadata, but must not invent pool, range, or fee facts. Ask for pool/position and Blink URL when missing.",
-  "riskNotes": "Meteora DLMM positions are sensitive to range selection, bin movement, fees, rewards, and impermanent loss. Display pool and position facts before approval.",
+  "actionPreparationNotes": "Meteora is first-class and prepare-only. Reads and prepared writes use the MCP adapter, store connectorId=meteora, refresh DLMM state at execution time, and reject missing pool/position/range/amount inputs. New position creation is intentionally not exposed because it requires an additional position keypair signer.",
+  "riskNotes": "Meteora DLMM positions are sensitive to bin selection, active-bin movement, fees, rewards, slippage, transfer fees, and impermanent loss. Display pool and position facts before approval.",
   "approvalBoundary": {
     "readGated": true,
     "writeGated": true,
-    "blinkBacked": true,
+    "blinkBacked": false,
     "summary": "safety.prepare_only"
   },
-  "walletApprovalBoundary": "The connector may read pool and position facts when configured. Writes are Blink-backed and only prepare a wallet approval request; the wallet signs separately.",
+  "walletApprovalBoundary": "The connector may read DLMM pool and position facts when configured. Writes create manual-approval inbox items only; the wallet signs and broadcasts separately after the adapter refreshes state.",
   "examples": {
     "requests": [
       {
         "user": "check my Meteora DLMM position",
         "classification": "needs_input",
-        "needsInputQuestions": ["Which position address or pool should I check?"],
-        "agentResponse": "The agent is missing facts needed to decide. Provide the position or pool so it can read connector facts."
+        "needsInputQuestions": ["Which position address should I check?", "Which DLMM pool is it in?"],
+        "agentResponse": "The agent needs a pool and position address before it can read Meteora DLMM position facts."
       },
       {
         "user": "show my Meteora fees",
         "classification": "needs_input",
-        "needsInputQuestions": ["Which Meteora position should I read?"],
-        "agentResponse": "The agent is missing facts needed to decide. Fee reads require a wallet position."
+        "needsInputQuestions": ["Which Meteora position should I read?", "Which pool is it in?"],
+        "agentResponse": "Fee reads require a Meteora pool and position address."
       },
       {
         "user": "add liquidity to this Meteora pool",
         "classification": "needs_input",
-        "needsInputQuestions": ["Which pool address?", "What token amounts?", "Paste the Meteora Blink URL."],
-        "agentResponse": "The agent is missing facts needed to decide. Pool, amounts, and action URL are required."
+        "needsInputQuestions": ["Which existing position should receive liquidity?", "What token amount should I add?", "What bin range should I use?"],
+        "agentResponse": "The agent is missing facts needed to prepare the approval item. Existing position, token amount, and bin range are required."
       },
       {
-        "user": "add 1 SOL and 100 USDC to Meteora with this Blink URL",
+        "user": "add 1 SOL and 100 USDC to my Meteora position between bins 100 and 120",
         "classification": "prepare_approval_action",
-        "writeAction": "blink_action",
-        "agentResponse": "Prepared a Meteora Blink review if the action metadata matches the requested pool and amounts. This prepares a wallet approval request; it does not sign."
+        "writeAction": "meteora_add_liquidity",
+        "agentResponse": "Prepared a Meteora add-liquidity approval item after validating the position, pool, bin range, strategy, and slippage cap. This prepares wallet approval only; it does not sign."
       },
       {
-        "user": "claim fees from my Meteora position using this action URL",
+        "user": "claim fees from my Meteora position",
         "classification": "prepare_approval_action",
-        "writeAction": "blink_action",
-        "agentResponse": "Prepared a claim-fees Blink review after checking the position id and action metadata."
+        "writeAction": "meteora_claim_fees",
+        "agentResponse": "Prepared a Meteora fee-claim approval item after checking the pool and position. The transaction is rebuilt when the wallet approves."
+      },
+      {
+        "user": "remove 25 percent of my Meteora liquidity",
+        "classification": "prepare_approval_action",
+        "writeAction": "meteora_remove_liquidity",
+        "agentResponse": "Prepared a Meteora remove-liquidity approval item for 25 percent of the position over its validated bin range."
       },
       {
         "user": "close my Meteora position without checking it",
         "classification": "unsupported",
         "denialReason": "safety.missing_facts",
-        "agentResponse": "The agent denied this because position facts are required before a close action can be reviewed."
+        "agentResponse": "The agent denied this because the position must be read and confirmed empty before close-position can be prepared."
+      },
+      {
+        "user": "create a new Meteora DLMM position",
+        "classification": "unsupported",
+        "denialReason": "safety.action_not_exposed",
+        "agentResponse": "The agent denied this because new Meteora position creation is not exposed by the connector."
       },
       {
         "user": "guarantee this Meteora range is safe",
         "classification": "unsupported",
         "denialReason": "safety.no_safety_guarantee",
-        "agentResponse": "The agent denied this because it cannot guarantee safety or profitability."
+        "agentResponse": "The agent denied this because it cannot guarantee safety, yield, or impermanent-loss outcomes."
       },
       {
         "user": "withdraw Meteora liquidity on devnet",
         "classification": "unsupported",
         "denialReason": "safety.action_not_exposed",
-        "agentResponse": "The agent denied this because Meteora connector actions are only cataloged for mainnet-beta."
+        "agentResponse": "The agent denied this because Meteora connector actions are only exposed for mainnet-beta."
       },
       {
         "user": "move my Meteora LP without opening my wallet",
         "classification": "unsupported",
         "denialReason": "safety.no_autonomous_funds",
-        "agentResponse": "The agent denied this because the connector cannot move funds without the user's wallet."
+        "agentResponse": "The agent denied this because the connector cannot move funds without the user's wallet approval."
       },
       {
         "user": "what is the APY on this Meteora pool?",
         "classification": "needs_input",
         "needsInputQuestions": ["Which pool address should I read?"],
-        "agentResponse": "The agent is missing facts needed to decide. A pool address is required before reading market facts."
+        "agentResponse": "The agent needs a pool address before reading Meteora market facts. It can report available pool facts, but it cannot guarantee future APY."
       }
     ]
   },
   "mirrorsCanonical": {
     "file": "apps/browser-demo/src/connectedDapps.ts",
     "entry": "meteora",
-    "note": "Mirrors the Meteora connector entry and marks runtime implementation gaps explicitly."
+    "note": "Mirrors the first-class Meteora connector entry and MCP adapter under packages/mcp-server/src/adapters/meteora."
   }
 }

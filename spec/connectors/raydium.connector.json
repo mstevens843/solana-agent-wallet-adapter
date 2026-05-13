@@ -2,152 +2,191 @@
   "$schema": "./connector-pack.schema.json",
   "id": "raydium",
   "name": "Raydium",
-  "status": "blink_backed",
+  "status": "first_class",
   "aliases": ["raydium", "ray"],
   "supportedClusters": ["mainnet-beta"],
   "requiredConfig": [
     {
-      "name": "Dialect client key",
-      "scope": "dialect_client_key",
-      "required": true,
-      "description": "Needed for Raydium market reads and Blink action discovery. MCP runtime does not expose these reads yet."
+      "name": "Raydium SDK",
+      "scope": "optional_dependency",
+      "required": false,
+      "description": "@raydium-io/raydium-sdk-v2 is loaded by the MCP Raydium adapter when first-class reads or prepared actions are used. Tests may inject a Raydium client factory."
     }
   ],
   "readCapabilities": [
     {
-      "toolName": "dialect_markets",
-      "source": "dialect-markets",
-      "implemented": false,
-      "requiresClientKey": true,
-      "returns": "Planned Raydium pool, farm, CLMM, and staking market facts.",
-      "facts": ["poolAddress", "poolType", "liquidity", "feeApr", "rewardApr", "actionUrl"]
+      "toolName": "solana_raydium_pool_snapshot",
+      "source": "first-class-adapter",
+      "implemented": true,
+      "requiresClientKey": false,
+      "returns": "Raydium CPMM, CLMM, or AMM v4 pool facts.",
+      "facts": ["poolId", "poolType", "programId", "tokenMints", "liquidity", "tvl", "feeRateBps", "currentTick", "rewardMints"]
+    },
+    {
+      "toolName": "solana_raydium_wallet_positions",
+      "source": "first-class-adapter",
+      "implemented": true,
+      "requiresClientKey": false,
+      "returns": "Wallet-owned Raydium CLMM positions, CPMM LP balances for a supplied pool, and farm reward context for a supplied farm.",
+      "facts": ["walletAddress", "poolId", "farmId", "positionMint", "liquidity", "lpAmount", "feesOwed", "rewardsOwed"]
+    },
+    {
+      "toolName": "solana_raydium_position_detail",
+      "source": "first-class-adapter",
+      "implemented": true,
+      "requiresClientKey": false,
+      "returns": "One Raydium CLMM position with tick range, liquidity, fees, rewards, and warnings.",
+      "facts": ["positionMint", "poolId", "tickLower", "tickUpper", "currentTick", "inRange", "feesOwed", "rewardsOwed"]
     }
   ],
   "writeCapabilities": [
     {
-      "actionKind": "blink_action",
-      "executionMode": "blink",
-      "implemented": false,
-      "prepares": "A planned approval-bound Blink action for AMM, CLMM, farm, or Stake RAY routes.",
+      "actionKind": "raydium_add_liquidity",
+      "executionMode": "first_class_prepare",
+      "implemented": true,
+      "prepares": "A wallet-approval inbox item to add CPMM liquidity or add/open CLMM liquidity.",
       "executesVia": "solana_execute_prepared_action",
-      "userApproves": "A Raydium Solana Action transaction after the user reviews pool, farm, token amount, and reward facts."
+      "userApproves": "A freshly rebuilt Raydium liquidity transaction."
+    },
+    {
+      "actionKind": "raydium_remove_liquidity",
+      "executionMode": "first_class_prepare",
+      "implemented": true,
+      "prepares": "A wallet-approval inbox item to remove CPMM LP liquidity or decrease CLMM liquidity.",
+      "executesVia": "solana_execute_prepared_action",
+      "userApproves": "A freshly rebuilt Raydium remove-liquidity transaction."
+    },
+    {
+      "actionKind": "raydium_collect_fees",
+      "executionMode": "first_class_prepare",
+      "implemented": true,
+      "prepares": "A wallet-approval inbox item to collect fees from a Raydium CLMM position.",
+      "executesVia": "solana_execute_prepared_action",
+      "userApproves": "A freshly rebuilt Raydium CLMM fee-collection transaction."
+    },
+    {
+      "actionKind": "raydium_farm_stake",
+      "executionMode": "first_class_prepare",
+      "implemented": true,
+      "prepares": "A wallet-approval inbox item to stake LP tokens into a Raydium farm.",
+      "executesVia": "solana_execute_prepared_action",
+      "userApproves": "A freshly rebuilt Raydium farm deposit transaction."
+    },
+    {
+      "actionKind": "raydium_farm_unstake",
+      "executionMode": "first_class_prepare",
+      "implemented": true,
+      "prepares": "A wallet-approval inbox item to unstake LP tokens from a Raydium farm.",
+      "executesVia": "solana_execute_prepared_action",
+      "userApproves": "A freshly rebuilt Raydium farm withdraw transaction."
+    },
+    {
+      "actionKind": "raydium_harvest",
+      "executionMode": "first_class_prepare",
+      "implemented": true,
+      "prepares": "A wallet-approval inbox item to harvest Raydium farm rewards.",
+      "executesVia": "solana_execute_prepared_action",
+      "userApproves": "A freshly rebuilt Raydium farm harvest transaction."
     }
   ],
   "requiredUserInputs": [
     {
-      "name": "poolAddress",
+      "name": "poolId",
       "kind": "text",
       "required": true,
-      "appliesTo": ["blink_action"],
-      "prompt": "Which Raydium pool, farm, or CLMM position should I use?"
+      "appliesTo": ["pool_snapshot", "raydium_add_liquidity", "raydium_remove_liquidity"],
+      "prompt": "Which Raydium pool id should I use?"
+    },
+    {
+      "name": "poolType",
+      "kind": "select",
+      "required": false,
+      "appliesTo": ["pool_snapshot", "raydium_add_liquidity", "raydium_remove_liquidity"],
+      "prompt": "Is this Raydium pool CPMM, CLMM, or AMM v4?"
+    },
+    {
+      "name": "positionMint",
+      "kind": "text",
+      "required": true,
+      "appliesTo": ["raydium_collect_fees"],
+      "prompt": "Which Raydium CLMM position mint should I use?"
+    },
+    {
+      "name": "farmId",
+      "kind": "text",
+      "required": true,
+      "appliesTo": ["raydium_farm_stake", "raydium_farm_unstake", "raydium_harvest"],
+      "prompt": "Which Raydium farm id should I use?"
     },
     {
       "name": "amount",
       "kind": "number",
       "required": true,
-      "appliesTo": ["blink_action"],
+      "appliesTo": ["raydium_add_liquidity", "raydium_farm_stake", "raydium_farm_unstake"],
       "prompt": "How much should I prepare for this Raydium action?"
-    },
-    {
-      "name": "blinkUrl",
-      "kind": "text",
-      "required": true,
-      "appliesTo": ["blink_action"],
-      "prompt": "Paste the Raydium Blink or Solana Action URL."
     }
   ],
   "requiredConnectorFacts": [
-    "Pool or farm address",
-    "Pool type: AMM, CLMM, farm, or staking",
-    "Token pair and token amounts",
-    "Liquidity and reward facts when available",
-    "Blink action URL metadata",
-    "Wallet token balance for each required token"
+    "Pool id, pool type, program id, and token pair",
+    "Exact token amounts or liquidity percentage before preparing wallet approval",
+    "CLMM range and in-range status for ranged liquidity",
+    "Farm id, LP mint, and reward mint facts for farm stake, unstake, or harvest",
+    "Configured slippage cap and wallet approval boundary"
   ],
   "unsupportedRequests": [
-    "Prepare a Raydium action without pool/farm details or a Blink URL.",
-    "Stake RAY without amount and action metadata.",
-    "Guarantee farm APY or safety.",
+    "Route or execute Raydium swaps.",
+    "Create permissioned pools or administer pools.",
+    "Stake RAY governance positions.",
+    "Guarantee APY, rewards, or impermanent-loss safety.",
     "Operate outside mainnet-beta.",
-    "Move funds without wallet approval.",
-    "Claim that a generic Raydium action was executed by the agent."
+    "Move funds without wallet approval."
   ],
-  "actionPreparationNotes": "Raydium is cataloged as Blink-backed. Until a generic Blink helper exists in MCP, answer capability questions and ask for pool/farm/action URL facts instead of inventing support.",
-  "riskNotes": "Raydium AMM and CLMM actions can create price, range, reward, and impermanent-loss exposure. Display exact pool and action metadata before wallet approval.",
+  "actionPreparationNotes": "Raydium first-class actions stage durable approval inbox items and refresh SDK state when the user executes the prepared action. The adapter never signs, submits, or grants delegated authority by itself.",
+  "riskNotes": "Raydium AMM, CPMM, CLMM, and farm actions can create price, range, reward, slippage, and impermanent-loss exposure. Display pool/farm facts and exact approval parameters before wallet approval.",
   "approvalBoundary": {
     "readGated": true,
     "writeGated": true,
-    "blinkBacked": true,
+    "blinkBacked": false,
     "summary": "safety.prepare_only"
   },
-  "walletApprovalBoundary": "Raydium actions are Blink-backed. The connector can prepare a wallet approval request only when action metadata is available; it never signs.",
+  "walletApprovalBoundary": "Raydium actions are first-class prepared wallet approvals. The connector can prepare and rebuild the transaction, but only the user's wallet signs.",
   "examples": {
     "requests": [
       {
         "user": "check a Raydium pool",
-        "classification": "needs_input",
-        "needsInputQuestions": ["Which Raydium pool address should I read?"],
-        "agentResponse": "The agent is missing facts needed to decide. Provide the pool address before reading market facts."
+        "classification": "read_facts",
+        "readTool": "solana_raydium_pool_snapshot",
+        "agentResponse": "Read Raydium pool facts as JSON without signing."
       },
       {
-        "user": "add liquidity to Raydium",
-        "classification": "needs_input",
-        "needsInputQuestions": ["Which pool?", "What token amounts?", "Paste the Blink URL."],
-        "agentResponse": "The agent is missing facts needed to decide. Pool, amounts, and action URL are required."
-      },
-      {
-        "user": "farm on Raydium with this action URL",
-        "classification": "needs_input",
-        "needsInputQuestions": ["How much should I deposit into the farm?"],
-        "agentResponse": "The agent is missing facts needed to decide. Amount is required before preparing the action."
-      },
-      {
-        "user": "stake 10 RAY using this Raydium Blink",
+        "user": "add liquidity to this Raydium CPMM pool",
         "classification": "prepare_approval_action",
-        "writeAction": "blink_action",
-        "agentResponse": "Prepared a Raydium Stake RAY Blink review if the action metadata matches 10 RAY. This prepares a wallet approval request; it does not sign."
+        "writeAction": "raydium_add_liquidity",
+        "agentResponse": "Prepared a Raydium add-liquidity approval. This does not sign or submit."
       },
       {
-        "user": "remove my Raydium liquidity without a pool id",
-        "classification": "needs_input",
-        "needsInputQuestions": ["Which pool or position should I withdraw from?"],
-        "agentResponse": "The agent is missing facts needed to decide. A pool or position id is required."
+        "user": "claim Raydium CLMM fees",
+        "classification": "prepare_approval_action",
+        "writeAction": "raydium_collect_fees",
+        "agentResponse": "Prepared a Raydium fee-collection approval. This does not sign or submit."
+      },
+      {
+        "user": "harvest rewards from this Raydium farm",
+        "classification": "prepare_approval_action",
+        "writeAction": "raydium_harvest",
+        "agentResponse": "Prepared a Raydium harvest approval. This does not sign or submit."
       },
       {
         "user": "guarantee this Raydium farm return",
         "classification": "unsupported",
         "denialReason": "safety.no_safety_guarantee",
         "agentResponse": "The agent denied this because it cannot guarantee yield or safety."
-      },
-      {
-        "user": "Raydium CLMM on devnet",
-        "classification": "unsupported",
-        "denialReason": "safety.action_not_exposed",
-        "agentResponse": "The agent denied this because Raydium connector actions are cataloged for mainnet-beta only."
-      },
-      {
-        "user": "move funds through Raydium without my wallet",
-        "classification": "unsupported",
-        "denialReason": "safety.no_autonomous_funds",
-        "agentResponse": "The agent denied this because the connector cannot move funds without the user's wallet."
-      },
-      {
-        "user": "claim Raydium rewards",
-        "classification": "needs_input",
-        "needsInputQuestions": ["Which farm or position should I claim from?", "Paste the Raydium action URL."],
-        "agentResponse": "The agent is missing facts needed to decide. Position and action metadata are required."
-      },
-      {
-        "user": "use Raydium but it is disabled",
-        "classification": "unsupported",
-        "denialReason": "safety.connector_disabled",
-        "agentResponse": "The agent denied this because this connector is not enabled."
       }
     ]
   },
   "mirrorsCanonical": {
     "file": "apps/browser-demo/src/connectedDapps.ts",
     "entry": "raydium",
-    "note": "Mirrors Raydium browser catalog support for Blink-backed actions and planned market reads."
+    "note": "Mirrors Raydium browser catalog support for first-class prepared actions and reads."
   }
 }

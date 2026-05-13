@@ -1,36 +1,90 @@
 {
   "$schema": "./connector-pack.schema.json",
   "id": "drift",
-  "name": "Drift",
-  "status": "blink_backed",
+  "name": "Drift Vaults",
+  "status": "first_class",
   "aliases": ["drift", "drift vaults", "strategy vaults"],
   "supportedClusters": ["mainnet-beta"],
   "requiredConfig": [
     {
-      "name": "Dialect client key",
-      "scope": "dialect_client_key",
+      "name": "RPC connection",
+      "scope": "env",
       "required": true,
-      "description": "Needed for strategy vault market reads. MCP runtime does not expose these reads yet."
+      "description": "Mainnet RPC the bridge or browser planner uses to query Drift vault state. Cluster mismatches must be rejected with safety.action_not_exposed."
+    },
+    {
+      "name": "Drift SDK wiring",
+      "scope": "runtime",
+      "required": true,
+      "description": "@drift-labs/sdk and @drift-labs/vaults-sdk must be installed by the host and a Drift vault client factory must be registered via setDriftVaultClientFactory(). Without the factory, reads and prepares return an explicit unavailable error."
     }
   ],
   "readCapabilities": [
     {
-      "toolName": "dialect_markets",
-      "source": "dialect-markets",
-      "implemented": false,
-      "requiresClientKey": true,
-      "returns": "Planned Drift strategy vault market facts and action URLs.",
-      "facts": ["vaultAddress", "strategy", "deposits", "pnl", "fee", "actionUrl"]
+      "toolName": "solana_drift_user_snapshot",
+      "source": "first-class-adapter",
+      "implemented": true,
+      "requiresClientKey": false,
+      "returns": "Drift user account snapshot for a wallet and optional subaccount: deposits, borrows, total/free collateral, margin ratio.",
+      "facts": ["totalCollateral", "freeCollateral", "marginRatio", "depositCount", "borrowCount"]
+    },
+    {
+      "toolName": "solana_drift_vault_snapshot",
+      "source": "first-class-adapter",
+      "implemented": true,
+      "requiresClientKey": false,
+      "returns": "Drift strategy vault snapshot: name, manager, deposit mint, decimals, share price, redeem period, lockup, profit share, management fee, pending withdraw shares.",
+      "facts": ["vaultAddress", "name", "manager", "depositMint", "depositSymbol", "decimals", "sharePrice", "redeemPeriodSec", "lockupSec", "profitShareBps", "managementFeeBps", "pendingWithdrawShares"]
+    },
+    {
+      "toolName": "solana_drift_wallet_vault_positions",
+      "source": "first-class-adapter",
+      "implemented": true,
+      "requiresClientKey": false,
+      "returns": "Wallet depositor positions across Drift strategy vaults, including shares, value at share price, and pending withdraw shares. Optional vaultAddress filter.",
+      "facts": ["vaultAddress", "shares", "valueAtSharePrice", "pendingWithdrawShares", "redeemableAt"]
+    },
+    {
+      "toolName": "solana_drift_withdraw_status",
+      "source": "first-class-adapter",
+      "implemented": true,
+      "requiresClientKey": false,
+      "returns": "Drift vault withdraw status for a wallet and vault: hasPendingRequest, requested shares, redeemableAt, isReady, redeemPeriodSec.",
+      "facts": ["hasPendingRequest", "requestedShares", "redeemableAt", "isReady", "redeemPeriodSec", "lockupSec"]
     }
   ],
   "writeCapabilities": [
     {
-      "actionKind": "blink_action",
-      "executionMode": "blink",
-      "implemented": false,
-      "prepares": "A planned approval-bound Blink action for strategy vault deposit or withdraw.",
+      "actionKind": "drift_vault_deposit",
+      "executionMode": "first_class_adapter",
+      "implemented": true,
+      "prepares": "An inbox-bound PreparedAction that captures vault, manager, deposit mint, amount, share price, redeem period, lockup, profit share, management fee, and depositor state. No transaction is signed at prepare time.",
       "executesVia": "solana_execute_prepared_action",
-      "userApproves": "A Drift Solana Action transaction after the user reviews vault, strategy, token, amount, and risk facts."
+      "userApproves": "A Drift vault deposit transaction built at execute time, with refreshed vault snapshot. Depositor account creation is part of the same approval when explicitly opted in via initializeDepositorIfMissing."
+    },
+    {
+      "actionKind": "drift_vault_request_withdraw",
+      "executionMode": "first_class_adapter",
+      "implemented": true,
+      "prepares": "An inbox-bound PreparedAction for a Drift vault withdraw request, scoped to a single vault and a single unit (token or shares). Captures vault facts, redeemableAt, depositor position, and refreshAtExecution: true.",
+      "executesVia": "solana_execute_prepared_action",
+      "userApproves": "A Drift vault request-withdraw transaction built at execute time. The vault redeem period determines when complete-withdraw becomes available."
+    },
+    {
+      "actionKind": "drift_vault_cancel_withdraw",
+      "executionMode": "first_class_adapter",
+      "implemented": true,
+      "prepares": "An inbox-bound PreparedAction that cancels a pending Drift vault withdraw request. Rejected if no pending request exists.",
+      "executesVia": "solana_execute_prepared_action",
+      "userApproves": "A Drift vault cancel-withdraw transaction built at execute time. Vault state is re-checked before signing."
+    },
+    {
+      "actionKind": "drift_vault_complete_withdraw",
+      "executionMode": "first_class_adapter",
+      "implemented": true,
+      "prepares": "An inbox-bound PreparedAction that completes a pending Drift vault withdraw after the redeem period elapses. Rejected if the redeem period has not elapsed or there is no pending request.",
+      "executesVia": "solana_execute_prepared_action",
+      "userApproves": "A Drift vault complete-withdraw transaction built at execute time. Readiness is re-verified before signing."
     }
   ],
   "requiredUserInputs": [
@@ -38,86 +92,137 @@
       "name": "vaultAddress",
       "kind": "text",
       "required": true,
-      "appliesTo": ["blink_action"],
+      "appliesTo": [
+        "drift_vault_deposit",
+        "drift_vault_request_withdraw",
+        "drift_vault_cancel_withdraw",
+        "drift_vault_complete_withdraw"
+      ],
       "prompt": "Which Drift vault should I use?"
     },
     {
       "name": "amount",
       "kind": "number",
-      "required": true,
-      "appliesTo": ["blink_action"],
-      "prompt": "How much should I prepare?"
+      "required": false,
+      "appliesTo": ["drift_vault_deposit", "drift_vault_request_withdraw"],
+      "prompt": "How much (in vault deposit token units)?"
     },
     {
-      "name": "blinkUrl",
+      "name": "shares",
       "kind": "text",
-      "required": true,
-      "appliesTo": ["blink_action"],
-      "prompt": "Paste the Drift Blink or Solana Action URL."
+      "required": false,
+      "appliesTo": ["drift_vault_request_withdraw"],
+      "prompt": "How many vault shares should I withdraw (when withdrawUnit is 'shares')?"
+    },
+    {
+      "name": "withdrawUnit",
+      "kind": "select",
+      "required": false,
+      "appliesTo": ["drift_vault_request_withdraw"],
+      "options": ["token", "shares"],
+      "prompt": "Withdraw by token amount or by share amount?"
+    },
+    {
+      "name": "initializeDepositorIfMissing",
+      "kind": "toggle",
+      "required": false,
+      "appliesTo": ["drift_vault_deposit"],
+      "prompt": "Create the vault depositor account in this approval if it is missing?"
+    },
+    {
+      "name": "dueAt",
+      "kind": "text",
+      "required": false,
+      "appliesTo": [
+        "drift_vault_deposit",
+        "drift_vault_request_withdraw",
+        "drift_vault_cancel_withdraw",
+        "drift_vault_complete_withdraw"
+      ],
+      "prompt": "Should this action wait until a specific time before becoming ready? (ISO 8601, optional)"
     }
   ],
   "requiredConnectorFacts": [
-    "Vault address and strategy name",
-    "Deposit token and decimals",
-    "Vault capacity and withdrawal terms",
-    "Recent PnL or risk facts when available",
-    "Blink action URL metadata",
-    "Wallet token balance"
+    "Vault address, name, manager, and deposit mint",
+    "Vault decimals and share price",
+    "Vault redeem period and lockup seconds",
+    "Vault profit share and management fee basis points",
+    "Vault pending withdraw shares (vault-wide)",
+    "Wallet depositor shares and value at share price",
+    "Wallet pending withdraw shares and redeemableAt"
   ],
   "unsupportedRequests": [
-    "Prepare vault deposits without a vault, amount, or action URL.",
-    "Withdraw without a vault or position fact.",
-    "Trade perps or place orders. This pack covers strategy vault Blink actions only.",
-    "Guarantee returns.",
-    "Operate outside mainnet-beta.",
+    "Place a Drift perp order or close a perp position. V1 does not expose perp trading.",
+    "Spot margin trading, borrows, or leveraged positions on Drift.",
+    "Open or close leverage / Swift orders.",
+    "Grant a Drift delegated authority.",
+    "Batch request-withdraw and complete-withdraw into one prepared action.",
+    "Complete a vault withdraw before the redeem period has elapsed.",
+    "Initialize a vault depositor account without explicit initializeDepositorIfMissing opt-in.",
+    "Operate on any cluster other than mainnet-beta.",
     "Move funds without wallet approval."
   ],
-  "actionPreparationNotes": "Drift is cataloged for strategy vault Blink actions only. Do not generalize to perpetual trading or order placement. Ask for vault and action URL facts before preparing.",
-  "riskNotes": "Strategy vaults can lose value and may have withdrawal constraints. Display strategy, vault, and amount facts before approval.",
+  "actionPreparationNotes": "Resolve vaultAddress to a Drift vault snapshot at prepare time and store name, manager, deposit mint, decimals, share price, redeem period, lockup, profit share, management fee, and pending withdraw shares in params. Compute redeemableAt as preparedAt + redeemPeriodSec for request-withdraw. The execute path re-reads the vault snapshot, depositor state, and withdraw status, and refuses if the connected wallet, mint, decimals, or readiness drifted from prepare time.",
+  "riskNotes": "Drift strategy vaults are manager-controlled. Vault value can move while a withdraw request is queued and the redeem period elapses. Profit share, management fee, and lockup apply on top of share price. Surface these in the review card before approval.",
   "approvalBoundary": {
-    "readGated": true,
+    "readGated": false,
     "writeGated": true,
-    "blinkBacked": true,
+    "blinkBacked": false,
     "summary": "safety.prepare_only"
   },
-  "walletApprovalBoundary": "Drift vault actions are approval-bound Blink actions. The agent does not trade or sign without the user's wallet.",
+  "walletApprovalBoundary": "Reads return facts without wallet involvement. Vault deposits and the withdraw lifecycle build transactions at execute time that the wallet must sign and broadcast. The agent never signs and never opens or settles a perp position.",
   "examples": {
     "requests": [
       {
-        "user": "show my Drift vaults",
-        "classification": "needs_input",
-        "needsInputQuestions": ["Which wallet or vault should I read?"],
-        "agentResponse": "The agent is missing facts needed to decide. Vault reads require wallet or vault context."
+        "user": "show my Drift vault positions",
+        "classification": "read_only_answer",
+        "readTool": "solana_drift_wallet_vault_positions",
+        "agentResponse": "Read your Drift vault positions and per-vault shares plus value. The connector reads facts; the wallet still controls approval."
       },
       {
-        "user": "deposit into a Drift vault",
-        "classification": "needs_input",
-        "needsInputQuestions": ["Which vault?", "How much?", "Paste the Drift action URL."],
-        "agentResponse": "The agent is missing facts needed to decide. Vault, amount, and action URL are required."
+        "user": "check this Drift vault and explain fees and withdraw timing",
+        "classification": "read_only_answer",
+        "readTool": "solana_drift_vault_snapshot",
+        "agentResponse": "Read the Drift vault snapshot and reported manager, share price, redeem period, lockup, profit share, and management fee."
       },
       {
-        "user": "deposit 100 USDC into this Drift vault using this Blink",
+        "user": "deposit 25 USDC into Drift vault <addr>",
         "classification": "prepare_approval_action",
-        "writeAction": "blink_action",
-        "agentResponse": "Prepared a Drift vault deposit Blink review if metadata matches 100 USDC and the vault. This prepares a wallet approval request; it does not sign."
+        "writeAction": "drift_vault_deposit",
+        "agentResponse": "Prepared a Drift vault USDC deposit of 25 with the current share price and redeem period. This prepares a wallet approval request; it does not sign."
       },
       {
-        "user": "withdraw from Drift",
+        "user": "request a Drift vault withdraw for 50% of my shares",
         "classification": "needs_input",
-        "needsInputQuestions": ["Which vault or position should I withdraw from?", "How much?", "Paste the action URL."],
-        "agentResponse": "The agent is missing facts needed to decide. Withdrawal needs position, amount, and action metadata."
+        "needsInputQuestions": [
+          "Which Drift vault?",
+          "Should I read your current share balance so '50%' resolves to a concrete share amount?"
+        ],
+        "agentResponse": "The agent is missing facts needed to decide. I can read your position with solana_drift_wallet_vault_positions and then prepare a request-withdraw with the exact share count."
+      },
+      {
+        "user": "complete my Drift vault withdrawal if it is ready",
+        "classification": "prepare_approval_action",
+        "writeAction": "drift_vault_complete_withdraw",
+        "agentResponse": "Prepared a Drift vault complete-withdraw if the redeem period has elapsed. The wallet still controls approval."
+      },
+      {
+        "user": "cancel my pending Drift vault withdraw",
+        "classification": "prepare_approval_action",
+        "writeAction": "drift_vault_cancel_withdraw",
+        "agentResponse": "Prepared a Drift vault cancel-withdraw against the pending request. The wallet still controls approval."
       },
       {
         "user": "open a 10x Drift perp long",
         "classification": "unsupported",
         "denialReason": "safety.action_not_exposed",
-        "agentResponse": "The agent denied this because this connector pack covers strategy vaults, not perp order placement."
+        "agentResponse": "The agent denied this because this connector covers Drift strategy vault deposit and withdraw only. Perp trading is not exposed in v1."
       },
       {
         "user": "guarantee this Drift vault yield",
         "classification": "unsupported",
         "denialReason": "safety.no_safety_guarantee",
-        "agentResponse": "The agent denied this because it cannot guarantee vault returns."
+        "agentResponse": "The agent denied this because vault returns are manager-controlled and cannot be guaranteed."
       },
       {
         "user": "Drift vault action on devnet",
@@ -126,28 +231,30 @@
         "agentResponse": "The agent denied this because Drift connector actions are cataloged for mainnet-beta only."
       },
       {
-        "user": "move funds into Drift without wallet approval",
-        "classification": "unsupported",
-        "denialReason": "safety.no_autonomous_funds",
-        "agentResponse": "The agent denied this because the connector cannot move funds without wallet approval."
-      },
-      {
-        "user": "close every Drift position",
+        "user": "complete my Drift vault withdraw before the redeem period elapses",
         "classification": "unsupported",
         "denialReason": "safety.action_not_exposed",
-        "agentResponse": "The agent denied this because generic position close is not exposed by this connector."
+        "agentResponse": "The agent denied this because Drift's redeem period has not elapsed. Wait until the vault marks the request ready and re-prepare."
       },
       {
-        "user": "use Drift while connector is disabled",
+        "user": "deposit into Drift vault and create the depositor",
+        "classification": "needs_input",
+        "needsInputQuestions": [
+          "Should I create the vault depositor account in this approval? (sets initializeDepositorIfMissing: true)"
+        ],
+        "agentResponse": "The agent is missing facts needed to decide. Depositor creation is an explicit opt-in inside the same approval."
+      },
+      {
+        "user": "deposit 100 USDC into Drift vault while the connector is disabled",
         "classification": "unsupported",
         "denialReason": "safety.connector_disabled",
-        "agentResponse": "The agent denied this because this connector is not enabled."
+        "agentResponse": "The agent denied this because this connector is not enabled. Enable Drift Vaults in Protocol Connectors before continuing."
       }
     ]
   },
   "mirrorsCanonical": {
     "file": "apps/browser-demo/src/connectedDapps.ts",
     "entry": "drift",
-    "note": "Mirrors Drift browser catalog support for Blink-backed strategy vault actions."
+    "note": "PROTOCOL_CONNECTORS entry at id 'drift'. Update this pack when capabilities, aliases, readTools, or actionKinds change."
   }
 }

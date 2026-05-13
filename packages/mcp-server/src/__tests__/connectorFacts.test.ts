@@ -9,6 +9,11 @@ import {
   fact,
   factsFromJupiterOrderPreview,
   factsFromKaminoReserveSnapshot,
+  factsFromMarginfiAccountDetail,
+  factsFromMarginfiBankSnapshot,
+  factsFromMarginfiHealthPreview,
+  factsFromOrcaPositionDetail,
+  factsFromOrcaWhirlpoolSnapshot,
 } from '../connectorFacts.js';
 
 describe('connector fact normalization', () => {
@@ -55,16 +60,19 @@ describe('connector fact normalization', () => {
       inputMint: 'So11111111111111111111111111111111111111112',
       outputMint: 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v',
       outAmount: '2500000',
+      otherAmountThreshold: '2400000',
       slippageBps: 50,
       priceImpact: '0.002',
+      routePlan: [{ label: 'Meteora DLMM', percent: 100 }],
+      feeBps: 2,
       hasTransaction: true,
       transaction: 'base64-transaction-should-not-be-copied',
     }, '2026-05-12T00:00:00.000Z');
 
-    expect(facts).toHaveLength(3);
+    expect(facts).toHaveLength(6);
     expect(facts[0]).toMatchObject({
       connectorId: 'jupiter',
-      label: 'Jupiter preview',
+      label: 'Jupiter Swap API v2 preview',
       value: 'Expected output 2500000',
       tone: 'good',
       detail: {
@@ -74,7 +82,162 @@ describe('connector fact normalization', () => {
         hasTransaction: true,
       },
     });
+    expect(facts).toEqual(expect.arrayContaining([
+      expect.objectContaining({ label: 'Minimum output', value: '2400000', tone: 'good' }),
+      expect.objectContaining({ label: 'Fees', value: '2 bps' }),
+    ]));
     expect(JSON.stringify(facts)).not.toContain('base64-transaction-should-not-be-copied');
+  });
+
+  it('maps Orca Whirlpool snapshots into stable connector facts', () => {
+    const facts = factsFromOrcaWhirlpoolSnapshot({
+      whirlpoolAddress: '11111111111111111111111111111111',
+      programId: 'whirLbMiicVdio4qvUfM5KAg6Ct8VwpYzGff3uctyCc',
+      configAddress: '2LecshUwdy9xi7meFgHtFJQNSKk4KdTrcpvaB56dP2NQ',
+      tokenMintA: 'So11111111111111111111111111111111111111112',
+      tokenMintB: 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v',
+      tickSpacing: 8,
+      feeRateBps: 30,
+      currentTickIndex: 64,
+      currentPrice: '150',
+      sqrtPrice: '123456',
+      liquidity: '100000',
+    }, '2026-05-12T00:00:00.000Z');
+
+    expect(facts.map((entry) => entry.label)).toEqual([
+      'Orca Whirlpool',
+      'Current tick',
+      'Liquidity',
+    ]);
+    expect(facts[0]).toMatchObject({
+      connectorId: 'orca',
+      tone: 'good',
+      source: 'connector',
+      checkedAt: '2026-05-12T00:00:00.000Z',
+    });
+  });
+
+  it('maps Orca position detail into range and rewards facts', () => {
+    const facts = factsFromOrcaPositionDetail({
+      positionMint: 'So11111111111111111111111111111111111111112',
+      whirlpoolAddress: '11111111111111111111111111111111',
+      tickLowerIndex: 56,
+      tickUpperIndex: 80,
+      currentTickIndex: 90,
+      inRange: false,
+      liquidity: '5000',
+      feesOwed: [{ mint: 'So11111111111111111111111111111111111111112', amount: '0.001', symbol: 'SOL' }],
+      rewardsOwed: [{ mint: 'JUPyiwrYJFskUPiHa7hkeR8VUtAeFoSYbKedZNsDvCN', amount: '2', symbol: 'JUP' }],
+      warnings: ['Current Whirlpool tick is outside the selected position range.'],
+    }, '2026-05-12T00:00:00.000Z');
+
+    expect(facts).toEqual(expect.arrayContaining([
+      expect.objectContaining({ label: expect.stringContaining('Position'), tone: 'warn' }),
+      expect.objectContaining({ label: 'Claimable fees', value: '0.001 SOL' }),
+      expect.objectContaining({ label: 'Claimable rewards', value: '2 JUP' }),
+      expect.objectContaining({ label: 'Position warnings', tone: 'warn' }),
+    ]));
+  });
+
+  it('maps MarginFi bank snapshots into stable connector facts', () => {
+    const facts = factsFromMarginfiBankSnapshot({
+      bankAddress: 'Bank111111111111111111111111111111111111111',
+      bankMint: 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v',
+      tokenSymbol: 'USDC',
+      decimals: 6,
+      depositApy: 4.2,
+      borrowApr: 7.1,
+      utilization: 62,
+      totalAssets: '1000',
+      totalLiabilities: '620',
+      depositCapacity: '500',
+      borrowCapacity: '200',
+    }, '2026-05-12T00:00:00.000Z');
+
+    expect(facts.map((entry) => entry.label)).toEqual([
+      'MarginFi bank',
+      'Deposit APY',
+      'Borrow APR',
+      'Utilization',
+      'Deposit capacity',
+      'Borrow capacity',
+    ]);
+    expect(facts[1]).toMatchObject({
+      connectorId: 'marginfi',
+      value: '4.2%',
+      tone: 'good',
+      source: 'connector',
+      checkedAt: '2026-05-12T00:00:00.000Z',
+    });
+  });
+
+  it('maps MarginFi account details into position and health facts', () => {
+    const facts = factsFromMarginfiAccountDetail({
+      marginfiAccount: '11111111111111111111111111111111',
+      authority: 'GgwYwf8XtAQRtu1ZUv9hY1Zk1wkJpz3DCH7jQAjmGGGV',
+      activeBalances: 1,
+      health: {
+        assets: '100',
+        liabilities: '40',
+        netValue: '60',
+        healthRatio: 2.5,
+        healthRatioText: '2.5',
+        healthy: true,
+      },
+      positions: [{
+        bankAddress: 'Bank111111111111111111111111111111111111111',
+        bankMint: 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v',
+        tokenSymbol: 'USDC',
+        decimals: 6,
+        suppliedAmount: '5',
+        borrowedAmount: '2',
+        suppliedUsd: '5',
+        borrowedUsd: '2',
+      }],
+    }, '2026-05-12T00:00:00.000Z');
+
+    expect(facts).toEqual(expect.arrayContaining([
+      expect.objectContaining({ connectorId: 'marginfi', label: 'MarginFi account', tone: 'good' }),
+      expect.objectContaining({ label: 'USDC position', value: '5 supplied · 2 borrowed · 5 supplied USD · 2 borrowed USD', tone: 'warn' }),
+    ]));
+  });
+
+  it('marks blocked MarginFi health previews as failing facts', () => {
+    const facts = factsFromMarginfiHealthPreview({
+      operation: 'borrow',
+      marginfiAccount: '11111111111111111111111111111111',
+      bankAddress: 'Bank111111111111111111111111111111111111111',
+      bankMint: 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v',
+      tokenSymbol: 'USDC',
+      amount: '10',
+      amountRaw: '10000000',
+      before: {
+        assets: '100',
+        liabilities: '40',
+        netValue: '60',
+        healthRatio: 2.5,
+        healthRatioText: '2.5',
+        healthy: true,
+      },
+      after: {
+        assets: '100',
+        liabilities: '95',
+        netValue: '5',
+        healthRatio: 1.05,
+        healthRatioText: '1.05',
+        healthy: true,
+      },
+      minHealthRatio: 1.1,
+      blocked: true,
+      warnings: ['Projected health ratio is below policy.'],
+      simulatedAt: '2026-05-12T00:00:00.000Z',
+    }, '2026-05-12T00:00:00.000Z');
+
+    expect(facts).toEqual(expect.arrayContaining([
+      expect.objectContaining({ label: 'MarginFi health preview', tone: 'fail' }),
+      expect.objectContaining({ label: 'Health after', tone: 'fail' }),
+      expect.objectContaining({ label: 'Health warnings', tone: 'fail' }),
+    ]));
   });
 
   it('tones Jupiter numeric string fields consistently', () => {
@@ -121,11 +284,11 @@ describe('connector fact normalization', () => {
       config: DEFAULT_CONFIG,
     });
 
-    await expect(service.connectorReadFacts({ connectorId: 'meteora' })).rejects.toMatchObject({
+    await expect(service.connectorReadFacts({ connectorId: 'jupiter', capability: 'positions' })).rejects.toMatchObject({
       name: 'ProtocolError',
       code: 'unsupported_method',
       recoverable: false,
-      message: expect.stringContaining('Meteora does not expose requested capability read capability'),
+      message: expect.stringContaining('Jupiter does not expose positions read capability'),
     });
   });
 

@@ -84,7 +84,7 @@
                 "intent": { "type": "string" },
                 "actionType": {
                   "type": "string",
-                  "enum": ["transfer_sol", "transfer_spl", "swap", "recurring_payment", "kamino_deposit", "kamino_withdraw", "read_only", "unsupported", "blink_action"]
+                  "enum": ["transfer_sol", "transfer_spl", "swap", "recurring_payment", "kamino_deposit", "kamino_withdraw", "meteora_claim_fees", "meteora_claim_rewards", "meteora_add_liquidity", "meteora_remove_liquidity", "meteora_close_position", "read_only", "unsupported", "blink_action"]
                 },
                 "parameters": {
                   "type": "object",
@@ -146,7 +146,7 @@
           "properties": {
             "actionType": {
               "type": ["string", "null"],
-              "enum": ["transfer_sol", "transfer_spl", "swap", "recurring_payment", "kamino_deposit", "kamino_withdraw", "read_only", "unsupported", "blink_action", null]
+              "enum": ["transfer_sol", "transfer_spl", "swap", "recurring_payment", "kamino_deposit", "kamino_withdraw", "meteora_claim_fees", "meteora_claim_rewards", "meteora_add_liquidity", "meteora_remove_liquidity", "meteora_close_position", "read_only", "unsupported", "blink_action", null]
             },
             "decision": {
               "type": "string",

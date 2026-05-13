@@ -21,11 +21,20 @@ export interface AgentWalletConfig {
   };
   tokens: TokenLimitConfig[];
   jupiter: {
+    /** Legacy swap/order base URL. Prefer swapBaseUrl for new config. */
     baseUrl: string;
+    swapBaseUrl?: string;
+    lendBaseUrl?: string;
+    triggerBaseUrl?: string;
+    recurringBaseUrl?: string;
+    tokensBaseUrl?: string;
+    priceBaseUrl?: string;
+    predictionBaseUrl?: string;
     apiKeyEnv: string;
   };
   recurring?: RecurringPolicyConfig;
   recipients?: Record<string, RecipientCapConfig>;
+  connectors?: ConnectorPolicyConfig;
 }
 
 export interface RecurringPolicyConfig {
@@ -40,12 +49,29 @@ export interface RecipientCapConfig {
   perMonthMax?: Record<string, string>;
 }
 
+export interface ConnectorPolicyConfig {
+  marginfi?: MarginfiPolicyConfig;
+}
+
+export interface MarginfiPolicyConfig {
+  minHealthRatio?: number;
+}
+
 export const WSOL_MINT = 'So11111111111111111111111111111111111111112';
 export const USDC_MINT = 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v';
 export const JUP_MINT = 'JUPyiwrYJFskUPiHa7hkeR8VUtAeFoSYbKedZNsDvCN';
 export const BONK_MINT = 'DezXAZ8z7PnrnRJjz3wXBoRgixCa6xjnB7YaB1pPB263';
 export const WIF_MINT = 'EKpQGSJtjMFqKZ9KQanSqYXRcF8fBopzLHYxdM65zcjm';
 export const PYUSD_MINT = '2b1kV6DkPAnxd5ixfnxCpjxmKwqjjaYmCZfHsFu24GXo';
+export const MSOL_MINT = 'mSoLzYCxHdYgdzU16g5QSh3KZK7ytfqcJm7So';
+
+export const DEFAULT_JUPITER_SWAP_BASE_URL = 'https://api.jup.ag/swap/v2';
+export const DEFAULT_JUPITER_LEND_BASE_URL = 'https://api.jup.ag/lend/v1';
+export const DEFAULT_JUPITER_TRIGGER_BASE_URL = 'https://api.jup.ag/trigger/v2';
+export const DEFAULT_JUPITER_RECURRING_BASE_URL = 'https://api.jup.ag/recurring/v1';
+export const DEFAULT_JUPITER_TOKENS_BASE_URL = 'https://api.jup.ag/tokens/v2';
+export const DEFAULT_JUPITER_PRICE_BASE_URL = 'https://api.jup.ag/price/v3';
+export const DEFAULT_JUPITER_PREDICTION_BASE_URL = 'https://api.jup.ag/prediction/v1';
 
 export const DEFAULT_TOKEN_REGISTRY: TokenLimitConfig[] = [
   {
@@ -78,6 +104,12 @@ export const DEFAULT_TOKEN_REGISTRY: TokenLimitConfig[] = [
     decimals: 6,
     maxTransfer: '25',
   },
+  {
+    symbol: 'mSOL',
+    mint: MSOL_MINT,
+    decimals: 9,
+    maxTransfer: '25',
+  },
 ];
 
 export const DEFAULT_CONFIG: AgentWalletConfig = {
@@ -92,8 +124,20 @@ export const DEFAULT_CONFIG: AgentWalletConfig = {
   },
   tokens: DEFAULT_TOKEN_REGISTRY,
   jupiter: {
-    baseUrl: 'https://api.jup.ag/ultra/v1',
+    baseUrl: DEFAULT_JUPITER_SWAP_BASE_URL,
+    swapBaseUrl: DEFAULT_JUPITER_SWAP_BASE_URL,
+    lendBaseUrl: DEFAULT_JUPITER_LEND_BASE_URL,
+    triggerBaseUrl: DEFAULT_JUPITER_TRIGGER_BASE_URL,
+    recurringBaseUrl: DEFAULT_JUPITER_RECURRING_BASE_URL,
+    tokensBaseUrl: DEFAULT_JUPITER_TOKENS_BASE_URL,
+    priceBaseUrl: DEFAULT_JUPITER_PRICE_BASE_URL,
+    predictionBaseUrl: DEFAULT_JUPITER_PREDICTION_BASE_URL,
     apiKeyEnv: 'JUPITER_API_KEY',
+  },
+  connectors: {
+    marginfi: {
+      minHealthRatio: 1.1,
+    },
   },
 };
 
@@ -117,15 +161,45 @@ export function normalizeConfig(input: Partial<AgentWalletConfig>): AgentWalletC
     ...DEFAULT_CONFIG.jupiter,
     ...(input.jupiter ?? {}),
   };
-  const jupiterBaseUrl = firstEnvValue('JUP_ULTRA_BASE', 'JUPITER_BASE_URL');
-  if (jupiterBaseUrl) {
-    jupiter.baseUrl = jupiterBaseUrl;
-  }
+  const configuredSwapBaseUrl =
+    firstEnvValue('JUPITER_SWAP_BASE_URL', 'JUP_ULTRA_BASE', 'JUPITER_BASE_URL') ??
+    input.jupiter?.swapBaseUrl ??
+    input.jupiter?.baseUrl ??
+    DEFAULT_JUPITER_SWAP_BASE_URL;
+  const swapBaseUrl = stripTrailingSlashes(configuredSwapBaseUrl);
+  jupiter.baseUrl = swapBaseUrl;
+  jupiter.swapBaseUrl = swapBaseUrl;
+  jupiter.lendBaseUrl = stripTrailingSlashes(
+    firstEnvValue('JUPITER_LEND_BASE_URL') ?? jupiter.lendBaseUrl ?? DEFAULT_JUPITER_LEND_BASE_URL,
+  );
+  jupiter.triggerBaseUrl = stripTrailingSlashes(
+    firstEnvValue('JUPITER_TRIGGER_BASE_URL') ?? jupiter.triggerBaseUrl ?? DEFAULT_JUPITER_TRIGGER_BASE_URL,
+  );
+  jupiter.recurringBaseUrl = stripTrailingSlashes(
+    firstEnvValue('JUPITER_RECURRING_BASE_URL') ?? jupiter.recurringBaseUrl ?? DEFAULT_JUPITER_RECURRING_BASE_URL,
+  );
+  jupiter.tokensBaseUrl = stripTrailingSlashes(
+    firstEnvValue('JUPITER_TOKENS_BASE_URL') ?? jupiter.tokensBaseUrl ?? DEFAULT_JUPITER_TOKENS_BASE_URL,
+  );
+  jupiter.priceBaseUrl = stripTrailingSlashes(
+    firstEnvValue('JUPITER_PRICE_BASE_URL') ?? jupiter.priceBaseUrl ?? DEFAULT_JUPITER_PRICE_BASE_URL,
+  );
+  jupiter.predictionBaseUrl = stripTrailingSlashes(
+    firstEnvValue('JUPITER_PREDICTION_BASE_URL') ?? jupiter.predictionBaseUrl ?? DEFAULT_JUPITER_PREDICTION_BASE_URL,
+  );
   if (!process.env[jupiter.apiKeyEnv]?.trim() && process.env.JUP_API_KEY?.trim()) {
     jupiter.apiKeyEnv = 'JUP_API_KEY';
   }
   const recurring = input.recurring;
   const recipients = input.recipients;
+  const connectors = {
+    ...DEFAULT_CONFIG.connectors,
+    ...(input.connectors ?? {}),
+    marginfi: {
+      ...DEFAULT_CONFIG.connectors?.marginfi,
+      ...(input.connectors?.marginfi ?? {}),
+    },
+  };
   return {
     cluster,
     rpcUrl,
@@ -134,6 +208,7 @@ export function normalizeConfig(input: Partial<AgentWalletConfig>): AgentWalletC
     jupiter,
     ...(recurring !== undefined && { recurring }),
     ...(recipients !== undefined && { recipients }),
+    connectors,
   };
 }
 
@@ -143,6 +218,10 @@ function firstEnvValue(...names: string[]): string | undefined {
     if (value) return value;
   }
   return undefined;
+}
+
+function stripTrailingSlashes(value: string): string {
+  return value.replace(/\/+$/, '');
 }
 
 export function requireMainnetEnabled(config: AgentWalletConfig): void {

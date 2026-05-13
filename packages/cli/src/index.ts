@@ -51,7 +51,7 @@ const POLL_INTERVAL_MS = 750;
 const RUNTIME_DIR_NAME = 'solana-agent-wallet';
 const WALLET_HOST_HEALTH_PATH = '/__agentic/health';
 const NO_OUTPUT = Symbol('no-output');
-const DEFAULT_JUPITER_ULTRA_BASE = 'https://api.jup.ag/ultra/v1';
+const DEFAULT_JUPITER_ULTRA_BASE = 'https://api.jup.ag/swap/v2';
 const DEFAULT_JUPITER_API_URL = 'https://quote-api.jup.ag';
 const DEFAULT_BIRDEYE_REST_BASE = 'https://public-api.birdeye.so';
 const SETUP_ENV_KEYS = [
@@ -59,6 +59,7 @@ const SETUP_ENV_KEYS = [
   'HELIUS_RPC_URL',
   'JUPITER_API_KEY',
   'JUP_API_KEY',
+  'JUPITER_SWAP_BASE_URL',
   'JUP_ULTRA_BASE',
   'JUPITER_API_URL',
   'BIRDEYE_API_KEY',
@@ -531,6 +532,7 @@ async function setupUpdates(
   let rpcUrl = setupOptions.rpcUrl ?? currentRpcUrl;
   let jupiterApiKey = setupOptions.jupiterApiKey ?? currentJupiterApiKey;
   let jupiterUltraBase = setupOptions.jupiterUltraBase
+    ?? env.values.JUPITER_SWAP_BASE_URL
     ?? env.values.JUP_ULTRA_BASE
     ?? DEFAULT_JUPITER_ULTRA_BASE;
   let jupiterApiUrl = setupOptions.jupiterApiUrl
@@ -555,7 +557,7 @@ async function setupUpdates(
       console.log(`Writing setup to ${options.envPath}`);
       rpcUrl = await promptExistingSecret(setupRl, 'Solana RPC URL', currentRpcUrl);
       jupiterApiKey = await promptExistingSecret(setupRl, 'Jupiter API key', currentJupiterApiKey);
-      jupiterUltraBase = await prompt(setupRl, 'Jupiter Ultra base URL', jupiterUltraBase);
+      jupiterUltraBase = await prompt(setupRl, 'Jupiter Swap API v2 base URL', jupiterUltraBase);
       jupiterApiUrl = await prompt(setupRl, 'Legacy Jupiter API URL', jupiterApiUrl);
       birdeyeApiKey = await promptExistingSecret(setupRl, 'BirdEye API key', currentBirdeyeApiKey);
       birdeyeRestBase = await prompt(setupRl, 'BirdEye REST base URL', birdeyeRestBase);
@@ -576,7 +578,8 @@ async function setupUpdates(
     updates.JUPITER_API_KEY = jupiterApiKey.trim();
     updates.JUP_API_KEY = jupiterApiKey.trim();
   }
-  updates.JUP_ULTRA_BASE = normalizeSetupUrl(jupiterUltraBase || DEFAULT_JUPITER_ULTRA_BASE, 'Jupiter Ultra base URL');
+  updates.JUPITER_SWAP_BASE_URL = normalizeSetupUrl(jupiterUltraBase || DEFAULT_JUPITER_ULTRA_BASE, 'Jupiter Swap API v2 base URL');
+  updates.JUP_ULTRA_BASE = updates.JUPITER_SWAP_BASE_URL;
   updates.JUPITER_API_URL = normalizeSetupUrl(jupiterApiUrl || DEFAULT_JUPITER_API_URL, 'Legacy Jupiter API URL');
   if (birdeyeApiKey.trim()) {
     updates.BIRDEYE_API_KEY = birdeyeApiKey.trim();
@@ -606,7 +609,7 @@ function parseSetupCommandOptions(args: string[]): SetupCommandOptions {
       index = value.index;
       continue;
     }
-    if (flag === '--jupiter-ultra-base' || flag === '--jup-ultra-base' || flag === '--jupiter-base-url') {
+    if (flag === '--jupiter-swap-base-url' || flag === '--jupiter-swap-base' || flag === '--jupiter-ultra-base' || flag === '--jup-ultra-base' || flag === '--jupiter-base-url') {
       const value = optionArgument(args, index, flag, inlineValue);
       options.jupiterUltraBase = value.value;
       index = value.index;
@@ -1882,7 +1885,7 @@ async function runtimeSetupStatus(options: GlobalOptions): Promise<RuntimeSetupS
   const env = await readEnvValues(options.envPath);
   const rpcUrl = firstValue(env.values, 'SOLANA_RPC_URL', 'HELIUS_RPC_URL') ?? '';
   const jupiterApiKey = firstValue(env.values, 'JUPITER_API_KEY', 'JUP_API_KEY') ?? '';
-  const jupiterUltraBase = env.values.JUP_ULTRA_BASE ?? DEFAULT_JUPITER_ULTRA_BASE;
+  const jupiterUltraBase = env.values.JUPITER_SWAP_BASE_URL ?? env.values.JUP_ULTRA_BASE ?? DEFAULT_JUPITER_ULTRA_BASE;
   const jupiterApiUrl = env.values.JUPITER_API_URL ?? DEFAULT_JUPITER_API_URL;
   const birdeyeApiKey = env.values.BIRDEYE_API_KEY ?? '';
   const birdeyeRestBase = env.values.BIRDEYE_REST_BASE ?? DEFAULT_BIRDEYE_REST_BASE;
@@ -2811,7 +2814,7 @@ function printSetupStatus(options: GlobalOptions, status: RuntimeSetupStatus): v
   console.log(`.env: ready at ${status.envPath}`);
   console.log(`RPC: ${status.rpcUrlConfigured ? `configured (${status.rpcUrlRedacted ?? ''})` : 'missing'}`);
   console.log(`Jupiter key: ${status.jupiterApiKeyConfigured ? `configured (${status.jupiterApiKeyRedacted ?? ''})` : 'missing'}`);
-  console.log(`Jupiter Ultra: ${status.jupiterUltraBase}`);
+  console.log(`Jupiter Swap API v2: ${status.jupiterUltraBase}`);
   console.log(`Legacy Jupiter API: ${status.jupiterApiUrl}`);
   console.log(`BirdEye key: ${status.birdeyeApiKeyConfigured ? `configured (${status.birdeyeApiKeyRedacted ?? ''})` : 'missing'}`);
   console.log(`BirdEye REST: ${status.birdeyeRestBase}`);
@@ -2888,7 +2891,7 @@ Usage:
 Setup options:
   --rpc-url <url>            SOLANA_RPC_URL and HELIUS_RPC_URL
   --jupiter-api-key <key>    JUPITER_API_KEY and JUP_API_KEY
-  --jupiter-ultra-base <url> Default: ${DEFAULT_JUPITER_ULTRA_BASE}
+  --jupiter-swap-base-url <url> Default: ${DEFAULT_JUPITER_ULTRA_BASE}
   --jupiter-api-url <url>    Default: ${DEFAULT_JUPITER_API_URL}
   --birdeye-api-key <key>    BIRDEYE_API_KEY for token search and prices
   --birdeye-rest-base <url>  Default: ${DEFAULT_BIRDEYE_REST_BASE}

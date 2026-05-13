@@ -202,20 +202,21 @@
       }
     },
     {
-      "id": "needs-input-meteora-blink-url",
-      "title": "Meteora Blink close request needs action URL",
+      "id": "needs-input-meteora-close-position",
+      "title": "Meteora close request needs pool and position",
       "category": "qa_missing_facts",
-      "userRequest": "Review the Meteora Blink close transaction.",
+      "userRequest": "Close my Meteora DLMM position.",
       "startingMode": "local_bridge",
       "enabledConnectors": ["meteora"],
       "providedFacts": {
-        "blinkUrl": "missing",
+        "poolAddress": "missing",
+        "positionAddress": "missing",
         "connectorStatus": "meteora_enabled"
       },
       "canary": false,
       "mockPlan": {
-        "intent": "meteora_blink_review",
-        "actionType": "blink_action",
+        "intent": "meteora_close_position",
+        "actionType": "meteora_close_position",
         "parameters": {
           "connectorId": "meteora",
           "action": "close_position"
@@ -224,27 +225,29 @@
       },
       "mockReview": {
         "decision": "needs_input",
-        "reason": "Blink URL is missing, so action parameters cannot be inspected.",
-        "summary": "Paste the Meteora Blink URL before the agent can review the close action. Wallet approval is required before any signature or transaction leaves the device.",
+        "reason": "Pool and position addresses are missing, so the adapter cannot confirm the position is empty.",
+        "summary": "Provide the Meteora pool and position address before the close-position approval item can be prepared. Wallet approval is required before any signature or transaction leaves the device.",
         "evidence": {
           "findings": [
-            { "label": "Blink URL", "value": "missing", "tone": "warn" },
+            { "label": "Pool", "value": "missing", "tone": "warn" },
+            { "label": "Position", "value": "missing", "tone": "warn" },
             { "label": "Connector", "value": "Meteora enabled", "tone": "good" }
           ]
         },
-        "questions": ["What Blink action URL should be inspected?"],
+        "questions": ["Which Meteora DLMM pool and position should be checked?"],
         "reviewers": [
-          { "id": "protocol", "decision": "needs_input", "reason": "Blink URL missing" }
+          { "id": "protocol", "decision": "needs_input", "reason": "pool and position missing" }
         ]
       },
       "expected": {
-        "actionType": "blink_action",
+        "actionType": "meteora_close_position",
         "decision": "needs_input",
         "findings": [
-          { "label": "Blink URL", "tone": "warn" },
+          { "label": "Pool", "tone": "warn" },
+          { "label": "Position", "tone": "warn" },
           { "label": "Connector", "tone": "good" }
         ],
-        "missingFacts": ["Blink URL"],
+        "missingFacts": ["pool address", "position address"],
         "forbiddenClaims": ["I signed", "guaranteed safe"],
         "requiredPhrases": ["Wallet approval is required before any signature or transaction leaves the device."],
         "approvalBoundaryText": "Wallet approval is required before any signature or transaction leaves the device."

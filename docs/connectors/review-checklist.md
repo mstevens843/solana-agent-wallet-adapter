@@ -9,7 +9,7 @@ Every connector pack under `spec/connectors/` must pass this checklist before me
 
 **Pass:** Kamino lists `solana_kamino_get_positions` with `implemented: true` and the adapter exists at `packages/mcp-server/src/adapters/kamino/positions.ts`.
 
-**Fail:** Meteora's `meteora_dlmm_position` listed with `implemented: true` while no `packages/mcp-server/src/adapters/meteora/` directory exists.
+**Fail:** A connector lists `implemented: true` for `solana_example_positions` while no matching adapter or tool exists.
 
 ## 2. Does it distinguish read from write?
 
@@ -43,7 +43,7 @@ Every connector pack under `spec/connectors/` must pass this checklist before me
 
 - At least 2 examples with `classification: "unsupported"` and a `denialReason` pointing at a phrase id.
 
-**Pass:** Meteora pack denies "Show my Meteora DLMM position" with `safety.action_not_exposed` because the adapter is unwired.
+**Pass:** Meteora pack denies "create a new Meteora DLMM position" with `safety.action_not_exposed` because new position creation is not exposed.
 
 **Fail:** A pack that lists only happy-path examples.
 

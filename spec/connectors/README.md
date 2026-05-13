@@ -8,7 +8,7 @@ This directory holds machine-readable knowledge packs for every Solana dapp conn
 
 - `connector-pack.schema.json` — JSON Schema (draft 2020-12) describing the shape of every pack.
 - `safety-phrases.json` — canonical required/forbidden phrases with stable ids. Reference by id from prompts and evals.
-- `<connector-id>.connector.json` — one pack per connector. Today: kamino, jupiter, meteora, raydium, orca, marginfi, drift, lulo, save.
+- `<connector-id>.connector.json` — one pack per connector. Today: kamino, jupiter, meteora, raydium, orca, marginfi, drift, lulo, save, jito.
 
 ## Status enum
 
@@ -66,4 +66,5 @@ A future workstream may wire Ajv against `connector-pack.schema.json` in CI.
 
 ## Changelog
 
+- v0.2, 2026-05-12: added the first-class Jito connector pack.
 - v0.1, 2026-05-12: initial schema, safety phrases, and 9 connector packs.

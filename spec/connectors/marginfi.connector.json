@@ -2,118 +2,180 @@
   "$schema": "./connector-pack.schema.json",
   "id": "marginfi",
   "name": "MarginFi",
-  "status": "blink_backed",
+  "status": "first_class",
   "aliases": ["marginfi", "mrgn"],
   "supportedClusters": ["mainnet-beta"],
   "requiredConfig": [
     {
-      "name": "Dialect client key",
-      "scope": "dialect_client_key",
+      "name": "@mrgnlabs/marginfi-client-v2 optional dependency",
+      "scope": "user_setting",
       "required": true,
-      "description": "Needed for MarginFi position and market reads. MCP runtime does not expose these reads yet."
+      "description": "Required for first-class MarginFi bank, account, health preview, and prepared transaction helpers."
+    },
+    {
+      "name": "connectors.marginfi.minHealthRatio",
+      "scope": "user_setting",
+      "required": false,
+      "description": "Minimum projected health ratio for borrow and withdraw previews. Defaults to 1.1."
     }
   ],
   "readCapabilities": [
     {
-      "toolName": "dialect_positions",
-      "source": "dialect-markets",
-      "implemented": false,
-      "requiresClientKey": true,
-      "returns": "Planned lending positions, supplied collateral, borrows, rewards, and account health facts.",
-      "facts": ["accountAddress", "suppliedAssets", "borrowedAssets", "healthFactor", "claimableRewards"]
+      "toolName": "solana_marginfi_bank_snapshot",
+      "source": "first-class-adapter",
+      "implemented": true,
+      "requiresClientKey": false,
+      "returns": "MarginFi bank APY/APR, utilization, deposit and borrow capacity, oracle, and risk metadata.",
+      "facts": ["bankAddress", "bankMint", "tokenSymbol", "depositApy", "borrowApr", "utilization", "depositCapacity", "borrowCapacity", "oraclePrice"]
     },
     {
-      "toolName": "dialect_markets",
-      "source": "dialect-markets",
-      "implemented": false,
-      "requiresClientKey": true,
-      "returns": "Planned MarginFi market APY, borrow APY, liquidity, and action URLs.",
-      "facts": ["bankAddress", "asset", "supplyApy", "borrowApy", "liquidity", "actionUrl"]
+      "toolName": "solana_marginfi_wallet_accounts",
+      "source": "first-class-adapter",
+      "implemented": true,
+      "requiresClientKey": false,
+      "returns": "MarginFi accounts owned by a wallet with active balance count and health components.",
+      "facts": ["walletAddress", "marginfiAccount", "activeBalances", "healthRatio", "netValue"]
+    },
+    {
+      "toolName": "solana_marginfi_account_detail",
+      "source": "first-class-adapter",
+      "implemented": true,
+      "requiresClientKey": false,
+      "returns": "One MarginFi account with supplied and borrowed positions plus account health.",
+      "facts": ["marginfiAccount", "authority", "suppliedAmount", "borrowedAmount", "suppliedUsd", "borrowedUsd", "healthRatio"]
+    },
+    {
+      "toolName": "solana_marginfi_health_preview",
+      "source": "first-class-adapter",
+      "implemented": true,
+      "requiresClientKey": false,
+      "returns": "Projected account health after deposit, withdraw, borrow, or repay without signing.",
+      "facts": ["operation", "amount", "bankAddress", "beforeHealth", "afterHealth", "minHealthRatio", "blocked", "warnings"]
+    },
+    {
+      "toolName": "solana_connector_read_facts",
+      "source": "first-class-adapter",
+      "implemented": true,
+      "requiresClientKey": false,
+      "returns": "Normalized MarginFi facts for markets, positions, borrow, withdraw, repay, and earn prompts.",
+      "facts": ["connectorFacts", "capability", "readiness"]
     }
   ],
   "writeCapabilities": [
     {
-      "actionKind": "blink_action",
-      "executionMode": "blink",
-      "implemented": false,
-      "prepares": "A planned approval-bound Blink action for deposit, withdraw, borrow, or repay.",
+      "actionKind": "marginfi_deposit",
+      "executionMode": "first_class_adapter",
+      "implemented": true,
+      "prepares": "A manual-approval inbox item that deposits tokens into a MarginFi bank.",
       "executesVia": "solana_execute_prepared_action",
-      "userApproves": "A MarginFi Solana Action transaction after the user reviews asset, amount, bank, and health facts."
+      "userApproves": "A MarginFi deposit transaction built from the official MarginFi SDK."
+    },
+    {
+      "actionKind": "marginfi_withdraw",
+      "executionMode": "first_class_adapter",
+      "implemented": true,
+      "prepares": "A manual-approval inbox item that withdraws supplied tokens after projected health is checked.",
+      "executesVia": "solana_execute_prepared_action",
+      "userApproves": "A MarginFi withdraw transaction built from refreshed account and bank state."
+    },
+    {
+      "actionKind": "marginfi_borrow",
+      "executionMode": "first_class_adapter",
+      "implemented": true,
+      "prepares": "A manual-approval inbox item that borrows tokens only when projected health remains above policy.",
+      "executesVia": "solana_execute_prepared_action",
+      "userApproves": "A MarginFi borrow transaction built from refreshed account and bank state."
+    },
+    {
+      "actionKind": "marginfi_repay",
+      "executionMode": "first_class_adapter",
+      "implemented": true,
+      "prepares": "A manual-approval inbox item that repays MarginFi debt for a selected bank.",
+      "executesVia": "solana_execute_prepared_action",
+      "userApproves": "A MarginFi repay transaction built from the official MarginFi SDK."
     }
   ],
   "requiredUserInputs": [
     {
-      "name": "asset",
+      "name": "token",
       "kind": "text",
       "required": true,
-      "appliesTo": ["blink_action"],
-      "prompt": "Which asset should MarginFi use?"
+      "appliesTo": ["marginfi_deposit", "marginfi_withdraw", "marginfi_borrow", "marginfi_repay"],
+      "prompt": "Which MarginFi token or bank should I use?"
     },
     {
       "name": "amount",
       "kind": "number",
       "required": true,
-      "appliesTo": ["blink_action"],
+      "appliesTo": ["marginfi_deposit", "marginfi_borrow"],
       "prompt": "How much should I prepare?"
     },
     {
-      "name": "blinkUrl",
+      "name": "marginfiAccount",
       "kind": "text",
-      "required": true,
-      "appliesTo": ["blink_action"],
-      "prompt": "Paste the MarginFi Blink or Solana Action URL."
+      "required": false,
+      "appliesTo": ["marginfi_deposit", "marginfi_withdraw", "marginfi_borrow", "marginfi_repay"],
+      "prompt": "Which MarginFi account should I use?"
     }
   ],
   "requiredConnectorFacts": [
-    "MarginFi account or bank address",
+    "MarginFi account address when the wallet has multiple accounts",
+    "Bank address or mint",
     "Asset mint and decimals",
-    "Supply APY or borrow APY",
-    "Account health after borrow or withdraw",
-    "Wallet balance and outstanding debt",
-    "Blink action URL metadata"
+    "Supply APY or borrow APR",
+    "Account health before and after borrow or withdraw",
+    "Wallet balance and outstanding debt for repay or withdraw-all requests"
   ],
   "unsupportedRequests": [
+    "Borrow or withdraw when the projected health preview is blocked.",
     "Borrow or withdraw without account health facts.",
-    "Prepare an action without asset, amount, and action URL.",
     "Guarantee liquidation safety.",
     "Repay an unspecified debt.",
+    "Create a new MarginFi account inside this connector version.",
     "Operate outside mainnet-beta.",
-    "Move funds without wallet approval."
+    "Move funds without wallet approval.",
+    "Use liquidation, flash loan, repay-with-collateral, delegated account, or authority-transfer flows."
   ],
-  "actionPreparationNotes": "MarginFi is Blink-backed in the browser catalog. For borrow/withdraw, require account health facts. For repay, require debt asset and amount. Deny broad requests that would rely on guessed positions.",
-  "riskNotes": "Borrowing and withdrawals can create liquidation risk. Account health and debt facts must be visible before wallet approval.",
+  "actionPreparationNotes": "MarginFi is first-class. Use bank_snapshot and account_detail for facts, health_preview before preparing risk-changing actions, and marginfi_* prepared action kinds for manual approval. Borrow and withdraw are rechecked at execution time against connectors.marginfi.minHealthRatio.",
+  "riskNotes": "Borrowing and withdrawals can create liquidation risk. The connector blocks failed simulations, unhealthy projected accounts, stale oracle/risk warnings, and projected health below policy, but it cannot guarantee future liquidation safety.",
   "approvalBoundary": {
     "readGated": true,
     "writeGated": true,
-    "blinkBacked": true,
+    "blinkBacked": false,
     "summary": "safety.prepare_only"
   },
-  "walletApprovalBoundary": "MarginFi actions are approval-bound. The agent can review connector facts and prepare an action, but the wallet signs separately.",
+  "walletApprovalBoundary": "MarginFi actions are approval-bound. The agent can read connector facts and prepare an action, but the wallet signs separately.",
   "examples": {
     "requests": [
       {
         "user": "show my MarginFi positions",
-        "classification": "needs_input",
-        "needsInputQuestions": ["Which wallet or account should I read?"],
-        "agentResponse": "The agent is missing facts needed to decide. Position reads require wallet or account context."
+        "classification": "read_facts",
+        "readTool": "solana_marginfi_wallet_accounts",
+        "agentResponse": "The agent reads MarginFi accounts and health for the connected wallet."
+      },
+      {
+        "user": "show the SOL MarginFi bank",
+        "classification": "read_facts",
+        "readTool": "solana_marginfi_bank_snapshot",
+        "agentResponse": "The agent reads the MarginFi SOL bank snapshot with APY, APR, utilization, and capacity."
       },
       {
         "user": "deposit 50 USDC into MarginFi",
-        "classification": "needs_input",
-        "needsInputQuestions": ["Paste the MarginFi deposit Blink or Solana Action URL."],
-        "agentResponse": "The agent is missing facts needed to decide. MarginFi deposit is Blink-backed in this catalog."
+        "classification": "prepare_approval_action",
+        "writeAction": "marginfi_deposit",
+        "agentResponse": "Prepared a MarginFi deposit review for 50 USDC. This prepares a wallet approval request; it does not sign."
       },
       {
         "user": "borrow 1 SOL on MarginFi",
-        "classification": "needs_input",
-        "needsInputQuestions": ["Paste the MarginFi borrow action URL.", "Should I read account health before preparing?"],
-        "agentResponse": "The agent is missing facts needed to decide. Borrowing requires action metadata and account health."
+        "classification": "prepare_approval_action",
+        "writeAction": "marginfi_borrow",
+        "agentResponse": "The agent previews projected account health before preparing the borrow for wallet approval."
       },
       {
-        "user": "repay my MarginFi loan",
+        "user": "repay my MarginFi USDC loan",
         "classification": "needs_input",
-        "needsInputQuestions": ["Which debt asset and amount should I repay?", "Paste the repay action URL."],
-        "agentResponse": "The agent is missing facts needed to decide. Repay requests need debt asset, amount, and action metadata."
+        "needsInputQuestions": ["How much USDC should I repay, or should I repay all?"],
+        "agentResponse": "The agent needs a repay amount or repayAll flag before preparing a wallet approval item."
       },
       {
         "user": "withdraw all MarginFi collateral without checking health",
@@ -122,10 +184,10 @@
         "agentResponse": "The agent denied this because account health facts are required before a withdrawal can be reviewed."
       },
       {
-        "user": "deposit 50 USDC with this MarginFi Blink",
-        "classification": "prepare_approval_action",
-        "writeAction": "blink_action",
-        "agentResponse": "Prepared a MarginFi deposit Blink review if metadata matches 50 USDC. This prepares a wallet approval request; it does not sign."
+        "user": "preview borrowing 10 USDC from MarginFi",
+        "classification": "read_facts",
+        "readTool": "solana_marginfi_health_preview",
+        "agentResponse": "The agent reads a projected health preview without signing or submitting a transaction."
       },
       {
         "user": "guarantee I will not be liquidated",
@@ -144,18 +206,12 @@
         "classification": "unsupported",
         "denialReason": "safety.no_autonomous_funds",
         "agentResponse": "The agent denied this because the connector cannot move funds without wallet approval."
-      },
-      {
-        "user": "use MarginFi while connector is disabled",
-        "classification": "unsupported",
-        "denialReason": "safety.connector_disabled",
-        "agentResponse": "The agent denied this because this connector is not enabled."
       }
     ]
   },
   "mirrorsCanonical": {
     "file": "apps/browser-demo/src/connectedDapps.ts",
     "entry": "marginfi",
-    "note": "Mirrors MarginFi browser catalog support for Blink-backed lending actions."
+    "note": "Mirrors MarginFi browser catalog support for first-class lending reads and prepared actions."
   }
 }

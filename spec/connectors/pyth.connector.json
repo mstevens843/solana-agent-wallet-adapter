@@ -1,0 +1,214 @@
+{
+  "$schema": "./connector-pack.schema.json",
+  "id": "pyth",
+  "name": "Pyth",
+  "status": "first_class",
+  "aliases": ["pyth", "pyth network", "pyth oracle"],
+  "supportedClusters": ["mainnet-beta"],
+  "requiredConfig": [
+    {
+      "name": "PYTH_HERMES_URL",
+      "scope": "env",
+      "required": false,
+      "description": "Optional override for the Hermes endpoint. Defaults to https://hermes.pyth.network. A misconfigured URL causes reads to fail with a structured reason."
+    },
+    {
+      "name": "PYTH_HERMES_AUTH",
+      "scope": "env",
+      "required": false,
+      "description": "Optional bearer token for private Hermes providers. Reads work without it against the public endpoint."
+    },
+    {
+      "name": "@pythnetwork/pyth-solana-receiver",
+      "scope": "runtime_optional_dependency",
+      "required": false,
+      "description": "Required only for the post-price-update prepare/execute path. Reads do not need this SDK."
+    }
+  ],
+  "readCapabilities": [
+    {
+      "toolName": "solana_pyth_price_feed",
+      "source": "first-class-adapter",
+      "implemented": true,
+      "requiresClientKey": false,
+      "returns": "Single Pyth price snapshot with price, confidence, exponent, publish time, freshness status, optional EMA, and the Hermes host that served it.",
+      "facts": ["priceFeedId", "priceUi", "confidenceUi", "confidenceBps", "exponent", "publishTime", "ageSeconds", "status", "ema"]
+    },
+    {
+      "toolName": "solana_pyth_price_feeds_batch",
+      "source": "first-class-adapter",
+      "implemented": true,
+      "requiresClientKey": false,
+      "returns": "Multiple Pyth price snapshots in one Hermes call with per-feed status (fresh, stale, missing) and totals.",
+      "facts": ["priceFeedId", "priceUi", "confidenceBps", "status", "totals"]
+    },
+    {
+      "toolName": "solana_pyth_feed_search",
+      "source": "first-class-adapter",
+      "implemented": true,
+      "requiresClientKey": false,
+      "returns": "Price-feed metadata matches by symbol or description, normalized with feed id, base, quote currency, and asset type. Built-in alias map hits return first.",
+      "facts": ["priceFeedId", "symbol", "description", "assetType", "base", "quoteCurrency", "source"]
+    },
+    {
+      "toolName": "solana_pyth_onchain_price_account",
+      "source": "first-class-adapter",
+      "implemented": true,
+      "requiresClientKey": false,
+      "returns": "Solana price-update account state derived from the feed id via the Pyth Solana Receiver SDK. Returns exists: 'no' when no account is posted yet, and evidenceSource: 'sdk_missing' when the receiver SDK is not installed.",
+      "facts": ["priceFeedId", "priceAccount", "exists", "evidenceSource", "ownerProgram", "lamports", "rentEpoch"]
+    },
+    {
+      "toolName": "solana_pyth_oracle_evidence",
+      "source": "first-class-adapter",
+      "implemented": true,
+      "requiresClientKey": false,
+      "returns": "Compact oracle evidence labelled fresh, stale, wide_confidence, missing, or api_unavailable. Returned with reason copy so downstream planners can refuse to trade off a degraded feed.",
+      "facts": ["status", "priceFeedId", "priceUi", "confidenceBps", "ageSeconds", "maxAgeSeconds", "maxConfidenceBps", "consumerProtocol", "reason"]
+    }
+  ],
+  "writeCapabilities": [
+    {
+      "actionKind": "pyth_post_price_update",
+      "executionMode": "first_class_adapter",
+      "implemented": true,
+      "prepares": "An inbox-bound PreparedAction that captures the requested feed ids, freshness snapshot, Hermes host, and probe of the Pyth Solana Receiver program ids. No transaction is signed or built at prepare time; the binary VAA is fetched and the tx is rebuilt at execute time.",
+      "executesVia": "solana_execute_prepared_action",
+      "userApproves": "A single Solana transaction built at execute time by the @pythnetwork/pyth-solana-receiver SDK that posts the fresh price update. The wallet signs once; ephemeral price-update account signers are partial-signed locally before the wallet is asked to sign."
+    }
+  ],
+  "requiredUserInputs": [
+    {
+      "name": "priceFeedId",
+      "kind": "text",
+      "required": true,
+      "appliesTo": [
+        "solana_pyth_price_feed",
+        "solana_pyth_onchain_price_account",
+        "solana_pyth_oracle_evidence"
+      ],
+      "prompt": "Which Pyth price feed should I read? Provide the hex feed id or a common symbol like SOL/USD."
+    },
+    {
+      "name": "priceFeedIds",
+      "kind": "text",
+      "required": true,
+      "appliesTo": ["solana_pyth_price_feeds_batch", "pyth_post_price_update"],
+      "prompt": "Provide the list of hex price feed ids. Post v1 accepts at most two feeds per transaction."
+    },
+    {
+      "name": "query",
+      "kind": "text",
+      "required": true,
+      "appliesTo": ["solana_pyth_feed_search"],
+      "prompt": "What symbol or asset name should I search Pyth feeds for?"
+    },
+    {
+      "name": "maxAgeSeconds",
+      "kind": "number",
+      "required": false,
+      "appliesTo": [
+        "solana_pyth_price_feed",
+        "solana_pyth_price_feeds_batch",
+        "solana_pyth_oracle_evidence",
+        "pyth_post_price_update"
+      ],
+      "prompt": "Optional staleness budget in seconds (defaults to 60)."
+    },
+    {
+      "name": "maxConfidenceBps",
+      "kind": "number",
+      "required": false,
+      "appliesTo": ["solana_pyth_oracle_evidence"],
+      "prompt": "Optional confidence budget in bps (defaults to 200)."
+    }
+  ],
+  "requiredConnectorFacts": [
+    "Resolved hex price feed id and human symbol",
+    "Latest price, confidence, exponent, and publish time from Hermes",
+    "Connector freshness budget (maxAgeSeconds) and confidence budget (maxConfidenceBps)",
+    "Hermes host that served the read (for reproducibility)",
+    "Receiver SDK availability when the prepare/execute path is requested"
+  ],
+  "unsupportedRequests": [
+    "Generate trading signals or buy/sell recommendations from Pyth oracle facts.",
+    "Liquidate positions, place perp orders, or take any autonomous trading action keyed off oracle moves.",
+    "Publisher or admin oracle operations (price publishing, validator-set changes, governance toggles).",
+    "Configure custom oracle parameters or override receiver program ids.",
+    "Post price updates for more than two feeds in one transaction. Multi-tx posts are not exposed in v1.",
+    "Operate on any cluster other than mainnet-beta.",
+    "Move funds without wallet approval."
+  ],
+  "actionPreparationNotes": "Read tools use the public Hermes API and require no API key. solana_prepare_pyth_post_price_update validates the feed count (max 2), refuses when any feed is older than maxAgeSeconds, and stores a price/confidence/publish-time snapshot in params. Execute re-fetches binary VAAs from Hermes, dynamic-imports @pythnetwork/pyth-solana-receiver, builds exactly one VersionedTransaction with closeUpdateAccounts=true by default, partial-signs ephemeral update account signers, and forwards the base64 transaction to the wallet for the final signature.",
+  "riskNotes": "Pyth oracle facts are evidence, not a guarantee or a trade instruction. Stale prices and wide confidence intervals must be surfaced before any consumer protocol acts on them. Posting a price update costs transaction fees; the v1 prepare path lets users opt out via closeUpdateAccounts=false when a downstream consumer needs the on-chain account to persist.",
+  "approvalBoundary": {
+    "readGated": false,
+    "writeGated": true,
+    "blinkBacked": false,
+    "summary": "safety.prepare_only"
+  },
+  "walletApprovalBoundary": "Reads return facts without wallet involvement. solana_prepare_pyth_post_price_update creates an approval inbox item; the wallet signs at execute time. The agent never signs.",
+  "examples": {
+    "requests": [
+      {
+        "user": "show the current Pyth SOL/USD price with confidence and publish time",
+        "classification": "read_only_answer",
+        "readTool": "solana_pyth_price_feed",
+        "agentResponse": "Read the Pyth SOL/USD feed and reported price, confidence interval, exponent, and publish time."
+      },
+      {
+        "user": "compare Pyth prices for SOL, JitoSOL, and mSOL",
+        "classification": "read_only_answer",
+        "readTool": "solana_pyth_price_feeds_batch",
+        "agentResponse": "Read the three Pyth feeds in one Hermes batch and returned per-feed freshness and confidence."
+      },
+      {
+        "user": "find a Pyth feed for JTO",
+        "classification": "read_only_answer",
+        "readTool": "solana_pyth_feed_search",
+        "agentResponse": "Searched Pyth feed metadata for JTO and returned matching feed ids."
+      },
+      {
+        "user": "give oracle evidence for this lending plan",
+        "classification": "read_only_answer",
+        "readTool": "solana_pyth_oracle_evidence",
+        "agentResponse": "Returned the Pyth oracle evidence with status fresh, stale, wide_confidence, or missing along with the price and confidence the planner should rely on."
+      },
+      {
+        "user": "prepare posting a fresh Pyth SOL/USD price update",
+        "classification": "prepare_approval_action",
+        "writeAction": "pyth_post_price_update",
+        "agentResponse": "Prepared a Pyth post-price-update inbox item for the SOL/USD feed with the current freshness snapshot. The wallet still controls approval; nothing is signed."
+      },
+      {
+        "user": "post Pyth updates for ten feeds at once",
+        "classification": "unsupported",
+        "denialReason": "safety.action_not_exposed",
+        "agentResponse": "The agent denied this because v1 supports at most two Pyth feeds per posted transaction. Split the request into smaller batches."
+      },
+      {
+        "user": "use Pyth to auto-trade SOL when the price drops",
+        "classification": "unsupported",
+        "denialReason": "safety.no_autonomous_funds",
+        "agentResponse": "The agent denied this because Pyth oracle facts are evidence only; the connector does not generate trading signals or move funds."
+      },
+      {
+        "user": "change the Pyth publisher set for SOL/USD",
+        "classification": "unsupported",
+        "denialReason": "safety.action_not_exposed",
+        "agentResponse": "The agent denied this because publisher and admin actions are not exposed by this connector."
+      },
+      {
+        "user": "post a Pyth price update on devnet",
+        "classification": "unsupported",
+        "denialReason": "safety.action_not_exposed",
+        "agentResponse": "The agent denied this because the Pyth connector is only supported on mainnet-beta in v1."
+      }
+    ]
+  },
+  "mirrorsCanonical": {
+    "file": "apps/browser-demo/src/connectedDapps.ts",
+    "entry": "pyth",
+    "note": "PROTOCOL_CONNECTORS entry at id 'pyth'. Update this pack when capabilities, aliases, readTools, or actionKinds change."
+  }
+}

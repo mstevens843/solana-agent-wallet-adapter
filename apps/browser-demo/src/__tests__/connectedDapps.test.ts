@@ -58,7 +58,7 @@ describe('KNOWN_CONNECTED_DAPPS', () => {
     expect(kamino?.enabledByDefault).toBe(false);
   });
 
-  it('seeds the major protocol connector catalog with Blink-capable protocols', () => {
+  it('seeds the major protocol connector catalog', () => {
     expect(KNOWN_CONNECTED_DAPPS.map((adapter) => adapter.id)).toEqual([
       'kamino',
       'jupiter',
@@ -67,11 +67,19 @@ describe('KNOWN_CONNECTED_DAPPS', () => {
       'meteora',
       'marginfi',
       'drift',
+      'squads',
+      'realms',
       'lulo',
       'save',
+      'jito',
+      'marinade',
+      'sanctum',
+      'magiceden',
+      'tensor',
+      'pyth',
     ]);
     expect(KNOWN_CONNECTED_DAPPS.find((adapter) => adapter.id === 'meteora')?.capabilities).toEqual(
-      expect.arrayContaining(['read_positions', 'read_rewards', 'blink_actions']),
+      expect.arrayContaining(['first_class_adapter', 'read_positions', 'read_rewards', 'blink_actions']),
     );
   });
 });
@@ -161,10 +169,7 @@ describe('cluster gating', () => {
   it('checkProtocolConnector can require a specific capability', () => {
     const state = setConnectedDappEnabled(emptyConnectedDapps(), 'raydium', true);
     const result = checkProtocolConnector('raydium', state, 'mainnet-beta', 'read_positions');
-    expect(result.ok).toBe(false);
-    if (!result.ok) {
-      expect(result.reason).toBe('missing_capability');
-    }
+    expect(result.ok).toBe(true);
   });
 });
 
@@ -214,17 +219,22 @@ describe('summary copy', () => {
 describe('helper lookups', () => {
   it('findAdapterByActionKind maps the action kind back to its adapter', () => {
     expect(findAdapterByActionKind('kamino_deposit')?.id).toBe('kamino');
+    expect(findAdapterByActionKind('raydium_harvest')?.id).toBe('raydium');
+    expect(findAdapterByActionKind('marinade_liquid_stake')?.id).toBe('marinade');
     expect(findAdapterByActionKind('totally-fake')).toBeUndefined();
   });
 
   it('findAdapterByReadTool maps the read tool name back to its adapter', () => {
     expect(findAdapterByReadTool('solana_kamino_reserve_snapshot')?.id).toBe('kamino');
+    expect(findAdapterByReadTool('solana_raydium_pool_snapshot')?.id).toBe('raydium');
+    expect(findAdapterByReadTool('solana_marinade_quote')?.id).toBe('marinade');
   });
 
   it('findProtocolConnectorByInput resolves common aliases', () => {
     expect(findProtocolConnectorByInput('Meteora DLMM')?.id).toBe('meteora');
     expect(findProtocolConnectorByInput('go check my Meteora account')?.id).toBe('meteora');
     expect(findProtocolConnectorByInput('jup')?.id).toBe('jupiter');
+    expect(findProtocolConnectorByInput('mSOL')?.id).toBe('marinade');
   });
 
   it('exposes the storage key as a stable constant', () => {
