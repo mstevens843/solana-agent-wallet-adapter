@@ -23,6 +23,7 @@ export interface TriggerChallenge {
   walletAddress: string;
   challengeType: JupiterTriggerChallengeType;
   challenge: string;
+  transaction?: string;
   expiresAt: number;
   apiHost: string;
 }
@@ -106,17 +107,24 @@ export async function requestChallenge(
   const body = await jupiterFetchJson(config, 'trigger', '/auth/challenge', {
     method: 'POST',
     body: {
-      walletAddress: input.walletAddress,
-      challengeType: input.challengeType,
+      walletPubkey: input.walletAddress,
+      type: input.challengeType,
     },
   });
-  const challenge = readString(body, 'challenge', 'Jupiter Trigger auth challenge response is missing challenge.');
+  const transaction = readOptionalString(body, 'transaction');
+  const challenge =
+    readOptionalString(body, 'challenge') ??
+    transaction ??
+    (() => {
+      throw new ProtocolError('wallet_unreachable', 'Jupiter Trigger auth challenge response is missing challenge or transaction.');
+    })();
   const expiresAtRaw = body.expiresAt ?? body.expires_at ?? body.expires;
   const expiresAt = parseExpiresAt(expiresAtRaw, JUPITER_TRIGGER_CHALLENGE_MAX_TTL_MS);
   return {
     walletAddress: input.walletAddress,
     challengeType: input.challengeType,
     challenge,
+    ...(transaction !== undefined && { transaction }),
     expiresAt,
     apiHost: jupiterApiHost(config, 'trigger'),
   };
@@ -140,8 +148,8 @@ export async function verifyChallenge(
     throw new ProtocolError('invalid_request', 'Transaction challenge requires a signedTransaction.');
   }
   const requestBody: Record<string, unknown> = {
-    walletAddress: input.walletAddress,
-    challengeType: input.challengeType,
+    walletPubkey: input.walletAddress,
+    type: input.challengeType,
   };
   if (input.signature) requestBody.signature = input.signature;
   if (input.signedTransaction) requestBody.signedTransaction = input.signedTransaction;
@@ -149,7 +157,12 @@ export async function verifyChallenge(
     method: 'POST',
     body: requestBody,
   });
-  const jwt = readString(body, 'jwt', 'Jupiter Trigger auth verify response is missing jwt.');
+  const jwt =
+    readOptionalString(body, 'token') ??
+    readOptionalString(body, 'jwt') ??
+    (() => {
+      throw new ProtocolError('wallet_unreachable', 'Jupiter Trigger auth verify response is missing token.');
+    })();
   const expiresAtRaw = body.expiresAt ?? body.expires_at ?? body.expires;
   const apiHost = jupiterApiHost(config, 'trigger');
   const officialExpiresAt = parseExpiresAt(expiresAtRaw, JUPITER_TRIGGER_JWT_MAX_TTL_MS + JUPITER_TRIGGER_JWT_SAFETY_MS);
@@ -196,10 +209,7 @@ function parseExpiresAt(raw: unknown, fallbackTtlMs: number): number {
   return Date.now() + fallbackTtlMs;
 }
 
-function readString(body: Record<string, unknown>, key: string, error: string): string {
+function readOptionalString(body: Record<string, unknown>, key: string): string | undefined {
   const value = body[key];
-  if (typeof value !== 'string' || !value.trim()) {
-    throw new ProtocolError('wallet_unreachable', error);
-  }
-  return value;
+  return typeof value === 'string' && value.trim() ? value : undefined;
 }

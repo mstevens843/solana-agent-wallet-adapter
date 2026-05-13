@@ -47,7 +47,7 @@ export interface AdapterPrepareResult {
 }
 
 export interface AdapterExecuteResult {
-  txid: string;
+  txid?: string;
   txids?: string[];
   signedAt: string;
   preview?: Record<string, unknown>;

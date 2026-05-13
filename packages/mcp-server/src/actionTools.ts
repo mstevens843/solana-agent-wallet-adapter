@@ -81,7 +81,7 @@ export function registerActionTools(
     'solana_connector_read_facts',
     {
       description:
-        'Read normalized protocol connector facts as stable JSON. Supports Kamino, Jupiter, Raydium, Orca, MarginFi, Drift, Lulo, Save, Jito, Marinade, Sanctum, Wormhole, Tensor, and other first-class connector reads. Unsupported connectors return structured missing-capability errors.',
+        'Read normalized protocol connector facts as stable JSON. Supports Kamino, Jupiter, Raydium, Orca, MarginFi, Drift, Lulo, Save, Jito, Marinade, Sanctum, Wormhole, Tensor, Realms, Squads, and other first-class connector reads. Unsupported connectors return structured missing-capability errors.',
       inputSchema: {
         connectorId: z.string().min(2).describe('Connector id or alias, for example kamino or jupiter.'),
         capability: connectorCapabilitySchema().optional(),
@@ -150,6 +150,28 @@ export function registerActionTools(
         limit: z.number().int().min(1).max(100).optional(),
         includePrice: z.boolean().optional(),
         includeSearchFallback: z.boolean().optional(),
+        realmAddress: z.string().min(32).optional(),
+        governanceAddress: z.string().min(32).optional(),
+        proposalAddress: z.string().min(32).optional(),
+        governingTokenMint: z.string().min(32).optional(),
+        multisigAddress: z.string().min(32).optional(),
+        vaultIndex: z.number().int().min(0).optional(),
+        transactionIndex: z.number().int().min(0).optional(),
+        proposalState: z
+          .enum([
+            'draft',
+            'signing_off',
+            'voting',
+            'succeeded',
+            'defeated',
+            'executing',
+            'completed',
+            'cancelled',
+            'executing_with_errors',
+            'vetoed',
+            'all',
+          ])
+          .optional(),
       },
     },
     async (input) => traceTool(
@@ -5092,7 +5114,7 @@ function wormholeQuoteInputSchema() {
     amount: z.string().min(1).describe('Human token amount, for example 10.'),
     destinationChain: z.string().min(2).describe('Destination chain name, for example Ethereum or Base.'),
     destinationAddress: z.string().min(1).describe('Destination wallet address on the destination chain.'),
-    routeType: z.enum(['auto', 'token_bridge', 'cctp', 'ntt']).optional().describe('Defaults to auto.'),
+    routeType: z.enum(['auto', 'token_bridge', 'cctp', 'ntt', 'automatic', 'manual']).optional().describe('Defaults to auto.'),
     nativeGasDropoff: z.string().min(1).optional(),
   };
 }

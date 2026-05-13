@@ -170,6 +170,7 @@ import {
   isClusterSupported,
   isDappEnabled,
   loadConnectedDapps,
+  PROTOCOL_CONNECTORS,
   protocolConnectorPlannerContext,
   saveConnectedDapps,
   setConnectedDappEnabled,
@@ -2807,6 +2808,7 @@ function homePage(): string {
 function docsPage(): string {
   return `
     ${docsSection()}
+    ${protocolConnectorsDocsSection()}
     ${gapSection()}
     ${walletDirectorySection()}
   `;
@@ -3516,6 +3518,219 @@ function docsCard(title: string, detail: string): string {
       <p>${escapeHtml(detail)}</p>
     </article>
   `;
+}
+
+interface ProtocolConnectorDocsGroup {
+  title: string;
+  detail: string;
+  connectorIds: ConnectedDappId[];
+}
+
+interface ProtocolConnectorDocsCopy {
+  focus: string;
+  summary: string;
+}
+
+type ProtocolConnectorDocsStatusTone = 'ready' | 'key' | 'planned';
+
+const PROTOCOL_CONNECTOR_DOC_GROUPS: ProtocolConnectorDocsGroup[] = [
+  {
+    title: 'Trading and liquidity',
+    detail: 'Swap routes, AMMs, pools, concentrated liquidity, DLMM positions, fees, and farm rewards.',
+    connectorIds: ['jupiter', 'raydium', 'orca', 'meteora'],
+  },
+  {
+    title: 'Lending and yield',
+    detail: 'Supply, borrow, repay, withdraw, vault positions, balances, reserves, account health, and position checks.',
+    connectorIds: ['kamino', 'marginfi', 'drift', 'lulo', 'save'],
+  },
+  {
+    title: 'Liquid staking',
+    detail: 'Stake-pool reads, LST quotes, stake and unstake preparation, tickets, claims, and Infinity liquidity.',
+    connectorIds: ['jito', 'marinade', 'sanctum'],
+  },
+  {
+    title: 'NFTs and governance',
+    detail: 'Marketplace reads, listing and bid preparation, multisig proposals, vaults, and governance voting.',
+    connectorIds: ['magiceden', 'tensor', 'squads', 'realms'],
+  },
+  {
+    title: 'Cross-chain and oracle',
+    detail: 'Bridge routes, transfer status, recovery flows, oracle price evidence, and planned cross-chain swap coverage.',
+    connectorIds: ['wormhole', 'pyth', 'mayan'],
+  },
+];
+
+const PROTOCOL_CONNECTOR_DOC_COPY: Record<ConnectedDappId, ProtocolConnectorDocsCopy> = {
+  drift: {
+    focus: 'Strategy vaults',
+    summary: 'Read Drift vaults and wallet positions, then prepare deposit and withdraw lifecycle approvals.',
+  },
+  jito: {
+    focus: 'JitoSOL staking',
+    summary: 'Read stake-pool state, wallet JitoSOL, and stake accounts; prepare stake, unstake, and withdrawal actions.',
+  },
+  jupiter: {
+    focus: 'Swap, token, price, lend',
+    summary: 'Preview and prepare swaps, refresh approval-time quotes, and gather token, price, lend, and prediction evidence.',
+  },
+  kamino: {
+    focus: 'Lend positions',
+    summary: 'Inspect Kamino reserves and wallet positions, prepare deposits or withdrawals, and produce earnings proof context.',
+  },
+  lulo: {
+    focus: 'Protected lending',
+    summary: 'Read Lulo rates, pool metadata, and wallet balances, then prepare deposit and withdrawal approvals.',
+  },
+  magiceden: {
+    focus: 'NFT marketplace',
+    summary: 'Read collections, listings, bids, activity, and wallet NFTs; prepare buy, list, bid, and cancellation reviews.',
+  },
+  marinade: {
+    focus: 'mSOL staking',
+    summary: 'Read Marinade state, stake accounts, tickets, and quotes; prepare liquid stake, unstake, delayed unstake, and claims.',
+  },
+  marginfi: {
+    focus: 'Borrow and repay',
+    summary: 'Read banks, accounts, and health previews, then prepare deposit, withdraw, borrow, and repay actions.',
+  },
+  mayan: {
+    focus: 'Planned cross-chain swap',
+    summary: 'Roadmap entry for Mayan route reads, quote review, pending swap status, and resume or refund approvals.',
+  },
+  meteora: {
+    focus: 'DLMM positions',
+    summary: 'Read DLMM pools and positions, then prepare fee, reward, liquidity, and close-position approvals.',
+  },
+  orca: {
+    focus: 'Whirlpools',
+    summary: 'Read Whirlpool pools and positions, then prepare liquidity, fee, and reward actions for wallet approval.',
+  },
+  pyth: {
+    focus: 'Oracle evidence',
+    summary: 'Read price feeds, batch prices, feed search, on-chain accounts, and prepare optional price-update posts.',
+  },
+  raydium: {
+    focus: 'CPMM, CLMM, farms',
+    summary: 'Read Raydium pools and wallet positions, then prepare liquidity, fee collection, farm, and harvest actions.',
+  },
+  realms: {
+    focus: 'SPL governance',
+    summary: 'Read realms, proposals, vote records, and voting power; prepare vote and governance token approvals.',
+  },
+  sanctum: {
+    focus: 'LST router and Infinity',
+    summary: 'Read LSTs, Infinity pool state, positions, and quotes; prepare swaps, stake, unstake, and INF liquidity.',
+  },
+  save: {
+    focus: 'Save/Solend lend',
+    summary: 'Read reserves, markets, obligations, and health previews; prepare deposit, withdraw, borrow, and repay actions.',
+  },
+  squads: {
+    focus: 'Multisig proposals',
+    summary: 'Read multisigs, members, thresholds, vaults, and proposals; prepare transfer proposals and proposal decisions.',
+  },
+  tensor: {
+    focus: 'NFT marketplace',
+    summary: 'Read floors, listings, bids, recent sales, wallet NFTs, and exposure; prepare buy, list, bid, cancel, and sweep reviews.',
+  },
+  wormhole: {
+    focus: 'Bridge routes',
+    summary: 'Read routes, token snapshots, quotes, transfer status, and exposure; prepare transfer, redeem, and recovery flows.',
+  },
+};
+
+function protocolConnectorsDocsSection(): string {
+  return `
+    <section id="protocol-connectors" class="protocol-connectors-section" aria-labelledby="protocol-connectors-title">
+      <div class="section-heading">
+        <p class="eyebrow mini">Protocol connectors</p>
+        <h2 id="protocol-connectors-title">Agents can work inside the dApps users already trust.</h2>
+        <p>
+          Agentic exposes ${PROTOCOL_CONNECTORS.length} protocol connector entries for reads, checks, prepared actions,
+          and proof-friendly approval flows. A connector never gives the agent custody; it gives the agent protocol
+          context and a bounded request for the user's wallet to review.
+        </p>
+      </div>
+      <div class="protocol-connector-flow-grid" aria-label="Protocol connector workflow">
+        ${protocolConnectorFlowCard('1. Enable', 'Turn on only the protocols an agent may read or prepare against in app Preferences.')}
+        ${protocolConnectorFlowCard('2. Ask', 'Draft with AI, create a one-time plan, or schedule recurring work against an enabled connector.')}
+        ${protocolConnectorFlowCard('3. Check', 'Use the inbox, one-time checks, recurring checks, and evidence receipts before approval.')}
+        ${protocolConnectorFlowCard('4. Sign', 'The agent prepares. The connected wallet signs only after user approval.')}
+      </div>
+      <div class="protocol-connector-groups">
+        ${PROTOCOL_CONNECTOR_DOC_GROUPS.map(protocolConnectorDocsGroup).join('')}
+      </div>
+      <div class="protocol-connectors-action">
+        <a class="button-link nav-pill-link launch-app-link" href="/app">Open App</a>
+        <span>Enable connectors per agent in Preferences. Runtime-ready connectors can read facts or prepare approval work; planned connectors stay labeled as planned.</span>
+      </div>
+    </section>
+  `;
+}
+
+function protocolConnectorFlowCard(title: string, detail: string): string {
+  return `
+    <article class="protocol-connector-flow-card">
+      <h3>${escapeHtml(title)}</h3>
+      <p>${escapeHtml(detail)}</p>
+    </article>
+  `;
+}
+
+function protocolConnectorDocsGroup(group: ProtocolConnectorDocsGroup): string {
+  return `
+    <section class="protocol-connector-group" aria-label="${escapeHtml(group.title)} connectors">
+      <div class="protocol-connector-group-head">
+        <h3>${escapeHtml(group.title)}</h3>
+        <p>${escapeHtml(group.detail)}</p>
+      </div>
+      <div class="protocol-connector-card-grid">
+        ${group.connectorIds.map(protocolConnectorDocsCard).join('')}
+      </div>
+    </section>
+  `;
+}
+
+function protocolConnectorDocsCard(id: ConnectedDappId): string {
+  const connector = getAdapterMeta(id);
+  if (!connector) return '';
+  const copy = PROTOCOL_CONNECTOR_DOC_COPY[id];
+  const status = protocolConnectorDocsStatus(connector);
+  const labels = protocolConnectorDocsCapabilityLabels(connector);
+  return `
+    <article class="protocol-connector-card ${status.tone}">
+      <div class="protocol-connector-card-head">
+        ${brandLogo(protocolConnectorLogoId(id), 'protocol-connector-doc-logo')}
+        <div>
+          <h4>${escapeHtml(connector.name)}</h4>
+          <span>${escapeHtml(copy.focus)}</span>
+        </div>
+        <strong class="protocol-connector-status ${status.tone}">${escapeHtml(status.label)}</strong>
+      </div>
+      <p>${escapeHtml(copy.summary)}</p>
+      <div class="protocol-connector-meta" aria-label="${escapeHtml(connector.name)} capabilities">
+        ${labels.map((label) => `<span>${escapeHtml(label)}</span>`).join('')}
+      </div>
+    </article>
+  `;
+}
+
+function protocolConnectorDocsStatus(connector: ProtocolConnector): { label: string; tone: ProtocolConnectorDocsStatusTone } {
+  if (!connector.actionSource && connector.readTools.length === 0) return { label: 'Planned', tone: 'planned' };
+  if (connector.requiresClientKey) return { label: 'API key', tone: 'key' };
+  return { label: connector.actionSource === 'blink' ? 'Blink' : 'First-class', tone: 'ready' };
+}
+
+function protocolConnectorDocsCapabilityLabels(connector: ProtocolConnector): string[] {
+  const labels: string[] = [];
+  if (connectorHasCapability(connector, 'read_positions')) labels.push('Positions');
+  if (connectorHasCapability(connector, 'read_rewards')) labels.push('Rewards');
+  if (connectorHasCapability(connector, 'read_markets')) labels.push('Markets');
+  if (connectorHasCapability(connector, 'blink_actions')) labels.push('Blinks');
+  if (connector.actionSource === 'first-class-adapter') labels.push('Prepared actions');
+  if (connector.actionSource === 'blink') labels.push('Blink actions');
+  return labels.length ? labels.slice(0, 4) : ['Roadmap'];
 }
 
 function heroTerminalPreview(): string {

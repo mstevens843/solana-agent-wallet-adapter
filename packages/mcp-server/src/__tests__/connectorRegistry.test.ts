@@ -201,6 +201,7 @@ describe('MCP connector registry', () => {
         'solana_jito_wallet_positions',
         'solana_jito_wallet_stake_accounts',
         'solana_jito_quote',
+        'solana_jito_deposit_receipts',
       ]),
     );
     expect(jito?.actionTools).toEqual(
@@ -209,6 +210,7 @@ describe('MCP connector registry', () => {
         'solana_prepare_jito_deposit_stake_account',
         'solana_prepare_jito_unstake_jitosol',
         'solana_prepare_jito_withdraw_sol',
+        'solana_prepare_jito_claim_deposit_receipt',
       ]),
     );
     expect(jito?.limitations.join(' ')).toContain('Restaking');

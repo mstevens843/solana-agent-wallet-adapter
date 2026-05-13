@@ -23,11 +23,13 @@ import {
   assertDecimalAtLeast,
   assertDecimalAtMost,
   assertFreshIso,
+  assertNotExpiredIso,
   normalizeDestinationChain,
   normalizeMint,
   normalizeRouteType,
   normalizeWormholeAmount,
   optionalActionString,
+  optionalNonNegativeDecimal,
   optionalNonEmptyString,
   requireActionString,
   requireNonEmptyString,
@@ -81,9 +83,9 @@ export const wormholeTransferAction: AdapterAction<WormholeTransferInput> = {
     const destinationChain = normalizeDestinationChain(input.destinationChain);
     const destinationAddress = validateDestinationAddress(destinationChain, input.destinationAddress);
     const routeType = normalizeRouteType(input.routeType);
-    const nativeGasDropoff = optionalNonEmptyString(input.nativeGasDropoff);
-    const minDestinationAmount = optionalNonEmptyString(input.minDestinationAmount);
-    const maxBridgeFee = optionalNonEmptyString(input.maxBridgeFee);
+    const nativeGasDropoff = optionalNonNegativeDecimal(input.nativeGasDropoff, 'nativeGasDropoff');
+    const minDestinationAmount = optionalNonNegativeDecimal(input.minDestinationAmount, 'minDestinationAmount');
+    const maxBridgeFee = optionalNonNegativeDecimal(input.maxBridgeFee, 'maxBridgeFee');
     const recipientMemo = optionalNonEmptyString(input.recipientMemo);
 
     const quote = await getWormholeClient().quoteTransfer(ctx.connection, {
@@ -100,6 +102,9 @@ export const wormholeTransferAction: AdapterAction<WormholeTransferInput> = {
       wormholeNetwork,
     });
     validateQuoteAgainstCaps(quote, { minDestinationAmount, maxBridgeFee });
+    assertQuoteRouteCompatible(routeType, quote);
+    assertDestinationTokenPresent(quote);
+    const programIds = programIdsForQuote(quote);
 
     const warnings = [
       ...(quote.warnings ?? []),
@@ -135,7 +140,7 @@ export const wormholeTransferAction: AdapterAction<WormholeTransferInput> = {
       ...(recipientMemo !== undefined && { recipientMemo }),
       quoteSnapshot: quote,
       ...(quote.routeSnapshot !== undefined && { routeSnapshot: quote.routeSnapshot }),
-      programIds: quote.programIds ?? quote.routeSnapshot?.programIds ?? WORMHOLE_PROGRAM_IDS,
+      programIds,
       warnings,
       preparedSnapshotAt: new Date().toISOString(),
     };
@@ -164,11 +169,12 @@ export const wormholeTransferAction: AdapterAction<WormholeTransferInput> = {
     const amount = requireActionString(action, 'amount');
     const amountRaw = requireActionString(action, 'amountRaw');
     const sourceDecimals = numericParam(action, 'sourceDecimals');
-    const minDestinationAmount = optionalActionString(action, 'minDestinationAmount');
-    const maxBridgeFee = optionalActionString(action, 'maxBridgeFee');
-    const nativeGasDropoff = optionalActionString(action, 'nativeGasDropoff');
+    const expectedRouteMode = requireActionString(action, 'routeMode');
+    const minDestinationAmount = optionalNonNegativeDecimal(optionalActionString(action, 'minDestinationAmount'), 'minDestinationAmount');
+    const maxBridgeFee = optionalNonNegativeDecimal(optionalActionString(action, 'maxBridgeFee'), 'maxBridgeFee');
+    const nativeGasDropoff = optionalNonNegativeDecimal(optionalActionString(action, 'nativeGasDropoff'), 'nativeGasDropoff');
     const recipientMemo = optionalActionString(action, 'recipientMemo');
-    const expectedDestinationToken = optionalActionString(action, 'destinationToken');
+    const expectedDestinationToken = requireActionString(action, 'destinationToken');
 
     const quote = await getWormholeClient().quoteTransfer(ctx.connection, {
       walletAddress,
@@ -184,7 +190,10 @@ export const wormholeTransferAction: AdapterAction<WormholeTransferInput> = {
       wormholeNetwork,
     });
     validateQuoteAgainstCaps(quote, { minDestinationAmount, maxBridgeFee });
+    assertQuoteRouteStable(routeType, expectedRouteMode, quote);
+    assertDestinationTokenPresent(quote);
     assertDestinationTokenStable(expectedDestinationToken, quote);
+    programIdsForQuote(quote);
 
     const built = await getWormholeClient().buildTransferTransaction(ctx.connection, {
       walletAddress,
@@ -243,7 +252,7 @@ export const wormholeRedeemAction: AdapterAction<WormholeRedeemInput> = {
       ...(vaa !== undefined && { vaa }),
       ...(transferId !== undefined && { transferId }),
       wormholeNetwork,
-    }).catch((): WormholeTransferStatus | undefined => undefined);
+    });
     assertStatusSolanaExecutable(status, 'redeem');
     assertExpectedMint(status, expectedMint);
 
@@ -414,6 +423,7 @@ function validateQuoteAgainstCaps(
   caps: { minDestinationAmount?: string; maxBridgeFee?: string },
 ): void {
   assertFreshIso(quote.asOfIso, MAX_WORMHOLE_QUOTE_AGE_MS);
+  assertNotExpiredIso(quote.expiresAtIso);
   assertDecimalAtMost({
     actual: quote.bridgeFee,
     cap: caps.maxBridgeFee,
@@ -428,15 +438,90 @@ function validateQuoteAgainstCaps(
   });
 }
 
-function assertDestinationTokenStable(expected: string | undefined, quote: WormholeQuoteSnapshot): void {
-  if (!expected || expected === 'null' || !quote.destinationToken) return;
-  if (expected !== quote.destinationToken) {
+function assertDestinationTokenPresent(quote: WormholeQuoteSnapshot): void {
+  if (!quote.destinationToken?.trim()) {
+    throw new AdapterError(
+      WORMHOLE_ADAPTER_ID,
+      'missing_destination_token',
+      'Wormhole quote is missing destination token mapping; refresh route facts before preparing.',
+    );
+  }
+}
+
+function assertQuoteRouteCompatible(
+  requestedRouteType: ReturnType<typeof normalizeRouteType>,
+  quote: WormholeQuoteSnapshot,
+): void {
+  assertConcreteQuoteRoute(quote);
+  if (requestedRouteType !== 'auto' && quote.routeType !== requestedRouteType) {
+    throw new AdapterError(
+      WORMHOLE_ADAPTER_ID,
+      'route_type_changed',
+      `Wormhole quote resolved ${quote.routeType} instead of requested ${requestedRouteType}; create a new prepared action.`,
+    );
+  }
+}
+
+function assertQuoteRouteStable(
+  expectedRouteType: ReturnType<typeof normalizeRouteType>,
+  expectedRouteMode: string,
+  quote: WormholeQuoteSnapshot,
+): void {
+  assertConcreteQuoteRoute(quote);
+  if (quote.routeType !== expectedRouteType) {
+    throw new AdapterError(
+      WORMHOLE_ADAPTER_ID,
+      'route_type_changed',
+      `Wormhole refreshed quote changed route type from ${expectedRouteType} to ${quote.routeType}; create a new prepared action.`,
+    );
+  }
+  if (quote.mode !== expectedRouteMode) {
+    throw new AdapterError(
+      WORMHOLE_ADAPTER_ID,
+      'route_mode_changed',
+      `Wormhole refreshed quote changed route mode from ${expectedRouteMode} to ${quote.mode}; create a new prepared action.`,
+    );
+  }
+}
+
+function assertConcreteQuoteRoute(quote: WormholeQuoteSnapshot): void {
+  if (quote.routeType === 'auto') {
+    throw new AdapterError(
+      WORMHOLE_ADAPTER_ID,
+      'missing_route_facts',
+      'Wormhole quote did not resolve automatic routing to a concrete route type; refresh route facts before approval.',
+    );
+  }
+}
+
+function assertDestinationTokenStable(expected: string, quote: WormholeQuoteSnapshot): void {
+  const actual = quote.destinationToken?.trim();
+  if (!actual) {
+    throw new AdapterError(
+      WORMHOLE_ADAPTER_ID,
+      'missing_destination_token',
+      'Wormhole refreshed quote is missing destination token mapping; create a new prepared action.',
+    );
+  }
+  if (canonicalTokenForCompare(expected) !== canonicalTokenForCompare(actual)) {
     throw new AdapterError(
       WORMHOLE_ADAPTER_ID,
       'destination_token_changed',
-      `Wormhole destination token changed from ${expected} to ${quote.destinationToken}; create a new prepared action.`,
+      `Wormhole destination token changed from ${expected} to ${actual}; create a new prepared action.`,
     );
   }
+}
+
+function programIdsForQuote(quote: WormholeQuoteSnapshot): string[] {
+  const programIds = quote.programIds ?? quote.routeSnapshot?.programIds;
+  if (quote.routeType !== 'token_bridge' && (!programIds || programIds.length === 0)) {
+    throw new AdapterError(
+      WORMHOLE_ADAPTER_ID,
+      'missing_route_program_ids',
+      `Wormhole ${quote.routeType} route is missing route-specific program ids; refresh route facts before preparing.`,
+    );
+  }
+  return programIds ?? WORMHOLE_PROGRAM_IDS;
 }
 
 function assertSolanaDestination(destinationChain: string): void {
@@ -453,7 +538,13 @@ function assertStatusSolanaExecutable(
   status: WormholeTransferStatus | undefined,
   operation: 'redeem' | 'recover_or_resume',
 ): void {
-  if (!status) return;
+  if (!status) {
+    throw new AdapterError(
+      WORMHOLE_ADAPTER_ID,
+      'status_unavailable',
+      `Wormhole ${operation} requires a resolved transfer status before preparing.`,
+    );
+  }
   if (status.redeemed) {
     throw new AdapterError(WORMHOLE_ADAPTER_ID, 'already_redeemed', 'Wormhole transfer is already redeemed.');
   }
@@ -464,7 +555,14 @@ function assertStatusSolanaExecutable(
       status.error ?? 'Wormhole transfer is marked failed and cannot be redeemed or resumed.',
     );
   }
-  if (status.solanaExecutable === false) {
+  if (status.state === 'pending_vaa' || status.nextAction === 'wait_for_vaa' || !status.vaaAvailable) {
+    throw new AdapterError(
+      WORMHOLE_ADAPTER_ID,
+      'vaa_not_ready',
+      'Wormhole Guardian attestation is not ready yet; retry after the VAA is available.',
+    );
+  }
+  if (status.solanaExecutable !== true || status.nextAction !== 'redeem_on_solana') {
     const destination = status.destinationChain ?? 'the destination chain';
     throw new AdapterError(
       WORMHOLE_ADAPTER_ID,
@@ -472,24 +570,36 @@ function assertStatusSolanaExecutable(
       `Wormhole ${operation} is not Solana-executable; redemption or recovery must be completed on ${destination}.`,
     );
   }
-  if (status.state === 'pending_vaa' || status.nextAction === 'wait_for_vaa') {
+  if (status.state !== 'ready_to_redeem') {
     throw new AdapterError(
       WORMHOLE_ADAPTER_ID,
-      'vaa_not_ready',
-      'Wormhole Guardian attestation is not ready yet; retry after the VAA is available.',
+      'status_not_ready',
+      `Wormhole ${operation} requires transfer state ready_to_redeem; current state is ${status.state}.`,
     );
   }
 }
 
 function assertExpectedMint(status: WormholeTransferStatus | undefined, expectedMint: string | undefined): void {
-  if (!status || !expectedMint || !status.destinationToken) return;
-  if (status.destinationToken !== expectedMint) {
+  if (!status || !expectedMint) return;
+  if (!status.destinationToken?.trim()) {
+    throw new AdapterError(
+      WORMHOLE_ADAPTER_ID,
+      'missing_destination_token',
+      'Wormhole status is missing destination token mapping; refresh status before preparing.',
+    );
+  }
+  if (canonicalTokenForCompare(status.destinationToken) !== canonicalTokenForCompare(expectedMint)) {
     throw new AdapterError(
       WORMHOLE_ADAPTER_ID,
       'destination_token_mismatch',
       `Wormhole destination token ${status.destinationToken} does not match expectedMint ${expectedMint}.`,
     );
   }
+}
+
+function canonicalTokenForCompare(value: string): string {
+  const trimmed = value.trim();
+  return trimmed.startsWith('0x') ? trimmed.toLowerCase() : trimmed;
 }
 
 async function assertConnectedWallet(

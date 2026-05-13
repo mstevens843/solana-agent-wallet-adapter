@@ -1835,6 +1835,208 @@ code {
   margin: 0;
 }
 
+.protocol-connectors-section {
+  border-top: 1px solid rgba(224, 230, 226, 0.075);
+  padding-top: 28px;
+  scroll-margin-top: 92px;
+}
+
+.protocol-connector-flow-grid {
+  display: grid;
+  gap: 10px;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  margin-bottom: 18px;
+}
+
+.protocol-connector-flow-card {
+  background: rgba(10, 12, 12, 0.58);
+  border: 1px solid rgba(224, 230, 226, 0.078);
+  border-radius: var(--radius);
+  display: grid;
+  gap: 8px;
+  min-width: 0;
+  padding: 14px;
+}
+
+.protocol-connector-flow-card h3 {
+  color: var(--text);
+  font-size: 1rem;
+  line-height: 1.25;
+  margin: 0;
+}
+
+.protocol-connector-flow-card p {
+  color: rgba(196, 205, 202, 0.84);
+  font-size: 0.9rem;
+  line-height: 1.45;
+  margin: 0;
+}
+
+.protocol-connector-groups {
+  display: grid;
+  gap: 20px;
+}
+
+.protocol-connector-group {
+  display: grid;
+  gap: 10px;
+  min-width: 0;
+}
+
+.protocol-connector-group-head {
+  display: grid;
+  gap: 5px;
+  max-width: 900px;
+}
+
+.protocol-connector-group-head h3 {
+  color: var(--text);
+  font-size: 1.28rem;
+  line-height: 1.15;
+  margin: 0;
+}
+
+.protocol-connector-group-head p {
+  color: rgba(196, 205, 202, 0.82);
+  font-size: 0.94rem;
+  line-height: 1.48;
+  margin: 0;
+}
+
+.protocol-connector-card-grid {
+  display: grid;
+  gap: 10px;
+  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+}
+
+.protocol-connector-card {
+  background: rgba(10, 12, 12, 0.66);
+  border: 1px solid rgba(224, 230, 226, 0.078);
+  border-radius: var(--radius);
+  display: grid;
+  gap: 12px;
+  min-height: 184px;
+  min-width: 0;
+  padding: 14px;
+}
+
+.protocol-connector-card.key {
+  border-color: rgba(245, 206, 126, 0.16);
+}
+
+.protocol-connector-card.planned {
+  border-color: rgba(150, 196, 240, 0.16);
+}
+
+.protocol-connector-card-head {
+  align-items: center;
+  display: grid;
+  gap: 10px;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  min-width: 0;
+}
+
+.protocol-connector-doc-logo {
+  align-items: center;
+  background: rgba(255, 255, 255, 0.052);
+  border: 1px solid rgba(150, 196, 240, 0.28);
+  border-radius: 8px;
+  display: inline-flex;
+  height: 42px;
+  justify-content: center;
+  overflow: hidden;
+  padding: 7px;
+  width: 42px;
+}
+
+.protocol-connector-doc-logo.brand-logo-lulo {
+  padding: 8px 5px;
+}
+
+.protocol-connector-doc-logo.brand-logo-kamino {
+  padding: 6px 8px;
+}
+
+.protocol-connector-card-head h4 {
+  color: var(--text);
+  font-size: 1.02rem;
+  line-height: 1.2;
+  margin: 0 0 3px;
+  overflow-wrap: anywhere;
+}
+
+.protocol-connector-card-head div > span {
+  color: var(--dim);
+  display: block;
+  font-size: 0.72rem;
+  font-weight: 760;
+  line-height: 1.25;
+}
+
+.protocol-connector-status {
+  align-self: start;
+  border: 1px solid rgba(139, 205, 170, 0.28);
+  border-radius: 6px;
+  color: var(--accent-2);
+  font-size: 0.66rem;
+  font-weight: 900;
+  letter-spacing: 0.06em;
+  line-height: 1;
+  padding: 5px 7px;
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+
+.protocol-connector-status.key {
+  border-color: rgba(245, 206, 126, 0.28);
+  color: #f5ce7e;
+}
+
+.protocol-connector-status.planned {
+  border-color: rgba(150, 196, 240, 0.28);
+  color: #a9c8f5;
+}
+
+.protocol-connector-card > p {
+  color: rgba(196, 205, 202, 0.86);
+  font-size: 0.9rem;
+  line-height: 1.45;
+  margin: 0;
+}
+
+.protocol-connector-meta {
+  align-items: center;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.protocol-connector-meta span {
+  background: rgba(255, 255, 255, 0.04);
+  border: 1px solid rgba(224, 230, 226, 0.07);
+  border-radius: 999px;
+  color: rgba(218, 229, 224, 0.78);
+  font-size: 0.68rem;
+  font-weight: 760;
+  line-height: 1;
+  padding: 6px 8px;
+}
+
+.protocol-connectors-action {
+  align-items: center;
+  color: var(--muted);
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  margin-top: 18px;
+}
+
+.protocol-connectors-action span {
+  font-size: 0.9rem;
+  line-height: 1.45;
+  max-width: 780px;
+}
+
 .builders-page {
   display: grid;
   gap: 22px;
@@ -9372,6 +9574,10 @@ button.danger:hover:not(:disabled) {
     grid-template-columns: repeat(3, minmax(0, 1fr));
   }
 
+  .protocol-connector-flow-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
   .download-grid {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
@@ -11189,6 +11395,8 @@ button.danger:hover:not(:disabled) {
   .browser-app-grid,
   .download-grid,
   .runtime-grid,
+  .protocol-connector-flow-grid,
+  .protocol-connector-card-grid,
   .wallet-directory-grid {
     display: grid;
     gap: 10px;
@@ -11207,6 +11415,8 @@ button.danger:hover:not(:disabled) {
   .browser-app-grid::-webkit-scrollbar,
   .download-grid::-webkit-scrollbar,
   .runtime-grid::-webkit-scrollbar,
+  .protocol-connector-flow-grid::-webkit-scrollbar,
+  .protocol-connector-card-grid::-webkit-scrollbar,
   .wallet-directory-grid::-webkit-scrollbar {
     display: none;
   }
@@ -11219,6 +11429,8 @@ button.danger:hover:not(:disabled) {
   .browser-app-card,
   .download-card,
   .runtime-card,
+  .protocol-connector-flow-card,
+  .protocol-connector-card,
   .wallet-directory-card {
     min-height: 0;
     padding: 14px;
@@ -11231,7 +11443,9 @@ button.danger:hover:not(:disabled) {
 
   .wallet-directory-card p,
   .browser-app-card p,
-  .docs-card p {
+  .docs-card p,
+  .protocol-connector-flow-card p,
+  .protocol-connector-card > p {
     font-size: 0.88rem;
   }
 
@@ -11999,6 +12213,7 @@ button.danger:hover:not(:disabled) {
   }
 
   .docs-section,
+  .protocol-connectors-section,
   .browser-app-section,
   .runtime-section,
   .desktop-section,
@@ -12017,12 +12232,16 @@ button.danger:hover:not(:disabled) {
 
   .docs-grid,
   .browser-app-grid,
+  .protocol-connector-flow-grid,
+  .protocol-connector-card-grid,
   .wallet-directory-grid {
     grid-auto-columns: minmax(204px, 74vw);
   }
 
   .docs-card,
   .browser-app-card,
+  .protocol-connector-flow-card,
+  .protocol-connector-card,
   .wallet-directory-card {
     gap: 11px;
     padding: 13px;
@@ -12030,6 +12249,8 @@ button.danger:hover:not(:disabled) {
 
   .docs-card p,
   .browser-app-card p,
+  .protocol-connector-flow-card p,
+  .protocol-connector-card > p,
   .wallet-directory-card p {
     display: -webkit-box;
     font-size: 0.86rem;

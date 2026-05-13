@@ -183,8 +183,8 @@ function makeContext(opts: {
     config: fakeConfig(opts.cluster ?? 'mainnet-beta'),
     connection: {} as Connection,
     signAndBroadcast: opts.signed ?? (async () => 'txid-magiceden'),
-    signTransaction: async () => "signed-base64-placeholder",
-    signMessage: async () => "signature-base64-placeholder",
+    signTransaction: async () => "signed-base64-stub",
+    signMessage: async () => "signature-base64-stub",
     store: opts.store,
   };
 }

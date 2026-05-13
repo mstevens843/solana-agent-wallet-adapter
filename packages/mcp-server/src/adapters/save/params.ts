@@ -50,8 +50,9 @@ export function requireBoolean(action: PreparedAction, key: string, fallback = f
 
 /**
  * Throws `exceeds_cap` if `amountRaw` is greater than the SDK-reported cap.
- * The cap arrives as a UI-decimal string (e.g. "40000000"); we parse it back
- * into raw units before comparing. Missing/blank caps are treated as "no cap".
+ * The cap arrives as a UI-decimal string. Missing/blank/`-1` is treated as
+ * "no cap reported"; `"0"` means "no capacity remaining" and refuses the
+ * action.
  */
 export function assertWithinCap(args: {
   amountRaw: bigint;
@@ -61,7 +62,14 @@ export function assertWithinCap(args: {
   operation: 'deposit' | 'borrow';
 }): void {
   const capUi = args.capUi?.trim();
-  if (!capUi || capUi === '0' || capUi === '-1') return;
+  if (!capUi || capUi === '-1') return;
+  if (capUi === '0' || /^0+(\.0+)?$/.test(capUi)) {
+    throw new AdapterError(
+      SAVE_ADAPTER_ID,
+      'exceeds_cap',
+      `Save ${args.operation} blocked: ${args.reserveSymbol} reports no remaining ${args.operation} capacity.`,
+    );
+  }
   let capRaw: bigint;
   try {
     capRaw = parseDecimalAmount(capUi, args.decimals, `${args.reserveSymbol} ${args.operation} cap`);

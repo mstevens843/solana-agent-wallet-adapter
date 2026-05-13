@@ -465,15 +465,45 @@ describe('Lulo complete withdraw', () => {
 describe('Lulo API key redaction', () => {
   it('strips an api key from error messages via redactLuloError', () => {
     const apiKey = 'super-secret-key-abcdef-123456';
-    const wrapped = redactLuloError(new Error(`Lulo rejected request: x-api-key=${apiKey} expired`), apiKey);
+    const original = new Error(`Lulo rejected request: x-api-key=${apiKey} expired`);
+    const wrapped = redactLuloError(original, apiKey);
     expect(wrapped.message).not.toContain(apiKey);
     expect(wrapped.message).toContain('***');
+    expect((wrapped as Error & { cause?: unknown }).cause).toBe(original);
   });
 
   it('still redacts header-style key matches even when the literal key is missing', () => {
     const wrapped = redactLuloError(new Error('Headers: x-api-key="abcdef-1234"'), 'unused');
     expect(wrapped.message).not.toContain('abcdef-1234');
     expect(wrapped.message).toContain('***');
+  });
+
+  it('does not re-wrap an already-redacted error (idempotent)', () => {
+    const apiKey = 'key-zzz';
+    const once = redactLuloError(new Error(`oops ${apiKey}`), apiKey);
+    const twice = redactLuloError(once, apiKey);
+    expect(twice).toBe(once);
+  });
+});
+
+describe('Lulo balances unavailable', () => {
+  it('surfaces a balances_unavailable fact-style payload without throwing', async () => {
+    setLuloClientFactory(() => buildFakeLulo({
+      rates: fakeRates(),
+      poolMeta: fakePoolMeta(),
+      balances: { balances_unavailable: true, reason: 'Lulo API does not currently expose balances for this wallet (404).' },
+      depositCalls: [],
+      withdrawCalls: [],
+      completeCalls: [],
+    }));
+    const ctx = makeContext({ store: inMemoryStore() });
+    const read = luloAdapter.reads.wallet_balances;
+    if (!read) throw new Error('wallet_balances read missing');
+    const result = await read.read({}, ctx);
+    expect(result).toMatchObject({
+      balances_unavailable: true,
+      reason: expect.stringContaining('balances'),
+    });
   });
 });
 

@@ -16,7 +16,19 @@
       "name": "Dialect client key",
       "scope": "dialect_client_key",
       "required": false,
-      "description": "Not used by MCP Jupiter Swap API v2 support. Jupiter Lend remains planned."
+      "description": "Not used by MCP Jupiter support. Lend Earn and Borrow are first-class via REST and the @jup-ag/lend SDK; no Dialect dependency."
+    },
+    {
+      "name": "@jup-ag/lend optional dependency",
+      "scope": "npm",
+      "required": false,
+      "description": "Optional Jupiter Lend SDK. Required for Borrow writes and SDK-backed Borrow reads. Earn REST reads work without it; missing SDK degrades Borrow capabilities with sdkUnavailable."
+    },
+    {
+      "name": "JUPITER_LEND_USE_SDK",
+      "scope": "env",
+      "required": false,
+      "description": "Optional boolean (true|false). Defaults to true. Set to false to force REST-only Earn reads even when the SDK is installed."
     },
     {
       "name": "JUPITER_TRIGGER_BASE_URL",

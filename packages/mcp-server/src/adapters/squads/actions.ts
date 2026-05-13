@@ -135,7 +135,7 @@ export const squadsCreateTransferProposalAction: AdapterAction<SquadsCreateTrans
       }
       decimals = tokenAccount.decimals;
       tokenSymbol = tokenAccount.symbol;
-      assertVaultMintDecimals(vaultSnapshot, mintAddress, decimals);
+      assertVaultMintDecimals(vaultSnapshot, mintAddress);
     }
 
     const amountRaw = parseDecimalAmount(input.amount, decimals, 'Squads transfer amount');
@@ -390,13 +390,14 @@ export function squadsVoteAction(operation: SquadsVoteOperation): AdapterAction<
         freshProposal,
       );
 
+      const reason = optionalString(action, 'reason');
       const built = await getSquadsMultisigClient().buildVoteTransaction(ctx.connection, {
         walletAddress: action.walletAddress,
         multisigAddress,
         transactionIndex,
         proposalAddress,
         operation,
-        ...(optionalString(action, 'reason') !== undefined && { reason: optionalString(action, 'reason')! }),
+        ...(reason !== undefined && { reason }),
       });
       const summary = formatVoteSummary(operation, freshProposal);
       const txid = await ctx.signAndBroadcast(built.transactionBase64, summary);

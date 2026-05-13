@@ -132,6 +132,7 @@ export type {
   JitoWithdrawMode,
 } from './client.js';
 export {
+  describeJitoReceiptClaimUnavailableReason,
   describeJitoStakeDepositUnavailableReason,
   describeJitoUnavailableReason,
   getJitoClient,

@@ -40,7 +40,7 @@ Ask for input when source mint, amount, destination chain, destination address, 
 
 ## Runtime
 
-The connector uses an injected `WormholeClient` facade. Hosts wire the official Wormhole SDK through `setWormholeClientFactory()`. Without a client, route discovery returns conservative static route facts, while quote, token, status, exposure, and prepare tools report that the Wormhole SDK client is not configured.
+The connector uses an injected `WormholeClient` facade. Hosts wire the official Wormhole SDK through `setWormholeClientFactory()`. Without a client, route discovery returns conservative static route facts with `prepareSupported=false`; quote, token, status, exposure, and prepare tools report that the Wormhole SDK client is not configured.
 
 ## User Approval
 

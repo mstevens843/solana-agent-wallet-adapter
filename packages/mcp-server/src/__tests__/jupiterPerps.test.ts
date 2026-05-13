@@ -91,6 +91,18 @@ describe('Jupiter Perps status read', () => {
       note: expect.stringContaining('future revision'),
     });
   });
+
+  it('connector_read_facts capability=perps dispatches to status read', async () => {
+    const result = await service().connectorReadFacts({ connectorId: 'jupiter', capability: 'perps' });
+    expect(result).toMatchObject({
+      capability: 'perps',
+      connectorId: 'jupiter',
+      product: 'perps',
+      readOnly: true,
+      apiStatus: 'work_in_progress',
+    });
+    expect((result as { connector?: { id?: string } }).connector?.id).toBe('jupiter');
+  });
 });
 
 describe('Jupiter Perps account snapshots', () => {

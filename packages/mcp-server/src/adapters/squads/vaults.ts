@@ -87,18 +87,26 @@ export function assertSufficientVaultBalance(
   }
 }
 
+/**
+ * Defensive check: ensure the vault's token-account decimals are non-negative and within the
+ * SPL Token range (0..18). Vault token-account decimals are sourced from the mint by the client,
+ * so this is a smoke test against malformed snapshots, not against a wrong-mint spoof.
+ */
 export function assertVaultMintDecimals(
   snapshot: SquadsVaultSnapshot,
   mintAddress: string,
-  expectedDecimals: number,
 ): void {
   const tokenAccount = snapshot.tokenAccounts.find((entry) => entry.mint === mintAddress);
   if (!tokenAccount) return;
-  if (tokenAccount.decimals !== expectedDecimals) {
+  if (
+    !Number.isInteger(tokenAccount.decimals) ||
+    tokenAccount.decimals < 0 ||
+    tokenAccount.decimals > 18
+  ) {
     throw new AdapterError(
       SQUADS_ADAPTER_ID,
-      'mint_decimals_mismatch',
-      `Squads vault expected ${expectedDecimals} decimals for mint ${mintAddress}, but token account reports ${tokenAccount.decimals}.`,
+      'mint_decimals_invalid',
+      `Squads vault token account for mint ${mintAddress} has invalid decimals ${tokenAccount.decimals}.`,
     );
   }
 }

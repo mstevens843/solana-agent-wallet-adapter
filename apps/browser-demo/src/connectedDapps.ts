@@ -702,7 +702,7 @@ export const PROTOCOL_CONNECTORS: ProtocolConnector[] = [
     description:
       'First-class bridge reads and prepare-only Solana-source Wormhole token transfers, Solana-compatible redeem, and recovery/resume actions.',
     supportedClusters: ['mainnet-beta', 'devnet'],
-    capabilities: ['first_class_adapter', 'read_positions', 'blink_actions', 'read_markets'],
+    capabilities: ['first_class_adapter', 'read_positions', 'read_markets'],
     supportedActions: [
       'Supported routes',
       'Token snapshot',

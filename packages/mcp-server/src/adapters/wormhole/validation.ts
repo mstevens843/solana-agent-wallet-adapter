@@ -45,7 +45,11 @@ export function normalizeSourceChain(value: string | undefined): string {
 }
 
 export function normalizeDestinationChain(value: string | undefined): string {
-  return normalizeWormholeChain(value, 'destinationChain');
+  try {
+    return normalizeWormholeChain(value, 'destinationChain');
+  } catch (err) {
+    throw new AdapterError(WORMHOLE_ADAPTER_ID, 'invalid_request', err instanceof Error ? err.message : String(err));
+  }
 }
 
 export function normalizeRouteType(value: string | undefined): WormholeRouteType {
@@ -74,7 +78,7 @@ export async function normalizeWormholeAmount(input: {
   const decimals = await resolveMintDecimals(input.connection, input.sourceMint);
   const raw = parseDecimalAmount(input.amount, decimals, 'Wormhole transfer amount');
   return {
-    amount: input.amount,
+    amount: input.amount.trim(),
     amountRaw: raw.toString(),
     decimals,
   };
@@ -85,14 +89,29 @@ export async function resolveMintDecimals(
   mintAddress: string,
 ): Promise<number> {
   if (mintAddress === 'native') return 9;
+  if (typeof connection.getParsedAccountInfo !== 'function') {
+    throw new AdapterError(
+      WORMHOLE_ADAPTER_ID,
+      'mint_decimals_unavailable',
+      `Wormhole could not resolve decimals for ${mintAddress}; provide an RPC connection with parsed mint account support.`,
+    );
+  }
   try {
-    const info = await connection.getParsedAccountInfo?.(new PublicKey(mintAddress));
+    const info = await connection.getParsedAccountInfo(new PublicKey(mintAddress));
     const decimals = info?.value?.data?.parsed?.info?.decimals;
     if (typeof decimals === 'number' && Number.isInteger(decimals) && decimals >= 0) return decimals;
-  } catch {
-    // Fall through to the conservative default used by the token registry for USDC-like assets.
+  } catch (err) {
+    throw new AdapterError(
+      WORMHOLE_ADAPTER_ID,
+      'mint_decimals_unavailable',
+      `Wormhole could not read decimals for ${mintAddress}: ${err instanceof Error ? err.message : String(err)}`,
+    );
   }
-  return 6;
+  throw new AdapterError(
+    WORMHOLE_ADAPTER_ID,
+    'mint_decimals_unavailable',
+    `Wormhole could not resolve decimals for ${mintAddress}; the mint account was missing or not parsed.`,
+  );
 }
 
 export function validateDestinationAddress(chain: string, address: string): string {
@@ -132,9 +151,9 @@ export function assertDecimalAtMost(input: {
   code: string;
   label: string;
 }): void {
-  const actual = decimalOrUndefined(input.actual);
-  const cap = decimalOrUndefined(input.cap);
-  if (!actual || !cap) return;
+  const cap = parseOptionalNonNegativeDecimal(input.cap, `${input.label} cap`);
+  if (!cap) return;
+  const actual = parseRequiredNonNegativeDecimal(input.actual, input.label, 'missing_quote_fact');
   if (actual.gt(cap)) {
     throw new AdapterError(
       WORMHOLE_ADAPTER_ID,
@@ -150,9 +169,9 @@ export function assertDecimalAtLeast(input: {
   code: string;
   label: string;
 }): void {
-  const actual = decimalOrUndefined(input.actual);
-  const floor = decimalOrUndefined(input.floor);
-  if (!actual || !floor) return;
+  const floor = parseOptionalNonNegativeDecimal(input.floor, `${input.label} minimum`);
+  if (!floor) return;
+  const actual = parseRequiredNonNegativeDecimal(input.actual, input.label, 'missing_quote_fact');
   if (actual.lt(floor)) {
     throw new AdapterError(
       WORMHOLE_ADAPTER_ID,
@@ -163,12 +182,28 @@ export function assertDecimalAtLeast(input: {
 }
 
 export function assertFreshIso(asOfIso: string | undefined, maxAgeMs: number): void {
-  if (!asOfIso) return;
-  const asOf = new Date(asOfIso).getTime();
-  if (!Number.isFinite(asOf)) return;
+  const asOf = parseRequiredIso(asOfIso, 'quote asOfIso');
   if (Date.now() - asOf > maxAgeMs) {
     throw new AdapterError(WORMHOLE_ADAPTER_ID, 'stale_quote', 'Wormhole quote is stale; refresh before approval.');
   }
+  if (asOf - Date.now() > 30_000) {
+    throw new AdapterError(WORMHOLE_ADAPTER_ID, 'invalid_quote', 'Wormhole quote timestamp is in the future; refresh before approval.');
+  }
+}
+
+export function assertNotExpiredIso(expiresAtIso: string | undefined): void {
+  if (!expiresAtIso) return;
+  const expiresAt = parseRequiredIso(expiresAtIso, 'quote expiresAtIso');
+  if (Date.now() > expiresAt) {
+    throw new AdapterError(WORMHOLE_ADAPTER_ID, 'stale_quote', 'Wormhole quote is expired; refresh before approval.');
+  }
+}
+
+export function optionalNonNegativeDecimal(value: string | undefined, field: string): string | undefined {
+  const trimmed = optionalNonEmptyString(value);
+  if (trimmed === undefined) return undefined;
+  parseOptionalNonNegativeDecimal(trimmed, field);
+  return trimmed;
 }
 
 export function requireActionString(action: PreparedAction, key: string): string {
@@ -203,11 +238,39 @@ function isEvmChain(normalized: string): boolean {
     normalized === 'binance';
 }
 
-function decimalOrUndefined(value: string | undefined): Decimal | undefined {
+function parseOptionalNonNegativeDecimal(value: string | undefined, label: string): Decimal | undefined {
   if (!value?.trim()) return undefined;
-  try {
-    return new Decimal(value.trim());
-  } catch {
-    return undefined;
+  return parseRequiredNonNegativeDecimal(value, label, 'invalid_request');
+}
+
+function parseRequiredNonNegativeDecimal(
+  value: string | undefined,
+  label: string,
+  code: 'invalid_request' | 'missing_quote_fact',
+): Decimal {
+  const trimmed = value?.trim();
+  if (!trimmed) {
+    throw new AdapterError(WORMHOLE_ADAPTER_ID, code, `Wormhole ${label} is required for this guard.`);
   }
+  try {
+    const decimal = new Decimal(trimmed);
+    if (!decimal.isFinite() || decimal.isNegative()) {
+      throw new Error('not a finite non-negative decimal');
+    }
+    return decimal;
+  } catch {
+    throw new AdapterError(WORMHOLE_ADAPTER_ID, 'invalid_request', `Wormhole ${label} must be a non-negative decimal string.`);
+  }
+}
+
+function parseRequiredIso(value: string | undefined, label: string): number {
+  const trimmed = value?.trim();
+  if (!trimmed) {
+    throw new AdapterError(WORMHOLE_ADAPTER_ID, 'invalid_quote', `Wormhole ${label} is missing.`);
+  }
+  const timestamp = new Date(trimmed).getTime();
+  if (!Number.isFinite(timestamp)) {
+    throw new AdapterError(WORMHOLE_ADAPTER_ID, 'invalid_quote', `Wormhole ${label} is invalid.`);
+  }
+  return timestamp;
 }

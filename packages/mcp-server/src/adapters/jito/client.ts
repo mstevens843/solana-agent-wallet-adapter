@@ -21,7 +21,6 @@ import {
   JITO_STAKE_POOL_ADDRESS,
   JITOSOL_DECIMALS,
   JITOSOL_MINT,
-  LAMPORTS_PER_SOL_BIGINT,
   SPL_STAKE_POOL_PROGRAM_ID,
   U64_MAX_EPOCH,
 } from './constants.js';
@@ -34,7 +33,9 @@ const FEATURE_DISABLED_REASON = 'JITO_CONNECTOR_ENABLED=false disables the Jito 
 const STAKE_POOL_UNAVAILABLE_REASON =
   '@solana/spl-stake-pool is not installed or could not be resolved. Install it as an optional MCP server dependency, or inject a mock with setJitoClientFactory().';
 const INTERCEPTOR_UNAVAILABLE_REASON =
-  '@jito-foundation/stake-deposit-interceptor-sdk is not installed or could not be resolved. Existing stake-account deposits are unavailable, but other JitoSOL actions can still work.';
+  '@jito-foundation/stake-deposit-interceptor-sdk is not installed or could not be resolved. Existing stake-account deposits, deposit receipt reads, and receipt claims are unavailable, but other JitoSOL actions can still work.';
+const SPL_TOKEN_UNAVAILABLE_REASON =
+  '@solana/spl-token is not installed or could not be resolved. Jito deposit receipt claims are unavailable because the connector cannot derive or create the wallet JitoSOL token account.';
 
 type SplStakePoolModule = typeof import('@solana/spl-stake-pool');
 type JitoInterceptorModule = typeof import('@jito-foundation/stake-deposit-interceptor-sdk');
@@ -784,6 +785,12 @@ export function describeJitoStakeDepositUnavailableReason(): string | undefined 
   return canResolvePackage(STAKE_DEPOSIT_INTERCEPTOR_PACKAGE) ? undefined : INTERCEPTOR_UNAVAILABLE_REASON;
 }
 
+export function describeJitoReceiptClaimUnavailableReason(): string | undefined {
+  if (isJitoConnectorFeatureDisabled()) return FEATURE_DISABLED_REASON;
+  if (!canResolvePackage(STAKE_DEPOSIT_INTERCEPTOR_PACKAGE)) return INTERCEPTOR_UNAVAILABLE_REASON;
+  return canResolvePackage(SPL_TOKEN_PACKAGE) ? undefined : SPL_TOKEN_UNAVAILABLE_REASON;
+}
+
 async function loadStakePoolSdk(): Promise<SplStakePoolModule> {
   return import(STAKE_POOL_PACKAGE) as Promise<SplStakePoolModule>;
 }
@@ -796,6 +803,9 @@ async function loadStakeDepositInterceptorSdk(): Promise<JitoInterceptorModule> 
 }
 
 async function loadSplTokenSdk(): Promise<SplTokenModule> {
+  if (!canResolvePackage(SPL_TOKEN_PACKAGE)) {
+    throw new AdapterError(JITO_ADAPTER_ID, 'spl_token_unavailable', SPL_TOKEN_UNAVAILABLE_REASON);
+  }
   return import(SPL_TOKEN_PACKAGE) as Promise<SplTokenModule>;
 }
 

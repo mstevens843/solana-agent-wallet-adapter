@@ -2,10 +2,8 @@ import type { Connection } from '@solana/web3.js';
 
 import { AdapterError } from '../types.js';
 import {
-  DEFAULT_WORMHOLE_FEE_CAP,
   WORMHOLE_ADAPTER_ID,
   WORMHOLE_FEATURE_FLAG_ENV,
-  WORMHOLE_PROGRAM_IDS,
   WORMHOLE_RPC_BASE_URL_ENV,
   type WormholeNetwork,
   type WormholeRouteMode,
@@ -293,15 +291,16 @@ export function staticWormholeRoute(input: {
     routeType,
     mode: automatic ? 'automatic' : 'manual',
     supported: true,
-    prepareSupported: true,
+    prepareSupported: false,
     manualRedemptionRequired: !automatic,
     relayerSupported: automatic,
     ...(input.sourceMint !== undefined && { sourceMint: input.sourceMint }),
-    bridgeFee: DEFAULT_WORMHOLE_FEE_CAP,
-    programIds: WORMHOLE_PROGRAM_IDS,
-    warnings: automatic
-      ? ['Automatic routes may use relayer and native-gas assumptions; refresh before wallet approval.']
-      : ['Manual redemption may require a destination-chain wallet after the Solana source transaction confirms.'],
+    warnings: [
+      'Wormhole SDK client is not configured; this static route fact is read-only and cannot be prepared.',
+      ...(automatic
+        ? ['Automatic route support and relayer fees must be refreshed by a configured Wormhole client before approval.']
+        : ['Manual redemption requirements must be refreshed by a configured Wormhole client before approval.']),
+    ],
   };
 }
 

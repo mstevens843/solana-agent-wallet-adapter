@@ -273,6 +273,25 @@ export interface ConnectorFactReadInput {
   includeListings?: boolean;
   includeBids?: boolean;
   includeCompressed?: boolean;
+  realmAddress?: string;
+  governanceAddress?: string;
+  proposalAddress?: string;
+  multisigAddress?: string;
+  vaultIndex?: number;
+  transactionIndex?: number;
+  governingTokenMint?: string;
+  proposalState?:
+    | 'draft'
+    | 'signing_off'
+    | 'voting'
+    | 'succeeded'
+    | 'defeated'
+    | 'executing'
+    | 'completed'
+    | 'cancelled'
+    | 'executing_with_errors'
+    | 'vetoed'
+    | 'all';
   maxListings?: number;
   maxBids?: number;
   listedOnly?: boolean;
@@ -612,6 +631,7 @@ export function factsFromJupiterTokenRead(
         name: token.name,
         decimals: token.decimals,
         tokenProgram: token.tokenProgram,
+        verification: token.verification,
         tags: token.tags,
         holderCount: token.holderCount,
         liquidity: token.liquidity,
@@ -679,7 +699,7 @@ export function factsFromJupiterTokenRiskEvidence(
       value: evidence.tokenFound
         ? `${evidence.name ?? tokenLabel}${evidence.isVerified === true ? ' · verified' : ' · not verified'}`
         : 'Token metadata missing',
-      tone: evidence.riskLabels.some((label) => label.includes('suspicious') || label.includes('very_low'))
+      tone: highRiskJupiterTokenEvidence(evidence.riskLabels)
         ? 'fail'
         : evidence.warnings.length > 1
           ? 'warn'
@@ -689,7 +709,9 @@ export function factsFromJupiterTokenRiskEvidence(
         mint: evidence.mint,
         decimals: evidence.decimals,
         tokenProgram: evidence.tokenProgram,
+        verification: evidence.verification,
         tags: evidence.tags,
+        candidateTokens: evidence.candidateTokens,
         organicScore: evidence.organicScore,
         organicScoreLabel: evidence.organicScoreLabel,
         audit: evidence.audit,
@@ -699,10 +721,13 @@ export function factsFromJupiterTokenRiskEvidence(
         mcap: evidence.mcap,
         fdv: evidence.fdv,
         stats: evidence.stats,
+        priceRequested: evidence.priceRequested,
         asOf: evidence.asOf,
       },
     }),
-    fact({
+    ...(evidence.priceRequested === false
+      ? []
+      : [fact({
       connectorId: 'jupiter',
       label: 'Jupiter USD price',
       value: evidence.usdPrice === undefined
@@ -713,15 +738,16 @@ export function factsFromJupiterTokenRiskEvidence(
       detail: {
         priceBlockId: evidence.priceBlockId,
         priceChange24h: evidence.priceChange24h,
+        priceMissingReason: evidence.priceMissingReason,
       },
-    }),
+    })]),
   ];
   if (evidence.riskLabels.length > 0) {
     facts.push(fact({
       connectorId: 'jupiter',
       label: 'Risk labels',
       value: evidence.riskLabels.join(', '),
-      tone: evidence.riskLabels.some((label) => label.includes('suspicious') || label.includes('very_low'))
+      tone: highRiskJupiterTokenEvidence(evidence.riskLabels)
         ? 'fail'
         : 'warn',
       checkedAt,
@@ -737,6 +763,17 @@ export function factsFromJupiterTokenRiskEvidence(
     }));
   }
   return facts;
+}
+
+function highRiskJupiterTokenEvidence(labels: string[]): boolean {
+  return labels.some((label) =>
+    label.includes('suspicious')
+    || label.includes('very_low')
+    || label.includes('blocked')
+    || label.includes('banned')
+    || label.includes('blacklisted')
+    || label.includes('scam'),
+  );
 }
 
 export function factsFromJupiterLendEarnTokens(
@@ -1150,9 +1187,35 @@ export function factsFromJupiterPredictionEventDetail(
     ),
   ];
   for (const market of result.markets?.slice(0, 10) ?? []) {
-    facts.push(buildPredictionEventFact(market, checkedAt));
+    facts.push(buildPredictionMarketRowFact(market, checkedAt));
   }
   return facts;
+}
+
+function buildPredictionMarketRowFact(
+  market: NormalizedPredictionMarket,
+  checkedAt: string,
+): ConnectorFact {
+  const yes = market.yesPrice ?? 'n/a';
+  const no = market.noPrice ?? 'n/a';
+  return fact({
+    connectorId: 'jupiter',
+    label: market.question ?? market.id ?? 'Market',
+    value: market.status === 'open'
+      ? `Open · YES ${yes} · NO ${no}`
+      : `${market.rawStatus ?? market.status}${market.result ? ` · ${market.result}` : ''}`,
+    tone: predictionStatusTone(market.status),
+    checkedAt,
+    detail: {
+      id: market.id,
+      provider: market.provider,
+      eventId: market.eventId,
+      rawStatus: market.rawStatus,
+      closeAt: market.closeAt,
+      resolveAt: market.resolveAt,
+      volume: market.volume,
+    },
+  });
 }
 
 function buildPredictionEventFact(

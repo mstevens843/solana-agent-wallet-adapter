@@ -140,6 +140,7 @@ function fakeVaultSnapshot(overrides: Partial<DriftVaultSnapshot> = {}): DriftVa
     vaultAddress: VAULT,
     name: 'JLP Delta Neutral',
     manager: 'MnGr1234567890abcdefghijklmnopqrstuvwxyzABCD',
+    programId: 'vAuLTsyrvSfZRuRB3XgvkPwNGgYSs9YRYymVebLKoxR',
     depositMint: 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v',
     depositSymbol: 'USDC',
     decimals: 6,
@@ -663,5 +664,57 @@ describe('Drift adapter SDK unavailable', () => {
         ctx,
       ),
     ).rejects.toThrowError(/Drift adapter is not configured/);
+  });
+});
+
+describe('Drift vault program guard', () => {
+  it('rejects prepare when vault snapshot reports a non-canonical program id', async () => {
+    const fakeState: FakeDriftState = {
+      vaultSnapshot: fakeVaultSnapshot({ programId: 'ImpostorProgram111111111111111111111111111' }),
+      userSnapshot: fakeUserSnapshot(),
+      positions: [fakeDepositor()],
+      withdrawStatus: fakeWithdrawStatus(),
+      depositCalls: [],
+      requestWithdrawCalls: [],
+      cancelWithdrawCalls: [],
+      completeWithdrawCalls: [],
+    };
+    setDriftVaultClientFactory(() => buildFakeDrift(fakeState));
+    const store = inMemoryStore();
+    const ctx = makeContext({ store });
+    await expect(
+      requireDriftAction('vault_deposit').prepare({ vaultAddress: VAULT, amount: '5' }, ctx),
+    ).rejects.toBeInstanceOf(AdapterError);
+  });
+});
+
+describe('Drift wallet vault positions read returns facts', () => {
+  it('includes per-vault facts and totals', async () => {
+    const fakeState: FakeDriftState = {
+      vaultSnapshot: fakeVaultSnapshot(),
+      userSnapshot: fakeUserSnapshot(),
+      positions: [fakeDepositor({ shares: '40', valueAtSharePrice: '42', pendingWithdrawShares: '0' })],
+      withdrawStatus: fakeWithdrawStatus(),
+      depositCalls: [],
+      requestWithdrawCalls: [],
+      cancelWithdrawCalls: [],
+      completeWithdrawCalls: [],
+    };
+    setDriftVaultClientFactory(() => buildFakeDrift(fakeState));
+    const store = inMemoryStore();
+    const ctx = makeContext({ store });
+    const read = driftAdapter.reads.wallet_vault_positions;
+    if (!read) throw new Error('wallet_vault_positions read missing');
+    const result = (await read.read({}, ctx)) as Record<string, unknown> & {
+      facts: Record<string, unknown>;
+    };
+    expect(result.facts).toMatchObject({
+      walletAddress: WALLET,
+      vaultCount: 1,
+      pendingWithdrawCount: 0,
+      totalShares: '40',
+      totalValue: '42',
+    });
+    expect(Array.isArray((result.facts as { vaults: unknown[] }).vaults)).toBe(true);
   });
 });

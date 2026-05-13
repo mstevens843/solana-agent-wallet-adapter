@@ -351,7 +351,7 @@ describe('Jupiter Trigger vault and orders', () => {
     }), captured));
     const result = await listJupiterTriggerOrders(config, { walletAddress: WALLET });
     expect(result.orders).toHaveLength(1);
-    expect(result.orders[0].cancellable).toBe(true);
+    expect(result.orders[0]!.cancellable).toBe(true);
     expect(captured[0]?.url).toContain('state=open');
   });
 });

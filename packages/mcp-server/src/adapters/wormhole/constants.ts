@@ -1,6 +1,8 @@
 import { PublicKey } from '@solana/web3.js';
 import type { Cluster } from '@solana-agent-wallet-adapter/core';
 
+import { AdapterError } from '../types.js';
+
 export const WORMHOLE_ADAPTER_ID = 'wormhole' as const;
 export const WORMHOLE_NAME = 'Wormhole';
 export const WORMHOLE_WEBSITE = 'https://wormhole.com';
@@ -32,7 +34,6 @@ export const WORMHOLE_NETWORK_ENV = 'WORMHOLE_NETWORK';
 export const WORMHOLE_RPC_BASE_URL_ENV = 'WORMHOLE_RPC_BASE_URL';
 
 export const MAX_WORMHOLE_QUOTE_AGE_MS = 60_000;
-export const DEFAULT_WORMHOLE_FEE_CAP = '0';
 
 export const WORMHOLE_SOURCE_CHAIN = 'Solana';
 
@@ -53,10 +54,21 @@ export type WormholeDestinationChain = typeof WORMHOLE_DESTINATION_CHAINS[number
 
 export function wormholeNetworkForCluster(cluster: Cluster): WormholeNetwork {
   const configured = process.env[WORMHOLE_NETWORK_ENV]?.trim();
-  if (configured === 'Mainnet' || configured === 'Testnet') return configured;
+  if (configured) {
+    const normalized = configured.replace(/[\s_-]+/g, '').toLowerCase();
+    if (normalized === 'mainnet') return 'Mainnet';
+    if (normalized === 'testnet') return 'Testnet';
+    throw new AdapterError(
+      WORMHOLE_ADAPTER_ID,
+      'invalid_request',
+      `${WORMHOLE_NETWORK_ENV} must be Mainnet or Testnet; received ${configured}.`,
+    );
+  }
   if (cluster === 'mainnet-beta') return 'Mainnet';
   if (cluster === 'devnet') return 'Testnet';
-  throw new Error(
+  throw new AdapterError(
+    WORMHOLE_ADAPTER_ID,
+    'unsupported_cluster',
     `Wormhole is only configured for mainnet-beta and devnet in this runtime; current cluster is ${cluster}.`,
   );
 }

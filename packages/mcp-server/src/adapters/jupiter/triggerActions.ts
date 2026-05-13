@@ -33,7 +33,9 @@ import {
 export interface JupiterTriggerSingleOrderInput {
   inputMint: string;
   outputMint: string;
-  amount: string;
+  /** Deprecated alias for amountRaw. */
+  amount?: string;
+  amountRaw?: string;
   triggerMint: string;
   triggerCondition: 'above' | 'below';
   triggerPriceUsd: number;
@@ -48,7 +50,9 @@ export interface JupiterTriggerSingleOrderInput {
 export interface JupiterTriggerOcoOrderInput {
   inputMint: string;
   outputMint: string;
-  amount: string;
+  /** Deprecated alias for amountRaw. */
+  amount?: string;
+  amountRaw?: string;
   triggerMint: string;
   takeProfitPriceUsd: number;
   stopLossPriceUsd: number;
@@ -64,7 +68,9 @@ export interface JupiterTriggerOcoOrderInput {
 export interface JupiterTriggerOtocoOrderInput {
   inputMint: string;
   outputMint: string;
-  amount: string;
+  /** Deprecated alias for amountRaw. */
+  amount?: string;
+  amountRaw?: string;
   triggerMint: string;
   entryCondition: 'above' | 'below';
   entryPriceUsd: number;
@@ -81,6 +87,7 @@ export interface JupiterTriggerOtocoOrderInput {
 
 export interface JupiterTriggerEditOrderInput {
   orderId: string;
+  orderType?: 'single' | 'oco' | 'otoco';
   newTriggerPriceUsd?: number;
   newSlippageBps?: number;
   newExpiresAt?: string;

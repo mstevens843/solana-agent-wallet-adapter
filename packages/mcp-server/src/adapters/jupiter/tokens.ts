@@ -62,6 +62,7 @@ export interface JupiterTokenInfo {
   audit?: Record<string, unknown>;
   organicScore?: number;
   organicScoreLabel?: 'high' | 'medium' | 'low' | string;
+  verification?: string;
   isVerified?: boolean | null;
   cexes?: string[];
   tags?: string[];
@@ -143,6 +144,10 @@ export function normalizeJupiterTokens(rows: Record<string, unknown>[]): Jupiter
 export function normalizeJupiterToken(row: Record<string, unknown>): JupiterTokenInfo | undefined {
   const id = stringField(row.id ?? row.mint ?? row.address);
   if (!id) return undefined;
+  const tags = stringArrayField(row.tags);
+  const verification = stringField(row.verification ?? row.verificationStatus ?? row.tokenVerification);
+  const explicitVerified = booleanOrNullField(row.isVerified);
+  const isVerified = explicitVerified ?? deriveVerifiedStatus(verification, tags);
   return {
     id,
     ...(stringField(row.name) !== undefined && { name: stringField(row.name) }),
@@ -174,9 +179,10 @@ export function normalizeJupiterToken(row: Record<string, unknown>): JupiterToke
     ...(recordField(row.audit) !== undefined && { audit: recordField(row.audit) }),
     ...(numberField(row.organicScore) !== undefined && { organicScore: numberField(row.organicScore) }),
     ...(stringField(row.organicScoreLabel) !== undefined && { organicScoreLabel: stringField(row.organicScoreLabel) }),
-    ...(booleanOrNullField(row.isVerified) !== undefined && { isVerified: booleanOrNullField(row.isVerified) }),
+    ...(verification !== undefined && { verification }),
+    ...(isVerified !== undefined && { isVerified }),
     ...(stringArrayField(row.cexes) !== undefined && { cexes: stringArrayField(row.cexes) }),
-    ...(stringArrayField(row.tags) !== undefined && { tags: stringArrayField(row.tags) }),
+    ...(tags !== undefined && { tags }),
     ...(normalizeStats(row.stats5m) !== undefined && { stats5m: normalizeStats(row.stats5m) }),
     ...(normalizeStats(row.stats1h) !== undefined && { stats1h: normalizeStats(row.stats1h) }),
     ...(normalizeStats(row.stats6h) !== undefined && { stats6h: normalizeStats(row.stats6h) }),
@@ -240,6 +246,21 @@ function numberField(value: unknown): number | undefined {
 function booleanOrNullField(value: unknown): boolean | null | undefined {
   if (typeof value === 'boolean') return value;
   return value === null ? null : undefined;
+}
+
+function deriveVerifiedStatus(verification: string | undefined, tags: string[] | undefined): boolean | undefined {
+  const normalized = verification?.trim().toLowerCase();
+  if (normalized) {
+    if (['verified', 'strict', 'strict_verified'].includes(normalized)) return true;
+    if (['unknown', 'unverified', 'community', 'none'].includes(normalized)) return false;
+    if (isBlockedVerification(normalized)) return false;
+  }
+  if (tags?.some((tag) => tag.trim().toLowerCase() === 'verified')) return true;
+  return undefined;
+}
+
+function isBlockedVerification(value: string): boolean {
+  return ['banned', 'blocked', 'blacklisted', 'scam', 'suspicious'].includes(value);
 }
 
 function stringArrayField(value: unknown): string[] | undefined {

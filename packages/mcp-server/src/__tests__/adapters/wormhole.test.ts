@@ -56,6 +56,7 @@ class FakeBackend {
 interface FakeWormholeState {
   quote: WormholeQuoteSnapshot;
   status: WormholeTransferStatus;
+  statusError?: Error;
   quoteCalls: Array<WormholeQuoteInput & { wormholeNetwork: 'Mainnet' | 'Testnet' }>;
   statusCalls: Array<WormholeStatusInput & { wormholeNetwork: 'Mainnet' | 'Testnet' }>;
   transferBuilds: Array<WormholeBuildTransferInput & { wormholeNetwork: 'Mainnet' | 'Testnet' }>;
@@ -107,7 +108,7 @@ describe('Wormhole adapter', () => {
         destinationChain: 'Base',
         routeType: 'token_bridge',
         supported: true,
-        prepareSupported: true,
+        prepareSupported: false,
       }),
     ]);
     expect(describeWormholeUnavailableReason()).toContain('@wormhole-foundation/sdk');
@@ -173,6 +174,27 @@ describe('Wormhole adapter', () => {
     expect(state.transferBuilds).toHaveLength(0);
   });
 
+  it('blocks execution when the refreshed route type changes', async () => {
+    const state = fakeState();
+    setWormholeClientFactory(() => fakeWormholeClient(state));
+    const ctx = makeContext();
+    const prepared = await wormholeTransferAction.prepare({
+      sourceMint: USDC_MINT,
+      amount: '10',
+      destinationChain: 'Base',
+      destinationAddress: DESTINATION,
+    }, ctx);
+    state.quote = fakeQuote({
+      routeType: 'cctp',
+      programIds: ['CCTP11111111111111111111111111111111111111'],
+    });
+
+    await expect(wormholeTransferAction.execute(preparedAction(prepared.addInput), ctx)).rejects.toMatchObject({
+      code: 'route_type_changed',
+    });
+    expect(state.transferBuilds).toHaveLength(0);
+  });
+
   it('blocks transfer preparation when bridge fees exceed the caller cap', async () => {
     const state = fakeState({ quote: fakeQuote({ bridgeFee: '0.5' }) });
     setWormholeClientFactory(() => fakeWormholeClient(state));
@@ -185,6 +207,111 @@ describe('Wormhole adapter', () => {
       maxBridgeFee: '0.1',
     }, makeContext())).rejects.toMatchObject({
       code: 'fee_above_cap',
+    });
+  });
+
+  it('fails closed when a caller supplies an invalid bridge fee cap', async () => {
+    const state = fakeState();
+    setWormholeClientFactory(() => fakeWormholeClient(state));
+
+    await expect(wormholeTransferAction.prepare({
+      sourceMint: USDC_MINT,
+      amount: '10',
+      destinationChain: 'Base',
+      destinationAddress: DESTINATION,
+      maxBridgeFee: 'not-a-decimal',
+    }, makeContext())).rejects.toMatchObject({
+      code: 'invalid_request',
+    });
+    expect(state.quoteCalls).toHaveLength(0);
+  });
+
+  it('fails closed when mint decimals cannot be resolved', async () => {
+    const state = fakeState();
+    setWormholeClientFactory(() => fakeWormholeClient(state));
+
+    await expect(wormholeTransferAction.prepare({
+      sourceMint: USDC_MINT,
+      amount: '10',
+      destinationChain: 'Base',
+      destinationAddress: DESTINATION,
+    }, makeContext({ parsedMintDecimals: null }))).rejects.toMatchObject({
+      code: 'mint_decimals_unavailable',
+    });
+    expect(state.quoteCalls).toHaveLength(0);
+  });
+
+  it('rejects stale or expired quotes before preparing a transfer', async () => {
+    const stale = fakeState({
+      quote: fakeQuote({ asOfIso: new Date(Date.now() - 61_000).toISOString() }),
+    });
+    setWormholeClientFactory(() => fakeWormholeClient(stale));
+
+    await expect(wormholeTransferAction.prepare({
+      sourceMint: USDC_MINT,
+      amount: '10',
+      destinationChain: 'Base',
+      destinationAddress: DESTINATION,
+    }, makeContext())).rejects.toMatchObject({
+      code: 'stale_quote',
+    });
+
+    const expired = fakeState({
+      quote: fakeQuote({ expiresAtIso: new Date(Date.now() - 1_000).toISOString() }),
+    });
+    setWormholeClientFactory(() => fakeWormholeClient(expired));
+
+    await expect(wormholeTransferAction.prepare({
+      sourceMint: USDC_MINT,
+      amount: '10',
+      destinationChain: 'Base',
+      destinationAddress: DESTINATION,
+    }, makeContext())).rejects.toMatchObject({
+      code: 'stale_quote',
+    });
+  });
+
+  it('requires automatic routing to resolve to a concrete route before preparing transfer', async () => {
+    const state = fakeState({ quote: fakeQuote({ routeType: 'auto' }) });
+    setWormholeClientFactory(() => fakeWormholeClient(state));
+
+    await expect(wormholeTransferAction.prepare({
+      sourceMint: USDC_MINT,
+      amount: '10',
+      destinationChain: 'Base',
+      destinationAddress: DESTINATION,
+    }, makeContext())).rejects.toMatchObject({
+      code: 'missing_route_facts',
+    });
+    expect(state.transferBuilds).toHaveLength(0);
+  });
+
+  it('requires destination token and route program facts before preparing transfer variants', async () => {
+    const missingToken = fakeState({ quote: fakeQuote({ destinationToken: undefined }) });
+    setWormholeClientFactory(() => fakeWormholeClient(missingToken));
+
+    await expect(wormholeTransferAction.prepare({
+      sourceMint: USDC_MINT,
+      amount: '10',
+      destinationChain: 'Base',
+      destinationAddress: DESTINATION,
+    }, makeContext())).rejects.toMatchObject({
+      code: 'missing_destination_token',
+    });
+
+    const missingProgramIds = fakeState({
+      quote: fakeQuote({ routeType: 'cctp', programIds: undefined }),
+    });
+    setWormholeClientFactory(() => fakeWormholeClient(missingProgramIds));
+
+    await expect(wormholeTransferAction.prepare({
+      sourceMint: USDC_MINT,
+      amount: '10',
+      destinationChain: 'Base',
+      destinationAddress: DESTINATION,
+      routeType: 'cctp',
+    }, makeContext())).rejects.toMatchObject({
+      code: 'missing_route_program_ids',
     });
   });
 
@@ -219,6 +346,52 @@ describe('Wormhole adapter', () => {
         expectedMint: USDC_MINT,
       }),
     ]);
+  });
+
+  it('refuses redeem when status cannot be resolved or the VAA is not ready', async () => {
+    const unavailable = fakeState({ statusError: new Error('status unavailable') });
+    setWormholeClientFactory(() => fakeWormholeClient(unavailable));
+
+    await expect(wormholeRedeemAction.prepare({
+      destinationChain: 'Solana',
+      vaa: 'AQIDBA==',
+    }, makeContext())).rejects.toThrow(/status unavailable/);
+
+    const pending = fakeState({
+      status: fakeStatus({
+        state: 'pending_vaa',
+        vaaAvailable: false,
+        nextAction: 'wait_for_vaa',
+        solanaExecutable: true,
+      }),
+    });
+    setWormholeClientFactory(() => fakeWormholeClient(pending));
+
+    await expect(wormholeRedeemAction.prepare({
+      destinationChain: 'Solana',
+      vaa: 'AQIDBA==',
+    }, makeContext())).rejects.toMatchObject({
+      code: 'vaa_not_ready',
+    });
+  });
+
+  it('refuses redeem for unknown status even when the client marks it Solana-executable', async () => {
+    const state = fakeState({
+      status: fakeStatus({
+        state: 'unknown',
+        vaaAvailable: true,
+        nextAction: 'redeem_on_solana',
+        solanaExecutable: true,
+      }),
+    });
+    setWormholeClientFactory(() => fakeWormholeClient(state));
+
+    await expect(wormholeRedeemAction.prepare({
+      destinationChain: 'Solana',
+      vaa: 'AQIDBA==',
+    }, makeContext())).rejects.toMatchObject({
+      code: 'status_not_ready',
+    });
   });
 
   it('refuses destination-chain redeem signing outside Solana', async () => {
@@ -317,13 +490,13 @@ function fakeWormholeClient(state: FakeWormholeState): WormholeClient {
         amountRaw: input.amountRaw,
         destinationChain: input.destinationChain,
         destinationAddress: input.destinationAddress,
-        routeType: input.routeType,
+        routeType: state.quote.routeType,
         nativeGasDropoff: input.nativeGasDropoff,
-        asOfIso: new Date().toISOString(),
       };
     },
     async getTransferStatus(_connection, input) {
       state.statusCalls.push(input);
+      if (state.statusError) throw state.statusError;
       return state.status;
     },
     async getWalletBridgeExposure(_connection, input) {
@@ -419,13 +592,15 @@ function fakeConfig(cluster: 'mainnet-beta' | 'devnet' = 'mainnet-beta'): AgentW
 function makeContext(opts: {
   cluster?: 'mainnet-beta' | 'devnet';
   signed?: (transactionBase64: string, summary: string) => Promise<string>;
+  parsedMintDecimals?: number | null;
 } = {}): DAppAdapterContext {
   return {
     backend: new FakeBackend() as unknown as DAppAdapterContext['backend'],
     config: fakeConfig(opts.cluster ?? 'mainnet-beta'),
     connection: {
       async getParsedAccountInfo() {
-        return { value: { data: { parsed: { info: { decimals: 6 } } } } };
+        if (opts.parsedMintDecimals === null) return { value: null };
+        return { value: { data: { parsed: { info: { decimals: opts.parsedMintDecimals ?? 6 } } } } };
       },
     } as unknown as DAppAdapterContext['connection'],
     signTransaction: async () => 'SIGNED_WORMHOLE_TRANSACTION',

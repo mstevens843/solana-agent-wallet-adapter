@@ -47,6 +47,7 @@ function jitoDepositReceiptResult(receipt: JitoDepositReceipt): JitoDepositRecei
     totals: {
       receipts: 1,
       claimableReceipts: receipt.cooldownComplete ? 1 : 0,
+      pendingReceipts: receipt.cooldownComplete ? 0 : 1,
       lstAmount: receipt.lstAmount,
       lstAmountRaw: receipt.lstAmountRaw,
     },

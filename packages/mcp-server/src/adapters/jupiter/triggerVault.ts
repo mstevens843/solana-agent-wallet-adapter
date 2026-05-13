@@ -1,5 +1,3 @@
-import { ProtocolError } from '@solana-agent-wallet-adapter/core';
-
 import type { AgentWalletConfig } from '../../config.js';
 
 import { jupiterFetchJson } from './client.js';
@@ -27,7 +25,6 @@ export async function readVault(
   const jwt = requireValidJwt(input.walletAddress, config);
   const body = await jupiterFetchJson(config, 'trigger', '/vault', {
     method: 'GET',
-    searchParams: { walletAddress: input.walletAddress },
     bearerToken: jwt.jwt,
   });
   return normalizeVault(input.walletAddress, body);
@@ -39,7 +36,7 @@ export interface PrepareRegisterVaultInput {
 
 export interface PrepareRegisterVaultResult {
   walletAddress: string;
-  transactionBase64: string;
+  transactionBase64?: string;
   vaultSnapshot: TriggerVaultSnapshot;
   raw: Record<string, unknown>;
 }
@@ -51,18 +48,13 @@ export async function prepareRegisterVault(
   requireTriggerEnabled(config);
   const jwt = requireValidJwt(input.walletAddress, config);
   const body = await jupiterFetchJson(config, 'trigger', '/vault/register', {
-    method: 'POST',
-    body: { walletAddress: input.walletAddress },
+    method: 'GET',
     bearerToken: jwt.jwt,
   });
-  const transactionBase64 = readString(
-    body,
-    'transaction',
-    'Jupiter Trigger vault register response missing transaction.',
-  );
+  const transactionBase64 = optionalString(body, 'transaction') ?? optionalString(body, 'transactionBase64');
   return {
     walletAddress: input.walletAddress,
-    transactionBase64,
+    ...(transactionBase64 !== undefined && { transactionBase64 }),
     vaultSnapshot: normalizeVault(input.walletAddress, body.vault as Record<string, unknown> | undefined ?? body),
     raw: body,
   };
@@ -88,12 +80,4 @@ function normalizeVault(walletAddress: string, body: Record<string, unknown>): T
 function optionalString(body: Record<string, unknown>, key: string): string | undefined {
   const value = body[key];
   return typeof value === 'string' && value.trim() ? value : undefined;
-}
-
-function readString(body: Record<string, unknown>, key: string, error: string): string {
-  const value = body[key];
-  if (typeof value !== 'string' || !value.trim()) {
-    throw new ProtocolError('wallet_unreachable', error);
-  }
-  return value;
 }

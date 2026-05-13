@@ -574,6 +574,27 @@ describe('Squads create transfer proposal', () => {
     ).rejects.toBeInstanceOf(AdapterError);
   });
 
+  it('accepts a vaultAddress alone and back-resolves vaultIndex from the snapshot', async () => {
+    const store = inMemoryStore();
+    const ctx = makeContext({ store });
+    const result = await requireSquadsAction('create_transfer_proposal').prepare(
+      {
+        multisigAddress: MULTISIG,
+        recipient: RECIPIENT,
+        amount: '0.5',
+        vaultAddress: VAULT,
+        title: 'Refund',
+      },
+      ctx,
+    );
+    expect(result.addInput.params).toMatchObject({
+      vaultIndex: 0,
+      vaultAddress: VAULT,
+      decimals: 9,
+      amountRaw: (500_000_000n).toString(),
+    });
+  });
+
   it('rejects on invalid recipient pubkey', async () => {
     const ctx = makeContext({ store: inMemoryStore() });
     await expect(
@@ -806,6 +827,35 @@ describe('Squads execute proposal', () => {
     await expect(
       requireSquadsAction('execute_proposal').execute(action, ctx),
     ).rejects.toThrowError(/Cannot execute|status changed|invalid_request/);
+  });
+
+  it('execute path rejects with ProtocolError when executableAt drifted between prepare and execute', async () => {
+    // Prepare with explicit executableAt in the past so assertCanExecute passes at execute time too.
+    const past = Date.now() - 1000;
+    fakeState.proposalSnapshot = fakeProposalSnapshot({
+      status: 'approved',
+      approvalCount: 2,
+      lockoutExpiresAt: past,
+      executableAt: past,
+    });
+    const store = inMemoryStore();
+    const ctx = makeContext({ store });
+    const prepared = await requireSquadsAction('execute_proposal').prepare(
+      { multisigAddress: MULTISIG, proposalAddress: PROPOSAL },
+      ctx,
+    );
+    const action = await store.addAction(prepared.addInput);
+    // Refresh returns the same status/approvals but a different executableAt — still in the past so
+    // assertCanExecute does not fire; assertExecuteStateUnchanged must catch the drift.
+    fakeState.proposalSnapshot = fakeProposalSnapshot({
+      status: 'approved',
+      approvalCount: 2,
+      lockoutExpiresAt: past - 500,
+      executableAt: past - 500,
+    });
+    await expect(
+      requireSquadsAction('execute_proposal').execute(action, ctx),
+    ).rejects.toThrowError(/executableAt changed/);
   });
 
   it('execute calls signAndBroadcast with the built transaction and returns a txid', async () => {

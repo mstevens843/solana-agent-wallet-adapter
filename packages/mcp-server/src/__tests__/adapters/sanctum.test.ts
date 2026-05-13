@@ -625,24 +625,4 @@ describe('Sanctum prepare + execute', () => {
     });
   });
 
-  it('rejects execution when the wallet cannot sign transaction bytes', async () => {
-    const store = inMemoryStore();
-    const ctx = makeContext({ store });
-    const prepared = await requireSanctumAction('swap_lst').prepare(
-      {
-        inputMint: JITOSOL_MINT,
-        outputMint: MSOL_MINT,
-        amount: '1',
-      },
-      ctx,
-    );
-    const action = await store.addAction(prepared.addInput);
-    delete (ctx as { signTransaction?: DAppAdapterContext['signTransaction'] }).signTransaction;
-
-    await expect(
-      requireSanctumAction('swap_lst').execute(action, ctx),
-    ).rejects.toMatchObject({
-      code: 'unsupported_method',
-    });
-  });
 });

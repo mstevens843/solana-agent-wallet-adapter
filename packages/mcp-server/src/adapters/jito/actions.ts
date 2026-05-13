@@ -7,6 +7,7 @@ import type { AdapterAction, AdapterExecuteResult, AdapterPrepareResult } from '
 import { AdapterError } from '../types.js';
 import {
   describeJitoStakeDepositUnavailableReason,
+  describeJitoReceiptClaimUnavailableReason,
   getJitoClient,
   parseJitosolAmount,
   parseSolLamports,
@@ -284,6 +285,10 @@ export const jitoWithdrawSolAction: AdapterAction<JitoWithdrawSolInput> = {
   kind: 'jito_withdraw_sol',
 
   async prepare(input, ctx): Promise<AdapterPrepareResult> {
+    const missingClaimDependency = describeJitoReceiptClaimUnavailableReason();
+    if (missingClaimDependency) {
+      throw new AdapterError(JITO_ADAPTER_ID, 'receipt_claim_unavailable', missingClaimDependency);
+    }
     const walletAddress = await ctx.backend.getAddress();
     const stake = await getJitoClient().getStakeAccount(ctx.connection, input.stakeAccount, walletAddress);
     if (stake.activationState !== 'inactive') {

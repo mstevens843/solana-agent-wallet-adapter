@@ -253,6 +253,7 @@ export const DEFAULT_CONFIG: AgentWalletConfig = {
       maxBorrowLtvBps: 8500,
       useSdk: true,
       tokenPrice: {
+        enabled: true,
         maxBatchPriceIds: DEFAULT_JUPITER_TOKEN_PRICE_MAX_BATCH_PRICE_IDS,
         maxSearchMintIds: DEFAULT_JUPITER_TOKEN_PRICE_MAX_SEARCH_MINT_IDS,
       },

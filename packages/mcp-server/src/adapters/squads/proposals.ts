@@ -1,3 +1,5 @@
+import { createHash } from 'node:crypto';
+
 import type { Connection } from '@solana/web3.js';
 
 import { ProtocolError } from '@solana-agent-wallet-adapter/core';
@@ -465,23 +467,28 @@ interface SquadsDiscriminatorEntry {
   warning?: string;
 }
 
-// Discriminators for the @sqds/multisig v4 IDL. Values lifted from the public Squads SDK.
-// The table is intentionally permissive — we accept that any new SDK version may add entries
-// and our fallback path (`unknown`) surfaces a warning rather than failing.
+// Anchor instruction discriminators are sha256("global:<method>")[0..8]. We compute them at
+// module load from the canonical @sqds/multisig v4 IDL method names so the decoder reflects the
+// actual on-chain encoding. If a future SDK version renames or adds methods, the entry falls
+// through to the `unknown` path with a warning rather than failing silently.
+function anchorDiscriminator(method: string): string {
+  return createHash('sha256').update(`global:${method}`).digest('hex').slice(0, 16);
+}
+
 const SQUADS_DISCRIMINATOR_TABLE = new Map<string, SquadsDiscriminatorEntry>([
-  ['7c7a7c7a7c7a7c7a', { kind: 'squads_vault_transaction_create', riskTier: 'transfer', summary: 'Squads vault transaction create' }],
-  ['1234123412341234', { kind: 'squads_config_transaction_create', riskTier: 'admin', summary: 'Squads config transaction create', warning: 'This proposal modifies multisig configuration (members, threshold, or time-lock).' }],
-  ['abcdabcdabcdabcd', { kind: 'squads_proposal_create', riskTier: 'governance', summary: 'Squads proposal create' }],
-  ['11ee11ee11ee11ee', { kind: 'squads_proposal_approve', riskTier: 'governance', summary: 'Squads proposal approve' }],
-  ['22ee22ee22ee22ee', { kind: 'squads_proposal_reject', riskTier: 'governance', summary: 'Squads proposal reject' }],
-  ['33ee33ee33ee33ee', { kind: 'squads_proposal_cancel', riskTier: 'governance', summary: 'Squads proposal cancel' }],
-  ['44ee44ee44ee44ee', { kind: 'squads_vault_transaction_execute', riskTier: 'transfer', summary: 'Squads vault transaction execute', warning: 'Execution moves treasury funds.' }],
-  ['55ee55ee55ee55ee', { kind: 'squads_config_transaction_execute', riskTier: 'admin', summary: 'Squads config transaction execute', warning: 'Execution changes multisig configuration.' }],
-  ['aa00aa00aa00aa00', { kind: 'squads_add_member', riskTier: 'admin', summary: 'Squads add member', warning: 'This proposal adds a member to the multisig.' }],
-  ['bb00bb00bb00bb00', { kind: 'squads_remove_member', riskTier: 'admin', summary: 'Squads remove member', warning: 'This proposal removes a member from the multisig.' }],
-  ['cc00cc00cc00cc00', { kind: 'squads_change_threshold', riskTier: 'admin', summary: 'Squads change threshold', warning: 'This proposal changes the multisig threshold.' }],
-  ['dd00dd00dd00dd00', { kind: 'squads_set_time_lock', riskTier: 'admin', summary: 'Squads set time-lock', warning: 'This proposal changes the multisig time-lock.' }],
-  ['ee00ee00ee00ee00', { kind: 'squads_set_config_authority', riskTier: 'admin', summary: 'Squads set config authority', warning: 'This proposal transfers configuration authority.' }],
+  [anchorDiscriminator('vault_transaction_create'), { kind: 'squads_vault_transaction_create', riskTier: 'transfer', summary: 'Squads vault transaction create' }],
+  [anchorDiscriminator('config_transaction_create'), { kind: 'squads_config_transaction_create', riskTier: 'admin', summary: 'Squads config transaction create', warning: 'This proposal modifies multisig configuration (members, threshold, or time-lock).' }],
+  [anchorDiscriminator('proposal_create'), { kind: 'squads_proposal_create', riskTier: 'governance', summary: 'Squads proposal create' }],
+  [anchorDiscriminator('proposal_approve'), { kind: 'squads_proposal_approve', riskTier: 'governance', summary: 'Squads proposal approve' }],
+  [anchorDiscriminator('proposal_reject'), { kind: 'squads_proposal_reject', riskTier: 'governance', summary: 'Squads proposal reject' }],
+  [anchorDiscriminator('proposal_cancel'), { kind: 'squads_proposal_cancel', riskTier: 'governance', summary: 'Squads proposal cancel' }],
+  [anchorDiscriminator('vault_transaction_execute'), { kind: 'squads_vault_transaction_execute', riskTier: 'transfer', summary: 'Squads vault transaction execute', warning: 'Execution moves treasury funds.' }],
+  [anchorDiscriminator('config_transaction_execute'), { kind: 'squads_config_transaction_execute', riskTier: 'admin', summary: 'Squads config transaction execute', warning: 'Execution changes multisig configuration.' }],
+  [anchorDiscriminator('multisig_add_member'), { kind: 'squads_add_member', riskTier: 'admin', summary: 'Squads add member', warning: 'This proposal adds a member to the multisig.' }],
+  [anchorDiscriminator('multisig_remove_member'), { kind: 'squads_remove_member', riskTier: 'admin', summary: 'Squads remove member', warning: 'This proposal removes a member from the multisig.' }],
+  [anchorDiscriminator('multisig_change_threshold'), { kind: 'squads_change_threshold', riskTier: 'admin', summary: 'Squads change threshold', warning: 'This proposal changes the multisig threshold.' }],
+  [anchorDiscriminator('multisig_set_time_lock'), { kind: 'squads_set_time_lock', riskTier: 'admin', summary: 'Squads set time-lock', warning: 'This proposal changes the multisig time-lock.' }],
+  [anchorDiscriminator('multisig_set_config_authority'), { kind: 'squads_set_config_authority', riskTier: 'admin', summary: 'Squads set config authority', warning: 'This proposal transfers configuration authority.' }],
 ]);
 
 export function collectInstructionWarnings(preview: SquadsInstructionPreview[]): string[] {

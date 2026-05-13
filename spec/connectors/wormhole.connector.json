@@ -8,7 +8,7 @@
   "requiredConfig": [
     {
       "name": "@wormhole-foundation/sdk",
-      "scope": "env",
+      "scope": "optional_dependency",
       "required": true,
       "description": "Optional MCP server dependency plus route-specific platform packages. Hosts wire the SDK through setWormholeClientFactory()."
     },
@@ -23,6 +23,12 @@
       "scope": "env",
       "required": false,
       "description": "Optional Mainnet or Testnet override. Defaults from the Solana cluster."
+    },
+    {
+      "name": "WORMHOLE_RPC_BASE_URL",
+      "scope": "env",
+      "required": false,
+      "description": "Optional host RPC hint. It does not enable the connector without a wired Wormhole client factory."
     }
   ],
   "readCapabilities": [

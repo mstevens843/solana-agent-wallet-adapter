@@ -429,13 +429,23 @@ async function readBoundedText(response: Response): Promise<string> {
 
 export function redactLuloError(err: unknown, apiKey: string): Error {
   const original = err instanceof Error ? err : new Error(String(err));
-  const cleanedMessage = redactString(original.message, apiKey);
-  if (original instanceof LuloHttpError) {
-    return new LuloHttpError(original.status, cleanedMessage);
+  if (original instanceof LuloRedactedError || original instanceof LuloHttpError) {
+    return original;
   }
-  const wrapped = new Error(cleanedMessage);
+  const cleanedMessage = redactString(original.message, apiKey);
+  const wrapped = new LuloRedactedError(cleanedMessage, { cause: original });
   wrapped.name = original.name || 'Error';
+  if (original.stack) {
+    wrapped.stack = redactString(original.stack, apiKey);
+  }
   return wrapped;
+}
+
+class LuloRedactedError extends Error {
+  constructor(message: string, options?: { cause?: unknown }) {
+    super(message, options);
+    this.name = 'LuloRedactedError';
+  }
 }
 
 function redactString(value: string, apiKey: string): string {

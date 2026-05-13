@@ -61,6 +61,14 @@ import {
   type WormholeQuoteSnapshot,
   type WormholeTransferStatus,
 } from '../adapters/wormhole/client.js';
+import {
+  resetLuloClientFactory,
+  setLuloClientFactory,
+  type LuloClient,
+  type LuloPoolMetaSnapshot,
+  type LuloRatesSnapshot,
+  type LuloWalletBalancesSnapshot,
+} from '../adapters/lulo/client.js';
 
 const WALLET = 'GgwYwf8XtAQRtu1ZUv9hY1Zk1wkJpz3DCH7jQAjmGGGV';
 const ORCA_WHIRLPOOL = '11111111111111111111111111111111';
@@ -78,6 +86,7 @@ afterEach(() => {
   resetRaydiumClientFactory();
   resetMarinadeClientFactory();
   resetWormholeClientFactory();
+  resetLuloClientFactory();
   clearReserveSnapshotCache();
   vi.unstubAllGlobals();
   vi.unstubAllEnvs();
@@ -369,6 +378,52 @@ describe('AgentWalletActionService connector runtime', () => {
       },
     });
     expect(state.transferBuilds).toHaveLength(0);
+  });
+
+  it('returns normalized Lulo rate facts via connectorReadFacts', async () => {
+    setLuloClientFactory(() => fakeLuloClient());
+    const service = newService();
+
+    const result = await service.connectorReadFacts({
+      connectorId: 'lulo',
+      capability: 'markets',
+      reserveMint: USDC_MINT,
+    });
+
+    expect(result.connector).toMatchObject({ id: 'lulo', name: 'Lulo' });
+    expect(result.facts).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        connectorId: 'lulo',
+        label: expect.stringContaining('Lulo Protected'),
+        tone: 'good',
+        source: 'connector',
+      }),
+    ]));
+  });
+
+  it('returns balances_unavailable Lulo facts without throwing', async () => {
+    setLuloClientFactory(() => fakeLuloClient({
+      balances: {
+        balances_unavailable: true,
+        reason: 'Lulo API does not currently expose balances for this wallet (404).',
+      },
+    }));
+    const service = newService();
+
+    const result = await service.connectorReadFacts({
+      connectorId: 'lulo',
+      capability: 'positions',
+      walletAddress: WALLET,
+    });
+
+    expect(result.connector).toMatchObject({ id: 'lulo', name: 'Lulo' });
+    expect(result.facts).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        connectorId: 'lulo',
+        label: 'Lulo balances',
+        tone: 'warn',
+      }),
+    ]));
   });
 
   it('returns normalized Jupiter preview facts and redacts secrets from payloads', async () => {
@@ -752,7 +807,7 @@ function fakeConfig(): AgentWalletConfig {
 function fakeConnection(): Connection {
   return {
     async getParsedAccountInfo() {
-      return { value: null };
+      return { value: { data: { parsed: { info: { decimals: 6 } } } } };
     },
   } as unknown as Connection;
 }
@@ -1150,7 +1205,7 @@ function fakeWormholeClient(state: FakeWormholeRuntimeState): WormholeClient {
         amountRaw: input.amountRaw,
         destinationChain: input.destinationChain,
         destinationAddress: input.destinationAddress,
-        routeType: input.routeType,
+        routeType: state.quote.routeType,
         nativeGasDropoff: input.nativeGasDropoff,
         asOfIso: new Date().toISOString(),
       };
@@ -1188,6 +1243,66 @@ function fakeWormholeClient(state: FakeWormholeRuntimeState): WormholeClient {
         programIds: ['worm2ZoG2kUd4vFXhvjh93UUH596ayRfgQ2MgjNMTth'],
         reusable: false,
       };
+    },
+  };
+}
+
+function fakeLuloClient(overrides: {
+  rates?: LuloRatesSnapshot;
+  poolMeta?: LuloPoolMetaSnapshot;
+  balances?: Awaited<ReturnType<LuloClient['getWalletBalances']>>;
+} = {}): LuloClient {
+  const rates: LuloRatesSnapshot = overrides.rates ?? {
+    rows: [
+      {
+        mintAddress: USDC_MINT,
+        symbol: 'USDC',
+        depositType: 'protected',
+        apy: 5.1,
+        tvlUsd: '100000000',
+        liquidityAvailable: '4500000',
+      },
+    ],
+    asOfIso: new Date().toISOString(),
+    source: 'lulo-api',
+  };
+  const poolMeta: LuloPoolMetaSnapshot = overrides.poolMeta ?? {
+    pools: [
+      {
+        mintAddress: USDC_MINT,
+        symbol: 'USDC',
+        decimals: 6,
+        supportedDepositTypes: ['protected', 'boost', 'regular'],
+        programIds: ['LULO11111111111111111111111111111111111111'],
+      },
+    ],
+    asOfIso: new Date().toISOString(),
+    source: 'lulo-api',
+  };
+  const balances: LuloWalletBalancesSnapshot = {
+    walletAddress: WALLET,
+    rows: [],
+    asOfIso: new Date().toISOString(),
+    source: 'lulo-api',
+  };
+  return {
+    async getRates() {
+      return rates;
+    },
+    async getPoolMeta() {
+      return poolMeta;
+    },
+    async getWalletBalances() {
+      return overrides.balances ?? balances;
+    },
+    async generateDepositTransaction() {
+      throw new Error('not used in connector runtime tests');
+    },
+    async generateWithdrawTransaction() {
+      throw new Error('not used in connector runtime tests');
+    },
+    async generateCompleteWithdrawTransaction() {
+      throw new Error('not used in connector runtime tests');
     },
   };
 }

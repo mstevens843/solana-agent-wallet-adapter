@@ -11,7 +11,7 @@ import {
   normalizeRouteType,
   normalizeSourceChain,
   normalizeWormholeAmount,
-  optionalNonEmptyString,
+  optionalNonNegativeDecimal,
   validateDestinationAddress,
 } from './validation.js';
 
@@ -61,6 +61,7 @@ export async function getWormholeQuote(
   const destinationChain = normalizeDestinationChain(input.destinationChain);
   const destinationAddress = validateDestinationAddress(destinationChain, input.destinationAddress);
   const routeType = normalizeRouteType(input.routeType);
+  const nativeGasDropoff = optionalNonNegativeDecimal(input.nativeGasDropoff, 'nativeGasDropoff');
   return getWormholeClient().quoteTransfer(ctx.connection, {
     ...(walletAddress !== undefined && { walletAddress }),
     sourceChain,
@@ -71,9 +72,7 @@ export async function getWormholeQuote(
     destinationChain,
     destinationAddress,
     routeType,
-    ...(optionalNonEmptyString(input.nativeGasDropoff) !== undefined && {
-      nativeGasDropoff: optionalNonEmptyString(input.nativeGasDropoff),
-    }),
+    ...(nativeGasDropoff !== undefined && { nativeGasDropoff }),
     wormholeNetwork,
   });
 }

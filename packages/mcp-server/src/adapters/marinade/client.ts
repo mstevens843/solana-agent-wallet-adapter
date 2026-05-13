@@ -380,11 +380,12 @@ class MarinadeSdkClient implements MarinadeClient {
     return withMarinadeSdkErrors('build liquid stake transaction', async () => {
       const wallet = new PublicKey(input.walletAddress);
       const marinade = createMarinadeSdk(connection, wallet.toBase58());
-      const built = await marinade.deposit(toSdkBn(input.amountRaw ?? 0n));
+      const amountRaw = requireAmountRaw(input, 'liquid stake');
+      const built = await marinade.deposit(toSdkBn(amountRaw));
       return serializeSdkTransaction(connection, wallet, built.transaction, [], {
         operation: 'liquid_stake',
-        solAmount: input.amountRaw !== undefined ? formatRawAmount(input.amountRaw, SOL_DECIMALS) : undefined,
-        solAmountRaw: input.amountRaw?.toString(),
+        solAmount: formatRawAmount(amountRaw, SOL_DECIMALS),
+        solAmountRaw: amountRaw.toString(),
         associatedMSolTokenAccount: publicKeyString(built.associatedMSolTokenAccountAddress),
       });
     });
@@ -397,12 +398,13 @@ class MarinadeSdkClient implements MarinadeClient {
     return withMarinadeSdkErrors('build delayed unstake transaction', async () => {
       const wallet = new PublicKey(input.walletAddress);
       const marinade = createMarinadeSdk(connection, wallet.toBase58());
-      const built = await marinade.orderUnstake(toSdkBn(input.amountRaw ?? 0n));
+      const amountRaw = requireAmountRaw(input, 'delayed unstake');
+      const built = await marinade.orderUnstake(toSdkBn(amountRaw));
       const ticketAccount = built.ticketAccountKeypair.publicKey.toBase58();
       return serializeSdkTransaction(connection, wallet, built.transaction, [built.ticketAccountKeypair], {
         operation: 'delayed_unstake',
-        msolAmount: input.amountRaw !== undefined ? formatRawAmount(input.amountRaw, MSOL_DECIMALS) : undefined,
-        msolAmountRaw: input.amountRaw?.toString(),
+        msolAmount: formatRawAmount(amountRaw, MSOL_DECIMALS),
+        msolAmountRaw: amountRaw.toString(),
         ticketAccount,
         associatedMSolTokenAccount: publicKeyString(built.associatedMSolTokenAccountAddress),
         ephemeralSigner: ticketAccount,
@@ -507,6 +509,13 @@ function createMarinadeSdk(connection: Connection, walletAddress?: string): AnyR
 function toSdkBn(value: bigint): AnyRecord {
   const sdk = loadMarinadeSdk();
   return new sdk.BN(value.toString()) as AnyRecord;
+}
+
+function requireAmountRaw(input: MarinadeBuildTransactionInput, operation: string): bigint {
+  if (input.amountRaw === undefined || input.amountRaw <= 0n) {
+    throw new ProtocolError('invalid_request', `Marinade ${operation} amount is required.`);
+  }
+  return input.amountRaw;
 }
 
 async function getMsolBalance(connection: Connection, owner: PublicKey): Promise<{ amountRaw: bigint; asOfSlot?: number }> {

@@ -1,5 +1,3 @@
-import type { Connection } from '@solana/web3.js';
-
 import { ProtocolError } from '@solana-agent-wallet-adapter/core';
 
 import { parseDecimalAmount } from '../../amounts.js';
@@ -28,7 +26,6 @@ import { getRealmSnapshot, requireAddress } from './realms.js';
 import {
   assertVoteEligibility,
   assertWithdrawUnlocked,
-  getVoteRecord,
 } from './votes.js';
 
 export interface RealmsCastVoteInput {
@@ -197,6 +194,18 @@ export const realmsCastVoteAction: AdapterAction<RealmsCastVoteInput> = {
       throw new ProtocolError(
         'invalid_request',
         `Wallet now has no voting power for mint ${governingTokenMint} in realm ${proposal.realmAddress}.`,
+      );
+    }
+
+    const refreshedVoteRecord = await getRealmsClient().getVoteRecord(
+      ctx.connection,
+      proposalAddress,
+      walletAddress,
+    );
+    if (refreshedVoteRecord && !refreshedVoteRecord.isRelinquished) {
+      throw new ProtocolError(
+        'invalid_request',
+        `Wallet already cast a ${refreshedVoteRecord.voteKind} vote on ${proposalAddress} since prepare time. Relinquish it before casting again.`,
       );
     }
 

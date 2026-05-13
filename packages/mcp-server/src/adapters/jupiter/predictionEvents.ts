@@ -5,6 +5,7 @@ import {
   predictionRequest,
   type JupiterPredictionEnvelope,
 } from './predictionClient.js';
+import { normalizeMarket, type NormalizedPredictionMarket } from './predictionMarkets.js';
 
 export type PredictionProvider = 'polymarket' | 'kalshi';
 export type PredictionEventCategory =
@@ -68,7 +69,7 @@ export interface PredictionEventsResult {
 
 export interface PredictionEventDetailResult {
   event: NormalizedPredictionEventSummary;
-  markets?: NormalizedPredictionEventSummary[];
+  markets?: NormalizedPredictionMarket[];
   raw: Record<string, unknown>;
 }
 
@@ -162,10 +163,13 @@ function extractEventsArray(body: Record<string, unknown>): Array<Record<string,
 
 function extractEmbeddedMarkets(
   body: Record<string, unknown>,
-): NormalizedPredictionEventSummary[] | undefined {
-  const candidates: unknown[] = [body.markets, (body.event as Record<string, unknown> | undefined)?.markets];
+): NormalizedPredictionMarket[] | undefined {
+  const eventRecord = isRecord(body.event) ? body.event : undefined;
+  const candidates: unknown[] = [body.markets, eventRecord?.markets];
   for (const candidate of candidates) {
-    if (Array.isArray(candidate)) return candidate.filter(isRecord).map(normalizeEventSummary);
+    if (Array.isArray(candidate)) {
+      return candidate.filter(isRecord).map((raw) => normalizeMarket(raw));
+    }
   }
   return undefined;
 }

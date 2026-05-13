@@ -508,6 +508,15 @@ describe('Save defensive guards', () => {
     ).rejects.toMatchObject({ code: 'exceeds_cap' });
   });
 
+  it('deposit refuses when depositLimitRemaining is zero', async () => {
+    state.reserves[USDC_MINT] = fakeReserve({ depositLimitRemaining: '0' });
+    const store = inMemoryStore();
+    const ctx = makeContext({ store });
+    await expect(
+      requireSaveAction('deposit').prepare({ amount: '1', token: 'USDC' }, ctx),
+    ).rejects.toMatchObject({ code: 'exceeds_cap' });
+  });
+
   it('borrow blocks amounts above borrowLimitRemaining', async () => {
     state.reserves[USDC_MINT] = fakeReserve({ borrowLimitRemaining: '1' });
     const store = inMemoryStore();

@@ -13,19 +13,24 @@ import { AdapterError } from '../types.js';
 
 import {
   JUPITER_ADAPTER_ID,
+  JUPITER_LEND_BORROW_PROGRAM_IDS_BASE58,
+  JUPITER_LEND_EARN_PROGRAM_IDS_BASE58,
   type JupiterLendBorrowOperation,
   type JupiterLendEarnOperation,
 } from './constants.js';
 import {
   assertBorrowHealthPreviewAllowed,
+  assertOracleFresh,
   configuredMaxLtvBps,
   configuredMinHealthRatio,
+  getBorrowPositions,
   getBorrowVaultDetail,
   previewBorrowHealth,
 } from './lendBorrow.js';
 import { getEarnTokenDetail } from './lendEarn.js';
 import {
   getJupiterLendClient,
+  type JupiterLendBorrowPositionSnapshot,
   type JupiterLendBorrowVaultSnapshot,
   type JupiterLendBuildResult,
   type JupiterLendEarnTokenSnapshot,
@@ -303,6 +308,7 @@ function buildEarnAction(
         parseDecimalAmount(input.shares, token.shareDecimals, `Jupiter Earn ${operation} shares`);
       }
       const summary = config.summarize(token, input.amount, input.shares);
+      const warnings = collectEarnWarnings(operation, token);
       const params: Record<string, unknown> = {
         adapter: JUPITER_ADAPTER_ID,
         connectorId: JUPITER_ADAPTER_ID,
@@ -323,8 +329,10 @@ function buildEarnAction(
         ...(input.minSharesOut !== undefined ? { minSharesOut: input.minSharesOut } : {}),
         ...(input.minUnderlyingOut !== undefined ? { minUnderlyingOut: input.minUnderlyingOut } : {}),
         earnSnapshot: token,
+        programIds: JUPITER_LEND_EARN_PROGRAM_IDS_BASE58,
         refreshAtExecution: config.refreshAtExecution,
         preparedSnapshotAt: new Date().toISOString(),
+        ...(warnings.length > 0 ? { warnings } : {}),
       };
       return {
         addInput: {
@@ -416,6 +424,13 @@ function buildBorrowAction(
         throw new AdapterError(JUPITER_ADAPTER_ID, 'invalid_request', `${operation} requires positionId.`);
       }
       const vault = await getBorrowVaultDetail(ctx.config, walletAddress, input.vaultId);
+      if (oracleGatedOperation(operation)) {
+        assertOracleFresh(vault.oracle, `Jupiter Borrow ${operation}`);
+      }
+      const positionSnapshot = await fetchPositionSnapshotIfNeeded(ctx, walletAddress, input);
+      if (positionSnapshot) {
+        assertPositionOwnership(positionSnapshot, walletAddress);
+      }
       const minHealthRatio = input.minHealthRatio ?? configuredMinHealthRatio(ctx.config);
       const maxLtvBps = input.maxLtvBps ?? configuredMaxLtvBps(ctx.config);
       let healthPreview: Awaited<ReturnType<typeof previewBorrowHealth>> | undefined;
@@ -457,9 +472,11 @@ function buildBorrowAction(
           : {}),
         ...(healthPreview ? { healthPreview } : {}),
         ...(vault.oracle ? { oracleSnapshot: vault.oracle } : {}),
+        ...(positionSnapshot ? { positionSnapshot } : {}),
         minHealthRatio,
         ...(maxLtvBps !== undefined ? { maxLtvBps } : {}),
         vaultSnapshot: vault,
+        programIds: JUPITER_LEND_BORROW_PROGRAM_IDS_BASE58,
         refreshAtExecution: config.refreshAtExecution,
         preparedSnapshotAt: new Date().toISOString(),
         ...(config.extraPreview ? config.extraPreview(input) : {}),
@@ -486,11 +503,20 @@ function buildBorrowAction(
         throw new ProtocolError('invalid_request', `Jupiter Borrow ${operation} prepared action is missing vaultId.`);
       }
       const vault = await getBorrowVaultDetail(ctx.config, walletAddress, vaultIdValue);
+      if (oracleGatedOperation(operation)) {
+        assertOracleFresh(vault.oracle, `Jupiter Borrow ${operation}`);
+      }
+      const input = readBorrowInputFromAction(action);
+      if (input.positionId !== undefined) {
+        const refreshedPosition = await fetchPositionSnapshotIfNeeded(ctx, walletAddress, input);
+        if (refreshedPosition) {
+          assertPositionOwnership(refreshedPosition, walletAddress);
+        }
+      }
       const minHealthRatio = typeof action.params.minHealthRatio === 'number'
         ? action.params.minHealthRatio
         : configuredMinHealthRatio(ctx.config);
       if (config.healthGated) {
-        const input = readBorrowInputFromAction(action);
         const collateralDelta = collateralDeltaForPreview(operation, input);
         const debtDelta = debtDeltaForPreview(operation, input);
         const refreshedPreview = await previewBorrowHealth(ctx.config, {
@@ -503,7 +529,6 @@ function buildBorrowAction(
         });
         assertBorrowHealthPreviewAllowed(refreshedPreview);
       }
-      const input = readBorrowInputFromAction(action);
       const refreshed = await config.build(client, {
         vault,
         args: {
@@ -598,6 +623,56 @@ function assertOwnership(action: PreparedAction, walletAddress: string): void {
       `Jupiter Lend ${action.kind} belongs to ${action.walletAddress}, but connected wallet is ${walletAddress}.`,
     );
   }
+}
+
+function assertPositionOwnership(
+  position: JupiterLendBorrowPositionSnapshot,
+  walletAddress: string,
+): void {
+  if (position.owner !== walletAddress) {
+    throw new AdapterError(
+      JUPITER_ADAPTER_ID,
+      'position_not_owned',
+      `Jupiter Borrow position #${position.positionId} is owned by ${position.owner}, not ${walletAddress}.`,
+    );
+  }
+}
+
+async function fetchPositionSnapshotIfNeeded(
+  ctx: DAppAdapterContext,
+  walletAddress: string,
+  input: { vaultId: number; positionId?: number },
+): Promise<JupiterLendBorrowPositionSnapshot | undefined> {
+  if (input.positionId === undefined) return undefined;
+  const positions = await getBorrowPositions(ctx.config, {
+    walletAddress,
+    vaultId: input.vaultId,
+    positionId: input.positionId,
+  });
+  return positions.find(
+    (entry) => entry.vaultId === input.vaultId && entry.positionId === input.positionId,
+  );
+}
+
+function oracleGatedOperation(operation: JupiterLendBorrowOperation): boolean {
+  return operation === 'borrow_borrow' || operation === 'borrow_withdraw_collateral';
+}
+
+function collectEarnWarnings(
+  operation: JupiterLendEarnOperation,
+  token: JupiterLendEarnTokenSnapshot,
+): string[] {
+  const warnings: string[] = [];
+  if (
+    (operation === 'earn_withdraw' || operation === 'earn_redeem') &&
+    token.withdrawalSmoothing?.enabled === true
+  ) {
+    warnings.push(
+      token.withdrawalSmoothing.note ??
+        'Jupiter Earn applies withdrawal smoothing on this market. The amount you receive may release over time.',
+    );
+  }
+  return warnings;
 }
 
 function requireParam(action: PreparedAction, key: string): string {

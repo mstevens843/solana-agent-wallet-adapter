@@ -16,7 +16,13 @@
       "name": "@jito-foundation/stake-deposit-interceptor-sdk",
       "scope": "env",
       "required": false,
-      "description": "Optional MCP server dependency required only for depositing an existing stake account into Jito through the interceptor."
+      "description": "Optional MCP server dependency required for depositing an existing stake account into Jito through the interceptor, reading interceptor receipts, and claiming receipt JitoSOL."
+    },
+    {
+      "name": "@solana/spl-token",
+      "scope": "env",
+      "required": true,
+      "description": "MCP server dependency used to create or find the JitoSOL associated token account when claiming an interceptor receipt."
     },
     {
       "name": "JITO_CONNECTOR_ENABLED",
@@ -57,6 +63,14 @@
       "requiresClientKey": false,
       "returns": "Read-only quote for stake SOL, deposit stake account, unstake JitoSOL, or withdraw SOL from a deactivated stake account.",
       "facts": ["operation", "amountRaw", "expectedJitoSolRaw", "expectedSolRaw", "exchangeRateSnapshot", "warnings"]
+    },
+    {
+      "toolName": "solana_jito_deposit_receipts",
+      "source": "first-class-adapter",
+      "implemented": true,
+      "requiresClientKey": false,
+      "returns": "Wallet Jito stake-deposit interceptor receipts, or a specific receipt account, including owner, JitoSOL amount, cooldown, claimable time, and early-claim fee basis points.",
+      "facts": ["depositReceipt", "owner", "lstAmountRaw", "claimableAt", "cooldownComplete", "secondsUntilClaimable", "initialFeeBps"]
     }
   ],
   "writeCapabilities": [
@@ -91,6 +105,14 @@
       "prepares": "An inbox-bound PreparedAction for withdrawing SOL from an inactive or deactivated stake account.",
       "executesVia": "solana_execute_prepared_action",
       "userApproves": "A native stake-program withdraw instruction. Execution refuses stake accounts that are still active."
+    },
+    {
+      "actionKind": "jito_claim_deposit_receipt",
+      "executionMode": "first_class_adapter",
+      "implemented": true,
+      "prepares": "An inbox-bound PreparedAction that validates receipt ownership and cooldown status before claiming JitoSOL from a Jito stake-deposit interceptor receipt.",
+      "executesVia": "solana_execute_prepared_action",
+      "userApproves": "A Jito stake-deposit interceptor claim transaction. The connector refuses cooldown-period claims unless allowEarlyClaim is explicitly true."
     }
   ],
   "requiredUserInputs": [
@@ -136,6 +158,20 @@
       "required": false,
       "appliesTo": ["jito_unstake_jitosol"],
       "prompt": "Optional minimum SOL output."
+    },
+    {
+      "name": "receiptAddress",
+      "kind": "text",
+      "required": true,
+      "appliesTo": ["jito_claim_deposit_receipt"],
+      "prompt": "Which Jito deposit receipt should be claimed?"
+    },
+    {
+      "name": "allowEarlyClaim",
+      "kind": "boolean",
+      "required": false,
+      "appliesTo": ["jito_claim_deposit_receipt"],
+      "prompt": "Allow claiming before cooldown completion and accept any interceptor early-claim fee?"
     }
   ],
   "requiredConnectorFacts": [
@@ -144,6 +180,7 @@
     "Connected wallet JitoSOL balance for unstake",
     "Stake account withdraw authority and validator vote account for stake-account deposit",
     "Stake account activation/deactivation state before SOL withdrawal",
+    "Deposit receipt owner, cooldown completion, claimable time, and early-claim fee before receipt claim",
     "Min-output guard result immediately before wallet approval when a minimum is supplied"
   ],
   "unsupportedRequests": [
@@ -155,15 +192,15 @@
     "Operate on any cluster other than mainnet-beta.",
     "Move funds without wallet approval."
   ],
-  "actionPreparationNotes": "Use the official JitoSOL mint J1toso1uCk3RLmjorhTtrVwY9HJ7X8V9yYac6Y7kGCPn and stake pool Jito4APyf642JPZPx3hGc6WWJ8zPKtRbRs4P815Awbb. Stake and unstake paths use @solana/spl-stake-pool. Existing stake-account deposits use @jito-foundation/stake-deposit-interceptor-sdk and create an interceptor receipt. Minimum output is rechecked immediately before the wallet prompt as an execution-time off-chain guard.",
-  "riskNotes": "JitoSOL exchange rate, fees, reserve SOL availability, and stake activation state can change before approval. Existing stake-account deposits may create a claimable receipt rather than immediately delivering JitoSOL. Unstaking to a stake account may require stake deactivation before SOL can be withdrawn.",
+  "actionPreparationNotes": "Use the official JitoSOL mint J1toso1uCk3RLmjorhTtrVwY9HJ7X8V9yYac6Y7kGCPn and stake pool Jito4APyf642JPZPx3hGc6WWJ8zPKtRbRs4P815Awbb. Stake and unstake paths use @solana/spl-stake-pool. Existing stake-account deposits and receipt claims use @jito-foundation/stake-deposit-interceptor-sdk; deposits derive the receipt and claims create the wallet JitoSOL ATA idempotently when needed. Minimum output is rechecked immediately before the wallet prompt as an execution-time off-chain guard.",
+  "riskNotes": "JitoSOL exchange rate, fees, reserve SOL availability, and stake activation state can change before approval. Existing stake-account deposits may create a claimable receipt rather than immediately delivering JitoSOL. Receipt claims during cooldown can pay an interceptor fee and require explicit allowEarlyClaim. Unstaking to a stake account may require stake deactivation before SOL can be withdrawn.",
   "approvalBoundary": {
     "readGated": false,
     "writeGated": true,
     "blinkBacked": false,
     "summary": "safety.prepare_only"
   },
-  "walletApprovalBoundary": "Reads return facts without wallet involvement. Stake, deposit-stake-account, unstake, and stake-account SOL withdrawal actions rebuild a transaction at execute time that the wallet must sign and broadcast. The agent never signs.",
+  "walletApprovalBoundary": "Reads return facts without wallet involvement. Stake, deposit-stake-account, receipt claim, unstake, and stake-account SOL withdrawal actions rebuild a transaction at execute time that the wallet must sign and broadcast. The agent never signs.",
   "examples": {
     "requests": [
       {
@@ -195,6 +232,24 @@
         "classification": "needs_input",
         "needsInputQuestions": ["Which stake account should Jito deposit?"],
         "agentResponse": "The agent needs the stake account address before checking eligibility and preparing."
+      },
+      {
+        "user": "show my Jito deposit receipts",
+        "classification": "read_only_answer",
+        "readTool": "solana_jito_deposit_receipts",
+        "agentResponse": "Read Jito deposit receipts for the wallet, including claimable times and cooldown status, without signing."
+      },
+      {
+        "user": "claim this Jito deposit receipt",
+        "classification": "needs_input",
+        "needsInputQuestions": ["Which Jito deposit receipt should be claimed?"],
+        "agentResponse": "The agent needs the receipt address before checking ownership and cooldown status."
+      },
+      {
+        "user": "claim this Jito deposit receipt now even if it is still cooling down",
+        "classification": "prepare_approval_action",
+        "writeAction": "jito_claim_deposit_receipt",
+        "agentResponse": "Prepared a Jito deposit receipt claim with early-claim enabled. This prepares a wallet approval request; it does not sign."
       },
       {
         "user": "unstake 0.1 JitoSOL to SOL if I get at least 0.1 SOL",

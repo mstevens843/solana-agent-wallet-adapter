@@ -3,6 +3,7 @@ import type { AdapterRead, DAppAdapter } from '../types.js';
 import {
   getRealmsClient,
   type GovernanceSnapshot,
+  type ProposalInstructionDecoded,
   type ProposalListEntry,
   type ProposalSnapshot,
   type RealmSnapshot,
@@ -156,7 +157,7 @@ const proposalListRead: AdapterRead<ProposalListReadInput, unknown> = {
 const proposalSnapshotRead: AdapterRead<ProposalSnapshotReadInput, unknown> = {
   id: 'proposal_snapshot',
   async read(input, ctx) {
-    const snapshot: ProposalSnapshot & { decodedInstructions: unknown[] } = await getProposalSnapshot(
+    const snapshot: ProposalSnapshot & { decodedInstructions: ProposalInstructionDecoded[] } = await getProposalSnapshot(
       ctx.connection,
       input.proposalAddress,
       {
@@ -178,7 +179,8 @@ const proposalSnapshotRead: AdapterRead<ProposalSnapshotReadInput, unknown> = {
         inCoolOff: snapshot.inCoolOff,
         pluginsDetected: snapshot.pluginsDetected,
         pluginNames: snapshot.pluginNames,
-        unknownInstructionCount: snapshot.decodedInstructions.length,
+        instructionCount: snapshot.decodedInstructions.length,
+        unknownInstructionCount: snapshot.decodedInstructions.filter((entry) => !entry.decoded).length,
       },
     };
   },

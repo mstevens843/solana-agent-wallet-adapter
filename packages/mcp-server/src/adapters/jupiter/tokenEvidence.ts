@@ -13,12 +13,15 @@ export interface JupiterTokenRiskEvidence {
   product: 'tokens_price';
   mint: string;
   tokenFound: boolean;
+  priceRequested: boolean;
   symbol?: string;
   name?: string;
   decimals?: number;
   tokenProgram?: string;
+  verification?: string;
   isVerified?: boolean | null;
   tags?: string[];
+  candidateTokens?: JupiterTokenEvidenceCandidate[];
   organicScore?: number;
   organicScoreLabel?: string;
   audit?: Record<string, unknown>;
@@ -30,6 +33,7 @@ export interface JupiterTokenRiskEvidence {
   usdPrice?: number;
   priceBlockId?: number;
   priceChange24h?: number;
+  priceMissingReason?: string;
   stats?: {
     stats5m?: JupiterTokenStats;
     stats1h?: JupiterTokenStats;
@@ -41,6 +45,15 @@ export interface JupiterTokenRiskEvidence {
   asOf: string;
 }
 
+export interface JupiterTokenEvidenceCandidate {
+  mint: string;
+  symbol?: string;
+  name?: string;
+  verification?: string;
+  isVerified?: boolean | null;
+  tags?: string[];
+}
+
 export async function getJupiterTokenRiskEvidence(
   config: AgentWalletConfig,
   input: JupiterTokenRiskEvidenceInput,
@@ -49,30 +62,53 @@ export async function getJupiterTokenRiskEvidence(
   const includePrice = input.includePrice ?? true;
   const includeSearchFallback = input.includeSearchFallback ?? true;
   const tokenRead = await getJupiterTokenSearch(config, { query: mint, limit: includeSearchFallback ? 20 : 1 });
-  const token = selectToken(mint, tokenRead.tokens, includeSearchFallback);
+  const token = selectExactToken(mint, tokenRead.tokens);
+  const candidateTokens = includeSearchFallback && !token ? tokenRead.tokens : [];
   const price = includePrice ? await getJupiterPrice(config, { mint }) : undefined;
-  return buildTokenRiskEvidence(mint, token, price);
+  return buildTokenRiskEvidence(mint, token, price, {
+    candidateTokens,
+    priceRequested: includePrice,
+  });
 }
 
 export function buildTokenRiskEvidence(
   mint: string,
   token: JupiterTokenInfo | undefined,
   price: JupiterPriceSnapshot | undefined,
+  options: {
+    candidateTokens?: JupiterTokenInfo[];
+    priceRequested?: boolean;
+  } = {},
   asOf = new Date().toISOString(),
 ): JupiterTokenRiskEvidence {
   const riskLabels: string[] = [];
   const warnings: string[] = [];
+  const priceRequested = options.priceRequested ?? price !== undefined;
+  const candidateTokens = (options.candidateTokens ?? [])
+    .filter((candidate) => candidate.id !== mint)
+    .slice(0, 5)
+    .map(tokenCandidate);
   const audit = token?.audit;
   const topHoldersPercentage = numberField(audit?.topHoldersPercentage);
   const liquidity = price?.liquidity ?? token?.liquidity;
   const usdPrice = price?.usdPrice ?? token?.usdPrice;
   const priceBlockId = price?.blockId ?? token?.priceBlockId;
   const priceChange24h = price?.priceChange24h ?? token?.stats24h?.priceChange;
+  const verification = token?.verification?.trim();
+  const normalizedVerification = verification?.toLowerCase();
 
   if (!token) {
     riskLabels.push('token_metadata_missing');
     warnings.push('Jupiter Token API did not return metadata for this mint.');
+    if (candidateTokens.length > 0) {
+      riskLabels.push('token_search_candidates_not_exact');
+      warnings.push('Jupiter Token API returned search candidates, but none exactly matched this mint.');
+    }
   } else {
+    if (normalizedVerification !== undefined && isBlockedVerification(normalizedVerification)) {
+      riskLabels.push('verification_blocked');
+      warnings.push(`Jupiter verification status is ${verification}.`);
+    }
     if (token.isVerified !== true) {
       riskLabels.push('unverified');
       warnings.push('Jupiter does not mark this token as verified.');
@@ -113,20 +149,34 @@ export function buildTokenRiskEvidence(
     riskLabels.push('price_missing');
     warnings.push(price.reason ?? 'Jupiter Price API did not return a reliable price.');
   }
-  riskLabels.push('price_evidence_not_oracle');
-  warnings.push('Jupiter price is evidence, not an oracle guarantee.');
+  if (priceRequested || usdPrice !== undefined) {
+    riskLabels.push('price_evidence_not_oracle');
+    warnings.push('Jupiter price is evidence, not an oracle guarantee.');
+  }
+
+  const stats = token === undefined
+    ? undefined
+    : {
+        ...(token.stats5m !== undefined && { stats5m: token.stats5m }),
+        ...(token.stats1h !== undefined && { stats1h: token.stats1h }),
+        ...(token.stats6h !== undefined && { stats6h: token.stats6h }),
+        ...(token.stats24h !== undefined && { stats24h: token.stats24h }),
+      };
 
   return {
     connectorId: 'jupiter',
     product: 'tokens_price',
     mint,
     tokenFound: token !== undefined,
+    priceRequested,
     ...(token?.symbol !== undefined && { symbol: token.symbol }),
     ...(token?.name !== undefined && { name: token.name }),
     ...(token?.decimals !== undefined && { decimals: token.decimals }),
     ...(token?.tokenProgram !== undefined && { tokenProgram: token.tokenProgram }),
+    ...(verification !== undefined && { verification }),
     ...(token?.isVerified !== undefined && { isVerified: token.isVerified }),
     ...(token?.tags !== undefined && { tags: token.tags }),
+    ...(candidateTokens.length > 0 && { candidateTokens }),
     ...(token?.organicScore !== undefined && { organicScore: token.organicScore }),
     ...(token?.organicScoreLabel !== undefined && { organicScoreLabel: token.organicScoreLabel }),
     ...(audit !== undefined && { audit }),
@@ -138,27 +188,34 @@ export function buildTokenRiskEvidence(
     ...(usdPrice !== undefined && { usdPrice }),
     ...(priceBlockId !== undefined && { priceBlockId }),
     ...(priceChange24h !== undefined && { priceChange24h }),
-    ...(token !== undefined && {
-      stats: {
-        ...(token.stats5m !== undefined && { stats5m: token.stats5m }),
-        ...(token.stats1h !== undefined && { stats1h: token.stats1h }),
-        ...(token.stats6h !== undefined && { stats6h: token.stats6h }),
-        ...(token.stats24h !== undefined && { stats24h: token.stats24h }),
-      },
-    }),
+    ...(price?.status === 'missing' && { priceMissingReason: price.reason }),
+    ...(stats !== undefined && Object.keys(stats).length > 0 && { stats }),
     riskLabels: [...new Set(riskLabels)],
     warnings: [...new Set(warnings)],
     asOf,
   };
 }
 
-function selectToken(
+function selectExactToken(
   mint: string,
   tokens: JupiterTokenInfo[],
-  includeSearchFallback: boolean,
 ): JupiterTokenInfo | undefined {
-  const exact = tokens.find((token) => token.id === mint);
-  return exact ?? (includeSearchFallback ? tokens[0] : undefined);
+  return tokens.find((token) => token.id === mint);
+}
+
+function tokenCandidate(token: JupiterTokenInfo): JupiterTokenEvidenceCandidate {
+  return {
+    mint: token.id,
+    ...(token.symbol !== undefined && { symbol: token.symbol }),
+    ...(token.name !== undefined && { name: token.name }),
+    ...(token.verification !== undefined && { verification: token.verification }),
+    ...(token.isVerified !== undefined && { isVerified: token.isVerified }),
+    ...(token.tags !== undefined && { tags: token.tags }),
+  };
+}
+
+function isBlockedVerification(value: string): boolean {
+  return ['banned', 'blocked', 'blacklisted', 'scam', 'suspicious'].includes(value);
 }
 
 function numberField(value: unknown): number | undefined {

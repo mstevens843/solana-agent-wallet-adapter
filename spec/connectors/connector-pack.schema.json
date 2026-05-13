@@ -55,7 +55,7 @@
           "name": { "type": "string", "description": "Env var, header, or settings key the connector needs." },
           "scope": {
             "type": "string",
-            "enum": ["env", "header", "wallet", "dialect_client_key", "user_setting"],
+            "enum": ["env", "header", "wallet", "dialect_client_key", "user_setting", "optional_dependency"],
             "description": "Where the config lives."
           },
           "required": { "type": "boolean", "default": true },
@@ -77,7 +77,7 @@
           },
           "source": {
             "type": "string",
-            "enum": ["first-class-adapter", "dialect-markets", "meteora-api", "jupiter-ultra", "jupiter-swap-v2", "none"],
+            "enum": ["first-class-adapter", "dialect-markets", "meteora-api", "jupiter-ultra", "jupiter-swap-v2", "jupiter-lend-rest", "jupiter-lend-read", "jupiter-prediction-api", "jupiter-trigger", "jupiter-perps", "none"],
             "description": "Mirrors readSource in apps/browser-demo/src/connectedDapps.ts."
           },
           "implemented": {

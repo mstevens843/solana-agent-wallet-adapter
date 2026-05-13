@@ -6,7 +6,7 @@ import {
   type JupiterPredictionPolicyConfig,
 } from '../../config.js';
 
-import { jupiterApiHost, jupiterFetchJson } from './client.js';
+import { jupiterApiHost, jupiterFetchJson, redactJupiterSecrets } from './client.js';
 
 export const JUPITER_PREDICTION_BETA_WARNING =
   'Jupiter Prediction API is in beta. Schemas, prices, and outcomes can change without notice.';
@@ -69,7 +69,7 @@ export function predictionEnvelope<T>(
     beta: true,
     apiBaseUrlHost: jupiterApiHost(config, 'prediction'),
     asOf: new Date().toISOString(),
-    data,
+    data: redactJupiterSecrets(data) as T,
     warnings: buildPredictionWarnings(warnings),
   };
 }

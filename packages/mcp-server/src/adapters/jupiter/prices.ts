@@ -66,15 +66,20 @@ function normalizePriceSnapshot(mint: string, value: unknown, asOf: string): Jup
   if (!record) return missingPrice(mint, asOf);
   const usdPrice = numberField(record.usdPrice);
   if (usdPrice === undefined) return missingPrice(mint, asOf);
+  const decimals = numberField(record.decimals);
+  const blockId = numberField(record.blockId);
+  const priceChange24h = numberField(record.priceChange24h);
+  const liquidity = numberField(record.liquidity);
+  const createdAt = stringField(record.createdAt);
   return {
     mint,
     status: 'found',
     usdPrice,
-    ...(numberField(record.decimals) !== undefined && { decimals: numberField(record.decimals) }),
-    ...(numberField(record.blockId) !== undefined && { blockId: numberField(record.blockId) }),
-    ...(numberField(record.priceChange24h) !== undefined && { priceChange24h: numberField(record.priceChange24h) }),
-    ...(numberField(record.liquidity) !== undefined && { liquidity: numberField(record.liquidity) }),
-    ...(stringField(record.createdAt) !== undefined && { createdAt: stringField(record.createdAt) }),
+    ...(decimals !== undefined && { decimals }),
+    ...(blockId !== undefined && { blockId }),
+    ...(priceChange24h !== undefined && { priceChange24h }),
+    ...(liquidity !== undefined && { liquidity }),
+    ...(createdAt !== undefined && { createdAt }),
     asOf,
   };
 }

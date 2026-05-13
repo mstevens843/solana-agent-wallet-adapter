@@ -11,6 +11,7 @@ import {
   type JupiterLendBorrowHealthPreview,
   type JupiterLendBorrowPositionSnapshot,
   type JupiterLendBorrowVaultSnapshot,
+  type JupiterLendOracleSnapshot,
 } from './lendClient.js';
 
 export interface ListBorrowVaultsInput {
@@ -91,16 +92,60 @@ export async function previewBorrowHealth(
 }
 
 export function assertBorrowHealthPreviewAllowed(preview: JupiterLendBorrowHealthPreview): void {
-  if (!preview.blocked) return;
   const after = preview.after;
+  if (
+    after.liquidationStatus === 'liquidated' ||
+    after.liquidationStatus === 'liquidatable' ||
+    after.liquidationStatus === 'unknown'
+  ) {
+    throw new AdapterError(
+      JUPITER_ADAPTER_ID,
+      'health_check_failed',
+      after.liquidationStatus === 'unknown'
+        ? 'Jupiter Borrow liquidation status is unknown; refusing to prepare a risky action.'
+        : 'Jupiter Borrow position is at or past liquidation threshold.',
+    );
+  }
+  if (!preview.blocked) return;
   const reason = preview.warnings.length > 0
     ? preview.warnings.join(' ')
     : after.healthRatio !== null && after.healthRatio < preview.minHealthRatio
       ? `Projected Jupiter Borrow health ratio ${after.healthRatioText} is below minimum ${preview.minHealthRatio}.`
-      : after.liquidationStatus === 'liquidated' || after.liquidationStatus === 'liquidatable'
-        ? 'Jupiter Borrow position is at or past liquidation threshold.'
-        : 'Projected Jupiter Borrow health is unsafe.';
+      : 'Projected Jupiter Borrow health is unsafe.';
   throw new AdapterError(JUPITER_ADAPTER_ID, 'health_check_failed', reason);
+}
+
+export function assertOracleFresh(
+  oracle: JupiterLendOracleSnapshot | undefined,
+  label: string,
+): void {
+  if (!oracle) return;
+  if (oracle.available === false) {
+    throw new AdapterError(
+      JUPITER_ADAPTER_ID,
+      'stale_oracle',
+      `${label} cannot proceed: oracle is reporting unavailable.`,
+    );
+  }
+  const maxStalenessSeconds = oracle.maxStalenessSeconds;
+  if (
+    typeof maxStalenessSeconds === 'number' &&
+    Number.isFinite(maxStalenessSeconds) &&
+    maxStalenessSeconds > 0 &&
+    oracle.publishedAt
+  ) {
+    const publishedAt = Date.parse(oracle.publishedAt);
+    if (Number.isFinite(publishedAt)) {
+      const ageSeconds = (Date.now() - publishedAt) / 1000;
+      if (ageSeconds > maxStalenessSeconds) {
+        throw new AdapterError(
+          JUPITER_ADAPTER_ID,
+          'stale_oracle',
+          `${label} cannot proceed: oracle is stale by ${Math.round(ageSeconds)}s (max ${maxStalenessSeconds}s).`,
+        );
+      }
+    }
+  }
 }
 
 export function configuredMinHealthRatio(config: AgentWalletConfig): number {

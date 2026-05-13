@@ -129,8 +129,8 @@
     "Operate on any cluster other than mainnet-beta.",
     "Move funds without wallet approval."
   ],
-  "actionPreparationNotes": "Resolve the reserve symbol from token input via resolveKnownReserve; if absent, require reserveMint. Read fresh reserve snapshot and obligation at prepare time and store reserveAddress, decimals, supplyApy/borrowApy, collateralFactor, liquidationThreshold, healthPreview, and the obligation snapshot in params. The execute path re-reads obligation and reserve, recomputes the health preview, and refuses borrow/withdraw if projected health is below the configured minimum.",
-  "riskNotes": "Borrow and withdraw raise liquidation risk. The adapter rejects borrows or withdrawals whose projected health factor breaches the minimum threshold (default 1.10). High utilization may delay withdrawals; surface utilization and liquidity in the review card before approval.",
+  "actionPreparationNotes": "Resolve the reserve symbol from token input via resolveKnownReserve; if absent, require reserveMint. Read fresh reserve snapshot and obligation at prepare time and store reserveAddress, decimals, supplyApy/borrowApy, collateralFactor, liquidationThreshold, healthPreview, and the obligation snapshot in params. Defensive guards at prepare time: deposit is refused when amount exceeds depositLimitRemaining (exceeds_cap); borrow is refused when amount exceeds borrowLimitRemaining (exceeds_cap), when the obligation has no collateral (no_collateral), and when the reserve has no oracle price (projected_health_unsafe with missing_price_oracle breach). The execute path re-reads obligation and reserve, recomputes the health preview, and refuses borrow/withdraw if projected health is below the configured minimum.",
+  "riskNotes": "Borrow and withdraw raise liquidation risk. The adapter rejects borrows or withdrawals whose projected health factor breaches the minimum threshold (default 1.10), as well as actions on reserves that lack an oracle price. High utilization may delay withdrawals; surface utilization and liquidity in the review card before approval.",
   "approvalBoundary": {
     "readGated": false,
     "writeGated": true,

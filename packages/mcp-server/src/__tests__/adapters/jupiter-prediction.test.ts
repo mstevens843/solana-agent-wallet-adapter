@@ -223,4 +223,65 @@ describe('Jupiter Prediction adapter (beta, read-only)', () => {
       message: expect.stringContaining('predictionOrderId is required'),
     });
   });
+
+  it('routes connector_read_facts predictionOperation=event_markets to /events/:id/markets', async () => {
+    fetchMock.mockResolvedValueOnce(jsonResponse({
+      event: { id: 'evt-9', title: 'Embedded test' },
+      markets: [{ id: 'mkt-9', question: 'A?', status: 'open', yesPrice: '0.55', noPrice: '0.45' }],
+    }));
+    const service = makeService(predictionConfig());
+    const result = await service.connectorReadFacts({
+      connectorId: 'jupiter',
+      capability: 'prediction',
+      predictionOperation: 'event_markets',
+      predictionEventId: 'evt-9',
+    });
+    expect(String((fetchMock.mock.calls[0] as unknown[])[0])).toContain('/events/evt-9/markets');
+    const data = (result as { data: { markets: Array<{ yesPrice?: string; status?: string }> } }).data;
+    // Embedded markets should normalize as NormalizedPredictionMarket (with YES/NO prices and status).
+    expect(data.markets[0]?.yesPrice).toBe('0.55');
+    expect(data.markets[0]?.status).toBe('open');
+  });
+
+  it('routes connector_read_facts to search_events when only a query is provided', async () => {
+    fetchMock.mockResolvedValueOnce(jsonResponse({ events: [] }));
+    const service = makeService(predictionConfig());
+    await service.connectorReadFacts({
+      connectorId: 'jupiter',
+      capability: 'prediction',
+      query: 'btc',
+    });
+    expect(String((fetchMock.mock.calls[0] as unknown[])[0])).toContain('/events/search');
+    expect(String((fetchMock.mock.calls[0] as unknown[])[0])).toContain('query=btc');
+  });
+
+  it('redacts api key / bearer / signed-transaction fields if present in raw success bodies', async () => {
+    fetchMock.mockResolvedValueOnce(jsonResponse({
+      events: [{ id: 'evt-secret', title: 'Sensitive' }],
+      apiKey: 'should-not-leak-1234567890',
+      meta: { authorization: 'Bearer should-not-leak', signedTransaction: 'AAAA' },
+    }));
+    const service = makeService(predictionConfig());
+    const result = await service.jupiterPredictionEvents({});
+    const data = result['data'] as { raw: Record<string, unknown> };
+    expect(data.raw.apiKey).toBe('[redacted]');
+    expect((data.raw.meta as Record<string, string>).authorization).toBe('[redacted]');
+    expect((data.raw.meta as Record<string, string>).signedTransaction).toBe('[redacted]');
+    expect(JSON.stringify(result)).not.toContain('should-not-leak');
+  });
+
+  it('embedded markets in event detail are normalized with YES/NO prices and status', async () => {
+    fetchMock.mockResolvedValueOnce(jsonResponse({
+      event: {
+        id: 'evt-detail',
+        title: 'Detail test',
+        markets: [{ id: 'mkt-d', question: 'B?', status: 'resolved', yesPrice: '1', noPrice: '0', result: 'YES' }],
+      },
+    }));
+    const service = makeService(predictionConfig());
+    const result = await service.jupiterPredictionEventDetail({ eventId: 'evt-detail' });
+    const data = (result as { data: { markets?: Array<{ status?: string; result?: string }> } }).data;
+    expect(data.markets?.[0]?.status).toBe('resolved');
+    expect(data.markets?.[0]?.result).toBe('YES');
+  });
 });

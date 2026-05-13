@@ -613,6 +613,21 @@ describe('Realms cast vote execute', () => {
       /not 'voting'|invalid_request/,
     );
   });
+
+  it('execute refuses when a vote record appears between prepare and execute', async () => {
+    const store = inMemoryStore();
+    const ctx = makeContext({ store });
+    const prepared = await requireRealmsAction('cast_vote').prepare(
+      { proposalAddress: PROPOSAL, vote: 'approve' },
+      ctx,
+    );
+    const action = await store.addAction(prepared.addInput);
+    state.voteRecord = fakeVoteRecord();
+    await expect(requireRealmsAction('cast_vote').execute(action, ctx)).rejects.toThrowError(
+      /already cast|invalid_request/,
+    );
+    expect(state.castVoteCalls).toHaveLength(0);
+  });
 });
 
 describe('Realms relinquish vote', () => {

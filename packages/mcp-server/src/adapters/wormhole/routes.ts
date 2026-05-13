@@ -3,11 +3,10 @@ import { getWormholeClient, staticWormholeRoute, type WormholeSupportedRoutesSna
 import {
   WORMHOLE_DESTINATION_CHAINS,
   WORMHOLE_SOURCE_CHAIN,
-  normalizeWormholeRouteType,
   wormholeNetworkForCluster,
   type WormholeRouteType,
 } from './constants.js';
-import { normalizeDestinationChain, normalizeMint, normalizeSourceChain } from './validation.js';
+import { normalizeDestinationChain, normalizeMint, normalizeRouteType, normalizeSourceChain } from './validation.js';
 
 export interface WormholeSupportedRoutesInput {
   sourceChain?: string;
@@ -21,7 +20,7 @@ export async function getWormholeSupportedRoutes(
   input: WormholeSupportedRoutesInput = {},
 ): Promise<WormholeSupportedRoutesSnapshot> {
   const sourceChain = normalizeSourceChain(input.sourceChain);
-  const routeType = normalizeWormholeRouteType(input.routeType);
+  const routeType = normalizeRouteType(input.routeType);
   const destinationChain = input.destinationChain ? normalizeDestinationChain(input.destinationChain) : undefined;
   const mintAddress = input.mintAddress ? normalizeMint(input.mintAddress, 'mintAddress') : undefined;
   const wormholeNetwork = wormholeNetworkForCluster(ctx.config.cluster);

@@ -184,6 +184,7 @@ import {
   type JupiterTokenByTagInput,
   type JupiterTokenCategoryInput,
   type JupiterTokenRecentInput,
+  type JupiterTokenRiskEvidence,
   type JupiterTokenRiskEvidenceInput,
   type JupiterTokenSearchInput,
   type MarketDetailInput as JupiterPredictionMarketDetailInput,
@@ -304,6 +305,8 @@ import {
   factsFromWormholeTokenSnapshot,
   factsFromWormholeTransferStatus,
   factsFromWormholeWalletBridgeExposure,
+  fact,
+  type ConnectorFact,
   type ConnectorFactReadInput,
 } from './connectorFacts.js';
 import { redactSecrets } from './trace.js';
@@ -1684,6 +1687,41 @@ export class AgentWalletActionService {
     return { evidence, facts: factsFromJupiterTokenRiskEvidence(evidence) };
   }
 
+  private async jupiterSwapTokenEvidence(input: {
+    requestedInputToken?: string;
+    requestedOutputToken?: string;
+    inputMint?: unknown;
+    outputMint?: unknown;
+  }): Promise<{ evidence: JupiterTokenRiskEvidence[]; facts: ConnectorFact[] }> {
+    const mints = [
+      swapEvidenceMint(input.inputMint, input.requestedInputToken, this.config),
+      swapEvidenceMint(input.outputMint, input.requestedOutputToken, this.config),
+    ].filter((mint): mint is string => mint !== undefined);
+    const uniqueMints = [...new Set(mints)];
+    const evidence: JupiterTokenRiskEvidence[] = [];
+    const facts: ConnectorFact[] = [];
+    for (const mint of uniqueMints) {
+      try {
+        const result = await getJupiterTokenRiskEvidence(this.config, {
+          mint,
+          includePrice: true,
+          includeSearchFallback: true,
+        });
+        evidence.push(result);
+        facts.push(...factsFromJupiterTokenRiskEvidence(result));
+      } catch (err) {
+        facts.push(fact({
+          connectorId: 'jupiter',
+          label: 'Jupiter token evidence unavailable',
+          value: `Could not read token evidence for ${shortToken(mint)}: ${err instanceof Error ? err.message : String(err)}`,
+          tone: 'warn',
+          detail: { mint },
+        }));
+      }
+    }
+    return { evidence, facts };
+  }
+
   async pythPriceFeed(input: GetPythPriceFeedInput): Promise<Record<string, unknown>> {
     const adapter = requireAdapter('pyth');
     assertSupportedCluster(adapter, this.config.cluster);
@@ -2060,6 +2098,12 @@ export class AgentWalletActionService {
       }
       if (connector.id === 'magiceden') {
         return await this.magicedenConnectorFacts(input);
+      }
+      if (connector.id === 'realms') {
+        return await this.realmsConnectorFacts(input);
+      }
+      if (connector.id === 'squads') {
+        return await this.squadsConnectorFacts(input);
       }
       throw missingConnectorCapability(connector, input.capability, 'read');
     } catch (err) {
@@ -2508,12 +2552,12 @@ export class AgentWalletActionService {
       ?? (input.predictionOrderId
         ? 'order_status'
         : input.predictionMarketId
-          ? input.predictionEventId
-            ? 'market_detail'
-            : 'market_detail'
+          ? 'market_detail'
           : input.predictionEventId
             ? 'event_detail'
-            : 'events');
+            : input.query?.trim()
+              ? 'search_events'
+              : 'events');
     switch (op) {
       case 'events':
         return this.jupiterPredictionEvents({
@@ -2936,6 +2980,132 @@ export class AgentWalletActionService {
         walletAddress: result.walletAddress,
         positions: result.positions,
         totals: result.totals,
+        facts: result.facts,
+      };
+    }
+    throw missingConnectorCapability(connector, capability, 'read');
+  }
+
+  private async realmsConnectorFacts(input: ConnectorFactReadInput): Promise<Record<string, unknown>> {
+    const connector = requireRuntimeConnector('realms');
+    const capability = input.capability ?? realmsDefaultCapability(input);
+
+    if (input.proposalAddress?.trim()) {
+      const result = await this.realmsProposalSnapshot({
+        proposalAddress: input.proposalAddress,
+      });
+      return {
+        connector: connectorCapabilityView(connector, this.config),
+        capability,
+        source: 'proposal_snapshot',
+        snapshot: result.snapshot,
+        facts: result.facts,
+      };
+    }
+    if (input.governanceAddress?.trim()) {
+      const result = await this.realmsGovernanceSnapshot({
+        governanceAddress: input.governanceAddress,
+      });
+      return {
+        connector: connectorCapabilityView(connector, this.config),
+        capability,
+        source: 'governance_snapshot',
+        snapshot: result.snapshot,
+        facts: result.facts,
+      };
+    }
+    if (input.realmAddress?.trim() && !input.walletAddress?.trim()) {
+      const result = await this.realmsRealmSnapshot({
+        realmAddress: input.realmAddress,
+      });
+      return {
+        connector: connectorCapabilityView(connector, this.config),
+        capability,
+        source: 'realm_snapshot',
+        snapshot: result.snapshot,
+        facts: result.facts,
+      };
+    }
+    if (capability === 'positions' || capability === 'governance' || capability === 'markets') {
+      const result = await this.realmsWalletGovernance({
+        ...(input.walletAddress !== undefined && { walletAddress: input.walletAddress }),
+        ...(input.realmAddress !== undefined && { realmAddress: input.realmAddress }),
+      });
+      return {
+        connector: connectorCapabilityView(connector, this.config),
+        capability,
+        source: 'wallet_governance',
+        walletAddress: result.walletAddress,
+        snapshots: result.snapshots,
+        facts: result.facts,
+      };
+    }
+    throw missingConnectorCapability(connector, capability, 'read');
+  }
+
+  private async squadsConnectorFacts(input: ConnectorFactReadInput): Promise<Record<string, unknown>> {
+    const connector = requireRuntimeConnector('squads');
+    const capability =
+      input.capability ??
+      (input.proposalAddress?.trim() || input.transactionIndex !== undefined
+        ? 'governance'
+        : input.multisigAddress?.trim()
+          ? input.vaultIndex !== undefined
+            ? 'treasury'
+            : 'governance'
+          : 'positions');
+
+    if (input.multisigAddress?.trim() && (input.proposalAddress?.trim() || input.transactionIndex !== undefined)) {
+      const result = await this.squadsProposalSnapshot({
+        multisigAddress: input.multisigAddress,
+        ...(input.proposalAddress !== undefined && { proposalAddress: input.proposalAddress }),
+        ...(input.transactionIndex !== undefined && { transactionIndex: input.transactionIndex }),
+      });
+      return {
+        connector: connectorCapabilityView(connector, this.config),
+        capability,
+        source: 'proposal_snapshot',
+        snapshot: result.snapshot,
+        facts: result.facts,
+      };
+    }
+    if (input.multisigAddress?.trim() && input.vaultIndex !== undefined) {
+      const result = await this.squadsVaultSnapshot({
+        multisigAddress: input.multisigAddress,
+        vaultIndex: input.vaultIndex,
+      });
+      return {
+        connector: connectorCapabilityView(connector, this.config),
+        capability,
+        source: 'vault_snapshot',
+        snapshot: result.snapshot,
+        facts: result.facts,
+      };
+    }
+    if (input.multisigAddress?.trim()) {
+      const result = await this.squadsMultisigSnapshot({
+        multisigAddress: input.multisigAddress,
+      });
+      return {
+        connector: connectorCapabilityView(connector, this.config),
+        capability,
+        source: 'multisig_snapshot',
+        snapshot: result.snapshot,
+        summary: result.summary,
+        walletRole: result.walletRole,
+        facts: result.facts,
+      };
+    }
+    if (capability === 'positions' || capability === 'governance') {
+      const result = await this.squadsWalletAuthority({
+        ...(input.walletAddress !== undefined && { walletAddress: input.walletAddress }),
+      });
+      return {
+        connector: connectorCapabilityView(connector, this.config),
+        capability,
+        source: 'wallet_authority',
+        walletAddress: result.walletAddress,
+        authority: result.authority,
         facts: result.facts,
       };
     }
@@ -3846,7 +4016,17 @@ export class AgentWalletActionService {
       ...(input.dueAt !== undefined && { dueAt: input.dueAt }),
       ...(input.note !== undefined && { note: input.note }),
     });
-    return { preparedAction: action };
+    const tokenEvidence = await this.jupiterSwapTokenEvidence({
+      requestedInputToken: input.inputToken,
+      requestedOutputToken: input.outputToken,
+      inputMint: swap.inputMint,
+      outputMint: swap.outputMint,
+    });
+    return {
+      preparedAction: action,
+      ...(tokenEvidence.evidence.length > 0 && { tokenEvidence: tokenEvidence.evidence }),
+      ...(tokenEvidence.facts.length > 0 && { facts: tokenEvidence.facts }),
+    };
   }
 
   async listPreparedActions(): Promise<Record<string, unknown>> {
@@ -3884,11 +4064,15 @@ export class AgentWalletActionService {
     await store.updateAction(actionId, { status: 'approval_pending' });
     try {
       const result = await this.executePreparedActionRecord(action);
+      const txids = result.txids?.filter((txid) => txid.trim()) ?? [];
+      const txid = typeof result.txid === 'string' && result.txid.trim()
+        ? result.txid
+        : txids[0];
       const updated = await store.updateAction(actionId, {
         status: 'approved',
-        txid: result.txid,
-        ...(Array.isArray(result.txids) ? { txids: result.txids } : {}),
-        txStatus: 'pending',
+        ...(txid !== undefined ? { txid } : {}),
+        ...(txids.length > 0 ? { txids } : {}),
+        ...(txid !== undefined || txids.length > 0 ? { txStatus: 'pending' as const } : {}),
         confirmedAt: undefined,
         txError: undefined,
         error: undefined,
@@ -4093,9 +4277,19 @@ export class AgentWalletActionService {
     requireActionAllowed(this.config);
     const order = await this.getSwapOrder(input);
     const summary = orderSummary(order);
+    const tokenEvidence = await this.jupiterSwapTokenEvidence({
+      requestedInputToken: input.inputToken,
+      requestedOutputToken: input.outputToken,
+      inputMint: summary.inputMint,
+      outputMint: summary.outputMint,
+    });
     return {
       ...summary,
-      facts: factsFromJupiterOrderPreview(summary),
+      ...(tokenEvidence.evidence.length > 0 && { tokenEvidence: tokenEvidence.evidence }),
+      facts: [
+        ...factsFromJupiterOrderPreview(summary),
+        ...tokenEvidence.facts,
+      ],
     };
   }
 
@@ -4292,7 +4486,7 @@ export class AgentWalletActionService {
     };
   }
 
-  async executePreparedActionRecord(action: PreparedAction): Promise<Record<string, unknown> & { txid: string; txids?: string[] }> {
+  async executePreparedActionRecord(action: PreparedAction): Promise<Record<string, unknown> & { txid?: string; txids?: string[] }> {
     const currentAddress = await this.backend.getAddress();
     if (currentAddress !== action.walletAddress) {
       throw new ProtocolError(
@@ -4383,6 +4577,22 @@ export class AgentWalletActionService {
       case 'wormhole_transfer':
       case 'wormhole_redeem':
       case 'wormhole_recover_or_resume':
+      case 'jupiter_lend_earn_deposit':
+      case 'jupiter_lend_earn_withdraw':
+      case 'jupiter_lend_earn_mint':
+      case 'jupiter_lend_earn_redeem':
+      case 'jupiter_lend_borrow_create_position':
+      case 'jupiter_lend_borrow_deposit_collateral':
+      case 'jupiter_lend_borrow_borrow':
+      case 'jupiter_lend_borrow_repay':
+      case 'jupiter_lend_borrow_withdraw_collateral':
+      case 'jupiter_trigger_register_vault':
+      case 'jupiter_trigger_single_order':
+      case 'jupiter_trigger_oco_order':
+      case 'jupiter_trigger_otoco_order':
+      case 'jupiter_trigger_edit_order':
+      case 'jupiter_trigger_cancel_order':
+      case 'jupiter_trigger_withdraw_order_funds':
         return this.executePreparedAdapterAction(action);
       case 'blink_action':
         return this.executePreparedBlinkAction(action);
@@ -4394,7 +4604,7 @@ export class AgentWalletActionService {
     }
   }
 
-  private async executePreparedAdapterAction(action: PreparedAction): Promise<Record<string, unknown> & { txid: string; txids?: string[] }> {
+  private async executePreparedAdapterAction(action: PreparedAction): Promise<Record<string, unknown> & { txid?: string; txids?: string[] }> {
     const match = actionForKind(action.kind);
     if (!match) {
       throw new ProtocolError(
@@ -4407,10 +4617,10 @@ export class AgentWalletActionService {
     return {
       adapter: match.adapter.id,
       action: match.action.id,
-      txid: result.txid,
+      ...(result.txid !== undefined && { txid: result.txid }),
       ...(result.txids !== undefined && { txids: result.txids }),
       signedAt: result.signedAt,
-      explorerUrl: explorerUrl(result.txid, this.config.cluster),
+      ...(result.txid !== undefined && { explorerUrl: explorerUrl(result.txid, this.config.cluster) }),
       ...(result.txids !== undefined && { explorerUrls: result.txids.map((txid) => explorerUrl(txid, this.config.cluster)) }),
       ...(result.preview ? { preview: result.preview } : {}),
     };
@@ -4620,6 +4830,12 @@ function driftDefaultCapability(input: ConnectorFactReadInput): ConnectorCapabil
   if (input.walletAddress || input.subAccountId !== undefined) return 'positions';
   if (input.vaultAddress) return 'markets';
   return 'positions';
+}
+
+function realmsDefaultCapability(input: ConnectorFactReadInput): ConnectorCapability {
+  if (input.proposalAddress?.trim() || input.governanceAddress?.trim()) return 'markets';
+  if (input.realmAddress?.trim() && !input.walletAddress?.trim()) return 'markets';
+  return 'governance';
 }
 
 function missingConnectorCapability(
@@ -5141,6 +5357,18 @@ function findKnownToken(config: AgentWalletConfig, token: string): TokenLimitCon
   return [...config.tokens, ...DEFAULT_TOKEN_REGISTRY].find(
     (entry) => entry.symbol.toLowerCase() === normalized || entry.mint.toLowerCase() === normalized,
   );
+}
+
+function swapEvidenceMint(
+  mintValue: unknown,
+  requestedToken: string | undefined,
+  config: AgentWalletConfig,
+): string | undefined {
+  const mint = typeof mintValue === 'string' && looksLikeMintAddress(mintValue) ? mintValue : undefined;
+  if (!mint || mint === WSOL_MINT) return undefined;
+  const requested = requestedToken?.trim();
+  if (requested && looksLikeMintAddress(requested) && requested !== WSOL_MINT) return mint;
+  return findKnownToken(config, mint) ? undefined : mint;
 }
 
 function isNativeSolToken(token: string): boolean {
