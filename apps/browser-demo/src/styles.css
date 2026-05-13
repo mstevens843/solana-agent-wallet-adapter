@@ -888,6 +888,7 @@ code {
 
 .brand-logo img,
 .wallet-provider-icon img,
+.command-preference-provider-logo-mark img,
 .select-picker-logo img {
   display: block;
   height: 100%;
@@ -7933,6 +7934,11 @@ button.danger:hover:not(:disabled) {
   grid-template-columns: auto minmax(190px, 260px) minmax(0, 1fr);
 }
 
+.one-time-plan-control-row.review-filter-row,
+.recurring-control-row.review-filter-row {
+  grid-template-columns: auto minmax(0, 1fr) auto;
+}
+
 .one-time-plan-tabs {
   justify-content: flex-start;
   min-width: 0;
@@ -7957,6 +7963,48 @@ button.danger:hover:not(:disabled) {
 
 .top-connector-control.active .select-picker-trigger {
   border-color: rgba(139, 205, 170, 0.26);
+}
+
+.review-filter-row .agent-review-filter-control {
+  grid-column: 3;
+  justify-self: end;
+  width: min(184px, 100%);
+}
+
+.agent-review-filter-control.select-picker-shell,
+.agent-review-filter-control .select-picker-trigger {
+  min-width: 0;
+  width: 100%;
+}
+
+.agent-review-filter-control .select-picker-trigger {
+  background: rgba(255, 255, 255, 0.032);
+  border-color: rgba(224, 230, 226, 0.13);
+  min-height: 34px;
+  padding-inline: 10px;
+}
+
+.agent-review-filter-control .select-picker-trigger:hover:not(:disabled) {
+  background: rgba(255, 255, 255, 0.055);
+  border-color: rgba(224, 230, 226, 0.22);
+}
+
+.agent-review-filter-control .select-picker-meta {
+  display: none;
+}
+
+.agent-review-filter-control .template-picker-current strong {
+  font-size: 0.82rem;
+  line-height: 1.1;
+}
+
+.agent-review-filter-control .select-picker-menu {
+  min-width: 216px;
+}
+
+.agent-review-filter-control .select-picker-option-copy em {
+  font-size: 0.72rem;
+  line-height: 1.25;
 }
 
 .recurring-control-row {
@@ -15687,6 +15735,10 @@ button.danger:hover:not(:disabled) {
   min-height: 34px;
 }
 
+.route-app .agent-review-filter-control .select-picker-trigger {
+  min-height: 34px;
+}
+
 .route-app .top-connector-control .template-picker-current strong {
   font-size: 0.82rem;
 }
@@ -16892,6 +16944,49 @@ button.danger:hover:not(:disabled) {
   z-index: 1;
 }
 
+.command-preference-card.has-provider-logo .command-preference-card-label,
+.command-preference-card.has-provider-logo > strong {
+  padding-right: 42px;
+}
+
+.command-preference-card.has-provider-logo > :not(.command-preference-provider-logo) {
+  position: relative;
+  z-index: 1;
+}
+
+.command-preference-provider-logo {
+  align-items: center;
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.075), rgba(255, 255, 255, 0.032)),
+    rgba(6, 12, 10, 0.92);
+  border: 1px solid rgba(139, 205, 170, 0.22);
+  border-radius: 8px;
+  box-shadow:
+    0 8px 20px rgba(0, 0, 0, 0.18),
+    inset 0 1px 0 rgba(255, 255, 255, 0.055);
+  display: inline-flex;
+  height: 34px;
+  justify-content: center;
+  overflow: hidden;
+  padding: 6px;
+  position: absolute;
+  right: 10px;
+  top: 10px;
+  width: 34px;
+  z-index: 2;
+}
+
+.command-preference-provider-logo-mark {
+  align-items: center;
+  background: transparent;
+  border: 0;
+  border-radius: 0;
+  display: inline-flex;
+  height: 100%;
+  justify-content: center;
+  width: 100%;
+}
+
 .command-ai-path-visual {
   color: rgba(111, 222, 164, 0.78);
   height: 76px;
@@ -17594,6 +17689,16 @@ button.danger:hover:not(:disabled) {
 .completed-history-value .market-usd-estimate {
   color: rgba(196, 205, 202, 0.76);
   font-size: 0.78rem;
+}
+
+.review-plan-value .review-plan-context,
+.inbox-approval-value .inbox-approval-context,
+.recurring-card-value .recurring-card-context,
+.completed-history-value .completed-history-context {
+  color: rgba(196, 205, 202, 0.76);
+  font-size: 0.78rem;
+  font-weight: 600;
+  letter-spacing: 0.02em;
 }
 
 .review-plan-facts {
@@ -22996,6 +23101,13 @@ button.danger:hover:not(:disabled) {
   .route-app .recurring-control-row,
   .route-app .recurring-control-row.has-connector {
     grid-template-columns: minmax(0, 1fr);
+  }
+
+  .route-app .one-time-plan-control-row.review-filter-row .agent-review-filter-control,
+  .route-app .recurring-control-row.review-filter-row .agent-review-filter-control {
+    grid-column: 1;
+    justify-self: stretch;
+    width: 100%;
   }
 
   .route-app .one-time-method-control,

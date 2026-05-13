@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
 import {
+  connectorActionFormByActionType,
   connectorActionFormTemplateActionType,
   connectorAiPlannerContext,
   connectorAiUserNotes,
@@ -247,6 +248,27 @@ describe('connector drafting helpers', () => {
       expect(initField?.type).toBe('select');
       const amount = driftDeposit.fields.find((field) => field.id === 'amount');
       expect(amount?.defaultValue).toBe('25');
+    });
+  });
+
+  describe('connectorActionFormByActionType', () => {
+    it('resolves the Kamino deposit form from its action type', () => {
+      const form = connectorActionFormByActionType('kamino_deposit');
+      expect(form?.connectorId).toBe('kamino');
+      expect(form?.operationLabel).toBe('Deposit');
+      const reserveField = form?.fields.find((field) => field.id === 'token');
+      expect(reserveField?.type).toBe('cascading-select');
+    });
+
+    it('returns the Magic Eden bid form when given a sub-action action type', () => {
+      const form = connectorActionFormByActionType('magiceden_bid');
+      expect(form?.subActions?.options.map((option) => option.id)).toContain('collection');
+    });
+
+    it('returns undefined for an unknown action type', () => {
+      expect(connectorActionFormByActionType('not_a_real_action')).toBeUndefined();
+      expect(connectorActionFormByActionType('')).toBeUndefined();
+      expect(connectorActionFormByActionType(undefined)).toBeUndefined();
     });
   });
 });

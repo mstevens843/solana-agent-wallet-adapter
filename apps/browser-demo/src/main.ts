@@ -28,6 +28,7 @@ import {
   formatScheduleStatus,
   lifetimeSpendEstimate,
   previewUpcoming,
+  reconcileThresholdReviewDecision,
   type AiGuardrailReport,
   type ApprovalRequestRecord as WorkflowApprovalRequestRecord,
   type AuditEventRecord as WorkflowAuditEventRecord,
@@ -195,6 +196,7 @@ import {
   effectiveFormFields,
   isConnectorCapableTemplate,
   normalizeConnectorDraftParameters,
+  connectorActionFormByActionType,
   selectedConnectorActionForm,
   selectedConnectorForDraftParameters,
   selectedSubAction,
@@ -288,6 +290,8 @@ interface TokenFieldSelection {
   priceUsd?: number;
 }
 type AgentPlanReviewStatus = 'checking' | 'approved' | 'denied' | 'needs_input' | 'error';
+type AgentReviewFilter = AgentPlanReviewStatus | 'all' | 'not_asked';
+type AgentReviewFilterScope = 'generated' | 'recurring';
 type RecurringPresetId = 'scheduled-transfer' | 'recurring-swap';
 type RecurringActionKind = 'transfer' | 'swap' | 'connector' | 'blink';
 type InlineReceiptKind = 'intent' | 'rejection' | 'policy' | 'review';
@@ -1814,6 +1818,8 @@ interface DemoState {
   selectedGeneratedPlanId: string;
   generatedPlanAuditId: string;
   showArchivedGeneratedPlans: boolean;
+  generatedPlanAgentReviewFilter: AgentReviewFilter;
+  recurringAgentReviewFilter: AgentReviewFilter;
   workspaceStoragePanelOpen: boolean | null;
   aiSettings: AiSettings;
   aiSettingsPanelOpen: boolean | null;
@@ -2559,6 +2565,8 @@ const state: DemoState = {
   selectedGeneratedPlanId: '',
   generatedPlanAuditId: '',
   showArchivedGeneratedPlans: false,
+  generatedPlanAgentReviewFilter: 'all',
+  recurringAgentReviewFilter: 'all',
   workspaceStoragePanelOpen: null,
   aiSettings: {
     ...initialAiSettings,
@@ -8415,6 +8423,8 @@ interface CommandPreferenceSnapshotCard {
   meta: string;
   tone: 'good' | 'warn' | 'idle';
   icon: CommandCenterIconId;
+  logoId?: BrandLogoId;
+  logoLabel?: string;
   actionLabel: string;
   action: CommandPreferenceSnapshotAction;
 }
@@ -8460,6 +8470,12 @@ function commandAiPreferenceSnapshotCard(): CommandPreferenceSnapshotCard {
     meta: readiness,
     tone: configured ? 'good' : 'warn',
     icon: configured ? 'aiConnected' : 'ai',
+    ...(configured
+      ? {
+          logoId: connectedAiProviderLogoId(),
+          logoLabel: provider,
+        }
+      : {}),
     actionLabel: configured ? 'Open' : 'Connect',
     action: { type: 'command', view: 'ai' },
   };
@@ -8547,11 +8563,22 @@ function commandGuardrailsPreferenceSnapshotCard(): CommandPreferenceSnapshotCar
 function commandPreferenceSnapshotCard(card: CommandPreferenceSnapshotCard): string {
   const hasMeta = Boolean(card.meta.trim());
   const meta = hasMeta ? `<em>${escapeHtml(card.meta)}</em>` : '';
+  const providerLogo = card.logoId
+    ? `
+      <span class="command-preference-provider-logo" title="${escapeHtml(card.logoLabel ?? card.label)}">
+        ${brandLogo(card.logoId, 'command-preference-provider-logo-mark')}
+      </span>
+    `
+    : '';
   // const aiPathVisual = card.icon === 'aiConnected' ? commandConnectedAiPathVisual() : '';
   const aiPathVisual = '';
+  const cardClass = ['command-preference-card', card.tone, providerLogo ? 'has-provider-logo' : '']
+    .filter(Boolean)
+    .join(' ');
   return `
-    <article class="command-preference-card ${escapeHtml(card.tone)}">
+    <article class="${escapeHtml(cardClass)}">
       ${aiPathVisual}
+      ${providerLogo}
       <div class="command-preference-card-label">
         ${commandCenterIcon(card.icon)}
         <span>${escapeHtml(card.label)}</span>
@@ -9304,13 +9331,15 @@ function agentPlanPanel(): string {
 
 function oneTimePlanTabs(): string {
   const creating = state.oneTimePlanView === 'create';
+  const reviewing = state.oneTimePlanView === 'review';
   const selectedConnector = creating ? selectedConnectorForCreate(selectedTemplate()) : undefined;
   return `
-    <div class="one-time-plan-control-row ${creating ? 'has-connector' : ''}">
+    <div class="one-time-plan-control-row ${creating ? 'has-connector' : reviewing ? 'review-filter-row' : ''}">
       <div class="tabs compact-tabs one-time-plan-tabs" role="tablist" aria-label="One-time plan steps">
         ${oneTimePlanViewButton('create', 'Start')}
         ${oneTimePlanViewButton('review', 'Check')}
       </div>
+      ${reviewing ? agentReviewFilterControl('generated') : ''}
       ${creating ? connectorCreatePickerControl(selectedTemplate()) : ''}
       ${creating && !selectedConnector ? templateOutcomeControls('header') : ''}
     </div>
@@ -9403,7 +9432,8 @@ function draftReadyPanel(plan: AgentPlan): string {
 
 function generatedPlansPanel(embedded = false): string {
   const allPlans = generatedPlansForPanel(embedded);
-  const visiblePlans = visibleGeneratedPlans(embedded);
+  const baseVisiblePlans = visibleGeneratedPlans(embedded);
+  const visiblePlans = filterGeneratedPlansByAgentReview(baseVisiblePlans);
   const paginatedPlans = paginateList(visiblePlans, 'review');
   const aiDraftPending = embedded && state.activeOperation === 'generate-ai-plan';
   const archivedCount = allPlans.filter((record) => record.status === 'archived').length;
@@ -9442,7 +9472,7 @@ function generatedPlansPanel(embedded = false): string {
       `}
 
       ${planTemplatesStrip(embedded)}
-      ${generatedPlanStatusLine(allPlans.length, visiblePlans.length, archivedCount, movedCount)}
+      ${generatedPlanStatusLine(allPlans.length, baseVisiblePlans.length, visiblePlans.length, archivedCount, movedCount)}
       ${aiDraftPending ? aiDraftPendingCard() : ''}
       ${
         visiblePlans.length
@@ -9452,7 +9482,7 @@ function generatedPlansPanel(embedded = false): string {
             </div>
             ${listPagination('review', paginatedPlans, 'Check drafts')}
           `
-          : aiDraftPending ? '' : generatedPlansEmptyState(embedded)
+          : aiDraftPending ? '' : generatedPlansEmptyState(embedded, baseVisiblePlans.length > 0)
       }
       ${state.error ? `<div class="error">${escapeHtml(state.error)}</div>` : ''}
   `;
@@ -9472,16 +9502,88 @@ function generatedPlansPanel(embedded = false): string {
   `;
 }
 
-function generatedPlanStatusLine(totalCount: number, visibleCount: number, archivedCount: number, movedCount: number): string {
+function generatedPlanStatusLine(
+  totalCount: number,
+  inCheckCount: number,
+  shownCount: number,
+  archivedCount: number,
+  movedCount: number,
+): string {
+  const filtered = state.generatedPlanAgentReviewFilter !== 'all';
   return `
     <div class="queue-status generated-plan-status">
       <span>${escapeHtml(`${totalCount} plan${totalCount === 1 ? '' : 's'} saved`)}</span>
-      <strong class="accent-note">${visibleCount} in check</strong>
+      ${filtered
+        ? `<strong class="accent-note">${shownCount} shown</strong><span>${inCheckCount} in check</span><span>${escapeHtml(agentReviewFilterLabel(state.generatedPlanAgentReviewFilter))}</span>`
+        : `<strong class="accent-note">${inCheckCount} in check</strong>`}
       <span>${movedCount} moved forward</span>
       <span>${archivedCount} archived</span>
       <span>Newest first</span>
     </div>
   `;
+}
+
+function agentReviewFilterControl(scope: AgentReviewFilterScope): string {
+  const value = scope === 'generated'
+    ? state.generatedPlanAgentReviewFilter
+    : state.recurringAgentReviewFilter;
+  return selectPicker({
+    id: scope === 'generated' ? 'generatedPlanAgentReviewFilter' : 'recurringAgentReviewFilter',
+    value,
+    options: agentReviewFilterOptions(),
+    attrs: { 'data-agent-review-filter': scope },
+    disabled: state.busy,
+    className: 'agent-review-filter-control',
+    title: 'Filter by AI review status',
+  });
+}
+
+function agentReviewFilterOptions(): SelectPickerOption[] {
+  return [
+    { value: 'all', label: 'AI: All', meta: 'AI filter', detail: 'Every review status' },
+    { value: 'approved', label: 'Passed', meta: 'AI filter', detail: 'Agent approved' },
+    { value: 'denied', label: 'Denied', meta: 'AI filter', detail: 'Agent denied' },
+    { value: 'needs_input', label: 'Needs context', meta: 'AI filter', detail: 'Agent asked questions' },
+    { value: 'checking', label: 'Checking', meta: 'AI filter', detail: 'Review in progress' },
+    { value: 'error', label: 'Failed', meta: 'AI filter', detail: 'Review failed' },
+    { value: 'not_asked', label: 'Not asked', meta: 'AI filter', detail: 'No agent review yet' },
+  ];
+}
+
+function isAgentReviewFilter(value: string | undefined): value is AgentReviewFilter {
+  return value === 'all' ||
+    value === 'approved' ||
+    value === 'denied' ||
+    value === 'needs_input' ||
+    value === 'checking' ||
+    value === 'error' ||
+    value === 'not_asked';
+}
+
+function agentReviewFilterLabel(filter: AgentReviewFilter): string {
+  switch (filter) {
+    case 'approved':
+      return 'Passed';
+    case 'denied':
+      return 'Denied';
+    case 'needs_input':
+      return 'Needs context';
+    case 'checking':
+      return 'Checking';
+    case 'error':
+      return 'Failed';
+    case 'not_asked':
+      return 'Not asked';
+    case 'all':
+    default:
+      return 'AI: All';
+  }
+}
+
+function matchesAgentReviewFilter(review: AgentPlanReviewState | undefined, filter: AgentReviewFilter): boolean {
+  if (filter === 'all') return true;
+  if (filter === 'not_asked') return !review?.required;
+  return review?.required === true && review.status === filter;
 }
 
 function aiDraftPendingCard(): string {
@@ -9623,12 +9725,129 @@ function generatedPlanHeroValue(record: GeneratedPlanRecord): string {
   const plan = record.plan;
   const metric = reviewPlanMetric(plan);
   const subject = marketAmountSubjectForPlan(plan);
+  const context = planConnectorContextLabel(plan);
   return `
     <div class="review-plan-value" title="${escapeHtml(marketHeroTitle(metric.primary, metric.secondary, subject))}">
       ${marketAmountLineHtml(metric.primary, subject)}
       ${metric.secondary ? `<span>${escapeHtml(metric.secondary)}</span>` : ''}
+      ${context ? `<span class="review-plan-context">${escapeHtml(context)}</span>` : ''}
     </div>
   `;
+}
+
+const CONNECTOR_CONTEXT_GENERIC_FIELD_IDS = new Set<string>([
+  'amount', 'amountSol', 'msolAmount', 'inputAmount', 'maxAmount', 'plannedAmount',
+  'memo', 'reason', 'note',
+  'recipient', 'recipientAddress', 'settlementWallet',
+  'slippageBps',
+  'priceSol', 'maxPriceSol', 'maxPricePerNftSol',
+  'count', 'cadence', 'startAt', 'maxOccurrences',
+  'inputToken', 'outputToken',
+  'cluster', 'walletAddress',
+  'protocol', 'connectorId', 'connectorOperationId',
+  'operation', 'templateId',
+  'dapp', 'provider', 'route',
+]);
+
+function connectorContextLabelFromParams(
+  params: Record<string, string>,
+  formHint?: ConnectorActionForm,
+): string {
+  const form = formHint ?? selectedConnectorActionForm(params);
+  if (!form) return '';
+  if (form.subActions) {
+    const branch = selectedSubAction(form, params);
+    if (branch?.label) return branch.label;
+  }
+  for (const field of form.fields) {
+    if (CONNECTOR_CONTEXT_GENERIC_FIELD_IDS.has(field.id)) continue;
+    if (field.type !== 'cascading-select' && field.type !== 'select') continue;
+    const value = params[field.id]?.trim();
+    if (!value) continue;
+    return formatConnectorContextDetail(value, field.label, form.connectorId);
+  }
+  return '';
+}
+
+function planConnectorContextLabel(plan: AgentPlan): string {
+  const fromParams = connectorContextLabelFromParams(plan.parameters);
+  if (fromParams) return fromParams;
+  const form = connectorActionFormByActionType(plan.actionType);
+  if (!form) return '';
+  return connectorContextLabelFromParams(plan.parameters, form);
+}
+
+function preparedActionConnectorContextLabel(action: PreparedAction): string {
+  const params: Record<string, string> = {};
+  for (const [key, value] of Object.entries(action.params ?? {})) {
+    if (typeof value === 'string') params[key] = value;
+  }
+  const fromParams = connectorContextLabelFromParams(params);
+  if (fromParams) return fromParams;
+  const form = connectorActionFormByActionType(action.kind);
+  if (!form) return '';
+  return connectorContextLabelFromParams(params, form);
+}
+
+function recurringPaymentConnectorContextLabel(payment: RecurringPayment): string {
+  const params: Record<string, string> = {};
+  if (payment.token) params.token = payment.token;
+  if (payment.inputToken) params.inputToken = payment.inputToken;
+  if (payment.outputToken) params.outputToken = payment.outputToken;
+  if (payment.amount) params.amount = payment.amount;
+  if (payment.recipient) params.recipient = payment.recipient;
+  const metadata = payment.metadata;
+  if (metadata && typeof metadata === 'object') {
+    const meta = metadata as Record<string, unknown>;
+    for (const key of ['connectorId', 'connectorOperationId', 'protocol', 'operation', 'templateId', 'connectorTemplateId'] as const) {
+      const value = meta[key];
+      if (typeof value === 'string') params[key] = value;
+    }
+  }
+  return connectorContextLabelFromParams(params);
+}
+
+function completedPlanConnectorContextLabel(plan: CompletedPlanRecord): string {
+  if (plan.actionId) {
+    const action = state.preparedActions.find((entry) => entry.id === plan.actionId);
+    if (action) {
+      const label = preparedActionConnectorContextLabel(action);
+      if (label) return label;
+    }
+  }
+  if (plan.generatedPlanId) {
+    const record = state.generatedPlans.find((entry) => entry.id === plan.generatedPlanId);
+    if (record) {
+      const label = planConnectorContextLabel(record.plan);
+      if (label) return label;
+    }
+  }
+  if (plan.recurringId) {
+    const recurring = state.recurringPayments.find((entry) => entry.id === plan.recurringId);
+    if (recurring) {
+      const label = recurringPaymentConnectorContextLabel(recurring);
+      if (label) return label;
+    }
+  }
+  return '';
+}
+
+function formatConnectorContextDetail(value: string, fieldLabel: string, connectorId: string): string {
+  const connectorName = PROTOCOL_CONNECTORS.find((entry) => entry.id === connectorId)?.name ?? '';
+  let suffix = fieldLabel.trim();
+  if (connectorName) {
+    const lower = suffix.toLowerCase();
+    const prefix = `${connectorName.toLowerCase()} `;
+    if (lower.startsWith(prefix)) suffix = suffix.slice(prefix.length);
+  }
+  const titled = suffix
+    .split(/\s+/)
+    .filter(Boolean)
+    .map((word) => word.charAt(0).toUpperCase() + word.slice(1).toLowerCase())
+    .join(' ');
+  const looksLikeSymbol = /^[a-zA-Z0-9-]{2,12}$/.test(value);
+  const displayValue = looksLikeSymbol ? value.toUpperCase() : `${value.slice(0, 4)}…${value.slice(-4)}`;
+  return titled ? `${displayValue} ${titled}` : displayValue;
 }
 
 function reviewPlanMetric(plan: AgentPlan): { primary: string; secondary: string } {
@@ -10763,12 +10982,14 @@ function generatedPlanResultBlock(record: GeneratedPlanRecord): string {
   `;
 }
 
-function generatedPlansEmptyState(oneTimeOnly = false): string {
+function generatedPlansEmptyState(oneTimeOnly = false, filterHasHiddenMatches = false): string {
   const records = generatedPlansForPanel(oneTimeOnly);
   const activeCount = records.filter(isGeneratedPlanActiveInReview).length;
   const movedCount = records.filter(hasGeneratedPlanMovedPastReview).length;
   const archivedCount = records.filter((record) => record.status === 'archived').length;
-  const detail = records.length === 0
+  const detail = filterHasHiddenMatches
+    ? 'No drafts match this AI review filter.'
+    : records.length === 0
     ? 'Create a draft first. It stays here for checking, then moves to Needs Approval or Done.'
     : activeCount === 0 && movedCount > 0
       ? 'All active drafts have moved forward. Open Needs Approval for queued work or Done for signed proofs and receipts.'
@@ -12082,6 +12303,36 @@ function aiProviderLogoId(providerId: AiSettings['provider']): BrandLogoId {
   }
 }
 
+function connectedAiProviderLogoId(): BrandLogoId {
+  if (state.aiSettings.mode !== 'bridge') {
+    return aiProviderLogoId(state.aiSettings.provider);
+  }
+  return bridgeAiProviderLogoId(state.aiStatus) ?? aiProviderLogoId(state.aiSettings.provider);
+}
+
+function bridgeAiProviderLogoId(status: BridgeAiStatus | null): BrandLogoId | undefined {
+  if (!status) return undefined;
+  const provider = status.provider?.trim().toLowerCase() ?? '';
+  const baseUrl = status.baseUrl?.trim().toLowerCase() ?? '';
+  const model = status.model?.trim().toLowerCase() ?? '';
+
+  if (/\b(anthropic|claude)\b/.test(provider)) return 'claude';
+  if (/\b(gemini|google)\b/.test(provider)) return 'gemini';
+  if (/\bopenrouter\b/.test(provider)) return 'agentRouter';
+  if (provider === 'openai') return 'codex';
+
+  if (baseUrl.includes('generativelanguage.googleapis.com')) return 'gemini';
+  if (baseUrl.includes('api.anthropic.com')) return 'claude';
+  if (baseUrl.includes('openrouter.ai')) return 'agentRouter';
+  if (baseUrl.includes('api.openai.com')) return 'codex';
+
+  if (/\bgemini\b/.test(model)) return 'gemini';
+  if (/\b(anthropic|claude)\b/.test(model)) return 'claude';
+  if (/\bgpt-[\w.-]+/.test(model)) return 'codex';
+  if (provider === 'openai-compatible' || provider === 'custom-openai-compatible') return 'agentRouter';
+  return undefined;
+}
+
 function aiModeDisabledReason(mode: AiSettings['mode']): string {
   if (IS_ANDROID_APP && mode === 'hosted') {
     return ANDROID_HOSTED_BYOK_DISABLED_REASON;
@@ -12972,10 +13223,12 @@ function completedPlanDisplayTitle(plan: CompletedPlanRecord): string {
 function completedPlanHero(plan: CompletedPlanRecord): string {
   const metric = completedPlanMetric(plan);
   const subject = marketAmountSubjectForCompletedPlan(plan);
+  const context = completedPlanConnectorContextLabel(plan);
   return `
     <div class="completed-history-value" title="${escapeHtml(marketHeroTitle(metric.primary, metric.secondary, subject))}">
       ${marketAmountLineHtml(metric.primary, subject)}
       ${metric.secondary ? `<span>${escapeHtml(metric.secondary)}</span>` : ''}
+      ${context ? `<span class="completed-history-context">${escapeHtml(context)}</span>` : ''}
     </div>
   `;
 }
@@ -13277,13 +13530,15 @@ function scheduledApprovalsPanel(): string {
 
 function recurringViewTabs(activeCount: number): string {
   const creating = state.recurringView === 'create';
+  const active = state.recurringView === 'active';
   const connector = creating ? recurringDraftConnector(state.recurringDraft) : undefined;
   return `
-    <div class="recurring-control-row ${creating ? 'has-connector' : ''}">
+    <div class="recurring-control-row ${creating ? 'has-connector' : active ? 'review-filter-row' : ''}">
       <div class="tabs compact-tabs recurring-view-tabs" role="tablist" aria-label="Repeat payment views">
         ${recurringViewButton('create', 'Create Repeat')}
         ${recurringViewButton('active', activeCount ? `Active Repeats (${activeCount})` : 'Active Repeats')}
       </div>
+      ${active ? agentReviewFilterControl('recurring') : ''}
       ${creating ? recurringConnectorPicker() : ''}
       ${creating ? (connector ? recurringConnectorActionPicker(state.recurringDraft, connector) : recurringPresetMethodControls()) : ''}
     </div>
@@ -14787,6 +15042,25 @@ function bind(): void {
   document.querySelector<HTMLSelectElement>('#inboxFilter')?.addEventListener('change', (event) => {
     state.inboxFilter = (event.currentTarget as HTMLSelectElement).value as InboxFilter;
     state.listPages.inbox = 1;
+    render();
+  });
+
+  document.querySelector<HTMLSelectElement>('#generatedPlanAgentReviewFilter')?.addEventListener('change', (event) => {
+    const filter = (event.currentTarget as HTMLSelectElement).value;
+    if (!isAgentReviewFilter(filter)) return;
+    state.generatedPlanAgentReviewFilter = filter;
+    state.listPages.review = 1;
+    selectFallbackGeneratedPlan();
+    state.error = '';
+    render();
+  });
+
+  document.querySelector<HTMLSelectElement>('#recurringAgentReviewFilter')?.addEventListener('change', (event) => {
+    const filter = (event.currentTarget as HTMLSelectElement).value;
+    if (!isAgentReviewFilter(filter)) return;
+    state.recurringAgentReviewFilter = filter;
+    state.listPages.recurring = 1;
+    state.error = '';
     render();
   });
 
@@ -17008,7 +17282,9 @@ async function runReviewGeneratedPlan(planId: string): Promise<void> {
       const appliedPolicyIds = enabledUserAgentPolicies().map((policy) => policy.id);
       const deterministicFacts = await gatherAgentReviewFacts(refreshed);
       const rawResult = await runAgentReview(refreshed, deterministicFacts);
-      const result = normalizeAgentReviewResultForFacts(rawResult, reviewPlan, deterministicFacts);
+      const result = normalizeAgentReviewResultForFacts(rawResult, reviewPlan, deterministicFacts, {
+        instruction: agentReviewInstruction(refreshed, reviewPlan),
+      });
       const review = agentReviewStateFromResult(result, previousReview, reviewPlan, appliedPolicyIds);
       review.facts = mergeReviewFacts(deterministicFacts, result.evidence);
       await updateGeneratedPlan(planId, { agentReview: review, error: undefined, failureLabel: undefined });
@@ -17524,6 +17800,10 @@ function visibleGeneratedPlans(oneTimeOnly = false): GeneratedPlanRecord[] {
   return records.filter((record) => !record.template && isGeneratedPlanVisibleInReview(record));
 }
 
+function filterGeneratedPlansByAgentReview(records: GeneratedPlanRecord[]): GeneratedPlanRecord[] {
+  return records.filter((record) => matchesAgentReviewFilter(record.agentReview, state.generatedPlanAgentReviewFilter));
+}
+
 function templateGeneratedPlans(oneTimeOnly = false): GeneratedPlanRecord[] {
   return generatedPlansForPanel(oneTimeOnly).filter((record) => record.template === true);
 }
@@ -17960,7 +18240,8 @@ function requireGeneratedPlanRecord(planId: string): GeneratedPlanRecord {
 }
 
 function selectFallbackGeneratedPlan(): void {
-  const next = visibleGeneratedPlans()[0] ?? state.generatedPlans[0];
+  const filtered = filterGeneratedPlansByAgentReview(visibleGeneratedPlans());
+  const next = filtered[0] ?? visibleGeneratedPlans()[0] ?? state.generatedPlans[0];
   state.selectedGeneratedPlanId = next?.id ?? '';
   if (state.generatedPlanAuditId && !generatedPlanById(state.generatedPlanAuditId)) {
     state.generatedPlanAuditId = '';
@@ -18119,6 +18400,16 @@ async function runAgentReview(
   return generateSessionAiReview(state.aiSettings, request);
 }
 
+function agentReviewInstruction(record: GeneratedPlanRecord, plan: AgentPlan = record.plan): string {
+  return [
+    plan.userNotes,
+    record.prompt && record.prompt !== plan.userNotes ? record.prompt : '',
+  ]
+    .filter((entry): entry is string => Boolean(entry?.trim()))
+    .join('\n')
+    .trim() || 'Review this draft before it is sent for wallet approval. Decide approve, deny, or needs_input and explain why.';
+}
+
 function agentReviewRequest(
   record: GeneratedPlanRecord,
   deterministicFacts = gatherDeterministicFacts(record),
@@ -18127,13 +18418,7 @@ function agentReviewRequest(
   const review = record.agentReview;
   const priorAnswers = review?.answers;
   const priorQuestions = review?.questions;
-  const instruction = [
-    reviewPlan.userNotes,
-    record.prompt && record.prompt !== reviewPlan.userNotes ? record.prompt : '',
-  ]
-    .filter((entry): entry is string => Boolean(entry?.trim()))
-    .join('\n')
-    .trim() || 'Review this draft before it is sent for wallet approval. Decide approve, deny, or needs_input and explain why.';
+  const instruction = agentReviewInstruction(record, reviewPlan);
   const priorHistorySnippet = review?.history?.slice(-2).map((attempt) => ({
     decision: attempt.decision,
     reason: attempt.reason,
@@ -18250,6 +18535,7 @@ function normalizeAgentReviewResultForFacts(
   result: AgentPlanReviewResult,
   plan: AgentPlan,
   facts: AgentReviewFactSet,
+  request?: { instruction?: string },
 ): AgentPlanReviewResult {
   if (result.decision !== 'needs_input' || !result.questions?.length || !planBehavesLikeSwap(plan)) {
     return result;
@@ -18259,28 +18545,277 @@ function normalizeAgentReviewResultForFacts(
     return result;
   }
   const hasFailedFact = Object.values(facts).some((fact) => fact?.state === 'fail');
-  const warnings = Object.values(facts)
-    .map((fact) => fact?.message)
-    .filter((message): message is string => Boolean(message?.trim()))
-    .slice(0, 3);
+  const instruction = request?.instruction ?? '';
+  const questionFindings = questionAwareFindingsFromFacts(facts, plan, instruction);
+  const unknowns = unsupportedFactsFromInstruction(instruction);
+  const reasonPieces: string[] = [];
+  for (const finding of questionFindings) {
+    if (finding.tone === 'good' || finding.tone === 'neutral') {
+      reasonPieces.push(`${finding.label}: ${finding.value}`);
+    }
+  }
+  for (const unknown of unknowns) {
+    reasonPieces.push(`${unknown.label}: not in deterministic facts`);
+  }
   const reason = hasFailedFact
-    ? 'Agent review completed from available route, protocol, token, and limit facts, and found a blocking issue.'
-    : warnings.length
-      ? `Agent review completed from available route, protocol, token, and limit facts. ${warnings.join(' ')}`
-      : 'Agent review completed from available route, protocol, token, and limit facts.';
-  return {
+    ? `A required deterministic fact failed. ${reasonPieces.join('. ')}`.trim()
+    : reasonPieces.length
+      ? reasonPieces.join('. ') + '.'
+      : 'Agent review passed from deterministic action facts (route, protocol, token, limits, simulation).';
+  const summary = hasFailedFact
+    ? 'Agent review found a blocking issue.'
+    : unknowns.length
+      ? `Approved from deterministic facts; ${unknowns.length} part${unknowns.length === 1 ? '' : 's'} of the question had no on-device source.`
+      : 'Approved from deterministic action facts.';
+  const factSources = deterministicSourcesFromFacts(facts, plan);
+  const cleanedEvidence = cleanEvidenceAfterConversion(
+    result.evidence,
+    unnecessaryQuestions.map((q) => q.id),
+    questionFindings,
+    unknowns,
+    factSources,
+  );
+  const converted: AgentPlanReviewResult = {
     ...result,
     decision: hasFailedFact ? 'deny' : 'approve',
-    reason: compactSentence(reason, 280),
-    summary: hasFailedFact ? 'Agent review found a blocking issue.' : 'Agent review passed from available facts.',
+    reason: compactSentence(reason, 360),
+    summary: compactSentence(summary, 200),
     questions: undefined,
-    evidence: {
-      ...result.evidence,
-      needsInputConverted: true,
-      convertedQuestionIds: unnecessaryQuestions.map((question) => question.id),
-      conversionReason: 'Questions were answerable from deterministic action facts, market lookup, or app execution defaults.',
-    },
+    evidence: cleanedEvidence,
   };
+  if (instruction) {
+    return reconcileThresholdReviewDecision(converted, { instruction });
+  }
+  return converted;
+}
+
+interface QuestionAwareFinding {
+  label: string;
+  value: string;
+  tone: 'good' | 'warn' | 'neutral' | 'fail';
+}
+
+interface UnsupportedFact {
+  label: string;
+  value: string;
+}
+
+function cleanEvidenceAfterConversion(
+  evidence: Record<string, unknown> | undefined,
+  convertedQuestionIds: string[],
+  questionFindings: QuestionAwareFinding[],
+  unknowns: UnsupportedFact[],
+  factSources: ReviewSource[] = [],
+): Record<string, unknown> {
+  const source = evidence && typeof evidence === 'object' && !Array.isArray(evidence) ? evidence : {};
+  const { research: _research, findings: rawFindings, facts: rawFacts, sources: rawSources, ...rest } = source;
+  const dropLabels = new Set(['research needed', 'research']);
+  const filteredFindings = Array.isArray(rawFindings)
+    ? rawFindings.filter((entry) => {
+        if (!entry || typeof entry !== 'object' || Array.isArray(entry)) return false;
+        const label = String((entry as Record<string, unknown>).label ?? '').toLowerCase().trim();
+        return !dropLabels.has(label);
+      })
+    : [];
+  const factsRecord = rawFacts && typeof rawFacts === 'object' && !Array.isArray(rawFacts)
+    ? (rawFacts as Record<string, unknown>)
+    : undefined;
+  const cleanedFacts = factsRecord
+    ? Object.fromEntries(Object.entries(factsRecord).filter(([key]) => key !== 'research'))
+    : undefined;
+  const newFindings = [
+    ...questionFindings,
+    ...unknowns.map((entry) => ({ label: entry.label, value: entry.value, tone: 'warn' as const })),
+  ];
+  const autoResolvedFinding = newFindings.length
+    ? undefined
+    : {
+        label: 'Auto-resolved',
+        value: convertedQuestionIds.length
+          ? `Deterministic action facts answered: ${convertedQuestionIds.join(', ')}.`
+          : 'Deterministic action facts answered the agent’s open questions.',
+        tone: 'good' as const,
+      };
+  const findings = [
+    ...newFindings,
+    ...filteredFindings,
+    ...(autoResolvedFinding ? [autoResolvedFinding] : []),
+  ];
+  const existingSources = Array.isArray(rawSources)
+    ? rawSources.filter((entry): entry is Record<string, unknown> => Boolean(entry && typeof entry === 'object' && !Array.isArray(entry)))
+    : [];
+  const dedupedSources = mergeReviewSources(existingSources, factSources);
+  return {
+    ...rest,
+    findings,
+    ...(cleanedFacts && Object.keys(cleanedFacts).length ? { facts: cleanedFacts } : {}),
+    ...(dedupedSources.length ? { sources: dedupedSources } : {}),
+  };
+}
+
+interface ReviewSource {
+  url: string;
+  title?: string;
+}
+
+function deterministicSourcesFromFacts(facts: AgentReviewFactSet, plan: AgentPlan): ReviewSource[] {
+  const sources: ReviewSource[] = [];
+  const tokenSource = typeof facts.tokenMint?.detail?.marketSource === 'string'
+    ? (facts.tokenMint.detail.marketSource as string)
+    : undefined;
+  if (tokenSource === 'birdeye') {
+    sources.push({ url: 'https://birdeye.so/', title: 'BirdEye — Solana token prices' });
+  } else if (tokenSource === 'dexscreener') {
+    sources.push({ url: 'https://dexscreener.com/solana', title: 'DEX Screener — Solana markets' });
+  }
+  if (planBehavesLikeSwap(plan)) {
+    sources.push({ url: 'https://jup.ag/', title: 'Jupiter — Solana swap aggregator' });
+  }
+  return sources;
+}
+
+function mergeReviewSources(
+  existing: Array<Record<string, unknown>>,
+  added: ReviewSource[],
+): Array<Record<string, unknown>> {
+  const out: Array<Record<string, unknown>> = [];
+  const seen = new Set<string>();
+  for (const entry of [...existing, ...added.map((source) => ({ url: source.url, ...(source.title ? { title: source.title } : {}) }))]) {
+    const url = typeof entry.url === 'string' ? entry.url.trim() : '';
+    if (!url || seen.has(url)) continue;
+    seen.add(url);
+    out.push(entry);
+  }
+  return out;
+}
+
+function questionAwareFindingsFromFacts(
+  facts: AgentReviewFactSet,
+  plan: AgentPlan,
+  instruction: string,
+): QuestionAwareFinding[] {
+  const findings: QuestionAwareFinding[] = [];
+  const seenLabels = new Set<string>();
+  const lowerInstruction = instruction.toLowerCase();
+  const tokens = tokensFromTokenMintFact(facts.tokenMint);
+
+  for (const token of tokens) {
+    const price = token.priceUsd;
+    if (price === undefined || !Number.isFinite(price)) continue;
+    const symbol = (token.symbol ?? token.label ?? '').toUpperCase();
+    if (!symbol) continue;
+    const label = `${symbol} price`;
+    if (seenLabels.has(label.toLowerCase())) continue;
+    seenLabels.add(label.toLowerCase());
+    findings.push({
+      label,
+      value: `${formatUsdEstimate(price)} (${token.source ?? 'BirdEye'})`,
+      tone: instructionMentionsToken(lowerInstruction, symbol, token.name) ? 'good' : 'neutral',
+    });
+  }
+
+  const slippageBps = typeof facts.limits?.detail?.slippageBps === 'number'
+    ? (facts.limits.detail.slippageBps as number)
+    : undefined;
+  if (slippageBps && Number.isFinite(slippageBps)) {
+    findings.push({
+      label: 'Slippage protection',
+      value: `${(slippageBps / 100).toFixed(2)}% (${slippageBps} bps)`,
+      tone: slippageBps > 200 ? 'warn' : 'good',
+    });
+  }
+
+  if (planBehavesLikeSwap(plan)) {
+    const amount = planParameter(plan, ['amount', 'inputAmount', 'plannedAmount']).trim();
+    const inputSymbol = (planParameter(plan, ['inputToken']).trim() || '').toUpperCase();
+    if (amount && inputSymbol) {
+      const numericAmount = Number(amount);
+      const inputToken = tokens.find((t) => (t.symbol ?? t.label ?? '').toUpperCase() === inputSymbol);
+      const inputPrice = inputToken?.priceUsd;
+      const usdEstimate = Number.isFinite(numericAmount) && inputPrice && Number.isFinite(inputPrice)
+        ? ` (~${formatUsdEstimate(numericAmount * inputPrice)})`
+        : '';
+      findings.push({
+        label: 'Swap amount',
+        value: `${amount} ${inputSymbol}${usdEstimate}`,
+        tone: 'neutral',
+      });
+    }
+  }
+
+  return findings;
+}
+
+interface TokenPriceFact {
+  role?: string;
+  symbol?: string;
+  label?: string;
+  name?: string;
+  priceUsd?: number;
+  source?: string;
+}
+
+function tokensFromTokenMintFact(fact: AgentReviewFact | undefined): TokenPriceFact[] {
+  const tokens = fact?.detail?.tokens;
+  if (!Array.isArray(tokens)) return [];
+  return tokens.flatMap((entry): TokenPriceFact[] => {
+    if (!entry || typeof entry !== 'object' || Array.isArray(entry)) return [];
+    const record = entry as Record<string, unknown>;
+    const market = record.market && typeof record.market === 'object' && !Array.isArray(record.market)
+      ? (record.market as Record<string, unknown>)
+      : undefined;
+    const price = market && typeof market.priceUsd === 'number' ? market.priceUsd : undefined;
+    const sourceTag = market && typeof market.source === 'string'
+      ? market.source
+      : typeof record.source === 'string' ? record.source : undefined;
+    return [{
+      role: typeof record.role === 'string' ? record.role : undefined,
+      symbol: typeof record.symbol === 'string' ? record.symbol : undefined,
+      label: typeof record.label === 'string' ? record.label : undefined,
+      name: typeof record.name === 'string' ? record.name : undefined,
+      priceUsd: price,
+      source: sourceTag ? prettifyMarketSource(sourceTag) : undefined,
+    }];
+  });
+}
+
+function prettifyMarketSource(value: string): string {
+  if (value === 'birdeye') return 'BirdEye';
+  if (value === 'dexscreener') return 'DEX Screener';
+  return value;
+}
+
+function instructionMentionsToken(lowerInstruction: string, symbol: string, name?: string): boolean {
+  if (!lowerInstruction) return false;
+  if (symbol && lowerInstruction.includes(symbol.toLowerCase())) return true;
+  if (name && lowerInstruction.includes(name.toLowerCase())) return true;
+  if (symbol === 'SOL' && /\bsolana\b/.test(lowerInstruction)) return true;
+  if (symbol === 'USDC' && /\busd\s*coin\b/.test(lowerInstruction)) return true;
+  return false;
+}
+
+function unsupportedFactsFromInstruction(instruction: string): UnsupportedFact[] {
+  const found: UnsupportedFact[] = [];
+  const lower = instruction.toLowerCase();
+  const checks: Array<{ test: RegExp; label: string; hint: string }> = [
+    { test: /fear\s*(?:&|and)\s*greed|crypto\s+fear|fng/i, label: 'Fear & Greed Index', hint: 'No on-device source for this metric.' },
+    { test: /\b(rsi|relative\s+strength)\b/i, label: 'RSI', hint: 'No on-device source for this metric.' },
+    { test: /\bfunding\s+rate\b/i, label: 'Funding rate', hint: 'No on-device source for this metric.' },
+    { test: /\b(open\s+interest|oi)\b/i, label: 'Open interest', hint: 'No on-device source for this metric.' },
+    { test: /\b(tvl|total\s+value\s+locked)\b/i, label: 'TVL', hint: 'No on-device source for this metric.' },
+    { test: /\b(volume\s+24h?|24h?\s+volume)\b/i, label: '24h volume', hint: 'No on-device source for this metric.' },
+    { test: /\b(market\s+cap|mcap)\b/i, label: 'Market cap', hint: 'No on-device source for this metric.' },
+    { test: /\b(yesterday|last\s+(?:hour|day|week|month)|historical)\b/i, label: 'Historical data', hint: 'No on-device source for historical lookups.' },
+  ];
+  for (const check of checks) {
+    if (check.test.test(lower)) {
+      found.push({
+        label: check.label,
+        value: `${check.hint} Switch to OpenAI or Anthropic for web research, or supply the value in the draft.`,
+      });
+    }
+  }
+  return found;
 }
 
 function planBehavesLikeSwap(plan: AgentPlan): boolean {
@@ -20971,7 +21506,9 @@ async function reviewRecurringPlan(
   const appliedPolicyIds = enabledUserAgentPolicies().map((policy) => policy.id);
   const deterministicFacts = await gatherAgentReviewFacts(record);
   const rawResult = await runAgentReview(record, deterministicFacts);
-  const result = normalizeAgentReviewResultForFacts(rawResult, plan, deterministicFacts);
+  const result = normalizeAgentReviewResultForFacts(rawResult, plan, deterministicFacts, {
+    instruction: agentReviewInstruction(record, plan),
+  });
   const review = agentReviewStateFromResult(result, previousReview, plan, appliedPolicyIds);
   review.facts = mergeReviewFacts(deterministicFacts, result.evidence);
   return review;
@@ -27911,10 +28448,12 @@ function inboxApprovalHero(action: PreparedAction): string {
     ? `To ${recipientDisplayLabel(recipientParam(action))}`
     : formatDateTime(action.dueAt);
   const subject = marketAmountSubjectForAction(action);
+  const context = preparedActionConnectorContextLabel(action);
   return `
     <div class="inbox-approval-value" title="${escapeHtml(marketHeroTitle(primary, secondary, subject))}">
       ${marketAmountLineHtml(primary, subject)}
       <span>${escapeHtml(secondary)}</span>
+      ${context ? `<span class="inbox-approval-context">${escapeHtml(context)}</span>` : ''}
     </div>
   `;
 }
@@ -29988,9 +30527,13 @@ function recurringRecipientInput(value: string): string {
 }
 
 function recurringList(): string {
-  const payments = activeWorkflowRecurringPayments();
-  if (payments.length === 0) {
+  const allPayments = activeWorkflowRecurringPayments();
+  if (allPayments.length === 0) {
     return '';
+  }
+  const payments = filterRecurringPaymentsByAgentReview(allPayments);
+  if (payments.length === 0) {
+    return signaturePlaceholder('No repeats match', 'No saved repeat payments match this AI review filter.');
   }
   const paginatedPayments = paginateList(payments, 'recurring');
   return `
@@ -29999,6 +30542,10 @@ function recurringList(): string {
     </div>
     ${listPagination('recurring', paginatedPayments, 'Active recurring')}
   `;
+}
+
+function filterRecurringPaymentsByAgentReview(payments: RecurringPayment[]): RecurringPayment[] {
+  return payments.filter((payment) => matchesAgentReviewFilter(payment.agentReview, state.recurringAgentReviewFilter));
 }
 
 function recurringCard(payment: RecurringPayment): string {
@@ -30090,10 +30637,12 @@ function recurringPaymentIsSwap(payment: RecurringPayment): boolean {
 function recurringCardHero(payment: RecurringPayment, nextRuns: string[]): string {
   const nextRun = nextRuns[0] ? `Next ${formatDateTime(nextRuns[0])}` : 'No future run preview';
   const tokenLabel = tokenDisplayLabel(recurringPaymentSpendToken(payment));
+  const context = recurringPaymentConnectorContextLabel(payment);
   return `
     <div class="recurring-card-value" title="${escapeHtml(`${payment.amount} ${tokenDisplayTitle(recurringPaymentSpendToken(payment))} - ${nextRun}`)}">
       <strong>${escapeHtml(`${payment.amount} ${tokenLabel}`)}</strong>
       <span>${escapeHtml(nextRun)}</span>
+      ${context ? `<span class="recurring-card-context">${escapeHtml(context)}</span>` : ''}
     </div>
   `;
 }

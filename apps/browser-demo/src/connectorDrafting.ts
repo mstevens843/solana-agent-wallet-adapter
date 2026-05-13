@@ -217,6 +217,22 @@ export function connectorActionFormById(id: string | undefined): ConnectorAction
   return undefined;
 }
 
+export function connectorActionFormByActionType(actionType: string | undefined): ConnectorActionForm | undefined {
+  const kind = actionType?.trim();
+  if (!kind) return undefined;
+  for (const connector of PROTOCOL_CONNECTORS) {
+    for (const form of connectorActionFormsForConnector(connector)) {
+      if (form.actionType === kind) return form;
+      if (form.subActions) {
+        for (const branch of form.subActions.options) {
+          if (branch.actionType === kind) return form;
+        }
+      }
+    }
+  }
+  return undefined;
+}
+
 export function connectorActionFormForTemplate(
   template: Pick<AgentPlanTemplate, 'id'>,
   connector?: ProtocolConnector,
