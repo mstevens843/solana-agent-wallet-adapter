@@ -5,6 +5,8 @@ import {
   aiRouteDiagnosticForSettings,
   buildTemplatePlan,
   confirmHostedAiPlanner,
+  inferTemplateIdForPrompt,
+  inferredTemplateParameters,
   generateSessionAiPlan,
   planWithStructuredSwapText,
   redactSecrets,
@@ -297,6 +299,41 @@ describe('planner AI setup helpers', () => {
 
     expect(redactSecrets(`bad ${apiKey}`, apiKey)).toBe('bad [redacted]');
     expect(redactSecrets('error api-key=providerSecret123456')).toBe('error api-key=[redacted]');
+  });
+
+  it('infers connector and recurring templates from natural-language prompts', () => {
+    expect(inferTemplateIdForPrompt('Supply 2 SOL into Kamino for yield', 'custom-request')).toBe('kamino-deposit');
+    expect(inferTemplateIdForPrompt('Withdraw 0.5 JitoSOL from Kamino', 'custom-request')).toBe('kamino-withdraw');
+    expect(inferTemplateIdForPrompt('Show my Kamino earnings', 'custom-request')).toBe('kamino-earnings-proof');
+    expect(inferTemplateIdForPrompt('Check my Meteora DLMM position fees', 'custom-request')).toBe('protocol-position-check');
+    expect(inferTemplateIdForPrompt('Swap 0.1 SOL to USDC', 'custom-request')).toBe('swap');
+    expect(inferTemplateIdForPrompt('Pay this wallet every Monday', 'custom-request')).toBe('subscription');
+  });
+
+  it('extracts high-confidence parameters for inferred templates', () => {
+    expect(inferredTemplateParameters(
+      templateById('kamino-deposit'),
+      'Supply 2.5 JitoSOL into Kamino',
+    )).toMatchObject({
+      token: 'JitoSOL',
+      amount: '2.5',
+    });
+    expect(inferredTemplateParameters(
+      templateById('swap'),
+      'Swap 0.1 SOL to USDC through Jupiter',
+    )).toMatchObject({
+      inputToken: 'SOL',
+      outputToken: 'USDC',
+      amount: '0.1',
+    });
+    expect(inferredTemplateParameters(
+      templateById('protocol-position-check'),
+      'Check my Meteora DLMM position 11111111111111111111111111111111 fees',
+    )).toMatchObject({
+      protocol: 'Meteora',
+      question: 'Fees',
+      position: '11111111111111111111111111111111',
+    });
   });
 });
 

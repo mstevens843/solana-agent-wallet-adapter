@@ -1,0 +1,161 @@
+{
+  "$schema": "./connector-pack.schema.json",
+  "id": "marginfi",
+  "name": "MarginFi",
+  "status": "blink_backed",
+  "aliases": ["marginfi", "mrgn"],
+  "supportedClusters": ["mainnet-beta"],
+  "requiredConfig": [
+    {
+      "name": "Dialect client key",
+      "scope": "dialect_client_key",
+      "required": true,
+      "description": "Needed for MarginFi position and market reads. MCP runtime does not expose these reads yet."
+    }
+  ],
+  "readCapabilities": [
+    {
+      "toolName": "dialect_positions",
+      "source": "dialect-markets",
+      "implemented": false,
+      "requiresClientKey": true,
+      "returns": "Planned lending positions, supplied collateral, borrows, rewards, and account health facts.",
+      "facts": ["accountAddress", "suppliedAssets", "borrowedAssets", "healthFactor", "claimableRewards"]
+    },
+    {
+      "toolName": "dialect_markets",
+      "source": "dialect-markets",
+      "implemented": false,
+      "requiresClientKey": true,
+      "returns": "Planned MarginFi market APY, borrow APY, liquidity, and action URLs.",
+      "facts": ["bankAddress", "asset", "supplyApy", "borrowApy", "liquidity", "actionUrl"]
+    }
+  ],
+  "writeCapabilities": [
+    {
+      "actionKind": "blink_action",
+      "executionMode": "blink",
+      "implemented": false,
+      "prepares": "A planned approval-bound Blink action for deposit, withdraw, borrow, or repay.",
+      "executesVia": "solana_execute_prepared_action",
+      "userApproves": "A MarginFi Solana Action transaction after the user reviews asset, amount, bank, and health facts."
+    }
+  ],
+  "requiredUserInputs": [
+    {
+      "name": "asset",
+      "kind": "text",
+      "required": true,
+      "appliesTo": ["blink_action"],
+      "prompt": "Which asset should MarginFi use?"
+    },
+    {
+      "name": "amount",
+      "kind": "number",
+      "required": true,
+      "appliesTo": ["blink_action"],
+      "prompt": "How much should I prepare?"
+    },
+    {
+      "name": "blinkUrl",
+      "kind": "text",
+      "required": true,
+      "appliesTo": ["blink_action"],
+      "prompt": "Paste the MarginFi Blink or Solana Action URL."
+    }
+  ],
+  "requiredConnectorFacts": [
+    "MarginFi account or bank address",
+    "Asset mint and decimals",
+    "Supply APY or borrow APY",
+    "Account health after borrow or withdraw",
+    "Wallet balance and outstanding debt",
+    "Blink action URL metadata"
+  ],
+  "unsupportedRequests": [
+    "Borrow or withdraw without account health facts.",
+    "Prepare an action without asset, amount, and action URL.",
+    "Guarantee liquidation safety.",
+    "Repay an unspecified debt.",
+    "Operate outside mainnet-beta.",
+    "Move funds without wallet approval."
+  ],
+  "actionPreparationNotes": "MarginFi is Blink-backed in the browser catalog. For borrow/withdraw, require account health facts. For repay, require debt asset and amount. Deny broad requests that would rely on guessed positions.",
+  "riskNotes": "Borrowing and withdrawals can create liquidation risk. Account health and debt facts must be visible before wallet approval.",
+  "approvalBoundary": {
+    "readGated": true,
+    "writeGated": true,
+    "blinkBacked": true,
+    "summary": "safety.prepare_only"
+  },
+  "walletApprovalBoundary": "MarginFi actions are approval-bound. The agent can review connector facts and prepare an action, but the wallet signs separately.",
+  "examples": {
+    "requests": [
+      {
+        "user": "show my MarginFi positions",
+        "classification": "needs_input",
+        "needsInputQuestions": ["Which wallet or account should I read?"],
+        "agentResponse": "The agent is missing facts needed to decide. Position reads require wallet or account context."
+      },
+      {
+        "user": "deposit 50 USDC into MarginFi",
+        "classification": "needs_input",
+        "needsInputQuestions": ["Paste the MarginFi deposit Blink or Solana Action URL."],
+        "agentResponse": "The agent is missing facts needed to decide. MarginFi deposit is Blink-backed in this catalog."
+      },
+      {
+        "user": "borrow 1 SOL on MarginFi",
+        "classification": "needs_input",
+        "needsInputQuestions": ["Paste the MarginFi borrow action URL.", "Should I read account health before preparing?"],
+        "agentResponse": "The agent is missing facts needed to decide. Borrowing requires action metadata and account health."
+      },
+      {
+        "user": "repay my MarginFi loan",
+        "classification": "needs_input",
+        "needsInputQuestions": ["Which debt asset and amount should I repay?", "Paste the repay action URL."],
+        "agentResponse": "The agent is missing facts needed to decide. Repay requests need debt asset, amount, and action metadata."
+      },
+      {
+        "user": "withdraw all MarginFi collateral without checking health",
+        "classification": "unsupported",
+        "denialReason": "safety.missing_facts",
+        "agentResponse": "The agent denied this because account health facts are required before a withdrawal can be reviewed."
+      },
+      {
+        "user": "deposit 50 USDC with this MarginFi Blink",
+        "classification": "prepare_approval_action",
+        "writeAction": "blink_action",
+        "agentResponse": "Prepared a MarginFi deposit Blink review if metadata matches 50 USDC. This prepares a wallet approval request; it does not sign."
+      },
+      {
+        "user": "guarantee I will not be liquidated",
+        "classification": "unsupported",
+        "denialReason": "safety.no_safety_guarantee",
+        "agentResponse": "The agent denied this because it cannot guarantee liquidation safety."
+      },
+      {
+        "user": "MarginFi borrow on devnet",
+        "classification": "unsupported",
+        "denialReason": "safety.action_not_exposed",
+        "agentResponse": "The agent denied this because MarginFi connector actions are cataloged for mainnet-beta only."
+      },
+      {
+        "user": "move funds from MarginFi without my wallet",
+        "classification": "unsupported",
+        "denialReason": "safety.no_autonomous_funds",
+        "agentResponse": "The agent denied this because the connector cannot move funds without wallet approval."
+      },
+      {
+        "user": "use MarginFi while connector is disabled",
+        "classification": "unsupported",
+        "denialReason": "safety.connector_disabled",
+        "agentResponse": "The agent denied this because this connector is not enabled."
+      }
+    ]
+  },
+  "mirrorsCanonical": {
+    "file": "apps/browser-demo/src/connectedDapps.ts",
+    "entry": "marginfi",
+    "note": "Mirrors MarginFi browser catalog support for Blink-backed lending actions."
+  }
+}

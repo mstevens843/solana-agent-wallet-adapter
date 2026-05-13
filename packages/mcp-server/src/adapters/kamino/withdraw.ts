@@ -15,6 +15,7 @@ import { getKaminoClient } from './client.js';
 import { KAMINO_ADAPTER_ID, resolveKnownReserve } from './constants.js';
 import { invalidateReserveSnapshot } from './reserveSnapshot.js';
 import { getPositions } from './positions.js';
+import { CONNECTOR_APPROVAL_BOUNDARY } from '../../connectorRegistry.js';
 
 export interface KaminoWithdrawInput {
   amount?: string;
@@ -82,7 +83,10 @@ export const kaminoWithdrawAction: AdapterAction<KaminoWithdrawInput> = {
     const summary = `Withdraw ${amountUi} ${position.reserveSymbol} from Kamino`;
     const previewParams: Record<string, unknown> = {
       adapter: KAMINO_ADAPTER_ID,
+      connectorId: KAMINO_ADAPTER_ID,
       action: 'withdraw',
+      operation: 'withdraw',
+      approvalBoundary: CONNECTOR_APPROVAL_BOUNDARY,
       reserveMint: snapshot.reserveMint,
       reserveSymbol: snapshot.reserveSymbol,
       reserveAddress: snapshot.reserveAddress,

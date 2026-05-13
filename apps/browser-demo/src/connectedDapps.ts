@@ -486,21 +486,49 @@ export function connectedDappsSummary(state: ConnectedDappsState, cluster: strin
 export function protocolConnectorPlannerContext(
   state: ConnectedDappsState,
   cluster: string,
-  opts: { dialectClientKeyConfigured?: boolean } = {},
+  opts: { dialectClientKeyConfigured?: boolean; includeDisabled?: boolean } = {},
 ): Array<Record<string, unknown>> {
-  return enabledProtocolConnectors(state, cluster).map((connector) => ({
-    id: connector.id,
-    name: connector.name,
-    aliases: connector.aliases,
-    capabilities: connector.capabilities,
-    supportedActions: connector.supportedActions,
-    readSource: connector.readSource ?? 'none',
-    actionSource: connector.actionSource ?? 'none',
-    readApiReady: connector.requiresClientKey ? Boolean(opts.dialectClientKeyConfigured) : true,
-    limitation: connector.requiresClientKey && !opts.dialectClientKeyConfigured
-      ? 'Read APIs need a Dialect client key; Blink/action URLs can still be reviewed if supplied.'
-      : undefined,
-  }));
+  const connectors = opts.includeDisabled
+    ? PROTOCOL_CONNECTORS.filter((connector) => isClusterSupported(connector, cluster))
+    : enabledProtocolConnectors(state, cluster);
+  return connectors.map((connector) => {
+    const enabled = isDappEnabled(connector.id, state, cluster);
+    const readReady = enabled && (connector.requiresClientKey ? Boolean(opts.dialectClientKeyConfigured) : true);
+    return {
+      id: connector.id,
+      name: connector.name,
+      enabled,
+      aliases: connector.aliases,
+      capabilities: connector.capabilities,
+      supportedActions: connector.supportedActions,
+      readActions: connector.readTools.map((tool) => ({
+        tool,
+        requiresClientKey: Boolean(connector.requiresClientKey),
+        ready: readReady,
+      })),
+      writeActions: connector.actionKinds.map((kind) => ({
+        kind,
+        executionMode: connector.actionSource ?? 'none',
+        ready: enabled && Boolean(connector.actionSource),
+        approvalBoundary: 'prepare_only_wallet_approval_required',
+      })),
+      readSource: connector.readSource ?? 'none',
+      actionSource: connector.actionSource ?? 'none',
+      agentUse:
+        'Use read actions as facts for answers/reviews. Use write actions only to prepare approval-bound wallet work; never claim the connector can sign or submit without the wallet.',
+      readApiReady: readReady,
+      readiness: enabled
+        ? readReady
+          ? 'ready'
+          : 'needs_client_key'
+        : 'disabled',
+      limitation: !enabled
+        ? `${connector.name} is not enabled in Protocol Connectors.`
+        : connector.requiresClientKey && !opts.dialectClientKeyConfigured
+          ? 'Read APIs need a Dialect client key; Blink/action URLs can still be reviewed if supplied.'
+          : undefined,
+    };
+  });
 }
 
 export function setConnectedDappEnabled(

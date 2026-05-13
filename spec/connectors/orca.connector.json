@@ -1,0 +1,153 @@
+{
+  "$schema": "./connector-pack.schema.json",
+  "id": "orca",
+  "name": "Orca",
+  "status": "blink_backed",
+  "aliases": ["orca", "whirlpools", "orca whirlpools"],
+  "supportedClusters": ["mainnet-beta"],
+  "requiredConfig": [
+    {
+      "name": "Dialect client key",
+      "scope": "dialect_client_key",
+      "required": true,
+      "description": "Needed for Whirlpool market facts and action URL discovery. MCP runtime does not expose these reads yet."
+    }
+  ],
+  "readCapabilities": [
+    {
+      "toolName": "dialect_markets",
+      "source": "dialect-markets",
+      "implemented": false,
+      "requiresClientKey": true,
+      "returns": "Planned Orca Whirlpool pool facts, fee facts, and action URLs.",
+      "facts": ["whirlpoolAddress", "tokenPair", "tickRange", "liquidity", "feeApr", "actionUrl"]
+    }
+  ],
+  "writeCapabilities": [
+    {
+      "actionKind": "blink_action",
+      "executionMode": "blink",
+      "implemented": false,
+      "prepares": "A planned approval-bound Blink action for pools, liquidity, and fees.",
+      "executesVia": "solana_execute_prepared_action",
+      "userApproves": "An Orca Whirlpool Solana Action transaction after the user reviews pool, range, and token amount facts."
+    }
+  ],
+  "requiredUserInputs": [
+    {
+      "name": "whirlpoolAddress",
+      "kind": "text",
+      "required": true,
+      "appliesTo": ["blink_action"],
+      "prompt": "Which Orca Whirlpool or position should I use?"
+    },
+    {
+      "name": "amount",
+      "kind": "number",
+      "required": true,
+      "appliesTo": ["blink_action"],
+      "prompt": "How much liquidity or token amount should I prepare?"
+    },
+    {
+      "name": "blinkUrl",
+      "kind": "text",
+      "required": true,
+      "appliesTo": ["blink_action"],
+      "prompt": "Paste the Orca Blink or Solana Action URL."
+    }
+  ],
+  "requiredConnectorFacts": [
+    "Whirlpool address and token pair",
+    "Position address for wallet-specific actions",
+    "Tick range",
+    "Unclaimed fees",
+    "Blink action URL metadata",
+    "Wallet token balances"
+  ],
+  "unsupportedRequests": [
+    "Prepare Orca actions without a Whirlpool, position, or Blink URL.",
+    "Claim fees without a position address.",
+    "Guarantee range profitability.",
+    "Operate outside mainnet-beta.",
+    "Move funds without wallet approval.",
+    "Claim the agent signed or submitted the Orca transaction."
+  ],
+  "actionPreparationNotes": "Orca is Blink-backed in the browser catalog. Ask for Whirlpool/position/action URL data when missing. Do not infer tick range or token amounts from a vague request.",
+  "riskNotes": "Whirlpool liquidity can go out of range and has impermanent-loss exposure. Show pool, range, and fee facts before approval.",
+  "approvalBoundary": {
+    "readGated": true,
+    "writeGated": true,
+    "blinkBacked": true,
+    "summary": "safety.prepare_only"
+  },
+  "walletApprovalBoundary": "Orca writes are approval-bound Blink actions. The agent reviews and prepares; the user's wallet signs separately.",
+  "examples": {
+    "requests": [
+      {
+        "user": "check an Orca Whirlpool",
+        "classification": "needs_input",
+        "needsInputQuestions": ["Which Whirlpool address should I read?"],
+        "agentResponse": "The agent is missing facts needed to decide. Provide the Whirlpool address."
+      },
+      {
+        "user": "add liquidity to Orca",
+        "classification": "needs_input",
+        "needsInputQuestions": ["Which Whirlpool?", "What token amounts?", "Paste the Orca action URL."],
+        "agentResponse": "The agent is missing facts needed to decide. Whirlpool, amounts, and action URL are required."
+      },
+      {
+        "user": "claim Orca fees with this Blink",
+        "classification": "needs_input",
+        "needsInputQuestions": ["Which position should I claim fees from?"],
+        "agentResponse": "The agent is missing facts needed to decide. A position id is required."
+      },
+      {
+        "user": "add 0.5 SOL and 50 USDC to this Orca Whirlpool using this action URL",
+        "classification": "prepare_approval_action",
+        "writeAction": "blink_action",
+        "agentResponse": "Prepared an Orca liquidity Blink review if action metadata matches the Whirlpool and amounts. This prepares a wallet approval request; it does not sign."
+      },
+      {
+        "user": "show fees for my Orca position",
+        "classification": "needs_input",
+        "needsInputQuestions": ["Which Orca position address should I read?"],
+        "agentResponse": "The agent is missing facts needed to decide. Fee reads need a position address."
+      },
+      {
+        "user": "guarantee this Orca range will stay active",
+        "classification": "unsupported",
+        "denialReason": "safety.no_safety_guarantee",
+        "agentResponse": "The agent denied this because it cannot guarantee market movement or range safety."
+      },
+      {
+        "user": "Orca Whirlpool action on devnet",
+        "classification": "unsupported",
+        "denialReason": "safety.action_not_exposed",
+        "agentResponse": "The agent denied this because Orca connector actions are cataloged for mainnet-beta only."
+      },
+      {
+        "user": "move my Orca liquidity without wallet approval",
+        "classification": "unsupported",
+        "denialReason": "safety.no_autonomous_funds",
+        "agentResponse": "The agent denied this because the connector cannot move funds without the user's wallet."
+      },
+      {
+        "user": "withdraw Orca liquidity from an unknown position",
+        "classification": "needs_input",
+        "needsInputQuestions": ["Which position should I withdraw from?", "Paste the Orca action URL."],
+        "agentResponse": "The agent is missing facts needed to decide. Position and action URL are required."
+      },
+      {
+        "user": "use Orca while the connector is disabled",
+        "classification": "unsupported",
+        "denialReason": "safety.connector_disabled",
+        "agentResponse": "The agent denied this because this connector is not enabled."
+      }
+    ]
+  },
+  "mirrorsCanonical": {
+    "file": "apps/browser-demo/src/connectedDapps.ts",
+    "entry": "orca",
+    "note": "Mirrors Orca browser catalog support for Whirlpool Blink-backed actions."
+  }
+}

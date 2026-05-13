@@ -5,6 +5,7 @@ import {
   formatOccurrenceStatus,
   type CreateRecurringRequest,
   type JsonObject,
+  type JsonValue,
   type MaterializeResult,
   type RecurringListResponse,
   type RecurringOccurrenceRecord,
@@ -41,6 +42,7 @@ export interface ScheduleView {
 export interface ScheduleMutationResult {
   schedule: RecurringScheduleRecord;
   webhookSecretOnce?: string;
+  previousStatus?: RecurringScheduleRecord['status'];
 }
 
 export interface RecurringNotificationStatusView {
@@ -373,6 +375,7 @@ export class RecurringService {
     session: RecurringSession,
     input: CreateRecurringRequest,
   ): Promise<ScheduleMutationResult> {
+    assertCreateRecurringScheduleStatus(input.status);
     assertCloudRecurringScheduleSupported(input);
     const now = this.now();
     const notificationResult = input.notifications !== undefined
@@ -380,7 +383,7 @@ export class RecurringService {
       : undefined;
     const record: RecurringScheduleRecord = {
       id: this.id('recurring'),
-      status: 'active',
+      status: input.status ?? 'active',
       walletAddress: session.walletAddress,
       cluster: input.cluster,
       ...(input.actionKind !== undefined ? { actionKind: input.actionKind } : {}),
@@ -414,7 +417,11 @@ export class RecurringService {
     this.enforcePolicy(record);
 
     await this.store.saveSchedule(session.walletAddress, record);
-    await this.audit(session, 'recurring.schedule.created', record.id);
+    await this.audit(session, 'recurring.schedule.created', record.id, undefined, undefined, recurringScheduleAuditMetadata(
+      undefined,
+      record,
+      scheduleTransitionSource(record.metadata),
+    ));
     return {
       schedule: record,
       ...(notificationResult?.webhookSecretOnce ? { webhookSecretOnce: notificationResult.webhookSecretOnce } : {}),
@@ -515,23 +522,36 @@ export class RecurringService {
 
     await this.store.saveSchedule(session.walletAddress, updated);
     await this.audit(session, `recurring.schedule.updated`, updated.id, undefined, undefined, {
-      status: updated.status,
+      ...recurringScheduleAuditMetadata(
+        existing.status,
+        updated,
+        scheduleUpdateTransitionSource(existing.metadata, input.metadata),
+      ),
     });
     return {
       schedule: updated,
+      previousStatus: existing.status,
       ...(notificationResult?.webhookSecretOnce ? { webhookSecretOnce: notificationResult.webhookSecretOnce } : {}),
     };
   }
 
   async pauseSchedule(session: RecurringSession, id: string): Promise<RecurringScheduleRecord> {
     const result = await this.updateScheduleWithResult(session, id, { status: 'paused' });
-    await this.audit(session, 'recurring.schedule.paused', id);
+    await this.audit(session, 'recurring.schedule.paused', id, undefined, undefined, recurringScheduleAuditMetadata(
+      result.previousStatus,
+      result.schedule,
+      'user',
+    ));
     return result.schedule;
   }
 
   async resumeSchedule(session: RecurringSession, id: string): Promise<RecurringScheduleRecord> {
     const result = await this.updateScheduleWithResult(session, id, { status: 'active' });
-    await this.audit(session, 'recurring.schedule.resumed', id);
+    await this.audit(session, 'recurring.schedule.resumed', id, undefined, undefined, recurringScheduleAuditMetadata(
+      result.previousStatus,
+      result.schedule,
+      'user',
+    ));
     return result.schedule;
   }
 
@@ -959,6 +979,158 @@ function sortByDueAt<T extends { dueAt: string }>(records: T[]): T[] {
 
 function notFound(message: string): RecurringServiceError {
   return new RecurringServiceError(404, 'not_found', message);
+}
+
+function recurringScheduleAuditMetadata(
+  previousStatus: RecurringScheduleRecord['status'] | undefined,
+  schedule: RecurringScheduleRecord,
+  transitionSource: 'agent' | 'user',
+): JsonObject {
+  return {
+    previousStatus: previousStatus ?? '',
+    nextStatus: schedule.status,
+    statusTransition: {
+      from: previousStatus ?? '',
+      to: schedule.status,
+    },
+    transitionSource,
+    ...safeConnectorMetadata(schedule.metadata),
+    ...safeAgentReviewMetadata(schedule.metadata),
+  };
+}
+
+function scheduleTransitionSource(metadata: JsonObject | undefined): 'agent' | 'user' {
+  return hasAgentReviewMetadata(metadata) ? 'agent' : 'user';
+}
+
+function scheduleUpdateTransitionSource(
+  previousMetadata: JsonObject | undefined,
+  patchMetadata: JsonObject | undefined,
+): 'agent' | 'user' {
+  if (!hasAgentReviewMetadata(patchMetadata)) return 'user';
+  return agentReviewFingerprint(previousMetadata) === agentReviewFingerprint(patchMetadata)
+    ? 'user'
+    : 'agent';
+}
+
+function hasAgentReviewMetadata(metadata: JsonObject | undefined): boolean {
+  return Boolean(
+    metadata &&
+    (
+      typeof metadata.agentReviewStatus === 'string' ||
+      typeof metadata.agentReviewDecision === 'string' ||
+      isJsonRecord(metadata.agentReview)
+    ),
+  );
+}
+
+function agentReviewFingerprint(metadata: JsonObject | undefined): string {
+  if (!metadata) return '';
+  const review = isJsonRecord(metadata.agentReview) ? metadata.agentReview : undefined;
+  const snapshot: JsonObject = {};
+  for (const key of [
+    'agentReviewStatus',
+    'agentReviewDecision',
+    'agentReviewCheckedAt',
+    'agentReviewProvider',
+    'agentReviewModel',
+    'agentReviewSummary',
+    'agentReviewReason',
+  ]) {
+    const value = metadata[key];
+    if (typeof value === 'string') snapshot[key] = value;
+  }
+  if (review) snapshot.agentReview = stableJsonValue(review) as JsonObject;
+  const factLabels = metadata.factLabels;
+  if (Array.isArray(factLabels) && factLabels.every((entry) => typeof entry === 'string')) {
+    snapshot.factLabels = [...factLabels];
+  }
+  return JSON.stringify(stableJsonValue(snapshot));
+}
+
+function safeAgentReviewMetadata(metadata: JsonObject | undefined): JsonObject {
+  if (!metadata) return {};
+  const review = isJsonRecord(metadata.agentReview) ? metadata.agentReview : undefined;
+  const summary = firstMetadataString(metadata, review, ['agentReviewSummary', 'reviewSummary', 'summary']);
+  const reason = firstMetadataString(metadata, review, ['agentReviewReason', 'reason', 'decisionReason', 'denialReason']);
+  const safe: JsonObject = {};
+  copyString(metadata, safe, 'agentReviewStatus');
+  copyString(metadata, safe, 'agentReviewDecision');
+  copyString(metadata, safe, 'agentReviewCheckedAt');
+  copyString(metadata, safe, 'agentReviewProvider');
+  copyString(metadata, safe, 'agentReviewModel');
+  if (summary) safe.agentReviewSummary = summary;
+  if (reason) safe.agentReviewReason = reason;
+  const factLabels = metadata.factLabels;
+  if (Array.isArray(factLabels) && factLabels.every((entry) => typeof entry === 'string')) {
+    safe.factLabels = factLabels.slice(0, 12);
+  }
+  return safe;
+}
+
+function safeConnectorMetadata(metadata: JsonObject | undefined): JsonObject {
+  if (!metadata) return {};
+  const safe: JsonObject = {};
+  for (const key of ['connectorId', 'connectorName', 'capability', 'operation', 'actionSource', 'approvalBoundary']) {
+    copyString(metadata, safe, key);
+  }
+  return safe;
+}
+
+function firstMetadataString(
+  metadata: JsonObject,
+  review: JsonObject | undefined,
+  keys: string[],
+): string | undefined {
+  for (const key of keys) {
+    const value = metadata[key];
+    if (typeof value === 'string' && value.trim()) return boundedMetadataString(value);
+  }
+  if (!review) return undefined;
+  for (const key of keys) {
+    const value = review[key];
+    if (typeof value === 'string' && value.trim()) return boundedMetadataString(value);
+  }
+  return undefined;
+}
+
+function copyString(source: JsonObject, target: JsonObject, key: string): void {
+  const value = source[key];
+  if (typeof value === 'string' && value.trim()) {
+    target[key] = boundedMetadataString(value);
+  }
+}
+
+function boundedMetadataString(value: string): string {
+  const trimmed = value.trim();
+  return trimmed.length <= 240 ? trimmed : `${trimmed.slice(0, 237)}...`;
+}
+
+function isJsonRecord(value: unknown): value is JsonObject {
+  return Boolean(value && typeof value === 'object' && !Array.isArray(value));
+}
+
+function stableJsonValue(value: JsonValue): JsonValue {
+  if (Array.isArray(value)) {
+    return value.map(stableJsonValue);
+  }
+  if (isJsonRecord(value)) {
+    const output: JsonObject = {};
+    for (const key of Object.keys(value).sort()) {
+      output[key] = stableJsonValue(value[key]!);
+    }
+    return output;
+  }
+  return value;
+}
+
+function assertCreateRecurringScheduleStatus(status: CreateRecurringRequest['status']): void {
+  if (status === undefined || status === 'active' || status === 'paused') return;
+  throw new RecurringServiceError(
+    400,
+    'invalid_status',
+    'Recurring schedules can only be created as active or paused.',
+  );
 }
 
 function assertCloudRecurringScheduleSupported(input: Pick<RecurringScheduleRecord | CreateRecurringRequest | UpdateRecurringRequest, 'actionKind' | 'token' | 'outputToken'>): void {

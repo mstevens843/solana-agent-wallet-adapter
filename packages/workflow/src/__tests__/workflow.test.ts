@@ -473,6 +473,14 @@ describe('Agentic Cloud validators', () => {
       status: 'paused',
       note: 'Hold until review',
     });
+    expect(validateCreateRecurringRequest({ ...createRecurringRequest(), status: 'paused' })).toMatchObject({
+      status: 'paused',
+      token: 'USDC',
+    });
+    expect(validateCreateRecurringRequest({ ...createRecurringRequest(), status: 'active' })).toMatchObject({
+      status: 'active',
+      token: 'USDC',
+    });
     expect(validateRecordId('recurring_1')).toBe('recurring_1');
     expect(validateRecurringId('recurring_1')).toBe('recurring_1');
 
@@ -486,6 +494,14 @@ describe('Agentic Cloud validators', () => {
       cadence: 'weekly',
       localTime: undefined,
     })).toThrow(WorkflowValidationError);
+    expect(workflowError(() => validateCreateRecurringRequest({
+      ...createRecurringRequest(),
+      status: 'completed',
+    }))).toMatchObject({ code: 'invalid_status' });
+    expect(workflowError(() => parseCreateRecurringRequest({
+      ...createRecurringRequest(),
+      status: 'cancelled',
+    }))).toMatchObject({ code: 'invalid_enum' });
     expect(() => validateCreatePlanRequest({
       ...createPlanRequest(),
       metadata: { privateKey: 'not accepted' },
@@ -494,6 +510,95 @@ describe('Agentic Cloud validators', () => {
       code: 'invalid_object',
       path: '$',
     });
+  });
+
+  it('validates agent review and connector metadata on recurring and approval contracts', () => {
+    const metadata = {
+      agentReview: {
+        summary: 'Reserve and wallet facts were checked.',
+        reason: 'Recipient is known and cadence is bounded.',
+        findings: [{ label: 'Reserve', value: 'Available', tone: 'good' }],
+        facts: [{ label: 'Wallet', value: 'Connected' }],
+      },
+      agentReviewStatus: 'approved',
+      agentReviewDecision: 'approve',
+      agentReviewCheckedAt: NOW,
+      agentReviewProvider: 'openai',
+      agentReviewModel: 'review-model',
+      connectorId: 'kamino',
+      connectorName: 'Kamino',
+      capability: 'earn',
+      operation: 'deposit',
+      readiness: { canRead: true },
+      factLabels: ['Reserve', 'Wallet'],
+      actionSource: 'connector',
+      actionProposal: { amount: '5', token: 'USDC' },
+      approvalBoundary: 'This prepares a wallet approval request; it does not sign.',
+      unknownSafeKey: { preserved: true },
+    };
+
+    expect(validateCreateRecurringRequest({
+      ...createRecurringRequest(),
+      status: 'paused',
+      metadata,
+    })).toMatchObject({
+      status: 'paused',
+      metadata: {
+        agentReviewStatus: 'approved',
+        connectorId: 'kamino',
+        unknownSafeKey: { preserved: true },
+      },
+    });
+    expect(validateUpdateRecurringRequest({
+      status: 'active',
+      metadata: {
+        ...metadata,
+        agentReviewStatus: 'denied',
+        agentReviewDecision: 'deny',
+      },
+    })).toMatchObject({
+      status: 'active',
+      metadata: {
+        agentReviewStatus: 'denied',
+        agentReviewDecision: 'deny',
+      },
+    });
+    expect(validateCreateApprovalRequest({
+      summary: 'Prepare Kamino deposit',
+      metadata,
+    })).toMatchObject({
+      summary: 'Prepare Kamino deposit',
+      metadata: {
+        connectorId: 'kamino',
+        approvalBoundary: 'This prepares a wallet approval request; it does not sign.',
+      },
+    });
+    expect(parseCreateRecurringRequest({
+      ...createRecurringRequest(),
+      status: 'paused',
+      metadata,
+    })).toMatchObject({
+      status: 'paused',
+      metadata: { connectorId: 'kamino' },
+    });
+    expect(parseCreateApprovalRequest({
+      summary: 'Prepare Kamino deposit',
+      metadata,
+    })).toMatchObject({
+      metadata: { operation: 'deposit' },
+    });
+
+    expect(workflowError(() => validateCreateRecurringRequest({
+      ...createRecurringRequest(),
+      metadata: { agentReviewStatus: 'maybe' },
+    }))).toMatchObject({ code: 'invalid_metadata' });
+    expect(workflowError(() => validateCreateApprovalRequest({
+      summary: 'Bad connector metadata',
+      metadata: { factLabels: ['ok', 1] },
+    }))).toMatchObject({ code: 'invalid_metadata' });
+    expect(workflowError(() => validateUpdateRecurringRequest({
+      metadata: { agentReview: { privateKey: 'not accepted' } },
+    }))).toMatchObject({ code: 'forbidden_secret' });
   });
 
   it('validates evidence receipt requests with shared workflow rules', () => {

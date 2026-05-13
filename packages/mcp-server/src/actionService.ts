@@ -4,6 +4,7 @@ import {
   SystemProgram,
   Transaction,
   TransactionInstruction,
+  VersionedTransaction,
 } from '@solana/web3.js';
 
 import {
@@ -37,11 +38,28 @@ import {
   type TokenLimitConfig,
 } from './config.js';
 import type {
+  AddRecurringPaymentInput,
   PreparedAction,
   PreparedActionStore,
   PreparedActionTxStatus,
   RecurringCadence,
 } from './preparedActions.js';
+import {
+  CONNECTOR_APPROVAL_BOUNDARY,
+  connectorCapabilityView,
+  getConnector,
+  listConnectorCapabilities,
+  type ConnectorCapability,
+  type ConnectorRegistryEntry,
+} from './connectorRegistry.js';
+import {
+  factsFromJupiterOrderPreview,
+  factsFromKaminoEarningsProof,
+  factsFromKaminoPositions,
+  factsFromKaminoReserveSnapshot,
+  type ConnectorFactReadInput,
+} from './connectorFacts.js';
+import { redactSecrets } from './trace.js';
 
 const TOKEN_PROGRAM_ID = new PublicKey('TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA');
 const TOKEN_2022_PROGRAM_ID = new PublicKey('TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb');
@@ -87,6 +105,7 @@ export interface PrepareSwapInput extends SwapInput {
 }
 
 export interface RecurringPaymentInput {
+  status?: 'active' | 'paused';
   actionKind?: 'transfer' | 'swap';
   token?: string;
   inputToken?: string;
@@ -106,6 +125,7 @@ export interface RecurringPaymentInput {
   note?: string;
   expiresAt?: string;
   notifications?: { inApp?: boolean; webhookUrl?: string };
+  metadata?: Record<string, unknown>;
 }
 
 export interface UpdateRecurringPaymentInput extends RecurringPaymentInput {
@@ -319,12 +339,114 @@ export class AgentWalletActionService {
     return { preparedAction: stored, preview: result.preview };
   }
 
+  connectorCapabilities(input: { connectorId?: string } = {}): Record<string, unknown> {
+    const connectors = input.connectorId
+      ? [connectorCapabilityView(requireRuntimeConnector(input.connectorId), this.config)]
+      : listConnectorCapabilities(this.config);
+    return {
+      cluster: this.config.cluster,
+      connectors,
+      approvalBoundary: CONNECTOR_APPROVAL_BOUNDARY,
+    };
+  }
+
+  async connectorReadFacts(input: ConnectorFactReadInput): Promise<Record<string, unknown>> {
+    const connector = requireRuntimeConnector(input.connectorId);
+    assertConnectorCluster(connector, this.config.cluster);
+    try {
+      if (connector.id === 'kamino') {
+        return await this.kaminoConnectorFacts(input);
+      }
+      if (connector.id === 'jupiter') {
+        return await this.jupiterConnectorFacts(input);
+      }
+      throw missingConnectorCapability(connector, input.capability, 'read');
+    } catch (err) {
+      if (err instanceof ProtocolError) throw err;
+      throw connectorReadProtocolError(connector, err);
+    }
+  }
+
+  private async kaminoConnectorFacts(input: ConnectorFactReadInput): Promise<Record<string, unknown>> {
+    const connector = requireRuntimeConnector('kamino');
+    const capability = input.capability ?? (input.walletAddress ? 'positions' : 'markets');
+    if (capability === 'markets' || capability === 'earn') {
+      const result = await this.kaminoReserveSnapshot({
+        ...(input.token !== undefined && { token: input.token }),
+        ...(input.reserveMint !== undefined && { reserveMint: input.reserveMint }),
+      });
+      return {
+        connector: connectorCapabilityView(connector, this.config),
+        capability: 'markets',
+        snapshot: result.snapshot,
+        facts: result.facts,
+      };
+    }
+    if (capability === 'positions') {
+      const result = await this.kaminoGetPositions({
+        ...(input.walletAddress !== undefined && { walletAddress: input.walletAddress }),
+      });
+      return {
+        connector: connectorCapabilityView(connector, this.config),
+        capability,
+        walletAddress: result.walletAddress,
+        positions: result.positions,
+        totals: result.totals,
+        facts: result.facts,
+      };
+    }
+    if (capability === 'rewards') {
+      const result = await this.kaminoPrepareEarningsProof({
+        ...(input.walletAddress !== undefined && { walletAddress: input.walletAddress }),
+        ...(input.reserveMint !== undefined && { reserveMint: input.reserveMint }),
+      });
+      return {
+        connector: connectorCapabilityView(connector, this.config),
+        capability,
+        proof: {
+          payload: result.payload,
+          canonicalBase64: result.canonicalBase64,
+        },
+        facts: result.facts,
+      };
+    }
+    throw missingConnectorCapability(connector, capability, 'read');
+  }
+
+  private async jupiterConnectorFacts(input: ConnectorFactReadInput): Promise<Record<string, unknown>> {
+    const connector = requireRuntimeConnector('jupiter');
+    const capability = input.capability ?? 'swap';
+    if (capability !== 'swap') {
+      throw missingConnectorCapability(connector, capability, 'read');
+    }
+    if (!input.amount?.trim()) {
+      throw new ProtocolError('invalid_request', 'amount is required to read Jupiter swap preview facts.');
+    }
+    const preview = await this.jupiterOrderPreview({
+      ...(input.inputToken !== undefined && { inputToken: input.inputToken }),
+      ...(input.outputToken !== undefined && { outputToken: input.outputToken }),
+      amount: input.amount,
+      ...(input.slippageBps !== undefined && { slippageBps: input.slippageBps }),
+      ...(input.taker !== undefined && { taker: input.taker }),
+    });
+    return {
+      connector: connectorCapabilityView(connector, this.config),
+      capability,
+      preview,
+      facts: preview.facts,
+    };
+  }
+
   async kaminoReserveSnapshot(input: { token?: string; reserveMint?: string }): Promise<Record<string, unknown>> {
     const adapter = requireAdapter('kamino');
     assertSupportedCluster(adapter, this.config.cluster);
     const read = adapter.reads.reserve_snapshot;
     if (!read) throw new AdapterError('kamino', 'unsupported_method', 'Kamino reserve snapshot read is not registered.');
-    return { snapshot: await read.read(input, this.adapterContext(adapter)) };
+    const snapshot = await read.read(input, this.adapterContext(adapter));
+    return {
+      snapshot,
+      facts: factsFromKaminoReserveSnapshot(snapshot as Parameters<typeof factsFromKaminoReserveSnapshot>[0]),
+    };
   }
 
   async kaminoGetPositions(input: { walletAddress?: string }): Promise<Record<string, unknown>> {
@@ -332,7 +454,19 @@ export class AgentWalletActionService {
     assertSupportedCluster(adapter, this.config.cluster);
     const read = adapter.reads.positions;
     if (!read) throw new AdapterError('kamino', 'unsupported_method', 'Kamino positions read is not registered.');
-    return (await read.read(input, this.adapterContext(adapter))) as Record<string, unknown>;
+    const result = (await read.read(input, this.adapterContext(adapter))) as {
+      walletAddress: string;
+      positions: Parameters<typeof factsFromKaminoPositions>[0]['positions'];
+      totals?: Parameters<typeof factsFromKaminoPositions>[0]['totals'];
+    } & Record<string, unknown>;
+    return {
+      ...result,
+      facts: factsFromKaminoPositions({
+        walletAddress: result.walletAddress,
+        positions: result.positions,
+        ...(result.totals !== undefined && { totals: result.totals }),
+      }),
+    };
   }
 
   async kaminoPrepareEarningsProof(input: { walletAddress?: string; reserveMint?: string }): Promise<Record<string, unknown>> {
@@ -340,7 +474,11 @@ export class AgentWalletActionService {
     assertSupportedCluster(adapter, this.config.cluster);
     const read = adapter.reads.earnings_proof;
     if (!read) throw new AdapterError('kamino', 'unsupported_method', 'Kamino earnings proof read is not registered.');
-    return (await read.read(input, this.adapterContext(adapter))) as Record<string, unknown>;
+    const result = (await read.read(input, this.adapterContext(adapter))) as Record<string, unknown>;
+    return {
+      ...result,
+      facts: factsFromKaminoEarningsProof(result as unknown as Parameters<typeof factsFromKaminoEarningsProof>[0]),
+    };
   }
 
   async prepareSwap(input: PrepareSwapInput): Promise<Record<string, unknown>> {
@@ -353,6 +491,9 @@ export class AgentWalletActionService {
       cluster: this.config.cluster,
       summary: `Swap ${input.amount} ${swap.inputSymbol} to ${swap.outputSymbol}`,
       params: {
+        connectorId: 'jupiter',
+        operation: 'swap',
+        approvalBoundary: CONNECTOR_APPROVAL_BOUNDARY,
         inputToken: swap.inputSymbol,
         outputToken: swap.outputSymbol,
         amount: input.amount,
@@ -513,9 +654,14 @@ export class AgentWalletActionService {
     if (!current) {
       throw new ProtocolError('invalid_request', `Unknown recurring payment: ${input.recurringId}`);
     }
+    const mergedInput: RecurringPaymentInput = {
+      ...current,
+      ...input,
+      slippageBps: normalizeRecurringSlippageBps(input.slippageBps ?? current.slippageBps),
+    };
     const recurringPayment = await store.updateRecurringPayment(
       input.recurringId,
-      await buildRecurringPaymentInput(input, current.walletAddress, this.config, this.connection),
+      await buildRecurringPaymentInput(mergedInput, current.walletAddress, this.config, this.connection),
     );
     const materialized = await store.materializeDueRecurring();
     return { recurringPayment, materialized, actions: await store.listActions() };
@@ -598,9 +744,17 @@ export class AgentWalletActionService {
   }
 
   async getSwapQuote(input: SwapInput): Promise<Record<string, unknown>> {
+    return this.jupiterOrderPreview(input);
+  }
+
+  async jupiterOrderPreview(input: SwapOrderInput): Promise<Record<string, unknown>> {
     requireActionAllowed(this.config);
     const order = await this.getSwapOrder(input);
-    return orderSummary(order);
+    const summary = orderSummary(order);
+    return {
+      ...summary,
+      facts: factsFromJupiterOrderPreview(summary),
+    };
   }
 
   async getSwapOrder(input: SwapOrderInput): Promise<Record<string, unknown>> {
@@ -634,9 +788,11 @@ export class AgentWalletActionService {
           : 'Jupiter did not return a transaction for this order.',
       );
     }
+    const swapSummary = `Swap ${input.amount} ${swap.inputSymbol} to ${swap.outputSymbol}`;
+    await this.simulateBeforeSign(order.transaction, swapSummary);
     const signed = await this.client.signTransaction(order.transaction, {
       cluster: this.config.cluster,
-      summary: `Swap ${input.amount} ${swap.inputSymbol} to ${swap.outputSymbol}`,
+      summary: swapSummary,
     });
     const executed = await executeJupiterOrder(this.config, signed.signature, order);
     return {
@@ -698,6 +854,7 @@ export class AgentWalletActionService {
   private adapterContext(adapter: DAppAdapter): DAppAdapterContext {
     void adapter;
     const signAndBroadcast = async (transactionBase64: string, summary: string): Promise<string> => {
+      await this.simulateBeforeSign(transactionBase64, summary);
       const signed = await this.client.signTransaction(transactionBase64, {
         cluster: this.config.cluster,
         summary,
@@ -754,7 +911,9 @@ export class AgentWalletActionService {
   }
 
   private async signAndBroadcastTransaction(transaction: Transaction, summary: string): Promise<string> {
-    const signed = await this.client.signTransaction(txToBase64(transaction), {
+    const transactionBase64 = txToBase64(transaction);
+    await this.simulateBeforeSign(transactionBase64, summary);
+    const signed = await this.client.signTransaction(transactionBase64, {
       cluster: this.config.cluster,
       summary,
     });
@@ -763,6 +922,87 @@ export class AgentWalletActionService {
       maxRetries: 5,
     });
   }
+
+  private async simulateBeforeSign(transactionBase64: string, summary: string): Promise<void> {
+    if (process.env.AGENT_WALLET_SKIP_SIMULATION === '1') return;
+    let bytes: Buffer;
+    try {
+      bytes = Buffer.from(transactionBase64, 'base64');
+    } catch {
+      return;
+    }
+    let simulationErr: unknown = null;
+    let logs: string[] | undefined;
+    try {
+      const versioned = VersionedTransaction.deserialize(bytes);
+      const result = await this.connection.simulateTransaction(versioned, {
+        sigVerify: false,
+        replaceRecentBlockhash: true,
+        commitment: 'confirmed',
+      });
+      simulationErr = result.value.err;
+      logs = result.value.logs ?? undefined;
+    } catch {
+      try {
+        const legacy = Transaction.from(bytes);
+        const result = await this.connection.simulateTransaction(legacy);
+        simulationErr = result.value.err;
+        logs = result.value.logs ?? undefined;
+      } catch {
+        return;
+      }
+    }
+    if (simulationErr) {
+      const tail = logs && logs.length > 0 ? ` Last log: ${logs[logs.length - 1]}.` : '';
+      throw new ProtocolError(
+        'simulation_failed',
+        `Pre-flight simulation rejected "${summary}": ${JSON.stringify(simulationErr)}.${tail} Refusing to ask the wallet to sign.`,
+      );
+    }
+  }
+}
+
+function requireRuntimeConnector(idOrAlias: string): ConnectorRegistryEntry {
+  const connector = getConnector(idOrAlias);
+  if (!connector) {
+    throw new ProtocolError('invalid_request', `Unknown connector: ${idOrAlias}`);
+  }
+  return connector;
+}
+
+function assertConnectorCluster(connector: ConnectorRegistryEntry, cluster: Cluster): void {
+  if (!connector.supportedClusters.includes(cluster)) {
+    throw new ProtocolError(
+      'cluster_mismatch',
+      `${connector.name} is only available on ${connector.supportedClusters.join(', ')}; current cluster is ${cluster}.`,
+    );
+  }
+}
+
+function missingConnectorCapability(
+  connector: ConnectorRegistryEntry,
+  capability: ConnectorCapability | undefined,
+  mode: 'read' | 'write',
+): ProtocolError {
+  const available = mode === 'read' ? connector.readCapabilities : connector.writeCapabilities;
+  const label = capability ?? 'requested capability';
+  return new ProtocolError(
+    'unsupported_method',
+    `${connector.name} does not expose ${label} ${mode} capability in the MCP runtime. Available ${mode} capabilities: ${available.length ? available.join(', ') : 'none'}.`,
+  );
+}
+
+function connectorReadProtocolError(
+  connector: ConnectorRegistryEntry,
+  err: unknown,
+): ProtocolError {
+  const raw = err instanceof Error ? err.message : String(err);
+  const redacted = String(redactSecrets(raw));
+  return new ProtocolError(
+    'unsupported_method',
+    `${connector.name} connector read is unavailable: ${redacted}`,
+    { cause: err },
+  );
 }
 
 function requireAdapterAction(adapter: DAppAdapter, id: string) {
@@ -808,12 +1048,19 @@ function requireActionAllowed(config: AgentWalletConfig): void {
   void config;
 }
 
+function normalizeRecurringSlippageBps(value: number | string | undefined): number | undefined {
+  if (value === undefined) return undefined;
+  if (typeof value === 'number') return Number.isFinite(value) ? value : undefined;
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? parsed : undefined;
+}
+
 async function buildRecurringPaymentInput(
   input: RecurringPaymentInput,
   walletAddress: string,
   config: AgentWalletConfig,
   connection: Connection,
-) {
+): Promise<AddRecurringPaymentInput> {
   requireActionAllowed(config);
   const actionKind: 'transfer' | 'swap' = input.actionKind === 'swap' || input.outputToken ? 'swap' : 'transfer';
   const token = normalizeTokenIdentifier(requireString(input.token ?? input.inputToken, 'token'));
@@ -867,8 +1114,10 @@ async function buildRecurringPaymentInput(
     expiresAt,
   });
 
+  const status: 'active' | 'paused' = input.status === 'paused' ? 'paused' : 'active';
   return {
     walletAddress,
+    status,
     cluster: config.cluster,
     ...(actionKind === 'swap' ? { actionKind, inputToken, outputToken, slippageBps: input.slippageBps ?? config.mainnet.maxSlippageBps } : {}),
     token,
@@ -878,6 +1127,7 @@ async function buildRecurringPaymentInput(
     ...(note !== undefined && { note }),
     ...(expiresAt !== undefined && { expiresAt }),
     ...(notifications !== undefined && { notifications }),
+    ...(input.metadata !== undefined && { metadata: input.metadata }),
   };
 }
 

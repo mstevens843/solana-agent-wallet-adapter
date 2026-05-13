@@ -76,9 +76,14 @@ export interface RecurringPayment {
   note?: string;
   expiresAt?: string;
   notifications?: RecurringPaymentNotifications;
+  metadata?: Record<string, unknown>;
   createdAt: string;
   updatedAt: string;
 }
+
+export type AddRecurringPaymentInput = Omit<RecurringPayment, 'id' | 'status' | 'createdAt' | 'updatedAt'> & {
+  status?: RecurringPayment['status'];
+};
 
 export interface RecurringPaymentNotifications {
   inApp?: boolean;
@@ -134,7 +139,7 @@ export interface PreparedActionStore {
   updateAction(id: string, patch: Partial<PreparedAction>): Promise<PreparedAction>;
   deleteAction(id: string): Promise<boolean>;
   archiveAction(id: string): Promise<PreparedAction>;
-  addRecurringPayment(input: Omit<RecurringPayment, 'id' | 'status' | 'createdAt' | 'updatedAt'>): Promise<RecurringPayment>;
+  addRecurringPayment(input: AddRecurringPaymentInput): Promise<RecurringPayment>;
   listRecurringPayments(): Promise<RecurringPayment[]>;
   listRecurringPaymentViews(now?: Date): Promise<RecurringPaymentView[]>;
   updateRecurringPayment(id: string, patch: Partial<RecurringPayment>): Promise<RecurringPayment>;
@@ -230,16 +235,16 @@ export class JsonPreparedActionStore implements PreparedActionStore {
   }
 
   async addRecurringPayment(
-    input: Omit<RecurringPayment, 'id' | 'status' | 'createdAt' | 'updatedAt'>,
+    input: AddRecurringPaymentInput,
   ): Promise<RecurringPayment> {
     return this.mutate((state) => {
       const now = new Date().toISOString();
       const payment: RecurringPayment = {
         id: newId('rp'),
-        status: 'active',
+        ...input,
+        status: input.status ?? 'active',
         createdAt: now,
         updatedAt: now,
-        ...input,
         startAt: input.startAt ?? now,
       };
       state.recurringPayments.push(payment);

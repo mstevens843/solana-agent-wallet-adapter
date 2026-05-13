@@ -1,0 +1,153 @@
+{
+  "$schema": "./connector-pack.schema.json",
+  "id": "drift",
+  "name": "Drift",
+  "status": "blink_backed",
+  "aliases": ["drift", "drift vaults", "strategy vaults"],
+  "supportedClusters": ["mainnet-beta"],
+  "requiredConfig": [
+    {
+      "name": "Dialect client key",
+      "scope": "dialect_client_key",
+      "required": true,
+      "description": "Needed for strategy vault market reads. MCP runtime does not expose these reads yet."
+    }
+  ],
+  "readCapabilities": [
+    {
+      "toolName": "dialect_markets",
+      "source": "dialect-markets",
+      "implemented": false,
+      "requiresClientKey": true,
+      "returns": "Planned Drift strategy vault market facts and action URLs.",
+      "facts": ["vaultAddress", "strategy", "deposits", "pnl", "fee", "actionUrl"]
+    }
+  ],
+  "writeCapabilities": [
+    {
+      "actionKind": "blink_action",
+      "executionMode": "blink",
+      "implemented": false,
+      "prepares": "A planned approval-bound Blink action for strategy vault deposit or withdraw.",
+      "executesVia": "solana_execute_prepared_action",
+      "userApproves": "A Drift Solana Action transaction after the user reviews vault, strategy, token, amount, and risk facts."
+    }
+  ],
+  "requiredUserInputs": [
+    {
+      "name": "vaultAddress",
+      "kind": "text",
+      "required": true,
+      "appliesTo": ["blink_action"],
+      "prompt": "Which Drift vault should I use?"
+    },
+    {
+      "name": "amount",
+      "kind": "number",
+      "required": true,
+      "appliesTo": ["blink_action"],
+      "prompt": "How much should I prepare?"
+    },
+    {
+      "name": "blinkUrl",
+      "kind": "text",
+      "required": true,
+      "appliesTo": ["blink_action"],
+      "prompt": "Paste the Drift Blink or Solana Action URL."
+    }
+  ],
+  "requiredConnectorFacts": [
+    "Vault address and strategy name",
+    "Deposit token and decimals",
+    "Vault capacity and withdrawal terms",
+    "Recent PnL or risk facts when available",
+    "Blink action URL metadata",
+    "Wallet token balance"
+  ],
+  "unsupportedRequests": [
+    "Prepare vault deposits without a vault, amount, or action URL.",
+    "Withdraw without a vault or position fact.",
+    "Trade perps or place orders. This pack covers strategy vault Blink actions only.",
+    "Guarantee returns.",
+    "Operate outside mainnet-beta.",
+    "Move funds without wallet approval."
+  ],
+  "actionPreparationNotes": "Drift is cataloged for strategy vault Blink actions only. Do not generalize to perpetual trading or order placement. Ask for vault and action URL facts before preparing.",
+  "riskNotes": "Strategy vaults can lose value and may have withdrawal constraints. Display strategy, vault, and amount facts before approval.",
+  "approvalBoundary": {
+    "readGated": true,
+    "writeGated": true,
+    "blinkBacked": true,
+    "summary": "safety.prepare_only"
+  },
+  "walletApprovalBoundary": "Drift vault actions are approval-bound Blink actions. The agent does not trade or sign without the user's wallet.",
+  "examples": {
+    "requests": [
+      {
+        "user": "show my Drift vaults",
+        "classification": "needs_input",
+        "needsInputQuestions": ["Which wallet or vault should I read?"],
+        "agentResponse": "The agent is missing facts needed to decide. Vault reads require wallet or vault context."
+      },
+      {
+        "user": "deposit into a Drift vault",
+        "classification": "needs_input",
+        "needsInputQuestions": ["Which vault?", "How much?", "Paste the Drift action URL."],
+        "agentResponse": "The agent is missing facts needed to decide. Vault, amount, and action URL are required."
+      },
+      {
+        "user": "deposit 100 USDC into this Drift vault using this Blink",
+        "classification": "prepare_approval_action",
+        "writeAction": "blink_action",
+        "agentResponse": "Prepared a Drift vault deposit Blink review if metadata matches 100 USDC and the vault. This prepares a wallet approval request; it does not sign."
+      },
+      {
+        "user": "withdraw from Drift",
+        "classification": "needs_input",
+        "needsInputQuestions": ["Which vault or position should I withdraw from?", "How much?", "Paste the action URL."],
+        "agentResponse": "The agent is missing facts needed to decide. Withdrawal needs position, amount, and action metadata."
+      },
+      {
+        "user": "open a 10x Drift perp long",
+        "classification": "unsupported",
+        "denialReason": "safety.action_not_exposed",
+        "agentResponse": "The agent denied this because this connector pack covers strategy vaults, not perp order placement."
+      },
+      {
+        "user": "guarantee this Drift vault yield",
+        "classification": "unsupported",
+        "denialReason": "safety.no_safety_guarantee",
+        "agentResponse": "The agent denied this because it cannot guarantee vault returns."
+      },
+      {
+        "user": "Drift vault action on devnet",
+        "classification": "unsupported",
+        "denialReason": "safety.action_not_exposed",
+        "agentResponse": "The agent denied this because Drift connector actions are cataloged for mainnet-beta only."
+      },
+      {
+        "user": "move funds into Drift without wallet approval",
+        "classification": "unsupported",
+        "denialReason": "safety.no_autonomous_funds",
+        "agentResponse": "The agent denied this because the connector cannot move funds without wallet approval."
+      },
+      {
+        "user": "close every Drift position",
+        "classification": "unsupported",
+        "denialReason": "safety.action_not_exposed",
+        "agentResponse": "The agent denied this because generic position close is not exposed by this connector."
+      },
+      {
+        "user": "use Drift while connector is disabled",
+        "classification": "unsupported",
+        "denialReason": "safety.connector_disabled",
+        "agentResponse": "The agent denied this because this connector is not enabled."
+      }
+    ]
+  },
+  "mirrorsCanonical": {
+    "file": "apps/browser-demo/src/connectedDapps.ts",
+    "entry": "drift",
+    "note": "Mirrors Drift browser catalog support for Blink-backed strategy vault actions."
+  }
+}

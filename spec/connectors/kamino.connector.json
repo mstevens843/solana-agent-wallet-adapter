@@ -1,0 +1,200 @@
+{
+  "$schema": "./connector-pack.schema.json",
+  "id": "kamino",
+  "name": "Kamino Finance",
+  "status": "first_class",
+  "aliases": ["kamino", "kamino finance", "klend", "kamino lend"],
+  "supportedClusters": ["mainnet-beta"],
+  "requiredConfig": [
+    {
+      "name": "RPC connection",
+      "scope": "env",
+      "required": true,
+      "description": "Mainnet RPC the bridge or browser planner uses to query Kamino state. Cluster mismatches must be rejected with safety.action_not_exposed."
+    }
+  ],
+  "readCapabilities": [
+    {
+      "toolName": "solana_kamino_get_positions",
+      "source": "first-class-adapter",
+      "implemented": true,
+      "requiresClientKey": false,
+      "returns": "Per-reserve supplied positions for the connected wallet with earned interest.",
+      "facts": ["reserveSymbol", "suppliedAmount", "earnedInterest", "reserveCount"]
+    },
+    {
+      "toolName": "solana_kamino_reserve_snapshot",
+      "source": "first-class-adapter",
+      "implemented": true,
+      "requiresClientKey": false,
+      "returns": "Reserve-level state: supply APY, borrow APY, utilization, deposit cap remaining, withdraw availability, withdrawal delay seconds.",
+      "facts": ["supplyApy", "borrowApy", "utilization", "depositLimit", "depositLimitRemaining", "withdrawAvailable", "withdrawalDelaySec"]
+    },
+    {
+      "toolName": "solana_kamino_prepare_earnings_proof",
+      "source": "first-class-adapter",
+      "implemented": true,
+      "requiresClientKey": false,
+      "returns": "Deterministic earnings payload the user can sign through solana_sign_message to create a verifiable proof. No transaction is built.",
+      "facts": ["proofPayloadBase64", "reserveSymbol", "earningsRangeStart", "earningsRangeEnd", "earnedAmount"]
+    }
+  ],
+  "writeCapabilities": [
+    {
+      "actionKind": "kamino_deposit",
+      "executionMode": "first_class_adapter",
+      "implemented": true,
+      "prepares": "An inbox-bound PreparedAction that captures reserve, amount, supply APY, and deposit cap remaining. No transaction is signed at prepare time.",
+      "executesVia": "solana_execute_prepared_action",
+      "userApproves": "A Kamino deposit transaction built at execute time, with refreshed reserve snapshot and a fee-payer set to the connected wallet."
+    },
+    {
+      "actionKind": "kamino_withdraw",
+      "executionMode": "first_class_adapter",
+      "implemented": true,
+      "prepares": "An inbox-bound PreparedAction that captures reserve, amount, withdrawal delay, and withdraw availability.",
+      "executesVia": "solana_execute_prepared_action",
+      "userApproves": "A Kamino withdraw transaction built at execute time. Withdrawal delays vary per reserve and must be surfaced."
+    }
+  ],
+  "requiredUserInputs": [
+    {
+      "name": "amount",
+      "kind": "number",
+      "required": true,
+      "appliesTo": ["kamino_deposit", "kamino_withdraw"],
+      "prompt": "How much do you want to deposit or withdraw?"
+    },
+    {
+      "name": "token",
+      "kind": "select",
+      "required": true,
+      "appliesTo": ["kamino_deposit", "kamino_withdraw"],
+      "options": ["SOL", "USDC", "JitoSOL", "mSOL", "bSOL"],
+      "prompt": "Which Kamino reserve do you want to use?"
+    },
+    {
+      "name": "dueAt",
+      "kind": "text",
+      "required": false,
+      "appliesTo": ["kamino_deposit", "kamino_withdraw"],
+      "prompt": "Should this action wait until a specific time before becoming ready? (ISO 8601, optional)"
+    }
+  ],
+  "requiredConnectorFacts": [
+    "Reserve supply APY at prepare time",
+    "Deposit cap remaining for the chosen reserve",
+    "Withdraw availability and withdrawal delay seconds",
+    "Connected wallet's SOL balance for fee headroom",
+    "Connected wallet's token balance for the chosen reserve"
+  ],
+  "unsupportedRequests": [
+    "Claim rewards on Kamino — the catalog lists 'Claim rewards' as a supported action but no kamino_claim_rewards adapter exists yet. Treat as unsupported until a claim action kind ships.",
+    "Borrow against a Kamino position — only deposit and withdraw are exposed.",
+    "Deposit a token not in the known reserve list (SOL, USDC, JitoSOL, mSOL, bSOL) without an explicit reserve mint address.",
+    "Operate on any cluster other than mainnet-beta."
+  ],
+  "actionPreparationNotes": "Resolve the reserve symbol from token input via resolveKnownReserve; if absent, require reserveMint. Read a fresh reserve snapshot at prepare time and store reserveAddress, decimals, supplyApy, utilization, depositLimit, and withdrawAvailable in params. The execute path re-reads the snapshot and refuses if the wallet address has changed.",
+  "riskNotes": "Withdrawals can be delayed by per-reserve withdrawalDelaySec. Deposits can be capped by depositLimitRemaining. Both must be surfaced in the review card before approval.",
+  "approvalBoundary": {
+    "readGated": false,
+    "writeGated": true,
+    "blinkBacked": false,
+    "summary": "safety.prepare_only"
+  },
+  "walletApprovalBoundary": "Reads return facts without wallet involvement. Deposits and withdrawals build a transaction at execute time that the wallet must sign and broadcast. The agent never signs.",
+  "examples": {
+    "requests": [
+      {
+        "user": "deposit 0.1 SOL into Kamino",
+        "classification": "prepare_approval_action",
+        "writeAction": "kamino_deposit",
+        "agentResponse": "Prepared a Kamino SOL deposit of 0.1 with the current supply APY and deposit cap. This prepares a wallet approval request; it does not sign."
+      },
+      {
+        "user": "supply 25 USDC to Kamino",
+        "classification": "prepare_approval_action",
+        "writeAction": "kamino_deposit",
+        "agentResponse": "Prepared a Kamino USDC supply of 25 against the USDC reserve. The wallet still controls approval."
+      },
+      {
+        "user": "lend on Kamino",
+        "classification": "needs_input",
+        "needsInputQuestions": [
+          "How much do you want to lend?",
+          "Which token (SOL, USDC, JitoSOL, mSOL, or bSOL)?"
+        ],
+        "agentResponse": "The agent is missing facts needed to decide. Tell me the amount and token and I will prepare the deposit."
+      },
+      {
+        "user": "withdraw half my SOL from Kamino",
+        "classification": "needs_input",
+        "needsInputQuestions": [
+          "Should I read your current Kamino SOL position so 'half' resolves to a concrete amount?"
+        ],
+        "agentResponse": "The agent is missing facts needed to decide. I can read your Kamino SOL position with solana_kamino_get_positions and confirm the exact amount before preparing."
+      },
+      {
+        "user": "show my Kamino positions and earned interest",
+        "classification": "read_only_answer",
+        "readTool": "solana_kamino_get_positions",
+        "agentResponse": "Read your Kamino positions and per-reserve earned interest. The connector can read facts, but the wallet still controls approval."
+      },
+      {
+        "user": "what's the current Kamino SOL supply APY?",
+        "classification": "read_only_answer",
+        "readTool": "solana_kamino_reserve_snapshot",
+        "agentResponse": "Read the SOL reserve snapshot and reported supply APY, utilization, and deposit cap remaining."
+      },
+      {
+        "user": "prepare an earnings proof for my Kamino USDC reserve",
+        "classification": "proof_only_review",
+        "readTool": "solana_kamino_prepare_earnings_proof",
+        "agentResponse": "Built a deterministic earnings payload for your USDC reserve range. Sign with solana_sign_message to produce a shareable proof. This is read-only; no transaction is built."
+      },
+      {
+        "user": "redeem 0.05 SOL from Kamino for manual approval",
+        "classification": "prepare_approval_action",
+        "writeAction": "kamino_withdraw",
+        "agentResponse": "Prepared a Kamino SOL withdraw of 0.05. Withdrawal delay for SOL is included in the review card. This prepares a wallet approval request; it does not sign."
+      },
+      {
+        "user": "claim my Kamino rewards",
+        "classification": "unsupported",
+        "denialReason": "safety.action_not_exposed",
+        "agentResponse": "The agent denied this because Kamino reward claiming is listed in the catalog but no kamino_claim_rewards adapter exists yet. This connector does not expose that action yet."
+      },
+      {
+        "user": "deposit 10 BONK into Kamino",
+        "classification": "unsupported",
+        "denialReason": "safety.action_not_exposed",
+        "agentResponse": "The agent denied this because BONK is not a known Kamino reserve. Supported reserves are SOL, USDC, JitoSOL, mSOL, and bSOL; pass a reserveMint to override."
+      },
+      {
+        "user": "deposit 0.5 SOL into Kamino on devnet",
+        "classification": "unsupported",
+        "denialReason": "safety.action_not_exposed",
+        "agentResponse": "The agent denied this because Kamino is only supported on mainnet-beta. Switch the active cluster before preparing."
+      },
+      {
+        "user": "deposit 100 SOL into Kamino",
+        "classification": "needs_input",
+        "needsInputQuestions": [
+          "Should I check your wallet balance and the SOL reserve deposit cap before preparing?"
+        ],
+        "agentResponse": "The agent is missing facts needed to decide. 100 SOL likely exceeds your balance or the reserve deposit cap; let me read facts before preparing."
+      },
+      {
+        "user": "deposit 0.1 SOL to Kamino but Kamino is disabled",
+        "classification": "unsupported",
+        "denialReason": "safety.connector_disabled",
+        "agentResponse": "The agent denied this because this connector is not enabled. Enable Kamino in Protocol Connectors before continuing."
+      }
+    ]
+  },
+  "mirrorsCanonical": {
+    "file": "apps/browser-demo/src/connectedDapps.ts",
+    "entry": "kamino",
+    "note": "PROTOCOL_CONNECTORS entry at id 'kamino'. Update this pack when capabilities, aliases, readTools, or actionKinds change."
+  }
+}

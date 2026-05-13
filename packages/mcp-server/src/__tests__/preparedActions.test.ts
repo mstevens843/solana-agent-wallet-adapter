@@ -68,6 +68,47 @@ describe('JsonPreparedActionStore', () => {
     });
   });
 
+  it('defaults repeat schedules active and honors agent-paused schedules', async () => {
+    const store = new JsonPreparedActionStore(await tempStorePath());
+    const active = await store.addRecurringPayment({
+      walletAddress: '11111111111111111111111111111111',
+      cluster: 'devnet',
+      token: 'SOL',
+      recipient: '22222222222222222222222222222222',
+      amount: '0.01',
+      cadence: 'weekly',
+      dayOfWeek: 5,
+      localTime: '00:00',
+      startAt: '2026-05-01T00:00:00.000Z',
+    });
+    const paused = await store.addRecurringPayment({
+      status: 'paused',
+      walletAddress: '11111111111111111111111111111111',
+      cluster: 'devnet',
+      token: 'SOL',
+      recipient: '33333333333333333333333333333333',
+      amount: '0.02',
+      cadence: 'weekly',
+      dayOfWeek: 5,
+      localTime: '00:00',
+      startAt: '2026-05-01T00:00:00.000Z',
+      metadata: {
+        agentReviewStatus: 'denied',
+        agentReviewDecision: 'deny',
+      },
+    });
+
+    expect(active.status).toBe('active');
+    expect(paused).toMatchObject({
+      status: 'paused',
+      metadata: {
+        agentReviewStatus: 'denied',
+        agentReviewDecision: 'deny',
+      },
+    });
+    await expect(store.materializeDueRecurring(new Date('2026-05-08T20:00:00.000Z'))).resolves.toHaveLength(1);
+  });
+
   it('materializes one overdue weekly payment when the user opens later that day', async () => {
     const store = new JsonPreparedActionStore(await tempStorePath());
     await store.addRecurringPayment({

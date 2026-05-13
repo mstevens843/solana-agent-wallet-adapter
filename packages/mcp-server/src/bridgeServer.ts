@@ -55,6 +55,7 @@ export interface CreateBridgeServerOptions {
 
 export function createBridgeServer(options: CreateBridgeServerOptions): BridgeServerHandle {
   const host = options.host ?? '127.0.0.1';
+  assertLoopbackBind(host);
   const port = options.port ?? 8787;
   const backend = options.backend;
   const actionConfig = options.actionConfig;
@@ -97,6 +98,23 @@ export function createBridgeServer(options: CreateBridgeServerOptions): BridgeSe
       server = null;
     },
   };
+}
+
+function assertLoopbackBind(host: string): void {
+  const normalized = host.trim().toLowerCase();
+  if (
+    normalized === 'localhost' ||
+    normalized === '::1' ||
+    normalized === '[::1]' ||
+    normalized === '0:0:0:0:0:0:0:1' ||
+    normalized.startsWith('127.')
+  ) {
+    return;
+  }
+  throw new ProtocolError(
+    'invalid_request',
+    `Refusing to bind the local bridge to non-loopback host "${host}". Use 127.0.0.1 or localhost.`,
+  );
 }
 
 async function handleRequest(
@@ -253,9 +271,14 @@ async function handleRequest(
     }
     if (req.method === 'POST' && url.pathname === '/bridge/recurring-payments') {
       const body = (await readJson(req)) as {
+        status?: 'active' | 'paused';
+        actionKind?: 'transfer' | 'swap';
         token?: string;
+        inputToken?: string;
+        outputToken?: string;
         recipient?: string;
         amount?: string;
+        slippageBps?: number;
         cadence?: 'weekly' | 'monthly' | 'interval_days' | 'interval_hours' | 'interval_minutes';
         dayOfWeek?: number;
         dayOfMonth?: number;
@@ -266,16 +289,24 @@ async function handleRequest(
         startAt?: string;
         maxOccurrences?: number;
         note?: string;
+        expiresAt?: string;
+        notifications?: { inApp?: boolean; webhookUrl?: string };
+        metadata?: Record<string, unknown>;
       };
       writeJson(res, 200, await requireActionService(actionService).createRecurringPayment(body));
       return;
     }
     if (req.method === 'POST' && url.pathname === '/bridge/recurring-payments/update') {
       const body = (await readJson(req)) as {
+        status?: 'active' | 'paused';
         recurringId?: string;
+        actionKind?: 'transfer' | 'swap';
         token?: string;
+        inputToken?: string;
+        outputToken?: string;
         recipient?: string;
         amount?: string;
+        slippageBps?: number;
         cadence?: 'weekly' | 'monthly' | 'interval_days' | 'interval_hours' | 'interval_minutes';
         dayOfWeek?: number;
         dayOfMonth?: number;
@@ -286,6 +317,9 @@ async function handleRequest(
         startAt?: string;
         maxOccurrences?: number;
         note?: string;
+        expiresAt?: string;
+        notifications?: { inApp?: boolean; webhookUrl?: string };
+        metadata?: Record<string, unknown>;
       };
       if (!body.recurringId) {
         throw new ProtocolError('invalid_request', 'Missing recurringId.');
@@ -450,6 +484,40 @@ async function handleRequest(
     }
     if (req.method === 'GET' && url.pathname === '/bridge/action/portfolio') {
       writeJson(res, 200, await requireActionService(actionService).portfolioSummary());
+      return;
+    }
+    if (req.method === 'GET' && url.pathname === '/bridge/action/connector-capabilities') {
+      const connectorId = url.searchParams.get('connectorId') ?? undefined;
+      writeJson(res, 200, requireActionService(actionService).connectorCapabilities({
+        ...(connectorId !== undefined && { connectorId }),
+      }));
+      return;
+    }
+    if (req.method === 'POST' && url.pathname === '/bridge/action/connector-read-facts') {
+      const body = (await readJson(req)) as {
+        connectorId?: string;
+        capability?: 'positions' | 'rewards' | 'markets' | 'blinks' | 'swap' | 'earn' | 'borrow' | 'withdraw' | 'repay' | 'add_liquidity' | 'close';
+        walletAddress?: string;
+        token?: string;
+        reserveMint?: string;
+        inputToken?: string;
+        outputToken?: string;
+        amount?: string;
+        slippageBps?: number;
+        taker?: string;
+      };
+      writeJson(res, 200, await requireActionService(actionService).connectorReadFacts({
+        connectorId: requireString(body.connectorId, 'connectorId'),
+        ...(body.capability !== undefined && { capability: body.capability }),
+        ...(body.walletAddress !== undefined && { walletAddress: body.walletAddress }),
+        ...(body.token !== undefined && { token: body.token }),
+        ...(body.reserveMint !== undefined && { reserveMint: body.reserveMint }),
+        ...(body.inputToken !== undefined && { inputToken: body.inputToken }),
+        ...(body.outputToken !== undefined && { outputToken: body.outputToken }),
+        ...(body.amount !== undefined && { amount: body.amount }),
+        ...(body.slippageBps !== undefined && { slippageBps: body.slippageBps }),
+        ...(body.taker !== undefined && { taker: body.taker }),
+      }));
       return;
     }
     if (req.method === 'POST' && url.pathname === '/bridge/action/prepare-transfer-sol') {
@@ -741,6 +809,7 @@ function requiredTier(method: string, pathname: string): AgentTier | null {
     if (pathname === '/bridge/action/swap-order') return 'capped';
     if (pathname === '/bridge/action/swap-execute') return 'full';
     if (pathname === '/bridge/action/swap-quote') return 'capped';
+    if (pathname === '/bridge/action/connector-read-facts') return 'capped';
     if (pathname === '/bridge/solana/latest-blockhash') return 'full';
     if (pathname === '/bridge/solana/send-transaction') return 'full';
     if (pathname === '/bridge/solana/signature-status') return null;

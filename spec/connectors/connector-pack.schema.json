@@ -1,0 +1,292 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://solana-agent-wallet-adapter/spec/connectors/connector-pack.schema.json",
+  "title": "Connector Pack",
+  "description": "Canonical knowledge pack describing what a Solana dapp connector can read, what it can prepare, what user inputs and connector facts it needs before approval, and what the agent must never claim about it. Packs are derived from the runtime catalog at apps/browser-demo/src/connectedDapps.ts and the implemented adapters under packages/mcp-server/src/adapters/.",
+  "type": "object",
+  "required": [
+    "id",
+    "name",
+    "status",
+    "supportedClusters",
+    "readCapabilities",
+    "writeCapabilities",
+    "approvalBoundary",
+    "examples",
+    "mirrorsCanonical"
+  ],
+  "additionalProperties": false,
+  "properties": {
+    "id": {
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9_]*$",
+      "description": "Stable connector id matching ProtocolConnectorId in apps/browser-demo/src/connectedDapps.ts."
+    },
+    "name": {
+      "type": "string",
+      "description": "Human-readable connector name shown to users."
+    },
+    "status": {
+      "type": "string",
+      "enum": ["first_class", "blink_backed", "read_only", "planned", "unsupported"],
+      "description": "Top-level capability state. first_class means an internal adapter owns reads and writes. blink_backed means writes route through Solana Actions/Blinks and reads may come from Dialect or a connector-specific API. read_only means reads work but no writes are exposed. planned means the pack documents a connector that is not yet implemented. unsupported means the agent must refuse all requests."
+    },
+    "aliases": {
+      "type": "array",
+      "items": { "type": "string" },
+      "description": "Common user-language synonyms. Duplicated from connectedDapps.ts to keep packs self-contained; see mirrorsCanonical for the source of truth and update both when one changes."
+    },
+    "supportedClusters": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "string",
+        "enum": ["mainnet-beta", "testnet", "devnet", "localnet"]
+      },
+      "description": "Clusters where the connector is usable. Requests on other clusters must be denied."
+    },
+    "requiredConfig": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["name", "scope"],
+        "additionalProperties": false,
+        "properties": {
+          "name": { "type": "string", "description": "Env var, header, or settings key the connector needs." },
+          "scope": {
+            "type": "string",
+            "enum": ["env", "header", "wallet", "dialect_client_key", "user_setting"],
+            "description": "Where the config lives."
+          },
+          "required": { "type": "boolean", "default": true },
+          "description": { "type": "string" }
+        }
+      },
+      "description": "Configuration the agent or bridge must have before the connector is usable."
+    },
+    "readCapabilities": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["toolName", "source", "implemented", "returns"],
+        "additionalProperties": false,
+        "properties": {
+          "toolName": {
+            "type": "string",
+            "description": "MCP tool or runtime read identifier (e.g., solana_kamino_get_positions, dialect_markets)."
+          },
+          "source": {
+            "type": "string",
+            "enum": ["first-class-adapter", "dialect-markets", "meteora-api", "jupiter-ultra", "none"],
+            "description": "Mirrors readSource in apps/browser-demo/src/connectedDapps.ts."
+          },
+          "implemented": {
+            "type": "boolean",
+            "description": "False when the catalog lists the tool but no adapter code exists yet."
+          },
+          "requiresClientKey": {
+            "type": "boolean",
+            "default": false,
+            "description": "True for Dialect-backed reads that need a configured Dialect client key."
+          },
+          "returns": {
+            "type": "string",
+            "description": "Plain-English description of the facts this read returns."
+          },
+          "facts": {
+            "type": "array",
+            "items": { "type": "string" },
+            "description": "Discrete fact identifiers the read produces (e.g., supplyApy, positionBalance)."
+          }
+        }
+      },
+      "description": "Read paths the agent may use to answer questions or ground a prepared action."
+    },
+    "writeCapabilities": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["actionKind", "executionMode", "prepares"],
+        "additionalProperties": false,
+        "properties": {
+          "actionKind": {
+            "type": "string",
+            "description": "PreparedActionKind in packages/mcp-server/src/preparedActions.ts (e.g., kamino_deposit, swap, blink_action)."
+          },
+          "executionMode": {
+            "type": "string",
+            "enum": ["first_class_adapter", "blink", "none"],
+            "description": "Mirrors actionSource in connectedDapps.ts."
+          },
+          "prepares": {
+            "type": "string",
+            "description": "What the prepare call returns: a manual-approval inbox item, a Blink action URL, etc."
+          },
+          "executesVia": {
+            "type": "string",
+            "description": "MCP tool name that takes the prepared action to wallet signing (e.g., solana_execute_prepared_action)."
+          },
+          "implemented": {
+            "type": "boolean",
+            "default": true,
+            "description": "False when the action kind is declared in the catalog but no adapter code exists."
+          },
+          "userApproves": {
+            "type": "string",
+            "description": "What the user signs in the wallet, in plain English."
+          }
+        }
+      },
+      "description": "Prepare-only write paths. The wallet always signs."
+    },
+    "requiredUserInputs": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["name", "kind", "required", "appliesTo", "prompt"],
+        "additionalProperties": false,
+        "properties": {
+          "name": { "type": "string", "description": "Field name passed to prepare(*)." },
+          "kind": {
+            "type": "string",
+            "enum": ["text", "select", "number"],
+            "description": "Matches inputKind in packages/mcp-server/src/aiPlanner.ts."
+          },
+          "required": { "type": "boolean" },
+          "appliesTo": {
+            "type": "array",
+            "items": { "type": "string" },
+            "description": "Write capability actionKinds this input gates."
+          },
+          "options": {
+            "type": "array",
+            "items": { "type": "string" },
+            "description": "Allowed values for select-kind inputs."
+          },
+          "prompt": {
+            "type": "string",
+            "description": "Exact question the agent asks when the input is missing."
+          }
+        }
+      },
+      "description": "Inputs the agent must collect from the user before preparing an action. Limit to 3 per action to mirror aiPlanner.ts's question cap."
+    },
+    "requiredConnectorFacts": {
+      "type": "array",
+      "items": { "type": "string" },
+      "description": "Facts the agent must read from the connector or wallet before preparing an action. The agent must say a fact is missing instead of inventing it."
+    },
+    "unsupportedRequests": {
+      "type": "array",
+      "items": { "type": "string" },
+      "description": "User requests the agent must refuse. Each entry is a plain-English description of the request and why it is not supported."
+    },
+    "actionPreparationNotes": {
+      "type": "string",
+      "description": "Implementer-facing notes about how prepare() builds the action: which params to set, which facts to attach, ordering rules."
+    },
+    "riskNotes": {
+      "type": "string",
+      "description": "Risk considerations the agent should surface to the user (slippage, withdrawal delays, deposit caps)."
+    },
+    "approvalBoundary": {
+      "type": "object",
+      "required": ["readGated", "writeGated", "blinkBacked", "summary"],
+      "additionalProperties": false,
+      "properties": {
+        "readGated": {
+          "type": "boolean",
+          "description": "True when reads require connector to be enabled or a client key to be configured."
+        },
+        "writeGated": {
+          "type": "boolean",
+          "description": "True when writes require wallet approval. Must always be true for any connector that exposes a write."
+        },
+        "blinkBacked": {
+          "type": "boolean",
+          "description": "True when the write path is a Blink endpoint rather than a first-class adapter."
+        },
+        "summary": {
+          "type": "string",
+          "description": "Phrase id from spec/connectors/safety-phrases.json that describes the boundary."
+        }
+      },
+      "description": "Structured wallet-approval boundary. The wallet always signs; this object records how reads and writes are gated."
+    },
+    "walletApprovalBoundary": {
+      "type": "string",
+      "description": "Optional prose paraphrase of the approval boundary for human readers."
+    },
+    "examples": {
+      "type": "object",
+      "required": ["requests"],
+      "additionalProperties": false,
+      "properties": {
+        "requests": {
+          "type": "array",
+          "minItems": 10,
+          "items": {
+            "type": "object",
+            "required": ["user", "classification"],
+            "additionalProperties": false,
+            "properties": {
+              "user": {
+                "type": "string",
+                "description": "Verbatim user request in user-language (not protocol-language)."
+              },
+              "classification": {
+                "type": "string",
+                "enum": ["read_only_answer", "prepare_approval_action", "proof_only_review", "needs_input", "unsupported"],
+                "description": "How the agent should classify and respond."
+              },
+              "agentResponse": {
+                "type": "string",
+                "description": "Canonical agent reply or summary of the action it would take."
+              },
+              "denialReason": {
+                "type": "string",
+                "description": "Required when classification is unsupported. References a safety phrase id when possible."
+              },
+              "needsInputQuestions": {
+                "type": "array",
+                "items": { "type": "string" },
+                "maxItems": 3,
+                "description": "Required when classification is needs_input. Max 3, matching aiPlanner's question cap."
+              },
+              "writeAction": {
+                "type": "string",
+                "description": "Required when classification is prepare_approval_action. The actionKind that would be prepared."
+              },
+              "readTool": {
+                "type": "string",
+                "description": "Required when classification is read_only_answer or proof_only_review. The read tool that would be called."
+              }
+            }
+          },
+          "description": "At least 10 user-language requests per connector; at least 5 must be denial or needs-input."
+        }
+      },
+      "description": "Natural-language coverage matrix used by evals and prompt designers."
+    },
+    "mirrorsCanonical": {
+      "type": "object",
+      "required": ["file", "entry"],
+      "additionalProperties": false,
+      "properties": {
+        "file": {
+          "type": "string",
+          "description": "Path to the canonical source file the pack mirrors (typically apps/browser-demo/src/connectedDapps.ts)."
+        },
+        "entry": {
+          "type": "string",
+          "description": "Identifier or anchor in the canonical file (typically the connector id)."
+        },
+        "note": {
+          "type": "string",
+          "description": "Optional reminder about the sync rule: update the pack when the canonical file changes."
+        }
+      },
+      "description": "Pointer to the source-of-truth file. Drift between this pack and the canonical file is a bug."
+    }
+  }
+}

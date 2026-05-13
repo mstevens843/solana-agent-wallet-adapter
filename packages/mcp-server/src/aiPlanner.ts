@@ -5,6 +5,7 @@ import {
 } from '@solana-agent-wallet-adapter/workflow';
 
 import { redactSecrets } from './trace.js';
+import { connectorRegistryPromptContext } from './connectorRegistry.js';
 
 export type AiApiFormat = 'openai-compatible' | 'anthropic';
 
@@ -134,6 +135,44 @@ const SHARED_SAFEGUARDS = [
 ];
 const AI_KEY_COPY_PASTE_ARTIFACTS = /[\s\u200B-\u200D\u2060\uFEFF]+/gu;
 
+const ALLOWED_AI_HOSTS: ReadonlySet<string> = new Set([
+  'api.openai.com',
+  'api.anthropic.com',
+  'api.x.ai',
+  'generativelanguage.googleapis.com',
+]);
+
+const SOLANA_PUBKEY_LIKE = /\b[1-9A-HJ-NP-Za-km-z]{32,44}\b/g;
+
+const WELL_KNOWN_PUBKEYS: ReadonlySet<string> = new Set([
+  '11111111111111111111111111111111',
+  'So11111111111111111111111111111111111111112',
+  'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v',
+  'Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB',
+  'TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA',
+  'TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb',
+  'ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL',
+]);
+
+function assertAiBaseUrlAllowed(baseUrl: string): void {
+  if (process.env.AGENTIC_AI_ALLOW_CUSTOM_BASE_URL === '1') return;
+  let host: string;
+  try {
+    host = new URL(baseUrl).hostname.toLowerCase();
+  } catch {
+    throw new ProtocolError(
+      'invalid_request',
+      `AI base URL is not a valid URL. Set AGENTIC_AI_BASE_URL to one of: ${[...ALLOWED_AI_HOSTS].join(', ')}, or set AGENTIC_AI_ALLOW_CUSTOM_BASE_URL=1 to opt in to a custom host.`,
+    );
+  }
+  if (!ALLOWED_AI_HOSTS.has(host)) {
+    throw new ProtocolError(
+      'invalid_request',
+      `AI base URL host "${host}" is not in the allowlist. Allowed: ${[...ALLOWED_AI_HOSTS].join(', ')}. Set AGENTIC_AI_ALLOW_CUSTOM_BASE_URL=1 to override.`,
+    );
+  }
+}
+
 const PLAN_JSON_SCHEMA = {
   type: 'object',
   additionalProperties: false,
@@ -236,10 +275,12 @@ export class BridgeAiPlanner {
     assertAiApiKeyHeaderSafe(apiKey);
     const provider = input.provider?.trim() || 'openai-compatible';
     const apiFormat = normalizeApiFormat(input.apiFormat, provider);
+    const baseUrl = normalizeBaseUrl(input.baseUrl || defaultBaseUrl(apiFormat), apiFormat);
+    assertAiBaseUrlAllowed(baseUrl);
     this.#sessionConfig = {
       provider,
       apiFormat,
-      baseUrl: normalizeBaseUrl(input.baseUrl || defaultBaseUrl(apiFormat), apiFormat),
+      baseUrl,
       model: input.model?.trim() || defaultModel(apiFormat),
       apiKey,
       source: 'session',
@@ -610,10 +651,12 @@ function envConfig(): AiRuntimeConfig | null {
   assertAiApiKeyHeaderSafe(apiKey);
   const provider = process.env.AGENTIC_AI_PROVIDER?.trim() || 'openai-compatible';
   const apiFormat = normalizeApiFormat(process.env.AGENTIC_AI_API_FORMAT, provider);
+  const baseUrl = normalizeBaseUrl(process.env.AGENTIC_AI_BASE_URL || defaultBaseUrl(apiFormat), apiFormat);
+  assertAiBaseUrlAllowed(baseUrl);
   return {
     provider,
     apiFormat,
-    baseUrl: normalizeBaseUrl(process.env.AGENTIC_AI_BASE_URL || defaultBaseUrl(apiFormat), apiFormat),
+    baseUrl,
     model: process.env.AGENTIC_AI_MODEL?.trim() || defaultModel(apiFormat),
     apiKey,
     source: 'env',
@@ -634,7 +677,7 @@ function normalizeRequest(request: AiPlanRequest): Required<AiPlanRequest> {
     template,
     parameters: request.parameters ?? {},
     userNotes: request.userNotes?.trim() || request.prompt?.trim() || template.description,
-    connectorContext: Array.isArray(request.connectorContext) ? request.connectorContext : [],
+    connectorContext: normalizeConnectorContext(request.connectorContext),
   };
 }
 
@@ -644,7 +687,7 @@ function normalizeReviewRequest(request: AiReviewRequest): Required<AiReviewRequ
     instruction: request.instruction?.trim() || 'Review this draft before it is sent for wallet approval. Decide approve or deny.',
     walletAddress: request.walletAddress?.trim() || '',
     cluster: request.cluster?.trim() || '',
-    context: request.context ?? {},
+    context: withDefaultConnectorContext(request.context),
     mode: request.mode === 'multi' ? 'multi' : 'single',
   };
 }
@@ -659,7 +702,28 @@ function normalizeAskRequest(request: AiAskRequest): Required<AiAskRequest> {
     question: question.slice(0, 600),
     walletAddress: request.walletAddress?.trim() || '',
     cluster: request.cluster?.trim() || '',
-    context: request.context ?? {},
+    context: withDefaultConnectorContext(request.context),
+  };
+}
+
+function normalizeConnectorContext(
+  context: Array<Record<string, unknown>> | undefined,
+): Array<Record<string, unknown>> {
+  return Array.isArray(context) && context.length > 0
+    ? context
+    : connectorRegistryPromptContext();
+}
+
+function withDefaultConnectorContext(
+  context: Record<string, unknown> | undefined,
+): Record<string, unknown> {
+  const base = context ?? {};
+  if (Array.isArray(base.protocolConnectors) || Array.isArray(base.connectorRegistry)) {
+    return base;
+  }
+  return {
+    ...base,
+    protocolConnectors: connectorRegistryPromptContext(),
   };
 }
 
@@ -668,7 +732,7 @@ function aiAskMessages(request: Required<AiAskRequest>): Array<{ role: 'system' 
     {
       role: 'system',
       content:
-        'You answer the user\'s question about a Solana wallet action plan. Be concise: 1 to 3 sentences, plain English. Cite plan fields you reference by name (e.g., recipient, amount, slippageBps). Never claim anything is signed, submitted, guaranteed safe, or already approved. Never request private keys. If the question cannot be answered from the plan, say so plainly.',
+        'You answer the user\'s question about a Solana wallet action plan. Be concise: 1 to 4 sentences, plain English. Use plan fields, context.facts, executionPath, protocolConnectors, and connector read/write capability notes when present. Cite plan fields you reference by name (e.g., recipient, amount, slippageBps) or connector facts by label. Never claim anything is signed, submitted, guaranteed safe, or already approved. Never request private keys. If the question cannot be answered from the plan or facts, say so plainly and state what fact is missing.',
     },
     {
       role: 'user',
@@ -725,7 +789,7 @@ function aiMessages(request: Required<AiPlanRequest>): Array<{ role: 'system' | 
     {
       role: 'system',
       content:
-        'You convert Solana wallet user requests into structured approval plans. Return only JSON with string fields intent, route, risk, approval, and safeguards as an array of short strings. When parameters include `inputTokenLabel`, `outputTokenLabel`, or `tokenLabel`, ALWAYS use those resolved symbols (for example "POPCAT") in the prose fields (intent, route, risk, approval, safeguards). Never substitute a different ticker for one provided in the parameter labels, and never invent a symbol when only a mint address is present. If a label is missing, refer to the token by its short mint form (first 4 + last 4 characters). Never claim a transaction is signed, submitted, approved, or safe. Never request private keys. The wallet user must approve separately.',
+        'You convert Solana wallet user requests into structured approval plans. Return only JSON with string fields intent, route, risk, approval, and safeguards as an array of short strings. Use enabled protocol connector context to explain which reads can inform the plan and which write actions can only prepare wallet approval work. When parameters include `inputTokenLabel`, `outputTokenLabel`, or `tokenLabel`, ALWAYS use those resolved symbols (for example "POPCAT") in the prose fields (intent, route, risk, approval, safeguards). Never substitute a different ticker for one provided in the parameter labels, and never invent a symbol when only a mint address is present. If a label is missing, refer to the token by its short mint form (first 4 + last 4 characters). Never claim a transaction is signed, submitted, approved, or safe. Never request private keys. The wallet user must approve separately.',
     },
     {
       role: 'user',
@@ -744,7 +808,7 @@ function aiMessages(request: Required<AiPlanRequest>): Array<{ role: 'system' | 
 
 function aiReviewMessages(request: Required<AiReviewRequest>): Array<{ role: 'system' | 'user'; content: string }> {
   const multi = request.mode === 'multi';
-  const baseSystem = 'You review a Solana wallet action draft before it is sent for wallet approval. Return only JSON with: decision ("approve", "deny", or "needs_input"); reason as one or two concise sentences; summary as one short sentence; evidence as an object. When you cannot decide because user intent is genuinely ambiguous, return decision "needs_input" plus a "questions" array with 1-3 short, specific questions answerable in under 20 words. Each question is an object with id (short slug), prompt (the question text), inputKind ("text" | "select" | "number"), and required (true/false). Use "needs_input" only when the missing information is something the user must supply, such as a missing amount, missing token, or missing recipient. Do not use "needs_input" for facts that are present in the plan, context.facts, context.executionPath, or facts you can infer. For browser swap drafts, Jupiter is the execution aggregator unless context says otherwise; do not ask the user which DEX/protocol will execute it. If a token mint address is present, review that mint address; do not ask the user what token it is or whether they verified it. If token metadata is missing, return approve or deny with a warning, not needs_input. If the context includes "userPolicies", treat each as a soft rule the user wants you to honor: factor them into your decision and cite the relevant policy id in evidence.policiesApplied when one influences the outcome. Be flexible: use the user instruction and available facts, not a fixed checklist. Never claim anything is signed, submitted, guaranteed safe, or already approved. Never request private keys. The wallet user must still approve separately.';
+  const baseSystem = 'You review a Solana wallet action draft before it is sent for wallet approval. Return only JSON with: decision ("approve", "deny", or "needs_input"); reason as one or two concise sentences; summary as one short sentence; evidence as an object. Put flexible user-facing findings in evidence.findings as an array of {label,value,tone}, where tone is good, warn, neutral, or fail. Findings must match the user request and connector facts; do not force route/quote/slippage rows when they do not apply. When you cannot decide because user intent is genuinely ambiguous, return decision "needs_input" plus a "questions" array with 1-3 short, specific questions answerable in under 20 words. Use "needs_input" only when the missing information is something the user must supply, such as a missing amount, missing token, or missing recipient. Do not use "needs_input" for facts that are present in the plan, context.facts, context.executionPath, or facts you can infer. For browser swap or recurring-swap drafts, Jupiter is the execution aggregator unless context says otherwise; do not ask the user which DEX/protocol will execute it. If a token mint address is present, review that mint address; do not ask the user what token it is or whether they verified it. If token metadata is missing, return approve or deny with a warning, not needs_input. If context includes protocolConnectors or connector facts, use reads as evidence and treat writes as prepare-only wallet-approval actions. If the context includes "userPolicies", treat each as a soft rule the user wants you to honor: factor them into your decision and cite the relevant policy id in evidence.policiesApplied when one influences the outcome. Be flexible: use the user instruction and available facts, not a fixed checklist. Never claim anything is signed, submitted, guaranteed safe, or already approved. Never request private keys. The wallet user must still approve separately.';
   const multiSystem = multi
     ? ' Additionally, fill the "reviewers" array with one entry per role (risk, quote, policy, protocol). Each reviewer evaluates the draft from their perspective independently and reports their own decision ("approve", "deny", or "needs_input") and a 1-sentence reason. The top-level decision should reflect the most severe verdict: any "deny" > any "needs_input" > all "approve". Risk inspects authority changes, unknown programs, and dangerous semantics. Quote checks slippage, output amount, and route freshness for swaps. Policy applies the user policies from context.userPolicies. Protocol identifies the protocol/aggregator and flags unknowns. Skip reviewers whose role does not apply (e.g., no quote role on a read-only plan).'
     : '';
@@ -824,11 +888,12 @@ function normalizeStrictAiReview(
 
 function aiPlanFromParsed(parsed: Record<string, unknown>, request: Required<AiPlanRequest>): AiPlan {
   const parameters = request.parameters;
+  const scrubbed = scrubPlanProse(parsed, parameters);
   const plan: AiPlan = {
-    intent: stringOr(parsed.intent, `${request.template.title}: ${request.prompt}`),
-    route: stringOr(parsed.route, `Draft ${request.template.actionType} request and show route details before wallet approval.`),
-    risk: stringOr(parsed.risk, `Risk level ${request.template.risk}. Verify all visible fields before signing.`),
-    approval: stringOr(parsed.approval, 'Wallet approval remains a separate explicit user action.'),
+    intent: stringOr(scrubbed.parsed.intent, `${request.template.title}: ${request.prompt}`),
+    route: stringOr(scrubbed.parsed.route, `Draft ${request.template.actionType} request and show route details before wallet approval.`),
+    risk: stringOr(scrubbed.parsed.risk, `Risk level ${request.template.risk}. Verify all visible fields before signing.`),
+    approval: stringOr(scrubbed.parsed.approval, 'Wallet approval remains a separate explicit user action.'),
     source: 'ai',
     category: request.template.category,
     actionType: request.template.actionType,
@@ -838,9 +903,42 @@ function aiPlanFromParsed(parsed: Record<string, unknown>, request: Required<AiP
     fields: Object.entries(parameters)
       .filter(([, value]) => value.trim().length > 0)
       .map(([key, value]) => ({ label: titleCase(key), value })),
-    safeguards: normalizeSafeguards(parsed.safeguards),
+    safeguards: normalizeSafeguards(scrubbed.parsed.safeguards, scrubbed.warning),
   };
   return withGuardrailReport(plan, request);
+}
+
+function scrubPlanProse(
+  parsed: Record<string, unknown>,
+  parameters: Record<string, string>,
+): { parsed: Record<string, unknown>; warning: string | null } {
+  const allowed = new Set<string>();
+  for (const value of Object.values(parameters)) {
+    if (typeof value === 'string' && value.trim()) {
+      allowed.add(value.trim());
+    }
+  }
+  const proseFields = ['intent', 'route', 'risk', 'approval'] as const;
+  for (const field of proseFields) {
+    const value = parsed[field];
+    if (typeof value !== 'string') continue;
+    const matches = value.match(SOLANA_PUBKEY_LIKE);
+    if (!matches) continue;
+    for (const candidate of matches) {
+      if (allowed.has(candidate)) continue;
+      if (WELL_KNOWN_PUBKEYS.has(candidate)) continue;
+      const stripped: Record<string, unknown> = { ...parsed };
+      for (const drop of proseFields) {
+        delete stripped[drop];
+      }
+      return {
+        parsed: stripped,
+        warning:
+          'AI prose referenced an address that was not part of the user request. Using the deterministic template instead. Re-check the recipient before approving.',
+      };
+    }
+  }
+  return { parsed, warning: null };
 }
 
 function aiReviewFromParsed(parsed: Record<string, unknown>, request: Required<AiReviewRequest>): AiReviewResult {
@@ -1085,10 +1183,14 @@ function compactReviewText(value: string, maxLength: number): string {
   return `${normalized.slice(0, maxLength - 1).trimEnd()}...`;
 }
 
-function normalizeSafeguards(value: unknown): string[] {
-  if (!Array.isArray(value)) return SHARED_SAFEGUARDS;
-  const entries = value.filter((entry): entry is string => typeof entry === 'string' && entry.trim().length > 0);
-  return [...SHARED_SAFEGUARDS, ...entries.slice(0, 8)];
+function normalizeSafeguards(value: unknown, extraWarning?: string | null): string[] {
+  const entries = Array.isArray(value)
+    ? value
+        .filter((entry): entry is string => typeof entry === 'string' && entry.trim().length > 0)
+        .slice(0, 8)
+    : [];
+  const prefix = extraWarning ? [extraWarning] : [];
+  return [...prefix, ...SHARED_SAFEGUARDS, ...entries];
 }
 
 function normalizeApiFormat(value: string | undefined, provider: string): AiApiFormat {
@@ -1298,12 +1400,12 @@ function extractModelText(payload: unknown): string {
 
 function parsePlanJson(content: string): Record<string, unknown> {
   const trimmed = content.trim();
-  const json = trimmed.startsWith('{')
-    ? trimmed
-    : trimmed.slice(Math.max(0, trimmed.indexOf('{')), trimmed.lastIndexOf('}') + 1);
+  if (!trimmed) return {};
   try {
-    const parsed = JSON.parse(json);
-    return parsed && typeof parsed === 'object' ? parsed as Record<string, unknown> : {};
+    const parsed = JSON.parse(trimmed);
+    return parsed && typeof parsed === 'object' && !Array.isArray(parsed)
+      ? (parsed as Record<string, unknown>)
+      : {};
   } catch {
     return {};
   }

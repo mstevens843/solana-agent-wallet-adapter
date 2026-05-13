@@ -78,10 +78,8 @@ import {
   trackWalletConnectSuccess,
 } from './analytics.js';
 import {
-  evidenceEntryTone,
-  isTokenMismatchEvidenceKey,
+  reviewEvidenceRows,
   swapTokenTextMismatchWarning,
-  tokenMismatchEvidenceRows,
   type AgentEvidenceTone,
 } from './agentReviewPresentation.js';
 import {
@@ -107,6 +105,8 @@ import {
   generateSessionAiAsk,
   generateSessionAiPlan,
   generateSessionAiReview,
+  inferTemplateIdForPrompt,
+  inferredTemplateParameters,
   planWithStructuredSwapText,
   redactSecrets,
   templateById,
@@ -354,7 +354,7 @@ interface AgentReviewAttempt {
 
 interface AgentReviewFact<TDetail = Record<string, unknown>> {
   state: 'checked' | 'missing' | 'warn' | 'ok' | 'fail';
-  source: 'deterministic' | 'ai';
+  source: 'deterministic' | 'ai' | 'connector';
   checkedAt: string;
   message?: string;
   detail?: TDetail;
@@ -371,6 +371,7 @@ interface AgentReviewFactSet {
   tokenMint?: AgentReviewFact;
   recipient?: AgentReviewFact;
   limits?: AgentReviewFact;
+  schedule?: AgentReviewFact;
 }
 
 interface AgentAskExchange {
@@ -386,6 +387,14 @@ interface AgentAskExchange {
   model?: string;
 }
 
+interface AgentReviewCheck {
+  label: string;
+  value: string;
+  tone?: AgentEvidenceTone;
+  source?: 'deterministic' | 'ai' | 'connector' | 'user';
+  detail?: Record<string, unknown>;
+}
+
 interface AgentPlanReviewState {
   schemaVersion?: typeof AGENT_REVIEW_SCHEMA_VERSION;
   required: boolean;
@@ -398,6 +407,7 @@ interface AgentPlanReviewState {
   model?: string;
   source?: AiSettings['mode'];
   evidence?: Record<string, unknown>;
+  checks?: AgentReviewCheck[];
   questions?: AgentReviewQuestion[];
   answers?: Record<string, string>;
   staleness?: AgentReviewStaleness;
@@ -963,6 +973,8 @@ interface RecurringPayment {
   lifetimeSpend?: LifetimeSpend;
   nextRuns?: string[];
   note?: string;
+  agentReview?: AgentPlanReviewState;
+  metadata?: JsonObject;
   createdAt: string;
   updatedAt: string;
   nextDueAt?: string;
@@ -5219,6 +5231,14 @@ function connectedDappRow(adapter: ConnectedDappAdapter): string {
       return `<span class="connected-dapp-capability-chip" title="${escapeHtml(fullLabel)}">${escapeHtml(compactConnectorCapabilityLabel(capability))}</span>`;
     })
     .join('');
+  const capabilityRows = connectorCapabilitySummaryRows(adapter)
+    .map((row) => `
+      <div class="connected-dapp-capability-summary-row ${row.tone ?? ''}" title="${escapeHtml(row.title ?? row.value)}">
+        <dt>${escapeHtml(row.label)}</dt>
+        <dd>${escapeHtml(row.value)}</dd>
+      </div>
+    `)
+    .join('');
   const toggleLabel = enabled ? 'Disconnect' : 'Connect';
   const toggleTitle = clusterOk
     ? enabled
@@ -5241,6 +5261,9 @@ function connectedDappRow(adapter: ConnectedDappAdapter): string {
       </div>
       <div class="connected-dapp-capability-chips">${capabilityChips}</div>
       <div class="connected-dapp-action-chips">${actionChips}</div>
+      <dl class="connected-dapp-capability-summary" aria-label="${escapeHtml(adapter.name)} connector capabilities">
+        ${capabilityRows}
+      </dl>
       <div class="connected-dapp-row-actions">
         <button
           type="button"
@@ -5254,6 +5277,53 @@ function connectedDappRow(adapter: ConnectedDappAdapter): string {
       </div>
     </article>
   `;
+}
+
+function connectorCapabilitySummaryRows(adapter: ConnectedDappAdapter): Array<{ label: string; value: string; title?: string; tone?: 'ready' | 'warn' | 'blocked' }> {
+  const readLabels = [
+    connectorHasCapability(adapter, 'read_positions') ? 'positions' : '',
+    connectorHasCapability(adapter, 'read_rewards') ? 'rewards' : '',
+    connectorHasCapability(adapter, 'read_markets') ? 'markets' : '',
+  ].filter(Boolean);
+  const readReady = !adapter.requiresClientKey || Boolean(state.protocolConnectorPrefs.dialectClientKey.trim());
+  return [
+    {
+      label: 'Reads',
+      value: readLabels.length ? readLabels.join(', ') : 'No read API',
+      tone: readLabels.length ? readReady ? 'ready' : 'warn' : 'blocked',
+      title: readLabels.length
+        ? readReady
+          ? `${adapter.name} can provide ${readLabels.join(', ')} facts when enabled.`
+          : `${adapter.name} reads need a Dialect client key before positions, rewards, or markets are available.`
+        : `${adapter.name} does not expose read APIs in this catalog.`,
+    },
+    {
+      label: 'Actions',
+      value: connectorActionSourceSummary(adapter),
+      tone: adapter.actionSource ? 'ready' : 'blocked',
+      title: adapter.actionSource
+        ? `${adapter.name} can prepare ${adapter.actionSource === 'first-class-adapter' ? 'first-class' : 'Blink-backed'} wallet approval work.`
+        : `${adapter.name} has no executable action path in this catalog.`,
+    },
+    {
+      label: 'Client key',
+      value: adapter.requiresClientKey
+        ? readReady ? 'Configured for reads' : 'Needed for reads'
+        : 'Not needed',
+      tone: adapter.requiresClientKey ? readReady ? 'ready' : 'warn' : 'ready',
+    },
+    {
+      label: 'Boundary',
+      value: 'Prepare only; wallet approves separately',
+      tone: 'ready',
+    },
+  ];
+}
+
+function connectorActionSourceSummary(adapter: ConnectedDappAdapter): string {
+  if (adapter.actionSource === 'first-class-adapter') return `First-class: ${adapter.supportedActions.slice(0, 3).join(', ')}`;
+  if (adapter.actionSource === 'blink') return `Blink-backed: ${adapter.supportedActions.slice(0, 3).join(', ')}`;
+  return 'Unavailable';
 }
 
 function protocolConnectorSelectOptions(connectors: ProtocolConnector[]): SelectPickerOption[] {
@@ -8278,6 +8348,7 @@ function agentReviewButton(record: GeneratedPlanRecord): string {
 function generatedPlanAgentReviewStrip(record: GeneratedPlanRecord): string {
   const review = record.agentReview;
   if (!review?.required) return '';
+  const stale = isAgentReviewStale(record);
   const label = agentReviewStripLabel(review.status);
   const detail = review.checkedAt
     ? `${agentReviewSourceLabel(review)} - ${formatDateTime(review.checkedAt)}`
@@ -8295,10 +8366,12 @@ function generatedPlanAgentReviewStrip(record: GeneratedPlanRecord): string {
         <em>${escapeHtml(detail)}</em>
         ${badge}
         ${watchBadge}
+        ${stale ? '<span class="agent-review-stale-pill" title="The draft changed after this review.">Stale</span>' : ''}
       </div>
       ${agentReviewBlockingReasonPanel(review) || `<p>${escapeHtml(review.reason || 'Agent review is available for context. Sending for approval is still your decision.')}</p>`}
+      ${stale ? '<p class="accent-note">This review is stale because the draft changed. Ask the agent again before relying on the decision.</p>' : ''}
       ${review.status === 'needs_input' ? agentReviewQuestionsForm(record) : ''}
-      ${agentEvidenceDrawer(review)}
+      ${agentEvidenceDrawer(review, { stale })}
       ${agentDenialActions(record)}
       ${agentAskAnythingPanel(record)}
     </section>
@@ -8396,8 +8469,11 @@ function agentDenialActions(record: GeneratedPlanRecord): string {
   `;
 }
 
-function agentEvidenceDrawer(review: AgentPlanReviewState): string {
-  const rows = agentEvidenceRows(review);
+function agentEvidenceDrawer(
+  review: AgentPlanReviewState,
+  opts: { stale?: boolean } = {},
+): string {
+  const rows = agentEvidenceRows(review, opts);
   if (!rows.length) return '';
   const statusTone = review.status === 'approved'
     ? 'pass'
@@ -8413,7 +8489,7 @@ function agentEvidenceDrawer(review: AgentPlanReviewState): string {
     <details class="agent-evidence-drawer">
       <summary>
         <span class="agent-evidence-summary-left">
-          <span class="agent-evidence-summary-label">What the agent checked (${rows.length})</span>
+          <span class="agent-evidence-summary-label">Agent findings (${rows.length})</span>
           <span class="agent-evidence-summary-state ${statusTone}">${escapeHtml(statusLabel)}</span>
         </span>
       </summary>
@@ -8429,115 +8505,14 @@ function agentEvidenceDrawer(review: AgentPlanReviewState): string {
   `;
 }
 
-function agentEvidenceRows(review: AgentPlanReviewState): Array<{ label: string; value: string; tone?: AgentEvidenceTone }> {
-  const rows: Array<{ label: string; value: string; tone?: AgentEvidenceTone }> = [];
-  rows.push(...tokenMismatchEvidenceRows(review.evidence));
-  const facts = review.facts;
-  if (facts) {
-    const factSlots: Array<{ key: keyof AgentReviewFactSet; label: string }> = [
-      { key: 'route', label: 'Route' },
-      { key: 'quote', label: 'Quote' },
-      { key: 'protocol', label: 'Protocol' },
-      { key: 'simulation', label: 'Simulation' },
-      { key: 'tokenMint', label: 'Token mint' },
-      { key: 'recipient', label: 'Recipient' },
-      { key: 'policy', label: 'Policy' },
-      { key: 'limits', label: 'Limits' },
-    ];
-    for (const { key, label } of factSlots) {
-      const fact = facts[key];
-      if (!fact) continue;
-      const tone = agentEvidenceFactTone(fact.state);
-      const value = fact.message?.trim() || agentEvidenceFactStateLabel(fact.state);
-      rows.push({ label, value, tone });
-    }
-  }
-  if (review.policies?.length) {
-    for (const snapshot of review.policies) {
-      const tone: 'good' | 'warn' | 'neutral' | 'fail' = snapshot.outcome === 'pass'
-        ? 'good'
-        : snapshot.outcome === 'warn'
-          ? 'warn'
-          : snapshot.outcome === 'block'
-            ? 'fail'
-            : 'neutral';
-      rows.push({ label: `Policy: ${snapshot.label}`, value: snapshot.ruleText, tone });
-    }
-  }
-  if (review.reviewers?.length) {
-    for (const reviewer of review.reviewers) {
-      const tone: 'good' | 'warn' | 'neutral' | 'fail' = reviewer.decision === 'approve'
-        ? 'good'
-        : reviewer.decision === 'needs_input'
-          ? 'warn'
-          : 'fail';
-      const decisionLabel = reviewer.decision === 'approve'
-        ? 'Approved'
-        : reviewer.decision === 'needs_input'
-          ? 'Needs input'
-          : 'Denied';
-      rows.push({
-        label: `${reviewer.label}: ${decisionLabel}`,
-        value: reviewer.reason,
-        tone,
-      });
-    }
-  }
-  const evidence = review.evidence;
-  if (isJsonObject(evidence)) {
-    const seenKeys = new Set(rows.map((row) => row.label.toLowerCase()));
-    for (const [key, raw] of Object.entries(evidence)) {
-      if (raw === undefined || raw === null) continue;
-      if (isTokenMismatchEvidenceKey(key)) continue;
-      const label = humanizeEvidenceKey(key);
-      if (seenKeys.has(label.toLowerCase())) continue;
-      const value = typeof raw === 'string'
-        ? raw
-        : typeof raw === 'number' || typeof raw === 'boolean'
-          ? String(raw)
-          : stableJson(raw as JsonValue);
-      rows.push({ label, value, tone: evidenceEntryTone(label, value) });
-    }
-  }
-  return rows;
-}
-
-function agentEvidenceFactTone(state: AgentReviewFact['state']): 'good' | 'warn' | 'neutral' | 'fail' {
-  switch (state) {
-    case 'ok':
-    case 'checked':
-      return 'good';
-    case 'warn':
-      return 'warn';
-    case 'fail':
-      return 'fail';
-    case 'missing':
-    default:
-      return 'neutral';
-  }
-}
-
-function agentEvidenceFactStateLabel(state: AgentReviewFact['state']): string {
-  switch (state) {
-    case 'ok':
-      return 'OK';
-    case 'checked':
-      return 'Checked';
-    case 'warn':
-      return 'Warning noted';
-    case 'fail':
-      return 'Failed';
-    case 'missing':
-    default:
-      return 'Not checked';
-  }
-}
-
-function humanizeEvidenceKey(key: string): string {
-  const trimmed = key.trim();
-  if (!trimmed) return key;
-  const spaced = trimmed.replace(/[_-]+/g, ' ').replace(/([a-z])([A-Z])/g, '$1 $2');
-  return spaced.charAt(0).toUpperCase() + spaced.slice(1);
+function agentEvidenceRows(
+  review: AgentPlanReviewState,
+  opts: { stale?: boolean } = {},
+): Array<{ label: string; value: string; tone?: AgentEvidenceTone }> {
+  return reviewEvidenceRows(review, {
+    stale: opts.stale,
+    stringify: stableJson,
+  });
 }
 
 function agentReviewStripLabel(status: AgentPlanReviewStatus): string {
@@ -12204,13 +12179,18 @@ function bind(): void {
   document.querySelector<HTMLButtonElement>('#sendTx')?.addEventListener('click', runSignAndSendTransaction);
   document.querySelector<HTMLButtonElement>('#generatePlan')?.addEventListener('click', runGenerateAgentPlan);
   document.querySelector<HTMLButtonElement>('#generateAiPlan')?.addEventListener('click', runGenerateAiPlan);
-  document.querySelector<HTMLInputElement>('[data-ask-agent-after-draft]')?.addEventListener('change', (event) => {
-    state.askAgentAfterDraft = (event.currentTarget as HTMLInputElement).checked;
-    render();
+  document.querySelectorAll<HTMLInputElement>('[data-ask-agent-after-draft]').forEach((input) => {
+    input.addEventListener('change', (event) => {
+      state.askAgentAfterDraft = (event.currentTarget as HTMLInputElement).checked;
+      render();
+    });
   });
   document.querySelector<HTMLButtonElement>('#signAgentPlan')?.addEventListener('click', runSignAgentPlan);
   document.querySelector<HTMLButtonElement>('#queueAgentPlan')?.addEventListener('click', runQueueAgentPlan);
   document.querySelector<HTMLButtonElement>('#refreshCompletedPlans')?.addEventListener('click', runRefreshInbox);
+  document.querySelector<HTMLButtonElement>('#draftRecurringWithAi')?.addEventListener('click', () => {
+    void runDraftRecurringWithAi();
+  });
   document.querySelector<HTMLButtonElement>('#toggleArchivedGeneratedPlans')?.addEventListener('click', () => {
     state.showArchivedGeneratedPlans = !state.showArchivedGeneratedPlans;
     state.listPages.review = 1;
@@ -14224,8 +14204,8 @@ async function runGenerateAiPlan(): Promise<void> {
     render();
     return;
   }
-  const template = selectedTemplate();
-  trackGenerateAiPlan(template.id, state.aiSettings.mode, state.aiSettings.provider);
+  const selectedTemplateForUi = selectedTemplate();
+  trackGenerateAiPlan(selectedTemplateForUi.id, state.aiSettings.mode, state.aiSettings.provider);
   state.activeOperation = 'generate-ai-plan';
   const toastId = pushToast('pending', 'Creating AI plan', 'Preparing through your configured AI Planner.');
   let reviewAfterDraftId = '';
@@ -14233,9 +14213,19 @@ async function runGenerateAiPlan(): Promise<void> {
     await run(
       'ai',
       async () => {
-        const parameters = readTemplateFields(template);
+        const selectedParameters = readTemplateFields(selectedTemplateForUi);
         const userNotes = state.agentPrompt.trim();
-        assertValidTemplatePlanInput(template, parameters, userNotes);
+        const inferredTemplateId = inferTemplateIdForPrompt(userNotes, selectedTemplateForUi.id);
+        const template = templateById(inferredTemplateId);
+        const inferredFromPrompt = template.id !== selectedTemplateForUi.id;
+        const parameters = inferredFromPrompt
+          ? inferredTemplateParameters(template, userNotes, selectedParameters)
+          : selectedParameters;
+        if (inferredFromPrompt) {
+          state.templateFieldErrors = {};
+        } else {
+          assertValidTemplatePlanInput(template, parameters, userNotes);
+        }
         const effectiveUserNotes = injectHouseRules(userNotes);
         state.oneTimePlanView = 'review';
         render();
@@ -14253,6 +14243,7 @@ async function runGenerateAiPlan(): Promise<void> {
           parameters,
           connectorContext: protocolConnectorPlannerContext(state.connectedDapps, state.cluster, {
             dialectClientKeyConfigured: Boolean(state.protocolConnectorPrefs.dialectClientKey.trim()),
+            includeDisabled: true,
           }),
         };
         state.aiDiagnostics = [
@@ -14570,11 +14561,15 @@ async function runAskAgentAnything(planId: string, question: string): Promise<vo
       amount: planAmountSummary(record.plan),
       risk: record.plan.risk,
       approval: record.plan.approval,
+      protocolConnectors: protocolConnectorPlannerContext(state.connectedDapps, state.cluster, {
+        dialectClientKeyConfigured: Boolean(state.protocolConnectorPrefs.dialectClientKey.trim()),
+        includeDisabled: true,
+      }),
       ...(factsForContext ? { facts: factsForContext } : {}),
-      ...(record.plan.actionType === 'swap'
+      ...(planBehavesLikeSwap(record.plan)
         ? {
             executionPath: {
-              kind: 'swap',
+              kind: record.plan.actionType === 'recurring_payment' ? 'recurring_swap' : 'swap',
               aggregator: 'Jupiter',
               routeSelection: 'Jupiter selects the executable route when the quote/order is fetched.',
               userInputRequired: 'Do not ask the user which DEX/protocol to use unless their intent explicitly requires a specific venue.',
@@ -15791,11 +15786,15 @@ function agentReviewRequest(
       amount: planAmountSummary(reviewPlan),
       risk: reviewPlan.risk,
       approval: reviewPlan.approval,
+      protocolConnectors: protocolConnectorPlannerContext(state.connectedDapps, state.cluster, {
+        dialectClientKeyConfigured: Boolean(state.protocolConnectorPrefs.dialectClientKey.trim()),
+        includeDisabled: true,
+      }),
       ...(factsForContext ? { facts: factsForContext } : {}),
-      ...(reviewPlan.actionType === 'swap'
+      ...(planBehavesLikeSwap(reviewPlan)
         ? {
             executionPath: {
-              kind: 'swap',
+              kind: reviewPlan.actionType === 'recurring_payment' ? 'recurring_swap' : 'swap',
               aggregator: 'Jupiter',
               routeSelection: 'Jupiter selects the executable route when the quote/order is fetched.',
               userInputRequired: 'Do not ask the user which DEX/protocol to use unless their intent explicitly requires a specific venue.',
@@ -15837,6 +15836,7 @@ function agentReviewStateFromResult(
   });
   const carriedAnswers = result.decision === 'needs_input' ? previous?.answers : undefined;
   const fingerprint = reviewedPlan ? planFingerprint(reviewedPlan) : previous?.reviewedPlanFingerprint;
+  const checks = agentReviewChecksFromEvidence(result.evidence);
   return {
     schemaVersion: AGENT_REVIEW_SCHEMA_VERSION,
     required: true,
@@ -15849,6 +15849,7 @@ function agentReviewStateFromResult(
     model: agentReviewModelLabel(),
     source: state.aiSettings.mode,
     evidence: result.evidence,
+    ...(checks?.length ? { checks } : {}),
     ...(result.questions?.length ? { questions: result.questions } : {}),
     ...(carriedAnswers ? { answers: carriedAnswers } : {}),
     ...(history.length ? { history } : {}),
@@ -15858,12 +15859,25 @@ function agentReviewStateFromResult(
   };
 }
 
+function agentReviewChecksFromEvidence(evidence: Record<string, unknown> | undefined): AgentReviewCheck[] | undefined {
+  if (!isJsonObject(evidence)) return undefined;
+  const raw = Array.isArray(evidence.checks)
+    ? evidence.checks
+    : Array.isArray(evidence.findings)
+      ? evidence.findings
+      : Array.isArray(evidence.evidenceRows)
+        ? evidence.evidenceRows
+        : undefined;
+  if (!raw) return undefined;
+  return parseAgentReviewChecks(raw);
+}
+
 function normalizeAgentReviewResultForFacts(
   result: AgentPlanReviewResult,
   plan: AgentPlan,
   facts: AgentReviewFactSet,
 ): AgentPlanReviewResult {
-  if (result.decision !== 'needs_input' || !result.questions?.length || plan.actionType !== 'swap') {
+  if (result.decision !== 'needs_input' || !result.questions?.length || !planBehavesLikeSwap(plan)) {
     return result;
   }
   const unnecessaryQuestions = result.questions.filter((question) => isSwapQuestionAnsweredByFacts(question, facts));
@@ -15890,9 +15904,15 @@ function normalizeAgentReviewResultForFacts(
       ...result.evidence,
       needsInputConverted: true,
       convertedQuestionIds: unnecessaryQuestions.map((question) => question.id),
-      conversionReason: 'Questions were answerable from deterministic swap facts, market lookup, or app execution defaults.',
+      conversionReason: 'Questions were answerable from deterministic action facts, market lookup, or app execution defaults.',
     },
   };
+}
+
+function planBehavesLikeSwap(plan: AgentPlan): boolean {
+  return plan.actionType === 'swap' ||
+    plan.parameters.actionKind === 'swap' ||
+    Boolean(plan.parameters.outputToken);
 }
 
 function isSwapQuestionAnsweredByFacts(question: AgentReviewQuestion, facts: AgentReviewFactSet): boolean {
@@ -16041,7 +16061,7 @@ function mergeReviewFacts(
   const aiFacts = aiEvidence?.facts;
   if (!aiFacts || typeof aiFacts !== 'object' || Array.isArray(aiFacts)) return merged;
   const checkedAt = new Date().toISOString();
-  const slots: Array<keyof AgentReviewFactSet> = ['quote', 'route', 'policy', 'simulation', 'protocol', 'tokenMint', 'recipient', 'limits'];
+  const slots: Array<keyof AgentReviewFactSet> = ['quote', 'route', 'policy', 'simulation', 'protocol', 'protocolConnector', 'blinkAction', 'tokenMint', 'recipient', 'limits', 'schedule'];
   for (const slot of slots) {
     const existing = merged[slot];
     if (existing && existing.source === 'deterministic' && existing.state !== 'missing') {
@@ -16125,7 +16145,7 @@ function tokenFactsForPlan(plan: AgentPlan, checkedAt: string): AgentReviewFact 
 }
 
 function planTokenCandidates(plan: AgentPlan): PlanTokenCandidate[] {
-  const entries: Array<{ role: PlanTokenCandidate['role']; value: string }> = plan.actionType === 'swap'
+  const entries: Array<{ role: PlanTokenCandidate['role']; value: string }> = planBehavesLikeSwap(plan)
     ? [
         { role: 'input', value: planParameter(plan, ['inputToken']) },
         { role: 'output', value: planParameter(plan, ['outputToken']) },
@@ -16429,7 +16449,33 @@ function gatherDeterministicFacts(record: GeneratedPlanRecord): AgentReviewFactS
     };
   }
 
-  if (plan.actionType === 'swap') {
+  if (plan.actionType === 'recurring_payment') {
+    const cadence = planParameter(plan, ['cadence']).trim() || 'weekly';
+    const scheduleBits = [
+      cadence,
+      planParameter(plan, ['localTime']).trim(),
+      planParameter(plan, ['dayOfWeek']).trim() ? `dayOfWeek ${planParameter(plan, ['dayOfWeek']).trim()}` : '',
+      planParameter(plan, ['dayOfMonth']).trim() ? `dayOfMonth ${planParameter(plan, ['dayOfMonth']).trim()}` : '',
+      planParameter(plan, ['maxOccurrences']).trim() ? `max ${planParameter(plan, ['maxOccurrences']).trim()} occurrences` : '',
+      planParameter(plan, ['expiresAt']).trim() ? `expires ${planParameter(plan, ['expiresAt']).trim()}` : '',
+    ].filter(Boolean);
+    facts.schedule = {
+      state: 'checked',
+      source: 'deterministic',
+      checkedAt,
+      message: `Repeat schedule: ${scheduleBits.join(', ') || 'schedule fields present'}. Each due occurrence requires wallet approval.`,
+      detail: {
+        cadence,
+        localTime: planParameter(plan, ['localTime']),
+        dayOfWeek: planParameter(plan, ['dayOfWeek']),
+        dayOfMonth: planParameter(plan, ['dayOfMonth']),
+        maxOccurrences: planParameter(plan, ['maxOccurrences']),
+        expiresAt: planParameter(plan, ['expiresAt']),
+      },
+    };
+  }
+
+  if (planBehavesLikeSwap(plan)) {
     const inputToken = planParameter(plan, ['inputToken']).trim();
     const outputToken = planParameter(plan, ['outputToken']).trim();
     const routeLabel = [resolveTokenDisplay(inputToken) ?? inputToken, resolveTokenDisplay(outputToken) ?? outputToken]
@@ -17600,6 +17646,8 @@ function cloudRecurringScheduleToPayment(
   }
   const status: 'active' | 'paused' = record.status === 'paused' ? 'paused' : 'active';
   const actionKind = record.actionKind === 'swap' || typeof record.outputToken === 'string' ? 'swap' : 'transfer';
+  const metadata = isJsonObject(record.metadata) ? record.metadata : undefined;
+  const agentReview = parseAgentPlanReviewState(metadata?.agentReview);
   return {
     id: record.id,
     status,
@@ -17632,6 +17680,8 @@ function cloudRecurringScheduleToPayment(
     ...(view?.lifetimeSpend && { lifetimeSpend: view.lifetimeSpend }),
     ...(view?.nextRuns && { nextRuns: view.nextRuns }),
     ...(typeof record.note === 'string' && { note: record.note }),
+    ...(agentReview ? { agentReview } : {}),
+    ...(metadata ? { metadata } : {}),
     createdAt: record.createdAt,
     updatedAt: record.updatedAt,
     ...(typeof record.nextDueAt === 'string' && { nextDueAt: record.nextDueAt }),
@@ -18038,45 +18088,349 @@ async function runCreateRecurring(): Promise<void> {
   await run('inbox', async () => {
     state.recurringDraft = readRecurringDraft();
     assertValidRecurringDraft(state.recurringDraft);
-    const mode = activeWorkflowMode();
-    const createMode = mode;
-    const body = recurringBody(state.recurringDraft);
-    if (createMode === 'local-bridge') {
-      await bridgeRequest('/bridge/recurring-payments', {
-        method: 'POST',
-        body: JSON.stringify(body),
-      });
-      await refreshInboxData();
-    } else if (createMode === 'agentic-cloud') {
-      const response = await cloudCreateRecurring({ ...body, cluster: state.cluster });
-      if (response.webhookSecretOnce) {
-        state.recurringWebhookSecretOnce = {
-          scheduleId: response.schedule.id,
-          secret: response.webhookSecretOnce,
-          createdAt: new Date().toISOString(),
-        };
+    let agentReview: AgentPlanReviewState | undefined;
+    let status: 'active' | 'paused' = 'active';
+    if (state.askAgentAfterDraft && hasDetectedAgentReviewPath()) {
+      const plan = recurringDraftToAgentPlan(state.recurringDraft, 'template');
+      try {
+        if (!canRunAgentReview()) {
+          throw new Error(agentReviewUnavailableReason());
+        }
+        agentReview = await reviewRecurringPlan(plan);
+      } catch (err) {
+        agentReview = recurringAgentReviewErrorState(err, plan);
       }
-      await refreshCloudWorkspaceData();
-    } else {
-      const payment = browserRecurringPaymentFromDraft(state.recurringDraft);
-      const occurrence = browserOccurrenceFromRecurring(payment);
-      state.recurringPayments = mergeRecurringPayments([payment], state.recurringPayments);
-      state.preparedActions = mergePreparedActions([occurrence], state.preparedActions);
-      state.materializedActions = state.preparedActions;
-      saveBrowserWorkflowState();
+      status = recurringStatusForAgentReview(agentReview);
     }
+    const createMode = await createRecurringFromDraft(state.recurringDraft, { status, agentReview });
     state.activeTab = 'schedule';
     state.recurringView = 'active';
     pushToast(
-      'success',
-      recurringDraftIsSwap(state.recurringDraft) ? 'Recurring swap created' : 'Repeat payment created',
-      createMode === 'local-bridge'
-        ? 'Future payments will appear in Needs Approval.'
-        : createMode === 'agentic-cloud'
-          ? 'Each run returns to your wallet for review.'
-          : 'Created one local approval now. Saved-on-device workflow does not run background repeats after this tab closes.',
+      recurringAgentToastKind(agentReview),
+      recurringCreateToastTitle(state.recurringDraft, agentReview, status),
+      recurringCreateToastDetail(createMode, agentReview),
     );
   });
+}
+
+async function createRecurringFromDraft(
+  draft: RecurringDraft,
+  opts: { status?: 'active' | 'paused'; agentReview?: AgentPlanReviewState } = {},
+): Promise<ActiveWorkflowMode> {
+  const createMode = activeWorkflowMode();
+  const status = opts.status ?? 'active';
+  const body = recurringBody(draft, { status, agentReview: opts.agentReview });
+  if (createMode === 'local-bridge') {
+    await bridgeRequest('/bridge/recurring-payments', {
+      method: 'POST',
+      body: JSON.stringify(body),
+    });
+    await refreshInboxData();
+    return createMode;
+  }
+  if (createMode === 'agentic-cloud') {
+    const response = await cloudCreateRecurring({ ...body, cluster: state.cluster });
+    if (response.webhookSecretOnce) {
+      state.recurringWebhookSecretOnce = {
+        scheduleId: response.schedule.id,
+        secret: response.webhookSecretOnce,
+        createdAt: new Date().toISOString(),
+      };
+    }
+    await refreshCloudWorkspaceData();
+    return createMode;
+  }
+  const payment = browserRecurringPaymentFromDraft(draft, { status, agentReview: opts.agentReview });
+  const actions = status === 'active' ? [browserOccurrenceFromRecurring(payment)] : [];
+  state.recurringPayments = mergeRecurringPayments([payment], state.recurringPayments);
+  if (actions.length) {
+    state.preparedActions = mergePreparedActions(actions, state.preparedActions);
+  }
+  state.materializedActions = state.preparedActions;
+  saveBrowserWorkflowState();
+  return createMode;
+}
+
+function recurringAgentReviewErrorState(err: unknown, plan: AgentPlan): AgentPlanReviewState {
+  const message = redactSecrets(err instanceof Error ? err.message : String(err));
+  const checkedAt = new Date().toISOString();
+  return {
+    schemaVersion: AGENT_REVIEW_SCHEMA_VERSION,
+    required: true,
+    status: 'error',
+    reason: compactSentence(`Agent review failed: ${message}. The repeat schedule was paused instead of started.`, 280),
+    summary: 'Agent review failed; repeat schedule paused.',
+    checkedAt,
+    provider: agentReviewProviderLabel(),
+    model: agentReviewModelLabel(),
+    source: state.aiSettings.mode,
+    evidence: {
+      findings: [
+        { label: 'Agent review', value: message, tone: 'fail' },
+        { label: 'Repeat state', value: 'Paused; no due wallet approval was created from this review.', tone: 'warn' },
+        { label: 'Wallet boundary', value: 'Every occurrence still needs a separate wallet approval before signing.', tone: 'neutral' },
+      ],
+    },
+    checks: [
+      { label: 'Agent review', value: message, tone: 'fail', source: 'ai' },
+      { label: 'Repeat state', value: 'Paused; ask the agent again after fixing the issue.', tone: 'warn', source: 'deterministic' },
+    ],
+    reviewedPlanFingerprint: planFingerprint(plan),
+  };
+}
+
+function recurringAgentToastKind(review: AgentPlanReviewState | undefined): ToastKind {
+  if (!review || review.status === 'approved') return 'success';
+  if (review.status === 'needs_input') return 'pending';
+  return 'error';
+}
+
+function recurringCreateToastTitle(
+  draft: RecurringDraft,
+  review: AgentPlanReviewState | undefined,
+  status: 'active' | 'paused',
+): string {
+  const noun = recurringDraftIsSwap(draft) ? 'Recurring swap' : 'Repeat payment';
+  if (!review) return `${noun} created`;
+  if (status === 'active' && review.status === 'approved') return `${noun} started after agent approval`;
+  if (review.status === 'needs_input') return `${noun} paused: input needed`;
+  if (review.status === 'error') return `${noun} paused: agent error`;
+  return `${noun} paused by agent`;
+}
+
+function recurringCreateToastDetail(
+  createMode: ActiveWorkflowMode,
+  review: AgentPlanReviewState | undefined,
+): string {
+  const walletBoundary = 'Every due occurrence still requires wallet approval before signing.';
+  if (review) {
+    return compactSentence(`${review.reason || review.summary || 'Agent review recorded.'} ${walletBoundary}`, 360);
+  }
+  if (createMode === 'local-bridge') return `Future payments will appear in Needs Approval. ${walletBoundary}`;
+  if (createMode === 'agentic-cloud') return `Each run returns to your wallet for review. ${walletBoundary}`;
+  return `Created one local approval now. Saved-on-device workflow does not run background repeats after this tab closes. ${walletBoundary}`;
+}
+
+async function runDraftRecurringWithAi(): Promise<void> {
+  if (!canGenerateAiPlanFromSettings()) {
+    pushToast('error', 'AI setup incomplete', aiGenerateDisabledReason());
+    render();
+    return;
+  }
+  if (!canRunAgentReview()) {
+    pushToast('error', 'Agent not detected', agentReviewUnavailableReason());
+    render();
+    return;
+  }
+  state.recurringDraft = readRecurringDraft();
+  assertValidRecurringDraft(state.recurringDraft);
+  state.activeOperation = 'generate-ai-plan';
+  const toastId = pushToast('pending', 'Drafting repeat with AI', 'Building and reviewing this repeat request.');
+  try {
+    await run('ai', async () => {
+      const generatedPlan = await generateRecurringAiPlan(state.recurringDraft);
+      let review: AgentPlanReviewState;
+      try {
+        review = await reviewRecurringPlan(generatedPlan);
+      } catch (err) {
+        review = recurringAgentReviewErrorState(err, generatedPlan);
+      }
+      const status = recurringStatusForAgentReview(review);
+      const createMode = await createRecurringFromDraft(state.recurringDraft, { status, agentReview: review });
+      state.activeTab = 'schedule';
+      state.recurringView = 'active';
+      replaceToast(
+        toastId,
+        recurringAgentToastKind(review),
+        recurringCreateToastTitle(state.recurringDraft, review, status),
+        recurringCreateToastDetail(createMode, review),
+      );
+    }, {
+      onError: (message, err) => {
+        const toastMessage = applyAiErrorDiagnostics(err, message);
+        replaceToast(toastId, 'error', aiErrorToastTitle(err), toastMessage);
+      },
+    });
+  } finally {
+    state.activeOperation = null;
+    render();
+  }
+}
+
+async function generateRecurringAiPlan(draft: RecurringDraft): Promise<AgentPlan> {
+  const template = templateById('subscription');
+  const parameters = recurringDraftPlanParameters(draft);
+  const fallback = recurringDraftToAgentPlan(draft, 'template');
+  const userNotes = draft.note.trim() || fallback.intent;
+  const request = {
+    prompt: userNotes,
+    userNotes: injectHouseRules(userNotes),
+    template: {
+      id: template.id,
+      category: template.category,
+      title: recurringDraftIsSwap(draft) ? 'Recurring swap' : 'Repeat payment',
+      description: recurringDraftIsSwap(draft)
+        ? 'Create a recurring swap schedule where every due swap needs wallet approval.'
+        : 'Create a repeat payment schedule where every due payment needs wallet approval.',
+      actionType: 'recurring_payment',
+      risk: template.risk,
+    },
+    parameters,
+    connectorContext: protocolConnectorPlannerContext(state.connectedDapps, state.cluster, {
+      dialectClientKeyConfigured: Boolean(state.protocolConnectorPrefs.dialectClientKey.trim()),
+      includeDisabled: true,
+    }),
+  };
+  state.aiDiagnostics = [
+    aiRouteDiagnostic(state.aiSettings.mode === 'bridge' ? '/bridge/ai/generate-plan' : '/api/ai/generate-plan'),
+  ];
+  render();
+  const generated = state.aiSettings.mode === 'bridge'
+    ? await bridgeRequest<AgentPlan>('/bridge/ai/generate-plan', {
+      method: 'POST',
+      body: JSON.stringify(request),
+    })
+    : state.aiSettings.mode === 'hosted'
+      ? await generateHostedAiPlan(state.aiSettings, request)
+      : await generateSessionAiPlan(state.aiSettings, request);
+  return planWithRuntimeTokenLabels({
+    ...fallback,
+    intent: generated.intent || fallback.intent,
+    route: generated.route || fallback.route,
+    risk: generated.risk || fallback.risk,
+    approval: generated.approval || fallback.approval,
+    source: 'ai',
+    userNotes: generated.userNotes || request.userNotes,
+    safeguards: generated.safeguards?.length ? generated.safeguards : fallback.safeguards,
+  });
+}
+
+async function reviewRecurringPlan(
+  plan: AgentPlan,
+  previousReview?: AgentPlanReviewState,
+): Promise<AgentPlanReviewState> {
+  const record = generatedRecordForRecurringPlan(plan, previousReview);
+  const appliedPolicyIds = enabledUserAgentPolicies().map((policy) => policy.id);
+  const deterministicFacts = await gatherAgentReviewFacts(record);
+  const rawResult = await runAgentReview(record, deterministicFacts);
+  const result = normalizeAgentReviewResultForFacts(rawResult, plan, deterministicFacts);
+  const review = agentReviewStateFromResult(result, previousReview, plan, appliedPolicyIds);
+  review.facts = mergeReviewFacts(deterministicFacts, result.evidence);
+  return review;
+}
+
+function generatedRecordForRecurringPlan(
+  plan: AgentPlan,
+  previousReview?: AgentPlanReviewState,
+): GeneratedPlanRecord {
+  const now = new Date().toISOString();
+  return {
+    id: `recurring-review-${Date.now().toString(36)}`,
+    plan,
+    createdAt: now,
+    updatedAt: now,
+    source: plan.source,
+    templateId: 'subscription',
+    templateTitle: plan.templateTitle,
+    prompt: plan.userNotes || plan.intent,
+    walletAddress: state.address,
+    cluster: state.cluster,
+    status: 'draft',
+    workflowSource: activeWorkflowMode() === 'local-bridge' ? 'local-bridge' : activeWorkflowMode() === 'agentic-cloud' ? 'cloud' : 'browser',
+    ...(previousReview ? { agentReview: previousReview } : {}),
+  };
+}
+
+function recurringDraftPlanParameters(draft: RecurringDraft): Record<string, string> {
+  const isSwap = recurringDraftIsSwap(draft);
+  return {
+    actionKind: isSwap ? 'swap' : 'transfer',
+    token: isSwap ? draft.inputToken : draft.token,
+    ...(isSwap ? { inputToken: draft.inputToken, outputToken: draft.outputToken, slippageBps: draft.slippageBps } : {}),
+    recipient: isSwap ? '' : draft.recipient,
+    amount: draft.amount,
+    cadence: draft.cadence,
+    localTime: draft.localTime,
+    dayOfWeek: draft.dayOfWeek,
+    dayOfMonth: draft.dayOfMonth,
+    intervalDays: draft.intervalDays,
+    intervalHours: draft.intervalHours,
+    intervalMinutes: draft.intervalMinutes,
+    startAt: draft.startAt,
+    maxOccurrences: draft.maxOccurrences,
+    expiresAt: draft.expiresAt,
+    webhookUrl: draft.webhookUrl,
+    note: draft.note,
+  };
+}
+
+function recurringDraftToAgentPlan(draft: RecurringDraft, source: AgentPlan['source']): AgentPlan {
+  const parameters = recurringDraftPlanParameters(draft);
+  const isSwap = recurringDraftIsSwap(draft);
+  const templateTitle = isSwap ? 'Recurring swap' : 'Repeat payment';
+  const asset = recurringDraftAssetLabel(draft);
+  const schedule = recurringDraftScheduleLabel(draft);
+  const route = isSwap
+    ? `${tokenDisplayLabel(draft.inputToken)} -> ${tokenDisplayLabel(draft.outputToken)} recurring swap; every run needs wallet approval.`
+    : `${tokenDisplayLabel(draft.token)} transfer to ${recipientDisplayLabel(draft.recipient)}; every run needs wallet approval.`;
+  const fields = Object.entries(parameters)
+    .filter(([, value]) => value.trim().length > 0)
+    .map(([key, value]) => ({ label: titleCase(key), value }));
+  return {
+    intent: `${templateTitle}: ${asset} on ${schedule}`,
+    route,
+    risk: isSwap
+      ? `Recurring swap risk: route, liquidity, output token, slippage cap, cadence, and future market conditions must be reviewed at each due approval.`
+      : `Repeat payment risk: recipient, amount, token, cadence, and caps must remain expected before each approval.`,
+    approval: 'Creating this schedule does not sign a transaction. Each due payment still returns to Needs Approval before wallet signing.',
+    source,
+    category: 'recurring',
+    actionType: 'recurring_payment',
+    templateTitle,
+    userNotes: draft.note || undefined,
+    parameters,
+    fields,
+    safeguards: [
+      'No private key, seed phrase, or delegated wallet authority is requested.',
+      'Every due occurrence requires an explicit wallet approval before signing.',
+      'Pause the repeat schedule if agent review denies or needs more information.',
+    ],
+  };
+}
+
+function recurringPaymentToAgentPlan(payment: RecurringPayment): AgentPlan {
+  const draft = recurringDraftFromPayment(payment);
+  const plan = recurringDraftToAgentPlan(draft, 'template');
+  return {
+    ...plan,
+    userNotes: payment.note || plan.userNotes,
+  };
+}
+
+function recurringDraftFromPayment(payment: RecurringPayment): RecurringDraft {
+  const isSwap = recurringPaymentIsSwap(payment);
+  return {
+    ...defaultRecurringDraft(),
+    actionKind: isSwap ? 'swap' : 'transfer',
+    token: payment.token,
+    inputToken: payment.inputToken || payment.token,
+    outputToken: payment.outputToken || 'USDC',
+    recipient: payment.recipient,
+    amount: payment.amount,
+    slippageBps: String(payment.slippageBps ?? '50'),
+    cadence: payment.cadence,
+    localTime: payment.localTime ?? '09:00',
+    dayOfWeek: payment.dayOfWeek === undefined ? '1' : String(payment.dayOfWeek),
+    dayOfMonth: payment.dayOfMonth === undefined ? '1' : String(payment.dayOfMonth),
+    intervalDays: payment.intervalDays === undefined ? '1' : String(payment.intervalDays),
+    intervalHours: payment.intervalHours === undefined ? '24' : String(payment.intervalHours),
+    intervalMinutes: payment.intervalMinutes === undefined ? '60' : String(payment.intervalMinutes),
+    startAt: payment.startAt ? localDateTime(new Date(payment.startAt)) : defaultRecurringDraft().startAt,
+    maxOccurrences: payment.maxOccurrences === undefined ? '' : String(payment.maxOccurrences),
+    expiresAt: payment.expiresAt ? localDateTime(new Date(payment.expiresAt)) : '',
+    webhookUrl: payment.notifications?.webhookUrl ?? '',
+    note: payment.note ?? '',
+  };
 }
 
 async function runPreparedActionOp(actionId: string, op: string): Promise<void> {
@@ -20837,6 +21191,10 @@ function browserRecurringHistory(recurringId: string): RecurringOccurrenceHistor
 
 async function runRecurringOp(recurringId: string, op: string, cursor?: string): Promise<void> {
   const payment = state.recurringPayments.find((candidate) => candidate.id === recurringId);
+  if (op === 'agent-review') {
+    await runRecurringAgentReview(recurringId);
+    return;
+  }
   const source = payment
     ? recurringPaymentWorkflowSource(payment)
     : isBrowserWorkflowId(recurringId)
@@ -20943,6 +21301,104 @@ async function runRecurringOp(recurringId: string, op: string, cursor?: string):
     await refreshInboxData();
     pushToast('success', op === 'delete' ? 'Deleted permanently' : `Repeat ${op}`, recurringId);
   });
+}
+
+async function runRecurringAgentReview(recurringId: string): Promise<void> {
+  const payment = state.recurringPayments.find((candidate) => candidate.id === recurringId);
+  if (!payment) {
+    pushToast('error', 'Repeat not found', recurringId);
+    return;
+  }
+  if (!canRunAgentReview()) {
+    pushToast('error', 'Agent not detected', agentReviewUnavailableReason());
+    render();
+    return;
+  }
+  state.activeOperation = 'review-agent-plan';
+  const toastId = pushToast('pending', 'Asking agent', 'Reviewing this repeat schedule.');
+  try {
+    await run('ai', async () => {
+      const plan = recurringPaymentToAgentPlan(payment);
+      const review = await reviewRecurringPlan(plan, payment.agentReview);
+      const status = recurringStatusForAgentReview(review);
+      await updateRecurringAgentReview(payment, review, status);
+      replaceToast(
+        toastId,
+        recurringAgentToastKind(review),
+        review.status === 'approved' ? 'Agent approved repeat' : recurringCreateToastTitle(recurringDraftFromPayment(payment), review, status),
+        compactSentence(`${review.reason || review.summary || 'Agent review recorded.'} Every due occurrence still requires wallet approval before signing.`, 360),
+      );
+    }, {
+      onError(message, err) {
+        const toastMessage = applyAiErrorDiagnostics(err, message);
+        replaceToast(toastId, 'error', 'Agent review failed', toastMessage);
+      },
+    });
+  } finally {
+    state.activeOperation = null;
+    render();
+  }
+}
+
+async function updateRecurringAgentReview(
+  payment: RecurringPayment,
+  review: AgentPlanReviewState,
+  status: 'active' | 'paused',
+): Promise<void> {
+  const metadata = stripUndefined({
+    ...(payment.metadata ?? {}),
+    agentReview: review,
+    agentReviewStatus: review.status,
+    agentReviewDecision: review.decision ?? '',
+  }) as JsonObject;
+  const source = recurringPaymentWorkflowSource(payment);
+  if (source === 'browser') {
+    const updatedAt = new Date().toISOString();
+    const existingOpenActions = state.preparedActions
+      .filter((action) => action.recurringId === payment.id && !isTerminalPreparedAction(action))
+      .sort((left, right) => right.createdAt.localeCompare(left.createdAt));
+    const shouldCreateOccurrence = status === 'active' && existingOpenActions.length === 0;
+    const updatedPayment: RecurringPayment = {
+      ...payment,
+      status,
+      agentReview: review,
+      metadata,
+      updatedAt,
+      occurrencesCreated: shouldCreateOccurrence
+        ? Math.max(1, payment.occurrencesCreated ?? 0)
+        : payment.occurrencesCreated,
+    };
+    state.recurringPayments = mergeRecurringPayments([updatedPayment], state.recurringPayments);
+    if (status === 'paused') {
+      state.preparedActions = state.preparedActions.filter((action) => action.recurringId !== payment.id || isTerminalPreparedAction(action));
+      state.materializedActions = state.preparedActions;
+    } else {
+      const keepOpenActionId = existingOpenActions[0]?.id;
+      const withoutDuplicateOpenActions = keepOpenActionId
+        ? state.preparedActions.filter((action) => (
+            action.recurringId !== payment.id ||
+            isTerminalPreparedAction(action) ||
+            action.id === keepOpenActionId
+          ))
+        : state.preparedActions;
+      state.preparedActions = shouldCreateOccurrence
+        ? mergePreparedActions([browserOccurrenceFromRecurring(updatedPayment)], withoutDuplicateOpenActions)
+        : withoutDuplicateOpenActions;
+      state.materializedActions = state.preparedActions;
+    }
+    saveBrowserWorkflowState();
+    return;
+  }
+  if (source === 'cloud') {
+    await cloudPatchRecurring(payment.id, { status, metadata });
+    await refreshCloudWorkspaceData();
+    return;
+  }
+  await bridgeRequest('/bridge/recurring-payments/update', {
+    method: 'POST',
+    body: JSON.stringify({ recurringId: payment.id, status, metadata }),
+  });
+  await refreshInboxData();
 }
 
 function runBrowserRecurringOp(recurringId: string, op: string): void {
@@ -23108,14 +23564,33 @@ async function queuePlanThroughBridge(plan: AgentPlan, sourceRecord?: GeneratedP
       return { id: response.preparedAction.id };
     }
     case 'recurring_payment': {
+      const isSwap = recurringPlanIsSwap(plan);
+      const inputToken = planParameter(plan, ['inputToken', 'token']) || 'SOL';
+      const outputToken = planParameter(plan, ['outputToken']);
+      const slippageBps = Number(plan.parameters.slippageBps || '50');
       const response = await bridgeRequest<{ recurringPayment?: { id: string }; payment?: { id: string } }>('/bridge/recurring-payments', {
         method: 'POST',
         body: JSON.stringify({
-          token: requiredPlanParam(plan, 'token'),
-          recipient: requiredPlanParam(plan, 'recipient'),
+          actionKind: isSwap ? 'swap' : 'transfer',
+          token: isSwap ? inputToken : requiredPlanParam(plan, 'token'),
+          recipient: isSwap ? '' : requiredPlanParam(plan, 'recipient'),
           amount: requiredPlanParam(plan, 'amount'),
+          ...(isSwap ? {
+            inputToken,
+            outputToken: outputToken || requiredPlanParam(plan, 'outputToken'),
+            slippageBps: Number.isFinite(slippageBps) ? slippageBps : 50,
+          } : {}),
           ...recurringSchedulePayload(plan),
           note,
+          ...(sourceRecord?.agentReview ? {
+            metadata: {
+              ...(isSwap ? { actionKind: 'swap', inputToken, outputToken: outputToken || requiredPlanParam(plan, 'outputToken') } : {}),
+              agentReview: sourceRecord.agentReview,
+              agentReviewStatus: sourceRecord.agentReview.status,
+              agentReviewDecision: sourceRecord.agentReview.decision ?? '',
+            },
+            status: recurringStatusForAgentReview(sourceRecord.agentReview),
+          } : {}),
         }),
       });
       return { id: response.recurringPayment?.id ?? response.payment?.id ?? 'recurring-payment' };
@@ -23150,7 +23625,7 @@ async function queuePlanThroughActiveWorkflow(
       return { ...response, mode: 'browser-workflow' };
     }
     const response = plan.actionType === 'recurring_payment'
-      ? await queueRecurringPlanThroughCloud(plan)
+      ? await queueRecurringPlanThroughCloud(plan, sourceRecord)
       : await queuePlanThroughCloud(plan, sourceRecord);
     return { ...response, mode: 'agentic-cloud' };
   }
@@ -23197,7 +23672,10 @@ async function queuePlanThroughCloud(plan: AgentPlan, sourceRecord?: GeneratedPl
 
 function cloudQueueUnsupportedReason(plan: AgentPlan): string | undefined {
   if (plan.actionType === 'transfer_sol') return undefined;
-  if (plan.actionType === 'recurring_payment' && (plan.parameters.token ?? 'SOL').toUpperCase() === 'SOL') return undefined;
+  if (plan.actionType === 'recurring_payment') {
+    if (recurringPlanIsSwap(plan)) return undefined;
+    if ((plan.parameters.token ?? 'SOL').toUpperCase() === 'SOL') return undefined;
+  }
   if (plan.actionType === 'transfer_spl' || plan.actionType === 'swap') {
     return 'Agentic Cloud currently finalizes SOL transfers only. Use Private local mode for SPL transfers and swaps.';
   }
@@ -23213,17 +23691,36 @@ function cloudQueueUnsupportedReason(plan: AgentPlan): string | undefined {
   return undefined;
 }
 
-async function queueRecurringPlanThroughCloud(plan: AgentPlan): Promise<{ id: string }> {
+async function queueRecurringPlanThroughCloud(plan: AgentPlan, sourceRecord?: GeneratedPlanRecord): Promise<{ id: string }> {
   if (!cloudSessionMatchesWallet()) {
     throw new Error('Sign in to Agentic Cloud with the connected wallet before creating cloud repeat payments.');
   }
+  const isSwap = recurringPlanIsSwap(plan);
+  const inputToken = planParameter(plan, ['inputToken', 'token']) || 'SOL';
+  const outputToken = planParameter(plan, ['outputToken']);
+  const slippageBps = Number(plan.parameters.slippageBps || '50');
   const body = {
     cluster: state.cluster,
-    token: requiredPlanParam(plan, 'token'),
-    recipient: requiredPlanParam(plan, 'recipient'),
+    actionKind: isSwap ? 'swap' : 'transfer',
+    token: isSwap ? inputToken : requiredPlanParam(plan, 'token'),
+    recipient: isSwap ? '' : requiredPlanParam(plan, 'recipient'),
     amount: requiredPlanParam(plan, 'amount'),
+    ...(isSwap ? {
+      inputToken,
+      outputToken: outputToken || requiredPlanParam(plan, 'outputToken'),
+      slippageBps: Number.isFinite(slippageBps) ? slippageBps : 50,
+    } : {}),
     ...recurringSchedulePayload(plan),
     note: plan.userNotes || '',
+    ...(sourceRecord?.agentReview ? {
+      metadata: {
+        ...(isSwap ? { actionKind: 'swap', inputToken, outputToken: outputToken || requiredPlanParam(plan, 'outputToken') } : {}),
+        agentReview: sourceRecord.agentReview,
+        agentReviewStatus: sourceRecord.agentReview.status,
+        agentReviewDecision: sourceRecord.agentReview.decision ?? '',
+      },
+      status: recurringStatusForAgentReview(sourceRecord.agentReview),
+    } : {}),
   };
   const cloudSchedule = parseCloudRecurringScheduleResponse(await cloudRequest('/api/recurring', {
     method: 'POST',
@@ -23242,10 +23739,12 @@ async function queuePlanThroughBrowserWorkflow(plan: AgentPlan, sourceRecord?: G
     throw new Error('Connect a wallet before sending for approval.');
   }
   if (plan.actionType === 'recurring_payment') {
-    const recurring = browserRecurringPaymentFromPlan(plan);
-    const occurrence = browserOccurrenceFromRecurring(recurring, plan.intent);
+    const recurring = browserRecurringPaymentFromPlan(plan, sourceRecord);
+    const occurrence = recurring.status === 'active' ? browserOccurrenceFromRecurring(recurring, plan.intent) : undefined;
     state.recurringPayments = mergeRecurringPayments([recurring], state.recurringPayments);
-    state.preparedActions = mergePreparedActions([occurrence], state.preparedActions);
+    if (occurrence) {
+      state.preparedActions = mergePreparedActions([occurrence], state.preparedActions);
+    }
     state.materializedActions = state.preparedActions;
     saveBrowserWorkflowState();
     return { id: recurring.id };
@@ -23401,27 +23900,52 @@ function blinkSingleTransaction(prepared: BlinkPreparedAction): string {
   throw new Error('Blink action did not return transaction bytes.');
 }
 
-function browserRecurringPaymentFromPlan(plan: AgentPlan): RecurringPayment {
+function browserRecurringPaymentFromPlan(plan: AgentPlan, sourceRecord?: GeneratedPlanRecord): RecurringPayment {
   const now = new Date().toISOString();
   const payload = recurringSchedulePayload(plan);
   const maxOccurrences = Number(plan.parameters.maxOccurrences);
+  const isSwap = recurringPlanIsSwap(plan);
+  const status = recurringStatusForAgentReview(sourceRecord?.agentReview);
+  const inputToken = planParameter(plan, ['inputToken', 'token']) || 'SOL';
+  const outputToken = planParameter(plan, ['outputToken']) || 'USDC';
+  const metadata = stripUndefined({
+    ...(isSwap ? { actionKind: 'swap', inputToken, outputToken } : {}),
+    ...(sourceRecord?.agentReview ? {
+      agentReview: sourceRecord.agentReview,
+      agentReviewStatus: sourceRecord.agentReview.status,
+      agentReviewDecision: sourceRecord.agentReview.decision ?? '',
+    } : {}),
+  }) as JsonObject;
   return {
     id: newId('browser-recurring'),
-    status: 'active',
+    status,
     walletAddress: state.address,
     cluster: state.cluster,
-    token: plan.parameters.token || 'SOL',
-    recipient: requiredPlanParam(plan, 'recipient'),
+    actionKind: isSwap ? 'swap' : 'transfer',
+    token: isSwap ? inputToken : (plan.parameters.token || 'SOL'),
+    ...(isSwap ? { inputToken, outputToken, slippageBps: plan.parameters.slippageBps || '50' } : {}),
+    recipient: isSwap ? '' : requiredPlanParam(plan, 'recipient'),
     amount: requiredPlanParam(plan, 'amount'),
     ...payload,
     ...(Number.isInteger(maxOccurrences) && maxOccurrences > 0 ? { maxOccurrences } : {}),
-    occurrencesCreated: 1,
+    occurrencesCreated: status === 'active' ? 1 : 0,
     note: plan.userNotes || '',
+    ...(sourceRecord?.agentReview ? { agentReview: sourceRecord.agentReview } : {}),
+    ...(Object.keys(metadata).length ? { metadata } : {}),
     createdAt: now,
     updatedAt: now,
     nextDueAt: recurringNextDueFromPayload(payload),
     workflowSource: 'browser',
   };
+}
+
+function recurringPlanIsSwap(plan: AgentPlan): boolean {
+  return plan.parameters.actionKind === 'swap' || Boolean(plan.parameters.outputToken?.trim());
+}
+
+function recurringStatusForAgentReview(review: AgentPlanReviewState | undefined): 'active' | 'paused' {
+  if (!review) return 'active';
+  return review.status === 'approved' && (!review.decision || review.decision === 'approve') ? 'active' : 'paused';
 }
 
 function completedPlanUserNote(...candidates: Array<string | undefined>): string {
@@ -23447,15 +23971,18 @@ function isSyntheticApprovalNote(note: string): boolean {
   );
 }
 
-function browserRecurringPaymentFromDraft(draft: RecurringDraft): RecurringPayment {
+function browserRecurringPaymentFromDraft(
+  draft: RecurringDraft,
+  opts: { status?: 'active' | 'paused'; agentReview?: AgentPlanReviewState } = {},
+): RecurringPayment {
   const now = new Date().toISOString();
-  const payload = recurringBody(draft);
+  const payload = recurringBody(draft, opts);
   const schedulePayload = payload as ReturnType<typeof recurringSchedulePayload>;
   const maxOccurrences = Number(draft.maxOccurrences);
   const isSwap = recurringDraftIsSwap(draft);
   return {
     id: newId('browser-recurring'),
-    status: 'active',
+    status: opts.status ?? 'active',
     walletAddress: state.address,
     cluster: state.cluster,
     ...schedulePayload,
@@ -23465,7 +23992,7 @@ function browserRecurringPaymentFromDraft(draft: RecurringDraft): RecurringPayme
     amount: draft.amount,
     ...(isSwap ? { inputToken: draft.inputToken, outputToken: draft.outputToken, slippageBps: draft.slippageBps } : {}),
     ...(Number.isInteger(maxOccurrences) && maxOccurrences > 0 ? { maxOccurrences } : {}),
-    occurrencesCreated: 1,
+    occurrencesCreated: (opts.status ?? 'active') === 'active' ? 1 : 0,
     ...(typeof payload.expiresAt === 'string' && { expiresAt: payload.expiresAt }),
     ...(isJsonObject(payload.notifications) && {
       notifications: {
@@ -23474,6 +24001,8 @@ function browserRecurringPaymentFromDraft(draft: RecurringDraft): RecurringPayme
       },
     }),
     note: draft.note || 'Saved-on-device repeat payment',
+    ...(opts.agentReview ? { agentReview: opts.agentReview } : {}),
+    ...(isJsonObject(payload.metadata) ? { metadata: payload.metadata } : {}),
     createdAt: now,
     updatedAt: now,
     nextDueAt: recurringDraftNextRuns(draft)[0],
@@ -23505,6 +24034,7 @@ function browserOccurrenceFromRecurring(payment: RecurringPayment, summary?: str
       createdAt: now,
       updatedAt: now,
       note: payment.note,
+      ...(payment.agentReview ? { agentReview: payment.agentReview } : {}),
       recurringId: payment.id,
       occurrenceKey: `browser-${now}`,
       workflowSource: 'browser',
@@ -23533,6 +24063,7 @@ function browserOccurrenceFromRecurring(payment: RecurringPayment, summary?: str
     createdAt: now,
     updatedAt: now,
     note: payment.note,
+    ...(payment.agentReview ? { agentReview: payment.agentReview } : {}),
     recurringId: payment.id,
     occurrenceKey: `browser-${now}`,
     workflowSource: 'browser',
@@ -26101,6 +26632,13 @@ function recurringComposer(): string {
   const workflowMode = activeWorkflowMode();
   const browserWorkflow = workflowMode === 'browser-workflow';
   const createDisabled = !state.address || state.busy;
+  const aiPathConnected = hasDetectedAgentReviewPath();
+  const aiDraftDisabledReason = canGenerateAiPlanFromSettings()
+    ? canRunAgentReview()
+      ? 'Draft and review this repeat request with the configured agent.'
+      : agentReviewUnavailableReason()
+    : aiGenerateDisabledReason();
+  const aiDraftDisabled = createDisabled || !canGenerateAiPlanFromSettings() || !canRunAgentReview();
   const composerTitle = isSwap ? 'Create recurring swap' : 'Create repeat payment';
   const createLabel = isSwap ? 'Create recurring swap' : 'Create repeat payment';
   const recurringHelp = isSwap
@@ -26142,9 +26680,29 @@ function recurringComposer(): string {
         </div>
         <div class="recurring-form-actions contract-actions">
           <button id="createRecurring" class="primary" ${createDisabled ? 'disabled' : ''}>${escapeHtml(createLabel)}</button>
+          ${aiPathConnected ? `
+            <button
+              id="draftRecurringWithAi"
+              class="primary ai-draft-button"
+              ${aiDraftDisabled ? 'disabled' : ''}
+              title="${escapeHtml(aiDraftDisabledReason)}"
+            >
+              Draft repeat payment with AI
+            </button>
+          ` : ''}
           <span class="contract-helper accent-note">${escapeHtml(actionHelper)}</span>
         </div>
       </div>
+      ${aiPathConnected ? `
+        <label class="ask-agent-after-draft recurring-agent-after-draft ${state.askAgentAfterDraft ? 'checked' : ''}">
+          <input type="checkbox" data-ask-agent-after-draft ${state.askAgentAfterDraft ? 'checked' : ''} ${state.busy ? 'disabled' : ''} />
+          <span class="ask-agent-check" aria-hidden="true">${checkIcon()}</span>
+          <span class="ask-agent-copy">
+            <strong>Ask agent before start</strong>
+            <em>Optional. Agent denial or missing information creates the repeat paused.</em>
+          </span>
+        </label>
+      ` : ''}
       <dl class="contract-summary recurring-create-summary">
         ${definitionRow('Asset', recurringDraftAssetLabel(draft))}
         ${isSwap
@@ -26521,13 +27079,16 @@ function recurringCard(payment: RecurringPayment): string {
   const history = state.recurringOccurrenceHistory[payment.id];
   const notifications = state.recurringNotificationStatus[payment.id];
   const source = recurringPaymentWorkflowSource(payment);
+  const pauseSource = recurringPauseSource(payment);
   return `
-    <article class="recurring-item recurring-card">
+    <article class="recurring-item recurring-card ${pauseSource === 'agent' ? 'agent-paused' : pauseSource === 'user' ? 'user-paused' : ''}">
       <div class="recurring-card-main">
         <div class="recurring-card-head">
           <div class="recurring-card-title-block">
             <div class="recurring-card-meta">
-              <span class="status-pill ${statusLabelToneClass(status.tone)}">${escapeHtml(status.label)}</span>
+              <span class="status-pill ${statusLabelToneClass(status.tone)}">${escapeHtml(pauseSource === 'agent' ? 'Agent paused' : status.label)}</span>
+              ${pauseSource === 'user' ? '<span class="recurring-pause-source-pill user">User paused</span>' : ''}
+              ${recurringAgentDecisionPill(payment)}
               <span>${escapeHtml(recurringCadenceLabel(payment.cadence))}</span>
               <span>${escapeHtml(recurringOccurrenceCountLabel(payment))}</span>
             </div>
@@ -26536,16 +27097,38 @@ function recurringCard(payment: RecurringPayment): string {
           </div>
           ${recurringCardHero(payment, nextRuns)}
           <div class="recurring-actions recurring-card-actions">
+            ${hasDetectedAgentReviewPath() ? `<button data-recurring-op="agent-review" data-recurring-id="${payment.id}" ${state.busy || !canRunAgentReview() ? 'disabled' : ''}>Ask agent again</button>` : ''}
             <button data-recurring-op="${flipOp}" data-recurring-id="${payment.id}" ${completed || state.busy ? 'disabled' : ''}>${payment.status === 'active' ? 'Pause' : 'Resume'}</button>
             <button data-recurring-op="history" data-recurring-id="${payment.id}" ${state.busy ? 'disabled' : ''}>${history ? 'Refresh past payments' : 'Load past payments'}</button>
           </div>
         </div>
         ${recurringCardSummaryGrid(payment, nextRuns, spend)}
+        ${recurringAgentReviewStrip(payment)}
         ${recurringCardNote(payment)}
         ${recurringCardFooter(payment, history, notifications, source, nextRuns)}
       </div>
     </article>
   `;
+}
+
+function recurringPauseSource(payment: RecurringPayment): 'agent' | 'user' | 'none' {
+  if (payment.status !== 'paused') return 'none';
+  const review = payment.agentReview;
+  if (review?.required && review.status !== 'approved') return 'agent';
+  return 'user';
+}
+
+function recurringAgentDecisionPill(payment: RecurringPayment): string {
+  const review = payment.agentReview;
+  if (!review?.required) return '';
+  const tone = review.status === 'approved'
+    ? 'good'
+    : review.status === 'needs_input'
+      ? 'warn'
+      : review.status === 'checking'
+        ? 'checking'
+        : 'fail';
+  return `<span class="recurring-agent-decision-pill ${tone}" title="${escapeHtml(review.reason || agentReviewStripLabel(review.status))}">${escapeHtml(agentReviewStripLabel(review.status))}</span>`;
 }
 
 function recurringCardSubtitle(payment: RecurringPayment): string {
@@ -26641,6 +27224,31 @@ function recurringCardNote(payment: RecurringPayment): string {
     <section class="review-plan-user-note recurring-card-note" aria-label="Repeat payment note" title="${escapeHtml(note)}">
       <span>Note</span>
       <p>${escapeHtml(note)}</p>
+    </section>
+  `;
+}
+
+function recurringAgentReviewStrip(payment: RecurringPayment): string {
+  const review = payment.agentReview;
+  if (!review?.required) return '';
+  const label = agentReviewStripLabel(review.status);
+  const detail = review.checkedAt
+    ? `${agentReviewSourceLabel(review)} - ${formatDateTime(review.checkedAt)}`
+    : agentReviewSourceLabel(review);
+  const stateDetail = payment.status === 'paused' && review.status !== 'approved'
+    ? 'Schedule is paused until the agent approves or you resume manually.'
+    : 'Schedule remains manual at each due wallet approval.';
+  return `
+    <section class="agent-review-strip recurring-agent-review ${escapeHtml(review.status)}" aria-label="Repeat agent review">
+      <div>
+        <span>Agent review</span>
+        <strong class="agent-review-state ${escapeHtml(review.status)}">${escapeHtml(label)}</strong>
+        <em>${escapeHtml(detail)}</em>
+        ${agentReviewPathBadge(review.source)}
+      </div>
+      ${agentReviewBlockingReasonPanel(review) || `<p>${escapeHtml(review.reason || stateDetail)}</p>`}
+      <p class="accent-note">${escapeHtml(stateDetail)}</p>
+      ${agentEvidenceDrawer(review)}
     </section>
   `;
 }
@@ -28379,9 +28987,13 @@ function isValidLocalTime(value: string): boolean {
   return /^([01]\d|2[0-3]):[0-5]\d$/.test(value);
 }
 
-function recurringBody(draft: RecurringDraft): Record<string, unknown> {
+function recurringBody(
+  draft: RecurringDraft,
+  opts: { status?: 'active' | 'paused'; agentReview?: AgentPlanReviewState } = {},
+): Record<string, unknown> {
   const isSwap = recurringDraftIsSwap(draft);
   const body: Record<string, unknown> = {
+    ...(opts.status ? { status: opts.status } : {}),
     actionKind: isSwap ? 'swap' : 'transfer',
     token: isSwap ? draft.inputToken : draft.token,
     recipient: isSwap ? '' : draft.recipient,
@@ -28400,6 +29012,14 @@ function recurringBody(draft: RecurringDraft): Record<string, unknown> {
       outputToken: draft.outputToken,
       ...tokenDisplayParametersForField('inputToken', inputSelection),
       ...tokenDisplayParametersForField('outputToken', outputSelection),
+    };
+  }
+  if (opts.agentReview) {
+    body.metadata = {
+      ...(isJsonObject(body.metadata) ? body.metadata : {}),
+      agentReview: opts.agentReview,
+      agentReviewStatus: opts.agentReview.status,
+      agentReviewDecision: opts.agentReview.decision ?? '',
     };
   }
   if (draft.note) body.note = draft.note;
@@ -30022,6 +30642,7 @@ function parseAgentPlanReviewState(value: unknown): AgentPlanReviewState | undef
   const policies = parseAgentReviewPolicySnapshots(value.policies);
   const history = parseAgentReviewAttempts(value.history);
   const facts = parseAgentReviewFactSet(value.facts);
+  const checks = parseAgentReviewChecks(value.checks);
   const conversation = parseAgentAskConversation(value.conversation);
   const appliedUserPolicyIds = Array.isArray(value.appliedUserPolicyIds)
     ? value.appliedUserPolicyIds.filter((entry): entry is string => typeof entry === 'string')
@@ -30038,6 +30659,7 @@ function parseAgentPlanReviewState(value: unknown): AgentPlanReviewState | undef
     ...(typeof value.model === 'string' && { model: value.model }),
     ...(value.source === 'hosted' || value.source === 'session' || value.source === 'bridge' ? { source: value.source } : {}),
     ...(isJsonObject(value.evidence) && { evidence: value.evidence }),
+    ...(checks && { checks }),
     ...(questions && { questions }),
     ...(answers && { answers }),
     ...(staleness && { staleness }),
@@ -30049,6 +30671,32 @@ function parseAgentPlanReviewState(value: unknown): AgentPlanReviewState | undef
     ...(typeof value.reviewedPlanFingerprint === 'string' && { reviewedPlanFingerprint: value.reviewedPlanFingerprint }),
     ...(appliedUserPolicyIds && appliedUserPolicyIds.length ? { appliedUserPolicyIds } : {}),
   };
+}
+
+function parseAgentReviewChecks(value: unknown): AgentReviewCheck[] | undefined {
+  if (!Array.isArray(value)) return undefined;
+  const rows: AgentReviewCheck[] = [];
+  for (const entry of value) {
+    if (!isJsonObject(entry)) continue;
+    const label = typeof entry.label === 'string' ? entry.label.trim() : '';
+    const rowValue = typeof entry.value === 'string' ? entry.value.trim() : '';
+    if (!label || !rowValue) continue;
+    const tone = entry.tone === 'good' || entry.tone === 'warn' || entry.tone === 'neutral' || entry.tone === 'fail'
+      ? entry.tone
+      : undefined;
+    const source = entry.source === 'deterministic' || entry.source === 'ai' || entry.source === 'connector' || entry.source === 'user'
+      ? entry.source
+      : undefined;
+    rows.push({
+      label: compactSentence(label, 80),
+      value: compactSentence(rowValue, 360),
+      ...(tone ? { tone } : {}),
+      ...(source ? { source } : {}),
+      ...(isJsonObject(entry.detail) ? { detail: entry.detail } : {}),
+    });
+    if (rows.length >= 24) break;
+  }
+  return rows.length ? rows : undefined;
 }
 
 function parseAgentAskConversation(value: unknown): AgentAskExchange[] | undefined {
@@ -30237,7 +30885,7 @@ function parseAgentReviewFact(value: unknown): AgentReviewFact | undefined {
   ) {
     return undefined;
   }
-  if (value.source !== 'deterministic' && value.source !== 'ai') return undefined;
+  if (value.source !== 'deterministic' && value.source !== 'ai' && value.source !== 'connector') return undefined;
   if (typeof value.checkedAt !== 'string') return undefined;
   return {
     state: value.state,
@@ -30250,7 +30898,7 @@ function parseAgentReviewFact(value: unknown): AgentReviewFact | undefined {
 
 function parseAgentReviewFactSet(value: unknown): AgentReviewFactSet | undefined {
   if (!isJsonObject(value)) return undefined;
-  const slots: Array<keyof AgentReviewFactSet> = ['quote', 'route', 'policy', 'simulation', 'protocol', 'tokenMint', 'recipient', 'limits'];
+  const slots: Array<keyof AgentReviewFactSet> = ['quote', 'route', 'policy', 'simulation', 'protocol', 'protocolConnector', 'blinkAction', 'tokenMint', 'recipient', 'limits', 'schedule'];
   const facts: AgentReviewFactSet = {};
   for (const slot of slots) {
     const fact = parseAgentReviewFact(value[slot]);

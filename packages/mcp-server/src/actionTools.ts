@@ -60,6 +60,47 @@ export function registerActionTools(
   );
 
   server.registerTool(
+    'solana_connector_capabilities',
+    {
+      description:
+        'List MCP protocol connector capabilities, read tools, action tools, limitations, and wallet approval boundaries. Answers what Kamino, Jupiter, Meteora, Raydium, Orca, MarginFi, Drift, Lulo, and Save can do in this runtime.',
+      inputSchema: {
+        connectorId: z.string().min(2).optional().describe('Optional connector id or alias, for example kamino, jupiter, or meteora.'),
+      },
+    },
+    async ({ connectorId }) => traceTool(
+      'solana_connector_capabilities',
+      { cluster: options.config.cluster, connectorId },
+      async () => jsonReply(optionsConnectorCapabilities(service, connectorId)),
+    ),
+  );
+
+  server.registerTool(
+    'solana_connector_read_facts',
+    {
+      description:
+        'Read normalized protocol connector facts as stable JSON. Supports Kamino positions/rewards/markets and Jupiter swap previews today. Unsupported connectors return structured missing-capability errors.',
+      inputSchema: {
+        connectorId: z.string().min(2).describe('Connector id or alias, for example kamino or jupiter.'),
+        capability: connectorCapabilitySchema().optional(),
+        walletAddress: z.string().min(32).optional(),
+        token: z.string().min(2).optional(),
+        reserveMint: z.string().min(32).optional(),
+        inputToken: z.string().min(2).optional(),
+        outputToken: z.string().min(2).optional(),
+        amount: z.string().min(1).optional(),
+        slippageBps: z.number().int().min(1).optional(),
+        taker: z.string().min(32).optional(),
+      },
+    },
+    async (input) => traceTool(
+      'solana_connector_read_facts',
+      { cluster: options.config.cluster, connectorId: input.connectorId, capability: input.capability },
+      async () => jsonReply(await service.connectorReadFacts(input)),
+    ),
+  );
+
+  server.registerTool(
     'solana_get_balances',
     {
       description: 'Read SOL and configured SPL token balances for the connected wallet.',
@@ -136,7 +177,7 @@ export function registerActionTools(
     'solana_prepare_swap',
     {
       description:
-        'Create a durable manual-approval inbox item for a capped swap. Quote and transaction are refreshed at approval time.',
+        'Create a durable manual-approval inbox item for a capped Jupiter swap. Prepares wallet approval work only; does not sign, submit, or grant delegated authority. Quote and transaction are refreshed at approval time.',
       inputSchema: {
         ...swapInputSchema(),
         dueAt: z.string().datetime().optional(),
@@ -154,7 +195,7 @@ export function registerActionTools(
     'solana_prepare_kamino_deposit',
     {
       description:
-        "Create a manual-approval inbox item that deposits a token into a Kamino Lend reserve. Natural-language synonyms: 'stake on Kamino', 'supply to Kamino', 'lend on Kamino', 'earn yield on Kamino'. Mainnet-beta only.",
+        "Create a manual-approval inbox item that deposits a token into a Kamino Lend reserve. Prepares wallet approval work only; does not sign, submit, or grant delegated authority. Natural-language synonyms: 'stake on Kamino', 'supply to Kamino', 'lend on Kamino', 'earn yield on Kamino'. Mainnet-beta only.",
       inputSchema: {
         amount: z.string().min(1).describe('Human token amount, for example 0.5.'),
         token: z.string().min(2).optional().describe('SOL, USDC, JitoSOL, mSOL, bSOL, or a known reserve symbol.'),
@@ -182,7 +223,7 @@ export function registerActionTools(
     'solana_prepare_kamino_withdraw',
     {
       description:
-        "Create a manual-approval inbox item that withdraws supplied tokens from a Kamino Lend reserve. Natural-language synonyms: 'unstake from Kamino', 'redeem from Kamino', 'withdraw on Kamino'. Mainnet-beta only.",
+        "Create a manual-approval inbox item that withdraws supplied tokens from a Kamino Lend reserve. Prepares wallet approval work only; does not sign, submit, or grant delegated authority. Natural-language synonyms: 'unstake from Kamino', 'redeem from Kamino', 'withdraw on Kamino'. Mainnet-beta only.",
       inputSchema: {
         amount: z.string().min(1).optional().describe("Human token amount. Pass 'all' or set withdrawAll to true to redeem the full position."),
         withdrawAll: z.boolean().optional(),
@@ -304,7 +345,7 @@ export function registerActionTools(
     'solana_execute_prepared_action',
     {
       description:
-        'Approve an inbox item now. Rechecks caps and balances, rebuilds a fresh transaction, opens the wallet, signs, and sends.',
+        'Send a prepared inbox item to the wallet for user approval now. Rechecks caps and balances, rebuilds a fresh transaction, opens the wallet, then only the wallet can sign and send.',
       inputSchema: {
         actionId: z.string().min(1),
       },
@@ -455,7 +496,7 @@ export function registerActionTools(
     'solana_get_swap_quote',
     {
       description:
-        'Get a capped Jupiter Swap API v2 order preview for a supported token pair. Does not sign.',
+        'Get a capped Jupiter Swap API v2 order preview and normalized connector facts for a supported token pair. Does not sign.',
       inputSchema: swapInputSchema(),
     },
     async (input) => traceTool(
@@ -466,10 +507,27 @@ export function registerActionTools(
   );
 
   server.registerTool(
+    'solana_jupiter_order_preview',
+    {
+      description:
+        'Get a Jupiter order preview as stable JSON with normalized connector facts. Read-only; does not sign, submit, or grant delegated authority.',
+      inputSchema: {
+        ...swapInputSchema(),
+        taker: z.string().min(32).optional().describe('Optional wallet address for wallet-specific Jupiter preview. Defaults to the connected wallet.'),
+      },
+    },
+    async (input) => traceTool(
+      'solana_jupiter_order_preview',
+      { cluster: options.config.cluster, input },
+      async () => jsonReply(await service.jupiterOrderPreview(input)),
+    ),
+  );
+
+  server.registerTool(
     'solana_swap',
     {
       description:
-        'Create a capped Jupiter Swap API v2 order, request wallet approval, execute the signed transaction, and return the transaction id.',
+        'Create a capped Jupiter Swap API v2 order, request wallet approval, execute the wallet-signed transaction, and return the transaction id. Does not grant delegated authority.',
       inputSchema: swapInputSchema(),
     },
     async (input) => traceTool(
@@ -504,6 +562,31 @@ function swapInputSchema() {
     amount: z.string().min(1),
     slippageBps: z.number().int().min(1).optional(),
   };
+}
+
+function connectorCapabilitySchema() {
+  return z.enum([
+    'positions',
+    'rewards',
+    'markets',
+    'blinks',
+    'swap',
+    'earn',
+    'borrow',
+    'withdraw',
+    'repay',
+    'add_liquidity',
+    'close',
+  ]);
+}
+
+function optionsConnectorCapabilities(
+  service: AgentWalletActionService,
+  connectorId: string | undefined,
+) {
+  return service.connectorCapabilities({
+    ...(connectorId !== undefined && { connectorId }),
+  });
 }
 
 function recurringInputSchema() {

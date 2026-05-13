@@ -95,6 +95,9 @@ export type RecurringCadence = (typeof RECURRING_CADENCES)[number];
 export const RECURRING_SCHEDULE_STATUSES = ['active', 'paused', 'completed', 'cancelled'] as const;
 export type RecurringScheduleStatus = (typeof RECURRING_SCHEDULE_STATUSES)[number];
 
+export const RECURRING_CREATE_SCHEDULE_STATUSES = ['active', 'paused'] as const;
+export type CreateRecurringScheduleStatus = (typeof RECURRING_CREATE_SCHEDULE_STATUSES)[number];
+
 export const RECURRING_ACTION_KINDS = ['transfer', 'swap'] as const;
 export type RecurringActionKind = (typeof RECURRING_ACTION_KINDS)[number];
 
@@ -114,6 +117,12 @@ export type CompletedKind = (typeof COMPLETED_KINDS)[number] | 'one-time';
 
 export const EVIDENCE_RECEIPT_STATUSES = ['approved', 'blocked', 'warn', 'observed'] as const;
 export type EvidenceReceiptStatus = (typeof EVIDENCE_RECEIPT_STATUSES)[number];
+
+export const RECURRING_AGENT_REVIEW_STATUSES = ['checking', 'approved', 'denied', 'needs_input', 'error'] as const;
+export type RecurringAgentReviewStatus = (typeof RECURRING_AGENT_REVIEW_STATUSES)[number];
+
+export const RECURRING_AGENT_REVIEW_DECISIONS = ['approve', 'deny', 'needs_input', ''] as const;
+export type RecurringAgentReviewDecision = (typeof RECURRING_AGENT_REVIEW_DECISIONS)[number];
 
 export const EVIDENCE_RECEIPT_KINDS = [
   'review_proof',
@@ -466,6 +475,32 @@ export interface RecurringOccurrenceRecord {
   metadata?: JsonObject;
 }
 
+export type RecurringAgentReviewMetadata = JsonObject & {
+  agentReview?: JsonObject;
+  agentReviewStatus?: RecurringAgentReviewStatus;
+  agentReviewDecision?: RecurringAgentReviewDecision;
+  agentReviewCheckedAt?: string;
+  agentReviewProvider?: string;
+  agentReviewModel?: string;
+};
+
+export type ConnectorWorkflowMetadata = JsonObject & {
+  connectorId?: string;
+  connectorName?: string;
+  capability?: string;
+  operation?: string;
+  market?: string;
+  pool?: string;
+  reserve?: string;
+  readiness?: JsonValue;
+  factLabels?: string[];
+  actionSource?: string;
+  actionProposal?: JsonObject;
+  approvalBoundary?: string;
+};
+
+export type WorkflowMetadata = JsonObject & RecurringAgentReviewMetadata & ConnectorWorkflowMetadata;
+
 export interface CompletedRecord {
   id: string;
   kind: CompletedKind;
@@ -643,7 +678,7 @@ export interface CreateApprovalRequest {
   token?: string;
   recipient?: string;
   riskMetadata?: JsonObject;
-  metadata?: JsonObject;
+  metadata?: WorkflowMetadata;
 }
 export type CreateApprovalInput = CreateApprovalRequest;
 
@@ -672,6 +707,7 @@ export interface ApprovalListResponse {
 }
 
 export interface CreateRecurringRequest {
+  status?: CreateRecurringScheduleStatus;
   cluster: WorkflowCluster;
   actionKind?: RecurringActionKind;
   token: string;
@@ -694,7 +730,7 @@ export interface CreateRecurringRequest {
   expiresAt?: string;
   notifications?: RecurringNotificationsConfig;
   riskMetadata?: JsonObject;
-  metadata?: JsonObject;
+  metadata?: WorkflowMetadata;
 }
 
 export interface UpdateRecurringRequest {
@@ -721,7 +757,7 @@ export interface UpdateRecurringRequest {
   expiresAt?: string;
   notifications?: RecurringNotificationsConfig;
   riskMetadata?: JsonObject;
-  metadata?: JsonObject;
+  metadata?: WorkflowMetadata;
 }
 
 export interface RecurringListResponse {
@@ -1766,7 +1802,7 @@ export function parseCreateApprovalRequest(input: unknown, path = '$'): CreateAp
     ...optionalStringProp(record, 'token', path),
     ...optionalStringProp(record, 'recipient', path),
     ...optionalJsonObjectProp(record, 'riskMetadata', path),
-    ...optionalJsonObjectProp(record, 'metadata', path),
+    ...optionalWorkflowMetadataProp(record, 'metadata', path),
   };
 }
 
@@ -1782,6 +1818,7 @@ export function parseApprovalListResponse(input: unknown, path = '$'): ApprovalL
 export function parseCreateRecurringRequest(input: unknown, path = '$'): CreateRecurringRequest {
   const record = expectRecord(input, path);
   return {
+    ...optionalEnumProp(record, 'status', RECURRING_CREATE_SCHEDULE_STATUSES, path),
     cluster: expectEnum(record, 'cluster', WORKFLOW_CLUSTERS, path),
     ...optionalEnumProp(record, 'actionKind', RECURRING_ACTION_KINDS, path),
     token: expectString(record, 'token', path),
@@ -1804,7 +1841,7 @@ export function parseCreateRecurringRequest(input: unknown, path = '$'): CreateR
     ...optionalStringProp(record, 'expiresAt', path),
     ...optionalNotificationsProp(record, 'notifications', path),
     ...optionalJsonObjectProp(record, 'riskMetadata', path),
-    ...optionalJsonObjectProp(record, 'metadata', path),
+    ...optionalWorkflowMetadataProp(record, 'metadata', path),
   };
 }
 
@@ -1974,7 +2011,7 @@ export function validateCreateApprovalRequest(body: unknown, path = '$'): Create
     ...(optionalString(input.recurringOccurrenceId, 'recurringOccurrenceId') ? { recurringOccurrenceId: optionalString(input.recurringOccurrenceId, 'recurringOccurrenceId') } : {}),
     ...(optionalString(input.occurrenceKey, 'occurrenceKey') ? { occurrenceKey: optionalString(input.occurrenceKey, 'occurrenceKey') } : {}),
     ...(input.riskMetadata === undefined ? {} : { riskMetadata: requireJsonObject(input.riskMetadata, 'riskMetadata') }),
-    ...(input.metadata === undefined ? {} : { metadata: requireJsonObject(input.metadata, 'metadata') }),
+    ...(input.metadata === undefined ? {} : { metadata: requireWorkflowMetadataObject(input.metadata, 'metadata') }),
   };
 }
 
@@ -2080,6 +2117,7 @@ export function validateCreateRecurringRequest(body: unknown, path = '$'): Creat
     throw new RecurringValidationError('missing_swap_output_token', 'outputToken is required for recurring swaps.');
   }
   const request: CreateRecurringRequest = {
+    ...(input.status !== undefined ? { status: requireCreateScheduleStatus(input.status) } : {}),
     cluster: requireCluster(input.cluster, 'cluster'),
     ...(actionKind !== 'transfer' || input.actionKind !== undefined ? { actionKind } : {}),
     token,
@@ -2102,7 +2140,7 @@ export function validateCreateRecurringRequest(body: unknown, path = '$'): Creat
     ...optionalIsoTimestampField(input.expiresAt, 'expiresAt'),
     ...optionalUserNotificationsField(input.notifications, 'notifications'),
     ...optionalJsonObjectField(input.riskMetadata, 'riskMetadata'),
-    ...optionalJsonObjectField(input.metadata, 'metadata'),
+    ...optionalWorkflowMetadataField(input.metadata, 'metadata'),
   };
   assertCadenceFields(request);
   return request;
@@ -2136,7 +2174,7 @@ export function validateUpdateRecurringRequest(body: unknown): UpdateRecurringRe
   if (input.expiresAt !== undefined) patch.expiresAt = requireIsoTimestamp(input.expiresAt, 'expiresAt');
   if (input.notifications !== undefined) patch.notifications = requireUserNotifications(input.notifications, 'notifications');
   if (input.riskMetadata !== undefined) patch.riskMetadata = requireJsonObject(input.riskMetadata, 'riskMetadata');
-  if (input.metadata !== undefined) patch.metadata = requireJsonObject(input.metadata, 'metadata');
+  if (input.metadata !== undefined) patch.metadata = requireWorkflowMetadataObject(input.metadata, 'metadata');
 
   if (Object.keys(patch).length === 0) {
     throw new RecurringValidationError('empty_patch', 'Recurring update must include at least one mutable field.');
@@ -2873,6 +2911,16 @@ function optionalJsonObjectProp<T extends string>(
   return { [key]: parseJsonObject(value, `${path}.${key}`) } as Partial<Record<T, JsonObject>>;
 }
 
+function optionalWorkflowMetadataProp<T extends string>(
+  record: Record<string, unknown>,
+  key: T,
+  path: string,
+): Partial<Record<T, JsonObject>> {
+  const value = record[key];
+  if (value === undefined) return {};
+  return { [key]: requireWorkflowMetadataObject(value, `${path}.${key}`) } as Partial<Record<T, JsonObject>>;
+}
+
 function optionalFinalizationSupportProp<T extends string>(
   record: Record<string, unknown>,
   key: T,
@@ -3014,6 +3062,95 @@ function optionalSource(value: unknown, fallback: PlanDraftSource | undefined): 
 
 function requireJsonObject(value: unknown, label: string): JsonObject {
   return coerceJsonObject(value, label);
+}
+
+function requireWorkflowMetadataObject(value: unknown, label: string): JsonObject {
+  assertNoForbiddenWorkflowSecrets(value, label);
+  const metadata = requireJsonObject(value, label);
+  validateWorkflowMetadataContract(metadata, label);
+  return metadata;
+}
+
+function validateWorkflowMetadataContract(metadata: JsonObject, label: string): void {
+  if (metadata.agentReview !== undefined && !isPlainObject(metadata.agentReview)) {
+    throw new WorkflowValidationError('invalid_metadata', `${label}.agentReview must be an object.`);
+  }
+  assertOptionalMetadataEnum(
+    metadata,
+    'agentReviewStatus',
+    RECURRING_AGENT_REVIEW_STATUSES,
+    label,
+  );
+  assertOptionalMetadataEnum(
+    metadata,
+    'agentReviewDecision',
+    RECURRING_AGENT_REVIEW_DECISIONS,
+    label,
+  );
+  assertOptionalMetadataIsoTimestamp(metadata, 'agentReviewCheckedAt', label);
+  for (const key of [
+    'agentReviewProvider',
+    'agentReviewModel',
+    'connectorId',
+    'connectorName',
+    'capability',
+    'operation',
+    'market',
+    'pool',
+    'reserve',
+    'actionSource',
+    'approvalBoundary',
+  ]) {
+    assertOptionalMetadataString(metadata, key, label);
+  }
+  assertOptionalMetadataStringArray(metadata, 'factLabels', label);
+  if (metadata.actionProposal !== undefined && !isPlainObject(metadata.actionProposal)) {
+    throw new WorkflowValidationError('invalid_metadata', `${label}.actionProposal must be an object.`);
+  }
+}
+
+function assertOptionalMetadataEnum<const T extends readonly string[]>(
+  metadata: JsonObject,
+  key: string,
+  values: T,
+  label: string,
+): void {
+  const value = metadata[key];
+  if (value === undefined) return;
+  if (typeof value !== 'string' || !values.includes(value as T[number])) {
+    throw new WorkflowValidationError(
+      'invalid_metadata',
+      `${label}.${key} must be one of: ${values.map((entry) => entry || 'empty string').join(', ')}.`,
+    );
+  }
+}
+
+function assertOptionalMetadataString(metadata: JsonObject, key: string, label: string): void {
+  const value = metadata[key];
+  if (value === undefined) return;
+  if (typeof value !== 'string') {
+    throw new WorkflowValidationError('invalid_metadata', `${label}.${key} must be a string.`);
+  }
+}
+
+function assertOptionalMetadataStringArray(metadata: JsonObject, key: string, label: string): void {
+  const value = metadata[key];
+  if (value === undefined) return;
+  if (!Array.isArray(value) || value.some((entry) => typeof entry !== 'string')) {
+    throw new WorkflowValidationError('invalid_metadata', `${label}.${key} must be an array of strings.`);
+  }
+}
+
+function assertOptionalMetadataIsoTimestamp(metadata: JsonObject, key: string, label: string): void {
+  const value = metadata[key];
+  if (value === undefined) return;
+  if (typeof value !== 'string' || !value.trim()) {
+    throw new WorkflowValidationError('invalid_metadata', `${label}.${key} must be an ISO timestamp string.`);
+  }
+  const parsed = new Date(value);
+  if (Number.isNaN(parsed.getTime())) {
+    throw new WorkflowValidationError('invalid_metadata', `${label}.${key} must be a valid ISO timestamp.`);
+  }
 }
 
 function planText(input: Record<string, unknown>, plan: JsonObject, key: string): string {
@@ -3250,6 +3387,16 @@ function requireScheduleStatus(value: unknown): RecurringScheduleStatus {
   return value as RecurringScheduleStatus;
 }
 
+function requireCreateScheduleStatus(value: unknown): CreateRecurringScheduleStatus {
+  if (typeof value !== 'string' || !RECURRING_CREATE_SCHEDULE_STATUSES.includes(value as CreateRecurringScheduleStatus)) {
+    throw new RecurringValidationError(
+      'invalid_status',
+      `status must be one of: ${RECURRING_CREATE_SCHEDULE_STATUSES.join(', ')}.`,
+    );
+  }
+  return value as CreateRecurringScheduleStatus;
+}
+
 function requireRecurringActionKind(value: unknown): RecurringActionKind {
   if (typeof value !== 'string' || !RECURRING_ACTION_KINDS.includes(value as RecurringActionKind)) {
     throw new RecurringValidationError(
@@ -3285,6 +3432,11 @@ function optionalIntegerField<K extends string>(value: unknown, key: K): Partial
 function optionalJsonObjectField<K extends string>(value: unknown, key: K): Partial<Record<K, JsonObject>> {
   if (value === undefined) return {};
   return { [key]: requireJsonObject(value, key) } as Partial<Record<K, JsonObject>>;
+}
+
+function optionalWorkflowMetadataField<K extends string>(value: unknown, key: K): Partial<Record<K, JsonObject>> {
+  if (value === undefined) return {};
+  return { [key]: requireWorkflowMetadataObject(value, key) } as Partial<Record<K, JsonObject>>;
 }
 
 function requireIsoTimestamp(value: unknown, label: string): string {

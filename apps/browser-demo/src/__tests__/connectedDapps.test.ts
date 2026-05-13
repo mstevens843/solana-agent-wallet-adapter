@@ -15,6 +15,7 @@ import {
   isDappEnabled,
   loadConnectedDapps,
   normalizeConnectedDapps,
+  protocolConnectorPlannerContext,
   saveConnectedDapps,
   setConnectedDappEnabled,
 } from '../connectedDapps.js';
@@ -181,6 +182,32 @@ describe('summary copy', () => {
   it('lists enabled connectors for planner context', () => {
     const state = setConnectedDappEnabled(emptyConnectedDapps(), 'meteora', true);
     expect(enabledProtocolConnectors(state, 'mainnet-beta').map((connector) => connector.id)).toEqual(['meteora']);
+  });
+
+  it('can include disabled connector readiness for planner missing-connector answers', () => {
+    const state = setConnectedDappEnabled(emptyConnectedDapps(), 'kamino', true);
+    const context = protocolConnectorPlannerContext(state, 'mainnet-beta', {
+      includeDisabled: true,
+      dialectClientKeyConfigured: false,
+    });
+
+    expect(context.find((entry) => entry.id === 'kamino')).toMatchObject({
+      enabled: true,
+      readiness: 'ready',
+      readApiReady: true,
+      writeActions: expect.arrayContaining([
+        expect.objectContaining({
+          kind: 'kamino_deposit',
+          ready: true,
+          approvalBoundary: 'prepare_only_wallet_approval_required',
+        }),
+      ]),
+    });
+    expect(context.find((entry) => entry.id === 'meteora')).toMatchObject({
+      enabled: false,
+      readiness: 'disabled',
+      limitation: 'Meteora is not enabled in Protocol Connectors.',
+    });
   });
 });
 

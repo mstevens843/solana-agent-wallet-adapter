@@ -1,0 +1,161 @@
+{
+  "$schema": "./connector-pack.schema.json",
+  "id": "lulo",
+  "name": "Lulo",
+  "status": "blink_backed",
+  "aliases": ["lulo"],
+  "supportedClusters": ["mainnet-beta"],
+  "requiredConfig": [
+    {
+      "name": "Dialect client key",
+      "scope": "dialect_client_key",
+      "required": true,
+      "description": "Needed for Lulo position, reward, and market reads. MCP runtime does not expose these reads yet."
+    }
+  ],
+  "readCapabilities": [
+    {
+      "toolName": "dialect_positions",
+      "source": "dialect-markets",
+      "implemented": false,
+      "requiresClientKey": true,
+      "returns": "Planned protected and boosted deposit positions and rewards.",
+      "facts": ["depositAccount", "asset", "balance", "apy", "claimableRewards"]
+    },
+    {
+      "toolName": "dialect_markets",
+      "source": "dialect-markets",
+      "implemented": false,
+      "requiresClientKey": true,
+      "returns": "Planned market APY, liquidity, and action URL facts.",
+      "facts": ["asset", "apy", "liquidity", "actionUrl"]
+    }
+  ],
+  "writeCapabilities": [
+    {
+      "actionKind": "blink_action",
+      "executionMode": "blink",
+      "implemented": false,
+      "prepares": "A planned approval-bound Blink action for deposit, withdraw, or rewards.",
+      "executesVia": "solana_execute_prepared_action",
+      "userApproves": "A Lulo Solana Action transaction after the user reviews asset, amount, APY, and action metadata."
+    }
+  ],
+  "requiredUserInputs": [
+    {
+      "name": "asset",
+      "kind": "text",
+      "required": true,
+      "appliesTo": ["blink_action"],
+      "prompt": "Which asset should Lulo use?"
+    },
+    {
+      "name": "amount",
+      "kind": "number",
+      "required": true,
+      "appliesTo": ["blink_action"],
+      "prompt": "How much should I prepare?"
+    },
+    {
+      "name": "blinkUrl",
+      "kind": "text",
+      "required": true,
+      "appliesTo": ["blink_action"],
+      "prompt": "Paste the Lulo Blink or Solana Action URL."
+    }
+  ],
+  "requiredConnectorFacts": [
+    "Asset mint and decimals",
+    "Deposit account or wallet position",
+    "APY and liquidity facts",
+    "Claimable rewards",
+    "Blink action URL metadata",
+    "Wallet token balance"
+  ],
+  "unsupportedRequests": [
+    "Deposit without asset, amount, or action URL.",
+    "Withdraw without position facts.",
+    "Claim rewards without reward facts or action metadata.",
+    "Guarantee protected yield.",
+    "Operate outside mainnet-beta.",
+    "Move funds without wallet approval."
+  ],
+  "actionPreparationNotes": "Lulo is Blink-backed. Ask for asset, amount, and action URL before prepare. For withdrawals and rewards, require position facts instead of guessing balances.",
+  "riskNotes": "Surface APY, liquidity, and withdrawal constraints when available. Do not describe yield as guaranteed.",
+  "approvalBoundary": {
+    "readGated": true,
+    "writeGated": true,
+    "blinkBacked": true,
+    "summary": "safety.prepare_only"
+  },
+  "walletApprovalBoundary": "Lulo actions are approval-bound. The agent prepares a review item only; the wallet signs separately.",
+  "examples": {
+    "requests": [
+      {
+        "user": "show my Lulo deposits",
+        "classification": "needs_input",
+        "needsInputQuestions": ["Which wallet should I read?"],
+        "agentResponse": "The agent is missing facts needed to decide. Position reads require wallet context."
+      },
+      {
+        "user": "deposit into Lulo",
+        "classification": "needs_input",
+        "needsInputQuestions": ["Which asset?", "How much?", "Paste the Lulo action URL."],
+        "agentResponse": "The agent is missing facts needed to decide. Asset, amount, and action URL are required."
+      },
+      {
+        "user": "deposit 100 USDC into Lulo with this Blink",
+        "classification": "prepare_approval_action",
+        "writeAction": "blink_action",
+        "agentResponse": "Prepared a Lulo deposit Blink review if metadata matches 100 USDC. This prepares a wallet approval request; it does not sign."
+      },
+      {
+        "user": "withdraw from Lulo",
+        "classification": "needs_input",
+        "needsInputQuestions": ["Which asset or position?", "How much?", "Paste the withdrawal action URL."],
+        "agentResponse": "The agent is missing facts needed to decide. Withdrawal needs position, amount, and action metadata."
+      },
+      {
+        "user": "claim Lulo rewards",
+        "classification": "needs_input",
+        "needsInputQuestions": ["Which reward position?", "Paste the rewards action URL."],
+        "agentResponse": "The agent is missing facts needed to decide. Reward facts and action metadata are required."
+      },
+      {
+        "user": "guarantee Lulo protected yield",
+        "classification": "unsupported",
+        "denialReason": "safety.no_safety_guarantee",
+        "agentResponse": "The agent denied this because it cannot guarantee yield or safety."
+      },
+      {
+        "user": "Lulo action on devnet",
+        "classification": "unsupported",
+        "denialReason": "safety.action_not_exposed",
+        "agentResponse": "The agent denied this because Lulo connector actions are cataloged for mainnet-beta only."
+      },
+      {
+        "user": "move funds into Lulo without my wallet",
+        "classification": "unsupported",
+        "denialReason": "safety.no_autonomous_funds",
+        "agentResponse": "The agent denied this because the connector cannot move funds without wallet approval."
+      },
+      {
+        "user": "deposit all my tokens into Lulo",
+        "classification": "unsupported",
+        "denialReason": "safety.missing_facts",
+        "agentResponse": "The agent denied this because an exact asset and amount are required."
+      },
+      {
+        "user": "use Lulo while connector is disabled",
+        "classification": "unsupported",
+        "denialReason": "safety.connector_disabled",
+        "agentResponse": "The agent denied this because this connector is not enabled."
+      }
+    ]
+  },
+  "mirrorsCanonical": {
+    "file": "apps/browser-demo/src/connectedDapps.ts",
+    "entry": "lulo",
+    "note": "Mirrors Lulo browser catalog support for Blink-backed deposit, withdrawal, and reward actions."
+  }
+}

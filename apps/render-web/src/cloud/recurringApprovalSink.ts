@@ -1,9 +1,12 @@
 import type {
   ApprovalSink,
+  JsonObject,
   ApprovalStatusReader,
   RecurringOccurrenceApprovalSummary,
   RecurringOccurrenceCompletedSummary,
   RecurringOccurrenceHistoryHydrator,
+  RecurringOccurrenceRecord,
+  RecurringScheduleRecord,
 } from './recurringService.js';
 import type { WorkflowService, WorkflowStore } from './workflowService.js';
 
@@ -61,6 +64,7 @@ export function createRecurringApprovalSink(workflowService: WorkflowService): A
         recurringScheduleId: schedule.id,
         recurringOccurrenceId: occurrence.id,
         occurrenceKey: occurrence.occurrenceKey,
+        metadata: recurringApprovalMetadata(schedule, occurrence, isSwap ? 'swap' : 'transfer'),
         ...(schedule.note ? { note: schedule.note } : {}),
       },
     );
@@ -155,4 +159,66 @@ function uniqueById<T extends { id: string }>(records: T[]): T[] {
     unique.push(record);
   }
   return unique;
+}
+
+function recurringApprovalMetadata(
+  schedule: RecurringScheduleRecord,
+  occurrence: RecurringOccurrenceRecord,
+  actionKind: 'swap' | 'transfer',
+): JsonObject {
+  const metadata = schedule.metadata;
+  return {
+    recurringScheduleId: schedule.id,
+    recurringOccurrenceId: occurrence.id,
+    occurrenceKey: occurrence.occurrenceKey,
+    actionKind,
+    ...(stringValue(metadata?.connectorId) ? { connectorId: stringValue(metadata?.connectorId) } : {}),
+    ...(stringValue(metadata?.connectorName) ? { connectorName: stringValue(metadata?.connectorName) } : {}),
+    ...(stringValue(metadata?.operation) ? { operation: stringValue(metadata?.operation) } : {}),
+    ...(stringValue(metadata?.capability) ? { capability: stringValue(metadata?.capability) } : {}),
+    ...(stringValue(metadata?.agentReviewStatus) ? { agentReviewStatus: stringValue(metadata?.agentReviewStatus) } : {}),
+    ...(stringValue(metadata?.agentReviewDecision) ? { agentReviewDecision: stringValue(metadata?.agentReviewDecision) } : {}),
+    ...(reviewText(metadata, ['agentReviewSummary', 'reviewSummary', 'summary'])
+      ? { agentReviewSummary: reviewText(metadata, ['agentReviewSummary', 'reviewSummary', 'summary']) }
+      : {}),
+    ...(reviewText(metadata, ['agentReviewReason', 'reason', 'decisionReason', 'denialReason'])
+      ? { agentReviewReason: reviewText(metadata, ['agentReviewReason', 'reason', 'decisionReason', 'denialReason']) }
+      : {}),
+    ...(stringArray(metadata?.factLabels) ? { factLabels: stringArray(metadata?.factLabels) } : {}),
+    approvalBoundary: stringValue(metadata?.approvalBoundary) ??
+      'Wallet approval is required for every recurring occurrence; the agent does not sign or submit transactions.',
+  };
+}
+
+function reviewText(metadata: JsonObject | undefined, keys: string[]): string | undefined {
+  if (!metadata) return undefined;
+  const review = jsonRecord(metadata.agentReview);
+  for (const key of keys) {
+    const value = stringValue(metadata[key]);
+    if (value) return boundedString(value);
+  }
+  if (!review) return undefined;
+  for (const key of keys) {
+    const value = stringValue(review[key]);
+    if (value) return boundedString(value);
+  }
+  return undefined;
+}
+
+function stringValue(value: unknown): string | undefined {
+  return typeof value === 'string' && value.trim() ? value.trim() : undefined;
+}
+
+function stringArray(value: unknown): string[] | undefined {
+  if (!Array.isArray(value) || !value.every((entry) => typeof entry === 'string')) return undefined;
+  return value.slice(0, 12);
+}
+
+function jsonRecord(value: unknown): JsonObject | undefined {
+  return value && typeof value === 'object' && !Array.isArray(value) ? value as JsonObject : undefined;
+}
+
+function boundedString(value: string): string {
+  const trimmed = value.trim();
+  return trimmed.length <= 240 ? trimmed : `${trimmed.slice(0, 237)}...`;
 }

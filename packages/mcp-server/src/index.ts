@@ -26,6 +26,33 @@ export {
   assertPreparedActionExecutable,
   preparedFailureStatus,
 } from './actionService.js';
+export {
+  CONNECTOR_APPROVAL_BOUNDARY,
+  CONNECTOR_REGISTRY,
+  connectorRegistryPromptContext,
+  getConnector,
+  listConnectorCapabilities,
+} from './connectorRegistry.js';
+export type {
+  ConnectorCapability,
+  ConnectorCapabilityView,
+  ConnectorExecutionMode,
+  ConnectorId,
+  ConnectorReadiness,
+  ConnectorRegistryEntry,
+} from './connectorRegistry.js';
+export {
+  fact,
+  factsFromJupiterOrderPreview,
+  factsFromKaminoEarningsProof,
+  factsFromKaminoPositions,
+  factsFromKaminoReserveSnapshot,
+} from './connectorFacts.js';
+export type {
+  ConnectorFact,
+  ConnectorFactReadInput,
+  ConnectorFactTone,
+} from './connectorFacts.js';
 export type {
   AgentWalletActionServiceOptions,
   PrepareSwapInput,

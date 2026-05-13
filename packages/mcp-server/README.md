@@ -17,6 +17,8 @@ Base wallet tools:
 Bridge mode also exposes higher-level tools:
 
 - `solana_wallet_status`
+- `solana_connector_capabilities`
+- `solana_connector_read_facts`
 - `solana_get_balances`
 - `solana_portfolio_summary`
 - `solana_prepare_transfer_sol`
@@ -36,6 +38,7 @@ Bridge mode also exposes higher-level tools:
 - `solana_transfer_sol`
 - `solana_transfer_spl`
 - `solana_get_swap_quote`
+- `solana_jupiter_order_preview`
 - `solana_swap`
 
 Signing tools return an `ApprovalResource`. Compatibility clients poll with `solana_check_approval`; clients that support URL elicitation can render `approvalUri` as the out-of-band wallet approval path. `solana_simulate_transaction` returns a preview only when the selected backend supports simulation. Product-level tools are thin wrappers around `AgentWalletActionService`, which is also used by the HTTP bridge, CLI, browser demo, and desktop shell.

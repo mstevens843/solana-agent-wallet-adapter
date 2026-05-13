@@ -168,14 +168,43 @@ describe('mcp server tools', () => {
 
     const result = await client.listTools();
     expect(result.tools.map((tool) => tool.name)).toContain('solana_useful_prompts');
+    expect(result.tools.map((tool) => tool.name)).toContain('solana_connector_capabilities');
+    expect(result.tools.map((tool) => tool.name)).toContain('solana_connector_read_facts');
     expect(result.tools.map((tool) => tool.name)).toContain('solana_wallet_status');
     expect(result.tools.map((tool) => tool.name)).toContain('solana_portfolio_summary');
     expect(result.tools.map((tool) => tool.name)).toContain('solana_prepare_transfer_sol');
+    expect(result.tools.map((tool) => tool.name)).toContain('solana_prepare_kamino_deposit');
     expect(result.tools.map((tool) => tool.name)).toContain('solana_list_prepared_actions');
     expect(result.tools.map((tool) => tool.name)).toContain('solana_execute_prepared_action');
     expect(result.tools.map((tool) => tool.name)).toContain('solana_create_recurring_payment');
     expect(result.tools.map((tool) => tool.name)).toContain('solana_transfer_sol');
+    expect(result.tools.map((tool) => tool.name)).toContain('solana_jupiter_order_preview');
     expect(result.tools.map((tool) => tool.name)).toContain('solana_swap');
+  });
+
+  it('describes connector write tools as wallet approval bounded', async () => {
+    await closeServer?.();
+    closeServer = undefined;
+
+    const linked = InMemoryTransport.createLinkedPair();
+    const server = createServer({
+      backend: createMockBackend(),
+      actionConfig: DEFAULT_CONFIG,
+    });
+    client = new Client({ name: 'mcp-server-test', version: '0.0.0' });
+    await Promise.all([server.connect(linked[1]), client.connect(linked[0])]);
+    closeServer = async () => {
+      await Promise.all([client.close(), server.close()]);
+    };
+
+    const result = await client.listTools();
+    const kaminoDeposit = result.tools.find((tool) => tool.name === 'solana_prepare_kamino_deposit');
+    const prepareSwap = result.tools.find((tool) => tool.name === 'solana_prepare_swap');
+
+    expect(kaminoDeposit?.description).toContain('Prepares wallet approval work only');
+    expect(kaminoDeposit?.description).toContain('does not sign, submit, or grant delegated authority');
+    expect(prepareSwap?.description).toContain('does not sign');
+    expect(prepareSwap?.description).toContain('delegated authority');
   });
 
   it('returns stable useful prompts when action config is supplied', async () => {
@@ -199,6 +228,34 @@ describe('mcp server tools', () => {
     expect(payload.worksNow[0].category).toBe('Wallet status');
     expect(JSON.stringify(payload)).toContain('Use solana-agent-wallet to show my wallet status.');
     expect(JSON.stringify(payload)).toContain('roadmapNotAutomatedYet');
+  });
+
+  it('returns connector capabilities through the MCP tool', async () => {
+    await closeServer?.();
+    closeServer = undefined;
+
+    const linked = InMemoryTransport.createLinkedPair();
+    const server = createServer({
+      backend: createMockBackend(),
+      actionConfig: DEFAULT_CONFIG,
+    });
+    client = new Client({ name: 'mcp-server-test', version: '0.0.0' });
+    await Promise.all([server.connect(linked[1]), client.connect(linked[0])]);
+    closeServer = async () => {
+      await Promise.all([client.close(), server.close()]);
+    };
+
+    const result = await callTool('solana_connector_capabilities', { connectorId: 'meteora' });
+    const payload = JSON.parse(textOf(result));
+
+    expect(payload.connectors).toHaveLength(1);
+    expect(payload.connectors[0]).toMatchObject({
+      id: 'meteora',
+      executionMode: 'unavailable',
+      readiness: {
+        reads: { ready: false },
+      },
+    });
   });
 
   it('allows arbitrary mainnet transaction signing through wallet approval', async () => {

@@ -448,6 +448,108 @@ export function defaultTemplateFieldValues(template: AgentPlanTemplate): Record<
   return Object.fromEntries(template.fields.map((fieldDef) => [fieldDef.id, fieldDef.defaultValue ?? '']));
 }
 
+export function inferTemplateIdForPrompt(prompt: string, fallbackTemplateId = 'custom-request'): string {
+  const text = normalizePromptText(prompt);
+  if (!text) return fallbackTemplateId;
+  if (/\b(?:why\s+did\s+the\s+agent\s+deny|what\s+(?:facts|info|information)\s+(?:are\s+)?missing|what\s+is\s+missing)\b/.test(text)) {
+    return fallbackTemplateId;
+  }
+  if (/\bkamino\b/.test(text)) {
+    if (/\b(?:withdraw|redeem|remove|take\s+out)\b/.test(text)) return 'kamino-withdraw';
+    if (/\b(?:stake|supply|deposit|lend|earn)\b/.test(text)) return 'kamino-deposit';
+    if (/\b(?:earning|earnings|reward|rewards|yield|interest|show|check|proof)\b/.test(text)) return 'kamino-earnings-proof';
+  }
+  if (/\b(?:meteora|dlmm)\b/.test(text) && /\b(?:position|positions|fee|fees|reward|rewards|check|show|status)\b/.test(text)) {
+    return 'protocol-position-check';
+  }
+  if (/\b(?:blink|solana-action|action\s+url)\b/.test(text)) return 'protocol-blink-action';
+  if (/\b(?:can|does|which)\b.*\b(?:connector|protocol)\b.*\b(?:do|support|capable|capability|action|read|write)\b/.test(text)) {
+    return 'protocol-position-check';
+  }
+  if (/\b(?:dca|dollar\s+cost|weekly\s+(?:buy|swap)|monthly\s+(?:buy|swap))\b/.test(text)) return 'dca';
+  if (/\b(?:repeat|recurring|subscription|every\s+(?:monday|tuesday|wednesday|thursday|friday|saturday|sunday|week|month)|weekly\s+pay|monthly\s+pay)\b/.test(text)) {
+    return 'subscription';
+  }
+  if (/\b(?:swap|trade|exchange|convert)\b/.test(text)) return 'swap';
+  if (/\b(?:send|pay|transfer)\b/.test(text)) {
+    const amountToken = amountTokenFromPrompt(prompt);
+    if (amountToken?.token.toUpperCase() === 'SOL') return 'transfer-sol';
+    return amountToken ? 'transfer-token' : fallbackTemplateId;
+  }
+  return fallbackTemplateId;
+}
+
+export function inferredTemplateParameters(
+  template: AgentPlanTemplate,
+  prompt: string,
+  baseParameters: Record<string, string> = {},
+): Record<string, string> {
+  const next = { ...defaultTemplateFieldValues(template), ...baseParameters };
+  const promptText = prompt.trim();
+  const amountToken = amountTokenFromPrompt(prompt);
+  const swap = swapTokensFromPrompt(prompt);
+  const protocol = protocolFromPrompt(prompt);
+  const position = solanaAddressFromPrompt(prompt);
+  const cadence = cadenceFromPrompt(prompt);
+  const recipient = recipientFromPrompt(prompt);
+
+  switch (template.id) {
+    case 'swap':
+      if (swap.inputToken) next.inputToken = swap.inputToken;
+      if (swap.outputToken) next.outputToken = swap.outputToken;
+      if (swap.amount) next.amount = swap.amount;
+      break;
+    case 'transfer-sol':
+      if (recipient) next.recipient = recipient;
+      if (amountToken?.amount) next.amount = amountToken.amount;
+      break;
+    case 'transfer-token':
+      if (recipient) next.recipient = recipient;
+      if (amountToken?.amount) next.amount = amountToken.amount;
+      if (amountToken?.token) next.token = amountToken.token;
+      break;
+    case 'subscription':
+      if (recipient) next.recipient = recipient;
+      if (amountToken?.amount) next.amount = amountToken.amount;
+      if (amountToken?.token) next.token = amountToken.token;
+      if (cadence) next.cadence = cadence;
+      next.memo = promptText || next.memo || '';
+      break;
+    case 'dca':
+      if (amountToken?.amount) next.amount = amountToken.amount;
+      if (amountToken?.token) next.token = amountToken.token;
+      if (recipient) next.recipient = recipient;
+      if (cadence) next.cadence = cadence;
+      next.memo = promptText || next.memo || '';
+      break;
+    case 'kamino-deposit':
+    case 'kamino-withdraw':
+      if (amountToken?.amount) next.amount = amountToken.amount;
+      if (amountToken?.token) next.token = amountToken.token;
+      next.memo = promptText || next.memo || '';
+      break;
+    case 'kamino-earnings-proof':
+      if (amountToken?.token) next.token = amountToken.token;
+      next.memo = promptText || next.memo || '';
+      break;
+    case 'protocol-position-check':
+      if (protocol) next.protocol = protocol;
+      if (position) next.position = position;
+      next.question = protocolQuestionFromPrompt(prompt) || next.question || '';
+      next.memo = promptText || next.memo || '';
+      break;
+    case 'protocol-blink-action':
+      if (protocol) next.protocol = protocol;
+      if (position) next.position = position;
+      if (amountToken) next.amount = `${amountToken.amount} ${amountToken.token}`;
+      next.operation = protocolOperationFromPrompt(prompt) || next.operation || '';
+      next.blinkUrl = blinkUrlFromPrompt(prompt) || next.blinkUrl || '';
+      next.memo = promptText || next.memo || '';
+      break;
+  }
+  return next;
+}
+
 export function templateFieldLabel(template: AgentPlanTemplate, id: string): string {
   return template.fields.find((fieldDef) => fieldDef.id === id)?.label ?? titleCase(id);
 }
@@ -1110,7 +1212,7 @@ export function aiAskMessages(request: AgentPlanAskRequest): Array<{ role: 'syst
     {
       role: 'system',
       content:
-        'You answer the user\'s question about a Solana wallet action plan. Be concise: 1 to 3 sentences, plain English. Cite plan fields you reference by name (e.g., recipient, amount, slippageBps). Never claim anything is signed, submitted, guaranteed safe, or already approved. Never request private keys. If the question cannot be answered from the plan, say so plainly.',
+        'You answer the user\'s question about a Solana wallet action plan. Be concise: 1 to 4 sentences, plain English. Support questions about what happens on approval, what is missing, why an agent denied, which connector is used, whether a connector can sign, whether a repeat auto-pays, what facts were read, whether a route is fixed or selected later, what changed, and risks. Use plan fields, context.facts, executionPath, protocolConnectors, and connector read/write capability notes when present. Cite plan fields you reference by name (e.g., recipient, amount, slippageBps) or connector facts by label. Never claim anything is signed, submitted, guaranteed safe, or already approved. Never say a connector can sign for the user; connectors can only read facts or prepare wallet-gated work. If the question cannot be answered from the plan or facts, say so plainly and state what fact is missing.',
     },
     {
       role: 'user',
@@ -1302,7 +1404,7 @@ export function aiMessages(request: AiPlanRequest): Array<{ role: 'system' | 'us
     {
       role: 'system',
       content:
-        'You convert Solana wallet user requests into structured approval plans. Return only JSON with string fields intent, route, risk, approval, and safeguards as an array of short strings. When parameters include `inputTokenLabel`, `outputTokenLabel`, or `tokenLabel`, ALWAYS use those resolved symbols (for example "POPCAT") in the prose fields (intent, route, risk, approval, safeguards). Never substitute a different ticker for one provided in the parameter labels, and never invent a symbol when only a mint address is present. If a label is missing, refer to the token by its short mint form (first 4 + last 4 characters). Never claim a transaction is signed, submitted, approved, or safe. Never request private keys. The wallet user must approve separately.',
+        'You convert Solana wallet user requests into structured approval plans. Return only JSON with string fields intent, route, risk, approval, and safeguards as an array of short strings. Support swaps, DCA/repeat instructions, scheduled payments, Kamino supply/withdraw/earnings, Meteora position checks, Blink actions, connector capability questions, denial reasons, and missing-fact questions. Use protocol connector context to explain which enabled reads can inform the plan and which enabled write actions can only prepare wallet approval work. If a requested connector is disabled or missing, state the connector name and make the plan read-only/proof-only instead of inventing execution. When parameters include `inputTokenLabel`, `outputTokenLabel`, or `tokenLabel`, ALWAYS use those resolved symbols (for example "POPCAT") in the prose fields (intent, route, risk, approval, safeguards). Never substitute a different ticker for one provided in the parameter labels, and never invent a symbol when only a mint address is present. If a label is missing, refer to the token by its short mint form (first 4 + last 4 characters). Never claim a transaction is signed, submitted, approved, or safe. Never request private keys. The wallet user must approve separately.',
     },
     {
       role: 'user',
@@ -1312,7 +1414,7 @@ export function aiMessages(request: AiPlanRequest): Array<{ role: 'system' | 'us
         template: request.template,
         parameters: request.parameters,
         protocolConnectors: request.connectorContext ?? [],
-        connectorRule: 'Only propose first-class or Blink executable actions for enabled connectors with matching capabilities. If a requested protocol/action is not present, make the plan proof/read-only and state what connector fact or action URL is missing.',
+        connectorRule: 'Only propose first-class or Blink executable actions for enabled connectors with matching capabilities. If a requested protocol/action is disabled, unsupported, or missing an action URL/client key, make the plan proof/read-only and state which connector fact, key, or action URL is missing.',
         requiredBoundary: 'AI prepares a plan only. Wallet approval and signing happen later in the user wallet.',
       }),
     },
@@ -1324,7 +1426,7 @@ export function aiReviewMessages(request: AgentPlanReviewRequest): Array<{ role:
     {
       role: 'system',
       content:
-        'You review a Solana wallet action draft before it is sent for wallet approval. Return only JSON with: decision ("approve", "deny", or "needs_input"); reason as one or two concise sentences; summary as one short sentence; evidence as an object. When you cannot decide because user intent is genuinely ambiguous, return decision "needs_input" plus a "questions" array with 1-3 short, specific questions answerable in under 20 words. Each question is an object with id (short slug), prompt (the question text), inputKind ("text" | "select" | "number"), and required (true/false). Use "needs_input" only when the missing information is something the user must supply, such as a missing amount, missing token, or missing recipient. Do not use "needs_input" for facts that are present in the plan, context.facts, context.executionPath, or facts you can infer. For browser swap drafts, Jupiter is the execution aggregator unless context says otherwise; do not ask the user which DEX/protocol will execute it. If a token mint address is present, review that mint address; do not ask the user what token it is or whether they verified it. If token metadata is missing, return approve or deny with a warning, not needs_input. If the context includes "userPolicies", treat each as a soft rule the user wants you to honor: factor them into your decision and cite the relevant policy id in evidence.policiesApplied when one influences the outcome. Be flexible: use the user instruction and available facts, not a fixed checklist. Never claim anything is signed, submitted, guaranteed safe, or already approved. Never request private keys. The wallet user must still approve separately.',
+        'You review a Solana wallet action draft before it is sent for wallet approval. Return only JSON with: decision ("approve", "deny", or "needs_input"); reason as one or two concise sentences; summary as one short sentence; evidence as an object. Put flexible user-facing findings in evidence.findings as an array of {label,value,tone}, where tone is good, warn, neutral, or fail. Findings must match the user request and connector facts; do not force route/quote/slippage rows when they do not apply. When you cannot decide because user intent is genuinely ambiguous, return decision "needs_input" plus a "questions" array with 1-3 short, specific questions answerable in under 20 words. Each question object must include id, prompt, inputKind ("text" | "select" | "number"), and required. Use "needs_input" only when the missing information is something the user must supply, such as a missing amount, missing token, or missing recipient. Do not use "needs_input" for facts that are present in the plan, context.facts, context.executionPath, or facts you can infer. For browser swap or recurring-swap drafts, Jupiter is the execution aggregator unless context says otherwise; do not ask the user which DEX/protocol will execute it. If a token mint address is present, review that mint address; do not ask the user what token it is or whether they verified it. If token metadata is missing, return approve or deny with a warning, not needs_input. If context includes protocolConnectors or connector facts, use reads as evidence and treat writes as prepare-only wallet-approval actions. If the context includes "userPolicies", treat each as a soft rule the user wants you to honor: factor them into your decision and cite the relevant policy id in evidence.policiesApplied when one influences the outcome. Be flexible: use the user instruction and available facts, not a fixed checklist. Never claim anything is signed, submitted, guaranteed safe, or already approved. Never request private keys. The wallet user must still approve separately.',
     },
     {
       role: 'user',
@@ -1540,6 +1642,113 @@ function textareaField(id: string, label: string, placeholder = '', defaultValue
 
 function selectField(id: string, label: string, options: string[], defaultValue: string): AgentPlanTemplateField {
   return { id, label, options, defaultValue, type: 'select' };
+}
+
+function normalizePromptText(prompt: string): string {
+  return prompt.trim().toLowerCase().replace(/\s+/g, ' ');
+}
+
+function amountTokenFromPrompt(prompt: string): { amount: string; token: string } | undefined {
+  const token = '(SOL|USDC|JUP|BONK|WIF|PYUSD|JitoSOL|mSOL|bSOL)';
+  const amount = '(\\d+(?:\\.\\d+)?)';
+  const amountThenToken = new RegExp(`\\b${amount}\\s*${token}\\b`, 'i').exec(prompt);
+  if (amountThenToken?.[1] && amountThenToken[2]) {
+    return { amount: amountThenToken[1], token: normalizeTokenCase(amountThenToken[2]) };
+  }
+  const tokenThenAmount = new RegExp(`\\b${token}\\s*${amount}\\b`, 'i').exec(prompt);
+  if (tokenThenAmount?.[1] && tokenThenAmount[2]) {
+    return { amount: tokenThenAmount[2], token: normalizeTokenCase(tokenThenAmount[1]) };
+  }
+  return undefined;
+}
+
+function swapTokensFromPrompt(prompt: string): { amount?: string; inputToken?: string; outputToken?: string } {
+  const token = '([A-Za-z][A-Za-z0-9]{1,11})';
+  const amount = '(\\d+(?:\\.\\d+)?)';
+  const withAmount = new RegExp(`\\b(?:swap|trade|exchange|convert)\\s+${amount}\\s+${token}\\s+(?:to|for|into)\\s+${token}\\b`, 'i').exec(prompt);
+  if (withAmount?.[1] && withAmount[2] && withAmount[3]) {
+    return {
+      amount: withAmount[1],
+      inputToken: normalizeTokenCase(withAmount[2]),
+      outputToken: normalizeTokenCase(withAmount[3]),
+    };
+  }
+  const noAmount = new RegExp(`\\b(?:swap|trade|exchange|convert)\\s+${token}\\s+(?:to|for|into)\\s+${token}\\b`, 'i').exec(prompt);
+  if (noAmount?.[1] && noAmount[2]) {
+    return {
+      inputToken: normalizeTokenCase(noAmount[1]),
+      outputToken: normalizeTokenCase(noAmount[2]),
+    };
+  }
+  const arrow = new RegExp(`\\b${amount}\\s+${token}\\s*(?:->|→|to|into)\\s*${token}\\b`, 'i').exec(prompt);
+  if (arrow?.[1] && arrow[2] && arrow[3]) {
+    return {
+      amount: arrow[1],
+      inputToken: normalizeTokenCase(arrow[2]),
+      outputToken: normalizeTokenCase(arrow[3]),
+    };
+  }
+  return {};
+}
+
+function normalizeTokenCase(value: string): string {
+  const trimmed = value.trim();
+  const lower = trimmed.toLowerCase();
+  if (lower === 'jitosol') return 'JitoSOL';
+  if (lower === 'msol') return 'mSOL';
+  if (lower === 'bsol') return 'bSOL';
+  return trimmed.toUpperCase();
+}
+
+function protocolFromPrompt(prompt: string): string | undefined {
+  const text = normalizePromptText(prompt);
+  const protocols = ['Kamino', 'Jupiter', 'Raydium', 'Orca', 'Meteora', 'MarginFi', 'Drift', 'Lulo', 'Save'];
+  return protocols.find((protocol) => text.includes(protocol.toLowerCase()));
+}
+
+function solanaAddressFromPrompt(prompt: string): string | undefined {
+  return /\b[1-9A-HJ-NP-Za-km-z]{32,44}\b/.exec(prompt)?.[0];
+}
+
+function recipientFromPrompt(prompt: string): string | undefined {
+  const address = solanaAddressFromPrompt(prompt);
+  if (address) return address;
+  return undefined;
+}
+
+function cadenceFromPrompt(prompt: string): string | undefined {
+  const text = normalizePromptText(prompt);
+  if (/\bmonthly|every\s+month\b/.test(text)) return 'monthly';
+  if (/\bdaily|every\s+day\b/.test(text)) return 'interval_days';
+  if (/\bweekly|every\s+week|every\s+(?:monday|tuesday|wednesday|thursday|friday|saturday|sunday)\b/.test(text)) return 'weekly';
+  return undefined;
+}
+
+function protocolQuestionFromPrompt(prompt: string): string | undefined {
+  const text = normalizePromptText(prompt);
+  if (/\b(?:reward|rewards)\b/.test(text)) return 'Rewards';
+  if (/\b(?:fee|fees)\b/.test(text)) return 'Fees';
+  if (/\bunlock|cooldown|delay\b/.test(text)) return 'Unlock timing';
+  if (/\baction|actions|can\b/.test(text)) return 'Available actions';
+  if (/\bstatus|position|check|show\b/.test(text)) return 'Status';
+  return undefined;
+}
+
+function protocolOperationFromPrompt(prompt: string): string | undefined {
+  const text = normalizePromptText(prompt);
+  if (/\bclaim\b.*\b(?:fee|fees)\b/.test(text)) return 'Claim fees';
+  if (/\bclaim\b.*\b(?:reward|rewards)\b/.test(text)) return 'Claim rewards';
+  if (/\bwithdraw\b.*\bliquidity\b/.test(text)) return 'Withdraw liquidity';
+  if (/\bclose\b/.test(text)) return 'Close position';
+  if (/\bdeposit|supply\b/.test(text)) return 'Deposit';
+  if (/\bborrow\b/.test(text)) return 'Borrow';
+  if (/\brepay\b/.test(text)) return 'Repay';
+  if (/\bswap\b/.test(text)) return 'Swap';
+  return undefined;
+}
+
+function blinkUrlFromPrompt(prompt: string): string | undefined {
+  return /\b(?:blink:[^\s]+|solana-action:[^\s]+|https:\/\/[^\s]+)\b/i.exec(prompt)?.[0];
 }
 
 const SWAP_TEXT_TOKENS = ['USDC', 'SOL', 'JUP', 'BONK', 'WIF', 'PYUSD'];

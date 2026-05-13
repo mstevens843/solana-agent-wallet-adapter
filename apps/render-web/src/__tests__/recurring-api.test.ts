@@ -15,6 +15,7 @@ import { createRecurringApiHandler } from '../cloud/recurringRoutes.js';
 import {
   MemoryRecurringStore,
   RecurringService,
+  RecurringServiceError,
   type RecurringAuditEvent,
   type RecurringOccurrenceRecord,
   type RecurringScheduleRecord,
@@ -72,6 +73,28 @@ describe('cloud recurring scheduler API', () => {
     });
   });
 
+  it('rejects terminal schedule states on recurring create requests', async () => {
+    await withRecurringServer(async ({ port, service }) => {
+      const completed = await postJson(port, '/api/recurring', {
+        ...validCreateBody(),
+        status: 'completed',
+      }, walletA);
+      const cancelled = await postJson(port, '/api/recurring', {
+        ...validCreateBody(),
+        status: 'cancelled',
+      }, walletA);
+
+      expect(completed.status).toBe(400);
+      expect(completed.body.error).toBe('invalid_status');
+      expect(cancelled.status).toBe(400);
+      expect(cancelled.body.error).toBe('invalid_status');
+      await expect(service.createSchedule({ walletAddress: walletA }, {
+        ...parseCreate(validCreateBody()),
+        status: 'completed',
+      } as unknown as Parameters<RecurringService['createSchedule']>[1])).rejects.toBeInstanceOf(RecurringServiceError);
+    });
+  });
+
   it('creates, lists, updates, and deletes recurring schedules', async () => {
     await withRecurringServer(async ({ port, setNow }) => {
       setNow(new Date('2026-05-01T12:00:00Z'));
@@ -125,6 +148,91 @@ describe('cloud recurring scheduler API', () => {
       const after = await postJson(port, '/api/recurring/materialize-due', {}, walletA);
       const afterResults = (after.body as { results: { reason: string }[] }).results;
       expect(afterResults[0]?.reason).toBe('created');
+    });
+  });
+
+  it('creates paused agent-reviewed schedules, resumes after agent re-review, and records safe audit transitions', async () => {
+    await withRecurringServer(async ({ port, setNow, store }) => {
+      setNow(new Date('2026-05-01T12:00:00Z'));
+      const created = await postJson(port, '/api/recurring', {
+        ...validIntervalMinutesBody(),
+        status: 'paused',
+        metadata: deniedAgentMetadata(),
+      }, walletA);
+      expect(created.status).toBe(201);
+      const schedule = created.body.schedule as RecurringScheduleRecord;
+      expect(schedule).toMatchObject({
+        status: 'paused',
+        metadata: {
+          agentReviewStatus: 'denied',
+          connectorId: 'kamino',
+        },
+      });
+
+      setNow(new Date('2026-05-01T12:10:00Z'));
+      const paused = await postJson(port, '/api/recurring/materialize-due', {}, walletA);
+      expect((paused.body as { results: { reason: string }[] }).results[0]?.reason).toBe('paused');
+
+      const resumed = await patchJson(port, `/api/recurring/${schedule.id}`, {
+        status: 'active',
+        metadata: approvedAgentMetadata(),
+      }, walletA);
+      expect(resumed.status).toBe(200);
+      expect((resumed.body.schedule as RecurringScheduleRecord).status).toBe('active');
+
+      const manualPause = await postJson(port, `/api/recurring/${schedule.id}/pause`, {}, walletA);
+      expect(manualPause.status).toBe(200);
+      const manualResume = await postJson(port, `/api/recurring/${schedule.id}/resume`, {}, walletA);
+      expect(manualResume.status).toBe(200);
+      const echoed = await patchJson(port, `/api/recurring/${schedule.id}`, {
+        note: 'User updated note after review',
+        metadata: approvedAgentMetadata(),
+      }, walletA);
+      expect(echoed.status).toBe(200);
+
+      const events = store.auditEventsFor(walletA);
+      expect(events.find((event) => event.type === 'recurring.schedule.created')?.metadata).toMatchObject({
+        previousStatus: '',
+        nextStatus: 'paused',
+        statusTransition: { from: '', to: 'paused' },
+        transitionSource: 'agent',
+        agentReviewStatus: 'denied',
+        agentReviewDecision: 'deny',
+        agentReviewReason: 'Connector facts were missing.',
+        connectorId: 'kamino',
+      });
+      expect(events.find((event) =>
+        event.type === 'recurring.schedule.updated' &&
+        event.metadata?.nextStatus === 'active' &&
+        event.metadata?.transitionSource === 'agent',
+      )?.metadata).toMatchObject({
+        previousStatus: 'paused',
+        nextStatus: 'active',
+        transitionSource: 'agent',
+        agentReviewStatus: 'approved',
+      });
+      expect(events.find((event) => event.type === 'recurring.schedule.paused')?.metadata).toMatchObject({
+        previousStatus: 'active',
+        nextStatus: 'paused',
+        transitionSource: 'user',
+      });
+      expect(events.find((event) => event.type === 'recurring.schedule.resumed')?.metadata).toMatchObject({
+        previousStatus: 'paused',
+        nextStatus: 'active',
+        transitionSource: 'user',
+      });
+      expect(events.find((event) =>
+        event.type === 'recurring.schedule.updated' &&
+        event.metadata?.previousStatus === 'active' &&
+        event.metadata?.nextStatus === 'active' &&
+        event.metadata?.transitionSource === 'user',
+      )?.metadata).toMatchObject({
+        previousStatus: 'active',
+        nextStatus: 'active',
+        transitionSource: 'user',
+        agentReviewStatus: 'approved',
+      });
+      expect(JSON.stringify(events.map((event) => event.metadata))).not.toContain('rawPrompt');
     });
   });
 
@@ -231,11 +339,17 @@ describe('cloud recurring scheduler API', () => {
       const privateKey = await postJson(port, '/api/recurring', { ...validCreateBody(), privateKey: 'leak' }, walletA);
       const delegated = await postJson(port, '/api/recurring', { ...validCreateBody(), delegatedSigner: 'server' }, walletA);
       const unlimited = await postJson(port, '/api/recurring', { ...validCreateBody(), approvalAuthority: 'unlimited' }, walletA);
+      const nestedReviewSecret = await postJson(port, '/api/recurring', {
+        ...validCreateBody(),
+        metadata: { agentReview: { privateKey: 'leak' } },
+      }, walletA);
 
       expect(seed.status).toBe(400);
       expect(privateKey.status).toBe(400);
       expect(delegated.status).toBe(400);
       expect(unlimited.status).toBe(400);
+      expect(nestedReviewSecret.status).toBe(400);
+      expect(nestedReviewSecret.body.error).toBe('forbidden_secret');
     });
   });
 
@@ -472,6 +586,7 @@ describe('cloud recurring scheduler API', () => {
       const created = await requestJsonWithHeaders(port, 'POST', '/api/recurring', {
         ...validIntervalMinutesBody(),
         startAt: '2020-01-01T00:00:00.000Z',
+        metadata: approvedAgentMetadata(),
       }, headers);
       expect(created.status).toBe(201);
       const schedule = created.body.schedule as RecurringScheduleRecord;
@@ -492,11 +607,25 @@ describe('cloud recurring scheduler API', () => {
         recurringScheduleId?: string;
         status: string;
         params?: Record<string, unknown>;
+        metadata?: Record<string, unknown>;
       }>;
       expect(approvals).toHaveLength(1);
       expect(approvals[0]?.status).toBe('ready');
       expect(approvals[0]?.recurringScheduleId).toBe(schedule.id);
       expect(approvals[0]?.params?.recurringScheduleId).toBe(schedule.id);
+      expect(approvals[0]?.metadata).toMatchObject({
+        recurringScheduleId: schedule.id,
+        recurringOccurrenceId: expect.any(String),
+        occurrenceKey: expect.any(String),
+        actionKind: 'transfer',
+        connectorId: 'kamino',
+        operation: 'deposit',
+        agentReviewStatus: 'approved',
+        agentReviewDecision: 'approve',
+        agentReviewSummary: 'Agent approved this recurring schedule.',
+        approvalBoundary: 'This prepares a wallet approval request; it does not sign.',
+      });
+      expect(JSON.stringify(approvals[0]?.metadata)).not.toContain('rawPrompt');
     });
   });
 
@@ -1108,6 +1237,41 @@ function validSwapBody(): Record<string, unknown> {
     slippageBps: 50,
     cadence: 'interval_minutes',
     intervalMinutes: 10,
+  };
+}
+
+function approvedAgentMetadata(): Record<string, unknown> {
+  return {
+    agentReview: {
+      summary: 'Agent approved this recurring schedule.',
+      reason: 'Cadence and approval boundary are clear.',
+      rawPrompt: 'This should never appear in audit or approval summary metadata.',
+    },
+    agentReviewStatus: 'approved',
+    agentReviewDecision: 'approve',
+    agentReviewCheckedAt: '2026-05-01T12:00:00.000Z',
+    agentReviewProvider: 'openai',
+    agentReviewModel: 'review-model',
+    connectorId: 'kamino',
+    connectorName: 'Kamino',
+    capability: 'earn',
+    operation: 'deposit',
+    factLabels: ['Reserve', 'Wallet'],
+    actionSource: 'connector',
+    approvalBoundary: 'This prepares a wallet approval request; it does not sign.',
+  };
+}
+
+function deniedAgentMetadata(): Record<string, unknown> {
+  return {
+    ...approvedAgentMetadata(),
+    agentReview: {
+      summary: 'Agent denied this recurring schedule.',
+      reason: 'Connector facts were missing.',
+      rawPrompt: 'This should never appear in audit metadata.',
+    },
+    agentReviewStatus: 'denied',
+    agentReviewDecision: 'deny',
   };
 }
 

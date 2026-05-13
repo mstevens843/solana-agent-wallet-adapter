@@ -3509,6 +3509,53 @@ code {
   color: #dcffe9;
 }
 
+.connected-dapp-capability-summary {
+  display: grid;
+  gap: 5px;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  margin: 0;
+}
+
+.connected-dapp-capability-summary-row {
+  background: rgba(255, 255, 255, 0.026);
+  border: 1px solid rgba(224, 230, 240, 0.09);
+  border-radius: 8px;
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+  padding: 6px 8px;
+}
+
+.connected-dapp-capability-summary-row.ready {
+  border-color: rgba(125, 231, 176, 0.18);
+}
+
+.connected-dapp-capability-summary-row.warn {
+  border-color: rgba(246, 194, 107, 0.24);
+}
+
+.connected-dapp-capability-summary-row.blocked {
+  opacity: 0.72;
+}
+
+.connected-dapp-capability-summary-row dt {
+  color: var(--dim);
+  font-size: 0.58rem;
+  font-weight: 900;
+  letter-spacing: 0.08em;
+  line-height: 1.12;
+  text-transform: uppercase;
+}
+
+.connected-dapp-capability-summary-row dd {
+  color: rgba(220, 229, 240, 0.88);
+  font-size: 0.7rem;
+  font-weight: 720;
+  line-height: 1.22;
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
 .connected-dapp-row-actions {
   display: grid;
   gap: 6px;
@@ -16358,6 +16405,10 @@ button.danger:hover:not(:disabled) {
   justify-self: start;
 }
 
+.route-app .recurring-agent-after-draft {
+  margin-top: 8px;
+}
+
 .route-app .recurring-create-summary {
   grid-template-columns: repeat(4, minmax(0, 1fr));
 }
@@ -16612,6 +16663,54 @@ button.danger:hover:not(:disabled) {
   font-size: var(--app-meta-size);
   gap: 6px;
   line-height: 1.2;
+}
+
+.route-app .recurring-item.agent-paused {
+  border-color: rgba(239, 111, 120, 0.32);
+  box-shadow: inset 3px 0 0 rgba(239, 111, 120, 0.62);
+}
+
+.route-app .recurring-item.user-paused {
+  border-color: rgba(246, 194, 107, 0.26);
+  box-shadow: inset 3px 0 0 rgba(246, 194, 107, 0.52);
+}
+
+.route-app .recurring-pause-source-pill,
+.route-app .recurring-agent-decision-pill {
+  align-items: center;
+  border: 1px solid rgba(224, 230, 226, 0.12);
+  border-radius: 999px;
+  display: inline-flex;
+  font-size: var(--app-meta-size);
+  font-weight: 900;
+  line-height: 1;
+  padding: 4px 8px;
+  white-space: nowrap;
+}
+
+.route-app .recurring-pause-source-pill.user,
+.route-app .recurring-agent-decision-pill.warn {
+  background: rgba(246, 194, 107, 0.12);
+  border-color: rgba(246, 194, 107, 0.32);
+  color: rgba(244, 224, 188, 0.96);
+}
+
+.route-app .recurring-agent-decision-pill.good {
+  background: rgba(63, 189, 131, 0.12);
+  border-color: rgba(139, 205, 170, 0.32);
+  color: rgba(189, 232, 213, 0.96);
+}
+
+.route-app .recurring-agent-decision-pill.fail {
+  background: rgba(239, 111, 120, 0.12);
+  border-color: rgba(239, 111, 120, 0.32);
+  color: rgba(239, 188, 192, 0.98);
+}
+
+.route-app .recurring-agent-decision-pill.checking {
+  background: rgba(140, 164, 255, 0.12);
+  border-color: rgba(140, 164, 255, 0.3);
+  color: rgba(217, 224, 252, 0.96);
 }
 
 .route-app .field.compact,

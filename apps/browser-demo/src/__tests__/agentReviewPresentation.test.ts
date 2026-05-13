@@ -3,6 +3,7 @@ import { describe, expect, it } from 'vitest';
 import {
   evidenceEntryTone,
   isTokenMismatchEvidenceKey,
+  reviewEvidenceRows,
   swapTokenTextMismatchWarning,
   tokenMismatchEvidenceRows,
 } from '../agentReviewPresentation.js';
@@ -110,5 +111,58 @@ describe('agent review presentation helpers', () => {
     expect(isTokenMismatchEvidenceKey('actual_output_token')).toBe(true);
     expect(evidenceEntryTone('Token mismatch', 'Wrong token')).toBe('fail');
     expect(evidenceEntryTone('Market data', 'Liquidity checked')).toBe('neutral');
+  });
+
+  it('renders findings-only evidence without exposing raw structured JSON rows', () => {
+    const rows = reviewEvidenceRows({
+      status: 'approved',
+      evidence: {
+        findings: [
+          { label: 'Connector', value: 'Kamino enabled; reads are ready', tone: 'good' },
+          { label: 'Wallet boundary', value: 'Wallet approval is still required', tone: 'neutral' },
+        ],
+      },
+    });
+
+    expect(rows).toEqual([
+      { label: 'Connector', value: 'Kamino enabled; reads are ready', tone: 'good' },
+      { label: 'Wallet boundary', value: 'Wallet approval is still required', tone: 'neutral' },
+    ]);
+    expect(rows.map((row) => row.label)).not.toContain('Findings');
+  });
+
+  it('renders denial, missing input, connector warning, and stale state as first-class rows', () => {
+    const rows = reviewEvidenceRows({
+      status: 'denied',
+      reason: 'Meteora connector is not enabled.',
+      questions: [{ prompt: 'Which DLMM position should be checked?', required: true }],
+      facts: {
+        protocolConnector: {
+          state: 'warn',
+          message: 'Meteora is not enabled in Protocol Connectors.',
+        },
+      },
+      evidence: {
+        missingInputs: ['position address'],
+      },
+    }, { stale: true });
+
+    expect(rows).toEqual(expect.arrayContaining([
+      { label: 'Connector', value: 'Meteora is not enabled in Protocol Connectors.', tone: 'warn' },
+      { label: 'Missing input', value: 'Which DLMM position should be checked?', tone: 'warn' },
+      { label: 'Missing input', value: 'position address', tone: 'warn' },
+      expect.objectContaining({ label: 'Stale review', tone: 'warn' }),
+    ]));
+  });
+
+  it('falls back to summary and reason when the agent returns no findings', () => {
+    expect(reviewEvidenceRows({
+      status: 'needs_input',
+      summary: 'The agent needs more information.',
+      reason: 'Recipient is missing.',
+    })).toEqual([
+      { label: 'Summary', value: 'The agent needs more information.', tone: 'warn' },
+      { label: 'Missing information', value: 'Recipient is missing.', tone: 'warn' },
+    ]);
   });
 });

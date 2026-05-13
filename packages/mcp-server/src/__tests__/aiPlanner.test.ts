@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { BridgeAiPlanner } from '../aiPlanner.js';
 
@@ -19,8 +19,13 @@ const request = {
 };
 
 describe('BridgeAiPlanner', () => {
+  beforeEach(() => {
+    vi.stubEnv('AGENTIC_AI_ALLOW_CUSTOM_BASE_URL', '1');
+  });
+
   afterEach(() => {
     vi.unstubAllGlobals();
+    vi.unstubAllEnvs();
   });
 
   it('uses the OpenAI Responses API for official OpenAI GPT-5 requests', async () => {
@@ -220,6 +225,41 @@ describe('BridgeAiPlanner', () => {
     expect(calls[0]?.body.temperature).toBeUndefined();
   });
 
+  it('adds MCP connector registry context to plan prompts by default', async () => {
+    const calls: Array<{ body: Record<string, unknown> }> = [];
+    vi.stubGlobal('fetch', vi.fn(async (_url: string | URL | Request, init?: RequestInit) => {
+      calls.push({
+        body: JSON.parse(String(init?.body ?? '{}')) as Record<string, unknown>,
+      });
+      return jsonResponse({
+        choices: [{ message: { content: planJson('Connector-aware intent') } }],
+      });
+    }));
+    const planner = new BridgeAiPlanner();
+    planner.setSessionKey({
+      apiKey: 'sk-test-connectors',
+      provider: 'openrouter',
+      apiFormat: 'openai-compatible',
+      baseUrl: 'https://openrouter.ai/api/v1',
+      model: 'openai/gpt-5',
+    });
+
+    const plan = await planner.generatePlan({
+      ...request,
+      prompt: 'Can you supply 0.1 SOL to Kamino?',
+      connectorContext: undefined,
+    });
+
+    expect(plan.intent).toBe('Connector-aware intent');
+    const messages = calls[0]?.body.messages as Array<{ role: string; content: string }>;
+    const userMessage = messages.find((entry) => entry.role === 'user');
+    expect(userMessage?.content).toContain('Kamino Finance');
+    expect(userMessage?.content).toContain('solana_prepare_kamino_deposit');
+    expect(userMessage?.content).toContain('Jupiter');
+    expect(userMessage?.content).toContain('first_class_prepare');
+    expect(userMessage?.content).toContain('does not sign');
+  });
+
   it('reviews plans with an approve or deny decision', async () => {
     const calls: Array<{ url: string; body: Record<string, unknown> }> = [];
     vi.stubGlobal('fetch', vi.fn(async (url: string | URL | Request, init?: RequestInit) => {
@@ -384,6 +424,63 @@ describe('BridgeAiPlanner', () => {
     expect(userMessage?.content).toContain('userPolicies');
     expect(userMessage?.content).toContain('policy-slip');
     expect(userMessage?.content).toContain('slippage_max');
+  });
+
+  it('preserves flexible findings evidence without requiring fixed review rows', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => jsonResponse({
+      choices: [{
+        message: {
+          content: JSON.stringify({
+            decision: 'approve',
+            reason: 'Reserve facts are adequate and the amount is modest.',
+            summary: 'Kamino deposit can be sent for wallet approval.',
+            evidence: {
+              findings: [
+                { label: 'Reserve', value: 'SOL supply APY 5.4%', tone: 'good' },
+                { label: 'Deposit cap', value: '1000 SOL remaining', tone: 'good' },
+              ],
+            },
+          }),
+        },
+      }],
+    })));
+    const planner = new BridgeAiPlanner();
+    planner.setSessionKey({
+      apiKey: 'sk-test-findings',
+      provider: 'openrouter',
+      apiFormat: 'openai-compatible',
+      baseUrl: 'https://openrouter.ai/api/v1',
+      model: 'openai/gpt-5',
+    });
+
+    const review = await planner.reviewPlan({
+      plan: {
+        intent: 'Supply 0.1 SOL to Kamino',
+        route: 'Kamino SOL reserve deposit',
+        risk: 'Medium',
+        approval: 'Wallet approval required.',
+        source: 'ai',
+        category: 'defi',
+        actionType: 'kamino_deposit',
+        templateTitle: 'Supply to Kamino',
+        parameters: { token: 'SOL', amount: '0.1' },
+        fields: [{ label: 'Amount', value: '0.1 SOL' }],
+        safeguards: ['Check reserve facts.'],
+      },
+      instruction: 'Use connector facts and return user-facing findings.',
+      context: {
+        facts: [
+          { connectorId: 'kamino', label: 'Supply APY', value: '5.4%', tone: 'good' },
+          { connectorId: 'kamino', label: 'Deposit capacity', value: '1000 SOL remaining', tone: 'good' },
+        ],
+      },
+    });
+
+    expect(review.decision).toBe('approve');
+    expect(review.evidence.findings).toEqual([
+      { label: 'Reserve', value: 'SOL supply APY 5.4%', tone: 'good' },
+      { label: 'Deposit cap', value: '1000 SOL remaining', tone: 'good' },
+    ]);
   });
 
   it('caps questions at three and drops malformed entries', async () => {
@@ -602,6 +699,7 @@ describe('BridgeAiPlanner', () => {
     expect(messages?.[0]?.role).toBe('system');
     expect(messages?.[0]?.content).toContain('Solana wallet action plan');
     expect(messages?.[1]?.content).toContain('What protocol is this?');
+    expect(messages?.[1]?.content).toContain('Kamino Finance');
   });
 
   it('rejects askAboutPlan with an empty question', async () => {

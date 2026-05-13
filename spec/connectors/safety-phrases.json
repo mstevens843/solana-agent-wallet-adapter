@@ -1,0 +1,97 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "version": "0.1",
+  "purpose": "Canonical safety-language phrases that agents, prompts, evals, and product copy must align with when talking about Solana connectors. Required phrases describe approved language for the wallet-approval boundary, missing facts, denials, and disabled connectors. Forbidden phrases describe agency claims the agent must never make. Other workstreams (prompts, evals) should reference phrases by id rather than copy the text by hand.",
+  "phrases": [
+    {
+      "id": "safety.prepare_only",
+      "kind": "required",
+      "category": "wallet_boundary",
+      "text": "This prepares a wallet approval request; it does not sign.",
+      "appliesTo": ["prepare_approval_action"],
+      "usage": "Say after preparing a write action so the user understands the wallet must still sign."
+    },
+    {
+      "id": "safety.read_only_boundary",
+      "kind": "required",
+      "category": "wallet_boundary",
+      "text": "The connector can read facts, but the wallet still controls approval.",
+      "appliesTo": ["read_only_answer", "proof_only_review"],
+      "usage": "Say when summarizing read-only facts so the user does not infer the agent can act on them."
+    },
+    {
+      "id": "safety.connector_disabled",
+      "kind": "required",
+      "category": "connector_state",
+      "text": "This connector is not enabled.",
+      "appliesTo": ["unsupported"],
+      "usage": "Say when the user asks for work against a connector whose enabled state is false in connectedDapps state."
+    },
+    {
+      "id": "safety.action_not_exposed",
+      "kind": "required",
+      "category": "connector_state",
+      "text": "This connector does not expose that action yet.",
+      "appliesTo": ["unsupported"],
+      "usage": "Say when the connector exists and is enabled but the requested action is not in supportedActions or actionKinds."
+    },
+    {
+      "id": "safety.missing_facts",
+      "kind": "required",
+      "category": "evidence",
+      "text": "The agent is missing facts needed to decide.",
+      "appliesTo": ["needs_input"],
+      "usage": "Say when required connector facts or user inputs are absent and the agent should ask instead of guessing."
+    },
+    {
+      "id": "safety.denied_with_reason",
+      "kind": "required",
+      "category": "evidence",
+      "text": "The agent denied this because...",
+      "appliesTo": ["unsupported"],
+      "usage": "Lead with this when denying so the user always gets a reason."
+    },
+    {
+      "id": "safety.no_sign_claim",
+      "kind": "forbidden",
+      "category": "wallet_boundary",
+      "text": "I signed",
+      "usage": "Never claim the agent signed. Only the wallet signs."
+    },
+    {
+      "id": "safety.no_approve_claim",
+      "kind": "forbidden",
+      "category": "wallet_boundary",
+      "text": "I approved",
+      "usage": "Agent approval means safe-enough-to-send-to-the-wallet, never wallet approval. Do not use 'approved' for wallet signatures."
+    },
+    {
+      "id": "safety.no_safety_guarantee",
+      "kind": "forbidden",
+      "category": "evidence",
+      "text": "guaranteed safe",
+      "usage": "Never guarantee safety. Surface facts and let the user decide."
+    },
+    {
+      "id": "safety.no_submit_claim",
+      "kind": "forbidden",
+      "category": "wallet_boundary",
+      "text": "I will submit",
+      "usage": "The agent prepares; the wallet submits. Do not promise submission."
+    },
+    {
+      "id": "safety.no_autonomous_funds",
+      "kind": "forbidden",
+      "category": "wallet_boundary",
+      "text": "the connector can move funds without you",
+      "usage": "No connector moves funds without wallet approval. Never imply otherwise."
+    },
+    {
+      "id": "safety.no_autopay_claim",
+      "kind": "forbidden",
+      "category": "wallet_boundary",
+      "text": "auto-pay without wallet approval",
+      "usage": "Recurring payments still return to wallet approval on every due occurrence. Never claim auto-pay bypasses approval."
+    }
+  ]
+}

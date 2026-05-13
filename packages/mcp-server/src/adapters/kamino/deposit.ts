@@ -18,6 +18,7 @@ import {
   resolveKnownReserve,
 } from './constants.js';
 import { invalidateReserveSnapshot } from './reserveSnapshot.js';
+import { CONNECTOR_APPROVAL_BOUNDARY } from '../../connectorRegistry.js';
 
 export interface KaminoDepositInput {
   amount: string;
@@ -60,7 +61,10 @@ export const kaminoDepositAction: AdapterAction<KaminoDepositInput> = {
     const summary = `Deposit ${input.amount} ${snapshot.reserveSymbol} into Kamino`;
     const previewParams: Record<string, unknown> = {
       adapter: KAMINO_ADAPTER_ID,
+      connectorId: KAMINO_ADAPTER_ID,
       action: 'deposit',
+      operation: 'deposit',
+      approvalBoundary: CONNECTOR_APPROVAL_BOUNDARY,
       reserveMint: snapshot.reserveMint,
       reserveSymbol: snapshot.reserveSymbol,
       reserveAddress: snapshot.reserveAddress,
@@ -152,4 +156,3 @@ function requireNumber(action: PreparedAction, key: string): number {
   }
   return value;
 }
-
