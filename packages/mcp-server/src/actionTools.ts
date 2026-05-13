@@ -5398,9 +5398,23 @@ function optionsConnectorCapabilities(
 
 function recurringInputSchema() {
   return {
-    token: z.string().min(2).describe('SOL or an allowlisted token symbol such as USDC.'),
-    recipient: z.string().min(32),
-    amount: z.string().min(1),
+    actionKind: z.enum(['transfer', 'swap', 'connector', 'blink']).optional().describe('What kind of recurring action this is. Defaults to "transfer".'),
+    token: z.string().min(2).optional().describe('SOL or an allowlisted token symbol such as USDC. Required for transfer/swap; for connector/blink the template provides the token.'),
+    recipient: z.string().min(32).optional().describe('Recipient public key. Required for transfer.'),
+    amount: z.string().min(1).optional().describe('Amount as a decimal string. Required for transfer/swap; connector/blink may pass it via connectorActionTemplate.params.'),
+    inputToken: z.string().min(2).optional().describe('Swap input token (defaults to token).'),
+    outputToken: z.string().min(2).optional().describe('Swap output token. Required for actionKind="swap".'),
+    slippageBps: z.number().int().min(0).max(10_000).optional(),
+    connectorActionTemplate: z
+      .object({
+        connectorId: z.string().min(1).describe('Connector id, e.g. "kamino", "jupiter", "marinade".'),
+        actionType: z.string().min(1).describe('PreparedActionKind to re-prepare on each occurrence (e.g. kamino_deposit, jupiter_lend_earn_deposit).'),
+        subActionId: z.string().min(1).optional().describe('Sub-action id from the connector form (e.g. "earn-deposit", "cpmm-add").'),
+        params: z.record(z.string()).describe('Parametric form values captured at create time. Re-supplied to the prepare tool each occurrence.'),
+        blinkUrl: z.string().url().optional().describe('Blink action URL. Required for actionKind="blink".'),
+      })
+      .optional()
+      .describe('Required when actionKind is "connector" or "blink".'),
     cadence: z.enum(['weekly', 'monthly', 'interval_days', 'interval_hours', 'interval_minutes']).default('weekly'),
     dayOfWeek: z.number().int().min(0).max(6).optional().describe('0 is Sunday, 5 is Friday. Required for weekly.'),
     dayOfMonth: z.number().int().min(1).max(31).optional().describe('Required for monthly. Values past month end clamp to the last day.'),

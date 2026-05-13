@@ -414,6 +414,72 @@ describe('JsonPreparedActionStore', () => {
     await expect(store.archiveAction(action!.id)).resolves.toMatchObject({ archived: true });
     await expect(store.deleteRecurringPayment(recurring.id)).resolves.toBe(true);
   });
+
+  it('materializes a connector recurring template into a parametric prepared action', async () => {
+    const store = new JsonPreparedActionStore(await tempStorePath());
+    await store.addRecurringPayment({
+      walletAddress: '11111111111111111111111111111111',
+      cluster: 'devnet',
+      actionKind: 'connector',
+      token: 'USDC',
+      recipient: '',
+      amount: '10',
+      cadence: 'weekly',
+      dayOfWeek: 5,
+      localTime: '00:00',
+      startAt: '2026-05-01T00:00:00.000Z',
+      connectorActionTemplate: {
+        connectorId: 'kamino',
+        actionType: 'kamino_deposit',
+        params: { token: 'USDC', amount: '10', memo: 'Recurring DCA' },
+      },
+    });
+    const due = await store.materializeDueRecurring(new Date('2026-05-08T20:00:00.000Z'));
+    expect(due).toHaveLength(1);
+    expect(due[0]).toMatchObject({
+      kind: 'kamino_deposit',
+      params: expect.objectContaining({
+        token: 'USDC',
+        amount: '10',
+        connectorId: 'kamino',
+        recurringActionType: 'kamino_deposit',
+        pendingPrepare: 'true',
+      }),
+    });
+  });
+
+  it('materializes a recurring blink template with the blink url frozen in params', async () => {
+    const store = new JsonPreparedActionStore(await tempStorePath());
+    await store.addRecurringPayment({
+      walletAddress: '11111111111111111111111111111111',
+      cluster: 'devnet',
+      actionKind: 'blink',
+      token: 'SOL',
+      recipient: '',
+      amount: '0',
+      cadence: 'weekly',
+      dayOfWeek: 5,
+      localTime: '00:00',
+      startAt: '2026-05-01T00:00:00.000Z',
+      connectorActionTemplate: {
+        connectorId: 'sample',
+        actionType: 'blink_action',
+        params: { intent: 'claim' },
+        blinkUrl: 'https://example.com/blink/claim',
+      },
+    });
+    const due = await store.materializeDueRecurring(new Date('2026-05-08T20:00:00.000Z'));
+    expect(due).toHaveLength(1);
+    expect(due[0]).toMatchObject({
+      kind: 'blink_action',
+      params: expect.objectContaining({
+        connectorId: 'sample',
+        blinkUrl: 'https://example.com/blink/claim',
+        intent: 'claim',
+        pendingPrepare: 'true',
+      }),
+    });
+  });
 });
 
 async function tempStorePath(): Promise<string> {

@@ -293,6 +293,77 @@ describe('planner AI setup helpers', () => {
     ]));
   });
 
+  describe('threshold reconciliation phrasing fixtures', () => {
+    type Fixture = {
+      name: string;
+      modelText: string;
+      modelDecision: 'approve' | 'deny';
+      findings?: Array<{ label: string; value: string; tone?: string }>;
+      expected: 'approve' | 'deny' | 'needs_input';
+      expectedFactValue?: string;
+    };
+    const HELIUM_INSTRUCTION =
+      "Check if helium mobile monthly plan is under $20. If it is approve swap. if it isn't deny it with reason. Regardless return monthly plan rate.";
+    const cases: Fixture[] = [
+      { name: 'slash-mo', modelText: 'Helium Mobile starts at $16.79/mo for entry-level.', modelDecision: 'deny', expected: 'approve', expectedFactValue: '$16.79' },
+      { name: 'rate word', modelText: 'Current rate is $16.79 for the monthly plan.', modelDecision: 'deny', expected: 'approve', expectedFactValue: '$16.79' },
+      { name: 'subscription word', modelText: 'Subscription costs $16.79 monthly.', modelDecision: 'deny', expected: 'approve', expectedFactValue: '$16.79' },
+      { name: 'bare colon', modelText: 'Helium: $16.79/month plan.', modelDecision: 'deny', expected: 'approve', expectedFactValue: '$16.79' },
+      { name: 'structured finding only', modelText: 'See finding.', modelDecision: 'deny', findings: [{ label: 'Plan rate', value: '$16.79/month' }], expected: 'approve', expectedFactValue: '$16.79' },
+      { name: 'over threshold model approves wrongly', modelText: 'Helium Mobile rate is $29.99/month.', modelDecision: 'approve', expected: 'deny', expectedFactValue: '$29.99' },
+      { name: 'no extractable price demotes to needs_input', modelText: 'Helium has multiple plans depending on usage.', modelDecision: 'deny', expected: 'needs_input' },
+    ];
+
+    for (const fixture of cases) {
+      it(`browser normalizeAiReview: ${fixture.name}`, () => {
+        const plan = buildTemplatePlan(templateById('swap'), {
+          inputToken: 'SOL',
+          outputToken: 'USDC',
+          amount: '0.01',
+          slippageBps: '50',
+        }, 'ai');
+        const review = normalizeAiReview({
+          content: [{
+            type: 'text',
+            text: JSON.stringify({
+              decision: fixture.modelDecision,
+              reason: fixture.modelText,
+              summary: 'Model summary.',
+              evidence: { findings: fixture.findings ?? [] },
+            }),
+          }],
+        }, {
+          plan,
+          instruction: HELIUM_INSTRUCTION,
+        });
+
+        expect(review.decision).toBe(fixture.expected);
+        const findings = Array.isArray(review.evidence.findings) ? review.evidence.findings : [];
+        const labels = findings
+          .filter((entry): entry is Record<string, unknown> => Boolean(entry && typeof entry === 'object'))
+          .map((entry) => String(entry.label ?? ''));
+        if (fixture.expected === 'needs_input' && !fixture.expectedFactValue) {
+          expect(labels).toContain('Threshold check');
+          expect(review.questions ?? []).toEqual(
+            expect.arrayContaining([
+              expect.objectContaining({ id: 'agent_review_threshold_fact' }),
+            ]),
+          );
+          return;
+        }
+        expect(labels).toContain('Threshold check');
+        const factEntry = findings.find((entry): entry is Record<string, unknown> => {
+          if (!entry || typeof entry !== 'object') return false;
+          const value = typeof (entry as Record<string, unknown>).value === 'string'
+            ? (entry as Record<string, unknown>).value as string
+            : '';
+          return Boolean(fixture.expectedFactValue && value.includes(fixture.expectedFactValue));
+        });
+        expect(factEntry, `expected a finding containing ${fixture.expectedFactValue}`).toBeDefined();
+      });
+    }
+  });
+
   it('confirms Hosted BYOK through the status route without generating a plan', async () => {
     const fetchMock = vi.fn(async (url: string | URL | Request) => {
       expect(String(url)).toBe('/api/ai/status');

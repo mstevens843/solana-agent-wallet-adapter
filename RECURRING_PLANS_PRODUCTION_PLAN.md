@@ -448,3 +448,51 @@ Phases can interleave: 3 and 4 are independent after 1; 5 benefits from but does
 - Smart-account or session-key delegation for recurring (would defeat the per-run wallet-approval boundary, which is the product's core promise)
 - Mobile-app changes (browser-demo is responsive; native iOS/Android apps are not in scope)
 - Marketing/landing copy about recurring being "the killer feature" — content/growth work belongs in user-prompt item #8, which is explicitly excluded from this push
+
+---
+
+## Recurring connector + Blink policy (added 2026-05-13)
+
+This section captures the rules for **recurring connector actions** (Kamino deposit on a schedule, Marginfi repay on a schedule, etc.) and **recurring Blink actions** (Solana Action URLs run on a schedule). It supplements the cascading-dropdown + Blink-classifier work described in `CONNECTOR_GRANULARITY_PLAN.md`.
+
+### Schema
+
+`RecurringPayment.actionKind` may be `'transfer' | 'swap' | 'connector' | 'blink'`. For connector/blink kinds, `connectorActionTemplate` carries:
+
+- `connectorId` — the Solana protocol connector id (e.g. `kamino`, `jupiter`, `meteora`)
+- `actionType` — the PreparedActionKind to re-prepare each occurrence (e.g. `kamino_deposit`, `jupiter_lend_earn_deposit`)
+- `subActionId` — optional sub-action branch id (e.g. `earn-deposit`, `cpmm-add`)
+- `params` — the parametric form values captured at create time (token, amount, reserveMint, vaultAddress, etc.)
+- `blinkUrl` — only for `actionKind === 'blink'`
+
+`materializeDueRecurring` emits one prepared action per occurrence with the template's params plus `pendingPrepare: 'true'`. The existing approval+execute pipeline runs the prepare → review → wallet-signature flow per occurrence; we never freeze stale transaction bytes.
+
+### Cadence floor
+
+Recurring Blinks require **cadence ≥ 1 day**. Sub-daily cadences (`interval_minutes`, `interval_hours` with intervalMinutes < 60×24) are rejected at create time with a `invalid_request` error. Connector recurring (non-Blink) inherits the same cadence rules as transfer/swap.
+
+### Initial classification gate (deferred)
+
+The full multi-reviewer Blink classifier runs **per occurrence** via `aiReviewMessages` (`packages/mcp-server/src/aiPlanner.ts`) when the prepared action is reviewed before wallet approval. The taxonomy in `packages/mcp-server/src/blinkClassification.ts` maps categories to default verdicts:
+
+- `disguised_transfer`, `token_account_drain` → `deny`
+- `unknown_program_interaction`, `unparseable` → `needs_input`
+- `safe_claim`, `safe_governance_vote`, `safe_donation_or_tip`, `lp_position_management`, `nft_marketplace`, `mint_or_buy` → `approve`
+
+Because every occurrence still passes through wallet approval, a Blink whose classification drops between occurrences (e.g. the host swapped the response shape) will be caught by the per-occurrence review and surface as a needs-input/deny inbox item. The user can pause or delete the schedule from there.
+
+A stricter **create-time classification gate** (rejecting a recurring Blink whose initial simulation already trips `closesTokenAccount` or `transfersSpl` to unknown recipients) is deferred — the per-occurrence reviewer is the primary safeguard, and front-running the gate requires fetching/simulating the Blink at create time with side-effects to the Blink host.
+
+### Host allowlist
+
+Per `feedback_allowlist_user_feature` in memory, allowlists are a **user feature, not backend enforcement**. The backend does not maintain a global recurring Blink allowlist; users decide what they trust via the existing token/recipient allowlist controls in the UI.
+
+### Failure handling
+
+`materializeDueRecurring` emits each occurrence into the prepared-actions store. If the per-occurrence prepare step fails (pool removed, reserve closed, Blink host offline), the prepared action is marked `failed` with the error in `txError`. The recurring schedule keeps running by default; product can later add a `consecutiveFailures` auto-pause threshold (the field is already on the `RecurringPayment` schema).
+
+### Out of scope here
+
+- Auto-deleting recurring schedules — paused but not deleted; user must explicitly delete
+- Mid-flight reclassification telemetry/UX (notification when category drifts)
+- Per-occurrence dry-run preview before promotion to wallet approval

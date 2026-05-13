@@ -689,6 +689,606 @@ const raydiumPositionProvider: ConnectorOptionProvider = {
   },
 };
 
+const marinadeTicketProvider: ConnectorOptionProvider = {
+  id: 'marinade.ticket',
+  connectorId: 'marinade',
+  ttlMs: 60_000,
+  async fetch({ walletAddress, bridge }) {
+    if (!walletAddress) return [];
+    const resp = await safeBridgeFacts(bridge, { connectorId: 'marinade', capability: 'positions', walletAddress });
+    const out: ConnectorOption[] = [];
+    for (const entry of genericListing(resp, ['tickets', 'unstakeTickets', 'positions'])) {
+      const ticket = pickIdentifier(entry, ['ticketAccount', 'ticket', 'address']);
+      if (!ticket) continue;
+      const amount = asString(entry.amount) ?? asString(entry.lamports);
+      const ready = asString(entry.ready) ?? asString(entry.status);
+      out.push({
+        value: ticket,
+        label: `Ticket ${ticket.slice(0, 6)}…`,
+        detail: [amount ? `${amount} mSOL` : '', ready ? `Status ${ready}` : ''].filter(Boolean).join(' · '),
+        group: 'positions',
+      });
+    }
+    return out;
+  },
+};
+
+const jitoStakeAccountProvider: ConnectorOptionProvider = {
+  id: 'jito.stakeAccount',
+  connectorId: 'jito',
+  ttlMs: 60_000,
+  async fetch({ walletAddress, bridge }) {
+    if (!walletAddress) return [];
+    const resp = await safeBridgeFacts(bridge, {
+      connectorId: 'jito',
+      capability: 'positions',
+      walletAddress,
+      includeStakeAccounts: true,
+    });
+    const out: ConnectorOption[] = [];
+    for (const entry of genericListing(resp, ['stakeAccounts', 'accounts', 'positions'])) {
+      const account = pickIdentifier(entry, ['stakeAccount', 'address', 'pubkey']);
+      if (!account) continue;
+      const stake = asString(entry.balance) ?? asString(entry.activeStake);
+      const validator = asString(entry.validator);
+      out.push({
+        value: account,
+        label: `Stake account ${account.slice(0, 6)}…`,
+        detail: [stake ? `${stake} SOL` : '', validator ? `Validator ${validator.slice(0, 6)}…` : ''].filter(Boolean).join(' · '),
+        group: 'positions',
+      });
+    }
+    return out;
+  },
+};
+
+const jitoReceiptProvider: ConnectorOptionProvider = {
+  id: 'jito.receipt',
+  connectorId: 'jito',
+  ttlMs: 60_000,
+  async fetch({ walletAddress, bridge }) {
+    if (!walletAddress) return [];
+    const resp = await safeBridgeFacts(bridge, {
+      connectorId: 'jito',
+      capability: 'positions',
+      walletAddress,
+      claimableOnly: true,
+    });
+    const out: ConnectorOption[] = [];
+    for (const entry of genericListing(resp, ['receipts', 'depositReceipts'])) {
+      const receipt = pickIdentifier(entry, ['receiptAddress', 'address', 'pubkey']);
+      if (!receipt) continue;
+      const status = asString(entry.status) ?? asString(entry.claimable);
+      out.push({
+        value: receipt,
+        label: `Receipt ${receipt.slice(0, 6)}…`,
+        detail: status ? `Status ${status}` : 'Deposit receipt',
+        group: 'positions',
+      });
+    }
+    return out;
+  },
+};
+
+const SANCTUM_COMMON_LSTS = ['JitoSOL', 'mSOL', 'bSOL', 'INF', 'jupSOL', 'SOL'];
+
+const sanctumLstProvider: ConnectorOptionProvider = {
+  id: 'sanctum.lst',
+  connectorId: 'sanctum',
+  ttlMs: 5 * 60_000,
+  async fetch({ walletAddress, bridge }) {
+    const positionsResp = walletAddress
+      ? await safeBridgeFacts(bridge, { connectorId: 'sanctum', capability: 'positions', walletAddress })
+      : null;
+    const lstResp = await safeBridgeFacts(bridge, { connectorId: 'sanctum', capability: 'markets' });
+    const seen = new Set<string>();
+    const positions: ConnectorOption[] = [];
+    for (const entry of genericListing(positionsResp, ['balances', 'positions', 'lsts'])) {
+      const mint = pickIdentifier(entry, ['mint', 'lstMint', 'address']);
+      const symbol = asString(entry.symbol);
+      const value = mint ?? symbol;
+      if (!value || seen.has(value)) continue;
+      seen.add(value);
+      const balance = asString(entry.balance);
+      positions.push({
+        value,
+        label: symbol ? `${symbol}` : value.slice(0, 12),
+        detail: balance ? `Your balance ${balance}` : 'Sanctum LST',
+        group: 'positions',
+        meta: { symbol, balance },
+      });
+    }
+    const lsts: ConnectorOption[] = [];
+    for (const entry of genericListing(lstResp, ['lsts'])) {
+      const mint = pickIdentifier(entry, ['mint', 'lstMint', 'address']);
+      const symbol = asString(entry.symbol);
+      const value = mint ?? symbol;
+      if (!value || seen.has(value)) continue;
+      seen.add(value);
+      const apy = asString(entry.apy) ?? asString(entry.stakeApy);
+      lsts.push({
+        value,
+        label: symbol ?? value.slice(0, 12),
+        detail: apy ? `APY ${apy}` : 'Sanctum LST',
+        group: 'all',
+        meta: { symbol, apy },
+      });
+    }
+    if (lsts.length === 0) {
+      for (const symbol of SANCTUM_COMMON_LSTS) {
+        if (seen.has(symbol)) continue;
+        lsts.push({ value: symbol, label: symbol, detail: 'Sanctum LST', group: 'all', meta: { symbol } });
+      }
+    }
+    return [...positions, ...lsts];
+  },
+};
+
+const meteoraPoolProvider: ConnectorOptionProvider = {
+  id: 'meteora.pool',
+  connectorId: 'meteora',
+  ttlMs: 60_000,
+  async fetch({ walletAddress, bridge }) {
+    const positionsResp = walletAddress
+      ? await safeBridgeFacts(bridge, { connectorId: 'meteora', capability: 'positions', walletAddress })
+      : null;
+    const poolsResp = await safeBridgeFacts(bridge, { connectorId: 'meteora', capability: 'markets' });
+    const seen = new Set<string>();
+    const positions: ConnectorOption[] = [];
+    for (const entry of genericListing(positionsResp, ['pools', 'positions'])) {
+      const pool = pickIdentifier(entry, ['poolAddress', 'pool', 'address']);
+      if (!pool || seen.has(pool)) continue;
+      seen.add(pool);
+      const name = asString(entry.poolName) ?? asString(entry.name);
+      positions.push({
+        value: pool,
+        label: name ? `${name} DLMM` : `Pool ${pool.slice(0, 6)}…`,
+        detail: 'Existing position in this pool',
+        group: 'positions',
+      });
+    }
+    const pools: ConnectorOption[] = [];
+    for (const entry of genericListing(poolsResp, ['pools'])) {
+      const pool = pickIdentifier(entry, ['poolAddress', 'pool', 'address']);
+      if (!pool || seen.has(pool)) continue;
+      seen.add(pool);
+      const name = asString(entry.poolName) ?? asString(entry.name);
+      const tvl = asString(entry.tvl);
+      pools.push({
+        value: pool,
+        label: name ? `${name} DLMM` : `Pool ${pool.slice(0, 6)}…`,
+        detail: tvl ? `TVL ${tvl}` : 'Meteora DLMM pool',
+        group: 'all',
+      });
+    }
+    return [...positions, ...pools];
+  },
+};
+
+const meteoraPositionProvider: ConnectorOptionProvider = {
+  id: 'meteora.position',
+  connectorId: 'meteora',
+  ttlMs: 60_000,
+  async fetch({ fieldValues, walletAddress, bridge }) {
+    if (!walletAddress) return [];
+    const poolAddress = fieldValues.poolAddress?.trim();
+    const resp = await safeBridgeFacts(bridge, {
+      connectorId: 'meteora',
+      capability: 'positions',
+      walletAddress,
+      ...(poolAddress ? { poolAddress } : {}),
+    });
+    const out: ConnectorOption[] = [];
+    for (const entry of genericListing(resp, ['positions'])) {
+      if (poolAddress) {
+        const entryPool = asString(entry.poolAddress);
+        if (entryPool && entryPool !== poolAddress) continue;
+      }
+      const position = pickIdentifier(entry, ['positionAddress', 'position', 'address']);
+      if (!position) continue;
+      out.push({
+        value: position,
+        label: `Position ${position.slice(0, 6)}…`,
+        detail: asString(entry.binRange) ?? 'DLMM position',
+        group: 'positions',
+      });
+    }
+    return out;
+  },
+};
+
+const orcaWhirlpoolProvider: ConnectorOptionProvider = {
+  id: 'orca.whirlpool',
+  connectorId: 'orca',
+  ttlMs: 60_000,
+  async fetch({ walletAddress, bridge }) {
+    const positionsResp = walletAddress
+      ? await safeBridgeFacts(bridge, { connectorId: 'orca', capability: 'positions', walletAddress })
+      : null;
+    const poolsResp = await safeBridgeFacts(bridge, { connectorId: 'orca', capability: 'markets' });
+    const seen = new Set<string>();
+    const positions: ConnectorOption[] = [];
+    for (const entry of genericListing(positionsResp, ['positions', 'pools', 'whirlpools'])) {
+      const pool = pickIdentifier(entry, ['whirlpoolAddress', 'whirlpool', 'address']);
+      if (!pool || seen.has(pool)) continue;
+      seen.add(pool);
+      const name = asString(entry.poolName) ?? asString(entry.name);
+      positions.push({
+        value: pool,
+        label: name ? `${name} whirlpool` : `Whirlpool ${pool.slice(0, 6)}…`,
+        detail: 'Existing position in this whirlpool',
+        group: 'positions',
+      });
+    }
+    const pools: ConnectorOption[] = [];
+    for (const entry of genericListing(poolsResp, ['whirlpools', 'pools'])) {
+      const pool = pickIdentifier(entry, ['whirlpoolAddress', 'whirlpool', 'address']);
+      if (!pool || seen.has(pool)) continue;
+      seen.add(pool);
+      const name = asString(entry.poolName) ?? asString(entry.name);
+      const tvl = asString(entry.tvl);
+      pools.push({
+        value: pool,
+        label: name ? `${name} whirlpool` : `Whirlpool ${pool.slice(0, 6)}…`,
+        detail: tvl ? `TVL ${tvl}` : 'Orca whirlpool',
+        group: 'all',
+      });
+    }
+    return [...positions, ...pools];
+  },
+};
+
+const orcaPositionProvider: ConnectorOptionProvider = {
+  id: 'orca.position',
+  connectorId: 'orca',
+  ttlMs: 60_000,
+  async fetch({ fieldValues, walletAddress, bridge }) {
+    if (!walletAddress) return [];
+    const whirlpoolAddress = fieldValues.whirlpoolAddress?.trim();
+    const resp = await safeBridgeFacts(bridge, {
+      connectorId: 'orca',
+      capability: 'positions',
+      walletAddress,
+      ...(whirlpoolAddress ? { whirlpoolAddress } : {}),
+    });
+    const out: ConnectorOption[] = [];
+    for (const entry of genericListing(resp, ['positions'])) {
+      if (whirlpoolAddress) {
+        const entryWhirlpool = asString(entry.whirlpoolAddress);
+        if (entryWhirlpool && entryWhirlpool !== whirlpoolAddress) continue;
+      }
+      const positionMint = pickIdentifier(entry, ['positionMint', 'mint', 'address']);
+      if (!positionMint) continue;
+      const range = asString(entry.range) ?? asString(entry.tickRange);
+      out.push({
+        value: positionMint,
+        label: `Position ${positionMint.slice(0, 6)}…`,
+        detail: range ? `Range ${range}` : 'Whirlpool position',
+        group: 'positions',
+      });
+    }
+    return out;
+  },
+};
+
+function buildNftWalletProvider(id: string, connectorId: 'magiceden' | 'tensor'): ConnectorOptionProvider {
+  return {
+    id,
+    connectorId,
+    ttlMs: 5 * 60_000,
+    async fetch({ walletAddress, bridge }) {
+      if (!walletAddress) return [];
+      const resp = await safeBridgeFacts(bridge, { connectorId, capability: 'positions', walletAddress });
+      const out: ConnectorOption[] = [];
+      for (const entry of genericListing(resp, ['nfts', 'mints', 'positions'])) {
+        const mint = pickIdentifier(entry, ['mintAddress', 'mint', 'address']);
+        if (!mint) continue;
+        const name = asString(entry.name) ?? asString(entry.title);
+        out.push({
+          value: mint,
+          label: name ?? `NFT ${mint.slice(0, 6)}…`,
+          detail: asString(entry.collectionName) ?? 'In your wallet',
+          group: 'positions',
+        });
+      }
+      return out;
+    },
+  };
+}
+
+function buildNftCollectionProvider(id: string, connectorId: 'magiceden' | 'tensor'): ConnectorOptionProvider {
+  return {
+    id,
+    connectorId,
+    ttlMs: 5 * 60_000,
+    async fetch({ bridge }) {
+      const resp = await safeBridgeFacts(bridge, { connectorId, capability: 'markets' });
+      const out: ConnectorOption[] = [];
+      for (const entry of genericListing(resp, ['collections'])) {
+        const collection = pickIdentifier(entry, ['collectionId', 'collectionSymbol', 'symbol']);
+        if (!collection) continue;
+        const name = asString(entry.name) ?? collection;
+        out.push({
+          value: collection,
+          label: name,
+          detail: asString(entry.floorPrice) ? `Floor ${asString(entry.floorPrice)} SOL` : 'NFT collection',
+          group: 'all',
+        });
+      }
+      return out;
+    },
+  };
+}
+
+function buildNftListingProvider(id: string, connectorId: 'magiceden' | 'tensor'): ConnectorOptionProvider {
+  return {
+    id,
+    connectorId,
+    ttlMs: 60_000,
+    async fetch({ fieldValues, bridge }) {
+      const collectionId = fieldValues.collectionId?.trim();
+      if (!collectionId) return [];
+      const resp = await safeBridgeFacts(bridge, {
+        connectorId,
+        capability: 'markets',
+        collectionId,
+        includeListings: true,
+      });
+      const out: ConnectorOption[] = [];
+      for (const entry of genericListing(resp, ['listings'])) {
+        const listing = pickIdentifier(entry, ['listingId', 'id']);
+        if (!listing) continue;
+        const price = asString(entry.priceSol) ?? asString(entry.price);
+        out.push({
+          value: listing,
+          label: `Listing ${listing.slice(0, 8)}…`,
+          detail: price ? `${price} SOL` : 'Active listing',
+          group: 'all',
+        });
+      }
+      return out;
+    },
+  };
+}
+
+const squadsMultisigProvider: ConnectorOptionProvider = {
+  id: 'squads.multisig',
+  connectorId: 'squads',
+  ttlMs: 5 * 60_000,
+  async fetch({ walletAddress, bridge }) {
+    if (!walletAddress) return [];
+    const resp = await safeBridgeFacts(bridge, { connectorId: 'squads', capability: 'positions', walletAddress });
+    const out: ConnectorOption[] = [];
+    for (const entry of genericListing(resp, ['multisigs', 'authorities'])) {
+      const multisig = pickIdentifier(entry, ['multisigAddress', 'address', 'multisig']);
+      if (!multisig) continue;
+      const name = asString(entry.name);
+      out.push({
+        value: multisig,
+        label: name ? `${name} multisig` : `Multisig ${multisig.slice(0, 6)}…`,
+        detail: 'You are a member or authority',
+        group: 'positions',
+      });
+    }
+    return out;
+  },
+};
+
+const squadsProposalProvider: ConnectorOptionProvider = {
+  id: 'squads.proposal',
+  connectorId: 'squads',
+  ttlMs: 60_000,
+  async fetch({ fieldValues, bridge }) {
+    const multisigAddress = fieldValues.multisigAddress?.trim();
+    if (!multisigAddress) return [];
+    const resp = await safeBridgeFacts(bridge, { connectorId: 'squads', capability: 'markets', multisigAddress });
+    const out: ConnectorOption[] = [];
+    for (const entry of genericListing(resp, ['proposals'])) {
+      const proposal = pickIdentifier(entry, ['proposalAddress', 'address', 'proposal']);
+      if (!proposal) continue;
+      const status = asString(entry.status) ?? 'Active';
+      out.push({
+        value: proposal,
+        label: `Proposal ${proposal.slice(0, 6)}…`,
+        detail: status,
+        group: 'all',
+      });
+    }
+    return out;
+  },
+};
+
+const squadsVaultProvider: ConnectorOptionProvider = {
+  id: 'squads.vault',
+  connectorId: 'squads',
+  ttlMs: 5 * 60_000,
+  async fetch({ fieldValues, bridge }) {
+    const multisigAddress = fieldValues.multisigAddress?.trim();
+    if (!multisigAddress) return [];
+    const resp = await safeBridgeFacts(bridge, { connectorId: 'squads', capability: 'positions', multisigAddress });
+    const out: ConnectorOption[] = [];
+    for (const entry of genericListing(resp, ['vaults'])) {
+      const idx = asString(entry.vaultIndex) ?? asString(entry.index);
+      const addr = pickIdentifier(entry, ['vaultAddress', 'address']);
+      const value = idx ?? addr;
+      if (!value) continue;
+      out.push({
+        value,
+        label: idx ? `Vault #${idx}` : `Vault ${addr?.slice(0, 6)}…`,
+        detail: asString(entry.balance) ?? 'Multisig vault',
+        group: 'all',
+      });
+    }
+    return out;
+  },
+};
+
+const realmsRealmProvider: ConnectorOptionProvider = {
+  id: 'realms.realm',
+  connectorId: 'realms',
+  ttlMs: 5 * 60_000,
+  async fetch({ walletAddress, bridge }) {
+    if (!walletAddress) return [];
+    const resp = await safeBridgeFacts(bridge, { connectorId: 'realms', capability: 'positions', walletAddress });
+    const out: ConnectorOption[] = [];
+    for (const entry of genericListing(resp, ['realms', 'governances'])) {
+      const realm = pickIdentifier(entry, ['realmAddress', 'address', 'realm']);
+      if (!realm) continue;
+      const name = asString(entry.name);
+      out.push({
+        value: realm,
+        label: name ? `${name}` : `Realm ${realm.slice(0, 6)}…`,
+        detail: 'You hold governance power in this realm',
+        group: 'positions',
+      });
+    }
+    return out;
+  },
+};
+
+const realmsTokenProvider: ConnectorOptionProvider = {
+  id: 'realms.token',
+  connectorId: 'realms',
+  ttlMs: 5 * 60_000,
+  async fetch({ fieldValues, bridge }) {
+    const realmAddress = fieldValues.realmAddress?.trim();
+    if (!realmAddress) return [];
+    const resp = await safeBridgeFacts(bridge, { connectorId: 'realms', capability: 'markets', realmAddress });
+    const out: ConnectorOption[] = [];
+    for (const entry of genericListing(resp, ['tokens', 'mints', 'governances'])) {
+      const mint = pickIdentifier(entry, ['governingTokenMint', 'mint', 'tokenMint']);
+      if (!mint) continue;
+      const role = asString(entry.role) ?? asString(entry.kind) ?? 'community';
+      out.push({
+        value: mint,
+        label: `${role} token`,
+        detail: mint.slice(0, 12),
+        group: 'all',
+      });
+    }
+    return out;
+  },
+};
+
+const realmsProposalProvider: ConnectorOptionProvider = {
+  id: 'realms.proposal',
+  connectorId: 'realms',
+  ttlMs: 60_000,
+  async fetch({ fieldValues, bridge }) {
+    const realmAddress = fieldValues.realmAddress?.trim();
+    if (!realmAddress) return [];
+    const resp = await safeBridgeFacts(bridge, { connectorId: 'realms', capability: 'markets', realmAddress });
+    const out: ConnectorOption[] = [];
+    for (const entry of genericListing(resp, ['proposals'])) {
+      const proposal = pickIdentifier(entry, ['proposalAddress', 'address', 'proposal']);
+      if (!proposal) continue;
+      const name = asString(entry.name) ?? `Proposal ${proposal.slice(0, 6)}…`;
+      const status = asString(entry.status) ?? 'voting';
+      out.push({
+        value: proposal,
+        label: name,
+        detail: `Status ${status}`,
+        group: 'all',
+      });
+    }
+    return out;
+  },
+};
+
+const WORMHOLE_DEFAULT_TOKENS = ['SOL', 'USDC', 'USDT', 'BONK', 'JUP'];
+const WORMHOLE_DEFAULT_CHAINS = ['Ethereum', 'Base', 'Arbitrum', 'Polygon', 'Avalanche', 'Sui'];
+
+const wormholeTokenProvider: ConnectorOptionProvider = {
+  id: 'wormhole.token',
+  connectorId: 'wormhole',
+  ttlMs: 10 * 60_000,
+  async fetch({ bridge }) {
+    const resp = await safeBridgeFacts(bridge, { connectorId: 'wormhole', capability: 'markets' });
+    const out: ConnectorOption[] = [];
+    const seen = new Set<string>();
+    for (const entry of genericListing(resp, ['tokens', 'routes'])) {
+      const symbol = asString(entry.symbol);
+      const mint = pickIdentifier(entry, ['mint', 'sourceMint', 'address']);
+      const value = symbol ?? mint;
+      if (!value || seen.has(value)) continue;
+      seen.add(value);
+      out.push({
+        value,
+        label: symbol ?? value.slice(0, 12),
+        detail: 'Wormhole route available',
+        group: 'all',
+        meta: { symbol },
+      });
+    }
+    if (out.length === 0) {
+      for (const symbol of WORMHOLE_DEFAULT_TOKENS) {
+        out.push({ value: symbol, label: symbol, detail: 'Wormhole route', group: 'all', meta: { symbol } });
+      }
+    }
+    return out;
+  },
+};
+
+const wormholeDestinationProvider: ConnectorOptionProvider = {
+  id: 'wormhole.destination',
+  connectorId: 'wormhole',
+  ttlMs: 10 * 60_000,
+  async fetch({ fieldValues, bridge }) {
+    const sourceMint = fieldValues.token?.trim();
+    if (!sourceMint) return [];
+    const resp = await safeBridgeFacts(bridge, { connectorId: 'wormhole', capability: 'markets', token: sourceMint });
+    const out: ConnectorOption[] = [];
+    const seen = new Set<string>();
+    for (const entry of genericListing(resp, ['routes', 'chains'])) {
+      const chain = asString(entry.chain) ?? asString(entry.destinationChain);
+      if (!chain || seen.has(chain)) continue;
+      seen.add(chain);
+      out.push({
+        value: chain,
+        label: chain,
+        detail: asString(entry.estimatedTime) ?? 'Wormhole route',
+        group: 'all',
+      });
+    }
+    if (out.length === 0) {
+      for (const chain of WORMHOLE_DEFAULT_CHAINS) {
+        out.push({ value: chain, label: chain, detail: 'Wormhole route', group: 'all' });
+      }
+    }
+    return out;
+  },
+};
+
+const pythFeedProvider: ConnectorOptionProvider = {
+  id: 'pyth.feed',
+  connectorId: 'pyth',
+  ttlMs: 10 * 60_000,
+  async fetch({ bridge }) {
+    const resp = await safeBridgeFacts(bridge, { connectorId: 'pyth', capability: 'markets' });
+    const out: ConnectorOption[] = [];
+    for (const entry of genericListing(resp, ['feeds'])) {
+      const id = pickIdentifier(entry, ['feedId', 'id', 'priceFeedId']);
+      if (!id) continue;
+      const symbol = asString(entry.symbol);
+      out.push({
+        value: id,
+        label: symbol ?? id.slice(0, 12),
+        detail: asString(entry.assetClass) ?? 'Pyth feed',
+        group: 'all',
+        meta: { symbol },
+      });
+    }
+    return out;
+  },
+};
+
+const magicedenWalletNftProvider = buildNftWalletProvider('magiceden.wallet.nft', 'magiceden');
+const magicedenCollectionProvider = buildNftCollectionProvider('magiceden.collection', 'magiceden');
+const magicedenListingProvider = buildNftListingProvider('magiceden.listing', 'magiceden');
+const tensorWalletNftProvider = buildNftWalletProvider('tensor.wallet.nft', 'tensor');
+const tensorCollectionProvider = buildNftCollectionProvider('tensor.collection', 'tensor');
+const tensorListingProvider = buildNftListingProvider('tensor.listing', 'tensor');
+
 let builtInProvidersRegistered = false;
 
 export function registerBuiltInConnectorOptionProviders(): void {
@@ -705,6 +1305,29 @@ export function registerBuiltInConnectorOptionProviders(): void {
   registerConnectorOptionProvider(raydiumCpmmPoolProvider);
   registerConnectorOptionProvider(raydiumClmmPoolProvider);
   registerConnectorOptionProvider(raydiumPositionProvider);
+  registerConnectorOptionProvider(marinadeTicketProvider);
+  registerConnectorOptionProvider(jitoStakeAccountProvider);
+  registerConnectorOptionProvider(jitoReceiptProvider);
+  registerConnectorOptionProvider(sanctumLstProvider);
+  registerConnectorOptionProvider(meteoraPoolProvider);
+  registerConnectorOptionProvider(meteoraPositionProvider);
+  registerConnectorOptionProvider(orcaWhirlpoolProvider);
+  registerConnectorOptionProvider(orcaPositionProvider);
+  registerConnectorOptionProvider(magicedenWalletNftProvider);
+  registerConnectorOptionProvider(magicedenCollectionProvider);
+  registerConnectorOptionProvider(magicedenListingProvider);
+  registerConnectorOptionProvider(tensorWalletNftProvider);
+  registerConnectorOptionProvider(tensorCollectionProvider);
+  registerConnectorOptionProvider(tensorListingProvider);
+  registerConnectorOptionProvider(squadsMultisigProvider);
+  registerConnectorOptionProvider(squadsProposalProvider);
+  registerConnectorOptionProvider(squadsVaultProvider);
+  registerConnectorOptionProvider(realmsRealmProvider);
+  registerConnectorOptionProvider(realmsTokenProvider);
+  registerConnectorOptionProvider(realmsProposalProvider);
+  registerConnectorOptionProvider(wormholeTokenProvider);
+  registerConnectorOptionProvider(wormholeDestinationProvider);
+  registerConnectorOptionProvider(pythFeedProvider);
 }
 
 export function unregisterBuiltInConnectorOptionProvidersForTests(): void {

@@ -1,6 +1,9 @@
 import { ProtocolError } from '@solana-agent-wallet-adapter/core';
 import {
+  appendReviewFinding,
   assertPlanGuardrails,
+  formatDollar,
+  reconcileThresholdReviewDecision,
   type AgentPlan as AiPlan,
   type AgentPlanAskRequest as AiAskRequest,
   type AgentPlanAskResult as AiAskResult,
@@ -99,17 +102,6 @@ interface AiReviewResearchEvidence {
   summary: string;
   sources: Array<{ title?: string; url: string; citedText?: string }>;
   sourcePolicy: string;
-}
-
-interface ThresholdRule {
-  threshold: number;
-  approveWhen: 'below' | 'above';
-}
-
-interface ThresholdPriceCandidate {
-  amount: number;
-  label: string;
-  text: string;
 }
 
 const WELL_KNOWN_PUBKEYS: ReadonlySet<string> = new Set([
@@ -539,7 +531,9 @@ export class BridgeAiPlanner {
           format: {
             type: 'json_schema',
             name: 'agentic_ai_review',
-            strict: true,
+            // evidence is intentionally open-shaped (varies per action type), and the
+            // post-processor normalizes the response, so strict structured-output is unneeded.
+            strict: false,
             schema: REVIEW_JSON_SCHEMA,
           },
         },
@@ -1117,7 +1111,7 @@ function aiReviewMessages(
 ): Array<{ role: 'system' | 'user'; content: string }> {
   const multi = request.mode === 'multi';
   const needsResearch = reviewNeedsWebResearch(request);
-  const baseSystem = 'You review a Solana wallet action draft before it is sent for wallet approval. Return only JSON with: decision ("approve", "deny", or "needs_input"); reason as one or two concise sentences; summary as one short sentence; evidence as an object. Put flexible user-facing findings in evidence.findings as an array of {label,value,tone}, where tone is good, warn, neutral, or fail. Findings must match the user request and connector facts; do not force route/quote/slippage rows when they do not apply. Use plan.actionType to decide which checks apply: swap drafts deserve route/quote/slippage scrutiny; lend/deposit/withdraw/stake/vault drafts deserve connector/reserve/vault checks and a balance/cap sanity check, not swap heuristics. For first-class adapter actions (kamino_deposit, kamino_withdraw, marginfi_*, save_*, marinade_*, jito_*, jupiter_lend_*, drift_vault_*, meteora_*, orca_*, raydium_*, sanctum_*), if the connector is enabled, the target token/reserve/vault is resolvable, and the amount is positive and within plausible bounds, approve unless a user policy or research result blocks. If the instruction asks for current or outside facts and web search is available, search reliable sources before deciding. Put source-backed findings in evidence.findings, put source links in evidence.sources as an array of {title,url}, and include evidence.research = {status:"checked"} when research was used. Apply user threshold rules exactly, for example "approve if under $20, deny if over $20". If multiple researched facts lead to different outcomes and the draft does not identify which one applies, return "needs_input" and list the found options. When you cannot decide because user intent is genuinely ambiguous, return decision "needs_input" plus a "questions" array with 1-3 short, specific questions answerable in under 20 words. Use "needs_input" only when the missing information is something the user must supply, such as a missing amount, missing token, missing recipient, or which researched option applies. Do not use "needs_input" for facts that are present in the plan, context.facts, context.executionPath, research results, or facts you can infer. For browser swap or recurring-swap drafts, Jupiter is the execution aggregator unless context says otherwise; do not ask the user which DEX/protocol will execute it. If a token mint address is present, review that mint address; do not ask the user what token it is or whether they verified it. If token metadata is missing, return approve or deny with a warning, not needs_input. If context includes protocolConnectors or connector facts, use reads as evidence and treat writes as prepare-only wallet-approval actions. If the context includes "userPolicies", treat each as a soft rule the user wants you to honor: factor them into your decision and cite the relevant policy id in evidence.policiesApplied when one influences the outcome. Be flexible: use the user instruction and available facts, not a fixed checklist. Never claim anything is signed, submitted, guaranteed safe, or already approved. Never request private keys. The wallet user must still approve separately.';
+  const baseSystem = 'You review a Solana wallet action draft before it is sent for wallet approval. Return only JSON with: decision ("approve", "deny", or "needs_input"); reason as one or two concise sentences; summary as one short sentence; evidence as an object. Put flexible user-facing findings in evidence.findings as an array of {label,value,tone}, where tone is good, warn, neutral, or fail. Findings must match the user request and connector facts; do not force route/quote/slippage rows when they do not apply. Use plan.actionType to decide which checks apply: swap drafts deserve route/quote/slippage scrutiny; lend/deposit/withdraw/stake/vault drafts deserve connector/reserve/vault checks and a balance/cap sanity check, not swap heuristics. For first-class adapter actions (kamino_deposit, kamino_withdraw, marginfi_*, save_*, marinade_*, jito_*, jupiter_lend_*, drift_vault_*, meteora_*, orca_*, raydium_*, sanctum_*), if the connector is enabled, the target token/reserve/vault is resolvable, and the amount is positive and within plausible bounds, approve unless a user policy or research result blocks. If the instruction asks for current or outside facts and web search is available, search reliable sources before deciding. Put source-backed findings in evidence.findings, put source links in evidence.sources as an array of {title,url}, and include evidence.research = {status:"checked"} when research was used. Apply user threshold rules exactly, for example "approve if under $20, deny if over $20". When the instruction asks a threshold or conditional question (e.g., "approve if under $X", "deny if over $Y"), you MUST include the asked-about value as a finding in evidence.findings with label matching the asked fact (e.g., "Plan rate", "Subscription price", "Monthly rate", "Current price"), value formatted with the currency unit (e.g., "$16.79" or "$16.79/month"), and tone set to "good" when the user\'s approve-when condition holds and "fail" otherwise. Also include a separate "Threshold check" finding stating the comparison in plain language. Always emit these findings even when you cannot decide; never omit the asked fact. Numeric values like "$16.79" must always be the precise figure you found, never rounded up or down to favor a decision. If multiple researched facts lead to different outcomes and the draft does not identify which one applies, return "needs_input" and list the found options. When you cannot decide because user intent is genuinely ambiguous, return decision "needs_input" plus a "questions" array with 1-3 short, specific questions answerable in under 20 words. Use "needs_input" only when the missing information is something the user must supply, such as a missing amount, missing token, missing recipient, or which researched option applies. Do not use "needs_input" for facts that are present in the plan, context.facts, context.executionPath, research results, or facts you can infer. For browser swap or recurring-swap drafts, Jupiter is the execution aggregator unless context says otherwise; do not ask the user which DEX/protocol will execute it. If a token mint address is present, review that mint address; do not ask the user what token it is or whether they verified it. If token metadata is missing, return approve or deny with a warning, not needs_input. If context includes protocolConnectors or connector facts, use reads as evidence and treat writes as prepare-only wallet-approval actions. If the context includes "userPolicies", treat each as a soft rule the user wants you to honor: factor them into your decision and cite the relevant policy id in evidence.policiesApplied when one influences the outcome. Be flexible: use the user instruction and available facts, not a fixed checklist. Never claim anything is signed, submitted, guaranteed safe, or already approved. Never request private keys. The wallet user must still approve separately.';
   const multiSystem = multi
     ? ' Additionally, fill the "reviewers" array with one entry per role (risk, quote, policy, protocol). Each reviewer evaluates the draft from their perspective independently and reports their own decision ("approve", "deny", or "needs_input") and a 1-sentence reason. The top-level decision should reflect the most severe verdict: any "deny" > any "needs_input" > all "approve". Risk inspects authority changes, unknown programs, and dangerous semantics. Quote checks slippage, output amount, and route freshness for swaps. Policy applies the user policies from context.userPolicies. Protocol identifies the protocol/aggregator and flags unknowns. Skip reviewers whose role does not apply (e.g., no quote role on a read-only plan).'
     : '';
@@ -1385,159 +1379,6 @@ function malformedAiReviewResult(
       hint: request.instruction,
     }],
   };
-}
-
-function reconcileThresholdReviewDecision(
-  result: AiReviewResult,
-  request: Required<AiReviewRequest>,
-): AiReviewResult {
-  const rule = extractThresholdRule(request.instruction);
-  if (!rule) return result;
-  const candidate = selectThresholdPriceCandidate(result, rule);
-  if (!candidate) return result;
-  const expected = expectedDecisionForThreshold(candidate.amount, rule);
-  if (expected === result.decision) return result;
-
-  const thresholdText = formatDollar(rule.threshold);
-  const amountText = formatDollar(candidate.amount);
-  const relation = candidate.amount < rule.threshold
-    ? 'under'
-    : candidate.amount > rule.threshold
-      ? 'over'
-      : 'equal to';
-  const correctedReason = expected === 'needs_input'
-    ? `${amountText} is exactly ${thresholdText}; the user rule used a strict under/over threshold, so the review needs clarification.`
-    : `${amountText} is ${relation} ${thresholdText}, so the user threshold rule ${expected === 'approve' ? 'approves' : 'denies'} this draft. Wallet approval is still required before anything signs.`;
-  const evidence = appendReviewFinding(result.evidence, {
-    label: 'Threshold check',
-    value: `Corrected model comparison: ${amountText} is ${relation} ${thresholdText}. Original decision was ${result.decision}.`,
-    tone: expected === 'approve' ? 'good' : expected === 'deny' ? 'fail' : 'warn',
-  });
-  return {
-    ...result,
-    decision: expected,
-    reason: compactReviewText(correctedReason, 280),
-    summary: compactReviewText(`Threshold rule checked: ${amountText} is ${relation} ${thresholdText}.`, 160),
-    evidence,
-  };
-}
-
-function extractThresholdRule(instruction: string): ThresholdRule | undefined {
-  const normalized = instruction.toLowerCase();
-  const threshold = extractInstructionThreshold(normalized);
-  if (threshold === undefined) return undefined;
-  const approveBelow = /\b(approve|allow|pass)\b[\s\S]{0,80}\b(under|below|less\s+than)\b/.test(normalized) ||
-    /\b(under|below|less\s+than)\b[\s\S]{0,80}\b(approve|allow|pass)\b/.test(normalized);
-  const approveAbove = /\b(approve|allow|pass)\b[\s\S]{0,80}\b(over|above|more\s+than|greater\s+than)\b/.test(normalized) ||
-    /\b(over|above|more\s+than|greater\s+than)\b[\s\S]{0,80}\b(approve|allow|pass)\b/.test(normalized);
-  const denyBelow = /\b(deny|block|reject|fail)\b[\s\S]{0,80}\b(under|below|less\s+than)\b/.test(normalized) ||
-    /\b(under|below|less\s+than)\b[\s\S]{0,80}\b(deny|block|reject|fail)\b/.test(normalized);
-  const denyAbove = /\b(deny|block|reject|fail)\b[\s\S]{0,80}\b(over|above|more\s+than|greater\s+than)\b/.test(normalized) ||
-    /\b(over|above|more\s+than|greater\s+than)\b[\s\S]{0,80}\b(deny|block|reject|fail)\b/.test(normalized);
-  if (approveBelow || denyAbove) return { threshold, approveWhen: 'below' };
-  if (approveAbove || denyBelow) return { threshold, approveWhen: 'above' };
-  return undefined;
-}
-
-function extractInstructionThreshold(text: string): number | undefined {
-  const matches = [...text.matchAll(/\$\s*([0-9]+(?:\.[0-9]+)?)/g)]
-    .map((match) => Number.parseFloat(match[1] ?? ''))
-    .filter(Number.isFinite);
-  if (!matches.length) return undefined;
-  return matches[0];
-}
-
-function expectedDecisionForThreshold(amount: number, rule: ThresholdRule): AiReviewDecision {
-  if (amount === rule.threshold) return 'needs_input';
-  if (rule.approveWhen === 'below') {
-    return amount < rule.threshold ? 'approve' : 'deny';
-  }
-  return amount > rule.threshold ? 'approve' : 'deny';
-}
-
-function selectThresholdPriceCandidate(
-  result: AiReviewResult,
-  rule: ThresholdRule,
-): ThresholdPriceCandidate | undefined {
-  const candidates = extractThresholdPriceCandidates(result, rule.threshold);
-  if (!candidates.length) return undefined;
-  const currentPrice = candidates.find((candidate) => /current price|cheapest|monthly plan|air plan|including taxes|taxes\/fees/i.test(candidate.label));
-  if (currentPrice) return currentPrice;
-  if (candidates.length === 1) return candidates[0];
-  const nonThresholdCandidates = candidates.filter((candidate) => candidate.amount !== rule.threshold);
-  return nonThresholdCandidates.length === 1 ? nonThresholdCandidates[0] : undefined;
-}
-
-function extractThresholdPriceCandidates(
-  result: AiReviewResult,
-  threshold: number,
-): ThresholdPriceCandidate[] {
-  const fields: Array<{ label: string; text: string }> = [
-    { label: 'reason', text: result.reason },
-    { label: 'summary', text: result.summary },
-    ...evidenceTextFields(result.evidence),
-  ];
-  const candidates: ThresholdPriceCandidate[] = [];
-  const seen = new Set<string>();
-  for (const field of fields) {
-    for (const sentence of field.text.split(/(?<=[.!?])\s+|\n+/)) {
-      if (!/\$/.test(sentence)) continue;
-      if (/\b(threshold|limit|rule)\b/i.test(sentence) && !/\b(cost|costs|price|priced|plan|monthly|per\s+month|tax|fee|current)\b/i.test(sentence)) {
-        continue;
-      }
-      if (!/\b(cost|costs|price|priced|plan|monthly|per\s+month|tax|fee|current|cheapest|air|infinity)\b/i.test(sentence)) {
-        continue;
-      }
-      for (const match of sentence.matchAll(/\$\s*([0-9]+(?:\.[0-9]+)?)/g)) {
-        const amount = Number.parseFloat(match[1] ?? '');
-        if (!Number.isFinite(amount)) continue;
-        if (amount === threshold && !/\b(cost|costs|price|priced|plan|monthly|per\s+month|tax|fee|current|cheapest|air|infinity)\b/i.test(sentence.slice(0, Math.max(0, match.index ?? 0)))) {
-          continue;
-        }
-        const key = `${amount}:${sentence.trim().toLowerCase()}`;
-        if (seen.has(key)) continue;
-        seen.add(key);
-        candidates.push({ amount, label: field.label, text: sentence.trim() });
-      }
-    }
-  }
-  return candidates;
-}
-
-function evidenceTextFields(evidence: Record<string, unknown>): Array<{ label: string; text: string }> {
-  const fields: Array<{ label: string; text: string }> = [];
-  const findings = Array.isArray(evidence.findings) ? evidence.findings : [];
-  for (const entry of findings) {
-    if (!entry || typeof entry !== 'object' || Array.isArray(entry)) continue;
-    const record = entry as Record<string, unknown>;
-    const label = typeof record.label === 'string' ? record.label : 'finding';
-    const value = typeof record.value === 'string' ? record.value : '';
-    if (value.trim()) fields.push({ label, text: value });
-  }
-  if (evidence.research && typeof evidence.research === 'object' && !Array.isArray(evidence.research)) {
-    const summary = (evidence.research as Record<string, unknown>).summary;
-    if (typeof summary === 'string' && summary.trim()) {
-      fields.push({ label: 'research', text: summary });
-    }
-  }
-  return fields;
-}
-
-function appendReviewFinding(
-  evidence: Record<string, unknown>,
-  finding: { label: string; value: string; tone: 'good' | 'warn' | 'neutral' | 'fail' },
-): Record<string, unknown> {
-  const findings = Array.isArray(evidence.findings)
-    ? evidence.findings.filter((entry) => entry && typeof entry === 'object' && !Array.isArray(entry))
-    : [];
-  return {
-    ...evidence,
-    findings: [...findings, finding],
-  };
-}
-
-function formatDollar(value: number): string {
-  return Number.isInteger(value) ? `$${value}` : `$${value.toFixed(2)}`;
 }
 
 function withResearchCitations(

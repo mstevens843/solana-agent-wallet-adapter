@@ -381,9 +381,17 @@ export interface PrepareBlinkActionInput {
   dueAt?: string;
 }
 
+export interface RecurringConnectorTemplateInput {
+  connectorId: string;
+  actionType: string;
+  subActionId?: string;
+  params: Record<string, string>;
+  blinkUrl?: string;
+}
+
 export interface RecurringPaymentInput {
   status?: 'active' | 'paused';
-  actionKind?: 'transfer' | 'swap';
+  actionKind?: 'transfer' | 'swap' | 'connector' | 'blink';
   token?: string;
   inputToken?: string;
   outputToken?: string;
@@ -402,6 +410,7 @@ export interface RecurringPaymentInput {
   note?: string;
   expiresAt?: string;
   notifications?: { inApp?: boolean; webhookUrl?: string };
+  connectorActionTemplate?: RecurringConnectorTemplateInput;
   metadata?: Record<string, unknown>;
 }
 
@@ -2078,6 +2087,7 @@ export class AgentWalletActionService {
     });
     const protocol = cleanOptionalString(input.protocol) ?? connector?.name ?? metadata?.title ?? prepared.title ?? 'Blink';
     const operation = cleanOptionalString(input.operation) ?? prepared.label ?? metadata?.label ?? 'Blink action';
+    const simulationSummary = await this.summarizeBlinkSimulation(prepared.transactionBase64).catch(() => undefined);
     const action = await this.store().addAction({
       kind: 'blink_action',
       walletAddress,
@@ -2100,12 +2110,14 @@ export class AgentWalletActionService {
         ...(cleanOptionalString(input.expectedToken) ? { expectedToken: cleanOptionalString(input.expectedToken) } : {}),
         ...(cleanOptionalString(input.expectedRecipient) ? { expectedRecipient: cleanOptionalString(input.expectedRecipient) } : {}),
         ...(cleanOptionalString(input.position) ? { position: cleanOptionalString(input.position) } : {}),
+        ...(simulationSummary ? { simulationSummary: JSON.stringify(simulationSummary) } : {}),
       },
       ...(input.dueAt !== undefined && { dueAt: input.dueAt }),
       ...(input.note !== undefined && { note: input.note }),
     });
     return {
       preparedAction: action,
+      ...(simulationSummary ? { simulationSummary } : {}),
       ...(metadata ? { metadata } : {}),
     };
   }
@@ -5007,6 +5019,93 @@ export class AgentWalletActionService {
     });
   }
 
+  private async summarizeBlinkSimulation(transactionBase64: string): Promise<{
+    ok: boolean;
+    invokedPrograms: string[];
+    closesTokenAccount: boolean;
+    transfersSpl: boolean;
+    transfersSol: boolean;
+    logsTail: string[];
+    unitsConsumed?: number;
+    error?: string;
+  }> {
+    let bytes: Buffer;
+    try {
+      bytes = Buffer.from(transactionBase64, 'base64');
+    } catch (err) {
+      return {
+        ok: false,
+        invokedPrograms: [],
+        closesTokenAccount: false,
+        transfersSpl: false,
+        transfersSol: false,
+        logsTail: [],
+        error: err instanceof Error ? err.message : 'invalid base64',
+      };
+    }
+    let invokedPrograms: string[] = [];
+    let logs: string[] = [];
+    let unitsConsumed: number | undefined;
+    let simulationErr: unknown = null;
+    let parsedOk = false;
+    try {
+      const versioned = VersionedTransaction.deserialize(bytes);
+      const message = versioned.message;
+      const programs = new Set<string>();
+      for (const ix of message.compiledInstructions) {
+        const key = message.staticAccountKeys[ix.programIdIndex];
+        if (key) programs.add(key.toBase58());
+      }
+      invokedPrograms = Array.from(programs);
+      parsedOk = true;
+      const result = await this.connection.simulateTransaction(versioned, {
+        sigVerify: false,
+        replaceRecentBlockhash: true,
+        commitment: 'confirmed',
+      });
+      simulationErr = result.value.err;
+      logs = result.value.logs ?? [];
+      unitsConsumed = result.value.unitsConsumed ?? undefined;
+    } catch (versionedErr) {
+      try {
+        const legacy = Transaction.from(bytes);
+        const programs = new Set<string>();
+        for (const ix of legacy.instructions) {
+          programs.add(ix.programId.toBase58());
+        }
+        invokedPrograms = Array.from(programs);
+        parsedOk = true;
+        const result = await this.connection.simulateTransaction(legacy);
+        simulationErr = result.value.err;
+        logs = result.value.logs ?? [];
+        unitsConsumed = result.value.unitsConsumed ?? undefined;
+      } catch (legacyErr) {
+        return {
+          ok: false,
+          invokedPrograms,
+          closesTokenAccount: false,
+          transfersSpl: false,
+          transfersSol: false,
+          logsTail: [],
+          error: legacyErr instanceof Error ? legacyErr.message : versionedErr instanceof Error ? versionedErr.message : 'unparseable transaction',
+        };
+      }
+    }
+    const closesTokenAccount = logs.some((line) => /Instruction:\s*CloseAccount/i.test(line));
+    const transfersSpl = logs.some((line) => /Instruction:\s*Transfer\b/i.test(line) || /Instruction:\s*TransferChecked\b/i.test(line));
+    const transfersSol = logs.some((line) => /Program 11111111111111111111111111111111 (invoke|success)/.test(line));
+    return {
+      ok: parsedOk && !simulationErr,
+      invokedPrograms,
+      closesTokenAccount,
+      transfersSpl,
+      transfersSol,
+      logsTail: logs.slice(-12),
+      ...(unitsConsumed !== undefined ? { unitsConsumed } : {}),
+      ...(simulationErr ? { error: JSON.stringify(simulationErr) } : {}),
+    };
+  }
+
   private async simulateBeforeSign(transactionBase64: string, summary: string): Promise<void> {
     if (process.env.AGENT_WALLET_SKIP_SIMULATION === '1') return;
     let bytes: Buffer;
@@ -5180,14 +5279,51 @@ async function buildRecurringPaymentInput(
   connection: Connection,
 ): Promise<AddRecurringPaymentInput> {
   requireActionAllowed(config);
-  const actionKind: 'transfer' | 'swap' = input.actionKind === 'swap' || input.outputToken ? 'swap' : 'transfer';
-  const token = normalizeTokenIdentifier(requireString(input.token ?? input.inputToken, 'token'));
-  const amount = requireString(input.amount, 'amount');
+  const actionKind: 'transfer' | 'swap' | 'connector' | 'blink' =
+    input.actionKind === 'connector' || input.actionKind === 'blink' || input.actionKind === 'swap'
+      ? input.actionKind
+      : input.outputToken
+        ? 'swap'
+        : 'transfer';
+  if (actionKind === 'connector' || actionKind === 'blink') {
+    if (!input.connectorActionTemplate) {
+      throw new ProtocolError(
+        'invalid_request',
+        `connectorActionTemplate is required when actionKind is "${actionKind}".`,
+      );
+    }
+    const template = input.connectorActionTemplate;
+    if (!template.connectorId.trim()) {
+      throw new ProtocolError('invalid_request', 'connectorActionTemplate.connectorId is required.');
+    }
+    if (!template.actionType.trim()) {
+      throw new ProtocolError('invalid_request', 'connectorActionTemplate.actionType is required.');
+    }
+    if (actionKind === 'blink' && !template.blinkUrl?.trim()) {
+      throw new ProtocolError(
+        'invalid_request',
+        'connectorActionTemplate.blinkUrl is required when actionKind is "blink".',
+      );
+    }
+  }
+  const tokenSeed = input.token ?? input.inputToken ?? (actionKind === 'connector' || actionKind === 'blink' ? input.connectorActionTemplate?.params?.token ?? 'SOL' : undefined);
+  const token = normalizeTokenIdentifier(requireString(tokenSeed, 'token'));
+  const amountSeed = input.amount ?? (actionKind === 'connector' || actionKind === 'blink' ? input.connectorActionTemplate?.params?.amount ?? '0' : undefined);
+  const amount = requireString(amountSeed, 'amount');
   const inputToken = normalizeTokenIdentifier(input.inputToken ?? token);
   const outputToken = actionKind === 'swap'
     ? normalizeTokenIdentifier(requireString(input.outputToken, 'outputToken'))
     : undefined;
-  const recipient = actionKind === 'swap' ? '' : new PublicKey(requireString(input.recipient, 'recipient')).toBase58();
+  let recipient = '';
+  if (actionKind === 'transfer') {
+    recipient = new PublicKey(requireString(input.recipient, 'recipient')).toBase58();
+  } else if (input.recipient) {
+    try {
+      recipient = new PublicKey(input.recipient).toBase58();
+    } catch {
+      recipient = '';
+    }
+  }
   const note = typeof input.note === 'string' && input.note.trim() ? input.note.trim().slice(0, 500) : undefined;
   const localTime = typeof input.localTime === 'string' && input.localTime.trim() ? input.localTime.trim() : undefined;
   if (localTime !== undefined && !/^\d{2}:\d{2}$/.test(localTime)) {
@@ -5208,11 +5344,28 @@ async function buildRecurringPaymentInput(
   if (actionKind === 'swap') {
     const inputTokenConfig = inputToken === 'SOL' ? { decimals: 9, symbol: 'SOL' } : await resolveToken(config, connection, inputToken);
     parseDecimalAmount(amount, inputTokenConfig.decimals, `${inputTokenConfig.symbol} recurring swap amount`);
-  } else if (token === 'SOL') {
-    parseDecimalAmount(amount, 9, 'SOL recurring payment amount');
-  } else {
-    const tokenConfig = await resolveToken(config, connection, token);
-    parseDecimalAmount(amount, tokenConfig.decimals, `${tokenConfig.symbol} recurring payment amount`);
+  } else if (actionKind === 'transfer') {
+    if (token === 'SOL') {
+      parseDecimalAmount(amount, 9, 'SOL recurring payment amount');
+    } else {
+      const tokenConfig = await resolveToken(config, connection, token);
+      parseDecimalAmount(amount, tokenConfig.decimals, `${tokenConfig.symbol} recurring payment amount`);
+    }
+  }
+  // For connector/blink, amount is a free-form parametric value; validation runs per occurrence.
+
+  if (actionKind === 'blink') {
+    const minDailyMinutes = 60 * 24;
+    const intervalMinutes = (schedule.intervalDays ?? 0) * 60 * 24
+      + (schedule.intervalHours ?? 0) * 60
+      + (schedule.intervalMinutes ?? 0);
+    const cadenceLooksDaily = schedule.cadence === 'weekly' || schedule.cadence === 'monthly';
+    if (!cadenceLooksDaily && intervalMinutes > 0 && intervalMinutes < minDailyMinutes) {
+      throw new ProtocolError(
+        'invalid_request',
+        'Recurring Blink schedules require at least a 1-day cadence.',
+      );
+    }
   }
 
   const expiresAt = normalizeExpiresAt(input.expiresAt);
@@ -5237,7 +5390,13 @@ async function buildRecurringPaymentInput(
     walletAddress,
     status,
     cluster: config.cluster,
-    ...(actionKind === 'swap' ? { actionKind, inputToken, outputToken, slippageBps: input.slippageBps ?? config.mainnet.maxSlippageBps } : {}),
+    ...(actionKind === 'swap' ? { actionKind: 'swap' as const, inputToken, outputToken, slippageBps: input.slippageBps ?? config.mainnet.maxSlippageBps } : {}),
+    ...(actionKind === 'connector' || actionKind === 'blink'
+      ? {
+          actionKind,
+          ...(input.connectorActionTemplate ? { connectorActionTemplate: input.connectorActionTemplate } : {}),
+        }
+      : {}),
     token,
     recipient,
     amount,

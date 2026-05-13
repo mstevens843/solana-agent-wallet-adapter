@@ -219,4 +219,83 @@ describe('agent review presentation helpers', () => {
       { label: 'Missing information', value: 'Recipient is missing.', tone: 'warn' },
     ]);
   });
+
+  it('renders Plan rate and Threshold check findings above facts for swap action', () => {
+    const rows = reviewEvidenceRows({
+      status: 'approved',
+      decision: 'approve',
+      reason: '$16.79 is under $20.',
+      summary: 'Threshold rule checked.',
+      evidence: {
+        findings: [
+          { label: 'Plan rate', value: '$16.79', tone: 'good' },
+          { label: 'Threshold check', value: 'Corrected model comparison: $16.79 is under $20. Original decision was deny.', tone: 'good' },
+        ],
+      },
+      facts: {
+        protocol: { state: 'ok', message: 'Jupiter' },
+        route: { state: 'ok', message: 'SOL -> USDC' },
+      },
+    }, { actionType: 'swap' });
+
+    const labels = rows.map((row) => row.label);
+    const planRateIdx = labels.indexOf('Plan rate');
+    const thresholdIdx = labels.indexOf('Threshold check');
+    const protocolIdx = labels.indexOf('Protocol');
+    expect(planRateIdx).toBeGreaterThanOrEqual(0);
+    expect(thresholdIdx).toBeGreaterThanOrEqual(0);
+    expect(protocolIdx).toBeGreaterThanOrEqual(0);
+    expect(planRateIdx).toBeLessThan(protocolIdx);
+    expect(thresholdIdx).toBeLessThan(protocolIdx);
+    expect(rows[planRateIdx]?.tone).toBe('good');
+    expect(rows[thresholdIdx]?.tone).toBe('good');
+  });
+
+  it('renders Plan rate and Threshold check findings above facts for recurring_payment', () => {
+    const rows = reviewEvidenceRows({
+      status: 'approved',
+      decision: 'approve',
+      reason: '$16.79 is under $20.',
+      summary: 'Threshold rule checked.',
+      evidence: {
+        findings: [
+          { label: 'Plan rate', value: '$16.79', tone: 'good' },
+          { label: 'Threshold check', value: '$16.79 is under $20.', tone: 'good' },
+        ],
+      },
+      facts: {
+        recipient: { state: 'ok', message: 'CnTpbHELIUM...' },
+        tokenMint: { state: 'ok', message: 'USDC' },
+        schedule: { state: 'ok', message: 'monthly' },
+      },
+    }, { actionType: 'recurring_payment' });
+
+    const labels = rows.map((row) => row.label);
+    const planRateIdx = labels.indexOf('Plan rate');
+    const thresholdIdx = labels.indexOf('Threshold check');
+    const recipientIdx = labels.indexOf('Recipient');
+    expect(planRateIdx).toBeGreaterThanOrEqual(0);
+    expect(thresholdIdx).toBeGreaterThanOrEqual(0);
+    expect(recipientIdx).toBeGreaterThanOrEqual(0);
+    expect(planRateIdx).toBeLessThan(recipientIdx);
+    expect(thresholdIdx).toBeLessThan(recipientIdx);
+  });
+
+  it('renders Threshold check as warn tone when reconciliation could not extract a price', () => {
+    const rows = reviewEvidenceRows({
+      status: 'needs_input',
+      decision: 'needs_input',
+      reason: 'The agent did not return a numeric value that could be compared against the $20 threshold.',
+      summary: 'Threshold rule needs a numeric value to apply ($20).',
+      evidence: {
+        findings: [
+          { label: 'Threshold check', value: 'Could not extract a current value to compare against the $20 threshold.', tone: 'warn' },
+        ],
+      },
+    }, { actionType: 'swap' });
+
+    const thresholdRow = rows.find((row) => row.label === 'Threshold check');
+    expect(thresholdRow).toBeDefined();
+    expect(thresholdRow?.tone).toBe('warn');
+  });
 });

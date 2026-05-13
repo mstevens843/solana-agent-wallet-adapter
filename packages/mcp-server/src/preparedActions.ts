@@ -141,12 +141,20 @@ export interface PreparedAction {
   archivedAt?: string;
 }
 
+export interface ConnectorRecurringTemplate {
+  connectorId: string;
+  actionType: string;
+  subActionId?: string;
+  params: Record<string, string>;
+  blinkUrl?: string;
+}
+
 export interface RecurringPayment {
   id: string;
   status: 'active' | 'paused';
   walletAddress: string;
   cluster: Cluster;
-  actionKind?: 'transfer' | 'swap';
+  actionKind?: 'transfer' | 'swap' | 'connector' | 'blink';
   token: string;
   inputToken?: string;
   outputToken?: string;
@@ -163,9 +171,12 @@ export interface RecurringPayment {
   startAt?: string;
   maxOccurrences?: number;
   occurrencesCreated?: number;
+  consecutiveFailures?: number;
+  lastOccurrenceError?: string;
   note?: string;
   expiresAt?: string;
   notifications?: RecurringPaymentNotifications;
+  connectorActionTemplate?: ConnectorRecurringTemplate;
   metadata?: Record<string, unknown>;
   createdAt: string;
   updatedAt: string;
@@ -420,39 +431,73 @@ export class JsonPreparedActionStore implements PreparedActionStore {
         );
         if (exists) continue;
         const timestamp = new Date().toISOString();
-        const isSwap = payment.actionKind === 'swap' || Boolean(payment.outputToken);
-        const inputToken = payment.inputToken || payment.token;
-        const outputToken = payment.outputToken || 'USDC';
-        const action: PreparedAction = {
+        const status: PreparedAction['status'] = occurrence.dueAt.getTime() < now.getTime() ? 'overdue' : 'ready';
+        const baseAction = {
           id: newId('pa'),
-          kind: isSwap ? 'swap' : payment.token.toUpperCase() === 'SOL' ? 'transfer_sol' : 'transfer_spl',
-          status: occurrence.dueAt.getTime() < now.getTime() ? 'overdue' : 'ready',
           walletAddress: payment.walletAddress,
           cluster: payment.cluster,
-          summary: isSwap
-            ? `Recurring ${payment.amount} ${inputToken} swap to ${outputToken}`
-            : `Recurring ${payment.amount} ${payment.token} payment to ${payment.recipient}`,
-          params: isSwap
-            ? {
-                inputToken,
-                outputToken,
-                amount: payment.amount,
-                slippageBps: payment.slippageBps ?? 50,
-              }
-            : payment.token.toUpperCase() === 'SOL'
-              ? { recipient: payment.recipient, amountSol: payment.amount }
-              : {
-                  token: payment.token,
-                  recipient: payment.recipient,
-                  amount: payment.amount,
-                },
           dueAt: occurrence.dueAt.toISOString(),
           createdAt: timestamp,
           updatedAt: timestamp,
+          status,
           ...(payment.note !== undefined && { note: payment.note }),
           recurringId: payment.id,
           occurrenceKey: occurrence.key,
         };
+        let action: PreparedAction;
+        if (payment.actionKind === 'connector' && payment.connectorActionTemplate) {
+          const template = payment.connectorActionTemplate;
+          action = {
+            ...baseAction,
+            kind: template.actionType as PreparedAction['kind'],
+            summary: `Recurring ${template.connectorId} ${template.subActionId ?? template.actionType}`.slice(0, 140),
+            params: {
+              ...template.params,
+              connectorId: template.connectorId,
+              recurringActionType: template.actionType,
+              ...(template.subActionId ? { subActionId: template.subActionId } : {}),
+              pendingPrepare: 'true',
+            },
+          };
+        } else if (payment.actionKind === 'blink' && payment.connectorActionTemplate?.blinkUrl) {
+          const template = payment.connectorActionTemplate;
+          action = {
+            ...baseAction,
+            kind: 'blink_action' as PreparedAction['kind'],
+            summary: `Recurring Blink ${template.connectorId}`.slice(0, 140),
+            params: {
+              ...template.params,
+              connectorId: template.connectorId,
+              blinkUrl: template.blinkUrl,
+              pendingPrepare: 'true',
+            },
+          };
+        } else {
+          const isSwap = payment.actionKind === 'swap' || Boolean(payment.outputToken);
+          const inputToken = payment.inputToken || payment.token;
+          const outputToken = payment.outputToken || 'USDC';
+          action = {
+            ...baseAction,
+            kind: isSwap ? 'swap' : payment.token.toUpperCase() === 'SOL' ? 'transfer_sol' : 'transfer_spl',
+            summary: isSwap
+              ? `Recurring ${payment.amount} ${inputToken} swap to ${outputToken}`
+              : `Recurring ${payment.amount} ${payment.token} payment to ${payment.recipient}`,
+            params: isSwap
+              ? {
+                  inputToken,
+                  outputToken,
+                  amount: payment.amount,
+                  slippageBps: payment.slippageBps ?? 50,
+                }
+              : payment.token.toUpperCase() === 'SOL'
+                ? { recipient: payment.recipient, amountSol: payment.amount }
+                : {
+                    token: payment.token,
+                    recipient: payment.recipient,
+                    amount: payment.amount,
+                  },
+          };
+        }
         state.actions.push(action);
         payment.occurrencesCreated = (payment.occurrencesCreated ?? 0) + 1;
         payment.updatedAt = timestamp;

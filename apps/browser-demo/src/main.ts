@@ -185,6 +185,7 @@ import {
   connectorActionFormById,
   connectorActionFormForTemplate,
   connectorActionFormsForConnector,
+  connectorActionFormTemplateActionType,
   connectorAiPlannerContext,
   connectorAiUserNotes,
   connectorCreateConnectors,
@@ -288,7 +289,7 @@ interface TokenFieldSelection {
 }
 type AgentPlanReviewStatus = 'checking' | 'approved' | 'denied' | 'needs_input' | 'error';
 type RecurringPresetId = 'scheduled-transfer' | 'recurring-swap';
-type RecurringActionKind = 'transfer' | 'swap';
+type RecurringActionKind = 'transfer' | 'swap' | 'connector' | 'blink';
 type InlineReceiptKind = 'intent' | 'rejection' | 'policy' | 'review';
 type AuditRecordType = 'plan' | 'approval' | 'completed' | 'evidence';
 type PreparedActionKind =
@@ -5820,13 +5821,17 @@ function localWorkspacePrompt(context: 'backup' | 'cloud'): string {
     ? `<button type="button" class="utility" data-cloud-action="copy-local-to-cloud" ${state.busy ? 'disabled' : ''}>Copy local to cloud</button>`
     : '';
   const detail = context === 'cloud'
-    ? 'Review and copy eligible local items after cloud sign-in, or export a backup first.'
+    ? state.cloudSession.status === 'unavailable'
+      ? 'Export a JSON backup before switching wallets or clearing browser data.'
+      : 'Review and copy eligible local items after cloud sign-in, or export a backup first.'
     : 'Export before signing out, switching wallets, or clearing browser data.';
+  const title = context === 'cloud' ? 'Optional local backup' : 'Back up local workspace';
+  const backupButtonLabel = context === 'cloud' ? 'Export backup' : 'Back up';
   return `
-    <section class="local-workspace-prompt" aria-label="Local workspace backup prompt">
+    <section class="local-workspace-prompt ${context}-context" aria-label="Local workspace backup prompt">
       <div>
         <span>${storageBadgeHtml(storageBadge('local-only'))}</span>
-        <strong>Back up local workspace</strong>
+        <strong>${escapeHtml(title)}</strong>
         <p>${escapeHtml(detail)}</p>
       </div>
       <div class="local-workspace-counts">
@@ -5837,7 +5842,7 @@ function localWorkspacePrompt(context: 'backup' | 'cloud'): string {
         ${localWorkspaceCountPill('Proofs', summary.proofs)}
       </div>
       <div class="local-workspace-actions">
-        <button type="button" class="${context === 'backup' ? 'primary' : 'utility'}" data-workspace-backup-action="export" ${state.busy ? 'disabled' : ''}>Back up</button>
+        <button type="button" class="${context === 'backup' ? 'primary' : 'utility'}" data-workspace-backup-action="export" ${state.busy ? 'disabled' : ''}>${escapeHtml(backupButtonLabel)}</button>
         ${importButton}
       </div>
     </section>
@@ -6034,29 +6039,25 @@ function cloudWorkspaceCard(): string {
   const reconnectNeeded = signedIn && !matched && !mismatch;
   const unavailable = state.cloudSession.status === 'unavailable';
   const noWalletCloudAction = firstRunNextAction();
-  const status = unavailable
-    ? 'Saved locally'
-    : signedIn
-      ? matched
-        ? 'Signed in'
-        : reconnectNeeded
-          ? 'Reconnect wallet'
-          : 'Wallet mismatch'
-      : 'Signed out';
+  const status = signedIn
+    ? matched
+      ? 'Signed in'
+      : reconnectNeeded
+        ? 'Reconnect wallet'
+        : 'Wallet mismatch'
+    : 'Signed out';
   const detail = unavailable
-    ? 'Plans, approvals, and proofs stay on this device. No localhost required.'
+    ? 'Cloud sign-in is unavailable from this host. Plans, approvals, and proofs stay on this device.'
     : signedIn
       ? matched
         ? 'One-time drafts, approvals, and done work sync through Agentic Cloud.'
         : `Signed in as ${short(state.cloudSession.walletAddress)}. ${reconnectNeeded ? 'Reconnect that wallet to use cloud workflow.' : 'Connect that wallet to use cloud workflow.'}`
       : 'Signed-out workflow data is saved on this device.';
-  const summaryDetail = unavailable
-    ? 'Saved on this device - no localhost required'
-    : signedIn
-      ? matched
-        ? 'Cloud workspace connected'
-        : `Signed in as ${short(state.cloudSession.walletAddress)}`
-      : 'Browser-local workflow storage';
+  const summaryDetail = signedIn
+    ? matched
+      ? 'Cloud workspace connected'
+      : `Signed in as ${short(state.cloudSession.walletAddress)}`
+    : 'Browser-local workflow storage';
   const open = state.workspaceStoragePanelOpen === true ? 'open' : '';
   return `
     <details class="workspace-storage-panel ${escapeHtml(mode)} ${signedIn ? 'signed-in' : ''}" data-layout="workspace-storage-panel" aria-label="Workspace storage status" ${open}>
@@ -6074,7 +6075,6 @@ function cloudWorkspaceCard(): string {
           ${matched ? `<span>Wallet <strong>${escapeHtml(short(state.cloudSession.walletAddress))}</strong></span>` : ''}
           ${state.cloudLastSync && matched ? `<span>Synced <strong>${escapeHtml(formatDateTime(state.cloudLastSync))}</strong></span>` : ''}
         </div>
-        ${localWorkspacePrompt('cloud')}
         <div class="rail-cloud-actions">
           ${signedIn ? `
             <button id="cloudLogout" class="utility" ${state.busy ? 'disabled' : ''}>Sign out</button>
@@ -6089,11 +6089,13 @@ function cloudWorkspaceCard(): string {
               Connect wallet to sign in
             </button>
           ` : unavailable ? `
-            <button class="rail-cloud-button" disabled title="Cloud APIs are unavailable from this host.">Cloud unavailable</button>
+            <button id="cloudSignIn" class="rail-cloud-button" disabled title="Cloud APIs are unavailable from this host.">Sign in</button>
           ` : `
             <button id="cloudSignIn" class="rail-cloud-button" ${state.busy ? 'disabled' : ''} title="Sign in with a wallet ownership proof.">Sign in</button>
           `}
         </div>
+        ${unavailable && state.address && !signedIn ? '<p class="rail-cloud-action-note">Cloud unavailable from this host; saved-on-device storage is active.</p>' : ''}
+        ${localWorkspacePrompt('cloud')}
         ${mismatch ? '<p class="rail-cloud-warning">Cloud sessions prove wallet ownership only. They do not grant spending authority.</p>' : ''}
         ${!signedIn && !state.address ? '<p class="rail-cloud-warning">Cloud sign-in uses your wallet as identity only. It does not grant spending authority.</p>' : ''}
       </section>
@@ -31797,14 +31799,50 @@ function recurringBody(
   opts: { status?: 'active' | 'paused'; agentReview?: AgentPlanReviewState } = {},
 ): Record<string, unknown> {
   const isSwap = recurringDraftIsSwap(draft);
+  const connectorForm = recurringDraftConnectorActionForm(draft);
+  const isConnector = Boolean(connectorForm) && draft.actionKind === 'connector';
+  const isBlink = Boolean(connectorForm) && draft.actionKind === 'blink';
+  const actionKind: RecurringActionKind = isBlink
+    ? 'blink'
+    : isConnector
+      ? 'connector'
+      : isSwap
+        ? 'swap'
+        : 'transfer';
   const body: Record<string, unknown> = {
     ...(opts.status ? { status: opts.status } : {}),
-    actionKind: isSwap ? 'swap' : 'transfer',
+    actionKind,
     token: isSwap ? draft.inputToken : draft.token,
-    recipient: isSwap ? '' : draft.recipient,
+    recipient: isSwap || isConnector || isBlink ? '' : draft.recipient,
     amount: draft.amount,
     cadence: draft.cadence,
   };
+  if (isConnector && connectorForm) {
+    const params: Record<string, string> = {
+      token: draft.token,
+      amount: draft.amount,
+    };
+    if (draft.recipient) params.recipient = draft.recipient;
+    if (draft.note) params.memo = draft.note;
+    body.connectorActionTemplate = {
+      connectorId: connectorForm.connectorId,
+      actionType: connectorActionFormTemplateActionType(connectorForm, params),
+      params,
+    };
+  } else if (isBlink && connectorForm) {
+    const params: Record<string, string> = {
+      token: draft.token,
+      amount: draft.amount,
+    };
+    if (draft.recipient) params.recipient = draft.recipient;
+    if (draft.note) params.memo = draft.note;
+    body.connectorActionTemplate = {
+      connectorId: connectorForm.connectorId,
+      actionType: 'blink_action',
+      params,
+      blinkUrl: '',
+    };
+  }
   if (isSwap) {
     const inputSelection = state.recurringTokenSelections.inputToken ?? tokenSelectionFromValue(draft.inputToken, recurringTokenMode('inputToken', draft.inputToken), 'manual');
     const outputSelection = state.recurringTokenSelections.outputToken ?? tokenSelectionFromValue(draft.outputToken, recurringTokenMode('outputToken', draft.outputToken), 'manual');

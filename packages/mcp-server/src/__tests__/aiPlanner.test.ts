@@ -64,6 +64,61 @@ describe('BridgeAiPlanner', () => {
     });
   });
 
+  it('sends the OpenAI Responses review request with strict:false to allow open-shaped evidence', async () => {
+    const calls: Array<{ url: string; body: Record<string, unknown> }> = [];
+    vi.stubGlobal('fetch', vi.fn(async (url: string | URL | Request, init?: RequestInit) => {
+      calls.push({
+        url: String(url),
+        body: JSON.parse(String(init?.body ?? '{}')) as Record<string, unknown>,
+      });
+      return jsonResponse({
+        output: [{
+          type: 'message',
+          status: 'completed',
+          content: [{
+            type: 'output_text',
+            text: JSON.stringify({
+              decision: 'approve',
+              reason: 'Plan rate $16.79 is under $20.',
+              summary: 'Approved.',
+              evidence: { findings: [{ label: 'Plan rate', value: '$16.79', tone: 'good' }] },
+            }),
+          }],
+        }],
+        status: 'completed',
+      });
+    }));
+    const planner = new BridgeAiPlanner();
+    planner.setSessionKey({
+      apiKey: 'sk-test-openai-strict-review',
+      provider: 'openai',
+      apiFormat: 'openai-compatible',
+      baseUrl: 'https://api.openai.com/v1',
+      model: 'gpt-5',
+    });
+
+    const review = await planner.reviewPlan({
+      plan: transferPlan(),
+      instruction: 'No outside facts needed; just verify the draft.',
+    });
+
+    expect(review.decision).toBe('approve');
+    const reviewCall = calls.find((call) => {
+      const text = (call.body.text ?? {}) as Record<string, unknown>;
+      const format = (text.format ?? {}) as Record<string, unknown>;
+      return format.name === 'agentic_ai_review';
+    });
+    expect(reviewCall, 'expected an OpenAI Responses /responses call with agentic_ai_review schema').toBeDefined();
+    expect(reviewCall?.url).toBe('https://api.openai.com/v1/responses');
+    expect(reviewCall?.body.text).toMatchObject({
+      format: {
+        type: 'json_schema',
+        name: 'agentic_ai_review',
+        strict: false,
+      },
+    });
+  });
+
   it('removes hidden separators from bridge session keys before building provider headers', async () => {
     const calls: Array<{ headers: Record<string, string> }> = [];
     vi.stubGlobal('fetch', vi.fn(async (_url: string | URL | Request, init?: RequestInit) => {
@@ -1120,6 +1175,334 @@ describe('BridgeAiPlanner', () => {
 
     expect(askResult.answer.length).toBeLessThanOrEqual(802);
     expect(askResult.answer.endsWith('...')).toBe(true);
+  });
+});
+
+describe('threshold reconciliation across providers and phrasings', () => {
+  beforeEach(() => {
+    vi.stubEnv('AGENTIC_AI_ALLOW_CUSTOM_BASE_URL', '1');
+  });
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    vi.unstubAllEnvs();
+  });
+
+  type ThresholdFixture = {
+    name: string;
+    instruction: string;
+    research: string;
+    reviewJson: Record<string, unknown>;
+    expectedDecision: 'approve' | 'deny' | 'needs_input';
+    expectedFactValue?: string;
+  };
+
+  const HELIUM_INSTRUCTION =
+    "Check if helium mobile monthly plan is under $20. If it is approve swap. if it isn't deny it with reason. Regardless return monthly plan rate.";
+
+  const fixtures: ThresholdFixture[] = [
+    {
+      name: 'air-plan phrasing (model denies wrongly)',
+      instruction: HELIUM_INSTRUCTION,
+      research: 'Helium Mobile Air Plan costs $16.79 including taxes/fees.',
+      reviewJson: {
+        decision: 'deny',
+        reason: 'Air Plan: $16.79 monthly. Above threshold.',
+        summary: 'Model thinks above threshold.',
+        evidence: {
+          findings: [
+            { label: 'Air Plan', value: '$16.79 monthly', tone: 'neutral' },
+          ],
+        },
+      },
+      expectedDecision: 'approve',
+      expectedFactValue: '$16.79',
+    },
+    {
+      name: 'slash-mo phrasing in research summary',
+      instruction: HELIUM_INSTRUCTION,
+      research: 'Helium Mobile starts at $16.79/mo for the entry-level plan.',
+      reviewJson: {
+        decision: 'deny',
+        reason: 'Pricing seems too high.',
+        summary: 'Above threshold.',
+        evidence: {
+          findings: [
+            { label: 'Plan rate', value: '$16.79', tone: 'neutral' },
+          ],
+        },
+      },
+      expectedDecision: 'approve',
+      expectedFactValue: '$16.79',
+    },
+    {
+      name: 'rate-word phrasing without structured finding',
+      instruction: HELIUM_INSTRUCTION,
+      research: 'The current rate is $16.79 for monthly service.',
+      reviewJson: {
+        decision: 'deny',
+        reason: 'Current rate is $16.79 monthly.',
+        summary: 'Looks like it goes over the rule.',
+        evidence: {
+          findings: [],
+        },
+      },
+      expectedDecision: 'approve',
+      expectedFactValue: '$16.79',
+    },
+    {
+      name: 'subscription-word phrasing',
+      instruction: HELIUM_INSTRUCTION,
+      research: 'Subscription costs $16.79 monthly.',
+      reviewJson: {
+        decision: 'deny',
+        reason: 'Subscription costs $16.79 monthly. Exceeds threshold.',
+        summary: 'Above threshold.',
+        evidence: { findings: [] },
+      },
+      expectedDecision: 'approve',
+      expectedFactValue: '$16.79',
+    },
+    {
+      name: 'structured finding has price (label-only price)',
+      instruction: HELIUM_INSTRUCTION,
+      research: 'Helium Mobile entry-level plan.',
+      reviewJson: {
+        decision: 'deny',
+        reason: 'Above threshold in my view.',
+        summary: 'Denied.',
+        evidence: {
+          findings: [
+            { label: 'Plan rate', value: '$16.79/month', tone: 'neutral' },
+          ],
+        },
+      },
+      expectedDecision: 'approve',
+      expectedFactValue: '$16.79',
+    },
+    {
+      name: 'over-threshold model approves wrongly',
+      instruction: HELIUM_INSTRUCTION,
+      research: 'Helium Mobile current plan is $29.99 per month.',
+      reviewJson: {
+        decision: 'approve',
+        reason: 'Looks fine.',
+        summary: 'Approving.',
+        evidence: {
+          findings: [
+            { label: 'Plan rate', value: '$29.99/month', tone: 'neutral' },
+          ],
+        },
+      },
+      expectedDecision: 'deny',
+      expectedFactValue: '$29.99',
+    },
+    {
+      name: 'no extractable price demotes to needs_input',
+      instruction: HELIUM_INSTRUCTION,
+      research: 'Helium Mobile offers multiple plans depending on usage.',
+      reviewJson: {
+        decision: 'deny',
+        reason: 'Insufficient information about pricing tier.',
+        summary: 'Cannot decide.',
+        evidence: { findings: [] },
+      },
+      expectedDecision: 'needs_input',
+    },
+  ];
+
+  type ProviderConfig = {
+    label: string;
+    provider: string;
+    apiFormat: 'anthropic' | 'openai-compatible';
+    baseUrl: string;
+    model: string;
+    buildResponses: (fixture: ThresholdFixture) => Array<unknown>;
+  };
+
+  const heliumCitation = {
+    url: 'https://support.hellohelium.com/en/articles/7039213-all-things-helium-mobile-faq',
+    title: 'All Things Helium Mobile FAQ',
+  };
+
+  const providers: ProviderConfig[] = [
+    {
+      label: 'anthropic',
+      provider: 'anthropic',
+      apiFormat: 'anthropic',
+      baseUrl: 'https://api.anthropic.com/v1',
+      model: 'claude-opus-4-1',
+      buildResponses: (fixture) => [
+        {
+          content: [{
+            type: 'text',
+            text: fixture.research,
+            citations: [heliumCitation],
+          }],
+        },
+        {
+          content: [{
+            type: 'text',
+            text: JSON.stringify(fixture.reviewJson),
+          }],
+        },
+      ],
+    },
+    {
+      label: 'openai-responses (gpt-5)',
+      provider: 'openai',
+      apiFormat: 'openai-compatible',
+      baseUrl: 'https://api.openai.com/v1',
+      model: 'gpt-5',
+      buildResponses: (fixture) => [
+        {
+          output: [{
+            type: 'message',
+            status: 'completed',
+            content: [{
+              type: 'output_text',
+              text: fixture.research,
+              annotations: [{ type: 'url_citation', ...heliumCitation }],
+            }],
+          }],
+          status: 'completed',
+        },
+        {
+          output: [{
+            type: 'message',
+            status: 'completed',
+            content: [{
+              type: 'output_text',
+              text: JSON.stringify(fixture.reviewJson),
+            }],
+          }],
+          status: 'completed',
+        },
+      ],
+    },
+  ];
+
+  for (const provider of providers) {
+    for (const fixture of fixtures) {
+      it(`${provider.label}: ${fixture.name}`, async () => {
+        const responses = provider.buildResponses(fixture);
+        let callIndex = 0;
+        vi.stubGlobal('fetch', vi.fn(async () => {
+          const body = responses[callIndex] ?? responses[responses.length - 1];
+          callIndex += 1;
+          return jsonResponse(body);
+        }));
+
+        const planner = new BridgeAiPlanner();
+        planner.setSessionKey({
+          apiKey: 'sk-test-threshold',
+          provider: provider.provider,
+          apiFormat: provider.apiFormat,
+          baseUrl: provider.baseUrl,
+          model: provider.model,
+        });
+
+        const review = await planner.reviewPlan({
+          plan: transferPlan(),
+          instruction: fixture.instruction,
+        });
+
+        expect(review.decision).toBe(fixture.expectedDecision);
+
+        const findings = Array.isArray(review.evidence?.findings) ? review.evidence.findings : [];
+        const labels = findings
+          .filter((entry): entry is Record<string, unknown> => Boolean(entry && typeof entry === 'object'))
+          .map((entry) => String(entry.label ?? ''));
+
+        if (fixture.expectedDecision === 'needs_input' && !fixture.expectedFactValue) {
+          expect(labels).toContain('Threshold check');
+          expect(review.questions ?? []).toEqual(
+            expect.arrayContaining([
+              expect.objectContaining({ id: 'agent_review_threshold_fact' }),
+            ]),
+          );
+          return;
+        }
+
+        const factEntry = findings.find((entry): entry is Record<string, unknown> => {
+          if (!entry || typeof entry !== 'object') return false;
+          const value = typeof (entry as Record<string, unknown>).value === 'string'
+            ? (entry as Record<string, unknown>).value as string
+            : '';
+          return Boolean(fixture.expectedFactValue && value.includes(fixture.expectedFactValue));
+        });
+        expect(factEntry, `expected a finding containing ${fixture.expectedFactValue}`).toBeDefined();
+        expect(labels).toContain('Threshold check');
+      });
+    }
+  }
+
+  it('openai-compatible (gemini/openrouter) without native research pre-empts with needs_input', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => jsonResponse({})));
+    const planner = new BridgeAiPlanner();
+    planner.setSessionKey({
+      apiKey: 'sk-test-openrouter',
+      provider: 'openrouter',
+      apiFormat: 'openai-compatible',
+      baseUrl: 'https://openrouter.ai/api/v1',
+      model: 'openai/gpt-4o-mini',
+    });
+
+    const review = await planner.reviewPlan({
+      plan: transferPlan(),
+      instruction: HELIUM_INSTRUCTION,
+    });
+
+    expect(review.decision).toBe('needs_input');
+    expect(review.evidence?.research).toMatchObject({ status: 'unavailable' });
+  });
+
+  it('always appends the Plan rate finding even when model already had a matching decision', async () => {
+    let anthropicCall = 0;
+    vi.stubGlobal('fetch', vi.fn(async () => {
+      anthropicCall += 1;
+      if (anthropicCall === 1) {
+        return jsonResponse({
+          content: [{ type: 'text', text: 'Plan rate is $16.79/month from official site.' }],
+        });
+      }
+      return jsonResponse({
+        content: [{
+          type: 'text',
+          text: JSON.stringify({
+            decision: 'approve',
+            reason: 'Plan rate is $16.79 which is under the $20 rule.',
+            summary: 'Approved by model.',
+            evidence: {
+              findings: [
+                { label: 'Plan rate', value: '$16.79/month', tone: 'good' },
+              ],
+            },
+          }),
+        }],
+      });
+    }));
+    const planner = new BridgeAiPlanner();
+    planner.setSessionKey({
+      apiKey: 'sk-test-already-correct',
+      provider: 'anthropic',
+      apiFormat: 'anthropic',
+      baseUrl: 'https://api.anthropic.com/v1',
+      model: 'claude-opus-4-1',
+    });
+
+    const review = await planner.reviewPlan({
+      plan: transferPlan(),
+      instruction: HELIUM_INSTRUCTION,
+    });
+
+    expect(review.decision).toBe('approve');
+    const findings = Array.isArray(review.evidence?.findings) ? review.evidence.findings : [];
+    const planRateEntries = findings.filter((entry): entry is Record<string, unknown> => {
+      if (!entry || typeof entry !== 'object') return false;
+      return String((entry as Record<string, unknown>).label ?? '').toLowerCase() === 'plan rate';
+    });
+    expect(planRateEntries).toHaveLength(1);
+    expect(String((planRateEntries[0] as Record<string, unknown>).value ?? '')).toContain('$16.79');
   });
 });
 

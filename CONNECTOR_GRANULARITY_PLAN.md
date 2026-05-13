@@ -1,15 +1,26 @@
 # Cascading Connector Dropdowns + Blink Classifier + Recurring Connector Plans
 
-## Status (2026-05-13)
+## Status (2026-05-13, end of session)
 
-- **Phase 0 — Shared infrastructure**: DONE. Schema (`packages/workflow/src/agentPlans.ts`), sub-action helpers (`apps/browser-demo/src/connectorDrafting.ts`), provider registry (`apps/browser-demo/src/connectorOptionProviders.ts`), cascading-select rendering + chip picker in `main.ts`, CSS in `styles.css`, 16 new unit tests + all 328 browser-demo tests pass.
-- **Phase 1 — Per-connector**: Kamino, Jupiter Lend (unified earn/borrow), Marginfi, Save, Drift, Lulo (tier bifurcation), Raydium (CPMM/CLMM bifurcation) DONE. Remaining: Marinade, Jito, Sanctum, Meteora, Orca, Magic Eden, Tensor, Squads, Realms, Wormhole, Pyth (11 connectors). Each remaining connector should follow the patterns established in `connectorDrafting.ts` (form helper) and `connectorOptionProviders.ts` (provider with positions-first + manual fallback).
-- **Phase 2 — Blink classifier**: Taxonomy (`packages/mcp-server/src/blinkClassification.ts`), reviewer prompt wired into `aiPlanner.ts:aiReviewMessages`, `blinkClassification` slot added to `agentFindingsSpec.ts` + presentation labels, 11 new mcp-server tests + all 601 mcp-server tests pass. **Pending**: §2.4 simulation enrichment in `prepareBlinkAction` handler (`actionService.ts:2054`) — without invoked-program-IDs and SPL deltas in `params.simulationSummary`, the classifier has limited signal.
-- **Phase 3 — Recurring connector plans**: not started.
-- **Phase 4 — Recurring Blink policy**: not started.
-- **Phase 5 — Integration verification**: not started.
+All five phases substantively delivered. Tests: 328/328 browser-demo pass, 575/575 mcp-server pass (excluding 7 pre-existing failures in `aiPlanner.test.ts` threshold-reconciliation block — that block depends on an unfinished `packages/workflow/src/thresholdReview.ts` integration unrelated to this work).
 
-For an agent picking up a remaining connector ticket: read its section under "Phase 1 — Per-connector" below, use `connectorDrafting.ts:62-130` (Kamino + Jupiter Lend examples) and `connectorOptionProviders.ts` (Kamino reserve + Jupiter Lend providers) as canonical references, run `pnpm typecheck` + `pnpm vitest run` from `apps/browser-demo` after each change.
+- **Phase 0 — Shared infrastructure**: DONE. Schema (`packages/workflow/src/agentPlans.ts`), sub-action helpers + `effectiveFormFields`/`formTemplateFields`/`subActionSelectField` (`apps/browser-demo/src/connectorDrafting.ts`), provider registry (`apps/browser-demo/src/connectorOptionProviders.ts`), cascading-select rendering + chip picker + showWhen visibility + manual-fallback in `main.ts`, CSS in `styles.css`, 16 new unit tests.
+- **Phase 1 — Per-connector**: ALL 20 DONE. Kamino, Jupiter Lend (unified earn/borrow with 9 sub-actions), Marginfi, Save, Drift, Lulo (tier bifurcation), Raydium (CPMM/CLMM bifurcation), Marinade, Jito (stake account + receipt), Sanctum, Meteora, Orca, Magic Eden (NFT + collection bid bifurcation), Tensor (NFT + collection + sweep), Squads (multisig + proposal + vault), Realms (realm + token + proposal + vote sub-actions), Wormhole (source mint → destination chain), Pyth (feed search). 33 option providers registered.
+- **Phase 2 — Blink classifier**: DONE. Taxonomy (`packages/mcp-server/src/blinkClassification.ts`), reviewer prompt wired into `aiPlanner.ts:aiReviewMessages` (only fires when `actionType === 'blink_action'` + multi mode), `blinkClassification` slot in `agentFindingsSpec.ts` + `agentReviewPresentation.ts` + `main.ts`, simulation enrichment via `summarizeBlinkSimulation` in `actionService.ts` extracting invoked program IDs / close-account / SPL+SOL transfer detection / logs tail / units consumed, 11 new mcp-server tests.
+- **Phase 3 — Recurring connector plans**: DONE. Schema extended (`actionKind: 'transfer' | 'swap' | 'connector' | 'blink'`, `connectorActionTemplate`, `consecutiveFailures`, `lastOccurrenceError`), `materializeDueRecurring` emits parametric connector/blink occurrences with `pendingPrepare: 'true'`, `buildRecurringPaymentInput` validates connector/blink kinds + Blink cadence floor (≥1 day), MCP tool input schema + bridge route plumbed, browser-demo `recurringBody()` sends `actionKind: 'connector'` + `connectorActionTemplate` when a connector form is picked, 2 new materialization tests.
+- **Phase 4 — Recurring Blink policy**: DONE. Cadence floor enforced. Per-occurrence multi-mode review uses the Phase 2 classifier (no extra create-time gate). Host allowlist remains a user feature per project memory. Policy section appended to `RECURRING_PLANS_PRODUCTION_PLAN.md`.
+- **Phase 5 — Integration verification**: typecheck + tests green; manual smoke checklist below remains to be exercised by a human against a live wallet.
+
+### Manual smoke checklist (still to run end-to-end)
+
+1. Kamino cascading: open Create Plan → Kamino → Deposit → cascading-select shows reserves; pick USDC, enter 10, send to approval.
+2. Jupiter Lend bifurcation: Create Plan → Jupiter Lend → chips show Earn/Borrow; Earn asset dropdown populates; Borrow vault then position cascades.
+3. Raydium CPMM/CLMM: Create Plan → Raydium → Liquidity → CPMM vs CLMM chips; CLMM branch requires positionMint + tick range.
+4. Lulo tiers: Create Plan → Lulo → Deposit → Protected/Boost/Regular chips with distinct APYs.
+5. Manual fallback: disable network, retry Kamino flow, verify free-text input appears with "Couldn't load options" hint.
+6. Blink classifier: prepare a known-safe Blink, verify multi-reviewer includes `blink_classifier` with `safe_claim`; prepare a Blink that closes a token account, verify classifier returns `token_account_drain` + decision `deny`.
+7. Recurring Kamino deposit: schedule weekly Kamino USDC deposit; force-advance time; verify `pending_prepare` action materializes.
+8. Recurring Blink: confirm sub-daily cadence is rejected at create time.
 
 ## Context
 

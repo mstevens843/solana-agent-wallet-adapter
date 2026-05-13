@@ -1316,13 +1316,49 @@ function buildRecurringPaymentInput(
     startAt?: string;
     maxOccurrences?: number;
     note?: string;
+    actionKind?: 'transfer' | 'swap' | 'connector' | 'blink';
+    connectorActionTemplate?: {
+      connectorId: string;
+      actionType: string;
+      subActionId?: string;
+      params: Record<string, string>;
+      blinkUrl?: string;
+    };
   },
   walletAddress: string,
   config: AgentWalletConfig,
 ): Omit<Awaited<ReturnType<PreparedActionStore['listRecurringPayments']>>[number], 'id' | 'status' | 'createdAt' | 'updatedAt' | 'occurrencesCreated'> {
-  const token = normalizeTokenIdentifier(requireString(body.token, 'token'));
-  const amount = requireString(body.amount, 'amount');
-  const recipient = new PublicKey(requireString(body.recipient, 'recipient')).toBase58();
+  const actionKind: 'transfer' | 'swap' | 'connector' | 'blink' = body.actionKind ?? 'transfer';
+  const isConnector = actionKind === 'connector' || actionKind === 'blink';
+  if (isConnector) {
+    const template = body.connectorActionTemplate;
+    if (!template?.connectorId?.trim() || !template?.actionType?.trim()) {
+      throw new ProtocolError(
+        'invalid_request',
+        `connectorActionTemplate.connectorId and actionType are required when actionKind is "${actionKind}".`,
+      );
+    }
+    if (actionKind === 'blink' && !template.blinkUrl?.trim()) {
+      throw new ProtocolError(
+        'invalid_request',
+        'connectorActionTemplate.blinkUrl is required when actionKind is "blink".',
+      );
+    }
+  }
+  const tokenSeed = body.token ?? (isConnector ? body.connectorActionTemplate?.params?.token ?? 'SOL' : undefined);
+  const token = normalizeTokenIdentifier(requireString(tokenSeed, 'token'));
+  const amountSeed = body.amount ?? (isConnector ? body.connectorActionTemplate?.params?.amount ?? '0' : undefined);
+  const amount = requireString(amountSeed, 'amount');
+  let recipient = '';
+  if (actionKind === 'transfer') {
+    recipient = new PublicKey(requireString(body.recipient, 'recipient')).toBase58();
+  } else if (body.recipient) {
+    try {
+      recipient = new PublicKey(body.recipient).toBase58();
+    } catch {
+      recipient = '';
+    }
+  }
   const note = typeof body.note === 'string' && body.note.trim() ? body.note.trim().slice(0, 500) : undefined;
   const localTime = typeof body.localTime === 'string' && body.localTime.trim() ? body.localTime.trim() : undefined;
   if (localTime !== undefined && !/^\d{2}:\d{2}$/.test(localTime)) {
@@ -1339,14 +1375,31 @@ function buildRecurringPaymentInput(
     startAt: body.startAt,
     maxOccurrences: body.maxOccurrences,
   });
-  if (token === 'SOL') {
-    parseDecimalAmount(amount, 9, 'SOL recurring payment amount');
-  } else {
-    parseDecimalAmount(amount, 9, `${tokenDisplayLabel(token)} recurring payment amount`);
+  if (actionKind === 'transfer') {
+    if (token === 'SOL') {
+      parseDecimalAmount(amount, 9, 'SOL recurring payment amount');
+    } else {
+      parseDecimalAmount(amount, 9, `${tokenDisplayLabel(token)} recurring payment amount`);
+    }
+  }
+  if (actionKind === 'blink') {
+    const minDailyMinutes = 60 * 24;
+    const intervalMinutes = (schedule.intervalDays ?? 0) * 60 * 24
+      + (schedule.intervalHours ?? 0) * 60
+      + (schedule.intervalMinutes ?? 0);
+    const cadenceLooksDaily = schedule.cadence === 'weekly' || schedule.cadence === 'monthly';
+    if (!cadenceLooksDaily && intervalMinutes > 0 && intervalMinutes < minDailyMinutes) {
+      throw new ProtocolError(
+        'invalid_request',
+        'Recurring Blink schedules require at least a 1-day cadence.',
+      );
+    }
   }
   return {
     walletAddress,
     cluster: config.cluster,
+    ...(actionKind !== 'transfer' ? { actionKind } : {}),
+    ...(isConnector && body.connectorActionTemplate ? { connectorActionTemplate: body.connectorActionTemplate } : {}),
     token,
     recipient,
     amount,

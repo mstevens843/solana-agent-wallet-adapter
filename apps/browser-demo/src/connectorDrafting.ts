@@ -86,6 +86,17 @@ const CONNECTOR_ACTION_FORMS: ConnectorActionForm[] = [
   ...driftForms(),
   luloUnifiedForm(),
   raydiumLiquidityUnifiedForm(),
+  ...marinadeForms(),
+  ...jitoForms(),
+  ...sanctumForms(),
+  ...meteoraForms(),
+  ...orcaForms(),
+  ...magicedenForms(),
+  ...tensorForms(),
+  ...squadsForms(),
+  ...realmsForms(),
+  ...wormholeForms(),
+  ...pythForms(),
 ];
 
 export function isConnectorCapableTemplate(
@@ -479,6 +490,488 @@ function kaminoReserveField(required: boolean): AgentPlanTemplateField {
     emptyHint: "Couldn't load Kamino reserves. Paste a reserve symbol (USDC, SOL, JitoSOL) or mint address.",
     placeholder: 'USDC',
   });
+}
+
+function marinadeForms(): ConnectorActionForm[] {
+  const ticketField = cascadingField('ticketAccount', 'Unstake ticket', 'marinade.ticket', {
+    required: true,
+    emptyHint: 'No delayed-unstake tickets found. Paste a ticket account address.',
+  });
+  return [
+    connectorActionForm('marinade', 'liquid-stake', 'Liquid stake', 'connector-marinade-liquid-stake', 'Stake SOL into mSOL via Marinade.', 'first-class-adapter', 'queueable', [
+      formField('amount', 'SOL amount', true),
+      formField('memo', 'Reason'),
+    ], false, 'marinade_liquid_stake'),
+    connectorActionForm('marinade', 'liquid-unstake', 'Liquid unstake', 'connector-marinade-liquid-unstake', 'Unstake mSOL into SOL immediately (with liquidity fee).', 'first-class-adapter', 'queueable', [
+      formField('amount', 'mSOL amount', true),
+      formField('memo', 'Reason'),
+    ], false, 'marinade_liquid_unstake'),
+    connectorActionForm('marinade', 'delayed-unstake', 'Delayed unstake', 'connector-marinade-delayed-unstake', 'Request a delayed unstake (no fee, takes 1–2 epochs).', 'first-class-adapter', 'queueable', [
+      formField('msolAmount', 'mSOL amount', true),
+      formField('memo', 'Reason'),
+    ], false, 'marinade_delayed_unstake'),
+    connectorActionForm('marinade', 'claim-delayed-unstake', 'Claim delayed unstake', 'connector-marinade-claim', 'Claim a matured delayed-unstake ticket.', 'first-class-adapter', 'queueable', [
+      ticketField,
+      formField('memo', 'Reason'),
+    ], false, 'marinade_claim_delayed_unstake'),
+  ];
+}
+
+function jitoForms(): ConnectorActionForm[] {
+  const stakeField = cascadingField('stakeAccount', 'Stake account', 'jito.stakeAccount', {
+    required: true,
+    emptyHint: 'No eligible stake accounts found. Paste a stake account address.',
+  });
+  const receiptField = cascadingField('receiptAccount', 'Deposit receipt', 'jito.receipt', {
+    required: true,
+    emptyHint: 'No claimable receipts found. Paste a receipt account address.',
+  });
+  return [
+    connectorActionForm('jito', 'stake-sol', 'Stake SOL', 'connector-jito-stake-sol', 'Stake SOL into JitoSOL via the Jito stake pool.', 'first-class-adapter', 'queueable', [
+      formField('amount', 'SOL amount', true),
+      formField('memo', 'Reason'),
+    ], false, 'jito_stake_sol'),
+    connectorActionForm('jito', 'deposit-stake-account', 'Deposit stake account', 'connector-jito-deposit-stake-account', 'Deposit a native stake account into the Jito pool (creates a claim receipt).', 'first-class-adapter', 'queueable', [
+      stakeField,
+      formField('memo', 'Reason'),
+    ], false, 'jito_deposit_stake_account'),
+    connectorActionForm('jito', 'unstake-jitosol', 'Unstake JitoSOL', 'connector-jito-unstake-jitosol', 'Redeem JitoSOL via the stake pool. Choose the redeem route.', 'first-class-adapter', 'queueable', [
+      formField('amount', 'JitoSOL amount', true),
+      { id: 'withdrawMode', label: 'Withdraw mode', type: 'select', options: ['stake_account', 'reserve_sol'], defaultValue: 'reserve_sol', required: true },
+      formField('memo', 'Reason'),
+    ], false, 'jito_unstake_jitosol'),
+    connectorActionForm('jito', 'withdraw-sol', 'Withdraw SOL', 'connector-jito-withdraw-sol', 'Withdraw SOL from an inactive Jito stake account.', 'first-class-adapter', 'queueable', [
+      stakeField,
+      formField('memo', 'Reason'),
+    ], false, 'jito_withdraw_sol'),
+    connectorActionForm('jito', 'claim-deposit-receipt', 'Claim deposit receipt', 'connector-jito-claim-deposit-receipt', 'Claim a Jito deposit receipt once cooldown completes.', 'first-class-adapter', 'queueable', [
+      receiptField,
+      formField('memo', 'Reason'),
+    ], false, 'jito_claim_deposit_receipt'),
+  ];
+}
+
+function sanctumLstField(id: string, label: string, providerId: string, required: boolean, dependsOn?: string[]): AgentPlanTemplateField {
+  return cascadingField(id, label, providerId, {
+    required,
+    ...(dependsOn ? { dependsOn } : {}),
+    emptyHint: "Couldn't load Sanctum LSTs. Paste an LST mint or symbol.",
+  });
+}
+
+function sanctumForms(): ConnectorActionForm[] {
+  return [
+    connectorActionForm('sanctum', 'swap-lst', 'Swap LST', 'connector-sanctum-swap-lst', 'Swap one Sanctum-supported LST for another.', 'first-class-adapter', 'queueable', [
+      sanctumLstField('inputLstMint', 'Input LST', 'sanctum.lst', true),
+      sanctumLstField('outputLstMint', 'Output LST', 'sanctum.lst', true),
+      formField('amount', 'Amount', true),
+      formField('memo', 'Reason'),
+    ], false, 'sanctum_swap_lst'),
+    connectorActionForm('sanctum', 'stake-sol-to-lst', 'Stake SOL → LST', 'connector-sanctum-stake-sol-to-lst', 'Stake SOL into an LST via Sanctum.', 'first-class-adapter', 'queueable', [
+      sanctumLstField('lstMint', 'Target LST', 'sanctum.lst', true),
+      formField('amount', 'SOL amount', true),
+      formField('memo', 'Reason'),
+    ], false, 'sanctum_stake_sol_to_lst'),
+    connectorActionForm('sanctum', 'unstake-lst-to-sol', 'Unstake LST → SOL', 'connector-sanctum-unstake-lst-to-sol', 'Redeem an LST for SOL via Sanctum.', 'first-class-adapter', 'queueable', [
+      sanctumLstField('lstMint', 'LST', 'sanctum.lst', true),
+      formField('amount', 'LST amount', true),
+      formField('memo', 'Reason'),
+    ], false, 'sanctum_unstake_lst_to_sol'),
+    connectorActionForm('sanctum', 'add-infinity-liquidity', 'Add Infinity liquidity', 'connector-sanctum-add-infinity', 'Provide liquidity to the Sanctum Infinity pool.', 'first-class-adapter', 'queueable', [
+      sanctumLstField('lstMint', 'Input LST / SOL', 'sanctum.lst', true),
+      formField('amount', 'Amount', true),
+      formField('memo', 'Reason'),
+    ], false, 'sanctum_add_infinity_liquidity'),
+    connectorActionForm('sanctum', 'remove-infinity-liquidity', 'Remove Infinity liquidity', 'connector-sanctum-remove-infinity', 'Withdraw from the Sanctum Infinity pool.', 'first-class-adapter', 'queueable', [
+      sanctumLstField('lstMint', 'Output LST', 'sanctum.lst', true),
+      formField('amount', 'Amount', true),
+      formField('memo', 'Reason'),
+    ], false, 'sanctum_remove_infinity_liquidity'),
+  ];
+}
+
+function meteoraPoolField(required: boolean): AgentPlanTemplateField {
+  return cascadingField('poolAddress', 'DLMM pool', 'meteora.pool', {
+    required,
+    emptyHint: "Couldn't load Meteora DLMM pools. Paste a pool address.",
+  });
+}
+
+function meteoraPositionField(required: boolean): AgentPlanTemplateField {
+  return cascadingField('positionAddress', 'DLMM position', 'meteora.position', {
+    required,
+    dependsOn: ['poolAddress'],
+    emptyHint: 'No positions found in this pool. Paste a position address to continue.',
+  });
+}
+
+function meteoraForms(): ConnectorActionForm[] {
+  return [
+    connectorActionForm('meteora', 'add-liquidity', 'Add liquidity', 'connector-meteora-add-liquidity', 'Add liquidity to a Meteora DLMM pool — new position or existing.', 'first-class-adapter', 'queueable', [
+      meteoraPoolField(true),
+      meteoraPositionField(false),
+      formField('amount', 'Amount', true),
+      formField('binRange', 'Bin range (lower/upper)'),
+      formField('memo', 'Reason'),
+    ], false, 'meteora_add_liquidity'),
+    connectorActionForm('meteora', 'remove-liquidity', 'Remove liquidity', 'connector-meteora-remove-liquidity', 'Remove liquidity from a Meteora DLMM position.', 'first-class-adapter', 'queueable', [
+      meteoraPoolField(true),
+      meteoraPositionField(true),
+      formField('amount', 'Amount'),
+      formField('memo', 'Reason'),
+    ], false, 'meteora_remove_liquidity'),
+    connectorActionForm('meteora', 'claim-fees', 'Claim fees', 'connector-meteora-claim-fees', 'Claim trading fees from a Meteora DLMM position.', 'first-class-adapter', 'queueable', [
+      meteoraPoolField(true),
+      meteoraPositionField(false),
+      formField('memo', 'Reason'),
+    ], false, 'meteora_claim_fees'),
+    connectorActionForm('meteora', 'claim-rewards', 'Claim rewards', 'connector-meteora-claim-rewards', 'Claim incentive rewards from a Meteora DLMM position.', 'first-class-adapter', 'queueable', [
+      meteoraPoolField(true),
+      meteoraPositionField(false),
+      formField('memo', 'Reason'),
+    ], false, 'meteora_claim_rewards'),
+    connectorActionForm('meteora', 'close-position', 'Close position', 'connector-meteora-close-position', 'Close a Meteora DLMM position and reclaim rent.', 'first-class-adapter', 'queueable', [
+      meteoraPoolField(true),
+      meteoraPositionField(true),
+      formField('memo', 'Reason'),
+    ], false, 'meteora_close_position'),
+  ];
+}
+
+function orcaWhirlpoolField(required: boolean): AgentPlanTemplateField {
+  return cascadingField('whirlpoolAddress', 'Whirlpool', 'orca.whirlpool', {
+    required,
+    emptyHint: "Couldn't load Orca whirlpools. Paste a whirlpool address.",
+  });
+}
+
+function orcaPositionField(required: boolean): AgentPlanTemplateField {
+  return cascadingField('positionMint', 'Whirlpool position', 'orca.position', {
+    required,
+    dependsOn: ['whirlpoolAddress'],
+    emptyHint: 'No positions found in this whirlpool. Paste a position mint to continue.',
+  });
+}
+
+function orcaForms(): ConnectorActionForm[] {
+  return [
+    connectorActionForm('orca', 'increase-liquidity', 'Increase liquidity', 'connector-orca-increase-liquidity', 'Add liquidity to a new or existing Orca whirlpool position.', 'first-class-adapter', 'queueable', [
+      orcaWhirlpoolField(true),
+      orcaPositionField(false),
+      formField('lowerTick', 'Lower tick (new position)'),
+      formField('upperTick', 'Upper tick (new position)'),
+      formField('amount', 'Amount'),
+      formField('memo', 'Reason'),
+    ], false, 'orca_increase_liquidity'),
+    connectorActionForm('orca', 'decrease-liquidity', 'Decrease liquidity', 'connector-orca-decrease-liquidity', 'Remove liquidity from an Orca whirlpool position.', 'first-class-adapter', 'queueable', [
+      orcaWhirlpoolField(true),
+      orcaPositionField(true),
+      formField('amount', 'Liquidity to remove'),
+      formField('memo', 'Reason'),
+    ], false, 'orca_decrease_liquidity'),
+    connectorActionForm('orca', 'collect-fees', 'Collect fees', 'connector-orca-collect-fees', 'Collect trading fees from an Orca whirlpool position.', 'first-class-adapter', 'queueable', [
+      orcaPositionField(true),
+      formField('memo', 'Reason'),
+    ], false, 'orca_collect_fees'),
+    connectorActionForm('orca', 'collect-rewards', 'Collect rewards', 'connector-orca-collect-rewards', 'Collect incentive rewards from an Orca whirlpool position.', 'first-class-adapter', 'queueable', [
+      orcaPositionField(true),
+      formField('memo', 'Reason'),
+    ], false, 'orca_collect_rewards'),
+  ];
+}
+
+function nftCollectionField(providerId: string, required: boolean): AgentPlanTemplateField {
+  return cascadingField('collectionId', 'Collection', providerId, {
+    required,
+    emptyHint: "Couldn't load collections. Paste a collection id or symbol.",
+  });
+}
+
+function nftWalletField(providerId: string, required: boolean): AgentPlanTemplateField {
+  return cascadingField('mintAddress', 'NFT', providerId, {
+    required,
+    emptyHint: "Couldn't load your NFTs. Paste an NFT mint address.",
+  });
+}
+
+function magicedenForms(): ConnectorActionForm[] {
+  const collectionListing = cascadingField('listingId', 'Listing', 'magiceden.listing', {
+    required: true,
+    dependsOn: ['collectionId'],
+    emptyHint: 'No listings found for this collection. Paste a listing id.',
+  });
+  return [
+    {
+      id: 'magiceden:bid-flow',
+      connectorId: 'magiceden',
+      operationId: 'bid',
+      operationLabel: 'Bid',
+      templateId: 'connector-magiceden-bid',
+      description: 'Place a bid on a single NFT or an entire collection on Magic Eden.',
+      executionMode: 'first-class-adapter',
+      outcome: 'queueable',
+      fields: [formField('priceSol', 'Price (SOL)', true), formField('memo', 'Reason')],
+      subActions: {
+        fieldId: 'subAction',
+        label: 'Bid target',
+        defaultId: 'nft',
+        options: [
+          { id: 'nft', label: 'Single NFT', description: 'Bid on one specific mint.', actionType: 'magiceden_bid', fields: [nftWalletField('magiceden.wallet.nft', true)] },
+          { id: 'collection', label: 'Collection', description: 'Collection-wide bid.', actionType: 'magiceden_bid', fields: [nftCollectionField('magiceden.collection', true)] },
+        ],
+      },
+    },
+    connectorActionForm('magiceden', 'buy', 'Buy', 'connector-magiceden-buy', 'Buy a listed NFT on Magic Eden.', 'first-class-adapter', 'queueable', [
+      nftWalletField('magiceden.collection', true),
+      formField('priceSol', 'Max price (SOL)', true),
+      formField('memo', 'Reason'),
+    ], false, 'magiceden_buy'),
+    connectorActionForm('magiceden', 'list', 'List', 'connector-magiceden-list', 'List one of your NFTs on Magic Eden.', 'first-class-adapter', 'queueable', [
+      nftWalletField('magiceden.wallet.nft', true),
+      formField('priceSol', 'List price (SOL)', true),
+      formField('memo', 'Reason'),
+    ], false, 'magiceden_list'),
+    connectorActionForm('magiceden', 'cancel-listing', 'Cancel listing', 'connector-magiceden-cancel-listing', 'Cancel an existing Magic Eden listing.', 'first-class-adapter', 'queueable', [
+      nftCollectionField('magiceden.collection', true),
+      collectionListing,
+      formField('memo', 'Reason'),
+    ], false, 'magiceden_cancel_listing'),
+    connectorActionForm('magiceden', 'cancel-bid', 'Cancel bid', 'connector-magiceden-cancel-bid', 'Cancel an outstanding Magic Eden bid.', 'first-class-adapter', 'queueable', [
+      nftCollectionField('magiceden.collection', true),
+      formField('bidId', 'Bid id', true),
+      formField('memo', 'Reason'),
+    ], false, 'magiceden_cancel_bid'),
+  ];
+}
+
+function tensorForms(): ConnectorActionForm[] {
+  const collectionListing = cascadingField('listingId', 'Listing', 'tensor.listing', {
+    required: true,
+    dependsOn: ['collectionId'],
+    emptyHint: 'No listings found for this collection. Paste a listing id.',
+  });
+  return [
+    {
+      id: 'tensor:bid-flow',
+      connectorId: 'tensor',
+      operationId: 'bid',
+      operationLabel: 'Bid',
+      templateId: 'connector-tensor-bid',
+      description: 'Place a bid on a single NFT or an entire collection on Tensor.',
+      executionMode: 'first-class-adapter',
+      outcome: 'queueable',
+      fields: [formField('priceSol', 'Price (SOL)', true), formField('memo', 'Reason')],
+      subActions: {
+        fieldId: 'subAction',
+        label: 'Bid target',
+        defaultId: 'nft',
+        options: [
+          { id: 'nft', label: 'Single NFT', description: 'Bid on one specific mint.', actionType: 'tensor_bid', fields: [nftWalletField('tensor.wallet.nft', true)] },
+          { id: 'collection', label: 'Collection', description: 'Collection-wide bid.', actionType: 'tensor_bid', fields: [nftCollectionField('tensor.collection', true)] },
+        ],
+      },
+    },
+    connectorActionForm('tensor', 'buy', 'Buy', 'connector-tensor-buy', 'Buy a listed NFT on Tensor.', 'first-class-adapter', 'queueable', [
+      nftWalletField('tensor.collection', true),
+      formField('priceSol', 'Max price (SOL)', true),
+      formField('memo', 'Reason'),
+    ], false, 'tensor_buy'),
+    connectorActionForm('tensor', 'list', 'List', 'connector-tensor-list', 'List one of your NFTs on Tensor.', 'first-class-adapter', 'queueable', [
+      nftWalletField('tensor.wallet.nft', true),
+      formField('priceSol', 'List price (SOL)', true),
+      formField('memo', 'Reason'),
+    ], false, 'tensor_list'),
+    connectorActionForm('tensor', 'cancel-listing', 'Cancel listing', 'connector-tensor-cancel-listing', 'Cancel an existing Tensor listing.', 'first-class-adapter', 'queueable', [
+      nftCollectionField('tensor.collection', true),
+      collectionListing,
+      formField('memo', 'Reason'),
+    ], false, 'tensor_cancel_listing'),
+    connectorActionForm('tensor', 'cancel-bid', 'Cancel bid', 'connector-tensor-cancel-bid', 'Cancel an outstanding Tensor bid.', 'first-class-adapter', 'queueable', [
+      nftCollectionField('tensor.collection', true),
+      formField('bidId', 'Bid id', true),
+      formField('memo', 'Reason'),
+    ], false, 'tensor_cancel_bid'),
+    connectorActionForm('tensor', 'sweep', 'Sweep', 'connector-tensor-sweep', 'Buy the N cheapest listings in a collection.', 'first-class-adapter', 'queueable', [
+      nftCollectionField('tensor.collection', true),
+      formField('count', 'Number of NFTs', true),
+      formField('maxPriceSol', 'Max price per NFT (SOL)'),
+      formField('memo', 'Reason'),
+    ], false, 'tensor_sweep'),
+  ];
+}
+
+function squadsMultisigField(required: boolean): AgentPlanTemplateField {
+  return cascadingField('multisigAddress', 'Multisig', 'squads.multisig', {
+    required,
+    emptyHint: "Couldn't load your Squads multisigs. Paste a multisig address.",
+  });
+}
+
+function squadsProposalField(required: boolean): AgentPlanTemplateField {
+  return cascadingField('proposalAddress', 'Proposal', 'squads.proposal', {
+    required,
+    dependsOn: ['multisigAddress'],
+    emptyHint: 'No proposals found for this multisig. Paste a proposal address.',
+  });
+}
+
+function squadsForms(): ConnectorActionForm[] {
+  return [
+    connectorActionForm('squads', 'approve-proposal', 'Approve proposal', 'connector-squads-approve-proposal', 'Approve a Squads proposal.', 'first-class-adapter', 'queueable', [
+      squadsMultisigField(true),
+      squadsProposalField(true),
+      formField('memo', 'Reason'),
+    ], false, 'squads_approve_proposal'),
+    connectorActionForm('squads', 'reject-proposal', 'Reject proposal', 'connector-squads-reject-proposal', 'Reject a Squads proposal.', 'first-class-adapter', 'queueable', [
+      squadsMultisigField(true),
+      squadsProposalField(true),
+      formField('memo', 'Reason'),
+    ], false, 'squads_reject_proposal'),
+    connectorActionForm('squads', 'cancel-proposal', 'Cancel proposal', 'connector-squads-cancel-proposal', 'Cancel a Squads proposal you authored.', 'first-class-adapter', 'queueable', [
+      squadsMultisigField(true),
+      squadsProposalField(true),
+      formField('memo', 'Reason'),
+    ], false, 'squads_cancel_proposal'),
+    connectorActionForm('squads', 'execute-proposal', 'Execute proposal', 'connector-squads-execute-proposal', 'Execute an approved Squads proposal.', 'first-class-adapter', 'queueable', [
+      squadsMultisigField(true),
+      squadsProposalField(true),
+      formField('memo', 'Reason'),
+    ], false, 'squads_execute_proposal'),
+    connectorActionForm('squads', 'create-transfer-proposal', 'Create transfer proposal', 'connector-squads-create-transfer-proposal', 'Draft a new transfer proposal in a Squads multisig.', 'first-class-adapter', 'queueable', [
+      squadsMultisigField(true),
+      cascadingField('vaultIndex', 'Vault', 'squads.vault', {
+        required: true,
+        dependsOn: ['multisigAddress'],
+        emptyHint: 'No vaults found. Paste a vault index (0, 1, …) to continue.',
+      }),
+      formField('recipient', 'Recipient', true),
+      formField('amount', 'Amount', true),
+      formField('token', 'Token or mint'),
+      formField('memo', 'Reason'),
+    ], false, 'squads_create_transfer_proposal'),
+  ];
+}
+
+function realmsRealmField(required: boolean): AgentPlanTemplateField {
+  return cascadingField('realmAddress', 'Realm', 'realms.realm', {
+    required,
+    emptyHint: "Couldn't load your realms. Paste a realm address.",
+  });
+}
+
+function realmsTokenField(required: boolean): AgentPlanTemplateField {
+  return cascadingField('governingTokenMint', 'Governance token', 'realms.token', {
+    required,
+    dependsOn: ['realmAddress'],
+    emptyHint: 'No governance tokens found for this realm.',
+  });
+}
+
+function realmsProposalField(required: boolean): AgentPlanTemplateField {
+  return cascadingField('proposalAddress', 'Proposal', 'realms.proposal', {
+    required,
+    dependsOn: ['realmAddress'],
+    emptyHint: 'No active proposals found in this realm.',
+  });
+}
+
+function realmsForms(): ConnectorActionForm[] {
+  return [
+    {
+      id: 'realms:cast-vote',
+      connectorId: 'realms',
+      operationId: 'cast-vote',
+      operationLabel: 'Cast vote',
+      templateId: 'connector-realms-cast-vote',
+      description: 'Cast a vote on a Realms proposal.',
+      executionMode: 'first-class-adapter',
+      outcome: 'queueable',
+      fields: [
+        realmsRealmField(true),
+        realmsTokenField(true),
+        realmsProposalField(true),
+        formField('memo', 'Reason'),
+      ],
+      subActions: {
+        fieldId: 'subAction',
+        label: 'Vote',
+        defaultId: 'approve',
+        options: [
+          { id: 'approve', label: 'Approve', description: 'Vote to approve the proposal.', actionType: 'realms_cast_vote', fields: [{ id: 'voteKind', label: 'Vote', type: 'select', options: ['approve'], defaultValue: 'approve' }] },
+          { id: 'deny', label: 'Deny', description: 'Vote to deny the proposal.', actionType: 'realms_cast_vote', fields: [{ id: 'voteKind', label: 'Vote', type: 'select', options: ['deny'], defaultValue: 'deny' }] },
+          { id: 'abstain', label: 'Abstain', description: 'Abstain from this vote.', actionType: 'realms_cast_vote', fields: [{ id: 'voteKind', label: 'Vote', type: 'select', options: ['abstain'], defaultValue: 'abstain' }] },
+          { id: 'veto', label: 'Veto', description: 'Cast a veto (council only).', actionType: 'realms_cast_vote', fields: [{ id: 'voteKind', label: 'Vote', type: 'select', options: ['veto'], defaultValue: 'veto' }] },
+        ],
+      },
+    },
+    connectorActionForm('realms', 'deposit-governance-tokens', 'Deposit governance tokens', 'connector-realms-deposit', 'Deposit governance tokens into a realm.', 'first-class-adapter', 'queueable', [
+      realmsRealmField(true),
+      realmsTokenField(true),
+      formField('amount', 'Amount', true),
+      formField('memo', 'Reason'),
+    ], false, 'realms_deposit_governance_tokens'),
+    connectorActionForm('realms', 'withdraw-governance-tokens', 'Withdraw governance tokens', 'connector-realms-withdraw', 'Withdraw governance tokens from a realm.', 'first-class-adapter', 'queueable', [
+      realmsRealmField(true),
+      realmsTokenField(true),
+      formField('amount', 'Amount'),
+      formField('memo', 'Reason'),
+    ], false, 'realms_withdraw_governance_tokens'),
+    connectorActionForm('realms', 'relinquish-vote', 'Relinquish vote', 'connector-realms-relinquish-vote', 'Relinquish a vote you previously cast.', 'first-class-adapter', 'queueable', [
+      realmsRealmField(true),
+      realmsTokenField(true),
+      realmsProposalField(true),
+      formField('memo', 'Reason'),
+    ], false, 'realms_relinquish_vote'),
+  ];
+}
+
+function wormholeTokenField(required: boolean): AgentPlanTemplateField {
+  return cascadingField('token', 'Source token', 'wormhole.token', {
+    required,
+    emptyHint: "Couldn't load Wormhole token routes. Paste a source mint.",
+  });
+}
+
+function wormholeDestinationField(required: boolean): AgentPlanTemplateField {
+  return cascadingField('destinationChain', 'Destination chain', 'wormhole.destination', {
+    required,
+    dependsOn: ['token'],
+    emptyHint: 'Choose a source token first.',
+  });
+}
+
+function wormholeForms(): ConnectorActionForm[] {
+  return [
+    connectorActionForm('wormhole', 'transfer', 'Transfer', 'connector-wormhole-transfer', 'Bridge tokens via Wormhole to another chain.', 'first-class-adapter', 'queueable', [
+      wormholeTokenField(true),
+      formField('amount', 'Amount', true),
+      wormholeDestinationField(true),
+      formField('recipient', 'Destination recipient', true),
+      formField('memo', 'Reason'),
+    ], false, 'wormhole_transfer'),
+    connectorActionForm('wormhole', 'redeem', 'Redeem', 'connector-wormhole-redeem', 'Redeem a pending Wormhole transfer on Solana.', 'first-class-adapter', 'queueable', [
+      formField('transferId', 'Transfer id / VAA', true),
+      formField('memo', 'Reason'),
+    ], false, 'wormhole_redeem'),
+    connectorActionForm('wormhole', 'recover-or-resume', 'Recover or resume', 'connector-wormhole-recover-or-resume', 'Recover or resume a stalled Wormhole transfer.', 'first-class-adapter', 'queueable', [
+      formField('transferId', 'Transfer id / VAA', true),
+      formField('memo', 'Reason'),
+    ], false, 'wormhole_recover_or_resume'),
+  ];
+}
+
+function pythForms(): ConnectorActionForm[] {
+  return [
+    connectorActionForm('pyth', 'post-price-update', 'Post price update', 'connector-pyth-post-price-update', 'Post a Pyth pull-oracle price update on-chain.', 'first-class-adapter', 'queueable', [
+      cascadingField('priceFeedIds', 'Price feeds', 'pyth.feed', {
+        required: true,
+        emptyHint: 'Type a symbol (e.g. SOL/USD) to search Pyth feeds.',
+        placeholder: 'SOL/USD',
+      }),
+      formField('maxAgeSeconds', 'Max price age (seconds)'),
+      formField('memo', 'Reason'),
+    ], false, 'pyth_post_price_update'),
+  ];
 }
 
 function marginfiBankField(required: boolean): AgentPlanTemplateField {
