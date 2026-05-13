@@ -54,6 +54,7 @@
     "verify:release-links": "node scripts/verify-release-links.mjs",
     "verify:release-links:live": "node scripts/verify-release-links.mjs --live",
     "security:audit": "pnpm audit --prod",
+    "hooks:install": "lefthook install",
     "clean": "pnpm -r exec rm -rf dist .turbo node_modules/.cache"
   },
   "pnpm": {
@@ -65,8 +66,9 @@
   },
   "devDependencies": {
     "@types/node": "^22.7.0",
+    "lefthook": "2.1.6",
     "typescript": "^5.6.0",
-    "vitest": "^2.1.0",
-    "vite": "^5.4.0"
+    "vite": "^5.4.0",
+    "vitest": "^2.1.0"
   }
 }

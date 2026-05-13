@@ -1,4 +1,5 @@
 import type { AgentPlan } from './planner.js';
+import { findingsSpecFor, type DeterministicFactKey } from './agentFindingsSpec.js';
 
 export type AgentEvidenceTone = 'good' | 'warn' | 'neutral' | 'fail';
 
@@ -49,7 +50,7 @@ export interface AgentEvidenceReviewLike {
   evidence?: Record<string, unknown>;
   checks?: AgentEvidenceCheckLike[];
   facts?: Partial<Record<
-    'quote' | 'route' | 'policy' | 'simulation' | 'protocol' | 'protocolConnector' | 'blinkAction' | 'tokenMint' | 'recipient' | 'limits' | 'schedule',
+    'quote' | 'route' | 'policy' | 'simulation' | 'protocol' | 'protocolConnector' | 'blinkAction' | 'blinkClassification' | 'tokenMint' | 'recipient' | 'limits' | 'schedule' | 'research',
     AgentEvidenceFactLike
   >>;
   policies?: AgentEvidencePolicyLike[];
@@ -58,11 +59,10 @@ export interface AgentEvidenceReviewLike {
   staleness?: AgentEvidenceStalenessLike;
 }
 
-type AgentEvidenceFactKey = keyof NonNullable<AgentEvidenceReviewLike['facts']>;
-
 export interface ReviewEvidenceRowsOptions {
   stale?: boolean;
   stringify?: (value: unknown) => string;
+  actionType?: string;
 }
 
 export interface SwapTokenTextMismatchWarning {
@@ -106,6 +106,18 @@ const STRUCTURED_EVIDENCE_KEYS = new Set([
   'facts',
   'questions',
   'reviewers',
+  'sources',
+  'citations',
+  'research',
+]);
+
+const RESEARCH_FALLBACK_EVIDENCE_KEYS = new Set([
+  'actiontype',
+  'action_type',
+  'templatetitle',
+  'template_title',
+  'parseerror',
+  'parse_error',
 ]);
 
 const MISSING_INPUT_KEYS = new Set([
@@ -170,6 +182,7 @@ export function reviewEvidenceRows(
   const seen = new Set<string>();
   const evidence = review.evidence && isPlainRecord(review.evidence) ? review.evidence : undefined;
   const stringify = options.stringify ?? stableStringify;
+  const researchFocused = hasResearchEvidence(evidence) || Boolean(review.facts?.research);
   const addRow = (row: Partial<AgentEvidenceDisplayRow>): void => {
     const label = textValue(row.label).slice(0, 96);
     const value = textValue(row.value).slice(0, 720);
@@ -193,25 +206,36 @@ export function reviewEvidenceRows(
   for (const row of tokenMismatchEvidenceRows(evidence)) {
     addRow(row);
   }
+  for (const row of sourceEvidenceRows(evidence)) {
+    addRow(row);
+  }
 
   const facts = review.facts;
   if (facts) {
-    const factSlots: Array<[AgentEvidenceFactKey, string]> = [
-      ['route', 'Route'],
-      ['quote', 'Quote'],
-      ['protocol', 'Protocol'],
-      ['protocolConnector', 'Connector'],
-      ['blinkAction', 'Connector action'],
-      ['simulation', 'Simulation'],
-      ['tokenMint', 'Token mint'],
-      ['recipient', 'Recipient'],
-      ['policy', 'Policy'],
-      ['limits', 'Limits'],
-      ['schedule', 'Schedule'],
-    ];
-    for (const [key, label] of factSlots) {
+    const spec = findingsSpecFor(options.actionType);
+    const defaultLabels: Record<DeterministicFactKey, string> = {
+      research: 'Research',
+      route: 'Route',
+      quote: 'Quote',
+      protocol: 'Protocol',
+      protocolConnector: 'Connector',
+      blinkAction: 'Connector action',
+      blinkClassification: 'Blink type',
+      simulation: 'Simulation',
+      tokenMint: 'Token mint',
+      recipient: 'Recipient',
+      policy: 'Policy',
+      limits: 'Limits',
+      schedule: 'Schedule',
+    };
+    const slotOrder = spec.slots.includes('research') || !facts.research
+      ? spec.slots
+      : (['research', ...spec.slots] as DeterministicFactKey[]);
+    for (const key of slotOrder) {
       const fact = facts[key];
       if (!fact) continue;
+      if (researchFocused && key !== 'research' && fact.state !== 'fail' && fact.state !== 'warn') continue;
+      const label = spec.labels?.[key] ?? defaultLabels[key];
       addRow({
         label,
         value: textValue(fact.message) || agentEvidenceFactStateLabel(fact.state),
@@ -273,6 +297,7 @@ export function reviewEvidenceRows(
     const seenLabels = new Set(rows.map((row) => row.label.toLowerCase()));
     for (const [key, raw] of Object.entries(evidence)) {
       if (raw === undefined || raw === null) continue;
+      if (researchFocused && isResearchFallbackEvidenceKey(key)) continue;
       if (isTokenMismatchEvidenceKey(key) || isStructuredEvidenceKey(key) || isMissingInputEvidenceKey(key)) continue;
       const label = humanizeEvidenceKey(key);
       if (seenLabels.has(label.toLowerCase())) continue;
@@ -289,6 +314,10 @@ export function reviewEvidenceRows(
 
 export function isTokenMismatchEvidenceKey(key: string): boolean {
   return TOKEN_MISMATCH_KEYS.has(normalizeEvidenceKey(key));
+}
+
+function isResearchFallbackEvidenceKey(key: string): boolean {
+  return RESEARCH_FALLBACK_EVIDENCE_KEYS.has(normalizeEvidenceKey(key));
 }
 
 export function evidenceEntryTone(label: string, value: string): AgentEvidenceTone {
@@ -320,6 +349,39 @@ function evidenceFindingRows(evidence: Record<string, unknown> | undefined): Age
       tone: normalizeEvidenceTone(entry.tone) ?? evidenceEntryTone(label, value),
     });
     if (rows.length >= 24) break;
+  }
+  return rows;
+}
+
+function hasResearchEvidence(evidence: Record<string, unknown> | undefined): boolean {
+  if (!evidence) return false;
+  if (isPlainRecord(evidence.research)) return true;
+  if (Array.isArray(evidence.sources) && evidence.sources.length > 0) return true;
+  return Array.isArray(evidence.citations) && evidence.citations.length > 0;
+}
+
+function sourceEvidenceRows(evidence: Record<string, unknown> | undefined): AgentEvidenceDisplayRow[] {
+  if (!evidence) return [];
+  const raw = Array.isArray(evidence.sources)
+    ? evidence.sources
+    : Array.isArray(evidence.citations)
+      ? evidence.citations
+      : undefined;
+  if (!raw) return [];
+  const rows: AgentEvidenceDisplayRow[] = [];
+  const seen = new Set<string>();
+  for (const entry of raw) {
+    if (!isPlainRecord(entry)) continue;
+    const url = textValue(entry.url) || textValue(entry.ref);
+    if (!url || seen.has(url)) continue;
+    seen.add(url);
+    const title = textValue(entry.title);
+    rows.push({
+      label: title ? `Source: ${title}` : 'Source',
+      value: url,
+      tone: 'neutral',
+    });
+    if (rows.length >= 6) break;
   }
   return rows;
 }

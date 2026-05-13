@@ -109,6 +109,19 @@ export type {
 } from './actionService.js';
 export { BridgeAiPlanner } from './aiPlanner.js';
 export {
+  BLINK_CLASSIFICATION_PROFILES,
+  BLINK_CLASSIFIER_REVIEW_PROMPT,
+  applyBlinkVerdictFloor,
+  blinkClassificationProfile,
+  isBlinkClassificationCategory,
+  normalizeBlinkClassification,
+} from './blinkClassification.js';
+export type {
+  BlinkClassificationCategory,
+  BlinkClassificationProfile,
+  BlinkDefaultVerdict,
+} from './blinkClassification.js';
+export {
   DEFAULT_BIRDEYE_REST_BASE,
   birdeyeConfigFromEnv,
   requestBirdeye,

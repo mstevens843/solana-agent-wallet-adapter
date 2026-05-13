@@ -18,6 +18,12 @@ import type {
   AiPlanRequest,
   TemplateRisk,
 } from '@solana-agent-wallet-adapter/workflow';
+import { PROTOCOL_CONNECTORS } from './connectedDapps.js';
+import {
+  connectorActionFormTemplateActionType,
+  connectorActionFormsForConnector,
+  formTemplateFields,
+} from './connectorDrafting.js';
 
 export type {
   AgentPlan,
@@ -49,6 +55,10 @@ export interface AiSettings {
   apiKey: string;
   multiReviewer?: boolean;
   autoBackgroundWatch?: boolean;
+}
+
+export interface AiRequestOptions {
+  signal?: AbortSignal;
 }
 
 export interface BridgeAiStatus {
@@ -95,7 +105,34 @@ const SHARED_SAFEGUARDS = [
   'AI prepares the review item; the wallet owner checks amount, recipient, route, protocol, slippage, and policy before signing.',
 ];
 
+const RESEARCH_MAX_USES = 3;
+const RESEARCH_SOURCE_POLICY = [
+  'Prefer official vendor, product, support, pricing, documentation, regulator, or primary-source pages over blogs and aggregators.',
+  'When the request mentions Helium Mobile, official Helium domains include hellohelium.com, support.hellohelium.com, and heliummobile.com.',
+  'Third-party sources may support context but should not override an official current pricing or policy source.',
+].join(' ');
 const AI_KEY_COPY_PASTE_ARTIFACTS = /[\s\u200B-\u200D\u2060\uFEFF]+/gu;
+
+interface AgentReviewResearchEvidence {
+  status: 'checked';
+  required: true;
+  provider: string;
+  checkedAt: string;
+  summary: string;
+  sources: Array<{ title?: string; url: string }>;
+  sourcePolicy: string;
+}
+
+interface ThresholdRule {
+  threshold: number;
+  approveWhen: 'below' | 'above';
+}
+
+interface ThresholdPriceCandidate {
+  amount: number;
+  label: string;
+  text: string;
+}
 
 export const DEFAULT_AI_BASE_URL = 'https://api.openai.com/v1';
 export const DEFAULT_AI_MODEL = 'gpt-5';
@@ -114,6 +151,8 @@ export interface AiProviderPreset {
 export interface AiProviderModel {
   id: string;
   label: string;
+  tokenRateLabel?: string;
+  tokensPerMinute?: number;
 }
 
 export const AI_PROVIDER_PRESETS: AiProviderPreset[] = [
@@ -123,18 +162,18 @@ export const AI_PROVIDER_PRESETS: AiProviderPreset[] = [
     detail: 'GPT models through Agentic hosted or local bridge calls.',
     apiFormat: 'openai-compatible',
     baseUrl: DEFAULT_AI_BASE_URL,
-    model: DEFAULT_AI_MODEL,
+    model: 'gpt-5.5',
     models: [
-      { id: 'gpt-5.5', label: 'GPT-5.5' },
-      { id: 'gpt-5.4', label: 'GPT-5.4' },
-      { id: 'gpt-5.4-mini', label: 'GPT-5.4 mini' },
-      { id: 'gpt-5.4-nano', label: 'GPT-5.4 nano' },
-      { id: DEFAULT_AI_MODEL, label: 'GPT-5' },
-      { id: 'gpt-5.2', label: 'GPT-5.2' },
-      { id: 'gpt-5.1', label: 'GPT-5.1' },
-      { id: 'gpt-5-mini', label: 'GPT-5 mini' },
-      { id: 'gpt-5-nano', label: 'GPT-5 nano' },
-      { id: 'gpt-4.1', label: 'GPT-4.1' },
+      { id: 'gpt-5.5', label: 'GPT-5.5', tokenRateLabel: '500K', tokensPerMinute: 500_000 },
+      { id: 'gpt-5.4', label: 'GPT-5.4', tokenRateLabel: '500K', tokensPerMinute: 500_000 },
+      { id: 'gpt-5.4-mini', label: 'GPT-5.4 mini', tokenRateLabel: '500K', tokensPerMinute: 500_000 },
+      { id: DEFAULT_AI_MODEL, label: 'GPT-5', tokenRateLabel: '500K', tokensPerMinute: 500_000 },
+      { id: 'gpt-5.2', label: 'GPT-5.2', tokenRateLabel: '500K', tokensPerMinute: 500_000 },
+      { id: 'gpt-5.1', label: 'GPT-5.1', tokenRateLabel: '500K', tokensPerMinute: 500_000 },
+      { id: 'gpt-5-mini', label: 'GPT-5 mini', tokenRateLabel: '500K', tokensPerMinute: 500_000 },
+      { id: 'gpt-5.4-nano', label: 'GPT-5.4 nano', tokenRateLabel: '200K', tokensPerMinute: 200_000 },
+      { id: 'gpt-5-nano', label: 'GPT-5 nano', tokenRateLabel: '200K', tokensPerMinute: 200_000 },
+      { id: 'gpt-4.1', label: 'GPT-4.1', tokenRateLabel: '30K', tokensPerMinute: 30_000 },
     ],
   },
   {
@@ -143,13 +182,13 @@ export const AI_PROVIDER_PRESETS: AiProviderPreset[] = [
     detail: 'Claude models through the Anthropic Messages API.',
     apiFormat: 'anthropic',
     baseUrl: 'https://api.anthropic.com/v1',
-    model: 'claude-sonnet-4-5',
+    model: 'claude-opus-4-1-20250805',
     models: [
-      { id: 'claude-sonnet-4-5', label: 'Claude Sonnet 4.5' },
-      { id: 'claude-sonnet-4-5-20250929', label: 'Claude Sonnet 4.5 snapshot' },
-      { id: 'claude-opus-4-1-20250805', label: 'Claude Opus 4.1' },
-      { id: 'claude-sonnet-4-20250514', label: 'Claude Sonnet 4' },
-      { id: 'claude-3-5-haiku-20241022', label: 'Claude Haiku 3.5' },
+      { id: 'claude-opus-4-1-20250805', label: 'Claude Opus 4.1', tokenRateLabel: '500K', tokensPerMinute: 500_000 },
+      { id: 'claude-3-5-haiku-20241022', label: 'Claude Haiku 3.5', tokenRateLabel: '50K', tokensPerMinute: 50_000 },
+      { id: 'claude-sonnet-4-5', label: 'Claude Sonnet 4.5', tokenRateLabel: '30K', tokensPerMinute: 30_000 },
+      { id: 'claude-sonnet-4-5-20250929', label: 'Claude Sonnet 4.5 snapshot', tokenRateLabel: '30K', tokensPerMinute: 30_000 },
+      { id: 'claude-sonnet-4-20250514', label: 'Claude Sonnet 4', tokenRateLabel: '30K', tokensPerMinute: 30_000 },
     ],
   },
   {
@@ -158,12 +197,12 @@ export const AI_PROVIDER_PRESETS: AiProviderPreset[] = [
     detail: 'Google Gemini through its OpenAI-compatible endpoint.',
     apiFormat: 'openai-compatible',
     baseUrl: 'https://generativelanguage.googleapis.com/v1beta/openai',
-    model: 'gemini-2.5-flash',
+    model: 'gemini-2.5-flash-lite',
     models: [
-      { id: 'gemini-2.5-flash', label: 'Gemini 2.5 Flash' },
-      { id: 'gemini-2.5-pro', label: 'Gemini 2.5 Pro' },
-      { id: 'gemini-2.5-flash-lite', label: 'Gemini 2.5 Flash-Lite' },
-      { id: 'gemini-2.0-flash', label: 'Gemini 2.0 Flash' },
+      { id: 'gemini-2.5-flash-lite', label: 'Gemini 2.5 Flash-Lite', tokenRateLabel: '4M', tokensPerMinute: 4_000_000 },
+      { id: 'gemini-2.0-flash', label: 'Gemini 2.0 Flash', tokenRateLabel: '4M', tokensPerMinute: 4_000_000 },
+      { id: 'gemini-2.5-pro', label: 'Gemini 2.5 Pro', tokenRateLabel: '2M', tokensPerMinute: 2_000_000 },
+      { id: 'gemini-2.5-flash', label: 'Gemini 2.5 Flash', tokenRateLabel: '1M', tokensPerMinute: 1_000_000 },
     ],
   },
   {
@@ -193,7 +232,7 @@ export const AI_PROVIDER_PRESETS: AiProviderPreset[] = [
   },
 ];
 
-export const AGENT_PLAN_TEMPLATES: AgentPlanTemplate[] = [
+const BASE_AGENT_PLAN_TEMPLATES: AgentPlanTemplate[] = [
   template('payments', 'transfer-sol', 'Send SOL', 'Prepare a SOL payment with recipient, amount, memo, and wallet approval.', 'transfer_sol', 'medium', [
     field('recipient', 'Recipient address', 'Recipient public key', '', true),
     field('amount', 'Amount SOL', '0.01', '0.01', true),
@@ -375,6 +414,11 @@ export const AGENT_PLAN_TEMPLATES: AgentPlanTemplate[] = [
   template('custom', 'custom-request', 'Custom request', 'Turn any plain-English request into a visible review plan before signing evidence.', 'manual_review', 'medium', [
     field('policy', 'Policy cap', 'What should never be allowed?', 'No private key sharing, no unlimited approvals'),
   ]),
+];
+
+export const AGENT_PLAN_TEMPLATES: AgentPlanTemplate[] = [
+  ...BASE_AGENT_PLAN_TEMPLATES,
+  ...connectorActionPlanTemplates(BASE_AGENT_PLAN_TEMPLATES),
 ];
 
 export function templateById(id: string): AgentPlanTemplate {
@@ -612,6 +656,7 @@ export function aiRouteDiagnosticForSettings(
 export async function generateSessionAiPlan(
   settings: AiSettings,
   request: AiPlanRequest,
+  options: AiRequestOptions = {},
 ): Promise<AgentPlan> {
   const apiKey = normalizeAiApiKey(settings.apiKey);
   if (!apiKey) {
@@ -624,9 +669,9 @@ export async function generateSessionAiPlan(
     throw new Error('OpenAI keys cannot be called directly from browser session mode. Select Hosted BYOK or Local bridge.');
   }
   if (settings.apiFormat === 'anthropic') {
-    return generateAnthropicPlan(normalizedSettings, request);
+    return generateAnthropicPlan(normalizedSettings, request, options);
   }
-  return generateOpenAiCompatiblePlan(normalizedSettings, request);
+  return generateOpenAiCompatiblePlan(normalizedSettings, request, options);
 }
 
 export async function generateSessionAiReview(
@@ -646,12 +691,16 @@ export async function generateSessionAiReview(
   if (settings.apiFormat === 'anthropic') {
     return generateAnthropicReview(normalizedSettings, request);
   }
+  if (reviewNeedsWebResearch(request)) {
+    return unsupportedBrowserResearchReview(request, settings.provider);
+  }
   return generateOpenAiCompatibleReview(normalizedSettings, request);
 }
 
 export async function generateHostedAiPlan(
   settings: AiSettings,
   request: AiPlanRequest,
+  options: AiRequestOptions = {},
 ): Promise<AgentPlan> {
   const apiKey = normalizeAiApiKey(settings.apiKey);
   if (!apiKey) {
@@ -668,12 +717,13 @@ export async function generateHostedAiPlan(
       path: '/api/ai/generate-plan',
     },
   ];
-  await assertHostedAiAvailable(diagnostics);
+  await assertHostedAiAvailable(diagnostics, options);
   const response = await fetch('/api/ai/generate-plan', {
     method: 'POST',
     headers: {
       'content-type': 'application/json',
     },
+    ...(options.signal ? { signal: options.signal } : {}),
     body: JSON.stringify({
       settings: {
         apiKey,
@@ -685,6 +735,7 @@ export async function generateHostedAiPlan(
       request,
     }),
   }).catch((err) => {
+    if (isAbortError(err)) throw err;
     throw aiPlanConnectionError(
       `Hosted AI request failed. ${redactSecrets(err instanceof Error ? err.message : String(err), settings.apiKey)}`,
       diagnostics,
@@ -817,6 +868,9 @@ export async function generateSessionAiAsk(
   if (settings.provider === 'openai') {
     throw new Error('OpenAI keys cannot be called directly from browser session mode. Select Hosted BYOK or Local bridge.');
   }
+  if (settings.apiFormat !== 'anthropic' && askNeedsWebResearch(request)) {
+    return unsupportedBrowserResearchAsk(settings.provider);
+  }
   if (settings.apiFormat === 'anthropic') {
     return generateAnthropicAsk(normalizedSettings, request);
   }
@@ -924,12 +978,14 @@ export async function confirmHostedAiPlanner(settings: AiSettings): Promise<AiDi
   return diagnostics.map(redactAiDiagnostic);
 }
 
-async function assertHostedAiAvailable(diagnostics: AiDiagnosticEntry[]): Promise<void> {
+async function assertHostedAiAvailable(diagnostics: AiDiagnosticEntry[], options: AiRequestOptions = {}): Promise<void> {
   const response = await fetch('/api/ai/status', {
     headers: {
       accept: 'application/json',
     },
+    ...(options.signal ? { signal: options.signal } : {}),
   }).catch((err) => {
+    if (isAbortError(err)) throw err;
     throw aiPlanConnectionError(
       `Hosted BYOK API is not reachable on this origin. Serve Agentic through the Render Node service or use Local bridge. ${err instanceof Error ? err.message : String(err)}`,
       diagnostics,
@@ -962,6 +1018,10 @@ async function assertHostedAiAvailable(diagnostics: AiDiagnosticEntry[]): Promis
       },
     );
   }
+}
+
+function isAbortError(err: unknown): boolean {
+  return err instanceof Error && err.name === 'AbortError';
 }
 
 function isHostedAiStatusPayload(payload: unknown): payload is { available: boolean; mode: string } {
@@ -1057,7 +1117,93 @@ function isAiDiagnosticEntry(value: unknown): value is AiDiagnosticEntry {
   return typeof record.code === 'string' && typeof record.message === 'string';
 }
 
-async function generateOpenAiCompatiblePlan(settings: AiSettings, request: AiPlanRequest): Promise<AgentPlan> {
+function askNeedsWebResearch(request: AgentPlanAskRequest): boolean {
+  return textNeedsWebResearch([
+    request.question,
+    request.plan.intent,
+    request.plan.route,
+    request.plan.approval,
+    request.plan.userNotes ?? '',
+  ].join('\n'));
+}
+
+function reviewNeedsWebResearch(request: AgentPlanReviewRequest): boolean {
+  return textNeedsWebResearch([
+    request.instruction ?? '',
+    request.plan.intent,
+    request.plan.route,
+    request.plan.approval,
+    request.plan.userNotes ?? '',
+  ].join('\n'));
+}
+
+function textNeedsWebResearch(text: string): boolean {
+  const normalized = text.toLowerCase();
+  if (!normalized.trim()) return false;
+  return (
+    /\b(current|currently|latest|today|tonight|tomorrow|yesterday|now|real[-\s]?time|up[-\s]?to[-\s]?date|as of)\b/.test(normalized) ||
+    /\b(price|cost|fee|rate|plan|subscription|monthly|per\s+month|market\s+cap|liquidity|apr|apy|weather|news|status|available|availability)\b/.test(normalized) && /\b(check|find|look\s+up|search|verify|how\s+much|whether|if|less\s+than|more\s+than|under|over|approve|deny)\b/.test(normalized) ||
+    /\$\s*\d+/.test(normalized) && /\b(less\s+than|more\s+than|under|over|approve|deny|per\s+month|monthly)\b/.test(normalized)
+  );
+}
+
+function anthropicWebSearchTool(): Record<string, unknown> {
+  return {
+    type: 'web_search_20250305',
+    name: 'web_search',
+    max_uses: RESEARCH_MAX_USES,
+    user_location: {
+      type: 'approximate',
+      country: 'US',
+      timezone: 'America/Los_Angeles',
+    },
+  };
+}
+
+function unsupportedBrowserResearchReview(
+  request: AgentPlanReviewRequest,
+  provider: string,
+): AgentPlanReviewResult {
+  const reason = `This review needs current outside facts, but ${provider} browser-session mode does not provide a native web-search tool.`;
+  return {
+    decision: 'needs_input',
+    reason,
+    summary: 'Current outside facts are required before the agent can decide.',
+    evidence: {
+      research: { status: 'unavailable', provider, required: true },
+      findings: [{
+        label: 'Research needed',
+        value: 'Use Hosted BYOK or Local bridge with OpenAI/Anthropic web search, or provide the current source fact in the draft.',
+        tone: 'warn',
+      }],
+      facts: {
+        research: {
+          state: 'missing',
+          message: reason,
+        },
+      },
+    },
+    checkedAt: new Date().toISOString(),
+    source: 'ai',
+    questions: [{
+      id: 'current_fact',
+      prompt: 'What current source fact should the agent use for this decision?',
+      inputKind: 'text',
+      required: true,
+      ...(request.instruction ? { hint: request.instruction } : {}),
+    }],
+  };
+}
+
+function unsupportedBrowserResearchAsk(provider: string): AgentPlanAskResult {
+  return {
+    answer: `This question needs current outside facts, but ${provider} browser-session mode does not provide a native web-search tool. Use Hosted BYOK or Local bridge with OpenAI/Anthropic web search, or provide the source fact in the draft.`,
+    checkedAt: new Date().toISOString(),
+    source: 'ai',
+  };
+}
+
+async function generateOpenAiCompatiblePlan(settings: AiSettings, request: AiPlanRequest, options: AiRequestOptions = {}): Promise<AgentPlan> {
   const baseUrl = normalizeBaseUrl(settings.baseUrl, 'openai-compatible');
   const body = {
     model: settings.model.trim() || DEFAULT_AI_MODEL,
@@ -1071,8 +1217,10 @@ async function generateOpenAiCompatiblePlan(settings: AiSettings, request: AiPla
       authorization: `Bearer ${settings.apiKey.trim()}`,
       'content-type': 'application/json',
     },
+    ...(options.signal ? { signal: options.signal } : {}),
     body: JSON.stringify(body),
   }).catch((err) => {
+    if (isAbortError(err)) throw err;
     throw new Error(
       `AI provider request failed. Use the local bridge or a browser-compatible gateway. ${redactSecrets(err instanceof Error ? err.message : String(err), settings.apiKey)}`,
     );
@@ -1144,6 +1292,7 @@ async function generateAnthropicAsk(settings: AiSettings, request: AgentPlanAskR
   const messages = aiAskMessages(request);
   const systemMessage = messages[0]?.content ?? '';
   const userMessage = messages[1]?.content ?? JSON.stringify(request);
+  const research = askNeedsWebResearch(request);
   const response = await fetch(`${baseUrl}/messages`, {
     method: 'POST',
     headers: {
@@ -1158,6 +1307,7 @@ async function generateAnthropicAsk(settings: AiSettings, request: AgentPlanAskR
       system: systemMessage,
       messages: [{ role: 'user', content: userMessage }],
       temperature: 0.3,
+      ...(research ? { tools: [anthropicWebSearchTool()] } : {}),
     }),
   }).catch((err) => {
     throw new Error(
@@ -1172,11 +1322,12 @@ async function generateAnthropicAsk(settings: AiSettings, request: AgentPlanAskR
 }
 
 export function aiAskMessages(request: AgentPlanAskRequest): Array<{ role: 'system' | 'user'; content: string }> {
+  const needsResearch = askNeedsWebResearch(request);
   return [
     {
       role: 'system',
       content:
-        'You answer the user\'s question about a Solana wallet action plan. Be concise: 1 to 4 sentences, plain English. Support questions about what happens on approval, what is missing, why an agent denied, which connector is used, whether a connector can sign, whether a repeat auto-pays, what facts were read, whether a route is fixed or selected later, what changed, and risks. Use plan fields, context.facts, executionPath, protocolConnectors, and connector read/write capability notes when present. Cite plan fields you reference by name (e.g., recipient, amount, slippageBps) or connector facts by label. Never claim anything is signed, submitted, guaranteed safe, or already approved. Never say a connector can sign for the user; connectors can only read facts or prepare wallet-gated work. If the question cannot be answered from the plan or facts, say so plainly and state what fact is missing.',
+        'You answer the user\'s question about a Solana wallet action plan. Be concise: 1 to 4 sentences, plain English. Support questions about what happens on approval, what is missing, why an agent denied, which connector is used, whether a connector can sign, whether a repeat auto-pays, what facts were read, whether a route is fixed or selected later, what changed, risks, and current outside facts when web search is available. Use plan fields, context.facts, executionPath, protocolConnectors, and connector read/write capability notes when present. If the question asks for current or outside facts and web search is available, search reliable sources and cite the source URL in the answer. Cite plan fields you reference by name (e.g., recipient, amount, slippageBps) or connector facts by label. Never claim anything is signed, submitted, guaranteed safe, or already approved. Never say a connector can sign for the user; connectors can only read facts or prepare wallet-gated work. If the question cannot be answered from the plan, facts, or available research tools, say so plainly and state what fact is missing.',
     },
     {
       role: 'user',
@@ -1186,6 +1337,12 @@ export function aiAskMessages(request: AgentPlanAskRequest): Array<{ role: 'syst
         walletAddress: request.walletAddress || 'not_connected',
         cluster: request.cluster || 'unknown',
         context: request.context ?? {},
+        research: {
+          needed: needsResearch,
+          mode: needsResearch ? 'auto_current_facts' : 'not_required',
+          currentDate: new Date().toISOString(),
+          maxSearches: RESEARCH_MAX_USES,
+        },
         requiredBoundary: 'This is conversational Q&A about a draft. It cannot sign or submit a transaction.',
       }),
     },
@@ -1197,8 +1354,10 @@ export function normalizeAiAsk(payload: unknown): AgentPlanAskResult {
   if (!text) {
     throw new Error('Agent did not return an answer.');
   }
+  const citations = sortResearchCitations(extractResearchCitations(payload));
   return {
     answer: compactReviewText(text, 800),
+    ...(citations.length ? { citations } : {}),
     checkedAt: new Date().toISOString(),
     source: 'ai',
   };
@@ -1215,6 +1374,14 @@ function normalizeHostedAiAsk(payload: unknown): AgentPlanAskResult {
   }
   return {
     answer: compactReviewText(answer, 800),
+    ...(Array.isArray(record.citations) ? {
+      citations: record.citations.filter((entry): entry is { kind: string; ref: string; title?: string } => (
+        Boolean(entry) &&
+        typeof entry === 'object' &&
+        typeof entry.kind === 'string' &&
+        typeof entry.ref === 'string'
+      )).slice(0, 8),
+    } : {}),
     checkedAt: typeof record.checkedAt === 'string' ? record.checkedAt : new Date().toISOString(),
     source: 'ai',
   };
@@ -1297,7 +1464,7 @@ function isHostedReviewPayload(payload: unknown): payload is Partial<AgentPlanRe
   );
 }
 
-async function generateAnthropicPlan(settings: AiSettings, request: AiPlanRequest): Promise<AgentPlan> {
+async function generateAnthropicPlan(settings: AiSettings, request: AiPlanRequest, options: AiRequestOptions = {}): Promise<AgentPlan> {
   const baseUrl = normalizeBaseUrl(settings.baseUrl, 'anthropic');
   const messages = aiMessages(request);
   const systemMessage = messages[0]?.content ?? '';
@@ -1317,7 +1484,9 @@ async function generateAnthropicPlan(settings: AiSettings, request: AiPlanReques
       messages: [{ role: 'user', content: userMessage }],
       temperature: 0.2,
     }),
+    ...(options.signal ? { signal: options.signal } : {}),
   }).catch((err) => {
+    if (isAbortError(err)) throw err;
     throw new Error(
       `AI provider request failed. Use the local bridge or a browser-compatible gateway. ${redactSecrets(err instanceof Error ? err.message : String(err), settings.apiKey)}`,
     );
@@ -1332,7 +1501,11 @@ async function generateAnthropicPlan(settings: AiSettings, request: AiPlanReques
 
 async function generateAnthropicReview(settings: AiSettings, request: AgentPlanReviewRequest): Promise<AgentPlanReviewResult> {
   const baseUrl = normalizeBaseUrl(settings.baseUrl, 'anthropic');
-  const messages = aiReviewMessages(request);
+  const research = reviewNeedsWebResearch(request);
+  const researchResult = research
+    ? await generateAnthropicResearchEvidence(settings, request)
+    : undefined;
+  const messages = aiReviewMessages(request, researchResult?.evidence);
   const systemMessage = messages[0]?.content ?? '';
   const userMessage = messages[1]?.content ?? JSON.stringify(request);
   const response = await fetch(`${baseUrl}/messages`, {
@@ -1360,7 +1533,47 @@ async function generateAnthropicReview(settings: AiSettings, request: AgentPlanR
   if (!response.ok) {
     throw new Error(providerFailureMessage(payload, response.status, settings.apiKey));
   }
-  return normalizeAiReview(payload, request);
+  return normalizeAiReview(payload, request, {
+    citations: researchResult?.citations,
+    researchEvidence: researchResult?.evidence,
+    providerLabel: 'Anthropic',
+  });
+}
+
+async function generateAnthropicResearchEvidence(
+  settings: AiSettings,
+  request: AgentPlanReviewRequest,
+): Promise<{ evidence: AgentReviewResearchEvidence; citations: Array<{ kind: string; ref: string; title?: string }> }> {
+  const baseUrl = normalizeBaseUrl(settings.baseUrl, 'anthropic');
+  const messages = aiResearchMessages(request);
+  const systemMessage = messages[0]?.content ?? '';
+  const userMessage = messages[1]?.content ?? JSON.stringify(request);
+  const response = await fetch(`${baseUrl}/messages`, {
+    method: 'POST',
+    headers: {
+      'anthropic-dangerous-direct-browser-access': 'true',
+      'anthropic-version': '2023-06-01',
+      'content-type': 'application/json',
+      'x-api-key': settings.apiKey.trim(),
+    },
+    body: JSON.stringify({
+      model: settings.model.trim() || aiProviderPresetById('anthropic').model,
+      max_tokens: 1800,
+      system: systemMessage,
+      messages: [{ role: 'user', content: userMessage }],
+      temperature: 0.2,
+      tools: [anthropicWebSearchTool()],
+    }),
+  }).catch((err) => {
+    throw new Error(
+      `AI provider research failed. Use the local bridge or a browser-compatible gateway. ${redactSecrets(err instanceof Error ? err.message : String(err), settings.apiKey)}`,
+    );
+  });
+  const payload = await response.json().catch(() => ({})) as unknown;
+  if (!response.ok) {
+    throw new Error(providerFailureMessage(payload, response.status, settings.apiKey));
+  }
+  return normalizeResearchEvidence(payload, 'Anthropic');
 }
 
 export function aiMessages(request: AiPlanRequest): Array<{ role: 'system' | 'user'; content: string }> {
@@ -1401,12 +1614,12 @@ function selectedConnectorContext(
   return context?.find((entry) => entry.selected === true || entry.selectedOnly === true);
 }
 
-export function aiReviewMessages(request: AgentPlanReviewRequest): Array<{ role: 'system' | 'user'; content: string }> {
+function aiResearchMessages(request: AgentPlanReviewRequest): Array<{ role: 'system' | 'user'; content: string }> {
   return [
     {
       role: 'system',
       content:
-        'You review a Solana wallet action draft before it is sent for wallet approval. Return only JSON with: decision ("approve", "deny", or "needs_input"); reason as one or two concise sentences; summary as one short sentence; evidence as an object. Put flexible user-facing findings in evidence.findings as an array of {label,value,tone}, where tone is good, warn, neutral, or fail. Findings must match the user request and connector facts; do not force route/quote/slippage rows when they do not apply. When you cannot decide because user intent is genuinely ambiguous, return decision "needs_input" plus a "questions" array with 1-3 short, specific questions answerable in under 20 words. Each question object must include id, prompt, inputKind ("text" | "select" | "number"), and required. Use "needs_input" only when the missing information is something the user must supply, such as a missing amount, missing token, or missing recipient. Do not use "needs_input" for facts that are present in the plan, context.facts, context.executionPath, or facts you can infer. For browser swap or recurring-swap drafts, Jupiter is the execution aggregator unless context says otherwise; do not ask the user which DEX/protocol will execute it. If a token mint address is present, review that mint address; do not ask the user what token it is or whether they verified it. If token metadata is missing, return approve or deny with a warning, not needs_input. If context includes protocolConnectors or connector facts, use reads as evidence and treat writes as prepare-only wallet-approval actions. If the context includes "userPolicies", treat each as a soft rule the user wants you to honor: factor them into your decision and cite the relevant policy id in evidence.policiesApplied when one influences the outcome. Be flexible: use the user instruction and available facts, not a fixed checklist. Never claim anything is signed, submitted, guaranteed safe, or already approved. Never request private keys. The wallet user must still approve separately.',
+        'You research current outside facts for a Solana wallet approval review. Do not approve, deny, or ask the wallet to sign. Search reliable current sources, prefer official sources, and return concise source-backed facts in plain English. Include current prices, thresholds, dates, plan names, ambiguity, and URLs when they are relevant. If multiple current options could change the approval outcome, list each option clearly. ' + RESEARCH_SOURCE_POLICY,
     },
     {
       role: 'user',
@@ -1416,6 +1629,48 @@ export function aiReviewMessages(request: AgentPlanReviewRequest): Array<{ role:
         cluster: request.cluster || 'unknown',
         plan: request.plan,
         context: request.context ?? {},
+        research: {
+          needed: true,
+          mode: 'collect_current_facts_only',
+          currentDate: new Date().toISOString(),
+          maxSearches: RESEARCH_MAX_USES,
+          sourcePolicy: RESEARCH_SOURCE_POLICY,
+        },
+        requiredBoundary: 'This research pass cannot approve, deny, sign, or submit. It only gathers facts for a later structured review.',
+      }),
+    },
+  ];
+}
+
+export function aiReviewMessages(
+  request: AgentPlanReviewRequest,
+  researchEvidence?: AgentReviewResearchEvidence,
+): Array<{ role: 'system' | 'user'; content: string }> {
+  const needsResearch = reviewNeedsWebResearch(request);
+  const context = researchEvidence
+    ? { ...(request.context ?? {}), researchEvidence }
+    : request.context ?? {};
+  return [
+    {
+      role: 'system',
+      content:
+        'You review a Solana wallet action draft before it is sent for wallet approval. Return only JSON with: decision ("approve", "deny", or "needs_input"); reason as one or two concise sentences; summary as one short sentence; evidence as an object. Put flexible user-facing findings in evidence.findings as an array of {label,value,tone}, where tone is good, warn, neutral, or fail. Findings must match the user request and connector facts; do not force route/quote/slippage rows when they do not apply. If the instruction asks for current or outside facts and web search is available, search reliable sources before deciding. If context.researchEvidence is present, current outside-fact research has already been supplied; do not request another search and do not omit the researched fact. Put source-backed findings in evidence.findings, put source links in evidence.sources as an array of {title,url}, and include evidence.research = {status:"checked"} when research was used. Apply user threshold rules exactly, for example "approve if under $20, deny if over $20". If multiple researched facts lead to different outcomes and the draft does not identify which one applies, return "needs_input" and list the found options. When you cannot decide because user intent is genuinely ambiguous, return decision "needs_input" plus a "questions" array with 1-3 short, specific questions answerable in under 20 words. Each question object must include id, prompt, inputKind ("text" | "select" | "number"), and required. Use "needs_input" only when the missing information is something the user must supply, such as a missing amount, missing token, missing recipient, or which researched option applies. Do not use "needs_input" for facts that are present in the plan, context.facts, context.executionPath, research results, or facts you can infer. For browser swap or recurring-swap drafts, Jupiter is the execution aggregator unless context says otherwise; do not ask the user which DEX/protocol will execute it. If a token mint address is present, review that mint address; do not ask the user what token it is or whether they verified it. If token metadata is missing, return approve or deny with a warning, not needs_input. If context includes protocolConnectors or connector facts, use reads as evidence and treat writes as prepare-only wallet-approval actions. If the context includes "userPolicies", treat each as a soft rule the user wants you to honor: factor them into your decision and cite the relevant policy id in evidence.policiesApplied when one influences the outcome. Be flexible: use the user instruction and available facts, not a fixed checklist. Never claim anything is signed, submitted, guaranteed safe, or already approved. Never request private keys. The wallet user must still approve separately.',
+    },
+    {
+      role: 'user',
+      content: JSON.stringify({
+        instruction: request.instruction?.trim() || 'Review this draft before it is sent for wallet approval. Decide approve, deny, or needs_input.',
+        walletAddress: request.walletAddress || 'not_connected',
+        cluster: request.cluster || 'unknown',
+        plan: request.plan,
+        context,
+        research: {
+          needed: researchEvidence ? false : needsResearch,
+          mode: researchEvidence ? 'provided_current_facts' : needsResearch ? 'auto_current_facts' : 'not_required',
+          currentDate: new Date().toISOString(),
+          maxSearches: RESEARCH_MAX_USES,
+          ...(researchEvidence ? { providedEvidence: true, sourcePolicy: researchEvidence.sourcePolicy } : {}),
+        },
         requiredBoundary: 'This AI review can approve, deny, or request more input. It cannot sign or submit a transaction.',
       }),
     },
@@ -1443,11 +1698,27 @@ export function normalizeAiPlan(payload: unknown, request: AiPlanRequest): Agent
   });
 }
 
-export function normalizeAiReview(payload: unknown, request: AgentPlanReviewRequest): AgentPlanReviewResult {
+export function normalizeAiReview(
+  payload: unknown,
+  request: AgentPlanReviewRequest,
+  options: {
+    citations?: Array<{ kind: string; ref: string; title?: string }>;
+    researchEvidence?: AgentReviewResearchEvidence;
+    providerLabel?: string;
+  } = {},
+): AgentPlanReviewResult {
   const content = extractModelText(payload);
   const parsed = parsePlanJson(content);
-  const decision = normalizeReviewDecision(parsed.decision);
+  const decision = reviewDecisionOrUndefined(parsed.decision);
+  if (!decision) {
+    return malformedAiReviewResult(request, {
+      citations: options.citations ?? extractResearchCitations(payload),
+      researchEvidence: options.researchEvidence,
+      providerLabel: options.providerLabel ?? 'AI provider',
+    });
+  }
   const questions = normalizeReviewQuestions(parsed.questions);
+  const citations = options.citations ?? extractResearchCitations(payload);
   const reason = stringOr(
     parsed.reason,
     decision === 'approve'
@@ -1456,17 +1727,242 @@ export function normalizeAiReview(payload: unknown, request: AgentPlanReviewRequ
         ? 'Agent needs clarifying answers before deciding. Answer the questions or send anyway.'
         : 'Denied by the configured agent review. Review the draft or ask the agent again.',
   );
-  return {
+  const evidence = jsonObjectOr(parsed.evidence, {
+    actionType: request.plan.actionType,
+    templateTitle: request.plan.templateTitle,
+  });
+  if (options.researchEvidence) {
+    if (!evidence.research) evidence.research = options.researchEvidence;
+    if (!Array.isArray(evidence.sources) || evidence.sources.length === 0) {
+      evidence.sources = options.researchEvidence.sources;
+    }
+  }
+  const result: AgentPlanReviewResult = {
     decision,
     reason: compactReviewText(reason, 280),
     summary: compactReviewText(stringOr(parsed.summary, reason), 160),
-    evidence: jsonObjectOr(parsed.evidence, {
-      actionType: request.plan.actionType,
-      templateTitle: request.plan.templateTitle,
-    }),
+    evidence: withResearchCitations(evidence, citations),
     checkedAt: new Date().toISOString(),
     source: 'ai',
     ...(questions ? { questions } : {}),
+  };
+  return reconcileThresholdReviewDecision(result, request);
+}
+
+function normalizeResearchEvidence(
+  payload: unknown,
+  providerLabel: string,
+): { evidence: AgentReviewResearchEvidence; citations: Array<{ kind: string; ref: string; title?: string }> } {
+  const citations = extractResearchCitations(payload);
+  const text = extractModelText(payload).trim();
+  const sources = citations.map((citation) => ({
+    ...(citation.title ? { title: citation.title } : {}),
+    url: citation.ref,
+  }));
+  return {
+    citations,
+    evidence: {
+      status: 'checked',
+      required: true,
+      provider: providerLabel,
+      checkedAt: new Date().toISOString(),
+      summary: text
+        ? compactReviewText(text, 1600)
+        : 'Research ran, but the provider did not return readable source-backed findings.',
+      sources,
+      sourcePolicy: RESEARCH_SOURCE_POLICY,
+    },
+  };
+}
+
+function reconcileThresholdReviewDecision(
+  result: AgentPlanReviewResult,
+  request: AgentPlanReviewRequest,
+): AgentPlanReviewResult {
+  const rule = extractThresholdRule(request.instruction ?? '');
+  if (!rule) return result;
+  const candidate = selectThresholdPriceCandidate(result, rule);
+  if (!candidate) return result;
+  const expected = expectedDecisionForThreshold(candidate.amount, rule);
+  if (expected === result.decision) return result;
+
+  const thresholdText = formatDollar(rule.threshold);
+  const amountText = formatDollar(candidate.amount);
+  const relation = candidate.amount < rule.threshold
+    ? 'under'
+    : candidate.amount > rule.threshold
+      ? 'over'
+      : 'equal to';
+  const correctedReason = expected === 'needs_input'
+    ? `${amountText} is exactly ${thresholdText}; the user rule used a strict under/over threshold, so the review needs clarification.`
+    : `${amountText} is ${relation} ${thresholdText}, so the user threshold rule ${expected === 'approve' ? 'approves' : 'denies'} this draft. Wallet approval is still required before anything signs.`;
+  const evidence = appendReviewFinding(result.evidence, {
+    label: 'Threshold check',
+    value: `Corrected model comparison: ${amountText} is ${relation} ${thresholdText}. Original decision was ${result.decision}.`,
+    tone: expected === 'approve' ? 'good' : expected === 'deny' ? 'fail' : 'warn',
+  });
+  return {
+    ...result,
+    decision: expected,
+    reason: compactReviewText(correctedReason, 280),
+    summary: compactReviewText(`Threshold rule checked: ${amountText} is ${relation} ${thresholdText}.`, 160),
+    evidence,
+  };
+}
+
+function extractThresholdRule(instruction: string): ThresholdRule | undefined {
+  const normalized = instruction.toLowerCase();
+  const threshold = extractInstructionThreshold(normalized);
+  if (threshold === undefined) return undefined;
+  const approveBelow = /\b(approve|allow|pass)\b[\s\S]{0,80}\b(under|below|less\s+than)\b/.test(normalized) ||
+    /\b(under|below|less\s+than)\b[\s\S]{0,80}\b(approve|allow|pass)\b/.test(normalized);
+  const approveAbove = /\b(approve|allow|pass)\b[\s\S]{0,80}\b(over|above|more\s+than|greater\s+than)\b/.test(normalized) ||
+    /\b(over|above|more\s+than|greater\s+than)\b[\s\S]{0,80}\b(approve|allow|pass)\b/.test(normalized);
+  const denyBelow = /\b(deny|block|reject|fail)\b[\s\S]{0,80}\b(under|below|less\s+than)\b/.test(normalized) ||
+    /\b(under|below|less\s+than)\b[\s\S]{0,80}\b(deny|block|reject|fail)\b/.test(normalized);
+  const denyAbove = /\b(deny|block|reject|fail)\b[\s\S]{0,80}\b(over|above|more\s+than|greater\s+than)\b/.test(normalized) ||
+    /\b(over|above|more\s+than|greater\s+than)\b[\s\S]{0,80}\b(deny|block|reject|fail)\b/.test(normalized);
+  if (approveBelow || denyAbove) return { threshold, approveWhen: 'below' };
+  if (approveAbove || denyBelow) return { threshold, approveWhen: 'above' };
+  return undefined;
+}
+
+function extractInstructionThreshold(text: string): number | undefined {
+  const matches = [...text.matchAll(/\$\s*([0-9]+(?:\.[0-9]+)?)/g)]
+    .map((match) => Number.parseFloat(match[1] ?? ''))
+    .filter(Number.isFinite);
+  return matches[0];
+}
+
+function expectedDecisionForThreshold(amount: number, rule: ThresholdRule): AgentPlanReviewDecision {
+  if (amount === rule.threshold) return 'needs_input';
+  if (rule.approveWhen === 'below') {
+    return amount < rule.threshold ? 'approve' : 'deny';
+  }
+  return amount > rule.threshold ? 'approve' : 'deny';
+}
+
+function selectThresholdPriceCandidate(
+  result: AgentPlanReviewResult,
+  rule: ThresholdRule,
+): ThresholdPriceCandidate | undefined {
+  const candidates = extractThresholdPriceCandidates(result, rule.threshold);
+  if (!candidates.length) return undefined;
+  const currentPrice = candidates.find((candidate) => /current price|cheapest|monthly plan|air plan|including taxes|taxes\/fees/i.test(candidate.label));
+  if (currentPrice) return currentPrice;
+  if (candidates.length === 1) return candidates[0];
+  const nonThresholdCandidates = candidates.filter((candidate) => candidate.amount !== rule.threshold);
+  return nonThresholdCandidates.length === 1 ? nonThresholdCandidates[0] : undefined;
+}
+
+function extractThresholdPriceCandidates(
+  result: AgentPlanReviewResult,
+  threshold: number,
+): ThresholdPriceCandidate[] {
+  const fields: Array<{ label: string; text: string }> = [
+    { label: 'reason', text: result.reason },
+    { label: 'summary', text: result.summary },
+    ...evidenceTextFields(result.evidence),
+  ];
+  const candidates: ThresholdPriceCandidate[] = [];
+  const seen = new Set<string>();
+  for (const field of fields) {
+    for (const sentence of field.text.split(/(?<=[.!?])\s+|\n+/)) {
+      if (!/\$/.test(sentence)) continue;
+      if (/\b(threshold|limit|rule)\b/i.test(sentence) && !/\b(cost|costs|price|priced|plan|monthly|per\s+month|tax|fee|current)\b/i.test(sentence)) {
+        continue;
+      }
+      if (!/\b(cost|costs|price|priced|plan|monthly|per\s+month|tax|fee|current|cheapest|air|infinity)\b/i.test(sentence)) {
+        continue;
+      }
+      for (const match of sentence.matchAll(/\$\s*([0-9]+(?:\.[0-9]+)?)/g)) {
+        const amount = Number.parseFloat(match[1] ?? '');
+        if (!Number.isFinite(amount)) continue;
+        if (amount === threshold && !/\b(cost|costs|price|priced|plan|monthly|per\s+month|tax|fee|current|cheapest|air|infinity)\b/i.test(sentence.slice(0, Math.max(0, match.index ?? 0)))) {
+          continue;
+        }
+        const key = `${amount}:${sentence.trim().toLowerCase()}`;
+        if (seen.has(key)) continue;
+        seen.add(key);
+        candidates.push({ amount, label: field.label, text: sentence.trim() });
+      }
+    }
+  }
+  return candidates;
+}
+
+function evidenceTextFields(evidence: Record<string, unknown>): Array<{ label: string; text: string }> {
+  const fields: Array<{ label: string; text: string }> = [];
+  const findings = Array.isArray(evidence.findings) ? evidence.findings : [];
+  for (const entry of findings) {
+    if (!entry || typeof entry !== 'object' || Array.isArray(entry)) continue;
+    const record = entry as Record<string, unknown>;
+    const label = typeof record.label === 'string' ? record.label : 'finding';
+    const value = typeof record.value === 'string' ? record.value : '';
+    if (value.trim()) fields.push({ label, text: value });
+  }
+  if (evidence.research && typeof evidence.research === 'object' && !Array.isArray(evidence.research)) {
+    const summary = (evidence.research as Record<string, unknown>).summary;
+    if (typeof summary === 'string' && summary.trim()) fields.push({ label: 'research', text: summary });
+  }
+  return fields;
+}
+
+function appendReviewFinding(
+  evidence: Record<string, unknown>,
+  finding: { label: string; value: string; tone: 'good' | 'warn' | 'neutral' | 'fail' },
+): Record<string, unknown> {
+  const findings = Array.isArray(evidence.findings)
+    ? evidence.findings.filter((entry) => entry && typeof entry === 'object' && !Array.isArray(entry))
+    : [];
+  return {
+    ...evidence,
+    findings: [...findings, finding],
+  };
+}
+
+function formatDollar(value: number): string {
+  return Number.isInteger(value) ? `$${value}` : `$${value.toFixed(2)}`;
+}
+
+function malformedAiReviewResult(
+  request: AgentPlanReviewRequest,
+  options: {
+    citations?: Array<{ kind: string; ref: string; title?: string }>;
+    researchEvidence?: AgentReviewResearchEvidence;
+    providerLabel?: string;
+  } = {},
+): AgentPlanReviewResult {
+  const hasResearch = Boolean(options.researchEvidence) || Boolean(options.citations?.length);
+  const reason = hasResearch
+    ? `${options.providerLabel ?? 'AI provider'} completed research but did not return a structured approval decision. Ask the agent again or narrow the request.`
+    : `${options.providerLabel ?? 'AI provider'} did not return a structured approval decision. Ask the agent again or narrow the request.`;
+  return {
+    decision: 'needs_input',
+    reason: compactReviewText(reason, 280),
+    summary: hasResearch
+      ? 'Research completed but the structured review failed.'
+      : 'The agent review response was not structured.',
+    evidence: withResearchCitations({
+      ...(options.researchEvidence ? { research: options.researchEvidence } : hasResearch ? { research: { status: 'checked', required: true } } : {}),
+      findings: [{
+        label: hasResearch ? 'Structured review' : 'Agent review',
+        value: hasResearch
+          ? 'Research sources were found, but the agent did not return a usable approval, denial, or price finding.'
+          : 'The agent response was missing a usable approval, denial, or needs-input decision.',
+        tone: 'warn',
+      }],
+      parseError: 'missing_or_invalid_review_json',
+    }, options.citations ?? []),
+    checkedAt: new Date().toISOString(),
+    source: 'ai',
+    questions: [{
+      id: 'agent_review_retry',
+      prompt: 'Ask the agent again or provide the missing current fact in the draft.',
+      inputKind: 'text',
+      required: false,
+      hint: request.instruction,
+    }],
   };
 }
 
@@ -1624,6 +2120,43 @@ function textareaField(id: string, label: string, placeholder = '', defaultValue
 
 function selectField(id: string, label: string, options: string[], defaultValue: string): AgentPlanTemplateField {
   return { id, label, options, defaultValue, type: 'select' };
+}
+
+function connectorActionPlanTemplates(existingTemplates: AgentPlanTemplate[]): AgentPlanTemplate[] {
+  const existingIds = new Set(existingTemplates.map((entry) => entry.id));
+  const generated: AgentPlanTemplate[] = [];
+  for (const connector of PROTOCOL_CONNECTORS) {
+    for (const form of connectorActionFormsForConnector(connector)) {
+      if (existingIds.has(form.templateId) || generated.some((entry) => entry.id === form.templateId)) continue;
+      if (form.executionMode === 'read-only' || form.executionMode === 'blink') continue;
+      generated.push(template(
+        connectorTemplateCategory(connector.id),
+        form.templateId,
+        `${connector.name} ${form.operationLabel}`.replace(/\s+/g, ' ').trim(),
+        form.description,
+        connectorActionFormTemplateActionType(form),
+        connectorActionTemplateRisk(connector.id, form.operationId),
+        formTemplateFields(form),
+        { connectorCapability: 'first_class_adapter', connectorActionSource: 'first-class-adapter' },
+      ));
+    }
+  }
+  return generated;
+}
+
+function connectorTemplateCategory(connectorId: string): string {
+  if (connectorId === 'magiceden' || connectorId === 'tensor') return 'nft';
+  if (connectorId === 'realms' || connectorId === 'squads') return 'governance';
+  if (connectorId === 'pyth') return 'oracle';
+  if (connectorId === 'wormhole') return 'bridge';
+  return 'defi';
+}
+
+function connectorActionTemplateRisk(connectorId: string, operationId: string): TemplateRisk {
+  if (connectorId === 'pyth' && operationId.includes('post')) return 'medium';
+  if (operationId.includes('cancel') || operationId.includes('claim') || operationId.includes('collect')) return 'medium';
+  if (operationId.includes('position-check')) return 'low';
+  return 'high';
 }
 
 function normalizePromptText(prompt: string): string {
@@ -1931,6 +2464,88 @@ function providerFailureMessage(payload: unknown, status: number, exactSecret = 
   return redactSecrets(message, exactSecret);
 }
 
+function extractResearchCitations(payload: unknown): Array<{ kind: string; ref: string; title?: string }> {
+  const citations: Array<{ kind: string; ref: string; title?: string }> = [];
+  const seen = new Set<string>();
+  const visit = (value: unknown, depth: number): void => {
+    if (depth > 10 || !value || typeof value !== 'object') return;
+    if (Array.isArray(value)) {
+      for (const entry of value) visit(entry, depth + 1);
+      return;
+    }
+    const record = value as Record<string, unknown>;
+    const url = typeof record.url === 'string' ? record.url.trim() : '';
+    const citationType = typeof record.type === 'string' ? record.type : '';
+    const hasCitationShape = citationType.includes('citation') ||
+      citationType.includes('web_search') ||
+      typeof record.title === 'string' ||
+      typeof record.cited_text === 'string' ||
+      typeof record.citedText === 'string';
+    if (url && hasCitationShape && /^https?:\/\//i.test(url) && !seen.has(url)) {
+      seen.add(url);
+      citations.push({
+        kind: 'url',
+        ref: url,
+        ...(typeof record.title === 'string' && record.title.trim() ? { title: record.title.trim() } : {}),
+      });
+      if (citations.length >= 8) return;
+    }
+    for (const entry of Object.values(record)) {
+      if (citations.length >= 8) return;
+      visit(entry, depth + 1);
+    }
+  };
+  visit(payload, 0);
+  return citations;
+}
+
+function withResearchCitations(
+  evidence: Record<string, unknown>,
+  citations: Array<{ kind: string; ref: string; title?: string }>,
+): Record<string, unknown> {
+  if (!citations.length) return evidence;
+  const existing = Array.isArray(evidence.sources)
+    ? evidence.sources.filter((entry): entry is Record<string, unknown> => Boolean(entry && typeof entry === 'object' && !Array.isArray(entry)))
+    : [];
+  const seen = new Set<string>();
+  const sources: Record<string, unknown>[] = [];
+  for (const entry of [...existing, ...citations]) {
+    const record = entry as Record<string, unknown>;
+    const url = typeof record.url === 'string'
+      ? record.url.trim()
+      : typeof record.ref === 'string'
+        ? record.ref.trim()
+        : '';
+    if (!url || seen.has(url)) continue;
+    seen.add(url);
+    sources.push({
+      ...(typeof record.title === 'string' && record.title.trim() ? { title: record.title.trim() } : {}),
+      url,
+    });
+    if (sources.length >= 8) break;
+  }
+  return {
+    ...evidence,
+    sources: sortResearchCitations(sources),
+    research: evidence.research ?? { status: 'checked' },
+  };
+}
+
+function sortResearchCitations<T extends { url?: string; ref?: string }>(citations: T[]): T[] {
+  return [...citations].sort((a, b) => researchSourcePriority(a.url ?? a.ref ?? '') - researchSourcePriority(b.url ?? b.ref ?? ''));
+}
+
+function researchSourcePriority(url: string): number {
+  try {
+    const host = new URL(url).hostname.toLowerCase();
+    if (host === 'hellohelium.com' || host.endsWith('.hellohelium.com')) return 0;
+    if (host === 'heliummobile.com' || host.endsWith('.heliummobile.com')) return 0;
+  } catch {
+    return 10;
+  }
+  return 5;
+}
+
 function isDefaultTemperatureOnlyModel(model: string): boolean {
   const normalized = model.trim().toLowerCase();
   return (
@@ -1979,15 +2594,72 @@ function extractModelText(payload: unknown): string {
 
 function parsePlanJson(content: string): Record<string, unknown> {
   const trimmed = content.trim();
-  const json = trimmed.startsWith('{')
-    ? trimmed
-    : trimmed.slice(Math.max(0, trimmed.indexOf('{')), trimmed.lastIndexOf('}') + 1);
-  try {
-    const parsed = JSON.parse(json);
-    return parsed && typeof parsed === 'object' ? parsed as Record<string, unknown> : {};
-  } catch {
-    return {};
+  if (!trimmed) return {};
+  const candidates = [
+    trimmed,
+    ...jsonCodeFenceCandidates(trimmed),
+    ...balancedJsonObjectCandidates(trimmed),
+  ];
+  const seen = new Set<string>();
+  for (const candidate of candidates) {
+    if (!candidate || seen.has(candidate)) continue;
+    seen.add(candidate);
+    try {
+      const parsed = JSON.parse(candidate);
+      if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+        return parsed as Record<string, unknown>;
+      }
+    } catch {
+      // Try the next candidate.
+    }
   }
+  return {};
+}
+
+function jsonCodeFenceCandidates(content: string): string[] {
+  const candidates: string[] = [];
+  const fencePattern = /```(?:json)?\s*([\s\S]*?)```/gi;
+  let match: RegExpExecArray | null;
+  while ((match = fencePattern.exec(content))) {
+    const candidate = match[1]?.trim();
+    if (candidate) candidates.push(candidate);
+  }
+  return candidates;
+}
+
+function balancedJsonObjectCandidates(content: string): string[] {
+  const candidates: string[] = [];
+  for (let start = content.indexOf('{'); start >= 0; start = content.indexOf('{', start + 1)) {
+    let depth = 0;
+    let inString = false;
+    let escaped = false;
+    for (let index = start; index < content.length; index += 1) {
+      const char = content[index];
+      if (escaped) {
+        escaped = false;
+        continue;
+      }
+      if (char === '\\') {
+        escaped = true;
+        continue;
+      }
+      if (char === '"') {
+        inString = !inString;
+        continue;
+      }
+      if (inString) continue;
+      if (char === '{') depth += 1;
+      if (char === '}') {
+        depth -= 1;
+        if (depth === 0) {
+          candidates.push(content.slice(start, index + 1));
+          break;
+        }
+      }
+    }
+    if (candidates.length >= 4) break;
+  }
+  return candidates;
 }
 
 function stringOr(value: unknown, fallback: string): string {
@@ -1995,6 +2667,10 @@ function stringOr(value: unknown, fallback: string): string {
 }
 
 function normalizeReviewDecision(value: unknown): AgentPlanReviewDecision {
+  return reviewDecisionOrUndefined(value) ?? 'needs_input';
+}
+
+function reviewDecisionOrUndefined(value: unknown): AgentPlanReviewDecision | undefined {
   const normalized = typeof value === 'string' ? value.trim().toLowerCase() : '';
   if (['approve', 'approved', 'allow', 'allowed', 'pass', 'passed', 'ok'].includes(normalized)) {
     return 'approve';
@@ -2002,7 +2678,10 @@ function normalizeReviewDecision(value: unknown): AgentPlanReviewDecision {
   if (['needs_input', 'needs-input', 'need_input', 'need-input', 'ask', 'clarify', 'needs_clarification'].includes(normalized)) {
     return 'needs_input';
   }
-  return 'deny';
+  if (['deny', 'denied', 'block', 'blocked', 'fail', 'failed', 'reject', 'rejected'].includes(normalized)) {
+    return 'deny';
+  }
+  return undefined;
 }
 
 function normalizeReviewQuestions(value: unknown): AgentReviewQuestion[] | undefined {

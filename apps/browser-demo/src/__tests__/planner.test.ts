@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import {
+  AI_PROVIDER_PRESETS,
   aiDiagnosticsFromError,
   aiMessages,
   aiRouteDiagnosticForSettings,
@@ -9,6 +10,7 @@ import {
   inferTemplateIdForPrompt,
   inferredTemplateParameters,
   generateSessionAiPlan,
+  normalizeAiReview,
   planWithStructuredSwapText,
   redactSecrets,
   templateById,
@@ -45,6 +47,39 @@ const sessionSettings: AiSettings = {
 describe('planner AI setup helpers', () => {
   afterEach(() => {
     vi.unstubAllGlobals();
+  });
+
+  it('orders provider model presets by token throughput and labels token rates', () => {
+    const anthropic = AI_PROVIDER_PRESETS.find((preset) => preset.id === 'anthropic');
+    const gemini = AI_PROVIDER_PRESETS.find((preset) => preset.id === 'gemini');
+    const openai = AI_PROVIDER_PRESETS.find((preset) => preset.id === 'openai');
+
+    expect(anthropic?.model).toBe('claude-opus-4-1-20250805');
+    expect(anthropic?.models.map((model) => model.id)).toEqual([
+      'claude-opus-4-1-20250805',
+      'claude-3-5-haiku-20241022',
+      'claude-sonnet-4-5',
+      'claude-sonnet-4-5-20250929',
+      'claude-sonnet-4-20250514',
+    ]);
+    expect(anthropic?.models.map((model) => model.tokenRateLabel)).toEqual([
+      '500K',
+      '50K',
+      '30K',
+      '30K',
+      '30K',
+    ]);
+
+    expect(gemini?.model).toBe('gemini-2.5-flash-lite');
+    expect(gemini?.models.map((model) => model.id)).toEqual([
+      'gemini-2.5-flash-lite',
+      'gemini-2.0-flash',
+      'gemini-2.5-pro',
+      'gemini-2.5-flash',
+    ]);
+    const openaiModels = openai?.models ?? [];
+    expect(openaiModels[0]).toMatchObject({ id: 'gpt-5.5', tokenRateLabel: '500K' });
+    expect(openaiModels[openaiModels.length - 1]).toMatchObject({ id: 'gpt-4.1', tokenRateLabel: '30K' });
   });
 
   it('redacts exact browser-session provider keys from errors', async () => {
@@ -222,6 +257,40 @@ describe('planner AI setup helpers', () => {
     expect(once.intent).toBe(obedient.intent);
     expect(twice.intent).toBe(once.intent);
     expect(twice.route).toBe(once.route);
+  });
+
+  it('corrects internally contradictory threshold review decisions', () => {
+    const plan = buildTemplatePlan(templateById('swap'), {
+      inputToken: 'SOL',
+      outputToken: 'USDC',
+      amount: '0.01',
+      slippageBps: '50',
+    }, 'ai');
+
+    const review = normalizeAiReview({
+      content: [{
+        type: 'text',
+        text: JSON.stringify({
+          decision: 'deny',
+          reason: 'Helium Mobile\'s cheapest monthly plan (Air Plan) costs $16.79 including taxes/fees, which exceeds the $20 threshold when total cost is considered.',
+          summary: 'Denied by model arithmetic.',
+          evidence: {
+            findings: [
+              { label: 'Current price', value: 'Air Plan: $16.79 including taxes/fees', tone: 'neutral' },
+            ],
+          },
+        }),
+      }],
+    }, {
+      plan,
+      instruction: 'Check if helium mobile monthly plan is under $20. If it is approve swap. if it isn\'t deny it with reason.',
+    });
+
+    expect(review.decision).toBe('approve');
+    expect(review.reason).toContain('$16.79 is under $20');
+    expect(review.evidence.findings).toEqual(expect.arrayContaining([
+      expect.objectContaining({ label: 'Threshold check', tone: 'good' }),
+    ]));
   });
 
   it('confirms Hosted BYOK through the status route without generating a plan', async () => {

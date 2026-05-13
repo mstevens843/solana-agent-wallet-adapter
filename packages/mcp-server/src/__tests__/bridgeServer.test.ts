@@ -19,9 +19,9 @@ describe('bridge lab artifact routes', () => {
   });
 
   it('stores and lists signed lab artifacts through the bridge API', async () => {
-    const handle = await startTestBridge();
+    const artifact = sampleArtifact();
+    const handle = await startTestBridge({ connectedAddress: artifact.walletAddress });
     try {
-      const artifact = sampleArtifact();
       const saved = await bridgeFetch<{ artifact: LabArtifact }>(handle.url, '/bridge/lab-artifacts', {
         method: 'POST',
         body: JSON.stringify({ artifact }),
@@ -38,9 +38,9 @@ describe('bridge lab artifact routes', () => {
   });
 
   it('deletes signed lab artifacts through the bridge API', async () => {
-    const handle = await startTestBridge();
+    const artifact = sampleArtifact();
+    const handle = await startTestBridge({ connectedAddress: artifact.walletAddress });
     try {
-      const artifact = sampleArtifact();
       await bridgeFetch<{ artifact: LabArtifact }>(handle.url, '/bridge/lab-artifacts', {
         method: 'POST',
         body: JSON.stringify({ artifact }),
@@ -252,6 +252,7 @@ describe('bridge lab artifact routes', () => {
     const handle = await startTestBridge({
       actionConfig: { ...DEFAULT_CONFIG, cluster: 'devnet', rpcUrl: 'http://127.0.0.1:1' },
       preparedActions: store,
+      connectedAddress: action.walletAddress,
     });
     try {
       const recorded = await bridgeFetch<{ preparedAction: { status: string; txid?: string; txStatus?: string } }>(

@@ -1,0 +1,41 @@
+# Pre-commit hooks. Install once after clone:
+#
+#   pnpm install --frozen-lockfile --ignore-scripts
+#   pnpm hooks:install
+#
+# Emergency bypass: `git commit --no-verify`. Use sparingly — these gates
+# exist because forgetting to .gitignore a wallet keypair is a one-way error.
+
+pre-commit:
+  parallel: true
+  commands:
+    block-secret-files:
+      run: |
+        staged=$(git diff --cached --name-only --diff-filter=ACMR)
+        # Block any *.env / *.env.* (except .env.example), *.pem, id.json,
+        # wallet.json, or any *keypair*.json. Matched against repo-root-relative paths.
+        matches=$(printf '%s\n' "$staged" | grep -E '(^|/)(\.env(\.[^/]+)?$|.+\.pem$|id\.json$|wallet\.json$|[^/]*keypair[^/]*\.json$)' | grep -Ev '(^|/)\.env\.example$' || true)
+        if [ -n "$matches" ]; then
+          echo "ERROR: refusing to commit potential secret / keypair file(s):"
+          echo "$matches" | sed 's/^/  /'
+          echo
+          echo "If this is a fixture and intentional, add an .gitignore exception"
+          echo "and bypass once with: git commit --no-verify"
+          exit 1
+        fi
+
+    lockfile-sync:
+      run: |
+        staged=$(git diff --cached --name-only --diff-filter=ACMR)
+        if ! printf '%s\n' "$staged" | grep -qE '(^|/)package\.json$'; then
+          exit 0
+        fi
+        if printf '%s\n' "$staged" | grep -qE '^pnpm-lock\.yaml$'; then
+          exit 0
+        fi
+        if git diff --name-only | grep -qE '^pnpm-lock\.yaml$'; then
+          echo "ERROR: package.json is staged but pnpm-lock.yaml has unstaged changes."
+          echo "Run: git add pnpm-lock.yaml"
+          exit 1
+        fi
+        # Lockfile is clean and unstaged — only metadata/scripts changed. Allow.

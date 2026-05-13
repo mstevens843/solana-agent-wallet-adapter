@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
 import {
+  connectorActionFormTemplateActionType,
   connectorAiPlannerContext,
   connectorAiUserNotes,
   connectorActionFormsForConnector,
@@ -14,10 +15,11 @@ import {
   validateConnectorDraftParameters,
 } from '../connectorDrafting.js';
 import {
+  PROTOCOL_CONNECTORS,
   emptyConnectedDapps,
   setConnectedDappEnabled,
 } from '../connectedDapps.js';
-import { templateById } from '../planner.js';
+import { AGENT_PLAN_TEMPLATES, templateById } from '../planner.js';
 
 describe('connector drafting helpers', () => {
   const template = templateById('protocol-blink-action');
@@ -88,6 +90,36 @@ describe('connector drafting helpers', () => {
       operation: 'Deposit',
       connectorActionSource: 'first-class-adapter',
     });
+  });
+
+  it('creates connector forms and plan templates for every registered first-class action kind', () => {
+    const templateActionTypes = new Set(AGENT_PLAN_TEMPLATES.map((candidate) => candidate.actionType));
+    const templateIds = new Set(AGENT_PLAN_TEMPLATES.map((candidate) => candidate.id));
+
+    for (const connector of PROTOCOL_CONNECTORS.filter((candidate) => candidate.actionKinds.length > 0)) {
+      const forms = connectorActionFormsForConnector(connector);
+      const formActionTypes = new Set<string>();
+      const subActionTemplateIds = new Set<string>();
+      for (const form of forms) {
+        const baseActionType = connectorActionFormTemplateActionType(form);
+        if (baseActionType) formActionTypes.add(baseActionType);
+        if (form.subActions) {
+          for (const branch of form.subActions.options) {
+            if (branch.actionType) {
+              formActionTypes.add(branch.actionType);
+              subActionTemplateIds.add(form.templateId);
+            }
+          }
+        }
+      }
+
+      for (const actionKind of connector.actionKinds) {
+        expect(formActionTypes.has(actionKind), `${connector.id} missing form for ${actionKind}`).toBe(true);
+        const hasDirectTemplate = templateActionTypes.has(actionKind);
+        const hasUnifiedTemplate = [...subActionTemplateIds].some((id) => templateIds.has(id));
+        expect(hasDirectTemplate || hasUnifiedTemplate, `${connector.id} missing template for ${actionKind}`).toBe(true);
+      }
+    }
   });
 
   it('blocks non-AI executable drafts for disabled connectors', () => {

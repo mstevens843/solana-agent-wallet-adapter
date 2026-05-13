@@ -17,6 +17,9 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      - name: Supply-chain IoC tripwire
+        run: bash scripts/ci-ioc-tripwire.sh
+
       - name: Setup pnpm
         uses: pnpm/action-setup@v4
         with:
@@ -31,6 +34,12 @@ jobs:
       - name: Install
         run: pnpm install --frozen-lockfile --ignore-scripts
 
+      - name: Lockfile dedupe check
+        # --config.minimumReleaseAge=0 bypasses the 7-day install floor only for this
+        # structural lint; install above still enforces it. Required because pnpm.overrides
+        # may pin a version freshly enough to clash with the floor during re-resolution.
+        run: pnpm dedupe --check --config.minimumReleaseAge=0
+
       - name: Audit
         run: pnpm security:audit
         continue-on-error: true
@@ -43,3 +52,15 @@ jobs:
 
       - name: Test
         run: pnpm -r test
+
+  osv-scan:
+    name: OSV-Scanner
+    permissions:
+      actions: read
+      contents: read
+      security-events: write
+    uses: google/osv-scanner-action/.github/workflows/osv-scanner-reusable.yml@v2.3.8
+    with:
+      scan-args: |-
+        --config=./.osv-scanner.toml
+        --lockfile=./pnpm-lock.yaml

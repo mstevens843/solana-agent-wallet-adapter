@@ -356,12 +356,16 @@ async function handleRequest(
       return;
     }
     if (req.method === 'GET' && url.pathname === '/bridge/lab-artifacts') {
-      writeJson(res, 200, { artifacts: labArtifacts ? await labArtifacts.listArtifacts() : [] });
+      const walletAddress = await backend.getAddress();
+      writeJson(res, 200, {
+        artifacts: labArtifacts ? filterLabArtifactsForWallet(await labArtifacts.listArtifacts(), walletAddress) : [],
+      });
       return;
     }
     if (req.method === 'POST' && url.pathname === '/bridge/lab-artifacts') {
       const body = (await readJson(req)) as { artifact?: unknown };
       const artifact = requireLabArtifact(body.artifact);
+      assertLabArtifactWalletOwner(artifact, await backend.getAddress());
       writeJson(res, 200, { artifact: await requireLabArtifactStore(labArtifacts).upsertArtifact(artifact) });
       return;
     }
@@ -370,7 +374,14 @@ async function handleRequest(
       if (!body.artifactId) {
         throw new ProtocolError('invalid_request', 'Missing artifactId.');
       }
-      writeJson(res, 200, { deleted: await requireLabArtifactStore(labArtifacts).deleteArtifact(body.artifactId) });
+      const store = requireLabArtifactStore(labArtifacts);
+      const walletAddress = await backend.getAddress();
+      const artifact = (await store.listArtifacts()).find((candidate) => candidate.id === body.artifactId);
+      if (!artifact) {
+        throw new ProtocolError('invalid_request', `Unknown lab artifact: ${body.artifactId}`);
+      }
+      assertLabArtifactWalletOwner(artifact, walletAddress);
+      writeJson(res, 200, { deleted: await store.deleteArtifact(body.artifactId) });
       return;
     }
     if (req.method === 'GET' && url.pathname === '/bridge/health') {
@@ -929,6 +940,20 @@ function requireLabArtifact(value: unknown): LabArtifact {
     throw new ProtocolError('invalid_request', 'Invalid lab artifact.');
   }
   return artifact as LabArtifact;
+}
+
+function filterLabArtifactsForWallet(artifacts: LabArtifact[], walletAddress: string): LabArtifact[] {
+  return artifacts.filter((artifact) => sameWalletAddress(artifact.walletAddress, walletAddress));
+}
+
+function assertLabArtifactWalletOwner(artifact: LabArtifact, walletAddress: string): void {
+  if (!sameWalletAddress(artifact.walletAddress, walletAddress)) {
+    throw new ProtocolError('unauthorized', 'Lab artifact belongs to a different wallet.');
+  }
+}
+
+function sameWalletAddress(left: string, right: string): boolean {
+  return left.trim().toLowerCase() === right.trim().toLowerCase();
 }
 
 function isLocalBridgeBackend(backend: WalletBackend): backend is LocalBridgeBackend {

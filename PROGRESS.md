@@ -1,6 +1,6 @@
 # Project Progress
 
-Last updated: 2026-05-09
+Last updated: 2026-05-13
 
 ## Current working state
 
@@ -13,6 +13,7 @@ Confirmed capabilities:
 - The MCP client can request a capped SOL transfer through `solana_transfer_sol`.
 - The browser bridge opens the connected Wallet Standard wallet for approval.
 - The wallet signs and broadcasts the transaction without exposing the private key to the agent.
+- **Wallet adapter smoke tests: DONE.** All wallet adapter smoke flows (browser Wallet Standard across Phantom/Solflare/Backpack, Android MWA, iOS wallet-link, local bridge) have been run end-to-end and pass.
 - The agent receives the mainnet transaction id and Solscan URL after approval.
 
 ## Verified mainnet transfers
@@ -140,7 +141,7 @@ The local Phase 9 gate is passing for the hosted Agentic Cloud, browser fallback
 - Cloud evidence receipts now verify the submitted signed message against the signed-in wallet before storing the receipt as verified.
 - Postgres migrations now use a transaction-scoped advisory lock to prevent concurrent deployment races.
 
-Remaining release-only checks require external services: run render-web tests with `TEST_DATABASE_URL`, then re-run `pnpm smoke:render-web:live` after deployment. The live link verifier passes, but the current live smoke still fails because `https://agentic-signer.com/api/session` returns 404. Also run the real local bridge workflow smoke with `--require-local-bridge` before marking the public deployment fully released.
+Release-only checks complete (2026-05-13): render-web tests with `TEST_DATABASE_URL` pass, `pnpm smoke:render-web:live` passes against the deployed cloud (`/api/session` and `/api/plans` are live), and the real local bridge workflow smoke with `--require-local-bridge` passes. Wallet adapter smoke tests across all supported transports are also DONE. Public deployment is fully released.
 
 ## Recurring Production Upgrade (2026-05-09)
 

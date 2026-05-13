@@ -213,10 +213,13 @@ import {
 } from './config.js';
 import type {
   AddRecurringPaymentInput,
+  ActionReceipt,
   PreparedAction,
   PreparedActionStore,
   PreparedActionTxStatus,
   RecurringCadence,
+  RecurringPayment,
+  RecurringPaymentView,
 } from './preparedActions.js';
 import {
   CONNECTOR_APPROVAL_BOUNDARY,
@@ -4214,14 +4217,20 @@ export class AgentWalletActionService {
 
   async listPreparedActions(): Promise<Record<string, unknown>> {
     const store = this.store();
+    const walletAddress = await this.connectedWalletAddress();
     const materialized = await store.materializeDueRecurring();
     const actions = await store.listActions();
-    return { materialized, actions };
+    return {
+      materialized: this.filterActionsForWallet(materialized, walletAddress),
+      actions: this.filterActionsForWallet(actions, walletAddress),
+    };
   }
 
   async rejectPreparedAction(actionId: string, reason?: string): Promise<Record<string, unknown>> {
+    const store = this.store();
+    await this.requireOwnedPreparedAction(store, actionId);
     return {
-      preparedAction: await this.store().updateAction(actionId, {
+      preparedAction: await store.updateAction(actionId, {
         status: 'rejected',
         ...(reason !== undefined && { error: reason }),
       }),
@@ -4229,20 +4238,21 @@ export class AgentWalletActionService {
   }
 
   async archivePreparedAction(actionId: string): Promise<Record<string, unknown>> {
-    return { preparedAction: await this.store().archiveAction(actionId) };
+    const store = this.store();
+    await this.requireOwnedPreparedAction(store, actionId);
+    return { preparedAction: await store.archiveAction(actionId) };
   }
 
   async deletePreparedAction(actionId: string): Promise<Record<string, unknown>> {
-    return { deleted: await this.store().deleteAction(actionId) };
+    const store = this.store();
+    await this.requireOwnedPreparedAction(store, actionId);
+    return { deleted: await store.deleteAction(actionId) };
   }
 
   async executePreparedAction(actionId: string): Promise<Record<string, unknown>> {
     requireActionAllowed(this.config);
     const store = this.store();
-    const action = await store.getAction(actionId);
-    if (!action) {
-      throw new ProtocolError('invalid_request', `Unknown prepared action: ${actionId}`);
-    }
+    const action = await this.requireOwnedPreparedAction(store, actionId);
     assertPreparedActionExecutable(action);
     await store.updateAction(actionId, { status: 'approval_pending' });
     try {
@@ -4278,10 +4288,7 @@ export class AgentWalletActionService {
     error?: string;
   }): Promise<Record<string, unknown>> {
     const store = this.store();
-    const action = await store.getAction(input.actionId);
-    if (!action) {
-      throw new ProtocolError('invalid_request', `Unknown prepared action: ${input.actionId}`);
-    }
+    await this.requireOwnedPreparedAction(store, input.actionId);
     const txStatus = input.txStatus ?? 'pending';
     const now = new Date().toISOString();
     const txids = input.txids?.filter((txid) => txid.trim()) ?? [];
@@ -4300,7 +4307,8 @@ export class AgentWalletActionService {
 
   async refreshPreparedActionTxStatuses(): Promise<Record<string, unknown>> {
     const store = this.store();
-    const actions = await store.listActions();
+    const walletAddress = await this.connectedWalletAddress();
+    const actions = this.filterActionsForWallet(await store.listActions(), walletAddress);
     const pending = actions.filter((action) => txidsForAction(action).length > 0 && action.txStatus !== 'confirmed' && action.txStatus !== 'failed');
     const updates: Array<{ actionId: string; txid: string; txStatus: PreparedActionTxStatus }> = [];
     for (const action of pending) {
@@ -4332,37 +4340,42 @@ export class AgentWalletActionService {
         updates.push({ actionId: action.id, txid: txids[0]!, txStatus: 'pending' });
       }
     }
-    return { updates, actions: await store.listActions() };
+    return { updates, actions: this.filterActionsForWallet(await store.listActions(), walletAddress) };
   }
 
   async receipts(): Promise<Record<string, unknown>> {
-    return { receipts: await this.store().listReceipts() };
+    const walletAddress = await this.connectedWalletAddress();
+    return { receipts: this.filterReceiptsForWallet(await this.store().listReceipts(), walletAddress) };
   }
 
   async createRecurringPayment(input: RecurringPaymentInput): Promise<Record<string, unknown>> {
     const store = this.store();
+    const walletAddress = await this.connectedWalletAddress();
     const recurringPayment = await store.addRecurringPayment(
-      await buildRecurringPaymentInput(input, await this.backend.getAddress(), this.config, this.connection),
+      await buildRecurringPaymentInput(input, walletAddress, this.config, this.connection),
     );
     const materialized = await store.materializeDueRecurring();
-    return { recurringPayment, materialized, actions: await store.listActions() };
+    return {
+      recurringPayment,
+      materialized: this.filterActionsForWallet(materialized, walletAddress),
+      actions: this.filterActionsForWallet(await store.listActions(), walletAddress),
+    };
   }
 
   async listRecurringPayments(): Promise<Record<string, unknown>> {
     const store = this.store();
+    const walletAddress = await this.connectedWalletAddress();
     const materialized = await store.materializeDueRecurring();
     return {
-      materialized,
-      recurringPayments: await store.listRecurringPaymentViews(),
+      materialized: this.filterActionsForWallet(materialized, walletAddress),
+      recurringPayments: this.filterRecurringPaymentsForWallet(await store.listRecurringPaymentViews(), walletAddress),
     };
   }
 
   async updateRecurringPayment(input: UpdateRecurringPaymentInput): Promise<Record<string, unknown>> {
     const store = this.store();
-    const current = (await store.listRecurringPayments()).find((payment) => payment.id === input.recurringId);
-    if (!current) {
-      throw new ProtocolError('invalid_request', `Unknown recurring payment: ${input.recurringId}`);
-    }
+    const walletAddress = await this.connectedWalletAddress();
+    const current = await this.requireOwnedRecurringPayment(store, input.recurringId);
     const mergedInput: RecurringPaymentInput = {
       ...current,
       ...input,
@@ -4373,19 +4386,29 @@ export class AgentWalletActionService {
       await buildRecurringPaymentInput(mergedInput, current.walletAddress, this.config, this.connection),
     );
     const materialized = await store.materializeDueRecurring();
-    return { recurringPayment, materialized, actions: await store.listActions() };
+    return {
+      recurringPayment,
+      materialized: this.filterActionsForWallet(materialized, walletAddress),
+      actions: this.filterActionsForWallet(await store.listActions(), walletAddress),
+    };
   }
 
   async pauseRecurringPayment(recurringId: string): Promise<Record<string, unknown>> {
-    return { recurringPayment: await this.store().updateRecurringPayment(recurringId, { status: 'paused' }) };
+    const store = this.store();
+    await this.requireOwnedRecurringPayment(store, recurringId);
+    return { recurringPayment: await store.updateRecurringPayment(recurringId, { status: 'paused' }) };
   }
 
   async resumeRecurringPayment(recurringId: string): Promise<Record<string, unknown>> {
-    return { recurringPayment: await this.store().updateRecurringPayment(recurringId, { status: 'active' }) };
+    const store = this.store();
+    await this.requireOwnedRecurringPayment(store, recurringId);
+    return { recurringPayment: await store.updateRecurringPayment(recurringId, { status: 'active' }) };
   }
 
   async deleteRecurringPayment(recurringId: string): Promise<Record<string, unknown>> {
-    return { deleted: await this.store().deleteRecurringPayment(recurringId) };
+    const store = this.store();
+    await this.requireOwnedRecurringPayment(store, recurringId);
+    return { deleted: await store.deleteRecurringPayment(recurringId) };
   }
 
   async transferSol(input: { recipient: string; amountSol: string }): Promise<Record<string, unknown>> {
@@ -4866,6 +4889,46 @@ export class AgentWalletActionService {
       throw new ProtocolError('unsupported_method', 'Prepared action store is not configured.');
     }
     return this.preparedActions;
+  }
+
+  private async connectedWalletAddress(): Promise<string> {
+    return this.backend.getAddress();
+  }
+
+  private assertConnectedWalletOwns(recordWalletAddress: string, connectedWalletAddress: string, label: string): void {
+    if (recordWalletAddress.trim().toLowerCase() !== connectedWalletAddress.trim().toLowerCase()) {
+      throw new ProtocolError('unauthorized', `${label} belongs to a different wallet.`);
+    }
+  }
+
+  private filterActionsForWallet(actions: PreparedAction[], walletAddress: string): PreparedAction[] {
+    return actions.filter((action) => action.walletAddress.trim().toLowerCase() === walletAddress.trim().toLowerCase());
+  }
+
+  private filterReceiptsForWallet(receipts: ActionReceipt[], walletAddress: string): ActionReceipt[] {
+    return receipts.filter((receipt) => receipt.walletAddress.trim().toLowerCase() === walletAddress.trim().toLowerCase());
+  }
+
+  private filterRecurringPaymentsForWallet<T extends RecurringPayment | RecurringPaymentView>(payments: T[], walletAddress: string): T[] {
+    return payments.filter((payment) => payment.walletAddress.trim().toLowerCase() === walletAddress.trim().toLowerCase());
+  }
+
+  private async requireOwnedPreparedAction(store: PreparedActionStore, actionId: string): Promise<PreparedAction> {
+    const action = await store.getAction(actionId);
+    if (!action) {
+      throw new ProtocolError('invalid_request', `Unknown prepared action: ${actionId}`);
+    }
+    this.assertConnectedWalletOwns(action.walletAddress, await this.connectedWalletAddress(), 'Prepared action');
+    return action;
+  }
+
+  private async requireOwnedRecurringPayment(store: PreparedActionStore, recurringId: string): Promise<RecurringPayment> {
+    const current = (await store.listRecurringPayments()).find((payment) => payment.id === recurringId);
+    if (!current) {
+      throw new ProtocolError('invalid_request', `Unknown recurring payment: ${recurringId}`);
+    }
+    this.assertConnectedWalletOwns(current.walletAddress, await this.connectedWalletAddress(), 'Recurring payment');
+    return current;
   }
 
   private async executePreparedSolTransfer(action: PreparedAction): Promise<Record<string, unknown> & { txid: string }> {

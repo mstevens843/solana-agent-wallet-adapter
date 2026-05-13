@@ -85,6 +85,33 @@ describe('BridgeAiPlanner', () => {
     expect(calls[0]?.headers.authorization).toBe('Bearer sk-test-openai');
   });
 
+  it('updates bridge session model settings without re-entering the API key', () => {
+    const planner = new BridgeAiPlanner();
+    planner.setSessionKey({
+      apiKey: 'sk-test-openai',
+      provider: 'openai',
+      apiFormat: 'openai-compatible',
+      baseUrl: 'https://api.openai.com/v1',
+      model: 'gpt-5',
+    });
+
+    const status = planner.setSessionKey({
+      provider: 'openai',
+      apiFormat: 'openai-compatible',
+      baseUrl: 'https://api.openai.com/v1',
+      model: 'gpt-5.5',
+    });
+
+    expect(status).toMatchObject({
+      available: true,
+      configured: true,
+      provider: 'openai',
+      apiFormat: 'openai-compatible',
+      model: 'gpt-5.5',
+      source: 'session',
+    });
+  });
+
   it('rejects non-ASCII bridge session keys before provider fetch can throw a ByteString error', async () => {
     const fetchMock = vi.fn();
     vi.stubGlobal('fetch', fetchMock);
@@ -733,6 +760,333 @@ describe('BridgeAiPlanner', () => {
     expect(fetchMock).not.toHaveBeenCalled();
   });
 
+  it('enables OpenAI web search for current-fact approval reviews and preserves source citations', async () => {
+    const calls: Array<{ url: string; body: Record<string, unknown> }> = [];
+    vi.stubGlobal('fetch', vi.fn(async (url: string | URL | Request, init?: RequestInit) => {
+      calls.push({
+        url: String(url),
+        body: JSON.parse(String(init?.body ?? '{}')) as Record<string, unknown>,
+      });
+      if (calls.length === 1) {
+        return jsonResponse({
+          output: [{
+            type: 'message',
+            content: [{
+              type: 'output_text',
+              text: 'Official Helium Mobile support lists the Air Plan at $15/month plus taxes and fees.',
+              annotations: [{
+                type: 'url_citation',
+                url: 'https://support.hellohelium.com/en/articles/7039213-all-things-helium-mobile-faq',
+                title: 'All Things Helium Mobile FAQ',
+              }],
+            }],
+          }],
+        });
+      }
+      return jsonResponse({
+        output: [{
+          type: 'message',
+          content: [{
+            type: 'output_text',
+            text: JSON.stringify({
+              decision: 'approve',
+              reason: 'Helium Mobile Air is currently $15/month before taxes and fees, which is under the $20 rule.',
+              summary: 'Current Helium Mobile Air price is under $20.',
+              evidence: {
+                research: { status: 'checked' },
+                findings: [
+                  { label: 'Current price', value: 'Air Plan: $15/month plus taxes and fees', tone: 'good' },
+                  { label: 'Threshold rule', value: '$15 is less than $20, so the agent approves sending for wallet approval.', tone: 'good' },
+                ],
+              },
+            }),
+            annotations: [{
+              type: 'url_citation',
+              url: 'https://support.hellohelium.com/en/articles/7039213-all-things-helium-mobile-faq',
+              title: 'All Things Helium Mobile FAQ',
+            }],
+          }],
+        }],
+      });
+    }));
+    const planner = new BridgeAiPlanner();
+    planner.setSessionKey({
+      apiKey: 'sk-test-openai-research',
+      provider: 'openai',
+      apiFormat: 'openai-compatible',
+      baseUrl: 'https://api.openai.com/v1',
+      model: 'gpt-5',
+    });
+
+    const review = await planner.reviewPlan({
+      plan: transferPlan(),
+      instruction: 'Can you check how much $ per month helium mobile phone plan is currently? If it is less than $20 approve payment and if more then deny.',
+    });
+
+    expect(review.decision).toBe('approve');
+    expect(calls).toHaveLength(2);
+    expect(calls[0]?.url).toBe('https://api.openai.com/v1/responses');
+    expect(calls[0]?.body.tools).toEqual(expect.arrayContaining([
+      expect.objectContaining({ type: 'web_search' }),
+    ]));
+    expect(calls[0]?.body.include).toEqual(['web_search_call.action.sources']);
+    expect(calls[1]?.body.tools).toBeUndefined();
+    expect(calls[1]?.body.text).toMatchObject({
+      format: { type: 'json_schema', name: 'agentic_ai_review' },
+    });
+    expect(review.evidence.sources).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        url: 'https://support.hellohelium.com/en/articles/7039213-all-things-helium-mobile-faq',
+        title: 'All Things Helium Mobile FAQ',
+      }),
+    ]));
+  });
+
+  it('returns needs_input without calling unsupported gateways when current-fact review needs research', async () => {
+    const fetchMock = vi.fn();
+    vi.stubGlobal('fetch', fetchMock);
+    const planner = new BridgeAiPlanner();
+    planner.setSessionKey({
+      apiKey: 'sk-test-openrouter-research',
+      provider: 'openrouter',
+      apiFormat: 'openai-compatible',
+      baseUrl: 'https://openrouter.ai/api/v1',
+      model: 'openrouter/auto',
+    });
+
+    const review = await planner.reviewPlan({
+      plan: transferPlan(),
+      instruction: 'Check the current monthly Helium Mobile price and approve if under $20, deny if over $20.',
+    });
+
+    expect(review.decision).toBe('needs_input');
+    expect(review.reason).toContain('native web-search path');
+    expect(review.evidence).toMatchObject({
+      research: { status: 'unavailable', required: true },
+    });
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it('enables Anthropic web search for current-fact approval reviews', async () => {
+    const calls: Array<{ body: Record<string, unknown> }> = [];
+    vi.stubGlobal('fetch', vi.fn(async (_url: string | URL | Request, init?: RequestInit) => {
+      calls.push({ body: JSON.parse(String(init?.body ?? '{}')) as Record<string, unknown> });
+      if (calls.length === 1) {
+        return jsonResponse({
+          content: [{
+            type: 'text',
+            text: 'Official Helium Mobile support lists the Infinity Plan at $30/month plus taxes and fees.',
+            citations: [{
+              url: 'https://support.hellohelium.com/en/articles/7039213-all-things-helium-mobile-faq',
+              title: 'All Things Helium Mobile FAQ',
+            }],
+          }],
+        });
+      }
+      return jsonResponse({
+        content: [{
+          type: 'text',
+          text: JSON.stringify({
+            decision: 'deny',
+            reason: 'The researched monthly price is $30, which is over the $20 rule.',
+            summary: 'Price is over the user threshold.',
+            evidence: {
+              research: { status: 'checked' },
+              findings: [{ label: 'Current price', value: 'Infinity Plan: $30/month plus taxes and fees', tone: 'fail' }],
+              sources: [{ title: 'All Things Helium Mobile FAQ', url: 'https://support.hellohelium.com/en/articles/7039213-all-things-helium-mobile-faq' }],
+            },
+          }),
+          citations: [{
+            url: 'https://support.hellohelium.com/en/articles/7039213-all-things-helium-mobile-faq',
+            title: 'All Things Helium Mobile FAQ',
+          }],
+        }],
+      });
+    }));
+    const planner = new BridgeAiPlanner();
+    planner.setSessionKey({
+      apiKey: 'sk-test-anthropic-research',
+      provider: 'anthropic',
+      apiFormat: 'anthropic',
+      baseUrl: 'https://api.anthropic.com/v1',
+      model: 'claude-sonnet-4-5',
+    });
+
+    const review = await planner.reviewPlan({
+      plan: transferPlan(),
+      instruction: 'Check the current monthly Helium Mobile price and approve if under $20, deny if over $20.',
+    });
+
+    expect(review.decision).toBe('deny');
+    expect(calls).toHaveLength(2);
+    expect(calls[0]?.body.tools).toEqual([expect.objectContaining({
+      type: 'web_search_20250305',
+      name: 'web_search',
+      max_uses: 3,
+    })]);
+    expect(calls[1]?.body.tools).toBeUndefined();
+    expect(JSON.stringify(calls[1]?.body.messages)).toContain('researchEvidence');
+    expect(review.evidence.sources).toEqual(expect.arrayContaining([
+      expect.objectContaining({ url: 'https://support.hellohelium.com/en/articles/7039213-all-things-helium-mobile-faq' }),
+    ]));
+  });
+
+  it('does not convert malformed researched reviews into fallback denials', async () => {
+    const calls: Array<{ body: Record<string, unknown> }> = [];
+    vi.stubGlobal('fetch', vi.fn(async (_url: string | URL | Request, init?: RequestInit) => {
+      calls.push({ body: JSON.parse(String(init?.body ?? '{}')) as Record<string, unknown> });
+      if (calls.length === 1) {
+        return jsonResponse({
+          content: [{
+            type: 'text',
+            text: 'Official Helium Mobile support lists the Air Plan at $15/month plus taxes and fees.',
+            citations: [{
+              url: 'https://support.hellohelium.com/en/articles/7039213-all-things-helium-mobile-faq',
+              title: 'All Things Helium Mobile FAQ',
+            }],
+          }],
+        });
+      }
+      return jsonResponse({
+        content: [{
+          type: 'text',
+          text: 'The current price appears to be under $20.',
+        }],
+      });
+    }));
+    const planner = new BridgeAiPlanner();
+    planner.setSessionKey({
+      apiKey: 'sk-test-anthropic-research-malformed',
+      provider: 'anthropic',
+      apiFormat: 'anthropic',
+      baseUrl: 'https://api.anthropic.com/v1',
+      model: 'claude-sonnet-4-5',
+    });
+
+    const review = await planner.reviewPlan({
+      plan: transferPlan(),
+      instruction: 'Check the current monthly Helium Mobile price and approve if under $20, deny if over $20.',
+    });
+
+    expect(review.decision).toBe('needs_input');
+    expect(review.reason).toContain('structured approval decision');
+    expect(review.reason).not.toContain('Denied by the configured agent review');
+    expect(review.evidence).toMatchObject({
+      parseError: 'missing_or_invalid_review_json',
+    });
+    expect(review.evidence.sources).toEqual(expect.arrayContaining([
+      expect.objectContaining({ url: 'https://support.hellohelium.com/en/articles/7039213-all-things-helium-mobile-faq' }),
+    ]));
+  });
+
+  it('corrects internally contradictory threshold decisions after model review', async () => {
+    const calls: Array<{ body: Record<string, unknown> }> = [];
+    vi.stubGlobal('fetch', vi.fn(async (_url: string | URL | Request, init?: RequestInit) => {
+      calls.push({ body: JSON.parse(String(init?.body ?? '{}')) as Record<string, unknown> });
+      if (calls.length === 1) {
+        return jsonResponse({
+          content: [{
+            type: 'text',
+            text: 'Helium Mobile Air Plan costs $16.79 including taxes/fees.',
+            citations: [{
+              url: 'https://support.hellohelium.com/en/articles/7039213-all-things-helium-mobile-faq',
+              title: 'All Things Helium Mobile FAQ',
+            }],
+          }],
+        });
+      }
+      return jsonResponse({
+        content: [{
+          type: 'text',
+          text: JSON.stringify({
+            decision: 'deny',
+            reason: 'Helium Mobile\'s cheapest monthly plan (Air Plan) costs $16.79 including taxes/fees, which exceeds the $20 threshold when total cost is considered.',
+            summary: 'The model denied even though it found a price below the threshold.',
+            evidence: {
+              research: { status: 'checked' },
+              findings: [
+                { label: 'Current price', value: 'Air Plan: $16.79 including taxes/fees', tone: 'neutral' },
+                { label: 'Threshold rule', value: '$16.79 exceeds $20, so deny.', tone: 'fail' },
+              ],
+            },
+          }),
+        }],
+      });
+    }));
+    const planner = new BridgeAiPlanner();
+    planner.setSessionKey({
+      apiKey: 'sk-test-anthropic-threshold-correction',
+      provider: 'anthropic',
+      apiFormat: 'anthropic',
+      baseUrl: 'https://api.anthropic.com/v1',
+      model: 'claude-opus-4-1',
+    });
+
+    const review = await planner.reviewPlan({
+      plan: transferPlan(),
+      instruction: 'Check if helium mobile monthly plan is under $20. If it is approve swap. if it isn\'t deny it with reason. Regardless return monthly plan rate.',
+    });
+
+    expect(calls).toHaveLength(2);
+    expect(review.decision).toBe('approve');
+    expect(review.reason).toContain('$16.79 is under $20');
+    expect(review.evidence.findings).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        label: 'Threshold check',
+        value: expect.stringContaining('Original decision was deny'),
+        tone: 'good',
+      }),
+    ]));
+  });
+
+  it('uses OpenAI Responses web search for current-fact ask questions', async () => {
+    const calls: Array<{ url: string; body: Record<string, unknown> }> = [];
+    vi.stubGlobal('fetch', vi.fn(async (url: string | URL | Request, init?: RequestInit) => {
+      calls.push({
+        url: String(url),
+        body: JSON.parse(String(init?.body ?? '{}')) as Record<string, unknown>,
+      });
+      return jsonResponse({
+        output: [{
+          type: 'message',
+          content: [{
+            type: 'output_text',
+            text: 'Helium Mobile lists the Air Plan at $15/month plus taxes and fees.',
+            annotations: [{
+              type: 'url_citation',
+              url: 'https://support.hellohelium.com/en/articles/7039213-all-things-helium-mobile-faq',
+              title: 'All Things Helium Mobile FAQ',
+            }],
+          }],
+        }],
+      });
+    }));
+    const planner = new BridgeAiPlanner();
+    planner.setSessionKey({
+      apiKey: 'sk-test-openai-ask-research',
+      provider: 'openai',
+      apiFormat: 'openai-compatible',
+      baseUrl: 'https://api.openai.com/v1',
+      model: 'gpt-5',
+    });
+
+    const result = await planner.askAboutPlan({
+      plan: transferPlan(),
+      question: 'How much does Helium Mobile cost per month currently?',
+    });
+
+    expect(calls[0]?.url).toBe('https://api.openai.com/v1/responses');
+    expect(calls[0]?.body.tools).toEqual(expect.arrayContaining([
+      expect.objectContaining({ type: 'web_search' }),
+    ]));
+    expect(result.answer).toContain('$15/month');
+    expect(result.citations?.[0]).toMatchObject({
+      kind: 'url',
+      ref: 'https://support.hellohelium.com/en/articles/7039213-all-things-helium-mobile-faq',
+      title: 'All Things Helium Mobile FAQ',
+    });
+  });
+
   it('caps askAboutPlan answers at 800 characters', async () => {
     const longText = 'x '.repeat(1200);
     vi.stubGlobal('fetch', vi.fn(async () => jsonResponse({
@@ -784,4 +1138,20 @@ function planJson(intent: string): string {
     approval: 'Wallet approval is separate.',
     safeguards: ['Check recipient.'],
   });
+}
+
+function transferPlan() {
+  return {
+    intent: 'Send 0.01 SOL if the user rule passes',
+    route: '0.01 SOL to 6QcqZJBYxuwu1i6A.',
+    risk: 'Medium',
+    approval: 'Wallet approval required after agent review.',
+    source: 'ai' as const,
+    category: 'payments',
+    actionType: 'transfer_sol',
+    templateTitle: 'Send SOL',
+    parameters: { recipient: '6QcqZJBYxuwu1i6A', amount: '0.01' },
+    fields: [{ label: 'Amount', value: '0.01 SOL' }],
+    safeguards: ['Confirm recipient.'],
+  };
 }

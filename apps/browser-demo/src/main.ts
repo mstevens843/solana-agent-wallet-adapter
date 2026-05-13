@@ -82,6 +82,7 @@ import {
   swapTokenTextMismatchWarning,
   type AgentEvidenceTone,
 } from './agentReviewPresentation.js';
+import { findingsSpecFor } from './agentFindingsSpec.js';
 import {
   hostedByokCloudSessionBlockReason,
   shouldAutoSignOutCloudSession,
@@ -190,14 +191,28 @@ import {
   connectorCreateStatus,
   connectorDraftConnectors,
   connectorDraftStatus,
+  effectiveFormFields,
   isConnectorCapableTemplate,
   normalizeConnectorDraftParameters,
   selectedConnectorActionForm,
   selectedConnectorForDraftParameters,
+  selectedSubAction,
   stripConnectorDraftExtras,
   validateConnectorDraftParameters,
   type ConnectorActionForm,
+  type ConnectorSubAction,
 } from './connectorDrafting.js';
+import {
+  connectorOptionCacheKey,
+  dependenciesSatisfied,
+  getConnectorOptionProvider,
+  missingDependencyLabel,
+  registerBuiltInConnectorOptionProviders,
+  type ConnectorOption,
+  type ConnectorOptionProvider,
+} from './connectorOptionProviders.js';
+
+registerBuiltInConnectorOptionProviders();
 import {
   normalizeBlinkUrl,
   prepareBlinkAction,
@@ -213,7 +228,6 @@ import {
   type SystemHealth,
 } from './systemHealth.js';
 import {
-  WORKSPACE_BACKUP_KEYS,
   backupFilename,
   exportWorkspace,
   parseBackup,
@@ -221,6 +235,7 @@ import {
   serializeBackup,
   summarizeBackup,
   unresolvedPendingTransactions,
+  workspaceBackupKeys,
   type BackupSectionSummary,
   type WorkspaceBackup,
 } from './workspaceBackup.js';
@@ -356,9 +371,17 @@ type IosNativeWalletId = 'phantom' | 'solflare' | 'backpack' | 'jupiter';
 type WorkflowModePreference = 'auto' | 'local-bridge';
 type ActiveWorkflowMode = 'agentic-cloud' | 'browser-workflow' | 'local-bridge';
 type WorkflowRecordSource = 'cloud' | 'browser' | 'local-bridge';
+type StorageDurabilityKind = 'cloud-synced' | 'local-only' | 'bridge-local' | 'session-only' | 'cloud-pending' | 'cloud-failed';
 type CloudSessionStatus = 'unknown' | 'signed-out' | 'signed-in' | 'unavailable';
 type CloudSessionLogoutReason = 'wallet-disconnected' | 'wallet-changed' | 'wallet-mismatch' | 'startup';
 type QueueWorkflowResult = { id: string; mode: ActiveWorkflowMode; planRecordId?: string };
+type ProofSyncStatus = 'pending' | 'synced' | 'failed' | 'skipped';
+
+interface StorageDurabilityBadge {
+  kind: StorageDurabilityKind;
+  label: string;
+  title: string;
+}
 
 const AGENT_REVIEW_SCHEMA_VERSION = 2 as const;
 
@@ -431,6 +454,7 @@ interface AgentReviewFact<TDetail = Record<string, unknown>> {
 }
 
 interface AgentReviewFactSet {
+  research?: AgentReviewFact;
   quote?: AgentReviewFact;
   route?: AgentReviewFact;
   policy?: AgentReviewFact;
@@ -438,6 +462,7 @@ interface AgentReviewFactSet {
   protocol?: AgentReviewFact;
   protocolConnector?: AgentReviewFact;
   blinkAction?: AgentReviewFact;
+  blinkClassification?: AgentReviewFact;
   tokenMint?: AgentReviewFact;
   recipient?: AgentReviewFact;
   limits?: AgentReviewFact;
@@ -448,6 +473,7 @@ interface AgentAskExchange {
   id: string;
   question: string;
   answer?: string;
+  citations?: Array<{ kind: string; ref: string; title?: string }>;
   error?: string;
   askedAt: string;
   answeredAt?: string;
@@ -522,6 +548,7 @@ interface SelectPickerOption {
   value: string;
   label: string;
   meta?: string;
+  metaSuffix?: string;
   detail?: string;
   logoId?: BrandLogoId;
   disabled?: boolean;
@@ -584,6 +611,7 @@ const BRIDGE_TOKEN_SESSION_KEY = 'agentic-local-bridge-token';
 const AI_API_KEYS_SESSION_STORAGE_KEY = 'solana-agent-wallet-ai-api-keys-v1';
 const GENERATED_PLANS_STORAGE_KEY = 'solana-agent-wallet-generated-plans-v1';
 const BROWSER_WORKFLOW_STORAGE_KEY = 'solana-agent-wallet-browser-workflow-v1';
+const LOCAL_COMPLETED_STORAGE_KEY = 'solana-agent-wallet-local-completed-v1';
 const RECIPIENT_RULES_STORAGE_KEY = 'solana-agent-wallet-recipient-rules-v1';
 const AGENT_POLICIES_STORAGE_KEY = 'solana-agent-wallet-agent-policies-v1';
 const CUSTOM_TOKENS_STORAGE_KEY = 'solana-agent-wallet-custom-tokens-v1';
@@ -660,14 +688,21 @@ const EXECUTABLE_BROWSER_ACTION_KINDS = new Set<PreparedActionKind>([
   'swap',
   'custom_transaction',
 ]);
-const CONNECTOR_APPROVAL_ACTION_TYPES = new Set<string>([
-  'kamino_deposit',
-  'kamino_withdraw',
-  'drift_vault_deposit',
-  'drift_vault_request_withdraw',
-  'drift_vault_cancel_withdraw',
-  'drift_vault_complete_withdraw',
+const BASE_PREPARED_ACTION_KINDS = new Set<string>([
+  'transfer_sol',
+  'transfer_spl',
+  'swap',
+  'manual_review',
+  'read_only',
+  'custom_transaction',
+  'custom',
 ]);
+const CONNECTOR_APPROVAL_ACTION_TYPES = new Set<string>(
+  PROTOCOL_CONNECTORS.flatMap((connector) => connector.actionKinds).filter((kind) => kind !== 'swap'),
+);
+for (const kind of CONNECTOR_APPROVAL_ACTION_TYPES) {
+  BASE_PREPARED_ACTION_KINDS.add(kind);
+}
 const RELEASE_BASE_URL =
   'https://github.com/mstevens843/solana-agent-wallet-adapter/releases/latest/download';
 const RELEASE_PAGE_URL =
@@ -1008,6 +1043,16 @@ interface GeneratedPlanRecord {
   workflowSource?: WorkflowRecordSource;
   template?: boolean;
   templateLabel?: string;
+  importedToCloudAt?: string;
+}
+
+interface ActiveAiDraftOperation {
+  id: number;
+  controller: AbortController;
+  toastId: number;
+  templateTitle: string;
+  prompt: string;
+  cancelled: boolean;
 }
 
 interface RuntimePath {
@@ -1060,6 +1105,7 @@ interface PreparedAction {
   agentOverride?: AgentReviewOverride;
   archived?: boolean;
   workflowSource?: WorkflowRecordSource;
+  importedToCloudAt?: string;
 }
 
 interface RecurringPayment {
@@ -1098,6 +1144,7 @@ interface RecurringPayment {
   updatedAt: string;
   nextDueAt?: string;
   workflowSource?: WorkflowRecordSource;
+  importedToCloudAt?: string;
 }
 
 interface RecurringOccurrenceHistoryItem extends WorkflowRecurringOccurrenceRecord {
@@ -1305,6 +1352,7 @@ interface CompletedPlanRecord {
   workflowSource?: WorkflowRecordSource;
   decisionProofVerified?: boolean;
   decisionProofMessage?: string;
+  importedToCloudAt?: string;
 }
 
 interface BridgeHealth {
@@ -1371,6 +1419,12 @@ interface LabArtifact {
   metadata?: JsonObject;
   cloudReceiptId?: string;
   bridgeArchived?: boolean;
+  cloudSyncStatus?: ProofSyncStatus;
+  cloudSyncError?: string;
+  bridgeSyncStatus?: ProofSyncStatus;
+  bridgeSyncError?: string;
+  syncAttemptedAt?: string;
+  importedToCloudAt?: string;
 }
 
 interface LabPayload {
@@ -1391,6 +1445,7 @@ interface LabPayload {
 interface RecurringDraft {
   actionKind: RecurringActionKind;
   connectorId: string;
+  connectorOperationId: string;
   token: string;
   inputToken: string;
   outputToken: string;
@@ -1697,6 +1752,13 @@ interface SafetyRailsState {
   slippage: SlippageCapState;
 }
 
+interface TemplateFieldOptionCacheEntry {
+  options: ConnectorOption[];
+  fetchedAt: number;
+  ttlMs: number;
+  error?: string;
+}
+
 interface DemoState {
   activeTab: ActiveTab;
   commandCenterView: CommandCenterView;
@@ -1741,6 +1803,8 @@ interface DemoState {
   templateTokenModes: Record<string, TokenInputMode>;
   templateTokenSelections: Record<string, TokenFieldSelection>;
   templateFieldErrors: Record<string, string>;
+  templateFieldOptionCache: Record<string, TemplateFieldOptionCacheEntry>;
+  templateFieldOptionLoading: Record<string, boolean>;
   agentPlan: AgentPlan | null;
   agentSignature: string;
   agentPreparedActionId: string;
@@ -1786,6 +1850,7 @@ interface DemoState {
   pendingTransactions: PendingTransactionRecord[];
   lastReconciliationAt: string;
   cloudCompletedPlans: CompletedPlanRecord[];
+  localCompletedPlans: CompletedPlanRecord[];
   cloudLastSync: string;
   lastCompletedFocusId: string;
   recurringDraft: RecurringDraft;
@@ -2483,6 +2548,8 @@ const state: DemoState = {
   templateTokenModes: defaultTemplateTokenModes(initialTemplate),
   templateTokenSelections: defaultTemplateTokenSelections(initialTemplate),
   templateFieldErrors: {},
+  templateFieldOptionCache: {},
+  templateFieldOptionLoading: {},
   agentPlan: null,
   agentSignature: '',
   agentPreparedActionId: '',
@@ -2536,6 +2603,7 @@ const state: DemoState = {
   pendingTransactions: loadTransactionLedger(),
   lastReconciliationAt: '',
   cloudCompletedPlans: [],
+  localCompletedPlans: loadLocalCompletedPlans(),
   cloudLastSync: '',
   lastCompletedFocusId: '',
   recurringDraft: defaultRecurringDraft(),
@@ -2592,6 +2660,8 @@ const state: DemoState = {
   },
 };
 
+let nextAiDraftOperationId = 1;
+let activeAiDraftOperation: ActiveAiDraftOperation | null = null;
 let client: SolanaSigningClient | null = null;
 let walletBackend: WalletBackend | null = null;
 let nextToastId = 1;
@@ -2666,6 +2736,16 @@ function hydrateGeneratedPlansForStartup(): void {
     state.selectedGeneratedPlanId = '';
     console.warn('Generated plan storage could not be loaded.', err);
   }
+}
+
+function hydrateLocalWorkspaceForWallet(): void {
+  if (!state.address) return;
+  const cloudPlans = state.generatedPlans.filter((record) => record.workflowSource === 'cloud');
+  const localPlans = loadGeneratedPlans(state.address);
+  state.generatedPlans = mergeGeneratedPlans(cloudPlans, localPlans);
+  state.localCompletedPlans = loadLocalCompletedPlans(state.address);
+  refreshBrowserWorkflowData();
+  selectFallbackGeneratedPlan();
 }
 
 function renderStartupFailure(err: unknown): void {
@@ -5552,18 +5632,18 @@ function preferencesStoragePolicy(): string {
     : 'Sign in from Cloud Storage to sync supported non-secret preferences.';
   return `
     <section class="preferences-storage-policy" aria-label="Preferences save policy">
-      ${preferencesStoragePolicyItem('Local first', 'Changes apply in this browser immediately.')}
-      ${preferencesStoragePolicyItem(cloudTitle, cloudDetail)}
-      ${preferencesStoragePolicyItem('Secrets stay local', 'AI keys, bridge tokens, wallet auth, and notification permission never sync.')}
+      ${preferencesStoragePolicyItem('Local first', 'Changes apply in this browser immediately.', storageBadge('local-only'))}
+      ${preferencesStoragePolicyItem(cloudTitle, cloudDetail, cloudSynced ? storageBadge('cloud-synced') : storageBadge('local-only'))}
+      ${preferencesStoragePolicyItem('Secrets stay local', 'AI keys, bridge tokens, wallet auth, and notification permission never sync.', storageBadge('session-only'))}
     </section>
   `;
 }
 
-function preferencesStoragePolicyItem(title: string, detail: string): string {
+function preferencesStoragePolicyItem(title: string, detail: string, badge?: StorageDurabilityBadge): string {
   return `
     <article>
       <span>${escapeHtml(title)}</span>
-      <strong>${escapeHtml(preferencesStoragePolicyShortTitle(title))}</strong>
+      <strong>${escapeHtml(preferencesStoragePolicyShortTitle(title))}${badge ? storageBadgeHtml(badge) : ''}</strong>
       <span>${escapeHtml(detail)}</span>
     </article>
   `;
@@ -5574,6 +5654,213 @@ function preferencesStoragePolicyShortTitle(title: string): string {
   if (title.startsWith('Cloud')) return title;
   if (title === 'Secrets stay local') return 'Secrets never sync';
   return title;
+}
+
+function storageBadge(kind: StorageDurabilityKind, title?: string): StorageDurabilityBadge {
+  switch (kind) {
+    case 'cloud-synced':
+      return { kind, label: 'Cloud synced', title: title ?? 'Saved to the wallet-scoped cloud workspace.' };
+    case 'bridge-local':
+      return { kind, label: 'Bridge local', title: title ?? 'Saved in the local bridge workspace for the connected wallet.' };
+    case 'session-only':
+      return { kind, label: 'Session only', title: title ?? 'Stored only for this browser session.' };
+    case 'cloud-pending':
+      return { kind, label: 'Cloud pending', title: title ?? 'Waiting to upload to Agentic Cloud.' };
+    case 'cloud-failed':
+      return { kind, label: 'Cloud retry', title: title ?? 'Cloud upload failed and can be retried.' };
+    case 'local-only':
+    default:
+      return { kind: 'local-only', label: 'Local only', title: title ?? 'Saved only in this browser workspace.' };
+  }
+}
+
+function storageBadgeHtml(badge: StorageDurabilityBadge): string {
+  return `<span class="storage-durability-chip ${escapeHtml(badge.kind)}" title="${escapeHtml(badge.title)}">${escapeHtml(badge.label)}</span>`;
+}
+
+function workflowSourceStorageBadge(source?: WorkflowRecordSource): StorageDurabilityBadge {
+  if (source === 'cloud') return storageBadge('cloud-synced');
+  if (source === 'local-bridge') return storageBadge('bridge-local');
+  return storageBadge('local-only');
+}
+
+function generatedPlanStorageBadge(record: GeneratedPlanRecord): StorageDurabilityBadge {
+  return workflowSourceStorageBadge(record.workflowSource ?? 'browser');
+}
+
+function preparedActionStorageBadge(action: PreparedAction): StorageDurabilityBadge {
+  return workflowSourceStorageBadge(action.workflowSource ?? (isBrowserWorkflowId(action.id) ? 'browser' : 'local-bridge'));
+}
+
+function recurringPaymentStorageBadge(payment: RecurringPayment): StorageDurabilityBadge {
+  return workflowSourceStorageBadge(recurringPaymentWorkflowSource(payment));
+}
+
+function completedPlanStorageBadge(plan: CompletedPlanRecord): StorageDurabilityBadge {
+  return workflowSourceStorageBadge(plan.workflowSource ?? (plan.actionId && isBrowserWorkflowId(plan.actionId) ? 'browser' : undefined));
+}
+
+function proofStorageBadge(artifact: LabArtifact): StorageDurabilityBadge {
+  if (artifact.cloudReceiptId || artifact.cloudSyncStatus === 'synced') return storageBadge('cloud-synced');
+  if (artifact.cloudSyncStatus === 'pending') return storageBadge('cloud-pending');
+  if (artifact.cloudSyncStatus === 'failed') return storageBadge('cloud-failed', artifact.cloudSyncError || undefined);
+  if (artifact.bridgeArchived || artifact.bridgeSyncStatus === 'synced') return storageBadge('bridge-local');
+  if (artifact.bridgeSyncStatus === 'pending') return storageBadge('bridge-local', 'Waiting to mirror to the local bridge archive.');
+  return storageBadge('local-only');
+}
+
+interface LocalWorkspaceSummary {
+  requests: number;
+  approvals: number;
+  repeatPayments: number;
+  done: number;
+  proofs: number;
+  total: number;
+}
+
+interface LocalCloudImportCandidates {
+  plans: GeneratedPlanRecord[];
+  approvals: PreparedAction[];
+  repeatPayments: RecurringPayment[];
+  proofs: LabArtifact[];
+  summary: LocalWorkspaceSummary;
+}
+
+function localWorkspaceSummary(): LocalWorkspaceSummary {
+  if (!state.address) {
+    return localWorkspaceSummaryFromCounts({ requests: 0, approvals: 0, repeatPayments: 0, done: 0, proofs: 0 });
+  }
+  const requests = state.generatedPlans
+    .filter((record) => record.workflowSource !== 'cloud')
+    .filter((record) => recordMatchesWalletScope(record, state.address))
+    .filter((record) => !record.template)
+    .length;
+  const approvals = state.preparedActions
+    .filter((action) => action.workflowSource !== 'cloud')
+    .filter((action) => recordMatchesWalletScope(action, state.address))
+    .filter((action) => !isTerminalPreparedAction(action))
+    .length;
+  const repeatPayments = state.recurringPayments
+    .filter((payment) => recurringPaymentWorkflowSource(payment) !== 'cloud')
+    .filter((payment) => recordMatchesWalletScope(payment, state.address))
+    .filter((payment) => !isRecurringPaymentCompleted(payment))
+    .length;
+  const done = state.localCompletedPlans
+    .filter((record) => record.workflowSource !== 'cloud')
+    .filter((record) => recordMatchesWalletScope(record, state.address))
+    .length;
+  const proofs = state.labArtifacts
+    .filter((artifact) => recordMatchesWalletScope(artifact, state.address))
+    .filter((artifact) => !(artifact.cloudReceiptId || artifact.cloudSyncStatus === 'synced'))
+    .length;
+  return localWorkspaceSummaryFromCounts({ requests, approvals, repeatPayments, done, proofs });
+}
+
+function localCloudImportCandidates(): LocalCloudImportCandidates {
+  if (!state.address) {
+    const summary = localWorkspaceSummaryFromCounts({ requests: 0, approvals: 0, repeatPayments: 0, done: 0, proofs: 0 });
+    return { plans: [], approvals: [], repeatPayments: [], proofs: [], summary };
+  }
+  const plans = state.generatedPlans
+    .filter((record) => record.workflowSource !== 'cloud')
+    .filter((record) => recordMatchesWalletScope(record, state.address))
+    .filter((record) => !record.template && !record.importedToCloudAt);
+  const approvals = state.preparedActions
+    .filter((action) => action.workflowSource !== 'cloud')
+    .filter((action) => recordMatchesWalletScope(action, state.address))
+    .filter((action) => !action.recurringId && !isTerminalPreparedAction(action) && !action.importedToCloudAt)
+    .filter((action) => cloudImportableApprovalKind(action.kind));
+  const repeatPayments = state.recurringPayments
+    .filter((payment) => recurringPaymentWorkflowSource(payment) !== 'cloud')
+    .filter((payment) => recordMatchesWalletScope(payment, state.address))
+    .filter((payment) => !isRecurringPaymentCompleted(payment) && !payment.importedToCloudAt)
+    .filter((payment) => cloudImportableRecurringPayment(payment));
+  const proofs = state.labArtifacts
+    .filter((artifact) => recordMatchesWalletScope(artifact, state.address))
+    .filter((artifact) => isCloudEvidenceReceiptKind(artifact.kind))
+    .filter((artifact) => !artifact.cloudReceiptId && artifact.cloudSyncStatus !== 'synced');
+  const summary = localWorkspaceSummaryFromCounts({
+    requests: plans.length,
+    approvals: approvals.length,
+    repeatPayments: repeatPayments.length,
+    done: 0,
+    proofs: proofs.length,
+  });
+  return { plans, approvals, repeatPayments, proofs, summary };
+}
+
+function localWorkspaceSummaryFromCounts(counts: Omit<LocalWorkspaceSummary, 'total'>): LocalWorkspaceSummary {
+  return {
+    ...counts,
+    total: counts.requests + counts.approvals + counts.repeatPayments + counts.done + counts.proofs,
+  };
+}
+
+function cloudImportableApprovalKind(kind: PreparedActionKind): boolean {
+  return kind === 'transfer_sol' ||
+    kind === 'transfer_spl' ||
+    kind === 'swap' ||
+    kind === 'manual_review' ||
+    kind === 'read_only' ||
+    kind === 'custom_transaction' ||
+    kind === 'custom';
+}
+
+function cloudImportableRecurringPayment(payment: RecurringPayment): boolean {
+  if (payment.actionKind === 'swap' || payment.outputToken) return true;
+  return (payment.token || 'SOL').toUpperCase() === 'SOL';
+}
+
+function localWorkspacePrompt(context: 'backup' | 'cloud'): string {
+  const summary = localWorkspaceSummary();
+  if (summary.total === 0) return '';
+  const importCandidates = localCloudImportCandidates();
+  const importCount = importCandidates.summary.total;
+  const importButton = cloudSessionMatchesWallet() && importCount > 0
+    ? `<button type="button" class="utility" data-cloud-action="copy-local-to-cloud" ${state.busy ? 'disabled' : ''}>Copy local to cloud</button>`
+    : '';
+  const detail = context === 'cloud'
+    ? 'Review and copy eligible local items after cloud sign-in, or export a backup first.'
+    : 'Export before signing out, switching wallets, or clearing browser data.';
+  return `
+    <section class="local-workspace-prompt" aria-label="Local workspace backup prompt">
+      <div>
+        <span>${storageBadgeHtml(storageBadge('local-only'))}</span>
+        <strong>Back up local workspace</strong>
+        <p>${escapeHtml(detail)}</p>
+      </div>
+      <div class="local-workspace-counts">
+        ${localWorkspaceCountPill('Requests', summary.requests)}
+        ${localWorkspaceCountPill('Approvals', summary.approvals)}
+        ${localWorkspaceCountPill('Repeats', summary.repeatPayments)}
+        ${localWorkspaceCountPill('Done', summary.done)}
+        ${localWorkspaceCountPill('Proofs', summary.proofs)}
+      </div>
+      <div class="local-workspace-actions">
+        <button type="button" class="${context === 'backup' ? 'primary' : 'utility'}" data-workspace-backup-action="export" ${state.busy ? 'disabled' : ''}>Back up</button>
+        ${importButton}
+      </div>
+    </section>
+  `;
+}
+
+function localWorkspaceCountPill(label: string, count: number): string {
+  if (count === 0) return '';
+  return `<span><em>${escapeHtml(label)}</em><strong>${count}</strong></span>`;
+}
+
+function localWorkspaceImportSummaryLabel(summary: LocalWorkspaceSummary): string {
+  return [
+    localWorkspaceCountPhrase(summary.requests, 'request'),
+    localWorkspaceCountPhrase(summary.approvals, 'approval'),
+    localWorkspaceCountPhrase(summary.repeatPayments, 'repeat payment'),
+    localWorkspaceCountPhrase(summary.proofs, 'proof'),
+  ].filter(Boolean).join(', ');
+}
+
+function localWorkspaceCountPhrase(count: number, label: string): string {
+  if (count === 0) return '';
+  return `${count} ${label}${count === 1 ? '' : 's'}`;
 }
 
 function preferencesViewButton(view: PreferencesView, title: string, detail: string): string {
@@ -5787,6 +6074,7 @@ function cloudWorkspaceCard(): string {
           ${matched ? `<span>Wallet <strong>${escapeHtml(short(state.cloudSession.walletAddress))}</strong></span>` : ''}
           ${state.cloudLastSync && matched ? `<span>Synced <strong>${escapeHtml(formatDateTime(state.cloudLastSync))}</strong></span>` : ''}
         </div>
+        ${localWorkspacePrompt('cloud')}
         <div class="rail-cloud-actions">
           ${signedIn ? `
             <button id="cloudLogout" class="utility" ${state.busy ? 'disabled' : ''}>Sign out</button>
@@ -7972,6 +8260,10 @@ function queueActionLabelForPlan(plan: AgentPlan): string {
 }
 
 function templatesForOutcomeFilter(filter = state.templateOutcomeFilter): AgentPlanTemplate[] {
+  const selectedConnector = selectedConnectorForCreate(selectedTemplate());
+  if (selectedConnector) {
+    return templatesForConnector(selectedConnector);
+  }
   const templates = oneTimePlanTemplates();
   if (filter === 'all') return templates;
   return templates.filter((template) => templateOutcome(template) === filter);
@@ -7982,7 +8274,27 @@ function firstTemplateForOutcomeFilter(filter: TemplateOutcomeFilter): AgentPlan
 }
 
 function oneTimePlanTemplates(): AgentPlanTemplate[] {
-  return AGENT_PLAN_TEMPLATES.filter((template) => template.actionType !== 'recurring_payment');
+  return AGENT_PLAN_TEMPLATES.filter((template) =>
+    template.actionType !== 'recurring_payment' &&
+    !isDedicatedConnectorTemplate(template),
+  );
+}
+
+function templatesForConnector(connector: ProtocolConnector): AgentPlanTemplate[] {
+  const templates = connectorActionFormsForConnector(connector)
+    .map((form) => AGENT_PLAN_TEMPLATES.find((template) => template.id === form.templateId))
+    .filter((template): template is AgentPlanTemplate => Boolean(template));
+  const seen = new Set<string>();
+  return templates.filter((template) => {
+    if (seen.has(template.id)) return false;
+    seen.add(template.id);
+    return template.actionType !== 'recurring_payment';
+  });
+}
+
+function isDedicatedConnectorTemplate(template: AgentPlanTemplate): boolean {
+  return template.connectorActionSource === 'first-class-adapter' &&
+    Boolean(connectorActionFormForTemplate(template));
 }
 
 function activePanel(): string {
@@ -8197,7 +8509,7 @@ function commandConnectorsPreferenceSnapshotCard(): CommandPreferenceSnapshotCar
     label: 'Connectors',
     value: `${enabledCount} ${enabledCount === 1 ? 'connector' : 'connectors'} set`,
     detail,
-    meta: `${titleCaseCluster(state.cluster)} cluster`,
+    meta: '',
     tone: enabledCount ? 'good' : 'idle',
     icon: 'connectors',
     actionLabel: 'Manage',
@@ -8224,18 +8536,21 @@ function commandGuardrailsPreferenceSnapshotCard(): CommandPreferenceSnapshotCar
 }
 
 function commandPreferenceSnapshotCard(card: CommandPreferenceSnapshotCard): string {
-  const connectedAiPath = card.icon === 'aiConnected';
+  const hasMeta = Boolean(card.meta.trim());
+  const meta = hasMeta ? `<em>${escapeHtml(card.meta)}</em>` : '';
+  // const aiPathVisual = card.icon === 'aiConnected' ? commandConnectedAiPathVisual() : '';
+  const aiPathVisual = '';
   return `
-    <article class="command-preference-card ${escapeHtml(card.tone)}${connectedAiPath ? ' has-ai-path-visual' : ''}">
-      ${connectedAiPath ? commandConnectedAiPathVisual() : ''}
+    <article class="command-preference-card ${escapeHtml(card.tone)}">
+      ${aiPathVisual}
       <div class="command-preference-card-label">
         ${commandCenterIcon(card.icon)}
         <span>${escapeHtml(card.label)}</span>
       </div>
       <strong>${escapeHtml(card.value)}</strong>
       <p>${escapeHtml(card.detail)}</p>
-      <div class="command-preference-card-foot">
-        <em>${escapeHtml(card.meta)}</em>
+      <div class="command-preference-card-foot${hasMeta ? '' : ' no-meta'}">
+        ${meta}
         ${commandPreferenceSnapshotButton(card)}
       </div>
     </article>
@@ -8480,6 +8795,8 @@ function commandCenterStoragePanel(): string {
           ${commandStorageCloudCard()}
         </div>
 
+        ${localWorkspacePrompt('cloud')}
+
         ${commandCloudStorageEducation()}
 
         <div class="command-storage-note">
@@ -8497,6 +8814,7 @@ function commandCenterStoragePanel(): string {
 function workspaceBackupPanel(): string {
   const pendingCount = state.pendingTransactions.length;
   const unresolved = unresolvedPendingTransactions().length;
+  const sectionCount = workspaceBackupKeys().length;
   const statusLine = state.workspaceBackupStatus
     ? `<p class="workspace-backup-status">${escapeHtml(state.workspaceBackupStatus)}</p>`
     : '';
@@ -8511,8 +8829,9 @@ function workspaceBackupPanel(): string {
       <div class="workspace-backup-stats">
         <span><em>Pending tx records</em><strong>${pendingCount}</strong></span>
         <span class="${unresolved > 0 ? 'warn' : ''}"><em>Unresolved on-chain</em><strong>${unresolved}</strong></span>
-        <span><em>Sections</em><strong>${WORKSPACE_BACKUP_KEYS.length}</strong></span>
+        <span><em>Sections</em><strong>${sectionCount}</strong></span>
       </div>
+      ${localWorkspacePrompt('backup')}
       <div class="workspace-backup-actions">
         <button type="button" class="primary" data-workspace-backup-action="export">Export workspace</button>
         <label class="workspace-backup-import">
@@ -8976,6 +9295,7 @@ function agentPlanPanel(): string {
 
 function oneTimePlanTabs(): string {
   const creating = state.oneTimePlanView === 'create';
+  const selectedConnector = creating ? selectedConnectorForCreate(selectedTemplate()) : undefined;
   return `
     <div class="one-time-plan-control-row ${creating ? 'has-connector' : ''}">
       <div class="tabs compact-tabs one-time-plan-tabs" role="tablist" aria-label="One-time plan steps">
@@ -8983,7 +9303,7 @@ function oneTimePlanTabs(): string {
         ${oneTimePlanViewButton('review', 'Check')}
       </div>
       ${creating ? connectorCreatePickerControl(selectedTemplate()) : ''}
-      ${creating ? templateOutcomeControls('header') : ''}
+      ${creating && !selectedConnector ? templateOutcomeControls('header') : ''}
     </div>
   `;
 }
@@ -9156,16 +9476,24 @@ function generatedPlanStatusLine(totalCount: number, visibleCount: number, archi
 }
 
 function aiDraftPendingCard(): string {
-  const template = selectedTemplate();
-  const prompt = state.agentPrompt.trim();
+  const operation = activeAiDraftOperation;
+  const templateTitle = operation?.templateTitle ?? selectedTemplate().title;
+  const prompt = operation?.prompt ?? state.agentPrompt.trim();
   return `
     <section class="ai-draft-pending-card" aria-label="AI draft in progress">
-      <div>
+      <div class="ai-draft-pending-copy">
         <span>AI draft</span>
-        <h3>${escapeHtml(template.title)} is being drafted</h3>
+        <h3>${escapeHtml(templateTitle)} is being drafted</h3>
         <p>${escapeHtml(prompt || 'Building the request for Check. Optional agent review stays off unless you enable it.')}</p>
       </div>
-      <strong>${buttonSpinner()}Working</strong>
+      <div class="ai-draft-pending-actions">
+        <strong>${buttonSpinner()}Working</strong>
+        ${operation ? `
+          <button type="button" class="utility danger" data-ai-draft-action="cancel">
+            Cancel
+          </button>
+        ` : ''}
+      </div>
     </section>
   `;
 }
@@ -9189,6 +9517,7 @@ function generatedPlanCard(record: GeneratedPlanRecord): string {
         <div class="review-plan-title-block">
           <div class="review-plan-meta">
             <span class="status-pill ${generatedPlanStatusTone(record)}">${escapeHtml(generatedPlanStatusLabel(record))}</span>
+            ${storageBadgeHtml(generatedPlanStorageBadge(record))}
             <span>${escapeHtml(record.source === 'ai' ? 'AI draft' : 'Template draft')}</span>
             ${generatedPlanFailurePill(record)}
             <span>${escapeHtml(formatDateTime(record.createdAt))}</span>
@@ -9242,26 +9571,9 @@ function generatedPlanCard(record: GeneratedPlanRecord): string {
             ${planGuardrailStrip(plan)}
             ${generatedPlanCompactExtras(plan)}
             ${generatedPlanOutcomeStrip(displayRecord)}
-            ${generatedPlanDetailActions(displayRecord)}
           </div>
         </details>
-        <button
-          class="utility review-template-mini"
-          data-template-action="save-as"
-          data-generated-plan-id="${escapeHtml(record.id)}"
-          ${state.busy ? 'disabled' : ''}
-          title="Save this plan as a reusable template"
-        >
-          Save as template
-        </button>
-        <button
-          class="utility danger review-delete-mini"
-          data-generated-plan-action="delete"
-          data-generated-plan-id="${escapeHtml(record.id)}"
-          ${state.busy ? 'disabled' : ''}
-        >
-          Delete
-        </button>
+        ${generatedPlanCardFooterActions(displayRecord)}
       </div>
     </article>
   `;
@@ -9452,7 +9764,7 @@ function generatedPlanAgentReviewStrip(record: GeneratedPlanRecord): string {
       ${agentReviewBlockingReasonPanel(review) || `<p>${escapeHtml(review.reason || 'Agent review is available for context. Sending for approval is still your decision.')}</p>`}
       ${stale ? '<p class="accent-note">This review is stale because the draft changed. Ask the agent again before relying on the decision.</p>' : ''}
       ${review.status === 'needs_input' ? agentReviewQuestionsForm(record) : ''}
-      ${agentEvidenceDrawer(review, { stale })}
+      ${agentEvidenceDrawer(review, { stale, actionType: record.plan.actionType })}
       ${agentDenialActions(record)}
       ${agentAskAnythingPanel(record)}
     </section>
@@ -9486,6 +9798,7 @@ function agentAskAnythingPanel(record: GeneratedPlanRecord): string {
           ? `<em>${escapeHtml(exchange.error)}</em>`
           : escapeHtml(exchange.answer ?? '')}
       </div>
+      ${agentAskCitationsHtml(exchange.citations)}
       ${exchange.answeredAt
         ? `<small>${escapeHtml(formatDateTime(exchange.answeredAt))}${exchange.provider ? ` · ${escapeHtml(exchange.provider)}` : ''}</small>`
         : ''}
@@ -9514,6 +9827,28 @@ function agentAskAnythingPanel(record: GeneratedPlanRecord): string {
       </div>
     </details>
   `;
+}
+
+function agentAskCitationsHtml(citations: AgentAskExchange['citations']): string {
+  if (!citations?.length) return '';
+  const links = citations
+    .filter((citation) => /^https?:\/\//i.test(citation.ref))
+    .slice(0, 3)
+    .map((citation) => `
+      <a href="${escapeHtml(citation.ref)}" target="_blank" rel="noreferrer">
+        ${escapeHtml(citation.title || citationHost(citation.ref))}
+      </a>
+    `)
+    .join('');
+  return links ? `<div class="agent-ask-citations">${links}</div>` : '';
+}
+
+function citationHost(url: string): string {
+  try {
+    return new URL(url).hostname;
+  } catch {
+    return url;
+  }
 }
 
 const AGENT_ASK_PLACEHOLDER_EXAMPLES: ReadonlyArray<string> = [
@@ -9552,7 +9887,7 @@ function agentDenialActions(record: GeneratedPlanRecord): string {
 
 function agentEvidenceDrawer(
   review: AgentPlanReviewState,
-  opts: { stale?: boolean } = {},
+  opts: { stale?: boolean; actionType?: string } = {},
 ): string {
   const rows = agentEvidenceRows(review, opts);
   if (!rows.length) return '';
@@ -9588,11 +9923,12 @@ function agentEvidenceDrawer(
 
 function agentEvidenceRows(
   review: AgentPlanReviewState,
-  opts: { stale?: boolean } = {},
+  opts: { stale?: boolean; actionType?: string } = {},
 ): Array<{ label: string; value: string; tone?: AgentEvidenceTone }> {
   return reviewEvidenceRows(review, {
     stale: opts.stale,
     stringify: stableJson,
+    actionType: opts.actionType,
   });
 }
 
@@ -9782,16 +10118,17 @@ function generatedPlanCompactExtras(plan: AgentPlan): string {
   `;
 }
 
-function generatedPlanDetailActions(record: GeneratedPlanRecord): string {
+function generatedPlanCardFooterActions(record: GeneratedPlanRecord): string {
   const archived = record.status === 'archived';
   return `
-    <div class="generated-plan-card-actions review-plan-detail-actions">
+    <div class="review-plan-footer-actions">
       <button
+        class="utility"
         data-generated-plan-action="reuse"
         data-generated-plan-id="${escapeHtml(record.id)}"
         ${state.busy ? 'disabled' : ''}
       >
-        Use as starting point
+        Use
       </button>
       <button
         class="utility"
@@ -9801,12 +10138,29 @@ function generatedPlanDetailActions(record: GeneratedPlanRecord): string {
         Full details
       </button>
       <button
+        class="utility review-template-mini"
+        data-template-action="save-as"
+        data-generated-plan-id="${escapeHtml(record.id)}"
+        ${state.busy ? 'disabled' : ''}
+        title="Save this plan as a reusable template"
+      >
+        Save as template
+      </button>
+      <button
         class="utility"
         data-generated-plan-action="${archived ? 'restore' : 'archive'}"
         data-generated-plan-id="${escapeHtml(record.id)}"
         ${state.busy ? 'disabled' : ''}
       >
         ${archived ? 'Restore' : 'Archive'}
+      </button>
+      <button
+        class="utility danger review-delete-mini"
+        data-generated-plan-action="delete"
+        data-generated-plan-id="${escapeHtml(record.id)}"
+        ${state.busy ? 'disabled' : ''}
+      >
+        Delete
       </button>
     </div>
   `;
@@ -10423,6 +10777,7 @@ function agentPlannerWorkbench(): string {
   const aiDisabledReason = aiGenerateDisabledReason();
   const templateGenerating = state.activeOperation === 'generate-template-plan';
   const aiGenerating = state.activeOperation === 'generate-ai-plan';
+  const draftActionBusy = state.busy || templateGenerating || aiGenerating;
   const outcome = templateOutcome(template);
   const notesLabel = notesRequired
     ? 'Custom request / notes'
@@ -10460,23 +10815,23 @@ function agentPlannerWorkbench(): string {
           </label>
           <div class="agent-actions signature-actions intent-document-actions">
             <div class="agent-actions-row">
-              <button id="generatePlan" class="primary" ${state.busy ? 'disabled' : ''}>${templateGenerating ? `${buttonSpinner()}Drafting...` : 'Draft from template'}</button>
               ${aiPathConnected ? `
-                <button id="generateAiPlan" class="primary ai-draft-button" ${!canUseAi || state.busy ? 'disabled' : ''} title="${escapeHtml(canUseAi ? 'Draft through your configured AI planner.' : aiDisabledReason)}">
+                <label class="ask-agent-after-draft ${state.askAgentAfterDraft ? 'checked' : ''}">
+                  <input type="checkbox" data-ask-agent-after-draft ${state.askAgentAfterDraft ? 'checked' : ''} ${state.busy ? 'disabled' : ''} />
+                  <span class="ask-agent-check" aria-hidden="true">${checkIcon()}</span>
+                  <span class="ask-agent-copy">
+                    <strong>Ask agent after draft</strong>
+                    <em>Optional. Runs the review in Check after drafting. Sending for approval stays manual.</em>
+                  </span>
+                </label>
+              ` : ''}
+              <button id="generatePlan" class="primary" ${draftActionBusy ? 'disabled' : ''}>${templateGenerating ? `${buttonSpinner()}Drafting...` : 'Draft from template'}</button>
+              ${aiPathConnected ? `
+                <button id="generateAiPlan" class="primary ai-draft-button" ${!canUseAi || draftActionBusy ? 'disabled' : ''} title="${escapeHtml(canUseAi ? 'Draft through your configured AI planner.' : aiDisabledReason)}">
                   ${aiGenerating ? `${buttonSpinner()}AI drafting...` : 'Draft with AI'}
                 </button>
               ` : ''}
             </div>
-            ${aiPathConnected ? `
-              <label class="ask-agent-after-draft ${state.askAgentAfterDraft ? 'checked' : ''}">
-                <input type="checkbox" data-ask-agent-after-draft ${state.askAgentAfterDraft ? 'checked' : ''} ${state.busy ? 'disabled' : ''} />
-                <span class="ask-agent-check" aria-hidden="true">${checkIcon()}</span>
-                <span class="ask-agent-copy">
-                  <strong>Ask agent after draft</strong>
-                  <em>Optional. Runs the review in Check after drafting. Sending for approval stays manual.</em>
-                </span>
-              </label>
-            ` : ''}
           </div>
         </div>
       </div>
@@ -10646,13 +11001,22 @@ function agentRouteStep(index: string, title: string, detail: string): string {
 }
 
 function templatePicker(template: AgentPlanTemplate): string {
-  const selectedLabel = templatePickerLabel(template);
+  const selectedConnector = selectedConnectorForCreate(template);
+  const selectedLabel = templatePickerLabel(template, selectedConnector);
   const visibleTemplates = templatesForOutcomeFilter();
   const groups: Array<[TemplateOutcome, string]> = [
     ['queueable', 'Request approval'],
     ['proof', 'Proof only'],
     ['audit', 'Evidence only'],
   ];
+  const connectorGroup = selectedConnector
+    ? `
+      <div class="template-picker-group" role="presentation">
+        <span>${escapeHtml(selectedConnector.name)}</span>
+        ${visibleTemplates.map((candidate) => templatePickerOption(candidate, template, selectedConnector)).join('')}
+      </div>
+    `
+    : '';
   return `
     <div class="template-picker" data-template-picker>
       <button
@@ -10665,7 +11029,7 @@ function templatePicker(template: AgentPlanTemplate): string {
         ${state.busy ? 'disabled' : ''}
       >
         <span class="template-picker-current">
-          <span class="template-picker-category">${escapeHtml(titleCase(template.category))}</span>
+          <span class="template-picker-category">${escapeHtml(selectedConnector ? selectedConnector.name : titleCase(template.category))}</span>
           <strong id="templatePickerValue">${escapeHtml(template.title)}</strong>
         </span>
         <span class="template-picker-caret" aria-hidden="true"></span>
@@ -10677,7 +11041,7 @@ function templatePicker(template: AgentPlanTemplate): string {
         aria-labelledby="templatePickerLabel"
         hidden
       >
-        ${groups.map(([outcome, heading]) => {
+        ${connectorGroup || groups.map(([outcome, heading]) => {
           const groupTemplates = visibleTemplates.filter((candidate) => templateOutcome(candidate) === outcome);
           if (groupTemplates.length === 0) return '';
           return `
@@ -10693,13 +11057,22 @@ function templatePicker(template: AgentPlanTemplate): string {
   `;
 }
 
-function templatePickerLabel(template: AgentPlanTemplate): string {
+function templatePickerLabel(template: AgentPlanTemplate, connector?: ProtocolConnector): string {
+  if (connector) return `${connector.name} - ${template.title}`;
   return `${titleCase(template.category)} - ${template.title}`;
 }
 
-function templatePickerOption(candidate: AgentPlanTemplate, selectedTemplate: AgentPlanTemplate): string {
+function templatePickerOption(
+  candidate: AgentPlanTemplate,
+  selectedTemplate: AgentPlanTemplate,
+  connector?: ProtocolConnector,
+): string {
   const selected = candidate.id === selectedTemplate.id;
   const outcome = templateOutcome(candidate);
+  const form = connector ? connectorActionFormForTemplate(candidate, connector) : undefined;
+  const meta = connector
+    ? `${connector.name} / ${connectorTemplateSourceLabel(form)}`
+    : `${titleCase(candidate.category)} / ${outcomeShortLabel(outcome)}`;
   return `
     <button
       id="template-option-${escapeHtml(candidate.id)}"
@@ -10708,13 +11081,20 @@ function templatePickerOption(candidate: AgentPlanTemplate, selectedTemplate: Ag
       role="option"
       aria-selected="${selected ? 'true' : 'false'}"
       data-template-option="${escapeHtml(candidate.id)}"
-      title="${escapeHtml(templatePickerLabel(candidate))}"
+      title="${escapeHtml(templatePickerLabel(candidate, connector))}"
     >
-      <span>${escapeHtml(titleCase(candidate.category))} / ${escapeHtml(outcomeShortLabel(outcome))}</span>
+      <span>${escapeHtml(meta)}</span>
       <strong>${escapeHtml(candidate.title)}</strong>
       <em>${escapeHtml(candidate.description)}</em>
     </button>
   `;
+}
+
+function connectorTemplateSourceLabel(form: ConnectorActionForm | undefined): string {
+  if (!form) return 'Connector action';
+  if (form.executionMode === 'read-only') return 'Read-only';
+  if (form.executionMode === 'blink') return 'Blink';
+  return 'First-class';
 }
 
 function templateFieldInput(fieldDef: AgentPlanTemplateField): string {
@@ -10726,11 +11106,20 @@ function templateFieldInput(fieldDef: AgentPlanTemplateField): string {
   if (connectorCreateOwnsTemplateField(template, fieldDef.id)) {
     return '';
   }
+  if (!templateFieldVisible(fieldDef)) {
+    return '';
+  }
+  if (templateFieldIsSubActionSelect(fieldDef)) {
+    return '';
+  }
   if (isConnectorCapableTemplate(template) && fieldDef.id === 'protocol') {
     return connectorProtocolFieldInput(fieldDef, value, label, error);
   }
   if (isConnectorCapableTemplate(template) && fieldDef.id === 'operation') {
     return connectorOperationFieldInput(fieldDef, value, label, error);
+  }
+  if (fieldDef.type === 'cascading-select' && fieldDef.cascading) {
+    return cascadingSelectFieldInput(fieldDef, value, label, error);
   }
   if (fieldDef.id === 'slippageBps') {
     return slippageFieldInput(fieldDef, value, label, error);
@@ -10843,6 +11232,8 @@ function connectorOperationFieldInput(
   const actions = connector?.supportedActions.length ? connector.supportedActions : fieldDef.options ?? [];
   const selectedValue = actions.includes(value) ? value : actions[0] ?? '';
   const connectorSelectable = connector ? connectorDraftStatus(connector, env).selectable : false;
+  const form = activeConnectorActionForm();
+  const subActionPicker = form?.subActions ? connectorSubActionPicker(form) : '';
   return `
     <div class="field compact planner-field connector-draft-field ${state.templateFieldErrors[fieldDef.id] ? 'field-error' : ''}">
       <span>${escapeHtml(label)}</span>
@@ -10857,9 +11248,300 @@ function connectorOperationFieldInput(
         },
         disabled: state.busy || !connectorSelectable || actions.length === 0,
       })}
+      ${subActionPicker}
       ${error}
     </div>
   `;
+}
+
+function activeConnectorActionForm(): ConnectorActionForm | undefined {
+  const fromState = selectedConnectorActionForm(state.templateFields);
+  if (fromState) return fromState;
+  const template = selectedTemplate();
+  return connectorActionFormForTemplate(template);
+}
+
+function templateFieldVisible(fieldDef: AgentPlanTemplateField): boolean {
+  if (!fieldDef.showWhen) return true;
+  for (const [key, expected] of Object.entries(fieldDef.showWhen)) {
+    const current = state.templateFields[key]?.trim() ?? '';
+    const expectations = Array.isArray(expected) ? expected : [expected];
+    if (!expectations.some((candidate) => candidate === current)) {
+      return false;
+    }
+  }
+  return true;
+}
+
+function templateFieldIsSubActionSelect(fieldDef: AgentPlanTemplateField): boolean {
+  const form = activeConnectorActionForm();
+  return Boolean(form?.subActions && form.subActions.fieldId === fieldDef.id);
+}
+
+function connectorSubActionPicker(form: ConnectorActionForm): string {
+  if (!form.subActions) return '';
+  const group = form.subActions;
+  const current = state.templateFields[group.fieldId]?.trim() || group.defaultId || group.options[0]?.id || '';
+  const chips = group.options
+    .map((option) => {
+      const active = option.id === current ? 'active' : '';
+      const disabledAttr = state.busy ? 'disabled' : '';
+      return `
+        <button
+          type="button"
+          class="connector-subaction-chip ${active}"
+          data-template-field="${escapeHtml(group.fieldId)}"
+          data-template-field-value="${escapeHtml(option.id)}"
+          title="${escapeHtml(option.description)}"
+          ${disabledAttr}
+        >
+          <strong>${escapeHtml(option.label)}</strong>
+          <em>${escapeHtml(option.description)}</em>
+        </button>
+      `;
+    })
+    .join('');
+  return `
+    <div class="connector-subaction-row">
+      <span class="connector-subaction-label">${escapeHtml(group.label)}</span>
+      <div class="connector-subaction-chips">${chips}</div>
+    </div>
+  `;
+}
+
+function cascadingSelectFieldInput(
+  fieldDef: AgentPlanTemplateField,
+  value: string,
+  label: string,
+  error: string,
+): string {
+  const cascading = fieldDef.cascading;
+  if (!cascading) {
+    return `
+      <label class="field compact planner-field">
+        <span>${escapeHtml(label)}</span>
+        <input data-template-field="${escapeHtml(fieldDef.id)}" value="${escapeHtml(value)}" ${state.busy ? 'disabled' : ''} />
+        ${error}
+      </label>
+    `;
+  }
+  const provider = getConnectorOptionProvider(cascading.providerId);
+  if (!provider) {
+    return `
+      <label class="field compact planner-field ${state.templateFieldErrors[fieldDef.id] ? 'field-error' : ''}">
+        <span>${escapeHtml(label)}</span>
+        <input
+          data-template-field="${escapeHtml(fieldDef.id)}"
+          data-cascading-manual="true"
+          value="${escapeHtml(value)}"
+          placeholder="${escapeHtml(fieldDef.placeholder ?? 'Paste address or id')}"
+          ${state.busy ? 'disabled' : ''}
+        />
+        <small class="planner-field-hint">${escapeHtml(cascading.emptyHint ?? 'Provider not registered yet. Paste a value to continue.')}</small>
+        ${error}
+      </label>
+    `;
+  }
+  if (!dependenciesSatisfied(cascading.dependsOn, state.templateFields)) {
+    const missing = missingDependencyLabel(cascading.dependsOn, state.templateFields);
+    return `
+      <label class="field compact planner-field disabled">
+        <span>${escapeHtml(label)}</span>
+        ${selectPicker({
+          value: '',
+          options: [{ value: '', label: `Choose ${missing ?? 'previous field'} first`, meta: fieldDef.label, disabled: true }],
+          attrs: { 'data-template-field': fieldDef.id },
+          disabled: true,
+        })}
+        ${error}
+      </label>
+    `;
+  }
+  const cacheKey = connectorOptionCacheKey(
+    cascading.providerId,
+    cascading.dependsOn,
+    state.templateFields,
+    walletAddressForCascading(),
+    state.cluster,
+  );
+  const cached = state.templateFieldOptionCache[cacheKey];
+  const loading = Boolean(state.templateFieldOptionLoading[cacheKey]);
+  const stale = cached ? Date.now() - cached.fetchedAt > cached.ttlMs : true;
+  if (stale && !loading) {
+    void requestConnectorOptions(fieldDef, provider, cacheKey);
+  }
+  if (loading && !cached) {
+    return `
+      <label class="field compact planner-field loading">
+        <span>${escapeHtml(label)}</span>
+        ${selectPicker({
+          value: '',
+          options: [{ value: '', label: 'Loading options…', meta: fieldDef.label, disabled: true }],
+          attrs: { 'data-template-field': fieldDef.id },
+          disabled: true,
+        })}
+        ${error}
+      </label>
+    `;
+  }
+  const fetchedAt = cached?.fetchedAt ?? 0;
+  const errorMessage = cached?.error;
+  const options = cached?.options ?? [];
+  if (errorMessage && !options.length && cascading.allowManualFallback) {
+    return `
+      <label class="field compact planner-field ${state.templateFieldErrors[fieldDef.id] ? 'field-error' : ''}">
+        <span>${escapeHtml(label)}</span>
+        <input
+          data-template-field="${escapeHtml(fieldDef.id)}"
+          data-cascading-manual="true"
+          value="${escapeHtml(value)}"
+          placeholder="${escapeHtml(fieldDef.placeholder ?? 'Paste address or id')}"
+          ${state.busy ? 'disabled' : ''}
+        />
+        <small class="planner-field-hint">${escapeHtml(cascading.emptyHint ?? "Couldn't load options. Paste an address to continue.")}</small>
+        <button
+          type="button"
+          class="utility cascading-retry"
+          data-cascading-retry="${escapeHtml(cacheKey)}"
+          ${state.busy ? 'disabled' : ''}
+        >Retry</button>
+        ${error}
+      </label>
+    `;
+  }
+  if (!options.length && cascading.allowManualFallback) {
+    return `
+      <label class="field compact planner-field ${state.templateFieldErrors[fieldDef.id] ? 'field-error' : ''}">
+        <span>${escapeHtml(label)}</span>
+        <input
+          data-template-field="${escapeHtml(fieldDef.id)}"
+          data-cascading-manual="true"
+          value="${escapeHtml(value)}"
+          placeholder="${escapeHtml(fieldDef.placeholder ?? 'Paste address or id')}"
+          ${state.busy ? 'disabled' : ''}
+        />
+        <small class="planner-field-hint">${escapeHtml(cascading.emptyHint ?? 'No options found. Paste a value to continue.')}</small>
+        ${error}
+      </label>
+    `;
+  }
+  return `
+    <label class="field compact planner-field cascading-field ${state.templateFieldErrors[fieldDef.id] ? 'field-error' : ''}">
+      <span>${escapeHtml(label)}</span>
+      ${selectPicker({
+        value,
+        options: cascadingSelectPickerOptions(options, fieldDef.label),
+        attrs: {
+          'data-template-field': fieldDef.id,
+          'data-cascading-select': true,
+        },
+        disabled: state.busy,
+      })}
+      ${loading ? '<small class="planner-field-hint">Refreshing…</small>' : ''}
+      ${errorMessage && options.length ? `<small class="planner-field-hint">Last refresh failed: ${escapeHtml(errorMessage)}</small>` : ''}
+      ${fetchedAt && !loading ? `<small class="planner-field-hint subtle">Updated ${escapeHtml(formatCascadingFetchedAt(fetchedAt))}</small>` : ''}
+      ${error}
+    </label>
+  `;
+}
+
+function cascadingSelectPickerOptions(options: ConnectorOption[], fallbackMeta: string): SelectPickerOption[] {
+  const result: SelectPickerOption[] = [];
+  const positions = options.filter((option) => option.group === 'positions');
+  const rest = options.filter((option) => option.group !== 'positions');
+  for (const option of positions) {
+    result.push({
+      value: option.value,
+      label: option.label,
+      meta: 'Your positions',
+      detail: option.detail,
+    });
+  }
+  for (const option of rest) {
+    result.push({
+      value: option.value,
+      label: option.label,
+      meta: option.group ? 'All' : fallbackMeta,
+      detail: option.detail,
+    });
+  }
+  return result;
+}
+
+function formatCascadingFetchedAt(fetchedAt: number): string {
+  const ageMs = Date.now() - fetchedAt;
+  if (ageMs < 30_000) return 'just now';
+  if (ageMs < 60_000) return 'less than a minute ago';
+  const minutes = Math.floor(ageMs / 60_000);
+  if (minutes < 60) return `${minutes} minute${minutes === 1 ? '' : 's'} ago`;
+  const hours = Math.floor(minutes / 60);
+  return `${hours} hour${hours === 1 ? '' : 's'} ago`;
+}
+
+function walletAddressForCascading(): string | undefined {
+  const direct = (state as { walletPublicKey?: unknown }).walletPublicKey;
+  if (typeof direct === 'string' && direct) return direct;
+  const balances = state.balances as { walletAddress?: string } | null;
+  return balances?.walletAddress;
+}
+
+async function requestConnectorOptions(
+  fieldDef: AgentPlanTemplateField,
+  provider: ConnectorOptionProvider,
+  cacheKey: string,
+): Promise<void> {
+  if (state.templateFieldOptionLoading[cacheKey]) return;
+  state.templateFieldOptionLoading[cacheKey] = true;
+  const fieldValuesSnapshot: Record<string, string> = { ...state.templateFields };
+  const ctxWalletAddress = walletAddressForCascading();
+  try {
+    const options = await provider.fetch({
+      fieldValues: fieldValuesSnapshot,
+      walletAddress: ctxWalletAddress,
+      cluster: state.cluster,
+      bridge: bridgeRequest,
+    });
+    state.templateFieldOptionCache[cacheKey] = {
+      options,
+      fetchedAt: Date.now(),
+      ttlMs: provider.ttlMs,
+    };
+  } catch (err) {
+    state.templateFieldOptionCache[cacheKey] = {
+      options: state.templateFieldOptionCache[cacheKey]?.options ?? [],
+      fetchedAt: Date.now(),
+      ttlMs: provider.ttlMs,
+      error: err instanceof Error ? err.message : String(err),
+    };
+  } finally {
+    state.templateFieldOptionLoading[cacheKey] = false;
+    render();
+  }
+  void fieldDef;
+}
+
+function invalidateCascadingDownstream(changedFieldId: string): void {
+  for (const key of Object.keys(state.templateFieldOptionCache)) {
+    const depPart = key.split('::')[1] ?? '';
+    if (depPart.split('|').some((segment) => segment.startsWith(`${changedFieldId}=`))) {
+      delete state.templateFieldOptionCache[key];
+    }
+  }
+}
+
+function handleCascadingFieldChange(
+  control: HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement,
+  fieldId: string,
+): boolean {
+  const isCascadingControl = control instanceof HTMLSelectElement
+    ? control.dataset.cascadingSelect === 'true'
+    : control instanceof HTMLInputElement
+      ? control.dataset.cascadingManual === 'true'
+      : false;
+  const cacheKeysBefore = Object.keys(state.templateFieldOptionCache).length;
+  invalidateCascadingDownstream(fieldId);
+  const cacheKeysAfter = Object.keys(state.templateFieldOptionCache).length;
+  return isCascadingControl || cacheKeysBefore !== cacheKeysAfter;
 }
 
 function connectorDraftEnvironment(): {
@@ -11225,6 +11907,10 @@ function aiSettingsCard(location: 'rail' | 'planner' = 'planner'): string {
               value: model.id,
               label: model.label,
               meta: 'Model preset',
+              metaSuffix: model.tokenRateLabel ? `${model.tokenRateLabel} tokens/minute` : undefined,
+              title: model.tokenRateLabel
+                ? `${model.label} - ${model.tokenRateLabel} input tokens per minute`
+                : model.label,
             })),
             { value: CUSTOM_AI_MODEL_VALUE, label: 'Custom model', meta: 'Model' },
           ],
@@ -11878,6 +12564,7 @@ function ensureAiProviderAllowedForMode(): void {
 function syncAiActionButtons(): void {
   const generateButton = document.querySelector<HTMLButtonElement>('#generateAiPlan');
   const canGenerateAi = canGenerateAiPlanFromSettings();
+  const aiDrafting = state.activeOperation === 'generate-ai-plan';
 
   for (const saveButton of document.querySelectorAll<HTMLButtonElement>('[data-ai-action="save-bridge-key"]')) {
     saveButton.disabled = !canSaveBridgeAiKey();
@@ -11896,9 +12583,11 @@ function syncAiActionButtons(): void {
     clearButton.disabled = !canClearAiKey();
   }
   if (generateButton) {
-    generateButton.disabled = !canGenerateAi;
+    generateButton.disabled = !canGenerateAi || aiDrafting || state.busy;
     generateButton.classList.toggle('primary', canGenerateAi);
-    generateButton.title = canGenerateAi
+    generateButton.title = aiDrafting
+      ? 'AI draft is already working. Cancel it from Check request or wait for it to finish.'
+      : canGenerateAi
       ? 'Create a one-time draft through your configured AI planner.'
       : aiGenerateDisabledReason();
   }
@@ -12218,6 +12907,7 @@ function completedPlanCard(plan: CompletedPlanRecord): string {
         <div class="completed-history-title-block">
           <div class="completed-history-meta">
             <span class="status-pill ${escapeHtml(plan.tone)}">${escapeHtml(plan.status)}</span>
+            ${storageBadgeHtml(completedPlanStorageBadge(plan))}
             <strong class="completed-history-meta-title">${escapeHtml(historyLabel)}</strong>
             ${evidenceBadgeHtml(evidenceBadge)}
             <span>${escapeHtml(plan.kind === 'recurring' ? 'Repeat' : 'One-time')}</span>
@@ -12578,6 +13268,7 @@ function scheduledApprovalsPanel(): string {
 
 function recurringViewTabs(activeCount: number): string {
   const creating = state.recurringView === 'create';
+  const connector = creating ? recurringDraftConnector(state.recurringDraft) : undefined;
   return `
     <div class="recurring-control-row ${creating ? 'has-connector' : ''}">
       <div class="tabs compact-tabs recurring-view-tabs" role="tablist" aria-label="Repeat payment views">
@@ -12585,6 +13276,7 @@ function recurringViewTabs(activeCount: number): string {
         ${recurringViewButton('active', activeCount ? `Active Repeats (${activeCount})` : 'Active Repeats')}
       </div>
       ${creating ? recurringConnectorPicker() : ''}
+      ${creating ? (connector ? recurringConnectorActionPicker(state.recurringDraft, connector) : recurringPresetMethodControls()) : ''}
     </div>
   `;
 }
@@ -12627,7 +13319,7 @@ function recurringViewButton(view: RecurringView, label: string): string {
 function labsPanel(): string {
   const lab = activeLab();
   const artifact = latestLabArtifact(lab.id);
-  const signedArtifacts = state.labArtifacts;
+  const signedArtifacts = state.labArtifacts.filter((entry) => recordMatchesWalletScope(entry, state.address));
   const complete = state.artifactView === 'signed' ? signedArtifacts.length > 0 : Boolean(artifact);
   const detail =
     state.artifactView === 'signed'
@@ -12927,6 +13619,7 @@ function signedArtifactList(artifacts: LabArtifact[]): string {
 function filteredLabArtifacts(): LabArtifact[] {
   const search = state.artifactSearch.trim().toLowerCase();
   return state.labArtifacts.filter((artifact) => {
+    if (!recordMatchesWalletScope(artifact, state.address)) return false;
     if (state.artifactFilter === 'verified' && !artifact.verified) return false;
     if (state.artifactFilter === 'warnings' && artifact.payload.status !== 'warn') return false;
     if (state.artifactFilter === 'blocked' && artifact.payload.status !== 'blocked') return false;
@@ -13088,14 +13781,11 @@ function archiveFact(label: string, value: string): string {
 }
 
 function receiptStorageBadges(artifact: LabArtifact): string {
-  const cloud = Boolean(artifact.cloudReceiptId);
-  const bridge = Boolean(artifact.bridgeArchived);
-  const cloudLabel = cloud ? 'Archived in Agentic Cloud' : 'Not archived in Agentic Cloud';
-  const bridgeLabel = bridge ? 'Mirrored to local bridge archive' : 'Not in bridge archive';
+  const retry = artifact.cloudSyncStatus === 'failed' && cloudSessionMatchesWallet();
   return `
-    <span class="receipt-storage-badge browser" role="status" aria-label="Saved on this device" title="Saved on this device">Browser</span>
-    <span class="receipt-storage-badge cloud ${cloud ? 'on' : 'off'}" role="status" aria-label="${escapeHtml(cloudLabel)}" title="${escapeHtml(cloudLabel)}">Cloud${cloud ? '' : ' off'}</span>
-    <span class="receipt-storage-badge bridge ${bridge ? 'on' : 'off'}" role="status" aria-label="${escapeHtml(bridgeLabel)}" title="${escapeHtml(bridgeLabel)}">Bridge${bridge ? '' : ' off'}</span>
+    ${storageBadgeHtml(proofStorageBadge(artifact))}
+    ${artifact.cloudSyncError ? `<span class="receipt-storage-badge cloud off" title="${escapeHtml(artifact.cloudSyncError)}">Retry needed</span>` : ''}
+    ${retry ? `<button type="button" class="utility receipt-proof-retry-button" data-artifact-retry-cloud="${escapeHtml(artifact.id)}" ${state.busy ? 'disabled' : ''}>Retry cloud</button>` : ''}
   `;
 }
 
@@ -13473,6 +14163,7 @@ function bind(): void {
   document.querySelector<HTMLButtonElement>('#sendTx')?.addEventListener('click', runSignAndSendTransaction);
   document.querySelector<HTMLButtonElement>('#generatePlan')?.addEventListener('click', runGenerateAgentPlan);
   document.querySelector<HTMLButtonElement>('#generateAiPlan')?.addEventListener('click', runGenerateAiPlan);
+  document.querySelector<HTMLButtonElement>('[data-ai-draft-action="cancel"]')?.addEventListener('click', cancelActiveAiDraft);
   document.querySelectorAll<HTMLInputElement>('[data-ask-agent-after-draft]').forEach((input) => {
     input.addEventListener('change', (event) => {
       state.askAgentAfterDraft = (event.currentTarget as HTMLInputElement).checked;
@@ -13617,6 +14308,9 @@ function bind(): void {
       if (button.dataset.cloudAction === 'cleanup-recurring-backlog') {
         void runCleanupRecurringBacklog();
       }
+      if (button.dataset.cloudAction === 'copy-local-to-cloud') {
+        void runCopyLocalWorkspaceToCloud();
+      }
     });
   }
   for (const button of document.querySelectorAll<HTMLButtonElement>('[data-cloud-delete-cancel]')) {
@@ -13679,6 +14373,7 @@ function bind(): void {
   document.querySelector<HTMLSelectElement>('#clusterSelect')?.addEventListener('change', (event) => {
     const cluster = (event.currentTarget as HTMLSelectElement).value;
     if (!isCluster(cluster)) return;
+    notifyLocalWorkspaceBackupReminder('Switching networks may hide wallet-scoped browser data until you reconnect.');
     state.cluster = cluster;
     clearBrowserWalletSession();
     if (isBrowserWalletSurface()) {
@@ -13695,6 +14390,7 @@ function bind(): void {
   });
 
   document.querySelector<HTMLSelectElement>('#walletSelect')?.addEventListener('change', (event) => {
+    notifyLocalWorkspaceBackupReminder('Back up before switching wallet selection.');
     state.selectedWalletName = (event.currentTarget as HTMLSelectElement).value;
     state.browserWalletPickerOpen = false;
     clearBrowserWalletSession();
@@ -13710,6 +14406,7 @@ function bind(): void {
   document.querySelector<HTMLSelectElement>('#iosWalletSelect')?.addEventListener('change', (event) => {
     const walletId = (event.currentTarget as HTMLSelectElement).value;
     if (!isIosNativeWalletId(walletId)) return;
+    notifyLocalWorkspaceBackupReminder('Back up before switching wallet selection.');
     state.selectedIosWalletId = walletId;
     state.selectedWalletName = iosWalletLabel(walletId);
     resetWalletConnection();
@@ -13757,16 +14454,43 @@ function bind(): void {
       delete state.templateFieldErrors.protocol;
       delete state.templateFieldErrors.blinkUrl;
       const shouldRerender = syncConnectorTemplateFieldChange(fieldId);
+      const cascadingRerender = handleCascadingFieldChange(fieldInput, fieldId);
       state.agentPlan = null;
       state.agentSignature = '';
       state.agentPreparedActionId = '';
-      if (shouldRerender) render();
+      if (shouldRerender || cascadingRerender) render();
     });
     fieldInput.addEventListener('change', () => {
       const fieldId = fieldInput.dataset.templateField;
       if (!fieldId) return;
       state.templateFields[fieldId] = syncTemplateFieldFromControl(fieldInput);
       syncConnectorTemplateFieldChange(fieldId);
+      if (handleCascadingFieldChange(fieldInput, fieldId)) render();
+    });
+  }
+
+  for (const button of document.querySelectorAll<HTMLButtonElement>('button[data-template-field][data-template-field-value]')) {
+    button.addEventListener('click', () => {
+      const fieldId = button.dataset.templateField;
+      const fieldValue = button.dataset.templateFieldValue;
+      if (!fieldId || fieldValue === undefined) return;
+      if (state.templateFields[fieldId] === fieldValue) return;
+      state.templateFields[fieldId] = fieldValue;
+      delete state.templateFieldErrors[fieldId];
+      invalidateCascadingDownstream(fieldId);
+      state.agentPlan = null;
+      state.agentSignature = '';
+      state.agentPreparedActionId = '';
+      render();
+    });
+  }
+
+  for (const button of document.querySelectorAll<HTMLButtonElement>('button[data-cascading-retry]')) {
+    button.addEventListener('click', () => {
+      const cacheKey = button.dataset.cascadingRetry;
+      if (!cacheKey) return;
+      delete state.templateFieldOptionCache[cacheKey];
+      render();
     });
   }
 
@@ -13867,6 +14591,7 @@ function bind(): void {
       resetAiPlannerConfirmation('AI provider changed. Confirm planner again if needed.');
       savePersistedState();
       void syncCloudPreference('ai-settings');
+      void syncConfiguredBridgeAiSettings();
       render();
     });
   }
@@ -13890,6 +14615,7 @@ function bind(): void {
       savePersistedState();
       saveCurrentSessionAiApiKey();
       void syncCloudPreference('ai-settings');
+      void syncConfiguredBridgeAiSettings();
       render();
     });
   }
@@ -14032,6 +14758,14 @@ function bind(): void {
       const artifactId = button.dataset.shareReceipt;
       if (!artifactId) return;
       void runShareLabArtifact(artifactId);
+    });
+  }
+
+  for (const button of document.querySelectorAll<HTMLButtonElement>('[data-artifact-retry-cloud]')) {
+    button.addEventListener('click', () => {
+      const artifactId = button.dataset.artifactRetryCloud;
+      if (!artifactId) return;
+      void runRetryCloudArtifact(artifactId);
     });
   }
 
@@ -14866,8 +15600,18 @@ function updateSelectPickerView(picker: HTMLElement, value: string): void {
   const metaNode = picker.querySelector<HTMLElement>('.select-picker-meta');
   if (metaNode) {
     const meta = selectedOption.dataset.selectPickerMeta ?? '';
-    metaNode.textContent = meta;
-    metaNode.hidden = meta.length === 0;
+    const metaSuffix = selectedOption.dataset.selectPickerMetaSuffix ?? '';
+    metaNode.textContent = '';
+    if (meta) {
+      metaNode.append(document.createTextNode(meta));
+    }
+    if (metaSuffix) {
+      const suffixNode = document.createElement('span');
+      suffixNode.className = 'select-picker-meta-extra';
+      suffixNode.textContent = metaSuffix;
+      metaNode.append(suffixNode);
+    }
+    metaNode.hidden = meta.length === 0 && metaSuffix.length === 0;
   }
 }
 
@@ -15219,6 +15963,7 @@ async function runConnect(): Promise<void> {
 async function runDisconnect(): Promise<void> {
   await run('connect', async () => {
     const browserWallet = isBrowserWalletSurface();
+    notifyLocalWorkspaceBackupReminder('Disconnecting does not move local data to another browser.');
     if (state.bridgeActive) {
       await disconnectBridgeHost().catch(() => undefined);
     }
@@ -15625,102 +16370,172 @@ async function runGenerateAgentPlan(): Promise<void> {
   }
 }
 
+function startAiDraftOperation(templateTitle: string, prompt: string, toastId: number): ActiveAiDraftOperation {
+  const operation: ActiveAiDraftOperation = {
+    id: nextAiDraftOperationId,
+    controller: new AbortController(),
+    toastId,
+    templateTitle,
+    prompt,
+    cancelled: false,
+  };
+  nextAiDraftOperationId += 1;
+  activeAiDraftOperation = operation;
+  state.activeOperation = 'generate-ai-plan';
+  state.steps.ai = 'active';
+  state.error = '';
+  return operation;
+}
+
+function cancelActiveAiDraft(): void {
+  const operation = activeAiDraftOperation;
+  if (!operation || state.activeOperation !== 'generate-ai-plan') return;
+  operation.cancelled = true;
+  operation.controller.abort();
+  state.activeOperation = null;
+  state.steps.ai = 'idle';
+  state.error = '';
+  replaceToast(operation.toastId, 'success', 'Draft cancelled', 'No plan was saved.');
+  render();
+}
+
+function assertAiDraftActive(operation: ActiveAiDraftOperation): void {
+  if (operation.cancelled || operation.controller.signal.aborted) {
+    throw new Error('AI draft cancelled.');
+  }
+}
+
+function isAbortError(err: unknown): boolean {
+  return err instanceof Error && err.name === 'AbortError';
+}
+
 async function runGenerateAiPlan(): Promise<void> {
   if (!canGenerateAiPlanFromSettings()) {
     pushToast('error', 'AI setup incomplete', aiGenerateDisabledReason());
     render();
     return;
   }
+  if (activeAiDraftOperation && state.activeOperation === 'generate-ai-plan') {
+    pushToast('pending', 'AI draft already working', 'Cancel the current draft or wait for it to finish.');
+    render();
+    return;
+  }
+  if (state.busy) {
+    pushToast('pending', 'Action in progress', 'Finish the current wallet or approval action before starting another AI draft.');
+    render();
+    return;
+  }
   const selectedTemplateForUi = selectedTemplate();
   trackGenerateAiPlan(selectedTemplateForUi.id, state.aiSettings.mode, state.aiSettings.provider);
-  state.activeOperation = 'generate-ai-plan';
   const toastId = pushToast('pending', 'Creating AI plan', 'Preparing through your configured AI Planner.');
+  const operation = startAiDraftOperation(selectedTemplateForUi.title, state.agentPrompt.trim(), toastId);
   let reviewAfterDraftId = '';
   try {
-    await run(
-      'ai',
-      async () => {
-        const selectedParameters = normalizeConnectorDraftParameters(
-          selectedTemplateForUi,
-          readTemplateFields(selectedTemplateForUi),
-        );
-        const userNotes = state.agentPrompt.trim();
-        const connectorLocked = Boolean(selectedConnectorForDraftParameters(selectedParameters));
-        const inferredTemplateId = connectorLocked
-          ? selectedTemplateForUi.id
-          : inferTemplateIdForPrompt(userNotes, selectedTemplateForUi.id);
-        const template = templateById(inferredTemplateId);
-        const inferredFromPrompt = template.id !== selectedTemplateForUi.id;
-        const parameters = normalizeConnectorDraftParameters(
-          template,
-          inferredFromPrompt
-            ? inferredTemplateParameters(template, userNotes, selectedParameters)
-            : selectedParameters,
-        );
-        if (inferredFromPrompt) {
-          state.templateFieldErrors = {};
-          if (isConnectorCapableTemplate(template)) {
-            assertValidTemplatePlanInput(template, parameters, userNotes, { mode: 'ai' });
-          }
-        } else {
-          assertValidTemplatePlanInput(template, parameters, userNotes, { mode: 'ai' });
-        }
-        state.templateFields = parameters;
-        const effectiveUserNotes = injectHouseRules(connectorAiUserNotes(template, parameters, userNotes));
-        state.oneTimePlanView = 'review';
-        render();
-        const request = {
-          prompt: userNotes || template.description,
-          userNotes: effectiveUserNotes,
-          template: {
-            id: template.id,
-            category: template.category,
-            title: template.title,
-            description: template.description,
-            actionType: template.actionType,
-            risk: template.risk,
-          },
-          parameters,
-          connectorContext: connectorAiPlannerContext(template, parameters, connectorDraftEnvironment()),
-        };
-        state.aiDiagnostics = [
-          aiRouteDiagnostic(state.aiSettings.mode === 'bridge' ? '/bridge/ai/generate-plan' : '/api/ai/generate-plan'),
-        ];
-        render();
-        const generatedPlan = state.aiSettings.mode === 'bridge'
-          ? await bridgeRequest<AgentPlan>('/bridge/ai/generate-plan', {
-            method: 'POST',
-            body: JSON.stringify(request),
-          })
-          : state.aiSettings.mode === 'hosted'
-            ? await generateHostedAiPlan(state.aiSettings, request)
-            : await generateSessionAiPlan(state.aiSettings, request);
-        const plan = planWithRuntimeTokenLabels(generatedPlan);
-        state.agentPlan = plan;
-        state.agentSignature = '';
-        state.agentPreparedActionId = '';
-        const record = await saveGeneratedPlan(plan, template, request.prompt);
-        state.selectedGeneratedPlanId = record.id;
-        state.oneTimePlanView = 'review';
-        if (state.askAgentAfterDraft && hasDetectedAgentReviewPath()) {
-          reviewAfterDraftId = record.id;
-        }
-        appendAiDiagnostic({
-          code: 'AI_PLAN_READY',
-          message: 'AI Planner returned a valid plan.',
-          detail: `${state.aiSettings.provider} ${state.aiSettings.model || 'model configured'}`,
-        });
-        replaceToast(toastId, 'success', 'AI plan created', `${plan.templateTitle} is ready in Check request.`);
-      },
-      {
-        onError: (message, err) => {
-          const toastMessage = applyAiErrorDiagnostics(err, message);
-          replaceToast(toastId, 'error', aiErrorToastTitle(err), toastMessage);
-        },
-      },
+    const selectedParameters = normalizeConnectorDraftParameters(
+      selectedTemplateForUi,
+      readTemplateFields(selectedTemplateForUi),
     );
+    const userNotes = state.agentPrompt.trim();
+    const connectorLocked = Boolean(selectedConnectorForDraftParameters(selectedParameters));
+    const inferredTemplateId = connectorLocked
+      ? selectedTemplateForUi.id
+      : inferTemplateIdForPrompt(userNotes, selectedTemplateForUi.id);
+    const template = templateById(inferredTemplateId);
+    const inferredFromPrompt = template.id !== selectedTemplateForUi.id;
+    const parameters = normalizeConnectorDraftParameters(
+      template,
+      inferredFromPrompt
+        ? inferredTemplateParameters(template, userNotes, selectedParameters)
+        : selectedParameters,
+    );
+    if (inferredFromPrompt) {
+      state.templateFieldErrors = {};
+      if (isConnectorCapableTemplate(template)) {
+        assertValidTemplatePlanInput(template, parameters, userNotes, { mode: 'ai' });
+      }
+    } else {
+      assertValidTemplatePlanInput(template, parameters, userNotes, { mode: 'ai' });
+    }
+    assertAiDraftActive(operation);
+    operation.templateTitle = template.title;
+    operation.prompt = userNotes || template.description;
+    state.templateFields = parameters;
+    const effectiveUserNotes = injectHouseRules(connectorAiUserNotes(template, parameters, userNotes));
+    state.oneTimePlanView = 'review';
+    render();
+    const request = {
+      prompt: userNotes || template.description,
+      userNotes: effectiveUserNotes,
+      template: {
+        id: template.id,
+        category: template.category,
+        title: template.title,
+        description: template.description,
+        actionType: template.actionType,
+        risk: template.risk,
+      },
+      parameters,
+      connectorContext: connectorAiPlannerContext(template, parameters, connectorDraftEnvironment()),
+    };
+    state.aiDiagnostics = [
+      aiRouteDiagnostic(state.aiSettings.mode === 'bridge' ? '/bridge/ai/generate-plan' : '/api/ai/generate-plan'),
+    ];
+    render();
+    const generatedPlan = state.aiSettings.mode === 'bridge'
+      ? await bridgeRequest<AgentPlan>('/bridge/ai/generate-plan', {
+        method: 'POST',
+        body: JSON.stringify(request),
+        signal: operation.controller.signal,
+      })
+      : state.aiSettings.mode === 'hosted'
+        ? await generateHostedAiPlan(state.aiSettings, request, { signal: operation.controller.signal })
+        : await generateSessionAiPlan(state.aiSettings, request, { signal: operation.controller.signal });
+    assertAiDraftActive(operation);
+    const plan = planWithRuntimeTokenLabels(generatedPlan);
+    state.agentPlan = plan;
+    state.agentSignature = '';
+    state.agentPreparedActionId = '';
+    const record = await saveGeneratedPlan(plan, template, request.prompt, { signal: operation.controller.signal });
+    assertAiDraftActive(operation);
+    state.selectedGeneratedPlanId = record.id;
+    state.oneTimePlanView = 'review';
+    if (state.askAgentAfterDraft && hasDetectedAgentReviewPath()) {
+      reviewAfterDraftId = record.id;
+    }
+    appendAiDiagnostic({
+      code: 'AI_PLAN_READY',
+      message: 'AI Planner returned a valid plan.',
+      detail: `${state.aiSettings.provider} ${state.aiSettings.model || 'model configured'}`,
+    });
+    state.steps.ai = 'done';
+    replaceToast(toastId, 'success', 'AI plan created', `${plan.templateTitle} is ready in Check request.`);
+  } catch (err) {
+    const isCurrentOperation = activeAiDraftOperation?.id === operation.id;
+    if (operation.cancelled || isAbortError(err)) {
+      if (isCurrentOperation) {
+        state.steps.ai = 'idle';
+        state.error = '';
+      }
+      if (!operation.cancelled) {
+        replaceToast(toastId, 'success', 'Draft cancelled', 'No plan was saved.');
+      }
+    } else {
+      const message = redactSecrets(err instanceof Error ? err.message : String(err));
+      if (isCurrentOperation) {
+        state.steps.ai = 'error';
+        state.error = message;
+      }
+      const toastMessage = applyAiErrorDiagnostics(err, message);
+      replaceToast(toastId, 'error', aiErrorToastTitle(err), toastMessage);
+    }
   } finally {
-    state.activeOperation = null;
+    const isCurrentOperation = activeAiDraftOperation?.id === operation.id;
+    if (isCurrentOperation) {
+      activeAiDraftOperation = null;
+      if (state.activeOperation === 'generate-ai-plan') {
+        state.activeOperation = null;
+      }
+    }
     render();
   }
   if (reviewAfterDraftId) {
@@ -16032,6 +16847,7 @@ async function runAskAgentAnything(planId: string, question: string): Promise<vo
       ...pendingExchange,
       pending: false,
       answer: result.answer,
+      ...(result.citations?.length ? { citations: result.citations } : {}),
       answeredAt: result.checkedAt,
     };
     const refreshed = generatedPlanById(planId);
@@ -16251,6 +17067,8 @@ async function runDeleteCompletedPlan(completedId: string): Promise<void> {
   state.completedDeleteModalId = '';
 
   await run('inbox', async () => {
+    state.localCompletedPlans = state.localCompletedPlans.filter((candidate) => candidate.id !== record.id);
+    saveLocalCompletedPlans();
     if (
       record.workflowSource === 'cloud' &&
       record.kind === 'recurring' &&
@@ -16406,11 +17224,17 @@ async function runQueueGeneratedPlan(planId: string): Promise<void> {
   });
 }
 
-async function saveGeneratedPlan(plan: AgentPlan, template: AgentPlanTemplate, prompt: string): Promise<GeneratedPlanRecord> {
+async function saveGeneratedPlan(
+  plan: AgentPlan,
+  template: AgentPlanTemplate,
+  prompt: string,
+  options: { signal?: AbortSignal } = {},
+): Promise<GeneratedPlanRecord> {
   plan = planWithRuntimeTokenLabels(plan);
   if (activeWorkflowMode() === 'agentic-cloud' && plan.actionType !== 'recurring_payment') {
     const cloudPlan = parseCloudPlanResponse(await cloudRequest('/api/plans', {
       method: 'POST',
+      ...(options.signal ? { signal: options.signal } : {}),
       body: JSON.stringify({
         plan,
         source: plan.source,
@@ -16421,12 +17245,18 @@ async function saveGeneratedPlan(plan: AgentPlan, template: AgentPlanTemplate, p
         status: 'draft',
       }),
     }));
+    if (options.signal?.aborted) {
+      throw new Error('AI draft cancelled.');
+    }
     const record = cloudPlanToGeneratedPlan(cloudPlan);
     if (!record) {
       throw new Error('Agentic Cloud did not return a valid plan draft.');
     }
     state.generatedPlans = mergeGeneratedPlans([record], state.generatedPlans.filter((candidate) => candidate.id !== record.id));
     return record;
+  }
+  if (options.signal?.aborted) {
+    throw new Error('AI draft cancelled.');
   }
   const now = new Date().toISOString();
   const record: GeneratedPlanRecord = {
@@ -16591,7 +17421,8 @@ function generatedPlansForPanel(oneTimeOnly = false): GeneratedPlanRecord[] {
     : mode === 'local-bridge'
       ? state.generatedPlans.filter((record) => record.workflowSource === 'local-bridge')
       : state.generatedPlans.filter((record) => record.workflowSource === 'browser' || !record.workflowSource);
-  return oneTimeOnly ? scoped.filter(isOneTimeGeneratedPlan) : scoped;
+  const walletScoped = scoped.filter((record) => recordMatchesWalletScope(record, state.address));
+  return oneTimeOnly ? walletScoped.filter(isOneTimeGeneratedPlan) : walletScoped;
 }
 
 function isOneTimeGeneratedPlan(record: GeneratedPlanRecord): boolean {
@@ -16620,7 +17451,7 @@ function hasGeneratedPlanMovedPastReview(record: GeneratedPlanRecord): boolean {
   return Boolean(record.signature || record.preparedActionId || record.status === 'signed' || record.status === 'queued');
 }
 
-function completedPlanRecords(): CompletedPlanRecord[] {
+function completedPlanRecords(options: { includeLocalLedger?: boolean } = {}): CompletedPlanRecord[] {
   const mode = activeWorkflowMode();
   const includeBrowserHistory = mode === 'browser-workflow' || mode === 'agentic-cloud';
   const historyActions = includeBrowserHistory
@@ -16632,12 +17463,17 @@ function completedPlanRecords(): CompletedPlanRecord[] {
   const historyPlans = includeBrowserHistory
     ? state.generatedPlans.filter((record) => record.workflowSource === 'browser' || !record.workflowSource)
     : state.generatedPlans.filter((record) => record.workflowSource === 'local-bridge');
-  const receiptsByActionId = new Map(historyReceipts.map((receipt) => [receipt.actionId, receipt]));
-  const actionsById = new Map(historyActions.map((action) => [action.id, action]));
+  const walletHistoryActions = historyActions.filter((action) => recordMatchesWalletScope(action, state.address));
+  const walletHistoryReceipts = historyReceipts.filter((receipt) => recordMatchesWalletScope(receipt, state.address));
+  const walletHistoryPlans = historyPlans.filter((record) => recordMatchesWalletScope(record, state.address));
+  const receiptsByActionId = new Map(walletHistoryReceipts.map((receipt) => [receipt.actionId, receipt]));
+  const actionsById = new Map(walletHistoryActions.map((action) => [action.id, action]));
   const usedActionIds = new Set<string>();
-  const records: CompletedPlanRecord[] = mode === 'agentic-cloud' ? [...state.cloudCompletedPlans] : [];
+  const records: CompletedPlanRecord[] = mode === 'agentic-cloud'
+    ? state.cloudCompletedPlans.filter((record) => recordMatchesWalletScope(record, state.address))
+    : [];
 
-  for (const record of historyPlans.filter(isOneTimeGeneratedPlan)) {
+  for (const record of walletHistoryPlans.filter(isOneTimeGeneratedPlan)) {
     const action = record.preparedActionId ? actionsById.get(record.preparedActionId) : undefined;
     const receipt = record.preparedActionId ? receiptsByActionId.get(record.preparedActionId) : undefined;
     const hasTerminalAction = Boolean(action && isTerminalPreparedAction(action));
@@ -16648,13 +17484,13 @@ function completedPlanRecords(): CompletedPlanRecord[] {
     if (record.preparedActionId) usedActionIds.add(record.preparedActionId);
   }
 
-  for (const receipt of historyReceipts) {
+  for (const receipt of walletHistoryReceipts) {
     if (usedActionIds.has(receipt.actionId)) continue;
     records.push(completedPlanFromReceipt(receipt, actionsById.get(receipt.actionId)));
     usedActionIds.add(receipt.actionId);
   }
 
-  for (const action of historyActions) {
+  for (const action of walletHistoryActions) {
     if (usedActionIds.has(action.id) || !isTerminalPreparedAction(action)) continue;
     records.push(completedPlanFromAction(action));
     usedActionIds.add(action.id);
@@ -16665,7 +17501,16 @@ function completedPlanRecords(): CompletedPlanRecord[] {
     records.push(completedPlanFromEndedRecurring(payment));
   }
 
-  return records.sort((left, right) => right.completedAt.localeCompare(left.completedAt));
+  const localLedger = options.includeLocalLedger === false
+    ? []
+    : state.localCompletedPlans
+        .filter((record) => recordMatchesWalletScope(record, state.address))
+        .filter((record) => {
+          if (mode === 'local-bridge') return record.workflowSource === 'local-bridge';
+          return record.workflowSource !== 'local-bridge';
+        });
+
+  return mergeCompletedPlanRecords(records, localLedger);
 }
 
 function showCompletedHistoryForAction(actionId?: string): void {
@@ -17350,8 +18195,7 @@ function normalizeAgentReviewResultForFacts(
 
 function planBehavesLikeSwap(plan: AgentPlan): boolean {
   return plan.actionType === 'swap' ||
-    plan.parameters.actionKind === 'swap' ||
-    Boolean(plan.parameters.outputToken);
+    plan.parameters.actionKind === 'swap';
 }
 
 function isSwapQuestionAnsweredByFacts(question: AgentReviewQuestion, facts: AgentReviewFactSet): boolean {
@@ -17500,7 +18344,7 @@ function mergeReviewFacts(
   const aiFacts = aiEvidence?.facts;
   if (!aiFacts || typeof aiFacts !== 'object' || Array.isArray(aiFacts)) return merged;
   const checkedAt = new Date().toISOString();
-  const slots: Array<keyof AgentReviewFactSet> = ['quote', 'route', 'policy', 'simulation', 'protocol', 'protocolConnector', 'blinkAction', 'tokenMint', 'recipient', 'limits', 'schedule'];
+  const slots: Array<keyof AgentReviewFactSet> = ['research', 'quote', 'route', 'policy', 'simulation', 'protocol', 'protocolConnector', 'blinkAction', 'blinkClassification', 'tokenMint', 'recipient', 'limits', 'schedule'];
   for (const slot of slots) {
     const existing = merged[slot];
     if (existing && existing.source === 'deterministic' && existing.state !== 'missing') {
@@ -17584,7 +18428,9 @@ function tokenFactsForPlan(plan: AgentPlan, checkedAt: string): AgentReviewFact 
 }
 
 function planTokenCandidates(plan: AgentPlan): PlanTokenCandidate[] {
-  const entries: Array<{ role: PlanTokenCandidate['role']; value: string }> = planBehavesLikeSwap(plan)
+  const spec = findingsSpecFor(plan.actionType);
+  const isSwapShaped = !spec.singleTokenRole && planBehavesLikeSwap(plan);
+  const entries: Array<{ role: PlanTokenCandidate['role']; value: string }> = isSwapShaped
     ? [
         { role: 'input', value: planParameter(plan, ['inputToken']) },
         { role: 'output', value: planParameter(plan, ['outputToken']) },
@@ -17848,9 +18694,11 @@ function gatherDeterministicFacts(record: GeneratedPlanRecord): AgentReviewFactS
   const facts: AgentReviewFactSet = {};
   const checkedAt = new Date().toISOString();
   const plan = planWithRuntimeTokenLabels(record.plan);
+  const spec = findingsSpecFor(plan.actionType);
+  const allows = (key: Parameters<typeof spec.slots.includes>[0]): boolean => spec.slots.includes(key);
 
   const recipientAddress = (planParameter(plan, ['recipient', 'recipientAddress']) || '').trim();
-  if (recipientAddress) {
+  if (recipientAddress && allows('recipient')) {
     const policyStatus = recipientPolicyStatus(recipientAddress);
     facts.recipient = {
       state: policyStatus.blocked ? 'fail' : policyStatus.allowRequired ? 'warn' : policyStatus.known ? 'ok' : 'checked',
@@ -17868,13 +18716,15 @@ function gatherDeterministicFacts(record: GeneratedPlanRecord): AgentReviewFactS
     };
   }
 
-  const tokenFacts = tokenFactsForPlan(plan, checkedAt);
-  if (tokenFacts) {
-    facts.tokenMint = tokenFacts;
+  if (allows('tokenMint')) {
+    const tokenFacts = tokenFactsForPlan(plan, checkedAt);
+    if (tokenFacts) {
+      facts.tokenMint = tokenFacts;
+    }
   }
 
   const slippageBpsRaw = planParameter(plan, ['slippageBps']);
-  if (slippageBpsRaw) {
+  if (slippageBpsRaw && allows('limits')) {
     const slippageBps = Number(slippageBpsRaw);
     const valid = Number.isFinite(slippageBps) && slippageBps > 0;
     facts.limits = {
@@ -17888,7 +18738,7 @@ function gatherDeterministicFacts(record: GeneratedPlanRecord): AgentReviewFactS
     };
   }
 
-  if (plan.actionType === 'recurring_payment') {
+  if (plan.actionType === 'recurring_payment' && allows('schedule')) {
     const cadence = planParameter(plan, ['cadence']).trim() || 'weekly';
     const scheduleBits = [
       cadence,
@@ -17914,69 +18764,82 @@ function gatherDeterministicFacts(record: GeneratedPlanRecord): AgentReviewFactS
     };
   }
 
-  if (planBehavesLikeSwap(plan)) {
+  if (planBehavesLikeSwap(plan) && (allows('protocol') || allows('route') || allows('quote'))) {
     const inputToken = planParameter(plan, ['inputToken']).trim();
     const outputToken = planParameter(plan, ['outputToken']).trim();
     const routeLabel = [resolveTokenDisplay(inputToken) ?? inputToken, resolveTokenDisplay(outputToken) ?? outputToken]
       .filter(Boolean)
       .join(' -> ');
-    facts.protocol = {
-      state: 'ok',
-      source: 'deterministic',
-      checkedAt,
-      message: 'Browser swaps execute through Jupiter; Jupiter chooses the venue route when the quote/order is fetched.',
-      detail: {
-        aggregator: 'Jupiter',
-        routeSelection: 'quote-time',
-        userInputRequired: false,
-      },
-    };
-    facts.route = {
-      state: routeLabel ? 'checked' : 'missing',
-      source: 'deterministic',
-      checkedAt,
-      message: routeLabel
-        ? `${routeLabel}; exact venue route resolves from the Jupiter quote.`
-        : 'Quote not requested yet. Route resolves when a quote is fetched.',
-    };
-    facts.quote = {
-      state: 'missing',
-      source: 'deterministic',
-      checkedAt,
-      message: 'No quote fetched in the browser yet for this draft; this is not user input.',
-    };
+    if (allows('protocol')) {
+      facts.protocol = {
+        state: 'ok',
+        source: 'deterministic',
+        checkedAt,
+        message: 'Browser swaps execute through Jupiter; Jupiter chooses the venue route when the quote/order is fetched.',
+        detail: {
+          aggregator: 'Jupiter',
+          routeSelection: 'quote-time',
+          userInputRequired: false,
+        },
+      };
+    }
+    if (allows('route')) {
+      facts.route = {
+        state: routeLabel ? 'checked' : 'missing',
+        source: 'deterministic',
+        checkedAt,
+        message: routeLabel
+          ? `${routeLabel}; exact venue route resolves from the Jupiter quote.`
+          : 'Quote not requested yet. Route resolves when a quote is fetched.',
+      };
+    }
+    if (allows('quote')) {
+      facts.quote = {
+        state: 'missing',
+        source: 'deterministic',
+        checkedAt,
+        message: 'No quote fetched in the browser yet for this draft; this is not user input.',
+      };
+    }
   }
 
-  if (plan.actionType === 'blink_action' || plan.parameters.blinkUrl || plan.parameters.actionUrl) {
+  const hasBlinkSignals = plan.actionType === 'blink_action' || plan.parameters.blinkUrl || plan.parameters.actionUrl;
+  const wantConnectorFact = allows('protocolConnector');
+  const wantBlinkFact = allows('blinkAction');
+  if ((wantConnectorFact || wantBlinkFact) && (hasBlinkSignals || wantConnectorFact)) {
     const connector = selectedConnectorForDraftParameters(plan.parameters) ??
       findProtocolConnectorByInput(plan.parameters.protocol || plan.parameters.dapp || plan.route);
-    facts.protocolConnector = {
-      state: connector && isDappEnabled(connector.id, state.connectedDapps, state.cluster) ? 'ok' : 'warn',
-      source: 'deterministic',
-      checkedAt,
-      message: connector
-        ? `${connector.name} connector ${isDappEnabled(connector.id, state.connectedDapps, state.cluster) ? 'is enabled' : 'is not enabled'} for ${state.cluster}.`
-        : 'No matching Protocol Connector was found for this draft.',
-      detail: connector
-        ? {
-            id: connector.id,
-            capabilities: connector.capabilities,
-            readSource: connector.readSource ?? null,
-            actionSource: connector.actionSource ?? null,
-          }
-        : {},
-    };
-    facts.blinkAction = {
-      state: plan.parameters.blinkUrl || plan.parameters.actionUrl ? 'ok' : 'missing',
-      source: 'deterministic',
-      checkedAt,
-      message: plan.parameters.blinkUrl || plan.parameters.actionUrl
-        ? 'Blink/Solana Action URL is present. Transaction bytes are fetched only when sent for approval.'
-        : 'No Blink/Solana Action URL was provided for this executable connector plan.',
-    };
+    if (wantConnectorFact) {
+      facts.protocolConnector = {
+        state: connector && isDappEnabled(connector.id, state.connectedDapps, state.cluster) ? 'ok' : 'warn',
+        source: 'deterministic',
+        checkedAt,
+        message: connector
+          ? `${connector.name} connector ${isDappEnabled(connector.id, state.connectedDapps, state.cluster) ? 'is enabled' : 'is not enabled'} for ${state.cluster}.`
+          : 'No matching Protocol Connector was found for this draft.',
+        detail: connector
+          ? {
+              id: connector.id,
+              capabilities: connector.capabilities,
+              readSource: connector.readSource ?? null,
+              actionSource: connector.actionSource ?? null,
+            }
+          : {},
+      };
+    }
+    if (wantBlinkFact) {
+      facts.blinkAction = {
+        state: plan.parameters.blinkUrl || plan.parameters.actionUrl ? 'ok' : 'missing',
+        source: 'deterministic',
+        checkedAt,
+        message: plan.parameters.blinkUrl || plan.parameters.actionUrl
+          ? 'Blink/Solana Action URL is present. Transaction bytes are fetched only when sent for approval.'
+          : 'No Blink/Solana Action URL was provided for this executable connector plan.',
+      };
+    }
   }
 
-  if (plan.actionType !== 'read_only' && plan.actionType !== 'manual_review') {
+  if (allows('simulation') && plan.actionType !== 'read_only' && plan.actionType !== 'manual_review') {
     facts.simulation = {
       state: 'missing',
       source: 'deterministic',
@@ -18021,6 +18884,34 @@ async function runSaveBridgeAiKey(): Promise<void> {
       pushToast('error', 'AI setup failed', message);
     },
   });
+}
+
+async function syncConfiguredBridgeAiSettings(): Promise<void> {
+  if (state.aiSettings.mode !== 'bridge' || !isBridgeAiConfigured()) return;
+  if (!state.aiSettings.model.trim()) return;
+  try {
+    await bridgeRequest('/bridge/ai/session-key', {
+      method: 'POST',
+      body: JSON.stringify({
+        baseUrl: state.aiSettings.baseUrl,
+        model: state.aiSettings.model,
+        provider: state.aiSettings.provider,
+        apiFormat: state.aiSettings.apiFormat,
+      }),
+    });
+    await refreshBridgeAiStatus(false);
+    render();
+  } catch (err) {
+    const message = redactSecrets(err instanceof Error ? err.message : String(err));
+    appendAiDiagnostic({
+      code: 'AI_PROVIDER_ERROR',
+      message: 'Bridge AI settings update failed.',
+      detail: message,
+      path: '/bridge/ai/session-key',
+    });
+    pushToast('error', 'Bridge AI update failed', message);
+    render();
+  }
 }
 
 async function runSaveDirectAiKey(): Promise<void> {
@@ -18303,7 +19194,9 @@ function hostedByokCloudSessionReason(): string {
 
 async function afterWalletConnected(): Promise<void> {
   await refreshCloudSession(false);
+  hydrateLocalWorkspaceForWallet();
   if (await signOutCloudSessionForWalletBoundary('wallet-mismatch', { toast: true })) {
+    await refreshActiveWorkflowData().catch(() => undefined);
     return;
   }
   if (cloudSessionMatchesWallet()) {
@@ -18313,8 +19206,8 @@ async function afterWalletConnected(): Promise<void> {
         error: err instanceof Error ? err.message : String(err),
       };
     });
-  } else if (activeWorkflowMode() === 'browser-workflow') {
-    refreshBrowserWorkflowData();
+  } else {
+    await refreshActiveWorkflowData().catch(() => undefined);
   }
 }
 
@@ -18349,14 +19242,203 @@ async function runCloudSignIn(): Promise<void> {
     savePersistedState();
     await refreshCloudWorkspaceData();
     pushToast('success', 'Cloud workspace signed in', short(state.address));
+    const importCandidates = localCloudImportCandidates();
+    if (importCandidates.summary.total > 0) {
+      pushToast('pending', 'Local data ready to copy', localWorkspaceImportSummaryLabel(importCandidates.summary));
+    }
   });
 }
 
 async function runCloudLogout(): Promise<void> {
   await run('connect', async () => {
+    notifyLocalWorkspaceBackupReminder('Sign-out keeps local data on this device only.');
     await signOutCloudSession();
     pushToast('success', 'Cloud workspace signed out', 'Saved-on-device workflow is active in this browser.');
   });
+}
+
+async function runCopyLocalWorkspaceToCloud(): Promise<void> {
+  await run('connect', async () => {
+    if (!cloudSessionMatchesWallet()) {
+      throw new Error('Sign in to Agentic Cloud with the connected wallet before copying local workspace data.');
+    }
+    const candidates = localCloudImportCandidates();
+    if (candidates.summary.total === 0) {
+      pushToast('success', 'Nothing to copy', 'No eligible local workspace records need cloud import.');
+      return;
+    }
+    const label = localWorkspaceImportSummaryLabel(candidates.summary);
+    const confirmed = window.confirm(
+      `${label || 'Local workspace records'} can be copied to Agentic Cloud for ${short(state.address)}. Continue?`,
+    );
+    if (!confirmed) return;
+
+    const now = new Date().toISOString();
+    const importedPlanIds = new Map<string, string>();
+    let copied = 0;
+    let failed = 0;
+
+    for (const record of candidates.plans) {
+      try {
+        const cloudPlan = parseCloudPlanResponse(await cloudRequest('/api/plans', {
+          method: 'POST',
+          body: JSON.stringify(cloudPlanImportBody(record)),
+        }));
+        const cloudRecord = cloudPlanToGeneratedPlan(cloudPlan);
+        if (cloudRecord) {
+          importedPlanIds.set(record.id, cloudRecord.id);
+          state.generatedPlans = mergeGeneratedPlans([cloudRecord], state.generatedPlans.map((candidate) =>
+            candidate.id === record.id ? { ...candidate, importedToCloudAt: now } : candidate,
+          ));
+          copied += 1;
+        }
+      } catch {
+        failed += 1;
+      }
+    }
+
+    for (const action of candidates.approvals) {
+      try {
+        const approvalRecord = parseCloudApprovalResponse(await cloudRequest('/api/approvals', {
+          method: 'POST',
+          body: JSON.stringify(cloudApprovalImportBody(action, importedPlanIds.get(action.planDraftId ?? ''))),
+        }));
+        const cloudApproval = cloudApprovalToPreparedAction(approvalRecord);
+        if (cloudApproval) {
+          state.preparedActions = mergePreparedActions([cloudApproval], state.preparedActions.map((candidate) =>
+            candidate.id === action.id ? { ...candidate, importedToCloudAt: now } : candidate,
+          ));
+          state.materializedActions = state.preparedActions;
+          copied += 1;
+        }
+      } catch {
+        failed += 1;
+      }
+    }
+
+    for (const payment of candidates.repeatPayments) {
+      try {
+        const response = await cloudCreateRecurring(cloudRecurringImportBody(payment));
+        const cloudPayment = cloudRecurringScheduleToPayment(response.schedule, {
+          lifetimeSpend: response.lifetimeSpend,
+          nextRuns: response.nextRuns,
+        });
+        if (cloudPayment) {
+          state.recurringPayments = mergeRecurringPayments([cloudPayment], state.recurringPayments.map((candidate) =>
+            candidate.id === payment.id ? { ...candidate, importedToCloudAt: now } : candidate,
+          ));
+          copied += 1;
+        }
+      } catch {
+        failed += 1;
+      }
+    }
+
+    for (const artifact of candidates.proofs) {
+      const uploaded = await uploadLabArtifactToCloud(artifact);
+      state.labArtifacts = mergeLabArtifacts([uploaded], state.labArtifacts);
+      if (uploaded.cloudSyncStatus === 'synced') {
+        copied += 1;
+      } else {
+        failed += 1;
+      }
+    }
+
+    saveGeneratedPlans();
+    saveBrowserWorkflowState();
+    await saveLabArtifacts();
+    await refreshCloudWorkspaceData().catch(() => undefined);
+
+    if (copied === 0 && failed > 0) {
+      throw new Error('No local records could be copied to Agentic Cloud.');
+    }
+    pushToast(
+      failed > 0 ? 'pending' : 'success',
+      failed > 0 ? 'Cloud copy partially completed' : 'Local workspace copied',
+      failed > 0 ? `${copied} copied, ${failed} need review.` : `${copied} item${copied === 1 ? '' : 's'} copied to cloud.`,
+    );
+  });
+}
+
+function notifyLocalWorkspaceBackupReminder(detail: string): void {
+  const summary = localWorkspaceSummary();
+  if (summary.total === 0) return;
+  pushToast('pending', 'Back up local workspace', `${summary.total} local item${summary.total === 1 ? '' : 's'} found. ${detail}`);
+}
+
+function cloudPlanImportBody(record: GeneratedPlanRecord): Record<string, unknown> {
+  return {
+    plan: record.plan,
+    source: record.source,
+    templateId: record.templateId,
+    templateTitle: record.templateTitle,
+    prompt: record.prompt,
+    cluster: record.cluster,
+    status: record.status === 'signed' || record.status === 'queued' ? record.status : 'draft',
+    ...(record.signature ? { signature: record.signature } : {}),
+    metadata: {
+      importedFrom: 'browser-workspace',
+      browserPlanId: record.id,
+      ...(record.agentReview ? { agentReview: record.agentReview } : {}),
+    },
+  };
+}
+
+function cloudApprovalImportBody(action: PreparedAction, planDraftId?: string): Record<string, unknown> {
+  const amount = amountLabel(action);
+  const token = tokenLabel(action);
+  const recipient = recipientParam(action);
+  return {
+    ...(planDraftId ? { planDraftId } : {}),
+    kind: action.kind,
+    summary: action.summary,
+    params: action.params as JsonObject,
+    cluster: action.cluster,
+    dueAt: action.dueAt,
+    ...(action.note ? { note: action.note } : {}),
+    ...(amount !== 'n/a' ? { amount } : {}),
+    ...(token !== 'n/a' ? { token } : {}),
+    ...(recipient ? { recipient } : {}),
+    metadata: {
+      importedFrom: 'browser-workspace',
+      browserActionId: action.id,
+      actionSource: action.workflowSource ?? (isBrowserWorkflowId(action.id) ? 'browser' : 'local-bridge'),
+      ...(action.agentReview ? { agentReview: action.agentReview } : {}),
+    },
+  };
+}
+
+function cloudRecurringImportBody(payment: RecurringPayment): Record<string, unknown> {
+  const isSwap = recurringPaymentIsSwap(payment);
+  return {
+    cluster: payment.cluster,
+    actionKind: isSwap ? 'swap' : 'transfer',
+    token: payment.token,
+    inputToken: payment.inputToken,
+    outputToken: payment.outputToken,
+    recipient: payment.recipient,
+    amount: payment.amount,
+    ...(payment.slippageBps ? { slippageBps: Number(payment.slippageBps) || payment.slippageBps } : {}),
+    cadence: payment.cadence,
+    ...(payment.dayOfWeek !== undefined ? { dayOfWeek: payment.dayOfWeek } : {}),
+    ...(payment.dayOfMonth !== undefined ? { dayOfMonth: payment.dayOfMonth } : {}),
+    ...(payment.intervalDays !== undefined ? { intervalDays: payment.intervalDays } : {}),
+    ...(payment.intervalHours !== undefined ? { intervalHours: payment.intervalHours } : {}),
+    ...(payment.intervalMinutes !== undefined ? { intervalMinutes: payment.intervalMinutes } : {}),
+    ...(payment.localTime ? { localTime: payment.localTime } : {}),
+    ...(payment.startAt ? { startAt: payment.startAt } : {}),
+    ...(payment.maxOccurrences !== undefined ? { maxOccurrences: payment.maxOccurrences } : {}),
+    ...(payment.expiresAt ? { expiresAt: payment.expiresAt } : {}),
+    ...(payment.notifications ? { notifications: payment.notifications } : {}),
+    ...(payment.note ? { note: payment.note } : {}),
+    status: payment.status,
+    metadata: {
+      ...(payment.metadata ?? {}),
+      importedFrom: 'browser-workspace',
+      browserRecurringId: payment.id,
+      ...(payment.agentReview ? { agentReview: payment.agentReview } : {}),
+    },
+  };
 }
 
 function openCloudWorkspaceDeleteModal(): void {
@@ -18516,7 +19598,7 @@ async function refreshActiveWorkflowData(): Promise<void> {
 }
 
 function refreshBrowserWorkflowData(): void {
-  const browserWorkflow = loadBrowserWorkflowState();
+  const browserWorkflow = loadBrowserWorkflowState(state.address);
   state.preparedActions = browserWorkflow.preparedActions;
   state.materializedActions = browserWorkflow.preparedActions;
   state.recurringPayments = browserWorkflow.recurringPayments;
@@ -18528,7 +19610,7 @@ async function refreshCloudWorkspaceData(): Promise<void> {
     throw new Error('Sign in to Agentic Cloud before loading cloud workflow data.');
   }
   void hydratePreferencesFromCloud();
-  const browserWorkflow = loadBrowserWorkflowState();
+  const browserWorkflow = loadBrowserWorkflowState(state.address);
   const recurringResponse: Awaited<ReturnType<typeof cloudRecurringList>> = await cloudRecurringList().catch((err) => {
     // eslint-disable-next-line no-console
     console.warn('Cloud recurring API unavailable:', err);
@@ -18592,7 +19674,8 @@ async function cloudRequest<T = unknown>(path: string, init: RequestInit = {}): 
       credentials: 'include',
       headers,
     });
-  } catch {
+  } catch (err) {
+    if (isAbortError(err)) throw err;
     throw new Error('Agentic Cloud is not reachable from this page.');
   }
   const payload = await response.json().catch(() => null) as unknown;
@@ -19782,11 +20865,17 @@ function generatedRecordForRecurringPlan(
 function recurringDraftPlanParameters(draft: RecurringDraft): Record<string, string> {
   const isSwap = recurringDraftIsSwap(draft);
   const connector = recurringDraftConnector(draft);
+  const connectorForm = recurringDraftConnectorActionForm(draft);
   return {
     actionKind: isSwap ? 'swap' : 'transfer',
     ...(connector ? {
       connectorId: connector.id,
       protocol: connector.name,
+      ...(connectorForm ? {
+        operation: connectorForm.operationLabel,
+        connectorOperationId: connectorForm.id,
+        connectorTemplateId: connectorForm.templateId,
+      } : {}),
       connectorActionSource: connector.actionSource ?? 'review-context',
       connectorApprovalBoundary: 'review_context_only',
     } : {}),
@@ -19855,10 +20944,12 @@ function recurringPaymentToAgentPlan(payment: RecurringPayment): AgentPlan {
 function recurringDraftFromPayment(payment: RecurringPayment): RecurringDraft {
   const isSwap = recurringPaymentIsSwap(payment);
   const connectorId = typeof payment.metadata?.connectorId === 'string' ? payment.metadata.connectorId : '';
-  return {
+  const connectorOperationId = typeof payment.metadata?.connectorOperationId === 'string' ? payment.metadata.connectorOperationId : '';
+  return normalizeRecurringConnectorDraft({
     ...defaultRecurringDraft(),
     actionKind: isSwap ? 'swap' : 'transfer',
     connectorId,
+    connectorOperationId,
     token: payment.token,
     inputToken: payment.inputToken || payment.token,
     outputToken: payment.outputToken || 'USDC',
@@ -19877,7 +20968,7 @@ function recurringDraftFromPayment(payment: RecurringPayment): RecurringDraft {
     expiresAt: payment.expiresAt ? localDateTime(new Date(payment.expiresAt)) : '',
     webhookUrl: payment.notifications?.webhookUrl ?? '',
     note: payment.note ?? '',
-  };
+  });
 }
 
 async function runPreparedActionOp(actionId: string, op: string): Promise<void> {
@@ -23227,6 +24318,26 @@ async function runShareLabArtifact(artifactId: string): Promise<void> {
   }
 }
 
+async function runRetryCloudArtifact(artifactId: string): Promise<void> {
+  const artifact = state.labArtifacts.find((candidate) => candidate.id === artifactId);
+  if (!artifact) return;
+  await run('lab', async () => {
+    if (!cloudSessionMatchesWallet()) {
+      throw new Error('Sign in to Agentic Cloud with this wallet before retrying proof upload.');
+    }
+    if (!isCloudEvidenceReceiptKind(artifact.kind)) {
+      throw new Error('This proof type is not supported by Agentic Cloud evidence storage.');
+    }
+    const uploaded = await uploadLabArtifactToCloud(artifact);
+    state.labArtifacts = mergeLabArtifacts([uploaded], state.labArtifacts);
+    await saveLabArtifacts();
+    if (uploaded.cloudSyncStatus !== 'synced') {
+      throw new Error(uploaded.cloudSyncError || 'Cloud proof upload did not complete.');
+    }
+    pushToast('success', 'Proof synced', 'Saved proof copied to Agentic Cloud.');
+  });
+}
+
 function deleteEvidenceConfirmCopy(artifact: LabArtifact): string {
   const destinations = ['this device'];
   if (activeWorkflowMode() === 'agentic-cloud' && artifact.cloudReceiptId) destinations.push('Agentic Cloud');
@@ -23267,43 +24378,92 @@ interface ArchiveLabArtifactResult {
 }
 
 async function archiveLabArtifact(artifact: LabArtifact): Promise<ArchiveLabArtifactResult> {
-  let working: LabArtifact = artifact;
+  let working: LabArtifact = {
+    ...artifact,
+    ...(artifact.cloudReceiptId ? { cloudSyncStatus: 'synced' as ProofSyncStatus } : {}),
+    ...(artifact.bridgeArchived ? { bridgeSyncStatus: 'synced' as ProofSyncStatus } : {}),
+  };
   state.labArtifacts = mergeLabArtifacts([working], state.labArtifacts);
   await saveLabArtifacts();
   const result: ArchiveLabArtifactResult = { savedToCloud: false, savedToBridge: false };
   const mode = activeWorkflowMode();
   if (mode === 'agentic-cloud' && isCloudEvidenceReceiptKind(working.kind)) {
-    try {
-      const response = await cloudRequest<{ receipt?: { id?: unknown } }>('/api/evidence', {
-        method: 'POST',
-        body: JSON.stringify(cloudEvidenceCreateBody(working)),
-      });
-      const cloudId = typeof response.receipt?.id === 'string' && response.receipt.id ? response.receipt.id : undefined;
-      if (cloudId) {
-        working = { ...working, cloudReceiptId: cloudId };
-        state.cloudEvidenceStatus = 'Cloud evidence archive synced for the signed-in wallet.';
-      } else {
-        state.cloudEvidenceStatus = 'Cloud archive accepted the receipt but did not return an id — refresh archive to recover it.';
-      }
-      result.savedToCloud = true;
-    } catch (err) {
-      state.cloudEvidenceStatus = `Cloud evidence archive failed: ${err instanceof Error ? err.message : String(err)}`;
-    }
+    working = await uploadLabArtifactToCloud(working);
+    result.savedToCloud = working.cloudSyncStatus === 'synced';
   }
   if (state.bridgeActive) {
-    try {
-      await saveBridgeLabArtifact(working);
-      working = { ...working, bridgeArchived: true };
-      result.savedToBridge = true;
-    } catch (err) {
-      state.bridgeStatus = `Receipt bridge archive failed: ${err instanceof Error ? err.message : String(err)}`;
-    }
+    working = await mirrorLabArtifactToBridge(working);
+    result.savedToBridge = working.bridgeSyncStatus === 'synced';
   }
   if (working !== artifact) {
     state.labArtifacts = mergeLabArtifacts([working], state.labArtifacts);
     await saveLabArtifacts();
   }
   return result;
+}
+
+async function uploadLabArtifactToCloud(artifact: LabArtifact): Promise<LabArtifact> {
+  const pending: LabArtifact = {
+    ...artifact,
+    cloudSyncStatus: 'pending',
+    cloudSyncError: undefined,
+    syncAttemptedAt: new Date().toISOString(),
+  };
+  state.labArtifacts = mergeLabArtifacts([pending], state.labArtifacts);
+  await saveLabArtifacts();
+  try {
+    const response = await cloudRequest<{ receipt?: { id?: unknown } }>('/api/evidence', {
+      method: 'POST',
+      body: JSON.stringify(cloudEvidenceCreateBody(pending)),
+    });
+    const cloudId = typeof response.receipt?.id === 'string' && response.receipt.id ? response.receipt.id : undefined;
+    if (!cloudId) {
+      throw new Error('Cloud accepted the proof but did not return a receipt id.');
+    }
+    state.cloudEvidenceStatus = 'Cloud evidence archive synced for the signed-in wallet.';
+    return {
+      ...pending,
+      cloudReceiptId: cloudId,
+      cloudSyncStatus: 'synced',
+      cloudSyncError: undefined,
+      importedToCloudAt: new Date().toISOString(),
+    };
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    state.cloudEvidenceStatus = `Cloud evidence archive failed: ${message}`;
+    return {
+      ...pending,
+      cloudSyncStatus: 'failed',
+      cloudSyncError: message,
+      syncAttemptedAt: new Date().toISOString(),
+    };
+  }
+}
+
+async function mirrorLabArtifactToBridge(artifact: LabArtifact): Promise<LabArtifact> {
+  const pending: LabArtifact = {
+    ...artifact,
+    bridgeSyncStatus: 'pending',
+    bridgeSyncError: undefined,
+    syncAttemptedAt: new Date().toISOString(),
+  };
+  try {
+    await saveBridgeLabArtifact(pending);
+    return {
+      ...pending,
+      bridgeArchived: true,
+      bridgeSyncStatus: 'synced',
+      bridgeSyncError: undefined,
+    };
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    state.bridgeStatus = `Receipt bridge archive failed: ${message}`;
+    return {
+      ...pending,
+      bridgeSyncStatus: 'failed',
+      bridgeSyncError: message,
+    };
+  }
 }
 
 function cloudEvidenceCreateBody(artifact: LabArtifact): Record<string, unknown> {
@@ -23341,20 +24501,13 @@ async function syncLabArtifactsWithCloud(): Promise<void> {
         !remoteIds.has(artifact.id) &&
         artifact.walletAddress === state.address &&
         isCloudEvidenceReceiptKind(artifact.kind) &&
-        !artifact.cloudReceiptId,
+        !artifact.cloudReceiptId &&
+        artifact.cloudSyncStatus !== 'pending',
     );
     const pushed: LabArtifact[] = [];
     for (const artifact of missingRemote) {
-      try {
-        const response = await cloudRequest<{ receipt?: { id?: unknown } }>('/api/evidence', {
-          method: 'POST',
-          body: JSON.stringify(cloudEvidenceCreateBody(artifact)),
-        });
-        const cloudId = typeof response.receipt?.id === 'string' && response.receipt.id ? response.receipt.id : undefined;
-        if (cloudId) pushed.push({ ...artifact, cloudReceiptId: cloudId });
-      } catch (err) {
-        state.cloudEvidenceStatus = `Cloud evidence archive failed: ${err instanceof Error ? err.message : String(err)}`;
-      }
+      const uploaded = await uploadLabArtifactToCloud(artifact);
+      pushed.push(uploaded);
     }
     state.labArtifacts = mergeLabArtifacts(remote, pushed, local);
     await saveLabArtifacts();
@@ -23407,6 +24560,7 @@ function cloudEvidenceRecordToLabArtifact(value: unknown): LabArtifact | null {
     verified,
     artifactHash: stringField(record.artifactHash) ?? stringField(record.preSignatureHash) ?? '',
     ...(cloudId ? { cloudReceiptId: cloudId } : {}),
+    ...(cloudId ? { cloudSyncStatus: 'synced' as ProofSyncStatus } : {}),
     ...(isJsonObject(metadata) ? { metadata } : {}),
   };
   return isLabArtifact(candidate) ? candidate : null;
@@ -23469,10 +24623,15 @@ async function syncLabArtifactsWithBridge(): Promise<void> {
     const local = state.labArtifacts;
     const remoteIds = new Set(remote.map((artifact) => artifact.id));
     const missingRemote = local.filter((artifact) => !remoteIds.has(artifact.id));
+    const mirrored: LabArtifact[] = [];
     for (const artifact of missingRemote) {
-      await saveBridgeLabArtifact(artifact);
+      mirrored.push(await mirrorLabArtifactToBridge(artifact));
     }
-    state.labArtifacts = mergeLabArtifacts(remote, local);
+    state.labArtifacts = mergeLabArtifacts(
+      remote.map((artifact) => ({ ...artifact, bridgeArchived: true, bridgeSyncStatus: 'synced' as ProofSyncStatus })),
+      mirrored,
+      local,
+    );
     await saveLabArtifacts();
     state.labArchiveStatus = 'Browser archive synced with bridge.';
   } catch (err) {
@@ -23482,7 +24641,11 @@ async function syncLabArtifactsWithBridge(): Promise<void> {
 
 async function loadBridgeLabArtifacts(): Promise<LabArtifact[]> {
   const response = await bridgeRequest<{ artifacts?: unknown[] }>('/bridge/lab-artifacts');
-  return mergeLabArtifacts(Array.isArray(response.artifacts) ? response.artifacts.filter(isLabArtifact) : []);
+  return mergeLabArtifacts(Array.isArray(response.artifacts)
+    ? response.artifacts
+        .filter(isLabArtifact)
+        .map((artifact) => ({ ...artifact, bridgeArchived: true, bridgeSyncStatus: 'synced' as ProofSyncStatus }))
+    : []);
 }
 
 async function saveBridgeLabArtifact(artifact: LabArtifact): Promise<void> {
@@ -23500,7 +24663,7 @@ async function deleteBridgeLabArtifact(artifactId: string): Promise<void> {
 }
 
 async function refreshInboxData(): Promise<void> {
-  const browserWorkflow = loadBrowserWorkflowState();
+  const browserWorkflow = loadBrowserWorkflowState(state.address);
   const [actionsResponse, recurringResponse, receiptsResponse, txResponse] = await Promise.all([
     bridgeRequest<{ materialized?: PreparedAction[]; actions?: PreparedAction[] }>('/bridge/prepared-actions'),
     bridgeRequest<{ recurringPayments?: RecurringPayment[] }>('/bridge/recurring-payments'),
@@ -23750,7 +24913,7 @@ function runWorkspaceExport(): void {
     const bundle = exportWorkspace();
     const text = serializeBackup(bundle);
     downloadJsonBlob(text, backupFilename());
-    state.workspaceBackupStatus = `Exported ${WORKSPACE_BACKUP_KEYS.length} sections at ${formatDateTime(bundle.exportedAt)}.`;
+    state.workspaceBackupStatus = `Exported ${Object.keys(bundle.sections).length} sections at ${formatDateTime(bundle.exportedAt)}.`;
     pushToast('success', 'Workspace exported', 'Your local state is saved to a JSON file.');
     render();
   } catch (err) {
@@ -25683,7 +26846,8 @@ async function bridgeRequest<T = unknown>(path: string, init?: RequestInit): Pro
       ...init,
       headers,
     });
-  } catch {
+  } catch (err) {
+    if (isAbortError(err)) throw err;
     throw new Error(bridgeOfflineMessage());
   }
   const payload = (await response.json().catch(() => ({}))) as unknown;
@@ -25993,6 +27157,13 @@ function resetWalletConnection(): void {
   state.agentPlan = null;
   state.agentSignature = '';
   state.agentPreparedActionId = '';
+  state.generatedPlans = [];
+  state.selectedGeneratedPlanId = '';
+  state.preparedActions = [];
+  state.materializedActions = [];
+  state.recurringPayments = [];
+  state.receipts = [];
+  state.localCompletedPlans = [];
   state.capabilities = null;
   state.bridgeActive = false;
   state.bridgeStatus = 'Bridge idle.';
@@ -26133,6 +27304,7 @@ function selectPicker(input: {
   const baseId = selectPickerBaseId(input);
   const selectedLabel = selected?.label ?? 'Select';
   const selectedMeta = selected?.meta ?? '';
+  const selectedMetaSuffix = selected?.metaSuffix ?? '';
   const selectedLogo = selected?.logoId ? selectPickerLogo(selected.logoId) : '';
   const attrs = htmlAttrs({
     ...(input.id ? { id: input.id } : {}),
@@ -26167,7 +27339,10 @@ function selectPicker(input: {
         >
           ${selectedLogo}
           <span class="template-picker-current">
-            <span class="template-picker-category select-picker-meta" ${selectedMeta ? '' : 'hidden'}>${escapeHtml(selectedMeta)}</span>
+            <span class="template-picker-category select-picker-meta" ${selectedMeta || selectedMetaSuffix ? '' : 'hidden'}>
+              ${escapeHtml(selectedMeta)}
+              ${selectedMetaSuffix ? `<span class="select-picker-meta-extra">${escapeHtml(selectedMetaSuffix)}</span>` : ''}
+            </span>
             <strong id="${escapeHtml(`${baseId}-value`)}" data-select-picker-value>${escapeHtml(selectedLabel)}</strong>
           </span>
           <span class="template-picker-caret" aria-hidden="true"></span>
@@ -26200,13 +27375,14 @@ function selectPickerOption(option: SelectPickerOption, selected: boolean): stri
       data-select-picker-option="${escapeHtml(option.value)}"
       data-select-picker-label="${escapeHtml(option.label)}"
       data-select-picker-meta="${escapeHtml(option.meta ?? '')}"
+      data-select-picker-meta-suffix="${escapeHtml(option.metaSuffix ?? '')}"
       tabindex="${selected ? '0' : '-1'}"
       ${option.disabled ? 'disabled aria-disabled="true"' : ''}
       ${title ? `title="${escapeHtml(title)}"` : ''}
     >
       ${logo}
       <span class="select-picker-option-copy">
-        ${option.meta ? `<span>${escapeHtml(option.meta)}</span>` : ''}
+        ${option.meta || option.metaSuffix ? `<span>${escapeHtml(option.meta ?? '')}${option.metaSuffix ? `<span class="select-picker-meta-extra">${escapeHtml(option.metaSuffix)}</span>` : ''}</span>` : ''}
         <strong>${escapeHtml(option.label)}</strong>
         ${option.detail ? `<em>${escapeHtml(option.detail)}</em>` : ''}
       </span>
@@ -26518,6 +27694,7 @@ function preparedActionCard(action: PreparedAction): string {
           <div class="inbox-approval-title-block">
             <div class="inbox-approval-meta">
               <span class="status-pill ${statusTone(action.status)}">${escapeHtml(action.status)}</span>
+              ${storageBadgeHtml(preparedActionStorageBadge(action))}
               <strong class="inbox-approval-meta-title">${escapeHtml(preparedActionCardTitle(action))}</strong>
               ${evidenceBadgeHtml(evidenceBadgeForAction(action))}
               <span>${escapeHtml(action.kind.replace(/_/g, ' '))}</span>
@@ -28139,37 +29316,27 @@ function recurringComposer(): string {
     : aiGenerateDisabledReason();
   const aiDraftDisabled = createDisabled || !canGenerateAiPlanFromSettings() || !canRunAgentReview();
   const composerTitle = isSwap ? 'Create recurring swap' : 'Create repeat payment';
-  const createLabel = isSwap ? 'Create recurring swap' : 'Create repeat payment';
+  const createLabel = 'Draft from template';
   const recurringHelp = isSwap
     ? browserWorkflow
-      ? 'Creates one local recurring swap approval now. Use Cloud or the local connector for background repeats.'
+      ? 'Each due swap returns to Needs Approval before wallet signing.'
       : 'Every due swap returns to Needs Approval before wallet signing.'
     : browserWorkflow
-      ? 'Creates one local approval item now. Use Cloud or the local connector for background repeats.'
+      ? 'Each payment returns to Needs Approval before wallet signing.'
       : 'Every payment returns to Needs Approval before wallet signing.';
-  const boundaryCopy = isSwap
-    ? 'Each due swap opens wallet review. No delegated trading authority or token allowance is created.'
-    : browserWorkflow
-      ? 'One local approval item is created now; background repeats need Cloud or local connector.'
-      : `${activeWorkflowLabel()} owns this repeat payment. No transaction signs until you approve a payment.`;
   const actionHelper = !state.address
     ? 'Connect a wallet before creating a repeat payment.'
     : isSwap && !browserWorkflow
       ? 'Future swaps will appear in Needs Approval.'
       : browserWorkflow
-        ? 'Creates one local approval item now.'
+        ? ''
         : 'Future payments will appear in Needs Approval.';
   return `
     <div class="recurring-panel recurring-contract">
       <div class="contract-head app-inline-head recurring-composer-head">
         <div>
-          <span>Repeat setup</span>
           <h3>${escapeHtml(composerTitle)}</h3>
           <p class="recurring-help">${escapeHtml(recurringHelp)}</p>
-        </div>
-        <div class="recurring-composer-meta">
-          <strong>${escapeHtml(recurringCadenceLabel(draft.cadence))}</strong>
-          <em class="accent-note">${browserWorkflow ? 'Local now; Cloud for background' : `${activeWorkflowLabel()} scheduler`}</em>
         </div>
       </div>
       <dl class="contract-summary recurring-create-summary">
@@ -28178,9 +29345,8 @@ function recurringComposer(): string {
           ? definitionRow('Swap', recurringDraftSwapRouteLabel(draft))
           : definitionRow('Recipient', recipient)}
         ${definitionRow('Cadence', recurringDraftScheduleLabel(draft))}
-        ${definitionRow('Limit', limit)}
+        ${definitionRow('End condition', limit)}
       </dl>
-      ${recurringPresetControls()}
       <div class="contract-section recurring-create-section">
         <div>
           <span>${escapeHtml(isSwap ? 'Swap terms' : 'Payment terms')}</span>
@@ -28253,37 +29419,35 @@ function recurringComposer(): string {
           </div>
         </div>
       </details>
-      ${recurringDraftPreviewPanel(draft)}
       <div class="recurring-create-primary-row">
-        <div class="recurring-boundary-note">
-          <strong>Signing boundary</strong>
-          <p>${escapeHtml(boundaryCopy)}</p>
-        </div>
+        ${aiPathConnected ? `
+          <label class="ask-agent-after-draft recurring-agent-after-draft ${state.askAgentAfterDraft ? 'checked' : ''}">
+            <input type="checkbox" data-ask-agent-after-draft ${state.askAgentAfterDraft ? 'checked' : ''} ${state.busy ? 'disabled' : ''} />
+            <span class="ask-agent-check" aria-hidden="true">${checkIcon()}</span>
+            <span class="ask-agent-copy">
+              <strong>Ask agent before start</strong>
+              <em>Optional. Agent denial or missing information creates the repeat paused.</em>
+            </span>
+          </label>
+        ` : '<span class="recurring-action-spacer"></span>'}
         <div class="recurring-form-actions contract-actions">
-          <button id="createRecurring" class="primary" ${createDisabled ? 'disabled' : ''}>${escapeHtml(createLabel)}</button>
-          ${aiPathConnected ? `
-            <button
-              id="draftRecurringWithAi"
-              class="primary ai-draft-button"
-              ${aiDraftDisabled ? 'disabled' : ''}
-              title="${escapeHtml(aiDraftDisabledReason)}"
-            >
-              Draft repeat payment with AI
-            </button>
-          ` : ''}
-          <span class="contract-helper accent-note">${escapeHtml(actionHelper)}</span>
+          <div class="agent-actions-row recurring-actions-row">
+            <button id="createRecurring" class="primary" ${createDisabled ? 'disabled' : ''}>${escapeHtml(createLabel)}</button>
+            ${aiPathConnected ? `
+              <button
+                id="draftRecurringWithAi"
+                class="primary ai-draft-button"
+                ${aiDraftDisabled ? 'disabled' : ''}
+                title="${escapeHtml(aiDraftDisabledReason)}"
+              >
+                Draft with AI
+              </button>
+            ` : ''}
+          </div>
+          ${actionHelper ? `<span class="contract-helper accent-note">${escapeHtml(actionHelper)}</span>` : ''}
         </div>
       </div>
-      ${aiPathConnected ? `
-        <label class="ask-agent-after-draft recurring-agent-after-draft ${state.askAgentAfterDraft ? 'checked' : ''}">
-          <input type="checkbox" data-ask-agent-after-draft ${state.askAgentAfterDraft ? 'checked' : ''} ${state.busy ? 'disabled' : ''} />
-          <span class="ask-agent-check" aria-hidden="true">${checkIcon()}</span>
-          <span class="ask-agent-copy">
-            <strong>Ask agent before start</strong>
-            <em>Optional. Agent denial or missing information creates the repeat paused.</em>
-          </span>
-        </label>
-      ` : ''}
+      ${recurringDraftPreviewPanel(draft)}
     </div>
   `;
 }
@@ -28297,7 +29461,7 @@ function recurringDraftLimitLabel(draft: RecurringDraft): string {
     const expiresAt = optionalLocalDateTimeToIso(draft.expiresAt);
     parts.push(expiresAt ? `expires ${formatDateTime(expiresAt)}` : 'expiry needs a valid date');
   }
-  return parts.length ? parts.join(' · ') : 'Manual review every time';
+  return parts.length ? parts.join(' · ') : 'No end condition';
 }
 
 function recurringDraftIsSwap(draft: RecurringDraft): boolean {
@@ -28312,12 +29476,39 @@ function recurringDraftConnector(draft: Pick<RecurringDraft, 'connectorId'>): Pr
   return connectorCreateStatus(connector, connectorDraftEnvironment()).selectable ? connector : undefined;
 }
 
+function recurringDraftConnectorActionForm(draft: Pick<RecurringDraft, 'connectorId' | 'connectorOperationId'>): ConnectorActionForm | undefined {
+  const connector = recurringDraftConnector(draft);
+  if (!connector) return undefined;
+  const forms = connectorActionFormsForConnector(connector);
+  return forms.find((form) => form.id === draft.connectorOperationId) ?? forms[0];
+}
+
+function normalizeRecurringConnectorDraft(draft: RecurringDraft): RecurringDraft {
+  const connector = recurringDraftConnector(draft);
+  if (!connector) {
+    return { ...draft, connectorId: '', connectorOperationId: '' };
+  }
+  const forms = connectorActionFormsForConnector(connector);
+  const selectedForm = forms.find((form) => form.id === draft.connectorOperationId) ?? forms[0];
+  return {
+    ...draft,
+    connectorId: connector.id,
+    connectorOperationId: selectedForm?.id ?? '',
+  };
+}
+
 function recurringConnectorMetadata(draft: RecurringDraft): JsonObject | undefined {
   const connector = recurringDraftConnector(draft);
   if (!connector) return undefined;
+  const form = recurringDraftConnectorActionForm(draft);
   return {
     connectorId: connector.id,
     connectorName: connector.name,
+    ...(form ? {
+      connectorOperationId: form.id,
+      operation: form.operationLabel,
+      templateId: form.templateId,
+    } : {}),
     actionSource: connector.actionSource ?? 'review-context',
     approvalBoundary: 'review_context_only',
   };
@@ -28330,6 +29521,7 @@ function recurringConnectorPlannerContext(draft: RecurringDraft): Array<Record<s
   });
   const connector = recurringDraftConnector(draft);
   if (!connector) return base;
+  const form = recurringDraftConnectorActionForm(draft);
   const selected = base.find((entry) => entry.id === connector.id) ?? {};
   return [{
     ...selected,
@@ -28338,6 +29530,8 @@ function recurringConnectorPlannerContext(draft: RecurringDraft): Array<Record<s
     id: connector.id,
     name: connector.name,
     selectedUse: 'repeat_payment_review_context',
+    selectedOperation: form?.operationLabel ?? '',
+    selectedTemplateId: form?.templateId ?? '',
     approvalBoundary: 'review_context_only',
     strictInstruction:
       'Use this protocol connector only as review/planning context for the repeat. Do not switch protocols. Do not claim protocol automation is enabled. Every repeat occurrence still requires Agentic Needs Approval and wallet approval before signing.',
@@ -28350,11 +29544,17 @@ function recurringConnectorActionParams(metadata: JsonObject | undefined): Recor
   const connectorName = typeof metadata.connectorName === 'string' ? metadata.connectorName : '';
   const actionSource = typeof metadata.actionSource === 'string' ? metadata.actionSource : '';
   const approvalBoundary = typeof metadata.approvalBoundary === 'string' ? metadata.approvalBoundary : '';
+  const operation = typeof metadata.operation === 'string' ? metadata.operation : '';
+  const connectorOperationId = typeof metadata.connectorOperationId === 'string' ? metadata.connectorOperationId : '';
+  const templateId = typeof metadata.templateId === 'string' ? metadata.templateId : '';
   return {
     ...(connectorId ? { connectorId } : {}),
     ...(connectorName ? { connectorName } : {}),
     ...(actionSource ? { connectorActionSource: actionSource } : {}),
     ...(approvalBoundary ? { connectorApprovalBoundary: approvalBoundary } : {}),
+    ...(operation ? { operation } : {}),
+    ...(connectorOperationId ? { connectorOperationId } : {}),
+    ...(templateId ? { connectorTemplateId: templateId } : {}),
   };
 }
 
@@ -28406,7 +29606,7 @@ function lifetimeSpendCopy(spend: LifetimeSpend, token: string): string {
 
 function recurringPresetControls(): string {
   return `
-    <div class="template-filter-row recurring-preset-row" role="group" aria-label="Repeat payment presets">
+    <nav class="template-filter-row one-time-method-filter recurring-preset-row" role="group" aria-label="Repeat payment presets">
       ${RECURRING_PRESETS.map((preset) => `
         <button
           type="button"
@@ -28418,6 +29618,47 @@ function recurringPresetControls(): string {
           ${escapeHtml(preset.title)}
         </button>
       `).join('')}
+    </nav>
+  `;
+}
+
+function recurringPresetMethodControls(): string {
+  return `
+    <div class="one-time-method-control recurring-method-control" role="group" aria-label="Repeat payment type">
+      <span class="one-time-method-label">
+        <strong>Repeat type</strong>
+        <em>What repeats</em>
+      </span>
+      ${recurringPresetControls()}
+    </div>
+  `;
+}
+
+function recurringConnectorActionPicker(draft: RecurringDraft, connector: ProtocolConnector): string {
+  const forms = connectorActionFormsForConnector(connector);
+  const selectedForm = recurringDraftConnectorActionForm(draft) ?? forms[0];
+  return `
+    <div class="recurring-connector-action-control" aria-label="Repeat connector template">
+      <span class="one-time-method-label">
+        <strong>Plan template</strong>
+        <em class="accent-note">${escapeHtml(connector.name)}</em>
+      </span>
+      ${selectPicker({
+        id: 'recurringConnectorActionPicker',
+        value: selectedForm?.id ?? '',
+        attrs: { 'data-recurring-field': 'connectorOperationId' },
+        disabled: state.busy || forms.length === 0,
+        className: 'top-connector-picker recurring-connector-action-picker',
+        title: selectedForm ? `${connector.name}: ${selectedForm.operationLabel}` : `${connector.name} templates`,
+        options: forms.length
+          ? forms.map((form) => ({
+            value: form.id,
+            label: form.operationLabel,
+            meta: connectorTemplateSourceLabel(form),
+            detail: form.description,
+          }))
+          : [{ value: '', label: 'No connector templates', meta: connector.name, disabled: true }],
+      })}
     </div>
   `;
 }
@@ -28640,6 +29881,7 @@ function recurringCard(payment: RecurringPayment): string {
           <div class="recurring-card-title-block">
             <div class="recurring-card-meta">
               <span class="status-pill ${statusLabelToneClass(status.tone)}">${escapeHtml(pauseSource === 'agent' ? 'Agent paused' : status.label)}</span>
+              ${storageBadgeHtml(recurringPaymentStorageBadge(payment))}
               ${pauseSource === 'user' ? '<span class="recurring-pause-source-pill user">User paused</span>' : ''}
               ${recurringAgentDecisionPill(payment)}
               <span>${escapeHtml(recurringCadenceLabel(payment.cadence))}</span>
@@ -28801,7 +30043,7 @@ function recurringAgentReviewStrip(payment: RecurringPayment): string {
       </div>
       ${agentReviewBlockingReasonPanel(review) || `<p>${escapeHtml(review.reason || stateDetail)}</p>`}
       <p class="accent-note">${escapeHtml(stateDetail)}</p>
-      ${agentEvidenceDrawer(review)}
+      ${agentEvidenceDrawer(review, { actionType: 'recurring_payment' })}
     </section>
   `;
 }
@@ -29108,18 +30350,22 @@ function filteredPreparedActions(): PreparedAction[] {
 }
 
 function activeWorkflowPreparedActions(): PreparedAction[] {
-  switch (activeWorkflowMode()) {
+  const actions = (() => {
+    switch (activeWorkflowMode()) {
     case 'agentic-cloud':
       return state.preparedActions.filter((action) => action.workflowSource === 'cloud' || isBrowserWorkflowId(action.id));
     case 'browser-workflow':
       return state.preparedActions.filter((action) => isBrowserWorkflowId(action.id));
     case 'local-bridge':
       return state.preparedActions.filter((action) => action.workflowSource === 'local-bridge');
-  }
+    }
+  })();
+  return actions.filter((action) => recordMatchesWalletScope(action, state.address));
 }
 
 function activeWorkflowRecurringPayments(): RecurringPayment[] {
-  switch (activeWorkflowMode()) {
+  const payments = (() => {
+    switch (activeWorkflowMode()) {
     case 'agentic-cloud':
       return state.recurringPayments.filter((payment) => {
         const source = recurringPaymentWorkflowSource(payment);
@@ -29129,7 +30375,9 @@ function activeWorkflowRecurringPayments(): RecurringPayment[] {
       return state.recurringPayments.filter((payment) => recurringPaymentWorkflowSource(payment) === 'browser');
     case 'local-bridge':
       return state.recurringPayments.filter((payment) => recurringPaymentWorkflowSource(payment) === 'local-bridge');
-  }
+    }
+  })();
+  return payments.filter((payment) => recordMatchesWalletScope(payment, state.address));
 }
 
 function isActionInboxActive(action: PreparedAction): boolean {
@@ -30165,7 +31413,7 @@ function latestConfirmedTx(): string {
 }
 
 function latestLabArtifact(labId: string): LabArtifact | null {
-  return state.labArtifacts.find((artifact) => artifact.labId === labId) ?? null;
+  return state.labArtifacts.find((artifact) => artifact.labId === labId && recordMatchesWalletScope(artifact, state.address)) ?? null;
 }
 
 function labById(labId: string): LabDefinition | null {
@@ -30393,15 +31641,17 @@ function labThesis(labId: string, status: LabPayload['status']): string {
 function readRecurringDraft(): RecurringDraft {
   const actionKind = state.recurringDraft.actionKind;
   const connectorControl = document.querySelector<HTMLSelectElement>('#recurringConnectorPicker');
+  const connectorOperationControl = document.querySelector<HTMLSelectElement>('#recurringConnectorActionPicker');
   const inputToken = readRecurringTokenField('inputToken') || state.recurringDraft.inputToken;
   const outputToken = readRecurringTokenField('outputToken') || state.recurringDraft.outputToken;
   const token = actionKind === 'swap'
     ? inputToken
     : readRecurringTokenField('token') || state.recurringDraft.token || inputToken;
   const slippageInput = inputValue('#recurringSlippageBps');
-  return {
+  return normalizeRecurringConnectorDraft({
     actionKind,
     connectorId: connectorControl ? connectorControl.value : state.recurringDraft.connectorId,
+    connectorOperationId: connectorOperationControl ? connectorOperationControl.value : state.recurringDraft.connectorOperationId,
     token,
     inputToken,
     outputToken,
@@ -30420,7 +31670,7 @@ function readRecurringDraft(): RecurringDraft {
     expiresAt: inputValue('#recurringExpiresAt') || state.recurringDraft.expiresAt,
     webhookUrl: inputValue('#recurringWebhookUrl') || state.recurringDraft.webhookUrl,
     note: inputValue('#recurringNote'),
-  };
+  });
 }
 
 function readRecurringTokenField(field: RecurringTokenField): string {
@@ -30621,6 +31871,7 @@ function defaultRecurringDraft(): RecurringDraft {
   return {
     actionKind: 'transfer',
     connectorId: '',
+    connectorOperationId: '',
     token: 'SOL',
     inputToken: 'SOL',
     outputToken: 'USDC',
@@ -32284,17 +33535,116 @@ function clearSensitiveLaunchParams(): void {
   window.history.replaceState(window.history.state, document.title, `${url.pathname}${url.search}${url.hash}`);
 }
 
-function loadGeneratedPlans(): GeneratedPlanRecord[] {
+function storageWalletKeyPart(walletAddress: string): string {
+  return walletAddress.trim().toLowerCase().replace(/[^a-z0-9_-]/g, '_');
+}
+
+function walletScopedStorageKey(baseKey: string, walletAddress: string): string {
+  const keyPart = storageWalletKeyPart(walletAddress);
+  return keyPart ? `${baseKey}:${keyPart}` : baseKey;
+}
+
+function sameWalletAddress(left?: string, right?: string): boolean {
+  const a = left?.trim().toLowerCase() ?? '';
+  const b = right?.trim().toLowerCase() ?? '';
+  return Boolean(a && b && a === b);
+}
+
+function recordMatchesWalletScope(record: { walletAddress?: string }, walletAddress: string): boolean {
+  return !walletAddress || !record.walletAddress || sameWalletAddress(record.walletAddress, walletAddress);
+}
+
+function localStorageJsonArray(key: string): unknown[] {
   try {
-    const raw = window.localStorage.getItem(GENERATED_PLANS_STORAGE_KEY);
+    const raw = window.localStorage.getItem(key);
     if (!raw) return [];
     const parsed = JSON.parse(raw);
-    return Array.isArray(parsed)
-      ? mergeGeneratedPlans(parsed.filter(isGeneratedPlanRecord).map((record) => ({
-          ...record,
-          workflowSource: record.workflowSource ?? 'browser',
-        })))
-      : [];
+    return Array.isArray(parsed) ? parsed : [];
+  } catch {
+    return [];
+  }
+}
+
+let legacyWalletStorageMigrated = false;
+
+function migrateLegacyWalletScopedStorage(): void {
+  if (legacyWalletStorageMigrated) return;
+  legacyWalletStorageMigrated = true;
+  try {
+    migrateGeneratedPlanStorage();
+    migrateBrowserWorkflowStorage();
+    migrateCompletedLedgerStorage();
+  } catch {
+    // Legacy storage remains readable from the base keys.
+  }
+}
+
+function migrateGeneratedPlanStorage(): void {
+  const legacyPlans = localStorageJsonArray(GENERATED_PLANS_STORAGE_KEY).filter(isGeneratedPlanRecord);
+  const byWallet = groupByWallet(legacyPlans);
+  for (const [walletAddress, records] of byWallet) {
+    const key = walletScopedStorageKey(GENERATED_PLANS_STORAGE_KEY, walletAddress);
+    const existing = localStorageJsonArray(key).filter(isGeneratedPlanRecord);
+    window.localStorage.setItem(key, JSON.stringify(mergeGeneratedPlans(existing, records)));
+  }
+}
+
+function migrateBrowserWorkflowStorage(): void {
+  const legacy = parseBrowserWorkflowStorage(BROWSER_WORKFLOW_STORAGE_KEY);
+  const wallets = new Set<string>();
+  for (const action of legacy.preparedActions) wallets.add(action.walletAddress);
+  for (const payment of legacy.recurringPayments) wallets.add(payment.walletAddress);
+  for (const receipt of legacy.receipts) wallets.add(receipt.walletAddress);
+  for (const walletAddress of wallets) {
+    const key = walletScopedStorageKey(BROWSER_WORKFLOW_STORAGE_KEY, walletAddress);
+    const existing = parseBrowserWorkflowStorage(key);
+    const scoped = normalizeBrowserWorkflowState({
+      preparedActions: [
+        ...existing.preparedActions,
+        ...legacy.preparedActions.filter((action) => recordMatchesWalletScope(action, walletAddress)),
+      ],
+      recurringPayments: [
+        ...existing.recurringPayments,
+        ...legacy.recurringPayments.filter((payment) => recordMatchesWalletScope(payment, walletAddress)),
+      ],
+      receipts: [
+        ...existing.receipts,
+        ...legacy.receipts.filter((receipt) => recordMatchesWalletScope(receipt, walletAddress)),
+      ],
+    }, walletAddress);
+    window.localStorage.setItem(key, JSON.stringify(scoped));
+  }
+}
+
+function migrateCompletedLedgerStorage(): void {
+  const legacyCompleted = localStorageJsonArray(LOCAL_COMPLETED_STORAGE_KEY).filter(isCompletedPlanRecord);
+  const byWallet = groupByWallet(legacyCompleted);
+  for (const [walletAddress, records] of byWallet) {
+    const key = walletScopedStorageKey(LOCAL_COMPLETED_STORAGE_KEY, walletAddress);
+    const existing = localStorageJsonArray(key).filter(isCompletedPlanRecord);
+    window.localStorage.setItem(key, JSON.stringify(mergeCompletedPlanRecords(existing, records)));
+  }
+}
+
+function groupByWallet<T extends { walletAddress?: string }>(records: T[]): Map<string, T[]> {
+  const byWallet = new Map<string, T[]>();
+  for (const record of records) {
+    const walletAddress = record.walletAddress?.trim();
+    if (!walletAddress) continue;
+    byWallet.set(walletAddress, [...(byWallet.get(walletAddress) ?? []), record]);
+  }
+  return byWallet;
+}
+
+function loadGeneratedPlans(walletAddress = ''): GeneratedPlanRecord[] {
+  try {
+    migrateLegacyWalletScopedStorage();
+    const legacy = localStorageJsonArray(GENERATED_PLANS_STORAGE_KEY);
+    const scoped = walletAddress ? localStorageJsonArray(walletScopedStorageKey(GENERATED_PLANS_STORAGE_KEY, walletAddress)) : [];
+    return mergeGeneratedPlans([...legacy, ...scoped].filter(isGeneratedPlanRecord).map((record) => ({
+      ...record,
+      workflowSource: record.workflowSource ?? 'browser',
+    }))).filter((record) => recordMatchesWalletScope(record, walletAddress));
   } catch {
     return [];
   }
@@ -32303,21 +33653,44 @@ function loadGeneratedPlans(): GeneratedPlanRecord[] {
 function saveGeneratedPlans(): void {
   try {
     state.generatedPlans = mergeGeneratedPlans(state.generatedPlans);
+    const localPlans = state.generatedPlans
+      .filter((record) => record.workflowSource !== 'cloud')
+      .filter((record) => recordMatchesWalletScope(record, state.address));
     window.localStorage.setItem(
       GENERATED_PLANS_STORAGE_KEY,
-      JSON.stringify(state.generatedPlans.filter((record) => record.workflowSource !== 'cloud')),
+      JSON.stringify(localPlans),
     );
+    if (state.address) {
+      window.localStorage.setItem(
+        walletScopedStorageKey(GENERATED_PLANS_STORAGE_KEY, state.address),
+        JSON.stringify(localPlans),
+      );
+    }
+    persistLocalCompletedSnapshot();
   } catch {
     // Best-effort browser persistence.
   }
 }
 
-function loadBrowserWorkflowState(): BrowserWorkflowState {
+function loadBrowserWorkflowState(walletAddress = ''): BrowserWorkflowState {
   try {
-    const raw = window.localStorage.getItem(BROWSER_WORKFLOW_STORAGE_KEY);
-    if (!raw) {
-      return emptyBrowserWorkflowState();
-    }
+    migrateLegacyWalletScopedStorage();
+    const legacy = parseBrowserWorkflowStorage(BROWSER_WORKFLOW_STORAGE_KEY);
+    const scoped = walletAddress ? parseBrowserWorkflowStorage(walletScopedStorageKey(BROWSER_WORKFLOW_STORAGE_KEY, walletAddress)) : emptyBrowserWorkflowState();
+    return normalizeBrowserWorkflowState({
+      preparedActions: [...legacy.preparedActions, ...scoped.preparedActions],
+      recurringPayments: [...legacy.recurringPayments, ...scoped.recurringPayments],
+      receipts: [...legacy.receipts, ...scoped.receipts],
+    }, walletAddress);
+  } catch {
+    return emptyBrowserWorkflowState();
+  }
+}
+
+function parseBrowserWorkflowStorage(key: string): BrowserWorkflowState {
+  try {
+    const raw = window.localStorage.getItem(key);
+    if (!raw) return emptyBrowserWorkflowState();
     const parsed = JSON.parse(raw) as Partial<BrowserWorkflowState>;
     return normalizeBrowserWorkflowState(parsed);
   } catch {
@@ -32333,14 +33706,16 @@ function emptyBrowserWorkflowState(): BrowserWorkflowState {
   };
 }
 
-function normalizeBrowserWorkflowState(input: Partial<BrowserWorkflowState>): BrowserWorkflowState {
+function normalizeBrowserWorkflowState(input: Partial<BrowserWorkflowState>, walletAddress = ''): BrowserWorkflowState {
   return {
     preparedActions: mergePreparedActions((input.preparedActions ?? []).filter(isPreparedAction).map((action) => ({
       ...action,
-      workflowSource: 'browser',
-    }))),
-    recurringPayments: mergeRecurringPayments(withRecurringPaymentSource(input.recurringPayments ?? [], 'browser')),
-    receipts: mergeActionReceipts((input.receipts ?? []).filter(isActionReceipt)),
+      workflowSource: 'browser' as WorkflowRecordSource,
+    })).filter((action) => recordMatchesWalletScope(action, walletAddress))),
+    recurringPayments: mergeRecurringPayments(withRecurringPaymentSource(input.recurringPayments ?? [], 'browser')
+      .filter((payment) => recordMatchesWalletScope(payment, walletAddress))),
+    receipts: mergeActionReceipts((input.receipts ?? []).filter(isActionReceipt)
+      .filter((receipt) => recordMatchesWalletScope(receipt, walletAddress))),
   };
 }
 
@@ -32350,11 +33725,100 @@ function saveBrowserWorkflowState(): void {
       preparedActions: state.preparedActions.filter(isBrowserWorkflowId),
       recurringPayments: state.recurringPayments.filter((payment) => recurringPaymentWorkflowSource(payment) === 'browser'),
       receipts: state.receipts.filter((receipt) => isBrowserWorkflowId(receipt.actionId)),
-    });
+    }, state.address);
     window.localStorage.setItem(BROWSER_WORKFLOW_STORAGE_KEY, JSON.stringify(workflow));
+    if (state.address) {
+      window.localStorage.setItem(
+        walletScopedStorageKey(BROWSER_WORKFLOW_STORAGE_KEY, state.address),
+        JSON.stringify(workflow),
+      );
+    }
+    persistLocalCompletedSnapshot();
   } catch {
     // Best-effort browser workflow persistence.
   }
+}
+
+function loadLocalCompletedPlans(walletAddress = ''): CompletedPlanRecord[] {
+  try {
+    migrateLegacyWalletScopedStorage();
+    const legacy = localStorageJsonArray(LOCAL_COMPLETED_STORAGE_KEY);
+    const scoped = walletAddress ? localStorageJsonArray(walletScopedStorageKey(LOCAL_COMPLETED_STORAGE_KEY, walletAddress)) : [];
+    return mergeCompletedPlanRecords(
+      [...legacy, ...scoped]
+        .filter(isCompletedPlanRecord)
+        .filter((record) => recordMatchesWalletScope(record, walletAddress)),
+    );
+  } catch {
+    return [];
+  }
+}
+
+function saveLocalCompletedPlans(): void {
+  try {
+    state.localCompletedPlans = mergeCompletedPlanRecords(
+      state.localCompletedPlans.filter((record) => recordMatchesWalletScope(record, state.address)),
+    );
+    window.localStorage.setItem(LOCAL_COMPLETED_STORAGE_KEY, JSON.stringify(state.localCompletedPlans));
+    if (state.address) {
+      window.localStorage.setItem(
+        walletScopedStorageKey(LOCAL_COMPLETED_STORAGE_KEY, state.address),
+        JSON.stringify(state.localCompletedPlans),
+      );
+    }
+  } catch {
+    // Best-effort completed history persistence.
+  }
+}
+
+let persistingLocalCompletedSnapshot = false;
+
+function persistLocalCompletedSnapshot(): void {
+  if (persistingLocalCompletedSnapshot || !state.address) return;
+  persistingLocalCompletedSnapshot = true;
+  try {
+    const snapshot = completedPlanRecords({ includeLocalLedger: false })
+      .filter((record) => record.workflowSource !== 'cloud')
+      .filter((record) => recordMatchesWalletScope(record, state.address));
+    if (!snapshot.length) return;
+    state.localCompletedPlans = mergeCompletedPlanRecords(state.localCompletedPlans, snapshot);
+    saveLocalCompletedPlans();
+  } finally {
+    persistingLocalCompletedSnapshot = false;
+  }
+}
+
+function mergeCompletedPlanRecords(...groups: CompletedPlanRecord[][]): CompletedPlanRecord[] {
+  const byId = new Map<string, CompletedPlanRecord>();
+  for (const records of groups) {
+    for (const record of records) {
+      const current = byId.get(record.id);
+      if (!current || record.completedAt.localeCompare(current.completedAt) >= 0) {
+        byId.set(record.id, record);
+      }
+    }
+  }
+  return [...byId.values()].sort((left, right) => right.completedAt.localeCompare(left.completedAt));
+}
+
+function isCompletedPlanRecord(value: unknown): value is CompletedPlanRecord {
+  if (!value || typeof value !== 'object') return false;
+  const record = value as Partial<CompletedPlanRecord>;
+  return (
+    typeof record.id === 'string' &&
+    (record.kind === 'one-time' || record.kind === 'recurring') &&
+    typeof record.status === 'string' &&
+    typeof record.tone === 'string' &&
+    typeof record.title === 'string' &&
+    typeof record.summary === 'string' &&
+    typeof record.completedAt === 'string' &&
+    typeof record.createdAt === 'string' &&
+    typeof record.walletAddress === 'string' &&
+    isCluster(record.cluster ?? '') &&
+    typeof record.copyPayload === 'string' &&
+    Array.isArray(record.detailRows) &&
+    record.detailRows.every(isDetailRow)
+  );
 }
 
 function mergePreparedActions(...groups: PreparedAction[][]): PreparedAction[] {
@@ -32424,53 +33888,7 @@ function isPreparedAction(value: unknown): value is PreparedAction {
 }
 
 function isPreparedActionKind(value: unknown): value is PreparedActionKind {
-  return value === 'transfer_sol' ||
-    value === 'transfer_spl' ||
-    value === 'swap' ||
-    value === 'manual_review' ||
-    value === 'read_only' ||
-    value === 'custom_transaction' ||
-    value === 'custom' ||
-    value === 'kamino_deposit' ||
-    value === 'kamino_withdraw' ||
-    value === 'meteora_claim_fees' ||
-    value === 'meteora_claim_rewards' ||
-    value === 'meteora_add_liquidity' ||
-    value === 'meteora_remove_liquidity' ||
-    value === 'meteora_close_position' ||
-    value === 'orca_increase_liquidity' ||
-    value === 'orca_decrease_liquidity' ||
-    value === 'orca_collect_fees' ||
-    value === 'orca_collect_rewards' ||
-    value === 'marginfi_deposit' ||
-    value === 'marginfi_withdraw' ||
-    value === 'marginfi_borrow' ||
-    value === 'marginfi_repay' ||
-    value === 'drift_vault_deposit' ||
-    value === 'drift_vault_request_withdraw' ||
-    value === 'drift_vault_cancel_withdraw' ||
-    value === 'drift_vault_complete_withdraw' ||
-    value === 'save_deposit' ||
-    value === 'save_withdraw' ||
-    value === 'save_borrow' ||
-    value === 'save_repay' ||
-    value === 'jito_stake_sol' ||
-    value === 'jito_deposit_stake_account' ||
-    value === 'jito_claim_deposit_receipt' ||
-    value === 'jito_unstake_jitosol' ||
-    value === 'jito_withdraw_sol' ||
-    value === 'lulo_deposit' ||
-    value === 'lulo_withdraw' ||
-    value === 'lulo_complete_withdraw' ||
-    value === 'raydium_add_liquidity' ||
-    value === 'raydium_remove_liquidity' ||
-    value === 'raydium_collect_fees' ||
-    value === 'raydium_farm_stake' ||
-    value === 'raydium_farm_unstake' ||
-    value === 'raydium_harvest' ||
-    value === 'wormhole_transfer' ||
-    value === 'wormhole_redeem' ||
-    value === 'wormhole_recover_or_resume';
+  return typeof value === 'string' && BASE_PREPARED_ACTION_KINDS.has(value);
 }
 
 function isRecurringPayment(value: unknown): value is RecurringPayment {
@@ -32669,6 +34087,13 @@ function parseAgentAskConversation(value: unknown): AgentAskExchange[] | undefin
       question: entry.question,
       askedAt: entry.askedAt,
       ...(typeof entry.answer === 'string' ? { answer: entry.answer } : {}),
+      ...(Array.isArray(entry.citations) ? {
+        citations: entry.citations.filter((citation): citation is { kind: string; ref: string; title?: string } => (
+          isJsonObject(citation) &&
+          typeof citation.kind === 'string' &&
+          typeof citation.ref === 'string'
+        )).slice(0, 8),
+      } : {}),
       ...(typeof entry.error === 'string' ? { error: entry.error } : {}),
       ...(typeof entry.answeredAt === 'string' ? { answeredAt: entry.answeredAt } : {}),
       ...(entry.pending === true ? { pending: true } : {}),
@@ -32857,7 +34282,7 @@ function parseAgentReviewFact(value: unknown): AgentReviewFact | undefined {
 
 function parseAgentReviewFactSet(value: unknown): AgentReviewFactSet | undefined {
   if (!isJsonObject(value)) return undefined;
-  const slots: Array<keyof AgentReviewFactSet> = ['quote', 'route', 'policy', 'simulation', 'protocol', 'protocolConnector', 'blinkAction', 'tokenMint', 'recipient', 'limits', 'schedule'];
+  const slots: Array<keyof AgentReviewFactSet> = ['research', 'quote', 'route', 'policy', 'simulation', 'protocol', 'protocolConnector', 'blinkAction', 'blinkClassification', 'tokenMint', 'recipient', 'limits', 'schedule'];
   const facts: AgentReviewFactSet = {};
   for (const slot of slots) {
     const fact = parseAgentReviewFact(value[slot]);

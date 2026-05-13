@@ -2,7 +2,20 @@ import type { AiGuardrailReport } from './index.js';
 
 export type AgentPlanSource = 'template' | 'ai';
 export type TemplateRisk = 'low' | 'medium' | 'high';
-export type TemplateFieldType = 'text' | 'number' | 'textarea' | 'select' | 'datetime-local';
+export type TemplateFieldType =
+  | 'text'
+  | 'number'
+  | 'textarea'
+  | 'select'
+  | 'datetime-local'
+  | 'cascading-select';
+
+export interface CascadingSelectOptions {
+  dependsOn: string[];
+  providerId: string;
+  allowManualFallback?: boolean;
+  emptyHint?: string;
+}
 
 export type ProtocolConnectorCapabilityId =
   | 'first_class_adapter'
@@ -42,6 +55,8 @@ export interface AgentPlanTemplateField {
   defaultValue?: string;
   options?: string[];
   required?: boolean;
+  cascading?: CascadingSelectOptions;
+  showWhen?: Record<string, string | string[]>;
 }
 
 export interface AgentPlanTemplate {
@@ -132,7 +147,7 @@ export interface AgentPlanAskRequest {
 
 export interface AgentPlanAskResult {
   answer: string;
-  citations?: Array<{ kind: string; ref: string }>;
+  citations?: Array<{ kind: string; ref: string; title?: string }>;
   checkedAt: string;
   source: 'ai';
 }

@@ -16,6 +16,7 @@ import {
 
 import { redactSecrets } from './trace.js';
 import { connectorRegistryPromptContext } from './connectorRegistry.js';
+import { BLINK_CLASSIFIER_REVIEW_PROMPT } from './blinkClassification.js';
 
 export type AiApiFormat = 'openai-compatible' | 'anthropic';
 export type {
@@ -62,6 +63,12 @@ const DEFAULT_ANTHROPIC_MODEL = 'claude-sonnet-4-5';
 const OPENAI_REASONING_EFFORT = 'low';
 const OPENAI_TEXT_VERBOSITY = 'low';
 const OPENAI_MAX_OUTPUT_TOKENS = 4096;
+const RESEARCH_MAX_USES = 3;
+const RESEARCH_SOURCE_POLICY = [
+  'Prefer official vendor, product, support, pricing, documentation, regulator, or primary-source pages over blogs and aggregators.',
+  'When the request mentions Helium Mobile, official Helium domains include hellohelium.com, support.hellohelium.com, and heliummobile.com.',
+  'Third-party sources may support context but should not override an official current pricing or policy source.',
+].join(' ');
 const SHARED_SAFEGUARDS = [
   'Wallet approval is required before any signature or transaction leaves the device.',
   'The agent never receives the wallet private key or seed phrase.',
@@ -77,6 +84,33 @@ const ALLOWED_AI_HOSTS: ReadonlySet<string> = new Set([
 ]);
 
 const SOLANA_PUBKEY_LIKE = /\b[1-9A-HJ-NP-Za-km-z]{32,44}\b/g;
+
+interface AiResearchCitation {
+  title?: string;
+  url: string;
+  citedText?: string;
+}
+
+interface AiReviewResearchEvidence {
+  status: 'checked';
+  required: true;
+  provider: string;
+  checkedAt: string;
+  summary: string;
+  sources: Array<{ title?: string; url: string; citedText?: string }>;
+  sourcePolicy: string;
+}
+
+interface ThresholdRule {
+  threshold: number;
+  approveWhen: 'below' | 'above';
+}
+
+interface ThresholdPriceCandidate {
+  amount: number;
+  label: string;
+  text: string;
+}
 
 const WELL_KNOWN_PUBKEYS: ReadonlySet<string> = new Set([
   '11111111111111111111111111111111',
@@ -202,20 +236,22 @@ export class BridgeAiPlanner {
       this.#sessionConfig = null;
       return this.status();
     }
-    const apiKey = normalizeAiApiKey(input.apiKey ?? '');
+    const providedApiKey = input.apiKey === undefined ? '' : normalizeAiApiKey(input.apiKey);
+    const currentConfig = providedApiKey ? this.#sessionConfig : this.config();
+    const apiKey = providedApiKey || normalizeAiApiKey(currentConfig?.apiKey ?? '');
     if (!apiKey) {
       throw new ProtocolError('invalid_request', 'Missing AI API key.');
     }
     assertAiApiKeyHeaderSafe(apiKey);
-    const provider = input.provider?.trim() || 'openai-compatible';
-    const apiFormat = normalizeApiFormat(input.apiFormat, provider);
-    const baseUrl = normalizeBaseUrl(input.baseUrl || defaultBaseUrl(apiFormat), apiFormat);
+    const provider = input.provider?.trim() || currentConfig?.provider || 'openai-compatible';
+    const apiFormat = normalizeApiFormat(input.apiFormat ?? currentConfig?.apiFormat, provider);
+    const baseUrl = normalizeBaseUrl(input.baseUrl || currentConfig?.baseUrl || defaultBaseUrl(apiFormat), apiFormat);
     assertAiBaseUrlAllowed(baseUrl);
     this.#sessionConfig = {
       provider,
       apiFormat,
       baseUrl,
-      model: input.model?.trim() || defaultModel(apiFormat),
+      model: input.model?.trim() || currentConfig?.model || defaultModel(apiFormat),
       apiKey,
       source: 'session',
     };
@@ -245,6 +281,9 @@ export class BridgeAiPlanner {
     }
     const normalizedRequest = normalizeReviewRequest(request);
     assertAiReviewRequestAllowed(normalizedRequest);
+    if (reviewNeedsWebResearch(normalizedRequest) && !supportsNativeWebResearch(config)) {
+      return unsupportedResearchReview(normalizedRequest, config);
+    }
     if (config.apiFormat === 'anthropic') {
       return this.generateAnthropicReview(config, normalizedRequest);
     }
@@ -261,10 +300,62 @@ export class BridgeAiPlanner {
     }
     const normalizedRequest = normalizeAskRequest(request);
     assertAiAskRequestAllowed(normalizedRequest);
+    if (askNeedsWebResearch(normalizedRequest) && !supportsNativeWebResearch(config)) {
+      return unsupportedResearchAsk(normalizedRequest, config);
+    }
+    if (shouldUseOpenAiResponses(config) && askNeedsWebResearch(normalizedRequest)) {
+      return this.generateOpenAiResponsesAsk(config, normalizedRequest);
+    }
     if (config.apiFormat === 'anthropic') {
       return this.generateAnthropicAsk(config, normalizedRequest);
     }
     return this.generateOpenAiCompatibleAsk(config, normalizedRequest);
+  }
+
+  private async generateOpenAiResponsesAsk(
+    config: AiRuntimeConfig,
+    normalizedRequest: Required<AiAskRequest>,
+  ): Promise<AiAskResult> {
+    const messages = aiAskMessages(normalizedRequest);
+    const systemMessage = messages[0]?.content ?? '';
+    const userMessage = messages[1]?.content ?? JSON.stringify(normalizedRequest);
+    const research = askNeedsWebResearch(normalizedRequest);
+    const response = await fetch(`${normalizeBaseUrl(config.baseUrl, 'openai-compatible')}/responses`, {
+      method: 'POST',
+      headers: {
+        authorization: `Bearer ${config.apiKey}`,
+        'content-type': 'application/json',
+      },
+      body: JSON.stringify({
+        model: config.model,
+        instructions: systemMessage,
+        input: userMessage,
+        max_output_tokens: 1200,
+        store: false,
+        ...(research ? {
+          tools: [openAiWebSearchTool()],
+          tool_choice: 'auto',
+          include: ['web_search_call.action.sources'],
+        } : {}),
+        ...(isReasoningModel(config.model) && {
+          reasoning: { effort: OPENAI_REASONING_EFFORT },
+        }),
+      }),
+    }).catch((err) => {
+      throw new ProtocolError(
+        'wallet_unreachable',
+        `AI provider ask request failed. ${redactText(err instanceof Error ? err.message : String(err))}`,
+      );
+    });
+    const payload = await response.json().catch(() => ({})) as unknown;
+    if (!response.ok) {
+      throw new ProtocolError(
+        'wallet_unreachable',
+        providerFailureMessage(payload, response.status),
+      );
+    }
+    assertCompleteOpenAiResponse(payload);
+    return aiAskFromPayload(payload);
   }
 
   private async generateOpenAiCompatibleAsk(
@@ -306,6 +397,7 @@ export class BridgeAiPlanner {
     const messages = aiAskMessages(normalizedRequest);
     const systemMessage = messages[0]?.content ?? '';
     const userMessage = messages[1]?.content ?? JSON.stringify(normalizedRequest);
+    const research = askNeedsWebResearch(normalizedRequest);
     const response = await fetch(`${normalizeBaseUrl(config.baseUrl, 'anthropic')}/messages`, {
       method: 'POST',
       headers: {
@@ -319,6 +411,7 @@ export class BridgeAiPlanner {
         system: systemMessage,
         messages: [{ role: 'user', content: userMessage }],
         temperature: 0.3,
+        ...(research ? { tools: [anthropicWebSearchTool()] } : {}),
       }),
     }).catch((err) => {
       throw new ProtocolError(
@@ -422,7 +515,11 @@ export class BridgeAiPlanner {
     config: AiRuntimeConfig,
     normalizedRequest: Required<AiReviewRequest>,
   ): Promise<AiReviewResult> {
-    const messages = aiReviewMessages(normalizedRequest);
+    const research = reviewNeedsWebResearch(normalizedRequest);
+    const researchResult = research
+      ? await this.generateOpenAiResponsesResearchEvidence(config, normalizedRequest)
+      : undefined;
+    const messages = aiReviewMessages(normalizedRequest, researchResult?.evidence);
     const systemMessage = messages[0]?.content ?? '';
     const userMessage = messages[1]?.content ?? JSON.stringify(normalizedRequest);
     const response = await fetch(`${normalizeBaseUrl(config.baseUrl, 'openai-compatible')}/responses`, {
@@ -464,7 +561,53 @@ export class BridgeAiPlanner {
       );
     }
     assertCompleteOpenAiResponse(payload);
-    return normalizeStrictAiReview(payload, normalizedRequest, 'OpenAI');
+    return normalizeStrictAiReview(payload, normalizedRequest, 'OpenAI', {
+      citations: researchResult?.citations,
+      researchEvidence: researchResult?.evidence,
+    });
+  }
+
+  private async generateOpenAiResponsesResearchEvidence(
+    config: AiRuntimeConfig,
+    normalizedRequest: Required<AiReviewRequest>,
+  ): Promise<{ evidence: AiReviewResearchEvidence; citations: AiResearchCitation[] }> {
+    const messages = aiResearchMessages(normalizedRequest);
+    const systemMessage = messages[0]?.content ?? '';
+    const userMessage = messages[1]?.content ?? JSON.stringify(normalizedRequest);
+    const response = await fetch(`${normalizeBaseUrl(config.baseUrl, 'openai-compatible')}/responses`, {
+      method: 'POST',
+      headers: {
+        authorization: `Bearer ${config.apiKey}`,
+        'content-type': 'application/json',
+      },
+      body: JSON.stringify({
+        model: config.model,
+        instructions: systemMessage,
+        input: userMessage,
+        max_output_tokens: 1800,
+        store: false,
+        tools: [openAiWebSearchTool()],
+        tool_choice: 'auto',
+        include: ['web_search_call.action.sources'],
+        ...(isReasoningModel(config.model) && {
+          reasoning: { effort: OPENAI_REASONING_EFFORT },
+        }),
+      }),
+    }).catch((err) => {
+      throw new ProtocolError(
+        'wallet_unreachable',
+        `AI provider research request failed. ${redactText(err instanceof Error ? err.message : String(err))}`,
+      );
+    });
+    const payload = await response.json().catch(() => ({})) as unknown;
+    if (!response.ok) {
+      throw new ProtocolError(
+        'wallet_unreachable',
+        providerFailureMessage(payload, response.status),
+      );
+    }
+    assertCompleteOpenAiResponse(payload);
+    return normalizeResearchEvidence(payload, normalizedRequest, 'OpenAI');
   }
 
   private async generateOpenAiCompatibleReview(
@@ -504,7 +647,11 @@ export class BridgeAiPlanner {
     config: AiRuntimeConfig,
     normalizedRequest: Required<AiReviewRequest>,
   ): Promise<AiReviewResult> {
-    const messages = aiReviewMessages(normalizedRequest);
+    const research = reviewNeedsWebResearch(normalizedRequest);
+    const researchResult = research
+      ? await this.generateAnthropicResearchEvidence(config, normalizedRequest)
+      : undefined;
+    const messages = aiReviewMessages(normalizedRequest, researchResult?.evidence);
     const systemMessage = messages[0]?.content ?? '';
     const userMessage = messages[1]?.content ?? JSON.stringify(normalizedRequest);
     const response = await fetch(`${normalizeBaseUrl(config.baseUrl, 'anthropic')}/messages`, {
@@ -534,7 +681,49 @@ export class BridgeAiPlanner {
         providerFailureMessage(payload, response.status),
       );
     }
-    return normalizeAiReview(payload, normalizedRequest);
+    return normalizeAiReview(payload, normalizedRequest, {
+      citations: researchResult?.citations,
+      researchEvidence: researchResult?.evidence,
+      providerLabel: 'Anthropic',
+    });
+  }
+
+  private async generateAnthropicResearchEvidence(
+    config: AiRuntimeConfig,
+    normalizedRequest: Required<AiReviewRequest>,
+  ): Promise<{ evidence: AiReviewResearchEvidence; citations: AiResearchCitation[] }> {
+    const messages = aiResearchMessages(normalizedRequest);
+    const systemMessage = messages[0]?.content ?? '';
+    const userMessage = messages[1]?.content ?? JSON.stringify(normalizedRequest);
+    const response = await fetch(`${normalizeBaseUrl(config.baseUrl, 'anthropic')}/messages`, {
+      method: 'POST',
+      headers: {
+        'anthropic-version': '2023-06-01',
+        'content-type': 'application/json',
+        'x-api-key': config.apiKey,
+      },
+      body: JSON.stringify({
+        model: config.model,
+        max_tokens: 1800,
+        system: systemMessage,
+        messages: [{ role: 'user', content: userMessage }],
+        temperature: 0.2,
+        tools: [anthropicWebSearchTool()],
+      }),
+    }).catch((err) => {
+      throw new ProtocolError(
+        'wallet_unreachable',
+        `AI provider research request failed. ${redactText(err instanceof Error ? err.message : String(err))}`,
+      );
+    });
+    const payload = await response.json().catch(() => ({})) as unknown;
+    if (!response.ok) {
+      throw new ProtocolError(
+        'wallet_unreachable',
+        providerFailureMessage(payload, response.status),
+      );
+    }
+    return normalizeResearchEvidence(payload, normalizedRequest, 'Anthropic');
   }
 
   private async generateAnthropicPlan(
@@ -661,12 +850,125 @@ function withDefaultConnectorContext(
   };
 }
 
+function supportsNativeWebResearch(config: AiRuntimeConfig): boolean {
+  return config.apiFormat === 'anthropic' || shouldUseOpenAiResponses(config);
+}
+
+function askNeedsWebResearch(request: Required<AiAskRequest>): boolean {
+  return textNeedsWebResearch([
+    request.question,
+    request.plan.intent,
+    request.plan.route,
+    request.plan.approval,
+    request.plan.userNotes ?? '',
+  ].join('\n'));
+}
+
+function reviewNeedsWebResearch(request: Required<AiReviewRequest>): boolean {
+  return textNeedsWebResearch([
+    request.instruction,
+    request.plan.intent,
+    request.plan.route,
+    request.plan.approval,
+    request.plan.userNotes ?? '',
+  ].join('\n'));
+}
+
+function textNeedsWebResearch(text: string): boolean {
+  const normalized = text.toLowerCase();
+  if (!normalized.trim()) return false;
+  return (
+    /\b(current|currently|latest|today|tonight|tomorrow|yesterday|now|real[-\s]?time|up[-\s]?to[-\s]?date|as of)\b/.test(normalized) ||
+    /\b(price|cost|fee|rate|plan|subscription|monthly|per\s+month|market\s+cap|liquidity|apr|apy|weather|news|status|available|availability)\b/.test(normalized) && /\b(check|find|look\s+up|search|verify|how\s+much|whether|if|less\s+than|more\s+than|under|over|approve|deny)\b/.test(normalized) ||
+    /\$\s*\d+/.test(normalized) && /\b(less\s+than|more\s+than|under|over|approve|deny|per\s+month|monthly)\b/.test(normalized)
+  );
+}
+
+function openAiWebSearchTool(): Record<string, unknown> {
+  return {
+    type: 'web_search',
+    user_location: {
+      type: 'approximate',
+      country: 'US',
+      timezone: 'America/Los_Angeles',
+    },
+  };
+}
+
+function anthropicWebSearchTool(): Record<string, unknown> {
+  return {
+    type: 'web_search_20250305',
+    name: 'web_search',
+    max_uses: RESEARCH_MAX_USES,
+    user_location: {
+      type: 'approximate',
+      country: 'US',
+      timezone: 'America/Los_Angeles',
+    },
+  };
+}
+
+function unsupportedResearchReview(
+  request: Required<AiReviewRequest>,
+  config: AiRuntimeConfig,
+): AiReviewResult {
+  const provider = config.provider || config.apiFormat;
+  const reason = `This review needs current outside facts, but ${provider} is not connected through a native web-search path.`;
+  return {
+    decision: 'needs_input',
+    reason,
+    summary: 'Current outside facts are required before the agent can decide.',
+    evidence: {
+      research: {
+        status: 'unavailable',
+        provider,
+        required: true,
+      },
+      findings: [
+        {
+          label: 'Research needed',
+          value: 'Switch to OpenAI or Anthropic through Hosted BYOK/Local bridge, or provide the current source fact in the draft.',
+          tone: 'warn',
+        },
+      ],
+      facts: {
+        research: {
+          state: 'missing',
+          message: reason,
+        },
+      },
+    },
+    checkedAt: new Date().toISOString(),
+    source: 'ai',
+    questions: [{
+      id: 'current_fact',
+      prompt: 'What current source fact should the agent use for this decision?',
+      inputKind: 'text',
+      required: true,
+      hint: request.instruction,
+    }],
+  };
+}
+
+function unsupportedResearchAsk(
+  _request: Required<AiAskRequest>,
+  config: AiRuntimeConfig,
+): AiAskResult {
+  const provider = config.provider || config.apiFormat;
+  return {
+    answer: `This question needs current outside facts, but ${provider} is not connected through a native web-search path. Switch to OpenAI or Anthropic through Hosted BYOK/Local bridge, or provide the source fact in the draft.`,
+    checkedAt: new Date().toISOString(),
+    source: 'ai',
+  };
+}
+
 function aiAskMessages(request: Required<AiAskRequest>): Array<{ role: 'system' | 'user'; content: string }> {
+  const needsResearch = askNeedsWebResearch(request);
   return [
     {
       role: 'system',
       content:
-        'You answer the user\'s question about a Solana wallet action plan. Be concise: 1 to 4 sentences, plain English. Use plan fields, context.facts, executionPath, protocolConnectors, and connector read/write capability notes when present. Cite plan fields you reference by name (e.g., recipient, amount, slippageBps) or connector facts by label. Never claim anything is signed, submitted, guaranteed safe, or already approved. Never request private keys. If the question cannot be answered from the plan or facts, say so plainly and state what fact is missing.',
+        'You answer the user\'s question about a Solana wallet action plan. Be concise: 1 to 4 sentences, plain English. Use plan fields, context.facts, executionPath, protocolConnectors, and connector read/write capability notes when present. If the question asks for current or outside facts and web search is available, search reliable sources and cite the source URL in the answer. Cite plan fields you reference by name (e.g., recipient, amount, slippageBps) or connector facts by label. Never claim anything is signed, submitted, guaranteed safe, or already approved. Never request private keys. If the question cannot be answered from the plan, facts, or available research tools, say so plainly and state what fact is missing.',
     },
     {
       role: 'user',
@@ -676,7 +978,41 @@ function aiAskMessages(request: Required<AiAskRequest>): Array<{ role: 'system' 
         walletAddress: request.walletAddress || 'not_connected',
         cluster: request.cluster || 'unknown',
         context: request.context,
+        research: {
+          needed: needsResearch,
+          mode: needsResearch ? 'auto_current_facts' : 'not_required',
+          currentDate: new Date().toISOString(),
+          maxSearches: RESEARCH_MAX_USES,
+        },
         requiredBoundary: 'This is conversational Q&A about a draft. It cannot sign or submit a transaction.',
+      }),
+    },
+  ];
+}
+
+function aiResearchMessages(request: Required<AiReviewRequest>): Array<{ role: 'system' | 'user'; content: string }> {
+  return [
+    {
+      role: 'system',
+      content:
+        'You research current outside facts for a Solana wallet approval review. Do not approve, deny, or ask the wallet to sign. Search reliable current sources, prefer official sources, and return concise source-backed facts in plain English. Include current prices, thresholds, dates, plan names, ambiguity, and URLs when they are relevant. If multiple current options could change the approval outcome, list each option clearly. ' + RESEARCH_SOURCE_POLICY,
+    },
+    {
+      role: 'user',
+      content: JSON.stringify({
+        instruction: request.instruction,
+        walletAddress: request.walletAddress || 'not_connected',
+        cluster: request.cluster || 'unknown',
+        plan: request.plan,
+        context: request.context,
+        research: {
+          needed: true,
+          mode: 'collect_current_facts_only',
+          currentDate: new Date().toISOString(),
+          maxSearches: RESEARCH_MAX_USES,
+          sourcePolicy: RESEARCH_SOURCE_POLICY,
+        },
+        requiredBoundary: 'This research pass cannot approve, deny, sign, or submit. It only gathers facts for a later structured review.',
       }),
     },
   ];
@@ -687,10 +1023,45 @@ function aiAskFromPayload(payload: unknown): AiAskResult {
   if (!text) {
     throw new ProtocolError('wallet_unreachable', 'Agent did not return any answer text. Try again.');
   }
+  const citations = sortResearchCitations(extractResearchCitations(payload));
   return {
     answer: compactReviewText(text, 800),
+    ...(citations.length ? { citations: citations.map((citation) => ({
+      kind: 'url',
+      ref: citation.url,
+      ...(citation.title ? { title: citation.title } : {}),
+    })) } : {}),
     checkedAt: new Date().toISOString(),
     source: 'ai',
+  };
+}
+
+function normalizeResearchEvidence(
+  payload: unknown,
+  _request: Required<AiReviewRequest>,
+  providerLabel: string,
+): { evidence: AiReviewResearchEvidence; citations: AiResearchCitation[] } {
+  const citations = extractResearchCitations(payload);
+  const text = extractModelText(payload).trim();
+  const summary = text
+    ? compactReviewText(text, 1600)
+    : 'Research ran, but the provider did not return readable source-backed findings.';
+  const sources = citations.map((citation) => ({
+    ...(citation.title ? { title: citation.title } : {}),
+    url: citation.url,
+    ...(citation.citedText ? { citedText: citation.citedText } : {}),
+  }));
+  return {
+    citations,
+    evidence: {
+      status: 'checked',
+      required: true,
+      provider: providerLabel,
+      checkedAt: new Date().toISOString(),
+      summary,
+      sources,
+      sourcePolicy: RESEARCH_SOURCE_POLICY,
+    },
   };
 }
 
@@ -740,16 +1111,29 @@ function aiMessages(request: Required<AiPlanRequest>): Array<{ role: 'system' | 
   ];
 }
 
-function aiReviewMessages(request: Required<AiReviewRequest>): Array<{ role: 'system' | 'user'; content: string }> {
+function aiReviewMessages(
+  request: Required<AiReviewRequest>,
+  researchEvidence?: AiReviewResearchEvidence,
+): Array<{ role: 'system' | 'user'; content: string }> {
   const multi = request.mode === 'multi';
-  const baseSystem = 'You review a Solana wallet action draft before it is sent for wallet approval. Return only JSON with: decision ("approve", "deny", or "needs_input"); reason as one or two concise sentences; summary as one short sentence; evidence as an object. Put flexible user-facing findings in evidence.findings as an array of {label,value,tone}, where tone is good, warn, neutral, or fail. Findings must match the user request and connector facts; do not force route/quote/slippage rows when they do not apply. When you cannot decide because user intent is genuinely ambiguous, return decision "needs_input" plus a "questions" array with 1-3 short, specific questions answerable in under 20 words. Use "needs_input" only when the missing information is something the user must supply, such as a missing amount, missing token, or missing recipient. Do not use "needs_input" for facts that are present in the plan, context.facts, context.executionPath, or facts you can infer. For browser swap or recurring-swap drafts, Jupiter is the execution aggregator unless context says otherwise; do not ask the user which DEX/protocol will execute it. If a token mint address is present, review that mint address; do not ask the user what token it is or whether they verified it. If token metadata is missing, return approve or deny with a warning, not needs_input. If context includes protocolConnectors or connector facts, use reads as evidence and treat writes as prepare-only wallet-approval actions. If the context includes "userPolicies", treat each as a soft rule the user wants you to honor: factor them into your decision and cite the relevant policy id in evidence.policiesApplied when one influences the outcome. Be flexible: use the user instruction and available facts, not a fixed checklist. Never claim anything is signed, submitted, guaranteed safe, or already approved. Never request private keys. The wallet user must still approve separately.';
+  const needsResearch = reviewNeedsWebResearch(request);
+  const baseSystem = 'You review a Solana wallet action draft before it is sent for wallet approval. Return only JSON with: decision ("approve", "deny", or "needs_input"); reason as one or two concise sentences; summary as one short sentence; evidence as an object. Put flexible user-facing findings in evidence.findings as an array of {label,value,tone}, where tone is good, warn, neutral, or fail. Findings must match the user request and connector facts; do not force route/quote/slippage rows when they do not apply. Use plan.actionType to decide which checks apply: swap drafts deserve route/quote/slippage scrutiny; lend/deposit/withdraw/stake/vault drafts deserve connector/reserve/vault checks and a balance/cap sanity check, not swap heuristics. For first-class adapter actions (kamino_deposit, kamino_withdraw, marginfi_*, save_*, marinade_*, jito_*, jupiter_lend_*, drift_vault_*, meteora_*, orca_*, raydium_*, sanctum_*), if the connector is enabled, the target token/reserve/vault is resolvable, and the amount is positive and within plausible bounds, approve unless a user policy or research result blocks. If the instruction asks for current or outside facts and web search is available, search reliable sources before deciding. Put source-backed findings in evidence.findings, put source links in evidence.sources as an array of {title,url}, and include evidence.research = {status:"checked"} when research was used. Apply user threshold rules exactly, for example "approve if under $20, deny if over $20". If multiple researched facts lead to different outcomes and the draft does not identify which one applies, return "needs_input" and list the found options. When you cannot decide because user intent is genuinely ambiguous, return decision "needs_input" plus a "questions" array with 1-3 short, specific questions answerable in under 20 words. Use "needs_input" only when the missing information is something the user must supply, such as a missing amount, missing token, missing recipient, or which researched option applies. Do not use "needs_input" for facts that are present in the plan, context.facts, context.executionPath, research results, or facts you can infer. For browser swap or recurring-swap drafts, Jupiter is the execution aggregator unless context says otherwise; do not ask the user which DEX/protocol will execute it. If a token mint address is present, review that mint address; do not ask the user what token it is or whether they verified it. If token metadata is missing, return approve or deny with a warning, not needs_input. If context includes protocolConnectors or connector facts, use reads as evidence and treat writes as prepare-only wallet-approval actions. If the context includes "userPolicies", treat each as a soft rule the user wants you to honor: factor them into your decision and cite the relevant policy id in evidence.policiesApplied when one influences the outcome. Be flexible: use the user instruction and available facts, not a fixed checklist. Never claim anything is signed, submitted, guaranteed safe, or already approved. Never request private keys. The wallet user must still approve separately.';
   const multiSystem = multi
     ? ' Additionally, fill the "reviewers" array with one entry per role (risk, quote, policy, protocol). Each reviewer evaluates the draft from their perspective independently and reports their own decision ("approve", "deny", or "needs_input") and a 1-sentence reason. The top-level decision should reflect the most severe verdict: any "deny" > any "needs_input" > all "approve". Risk inspects authority changes, unknown programs, and dangerous semantics. Quote checks slippage, output amount, and route freshness for swaps. Policy applies the user policies from context.userPolicies. Protocol identifies the protocol/aggregator and flags unknowns. Skip reviewers whose role does not apply (e.g., no quote role on a read-only plan).'
     : '';
+  const blinkSystem = multi && request.plan?.actionType === 'blink_action'
+    ? ` ${BLINK_CLASSIFIER_REVIEW_PROMPT}`
+    : '';
+  const researchSystem = researchEvidence
+    ? ' Current outside-fact research has already been supplied in context.researchEvidence. Do not request another search and do not omit the researched fact. Use that evidence to produce the structured decision, including source-backed findings such as current price, threshold comparison, and source URL when relevant.'
+    : '';
+  const context = researchEvidence
+    ? { ...request.context, researchEvidence }
+    : request.context;
   return [
     {
       role: 'system',
-      content: `${baseSystem}${multiSystem}`,
+      content: `${baseSystem}${multiSystem}${blinkSystem}${researchSystem}`,
     },
     {
       role: 'user',
@@ -758,8 +1142,15 @@ function aiReviewMessages(request: Required<AiReviewRequest>): Array<{ role: 'sy
         walletAddress: request.walletAddress || 'not_connected',
         cluster: request.cluster || 'unknown',
         plan: request.plan,
-        context: request.context,
+        context,
         reviewMode: request.mode,
+        research: {
+          needed: researchEvidence ? false : needsResearch,
+          mode: researchEvidence ? 'provided_current_facts' : needsResearch ? 'auto_current_facts' : 'not_required',
+          currentDate: new Date().toISOString(),
+          maxSearches: RESEARCH_MAX_USES,
+          ...(researchEvidence ? { providedEvidence: true, sourcePolicy: researchEvidence.sourcePolicy } : {}),
+        },
         requiredBoundary: 'This AI review can approve, deny, or request more input. It cannot sign or submit a transaction.',
       }),
     },
@@ -793,31 +1184,56 @@ function normalizeStrictAiPlan(
   return aiPlanFromParsed(parsed, request);
 }
 
-function normalizeAiReview(payload: unknown, request: Required<AiReviewRequest>): AiReviewResult {
-  const parsed = parsePlanJson(extractModelText(payload));
-  return aiReviewFromParsed(parsed, request);
+function normalizeAiReview(
+  payload: unknown,
+  request: Required<AiReviewRequest>,
+  options: {
+    citations?: AiResearchCitation[];
+    researchEvidence?: AiReviewResearchEvidence;
+    providerLabel?: string;
+  } = {},
+): AiReviewResult {
+  const content = extractModelText(payload);
+  const parsed = parsePlanJson(content);
+  return aiReviewFromParsed(parsed, request, {
+    citations: options.citations ?? extractResearchCitations(payload),
+    researchEvidence: options.researchEvidence,
+    providerLabel: options.providerLabel ?? 'AI provider',
+  });
 }
 
 function normalizeStrictAiReview(
   payload: unknown,
   request: Required<AiReviewRequest>,
   providerLabel: string,
+  options: {
+    citations?: AiResearchCitation[];
+    researchEvidence?: AiReviewResearchEvidence;
+  } = {},
 ): AiReviewResult {
   const content = extractModelText(payload).trim();
   if (!content) {
-    throw new ProtocolError(
-      'wallet_unreachable',
-      `${providerLabel} returned no review text. Try again or choose a model with enough output tokens for structured JSON.`,
-    );
+    return malformedAiReviewResult(request, {
+      citations: options.citations ?? extractResearchCitations(payload),
+      researchEvidence: options.researchEvidence,
+      providerLabel,
+      reason: `${providerLabel} returned no structured review text. Ask the agent again or narrow the request.`,
+    });
   }
   const parsed = parsePlanJson(content);
   if (!isReviewJson(parsed)) {
-    throw new ProtocolError(
-      'wallet_unreachable',
-      `${providerLabel} returned a response that was not a valid Agentic review JSON.`,
-    );
+    return malformedAiReviewResult(request, {
+      citations: options.citations ?? extractResearchCitations(payload),
+      researchEvidence: options.researchEvidence,
+      providerLabel,
+      reason: `${providerLabel} returned research but not a valid structured approval decision. Ask the agent again or narrow the request.`,
+    });
   }
-  return aiReviewFromParsed(parsed, request);
+  return aiReviewFromParsed(parsed, request, {
+    citations: options.citations ?? extractResearchCitations(payload),
+    researchEvidence: options.researchEvidence,
+    providerLabel,
+  });
 }
 
 function aiPlanFromParsed(parsed: Record<string, unknown>, request: Required<AiPlanRequest>): AiPlan {
@@ -875,8 +1291,23 @@ function scrubPlanProse(
   return { parsed, warning: null };
 }
 
-function aiReviewFromParsed(parsed: Record<string, unknown>, request: Required<AiReviewRequest>): AiReviewResult {
-  const rawDecision = normalizeReviewDecision(parsed.decision);
+function aiReviewFromParsed(
+  parsed: Record<string, unknown>,
+  request: Required<AiReviewRequest>,
+  options: {
+    citations?: AiResearchCitation[];
+    researchEvidence?: AiReviewResearchEvidence;
+    providerLabel?: string;
+  } = {},
+): AiReviewResult {
+  const rawDecision = reviewDecisionOrUndefined(parsed.decision);
+  if (!rawDecision) {
+    return malformedAiReviewResult(request, {
+      citations: options.citations ?? [],
+      researchEvidence: options.researchEvidence,
+      providerLabel: options.providerLabel ?? 'AI provider',
+    });
+  }
   const questions = normalizeReviewQuestions(parsed.questions);
   const reviewers = normalizeReviewers(parsed.reviewers);
   const decision = reviewers && reviewers.length
@@ -890,19 +1321,267 @@ function aiReviewFromParsed(parsed: Record<string, unknown>, request: Required<A
         ? 'Agent needs clarifying answers before deciding. Answer the questions or send anyway.'
         : 'Denied by the configured agent review. Review the draft or ask the agent again.',
   );
-  return {
+  const evidence = jsonObjectOr(parsed.evidence, {
+    actionType: request.plan.actionType,
+    templateTitle: request.plan.templateTitle,
+  });
+  if (options.researchEvidence) {
+    if (!evidence.research) evidence.research = options.researchEvidence;
+    if (!Array.isArray(evidence.sources) || evidence.sources.length === 0) {
+      evidence.sources = options.researchEvidence.sources;
+    }
+  }
+  const result: AiReviewResult = {
     decision,
     reason: compactReviewText(reason, 280),
     summary: compactReviewText(stringOr(parsed.summary, reason), 160),
-    evidence: jsonObjectOr(parsed.evidence, {
-      actionType: request.plan.actionType,
-      templateTitle: request.plan.templateTitle,
-    }),
+    evidence: withResearchCitations(evidence, options.citations ?? []),
     checkedAt: new Date().toISOString(),
     source: 'ai',
     ...(questions ? { questions } : {}),
     ...(reviewers && reviewers.length ? { reviewers } : {}),
   };
+  return reconcileThresholdReviewDecision(result, request);
+}
+
+function malformedAiReviewResult(
+  request: Required<AiReviewRequest>,
+  options: {
+    citations?: AiResearchCitation[];
+    researchEvidence?: AiReviewResearchEvidence;
+    providerLabel?: string;
+    reason?: string;
+  } = {},
+): AiReviewResult {
+  const hasResearch = Boolean(options.researchEvidence) || Boolean(options.citations?.length);
+  const reason = options.reason ?? (hasResearch
+    ? `${options.providerLabel ?? 'AI provider'} completed research but did not return a structured approval decision. Ask the agent again or narrow the request.`
+    : `${options.providerLabel ?? 'AI provider'} did not return a structured approval decision. Ask the agent again or narrow the request.`);
+  const evidence = withResearchCitations({
+    ...(options.researchEvidence ? { research: options.researchEvidence } : hasResearch ? { research: { status: 'checked', required: true } } : {}),
+    findings: [{
+      label: hasResearch ? 'Structured review' : 'Agent review',
+      value: hasResearch
+        ? 'Research sources were found, but the agent did not return a usable approval, denial, or price finding.'
+        : 'The agent response was missing a usable approval, denial, or needs-input decision.',
+      tone: 'warn',
+    }],
+    parseError: 'missing_or_invalid_review_json',
+  }, options.citations ?? []);
+  return {
+    decision: 'needs_input',
+    reason: compactReviewText(reason, 280),
+    summary: hasResearch
+      ? 'Research completed but the structured review failed.'
+      : 'The agent review response was not structured.',
+    evidence,
+    checkedAt: new Date().toISOString(),
+    source: 'ai',
+    questions: [{
+      id: 'agent_review_retry',
+      prompt: 'Ask the agent again or provide the missing current fact in the draft.',
+      inputKind: 'text',
+      required: false,
+      hint: request.instruction,
+    }],
+  };
+}
+
+function reconcileThresholdReviewDecision(
+  result: AiReviewResult,
+  request: Required<AiReviewRequest>,
+): AiReviewResult {
+  const rule = extractThresholdRule(request.instruction);
+  if (!rule) return result;
+  const candidate = selectThresholdPriceCandidate(result, rule);
+  if (!candidate) return result;
+  const expected = expectedDecisionForThreshold(candidate.amount, rule);
+  if (expected === result.decision) return result;
+
+  const thresholdText = formatDollar(rule.threshold);
+  const amountText = formatDollar(candidate.amount);
+  const relation = candidate.amount < rule.threshold
+    ? 'under'
+    : candidate.amount > rule.threshold
+      ? 'over'
+      : 'equal to';
+  const correctedReason = expected === 'needs_input'
+    ? `${amountText} is exactly ${thresholdText}; the user rule used a strict under/over threshold, so the review needs clarification.`
+    : `${amountText} is ${relation} ${thresholdText}, so the user threshold rule ${expected === 'approve' ? 'approves' : 'denies'} this draft. Wallet approval is still required before anything signs.`;
+  const evidence = appendReviewFinding(result.evidence, {
+    label: 'Threshold check',
+    value: `Corrected model comparison: ${amountText} is ${relation} ${thresholdText}. Original decision was ${result.decision}.`,
+    tone: expected === 'approve' ? 'good' : expected === 'deny' ? 'fail' : 'warn',
+  });
+  return {
+    ...result,
+    decision: expected,
+    reason: compactReviewText(correctedReason, 280),
+    summary: compactReviewText(`Threshold rule checked: ${amountText} is ${relation} ${thresholdText}.`, 160),
+    evidence,
+  };
+}
+
+function extractThresholdRule(instruction: string): ThresholdRule | undefined {
+  const normalized = instruction.toLowerCase();
+  const threshold = extractInstructionThreshold(normalized);
+  if (threshold === undefined) return undefined;
+  const approveBelow = /\b(approve|allow|pass)\b[\s\S]{0,80}\b(under|below|less\s+than)\b/.test(normalized) ||
+    /\b(under|below|less\s+than)\b[\s\S]{0,80}\b(approve|allow|pass)\b/.test(normalized);
+  const approveAbove = /\b(approve|allow|pass)\b[\s\S]{0,80}\b(over|above|more\s+than|greater\s+than)\b/.test(normalized) ||
+    /\b(over|above|more\s+than|greater\s+than)\b[\s\S]{0,80}\b(approve|allow|pass)\b/.test(normalized);
+  const denyBelow = /\b(deny|block|reject|fail)\b[\s\S]{0,80}\b(under|below|less\s+than)\b/.test(normalized) ||
+    /\b(under|below|less\s+than)\b[\s\S]{0,80}\b(deny|block|reject|fail)\b/.test(normalized);
+  const denyAbove = /\b(deny|block|reject|fail)\b[\s\S]{0,80}\b(over|above|more\s+than|greater\s+than)\b/.test(normalized) ||
+    /\b(over|above|more\s+than|greater\s+than)\b[\s\S]{0,80}\b(deny|block|reject|fail)\b/.test(normalized);
+  if (approveBelow || denyAbove) return { threshold, approveWhen: 'below' };
+  if (approveAbove || denyBelow) return { threshold, approveWhen: 'above' };
+  return undefined;
+}
+
+function extractInstructionThreshold(text: string): number | undefined {
+  const matches = [...text.matchAll(/\$\s*([0-9]+(?:\.[0-9]+)?)/g)]
+    .map((match) => Number.parseFloat(match[1] ?? ''))
+    .filter(Number.isFinite);
+  if (!matches.length) return undefined;
+  return matches[0];
+}
+
+function expectedDecisionForThreshold(amount: number, rule: ThresholdRule): AiReviewDecision {
+  if (amount === rule.threshold) return 'needs_input';
+  if (rule.approveWhen === 'below') {
+    return amount < rule.threshold ? 'approve' : 'deny';
+  }
+  return amount > rule.threshold ? 'approve' : 'deny';
+}
+
+function selectThresholdPriceCandidate(
+  result: AiReviewResult,
+  rule: ThresholdRule,
+): ThresholdPriceCandidate | undefined {
+  const candidates = extractThresholdPriceCandidates(result, rule.threshold);
+  if (!candidates.length) return undefined;
+  const currentPrice = candidates.find((candidate) => /current price|cheapest|monthly plan|air plan|including taxes|taxes\/fees/i.test(candidate.label));
+  if (currentPrice) return currentPrice;
+  if (candidates.length === 1) return candidates[0];
+  const nonThresholdCandidates = candidates.filter((candidate) => candidate.amount !== rule.threshold);
+  return nonThresholdCandidates.length === 1 ? nonThresholdCandidates[0] : undefined;
+}
+
+function extractThresholdPriceCandidates(
+  result: AiReviewResult,
+  threshold: number,
+): ThresholdPriceCandidate[] {
+  const fields: Array<{ label: string; text: string }> = [
+    { label: 'reason', text: result.reason },
+    { label: 'summary', text: result.summary },
+    ...evidenceTextFields(result.evidence),
+  ];
+  const candidates: ThresholdPriceCandidate[] = [];
+  const seen = new Set<string>();
+  for (const field of fields) {
+    for (const sentence of field.text.split(/(?<=[.!?])\s+|\n+/)) {
+      if (!/\$/.test(sentence)) continue;
+      if (/\b(threshold|limit|rule)\b/i.test(sentence) && !/\b(cost|costs|price|priced|plan|monthly|per\s+month|tax|fee|current)\b/i.test(sentence)) {
+        continue;
+      }
+      if (!/\b(cost|costs|price|priced|plan|monthly|per\s+month|tax|fee|current|cheapest|air|infinity)\b/i.test(sentence)) {
+        continue;
+      }
+      for (const match of sentence.matchAll(/\$\s*([0-9]+(?:\.[0-9]+)?)/g)) {
+        const amount = Number.parseFloat(match[1] ?? '');
+        if (!Number.isFinite(amount)) continue;
+        if (amount === threshold && !/\b(cost|costs|price|priced|plan|monthly|per\s+month|tax|fee|current|cheapest|air|infinity)\b/i.test(sentence.slice(0, Math.max(0, match.index ?? 0)))) {
+          continue;
+        }
+        const key = `${amount}:${sentence.trim().toLowerCase()}`;
+        if (seen.has(key)) continue;
+        seen.add(key);
+        candidates.push({ amount, label: field.label, text: sentence.trim() });
+      }
+    }
+  }
+  return candidates;
+}
+
+function evidenceTextFields(evidence: Record<string, unknown>): Array<{ label: string; text: string }> {
+  const fields: Array<{ label: string; text: string }> = [];
+  const findings = Array.isArray(evidence.findings) ? evidence.findings : [];
+  for (const entry of findings) {
+    if (!entry || typeof entry !== 'object' || Array.isArray(entry)) continue;
+    const record = entry as Record<string, unknown>;
+    const label = typeof record.label === 'string' ? record.label : 'finding';
+    const value = typeof record.value === 'string' ? record.value : '';
+    if (value.trim()) fields.push({ label, text: value });
+  }
+  if (evidence.research && typeof evidence.research === 'object' && !Array.isArray(evidence.research)) {
+    const summary = (evidence.research as Record<string, unknown>).summary;
+    if (typeof summary === 'string' && summary.trim()) {
+      fields.push({ label: 'research', text: summary });
+    }
+  }
+  return fields;
+}
+
+function appendReviewFinding(
+  evidence: Record<string, unknown>,
+  finding: { label: string; value: string; tone: 'good' | 'warn' | 'neutral' | 'fail' },
+): Record<string, unknown> {
+  const findings = Array.isArray(evidence.findings)
+    ? evidence.findings.filter((entry) => entry && typeof entry === 'object' && !Array.isArray(entry))
+    : [];
+  return {
+    ...evidence,
+    findings: [...findings, finding],
+  };
+}
+
+function formatDollar(value: number): string {
+  return Number.isInteger(value) ? `$${value}` : `$${value.toFixed(2)}`;
+}
+
+function withResearchCitations(
+  evidence: Record<string, unknown>,
+  citations: AiResearchCitation[],
+): Record<string, unknown> {
+  if (!citations.length) return evidence;
+  const existing = Array.isArray(evidence.sources)
+    ? evidence.sources.filter((entry): entry is Record<string, unknown> => Boolean(entry && typeof entry === 'object' && !Array.isArray(entry)))
+    : [];
+  const seen = new Set<string>();
+  const sources: AiResearchCitation[] = [];
+  for (const entry of [...existing, ...citations]) {
+    const record = entry as Record<string, unknown>;
+    const url = typeof record.url === 'string' ? record.url.trim() : '';
+    if (!url || seen.has(url)) continue;
+    seen.add(url);
+    sources.push({
+      ...(typeof record.title === 'string' && record.title.trim() ? { title: record.title.trim() } : {}),
+      url,
+      ...(typeof record.citedText === 'string' && record.citedText.trim() ? { citedText: record.citedText.trim() } : {}),
+    });
+    if (sources.length >= 8) break;
+  }
+  return {
+    ...evidence,
+    sources: sortResearchCitations(sources),
+    research: evidence.research ?? { status: 'checked' },
+  };
+}
+
+function sortResearchCitations<T extends { url: string }>(citations: T[]): T[] {
+  return [...citations].sort((a, b) => researchSourcePriority(a.url) - researchSourcePriority(b.url));
+}
+
+function researchSourcePriority(url: string): number {
+  try {
+    const host = new URL(url).hostname.toLowerCase();
+    if (host === 'hellohelium.com' || host.endsWith('.hellohelium.com')) return 0;
+    if (host === 'heliummobile.com' || host.endsWith('.heliummobile.com')) return 0;
+  } catch {
+    return 10;
+  }
+  return 5;
 }
 
 function normalizeReviewers(value: unknown): AiReviewerEntry[] | undefined {
@@ -921,7 +1600,8 @@ function normalizeReviewers(value: unknown): AiReviewerEntry[] | undefined {
     const idRaw = typeof record.id === 'string' ? record.id.trim().toLowerCase() : '';
     if (!['risk', 'quote', 'policy', 'protocol'].includes(idRaw)) continue;
     if (seenIds.has(idRaw)) continue;
-    const decisionValue = normalizeReviewDecision(record.decision);
+    const decisionValue = reviewDecisionOrUndefined(record.decision);
+    if (!decisionValue) continue;
     const reasonText = typeof record.reason === 'string' ? record.reason : '';
     if (!reasonText.trim()) continue;
     const summaryText = typeof record.summary === 'string' ? record.summary : '';
@@ -1058,7 +1738,7 @@ function isReviewJson(value: Record<string, unknown>): boolean {
   );
 }
 
-function normalizeReviewDecision(value: unknown): AiReviewDecision {
+function reviewDecisionOrUndefined(value: unknown): AiReviewDecision | undefined {
   const normalized = typeof value === 'string' ? value.trim().toLowerCase() : '';
   if (['approve', 'approved', 'allow', 'allowed', 'pass', 'passed', 'ok'].includes(normalized)) {
     return 'approve';
@@ -1066,7 +1746,10 @@ function normalizeReviewDecision(value: unknown): AiReviewDecision {
   if (['needs_input', 'needs-input', 'need_input', 'need-input', 'ask', 'clarify', 'needs_clarification'].includes(normalized)) {
     return 'needs_input';
   }
-  return 'deny';
+  if (['deny', 'denied', 'block', 'blocked', 'fail', 'failed', 'reject', 'rejected'].includes(normalized)) {
+    return 'deny';
+  }
+  return undefined;
 }
 
 function normalizeReviewQuestions(value: unknown): AiReviewQuestion[] | undefined {
@@ -1277,6 +1960,46 @@ function assertCompleteOpenAiResponse(payload: unknown): void {
   }
 }
 
+function extractResearchCitations(payload: unknown): AiResearchCitation[] {
+  const citations: AiResearchCitation[] = [];
+  const seen = new Set<string>();
+  const visit = (value: unknown, depth: number): void => {
+    if (depth > 10 || !value || typeof value !== 'object') return;
+    if (Array.isArray(value)) {
+      for (const entry of value) visit(entry, depth + 1);
+      return;
+    }
+    const record = value as Record<string, unknown>;
+    const url = typeof record.url === 'string' ? record.url.trim() : '';
+    const citationType = typeof record.type === 'string' ? record.type : '';
+    const hasCitationShape = citationType.includes('citation') ||
+      citationType.includes('web_search') ||
+      typeof record.title === 'string' ||
+      typeof record.cited_text === 'string' ||
+      typeof record.citedText === 'string';
+    if (url && hasCitationShape && /^https?:\/\//i.test(url) && !seen.has(url)) {
+      seen.add(url);
+      const citedText = typeof record.citedText === 'string'
+        ? record.citedText
+        : typeof record.cited_text === 'string'
+          ? record.cited_text
+          : undefined;
+      citations.push({
+        url,
+        ...(typeof record.title === 'string' && record.title.trim() ? { title: record.title.trim() } : {}),
+        ...(citedText && citedText.trim() ? { citedText: citedText.trim() } : {}),
+      });
+      if (citations.length >= 8) return;
+    }
+    for (const entry of Object.values(record)) {
+      if (citations.length >= 8) return;
+      visit(entry, depth + 1);
+    }
+  };
+  visit(payload, 0);
+  return citations;
+}
+
 function extractModelText(payload: unknown): string {
   if (!payload || typeof payload !== 'object') return '';
   const record = payload as Record<string, unknown>;
@@ -1335,14 +2058,71 @@ function extractModelText(payload: unknown): string {
 function parsePlanJson(content: string): Record<string, unknown> {
   const trimmed = content.trim();
   if (!trimmed) return {};
-  try {
-    const parsed = JSON.parse(trimmed);
-    return parsed && typeof parsed === 'object' && !Array.isArray(parsed)
-      ? (parsed as Record<string, unknown>)
-      : {};
-  } catch {
-    return {};
+  const candidates = [
+    trimmed,
+    ...jsonCodeFenceCandidates(trimmed),
+    ...balancedJsonObjectCandidates(trimmed),
+  ];
+  const seen = new Set<string>();
+  for (const candidate of candidates) {
+    if (!candidate || seen.has(candidate)) continue;
+    seen.add(candidate);
+    try {
+      const parsed = JSON.parse(candidate);
+      if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+        return parsed as Record<string, unknown>;
+      }
+    } catch {
+      // Try the next candidate.
+    }
   }
+  return {};
+}
+
+function jsonCodeFenceCandidates(content: string): string[] {
+  const candidates: string[] = [];
+  const fencePattern = /```(?:json)?\s*([\s\S]*?)```/gi;
+  let match: RegExpExecArray | null;
+  while ((match = fencePattern.exec(content))) {
+    const candidate = match[1]?.trim();
+    if (candidate) candidates.push(candidate);
+  }
+  return candidates;
+}
+
+function balancedJsonObjectCandidates(content: string): string[] {
+  const candidates: string[] = [];
+  for (let start = content.indexOf('{'); start >= 0; start = content.indexOf('{', start + 1)) {
+    let depth = 0;
+    let inString = false;
+    let escaped = false;
+    for (let index = start; index < content.length; index += 1) {
+      const char = content[index];
+      if (escaped) {
+        escaped = false;
+        continue;
+      }
+      if (char === '\\') {
+        escaped = true;
+        continue;
+      }
+      if (char === '"') {
+        inString = !inString;
+        continue;
+      }
+      if (inString) continue;
+      if (char === '{') depth += 1;
+      if (char === '}') {
+        depth -= 1;
+        if (depth === 0) {
+          candidates.push(content.slice(start, index + 1));
+          break;
+        }
+      }
+    }
+    if (candidates.length >= 4) break;
+  }
+  return candidates;
 }
 
 function stringOr(value: unknown, fallback: string): string {

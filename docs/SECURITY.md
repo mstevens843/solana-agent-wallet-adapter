@@ -1,6 +1,6 @@
 # Security
 
-This project routes Solana signing through the user's real wallet. The agent process never sees a private key or seed phrase. This file documents the operator-side hygiene and architectural boundaries that keep that promise true under the May 2026 supply-chain threat family (Mini Shai-Hulud / CVE-2026-45321 and its siblings).
+This project routes Solana signing through the user's real wallet. The agent process never sees a private key or seed phrase. This file documents the operator-side hygiene and architectural boundaries that keep that promise true under the May 2026 supply-chain threat family — Mini Shai-Hulud / CVE-2026-45321 on npm, the mistralai PyPI v2.4.6 import-time payload, and adjacent incidents. The family is multi-incident and cross-ecosystem; treat each new disclosure as a probable variant.
 
 ## Reporting a vulnerability
 
@@ -36,7 +36,15 @@ Run this checklist on any dev machine that ran `pnpm install`, `npm install`, or
    grep -E "@(tanstack|uipath|mistralai|opensearch-project)/" pnpm-lock.yaml
    grep -E "raydium-bs58|base-x-64|bs58-basic|ethersproject-wallet|@kodane/patch-manager|solana-transaction-toolkit|solana-stable-web-huks" pnpm-lock.yaml
    ```
-   Expected: no output.
+   Expected: no output. The unambiguous IoCs are also enforced as a hard CI gate via `scripts/ci-ioc-tripwire.sh`; this manual grep is the broader forensic that includes legitimate-scope checks too noisy for CI.
+
+6. Cross-ecosystem check (mistralai PyPI v2.4.6, May 2026): the payload runs on `import`, drops to `/tmp/transformers.pyz`, and installs a `pgsql-monitor.service` persistence. Even if this machine does not directly `pip install mistralai`, dev boxes often run mixed toolchains.
+   ```sh
+   ls /tmp/transformers.pyz /tmp/pgmonitor.py 2>/dev/null
+   systemctl --user list-units --all 2>/dev/null | grep -i 'pgsql-monitor\|pgmonitor'
+   sudo ss -ntp 2>/dev/null | grep '83\.142\.209\.194'
+   ```
+   Expected: empty / no matches. Any hit → isolate the host, block `83.142.209.194` at egress, hunt for `transformers.pyz` and rotate credentials per step 3.
 
 ## Architectural defenses
 
@@ -44,12 +52,18 @@ These are enforced in code; they protect users even if a contributor's machine i
 
 ### Supply-chain
 
-- **`ignore-scripts=true`** in root `.npmrc` and `--ignore-scripts` in every CI workflow. Compromised packages cannot run `preinstall`/`postinstall` payloads during `pnpm install`. This is the specific vector used by CVE-2026-45321's `router_init.js`.
+- **`ignore-scripts=true`** in root `.npmrc` and `--ignore-scripts` in every CI workflow. Compromised packages cannot run `preinstall`/`postinstall` payloads during `pnpm install`. This is the specific vector used by CVE-2026-45321's `router_init.js`. Defense-in-depth: `enable-pre-post-scripts=false` and `dangerously-allow-all-builds=false` are also set in `.npmrc` to explicitly close the pnpm-specific lifecycle hooks and the native-build allowlist.
+- **Import-time payloads** — the install-script defenses above do **not** cover code that runs when a malicious module is first `import`-ed (the vector used by mistralai PyPI v2.4.6, and feasible on npm via top-level ESM/CJS side effects). The release-age floor below is the load-bearing defense for this case; lockfile pinning + `verify-deps-before-run=warn` in `.npmrc` catches drift between `pnpm-lock.yaml` and what's on disk before any script runs.
 - **7-day release-age floor** — `minimumReleaseAge: 10080` in `pnpm-workspace.yaml` and `min-release-age=7d` in `.npmrc`. pnpm refuses to install package versions younger than 7 days. This is the highest-leverage defense against near-real-time worms like Mini Shai-Hulud (which spread end-to-end in under 30 minutes); detection services flag malware inside the 7-day window. Emergency override: `pnpm add <pkg> --config.minimumReleaseAge=0`, or list the package in `minimumReleaseAgeExclude` in `pnpm-workspace.yaml`. Lockfile-pinned installs are unaffected.
 - **No `pull_request_target`** trigger anywhere — the GitHub Actions Pwn Request vector that compromised TanStack is not present.
 - **Minimum-privilege `GITHUB_TOKEN`** — `ci.yml` is `contents: read`. The token cannot push, publish, or alter releases even if a step is compromised.
 - **Lockfile-only installs** (`--frozen-lockfile`) in all workflows.
 - **`pnpm audit`** runs on every PR (non-blocking initially) plus Dependabot daily.
+- **OSV-Scanner** runs on every PR via `google/osv-scanner-action` against `pnpm-lock.yaml`. Suppressions live in `.osv-scanner.toml`; any new advisory not in that file fails CI.
+- **`pnpm dedupe --check`** runs on every PR — fails if the lockfile contains avoidable duplicate versions, which is a common shape for a smuggled extra dep.
+- **Hard-fail IoC tripwire** (`scripts/ci-ioc-tripwire.sh`) runs on every PR and master push. It greps `pnpm-lock.yaml` and every tracked file for unambiguous IoCs (payload filenames, the CVE-2026-45321 SHA-256, mistralai C2 IP and dropped filenames, the known compromised npm package names) and exits non-zero on any match. `docs/SECURITY.md` and the workflow itself are excluded so legitimate forensic references do not self-trigger.
+- **Pre-commit hooks** (`lefthook.yml`) block staging of `.env*` (except `.env.example`), `*.pem`, and any `id.json` / `wallet.json` / `*keypair*.json` file. Also fails if `package.json` is staged while `pnpm-lock.yaml` has unstaged changes (forgot-to-stage-the-lockfile case). One-time setup per clone: `pnpm hooks:install`. Emergency bypass for a legitimate edge case: `git commit --no-verify`.
+- **SBOM published per release** — `.github/workflows/sbom-release.yml` runs `anchore/sbom-action` on every `v*` tag and attaches `sbom.spdx.json` to the GitHub release. Anyone consuming a CLI / desktop / Android artifact can verify exactly which dependency versions shipped in that release.
 
 ### Wallet and signing
 

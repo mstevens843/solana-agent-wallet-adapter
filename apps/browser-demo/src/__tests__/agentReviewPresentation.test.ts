@@ -131,6 +131,60 @@ describe('agent review presentation helpers', () => {
     expect(rows.map((row) => row.label)).not.toContain('Findings');
   });
 
+  it('renders research sources as first-class rows without raw source JSON', () => {
+    const rows = reviewEvidenceRows({
+      status: 'approved',
+      evidence: {
+        research: { status: 'checked' },
+        findings: [
+          { label: 'Current price', value: 'Air Plan: $15/month plus taxes and fees', tone: 'good' },
+          { label: 'Threshold rule', value: '$15 is less than $20, so approve.', tone: 'good' },
+        ],
+        sources: [
+          {
+            title: 'All Things Helium Mobile FAQ',
+            url: 'https://support.hellohelium.com/en/articles/7039213-all-things-helium-mobile-faq',
+          },
+        ],
+        actionType: 'swap',
+        templateTitle: 'Swap tokens',
+        parseError: 'missing_or_invalid_review_json',
+      },
+      facts: {
+        research: {
+          state: 'checked',
+          message: 'Official Helium Mobile support article checked.',
+        },
+        route: {
+          state: 'checked',
+          message: 'SOL -> USDC; exact venue route resolves from the Jupiter quote.',
+        },
+        quote: {
+          state: 'missing',
+          message: 'No quote fetched in the browser yet for this draft.',
+        },
+      },
+    });
+
+    expect(rows).toEqual(expect.arrayContaining([
+      { label: 'Current price', value: 'Air Plan: $15/month plus taxes and fees', tone: 'good' },
+      { label: 'Threshold rule', value: '$15 is less than $20, so approve.', tone: 'good' },
+      {
+        label: 'Source: All Things Helium Mobile FAQ',
+        value: 'https://support.hellohelium.com/en/articles/7039213-all-things-helium-mobile-faq',
+        tone: 'neutral',
+      },
+      { label: 'Research', value: 'Official Helium Mobile support article checked.', tone: 'good' },
+    ]));
+    expect(rows.map((row) => row.label)).not.toContain('Sources');
+    expect(rows.map((row) => row.label)).not.toContain('Research status');
+    expect(rows.map((row) => row.label)).not.toContain('Route');
+    expect(rows.map((row) => row.label)).not.toContain('Quote');
+    expect(rows.map((row) => row.label)).not.toContain('Action type');
+    expect(rows.map((row) => row.label)).not.toContain('Template title');
+    expect(rows.map((row) => row.label)).not.toContain('Parse error');
+  });
+
   it('renders denial, missing input, connector warning, and stale state as first-class rows', () => {
     const rows = reviewEvidenceRows({
       status: 'denied',

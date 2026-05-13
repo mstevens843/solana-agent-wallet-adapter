@@ -58,6 +58,7 @@ export const WORKSPACE_BACKUP_KEYS: ReadonlyArray<string> = [
   'solana-agent-wallet-demo-v2',
   'solana-agent-wallet-generated-plans-v1',
   'solana-agent-wallet-browser-workflow-v1',
+  'solana-agent-wallet-local-completed-v1',
   'solana-agent-wallet-recipient-rules-v1',
   PROTOCOL_CONNECTORS_STORAGE_KEY,
   'solana-agent-wallet-agent-policies-v1',
@@ -69,6 +70,12 @@ export const WORKSPACE_BACKUP_KEYS: ReadonlyArray<string> = [
   'solana-agent-wallet-slippage-cap-v1',
   'solana-agent-wallet-lab-artifacts-v1',
   TRANSACTION_LEDGER_STORAGE_KEY,
+];
+
+export const WORKSPACE_BACKUP_KEY_PREFIXES: ReadonlyArray<string> = [
+  'solana-agent-wallet-generated-plans-v1:',
+  'solana-agent-wallet-browser-workflow-v1:',
+  'solana-agent-wallet-local-completed-v1:',
 ];
 
 // Session secrets that must never leave this browser.
@@ -90,7 +97,7 @@ const UNRESOLVED_PHASES: ReadonlySet<ExecutionPhase> = new Set<ExecutionPhase>([
 
 export function exportWorkspace(options: ExportOptions = {}): WorkspaceBackup {
   const storage = resolveStorage(options.storage);
-  const keys = options.includeKeys ?? WORKSPACE_BACKUP_KEYS;
+  const keys = options.includeKeys ?? workspaceBackupKeys(storage);
   const sections: Record<string, WorkspaceBackupSection> = {};
   for (const key of keys) {
     if (NEVER_EXPORT_KEYS.has(key)) continue;
@@ -104,6 +111,18 @@ export function exportWorkspace(options: ExportOptions = {}): WorkspaceBackup {
   };
   if (options.appVersion) bundle.appVersion = options.appVersion;
   return bundle;
+}
+
+export function workspaceBackupKeys(storage: Storage = resolveStorage()): string[] {
+  const keys = new Set<string>(WORKSPACE_BACKUP_KEYS);
+  for (let index = 0; index < storage.length; index += 1) {
+    const key = storage.key(index);
+    if (!key) continue;
+    if (WORKSPACE_BACKUP_KEY_PREFIXES.some((prefix) => key.startsWith(prefix))) {
+      keys.add(key);
+    }
+  }
+  return [...keys].sort();
 }
 
 export function serializeBackup(bundle: WorkspaceBackup): string {

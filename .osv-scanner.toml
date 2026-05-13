@@ -1,0 +1,7 @@
+# Suppression list for OSV-Scanner CI step.
+# Add entries here when an advisory is known-not-reachable in our code paths and
+# is tracked in docs/SECURITY.md. New findings (not listed below) should fail CI.
+
+[[IgnoredVulns]]
+id = "GHSA-3gc7-fjrx-p6mg"
+reason = "bigint-buffer <=1.1.5 toBigIntLE() buffer overflow. Reaches the tree via @kamino-finance/klend-sdk → ... → bigint-buffer; vulnerable code path is binary-layout decoding and is not reachable from agent code. No upstream patch published. Tracked in docs/SECURITY.md under 'Known unpatched advisories'."
