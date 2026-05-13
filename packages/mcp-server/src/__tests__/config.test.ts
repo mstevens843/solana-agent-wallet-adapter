@@ -95,6 +95,7 @@ describe('config env aliases', () => {
     expect(config.jupiter.tokensBaseUrl).toBe('https://tokens.example/v2');
     expect(config.jupiter.priceBaseUrl).toBe('https://price.example/v3');
     expect(config.connectors?.jupiter?.tokenPrice).toMatchObject({
+      enabled: true,
       maxBatchPriceIds: 25,
       maxSearchMintIds: 40,
     });

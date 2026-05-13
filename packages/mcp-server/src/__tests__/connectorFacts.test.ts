@@ -7,6 +7,12 @@ import { createMockBackend } from '../mockBackend.js';
 import { DEFAULT_CONFIG } from '../config.js';
 import {
   fact,
+  factsFromJupiterLendBorrowHealth,
+  factsFromJupiterLendBorrowPositions,
+  factsFromJupiterLendBorrowVaults,
+  factsFromJupiterLendEarnEarnings,
+  factsFromJupiterLendEarnPositions,
+  factsFromJupiterLendEarnTokens,
   factsFromJupiterOrderPreview,
   factsFromKaminoReserveSnapshot,
   factsFromMarginfiAccountDetail,
@@ -304,6 +310,168 @@ describe('connector fact normalization', () => {
         authorization: 'Bearer [redacted]',
       },
     });
+  });
+
+  it('maps Jupiter Lend Earn tokens into APY-tagged connector facts', () => {
+    const facts = factsFromJupiterLendEarnTokens(
+      {
+        tokens: [
+          {
+            assetMint: 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v',
+            shareMint: '11111111111111111111111111111111',
+            tokenSymbol: 'USDC',
+            decimals: 6,
+            shareDecimals: 6,
+            apy: 5.2,
+            rewardApy: 0.3,
+            exchangePrice: '1.02',
+            availableLiquidity: '1000000',
+            active: true,
+          },
+        ],
+      },
+      '2026-05-12T00:00:00.000Z',
+    );
+    expect(facts).toHaveLength(1);
+    expect(facts[0]).toMatchObject({
+      connectorId: 'jupiter',
+      label: 'Jupiter Earn USDC',
+      tone: 'good',
+      source: 'connector',
+    });
+    expect(facts[0]?.value).toContain('5.2%');
+    expect(facts[0]?.detail).toMatchObject({ exchangePrice: '1.02' });
+  });
+
+  it('maps empty Jupiter Lend Earn positions to a neutral fact', () => {
+    const facts = factsFromJupiterLendEarnPositions(
+      { walletAddress: 'Wallet111', positions: [] },
+      '2026-05-12T00:00:00.000Z',
+    );
+    expect(facts).toEqual([
+      expect.objectContaining({
+        connectorId: 'jupiter',
+        label: 'Jupiter Earn positions',
+        tone: 'neutral',
+      }),
+    ]);
+  });
+
+  it('maps Jupiter Lend Earn earnings into a per-asset summary', () => {
+    const facts = factsFromJupiterLendEarnEarnings(
+      {
+        walletAddress: 'Wallet111',
+        earnings: [
+          {
+            assetMint: 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v',
+            walletAddress: 'Wallet111',
+            totalEarnings: '0.12',
+            rewardEarnings: '0.01',
+            decimals: 6,
+          },
+        ],
+      },
+      '2026-05-12T00:00:00.000Z',
+    );
+    expect(facts).toHaveLength(1);
+    expect(facts[0]?.value).toContain('0.12 earned');
+    expect(facts[0]?.tone).toBe('good');
+  });
+
+  it('maps Jupiter Lend Borrow vaults into LTV-tagged connector facts', () => {
+    const facts = factsFromJupiterLendBorrowVaults(
+      {
+        vaults: [
+          {
+            vaultId: 7,
+            vaultAddress: 'Vault111',
+            supplyMint: 'So11111111111111111111111111111111111111112',
+            borrowMint: 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v',
+            supplySymbol: 'SOL',
+            borrowSymbol: 'USDC',
+            supplyDecimals: 9,
+            borrowDecimals: 6,
+            ltvBps: 7500,
+            liquidationThresholdBps: 8500,
+            liquidationPenaltyBps: 500,
+            active: true,
+          },
+        ],
+      },
+      '2026-05-12T00:00:00.000Z',
+    );
+    expect(facts).toHaveLength(1);
+    expect(facts[0]?.value).toContain('SOL/USDC');
+    expect(facts[0]?.value).toContain('LTV 75%');
+    expect(facts[0]?.value).toContain('liquidation 85%');
+    expect(facts[0]?.tone).toBe('good');
+  });
+
+  it('maps Jupiter Lend Borrow positions and tones liquidation status', () => {
+    const facts = factsFromJupiterLendBorrowPositions(
+      {
+        walletAddress: 'Wallet111',
+        positions: [
+          {
+            vaultId: 7,
+            vaultAddress: 'Vault111',
+            positionId: 1,
+            positionAddress: 'Position111',
+            owner: 'Wallet111',
+            collateralAmount: '1',
+            collateralAmountRaw: '1000000000',
+            debtAmount: '50',
+            debtAmountRaw: '50000000',
+            healthRatio: 1.05,
+            healthRatioText: '1.05',
+            liquidationStatus: 'at_risk',
+            ltvBps: 7000,
+            liquidationThresholdBps: 8500,
+          },
+        ],
+      },
+      '2026-05-12T00:00:00.000Z',
+    );
+    expect(facts).toHaveLength(1);
+    expect(facts[0]?.tone).toBe('warn');
+    expect(facts[0]?.value).toContain('debt 50');
+    expect(facts[0]?.value).toContain('health 1.05');
+  });
+
+  it('maps a blocked Jupiter Borrow health preview to fail tone with warnings', () => {
+    const facts = factsFromJupiterLendBorrowHealth(
+      {
+        vaultId: 7,
+        vaultAddress: 'Vault111',
+        positionId: 1,
+        walletAddress: 'Wallet111',
+        before: {
+          collateralAmount: '1',
+          debtAmount: '50',
+          healthRatio: 2.4,
+          healthRatioText: '2.4',
+          liquidationStatus: 'safe',
+        },
+        after: {
+          collateralAmount: '1',
+          debtAmount: '70',
+          healthRatio: 1.05,
+          healthRatioText: '1.05',
+          liquidationStatus: 'at_risk',
+        },
+        minHealthRatio: 1.25,
+        blocked: true,
+        warnings: ['Projected health below policy.'],
+        simulatedAt: '2026-05-12T00:00:00.000Z',
+      },
+      '2026-05-12T00:00:00.000Z',
+    );
+    const labels = facts.map((entry) => entry.label);
+    expect(labels).toEqual(
+      expect.arrayContaining(['Jupiter Borrow health preview', 'Health before', 'Health after', 'Health warnings']),
+    );
+    expect(facts[0]?.tone).toBe('fail');
+    expect(facts.find((entry) => entry.label === 'Health warnings')?.tone).toBe('fail');
   });
 
   it('returns deterministic missing-capability errors for unavailable connector reads', async () => {

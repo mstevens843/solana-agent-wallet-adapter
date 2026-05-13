@@ -372,38 +372,38 @@ export const AGENT_PLAN_TEMPLATES: AgentPlanTemplate[] = [
     selectField('token', 'Token', ['SOL', 'USDC', 'JitoSOL', 'mSOL', 'bSOL'], 'SOL'),
     field('amount', 'Amount', '0.1', '0.1', true),
     field('memo', 'Reason', 'Earn yield on idle SOL', 'Kamino deposit review'),
-  ]),
+  ], { connectorCapability: 'first_class_adapter', connectorActionSource: 'first-class-adapter' }),
   template('defi', 'kamino-withdraw', 'Kamino withdraw', 'Redeem some or all of a Kamino Lend supply position. Requires Kamino enabled in Protocol Connectors.', 'kamino_withdraw', 'medium', [
     selectField('token', 'Token', ['SOL', 'USDC', 'JitoSOL', 'mSOL', 'bSOL'], 'SOL'),
     field('amount', 'Amount (or "all")', '0.05', '0.05'),
     field('memo', 'Reason', 'Need liquidity for payments', 'Kamino withdraw review'),
-  ]),
+  ], { connectorCapability: 'first_class_adapter', connectorActionSource: 'first-class-adapter' }),
   template('defi', 'kamino-earnings-proof', 'Kamino earnings proof', "Build a signable receipt that proves how much you've earned by supplying to Kamino. Read-only; signing creates a shareable verification.", 'read_only', 'low', [
     selectField('token', 'Reserve', ['All reserves', 'SOL', 'USDC', 'JitoSOL', 'mSOL', 'bSOL'], 'All reserves'),
     field('memo', 'Reason', 'Tax / accounting record', 'Kamino earnings receipt'),
-  ]),
+  ], { connectorCapability: 'first_class_adapter', connectorActionSource: 'first-class-adapter' }),
   template('defi', 'drift-vault-deposit', 'Drift vault deposit', "Deposit a token into a Drift strategy vault. Prepares wallet approval work only and does not sign. Requires Drift Vaults enabled in Protocol Connectors. V1 covers vault deposit/withdraw lifecycle only; no perp or spot order placement.", 'drift_vault_deposit', 'medium', [
     field('vaultAddress', 'Vault address', 'Drift vault account address', '', true),
     field('amount', 'Amount', '25', '25', true),
     field('mint', 'Deposit mint (optional)', 'Vault deposit mint address', ''),
     selectField('initializeDepositorIfMissing', 'Create depositor if missing', ['no', 'yes'], 'no'),
     field('memo', 'Reason', 'Earn yield in a Drift strategy vault', 'Drift vault deposit review'),
-  ]),
+  ], { connectorCapability: 'first_class_adapter', connectorActionSource: 'first-class-adapter' }),
   template('defi', 'drift-vault-request-withdraw', 'Drift vault request withdraw', 'Request a Drift strategy vault withdraw. Rejected if a pending request already exists. Prepares wallet approval work only; the redeem period must elapse before completing.', 'drift_vault_request_withdraw', 'medium', [
     field('vaultAddress', 'Vault address', 'Drift vault account address', '', true),
     selectField('withdrawUnit', 'Withdraw unit', ['token', 'shares'], 'token'),
     field('amount', 'Token amount', '10', ''),
     field('shares', 'Share amount', '5', ''),
     field('memo', 'Reason', 'Need liquidity, exit strategy', 'Drift vault withdraw request review'),
-  ]),
+  ], { connectorCapability: 'first_class_adapter', connectorActionSource: 'first-class-adapter' }),
   template('defi', 'drift-vault-cancel-withdraw', 'Drift vault cancel withdraw', 'Cancel a pending Drift vault withdraw request. Rejected if no pending request exists.', 'drift_vault_cancel_withdraw', 'medium', [
     field('vaultAddress', 'Vault address', 'Drift vault account address', '', true),
     field('memo', 'Reason', 'Changed my mind, stay deposited', 'Drift vault cancel withdraw review'),
-  ]),
+  ], { connectorCapability: 'first_class_adapter', connectorActionSource: 'first-class-adapter' }),
   template('defi', 'drift-vault-complete-withdraw', 'Drift vault complete withdraw', 'Complete a Drift vault withdraw after the redeem period has elapsed. Rejected if not yet ready.', 'drift_vault_complete_withdraw', 'medium', [
     field('vaultAddress', 'Vault address', 'Drift vault account address', '', true),
     field('memo', 'Reason', 'Redeem period elapsed, finalize exit', 'Drift vault complete withdraw review'),
-  ]),
+  ], { connectorCapability: 'first_class_adapter', connectorActionSource: 'first-class-adapter' }),
   template('defi', 'liquidity', 'Liquidity position review', 'Review LP deposits, withdrawals, fees, and impermanent loss before wallet approval.', 'manual_review', 'high', [
     field('pool', 'Pool / protocol', 'Orca, Raydium, Meteora, custom', ''),
     field('amounts', 'Amounts', '0.1 SOL + 20 USDC', ''),
@@ -1928,6 +1928,16 @@ function safeguardsFor(actionType: string, risk: TemplateRisk): string[] {
 
 function readableParameters(template: AgentPlanTemplate, parameters: Record<string, string>): AgentPlanField[] {
   const rows: AgentPlanField[] = [];
+  const fieldIds = new Set(template.fields.map((fieldDef) => fieldDef.id));
+  const protocol = parameters.protocol?.trim();
+  const connectorId = parameters.connectorId?.trim();
+  const operation = parameters.operation?.trim();
+  if ((protocol || connectorId) && !fieldIds.has('protocol')) {
+    rows.push({ label: 'Connector', value: protocol || connectorId });
+  }
+  if (operation && !fieldIds.has('operation')) {
+    rows.push({ label: 'Operation', value: operation });
+  }
   for (const fieldDef of template.fields) {
     const rawValue = (parameters[fieldDef.id] ?? '').trim();
     const value = fieldDef.id === 'slippageBps'

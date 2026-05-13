@@ -113,8 +113,8 @@
       "source": "first-class-adapter",
       "implemented": true,
       "requiresClientKey": true,
-      "returns": "Read-only compact token risk evidence combining Token API V2 metadata and optional Price API V3 price evidence for planner reviews. It never prepares or approves transactions.",
-      "facts": ["mint", "symbol", "name", "decimals", "isVerified", "tags", "audit", "holderCount", "topHoldersPercentage", "liquidity", "organicScore", "usdPrice", "priceBlockId", "priceChange24h", "riskLabels", "warnings"]
+      "returns": "Read-only compact token risk evidence combining exact-mint Token API V2 metadata and optional Price API V3 price evidence for planner reviews. Non-exact token search hits are candidates only. It never prepares or approves transactions.",
+      "facts": ["mint", "symbol", "name", "decimals", "verification", "isVerified", "tags", "candidateTokens", "audit", "holderCount", "topHoldersPercentage", "liquidity", "organicScore", "usdPrice", "priceBlockId", "priceChange24h", "priceMissingReason", "riskLabels", "warnings"]
     },
     {
       "toolName": "solana_jupiter_lend_earn_tokens",
@@ -547,7 +547,7 @@
     "Slippage cap in basis points",
     "Price impact when reported",
     "Token mint and decimals for any mint not in the allowlist",
-    "Token verification, tags, audit flags, holder concentration, liquidity, organic score, and stats for token-risk reviews",
+    "Exact-mint token verification, tags, audit flags, holder concentration, liquidity, organic score, stats, and non-exact candidate warnings for token-risk reviews",
     "Price API USD price, block id, 24-hour change, and structured missing-price reason when Jupiter does not return reliable price data",
     "Evidence warning that Jupiter Token/Price reads are not oracle guarantees and never authorize transactions",
     "Connected wallet address for wallet-specific order previews"
@@ -576,8 +576,8 @@
     "Claim that Jupiter or the agent can sign or submit without the user's wallet.",
     "Claim that Jupiter Prediction odds imply truth or guaranteed outcomes."
   ],
-  "actionPreparationNotes": "Normalize SOL to wrapped SOL for Jupiter Swap API v2, resolve allowlisted symbols or mint decimals, enforce maxSwapInput and maxSlippageBps, then prepare a swap inbox item with refreshAtExecution=true. For previews, call Jupiter /order with taker, inputMint, outputMint, amount, and slippageBps. Do not store raw transaction bytes in prepared actions or expose them in findings. For Trigger V2: authenticate via solana_jupiter_trigger_auth_challenge then solana_sign_message then solana_jupiter_trigger_auth_verify before any vault/order read or prepared action. JWTs live only in volatile process memory and are clamped to 23h. Prepared deposit transactions are re-fetched at execute time, signed locally via ctx.signTransaction, then POSTed back to Jupiter Trigger which broadcasts the deposit on-chain. Do not store JWTs, signed challenges, or signed transaction bytes anywhere.",
-  "riskNotes": "Quotes can expire or change before approval. Price impact, minimum output, and slippage must be shown. Unknown token mints should be displayed as short mints unless metadata is available. Jupiter Token/Price data is review evidence only; it can be missing, stale, or heuristic-filtered and must not be presented as an oracle guarantee. Jupiter Perps are leveraged derivatives; liquidation can cause complete loss of posted collateral and writes are denied until the official API stabilizes and a leverage-risk policy is approved. Jupiter Trigger V2 stores order funds in a Privy-managed custody vault; future fills execute through Jupiter automation outside the Agentic approval inbox. Output is not guaranteed at trigger time. Cancel and withdrawal are separate steps; expired or cancelled funds remain in the vault until the user completes the withdraw flow.",
+  "actionPreparationNotes": "Normalize SOL to wrapped SOL for Jupiter Swap API v2, resolve allowlisted symbols or mint decimals, enforce maxSwapInput and maxSlippageBps, then prepare a swap inbox item with refreshAtExecution=true. For previews, call Jupiter /order with taker, inputMint, outputMint, amount, and slippageBps. Raw or unknown swap mints should include Jupiter token-risk evidence facts when available, without blocking the quote if token evidence is unavailable. Do not store raw transaction bytes in prepared actions or expose them in findings. For Trigger V2: authenticate via solana_jupiter_trigger_auth_challenge then solana_sign_message then solana_jupiter_trigger_auth_verify before any vault/order read or prepared action. JWTs live only in volatile process memory and are clamped to 23h. Prepared deposit transactions are re-fetched at execute time, signed locally via ctx.signTransaction, then POSTed back to Jupiter Trigger which broadcasts the deposit on-chain. Do not store JWTs, signed challenges, or signed transaction bytes anywhere.",
+  "riskNotes": "Quotes can expire or change before approval. Price impact, minimum output, and slippage must be shown. Unknown token mints should be displayed as short mints unless exact metadata is available. Jupiter Token/Price data is review evidence only; it can be missing, stale, or heuristic-filtered and must not be presented as an oracle guarantee. Non-exact Token API search hits must be presented as candidates, not as evidence for the requested mint. Jupiter Perps are leveraged derivatives; liquidation can cause complete loss of posted collateral and writes are denied until the official API stabilizes and a leverage-risk policy is approved. Jupiter Trigger V2 stores order funds in a Privy-managed custody vault; future fills execute through Jupiter automation outside the Agentic approval inbox. Output is not guaranteed at trigger time. Cancel and withdrawal are separate steps; expired or cancelled funds remain in the vault until the user completes the withdraw flow.",
   "approvalBoundary": {
     "readGated": true,
     "writeGated": true,
@@ -609,7 +609,7 @@
         "user": "show Jupiter token risk evidence for 7GCihgDB8fe6KNjn2MYtkzZcRjQy3t9GHdC8uHYmW2hr",
         "classification": "proof_only_review",
         "readTool": "solana_jupiter_token_risk_evidence",
-        "agentResponse": "Returned token verification, audit, holder, liquidity, organic score, price, risk label, and warning evidence. Jupiter price evidence is not an oracle guarantee."
+        "agentResponse": "Returned exact-mint token verification, audit, holder, liquidity, organic score, price, risk label, and warning evidence. Non-exact search hits would be candidates only. Jupiter price evidence is not an oracle guarantee."
       },
       {
         "user": "get Jupiter prices for SOL, USDC, and JUP",

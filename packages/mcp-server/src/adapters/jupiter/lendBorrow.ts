@@ -42,7 +42,7 @@ export async function listBorrowVaults(
   walletAddress: string,
   input: ListBorrowVaultsInput,
 ): Promise<JupiterLendBorrowVaultSnapshot[]> {
-  const client = await getJupiterLendClient(walletAddress);
+  const client = await getJupiterLendClient(walletAddress, config);
   return client.getBorrowVaults(input);
 }
 
@@ -54,7 +54,7 @@ export async function getBorrowVaultDetail(
   if (!Number.isFinite(vaultId)) {
     throw new AdapterError(JUPITER_ADAPTER_ID, 'invalid_request', 'vaultId must be a number to read a Jupiter Lend Borrow vault.');
   }
-  const client = await getJupiterLendClient(walletAddress);
+  const client = await getJupiterLendClient(walletAddress, config);
   return client.getBorrowVaultDetail({ vaultId });
 }
 
@@ -65,7 +65,7 @@ export async function getBorrowPositions(
   if (!input.walletAddress.trim()) {
     throw new AdapterError(JUPITER_ADAPTER_ID, 'invalid_request', 'walletAddress is required to read Jupiter Lend Borrow positions.');
   }
-  const client = await getJupiterLendClient(input.walletAddress);
+  const client = await getJupiterLendClient(input.walletAddress, config);
   const positions = await client.getBorrowPositions(input);
   return positions.filter((position) => position.owner === input.walletAddress);
 }
@@ -77,7 +77,7 @@ export async function previewBorrowHealth(
   if (!input.walletAddress.trim()) {
     throw new AdapterError(JUPITER_ADAPTER_ID, 'invalid_request', 'walletAddress is required to preview Jupiter Lend Borrow health.');
   }
-  const client = await getJupiterLendClient(input.walletAddress);
+  const client = await getJupiterLendClient(input.walletAddress, config);
   const minHealthRatio = input.minHealthRatio ?? configuredMinHealthRatio(config);
   const maxLtvBps = input.maxLtvBps ?? configuredMaxLtvBps(config);
   return client.previewBorrowHealth({

@@ -98,7 +98,11 @@ export type PreparedActionKind =
   | 'jupiter_trigger_otoco_order'
   | 'jupiter_trigger_edit_order'
   | 'jupiter_trigger_cancel_order'
-  | 'jupiter_trigger_withdraw_order_funds';
+  | 'jupiter_trigger_withdraw_order_funds'
+  | 'jupiter_recurring_create_time_order'
+  | 'jupiter_recurring_cancel_order'
+  | 'jupiter_recurring_deposit_price_order'
+  | 'jupiter_recurring_withdraw_price_order';
 export type PreparedActionTxStatus = 'pending' | 'confirmed' | 'failed';
 export type RecurringCadence = WorkflowRecurringCadence;
 

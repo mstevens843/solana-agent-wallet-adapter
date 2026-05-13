@@ -50,6 +50,10 @@ import { marginfiMinHealthRatio } from './adapters/marginfi/actions.js';
 import type {
   JupiterLendBorrowActionInput,
   JupiterLendEarnActionInput,
+  JupiterRecurringCancelOrderInput,
+  JupiterRecurringCreateTimeOrderInput,
+  JupiterRecurringOrderState,
+  JupiterRecurringPriceOrderManagementInput,
   JupiterTriggerCancelOrderInput,
   JupiterTriggerChallengeType,
   JupiterTriggerEditOrderInput,
@@ -235,8 +239,10 @@ import {
   factsFromJupiterPredictionVaultInfo,
   factsFromJupiterPrice,
   factsFromJupiterPriceBatch,
+  factsFromJupiterRecurringRead,
   factsFromJupiterTokenRead,
   factsFromJupiterTokenRiskEvidence,
+  factsFromJupiterTriggerRead,
   factsFromJupiterLendBorrowHealth,
   factsFromJupiterLendBorrowPositions,
   factsFromJupiterLendBorrowVaults,
@@ -328,6 +334,7 @@ export interface SwapInput {
   outputToken?: string;
   amount: string;
   slippageBps?: number;
+  minOutputAmount?: string;
 }
 
 export interface SwapOrderInput extends SwapInput {
@@ -350,6 +357,7 @@ export interface PrepareTransferSplInput {
 }
 
 export interface PrepareSwapInput extends SwapInput {
+  captureQuoteSnapshot?: boolean;
   dueAt?: string;
   note?: string;
 }

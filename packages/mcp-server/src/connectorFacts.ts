@@ -266,6 +266,20 @@ export interface ConnectorFactReadInput {
   predictionStatus?: 'pending' | 'filled' | 'failed' | 'all';
   predictionLimit?: number;
   predictionOwner?: string;
+  triggerOperation?:
+    | 'auth_status'
+    | 'vault'
+    | 'orders'
+    | 'order_detail'
+    | 'order_history';
+  triggerOrderId?: string;
+  triggerState?: 'open' | 'pending' | 'filled' | 'expired' | 'cancelled' | 'ready_to_cancel' | 'all';
+  recurringOperation?: 'orders' | 'order_detail';
+  recurringOrderId?: string;
+  recurringState?: 'active' | 'history' | 'completed' | 'cancelled' | 'failed' | 'all';
+  recurringPage?: number;
+  recurringMint?: string;
+  includeFailedTx?: boolean;
   collectionId?: string;
   collectionSymbol?: string;
   mintAddress?: string;
@@ -565,6 +579,103 @@ export function factsFromJupiterOrderPreview(
     }));
   }
   return facts;
+}
+
+export function factsFromJupiterTriggerRead(
+  readId: string,
+  result: unknown,
+  checkedAt = new Date().toISOString(),
+): ConnectorFact[] {
+  const record = safeFactRecord(result) ?? {};
+  const inner = safeFactRecord(record.result) ?? record;
+  if (readId === 'trigger_auth_status') {
+    return [
+      fact({
+        connectorId: 'jupiter',
+        label: 'Jupiter Trigger auth',
+        value: inner.authenticated === true ? 'Authenticated in volatile memory' : 'Not authenticated',
+        tone: inner.authenticated === true ? 'good' : 'warn',
+        checkedAt,
+        detail: inner,
+      }),
+    ];
+  }
+  if (readId === 'trigger_vault') {
+    return [
+      fact({
+        connectorId: 'jupiter',
+        label: 'Jupiter Trigger vault',
+        value: inner.registered === true ? 'Privy custody vault registered' : 'Vault not registered',
+        tone: inner.registered === true ? 'warn' : 'neutral',
+        checkedAt,
+        detail: inner,
+      }),
+    ];
+  }
+  const orders = Array.isArray(inner.orders) ? inner.orders : [];
+  if (orders.length > 0 || readId.includes('orders')) {
+    return [
+      fact({
+        connectorId: 'jupiter',
+        label: 'Jupiter Trigger orders',
+        value: `${orders.length} order${orders.length === 1 ? '' : 's'} returned`,
+        tone: orders.length > 0 ? 'good' : 'neutral',
+        checkedAt,
+        detail: { readId, pagination: inner.pagination, state: inner.state },
+      }),
+      fact({
+        connectorId: 'jupiter',
+        label: 'Trigger automation',
+        value: 'Future fills execute through Jupiter Trigger automation and do not return to Agentic for approval.',
+        tone: 'warn',
+        checkedAt,
+      }),
+    ];
+  }
+  return [
+    fact({
+      connectorId: 'jupiter',
+      label: 'Jupiter Trigger read',
+      value: readId,
+      tone: 'neutral',
+      checkedAt,
+      detail: inner,
+    }),
+  ];
+}
+
+export function factsFromJupiterRecurringRead(
+  readId: string,
+  result: unknown,
+  checkedAt = new Date().toISOString(),
+): ConnectorFact[] {
+  const record = safeFactRecord(result) ?? {};
+  const inner = safeFactRecord(record.result) ?? record;
+  const orders = Array.isArray(inner.orders) ? inner.orders : [];
+  return [
+    fact({
+      connectorId: 'jupiter',
+      label: 'Jupiter Recurring orders',
+      value: `${orders.length} order${orders.length === 1 ? '' : 's'} returned`,
+      tone: orders.length > 0 ? 'good' : 'neutral',
+      checkedAt,
+      detail: { readId, walletAddress: inner.walletAddress, state: inner.state, page: inner.page, totalPages: inner.totalPages },
+    }),
+    fact({
+      connectorId: 'jupiter',
+      label: 'Recurring automation',
+      value: 'Future fills execute through Jupiter Recurring automation without Agentic approval each cycle.',
+      tone: 'warn',
+      checkedAt,
+    }),
+    fact({
+      connectorId: 'jupiter',
+      label: 'Recurring fees',
+      value: 'Jupiter Recurring charges a 0.1% Jupiter fee; integrator fees are not supported.',
+      tone: 'neutral',
+      checkedAt,
+    }),
+  ];
 }
 
 function jupiterRoutingConstraintWarnings(

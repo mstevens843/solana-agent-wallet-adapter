@@ -30,7 +30,7 @@ export async function listEarnTokens(
     return fetchEarnTokensViaRest(config, input);
   }
   try {
-    const client = await getJupiterLendClient(walletAddress);
+    const client = await getJupiterLendClient(walletAddress, config);
     return await client.getEarnTokens(input);
   } catch (err) {
     if (isSdkUnavailable(err)) {
@@ -57,7 +57,7 @@ export async function getEarnTokenDetail(
     return matched;
   }
   try {
-    const client = await getJupiterLendClient(walletAddress);
+    const client = await getJupiterLendClient(walletAddress, config);
     return await client.getEarnTokenDetail({ assetMint });
   } catch (err) {
     if (isSdkUnavailable(err)) {
@@ -83,7 +83,7 @@ export async function getEarnPositions(
     return fetchEarnPositionsViaRest(config, input);
   }
   try {
-    const client = await getJupiterLendClient(input.walletAddress);
+    const client = await getJupiterLendClient(input.walletAddress, config);
     return await client.getEarnPositions(input);
   } catch (err) {
     if (isSdkUnavailable(err)) {
@@ -104,7 +104,7 @@ export async function getEarnEarnings(
     return fetchEarnEarningsViaRest(config, input);
   }
   try {
-    const client = await getJupiterLendClient(input.walletAddress);
+    const client = await getJupiterLendClient(input.walletAddress, config);
     return await client.getEarnEarnings(input);
   } catch (err) {
     if (isSdkUnavailable(err)) {

@@ -1,6 +1,6 @@
 # Jupiter Connector
 
-Jupiter is first-class for Swap API v2 previews, prepared swaps, wallet-approved swap execution, Jupiter Lend Earn / Borrow (reads plus prepare-only actions), and read-only Token API V2 / Price API V3 evidence in MCP. Token and price reads are review evidence only; they are not oracle guarantees and they never approve or prepare transactions.
+Jupiter is first-class for Swap API v2 previews, prepared swaps, wallet-approved swap execution, Jupiter Lend Earn / Borrow (reads plus prepare-only actions), Jupiter Trigger V2 (disabled by default), beta read-only Prediction, read-only Perps research, and read-only Token API V2 / Price API V3 evidence in MCP. Token and price reads are review evidence only; they are not oracle guarantees and they never approve or prepare transactions.
 
 ## What It Can Read
 
@@ -11,14 +11,16 @@ Jupiter is first-class for Swap API v2 previews, prepared swaps, wallet-approved
 - `solana_jupiter_token_category` reads top organic score, top traded, and top trending token categories by interval.
 - `solana_jupiter_token_recent` reads tokens by first pool creation recency.
 - `solana_jupiter_price` and `solana_jupiter_price_batch` read Price API V3 USD prices, decimals, block id, liquidity, and 24h change when Jupiter returns reliable price data.
-- `solana_jupiter_token_risk_evidence` returns compact token metadata, verification, audit, holder, liquidity, organic score, price, risk labels, and warnings for planner reviews.
+- `solana_jupiter_token_risk_evidence` returns compact token metadata, verification, audit, holder, liquidity, organic score, price, risk labels, and warnings for planner reviews. Requested mint evidence requires an exact mint match; non-exact search hits are surfaced only as candidates.
 - `solana_jupiter_lend_earn_tokens` / `solana_jupiter_lend_earn_token_detail` return Jupiter Earn markets with APY, reward APY, exchange price, liquidity, utilization, and withdrawal-smoothing facts.
 - `solana_jupiter_lend_earn_positions` returns a wallet's Earn positions with shares, underlying amount, and APY.
 - `solana_jupiter_lend_earn_earnings` rolls up Earn earnings over an optional ISO range.
 - `solana_jupiter_lend_borrow_vaults` / `solana_jupiter_lend_borrow_vault_detail` return Borrow vaults with LTV, liquidation threshold, supply/borrow rates, oracle facts, and capacity.
 - `solana_jupiter_lend_borrow_positions` returns a wallet's Borrow positions with collateral, debt, health ratio, and liquidation status.
 - `solana_jupiter_lend_borrow_health_preview` projects health for a candidate collateral or debt delta and reports the gate verdict against the configured minimum borrow health ratio.
-- `solana_connector_capabilities jupiter` reports Swap, Token, Price, Lend Earn, and Lend Borrow readiness plus other Jupiter product groups.
+- `solana_jupiter_trigger_auth_challenge` / `_verify` / `_status` handle Trigger V2 wallet authentication without returning or storing JWTs in user-visible artifacts.
+- `solana_jupiter_trigger_vault`, `_orders`, `_order_detail`, and `_order_history` read Trigger V2 vault and order state when Trigger is enabled and authenticated.
+- `solana_connector_capabilities jupiter` reports Swap, Token, Price, Lend Earn, Lend Borrow, Prediction, Perps, and Trigger readiness plus other Jupiter product groups.
 
 ## What It Can Prepare Or Execute
 
@@ -27,6 +29,7 @@ Jupiter is first-class for Swap API v2 previews, prepared swaps, wallet-approved
 - `solana_prepare_jupiter_lend_earn_deposit` / `_withdraw` / `_mint` / `_redeem` prepare Earn actions. Withdraw and redeem refresh pool state at execution.
 - `solana_prepare_jupiter_lend_borrow_create_position` opens a Borrow position with optional initial collateral and borrow amounts; the health gate runs before approval.
 - `solana_prepare_jupiter_lend_borrow_deposit_collateral` / `_borrow` / `_repay` / `_withdraw_collateral` prepare Borrow lifecycle actions. Borrow and withdraw-collateral run a fresh health preview before approval and again at execution.
+- `solana_prepare_jupiter_trigger_register_vault`, `_single_order`, `_oco_order`, `_otoco_order`, `_edit_order`, `_cancel_order`, and `_withdraw_order_funds` prepare Trigger V2 actions when Trigger is enabled and the wallet has a valid volatile JWT. Deposit-bearing actions refresh the Jupiter-built deposit transaction at execution and hand the signed blob back to Jupiter for broadcast.
 - `solana_execute_prepared_action` executes any prepared swap or lend item by refreshing market or health data before wallet signing.
 
 ## Required Inputs
@@ -37,11 +40,14 @@ Earn: `assetMint`. Use `amount` for deposit/withdraw, `shares` for mint/redeem; 
 
 Borrow: `vaultId`, with `positionId` for everything except `create_position`. Use `collateralAmount` / `borrowAmount` for create, `amount` plus optional `repayAll` for the rest. Optional `minHealthRatio` and `maxLtvBps` override the policy defaults.
 
+Trigger: authenticate first, then use wallet-scoped vault/order inputs. Create-order inputs require mints, amount/amountRaw, USD trigger prices, expiration, and explicit slippage policy acceptance when above warning thresholds.
+
 Ask:
 
 - "How much do you want to swap, deposit, or borrow?"
 - "Which Earn token (mint) or Borrow vault id should I use?"
 - "Should I cap the borrow health ratio?"
+- "Have you authenticated Jupiter Trigger for this wallet, and do you accept the Privy custody and external automation warnings?"
 
 ## Required Facts
 
@@ -58,11 +64,11 @@ Ask:
 
 ## Deny Or Ask
 
-Deny swaps above configured max input, slippage above the configured cap, unsupported clusters, missing API-key execution, and requests to guarantee exact output. Reject Token or Price reads when `connectors.jupiter.tokenPrice.enabled=false`, when the API key is missing, when price batches exceed the configured cap, or when search requests exceed the configured comma-separated mint cap. Deny borrow or withdraw-collateral whose projected health drops below `connectors.jupiter.minBorrowHealthRatio` (default 1.25) or whose projected LTV exceeds `connectors.jupiter.maxBorrowLtvBps` (default 8500). Reject Borrow writes when the optional `@jup-ag/lend` SDK is unavailable. Reject flashloan, multiply, unwind, vault swap, or liquidation flows. Ask for a supported first-class product path before Trigger or Recurring requests because this runtime does not implement those Jupiter surfaces yet. For Jupiter Perps, route to the read-only research surface (`solana_jupiter_perps_status`) and deny every write or leverage-recommendation request.
+Deny swaps above configured max input, slippage above the configured cap, unsupported clusters, missing API-key execution, and requests to guarantee exact output. Reject Token or Price reads when `connectors.jupiter.tokenPrice.enabled=false`, when the API key is missing, when price batches exceed the configured cap, or when search requests exceed the configured comma-separated mint cap. Deny borrow or withdraw-collateral whose projected health drops below `connectors.jupiter.minBorrowHealthRatio` (default 1.25) or whose projected LTV exceeds `connectors.jupiter.maxBorrowLtvBps` (default 8500). Reject Borrow writes when the optional `@jup-ag/lend` SDK is unavailable. Reject flashloan, multiply, unwind, vault swap, or liquidation flows. Reject Trigger V2 requests when the surface is disabled, the wallet is unauthenticated, the vault is unregistered, order value is below Jupiter's minimum, expiration/slippage policy fails, or the user asks for fills to return to the Agentic approval inbox. Ask for a supported first-class product path before Recurring requests because this runtime does not implement Jupiter-native DCA yet. For Jupiter Perps, route to the read-only research surface (`solana_jupiter_perps_status`) and deny every write or leverage-recommendation request.
 
 ## User Approval
 
-Jupiter previews and Token/Price/Lend reads are read-only. Prepared swaps and prepared Lend actions remain manual-approval items until the user sends them to the wallet. The wallet signs; Jupiter `/execute` or the Lend SDK landing path handles broadcast after the signed transaction is returned.
+Jupiter previews and Token/Price/Lend/Prediction/Perps reads are read-only. Prepared swaps and prepared Lend actions remain manual-approval items until the user sends them to the wallet. Trigger auth requires a wallet message signature; Trigger order deposits are wallet-signed locally, then handed back to Jupiter for broadcast and future automation from the Privy vault. The wallet signs; Jupiter `/execute`, Trigger submit, or the Lend SDK landing path handles broadcast after the signed transaction is returned.
 
 ## Prediction Markets (Beta, Read-Only)
 

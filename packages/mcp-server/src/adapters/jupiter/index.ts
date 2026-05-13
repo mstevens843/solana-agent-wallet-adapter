@@ -41,6 +41,12 @@ import {
   withdrawOrderFundsAction,
 } from './triggerActions.js';
 import {
+  recurringCancelOrderAction,
+  recurringCreateTimeOrderAction,
+  recurringDepositPriceOrderAction,
+  recurringWithdrawPriceOrderAction,
+} from './recurringActions.js';
+import {
   readAuthStatus,
   requestChallenge,
   requireTriggerEnabled,
@@ -54,6 +60,11 @@ import {
 } from './triggerConstants.js';
 import { getOrder, listOrders, orderHistory } from './triggerOrders.js';
 import { readVault } from './triggerVault.js';
+import {
+  getRecurringOrder,
+  listRecurringOrders,
+  type JupiterRecurringOrderState,
+} from './recurringOrders.js';
 
 const earnTokensRead: AdapterRead<
   { includeInactive?: boolean; assetMint?: string },
@@ -299,6 +310,39 @@ const triggerOrderHistoryRead: AdapterRead<
   },
 };
 
+const recurringOrdersRead: AdapterRead<
+  {
+    walletAddress?: string;
+    state?: JupiterRecurringOrderState;
+    limit?: number;
+    page?: number;
+    mint?: string;
+    includeFailedTx?: boolean;
+  },
+  unknown
+> = {
+  id: 'recurring_orders',
+  async read(input, ctx) {
+    const walletAddress = input.walletAddress?.trim() || (await ctx.backend.getAddress());
+    return listRecurringOrders(ctx.config, {
+      walletAddress,
+      ...(input.state !== undefined && { state: input.state }),
+      ...(input.limit !== undefined && { limit: input.limit }),
+      ...(input.page !== undefined && { page: input.page }),
+      ...(input.mint !== undefined && { mint: input.mint }),
+      ...(input.includeFailedTx !== undefined && { includeFailedTx: input.includeFailedTx }),
+    });
+  },
+};
+
+const recurringOrderDetailRead: AdapterRead<{ walletAddress?: string; orderId: string }, unknown> = {
+  id: 'recurring_order_detail',
+  async read(input, ctx) {
+    const walletAddress = input.walletAddress?.trim() || (await ctx.backend.getAddress());
+    return getRecurringOrder(ctx.config, { walletAddress, orderId: input.orderId });
+  },
+};
+
 export const jupiterAdapter: DAppAdapter = {
   id: JUPITER_ADAPTER_ID,
   name: JUPITER_NAME,
@@ -323,6 +367,10 @@ export const jupiterAdapter: DAppAdapter = {
     trigger_edit_order: editOrderAction,
     trigger_cancel_order: cancelOrderAction,
     trigger_withdraw_order_funds: withdrawOrderFundsAction,
+    recurring_create_time_order: recurringCreateTimeOrderAction,
+    recurring_cancel_order: recurringCancelOrderAction,
+    recurring_deposit_price_order: recurringDepositPriceOrderAction,
+    recurring_withdraw_price_order: recurringWithdrawPriceOrderAction,
   },
   reads: {
     earn_tokens: earnTokensRead,
@@ -340,6 +388,8 @@ export const jupiterAdapter: DAppAdapter = {
     trigger_orders: triggerOrdersRead,
     trigger_order_detail: triggerOrderDetailRead,
     trigger_order_history: triggerOrderHistoryRead,
+    recurring_orders: recurringOrdersRead,
+    recurring_order_detail: recurringOrderDetailRead,
   },
 };
 
@@ -612,3 +662,31 @@ export {
   triggerRegisterVaultWarnings,
   triggerWithdrawWarnings,
 } from './triggerSafety.js';
+export {
+  getRecurringOrder as getJupiterRecurringOrder,
+  listRecurringOrders as listJupiterRecurringOrders,
+  normalizeRecurringOrder as normalizeJupiterRecurringOrder,
+  normalizeRecurringOrderList as normalizeJupiterRecurringOrderList,
+  requireRecurringEnabled as requireJupiterRecurringEnabled,
+  type JupiterRecurringOrderState,
+  type ListRecurringOrdersInput as JupiterRecurringOrdersInput,
+  type ListRecurringOrdersResult as JupiterRecurringOrdersResult,
+  type RecurringOrderSnapshot as JupiterRecurringOrderSnapshot,
+} from './recurringOrders.js';
+export {
+  recurringCancelOrderAction as jupiterRecurringCancelOrderAction,
+  recurringCreateTimeOrderAction as jupiterRecurringCreateTimeOrderAction,
+  recurringDepositPriceOrderAction as jupiterRecurringDepositPriceOrderAction,
+  recurringWithdrawPriceOrderAction as jupiterRecurringWithdrawPriceOrderAction,
+  type JupiterRecurringCancelOrderInput,
+  type JupiterRecurringCreateTimeOrderInput,
+  type JupiterRecurringPriceOrderManagementInput,
+} from './recurringActions.js';
+export {
+  RECURRING_AUTOMATION_WARNING,
+  RECURRING_FEE_WARNING,
+  RECURRING_PRICE_ORDER_DEPRECATED_WARNING,
+  recurringCancelWarnings,
+  recurringCreateWarnings,
+  recurringPriceOrderWarnings,
+} from './recurringSafety.js';

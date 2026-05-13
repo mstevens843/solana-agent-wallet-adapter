@@ -350,7 +350,7 @@ function buildEarnAction(
     async execute(action: PreparedAction, ctx: DAppAdapterContext): Promise<AdapterExecuteResult> {
       const walletAddress = await ctx.backend.getAddress();
       assertOwnership(action, walletAddress);
-      const client = await getJupiterLendClient(walletAddress);
+      const client = await getJupiterLendClient(walletAddress, ctx.config);
       const token = await getEarnTokenDetail(ctx.config, walletAddress, requireParam(action, 'assetMint'));
       const refreshed = await config.build(client, {
         token,
@@ -378,6 +378,7 @@ function buildEarnAction(
           assetMint: token.assetMint,
           ...(action.params.amount !== undefined ? { amount: action.params.amount } : {}),
           ...(action.params.shares !== undefined ? { shares: action.params.shares } : {}),
+          ...(refreshed.notes && refreshed.notes.length > 0 ? { notes: refreshed.notes } : {}),
         },
       };
     },
@@ -497,7 +498,7 @@ function buildBorrowAction(
     async execute(action: PreparedAction, ctx: DAppAdapterContext): Promise<AdapterExecuteResult> {
       const walletAddress = await ctx.backend.getAddress();
       assertOwnership(action, walletAddress);
-      const client = await getJupiterLendClient(walletAddress);
+      const client = await getJupiterLendClient(walletAddress, ctx.config);
       const vaultIdValue = action.params.vaultId;
       if (typeof vaultIdValue !== 'number' || !Number.isFinite(vaultIdValue)) {
         throw new ProtocolError('invalid_request', `Jupiter Borrow ${operation} prepared action is missing vaultId.`);
@@ -547,6 +548,7 @@ function buildBorrowAction(
           vaultId: vault.vaultId,
           ...(input.positionId !== undefined ? { positionId: input.positionId } : {}),
           ...(input.amount !== undefined ? { amount: input.amount } : {}),
+          ...(refreshed.notes && refreshed.notes.length > 0 ? { notes: refreshed.notes } : {}),
         },
       };
     },
@@ -649,9 +651,17 @@ async function fetchPositionSnapshotIfNeeded(
     vaultId: input.vaultId,
     positionId: input.positionId,
   });
-  return positions.find(
+  const match = positions.find(
     (entry) => entry.vaultId === input.vaultId && entry.positionId === input.positionId,
   );
+  if (!match) {
+    throw new AdapterError(
+      JUPITER_ADAPTER_ID,
+      'position_not_owned',
+      `Jupiter Borrow position #${input.positionId} is not owned by ${walletAddress}.`,
+    );
+  }
+  return match;
 }
 
 function oracleGatedOperation(operation: JupiterLendBorrowOperation): boolean {

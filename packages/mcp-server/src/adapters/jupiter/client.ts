@@ -24,7 +24,7 @@ export type JupiterProduct =
 export const JUPITER_RESPONSE_BYTE_LIMIT = 512_000;
 
 export interface JupiterFetchOptions {
-  method?: 'GET' | 'POST';
+  method?: 'GET' | 'POST' | 'PATCH';
   searchParams?: Record<string, string | number | boolean | undefined>;
   body?: Record<string, unknown>;
   bearerToken?: string;

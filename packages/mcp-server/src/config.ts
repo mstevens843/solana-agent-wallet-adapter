@@ -68,6 +68,7 @@ export interface JupiterConnectorPolicyConfig {
   prediction?: JupiterPredictionPolicyConfig;
   perps?: JupiterPerpsPolicyConfig;
   trigger?: JupiterTriggerPolicyConfig;
+  recurring?: JupiterRecurringPolicyConfig;
 }
 
 export interface JupiterTriggerPolicyConfig {
@@ -112,6 +113,50 @@ export function getJupiterTriggerPolicy(config: AgentWalletConfig): ResolvedJupi
   if (policy?.maxDepositUsd !== undefined) resolved.maxDepositUsd = policy.maxDepositUsd;
   if (policy?.maxStopLossSlippageBps !== undefined) resolved.maxStopLossSlippageBps = policy.maxStopLossSlippageBps;
   if (policy?.maxSlippageBps !== undefined) resolved.maxSlippageBps = policy.maxSlippageBps;
+  return resolved;
+}
+
+export interface JupiterRecurringPolicyConfig {
+  enabled?: boolean;
+  maxDepositAmount?: Record<string, string>;
+  maxOrderCount?: number;
+  maxLifetimeDays?: number;
+  minIntervalSeconds?: number;
+  allowDeprecatedPriceOrders?: boolean;
+}
+
+export const DEFAULT_JUPITER_RECURRING_MAX_ORDER_COUNT = 100;
+export const DEFAULT_JUPITER_RECURRING_MIN_INTERVAL_SECONDS = 3600;
+
+export const DEFAULT_JUPITER_RECURRING_POLICY: Required<
+  Pick<JupiterRecurringPolicyConfig, 'enabled' | 'maxOrderCount' | 'minIntervalSeconds' | 'allowDeprecatedPriceOrders'>
+> = {
+  enabled: false,
+  maxOrderCount: DEFAULT_JUPITER_RECURRING_MAX_ORDER_COUNT,
+  minIntervalSeconds: DEFAULT_JUPITER_RECURRING_MIN_INTERVAL_SECONDS,
+  allowDeprecatedPriceOrders: true,
+};
+
+export interface ResolvedJupiterRecurringPolicy {
+  enabled: boolean;
+  maxOrderCount: number;
+  minIntervalSeconds: number;
+  allowDeprecatedPriceOrders: boolean;
+  maxDepositAmount?: Record<string, string>;
+  maxLifetimeDays?: number;
+}
+
+export function getJupiterRecurringPolicy(config: AgentWalletConfig): ResolvedJupiterRecurringPolicy {
+  const policy = config.connectors?.jupiter?.recurring;
+  const resolved: ResolvedJupiterRecurringPolicy = {
+    enabled: policy?.enabled ?? DEFAULT_JUPITER_RECURRING_POLICY.enabled,
+    maxOrderCount: policy?.maxOrderCount ?? DEFAULT_JUPITER_RECURRING_POLICY.maxOrderCount,
+    minIntervalSeconds: policy?.minIntervalSeconds ?? DEFAULT_JUPITER_RECURRING_POLICY.minIntervalSeconds,
+    allowDeprecatedPriceOrders:
+      policy?.allowDeprecatedPriceOrders ?? DEFAULT_JUPITER_RECURRING_POLICY.allowDeprecatedPriceOrders,
+  };
+  if (policy?.maxDepositAmount !== undefined) resolved.maxDepositAmount = policy.maxDepositAmount;
+  if (policy?.maxLifetimeDays !== undefined) resolved.maxLifetimeDays = policy.maxLifetimeDays;
   return resolved;
 }
 
@@ -270,6 +315,12 @@ export const DEFAULT_CONFIG: AgentWalletConfig = {
         maxOrderLifetimeDays: DEFAULT_JUPITER_TRIGGER_POLICY.maxOrderLifetimeDays,
         highSlippageWarnBps: DEFAULT_JUPITER_TRIGGER_POLICY.highSlippageWarnBps,
       },
+      recurring: {
+        enabled: DEFAULT_JUPITER_RECURRING_POLICY.enabled,
+        maxOrderCount: DEFAULT_JUPITER_RECURRING_POLICY.maxOrderCount,
+        minIntervalSeconds: DEFAULT_JUPITER_RECURRING_POLICY.minIntervalSeconds,
+        allowDeprecatedPriceOrders: DEFAULT_JUPITER_RECURRING_POLICY.allowDeprecatedPriceOrders,
+      },
     },
   },
 };
@@ -358,6 +409,10 @@ export function normalizeConfig(input: Partial<AgentWalletConfig>): AgentWalletC
         ...DEFAULT_CONFIG.connectors?.jupiter?.trigger,
         ...(input.connectors?.jupiter?.trigger ?? {}),
       },
+      recurring: {
+        ...DEFAULT_CONFIG.connectors?.jupiter?.recurring,
+        ...(input.connectors?.jupiter?.recurring ?? {}),
+      },
     },
   };
   if (process.env.JUPITER_LEND_USE_SDK !== undefined) {
@@ -366,6 +421,7 @@ export function normalizeConfig(input: Partial<AgentWalletConfig>): AgentWalletC
     if (value === 'true' || value === '1') connectors.jupiter.useSdk = true;
   }
   applyJupiterTriggerEnvOverrides(connectors.jupiter.trigger);
+  applyJupiterRecurringEnvOverrides(connectors.jupiter.recurring);
   return {
     cluster,
     rpcUrl,
@@ -407,6 +463,28 @@ function applyJupiterTriggerEnvOverrides(trigger: JupiterTriggerPolicyConfig | u
   if (maxSlippage !== undefined) trigger.maxSlippageBps = maxSlippage;
   const highWarn = numericEnv('CONNECTORS_JUPITER_TRIGGER_HIGH_SLIPPAGE_WARN_BPS');
   if (highWarn !== undefined) trigger.highSlippageWarnBps = highWarn;
+}
+
+function applyJupiterRecurringEnvOverrides(recurring: JupiterRecurringPolicyConfig | undefined): void {
+  if (!recurring) return;
+  const enabledRaw = process.env.CONNECTORS_JUPITER_RECURRING_ENABLED?.trim().toLowerCase();
+  if (enabledRaw === 'true' || enabledRaw === '1') recurring.enabled = true;
+  if (enabledRaw === 'false' || enabledRaw === '0') recurring.enabled = false;
+  const numericEnv = (name: string): number | undefined => {
+    const raw = process.env[name]?.trim();
+    if (!raw) return undefined;
+    const value = Number(raw);
+    return Number.isFinite(value) ? value : undefined;
+  };
+  const maxOrderCount = numericEnv('CONNECTORS_JUPITER_RECURRING_MAX_ORDER_COUNT');
+  if (maxOrderCount !== undefined) recurring.maxOrderCount = maxOrderCount;
+  const maxLifetimeDays = numericEnv('CONNECTORS_JUPITER_RECURRING_MAX_LIFETIME_DAYS');
+  if (maxLifetimeDays !== undefined) recurring.maxLifetimeDays = maxLifetimeDays;
+  const minIntervalSeconds = numericEnv('CONNECTORS_JUPITER_RECURRING_MIN_INTERVAL_SECONDS');
+  if (minIntervalSeconds !== undefined) recurring.minIntervalSeconds = minIntervalSeconds;
+  const allowDeprecatedRaw = process.env.CONNECTORS_JUPITER_RECURRING_ALLOW_DEPRECATED_PRICE_ORDERS?.trim().toLowerCase();
+  if (allowDeprecatedRaw === 'true' || allowDeprecatedRaw === '1') recurring.allowDeprecatedPriceOrders = true;
+  if (allowDeprecatedRaw === 'false' || allowDeprecatedRaw === '0') recurring.allowDeprecatedPriceOrders = false;
 }
 
 function stripTrailingSlashes(value: string): string {

@@ -1,5 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
+import type { Connection } from '@solana/web3.js';
+
 import { AgentWalletActionService } from '../../actionService.js';
 import { DEFAULT_CONFIG, type AgentWalletConfig } from '../../config.js';
 import { createMockBackend } from '../../mockBackend.js';
@@ -34,6 +36,7 @@ describe('Jupiter token and price reads', () => {
       tokens: [expect.objectContaining({
         id: JUP_MINT,
         symbol: 'JUP',
+        verification: 'verified',
         isVerified: true,
         organicScoreLabel: 'high',
       })],
@@ -81,6 +84,37 @@ describe('Jupiter token and price reads', () => {
     });
   });
 
+  it('rejects token and price reads when disabled or missing an API key', async () => {
+    vi.stubEnv('JUPITER_API_KEY', 'sk-test-secret-jupiter');
+    await expect(service(disabledTokenPriceConfig()).jupiterPrice({ mint: SOL_MINT })).rejects.toMatchObject({
+      code: 'unauthorized',
+      message: expect.stringContaining('tokenPrice.enabled=false'),
+    });
+
+    vi.unstubAllEnvs();
+    await expect(service().jupiterPrice({ mint: SOL_MINT })).rejects.toMatchObject({
+      code: 'unauthorized',
+      message: expect.stringContaining('Missing Jupiter API key'),
+    });
+  });
+
+  it('reads a single Jupiter price with missing price reason details', async () => {
+    vi.stubEnv('JUPITER_API_KEY', 'sk-test-secret-jupiter');
+    vi.stubGlobal('fetch', vi.fn(async () => jsonResponse({})));
+
+    const result = await service().jupiterPrice({ mint: SOL_MINT });
+
+    expect(result.price).toMatchObject({
+      mint: SOL_MINT,
+      status: 'missing',
+      reason: expect.stringContaining('did not return a reliable price'),
+    });
+    expect(result.facts).toEqual(expect.arrayContaining([
+      expect.objectContaining({ label: expect.stringContaining('Jupiter price'), tone: 'warn' }),
+      expect.objectContaining({ label: 'Price evidence', tone: 'warn' }),
+    ]));
+  });
+
   it('returns partial missing price evidence instead of dropping missing mints', async () => {
     vi.stubEnv('JUPITER_API_KEY', 'sk-test-secret-jupiter');
     vi.stubGlobal('fetch', vi.fn(async (url: string | URL | Request) => {
@@ -119,6 +153,7 @@ describe('Jupiter token and price reads', () => {
       if (requestUrl.pathname.endsWith('/search')) {
         return jsonResponse([jupToken({
           id: JUP_MINT,
+          verification: 'banned',
           isVerified: false,
           liquidity: 500,
           organicScore: 12,
@@ -143,6 +178,7 @@ describe('Jupiter token and price reads', () => {
       tokenFound: true,
       riskLabels: expect.arrayContaining([
         'unverified',
+        'verification_blocked',
         'suspicious_audit',
         'mint_authority_present',
         'freeze_authority_present',
@@ -159,15 +195,137 @@ describe('Jupiter token and price reads', () => {
     ]));
   });
 
+  it('does not attach non-exact token search hits as requested mint evidence', async () => {
+    vi.stubEnv('JUPITER_API_KEY', 'sk-test-secret-jupiter');
+    vi.stubGlobal('fetch', vi.fn(async (url: string | URL | Request) => {
+      const requestUrl = new URL(String(url));
+      if (requestUrl.pathname.endsWith('/search')) {
+        return jsonResponse([jupToken({ id: USDC_MINT, symbol: 'USDC', name: 'USD Coin' })]);
+      }
+      return jsonResponse({});
+    }));
+
+    const result = await service().jupiterTokenRiskEvidence({ mint: JUP_MINT });
+
+    expect(result.evidence).toMatchObject({
+      mint: JUP_MINT,
+      tokenFound: false,
+      candidateTokens: [expect.objectContaining({ mint: USDC_MINT, symbol: 'USDC' })],
+      riskLabels: expect.arrayContaining([
+        'token_metadata_missing',
+        'token_search_candidates_not_exact',
+        'price_missing',
+      ]),
+    });
+    expect(result.evidence).not.toMatchObject({ symbol: 'USDC' });
+  });
+
+  it('omits price warnings when token evidence is requested without price', async () => {
+    vi.stubEnv('JUPITER_API_KEY', 'sk-test-secret-jupiter');
+    const fetchImpl = vi.fn(async () => jsonResponse([jupToken()]));
+    vi.stubGlobal('fetch', fetchImpl);
+
+    const result = await service().jupiterTokenRiskEvidence({ mint: JUP_MINT, includePrice: false });
+
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+    expect(result.evidence).toMatchObject({
+      mint: JUP_MINT,
+      tokenFound: true,
+      priceRequested: false,
+    });
+    const evidence = result.evidence as { riskLabels: string[] };
+    expect(evidence.riskLabels).not.toContain('price_evidence_not_oracle');
+    expect(result.facts).not.toEqual(expect.arrayContaining([
+      expect.objectContaining({ label: 'Jupiter USD price' }),
+    ]));
+  });
+
+  it('routes Jupiter token and price reads through solana_connector_read_facts', async () => {
+    vi.stubEnv('JUPITER_API_KEY', 'sk-test-secret-jupiter');
+    vi.stubGlobal('fetch', vi.fn(async (url: string | URL | Request) => {
+      const requestUrl = new URL(String(url));
+      if (requestUrl.pathname.endsWith('/search')) return jsonResponse([jupToken()]);
+      if (requestUrl.pathname.endsWith('/v3')) {
+        return jsonResponse({
+          [JUP_MINT]: { usdPrice: 1.25, decimals: 6, blockId: 348004023 },
+          [SOL_MINT]: { usdPrice: 150, decimals: 9, blockId: 348004024 },
+        });
+      }
+      return jsonResponse([]);
+    }));
+    const svc = service();
+
+    const tokenResult = await svc.connectorReadFacts({
+      connectorId: 'jupiter',
+      capability: 'tokens',
+      mint: JUP_MINT,
+    });
+    const priceResult = await svc.connectorReadFacts({
+      connectorId: 'jupiter',
+      capability: 'price',
+      mints: [JUP_MINT, SOL_MINT],
+    });
+
+    expect(tokenResult).toMatchObject({
+      connector: expect.objectContaining({ id: 'jupiter' }),
+      capability: 'tokens',
+      evidence: expect.objectContaining({ mint: JUP_MINT, tokenFound: true }),
+    });
+    expect(priceResult).toMatchObject({
+      capability: 'price',
+      batch: expect.objectContaining({ totals: { requested: 2, found: 2, missing: 0 } }),
+    });
+  });
+
+  it('adds token evidence facts to swap previews for raw mint inputs without blocking quote facts', async () => {
+    vi.stubEnv('JUPITER_API_KEY', 'sk-test-secret-jupiter');
+    vi.stubGlobal('fetch', vi.fn(async (url: string | URL | Request) => {
+      const requestUrl = new URL(String(url));
+      if (requestUrl.pathname.endsWith('/order')) {
+        return jsonResponse({
+          mode: 'ultra',
+          router: 'iris',
+          inputMint: SOL_MINT,
+          outputMint: JUP_MINT,
+          inAmount: '10000000',
+          outAmount: '25000000',
+          otherAmountThreshold: '24000000',
+          slippageBps: 50,
+          requestId: 'req_jupiter_token_evidence',
+          transaction: 'base64-transaction',
+        });
+      }
+      if (requestUrl.pathname.endsWith('/search')) return jsonResponse([jupToken()]);
+      if (requestUrl.pathname.endsWith('/v3')) return jsonResponse({ [JUP_MINT]: { usdPrice: 1.25, decimals: 6 } });
+      return jsonResponse({});
+    }));
+
+    const result = await service().jupiterOrderPreview({
+      inputToken: 'SOL',
+      outputToken: JUP_MINT,
+      amount: '0.01',
+    });
+
+    expect(result).toMatchObject({
+      outputMint: JUP_MINT,
+      tokenEvidence: [expect.objectContaining({ mint: JUP_MINT, tokenFound: true })],
+    });
+    expect(result.facts).toEqual(expect.arrayContaining([
+      expect.objectContaining({ label: 'Jupiter Swap API v2 preview', tone: 'good' }),
+      expect.objectContaining({ label: 'Jupiter token evidence JUP', tone: 'good' }),
+    ]));
+  });
+
   it('redacts Jupiter secrets from API error bodies', async () => {
     expect(redactJupiterSecrets({ apiKey: 'sk-test-secret-jupiter' })).toEqual({ apiKey: '[redacted]' });
   });
 });
 
-function service(config: AgentWalletConfig = testConfig()): AgentWalletActionService {
+function service(config: AgentWalletConfig = testConfig(), connection: Connection = fakeConnection()): AgentWalletActionService {
   return new AgentWalletActionService({
     backend: createMockBackend(),
     config,
+    connection,
   });
 }
 
@@ -176,9 +334,28 @@ function testConfig(): AgentWalletConfig {
     ...DEFAULT_CONFIG,
     jupiter: {
       ...DEFAULT_CONFIG.jupiter,
+      baseUrl: 'https://jupiter.example/swap/v2',
+      swapBaseUrl: 'https://jupiter.example/swap/v2',
       tokensBaseUrl: 'https://tokens.example/v2',
       priceBaseUrl: 'https://price.example/v3',
       apiKeyEnv: 'JUPITER_API_KEY',
+    },
+  };
+}
+
+function disabledTokenPriceConfig(): AgentWalletConfig {
+  const config = testConfig();
+  return {
+    ...config,
+    connectors: {
+      ...config.connectors,
+      jupiter: {
+        ...config.connectors?.jupiter,
+        tokenPrice: {
+          ...config.connectors?.jupiter?.tokenPrice,
+          enabled: false,
+        },
+      },
     },
   };
 }
@@ -194,6 +371,7 @@ function jupToken(overrides: Record<string, unknown> = {}): Record<string, unkno
     liquidity: 5000000,
     organicScore: 98,
     organicScoreLabel: 'high',
+    verification: 'verified',
     isVerified: true,
     tags: ['verified'],
     audit: {
@@ -210,4 +388,12 @@ function jsonResponse(payload: unknown, status = 200): Response {
     status,
     headers: { 'content-type': 'application/json' },
   });
+}
+
+function fakeConnection(): Connection {
+  return {
+    async getParsedAccountInfo() {
+      return { value: { data: { parsed: { info: { decimals: 6 } } } } };
+    },
+  } as unknown as Connection;
 }

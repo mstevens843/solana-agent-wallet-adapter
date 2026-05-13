@@ -505,4 +505,272 @@ describe('Jupiter lend prepare and execute', () => {
       repayAll: true,
     });
   });
+
+  it('earn deposit stores programIds, minSharesOut, and earnSnapshot', async () => {
+    const ctx = makeContext({ store: inMemoryStore() });
+    const result = await requireJupiterAction('earn_deposit').prepare(
+      { assetMint: USDC_MINT, amount: '5', minSharesOut: '4.9' },
+      ctx,
+    );
+
+    expect(result.addInput.params).toMatchObject({
+      minSharesOut: '4.9',
+      programIds: expect.arrayContaining([
+        'jup3YeL8QhtSx1e253b2FDvsMNC87fDrgQZivbrndc9',
+      ]),
+      earnSnapshot: expect.objectContaining({ assetMint: USDC_MINT }),
+    });
+  });
+
+  it('earn withdraw surfaces withdrawal-smoothing warning when enabled', async () => {
+    state.earnToken = {
+      ...state.earnToken,
+      withdrawalSmoothing: { enabled: true, note: 'Smoothing applies for 30 minutes.' },
+    };
+    const ctx = makeContext({ store: inMemoryStore() });
+    const result = await requireJupiterAction('earn_withdraw').prepare(
+      { assetMint: USDC_MINT, amount: '5', minUnderlyingOut: '4.95' },
+      ctx,
+    );
+
+    expect(result.addInput.params).toMatchObject({
+      operation: 'earn_withdraw',
+      minUnderlyingOut: '4.95',
+      refreshAtExecution: true,
+      warnings: ['Smoothing applies for 30 minutes.'],
+    });
+  });
+
+  it('borrow prepare stores positionSnapshot, oracleSnapshot, programIds, and vaultSnapshot', async () => {
+    const ctx = makeContext({ store: inMemoryStore() });
+    const result = await requireJupiterAction('borrow_borrow').prepare(
+      { vaultId: 7, positionId: 1, amount: '10' },
+      ctx,
+    );
+
+    expect(result.addInput.params).toMatchObject({
+      vaultId: 7,
+      positionId: 1,
+      vaultSnapshot: expect.objectContaining({ vaultId: 7 }),
+      positionSnapshot: expect.objectContaining({ positionId: 1, owner: WALLET }),
+      programIds: expect.arrayContaining([
+        'jupr81YtYssSyPt8jbnGuiWon5f6x9TcDEFxYe3Bdzi',
+      ]),
+      refreshAtExecution: true,
+    });
+  });
+
+  it('rejects unknown liquidation status even without preview.blocked', async () => {
+    state.healthPreviewOverride = {
+      after: {
+        collateralAmount: '1',
+        debtAmount: '60',
+        healthRatio: 1.4,
+        healthRatioText: '1.4',
+        liquidationStatus: 'unknown',
+      },
+      blocked: false,
+      warnings: [],
+    };
+    const ctx = makeContext({ store: inMemoryStore() });
+
+    await expect(
+      requireJupiterAction('borrow_borrow').prepare(
+        { vaultId: 7, positionId: 1, amount: '5' },
+        ctx,
+      ),
+    ).rejects.toMatchObject({
+      name: 'AdapterError',
+      code: 'health_check_failed',
+    });
+  });
+
+  it('rejects borrow when oracle is unavailable', async () => {
+    state.borrowVault = {
+      ...state.borrowVault,
+      oracle: { available: false, warnings: ['Oracle is down.'] },
+    };
+    const ctx = makeContext({ store: inMemoryStore() });
+
+    await expect(
+      requireJupiterAction('borrow_borrow').prepare(
+        { vaultId: 7, positionId: 1, amount: '5' },
+        ctx,
+      ),
+    ).rejects.toMatchObject({
+      name: 'AdapterError',
+      code: 'stale_oracle',
+    });
+  });
+
+  it('rejects borrow when oracle is stale beyond maxStalenessSeconds', async () => {
+    const stalePublishedAt = new Date(Date.now() - 600_000).toISOString();
+    state.borrowVault = {
+      ...state.borrowVault,
+      oracle: {
+        available: true,
+        publishedAt: stalePublishedAt,
+        maxStalenessSeconds: 60,
+      },
+    };
+    const ctx = makeContext({ store: inMemoryStore() });
+
+    await expect(
+      requireJupiterAction('borrow_borrow').prepare(
+        { vaultId: 7, positionId: 1, amount: '5' },
+        ctx,
+      ),
+    ).rejects.toMatchObject({
+      name: 'AdapterError',
+      code: 'stale_oracle',
+    });
+  });
+
+  it('rejects execute when position ownership changed after prepare', async () => {
+    const ctx = makeContext({ store: inMemoryStore() });
+    const prepared = await requireJupiterAction('borrow_repay').prepare(
+      { vaultId: 7, positionId: 1, amount: '1' },
+      ctx,
+    );
+    const action = await ctx.store.addAction(prepared.addInput);
+
+    state.borrowPositions = state.borrowPositions.map((position) => ({
+      ...position,
+      owner: 'OtherWalletAddress1111111111111111111111111',
+    }));
+
+    await expect(
+      requireJupiterAction('borrow_repay').execute(action, ctx),
+    ).rejects.toMatchObject({
+      name: 'AdapterError',
+      code: 'position_not_owned',
+    });
+  });
+
+  it('execute refresh blocks health regression before signing', async () => {
+    const store = inMemoryStore();
+    const signedCalls: string[] = [];
+    const ctx = makeContext({
+      store,
+      signed: async () => {
+        signedCalls.push('signed');
+        return 'should-not-be-called';
+      },
+    });
+
+    const prepared = await requireJupiterAction('borrow_borrow').prepare(
+      { vaultId: 7, positionId: 1, amount: '5' },
+      ctx,
+    );
+    const action = await store.addAction(prepared.addInput);
+
+    state.healthPreviewOverride = {
+      after: {
+        collateralAmount: '1',
+        debtAmount: '90',
+        healthRatio: 0.9,
+        healthRatioText: '0.9',
+        liquidationStatus: 'at_risk',
+      },
+      blocked: true,
+      warnings: ['Projected health drops below policy after a market move.'],
+    };
+
+    await expect(
+      requireJupiterAction('borrow_borrow').execute(action, ctx),
+    ).rejects.toMatchObject({
+      name: 'AdapterError',
+      code: 'health_check_failed',
+    });
+    expect(signedCalls).toEqual([]);
+  });
 });
+
+describe('Jupiter lend SDK unavailability', () => {
+  beforeEach(() => {
+    resetJupiterLendClientFactory();
+  });
+
+  it('default factory throws sdk_unavailable from borrow paths', async () => {
+    const ctx = makeContext({ store: inMemoryStore() });
+    await expect(
+      requireJupiterAction('borrow_borrow').prepare(
+        { vaultId: 7, positionId: 1, amount: '5' },
+        ctx,
+      ),
+    ).rejects.toMatchObject({ name: 'AdapterError', code: 'sdk_unavailable' });
+  });
+});
+
+describe('Jupiter lend REST behaviour', () => {
+  let originalApiKey: string | undefined;
+  let originalJupKey: string | undefined;
+
+  beforeEach(() => {
+    originalApiKey = process.env.JUPITER_API_KEY;
+    originalJupKey = process.env.JUP_API_KEY;
+  });
+
+  afterEach(() => {
+    if (originalApiKey === undefined) delete process.env.JUPITER_API_KEY;
+    else process.env.JUPITER_API_KEY = originalApiKey;
+    if (originalJupKey === undefined) delete process.env.JUP_API_KEY;
+    else process.env.JUP_API_KEY = originalJupKey;
+  });
+
+  it('missing API key rejects REST Earn reads with unauthorized', async () => {
+    delete process.env.JUPITER_API_KEY;
+    delete process.env.JUP_API_KEY;
+    const { listEarnTokens } = await import('../../adapters/jupiter/lendEarn.js');
+    const config = restConfig({ useSdk: false });
+
+    await expect(listEarnTokens(config, WALLET, {})).rejects.toMatchObject({
+      name: 'ProtocolError',
+      code: 'unauthorized',
+    });
+  });
+
+  it('redacts API key in REST error bodies', async () => {
+    process.env.JUPITER_API_KEY = 'sk-jupiter-supersecret';
+    const { listEarnTokens } = await import('../../adapters/jupiter/lendEarn.js');
+    const config = restConfig({ useSdk: false });
+    const fetchImpl: typeof fetch = async () =>
+      new Response(
+        JSON.stringify({
+          error: 'rejected',
+          headers: { 'x-api-key': 'sk-jupiter-supersecret' },
+          transaction: 'A'.repeat(200),
+        }),
+        { status: 401 },
+      );
+
+    // Patch global fetch for jupiterFetchJson default consumer
+    const realFetch = globalThis.fetch;
+    globalThis.fetch = fetchImpl;
+    try {
+      await expect(listEarnTokens(config, WALLET, {})).rejects.toMatchObject({
+        message: expect.stringContaining('[redacted]'),
+      });
+    } finally {
+      globalThis.fetch = realFetch;
+    }
+  });
+});
+
+function restConfig(overrides: { useSdk?: boolean } = {}): AgentWalletConfig {
+  const base = fakeConfig();
+  return {
+    ...base,
+    jupiter: {
+      ...base.jupiter,
+      lendBaseUrl: 'https://api.jup.ag/lend/v1',
+    },
+    connectors: {
+      ...base.connectors,
+      jupiter: {
+        ...base.connectors?.jupiter,
+        useSdk: overrides.useSdk ?? false,
+      },
+    },
+  } as AgentWalletConfig;
+}

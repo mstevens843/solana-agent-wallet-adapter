@@ -1,8 +1,10 @@
 import { createRequire } from 'node:module';
 
 import { AdapterError } from '../types.js';
+import type { AgentWalletConfig } from '../../config.js';
 
 import { JUPITER_ADAPTER_ID, type JupiterLendOperation } from './constants.js';
+import { jupiterFetchJson } from './client.js';
 
 export interface JupiterLendEarnTokenSnapshot {
   assetMint: string;
@@ -266,7 +268,10 @@ export interface JupiterLendClient {
   buildBorrowWithdrawCollateral(args: JupiterLendBorrowWithdrawCollateralArgs): Promise<JupiterLendBuildResult>;
 }
 
-export type JupiterLendClientFactory = (walletAddress: string) => Promise<JupiterLendClient> | JupiterLendClient;
+export type JupiterLendClientFactory = (
+  walletAddress: string,
+  config?: AgentWalletConfig,
+) => Promise<JupiterLendClient> | JupiterLendClient;
 
 const SDK_UNAVAILABLE_REASON =
   '@jup-ag/lend-read and @jup-ag/lend are not installed. Install the optional Jupiter Lend SDK or inject a mock client for tests.';
@@ -295,7 +300,7 @@ export function describeJupiterLendReadUnavailableReason(): string | undefined {
 }
 
 class JupiterLendUnavailable implements JupiterLendClient {
-  private deny(method: string): never {
+  protected deny(method: string): never {
     throw new AdapterError(
       JUPITER_ADAPTER_ID,
       'sdk_unavailable',
@@ -303,71 +308,150 @@ class JupiterLendUnavailable implements JupiterLendClient {
     );
   }
 
-  async getEarnTokens(): Promise<JupiterLendEarnTokenSnapshot[]> {
+  async getEarnTokens(_input: Parameters<JupiterLendClient['getEarnTokens']>[0]): Promise<JupiterLendEarnTokenSnapshot[]> {
     this.deny('earn tokens read');
   }
-  async getEarnTokenDetail(): Promise<JupiterLendEarnTokenSnapshot> {
+  async getEarnTokenDetail(_input: Parameters<JupiterLendClient['getEarnTokenDetail']>[0]): Promise<JupiterLendEarnTokenSnapshot> {
     this.deny('earn token detail read');
   }
-  async getEarnPositions(): Promise<JupiterLendEarnPositionSnapshot[]> {
+  async getEarnPositions(_input: Parameters<JupiterLendClient['getEarnPositions']>[0]): Promise<JupiterLendEarnPositionSnapshot[]> {
     this.deny('earn positions read');
   }
-  async getEarnEarnings(): Promise<JupiterLendEarnEarningsSnapshot[]> {
+  async getEarnEarnings(_input: Parameters<JupiterLendClient['getEarnEarnings']>[0]): Promise<JupiterLendEarnEarningsSnapshot[]> {
     this.deny('earn earnings read');
   }
-  async getBorrowVaults(): Promise<JupiterLendBorrowVaultSnapshot[]> {
+  async getBorrowVaults(_input: Parameters<JupiterLendClient['getBorrowVaults']>[0]): Promise<JupiterLendBorrowVaultSnapshot[]> {
     this.deny('borrow vaults read');
   }
-  async getBorrowVaultDetail(): Promise<JupiterLendBorrowVaultSnapshot> {
+  async getBorrowVaultDetail(_input: Parameters<JupiterLendClient['getBorrowVaultDetail']>[0]): Promise<JupiterLendBorrowVaultSnapshot> {
     this.deny('borrow vault detail read');
   }
-  async getBorrowPositions(): Promise<JupiterLendBorrowPositionSnapshot[]> {
+  async getBorrowPositions(_input: Parameters<JupiterLendClient['getBorrowPositions']>[0]): Promise<JupiterLendBorrowPositionSnapshot[]> {
     this.deny('borrow positions read');
   }
-  async previewBorrowHealth(): Promise<JupiterLendBorrowHealthPreview> {
+  async previewBorrowHealth(_input: Parameters<JupiterLendClient['previewBorrowHealth']>[0]): Promise<JupiterLendBorrowHealthPreview> {
     this.deny('borrow health preview');
   }
-  async buildEarnDeposit(): Promise<JupiterLendBuildResult> {
+  async buildEarnDeposit(_args: JupiterLendEarnDepositArgs): Promise<JupiterLendBuildResult> {
     this.deny('earn deposit build');
   }
-  async buildEarnWithdraw(): Promise<JupiterLendBuildResult> {
+  async buildEarnWithdraw(_args: JupiterLendEarnWithdrawArgs): Promise<JupiterLendBuildResult> {
     this.deny('earn withdraw build');
   }
-  async buildEarnMint(): Promise<JupiterLendBuildResult> {
+  async buildEarnMint(_args: JupiterLendEarnMintArgs): Promise<JupiterLendBuildResult> {
     this.deny('earn mint build');
   }
-  async buildEarnRedeem(): Promise<JupiterLendBuildResult> {
+  async buildEarnRedeem(_args: JupiterLendEarnRedeemArgs): Promise<JupiterLendBuildResult> {
     this.deny('earn redeem build');
   }
-  async buildBorrowCreatePosition(): Promise<JupiterLendBuildResult> {
+  async buildBorrowCreatePosition(_args: JupiterLendBorrowCreatePositionArgs): Promise<JupiterLendBuildResult> {
     this.deny('borrow create position build');
   }
-  async buildBorrowDepositCollateral(): Promise<JupiterLendBuildResult> {
+  async buildBorrowDepositCollateral(_args: JupiterLendBorrowDepositCollateralArgs): Promise<JupiterLendBuildResult> {
     this.deny('borrow deposit collateral build');
   }
-  async buildBorrowBorrow(): Promise<JupiterLendBuildResult> {
+  async buildBorrowBorrow(_args: JupiterLendBorrowBorrowArgs): Promise<JupiterLendBuildResult> {
     this.deny('borrow borrow build');
   }
-  async buildBorrowRepay(): Promise<JupiterLendBuildResult> {
+  async buildBorrowRepay(_args: JupiterLendBorrowRepayArgs): Promise<JupiterLendBuildResult> {
     this.deny('borrow repay build');
   }
-  async buildBorrowWithdrawCollateral(): Promise<JupiterLendBuildResult> {
+  async buildBorrowWithdrawCollateral(_args: JupiterLendBorrowWithdrawCollateralArgs): Promise<JupiterLendBuildResult> {
     this.deny('borrow withdraw collateral build');
   }
 }
 
-let factory: JupiterLendClientFactory = () => new JupiterLendUnavailable();
+class JupiterLendRestClient extends JupiterLendUnavailable {
+  constructor(private readonly config: AgentWalletConfig) {
+    super();
+  }
+
+  override async buildEarnDeposit(input: JupiterLendEarnDepositArgs): Promise<JupiterLendBuildResult> {
+    return this.buildEarnTransaction('deposit', {
+      asset: input.assetMint,
+      signer: input.walletAddress,
+      amount: input.amountRaw,
+    });
+  }
+
+  override async buildEarnWithdraw(input: JupiterLendEarnWithdrawArgs): Promise<JupiterLendBuildResult> {
+    return this.buildEarnTransaction('withdraw', {
+      asset: input.assetMint,
+      signer: input.walletAddress,
+      amount: input.amountRaw,
+    });
+  }
+
+  override async buildEarnMint(input: JupiterLendEarnMintArgs): Promise<JupiterLendBuildResult> {
+    return this.buildEarnTransaction('mint', {
+      asset: input.assetMint,
+      signer: input.walletAddress,
+      shares: input.sharesRaw,
+    });
+  }
+
+  override async buildEarnRedeem(input: JupiterLendEarnRedeemArgs): Promise<JupiterLendBuildResult> {
+    return this.buildEarnTransaction('redeem', {
+      asset: input.assetMint,
+      signer: input.walletAddress,
+      shares: input.sharesRaw,
+    });
+  }
+
+  override async buildBorrowCreatePosition(): Promise<JupiterLendBuildResult> {
+    throw new AdapterError(JUPITER_ADAPTER_ID, 'sdk_unavailable', REST_UNAVAILABLE_REASON);
+  }
+
+  override async buildBorrowDepositCollateral(): Promise<JupiterLendBuildResult> {
+    throw new AdapterError(JUPITER_ADAPTER_ID, 'sdk_unavailable', REST_UNAVAILABLE_REASON);
+  }
+
+  override async buildBorrowBorrow(): Promise<JupiterLendBuildResult> {
+    throw new AdapterError(JUPITER_ADAPTER_ID, 'sdk_unavailable', REST_UNAVAILABLE_REASON);
+  }
+
+  override async buildBorrowRepay(): Promise<JupiterLendBuildResult> {
+    throw new AdapterError(JUPITER_ADAPTER_ID, 'sdk_unavailable', REST_UNAVAILABLE_REASON);
+  }
+
+  override async buildBorrowWithdrawCollateral(): Promise<JupiterLendBuildResult> {
+    throw new AdapterError(JUPITER_ADAPTER_ID, 'sdk_unavailable', REST_UNAVAILABLE_REASON);
+  }
+
+  private async buildEarnTransaction(
+    operation: 'deposit' | 'withdraw' | 'mint' | 'redeem',
+    body: Record<string, unknown>,
+  ): Promise<JupiterLendBuildResult> {
+    const response = await jupiterFetchJson(this.config, 'lend', `/earn/${operation}`, {
+      method: 'POST',
+      body,
+    });
+    const transactionBase64 = readTransactionBase64(response, operation);
+    return {
+      transactionBase64,
+      refreshAtExecution: true,
+      notes: ['Built via Jupiter Lend Earn REST API; refresh before wallet signing to avoid stale blockhashes.'],
+    };
+  }
+}
+
+let factory: JupiterLendClientFactory = (_walletAddress, config) =>
+  config ? new JupiterLendRestClient(config) : new JupiterLendUnavailable();
 
 export function setJupiterLendClientFactory(next: JupiterLendClientFactory): void {
   factory = next;
 }
 
 export function resetJupiterLendClientFactory(): void {
-  factory = () => new JupiterLendUnavailable();
+  factory = (_walletAddress, config) =>
+    config ? new JupiterLendRestClient(config) : new JupiterLendUnavailable();
 }
 
-export async function getJupiterLendClient(walletAddress: string): Promise<JupiterLendClient> {
-  return factory(walletAddress);
+export async function getJupiterLendClient(
+  walletAddress: string,
+  config?: AgentWalletConfig,
+): Promise<JupiterLendClient> {
+  return factory(walletAddress, config);
 }
 
 export function jupiterLendRestUnavailableReason(): string {
@@ -376,4 +460,14 @@ export function jupiterLendRestUnavailableReason(): string {
 
 export function isJupiterLendBorrowOperation(operation: JupiterLendOperation): boolean {
   return operation.startsWith('borrow_');
+}
+
+function readTransactionBase64(body: Record<string, unknown>, operation: string): string {
+  const value = body.transaction ?? body.transactionBase64;
+  if (typeof value === 'string' && value.trim()) return value;
+  throw new AdapterError(
+    JUPITER_ADAPTER_ID,
+    'wallet_unreachable',
+    `Jupiter Lend Earn ${operation} response did not include transaction.`,
+  );
 }

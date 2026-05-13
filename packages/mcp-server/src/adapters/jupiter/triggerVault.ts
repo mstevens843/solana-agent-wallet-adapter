@@ -25,6 +25,7 @@ export async function readVault(
   const jwt = requireValidJwt(input.walletAddress, config);
   const body = await jupiterFetchJson(config, 'trigger', '/vault', {
     method: 'GET',
+    searchParams: { walletAddress: input.walletAddress },
     bearerToken: jwt.jwt,
   });
   return normalizeVault(input.walletAddress, body);
@@ -61,12 +62,15 @@ export async function prepareRegisterVault(
 }
 
 function normalizeVault(walletAddress: string, body: Record<string, unknown>): TriggerVaultSnapshot {
-  const vaultAddress = optionalString(body, 'vaultAddress') ?? optionalString(body, 'vault_address');
+  const vaultAddress =
+    optionalString(body, 'vaultPubkey') ??
+    optionalString(body, 'vaultAddress') ??
+    optionalString(body, 'vault_address');
   const vaultId = optionalString(body, 'vaultId') ?? optionalString(body, 'vault_id') ?? optionalString(body, 'privyVaultId');
   const balances = (body.balances as Record<string, unknown> | undefined) ?? undefined;
   const registered = Boolean(vaultAddress) || body.registered === true;
   const snapshot: TriggerVaultSnapshot = {
-    walletAddress,
+    walletAddress: optionalString(body, 'userPubkey') ?? walletAddress,
     custody: 'privy',
     registered,
     raw: body,

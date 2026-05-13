@@ -180,15 +180,22 @@ import {
   type ProtocolConnector,
 } from './connectedDapps.js';
 import {
+  connectorActionFormById,
+  connectorActionFormForTemplate,
+  connectorActionFormsForConnector,
   connectorAiPlannerContext,
   connectorAiUserNotes,
+  connectorCreateConnectors,
+  connectorCreateStatus,
   connectorDraftConnectors,
   connectorDraftStatus,
   isConnectorCapableTemplate,
   normalizeConnectorDraftParameters,
+  selectedConnectorActionForm,
   selectedConnectorForDraftParameters,
   stripConnectorDraftExtras,
   validateConnectorDraftParameters,
+  type ConnectorActionForm,
 } from './connectorDrafting.js';
 import {
   normalizeBlinkUrl,
@@ -621,6 +628,14 @@ const EXECUTABLE_BROWSER_ACTION_KINDS = new Set<PreparedActionKind>([
   'transfer_spl',
   'swap',
   'custom_transaction',
+]);
+const CONNECTOR_APPROVAL_ACTION_TYPES = new Set<string>([
+  'kamino_deposit',
+  'kamino_withdraw',
+  'drift_vault_deposit',
+  'drift_vault_request_withdraw',
+  'drift_vault_cancel_withdraw',
+  'drift_vault_complete_withdraw',
 ]);
 const RELEASE_BASE_URL =
   'https://github.com/mstevens843/solana-agent-wallet-adapter/releases/latest/download';
@@ -7487,7 +7502,8 @@ function templateOutcome(template: AgentPlanTemplate): TemplateOutcome {
 }
 
 function templateCanQueue(template: AgentPlanTemplate): boolean {
-  return ['transfer_sol', 'transfer_spl', 'swap', 'recurring_payment', 'blink_action'].includes(template.actionType);
+  return ['transfer_sol', 'transfer_spl', 'swap', 'recurring_payment', 'blink_action'].includes(template.actionType) ||
+    CONNECTOR_APPROVAL_ACTION_TYPES.has(template.actionType);
 }
 
 function planOutcome(plan: AgentPlan): TemplateOutcome {
@@ -9830,6 +9846,7 @@ function agentPlannerWorkbench(): string {
             ${templatePicker(template)}
           </div>
           <p class="template-description">${escapeHtml(template.description)}</p>
+          ${connectorCreateBand(template)}
         </div>
         <div class="planner-form-body">
           <div class="planner-fields">
@@ -24031,7 +24048,8 @@ function planGuardrailVerdict(plan: AgentPlan): AiGuardrailReport['verdict'] | '
 }
 
 function canQueueAgentPlan(plan: AgentPlan): boolean {
-  return ['transfer_sol', 'transfer_spl', 'swap', 'recurring_payment', 'custom_transaction', 'blink_action'].includes(plan.actionType);
+  return ['transfer_sol', 'transfer_spl', 'swap', 'recurring_payment', 'custom_transaction', 'blink_action'].includes(plan.actionType) ||
+    CONNECTOR_APPROVAL_ACTION_TYPES.has(plan.actionType);
 }
 
 function canQueueGuardedPlan(plan: AgentPlan): boolean {
@@ -24064,15 +24082,20 @@ function assertPlanCanQueue(plan: AgentPlan): void {
 }
 
 function protocolConnectorQueueBlockReason(plan: AgentPlan): string {
-  if (plan.actionType !== 'blink_action' && !plan.parameters.blinkUrl && !plan.parameters.actionUrl) {
+  const hasConnectorSelection = Boolean(selectedConnectorForDraftParameters(plan.parameters));
+  const requiresBlink = plan.actionType === 'blink_action' || Boolean(plan.parameters.blinkUrl || plan.parameters.actionUrl);
+  if (!requiresBlink && !hasConnectorSelection) {
     return '';
   }
   const connector = selectedConnectorForDraftParameters(plan.parameters) ??
     findProtocolConnectorByInput(plan.parameters.protocol || plan.parameters.dapp || plan.parameters.provider || plan.route);
-  if (!connector) {
+  if (!connector && requiresBlink) {
     return 'Choose one enabled Protocol Connector before preparing a Blink action.';
   }
-  if (!connectorHasCapability(connector, 'blink_actions')) {
+  if (!connector) {
+    return 'Choose one enabled Protocol Connector before preparing connector-backed work.';
+  }
+  if (requiresBlink && !connectorHasCapability(connector, 'blink_actions')) {
     return `${connector.name} does not expose Blink actions in this connector catalog.`;
   }
   if (!isClusterSupported(connector, state.cluster)) {
@@ -24081,10 +24104,12 @@ function protocolConnectorQueueBlockReason(plan: AgentPlan): string {
   if (!isDappEnabled(connector.id, state.connectedDapps, state.cluster)) {
     return `${connector.name} is not enabled. Enable it in Protocol Connectors before sending.`;
   }
-  try {
-    normalizeBlinkUrl(plan.parameters.blinkUrl || plan.parameters.actionUrl || '');
-  } catch (err) {
-    return err instanceof Error ? err.message : 'Blink/Solana Action URL is invalid.';
+  if (requiresBlink) {
+    try {
+      normalizeBlinkUrl(plan.parameters.blinkUrl || plan.parameters.actionUrl || '');
+    } catch (err) {
+      return err instanceof Error ? err.message : 'Blink/Solana Action URL is invalid.';
+    }
   }
   return '';
 }
@@ -24267,6 +24292,10 @@ async function queuePlanThroughActiveWorkflow(
   }
   const mode = activeWorkflowMode();
   if (plan.actionType === 'blink_action') {
+    const response = await queuePlanThroughBrowserWorkflow(plan, sourceRecord);
+    return { ...response, mode: 'browser-workflow' };
+  }
+  if (CONNECTOR_APPROVAL_ACTION_TYPES.has(plan.actionType)) {
     const response = await queuePlanThroughBrowserWorkflow(plan, sourceRecord);
     return { ...response, mode: 'browser-workflow' };
   }
@@ -24499,6 +24528,9 @@ function browserActionKindForPlan(plan: AgentPlan): PreparedActionKind {
   if (plan.actionType === 'swap') return 'swap';
   if (plan.actionType === 'custom_transaction') return 'custom_transaction';
   if (plan.actionType === 'blink_action') return 'custom_transaction';
+  if (CONNECTOR_APPROVAL_ACTION_TYPES.has(plan.actionType) && isPreparedActionKind(plan.actionType)) {
+    return plan.actionType;
+  }
   throw new Error('Only transfers, swaps, Blink actions, custom transactions, and repeat payments can be queued.');
 }
 
@@ -24529,6 +24561,12 @@ function browserActionParams(plan: AgentPlan, kind: PreparedActionKind): Record<
   if (kind === 'custom_transaction') {
     return {
       transactionBase64: requiredPlanParam(plan, 'transactionBase64'),
+      reason: plan.userNotes || plan.intent,
+    };
+  }
+  if (CONNECTOR_APPROVAL_ACTION_TYPES.has(kind)) {
+    return {
+      ...plan.parameters,
       reason: plan.userNotes || plan.intent,
     };
   }

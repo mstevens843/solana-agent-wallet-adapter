@@ -1,9 +1,14 @@
+import { PublicKey, type Connection } from '@solana/web3.js';
 import { ProtocolError } from '@solana-agent-wallet-adapter/core';
 
+import { parseDecimalAmount } from '../../amounts.js';
 import { CONNECTOR_APPROVAL_BOUNDARY } from '../../connectorRegistry.js';
 import {
+  DEFAULT_TOKEN_REGISTRY,
   JUPITER_TRIGGER_MIN_ORDER_USD,
+  WSOL_MINT,
   getJupiterTriggerPolicy,
+  type AgentWalletConfig,
   type ResolvedJupiterTriggerPolicy,
 } from '../../config.js';
 import type { PreparedAction } from '../../preparedActions.js';
@@ -133,7 +138,7 @@ export const registerVaultAction: AdapterAction<JupiterTriggerRegisterVaultInput
       walletAddress,
       cluster: ctx.config.cluster,
     });
-    params.transactionBase64 = built.transactionBase64;
+    if (built.transactionBase64) params.transactionBase64 = built.transactionBase64;
     params.vaultSnapshot = built.vaultSnapshot;
     params.warnings = triggerRegisterVaultWarnings();
     return preparedActionResult('jupiter_trigger_register_vault', walletAddress, ctx, summary, params, input);
@@ -143,11 +148,14 @@ export const registerVaultAction: AdapterAction<JupiterTriggerRegisterVaultInput
     const walletAddress = await assertOwnership(action, ctx);
     requireValidJwt(walletAddress, ctx.config);
     const refreshed = await prepareRegisterVault(ctx.config, { walletAddress });
-    const signed = await ctx.signTransaction(refreshed.transactionBase64, action.summary);
-    const body = await postSignedToTrigger(ctx, '/vault/register/submit', {
-      walletAddress,
-      signedTransaction: signed,
-    });
+    let body = refreshed.raw;
+    if (refreshed.transactionBase64) {
+      const signed = await ctx.signTransaction(refreshed.transactionBase64, action.summary);
+      body = await postSignedToTrigger(ctx, '/vault/register/submit', {
+        walletAddress,
+        signedTransaction: signed,
+      });
+    }
     return executeResult(body, { walletAddress });
   },
 };
@@ -162,18 +170,20 @@ export const singleOrderAction: AdapterAction<JupiterTriggerSingleOrderInput> = 
     const policy = getJupiterTriggerPolicy(ctx.config);
     validateSingleInput(input, policy);
     await assertVaultRegistered(ctx, walletAddress);
+    const inputAmount = await triggerOrderAmountRaw(input, ctx);
     const orderParams = {
-      walletAddress,
+      orderType: 'single',
+      userPubkey: walletAddress,
       inputMint: input.inputMint,
       outputMint: input.outputMint,
-      amount: input.amount,
+      inputAmount,
       triggerMint: input.triggerMint,
       triggerCondition: input.triggerCondition,
       triggerPriceUsd: input.triggerPriceUsd,
       slippageBps: input.slippageBps,
-      expiresAt: input.expiresAt,
+      expiresAt: expiresAtMs(input.expiresAt),
     };
-    const built = await createOrderTransaction(ctx, '/order/create-single', orderParams, walletAddress);
+    const built = await craftDepositTransaction(ctx, 'single', orderParams, walletAddress);
     const summary = describeSingleOrder(input);
     const params: Record<string, unknown> = baseTriggerParams({
       operation: 'single_order',
@@ -184,7 +194,7 @@ export const singleOrderAction: AdapterAction<JupiterTriggerSingleOrderInput> = 
       inputMint: input.inputMint,
       outputMint: input.outputMint,
       triggerMint: input.triggerMint,
-      amount: input.amount,
+      amountRaw: inputAmount,
       orderType: 'single',
       triggerCondition: input.triggerCondition,
       triggerPriceUsd: input.triggerPriceUsd,
@@ -192,6 +202,7 @@ export const singleOrderAction: AdapterAction<JupiterTriggerSingleOrderInput> = 
       expiresAt: input.expiresAt,
       orderParams,
       transactionBase64: built.transactionBase64,
+      depositRequestId: built.requestId,
       vaultSnapshot: built.vaultSnapshot,
       automationWarningAccepted: true,
       custodyWarningAccepted: true,
@@ -205,16 +216,12 @@ export const singleOrderAction: AdapterAction<JupiterTriggerSingleOrderInput> = 
     const walletAddress = await assertOwnership(action, ctx);
     requireValidJwt(walletAddress, ctx.config);
     const orderParams = requireRecordParam(action, 'orderParams');
-    const refreshed = await createOrderTransaction(ctx, '/order/create-single', orderParams, walletAddress);
+    const refreshed = await craftDepositTransaction(ctx, 'single', orderParams, walletAddress);
     const signed = await ctx.signTransaction(refreshed.transactionBase64, action.summary);
-    const body = await postSignedToTrigger(ctx, '/order/submit', {
-      walletAddress,
-      signedTransaction: signed,
-      orderParams,
-    });
+    const body = await submitTriggerOrder(ctx, orderParams, walletAddress, refreshed.requestId, signed);
     return executeResult(body, {
       walletAddress,
-      orderId: optionalString(body, 'orderId'),
+      orderId: optionalString(body, 'id') ?? optionalString(body, 'orderId'),
     });
   },
 };
@@ -229,19 +236,21 @@ export const ocoOrderAction: AdapterAction<JupiterTriggerOcoOrderInput> = {
     const policy = getJupiterTriggerPolicy(ctx.config);
     validateOcoInput(input, policy);
     await assertVaultRegistered(ctx, walletAddress);
+    const inputAmount = await triggerOrderAmountRaw(input, ctx);
     const orderParams = {
-      walletAddress,
+      orderType: 'oco',
+      userPubkey: walletAddress,
       inputMint: input.inputMint,
       outputMint: input.outputMint,
-      amount: input.amount,
+      inputAmount,
       triggerMint: input.triggerMint,
-      takeProfitPriceUsd: input.takeProfitPriceUsd,
-      stopLossPriceUsd: input.stopLossPriceUsd,
-      takeProfitSlippageBps: input.takeProfitSlippageBps,
-      stopLossSlippageBps: input.stopLossSlippageBps,
-      expiresAt: input.expiresAt,
+      tpPriceUsd: input.takeProfitPriceUsd,
+      slPriceUsd: input.stopLossPriceUsd,
+      tpSlippageBps: input.takeProfitSlippageBps,
+      slSlippageBps: input.stopLossSlippageBps,
+      expiresAt: expiresAtMs(input.expiresAt),
     };
-    const built = await createOrderTransaction(ctx, '/order/create-oco', orderParams, walletAddress);
+    const built = await craftDepositTransaction(ctx, 'oco', orderParams, walletAddress);
     const summary = `OCO Jupiter Trigger order: TP ${input.takeProfitPriceUsd} USD / SL ${input.stopLossPriceUsd} USD${triggerSummarySuffix({
       includeCustody: true,
       includeAutomation: true,
@@ -256,7 +265,7 @@ export const ocoOrderAction: AdapterAction<JupiterTriggerOcoOrderInput> = {
       inputMint: input.inputMint,
       outputMint: input.outputMint,
       triggerMint: input.triggerMint,
-      amount: input.amount,
+      amountRaw: inputAmount,
       orderType: 'oco',
       takeProfitPriceUsd: input.takeProfitPriceUsd,
       stopLossPriceUsd: input.stopLossPriceUsd,
@@ -265,6 +274,7 @@ export const ocoOrderAction: AdapterAction<JupiterTriggerOcoOrderInput> = {
       expiresAt: input.expiresAt,
       orderParams,
       transactionBase64: built.transactionBase64,
+      depositRequestId: built.requestId,
       vaultSnapshot: built.vaultSnapshot,
       automationWarningAccepted: true,
       custodyWarningAccepted: true,
@@ -278,16 +288,12 @@ export const ocoOrderAction: AdapterAction<JupiterTriggerOcoOrderInput> = {
     const walletAddress = await assertOwnership(action, ctx);
     requireValidJwt(walletAddress, ctx.config);
     const orderParams = requireRecordParam(action, 'orderParams');
-    const refreshed = await createOrderTransaction(ctx, '/order/create-oco', orderParams, walletAddress);
+    const refreshed = await craftDepositTransaction(ctx, 'oco', orderParams, walletAddress);
     const signed = await ctx.signTransaction(refreshed.transactionBase64, action.summary);
-    const body = await postSignedToTrigger(ctx, '/order/submit', {
-      walletAddress,
-      signedTransaction: signed,
-      orderParams,
-    });
+    const body = await submitTriggerOrder(ctx, orderParams, walletAddress, refreshed.requestId, signed);
     return executeResult(body, {
       walletAddress,
-      orderId: optionalString(body, 'orderId'),
+      orderId: optionalString(body, 'id') ?? optionalString(body, 'orderId'),
     });
   },
 };
@@ -302,22 +308,24 @@ export const otocoOrderAction: AdapterAction<JupiterTriggerOtocoOrderInput> = {
     const policy = getJupiterTriggerPolicy(ctx.config);
     validateOtocoInput(input, policy);
     await assertVaultRegistered(ctx, walletAddress);
+    const inputAmount = await triggerOrderAmountRaw(input, ctx);
     const orderParams = {
-      walletAddress,
+      orderType: 'otoco',
+      userPubkey: walletAddress,
       inputMint: input.inputMint,
       outputMint: input.outputMint,
-      amount: input.amount,
+      inputAmount,
       triggerMint: input.triggerMint,
-      entryCondition: input.entryCondition,
-      entryPriceUsd: input.entryPriceUsd,
-      takeProfitPriceUsd: input.takeProfitPriceUsd,
-      stopLossPriceUsd: input.stopLossPriceUsd,
+      triggerCondition: input.entryCondition,
+      triggerPriceUsd: input.entryPriceUsd,
       slippageBps: input.slippageBps,
-      takeProfitSlippageBps: input.takeProfitSlippageBps,
-      stopLossSlippageBps: input.stopLossSlippageBps,
-      expiresAt: input.expiresAt,
+      tpPriceUsd: input.takeProfitPriceUsd,
+      slPriceUsd: input.stopLossPriceUsd,
+      tpSlippageBps: input.takeProfitSlippageBps,
+      slSlippageBps: input.stopLossSlippageBps,
+      expiresAt: expiresAtMs(input.expiresAt),
     };
-    const built = await createOrderTransaction(ctx, '/order/create-otoco', orderParams, walletAddress);
+    const built = await craftDepositTransaction(ctx, 'otoco', orderParams, walletAddress);
     const summary = `OTOCO Jupiter Trigger order: entry ${input.entryCondition} ${input.entryPriceUsd} USD then TP/SL${triggerSummarySuffix({
       includeCustody: true,
       includeAutomation: true,
@@ -332,7 +340,7 @@ export const otocoOrderAction: AdapterAction<JupiterTriggerOtocoOrderInput> = {
       inputMint: input.inputMint,
       outputMint: input.outputMint,
       triggerMint: input.triggerMint,
-      amount: input.amount,
+      amountRaw: inputAmount,
       orderType: 'otoco',
       entryCondition: input.entryCondition,
       entryPriceUsd: input.entryPriceUsd,
@@ -344,6 +352,7 @@ export const otocoOrderAction: AdapterAction<JupiterTriggerOtocoOrderInput> = {
       expiresAt: input.expiresAt,
       orderParams,
       transactionBase64: built.transactionBase64,
+      depositRequestId: built.requestId,
       vaultSnapshot: built.vaultSnapshot,
       automationWarningAccepted: true,
       custodyWarningAccepted: true,
@@ -357,16 +366,12 @@ export const otocoOrderAction: AdapterAction<JupiterTriggerOtocoOrderInput> = {
     const walletAddress = await assertOwnership(action, ctx);
     requireValidJwt(walletAddress, ctx.config);
     const orderParams = requireRecordParam(action, 'orderParams');
-    const refreshed = await createOrderTransaction(ctx, '/order/create-otoco', orderParams, walletAddress);
+    const refreshed = await craftDepositTransaction(ctx, 'otoco', orderParams, walletAddress);
     const signed = await ctx.signTransaction(refreshed.transactionBase64, action.summary);
-    const body = await postSignedToTrigger(ctx, '/order/submit', {
-      walletAddress,
-      signedTransaction: signed,
-      orderParams,
-    });
+    const body = await submitTriggerOrder(ctx, orderParams, walletAddress, refreshed.requestId, signed);
     return executeResult(body, {
       walletAddress,
-      orderId: optionalString(body, 'orderId'),
+      orderId: optionalString(body, 'id') ?? optionalString(body, 'orderId'),
     });
   },
 };
@@ -395,6 +400,7 @@ export const editOrderAction: AdapterAction<JupiterTriggerEditOrderInput> = {
     });
     Object.assign(params, {
       orderId: input.orderId,
+      orderType: input.orderType ?? orderSnapshot.orderType ?? 'single',
       orderSnapshot,
       ...(input.newTriggerPriceUsd !== undefined && { newTriggerPriceUsd: input.newTriggerPriceUsd }),
       ...(input.newSlippageBps !== undefined && { newSlippageBps: input.newSlippageBps }),
@@ -411,12 +417,14 @@ export const editOrderAction: AdapterAction<JupiterTriggerEditOrderInput> = {
     const walletAddress = await assertOwnership(action, ctx);
     const jwt = requireValidJwt(walletAddress, ctx.config);
     const orderId = requireStringParam(action, 'orderId');
-    const editBody: Record<string, unknown> = { walletAddress, orderId };
-    if (typeof action.params.newTriggerPriceUsd === 'number') editBody.newTriggerPriceUsd = action.params.newTriggerPriceUsd;
-    if (typeof action.params.newSlippageBps === 'number') editBody.newSlippageBps = action.params.newSlippageBps;
-    if (typeof action.params.newExpiresAt === 'string') editBody.newExpiresAt = action.params.newExpiresAt;
-    const body = await jupiterFetchJson(ctx.config, 'trigger', `/orders/${encodeURIComponent(orderId)}/edit`, {
-      method: 'POST',
+    const editBody: Record<string, unknown> = {
+      orderType: typeof action.params.orderType === 'string' ? action.params.orderType : 'single',
+    };
+    if (typeof action.params.newTriggerPriceUsd === 'number') editBody.triggerPriceUsd = action.params.newTriggerPriceUsd;
+    if (typeof action.params.newSlippageBps === 'number') editBody.slippageBps = action.params.newSlippageBps;
+    if (typeof action.params.newExpiresAt === 'string') editBody.expiresAt = action.params.newExpiresAt;
+    const body = await jupiterFetchJson(ctx.config, 'trigger', `/orders/price/${encodeURIComponent(orderId)}`, {
+      method: 'PATCH',
       body: editBody,
       bearerToken: jwt.jwt,
     });
@@ -457,13 +465,9 @@ export const cancelOrderAction: AdapterAction<JupiterTriggerCancelOrderInput> = 
   async execute(action, ctx): Promise<AdapterExecuteResult> {
     requireTriggerEnabled(ctx.config);
     const walletAddress = await assertOwnership(action, ctx);
-    const jwt = requireValidJwt(walletAddress, ctx.config);
+    requireValidJwt(walletAddress, ctx.config);
     const orderId = requireStringParam(action, 'orderId');
-    const body = await jupiterFetchJson(ctx.config, 'trigger', `/orders/${encodeURIComponent(orderId)}/cancel`, {
-      method: 'POST',
-      body: { walletAddress, orderId },
-      bearerToken: jwt.jwt,
-    });
+    const body = await executeCancelFlow(ctx, walletAddress, orderId, action.summary);
     return executeResult(body, { walletAddress, orderId });
   },
 };
@@ -478,14 +482,15 @@ export const withdrawOrderFundsAction: AdapterAction<JupiterTriggerWithdrawOrder
     if (!input.orderId?.trim()) {
       throw new AdapterError(JUPITER_ADAPTER_ID, 'invalid_request', 'Withdraw order funds requires orderId.');
     }
+    if (input.destination && input.destination !== walletAddress) {
+      throw new AdapterError(
+        JUPITER_ADAPTER_ID,
+        'invalid_request',
+        'Jupiter Trigger V2 withdraws cancelled/expired funds back to the authenticated wallet; custom destinations are not supported.',
+      );
+    }
     const orderSnapshot = await getOrder(ctx.config, { walletAddress, orderId: input.orderId });
     assertOrderWithdrawable(orderSnapshot);
-    const built = await createOrderTransaction(
-      ctx,
-      `/orders/${encodeURIComponent(input.orderId)}/withdraw`,
-      { walletAddress, orderId: input.orderId, ...(input.destination ? { destination: input.destination } : {}) },
-      walletAddress,
-    );
     const summary = `Withdraw Jupiter Trigger order ${input.orderId} funds to ${input.destination ?? walletAddress}${triggerSummarySuffix(
       { includeCustody: true },
     )}`;
@@ -498,7 +503,6 @@ export const withdrawOrderFundsAction: AdapterAction<JupiterTriggerWithdrawOrder
       orderId: input.orderId,
       orderSnapshot,
       ...(input.destination !== undefined && { destination: input.destination }),
-      transactionBase64: built.transactionBase64,
       warnings: triggerWithdrawWarnings(),
       refreshAtExecution: true,
     });
@@ -509,53 +513,100 @@ export const withdrawOrderFundsAction: AdapterAction<JupiterTriggerWithdrawOrder
     const walletAddress = await assertOwnership(action, ctx);
     requireValidJwt(walletAddress, ctx.config);
     const orderId = requireStringParam(action, 'orderId');
-    const destination = typeof action.params.destination === 'string' ? action.params.destination : walletAddress;
-    const refreshed = await createOrderTransaction(
-      ctx,
-      `/orders/${encodeURIComponent(orderId)}/withdraw`,
-      { walletAddress, orderId, destination },
-      walletAddress,
-    );
-    const signed = await ctx.signTransaction(refreshed.transactionBase64, action.summary);
-    const body = await postSignedToTrigger(ctx, '/order/submit', {
-      walletAddress,
-      signedTransaction: signed,
-      orderParams: { walletAddress, orderId, destination, operation: 'withdraw_order_funds' },
-    });
+    const body = await executeCancelFlow(ctx, walletAddress, orderId, action.summary);
     return executeResult(body, { walletAddress, orderId });
   },
 };
 
-interface CreatedOrderTransaction {
+interface CraftedDepositTransaction {
   transactionBase64: string;
+  requestId: string;
   vaultSnapshot?: Record<string, unknown>;
   raw: Record<string, unknown>;
 }
 
-async function createOrderTransaction(
+async function craftDepositTransaction(
   ctx: DAppAdapterContext,
-  path: string,
+  orderSubType: 'single' | 'oco' | 'otoco',
   orderParams: Record<string, unknown>,
   walletAddress: string,
-): Promise<CreatedOrderTransaction> {
+): Promise<CraftedDepositTransaction> {
   const jwt = requireValidJwt(walletAddress, ctx.config);
-  const body = await jupiterFetchJson(ctx.config, 'trigger', path, {
+  const body = await jupiterFetchJson(ctx.config, 'trigger', '/deposit/craft', {
     method: 'POST',
-    body: orderParams,
+    body: {
+      inputMint: orderParams.inputMint,
+      outputMint: orderParams.outputMint,
+      userAddress: walletAddress,
+      amount: orderParams.inputAmount,
+      orderType: 'price',
+      orderSubType,
+    },
     bearerToken: jwt.jwt,
   });
   const transactionBase64 = optionalString(body, 'transaction') ?? optionalString(body, 'transactionBase64');
   if (!transactionBase64) {
     throw new ProtocolError(
       'wallet_unreachable',
-      `Jupiter Trigger ${path} did not return an unsigned transaction.`,
+      'Jupiter Trigger deposit craft did not return an unsigned transaction.',
     );
   }
+  const requestId = optionalString(body, 'requestId') ?? optionalString(body, 'depositRequestId') ?? '';
+  if (!requestId) {
+    throw new ProtocolError(
+      'wallet_unreachable',
+      'Jupiter Trigger deposit craft did not return requestId.',
+    );
+  }
+  const vaultSnapshot = (body.vault as Record<string, unknown> | undefined)
+    ?? (body.vaultSnapshot as Record<string, unknown> | undefined)
+    ?? undefined;
   return {
     transactionBase64,
-    vaultSnapshot: (body.vault as Record<string, unknown> | undefined) ?? undefined,
+    requestId,
+    ...(vaultSnapshot !== undefined && { vaultSnapshot }),
     raw: body,
   };
+}
+
+async function submitTriggerOrder(
+  ctx: DAppAdapterContext,
+  orderParams: Record<string, unknown>,
+  walletAddress: string,
+  depositRequestId: string,
+  signedTransaction: string,
+): Promise<Record<string, unknown>> {
+  return postSignedToTrigger(ctx, '/orders/price', {
+    ...orderParams,
+    walletAddress,
+    depositRequestId,
+    depositSignedTx: signedTransaction,
+  });
+}
+
+async function executeCancelFlow(
+  ctx: DAppAdapterContext,
+  walletAddress: string,
+  orderId: string,
+  summary: string,
+): Promise<Record<string, unknown>> {
+  const cancelData = await postSignedToTrigger(ctx, `/orders/price/cancel/${encodeURIComponent(orderId)}`, {
+    walletAddress,
+  });
+  const transactionBase64 = optionalString(cancelData, 'transaction') ?? optionalString(cancelData, 'transactionBase64');
+  if (!transactionBase64) {
+    throw new ProtocolError('wallet_unreachable', 'Jupiter Trigger cancel response missing withdrawal transaction.');
+  }
+  const cancelRequestId = optionalString(cancelData, 'requestId') ?? optionalString(cancelData, 'cancelRequestId');
+  if (!cancelRequestId) {
+    throw new ProtocolError('wallet_unreachable', 'Jupiter Trigger cancel response missing requestId.');
+  }
+  const signedTransaction = await ctx.signTransaction(transactionBase64, summary);
+  return postSignedToTrigger(ctx, `/orders/price/confirm-cancel/${encodeURIComponent(orderId)}`, {
+    walletAddress,
+    signedTransaction,
+    cancelRequestId,
+  });
 }
 
 async function postSignedToTrigger(
@@ -565,9 +616,11 @@ async function postSignedToTrigger(
 ): Promise<Record<string, unknown>> {
   const walletAddress = body.walletAddress as string;
   const jwt = requireValidJwt(walletAddress, ctx.config);
+  const { walletAddress: _walletAddress, ...requestBody } = body;
+  void _walletAddress;
   return jupiterFetchJson(ctx.config, 'trigger', path, {
     method: 'POST',
-    body,
+    ...(Object.keys(requestBody).length > 0 ? { body: requestBody } : {}),
     bearerToken: jwt.jwt,
   });
 }
@@ -602,7 +655,7 @@ function baseTriggerParams(input: {
 
 function describeSingleOrder(input: JupiterTriggerSingleOrderInput): string {
   const direction = input.triggerCondition === 'above' ? '>' : '<';
-  return `Trigger ${input.amount} ${shortMint(input.inputMint)} -> ${shortMint(input.outputMint)} when ${shortMint(
+  return `Trigger ${input.amount ?? input.amountRaw ?? 'unknown'} ${shortMint(input.inputMint)} -> ${shortMint(input.outputMint)} when ${shortMint(
     input.triggerMint,
   )} ${direction} ${input.triggerPriceUsd} USD${triggerSummarySuffix({
     includeCustody: true,
@@ -620,13 +673,13 @@ function validateSingleInput(input: JupiterTriggerSingleOrderInput, policy: Reso
   if (!input.inputMint || !input.outputMint || !input.triggerMint) {
     throw new AdapterError(JUPITER_ADAPTER_ID, 'invalid_request', 'Single order requires inputMint, outputMint, triggerMint.');
   }
-  if (!input.amount) {
-    throw new AdapterError(JUPITER_ADAPTER_ID, 'invalid_request', 'Single order requires amount.');
+  if (!hasOrderAmount(input)) {
+    throw new AdapterError(JUPITER_ADAPTER_ID, 'invalid_request', 'Single order requires amount or amountRaw.');
   }
   if (!Number.isFinite(input.triggerPriceUsd) || input.triggerPriceUsd <= 0) {
     throw new AdapterError(JUPITER_ADAPTER_ID, 'invalid_request', 'Single order requires positive triggerPriceUsd.');
   }
-  enforceMinOrderUsd(input.triggerPriceUsd, input.amount);
+  enforceMinOrderUsd(input.triggerPriceUsd, humanAmountForMinOrder(input));
   enforceExpiration(input.expiresAt, policy);
   enforceSlippage(input.slippageBps, policy.maxSlippageBps, policy.highSlippageWarnBps, input.acceptHighSlippage);
 }
@@ -635,8 +688,8 @@ function validateOcoInput(input: JupiterTriggerOcoOrderInput, policy: ResolvedJu
   if (!input.inputMint || !input.outputMint || !input.triggerMint) {
     throw new AdapterError(JUPITER_ADAPTER_ID, 'invalid_request', 'OCO order requires inputMint, outputMint, triggerMint.');
   }
-  if (!input.amount) {
-    throw new AdapterError(JUPITER_ADAPTER_ID, 'invalid_request', 'OCO order requires amount.');
+  if (!hasOrderAmount(input)) {
+    throw new AdapterError(JUPITER_ADAPTER_ID, 'invalid_request', 'OCO order requires amount or amountRaw.');
   }
   if (!Number.isFinite(input.takeProfitPriceUsd) || !Number.isFinite(input.stopLossPriceUsd)) {
     throw new AdapterError(JUPITER_ADAPTER_ID, 'invalid_request', 'OCO order requires takeProfitPriceUsd and stopLossPriceUsd.');
@@ -656,7 +709,7 @@ function validateOcoInput(input: JupiterTriggerOcoOrderInput, policy: ResolvedJu
       'OCO buy order requires takeProfitPriceUsd < stopLossPriceUsd.',
     );
   }
-  enforceMinOrderUsd(input.takeProfitPriceUsd, input.amount);
+  enforceMinOrderUsd(input.takeProfitPriceUsd, humanAmountForMinOrder(input));
   enforceExpiration(input.expiresAt, policy);
   enforceSlippage(input.takeProfitSlippageBps, policy.maxSlippageBps, policy.highSlippageWarnBps, input.acceptHighSlippage);
   enforceStopLossSlippage(input.stopLossSlippageBps, policy, input.acceptHighSlippage);
@@ -666,8 +719,8 @@ function validateOtocoInput(input: JupiterTriggerOtocoOrderInput, policy: Resolv
   if (!input.inputMint || !input.outputMint || !input.triggerMint) {
     throw new AdapterError(JUPITER_ADAPTER_ID, 'invalid_request', 'OTOCO order requires inputMint, outputMint, triggerMint.');
   }
-  if (!input.amount) {
-    throw new AdapterError(JUPITER_ADAPTER_ID, 'invalid_request', 'OTOCO order requires amount.');
+  if (!hasOrderAmount(input)) {
+    throw new AdapterError(JUPITER_ADAPTER_ID, 'invalid_request', 'OTOCO order requires amount or amountRaw.');
   }
   if (!Number.isFinite(input.entryPriceUsd) || !Number.isFinite(input.takeProfitPriceUsd) || !Number.isFinite(input.stopLossPriceUsd)) {
     throw new AdapterError(
@@ -683,7 +736,7 @@ function validateOtocoInput(input: JupiterTriggerOtocoOrderInput, policy: Resolv
       'OTOCO order requires takeProfitPriceUsd > stopLossPriceUsd.',
     );
   }
-  enforceMinOrderUsd(input.entryPriceUsd, input.amount);
+  enforceMinOrderUsd(input.entryPriceUsd, humanAmountForMinOrder(input));
   enforceExpiration(input.expiresAt, policy);
   enforceSlippage(input.slippageBps, policy.maxSlippageBps, policy.highSlippageWarnBps, input.acceptHighSlippage);
   enforceStopLossSlippage(input.stopLossSlippageBps, policy, input.acceptHighSlippage);
@@ -697,7 +750,8 @@ function validateEditInput(input: JupiterTriggerEditOrderInput, policy: Resolved
   enforceSlippage(input.newSlippageBps, policy.maxSlippageBps, policy.highSlippageWarnBps, input.acceptHighSlippage);
 }
 
-function enforceMinOrderUsd(priceUsd: number, amount: string): void {
+function enforceMinOrderUsd(priceUsd: number, amount: string | undefined): void {
+  if (amount === undefined) return;
   const amountNumber = Number(amount);
   if (Number.isFinite(amountNumber) && amountNumber > 0 && priceUsd > 0) {
     const usdValue = amountNumber * priceUsd;
@@ -709,6 +763,66 @@ function enforceMinOrderUsd(priceUsd: number, amount: string): void {
       );
     }
   }
+}
+
+function hasOrderAmount(input: { amount?: string; amountRaw?: string }): boolean {
+  return Boolean(input.amountRaw?.trim() || input.amount?.trim());
+}
+
+async function triggerOrderAmountRaw(
+  input: { inputMint: string; amount?: string; amountRaw?: string },
+  ctx: DAppAdapterContext,
+): Promise<string> {
+  if (input.amountRaw?.trim()) {
+    if (!/^\d+$/.test(input.amountRaw.trim())) {
+      throw new AdapterError(JUPITER_ADAPTER_ID, 'invalid_request', 'amountRaw must be an integer string.');
+    }
+    return input.amountRaw.trim();
+  }
+  if (!input.amount?.trim()) {
+    throw new AdapterError(JUPITER_ADAPTER_ID, 'invalid_request', 'amount is required.');
+  }
+  const decimals = await resolveMintDecimals(ctx.config, ctx.connection, input.inputMint);
+  return parseDecimalAmount(input.amount, decimals, 'Jupiter Trigger amount').toString();
+}
+
+function humanAmountForMinOrder(input: { amount?: string; amountRaw?: string }): string | undefined {
+  return input.amount;
+}
+
+async function resolveMintDecimals(
+  config: AgentWalletConfig,
+  connection: Connection,
+  mintText: string,
+): Promise<number> {
+  if (mintText === WSOL_MINT) return 9;
+  const known = [...config.tokens, ...DEFAULT_TOKEN_REGISTRY].find(
+    (entry) => entry.mint === mintText || entry.symbol.toLowerCase() === mintText.toLowerCase(),
+  );
+  if (known) return known.decimals;
+  let mint: PublicKey;
+  try {
+    mint = new PublicKey(mintText);
+  } catch {
+    throw new AdapterError(JUPITER_ADAPTER_ID, 'invalid_request', `Invalid token mint ${mintText}.`);
+  }
+  const account = await connection.getParsedAccountInfo(mint, 'confirmed').catch(() => null);
+  const parsedData = account?.value?.data;
+  const parsed = parsedData && typeof parsedData === 'object' && 'parsed' in parsedData
+    ? parsedData.parsed as { info?: { decimals?: unknown } }
+    : undefined;
+  if (typeof parsed?.info?.decimals === 'number' && Number.isInteger(parsed.info.decimals) && parsed.info.decimals >= 0) {
+    return parsed.info.decimals;
+  }
+  throw new AdapterError(JUPITER_ADAPTER_ID, 'invalid_request', `Could not read decimals for token mint ${mintText}.`);
+}
+
+function expiresAtMs(expiresAt: string): number {
+  const ts = Date.parse(expiresAt);
+  if (!Number.isFinite(ts)) {
+    throw new AdapterError(JUPITER_ADAPTER_ID, 'invalid_request', 'expiresAt is not a valid ISO timestamp.');
+  }
+  return ts;
 }
 
 function enforceExpiration(expiresAt: string | undefined, policy: ResolvedJupiterTriggerPolicy): void {
@@ -783,9 +897,13 @@ function executeResult(
   body: Record<string, unknown>,
   preview: Record<string, unknown>,
 ): AdapterExecuteResult {
-  const txid = optionalString(body, 'depositTxid') ?? optionalString(body, 'txid') ?? optionalString(body, 'signature') ?? '';
+  const txid =
+    optionalString(body, 'txSignature') ??
+    optionalString(body, 'depositTxid') ??
+    optionalString(body, 'txid') ??
+    optionalString(body, 'signature');
   return {
-    txid,
+    ...(txid !== undefined && { txid }),
     signedAt: new Date().toISOString(),
     preview: { ...preview, raw: body },
   };
