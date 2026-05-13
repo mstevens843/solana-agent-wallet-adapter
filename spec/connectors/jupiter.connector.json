@@ -3,7 +3,7 @@
   "id": "jupiter",
   "name": "Jupiter",
   "status": "first_class",
-  "aliases": ["jupiter", "jup", "jupiter swap", "jupiter swap api v2", "jupiter ultra", "jupiter lend", "jupiter token", "jupiter price", "jupiter trigger", "jupiter limit"],
+  "aliases": ["jupiter", "jup", "jupiter swap", "jupiter swap api v2", "jupiter ultra", "jupiter lend", "jupiter token", "jupiter price", "jupiter trigger", "jupiter limit", "jupiter recurring", "jupiter dca"],
   "supportedClusters": ["mainnet-beta"],
   "requiredConfig": [
     {
@@ -41,6 +41,48 @@
       "scope": "env",
       "required": false,
       "description": "Set true to enable Jupiter Trigger V2 reads and prepared actions. Disabled by default; mirrors connectors.jupiter.trigger.enabled in agent-wallet.config.json."
+    },
+    {
+      "name": "JUPITER_RECURRING_BASE_URL",
+      "scope": "env",
+      "required": false,
+      "description": "Optional override for the Jupiter Recurring base URL. Defaults to https://api.jup.ag/recurring/v1."
+    },
+    {
+      "name": "CONNECTORS_JUPITER_RECURRING_ENABLED",
+      "scope": "env",
+      "required": false,
+      "description": "Set true to enable Jupiter Recurring native DCA reads and prepared actions. Disabled by default; mirrors connectors.jupiter.recurring.enabled in agent-wallet.config.json."
+    },
+    {
+      "name": "connectors.jupiter.recurring.maxDepositAmount",
+      "scope": "agent-wallet.config.json",
+      "required": false,
+      "description": "Optional per-mint or wildcard cap for the total input amount deposited into a Jupiter Recurring order."
+    },
+    {
+      "name": "CONNECTORS_JUPITER_RECURRING_MAX_ORDER_COUNT",
+      "scope": "env",
+      "required": false,
+      "description": "Optional maximum numberOfOrders policy override for Jupiter Recurring. Defaults to 100."
+    },
+    {
+      "name": "CONNECTORS_JUPITER_RECURRING_MAX_LIFETIME_DAYS",
+      "scope": "env",
+      "required": false,
+      "description": "Optional maximum total Jupiter Recurring order lifetime in days."
+    },
+    {
+      "name": "CONNECTORS_JUPITER_RECURRING_MIN_INTERVAL_SECONDS",
+      "scope": "env",
+      "required": false,
+      "description": "Optional minimum interval between Jupiter Recurring fills. Defaults to 3600 seconds."
+    },
+    {
+      "name": "CONNECTORS_JUPITER_RECURRING_ALLOW_DEPRECATED_PRICE_ORDERS",
+      "scope": "env",
+      "required": false,
+      "description": "Optional boolean. Controls whether deprecated Jupiter Recurring price-order deposit/withdraw management is exposed after explicit user acceptance."
     }
   ],
   "readCapabilities": [
@@ -355,6 +397,30 @@
       "requiresClientKey": true,
       "returns": "Lists Jupiter Trigger V2 order history across all states by default (filled, expired, cancelled, ready_to_cancel).",
       "facts": ["orderId", "orderType", "state", "expiresAt", "cancellable", "withdrawable"]
+    },
+    {
+      "toolName": "solana_jupiter_recurring_orders",
+      "source": "jupiter-recurring",
+      "implemented": true,
+      "requiresClientKey": true,
+      "returns": "Lists Jupiter Recurring native DCA orders for a wallet. Defaults to active time-based orders and marks future fills as Jupiter automation.",
+      "facts": ["walletAddress", "state", "orders", "orderId", "recurringType", "status", "inputMint", "outputMint", "amountPerCycleRaw", "numberOfOrders", "remainingOrders", "intervalSeconds"]
+    },
+    {
+      "toolName": "solana_jupiter_recurring_order_detail",
+      "source": "jupiter-recurring",
+      "implemented": true,
+      "requiresClientKey": true,
+      "returns": "Reads a single Jupiter Recurring order from the first active/history pages.",
+      "facts": ["orderId", "recurringType", "status", "inputMint", "outputMint", "totalAmountRaw", "amountPerCycleRaw", "remainingOrders", "nextExecutionAt"]
+    },
+    {
+      "toolName": "solana_jupiter_recurring_quote",
+      "source": "jupiter-recurring",
+      "implemented": true,
+      "requiresClientKey": true,
+      "returns": "Locally previews Jupiter Recurring time-order exposure, per-cycle amount, fee note, and automation warnings without creating an order.",
+      "facts": ["inputMint", "outputMint", "totalAmountRaw", "amountPerCycleRaw", "numberOfOrders", "intervalSeconds", "feeBps", "warnings"]
     }
   ],
   "writeCapabilities": [
@@ -444,7 +510,7 @@
       "implemented": true,
       "prepares": "Manual-approval PreparedAction that registers the wallet's Jupiter Trigger V2 vault. The vault is Privy-managed custody, not the wallet.",
       "executesVia": "solana_execute_prepared_action",
-      "userApproves": "A Jupiter-built vault registration transaction signed via solana_sign_transaction and submitted to Jupiter for broadcast."
+      "userApproves": "A Jupiter-built vault registration transaction when Jupiter returns one; otherwise the refreshed register response is submitted without exposing or storing secrets."
     },
     {
       "actionKind": "jupiter_trigger_single_order",
@@ -484,7 +550,7 @@
       "implemented": true,
       "prepares": "Manual-approval PreparedAction that cancels a Jupiter Trigger V2 order. Cancel and withdraw are separate steps.",
       "executesVia": "solana_execute_prepared_action",
-      "userApproves": "A Jupiter Trigger cancel request. Expired funds stay in the Privy vault until the withdraw step completes."
+      "userApproves": "A Jupiter-built cancel transaction when returned, followed by Jupiter Trigger confirm-cancel. Expired funds stay in the Privy vault until the withdraw step completes."
     },
     {
       "actionKind": "jupiter_trigger_withdraw_order_funds",
@@ -492,15 +558,39 @@
       "implemented": true,
       "prepares": "Manual-approval PreparedAction that withdraws cancelled or expired Jupiter Trigger V2 order funds from the Privy vault back to the wallet.",
       "executesVia": "solana_execute_prepared_action",
-      "userApproves": "A Jupiter-built withdrawal transaction, signed and POSTed to Jupiter for broadcast."
+      "userApproves": "A Jupiter-built cancel/withdraw transaction flow signed when returned and confirmed with Jupiter. Custom destinations are not supported."
     },
     {
-      "actionKind": "blink_action",
-      "executionMode": "blink",
-      "implemented": false,
-      "prepares": "Planned Jupiter Recurring action review. MCP runtime does not expose Jupiter-native DCA yet.",
+      "actionKind": "jupiter_recurring_create_time_order",
+      "executionMode": "first_class_adapter",
+      "implemented": true,
+      "prepares": "Manual-approval PreparedAction that creates a time-based Jupiter Recurring native DCA order. Future fills execute through Jupiter automation outside the Agentic approval inbox.",
       "executesVia": "solana_execute_prepared_action",
-      "userApproves": "A future Jupiter product transaction after explicit wallet approval. Not implemented in this pass."
+      "userApproves": "A Jupiter-built setup transaction. After signing, the signed transaction is POSTed to Jupiter Recurring /execute with the request id."
+    },
+    {
+      "actionKind": "jupiter_recurring_cancel_order",
+      "executionMode": "first_class_adapter",
+      "implemented": true,
+      "prepares": "Manual-approval PreparedAction that cancels a time-based Jupiter Recurring order and reclaims remaining funds.",
+      "executesVia": "solana_execute_prepared_action",
+      "userApproves": "A Jupiter-built cancel transaction, signed locally and submitted through Jupiter Recurring /execute."
+    },
+    {
+      "actionKind": "jupiter_recurring_deposit_price_order",
+      "executionMode": "first_class_adapter",
+      "implemented": true,
+      "prepares": "Manual-approval PreparedAction that deposits into an existing deprecated price-based Jupiter Recurring order after explicit deprecation acceptance.",
+      "executesVia": "solana_execute_prepared_action",
+      "userApproves": "A Jupiter-built deprecated price-order deposit transaction."
+    },
+    {
+      "actionKind": "jupiter_recurring_withdraw_price_order",
+      "executionMode": "first_class_adapter",
+      "implemented": true,
+      "prepares": "Manual-approval PreparedAction that withdraws from an existing deprecated price-based Jupiter Recurring order after explicit deprecation acceptance.",
+      "executesVia": "solana_execute_prepared_action",
+      "userApproves": "A Jupiter-built deprecated price-order withdraw transaction."
     }
   ],
   "requiredUserInputs": [
@@ -537,7 +627,21 @@
       "kind": "text",
       "required": true,
       "appliesTo": ["blink_action"],
-      "prompt": "Jupiter non-swap product support is not implemented in this runtime yet."
+      "prompt": "Only needed for generic Blink/Solana Action URLs; Jupiter first-class products should use the dedicated Jupiter tools instead."
+    },
+    {
+      "name": "automationWarningAccepted",
+      "kind": "boolean",
+      "required": true,
+      "appliesTo": ["jupiter_recurring_create_time_order"],
+      "prompt": "Acknowledge that Jupiter Recurring future fills are Jupiter-native automation and do not return to the Agentic approval inbox each cycle."
+    },
+    {
+      "name": "priceOrderDeprecationAccepted",
+      "kind": "boolean",
+      "required": true,
+      "appliesTo": ["jupiter_recurring_deposit_price_order", "jupiter_recurring_withdraw_price_order"],
+      "prompt": "Acknowledge that Jupiter price-based Recurring orders are deprecated before managing an existing price order."
     }
   ],
   "requiredConnectorFacts": [
@@ -550,7 +654,9 @@
     "Exact-mint token verification, tags, audit flags, holder concentration, liquidity, organic score, stats, and non-exact candidate warnings for token-risk reviews",
     "Price API USD price, block id, 24-hour change, and structured missing-price reason when Jupiter does not return reliable price data",
     "Evidence warning that Jupiter Token/Price reads are not oracle guarantees and never authorize transactions",
-    "Connected wallet address for wallet-specific order previews"
+    "Connected wallet address for wallet-specific order previews",
+    "Trigger vault custody status, JWT volatility, order state, cancellation and withdrawal eligibility before Trigger actions",
+    "Recurring amount-per-cycle, order count, interval, fee note, and Jupiter-native automation warning before Recurring actions"
   ],
   "unsupportedRequests": [
     "Swap without an amount, input token, or output token.",
@@ -563,7 +669,10 @@
     "Persist Jupiter Trigger V2 JWTs, signed challenges, or API bearer tokens in receipts, prepared actions, traces, or connector facts.",
     "Claim that Jupiter Trigger V2 fills are reversible, guaranteed, or returned to the Agentic approval inbox at fill time.",
     "Cancel a Jupiter Trigger V2 order and assume funds land in the wallet automatically; withdraw is a separate step.",
-    "Recurring through Jupiter; it is roadmapped under the parent plan but not implemented in this pass.",
+    "Use Jupiter Recurring without explicit user opt-in via connectors.jupiter.recurring.enabled or CONNECTORS_JUPITER_RECURRING_ENABLED. The surface is disabled by default.",
+    "Describe Jupiter Recurring as Agentic recurring payments. Jupiter Recurring is Jupiter-native automation after setup approval.",
+    "Create a Jupiter Recurring order without automationWarningAccepted=true.",
+    "Manage deprecated Jupiter Recurring price orders without priceOrderDeprecationAccepted=true.",
     "Open, close, increase, decrease, add or remove collateral, or otherwise modify any Jupiter Perps position. Perps writes require a separate leverage-risk policy that has not landed.",
     "Recommend leverage, set leverage, or imply Jupiter Perps liquidation is safe.",
     "Mint, redeem, deposit, withdraw, or otherwise take any JLP write action.",
@@ -576,15 +685,15 @@
     "Claim that Jupiter or the agent can sign or submit without the user's wallet.",
     "Claim that Jupiter Prediction odds imply truth or guaranteed outcomes."
   ],
-  "actionPreparationNotes": "Normalize SOL to wrapped SOL for Jupiter Swap API v2, resolve allowlisted symbols or mint decimals, enforce maxSwapInput and maxSlippageBps, then prepare a swap inbox item with refreshAtExecution=true. For previews, call Jupiter /order with taker, inputMint, outputMint, amount, and slippageBps. Raw or unknown swap mints should include Jupiter token-risk evidence facts when available, without blocking the quote if token evidence is unavailable. Do not store raw transaction bytes in prepared actions or expose them in findings. For Trigger V2: authenticate via solana_jupiter_trigger_auth_challenge then solana_sign_message then solana_jupiter_trigger_auth_verify before any vault/order read or prepared action. JWTs live only in volatile process memory and are clamped to 23h. Prepared deposit transactions are re-fetched at execute time, signed locally via ctx.signTransaction, then POSTed back to Jupiter Trigger which broadcasts the deposit on-chain. Do not store JWTs, signed challenges, or signed transaction bytes anywhere.",
-  "riskNotes": "Quotes can expire or change before approval. Price impact, minimum output, and slippage must be shown. Unknown token mints should be displayed as short mints unless exact metadata is available. Jupiter Token/Price data is review evidence only; it can be missing, stale, or heuristic-filtered and must not be presented as an oracle guarantee. Non-exact Token API search hits must be presented as candidates, not as evidence for the requested mint. Jupiter Perps are leveraged derivatives; liquidation can cause complete loss of posted collateral and writes are denied until the official API stabilizes and a leverage-risk policy is approved. Jupiter Trigger V2 stores order funds in a Privy-managed custody vault; future fills execute through Jupiter automation outside the Agentic approval inbox. Output is not guaranteed at trigger time. Cancel and withdrawal are separate steps; expired or cancelled funds remain in the vault until the user completes the withdraw flow.",
+  "actionPreparationNotes": "Normalize SOL to wrapped SOL for Jupiter Swap API v2, resolve allowlisted symbols or mint decimals, enforce maxSwapInput and maxSlippageBps, then prepare a swap inbox item with refreshAtExecution=true. For previews, call Jupiter /order with taker, inputMint, outputMint, amount, and slippageBps. Raw or unknown swap mints should include Jupiter token-risk evidence facts when available, without blocking the quote if token evidence is unavailable. Do not store raw transaction bytes in prepared actions or expose them in findings. For Trigger V2: authenticate via solana_jupiter_trigger_auth_challenge then solana_sign_message then solana_jupiter_trigger_auth_verify before any vault/order read or prepared action. JWTs live only in volatile process memory and are clamped to 23h. Prepared deposit transactions are re-fetched at execute time, signed locally via ctx.signTransaction, then POSTed back to Jupiter Trigger which broadcasts the deposit on-chain. For Recurring: create/cancel/price-management transactions are prepared approval items, refreshed at execute time, signed locally, and POSTed to Jupiter Recurring /execute with the request id. Do not store JWTs, signed challenges, signed transaction bytes, or API keys anywhere.",
+  "riskNotes": "Quotes can expire or change before approval. Price impact, minimum output, and slippage must be shown. Unknown token mints should be displayed as short mints unless exact metadata is available. Jupiter Token/Price data is review evidence only; it can be missing, stale, or heuristic-filtered and must not be presented as an oracle guarantee. Non-exact Token API search hits must be presented as candidates, not as evidence for the requested mint. Jupiter Perps are leveraged derivatives; liquidation can cause complete loss of posted collateral and writes are denied until the official API stabilizes and a leverage-risk policy is approved. Jupiter Trigger V2 stores order funds in a Privy-managed custody vault; future fills execute through Jupiter automation outside the Agentic approval inbox. Output is not guaranteed at trigger time. Cancel and withdrawal are separate steps; expired or cancelled funds remain in the vault until the user completes the withdraw flow. Jupiter Recurring is Jupiter-native DCA automation; after setup approval, future fills execute through Jupiter without returning to Agentic each cycle. Jupiter Recurring charges a 0.1% fee and price-based orders are deprecated.",
   "approvalBoundary": {
     "readGated": true,
     "writeGated": true,
     "blinkBacked": false,
     "summary": "safety.prepare_only"
   },
-  "walletApprovalBoundary": "Jupiter previews and Token/Price reads are read-only. Token/Price reads never prepare, approve, sign, or execute transactions. Prepared swaps stay in the approval inbox until the user sends them to the wallet. The wallet signs and broadcasts; the agent does not. Jupiter Trigger V2 auth requires a wallet message signature via solana_sign_message and the JWT is held only in volatile process memory. Trigger order deposits are signed locally then handed back to Jupiter for broadcast, and order funds live in a Jupiter-managed Privy custody vault until withdrawal completes.",
+  "walletApprovalBoundary": "Jupiter previews and Token/Price reads are read-only. Token/Price reads never prepare, approve, sign, or execute transactions. Prepared swaps stay in the approval inbox until the user sends them to the wallet. The wallet signs and broadcasts; the agent does not. Jupiter Trigger V2 auth requires a wallet message signature via solana_sign_message and the JWT is held only in volatile process memory. Trigger order deposits are signed locally then handed back to Jupiter for broadcast, and order funds live in a Jupiter-managed Privy custody vault until withdrawal completes. Jupiter Recurring setup/cancel/deprecated price management requires wallet transaction approval; future DCA fills after setup are executed by Jupiter automation.",
   "examples": {
     "requests": [
       {
@@ -655,15 +764,15 @@
       },
       {
         "user": "lend 5 USDC on Jupiter",
-        "classification": "unsupported",
-        "denialReason": "safety.action_not_exposed",
-        "agentResponse": "The agent cannot prepare Jupiter Lend yet because this pass only implements Jupiter Swap API v2."
+        "classification": "prepare_approval_action",
+        "writeAction": "jupiter_lend_earn_deposit",
+        "agentResponse": "Prepared a Jupiter Earn deposit for manual wallet approval after reading the Earn token snapshot. The agent did not sign or submit."
       },
       {
         "user": "repay my Jupiter loan automatically every week",
         "classification": "unsupported",
         "denialReason": "safety.no_autopay_claim",
-        "agentResponse": "The agent denied this because Jupiter Lend and Jupiter-native recurring automation are not first-class in MCP runtime yet."
+        "agentResponse": "The agent denied this because Jupiter Borrow repayment is a wallet-approved action; this runtime does not create autonomous loan repayments."
       },
       {
         "user": "borrow on Jupiter without opening my wallet",
@@ -789,12 +898,30 @@
         "classification": "unsupported",
         "denialReason": "safety.denied_with_reason",
         "agentResponse": "The agent denied this because Jupiter Trigger requires a minimum order value of 10 USD."
+      },
+      {
+        "user": "show my Jupiter native DCA orders",
+        "classification": "read_only_answer",
+        "readTool": "solana_jupiter_recurring_orders",
+        "agentResponse": "Read Jupiter Recurring native DCA orders for the wallet. Future fills are Jupiter automation, not Agentic approval-per-run schedules."
+      },
+      {
+        "user": "create a Jupiter DCA order to buy SOL with 100 USDC over 10 days",
+        "classification": "prepare_approval_action",
+        "writeAction": "jupiter_recurring_create_time_order",
+        "agentResponse": "Prepared a Jupiter Recurring time-order setup after automationWarningAccepted=true. The wallet approves setup once; future fills execute through Jupiter automation and do not return to the Agentic approval inbox each cycle."
+      },
+      {
+        "user": "deposit more into an old Jupiter price DCA order",
+        "classification": "needs_input",
+        "needsInputQuestions": ["Do you accept that Jupiter price-based Recurring orders are deprecated?"],
+        "agentResponse": "The agent requires priceOrderDeprecationAccepted=true before preparing deprecated Jupiter Recurring price-order management."
       }
     ]
   },
   "mirrorsCanonical": {
     "file": "apps/browser-demo/src/connectedDapps.ts",
     "entry": "jupiter",
-    "note": "Browser catalog lists Jupiter as first-class for Swap API v2, Lend Earn/Borrow, Token/Price, beta Prediction, and Trigger V2 (auth + vault + orders + 7 prepared action kinds). Trigger is disabled by default until the host opts in. Recurring remains roadmap."
+    "note": "Browser catalog lists Jupiter as first-class for Swap API v2, Lend Earn/Borrow, Token/Price, beta Prediction, Trigger V2, Perps read-only status, and Recurring native DCA. Trigger and Recurring are disabled by default until the host opts in."
   }
 }

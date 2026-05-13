@@ -352,7 +352,7 @@ describe('Jupiter Trigger vault and orders', () => {
     const result = await listJupiterTriggerOrders(config, { walletAddress: WALLET });
     expect(result.orders).toHaveLength(1);
     expect(result.orders[0]!.cancellable).toBe(true);
-    expect(captured[0]?.url).toContain('state=open');
+    expect(captured[0]?.url).toContain('state=active');
   });
 });
 
@@ -403,11 +403,11 @@ describe('Jupiter Trigger single order prepare', () => {
     let call = 0;
     vi.stubGlobal('fetch', fakeFetch((request) => {
       call += 1;
-      if (request.url.endsWith('/vault?walletAddress=' + WALLET)) {
+      if (request.url.includes('/vault') && !request.url.includes('/vault/register')) {
         return { body: { vaultAddress: 'V', registered: true } };
       }
-      if (request.url.endsWith('/order/create-single')) {
-        return { body: { transaction: 'unsigned-tx-base64' } };
+      if (request.url.endsWith('/deposit/craft')) {
+        return { body: { transaction: 'unsigned-tx-base64', requestId: 'deposit-request-id', vault: { vaultAddress: 'V' } } };
       }
       return { body: {} };
     }, []));
@@ -438,11 +438,11 @@ describe('Jupiter Trigger single order execute', () => {
       if (request.url.includes('/vault')) {
         return { body: { vaultAddress: 'V', registered: true } };
       }
-      if (request.url.endsWith('/order/create-single')) {
-        return { body: { transaction: 'fresh-deposit-tx-base64' } };
+      if (request.url.endsWith('/deposit/craft')) {
+        return { body: { transaction: 'fresh-deposit-tx-base64', requestId: 'fresh-request-id' } };
       }
-      if (request.url.endsWith('/order/submit')) {
-        return { body: { depositTxid: 'on-chain-deposit-txid', orderId: 'new-order-id' } };
+      if (request.url.endsWith('/orders/price')) {
+        return { body: { txSignature: 'on-chain-deposit-txid', id: 'new-order-id' } };
       }
       return { body: {} };
     }, captured));
@@ -453,10 +453,10 @@ describe('Jupiter Trigger single order execute', () => {
     const executed = await jupiterTriggerSingleOrderAction.execute(stored, ctx);
     expect(signTransaction).toHaveBeenCalledWith('fresh-deposit-tx-base64', expect.any(String));
     expect(executed.txid).toBe('on-chain-deposit-txid');
-    const submitCall = captured.find((c) => c.url.endsWith('/order/submit'));
-    expect(submitCall?.body).toMatchObject({ signedTransaction: 'signed-fresh-tx-base64' });
+    const submitCall = captured.find((c) => c.url.endsWith('/orders/price'));
+    expect(submitCall?.body).toMatchObject({ depositSignedTx: 'signed-fresh-tx-base64' });
     // signAndBroadcast not used (would double-spend nonce)
-    expect(submitCall?.body?.signedTransaction).toBe('signed-fresh-tx-base64');
+    expect(submitCall?.body?.depositSignedTx).toBe('signed-fresh-tx-base64');
   });
 
   it('rejects execute when connected wallet differs from action wallet', async () => {
@@ -465,7 +465,7 @@ describe('Jupiter Trigger single order execute', () => {
     const ctx = makeContext({ config });
     vi.stubGlobal('fetch', fakeFetch((request) => {
       if (request.url.includes('/vault')) return { body: { vaultAddress: 'V', registered: true } };
-      return { body: { transaction: 'fresh-tx' } };
+      return { body: { transaction: 'fresh-tx', requestId: 'request-id' } };
     }, []));
     const prepared = await jupiterTriggerSingleOrderAction.prepare(singleOrderInput(), ctx);
     const stored = await ctx.store.addAction(prepared.addInput);
@@ -550,7 +550,7 @@ describe('Jupiter Trigger cancel and withdraw eligibility', () => {
     const config = fakeConfig();
     authenticate(WALLET, config);
     const ctx = makeContext({ config });
-    vi.stubGlobal('fetch', fakeFetch(() => ({ body: { orderId: 'ord_1', state: 'filled' } }), []));
+    vi.stubGlobal('fetch', fakeFetch(() => ({ body: { orders: [{ id: 'ord_1', orderState: 'filled' }] } }), []));
     await expect(jupiterTriggerCancelOrderAction.prepare({ orderId: 'ord_1' }, ctx)).rejects.toMatchObject({
       code: 'invalid_request',
     });
@@ -560,7 +560,7 @@ describe('Jupiter Trigger cancel and withdraw eligibility', () => {
     const config = fakeConfig();
     authenticate(WALLET, config);
     const ctx = makeContext({ config });
-    vi.stubGlobal('fetch', fakeFetch(() => ({ body: { orderId: 'ord_2', state: 'open' } }), []));
+    vi.stubGlobal('fetch', fakeFetch(() => ({ body: { orders: [{ id: 'ord_2', orderState: 'open' }] } }), []));
     await expect(jupiterTriggerWithdrawOrderFundsAction.prepare({ orderId: 'ord_2' }, ctx)).rejects.toMatchObject({
       code: 'invalid_request',
     });
@@ -570,7 +570,7 @@ describe('Jupiter Trigger cancel and withdraw eligibility', () => {
     const config = fakeConfig();
     authenticate(WALLET, config);
     const ctx = makeContext({ config });
-    vi.stubGlobal('fetch', fakeFetch(() => ({ body: { orderId: 'ord_3', state: 'open' } }), []));
+    vi.stubGlobal('fetch', fakeFetch(() => ({ body: { orders: [{ id: 'ord_3', orderState: 'open' }] } }), []));
     const result = await jupiterTriggerCancelOrderAction.prepare({ orderId: 'ord_3' }, ctx);
     expect(result.addInput.summary).toContain('Expired or cancelled order funds remain in the Jupiter Trigger vault');
     expect(result.preview).toMatchObject({ operation: 'cancel_order' });
@@ -602,7 +602,7 @@ describe('Jupiter Trigger edit order', () => {
     const config = fakeConfig();
     authenticate(WALLET, config);
     const ctx = makeContext({ config });
-    vi.stubGlobal('fetch', fakeFetch(() => ({ body: { orderId: 'ord_4', state: 'open' } }), []));
+    vi.stubGlobal('fetch', fakeFetch(() => ({ body: { orders: [{ id: 'ord_4', orderState: 'open', orderType: 'single' }] } }), []));
     const result = await jupiterTriggerEditOrderAction.prepare({
       orderId: 'ord_4',
       newTriggerPriceUsd: 175,

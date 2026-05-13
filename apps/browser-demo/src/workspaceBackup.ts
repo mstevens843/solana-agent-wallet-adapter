@@ -11,6 +11,7 @@ import {
   type ExecutionPhase,
   type PendingTransactionRecord,
 } from './transactionLedger.js';
+import { PROTOCOL_CONNECTORS_STORAGE_KEY } from './connectedDapps.js';
 
 export const WORKSPACE_BACKUP_VERSION = 1 as const;
 
@@ -58,6 +59,14 @@ export const WORKSPACE_BACKUP_KEYS: ReadonlyArray<string> = [
   'solana-agent-wallet-generated-plans-v1',
   'solana-agent-wallet-browser-workflow-v1',
   'solana-agent-wallet-recipient-rules-v1',
+  PROTOCOL_CONNECTORS_STORAGE_KEY,
+  'solana-agent-wallet-agent-policies-v1',
+  'solana-agent-wallet-custom-tokens-v1',
+  'solana-agent-wallet-failure-policies-v1',
+  'solana-agent-wallet-program-rules-v1',
+  'solana-agent-wallet-token-rules-v1',
+  'solana-agent-wallet-spend-caps-v1',
+  'solana-agent-wallet-slippage-cap-v1',
   'solana-agent-wallet-lab-artifacts-v1',
   TRANSACTION_LEDGER_STORAGE_KEY,
 ];
@@ -66,6 +75,9 @@ export const WORKSPACE_BACKUP_KEYS: ReadonlyArray<string> = [
 export const NEVER_EXPORT_KEYS: ReadonlySet<string> = new Set([
   'agentic-local-bridge-token',
   'agent-wallet-desktop-token',
+  'solana-agent-wallet-ai-api-keys-v1',
+  'solana-agent-wallet-agents-v1',
+  'solana-agent-wallet-protocol-connector-prefs-v1',
 ]);
 
 const UNRESOLVED_PHASES: ReadonlySet<ExecutionPhase> = new Set<ExecutionPhase>([

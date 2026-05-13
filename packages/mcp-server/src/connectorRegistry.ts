@@ -1,6 +1,6 @@
 import type { Cluster } from '@solana-agent-wallet-adapter/core';
 
-import { getJupiterPredictionPolicy, getJupiterTriggerPolicy, type AgentWalletConfig } from './config.js';
+import { getJupiterPredictionPolicy, getJupiterRecurringPolicy, getJupiterTriggerPolicy, type AgentWalletConfig } from './config.js';
 import { describeDriftUnavailableReason } from './adapters/drift/client.js';
 import { describeJitoUnavailableReason } from './adapters/jito/client.js';
 import { getJupiterApiKey, jupiterApiHost } from './adapters/jupiter/client.js';
@@ -66,7 +66,8 @@ export type ConnectorCapability =
   | 'bridge'
   | 'prediction'
   | 'perps'
-  | 'trigger';
+  | 'trigger'
+  | 'recurring';
 
 export type ConnectorExecutionMode =
   | 'first_class_prepare'
@@ -156,10 +157,10 @@ export const CONNECTOR_REGISTRY: ConnectorRegistryEntry[] = [
   {
     id: 'jupiter',
     name: 'Jupiter',
-    aliases: ['jupiter', 'jup', 'jupiter swap', 'jupiter swap api v2', 'jupiter ultra', 'jupiter lend', 'jupiter earn', 'jupiter borrow', 'jupiter token', 'jupiter price', 'jupiter prediction', 'jupiter perps', 'jupiter perpetuals', 'jupiter trigger', 'jupiter limit'],
+    aliases: ['jupiter', 'jup', 'jupiter swap', 'jupiter swap api v2', 'jupiter ultra', 'jupiter lend', 'jupiter earn', 'jupiter borrow', 'jupiter token', 'jupiter price', 'jupiter prediction', 'jupiter perps', 'jupiter perpetuals', 'jupiter trigger', 'jupiter limit', 'jupiter recurring', 'jupiter dca'],
     supportedClusters: ['mainnet-beta'],
-    readCapabilities: ['swap', 'tokens', 'price', 'earn', 'borrow', 'positions', 'markets', 'prediction', 'perps', 'trigger'],
-    writeCapabilities: ['swap', 'earn', 'borrow', 'withdraw', 'repay', 'trigger'],
+    readCapabilities: ['swap', 'tokens', 'price', 'earn', 'borrow', 'positions', 'markets', 'prediction', 'perps', 'trigger', 'recurring'],
+    writeCapabilities: ['swap', 'earn', 'borrow', 'withdraw', 'repay', 'trigger', 'recurring'],
     readTools: [
       'solana_connector_read_facts',
       'solana_jupiter_order_preview',
@@ -201,6 +202,9 @@ export const CONNECTOR_REGISTRY: ConnectorRegistryEntry[] = [
       'solana_jupiter_trigger_orders',
       'solana_jupiter_trigger_order_detail',
       'solana_jupiter_trigger_order_history',
+      'solana_jupiter_recurring_orders',
+      'solana_jupiter_recurring_order_detail',
+      'solana_jupiter_recurring_quote',
     ],
     actionTools: [
       'solana_prepare_swap',
@@ -221,6 +225,10 @@ export const CONNECTOR_REGISTRY: ConnectorRegistryEntry[] = [
       'solana_prepare_jupiter_trigger_edit_order',
       'solana_prepare_jupiter_trigger_cancel_order',
       'solana_prepare_jupiter_trigger_withdraw_order_funds',
+      'solana_prepare_jupiter_recurring_create_time_order',
+      'solana_prepare_jupiter_recurring_cancel_order',
+      'solana_prepare_jupiter_recurring_deposit_price_order',
+      'solana_prepare_jupiter_recurring_withdraw_price_order',
       'solana_execute_prepared_action',
     ],
     requiresClientKey: true,
@@ -238,7 +246,7 @@ export const CONNECTOR_REGISTRY: ConnectorRegistryEntry[] = [
       'Jupiter Prediction is beta and read-only in v1 (no order create/close/claim). Disabled by default until connectors.jupiter.prediction.enabled is set.',
       'Jupiter Perps is exposed as a read-only research surface; solana_jupiter_perps_status reports readiness while pool, custody, and position snapshots return unsupported_method until the official Jupiter Perps API stabilizes. All Perps writes, leverage recommendations, and JLP writes are denied.',
       'Jupiter Trigger V2 (limit/OCO/OTOCO/edit/cancel/withdraw + auth + vault + order reads) is implemented; disabled by default until connectors.jupiter.trigger.enabled (or CONNECTORS_JUPITER_TRIGGER_ENABLED) is set. Trigger orders deposit into a Jupiter-managed Privy custody vault; future fills execute through Jupiter automation outside the Agentic approval inbox. JWTs live only in volatile process memory.',
-      'Jupiter Recurring is tracked in the Jupiter roadmap but is not implemented in this pass.',
+      'Jupiter Recurring can create/cancel time-based native DCA orders and manage deprecated price orders only after explicit acceptance. Future fills execute through Jupiter automation outside the Agentic approval inbox.',
     ],
     examples: [
       'quote swapping 0.1 SOL to USDC',
@@ -255,6 +263,8 @@ export const CONNECTOR_REGISTRY: ConnectorRegistryEntry[] = [
       'show live Jupiter prediction markets for crypto',
       'is Jupiter Perps supported here?',
       'show Jupiter Perps API status',
+      'show my Jupiter native DCA orders',
+      'prepare a Jupiter Recurring order from 100 USDC into SOL over 10 orders',
     ],
   },
   {
@@ -1139,7 +1149,7 @@ function jupiterProductReadiness(
       lendEarn: { ready: true },
       lendBorrow: { ready: true, reason: 'Earn REST plus optional @jup-ag/lend SDK for Borrow writes.' },
       trigger: unavailable('Jupiter Trigger V2 is disabled by default; enable connectors.jupiter.trigger.enabled.'),
-      recurring: unavailable('Jupiter Recurring is planned but not implemented in this pass.'),
+      recurring: unavailable('Jupiter Recurring is disabled by default; enable connectors.jupiter.recurring.enabled.'),
       tokens: { ready: true },
       price: { ready: true },
       prediction: unavailable('Jupiter Prediction beta is disabled by default; enable connectors.jupiter.prediction.enabled.'),
@@ -1152,7 +1162,6 @@ function jupiterProductReadiness(
   const { apiKey, envName } = getJupiterApiKey(config);
   const swapReason = clusterReason
     ?? (!apiKey ? `Missing Jupiter API key. Set ${envName} or JUP_API_KEY.` : undefined);
-  const notImplemented = 'Roadmapped under the Jupiter parent plan, but not implemented in this Foundation + Swap pass.';
   const predictionPolicy = getJupiterPredictionPolicy(config);
   let predictionReadiness: ConnectorReadiness;
   if (clusterReason) {
@@ -1204,6 +1213,21 @@ function jupiterProductReadiness(
             ready: true,
             reason: `Configured for ${jupiterApiHost(config, 'trigger')}. Vault is Privy-managed custody; JWTs stay in volatile process memory only.`,
           };
+  const recurringPolicy = getJupiterRecurringPolicy(config);
+  const recurringReadiness: ConnectorReadiness = clusterReason
+    ? { ready: false, reason: clusterReason }
+    : !recurringPolicy.enabled
+      ? {
+          ready: false,
+          reason:
+            'Jupiter Recurring is disabled by default. Set connectors.jupiter.recurring.enabled=true or CONNECTORS_JUPITER_RECURRING_ENABLED=true to opt in.',
+        }
+      : !apiKey
+        ? { ready: false, reason: `Missing Jupiter API key. Set ${envName} or JUP_API_KEY.` }
+        : {
+            ready: true,
+            reason: `Configured for ${jupiterApiHost(config, 'recurring')}. Future fills execute through Jupiter automation outside Agentic approvals.`,
+          };
   const tokenPriceReason = clusterReason ?? describeJupiterTokenPriceUnavailableReason(config);
   const tokenReadiness: ConnectorReadiness = tokenPriceReason
     ? { ready: false, reason: tokenPriceReason }
@@ -1218,7 +1242,7 @@ function jupiterProductReadiness(
     lendEarn: lendEarnReadiness,
     lendBorrow: lendBorrowReadiness,
     trigger: triggerReadiness,
-    recurring: unavailable(notImplemented),
+    recurring: recurringReadiness,
     tokens: tokenReadiness,
     price: priceReadiness,
     prediction: predictionReadiness,

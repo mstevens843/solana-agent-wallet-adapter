@@ -144,9 +144,9 @@ export const PROTOCOL_CONNECTORS: ProtocolConnector[] = [
   {
     id: 'jupiter',
     name: 'Jupiter',
-    aliases: ['jupiter', 'jup', 'jupiter swap', 'jupiter swap api v2', 'jupiter lend', 'jupiter earn', 'jupiter borrow', 'jupiter token', 'jupiter price', 'jupiter prediction', 'jupiter trigger', 'jupiter limit'],
+    aliases: ['jupiter', 'jup', 'jupiter swap', 'jupiter swap api v2', 'jupiter lend', 'jupiter earn', 'jupiter borrow', 'jupiter token', 'jupiter price', 'jupiter prediction', 'jupiter trigger', 'jupiter limit', 'jupiter recurring', 'jupiter dca'],
     website: 'https://jup.ag',
-    description: 'First-class Jupiter Swap API v2 previews, wallet-approved swaps, Jupiter Lend Earn / Borrow (reads + prepare-only actions), read-only Token API V2 / Price API V3 evidence, beta read-only Prediction markets, and Jupiter Trigger V2 (auth + vault + orders + 7 prepared action kinds, disabled by default). Recurring and Perps writes remain roadmap surfaces.',
+    description: 'First-class Jupiter Swap API v2 previews, wallet-approved swaps, Jupiter Lend Earn / Borrow, read-only Token API V2 / Price API V3 evidence, beta read-only Prediction markets, Jupiter Trigger V2, and Jupiter Recurring DCA. Trigger and Recurring are disabled by default; Perps writes remain roadmap.',
     supportedClusters: ['mainnet-beta'],
     capabilities: ['first_class_adapter', 'read_markets', 'read_positions'],
     supportedActions: [
@@ -165,6 +165,9 @@ export const PROTOCOL_CONNECTORS: ProtocolConnector[] = [
       'Trigger V2 vault read / register',
       'Trigger V2 orders / detail / history',
       'Trigger V2 single / OCO / OTOCO / edit / cancel / withdraw',
+      'Recurring orders / detail / quote',
+      'Recurring time order create / cancel',
+      'Deprecated Recurring price-order deposit / withdraw',
     ],
     actionKinds: [
       'swap',
@@ -184,6 +187,10 @@ export const PROTOCOL_CONNECTORS: ProtocolConnector[] = [
       'jupiter_trigger_edit_order',
       'jupiter_trigger_cancel_order',
       'jupiter_trigger_withdraw_order_funds',
+      'jupiter_recurring_create_time_order',
+      'jupiter_recurring_cancel_order',
+      'jupiter_recurring_deposit_price_order',
+      'jupiter_recurring_withdraw_price_order',
     ],
     readTools: [
       'solana_jupiter_order_preview',
@@ -221,6 +228,9 @@ export const PROTOCOL_CONNECTORS: ProtocolConnector[] = [
       'solana_jupiter_trigger_orders',
       'solana_jupiter_trigger_order_detail',
       'solana_jupiter_trigger_order_history',
+      'solana_jupiter_recurring_orders',
+      'solana_jupiter_recurring_order_detail',
+      'solana_jupiter_recurring_quote',
     ],
     enabledByDefault: false,
     initials: 'JU',

@@ -44,6 +44,27 @@ describe('postgres workflow store', () => {
     expect(await second.getPlan(walletB, 'plan_a')).toBeUndefined();
   });
 
+  it('persists wallet-scoped preferences across store instances', async () => {
+    const client = new FakePgClient();
+    const first = new PostgresWorkflowStore({ client });
+    const second = new PostgresWorkflowStore({ client });
+
+    await first.savePreference(walletA, {
+      namespace: 'ai-settings',
+      payload: { mode: 'hosted', provider: 'openai', model: 'gpt-5' },
+      updatedAt: '2026-05-08T20:00:00.000Z',
+      version: 1,
+    });
+
+    expect(await second.getPreference(walletA, 'ai-settings')).toMatchObject({
+      namespace: 'ai-settings',
+      payload: { mode: 'hosted', provider: 'openai', model: 'gpt-5' },
+      version: 1,
+    });
+    expect(await second.getPreference(walletB, 'ai-settings')).toBeUndefined();
+    expect((await second.listPreferences(walletA)).map((entry) => entry.namespace)).toEqual(['ai-settings']);
+  });
+
   it('maps active approval plan uniqueness conflicts to approval_exists', async () => {
     const store = new PostgresWorkflowStore({ client: new FakePgClient() });
 
@@ -228,6 +249,13 @@ class FakePgClient implements PgClient {
   readonly approvals = new Map<string, JsonRow<ApprovalRequestRecord>>();
   readonly schedules = new Map<string, JsonRow<ReturnType<typeof scheduleRecord>>>();
   readonly occurrences = new Map<string, JsonRow<RecurringOccurrenceRecord>>();
+  readonly preferences = new Map<string, {
+    wallet_address: string;
+    namespace: string;
+    payload: unknown;
+    updated_at: string;
+    version: number;
+  }>();
   userUpserts = 0;
 
   async query<R extends QueryResultRow = QueryResultRow>(query: QueryConfig): Promise<QueryResult<R>> {
@@ -320,6 +348,32 @@ class FakePgClient implements PgClient {
       case 'plan.get': {
         const row = this.plans.get(String(values[1]));
         return result(row && row.wallet_address === values[0] ? [{ record: row.record }] : []);
+      }
+
+      case 'preference.upsert': {
+        const row = {
+          wallet_address: String(values[0]),
+          namespace: String(values[1]),
+          version: Number(values[2]),
+          updated_at: String(values[3]),
+          payload: JSON.parse(String(values[4])) as unknown,
+        };
+        this.preferences.set(`${row.wallet_address}:${row.namespace}`, row);
+        return result([row]);
+      }
+
+      case 'preference.get': {
+        const row = this.preferences.get(`${String(values[0])}:${String(values[1])}`);
+        return result(row ? [row] : []);
+      }
+
+      case 'preference.list': {
+        const namespaceFilter = Array.isArray(values[1]) ? new Set(values[1].map(String)) : undefined;
+        const rows = [...this.preferences.values()]
+          .filter((row) => row.wallet_address === values[0])
+          .filter((row) => !namespaceFilter || namespaceFilter.has(row.namespace))
+          .sort((left, right) => left.namespace.localeCompare(right.namespace));
+        return result(rows);
       }
 
       case 'approval.upsert': {

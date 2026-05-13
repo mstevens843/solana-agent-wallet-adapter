@@ -1,68 +1,44 @@
 import {
   assertPlanGuardrails,
-  type AiGuardrailReport,
 } from '@solana-agent-wallet-adapter/workflow';
 import type {
-  ProtocolConnectorCapabilityId,
-} from './connectedDapps.js';
+  AgentPlan,
+  AgentPlanAskRequest,
+  AgentPlanAskResult,
+  AgentPlanField,
+  AgentPlanReviewDecision,
+  AgentPlanReviewMode,
+  AgentPlanReviewRequest,
+  AgentPlanReviewResult,
+  AgentPlanSource,
+  AgentPlanTemplate,
+  AgentPlanTemplateField,
+  AgentReviewQuestion,
+  AgentReviewerEntry,
+  AiPlanRequest,
+  TemplateRisk,
+} from '@solana-agent-wallet-adapter/workflow';
 
-export type AgentPlanSource = 'template' | 'ai';
-export type TemplateRisk = 'low' | 'medium' | 'high';
-export type TemplateFieldType = 'text' | 'number' | 'textarea' | 'select' | 'datetime-local';
+export type {
+  AgentPlan,
+  AgentPlanAskRequest,
+  AgentPlanAskResult,
+  AgentPlanField,
+  AgentPlanReviewDecision,
+  AgentPlanReviewMode,
+  AgentPlanReviewRequest,
+  AgentPlanReviewResult,
+  AgentPlanSource,
+  AgentPlanTemplate,
+  AgentPlanTemplateField,
+  AgentReviewQuestion,
+  AgentReviewerEntry,
+  AiPlanRequest,
+  TemplateRisk,
+} from '@solana-agent-wallet-adapter/workflow';
+
 export type AiApiFormat = 'openai-compatible' | 'anthropic';
 export type AiProviderId = 'openai' | 'anthropic' | 'gemini' | 'openrouter' | 'custom-openai-compatible';
-
-export interface AgentPlanField {
-  label: string;
-  value: string;
-}
-
-export interface AgentPlan {
-  intent: string;
-  route: string;
-  risk: string;
-  approval: string;
-  source: AgentPlanSource;
-  category: string;
-  actionType: string;
-  templateTitle: string;
-  userNotes?: string;
-  parameters: Record<string, string>;
-  fields: AgentPlanField[];
-  safeguards: string[];
-  guardrailReport?: AiGuardrailReport;
-  constraintFingerprint?: string;
-  constraintHash?: string;
-}
-
-export interface AgentPlanTemplateField {
-  id: string;
-  label: string;
-  type?: TemplateFieldType;
-  placeholder?: string;
-  defaultValue?: string;
-  options?: string[];
-  required?: boolean;
-}
-
-export interface AgentPlanTemplate {
-  id: string;
-  category: string;
-  title: string;
-  description: string;
-  prompt: string;
-  actionType: string;
-  risk: TemplateRisk;
-  route: string;
-  riskText: string;
-  approval: string;
-  safeguards: string[];
-  requiresWallet: boolean;
-  requiresBridge: boolean;
-  connectorCapability?: ProtocolConnectorCapabilityId;
-  connectorActionSource?: 'blink' | 'first-class-adapter';
-  fields: AgentPlanTemplateField[];
-}
 
 export interface AiSettings {
   mode: 'hosted' | 'session' | 'bridge';
@@ -83,72 +59,6 @@ export interface BridgeAiStatus {
   apiFormat?: AiApiFormat;
   baseUrl?: string;
   model?: string;
-}
-
-export interface AiPlanRequest {
-  prompt: string;
-  template: Pick<AgentPlanTemplate, 'id' | 'category' | 'title' | 'description' | 'actionType' | 'risk'>;
-  parameters: Record<string, string>;
-  userNotes?: string;
-  connectorContext?: Array<Record<string, unknown>>;
-}
-
-export type AgentPlanReviewMode = 'single' | 'multi';
-
-export interface AgentPlanReviewRequest {
-  plan: AgentPlan;
-  instruction?: string;
-  walletAddress?: string;
-  cluster?: string;
-  context?: Record<string, unknown>;
-  mode?: AgentPlanReviewMode;
-}
-
-export interface AgentPlanAskRequest {
-  plan: AgentPlan;
-  question: string;
-  walletAddress?: string;
-  cluster?: string;
-  context?: Record<string, unknown>;
-}
-
-export interface AgentPlanAskResult {
-  answer: string;
-  citations?: Array<{ kind: string; ref: string }>;
-  checkedAt: string;
-  source: 'ai';
-}
-
-export type AgentPlanReviewDecision = 'approve' | 'deny' | 'needs_input';
-
-export interface AgentReviewQuestion {
-  id: string;
-  prompt: string;
-  inputKind: 'text' | 'select' | 'number';
-  options?: string[];
-  required: boolean;
-  hint?: string;
-}
-
-export interface AgentReviewerEntry {
-  id: string;
-  label: string;
-  decision: AgentPlanReviewDecision;
-  reason: string;
-  summary?: string;
-  errored?: { message: string };
-  checkedAt: string;
-}
-
-export interface AgentPlanReviewResult {
-  decision: AgentPlanReviewDecision;
-  reason: string;
-  summary: string;
-  evidence: Record<string, unknown>;
-  checkedAt: string;
-  source: 'ai';
-  questions?: AgentReviewQuestion[];
-  reviewers?: AgentReviewerEntry[];
 }
 
 export type AiDiagnosticCode =
@@ -1932,8 +1842,9 @@ function readableParameters(template: AgentPlanTemplate, parameters: Record<stri
   const protocol = parameters.protocol?.trim();
   const connectorId = parameters.connectorId?.trim();
   const operation = parameters.operation?.trim();
-  if ((protocol || connectorId) && !fieldIds.has('protocol')) {
-    rows.push({ label: 'Connector', value: protocol || connectorId });
+  const connectorValue = protocol || connectorId || '';
+  if (connectorValue && !fieldIds.has('protocol')) {
+    rows.push({ label: 'Connector', value: connectorValue });
   }
   if (operation && !fieldIds.has('operation')) {
     rows.push({ label: 'Operation', value: operation });

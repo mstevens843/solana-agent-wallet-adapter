@@ -164,12 +164,10 @@ function normalizeOrder(walletAddress: string, body: Record<string, unknown>): T
   if (triggerCondition) snapshot.triggerCondition = triggerCondition;
   const triggerPriceUsd = optionalNumber(body, 'triggerPriceUsd');
   if (triggerPriceUsd !== undefined) snapshot.triggerPriceUsd = triggerPriceUsd;
-  const takeProfitPriceUsd = optionalNumber(body, 'takeProfitPriceUsd');
-  const tpPriceUsd = optionalNumber(body, 'tpPriceUsd');
-  if (takeProfitPriceUsd !== undefined || tpPriceUsd !== undefined) snapshot.takeProfitPriceUsd = takeProfitPriceUsd ?? tpPriceUsd;
-  const stopLossPriceUsd = optionalNumber(body, 'stopLossPriceUsd');
-  const slPriceUsd = optionalNumber(body, 'slPriceUsd');
-  if (stopLossPriceUsd !== undefined || slPriceUsd !== undefined) snapshot.stopLossPriceUsd = stopLossPriceUsd ?? slPriceUsd;
+  const takeProfitPriceUsd = optionalNumber(body, 'takeProfitPriceUsd') ?? optionalNumber(body, 'tpPriceUsd');
+  if (takeProfitPriceUsd !== undefined) snapshot.takeProfitPriceUsd = takeProfitPriceUsd;
+  const stopLossPriceUsd = optionalNumber(body, 'stopLossPriceUsd') ?? optionalNumber(body, 'slPriceUsd');
+  if (stopLossPriceUsd !== undefined) snapshot.stopLossPriceUsd = stopLossPriceUsd;
   const slippageBps = optionalNumber(body, 'slippageBps');
   if (slippageBps !== undefined) snapshot.slippageBps = slippageBps;
   const expiresAt = optionalString(body, 'expiresAt');

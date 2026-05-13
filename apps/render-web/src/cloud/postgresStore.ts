@@ -19,6 +19,9 @@ import type {
   RecurringStore,
 } from './recurringService.js';
 import type {
+  CloudPreferenceNamespace,
+  CloudPreferenceRecord,
+  CloudPreferencesStore,
   CloudWorkspaceDeleteCounts,
   CloudWorkspaceDeleteStore,
   AuditEventRecord,
@@ -98,13 +101,21 @@ interface WalletRow extends QueryResultRow {
   wallet_address: string;
 }
 
+interface PreferenceRow extends QueryResultRow {
+  namespace: string;
+  payload: unknown | string;
+  updated_at: Date | string;
+  version: number | string;
+}
+
 export class PostgresWorkflowStore implements
   SessionWorkflowStore,
   OneTimeWorkflowStore,
   EvidenceStore,
   RecurringStore,
   RecurringNotificationStore,
-  CloudWorkspaceDeleteStore {
+  CloudWorkspaceDeleteStore,
+  CloudPreferencesStore {
   private readonly client: PgClient;
   private readonly ownsClient: boolean;
 
@@ -908,11 +919,102 @@ export class PostgresWorkflowStore implements
     return result.rows.map((row) => jsonRecord(row.record));
   }
 
+  async listPreferences(
+    walletAddress: string,
+    namespaces?: CloudPreferenceNamespace[],
+  ): Promise<CloudPreferenceRecord[]> {
+    const result = await this.query<PreferenceRow>({
+      name: 'preference.list',
+      text: `
+        SELECT namespace, payload, updated_at, version
+        FROM wallet_preferences
+        WHERE wallet_address = $1
+          AND ($2::text[] IS NULL OR namespace = ANY($2::text[]))
+        ORDER BY namespace ASC
+      `,
+      values: [walletAddress, namespaces ?? null],
+    });
+    return result.rows.map(preferenceFromRow);
+  }
+
+  async getPreference(
+    walletAddress: string,
+    namespace: CloudPreferenceNamespace,
+  ): Promise<CloudPreferenceRecord | undefined> {
+    const result = await this.query<PreferenceRow>({
+      name: 'preference.get',
+      text: `
+        SELECT namespace, payload, updated_at, version
+        FROM wallet_preferences
+        WHERE wallet_address = $1 AND namespace = $2
+      `,
+      values: [walletAddress, namespace],
+    });
+    return result.rows[0] ? preferenceFromRow(result.rows[0]) : undefined;
+  }
+
+  async savePreference(walletAddress: string, record: CloudPreferenceRecord): Promise<CloudPreferenceRecord> {
+    await this.ensureUser(walletAddress, record.updatedAt);
+    const result = await this.query<PreferenceRow>({
+      name: 'preference.upsert',
+      text: `
+        INSERT INTO wallet_preferences (wallet_address, namespace, version, updated_at, payload)
+        VALUES ($1, $2, $3, $4, $5::jsonb)
+        ON CONFLICT (wallet_address, namespace) DO UPDATE SET
+          version = EXCLUDED.version,
+          updated_at = EXCLUDED.updated_at,
+          payload = EXCLUDED.payload
+        RETURNING namespace, payload, updated_at, version
+      `,
+      values: [
+        walletAddress,
+        record.namespace,
+        record.version,
+        record.updatedAt,
+        jsonParam(record.payload),
+      ],
+    });
+    return result.rows[0] ? preferenceFromRow(result.rows[0]) : record;
+  }
+
+  async getAgentPolicies(walletAddress: string): Promise<{ policies: unknown[]; updatedAt: string; version: number } | undefined> {
+    const record = await this.getPreference(walletAddress, 'agent-policies');
+    if (!record) return undefined;
+    return {
+      policies: Array.isArray(record.payload) ? record.payload : [],
+      updatedAt: record.updatedAt,
+      version: record.version,
+    };
+  }
+
+  async saveAgentPolicies(
+    walletAddress: string,
+    state: { policies: unknown[]; updatedAt: string; version: number },
+  ): Promise<{ policies: unknown[]; updatedAt: string; version: number }> {
+    const saved = await this.savePreference(walletAddress, {
+      namespace: 'agent-policies',
+      payload: state.policies,
+      updatedAt: state.updatedAt,
+      version: state.version,
+    });
+    return {
+      policies: Array.isArray(saved.payload) ? saved.payload : [],
+      updatedAt: saved.updatedAt,
+      version: saved.version,
+    };
+  }
+
   async deleteCloudWorkspace(walletAddress: string): Promise<CloudWorkspaceDeleteCounts> {
     const client = await this.checkoutClient();
     await client.query({ text: 'BEGIN' });
     try {
       const counts = emptyCloudWorkspaceDeleteCounts();
+      counts.preferences = await deleteByWalletWithClient(
+        client,
+        'cloudWorkspace.preferences.delete',
+        'wallet_preferences',
+        walletAddress,
+      );
       counts.recurringNotificationDeliveries = await deleteByWalletWithClient(
         client,
         'cloudWorkspace.recurringNotifications.delete',
@@ -1155,6 +1257,15 @@ function auditEventFromRow(row: AuditEventRow): AuditEventRecord {
     type: row.type,
     createdAt: iso(row.created_at),
     metadata: row.metadata ? jsonRecord<Record<string, unknown>>(row.metadata) : {},
+  };
+}
+
+function preferenceFromRow(row: PreferenceRow): CloudPreferenceRecord {
+  return {
+    namespace: row.namespace as CloudPreferenceNamespace,
+    payload: jsonRecord(row.payload),
+    updatedAt: iso(row.updated_at),
+    version: typeof row.version === 'number' ? row.version : Number(row.version) || 0,
   };
 }
 

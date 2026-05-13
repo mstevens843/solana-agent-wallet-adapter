@@ -53,7 +53,8 @@ import type {
   JupiterRecurringCancelOrderInput,
   JupiterRecurringCreateTimeOrderInput,
   JupiterRecurringOrderState,
-  JupiterRecurringPriceOrderManagementInput,
+  JupiterRecurringPriceOrderInput,
+  JupiterRecurringQuoteInput,
   JupiterTriggerCancelOrderInput,
   JupiterTriggerChallengeType,
   JupiterTriggerEditOrderInput,
@@ -1040,10 +1041,72 @@ export class AgentWalletActionService {
       throw new ProtocolError('unsupported_method', `Jupiter adapter is missing read ${readId}.`);
     }
     const result = await read.read(input, this.adapterContext(adapter));
-    return { result };
+    return { result, facts: factsFromJupiterTriggerRead(readId, result) };
   }
 
   private async runJupiterTriggerAction(actionId: string, input: unknown): Promise<Record<string, unknown>> {
+    requireActionAllowed(this.config);
+    const adapter = requireAdapter('jupiter');
+    assertSupportedCluster(adapter, this.config.cluster);
+    const action = requireAdapterAction(adapter, actionId);
+    const result = await action.prepare(input, this.adapterContext(adapter));
+    const stored = await this.store().addAction(result.addInput);
+    return { preparedAction: stored, preview: result.preview };
+  }
+
+  async jupiterRecurringOrders(input: {
+    walletAddress?: string;
+    state?: JupiterRecurringOrderState;
+    limit?: number;
+    page?: number;
+    inputMint?: string;
+    outputMint?: string;
+    recurringType?: 'time' | 'price';
+    includeFailedTx?: boolean;
+  }): Promise<Record<string, unknown>> {
+    return this.runJupiterRecurringRead('recurring_orders', input);
+  }
+
+  async jupiterRecurringOrderDetail(input: {
+    walletAddress?: string;
+    orderId: string;
+    recurringType?: 'time' | 'price';
+  }): Promise<Record<string, unknown>> {
+    return this.runJupiterRecurringRead('recurring_order_detail', input);
+  }
+
+  async jupiterRecurringQuote(input: JupiterRecurringQuoteInput): Promise<Record<string, unknown>> {
+    return this.runJupiterRecurringRead('recurring_quote', input);
+  }
+
+  async prepareJupiterRecurringCreateTimeOrder(input: JupiterRecurringCreateTimeOrderInput): Promise<Record<string, unknown>> {
+    return this.runJupiterRecurringAction('recurring_create_time_order', input);
+  }
+
+  async prepareJupiterRecurringCancelOrder(input: JupiterRecurringCancelOrderInput): Promise<Record<string, unknown>> {
+    return this.runJupiterRecurringAction('recurring_cancel_order', input);
+  }
+
+  async prepareJupiterRecurringDepositPriceOrder(input: JupiterRecurringPriceOrderInput): Promise<Record<string, unknown>> {
+    return this.runJupiterRecurringAction('recurring_deposit_price_order', input);
+  }
+
+  async prepareJupiterRecurringWithdrawPriceOrder(input: JupiterRecurringPriceOrderInput): Promise<Record<string, unknown>> {
+    return this.runJupiterRecurringAction('recurring_withdraw_price_order', input);
+  }
+
+  private async runJupiterRecurringRead(readId: string, input: unknown): Promise<Record<string, unknown>> {
+    const adapter = requireAdapter('jupiter');
+    assertSupportedCluster(adapter, this.config.cluster);
+    const read = adapter.reads[readId];
+    if (!read) {
+      throw new ProtocolError('unsupported_method', `Jupiter adapter is missing read ${readId}.`);
+    }
+    const result = await read.read(input, this.adapterContext(adapter));
+    return { result, facts: factsFromJupiterRecurringRead(readId, result) };
+  }
+
+  private async runJupiterRecurringAction(actionId: string, input: unknown): Promise<Record<string, unknown>> {
     requireActionAllowed(this.config);
     const adapter = requireAdapter('jupiter');
     assertSupportedCluster(adapter, this.config.cluster);
@@ -2532,6 +2595,22 @@ export class AgentWalletActionService {
         ...status,
       };
     }
+    if (capability === 'trigger') {
+      const result = await this.dispatchJupiterTriggerRead(input);
+      return {
+        connector: connectorCapabilityView(connector, this.config),
+        capability,
+        ...result,
+      };
+    }
+    if (capability === 'recurring') {
+      const result = await this.dispatchJupiterRecurringRead(input);
+      return {
+        connector: connectorCapabilityView(connector, this.config),
+        capability,
+        ...result,
+      };
+    }
     if (capability !== 'swap') {
       throw missingConnectorCapability(connector, capability, 'read');
     }
@@ -2551,6 +2630,95 @@ export class AgentWalletActionService {
       preview,
       facts: preview.facts,
     };
+  }
+
+  private async dispatchJupiterTriggerRead(
+    input: ConnectorFactReadInput,
+  ): Promise<Record<string, unknown>> {
+    const op = input.triggerOperation
+      ?? (input.triggerOrderId ? 'order_detail' : 'orders');
+    switch (op) {
+      case 'auth_status':
+        return this.jupiterTriggerAuthStatus({
+          ...(input.walletAddress !== undefined && { walletAddress: input.walletAddress }),
+        });
+      case 'vault':
+        return this.jupiterTriggerVault({
+          ...(input.walletAddress !== undefined && { walletAddress: input.walletAddress }),
+        });
+      case 'orders':
+        return this.jupiterTriggerOrders({
+          ...(input.walletAddress !== undefined && { walletAddress: input.walletAddress }),
+          ...(input.triggerState !== undefined && { state: input.triggerState }),
+          ...(input.limit !== undefined && { limit: input.limit }),
+        });
+      case 'order_history':
+        return this.jupiterTriggerOrderHistory({
+          ...(input.walletAddress !== undefined && { walletAddress: input.walletAddress }),
+          ...(input.triggerState !== undefined && { state: input.triggerState }),
+          ...(input.limit !== undefined && { limit: input.limit }),
+        });
+      case 'order_detail':
+        if (!input.triggerOrderId) {
+          throw new ProtocolError('invalid_request', 'triggerOrderId is required for Jupiter Trigger order_detail.');
+        }
+        return this.jupiterTriggerOrderDetail({
+          ...(input.walletAddress !== undefined && { walletAddress: input.walletAddress }),
+          orderId: input.triggerOrderId,
+        });
+    }
+  }
+
+  private async dispatchJupiterRecurringRead(
+    input: ConnectorFactReadInput,
+  ): Promise<Record<string, unknown>> {
+    const op = input.recurringOperation ?? (input.recurringOrderId ? 'order_detail' : 'orders');
+    switch (op) {
+      case 'orders':
+        return this.jupiterRecurringOrders({
+          ...(input.walletAddress !== undefined && { walletAddress: input.walletAddress }),
+          ...(input.recurringState !== undefined && { state: input.recurringState }),
+          ...(input.limit !== undefined && { limit: input.limit }),
+          ...(input.recurringPage !== undefined && { page: input.recurringPage }),
+          ...(input.inputMint !== undefined && { inputMint: input.inputMint }),
+          ...(input.outputMint !== undefined && { outputMint: input.outputMint }),
+          ...(input.recurringType !== undefined && { recurringType: input.recurringType }),
+          ...(input.includeFailedTx !== undefined && { includeFailedTx: input.includeFailedTx }),
+        });
+      case 'order_detail':
+        if (!input.recurringOrderId) {
+          throw new ProtocolError('invalid_request', 'recurringOrderId is required for Jupiter Recurring order_detail.');
+        }
+        return this.jupiterRecurringOrderDetail({
+          ...(input.walletAddress !== undefined && { walletAddress: input.walletAddress }),
+          orderId: input.recurringOrderId,
+          ...(input.recurringType !== undefined && { recurringType: input.recurringType }),
+        });
+      case 'quote':
+        if (
+          !input.inputMint ||
+          !input.outputMint ||
+          (!input.amount && !input.amountRaw) ||
+          !input.recurringNumberOfOrders ||
+          !input.recurringIntervalSeconds
+        ) {
+          throw new ProtocolError(
+            'invalid_request',
+            'inputMint, outputMint, amount or amountRaw, recurringNumberOfOrders, and recurringIntervalSeconds are required for Jupiter Recurring quote.',
+          );
+        }
+        return this.jupiterRecurringQuote({
+          inputMint: input.inputMint,
+          outputMint: input.outputMint,
+          ...(input.amount !== undefined ? { totalAmount: input.amount } : {}),
+          ...(input.amountRaw !== undefined ? { totalAmountRaw: input.amountRaw } : {}),
+          numberOfOrders: input.recurringNumberOfOrders,
+          intervalSeconds: input.recurringIntervalSeconds,
+          ...(input.recurringStartAt !== undefined && { startAt: input.recurringStartAt }),
+          ...(input.recurringMinPrice !== undefined && { minPrice: input.recurringMinPrice }),
+          ...(input.recurringMaxPrice !== undefined && { maxPrice: input.recurringMaxPrice }),
+        });
+    }
   }
 
   private async dispatchJupiterPredictionRead(
@@ -3999,6 +4167,10 @@ export class AgentWalletActionService {
     requireActionAllowed(this.config);
     const swap = await normalizeSwapInput(this.config, this.connection, input);
     const from = await this.backend.getAddress();
+    const minimumOutputRaw = minimumOutputRawFromSwapInput(input, swap);
+    const quoteSnapshot = input.captureQuoteSnapshot === true
+      ? orderSummary(await fetchJupiterOrder(this.config, undefined, swap))
+      : undefined;
     const action = await this.store().addAction({
       kind: 'swap',
       walletAddress: from,
@@ -4016,6 +4188,9 @@ export class AgentWalletActionService {
         amount: input.amount,
         amountRaw: swap.amountRaw.toString(),
         slippageBps: swap.slippageBps,
+        ...(input.minOutputAmount !== undefined && { minOutputAmount: input.minOutputAmount }),
+        ...(minimumOutputRaw !== undefined && { otherAmountThreshold: minimumOutputRaw }),
+        ...(quoteSnapshot !== undefined && { quoteSnapshot }),
         maxSwapInput: this.config.mainnet.maxSwapInput,
         apiBaseUrlHost: jupiterApiHost(this.config, 'swap'),
         preparedAt: new Date().toISOString(),
@@ -4458,7 +4633,7 @@ export class AgentWalletActionService {
     requireActionAllowed(this.config);
     const taker = await this.backend.getAddress();
     const swap = await normalizeSwapInput(this.config, this.connection, input);
-    return this.signAndExecuteJupiterSwap(input, taker, swap);
+    return this.signAndExecuteJupiterSwap(input, taker, swap, minimumOutputRawFromSwapInput(input, swap));
   }
 
   private async signAndExecuteJupiterSwap(
@@ -4601,6 +4776,10 @@ export class AgentWalletActionService {
       case 'jupiter_trigger_edit_order':
       case 'jupiter_trigger_cancel_order':
       case 'jupiter_trigger_withdraw_order_funds':
+      case 'jupiter_recurring_create_time_order':
+      case 'jupiter_recurring_cancel_order':
+      case 'jupiter_recurring_deposit_price_order':
+      case 'jupiter_recurring_withdraw_price_order':
         return this.executePreparedAdapterAction(action);
       case 'blink_action':
         return this.executePreparedBlinkAction(action);
@@ -4707,6 +4886,7 @@ export class AgentWalletActionService {
       inputToken: requireStringParam(action, 'inputToken'),
       outputToken: requireStringParam(action, 'outputToken'),
       amount: requireStringParam(action, 'amount'),
+      ...(typeof action.params.minOutputAmount === 'string' ? { minOutputAmount: action.params.minOutputAmount } : {}),
       slippageBps:
         typeof action.params.slippageBps === 'number'
           ? action.params.slippageBps
@@ -5407,7 +5587,7 @@ function shortToken(value: string): string {
 
 async function fetchJupiterOrder(
   config: AgentWalletConfig,
-  taker: string,
+  taker: string | undefined,
   swap: NormalizedSwapInput,
 ): Promise<Record<string, unknown>> {
   return jupiterFetchJson(config, 'swap', '/order', {
@@ -5548,8 +5728,16 @@ function safeRecord(value: unknown): Record<string, unknown> | undefined {
 
 function preparedMinimumOutputRaw(action: PreparedAction): string | undefined {
   const snapshot = safeRecord(action.params.quoteSnapshot);
-  const threshold = snapshot?.otherAmountThreshold ?? action.params.otherAmountThreshold;
+  const threshold = action.params.otherAmountThreshold ?? snapshot?.otherAmountThreshold;
   return typeof threshold === 'string' && /^\d+$/.test(threshold) ? threshold : undefined;
+}
+
+function minimumOutputRawFromSwapInput(
+  input: Pick<SwapInput, 'minOutputAmount'>,
+  swap: NormalizedSwapInput,
+): string | undefined {
+  if (input.minOutputAmount === undefined) return undefined;
+  return parseDecimalAmount(input.minOutputAmount, swap.outputDecimals, `${swap.outputSymbol} minimum output`).toString();
 }
 
 function enforceMinimumPreparedOutput(order: Record<string, unknown>, minimumOutputRaw: string | undefined): void {

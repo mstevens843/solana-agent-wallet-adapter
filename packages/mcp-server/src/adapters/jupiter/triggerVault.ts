@@ -25,7 +25,6 @@ export async function readVault(
   const jwt = requireValidJwt(input.walletAddress, config);
   const body = await jupiterFetchJson(config, 'trigger', '/vault', {
     method: 'GET',
-    searchParams: { walletAddress: input.walletAddress },
     bearerToken: jwt.jwt,
   });
   return normalizeVault(input.walletAddress, body);

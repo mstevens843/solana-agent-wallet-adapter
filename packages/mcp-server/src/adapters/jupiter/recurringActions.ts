@@ -1,13 +1,12 @@
-import { PublicKey, type Connection } from '@solana/web3.js';
 import { ProtocolError } from '@solana-agent-wallet-adapter/core';
 
 import { assertMaxAmount, formatRawAmount, parseDecimalAmount } from '../../amounts.js';
 import { CONNECTOR_APPROVAL_BOUNDARY } from '../../connectorRegistry.js';
 import {
-  DEFAULT_TOKEN_REGISTRY,
   WSOL_MINT,
   getJupiterRecurringPolicy,
   type AgentWalletConfig,
+  type ResolvedJupiterRecurringPolicy,
 } from '../../config.js';
 import type { PreparedAction } from '../../preparedActions.js';
 import type {
@@ -20,27 +19,30 @@ import { AdapterError } from '../types.js';
 
 import { jupiterFetchJson } from './client.js';
 import { JUPITER_ADAPTER_ID } from './constants.js';
-import {
-  getRecurringOrder,
-  requireRecurringEnabled,
-} from './recurringOrders.js';
+import { getRecurringOrder, requireRecurringEnabled, type RecurringOrderSnapshot } from './recurringOrders.js';
 import {
   recurringCancelWarnings,
   recurringCreateWarnings,
   recurringPriceOrderWarnings,
 } from './recurringSafety.js';
 
+const JUPITER_RECURRING_PRODUCT = 'recurring';
+const JUPITER_RECURRING_FEE_BPS = 10;
+
 export interface JupiterRecurringCreateTimeOrderInput {
   inputMint: string;
   outputMint: string;
-  totalAmount: string;
+  /** Human amount. Requires known input-mint decimals in config. */
+  totalAmount?: string;
+  /** Raw integer amount in input token base units. Preferred for arbitrary mints. */
+  totalAmountRaw?: string;
   numberOfOrders: number;
   intervalSeconds: number;
   startAt?: string;
   minPrice?: string;
   maxPrice?: string;
   maxFeeBps?: number;
-  automationWarningAccepted: boolean;
+  automationWarningAccepted?: boolean;
   dueAt?: string;
   note?: string;
 }
@@ -52,149 +54,298 @@ export interface JupiterRecurringCancelOrderInput {
   note?: string;
 }
 
-export interface JupiterRecurringPriceOrderManagementInput {
+export interface JupiterRecurringPriceOrderInput {
   orderId: string;
-  amount: string;
-  mint?: string;
+  /** Deprecated raw amount alias kept for tool compatibility. */
+  amount?: string;
+  amountRaw?: string;
   inputOrOutput?: 'In' | 'Out';
-  priceOrderDeprecationAccepted: boolean;
-  reason?: string;
+  priceOrderDeprecationAccepted?: boolean;
   dueAt?: string;
   note?: string;
 }
 
-interface BuiltRecurringTransaction {
-  transactionBase64: string;
+export interface JupiterRecurringQuoteInput {
+  inputMint: string;
+  outputMint: string;
+  totalAmount?: string;
+  totalAmountRaw?: string;
+  numberOfOrders: number;
+  intervalSeconds: number;
+  startAt?: string;
+  minPrice?: string;
+  maxPrice?: string;
+}
+
+interface RecurringAmountResolution {
+  amountRaw: string;
+  amount?: string;
+  decimals?: number;
+}
+
+interface RecurringTransactionBuild {
   requestId: string;
-  orderId?: string;
+  transactionBase64: string;
   raw: Record<string, unknown>;
 }
 
-export const recurringCreateTimeOrderAction: AdapterAction<JupiterRecurringCreateTimeOrderInput> = {
+export async function quoteRecurringTimeOrder(
+  config: AgentWalletConfig,
+  input: JupiterRecurringQuoteInput,
+): Promise<Record<string, unknown>> {
+  requireRecurringEnabled(config);
+  const policy = getJupiterRecurringPolicy(config);
+  validateTimeOrderInput(input, policy, false);
+  const amount = recurringAmount(config, input.inputMint, input.totalAmount, input.totalAmountRaw, 'Jupiter Recurring total amount');
+  enforceRecurringAmountPolicy(config, policy, input.inputMint, amount);
+  const perCycle = perCycleAmounts(amount.amountRaw, input.numberOfOrders, amount.decimals);
+  return {
+    product: JUPITER_RECURRING_PRODUCT,
+    inputMint: input.inputMint,
+    outputMint: input.outputMint,
+    totalAmountRaw: amount.amountRaw,
+    ...(amount.amount !== undefined ? { totalAmount: amount.amount } : {}),
+    numberOfOrders: input.numberOfOrders,
+    intervalSeconds: input.intervalSeconds,
+    startAt: normalizeStartAt(input.startAt),
+    ...(input.minPrice !== undefined ? { minPrice: input.minPrice } : {}),
+    ...(input.maxPrice !== undefined ? { maxPrice: input.maxPrice } : {}),
+    feeBps: JUPITER_RECURRING_FEE_BPS,
+    amountPerCycleRaw: perCycle.amountPerCycleRaw,
+    ...(perCycle.amountPerCycle !== undefined ? { amountPerCycle: perCycle.amountPerCycle } : {}),
+    ...(perCycle.remainderRaw !== undefined ? { remainderRaw: perCycle.remainderRaw } : {}),
+    warnings: recurringCreateWarnings({
+      hasPriceRange: input.minPrice !== undefined || input.maxPrice !== undefined,
+      hasRoundingRemainder: perCycle.remainderRaw !== undefined,
+    }),
+  };
+}
+
+export const createTimeOrderAction: AdapterAction<JupiterRecurringCreateTimeOrderInput> = {
   id: 'recurring_create_time_order',
   kind: 'jupiter_recurring_create_time_order',
   async prepare(input, ctx): Promise<AdapterPrepareResult> {
     requireRecurringEnabled(ctx.config);
     const walletAddress = await ctx.backend.getAddress();
-    const prepared = await prepareCreateTimeOrder(input, ctx, walletAddress);
-    const summary = `Create Jupiter Recurring DCA ${input.totalAmount} ${shortMint(input.inputMint)} -> ${shortMint(input.outputMint)} over ${input.numberOfOrders} orders`;
-    const params = baseRecurringParams({
-      operation: 'create_time_order',
-      walletAddress,
-      cluster: ctx.config.cluster,
-    });
+    const policy = getJupiterRecurringPolicy(ctx.config);
+    validateTimeOrderInput(input, policy, true);
+    const amount = recurringAmount(ctx.config, input.inputMint, input.totalAmount, input.totalAmountRaw, 'Jupiter Recurring total amount');
+    enforceRecurringAmountPolicy(ctx.config, policy, input.inputMint, amount);
+    enforceFeeCap(input.maxFeeBps);
+    const createOrderParams = buildCreateTimeOrderParams(walletAddress, input, amount);
+    const built = await buildRecurringTransaction(ctx.config, '/createOrder', createOrderParams);
+    const perCycle = perCycleAmounts(amount.amountRaw, input.numberOfOrders, amount.decimals);
+    const params: Record<string, unknown> = baseRecurringParams('create_time_order', walletAddress, ctx.config.cluster);
     Object.assign(params, {
       inputMint: input.inputMint,
       outputMint: input.outputMint,
-      totalAmount: input.totalAmount,
-      totalAmountRaw: prepared.totalAmountRaw,
-      amountPerCycle: prepared.amountPerCycle,
-      amountPerCycleRaw: prepared.amountPerCycleRaw,
+      totalAmountRaw: amount.amountRaw,
+      ...(amount.amount !== undefined ? { totalAmount: amount.amount } : {}),
       numberOfOrders: input.numberOfOrders,
       intervalSeconds: input.intervalSeconds,
-      ...(input.startAt !== undefined && { startAt: input.startAt }),
-      ...(prepared.startAtUnix !== null && { startAtUnix: prepared.startAtUnix }),
-      ...(input.minPrice !== undefined && { minPrice: input.minPrice }),
-      ...(input.maxPrice !== undefined && { maxPrice: input.maxPrice }),
-      ...(input.maxFeeBps !== undefined && { maxFeeBps: input.maxFeeBps }),
-      feePreview: { jupiterFeeBps: 10, integratorFeesSupported: false },
-      requestId: prepared.built.requestId,
-      transactionBase64: prepared.built.transactionBase64,
+      startAt: normalizeStartAt(input.startAt),
+      startAtUnix: startAtUnixOrNull(input.startAt),
+      ...(input.minPrice !== undefined ? { minPrice: input.minPrice } : {}),
+      ...(input.maxPrice !== undefined ? { maxPrice: input.maxPrice } : {}),
+      feeBps: JUPITER_RECURRING_FEE_BPS,
+      amountPerCycleRaw: perCycle.amountPerCycleRaw,
+      ...(perCycle.amountPerCycle !== undefined ? { amountPerCycle: perCycle.amountPerCycle } : {}),
+      ...(perCycle.remainderRaw !== undefined ? { remainderRaw: perCycle.remainderRaw } : {}),
+      requestId: built.requestId,
+      transactionBase64: built.transactionBase64,
+      createOrderParams,
       automationWarningAccepted: true,
+      refreshAtExecution: true,
       warnings: recurringCreateWarnings({
         hasPriceRange: input.minPrice !== undefined || input.maxPrice !== undefined,
-        hasRoundingRemainder: prepared.hasRoundingRemainder,
+        hasRoundingRemainder: perCycle.remainderRaw !== undefined,
       }),
-      refreshAtExecution: false,
+      rawCreateOrderResponse: built.raw,
     });
-    return preparedActionResult('jupiter_recurring_create_time_order', walletAddress, ctx, summary, params, input);
+    return preparedActionResult(
+      'jupiter_recurring_create_time_order',
+      walletAddress,
+      ctx,
+      describeTimeOrder(input, amount),
+      params,
+      input,
+    );
   },
   async execute(action, ctx): Promise<AdapterExecuteResult> {
-    return executeStoredRecurringTransaction(action, ctx);
+    requireRecurringEnabled(ctx.config);
+    const walletAddress = await assertOwnership(action, ctx);
+    const createOrderParams = requireRecordParam(action, 'createOrderParams');
+    const built = await buildRecurringTransaction(ctx.config, '/createOrder', {
+      ...createOrderParams,
+      user: walletAddress,
+    });
+    const signedTransaction = await ctx.signTransaction(built.transactionBase64, action.summary);
+    const body = await executeRecurringTransaction(ctx.config, built.requestId, signedTransaction);
+    return executeResult(body, {
+      operation: 'create_time_order',
+      walletAddress,
+      requestId: built.requestId,
+      orderId: optionalString(body, 'order'),
+    });
   },
 };
 
-export const recurringCancelOrderAction: AdapterAction<JupiterRecurringCancelOrderInput> = {
+export const cancelRecurringOrderAction: AdapterAction<JupiterRecurringCancelOrderInput> = {
   id: 'recurring_cancel_order',
   kind: 'jupiter_recurring_cancel_order',
   async prepare(input, ctx): Promise<AdapterPrepareResult> {
     requireRecurringEnabled(ctx.config);
+    validateOrderId(input.orderId);
     const walletAddress = await ctx.backend.getAddress();
-    if (!input.orderId?.trim()) {
-      throw new AdapterError(JUPITER_ADAPTER_ID, 'invalid_request', 'Jupiter Recurring cancel requires orderId.');
-    }
-    const orderSnapshot = await getRecurringOrder(ctx.config, { walletAddress, orderId: input.orderId });
-    const built = await buildRecurringTransaction(ctx.config, '/cancelOrder', {
-      order: input.orderId,
-      user: walletAddress,
-      recurringType: orderSnapshot.recurringType ?? 'time',
-    });
-    const summary = `Cancel Jupiter Recurring order ${input.orderId}`;
-    const params = baseRecurringParams({
-      operation: 'cancel_order',
-      walletAddress,
-      cluster: ctx.config.cluster,
-    });
+    const orderSnapshot = await tryReadRecurringOrder(ctx.config, walletAddress, input.orderId, 'time');
+    const cancelParams = buildCancelOrderParams(walletAddress, input.orderId, 'time');
+    const built = await buildRecurringTransaction(ctx.config, '/cancelOrder', cancelParams);
+    const params: Record<string, unknown> = baseRecurringParams('cancel_order', walletAddress, ctx.config.cluster);
     Object.assign(params, {
       orderId: input.orderId,
-      orderSnapshot,
+      recurringType: 'time',
       requestId: built.requestId,
       transactionBase64: built.transactionBase64,
-      ...(input.reason !== undefined && { reason: input.reason }),
+      cancelParams,
+      ...(input.reason !== undefined ? { reason: input.reason } : {}),
+      ...(orderSnapshot !== undefined ? { orderSnapshot } : {}),
+      refreshAtExecution: true,
       warnings: recurringCancelWarnings(),
-      refreshAtExecution: false,
+      rawCancelOrderResponse: built.raw,
     });
-    return preparedActionResult('jupiter_recurring_cancel_order', walletAddress, ctx, summary, params, input);
+    return preparedActionResult(
+      'jupiter_recurring_cancel_order',
+      walletAddress,
+      ctx,
+      `Cancel Jupiter Recurring order ${input.orderId}`,
+      params,
+      input,
+    );
   },
   async execute(action, ctx): Promise<AdapterExecuteResult> {
-    return executeStoredRecurringTransaction(action, ctx);
+    requireRecurringEnabled(ctx.config);
+    const walletAddress = await assertOwnership(action, ctx);
+    const orderId = requireStringParam(action, 'orderId');
+    const cancelParams = buildCancelOrderParams(walletAddress, orderId, 'time');
+    const built = await buildRecurringTransaction(ctx.config, '/cancelOrder', cancelParams);
+    const signedTransaction = await ctx.signTransaction(built.transactionBase64, action.summary);
+    const body = await executeRecurringTransaction(ctx.config, built.requestId, signedTransaction);
+    return executeResult(body, {
+      operation: 'cancel_order',
+      walletAddress,
+      orderId,
+      requestId: built.requestId,
+    });
   },
 };
 
-export const recurringDepositPriceOrderAction: AdapterAction<JupiterRecurringPriceOrderManagementInput> = {
+export const depositPriceOrderAction: AdapterAction<JupiterRecurringPriceOrderInput> = {
   id: 'recurring_deposit_price_order',
   kind: 'jupiter_recurring_deposit_price_order',
   async prepare(input, ctx): Promise<AdapterPrepareResult> {
-    const built = await preparePriceManagement(input, ctx, 'deposit_price_order');
-    return built;
+    return preparePriceOrderManagement(input, ctx, 'deposit');
   },
   async execute(action, ctx): Promise<AdapterExecuteResult> {
-    return executeStoredRecurringTransaction(action, ctx);
+    return executePriceOrderManagement(action, ctx, 'deposit');
   },
 };
 
-export const recurringWithdrawPriceOrderAction: AdapterAction<JupiterRecurringPriceOrderManagementInput> = {
+export const withdrawPriceOrderAction: AdapterAction<JupiterRecurringPriceOrderInput> = {
   id: 'recurring_withdraw_price_order',
   kind: 'jupiter_recurring_withdraw_price_order',
   async prepare(input, ctx): Promise<AdapterPrepareResult> {
-    return preparePriceManagement(input, ctx, 'withdraw_price_order');
+    return preparePriceOrderManagement(input, ctx, 'withdraw');
   },
   async execute(action, ctx): Promise<AdapterExecuteResult> {
-    return executeStoredRecurringTransaction(action, ctx);
+    return executePriceOrderManagement(action, ctx, 'withdraw');
   },
 };
 
-async function prepareCreateTimeOrder(
-  input: JupiterRecurringCreateTimeOrderInput,
+async function preparePriceOrderManagement(
+  input: JupiterRecurringPriceOrderInput,
   ctx: DAppAdapterContext,
-  walletAddress: string,
-): Promise<{
-  totalAmountRaw: string;
-  amountPerCycle: string;
-  amountPerCycleRaw: string;
-  startAtUnix: number | null;
-  hasRoundingRemainder: boolean;
-  built: BuiltRecurringTransaction;
-}> {
-  if (input.automationWarningAccepted !== true) {
+  operation: 'deposit' | 'withdraw',
+): Promise<AdapterPrepareResult> {
+  requireRecurringEnabled(ctx.config);
+  const policy = getJupiterRecurringPolicy(ctx.config);
+  enforceDeprecatedPriceOrderAccepted(input, policy);
+  validateOrderId(input.orderId);
+  const amountRaw = priceOrderAmountRaw(input);
+  const walletAddress = await ctx.backend.getAddress();
+  const orderSnapshot = await tryReadRecurringOrder(ctx.config, walletAddress, input.orderId, 'price');
+  const requestParams = buildPriceOrderParams(walletAddress, input.orderId, operation, amountRaw, input.inputOrOutput);
+  const built = await buildRecurringTransaction(ctx.config, priceOrderPath(operation), requestParams);
+  const params: Record<string, unknown> = baseRecurringParams(`${operation}_price_order`, walletAddress, ctx.config.cluster);
+  Object.assign(params, {
+    orderId: input.orderId,
+    recurringType: 'price',
+    amountRaw,
+    ...(input.inputOrOutput !== undefined ? { inputOrOutput: input.inputOrOutput } : {}),
+    priceOrderDeprecationAccepted: true,
+    requestId: built.requestId,
+    transactionBase64: built.transactionBase64,
+    requestParams,
+    ...(orderSnapshot !== undefined ? { orderSnapshot } : {}),
+    refreshAtExecution: true,
+    warnings: recurringPriceOrderWarnings(),
+    rawPriceOrderResponse: built.raw,
+  });
+  return preparedActionResult(
+    operation === 'deposit'
+      ? 'jupiter_recurring_deposit_price_order'
+      : 'jupiter_recurring_withdraw_price_order',
+    walletAddress,
+    ctx,
+    `${operation === 'deposit' ? 'Deposit into' : 'Withdraw from'} deprecated Jupiter Recurring price order ${input.orderId}`,
+    params,
+    input,
+  );
+}
+
+async function executePriceOrderManagement(
+  action: PreparedAction,
+  ctx: DAppAdapterContext,
+  operation: 'deposit' | 'withdraw',
+): Promise<AdapterExecuteResult> {
+  requireRecurringEnabled(ctx.config);
+  const policy = getJupiterRecurringPolicy(ctx.config);
+  if (!policy.allowDeprecatedPriceOrders) {
     throw new AdapterError(
       JUPITER_ADAPTER_ID,
-      'invalid_request',
-      'Set automationWarningAccepted=true after acknowledging future Jupiter Recurring fills execute outside the Agentic approval inbox.',
+      'unsupported_method',
+      'Deprecated Jupiter Recurring price-order management is disabled by policy.',
     );
   }
-  validateMintPair(input.inputMint, input.outputMint);
-  const policy = getJupiterRecurringPolicy(ctx.config);
+  const walletAddress = await assertOwnership(action, ctx);
+  const orderId = requireStringParam(action, 'orderId');
+  const amountRaw = requireStringParam(action, 'amountRaw');
+  const inputOrOutput = action.params.inputOrOutput === 'Out' ? 'Out' : 'In';
+  const requestParams = buildPriceOrderParams(walletAddress, orderId, operation, amountRaw, inputOrOutput);
+  const built = await buildRecurringTransaction(ctx.config, priceOrderPath(operation), requestParams);
+  const signedTransaction = await ctx.signTransaction(built.transactionBase64, action.summary);
+  const body = await executeRecurringTransaction(ctx.config, built.requestId, signedTransaction);
+  return executeResult(body, {
+    operation: `${operation}_price_order`,
+    walletAddress,
+    orderId,
+    requestId: built.requestId,
+  });
+}
+
+function validateTimeOrderInput(
+  input: JupiterRecurringQuoteInput,
+  policy: ResolvedJupiterRecurringPolicy,
+  requireWarningAcceptance: boolean,
+): void {
+  if (!input.inputMint?.trim() || !input.outputMint?.trim()) {
+    throw new AdapterError(JUPITER_ADAPTER_ID, 'invalid_request', 'Jupiter Recurring time order requires inputMint and outputMint.');
+  }
+  if (input.inputMint === input.outputMint) {
+    throw new AdapterError(JUPITER_ADAPTER_ID, 'invalid_request', 'Jupiter Recurring inputMint and outputMint must differ.');
+  }
+  if (!input.totalAmount?.trim() && !input.totalAmountRaw?.trim()) {
+    throw new AdapterError(JUPITER_ADAPTER_ID, 'invalid_request', 'Jupiter Recurring time order requires totalAmountRaw or totalAmount.');
+  }
   if (!Number.isInteger(input.numberOfOrders) || input.numberOfOrders <= 0) {
     throw new AdapterError(JUPITER_ADAPTER_ID, 'invalid_request', 'numberOfOrders must be a positive integer.');
   }
@@ -202,14 +353,17 @@ async function prepareCreateTimeOrder(
     throw new AdapterError(
       JUPITER_ADAPTER_ID,
       'invalid_request',
-      `numberOfOrders ${input.numberOfOrders} exceeds configured maxOrderCount ${policy.maxOrderCount}.`,
+      `numberOfOrders ${input.numberOfOrders} exceeds configured Jupiter Recurring maxOrderCount ${policy.maxOrderCount}.`,
     );
   }
-  if (!Number.isInteger(input.intervalSeconds) || input.intervalSeconds < policy.minIntervalSeconds) {
+  if (!Number.isInteger(input.intervalSeconds) || input.intervalSeconds <= 0) {
+    throw new AdapterError(JUPITER_ADAPTER_ID, 'invalid_request', 'intervalSeconds must be a positive integer.');
+  }
+  if (input.intervalSeconds < policy.minIntervalSeconds) {
     throw new AdapterError(
       JUPITER_ADAPTER_ID,
       'invalid_request',
-      `intervalSeconds must be at least ${policy.minIntervalSeconds}.`,
+      `intervalSeconds ${input.intervalSeconds} is below configured Jupiter Recurring minimum ${policy.minIntervalSeconds}.`,
     );
   }
   if (policy.maxLifetimeDays !== undefined) {
@@ -218,135 +372,209 @@ async function prepareCreateTimeOrder(
       throw new AdapterError(
         JUPITER_ADAPTER_ID,
         'invalid_request',
-        `Recurring order lifetime ${lifetimeDays.toFixed(2)} days exceeds configured maxLifetimeDays ${policy.maxLifetimeDays}.`,
+        `Jupiter Recurring lifetime ${lifetimeDays.toFixed(2)} days exceeds configured maxLifetimeDays ${policy.maxLifetimeDays}.`,
       );
     }
   }
-  if (input.maxFeeBps !== undefined && input.maxFeeBps < 10) {
-    throw new AdapterError(JUPITER_ADAPTER_ID, 'invalid_request', 'Jupiter Recurring fee is 10 bps; maxFeeBps must be at least 10.');
+  if (input.startAt !== undefined) normalizeStartAt(input.startAt);
+  validatePriceBound(input.minPrice, 'minPrice');
+  validatePriceBound(input.maxPrice, 'maxPrice');
+  if (input.minPrice !== undefined && input.maxPrice !== undefined && Number(input.minPrice) > Number(input.maxPrice)) {
+    throw new AdapterError(JUPITER_ADAPTER_ID, 'invalid_request', 'minPrice must be less than or equal to maxPrice.');
   }
-  const decimals = await resolveMintDecimals(ctx.config, ctx.connection, input.inputMint);
-  const totalRaw = parseDecimalAmount(input.totalAmount, decimals, 'Jupiter Recurring totalAmount');
-  const cap = policy.maxDepositAmount?.[input.inputMint] ?? policy.maxDepositAmount?.[shortMint(input.inputMint)];
-  if (cap) assertMaxAmount(totalRaw, cap, decimals, 'Jupiter Recurring totalAmount');
-  const perCycleRaw = totalRaw / BigInt(input.numberOfOrders);
-  if (perCycleRaw <= 0n) {
+  if (requireWarningAcceptance && (input as JupiterRecurringCreateTimeOrderInput).automationWarningAccepted !== true) {
     throw new AdapterError(
       JUPITER_ADAPTER_ID,
       'invalid_request',
-      'totalAmount is too small for numberOfOrders; per-cycle raw amount would be zero.',
+      'Set automationWarningAccepted=true to acknowledge future Jupiter Recurring fills run through Jupiter automation without returning to the Agentic approval inbox.',
     );
   }
-  const startAtUnix = input.startAt === undefined ? null : parseStartAt(input.startAt);
-  const built = await buildRecurringTransaction(ctx.config, '/createOrder', {
+}
+
+function recurringAmount(
+  config: AgentWalletConfig,
+  mint: string,
+  amount: string | undefined,
+  amountRaw: string | undefined,
+  label: string,
+): RecurringAmountResolution {
+  const decimals = tokenDecimals(config, mint);
+  const raw = amountRaw?.trim()
+    ? validateRawAmount(amountRaw, label)
+    : amount?.trim()
+      ? decimalAmountToRaw(amount, decimals, label)
+      : undefined;
+  if (!raw) {
+    throw new AdapterError(JUPITER_ADAPTER_ID, 'invalid_request', `${label} requires amountRaw or a decimal amount with known decimals.`);
+  }
+  if (amount?.trim() && amountRaw?.trim() && decimals !== undefined) {
+    const parsed = decimalAmountToRaw(amount, decimals, label);
+    if (parsed !== raw) {
+      throw new AdapterError(JUPITER_ADAPTER_ID, 'invalid_request', `${label} and amountRaw do not match.`);
+    }
+  }
+  const resolved: RecurringAmountResolution = { amountRaw: raw };
+  if (amount?.trim()) {
+    resolved.amount = amount;
+  } else if (decimals !== undefined) {
+    resolved.amount = formatRawAmount(BigInt(raw), decimals);
+  }
+  if (decimals !== undefined) resolved.decimals = decimals;
+  return resolved;
+}
+
+function enforceRecurringAmountPolicy(
+  config: AgentWalletConfig,
+  policy: ResolvedJupiterRecurringPolicy,
+  mint: string,
+  amount: RecurringAmountResolution,
+): void {
+  const maxDeposit = policy.maxDepositAmount?.[mint]
+    ?? policy.maxDepositAmount?.[mint.toLowerCase()]
+    ?? policy.maxDepositAmount?.['*'];
+  if (!maxDeposit) return;
+  const decimals = amount.decimals ?? tokenDecimals(config, mint);
+  if (decimals === undefined) {
+    throw new AdapterError(
+      JUPITER_ADAPTER_ID,
+      'invalid_request',
+      `Jupiter Recurring deposit cap is configured for ${mint}, but token decimals are unknown; pass a configured token mint.`,
+    );
+  }
+  assertMaxAmount(BigInt(amount.amountRaw), maxDeposit, decimals, 'Jupiter Recurring total deposit');
+}
+
+function buildCreateTimeOrderParams(
+  walletAddress: string,
+  input: JupiterRecurringCreateTimeOrderInput,
+  amount: RecurringAmountResolution,
+): Record<string, unknown> {
+  return {
     user: walletAddress,
     inputMint: input.inputMint,
     outputMint: input.outputMint,
     params: {
       time: {
-        inAmount: rawJsonAmount(totalRaw),
+        inAmount: apiInteger(amount.amountRaw),
         numberOfOrders: input.numberOfOrders,
         interval: input.intervalSeconds,
-        minPrice: input.minPrice ?? null,
-        maxPrice: input.maxPrice ?? null,
-        startAt: startAtUnix,
+        minPrice: apiPriceOrNull(input.minPrice),
+        maxPrice: apiPriceOrNull(input.maxPrice),
+        startAt: startAtUnixOrNull(input.startAt),
       },
     },
-  });
-  return {
-    totalAmountRaw: totalRaw.toString(),
-    amountPerCycle: formatRawAmount(perCycleRaw, decimals),
-    amountPerCycleRaw: perCycleRaw.toString(),
-    startAtUnix,
-    hasRoundingRemainder: totalRaw % BigInt(input.numberOfOrders) !== 0n,
-    built,
   };
 }
 
-async function preparePriceManagement(
-  input: JupiterRecurringPriceOrderManagementInput,
-  ctx: DAppAdapterContext,
-  operation: 'deposit_price_order' | 'withdraw_price_order',
-): Promise<AdapterPrepareResult> {
-  requireRecurringEnabled(ctx.config);
-  const walletAddress = await ctx.backend.getAddress();
-  if (input.priceOrderDeprecationAccepted !== true) {
-    throw new AdapterError(
-      JUPITER_ADAPTER_ID,
-      'invalid_request',
-      'Set priceOrderDeprecationAccepted=true to manage a deprecated price-based Jupiter Recurring order.',
-    );
-  }
-  if (!input.orderId?.trim()) {
-    throw new AdapterError(JUPITER_ADAPTER_ID, 'invalid_request', 'Price-order management requires orderId.');
-  }
-  const amountRaw = await priceManagementAmountRaw(input, ctx);
-  const endpoint = operation === 'deposit_price_order' ? '/priceDeposit' : '/priceWithdraw';
-  const body: Record<string, unknown> = {
-    order: input.orderId,
+function buildCancelOrderParams(walletAddress: string, orderId: string, recurringType: 'time' | 'price'): Record<string, unknown> {
+  return {
+    order: orderId,
     user: walletAddress,
-    amount: rawJsonAmount(amountRaw),
+    recurringType,
   };
-  if (operation === 'withdraw_price_order') {
-    body.inputOrOutput = input.inputOrOutput ?? 'In';
-  }
-  const built = await buildRecurringTransaction(ctx.config, endpoint, body);
-  const summary = `${operation === 'deposit_price_order' ? 'Deposit into' : 'Withdraw from'} deprecated Jupiter Recurring price order ${input.orderId}`;
-  const params = baseRecurringParams({
-    operation,
-    walletAddress,
-    cluster: ctx.config.cluster,
-  });
-  Object.assign(params, {
-    orderId: input.orderId,
-    amount: input.amount,
-    amountRaw: amountRaw.toString(),
-    ...(input.mint !== undefined && { mint: input.mint }),
-    ...(input.inputOrOutput !== undefined && { inputOrOutput: input.inputOrOutput }),
-    requestId: built.requestId,
-    transactionBase64: built.transactionBase64,
-    priceOrderDeprecationAccepted: true,
-    ...(input.reason !== undefined && { reason: input.reason }),
-    warnings: recurringPriceOrderWarnings(),
-    refreshAtExecution: false,
-  });
-  const kind = operation === 'deposit_price_order'
-    ? 'jupiter_recurring_deposit_price_order'
-    : 'jupiter_recurring_withdraw_price_order';
-  return preparedActionResult(kind, walletAddress, ctx, summary, params, input);
+}
+
+function buildPriceOrderParams(
+  walletAddress: string,
+  orderId: string,
+  operation: 'deposit' | 'withdraw',
+  amountRaw: string,
+  inputOrOutput?: 'In' | 'Out',
+): Record<string, unknown> {
+  return {
+    order: orderId,
+    user: walletAddress,
+    amount: apiInteger(amountRaw),
+    ...(operation === 'withdraw' ? { inputOrOutput: inputOrOutput ?? 'In' } : {}),
+  };
 }
 
 async function buildRecurringTransaction(
   config: AgentWalletConfig,
   path: '/createOrder' | '/cancelOrder' | '/priceDeposit' | '/priceWithdraw',
   body: Record<string, unknown>,
-): Promise<BuiltRecurringTransaction> {
+): Promise<RecurringTransactionBuild> {
   const response = await jupiterFetchJson(config, 'recurring', path, {
     method: 'POST',
     body,
   });
   const transactionBase64 = optionalString(response, 'transaction') ?? optionalString(response, 'transactionBase64');
-  const requestId = optionalString(response, 'requestId');
-  if (!transactionBase64 || !requestId) {
-    throw new ProtocolError(
-      'wallet_unreachable',
-      `Jupiter Recurring ${path} response is missing transaction or requestId.`,
-    );
+  if (!transactionBase64) {
+    throw new ProtocolError('wallet_unreachable', `Jupiter Recurring ${path} response missing transaction.`);
   }
-  const orderId = optionalString(response, 'order');
+  const requestId = optionalString(response, 'requestId');
+  if (!requestId) {
+    throw new ProtocolError('wallet_unreachable', `Jupiter Recurring ${path} response missing requestId.`);
+  }
   return {
-    transactionBase64,
     requestId,
-    ...(orderId !== undefined && { orderId }),
+    transactionBase64,
     raw: response,
   };
 }
 
-async function executeStoredRecurringTransaction(
-  action: PreparedAction,
-  ctx: DAppAdapterContext,
-): Promise<AdapterExecuteResult> {
-  requireRecurringEnabled(ctx.config);
+async function executeRecurringTransaction(
+  config: AgentWalletConfig,
+  requestId: string,
+  signedTransaction: string,
+): Promise<Record<string, unknown>> {
+  return jupiterFetchJson(config, 'recurring', '/execute', {
+    method: 'POST',
+    body: {
+      signedTransaction,
+      requestId,
+    },
+  });
+}
+
+async function tryReadRecurringOrder(
+  config: AgentWalletConfig,
+  walletAddress: string,
+  orderId: string,
+  recurringType: 'time' | 'price',
+): Promise<RecurringOrderSnapshot | undefined> {
+  return getRecurringOrder(config, { walletAddress, orderId, recurringType }).catch(() => undefined);
+}
+
+function baseRecurringParams(operation: string, walletAddress: string, cluster: string): Record<string, unknown> {
+  return {
+    adapter: JUPITER_ADAPTER_ID,
+    connectorId: JUPITER_ADAPTER_ID,
+    product: JUPITER_RECURRING_PRODUCT,
+    operation,
+    approvalBoundary: CONNECTOR_APPROVAL_BOUNDARY,
+    walletAddress,
+    cluster,
+    preparedSnapshotAt: new Date().toISOString(),
+  };
+}
+
+function describeTimeOrder(
+  input: JupiterRecurringCreateTimeOrderInput,
+  amount: RecurringAmountResolution,
+): string {
+  return `Create Jupiter Recurring DCA ${amount.amount ?? `${amount.amountRaw} raw`} ${shortMint(input.inputMint)} -> ${shortMint(
+    input.outputMint,
+  )} over ${input.numberOfOrders} orders every ${input.intervalSeconds}s`;
+}
+
+function perCycleAmounts(
+  amountRaw: string,
+  numberOfOrders: number,
+  decimals: number | undefined,
+): { amountPerCycleRaw: string; amountPerCycle?: string; remainderRaw?: string } {
+  const total = BigInt(amountRaw);
+  const count = BigInt(numberOfOrders);
+  const amountPerCycleRaw = total / count;
+  const remainder = total % count;
+  return {
+    amountPerCycleRaw: amountPerCycleRaw.toString(),
+    ...(decimals !== undefined ? { amountPerCycle: formatRawAmount(amountPerCycleRaw, decimals) } : {}),
+    ...(remainder > 0n ? { remainderRaw: remainder.toString() } : {}),
+  };
+}
+
+async function assertOwnership(action: PreparedAction, ctx: DAppAdapterContext): Promise<string> {
   const walletAddress = await ctx.backend.getAddress();
   if (walletAddress !== action.walletAddress) {
     throw new ProtocolError(
@@ -354,54 +582,23 @@ async function executeStoredRecurringTransaction(
       `Jupiter Recurring action belongs to ${action.walletAddress}, but connected wallet is ${walletAddress}.`,
     );
   }
-  const transactionBase64 = requireStringParam(action, 'transactionBase64');
-  const requestId = requireStringParam(action, 'requestId');
-  const signedTransaction = await ctx.signTransaction(transactionBase64, action.summary);
-  const body = await jupiterFetchJson(ctx.config, 'recurring', '/execute', {
-    method: 'POST',
-    body: {
-      signedTransaction,
-      requestId,
-    },
-  });
-  const status = optionalString(body, 'status')?.toLowerCase();
-  if (status === 'failed') {
-    throw new ProtocolError(
-      'wallet_unreachable',
-      `Jupiter Recurring execute failed${typeof body.error === 'string' ? `: ${body.error}` : '.'}`,
-    );
-  }
-  const txid = optionalString(body, 'signature') ?? optionalString(body, 'txid');
-  if (!txid) {
-    throw new ProtocolError('wallet_unreachable', 'Jupiter Recurring execute response is missing signature.');
-  }
-  return {
-    txid,
-    signedAt: new Date().toISOString(),
-    preview: {
-      walletAddress,
-      requestId,
-      orderId: optionalString(body, 'order') ?? action.params.orderId,
-      status: body.status,
-      raw: body,
-    },
-  };
+  return walletAddress;
 }
 
-function baseRecurringParams(input: {
-  operation: string;
-  walletAddress: string;
-  cluster: string;
-}): Record<string, unknown> {
+function executeResult(body: Record<string, unknown>, preview: Record<string, unknown>): AdapterExecuteResult {
+  const txid = optionalString(body, 'signature') ?? optionalString(body, 'txid') ?? optionalString(body, 'txSignature');
+  const status = optionalString(body, 'status');
+  const error = optionalString(body, 'error');
+  if (status?.toLowerCase() === 'failed' || error) {
+    throw new ProtocolError(
+      'wallet_unreachable',
+      `Jupiter Recurring execute failed${error ? `: ${error}` : '.'}`,
+    );
+  }
   return {
-    adapter: JUPITER_ADAPTER_ID,
-    connectorId: JUPITER_ADAPTER_ID,
-    product: 'recurring',
-    operation: input.operation,
-    approvalBoundary: CONNECTOR_APPROVAL_BOUNDARY,
-    walletAddress: input.walletAddress,
-    cluster: input.cluster,
-    preparedSnapshotAt: new Date().toISOString(),
+    ...(txid !== undefined ? { txid } : {}),
+    signedAt: new Date().toISOString(),
+    preview: { ...preview, raw: body },
   };
 }
 
@@ -420,87 +617,123 @@ function preparedActionResult(
       cluster: ctx.config.cluster,
       summary,
       params,
-      ...(input.dueAt !== undefined && { dueAt: input.dueAt }),
-      ...(input.note !== undefined && { note: input.note }),
+      ...(input.dueAt !== undefined ? { dueAt: input.dueAt } : {}),
+      ...(input.note !== undefined ? { note: input.note } : {}),
     },
     preview: params,
   };
 }
 
-async function priceManagementAmountRaw(
-  input: JupiterRecurringPriceOrderManagementInput,
-  ctx: DAppAdapterContext,
-): Promise<bigint> {
-  if (input.mint) {
-    const decimals = await resolveMintDecimals(ctx.config, ctx.connection, input.mint);
-    return parseDecimalAmount(input.amount, decimals, 'Jupiter Recurring price-order amount');
+function enforceDeprecatedPriceOrderAccepted(
+  input: JupiterRecurringPriceOrderInput,
+  policy: ResolvedJupiterRecurringPolicy,
+): void {
+  if (!policy.allowDeprecatedPriceOrders) {
+    throw new AdapterError(
+      JUPITER_ADAPTER_ID,
+      'unsupported_method',
+      'Deprecated Jupiter Recurring price-order management is disabled by policy.',
+    );
   }
-  if (!/^\d+$/.test(input.amount.trim())) {
+  if (input.priceOrderDeprecationAccepted !== true) {
     throw new AdapterError(
       JUPITER_ADAPTER_ID,
       'invalid_request',
-      'Deprecated price-order management requires an integer raw amount unless mint is supplied for decimal conversion.',
+      'Set priceOrderDeprecationAccepted=true to acknowledge Jupiter price-based Recurring orders are deprecated.',
     );
   }
-  const amount = BigInt(input.amount);
-  if (amount <= 0n) {
-    throw new AdapterError(JUPITER_ADAPTER_ID, 'invalid_request', 'Jupiter Recurring price-order amount must be greater than zero.');
-  }
-  return amount;
 }
 
-async function resolveMintDecimals(
-  config: AgentWalletConfig,
-  connection: Connection,
-  mintText: string,
-): Promise<number> {
-  if (mintText === WSOL_MINT) return 9;
-  const known = [...config.tokens, ...DEFAULT_TOKEN_REGISTRY].find(
-    (entry) => entry.mint === mintText || entry.symbol.toLowerCase() === mintText.toLowerCase(),
-  );
-  if (known) return known.decimals;
-  let mint: PublicKey;
-  try {
-    mint = new PublicKey(mintText);
-  } catch {
-    throw new AdapterError(JUPITER_ADAPTER_ID, 'invalid_request', `Invalid token mint ${mintText}.`);
+function priceOrderAmountRaw(input: JupiterRecurringPriceOrderInput): string {
+  const amount = input.amountRaw?.trim() || input.amount?.trim();
+  if (!amount) {
+    throw new AdapterError(JUPITER_ADAPTER_ID, 'invalid_request', 'Deprecated Jupiter Recurring price-order management requires amountRaw.');
   }
-  const account = await connection.getParsedAccountInfo(mint, 'confirmed').catch(() => null);
-  const parsedData = account?.value?.data;
-  const parsed = parsedData && typeof parsedData === 'object' && 'parsed' in parsedData
-    ? parsedData.parsed as { info?: { decimals?: unknown } }
-    : undefined;
-  if (typeof parsed?.info?.decimals === 'number' && Number.isInteger(parsed.info.decimals) && parsed.info.decimals >= 0) {
-    return parsed.info.decimals;
-  }
-  throw new AdapterError(JUPITER_ADAPTER_ID, 'invalid_request', `Could not read decimals for token mint ${mintText}.`);
+  return validateRawAmount(amount, 'Jupiter Recurring price order amount');
 }
 
-function validateMintPair(inputMint: string, outputMint: string): void {
-  try {
-    new PublicKey(inputMint);
-    new PublicKey(outputMint);
-  } catch {
-    throw new AdapterError(JUPITER_ADAPTER_ID, 'invalid_request', 'inputMint and outputMint must be valid mint addresses.');
-  }
-  if (inputMint === outputMint) {
-    throw new AdapterError(JUPITER_ADAPTER_ID, 'invalid_request', 'inputMint and outputMint must be different.');
+function enforceFeeCap(maxFeeBps: number | undefined): void {
+  if (maxFeeBps !== undefined && maxFeeBps < JUPITER_RECURRING_FEE_BPS) {
+    throw new AdapterError(
+      JUPITER_ADAPTER_ID,
+      'invalid_request',
+      `maxFeeBps ${maxFeeBps} is below Jupiter Recurring fee ${JUPITER_RECURRING_FEE_BPS}.`,
+    );
   }
 }
 
-function parseStartAt(value: string): number {
+function validateOrderId(orderId: string): void {
+  if (!orderId?.trim()) {
+    throw new AdapterError(JUPITER_ADAPTER_ID, 'invalid_request', 'Jupiter Recurring orderId is required.');
+  }
+}
+
+function validatePriceBound(value: string | undefined, label: string): void {
+  if (value === undefined) return;
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed) || parsed < 0) {
+    throw new AdapterError(JUPITER_ADAPTER_ID, 'invalid_request', `${label} must be a non-negative number string.`);
+  }
+}
+
+function normalizeStartAt(value: string | undefined): string | null {
+  if (value === undefined) return null;
   const parsed = Date.parse(value);
   if (!Number.isFinite(parsed)) {
     throw new AdapterError(JUPITER_ADAPTER_ID, 'invalid_request', 'startAt must be a valid ISO timestamp.');
   }
-  if (parsed < Date.now()) {
-    throw new AdapterError(JUPITER_ADAPTER_ID, 'invalid_request', 'startAt must be in the future.');
-  }
-  return Math.floor(parsed / 1000);
+  return new Date(parsed).toISOString();
 }
 
-function rawJsonAmount(value: bigint): string | number {
-  return value <= BigInt(Number.MAX_SAFE_INTEGER) ? Number(value) : value.toString();
+function startAtUnixOrNull(value: string | undefined): number | null {
+  const normalized = normalizeStartAt(value);
+  if (normalized === null) return null;
+  return Math.floor(Date.parse(normalized) / 1000);
+}
+
+function decimalAmountToRaw(amount: string, decimals: number | undefined, label: string): string {
+  if (decimals === undefined) {
+    throw new AdapterError(
+      JUPITER_ADAPTER_ID,
+      'invalid_request',
+      `${label} was provided as a decimal amount, but the input mint decimals are not configured. Pass amountRaw instead.`,
+    );
+  }
+  return parseDecimalAmount(amount, decimals, label).toString();
+}
+
+function validateRawAmount(amountRaw: string, label: string): string {
+  const trimmed = amountRaw.trim();
+  if (!/^\d+$/.test(trimmed) || BigInt(trimmed) <= 0n) {
+    throw new AdapterError(JUPITER_ADAPTER_ID, 'invalid_request', `${label} must be a positive integer raw amount.`);
+  }
+  return trimmed;
+}
+
+function tokenDecimals(config: AgentWalletConfig, mint: string): number | undefined {
+  if (mint === WSOL_MINT) return 9;
+  return config.tokens.find((token) => token.mint === mint || token.symbol.toLowerCase() === mint.toLowerCase())?.decimals;
+}
+
+function apiInteger(raw: string): number | string {
+  const value = BigInt(raw);
+  return value <= BigInt(Number.MAX_SAFE_INTEGER) ? Number(value) : raw;
+}
+
+function apiPriceOrNull(value: string | undefined): number | null {
+  return value === undefined ? null : Number(value);
+}
+
+function priceOrderPath(operation: 'deposit' | 'withdraw'): '/priceDeposit' | '/priceWithdraw' {
+  return operation === 'deposit' ? '/priceDeposit' : '/priceWithdraw';
+}
+
+function requireRecordParam(action: PreparedAction, key: string): Record<string, unknown> {
+  const value = action.params[key];
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    throw new ProtocolError('invalid_request', `Jupiter Recurring action is missing ${key} record.`);
+  }
+  return value as Record<string, unknown>;
 }
 
 function requireStringParam(action: PreparedAction, key: string): string {
@@ -513,9 +746,12 @@ function requireStringParam(action: PreparedAction, key: string): string {
 
 function optionalString(body: Record<string, unknown>, key: string): string | undefined {
   const value = body[key];
-  return typeof value === 'string' && value.trim() ? value : undefined;
+  if (typeof value === 'string' && value.trim()) return value;
+  if (typeof value === 'number' && Number.isFinite(value)) return String(value);
+  return undefined;
 }
 
 function shortMint(mint: string): string {
-  return mint.length <= 8 ? mint : `${mint.slice(0, 4)}...${mint.slice(-4)}`;
+  if (mint.length <= 8) return mint;
+  return `${mint.slice(0, 4)}...${mint.slice(-4)}`;
 }

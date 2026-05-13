@@ -309,14 +309,16 @@ export function normalizeConnectorDraftParameters(
   const connector = selectedConnectorForDraftParameters(parameters);
   if (!connector && !isConnectorCapableTemplate(template)) return { ...parameters };
   if (!connector) return { ...parameters };
-  const form = selectedConnectorActionForm(parameters) ?? connectorActionFormForTemplate(template, connector);
-  const operation = form?.operationLabel ?? normalizedConnectorOperation(connector, parameters.operation);
+  const explicitForm = connectorActionFormById(parameters.connectorOperationId);
+  const form = explicitForm ?? connectorActionFormForTemplate(template, connector);
+  const operation = explicitForm?.operationLabel ?? normalizedConnectorOperation(connector, parameters.operation);
+  const shouldPersistForm = Boolean(explicitForm || (form && !isGenericConnectorActionForm(form)));
   return {
     ...parameters,
     connectorId: connector.id,
     protocol: connector.name,
     operation,
-    ...(form ? { connectorOperationId: form.id } : {}),
+    ...(shouldPersistForm && form ? { connectorOperationId: form.id } : {}),
     connectorActionSource: form?.executionMode === 'blink'
       ? 'blink'
       : form?.executionMode === 'read-only'
@@ -477,18 +479,22 @@ function connectorDraftRequiresBlink(
   );
 }
 
+function isGenericConnectorActionForm(form: ConnectorActionForm): boolean {
+  return form.operationId === 'position-check' || form.operationId === 'blink-action';
+}
+
 export function connectorAiPlannerContext(
   template: Pick<AgentPlanTemplate, 'id' | 'actionType' | 'connectorCapability'>,
   parameters: Record<string, string>,
   env: ConnectorDraftEnvironment,
 ): Array<Record<string, unknown>> {
-  if (!isConnectorCapableTemplate(template)) {
+  const selected = selectedConnectorForDraftParameters(parameters);
+  if (!isConnectorCapableTemplate(template) && !selected) {
     return protocolConnectorPlannerContext(env.connectedDapps, env.cluster, {
       dialectClientKeyConfigured: Boolean(env.dialectClientKeyConfigured),
       includeDisabled: true,
     });
   }
-  const selected = selectedConnectorForDraftParameters(parameters);
   if (!selected) return [];
   const validation = validateConnectorDraftParameters(template, parameters, env, 'ai');
   const base = protocolConnectorPlannerContext(env.connectedDapps, env.cluster, {
@@ -520,8 +526,8 @@ export function connectorAiUserNotes(
   parameters: Record<string, string>,
   userNotes: string,
 ): string {
-  if (!isConnectorCapableTemplate(template)) return userNotes;
   const connector = selectedConnectorForDraftParameters(parameters);
+  if (!isConnectorCapableTemplate(template) && !connector) return userNotes;
   if (!connector) return userNotes;
   const steering = [
     `Selected protocol connector: ${connector.name} (${connector.id}).`,

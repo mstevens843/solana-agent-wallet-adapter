@@ -19,6 +19,14 @@ import {
   defaultLabArtifactStorePath,
   loadConfig,
 } from '@solana-agent-wallet-adapter/mcp-server';
+import {
+  defaultTemplateFieldValues,
+  inferTemplateIdForPrompt,
+  inferredTemplateParameters,
+  templateById,
+  type AgentPlan as SharedAgentPlan,
+  type AiPlanRequest,
+} from '@solana-agent-wallet-adapter/workflow';
 
 type Cluster = 'mainnet-beta' | 'testnet' | 'devnet' | 'localnet';
 type PreparedActionKind =
@@ -245,13 +253,25 @@ interface TerminalAppState {
   lastReceipts: ActionReceipt[];
 }
 
-interface AgentPlan {
+interface TerminalAgentPlan {
   intent: string;
   route: string;
   risk: RiskLevel;
   constraints: string[];
   createdAt: string;
 }
+
+interface BridgeAiStatus {
+  available: boolean;
+  configured: boolean;
+  source: 'env' | 'session' | 'none';
+  provider?: string;
+  apiFormat?: string;
+  baseUrl?: string;
+  model?: string;
+}
+
+type CliAgentPlan = TerminalAgentPlan | SharedAgentPlan;
 
 interface ResearchArtifact {
   version: 'terminal-research-v1';
@@ -1265,11 +1285,20 @@ async function runPlanCommand(
 ): Promise<void> {
   printSection('Agent Plan');
   const intent = naturalLanguage || await promptRequired(rl, 'User request');
-  const plan = buildAgentPlan(intent);
+  const aiPlan = await generateBridgeAiPlanIfConfigured(state.options, intent).catch((err) => {
+    printWarn(state.options, `AI planner unavailable; using deterministic template fallback. ${errorMessage(err)}`);
+    return null;
+  });
+  const plan: CliAgentPlan = aiPlan ?? buildAgentPlan(intent);
+  if (aiPlan) {
+    printMuted(state.options, 'Source: local bridge AI draft. Wallet approval is still required.');
+  } else {
+    printMuted(state.options, 'Source: deterministic terminal template. Configure bridge AI for richer drafts.');
+  }
   printAgentPlan(plan);
 
   if (await confirm(rl, 'Sign this plan as an off-chain proof?', false)) {
-    const artifact = await signTextWithWallet(state, agentPlanSigningMessage(plan), 'Agent plan approval proof', plan.risk);
+    const artifact = await signTextWithWallet(state, agentPlanSigningMessage(plan), 'Agent plan approval proof', planRisk(plan));
     printOk(state.options, `Plan signed: ${short(artifact.result?.signature ?? artifact.requestId, 12)}`);
   }
 
@@ -1281,9 +1310,13 @@ async function runPlanCommand(
 async function queuePlanAction(
   state: TerminalAppState,
   rl: readline.Interface,
-  plan: AgentPlan,
+  plan: CliAgentPlan,
 ): Promise<void> {
   await requireWalletConnected(state);
+  if (isSharedAgentPlan(plan)) {
+    await queueSharedAgentPlanAction(state, rl, plan);
+    return;
+  }
   if (plan.route === 'swap') {
     const amount = await prompt(rl, 'Amount', '0.01');
     const inputToken = (await prompt(rl, 'Input token', 'SOL')).toUpperCase();
@@ -1323,6 +1356,127 @@ async function queuePlanAction(
   }
 
   printWarn(state.options, 'This plan is a research/proof plan only; no transaction route was queued.');
+}
+
+async function queueSharedAgentPlanAction(
+  state: TerminalAppState,
+  rl: readline.Interface,
+  plan: SharedAgentPlan,
+): Promise<void> {
+  const note = [plan.intent, plan.userNotes].filter(Boolean).join(' | ').slice(0, 500);
+  if (plan.actionType === 'transfer_sol') {
+    const recipient = await planParamOrPrompt(rl, plan, 'recipient', 'Recipient address');
+    const amountSol = await planParamOrPrompt(rl, plan, 'amount', 'Amount SOL', '0.01');
+    const response = await bridgeRequest<{ preparedAction?: PreparedAction }>(
+      state.options,
+      '/bridge/action/prepare-transfer-sol',
+      {
+        method: 'POST',
+        body: JSON.stringify({ recipient, amountSol, note }),
+      },
+    );
+    printOk(state.options, `Queued SOL transfer approval ${response.preparedAction?.id ?? ''}.`);
+    return;
+  }
+
+  if (plan.actionType === 'transfer_spl') {
+    const token = await planParamOrPrompt(rl, plan, 'token', 'Token', 'USDC');
+    const recipient = await planParamOrPrompt(rl, plan, 'recipient', 'Recipient address');
+    const amount = await planParamOrPrompt(rl, plan, 'amount', `Amount ${token}`, '10');
+    const response = await bridgeRequest<{ preparedAction?: PreparedAction }>(
+      state.options,
+      '/bridge/action/prepare-transfer-spl',
+      {
+        method: 'POST',
+        body: JSON.stringify({ token, recipient, amount, note }),
+      },
+    );
+    printOk(state.options, `Queued SPL transfer approval ${response.preparedAction?.id ?? ''}.`);
+    return;
+  }
+
+  if (plan.actionType === 'swap') {
+    const amount = await planParamOrPrompt(rl, plan, 'amount', 'Amount', '0.01');
+    const inputToken = (await planParamOrPrompt(rl, plan, 'inputToken', 'Input token', 'SOL')).toUpperCase();
+    const outputToken = (await planParamOrPrompt(rl, plan, 'outputToken', 'Output token', 'USDC')).toUpperCase();
+    const slippageBps = Number(await planParamOrPrompt(rl, plan, 'slippageBps', 'Slippage bps', '50'));
+    const response = await bridgeRequest<{ preparedAction?: PreparedAction }>(
+      state.options,
+      '/bridge/action/prepare-swap',
+      {
+        method: 'POST',
+        body: JSON.stringify({
+          inputToken,
+          outputToken,
+          amount,
+          slippageBps: Number.isFinite(slippageBps) ? slippageBps : 50,
+          note,
+        }),
+      },
+    );
+    printOk(state.options, `Queued swap approval ${response.preparedAction?.id ?? ''}.`);
+    return;
+  }
+
+  if (plan.actionType === 'recurring_payment') {
+    const token = await planParamOrPrompt(rl, plan, 'token', 'Token', 'USDC');
+    const recipient = await planParamOrPrompt(rl, plan, 'recipient', 'Recipient address');
+    const amount = await planParamOrPrompt(rl, plan, 'amount', `Amount ${token}`, '5');
+    const cadence = await planParamOrPrompt(rl, plan, 'cadence', 'Cadence (weekly/monthly/days)', 'monthly');
+    const body: Record<string, unknown> = {
+      actionKind: 'transfer',
+      token,
+      recipient,
+      amount,
+      note,
+    };
+    if (cadence === 'weekly') {
+      body.cadence = 'weekly';
+      body.dayOfWeek = Number(await prompt(rl, 'Day of week 0=Sun 6=Sat', '1'));
+    } else if (cadence === 'monthly') {
+      body.cadence = 'monthly';
+      body.dayOfMonth = Number(await prompt(rl, 'Day of month 1-31', '1'));
+    } else {
+      body.cadence = 'interval_days';
+      body.intervalDays = Number(await prompt(rl, 'Every N days', '7'));
+    }
+    const response = await bridgeRequest<{ recurringPayment?: { id: string }; payment?: { id: string } }>(
+      state.options,
+      '/bridge/recurring-payments',
+      {
+        method: 'POST',
+        body: JSON.stringify(body),
+      },
+    );
+    printOk(state.options, `Queued recurring approval ${response.recurringPayment?.id ?? response.payment?.id ?? ''}.`);
+    return;
+  }
+
+  if (plan.actionType === 'blink_action') {
+    const blinkUrl = await planParamOrPrompt(rl, plan, 'blinkUrl', 'Blink / Action URL');
+    const response = await bridgeRequest<{ preparedAction?: PreparedAction }>(
+      state.options,
+      '/bridge/action/prepare-blink',
+      {
+        method: 'POST',
+        body: JSON.stringify(removeUndefined({
+          blinkUrl,
+          connector: plan.parameters.connectorId,
+          protocol: plan.parameters.protocol,
+          operation: plan.parameters.operation,
+          expectedAmount: plan.parameters.expectedAmount ?? plan.parameters.amount,
+          expectedToken: plan.parameters.expectedToken,
+          expectedRecipient: plan.parameters.expectedRecipient,
+          position: plan.parameters.position,
+          note,
+        })),
+      },
+    );
+    printOk(state.options, `Queued Blink approval ${response.preparedAction?.id ?? ''}.`);
+    return;
+  }
+
+  printWarn(state.options, 'This AI plan is proof-only in the CLI; no transaction route was queued.');
 }
 
 async function runResearchCommand(
@@ -2392,7 +2546,44 @@ function pushLog(state: TerminalAppState, line: string): void {
   }
 }
 
-function buildAgentPlan(intent: string): AgentPlan {
+async function generateBridgeAiPlanIfConfigured(
+  options: GlobalOptions,
+  intent: string,
+): Promise<SharedAgentPlan | null> {
+  const status = await tryBridgeRequest<BridgeAiStatus>(options, '/bridge/ai/status');
+  if (!status.ok || !status.value.available) {
+    return null;
+  }
+  const request = bridgeAiPlanRequest(intent);
+  return bridgeRequest<SharedAgentPlan>(options, '/bridge/ai/generate-plan', {
+    method: 'POST',
+    body: JSON.stringify(request),
+  });
+}
+
+function bridgeAiPlanRequest(intent: string): AiPlanRequest {
+  const template = templateById(inferTemplateIdForPrompt(intent, 'custom-request'));
+  const parameters = inferredTemplateParameters(
+    template,
+    intent,
+    defaultTemplateFieldValues(template),
+  );
+  return {
+    prompt: intent,
+    userNotes: intent,
+    template: {
+      id: template.id,
+      category: template.category,
+      title: template.title,
+      description: template.description,
+      actionType: template.actionType,
+      risk: template.risk,
+    },
+    parameters,
+  };
+}
+
+function buildAgentPlan(intent: string): TerminalAgentPlan {
   const normalized = intent.toLowerCase();
   const route = normalized.includes('swap')
     ? 'swap'
@@ -2420,27 +2611,69 @@ function buildAgentPlan(intent: string): AgentPlan {
   };
 }
 
-function printAgentPlan(plan: AgentPlan): void {
+function printAgentPlan(plan: CliAgentPlan): void {
   console.log(`Intent: ${plan.intent}`);
   console.log(`Route: ${plan.route}`);
   console.log(`Risk: ${plan.risk}`);
-  console.log('Constraints:');
-  for (const constraint of plan.constraints) {
-    console.log(`- ${constraint}`);
+  if (isSharedAgentPlan(plan)) {
+    console.log(`Action: ${plan.actionType}`);
+    if (plan.fields.length) {
+      console.log('Fields:');
+      for (const fieldEntry of plan.fields) {
+        console.log(`- ${fieldEntry.label}: ${fieldEntry.value}`);
+      }
+    }
+    if (plan.safeguards.length) {
+      console.log('Safeguards:');
+      for (const safeguard of plan.safeguards) {
+        console.log(`- ${safeguard}`);
+      }
+    }
+  } else {
+    console.log('Constraints:');
+    for (const constraint of plan.constraints) {
+      console.log(`- ${constraint}`);
+    }
   }
 }
 
-function agentPlanSigningMessage(plan: AgentPlan): string {
+function agentPlanSigningMessage(plan: CliAgentPlan): string {
+  const constraints = isSharedAgentPlan(plan)
+    ? plan.safeguards.join(' | ')
+    : plan.constraints.join(' | ');
   return [
     'Solana Agent Wallet Adapter',
     'Agent plan approval proof',
     `Intent: ${plan.intent}`,
     `Route: ${plan.route}`,
     `Risk: ${plan.risk}`,
-    `Constraints: ${plan.constraints.join(' | ')}`,
-    `Created: ${plan.createdAt}`,
+    `Constraints: ${constraints}`,
+    `Created: ${isSharedAgentPlan(plan) ? new Date().toISOString() : plan.createdAt}`,
     `Hash: ${sha256(stableJson(plan))}`,
   ].join('\n');
+}
+
+function isSharedAgentPlan(plan: CliAgentPlan): plan is SharedAgentPlan {
+  return 'actionType' in plan && 'parameters' in plan && 'safeguards' in plan;
+}
+
+function planRisk(plan: CliAgentPlan): RiskLevel {
+  const risk = plan.risk.toLowerCase();
+  if (risk.includes('high')) return 'high';
+  if (risk.includes('medium')) return 'medium';
+  return 'low';
+}
+
+async function planParamOrPrompt(
+  rl: readline.Interface,
+  plan: SharedAgentPlan,
+  key: string,
+  label: string,
+  fallback = '',
+): Promise<string> {
+  const value = plan.parameters[key]?.trim();
+  if (value) return value;
+  return fallback ? prompt(rl, label, fallback) : promptRequired(rl, label);
 }
 
 function researchSigningMessage(artifact: ResearchArtifact): string {

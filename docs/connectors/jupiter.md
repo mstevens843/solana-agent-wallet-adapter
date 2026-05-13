@@ -1,6 +1,6 @@
 # Jupiter Connector
 
-Jupiter is first-class for Swap API v2 previews, prepared swaps, wallet-approved swap execution, Jupiter Lend Earn / Borrow (reads plus prepare-only actions), Jupiter Trigger V2 (disabled by default), beta read-only Prediction, read-only Perps research, and read-only Token API V2 / Price API V3 evidence in MCP. Token and price reads are review evidence only; they are not oracle guarantees and they never approve or prepare transactions.
+Jupiter is first-class for Swap API v2 previews, prepared swaps, wallet-approved swap execution, Jupiter Lend Earn / Borrow (reads plus prepare-only actions), Jupiter Trigger V2 (disabled by default), Jupiter Recurring native DCA (disabled by default), beta read-only Prediction, read-only Perps research, and read-only Token API V2 / Price API V3 evidence in MCP. Token and price reads are review evidence only; they are not oracle guarantees and they never approve or prepare transactions.
 
 ## What It Can Read
 
@@ -20,7 +20,8 @@ Jupiter is first-class for Swap API v2 previews, prepared swaps, wallet-approved
 - `solana_jupiter_lend_borrow_health_preview` projects health for a candidate collateral or debt delta and reports the gate verdict against the configured minimum borrow health ratio.
 - `solana_jupiter_trigger_auth_challenge` / `_verify` / `_status` handle Trigger V2 wallet authentication without returning or storing JWTs in user-visible artifacts.
 - `solana_jupiter_trigger_vault`, `_orders`, `_order_detail`, and `_order_history` read Trigger V2 vault and order state when Trigger is enabled and authenticated.
-- `solana_connector_capabilities jupiter` reports Swap, Token, Price, Lend Earn, Lend Borrow, Prediction, Perps, and Trigger readiness plus other Jupiter product groups.
+- `solana_jupiter_recurring_orders`, `_order_detail`, and `_quote` read or locally preview Jupiter Recurring native DCA orders when Recurring is enabled.
+- `solana_connector_capabilities jupiter` reports Swap, Token, Price, Lend Earn, Lend Borrow, Prediction, Perps, Trigger, and Recurring readiness plus other Jupiter product groups.
 
 ## What It Can Prepare Or Execute
 
@@ -30,7 +31,8 @@ Jupiter is first-class for Swap API v2 previews, prepared swaps, wallet-approved
 - `solana_prepare_jupiter_lend_borrow_create_position` opens a Borrow position with optional initial collateral and borrow amounts; the health gate runs before approval.
 - `solana_prepare_jupiter_lend_borrow_deposit_collateral` / `_borrow` / `_repay` / `_withdraw_collateral` prepare Borrow lifecycle actions. Borrow and withdraw-collateral run a fresh health preview before approval and again at execution.
 - `solana_prepare_jupiter_trigger_register_vault`, `_single_order`, `_oco_order`, `_otoco_order`, `_edit_order`, `_cancel_order`, and `_withdraw_order_funds` prepare Trigger V2 actions when Trigger is enabled and the wallet has a valid volatile JWT. Deposit-bearing actions refresh the Jupiter-built deposit transaction at execution and hand the signed blob back to Jupiter for broadcast.
-- `solana_execute_prepared_action` executes any prepared swap or lend item by refreshing market or health data before wallet signing.
+- `solana_prepare_jupiter_recurring_create_time_order`, `_cancel_order`, `_deposit_price_order`, and `_withdraw_price_order` prepare Jupiter Recurring native DCA setup/cancel/deprecated price-management actions when Recurring is enabled. Setup/cancel transactions are refreshed at execution and handed to Jupiter `/execute`.
+- `solana_execute_prepared_action` executes any prepared Jupiter item by refreshing market, health, or Jupiter-built transaction data before wallet signing.
 
 ## Required Inputs
 
@@ -41,6 +43,8 @@ Earn: `assetMint`. Use `amount` for deposit/withdraw, `shares` for mint/redeem; 
 Borrow: `vaultId`, with `positionId` for everything except `create_position`. Use `collateralAmount` / `borrowAmount` for create, `amount` plus optional `repayAll` for the rest. Optional `minHealthRatio` and `maxLtvBps` override the policy defaults.
 
 Trigger: authenticate first, then use wallet-scoped vault/order inputs. Create-order inputs require mints, amount/amountRaw, USD trigger prices, expiration, and explicit slippage policy acceptance when above warning thresholds.
+
+Recurring: enable `connectors.jupiter.recurring.enabled=true` first. Time-order setup requires input/output mints, `totalAmountRaw` (or `totalAmount` when input mint decimals are configured), `numberOfOrders`, `intervalSeconds`, and `automationWarningAccepted=true`. Deprecated price-order deposit/withdraw requires `priceOrderDeprecationAccepted=true`.
 
 Ask:
 
@@ -61,14 +65,15 @@ Ask:
 - Price API missing-price reason when Jupiter does not return a reliable price.
 - Earn snapshot (APY, exchange price, liquidity, withdrawal smoothing) before any Earn prepare.
 - Borrow vault snapshot (LTV, liquidation threshold, oracle freshness, capacity) plus health preview before any Borrow prepare.
+- Recurring amount-per-cycle, interval, number of orders, fee warning, and explicit note that Jupiter automation handles future fills after setup approval.
 
 ## Deny Or Ask
 
-Deny swaps above configured max input, slippage above the configured cap, unsupported clusters, missing API-key execution, and requests to guarantee exact output. Reject Token or Price reads when `connectors.jupiter.tokenPrice.enabled=false`, when the API key is missing, when price batches exceed the configured cap, or when search requests exceed the configured comma-separated mint cap. Deny borrow or withdraw-collateral whose projected health drops below `connectors.jupiter.minBorrowHealthRatio` (default 1.25) or whose projected LTV exceeds `connectors.jupiter.maxBorrowLtvBps` (default 8500). Reject Borrow writes when the optional `@jup-ag/lend` SDK is unavailable. Reject flashloan, multiply, unwind, vault swap, or liquidation flows. Reject Trigger V2 requests when the surface is disabled, the wallet is unauthenticated, the vault is unregistered, order value is below Jupiter's minimum, expiration/slippage policy fails, or the user asks for fills to return to the Agentic approval inbox. Ask for a supported first-class product path before Recurring requests because this runtime does not implement Jupiter-native DCA yet. For Jupiter Perps, route to the read-only research surface (`solana_jupiter_perps_status`) and deny every write or leverage-recommendation request.
+Deny swaps above configured max input, slippage above the configured cap, unsupported clusters, missing API-key execution, and requests to guarantee exact output. Reject Token or Price reads when `connectors.jupiter.tokenPrice.enabled=false`, when the API key is missing, when price batches exceed the configured cap, or when search requests exceed the configured comma-separated mint cap. Deny borrow or withdraw-collateral whose projected health drops below `connectors.jupiter.minBorrowHealthRatio` (default 1.25) or whose projected LTV exceeds `connectors.jupiter.maxBorrowLtvBps` (default 8500). Reject Borrow writes when the optional `@jup-ag/lend` SDK is unavailable. Reject flashloan, multiply, unwind, vault swap, or liquidation flows. Reject Trigger V2 requests when the surface is disabled, the wallet is unauthenticated, the vault is unregistered, order value is below Jupiter's minimum, expiration/slippage policy fails, or the user asks for fills to return to the Agentic approval inbox. Reject Recurring when disabled, missing `automationWarningAccepted`, over configured amount/order/lifetime/interval policy, or when deprecated price-order management lacks explicit deprecation acceptance. For Jupiter Perps, route to the read-only research surface (`solana_jupiter_perps_status`) and deny every write or leverage-recommendation request.
 
 ## User Approval
 
-Jupiter previews and Token/Price/Lend/Prediction/Perps reads are read-only. Prepared swaps and prepared Lend actions remain manual-approval items until the user sends them to the wallet. Trigger auth requires a wallet message signature; Trigger order deposits are wallet-signed locally, then handed back to Jupiter for broadcast and future automation from the Privy vault. The wallet signs; Jupiter `/execute`, Trigger submit, or the Lend SDK landing path handles broadcast after the signed transaction is returned.
+Jupiter previews and Token/Price/Lend/Prediction/Perps reads are read-only. Prepared swaps and prepared Lend actions remain manual-approval items until the user sends them to the wallet. Trigger auth requires a wallet message signature; Trigger order deposits are wallet-signed locally, then handed back to Jupiter for broadcast and future automation from the Privy vault. Recurring setup/cancel/deprecated price-management transactions are wallet-signed locally, then handed to Jupiter Recurring `/execute`; future native DCA fills after setup do not return to the Agentic approval inbox. The wallet signs; Jupiter `/execute`, Trigger submit, or the Lend SDK landing path handles broadcast after the signed transaction is returned.
 
 ## Prediction Markets (Beta, Read-Only)
 
@@ -139,7 +144,7 @@ If the JWT is missing or expired, every Trigger read and prepared action throws 
 ### What It Can Read
 
 - `solana_jupiter_trigger_vault` — read the wallet's Privy vault: registration status, vault address, vault id, and balances. Custody is marked `privy`.
-- `solana_jupiter_trigger_orders` — list orders for the wallet. Defaults to `state=open`. Supports `limit`/`offset`.
+- `solana_jupiter_trigger_orders` — list orders for the wallet. Defaults to `state=open` at the tool surface and maps that to Jupiter's active order-history state. Supports `limit`/`offset`.
 - `solana_jupiter_trigger_order_detail` — read a single order including type, state, trigger fields, slippage, expiration, cancellability, and withdrawal eligibility.
 - `solana_jupiter_trigger_order_history` — list order history across all states (filled, expired, cancelled, ready_to_cancel) by default.
 
@@ -147,15 +152,15 @@ If the JWT is missing or expired, every Trigger read and prepared action throws 
 
 Each prepared action stores `connectorId: 'jupiter'`, `product: 'trigger'`, the operation, wallet address, cluster, mints, trigger fields, vault snapshot, `automationWarningAccepted: true`, `custodyWarningAccepted: true`, the next-step transaction base64 (if any), and `refreshAtExecution: true`. Prepared actions never store the JWT, signed challenges, signed transaction blobs, or the Jupiter API key.
 
-- `solana_prepare_jupiter_trigger_register_vault` — register the Privy vault for the wallet (one-time per wallet). Signs a Jupiter-built transaction at execute time.
+- `solana_prepare_jupiter_trigger_register_vault` — register the Privy vault for the wallet (one-time per wallet). If Jupiter returns a registration transaction, it is signed at execute time; otherwise the refreshed register response is submitted without storing a transaction.
 - `solana_prepare_jupiter_trigger_single_order` — single limit/trigger order with a USD price condition. Enforces the 10 USD minimum, expiration ≤ `maxOrderLifetimeDays`, and slippage caps.
 - `solana_prepare_jupiter_trigger_oco_order` — take-profit + stop-loss pair where one cancels the other. Validates pairing direction (sells require TP > SL; buys require TP < SL).
 - `solana_prepare_jupiter_trigger_otoco_order` — entry trigger then OCO take-profit/stop-loss. Same pairing validation as OCO.
-- `solana_prepare_jupiter_trigger_edit_order` — edit an existing order's trigger price, slippage, or expiration. No on-chain signature when Jupiter does not require one; the prepared action still surfaces the automation warning and the "expired funds stay in vault" warning.
-- `solana_prepare_jupiter_trigger_cancel_order` — cancel an open or pending order. Confirms cancellability before submission. Surfaces the "cancel and withdraw are separate steps" warning.
-- `solana_prepare_jupiter_trigger_withdraw_order_funds` — withdraw cancelled or expired order funds from the Privy vault back to the wallet. Signs a Jupiter-built withdrawal transaction.
+- `solana_prepare_jupiter_trigger_edit_order` — edit an existing order's trigger price, slippage, or expiration through Trigger V2 `PATCH /orders/price/{orderId}`. No on-chain signature when Jupiter does not require one; the prepared action still surfaces the automation warning and the "expired funds stay in vault" warning.
+- `solana_prepare_jupiter_trigger_cancel_order` — cancel an open or pending order. Confirms cancellability before submission, signs Jupiter's cancel transaction when returned, and confirms the signed cancel with Jupiter.
+- `solana_prepare_jupiter_trigger_withdraw_order_funds` — withdraw cancelled or expired order funds from the Privy vault back to the authenticated wallet. Custom destinations are not supported; Jupiter's cancel/confirm-cancel transaction flow is signed when returned.
 
-At `execute()` time, deposit-bearing actions re-fetch a fresh deposit transaction from Jupiter (to avoid blockhash expiry), sign it locally via `ctx.signTransaction`, then POST the signed base64 to Jupiter's submit endpoint. Jupiter broadcasts the deposit on-chain. The agent does **not** call `signAndBroadcast` for Trigger order submission — that would double-spend the nonce because Jupiter handles broadcast itself.
+At `execute()` time, deposit-bearing actions re-fetch a fresh deposit transaction from Jupiter (to avoid blockhash expiry), sign it locally via `ctx.signTransaction`, then POST the signed base64 to Jupiter's submit endpoint. Cancel/withdraw flows likewise use Jupiter's cancel and confirm-cancel endpoints when Jupiter returns a transaction to sign. Jupiter broadcasts the signed transaction; the agent does **not** call `signAndBroadcast` for Trigger submission.
 
 ### Required Inputs
 
@@ -192,9 +197,9 @@ The agent denies and explains when:
 Trigger flows surface **two** wallet approval boundaries:
 
 1. **Auth message signature** via `solana_sign_message` for the auth challenge. Used to exchange for a JWT that lives in memory only.
-2. **Deposit / withdrawal / vault transaction signature** via `solana_sign_transaction`. Signed bytes are POSTed back to Jupiter, which broadcasts them on-chain.
+2. **Deposit / cancel / withdrawal / vault transaction signature** via `solana_sign_transaction` when Jupiter returns a transaction. Signed bytes are POSTed back to Jupiter, which broadcasts them on-chain.
 
-Edit and cancel paths do not request an on-chain signature when Jupiter does not require one; they still go through the Agentic approval inbox so the user can review the change and the safety warnings before submission. Once an order is live, **Jupiter automation handles all future fills directly** — they do not return to the Agentic approval inbox per fill.
+Edit paths do not request an on-chain signature when Jupiter does not require one; cancel and withdrawal paths sign Jupiter-built transactions when returned. They still go through the Agentic approval inbox so the user can review the change and the safety warnings before submission. Once an order is live, **Jupiter automation handles all future fills directly** — they do not return to the Agentic approval inbox per fill.
 
 Source of truth and pointers:
 
@@ -204,3 +209,31 @@ Source of truth and pointers:
 - Create order: [developers.jup.ag/docs/trigger/create-order](https://developers.jup.ag/docs/trigger/create-order)
 - Manage orders: [developers.jup.ag/docs/trigger/manage-orders](https://developers.jup.ag/docs/trigger/manage-orders)
 - Order history: [developers.jup.ag/docs/api-reference/trigger/order-history](https://developers.jup.ag/docs/api-reference/trigger/order-history)
+
+## Recurring Native DCA
+
+Jupiter Recurring is a first-class adapter surface under `connectorId: "jupiter"`, capability `recurring`. It is **disabled by default**; set `connectors.jupiter.recurring.enabled=true` in `agent-wallet.config.json` or `CONNECTORS_JUPITER_RECURRING_ENABLED=true` in the environment to opt in. The optional `JUPITER_RECURRING_BASE_URL` env var defaults to `https://api.jup.ag/recurring/v1`.
+
+This is **not** Agentic recurring payments. Agentic recurring schedules materialize future approval inbox items. Jupiter Recurring asks the wallet to approve setup or cancellation, then Jupiter automation runs future DCA fills without returning to the Agentic approval inbox each cycle.
+
+### What It Can Read
+
+- `solana_jupiter_recurring_orders` — list active/history Jupiter Recurring orders for the wallet.
+- `solana_jupiter_recurring_order_detail` — read one order account from the first active/history pages.
+- `solana_jupiter_recurring_quote` — locally preview per-cycle amount, total duration, fee note, and automation warnings before creating an order.
+
+### What It Can Prepare Or Execute
+
+- `solana_prepare_jupiter_recurring_create_time_order` — create a time-based DCA order. Requires `automationWarningAccepted=true`.
+- `solana_prepare_jupiter_recurring_cancel_order` — cancel a time-based order and reclaim remaining funds.
+- `solana_prepare_jupiter_recurring_deposit_price_order` / `_withdraw_price_order` — manage existing deprecated price-based orders only when `priceOrderDeprecationAccepted=true`.
+
+Prepared actions store `connectorId: 'jupiter'`, `product: 'recurring'`, operation, wallet, cluster, mints, amount fields, number of orders, interval, request id, warnings, and `refreshAtExecution: true`. They never store API keys or signed setup/cancel transaction blobs.
+
+Source of truth and pointers:
+
+- Plan: [firstclassconnectrors/jupiter-recurring.md](../../firstclassconnectrors/jupiter-recurring.md)
+- Create order: [developers.jup.ag/docs/recurring/create-order](https://developers.jup.ag/docs/recurring/create-order)
+- Execute order: [developers.jup.ag/docs/recurring/execute-order](https://developers.jup.ag/docs/recurring/execute-order)
+- Cancel order: [developers.jup.ag/docs/recurring/cancel-order](https://developers.jup.ag/docs/recurring/cancel-order)
+- Get recurring orders: [developers.jup.ag/docs/recurring/get-recurring-orders](https://developers.jup.ag/docs/recurring/get-recurring-orders)

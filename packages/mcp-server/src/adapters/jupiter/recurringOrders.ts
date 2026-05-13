@@ -90,11 +90,12 @@ export async function listRecurringOrders(
       },
     };
   }
+  const orderStatus = apiOrderStatus(state);
   const body = await jupiterFetchJson(config, 'recurring', '/getRecurringOrders', {
     method: 'GET',
     searchParams: {
       user: input.walletAddress,
-      orderStatus: apiOrderStatus(state),
+      orderStatus,
       recurringType: input.recurringType ?? 'time',
       page,
       inputMint: input.inputMint,
@@ -102,7 +103,10 @@ export async function listRecurringOrders(
       includeFailedTx: input.includeFailedTx ?? false,
     },
   });
-  const orders = normalizeRecurringOrderList(input.walletAddress, body, state);
+  const orders = filterRecurringOrdersByState(
+    normalizeRecurringOrderList(input.walletAddress, body, orderStatus),
+    state,
+  );
   const limited = input.limit === undefined ? orders : orders.slice(0, input.limit);
   const totalPages = optionalNumber(body, 'totalPages');
   return {
@@ -224,6 +228,22 @@ export function normalizeRecurringOrder(
 
 function apiOrderStatus(state: JupiterRecurringOrderState): 'active' | 'history' {
   return state === 'active' ? 'active' : 'history';
+}
+
+function filterRecurringOrdersByState(
+  orders: RecurringOrderSnapshot[],
+  state: JupiterRecurringOrderState,
+): RecurringOrderSnapshot[] {
+  if (state === 'active' || state === 'history' || state === 'all') return orders;
+  return orders.filter((order) => recurringStatusMatches(order.status, state));
+}
+
+function recurringStatusMatches(status: string | undefined, state: Exclude<JupiterRecurringOrderState, 'active' | 'history' | 'all'>): boolean {
+  const normalized = status?.trim().toLowerCase();
+  if (!normalized) return false;
+  if (state === 'cancelled') return normalized.includes('cancel');
+  if (state === 'completed') return normalized.includes('complete') || normalized.includes('filled');
+  return normalized.includes('fail');
 }
 
 function optionalString(body: Record<string, unknown>, key: string): string | undefined {

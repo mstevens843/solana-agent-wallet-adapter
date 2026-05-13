@@ -369,6 +369,31 @@ describe('render web hosted BYOK API', () => {
       expect(send.body.error).toBe('signedTransaction is required.');
     });
   });
+
+  it('persists signed-in wallet preferences through the hosted API', async () => {
+    await withServer(async (port, ctx) => {
+      const unauthorized = await putJson(port, '/api/preferences/ai-settings', {
+        payload: { mode: 'hosted', provider: 'openai', model: 'gpt-5' },
+      });
+      expect(unauthorized.status).toBe(401);
+
+      const saved = await putJson(port, '/api/preferences/ai-settings', {
+        payload: { mode: 'hosted', provider: 'openai', model: 'gpt-5' },
+      }, { cookie: ctx.cookie });
+      expect(saved.status).toBe(200);
+      expect(saved.body).toMatchObject({
+        namespace: 'ai-settings',
+        payload: { mode: 'hosted', provider: 'openai', model: 'gpt-5' },
+        version: 1,
+      });
+
+      const listed = await getJson(port, '/api/preferences', { cookie: ctx.cookie });
+      expect(listed.status).toBe(200);
+      expect(listed.body.preferences).toEqual([
+        expect.objectContaining({ namespace: 'ai-settings', version: 1 }),
+      ]);
+    });
+  });
 });
 
 async function withServer(callback: (port: number, ctx: ServerCtx) => Promise<void>): Promise<void> {
@@ -432,6 +457,80 @@ function postJson(
     });
     req.on('error', reject);
     req.end(payload);
+  });
+}
+
+function putJson(
+  port: number,
+  path: string,
+  body: unknown,
+  headers: Record<string, string> = {},
+): Promise<TestResponse> {
+  return writeJsonRequest('PUT', port, path, body, headers);
+}
+
+function writeJsonRequest(
+  method: 'POST' | 'PUT',
+  port: number,
+  path: string,
+  body: unknown,
+  headers: Record<string, string> = {},
+): Promise<TestResponse> {
+  return new Promise((resolve, reject) => {
+    const payload = JSON.stringify(body);
+    const req = httpRequest({
+      hostname: '127.0.0.1',
+      port,
+      path,
+      method,
+      headers: {
+        ...headers,
+        'content-type': 'application/json',
+        'content-length': Buffer.byteLength(payload),
+      },
+    }, (res) => {
+      const chunks: Buffer[] = [];
+      res.on('data', (chunk) => chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk)));
+      res.on('error', reject);
+      res.on('end', () => {
+        const raw = Buffer.concat(chunks).toString('utf8');
+        resolve({
+          status: res.statusCode ?? 0,
+          body: raw ? JSON.parse(raw) as Record<string, unknown> : {},
+        });
+      });
+    });
+    req.on('error', reject);
+    req.end(payload);
+  });
+}
+
+function getJson(
+  port: number,
+  path: string,
+  headers: Record<string, string> = {},
+): Promise<TestResponse> {
+  return new Promise((resolve, reject) => {
+    const req = httpRequest({
+      hostname: '127.0.0.1',
+      port,
+      path,
+      method: 'GET',
+      headers,
+    }, (res) => {
+      const chunks: Buffer[] = [];
+      res.on('data', (chunk) => chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk)));
+      res.on('error', reject);
+      res.on('end', () => {
+        const raw = Buffer.concat(chunks).toString('utf8');
+        resolve({
+          status: res.statusCode ?? 0,
+          body: raw ? JSON.parse(raw) as Record<string, unknown> : {},
+        });
+      });
+    });
+    req.on('error', reject);
+    req.end();
   });
 }
 

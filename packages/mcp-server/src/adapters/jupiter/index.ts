@@ -41,10 +41,11 @@ import {
   withdrawOrderFundsAction,
 } from './triggerActions.js';
 import {
-  recurringCancelOrderAction,
-  recurringCreateTimeOrderAction,
-  recurringDepositPriceOrderAction,
-  recurringWithdrawPriceOrderAction,
+  cancelRecurringOrderAction,
+  createTimeOrderAction,
+  depositPriceOrderAction,
+  quoteRecurringTimeOrder,
+  withdrawPriceOrderAction,
 } from './recurringActions.js';
 import {
   readAuthStatus,
@@ -316,7 +317,9 @@ const recurringOrdersRead: AdapterRead<
     state?: JupiterRecurringOrderState;
     limit?: number;
     page?: number;
-    mint?: string;
+    inputMint?: string;
+    outputMint?: string;
+    recurringType?: 'time' | 'price';
     includeFailedTx?: boolean;
   },
   unknown
@@ -329,17 +332,43 @@ const recurringOrdersRead: AdapterRead<
       ...(input.state !== undefined && { state: input.state }),
       ...(input.limit !== undefined && { limit: input.limit }),
       ...(input.page !== undefined && { page: input.page }),
-      ...(input.mint !== undefined && { mint: input.mint }),
+      ...(input.inputMint !== undefined && { inputMint: input.inputMint }),
+      ...(input.outputMint !== undefined && { outputMint: input.outputMint }),
+      ...(input.recurringType !== undefined && { recurringType: input.recurringType }),
       ...(input.includeFailedTx !== undefined && { includeFailedTx: input.includeFailedTx }),
     });
   },
 };
 
-const recurringOrderDetailRead: AdapterRead<{ walletAddress?: string; orderId: string }, unknown> = {
+const recurringOrderDetailRead: AdapterRead<{ walletAddress?: string; orderId: string; recurringType?: 'time' | 'price' }, unknown> = {
   id: 'recurring_order_detail',
   async read(input, ctx) {
     const walletAddress = input.walletAddress?.trim() || (await ctx.backend.getAddress());
-    return getRecurringOrder(ctx.config, { walletAddress, orderId: input.orderId });
+    return getRecurringOrder(ctx.config, {
+      walletAddress,
+      orderId: input.orderId,
+      ...(input.recurringType !== undefined ? { recurringType: input.recurringType } : {}),
+    });
+  },
+};
+
+const recurringQuoteRead: AdapterRead<
+  {
+    inputMint: string;
+    outputMint: string;
+    totalAmount?: string;
+    totalAmountRaw?: string;
+    numberOfOrders: number;
+    intervalSeconds: number;
+    startAt?: string;
+    minPrice?: string;
+    maxPrice?: string;
+  },
+  unknown
+> = {
+  id: 'recurring_quote',
+  async read(input, ctx) {
+    return quoteRecurringTimeOrder(ctx.config, input);
   },
 };
 
@@ -367,10 +396,10 @@ export const jupiterAdapter: DAppAdapter = {
     trigger_edit_order: editOrderAction,
     trigger_cancel_order: cancelOrderAction,
     trigger_withdraw_order_funds: withdrawOrderFundsAction,
-    recurring_create_time_order: recurringCreateTimeOrderAction,
-    recurring_cancel_order: recurringCancelOrderAction,
-    recurring_deposit_price_order: recurringDepositPriceOrderAction,
-    recurring_withdraw_price_order: recurringWithdrawPriceOrderAction,
+    recurring_create_time_order: createTimeOrderAction,
+    recurring_cancel_order: cancelRecurringOrderAction,
+    recurring_deposit_price_order: depositPriceOrderAction,
+    recurring_withdraw_price_order: withdrawPriceOrderAction,
   },
   reads: {
     earn_tokens: earnTokensRead,
@@ -390,6 +419,7 @@ export const jupiterAdapter: DAppAdapter = {
     trigger_order_history: triggerOrderHistoryRead,
     recurring_orders: recurringOrdersRead,
     recurring_order_detail: recurringOrderDetailRead,
+    recurring_quote: recurringQuoteRead,
   },
 };
 
@@ -674,13 +704,15 @@ export {
   type RecurringOrderSnapshot as JupiterRecurringOrderSnapshot,
 } from './recurringOrders.js';
 export {
-  recurringCancelOrderAction as jupiterRecurringCancelOrderAction,
-  recurringCreateTimeOrderAction as jupiterRecurringCreateTimeOrderAction,
-  recurringDepositPriceOrderAction as jupiterRecurringDepositPriceOrderAction,
-  recurringWithdrawPriceOrderAction as jupiterRecurringWithdrawPriceOrderAction,
+  cancelRecurringOrderAction as jupiterRecurringCancelOrderAction,
+  createTimeOrderAction as jupiterRecurringCreateTimeOrderAction,
+  depositPriceOrderAction as jupiterRecurringDepositPriceOrderAction,
+  quoteRecurringTimeOrder as jupiterRecurringQuote,
+  withdrawPriceOrderAction as jupiterRecurringWithdrawPriceOrderAction,
   type JupiterRecurringCancelOrderInput,
   type JupiterRecurringCreateTimeOrderInput,
-  type JupiterRecurringPriceOrderManagementInput,
+  type JupiterRecurringPriceOrderInput,
+  type JupiterRecurringQuoteInput,
 } from './recurringActions.js';
 export {
   RECURRING_AUTOMATION_WARNING,

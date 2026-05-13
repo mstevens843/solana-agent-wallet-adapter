@@ -4,6 +4,7 @@ import { migration003ActiveApprovalUniquePlan } from './003_active_approval_uniq
 import { migration004TransactionFinalizations } from './004_transaction_finalizations.js';
 import { migration005RecurringExpiresAt } from './005_recurring_expires_at.js';
 import { migration006RecurringNotificationDeliveries } from './006_recurring_notification_deliveries.js';
+import { migration007WalletPreferences } from './007_wallet_preferences.js';
 
 export interface PostgresMigration {
   id: string;
@@ -17,4 +18,5 @@ export const postgresMigrations: PostgresMigration[] = [
   migration004TransactionFinalizations,
   migration005RecurringExpiresAt,
   migration006RecurringNotificationDeliveries,
+  migration007WalletPreferences,
 ];

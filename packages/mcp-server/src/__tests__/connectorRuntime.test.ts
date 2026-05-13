@@ -500,6 +500,29 @@ describe('AgentWalletActionService connector runtime', () => {
     expect(JSON.stringify(result)).not.toContain('base64-transaction');
   });
 
+  it('stores explicit Jupiter prepared-swap minimum output as a raw threshold', async () => {
+    const service = newService();
+
+    const result = await service.prepareSwap({
+      inputToken: 'SOL',
+      outputToken: 'USDC',
+      amount: '0.01',
+      slippageBps: 50,
+      minOutputAmount: '0.12',
+    });
+
+    expect(result.preparedAction).toMatchObject({
+      kind: 'swap',
+      params: {
+        connectorId: 'jupiter',
+        product: 'swap',
+        minOutputAmount: '0.12',
+        otherAmountThreshold: '120000',
+        refreshAtExecution: true,
+      },
+    });
+  });
+
   it('blocks Jupiter swap slippage above the configured cap', async () => {
     const service = newService();
 

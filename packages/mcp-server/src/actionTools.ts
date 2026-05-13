@@ -96,6 +96,7 @@ export function registerActionTools(
         inputToken: z.string().min(2).optional(),
         outputToken: z.string().min(2).optional(),
         amount: z.string().min(1).optional(),
+        amountRaw: z.string().min(1).optional(),
         slippageBps: z.number().int().min(0).optional(),
         taker: z.string().min(32).optional(),
         poolAddress: z.string().min(32).optional(),
@@ -150,6 +151,19 @@ export function registerActionTools(
         limit: z.number().int().min(1).max(100).optional(),
         includePrice: z.boolean().optional(),
         includeSearchFallback: z.boolean().optional(),
+        triggerOperation: z.enum(['auth_status', 'vault', 'orders', 'order_detail', 'order_history']).optional(),
+        triggerOrderId: z.string().min(1).optional(),
+        triggerState: z.enum(['open', 'pending', 'filled', 'expired', 'cancelled', 'ready_to_cancel', 'all']).optional(),
+        recurringOperation: z.enum(['orders', 'order_detail', 'quote']).optional(),
+        recurringOrderId: z.string().min(1).optional(),
+        recurringState: z.enum(['active', 'history', 'completed', 'cancelled', 'failed', 'all']).optional(),
+        recurringPage: z.number().int().min(1).optional(),
+        recurringNumberOfOrders: z.number().int().min(1).optional(),
+        recurringIntervalSeconds: z.number().int().min(1).optional(),
+        recurringStartAt: z.string().datetime().optional(),
+        recurringMinPrice: z.string().min(1).optional(),
+        recurringMaxPrice: z.string().min(1).optional(),
+        includeFailedTx: z.boolean().optional(),
         realmAddress: z.string().min(32).optional(),
         governanceAddress: z.string().min(32).optional(),
         proposalAddress: z.string().min(32).optional(),
@@ -261,6 +275,7 @@ export function registerActionTools(
         'Create a durable manual-approval inbox item for a capped Jupiter swap. Prepares wallet approval work only; does not sign, submit, or grant delegated authority. Quote and transaction are refreshed at approval time.',
       inputSchema: {
         ...swapInputSchema(),
+        captureQuoteSnapshot: z.boolean().optional().describe('Optional. When true, captures a quote-only snapshot for review; execution still refreshes the order before signing.'),
         dueAt: z.string().datetime().optional(),
         note: z.string().max(500).optional(),
       },
@@ -1400,6 +1415,7 @@ export function registerActionTools(
   );
 
   registerJupiterTriggerTools(server, service, options);
+  registerJupiterRecurringTools(server, service, options);
 
   server.registerTool(
     'solana_drift_user_snapshot',
@@ -4929,7 +4945,8 @@ function registerJupiterTriggerTools(
       inputSchema: {
         inputMint: z.string().min(32),
         outputMint: z.string().min(32),
-        amount: z.string().min(1),
+        amount: z.string().min(1).optional().describe('Deprecated raw amount alias. Prefer amountRaw.'),
+        amountRaw: z.string().min(1).optional().describe('Raw integer input-token amount.'),
         triggerMint: z.string().min(32),
         triggerCondition: z.enum(['above', 'below']),
         triggerPriceUsd: z.number().positive(),
@@ -4955,7 +4972,8 @@ function registerJupiterTriggerTools(
       inputSchema: {
         inputMint: z.string().min(32),
         outputMint: z.string().min(32),
-        amount: z.string().min(1),
+        amount: z.string().min(1).optional().describe('Deprecated raw amount alias. Prefer amountRaw.'),
+        amountRaw: z.string().min(1).optional().describe('Raw integer input-token amount.'),
         triggerMint: z.string().min(32),
         takeProfitPriceUsd: z.number().positive(),
         stopLossPriceUsd: z.number().positive(),
@@ -4982,7 +5000,8 @@ function registerJupiterTriggerTools(
       inputSchema: {
         inputMint: z.string().min(32),
         outputMint: z.string().min(32),
-        amount: z.string().min(1),
+        amount: z.string().min(1).optional().describe('Deprecated raw amount alias. Prefer amountRaw.'),
+        amountRaw: z.string().min(1).optional().describe('Raw integer input-token amount.'),
         triggerMint: z.string().min(32),
         entryCondition: z.enum(['above', 'below']),
         entryPriceUsd: z.number().positive(),
@@ -5010,6 +5029,7 @@ function registerJupiterTriggerTools(
       description: `Prepare an edit for an existing Jupiter Trigger V2 order. ${triggerWarningSuffix}`,
       inputSchema: {
         orderId: z.string().min(1),
+        orderType: z.enum(['single', 'oco', 'otoco']).optional(),
         newTriggerPriceUsd: z.number().positive().optional(),
         newSlippageBps: z.number().int().min(0).max(10_000).optional(),
         newExpiresAt: z.string().datetime().optional(),
@@ -5066,6 +5086,165 @@ function registerJupiterTriggerTools(
   );
 }
 
+function registerJupiterRecurringTools(
+  server: McpServer,
+  service: AgentWalletActionService,
+  options: RegisterActionToolsOptions,
+): void {
+  const cluster = options.config.cluster;
+  const recurringStateSchema = z.enum(['active', 'history', 'completed', 'cancelled', 'failed', 'all']);
+  const recurringWarningSuffix =
+    'Jupiter Recurring is Jupiter-native automation: the wallet approves setup or cancellation, then future fills execute through Jupiter without returning to the Agentic approval inbox. Jupiter charges a 0.1% fee and integrator fees are not supported.';
+
+  server.registerTool(
+    'solana_jupiter_recurring_orders',
+    {
+      description:
+        'List Jupiter Recurring DCA orders for the connected wallet. Read-only. Defaults to active time-based orders.',
+      inputSchema: {
+        walletAddress: z.string().min(32).optional(),
+        state: recurringStateSchema.optional(),
+        limit: z.number().int().min(1).max(100).optional(),
+        page: z.number().int().min(1).optional(),
+        inputMint: z.string().min(32).optional(),
+        outputMint: z.string().min(32).optional(),
+        recurringType: z.enum(['time', 'price']).optional(),
+        includeFailedTx: z.boolean().optional(),
+      },
+    },
+    async (input) => traceTool(
+      'solana_jupiter_recurring_orders',
+      { cluster, input },
+      async () => jsonReply(await service.jupiterRecurringOrders(input)),
+    ),
+  );
+
+  server.registerTool(
+    'solana_jupiter_recurring_order_detail',
+    {
+      description:
+        'Read a Jupiter Recurring order by order account. Checks the first active and history pages. Read-only.',
+      inputSchema: {
+        walletAddress: z.string().min(32).optional(),
+        orderId: z.string().min(1),
+        recurringType: z.enum(['time', 'price']).optional(),
+      },
+    },
+    async (input) => traceTool(
+      'solana_jupiter_recurring_order_detail',
+      { cluster, input },
+      async () => jsonReply(await service.jupiterRecurringOrderDetail(input)),
+    ),
+  );
+
+  server.registerTool(
+    'solana_jupiter_recurring_quote',
+    {
+      description: `Preview local Jupiter Recurring DCA exposure, per-cycle amount, fee note, and automation warnings without creating an order. ${recurringWarningSuffix}`,
+      inputSchema: {
+        inputMint: z.string().min(32),
+        outputMint: z.string().min(32),
+        totalAmount: z.string().min(1).optional().describe('Human input-token amount; requires configured input-mint decimals.'),
+        totalAmountRaw: z.string().min(1).optional().describe('Raw integer input-token amount. Preferred for arbitrary mints.'),
+        numberOfOrders: z.number().int().min(1),
+        intervalSeconds: z.number().int().min(1),
+        startAt: z.string().datetime().optional(),
+        minPrice: z.string().min(1).optional(),
+        maxPrice: z.string().min(1).optional(),
+      },
+    },
+    async (input) => traceTool(
+      'solana_jupiter_recurring_quote',
+      { cluster, input },
+      async () => jsonReply(await service.jupiterRecurringQuote(input)),
+    ),
+  );
+
+  server.registerTool(
+    'solana_prepare_jupiter_recurring_create_time_order',
+    {
+      description: `Create a manual-approval inbox item that sets up a time-based Jupiter Recurring DCA order. ${recurringWarningSuffix}`,
+      inputSchema: {
+        inputMint: z.string().min(32),
+        outputMint: z.string().min(32),
+        totalAmount: z.string().min(1).optional().describe('Human input-token amount deposited for the whole DCA order; requires configured input-mint decimals.'),
+        totalAmountRaw: z.string().min(1).optional().describe('Raw integer amount deposited for the whole DCA order. Preferred for arbitrary mints.'),
+        numberOfOrders: z.number().int().min(1),
+        intervalSeconds: z.number().int().min(1),
+        startAt: z.string().datetime().optional(),
+        minPrice: z.string().min(1).optional(),
+        maxPrice: z.string().min(1).optional(),
+        maxFeeBps: z.number().int().min(0).max(10_000).optional(),
+        automationWarningAccepted: z.literal(true),
+        dueAt: z.string().datetime().optional(),
+        note: z.string().max(500).optional(),
+      },
+    },
+    async (input) => traceTool(
+      'solana_prepare_jupiter_recurring_create_time_order',
+      { cluster, input },
+      async () => jsonReply(await service.prepareJupiterRecurringCreateTimeOrder(input)),
+    ),
+  );
+
+  server.registerTool(
+    'solana_prepare_jupiter_recurring_cancel_order',
+    {
+      description:
+        'Create a manual-approval inbox item that cancels a Jupiter Recurring order and reclaims remaining funds after wallet approval.',
+      inputSchema: {
+        orderId: z.string().min(1),
+        reason: z.string().max(500).optional(),
+        dueAt: z.string().datetime().optional(),
+        note: z.string().max(500).optional(),
+      },
+    },
+    async (input) => traceTool(
+      'solana_prepare_jupiter_recurring_cancel_order',
+      { cluster, input },
+      async () => jsonReply(await service.prepareJupiterRecurringCancelOrder(input)),
+    ),
+  );
+
+  const priceManagementSchema = {
+    orderId: z.string().min(1),
+    amount: z.string().min(1).optional().describe('Deprecated raw integer amount alias. Prefer amountRaw.'),
+    amountRaw: z.string().min(1).optional().describe('Raw integer amount.'),
+    inputOrOutput: z.enum(['In', 'Out']).optional(),
+    priceOrderDeprecationAccepted: z.literal(true),
+    dueAt: z.string().datetime().optional(),
+    note: z.string().max(500).optional(),
+  };
+
+  server.registerTool(
+    'solana_prepare_jupiter_recurring_deposit_price_order',
+    {
+      description:
+        'Create a manual-approval inbox item to deposit funds into an existing deprecated price-based Jupiter Recurring order. Requires explicit deprecation acceptance.',
+      inputSchema: priceManagementSchema,
+    },
+    async (input) => traceTool(
+      'solana_prepare_jupiter_recurring_deposit_price_order',
+      { cluster, input },
+      async () => jsonReply(await service.prepareJupiterRecurringDepositPriceOrder(input)),
+    ),
+  );
+
+  server.registerTool(
+    'solana_prepare_jupiter_recurring_withdraw_price_order',
+    {
+      description:
+        'Create a manual-approval inbox item to withdraw funds from an existing deprecated price-based Jupiter Recurring order. Requires explicit deprecation acceptance.',
+      inputSchema: priceManagementSchema,
+    },
+    async (input) => traceTool(
+      'solana_prepare_jupiter_recurring_withdraw_price_order',
+      { cluster, input },
+      async () => jsonReply(await service.prepareJupiterRecurringWithdrawPriceOrder(input)),
+    ),
+  );
+}
+
 async function traceTool<T>(tool: string, payload: Record<string, unknown>, run: () => Promise<T> | T) {
   const traceId = newTraceId('tool');
   trace('mcp.tool.start', { traceId, tool, ...payload });
@@ -5089,6 +5268,7 @@ function swapInputSchema() {
     outputToken: z.string().default('USDC'),
     amount: z.string().min(1),
     slippageBps: z.number().int().min(0).optional(),
+    minOutputAmount: z.string().min(1).optional().describe('Optional human output-token amount. Direct/prepared swaps are blocked if the refreshed Jupiter output is below this amount.'),
   };
 }
 
@@ -5201,6 +5381,9 @@ function connectorCapabilitySchema() {
     'treasury',
     'bridge',
     'prediction',
+    'perps',
+    'trigger',
+    'recurring',
   ]);
 }
 

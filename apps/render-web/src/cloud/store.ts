@@ -62,6 +62,7 @@ export interface CloudWorkspaceDeleteCounts {
   nonces: number;
   sessions: number;
   users: number;
+  preferences: number;
 }
 
 export const emptyCloudWorkspaceDeleteCounts = (): CloudWorkspaceDeleteCounts => ({
@@ -77,10 +78,35 @@ export const emptyCloudWorkspaceDeleteCounts = (): CloudWorkspaceDeleteCounts =>
   nonces: 0,
   sessions: 0,
   users: 0,
+  preferences: 0,
 });
 
 export interface CloudWorkspaceDeleteStore {
   deleteCloudWorkspace(walletAddress: string): Promise<CloudWorkspaceDeleteCounts>;
+}
+
+export const CLOUD_PREFERENCE_NAMESPACES = [
+  'agent-policies',
+  'protocol-connectors',
+  'safety-rails',
+  'failure-policies',
+  'custom-tokens',
+  'ai-settings',
+] as const;
+
+export type CloudPreferenceNamespace = (typeof CLOUD_PREFERENCE_NAMESPACES)[number];
+
+export interface CloudPreferenceRecord {
+  namespace: CloudPreferenceNamespace;
+  payload: unknown;
+  updatedAt: string;
+  version: number;
+}
+
+export interface CloudPreferencesStore {
+  listPreferences(walletAddress: string, namespaces?: CloudPreferenceNamespace[]): Promise<CloudPreferenceRecord[]>;
+  getPreference(walletAddress: string, namespace: CloudPreferenceNamespace): Promise<CloudPreferenceRecord | undefined>;
+  savePreference(walletAddress: string, record: CloudPreferenceRecord): Promise<CloudPreferenceRecord>;
 }
 
 export interface WorkflowStore {

@@ -22,6 +22,7 @@ export type { CadenceFields, ExhaustionReason, LifetimeSpend, OccurrenceInfo } f
 
 export { formatOccurrenceStatus, formatScheduleStatus } from './labels.js';
 export type { ApprovalSummaryHint, LabelTone, StatusLabel } from './labels.js';
+export * from './agentPlans.js';
 
 export const WORKFLOW_MODES = ['agentic_cloud', 'browser_fallback', 'local_bridge'] as const;
 export type WorkflowMode = (typeof WORKFLOW_MODES)[number];

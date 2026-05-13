@@ -170,6 +170,7 @@ import {
   isClusterSupported,
   isDappEnabled,
   loadConnectedDapps,
+  normalizeConnectedDapps,
   PROTOCOL_CONNECTORS,
   protocolConnectorPlannerContext,
   saveConnectedDapps,
@@ -230,7 +231,10 @@ type StepName = 'discover' | 'connect' | 'sign' | 'transaction' | 'bridge' | 'in
 type ActiveTab = 'overview' | 'wallet' | 'agent' | 'generated' | 'inbox' | 'completed' | 'schedule' | 'labs' | 'preferences';
 type PreferencesView = 'workspace' | 'ai' | 'access' | 'rules' | 'tokens';
 type CommandCenterView = 'center' | 'ai' | 'storage';
-type CommandCenterIconId = 'wallet' | 'approvals' | 'recurring' | 'proofs';
+type CommandCenterIconId = 'wallet' | 'approvals' | 'recurring' | 'proofs' | 'ai' | 'cloud' | 'connectors' | 'guardrails';
+type CommandPreferenceSnapshotAction =
+  | { type: 'command'; view: CommandCenterView }
+  | { type: 'preferences'; view: PreferencesView };
 type ArtifactView = 'create' | 'signed';
 type OneTimePlanView = 'create' | 'review';
 type RecurringView = 'create' | 'active';
@@ -619,6 +623,24 @@ const KNOWN_BROWSER_TOKENS: Record<string, { symbol: string; mint: string; decim
   WIF: { symbol: 'WIF', mint: WIF_MINT, decimals: 6 },
   PYUSD: { symbol: 'PYUSD', mint: PYUSD_MINT, decimals: 6 },
 };
+
+const CLOUD_PREFERENCE_NAMESPACES = [
+  'agent-policies',
+  'protocol-connectors',
+  'safety-rails',
+  'failure-policies',
+  'custom-tokens',
+  'ai-settings',
+] as const;
+
+type CloudPreferenceNamespace = (typeof CLOUD_PREFERENCE_NAMESPACES)[number];
+
+interface CloudPreferenceRecord {
+  namespace: CloudPreferenceNamespace;
+  payload: unknown;
+  updatedAt: string;
+  version: number;
+}
 const tokenMarketPrices = new Map<string, TokenMarketPrice>();
 const tokenMarketMetadata = new Map<string, TokenMarketMetadata>();
 const tokenSearchStates = new Map<string, TokenSearchState>();
@@ -684,6 +706,7 @@ type NavItem = {
 const NAV_ITEMS: ReadonlyArray<NavItem> = [
   { route: '/', label: 'Home' },
   { route: '/docs', label: 'Docs' },
+  { route: '/builders', label: 'Builders', mobileHidden: true },
   { route: '/cli', label: 'CLI', mobileHidden: true },
   { route: '/desktop', label: 'Desktop App', mobileHidden: true },
   { route: '/demo', label: 'Launch Demo', mobileLabel: 'Demo' },
@@ -934,6 +957,7 @@ interface CloudWorkspaceDeleteCounts {
   nonces?: number;
   sessions?: number;
   users?: number;
+  preferences?: number;
 }
 
 interface CloudWorkspaceDeleteResponse {
@@ -1357,6 +1381,7 @@ interface LabPayload {
 
 interface RecurringDraft {
   actionKind: RecurringActionKind;
+  connectorId: string;
   token: string;
   inputToken: string;
   outputToken: string;
@@ -1549,6 +1574,9 @@ interface PersistedState {
   aiApiFormat?: AiSettings['apiFormat'];
   aiBaseUrl?: string;
   aiModel?: string;
+  aiMultiReviewer?: boolean;
+  aiAutoBackgroundWatch?: boolean;
+  notificationSettings?: Partial<Omit<NotificationSettingsState, 'permission'>>;
 }
 
 interface WorkspaceBackupConfirmState {
@@ -2209,6 +2237,27 @@ const AI_DRAFT_EXAMPLE_PROMPT = 'Review a new DeFi position before signing. Chec
 
 const DEFAULT_FAILURE_POLICY: FailureRetryPolicy = { kind: 'rpc_timeout', mode: 'ask', maxAttempts: 2 };
 
+function defaultNotificationSettings(): NotificationSettingsState {
+  const permission = typeof Notification !== 'undefined' && Notification.permission
+    ? Notification.permission
+    : ('unsupported' as const);
+  return { permission, browser: false, due: false, pending: false, confirmed: false, failed: false };
+}
+
+function notificationSettingsFromPersisted(
+  persistedSettings?: Partial<Omit<NotificationSettingsState, 'permission'>>,
+): NotificationSettingsState {
+  const current = defaultNotificationSettings();
+  return {
+    ...current,
+    browser: persistedSettings?.browser === true,
+    due: persistedSettings?.due === true,
+    pending: persistedSettings?.pending === true,
+    confirmed: persistedSettings?.confirmed === true,
+    failed: persistedSettings?.failed === true,
+  };
+}
+
 const persisted = loadPersistedState();
 const launchParams = readLaunchParams();
 clearSensitiveLaunchParams();
@@ -2470,7 +2519,7 @@ const state: DemoState = {
   safetyRails: loadSafetyRails(),
   attachTxModal: null,
   debugLog: [],
-  notificationSettings: defaultNotificationSettings(),
+  notificationSettings: notificationSettingsFromPersisted(persisted.notificationSettings),
   notifiedRecords: {},
   balances: null,
   preparedActions: initialBrowserWorkflow.preparedActions,
@@ -2834,43 +2883,90 @@ function buildersPage(): string {
     <section class="builders-page" aria-labelledby="builders-title">
       <div class="builders-hero">
         <div class="builders-hero-copy">
-          <p class="eyebrow mini">Builder preview</p>
-          <h1 id="builders-title">Integrate an agent into wallet approval today.</h1>
-          <p>
-            Agentic gives MCP clients, CLI workflows, Vercel AI apps, Solana Agent Kit agents, and protocol
-            connectors one approval boundary: agents prepare the action, and the user's wallet signs.
+          <div class="chain-strip builders-chain-strip" aria-label="Builder signing surfaces">
+            <span class="logo-chip solana-chip">${brandLogo('solana', 'logo-chip-icon')}<span>Solana</span></span>
+            <span class="logo-chip">${brandLogo('agentRouter', 'logo-chip-icon')}<span>MCP</span></span>
+            <span class="logo-chip">${brandLogo('vercel', 'logo-chip-icon')}<span>Vercel AI</span></span>
+            <span class="logo-chip">${brandLogo('solanaMobile', 'logo-chip-icon')}<span>MWA</span></span>
+          </div>
+          <p class="eyebrow mini">Builder integration</p>
+          <h1 id="builders-title">
+            <span class="builders-title-line">Plug any</span>
+            <span class="builders-title-line">Solana agent into</span>
+            <span class="builders-title-line">real wallet</span>
+            <span class="builders-title-line">approval.</span>
+          </h1>
+          <p class="builders-hero-lede">
+            MCP clients, CLI workflows, Vercel AI apps, Solana Agent Kit agents, and protocol connectors can all
+            prepare Solana work through one approval boundary. The agent gets facts, drafts actions, and receives
+            receipts. The user's wallet remains the signer.
           </p>
+          <div class="builders-hero-actions">
+            <a class="button-link nav-pill-link launch-app-link" href="#builder-snippets">Copy code</a>
+            <a class="button-link" href="/docs">Read docs</a>
+          </div>
+          ${agentRuntimeStrip()}
         </div>
-        <div class="builders-boundary-panel" aria-label="Agentic approval boundary">
-          ${builderBoundaryItem('Agent runtime', 'MCP, CLI, Vercel AI, Solana Agent Kit, or app request.')}
-          ${builderBoundaryItem('Approval layer', 'Agentic bridge, inbox, caps, reviews, and receipts.')}
-          ${builderBoundaryItem('Signing boundary', 'Phantom, Solflare, Backpack, Wallet Standard, MWA, or iOS wallet path.')}
+        <div class="builders-flow-panel" aria-label="Agentic approval boundary">
+          <div class="builders-flow-card terminal-preview-window">
+            <div class="terminal-preview-bar">
+              <span></span>
+              <span></span>
+              <span></span>
+              <strong>agentic/builders</strong>
+            </div>
+            <div class="builders-flow-body">
+              ${builderFlowStep('1', 'Agent runtime', 'MCP, CLI, Vercel AI, Solana Agent Kit, or app request.', 'agentRouter')}
+              ${builderFlowStep('2', 'Agentic approval layer', 'Bridge, inbox, caps, reviews, prepared actions, and receipts.', 'codex')}
+              ${builderFlowStep('3', 'User wallet signs', 'Phantom, Solflare, Backpack, Wallet Standard, MWA, or iOS wallet link.', 'phantom')}
+              ${builderFlowStep('4', 'Evidence returns', 'Approved result, transaction id, rejection reason, or receipt context.', 'solana')}
+            </div>
+          </div>
         </div>
       </div>
 
-      <div class="builders-section-heading">
+      <section class="builders-quickstart" aria-labelledby="builders-quickstart-title">
+        <div class="builders-section-heading">
+          <p class="eyebrow mini">Integration path</p>
+          <h2 id="builders-quickstart-title">A builder can wire this in today.</h2>
+          <p>Start the local runtime, register the agent surface, let the agent read facts or prepare work, then send every write through wallet approval.</p>
+        </div>
+        <div class="builders-setup-grid" aria-label="Builder setup sequence">
+          ${builderSetupStep('01', 'Run the local approval runtime', 'Use the one-shot CLI or Desktop App to start the bridge and wallet host.')}
+          ${builderSetupStep('02', 'Connect an agent surface', 'Register MCP, import Vercel AI tools, or drop the BaseWallet adapter into Solana Agent Kit.')}
+          ${builderSetupStep('03', 'Expose bounded capabilities', 'Reads return facts. Writes become prepared actions with caps, review copy, and safety checks.')}
+          ${builderSetupStep('04', 'Keep the wallet final', 'The existing wallet approves, rejects, signs, submits when supported, and leaves receipts behind.')}
+        </div>
+      </section>
+
+      <div id="builder-snippets" class="builders-section-heading">
+        <p class="eyebrow mini">Starter snippets</p>
         <h2>Copy the path that matches your stack.</h2>
-        <p>These snippets are static preview copy for the hidden builder page. They do not connect a wallet or mutate local state.</p>
+        <p>These snippets are safe setup copy. They do not connect a wallet or mutate local state until a builder runs them in their own environment.</p>
       </div>
 
-      <div class="builders-integration-grid">
+      <div class="builders-integration-grid" aria-label="Builder integration snippets">
         ${builderIntegrationCard(
           'CLI runtime',
           'Start the local bridge, wallet host, and terminal approval app from npm.',
           NPM_EXEC_COMMAND,
           'CLI one-shot command',
+          'agentRouter',
+          'No install',
         )}
         ${builderIntegrationCard(
           'MCP client',
           'Register the MCP server against the local approval bridge for Claude, Codex, or another MCP host.',
           `claude mcp add --scope user solana-agent-wallet -- \\
-  node /absolute/path/to/solana-agent-wallet-adapter/packages/mcp-server/dist/bin/server.js \\
+  node <repo>/packages/mcp-server/dist/bin/server.js \\
   --bridge-url http://127.0.0.1:8787 \\
   --bridge-token local-agent-wallet \\
-  --env /absolute/path/to/solana-agent-wallet-adapter/.env \\
-  --config /absolute/path/to/solana-agent-wallet-adapter/agent-wallet.config.json \\
-  --prepared-actions /absolute/path/to/solana-agent-wallet-adapter/.agent-wallet/prepared-actions.json`,
+  --env <repo>/.env \\
+  --config <repo>/agent-wallet.config.json \\
+  --prepared-actions <repo>/.agent-wallet/prepared-actions.json`,
           'MCP registration command',
+          'claude',
+          'Agent clients',
         )}
         ${builderIntegrationCard(
           'Vercel AI SDK',
@@ -2887,6 +2983,8 @@ const backend = new WalletStandardWebBackend({
 const client = new SolanaSigningClient({ backend });
 const tools = createSolanaTools({ client });`,
           'Vercel AI SDK snippet',
+          'vercel',
+          'AI SDK tools',
         )}
         ${builderIntegrationCard(
           'Solana Agent Kit',
@@ -2909,68 +3007,156 @@ const agent = new SolanaAgentKit(wallet, 'https://api.devnet.solana.com', {
   OPENAI_API_KEY: process.env.OPENAI_API_KEY,
 });`,
           'Solana Agent Kit snippet',
+          'solana',
+          'BaseWallet',
         )}
         ${builderIntegrationCard(
           'Connector specs',
-          'Use machine-readable connector packs to tell agents what can be read, prepared, or refused.',
+          'Use machine-readable connector packs to tell agents what can be read, prepared, capped, or refused.',
           `spec/connectors/connector-pack.schema.json
 spec/connectors/kamino.connector.json
 spec/connectors/jupiter.connector.json
 spec/connectors/safety-phrases.json`,
           'Connector spec paths',
+          'jupiter',
+          'Capabilities',
         )}
         ${builderIntegrationCard(
           'Example prompts',
           'Prompt an agent to inspect, prepare, queue, or explain approval-bound Solana work.',
-          `Use solana-agent-wallet to show my wallet status.
-Use solana-agent-wallet to show my SOL and token balances.
+          `Use solana-agent-wallet to show my wallet status and enabled connectors.
+Use solana-agent-wallet to show my SOL, token balances, and open approval inbox.
 Use solana-agent-wallet to quote swapping 0.01 SOL to USDC. Do not execute it.
 Use solana-agent-wallet to prepare sending 0.01 SOL to <recipient> for wallet approval.
-Use solana-agent-wallet to show which protocol connectors are available.`,
+Use solana-agent-wallet to create a weekly 10 USDC recurring payment to <recipient> for manual approval. Stop after 2026-12-31.
+Use solana-agent-wallet to show receipts and policy context for the last approved action.`,
           'Example prompt pack',
+          'codex',
+          'Prompt pack',
         )}
       </div>
+
+      <section class="builders-capability-section" aria-labelledby="builders-capability-title">
+        <div class="builders-section-heading">
+          <p class="eyebrow mini">Capability surface</p>
+          <h2 id="builders-capability-title">One approval layer, multiple builder entrypoints.</h2>
+          <p>The same <code>WalletBackend</code> boundary sits under MCP, framework adapters, mobile wallet paths, and protocol connector packs.</p>
+        </div>
+        <div class="builders-package-grid">
+          ${builderPackageCard('Core client', '@solana-agent-wallet-adapter/core', 'WalletBackend, SolanaSigningClient, approval resources, errors, and typed signing requests.', 'solana')}
+          ${builderPackageCard('MCP server', '@solana-agent-wallet-adapter/mcp-server', 'Wallet status, balances, connector facts, prepared actions, inbox, recurring schedules, swaps, and receipts.', 'agentRouter')}
+          ${builderPackageCard('Wallet transports', 'wallet-standard-web / mwa-mobile-web / ios-link', 'Browser Wallet Standard, Android MWA, Seed Vault surfaces, and iOS wallet link compatibility.', 'solanaMobile')}
+          ${builderPackageCard('Framework adapters', 'vercel-ai / solana-agent-kit', 'Vercel AI tool definitions and Solana Agent Kit BaseWallet replacement with no agent-held key.', 'vercel')}
+        </div>
+      </section>
 
       <div class="builders-contract-band" aria-label="Builder contract">
         ${builderContractItem('Reads are facts', 'Balances, connector capabilities, positions, rewards, and quotes inform the agent response.')}
         ${builderContractItem('Writes are prepared work', 'Transfers, swaps, deposits, withdrawals, and Blink actions wait for approval.')}
         ${builderContractItem('Wallet remains final', 'No adapter path can approve, sign, submit, or bypass the user wallet.')}
       </div>
+
+      <section class="builders-final-cta" aria-label="Open builder approval workspace">
+        <div>
+          <p class="eyebrow mini">Approval workspace</p>
+          <h2>Test the real wallet boundary after the copy lands.</h2>
+          <p>Launch App opens the browser and mobile-web approval surface. Launch Demo stays available for a guided review before connecting a wallet.</p>
+        </div>
+        <div class="builders-final-actions">
+          <a class="button-link nav-pill-link launch-app-link" href="/app">Launch App</a>
+          <a class="button-link" href="/demo">Launch Demo</a>
+        </div>
+      </section>
     </section>
   `;
 }
 
-function builderBoundaryItem(label: string, value: string): string {
+function builderFlowStep(
+  step: string,
+  label: string,
+  detail: string,
+  logoId: BrandLogoId,
+): string {
   return `
-    <div class="builder-boundary-item">
-      <span>${escapeHtml(label)}</span>
-      <strong>${escapeHtml(value)}</strong>
+    <div class="builder-flow-step">
+      <div class="builder-flow-node">
+        <span>${escapeHtml(step)}</span>
+        ${brandLogo(logoId, 'builder-flow-logo')}
+      </div>
+      <div>
+        <span>${escapeHtml(label)}</span>
+        <strong>${escapeHtml(detail)}</strong>
+      </div>
     </div>
   `;
 }
 
-function builderIntegrationCard(title: string, detail: string, snippet: string, copyName: string): string {
+function builderSetupStep(step: string, title: string, detail: string): string {
+  return `
+    <article class="builder-setup-step">
+      <span>${escapeHtml(step)}</span>
+      <h3>${escapeHtml(title)}</h3>
+      <p>${escapeHtml(detail)}</p>
+    </article>
+  `;
+}
+
+function builderIntegrationCard(
+  title: string,
+  detail: string,
+  snippet: string,
+  copyName: string,
+  logoId: BrandLogoId,
+  badge: string,
+): string {
   const copyId = commandCopyId('builders', title, snippet);
   const copied = state.recentCopyId === copyId;
   return `
     <article class="builder-integration-card ${copied ? 'copied' : ''}">
+      <div class="builder-integration-head">
+        ${brandLogo(logoId, 'builder-card-logo')}
+        <span>${escapeHtml(badge)}</span>
+      </div>
       <div class="builder-integration-copy">
         <span>${escapeHtml(title)}</span>
         <p>${escapeHtml(detail)}</p>
       </div>
-      <div class="builder-snippet">
-        <pre><code>${escapeHtml(snippet)}</code></pre>
-        <button
-          type="button"
-          class="${copied ? 'copied' : ''}"
-          data-copy="${escapeHtml(snippet)}"
-          data-copy-id="${escapeHtml(copyId)}"
-          data-copy-name="${escapeHtml(copyName)}"
-          title="Copy ${escapeHtml(copyName)}"
-        >
-          ${copied ? 'Copied' : 'Copy'}
-        </button>
+      <div class="builder-snippet terminal-preview-window">
+        <div class="terminal-preview-bar builder-snippet-bar">
+          <span></span>
+          <span></span>
+          <span></span>
+          <strong>${escapeHtml(copyName)}</strong>
+        </div>
+        <div class="builder-snippet-body">
+          <pre><code>${escapeHtml(snippet)}</code></pre>
+          <button
+            type="button"
+            class="${copied ? 'copied' : ''}"
+            data-copy="${escapeHtml(snippet)}"
+            data-copy-id="${escapeHtml(copyId)}"
+            data-copy-name="${escapeHtml(copyName)}"
+            title="Copy ${escapeHtml(copyName)}"
+          >
+            ${copied ? 'Copied' : 'Copy'}
+          </button>
+        </div>
       </div>
+    </article>
+  `;
+}
+
+function builderPackageCard(title: string, packageName: string, detail: string, logoId: BrandLogoId): string {
+  return `
+    <article class="builder-package-card">
+      <div class="builder-package-head">
+        ${brandLogo(logoId, 'builder-card-logo')}
+        <div>
+          <h3>${escapeHtml(title)}</h3>
+          <code>${escapeHtml(packageName)}</code>
+        </div>
+      </div>
+      <p>${escapeHtml(detail)}</p>
     </article>
   `;
 }
@@ -2990,13 +3176,17 @@ function appPage(): string {
 
 function cliPage(): string {
   return `
+    ${cliHeroSection()}
     ${cliInstallSection()}
     ${localDevelopmentSection()}
   `;
 }
 
 function desktopPage(): string {
-  return desktopDownloadSection();
+  return `
+    ${desktopHeroSection()}
+    ${desktopDownloadSection()}
+  `;
 }
 
 function androidPage(): string {
@@ -3964,6 +4154,126 @@ function walletDirectoryCard(
   `;
 }
 
+function cliHeroSection(): string {
+  return `
+    <section class="tooling-hero cli-hero" aria-labelledby="cli-hero-title">
+      <div class="tooling-hero-copy">
+        <div class="tooling-chip-strip" aria-label="CLI integration surfaces">
+          <span class="logo-chip solana-chip">${brandLogo('solana', 'logo-chip-icon')}<span>Solana</span></span>
+          <span class="logo-chip">${brandLogo('agentRouter', 'logo-chip-icon')}<span>MCP</span></span>
+          <span class="logo-chip">${brandLogo('codex', 'logo-chip-icon')}<span>Codex</span></span>
+          <span class="logo-chip">${brandLogo('vercel', 'logo-chip-icon')}<span>Vercel AI</span></span>
+        </div>
+        <p class="eyebrow mini">Local approval runtime</p>
+        <h1 id="cli-hero-title">Start the wallet approval bridge from Terminal.</h1>
+        <p>
+          The CLI launches the local bridge, wallet host, and terminal approval app in one command. Agents can prepare
+          requests through MCP or app runtimes, while the user's wallet remains the signer.
+        </p>
+        <div class="tooling-hero-actions">
+          <button
+            class="primary"
+            data-copy="${escapeHtml(NPM_EXEC_COMMAND)}"
+            data-copy-name="CLI one-shot command"
+            title="Copy CLI one-shot command"
+          >
+            Copy npm exec
+          </button>
+          <a class="button-link" href="${RELEASE_PAGE_URL}" target="_blank" rel="noreferrer">View releases</a>
+        </div>
+      </div>
+      <div class="tooling-terminal terminal-preview-window">
+        <div class="terminal-preview-bar">
+          <span></span>
+          <span></span>
+          <span></span>
+          <strong>agentic-cli</strong>
+        </div>
+        <div class="terminal-preview-body">
+          <p><span>$</span> ${escapeHtml(NPM_EXEC_COMMAND)}<i class="terminal-caret" aria-hidden="true"></i></p>
+          <p class="warn">bridge starts at http://127.0.0.1:8787</p>
+          <p><span>wallet</span> Phantom, Solflare, Backpack, Wallet Standard, or MWA</p>
+          <p><span>agent</span> prepare transfer, swap, deposit, withdrawal, or Blink action</p>
+          <p class="ok">result wallet approval required before signing</p>
+        </div>
+      </div>
+      <div class="tooling-proof-grid" aria-label="CLI runtime model">
+        ${toolingProofCard('Bridge', 'Local only', 'HTTP approval bridge stays on 127.0.0.1 with a user-owned token.', 'agentRouter')}
+        ${toolingProofCard('Wallet host', 'External signer', 'Browser and mobile wallets approve the prepared transaction bytes.', 'phantom')}
+        ${toolingProofCard('Receipts', 'Auditable handoff', 'Agents get bounded results, denials, and receipts instead of private keys.', 'solana')}
+      </div>
+    </section>
+  `;
+}
+
+function desktopHeroSection(): string {
+  return `
+    <section class="tooling-hero desktop-hero" aria-labelledby="desktop-hero-title">
+      <div class="tooling-hero-copy">
+        <div class="tooling-chip-strip" aria-label="Desktop app surfaces">
+          <span class="logo-chip solana-chip">${brandLogo('solana', 'logo-chip-icon')}<span>Solana</span></span>
+          <span class="logo-chip">${brandLogo('phantom', 'logo-chip-icon')}<span>Wallet approvals</span></span>
+          <span class="logo-chip">${brandLogo('solanaMobile', 'logo-chip-icon')}<span>MWA</span></span>
+        </div>
+        <p class="eyebrow mini">Desktop App</p>
+        <h1 id="desktop-hero-title">Run the bridge with controls, logs, and a visible approval queue.</h1>
+        <p>
+          The Desktop App is the same local approval boundary with a fuller operator surface: start or stop the bridge,
+          watch pending work, inspect receipts, and diagnose wallet-host state without living in Terminal.
+        </p>
+        <div class="tooling-hero-actions">
+          <a class="button-link nav-pill-link launch-app-link" href="${RELEASE_PAGE_URL}" target="_blank" rel="noreferrer">
+            Download latest
+          </a>
+          <a class="button-link" href="/cli">Use CLI instead</a>
+        </div>
+      </div>
+      <div class="desktop-app-preview terminal-preview-window">
+        <div class="terminal-preview-bar">
+          <span></span>
+          <span></span>
+          <span></span>
+          <strong>Agentic Desktop</strong>
+        </div>
+        <div class="desktop-preview-body">
+          ${desktopPreviewRow('Bridge', 'Running locally', '127.0.0.1:8787', 'ok')}
+          ${desktopPreviewRow('Needs approval', 'Swap SOL to USDC', 'Wallet review waiting', 'live')}
+          ${desktopPreviewRow('Wallet host', 'Phantom connected', 'Signer remains external', 'ok')}
+          ${desktopPreviewRow('Receipts', 'Policy context saved', 'Evidence ready for agent', 'idle')}
+        </div>
+      </div>
+      <div class="tooling-proof-grid" aria-label="Desktop app model">
+        ${toolingProofCard('Queue', 'Needs Approval inbox', 'Review prepared agent work before any wallet signature is requested.', 'codex')}
+        ${toolingProofCard('Logs', 'Bridge diagnostics', 'See local bridge, wallet host, and request lifecycle state in one place.', 'agentRouter')}
+        ${toolingProofCard('Wallets', 'Same signer boundary', 'Desktop controls the runtime; Phantom, Solflare, Backpack, MWA, or Wallet Standard still sign.', 'solanaMobile')}
+      </div>
+    </section>
+  `;
+}
+
+function toolingProofCard(kicker: string, title: string, detail: string, logoId: BrandLogoId): string {
+  return `
+    <article class="tooling-proof-card">
+      <div>
+        ${brandLogo(logoId, 'tooling-proof-logo')}
+        <span>${escapeHtml(kicker)}</span>
+      </div>
+      <h3>${escapeHtml(title)}</h3>
+      <p>${escapeHtml(detail)}</p>
+    </article>
+  `;
+}
+
+function desktopPreviewRow(kicker: string, title: string, detail: string, tone: 'ok' | 'live' | 'idle'): string {
+  return `
+    <div class="desktop-preview-row ${escapeHtml(tone)}">
+      <span>${escapeHtml(kicker)}</span>
+      <strong>${escapeHtml(title)}</strong>
+      <em>${escapeHtml(detail)}</em>
+    </div>
+  `;
+}
+
 function cliInstallSection(): string {
   return `
     <section id="cli" class="runtime-section cli-section" aria-labelledby="cli-title">
@@ -4077,17 +4387,28 @@ function guidedDemoWalkthroughPage(): string {
     <section id="demo-guide" class="guided-demo-page" aria-labelledby="guided-demo-title">
       <div class="guided-demo-hero">
         <div class="guided-demo-hero-copy">
+          <div class="tooling-chip-strip demo-chip-strip" aria-label="Demo approval surfaces">
+            <span class="logo-chip solana-chip">${brandLogo('solana', 'logo-chip-icon')}<span>Solana</span></span>
+            <span class="logo-chip">${brandLogo('agentRouter', 'logo-chip-icon')}<span>Agent runtime</span></span>
+            <span class="logo-chip">${brandLogo('phantom', 'logo-chip-icon')}<span>Wallet review</span></span>
+            <span class="logo-chip">${brandLogo('solanaMobile', 'logo-chip-icon')}<span>MWA</span></span>
+          </div>
           <p class="eyebrow mini">Guided demo</p>
-          <h1 id="guided-demo-title">The agent prepares. You approve.</h1>
+          <h1 id="guided-demo-title">Preview wallet approval without connecting a wallet.</h1>
           <p>
             Pick a practical Solana request and watch Agentic turn it into a bounded wallet review. This demo
             simulates the approval flow, does not move funds, and never asks you to start the local bridge.
           </p>
+          <div class="guided-demo-hero-actions">
+            <a class="button-link nav-pill-link launch-app-link" href="#demo-runner">Walk through demo</a>
+            <a class="button-link" href="/app">Open full app</a>
+          </div>
         </div>
+        ${guidedDemoPreviewPanel(scenario)}
         <div class="guided-demo-trust-grid" aria-label="Demo safety model">
-          ${guidedDemoTrustItem('No key handoff', 'The agent never receives your seed phrase, private key, or unlimited signer.')}
-          ${guidedDemoTrustItem('Explicit approval', 'Prepared actions wait until the wallet owner approves or denies them.')}
-          ${guidedDemoTrustItem('Receipt trail', 'Every demo decision ends with a receipt you can inspect or copy.')}
+          ${guidedDemoTrustItem('No key handoff', 'The agent never receives your seed phrase, private key, or unlimited signer.', 'agentRouter')}
+          ${guidedDemoTrustItem('Explicit approval', 'Prepared actions wait until the wallet owner approves or denies them.', 'phantom')}
+          ${guidedDemoTrustItem('Receipt trail', 'Every demo decision ends with a receipt you can inspect or copy.', 'solana')}
         </div>
       </div>
 
@@ -4103,15 +4424,23 @@ function guidedDemoWalkthroughPage(): string {
           </div>
         </aside>
 
-        <section class="guided-demo-runner" aria-label="Simulated approval walkthrough">
-          ${guidedDemoStepRail()}
-          <div class="guided-demo-runner-body">
-            ${guidedDemoRequestCard(scenario)}
-            ${guidedDemoPreparedPlan(scenario)}
-            ${guidedDemoReviewCard(scenario)}
-            ${guidedDemoReceiptCard(scenario)}
+        <section id="demo-runner" class="guided-demo-runner terminal-preview-window" aria-label="Simulated approval walkthrough">
+          <div class="terminal-preview-bar guided-demo-runner-bar">
+            <span></span>
+            <span></span>
+            <span></span>
+            <strong>approval-demo</strong>
           </div>
-          ${guidedDemoActions()}
+          <div class="guided-demo-runner-inner">
+            ${guidedDemoStepRail()}
+            <div class="guided-demo-runner-body">
+              ${guidedDemoRequestCard(scenario)}
+              ${guidedDemoPreparedPlan(scenario)}
+              ${guidedDemoReviewCard(scenario)}
+              ${guidedDemoReceiptCard(scenario)}
+            </div>
+            ${guidedDemoActions()}
+          </div>
         </section>
       </div>
 
@@ -4127,10 +4456,55 @@ function guidedDemoWalkthroughPage(): string {
   `;
 }
 
-function guidedDemoTrustItem(title: string, detail: string): string {
+function guidedDemoPreviewPanel(scenario: GuidedDemoScenario): string {
+  const prepared = guidedDemoAtLeast('prepared');
+  const queued = guidedDemoAtLeast('queued');
+  const receiptReady = state.guidedDemo.stage === 'receipt';
+  return `
+    <div class="guided-demo-preview terminal-preview-window" aria-label="Current demo route preview">
+      <div class="terminal-preview-bar">
+        <span></span>
+        <span></span>
+        <span></span>
+        <strong>simulated-route</strong>
+      </div>
+      <div class="guided-demo-preview-body">
+        <p><span>user</span> ${escapeHtml(scenario.prompt)}</p>
+        ${guidedDemoPreviewRow('Agent prepares', scenario.planTitle, scenario.detail, prepared ? 'complete' : 'active')}
+        ${guidedDemoPreviewRow(
+          'Wallet reviews',
+          'Wallet-owned signing boundary',
+          scenario.approvalBoundary,
+          queued ? 'complete' : prepared ? 'active' : 'idle',
+        )}
+        ${guidedDemoPreviewRow(
+          'Receipt records',
+          receiptReady ? scenario.receiptSummary : 'Decision evidence waits for approval or denial.',
+          receiptReady ? formatDateTime(state.guidedDemo.receiptCreatedAt) : 'No funds move in this demo.',
+          receiptReady ? 'complete' : 'idle',
+        )}
+      </div>
+    </div>
+  `;
+}
+
+function guidedDemoPreviewRow(kicker: string, title: string, detail: string, tone: 'active' | 'complete' | 'idle'): string {
+  return `
+    <div class="guided-demo-preview-row ${escapeHtml(tone)}">
+      <span>${escapeHtml(kicker)}</span>
+      <strong>${escapeHtml(title)}</strong>
+      <em>${escapeHtml(detail)}</em>
+    </div>
+  `;
+}
+
+function guidedDemoTrustItem(title: string, detail: string, logoId: BrandLogoId): string {
   return `
     <article class="guided-demo-trust-item">
-      <strong>${escapeHtml(title)}</strong>
+      <div>
+        ${brandLogo(logoId, 'guided-demo-trust-logo')}
+        <strong>${escapeHtml(title)}</strong>
+      </div>
       <p>${escapeHtml(detail)}</p>
     </article>
   `;
@@ -4145,11 +4519,28 @@ function guidedDemoScenarioCard(scenario: GuidedDemoScenario): string {
       aria-pressed="${active ? 'true' : 'false'}"
       ${state.busy ? 'disabled' : ''}
     >
-      <span>${escapeHtml(scenario.eyebrow)}</span>
+      <div class="guided-demo-scenario-head">
+        ${brandLogo(guidedDemoScenarioLogo(scenario.id), 'guided-demo-scenario-logo')}
+        <span>${escapeHtml(scenario.eyebrow)}</span>
+      </div>
       <strong>${escapeHtml(scenario.title)}</strong>
       <em>${escapeHtml(scenario.prompt)}</em>
     </button>
   `;
+}
+
+function guidedDemoScenarioLogo(scenarioId: GuidedDemoScenarioId): BrandLogoId {
+  switch (scenarioId) {
+    case 'swap':
+      return 'jupiter';
+    case 'dca':
+      return 'solanaMobile';
+    case 'payouts':
+      return 'codex';
+    case 'transfer':
+    default:
+      return 'solana';
+  }
 }
 
 function guidedDemoStepRail(): string {
@@ -6883,6 +7274,7 @@ function handleConnectedDappAction(button: HTMLButtonElement): void {
     const updated = setConnectedDappEnabled(state.connectedDapps, id, next);
     state.connectedDapps = updated;
     saveConnectedDapps(updated);
+    void syncCloudPreference('protocol-connectors');
     pushToast(
       'success',
       next ? `${adapter.name} enabled` : `${adapter.name} disabled`,
@@ -7681,9 +8073,186 @@ function commandCenterOverviewPanel(): string {
           ${commandCenterCard('Repeat Payments', `${recurringActive.length} active`, recurringActive[0] ? scheduleLabel(recurringActive[0]) : 'No active repeat payments', recurringActive.length ? 'good' : 'idle', 'open-recurring', 'Open', 'recurring')}
           ${commandCenterCard('Save Proof', proofLabel, latestProof ? formatDateTime(latestProof.createdAt) : latestHistory ? formatDateTime(latestHistory.completedAt) : 'Save a proof or complete an approval', latestProof || latestHistory ? 'good' : 'idle', 'open-proofs', latestProof || latestHistory ? 'View' : 'Save', 'proofs')}
         </div>
+
+        ${commandPreferenceSnapshot()}
       </section>
     </div>
   `;
+}
+
+interface CommandPreferenceSnapshotCard {
+  label: string;
+  value: string;
+  detail: string;
+  meta: string;
+  tone: 'good' | 'warn' | 'idle';
+  icon: CommandCenterIconId;
+  actionLabel: string;
+  action: CommandPreferenceSnapshotAction;
+}
+
+function commandPreferenceSnapshot(): string {
+  const cards: CommandPreferenceSnapshotCard[] = [
+    commandAiPreferenceSnapshotCard(),
+    commandCloudPreferenceSnapshotCard(),
+    commandConnectorsPreferenceSnapshotCard(),
+    commandGuardrailsPreferenceSnapshotCard(),
+  ];
+  return `
+    <section class="command-preference-snapshot" aria-label="Preference snapshot">
+      <div class="command-preference-snapshot-head">
+        <div>
+          <span>Preference snapshot</span>
+          <h3>Current setup</h3>
+        </div>
+        <p>Most important workspace settings at a glance.</p>
+      </div>
+      <div class="command-preference-snapshot-grid">
+        ${cards.map(commandPreferenceSnapshotCard).join('')}
+      </div>
+    </section>
+  `;
+}
+
+function commandAiPreferenceSnapshotCard(): CommandPreferenceSnapshotCard {
+  const configured = isAiConfiguredForCurrentMode();
+  const path = aiPathPreferenceLabel(state.aiSettings.mode);
+  const providerPreset = aiProviderPresetById(state.aiSettings.provider);
+  const provider = state.aiSettings.mode === 'bridge' && state.aiStatus?.provider
+    ? state.aiStatus.provider
+    : providerPreset.label;
+  const model = state.aiSettings.mode === 'bridge' && state.aiStatus?.model
+    ? state.aiStatus.model
+    : state.aiSettings.model || providerPreset.model;
+  const readiness = aiReadinessLabel(state.aiStatus);
+  return {
+    label: 'AI path',
+    value: configured ? `${path} connected` : `${path} selected`,
+    detail: `${provider} - ${model}`,
+    meta: readiness,
+    tone: configured ? 'good' : 'warn',
+    icon: 'ai',
+    actionLabel: configured ? 'Open' : 'Connect',
+    action: { type: 'command', view: 'ai' },
+  };
+}
+
+function commandCloudPreferenceSnapshotCard(): CommandPreferenceSnapshotCard {
+  const signedIn = state.cloudSession.status === 'signed-in';
+  const matched = cloudSessionMatchesWallet();
+  const mismatch = cloudSessionWalletMismatch();
+  const reconnectNeeded = signedIn && !matched && !mismatch;
+  const unavailable = state.cloudSession.status === 'unavailable';
+  const value = unavailable
+    ? 'Cloud unavailable'
+    : matched
+      ? 'Cloud connected'
+      : signedIn
+        ? reconnectNeeded
+          ? 'Reconnect wallet'
+          : 'Wallet mismatch'
+        : 'Signed out';
+  const detail = matched
+    ? `Signed in as ${short(state.cloudSession.walletAddress)}`
+    : signedIn
+      ? `Signed in as ${short(state.cloudSession.walletAddress)}. Connect the matching wallet.`
+      : unavailable
+        ? 'Workflow data stays saved on this device.'
+        : 'Cloud sync is off; local workspace is active.';
+  const meta = matched
+    ? 'Sync available'
+    : signedIn
+      ? 'Wallet identity issue'
+      : unavailable
+        ? 'Local only'
+        : 'Local workspace';
+  return {
+    label: 'Cloud storage',
+    value,
+    detail,
+    meta,
+    tone: matched ? 'good' : signedIn ? 'warn' : 'idle',
+    icon: 'cloud',
+    actionLabel: matched ? 'Open' : 'Connect',
+    action: { type: 'command', view: 'storage' },
+  };
+}
+
+function commandConnectorsPreferenceSnapshotCard(): CommandPreferenceSnapshotCard {
+  const enabledConnectors = enabledProtocolConnectors(state.connectedDapps, state.cluster);
+  const enabledCount = enabledConnectors.length;
+  const names = enabledConnectors.slice(0, 2).map((connector) => connector.name).join(', ');
+  const extra = enabledCount - 2;
+  const detail = enabledCount
+    ? `${names}${extra > 0 ? ` +${extra} more` : ''}`
+    : `No connectors enabled for ${titleCaseCluster(state.cluster)}.`;
+  return {
+    label: 'Connectors',
+    value: `${enabledCount} ${enabledCount === 1 ? 'connector' : 'connectors'} set`,
+    detail,
+    meta: `${titleCaseCluster(state.cluster)} cluster`,
+    tone: enabledCount ? 'good' : 'idle',
+    icon: 'connectors',
+    actionLabel: 'Manage',
+    action: { type: 'preferences', view: 'access' },
+  };
+}
+
+function commandGuardrailsPreferenceSnapshotCard(): CommandPreferenceSnapshotCard {
+  const railsOn = safetyRailsEnabledCount();
+  const enabledPolicies = state.agentPolicies.filter((policy) => policy.enabled).length;
+  const recipients = state.recipientRules.recipients.length;
+  const alertsOn = notificationEnabledCount();
+  const hasCustomReview = railsOn > 0 || enabledPolicies > 0 || recipients > 0 || alertsOn > 0;
+  return {
+    label: 'Review rules',
+    value: hasCustomReview ? 'Preferences set' : 'Defaults active',
+    detail: `${countPhrase(recipients, 'recipient')} - ${countPhrase(railsOn, 'rail')} - ${countPhrase(enabledPolicies, 'policy', 'policies')} - ${countPhrase(alertsOn, 'alert')}`,
+    meta: hasCustomReview ? 'Review extras on' : 'No extra rules',
+    tone: hasCustomReview ? 'good' : 'idle',
+    icon: 'guardrails',
+    actionLabel: 'Review',
+    action: { type: 'preferences', view: 'rules' },
+  };
+}
+
+function commandPreferenceSnapshotCard(card: CommandPreferenceSnapshotCard): string {
+  return `
+    <article class="command-preference-card ${escapeHtml(card.tone)}">
+      <div class="command-preference-card-label">
+        ${commandCenterIcon(card.icon)}
+        <span>${escapeHtml(card.label)}</span>
+      </div>
+      <strong>${escapeHtml(card.value)}</strong>
+      <p>${escapeHtml(card.detail)}</p>
+      <div class="command-preference-card-foot">
+        <em>${escapeHtml(card.meta)}</em>
+        ${commandPreferenceSnapshotButton(card)}
+      </div>
+    </article>
+  `;
+}
+
+function commandPreferenceSnapshotButton(card: CommandPreferenceSnapshotCard): string {
+  if (card.action.type === 'command') {
+    return `<button type="button" class="utility" data-command-center-view="${escapeHtml(card.action.view)}">${escapeHtml(card.actionLabel)}</button>`;
+  }
+  return `<button type="button" class="utility" data-tab="preferences" data-preferences-view="${escapeHtml(card.action.view)}">${escapeHtml(card.actionLabel)}</button>`;
+}
+
+function aiPathPreferenceLabel(mode: AiSettings['mode']): string {
+  switch (mode) {
+    case 'hosted':
+      return 'Hosted BYOK';
+    case 'bridge':
+      return 'Local Bridge';
+    case 'session':
+      return IS_ANDROID_APP ? 'Android Session' : 'Browser Session';
+  }
+}
+
+function countPhrase(count: number, singular: string, plural = `${singular}s`): string {
+  return `${count} ${count === 1 ? singular : plural}`;
 }
 
 function approvalsCardDetail(openApprovals: PreparedAction[]): string {
@@ -8265,6 +8834,10 @@ function commandCenterIcon(icon: CommandCenterIconId): string {
     approvals: '<path d="M8.75 5.75h6.5" /><path d="M9.25 4.25h5.5a1 1 0 0 1 1 1v1.5h-7.5v-1.5a1 1 0 0 1 1-1Z" /><path d="M7 6.75H5.75a2 2 0 0 0-2 2v9.5a2 2 0 0 0 2 2h12.5a2 2 0 0 0 2-2v-9.5a2 2 0 0 0-2-2H17" /><path d="m8 14 2.35 2.35L16 10.75" />',
     recurring: '<path d="M17.25 7.25h-7.5a4 4 0 0 0-3.63 2.31" /><path d="m14.75 4.75 2.5 2.5-2.5 2.5" /><path d="M6.75 16.75h7.5a4 4 0 0 0 3.63-2.31" /><path d="m9.25 19.25-2.5-2.5 2.5-2.5" />',
     proofs: '<path d="M7.25 3.75h6.9l3.6 3.6v10.9a2 2 0 0 1-2 2h-8.5a2 2 0 0 1-2-2V5.75a2 2 0 0 1 2-2Z" /><path d="M14 3.95V7.5h3.55" /><path d="m8.5 13.85 2.15 2.15 4.85-5" />',
+    ai: '<path d="M12 3.75v2.5" /><path d="M12 17.75v2.5" /><path d="M3.75 12h2.5" /><path d="M17.75 12h2.5" /><path d="m6.35 6.35 1.77 1.77" /><path d="m15.88 15.88 1.77 1.77" /><path d="m17.65 6.35-1.77 1.77" /><path d="m8.12 15.88-1.77 1.77" /><circle cx="12" cy="12" r="3.25" />',
+    cloud: '<path d="M7.25 17.75h9.25a4 4 0 0 0 .62-7.95 5.25 5.25 0 0 0-9.97-1.66 3.75 3.75 0 0 0 .1 9.61Z" /><path d="m9.25 13.25 1.85 1.85 3.9-4.1" />',
+    connectors: '<path d="M8.25 7.25h-1.5a3 3 0 0 0 0 6h1.5" /><path d="M15.75 7.25h1.5a3 3 0 0 1 0 6h-1.5" /><path d="M8.75 10.25h6.5" /><path d="M6.5 16.75h11" /><path d="M9.5 19.25h5" />',
+    guardrails: '<path d="M12 3.75 18.25 6v5.25c0 4.05-2.44 7.25-6.25 9-3.81-1.75-6.25-4.95-6.25-9V6L12 3.75Z" /><path d="m8.85 12.35 2.05 2.05 4.25-4.65" />',
   };
   return `
     <svg class="command-center-card-icon" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
@@ -8371,13 +8944,15 @@ function agentPlanPanel(): string {
 }
 
 function oneTimePlanTabs(): string {
+  const creating = state.oneTimePlanView === 'create';
   return `
-    <div class="one-time-plan-control-row">
+    <div class="one-time-plan-control-row ${creating ? 'has-connector' : ''}">
       <div class="tabs compact-tabs one-time-plan-tabs" role="tablist" aria-label="One-time plan steps">
         ${oneTimePlanViewButton('create', 'Start')}
         ${oneTimePlanViewButton('review', 'Check')}
       </div>
-      ${state.oneTimePlanView === 'create' ? templateOutcomeControls('header') : ''}
+      ${creating ? connectorCreatePickerControl(selectedTemplate()) : ''}
+      ${creating ? templateOutcomeControls('header') : ''}
     </div>
   `;
 }
@@ -9846,7 +10421,6 @@ function agentPlannerWorkbench(): string {
             ${templatePicker(template)}
           </div>
           <p class="template-description">${escapeHtml(template.description)}</p>
-          ${connectorCreateBand(template)}
         </div>
         <div class="planner-form-body">
           <div class="planner-fields">
@@ -9887,6 +10461,73 @@ function agentPlannerWorkbench(): string {
       </div>
     </div>
   `;
+}
+
+function connectorCreatePickerControl(template: AgentPlanTemplate): string {
+  const env = connectorDraftEnvironment();
+  const connectors = connectorCreateConnectors(env);
+  const selectedConnector = selectedConnectorForCreate(template);
+  const selectedConnectorId = selectedConnector?.id ?? '';
+  return `
+    <div class="top-connector-control one-time-connector-control ${selectedConnector ? 'active' : ''}">
+      ${selectPicker({
+        id: 'connectorCreatePicker',
+        value: selectedConnectorId,
+        options: connectorCreatePickerOptions(connectors, env),
+        attrs: { 'data-connector-create-picker': true },
+        disabled: state.busy || connectors.length === 0,
+        className: 'top-connector-picker connector-create-picker',
+        title: selectedConnector ? `${selectedConnector.name} connector selected` : 'Use connector',
+      })}
+    </div>
+  `;
+}
+
+function connectorCreatePickerOptions(
+  connectors: ProtocolConnector[],
+  env: ReturnType<typeof connectorDraftEnvironment>,
+): SelectPickerOption[] {
+  return [
+    {
+      value: '',
+      label: 'Use connector',
+      meta: 'Template only',
+      detail: 'Use the selected template without a protocol connector.',
+    },
+    ...connectors.map((connector) => {
+      const status = connectorCreateStatus(connector, env);
+      return {
+        value: connector.id,
+        label: connector.name,
+        meta: status.meta,
+        detail: connectorCreateOptionDetail(connector, status.detail),
+        disabled: !status.selectable,
+        title: status.detail,
+        logoId: protocolConnectorLogoId(connector.id),
+      };
+    }),
+  ];
+}
+
+function selectedConnectorForCreate(template: AgentPlanTemplate): ProtocolConnector | undefined {
+  const selected = selectedConnectorForDraftParameters(state.templateFields);
+  if (selected) return selected;
+  if (!isConnectorCapableTemplate(template)) return undefined;
+  const form = connectorActionFormForTemplate(template);
+  if (!form || isGenericConnectorActionForm(form)) return undefined;
+  return getAdapterMeta(form.connectorId);
+}
+
+function connectorCreateOptionDetail(connector: ProtocolConnector, statusDetail: string): string {
+  const forms = connectorActionFormsForConnector(connector)
+    .slice(0, 3)
+    .map((form) => form.operationLabel)
+    .join(' · ');
+  return forms ? `${statusDetail} ${forms}` : statusDetail;
+}
+
+function isGenericConnectorActionForm(form: ConnectorActionForm): boolean {
+  return form.operationId === 'position-check' || form.operationId === 'blink-action';
 }
 
 function templateOutcomeControls(placement: 'header' | 'inline' = 'inline'): string {
@@ -10062,6 +10703,9 @@ function templateFieldInput(fieldDef: AgentPlanTemplateField): string {
   const disabled = state.busy ? 'disabled' : '';
   const label = `${fieldDef.label}${fieldDef.required ? ' *' : ''}`;
   const error = fieldError(fieldDef.id);
+  if (connectorCreateOwnsTemplateField(template, fieldDef.id)) {
+    return '';
+  }
   if (isConnectorCapableTemplate(template) && fieldDef.id === 'protocol') {
     return connectorProtocolFieldInput(fieldDef, value, label, error);
   }
@@ -10111,6 +10755,11 @@ function templateFieldInput(fieldDef: AgentPlanTemplateField): string {
       ${error}
     </label>
   `;
+}
+
+function connectorCreateOwnsTemplateField(template: AgentPlanTemplate, fieldId: string): boolean {
+  if (fieldId !== 'protocol') return false;
+  return Boolean(selectedConnectorForCreate(template));
 }
 
 function connectorProtocolFieldInput(
@@ -11908,10 +12557,33 @@ function scheduledApprovalsPanel(): string {
 }
 
 function recurringViewTabs(activeCount: number): string {
+  const creating = state.recurringView === 'create';
   return `
-    <div class="tabs compact-tabs recurring-view-tabs" role="tablist" aria-label="Repeat payment views">
-      ${recurringViewButton('create', 'Create Repeat')}
-      ${recurringViewButton('active', activeCount ? `Active Repeats (${activeCount})` : 'Active Repeats')}
+    <div class="recurring-control-row ${creating ? 'has-connector' : ''}">
+      <div class="tabs compact-tabs recurring-view-tabs" role="tablist" aria-label="Repeat payment views">
+        ${recurringViewButton('create', 'Create Repeat')}
+        ${recurringViewButton('active', activeCount ? `Active Repeats (${activeCount})` : 'Active Repeats')}
+      </div>
+      ${creating ? recurringConnectorPicker() : ''}
+    </div>
+  `;
+}
+
+function recurringConnectorPicker(): string {
+  const env = connectorDraftEnvironment();
+  const connectors = connectorCreateConnectors(env);
+  const selectedConnector = recurringDraftConnector(state.recurringDraft);
+  return `
+    <div class="top-connector-control recurring-connector-control ${selectedConnector ? 'active' : ''}">
+      ${selectPicker({
+        id: 'recurringConnectorPicker',
+        value: selectedConnector?.id ?? '',
+        options: connectorCreatePickerOptions(connectors, env),
+        attrs: { 'data-recurring-field': 'connectorId' },
+        disabled: state.busy || connectors.length === 0,
+        className: 'top-connector-picker recurring-connector-picker',
+        title: selectedConnector ? `${selectedConnector.name} connector selected for review context` : 'Use connector',
+      })}
     </div>
   `;
 }
@@ -13048,6 +13720,14 @@ function bind(): void {
     state.agentPreparedActionId = '';
   });
 
+  document.querySelector<HTMLSelectElement>('[data-connector-create-picker]')?.addEventListener('input', (event) => {
+    selectConnectorForCreate((event.currentTarget as HTMLSelectElement).value);
+  });
+
+  document.querySelector<HTMLSelectElement>('[data-connector-create-action]')?.addEventListener('input', (event) => {
+    selectConnectorActionForCreate((event.currentTarget as HTMLSelectElement).value);
+  });
+
   for (const fieldInput of document.querySelectorAll<HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement>('[data-template-field]')) {
     fieldInput.addEventListener('input', () => {
       const fieldId = fieldInput.dataset.templateField;
@@ -13166,6 +13846,7 @@ function bind(): void {
       }
       resetAiPlannerConfirmation('AI provider changed. Confirm planner again if needed.');
       savePersistedState();
+      void syncCloudPreference('ai-settings');
       render();
     });
   }
@@ -13176,6 +13857,7 @@ function bind(): void {
       resetAiPlannerConfirmation('Gateway changed. Confirm planner again if needed.');
       savePersistedState();
       saveCurrentSessionAiApiKey();
+      void syncCloudPreference('ai-settings');
       syncAiActionButtons();
     });
   }
@@ -13187,6 +13869,7 @@ function bind(): void {
       resetAiPlannerConfirmation('Model changed. Confirm planner again if needed.');
       savePersistedState();
       saveCurrentSessionAiApiKey();
+      void syncCloudPreference('ai-settings');
       render();
     });
   }
@@ -13197,6 +13880,7 @@ function bind(): void {
       resetAiPlannerConfirmation('Model changed. Confirm planner again if needed.');
       savePersistedState();
       saveCurrentSessionAiApiKey();
+      void syncCloudPreference('ai-settings');
       syncAiActionButtons();
     });
   }
@@ -13214,6 +13898,7 @@ function bind(): void {
     control.addEventListener('change', (event) => {
       state.aiSettings.multiReviewer = (event.currentTarget as HTMLInputElement).checked;
       savePersistedState();
+      void syncCloudPreference('ai-settings');
       render();
     });
   }
@@ -13229,6 +13914,7 @@ function bind(): void {
         stopAgentBackgroundWatch();
       }
       render();
+      void syncCloudPreference('ai-settings');
     });
   }
 
@@ -14197,6 +14883,74 @@ function selectAgentTemplate(templateId: string): boolean {
   return true;
 }
 
+function selectConnectorForCreate(connectorId: string): void {
+  const trimmed = connectorId.trim();
+  if (!trimmed) {
+    clearConnectorCreateSelection();
+    return;
+  }
+  const connector = getAdapterMeta(trimmed as ConnectedDappId);
+  if (!connector) return;
+  const env = connectorDraftEnvironment();
+  if (!connectorCreateStatus(connector, env).selectable) return;
+  const form = connectorActionFormsForConnector(connector)[0];
+  if (!form) return;
+  applyConnectorActionForm(form);
+}
+
+function selectConnectorActionForCreate(formId: string): void {
+  const form = connectorActionFormById(formId);
+  if (!form) return;
+  const connector = getAdapterMeta(form.connectorId);
+  if (!connector || !connectorCreateStatus(connector, connectorDraftEnvironment()).selectable) return;
+  applyConnectorActionForm(form);
+}
+
+function applyConnectorActionForm(form: ConnectorActionForm): void {
+  const connector = getAdapterMeta(form.connectorId);
+  if (!connector) return;
+  const template = templateById(form.templateId);
+  state.selectedTemplateId = template.id;
+  state.templateOutcomeFilter = templateOutcome(template);
+  state.templateFields = normalizeConnectorDraftParameters(template, {
+    ...defaultTemplateFieldValues(template),
+    ...state.templateFields,
+    connectorId: connector.id,
+    protocol: connector.id,
+    operation: form.operationLabel,
+    connectorOperationId: form.id,
+  });
+  state.templateTokenModes = defaultTemplateTokenModes(template, state.templateFields);
+  state.templateTokenSelections = defaultTemplateTokenSelections(template, state.templateFields);
+  state.templateFieldErrors = {};
+  state.agentPlan = null;
+  state.agentSignature = '';
+  state.agentPreparedActionId = '';
+  render();
+}
+
+function clearConnectorCreateSelection(): void {
+  const fallback = templateById(selectedConnectorForCreate(selectedTemplate()) ? 'swap' : state.selectedTemplateId);
+  state.selectedTemplateId = fallback.id;
+  state.templateOutcomeFilter = templateOutcome(fallback);
+  state.templateFields = stripConnectorDraftExtras(fallback, {
+    ...defaultTemplateFieldValues(fallback),
+    ...state.templateFields,
+    connectorId: '',
+    connectorOperationId: '',
+    connectorActionSource: '',
+    protocol: '',
+    operation: '',
+  });
+  state.templateTokenModes = defaultTemplateTokenModes(fallback, state.templateFields);
+  state.templateTokenSelections = defaultTemplateTokenSelections(fallback, state.templateFields);
+  state.templateFieldErrors = {};
+  state.agentPlan = null;
+  state.agentSignature = '';
+  state.agentPreparedActionId = '';
+  render();
+}
+
 function normalizeTemplateFieldsForTemplate(
   template: AgentPlanTemplate,
   fields: Record<string, string>,
@@ -14205,17 +14959,29 @@ function normalizeTemplateFieldsForTemplate(
     return stripConnectorDraftExtras(template, fields);
   }
   const env = connectorDraftEnvironment();
-  const selectable = connectorDraftConnectors(env).find((connector) => connectorDraftStatus(connector, env).selectable);
-  const connector = selectedConnectorForDraftParameters(fields) ?? selectable;
+  const templateForm = connectorActionFormForTemplate(template);
+  const templateConnector = templateForm && !isGenericConnectorActionForm(templateForm)
+    ? getAdapterMeta(templateForm.connectorId)
+    : undefined;
+  const selectable = connectorCreateConnectors(env).find((connector) => connectorCreateStatus(connector, env).selectable);
+  const connector = selectedConnectorForDraftParameters(fields) ?? templateConnector ?? selectable;
   const next = connector
     ? normalizeConnectorDraftParameters(template, {
       ...fields,
       protocol: connector.id,
       connectorId: connector.id,
+      ...(templateForm ? {
+        operation: templateForm.operationLabel,
+        connectorOperationId: templateForm.id,
+      } : {}),
     })
     : normalizeConnectorDraftParameters(template, fields);
   const selected = selectedConnectorForDraftParameters(next);
-  if (selected && !selected.supportedActions.includes(next.operation ?? '')) {
+  const selectedForm = selectedConnectorActionForm(next) ?? (selected ? connectorActionFormForTemplate(template, selected) : undefined);
+  if (selectedForm) {
+    next.operation = selectedForm.operationLabel;
+    next.connectorOperationId = selectedForm.id;
+  } else if (selected && !selected.supportedActions.includes(next.operation ?? '')) {
     next.operation = selected.supportedActions[0] ?? '';
   }
   return next;
@@ -14859,8 +15625,7 @@ async function runGenerateAiPlan(): Promise<void> {
           readTemplateFields(selectedTemplateForUi),
         );
         const userNotes = state.agentPrompt.trim();
-        const connectorLocked = isConnectorCapableTemplate(selectedTemplateForUi) &&
-          Boolean(selectedConnectorForDraftParameters(selectedParameters));
+        const connectorLocked = Boolean(selectedConnectorForDraftParameters(selectedParameters));
         const inferredTemplateId = connectorLocked
           ? selectedTemplateForUi.id
           : inferTemplateIdForPrompt(userNotes, selectedTemplateForUi.id);
@@ -17418,6 +18183,7 @@ function setAiPlannerMode(mode: AiSettings['mode']): void {
   }
   resetAiPlannerConfirmation('AI path changed. Workflow capability is unchanged.');
   savePersistedState();
+  void syncCloudPreference('ai-settings');
   pushToast('success', 'AI Planner path changed', aiModeToastMessage(mode));
   render();
 }
@@ -17741,7 +18507,7 @@ async function refreshCloudWorkspaceData(): Promise<void> {
   if (state.cloudSession.status !== 'signed-in') {
     throw new Error('Sign in to Agentic Cloud before loading cloud workflow data.');
   }
-  void hydrateAgentPoliciesFromCloud();
+  void hydratePreferencesFromCloud();
   const browserWorkflow = loadBrowserWorkflowState();
   const recurringResponse: Awaited<ReturnType<typeof cloudRecurringList>> = await cloudRecurringList().catch((err) => {
     // eslint-disable-next-line no-console
@@ -18931,10 +19697,7 @@ async function generateRecurringAiPlan(draft: RecurringDraft): Promise<AgentPlan
       risk: template.risk,
     },
     parameters,
-    connectorContext: protocolConnectorPlannerContext(state.connectedDapps, state.cluster, {
-      dialectClientKeyConfigured: Boolean(state.protocolConnectorPrefs.dialectClientKey.trim()),
-      includeDisabled: true,
-    }),
+    connectorContext: recurringConnectorPlannerContext(draft),
   };
   state.aiDiagnostics = [
     aiRouteDiagnostic(state.aiSettings.mode === 'bridge' ? '/bridge/ai/generate-plan' : '/api/ai/generate-plan'),
@@ -18998,8 +19761,15 @@ function generatedRecordForRecurringPlan(
 
 function recurringDraftPlanParameters(draft: RecurringDraft): Record<string, string> {
   const isSwap = recurringDraftIsSwap(draft);
+  const connector = recurringDraftConnector(draft);
   return {
     actionKind: isSwap ? 'swap' : 'transfer',
+    ...(connector ? {
+      connectorId: connector.id,
+      protocol: connector.name,
+      connectorActionSource: connector.actionSource ?? 'review-context',
+      connectorApprovalBoundary: 'review_context_only',
+    } : {}),
     token: isSwap ? draft.inputToken : draft.token,
     ...(isSwap ? { inputToken: draft.inputToken, outputToken: draft.outputToken, slippageBps: draft.slippageBps } : {}),
     recipient: isSwap ? '' : draft.recipient,
@@ -19064,9 +19834,11 @@ function recurringPaymentToAgentPlan(payment: RecurringPayment): AgentPlan {
 
 function recurringDraftFromPayment(payment: RecurringPayment): RecurringDraft {
   const isSwap = recurringPaymentIsSwap(payment);
+  const connectorId = typeof payment.metadata?.connectorId === 'string' ? payment.metadata.connectorId : '';
   return {
     ...defaultRecurringDraft(),
     actionKind: isSwap ? 'swap' : 'transfer',
+    connectorId,
     token: payment.token,
     inputToken: payment.inputToken || payment.token,
     outputToken: payment.outputToken || 'USDC',
@@ -23961,7 +24733,7 @@ function readTemplateFields(template = selectedTemplate()): Record<string, strin
     }
   }
   const withDisplay = withTemplateTokenDisplayParameters(template, current);
-  const normalized = isConnectorCapableTemplate(template)
+  const normalized = isConnectorCapableTemplate(template) || Boolean(selectedConnectorForDraftParameters(withDisplay))
     ? normalizeConnectorDraftParameters(template, withDisplay)
     : stripConnectorDraftExtras(template, withDisplay);
   state.templateFields = normalized;
@@ -24604,8 +25376,15 @@ function browserRecurringPaymentFromPlan(plan: AgentPlan, sourceRecord?: Generat
   const status = recurringStatusForAgentReview(sourceRecord?.agentReview);
   const inputToken = planParameter(plan, ['inputToken', 'token']) || 'SOL';
   const outputToken = planParameter(plan, ['outputToken']) || 'USDC';
+  const connector = selectedConnectorForDraftParameters(plan.parameters);
   const metadata = stripUndefined({
     ...(isSwap ? { actionKind: 'swap', inputToken, outputToken } : {}),
+    ...(connector ? {
+      connectorId: connector.id,
+      connectorName: connector.name,
+      actionSource: connector.actionSource ?? 'review-context',
+      approvalBoundary: 'review_context_only',
+    } : {}),
     ...(sourceRecord?.agentReview ? {
       agentReview: sourceRecord.agentReview,
       agentReviewStatus: sourceRecord.agentReview.status,
@@ -24710,6 +25489,7 @@ function browserOccurrenceFromRecurring(payment: RecurringPayment, summary?: str
   const now = new Date().toISOString();
   const actionId = newId('browser-action');
   const token = payment.token || 'SOL';
+  const connectorParams = recurringConnectorActionParams(payment.metadata);
   if (recurringPaymentIsSwap(payment)) {
     const inputToken = payment.inputToken || payment.token || 'SOL';
     const outputToken = payment.outputToken || 'USDC';
@@ -24725,6 +25505,7 @@ function browserOccurrenceFromRecurring(payment: RecurringPayment, summary?: str
         outputToken,
         amount: payment.amount,
         slippageBps: payment.slippageBps || '50',
+        ...connectorParams,
       },
       dueAt: now,
       createdAt: now,
@@ -24748,12 +25529,14 @@ function browserOccurrenceFromRecurring(payment: RecurringPayment, summary?: str
           recipient: payment.recipient,
           amountSol: payment.amount,
           memo: payment.note ?? '',
+          ...connectorParams,
         }
       : {
           token: payment.token,
           recipient: payment.recipient,
           amount: payment.amount,
           memo: payment.note ?? '',
+          ...connectorParams,
         },
     dueAt: now,
     createdAt: now,
@@ -27501,6 +28284,60 @@ function recurringDraftIsSwap(draft: RecurringDraft): boolean {
   return draft.actionKind === 'swap';
 }
 
+function recurringDraftConnector(draft: Pick<RecurringDraft, 'connectorId'>): ProtocolConnector | undefined {
+  const id = draft.connectorId.trim();
+  if (!id) return undefined;
+  const connector = getAdapterMeta(id as ConnectedDappId);
+  if (!connector) return undefined;
+  return connectorCreateStatus(connector, connectorDraftEnvironment()).selectable ? connector : undefined;
+}
+
+function recurringConnectorMetadata(draft: RecurringDraft): JsonObject | undefined {
+  const connector = recurringDraftConnector(draft);
+  if (!connector) return undefined;
+  return {
+    connectorId: connector.id,
+    connectorName: connector.name,
+    actionSource: connector.actionSource ?? 'review-context',
+    approvalBoundary: 'review_context_only',
+  };
+}
+
+function recurringConnectorPlannerContext(draft: RecurringDraft): Array<Record<string, unknown>> {
+  const base = protocolConnectorPlannerContext(state.connectedDapps, state.cluster, {
+    dialectClientKeyConfigured: Boolean(state.protocolConnectorPrefs.dialectClientKey.trim()),
+    includeDisabled: true,
+  });
+  const connector = recurringDraftConnector(draft);
+  if (!connector) return base;
+  const selected = base.find((entry) => entry.id === connector.id) ?? {};
+  return [{
+    ...selected,
+    selected: true,
+    selectedOnly: true,
+    id: connector.id,
+    name: connector.name,
+    selectedUse: 'repeat_payment_review_context',
+    approvalBoundary: 'review_context_only',
+    strictInstruction:
+      'Use this protocol connector only as review/planning context for the repeat. Do not switch protocols. Do not claim protocol automation is enabled. Every repeat occurrence still requires Agentic Needs Approval and wallet approval before signing.',
+  }];
+}
+
+function recurringConnectorActionParams(metadata: JsonObject | undefined): Record<string, string> {
+  if (!metadata) return {};
+  const connectorId = typeof metadata.connectorId === 'string' ? metadata.connectorId : '';
+  const connectorName = typeof metadata.connectorName === 'string' ? metadata.connectorName : '';
+  const actionSource = typeof metadata.actionSource === 'string' ? metadata.actionSource : '';
+  const approvalBoundary = typeof metadata.approvalBoundary === 'string' ? metadata.approvalBoundary : '';
+  return {
+    ...(connectorId ? { connectorId } : {}),
+    ...(connectorName ? { connectorName } : {}),
+    ...(actionSource ? { connectorActionSource: actionSource } : {}),
+    ...(approvalBoundary ? { connectorApprovalBoundary: approvalBoundary } : {}),
+  };
+}
+
 function recurringDraftSpendToken(draft: RecurringDraft): string {
   return recurringDraftIsSwap(draft) ? draft.inputToken : draft.token;
 }
@@ -29535,6 +30372,7 @@ function labThesis(labId: string, status: LabPayload['status']): string {
 
 function readRecurringDraft(): RecurringDraft {
   const actionKind = state.recurringDraft.actionKind;
+  const connectorControl = document.querySelector<HTMLSelectElement>('#recurringConnectorPicker');
   const inputToken = readRecurringTokenField('inputToken') || state.recurringDraft.inputToken;
   const outputToken = readRecurringTokenField('outputToken') || state.recurringDraft.outputToken;
   const token = actionKind === 'swap'
@@ -29543,6 +30381,7 @@ function readRecurringDraft(): RecurringDraft {
   const slippageInput = inputValue('#recurringSlippageBps');
   return {
     actionKind,
+    connectorId: connectorControl ? connectorControl.value : state.recurringDraft.connectorId,
     token,
     inputToken,
     outputToken,
@@ -29710,6 +30549,13 @@ function recurringBody(
       ...tokenDisplayParametersForField('outputToken', outputSelection),
     };
   }
+  const connectorMetadata = recurringConnectorMetadata(draft);
+  if (connectorMetadata) {
+    body.metadata = {
+      ...(isJsonObject(body.metadata) ? body.metadata : {}),
+      ...connectorMetadata,
+    };
+  }
   if (opts.agentReview) {
     body.metadata = {
       ...(isJsonObject(body.metadata) ? body.metadata : {}),
@@ -29754,6 +30600,7 @@ function recurringBody(
 function defaultRecurringDraft(): RecurringDraft {
   return {
     actionKind: 'transfer',
+    connectorId: '',
     token: 'SOL',
     inputToken: 'SOL',
     outputToken: 'USDC',
@@ -29963,6 +30810,10 @@ function persistedAiSettings(persistedState: PersistedState): Omit<AiSettings, '
   const provider = persistedState.aiProvider ? aiProviderPresetById(persistedState.aiProvider) : fallback;
   const mode = normalizeAiModeForSurface(persistedState.aiMode ?? defaultAiMode());
   const model = persistedState.aiModel?.trim() || provider.model;
+  const reviewPrefs = {
+    multiReviewer: persistedState.aiMultiReviewer === true,
+    autoBackgroundWatch: persistedState.aiAutoBackgroundWatch === true,
+  };
   const settings = {
     mode,
     provider: provider.id,
@@ -29977,6 +30828,7 @@ function persistedAiSettings(persistedState: PersistedState): Omit<AiSettings, '
       apiFormat: fallback.apiFormat,
       baseUrl: fallback.baseUrl,
       model: fallback.model,
+      ...reviewPrefs,
     };
   }
   if (settings.mode === 'session' && settings.provider === 'openai') {
@@ -29987,9 +30839,13 @@ function persistedAiSettings(persistedState: PersistedState): Omit<AiSettings, '
       apiFormat: browserPreset.apiFormat,
       baseUrl: browserPreset.baseUrl,
       model: browserPreset.model,
+      ...reviewPrefs,
     };
   }
-  return settings;
+  return {
+    ...settings,
+    ...reviewPrefs,
+  };
 }
 
 function aiApiKeySessionEntryKey(settings: Pick<AiSettings, 'mode' | 'provider' | 'apiFormat' | 'baseUrl'>): string {
@@ -30165,6 +31021,13 @@ function isAiProviderId(value: string): value is AiSettings['provider'] {
 
 function isPersistedIosWalletId(value: string): value is IosNativeWalletId {
   return value === 'phantom' || value === 'solflare' || value === 'backpack' || value === 'jupiter';
+}
+
+function isPersistedNotificationSettings(value: unknown): value is Partial<Omit<NotificationSettingsState, 'permission'>> {
+  if (!isJsonObject(value)) return false;
+  return ['browser', 'due', 'pending', 'confirmed', 'failed'].every((key) =>
+    value[key] === undefined || typeof value[key] === 'boolean',
+  );
 }
 
 function inputValue(selector: string): string {
@@ -30439,6 +31302,11 @@ function loadPersistedState(): PersistedState {
       ...(typeof parsed.aiApiFormat === 'string' && isAiApiFormat(parsed.aiApiFormat) && { aiApiFormat: parsed.aiApiFormat }),
       ...(typeof parsed.aiBaseUrl === 'string' && { aiBaseUrl: parsed.aiBaseUrl }),
       ...(typeof parsed.aiModel === 'string' && { aiModel: parsed.aiModel }),
+      ...(typeof parsed.aiMultiReviewer === 'boolean' && { aiMultiReviewer: parsed.aiMultiReviewer }),
+      ...(typeof parsed.aiAutoBackgroundWatch === 'boolean' && { aiAutoBackgroundWatch: parsed.aiAutoBackgroundWatch }),
+      ...(isPersistedNotificationSettings(parsed.notificationSettings) && {
+        notificationSettings: parsed.notificationSettings,
+      }),
     };
   } catch {
     return {};
@@ -30463,6 +31331,15 @@ function savePersistedState(): void {
         aiApiFormat: state.aiSettings.apiFormat,
         aiBaseUrl: state.aiSettings.baseUrl,
         aiModel: state.aiSettings.model,
+        aiMultiReviewer: state.aiSettings.multiReviewer === true,
+        aiAutoBackgroundWatch: state.aiSettings.autoBackgroundWatch === true,
+        notificationSettings: {
+          browser: state.notificationSettings.browser,
+          due: state.notificationSettings.due,
+          pending: state.notificationSettings.pending,
+          confirmed: state.notificationSettings.confirmed,
+          failed: state.notificationSettings.failed,
+        },
       }),
     );
   } catch {
@@ -30528,6 +31405,23 @@ function saveSafetyRailsSection(section: keyof SafetyRailsState): void {
   } catch {
     // Best-effort browser persistence.
   }
+  void syncCloudPreference('safety-rails');
+}
+
+function saveSafetyRailsAll(): void {
+  for (const section of Object.keys(state.safetyRails) as Array<keyof SafetyRailsState>) {
+    try {
+      const key = {
+        programs: PROGRAM_RULES_STORAGE_KEY,
+        tokens: TOKEN_RULES_STORAGE_KEY,
+        spend: SPEND_CAPS_STORAGE_KEY,
+        slippage: SLIPPAGE_CAP_STORAGE_KEY,
+      }[section];
+      window.localStorage.setItem(key, JSON.stringify(state.safetyRails[section]));
+    } catch {
+      // Best-effort browser persistence.
+    }
+  }
 }
 
 function loadCustomTokens(): CustomToken[] {
@@ -30544,11 +31438,14 @@ function loadCustomTokens(): CustomToken[] {
   }
 }
 
-function saveCustomTokens(): void {
+function saveCustomTokens(options: { sync?: boolean } = {}): void {
   try {
     window.localStorage.setItem(CUSTOM_TOKENS_STORAGE_KEY, JSON.stringify(state.customTokens));
   } catch {
     // Best-effort browser persistence.
+  }
+  if (options.sync !== false) {
+    void syncCloudPreference('custom-tokens');
   }
 }
 
@@ -30812,11 +31709,14 @@ function saveAgentPolicies(): void {
   void syncAgentPoliciesToCloud();
 }
 
+const cloudPreferenceVersions: Partial<Record<CloudPreferenceNamespace, number>> = {};
+const cloudPreferencePushes = new Map<CloudPreferenceNamespace, Promise<unknown>>();
+
 let agentPoliciesCloudVersion = 0;
 let lastCloudPoliciesPushPromise: Promise<unknown> | null = null;
 
 async function syncAgentPoliciesToCloud(): Promise<void> {
-  if (state.cloudSession.status !== 'signed-in') return;
+  if (!cloudSessionMatchesWallet()) return;
   const payload = JSON.stringify({
     policies: state.agentPolicies,
     version: agentPoliciesCloudVersion + 1,
@@ -30830,6 +31730,7 @@ async function syncAgentPoliciesToCloud(): Promise<void> {
       const data = response as { version?: number } | undefined;
       if (data && typeof data.version === 'number') {
         agentPoliciesCloudVersion = data.version;
+        cloudPreferenceVersions['agent-policies'] = data.version;
       }
     } catch {
       // Best-effort: keep local state on failure.
@@ -30838,8 +31739,311 @@ async function syncAgentPoliciesToCloud(): Promise<void> {
   await lastCloudPoliciesPushPromise;
 }
 
+async function syncCloudPreference(namespace: CloudPreferenceNamespace): Promise<void> {
+  if (!cloudSessionMatchesWallet()) return;
+  if (namespace === 'agent-policies') {
+    await syncAgentPoliciesToCloud();
+    return;
+  }
+  const payload = cloudPreferencePayload(namespace);
+  const promise = (async () => {
+    try {
+      const response = await cloudRequest(`/api/preferences/${encodeURIComponent(namespace)}`, {
+        method: 'PUT',
+        body: JSON.stringify({
+          payload,
+          version: (cloudPreferenceVersions[namespace] ?? 0) + 1,
+        }),
+      });
+      const record = cloudPreferenceRecordFromUnknown(response);
+      if (record) {
+        cloudPreferenceVersions[namespace] = record.version;
+      }
+    } catch {
+      // Best-effort: local browser state remains authoritative on failure.
+    }
+  })();
+  cloudPreferencePushes.set(namespace, promise);
+  await promise;
+}
+
+async function hydratePreferencesFromCloud(): Promise<void> {
+  if (!cloudSessionMatchesWallet()) return;
+  try {
+    const response = await cloudRequest('/api/preferences', { method: 'GET' });
+    const records = cloudPreferenceRecordsFromResponse(response);
+    const seen = new Set<CloudPreferenceNamespace>();
+    let changed = false;
+    for (const record of records) {
+      seen.add(record.namespace);
+      changed = applyCloudPreference(record) || changed;
+    }
+    for (const namespace of CLOUD_PREFERENCE_NAMESPACES) {
+      if (!seen.has(namespace) && cloudPreferenceLocalNonEmpty(namespace)) {
+        void syncCloudPreference(namespace);
+      }
+    }
+    if (changed) render();
+  } catch {
+    // Keep local browser preferences if the cloud preference API is unavailable.
+    await hydrateAgentPoliciesFromCloud();
+  }
+}
+
+function cloudPreferencePayload(namespace: CloudPreferenceNamespace): unknown {
+  switch (namespace) {
+    case 'agent-policies':
+      return state.agentPolicies;
+    case 'protocol-connectors':
+      return normalizeConnectedDapps(state.connectedDapps);
+    case 'safety-rails':
+      return state.safetyRails;
+    case 'failure-policies':
+      return state.failurePolicies;
+    case 'custom-tokens':
+      return state.customTokens;
+    case 'ai-settings':
+      return {
+        mode: state.aiSettings.mode,
+        provider: state.aiSettings.provider,
+        apiFormat: state.aiSettings.apiFormat,
+        baseUrl: state.aiSettings.baseUrl,
+        model: state.aiSettings.model,
+        multiReviewer: state.aiSettings.multiReviewer === true,
+        autoBackgroundWatch: state.aiSettings.autoBackgroundWatch === true,
+      };
+  }
+}
+
+function cloudPreferenceRecordsFromResponse(value: unknown): CloudPreferenceRecord[] {
+  if (!isJsonObject(value) || !Array.isArray(value.preferences)) return [];
+  return value.preferences
+    .map(cloudPreferenceRecordFromUnknown)
+    .filter((entry): entry is CloudPreferenceRecord => Boolean(entry));
+}
+
+function cloudPreferenceRecordFromUnknown(value: unknown): CloudPreferenceRecord | null {
+  if (!isJsonObject(value)) return null;
+  if (typeof value.namespace !== 'string' || !isCloudPreferenceNamespace(value.namespace)) return null;
+  return {
+    namespace: value.namespace,
+    payload: value.payload,
+    updatedAt: typeof value.updatedAt === 'string' ? value.updatedAt : '',
+    version: typeof value.version === 'number' && Number.isFinite(value.version) ? value.version : 0,
+  };
+}
+
+function isCloudPreferenceNamespace(value: string): value is CloudPreferenceNamespace {
+  return (CLOUD_PREFERENCE_NAMESPACES as readonly string[]).includes(value);
+}
+
+function applyCloudPreference(record: CloudPreferenceRecord): boolean {
+  cloudPreferenceVersions[record.namespace] = record.version;
+  switch (record.namespace) {
+    case 'agent-policies':
+      return applyCloudAgentPolicies(record);
+    case 'protocol-connectors': {
+      state.connectedDapps = normalizeConnectedDapps(record.payload);
+      saveConnectedDapps(state.connectedDapps);
+      return true;
+    }
+    case 'safety-rails': {
+      state.safetyRails = normalizeSafetyRails(record.payload);
+      saveSafetyRailsAll();
+      return true;
+    }
+    case 'failure-policies': {
+      state.failurePolicies = normalizeFailurePolicies(record.payload);
+      saveFailurePolicies({ sync: false });
+      return true;
+    }
+    case 'custom-tokens': {
+      state.customTokens = normalizeCustomTokens(record.payload);
+      saveCustomTokens({ sync: false });
+      return true;
+    }
+    case 'ai-settings': {
+      return applyCloudAiSettings(record.payload);
+    }
+  }
+}
+
+function applyCloudAgentPolicies(record: CloudPreferenceRecord): boolean {
+  const payload = Array.isArray(record.payload) ? record.payload : [];
+  const cloudPolicies = payload
+    .map(parseUserAgentPolicy)
+    .filter((entry): entry is UserAgentPolicy => Boolean(entry));
+  if (!cloudPolicies.length && !state.agentPolicies.length) return false;
+  if (state.agentPolicies.length && cloudPolicies.length) {
+    const localUpdated = state.agentPolicies.reduce(
+      (acc, policy) => Math.max(acc, Date.parse(policy.updatedAt) || 0),
+      0,
+    );
+    const cloudUpdated = cloudPolicies.reduce(
+      (acc, policy) => Math.max(acc, Date.parse(policy.updatedAt) || 0),
+      0,
+    );
+    if (localUpdated > cloudUpdated) {
+      void syncAgentPoliciesToCloud();
+      return false;
+    }
+  }
+  state.agentPolicies = cloudPolicies;
+  agentPoliciesCloudVersion = record.version;
+  try {
+    window.localStorage.setItem(AGENT_POLICIES_STORAGE_KEY, JSON.stringify(state.agentPolicies));
+  } catch {
+    // Best-effort persistence.
+  }
+  return true;
+}
+
+function applyCloudAiSettings(payload: unknown): boolean {
+  if (!isJsonObject(payload)) return false;
+  saveCurrentSessionAiApiKey();
+  if (typeof payload.mode === 'string' && isAiMode(payload.mode)) {
+    state.aiSettings.mode = normalizeAiModeForSurface(payload.mode);
+  }
+  if (typeof payload.provider === 'string' && isAiProviderId(payload.provider)) {
+    state.aiSettings.provider = payload.provider;
+  }
+  if (typeof payload.apiFormat === 'string' && isAiApiFormat(payload.apiFormat)) {
+    state.aiSettings.apiFormat = payload.apiFormat;
+  }
+  if (typeof payload.baseUrl === 'string') {
+    state.aiSettings.baseUrl = payload.baseUrl.trim();
+  }
+  if (typeof payload.model === 'string') {
+    state.aiSettings.model = payload.model.trim();
+  }
+  state.aiSettings.multiReviewer = payload.multiReviewer === true;
+  state.aiSettings.autoBackgroundWatch = payload.autoBackgroundWatch === true;
+  ensureAiProviderAllowedForMode();
+  state.aiSettings.apiKey = shouldHideAiKeyEntry() ? '' : loadSessionAiApiKey(state.aiSettings);
+  savePersistedState();
+  if (state.aiSettings.autoBackgroundWatch) {
+    startAgentBackgroundWatch();
+  } else {
+    stopAgentBackgroundWatch();
+  }
+  return true;
+}
+
+function cloudPreferenceLocalNonEmpty(namespace: CloudPreferenceNamespace): boolean {
+  switch (namespace) {
+    case 'agent-policies':
+      return state.agentPolicies.length > 0;
+    case 'protocol-connectors':
+      return protocolConnectorsDifferFromDefaults(state.connectedDapps);
+    case 'safety-rails':
+      return stableJson(state.safetyRails) !== stableJson(defaultSafetyRails());
+    case 'failure-policies':
+      return stableJson(state.failurePolicies) !== stableJson(defaultFailurePoliciesList());
+    case 'custom-tokens':
+      return state.customTokens.length > 0;
+    case 'ai-settings':
+      return true;
+  }
+}
+
+function protocolConnectorsDifferFromDefaults(value: ConnectedDappsState): boolean {
+  const normalized = normalizeConnectedDapps(value);
+  return PROTOCOL_CONNECTORS.some((connector) => {
+    const enabled = normalized.entries[connector.id]?.enabled === true;
+    return enabled !== connector.enabledByDefault;
+  });
+}
+
+function normalizeSafetyRails(value: unknown): SafetyRailsState {
+  const fallback = defaultSafetyRails();
+  if (!isJsonObject(value)) return fallback;
+  return {
+    programs: normalizeProgramRules(value.programs, fallback.programs),
+    tokens: normalizeTokenRules(value.tokens, fallback.tokens),
+    spend: normalizeSpendCaps(value.spend, fallback.spend),
+    slippage: normalizeSlippageCap(value.slippage, fallback.slippage),
+  };
+}
+
+function normalizeProgramRules(value: unknown, fallback: ProgramRulesState): ProgramRulesState {
+  if (!isJsonObject(value)) return fallback;
+  return {
+    enabled: value.enabled === true,
+    mode: value.mode === 'block' ? 'block' : 'warn',
+    allowlist: stringList(value.allowlist),
+    blocklist: stringList(value.blocklist),
+  };
+}
+
+function normalizeTokenRules(value: unknown, fallback: TokenRulesState): TokenRulesState {
+  if (!isJsonObject(value)) return fallback;
+  return {
+    enabled: value.enabled === true,
+    mode: value.mode === 'block' ? 'block' : 'warn',
+    allowlist: stringList(value.allowlist),
+    blocklist: stringList(value.blocklist),
+  };
+}
+
+function normalizeSpendCaps(value: unknown, fallback: SpendCapsState): SpendCapsState {
+  if (!isJsonObject(value)) return fallback;
+  const caps = Array.isArray(value.caps)
+    ? value.caps
+        .map((entry): SpendCapEntry | null => {
+          if (!isJsonObject(entry) || typeof entry.token !== 'string' || !entry.token.trim()) return null;
+          const cap: SpendCapEntry = { token: entry.token.trim().slice(0, 64) };
+          if (typeof entry.maxPerDay === 'number' && Number.isFinite(entry.maxPerDay)) cap.maxPerDay = entry.maxPerDay;
+          if (typeof entry.maxPerWeek === 'number' && Number.isFinite(entry.maxPerWeek)) cap.maxPerWeek = entry.maxPerWeek;
+          if (typeof entry.maxPerMonth === 'number' && Number.isFinite(entry.maxPerMonth)) cap.maxPerMonth = entry.maxPerMonth;
+          return cap;
+        })
+        .filter((entry): entry is SpendCapEntry => Boolean(entry))
+    : [];
+  return {
+    enabled: value.enabled === true,
+    mode: value.mode === 'block' ? 'block' : 'warn',
+    caps,
+  };
+}
+
+function normalizeSlippageCap(value: unknown, fallback: SlippageCapState): SlippageCapState {
+  if (!isJsonObject(value)) return fallback;
+  const maxBps = typeof value.maxBps === 'number' && Number.isFinite(value.maxBps)
+    ? Math.max(0, Math.min(10_000, Math.floor(value.maxBps)))
+    : fallback.maxBps;
+  return {
+    enabled: value.enabled === true,
+    mode: value.mode === 'block' ? 'block' : 'warn',
+    maxBps,
+  };
+}
+
+function normalizeFailurePolicies(value: unknown): FailureRetryPolicy[] {
+  if (!Array.isArray(value)) return defaultFailurePoliciesList();
+  const byKind = new Map<TransactionFailureKind, FailureRetryPolicy>();
+  for (const entry of value) {
+    const policy = parseFailurePolicy(entry);
+    if (policy) byKind.set(policy.kind, policy);
+  }
+  return FAILURE_RETRY_KINDS.map((kind) =>
+    byKind.get(kind) ?? { kind, mode: 'ask' as FailureRetryMode, maxAttempts: 2 },
+  );
+}
+
+function normalizeCustomTokens(value: unknown): CustomToken[] {
+  return Array.isArray(value)
+    ? value.map(parseCustomToken).filter((entry): entry is CustomToken => Boolean(entry))
+    : [];
+}
+
+function stringList(value: unknown): string[] {
+  return Array.isArray(value)
+    ? value.filter((entry): entry is string => typeof entry === 'string').map((entry) => entry.trim()).filter(Boolean).slice(0, 200)
+    : [];
+}
+
 async function hydrateAgentPoliciesFromCloud(): Promise<void> {
-  if (state.cloudSession.status !== 'signed-in') return;
+  if (!cloudSessionMatchesWallet()) return;
   try {
     const response = await cloudRequest('/api/preferences/agent-policies', { method: 'GET' });
     const data = response as { policies?: unknown; version?: number } | undefined;
@@ -30865,6 +32069,7 @@ async function hydrateAgentPoliciesFromCloud(): Promise<void> {
     }
     state.agentPolicies = cloudPolicies;
     agentPoliciesCloudVersion = typeof data.version === 'number' ? data.version : 0;
+    cloudPreferenceVersions['agent-policies'] = agentPoliciesCloudVersion;
     try {
       window.localStorage.setItem(AGENT_POLICIES_STORAGE_KEY, JSON.stringify(state.agentPolicies));
     } catch {
@@ -31990,13 +33195,6 @@ function useSavedPrompt(promptId: string): void {
 
 // === Phase 3 helpers: diagnostics, notifications, attach-tx ===
 
-function defaultNotificationSettings(): NotificationSettingsState {
-  const permission = typeof Notification !== 'undefined' && Notification.permission
-    ? Notification.permission
-    : ('unsupported' as const);
-  return { permission, browser: false, due: false, pending: false, confirmed: false, failed: false };
-}
-
 const DEBUG_LOG_LIMIT = 200;
 
 function logDebug(event: Omit<DebugLogEvent, 'ts'>): void {
@@ -32318,6 +33516,7 @@ async function handleNotificationAction(op: string): Promise<void> {
         const permission = await Notification.requestPermission();
         state.notificationSettings.permission = permission;
         if (permission === 'granted') state.notificationSettings.browser = true;
+        savePersistedState();
         render();
       } catch (err) {
         const message = err instanceof Error ? err.message : 'Permission request failed.';
@@ -32327,22 +33526,27 @@ async function handleNotificationAction(op: string): Promise<void> {
     }
     case 'toggle-browser':
       state.notificationSettings.browser = !state.notificationSettings.browser;
+      savePersistedState();
       render();
       return;
     case 'toggle-due':
       state.notificationSettings.due = !state.notificationSettings.due;
+      savePersistedState();
       render();
       return;
     case 'toggle-pending':
       state.notificationSettings.pending = !state.notificationSettings.pending;
+      savePersistedState();
       render();
       return;
     case 'toggle-confirmed':
       state.notificationSettings.confirmed = !state.notificationSettings.confirmed;
+      savePersistedState();
       render();
       return;
     case 'toggle-failed':
       state.notificationSettings.failed = !state.notificationSettings.failed;
+      savePersistedState();
       render();
       return;
   }
@@ -32416,11 +33620,14 @@ function loadFailurePolicies(): FailureRetryPolicy[] {
   }
 }
 
-function saveFailurePolicies(): void {
+function saveFailurePolicies(options: { sync?: boolean } = {}): void {
   try {
     window.localStorage.setItem(FAILURE_POLICIES_STORAGE_KEY, JSON.stringify(state.failurePolicies));
   } catch {
     // Best-effort.
+  }
+  if (options.sync !== false) {
+    void syncCloudPreference('failure-policies');
   }
 }
 

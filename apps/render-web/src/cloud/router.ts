@@ -45,8 +45,12 @@ import { createAgentBackgroundWatch } from './agentBackgroundWatch.js';
 import { RecurringScheduler } from './scheduler.js';
 import { createWalletSession, deleteSessionFromRequest, SESSION_TTL_MS, sessionFromRequest } from './session.js';
 import {
+  CLOUD_PREFERENCE_NAMESPACES,
   sessionResponse,
   systemClock,
+  type CloudPreferenceNamespace,
+  type CloudPreferenceRecord,
+  type CloudPreferencesStore,
   type CloudWorkspaceDeleteCounts,
   type CloudWorkspaceDeleteStore,
   type Clock,
@@ -441,6 +445,26 @@ async function routeApiRequest(
     }
     if (req.method === 'PUT') {
       await handlePutAgentPolicies(req, res, store, clock);
+      return;
+    }
+    requireMethod(req, 'GET');
+    return;
+  }
+
+  if (url.pathname === '/api/preferences') {
+    requireMethod(req, 'GET');
+    await handleListPreferences(req, res, store, clock);
+    return;
+  }
+
+  const preferenceNamespace = preferenceNamespaceFromPath(url.pathname);
+  if (preferenceNamespace) {
+    if (req.method === 'GET') {
+      await handleGetPreference(req, res, store, clock, preferenceNamespace);
+      return;
+    }
+    if (req.method === 'PUT') {
+      await handlePutPreference(req, res, store, clock, preferenceNamespace);
       return;
     }
     requireMethod(req, 'GET');
@@ -1232,10 +1256,118 @@ async function handlePutAgentPolicies(
   });
 }
 
+async function handleListPreferences(
+  req: IncomingMessage,
+  res: ServerResponse,
+  store: WorkflowStore,
+  clock: Clock,
+): Promise<void> {
+  const session = await sessionFromRequest({ req, store, clock });
+  if (!session) {
+    throw new ApiError(401, 'Sign in required to read preferences.');
+  }
+  const preferenceStore = isCloudPreferencesStore(store) ? store : undefined;
+  if (!preferenceStore) {
+    writeJson(res, 200, { preferences: [] });
+    return;
+  }
+  const preferences = await preferenceStore.listPreferences(session.walletAddress, [...CLOUD_PREFERENCE_NAMESPACES]);
+  writeJson(res, 200, { preferences });
+}
+
+async function handleGetPreference(
+  req: IncomingMessage,
+  res: ServerResponse,
+  store: WorkflowStore,
+  clock: Clock,
+  namespace: CloudPreferenceNamespace,
+): Promise<void> {
+  const session = await sessionFromRequest({ req, store, clock });
+  if (!session) {
+    throw new ApiError(401, 'Sign in required to read preferences.');
+  }
+  const preferenceStore = isCloudPreferencesStore(store) ? store : undefined;
+  if (!preferenceStore) {
+    writeJson(res, 200, { namespace, payload: null, version: 0, updatedAt: null });
+    return;
+  }
+  const preference = await preferenceStore.getPreference(session.walletAddress, namespace);
+  writeJson(res, 200, preference ?? { namespace, payload: null, version: 0, updatedAt: null });
+}
+
+async function handlePutPreference(
+  req: IncomingMessage,
+  res: ServerResponse,
+  store: WorkflowStore,
+  clock: Clock,
+  namespace: CloudPreferenceNamespace,
+): Promise<void> {
+  const session = await sessionFromRequest({ req, store, clock });
+  if (!session) {
+    throw new ApiError(401, 'Sign in required to save preferences.');
+  }
+  const preferenceStore = isCloudPreferencesStore(store) ? store : undefined;
+  if (!preferenceStore) {
+    throw new ApiError(503, 'Preference storage is not configured on this server.');
+  }
+  const body = await readJsonBody(req);
+  if (!body || typeof body !== 'object' || Array.isArray(body)) {
+    throw new ApiError(400, 'Missing preference payload.');
+  }
+  const payload = (body as { payload?: unknown }).payload;
+  validatePreferencePayload(namespace, payload);
+  const existing = await preferenceStore.getPreference(session.walletAddress, namespace);
+  const saved = await preferenceStore.savePreference(session.walletAddress, {
+    namespace,
+    payload,
+    updatedAt: clock.now().toISOString(),
+    version: (existing?.version ?? 0) + 1,
+  });
+  writeJson(res, 200, saved);
+}
+
 function isAgentPolicyStore(store: unknown): store is { getAgentPolicies: (wallet: string) => Promise<{ policies: unknown[]; updatedAt: string; version: number } | undefined>; saveAgentPolicies: (wallet: string, state: { policies: unknown[]; updatedAt: string; version: number }) => Promise<{ policies: unknown[]; updatedAt: string; version: number }> } {
   if (!store || typeof store !== 'object') return false;
   const record = store as Record<string, unknown>;
   return typeof record.getAgentPolicies === 'function' && typeof record.saveAgentPolicies === 'function';
+}
+
+function isCloudPreferencesStore(store: unknown): store is CloudPreferencesStore {
+  if (!store || typeof store !== 'object') return false;
+  const record = store as Record<string, unknown>;
+  return typeof record.listPreferences === 'function' &&
+    typeof record.getPreference === 'function' &&
+    typeof record.savePreference === 'function';
+}
+
+function preferenceNamespaceFromPath(pathname: string): CloudPreferenceNamespace | null {
+  const match = /^\/api\/preferences\/([^/]+)$/.exec(pathname);
+  if (!match) return null;
+  const namespace = decodeURIComponent(match[1] ?? '');
+  return isCloudPreferenceNamespace(namespace) ? namespace : null;
+}
+
+function isCloudPreferenceNamespace(value: string): value is CloudPreferenceNamespace {
+  return (CLOUD_PREFERENCE_NAMESPACES as readonly string[]).includes(value);
+}
+
+function validatePreferencePayload(namespace: CloudPreferenceNamespace, payload: unknown): void {
+  const bytes = Buffer.byteLength(JSON.stringify(payload ?? null), 'utf8');
+  if (bytes > MAX_JSON_BYTES) {
+    throw new ApiError(400, 'Preference payload is too large.');
+  }
+  if (namespace === 'agent-policies') {
+    if (!Array.isArray(payload)) {
+      throw new ApiError(400, 'Agent policies preference must be an array.');
+    }
+    if (payload.length > 50) {
+      throw new ApiError(400, 'Too many agent policies. Limit is 50.');
+    }
+    return;
+  }
+  if (!payload || typeof payload !== 'object') {
+    throw new ApiError(400, 'Preference payload must be a JSON object or array.');
+  }
 }
 
 interface CloudWorkspaceDeleteRequest {

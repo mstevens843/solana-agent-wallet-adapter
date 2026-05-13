@@ -34,6 +34,13 @@ interface RuntimeSetup {
   birdeyeApiKeyConfigured: boolean;
   birdeyeApiKeyRedacted: string | null;
   birdeyeRestBase: string;
+  aiProvider: string;
+  aiApiFormat: string;
+  aiApiKeyConfigured: boolean;
+  aiApiKeyRedacted: string | null;
+  aiModel: string;
+  aiBaseUrl: string;
+  aiReady: boolean;
   solTransfersReady: boolean;
   tokenTransfersReady: boolean;
   swapsReady: boolean;
@@ -298,6 +305,9 @@ function runtimeSetupPanel(): string {
   const birdeyePlaceholder = setup?.birdeyeApiKeyConfigured
     ? `Configured: ${setup.birdeyeApiKeyRedacted ?? 'redacted'}`
     : 'Paste BirdEye API key';
+  const aiKeyPlaceholder = setup?.aiApiKeyConfigured
+    ? `Configured: ${setup.aiApiKeyRedacted ?? 'redacted'}`
+    : 'Paste AI provider key';
   return `
     <section class="panel">
       <div class="panel-title">
@@ -329,12 +339,33 @@ function runtimeSetupPanel(): string {
           <span>BirdEye REST base</span>
           <input id="setupBirdeyeRestBase" value="${escapeHtml(setup?.birdeyeRestBase ?? 'https://public-api.birdeye.so')}" />
         </label>
+        <label>
+          <span>AI provider</span>
+          <input id="setupAiProvider" value="${escapeHtml(setup?.aiProvider ?? 'openai')}" />
+        </label>
+        <label>
+          <span>AI API format</span>
+          <input id="setupAiApiFormat" value="${escapeHtml(setup?.aiApiFormat ?? 'openai-compatible')}" />
+        </label>
+        <label>
+          <span>AI API key</span>
+          <input id="setupAiApiKey" type="password" placeholder="${escapeHtml(aiKeyPlaceholder)}" autocomplete="off" />
+        </label>
+        <label>
+          <span>AI model</span>
+          <input id="setupAiModel" value="${escapeHtml(setup?.aiModel ?? 'gpt-5')}" />
+        </label>
+        <label>
+          <span>AI base URL</span>
+          <input id="setupAiBaseUrl" value="${escapeHtml(setup?.aiBaseUrl ?? 'https://api.openai.com/v1')}" />
+        </label>
       </div>
       <div class="readiness">
         ${readinessPill('SOL sends', setup?.solTransfersReady ?? false)}
         ${readinessPill('Token sends', setup?.tokenTransfersReady ?? false)}
         ${readinessPill('Swaps', setup?.swapsReady ?? false)}
         ${readinessPill('Market data', setup?.marketDataReady ?? false)}
+        ${readinessPill('Bridge AI', setup?.aiReady ?? false)}
       </div>
       <div class="actions">
         <button id="saveRuntimeSetup" class="primary" ${state.busy || !state.nativeAvailable ? 'disabled' : ''}>Save setup</button>
@@ -636,6 +667,11 @@ async function saveRuntimeSetup(): Promise<void> {
         jupiterApiUrl: inputValue('#setupJupiterApiUrl'),
         birdeyeApiKey: inputValue('#setupBirdeyeApiKey'),
         birdeyeRestBase: inputValue('#setupBirdeyeRestBase'),
+        aiProvider: inputValue('#setupAiProvider'),
+        aiApiFormat: inputValue('#setupAiApiFormat'),
+        aiApiKey: inputValue('#setupAiApiKey'),
+        aiModel: inputValue('#setupAiModel'),
+        aiBaseUrl: inputValue('#setupAiBaseUrl'),
       },
     });
     if (wasRunning) {

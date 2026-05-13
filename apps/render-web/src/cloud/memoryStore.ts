@@ -1,4 +1,7 @@
 import type {
+  CloudPreferenceNamespace,
+  CloudPreferenceRecord,
+  CloudPreferencesStore,
   CloudWorkspaceDeleteCounts,
   CloudWorkspaceDeleteStore,
   AuditEventRecord,
@@ -28,7 +31,7 @@ export interface AgentPolicyState {
   version: number;
 }
 
-export class MemoryWorkflowStore implements SessionWorkflowStore, OneTimeWorkflowStore, CloudWorkspaceDeleteStore, AgentPolicyStore {
+export class MemoryWorkflowStore implements SessionWorkflowStore, OneTimeWorkflowStore, CloudWorkspaceDeleteStore, CloudPreferencesStore, AgentPolicyStore {
   private readonly nonces = new Map<string, AuthNonceRecord>();
   private readonly sessions = new Map<string, WalletSessionRecord>();
   private readonly auditEvents = new Map<string, AuditEventRecord[]>();
@@ -36,7 +39,7 @@ export class MemoryWorkflowStore implements SessionWorkflowStore, OneTimeWorkflo
   private readonly approvals = new Map<string, ApprovalRequestRecord>();
   private readonly completed = new Map<string, CompletedRecord>();
   private readonly finalizations = new Map<string, TransactionFinalizationRecord>();
-  private readonly agentPolicies = new Map<string, AgentPolicyState>();
+  private readonly preferences = new Map<string, CloudPreferenceRecord>();
 
   async createAuthNonce(record: AuthNonceRecord): Promise<void> {
     await this.cleanupExpired(record.createdAt);
@@ -131,17 +134,51 @@ export class MemoryWorkflowStore implements SessionWorkflowStore, OneTimeWorkflo
   }
 
   async getAgentPolicies(walletAddress: string): Promise<AgentPolicyState | undefined> {
-    const record = this.agentPolicies.get(walletAddress);
-    return record ? clone(record) : undefined;
+    const record = await this.getPreference(walletAddress, 'agent-policies');
+    if (!record) return undefined;
+    return {
+      policies: Array.isArray(record.payload) ? record.payload : [],
+      updatedAt: record.updatedAt,
+      version: record.version,
+    };
   }
 
   async saveAgentPolicies(walletAddress: string, state: AgentPolicyState): Promise<AgentPolicyState> {
-    const stored: AgentPolicyState = {
-      policies: state.policies,
+    const saved = await this.savePreference(walletAddress, {
+      namespace: 'agent-policies',
+      payload: state.policies,
       updatedAt: state.updatedAt,
       version: state.version,
+    });
+    return {
+      policies: Array.isArray(saved.payload) ? saved.payload : [],
+      updatedAt: saved.updatedAt,
+      version: saved.version,
     };
-    this.agentPolicies.set(walletAddress, clone(stored));
+  }
+
+  async listPreferences(
+    walletAddress: string,
+    namespaces?: CloudPreferenceNamespace[],
+  ): Promise<CloudPreferenceRecord[]> {
+    const namespaceSet = namespaces ? new Set(namespaces) : undefined;
+    return [...this.preferences.entries()]
+      .filter(([key, record]) => key.startsWith(`${walletAddress}:`) && (!namespaceSet || namespaceSet.has(record.namespace)))
+      .map(([, record]) => clone(record))
+      .sort((left, right) => left.namespace.localeCompare(right.namespace));
+  }
+
+  async getPreference(
+    walletAddress: string,
+    namespace: CloudPreferenceNamespace,
+  ): Promise<CloudPreferenceRecord | undefined> {
+    const record = this.preferences.get(preferenceKey(walletAddress, namespace));
+    return record ? clone(record) : undefined;
+  }
+
+  async savePreference(walletAddress: string, record: CloudPreferenceRecord): Promise<CloudPreferenceRecord> {
+    const stored = clone(record);
+    this.preferences.set(preferenceKey(walletAddress, record.namespace), stored);
     return clone(stored);
   }
 
@@ -254,6 +291,7 @@ export class MemoryWorkflowStore implements SessionWorkflowStore, OneTimeWorkflo
     counts.sessions = deleteOwned(this.sessions, (record) => record.walletAddress === walletAddress);
     counts.auditEvents = this.auditEvents.get(walletAddress)?.length ?? 0;
     this.auditEvents.delete(walletAddress);
+    counts.preferences = deleteOwned(this.preferences, (_record, key) => key.startsWith(`${walletAddress}:`));
     counts.plans = deleteOwned(this.plans, (record) => record.walletAddress === walletAddress);
     counts.approvals = deleteOwned(this.approvals, (record) => record.walletAddress === walletAddress);
     counts.completedRecords = deleteOwned(this.completed, (record) => record.walletAddress === walletAddress);
@@ -267,10 +305,14 @@ function ownerClone<T extends { walletAddress: string }>(record: T | undefined, 
   return clone(record);
 }
 
-function deleteOwned<T>(records: Map<string, T>, predicate: (record: T) => boolean): number {
+function preferenceKey(walletAddress: string, namespace: CloudPreferenceNamespace): string {
+  return `${walletAddress}:${namespace}`;
+}
+
+function deleteOwned<T>(records: Map<string, T>, predicate: (record: T, key: string) => boolean): number {
   let deleted = 0;
   for (const [id, record] of records) {
-    if (predicate(record)) {
+    if (predicate(record, id)) {
       records.delete(id);
       deleted += 1;
     }

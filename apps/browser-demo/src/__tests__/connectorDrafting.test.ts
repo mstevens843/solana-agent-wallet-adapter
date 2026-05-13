@@ -3,6 +3,9 @@ import { describe, expect, it } from 'vitest';
 import {
   connectorAiPlannerContext,
   connectorAiUserNotes,
+  connectorActionFormsForConnector,
+  connectorCreateConnectors,
+  connectorCreateStatus,
   connectorDraftConnectors,
   connectorDraftStatus,
   isConnectorCapableTemplate,
@@ -47,9 +50,44 @@ describe('connector drafting helpers', () => {
       connectorId: 'meteora',
       protocol: 'Meteora',
       operation: 'Claim fees',
-      connectorActionSource: 'first-class-adapter',
+      connectorActionSource: 'blink',
     });
     expect(selectedConnectorForDraftParameters(parameters)?.id).toBe('meteora');
+  });
+
+  it('exposes first-class connector forms without requiring Blink URLs', () => {
+    const connectedDapps = setConnectedDappEnabled(emptyConnectedDapps(), 'kamino', true);
+    const connectors = connectorCreateConnectors({
+      connectedDapps,
+      cluster: 'mainnet-beta',
+    });
+    const kamino = connectors.find((connector) => connector.id === 'kamino')!;
+    const forms = connectorActionFormsForConnector(kamino);
+
+    expect(connectorCreateStatus(kamino, { connectedDapps, cluster: 'mainnet-beta' }).selectable).toBe(true);
+    expect(forms.map((form) => form.id)).toEqual(expect.arrayContaining([
+      'kamino:deposit',
+      'kamino:withdraw',
+      'kamino:earnings-proof',
+    ]));
+
+    const result = validateConnectorDraftParameters(templateById('kamino-deposit'), {
+      connectorId: 'kamino',
+      connectorOperationId: 'kamino:deposit',
+      token: 'SOL',
+      amount: '0.1',
+    }, {
+      connectedDapps,
+      cluster: 'mainnet-beta',
+    }, 'template');
+
+    expect(result.errors).toEqual({});
+    expect(result.parameters).toMatchObject({
+      connectorId: 'kamino',
+      protocol: 'Kamino Finance',
+      operation: 'Deposit',
+      connectorActionSource: 'first-class-adapter',
+    });
   });
 
   it('blocks non-AI executable drafts for disabled connectors', () => {

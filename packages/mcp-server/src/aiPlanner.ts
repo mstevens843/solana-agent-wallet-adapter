@@ -1,106 +1,40 @@
 import { ProtocolError } from '@solana-agent-wallet-adapter/core';
 import {
   assertPlanGuardrails,
-  type AiGuardrailReport,
+  type AgentPlan as AiPlan,
+  type AgentPlanAskRequest as AiAskRequest,
+  type AgentPlanAskResult as AiAskResult,
+  type AgentPlanReviewDecision as AiReviewDecision,
+  type AgentPlanReviewMode as AiReviewMode,
+  type AgentPlanReviewRequest as AiReviewRequest,
+  type AgentPlanReviewResult as AiReviewResult,
+  type AgentReviewQuestion as AiReviewQuestion,
+  type AgentReviewerEntry as AiReviewerEntry,
+  type AiPlanRequest as WorkflowAiPlanRequest,
+  type AiPlanTemplateContext,
 } from '@solana-agent-wallet-adapter/workflow';
 
 import { redactSecrets } from './trace.js';
 import { connectorRegistryPromptContext } from './connectorRegistry.js';
 
 export type AiApiFormat = 'openai-compatible' | 'anthropic';
+export type {
+  AiPlan,
+  AiAskRequest,
+  AiAskResult,
+  AiPlanTemplateContext,
+  AiReviewDecision,
+  AiReviewMode,
+  AiReviewQuestion,
+  AiReviewerEntry,
+  AiReviewRequest,
+  AiReviewResult,
+};
 
-export interface AiPlanTemplateContext {
-  id: string;
-  category: string;
-  title: string;
-  description: string;
-  actionType: string;
-  risk: string;
-}
-
-export interface AiPlanRequest {
-  prompt?: string;
+export type AiPlanRequest = Partial<WorkflowAiPlanRequest> & {
   template?: AiPlanTemplateContext;
   parameters?: Record<string, string>;
-  userNotes?: string;
-  connectorContext?: Array<Record<string, unknown>>;
-}
-
-export interface AiPlan {
-  intent: string;
-  route: string;
-  risk: string;
-  approval: string;
-  source: 'template' | 'ai';
-  category: string;
-  actionType: string;
-  templateTitle: string;
-  userNotes?: string;
-  parameters: Record<string, string>;
-  fields: Array<{ label: string; value: string }>;
-  safeguards: string[];
-  guardrailReport?: AiGuardrailReport;
-  constraintFingerprint?: string;
-  constraintHash?: string;
-}
-
-export type AiReviewMode = 'single' | 'multi';
-
-export interface AiReviewRequest {
-  plan: AiPlan;
-  instruction?: string;
-  walletAddress?: string;
-  cluster?: string;
-  context?: Record<string, unknown>;
-  mode?: AiReviewMode;
-}
-
-export type AiReviewDecision = 'approve' | 'deny' | 'needs_input';
-
-export interface AiReviewQuestion {
-  id: string;
-  prompt: string;
-  inputKind: 'text' | 'select' | 'number';
-  options?: string[];
-  required: boolean;
-  hint?: string;
-}
-
-export interface AiReviewerEntry {
-  id: string;
-  label: string;
-  decision: AiReviewDecision;
-  reason: string;
-  summary?: string;
-  errored?: { message: string };
-  checkedAt: string;
-}
-
-export interface AiReviewResult {
-  decision: AiReviewDecision;
-  reason: string;
-  summary: string;
-  evidence: Record<string, unknown>;
-  checkedAt: string;
-  source: 'ai';
-  questions?: AiReviewQuestion[];
-  reviewers?: AiReviewerEntry[];
-}
-
-export interface AiAskRequest {
-  plan: AiPlan;
-  question: string;
-  walletAddress?: string;
-  cluster?: string;
-  context?: Record<string, unknown>;
-}
-
-export interface AiAskResult {
-  answer: string;
-  citations?: Array<{ kind: string; ref: string }>;
-  checkedAt: string;
-  source: 'ai';
-}
+};
 
 interface AiRuntimeConfig {
   provider: string;

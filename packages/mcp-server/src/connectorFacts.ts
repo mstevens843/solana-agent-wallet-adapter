@@ -168,6 +168,7 @@ export interface ConnectorFactReadInput {
   inputToken?: string;
   outputToken?: string;
   amount?: string;
+  amountRaw?: string;
   slippageBps?: number;
   taker?: string;
   poolAddress?: string;
@@ -274,11 +275,16 @@ export interface ConnectorFactReadInput {
     | 'order_history';
   triggerOrderId?: string;
   triggerState?: 'open' | 'pending' | 'filled' | 'expired' | 'cancelled' | 'ready_to_cancel' | 'all';
-  recurringOperation?: 'orders' | 'order_detail';
+  recurringOperation?: 'orders' | 'order_detail' | 'quote';
   recurringOrderId?: string;
   recurringState?: 'active' | 'history' | 'completed' | 'cancelled' | 'failed' | 'all';
+  recurringType?: 'time' | 'price';
   recurringPage?: number;
-  recurringMint?: string;
+  recurringNumberOfOrders?: number;
+  recurringIntervalSeconds?: number;
+  recurringStartAt?: string;
+  recurringMinPrice?: string;
+  recurringMaxPrice?: string;
   includeFailedTx?: boolean;
   collectionId?: string;
   collectionSymbol?: string;
@@ -651,6 +657,32 @@ export function factsFromJupiterRecurringRead(
 ): ConnectorFact[] {
   const record = safeFactRecord(result) ?? {};
   const inner = safeFactRecord(record.result) ?? record;
+  if (readId === 'recurring_quote') {
+    return [
+      fact({
+        connectorId: 'jupiter',
+        label: 'Jupiter Recurring quote',
+        value: `${stringValue(inner.numberOfOrders) || '0'} scheduled fill(s), every ${stringValue(inner.intervalSeconds) || '?'} seconds`,
+        tone: 'neutral',
+        checkedAt,
+        detail: inner,
+      }),
+      fact({
+        connectorId: 'jupiter',
+        label: 'Recurring automation',
+        value: 'Future fills execute through Jupiter Recurring automation without Agentic approval each cycle.',
+        tone: 'warn',
+        checkedAt,
+      }),
+      fact({
+        connectorId: 'jupiter',
+        label: 'Recurring fees',
+        value: 'Jupiter Recurring charges a 0.1% Jupiter fee; integrator fees are not supported.',
+        tone: 'neutral',
+        checkedAt,
+      }),
+    ];
+  }
   const orders = Array.isArray(inner.orders) ? inner.orders : [];
   return [
     fact({

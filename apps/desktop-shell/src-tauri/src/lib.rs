@@ -23,7 +23,11 @@ const MAX_LOG_LINES: usize = 600;
 const DEFAULT_JUPITER_ULTRA_BASE: &str = "https://api.jup.ag/swap/v2";
 const DEFAULT_JUPITER_API_URL: &str = "https://quote-api.jup.ag";
 const DEFAULT_BIRDEYE_REST_BASE: &str = "https://public-api.birdeye.so";
-const SETUP_ENV_KEYS: [&str; 9] = [
+const DEFAULT_AI_PROVIDER: &str = "openai";
+const DEFAULT_AI_API_FORMAT: &str = "openai-compatible";
+const DEFAULT_AI_BASE_URL: &str = "https://api.openai.com/v1";
+const DEFAULT_AI_MODEL: &str = "gpt-5";
+const SETUP_ENV_KEYS: [&str; 14] = [
     "SOLANA_RPC_URL",
     "HELIUS_RPC_URL",
     "JUPITER_API_KEY",
@@ -33,6 +37,11 @@ const SETUP_ENV_KEYS: [&str; 9] = [
     "JUPITER_API_URL",
     "BIRDEYE_API_KEY",
     "BIRDEYE_REST_BASE",
+    "AGENTIC_AI_PROVIDER",
+    "AGENTIC_AI_API_FORMAT",
+    "AGENTIC_AI_API_KEY",
+    "AGENTIC_AI_MODEL",
+    "AGENTIC_AI_BASE_URL",
 ];
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -56,6 +65,11 @@ struct RuntimeSetupInput {
     jupiter_api_url: Option<String>,
     birdeye_api_key: Option<String>,
     birdeye_rest_base: Option<String>,
+    ai_provider: Option<String>,
+    ai_api_format: Option<String>,
+    ai_api_key: Option<String>,
+    ai_model: Option<String>,
+    ai_base_url: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -72,6 +86,13 @@ struct RuntimeSetup {
     birdeye_api_key_configured: bool,
     birdeye_api_key_redacted: Option<String>,
     birdeye_rest_base: String,
+    ai_provider: String,
+    ai_api_format: String,
+    ai_api_key_configured: bool,
+    ai_api_key_redacted: Option<String>,
+    ai_model: String,
+    ai_base_url: String,
+    ai_ready: bool,
     sol_transfers_ready: bool,
     token_transfers_ready: bool,
     swaps_ready: bool,
@@ -1059,9 +1080,34 @@ fn runtime_setup_for_config(config: &DesktopConfig) -> Result<RuntimeSetup, Stri
         .filter(|value| !value.trim().is_empty())
         .cloned()
         .unwrap_or_else(|| DEFAULT_BIRDEYE_REST_BASE.into());
+    let ai_provider = values
+        .get("AGENTIC_AI_PROVIDER")
+        .filter(|value| !value.trim().is_empty())
+        .cloned()
+        .unwrap_or_else(|| DEFAULT_AI_PROVIDER.into());
+    let ai_api_format = values
+        .get("AGENTIC_AI_API_FORMAT")
+        .filter(|value| !value.trim().is_empty())
+        .cloned()
+        .unwrap_or_else(|| DEFAULT_AI_API_FORMAT.into());
+    let ai_api_key = values
+        .get("AGENTIC_AI_API_KEY")
+        .filter(|value| !value.trim().is_empty())
+        .cloned();
+    let ai_model = values
+        .get("AGENTIC_AI_MODEL")
+        .filter(|value| !value.trim().is_empty())
+        .cloned()
+        .unwrap_or_else(|| DEFAULT_AI_MODEL.into());
+    let ai_base_url = values
+        .get("AGENTIC_AI_BASE_URL")
+        .filter(|value| !value.trim().is_empty())
+        .cloned()
+        .unwrap_or_else(|| DEFAULT_AI_BASE_URL.into());
     let rpc_url_configured = rpc_url.is_some();
     let jupiter_api_key_configured = jupiter_api_key.is_some();
     let birdeye_api_key_configured = birdeye_api_key.is_some();
+    let ai_api_key_configured = ai_api_key.is_some();
     Ok(RuntimeSetup {
         env_path: config.env_path.clone(),
         env_found,
@@ -1074,6 +1120,13 @@ fn runtime_setup_for_config(config: &DesktopConfig) -> Result<RuntimeSetup, Stri
         birdeye_api_key_configured,
         birdeye_api_key_redacted: birdeye_api_key.as_deref().map(redact_secret),
         birdeye_rest_base,
+        ai_provider,
+        ai_api_format,
+        ai_api_key_configured,
+        ai_api_key_redacted: ai_api_key.as_deref().map(redact_secret),
+        ai_model,
+        ai_base_url,
+        ai_ready: ai_api_key_configured,
         sol_transfers_ready: rpc_url_configured,
         token_transfers_ready: rpc_url_configured,
         swaps_ready: rpc_url_configured && jupiter_api_key_configured,
@@ -1163,6 +1216,58 @@ fn save_runtime_setup_to_env(
     updates.insert(
         "BIRDEYE_REST_BASE".into(),
         normalize_setup_url(&birdeye_rest_base, "BirdEye REST base URL")?,
+    );
+
+    let ai_provider = input
+        .ai_provider
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string)
+        .or_else(|| values.get("AGENTIC_AI_PROVIDER").cloned())
+        .unwrap_or_else(|| DEFAULT_AI_PROVIDER.into());
+    updates.insert("AGENTIC_AI_PROVIDER".into(), ai_provider);
+
+    let ai_api_format = input
+        .ai_api_format
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string)
+        .or_else(|| values.get("AGENTIC_AI_API_FORMAT").cloned())
+        .unwrap_or_else(|| DEFAULT_AI_API_FORMAT.into());
+    updates.insert("AGENTIC_AI_API_FORMAT".into(), ai_api_format);
+
+    if let Some(api_key) = input
+        .ai_api_key
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        updates.insert("AGENTIC_AI_API_KEY".into(), api_key.into());
+    }
+
+    let ai_model = input
+        .ai_model
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string)
+        .or_else(|| values.get("AGENTIC_AI_MODEL").cloned())
+        .unwrap_or_else(|| DEFAULT_AI_MODEL.into());
+    updates.insert("AGENTIC_AI_MODEL".into(), ai_model);
+
+    let ai_base_url = input
+        .ai_base_url
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string)
+        .or_else(|| values.get("AGENTIC_AI_BASE_URL").cloned())
+        .unwrap_or_else(|| DEFAULT_AI_BASE_URL.into());
+    updates.insert(
+        "AGENTIC_AI_BASE_URL".into(),
+        normalize_setup_url(&ai_base_url, "AI base URL")?,
     );
 
     if let Some(parent) = path.parent() {
@@ -1682,6 +1787,11 @@ mod tests {
         updates.insert("JUPITER_SWAP_BASE_URL".into(), DEFAULT_JUPITER_ULTRA_BASE.into());
         updates.insert("JUP_ULTRA_BASE".into(), DEFAULT_JUPITER_ULTRA_BASE.into());
         updates.insert("JUPITER_API_URL".into(), DEFAULT_JUPITER_API_URL.into());
+        updates.insert("AGENTIC_AI_PROVIDER".into(), "openai".into());
+        updates.insert("AGENTIC_AI_API_FORMAT".into(), "openai-compatible".into());
+        updates.insert("AGENTIC_AI_API_KEY".into(), "ai-secret".into());
+        updates.insert("AGENTIC_AI_MODEL".into(), "gpt-5".into());
+        updates.insert("AGENTIC_AI_BASE_URL".into(), DEFAULT_AI_BASE_URL.into());
 
         let next = apply_env_updates(raw, &updates).expect("env update should succeed");
 
@@ -1690,6 +1800,9 @@ mod tests {
         assert!(next.contains("JUP_API_KEY=jupiter-secret"));
         assert!(next.contains("SOLANA_RPC_URL=https://mainnet.helius-rpc.com/?api-key=rpc-secret"));
         assert!(next.contains("HELIUS_RPC_URL=https://mainnet.helius-rpc.com/?api-key=rpc-secret"));
+        assert!(next.contains("AGENTIC_AI_API_KEY=ai-secret"));
+        assert!(next.contains("AGENTIC_AI_MODEL=gpt-5"));
+        assert!(next.contains("AGENTIC_AI_BASE_URL=https://api.openai.com/v1"));
     }
 
     #[test]
