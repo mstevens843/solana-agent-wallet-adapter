@@ -1,7 +1,9 @@
 export * from './types.js';
 export {
+  CONNECTOR_APPROVAL_ACTION_TYPES,
   actionForKind,
   adapterForActionKind,
+  adapterForKind,
   getAdapter,
   listAdapters,
   requireAdapter,

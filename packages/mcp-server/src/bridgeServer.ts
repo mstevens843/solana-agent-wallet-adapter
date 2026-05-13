@@ -14,6 +14,7 @@ import { Connection, PublicKey } from '@solana/web3.js';
 import {
   AgentWalletActionService,
 } from './actionService.js';
+import { AdapterError } from './adapters/types.js';
 import {
   AgentRegistry,
   isAgentTier,
@@ -698,6 +699,22 @@ async function handleRequest(
       writeJson(res, 200, await requireActionService(actionService).executePreparedAction(body.actionId));
       return;
     }
+    if (req.method === 'POST') {
+      const prepareTxMatch = url.pathname.match(
+        /^\/bridge\/prepared-actions\/([^/]+)\/prepare-transaction$/,
+      );
+      if (prepareTxMatch) {
+        const actionId = decodeURIComponent(prepareTxMatch[1]!);
+        const service = requireActionService(actionService);
+        try {
+          const payload = await service.prepareTransactionForActionApproval(actionId);
+          writeJson(res, 200, payload);
+        } catch (err) {
+          writePrepareTransactionError(res, err);
+        }
+        return;
+      }
+    }
     if (req.method === 'POST' && url.pathname === '/bridge/prepared-actions/record-transaction') {
       const body = (await readJson(req)) as { actionId?: string; txid?: string; txids?: string[]; txStatus?: string; error?: string };
       if (!body.actionId) {
@@ -866,6 +883,12 @@ function requiredTier(method: string, pathname: string): AgentTier | null {
     if (pathname === '/bridge/prepared-actions/archive') return 'capped';
     if (pathname === '/bridge/prepared-actions/delete') return 'capped';
     if (pathname === '/bridge/prepared-actions/record-transaction') return 'capped';
+    if (
+      pathname.startsWith('/bridge/prepared-actions/') &&
+      pathname.endsWith('/prepare-transaction')
+    ) {
+      return 'capped';
+    }
     if (pathname === '/bridge/ai/generate-plan') return 'capped';
     if (pathname === '/bridge/ai/review-plan') return 'capped';
     if (pathname === '/bridge/ai/ask-about-plan') return 'capped';
@@ -907,6 +930,42 @@ function requireActionService(actionService: AgentWalletActionService | undefine
     throw new ProtocolError('unsupported_method', 'Bridge action service is not configured.');
   }
   return actionService;
+}
+
+function writePrepareTransactionError(res: ServerResponse, err: unknown): void {
+  if (err instanceof AdapterError) {
+    if (err.code === 'unknown_kind' || err.code === 'not_executable') {
+      writeJson(res, 422, {
+        error: { code: err.code, message: err.message, recoverable: false },
+      });
+      return;
+    }
+    writeJson(res, 502, {
+      error: { code: err.code, message: err.message, recoverable: false },
+    });
+    return;
+  }
+  if (err instanceof ProtocolError) {
+    if (err.code === 'invalid_request' && /Unknown prepared action/.test(err.message)) {
+      writeJson(res, 404, { error: err.toPayload() });
+      return;
+    }
+    if (err.code === 'unauthorized') {
+      writeJson(res, 404, { error: err.toPayload() });
+      return;
+    }
+    if (err.code === 'invalid_request' && /is already /.test(err.message)) {
+      writeJson(res, 409, { error: err.toPayload() });
+      return;
+    }
+    writeJson(res, 400, { error: err.toPayload() });
+    return;
+  }
+  const wrapped = new ProtocolError(
+    'wallet_unreachable',
+    err instanceof Error ? err.message : 'Bridge error.',
+  );
+  writeJson(res, 502, { error: wrapped.toPayload() });
 }
 
 function requireLabArtifactStore(labArtifacts: LabArtifactStore | undefined): LabArtifactStore {

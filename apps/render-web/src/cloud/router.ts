@@ -57,6 +57,7 @@ import {
   type WorkflowStore,
 } from './store.js';
 import { WorkflowService, type WorkflowStore as OneTimeWorkflowStore } from './workflowService.js';
+import type { ConnectorTransactionPreparer } from './prepareConnectorTransaction.js';
 import { createWorkflowApiHandler } from './workflowRoutes.js';
 
 const MAX_JSON_BYTES = 64 * 1024;
@@ -81,6 +82,7 @@ const REGISTERED_API_ROUTES = [
   '/api/approvals',
   'POST /api/approvals/cleanup-recurring-backlog',
   'POST /api/approvals/:id/wallet-execution',
+  'POST /api/approvals/:id/prepare-transaction',
   'POST /api/approvals/:id/finalization/prepare',
   'POST /api/approvals/:id/finalization/:finalizationId/submit',
   'POST /api/approvals/:id/finalization/:finalizationId/confirm',
@@ -138,6 +140,12 @@ export interface CloudApiRouterOptions {
   clock?: Clock;
   authRateLimiter?: AuthRateLimiter | false;
   recurringPolicy?: RecurringPolicyConfig;
+  /**
+   * Test-only override: replace the adapter-backed transaction preparer used by
+   * `POST /api/approvals/:id/prepare-transaction`. Production code constructs the default
+   * preparer via `createDefaultConnectorPreparer()` in `prepareConnectorTransaction.ts`.
+   */
+  connectorPreparer?: ConnectorTransactionPreparer;
 }
 
 export interface CloudApiRouter {
@@ -218,7 +226,9 @@ export function createCloudApiRouter(options: CloudApiRouterOptions = {}): Cloud
     return session ? { walletAddress: session.walletAddress, sessionId: session.tokenHash } : null;
   };
   const workflowStore = requireOneTimeWorkflowStore(store);
-  const workflowService = new WorkflowService(workflowStore);
+  const workflowService = new WorkflowService(workflowStore, {
+    ...(options.connectorPreparer ? { connectorPreparer: options.connectorPreparer } : {}),
+  });
   const workflowApiHandler = createWorkflowApiHandler({
     service: workflowService,
     getSession: sessionResolver,

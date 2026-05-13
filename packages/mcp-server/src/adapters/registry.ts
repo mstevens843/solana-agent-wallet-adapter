@@ -1,3 +1,4 @@
+import type { PreparedActionKind } from '../preparedActions.js';
 import { driftAdapter } from './drift/index.js';
 import { jitoAdapter } from './jito/index.js';
 import { jupiterAdapter } from './jupiter/index.js';
@@ -16,7 +17,7 @@ import { sanctumAdapter } from './sanctum/index.js';
 import { squadsAdapter } from './squads/index.js';
 import { tensorAdapter } from './tensor/index.js';
 import { wormholeAdapter } from './wormhole/index.js';
-import type { DAppAdapter, DAppAdapterId } from './types.js';
+import type { AdapterAction, DAppAdapter, DAppAdapterId } from './types.js';
 
 const ADAPTERS: Partial<Record<DAppAdapterId, DAppAdapter>> = {
   jupiter: jupiterAdapter,
@@ -74,3 +75,25 @@ export function actionForKind(kind: string): { adapter: DAppAdapter; action: { e
   }
   return undefined;
 }
+
+export function adapterForKind(kind: PreparedActionKind): AdapterAction<unknown> | undefined {
+  for (const adapter of listAdapters()) {
+    for (const action of Object.values(adapter.actions)) {
+      if (action.kind === kind) return action;
+    }
+  }
+  return undefined;
+}
+
+function buildConnectorApprovalActionTypes(): ReadonlySet<PreparedActionKind> {
+  const kinds = new Set<PreparedActionKind>();
+  for (const adapter of listAdapters()) {
+    for (const action of Object.values(adapter.actions)) {
+      kinds.add(action.kind);
+    }
+  }
+  return kinds;
+}
+
+export const CONNECTOR_APPROVAL_ACTION_TYPES: ReadonlySet<PreparedActionKind> =
+  buildConnectorApprovalActionTypes();

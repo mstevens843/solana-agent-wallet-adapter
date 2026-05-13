@@ -22,6 +22,7 @@ export function createRenderWebServer(options: RenderWebServerOptions = {}): Ser
     clock: options.clock,
     authRateLimiter: options.authRateLimiter,
     recurringPolicy: options.recurringPolicy,
+    ...(options.connectorPreparer ? { connectorPreparer: options.connectorPreparer } : {}),
   });
   return createServer((req, res) => {
     void handleRequest(req, res, staticDir, apiRouter);

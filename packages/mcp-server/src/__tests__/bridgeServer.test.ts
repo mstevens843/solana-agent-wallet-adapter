@@ -5,12 +5,25 @@ import { join } from 'node:path';
 
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
+import { PublicKey, Transaction } from '@solana/web3.js';
+
+import {
+  resetKaminoClientFactory,
+  setKaminoClientFactory,
+  type KaminoClient,
+  type KaminoReserveSnapshot,
+} from '../adapters/kamino/client.js';
+import { clearReserveSnapshotCache } from '../adapters/kamino/reserveSnapshot.js';
 import { AgentRegistry, type PublicRegisteredAgent } from '../agentRegistry.js';
 import { createBridgeServer } from '../bridgeServer.js';
 import { DEFAULT_CONFIG, type AgentWalletConfig } from '../config.js';
 import { JsonLabArtifactStore, type LabArtifact } from '../labArtifacts.js';
 import { LocalBridgeBackend } from '../localBridgeBackend.js';
-import { JsonPreparedActionStore, type PreparedActionStore } from '../preparedActions.js';
+import {
+  JsonPreparedActionStore,
+  type PreparedActionKind,
+  type PreparedActionStore,
+} from '../preparedActions.js';
 
 describe('bridge lab artifact routes', () => {
   afterEach(() => {
@@ -386,6 +399,261 @@ describe('bridge lab artifact routes', () => {
     }
   });
 });
+
+describe('bridge prepared-action prepare-transaction', () => {
+  afterEach(() => {
+    resetKaminoClientFactory();
+    clearReserveSnapshotCache();
+    vi.unstubAllEnvs();
+    vi.unstubAllGlobals();
+  });
+
+  it('returns 200 with captured base64 for a registered adapter kind', async () => {
+    const wallet = 'GgwYwf8XtAQRtu1ZUv9hY1Zk1wkJpz3DCH7jQAjmGGGV';
+    setKaminoClientFactory(() => buildFakeKaminoClient());
+
+    const store = new JsonPreparedActionStore(
+      join(await mkdtemp(join(tmpdir(), 'sawa-bridge-prepare-tx-')), 'actions.json'),
+    );
+    const action = await store.addAction({
+      kind: 'kamino_deposit',
+      walletAddress: wallet,
+      cluster: 'mainnet-beta',
+      summary: 'Deposit 0.5 SOL into Kamino',
+      params: {
+        reserveMint: 'So11111111111111111111111111111111111111112',
+        amountRaw: '500000000',
+        decimals: 9,
+      },
+    });
+    const handle = await startTestBridge({
+      actionConfig: { ...DEFAULT_CONFIG, rpcUrl: 'http://127.0.0.1:1' },
+      preparedActions: store,
+      connectedAddress: wallet,
+    });
+    try {
+      const response = await fetch(
+        new URL(`/bridge/prepared-actions/${action.id}/prepare-transaction`, handle.url),
+        {
+          method: 'POST',
+          headers: { 'x-agent-wallet-token': 'test-token' },
+        },
+      );
+      expect(response.status).toBe(200);
+      const body = (await response.json()) as {
+        transactionBase64: string;
+        summary: string;
+        cluster: string;
+        preview?: Record<string, unknown>;
+      };
+      expect(typeof body.transactionBase64).toBe('string');
+      expect(body.transactionBase64.length).toBeGreaterThan(0);
+      expect(body.summary).toBe('Deposit 0.5 SOL into Kamino');
+      expect(body.cluster).toBe('mainnet-beta');
+      expect(body.preview).toMatchObject({ reserveSymbol: 'SOL' });
+
+      const stored = await store.getAction(action.id);
+      expect(stored?.status).toBe('ready');
+    } finally {
+      await handle.stop();
+    }
+  });
+
+  it('returns 422 when no adapter is registered for the action kind', async () => {
+    const wallet = 'GgwYwf8XtAQRtu1ZUv9hY1Zk1wkJpz3DCH7jQAjmGGGV';
+    const store = new JsonPreparedActionStore(
+      join(await mkdtemp(join(tmpdir(), 'sawa-bridge-prepare-tx-')), 'actions.json'),
+    );
+    const action = await store.addAction({
+      kind: 'manual_review' as PreparedActionKind,
+      walletAddress: wallet,
+      cluster: 'mainnet-beta',
+      summary: 'Manual review',
+      params: {},
+    });
+    const handle = await startTestBridge({
+      actionConfig: { ...DEFAULT_CONFIG, rpcUrl: 'http://127.0.0.1:1' },
+      preparedActions: store,
+      connectedAddress: wallet,
+    });
+    try {
+      const response = await fetch(
+        new URL(`/bridge/prepared-actions/${action.id}/prepare-transaction`, handle.url),
+        {
+          method: 'POST',
+          headers: { 'x-agent-wallet-token': 'test-token' },
+        },
+      );
+      expect(response.status).toBe(422);
+      const body = (await response.json()) as { error?: { code?: string; message?: string } };
+      expect(body.error?.code).toBe('unknown_kind');
+    } finally {
+      await handle.stop();
+    }
+  });
+
+  it('returns 409 when the action is already in a terminal status', async () => {
+    const wallet = 'GgwYwf8XtAQRtu1ZUv9hY1Zk1wkJpz3DCH7jQAjmGGGV';
+    const store = new JsonPreparedActionStore(
+      join(await mkdtemp(join(tmpdir(), 'sawa-bridge-prepare-tx-')), 'actions.json'),
+    );
+    const action = await store.addAction({
+      kind: 'kamino_deposit',
+      walletAddress: wallet,
+      cluster: 'mainnet-beta',
+      summary: 'Deposit 0.5 SOL into Kamino',
+      params: {
+        reserveMint: 'So11111111111111111111111111111111111111112',
+        amountRaw: '500000000',
+        decimals: 9,
+      },
+    });
+    await store.updateAction(action.id, { status: 'approved' });
+
+    const handle = await startTestBridge({
+      actionConfig: { ...DEFAULT_CONFIG, rpcUrl: 'http://127.0.0.1:1' },
+      preparedActions: store,
+      connectedAddress: wallet,
+    });
+    try {
+      const response = await fetch(
+        new URL(`/bridge/prepared-actions/${action.id}/prepare-transaction`, handle.url),
+        {
+          method: 'POST',
+          headers: { 'x-agent-wallet-token': 'test-token' },
+        },
+      );
+      expect(response.status).toBe(409);
+      const body = (await response.json()) as { error?: { code?: string; message?: string } };
+      expect(body.error?.code).toBe('invalid_request');
+      expect(body.error?.message).toMatch(/is already approved/);
+    } finally {
+      await handle.stop();
+    }
+  });
+
+  it('returns 404 when the action does not exist', async () => {
+    const wallet = 'GgwYwf8XtAQRtu1ZUv9hY1Zk1wkJpz3DCH7jQAjmGGGV';
+    const store = new JsonPreparedActionStore(
+      join(await mkdtemp(join(tmpdir(), 'sawa-bridge-prepare-tx-')), 'actions.json'),
+    );
+    const handle = await startTestBridge({
+      actionConfig: { ...DEFAULT_CONFIG, rpcUrl: 'http://127.0.0.1:1' },
+      preparedActions: store,
+      connectedAddress: wallet,
+    });
+    try {
+      const response = await fetch(
+        new URL('/bridge/prepared-actions/does-not-exist/prepare-transaction', handle.url),
+        {
+          method: 'POST',
+          headers: { 'x-agent-wallet-token': 'test-token' },
+        },
+      );
+      expect(response.status).toBe(404);
+      const body = (await response.json()) as { error?: { code?: string; message?: string } };
+      expect(body.error?.code).toBe('invalid_request');
+      expect(body.error?.message).toMatch(/Unknown prepared action/);
+    } finally {
+      await handle.stop();
+    }
+  });
+
+  it('returns 404 when the action belongs to a different wallet', async () => {
+    const ownerWallet = 'GgwYwf8XtAQRtu1ZUv9hY1Zk1wkJpz3DCH7jQAjmGGGV';
+    const otherWallet = 'HnXY7XBN3iLkz9aXVH3xukNNa1aAvK7Crh1MDBQTRJVA';
+    const store = new JsonPreparedActionStore(
+      join(await mkdtemp(join(tmpdir(), 'sawa-bridge-prepare-tx-')), 'actions.json'),
+    );
+    const action = await store.addAction({
+      kind: 'kamino_deposit',
+      walletAddress: ownerWallet,
+      cluster: 'mainnet-beta',
+      summary: 'Deposit 0.5 SOL into Kamino',
+      params: {
+        reserveMint: 'So11111111111111111111111111111111111111112',
+        amountRaw: '500000000',
+        decimals: 9,
+      },
+    });
+    const handle = await startTestBridge({
+      actionConfig: { ...DEFAULT_CONFIG, rpcUrl: 'http://127.0.0.1:1' },
+      preparedActions: store,
+      connectedAddress: otherWallet,
+    });
+    try {
+      const response = await fetch(
+        new URL(`/bridge/prepared-actions/${action.id}/prepare-transaction`, handle.url),
+        {
+          method: 'POST',
+          headers: { 'x-agent-wallet-token': 'test-token' },
+        },
+      );
+      expect(response.status).toBe(404);
+      const body = (await response.json()) as { error?: { code?: string } };
+      expect(body.error?.code).toBe('unauthorized');
+    } finally {
+      await handle.stop();
+    }
+  });
+});
+
+function buildFakeKaminoClient(): KaminoClient {
+  const snapshot: KaminoReserveSnapshot = {
+    reserveAddress: 'ReserveAddressForSolPlaceholder111111111111',
+    reserveMint: 'So11111111111111111111111111111111111111112',
+    reserveSymbol: 'SOL',
+    decimals: 9,
+    supplyApy: 5.4,
+    borrowApy: 7.2,
+    utilization: 68,
+    totalSupply: '10000',
+    totalBorrow: '6800',
+    depositLimit: '50000',
+    depositLimitRemaining: '40000',
+    withdrawalDelaySec: 0,
+    withdrawAvailable: '3200',
+    lastUpdateSlot: 280_000_000,
+    asOfBlockTime: 1_770_000_000,
+  };
+  return {
+    async getReserveSnapshot() {
+      return snapshot;
+    },
+    async listReserveSnapshots() {
+      return [snapshot];
+    },
+    async getPositions() {
+      return [];
+    },
+    async buildDepositTransaction(_connection, input) {
+      const tx = new Transaction();
+      tx.feePayer = new PublicKey(input.walletAddress);
+      tx.recentBlockhash = '11111111111111111111111111111111';
+      return {
+        transaction: tx,
+        reserveAddress: snapshot.reserveAddress,
+        reserveSymbol: snapshot.reserveSymbol,
+        decimals: snapshot.decimals,
+        amountUi: (Number(input.amountRaw) / 10 ** snapshot.decimals).toString(),
+        reserveSnapshot: snapshot,
+      };
+    },
+    async buildWithdrawTransaction(_connection, input) {
+      const tx = new Transaction();
+      tx.feePayer = new PublicKey(input.walletAddress);
+      tx.recentBlockhash = '11111111111111111111111111111111';
+      return {
+        transaction: tx,
+        reserveAddress: snapshot.reserveAddress,
+        reserveSymbol: snapshot.reserveSymbol,
+        decimals: snapshot.decimals,
+        amountUi: (Number(input.amountRaw) / 10 ** snapshot.decimals).toString(),
+        reserveSnapshot: snapshot,
+      };
+    },
+  };
+}
 
 async function startTestBridge(
   options: {

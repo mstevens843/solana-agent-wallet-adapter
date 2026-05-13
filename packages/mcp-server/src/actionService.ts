@@ -221,6 +221,11 @@ import type {
   RecurringPayment,
   RecurringPaymentView,
 } from './preparedActions.js';
+import { TERMINAL_PREPARED_ACTION_STATUSES } from './preparedActions.js';
+import {
+  prepareTransactionForApproval,
+  type PreparedTransactionPayload,
+} from './preparedActionTransactionBuilder.js';
 import {
   CONNECTOR_APPROVAL_BOUNDARY,
   connectorCapabilityView,
@@ -4261,6 +4266,21 @@ export class AgentWalletActionService {
     return { deleted: await store.deleteAction(actionId) };
   }
 
+  async prepareTransactionForActionApproval(
+    actionId: string,
+  ): Promise<PreparedTransactionPayload> {
+    requireActionAllowed(this.config);
+    const store = this.store();
+    const action = await this.requireOwnedPreparedAction(store, actionId);
+    if (TERMINAL_PREPARED_ACTION_STATUSES.has(action.status)) {
+      throw new ProtocolError(
+        'invalid_request',
+        `Prepared action ${action.id} is already ${action.status}.`,
+      );
+    }
+    return prepareTransactionForApproval(action, this.adapterContext());
+  }
+
   async executePreparedAction(actionId: string): Promise<Record<string, unknown>> {
     requireActionAllowed(this.config);
     const store = this.store();
@@ -4848,7 +4868,7 @@ export class AgentWalletActionService {
     };
   }
 
-  private adapterContext(adapter: DAppAdapter): DAppAdapterContext {
+  private adapterContext(adapter?: DAppAdapter): DAppAdapterContext {
     void adapter;
     const signTransaction = async (transactionBase64: string, summary: string): Promise<string> => {
       await this.simulateBeforeSign(transactionBase64, summary);

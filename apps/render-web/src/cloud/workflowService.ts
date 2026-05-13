@@ -21,6 +21,13 @@ import {
   workflowFinalizationProofMessage,
 } from '@solana-agent-wallet-adapter/workflow';
 
+import {
+  AdapterError,
+  CONNECTOR_APPROVAL_ACTION_TYPES,
+  createDefaultConnectorPreparer,
+  type ConnectorTransactionPreparer,
+  type PreparedTransactionPayload,
+} from './prepareConnectorTransaction.js';
 import { completedRecordFromApproval } from './receiptService.js';
 import type {
   ApprovalDecision,
@@ -66,6 +73,7 @@ interface WorkflowServiceOptions {
   clock?: () => Date;
   idFactory?: () => string;
   transactionVerifier?: TransactionVerifier;
+  connectorPreparer?: ConnectorTransactionPreparer;
 }
 
 export type TransactionVerificationStatus = 'confirmed' | 'pending' | 'failed' | 'message_mismatch';
@@ -122,7 +130,11 @@ const MAX_FINALIZATION_PREVIEW_TTL_MS = 15 * 60_000;
 const MEMO_PROGRAM_ID = new PublicKey('MemoSq4gqABAXKb96qnH8TysNcWxMyWCqXgDLGmfcHr');
 const BLINK_BROWSER_LOCAL_FINALIZATION_REASON =
   'Blink transaction bytes are resolved in the browser before wallet approval.';
-const BROWSER_WALLET_EXECUTION_KINDS = new Set(['swap', 'blink_action']);
+const BROWSER_WALLET_EXECUTION_KINDS = new Set<string>([
+  'swap',
+  'blink_action',
+  ...CONNECTOR_APPROVAL_ACTION_TYPES,
+]);
 
 export class WorkflowServiceError extends Error {
   constructor(
@@ -139,6 +151,7 @@ export class WorkflowService {
   private readonly clock: () => Date;
   private readonly idFactory: () => string;
   private readonly transactionVerifier: TransactionVerifier;
+  private readonly connectorPreparer: ConnectorTransactionPreparer;
 
   constructor(
     private readonly store: WorkflowStore,
@@ -147,6 +160,7 @@ export class WorkflowService {
     this.clock = options.clock ?? (() => new Date());
     this.idFactory = options.idFactory ?? (() => randomUUID());
     this.transactionVerifier = options.transactionVerifier ?? verifySolanaTransactionFinalization;
+    this.connectorPreparer = options.connectorPreparer ?? createDefaultConnectorPreparer();
   }
 
   async createPlan(session: WorkflowSession, input: CreatePlanInput): Promise<PlanDraftRecord> {
@@ -466,6 +480,28 @@ export class WorkflowService {
       serverPrepared: true,
     });
     return { ...result, transactionBase64: prepared.transactionBase64 };
+  }
+
+  async prepareApprovalTransaction(
+    session: WorkflowSession,
+    id: string,
+  ): Promise<PreparedTransactionPayload> {
+    const approval = await this.requireApproval(session, id);
+    if (isTerminalApprovalStatus(approval.status)) {
+      throw new WorkflowServiceError(409, 'approval_terminal', 'Approval request is already terminal.');
+    }
+    let payload: PreparedTransactionPayload;
+    try {
+      payload = await this.connectorPreparer(approval);
+    } catch (err) {
+      throw translateAdapterError(err);
+    }
+    await this.audit(session, 'approval.transaction.prepared', 'approval', approval.id, {
+      kind: approval.kind,
+      cluster: payload.cluster,
+      summary: payload.summary,
+    });
+    return payload;
   }
 
   async submitTransactionFinalization(
@@ -1322,6 +1358,24 @@ function guardrailAuditMetadata(report: AiGuardrailReport): JsonObject {
 
 function notFound(message: string): WorkflowServiceError {
   return new WorkflowServiceError(404, 'not_found', message);
+}
+
+function translateAdapterError(err: unknown): WorkflowServiceError {
+  if (err instanceof WorkflowServiceError) return err;
+  if (err instanceof AdapterError) {
+    switch (err.code) {
+      case 'unknown_kind':
+        return new WorkflowServiceError(422, 'unsupported_kind', err.message);
+      case 'not_executable':
+        return new WorkflowServiceError(422, 'adapter_not_executable', err.message);
+      case 'multi_tx_not_supported':
+        return new WorkflowServiceError(502, 'multi_tx_not_supported', err.message);
+      default:
+        return new WorkflowServiceError(502, 'adapter_failure', err.message);
+    }
+  }
+  const message = err instanceof Error ? err.message : 'Failed to prepare connector transaction.';
+  return new WorkflowServiceError(502, 'prepare_failed', message);
 }
 
 function isApprovalExistsStoreError(err: unknown): boolean {

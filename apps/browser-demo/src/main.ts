@@ -183,6 +183,20 @@ import {
   type ProtocolConnector,
 } from './connectedDapps.js';
 import {
+  CONNECTOR_APPROVAL_ACTION_TYPES,
+  classifyConnectorReceipt,
+  connectorExecutionUnsupportedMessage,
+  connectorPrepareEndpointAvailable,
+  executeBrowserConnectorAction,
+  isConnectorApprovalKind,
+  isProofOnlyApprovalKind,
+  type BrowserTransactionExecutionResult,
+  type ConnectorActionExecutionTarget,
+  type ConnectorExecutionDeps,
+  type ConnectorExecutionToastContext,
+  type ConnectorReceiptShape,
+} from './connectorExecution.js';
+import {
   connectorActionFormById,
   connectorActionFormForTemplate,
   connectorActionFormsForConnector,
@@ -702,9 +716,6 @@ const BASE_PREPARED_ACTION_KINDS = new Set<string>([
   'custom_transaction',
   'custom',
 ]);
-const CONNECTOR_APPROVAL_ACTION_TYPES = new Set<string>(
-  PROTOCOL_CONNECTORS.flatMap((connector) => connector.actionKinds).filter((kind) => kind !== 'swap'),
-);
 for (const kind of CONNECTOR_APPROVAL_ACTION_TYPES) {
   BASE_PREPARED_ACTION_KINDS.add(kind);
 }
@@ -1350,6 +1361,7 @@ interface CompletedPlanRecord {
   explorerUrl?: string;
   generatedPlanId?: string;
   actionId?: string;
+  actionKind?: string;
   recurringId?: string;
   occurrenceKey?: string;
   copyPayload: string;
@@ -13161,6 +13173,7 @@ function completedPlanCard(plan: CompletedPlanRecord): string {
   const focused = state.lastCompletedFocusId === plan.id || Boolean(plan.actionId && state.lastCompletedFocusId === plan.actionId);
   const decisionProofBlock = decisionProofRow(plan);
   const historyLabel = plan.kind === 'recurring' ? 'Repeat payment done' : 'One-time done';
+  const submissionPill = completedPlanSubmissionPill(plan);
   return `
     <article class="generated-plan-card completed-plan-card ${focused ? 'focused' : ''}" ${focused ? 'data-completed-focus="true"' : ''}>
       <div class="completed-history-head">
@@ -13170,6 +13183,7 @@ function completedPlanCard(plan: CompletedPlanRecord): string {
             ${storageBadgeHtml(completedPlanStorageBadge(plan))}
             <strong class="completed-history-meta-title">${escapeHtml(historyLabel)}</strong>
             ${evidenceBadgeHtml(evidenceBadge)}
+            ${submissionPill}
             <span>${escapeHtml(plan.kind === 'recurring' ? 'Repeat' : 'One-time')}</span>
             <span>${escapeHtml(titleCaseCluster(plan.cluster))}</span>
           </div>
@@ -18016,6 +18030,7 @@ function completedPlanFromReceipt(receipt: ActionReceipt, action: PreparedAction
     ...(receipt.explorerUrl && { explorerUrl: receipt.explorerUrl }),
     ...(receipt.proofSignature && { signature: receipt.proofSignature }),
     actionId: receipt.actionId,
+    ...(action?.kind ? { actionKind: action.kind } : {}),
     ...(recurringId ? { recurringId } : {}),
     ...(occurrenceKey ? { occurrenceKey } : {}),
     ...(workflowSource ? { workflowSource } : {}),
@@ -18101,6 +18116,7 @@ function completedPlanFromAction(action: PreparedAction): CompletedPlanRecord {
     ...(recipient && { recipient }),
     ...(action.txid && { txid: action.txid }),
     actionId: action.id,
+    ...(action.kind ? { actionKind: action.kind } : {}),
     ...(action.recurringId && { recurringId: action.recurringId }),
     ...(action.occurrenceKey && { occurrenceKey: action.occurrenceKey }),
     ...(action.workflowSource ? { workflowSource: action.workflowSource } : {}),
@@ -22420,10 +22436,18 @@ async function runBrowserPreparedActionOp(actionId: string, op: string): Promise
         await executeBrowserPreparedAction(action);
         return;
       }
+      if (isConnectorApprovalKind(action)) {
+        throw new Error(connectorExecutionUnsupportedMessage(action));
+      }
+      if (!isProofOnlyApprovalKind(action)) {
+        throw new Error(
+          `Browser workflow cannot execute ${action.kind.replace(/_/g, ' ')} from this device yet.`,
+        );
+      }
       const proofSignature = await signBrowserWorkflowDecision(action, 'approved');
       completeBrowserPreparedAction(action, 'approved', proofSignature);
       showCompletedHistoryForAction(action.id);
-      pushToast('success', 'Approval recorded', 'Wallet proof saved in Done.');
+      pushToast('success', 'Decision proof saved', 'Wallet proof saved in Done. No transaction was submitted.');
       return;
     }
     case 'reject': {
@@ -22726,14 +22750,18 @@ async function signBrowserWorkflowDecision(
 }
 
 function isExecutableBrowserAction(action: PreparedAction): boolean {
-  return action.workflowSource !== 'cloud' &&
-    EXECUTABLE_BROWSER_ACTION_KINDS.has(action.kind);
+  if (action.workflowSource === 'cloud') return false;
+  if (EXECUTABLE_BROWSER_ACTION_KINDS.has(action.kind)) return true;
+  return isConnectorApprovalKind(action) && connectorPrepareEndpointAvailable({
+    bridgeActive: state.bridgeActive,
+    cloudSessionMatchesWallet: cloudSessionMatchesWallet(),
+  });
 }
 
 function isCloudBrowserExecutableAction(action: PreparedAction): boolean {
-  return action.workflowSource === 'cloud' &&
-    action.kind === 'swap' &&
-    EXECUTABLE_BROWSER_ACTION_KINDS.has(action.kind);
+  if (action.workflowSource !== 'cloud') return false;
+  if (action.kind === 'swap' && EXECUTABLE_BROWSER_ACTION_KINDS.has(action.kind)) return true;
+  return isConnectorApprovalKind(action) && cloudSessionMatchesWallet();
 }
 
 async function executeBrowserPreparedAction(action: PreparedAction): Promise<void> {
@@ -23153,8 +23181,70 @@ async function executeBrowserPreparedActionRecord(
     case 'custom_transaction':
       return executeBrowserCustomTransaction(action, toastContext);
     default:
+      if (isConnectorApprovalKind(action)) {
+        return executeBrowserConnectorPreparedAction(action, toastContext);
+      }
       throw new Error(`Browser workflow cannot broadcast ${action.kind}.`);
   }
+}
+
+function browserConnectorExecutionDeps(): ConnectorExecutionDeps<PreparedAction> {
+  return {
+    cloudRequest: (path, init) => cloudRequest(path, init as RequestInit),
+    bridgeRequest: (path, init) => bridgeRequest(path, init as RequestInit),
+    signAndBroadcast: (action, base64, summary, toastContext) =>
+      signAndBroadcastBrowserTransactionBase64(
+        action,
+        base64,
+        summary,
+        toastContextFromConnector(toastContext, action.cluster),
+      ),
+    resolveStatus: (cluster, txid, toastContext) =>
+      resolveSubmittedTransactionStatus(
+        cluster as Cluster,
+        txid,
+        toastContext ? toastContextFromConnector(toastContext, cluster as Cluster) : undefined,
+      ) as Promise<string>,
+    capabilitiesSupportSignTransaction: () => state.capabilities?.supports.signTransaction === true,
+    explorerUrl: (txid, cluster) => explorerUrl(txid, cluster as Cluster),
+    availability: {
+      bridgeActive: state.bridgeActive,
+      cloudSessionMatchesWallet: cloudSessionMatchesWallet(),
+    },
+  };
+}
+
+function toastContextFromConnector(
+  toastContext: ConnectorExecutionToastContext,
+  fallbackCluster: Cluster,
+): TransactionToastContext {
+  return {
+    toastId: toastContext.toastId,
+    actionId: toastContext.actionId,
+    cluster: (toastContext.cluster as Cluster) || fallbackCluster,
+  };
+}
+
+async function executeBrowserConnectorPreparedAction(
+  action: PreparedAction,
+  toastContext: TransactionToastContext,
+): Promise<BrowserTransactionExecution> {
+  const result = await executeBrowserConnectorAction(
+    action as PreparedAction & ConnectorActionExecutionTarget,
+    {
+      toastId: toastContext.toastId,
+      ...(toastContext.actionId ? { actionId: toastContext.actionId } : {}),
+      cluster: toastContext.cluster,
+    },
+    browserConnectorExecutionDeps(),
+  );
+  const execution: BrowserTransactionExecution = {
+    txid: result.txid,
+    txStatus: result.txStatus as PreparedActionTxStatus,
+    explorerUrl: result.explorerUrl,
+    ...(result.preview ? { result: result.preview } : {}),
+  };
+  return execution;
 }
 
 async function executeBrowserSolTransfer(
@@ -27342,11 +27432,60 @@ function browserRecurringPaymentFromDraft(
   };
 }
 
+function recurringPaymentIsConnector(payment: RecurringPayment): boolean {
+  return payment.actionKind === 'connector';
+}
+
+function resolveRecurringConnectorKind(payment: RecurringPayment): string | undefined {
+  const metadata = payment.metadata;
+  if (!metadata || typeof metadata !== 'object') return undefined;
+  const connectorOperationId = typeof metadata.connectorOperationId === 'string'
+    ? metadata.connectorOperationId
+    : '';
+  const params: Record<string, string> = {};
+  if (typeof metadata.operation === 'string') params.operation = metadata.operation;
+  if (typeof metadata.templateId === 'string') params.templateId = metadata.templateId;
+  const form = connectorOperationId ? connectorActionFormById(connectorOperationId) : undefined;
+  if (!form) return undefined;
+  const actionType = connectorActionFormTemplateActionType(form, params);
+  return actionType || undefined;
+}
+
 function browserOccurrenceFromRecurring(payment: RecurringPayment, summary?: string): PreparedAction {
   const now = new Date().toISOString();
   const actionId = newId('browser-action');
   const token = payment.token || 'SOL';
   const connectorParams = recurringConnectorActionParams(payment.metadata);
+  if (recurringPaymentIsConnector(payment)) {
+    const connectorKind = resolveRecurringConnectorKind(payment);
+    if (connectorKind) {
+      return {
+        id: actionId,
+        kind: connectorKind as PreparedActionKind,
+        status: 'ready',
+        walletAddress: payment.walletAddress,
+        cluster: payment.cluster,
+        summary: summary || `${payment.amount} ${tokenDisplayLabel(token)} recurring ${connectorKind.replace(/_/g, ' ')}`,
+        params: {
+          token: payment.token,
+          amount: payment.amount,
+          memo: payment.note ?? '',
+          ...(payment.recipient ? { recipient: payment.recipient } : {}),
+          ...connectorParams,
+        },
+        dueAt: now,
+        createdAt: now,
+        updatedAt: now,
+        note: payment.note,
+        ...(payment.agentReview ? { agentReview: payment.agentReview } : {}),
+        recurringId: payment.id,
+        occurrenceKey: `browser-${now}`,
+        workflowSource: 'browser',
+      };
+    }
+    // Fall through to swap/transfer if we cannot resolve a connector kind — the
+    // legacy transfer/swap surface is still better than dropping the occurrence.
+  }
   if (recurringPaymentIsSwap(payment)) {
     const inputToken = payment.inputToken || payment.token || 'SOL';
     const outputToken = payment.outputToken || 'USDC';
@@ -28350,7 +28489,9 @@ function preparedActionCard(action: PreparedAction): string {
   const cloudWorkflow = action.workflowSource === 'cloud';
   const decisionLabels = preparedActionDecisionLabels(action);
   const effectCopy = approvalEffectCopy(action);
-  const executionBlockReason = cloudExecutionBlockReason(action) ?? actionRecipientPolicyBlockReason(action);
+  const executionBlockReason = cloudExecutionBlockReason(action)
+    ?? actionRecipientPolicyBlockReason(action)
+    ?? connectorExecutionBlockReason(action);
   const confirmable = canConfirmCloudFinalization(action) || canConfirmCloudBrowserTransaction(action) || canConfirmBrowserTransaction(action);
   const pendingLedgerExecution = hasPendingExecutionLedgerEntry(action);
   const clearablePending = !cloudWorkflow &&
@@ -29792,6 +29933,12 @@ function preparedActionDecisionLabels(action: PreparedAction): { approve: string
       reject: 'Deny request',
     };
   }
+  if (isConnectorApprovalKind(action)) {
+    return {
+      approve: 'Execution unavailable',
+      reject: 'Deny request',
+    };
+  }
   if (action.workflowSource === 'cloud' || isBrowserWorkflowId(action.id)) {
     return {
       approve: 'Sign approval proof',
@@ -29814,7 +29961,10 @@ function approvalEffectCopy(action: PreparedAction): string {
       : 'This Cloud request type is not executable from this browser yet. Deny it and recreate the request as a browser wallet action.';
   }
   if (isCloudBrowserExecutableAction(action)) {
-    return 'Your wallet signs the swap transaction. Agentic Cloud saves the status and receipt; it never receives signing authority.';
+    if (action.kind === 'swap') {
+      return 'Your wallet signs the swap transaction. Agentic Cloud saves the status and receipt; it never receives signing authority.';
+    }
+    return 'Agentic Cloud prepares the connector transaction; your wallet signs and submits it. Cloud saves the status and receipt; it never receives signing authority.';
   }
   if (action.workflowSource === 'cloud') {
     return 'Your wallet signs a decision proof bound to this approval. Agentic Cloud saves the receipt; this proof does not submit a transaction.';
@@ -29823,7 +29973,13 @@ function approvalEffectCopy(action: PreparedAction): string {
     if (action.kind === 'swap') {
       return 'Your wallet signs the swap transaction. Pending transactions stay here with a Solscan link; Done appears after confirmation.';
     }
+    if (isConnectorApprovalKind(action)) {
+      return 'The prepared connector transaction is fetched from Private Local Mode (or Agentic Cloud); your wallet signs and submits it. Pending transactions stay here with a Solscan link; Done appears after confirmation.';
+    }
     return 'Your wallet signs and submits the transaction. Pending transactions stay here with a Solscan link; Done appears after confirmation.';
+  }
+  if (isConnectorApprovalKind(action)) {
+    return 'Connector execution is not yet wired into this browser. Approving here would only sign a decision proof — no transaction would be submitted. Use Private Local Mode (or sign into Agentic Cloud) to actually run this connector.';
   }
   if (isBrowserWorkflowId(action.id)) {
     return 'Your wallet signs a browser-local decision proof. The receipt stays on this device; no transaction is submitted by this proof.';
@@ -29892,6 +30048,29 @@ function requiresCloudTransactionFinalization(action: PreparedAction): boolean {
   return action.workflowSource === 'cloud' &&
     CLOUD_TRANSACTION_FINALIZATION_KINDS.has(action.kind) &&
     !isCloudBrowserExecutableAction(action);
+}
+
+function connectorExecutionBlockReason(action: PreparedAction): string | null {
+  if (!isConnectorApprovalKind(action)) return null;
+  if (isExecutableBrowserAction(action)) return null;
+  return connectorExecutionUnsupportedMessage(action);
+}
+
+function completedPlanSubmissionPill(plan: CompletedPlanRecord): string {
+  if (!plan.actionKind) return '';
+  const receipt: ConnectorReceiptShape = {
+    kind: plan.actionKind,
+    txid: plan.txid,
+    proofSignature: plan.signature,
+  };
+  const outcome = classifyConnectorReceipt(receipt);
+  if (outcome === 'unsubmitted_connector') {
+    return `<span class="status-pill warn" title="This receipt signed a decision proof but no on-chain transaction was submitted. The connector execution path was not yet wired when this approval ran.">decision proof — no transaction</span>`;
+  }
+  if (outcome === 'decision_proof_only' && isConnectorApprovalKind({ kind: plan.actionKind })) {
+    return `<span class="status-pill warn" title="Audit-only receipt: a decision proof signature, not a submitted transaction.">decision proof — no transaction</span>`;
+  }
+  return '';
 }
 
 function cloudExecutionBlockReason(action: PreparedAction): string | null {

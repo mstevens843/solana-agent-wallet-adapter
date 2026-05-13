@@ -7,7 +7,11 @@ export { RemoteBridgeBackend } from './remoteBridgeBackend.js';
 export { createBridgeServer } from './bridgeServer.js';
 export { DEFAULT_CONFIG, loadConfig, normalizeConfig } from './config.js';
 export type { AgentWalletConfig, TokenLimitConfig } from './config.js';
-export { JsonPreparedActionStore, defaultPreparedActionStorePath } from './preparedActions.js';
+export {
+  JsonPreparedActionStore,
+  TERMINAL_PREPARED_ACTION_STATUSES,
+  defaultPreparedActionStorePath,
+} from './preparedActions.js';
 export { JsonLabArtifactStore, defaultLabArtifactStorePath } from './labArtifacts.js';
 export type {
   PreparedAction,
@@ -26,6 +30,25 @@ export {
   assertPreparedActionExecutable,
   preparedFailureStatus,
 } from './actionService.js';
+export {
+  CONNECTOR_APPROVAL_ACTION_TYPES,
+  adapterForKind,
+} from './adapters/registry.js';
+export {
+  AdapterError,
+} from './adapters/types.js';
+export type {
+  AdapterAction,
+  AdapterExecuteResult,
+  AdapterPrepareResult,
+  DAppAdapter,
+  DAppAdapterContext,
+  DAppAdapterId,
+} from './adapters/types.js';
+export {
+  prepareTransactionForApproval,
+} from './preparedActionTransactionBuilder.js';
+export type { PreparedTransactionPayload } from './preparedActionTransactionBuilder.js';
 export {
   fetchBlinkMetadata,
   normalizeBlinkUrl,

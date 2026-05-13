@@ -529,6 +529,23 @@ Total wall-clock with three concurrent agents and good handoff: ~1 working day.
 5. Confirm a user without cloud session **and** without local bridge sees a clear actionable error
    when they try to approve a connector action (no silent proof signing).
 
+## 5a. Known related gap (surfaced by Track E)
+
+`browserOccurrenceFromRecurring` (`apps/browser-demo/src/main.ts:27364`) hardcodes occurrence
+`kind` to `swap` / `transfer_sol` / `transfer_spl` based on the payment shape and **does not
+branch on `actionKind === 'connector'`**. So a recurring connector schedule (e.g., recurring
+Kamino deposit) created under browser-workflow mode produces occurrences with the wrong `kind`,
+which means:
+- the Phase D1 safety stop does not catch them (kind isn't a connector kind), and
+- the Phase D2 dispatcher never gets a chance to route them through cloud/bridge prepare.
+
+This is a pre-existing bug independent of the proof-only execute path. Fold it into Track D
+Phase 2 (so connector recurring schedules end-to-end work the moment D2 lands): when
+`payment.actionKind === 'connector'`, derive the occurrence `kind` from
+`payment.metadata.connectorOperationId` / `connectorTemplateId` (e.g., `'kamino_deposit'`) and
+carry the connector params on `occurrence.params`. Cloud and local-bridge recurring paths
+already generate the correct kind server-side, so they need no change.
+
 ## 6. Out of scope (do not let scope creep into these)
 
 - Adapter refactors. The capture pattern is intentionally zero-touch on adapter source code.

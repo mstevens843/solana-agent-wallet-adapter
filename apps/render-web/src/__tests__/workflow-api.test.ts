@@ -14,6 +14,11 @@ import { MemoryWorkflowStore } from '../cloud/memoryStore.js';
 import { createWalletSession } from '../cloud/session.js';
 import type { Clock } from '../cloud/store.js';
 import { createWorkflowApiHandler } from '../cloud/workflowRoutes.js';
+import {
+  AdapterError,
+  type ConnectorTransactionPreparer,
+  type PreparedTransactionPayload,
+} from '../cloud/prepareConnectorTransaction.js';
 import { WorkflowService, workflowDecisionProofMessage, type TransactionVerifier, type WorkflowStore } from '../cloud/workflowService.js';
 import type {
   ApprovalRequestRecord,
@@ -1151,7 +1156,171 @@ describe('cloud one-time workflow API', () => {
       expect(listed.body.completed).toEqual([]);
     });
   });
+
+  describe('POST /api/approvals/:id/prepare-transaction', () => {
+    const stubPayload: PreparedTransactionPayload = {
+      transactionBase64: 'AQID',
+      summary: 'Deposit 0.01 SOL into Kamino',
+      preview: { reserveAddress: 'So11111111111111111111111111111111111111112', apy: 5.2 },
+      cluster: 'devnet',
+    };
+
+    it('returns 200 with base64 for a connector approval', async () => {
+      let preparerCalls = 0;
+      await withWorkflowServer(async ({ port, store }) => {
+        const approval = await seedConnectorApproval(store);
+        const response = await postJson(
+          port,
+          `/api/approvals/${approval.id}/prepare-transaction`,
+          {},
+          walletA,
+        );
+        expect(response.status).toBe(200);
+        expect(response.body).toMatchObject({
+          transactionBase64: 'AQID',
+          summary: stubPayload.summary,
+          cluster: 'devnet',
+        });
+        expect(preparerCalls).toBe(1);
+        expect(store.auditEvents.some((event) => event.eventType === 'approval.transaction.prepared')).toBe(true);
+      }, {
+        connectorPreparer: async () => {
+          preparerCalls += 1;
+          return stubPayload;
+        },
+      });
+    });
+
+    it('returns 404 for an unknown approval id', async () => {
+      await withWorkflowServer(async ({ port }) => {
+        const response = await postJson(
+          port,
+          '/api/approvals/approval_missing/prepare-transaction',
+          {},
+          walletA,
+        );
+        expect(response.status).toBe(404);
+        expect(response.body.error).toBe('not_found');
+      }, { connectorPreparer: async () => stubPayload });
+    });
+
+    it('returns 404 when the approval is owned by a different wallet', async () => {
+      await withWorkflowServer(async ({ port, store }) => {
+        const approval = await seedConnectorApproval(store);
+        const response = await postJson(
+          port,
+          `/api/approvals/${approval.id}/prepare-transaction`,
+          {},
+          walletB,
+        );
+        expect(response.status).toBe(404);
+        expect(response.body.error).toBe('not_found');
+      }, { connectorPreparer: async () => stubPayload });
+    });
+
+    it('returns 409 when the approval is already terminal', async () => {
+      await withWorkflowServer(async ({ port, store }) => {
+        const approval = await seedConnectorApproval(store, { status: 'approved' });
+        const response = await postJson(
+          port,
+          `/api/approvals/${approval.id}/prepare-transaction`,
+          {},
+          walletA,
+        );
+        expect(response.status).toBe(409);
+        expect(response.body.error).toBe('approval_terminal');
+      }, { connectorPreparer: async () => stubPayload });
+    });
+
+    it('returns 422 when the adapter registry has no entry for the kind', async () => {
+      await withWorkflowServer(async ({ port, store }) => {
+        const approval = await seedConnectorApproval(store, { kind: 'totally_unknown_kind' });
+        const response = await postJson(
+          port,
+          `/api/approvals/${approval.id}/prepare-transaction`,
+          {},
+          walletA,
+        );
+        expect(response.status).toBe(422);
+        expect(response.body.error).toBe('unsupported_kind');
+      }, {
+        connectorPreparer: async () => {
+          throw new AdapterError('registry', 'unknown_kind', 'No adapter registered for kind totally_unknown_kind.');
+        },
+      });
+    });
+
+    it('returns 502 when the adapter throws a non-AdapterError', async () => {
+      await withWorkflowServer(async ({ port, store }) => {
+        const approval = await seedConnectorApproval(store);
+        const response = await postJson(
+          port,
+          `/api/approvals/${approval.id}/prepare-transaction`,
+          {},
+          walletA,
+        );
+        expect(response.status).toBe(502);
+        expect(response.body.error).toBe('prepare_failed');
+      }, {
+        connectorPreparer: async () => {
+          throw new Error('RPC unreachable');
+        },
+      });
+    });
+  });
+
+  describe('POST /api/approvals/:id/wallet-execution — connector kinds (regression for §2.6)', () => {
+    it('accepts a kamino_deposit txid after the BROWSER_WALLET_EXECUTION_KINDS expansion', async () => {
+      await withWorkflowServer(async ({ port, store }) => {
+        const approval = await seedConnectorApproval(store);
+        const response = await postJson(
+          port,
+          `/api/approvals/${approval.id}/wallet-execution`,
+          {
+            ...decisionProofBody(approval, 'approved'),
+            txid: 'kamino_connector_txid_5abc',
+            txStatus: 'pending',
+            explorerUrl: 'https://solscan.io/tx/kamino_connector_txid_5abc',
+          },
+          walletA,
+        );
+        expect(response.status).toBe(200);
+        expect(response.body.approval).toMatchObject({
+          id: approval.id,
+          txid: 'kamino_connector_txid_5abc',
+          txStatus: 'pending',
+        });
+      });
+    });
+  });
 });
+
+async function seedConnectorApproval(
+  store: TestWorkflowStore,
+  overrides: Partial<ApprovalRequestRecord> = {},
+): Promise<ApprovalRequestRecord> {
+  const now = '2026-05-13T12:00:00.000Z';
+  const id = overrides.id ?? `approval_${Math.random().toString(36).slice(2, 10)}`;
+  const record: ApprovalRequestRecord = {
+    id,
+    walletAddress: walletA,
+    kind: 'kamino_deposit',
+    status: 'approval_pending',
+    summary: 'Deposit 0.01 SOL into Kamino',
+    params: {
+      reserveAddress: 'So11111111111111111111111111111111111111112',
+      amount: '0.01',
+      mint: 'So11111111111111111111111111111111111111112',
+    },
+    cluster: 'devnet',
+    dueAt: now,
+    createdAt: now,
+    updatedAt: now,
+    ...overrides,
+  };
+  await store.saveApproval(record.walletAddress, record);
+  return record;
+}
 
 function createPlanBody(): Record<string, unknown> {
   return {
@@ -1367,12 +1536,16 @@ async function withMockServerFinalization(callback: () => Promise<void>): Promis
 
 async function withWorkflowServer(
   callback: (server: { port: number; store: TestWorkflowStore }) => Promise<void>,
-  options: { transactionVerifier?: TransactionVerifier } = {},
+  options: {
+    transactionVerifier?: TransactionVerifier;
+    connectorPreparer?: ConnectorTransactionPreparer;
+  } = {},
 ): Promise<void> {
   const store = new TestWorkflowStore();
   const handler = createWorkflowApiHandler({
     service: new WorkflowService(store, {
       ...(options.transactionVerifier ? { transactionVerifier: options.transactionVerifier } : {}),
+      ...(options.connectorPreparer ? { connectorPreparer: options.connectorPreparer } : {}),
     }),
     getSession(req): WorkflowSession | null {
       const wallet = req.headers['x-test-wallet'];

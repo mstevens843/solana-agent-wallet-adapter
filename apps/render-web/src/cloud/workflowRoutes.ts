@@ -77,6 +77,9 @@ export async function handleWorkflowApiRequest(
       case 'approval-wallet-execution':
         await handleApprovalWalletExecution(req, res, context.service, session, route.id);
         return true;
+      case 'approval-prepare-transaction':
+        await handleApprovalPrepareTransaction(req, res, context.service, session, route.id);
+        return true;
       case 'approval-finalizations':
         await handleApprovalFinalizations(req, res, context.service, session, route.id);
         return true;
@@ -118,6 +121,7 @@ type WorkflowRoute =
   | { name: 'approval-cleanup-recurring-backlog' }
   | { name: 'approval-decision'; id: string; decision: 'approved' | 'rejected' | 'cancelled' }
   | { name: 'approval-wallet-execution'; id: string }
+  | { name: 'approval-prepare-transaction'; id: string }
   | { name: 'approval-finalizations'; id: string }
   | { name: 'approval-finalization-prepare'; id: string }
   | { name: 'approval-finalization-submit'; id: string; finalizationId: string }
@@ -140,6 +144,13 @@ function matchWorkflowRoute(pathname: string): WorkflowRoute | undefined {
     return {
       name: 'approval-wallet-execution',
       id: validateRecordId(walletExecution[1], 'approval id'),
+    };
+  }
+  const prepareTransaction = /^\/api\/approvals\/([^/]+)\/prepare-transaction$/.exec(pathname);
+  if (prepareTransaction?.[1]) {
+    return {
+      name: 'approval-prepare-transaction',
+      id: validateRecordId(prepareTransaction[1], 'approval id'),
     };
   }
   const finalizationPrepare = /^\/api\/approvals\/([^/]+)\/finalization\/prepare$/.exec(pathname);
@@ -321,6 +332,21 @@ async function handleApprovalWalletExecution(
     validateApprovalDecisionRequest(await readJsonBody(req)),
   );
   writeJson(res, 200, result);
+}
+
+async function handleApprovalPrepareTransaction(
+  req: IncomingMessage,
+  res: ServerResponse,
+  service: WorkflowService,
+  session: WorkflowSession,
+  id: string,
+): Promise<void> {
+  if (req.method !== 'POST') {
+    methodNotAllowed(res);
+    return;
+  }
+  await readJsonBody(req);
+  writeJson(res, 200, await service.prepareApprovalTransaction(session, id));
 }
 
 async function handleApprovalFinalizations(

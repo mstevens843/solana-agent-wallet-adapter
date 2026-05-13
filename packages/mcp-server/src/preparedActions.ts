@@ -116,6 +116,13 @@ export type PreparedActionStatus =
   | 'blocked'
   | 'failed';
 
+export const TERMINAL_PREPARED_ACTION_STATUSES: ReadonlySet<PreparedActionStatus> = new Set<PreparedActionStatus>([
+  'approved',
+  'rejected',
+  'blocked',
+  'failed',
+]);
+
 export interface PreparedAction {
   id: string;
   kind: PreparedActionKind;
