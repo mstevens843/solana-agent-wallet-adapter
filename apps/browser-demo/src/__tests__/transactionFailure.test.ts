@@ -578,6 +578,20 @@ describe('transactionFailureToastCopy', () => {
     expect(copy.title).toBe('Wallet approval rejected');
     expect(copy.message).toContain('Wallet approval was rejected');
   });
+
+  it('does NOT show "signed transaction is being checked" for pre-sign errors with no signature or txid', () => {
+    // A connector dispatcher refusing the action before the wallet opens lands in the
+    // generic unknown_maybe_submitted fallback, but maybeSubmitted is false because no
+    // signed bytes exist. The toast must surface the real error, not pretend a signed
+    // transaction is being checked.
+    const result = classify('kamino deposit cannot execute from this device yet. Connect Private Local Mode.');
+    expect(result.kind).toBe('unknown_maybe_submitted');
+    expect(result.maybeSubmitted).toBe(false);
+    const copy = transactionFailureToastCopy(result);
+    expect(copy.message).not.toContain('signed transaction is being checked');
+    expect(copy.title).toBe('Transaction error');
+    expect(copy.message).toContain('cannot execute from this device yet');
+  });
 });
 
 describe('normalizeErrorMessage', () => {

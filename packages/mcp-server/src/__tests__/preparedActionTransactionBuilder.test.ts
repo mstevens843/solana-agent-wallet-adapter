@@ -311,6 +311,67 @@ describe('prepareTransactionForApproval', () => {
     }));
     await expect(prepareTransactionForApproval(action, ctx)).rejects.toThrow(/forced build failure/);
   });
+
+  it('auto-enriches raw form-keyed params via adapter.prepare() when preparedSnapshotAt is missing', async () => {
+    // A template-drafted Kamino deposit reaches the dispatcher with form-keyed params:
+    // { token: 'SOL', amount: '0.01' } — NO reserveMint, NO amountRaw, NO preparedSnapshotAt.
+    // The helper must run prepare() first to enrich, then execute() succeeds.
+    const store = inMemoryStore();
+    const ctx = makeContext(store);
+    const now = new Date().toISOString();
+    const rawAction: PreparedAction = {
+      id: 'pa_raw_form',
+      kind: 'kamino_deposit' as PreparedActionKind,
+      status: 'ready',
+      walletAddress: WALLET,
+      cluster: 'mainnet-beta',
+      summary: 'Template-drafted Kamino deposit',
+      params: {
+        token: 'SOL',
+        amount: '0.25',
+        memo: 'Test enrichment',
+        // notably absent: reserveMint, reserveSymbol, amountRaw, decimals, preparedSnapshotAt
+      },
+      dueAt: now,
+      createdAt: now,
+      updatedAt: now,
+    };
+
+    const payload = await prepareTransactionForApproval(rawAction, ctx);
+
+    expect(payload.transactionBase64.length).toBeGreaterThan(0);
+    expect(payload.summary).toBe('Deposit 0.25 SOL into Kamino');
+    expect(fakeState.depositCalls).toHaveLength(1);
+    expect(fakeState.depositCalls[0]?.amountRaw).toBe(250_000_000n);
+    expect(fakeState.depositCalls[0]?.reserveMint).toBe(fakeState.snapshot.reserveMint);
+  });
+
+  it('does NOT re-run adapter.prepare() when params already carry preparedSnapshotAt', async () => {
+    const store = inMemoryStore();
+    const ctx = makeContext(store);
+    const prepared = await adapterForKind('kamino_deposit')!.prepare(
+      { amount: '0.5', token: 'SOL' },
+      ctx,
+    );
+    const action = await store.addAction(prepared.addInput);
+    // prepare() above already ran once; fakeState.depositCalls is still 0 because we only call
+    // buildDepositTransaction on execute, not on prepare. Clear it to be unambiguous.
+    fakeState.depositCalls.length = 0;
+    let prepareSpyCount = 0;
+    // Track that prepare is not invoked again by monkeypatching the adapter entry's prepare.
+    const originalPrepare = adapterForKind('kamino_deposit')!.prepare;
+    (adapterForKind('kamino_deposit') as unknown as { prepare: typeof originalPrepare }).prepare = async (input, ctxIn) => {
+      prepareSpyCount += 1;
+      return originalPrepare(input, ctxIn);
+    };
+    try {
+      await prepareTransactionForApproval(action, ctx);
+    } finally {
+      (adapterForKind('kamino_deposit') as unknown as { prepare: typeof originalPrepare }).prepare = originalPrepare;
+    }
+    expect(prepareSpyCount).toBe(0);
+    expect(fakeState.depositCalls).toHaveLength(1);
+  });
 });
 
 describe('createCaptureContext', () => {

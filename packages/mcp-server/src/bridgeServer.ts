@@ -29,7 +29,9 @@ import {
   requestBirdeyePriceMulti,
   requestBirdeyeSearch,
   requestBirdeyeTokenMetadata,
+  requestBirdeyeTokenSecurity,
 } from './birdeye.js';
+import { requestCoinGeckoGlobal } from './coingecko.js';
 import { type AgentWalletConfig } from './config.js';
 import { parseDecimalAmount } from './amounts.js';
 import { LocalBridgeBackend } from './localBridgeBackend.js';
@@ -452,6 +454,15 @@ async function handleRequest(
     if (req.method === 'POST' && url.pathname === '/bridge/birdeye/token-meta') {
       const body = (await readJson(req)) as { addresses?: unknown };
       writeJson(res, 200, await requestBirdeyeTokenMetadata(requireStringArray(body.addresses, 'addresses')));
+      return;
+    }
+    if (req.method === 'POST' && url.pathname === '/bridge/birdeye/token-security') {
+      const body = (await readJson(req)) as { address?: unknown };
+      writeJson(res, 200, await requestBirdeyeTokenSecurity(requireString(body.address, 'address')));
+      return;
+    }
+    if (req.method === 'GET' && url.pathname === '/bridge/coingecko/global') {
+      writeJson(res, 200, await requestCoinGeckoGlobal());
       return;
     }
     if (req.method === 'GET' && url.pathname === '/bridge/ai/status') {

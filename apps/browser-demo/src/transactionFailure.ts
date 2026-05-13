@@ -473,7 +473,11 @@ export function transactionFailureToastCopy(result: ClassifiedTransactionFailure
   title: string;
   message: string;
 } {
-  if (result.kind === 'unknown_maybe_submitted' || result.maybeSubmitted) {
+  // Only show the "signed transaction is being checked" copy when there is an
+  // actual possibility a transaction was submitted. The fallback `unknown_maybe_submitted`
+  // kind also fires for pre-sign errors (e.g., dispatcher refused, validation failed) —
+  // in those cases the wallet never opened and the user must see the real error.
+  if (result.maybeSubmitted) {
     if (result.kind === 'onchain_failed') {
       return { title: TITLE_BY_KIND.onchain_failed, message: ONCHAIN_MESSAGE };
     }

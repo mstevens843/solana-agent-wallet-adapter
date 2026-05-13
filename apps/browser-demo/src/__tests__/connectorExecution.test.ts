@@ -103,11 +103,11 @@ describe('connectorExecution helpers', () => {
   });
 
   describe('connectorExecutionUnsupportedMessage', () => {
-    it('humanizes the kind and tells the user how to actually execute', () => {
+    it('humanizes the kind and explains the wallet capability constraint', () => {
       const message = connectorExecutionUnsupportedMessage({ kind: 'kamino_deposit' });
       expect(message).toContain('kamino deposit');
-      expect(message.toLowerCase()).toContain('private local mode');
-      expect(message).not.toContain('_');
+      expect(message.toLowerCase()).toContain('transaction signing');
+      expect(message).not.toMatch(/kamino_deposit/);
     });
 
     it('works for sub-action-bearing kinds like magiceden_bid', () => {
@@ -263,14 +263,32 @@ describe('executeBrowserConnectorAction — Phase D2 dispatcher', () => {
     expect(deps.resolveStatus).toHaveBeenCalledWith('mainnet-beta', 'tx-signature-1', expect.any(Object));
   });
 
-  it('throws connectorExecutionUnsupportedMessage when neither endpoint is available', async () => {
+  it('falls back to the public stateless cloud route when neither bridge nor cloud session is available', async () => {
     const deps = makeDeps({}, { availability: { bridgeActive: false, cloudSessionMatchesWallet: false } });
-    const action = makeAction({ workflowSource: 'browser' });
-    await expect(executeBrowserConnectorAction(action, makeToastContext(), deps))
-      .rejects.toThrow(/cannot execute from this device yet/);
+    const action = makeAction({
+      workflowSource: 'browser',
+      params: { token: 'SOL', amount: '0.01' },
+    });
+    await executeBrowserConnectorAction(action, makeToastContext(), deps);
     expect(deps.bridgeRequest).not.toHaveBeenCalled();
-    expect(deps.cloudRequest).not.toHaveBeenCalled();
-    expect(deps.signAndBroadcast).not.toHaveBeenCalled();
+    expect(deps.cloudRequest).toHaveBeenCalledWith(
+      '/api/connector/prepare-transaction',
+      expect.objectContaining({
+        method: 'POST',
+        body: expect.stringContaining('"kind":"kamino_deposit"'),
+      }),
+    );
+    const call = (deps.cloudRequest as ReturnType<typeof vi.fn>).mock.calls[0];
+    expect(call).toBeDefined();
+    const init = call?.[1] as { body?: string } | undefined;
+    expect(typeof init?.body).toBe('string');
+    const body = JSON.parse(init!.body!);
+    expect(body).toEqual({
+      kind: 'kamino_deposit',
+      params: { token: 'SOL', amount: '0.01' },
+      walletAddress: 'Wallet111',
+      cluster: 'mainnet-beta',
+    });
   });
 
   it('refuses to dispatch a non-connector kind (defensive check)', async () => {
@@ -295,12 +313,38 @@ describe('executeBrowserConnectorAction — Phase D2 dispatcher', () => {
     expect(deps.signAndBroadcast).not.toHaveBeenCalled();
   });
 
-  it('falls back to bridge for browser-source actions when bridge is active', async () => {
+  it('routes browser-source actions to the stateless cloud endpoint even when the bridge is active', async () => {
+    // Browser-source actions live only in the user's localStorage; the bridge has
+    // no record of their `browser-action_*` IDs and 404s with "Unknown prepared
+    // action" if asked to look them up. Always send them through the stateless
+    // cloud route so Approve-and-send works for every connection combination.
     const deps = makeDeps({}, { availability: { bridgeActive: true, cloudSessionMatchesWallet: true } });
-    const action = makeAction({ workflowSource: 'browser' });
+    const action = makeAction({
+      workflowSource: 'browser',
+      params: { token: 'SOL', amount: '0.01' },
+    });
     await executeBrowserConnectorAction(action, makeToastContext(), deps);
-    expect(deps.bridgeRequest).toHaveBeenCalled();
-    expect(deps.cloudRequest).not.toHaveBeenCalled();
+    expect(deps.bridgeRequest).not.toHaveBeenCalled();
+    expect(deps.cloudRequest).toHaveBeenCalledWith(
+      '/api/connector/prepare-transaction',
+      expect.objectContaining({
+        method: 'POST',
+        body: expect.stringContaining('"kind":"kamino_deposit"'),
+      }),
+    );
+  });
+
+  it('uses the stateless cloud route for AI-drafted (workflowSource undefined) actions when there is no bridge', async () => {
+    const deps = makeDeps({}, { availability: { bridgeActive: false, cloudSessionMatchesWallet: false } });
+    const action = makeAction({
+      workflowSource: undefined as unknown as string,
+      params: { token: 'USDC', amount: '5' },
+    });
+    await executeBrowserConnectorAction(action, makeToastContext(), deps);
+    expect(deps.cloudRequest).toHaveBeenCalledWith(
+      '/api/connector/prepare-transaction',
+      expect.any(Object),
+    );
   });
 });
 

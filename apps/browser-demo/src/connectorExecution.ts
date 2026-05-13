@@ -22,7 +22,7 @@ export function isProofOnlyApprovalKind(action: { kind: string }): boolean {
 
 export function connectorExecutionUnsupportedMessage(action: { kind: string }): string {
   const label = action.kind.replace(/_/g, ' ');
-  return `${label} cannot execute from this device yet. Connector execution lands in a follow-up — until then, use Private Local Mode (local bridge) to actually submit this transaction.`;
+  return `${label} cannot execute from this device. The connected wallet must support transaction signing in this browser.`;
 }
 
 export interface ConnectorExecutionAvailability {
@@ -72,6 +72,7 @@ export interface ConnectorActionExecutionTarget {
   cluster: string;
   walletAddress: string;
   workflowSource?: string;
+  params?: Record<string, unknown>;
 }
 
 export interface PreparedTransactionResponse {
@@ -118,7 +119,7 @@ function requireConnectorString(value: unknown, label: string): string {
   throw new Error(`Connector prepare-transaction response is missing ${label}.`);
 }
 
-export async function executeBrowserConnectorAction<TAction extends ConnectorActionExecutionTarget>(
+export async function executeBrowserConnectorAction<TAction extends ConnectorActionExecutionTarget & { params?: Record<string, unknown> }>(
   action: TAction,
   toastContext: ConnectorExecutionToastContext,
   deps: ConnectorExecutionDeps<TAction>,
@@ -133,11 +134,7 @@ export async function executeBrowserConnectorAction<TAction extends ConnectorAct
   if (!route) {
     throw new Error(connectorExecutionUnsupportedMessage(action));
   }
-  const path = `${route.basePath}/${encodeURIComponent(action.id)}/prepare-transaction`;
-  const init: ConnectorExecutionInit = { method: 'POST' };
-  const response = route.kind === 'bridge'
-    ? await deps.bridgeRequest<PreparedTransactionResponse>(path, init)
-    : await deps.cloudRequest<PreparedTransactionResponse>(path, init);
+  const response = await fetchPreparedTransaction(action, route, deps);
   const transactionBase64 = requireConnectorString(response?.transactionBase64, 'transactionBase64');
   const summary = requireConnectorString(response?.summary, 'summary');
   const txid = await deps.signAndBroadcast(action, transactionBase64, summary, toastContext);
@@ -151,24 +148,60 @@ export async function executeBrowserConnectorAction<TAction extends ConnectorAct
   };
 }
 
-type ConnectorPrepareRoute =
-  | { kind: 'bridge'; basePath: '/bridge/prepared-actions' }
-  | { kind: 'cloud'; basePath: '/api/approvals' };
+async function fetchPreparedTransaction<TAction extends ConnectorActionExecutionTarget & { params?: Record<string, unknown> }>(
+  action: TAction,
+  route: ConnectorPrepareRoute,
+  deps: ConnectorExecutionDeps<TAction>,
+): Promise<PreparedTransactionResponse> {
+  if (route.kind === 'bridge') {
+    return deps.bridgeRequest<PreparedTransactionResponse>(
+      `/bridge/prepared-actions/${encodeURIComponent(action.id)}/prepare-transaction`,
+      { method: 'POST' },
+    );
+  }
+  if (route.kind === 'cloud-approval') {
+    return deps.cloudRequest<PreparedTransactionResponse>(
+      `/api/approvals/${encodeURIComponent(action.id)}/prepare-transaction`,
+      { method: 'POST' },
+    );
+  }
+  // Stateless route: no stored approval needed. Send raw kind+params+wallet+cluster.
+  return deps.cloudRequest<PreparedTransactionResponse>(
+    '/api/connector/prepare-transaction',
+    {
+      method: 'POST',
+      body: JSON.stringify({
+        kind: action.kind,
+        params: action.params ?? {},
+        walletAddress: action.walletAddress,
+        cluster: action.cluster,
+      }),
+    },
+  );
+}
 
-function pickConnectorPrepareRoute(
+export type ConnectorPrepareRoute =
+  | { kind: 'bridge' }
+  | { kind: 'cloud-approval' }
+  | { kind: 'cloud-stateless' };
+
+export function pickConnectorPrepareRoute(
   action: ConnectorActionExecutionTarget,
   availability: ConnectorExecutionAvailability,
 ): ConnectorPrepareRoute | undefined {
+  // Honor where the action actually lives — local-bridge and cloud-stored approvals
+  // must be prepared by the backend that holds them so the auth + lookup work.
   if (action.workflowSource === 'local-bridge' && availability.bridgeActive) {
-    return { kind: 'bridge', basePath: '/bridge/prepared-actions' };
+    return { kind: 'bridge' };
   }
   if (action.workflowSource === 'cloud' && availability.cloudSessionMatchesWallet) {
-    return { kind: 'cloud', basePath: '/api/approvals' };
+    return { kind: 'cloud-approval' };
   }
-  // Source-less (browser-workflow): the approval doesn't exist on either backend.
-  // Prefer the bridge if it's active (the user can re-import to bridge later); else nothing.
-  if (!action.workflowSource || action.workflowSource === 'browser') {
-    if (availability.bridgeActive) return { kind: 'bridge', basePath: '/bridge/prepared-actions' };
-  }
-  return undefined;
+  // Browser-workflow (and source-less) actions live only in the user's localStorage:
+  // the bridge has no record of their `browser-action_*` IDs and 404s on lookup. Send
+  // them through the stateless public cloud endpoint, which builds the unsigned tx
+  // from raw kind + params + wallet + cluster. The browser still signs locally, so
+  // funds never leave the user's control. Works for wallet-only, wallet+cloud,
+  // wallet+AI, or any combination — including when a local bridge is also active.
+  return { kind: 'cloud-stateless' };
 }

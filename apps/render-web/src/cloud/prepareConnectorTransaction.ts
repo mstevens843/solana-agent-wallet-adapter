@@ -22,14 +22,48 @@ export type ConnectorTransactionPreparer = (
   approval: ApprovalRequestRecord,
 ) => Promise<PreparedTransactionPayload>;
 
+export interface StatelessConnectorPrepareInput {
+  kind: string;
+  params: Record<string, unknown>;
+  walletAddress: string;
+  cluster: WorkflowCluster;
+  summary?: string;
+}
+
+export type StatelessConnectorTransactionPreparer = (
+  input: StatelessConnectorPrepareInput,
+) => Promise<PreparedTransactionPayload>;
+
 type PrepareOnlyBackend = DAppAdapterContext['backend'];
 
 export function createDefaultConnectorPreparer(): ConnectorTransactionPreparer {
   return async (approval) => {
     const cluster: WorkflowCluster = approval.cluster ?? 'devnet';
     const rpcUrl = resolveRpcUrl(cluster);
-    const ctx = buildPrepareOnlyContext({ approval, cluster, rpcUrl });
+    const ctx = buildPrepareOnlyContext({ walletAddress: approval.walletAddress, cluster, rpcUrl });
     const action = approvalRecordToPreparedAction(approval, cluster);
+    return prepareTransactionForApproval(action, ctx);
+  };
+}
+
+export function createStatelessConnectorPreparer(): StatelessConnectorTransactionPreparer {
+  return async (input) => {
+    const cluster: WorkflowCluster = input.cluster;
+    const rpcUrl = resolveRpcUrl(cluster);
+    const ctx = buildPrepareOnlyContext({ walletAddress: input.walletAddress, cluster, rpcUrl });
+    const now = new Date().toISOString();
+    const action: PreparedAction = {
+      id: `stateless_${now}`,
+      kind: input.kind as PreparedActionKind,
+      status: 'ready',
+      walletAddress: input.walletAddress,
+      cluster,
+      summary: input.summary ?? `Prepare ${input.kind.replace(/_/g, ' ')}`,
+      params: input.params,
+      dueAt: now,
+      createdAt: now,
+      updatedAt: now,
+    };
     return prepareTransactionForApproval(action, ctx);
   };
 }
@@ -54,13 +88,13 @@ function approvalRecordToPreparedAction(
 }
 
 function buildPrepareOnlyContext(args: {
-  approval: ApprovalRequestRecord;
+  walletAddress: string;
   cluster: WorkflowCluster;
   rpcUrl: string;
 }): DAppAdapterContext {
-  const { approval, cluster, rpcUrl } = args;
+  const { walletAddress, cluster, rpcUrl } = args;
   return {
-    backend: prepareOnlyBackend(approval.walletAddress, cluster),
+    backend: prepareOnlyBackend(walletAddress, cluster),
     config: { ...DEFAULT_CONFIG, cluster, rpcUrl },
     connection: new Connection(rpcUrl, 'confirmed'),
     signTransaction: throwInPrepareOnly('signTransaction'),

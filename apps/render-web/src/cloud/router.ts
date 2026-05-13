@@ -6,6 +6,8 @@ import {
   requestBirdeyePriceMulti,
   requestBirdeyeSearch,
   requestBirdeyeTokenMetadata,
+  requestBirdeyeTokenSecurity,
+  requestCoinGeckoGlobal,
   type AiApiFormat,
   type AiAskRequest,
   type AiPlanRequest,
@@ -57,7 +59,12 @@ import {
   type WorkflowStore,
 } from './store.js';
 import { WorkflowService, type WorkflowStore as OneTimeWorkflowStore } from './workflowService.js';
-import type { ConnectorTransactionPreparer } from './prepareConnectorTransaction.js';
+import {
+  AdapterError,
+  createStatelessConnectorPreparer,
+  type ConnectorTransactionPreparer,
+  type StatelessConnectorTransactionPreparer,
+} from './prepareConnectorTransaction.js';
 import { createWorkflowApiHandler } from './workflowRoutes.js';
 
 const MAX_JSON_BYTES = 64 * 1024;
@@ -101,9 +108,12 @@ const REGISTERED_API_ROUTES = [
   'POST /api/solana/signature-status',
   'POST /api/swap/order',
   'POST /api/swap/execute',
+  'POST /api/connector/prepare-transaction',
   'POST /api/birdeye/price-multi',
   'POST /api/birdeye/search',
   'POST /api/birdeye/token-meta',
+  'POST /api/birdeye/token-security',
+  'GET /api/coingecko/global',
 ] as const;
 
 type HostedProviderId = 'openai' | 'anthropic' | 'gemini' | 'openrouter';
@@ -146,6 +156,12 @@ export interface CloudApiRouterOptions {
    * preparer via `createDefaultConnectorPreparer()` in `prepareConnectorTransaction.ts`.
    */
   connectorPreparer?: ConnectorTransactionPreparer;
+  /**
+   * Test-only override: replace the stateless preparer used by
+   * `POST /api/connector/prepare-transaction`. Production constructs the default via
+   * `createStatelessConnectorPreparer()` in `prepareConnectorTransaction.ts`.
+   */
+  statelessConnectorPreparer?: StatelessConnectorTransactionPreparer;
 }
 
 export interface CloudApiRouter {
@@ -229,6 +245,7 @@ export function createCloudApiRouter(options: CloudApiRouterOptions = {}): Cloud
   const workflowService = new WorkflowService(workflowStore, {
     ...(options.connectorPreparer ? { connectorPreparer: options.connectorPreparer } : {}),
   });
+  const statelessConnectorPreparer = options.statelessConnectorPreparer ?? createStatelessConnectorPreparer();
   const workflowApiHandler = createWorkflowApiHandler({
     service: workflowService,
     getSession: sessionResolver,
@@ -293,6 +310,7 @@ export function createCloudApiRouter(options: CloudApiRouterOptions = {}): Cloud
           workflowApiHandler,
           evidenceApiHandler,
           recurringApiHandler,
+          statelessConnectorPreparer,
         );
       } catch (err) {
         const status = err instanceof ApiError ? err.status : err instanceof AuthValidationError ? 400 : 500;
@@ -409,6 +427,7 @@ async function routeApiRequest(
   workflowApiHandler: (req: IncomingMessage, res: ServerResponse) => Promise<boolean>,
   evidenceApiHandler: (req: IncomingMessage, res: ServerResponse) => Promise<boolean>,
   recurringApiHandler: (req: IncomingMessage, res: ServerResponse) => Promise<boolean>,
+  statelessConnectorPreparer: StatelessConnectorTransactionPreparer,
 ): Promise<void> {
   if (url.pathname === '/api/ai/status') {
     requireMethod(req, 'GET');
@@ -563,6 +582,12 @@ async function routeApiRequest(
     return;
   }
 
+  if (url.pathname === '/api/connector/prepare-transaction') {
+    requireMethod(req, 'POST');
+    await handleConnectorPrepareTransaction(req, res, statelessConnectorPreparer);
+    return;
+  }
+
   if (url.pathname === '/api/birdeye/price-multi') {
     requireMethod(req, 'POST');
     await handleBirdeyePriceMulti(req, res);
@@ -578,6 +603,18 @@ async function routeApiRequest(
   if (url.pathname === '/api/birdeye/token-meta') {
     requireMethod(req, 'POST');
     await handleBirdeyeTokenMetadata(req, res);
+    return;
+  }
+
+  if (url.pathname === '/api/birdeye/token-security') {
+    requireMethod(req, 'POST');
+    await handleBirdeyeTokenSecurity(req, res);
+    return;
+  }
+
+  if (url.pathname === '/api/coingecko/global') {
+    requireMethod(req, 'GET');
+    await handleCoinGeckoGlobal(req, res);
     return;
   }
 
@@ -894,6 +931,40 @@ async function handleHostedAiReviewRequest(
   }
 }
 
+async function handleConnectorPrepareTransaction(
+  req: IncomingMessage,
+  res: ServerResponse,
+  preparer: StatelessConnectorTransactionPreparer,
+): Promise<void> {
+  const body = asJsonRecord(await readJsonBody(req), 'connector prepare-transaction body');
+  const kind = requiredBodyString(body, 'kind');
+  const walletAddress = requiredBodyString(body, 'walletAddress');
+  const cluster = requiredCluster(body.cluster);
+  const params = body.params;
+  if (!params || typeof params !== 'object' || Array.isArray(params)) {
+    throw new ApiError(400, 'params must be an object.');
+  }
+  const summary = typeof body.summary === 'string' ? body.summary : undefined;
+  try {
+    const payload = await preparer({
+      kind,
+      params: params as Record<string, unknown>,
+      walletAddress,
+      cluster,
+      ...(summary ? { summary } : {}),
+    });
+    writeJson(res, 200, payload);
+  } catch (err) {
+    if (err instanceof AdapterError) {
+      if (err.code === 'unknown_kind' || err.code === 'not_executable') {
+        throw new ApiError(422, err.message);
+      }
+      throw new ApiError(502, err.message);
+    }
+    throw new ApiError(502, err instanceof Error ? redactSecrets(err.message) : 'Connector prepare failed.');
+  }
+}
+
 async function handleJupiterSwapOrder(req: IncomingMessage, res: ServerResponse): Promise<void> {
   const body = asJsonRecord(await readJsonBody(req), 'swap order body');
   const inputMint = requiredBodyString(body, 'inputMint');
@@ -997,6 +1068,22 @@ async function handleBirdeyeTokenMetadata(req: IncomingMessage, res: ServerRespo
   const body = asJsonRecord(await readJsonBody(req), 'BirdEye token metadata body');
   const addresses = requiredStringArray(body.addresses, 'addresses');
   writeJson(res, 200, await requestBirdeyeForRender(() => requestBirdeyeTokenMetadata(addresses)));
+}
+
+async function handleBirdeyeTokenSecurity(req: IncomingMessage, res: ServerResponse): Promise<void> {
+  const body = asJsonRecord(await readJsonBody(req), 'BirdEye token security body');
+  const address = requiredBodyString(body, 'address');
+  writeJson(res, 200, await requestBirdeyeForRender(() => requestBirdeyeTokenSecurity(address)));
+}
+
+async function handleCoinGeckoGlobal(_req: IncomingMessage, res: ServerResponse): Promise<void> {
+  try {
+    const snapshot = await requestCoinGeckoGlobal();
+    writeJson(res, 200, snapshot);
+  } catch (err) {
+    const message = err instanceof Error ? redactSecrets(err.message) : 'CoinGecko request failed.';
+    throw new ApiError(502, message);
+  }
 }
 
 async function requestBirdeyeForRender(callback: () => Promise<Record<string, unknown>>): Promise<Record<string, unknown>> {

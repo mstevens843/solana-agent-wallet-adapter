@@ -154,15 +154,6 @@ import {
   type TransactionFailureKind,
 } from './transactionFailure.js';
 import {
-  buildCustomTransactionPreSignReview,
-  buildKaminoDepositPreSignReview,
-  buildKaminoEarningsProofPreSignReview,
-  buildKaminoWithdrawPreSignReview,
-  type PreSignReviewModel,
-  type PreSignReviewRow,
-  type PreSignReviewSection,
-} from './preSignReview.js';
-import {
   connectedDappsSummary,
   connectorHasCapability,
   disabledProtocolConnectors,
@@ -486,6 +477,8 @@ interface AgentReviewFactSet {
   recipient?: AgentReviewFact;
   limits?: AgentReviewFact;
   schedule?: AgentReviewFact;
+  marketSentiment?: AgentReviewFact;
+  marketConditions?: AgentReviewFact;
 }
 
 interface AgentAskExchange {
@@ -699,6 +692,8 @@ interface CloudPreferenceRecord {
 }
 const tokenMarketPrices = new Map<string, TokenMarketPrice>();
 const tokenMarketMetadata = new Map<string, TokenMarketMetadata>();
+const tokenSecurityCache = new Map<string, TokenSecurityInfo>();
+const TOKEN_SECURITY_TTL_MS = 10 * 60 * 1000;
 const tokenSearchStates = new Map<string, TokenSearchState>();
 const tokenSearchTimers = new Map<string, number>();
 const EXECUTABLE_BROWSER_ACTION_KINDS = new Set<PreparedActionKind>([
@@ -1310,6 +1305,19 @@ interface TokenMarketPrice {
   fetchedAt: number;
   updateUnixTime?: number;
   liquidity?: number;
+}
+
+interface TokenSecurityInfo {
+  mint: string;
+  mintAuthority?: string | null;
+  freezeAuthority?: string | null;
+  mintable?: boolean;
+  /** Token age = now - creationTime, in seconds. */
+  ageSeconds?: number;
+  creationTime?: number;
+  ownerAddress?: string | null;
+  isTrueToken?: boolean;
+  fetchedAt: number;
 }
 
 interface TokenSearchResult {
@@ -16634,7 +16642,6 @@ async function runGenerateAgentPlan(): Promise<void> {
   trackGenerateTemplatePlan(template.id);
   state.activeOperation = 'generate-template-plan';
   const toastId = pushToast('pending', 'Creating template plan', 'Preparing a saved plan for review.');
-  let reviewAfterDraftId = '';
   try {
     await run(
       'sign',
@@ -16651,9 +16658,6 @@ async function runGenerateAgentPlan(): Promise<void> {
         const record = await saveGeneratedPlan(plan, template, userNotes || template.description);
         state.selectedGeneratedPlanId = record.id;
         state.oneTimePlanView = 'review';
-        if (state.askAgentAfterDraft && hasDetectedAgentReviewPath()) {
-          reviewAfterDraftId = record.id;
-        }
         replaceToast(toastId, 'success', 'Plan created', `${template.title} is ready in Check request.`);
       },
       { onError: (message) => replaceToast(toastId, 'error', 'Template plan failed', message) },
@@ -16661,9 +16665,6 @@ async function runGenerateAgentPlan(): Promise<void> {
   } finally {
     state.activeOperation = null;
     render();
-  }
-  if (reviewAfterDraftId) {
-    await runReviewGeneratedPlan(reviewAfterDraftId);
   }
 }
 
@@ -18279,7 +18280,7 @@ function generatedPlanStatusLabel(record: GeneratedPlanRecord): string {
   if (record.status === 'archived') return 'archived';
   if (record.preparedActionId || record.status === 'queued') return 'queued';
   if (record.signature || record.status === 'signed') return 'proof signed';
-  return 'needs check';
+  return 'drafted';
 }
 
 function generatedPlanStatusTone(record: GeneratedPlanRecord): string {
@@ -18287,7 +18288,7 @@ function generatedPlanStatusTone(record: GeneratedPlanRecord): string {
   if (record.status === 'failed') return 'needs-review';
   if (record.preparedActionId || record.status === 'queued') return 'tx-pending';
   if (record.signature || record.status === 'signed') return 'tx-confirmed';
-  return 'needs-review';
+  return 'neutral';
 }
 
 function signedGeneratedPlanCount(): number {
@@ -18563,7 +18564,7 @@ function normalizeAgentReviewResultForFacts(
   const hasFailedFact = Object.values(facts).some((fact) => fact?.state === 'fail');
   const instruction = request?.instruction ?? '';
   const questionFindings = questionAwareFindingsFromFacts(facts, plan, instruction);
-  const unknowns = unsupportedFactsFromInstruction(instruction);
+  const unknowns = unsupportedFactsFromInstruction(instruction, facts);
   const reasonPieces: string[] = [];
   for (const finding of questionFindings) {
     if (finding.tone === 'good' || finding.tone === 'neutral') {
@@ -18687,6 +18688,18 @@ function deterministicSourcesFromFacts(facts: AgentReviewFactSet, plan: AgentPla
   if (planBehavesLikeSwap(plan)) {
     sources.push({ url: 'https://jup.ag/', title: 'Jupiter — Solana swap aggregator' });
   }
+  if (facts.marketSentiment?.state === 'ok') {
+    sources.push({
+      url: 'https://alternative.me/crypto/fear-and-greed-index/',
+      title: 'alternative.me — Crypto Fear & Greed Index',
+    });
+  }
+  if (facts.marketConditions?.state === 'ok') {
+    sources.push({
+      url: 'https://www.coingecko.com/en/global-charts',
+      title: 'CoinGecko — Global market dominance & volume',
+    });
+  }
   return sources;
 }
 
@@ -18759,7 +18772,155 @@ function questionAwareFindingsFromFacts(
     }
   }
 
+  const fearGreed = fearGreedValueFromFacts(facts);
+  if (fearGreed) {
+    const mentioned = /fear\s*(?:&|and)\s*greed|crypto\s+fear|fng/i.test(instruction);
+    const threshold = parseFearGreedThreshold(instruction);
+    let tone: QuestionAwareFinding['tone'] = 'neutral';
+    if (threshold !== undefined) {
+      tone = fearGreed.value > threshold ? 'good' : 'fail';
+    } else if (mentioned) {
+      tone = 'good';
+    }
+    findings.push({
+      label: 'BTC Fear & Greed Index',
+      value: `${fearGreed.value} (${fearGreed.classification}) — alternative.me`,
+      tone,
+    });
+  }
+
+  const conditions = marketConditionsFromFacts(facts);
+  if (conditions) {
+    const btcDominanceMentioned = /\bbtc\s*dominance\b|\bbitcoin\s+dominance\b/i.test(instruction);
+    const btcThreshold = parseDominanceThreshold(instruction);
+    if (conditions.btcDominancePct !== undefined) {
+      let tone: QuestionAwareFinding['tone'] = btcDominanceMentioned ? 'good' : 'neutral';
+      if (btcThreshold !== undefined) {
+        tone = conditions.btcDominancePct > btcThreshold ? 'good' : 'fail';
+      }
+      findings.push({
+        label: 'BTC dominance',
+        value: `${conditions.btcDominancePct.toFixed(2)}% — CoinGecko`,
+        tone,
+      });
+    }
+    if (conditions.totalMarketCapUsd !== undefined && /total\s+market\s+cap|crypto\s+market\s+cap/i.test(instruction)) {
+      findings.push({
+        label: 'Total crypto market cap',
+        value: `${formatUsdCompact(conditions.totalMarketCapUsd)} — CoinGecko`,
+        tone: 'neutral',
+      });
+    }
+    if (conditions.marketCapChangePct24hUsd !== undefined && /24h\s+(?:market|change)|market\s+cap\s+change/i.test(instruction)) {
+      findings.push({
+        label: '24h market cap change',
+        value: `${conditions.marketCapChangePct24hUsd >= 0 ? '+' : ''}${conditions.marketCapChangePct24hUsd.toFixed(2)}% — CoinGecko`,
+        tone: 'neutral',
+      });
+    }
+  }
+
+  for (const token of tokenSecurityRows(facts, instruction)) {
+    findings.push(token);
+  }
+
   return findings;
+}
+
+function parseDominanceThreshold(instruction: string): number | undefined {
+  if (!instruction) return undefined;
+  const match = instruction.match(/(?:btc|bitcoin)\s*dominance[^.\n]*?(?:above|over|greater than|>=?|>)\s*(\d{1,3}(?:\.\d+)?)/i);
+  if (!match || !match[1]) return undefined;
+  const value = Number(match[1]);
+  return Number.isFinite(value) ? value : undefined;
+}
+
+interface TokenSecurityRow extends QuestionAwareFinding {}
+
+function tokenSecurityRows(facts: AgentReviewFactSet, instruction: string): TokenSecurityRow[] {
+  const tokenList = facts.tokenMint?.detail?.tokens;
+  if (!Array.isArray(tokenList)) return [];
+  const wantMintAuth = /\bmint(?:ing)?\s+authority\b/i.test(instruction);
+  const wantFreezeAuth = /\bfreeze\s+authority\b/i.test(instruction);
+  const ageMatch = instruction.match(/token\s+age[^.\n]*?(\d+)\s*(h(?:ours?)?|d(?:ays?)?|w(?:eeks?)?)/i);
+  const minAgeSeconds = ageMatch ? parseAgeThresholdSeconds(ageMatch[1]!, ageMatch[2]!) : undefined;
+  const wantAge = minAgeSeconds !== undefined || /\btoken\s+age\b|\bage\s+above\b|\bcreated\s+(?:at|on|after)\b/i.test(instruction);
+  const rows: TokenSecurityRow[] = [];
+  for (const raw of tokenList) {
+    if (!raw || typeof raw !== 'object' || Array.isArray(raw)) continue;
+    const entry = raw as Record<string, unknown>;
+    const security = entry.security as Record<string, unknown> | undefined;
+    if (!security || typeof security !== 'object') continue;
+    const role = typeof entry.role === 'string' ? entry.role.toUpperCase() : 'TOKEN';
+    const symbol = typeof entry.symbol === 'string' ? entry.symbol : (typeof entry.label === 'string' ? entry.label : '');
+    const prefix = symbol ? `${role} ${symbol}` : role;
+    if (wantMintAuth) {
+      const mintAuth = security.mintAuthority;
+      const disabled = mintAuth === null;
+      rows.push({
+        label: `${prefix} mint authority`,
+        value: disabled
+          ? 'disabled (null) — BirdEye'
+          : typeof mintAuth === 'string' && mintAuth
+            ? `enabled: ${short(mintAuth)} — BirdEye`
+            : 'unknown',
+        tone: disabled ? 'good' : typeof mintAuth === 'string' ? 'fail' : 'warn',
+      });
+    }
+    if (wantFreezeAuth) {
+      const freezeAuth = security.freezeAuthority;
+      const disabled = freezeAuth === null;
+      rows.push({
+        label: `${prefix} freeze authority`,
+        value: disabled
+          ? 'disabled (null) — BirdEye'
+          : typeof freezeAuth === 'string' && freezeAuth
+            ? `enabled: ${short(freezeAuth)} — BirdEye`
+            : 'unknown',
+        tone: disabled ? 'good' : typeof freezeAuth === 'string' ? 'fail' : 'warn',
+      });
+    }
+    if (wantAge) {
+      const ageSeconds = typeof security.ageSeconds === 'number' ? security.ageSeconds : undefined;
+      if (ageSeconds === undefined) {
+        rows.push({ label: `${prefix} token age`, value: 'unknown', tone: 'warn' });
+      } else {
+        const passes = minAgeSeconds === undefined ? undefined : ageSeconds >= minAgeSeconds;
+        rows.push({
+          label: `${prefix} token age`,
+          value: `${formatTokenAge(ageSeconds)} — BirdEye`,
+          tone: passes === undefined ? 'neutral' : passes ? 'good' : 'fail',
+        });
+      }
+    }
+  }
+  return rows;
+}
+
+function parseAgeThresholdSeconds(value: string, unit: string): number {
+  const n = Number(value);
+  if (!Number.isFinite(n) || n < 0) return 0;
+  const unitLower = unit.toLowerCase();
+  if (unitLower.startsWith('h')) return n * 3600;
+  if (unitLower.startsWith('d')) return n * 86_400;
+  if (unitLower.startsWith('w')) return n * 7 * 86_400;
+  return n;
+}
+
+function formatTokenAge(seconds: number): string {
+  if (seconds < 60) return `${seconds}s`;
+  if (seconds < 3600) return `${Math.round(seconds / 60)}m`;
+  if (seconds < 86_400) return `${(seconds / 3600).toFixed(1)}h`;
+  if (seconds < 30 * 86_400) return `${(seconds / 86_400).toFixed(1)}d`;
+  return `${(seconds / (30 * 86_400)).toFixed(1)} months`;
+}
+
+function parseFearGreedThreshold(instruction: string): number | undefined {
+  if (!instruction) return undefined;
+  const match = instruction.match(/fear\s*(?:&|and)\s*greed[^.\n]*?(?:above|over|greater than|>=?|>)\s*(\d{1,3})/i);
+  if (!match || !match[1]) return undefined;
+  const value = Number(match[1]);
+  return Number.isFinite(value) ? value : undefined;
 }
 
 interface TokenPriceFact {
@@ -18810,24 +18971,68 @@ function instructionMentionsToken(lowerInstruction: string, symbol: string, name
   return false;
 }
 
-function unsupportedFactsFromInstruction(instruction: string): UnsupportedFact[] {
+function unsupportedFactsFromInstruction(
+  instruction: string,
+  facts?: AgentReviewFactSet,
+): UnsupportedFact[] {
   const found: UnsupportedFact[] = [];
   const lower = instruction.toLowerCase();
-  const checks: Array<{ test: RegExp; label: string; hint: string }> = [
-    { test: /fear\s*(?:&|and)\s*greed|crypto\s+fear|fng/i, label: 'Fear & Greed Index', hint: 'No on-device source for this metric.' },
+  const sentimentOk = facts ? facts.marketSentiment?.state === 'ok' : false;
+  const conditionsOk = facts ? facts.marketConditions?.state === 'ok' : false;
+  const conditionsDetail = (facts?.marketConditions?.detail ?? {}) as Record<string, unknown>;
+  const tokenMintOk = facts ? facts.tokenMint?.state === 'ok' : false;
+  const hasTokenSecurity = tokenMintOk && Array.isArray((facts?.tokenMint?.detail as { tokens?: unknown[] } | undefined)?.tokens)
+    && ((facts!.tokenMint!.detail as { tokens?: Array<Record<string, unknown>> }).tokens ?? []).some((token) => Boolean(token.security));
+  const checks: Array<{ test: RegExp; label: string; hint: string; satisfied?: boolean }> = [
+    {
+      test: /fear\s*(?:&|and)\s*greed|crypto\s+fear|fng/i,
+      label: 'Fear & Greed Index',
+      hint: 'No on-device source for this metric.',
+      satisfied: sentimentOk,
+    },
+    {
+      test: /\b(btc|bitcoin)\s*dominance\b/i,
+      label: 'BTC dominance',
+      hint: 'No on-device source for this metric.',
+      satisfied: conditionsOk && typeof conditionsDetail.btcDominancePct === 'number',
+    },
+    {
+      test: /\bmint(?:ing)?\s+authority\b/i,
+      label: 'Mint authority',
+      hint: 'No on-device source for this metric.',
+      satisfied: hasTokenSecurity,
+    },
+    {
+      test: /\bfreeze\s+authority\b/i,
+      label: 'Freeze authority',
+      hint: 'No on-device source for this metric.',
+      satisfied: hasTokenSecurity,
+    },
+    {
+      test: /\btoken\s+age\b|\bage\s+above\b/i,
+      label: 'Token age',
+      hint: 'No on-device source for this metric.',
+      satisfied: hasTokenSecurity,
+    },
     { test: /\b(rsi|relative\s+strength)\b/i, label: 'RSI', hint: 'No on-device source for this metric.' },
     { test: /\bfunding\s+rate\b/i, label: 'Funding rate', hint: 'No on-device source for this metric.' },
     { test: /\b(open\s+interest|oi)\b/i, label: 'Open interest', hint: 'No on-device source for this metric.' },
     { test: /\b(tvl|total\s+value\s+locked)\b/i, label: 'TVL', hint: 'No on-device source for this metric.' },
     { test: /\b(volume\s+24h?|24h?\s+volume)\b/i, label: '24h volume', hint: 'No on-device source for this metric.' },
-    { test: /\b(market\s+cap|mcap)\b/i, label: 'Market cap', hint: 'No on-device source for this metric.' },
+    {
+      test: /\b(market\s+cap|mcap)\b/i,
+      label: 'Market cap',
+      hint: 'No on-device source for this metric.',
+      satisfied: conditionsOk && typeof conditionsDetail.totalMarketCapUsd === 'number',
+    },
     { test: /\b(yesterday|last\s+(?:hour|day|week|month)|historical)\b/i, label: 'Historical data', hint: 'No on-device source for historical lookups.' },
   ];
   for (const check of checks) {
+    if (check.satisfied) continue;
     if (check.test.test(lower)) {
       found.push({
         label: check.label,
-        value: `${check.hint} Switch to OpenAI or Anthropic for web research, or supply the value in the draft.`,
+        value: `${check.hint} Supply the value in the draft or pick an AI provider that can fetch it.`,
       });
     }
   }
@@ -19018,7 +19223,158 @@ async function gatherAgentReviewFacts(record: GeneratedPlanRecord): Promise<Agen
   if (!enriched) {
     await enrichTokenFactsFromDexScreener(plan, facts).catch(() => undefined);
   }
+  await Promise.all([
+    enrichMarketSentimentFromAlternativeMe(facts).catch(() => undefined),
+    enrichMarketConditionsFromCoinGecko(facts).catch(() => undefined),
+  ]);
   return facts;
+}
+
+interface FearGreedIndexEntry {
+  value: number;
+  classification: string;
+  updatedAt: string;
+}
+
+let fearGreedCache: { entry: FearGreedIndexEntry; fetchedAtMs: number } | undefined;
+const FEAR_GREED_TTL_MS = 5 * 60 * 1000;
+const FEAR_GREED_ENDPOINT = 'https://api.alternative.me/fng/?limit=1';
+
+async function fetchFearGreedIndex(): Promise<FearGreedIndexEntry | undefined> {
+  const now = Date.now();
+  if (fearGreedCache && now - fearGreedCache.fetchedAtMs < FEAR_GREED_TTL_MS) {
+    return fearGreedCache.entry;
+  }
+  try {
+    const response = await fetch(FEAR_GREED_ENDPOINT, { method: 'GET' });
+    if (!response.ok) return undefined;
+    const payload = await response.json() as { data?: Array<Record<string, unknown>> };
+    const item = payload?.data?.[0];
+    if (!item) return undefined;
+    const rawValue = typeof item.value === 'string' ? Number(item.value) : Number(item.value);
+    if (!Number.isFinite(rawValue)) return undefined;
+    const classification = typeof item.value_classification === 'string' ? item.value_classification : 'Unknown';
+    const tsSeconds = typeof item.timestamp === 'string' ? Number(item.timestamp) : Number(item.timestamp);
+    const updatedAt = Number.isFinite(tsSeconds)
+      ? new Date(tsSeconds * 1000).toISOString()
+      : new Date().toISOString();
+    const entry: FearGreedIndexEntry = { value: rawValue, classification, updatedAt };
+    fearGreedCache = { entry, fetchedAtMs: now };
+    return entry;
+  } catch {
+    return undefined;
+  }
+}
+
+async function enrichMarketSentimentFromAlternativeMe(facts: AgentReviewFactSet): Promise<void> {
+  const entry = await fetchFearGreedIndex();
+  if (!entry) return;
+  facts.marketSentiment = {
+    state: 'ok',
+    source: 'deterministic',
+    checkedAt: new Date().toISOString(),
+    message: `BTC Fear & Greed Index ${entry.value} (${entry.classification}) as of ${entry.updatedAt}`,
+    detail: {
+      provider: 'alternative.me',
+      url: 'https://alternative.me/crypto/fear-and-greed-index/',
+      index: entry.value,
+      classification: entry.classification,
+      updatedAt: entry.updatedAt,
+    },
+  };
+}
+
+function fearGreedValueFromFacts(facts: AgentReviewFactSet): { value: number; classification: string; updatedAt: string } | undefined {
+  const fact = facts.marketSentiment;
+  if (!fact || fact.state !== 'ok') return undefined;
+  const detail = fact.detail as Record<string, unknown> | undefined;
+  const value = typeof detail?.index === 'number' ? detail.index : undefined;
+  if (value === undefined || !Number.isFinite(value)) return undefined;
+  const classification = typeof detail?.classification === 'string' ? detail.classification : 'Unknown';
+  const updatedAt = typeof detail?.updatedAt === 'string' ? detail.updatedAt : '';
+  return { value, classification, updatedAt };
+}
+
+interface CoinGeckoGlobalSnapshot {
+  totalMarketCapUsd?: number;
+  totalVolume24hUsd?: number;
+  marketCapChangePct24hUsd?: number;
+  btcDominancePct?: number;
+  ethDominancePct?: number;
+  updatedAt?: string;
+}
+
+let coinGeckoGlobalCache: { snapshot: CoinGeckoGlobalSnapshot; fetchedAtMs: number } | undefined;
+const COINGECKO_GLOBAL_TTL_MS = 5 * 60 * 1000;
+
+async function fetchCoinGeckoGlobalSnapshot(): Promise<CoinGeckoGlobalSnapshot | undefined> {
+  const now = Date.now();
+  if (coinGeckoGlobalCache && now - coinGeckoGlobalCache.fetchedAtMs < COINGECKO_GLOBAL_TTL_MS) {
+    return coinGeckoGlobalCache.snapshot;
+  }
+  // Try bridge first (uses the user's local key), then cloud (uses the deployed key).
+  const bridgeAttempt = state.bridgeActive && state.bridgeToken && isLoopbackBridgeUrl(state.bridgeUrl)
+    ? bridgeRequest<CoinGeckoGlobalSnapshot>('/bridge/coingecko/global', { method: 'GET' }).catch(() => undefined)
+    : undefined;
+  const bridgeSnapshot = await (bridgeAttempt ?? Promise.resolve(undefined));
+  let snapshot = bridgeSnapshot;
+  if (!snapshot) {
+    try {
+      const response = await fetch('/api/coingecko/global', { method: 'GET', credentials: 'include' });
+      if (response.ok) {
+        const parsed = await response.json().catch(() => undefined) as CoinGeckoGlobalSnapshot | undefined;
+        if (parsed) snapshot = parsed;
+      }
+    } catch {
+      // ignore — handled below
+    }
+  }
+  if (!snapshot) return undefined;
+  coinGeckoGlobalCache = { snapshot, fetchedAtMs: now };
+  return snapshot;
+}
+
+async function enrichMarketConditionsFromCoinGecko(facts: AgentReviewFactSet): Promise<void> {
+  const snapshot = await fetchCoinGeckoGlobalSnapshot();
+  if (!snapshot) return;
+  const pieces: string[] = [];
+  if (snapshot.btcDominancePct !== undefined) pieces.push(`BTC dominance ${snapshot.btcDominancePct.toFixed(2)}%`);
+  if (snapshot.ethDominancePct !== undefined) pieces.push(`ETH dominance ${snapshot.ethDominancePct.toFixed(2)}%`);
+  if (snapshot.totalMarketCapUsd !== undefined) pieces.push(`Total market cap ${formatUsdCompact(snapshot.totalMarketCapUsd)}`);
+  if (snapshot.marketCapChangePct24hUsd !== undefined) {
+    pieces.push(`24h market cap change ${snapshot.marketCapChangePct24hUsd >= 0 ? '+' : ''}${snapshot.marketCapChangePct24hUsd.toFixed(2)}%`);
+  }
+  facts.marketConditions = {
+    state: 'ok',
+    source: 'deterministic',
+    checkedAt: new Date().toISOString(),
+    message: pieces.length ? `CoinGecko: ${pieces.join(', ')}` : 'CoinGecko global snapshot fetched.',
+    detail: {
+      provider: 'coingecko',
+      url: 'https://www.coingecko.com/en/global-charts',
+      ...(snapshot.btcDominancePct !== undefined ? { btcDominancePct: snapshot.btcDominancePct } : {}),
+      ...(snapshot.ethDominancePct !== undefined ? { ethDominancePct: snapshot.ethDominancePct } : {}),
+      ...(snapshot.totalMarketCapUsd !== undefined ? { totalMarketCapUsd: snapshot.totalMarketCapUsd } : {}),
+      ...(snapshot.totalVolume24hUsd !== undefined ? { totalVolume24hUsd: snapshot.totalVolume24hUsd } : {}),
+      ...(snapshot.marketCapChangePct24hUsd !== undefined ? { marketCapChangePct24hUsd: snapshot.marketCapChangePct24hUsd } : {}),
+      ...(snapshot.updatedAt ? { updatedAt: snapshot.updatedAt } : {}),
+    },
+  };
+}
+
+function marketConditionsFromFacts(facts: AgentReviewFactSet): CoinGeckoGlobalSnapshot | undefined {
+  const fact = facts.marketConditions;
+  if (!fact || fact.state !== 'ok') return undefined;
+  const detail = fact.detail as Record<string, unknown> | undefined;
+  if (!detail) return undefined;
+  const snapshot: CoinGeckoGlobalSnapshot = {};
+  if (typeof detail.btcDominancePct === 'number') snapshot.btcDominancePct = detail.btcDominancePct;
+  if (typeof detail.ethDominancePct === 'number') snapshot.ethDominancePct = detail.ethDominancePct;
+  if (typeof detail.totalMarketCapUsd === 'number') snapshot.totalMarketCapUsd = detail.totalMarketCapUsd;
+  if (typeof detail.totalVolume24hUsd === 'number') snapshot.totalVolume24hUsd = detail.totalVolume24hUsd;
+  if (typeof detail.marketCapChangePct24hUsd === 'number') snapshot.marketCapChangePct24hUsd = detail.marketCapChangePct24hUsd;
+  if (typeof detail.updatedAt === 'string') snapshot.updatedAt = detail.updatedAt;
+  return snapshot;
 }
 
 interface PlanTokenCandidate {
@@ -19211,10 +19567,12 @@ async function enrichTokenFactsFromBirdEye(plan: AgentPlan, facts: AgentReviewFa
   await Promise.all([
     fetchTokenMetadataForMints(uniqueMints),
     fetchTokenPricesForMints(uniqueMints),
+    fetchTokenSecurityForMints(uniqueMints).catch(() => false),
   ]);
   const mergedTokens = candidates.map((token) => {
     const metadata = token.mint ? tokenMarketMetadata.get(token.mint) : undefined;
     const price = token.mint ? tokenMarketPrices.get(token.mint) : undefined;
+    const security = token.mint ? tokenSecurityCache.get(token.mint) : undefined;
     return {
       role: token.role,
       value: token.raw,
@@ -19230,6 +19588,20 @@ async function enrichTokenFactsFromBirdEye(plan: AgentPlan, facts: AgentReviewFa
               ...(price ? { priceUsd: price.value } : {}),
               ...(price?.liquidity !== undefined ? { liquidityUsd: price.liquidity } : {}),
               ...(metadata?.logoURI ? { logoURI: metadata.logoURI } : {}),
+            },
+          }
+        : {}),
+      ...(security
+        ? {
+            security: {
+              source: 'birdeye',
+              mintAuthority: security.mintAuthority ?? null,
+              freezeAuthority: security.freezeAuthority ?? null,
+              ...(security.mintable !== undefined ? { mintable: security.mintable } : {}),
+              ...(security.creationTime !== undefined ? { creationTime: security.creationTime } : {}),
+              ...(security.ageSeconds !== undefined ? { ageSeconds: security.ageSeconds } : {}),
+              ...(security.ownerAddress !== undefined ? { ownerAddress: security.ownerAddress } : {}),
+              ...(security.isTrueToken !== undefined ? { isTrueToken: security.isTrueToken } : {}),
             },
           }
         : {}),
@@ -22752,10 +23124,12 @@ async function signBrowserWorkflowDecision(
 function isExecutableBrowserAction(action: PreparedAction): boolean {
   if (action.workflowSource === 'cloud') return false;
   if (EXECUTABLE_BROWSER_ACTION_KINDS.has(action.kind)) return true;
-  return isConnectorApprovalKind(action) && connectorPrepareEndpointAvailable({
-    bridgeActive: state.bridgeActive,
-    cloudSessionMatchesWallet: cloudSessionMatchesWallet(),
-  });
+  if (!isConnectorApprovalKind(action)) return false;
+  // Connector approvals can always be prepared:
+  //  • local-bridge / browser-local with bridge active → bridge route
+  //  • browser-workflow without bridge → public stateless cloud route (no session required)
+  // Either way, the dispatcher has a path. Disable only when the wallet itself cannot sign.
+  return state.capabilities?.supports.signTransaction === true;
 }
 
 function isCloudBrowserExecutableAction(action: PreparedAction): boolean {
@@ -28934,6 +29308,66 @@ async function fetchTokenMetadataForMints(mints: string[]): Promise<boolean> {
   return changed;
 }
 
+async function fetchTokenSecurityForMints(mints: string[]): Promise<boolean> {
+  const addresses = [...new Set(mints.filter(Boolean))].filter(tokenSecurityNeedsHydration);
+  if (!addresses.length) return false;
+  // BirdEye token-security is per-address; fetch in parallel.
+  const results = await Promise.allSettled(
+    addresses.map(async (address) => {
+      const payload = await tokenMarketRequest('/token-security', { address });
+      return parseTokenSecurityPayload(address, payload);
+    }),
+  );
+  let changed = false;
+  for (const entry of results) {
+    if (entry.status !== 'fulfilled' || !entry.value) continue;
+    tokenSecurityCache.set(entry.value.mint, entry.value);
+    changed = true;
+  }
+  return changed;
+}
+
+function tokenSecurityNeedsHydration(mint: string): boolean {
+  const cached = tokenSecurityCache.get(mint);
+  if (!cached) return true;
+  return Date.now() - cached.fetchedAt > TOKEN_SECURITY_TTL_MS;
+}
+
+function parseTokenSecurityPayload(mint: string, payload: unknown): TokenSecurityInfo | undefined {
+  const root = asRecord(payload);
+  const data = asRecord(root?.data) ?? root;
+  if (!data) return undefined;
+  const mintAuthority = data.mintAuthority === null
+    ? null
+    : typeof data.mintAuthority === 'string' ? data.mintAuthority : undefined;
+  const freezeAuthority = data.freezeAuthority === null
+    ? null
+    : typeof data.freezeAuthority === 'string' ? data.freezeAuthority : undefined;
+  const ownerAddress = data.ownerAddress === null
+    ? null
+    : typeof data.ownerAddress === 'string' ? data.ownerAddress : undefined;
+  const creationTime = typeof data.creationTime === 'number'
+    ? data.creationTime
+    : typeof data.creationTime === 'string' ? Number(data.creationTime) : undefined;
+  const mintable = typeof data.mintable === 'boolean' ? data.mintable : undefined;
+  const isTrueToken = typeof data.isTrueToken === 'boolean' ? data.isTrueToken : undefined;
+  const now = Date.now();
+  const ageSeconds = creationTime && Number.isFinite(creationTime)
+    ? Math.max(0, Math.floor(now / 1000) - creationTime)
+    : undefined;
+  return {
+    mint,
+    ...(mintAuthority !== undefined ? { mintAuthority } : {}),
+    ...(freezeAuthority !== undefined ? { freezeAuthority } : {}),
+    ...(ownerAddress !== undefined ? { ownerAddress } : {}),
+    ...(creationTime !== undefined ? { creationTime } : {}),
+    ...(ageSeconds !== undefined ? { ageSeconds } : {}),
+    ...(mintable !== undefined ? { mintable } : {}),
+    ...(isTrueToken !== undefined ? { isTrueToken } : {}),
+    fetchedAt: now,
+  };
+}
+
 async function tokenMarketRequest(path: string, body: Record<string, unknown>): Promise<Record<string, unknown>> {
   let bridgeError: unknown;
   if (state.bridgeActive && state.bridgeToken && isLoopbackBridgeUrl(state.bridgeUrl)) {
@@ -29683,14 +30117,9 @@ function preSignReviewBlock(action: PreparedAction): string {
     return policyWarningsStrip(action);
   }
   if (!isExecutableBrowserAction(action) && action.workflowSource !== 'local-bridge') return '';
-  // Suppress review once the action is in flight — the Check-confirmation flow takes over.
   if (hasPendingExecutionLedgerEntry(action)) return '';
   if (action.txStatus === 'pending' && action.txid) return '';
-
-  const model = buildPreSignReviewModelForAction(action);
-  if (!model) return '';
-  return renderPreSignReviewModel(model)
-    + policyWarningsStrip(action);
+  return policyWarningsStrip(action);
 }
 
 function policyWarningsStrip(action: PreparedAction): string {
@@ -29706,52 +30135,6 @@ function policyWarningsStrip(action: PreparedAction): string {
       `).join('')}
     </ul>
   `;
-}
-
-function buildPreSignReviewModelForAction(action: PreparedAction): PreSignReviewModel | undefined {
-  const mainnet = action.cluster === 'mainnet-beta';
-  if (action.kind === 'custom_transaction') {
-    const transactionHash = stringParam(action, 'transactionHash') || stringParam(action, 'fingerprint') || undefined;
-    return buildCustomTransactionPreSignReview({
-      cluster: action.cluster,
-      transactionHash,
-    });
-  }
-  if (action.kind === 'kamino_deposit') {
-    return buildKaminoDepositPreSignReview({
-      cluster: action.cluster,
-      wallet: action.walletAddress || undefined,
-      reserveSymbol: stringParam(action, 'reserveSymbol') || undefined,
-      reserveMint: stringParam(action, 'reserveMint') || undefined,
-      amount: stringParam(action, 'amount') || undefined,
-      supplyApy: numberParam(action, 'supplyApy'),
-      utilization: numberParam(action, 'utilization'),
-      withdrawalDelaySec: numberParam(action, 'withdrawalDelaySec'),
-      depositLimitRemaining: stringParam(action, 'depositLimitRemaining') || undefined,
-      withdrawAvailable: stringParam(action, 'withdrawAvailable') || undefined,
-      mainnetWarning: mainnet,
-      adapterEnabled: isDappEnabled('kamino', state.connectedDapps, action.cluster),
-    });
-  }
-  if (action.kind === 'kamino_withdraw') {
-    return buildKaminoWithdrawPreSignReview({
-      cluster: action.cluster,
-      wallet: action.walletAddress || undefined,
-      reserveSymbol: stringParam(action, 'reserveSymbol') || undefined,
-      reserveMint: stringParam(action, 'reserveMint') || undefined,
-      amount: stringParam(action, 'amount') || undefined,
-      withdrawAll: action.params.withdrawAll === true,
-      suppliedBefore: stringParam(action, 'suppliedBefore') || undefined,
-      earnedInterest: stringParam(action, 'earnedInterest') || undefined,
-      supplyApy: numberParam(action, 'supplyApy'),
-      utilization: numberParam(action, 'utilization'),
-      withdrawalDelaySec: numberParam(action, 'withdrawalDelaySec'),
-      withdrawAvailable: stringParam(action, 'withdrawAvailable') || undefined,
-      mainnetWarning: mainnet,
-      adapterEnabled: isDappEnabled('kamino', state.connectedDapps, action.cluster),
-    });
-  }
-  return undefined;
 }
 
 function numberParam(action: PreparedAction, key: string): number | undefined {
@@ -29772,55 +30155,6 @@ function browserSlippageBpsFromParams(action: PreparedAction): number | undefine
     if (Number.isFinite(parsed)) return Math.max(0, Math.floor(parsed));
   }
   return undefined;
-}
-
-function renderPreSignReviewModel(model: PreSignReviewModel): string {
-  const warnings = model.warnings.length
-    ? `<ul class="pre-sign-review-warnings">${model.warnings.map((warning) => `<li>${escapeHtml(warning)}</li>`).join('')}</ul>`
-    : '';
-  return `
-    <section class="pre-sign-review tone-${escapeHtml(model.riskTone)}" aria-label="${escapeHtml(model.title)}">
-      <header>
-        <strong>${escapeHtml(model.title)}</strong>
-        ${model.subtitle ? `<p>${escapeHtml(model.subtitle)}</p>` : ''}
-      </header>
-      ${warnings}
-      <div class="pre-sign-review-sections">
-        ${model.sections.map(renderPreSignReviewSection).join('')}
-      </div>
-    </section>
-  `;
-}
-
-function renderPreSignReviewSection(section: PreSignReviewSection): string {
-  return `
-    <div class="pre-sign-review-section">
-      <h4>${escapeHtml(section.title)}</h4>
-      <dl>${section.rows.map(renderPreSignReviewRow).join('')}</dl>
-      ${section.note ? `<p class="pre-sign-review-section-note">${escapeHtml(section.note)}</p>` : ''}
-    </div>
-  `;
-}
-
-function renderPreSignReviewRow(row: PreSignReviewRow): string {
-  const toneClass = row.tone ? ` tone-${escapeHtml(row.tone)}` : '';
-  const titleAttr = row.title ? ` title="${escapeHtml(row.title)}"` : '';
-  const copyButton = row.copyValue
-    ? `<button type="button" class="wallet-action-copy" data-copy="${escapeHtml(row.copyValue)}" data-copy-name="${escapeHtml(row.label)}">Copy</button>`
-    : '';
-  const badge = row.badge
-    ? `<span class="pre-sign-review-row-badge">${escapeHtml(row.badge)}</span>`
-    : '';
-  return `
-    <div class="pre-sign-review-row${toneClass}"${titleAttr}>
-      <dt>${escapeHtml(row.label)}</dt>
-      <dd>
-        <span>${escapeHtml(row.value)}</span>
-        ${badge}
-        ${copyButton}
-      </dd>
-    </div>
-  `;
 }
 
 function inboxApprovalNote(action: PreparedAction): string {
@@ -30053,6 +30387,9 @@ function requiresCloudTransactionFinalization(action: PreparedAction): boolean {
 function connectorExecutionBlockReason(action: PreparedAction): string | null {
   if (!isConnectorApprovalKind(action)) return null;
   if (isExecutableBrowserAction(action)) return null;
+  if (state.capabilities && state.capabilities.supports.signTransaction !== true) {
+    return 'The connected wallet cannot sign transactions in this browser. Switch to a wallet that supports transaction signing.';
+  }
   return connectorExecutionUnsupportedMessage(action);
 }
 

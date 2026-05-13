@@ -122,6 +122,24 @@ export async function requestBirdeyeTokenMetadata(
   });
 }
 
+export async function requestBirdeyeTokenSecurity(
+  address: string,
+  options: { env?: NodeJS.ProcessEnv; fetchImpl?: typeof fetch } = {},
+): Promise<Record<string, unknown>> {
+  const trimmed = address.trim();
+  if (!trimmed) {
+    throw new ProtocolError('invalid_request', 'BirdEye token security request requires a token mint address.');
+  }
+  return requestBirdeye('/defi/token_security', {
+    method: 'GET',
+    query: {
+      address: trimmed,
+    },
+    env: options.env,
+    fetchImpl: options.fetchImpl,
+  });
+}
+
 function normalizeAddressList(addresses: string[], limit: number): string[] {
   const seen = new Set<string>();
   const list: string[] = [];

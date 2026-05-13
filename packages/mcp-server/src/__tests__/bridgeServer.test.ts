@@ -424,6 +424,9 @@ describe('bridge prepared-action prepare-transaction', () => {
         reserveMint: 'So11111111111111111111111111111111111111112',
         amountRaw: '500000000',
         decimals: 9,
+        // Sentinel that signals these params already went through adapter.prepare().
+        // Without it, prepareTransactionForApproval will auto-enrich by re-running prepare().
+        preparedSnapshotAt: new Date().toISOString(),
       },
     });
     const handle = await startTestBridge({
@@ -506,6 +509,9 @@ describe('bridge prepared-action prepare-transaction', () => {
         reserveMint: 'So11111111111111111111111111111111111111112',
         amountRaw: '500000000',
         decimals: 9,
+        // Sentinel that signals these params already went through adapter.prepare().
+        // Without it, prepareTransactionForApproval will auto-enrich by re-running prepare().
+        preparedSnapshotAt: new Date().toISOString(),
       },
     });
     await store.updateAction(action.id, { status: 'approved' });

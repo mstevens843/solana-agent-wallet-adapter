@@ -370,6 +370,114 @@ describe('render web hosted BYOK API', () => {
     });
   });
 
+  describe('POST /api/connector/prepare-transaction (public stateless route)', () => {
+    const stubPayload = {
+      transactionBase64: 'AAAA-base64-fixture',
+      summary: 'Deposit 0.5 SOL into Kamino',
+      preview: { reserveSymbol: 'SOL', apy: 5.4 },
+      cluster: 'mainnet-beta' as const,
+    };
+
+    it('returns 200 + base64 for a valid kind + params, no session required', async () => {
+      let calls = 0;
+      await withServer(async (port) => {
+        const response = await postJson(port, '/api/connector/prepare-transaction', {
+          kind: 'kamino_deposit',
+          params: { token: 'SOL', amount: '0.5' },
+          walletAddress: 'Wallet111',
+          cluster: 'mainnet-beta',
+        });
+        expect(response.status).toBe(200);
+        expect(response.body).toMatchObject({
+          transactionBase64: 'AAAA-base64-fixture',
+          summary: stubPayload.summary,
+          cluster: 'mainnet-beta',
+        });
+        expect(calls).toBe(1);
+      }, {
+        statelessConnectorPreparer: async (input) => {
+          calls += 1;
+          expect(input.kind).toBe('kamino_deposit');
+          expect(input.walletAddress).toBe('Wallet111');
+          expect(input.cluster).toBe('mainnet-beta');
+          expect(input.params).toEqual({ token: 'SOL', amount: '0.5' });
+          return stubPayload;
+        },
+      });
+    });
+
+    it('returns 422 when the adapter registry has no entry for the kind', async () => {
+      await withServer(async (port) => {
+        const response = await postJson(port, '/api/connector/prepare-transaction', {
+          kind: 'not_a_real_kind',
+          params: {},
+          walletAddress: 'Wallet111',
+          cluster: 'mainnet-beta',
+        });
+        expect(response.status).toBe(422);
+        expect(String(response.body.error)).toContain('No adapter');
+      }, {
+        statelessConnectorPreparer: async () => {
+          const { AdapterError } = await import('../cloud/prepareConnectorTransaction.js');
+          throw new AdapterError('registry', 'unknown_kind', 'No adapter registered for kind not_a_real_kind');
+        },
+      });
+    });
+
+    it('returns 502 when the adapter itself fails (SDK/RPC error)', async () => {
+      await withServer(async (port) => {
+        const response = await postJson(port, '/api/connector/prepare-transaction', {
+          kind: 'kamino_deposit',
+          params: { token: 'SOL', amount: '0.5' },
+          walletAddress: 'Wallet111',
+          cluster: 'mainnet-beta',
+        });
+        expect(response.status).toBe(502);
+      }, {
+        statelessConnectorPreparer: async () => {
+          throw new Error('RPC unreachable');
+        },
+      });
+    });
+
+    it('returns 400 when kind is missing', async () => {
+      await withServer(async (port) => {
+        const response = await postJson(port, '/api/connector/prepare-transaction', {
+          params: { token: 'SOL', amount: '0.5' },
+          walletAddress: 'Wallet111',
+          cluster: 'mainnet-beta',
+        });
+        expect(response.status).toBe(400);
+      }, { statelessConnectorPreparer: async () => stubPayload });
+    });
+
+    it('returns 400 when params is not an object', async () => {
+      await withServer(async (port) => {
+        const response = await postJson(port, '/api/connector/prepare-transaction', {
+          kind: 'kamino_deposit',
+          params: 'not-an-object',
+          walletAddress: 'Wallet111',
+          cluster: 'mainnet-beta',
+        });
+        expect(response.status).toBe(400);
+        expect(String(response.body.error)).toContain('params');
+      }, { statelessConnectorPreparer: async () => stubPayload });
+    });
+
+    it('returns 400 for an unknown cluster', async () => {
+      await withServer(async (port) => {
+        const response = await postJson(port, '/api/connector/prepare-transaction', {
+          kind: 'kamino_deposit',
+          params: { token: 'SOL', amount: '0.5' },
+          walletAddress: 'Wallet111',
+          cluster: 'asgard-net',
+        });
+        expect(response.status).toBe(400);
+        expect(String(response.body.error).toLowerCase()).toContain('cluster');
+      }, { statelessConnectorPreparer: async () => stubPayload });
+    });
+  });
+
   it('persists signed-in wallet preferences through the hosted API', async () => {
     await withServer(async (port, ctx) => {
       const unauthorized = await putJson(port, '/api/preferences/ai-settings', {
@@ -396,7 +504,10 @@ describe('render web hosted BYOK API', () => {
   });
 });
 
-async function withServer(callback: (port: number, ctx: ServerCtx) => Promise<void>): Promise<void> {
+async function withServer(
+  callback: (port: number, ctx: ServerCtx) => Promise<void>,
+  options: { statelessConnectorPreparer?: import('../cloud/prepareConnectorTransaction.js').StatelessConnectorTransactionPreparer } = {},
+): Promise<void> {
   const staticDir = await mkdtemp(join(tmpdir(), 'agentic-render-web-'));
   await writeFile(join(staticDir, 'index.html'), '<!doctype html><div id="app"></div>');
   await mkdir(join(staticDir, 'app'));
@@ -407,7 +518,13 @@ async function withServer(callback: (port: number, ctx: ServerCtx) => Promise<vo
     walletAddress: '11111111111111111111111111111111',
     clock: { now: () => new Date('2026-05-08T18:00:00.000Z') },
   });
-  const server = createRenderWebServer({ staticDir, store });
+  const server = createRenderWebServer({
+    staticDir,
+    store,
+    ...(options.statelessConnectorPreparer
+      ? { statelessConnectorPreparer: options.statelessConnectorPreparer }
+      : {}),
+  });
   await new Promise<void>((resolve, reject) => {
     server.once('error', reject);
     server.listen(0, '127.0.0.1', resolve);

@@ -151,7 +151,16 @@ export {
   requestBirdeyePriceMulti,
   requestBirdeyeSearch,
   requestBirdeyeTokenMetadata,
+  requestBirdeyeTokenSecurity,
 } from './birdeye.js';
+export {
+  DEFAULT_COINGECKO_PUBLIC_BASE,
+  DEFAULT_COINGECKO_PRO_BASE,
+  coinGeckoConfigFromEnv,
+  requestCoinGecko,
+  requestCoinGeckoGlobal,
+} from './coingecko.js';
+export type { CoinGeckoConfig, CoinGeckoGlobalSnapshot, CoinGeckoRequestInit } from './coingecko.js';
 export type { BirdeyeConfig, BirdeyeRequestInit } from './birdeye.js';
 export type {
   AiApiFormat,

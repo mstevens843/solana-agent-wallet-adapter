@@ -48,6 +48,37 @@ export function createCaptureContext(ctx: DAppAdapterContext): {
   return { ctx: captureCtx, captured };
 }
 
+/**
+ * Sentinel that every adapter's `prepare()` stamps into its previewParams. If an action's
+ * params don't carry this field, the params were produced by the form-driven template path
+ * (or an AI plan) and have NOT yet been run through `adapter.prepare()` — so the adapter's
+ * `execute()` would fail looking up enriched keys like `reserveMint` / `amountRaw`.
+ */
+const PREPARED_SNAPSHOT_KEY = 'preparedSnapshotAt';
+
+function actionParamsAreEnriched(action: PreparedAction): boolean {
+  return typeof action.params[PREPARED_SNAPSHOT_KEY] === 'string';
+}
+
+async function enrichActionParams(
+  action: PreparedAction,
+  adapterAction: ReturnType<typeof adapterForKind> & {},
+  ctx: DAppAdapterContext,
+): Promise<PreparedAction> {
+  // The adapter's prepare() accepts an opaque input; the form-keyed action.params shape
+  // is compatible with every adapter we have (e.g., Kamino reads `input.token`, MarginFi reads
+  // `input.bank`, etc.). Adapters tolerate unknown fields.
+  const prepared = await adapterAction.prepare(action.params as never, ctx);
+  return {
+    ...action,
+    summary: prepared.addInput.summary || action.summary,
+    params: {
+      ...action.params,
+      ...prepared.addInput.params,
+    },
+  };
+}
+
 export async function prepareTransactionForApproval(
   action: PreparedAction,
   ctx: DAppAdapterContext,
@@ -61,8 +92,12 @@ export async function prepareTransactionForApproval(
     );
   }
 
+  const enrichedAction = actionParamsAreEnriched(action)
+    ? action
+    : await enrichActionParams(action, adapterAction, ctx);
+
   const { ctx: captureCtx, captured } = createCaptureContext(ctx);
-  const result = await adapterAction.execute(action, captureCtx);
+  const result = await adapterAction.execute(enrichedAction, captureCtx);
 
   if (captured.base64 === undefined || captured.summary === undefined) {
     throw new AdapterError(
