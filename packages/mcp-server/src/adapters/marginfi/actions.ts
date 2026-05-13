@@ -15,6 +15,7 @@ import {
 } from './constants.js';
 import {
   getMarginfiClient,
+  normalizeMarginfiActionInput,
   type MarginfiActionBuildInput,
   type MarginfiHealthPreview,
   type MarginfiOperation,
@@ -42,7 +43,7 @@ export function marginfiAction(operation: MarginfiOperation): AdapterAction<Marg
       const walletAddress = await ctx.backend.getAddress();
       const client = await getMarginfiClient(walletAddress);
       const minHealthRatio = marginfiMinHealthRatio(ctx.config);
-      const previewInput: MarginfiActionBuildInput & { minHealthRatio?: number; createAccountIfMissing?: boolean } = {
+      const previewInput = normalizeMarginfiActionInput({
         operation,
         walletAddress,
         ...(input.bankAddress !== undefined && { bankAddress: input.bankAddress }),
@@ -54,7 +55,7 @@ export function marginfiAction(operation: MarginfiOperation): AdapterAction<Marg
         ...(input.repayAll !== undefined && { repayAll: input.repayAll }),
         ...(input.createAccountIfMissing !== undefined && { createAccountIfMissing: input.createAccountIfMissing }),
         minHealthRatio,
-      };
+      } satisfies MarginfiActionBuildInput & { minHealthRatio?: number });
 
       const preview = await client.previewHealth(ctx.connection, previewInput);
       assertHealthPreviewAllowed(preview);

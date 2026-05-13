@@ -18,9 +18,9 @@ import {
 } from './client.js';
 import { DRIFT_ADAPTER_ID, type DriftWithdrawUnit } from './constants.js';
 import {
+  assertDriftVaultProgram,
   displaySymbol,
   displayVaultName,
-  requireNumber,
   requireString,
   requireVaultAddress,
   short,
@@ -73,6 +73,7 @@ export const driftVaultRequestWithdrawAction: AdapterAction<DriftVaultRequestWit
     const walletAddress = await ctx.backend.getAddress();
 
     const snapshot = await getDriftVaultClient().getVaultSnapshot(ctx.connection, vaultAddress);
+    assertDriftVaultProgram(snapshot);
     const positions = await getDriftVaultClient().getWalletVaultPositions(
       ctx.connection,
       walletAddress,
@@ -276,6 +277,7 @@ export const driftVaultCancelWithdrawAction: AdapterAction<DriftVaultCancelWithd
       );
     }
     const snapshot = await getDriftVaultClient().getVaultSnapshot(ctx.connection, vaultAddress);
+    assertDriftVaultProgram(snapshot);
     const summary = `Cancel pending Drift vault withdraw on ${displayVaultName(snapshot)}`;
     const previewParams: Record<string, unknown> = {
       adapter: DRIFT_ADAPTER_ID,
@@ -379,6 +381,7 @@ export const driftVaultCompleteWithdrawAction: AdapterAction<DriftVaultCompleteW
       );
     }
     const snapshot = await getDriftVaultClient().getVaultSnapshot(ctx.connection, vaultAddress);
+    assertDriftVaultProgram(snapshot);
     const nowIso = new Date().toISOString();
     const summary = `Complete Drift vault withdraw on ${displayVaultName(snapshot)}`;
     const previewParams: Record<string, unknown> = {

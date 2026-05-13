@@ -23,6 +23,16 @@ Each production release review must verify the source below or remove the SVG im
 | `gemini.svg` | Gemini AI provider context | Wikimedia Commons `Google_Gemini_icon_2025.svg`; attributed there to Google LLC. Verify trademark/source before production release. |
 | `agent-router.svg` | Generic AI gateway/router context for OpenRouter/custom providers | Original project artwork; not an OpenRouter trademark. |
 | `vercel.svg` | Vercel runtime context | Provider-site reference required before production release |
+| `jito.svg` | Jito liquid staking connector context | SVG mark adapted from the Realms official integration logo at `https://app.realms.today/images/logos/jito.svg`; Jito homepage access was Cloudflare-blocked during verification. Re-verify with Jito brand assets before production release. |
+| `marinade.svg` | Marinade liquid staking connector context | Marinade official press kit was checked at `https://docs.marinade.finance/partnerships/marinade-press-kit`; SVG mark adapted from the Realms official integration logo at `https://app.realms.today/images/logos/marinade.svg` because the press kit surfaced PNG assets during verification. |
+| `sanctum.svg` | Sanctum LST and Infinity connector context | Official Sanctum docs press-kit asset from `https://learn.sanctum.so/docs/misc/press-kit` (`Cloud Symbol (Circle, Blue).svg`). |
+| `magiceden.svg` | Magic Eden NFT marketplace connector context | Official Magic Eden homepage inline header mark from `https://magiceden.io`; visually cross-checked with the site maskable icon. |
+| `tensor.svg` | Tensor NFT marketplace connector context | Vector recreation from Tensor official homepage OG/logo image at `https://www.tensor.trade`; re-verify against a first-party SVG before production release. |
+| `wormhole.svg` | Wormhole bridge connector context | Official Wormhole brand-and-press logomark from `https://wormhole.com/brand-and-press`. |
+| `mayan.svg` | Mayan cross-chain swap connector context | Official Mayan docs logo SVG loaded from the Mintlify-backed docs site at `https://docs.mayan.finance/`. |
+| `pyth.svg` | Pyth oracle connector context | SVG mark adapted from the Realms official integration logo at `https://app.realms.today/images/logos/pyth.svg`; re-verify against Pyth brand assets before production release. |
+| `squads.svg` | Squads multisig connector context | Vector recreation from the official Squads site favicon/mark at `https://squads.so`; re-verify against a first-party SVG before production release. |
+| `realms.svg` | Realms governance connector context | Official Realms app logo from `https://app.realms.today/img/logo-realms.svg`. |
 
 ## Fallback Rule
 

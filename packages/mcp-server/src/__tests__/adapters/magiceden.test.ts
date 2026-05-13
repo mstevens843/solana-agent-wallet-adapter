@@ -8,6 +8,7 @@ import {
   magicedenAdapter,
 } from '../../adapters/magiceden/index.js';
 import {
+  MagicedenApiClient,
   describeMagicedenUnavailableReason,
   resetMagicedenClientFactory,
   setMagicedenClientFactory,
@@ -182,6 +183,8 @@ function makeContext(opts: {
     config: fakeConfig(opts.cluster ?? 'mainnet-beta'),
     connection: {} as Connection,
     signAndBroadcast: opts.signed ?? (async () => 'txid-magiceden'),
+    signTransaction: async () => "signed-base64-placeholder",
+    signMessage: async () => "signature-base64-placeholder",
     store: opts.store,
   };
 }
@@ -475,5 +478,197 @@ describe('Magic Eden cancel preparation', () => {
     await expect(
       requireMeAction('cancel_bid').prepare({}, ctx),
     ).rejects.toBeInstanceOf(AdapterError);
+  });
+});
+
+describe('Magic Eden buy safety hardening', () => {
+  it('refuses to prepare a buy when the active listing has priceLamports=0', async () => {
+    const state = fakeState();
+    state.listings = [fakeListing({ priceLamports: '0', priceSol: '0' })];
+    setMagicedenClientFactory(() => fakeClient(state));
+    const ctx = makeContext({ store: inMemoryStore() });
+    await expect(
+      requireMeAction('buy').prepare({ mintAddress: MINT, maxPriceSol: '1' }, ctx),
+    ).rejects.toMatchObject({ code: 'listing_not_found' });
+  });
+
+  it('refuses to prepare a buy when the active listing has no seller', async () => {
+    const state = fakeState();
+    state.listings = [fakeListing({ seller: '' })];
+    setMagicedenClientFactory(() => fakeClient(state));
+    const ctx = makeContext({ store: inMemoryStore() });
+    await expect(
+      requireMeAction('buy').prepare({ mintAddress: MINT, maxPriceSol: '1' }, ctx),
+    ).rejects.toMatchObject({ code: 'listing_not_found' });
+  });
+
+  it('picks the lowest-priced active listing when multiple exist for one mint', async () => {
+    const state = fakeState();
+    state.listings = [
+      fakeListing({ listingId: 'higher', priceLamports: '2000000000', priceSol: '2' }),
+      fakeListing({ listingId: 'lower', priceLamports: '900000000', priceSol: '0.9' }),
+    ];
+    setMagicedenClientFactory(() => fakeClient(state));
+    const ctx = makeContext({ store: inMemoryStore() });
+    const result = await requireMeAction('buy').prepare(
+      { mintAddress: MINT, maxPriceSol: '1' },
+      ctx,
+    );
+    expect(result.addInput.params).toMatchObject({
+      listingId: 'lower',
+      priceLamports: '900000000',
+    });
+  });
+
+  it('refuses to execute a buy when the API returns a transaction touching a non-ME program', async () => {
+    const state = fakeState();
+    setMagicedenClientFactory(() => ({
+      ...fakeClient(state),
+      async generateBuyTransaction() {
+        return {
+          transactionBase64: 'base64-buy',
+          programIds: ['11111111111111111111111111111111'],
+          reusable: false,
+        };
+      },
+    }));
+    const store = inMemoryStore();
+    const ctx = makeContext({ store });
+    const prepared = await requireMeAction('buy').prepare(
+      { mintAddress: MINT, maxPriceSol: '1' },
+      ctx,
+    );
+    const stored = await store.addAction(prepared.addInput);
+    await expect(requireMeAction('buy').execute(stored, ctx)).rejects.toMatchObject({
+      code: 'program_mismatch',
+    });
+  });
+
+  it('re-checks trading health at execute time and refuses if degraded', async () => {
+    const state = fakeState();
+    setMagicedenClientFactory(() => fakeClient(state));
+    const store = inMemoryStore();
+    const ctx = makeContext({ store });
+    const prepared = await requireMeAction('buy').prepare(
+      { mintAddress: MINT, maxPriceSol: '1' },
+      ctx,
+    );
+    const stored = await store.addAction(prepared.addInput);
+    state.health = fakeHealth({
+      apiOperational: true,
+      tradingOperational: false,
+      readOnlyFallback: true,
+      degradedReasons: ['probe failed at execute time'],
+    });
+    await expect(requireMeAction('buy').execute(stored, ctx)).rejects.toMatchObject({
+      code: 'health_degraded',
+    });
+  });
+});
+
+describe('MagicedenApiClient transport', () => {
+  function stubFetch(responder: (url: string, init?: unknown) => Response): typeof fetch {
+    return (async (input: unknown, init?: unknown) => {
+      const url = typeof input === 'string' ? input : String(input);
+      return responder(url, init);
+    }) as unknown as typeof fetch;
+  }
+
+  it('redacts MAGICEDEN_API_KEY from error messages', async () => {
+    const apiKey = 'sk-magiceden-secret-token-abc123';
+    const client = new MagicedenApiClient({
+      apiKey,
+      baseUrl: 'https://api.fake',
+      fetchImpl: stubFetch(() =>
+        new Response(`{"error":"db crashed: authorization=Bearer ${apiKey}"}`, {
+          status: 500,
+          headers: { 'content-type': 'application/json' },
+        }),
+      ),
+    });
+    await expect(client.getCollectionListings({ collectionSymbol: 'test' })).rejects.toMatchObject({
+      message: expect.not.stringContaining(apiKey),
+    });
+    await expect(client.getCollectionListings({ collectionSymbol: 'test' })).rejects.toMatchObject({
+      message: expect.stringContaining('***'),
+    });
+  });
+
+  it('normalizes rate-limit headers into the health snapshot', async () => {
+    const client = new MagicedenApiClient({
+      apiKey: 'k',
+      baseUrl: 'https://api.fake',
+      fetchImpl: stubFetch(() =>
+        new Response('[]', {
+          status: 200,
+          headers: {
+            'content-type': 'application/json',
+            'retry-after': '30',
+            'x-ratelimit-remaining': '0',
+          },
+        }),
+      ),
+    });
+    const snapshot = await client.getApiHealth({ includeTradingEndpoints: false });
+    expect(snapshot.apiOperational).toBe(true);
+    expect(snapshot.rateLimit).toMatchObject({ limited: true, retryAfterSeconds: 30, remaining: 0 });
+    expect(snapshot.warnings.some((w) => w.includes('rate-limited'))).toBe(true);
+  });
+
+  it('keeps tradingOperational=true when the trading probe returns a 400 Bad Request', async () => {
+    const client = new MagicedenApiClient({
+      apiKey: 'k',
+      baseUrl: 'https://api.fake',
+      fetchImpl: stubFetch((url) => {
+        if (url.includes('/collections')) {
+          return new Response('[]', { status: 200, headers: { 'content-type': 'application/json' } });
+        }
+        return new Response('{"error":"missing required parameters"}', {
+          status: 400,
+          headers: { 'content-type': 'application/json' },
+        });
+      }),
+    });
+    const snapshot = await client.getApiHealth({ includeTradingEndpoints: true });
+    expect(snapshot.apiOperational).toBe(true);
+    expect(snapshot.tradingOperational).toBe(true);
+    expect(snapshot.readOnlyFallback).toBe(false);
+  });
+
+  it('flags tradingOperational=false when the trading probe returns 401', async () => {
+    const client = new MagicedenApiClient({
+      apiKey: 'k',
+      baseUrl: 'https://api.fake',
+      fetchImpl: stubFetch((url) => {
+        if (url.includes('/collections')) {
+          return new Response('[]', { status: 200, headers: { 'content-type': 'application/json' } });
+        }
+        return new Response('{"error":"unauthorized"}', {
+          status: 401,
+          headers: { 'content-type': 'application/json' },
+        });
+      }),
+    });
+    const snapshot = await client.getApiHealth({ includeTradingEndpoints: true });
+    expect(snapshot.apiOperational).toBe(true);
+    expect(snapshot.tradingOperational).toBe(false);
+    expect(snapshot.degradedReasons.join(' ')).toContain('auth failure');
+  });
+});
+
+describe('Magic Eden execute dispatcher routing', () => {
+  it('exposes every magiceden_* kind through actionForKind', () => {
+    const kinds = [
+      'magiceden_buy',
+      'magiceden_list',
+      'magiceden_cancel_listing',
+      'magiceden_bid',
+      'magiceden_cancel_bid',
+    ] as const;
+    for (const kind of kinds) {
+      const match = actionForKind(kind);
+      expect(match?.adapter.id).toBe('magiceden');
+      expect(typeof match?.action.execute).toBe('function');
+    }
   });
 });

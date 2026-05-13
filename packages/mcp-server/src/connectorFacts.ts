@@ -29,6 +29,24 @@ import type {
 } from './adapters/marginfi/client.js';
 import { shortAddress } from './adapters/orca/constants.js';
 import type {
+  JupiterPriceBatchResult,
+  JupiterPriceSnapshot,
+  JupiterTokenReadResult,
+  JupiterTokenRiskEvidence,
+  NormalizedOrderbook,
+  NormalizedPredictionEventSummary,
+  NormalizedPredictionMarket,
+  NormalizedPredictionOrder,
+  NormalizedPredictionPosition,
+  NormalizedPredictionVault,
+  PredictionEventDetailResult,
+  PredictionEventsResult,
+  PredictionHistoryResult,
+  PredictionMarketStatus,
+  PredictionOrdersResult,
+  PredictionPositionsResult,
+} from './adapters/jupiter/index.js';
+import type {
   SaveMarketSnapshot,
   SaveObligation,
   SaveReserveSnapshot,
@@ -36,6 +54,7 @@ import type {
 import type { HealthPreview as SaveHealthPreview } from './adapters/save/health.js';
 import type {
   JitoQuote,
+  JitoDepositReceiptsResult,
   JitoStakeAccount,
   JitoStakePoolSnapshot,
   JitoWalletPositionsResult,
@@ -82,6 +101,14 @@ import type {
   WormholeTransferStatus,
   WormholeWalletBridgeExposure,
 } from './adapters/wormhole/client.js';
+import type {
+  JupiterLendBorrowHealthPreview,
+  JupiterLendBorrowPositionSnapshot,
+  JupiterLendBorrowVaultSnapshot,
+  JupiterLendEarnEarningsSnapshot,
+  JupiterLendEarnPositionSnapshot,
+  JupiterLendEarnTokenSnapshot,
+} from './adapters/jupiter/lendClient.js';
 import { shortWormholeAddress } from './adapters/wormhole/constants.js';
 import type {
   PythFeedSearchResult,
@@ -104,6 +131,11 @@ export interface MagicedenCollectionSnapshotInput {
   bids?: MagicedenCollectionBids;
 }
 
+/**
+ * Shape returned by the Tensor adapter's collection_snapshot read. Kept as a
+ * structural alias so service code can pass the read result straight through
+ * to factsFromTensorCollectionSnapshot without an `as` cast.
+ */
 export interface TensorCollectionSnapshotInput {
   collection: TensorCollectionSnapshot;
   listings?: TensorListing[];
@@ -127,6 +159,8 @@ export interface ConnectorFactReadInput {
   capability?: ConnectorCapability;
   walletAddress?: string;
   token?: string;
+  mint?: string;
+  mints?: string[];
   reserveMint?: string;
   lstMint?: string;
   inputMint?: string;
@@ -147,9 +181,12 @@ export interface ConnectorFactReadInput {
   bankMint?: string;
   marginfiAccount?: string;
   operation?: 'deposit' | 'withdraw' | 'borrow' | 'repay';
+  vaultAddress?: string;
+  subAccountId?: number;
   jitoOperation?: 'stake_sol' | 'deposit_stake_account' | 'unstake_jitosol' | 'withdraw_sol';
   marinadeOperation?: 'liquid_stake' | 'liquid_unstake' | 'delayed_unstake' | 'claim_delayed_unstake';
   stakeAccount?: string;
+  receiptAddress?: string;
   solAmount?: string;
   jitoSolAmount?: string;
   msolAmount?: string;
@@ -168,16 +205,23 @@ export interface ConnectorFactReadInput {
   withdrawAll?: boolean;
   repayAll?: boolean;
   createAccountIfMissing?: boolean;
+  sourceChain?: string;
   sourceMint?: string;
   destinationChain?: string;
   destinationAddress?: string;
-  routeType?: string;
+  routeType?: 'auto' | 'token_bridge' | 'cctp' | 'ntt' | 'automatic' | 'manual';
   nativeGasDropoff?: string;
   txid?: string;
   vaa?: string;
   sequence?: string;
   transferId?: string;
   includePendingTransfers?: boolean;
+  tag?: 'lst' | 'verified' | 'stocks';
+  category?: 'toporganicscore' | 'toptraded' | 'toptrending';
+  interval?: '5m' | '1h' | '6h' | '24h';
+  limit?: number;
+  includePrice?: boolean;
+  includeSearchFallback?: boolean;
   priceFeedId?: string;
   priceFeedIds?: string[];
   symbol?: string;
@@ -188,6 +232,50 @@ export interface ConnectorFactReadInput {
   consumerProtocol?: string;
   includeEma?: boolean;
   includeRawAccount?: boolean;
+  predictionOperation?:
+    | 'events'
+    | 'search_events'
+    | 'event_detail'
+    | 'event_markets'
+    | 'market_detail'
+    | 'orderbook'
+    | 'orders'
+    | 'order_status'
+    | 'positions'
+    | 'history'
+    | 'vault_info';
+  predictionProvider?: 'polymarket' | 'kalshi';
+  predictionIncludeMarkets?: boolean;
+  predictionCategory?:
+    | 'all'
+    | 'crypto'
+    | 'sports'
+    | 'politics'
+    | 'esports'
+    | 'culture'
+    | 'economics'
+    | 'tech';
+  predictionSortBy?: 'volume' | 'beginAt';
+  predictionSortDirection?: 'asc' | 'desc';
+  predictionFilter?: 'new' | 'live' | 'trending';
+  predictionStart?: number;
+  predictionEnd?: number;
+  predictionEventId?: string;
+  predictionMarketId?: string;
+  predictionOrderId?: string;
+  predictionStatus?: 'pending' | 'filled' | 'failed' | 'all';
+  predictionLimit?: number;
+  predictionOwner?: string;
+  collectionId?: string;
+  collectionSymbol?: string;
+  mintAddress?: string;
+  assetId?: string;
+  includeListings?: boolean;
+  includeBids?: boolean;
+  includeCompressed?: boolean;
+  maxListings?: number;
+  maxBids?: number;
+  listedOnly?: boolean;
 }
 
 export function fact(input: {
@@ -367,7 +455,7 @@ export function factsFromJupiterOrderPreview(
   const feeBps = order.feeBps ?? (safeFactRecord(order.platformFee)?.feeBps);
   const feeMint = stringValue(order.feeMint ?? safeFactRecord(order.platformFee)?.feeMint);
   const routePlan = Array.isArray(order.routePlan) ? order.routePlan : [];
-  return [
+  const facts = [
     fact({
       connectorId: 'jupiter',
       label: 'Jupiter Swap API v2 preview',
@@ -438,6 +526,864 @@ export function factsFromJupiterOrderPreview(
         rentFeeLamports: order.rentFeeLamports,
       },
     }),
+  ];
+  const routingWarnings = jupiterRoutingConstraintWarnings(order, router, mode);
+  if (routingWarnings.length > 0) {
+    facts.push(fact({
+      connectorId: 'jupiter',
+      label: 'Routing constraints',
+      value: routingWarnings.join(' '),
+      tone: 'warn',
+      checkedAt,
+      detail: {
+        mode,
+        router,
+        swapType: order.swapType,
+        quoteId: order.quoteId,
+        maker: order.maker,
+        expireAt: order.expireAt,
+      },
+    }));
+  }
+  return facts;
+}
+
+function jupiterRoutingConstraintWarnings(
+  order: Record<string, unknown>,
+  router: string,
+  mode: string,
+): string[] {
+  const warnings: string[] = [];
+  if (mode.toLowerCase() === 'manual') {
+    warnings.push('Manual mode means optional parameters may restrict routing or change swap behavior.');
+  }
+  const swapType = stringValue(order.swapType).toLowerCase();
+  const hasRfqFields = Boolean(stringValue(order.quoteId) || stringValue(order.maker) || stringValue(order.expireAt));
+  if (router.toLowerCase() === 'jupiterz' || swapType.includes('rfq') || hasRfqFields) {
+    warnings.push('JupiterZ/RFQ routes can require partial signing and should not be modified after order creation.');
+  }
+  return warnings;
+}
+
+export {
+  factsFromJupiterPerpsStatus,
+  factsFromJupiterPerpsPoolSnapshot,
+  factsFromJupiterPerpsCustodySnapshot,
+  factsFromJupiterPerpsPositionSnapshot,
+} from './adapters/jupiter/perpsEvidence.js';
+
+export function factsFromJupiterTokenRead(
+  result: JupiterTokenReadResult,
+  checkedAt = new Date().toISOString(),
+): ConnectorFact[] {
+  const descriptor = result.query
+    ? ` for "${result.query}"`
+    : result.tag
+      ? ` tagged ${result.tag}`
+      : result.category && result.interval
+        ? ` for ${result.category}/${result.interval}`
+        : '';
+  const facts: ConnectorFact[] = [
+    fact({
+      connectorId: 'jupiter',
+      label: 'Jupiter Token API V2',
+      value: `${result.tokens.length} token${result.tokens.length === 1 ? '' : 's'}${descriptor}`,
+      tone: result.tokens.length > 0 ? 'good' : 'warn',
+      checkedAt,
+      detail: {
+        source: result.source,
+        query: result.query,
+        tag: result.tag,
+        category: result.category,
+        interval: result.interval,
+        asOf: result.asOf,
+      },
+    }),
+  ];
+  for (const token of result.tokens.slice(0, 5)) {
+    facts.push(fact({
+      connectorId: 'jupiter',
+      label: token.symbol ?? shortAddress(token.id),
+      value: tokenValue(token),
+      tone: token.isVerified === false ? 'warn' : token.isVerified === true ? 'good' : 'neutral',
+      checkedAt,
+      detail: {
+        mint: token.id,
+        name: token.name,
+        decimals: token.decimals,
+        tokenProgram: token.tokenProgram,
+        tags: token.tags,
+        holderCount: token.holderCount,
+        liquidity: token.liquidity,
+        organicScore: token.organicScore,
+        organicScoreLabel: token.organicScoreLabel,
+        audit: token.audit,
+      },
+    }));
+  }
+  return facts;
+}
+
+export function factsFromJupiterPrice(
+  price: JupiterPriceSnapshot,
+  checkedAt = new Date().toISOString(),
+): ConnectorFact[] {
+  return [
+    jupiterPriceFact(price, checkedAt),
+    fact({
+      connectorId: 'jupiter',
+      label: 'Price evidence',
+      value: 'Jupiter price is evidence, not an oracle guarantee.',
+      tone: 'warn',
+      checkedAt,
+    }),
+  ];
+}
+
+export function factsFromJupiterPriceBatch(
+  batch: JupiterPriceBatchResult,
+  checkedAt = new Date().toISOString(),
+): ConnectorFact[] {
+  const facts: ConnectorFact[] = [
+    fact({
+      connectorId: 'jupiter',
+      label: 'Jupiter Price API V3 batch',
+      value: `${batch.totals.requested} requested · ${batch.totals.found} found · ${batch.totals.missing} missing`,
+      tone: batch.totals.missing > 0 ? 'warn' : 'good',
+      checkedAt,
+      detail: { asOf: batch.asOf },
+    }),
+  ];
+  for (const price of batch.prices.slice(0, 10)) {
+    facts.push(jupiterPriceFact(price, checkedAt));
+  }
+  facts.push(fact({
+    connectorId: 'jupiter',
+    label: 'Price evidence',
+    value: 'Jupiter price is evidence, not an oracle guarantee.',
+    tone: 'warn',
+    checkedAt,
+  }));
+  return facts;
+}
+
+export function factsFromJupiterTokenRiskEvidence(
+  evidence: JupiterTokenRiskEvidence,
+  checkedAt = new Date().toISOString(),
+): ConnectorFact[] {
+  const tokenLabel = evidence.symbol ?? shortAddress(evidence.mint);
+  const facts: ConnectorFact[] = [
+    fact({
+      connectorId: 'jupiter',
+      label: `Jupiter token evidence ${tokenLabel}`,
+      value: evidence.tokenFound
+        ? `${evidence.name ?? tokenLabel}${evidence.isVerified === true ? ' · verified' : ' · not verified'}`
+        : 'Token metadata missing',
+      tone: evidence.riskLabels.some((label) => label.includes('suspicious') || label.includes('very_low'))
+        ? 'fail'
+        : evidence.warnings.length > 1
+          ? 'warn'
+          : 'good',
+      checkedAt,
+      detail: {
+        mint: evidence.mint,
+        decimals: evidence.decimals,
+        tokenProgram: evidence.tokenProgram,
+        tags: evidence.tags,
+        organicScore: evidence.organicScore,
+        organicScoreLabel: evidence.organicScoreLabel,
+        audit: evidence.audit,
+        holderCount: evidence.holderCount,
+        topHoldersPercentage: evidence.topHoldersPercentage,
+        liquidity: evidence.liquidity,
+        mcap: evidence.mcap,
+        fdv: evidence.fdv,
+        stats: evidence.stats,
+        asOf: evidence.asOf,
+      },
+    }),
+    fact({
+      connectorId: 'jupiter',
+      label: 'Jupiter USD price',
+      value: evidence.usdPrice === undefined
+        ? 'Price missing or unreliable'
+        : `$${evidence.usdPrice}${evidence.priceChange24h === undefined ? '' : ` · 24h ${formatPercent(evidence.priceChange24h)}`}`,
+      tone: evidence.usdPrice === undefined ? 'warn' : 'good',
+      checkedAt,
+      detail: {
+        priceBlockId: evidence.priceBlockId,
+        priceChange24h: evidence.priceChange24h,
+      },
+    }),
+  ];
+  if (evidence.riskLabels.length > 0) {
+    facts.push(fact({
+      connectorId: 'jupiter',
+      label: 'Risk labels',
+      value: evidence.riskLabels.join(', '),
+      tone: evidence.riskLabels.some((label) => label.includes('suspicious') || label.includes('very_low'))
+        ? 'fail'
+        : 'warn',
+      checkedAt,
+    }));
+  }
+  if (evidence.warnings.length > 0) {
+    facts.push(fact({
+      connectorId: 'jupiter',
+      label: 'Token warnings',
+      value: evidence.warnings.join(' '),
+      tone: evidence.warnings.some((warning) => warning.toLowerCase().includes('suspicious')) ? 'fail' : 'warn',
+      checkedAt,
+    }));
+  }
+  return facts;
+}
+
+export function factsFromJupiterLendEarnTokens(
+  input: { tokens: JupiterLendEarnTokenSnapshot[] },
+  checkedAt = new Date().toISOString(),
+): ConnectorFact[] {
+  if (input.tokens.length === 0) {
+    return [
+      fact({
+        connectorId: 'jupiter',
+        label: 'Jupiter Earn markets',
+        value: 'No Jupiter Lend Earn tokens were returned.',
+        tone: 'warn',
+        checkedAt,
+      }),
+    ];
+  }
+  return input.tokens.map((token) =>
+    fact({
+      connectorId: 'jupiter',
+      label: `Jupiter Earn ${earnTokenLabel(token)}`,
+      value: `${formatPercent(token.apy ?? Number.NaN)} APY${
+        token.rewardApy ? ` · rewards ${formatPercent(token.rewardApy)}` : ''
+      }${token.availableLiquidity ? ` · liquidity ${token.availableLiquidity}` : ''}`,
+      tone: token.active === false ? 'warn' : rateTone(token.apy ?? Number.NaN),
+      checkedAt,
+      detail: {
+        assetMint: token.assetMint,
+        shareMint: token.shareMint,
+        decimals: token.decimals,
+        shareDecimals: token.shareDecimals,
+        exchangePrice: token.exchangePrice,
+        totalSupplyUnderlying: token.totalSupplyUnderlying,
+        utilization: token.utilization,
+        rewards: token.rewards,
+        withdrawalSmoothing: token.withdrawalSmoothing,
+        asOf: token.asOf,
+      },
+    }),
+  );
+}
+
+export function factsFromJupiterLendEarnPositions(
+  input: { walletAddress: string; positions: JupiterLendEarnPositionSnapshot[] },
+  checkedAt = new Date().toISOString(),
+): ConnectorFact[] {
+  if (input.positions.length === 0) {
+    return [
+      fact({
+        connectorId: 'jupiter',
+        label: 'Jupiter Earn positions',
+        value: 'No Jupiter Lend Earn positions for this wallet.',
+        tone: 'neutral',
+        checkedAt,
+        detail: { walletAddress: input.walletAddress },
+      }),
+    ];
+  }
+  return input.positions.map((position) =>
+    fact({
+      connectorId: 'jupiter',
+      label: `Jupiter Earn ${earnPositionLabel(position)}`,
+      value: `${position.underlyingAmount} ${earnPositionLabel(position)} · ${position.shares} shares${
+        position.apy ? ` · ${formatPercent(position.apy)} APY` : ''
+      }`,
+      tone: positiveString(position.underlyingAmount) ? 'good' : 'neutral',
+      checkedAt,
+      detail: {
+        assetMint: position.assetMint,
+        shareMint: position.shareMint,
+        decimals: position.decimals,
+        shareDecimals: position.shareDecimals,
+        underlyingAmountRaw: position.underlyingAmountRaw,
+        sharesRaw: position.sharesRaw,
+        exchangePrice: position.exchangePrice,
+        walletBalanceUnderlying: position.walletBalanceUnderlying,
+        rewardApy: position.rewardApy,
+        asOf: position.asOf,
+      },
+    }),
+  );
+}
+
+export function factsFromJupiterLendEarnEarnings(
+  input: { walletAddress: string; earnings: JupiterLendEarnEarningsSnapshot[] },
+  checkedAt = new Date().toISOString(),
+): ConnectorFact[] {
+  if (input.earnings.length === 0) {
+    return [
+      fact({
+        connectorId: 'jupiter',
+        label: 'Jupiter Earn earnings',
+        value: 'No Jupiter Lend Earn earnings reported for this window.',
+        tone: 'neutral',
+        checkedAt,
+        detail: { walletAddress: input.walletAddress },
+      }),
+    ];
+  }
+  return input.earnings.map((earning) =>
+    fact({
+      connectorId: 'jupiter',
+      label: `Jupiter Earn earnings ${shortAddress(earning.assetMint)}`,
+      value: `${earning.totalEarnings} earned${
+        earning.rewardEarnings ? ` · ${earning.rewardEarnings} rewards` : ''
+      }`,
+      tone: positiveString(earning.totalEarnings) ? 'good' : 'neutral',
+      checkedAt,
+      detail: {
+        assetMint: earning.assetMint,
+        decimals: earning.decimals,
+        from: earning.from,
+        to: earning.to,
+        asOf: earning.asOf,
+      },
+    }),
+  );
+}
+
+export function factsFromJupiterLendBorrowVaults(
+  input: { vaults: JupiterLendBorrowVaultSnapshot[] },
+  checkedAt = new Date().toISOString(),
+): ConnectorFact[] {
+  if (input.vaults.length === 0) {
+    return [
+      fact({
+        connectorId: 'jupiter',
+        label: 'Jupiter Borrow vaults',
+        value: 'No Jupiter Lend Borrow vaults returned.',
+        tone: 'warn',
+        checkedAt,
+      }),
+    ];
+  }
+  return input.vaults.flatMap((vault) => {
+    const baseTone: ConnectorFactTone = vault.active ? 'good' : 'warn';
+    const ltvPercent = vault.ltvBps / 100;
+    const ltPercent = vault.liquidationThresholdBps / 100;
+    const liquidationPenaltyPercent =
+      vault.liquidationPenaltyBps !== undefined ? vault.liquidationPenaltyBps / 100 : undefined;
+    return [
+      fact({
+        connectorId: 'jupiter',
+        label: `Jupiter Borrow vault #${vault.vaultId}`,
+        value: `${borrowVaultPairLabel(vault)} · LTV ${ltvPercent}% · liquidation ${ltPercent}%`,
+        tone: baseTone,
+        checkedAt,
+        detail: {
+          vaultAddress: vault.vaultAddress,
+          supplyMint: vault.supplyMint,
+          borrowMint: vault.borrowMint,
+          supplyDecimals: vault.supplyDecimals,
+          borrowDecimals: vault.borrowDecimals,
+          supplyApy: vault.supplyApy,
+          borrowApr: vault.borrowApr,
+          totalCollateral: vault.totalCollateral,
+          totalDebt: vault.totalDebt,
+          supplyAvailable: vault.supplyAvailable,
+          borrowAvailable: vault.borrowAvailable,
+          liquidationPenaltyPercent,
+          oracle: vault.oracle,
+          asOf: vault.asOf,
+        },
+      }),
+    ];
+  });
+}
+
+export function factsFromJupiterLendBorrowPositions(
+  input: { walletAddress: string; positions: JupiterLendBorrowPositionSnapshot[] },
+  checkedAt = new Date().toISOString(),
+): ConnectorFact[] {
+  if (input.positions.length === 0) {
+    return [
+      fact({
+        connectorId: 'jupiter',
+        label: 'Jupiter Borrow positions',
+        value: 'No Jupiter Lend Borrow positions for this wallet.',
+        tone: 'neutral',
+        checkedAt,
+        detail: { walletAddress: input.walletAddress },
+      }),
+    ];
+  }
+  return input.positions.map((position) =>
+    fact({
+      connectorId: 'jupiter',
+      label: `Jupiter Borrow position #${position.positionId}`,
+      value: `collateral ${position.collateralAmount} · debt ${position.debtAmount} · health ${position.healthRatioText} · ${position.liquidationStatus}`,
+      tone: borrowPositionTone(position),
+      checkedAt,
+      detail: {
+        vaultId: position.vaultId,
+        vaultAddress: position.vaultAddress,
+        positionAddress: position.positionAddress,
+        collateralAmountRaw: position.collateralAmountRaw,
+        debtAmountRaw: position.debtAmountRaw,
+        collateralValueUsd: position.collateralValueUsd,
+        debtValueUsd: position.debtValueUsd,
+        ltvBps: position.ltvBps,
+        liquidationThresholdBps: position.liquidationThresholdBps,
+        asOf: position.asOf,
+      },
+    }),
+  );
+}
+
+export function factsFromJupiterLendBorrowHealth(
+  preview: JupiterLendBorrowHealthPreview,
+  checkedAt = new Date().toISOString(),
+): ConnectorFact[] {
+  const facts: ConnectorFact[] = [
+    fact({
+      connectorId: 'jupiter',
+      label: 'Jupiter Borrow health preview',
+      value: `projected health ${preview.after.healthRatioText} · status ${preview.after.liquidationStatus}`,
+      tone: preview.blocked
+        ? 'fail'
+        : preview.warnings.length > 0
+          ? 'warn'
+          : preview.after.liquidationStatus === 'safe'
+            ? 'good'
+            : 'warn',
+      checkedAt,
+      detail: {
+        vaultId: preview.vaultId,
+        vaultAddress: preview.vaultAddress,
+        positionId: preview.positionId,
+        walletAddress: preview.walletAddress,
+        collateralDelta: preview.collateralDelta,
+        debtDelta: preview.debtDelta,
+        minHealthRatio: preview.minHealthRatio,
+        maxLtvBps: preview.maxLtvBps,
+        projectedLtvBps: preview.projectedLtvBps,
+        simulatedAt: preview.simulatedAt,
+      },
+    }),
+  ];
+  if (preview.before) {
+    facts.push(
+      fact({
+        connectorId: 'jupiter',
+        label: 'Health before',
+        value: `collateral ${preview.before.collateralAmount} · debt ${preview.before.debtAmount} · health ${preview.before.healthRatioText}`,
+        tone: preview.before.liquidationStatus === 'safe' ? 'good' : 'warn',
+        checkedAt,
+        detail: { ...preview.before },
+      }),
+    );
+  }
+  facts.push(
+    fact({
+      connectorId: 'jupiter',
+      label: 'Health after',
+      value: `collateral ${preview.after.collateralAmount} · debt ${preview.after.debtAmount} · health ${preview.after.healthRatioText}`,
+      tone: preview.blocked ? 'fail' : preview.after.liquidationStatus === 'safe' ? 'good' : 'warn',
+      checkedAt,
+      detail: { ...preview.after },
+    }),
+  );
+  if (preview.warnings.length > 0) {
+    facts.push(
+      fact({
+        connectorId: 'jupiter',
+        label: 'Health warnings',
+        value: preview.warnings.join('; '),
+        tone: preview.blocked ? 'fail' : 'warn',
+        checkedAt,
+      }),
+    );
+  }
+  if (preview.oracle) {
+    facts.push(
+      fact({
+        connectorId: 'jupiter',
+        label: 'Oracle',
+        value: preview.oracle.available
+          ? `price ${preview.oracle.price ?? 'unknown'} · confidence ${preview.oracle.confidenceBps ?? 'unknown'} bps`
+          : 'Oracle unavailable',
+        tone: preview.oracle.available ? 'good' : 'warn',
+        checkedAt,
+        detail: { ...preview.oracle },
+      }),
+    );
+  }
+  return facts;
+}
+
+function earnTokenLabel(token: JupiterLendEarnTokenSnapshot): string {
+  return token.tokenSymbol ?? shortAddress(token.assetMint);
+}
+
+function earnPositionLabel(position: JupiterLendEarnPositionSnapshot): string {
+  return position.tokenSymbol ?? shortAddress(position.assetMint);
+}
+
+function borrowVaultPairLabel(vault: JupiterLendBorrowVaultSnapshot): string {
+  return `${vault.supplySymbol ?? shortAddress(vault.supplyMint)}/${vault.borrowSymbol ?? shortAddress(vault.borrowMint)}`;
+}
+
+function borrowPositionTone(position: JupiterLendBorrowPositionSnapshot): ConnectorFactTone {
+  switch (position.liquidationStatus) {
+    case 'liquidated':
+    case 'liquidatable':
+      return 'fail';
+    case 'at_risk':
+      return 'warn';
+    case 'safe':
+      return positiveString(position.debtAmount) ? 'good' : 'neutral';
+    default:
+      return 'neutral';
+  }
+}
+
+function tokenValue(token: JupiterTokenReadResult['tokens'][number]): string {
+  const parts = [
+    token.name ?? shortAddress(token.id),
+    token.isVerified === true ? 'verified' : token.isVerified === false ? 'unverified' : undefined,
+    typeof token.liquidity === 'number' ? `liquidity $${formatCompactNumber(token.liquidity)}` : undefined,
+    typeof token.organicScore === 'number' ? `organic ${token.organicScore}` : undefined,
+  ];
+  return parts.filter((part): part is string => Boolean(part)).join(' · ');
+}
+
+function jupiterPriceFact(price: JupiterPriceSnapshot, checkedAt: string): ConnectorFact {
+  return fact({
+    connectorId: 'jupiter',
+    label: `Jupiter price ${shortAddress(price.mint)}`,
+    value: price.status === 'found'
+      ? `$${price.usdPrice}${price.priceChange24h === undefined ? '' : ` · 24h ${formatPercent(price.priceChange24h)}`}`
+      : price.reason ?? 'Price missing',
+    tone: price.status === 'found' ? 'good' : 'warn',
+    checkedAt,
+    detail: {
+      mint: price.mint,
+      status: price.status,
+      usdPrice: price.usdPrice,
+      decimals: price.decimals,
+      blockId: price.blockId,
+      priceChange24h: price.priceChange24h,
+      liquidity: price.liquidity,
+      createdAt: price.createdAt,
+      asOf: price.asOf,
+    },
+  });
+}
+
+function formatCompactNumber(value: number): string {
+  if (!Number.isFinite(value)) return String(value);
+  if (Math.abs(value) >= 1_000_000_000) return `${(value / 1_000_000_000).toFixed(2)}B`;
+  if (Math.abs(value) >= 1_000_000) return `${(value / 1_000_000).toFixed(2)}M`;
+  if (Math.abs(value) >= 1_000) return `${(value / 1_000).toFixed(2)}K`;
+  return value.toString();
+}
+
+const PREDICTION_BETA_LABEL = 'Jupiter Prediction (beta)';
+
+function predictionStatusTone(status: PredictionMarketStatus): ConnectorFactTone {
+  if (status === 'open') return 'good';
+  if (status === 'unknown') return 'neutral';
+  return 'warn';
+}
+
+function predictionBetaHeader(
+  value: string,
+  detail: Record<string, unknown>,
+  checkedAt: string,
+): ConnectorFact {
+  return fact({
+    connectorId: 'jupiter',
+    label: PREDICTION_BETA_LABEL,
+    value,
+    tone: 'warn',
+    checkedAt,
+    detail,
+  });
+}
+
+export function factsFromJupiterPredictionEvents(
+  result: PredictionEventsResult,
+  checkedAt = new Date().toISOString(),
+): ConnectorFact[] {
+  const total = result.total ?? result.events.length;
+  const facts: ConnectorFact[] = [
+    predictionBetaHeader(
+      total === 0 ? 'No events returned' : `${total} events`,
+      { count: result.events.length, total: result.total },
+      checkedAt,
+    ),
+  ];
+  for (const event of result.events.slice(0, 10)) {
+    facts.push(buildPredictionEventFact(event, checkedAt));
+  }
+  return facts;
+}
+
+export function factsFromJupiterPredictionEventDetail(
+  result: PredictionEventDetailResult,
+  checkedAt = new Date().toISOString(),
+): ConnectorFact[] {
+  const facts: ConnectorFact[] = [
+    predictionBetaHeader(
+      result.event.title ?? result.event.id ?? 'Event',
+      {
+        eventId: result.event.id,
+        provider: result.event.provider,
+        closeAt: result.event.closeAt,
+        marketCount: result.markets?.length ?? result.event.marketCount,
+      },
+      checkedAt,
+    ),
+  ];
+  for (const market of result.markets?.slice(0, 10) ?? []) {
+    facts.push(buildPredictionEventFact(market, checkedAt));
+  }
+  return facts;
+}
+
+function buildPredictionEventFact(
+  event: NormalizedPredictionEventSummary,
+  checkedAt: string,
+): ConnectorFact {
+  return fact({
+    connectorId: 'jupiter',
+    label: event.title ?? event.id ?? 'Event',
+    value: [event.category, event.provider, event.volume ? `vol ${event.volume}` : undefined]
+      .filter((part): part is string => Boolean(part))
+      .join(' · ') || 'Beta event',
+    tone: 'neutral',
+    checkedAt,
+    detail: {
+      id: event.id,
+      provider: event.provider,
+      category: event.category,
+      beginAt: event.beginAt,
+      endAt: event.endAt,
+      closeAt: event.closeAt,
+      rulesUrl: event.rulesUrl,
+      marketCount: event.marketCount,
+    },
+  });
+}
+
+export function factsFromJupiterPredictionMarketDetail(
+  market: NormalizedPredictionMarket,
+  checkedAt = new Date().toISOString(),
+): ConnectorFact[] {
+  const status = market.status;
+  return [
+    predictionBetaHeader(
+      market.question ?? market.id ?? 'Market',
+      { id: market.id, status, rawStatus: market.rawStatus, provider: market.provider },
+      checkedAt,
+    ),
+    fact({
+      connectorId: 'jupiter',
+      label: 'Status',
+      value: market.rawStatus ?? status,
+      tone: predictionStatusTone(status),
+      checkedAt,
+      detail: { result: market.result, closeAt: market.closeAt, resolveAt: market.resolveAt },
+    }),
+    fact({
+      connectorId: 'jupiter',
+      label: 'YES price',
+      value: market.yesPrice ?? 'Not reported',
+      tone: market.yesPrice ? 'good' : 'warn',
+      checkedAt,
+    }),
+    fact({
+      connectorId: 'jupiter',
+      label: 'NO price',
+      value: market.noPrice ?? 'Not reported',
+      tone: market.noPrice ? 'good' : 'warn',
+      checkedAt,
+    }),
+    fact({
+      connectorId: 'jupiter',
+      label: 'Volume',
+      value: market.volume ?? 'Not reported',
+      tone: 'neutral',
+      checkedAt,
+      detail: { rulesUrl: market.rulesUrl },
+    }),
+  ];
+}
+
+export function factsFromJupiterPredictionOrderbook(
+  book: NormalizedOrderbook,
+  checkedAt = new Date().toISOString(),
+): ConnectorFact[] {
+  return [
+    predictionBetaHeader(
+      `Orderbook for ${shortAddress(book.marketId)}`,
+      { marketId: book.marketId, status: book.status },
+      checkedAt,
+    ),
+    fact({
+      connectorId: 'jupiter',
+      label: 'YES best bid / ask',
+      value: `${book.yes.bestBid ?? 'n/a'} / ${book.yes.bestAsk ?? 'n/a'}`,
+      tone: predictionStatusTone(book.status),
+      checkedAt,
+      detail: { bidLevels: book.yes.bids.length, askLevels: book.yes.asks.length },
+    }),
+    fact({
+      connectorId: 'jupiter',
+      label: 'NO best bid / ask',
+      value: `${book.no.bestBid ?? 'n/a'} / ${book.no.bestAsk ?? 'n/a'}`,
+      tone: predictionStatusTone(book.status),
+      checkedAt,
+      detail: { bidLevels: book.no.bids.length, askLevels: book.no.asks.length },
+    }),
+  ];
+}
+
+export function factsFromJupiterPredictionOrders(
+  result: PredictionOrdersResult,
+  checkedAt = new Date().toISOString(),
+): ConnectorFact[] {
+  const facts: ConnectorFact[] = [
+    predictionBetaHeader(
+      result.orders.length === 0
+        ? `No orders for ${shortAddress(result.owner)}`
+        : `${result.orders.length} orders for ${shortAddress(result.owner)}`,
+      { owner: result.owner },
+      checkedAt,
+    ),
+  ];
+  for (const order of result.orders.slice(0, 10)) {
+    facts.push(buildPredictionOrderFact(order, checkedAt));
+  }
+  return facts;
+}
+
+export function factsFromJupiterPredictionOrderStatus(
+  order: NormalizedPredictionOrder,
+  checkedAt = new Date().toISOString(),
+): ConnectorFact[] {
+  return [
+    predictionBetaHeader(
+      order.orderId ?? order.orderPubkey ?? 'Order',
+      { marketId: order.marketId, status: order.status },
+      checkedAt,
+    ),
+    buildPredictionOrderFact(order, checkedAt),
+  ];
+}
+
+function buildPredictionOrderFact(
+  order: NormalizedPredictionOrder,
+  checkedAt: string,
+): ConnectorFact {
+  return fact({
+    connectorId: 'jupiter',
+    label: order.orderId ?? order.orderPubkey ?? 'Order',
+    value: `${order.side ?? '—'} · ${order.price ?? 'n/a'} · ${order.size ?? 'n/a'} · ${order.status ?? 'unknown'}`,
+    tone: order.status === 'filled' ? 'good' : order.status === 'failed' ? 'fail' : 'neutral',
+    checkedAt,
+    detail: {
+      marketId: order.marketId,
+      filled: order.filled,
+      createdAt: order.createdAt,
+    },
+  });
+}
+
+export function factsFromJupiterPredictionPositions(
+  result: PredictionPositionsResult,
+  checkedAt = new Date().toISOString(),
+): ConnectorFact[] {
+  const facts: ConnectorFact[] = [
+    predictionBetaHeader(
+      result.positions.length === 0
+        ? `No positions for ${shortAddress(result.owner)}`
+        : `${result.positions.length} positions for ${shortAddress(result.owner)}`,
+      { owner: result.owner },
+      checkedAt,
+    ),
+  ];
+  for (const position of result.positions.slice(0, 10)) {
+    facts.push(buildPredictionPositionFact(position, checkedAt));
+  }
+  return facts;
+}
+
+function buildPredictionPositionFact(
+  position: NormalizedPredictionPosition,
+  checkedAt: string,
+): ConnectorFact {
+  const tone: ConnectorFactTone = position.claimable
+    ? 'good'
+    : position.settled
+      ? 'warn'
+      : 'neutral';
+  return fact({
+    connectorId: 'jupiter',
+    label: position.positionPubkey ?? position.marketId ?? 'Position',
+    value: `${position.outcome ?? '—'} · ${position.shares ?? 'n/a'} shares · avg ${position.averagePrice ?? 'n/a'}${position.settled ? ' · settled' : ''}${position.claimable ? ' · claimable' : ''}`,
+    tone,
+    checkedAt,
+    detail: {
+      marketId: position.marketId,
+      eventId: position.eventId,
+      unrealizedPnl: position.unrealizedPnl,
+    },
+  });
+}
+
+export function factsFromJupiterPredictionHistory(
+  result: PredictionHistoryResult,
+  checkedAt = new Date().toISOString(),
+): ConnectorFact[] {
+  const facts: ConnectorFact[] = [
+    predictionBetaHeader(
+      result.entries.length === 0
+        ? `No history for ${shortAddress(result.owner)}`
+        : `${result.entries.length} entries for ${shortAddress(result.owner)}`,
+      { owner: result.owner },
+      checkedAt,
+    ),
+  ];
+  for (const entry of result.entries.slice(0, 10)) {
+    facts.push(fact({
+      connectorId: 'jupiter',
+      label: entry.kind ?? entry.txid ?? 'Entry',
+      value: `${entry.side ?? '—'} · ${entry.price ?? 'n/a'} · ${entry.size ?? 'n/a'} · ${entry.occurredAt ?? 'unknown'}`,
+      tone: 'neutral',
+      checkedAt,
+      detail: { marketId: entry.marketId, eventId: entry.eventId, txid: entry.txid },
+    }));
+  }
+  return facts;
+}
+
+export function factsFromJupiterPredictionVaultInfo(
+  vault: NormalizedPredictionVault,
+  checkedAt = new Date().toISOString(),
+): ConnectorFact[] {
+  return [
+    predictionBetaHeader(
+      vault.balance
+        ? `${vault.balance}${vault.currency ? ` ${vault.currency}` : ''}`
+        : 'No vault balance reported',
+      { owner: vault.owner, vaultAddress: vault.vaultAddress },
+      checkedAt,
+    ),
   ];
 }
 
@@ -641,6 +1587,7 @@ export function factsFromRaydiumPositions(
         detail: {
           walletAddress: result.walletAddress,
           poolId: result.poolId,
+          farmId: result.farmId,
         },
       }),
     ];
@@ -658,6 +1605,7 @@ export function factsFromRaydiumPositions(
       detail: {
         walletAddress: result.walletAddress,
         poolId: result.poolId,
+        farmId: result.farmId,
       },
     }),
     ...result.positions.map((position) => raydiumPositionFact(position, checkedAt)),
@@ -1427,6 +2375,47 @@ export function factsFromJitoStakeAccounts(
   ];
 }
 
+export function factsFromJitoDepositReceipts(
+  snapshot: JitoDepositReceiptsResult,
+  checkedAt = new Date().toISOString(),
+): ConnectorFact[] {
+  const facts: ConnectorFact[] = [
+    fact({
+      connectorId: 'jito',
+      label: 'Jito deposit receipts',
+      value: `${snapshot.totals.receipts} receipts · ${snapshot.totals.claimableReceipts} claimable · ${snapshot.totals.lstAmount} JitoSOL`,
+      tone: snapshot.totals.claimableReceipts > 0 ? 'good' : snapshot.totals.receipts > 0 ? 'warn' : 'neutral',
+      checkedAt,
+      detail: {
+        walletAddress: snapshot.walletAddress,
+        totals: snapshot.totals,
+      },
+    }),
+  ];
+  for (const receipt of snapshot.receipts.slice(0, 5)) {
+    facts.push(fact({
+      connectorId: 'jito',
+      label: shortAddress(receipt.depositReceipt),
+      value: receipt.cooldownComplete
+        ? `${receipt.lstAmount} JitoSOL claimable`
+        : `${receipt.lstAmount} JitoSOL claimable at ${receipt.claimableAt}`,
+      tone: receipt.cooldownComplete ? 'good' : 'warn',
+      checkedAt,
+      detail: {
+        depositReceipt: receipt.depositReceipt,
+        owner: receipt.owner,
+        lstAmountRaw: receipt.lstAmountRaw,
+        claimableAt: receipt.claimableAt,
+        cooldownComplete: receipt.cooldownComplete,
+        secondsUntilClaimable: receipt.secondsUntilClaimable,
+        initialFeeBps: receipt.initialFeeBps,
+        warnings: receipt.warnings,
+      },
+    }));
+  }
+  return facts;
+}
+
 export function factsFromJitoQuote(
   quote: JitoQuote,
   checkedAt = new Date().toISOString(),
@@ -2056,6 +3045,215 @@ export function factsFromSanctumQuote(
       tone: 'warn',
       checkedAt,
     }));
+  }
+  return facts;
+}
+
+export function factsFromWormholeSupportedRoutes(
+  snapshot: WormholeSupportedRoutesSnapshot,
+  checkedAt = new Date().toISOString(),
+): ConnectorFact[] {
+  const supported = snapshot.routes.filter((route) => route.supported);
+  const manual = supported.filter((route) => route.manualRedemptionRequired);
+  const facts: ConnectorFact[] = [
+    fact({
+      connectorId: 'wormhole',
+      label: 'Wormhole routes',
+      value: `${supported.length} supported route${supported.length === 1 ? '' : 's'} from ${snapshot.sourceChain}${snapshot.destinationChain ? ` to ${snapshot.destinationChain}` : ''}`,
+      tone: supported.length > 0 ? 'good' : 'warn',
+      checkedAt,
+      detail: {
+        wormholeNetwork: snapshot.wormholeNetwork,
+        ...(snapshot.mintAddress !== undefined && { mintAddress: snapshot.mintAddress }),
+        ...(snapshot.routeType !== undefined && { routeType: snapshot.routeType }),
+      },
+    }),
+  ];
+  if (manual.length > 0) {
+    facts.push(fact({
+      connectorId: 'wormhole',
+      label: 'Manual redemption',
+      value: `${manual.length} route${manual.length === 1 ? '' : 's'} may require destination-chain redemption`,
+      tone: 'warn',
+      checkedAt,
+    }));
+  }
+  for (const route of supported.slice(0, 5)) {
+    facts.push(fact({
+      connectorId: 'wormhole',
+      label: `${route.destinationChain} ${route.routeType}`,
+      value: `${route.mode}${route.etaSeconds ? ` · ETA ${route.etaSeconds}s` : ''}${route.bridgeFee ? ` · fee ${route.bridgeFee}` : ''}`,
+      tone: route.manualRedemptionRequired ? 'warn' : 'good',
+      checkedAt,
+      detail: {
+        sourceChain: route.sourceChain,
+        destinationChain: route.destinationChain,
+        routeType: route.routeType,
+        prepareSupported: route.prepareSupported,
+        relayerSupported: route.relayerSupported,
+        ...(route.destinationToken !== undefined && { destinationToken: route.destinationToken }),
+      },
+    }));
+  }
+  return facts;
+}
+
+export function factsFromWormholeTokenSnapshot(
+  snapshot: WormholeTokenSnapshot,
+  checkedAt = new Date().toISOString(),
+): ConnectorFact[] {
+  const facts: ConnectorFact[] = [
+    fact({
+      connectorId: 'wormhole',
+      label: 'Wormhole token',
+      value: `${snapshot.symbol ?? shortWormholeAddress(snapshot.mintAddress)} on ${snapshot.sourceChain}${typeof snapshot.decimals === 'number' ? ` · ${snapshot.decimals} decimals` : ''}`,
+      tone: snapshot.supportedRoutes.length > 0 ? 'good' : 'warn',
+      checkedAt,
+      detail: {
+        mintAddress: snapshot.mintAddress,
+        wormholeNetwork: snapshot.wormholeNetwork,
+        wrappedAssetCount: snapshot.wrappedAssets?.length ?? 0,
+      },
+    }),
+    fact({
+      connectorId: 'wormhole',
+      label: 'Supported routes',
+      value: `${snapshot.supportedRoutes.length} route${snapshot.supportedRoutes.length === 1 ? '' : 's'}`,
+      tone: snapshot.supportedRoutes.length > 0 ? 'good' : 'warn',
+      checkedAt,
+    }),
+  ];
+  for (const wrapped of snapshot.wrappedAssets?.slice(0, 5) ?? []) {
+    facts.push(fact({
+      connectorId: 'wormhole',
+      label: `${wrapped.chain} asset`,
+      value: shortWormholeAddress(wrapped.address),
+      tone: wrapped.tokenBridgeWrapped === false ? 'neutral' : 'good',
+      checkedAt,
+    }));
+  }
+  for (const warning of snapshot.warnings ?? []) {
+    facts.push(fact({ connectorId: 'wormhole', label: 'Warning', value: warning, tone: 'warn', checkedAt }));
+  }
+  return facts;
+}
+
+export function factsFromWormholeQuote(
+  quote: WormholeQuoteSnapshot,
+  checkedAt = new Date().toISOString(),
+): ConnectorFact[] {
+  const facts: ConnectorFact[] = [
+    fact({
+      connectorId: 'wormhole',
+      label: 'Wormhole quote',
+      value: `${quote.amount} ${shortWormholeAddress(quote.sourceMint)} from ${quote.sourceChain} to ${quote.destinationChain}`,
+      tone: 'good',
+      checkedAt,
+      detail: {
+        routeType: quote.routeType,
+        mode: quote.mode,
+        destinationAddress: quote.destinationAddress,
+        ...(quote.destinationToken !== undefined && { destinationToken: quote.destinationToken }),
+        ...(quote.quoteId !== undefined && { quoteId: quote.quoteId }),
+        ...(quote.expiresAtIso !== undefined && { expiresAtIso: quote.expiresAtIso }),
+      },
+    }),
+    fact({
+      connectorId: 'wormhole',
+      label: 'Estimated destination amount',
+      value: quote.estimatedDestinationAmount ?? 'unknown',
+      tone: quote.estimatedDestinationAmount ? 'good' : 'neutral',
+      checkedAt,
+    }),
+    fact({
+      connectorId: 'wormhole',
+      label: 'Bridge fee',
+      value: quote.bridgeFee ? `${quote.bridgeFee}${quote.bridgeFeeToken ? ` ${quote.bridgeFeeToken}` : ''}` : 'unknown',
+      tone: quote.bridgeFee ? 'neutral' : 'warn',
+      checkedAt,
+    }),
+    fact({
+      connectorId: 'wormhole',
+      label: 'Redemption',
+      value: quote.manualRedemptionRequired ? 'Manual redemption may be required' : 'Relayer/automatic route indicated',
+      tone: quote.manualRedemptionRequired ? 'warn' : 'good',
+      checkedAt,
+    }),
+  ];
+  for (const warning of quote.warnings ?? []) {
+    facts.push(fact({ connectorId: 'wormhole', label: 'Warning', value: warning, tone: 'warn', checkedAt }));
+  }
+  return facts;
+}
+
+export function factsFromWormholeTransferStatus(
+  status: WormholeTransferStatus,
+  checkedAt = new Date().toISOString(),
+): ConnectorFact[] {
+  const facts: ConnectorFact[] = [
+    fact({
+      connectorId: 'wormhole',
+      label: 'Wormhole transfer status',
+      value: status.state,
+      tone: status.state === 'failed' ? 'fail' : status.redeemed ? 'good' : status.vaaAvailable ? 'warn' : 'neutral',
+      checkedAt,
+      detail: {
+        sourceChain: status.sourceChain,
+        ...(status.destinationChain !== undefined && { destinationChain: status.destinationChain }),
+        ...(status.sourceTxid !== undefined && { sourceTxid: status.sourceTxid }),
+        ...(status.destinationTxid !== undefined && { destinationTxid: status.destinationTxid }),
+        ...(status.sequence !== undefined && { sequence: status.sequence }),
+        ...(status.transferId !== undefined && { transferId: status.transferId }),
+        nextAction: status.nextAction ?? null,
+        solanaExecutable: status.solanaExecutable,
+      },
+    }),
+    fact({
+      connectorId: 'wormhole',
+      label: 'VAA',
+      value: status.vaaAvailable ? 'available' : 'not available yet',
+      tone: status.vaaAvailable ? 'good' : 'warn',
+      checkedAt,
+    }),
+  ];
+  if (status.error) {
+    facts.push(fact({ connectorId: 'wormhole', label: 'Transfer error', value: status.error, tone: 'fail', checkedAt }));
+  }
+  for (const warning of status.warnings ?? []) {
+    facts.push(fact({ connectorId: 'wormhole', label: 'Warning', value: warning, tone: 'warn', checkedAt }));
+  }
+  return facts;
+}
+
+export function factsFromWormholeWalletBridgeExposure(
+  exposure: WormholeWalletBridgeExposure,
+  checkedAt = new Date().toISOString(),
+): ConnectorFact[] {
+  const facts: ConnectorFact[] = [
+    fact({
+      connectorId: 'wormhole',
+      label: 'Wormhole bridge exposure',
+      value: `${exposure.pendingTransfers.length} pending transfer${exposure.pendingTransfers.length === 1 ? '' : 's'}`,
+      tone: exposure.pendingTransfers.length > 0 ? 'warn' : 'good',
+      checkedAt,
+      detail: {
+        walletAddress: exposure.walletAddress,
+        sourceChain: exposure.sourceChain,
+        recentTransferCount: exposure.recentTransfers?.length ?? 0,
+      },
+    }),
+  ];
+  for (const transfer of exposure.pendingTransfers.slice(0, 5)) {
+    facts.push(fact({
+      connectorId: 'wormhole',
+      label: transfer.transferId ?? transfer.sourceTxid ?? 'Pending transfer',
+      value: `${transfer.state}${transfer.destinationChain ? ` · ${transfer.destinationChain}` : ''}`,
+      tone: transfer.vaaAvailable ? 'warn' : 'neutral',
+      checkedAt,
+    }));
+  }
+  for (const warning of exposure.warnings ?? []) {
+    facts.push(fact({ connectorId: 'wormhole', label: 'Warning', value: warning, tone: 'warn', checkedAt }));
   }
   return facts;
 }

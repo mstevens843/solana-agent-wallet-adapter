@@ -149,12 +149,16 @@ function makeContext(opts: {
   store: PreparedActionStore;
   cluster?: 'mainnet-beta' | 'devnet';
   signed?: (tx: string, summary: string) => Promise<string>;
+  signedMany?: (txs: string[], summary: string) => Promise<string[]>;
 }): DAppAdapterContext {
   return {
     backend: new FakeBackend() as unknown as DAppAdapterContext['backend'],
     config: fakeConfig(opts.cluster ?? 'mainnet-beta'),
     connection: {} as unknown as DAppAdapterContext['connection'],
+    signTransaction: async () => 'PythSignedTxPlaceholder1111111111111111111',
     signAndBroadcast: opts.signed ?? (async () => 'PythTxidPlaceholder1111111111111111111111'),
+    signMessage: async () => 'PythSignedMsgPlaceholder111111111111111111',
+    ...(opts.signedMany !== undefined ? { signAndBroadcastMany: opts.signedMany } : {}),
     store: opts.store,
   };
 }
@@ -659,5 +663,91 @@ describe('Pyth error redaction', () => {
     );
     expect(wrapped.message).not.toContain('rotating-token-abc');
     expect(wrapped.message).toContain('***');
+  });
+});
+
+describe('Pyth connectorReadFacts (end-to-end)', () => {
+  beforeEach(() => {
+    setPythClientFactory(() =>
+      buildFakeHermes({
+        rows: [freshSolRow()],
+        binary: [],
+        feedMetadata: [
+          { priceFeedId: SOL_FEED, symbol: 'SOL/USD', description: 'Solana / US Dollar', assetType: 'crypto' },
+        ],
+        searchCalls: [],
+        latestCalls: [],
+      }),
+    );
+  });
+
+  it('routes capability=undefined with priceFeedId to oracle evidence', async () => {
+    const { AgentWalletActionService } = await import('../../actionService.js');
+    const { createMockBackend } = await import('../../mockBackend.js');
+    const { DEFAULT_CONFIG } = await import('../../config.js');
+    const service = new AgentWalletActionService({
+      backend: createMockBackend(),
+      config: DEFAULT_CONFIG,
+      preparedActions: inMemoryStore(),
+    });
+    const result = (await service.connectorReadFacts({ connectorId: 'pyth', priceFeedId: SOL_FEED })) as Record<string, unknown>;
+    expect(result.capability).toBe('oracle');
+    expect(result.facts).toBeDefined();
+    const evidence = result.evidence as { status: string; priceFeedId: string };
+    expect(evidence.status).toBe('fresh');
+    expect(evidence.priceFeedId).toBe(SOL_FEED);
+  });
+
+  it('routes capability=markets with query to feed search', async () => {
+    const { AgentWalletActionService } = await import('../../actionService.js');
+    const { createMockBackend } = await import('../../mockBackend.js');
+    const { DEFAULT_CONFIG } = await import('../../config.js');
+    const service = new AgentWalletActionService({
+      backend: createMockBackend(),
+      config: DEFAULT_CONFIG,
+      preparedActions: inMemoryStore(),
+    });
+    const result = (await service.connectorReadFacts({
+      connectorId: 'pyth',
+      capability: 'markets',
+      query: 'SOL',
+    })) as Record<string, unknown>;
+    expect(result.capability).toBe('markets');
+    expect(result.search).toBeDefined();
+  });
+
+  it('routes capability=markets with priceFeedIds to batch read', async () => {
+    const { AgentWalletActionService } = await import('../../actionService.js');
+    const { createMockBackend } = await import('../../mockBackend.js');
+    const { DEFAULT_CONFIG } = await import('../../config.js');
+    const service = new AgentWalletActionService({
+      backend: createMockBackend(),
+      config: DEFAULT_CONFIG,
+      preparedActions: inMemoryStore(),
+    });
+    const result = (await service.connectorReadFacts({
+      connectorId: 'pyth',
+      capability: 'markets',
+      priceFeedIds: [SOL_FEED, USDC_FEED],
+    })) as Record<string, unknown>;
+    expect(result.capability).toBe('markets');
+    expect(result.batch).toBeDefined();
+  });
+
+  it('rejects markets capability without inputs as invalid_request', async () => {
+    const { AgentWalletActionService } = await import('../../actionService.js');
+    const { createMockBackend } = await import('../../mockBackend.js');
+    const { DEFAULT_CONFIG } = await import('../../config.js');
+    const service = new AgentWalletActionService({
+      backend: createMockBackend(),
+      config: DEFAULT_CONFIG,
+      preparedActions: inMemoryStore(),
+    });
+    await expect(
+      service.connectorReadFacts({ connectorId: 'pyth', capability: 'markets' }),
+    ).rejects.toMatchObject({
+      name: 'ProtocolError',
+      code: 'invalid_request',
+    });
   });
 });

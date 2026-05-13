@@ -14,7 +14,6 @@ import {
   parsePublicKey,
   requireStringParam,
   stripUndefined,
-  validateOptionalPositiveDecimalString,
   validatePositiveDecimalString,
 } from './validation.js';
 
@@ -66,14 +65,16 @@ async function prepareFarmAction(
   const walletAddress = await ctx.backend.getAddress();
   const farmId = parsePublicKey(input.farmId, 'farmId');
   if (operation === 'harvest') {
-    validateOptionalPositiveDecimalString(input.amount, 'amount');
+    if (input.amount !== undefined) {
+      throw new ProtocolError('invalid_request', 'Raydium harvest does not accept an amount; it harvests available rewards with zero LP withdrawal.');
+    }
   } else {
     validatePositiveDecimalString(input.amount ?? '', 'amount');
   }
   const farmInput: RaydiumFarmInput = {
     walletAddress,
     farmId,
-    ...(input.amount !== undefined && { amount: input.amount }),
+    ...(operation !== 'harvest' && input.amount !== undefined && { amount: input.amount }),
   };
   const preview = operation === 'stake'
     ? await getRaydiumClient().previewFarmStake(ctx.connection, farmInput)
@@ -88,7 +89,7 @@ async function prepareFarmAction(
     approvalBoundary: CONNECTOR_APPROVAL_BOUNDARY,
     refreshAtExecution: true,
     farmId,
-    ...(input.amount !== undefined && { amount: input.amount }),
+    ...(operation !== 'harvest' && input.amount !== undefined && { amount: input.amount }),
     lpMint: preview.lpMint,
     rewardMints: preview.rewardMints,
     tokenAmounts: preview.tokenAmounts,
@@ -132,10 +133,19 @@ async function executeFarmAction(
       `Raydium ${operation} action belongs to ${action.walletAddress}, but connected wallet is ${walletAddress}.`,
     );
   }
+  const farmId = parsePublicKey(requireStringParam(action, 'farmId'), 'farmId');
+  const amount = optionalStringParam(action, 'amount');
+  if (operation === 'harvest') {
+    if (amount !== undefined) {
+      throw new ProtocolError('invalid_request', 'Raydium harvest does not accept an amount; it harvests available rewards with zero LP withdrawal.');
+    }
+  } else {
+    validatePositiveDecimalString(amount ?? '', 'amount');
+  }
   const input: RaydiumFarmInput = {
     walletAddress,
-    farmId: requireStringParam(action, 'farmId'),
-    ...(optionalStringParam(action, 'amount') !== undefined && { amount: optionalStringParam(action, 'amount') }),
+    farmId,
+    ...(operation !== 'harvest' && amount !== undefined && { amount }),
   };
   const built = operation === 'stake'
     ? await getRaydiumClient().buildFarmStakeTransaction(ctx.connection, input)

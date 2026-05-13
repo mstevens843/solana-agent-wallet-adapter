@@ -33,7 +33,7 @@ import { type AgentWalletConfig } from './config.js';
 import { parseDecimalAmount } from './amounts.js';
 import { LocalBridgeBackend } from './localBridgeBackend.js';
 import type { LabArtifact, LabArtifactStore } from './labArtifacts.js';
-import type { PreparedActionStore, PreparedActionTxStatus } from './preparedActions.js';
+import type { PreparedAction, PreparedActionStore, PreparedActionTxStatus } from './preparedActions.js';
 import { trace } from './trace.js';
 
 export interface BridgeServerHandle {
@@ -503,6 +503,17 @@ async function handleRequest(
         inputToken?: string;
         outputToken?: string;
         amount?: string;
+        jitoOperation?: 'stake_sol' | 'deposit_stake_account' | 'unstake_jitosol' | 'withdraw_sol';
+        solAmount?: string;
+        jitoSolAmount?: string;
+        stakeAccount?: string;
+        receiptAddress?: string;
+        withdrawMode?: 'stake_account' | 'reserve_sol';
+        includeValidators?: boolean;
+        includeStakeAccounts?: boolean;
+        delegatedOnly?: boolean;
+        eligibleForJitoDepositOnly?: boolean;
+        claimableOnly?: boolean;
         slippageBps?: number;
         taker?: string;
         whirlpoolAddress?: string;
@@ -519,6 +530,17 @@ async function handleRequest(
         ...(body.inputToken !== undefined && { inputToken: body.inputToken }),
         ...(body.outputToken !== undefined && { outputToken: body.outputToken }),
         ...(body.amount !== undefined && { amount: body.amount }),
+        ...(body.jitoOperation !== undefined && { jitoOperation: body.jitoOperation }),
+        ...(body.solAmount !== undefined && { solAmount: body.solAmount }),
+        ...(body.jitoSolAmount !== undefined && { jitoSolAmount: body.jitoSolAmount }),
+        ...(body.stakeAccount !== undefined && { stakeAccount: body.stakeAccount }),
+        ...(body.receiptAddress !== undefined && { receiptAddress: body.receiptAddress }),
+        ...(body.withdrawMode !== undefined && { withdrawMode: body.withdrawMode }),
+        ...(body.includeValidators !== undefined && { includeValidators: body.includeValidators }),
+        ...(body.includeStakeAccounts !== undefined && { includeStakeAccounts: body.includeStakeAccounts }),
+        ...(body.delegatedOnly !== undefined && { delegatedOnly: body.delegatedOnly }),
+        ...(body.eligibleForJitoDepositOnly !== undefined && { eligibleForJitoDepositOnly: body.eligibleForJitoDepositOnly }),
+        ...(body.claimableOnly !== undefined && { claimableOnly: body.claimableOnly }),
         ...(body.slippageBps !== undefined && { slippageBps: body.slippageBps }),
         ...(body.taker !== undefined && { taker: body.taker }),
         ...(body.whirlpoolAddress !== undefined && { whirlpoolAddress: body.whirlpoolAddress }),
@@ -666,7 +688,7 @@ async function handleRequest(
       return;
     }
     if (req.method === 'POST' && url.pathname === '/bridge/prepared-actions/record-transaction') {
-      const body = (await readJson(req)) as { actionId?: string; txid?: string; txStatus?: string; error?: string };
+      const body = (await readJson(req)) as { actionId?: string; txid?: string; txids?: string[]; txStatus?: string; error?: string };
       if (!body.actionId) {
         throw new ProtocolError('invalid_request', 'Missing actionId.');
       }
@@ -681,6 +703,7 @@ async function handleRequest(
       writeJson(res, 200, await requireActionService(actionService).recordPreparedActionTransaction({
         actionId: body.actionId,
         ...(body.txid !== undefined && { txid: body.txid }),
+        ...(Array.isArray(body.txids) && { txids: body.txids }),
         ...(body.txStatus !== undefined && { txStatus: body.txStatus }),
         ...(body.error !== undefined && { error: body.error }),
       }));
@@ -1144,45 +1167,48 @@ async function refreshPreparedActionTxStatuses(
   config: AgentWalletConfig,
 ): Promise<Array<{ actionId: string; txid: string; txStatus: PreparedActionTxStatus }>> {
   const actions = await preparedActions.listActions();
-  const pending = actions.filter((action) => action.txid && action.txStatus !== 'confirmed' && action.txStatus !== 'failed');
+  const pending = actions.filter((action) => txidsForAction(action).length > 0 && action.txStatus !== 'confirmed' && action.txStatus !== 'failed');
   if (pending.length === 0) return [];
   const connection = new Connection(config.rpcUrl, 'confirmed');
-  const statuses = await connection.getSignatureStatuses(pending.map((action) => action.txid!));
   const updates: Array<{ actionId: string; txid: string; txStatus: PreparedActionTxStatus }> = [];
-  for (let index = 0; index < pending.length; index += 1) {
-    const action = pending[index]!;
-    const txid = action.txid!;
-    const status = statuses.value[index];
-    if (!status) {
-      if (action.txStatus !== 'pending') {
-        await preparedActions.updateAction(action.id, { txStatus: 'pending' });
-        updates.push({ actionId: action.id, txid, txStatus: 'pending' });
-      }
-      continue;
-    }
-    if (status.err) {
+  for (const action of pending) {
+    const txids = txidsForAction(action);
+    const statuses = await connection.getSignatureStatuses(txids);
+    const failedIndex = statuses.value.findIndex((status) => Boolean(status?.err));
+    if (failedIndex >= 0) {
+      const txid = txids[failedIndex]!;
       await preparedActions.updateAction(action.id, {
         txStatus: 'failed',
-        txError: JSON.stringify(status.err),
+        txError: JSON.stringify(statuses.value[failedIndex]?.err),
       });
       updates.push({ actionId: action.id, txid, txStatus: 'failed' });
       continue;
     }
-    if (status.confirmationStatus === 'confirmed' || status.confirmationStatus === 'finalized') {
+    const allConfirmed = statuses.value.length === txids.length &&
+      statuses.value.every((status) => status?.confirmationStatus === 'confirmed' || status?.confirmationStatus === 'finalized');
+    if (allConfirmed) {
       await preparedActions.updateAction(action.id, {
         txStatus: 'confirmed',
         confirmedAt: new Date().toISOString(),
         txError: undefined,
       });
-      updates.push({ actionId: action.id, txid, txStatus: 'confirmed' });
+      updates.push({ actionId: action.id, txid: txids[0]!, txStatus: 'confirmed' });
       continue;
     }
     if (action.txStatus !== 'pending') {
       await preparedActions.updateAction(action.id, { txStatus: 'pending' });
-      updates.push({ actionId: action.id, txid, txStatus: 'pending' });
+      updates.push({ actionId: action.id, txid: txids[0]!, txStatus: 'pending' });
     }
   }
   return updates;
+}
+
+function txidsForAction(action: PreparedAction): string[] {
+  const txids = Array.isArray(action.txids)
+    ? action.txids.filter((txid): txid is string => typeof txid === 'string' && txid.trim() !== '').map((txid) => txid.trim())
+    : [];
+  if (txids.length > 0) return [...new Set(txids)];
+  return action.txid ? [action.txid] : [];
 }
 
 async function checkRpcWritable(rpcUrl: string): Promise<{ ok: boolean; message: string }> {

@@ -33,7 +33,7 @@ describe('connector drafting helpers', () => {
 
     expect(connectors[0]?.id).toBe('meteora');
     expect(connectorDraftStatus(connectors[0]!, { connectedDapps, cluster: 'mainnet-beta' }).selectable).toBe(true);
-    expect(connectors.find((connector) => connector.id === 'raydium')).toBeDefined();
+    expect(connectors.find((connector) => connector.id === 'orca')).toBeDefined();
   });
 
   it('normalizes selected connector parameters to canonical connector identity', () => {

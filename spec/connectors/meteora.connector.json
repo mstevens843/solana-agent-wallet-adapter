@@ -13,10 +13,10 @@
       "description": "Used by the MCP adapter to read DLMM pool and position accounts and refresh state at approval time."
     },
     {
-      "name": "Meteora DLMM client",
+      "name": "Meteora DLMM SDK",
       "scope": "env",
       "required": true,
-      "description": "Host process must wire the Meteora DLMM client factory backed by @meteora-ag/dlmm, or inject an equivalent client for tests."
+      "description": "MCP server auto-loads the optional @meteora-ag/dlmm SDK and @coral-xyz/anchor dependency, or accepts an injected equivalent client for tests."
     }
   ],
   "readCapabilities": [
@@ -52,7 +52,7 @@
       "implemented": true,
       "prepares": "A manual-approval inbox item to claim swap fees for one DLMM position, or all positions in a pool when claimAll is true.",
       "executesVia": "solana_execute_prepared_action",
-      "userApproves": "A freshly rebuilt Meteora DLMM claim-fees transaction."
+      "userApproves": "One or more freshly rebuilt Meteora DLMM claim-fees transactions, signed sequentially when the SDK returns multiple transactions."
     },
     {
       "actionKind": "meteora_claim_rewards",
@@ -60,7 +60,7 @@
       "implemented": true,
       "prepares": "A manual-approval inbox item to claim liquidity mining rewards for one DLMM position, or all positions in a pool when claimAll is true.",
       "executesVia": "solana_execute_prepared_action",
-      "userApproves": "A freshly rebuilt Meteora DLMM claim-rewards transaction."
+      "userApproves": "One or more freshly rebuilt Meteora DLMM claim-rewards transactions, signed sequentially when the SDK returns multiple transactions."
     },
     {
       "actionKind": "meteora_add_liquidity",
@@ -76,7 +76,7 @@
       "implemented": true,
       "prepares": "A manual-approval inbox item to remove a bounded percentage of liquidity from a DLMM position over a validated bin range.",
       "executesVia": "solana_execute_prepared_action",
-      "userApproves": "A freshly rebuilt Meteora DLMM remove-liquidity transaction."
+      "userApproves": "One or more freshly rebuilt Meteora DLMM remove-liquidity transactions, signed sequentially when the SDK returns multiple transactions."
     },
     {
       "actionKind": "meteora_close_position",
@@ -136,12 +136,12 @@
   "unsupportedRequests": [
     "Create a brand-new Meteora DLMM position.",
     "Prepare Meteora actions without a pool or required position address.",
-    "Close a position that still has liquidity.",
+    "Close a position that still has liquidity or claimable fees/rewards.",
     "Guarantee profitability, APY, or impermanent-loss safety.",
     "Operate outside mainnet-beta.",
     "Move funds without a wallet signature."
   ],
-  "actionPreparationNotes": "Meteora is first-class and prepare-only. Reads and prepared writes use the MCP adapter, store connectorId=meteora, refresh DLMM state at execution time, and reject missing pool/position/range/amount inputs. New position creation is intentionally not exposed because it requires an additional position keypair signer.",
+  "actionPreparationNotes": "Meteora is first-class and prepare-only. Reads and prepared writes use the MCP adapter, store connectorId=meteora, refresh DLMM state at execution time, and reject missing pool/position/range/amount inputs. SDK flows that return multiple transactions are signed sequentially and store all txids. New position creation is intentionally not exposed because it requires an additional position keypair signer.",
   "riskNotes": "Meteora DLMM positions are sensitive to bin selection, active-bin movement, fees, rewards, slippage, transfer fees, and impermanent loss. Display pool and position facts before approval.",
   "approvalBoundary": {
     "readGated": true,
@@ -149,7 +149,7 @@
     "blinkBacked": false,
     "summary": "safety.prepare_only"
   },
-  "walletApprovalBoundary": "The connector may read DLMM pool and position facts when configured. Writes create manual-approval inbox items only; the wallet signs and broadcasts separately after the adapter refreshes state.",
+  "walletApprovalBoundary": "The connector may read DLMM pool and position facts when the optional SDK is installed. Writes create manual-approval inbox items only; the wallet signs and broadcasts separately after the adapter refreshes state, including sequential signatures for multi-transaction SDK results.",
   "examples": {
     "requests": [
       {

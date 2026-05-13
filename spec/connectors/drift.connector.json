@@ -124,9 +124,10 @@
     },
     {
       "name": "initializeDepositorIfMissing",
-      "kind": "toggle",
+      "kind": "select",
       "required": false,
       "appliesTo": ["drift_vault_deposit"],
+      "options": ["no", "yes"],
       "prompt": "Create the vault depositor account in this approval if it is missing?"
     },
     {

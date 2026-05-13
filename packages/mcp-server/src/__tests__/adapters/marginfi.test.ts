@@ -1,4 +1,9 @@
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import {
+  PublicKey,
+  SystemProgram,
+  TransactionInstruction,
+} from '@solana/web3.js';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import {
   MARGINFI_ADAPTER_ID,
@@ -6,8 +11,11 @@ import {
   marginfiAdapter,
 } from '../../adapters/marginfi/index.js';
 import {
+  getMarginfiClient,
   resetMarginfiClientFactory,
+  resetMarginfiSdkLoaderForTests,
   setMarginfiClientFactory,
+  setMarginfiSdkLoaderForTests,
   type MarginfiAccountDetail,
   type MarginfiAccountSummary,
   type MarginfiBankSnapshot,
@@ -50,8 +58,14 @@ interface FakeMarginfiState {
   bank: MarginfiBankSnapshot;
   accounts: MarginfiAccountSummary[];
   detail: MarginfiAccountDetail;
-  previewCalls: Array<{ operation: MarginfiOperation; amount?: string }>;
-  buildCalls: Array<{ operation: MarginfiOperation; amount?: string }>;
+  previewCalls: Array<{
+    operation: MarginfiOperation;
+    amount?: string;
+    withdrawAll?: boolean;
+    repayAll?: boolean;
+    createAccountIfMissing?: boolean;
+  }>;
+  buildCalls: Array<{ operation: MarginfiOperation; amount?: string; withdrawAll?: boolean; repayAll?: boolean }>;
   previewOverride?: Partial<MarginfiHealthPreview>;
 }
 
@@ -67,7 +81,13 @@ function buildFakeMarginfi(state: FakeMarginfiState): MarginfiClient {
       return state.detail;
     },
     async previewHealth(_connection, input): Promise<MarginfiHealthPreview> {
-      state.previewCalls.push({ operation: input.operation, ...(input.amount !== undefined && { amount: input.amount }) });
+      state.previewCalls.push({
+        operation: input.operation,
+        ...(input.amount !== undefined && { amount: input.amount }),
+        ...(input.withdrawAll ? { withdrawAll: true } : {}),
+        ...(input.repayAll ? { repayAll: true } : {}),
+        ...(input.createAccountIfMissing ? { createAccountIfMissing: true } : {}),
+      });
       const amount = input.withdrawAll ? '5' : input.repayAll ? '2' : input.amount ?? '1';
       return {
         operation: input.operation,
@@ -89,7 +109,12 @@ function buildFakeMarginfi(state: FakeMarginfiState): MarginfiClient {
       };
     },
     async buildActionTransaction(_connection, input): Promise<MarginfiBuildTransactionResult> {
-      state.buildCalls.push({ operation: input.operation, ...(input.amount !== undefined && { amount: input.amount }) });
+      state.buildCalls.push({
+        operation: input.operation,
+        ...(input.amount !== undefined && { amount: input.amount }),
+        ...(input.withdrawAll ? { withdrawAll: true } : {}),
+        ...(input.repayAll ? { repayAll: true } : {}),
+      });
       const amount = input.withdrawAll ? '5' : input.repayAll ? '2' : input.amount ?? '1';
       return {
         transactionBase64: Buffer.from('marginfi-test-transaction').toString('base64'),
@@ -198,6 +223,8 @@ function makeContext(opts: {
     config: fakeConfig(opts.cluster ?? 'mainnet-beta'),
     connection: {} as DAppAdapterContext['connection'],
     signAndBroadcast: opts.signed ?? (async () => 'marginfi-test-txid'),
+    signTransaction: async () => "signed-base64-placeholder",
+    signMessage: async () => "signature-base64-placeholder",
     store: opts.store,
   };
 }
@@ -273,6 +300,7 @@ function inMemoryStore(): PreparedActionStore {
 
 afterEach(() => {
   resetMarginfiClientFactory();
+  resetMarginfiSdkLoaderForTests();
 });
 
 function requireMarginfiAction(id: 'deposit' | 'withdraw' | 'borrow' | 'repay') {
@@ -387,7 +415,227 @@ describe('MarginFi prepare + execute', () => {
       repayAll: true,
     });
   });
+
+  it("normalizes withdraw amount 'all' into withdrawAll before previewing", async () => {
+    const ctx = makeContext({ store: inMemoryStore() });
+    const result = await requireMarginfiAction('withdraw').prepare({ token: 'USDC', amount: 'all' }, ctx);
+
+    expect(result.addInput.params).toMatchObject({
+      operation: 'withdraw',
+      amount: '5',
+      amountRaw: '5000000',
+      withdrawAll: true,
+      refreshAtExecution: true,
+    });
+    expect(state.previewCalls).toEqual([{ operation: 'withdraw', withdrawAll: true }]);
+  });
+
+  it("rejects amount 'all' for deposit and borrow", async () => {
+    const ctx = makeContext({ store: inMemoryStore() });
+
+    await expect(
+      requireMarginfiAction('deposit').prepare({ token: 'USDC', amount: 'all' }, ctx),
+    ).rejects.toMatchObject({
+      name: 'AdapterError',
+      code: 'invalid_amount',
+    });
+    await expect(
+      requireMarginfiAction('borrow').prepare({ token: 'USDC', amount: 'all' }, ctx),
+    ).rejects.toMatchObject({
+      name: 'AdapterError',
+      code: 'invalid_amount',
+    });
+    expect(state.previewCalls).toEqual([]);
+  });
+
+  it('forwards createAccountIfMissing through direct health preview reads', async () => {
+    const ctx = makeContext({ store: inMemoryStore() });
+    const read = marginfiAdapter.reads.health_preview;
+    if (!read) throw new Error('missing health preview read');
+
+    await read.read({
+      operation: 'deposit',
+      token: 'USDC',
+      amount: '1',
+      createAccountIfMissing: true,
+    }, ctx);
+
+    expect(state.previewCalls).toEqual([{
+      operation: 'deposit',
+      amount: '1',
+      createAccountIfMissing: true,
+    }]);
+  });
+
+  it("normalizes repay health preview amount 'all' into repayAll", async () => {
+    const ctx = makeContext({ store: inMemoryStore() });
+    const read = marginfiAdapter.reads.health_preview;
+    if (!read) throw new Error('missing health preview read');
+
+    const preview = await read.read({
+      operation: 'repay',
+      token: 'USDC',
+      amount: 'all',
+    }, ctx) as MarginfiHealthPreview;
+
+    expect(preview).toMatchObject({
+      operation: 'repay',
+      amount: '2',
+      amountRaw: '2000000',
+      repayAll: true,
+    });
+    expect(state.previewCalls).toEqual([{ operation: 'repay', repayAll: true }]);
+  });
 });
+
+describe('MarginFi real client hardening', () => {
+  it('returns a clean AdapterError when the SDK cannot be loaded', async () => {
+    setMarginfiSdkLoaderForTests(async () => {
+      throw new AdapterError(MARGINFI_ADAPTER_ID, 'sdk_unavailable', 'missing sdk');
+    });
+    const client = await getMarginfiClient(WALLET);
+
+    await expect(
+      client.getBankSnapshot(fakeConnection(), { token: 'USDC' }),
+    ).rejects.toMatchObject({
+      name: 'AdapterError',
+      code: 'sdk_unavailable',
+    });
+  });
+
+  it('validates decimal amounts before building SDK instructions', async () => {
+    const sdk = installFakeMarginfiSdk();
+    const client = await getMarginfiClient(WALLET);
+
+    await expect(
+      client.previewHealth(sdk.connection, {
+        operation: 'borrow',
+        walletAddress: WALLET,
+        token: 'USDC',
+        amount: '-1',
+      }),
+    ).rejects.toThrow(/positive decimal string/);
+    expect(sdk.account.makeBorrowIx).not.toHaveBeenCalled();
+  });
+
+  it("resolves real-client withdraw amount 'all' from the current position", async () => {
+    const sdk = installFakeMarginfiSdk();
+    const client = await getMarginfiClient(WALLET);
+
+    const preview = await client.previewHealth(sdk.connection, {
+      operation: 'withdraw',
+      walletAddress: WALLET,
+      token: 'USDC',
+      amount: 'all',
+    });
+
+    expect(preview).toMatchObject({
+      operation: 'withdraw',
+      amount: '5',
+      amountRaw: '5000000',
+      withdrawAll: true,
+      blocked: false,
+    });
+    expect(sdk.account.makeWithdrawIx).toHaveBeenCalledWith('5', sdk.bank.address, true);
+  });
+
+  it('returns an explicit unsupported error for requested account creation', async () => {
+    const sdk = installFakeMarginfiSdk({ accounts: [] });
+    const client = await getMarginfiClient(WALLET);
+
+    await expect(
+      client.previewHealth(sdk.connection, {
+        operation: 'deposit',
+        walletAddress: WALLET,
+        token: 'USDC',
+        amount: '1',
+        createAccountIfMissing: true,
+      }),
+    ).rejects.toMatchObject({
+      name: 'AdapterError',
+      code: 'create_account_not_supported',
+    });
+    expect(sdk.account.makeDepositIx).not.toHaveBeenCalled();
+  });
+});
+
+function fakeConnection(): DAppAdapterContext['connection'] {
+  return {
+    rpcEndpoint: 'https://api.fake',
+    getLatestBlockhash: vi.fn(async () => ({
+      blockhash: '11111111111111111111111111111111',
+      lastValidBlockHeight: 1,
+    })),
+  } as unknown as DAppAdapterContext['connection'];
+}
+
+function installFakeMarginfiSdk(options: { accounts?: Record<string, any>[] } = {}): {
+  connection: DAppAdapterContext['connection'];
+  account: Record<string, any>;
+  bank: { address: PublicKey; mint: PublicKey; tokenSymbol: string; mintDecimals: number };
+} {
+  const bankAddress = new PublicKey(USDC_BANK);
+  const bankMint = new PublicKey(USDC_MINT);
+  const instruction = new TransactionInstruction({
+    keys: [],
+    programId: SystemProgram.programId,
+    data: Buffer.alloc(0),
+  });
+  const bank = {
+    address: bankAddress,
+    mint: bankMint,
+    tokenSymbol: 'USDC',
+    mintDecimals: 6,
+    computeInterestRates: vi.fn(() => ({ lendingRate: 0.04, borrowingRate: 0.07 })),
+    computeUtilizationRate: vi.fn(() => 0.6),
+    computeRemainingCapacity: vi.fn(() => ({ depositCapacity: '1000', borrowCapacity: '500' })),
+    getTotalAssetQuantity: vi.fn(() => '1000'),
+    getTotalLiabilityQuantity: vi.fn(() => '400'),
+    config: {},
+  };
+  const balance = {
+    bankPk: bankAddress,
+    assetShares: '5',
+    liabilityShares: '2',
+    computeQuantityUi: vi.fn(() => ({ assets: '5', liabilities: '2' })),
+    computeUsdValue: vi.fn(() => ({ assets: '5', liabilities: '2' })),
+  };
+  const account: Record<string, any> = {
+    address: new PublicKey(MARGINFI_ACCOUNT),
+    authority: new PublicKey(WALLET),
+    activeBalances: [balance],
+    computeHealthComponents: vi.fn(() => ({ assets: '100', liabilities: '40' })),
+    simulateBorrowLendTransaction: vi.fn(async () => ({ marginfiAccount: account })),
+    makeDepositIx: vi.fn(async () => ({ instructions: [instruction], keys: [] })),
+    makeWithdrawIx: vi.fn(async () => ({ instructions: [instruction], keys: [] })),
+    makeBorrowIx: vi.fn(async () => ({ instructions: [instruction], keys: [] })),
+    makeRepayIx: vi.fn(async () => ({ instructions: [instruction], keys: [] })),
+  };
+  const sdkClient = {
+    wallet: { publicKey: new PublicKey(WALLET) },
+    getMarginfiAccountsForAuthority: vi.fn(async () => options.accounts ?? [account]),
+    getBankByPk: vi.fn((address: PublicKey) => address.toBase58() === bankAddress.toBase58() ? bank : null),
+    getBankByMint: vi.fn((mint: PublicKey) => mint.toBase58() === bankMint.toBase58() ? bank : null),
+    getBankByTokenSymbol: vi.fn((token: string) => token.toUpperCase() === 'USDC' ? bank : null),
+    getOraclePriceByBank: vi.fn(() => ({ priceRealtime: { price: '1' }, timestamp: '1700000000' })),
+  };
+  account.client = sdkClient;
+  setMarginfiSdkLoaderForTests(async () => ({
+    MarginfiClient: {
+      fetch: vi.fn(async () => sdkClient),
+    },
+    MarginfiAccountWrapper: {
+      fetch: vi.fn(async () => account),
+    },
+    MarginRequirementType: { Maintenance: 'maintenance' },
+    getConfig: vi.fn(() => ({ environment: 'production' })),
+  }));
+  return {
+    connection: fakeConnection(),
+    account,
+    bank,
+  };
+}
 
 function rawAmount(amount: string, decimals: number): string {
   const [whole = '0', fractional = ''] = amount.trim().split('.');

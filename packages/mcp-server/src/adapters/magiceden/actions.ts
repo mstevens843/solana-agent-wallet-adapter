@@ -18,6 +18,7 @@ import {
 import {
   MAGICEDEN_ADAPTER_ID,
   MAGICEDEN_API_TRANSITION_WARNING,
+  MAGICEDEN_MARKETPLACE_PROGRAM_ID,
   lamportsFromSol,
   shortMint,
   solFromLamports,
@@ -181,6 +182,7 @@ export const magicedenBuyAction: AdapterAction<MagicedenBuyPrepareInput> = {
     const maxPriceLamports = BigInt(requireParamString(action, 'maxPriceLamports'));
     const collectionSymbol = optionalParamString(action, 'collectionSymbol');
 
+    requireTradingOperational(await getApiHealthSnapshot({ includeTradingEndpoints: true }));
     const walletAddress = await assertConnectedWallet(ctx, action);
     const client = getMagicedenClient();
     const listings = await client.getCollectionListings({
@@ -230,6 +232,7 @@ export const magicedenBuyAction: AdapterAction<MagicedenBuyPrepareInput> = {
       ...(collectionSymbol ? { collectionSymbol } : {}),
       ...(listing.listingId ? { expectedListingId: listing.listingId } : {}),
     });
+    assertMagicedenProgramIds(built.programIds);
     const summary = `Buy ${listing.tokenName ?? shortMint(mintAddress)} on Magic Eden for ${listing.priceSol} SOL`;
     const txid = await ctx.signAndBroadcast(built.transactionBase64, summary);
     return {
@@ -312,6 +315,7 @@ export const magicedenListAction: AdapterAction<MagicedenListPrepareInput> = {
     const mintAddress = requireParamString(action, 'mintAddress');
     const priceLamports = requireParamString(action, 'priceLamports');
     const expiresAt = optionalParamString(action, 'expiresAt');
+    requireTradingOperational(await getApiHealthSnapshot({ includeTradingEndpoints: true }));
     const walletAddress = await assertConnectedWallet(ctx, action);
 
     const client = getMagicedenClient();
@@ -329,6 +333,7 @@ export const magicedenListAction: AdapterAction<MagicedenListPrepareInput> = {
       priceLamports,
       ...(expiresAt ? { expiresAt } : {}),
     });
+    assertMagicedenProgramIds(built.programIds);
     const summary = `List ${shortMint(mintAddress)} on Magic Eden for ${solFromLamports(priceLamports)} SOL`;
     const txid = await ctx.signAndBroadcast(built.transactionBase64, summary);
     return {
@@ -402,6 +407,7 @@ export const magicedenCancelListingAction: AdapterAction<MagicedenCancelListingP
     const mintAddress = requireParamString(action, 'mintAddress');
     const priceLamports = requireParamString(action, 'priceLamports');
     const listingId = optionalParamString(action, 'listingId');
+    requireTradingOperational(await getApiHealthSnapshot({ includeTradingEndpoints: true }));
     const walletAddress = await assertConnectedWallet(ctx, action);
     const built = await getMagicedenClient().generateCancelListingTransaction({
       sellerAddress: walletAddress,
@@ -409,6 +415,7 @@ export const magicedenCancelListingAction: AdapterAction<MagicedenCancelListingP
       priceLamports,
       ...(listingId ? { listingId } : {}),
     });
+    assertMagicedenProgramIds(built.programIds);
     const summary = `Cancel Magic Eden listing for ${shortMint(mintAddress)}`;
     const txid = await ctx.signAndBroadcast(built.transactionBase64, summary);
     return {
@@ -508,6 +515,7 @@ export const magicedenBidAction: AdapterAction<MagicedenBidPrepareInput> = {
   },
 
   async execute(action: PreparedAction, ctx): Promise<AdapterExecuteResult> {
+    requireTradingOperational(await getApiHealthSnapshot({ includeTradingEndpoints: true }));
     const walletAddress = await assertConnectedWallet(ctx, action);
     const bidLamports = requireParamString(action, 'bidPriceLamports');
     const quantity = typeof action.params.quantity === 'number' ? action.params.quantity : 1;
@@ -524,6 +532,7 @@ export const magicedenBidAction: AdapterAction<MagicedenBidPrepareInput> = {
       ...(quantity !== 1 ? { quantity } : {}),
       ...(expiresAt ? { expiresAt } : {}),
     });
+    assertMagicedenProgramIds(built.programIds);
     const summary = mintAddress
       ? `Bid ${solFromLamports(bidLamports)} SOL on Magic Eden token ${shortMint(mintAddress)}`
       : `Bid ${solFromLamports(bidLamports)} SOL on Magic Eden collection ${collectionSymbol ?? collectionId}`;
@@ -591,6 +600,7 @@ export const magicedenCancelBidAction: AdapterAction<MagicedenCancelBidPrepareIn
   },
 
   async execute(action: PreparedAction, ctx): Promise<AdapterExecuteResult> {
+    requireTradingOperational(await getApiHealthSnapshot({ includeTradingEndpoints: true }));
     const walletAddress = await assertConnectedWallet(ctx, action);
     const bidId = optionalParamString(action, 'bidId');
     const mintAddress = optionalParamString(action, 'mintAddress');
@@ -603,6 +613,7 @@ export const magicedenCancelBidAction: AdapterAction<MagicedenCancelBidPrepareIn
       ...(collectionSymbol ? { collectionSymbol } : {}),
       ...(collectionId ? { collectionId } : {}),
     });
+    assertMagicedenProgramIds(built.programIds);
     const summary = `Cancel Magic Eden bid${mintAddress ? ` on ${shortMint(mintAddress)}` : collectionSymbol ? ` on collection ${collectionSymbol}` : ''}`;
     const txid = await ctx.signAndBroadcast(built.transactionBase64, summary);
     return {
@@ -644,11 +655,46 @@ function pickListingForMint(
   mintAddress: string,
   expectedListingId?: string,
 ): MagicedenListingRow | undefined {
+  const candidates = rows
+    .filter((row) => row.mintAddress === mintAddress)
+    .filter((row) => isValidListingRow(row));
+  if (candidates.length === 0) return undefined;
   if (expectedListingId) {
-    const exact = rows.find((row) => row.listingId === expectedListingId && row.mintAddress === mintAddress);
+    const exact = candidates.find((row) => row.listingId === expectedListingId);
     if (exact) return exact;
   }
-  return rows.find((row) => row.mintAddress === mintAddress);
+  candidates.sort((a, b) => compareLamports(a.priceLamports, b.priceLamports));
+  return candidates[0];
+}
+
+function isValidListingRow(row: MagicedenListingRow): boolean {
+  if (!row.seller || !row.seller.trim()) return false;
+  if (!/^\d+$/.test(row.priceLamports)) return false;
+  try {
+    return BigInt(row.priceLamports) > 0n;
+  } catch {
+    return false;
+  }
+}
+
+function compareLamports(a: string, b: string): number {
+  const left = /^\d+$/.test(a) ? BigInt(a) : 0n;
+  const right = /^\d+$/.test(b) ? BigInt(b) : 0n;
+  if (left < right) return -1;
+  if (left > right) return 1;
+  return 0;
+}
+
+function assertMagicedenProgramIds(programIds: string[]): void {
+  if (programIds.length === 0) return;
+  const expected = MAGICEDEN_MARKETPLACE_PROGRAM_ID.toBase58();
+  if (!programIds.includes(expected)) {
+    throw new AdapterError(
+      MAGICEDEN_ADAPTER_ID,
+      'program_mismatch',
+      `Magic Eden API returned a transaction touching unexpected programs [${programIds.join(', ')}]; expected ${expected}. Refusing to sign.`,
+    );
+  }
 }
 
 function serializeListing(listing: MagicedenListingRow): Record<string, unknown> {

@@ -6,7 +6,7 @@ import {
   MARGINFI_SUPPORTED_CLUSTERS,
   MARGINFI_WEBSITE,
 } from './constants.js';
-import { getMarginfiClient } from './client.js';
+import { getMarginfiClient, normalizeMarginfiActionInput } from './client.js';
 import { marginfiAction, type MarginfiActionInput } from './actions.js';
 import type { AdapterRead, DAppAdapter } from '../types.js';
 
@@ -48,7 +48,7 @@ const healthPreviewRead: AdapterRead<MarginfiActionInput & { operation: 'deposit
   async read(input, ctx) {
     const walletAddress = input.walletAddress?.trim() || await ctx.backend.getAddress();
     const client = await getMarginfiClient(walletAddress);
-    return client.previewHealth(ctx.connection, {
+    return client.previewHealth(ctx.connection, normalizeMarginfiActionInput({
       operation: input.operation,
       walletAddress,
       ...(input.bankAddress !== undefined && { bankAddress: input.bankAddress }),
@@ -58,8 +58,9 @@ const healthPreviewRead: AdapterRead<MarginfiActionInput & { operation: 'deposit
       ...(input.marginfiAccount !== undefined && { marginfiAccount: input.marginfiAccount }),
       ...(input.withdrawAll !== undefined && { withdrawAll: input.withdrawAll }),
       ...(input.repayAll !== undefined && { repayAll: input.repayAll }),
+      ...(input.createAccountIfMissing !== undefined && { createAccountIfMissing: input.createAccountIfMissing }),
       ...(input.minHealthRatio !== undefined && { minHealthRatio: input.minHealthRatio }),
-    });
+    }));
   },
 };
 
@@ -93,4 +94,3 @@ export {
   MARGINFI_SUPPORTED_CLUSTERS,
   MARGINFI_PROGRAM_ID,
 };
-

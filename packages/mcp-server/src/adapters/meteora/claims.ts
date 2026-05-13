@@ -9,10 +9,15 @@ import type {
   DAppAdapterContext,
 } from '../types.js';
 import { AdapterError } from '../types.js';
-import { getMeteoraClient, type MeteoraClaimInput as ClientMeteoraClaimInput } from './client.js';
+import {
+  getMeteoraClient,
+  type MeteoraBuildTransactionResult,
+  type MeteoraClaimInput as ClientMeteoraClaimInput,
+} from './client.js';
 import { METEORA_ADAPTER_ID, METEORA_PROGRAM_IDS, shortAddress } from './constants.js';
 import { getPositionDetail } from './positions.js';
 import {
+  ensurePositionOwnedByWallet,
   optionalPublicKey,
   optionalStringParam,
   parsePublicKey,
@@ -66,7 +71,8 @@ async function prepareClaimAction(
     throw new AdapterError(METEORA_ADAPTER_ID, 'missing_position', 'positionAddress is required unless claimAll is true.');
   }
   if (positionAddress) {
-    await getPositionDetail(ctx, { poolAddress, positionAddress });
+    const position = await getPositionDetail(ctx, { poolAddress, positionAddress });
+    ensurePositionOwnedByWallet(position, walletAddress);
   }
   const clientInput: ClientMeteoraClaimInput = {
     walletAddress,
@@ -125,20 +131,55 @@ async function executeClaimAction(
   const input: ClientMeteoraClaimInput = {
     walletAddress,
     poolAddress: requireStringParam(action, 'poolAddress'),
-    ...(optionalStringParam(action, 'positionAddress') !== undefined && { positionAddress: optionalStringParam(action, 'positionAddress') }),
     ...(action.params.claimAll === true && { claimAll: true }),
   };
+  const positionAddress = optionalStringParam(action, 'positionAddress');
+  if (positionAddress !== undefined) {
+    const position = await getPositionDetail(ctx, { poolAddress: input.poolAddress, positionAddress });
+    ensurePositionOwnedByWallet(position, walletAddress);
+    input.positionAddress = positionAddress;
+  }
   const built = operation === 'claim_fees'
     ? await getMeteoraClient().buildClaimFeesTransaction(ctx.connection, input)
     : await getMeteoraClient().buildClaimRewardsTransaction(ctx.connection, input);
   const label = operation === 'claim_fees' ? 'Claim Meteora fees' : 'Claim Meteora rewards';
   const suffix = input.positionAddress ? ` for ${shortAddress(input.positionAddress)}` : '';
-  const txid = await ctx.signAndBroadcast(built.transactionBase64, `${label}${suffix}`);
+  const txids = await signMeteoraBuiltTransaction(ctx, built, `${label}${suffix}`);
   return {
-    txid,
+    txid: txids[0]!,
+    txids,
     signedAt: new Date().toISOString(),
     ...(built.preview ? { preview: built.preview as unknown as Record<string, unknown> } : {}),
   };
+}
+
+async function signMeteoraBuiltTransaction(
+  ctx: DAppAdapterContext,
+  built: MeteoraBuildTransactionResult,
+  summary: string,
+): Promise<string[]> {
+  const transactions = transactionsForBuiltResult(built);
+  if (ctx.signAndBroadcastMany) {
+    return ctx.signAndBroadcastMany(transactions, summary);
+  }
+  const txids: string[] = [];
+  for (let index = 0; index < transactions.length; index += 1) {
+    const suffix = transactions.length > 1 ? ` (${index + 1}/${transactions.length})` : '';
+    txids.push(await ctx.signAndBroadcast(transactions[index]!, `${summary}${suffix}`));
+  }
+  return txids;
+}
+
+function transactionsForBuiltResult(built: MeteoraBuildTransactionResult): string[] {
+  const transactions = built.transactionsBase64?.length
+    ? built.transactionsBase64
+    : built.transactionBase64
+      ? [built.transactionBase64]
+      : [];
+  if (transactions.length === 0) {
+    throw new AdapterError(METEORA_ADAPTER_ID, 'empty_transaction', 'Meteora SDK returned no transaction to sign.');
+  }
+  return transactions;
 }
 
 function stripUndefined(input: Record<string, unknown>): Record<string, unknown> {

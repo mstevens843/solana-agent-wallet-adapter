@@ -331,15 +331,21 @@ class SolanaReceiverWrapper implements PythReceiverClient {
   }
 }
 
+// The Pyth Solana Receiver SDK accepts any object that satisfies the Anchor
+// Wallet shape. We never invoke signTransaction on it: the receiver builder
+// only needs the publicKey to plan fee-payer slots, and ephemeral price-update
+// signers are signed locally. signTransaction/signAllTransactions are no-ops.
 function wrapAsNodeWallet(
   web3: typeof import('@solana/web3.js'),
   walletAddress: string,
-): { publicKey: InstanceType<typeof web3.PublicKey>; signTransaction: (tx: unknown) => Promise<unknown>; signAllTransactions: (txs: unknown[]) => Promise<unknown[]>; payer: InstanceType<typeof web3.Keypair> } {
+): {
+  publicKey: InstanceType<typeof web3.PublicKey>;
+  signTransaction: (tx: unknown) => Promise<unknown>;
+  signAllTransactions: (txs: unknown[]) => Promise<unknown[]>;
+} {
   const publicKey = new web3.PublicKey(walletAddress);
-  const payer = web3.Keypair.generate();
   return {
     publicKey,
-    payer,
     async signTransaction(tx: unknown): Promise<unknown> {
       return tx;
     },
@@ -361,13 +367,13 @@ interface HermesParsedRow {
   metadata?: unknown;
 }
 
-interface HermesFeedsResponse {
-  // /v2/price_feeds returns an array directly.
-}
-
-interface HermesFeedResponse {
-  // /v2/price_feeds/<id> returns a single object.
-}
+// Hermes /v2/price_feeds returns an array of feed-metadata objects; the
+// shape is validated at runtime by normalizeFeedList. The empty interface is
+// a deliberate type anchor — see normalizeFeedMetadata for the runtime checks.
+type HermesFeedsResponse = unknown;
+// Hermes /v2/price_feeds/<id> returns a single feed-metadata object; shape is
+// validated at runtime by normalizeFeedMetadata.
+type HermesFeedResponse = unknown;
 
 function normalizeUpdates(body: HermesUpdatesResponse): PythHermesPriceUpdate {
   const parsedList = Array.isArray(body.parsed) ? (body.parsed as HermesParsedRow[]) : [];

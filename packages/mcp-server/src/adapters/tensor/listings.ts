@@ -32,6 +32,11 @@ export interface TensorListPrepareInput {
   assetId?: string;
   priceSol: string;
   expiresAt?: string;
+  /**
+   * When false, the prepare rejects compressed NFTs with `compressed_not_allowed`
+   * so the caller doesn't accidentally publish a tcomp listing. Defaults to true.
+   */
+  allowCompressed?: boolean;
   dueAt?: string;
   note?: string;
 }
@@ -67,6 +72,14 @@ export const tensorListAction: AdapterAction<TensorListPrepareInput> = {
         TENSOR_ADAPTER_ID,
         'frozen_asset',
         'Tensor cannot list a frozen NFT.',
+      );
+    }
+    const allowCompressed = input.allowCompressed !== false;
+    if (detail.compressed && !allowCompressed) {
+      throw new AdapterError(
+        TENSOR_ADAPTER_ID,
+        'compressed_not_allowed',
+        'This NFT is compressed (tcomp). Pass allowCompressed: true to list it.',
       );
     }
     const warnings: string[] = [...(detail.warnings ?? [])];
@@ -200,16 +213,12 @@ export const tensorCancelListingAction: AdapterAction<TensorCancelListingPrepare
         `Connected wallet does not own this Tensor listing.`,
       );
     }
-    if (!listingId && listing.listingId && Array.isArray(detail.topBids)) {
-      // If there are multiple open listings the host should pass listingId. We can detect via warnings.
-      const extraListings = (detail.warnings ?? []).filter((w) => w.toLowerCase().includes('multiple listings'));
-      if (extraListings.length > 0) {
-        throw new AdapterError(
-          TENSOR_ADAPTER_ID,
-          'needs_input',
-          'Multiple open Tensor listings exist for this NFT; pass listingId.',
-        );
-      }
+    if (!listingId && typeof detail.walletOpenListings === 'number' && detail.walletOpenListings > 1) {
+      throw new AdapterError(
+        TENSOR_ADAPTER_ID,
+        'needs_input',
+        `Wallet has ${detail.walletOpenListings} open Tensor listings for this NFT; pass listingId to disambiguate.`,
+      );
     }
 
     const cancelInput: TensorCancelListingInput = {

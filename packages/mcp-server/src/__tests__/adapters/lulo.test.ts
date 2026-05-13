@@ -190,6 +190,8 @@ function makeContext(opts: {
     config: fakeConfig(opts.cluster ?? 'mainnet-beta'),
     connection: new FakeConnection() as unknown as DAppAdapterContext['connection'],
     signAndBroadcast: opts.signed ?? (async () => 'TxidPlaceholderForLuloTests111111111111111'),
+    signTransaction: async () => "signed-base64-placeholder",
+    signMessage: async () => "signature-base64-placeholder",
     store: opts.store,
   };
 }
@@ -495,6 +497,8 @@ describe('Lulo unknown mint decimals', () => {
         },
       } as unknown as DAppAdapterContext['connection'],
       signAndBroadcast: async () => 'unused',
+      signTransaction: async () => "signed-base64-placeholder",
+      signMessage: async () => "signature-base64-placeholder",
       store,
     };
     await expect(

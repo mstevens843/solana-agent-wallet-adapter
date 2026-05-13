@@ -3,20 +3,32 @@
   "id": "jupiter",
   "name": "Jupiter",
   "status": "first_class",
-  "aliases": ["jupiter", "jup", "jupiter swap", "jupiter swap api v2", "jupiter ultra", "jupiter lend"],
+  "aliases": ["jupiter", "jup", "jupiter swap", "jupiter swap api v2", "jupiter ultra", "jupiter lend", "jupiter token", "jupiter price", "jupiter trigger", "jupiter limit"],
   "supportedClusters": ["mainnet-beta"],
   "requiredConfig": [
     {
       "name": "JUPITER_API_KEY or JUP_API_KEY",
       "scope": "env",
       "required": true,
-      "description": "Required for Jupiter Swap API v2 order previews, prepared swaps, and swap execution."
+      "description": "Required for Jupiter Swap API v2 order previews, Token API V2 reads, Price API V3 reads, prepared swaps, and swap execution."
     },
     {
       "name": "Dialect client key",
       "scope": "dialect_client_key",
       "required": false,
       "description": "Not used by MCP Jupiter Swap API v2 support. Jupiter Lend remains planned."
+    },
+    {
+      "name": "JUPITER_TRIGGER_BASE_URL",
+      "scope": "env",
+      "required": false,
+      "description": "Optional override for the Jupiter Trigger V2 base URL. Defaults to https://api.jup.ag/trigger/v2."
+    },
+    {
+      "name": "CONNECTORS_JUPITER_TRIGGER_ENABLED",
+      "scope": "env",
+      "required": false,
+      "description": "Set true to enable Jupiter Trigger V2 reads and prepared actions. Disabled by default; mirrors connectors.jupiter.trigger.enabled in agent-wallet.config.json."
     }
   ],
   "readCapabilities": [
@@ -25,8 +37,8 @@
       "source": "jupiter-swap-v2",
       "implemented": true,
       "requiresClientKey": false,
-      "returns": "Read-only Jupiter Swap API v2 order preview with output amount, minimum output threshold, slippage, price impact, route plan, router/mode metadata, fee fields, and request id.",
-      "facts": ["inputMint", "outputMint", "inAmount", "outAmount", "otherAmountThreshold", "slippageBps", "priceImpact", "routePlan", "router", "mode", "feeBps", "feeMint", "requestId", "hasTransaction"]
+      "returns": "Read-only Jupiter Swap API v2 order preview with output amount, minimum output threshold, slippage, price impact, route plan, router/mode metadata, manual/RFQ routing warnings, fee fields, and request id.",
+      "facts": ["inputMint", "outputMint", "inAmount", "outAmount", "otherAmountThreshold", "slippageBps", "priceImpact", "routePlan", "router", "mode", "routingConstraints", "feeBps", "feeMint", "requestId", "hasTransaction"]
     },
     {
       "toolName": "solana_get_swap_quote",
@@ -37,20 +49,300 @@
       "facts": ["outAmount", "slippageBps", "priceImpact"]
     },
     {
-      "toolName": "dialect_positions",
-      "source": "dialect-markets",
-      "implemented": false,
+      "toolName": "solana_jupiter_token_search",
+      "source": "first-class-adapter",
+      "implemented": true,
       "requiresClientKey": true,
-      "returns": "Planned Jupiter Lend positions. Not implemented in this Swap API v2 pass.",
-      "facts": ["positionBalance", "borrowBalance", "collateralToken", "healthFactor"]
+      "returns": "Read-only Jupiter Token API V2 search by symbol, name, mint, or comma-separated mints. Search requests are capped by connectors.jupiter.tokenPrice.maxSearchMintIds.",
+      "facts": ["id", "name", "symbol", "decimals", "tokenProgram", "isVerified", "tags", "audit", "liquidity", "organicScore", "stats"]
     },
     {
-      "toolName": "dialect_markets",
-      "source": "dialect-markets",
-      "implemented": false,
+      "toolName": "solana_jupiter_token_by_tag",
+      "source": "first-class-adapter",
+      "implemented": true,
       "requiresClientKey": true,
-      "returns": "Planned Jupiter Lend market facts. Not implemented in this Swap API v2 pass.",
-      "facts": ["marketApy", "borrowApy", "liquidity", "actionUrl"]
+      "returns": "Read-only Jupiter Token API V2 list for supported tags such as lst, verified, and stocks.",
+      "facts": ["tag", "id", "symbol", "isVerified", "tags", "liquidity", "organicScore"]
+    },
+    {
+      "toolName": "solana_jupiter_token_category",
+      "source": "first-class-adapter",
+      "implemented": true,
+      "requiresClientKey": true,
+      "returns": "Read-only Jupiter Token API V2 category list for top organic score, top traded, or top trending tokens over a supported interval.",
+      "facts": ["category", "interval", "id", "symbol", "stats", "liquidity", "organicScore"]
+    },
+    {
+      "toolName": "solana_jupiter_token_recent",
+      "source": "first-class-adapter",
+      "implemented": true,
+      "requiresClientKey": true,
+      "returns": "Read-only Jupiter Token API V2 recent-token list based on first pool creation time.",
+      "facts": ["id", "symbol", "name", "firstPool", "createdAt", "liquidity", "audit"]
+    },
+    {
+      "toolName": "solana_jupiter_price",
+      "source": "first-class-adapter",
+      "implemented": true,
+      "requiresClientKey": true,
+      "returns": "Read-only Jupiter Price API V3 USD price evidence for a single mint, including structured missing-price reasons when Jupiter does not return reliable price data.",
+      "facts": ["mint", "status", "usdPrice", "decimals", "blockId", "priceChange24h", "reason", "asOf"]
+    },
+    {
+      "toolName": "solana_jupiter_price_batch",
+      "source": "first-class-adapter",
+      "implemented": true,
+      "requiresClientKey": true,
+      "returns": "Read-only Jupiter Price API V3 USD price evidence for up to 50 mints, preserving partial missing results.",
+      "facts": ["prices", "requested", "found", "missing", "usdPrice", "decimals", "blockId", "priceChange24h", "reason"]
+    },
+    {
+      "toolName": "solana_jupiter_token_risk_evidence",
+      "source": "first-class-adapter",
+      "implemented": true,
+      "requiresClientKey": true,
+      "returns": "Read-only compact token risk evidence combining Token API V2 metadata and optional Price API V3 price evidence for planner reviews. It never prepares or approves transactions.",
+      "facts": ["mint", "symbol", "name", "decimals", "isVerified", "tags", "audit", "holderCount", "topHoldersPercentage", "liquidity", "organicScore", "usdPrice", "priceBlockId", "priceChange24h", "riskLabels", "warnings"]
+    },
+    {
+      "toolName": "solana_jupiter_lend_earn_tokens",
+      "source": "jupiter-lend-rest",
+      "implemented": true,
+      "requiresClientKey": true,
+      "returns": "Read-only Jupiter Lend Earn token list with APY, reward APY, exchange price, utilization, liquidity, and active flag.",
+      "facts": ["assetMint", "shareMint", "apy", "rewardApy", "exchangePrice", "totalSupplyUnderlying", "availableLiquidity", "withdrawalSmoothing"]
+    },
+    {
+      "toolName": "solana_jupiter_lend_earn_token_detail",
+      "source": "jupiter-lend-rest",
+      "implemented": true,
+      "requiresClientKey": true,
+      "returns": "Read-only Jupiter Lend Earn single-token snapshot. Same facts as the list endpoint.",
+      "facts": ["assetMint", "shareMint", "apy", "rewardApy", "exchangePrice", "utilization", "rewards"]
+    },
+    {
+      "toolName": "solana_jupiter_lend_earn_positions",
+      "source": "jupiter-lend-rest",
+      "implemented": true,
+      "requiresClientKey": true,
+      "returns": "Read-only Jupiter Lend Earn positions for a wallet with shares, underlying amount, APY, and as-of timestamp.",
+      "facts": ["assetMint", "shareMint", "shares", "underlyingAmount", "apy", "rewardApy", "asOf"]
+    },
+    {
+      "toolName": "solana_jupiter_lend_earn_earnings",
+      "source": "jupiter-lend-rest",
+      "implemented": true,
+      "requiresClientKey": true,
+      "returns": "Read-only Jupiter Lend Earn earnings rolled up over an optional ISO range.",
+      "facts": ["assetMint", "totalEarnings", "rewardEarnings", "from", "to", "asOf"]
+    },
+    {
+      "toolName": "solana_jupiter_lend_borrow_vaults",
+      "source": "jupiter-lend-read",
+      "implemented": true,
+      "requiresClientKey": true,
+      "returns": "Read-only Jupiter Lend Borrow vault list with LTV, liquidation threshold, supply/borrow rates, oracle facts, and capacity.",
+      "facts": ["vaultId", "supplyMint", "borrowMint", "ltvBps", "liquidationThresholdBps", "supplyApy", "borrowApr", "oracle"]
+    },
+    {
+      "toolName": "solana_jupiter_lend_borrow_vault_detail",
+      "source": "jupiter-lend-read",
+      "implemented": true,
+      "requiresClientKey": true,
+      "returns": "Read-only Jupiter Lend Borrow single-vault snapshot.",
+      "facts": ["vaultId", "ltvBps", "liquidationThresholdBps", "liquidationPenaltyBps", "supplyAvailable", "borrowAvailable", "oracle"]
+    },
+    {
+      "toolName": "solana_jupiter_lend_borrow_positions",
+      "source": "jupiter-lend-read",
+      "implemented": true,
+      "requiresClientKey": true,
+      "returns": "Read-only Jupiter Lend Borrow positions owned by a wallet, with collateral, debt, health ratio, and liquidation status.",
+      "facts": ["vaultId", "positionId", "collateralAmount", "debtAmount", "healthRatio", "liquidationStatus"]
+    },
+    {
+      "toolName": "solana_jupiter_lend_borrow_health_preview",
+      "source": "jupiter-lend-read",
+      "implemented": true,
+      "requiresClientKey": true,
+      "returns": "Read-only projected Jupiter Borrow health preview with before/after components, warnings, projected LTV, and gate verdict.",
+      "facts": ["before", "after", "minHealthRatio", "maxLtvBps", "projectedLtvBps", "blocked", "warnings", "oracle"]
+    },
+    {
+      "toolName": "solana_jupiter_prediction_events",
+      "source": "jupiter-prediction-api",
+      "implemented": true,
+      "requiresClientKey": true,
+      "returns": "Beta read-only Jupiter Prediction events with provider, category, close time, volume, and embedded market summaries. Disabled until connectors.jupiter.prediction.enabled is true.",
+      "facts": ["beta", "events", "provider", "category", "filter", "warnings"]
+    },
+    {
+      "toolName": "solana_jupiter_prediction_search_events",
+      "source": "jupiter-prediction-api",
+      "implemented": true,
+      "requiresClientKey": true,
+      "returns": "Beta read-only search across Jupiter Prediction events by query and optional provider.",
+      "facts": ["beta", "query", "events", "warnings"]
+    },
+    {
+      "toolName": "solana_jupiter_prediction_event_detail",
+      "source": "jupiter-prediction-api",
+      "implemented": true,
+      "requiresClientKey": true,
+      "returns": "Beta read-only Jupiter Prediction event detail, with optional embedded markets.",
+      "facts": ["beta", "event", "markets", "warnings"]
+    },
+    {
+      "toolName": "solana_jupiter_prediction_event_markets",
+      "source": "jupiter-prediction-api",
+      "implemented": true,
+      "requiresClientKey": true,
+      "returns": "Beta read-only list of markets attached to a Jupiter Prediction event.",
+      "facts": ["beta", "event", "markets", "warnings"]
+    },
+    {
+      "toolName": "solana_jupiter_prediction_market_detail",
+      "source": "jupiter-prediction-api",
+      "implemented": true,
+      "requiresClientKey": true,
+      "returns": "Beta read-only Jupiter Prediction market detail with normalized status, YES/NO prices, volume, rules link, and resolve/close times.",
+      "facts": ["beta", "status", "yesPrice", "noPrice", "volume", "result", "warnings"]
+    },
+    {
+      "toolName": "solana_jupiter_prediction_orderbook",
+      "source": "jupiter-prediction-api",
+      "implemented": true,
+      "requiresClientKey": true,
+      "returns": "Beta read-only Jupiter Prediction YES/NO orderbook with best bid/ask. Prices change quickly.",
+      "facts": ["beta", "status", "yesBestBid", "yesBestAsk", "noBestBid", "noBestAsk", "warnings"]
+    },
+    {
+      "toolName": "solana_jupiter_prediction_orders",
+      "source": "jupiter-prediction-api",
+      "implemented": true,
+      "requiresClientKey": true,
+      "returns": "Beta read-only Jupiter Prediction orders for the connected wallet or an explicit owner.",
+      "facts": ["beta", "owner", "orders", "warnings"]
+    },
+    {
+      "toolName": "solana_jupiter_prediction_order_status",
+      "source": "jupiter-prediction-api",
+      "implemented": true,
+      "requiresClientKey": true,
+      "returns": "Beta read-only Jupiter Prediction single-order status by orderId.",
+      "facts": ["beta", "orderId", "status", "filled", "warnings"]
+    },
+    {
+      "toolName": "solana_jupiter_prediction_positions",
+      "source": "jupiter-prediction-api",
+      "implemented": true,
+      "requiresClientKey": true,
+      "returns": "Beta read-only Jupiter Prediction positions for the connected wallet or an explicit owner.",
+      "facts": ["beta", "owner", "positions", "claimable", "settled", "warnings"]
+    },
+    {
+      "toolName": "solana_jupiter_prediction_history",
+      "source": "jupiter-prediction-api",
+      "implemented": true,
+      "requiresClientKey": true,
+      "returns": "Beta read-only Jupiter Prediction history for the connected wallet or an explicit owner.",
+      "facts": ["beta", "owner", "entries", "warnings"]
+    },
+    {
+      "toolName": "solana_jupiter_prediction_vault_info",
+      "source": "jupiter-prediction-api",
+      "implemented": true,
+      "requiresClientKey": true,
+      "returns": "Beta read-only Jupiter Prediction vault info for the connected wallet or an explicit owner.",
+      "facts": ["beta", "owner", "vaultAddress", "balance", "warnings"]
+    },
+    {
+      "toolName": "solana_jupiter_perps_status",
+      "source": "jupiter-perps",
+      "implemented": true,
+      "requiresClientKey": false,
+      "returns": "Read-only Jupiter Perps research surface. Reports work-in-progress API status, the five official documentation links, leverage and liquidation warnings, and the connectors.jupiter.perps policy flags. Returns no on-chain account data.",
+      "facts": ["apiStatus", "officialDocsStatus", "writeSupport", "warnings", "perpsConfig"]
+    },
+    {
+      "toolName": "solana_jupiter_perps_pool_snapshot",
+      "source": "jupiter-perps",
+      "implemented": true,
+      "requiresClientKey": false,
+      "returns": "Validates the requested Jupiter Perps/JLP pool address, then returns unsupported_method with a structured reason until the official Jupiter Perps API stabilizes. Never decodes accounts via unofficial Anchor IDL.",
+      "facts": []
+    },
+    {
+      "toolName": "solana_jupiter_perps_custody_snapshot",
+      "source": "jupiter-perps",
+      "implemented": true,
+      "requiresClientKey": false,
+      "returns": "Validates the requested Jupiter Perps custody address, then returns unsupported_method until the official API stabilizes.",
+      "facts": []
+    },
+    {
+      "toolName": "solana_jupiter_perps_position_snapshot",
+      "source": "jupiter-perps",
+      "implemented": true,
+      "requiresClientKey": false,
+      "returns": "Validates optional wallet/position/market filters (defaulting wallet to the connected wallet), then returns unsupported_method until the official Jupiter Perps API stabilizes. Returns no leverage recommendations.",
+      "facts": []
+    },
+    {
+      "toolName": "solana_jupiter_trigger_auth_challenge",
+      "source": "jupiter-trigger",
+      "implemented": true,
+      "requiresClientKey": true,
+      "returns": "Requests a Jupiter Trigger V2 wallet challenge (message or transaction). Returns the challenge string and TTL.",
+      "facts": ["challenge", "challengeType", "expiresAt", "apiHost"]
+    },
+    {
+      "toolName": "solana_jupiter_trigger_auth_verify",
+      "source": "jupiter-trigger",
+      "implemented": true,
+      "requiresClientKey": true,
+      "returns": "Submits a signed Jupiter Trigger V2 challenge. On success, caches the JWT in volatile process memory and returns authentication status; never returns the JWT.",
+      "facts": ["authenticated", "expiresAt", "walletAddress", "cluster", "apiHost"]
+    },
+    {
+      "toolName": "solana_jupiter_trigger_auth_status",
+      "source": "jupiter-trigger",
+      "implemented": true,
+      "requiresClientKey": true,
+      "returns": "Reports whether the wallet has a live Jupiter Trigger V2 JWT. Returns authenticated, walletAddress, cluster, apiHost, and expiresAt; never returns the JWT.",
+      "facts": ["authenticated", "walletAddress", "cluster", "apiHost", "expiresAt"]
+    },
+    {
+      "toolName": "solana_jupiter_trigger_vault",
+      "source": "jupiter-trigger",
+      "implemented": true,
+      "requiresClientKey": true,
+      "returns": "Reads the Jupiter Trigger V2 vault for the wallet (Privy-managed custody). Returns registration status, vault address, vault id, and balances.",
+      "facts": ["walletAddress", "vaultAddress", "vaultId", "custody", "registered", "balances"]
+    },
+    {
+      "toolName": "solana_jupiter_trigger_orders",
+      "source": "jupiter-trigger",
+      "implemented": true,
+      "requiresClientKey": true,
+      "returns": "Lists Jupiter Trigger V2 orders for the wallet (default state=open). Includes order type, state, mints, trigger fields, slippage, expiration, cancellability, and withdrawal eligibility.",
+      "facts": ["orderId", "orderType", "state", "inputMint", "outputMint", "triggerMint", "triggerPriceUsd", "slippageBps", "expiresAt", "cancellable", "withdrawable"]
+    },
+    {
+      "toolName": "solana_jupiter_trigger_order_detail",
+      "source": "jupiter-trigger",
+      "implemented": true,
+      "requiresClientKey": true,
+      "returns": "Reads a single Jupiter Trigger V2 order detail.",
+      "facts": ["orderId", "orderType", "state", "triggerPriceUsd", "takeProfitPriceUsd", "stopLossPriceUsd", "cancellable", "withdrawable"]
+    },
+    {
+      "toolName": "solana_jupiter_trigger_order_history",
+      "source": "jupiter-trigger",
+      "implemented": true,
+      "requiresClientKey": true,
+      "returns": "Lists Jupiter Trigger V2 order history across all states by default (filled, expired, cancelled, ready_to_cancel).",
+      "facts": ["orderId", "orderType", "state", "expiresAt", "cancellable", "withdrawable"]
     }
   ],
   "writeCapabilities": [
@@ -63,10 +355,138 @@
       "userApproves": "A Jupiter-built swap transaction for the exact input token, output token, amount, and slippage cap."
     },
     {
+      "actionKind": "jupiter_lend_earn_deposit",
+      "executionMode": "first_class_adapter",
+      "implemented": true,
+      "prepares": "Manual-approval PreparedAction that deposits the underlying asset into Jupiter Earn. Refreshes Earn token snapshot at execution.",
+      "executesVia": "solana_execute_prepared_action",
+      "userApproves": "A Jupiter-built deposit transaction for the exact asset mint and amount."
+    },
+    {
+      "actionKind": "jupiter_lend_earn_withdraw",
+      "executionMode": "first_class_adapter",
+      "implemented": true,
+      "prepares": "Manual-approval PreparedAction that withdraws the underlying asset from Jupiter Earn. Refreshes Earn pool state at execution.",
+      "executesVia": "solana_execute_prepared_action",
+      "userApproves": "A Jupiter-built withdraw transaction with optional minUnderlyingOut."
+    },
+    {
+      "actionKind": "jupiter_lend_earn_mint",
+      "executionMode": "first_class_adapter",
+      "implemented": true,
+      "prepares": "Manual-approval PreparedAction that mints Jupiter Earn shares.",
+      "executesVia": "solana_execute_prepared_action",
+      "userApproves": "A Jupiter-built mint transaction for the exact share amount."
+    },
+    {
+      "actionKind": "jupiter_lend_earn_redeem",
+      "executionMode": "first_class_adapter",
+      "implemented": true,
+      "prepares": "Manual-approval PreparedAction that redeems Jupiter Earn shares for underlying. Refreshes pool state at execution.",
+      "executesVia": "solana_execute_prepared_action",
+      "userApproves": "A Jupiter-built redeem transaction with optional minUnderlyingOut."
+    },
+    {
+      "actionKind": "jupiter_lend_borrow_create_position",
+      "executionMode": "first_class_adapter",
+      "implemented": true,
+      "prepares": "Manual-approval PreparedAction that opens a Jupiter Borrow position with optional initial collateral and borrow amounts. Health-gated.",
+      "executesVia": "solana_execute_prepared_action",
+      "userApproves": "A Jupiter-built create-position transaction. The wallet still signs every step."
+    },
+    {
+      "actionKind": "jupiter_lend_borrow_deposit_collateral",
+      "executionMode": "first_class_adapter",
+      "implemented": true,
+      "prepares": "Manual-approval PreparedAction that deposits collateral into an existing Jupiter Borrow position.",
+      "executesVia": "solana_execute_prepared_action",
+      "userApproves": "A Jupiter-built deposit-collateral transaction for the exact amount."
+    },
+    {
+      "actionKind": "jupiter_lend_borrow_borrow",
+      "executionMode": "first_class_adapter",
+      "implemented": true,
+      "prepares": "Manual-approval PreparedAction that borrows from an existing Jupiter Borrow position. Blocks unless projected health stays above the configured minimum and refreshes health at execution.",
+      "executesVia": "solana_execute_prepared_action",
+      "userApproves": "A Jupiter-built borrow transaction for the exact amount and health gate."
+    },
+    {
+      "actionKind": "jupiter_lend_borrow_repay",
+      "executionMode": "first_class_adapter",
+      "implemented": true,
+      "prepares": "Manual-approval PreparedAction that repays Jupiter Borrow debt. Supports repayAll.",
+      "executesVia": "solana_execute_prepared_action",
+      "userApproves": "A Jupiter-built repay transaction."
+    },
+    {
+      "actionKind": "jupiter_lend_borrow_withdraw_collateral",
+      "executionMode": "first_class_adapter",
+      "implemented": true,
+      "prepares": "Manual-approval PreparedAction that withdraws collateral from a Jupiter Borrow position. Health-gated and refreshed at execution.",
+      "executesVia": "solana_execute_prepared_action",
+      "userApproves": "A Jupiter-built withdraw-collateral transaction."
+    },
+    {
+      "actionKind": "jupiter_trigger_register_vault",
+      "executionMode": "first_class_adapter",
+      "implemented": true,
+      "prepares": "Manual-approval PreparedAction that registers the wallet's Jupiter Trigger V2 vault. The vault is Privy-managed custody, not the wallet.",
+      "executesVia": "solana_execute_prepared_action",
+      "userApproves": "A Jupiter-built vault registration transaction signed via solana_sign_transaction and submitted to Jupiter for broadcast."
+    },
+    {
+      "actionKind": "jupiter_trigger_single_order",
+      "executionMode": "first_class_adapter",
+      "implemented": true,
+      "prepares": "Manual-approval PreparedAction that creates a single Jupiter Trigger V2 limit order with USD trigger. Deposits into the Privy vault; future fill is automated by Jupiter outside the Agentic approval inbox.",
+      "executesVia": "solana_execute_prepared_action",
+      "userApproves": "A Jupiter-built deposit transaction. After signing, the signed blob is POSTed to Jupiter Trigger and Jupiter broadcasts the deposit on-chain."
+    },
+    {
+      "actionKind": "jupiter_trigger_oco_order",
+      "executionMode": "first_class_adapter",
+      "implemented": true,
+      "prepares": "Manual-approval PreparedAction that creates a Jupiter Trigger V2 OCO order (take-profit and stop-loss; one cancels the other).",
+      "executesVia": "solana_execute_prepared_action",
+      "userApproves": "A Jupiter-built deposit transaction for the OCO order."
+    },
+    {
+      "actionKind": "jupiter_trigger_otoco_order",
+      "executionMode": "first_class_adapter",
+      "implemented": true,
+      "prepares": "Manual-approval PreparedAction that creates a Jupiter Trigger V2 OTOCO order (entry trigger then OCO take-profit/stop-loss).",
+      "executesVia": "solana_execute_prepared_action",
+      "userApproves": "A Jupiter-built deposit transaction for the OTOCO order."
+    },
+    {
+      "actionKind": "jupiter_trigger_edit_order",
+      "executionMode": "first_class_adapter",
+      "implemented": true,
+      "prepares": "Manual-approval PreparedAction that edits an existing Jupiter Trigger V2 order. Surface still requires explicit user confirmation; expired funds remain in the vault until withdrawal completes.",
+      "executesVia": "solana_execute_prepared_action",
+      "userApproves": "A Jupiter Trigger edit instruction; no on-chain signature when Jupiter does not require one."
+    },
+    {
+      "actionKind": "jupiter_trigger_cancel_order",
+      "executionMode": "first_class_adapter",
+      "implemented": true,
+      "prepares": "Manual-approval PreparedAction that cancels a Jupiter Trigger V2 order. Cancel and withdraw are separate steps.",
+      "executesVia": "solana_execute_prepared_action",
+      "userApproves": "A Jupiter Trigger cancel request. Expired funds stay in the Privy vault until the withdraw step completes."
+    },
+    {
+      "actionKind": "jupiter_trigger_withdraw_order_funds",
+      "executionMode": "first_class_adapter",
+      "implemented": true,
+      "prepares": "Manual-approval PreparedAction that withdraws cancelled or expired Jupiter Trigger V2 order funds from the Privy vault back to the wallet.",
+      "executesVia": "solana_execute_prepared_action",
+      "userApproves": "A Jupiter-built withdrawal transaction, signed and POSTed to Jupiter for broadcast."
+    },
+    {
       "actionKind": "blink_action",
       "executionMode": "blink",
       "implemented": false,
-      "prepares": "Planned Jupiter Lend, Trigger, or Recurring action review. MCP runtime does not expose those Jupiter product surfaces in this pass.",
+      "prepares": "Planned Jupiter Recurring action review. MCP runtime does not expose Jupiter-native DCA yet.",
       "executesVia": "solana_execute_prepared_action",
       "userApproves": "A future Jupiter product transaction after explicit wallet approval. Not implemented in this pass."
     }
@@ -111,29 +531,48 @@
   "requiredConnectorFacts": [
     "Jupiter Swap API v2 order preview before review",
     "Output amount and minimum output threshold",
-    "Router, mode, route plan, and fee fields when reported",
+    "Router, mode, route plan, manual/RFQ routing warnings, and fee fields when reported",
     "Slippage cap in basis points",
     "Price impact when reported",
     "Token mint and decimals for any mint not in the allowlist",
+    "Token verification, tags, audit flags, holder concentration, liquidity, organic score, and stats for token-risk reviews",
+    "Price API USD price, block id, 24-hour change, and structured missing-price reason when Jupiter does not return reliable price data",
+    "Evidence warning that Jupiter Token/Price reads are not oracle guarantees and never authorize transactions",
     "Connected wallet address for wallet-specific order previews"
   ],
   "unsupportedRequests": [
     "Swap without an amount, input token, or output token.",
     "Use a slippage cap above the configured wallet limit.",
     "Guarantee an exact output after the quote is shown. Jupiter routes can change before signing.",
-    "Lend, borrow, withdraw, repay, Trigger, Recurring, Prediction, or Perps through Jupiter in this Swap API v2 pass.",
+    "Use Jupiter token or price evidence as an oracle guarantee.",
+    "Prepare, sign, or execute any action from Token API V2 or Price API V3 reads.",
+    "Request more than 50 Jupiter price ids or more than 100 comma-separated token search mints.",
+    "Use Jupiter Trigger V2 without explicit user opt-in via connectors.jupiter.trigger.enabled or CONNECTORS_JUPITER_TRIGGER_ENABLED. The surface is disabled by default.",
+    "Persist Jupiter Trigger V2 JWTs, signed challenges, or API bearer tokens in receipts, prepared actions, traces, or connector facts.",
+    "Claim that Jupiter Trigger V2 fills are reversible, guaranteed, or returned to the Agentic approval inbox at fill time.",
+    "Cancel a Jupiter Trigger V2 order and assume funds land in the wallet automatically; withdraw is a separate step.",
+    "Recurring through Jupiter; it is roadmapped under the parent plan but not implemented in this pass.",
+    "Open, close, increase, decrease, add or remove collateral, or otherwise modify any Jupiter Perps position. Perps writes require a separate leverage-risk policy that has not landed.",
+    "Recommend leverage, set leverage, or imply Jupiter Perps liquidation is safe.",
+    "Mint, redeem, deposit, withdraw, or otherwise take any JLP write action.",
+    "Decode Jupiter Perps pool, custody, position, or position-request accounts via unofficial Anchor IDL for money-moving decisions.",
+    "Claim that Jupiter Perps API is stable; the official docs mark it work in progress.",
+    "Create a Jupiter Prediction order. Beta writes are not enabled in v1.",
+    "Close a Jupiter Prediction position or close all positions. Beta writes are not enabled in v1.",
+    "Claim a Jupiter Prediction payout. Beta writes are not enabled in v1.",
     "Operate on any cluster other than mainnet-beta.",
-    "Claim that Jupiter or the agent can sign or submit without the user's wallet."
+    "Claim that Jupiter or the agent can sign or submit without the user's wallet.",
+    "Claim that Jupiter Prediction odds imply truth or guaranteed outcomes."
   ],
-  "actionPreparationNotes": "Normalize SOL to wrapped SOL for Jupiter Swap API v2, resolve allowlisted symbols or mint decimals, enforce maxSwapInput and maxSlippageBps, then prepare a swap inbox item with refreshAtExecution=true. For previews, call Jupiter /order with taker, inputMint, outputMint, amount, and slippageBps. Do not store raw transaction bytes in prepared actions or expose them in findings.",
-  "riskNotes": "Quotes can expire or change before approval. Price impact, minimum output, and slippage must be shown. Unknown token mints should be displayed as short mints unless metadata is available.",
+  "actionPreparationNotes": "Normalize SOL to wrapped SOL for Jupiter Swap API v2, resolve allowlisted symbols or mint decimals, enforce maxSwapInput and maxSlippageBps, then prepare a swap inbox item with refreshAtExecution=true. For previews, call Jupiter /order with taker, inputMint, outputMint, amount, and slippageBps. Do not store raw transaction bytes in prepared actions or expose them in findings. For Trigger V2: authenticate via solana_jupiter_trigger_auth_challenge then solana_sign_message then solana_jupiter_trigger_auth_verify before any vault/order read or prepared action. JWTs live only in volatile process memory and are clamped to 23h. Prepared deposit transactions are re-fetched at execute time, signed locally via ctx.signTransaction, then POSTed back to Jupiter Trigger which broadcasts the deposit on-chain. Do not store JWTs, signed challenges, or signed transaction bytes anywhere.",
+  "riskNotes": "Quotes can expire or change before approval. Price impact, minimum output, and slippage must be shown. Unknown token mints should be displayed as short mints unless metadata is available. Jupiter Token/Price data is review evidence only; it can be missing, stale, or heuristic-filtered and must not be presented as an oracle guarantee. Jupiter Perps are leveraged derivatives; liquidation can cause complete loss of posted collateral and writes are denied until the official API stabilizes and a leverage-risk policy is approved. Jupiter Trigger V2 stores order funds in a Privy-managed custody vault; future fills execute through Jupiter automation outside the Agentic approval inbox. Output is not guaranteed at trigger time. Cancel and withdrawal are separate steps; expired or cancelled funds remain in the vault until the user completes the withdraw flow.",
   "approvalBoundary": {
     "readGated": true,
     "writeGated": true,
     "blinkBacked": false,
     "summary": "safety.prepare_only"
   },
-  "walletApprovalBoundary": "Jupiter previews are read-only. Prepared swaps stay in the approval inbox until the user sends them to the wallet. The wallet signs and broadcasts; the agent does not.",
+  "walletApprovalBoundary": "Jupiter previews and Token/Price reads are read-only. Token/Price reads never prepare, approve, sign, or execute transactions. Prepared swaps stay in the approval inbox until the user sends them to the wallet. The wallet signs and broadcasts; the agent does not. Jupiter Trigger V2 auth requires a wallet message signature via solana_sign_message and the JWT is held only in volatile process memory. Trigger order deposits are signed locally then handed back to Jupiter for broadcast, and order funds live in a Jupiter-managed Privy custody vault until withdrawal completes.",
   "examples": {
     "requests": [
       {
@@ -147,6 +586,36 @@
         "classification": "read_only_answer",
         "readTool": "solana_jupiter_order_preview",
         "agentResponse": "Read a Jupiter Swap API v2 order preview and returned expected output, minimum output, slippage, route, fee, and price impact facts. The connector can read facts, but the wallet still controls approval."
+      },
+      {
+        "user": "search Jupiter tokens for JUP",
+        "classification": "read_only_answer",
+        "readTool": "solana_jupiter_token_search",
+        "agentResponse": "Returned Jupiter Token API V2 metadata search results for JUP. This is read-only evidence and does not prepare a transaction."
+      },
+      {
+        "user": "show Jupiter token risk evidence for 7GCihgDB8fe6KNjn2MYtkzZcRjQy3t9GHdC8uHYmW2hr",
+        "classification": "proof_only_review",
+        "readTool": "solana_jupiter_token_risk_evidence",
+        "agentResponse": "Returned token verification, audit, holder, liquidity, organic score, price, risk label, and warning evidence. Jupiter price evidence is not an oracle guarantee."
+      },
+      {
+        "user": "get Jupiter prices for SOL, USDC, and JUP",
+        "classification": "read_only_answer",
+        "readTool": "solana_jupiter_price_batch",
+        "agentResponse": "Returned read-only Jupiter Price API V3 evidence for the requested mints, including any missing-price reasons. No action was prepared."
+      },
+      {
+        "user": "show recent Jupiter tokens but do not trade",
+        "classification": "read_only_answer",
+        "readTool": "solana_jupiter_token_recent",
+        "agentResponse": "Returned recent Jupiter Token API V2 tokens by first pool creation time. This is read-only evidence and does not authorize a trade."
+      },
+      {
+        "user": "use Jupiter price as a guaranteed oracle for this trade",
+        "classification": "unsupported",
+        "denialReason": "safety.denied_with_reason",
+        "agentResponse": "The agent denied this because Jupiter Price API data is evidence only and must not be treated as an oracle guarantee."
       },
       {
         "user": "swap SOL to USDC",
@@ -207,12 +676,113 @@
         "classification": "unsupported",
         "denialReason": "safety.action_not_exposed",
         "agentResponse": "The agent denied this because Jupiter Swap API v2 swaps are only supported on mainnet-beta in this runtime."
+      },
+      {
+        "user": "show live Jupiter prediction markets for crypto",
+        "classification": "read_only_answer",
+        "readTool": "solana_jupiter_prediction_events",
+        "agentResponse": "Returned a beta-flagged list of Jupiter Prediction events for the crypto category with a beta warning. Disabled by default until the host opts in via connectors.jupiter.prediction.enabled."
+      },
+      {
+        "user": "search Jupiter prediction events for election markets",
+        "classification": "read_only_answer",
+        "readTool": "solana_jupiter_prediction_search_events",
+        "agentResponse": "Searched Jupiter Prediction events for the term \"election\" and returned a beta-flagged list. Outcomes come from external providers and can change."
+      },
+      {
+        "user": "create a prediction order on Jupiter",
+        "classification": "unsupported",
+        "denialReason": "safety.action_not_exposed",
+        "agentResponse": "The agent denied this because Jupiter Prediction v1 is read-only beta. Order create, close, and claim are reserved future actions."
+      },
+      {
+        "user": "claim my Jupiter prediction payout",
+        "classification": "unsupported",
+        "denialReason": "safety.action_not_exposed",
+        "agentResponse": "The agent denied this because Jupiter Prediction beta payouts are not exposed in v1; claim is a reserved future action."
+      },
+      {
+        "user": "is Jupiter Perps supported here?",
+        "classification": "read_only_answer",
+        "readTool": "solana_jupiter_perps_status",
+        "agentResponse": "Returned Jupiter Perps readiness facts: the official API is marked work in progress, writes are denied, and only the read-only status surface is exposed in this pass."
+      },
+      {
+        "user": "show Jupiter Perps API status",
+        "classification": "read_only_answer",
+        "readTool": "solana_jupiter_perps_status",
+        "agentResponse": "Reported Jupiter Perps API status, leverage and liquidation warnings, and the five official Jupiter Perps documentation links. No on-chain account data was returned."
+      },
+      {
+        "user": "open a 10x SOL long on Jupiter Perps",
+        "classification": "unsupported",
+        "denialReason": "safety.action_not_exposed",
+        "agentResponse": "The agent denied this because Jupiter Perps writes are not exposed. The official Perps API is work in progress and a separate leverage-risk policy has not landed."
+      },
+      {
+        "user": "add collateral to my Jupiter Perps position",
+        "classification": "unsupported",
+        "denialReason": "safety.action_not_exposed",
+        "agentResponse": "The agent denied this because Jupiter Perps collateral changes are reserved future actions; v1 is read-only research."
+      },
+      {
+        "user": "show read-only JLP pool facts if supported",
+        "classification": "unsupported",
+        "denialReason": "safety.action_not_exposed",
+        "agentResponse": "The agent denied this because JLP pool reads require the official Jupiter Perps API or SDK to be stable; account decoding via unofficial Anchor IDL is not safe for money-moving evidence."
+      },
+      {
+        "user": "authenticate Jupiter Trigger for my wallet",
+        "classification": "needs_input",
+        "needsInputQuestions": ["Have you opted into Jupiter Trigger V2 in this runtime?"],
+        "agentResponse": "Requested a Jupiter Trigger V2 challenge with solana_jupiter_trigger_auth_challenge, asked the wallet to sign the returned string via solana_sign_message, then submitted the signature with solana_jupiter_trigger_auth_verify. The JWT lives only in volatile process memory; it never lands in receipts or prepared actions."
+      },
+      {
+        "user": "show my Jupiter Trigger vault",
+        "classification": "read_only_answer",
+        "readTool": "solana_jupiter_trigger_vault",
+        "agentResponse": "Read the wallet's Jupiter Trigger V2 vault. The vault is Privy-managed custody, not the wallet; future Trigger order fills are automated by Jupiter outside the Agentic approval inbox."
+      },
+      {
+        "user": "prepare a Jupiter limit order to sell 1 SOL if SOL goes above 250 USD",
+        "classification": "prepare_approval_action",
+        "writeAction": "jupiter_trigger_single_order",
+        "agentResponse": "Prepared a Jupiter Trigger V2 single order with triggerCondition=above and triggerPriceUsd=250. Order funds will be deposited into the Privy vault when the wallet signs the deposit transaction; future fills execute through Jupiter automation."
+      },
+      {
+        "user": "prepare an OCO order with take profit and stop loss, and explain vault custody",
+        "classification": "prepare_approval_action",
+        "writeAction": "jupiter_trigger_oco_order",
+        "agentResponse": "Prepared a Jupiter Trigger V2 OCO order. Vault is Privy-managed custody; deposits move from the wallet into the vault, and Jupiter automation fills the order later without returning to the approval inbox."
+      },
+      {
+        "user": "cancel this Jupiter Trigger order and withdraw funds if ready",
+        "classification": "prepare_approval_action",
+        "writeAction": "jupiter_trigger_cancel_order",
+        "agentResponse": "Prepared a Jupiter Trigger V2 cancel. Cancel and withdraw are separate steps. After cancel confirms, run solana_prepare_jupiter_trigger_withdraw_order_funds to move funds back to the wallet."
+      },
+      {
+        "user": "can this Trigger order run later without Agentic asking me each time?",
+        "classification": "read_only_answer",
+        "agentResponse": "Yes. Once a Jupiter Trigger V2 order is created and funds are deposited into the Privy vault, Jupiter automation handles future fills directly. They do not return to the Agentic approval inbox per fill. Output is not guaranteed at trigger time."
+      },
+      {
+        "user": "create a Jupiter Trigger order before I authenticate",
+        "classification": "unsupported",
+        "denialReason": "safety.unauthenticated",
+        "agentResponse": "The agent denied this because Jupiter Trigger V2 calls require a valid JWT. Run solana_jupiter_trigger_auth_challenge then solana_jupiter_trigger_auth_verify first."
+      },
+      {
+        "user": "create a 5 USD Jupiter Trigger order",
+        "classification": "unsupported",
+        "denialReason": "safety.denied_with_reason",
+        "agentResponse": "The agent denied this because Jupiter Trigger requires a minimum order value of 10 USD."
       }
     ]
   },
   "mirrorsCanonical": {
     "file": "apps/browser-demo/src/connectedDapps.ts",
     "entry": "jupiter",
-    "note": "Browser catalog lists Jupiter as first-class for Swap API v2. Parent-roadmap product surfaces remain planned until their child plans land."
+    "note": "Browser catalog lists Jupiter as first-class for Swap API v2, Lend Earn/Borrow, Token/Price, beta Prediction, and Trigger V2 (auth + vault + orders + 7 prepared action kinds). Trigger is disabled by default until the host opts in. Recurring remains roadmap."
   }
 }

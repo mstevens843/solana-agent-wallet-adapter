@@ -1,10 +1,9 @@
 import type { DAppAdapterContext } from '../types.js';
 import { AdapterError } from '../types.js';
 
-import { getPythClient, getPythReceiver, describePythReceiverUnavailableReason } from './client.js';
+import { getPythClient, describePythReceiverUnavailableReason } from './client.js';
 import {
   PYTH_ADAPTER_ID,
-  PYTH_DEFAULT_MAX_AGE_SECONDS,
   normalizePriceFeedId,
   withFeedIdPrefix,
 } from './constants.js';
@@ -226,5 +225,3 @@ function hexToBuffer(value: string): Buffer {
   }
   return Buffer.from(normalized, 'hex');
 }
-
-export const PYTH_DEFAULT_MAX_AGE = PYTH_DEFAULT_MAX_AGE_SECONDS;

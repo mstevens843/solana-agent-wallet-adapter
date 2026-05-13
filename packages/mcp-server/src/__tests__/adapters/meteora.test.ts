@@ -33,6 +33,7 @@ const POOL = '11111111111111111111111111111111';
 const POSITION = 'So11111111111111111111111111111111111111112';
 const TOKEN_X = 'So11111111111111111111111111111111111111112';
 const TOKEN_Y = 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v';
+type FakeBuildKind = 'claim_fees' | 'claim_rewards' | 'add_liquidity' | 'remove_liquidity' | 'close_position';
 
 class FakeBackend {
   async getAddress(): Promise<string> {
@@ -47,6 +48,7 @@ interface FakeMeteoraState {
   snapshot: MeteoraPoolSnapshot;
   position: MeteoraPosition;
   buildCalls: string[];
+  buildTransactions?: Partial<Record<FakeBuildKind, string[]>>;
 }
 
 function fakeMeteoraClient(state: FakeMeteoraState): MeteoraClient {
@@ -93,24 +95,38 @@ function fakeMeteoraClient(state: FakeMeteoraState): MeteoraClient {
     },
     async buildClaimFeesTransaction() {
       state.buildCalls.push('claim_fees');
-      return { transactionBase64: 'base64-claim-fees', preview };
+      return buildResult(state, 'claim_fees', 'base64-claim-fees', preview);
     },
     async buildClaimRewardsTransaction() {
       state.buildCalls.push('claim_rewards');
-      return { transactionBase64: 'base64-claim-rewards', preview };
+      return buildResult(state, 'claim_rewards', 'base64-claim-rewards', preview);
     },
     async buildAddLiquidityTransaction() {
       state.buildCalls.push('add_liquidity');
-      return { transactionBase64: 'base64-add', preview };
+      return buildResult(state, 'add_liquidity', 'base64-add', preview);
     },
     async buildRemoveLiquidityTransaction() {
       state.buildCalls.push('remove_liquidity');
-      return { transactionBase64: 'base64-remove', preview };
+      return buildResult(state, 'remove_liquidity', 'base64-remove', preview);
     },
     async buildClosePositionTransaction() {
       state.buildCalls.push('close_position');
-      return { transactionBase64: 'base64-close', preview };
+      return buildResult(state, 'close_position', 'base64-close', preview);
     },
+  };
+}
+
+function buildResult(
+  state: FakeMeteoraState,
+  kind: FakeBuildKind,
+  fallback: string,
+  preview: MeteoraLiquidityPreview,
+) {
+  const transactionsBase64 = state.buildTransactions?.[kind] ?? [fallback];
+  return {
+    transactionBase64: transactionsBase64[0],
+    transactionsBase64,
+    preview,
   };
 }
 
@@ -189,6 +205,8 @@ function makeContext(opts: {
     config: fakeConfig(opts.cluster ?? 'mainnet-beta'),
     connection: {} as Connection,
     signAndBroadcast: opts.signed ?? (async () => 'meteora-test-txid'),
+    signTransaction: async () => "signed-base64-placeholder",
+    signMessage: async () => "signature-base64-placeholder",
     store: {} as PreparedActionStore,
   };
 }
@@ -209,7 +227,7 @@ function preparedAction(input: AddPreparedActionInput): PreparedAction {
   };
 }
 
-function requireMeteoraAction(id: 'claim_fees' | 'add_liquidity' | 'close_position') {
+function requireMeteoraAction(id: 'claim_fees' | 'claim_rewards' | 'add_liquidity' | 'remove_liquidity' | 'close_position') {
   const action = meteoraAdapter.actions[id];
   if (!action) throw new Error(`Missing Meteora action ${id}`);
   return action;
@@ -302,6 +320,81 @@ describe('Meteora prepared actions', () => {
     });
   });
 
+  it('rejects add-liquidity when the requested bins are outside the existing position range', async () => {
+    const state = fakeState({ position: fakePosition({ lowerBinId: 10, upperBinId: 12 }) });
+    setMeteoraClientFactory(() => fakeMeteoraClient(state));
+
+    const action = requireMeteoraAction('add_liquidity');
+
+    await expect(action.prepare({
+      poolAddress: POOL,
+      positionAddress: POSITION,
+      tokenXAmount: '0.01',
+      minBinId: 9,
+      maxBinId: 12,
+      strategyType: 'spot',
+      slippageBps: 50,
+    }, makeContext()))
+      .rejects
+      .toMatchObject({ code: 'bin_range_outside_position' });
+  });
+
+  it('executes multi-transaction remove-liquidity sequentially and returns every txid', async () => {
+    const state = fakeState({
+      buildTransactions: {
+        remove_liquidity: ['base64-remove-1', 'base64-remove-2'],
+      },
+    });
+    setMeteoraClientFactory(() => fakeMeteoraClient(state));
+    const signed: string[] = [];
+    const ctx = makeContext({
+      signed: async (transactionBase64, summary) => {
+        signed.push(`${transactionBase64}:${summary}`);
+        return `txid-${signed.length}`;
+      },
+    });
+
+    const action = requireMeteoraAction('remove_liquidity');
+    const prepared = await action.prepare({
+      poolAddress: POOL,
+      positionAddress: POSITION,
+      liquidityPercent: 25,
+      slippageBps: 50,
+    }, ctx);
+    const result = await action.execute(preparedAction(prepared.addInput), ctx);
+
+    expect(result.txid).toBe('txid-1');
+    expect(result.txids).toEqual(['txid-1', 'txid-2']);
+    expect(signed).toEqual([
+      `base64-remove-1:Remove Meteora liquidity from So11...1112 (1/2)`,
+      `base64-remove-2:Remove Meteora liquidity from So11...1112 (2/2)`,
+    ]);
+  });
+
+  it('executes multi-transaction claim-rewards sequentially', async () => {
+    const state = fakeState({
+      buildTransactions: {
+        claim_rewards: ['base64-reward-1', 'base64-reward-2'],
+      },
+    });
+    setMeteoraClientFactory(() => fakeMeteoraClient(state));
+    const signed: string[] = [];
+    const ctx = makeContext({
+      signed: async (transactionBase64, summary) => {
+        signed.push(`${transactionBase64}:${summary}`);
+        return `reward-txid-${signed.length}`;
+      },
+    });
+
+    const action = requireMeteoraAction('claim_rewards');
+    const prepared = await action.prepare({ poolAddress: POOL, positionAddress: POSITION }, ctx);
+    const result = await action.execute(preparedAction(prepared.addInput), ctx);
+
+    expect(result.txids).toEqual(['reward-txid-1', 'reward-txid-2']);
+    expect(signed[0]).toContain('Claim Meteora rewards for So11...1112 (1/2)');
+    expect(signed[1]).toContain('Claim Meteora rewards for So11...1112 (2/2)');
+  });
+
   it('rejects close-position when the position still has liquidity', async () => {
     const state = fakeState({ position: fakePosition({ liquidity: '1' }) });
     setMeteoraClientFactory(() => fakeMeteoraClient(state));
@@ -311,5 +404,16 @@ describe('Meteora prepared actions', () => {
     await expect(action.prepare({ poolAddress: POOL, positionAddress: POSITION }, makeContext()))
       .rejects
       .toMatchObject({ code: 'position_not_empty' });
+  });
+
+  it('rejects close-position when an empty position still has claimable amounts', async () => {
+    const state = fakeState({ position: fakePosition({ liquidity: '0' }) });
+    setMeteoraClientFactory(() => fakeMeteoraClient(state));
+
+    const action = requireMeteoraAction('close_position');
+
+    await expect(action.prepare({ poolAddress: POOL, positionAddress: POSITION }, makeContext()))
+      .rejects
+      .toMatchObject({ code: 'position_has_claimable_amounts' });
   });
 });

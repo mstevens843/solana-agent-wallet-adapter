@@ -235,19 +235,27 @@ class SanctumApiClient implements SanctumClient {
       swapSrc: requestedSources,
     });
     const orderResponse = firstDataObject(payload);
-    const outputAmountRaw = firstString(orderResponse.outAmt, orderResponse.outAmount, orderResponse.amountOut) ?? '0';
+    const inputAmountRaw = requireUnsignedIntegerString(
+      firstString(orderResponse.inpAmt, orderResponse.inputAmount) ?? input.amountRaw,
+      'input amount',
+    );
+    const outputAmountRaw = requireUnsignedIntegerString(
+      firstString(orderResponse.outAmt, orderResponse.outAmount, orderResponse.amountOut),
+      'output amount',
+    );
     const transactionBase64 = firstString(orderResponse.tx, orderResponse.transaction, orderResponse.transactionBase64);
     const routeSources = extractRouteSources(orderResponse, requestedSources);
+    const maxObservedFeeBps = extractMaxFeeBps(orderResponse);
     return {
       inputMint: firstString(orderResponse.inp) ?? input.inputMint,
       outputMint: firstString(orderResponse.out) ?? input.outputMint,
-      inputAmountRaw: firstString(orderResponse.inpAmt, orderResponse.inputAmount) ?? input.amountRaw,
+      inputAmountRaw,
       outputAmountRaw,
       mode: (firstString(orderResponse.mode) === 'ExactOut' ? 'ExactOut' : 'ExactIn'),
       routeSources,
       requestedSources,
       ...(input.slippageBps !== undefined && { slippageBps: input.slippageBps }),
-      ...(extractMaxFeeBps(orderResponse) !== undefined && { maxObservedFeeBps: extractMaxFeeBps(orderResponse) }),
+      ...(maxObservedFeeBps !== undefined && { maxObservedFeeBps }),
       ...(transactionBase64 !== undefined && { transactionBase64 }),
       hasTransaction: transactionBase64 !== undefined,
       warnings: extractWarnings(orderResponse),
@@ -389,12 +397,11 @@ function extractRouteSources(order: Record<string, unknown>, fallback: SanctumSw
   const swapSrcData = order.swapSrcData;
   if (isRecord(swapSrcData)) {
     for (const key of Object.keys(swapSrcData)) {
-      if (key) sources.add(key);
+      if (looksLikeRouteSourceKey(key)) sources.add(key);
     }
   }
-  for (const key of ['swapSrc', 'source', 'route', 'router']) {
-    const value = order[key];
-    if (typeof value === 'string' && value.trim()) sources.add(value.trim());
+  for (const key of ['swapSrc', 'swapSrcs', 'source', 'sources', 'route', 'routeSources', 'router']) {
+    collectRouteSourceValue(order[key], sources);
   }
   if (sources.size === 0) {
     for (const source of fallback) sources.add(source);
@@ -406,11 +413,56 @@ function extractMaxFeeBps(value: unknown): number | undefined {
   const found: number[] = [];
   visit(value, (key, item) => {
     const normalized = key.toLowerCase();
-    if (!normalized.includes('bps')) return;
+    if (!isFeeBpsKey(normalized)) return;
     const parsed = typeof item === 'number' ? item : typeof item === 'string' ? Number(item) : NaN;
-    if (Number.isFinite(parsed)) found.push(parsed);
+    if (Number.isFinite(parsed) && parsed >= 0) found.push(parsed);
   });
   return found.length > 0 ? Math.max(...found) : undefined;
+}
+
+function collectRouteSourceValue(value: unknown, sources: Set<string>): void {
+  if (typeof value === 'string' && value.trim()) {
+    for (const source of value.split(/[>,|/]+/)) {
+      if (source.trim()) sources.add(source.trim());
+    }
+    return;
+  }
+  if (Array.isArray(value)) {
+    for (const entry of value) collectRouteSourceValue(entry, sources);
+    return;
+  }
+  if (isRecord(value)) {
+    collectRouteSourceValue(value.swapSrc, sources);
+    collectRouteSourceValue(value.source, sources);
+    collectRouteSourceValue(value.router, sources);
+    collectRouteSourceValue(value.name, sources);
+  }
+}
+
+function looksLikeRouteSourceKey(value: string): boolean {
+  const normalized = value.toLowerCase().replace(/[^a-z0-9]/g, '');
+  return normalized === 'inf' ||
+    normalized === 'infinity' ||
+    normalized === 'sanctuminf' ||
+    normalized === 'sanctuminfinity' ||
+    normalized === 'router' ||
+    normalized === 'sanctumrouter' ||
+    normalized === 'jup' ||
+    normalized === 'jupiter';
+}
+
+function isFeeBpsKey(key: string): boolean {
+  const normalized = key.replace(/[^a-z0-9]/g, '');
+  return normalized.includes('bps') &&
+    normalized.includes('fee') &&
+    !normalized.includes('slippage') &&
+    !normalized.includes('referral') &&
+    !normalized.includes('threshold');
+}
+
+function requireUnsignedIntegerString(value: string | undefined, label: string): string {
+  if (value && /^\d+$/.test(value)) return value;
+  throw new Error(`Sanctum API did not return a valid unsigned integer ${label}.`);
 }
 
 function extractWarnings(value: unknown): string[] {

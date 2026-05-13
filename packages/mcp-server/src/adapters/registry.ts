@@ -1,5 +1,6 @@
 import { driftAdapter } from './drift/index.js';
 import { jitoAdapter } from './jito/index.js';
+import { jupiterAdapter } from './jupiter/index.js';
 import { kaminoAdapter } from './kamino/index.js';
 import { luloAdapter } from './lulo/index.js';
 import { magicedenAdapter } from './magiceden/index.js';
@@ -18,6 +19,7 @@ import { wormholeAdapter } from './wormhole/index.js';
 import type { DAppAdapter, DAppAdapterId } from './types.js';
 
 const ADAPTERS: Partial<Record<DAppAdapterId, DAppAdapter>> = {
+  jupiter: jupiterAdapter,
   kamino: kaminoAdapter,
   meteora: meteoraAdapter,
   orca: orcaAdapter,

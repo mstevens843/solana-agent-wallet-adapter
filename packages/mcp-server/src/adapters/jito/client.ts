@@ -29,6 +29,7 @@ import {
 const requireFromHere = createRequire(import.meta.url);
 const STAKE_POOL_PACKAGE = '@solana/spl-stake-pool';
 const STAKE_DEPOSIT_INTERCEPTOR_PACKAGE = '@jito-foundation/stake-deposit-interceptor-sdk';
+const SPL_TOKEN_PACKAGE = '@solana/spl-token';
 const FEATURE_DISABLED_REASON = 'JITO_CONNECTOR_ENABLED=false disables the Jito connector.';
 const STAKE_POOL_UNAVAILABLE_REASON =
   '@solana/spl-stake-pool is not installed or could not be resolved. Install it as an optional MCP server dependency, or inject a mock with setJitoClientFactory().';
@@ -37,6 +38,7 @@ const INTERCEPTOR_UNAVAILABLE_REASON =
 
 type SplStakePoolModule = typeof import('@solana/spl-stake-pool');
 type JitoInterceptorModule = typeof import('@jito-foundation/stake-deposit-interceptor-sdk');
+type SplTokenModule = typeof import('@solana/spl-token');
 
 export type JitoQuoteOperation =
   | 'stake_sol'
@@ -131,6 +133,37 @@ export interface JitoWalletPositionsResult {
   };
 }
 
+export interface JitoDepositReceipt {
+  depositReceipt: string;
+  base: string;
+  owner: string;
+  stakePool: string;
+  stakePoolDepositStakeAuthority: string;
+  lstAmount: string;
+  lstAmountRaw: string;
+  depositTime: string;
+  depositedAt: string;
+  coolDownSeconds: string;
+  claimableAt: string;
+  cooldownComplete: boolean;
+  secondsUntilClaimable: number;
+  initialFeeBps: number;
+  programIds: string[];
+  warnings: string[];
+}
+
+export interface JitoDepositReceiptsResult {
+  walletAddress: string;
+  receipts: JitoDepositReceipt[];
+  totals: {
+    receipts: number;
+    claimableReceipts: number;
+    pendingReceipts: number;
+    lstAmountRaw: string;
+    lstAmount: string;
+  };
+}
+
 export interface JitoQuoteInput {
   operation: JitoQuoteOperation;
   solAmount?: string;
@@ -165,6 +198,7 @@ export interface JitoBuildStakeSolInput {
 export interface JitoBuildDepositStakeInput {
   walletAddress: string;
   stakeAccount: string;
+  minJitoSolRaw?: bigint;
 }
 
 export interface JitoBuildUnstakeInput {
@@ -178,6 +212,12 @@ export interface JitoBuildWithdrawSolInput {
   stakeAccount: string;
   amountLamports?: bigint;
   withdrawAll?: boolean;
+}
+
+export interface JitoBuildClaimDepositReceiptInput {
+  walletAddress: string;
+  receiptAddress: string;
+  allowEarlyClaim?: boolean;
 }
 
 export interface JitoBuildTransactionResult {
@@ -202,12 +242,19 @@ export interface JitoClient {
     walletAddress: string,
     input?: { delegatedOnly?: boolean; eligibleForJitoDepositOnly?: boolean },
   ): Promise<JitoStakeAccount[]>;
+  getWalletDepositReceipts(
+    connection: Connection,
+    walletAddress: string,
+    input?: { claimableOnly?: boolean },
+  ): Promise<JitoDepositReceiptsResult>;
   getStakeAccount(connection: Connection, stakeAccount: string, walletAddress?: string): Promise<JitoStakeAccount>;
+  getDepositReceipt(connection: Connection, receiptAddress: string): Promise<JitoDepositReceipt>;
   quote(connection: Connection, input: JitoQuoteInput): Promise<JitoQuote>;
   buildStakeSolTransaction(connection: Connection, input: JitoBuildStakeSolInput): Promise<JitoBuildTransactionResult>;
   buildDepositStakeAccountTransaction(connection: Connection, input: JitoBuildDepositStakeInput): Promise<JitoBuildTransactionResult>;
   buildUnstakeJitosolTransaction(connection: Connection, input: JitoBuildUnstakeInput): Promise<JitoBuildTransactionResult>;
   buildWithdrawSolTransaction(connection: Connection, input: JitoBuildWithdrawSolInput): Promise<JitoBuildTransactionResult>;
+  buildClaimDepositReceiptTransaction(connection: Connection, input: JitoBuildClaimDepositReceiptInput): Promise<JitoBuildTransactionResult>;
 }
 
 class JitoSdkUnavailable implements JitoClient {
@@ -230,8 +277,14 @@ class JitoSdkUnavailable implements JitoClient {
   async getWalletStakeAccounts(): Promise<JitoStakeAccount[]> {
     this.fail('getWalletStakeAccounts');
   }
+  async getWalletDepositReceipts(): Promise<JitoDepositReceiptsResult> {
+    this.fail('getWalletDepositReceipts');
+  }
   async getStakeAccount(): Promise<JitoStakeAccount> {
     this.fail('getStakeAccount');
+  }
+  async getDepositReceipt(): Promise<JitoDepositReceipt> {
+    this.fail('getDepositReceipt');
   }
   async quote(): Promise<JitoQuote> {
     this.fail('quote');
@@ -247,6 +300,9 @@ class JitoSdkUnavailable implements JitoClient {
   }
   async buildWithdrawSolTransaction(): Promise<JitoBuildTransactionResult> {
     this.fail('buildWithdrawSolTransaction');
+  }
+  async buildClaimDepositReceiptTransaction(): Promise<JitoBuildTransactionResult> {
+    this.fail('buildClaimDepositReceiptTransaction');
   }
 }
 
@@ -354,12 +410,45 @@ class JitoSdkClient implements JitoClient {
       commitment: 'confirmed',
       filters: [{ memcmp: { offset: 44, bytes: owner.toBase58() } }],
     });
-    const accounts = rows
+    const normalized = rows
       .map((row) => normalizeStakeAccount(row.pubkey, row.account, owner.toBase58(), epochInfo?.epoch, nowSeconds))
-      .filter((account): account is JitoStakeAccount => account !== null)
+      .filter((account): account is JitoStakeAccount => account !== null);
+    const accounts = await Promise.all(normalized.map(async (account) => {
+      const activation = await connection.getStakeActivation(new PublicKey(account.stakeAccount), 'confirmed').catch(() => undefined);
+      return withConfirmedDepositEligibility(account, activation?.state);
+    }));
+    return accounts
       .filter((account) => !input.delegatedOnly || account.state === 'delegated')
       .filter((account) => !input.eligibleForJitoDepositOnly || account.eligibleForJitoDeposit);
-    return accounts;
+  }
+
+  async getWalletDepositReceipts(
+    connection: Connection,
+    walletAddress: string,
+    input: { claimableOnly?: boolean } = {},
+  ): Promise<JitoDepositReceiptsResult> {
+    const interceptor = await loadStakeDepositInterceptorSdk();
+    const owner = new PublicKey(walletAddress);
+    const nowSeconds = Math.floor(Date.now() / 1000);
+    const rows = await connection.getProgramAccounts(interceptor.PROGRAM_ID, {
+      commitment: 'confirmed',
+      filters: [{ memcmp: { offset: 40, bytes: owner.toBase58() } }],
+    });
+    const receipts = rows
+      .map((row) => normalizeDepositReceipt(row.pubkey, interceptor.DepositReceipt.fromAccountInfo(row.account)[0], nowSeconds, interceptor.PROGRAM_ID))
+      .filter((receipt) => !input.claimableOnly || receipt.cooldownComplete);
+    const totalRaw = receipts.reduce((sum, receipt) => sum + safeBigInt(receipt.lstAmountRaw), 0n);
+    return {
+      walletAddress: owner.toBase58(),
+      receipts,
+      totals: {
+        receipts: receipts.length,
+        claimableReceipts: receipts.filter((receipt) => receipt.cooldownComplete).length,
+        pendingReceipts: receipts.filter((receipt) => !receipt.cooldownComplete).length,
+        lstAmountRaw: totalRaw.toString(),
+        lstAmount: formatRawAmount(totalRaw, JITOSOL_DECIMALS),
+      },
+    };
   }
 
   async getStakeAccount(connection: Connection, stakeAccount: string, walletAddress?: string): Promise<JitoStakeAccount> {
@@ -375,7 +464,18 @@ class JitoSdkClient implements JitoClient {
       throw new AdapterError(JITO_ADAPTER_ID, 'invalid_stake_account', `${pubkey.toBase58()} is not a parsed stake account.`);
     }
     const activation = await connection.getStakeActivation(pubkey, 'confirmed').catch(() => undefined);
-    return activation?.state ? { ...normalized, activationState: activation.state } : normalized;
+    return withConfirmedDepositEligibility(normalized, activation?.state);
+  }
+
+  async getDepositReceipt(connection: Connection, receiptAddress: string): Promise<JitoDepositReceipt> {
+    const interceptor = await loadStakeDepositInterceptorSdk();
+    const pubkey = new PublicKey(receiptAddress);
+    const account = await connection.getAccountInfo(pubkey, 'confirmed');
+    if (!account) {
+      throw new AdapterError(JITO_ADAPTER_ID, 'deposit_receipt_not_found', `Jito deposit receipt ${pubkey.toBase58()} was not found.`);
+    }
+    const [receipt] = interceptor.DepositReceipt.fromAccountInfo(account);
+    return normalizeDepositReceipt(pubkey, receipt, Math.floor(Date.now() / 1000), interceptor.PROGRAM_ID);
   }
 
   async quote(connection: Connection, input: JitoQuoteInput): Promise<JitoQuote> {
@@ -486,16 +586,11 @@ class JitoSdkClient implements JitoClient {
     const interceptor = await loadStakeDepositInterceptorSdk();
     const wallet = new PublicKey(input.walletAddress);
     const stake = await this.getStakeAccount(connection, input.stakeAccount, wallet.toBase58());
-    if (!stake.eligibleForJitoDeposit) {
-      throw new AdapterError(
-        JITO_ADAPTER_ID,
-        'stake_account_not_eligible',
-        stake.ineligibleReason ?? 'Stake account is not eligible for Jito stake-pool deposit.',
-      );
-    }
+    requireJitoStakeDepositEligible(stake);
     if (!stake.voter) {
       throw new AdapterError(JITO_ADAPTER_ID, 'missing_vote_account', 'Stake account is missing a validator vote account.');
     }
+    await assertVoteAccountInJitoPool(connection, stake.voter);
     const built = await interceptor.depositStake(
       connection,
       wallet,
@@ -504,10 +599,21 @@ class JitoSdkClient implements JitoClient {
       new PublicKey(stake.voter),
       new PublicKey(stake.stakeAccount),
     );
+    const baseSigner = built.signers[0];
+    if (!baseSigner) {
+      throw new AdapterError(JITO_ADAPTER_ID, 'missing_deposit_receipt_base', 'Jito stake deposit did not return a receipt base signer.');
+    }
+    const depositReceipt = deriveDepositReceiptAddress(interceptor.PROGRAM_ID, JITO_STAKE_POOL_ADDRESS, baseSigner.publicKey);
+    if (input.minJitoSolRaw !== undefined) {
+      replaceDepositStakeWithSlippageInstruction(built.instructions, wallet, input.minJitoSolRaw, interceptor);
+    }
     return buildTransaction(connection, wallet, built.instructions, built.signers, {
       operation: 'deposit_stake_account',
       stakeAccount: stake.stakeAccount,
       delegatedStakeLamports: stake.delegatedStakeLamports,
+      depositReceipt: depositReceipt.toBase58(),
+      receiptBase: baseSigner.publicKey.toBase58(),
+      minJitoSolRaw: input.minJitoSolRaw?.toString(),
       expectedClaim: 'Deposit creates an interceptor receipt; JitoSOL is claimable after the cooldown or earlier with the interceptor fee.',
     }, [SPL_STAKE_POOL_PROGRAM_ID.toBase58(), interceptor.PROGRAM_ID.toBase58()]);
   }
@@ -523,12 +629,16 @@ class JitoSdkClient implements JitoClient {
       ? await sdk.withdrawSol(connection, JITO_STAKE_POOL_ADDRESS, wallet, wallet, amount)
       : await sdk.withdrawStake(connection, JITO_STAKE_POOL_ADDRESS, wallet, amount);
     const stakeReceiver = (built as { stakeReceiver?: PublicKey }).stakeReceiver;
+    const generatedStakeReceivers = input.withdrawMode === 'stake_account'
+      ? built.signers.slice(1).map((signer) => signer.publicKey.toBase58())
+      : [];
     return buildTransaction(connection, wallet, built.instructions, built.signers, {
       operation: 'unstake_jitosol',
       withdrawMode: input.withdrawMode,
       jitoSolAmount: formatRawAmount(input.jitoSolAmountRaw, JITOSOL_DECIMALS),
       jitoSolAmountRaw: input.jitoSolAmountRaw.toString(),
       stakeReceiver: stakeReceiver?.toBase58(),
+      generatedStakeReceivers,
     }, [SPL_STAKE_POOL_PROGRAM_ID.toBase58()]);
   }
 
@@ -548,9 +658,13 @@ class JitoSdkClient implements JitoClient {
         `Stake account ${stake.stakeAccount} is ${activationState ?? stake.state}; wait until it is inactive before withdrawing SOL.`,
       );
     }
+    if (input.withdrawAll && input.amountLamports !== undefined) {
+      throw new ProtocolError('invalid_request', 'Jito SOL withdrawal cannot set both withdrawAll and amountLamports.');
+    }
     const lamports = input.withdrawAll || input.amountLamports === undefined
       ? safeBigInt(stake.lamports)
       : input.amountLamports;
+    validateStakeWithdrawalAmount(stake, lamports, input.withdrawAll ?? input.amountLamports === undefined);
     const transaction = new Transaction().add(
       ...StakeProgram.withdraw({
         stakePubkey: new PublicKey(stake.stakeAccount),
@@ -572,6 +686,50 @@ class JitoSdkClient implements JitoClient {
       },
       signerCount: 0,
     };
+  }
+
+  async buildClaimDepositReceiptTransaction(
+    connection: Connection,
+    input: JitoBuildClaimDepositReceiptInput,
+  ): Promise<JitoBuildTransactionResult> {
+    const interceptor = await loadStakeDepositInterceptorSdk();
+    const splToken = await loadSplTokenSdk();
+    const wallet = new PublicKey(input.walletAddress);
+    const receipt = await this.getDepositReceipt(connection, input.receiptAddress);
+    requireReceiptOwner(receipt, wallet.toBase58());
+    requireReceiptClaimable(receipt, input.allowEarlyClaim === true);
+    const authority = await interceptor.StakePoolDepositStakeAuthority.fromAccountAddress(
+      connection,
+      new PublicKey(receipt.stakePoolDepositStakeAuthority),
+      'confirmed',
+    );
+    if (!new PublicKey(receipt.stakePool).equals(JITO_STAKE_POOL_ADDRESS) || !authority.poolMint.equals(JITOSOL_MINT)) {
+      throw new AdapterError(JITO_ADAPTER_ID, 'invalid_deposit_receipt', 'Deposit receipt does not belong to the configured JitoSOL stake pool.');
+    }
+    const destination = splToken.getAssociatedTokenAddressSync(authority.poolMint, wallet);
+    const instructions: TransactionInstruction[] = [
+      splToken.createAssociatedTokenAccountIdempotentInstruction(wallet, destination, wallet, authority.poolMint),
+      interceptor.createClaimPoolTokensInstruction({
+        depositReceipt: new PublicKey(receipt.depositReceipt),
+        owner: wallet,
+        vault: authority.vault,
+        destination,
+        feeWallet: authority.feeWallet,
+        depositAuthority: new PublicKey(receipt.stakePoolDepositStakeAuthority),
+        poolMint: authority.poolMint,
+        tokenProgram: splToken.TOKEN_PROGRAM_ID,
+      }),
+    ];
+    return buildTransaction(connection, wallet, instructions, [], {
+      operation: 'claim_deposit_receipt',
+      depositReceipt: receipt.depositReceipt,
+      destinationTokenAccount: destination.toBase58(),
+      lstAmount: receipt.lstAmount,
+      lstAmountRaw: receipt.lstAmountRaw,
+      cooldownComplete: receipt.cooldownComplete,
+      allowEarlyClaim: input.allowEarlyClaim === true,
+      initialFeeBps: receipt.initialFeeBps,
+    }, [interceptor.PROGRAM_ID.toBase58()]);
   }
 }
 
@@ -637,6 +795,10 @@ async function loadStakeDepositInterceptorSdk(): Promise<JitoInterceptorModule> 
   return import(STAKE_DEPOSIT_INTERCEPTOR_PACKAGE) as Promise<JitoInterceptorModule>;
 }
 
+async function loadSplTokenSdk(): Promise<SplTokenModule> {
+  return import(SPL_TOKEN_PACKAGE) as Promise<SplTokenModule>;
+}
+
 async function readValidators(
   connection: Connection,
   sdk: SplStakePoolModule,
@@ -661,6 +823,84 @@ async function readValidators(
       status: validatorStatus(row.status),
     };
   });
+}
+
+async function assertVoteAccountInJitoPool(connection: Connection, voteAccount: string): Promise<void> {
+  const sdk = await loadStakePoolSdk();
+  const stakePoolAccount = await sdk.getStakePoolAccount(connection, JITO_STAKE_POOL_ADDRESS);
+  const validators = await readValidators(connection, sdk, stakePoolAccount.account.data.validatorList);
+  if (!validators.some((validator) => validator.voteAccountAddress === voteAccount)) {
+    throw new AdapterError(
+      JITO_ADAPTER_ID,
+      'validator_not_in_jito_pool',
+      `Stake account validator vote account ${voteAccount} is not in the Jito validator list.`,
+    );
+  }
+}
+
+function withConfirmedDepositEligibility(account: JitoStakeAccount, activationState: string | undefined): JitoStakeAccount {
+  const next: JitoStakeAccount = activationState ? { ...account, activationState } : { ...account };
+  if (next.eligibleForJitoDeposit && next.state === 'delegated') {
+    if (!activationState) {
+      return {
+        ...next,
+        eligibleForJitoDeposit: false,
+        ineligibleReason: 'Stake activation state could not be confirmed.',
+      };
+    }
+    if (activationState !== 'active') {
+      return {
+        ...next,
+        eligibleForJitoDeposit: false,
+        ineligibleReason: `Stake account activation state is ${activationState}; Jito deposit requires active delegated stake.`,
+      };
+    }
+  }
+  return next;
+}
+
+function normalizeDepositReceipt(
+  pubkey: PublicKey,
+  receipt: {
+    base: PublicKey;
+    owner: PublicKey;
+    stakePool: PublicKey;
+    stakePoolDepositStakeAuthority: PublicKey;
+    depositTime: unknown;
+    lstAmount: unknown;
+    coolDownSeconds: unknown;
+    initialFeeBps: number;
+  },
+  nowSeconds: number,
+  programId: PublicKey,
+): JitoDepositReceipt {
+  const depositTime = safeBigInt(receipt.depositTime);
+  const coolDownSeconds = safeBigInt(receipt.coolDownSeconds);
+  const claimableAtSeconds = depositTime + coolDownSeconds;
+  const secondsUntilClaimable = Number(claimableAtSeconds > BigInt(nowSeconds) ? claimableAtSeconds - BigInt(nowSeconds) : 0n);
+  const lstAmountRaw = safeBigInt(receipt.lstAmount);
+  const warnings: string[] = [];
+  if (!receipt.stakePool.equals(JITO_STAKE_POOL_ADDRESS)) {
+    warnings.push(`Receipt stake pool ${receipt.stakePool.toBase58()} does not match Jito ${JITO_STAKE_POOL_ADDRESS.toBase58()}.`);
+  }
+  return {
+    depositReceipt: pubkey.toBase58(),
+    base: receipt.base.toBase58(),
+    owner: receipt.owner.toBase58(),
+    stakePool: receipt.stakePool.toBase58(),
+    stakePoolDepositStakeAuthority: receipt.stakePoolDepositStakeAuthority.toBase58(),
+    lstAmount: formatRawAmount(lstAmountRaw, JITOSOL_DECIMALS),
+    lstAmountRaw: lstAmountRaw.toString(),
+    depositTime: depositTime.toString(),
+    depositedAt: unixSecondsToIso(depositTime),
+    coolDownSeconds: coolDownSeconds.toString(),
+    claimableAt: unixSecondsToIso(claimableAtSeconds),
+    cooldownComplete: secondsUntilClaimable === 0,
+    secondsUntilClaimable,
+    initialFeeBps: receipt.initialFeeBps,
+    programIds: [programId.toBase58()],
+    warnings,
+  };
 }
 
 function normalizeStakeAccount(
@@ -699,6 +939,8 @@ function normalizeStakeAccount(
   let ineligibleReason: string | undefined;
   if (walletAddress && withdrawer && withdrawer !== walletAddress) {
     ineligibleReason = `Withdraw authority ${withdrawer} does not match wallet ${walletAddress}.`;
+  } else if (walletAddress && staker && staker !== walletAddress) {
+    ineligibleReason = `Stake authority ${staker} does not match wallet ${walletAddress}.`;
   } else if (state !== 'delegated') {
     ineligibleReason = `Stake account is ${state}; Jito deposit requires delegated stake.`;
   } else if (!voter) {
@@ -763,6 +1005,118 @@ async function prepareLegacyTransaction(
   if (signers.length > 0) {
     transaction.partialSign(...signers);
   }
+}
+
+function deriveDepositReceiptAddress(programId: PublicKey, stakePoolAddress: PublicKey, base: PublicKey): PublicKey {
+  return PublicKey.findProgramAddressSync(
+    [Buffer.from('deposit_receipt'), stakePoolAddress.toBuffer(), base.toBuffer()],
+    programId,
+  )[0];
+}
+
+function replaceDepositStakeWithSlippageInstruction(
+  instructions: TransactionInstruction[],
+  owner: PublicKey,
+  minimumPoolTokensOut: bigint,
+  interceptor: JitoInterceptorModule,
+): void {
+  let index = -1;
+  for (let i = instructions.length - 1; i >= 0; i -= 1) {
+    if (instructions[i]?.programId.equals(interceptor.PROGRAM_ID)) {
+      index = i;
+      break;
+    }
+  }
+  const instruction = index >= 0 ? instructions[index] : undefined;
+  if (!instruction) {
+    throw new AdapterError(JITO_ADAPTER_ID, 'missing_deposit_instruction', 'Jito stake deposit instruction was not found.');
+  }
+  const key = (position: number, label: string): PublicKey => {
+    const account = instruction.keys[position]?.pubkey;
+    if (!account) {
+      throw new AdapterError(JITO_ADAPTER_ID, 'invalid_deposit_instruction', `Jito stake deposit instruction is missing ${label}.`);
+    }
+    return account;
+  };
+  instructions[index] = interceptor.createDepositStakeWithSlippageInstruction({
+    payer: key(0, 'payer'),
+    stakePoolProgram: key(1, 'stake pool program'),
+    depositReceipt: key(2, 'deposit receipt'),
+    stakePool: key(3, 'stake pool'),
+    validatorStakeList: key(4, 'validator stake list'),
+    depositStakeAuthority: key(5, 'deposit stake authority'),
+    base: key(6, 'base'),
+    stakePoolWithdrawAuthority: key(7, 'stake pool withdraw authority'),
+    stake: key(8, 'stake'),
+    validatorStakeAccount: key(9, 'validator stake account'),
+    reserveStakeAccount: key(10, 'reserve stake account'),
+    vault: key(11, 'vault'),
+    managerFeeAccount: key(12, 'manager fee account'),
+    referrerPoolTokensAccount: key(13, 'referrer pool token account'),
+    poolMint: key(14, 'pool mint'),
+    clock: key(15, 'clock'),
+    stakeHistory: key(16, 'stake history'),
+    tokenProgram: key(17, 'token program'),
+    stakeProgram: key(18, 'stake program'),
+    systemProgram: key(19, 'system program'),
+  }, {
+    depositStakeWithSlippageArgs: {
+      owner,
+      minimumPoolTokensOut: safeNumber(minimumPoolTokensOut, 'Minimum JitoSOL output'),
+    },
+  });
+}
+
+function requireJitoStakeDepositEligible(stake: JitoStakeAccount): void {
+  if (!stake.eligibleForJitoDeposit) {
+    throw new AdapterError(
+      JITO_ADAPTER_ID,
+      'stake_account_not_eligible',
+      stake.ineligibleReason ?? 'Stake account is not eligible for Jito stake-pool deposit.',
+    );
+  }
+}
+
+function requireReceiptOwner(receipt: JitoDepositReceipt, walletAddress: string): void {
+  if (receipt.owner !== walletAddress) {
+    throw new ProtocolError(
+      'unauthorized',
+      `Jito deposit receipt belongs to ${receipt.owner}, but connected wallet is ${walletAddress}.`,
+    );
+  }
+}
+
+function requireReceiptClaimable(receipt: JitoDepositReceipt, allowEarlyClaim: boolean): void {
+  if (!receipt.cooldownComplete && !allowEarlyClaim) {
+    throw new AdapterError(
+      JITO_ADAPTER_ID,
+      'deposit_receipt_cooling_down',
+      `Jito deposit receipt is claimable without early-claim fees at ${receipt.claimableAt}; pass allowEarlyClaim to claim during cooldown.`,
+    );
+  }
+}
+
+function validateStakeWithdrawalAmount(stake: JitoStakeAccount, amountLamports: bigint, withdrawAll: boolean): void {
+  const total = safeBigInt(stake.lamports);
+  if (amountLamports <= 0n) {
+    throw new ProtocolError('invalid_request', 'Jito stake-account SOL withdrawal amount must be greater than zero.');
+  }
+  if (amountLamports > total) {
+    throw new ProtocolError('invalid_request', 'Jito stake-account SOL withdrawal amount exceeds the stake account balance.');
+  }
+  const rentReserve = stake.rentExemptReserve ? safeBigInt(stake.rentExemptReserve) : undefined;
+  if (!withdrawAll && rentReserve !== undefined && total - amountLamports < rentReserve) {
+    throw new ProtocolError(
+      'invalid_request',
+      `Partial Jito stake-account SOL withdrawal must leave the rent-exempt reserve of ${formatRawAmount(rentReserve, 9)} SOL.`,
+    );
+  }
+}
+
+function unixSecondsToIso(seconds: bigint): string {
+  const millis = seconds * 1000n;
+  if (millis > BigInt(Number.MAX_SAFE_INTEGER)) return '9999-12-31T23:59:59.999Z';
+  return new Date(Number(millis)).toISOString();
 }
 
 function poolMath(snapshot: JitoStakePoolSnapshot): { totalLamports: bigint; poolTokenSupply: bigint } {

@@ -1,0 +1,201 @@
+{
+  "$schema": "./connector-pack.schema.json",
+  "id": "wormhole",
+  "name": "Wormhole",
+  "status": "first_class",
+  "aliases": ["wormhole", "portal bridge", "token bridge", "wormhole token bridge", "wtt", "cctp bridge"],
+  "supportedClusters": ["mainnet-beta", "devnet"],
+  "requiredConfig": [
+    {
+      "name": "@wormhole-foundation/sdk",
+      "scope": "env",
+      "required": true,
+      "description": "Optional MCP server dependency plus route-specific platform packages. Hosts wire the SDK through setWormholeClientFactory()."
+    },
+    {
+      "name": "WORMHOLE_CONNECTOR_ENABLED",
+      "scope": "env",
+      "required": false,
+      "description": "Set false/0/off to disable the connector."
+    },
+    {
+      "name": "WORMHOLE_NETWORK",
+      "scope": "env",
+      "required": false,
+      "description": "Optional Mainnet or Testnet override. Defaults from the Solana cluster."
+    }
+  ],
+  "readCapabilities": [
+    {
+      "toolName": "solana_wormhole_supported_routes",
+      "source": "first-class-adapter",
+      "implemented": true,
+      "requiresClientKey": false,
+      "returns": "Supported Solana-source destination chains, route types, relayer support, manual redemption requirement, and prepare support.",
+      "facts": ["sourceChain", "destinationChain", "routeType", "manualRedemptionRequired", "relayerSupported"]
+    },
+    {
+      "toolName": "solana_wormhole_token_snapshot",
+      "source": "first-class-adapter",
+      "implemented": true,
+      "requiresClientKey": false,
+      "returns": "Wormhole token metadata, wrapped assets where exposed, and supported routes for a Solana mint.",
+      "facts": ["mintAddress", "wrappedAssets", "supportedRoutes", "warnings"]
+    },
+    {
+      "toolName": "solana_wormhole_quote",
+      "source": "first-class-adapter",
+      "implemented": true,
+      "requiresClientKey": false,
+      "returns": "Quote snapshot for a Solana-source Wormhole transfer, including fees, destination token, route mode, native gas, and redemption facts.",
+      "facts": ["amountRaw", "destinationToken", "bridgeFee", "estimatedDestinationAmount", "manualRedemptionRequired"]
+    },
+    {
+      "toolName": "solana_wormhole_transfer_status",
+      "source": "first-class-adapter",
+      "implemented": true,
+      "requiresClientKey": false,
+      "returns": "Transfer status from txid, VAA, sequence, or transfer id, including VAA availability, redeemed state, next action, and Solana-executable flag.",
+      "facts": ["state", "vaaAvailable", "redeemed", "nextAction", "solanaExecutable"]
+    },
+    {
+      "toolName": "solana_wormhole_wallet_bridge_exposure",
+      "source": "first-class-adapter",
+      "implemented": true,
+      "requiresClientKey": false,
+      "returns": "Pending and recent bridge exposure for a wallet.",
+      "facts": ["walletAddress", "pendingTransfers", "recentTransfers"]
+    }
+  ],
+  "writeCapabilities": [
+    {
+      "actionKind": "wormhole_transfer",
+      "executionMode": "first_class_adapter",
+      "prepares": "A manual-approval inbox item for a Solana-source Wormhole token transfer.",
+      "executesVia": "solana_execute_prepared_action",
+      "implemented": true,
+      "userApproves": "The Solana source-chain bridge transaction."
+    },
+    {
+      "actionKind": "wormhole_redeem",
+      "executionMode": "first_class_adapter",
+      "prepares": "A manual-approval inbox item to redeem/finalize a Wormhole transfer on Solana only.",
+      "executesVia": "solana_execute_prepared_action",
+      "implemented": true,
+      "userApproves": "The Solana redemption transaction."
+    },
+    {
+      "actionKind": "wormhole_recover_or_resume",
+      "executionMode": "first_class_adapter",
+      "prepares": "A manual-approval inbox item to recover or resume a transfer only when the next step is Solana-compatible.",
+      "executesVia": "solana_execute_prepared_action",
+      "implemented": true,
+      "userApproves": "The Solana recovery/resume transaction."
+    }
+  ],
+  "requiredUserInputs": [
+    {
+      "name": "destinationChain",
+      "kind": "text",
+      "required": true,
+      "appliesTo": ["wormhole_transfer", "wormhole_redeem"],
+      "prompt": "Which destination chain should Wormhole use?"
+    },
+    {
+      "name": "destinationAddress",
+      "kind": "text",
+      "required": true,
+      "appliesTo": ["wormhole_transfer"],
+      "prompt": "What destination wallet address should receive the bridged asset?"
+    },
+    {
+      "name": "amount",
+      "kind": "text",
+      "required": true,
+      "appliesTo": ["wormhole_transfer"],
+      "prompt": "How much should be bridged?"
+    }
+  ],
+  "requiredConnectorFacts": [
+    "supported route",
+    "fresh quote",
+    "destination token mapping",
+    "fee cap check",
+    "redemption mode"
+  ],
+  "unsupportedRequests": [
+    "Arbitrary EVM signing or destination-chain transaction signing.",
+    "NFT bridge transfers.",
+    "Governance VAA, relayer operator, NTT admin, or custom bridge deployment actions.",
+    "Claims that bridge transfers are reversible or guaranteed.",
+    "Automated redemption on non-Solana destination chains."
+  ],
+  "actionPreparationNotes": "Wormhole is first-class and prepare-only. Prepared transfer actions store connectorId=wormhole, amount, amountRaw, destination chain/address, route/quote/status snapshots, fee caps, program ids, and refreshAtExecution=true. Execution refreshes quote and route state, rejects changed destination token mapping, fee cap breaches, stale quotes, and non-Solana redeem signing.",
+  "riskNotes": "Bridge fees, finality, relayer behavior, native gas dropoff, destination token mapping, and redemption requirements vary by route. The agent must surface manual redemption and destination-chain signing caveats.",
+  "approvalBoundary": {
+    "readGated": true,
+    "writeGated": true,
+    "blinkBacked": false,
+    "summary": "safety.prepare_only"
+  },
+  "walletApprovalBoundary": "This prepares a wallet approval request; it does not sign, submit, or grant delegated authority.",
+  "examples": {
+    "requests": [
+      {
+        "user": "Show Wormhole routes for USDC from Solana to Ethereum.",
+        "classification": "read_only_answer",
+        "readTool": "solana_wormhole_supported_routes"
+      },
+      {
+        "user": "Quote bridging 10 USDC from Solana to Base through Wormhole.",
+        "classification": "read_only_answer",
+        "readTool": "solana_wormhole_quote"
+      },
+      {
+        "user": "Prepare a Wormhole transfer of 5 USDC to this Base address. Do not sign.",
+        "classification": "prepare_approval_action",
+        "writeAction": "wormhole_transfer"
+      },
+      {
+        "user": "Check status of this Wormhole tx.",
+        "classification": "read_only_answer",
+        "readTool": "solana_wormhole_transfer_status"
+      },
+      {
+        "user": "Prepare redeeming this Wormhole transfer on Solana.",
+        "classification": "prepare_approval_action",
+        "writeAction": "wormhole_redeem"
+      },
+      {
+        "user": "Bridge USDC somewhere with Wormhole.",
+        "classification": "needs_input",
+        "needsInputQuestions": ["Which destination chain?", "What destination wallet address?", "How much USDC?"]
+      },
+      {
+        "user": "Sign the Ethereum redemption for me after this bridge.",
+        "classification": "unsupported",
+        "denialReason": "Destination-chain signing is outside the Solana Wormhole connector."
+      },
+      {
+        "user": "Bridge this NFT through Wormhole.",
+        "classification": "unsupported",
+        "denialReason": "NFT bridge transfers are not exposed in v1."
+      },
+      {
+        "user": "Deploy a custom Wormhole NTT route.",
+        "classification": "unsupported",
+        "denialReason": "NTT admin and custom bridge deployment actions are not exposed."
+      },
+      {
+        "user": "Guarantee this bridge cannot fail.",
+        "classification": "unsupported",
+        "denialReason": "The agent must not claim bridge transfers are guaranteed or reversible."
+      }
+    ]
+  },
+  "mirrorsCanonical": {
+    "file": "apps/browser-demo/src/connectedDapps.ts",
+    "entry": "wormhole",
+    "note": "Update this pack whenever the browser connector catalog changes."
+  }
+}

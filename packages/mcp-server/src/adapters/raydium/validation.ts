@@ -35,6 +35,13 @@ export function parseReadPoolType(value: string | undefined): RaydiumPoolType | 
   throw new AdapterError(RAYDIUM_ADAPTER_ID, 'invalid_pool_type', 'Raydium read poolType must be cpmm, clmm, or amm_v4.');
 }
 
+export function parsePositionPoolType(value: string | undefined): RaydiumLiquidityPoolType | undefined {
+  if (value === undefined || value.trim() === '') return undefined;
+  const normalized = value.trim().toLowerCase();
+  if (normalized === 'cpmm' || normalized === 'clmm') return normalized;
+  throw new AdapterError(RAYDIUM_ADAPTER_ID, 'invalid_pool_type', 'Raydium wallet position poolType must be cpmm or clmm.');
+}
+
 export function validateSlippageBps(value: number | undefined, maxSlippageBps: number): number {
   const slippageBps = value ?? maxSlippageBps;
   if (!Number.isInteger(slippageBps) || slippageBps < 0) {
@@ -61,6 +68,17 @@ export function validateOptionalPositiveDecimalString(value: string | undefined,
   if (value !== undefined && value.trim() !== '') validatePositiveDecimalString(value, field);
 }
 
+export function validatePositiveIntegerString(value: string, field: string): void {
+  const trimmed = value.trim();
+  if (!/^[1-9]\d*$/.test(trimmed)) {
+    throw new AdapterError(RAYDIUM_ADAPTER_ID, 'invalid_amount', `${field} must be a positive unsigned integer string.`);
+  }
+}
+
+export function validateOptionalPositiveIntegerString(value: string | undefined, field: string): void {
+  if (value !== undefined && value.trim() !== '') validatePositiveIntegerString(value, field);
+}
+
 export function validateLiquidityPercent(value: number | undefined): number | undefined {
   if (value === undefined) return undefined;
   if (!Number.isFinite(value) || value <= 0 || value > 100) {
@@ -85,6 +103,17 @@ export function validateDecreaseAmountChoice(input: {
       'invalid_liquidity_amount',
       'Provide exactly one of liquidityPercent or liquidityAmount for Raydium remove-liquidity.',
     );
+  }
+}
+
+export function validateRemoveLiquidityAmount(input: {
+  poolType: RaydiumLiquidityPoolType;
+  liquidityAmount?: string;
+}): void {
+  if (input.poolType === 'clmm') {
+    validateOptionalPositiveIntegerString(input.liquidityAmount, 'liquidityAmount');
+  } else {
+    validateOptionalPositiveDecimalString(input.liquidityAmount, 'liquidityAmount');
   }
 }
 

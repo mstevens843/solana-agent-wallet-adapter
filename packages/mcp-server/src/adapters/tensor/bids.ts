@@ -19,11 +19,12 @@ import {
 import { getWalletMarketplaceExposure } from './wallet.js';
 import {
   optionalBooleanParam,
+  optionalCollectionId,
   optionalStringParam,
   parseExpiresAt,
   parsePositiveQuantity,
-  parsePublicKey,
   parseSolDecimal,
+  requireCollectionId,
   requireMintOrAssetId,
   requireStringParam,
   stripUndefined,
@@ -37,6 +38,12 @@ export interface TensorBidPrepareInput {
   quantity?: number;
   expiresAt?: string;
   maxEscrowSol: string;
+  /**
+   * True when bidding on a compressed (tcomp) collection. Hosts MUST set this
+   * for tcomp collections so the SDK routes to @tensor-oss/tcomp-sdk instead of
+   * the legacy tensorswap escrow. Defaults to false.
+   */
+  compressed?: boolean;
   dueAt?: string;
   note?: string;
 }
@@ -54,10 +61,7 @@ export const tensorBidAction: AdapterAction<TensorBidPrepareInput> = {
 
   async prepare(input, ctx): Promise<AdapterPrepareResult> {
     const walletAddress = await ctx.backend.getAddress();
-    const collectionId = (input.collectionId ?? '').trim();
-    if (!collectionId) {
-      throw new AdapterError(TENSOR_ADAPTER_ID, 'missing_input', 'collectionId is required for Tensor bids.');
-    }
+    const collectionId = requireCollectionId(input.collectionId);
     const itemRef = input.mintAddress || input.assetId
       ? requireMintOrAssetId({ mintAddress: input.mintAddress, assetId: input.assetId })
       : {};
@@ -86,8 +90,7 @@ export const tensorBidAction: AdapterAction<TensorBidPrepareInput> = {
       );
     }
 
-    // The bid is compressed iff every item in the collection is compressed; default false unless the host marks it.
-    const compressed = false;
+    const compressed = input.compressed === true;
 
     const bidInput: TensorBidInput = {
       walletAddress,
@@ -214,8 +217,7 @@ export const tensorCancelBidAction: AdapterAction<TensorCancelBidPrepareInput> =
   async prepare(input, ctx): Promise<AdapterPrepareResult> {
     const walletAddress = await ctx.backend.getAddress();
     const explicitBidId = input.bidId?.trim() || undefined;
-    const collectionId = input.collectionId?.trim() || undefined;
-    if (collectionId) parsePublicKey(collectionId, 'collectionId');
+    const collectionId = optionalCollectionId(input.collectionId);
 
     const exposure = await getWalletMarketplaceExposure(ctx, { walletAddress });
     const ownedBids = exposure.openBids.filter((bid) => bid.bidder === walletAddress);

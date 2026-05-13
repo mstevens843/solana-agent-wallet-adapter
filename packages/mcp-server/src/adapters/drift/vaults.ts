@@ -19,6 +19,17 @@ import {
 } from './client.js';
 import { DRIFT_ADAPTER_ID, DRIFT_VAULTS_PROGRAM_ID } from './constants.js';
 
+export function assertDriftVaultProgram(snapshot: DriftVaultSnapshot): void {
+  const expected = DRIFT_VAULTS_PROGRAM_ID.toBase58();
+  if (snapshot.programId !== expected) {
+    throw new AdapterError(
+      DRIFT_ADAPTER_ID,
+      'unknown_vault_program',
+      `Drift vault ${snapshot.vaultAddress} is owned by ${snapshot.programId}, not the canonical Drift Vaults program ${expected}.`,
+    );
+  }
+}
+
 export interface DriftVaultDepositInput {
   vaultAddress: string;
   amount: string;
@@ -93,6 +104,7 @@ export const driftVaultDepositAction: AdapterAction<DriftVaultDepositInput> = {
   async prepare(input, ctx): Promise<AdapterPrepareResult> {
     const vaultAddress = requireVaultAddress(input.vaultAddress);
     const snapshot = await getVaultSnapshot(ctx.connection, vaultAddress);
+    assertDriftVaultProgram(snapshot);
 
     if (input.mint && input.mint.trim() !== snapshot.depositMint) {
       throw new AdapterError(
@@ -187,6 +199,7 @@ export const driftVaultDepositAction: AdapterAction<DriftVaultDepositInput> = {
     }
 
     const freshSnapshot = await getDriftVaultClient().getVaultSnapshot(ctx.connection, vaultAddress);
+    assertDriftVaultProgram(freshSnapshot);
     if (freshSnapshot.depositMint !== depositMint) {
       throw new ProtocolError(
         'invalid_request',

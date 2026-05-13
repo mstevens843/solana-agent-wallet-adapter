@@ -21,9 +21,9 @@ import {
 import {
   assertCompressedHomogeneous,
   assertNotMoreThanMaxSweep,
-  parsePublicKey,
   parseSolDecimal,
   requireArrayParam,
+  requireCollectionId,
   requireStringParam,
   stripUndefined,
   sumLamports,
@@ -50,7 +50,7 @@ export const tensorSweepAction: AdapterAction<TensorSweepPrepareInput> = {
 
   async prepare(input, ctx): Promise<AdapterPrepareResult> {
     const walletAddress = await ctx.backend.getAddress();
-    const collectionId = parsePublicKey(input.collectionId, 'collectionId');
+    const collectionId = requireCollectionId(input.collectionId);
     if (!Number.isInteger(input.maxItems) || input.maxItems <= 0) {
       throw new AdapterError(
         TENSOR_ADAPTER_ID,
@@ -85,34 +85,61 @@ export const tensorSweepAction: AdapterAction<TensorSweepPrepareInput> = {
     }
 
     const client = getTensorClient();
-    const candidates = await withTensorErrors('fetchCollectionListings', () =>
-      client.fetchCollectionListings(ctx.connection, collectionId, MAX_SWEEP_ITEMS * 4),
-    );
-
-    let pool = candidates.filter((listing) => {
-      const mint = listing.mintAddress ?? listing.assetId;
-      if (!mint) return false;
-      if (exclude.has(mint)) return false;
-      return BigInt(listing.priceLamports) <= maxPricePerItemLamports;
-    });
-
     let selected: TensorListing[];
     if (required.length > 0) {
-      selected = required.map((mint) => {
-        const match = pool.find((listing) => (listing.mintAddress ?? listing.assetId) === mint);
-        if (!match) {
-          throw new AdapterError(
-            TENSOR_ADAPTER_ID,
-            'listing_not_found',
-            `Required Tensor mint ${shortAddress(mint)} is not listed at or below ${maxPricePerItemSol} SOL.`,
+      // When the caller pins specific items, refresh each one directly. A bulk
+      // listing fetch would miss items past the page window even if they are
+      // legitimately listed under the per-item cap.
+      const refreshed = await Promise.all(
+        required.map(async (itemId) => {
+          if (exclude.has(itemId)) {
+            throw new AdapterError(
+              TENSOR_ADAPTER_ID,
+              'invalid_input',
+              `Tensor sweep item ${shortAddress(itemId)} appears in both requiredMintAddresses and excludeMintAddresses.`,
+            );
+          }
+          const listing = await withTensorErrors('refreshListing', () =>
+            client.refreshListing(ctx.connection, { mintAddress: itemId }),
           );
-        }
-        return match;
-      });
-    } else {
-      pool = pool.sort((a, b) =>
-        BigInt(a.priceLamports) < BigInt(b.priceLamports) ? -1 : 1,
+          if (!listing) {
+            const alt = await withTensorErrors('refreshListing', () =>
+              client.refreshListing(ctx.connection, { assetId: itemId }),
+            );
+            if (!alt) {
+              throw new AdapterError(
+                TENSOR_ADAPTER_ID,
+                'listing_not_found',
+                `Required Tensor item ${shortAddress(itemId)} is not actively listed.`,
+              );
+            }
+            return alt;
+          }
+          if (BigInt(listing.priceLamports) > maxPricePerItemLamports) {
+            throw new AdapterError(
+              TENSOR_ADAPTER_ID,
+              'price_above_cap',
+              `Required Tensor item ${shortAddress(itemId)} listed at ${listing.priceSol} SOL exceeds per-item cap ${maxPricePerItemSol} SOL.`,
+            );
+          }
+          return listing;
+        }),
       );
+      selected = refreshed;
+    } else {
+      const candidates = await withTensorErrors('fetchCollectionListings', () =>
+        client.fetchCollectionListings(ctx.connection, collectionId, MAX_SWEEP_ITEMS * 4),
+      );
+      const pool = candidates
+        .filter((listing) => {
+          const id = listing.mintAddress ?? listing.assetId;
+          if (!id) return false;
+          if (exclude.has(id)) return false;
+          return BigInt(listing.priceLamports) <= maxPricePerItemLamports;
+        })
+        .sort((a, b) =>
+          BigInt(a.priceLamports) < BigInt(b.priceLamports) ? -1 : 1,
+        );
       selected = pool.slice(0, input.maxItems);
     }
 

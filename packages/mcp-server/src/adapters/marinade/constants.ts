@@ -7,12 +7,12 @@ export const MARINADE_WEBSITE = 'https://marinade.finance';
 export const MARINADE_DESCRIPTION =
   'Stake SOL into mSOL, prepare instant mSOL exits through Jupiter, manage delayed unstake orders, and inspect Marinade staking positions.';
 
-export const MSOL_MINT = 'mSoLzYCxHdYgdzU16g5QSh3KZK7ytfqcJm7So';
+export const MSOL_MINT = 'mSoLzYCxHdYgdzU16g5QSh3i5K3z3KZK7ytfqcJm7So';
 export const MSOL_DECIMALS = 9;
 export const SOL_DECIMALS = 9;
 
 export const MARINADE_PROGRAM_ID = 'MarBmsSgKXdrN1egZf5sqe1TMai9K1rChYNDJgjq7aD';
-export const MARINADE_STATE_ADDRESS = '8szGkuLTAuxqvFV8fYCoDxN8XrJLK9u2kjuYKxE6V5V';
+export const MARINADE_STATE_ADDRESS = '8szGkuLTAux9XMgZ2vtY39jVSowEcpBfFfD8hXSEqdGC';
 export const STAKE_PROGRAM_ID = 'Stake11111111111111111111111111111111111111';
 
 export const MSOL_MINT_PUBLIC_KEY = new PublicKey(MSOL_MINT);

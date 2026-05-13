@@ -20,13 +20,12 @@ import {
   type TensorWalletExposure,
 } from '../../adapters/tensor/client.js';
 import { TENSOR_PROGRAM_IDS } from '../../adapters/tensor/constants.js';
+// Import from types.js directly so this test does not pay the cost (or load
+// failures) of every other adapter's module side-effects via the barrel.
 import {
   AdapterError,
-  actionForKind,
-  adapterForActionKind,
   assertSupportedCluster,
-  requireAdapter,
-} from '../../adapters/index.js';
+} from '../../adapters/types.js';
 import type { AgentWalletConfig } from '../../config.js';
 import type { DAppAdapterContext } from '../../adapters/types.js';
 import type {
@@ -240,6 +239,8 @@ function makeContext(opts: {
     config: fakeConfig(opts.cluster ?? 'mainnet-beta'),
     connection: {} as Connection,
     signAndBroadcast: opts.signed ?? (async () => 'txid-tensor'),
+    signTransaction: async () => "signed-base64-placeholder",
+    signMessage: async () => "signature-base64-placeholder",
     store: opts.store,
   };
 }
@@ -347,10 +348,21 @@ describe('Tensor adapter shape', () => {
     expect(tensorAdapter.reads.wallet_marketplace_exposure).toBeDefined();
   });
 
-  it('is discoverable via the adapter registry', () => {
-    expect(requireAdapter('tensor').id).toBe('tensor');
-    expect(adapterForActionKind('tensor_buy')?.id).toBe('tensor');
-    expect(actionForKind('tensor_sweep')?.action.id).toBe('sweep');
+  it('exposes the correct PreparedActionKind on every action', () => {
+    // Equivalent to actionForKind/adapterForActionKind asserts, but without
+    // pulling the registry barrel (which transitively loads every other
+    // adapter's module-time side effects).
+    const byKind = Object.fromEntries(
+      Object.entries(tensorAdapter.actions).map(([id, action]) => [action.kind, id]),
+    );
+    expect(byKind).toEqual({
+      tensor_buy: 'buy',
+      tensor_list: 'list',
+      tensor_cancel_listing: 'cancel_listing',
+      tensor_bid: 'bid',
+      tensor_cancel_bid: 'cancel_bid',
+      tensor_sweep: 'sweep',
+    });
   });
 
   it('throws AdapterError on cluster mismatch via assertSupportedCluster', () => {
@@ -805,5 +817,351 @@ describe('Tensor API key redaction', () => {
       const message = (err as Error).message;
       expect(message).not.toContain('tensor-secret-abc123');
     }
+  });
+});
+
+describe('Tensor collection slug support', () => {
+  it('accepts a non-public-key collection id (slug) for sweep', async () => {
+    const state = fakeState();
+    setTensorClientFactory(() => fakeTensorClient(state));
+    const ctx = makeContext({ store: inMemoryStore() });
+
+    const result = await requireTensorAction('sweep').prepare(
+      {
+        collectionId: 'madlads',
+        maxItems: 2,
+        maxTotalSol: '1',
+        maxPricePerItemSol: '0.5',
+      },
+      ctx,
+    );
+
+    expect(result.addInput.kind).toBe('tensor_sweep');
+    expect((result.addInput.params as Record<string, unknown>).collectionId).toBe('madlads');
+  });
+
+  it('accepts a non-public-key collection id (slug) for cancel_bid', async () => {
+    const state = fakeState();
+    state.exposure = fakeExposure({
+      openBids: [
+        {
+          bidId: BID_ID,
+          collectionId: 'madlads',
+          bidder: WALLET,
+          bidPriceLamports: '500000000',
+          bidPriceSol: '0.5',
+          quantity: 1,
+        },
+      ],
+    });
+    setTensorClientFactory(() => fakeTensorClient(state));
+    const ctx = makeContext({ store: inMemoryStore() });
+
+    const result = await requireTensorAction('cancel_bid').prepare(
+      { collectionId: 'madlads' },
+      ctx,
+    );
+
+    expect(result.addInput.kind).toBe('tensor_cancel_bid');
+    expect((result.addInput.params as Record<string, unknown>).bidId).toBe(BID_ID);
+  });
+
+  it('rejects an empty collection id with missing_input', async () => {
+    const state = fakeState();
+    setTensorClientFactory(() => fakeTensorClient(state));
+    const ctx = makeContext({ store: inMemoryStore() });
+
+    await expect(
+      requireTensorAction('sweep').prepare(
+        {
+          collectionId: '   ',
+          maxItems: 1,
+          maxTotalSol: '1',
+          maxPricePerItemSol: '0.5',
+        },
+        ctx,
+      ),
+    ).rejects.toMatchObject({ code: 'missing_input' });
+  });
+});
+
+describe('Tensor bid compressed flag', () => {
+  it('threads compressed: true through prepare params for tcomp collections', async () => {
+    const state = fakeState();
+    setTensorClientFactory(() => fakeTensorClient(state));
+    const ctx = makeContext({ store: inMemoryStore() });
+
+    const result = await requireTensorAction('bid').prepare(
+      {
+        collectionId: COLLECTION,
+        bidPriceSol: '0.5',
+        quantity: 1,
+        maxEscrowSol: '2',
+        compressed: true,
+      },
+      ctx,
+    );
+
+    expect(result.addInput.params).toMatchObject({
+      compressed: true,
+      bidPriceLamports: '500000000',
+    });
+  });
+
+  it('defaults compressed to false when not provided', async () => {
+    const state = fakeState();
+    setTensorClientFactory(() => fakeTensorClient(state));
+    const ctx = makeContext({ store: inMemoryStore() });
+
+    const result = await requireTensorAction('bid').prepare(
+      {
+        collectionId: COLLECTION,
+        bidPriceSol: '0.5',
+        quantity: 1,
+        maxEscrowSol: '2',
+      },
+      ctx,
+    );
+
+    expect(result.addInput.params).toMatchObject({ compressed: false });
+  });
+});
+
+describe('Tensor sweep requiredMintAddresses', () => {
+  const RARE_MINT = '6KbtSyihKHvAGqRMtaowQEgL26WtFiSPm2pHwLJrZdwa';
+
+  function clientWithPerMintRefresh(
+    state: FakeTensorState,
+    perMint: Record<string, TensorListing | null>,
+  ): TensorClient {
+    const base = fakeTensorClient(state);
+    return {
+      ...base,
+      async refreshListing(_connection, input) {
+        const id = input.mintAddress ?? input.assetId ?? '';
+        return perMint[id] ?? null;
+      },
+    } as TensorClient;
+  }
+
+  it('uses per-mint refreshListing instead of bulk fetch when requiredMintAddresses is supplied', async () => {
+    const state = fakeState();
+    const rareListing = fakeListing({
+      listingId: 'rare',
+      mintAddress: RARE_MINT,
+      priceLamports: '300000000',
+      priceSol: '0.3',
+    });
+    state.collectionListings = [];
+    setTensorClientFactory(() =>
+      clientWithPerMintRefresh(state, { [RARE_MINT]: rareListing }),
+    );
+    const ctx = makeContext({ store: inMemoryStore() });
+
+    const result = await requireTensorAction('sweep').prepare(
+      {
+        collectionId: COLLECTION,
+        maxItems: 1,
+        maxTotalSol: '1',
+        maxPricePerItemSol: '0.5',
+        requiredMintAddresses: [RARE_MINT],
+      },
+      ctx,
+    );
+
+    const items = (result.addInput.params as Record<string, unknown>).exactSweepItems as Array<{
+      mintAddress?: string;
+      expectedPriceLamports: string;
+    }>;
+    expect(items).toHaveLength(1);
+    expect(items[0]?.mintAddress).toBe(RARE_MINT);
+    expect(items[0]?.expectedPriceLamports).toBe('300000000');
+  });
+
+  it('rejects when a required mint is not actively listed', async () => {
+    const state = fakeState();
+    state.collectionListings = [];
+    setTensorClientFactory(() => clientWithPerMintRefresh(state, {}));
+    const ctx = makeContext({ store: inMemoryStore() });
+
+    await expect(
+      requireTensorAction('sweep').prepare(
+        {
+          collectionId: COLLECTION,
+          maxItems: 1,
+          maxTotalSol: '1',
+          maxPricePerItemSol: '0.5',
+          requiredMintAddresses: [RARE_MINT],
+        },
+        ctx,
+      ),
+    ).rejects.toMatchObject({ code: 'listing_not_found' });
+  });
+
+  it('rejects when a required mint exceeds the per-item cap', async () => {
+    const state = fakeState();
+    const expensiveListing = fakeListing({
+      listingId: 'pricey',
+      mintAddress: RARE_MINT,
+      priceLamports: '900000000',
+      priceSol: '0.9',
+    });
+    state.collectionListings = [];
+    setTensorClientFactory(() =>
+      clientWithPerMintRefresh(state, { [RARE_MINT]: expensiveListing }),
+    );
+    const ctx = makeContext({ store: inMemoryStore() });
+
+    await expect(
+      requireTensorAction('sweep').prepare(
+        {
+          collectionId: COLLECTION,
+          maxItems: 1,
+          maxTotalSol: '1',
+          maxPricePerItemSol: '0.5',
+          requiredMintAddresses: [RARE_MINT],
+        },
+        ctx,
+      ),
+    ).rejects.toMatchObject({ code: 'price_above_cap' });
+  });
+
+  it('rejects when a required mint also appears in excludeMintAddresses', async () => {
+    const state = fakeState();
+    setTensorClientFactory(() => fakeTensorClient(state));
+    const ctx = makeContext({ store: inMemoryStore() });
+
+    await expect(
+      requireTensorAction('sweep').prepare(
+        {
+          collectionId: COLLECTION,
+          maxItems: 1,
+          maxTotalSol: '1',
+          maxPricePerItemSol: '0.5',
+          requiredMintAddresses: [MINT],
+          excludeMintAddresses: [MINT],
+        },
+        ctx,
+      ),
+    ).rejects.toMatchObject({ code: 'invalid_input' });
+  });
+});
+
+describe('Tensor list allowCompressed', () => {
+  it('rejects compressed NFT when allowCompressed: false', async () => {
+    const state = fakeState();
+    state.detail = fakeDetail({ compressed: true });
+    setTensorClientFactory(() => fakeTensorClient(state));
+    const ctx = makeContext({ store: inMemoryStore() });
+
+    await expect(
+      requireTensorAction('list').prepare(
+        { mintAddress: MINT, priceSol: '2', allowCompressed: false },
+        ctx,
+      ),
+    ).rejects.toMatchObject({ code: 'compressed_not_allowed' });
+  });
+
+  it('lists a compressed NFT when allowCompressed defaults true', async () => {
+    const state = fakeState();
+    state.detail = fakeDetail({ compressed: true });
+    setTensorClientFactory(() => fakeTensorClient(state));
+    const ctx = makeContext({ store: inMemoryStore() });
+
+    const result = await requireTensorAction('list').prepare(
+      { mintAddress: MINT, priceSol: '2' },
+      ctx,
+    );
+    expect(result.addInput.params).toMatchObject({ compressed: true });
+  });
+});
+
+describe('Tensor cancel-listing multi-listing disambiguation', () => {
+  it('raises needs_input when walletOpenListings > 1 and no listingId is given', async () => {
+    const state = fakeState();
+    state.detail = fakeDetail({
+      topListing: fakeListing({ seller: WALLET }),
+      walletOpenListings: 2,
+    });
+    setTensorClientFactory(() => fakeTensorClient(state));
+    const ctx = makeContext({ store: inMemoryStore() });
+
+    await expect(
+      requireTensorAction('cancel_listing').prepare({ mintAddress: MINT }, ctx),
+    ).rejects.toMatchObject({ code: 'needs_input' });
+  });
+
+  it('accepts a single open listing without listingId', async () => {
+    const state = fakeState();
+    state.detail = fakeDetail({
+      topListing: fakeListing({ seller: WALLET }),
+      walletOpenListings: 1,
+    });
+    setTensorClientFactory(() => fakeTensorClient(state));
+    const ctx = makeContext({ store: inMemoryStore() });
+
+    const result = await requireTensorAction('cancel_listing').prepare(
+      { mintAddress: MINT },
+      ctx,
+    );
+    expect(result.addInput.kind).toBe('tensor_cancel_listing');
+  });
+});
+
+describe('Tensor buy marketplace mismatch', () => {
+  it('rejects when expectedMarketplace=tensor but listing.marketplace differs', async () => {
+    const state = fakeState();
+    state.listing = fakeListing({
+      priceLamports: '500000000',
+      priceSol: '0.5',
+      marketplace: 'aggregator',
+    });
+    setTensorClientFactory(() => fakeTensorClient(state));
+    const ctx = makeContext({ store: inMemoryStore() });
+
+    await expect(
+      requireTensorAction('buy').prepare(
+        { mintAddress: MINT, maxPriceSol: '1', expectedMarketplace: 'tensor' },
+        ctx,
+      ),
+    ).rejects.toMatchObject({ code: 'marketplace_mismatch' });
+  });
+
+  it('allows any_tensor_supported regardless of marketplace label', async () => {
+    const state = fakeState();
+    state.listing = fakeListing({
+      priceLamports: '500000000',
+      priceSol: '0.5',
+      marketplace: 'aggregator',
+    });
+    setTensorClientFactory(() => fakeTensorClient(state));
+    const ctx = makeContext({ store: inMemoryStore() });
+
+    const result = await requireTensorAction('buy').prepare(
+      { mintAddress: MINT, maxPriceSol: '1', expectedMarketplace: 'any_tensor_supported' },
+      ctx,
+    );
+    expect(result.addInput.kind).toBe('tensor_buy');
+  });
+});
+
+describe('Tensor buy stale listing', () => {
+  it('rejects when the listing snapshot is older than MAX_QUOTE_AGE_MS', async () => {
+    const state = fakeState();
+    const stale = new Date(Date.now() - 10 * 60 * 1000).toISOString();
+    state.listing = fakeListing({
+      priceLamports: '500000000',
+      priceSol: '0.5',
+      asOf: stale,
+    });
+    setTensorClientFactory(() => fakeTensorClient(state));
+    const ctx = makeContext({ store: inMemoryStore() });
+
+    await expect(
+      requireTensorAction('buy').prepare(
+        { mintAddress: MINT, maxPriceSol: '1' },
+        ctx,
+      ),
+    ).rejects.toMatchObject({ code: 'stale_listing' });
   });
 });

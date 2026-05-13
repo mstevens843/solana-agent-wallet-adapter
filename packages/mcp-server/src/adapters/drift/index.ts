@@ -79,11 +79,28 @@ const walletVaultPositionsRead: AdapterRead<
   async read(input, ctx) {
     const walletAddress = input.walletAddress?.trim() || (await ctx.backend.getAddress());
     const positions = await getWalletVaultPositions(ctx.connection, walletAddress, input.vaultAddress);
+    const totals = summarizeVaultPositions(positions);
     return {
       walletAddress,
       cluster: ctx.config.cluster,
       positions,
-      totals: summarizeVaultPositions(positions),
+      totals,
+      facts: {
+        walletAddress,
+        vaultCount: totals.vaultCount,
+        pendingWithdrawCount: totals.pendingWithdrawCount,
+        totalShares: totals.totalShares,
+        totalValue: totals.totalValue,
+        vaults: positions.map((entry) => ({
+          vaultAddress: entry.vaultAddress,
+          shares: entry.shares,
+          valueAtSharePrice: entry.valueAtSharePrice,
+          pendingWithdrawShares: entry.pendingWithdrawShares,
+          redeemableAt: entry.redeemableAt
+            ? new Date(entry.redeemableAt * 1000).toISOString()
+            : null,
+        })),
+      },
     };
   },
 };

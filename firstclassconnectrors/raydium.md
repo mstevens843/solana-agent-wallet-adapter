@@ -23,7 +23,7 @@ Raydium currently appears in:
 - `spec/connectors/raydium.connector.json`
 - `docs/connectors/planned-connectors.md`
 
-Current runtime mode is Blink-backed. First-class work should move it to owned adapter reads/actions.
+Current runtime mode is first-class. Raydium uses owned adapter reads/actions through the MCP server and no longer advertises Blink-backed actions in the browser catalog.
 
 ## External Source Of Truth
 
@@ -82,12 +82,14 @@ If farm/staking work is not stable in v1, keep the MCP tool names reserved but u
 Pool snapshot:
 
 - `poolId`: required Solana public key.
-- `poolType`: optional enum `cpmm | clmm | amm_v4`.
+- `poolType`: optional enum `cpmm | clmm`.
 
 Wallet positions:
 
 - `walletAddress`: optional. Defaults to connected wallet.
-- `poolType`: optional enum `cpmm | clmm | farm`.
+- `poolId`: optional. Required to discover CPMM LP balances.
+- `poolType`: optional enum `cpmm | clmm | amm_v4`.
+- `farmId`: optional. Returns a farm position only when the wallet has a decoded Raydium farm ledger with deposited LP.
 
 Add liquidity:
 
@@ -106,7 +108,7 @@ Remove liquidity:
 - `poolId`: required.
 - `poolType`: required enum `cpmm | clmm`.
 - `positionMint` or LP token account: required depending on pool type.
-- `liquidityPercent` or `liquidityAmount`: required.
+- `liquidityPercent` or `liquidityAmount`: required. CLMM `liquidityAmount` is raw unsigned integer liquidity; CPMM `liquidityAmount` is a human LP token amount.
 - `minTokenAAmount` and `minTokenBAmount`: optional.
 - `slippageBps`: optional.
 
@@ -227,8 +229,8 @@ Smoke prompts:
 
 ## Completion Checklist
 
-- Raydium row in app says first-class, not Blink connector.
-- `solana_connector_capabilities raydium` reports first-class reads/actions.
-- `solana_connector_read_facts` works for pool facts.
-- At least one liquidity prepare path works end-to-end into Needs Approval.
-- No Raydium path signs before wallet approval.
+- [x] Raydium row in app says first-class, not Blink connector.
+- [x] `solana_connector_capabilities raydium` reports first-class reads/actions.
+- [x] `solana_connector_read_facts` works for pool facts.
+- [x] At least one liquidity prepare path works end-to-end into Needs Approval.
+- [x] No Raydium path signs before wallet approval.

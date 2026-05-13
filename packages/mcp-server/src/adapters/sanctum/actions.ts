@@ -242,6 +242,7 @@ async function prepareSanctumOrder(
     minOutputAmountRaw,
     maxFeeBps,
     allowDelayedUnstake: spec.allowDelayedUnstake === true,
+    allowedSources: spec.swapSources,
   });
   const summary = summaryForOperation(spec.operation, spec.amount, inputMeta.symbol, outputMeta.symbol);
   const params = stripUndefined({
@@ -297,22 +298,18 @@ async function executeSanctumOrder(
       `Sanctum action belongs to ${action.walletAddress}, but connected wallet is ${walletAddress}.`,
     );
   }
-  if (!ctx.signTransaction) {
-    throw new ProtocolError(
-      'unsupported_method',
-      'Sanctum execution requires a wallet signing boundary that returns the signed transaction bytes.',
-    );
-  }
   const operation = requireOperation(action);
   const inputMint = requireStringParam(action, 'inputMint');
   const outputMint = requireStringParam(action, 'outputMint');
   const inputAmountRaw = requireStringParam(action, 'inputAmountRaw');
   const minOutputAmountRawText = optionalStringParam(action, 'minOutputAmountRaw');
-  const minOutputAmountRaw = minOutputAmountRawText ? BigInt(minOutputAmountRawText) : undefined;
+  const minOutputAmountRaw = minOutputAmountRawText
+    ? parsePreparedRawAmount(action, 'minOutputAmountRaw', minOutputAmountRawText)
+    : undefined;
   const maxFeeBps = optionalNumberParam(action, 'maxFeeBps') ?? SANCTUM_DEFAULT_MAX_FEE_BPS;
   const slippageBps = optionalNumberParam(action, 'slippageBps') ?? SANCTUM_DEFAULT_SLIPPAGE_BPS;
   const allowDelayedUnstake = action.params.allowDelayedUnstake === true;
-  const requestedSources = requestedSourcesFromAction(action);
+  const requestedSources = requestedSourcesFromAction(action, operation);
   const fresh = await getSanctumClient().getTokenOrder({
     inputMint,
     outputMint,
@@ -321,11 +318,12 @@ async function executeSanctumOrder(
     slippageBps,
     swapSources: requestedSources,
   });
-  validateQuote(fresh, {
+  const validation = validateQuote(fresh, {
     operation,
     minOutputAmountRaw,
     maxFeeBps,
     allowDelayedUnstake,
+    allowedSources: requestedSources,
   });
   if (!fresh.transactionBase64) {
     throw new AdapterError(
@@ -348,7 +346,7 @@ async function executeSanctumOrder(
       outputMint,
       inputAmountRaw,
       outputAmountRaw: fresh.outputAmountRaw,
-      outputAmount: formatRawAmount(BigInt(fresh.outputAmountRaw || '0'), optionalNumberParam(action, 'outputDecimals') ?? 9),
+      outputAmount: formatRawAmount(validation.outputAmountRaw, optionalNumberParam(action, 'outputDecimals') ?? 9),
       routeSources: fresh.routeSources,
       programIds: programIdsForQuote(fresh),
     },
@@ -362,16 +360,13 @@ function validateQuote(
     minOutputAmountRaw?: bigint;
     maxFeeBps: number;
     allowDelayedUnstake: boolean;
+    allowedSources: SanctumSwapSource[];
   },
-): void {
-  if (quote.routeSources.some((source) => source.toLowerCase() === 'jup' || source.toLowerCase() === 'jupiter')) {
-    throw new AdapterError(
-      SANCTUM_ADAPTER_ID,
-      'unsupported_route',
-      'Sanctum connector routes must stay on Sanctum Infinity or Sanctum Router; Jupiter fallback is not allowed here.',
-    );
-  }
-  if (opts.minOutputAmountRaw !== undefined && BigInt(quote.outputAmountRaw || '0') < opts.minOutputAmountRaw) {
+): { outputAmountRaw: bigint } {
+  validateRouteSources(quote.routeSources, opts.allowedSources);
+  parseQuoteRawAmount(quote.inputAmountRaw, 'inputAmountRaw');
+  const outputAmountRaw = parseQuoteRawAmount(quote.outputAmountRaw, 'outputAmountRaw');
+  if (opts.minOutputAmountRaw !== undefined && outputAmountRaw < opts.minOutputAmountRaw) {
     throw new AdapterError(
       SANCTUM_ADAPTER_ID,
       'output_below_minimum',
@@ -392,6 +387,7 @@ function validateQuote(
       'Sanctum route appears to require delayed unstake. Pass allowDelayedUnstake=true to prepare it explicitly.',
     );
   }
+  return { outputAmountRaw };
 }
 
 async function resolveTokenMeta(mint: string): Promise<{ symbol: string; decimals: number; snapshot?: SanctumLstSnapshot }> {
@@ -523,11 +519,122 @@ function requireOperation(action: PreparedAction): SanctumOperation {
   throw new ProtocolError('invalid_request', `Sanctum action ${action.id} has unsupported operation ${value}.`);
 }
 
-function requestedSourcesFromAction(action: PreparedAction): SanctumSwapSource[] {
+function requestedSourcesFromAction(action: PreparedAction, operation: SanctumOperation): SanctumSwapSource[] {
   const value = action.params.requestedSources;
-  if (!Array.isArray(value)) return SANCTUM_ROUTER_SWAP_SOURCES;
-  const sources = value.filter((entry): entry is SanctumSwapSource => entry === 'Inf' || entry === 'SanctumRouter');
-  return sources.length > 0 ? sources : SANCTUM_ROUTER_SWAP_SOURCES;
+  const allowedForOperation = defaultSourcesForOperation(operation);
+  if (value === undefined) return allowedForOperation;
+  if (!Array.isArray(value)) {
+    throw new ProtocolError('invalid_request', `Sanctum action ${action.id} has malformed requestedSources.`);
+  }
+  const allowedSet = new Set<SanctumSwapSource>(allowedForOperation);
+  const sources: SanctumSwapSource[] = [];
+  for (const entry of value) {
+    if (entry !== 'Inf' && entry !== 'SanctumRouter') {
+      throw new ProtocolError('invalid_request', `Sanctum action ${action.id} has unsupported requested source ${String(entry)}.`);
+    }
+    if (!allowedSet.has(entry)) {
+      throw new ProtocolError(
+        'invalid_request',
+        `Sanctum action ${action.id} cannot use requested source ${entry} for ${operation}.`,
+      );
+    }
+    if (!sources.includes(entry)) sources.push(entry);
+  }
+  if (sources.length === 0) {
+    throw new ProtocolError('invalid_request', `Sanctum action ${action.id} must keep at least one requested source.`);
+  }
+  return sources;
+}
+
+function defaultSourcesForOperation(operation: SanctumOperation): SanctumSwapSource[] {
+  return operation === 'add_infinity_liquidity' || operation === 'remove_infinity_liquidity'
+    ? SANCTUM_INFINITY_SWAP_SOURCES
+    : SANCTUM_ROUTER_SWAP_SOURCES;
+}
+
+function validateRouteSources(routeSources: string[], allowedSources: SanctumSwapSource[]): void {
+  const allowed = new Set(allowedSources);
+  for (const source of routeSources) {
+    const parsed = parseRouteSource(source);
+    if (parsed.hasJupiter) {
+      throw new AdapterError(
+        SANCTUM_ADAPTER_ID,
+        'unsupported_route',
+        'Sanctum connector routes must stay on Sanctum Infinity or Sanctum Router; Jupiter fallback is not allowed here.',
+      );
+    }
+    if (parsed.sources.length === 0) {
+      throw new AdapterError(
+        SANCTUM_ADAPTER_ID,
+        'unsupported_route',
+        `Sanctum quote returned unsupported route source ${source}.`,
+      );
+    }
+    for (const routeSource of parsed.sources) {
+      if (!allowed.has(routeSource)) {
+        throw new AdapterError(
+          SANCTUM_ADAPTER_ID,
+          'unsupported_route',
+          `Sanctum quote returned unrequested route source ${routeSource}.`,
+        );
+      }
+    }
+  }
+}
+
+function parseRouteSource(source: string): { hasJupiter: boolean; sources: SanctumSwapSource[] } {
+  const tokens = routeSourceTokens(source);
+  const normalized = normalizeRouteSourceText(source);
+  const candidates = new Set([normalized, ...tokens]);
+  const sources: SanctumSwapSource[] = [];
+  if (
+    candidates.has('inf') ||
+    candidates.has('infinity') ||
+    candidates.has('sanctuminf') ||
+    candidates.has('sanctuminfinity')
+  ) {
+    sources.push('Inf');
+  }
+  if (
+    candidates.has('router') ||
+    candidates.has('sanctumrouter') ||
+    (candidates.has('sanctum') && candidates.has('router'))
+  ) {
+    sources.push('SanctumRouter');
+  }
+  return {
+    hasJupiter: [...candidates].some((candidate) => candidate.includes('jup')),
+    sources,
+  };
+}
+
+function routeSourceTokens(source: string): string[] {
+  return source
+    .split(/[^A-Za-z0-9]+/)
+    .map(normalizeRouteSourceText)
+    .filter((token) => token.length > 0);
+}
+
+function normalizeRouteSourceText(value: string): string {
+  return value.toLowerCase().replace(/[^a-z0-9]/g, '');
+}
+
+function parseQuoteRawAmount(value: string, label: string): bigint {
+  if (!/^\d+$/.test(value)) {
+    throw new AdapterError(
+      SANCTUM_ADAPTER_ID,
+      'invalid_quote',
+      `Sanctum quote ${label} must be an unsigned integer raw amount.`,
+    );
+  }
+  return BigInt(value);
+}
+
+function parsePreparedRawAmount(action: PreparedAction, key: string, value: string): bigint {
+  if (!/^\d+$/.test(value)) {
+    throw new ProtocolError('invalid_request', `Sanctum action ${action.id} has malformed ${key}.`);
+  }
+  return BigInt(value);
 }
 
 function requireStringParam(action: PreparedAction, key: string): string {

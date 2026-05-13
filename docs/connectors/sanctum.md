@@ -14,9 +14,9 @@ Sanctum is a first-class LST, Router, and Infinity connector. The MCP runtime ow
 
 - `solana_sanctum_lst_list` returns the Sanctum LST catalog.
 - `solana_sanctum_lst_snapshot` returns one LST by mint or symbol, with optional APY rows.
-- `solana_sanctum_infinity_pool_snapshot` returns Infinity metadata, INF mint, program ids, and optional catalog-derived composition.
+- `solana_sanctum_infinity_pool_snapshot` returns Infinity metadata, INF mint, the v1 known Sanctum program-id set, and optional catalog-derived composition.
 - `solana_sanctum_wallet_positions` returns wallet LST and INF token balances from SPL Token and Token-2022 accounts.
-- `solana_sanctum_quote` previews a Sanctum Token Swap order without signing.
+- `solana_sanctum_quote` previews a Sanctum Token Swap order without signing; it accepts supported LST mints/symbols plus `SOL` and `INF`.
 
 ## What It Can Prepare
 
@@ -41,4 +41,4 @@ Ask concise questions when mints, amount, minimum output, or delayed-unstake acc
 
 ## User Approval
 
-Sanctum writes are prepare-only. Prepared actions store quote facts and route constraints, not a reusable transaction. At execution time the adapter gets a fresh Sanctum Token Swap order, refuses disallowed route sources or cap drift, asks the wallet to sign the transaction, and submits the signed transaction through Sanctum execute.
+Sanctum writes are prepare-only. Prepared actions store quote facts and route constraints, not a reusable transaction. At execution time the adapter gets a fresh Sanctum Token Swap order, refuses Jupiter or any unrequested route source, checks cap drift, asks the wallet to sign the transaction, and submits the signed transaction through Sanctum execute.

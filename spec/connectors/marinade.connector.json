@@ -155,7 +155,7 @@
     "Operate on any cluster other than mainnet-beta.",
     "Move funds without wallet approval."
   ],
-  "actionPreparationNotes": "Use the official mSOL mint mSoLzYCxHdYgdzU16g5QSh3KZK7ytfqcJm7So, Marinade program MarBmsSgKXdrN1egZf5sqe1TMai9K1rChYNDJgjq7aD, and state account 8szGkuLTAuxqvFV8fYCoDxN8XrJLK9u2kjuYKxE6V5V. SOL to mSOL stake, delayed unstake, and claim actions use the injected Marinade client. Instant unstake is intentionally a Jupiter Ultra mSOL to SOL route and refreshes the route before wallet approval.",
+  "actionPreparationNotes": "Use the official mSOL mint mSoLzYCxHdYgdzU16g5QSh3i5K3z3KZK7ytfqcJm7So, Marinade program MarBmsSgKXdrN1egZf5sqe1TMai9K1rChYNDJgjq7aD, and state account 8szGkuLTAuxqvFV8fYCoDxN8XrJLK9u2kjuYKxE6V5V. SOL to mSOL stake, delayed unstake, and claim actions use the injected Marinade client. Instant unstake is intentionally a Jupiter Ultra mSOL to SOL route and refreshes the route before wallet approval.",
   "riskNotes": "mSOL price, reserve liquidity, ticket status, Jupiter route, fees, and slippage can change between preparation and approval. Prepared actions re-read or requote before signing boundaries where applicable. Delayed unstake claims are blocked unless the ticket is claimable.",
   "approvalBoundary": {
     "readGated": false,

@@ -66,12 +66,37 @@ export {
   factsFromMeteoraPoolSnapshot,
   factsFromMeteoraPositionDetail,
   factsFromMeteoraPositions,
+  factsFromOrcaPositionDetail,
+  factsFromOrcaPositions,
+  factsFromOrcaWhirlpoolSnapshot,
+  factsFromWormholeQuote,
+  factsFromWormholeSupportedRoutes,
+  factsFromWormholeTokenSnapshot,
+  factsFromWormholeTransferStatus,
+  factsFromWormholeWalletBridgeExposure,
 } from './connectorFacts.js';
 export type {
   ConnectorFact,
   ConnectorFactReadInput,
   ConnectorFactTone,
 } from './connectorFacts.js';
+export {
+  describeWormholeUnavailableReason,
+  getWormholeClient,
+  resetWormholeClientFactory,
+  setWormholeClientFactory,
+} from './adapters/wormhole/client.js';
+export type {
+  WormholeBuiltTransaction,
+  WormholeClient,
+  WormholeQuoteInput,
+  WormholeQuoteSnapshot,
+  WormholeRouteSnapshot,
+  WormholeSupportedRoutesSnapshot,
+  WormholeTokenSnapshot,
+  WormholeTransferStatus,
+  WormholeWalletBridgeExposure,
+} from './adapters/wormhole/client.js';
 export type {
   AgentWalletActionServiceOptions,
   PrepareBlinkActionInput,
@@ -103,3 +128,23 @@ export type {
   AiReviewResult,
   AiStatus,
 } from './aiPlanner.js';
+export {
+  describeOrcaUnavailableReason,
+  getOrcaClient,
+  isOrcaConfigured,
+  resetOrcaClientFactory,
+  setOrcaClientFactory,
+} from './adapters/orca/client.js';
+export type {
+  OrcaBuildTransactionResult,
+  OrcaClient,
+  OrcaCollectInput,
+  OrcaDecreaseLiquidityInput,
+  OrcaIncreaseLiquidityInput,
+  OrcaLiquidityPreview,
+  OrcaPosition,
+  OrcaRewardAmount,
+  OrcaTokenAmount,
+  OrcaWalletPositionsResult,
+  OrcaWhirlpoolSnapshot,
+} from './adapters/orca/client.js';

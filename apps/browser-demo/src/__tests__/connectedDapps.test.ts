@@ -76,11 +76,23 @@ describe('KNOWN_CONNECTED_DAPPS', () => {
       'sanctum',
       'magiceden',
       'tensor',
+      'wormhole',
+      'mayan',
       'pyth',
     ]);
     expect(KNOWN_CONNECTED_DAPPS.find((adapter) => adapter.id === 'meteora')?.capabilities).toEqual(
       expect.arrayContaining(['first_class_adapter', 'read_positions', 'read_rewards', 'blink_actions']),
     );
+    expect(KNOWN_CONNECTED_DAPPS.find((adapter) => adapter.id === 'wormhole')?.readTools).toEqual(
+      expect.arrayContaining(['solana_wormhole_quote', 'solana_wormhole_transfer_status']),
+    );
+    const mayan = KNOWN_CONNECTED_DAPPS.find((adapter) => adapter.id === 'mayan');
+    expect(mayan).toMatchObject({
+      actionKinds: [],
+      readTools: [],
+    });
+    expect(mayan?.actionSource).toBeUndefined();
+    expect(mayan?.readSource).toBeUndefined();
   });
 });
 
@@ -221,13 +233,18 @@ describe('helper lookups', () => {
     expect(findAdapterByActionKind('kamino_deposit')?.id).toBe('kamino');
     expect(findAdapterByActionKind('raydium_harvest')?.id).toBe('raydium');
     expect(findAdapterByActionKind('marinade_liquid_stake')?.id).toBe('marinade');
+    expect(findAdapterByActionKind('wormhole_transfer')?.id).toBe('wormhole');
+    expect(findAdapterByActionKind('mayan_swap')).toBeUndefined();
     expect(findAdapterByActionKind('totally-fake')).toBeUndefined();
   });
 
   it('findAdapterByReadTool maps the read tool name back to its adapter', () => {
     expect(findAdapterByReadTool('solana_kamino_reserve_snapshot')?.id).toBe('kamino');
+    expect(findAdapterByReadTool('solana_jupiter_token_risk_evidence')?.id).toBe('jupiter');
     expect(findAdapterByReadTool('solana_raydium_pool_snapshot')?.id).toBe('raydium');
     expect(findAdapterByReadTool('solana_marinade_quote')?.id).toBe('marinade');
+    expect(findAdapterByReadTool('solana_wormhole_quote')?.id).toBe('wormhole');
+    expect(findAdapterByReadTool('solana_mayan_quote')).toBeUndefined();
   });
 
   it('findProtocolConnectorByInput resolves common aliases', () => {
@@ -235,6 +252,8 @@ describe('helper lookups', () => {
     expect(findProtocolConnectorByInput('go check my Meteora account')?.id).toBe('meteora');
     expect(findProtocolConnectorByInput('jup')?.id).toBe('jupiter');
     expect(findProtocolConnectorByInput('mSOL')?.id).toBe('marinade');
+    expect(findProtocolConnectorByInput('portal bridge')?.id).toBe('wormhole');
+    expect(findProtocolConnectorByInput('cross-chain swap')?.id).toBe('mayan');
   });
 
   it('exposes the storage key as a stable constant', () => {

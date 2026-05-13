@@ -8,6 +8,7 @@ export {
 } from './registry.js';
 export { kaminoAdapter } from './kamino/index.js';
 export { jitoAdapter } from './jito/index.js';
+export { jupiterAdapter } from './jupiter/index.js';
 export { luloAdapter } from './lulo/index.js';
 export { magicedenAdapter } from './magiceden/index.js';
 export { marinadeAdapter } from './marinade/index.js';

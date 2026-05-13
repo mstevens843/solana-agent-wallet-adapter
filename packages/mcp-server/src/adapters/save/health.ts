@@ -30,7 +30,11 @@ export function previewHealth(
   delta: HealthDelta,
 ): HealthPreview {
   const decimalsFactor = 10 ** delta.decimals;
-  const priceUsd = delta.reserveSnapshot.priceUsd ?? 0;
+  const rawPrice = delta.reserveSnapshot.priceUsd;
+  const priceUsd = typeof rawPrice === 'number' && Number.isFinite(rawPrice) && rawPrice > 0
+    ? rawPrice
+    : 0;
+  const priceMissing = priceUsd <= 0;
   const amountUi = Number(delta.amountRaw) / decimalsFactor;
   const deltaValueUsd = amountUi * priceUsd;
 
@@ -78,6 +82,12 @@ export function previewHealth(
   );
 
   const breaches: string[] = [];
+  if (priceMissing && (delta.kind === 'borrow' || delta.kind === 'withdraw')) {
+    // Without an oracle price we cannot model the debt-side change; refuse
+    // rather than silently allow a borrow or withdraw whose health impact is
+    // unknown.
+    breaches.push('missing_price_oracle');
+  }
   if (delta.kind === 'borrow' && projectedBorrowValue > projectedBorrowLimit + 1e-9) {
     breaches.push('projected_borrow_exceeds_borrow_limit');
   }

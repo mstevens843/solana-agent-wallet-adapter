@@ -288,6 +288,7 @@ type PreparedActionKind =
   | 'save_repay'
   | 'jito_stake_sol'
   | 'jito_deposit_stake_account'
+  | 'jito_claim_deposit_receipt'
   | 'jito_unstake_jitosol'
   | 'jito_withdraw_sol'
   | 'lulo_deposit'
@@ -298,7 +299,10 @@ type PreparedActionKind =
   | 'raydium_collect_fees'
   | 'raydium_farm_stake'
   | 'raydium_farm_unstake'
-  | 'raydium_harvest';
+  | 'raydium_harvest'
+  | 'wormhole_transfer'
+  | 'wormhole_redeem'
+  | 'wormhole_recover_or_resume';
 type GuidedDemoScenarioId = 'transfer' | 'swap' | 'dca' | 'payouts';
 type GuidedDemoStage = 'request' | 'prepared' | 'queued' | 'receipt';
 type GuidedDemoDecision = 'pending' | 'approved' | 'denied';
@@ -745,19 +749,29 @@ type BrandLogoId =
   | 'codex'
   | 'drift'
   | 'gemini'
+  | 'jito'
   | 'jupiter'
   | 'kamino'
   | 'lulo'
+  | 'magiceden'
   | 'marginfi'
+  | 'marinade'
+  | 'mayan'
   | 'meteora'
   | 'orca'
   | 'phantom'
+  | 'pyth'
   | 'raydium'
+  | 'realms'
+  | 'sanctum'
   | 'save'
   | 'solana'
   | 'solanaMobile'
   | 'solflare'
-  | 'vercel';
+  | 'squads'
+  | 'tensor'
+  | 'vercel'
+  | 'wormhole';
 
 const BRAND_LOGOS: Record<BrandLogoId, string> = {
   agentRouter: new URL('./assets/logos/agent-router.svg', import.meta.url).href,
@@ -766,19 +780,29 @@ const BRAND_LOGOS: Record<BrandLogoId, string> = {
   codex: new URL('./assets/logos/codex.svg', import.meta.url).href,
   drift: new URL('./assets/logos/drift.svg', import.meta.url).href,
   gemini: new URL('./assets/logos/gemini.svg', import.meta.url).href,
+  jito: new URL('./assets/logos/jito.svg', import.meta.url).href,
   jupiter: new URL('./assets/logos/jupiter.svg', import.meta.url).href,
   kamino: new URL('./assets/logos/kamino.svg', import.meta.url).href,
   lulo: new URL('./assets/logos/lulo.svg', import.meta.url).href,
+  magiceden: new URL('./assets/logos/magiceden.svg', import.meta.url).href,
   marginfi: new URL('./assets/logos/marginfi.svg', import.meta.url).href,
+  marinade: new URL('./assets/logos/marinade.svg', import.meta.url).href,
+  mayan: new URL('./assets/logos/mayan.svg', import.meta.url).href,
   meteora: new URL('./assets/logos/meteora.svg', import.meta.url).href,
   orca: new URL('./assets/logos/orca.svg', import.meta.url).href,
   phantom: new URL('./assets/logos/phantom.svg', import.meta.url).href,
+  pyth: new URL('./assets/logos/pyth.svg', import.meta.url).href,
   raydium: new URL('./assets/logos/raydium.svg', import.meta.url).href,
+  realms: new URL('./assets/logos/realms.svg', import.meta.url).href,
+  sanctum: new URL('./assets/logos/sanctum.svg', import.meta.url).href,
   save: new URL('./assets/logos/save.svg', import.meta.url).href,
   solana: new URL('./assets/logos/solana.svg', import.meta.url).href,
   solanaMobile: new URL('./assets/logos/solana-mobile.svg', import.meta.url).href,
   solflare: new URL('./assets/logos/solflare.svg', import.meta.url).href,
+  squads: new URL('./assets/logos/squads.svg', import.meta.url).href,
+  tensor: new URL('./assets/logos/tensor.svg', import.meta.url).href,
   vercel: new URL('./assets/logos/vercel.svg', import.meta.url).href,
+  wormhole: new URL('./assets/logos/wormhole.svg', import.meta.url).href,
 };
 const IOS_NATIVE_WALLETS: ReadonlyArray<IosNativeWalletOption> = [
   {
@@ -5517,8 +5541,11 @@ function connectorCapabilitySummaryRows(adapter: ConnectedDappAdapter): Array<{ 
     },
     {
       label: 'Boundary',
-      value: 'Prepare only; wallet approves separately',
-      tone: 'ready',
+      value: adapter.actionSource ? 'Prepare only; wallet approves separately' : 'Runtime tools not wired',
+      tone: adapter.actionSource ? 'ready' : 'blocked',
+      title: adapter.actionSource
+        ? `${adapter.name} prepares work only; the wallet approval remains separate.`
+        : `${adapter.name} is cataloged but does not expose executable runtime tools yet.`,
     },
   ];
 }
@@ -5536,7 +5563,11 @@ function protocolConnectorSelectOptions(connectors: ProtocolConnector[]): Select
   return connectors.map((connector) => ({
     value: connector.id,
     label: connector.name,
-    meta: connector.actionSource === 'first-class-adapter' ? 'First-class' : 'Blink connector',
+    meta: connector.actionSource === 'first-class-adapter'
+      ? 'First-class'
+      : connector.actionSource === 'blink'
+        ? 'Blink connector'
+        : 'Planned',
     detail: connector.supportedActions.slice(0, 4).join(' · '),
     logoId: protocolConnectorLogoId(connector.id),
   }));
@@ -5545,21 +5576,24 @@ function protocolConnectorSelectOptions(connectors: ProtocolConnector[]): Select
 function protocolConnectorLogoId(id: ConnectedDappId): BrandLogoId {
   const logos: Record<ConnectedDappId, BrandLogoId> = {
     drift: 'drift',
-    jito: 'solana',
+    jito: 'jito',
     jupiter: 'jupiter',
     kamino: 'kamino',
     lulo: 'lulo',
-    magiceden: 'solana',
+    magiceden: 'magiceden',
+    marinade: 'marinade',
     marginfi: 'marginfi',
+    mayan: 'mayan',
     meteora: 'meteora',
     orca: 'orca',
+    pyth: 'pyth',
     raydium: 'raydium',
+    realms: 'realms',
+    sanctum: 'sanctum',
     save: 'save',
-    tensor: 'solana',
-    sanctum: 'solana',
-    realms: 'solana',
-    pyth: 'solana',
-    squads: 'solana',
+    squads: 'squads',
+    tensor: 'tensor',
+    wormhole: 'wormhole',
   };
   return logos[id];
 }
@@ -30944,6 +30978,7 @@ function isPreparedActionKind(value: unknown): value is PreparedActionKind {
     value === 'save_repay' ||
     value === 'jito_stake_sol' ||
     value === 'jito_deposit_stake_account' ||
+    value === 'jito_claim_deposit_receipt' ||
     value === 'jito_unstake_jitosol' ||
     value === 'jito_withdraw_sol' ||
     value === 'lulo_deposit' ||
@@ -30954,7 +30989,10 @@ function isPreparedActionKind(value: unknown): value is PreparedActionKind {
     value === 'raydium_collect_fees' ||
     value === 'raydium_farm_stake' ||
     value === 'raydium_farm_unstake' ||
-    value === 'raydium_harvest';
+    value === 'raydium_harvest' ||
+    value === 'wormhole_transfer' ||
+    value === 'wormhole_redeem' ||
+    value === 'wormhole_recover_or_resume';
 }
 
 function isRecurringPayment(value: unknown): value is RecurringPayment {

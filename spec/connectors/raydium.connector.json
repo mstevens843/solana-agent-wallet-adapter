@@ -27,8 +27,8 @@
       "source": "first-class-adapter",
       "implemented": true,
       "requiresClientKey": false,
-      "returns": "Wallet-owned Raydium CLMM positions, CPMM LP balances for a supplied pool, and farm reward context for a supplied farm.",
-      "facts": ["walletAddress", "poolId", "farmId", "positionMint", "liquidity", "lpAmount", "feesOwed", "rewardsOwed"]
+      "returns": "Wallet-owned Raydium CLMM positions, CPMM LP balances for a supplied pool, and farm LP deposits for a supplied farm.",
+      "facts": ["walletAddress", "poolId", "farmId", "positionMint", "liquidity", "lpAmount", "depositedAmount", "feesOwed", "rewardsOwed"]
     },
     {
       "toolName": "solana_raydium_position_detail",

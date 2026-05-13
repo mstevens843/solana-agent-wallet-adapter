@@ -1,9 +1,11 @@
 import type { Cluster } from '@solana-agent-wallet-adapter/core';
 
-import type { AgentWalletConfig } from './config.js';
+import { getJupiterPredictionPolicy, getJupiterTriggerPolicy, type AgentWalletConfig } from './config.js';
 import { describeDriftUnavailableReason } from './adapters/drift/client.js';
 import { describeJitoUnavailableReason } from './adapters/jito/client.js';
 import { getJupiterApiKey, jupiterApiHost } from './adapters/jupiter/client.js';
+import { describeJupiterLendReadUnavailableReason } from './adapters/jupiter/lendClient.js';
+import { describeJupiterTokenPriceUnavailableReason } from './adapters/jupiter/tokenClient.js';
 import { describeKaminoUnavailableReason } from './adapters/kamino/client.js';
 import { describeLuloUnavailableReason } from './adapters/lulo/client.js';
 import { describeMagicedenUnavailableReason } from './adapters/magiceden/client.js';
@@ -49,6 +51,8 @@ export type ConnectorCapability =
   | 'markets'
   | 'blinks'
   | 'swap'
+  | 'tokens'
+  | 'price'
   | 'earn'
   | 'borrow'
   | 'withdraw'
@@ -59,7 +63,10 @@ export type ConnectorCapability =
   | 'oracle'
   | 'governance'
   | 'treasury'
-  | 'bridge';
+  | 'bridge'
+  | 'prediction'
+  | 'perps'
+  | 'trigger';
 
 export type ConnectorExecutionMode =
   | 'first_class_prepare'
@@ -149,35 +156,105 @@ export const CONNECTOR_REGISTRY: ConnectorRegistryEntry[] = [
   {
     id: 'jupiter',
     name: 'Jupiter',
-    aliases: ['jupiter', 'jup', 'jupiter swap', 'jupiter swap api v2', 'jupiter ultra', 'jupiter lend'],
+    aliases: ['jupiter', 'jup', 'jupiter swap', 'jupiter swap api v2', 'jupiter ultra', 'jupiter lend', 'jupiter earn', 'jupiter borrow', 'jupiter token', 'jupiter price', 'jupiter prediction', 'jupiter perps', 'jupiter perpetuals', 'jupiter trigger', 'jupiter limit'],
     supportedClusters: ['mainnet-beta'],
-    readCapabilities: ['swap'],
-    writeCapabilities: ['swap'],
+    readCapabilities: ['swap', 'tokens', 'price', 'earn', 'borrow', 'positions', 'markets', 'prediction', 'perps', 'trigger'],
+    writeCapabilities: ['swap', 'earn', 'borrow', 'withdraw', 'repay', 'trigger'],
     readTools: [
       'solana_connector_read_facts',
       'solana_jupiter_order_preview',
       'solana_get_swap_quote',
+      'solana_jupiter_token_search',
+      'solana_jupiter_token_by_tag',
+      'solana_jupiter_token_category',
+      'solana_jupiter_token_recent',
+      'solana_jupiter_price',
+      'solana_jupiter_price_batch',
+      'solana_jupiter_token_risk_evidence',
+      'solana_jupiter_lend_earn_tokens',
+      'solana_jupiter_lend_earn_token_detail',
+      'solana_jupiter_lend_earn_positions',
+      'solana_jupiter_lend_earn_earnings',
+      'solana_jupiter_lend_borrow_vaults',
+      'solana_jupiter_lend_borrow_vault_detail',
+      'solana_jupiter_lend_borrow_positions',
+      'solana_jupiter_lend_borrow_health_preview',
+      'solana_jupiter_prediction_events',
+      'solana_jupiter_prediction_search_events',
+      'solana_jupiter_prediction_event_detail',
+      'solana_jupiter_prediction_event_markets',
+      'solana_jupiter_prediction_market_detail',
+      'solana_jupiter_prediction_orderbook',
+      'solana_jupiter_prediction_orders',
+      'solana_jupiter_prediction_order_status',
+      'solana_jupiter_prediction_positions',
+      'solana_jupiter_prediction_history',
+      'solana_jupiter_prediction_vault_info',
+      'solana_jupiter_perps_status',
+      'solana_jupiter_perps_pool_snapshot',
+      'solana_jupiter_perps_custody_snapshot',
+      'solana_jupiter_perps_position_snapshot',
+      'solana_jupiter_trigger_auth_challenge',
+      'solana_jupiter_trigger_auth_verify',
+      'solana_jupiter_trigger_auth_status',
+      'solana_jupiter_trigger_vault',
+      'solana_jupiter_trigger_orders',
+      'solana_jupiter_trigger_order_detail',
+      'solana_jupiter_trigger_order_history',
     ],
     actionTools: [
       'solana_prepare_swap',
       'solana_swap',
+      'solana_prepare_jupiter_lend_earn_deposit',
+      'solana_prepare_jupiter_lend_earn_withdraw',
+      'solana_prepare_jupiter_lend_earn_mint',
+      'solana_prepare_jupiter_lend_earn_redeem',
+      'solana_prepare_jupiter_lend_borrow_create_position',
+      'solana_prepare_jupiter_lend_borrow_deposit_collateral',
+      'solana_prepare_jupiter_lend_borrow_borrow',
+      'solana_prepare_jupiter_lend_borrow_repay',
+      'solana_prepare_jupiter_lend_borrow_withdraw_collateral',
+      'solana_prepare_jupiter_trigger_register_vault',
+      'solana_prepare_jupiter_trigger_single_order',
+      'solana_prepare_jupiter_trigger_oco_order',
+      'solana_prepare_jupiter_trigger_otoco_order',
+      'solana_prepare_jupiter_trigger_edit_order',
+      'solana_prepare_jupiter_trigger_cancel_order',
+      'solana_prepare_jupiter_trigger_withdraw_order_funds',
       'solana_execute_prepared_action',
     ],
     requiresClientKey: true,
     requiredConfig: ['JUPITER_API_KEY or JUP_API_KEY'],
-    executionMode: 'wallet_approval',
+    executionMode: 'first_class_prepare',
     approvalBoundary: CONNECTOR_APPROVAL_BOUNDARY,
     limitations: [
-      'Uses the configured Jupiter Swap API v2 endpoint.',
+      'Uses the configured Jupiter Swap API v2 endpoint and Lend API/SDK endpoints.',
       'Order previews require a Jupiter API key.',
       'Prepared swaps can be staged without an API key, but quote preview, direct execution, and approval-time quote refresh require a Jupiter API key.',
-      'Jupiter Lend, Trigger, Recurring, Token/Price, Prediction, and Perps are tracked in the Jupiter roadmap but are not implemented in this pass.',
+      'Jupiter Lend Borrow writes require the optional @jup-ag/lend SDK. Without it, Borrow read facts and Borrow prepares are blocked while Swap and Earn REST reads continue to work.',
+      'Borrow and withdraw-collateral prepares require a fresh health preview and are blocked below the configured minimum borrow health ratio (default 1.25).',
+      'Token and Price API reads are evidence only; they do not approve actions and are not oracle guarantees.',
+      'Flashloans, multiply, unwind, liquidation, vault swap, and leverage loops are not exposed in v1.',
+      'Jupiter Prediction is beta and read-only in v1 (no order create/close/claim). Disabled by default until connectors.jupiter.prediction.enabled is set.',
+      'Jupiter Perps is exposed as a read-only research surface; solana_jupiter_perps_status reports readiness while pool, custody, and position snapshots return unsupported_method until the official Jupiter Perps API stabilizes. All Perps writes, leverage recommendations, and JLP writes are denied.',
+      'Jupiter Trigger V2 (limit/OCO/OTOCO/edit/cancel/withdraw + auth + vault + order reads) is implemented; disabled by default until connectors.jupiter.trigger.enabled (or CONNECTORS_JUPITER_TRIGGER_ENABLED) is set. Trigger orders deposit into a Jupiter-managed Privy custody vault; future fills execute through Jupiter automation outside the Agentic approval inbox. JWTs live only in volatile process memory.',
+      'Jupiter Recurring is tracked in the Jupiter roadmap but is not implemented in this pass.',
     ],
     examples: [
       'quote swapping 0.1 SOL to USDC',
       'prepare a swap from SOL to USDC',
       'swap 0.25 SOL to USDC with wallet approval',
-      'DCA SOL to USDC weekly',
+      'show Jupiter Earn markets and rates',
+      'show my Jupiter Earn positions',
+      'prepare depositing 5 USDC into Jupiter Earn',
+      'show Jupiter Borrow vaults for SOL/USDC',
+      'prepare borrowing 2 USDC only if health stays above 1.5',
+      'prepare repaying all of my Jupiter Borrow USDC debt',
+      'show Jupiter token risk evidence for this mint',
+      'get Jupiter prices for SOL, USDC, and JUP',
+      'show live Jupiter prediction markets for crypto',
+      'is Jupiter Perps supported here?',
+      'show Jupiter Perps API status',
     ],
   },
   {
@@ -202,12 +279,13 @@ export const CONNECTOR_REGISTRY: ConnectorRegistryEntry[] = [
       'solana_execute_prepared_action',
     ],
     requiresClientKey: false,
-    requiredConfig: ['Meteora DLMM client factory or @meteora-ag/dlmm integration'],
+    requiredConfig: ['@meteora-ag/dlmm and @coral-xyz/anchor optional dependencies'],
     executionMode: 'first_class_prepare',
     approvalBoundary: CONNECTOR_APPROVAL_BOUNDARY,
     limitations: [
       'Mainnet-beta DLMM only.',
-      'Reads and prepared actions require the Meteora client to be wired by the host process.',
+      'Reads and prepared actions auto-load the optional Meteora DLMM SDK when installed, or use an injected client factory in tests/hosts.',
+      'Some claim and remove-liquidity approvals can require multiple sequential wallet signatures because the Meteora SDK may return multiple transactions.',
       'DAMM, DBC, Alpha Vault, presale, Zap, Dynamic Fee Sharing, delegated/operator positions, and new position creation are not exposed in v1.',
       'Prepared actions refresh DLMM state at execution time and remain approval inbox items until the wallet signs.',
     ],
@@ -281,12 +359,12 @@ export const CONNECTOR_REGISTRY: ConnectorRegistryEntry[] = [
       'solana_execute_prepared_action',
     ],
     requiresClientKey: false,
-    requiredConfig: ['Orca Whirlpools client factory or @orca-so/whirlpools integration'],
+    requiredConfig: ['@orca-so/whirlpools and @solana/kit optional dependencies'],
     executionMode: 'first_class_prepare',
     approvalBoundary: CONNECTOR_APPROVAL_BOUNDARY,
     limitations: [
       'Mainnet-beta Whirlpools only.',
-      'Reads and prepared actions require the Orca client to be wired by the host process.',
+      'Reads and prepared actions auto-load the optional Orca Whirlpools SDK when installed, or use an injected client factory in tests/hosts.',
       'Legacy pools, vaults, swaps, delegated managers, and automated LP strategy management are not exposed in v1.',
       'Prepared actions refresh Whirlpool state at execution time and remain approval inbox items until the wallet signs.',
     ],
@@ -560,12 +638,14 @@ export const CONNECTOR_REGISTRY: ConnectorRegistryEntry[] = [
       'solana_jito_wallet_positions',
       'solana_jito_wallet_stake_accounts',
       'solana_jito_quote',
+      'solana_jito_deposit_receipts',
     ],
     actionTools: [
       'solana_prepare_jito_stake_sol',
       'solana_prepare_jito_deposit_stake_account',
       'solana_prepare_jito_unstake_jitosol',
       'solana_prepare_jito_withdraw_sol',
+      'solana_prepare_jito_claim_deposit_receipt',
       'solana_execute_prepared_action',
     ],
     requiresClientKey: false,
@@ -578,8 +658,8 @@ export const CONNECTOR_REGISTRY: ConnectorRegistryEntry[] = [
     approvalBoundary: CONNECTOR_APPROVAL_BOUNDARY,
     limitations: [
       'Mainnet-beta JitoSOL liquid staking only.',
-      'V1 covers stake SOL, deposit an existing eligible stake account, unstake JitoSOL to SOL or a stake account, and withdraw SOL from an inactive stake account.',
-      'Existing stake-account deposits use the Jito stake-deposit interceptor and create a claimable receipt; JitoSOL may not be immediately delivered.',
+      'V1 covers stake SOL, deposit an existing eligible stake account, claim stake-deposit receipts, unstake JitoSOL to SOL or a stake account, and withdraw SOL from an inactive stake account.',
+      'Existing stake-account deposits use the Jito stake-deposit interceptor and create a claimable receipt; JitoSOL may not be immediately delivered and early receipt claims can have interceptor fees.',
       'Restaking, MEV/searcher/bundle flows, validator set management, governance, and JTO token operations are not exposed.',
       'Prepared actions refresh pool and wallet state at execution time and remain approval inbox items until the wallet signs.',
     ],
@@ -589,6 +669,8 @@ export const CONNECTOR_REGISTRY: ConnectorRegistryEntry[] = [
       'quote staking 1 SOL into JitoSOL',
       'stake 0.5 SOL for JitoSOL',
       'deposit this delegated stake account into Jito',
+      'show my Jito deposit receipts',
+      'claim this Jito deposit receipt',
       'unstake 0.1 JitoSOL to a stake account',
       'withdraw SOL from this deactivated Jito stake account',
     ],
@@ -789,7 +871,7 @@ export const CONNECTOR_REGISTRY: ConnectorRegistryEntry[] = [
   {
     id: 'wormhole',
     name: 'Wormhole',
-    aliases: ['wormhole', 'portal bridge', 'token bridge', 'wtt', 'cctp bridge'],
+    aliases: ['wormhole', 'portal bridge', 'token bridge', 'wormhole token bridge', 'wtt', 'cctp bridge'],
     supportedClusters: ['mainnet-beta', 'devnet'],
     readCapabilities: ['bridge', 'markets', 'positions'],
     writeCapabilities: ['bridge'],
@@ -1054,32 +1136,98 @@ function jupiterProductReadiness(
   if (!config) {
     return {
       swap: { ready: true },
-      lendEarn: unavailable('Jupiter Lend Earn is planned but not implemented in this pass.'),
-      lendBorrow: unavailable('Jupiter Lend Borrow is planned but not implemented in this pass.'),
-      trigger: unavailable('Jupiter Trigger V2 is planned but not implemented in this pass.'),
+      lendEarn: { ready: true },
+      lendBorrow: { ready: true, reason: 'Earn REST plus optional @jup-ag/lend SDK for Borrow writes.' },
+      trigger: unavailable('Jupiter Trigger V2 is disabled by default; enable connectors.jupiter.trigger.enabled.'),
       recurring: unavailable('Jupiter Recurring is planned but not implemented in this pass.'),
-      tokens: unavailable('Jupiter Token API V2 evidence is planned but not implemented in this pass.'),
-      price: unavailable('Jupiter Price API V3 evidence is planned but not implemented in this pass.'),
-      prediction: unavailable('Jupiter Prediction beta reads are planned but not implemented in this pass.'),
-      perpsReadonly: unavailable('Jupiter Perps remains read-only research because official docs mark it work in progress.'),
+      tokens: { ready: true },
+      price: { ready: true },
+      prediction: unavailable('Jupiter Prediction beta is disabled by default; enable connectors.jupiter.prediction.enabled.'),
+      perpsReadonly: {
+        ready: true,
+        reason: 'Jupiter Perps read-only research surface is exposed via solana_jupiter_perps_status. Account decoding for pools, custodies, and positions remains gated behind official API stability; writes are denied.',
+      },
     };
   }
   const { apiKey, envName } = getJupiterApiKey(config);
   const swapReason = clusterReason
     ?? (!apiKey ? `Missing Jupiter API key. Set ${envName} or JUP_API_KEY.` : undefined);
   const notImplemented = 'Roadmapped under the Jupiter parent plan, but not implemented in this Foundation + Swap pass.';
+  const predictionPolicy = getJupiterPredictionPolicy(config);
+  let predictionReadiness: ConnectorReadiness;
+  if (clusterReason) {
+    predictionReadiness = { ready: false, reason: clusterReason };
+  } else if (!predictionPolicy.enabled) {
+    predictionReadiness = {
+      ready: false,
+      reason: 'Jupiter Prediction beta is disabled by default. Set connectors.jupiter.prediction.enabled=true to opt in.',
+    };
+  } else if (!apiKey) {
+    predictionReadiness = {
+      ready: false,
+      reason: `Missing Jupiter API key. Set ${envName} or JUP_API_KEY.`,
+    };
+  } else {
+    predictionReadiness = {
+      ready: true,
+      reason: `Configured for ${jupiterApiHost(config, 'prediction')} (beta).`,
+    };
+  }
+  const lendSdkReason = describeJupiterLendReadUnavailableReason();
+  const lendEarnReadiness: ConnectorReadiness = clusterReason
+    ? { ready: false, reason: clusterReason }
+    : !apiKey
+      ? { ready: false, reason: `Missing Jupiter API key. Set ${envName} or JUP_API_KEY.` }
+      : { ready: true, reason: `Configured for ${jupiterApiHost(config, 'lend')}.` };
+  const lendBorrowReadiness: ConnectorReadiness = clusterReason
+    ? { ready: false, reason: clusterReason }
+    : lendSdkReason
+      ? {
+          ready: false,
+          reason: `Jupiter Lend Borrow writes need the optional @jup-ag/lend SDK: ${lendSdkReason}`,
+        }
+      : !apiKey
+      ? { ready: false, reason: `Missing Jupiter API key. Set ${envName} or JUP_API_KEY.` }
+      : { ready: true, reason: `Configured for ${jupiterApiHost(config, 'lend')} with SDK.` };
+  const triggerPolicy = getJupiterTriggerPolicy(config);
+  const triggerReadiness: ConnectorReadiness = clusterReason
+    ? { ready: false, reason: clusterReason }
+    : !triggerPolicy.enabled
+      ? {
+          ready: false,
+          reason:
+            'Jupiter Trigger V2 is disabled by default. Set connectors.jupiter.trigger.enabled=true or CONNECTORS_JUPITER_TRIGGER_ENABLED=true to opt in.',
+        }
+      : !apiKey
+        ? { ready: false, reason: `Missing Jupiter API key. Set ${envName} or JUP_API_KEY.` }
+        : {
+            ready: true,
+            reason: `Configured for ${jupiterApiHost(config, 'trigger')}. Vault is Privy-managed custody; JWTs stay in volatile process memory only.`,
+          };
+  const tokenPriceReason = clusterReason ?? describeJupiterTokenPriceUnavailableReason(config);
+  const tokenReadiness: ConnectorReadiness = tokenPriceReason
+    ? { ready: false, reason: tokenPriceReason }
+    : { ready: true, reason: `Configured for ${jupiterApiHost(config, 'tokens')}.` };
+  const priceReadiness: ConnectorReadiness = tokenPriceReason
+    ? { ready: false, reason: tokenPriceReason }
+    : { ready: true, reason: `Configured for ${jupiterApiHost(config, 'price')}.` };
   return {
     swap: swapReason
       ? { ready: false, reason: swapReason }
       : { ready: true, reason: `Configured for ${jupiterApiHost(config, 'swap')}.` },
-    lendEarn: unavailable(notImplemented),
-    lendBorrow: unavailable(notImplemented),
-    trigger: unavailable(notImplemented),
+    lendEarn: lendEarnReadiness,
+    lendBorrow: lendBorrowReadiness,
+    trigger: triggerReadiness,
     recurring: unavailable(notImplemented),
-    tokens: unavailable(notImplemented),
-    price: unavailable(notImplemented),
-    prediction: unavailable('Roadmapped beta read surface; not implemented in this Foundation + Swap pass.'),
-    perpsReadonly: unavailable('Official Jupiter Perps API is work in progress; no Perps writes are exposed.'),
+    tokens: tokenReadiness,
+    price: priceReadiness,
+    prediction: predictionReadiness,
+    perpsReadonly: clusterReason
+      ? { ready: false, reason: clusterReason }
+      : {
+          ready: true,
+          reason: 'Jupiter Perps read-only research surface is exposed via solana_jupiter_perps_status. Account-decode reads remain gated behind official API stability; writes are denied.',
+        },
   };
 }
 

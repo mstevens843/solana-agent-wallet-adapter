@@ -21,7 +21,7 @@ import {
 } from './constants.js';
 import { assertHealthy, previewHealth, resolveMinHealthFactor } from './health.js';
 import { getObligation } from './obligations.js';
-import { requireNumber, requireOptionalString, requireString } from './params.js';
+import { assertWithinCap, requireNumber, requireOptionalString, requireString } from './params.js';
 
 export interface SaveBorrowInput {
   amount: string;
@@ -45,7 +45,21 @@ export const saveBorrowAction: AdapterAction<SaveBorrowInput> = {
     const walletAddress = await ctx.backend.getAddress();
     const client = getSaveClient();
     const snapshot = await client.getReserveSnapshot(ctx.connection, reserveMint, marketAddress);
+    assertWithinCap({
+      amountRaw,
+      capUi: snapshot.borrowLimitRemaining,
+      decimals: snapshot.decimals,
+      reserveSymbol: snapshot.reserveSymbol,
+      operation: 'borrow',
+    });
     const obligation = await getObligation(ctx.connection, walletAddress, marketAddress);
+    if (!obligation || obligation.totalDepositValueUsd <= 0) {
+      throw new AdapterError(
+        SAVE_ADAPTER_ID,
+        'no_collateral',
+        `Save borrow blocked: no supplied collateral was found for ${walletAddress}. Deposit collateral to Save first.`,
+      );
+    }
     const minHealthFactor = resolveMinHealthFactor(input.minHealthFactor);
     const healthPreview = previewHealth(obligation, {
       kind: 'borrow',

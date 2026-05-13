@@ -61,6 +61,7 @@ export const orcaIncreaseLiquidityAction: AdapterAction<OrcaIncreaseLiquidityPre
     const positionMint = optionalPublicKey(input.positionMint, 'positionMint');
     const slippageBps = validateSlippageBps(input.slippageBps, ctx.config.mainnet.maxSlippageBps);
     validateIncreaseAmount(input);
+    const snapshot = await getWhirlpoolSnapshot(ctx, whirlpoolAddress);
 
     let lowerTick = input.lowerTick;
     let upperTick = input.upperTick;
@@ -70,9 +71,8 @@ export const orcaIncreaseLiquidityAction: AdapterAction<OrcaIncreaseLiquidityPre
       ensurePositionMatchesWhirlpool(position, whirlpoolAddress);
       lowerTick = position.tickLowerIndex;
       upperTick = position.tickUpperIndex;
-      baseWarnings = [...rangeWarnings(position.currentTickIndex, lowerTick, upperTick), ...(position.warnings ?? [])];
+      baseWarnings = [...rangeWarnings(snapshot.currentTickIndex, lowerTick, upperTick), ...(position.warnings ?? [])];
     } else {
-      const snapshot = await getWhirlpoolSnapshot(ctx, whirlpoolAddress);
       validateTickRange(lowerTick, upperTick, snapshot.tickSpacing);
       baseWarnings = rangeWarnings(snapshot.currentTickIndex, lowerTick!, upperTick!);
     }
@@ -137,17 +137,38 @@ export const orcaIncreaseLiquidityAction: AdapterAction<OrcaIncreaseLiquidityPre
         `Orca increase-liquidity action belongs to ${action.walletAddress}, but connected wallet is ${walletAddress}.`,
       );
     }
+    const whirlpoolAddress = parsePublicKey(requireStringParam(action, 'whirlpoolAddress'), 'whirlpoolAddress');
+    const positionMint = optionalPublicKey(optionalStringParam(action, 'positionMint'), 'positionMint');
+    const tokenAAmount = optionalStringParam(action, 'tokenAAmount');
+    const tokenBAmount = optionalStringParam(action, 'tokenBAmount');
+    const maxTokenAAmount = optionalStringParam(action, 'maxTokenAAmount');
+    const maxTokenBAmount = optionalStringParam(action, 'maxTokenBAmount');
+    const slippageBps = validateSlippageBps(optionalNumberParam(action, 'slippageBps'), ctx.config.mainnet.maxSlippageBps);
+    validateIncreaseAmount({ tokenAAmount, tokenBAmount, maxTokenAAmount, maxTokenBAmount });
+    const snapshot = await getWhirlpoolSnapshot(ctx, whirlpoolAddress);
+    let lowerTick = optionalNumberParam(action, 'lowerTick');
+    let upperTick = optionalNumberParam(action, 'upperTick');
+    if (positionMint) {
+      const position = await getPositionDetail(ctx, { positionMint, whirlpoolAddress });
+      ensurePositionMatchesWhirlpool(position, whirlpoolAddress);
+      lowerTick = position.tickLowerIndex;
+      upperTick = position.tickUpperIndex;
+    } else {
+      const range = validateTickRange(lowerTick, upperTick, snapshot.tickSpacing);
+      lowerTick = range.lowerTick;
+      upperTick = range.upperTick;
+    }
     const input: OrcaIncreaseLiquidityInput = {
       walletAddress,
-      whirlpoolAddress: requireStringParam(action, 'whirlpoolAddress'),
-      ...(optionalStringParam(action, 'positionMint') !== undefined && { positionMint: optionalStringParam(action, 'positionMint') }),
-      ...(optionalStringParam(action, 'tokenAAmount') !== undefined && { tokenAAmount: optionalStringParam(action, 'tokenAAmount') }),
-      ...(optionalStringParam(action, 'tokenBAmount') !== undefined && { tokenBAmount: optionalStringParam(action, 'tokenBAmount') }),
-      ...(optionalStringParam(action, 'maxTokenAAmount') !== undefined && { maxTokenAAmount: optionalStringParam(action, 'maxTokenAAmount') }),
-      ...(optionalStringParam(action, 'maxTokenBAmount') !== undefined && { maxTokenBAmount: optionalStringParam(action, 'maxTokenBAmount') }),
-      ...(optionalNumberParam(action, 'lowerTick') !== undefined && { lowerTick: optionalNumberParam(action, 'lowerTick') }),
-      ...(optionalNumberParam(action, 'upperTick') !== undefined && { upperTick: optionalNumberParam(action, 'upperTick') }),
-      slippageBps: optionalNumberParam(action, 'slippageBps') ?? ctx.config.mainnet.maxSlippageBps,
+      whirlpoolAddress,
+      ...(positionMint !== undefined && { positionMint }),
+      ...(tokenAAmount !== undefined && { tokenAAmount }),
+      ...(tokenBAmount !== undefined && { tokenBAmount }),
+      ...(maxTokenAAmount !== undefined && { maxTokenAAmount }),
+      ...(maxTokenBAmount !== undefined && { maxTokenBAmount }),
+      ...(lowerTick !== undefined && { lowerTick }),
+      ...(upperTick !== undefined && { upperTick }),
+      slippageBps,
     };
     const built = await getOrcaClient().buildIncreaseLiquidityTransaction(ctx.connection, input);
     const summary = `Increase Orca liquidity on ${shortAddress(input.whirlpoolAddress)}`;
@@ -171,10 +192,11 @@ export const orcaDecreaseLiquidityAction: AdapterAction<OrcaDecreaseLiquidityPre
     const slippageBps = validateSlippageBps(input.slippageBps, ctx.config.mainnet.maxSlippageBps);
     const liquidityPercent = validateLiquidityPercent(input.liquidityPercent);
     validateExactDecreaseAmountChoice({ liquidityPercent, liquidityAmount: input.liquidityAmount });
-    if (input.liquidityAmount !== undefined) validatePositiveDecimalString(input.liquidityAmount, 'liquidityAmount');
+    if (input.liquidityAmount !== undefined) validatePositiveIntegerString(input.liquidityAmount, 'liquidityAmount');
     if (input.minTokenAAmount !== undefined) validatePositiveDecimalString(input.minTokenAAmount, 'minTokenAAmount');
     if (input.minTokenBAmount !== undefined) validatePositiveDecimalString(input.minTokenBAmount, 'minTokenBAmount');
 
+    const snapshot = await getWhirlpoolSnapshot(ctx, whirlpoolAddress);
     const position = await getPositionDetail(ctx, { positionMint, whirlpoolAddress });
     ensurePositionMatchesWhirlpool(position, whirlpoolAddress);
     const preparedInput: OrcaDecreaseLiquidityInput = {
@@ -210,7 +232,7 @@ export const orcaDecreaseLiquidityAction: AdapterAction<OrcaDecreaseLiquidityPre
       tokenAmounts: preview.tokenAmounts,
       priceRange: preview.priceRange,
       quote: preview.quote,
-      warnings: uniqueStrings([...(preview.warnings ?? []), ...rangeWarnings(position.currentTickIndex, position.tickLowerIndex, position.tickUpperIndex), ...(position.warnings ?? [])]),
+      warnings: uniqueStrings([...(preview.warnings ?? []), ...rangeWarnings(snapshot.currentTickIndex, position.tickLowerIndex, position.tickUpperIndex), ...(position.warnings ?? [])]),
       preparedSnapshotAt: new Date().toISOString(),
     };
     return {
@@ -235,15 +257,29 @@ export const orcaDecreaseLiquidityAction: AdapterAction<OrcaDecreaseLiquidityPre
         `Orca decrease-liquidity action belongs to ${action.walletAddress}, but connected wallet is ${walletAddress}.`,
       );
     }
+    const whirlpoolAddress = parsePublicKey(requireStringParam(action, 'whirlpoolAddress'), 'whirlpoolAddress');
+    const positionMint = parsePublicKey(requireStringParam(action, 'positionMint'), 'positionMint');
+    const liquidityPercent = validateLiquidityPercent(optionalNumberParam(action, 'liquidityPercent'));
+    const liquidityAmount = optionalStringParam(action, 'liquidityAmount');
+    const minTokenAAmount = optionalStringParam(action, 'minTokenAAmount');
+    const minTokenBAmount = optionalStringParam(action, 'minTokenBAmount');
+    const slippageBps = validateSlippageBps(optionalNumberParam(action, 'slippageBps'), ctx.config.mainnet.maxSlippageBps);
+    validateExactDecreaseAmountChoice({ liquidityPercent, liquidityAmount });
+    if (liquidityAmount !== undefined) validatePositiveIntegerString(liquidityAmount, 'liquidityAmount');
+    if (minTokenAAmount !== undefined) validatePositiveDecimalString(minTokenAAmount, 'minTokenAAmount');
+    if (minTokenBAmount !== undefined) validatePositiveDecimalString(minTokenBAmount, 'minTokenBAmount');
+    await getWhirlpoolSnapshot(ctx, whirlpoolAddress);
+    const position = await getPositionDetail(ctx, { positionMint, whirlpoolAddress });
+    ensurePositionMatchesWhirlpool(position, whirlpoolAddress);
     const input: OrcaDecreaseLiquidityInput = {
       walletAddress,
-      whirlpoolAddress: requireStringParam(action, 'whirlpoolAddress'),
-      positionMint: requireStringParam(action, 'positionMint'),
-      ...(optionalNumberParam(action, 'liquidityPercent') !== undefined && { liquidityPercent: optionalNumberParam(action, 'liquidityPercent') }),
-      ...(optionalStringParam(action, 'liquidityAmount') !== undefined && { liquidityAmount: optionalStringParam(action, 'liquidityAmount') }),
-      ...(optionalStringParam(action, 'minTokenAAmount') !== undefined && { minTokenAAmount: optionalStringParam(action, 'minTokenAAmount') }),
-      ...(optionalStringParam(action, 'minTokenBAmount') !== undefined && { minTokenBAmount: optionalStringParam(action, 'minTokenBAmount') }),
-      slippageBps: optionalNumberParam(action, 'slippageBps') ?? ctx.config.mainnet.maxSlippageBps,
+      whirlpoolAddress,
+      positionMint,
+      ...(liquidityPercent !== undefined && { liquidityPercent }),
+      ...(liquidityAmount !== undefined && { liquidityAmount }),
+      ...(minTokenAAmount !== undefined && { minTokenAAmount }),
+      ...(minTokenBAmount !== undefined && { minTokenBAmount }),
+      slippageBps,
     };
     const built = await getOrcaClient().buildDecreaseLiquidityTransaction(ctx.connection, input);
     const summary = `Decrease Orca liquidity on ${shortAddress(input.positionMint)}`;
@@ -256,25 +292,35 @@ export const orcaDecreaseLiquidityAction: AdapterAction<OrcaDecreaseLiquidityPre
   },
 };
 
-function validateIncreaseAmount(input: OrcaIncreaseLiquidityPrepareInput): void {
+function validateIncreaseAmount(input: Pick<
+  OrcaIncreaseLiquidityPrepareInput,
+  'tokenAAmount' | 'tokenBAmount' | 'maxTokenAAmount' | 'maxTokenBAmount'
+>): void {
   const values = [
     ['tokenAAmount', input.tokenAAmount],
     ['tokenBAmount', input.tokenBAmount],
     ['maxTokenAAmount', input.maxTokenAAmount],
     ['maxTokenBAmount', input.maxTokenBAmount],
   ] as const;
-  let found = false;
+  let found = 0;
   for (const [field, value] of values) {
     if (value !== undefined && value.trim() !== '') {
-      found = true;
+      found += 1;
       validatePositiveDecimalString(value, field);
     }
   }
-  if (!found) {
+  if (found === 0) {
     throw new AdapterError(
       ORCA_ADAPTER_ID,
       'missing_amount',
       'Provide tokenAAmount, tokenBAmount, maxTokenAAmount, or maxTokenBAmount for an Orca increase-liquidity action.',
+    );
+  }
+  if (found > 1) {
+    throw new AdapterError(
+      ORCA_ADAPTER_ID,
+      'invalid_amount',
+      'Provide exactly one Orca increase-liquidity amount field.',
     );
   }
 }
@@ -283,6 +329,13 @@ function validatePositiveDecimalString(value: string, field: string): void {
   const trimmed = value.trim();
   if (!/^(?:\d+|\d*\.\d+)$/.test(trimmed) || Number(trimmed) <= 0) {
     throw new AdapterError(ORCA_ADAPTER_ID, 'invalid_amount', `${field} must be a positive decimal string.`);
+  }
+}
+
+function validatePositiveIntegerString(value: string, field: string): void {
+  const trimmed = value.trim();
+  if (!/^\d+$/.test(trimmed) || BigInt(trimmed) <= 0n) {
+    throw new AdapterError(ORCA_ADAPTER_ID, 'invalid_amount', `${field} must be a positive integer string.`);
   }
 }
 

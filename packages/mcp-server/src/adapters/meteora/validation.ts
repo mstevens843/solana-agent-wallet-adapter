@@ -96,12 +96,49 @@ export function ensurePositionMatchesPool(position: MeteoraPosition, poolAddress
   }
 }
 
+export function ensurePositionOwnedByWallet(position: MeteoraPosition, walletAddress: string): void {
+  if (!position.owner) return;
+  if (position.owner !== walletAddress) {
+    throw new AdapterError(
+      METEORA_ADAPTER_ID,
+      'position_owner_mismatch',
+      `Position belongs to wallet ${position.owner}, not ${walletAddress}.`,
+    );
+  }
+}
+
+export function ensureBinRangeWithinPosition(
+  position: MeteoraPosition,
+  minBinId: number,
+  maxBinId: number,
+): void {
+  if (minBinId < position.lowerBinId || maxBinId > position.upperBinId) {
+    throw new AdapterError(
+      METEORA_ADAPTER_ID,
+      'bin_range_outside_position',
+      `Requested bin range ${minBinId}-${maxBinId} is outside position range ${position.lowerBinId}-${position.upperBinId}.`,
+    );
+  }
+}
+
 export function ensureEmptyPosition(position: MeteoraPosition): void {
   if (!isZeroish(position.liquidity)) {
     throw new AdapterError(
       METEORA_ADAPTER_ID,
       'position_not_empty',
       'Meteora close position is only supported for empty positions. Remove liquidity first, then prepare close.',
+    );
+  }
+}
+
+export function ensureNoClaimableAmounts(position: MeteoraPosition): void {
+  const hasFees = (position.feesOwed ?? []).some((amount) => !isZeroish(amount.rawAmount ?? amount.amount));
+  const hasRewards = (position.rewardsOwed ?? []).some((amount) => !isZeroish(amount.rawAmount ?? amount.amount));
+  if (hasFees || hasRewards) {
+    throw new AdapterError(
+      METEORA_ADAPTER_ID,
+      'position_has_claimable_amounts',
+      'Meteora close position requires no claimable fees or rewards. Claim fees and rewards first, then prepare close.',
     );
   }
 }
@@ -131,8 +168,9 @@ function isZeroish(value: unknown): boolean {
   if (typeof value === 'string') {
     const trimmed = value.trim();
     if (!trimmed) return true;
+    if (/^\d+$/.test(trimmed)) return BigInt(trimmed) === 0n;
     const parsed = Number(trimmed);
-    return Number.isFinite(parsed) ? parsed === 0 : /^0+$/.test(trimmed);
+    return Number.isFinite(parsed) ? parsed === 0 : false;
   }
   return false;
 }

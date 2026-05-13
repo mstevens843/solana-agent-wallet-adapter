@@ -45,18 +45,39 @@ import {
   type RaydiumPoolSnapshot,
   type RaydiumPosition,
 } from '../adapters/raydium/client.js';
+import {
+  resetMarinadeClientFactory,
+  setMarinadeClientFactory,
+  type MarinadeClient,
+  type MarinadeQuoteInput,
+} from '../adapters/marinade/client.js';
+import { MARINADE_PROGRAM_ID, MSOL_MINT } from '../adapters/marinade/constants.js';
+import {
+  resetWormholeClientFactory,
+  setWormholeClientFactory,
+  type WormholeBuildTransferInput,
+  type WormholeClient,
+  type WormholeQuoteInput,
+  type WormholeQuoteSnapshot,
+  type WormholeTransferStatus,
+} from '../adapters/wormhole/client.js';
 
 const WALLET = 'GgwYwf8XtAQRtu1ZUv9hY1Zk1wkJpz3DCH7jQAjmGGGV';
 const ORCA_WHIRLPOOL = '11111111111111111111111111111111';
 const ORCA_POSITION_MINT = 'So11111111111111111111111111111111111111112';
 const RAYDIUM_POOL = '11111111111111111111111111111111';
 const RAYDIUM_POSITION_MINT = 'So11111111111111111111111111111111111111112';
+const USDC_MINT = 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v';
+const WORMHOLE_DESTINATION = '0x1111111111111111111111111111111111111111';
+const WORMHOLE_DESTINATION_TOKEN = '0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48';
 
 afterEach(() => {
   resetKaminoClientFactory();
   resetOrcaClientFactory();
   resetMarginfiClientFactory();
   resetRaydiumClientFactory();
+  resetMarinadeClientFactory();
+  resetWormholeClientFactory();
   clearReserveSnapshotCache();
   vi.unstubAllGlobals();
   vi.unstubAllEnvs();
@@ -243,20 +264,127 @@ describe('AgentWalletActionService connector runtime', () => {
     });
   });
 
+  it('returns normalized Marinade wallet position facts', async () => {
+    setMarinadeClientFactory(() => fakeMarinadeClient());
+    const service = newService();
+
+    const result = await service.connectorReadFacts({
+      connectorId: 'marinade',
+      capability: 'positions',
+      walletAddress: WALLET,
+    });
+
+    expect(result.connector).toMatchObject({ id: 'marinade', name: 'Marinade' });
+    expect(result.facts).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        connectorId: 'marinade',
+        label: 'mSOL balance',
+        value: '1 mSOL',
+        tone: 'good',
+      }),
+      expect.objectContaining({
+        label: 'Unstake tickets',
+        value: '1 found · 1 claimable',
+      }),
+    ]));
+  });
+
+  it('prepares a Marinade liquid-stake action through the service', async () => {
+    setMarinadeClientFactory(() => fakeMarinadeClient());
+    const service = newService();
+
+    const result = await service.prepareMarinadeLiquidStake({
+      solAmount: '0.5',
+      minMsolAmount: '0.45',
+    });
+
+    expect(result.preparedAction).toMatchObject({
+      kind: 'marinade_liquid_stake',
+      walletAddress: '11111111111111111111111111111111',
+      params: {
+        connectorId: 'marinade',
+        operation: 'liquid_stake',
+        solAmount: '0.5',
+        solAmountRaw: '500000000',
+        minMsolAmountRaw: '450000000',
+        refreshAtExecution: true,
+      },
+    });
+  });
+
+  it('returns normalized Wormhole bridge quote facts', async () => {
+    const state = fakeWormholeState();
+    setWormholeClientFactory(() => fakeWormholeClient(state));
+    const service = newService();
+
+    const result = await service.connectorReadFacts({
+      connectorId: 'wormhole',
+      capability: 'bridge',
+      sourceMint: USDC_MINT,
+      amount: '10',
+      destinationChain: 'Base',
+      destinationAddress: WORMHOLE_DESTINATION,
+    });
+
+    expect(result.connector).toMatchObject({ id: 'wormhole', name: 'Wormhole' });
+    expect(result.facts).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        connectorId: 'wormhole',
+        label: 'Wormhole quote',
+        tone: 'good',
+      }),
+      expect.objectContaining({
+        label: 'Bridge fee',
+        value: '0.01 USDC',
+      }),
+    ]));
+    expect(state.quoteCalls).toHaveLength(1);
+  });
+
+  it('prepares a Wormhole transfer through the service without signing', async () => {
+    const state = fakeWormholeState();
+    setWormholeClientFactory(() => fakeWormholeClient(state));
+    const service = newService();
+
+    const result = await service.prepareWormholeTransfer({
+      sourceMint: USDC_MINT,
+      amount: '10',
+      destinationChain: 'Base',
+      destinationAddress: WORMHOLE_DESTINATION,
+      maxBridgeFee: '0.1',
+    });
+
+    expect(result.preparedAction).toMatchObject({
+      kind: 'wormhole_transfer',
+      walletAddress: '11111111111111111111111111111111',
+      params: {
+        connectorId: 'wormhole',
+        operation: 'transfer',
+        amountRaw: '10000000',
+        destinationChain: 'Base',
+        destinationAddress: WORMHOLE_DESTINATION,
+        destinationToken: WORMHOLE_DESTINATION_TOKEN,
+        maxBridgeFee: '0.1',
+        refreshAtExecution: true,
+      },
+    });
+    expect(state.transferBuilds).toHaveLength(0);
+  });
+
   it('returns normalized Jupiter preview facts and redacts secrets from payloads', async () => {
     vi.stubEnv('JUPITER_API_KEY', 'sk-test-secret-jupiter');
     vi.stubGlobal('fetch', vi.fn(async (url: string | URL | Request, init?: RequestInit) => {
       expect((init?.headers as Record<string, string>)['x-api-key']).toBe('sk-test-secret-jupiter');
       const requestUrl = new URL(String(url));
-      expect(requestUrl.origin + requestUrl.pathname).toBe('https://jupiter.example/ultra/v1/order');
-      expect(requestUrl.searchParams.get('amount')).toBe('100000000');
+      expect(requestUrl.origin + requestUrl.pathname).toBe('https://jupiter.example/swap/v2/order');
+      expect(requestUrl.searchParams.get('amount')).toBe('10000000');
       expect(requestUrl.searchParams.get('slippageBps')).toBe('100');
       return jsonResponse({
         mode: 'ultra',
         router: 'iris',
         inputMint: 'So11111111111111111111111111111111111111112',
         outputMint: 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v',
-        inAmount: '100000000',
+        inAmount: '10000000',
         outAmount: '123456',
         otherAmountThreshold: '120000',
         slippageBps: 50,
@@ -276,7 +404,7 @@ describe('AgentWalletActionService connector runtime', () => {
       capability: 'swap',
       inputToken: 'SOL',
       outputToken: 'USDC',
-      amount: '0.1',
+      amount: '0.01',
     });
 
     expect(result.connector).toMatchObject({ id: 'jupiter' });
@@ -331,6 +459,172 @@ describe('AgentWalletActionService connector runtime', () => {
     });
   });
 
+  it('allows explicit zero slippage while preserving the configured cap', async () => {
+    const service = newService();
+
+    const result = await service.prepareSwap({
+      inputToken: 'SOL',
+      outputToken: 'USDC',
+      amount: '0.01',
+      slippageBps: 0,
+    });
+
+    expect(result.preparedAction).toMatchObject({
+      kind: 'swap',
+      params: {
+        connectorId: 'jupiter',
+        slippageBps: 0,
+      },
+    });
+  });
+
+  it('executes a Jupiter Swap API v2 order through wallet signing and /execute', async () => {
+    vi.stubEnv('JUPITER_API_KEY', 'sk-test-secret-jupiter');
+    const unsignedTransaction = 'dW5zaWduZWQtdHJhbnNhY3Rpb24=';
+    const signedTransaction = 'c2lnbmVkLXRyYW5zYWN0aW9u';
+    const requests: Array<{ path: string; body?: string }> = [];
+    vi.stubGlobal('fetch', vi.fn(async (url: string | URL | Request, init?: RequestInit) => {
+      const requestUrl = new URL(String(url));
+      requests.push({ path: requestUrl.pathname, body: typeof init?.body === 'string' ? init.body : undefined });
+      if (requestUrl.pathname.endsWith('/order')) {
+        expect(requestUrl.origin + requestUrl.pathname).toBe('https://jupiter.example/swap/v2/order');
+        expect(requestUrl.searchParams.get('inputMint')).toBe('So11111111111111111111111111111111111111112');
+        expect(requestUrl.searchParams.get('outputMint')).toBe('EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v');
+        expect(requestUrl.searchParams.get('amount')).toBe('10000000');
+        expect(requestUrl.searchParams.get('taker')).toBe('11111111111111111111111111111111');
+        return jsonResponse({
+          mode: 'ultra',
+          router: 'iris',
+          inputMint: 'So11111111111111111111111111111111111111112',
+          outputMint: 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v',
+          inAmount: '10000000',
+          outAmount: '123456',
+          otherAmountThreshold: '120000',
+          slippageBps: 50,
+          requestId: 'req_jupiter_test',
+          transaction: unsignedTransaction,
+          lastValidBlockHeight: '12345',
+        });
+      }
+      expect(requestUrl.origin + requestUrl.pathname).toBe('https://jupiter.example/swap/v2/execute');
+      expect(init?.method).toBe('POST');
+      expect(String(init?.body)).toContain(signedTransaction);
+      expect(String(init?.body)).toContain('req_jupiter_test');
+      return jsonResponse({
+        status: 'Success',
+        signature: 'tx-jupiter-success',
+        code: 0,
+        inputAmountResult: '10000000',
+        outputAmountResult: '123456',
+      });
+    }));
+    const signedInputs: string[] = [];
+    const service = newService({
+      client: {
+        async signTransaction(transactionBase64: string) {
+          signedInputs.push(transactionBase64);
+          return { signature: signedTransaction };
+        },
+      } as unknown as SolanaSigningClient,
+    });
+
+    const result = await service.swap({
+      inputToken: 'SOL',
+      outputToken: 'USDC',
+      amount: '0.01',
+      slippageBps: 50,
+    });
+
+    expect(signedInputs).toEqual([unsignedTransaction]);
+    expect(requests.map((request) => request.path)).toEqual(['/swap/v2/order', '/swap/v2/execute']);
+    expect(result).toMatchObject({
+      txid: 'tx-jupiter-success',
+      status: 'Success',
+      execution: {
+        status: 'Success',
+        code: 0,
+        inputAmountResult: '10000000',
+        outputAmountResult: '123456',
+      },
+    });
+    expect(JSON.stringify(result)).not.toContain(unsignedTransaction);
+    expect(JSON.stringify(result)).not.toContain(signedTransaction);
+  });
+
+  it('rejects Jupiter orders that do not include a transaction before signing', async () => {
+    vi.stubEnv('JUPITER_API_KEY', 'sk-test-secret-jupiter');
+    vi.stubGlobal('fetch', vi.fn(async () => jsonResponse({
+      mode: 'manual',
+      router: 'iris',
+      requestId: 'req_jupiter_test',
+      errorMessage: 'No transaction could be built for this order.',
+    })));
+    const signedInputs: string[] = [];
+    const service = newService({
+      client: {
+        async signTransaction(transactionBase64: string) {
+          signedInputs.push(transactionBase64);
+          return { signature: 'signed-transaction' };
+        },
+      } as unknown as SolanaSigningClient,
+    });
+
+    await expect(service.swap({
+      inputToken: 'SOL',
+      outputToken: 'USDC',
+      amount: '0.01',
+    })).rejects.toMatchObject({
+      code: 'invalid_request',
+      message: expect.stringContaining('No transaction could be built'),
+    });
+    expect(signedInputs).toEqual([]);
+  });
+
+  it('refreshes prepared Jupiter swaps and enforces the prepared minimum output before signing', async () => {
+    vi.stubEnv('JUPITER_API_KEY', 'sk-test-secret-jupiter');
+    vi.stubGlobal('fetch', vi.fn(async () => jsonResponse({
+      mode: 'ultra',
+      router: 'iris',
+      requestId: 'req_jupiter_test',
+      transaction: 'dW5zaWduZWQtdHJhbnNhY3Rpb24=',
+      outAmount: '119999',
+      otherAmountThreshold: '119000',
+    })));
+    const store = inMemoryStore();
+    const action = await store.addAction({
+      kind: 'swap',
+      walletAddress: '11111111111111111111111111111111',
+      cluster: 'mainnet-beta',
+      summary: 'Swap 0.01 SOL to USDC',
+      params: {
+        connectorId: 'jupiter',
+        inputToken: 'SOL',
+        outputToken: 'USDC',
+        amount: '0.01',
+        slippageBps: 50,
+        quoteSnapshot: {
+          otherAmountThreshold: '120000',
+        },
+      },
+    });
+    const signedInputs: string[] = [];
+    const service = newService({
+      preparedActions: store,
+      client: {
+        async signTransaction(transactionBase64: string) {
+          signedInputs.push(transactionBase64);
+          return { signature: 'signed-transaction' };
+        },
+      } as unknown as SolanaSigningClient,
+    });
+
+    await expect(service.executePreparedAction(action.id)).rejects.toMatchObject({
+      code: 'unauthorized',
+      message: expect.stringContaining('below the prepared minimum output'),
+    });
+    expect(signedInputs).toEqual([]);
+  });
+
   it('treats Jupiter execute failure payloads as failed and does not echo signed transactions', async () => {
     vi.stubEnv('JUPITER_API_KEY', 'sk-test-secret-jupiter');
     vi.stubGlobal('fetch', vi.fn(async (_url: string | URL | Request, init?: RequestInit) => {
@@ -363,13 +657,18 @@ describe('AgentWalletActionService connector runtime', () => {
   it('returns deterministic missing-capability errors for unavailable connectors', async () => {
     const service = newService();
 
-    await expect(service.connectorReadFacts({
+    await service.connectorReadFacts({
       connectorId: 'jupiter',
       capability: 'positions',
-    })).rejects.toMatchObject({
-      code: 'unsupported_method',
-      message: expect.stringContaining('Jupiter does not expose positions read capability'),
-    });
+    }).then(
+      () => {
+        throw new Error('Expected Jupiter positions read to fail.');
+      },
+      (err: unknown) => {
+        expect(err).toMatchObject({ code: 'unsupported_method' });
+        expect(err instanceof Error ? err.message : String(err)).toContain('positions');
+      },
+    );
   });
 
   it('executes Blink prepared actions through wallet signing and RPC broadcast', async () => {
@@ -424,12 +723,16 @@ describe('AgentWalletActionService connector runtime', () => {
   });
 });
 
-function newService(): AgentWalletActionService {
+function newService(input: {
+  client?: SolanaSigningClient;
+  preparedActions?: PreparedActionStore;
+} = {}): AgentWalletActionService {
   return new AgentWalletActionService({
     backend: createMockBackend(),
     config: fakeConfig(),
     connection: fakeConnection(),
-    preparedActions: inMemoryStore(),
+    preparedActions: input.preparedActions ?? inMemoryStore(),
+    ...(input.client !== undefined && { client: input.client }),
   });
 }
 
@@ -439,7 +742,8 @@ function fakeConfig(): AgentWalletConfig {
     cluster: 'mainnet-beta',
     rpcUrl: 'https://api.fake',
     jupiter: {
-      baseUrl: 'https://jupiter.example/ultra/v1',
+      baseUrl: 'https://jupiter.example/swap/v2',
+      swapBaseUrl: 'https://jupiter.example/swap/v2',
       apiKeyEnv: 'JUPITER_API_KEY',
     },
   };
@@ -674,6 +978,216 @@ function fakeRaydiumClient(): RaydiumClient {
     },
     async buildHarvestTransaction() {
       return { transactionBase64: 'base64-raydium-harvest', programIds: [snapshot.programId], preview };
+    },
+  };
+}
+
+function fakeMarinadeClient(): MarinadeClient {
+  return {
+    async getStateSnapshot() {
+      return {
+        connectorId: 'marinade',
+        stateAddress: '8szGkuLTAuxqvFV8fYCoDxN8XrJLK9u2kjuYKxE6V5V',
+        programId: MARINADE_PROGRAM_ID,
+        msolMint: MSOL_MINT,
+        msolPrice: '1.05',
+        totalVirtualStakedSol: '1000000',
+        availableReserveSol: '10000',
+        warnings: [],
+      };
+    },
+    async getWalletPositions(_connection, walletAddress) {
+      return {
+        connectorId: 'marinade',
+        walletAddress,
+        msolMint: MSOL_MINT,
+        msolBalanceRaw: '1000000000',
+        msolBalance: '1',
+        estimatedSolValue: '1.05',
+        nativeStakeAccounts: [],
+        unstakeTickets: [{
+          ticketAccount: '11111111111111111111111111111111',
+          solAmount: '0.5',
+          lamports: '500000000',
+          status: 'claimable',
+        }],
+        warnings: [],
+      };
+    },
+    async getStakeAccounts() {
+      return [];
+    },
+    async getUnstakeTickets() {
+      return [{
+        ticketAccount: '11111111111111111111111111111111',
+        solAmount: '0.5',
+        lamports: '500000000',
+        status: 'claimable',
+      }];
+    },
+    async getQuote(_connection, input: MarinadeQuoteInput) {
+      return {
+        connectorId: 'marinade',
+        operation: input.operation,
+        inputAmount: '0.5',
+        inputAmountRaw: input.inputAmountRaw.toString(),
+        outputAmount: input.operation === 'liquid_stake' ? '0.47' : '0.51',
+        outputAmountRaw: input.operation === 'liquid_stake' ? '470000000' : '510000000',
+        minOutputAmountRaw: input.minOutputAmountRaw?.toString(),
+        route: 'marinade',
+        warnings: [],
+      };
+    },
+    async buildLiquidStakeTransaction() {
+      return {
+        transactionBase64: Buffer.from('marinade-runtime-test').toString('base64'),
+        programIds: [MARINADE_PROGRAM_ID],
+        preview: { operation: 'liquid_stake' },
+      };
+    },
+    async buildDelayedUnstakeTransaction() {
+      return {
+        transactionBase64: Buffer.from('marinade-runtime-test').toString('base64'),
+        programIds: [MARINADE_PROGRAM_ID],
+        preview: { operation: 'delayed_unstake' },
+      };
+    },
+    async buildClaimDelayedUnstakeTransaction() {
+      return {
+        transactionBase64: Buffer.from('marinade-runtime-test').toString('base64'),
+        programIds: [MARINADE_PROGRAM_ID],
+        preview: { operation: 'claim_delayed_unstake' },
+      };
+    },
+  };
+}
+
+interface FakeWormholeRuntimeState {
+  quote: WormholeQuoteSnapshot;
+  status: WormholeTransferStatus;
+  quoteCalls: Array<WormholeQuoteInput & { wormholeNetwork: 'Mainnet' | 'Testnet' }>;
+  transferBuilds: Array<WormholeBuildTransferInput & { wormholeNetwork: 'Mainnet' | 'Testnet' }>;
+}
+
+function fakeWormholeState(input: Partial<FakeWormholeRuntimeState> = {}): FakeWormholeRuntimeState {
+  return {
+    quote: {
+      quoteId: 'quote-runtime-wormhole',
+      sourceChain: 'Solana',
+      destinationChain: 'Base',
+      sourceMint: USDC_MINT,
+      destinationToken: WORMHOLE_DESTINATION_TOKEN,
+      destinationAddress: WORMHOLE_DESTINATION,
+      amount: '10',
+      amountRaw: '10000000',
+      routeType: 'token_bridge',
+      mode: 'automatic',
+      estimatedDestinationAmount: '9.99',
+      bridgeFee: '0.01',
+      bridgeFeeToken: 'USDC',
+      manualRedemptionRequired: false,
+      relayerSupported: true,
+      programIds: ['worm2ZoG2kUd4vFXhvjh93UUH596ayRfgQ2MgjNMTth'],
+      asOfIso: new Date().toISOString(),
+    },
+    status: {
+      transferId: 'wh-runtime-transfer',
+      sourceChain: 'Solana',
+      destinationChain: 'Solana',
+      vaaAvailable: true,
+      redeemed: false,
+      state: 'ready_to_redeem',
+      nextAction: 'redeem_on_solana',
+      solanaExecutable: true,
+      updatedAtIso: new Date().toISOString(),
+    },
+    quoteCalls: [],
+    transferBuilds: [],
+    ...input,
+  };
+}
+
+function fakeWormholeClient(state: FakeWormholeRuntimeState): WormholeClient {
+  return {
+    async getSupportedRoutes(_connection, input) {
+      return {
+        sourceChain: input.sourceChain ?? 'Solana',
+        wormholeNetwork: input.wormholeNetwork,
+        destinationChain: input.destinationChain,
+        mintAddress: input.mintAddress,
+        routeType: input.routeType,
+        routes: [{
+          sourceChain: input.sourceChain ?? 'Solana',
+          destinationChain: input.destinationChain ?? 'Base',
+          routeType: input.routeType ?? 'token_bridge',
+          mode: 'automatic',
+          supported: true,
+          prepareSupported: true,
+          manualRedemptionRequired: false,
+          relayerSupported: true,
+        }],
+        asOfIso: new Date().toISOString(),
+      };
+    },
+    async getTokenSnapshot(_connection, input) {
+      return {
+        mintAddress: input.mintAddress,
+        sourceChain: 'Solana',
+        wormholeNetwork: input.wormholeNetwork,
+        decimals: 6,
+        symbol: 'USDC',
+        supportedRoutes: [],
+        asOfIso: new Date().toISOString(),
+      };
+    },
+    async quoteTransfer(_connection, input) {
+      state.quoteCalls.push(input);
+      return {
+        ...state.quote,
+        sourceChain: input.sourceChain,
+        sourceMint: input.sourceMint,
+        amount: input.amount,
+        amountRaw: input.amountRaw,
+        destinationChain: input.destinationChain,
+        destinationAddress: input.destinationAddress,
+        routeType: input.routeType,
+        nativeGasDropoff: input.nativeGasDropoff,
+        asOfIso: new Date().toISOString(),
+      };
+    },
+    async getTransferStatus() {
+      return state.status;
+    },
+    async getWalletBridgeExposure(_connection, input) {
+      return {
+        walletAddress: input.walletAddress,
+        sourceChain: 'Solana',
+        pendingTransfers: [state.status],
+        asOfIso: new Date().toISOString(),
+      };
+    },
+    async buildTransferTransaction(_connection, input) {
+      state.transferBuilds.push(input);
+      return {
+        transactionBase64: 'BASE64_WORMHOLE_RUNTIME',
+        programIds: ['worm2ZoG2kUd4vFXhvjh93UUH596ayRfgQ2MgjNMTth'],
+        reusable: false,
+        quoteSnapshot: input.quote,
+      };
+    },
+    async buildRedeemTransaction() {
+      return {
+        transactionBase64: 'BASE64_WORMHOLE_REDEEM_RUNTIME',
+        programIds: ['worm2ZoG2kUd4vFXhvjh93UUH596ayRfgQ2MgjNMTth'],
+        reusable: false,
+      };
+    },
+    async buildRecoverOrResumeTransaction() {
+      return {
+        transactionBase64: 'BASE64_WORMHOLE_RECOVER_RUNTIME',
+        programIds: ['worm2ZoG2kUd4vFXhvjh93UUH596ayRfgQ2MgjNMTth'],
+        reusable: false,
+      };
     },
   };
 }

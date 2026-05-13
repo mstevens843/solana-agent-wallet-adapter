@@ -258,6 +258,8 @@ function makeContext(opts: {
     config: fakeConfig(opts.cluster ?? 'mainnet-beta'),
     connection: {} as DAppAdapterContext['connection'],
     signAndBroadcast: opts.signed ?? (async () => 'TxidPlaceholderForSquadsTests11111111111111'),
+    signTransaction: async () => "signed-base64-placeholder",
+    signMessage: async () => "signature-base64-placeholder",
     store: opts.store,
   };
 }

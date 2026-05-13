@@ -19,11 +19,28 @@
   "jupiter": {
     "baseUrl": "https://api.jup.ag/swap/v2",
     "swapBaseUrl": "https://api.jup.ag/swap/v2",
+    "tokensBaseUrl": "https://api.jup.ag/tokens/v2",
+    "priceBaseUrl": "https://api.jup.ag/price/v3",
     "apiKeyEnv": "JUPITER_API_KEY"
   },
   "connectors": {
     "marginfi": {
       "minHealthRatio": 1.1
+    },
+    "jupiter": {
+      "tokenPrice": {
+        "enabled": true,
+        "maxBatchPriceIds": 50,
+        "maxSearchMintIds": 100
+      },
+      "prediction": {
+        "enabled": false,
+        "readOnly": true
+      },
+      "perps": {
+        "enabled": false,
+        "readOnly": true
+      }
     }
   },
   "recurring": {

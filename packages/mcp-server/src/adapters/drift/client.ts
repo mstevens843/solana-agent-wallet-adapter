@@ -33,6 +33,7 @@ export interface DriftVaultSnapshot {
   vaultAddress: string;
   name: string;
   manager: string;
+  programId: string;
   depositMint: string;
   depositSymbol?: string;
   decimals: number;

@@ -185,6 +185,8 @@ function makeContext(signed?: (transactionBase64: string, summary: string) => Pr
     config: fakeConfig(),
     connection: {} as DAppAdapterContext['connection'],
     signAndBroadcast: signed ?? (async () => 'tx-jito'),
+    signTransaction: async () => "signed-base64-placeholder",
+    signMessage: async () => "signature-base64-placeholder",
     store: {} as PreparedActionStore,
   };
 }

@@ -49,7 +49,6 @@ export interface MarinadeLiquidUnstakeInput {
   msolAmount: string;
   minSolAmount?: string;
   slippageBps?: number;
-  maxFeeBps?: number;
   dueAt?: string;
   note?: string;
 }
@@ -182,8 +181,8 @@ export const marinadeLiquidUnstakeAction: AdapterAction<MarinadeLiquidUnstakeInp
       minSolAmount: input.minSolAmount,
       ...(minRaw !== undefined && { minSolAmountRaw: minRaw.toString() }),
       slippageBps,
-      ...(input.maxFeeBps !== undefined && { maxFeeBps: input.maxFeeBps }),
       jupiterRequestId: order.requestId,
+      ...(order.lastValidBlockHeight !== undefined && { jupiterLastValidBlockHeight: order.lastValidBlockHeight }),
       quoteSnapshot: quoteForStorage(quote),
       programIds: ['Jupiter Ultra API'],
     });
@@ -192,12 +191,6 @@ export const marinadeLiquidUnstakeAction: AdapterAction<MarinadeLiquidUnstakeInp
 
   async execute(action, ctx): Promise<AdapterExecuteResult> {
     await requireWallet(action, ctx);
-    if (!ctx.signTransaction) {
-      throw new ProtocolError(
-        'unsupported_method',
-        'Marinade instant unstake requires a wallet signing boundary that returns the signed transaction bytes.',
-      );
-    }
     const amountRaw = BigInt(requireStringParam(action, 'msolAmountRaw'));
     const minRaw = optionalBigintParam(action, 'minSolAmountRaw');
     const slippageBps = optionalNumberParam(action, 'slippageBps') ?? MARINADE_DEFAULT_SLIPPAGE_BPS;
@@ -213,6 +206,7 @@ export const marinadeLiquidUnstakeAction: AdapterAction<MarinadeLiquidUnstakeInp
       config: ctx.config,
       signedTransaction,
       requestId: order.requestId,
+      lastValidBlockHeight: order.lastValidBlockHeight,
     });
     const txid = txidFromJupiterExecution(executed);
     return {
@@ -229,6 +223,7 @@ export const marinadeLiquidUnstakeAction: AdapterAction<MarinadeLiquidUnstakeInp
           ? formatRawAmount(BigInt(order.outputAmountRaw), SOL_DECIMALS)
           : undefined,
         minOutputAmountRaw: order.minOutputAmountRaw,
+        jupiterLastValidBlockHeight: order.lastValidBlockHeight,
         jupiterStatus: executed.status,
       }),
     };
@@ -316,7 +311,7 @@ export const marinadeClaimDelayedUnstakeAction: AdapterAction<MarinadeClaimDelay
   async prepare(input, ctx): Promise<AdapterPrepareResult> {
     const ticketAccount = normalizePublicKey(input.ticketAccount, 'ticketAccount');
     const walletAddress = await ctx.backend.getAddress();
-    const ticket = await findClaimableTicket(ctx, walletAddress, ticketAccount);
+    const ticket = await findClaimableTicket(ctx, walletAddress, ticketAccount, input.expectedClaimableAt);
     const summary = `Claim Marinade delayed unstake ticket ${shortAddress(ticketAccount)}`;
     const params = marinadeParams({
       action: 'claim_delayed_unstake',
@@ -333,7 +328,12 @@ export const marinadeClaimDelayedUnstakeAction: AdapterAction<MarinadeClaimDelay
   async execute(action, ctx): Promise<AdapterExecuteResult> {
     await requireWallet(action, ctx);
     const ticketAccount = requireStringParam(action, 'ticketAccount');
-    const ticket = await findClaimableTicket(ctx, action.walletAddress, ticketAccount);
+    const ticket = await findClaimableTicket(
+      ctx,
+      action.walletAddress,
+      ticketAccount,
+      optionalStringParam(action, 'expectedClaimableAt'),
+    );
     const built = await getMarinadeClient().buildClaimDelayedUnstakeTransaction(ctx.connection, {
       walletAddress: action.walletAddress,
       ticketAccount,
@@ -401,9 +401,10 @@ async function findClaimableTicket(
   ctx: DAppAdapterContext,
   walletAddress: string,
   ticketAccount: string,
+  expectedClaimableAt?: string,
 ): Promise<MarinadeUnstakeTicket> {
   const tickets = await getMarinadeClient().getUnstakeTickets(ctx.connection, walletAddress);
-  const ticket = tickets.find((entry) => entry.ticketAccount === ticketAccount);
+  const ticket = tickets.find((entry) => safeNormalizePublicKey(entry.ticketAccount) === ticketAccount);
   if (!ticket) {
     throw new AdapterError(MARINADE_ADAPTER_ID, 'ticket_not_found', `Marinade unstake ticket ${ticketAccount} was not found.`);
   }
@@ -412,6 +413,13 @@ async function findClaimableTicket(
       MARINADE_ADAPTER_ID,
       'ticket_not_claimable',
       ticket.reason ?? `Marinade unstake ticket ${ticketAccount} is not claimable yet.`,
+    );
+  }
+  if (expectedClaimableAt && ticket.claimableAt && ticket.claimableAt !== expectedClaimableAt) {
+    throw new AdapterError(
+      MARINADE_ADAPTER_ID,
+      'ticket_claimable_time_changed',
+      `Marinade unstake ticket ${ticketAccount} claimable time changed from ${expectedClaimableAt} to ${ticket.claimableAt}.`,
     );
   }
   return ticket;
@@ -425,7 +433,7 @@ function enforceQuoteMinOutput(
   if (minOutputAmountRaw === undefined) {
     return;
   }
-  const raw = quote.minOutputAmountRaw ?? quote.outputAmountRaw;
+  const raw = quote.outputAmountRaw ?? quote.minOutputAmountRaw;
   if (!raw) {
     throw new AdapterError(
       MARINADE_ADAPTER_ID,
@@ -473,6 +481,15 @@ function normalizePublicKey(value: string, label: string): string {
   }
 }
 
+function safeNormalizePublicKey(value: string | undefined): string | undefined {
+  if (!value) return undefined;
+  try {
+    return new PublicKey(value.trim()).toBase58();
+  } catch {
+    return undefined;
+  }
+}
+
 function requireStringParam(action: PreparedAction, key: string): string {
   const value = action.params[key];
   if (typeof value !== 'string' || !value) {
@@ -492,6 +509,11 @@ function optionalBigintParam(action: PreparedAction, key: string): bigint | unde
 function optionalNumberParam(action: PreparedAction, key: string): number | undefined {
   const value = action.params[key];
   return typeof value === 'number' && Number.isFinite(value) ? value : undefined;
+}
+
+function optionalStringParam(action: PreparedAction, key: string): string | undefined {
+  const value = action.params[key];
+  return typeof value === 'string' && value.length > 0 ? value : undefined;
 }
 
 function quoteForStorage(quote: MarinadeQuote): Record<string, unknown> {

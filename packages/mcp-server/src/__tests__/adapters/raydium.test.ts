@@ -197,6 +197,8 @@ function makeContext(opts: {
     config: fakeConfig(opts.cluster ?? 'mainnet-beta'),
     connection: {} as Connection,
     signAndBroadcast: opts.signed ?? (async () => 'txid-raydium'),
+    signTransaction: async () => "signed-base64-placeholder",
+    signMessage: async () => "signature-base64-placeholder",
     store: opts.store,
   };
 }
@@ -383,6 +385,78 @@ describe('Raydium liquidity preparation', () => {
     expect(state.buildCalls).toEqual(['add']);
     expect(signedCalls[0]).toMatchObject({ tx: 'base64-add' });
   });
+
+  it('revalidates prepared add-liquidity params before rebuilding', async () => {
+    const state = fakeState();
+    setRaydiumClientFactory(() => fakeRaydiumClient(state));
+    const store = inMemoryStore();
+    const ctx = makeContext({ store });
+
+    const prepared = await requireRaydiumAction('add_liquidity').prepare({
+      poolId: POOL,
+      poolType: 'clmm',
+      positionMint: POSITION_MINT,
+      tokenAAmount: '0.01',
+      maxTokenBAmount: '1',
+    }, ctx);
+    const action = await store.addAction(prepared.addInput);
+    action.params.slippageBps = 250;
+
+    await expect(requireRaydiumAction('add_liquidity').execute(action, ctx)).rejects.toBeInstanceOf(AdapterError);
+    expect(state.buildCalls).toEqual([]);
+  });
+
+  it('rejects decimal CLMM liquidityAmount because the SDK expects raw integer liquidity', async () => {
+    const state = fakeState();
+    setRaydiumClientFactory(() => fakeRaydiumClient(state));
+    const ctx = makeContext({ store: inMemoryStore() });
+
+    await expect(requireRaydiumAction('remove_liquidity').prepare({
+      poolId: POOL,
+      poolType: 'clmm',
+      positionMint: POSITION_MINT,
+      liquidityAmount: '1.5',
+    }, ctx)).rejects.toBeInstanceOf(AdapterError);
+  });
+
+  it('accepts integer CLMM liquidityAmount and preserves it in prepared params', async () => {
+    const state = fakeState();
+    setRaydiumClientFactory(() => fakeRaydiumClient(state));
+    const ctx = makeContext({ store: inMemoryStore() });
+
+    const result = await requireRaydiumAction('remove_liquidity').prepare({
+      poolId: POOL,
+      poolType: 'clmm',
+      positionMint: POSITION_MINT,
+      liquidityAmount: '123',
+    }, ctx);
+
+    expect(result.addInput.params).toMatchObject({
+      poolId: POOL,
+      poolType: 'clmm',
+      positionMint: POSITION_MINT,
+      liquidityAmount: '123',
+    });
+  });
+
+  it('revalidates prepared remove-liquidity params before rebuilding', async () => {
+    const state = fakeState();
+    setRaydiumClientFactory(() => fakeRaydiumClient(state));
+    const store = inMemoryStore();
+    const ctx = makeContext({ store });
+
+    const prepared = await requireRaydiumAction('remove_liquidity').prepare({
+      poolId: POOL,
+      poolType: 'clmm',
+      positionMint: POSITION_MINT,
+      liquidityAmount: '123',
+    }, ctx);
+    const action = await store.addAction(prepared.addInput);
+    action.params.liquidityAmount = '0.5';
+
+    await expect(requireRaydiumAction('remove_liquidity').execute(action, ctx)).rejects.toBeInstanceOf(AdapterError);
+    expect(state.buildCalls).toEqual([]);
+  });
 });
 
 describe('Raydium farm preparation', () => {
@@ -401,5 +475,32 @@ describe('Raydium farm preparation', () => {
       farmId: POOL,
       refreshAtExecution: true,
     });
+  });
+
+  it('rejects harvest amounts during preparation', async () => {
+    const state = fakeState();
+    setRaydiumClientFactory(() => fakeRaydiumClient(state));
+    const ctx = makeContext({ store: inMemoryStore() });
+
+    await expect(requireRaydiumAction('harvest').prepare({
+      farmId: POOL,
+      amount: '1',
+    } as never, ctx)).rejects.toThrow(/does not accept an amount/);
+  });
+
+  it('rejects tampered harvest amounts during execution', async () => {
+    const state = fakeState();
+    setRaydiumClientFactory(() => fakeRaydiumClient(state));
+    const store = inMemoryStore();
+    const ctx = makeContext({ store });
+
+    const prepared = await requireRaydiumAction('harvest').prepare({
+      farmId: POOL,
+    }, ctx);
+    const action = await store.addAction(prepared.addInput);
+    action.params.amount = '1';
+
+    await expect(requireRaydiumAction('harvest').execute(action, ctx)).rejects.toThrow(/does not accept an amount/);
+    expect(state.buildCalls).toEqual([]);
   });
 });

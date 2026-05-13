@@ -18,7 +18,8 @@ export type JupiterProduct =
   | 'recurring'
   | 'tokens'
   | 'price'
-  | 'prediction';
+  | 'prediction'
+  | 'perps';
 
 export const JUPITER_RESPONSE_BYTE_LIMIT = 512_000;
 
@@ -56,6 +57,14 @@ export function jupiterBaseUrl(config: AgentWalletConfig, product: JupiterProduc
       return stripTrailingSlashes(jupiter.priceBaseUrl ?? DEFAULT_JUPITER_PRICE_BASE_URL);
     case 'prediction':
       return stripTrailingSlashes(jupiter.predictionBaseUrl ?? DEFAULT_JUPITER_PREDICTION_BASE_URL);
+    case 'perps':
+      if (!jupiter.perpsBaseUrl) {
+        throw new ProtocolError(
+          'unsupported_method',
+          'Jupiter Perps base URL is not configured; the official Perps API is marked work in progress. Set JUPITER_PERPS_BASE_URL only when official endpoints stabilize.',
+        );
+      }
+      return stripTrailingSlashes(jupiter.perpsBaseUrl);
   }
 }
 

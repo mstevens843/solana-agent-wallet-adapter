@@ -3,6 +3,7 @@ import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 
 import {
   ProtocolError,
+  type ErrorCode,
   type ProtocolErrorPayload,
   type WalletBackend,
 } from '@solana-agent-wallet-adapter/core';
@@ -17,6 +18,7 @@ import {
   defaultPreparedActionStorePath,
   type PreparedActionStore,
 } from './preparedActions.js';
+import { AdapterError } from './adapters/types.js';
 import { newTraceId, trace } from './trace.js';
 
 export interface RegisterActionToolsOptions {
@@ -63,7 +65,7 @@ export function registerActionTools(
     'solana_connector_capabilities',
     {
       description:
-        'List MCP protocol connector capabilities, read tools, action tools, limitations, and wallet approval boundaries. Answers what Kamino, Jupiter, Meteora, Raydium, Orca, MarginFi, Drift, Lulo, Save, Jito, Marinade, Sanctum, Magic Eden, and Tensor can do in this runtime.',
+        'List MCP protocol connector capabilities, read tools, action tools, limitations, and wallet approval boundaries. Answers what Kamino, Jupiter, Meteora, Raydium, Orca, MarginFi, Drift, Lulo, Save, Jito, Marinade, Sanctum, Wormhole, Magic Eden, and Tensor can do in this runtime.',
       inputSchema: {
         connectorId: z.string().min(2).optional().describe('Optional connector id or alias, for example kamino, jupiter, or meteora.'),
       },
@@ -79,12 +81,14 @@ export function registerActionTools(
     'solana_connector_read_facts',
     {
       description:
-        'Read normalized protocol connector facts as stable JSON. Supports Kamino, Jupiter, Raydium, Orca, MarginFi, Lulo, Save, Jito, Marinade, Sanctum, Tensor, and other first-class connector reads. Unsupported connectors return structured missing-capability errors.',
+        'Read normalized protocol connector facts as stable JSON. Supports Kamino, Jupiter, Raydium, Orca, MarginFi, Drift, Lulo, Save, Jito, Marinade, Sanctum, Wormhole, Tensor, and other first-class connector reads. Unsupported connectors return structured missing-capability errors.',
       inputSchema: {
         connectorId: z.string().min(2).describe('Connector id or alias, for example kamino or jupiter.'),
         capability: connectorCapabilitySchema().optional(),
         walletAddress: z.string().min(32).optional(),
         token: z.string().min(2).optional(),
+        mint: z.string().min(32).optional(),
+        mints: z.array(z.string().min(32)).min(1).max(50).optional(),
         reserveMint: z.string().min(32).optional(),
         lstMint: z.string().min(32).optional(),
         inputMint: z.string().min(32).optional(),
@@ -92,7 +96,7 @@ export function registerActionTools(
         inputToken: z.string().min(2).optional(),
         outputToken: z.string().min(2).optional(),
         amount: z.string().min(1).optional(),
-        slippageBps: z.number().int().min(1).optional(),
+        slippageBps: z.number().int().min(0).optional(),
         taker: z.string().min(32).optional(),
         poolAddress: z.string().min(32).optional(),
         positionAddress: z.string().min(32).optional(),
@@ -105,9 +109,12 @@ export function registerActionTools(
         bankMint: z.string().min(32).optional(),
         marginfiAccount: z.string().min(32).optional(),
         operation: marginfiOperationSchema().optional(),
+        vaultAddress: z.string().min(32).optional(),
+        subAccountId: z.number().int().min(0).optional(),
         jitoOperation: z.enum(['stake_sol', 'deposit_stake_account', 'unstake_jitosol', 'withdraw_sol']).optional(),
         marinadeOperation: z.enum(['liquid_stake', 'liquid_unstake', 'delayed_unstake', 'claim_delayed_unstake']).optional(),
         stakeAccount: z.string().min(32).optional(),
+        receiptAddress: z.string().min(32).optional(),
         solAmount: z.string().min(1).optional(),
         jitoSolAmount: z.string().min(1).optional(),
         msolAmount: z.string().min(1).optional(),
@@ -126,6 +133,23 @@ export function registerActionTools(
         withdrawAll: z.boolean().optional(),
         repayAll: z.boolean().optional(),
         createAccountIfMissing: z.boolean().optional(),
+        sourceChain: z.string().min(2).optional(),
+        sourceMint: z.string().min(1).optional(),
+        destinationChain: z.string().min(2).optional(),
+        destinationAddress: z.string().min(1).optional(),
+        routeType: z.enum(['auto', 'token_bridge', 'cctp', 'ntt', 'automatic', 'manual']).optional(),
+        nativeGasDropoff: z.string().min(1).optional(),
+        txid: z.string().min(1).optional(),
+        vaa: z.string().min(1).optional(),
+        sequence: z.string().min(1).optional(),
+        transferId: z.string().min(1).optional(),
+        includePendingTransfers: z.boolean().optional(),
+        tag: jupiterTokenTagSchema().optional(),
+        category: jupiterTokenCategorySchema().optional(),
+        interval: jupiterTokenCategoryIntervalSchema().optional(),
+        limit: z.number().int().min(1).max(100).optional(),
+        includePrice: z.boolean().optional(),
+        includeSearchFallback: z.boolean().optional(),
       },
     },
     async (input) => traceTool(
@@ -432,7 +456,7 @@ export function registerActionTools(
     'solana_prepare_meteora_claim_fees',
     {
       description:
-        'Create a manual-approval inbox item to claim fees from one Meteora DLMM position, or all positions in a pool when claimAll is true. Prepares wallet approval work only; does not sign, submit, or grant delegated authority. Mainnet-beta only.',
+        'Create a manual-approval inbox item to claim fees from one Meteora DLMM position, or all positions in a pool when claimAll is true. Some SDK results require sequential wallet signatures. Prepares wallet approval work only; does not sign, submit, or grant delegated authority. Mainnet-beta only.',
       inputSchema: meteoraClaimInputSchema(),
     },
     async (input) => traceTool(
@@ -446,7 +470,7 @@ export function registerActionTools(
     'solana_prepare_meteora_claim_rewards',
     {
       description:
-        'Create a manual-approval inbox item to claim rewards from one Meteora DLMM position, or all positions in a pool when claimAll is true. Prepares wallet approval work only; does not sign, submit, or grant delegated authority. Mainnet-beta only.',
+        'Create a manual-approval inbox item to claim rewards from one Meteora DLMM position, or all positions in a pool when claimAll is true. Some SDK results require sequential wallet signatures. Prepares wallet approval work only; does not sign, submit, or grant delegated authority. Mainnet-beta only.',
       inputSchema: meteoraClaimInputSchema(),
     },
     async (input) => traceTool(
@@ -486,7 +510,7 @@ export function registerActionTools(
     'solana_prepare_meteora_remove_liquidity',
     {
       description:
-        'Create a manual-approval inbox item to remove liquidity from a Meteora DLMM position. Prepares wallet approval work only; does not sign, submit, or grant delegated authority. Mainnet-beta only.',
+        'Create a manual-approval inbox item to remove liquidity from a Meteora DLMM position. Some SDK results require sequential wallet signatures. Prepares wallet approval work only; does not sign, submit, or grant delegated authority. Mainnet-beta only.',
       inputSchema: {
         poolAddress: z.string().min(32),
         positionAddress: z.string().min(32),
@@ -549,11 +573,11 @@ export function registerActionTools(
     'solana_raydium_wallet_positions',
     {
       description:
-        'List wallet-owned Raydium CLMM positions, CPMM LP balances for a pool, and farm reward context when a farm id is supplied. Read-only. Mainnet-beta only.',
+        'List wallet-owned Raydium CLMM positions globally, CPMM LP balances when a pool id is supplied, and farm LP deposits when a farm id is supplied. Read-only. Mainnet-beta only.',
       inputSchema: {
         walletAddress: z.string().min(32).optional().describe('Defaults to the connected wallet.'),
         poolId: z.string().min(32).optional(),
-        poolType: raydiumReadPoolTypeSchema().optional(),
+        poolType: raydiumLiquidityPoolTypeSchema().optional(),
         farmId: z.string().min(32).optional(),
       },
     },
@@ -623,12 +647,12 @@ export function registerActionTools(
     'solana_prepare_raydium_remove_liquidity',
     {
       description:
-        'Create a manual-approval inbox item to remove liquidity from a Raydium CPMM pool or CLMM position. Provide exactly one of liquidityPercent or liquidityAmount. Prepares wallet approval work only; does not sign, submit, or grant delegated authority. Mainnet-beta only.',
+        'Create a manual-approval inbox item to remove liquidity from a Raydium CPMM pool or CLMM position. Provide exactly one of liquidityPercent or liquidityAmount; CLMM liquidityAmount is raw unsigned integer liquidity, while CPMM liquidityAmount is a human LP token amount. Prepares wallet approval work only; does not sign, submit, or grant delegated authority. Mainnet-beta only.',
       inputSchema: {
         ...raydiumLiquidityInputSchema(),
         positionMint: z.string().min(32).optional().describe('Required for CLMM remove-liquidity.'),
         liquidityPercent: z.number().gt(0).max(100).optional(),
-        liquidityAmount: z.string().min(1).optional().describe('Raw CLMM liquidity amount or human CPMM LP token amount.'),
+        liquidityAmount: z.string().min(1).optional().describe('Raw unsigned integer CLMM liquidity amount or human CPMM LP token amount.'),
         minTokenAAmount: z.string().min(1).optional(),
         minTokenBAmount: z.string().min(1).optional(),
         closePosition: z.boolean().optional().describe('CLMM only: close the position when removing all liquidity.'),
@@ -1024,6 +1048,336 @@ export function registerActionTools(
       async () => jsonReply(await service.prepareMarginfiRepay(input)),
     ),
   );
+
+  server.registerTool(
+    'solana_jupiter_lend_earn_tokens',
+    {
+      description:
+        'List Jupiter Lend Earn tokens with APY, rewards, exchange price, liquidity, and withdrawal smoothing facts. Read-only. Mainnet-beta only. Requires a Jupiter API key.',
+      inputSchema: {
+        includeInactive: z.boolean().optional().describe('Include unavailable tokens. Default false.'),
+        assetMint: z.string().min(32).optional().describe('Filter to one Earn token mint.'),
+      },
+    },
+    async (input) => traceTool(
+      'solana_jupiter_lend_earn_tokens',
+      { cluster: options.config.cluster, input },
+      async () => jsonReply(await service.jupiterLendEarnTokens(input)),
+    ),
+  );
+
+  server.registerTool(
+    'solana_jupiter_lend_earn_token_detail',
+    {
+      description:
+        'Read a single Jupiter Lend Earn token. Includes share decimals, exchange price, APY, reward APY, and liquidity facts. Read-only. Mainnet-beta only.',
+      inputSchema: {
+        assetMint: z.string().min(32),
+      },
+    },
+    async ({ assetMint }) => traceTool(
+      'solana_jupiter_lend_earn_token_detail',
+      { cluster: options.config.cluster, assetMint },
+      async () => jsonReply(await service.jupiterLendEarnTokenDetail({ assetMint })),
+    ),
+  );
+
+  server.registerTool(
+    'solana_jupiter_lend_earn_positions',
+    {
+      description:
+        'Read Jupiter Lend Earn positions for a wallet. Returns shares, underlying amount, exchange price, and APY facts. Read-only. Mainnet-beta only.',
+      inputSchema: {
+        walletAddress: z.string().min(32).optional().describe('Defaults to the connected wallet.'),
+        assetMint: z.string().min(32).optional(),
+      },
+    },
+    async (input) => traceTool(
+      'solana_jupiter_lend_earn_positions',
+      { cluster: options.config.cluster, input },
+      async () => jsonReply(await service.jupiterLendEarnPositions(input)),
+    ),
+  );
+
+  server.registerTool(
+    'solana_jupiter_lend_earn_earnings',
+    {
+      description:
+        'Read Jupiter Lend Earn earnings for a wallet over an optional ISO timestamp range. Read-only. Mainnet-beta only.',
+      inputSchema: {
+        walletAddress: z.string().min(32).optional().describe('Defaults to the connected wallet.'),
+        assetMint: z.string().min(32).optional(),
+        from: z.string().datetime().optional(),
+        to: z.string().datetime().optional(),
+      },
+    },
+    async (input) => traceTool(
+      'solana_jupiter_lend_earn_earnings',
+      { cluster: options.config.cluster, input },
+      async () => jsonReply(await service.jupiterLendEarnEarnings(input)),
+    ),
+  );
+
+  server.registerTool(
+    'solana_jupiter_lend_borrow_vaults',
+    {
+      description:
+        'List Jupiter Lend Borrow vaults with LTV, liquidation threshold, supply/borrow rates, liquidity, and oracle facts. Read-only. Mainnet-beta only. SDK-backed.',
+      inputSchema: {
+        vaultId: z.number().int().min(0).optional(),
+        supplyMint: z.string().min(32).optional(),
+        borrowMint: z.string().min(32).optional(),
+        includeUnavailable: z.boolean().optional(),
+      },
+    },
+    async (input) => traceTool(
+      'solana_jupiter_lend_borrow_vaults',
+      { cluster: options.config.cluster, input },
+      async () => jsonReply(await service.jupiterLendBorrowVaults(input)),
+    ),
+  );
+
+  server.registerTool(
+    'solana_jupiter_lend_borrow_vault_detail',
+    {
+      description:
+        'Read a single Jupiter Lend Borrow vault including LTV, liquidation threshold, penalty, oracle freshness, and capacity. Read-only. Mainnet-beta only.',
+      inputSchema: {
+        vaultId: z.number().int().min(0),
+      },
+    },
+    async ({ vaultId }) => traceTool(
+      'solana_jupiter_lend_borrow_vault_detail',
+      { cluster: options.config.cluster, vaultId },
+      async () => jsonReply(await service.jupiterLendBorrowVaultDetail({ vaultId })),
+    ),
+  );
+
+  server.registerTool(
+    'solana_jupiter_lend_borrow_positions',
+    {
+      description:
+        'List Jupiter Lend Borrow positions owned by a wallet with collateral, debt, health ratio, and liquidation status. Read-only. Mainnet-beta only.',
+      inputSchema: {
+        walletAddress: z.string().min(32).optional().describe('Defaults to the connected wallet.'),
+        vaultId: z.number().int().min(0).optional(),
+        positionId: z.number().int().min(0).optional(),
+      },
+    },
+    async (input) => traceTool(
+      'solana_jupiter_lend_borrow_positions',
+      { cluster: options.config.cluster, input },
+      async () => jsonReply(await service.jupiterLendBorrowPositions(input)),
+    ),
+  );
+
+  server.registerTool(
+    'solana_jupiter_lend_borrow_health_preview',
+    {
+      description:
+        'Preview projected Jupiter Lend Borrow health after a deposit, borrow, repay, or withdraw delta. Blocks when projected health drops below the configured minimum borrow health ratio. Read-only. Mainnet-beta only.',
+      inputSchema: {
+        walletAddress: z.string().min(32).optional().describe('Defaults to the connected wallet.'),
+        vaultId: z.number().int().min(0),
+        positionId: z.number().int().min(0).optional(),
+        collateralDelta: z.string().optional().describe('Signed decimal collateral delta, e.g. "5" or "-2".'),
+        debtDelta: z.string().optional().describe('Signed decimal debt delta, e.g. "2" or "-1".'),
+        minHealthRatio: z.number().optional().describe('Override the configured minimum borrow health ratio.'),
+        maxLtvBps: z.number().int().min(0).max(10_000).optional(),
+      },
+    },
+    async (input) => traceTool(
+      'solana_jupiter_lend_borrow_health_preview',
+      { cluster: options.config.cluster, input },
+      async () => jsonReply(await service.jupiterLendBorrowHealthPreview(input)),
+    ),
+  );
+
+  server.registerTool(
+    'solana_prepare_jupiter_lend_earn_deposit',
+    {
+      description:
+        'Create a manual-approval inbox item that deposits a token into Jupiter Lend Earn. Prepares wallet approval work only; does not sign or submit. Mainnet-beta only.',
+      inputSchema: {
+        ...jupiterLendEarnInputSchema(),
+        amount: z.string().min(1).describe('Human token amount in the underlying asset.'),
+        minSharesOut: z.string().min(1).optional(),
+        dueAt: z.string().datetime().optional(),
+        note: z.string().max(500).optional(),
+      },
+    },
+    async (input) => traceTool(
+      'solana_prepare_jupiter_lend_earn_deposit',
+      { cluster: options.config.cluster, input },
+      async () => jsonReply(await service.prepareJupiterLendEarnDeposit(input)),
+    ),
+  );
+
+  server.registerTool(
+    'solana_prepare_jupiter_lend_earn_withdraw',
+    {
+      description:
+        'Create a manual-approval inbox item that withdraws underlying tokens from Jupiter Lend Earn. Refreshes pool state at execution. Mainnet-beta only.',
+      inputSchema: {
+        ...jupiterLendEarnInputSchema(),
+        amount: z.string().min(1).describe('Human token amount in the underlying asset.'),
+        minUnderlyingOut: z.string().min(1).optional(),
+        dueAt: z.string().datetime().optional(),
+        note: z.string().max(500).optional(),
+      },
+    },
+    async (input) => traceTool(
+      'solana_prepare_jupiter_lend_earn_withdraw',
+      { cluster: options.config.cluster, input },
+      async () => jsonReply(await service.prepareJupiterLendEarnWithdraw(input)),
+    ),
+  );
+
+  server.registerTool(
+    'solana_prepare_jupiter_lend_earn_mint',
+    {
+      description:
+        'Create a manual-approval inbox item that mints Jupiter Lend Earn shares for a specified share amount. Mainnet-beta only.',
+      inputSchema: {
+        ...jupiterLendEarnInputSchema(),
+        shares: z.string().min(1).describe('Human share amount.'),
+        dueAt: z.string().datetime().optional(),
+        note: z.string().max(500).optional(),
+      },
+    },
+    async (input) => traceTool(
+      'solana_prepare_jupiter_lend_earn_mint',
+      { cluster: options.config.cluster, input },
+      async () => jsonReply(await service.prepareJupiterLendEarnMint(input)),
+    ),
+  );
+
+  server.registerTool(
+    'solana_prepare_jupiter_lend_earn_redeem',
+    {
+      description:
+        'Create a manual-approval inbox item that redeems Jupiter Lend Earn shares for underlying. Refreshes pool state at execution. Mainnet-beta only.',
+      inputSchema: {
+        ...jupiterLendEarnInputSchema(),
+        shares: z.string().min(1).describe('Human share amount.'),
+        minUnderlyingOut: z.string().min(1).optional(),
+        dueAt: z.string().datetime().optional(),
+        note: z.string().max(500).optional(),
+      },
+    },
+    async (input) => traceTool(
+      'solana_prepare_jupiter_lend_earn_redeem',
+      { cluster: options.config.cluster, input },
+      async () => jsonReply(await service.prepareJupiterLendEarnRedeem(input)),
+    ),
+  );
+
+  server.registerTool(
+    'solana_prepare_jupiter_lend_borrow_create_position',
+    {
+      description:
+        'Create a manual-approval inbox item that opens a Jupiter Lend Borrow position with optional initial collateral and borrow amounts. Health-gated. Mainnet-beta only.',
+      inputSchema: {
+        ...jupiterLendBorrowInputSchema(),
+        collateralAmount: z.string().min(1).optional(),
+        borrowAmount: z.string().min(1).optional(),
+        dueAt: z.string().datetime().optional(),
+        note: z.string().max(500).optional(),
+      },
+    },
+    async (input) => traceTool(
+      'solana_prepare_jupiter_lend_borrow_create_position',
+      { cluster: options.config.cluster, input },
+      async () => jsonReply(await service.prepareJupiterLendBorrowCreatePosition(input)),
+    ),
+  );
+
+  server.registerTool(
+    'solana_prepare_jupiter_lend_borrow_deposit_collateral',
+    {
+      description:
+        'Create a manual-approval inbox item that deposits collateral into an existing Jupiter Borrow position. Mainnet-beta only.',
+      inputSchema: {
+        ...jupiterLendBorrowInputSchema(),
+        positionId: z.number().int().min(0),
+        amount: z.string().min(1),
+        dueAt: z.string().datetime().optional(),
+        note: z.string().max(500).optional(),
+      },
+    },
+    async (input) => traceTool(
+      'solana_prepare_jupiter_lend_borrow_deposit_collateral',
+      { cluster: options.config.cluster, input },
+      async () => jsonReply(await service.prepareJupiterLendBorrowDepositCollateral(input)),
+    ),
+  );
+
+  server.registerTool(
+    'solana_prepare_jupiter_lend_borrow_borrow',
+    {
+      description:
+        'Create a manual-approval inbox item that borrows from an existing Jupiter Borrow position. Blocks unless projected health stays above the configured minimum. Refreshes health at execution. Mainnet-beta only.',
+      inputSchema: {
+        ...jupiterLendBorrowInputSchema(),
+        positionId: z.number().int().min(0),
+        amount: z.string().min(1),
+        minHealthRatio: z.number().optional(),
+        maxLtvBps: z.number().int().min(0).max(10_000).optional(),
+        dueAt: z.string().datetime().optional(),
+        note: z.string().max(500).optional(),
+      },
+    },
+    async (input) => traceTool(
+      'solana_prepare_jupiter_lend_borrow_borrow',
+      { cluster: options.config.cluster, input },
+      async () => jsonReply(await service.prepareJupiterLendBorrowBorrow(input)),
+    ),
+  );
+
+  server.registerTool(
+    'solana_prepare_jupiter_lend_borrow_repay',
+    {
+      description:
+        'Create a manual-approval inbox item that repays Jupiter Borrow debt. Pass repayAll to clear the position. Mainnet-beta only.',
+      inputSchema: {
+        ...jupiterLendBorrowInputSchema(),
+        positionId: z.number().int().min(0),
+        amount: z.string().min(1).optional(),
+        repayAll: z.boolean().optional(),
+        dueAt: z.string().datetime().optional(),
+        note: z.string().max(500).optional(),
+      },
+    },
+    async (input) => traceTool(
+      'solana_prepare_jupiter_lend_borrow_repay',
+      { cluster: options.config.cluster, input },
+      async () => jsonReply(await service.prepareJupiterLendBorrowRepay(input)),
+    ),
+  );
+
+  server.registerTool(
+    'solana_prepare_jupiter_lend_borrow_withdraw_collateral',
+    {
+      description:
+        'Create a manual-approval inbox item that withdraws collateral from a Jupiter Borrow position. Health-gated; refreshes health at execution. Mainnet-beta only.',
+      inputSchema: {
+        ...jupiterLendBorrowInputSchema(),
+        positionId: z.number().int().min(0),
+        amount: z.string().min(1),
+        minHealthRatio: z.number().optional(),
+        maxLtvBps: z.number().int().min(0).max(10_000).optional(),
+        dueAt: z.string().datetime().optional(),
+        note: z.string().max(500).optional(),
+      },
+    },
+    async (input) => traceTool(
+      'solana_prepare_jupiter_lend_borrow_withdraw_collateral',
+      { cluster: options.config.cluster, input },
+      async () => jsonReply(await service.prepareJupiterLendBorrowWithdrawCollateral(input)),
+    ),
+  );
+
+  registerJupiterTriggerTools(server, service, options);
 
   server.registerTool(
     'solana_drift_user_snapshot',
@@ -2025,10 +2379,10 @@ export function registerActionTools(
     'solana_sanctum_quote',
     {
       description:
-        'Preview a Sanctum Token Swap order for LST, SOL, and Infinity routes. Does not sign or submit. Mainnet-beta only.',
+        'Preview a Sanctum Token Swap order for LST, SOL, and Infinity routes by mint or supported symbol. Does not sign or submit. Mainnet-beta only.',
       inputSchema: {
-        inputMint: z.string().min(32),
-        outputMint: z.string().min(32),
+        inputMint: z.string().min(2).describe('Input token mint or supported symbol, for example JitoSOL, SOL, or INF.'),
+        outputMint: z.string().min(2).describe('Output token mint or supported symbol, for example mSOL, SOL, or INF.'),
         amount: z.string().min(1).describe('Human token amount, for example 0.25.'),
         slippageBps: z.number().int().min(0).max(10000).optional(),
       },
@@ -2681,11 +3035,12 @@ export function registerActionTools(
         assetId: z.string().min(32).optional(),
         priceSol: z.string().min(1),
         expiresAt: z.string().datetime().optional(),
+        allowCompressed: z.boolean().optional().describe('Set false to reject compressed (tcomp) NFTs. Defaults to true.'),
         dueAt: z.string().datetime().optional(),
         note: z.string().max(500).optional(),
       },
     },
-    async ({ mintAddress, assetId, priceSol, expiresAt, dueAt, note }) => traceTool(
+    async ({ mintAddress, assetId, priceSol, expiresAt, allowCompressed, dueAt, note }) => traceTool(
       'solana_prepare_tensor_list',
       { cluster: options.config.cluster, mintAddress, assetId, priceSol, dueAt },
       async () => jsonReply(
@@ -2694,6 +3049,7 @@ export function registerActionTools(
           ...(assetId !== undefined && { assetId }),
           priceSol,
           ...(expiresAt !== undefined && { expiresAt }),
+          ...(allowCompressed !== undefined && { allowCompressed }),
           ...(dueAt !== undefined && { dueAt }),
           ...(note !== undefined && { note }),
         }),
@@ -2742,11 +3098,12 @@ export function registerActionTools(
         quantity: z.number().int().positive().optional(),
         expiresAt: z.string().datetime().optional(),
         maxEscrowSol: z.string().min(1),
+        compressed: z.boolean().optional().describe('Set true for tcomp (compressed) collection bids so the SDK routes through tcomp-sdk.'),
         dueAt: z.string().datetime().optional(),
         note: z.string().max(500).optional(),
       },
     },
-    async ({ collectionId, mintAddress, assetId, bidPriceSol, quantity, expiresAt, maxEscrowSol, dueAt, note }) => traceTool(
+    async ({ collectionId, mintAddress, assetId, bidPriceSol, quantity, expiresAt, maxEscrowSol, compressed, dueAt, note }) => traceTool(
       'solana_prepare_tensor_bid',
       { cluster: options.config.cluster, collectionId, bidPriceSol, maxEscrowSol, dueAt },
       async () => jsonReply(
@@ -2758,6 +3115,7 @@ export function registerActionTools(
           ...(quantity !== undefined && { quantity }),
           ...(expiresAt !== undefined && { expiresAt }),
           maxEscrowSol,
+          ...(compressed !== undefined && { compressed }),
           ...(dueAt !== undefined && { dueAt }),
           ...(note !== undefined && { note }),
         }),
@@ -3299,6 +3657,28 @@ export function registerActionTools(
   );
 
   server.registerTool(
+    'solana_jito_deposit_receipts',
+    {
+      description:
+        'Read Jito stake-deposit interceptor receipts for a wallet, or inspect a specific receipt address for claimability and JitoSOL amount. Read-only. Mainnet-beta only.',
+      inputSchema: {
+        walletAddress: z.string().min(32).optional().describe('Defaults to the connected wallet when receiptAddress is omitted.'),
+        receiptAddress: z.string().min(32).optional().describe('Specific Jito deposit receipt account to inspect.'),
+        claimableOnly: z.boolean().optional().describe('When listing wallet receipts, return only receipts whose cooldown is complete.'),
+      },
+    },
+    async ({ walletAddress, receiptAddress, claimableOnly }) => traceTool(
+      'solana_jito_deposit_receipts',
+      { cluster: options.config.cluster, walletAddress, receiptAddress, claimableOnly },
+      async () => jsonReply(await service.jitoDepositReceipts({
+        ...(walletAddress !== undefined && { walletAddress }),
+        ...(receiptAddress !== undefined && { receiptAddress }),
+        ...(claimableOnly !== undefined && { claimableOnly }),
+      })),
+    ),
+  );
+
+  server.registerTool(
     'solana_prepare_jito_stake_sol',
     {
       description:
@@ -3366,6 +3746,30 @@ export function registerActionTools(
         jitoSolAmount,
         ...(minSolAmount !== undefined && { minSolAmount }),
         ...(withdrawMode !== undefined && { withdrawMode }),
+        ...(dueAt !== undefined && { dueAt }),
+        ...(note !== undefined && { note }),
+      })),
+    ),
+  );
+
+  server.registerTool(
+    'solana_prepare_jito_claim_deposit_receipt',
+    {
+      description:
+        'Create a manual-approval inbox item that claims JitoSOL from a Jito stake-deposit interceptor receipt. Refuses cooldown-period claims unless allowEarlyClaim is true because early claims can pay an interceptor fee. Mainnet-beta only.',
+      inputSchema: {
+        receiptAddress: z.string().min(32),
+        allowEarlyClaim: z.boolean().optional().describe('Allow claiming during the cooldown period if the receipt permits it, accepting any interceptor early-claim fee.'),
+        dueAt: z.string().datetime().optional(),
+        note: z.string().max(500).optional(),
+      },
+    },
+    async ({ receiptAddress, allowEarlyClaim, dueAt, note }) => traceTool(
+      'solana_prepare_jito_claim_deposit_receipt',
+      { cluster: options.config.cluster, receiptAddress, allowEarlyClaim, dueAt },
+      async () => jsonReply(await service.prepareJitoClaimDepositReceipt({
+        receiptAddress,
+        ...(allowEarlyClaim !== undefined && { allowEarlyClaim }),
         ...(dueAt !== undefined && { dueAt }),
         ...(note !== undefined && { note }),
       })),
@@ -3592,6 +3996,157 @@ export function registerActionTools(
   );
 
   server.registerTool(
+    'solana_wormhole_supported_routes',
+    {
+      description:
+        'Read Wormhole-supported bridge routes from Solana: destination chains, route type, manual redemption, relayer support, and prepare support. Read-only; does not sign. Mainnet-beta and devnet only.',
+      inputSchema: {
+        sourceChain: z.string().min(2).optional().describe('Defaults to Solana. V1 only supports Solana.'),
+        destinationChain: z.string().min(2).optional(),
+        mintAddress: z.string().min(1).optional(),
+        routeType: z.enum(['auto', 'token_bridge', 'cctp', 'ntt', 'automatic', 'manual']).optional(),
+      },
+    },
+    async (input) => traceTool(
+      'solana_wormhole_supported_routes',
+      { cluster: options.config.cluster, input },
+      async () => jsonReply(await service.wormholeSupportedRoutes(input)),
+    ),
+  );
+
+  server.registerTool(
+    'solana_wormhole_token_snapshot',
+    {
+      description:
+        'Read Wormhole token bridge metadata for a Solana mint: supported routes, wrapped assets where exposed, and token warnings. Read-only; does not sign.',
+      inputSchema: {
+        mintAddress: z.string().min(1).describe('Solana mint address or native.'),
+        destinationChain: z.string().min(2).optional(),
+        includeWrappedAssets: z.boolean().optional().describe('Defaults to true.'),
+      },
+    },
+    async (input) => traceTool(
+      'solana_wormhole_token_snapshot',
+      { cluster: options.config.cluster, input },
+      async () => jsonReply(await service.wormholeTokenSnapshot(input)),
+    ),
+  );
+
+  server.registerTool(
+    'solana_wormhole_quote',
+    {
+      description:
+        'Quote a Wormhole Solana-source token transfer, including route type, destination token, fee, redemption mode, native gas dropoff, and warnings. Read-only; does not sign.',
+      inputSchema: wormholeQuoteInputSchema(),
+    },
+    async (input) => traceTool(
+      'solana_wormhole_quote',
+      { cluster: options.config.cluster, input },
+      async () => jsonReply(await service.wormholeQuote(input)),
+    ),
+  );
+
+  server.registerTool(
+    'solana_wormhole_transfer_status',
+    {
+      description:
+        'Read Wormhole transfer status from txid, VAA, sequence, or transfer id. Reports VAA availability, redeem state, next action, and whether the next step is Solana-executable.',
+      inputSchema: {
+        txid: z.string().min(1).optional(),
+        vaa: z.string().min(1).optional(),
+        sequence: z.string().min(1).optional(),
+        transferId: z.string().min(1).optional(),
+        sourceChain: z.string().min(2).optional().describe('Defaults to Solana.'),
+        destinationChain: z.string().min(2).optional(),
+      },
+    },
+    async (input) => traceTool(
+      'solana_wormhole_transfer_status',
+      { cluster: options.config.cluster, input },
+      async () => jsonReply(await service.wormholeTransferStatus(input)),
+    ),
+  );
+
+  server.registerTool(
+    'solana_wormhole_wallet_bridge_exposure',
+    {
+      description:
+        'Read pending Wormhole bridge exposure for a wallet. Defaults to the connected wallet. Read-only; does not sign.',
+      inputSchema: {
+        walletAddress: z.string().min(32).optional(),
+        includePendingTransfers: z.boolean().optional().describe('Defaults to true.'),
+      },
+    },
+    async (input) => traceTool(
+      'solana_wormhole_wallet_bridge_exposure',
+      { cluster: options.config.cluster, input },
+      async () => jsonReply(await service.wormholeWalletBridgeExposure(input)),
+    ),
+  );
+
+  server.registerTool(
+    'solana_prepare_wormhole_transfer',
+    {
+      description:
+        'Create a manual-approval inbox item for a Wormhole Solana-source token bridge transfer. Prepares wallet approval work only; does not sign, submit, or grant delegated authority. Refreshes route and quote before approval.',
+      inputSchema: {
+        ...wormholeQuoteInputSchema(),
+        minDestinationAmount: z.string().min(1).optional(),
+        maxBridgeFee: z.string().min(1).optional(),
+        recipientMemo: z.string().max(200).optional(),
+        dueAt: z.string().datetime().optional(),
+        note: z.string().max(500).optional(),
+      },
+    },
+    async (input) => traceTool(
+      'solana_prepare_wormhole_transfer',
+      { cluster: options.config.cluster, input },
+      async () => jsonReply(await service.prepareWormholeTransfer(input)),
+    ),
+  );
+
+  server.registerTool(
+    'solana_prepare_wormhole_redeem',
+    {
+      description:
+        'Create a manual-approval inbox item to redeem/finalize a Wormhole transfer on Solana. Refuses non-Solana destination signing. Prepares wallet approval work only.',
+      inputSchema: {
+        vaa: z.string().min(1).optional(),
+        transferId: z.string().min(1).optional(),
+        destinationChain: z.string().min(2).describe('Must be Solana in v1.'),
+        expectedMint: z.string().min(1).optional(),
+        dueAt: z.string().datetime().optional(),
+        note: z.string().max(500).optional(),
+      },
+    },
+    async (input) => traceTool(
+      'solana_prepare_wormhole_redeem',
+      { cluster: options.config.cluster, input },
+      async () => jsonReply(await service.prepareWormholeRedeem(input)),
+    ),
+  );
+
+  server.registerTool(
+    'solana_prepare_wormhole_recover_or_resume',
+    {
+      description:
+        'Create a manual-approval inbox item to recover or resume a Wormhole transfer only when the next executable step is Solana-compatible. Prepares wallet approval work only.',
+      inputSchema: {
+        sourceTxid: z.string().min(1).optional(),
+        transferId: z.string().min(1).optional(),
+        destinationChain: z.string().min(2).optional(),
+        dueAt: z.string().datetime().optional(),
+        note: z.string().max(500).optional(),
+      },
+    },
+    async (input) => traceTool(
+      'solana_prepare_wormhole_recover_or_resume',
+      { cluster: options.config.cluster, input },
+      async () => jsonReply(await service.prepareWormholeRecoverOrResume(input)),
+    ),
+  );
+
+  server.registerTool(
     'solana_list_prepared_actions',
     {
       description:
@@ -3771,6 +4326,124 @@ export function registerActionTools(
   );
 
   server.registerTool(
+    'solana_jupiter_token_search',
+    {
+      description:
+        'Search Jupiter Token API V2 metadata by symbol, name, mint, or comma-separated mints. Read-only; does not sign or prepare transactions.',
+      inputSchema: {
+        query: z.string().min(1).describe('Symbol, name, mint, or comma-separated mint addresses.'),
+        limit: z.number().int().min(1).max(100).optional().describe('Defaults to 20 for symbol/name searches.'),
+      },
+    },
+    async (input) => traceTool(
+      'solana_jupiter_token_search',
+      { cluster: options.config.cluster, input },
+      async () => jsonReply(await service.jupiterTokenSearch(input)),
+    ),
+  );
+
+  server.registerTool(
+    'solana_jupiter_token_by_tag',
+    {
+      description:
+        'Read Jupiter Token API V2 tokens by tag: verified, liquid-staked tokens, or tokenized stocks. Read-only.',
+      inputSchema: {
+        tag: jupiterTokenTagSchema(),
+        limit: z.number().int().min(1).max(100).optional(),
+      },
+    },
+    async (input) => traceTool(
+      'solana_jupiter_token_by_tag',
+      { cluster: options.config.cluster, input },
+      async () => jsonReply(await service.jupiterTokensByTag(input)),
+    ),
+  );
+
+  server.registerTool(
+    'solana_jupiter_token_category',
+    {
+      description:
+        'Read Jupiter Token API V2 top organic score, top traded, or top trending token categories for an interval. Read-only.',
+      inputSchema: {
+        category: jupiterTokenCategorySchema(),
+        interval: jupiterTokenCategoryIntervalSchema(),
+        limit: z.number().int().min(1).max(100).optional().describe('Defaults to 50.'),
+      },
+    },
+    async (input) => traceTool(
+      'solana_jupiter_token_category',
+      { cluster: options.config.cluster, input },
+      async () => jsonReply(await service.jupiterTokenCategory(input)),
+    ),
+  );
+
+  server.registerTool(
+    'solana_jupiter_token_recent',
+    {
+      description:
+        'Read recent Jupiter Token API V2 tokens based on first pool creation time, not mint creation time. Read-only.',
+      inputSchema: {
+        limit: z.number().int().min(1).max(100).optional().describe('Defaults to 30.'),
+      },
+    },
+    async (input) => traceTool(
+      'solana_jupiter_token_recent',
+      { cluster: options.config.cluster, input },
+      async () => jsonReply(await service.jupiterRecentTokens(input)),
+    ),
+  );
+
+  server.registerTool(
+    'solana_jupiter_price',
+    {
+      description:
+        'Read a Jupiter Price API V3 USD price for one mint. Missing prices are returned as structured warnings. Read-only and not an oracle guarantee.',
+      inputSchema: {
+        mint: jupiterMintSchema(),
+      },
+    },
+    async (input) => traceTool(
+      'solana_jupiter_price',
+      { cluster: options.config.cluster, mint: input.mint },
+      async () => jsonReply(await service.jupiterPrice(input)),
+    ),
+  );
+
+  server.registerTool(
+    'solana_jupiter_price_batch',
+    {
+      description:
+        'Read Jupiter Price API V3 USD prices for up to 50 mints. Missing prices are returned as structured warnings. Read-only and not an oracle guarantee.',
+      inputSchema: {
+        mints: z.array(jupiterMintSchema()).min(1).max(50),
+      },
+    },
+    async (input) => traceTool(
+      'solana_jupiter_price_batch',
+      { cluster: options.config.cluster, mints: input.mints },
+      async () => jsonReply(await service.jupiterPriceBatch(input)),
+    ),
+  );
+
+  server.registerTool(
+    'solana_jupiter_token_risk_evidence',
+    {
+      description:
+        'Return compact Jupiter token and price evidence for review: metadata, verification, audit flags, liquidity, organic score, price, and warnings. Read-only; does not approve or guarantee safety.',
+      inputSchema: {
+        mint: jupiterMintSchema(),
+        includePrice: z.boolean().optional().describe('Defaults to true.'),
+        includeSearchFallback: z.boolean().optional().describe('Defaults to true.'),
+      },
+    },
+    async (input) => traceTool(
+      'solana_jupiter_token_risk_evidence',
+      { cluster: options.config.cluster, mint: input.mint },
+      async () => jsonReply(await service.jupiterTokenRiskEvidence(input)),
+    ),
+  );
+
+  server.registerTool(
     'solana_get_swap_quote',
     {
       description:
@@ -3814,6 +4487,561 @@ export function registerActionTools(
       async () => jsonReply(await service.swap(input)),
     ),
   );
+
+  server.registerTool(
+    'solana_jupiter_perps_status',
+    {
+      description:
+        'Read-only Jupiter Perps research surface. Returns official API readiness (work in progress), docs links, leverage and liquidation warnings, and the perps config flags. Does not sign and exposes no writes.',
+      inputSchema: {
+        includeDocsCheck: z.boolean().optional().describe('Reserved for a future revision; currently a no-op.'),
+      },
+    },
+    async (input) => traceTool(
+      'solana_jupiter_perps_status',
+      { cluster: options.config.cluster, input },
+      async () => jsonReply(await service.jupiterPerpsStatus(input)),
+    ),
+  );
+
+  server.registerTool(
+    'solana_jupiter_perps_pool_snapshot',
+    {
+      description:
+        'Read Jupiter Perps/JLP pool account state. Returns unsupported_method until the official Jupiter Perps API stabilizes; never decodes account data via unofficial Anchor IDL.',
+      inputSchema: {
+        poolAddress: z.string().min(32).describe('Jupiter Perps pool account address.'),
+        includeCustodies: z.boolean().optional().describe('Reserved for future use once the official API stabilizes.'),
+      },
+    },
+    async (input) => traceTool(
+      'solana_jupiter_perps_pool_snapshot',
+      { cluster: options.config.cluster, input },
+      async () => jsonReply(await service.jupiterPerpsPoolSnapshot(input)),
+    ),
+  );
+
+  server.registerTool(
+    'solana_jupiter_perps_custody_snapshot',
+    {
+      description:
+        'Read Jupiter Perps custody account state. Returns unsupported_method until the official Jupiter Perps API stabilizes.',
+      inputSchema: {
+        custodyAddress: z.string().min(32).describe('Jupiter Perps custody account address.'),
+      },
+    },
+    async (input) => traceTool(
+      'solana_jupiter_perps_custody_snapshot',
+      { cluster: options.config.cluster, input },
+      async () => jsonReply(await service.jupiterPerpsCustodySnapshot(input)),
+    ),
+  );
+
+  server.registerTool(
+    'solana_jupiter_perps_position_snapshot',
+    {
+      description:
+        'Read Jupiter Perps wallet/position account state. Returns unsupported_method until the official Jupiter Perps API stabilizes. Never returns leverage recommendations.',
+      inputSchema: {
+        walletAddress: z.string().min(32).optional().describe('Optional wallet address; defaults to the connected wallet.'),
+        positionAddress: z.string().min(32).optional().describe('Optional Jupiter Perps position account address.'),
+        market: z.string().optional().describe('Optional market identifier for filtered position reads.'),
+      },
+    },
+    async (input) => traceTool(
+      'solana_jupiter_perps_position_snapshot',
+      { cluster: options.config.cluster, input },
+      async () => jsonReply(await service.jupiterPerpsPositionSnapshot(input)),
+    ),
+  );
+
+  server.registerTool(
+    'solana_jupiter_prediction_events',
+    {
+      description:
+        'List Jupiter Prediction events (beta, read-only). Disabled by default until connectors.jupiter.prediction.enabled is set.',
+      inputSchema: {
+        provider: z.enum(['polymarket', 'kalshi']).optional(),
+        includeMarkets: z.boolean().optional(),
+        category: z.enum(['all', 'crypto', 'sports', 'politics', 'esports', 'culture', 'economics', 'tech']).optional(),
+        sortBy: z.enum(['volume', 'beginAt']).optional(),
+        sortDirection: z.enum(['asc', 'desc']).optional(),
+        filter: z.enum(['new', 'live', 'trending']).optional(),
+        start: z.number().int().optional(),
+        end: z.number().int().optional(),
+      },
+    },
+    async (input) => traceTool(
+      'solana_jupiter_prediction_events',
+      { cluster: options.config.cluster, input },
+      async () => jsonReply(await service.jupiterPredictionEvents(input)),
+    ),
+  );
+
+  server.registerTool(
+    'solana_jupiter_prediction_search_events',
+    {
+      description:
+        'Search Jupiter Prediction events by query (beta, read-only).',
+      inputSchema: {
+        query: z.string().min(1),
+        provider: z.enum(['polymarket', 'kalshi']).optional(),
+        limit: z.number().int().min(1).max(200).optional(),
+      },
+    },
+    async (input) => traceTool(
+      'solana_jupiter_prediction_search_events',
+      { cluster: options.config.cluster, input },
+      async () => jsonReply(await service.jupiterPredictionSearchEvents(input)),
+    ),
+  );
+
+  server.registerTool(
+    'solana_jupiter_prediction_event_detail',
+    {
+      description:
+        'Read a single Jupiter Prediction event with optional embedded markets (beta, read-only).',
+      inputSchema: {
+        eventId: z.string().min(1),
+        includeMarkets: z.boolean().optional().describe('Defaults to true.'),
+      },
+    },
+    async (input) => traceTool(
+      'solana_jupiter_prediction_event_detail',
+      { cluster: options.config.cluster, input },
+      async () => jsonReply(await service.jupiterPredictionEventDetail(input)),
+    ),
+  );
+
+  server.registerTool(
+    'solana_jupiter_prediction_event_markets',
+    {
+      description:
+        'List markets for a Jupiter Prediction event (beta, read-only).',
+      inputSchema: {
+        eventId: z.string().min(1),
+      },
+    },
+    async (input) => traceTool(
+      'solana_jupiter_prediction_event_markets',
+      { cluster: options.config.cluster, input },
+      async () => jsonReply(await service.jupiterPredictionEventMarkets(input)),
+    ),
+  );
+
+  server.registerTool(
+    'solana_jupiter_prediction_market_detail',
+    {
+      description:
+        'Read a Jupiter Prediction market detail (beta, read-only). Includes status and YES/NO prices when reported.',
+      inputSchema: {
+        marketId: z.string().min(1),
+      },
+    },
+    async (input) => traceTool(
+      'solana_jupiter_prediction_market_detail',
+      { cluster: options.config.cluster, input },
+      async () => jsonReply(await service.jupiterPredictionMarketDetail(input)),
+    ),
+  );
+
+  server.registerTool(
+    'solana_jupiter_prediction_orderbook',
+    {
+      description:
+        'Read the YES/NO orderbook for a Jupiter Prediction market (beta, read-only). Prices change quickly.',
+      inputSchema: {
+        marketId: z.string().min(1),
+      },
+    },
+    async (input) => traceTool(
+      'solana_jupiter_prediction_orderbook',
+      { cluster: options.config.cluster, input },
+      async () => jsonReply(await service.jupiterPredictionOrderbook(input)),
+    ),
+  );
+
+  server.registerTool(
+    'solana_jupiter_prediction_orders',
+    {
+      description:
+        'List Jupiter Prediction orders for the connected wallet or an explicit owner (beta, read-only).',
+      inputSchema: {
+        owner: z.string().min(32).optional().describe('Defaults to the connected wallet.'),
+        marketId: z.string().min(1).optional(),
+        status: z.enum(['pending', 'filled', 'failed', 'all']).optional(),
+      },
+    },
+    async (input) => traceTool(
+      'solana_jupiter_prediction_orders',
+      { cluster: options.config.cluster, input },
+      async () => jsonReply(await service.jupiterPredictionOrders(input)),
+    ),
+  );
+
+  server.registerTool(
+    'solana_jupiter_prediction_order_status',
+    {
+      description:
+        'Read a Jupiter Prediction order status by orderId for the connected wallet or an explicit owner (beta, read-only).',
+      inputSchema: {
+        orderId: z.string().min(1),
+        owner: z.string().min(32).optional().describe('Defaults to the connected wallet.'),
+      },
+    },
+    async (input) => traceTool(
+      'solana_jupiter_prediction_order_status',
+      { cluster: options.config.cluster, input },
+      async () => jsonReply(await service.jupiterPredictionOrderStatus(input)),
+    ),
+  );
+
+  server.registerTool(
+    'solana_jupiter_prediction_positions',
+    {
+      description:
+        'List Jupiter Prediction positions for the connected wallet or an explicit owner (beta, read-only).',
+      inputSchema: {
+        owner: z.string().min(32).optional().describe('Defaults to the connected wallet.'),
+        marketId: z.string().min(1).optional(),
+        eventId: z.string().min(1).optional(),
+      },
+    },
+    async (input) => traceTool(
+      'solana_jupiter_prediction_positions',
+      { cluster: options.config.cluster, input },
+      async () => jsonReply(await service.jupiterPredictionPositions(input)),
+    ),
+  );
+
+  server.registerTool(
+    'solana_jupiter_prediction_history',
+    {
+      description:
+        'List Jupiter Prediction history for the connected wallet or an explicit owner (beta, read-only).',
+      inputSchema: {
+        owner: z.string().min(32).optional().describe('Defaults to the connected wallet.'),
+        marketId: z.string().min(1).optional(),
+        eventId: z.string().min(1).optional(),
+        limit: z.number().int().min(1).max(200).optional(),
+      },
+    },
+    async (input) => traceTool(
+      'solana_jupiter_prediction_history',
+      { cluster: options.config.cluster, input },
+      async () => jsonReply(await service.jupiterPredictionHistory(input)),
+    ),
+  );
+
+  server.registerTool(
+    'solana_jupiter_prediction_vault_info',
+    {
+      description:
+        'Read Jupiter Prediction vault info for the connected wallet or an explicit owner (beta, read-only).',
+      inputSchema: {
+        owner: z.string().min(32).optional().describe('Defaults to the connected wallet.'),
+      },
+    },
+    async (input) => traceTool(
+      'solana_jupiter_prediction_vault_info',
+      { cluster: options.config.cluster, input },
+      async () => jsonReply(await service.jupiterPredictionVaultInfo(input)),
+    ),
+  );
+}
+
+function registerJupiterTriggerTools(
+  server: McpServer,
+  service: AgentWalletActionService,
+  options: RegisterActionToolsOptions,
+): void {
+  const cluster = options.config.cluster;
+  const challengeTypeSchema = z.enum(['message', 'transaction']);
+  const orderStateSchema = z.enum(['open', 'pending', 'filled', 'expired', 'cancelled', 'ready_to_cancel', 'all']);
+  const triggerWarningSuffix =
+    'Trigger orders deposit funds into a Jupiter-managed Privy custody vault and execute later through Jupiter automation; future fills do not return to the Agentic approval inbox. Output is not guaranteed at trigger time. Cancel and withdraw are separate steps.';
+
+  server.registerTool(
+    'solana_jupiter_trigger_auth_challenge',
+    {
+      description:
+        'Request a Jupiter Trigger V2 auth challenge for the wallet. Returns a challenge string the wallet must sign with solana_sign_message. JWT is never persisted; volatile process memory only.',
+      inputSchema: {
+        walletAddress: z.string().min(32).optional(),
+        challengeType: challengeTypeSchema.optional(),
+      },
+    },
+    async (input) => traceTool(
+      'solana_jupiter_trigger_auth_challenge',
+      { cluster, input },
+      async () => jsonReply(await service.jupiterTriggerAuthChallenge(input)),
+    ),
+  );
+
+  server.registerTool(
+    'solana_jupiter_trigger_auth_verify',
+    {
+      description:
+        'Submit a signed Jupiter Trigger V2 challenge. Exchanges the signature for a short-lived JWT cached only in volatile process memory. Never returns the JWT to the caller.',
+      inputSchema: {
+        walletAddress: z.string().min(32).optional(),
+        challengeType: challengeTypeSchema,
+        signature: z.string().min(1).optional(),
+        signedTransaction: z.string().min(1).optional(),
+      },
+    },
+    async (input) => traceTool(
+      'solana_jupiter_trigger_auth_verify',
+      { cluster, input: { walletAddress: input.walletAddress, challengeType: input.challengeType } },
+      async () => jsonReply(await service.jupiterTriggerAuthVerify(input)),
+    ),
+  );
+
+  server.registerTool(
+    'solana_jupiter_trigger_auth_status',
+    {
+      description:
+        'Report whether the wallet has a live Jupiter Trigger V2 authentication. Returns authenticated, walletAddress, cluster, apiHost, and expiresAt; never returns the JWT itself.',
+      inputSchema: {
+        walletAddress: z.string().min(32).optional(),
+      },
+    },
+    async (input) => traceTool(
+      'solana_jupiter_trigger_auth_status',
+      { cluster, input },
+      async () => jsonReply(await service.jupiterTriggerAuthStatus(input)),
+    ),
+  );
+
+  server.registerTool(
+    'solana_jupiter_trigger_vault',
+    {
+      description:
+        'Read the wallet\'s Jupiter Trigger V2 vault. The vault is Privy-managed custody, not the wallet. Read-only.',
+      inputSchema: {
+        walletAddress: z.string().min(32).optional(),
+      },
+    },
+    async (input) => traceTool(
+      'solana_jupiter_trigger_vault',
+      { cluster, input },
+      async () => jsonReply(await service.jupiterTriggerVault(input)),
+    ),
+  );
+
+  server.registerTool(
+    'solana_jupiter_trigger_orders',
+    {
+      description:
+        'List active Jupiter Trigger V2 orders for the wallet. Defaults to state=open. Read-only.',
+      inputSchema: {
+        walletAddress: z.string().min(32).optional(),
+        state: orderStateSchema.optional(),
+        limit: z.number().int().min(1).max(200).optional(),
+        offset: z.number().int().min(0).optional(),
+      },
+    },
+    async (input) => traceTool(
+      'solana_jupiter_trigger_orders',
+      { cluster, input },
+      async () => jsonReply(await service.jupiterTriggerOrders(input)),
+    ),
+  );
+
+  server.registerTool(
+    'solana_jupiter_trigger_order_detail',
+    {
+      description:
+        'Read a single Jupiter Trigger V2 order detail including type, state, trigger fields, slippage, expiration, cancellability, and withdrawal eligibility. Read-only.',
+      inputSchema: {
+        walletAddress: z.string().min(32).optional(),
+        orderId: z.string().min(1),
+      },
+    },
+    async (input) => traceTool(
+      'solana_jupiter_trigger_order_detail',
+      { cluster, input },
+      async () => jsonReply(await service.jupiterTriggerOrderDetail(input)),
+    ),
+  );
+
+  server.registerTool(
+    'solana_jupiter_trigger_order_history',
+    {
+      description:
+        'List Jupiter Trigger V2 order history (all states by default). Includes filled, expired, cancelled, and ready_to_cancel orders. Read-only.',
+      inputSchema: {
+        walletAddress: z.string().min(32).optional(),
+        state: orderStateSchema.optional(),
+        limit: z.number().int().min(1).max(200).optional(),
+        offset: z.number().int().min(0).optional(),
+      },
+    },
+    async (input) => traceTool(
+      'solana_jupiter_trigger_order_history',
+      { cluster, input },
+      async () => jsonReply(await service.jupiterTriggerOrderHistory(input)),
+    ),
+  );
+
+  server.registerTool(
+    'solana_prepare_jupiter_trigger_register_vault',
+    {
+      description: `Prepare a manual-approval inbox item that registers the wallet\'s Jupiter Trigger V2 vault. ${triggerWarningSuffix}`,
+      inputSchema: {
+        dueAt: z.string().datetime().optional(),
+        note: z.string().max(500).optional(),
+      },
+    },
+    async (input) => traceTool(
+      'solana_prepare_jupiter_trigger_register_vault',
+      { cluster, input },
+      async () => jsonReply(await service.prepareJupiterTriggerRegisterVault(input)),
+    ),
+  );
+
+  server.registerTool(
+    'solana_prepare_jupiter_trigger_single_order',
+    {
+      description: `Prepare a single Jupiter Trigger V2 limit order. ${triggerWarningSuffix}`,
+      inputSchema: {
+        inputMint: z.string().min(32),
+        outputMint: z.string().min(32),
+        amount: z.string().min(1),
+        triggerMint: z.string().min(32),
+        triggerCondition: z.enum(['above', 'below']),
+        triggerPriceUsd: z.number().positive(),
+        slippageBps: z.number().int().min(0).max(10_000).optional(),
+        expiresAt: z.string().datetime(),
+        acceptHighSlippage: z.boolean().optional(),
+        maxDepositUsd: z.number().positive().optional(),
+        dueAt: z.string().datetime().optional(),
+        note: z.string().max(500).optional(),
+      },
+    },
+    async (input) => traceTool(
+      'solana_prepare_jupiter_trigger_single_order',
+      { cluster, input },
+      async () => jsonReply(await service.prepareJupiterTriggerSingleOrder(input)),
+    ),
+  );
+
+  server.registerTool(
+    'solana_prepare_jupiter_trigger_oco_order',
+    {
+      description: `Prepare a Jupiter Trigger V2 OCO order (take-profit + stop-loss; one cancels the other). ${triggerWarningSuffix}`,
+      inputSchema: {
+        inputMint: z.string().min(32),
+        outputMint: z.string().min(32),
+        amount: z.string().min(1),
+        triggerMint: z.string().min(32),
+        takeProfitPriceUsd: z.number().positive(),
+        stopLossPriceUsd: z.number().positive(),
+        takeProfitSlippageBps: z.number().int().min(0).max(10_000).optional(),
+        stopLossSlippageBps: z.number().int().min(0).max(10_000).optional(),
+        expiresAt: z.string().datetime(),
+        side: z.enum(['sell', 'buy']).optional(),
+        acceptHighSlippage: z.boolean().optional(),
+        dueAt: z.string().datetime().optional(),
+        note: z.string().max(500).optional(),
+      },
+    },
+    async (input) => traceTool(
+      'solana_prepare_jupiter_trigger_oco_order',
+      { cluster, input },
+      async () => jsonReply(await service.prepareJupiterTriggerOcoOrder(input)),
+    ),
+  );
+
+  server.registerTool(
+    'solana_prepare_jupiter_trigger_otoco_order',
+    {
+      description: `Prepare a Jupiter Trigger V2 OTOCO order (entry trigger then take-profit/stop-loss OCO). ${triggerWarningSuffix}`,
+      inputSchema: {
+        inputMint: z.string().min(32),
+        outputMint: z.string().min(32),
+        amount: z.string().min(1),
+        triggerMint: z.string().min(32),
+        entryCondition: z.enum(['above', 'below']),
+        entryPriceUsd: z.number().positive(),
+        takeProfitPriceUsd: z.number().positive(),
+        stopLossPriceUsd: z.number().positive(),
+        slippageBps: z.number().int().min(0).max(10_000).optional(),
+        takeProfitSlippageBps: z.number().int().min(0).max(10_000).optional(),
+        stopLossSlippageBps: z.number().int().min(0).max(10_000).optional(),
+        expiresAt: z.string().datetime(),
+        acceptHighSlippage: z.boolean().optional(),
+        dueAt: z.string().datetime().optional(),
+        note: z.string().max(500).optional(),
+      },
+    },
+    async (input) => traceTool(
+      'solana_prepare_jupiter_trigger_otoco_order',
+      { cluster, input },
+      async () => jsonReply(await service.prepareJupiterTriggerOtocoOrder(input)),
+    ),
+  );
+
+  server.registerTool(
+    'solana_prepare_jupiter_trigger_edit_order',
+    {
+      description: `Prepare an edit for an existing Jupiter Trigger V2 order. ${triggerWarningSuffix}`,
+      inputSchema: {
+        orderId: z.string().min(1),
+        newTriggerPriceUsd: z.number().positive().optional(),
+        newSlippageBps: z.number().int().min(0).max(10_000).optional(),
+        newExpiresAt: z.string().datetime().optional(),
+        acceptHighSlippage: z.boolean().optional(),
+        reason: z.string().max(500).optional(),
+        dueAt: z.string().datetime().optional(),
+        note: z.string().max(500).optional(),
+      },
+    },
+    async (input) => traceTool(
+      'solana_prepare_jupiter_trigger_edit_order',
+      { cluster, input },
+      async () => jsonReply(await service.prepareJupiterTriggerEditOrder(input)),
+    ),
+  );
+
+  server.registerTool(
+    'solana_prepare_jupiter_trigger_cancel_order',
+    {
+      description:
+        'Prepare a cancel for a Jupiter Trigger V2 order. Cancel and withdraw are separate steps; expired funds remain in the vault until withdrawal completes.',
+      inputSchema: {
+        orderId: z.string().min(1),
+        reason: z.string().max(500).optional(),
+        dueAt: z.string().datetime().optional(),
+        note: z.string().max(500).optional(),
+      },
+    },
+    async (input) => traceTool(
+      'solana_prepare_jupiter_trigger_cancel_order',
+      { cluster, input },
+      async () => jsonReply(await service.prepareJupiterTriggerCancelOrder(input)),
+    ),
+  );
+
+  server.registerTool(
+    'solana_prepare_jupiter_trigger_withdraw_order_funds',
+    {
+      description:
+        'Prepare a withdrawal of cancelled/expired Jupiter Trigger V2 order funds from the Privy vault back to the wallet.',
+      inputSchema: {
+        orderId: z.string().min(1),
+        destination: z.string().min(32).optional(),
+        reason: z.string().max(500).optional(),
+        dueAt: z.string().datetime().optional(),
+        note: z.string().max(500).optional(),
+      },
+    },
+    async (input) => traceTool(
+      'solana_prepare_jupiter_trigger_withdraw_order_funds',
+      { cluster, input },
+      async () => jsonReply(await service.prepareJupiterTriggerWithdrawOrderFunds(input)),
+    ),
+  );
 }
 
 async function traceTool<T>(tool: string, payload: Record<string, unknown>, run: () => Promise<T> | T) {
@@ -3838,7 +5066,34 @@ function swapInputSchema() {
     inputToken: z.string().default('SOL'),
     outputToken: z.string().default('USDC'),
     amount: z.string().min(1),
-    slippageBps: z.number().int().min(1).optional(),
+    slippageBps: z.number().int().min(0).optional(),
+  };
+}
+
+function jupiterMintSchema() {
+  return z.string().min(32).max(44).describe('Solana token mint address.');
+}
+
+function jupiterTokenTagSchema() {
+  return z.enum(['lst', 'verified', 'stocks']);
+}
+
+function jupiterTokenCategorySchema() {
+  return z.enum(['toporganicscore', 'toptraded', 'toptrending']);
+}
+
+function jupiterTokenCategoryIntervalSchema() {
+  return z.enum(['5m', '1h', '6h', '24h']);
+}
+
+function wormholeQuoteInputSchema() {
+  return {
+    sourceMint: z.string().min(1).describe('Solana source mint address or native.'),
+    amount: z.string().min(1).describe('Human token amount, for example 10.'),
+    destinationChain: z.string().min(2).describe('Destination chain name, for example Ethereum or Base.'),
+    destinationAddress: z.string().min(1).describe('Destination wallet address on the destination chain.'),
+    routeType: z.enum(['auto', 'token_bridge', 'cctp', 'ntt']).optional().describe('Defaults to auto.'),
+    nativeGasDropoff: z.string().min(1).optional(),
   };
 }
 
@@ -3883,11 +5138,23 @@ function marginfiActionInputSchema() {
   return {
     ...marginfiBankInputSchema(),
     walletAddress: z.string().min(32).optional().describe('Defaults to the connected wallet.'),
-    amount: z.string().min(1).optional().describe('Human token amount. Required unless withdrawAll or repayAll resolves the amount.'),
+    amount: z.string().min(1).optional().describe("Human token amount. Required unless withdrawAll or repayAll resolves the amount; pass 'all' only for withdraw or repay."),
     marginfiAccount: z.string().min(32).optional().describe('Required when the wallet has multiple MarginFi accounts.'),
     withdrawAll: z.boolean().optional(),
     repayAll: z.boolean().optional(),
-    createAccountIfMissing: z.boolean().optional(),
+    createAccountIfMissing: z.boolean().optional().describe('Currently rejected by the connector; included as an explicit safety signal.'),
+  };
+}
+
+function jupiterLendEarnInputSchema() {
+  return {
+    assetMint: z.string().min(32).describe('Underlying Jupiter Earn asset mint.'),
+  };
+}
+
+function jupiterLendBorrowInputSchema() {
+  return {
+    vaultId: z.number().int().min(0).describe('Jupiter Lend Borrow vault id.'),
   };
 }
 
@@ -3898,6 +5165,8 @@ function connectorCapabilitySchema() {
     'markets',
     'blinks',
     'swap',
+    'tokens',
+    'price',
     'earn',
     'borrow',
     'withdraw',
@@ -3909,6 +5178,7 @@ function connectorCapabilitySchema() {
     'governance',
     'treasury',
     'bridge',
+    'prediction',
   ]);
 }
 
@@ -4073,13 +5343,7 @@ function jsonReply(payload: unknown) {
 }
 
 function errorReply(err: unknown) {
-  const protocolErr =
-    err instanceof ProtocolError
-      ? err
-      : new ProtocolError(
-          'wallet_unreachable',
-          err instanceof Error ? err.message : 'Unknown action error.',
-        );
+  const protocolErr = protocolErrorFromUnknown(err);
   const payload: ProtocolErrorPayload = protocolErr.toPayload();
   return {
     content: [
@@ -4090,6 +5354,28 @@ function errorReply(err: unknown) {
     ],
     isError: true,
   };
+}
+
+function protocolErrorFromUnknown(err: unknown): ProtocolError {
+  if (err instanceof ProtocolError) return err;
+  if (err instanceof AdapterError) {
+    return new ProtocolError(
+      adapterErrorCode(err),
+      `${err.adapterId} connector error (${err.code}): ${err.message}`,
+      { cause: err },
+    );
+  }
+  return new ProtocolError(
+    'wallet_unreachable',
+    err instanceof Error ? err.message : 'Unknown action error.',
+  );
+}
+
+function adapterErrorCode(err: AdapterError): ErrorCode {
+  if (err.code === 'unsupported_cluster') return 'cluster_mismatch';
+  if (err.code === 'unsupported_method') return 'unsupported_method';
+  if (err.code === 'unauthorized') return 'unauthorized';
+  return 'invalid_request';
 }
 
 function stringify(payload: unknown): string {

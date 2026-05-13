@@ -224,6 +224,8 @@ function makeContext(opts: {
       },
     } as unknown as DAppAdapterContext['connection'],
     signAndBroadcast: opts.signed ?? (async () => 'TxidPlaceholderForSaveTests111111111111111'),
+    signTransaction: async () => "signed-base64-placeholder",
+    signMessage: async () => "signature-base64-placeholder",
     store: opts.store,
   };
 }
@@ -479,6 +481,107 @@ describe('Save withdraw prepare + execute', () => {
     await expect(
       requireSaveAction('withdraw').prepare({ amount: '1', token: 'USDC' }, ctx),
     ).rejects.toMatchObject({ code: 'no_position' });
+  });
+});
+
+describe('Save defensive guards', () => {
+  let state: FakeSaveState;
+
+  beforeEach(() => {
+    state = {
+      reserves: { [USDC_MINT]: fakeReserve(), [SOL_MINT]: solReserve() },
+      obligation: fakeObligation(),
+      depositCalls: [],
+      withdrawCalls: [],
+      borrowCalls: [],
+      repayCalls: [],
+    };
+    setSaveClientFactory(() => buildFakeSave(state));
+  });
+
+  it('deposit blocks amounts above depositLimitRemaining', async () => {
+    state.reserves[USDC_MINT] = fakeReserve({ depositLimitRemaining: '5' });
+    const store = inMemoryStore();
+    const ctx = makeContext({ store });
+    await expect(
+      requireSaveAction('deposit').prepare({ amount: '10', token: 'USDC' }, ctx),
+    ).rejects.toMatchObject({ code: 'exceeds_cap' });
+  });
+
+  it('borrow blocks amounts above borrowLimitRemaining', async () => {
+    state.reserves[USDC_MINT] = fakeReserve({ borrowLimitRemaining: '1' });
+    const store = inMemoryStore();
+    const ctx = makeContext({ store });
+    await expect(
+      requireSaveAction('borrow').prepare({ amount: '5', token: 'USDC' }, ctx),
+    ).rejects.toMatchObject({ code: 'exceeds_cap' });
+  });
+
+  it('borrow refuses when the wallet has no collateral', async () => {
+    state.obligation = null;
+    const store = inMemoryStore();
+    const ctx = makeContext({ store });
+    await expect(
+      requireSaveAction('borrow').prepare({ amount: '5', token: 'USDC' }, ctx),
+    ).rejects.toMatchObject({ code: 'no_collateral' });
+  });
+
+  it('borrow refuses when the obligation has zero deposit value', async () => {
+    state.obligation = fakeObligation({
+      deposits: [],
+      borrows: [],
+      totalDepositValueUsd: 0,
+      totalBorrowValueUsd: 0,
+      borrowLimitUsd: 0,
+      liquidationThresholdUsd: 0,
+      healthFactor: Number.POSITIVE_INFINITY,
+    });
+    const store = inMemoryStore();
+    const ctx = makeContext({ store });
+    await expect(
+      requireSaveAction('borrow').prepare({ amount: '5', token: 'USDC' }, ctx),
+    ).rejects.toMatchObject({ code: 'no_collateral' });
+  });
+
+  it('borrow refuses when the reserve has no oracle price (priceUsd missing)', async () => {
+    state.reserves[USDC_MINT] = fakeReserve({ priceUsd: undefined });
+    const store = inMemoryStore();
+    const ctx = makeContext({ store });
+    await expect(
+      requireSaveAction('borrow').prepare({ amount: '1', token: 'USDC' }, ctx),
+    ).rejects.toMatchObject({ code: 'projected_health_unsafe' });
+  });
+
+  it('withdraw refuses when the reserve has no oracle price (priceUsd missing)', async () => {
+    state.reserves[USDC_MINT] = fakeReserve({ priceUsd: undefined });
+    const store = inMemoryStore();
+    const ctx = makeContext({ store });
+    await expect(
+      requireSaveAction('withdraw').prepare({ amount: '1', token: 'USDC' }, ctx),
+    ).rejects.toMatchObject({ code: 'projected_health_unsafe' });
+  });
+
+  it('deposit accepts a reserve without a price (deposit is conservative)', async () => {
+    state.reserves[USDC_MINT] = fakeReserve({ priceUsd: undefined });
+    state.obligation = null;
+    const store = inMemoryStore();
+    const ctx = makeContext({ store });
+    const prepared = await requireSaveAction('deposit').prepare(
+      { amount: '1', token: 'USDC' },
+      ctx,
+    );
+    expect(prepared.addInput.kind).toBe('save_deposit');
+  });
+
+  it('repay accepts a reserve without a price (repay only improves health)', async () => {
+    state.reserves[USDC_MINT] = fakeReserve({ priceUsd: undefined });
+    const store = inMemoryStore();
+    const ctx = makeContext({ store });
+    const prepared = await requireSaveAction('repay').prepare(
+      { amount: '1', token: 'USDC' },
+      ctx,
+    );
+    expect(prepared.addInput.kind).toBe('save_repay');
   });
 });
 

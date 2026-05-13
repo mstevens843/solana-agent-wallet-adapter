@@ -40,6 +40,7 @@ export type PreparedActionKind =
   | 'jito_deposit_stake_account'
   | 'jito_unstake_jitosol'
   | 'jito_withdraw_sol'
+  | 'jito_claim_deposit_receipt'
   | 'marinade_liquid_stake'
   | 'marinade_liquid_unstake'
   | 'marinade_delayed_unstake'
@@ -81,7 +82,23 @@ export type PreparedActionKind =
   | 'squads_execute_proposal'
   | 'wormhole_transfer'
   | 'wormhole_redeem'
-  | 'wormhole_recover_or_resume';
+  | 'wormhole_recover_or_resume'
+  | 'jupiter_lend_earn_deposit'
+  | 'jupiter_lend_earn_withdraw'
+  | 'jupiter_lend_earn_mint'
+  | 'jupiter_lend_earn_redeem'
+  | 'jupiter_lend_borrow_create_position'
+  | 'jupiter_lend_borrow_deposit_collateral'
+  | 'jupiter_lend_borrow_borrow'
+  | 'jupiter_lend_borrow_repay'
+  | 'jupiter_lend_borrow_withdraw_collateral'
+  | 'jupiter_trigger_register_vault'
+  | 'jupiter_trigger_single_order'
+  | 'jupiter_trigger_oco_order'
+  | 'jupiter_trigger_otoco_order'
+  | 'jupiter_trigger_edit_order'
+  | 'jupiter_trigger_cancel_order'
+  | 'jupiter_trigger_withdraw_order_funds';
 export type PreparedActionTxStatus = 'pending' | 'confirmed' | 'failed';
 export type RecurringCadence = WorkflowRecurringCadence;
 
@@ -108,6 +125,7 @@ export interface PreparedAction {
   updatedAt: string;
   activeRequestId?: string;
   txid?: string;
+  txids?: string[];
   txStatus?: PreparedActionTxStatus;
   confirmedAt?: string;
   txError?: string;
@@ -167,7 +185,9 @@ export interface ActionReceipt {
   status: PreparedActionStatus;
   txStatus?: PreparedActionTxStatus;
   txid?: string;
+  txids?: string[];
   explorerUrl?: string;
+  explorerUrls?: string[];
   summary: string;
   note?: string;
   walletAddress: string;
@@ -551,7 +571,9 @@ function actionReceipt(action: PreparedAction): ActionReceipt {
     status: action.status,
     ...(action.txStatus !== undefined && { txStatus: action.txStatus }),
     ...(action.txid !== undefined && { txid: action.txid }),
+    ...(action.txids !== undefined && { txids: action.txids }),
     ...(action.txid !== undefined && { explorerUrl: explorerUrl(action.txid, action.cluster) }),
+    ...(action.txids !== undefined && { explorerUrls: action.txids.map((txid) => explorerUrl(txid, action.cluster)) }),
     summary: action.summary,
     ...(action.note !== undefined && { note: action.note }),
     walletAddress: action.walletAddress,

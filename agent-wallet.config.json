@@ -23,6 +23,12 @@
   "connectors": {
     "marginfi": {
       "minHealthRatio": 1.1
+    },
+    "jupiter": {
+      "perps": {
+        "enabled": false,
+        "readOnly": true
+      }
     }
   }
 }

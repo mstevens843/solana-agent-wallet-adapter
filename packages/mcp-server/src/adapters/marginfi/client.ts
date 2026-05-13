@@ -14,6 +14,7 @@ import {
   DEFAULT_MARGINFI_MIN_HEALTH_RATIO,
   MARGINFI_ADAPTER_ID,
 } from './constants.js';
+import { parseDecimalAmount } from '../../amounts.js';
 
 export type MarginfiOperation = 'deposit' | 'withdraw' | 'borrow' | 'repay';
 
@@ -107,6 +108,7 @@ export interface MarginfiActionBuildInput extends MarginfiBankLookupInput {
   amount?: string;
   withdrawAll?: boolean;
   repayAll?: boolean;
+  createAccountIfMissing?: boolean;
 }
 
 export interface MarginfiBuildTransactionResult {
@@ -140,46 +142,33 @@ const require = createRequire(import.meta.url);
 const SDK_UNAVAILABLE_REASON =
   '@mrgnlabs/marginfi-client-v2 and @mrgnlabs/mrgn-common are not installed. Install optional MarginFi SDK dependencies or inject a mock client for tests.';
 
-class MarginfiSdkUnavailable implements MarginfiClient {
-  readonly reason = SDK_UNAVAILABLE_REASON;
+type MarginfiSdkModule = Record<string, any>;
+type MarginfiSdkLoader = () => Promise<MarginfiSdkModule>;
 
-  private fail(method: string): never {
-    throw new Error(`MarginFi adapter is not configured (${method}): ${this.reason}`);
-  }
-
-  async getBankSnapshot(): Promise<MarginfiBankSnapshot> {
-    this.fail('getBankSnapshot');
-  }
-
-  async getWalletAccounts(): Promise<MarginfiAccountSummary[]> {
-    this.fail('getWalletAccounts');
-  }
-
-  async getAccountDetail(): Promise<MarginfiAccountDetail> {
-    this.fail('getAccountDetail');
-  }
-
-  async previewHealth(): Promise<MarginfiHealthPreview> {
-    this.fail('previewHealth');
-  }
-
-  async buildActionTransaction(): Promise<MarginfiBuildTransactionResult> {
-    this.fail('buildActionTransaction');
-  }
-}
-
-let factory: MarginfiClientFactory = () => new RealMarginfiClient();
+let loadedSdkModule: MarginfiSdkModule | undefined;
+let sdkLoader: MarginfiSdkLoader = defaultMarginfiSdkLoader;
+let factory: MarginfiClientFactory = (walletAddress) => new RealMarginfiClient(walletAddress);
 
 export function setMarginfiClientFactory(next: MarginfiClientFactory): void {
   factory = next;
 }
 
 export function resetMarginfiClientFactory(): void {
-  factory = () => new RealMarginfiClient();
+  factory = (walletAddress) => new RealMarginfiClient(walletAddress);
 }
 
 export async function getMarginfiClient(walletAddress: string): Promise<MarginfiClient> {
   return factory(walletAddress);
+}
+
+export function setMarginfiSdkLoaderForTests(next: MarginfiSdkLoader): void {
+  sdkLoader = next;
+  loadedSdkModule = undefined;
+}
+
+export function resetMarginfiSdkLoaderForTests(): void {
+  sdkLoader = defaultMarginfiSdkLoader;
+  loadedSdkModule = undefined;
 }
 
 export function describeMarginfiUnavailableReason(): string | undefined {
@@ -195,8 +184,10 @@ export function describeMarginfiUnavailableReason(): string | undefined {
 class RealMarginfiClient implements MarginfiClient {
   private clientCache = new Map<string, Promise<AnyMarginfiClient>>();
 
+  constructor(private readonly walletAddress: string) {}
+
   async getBankSnapshot(connection: Connection, input: MarginfiBankLookupInput): Promise<MarginfiBankSnapshot> {
-    const client = await this.sdkClient(connection, PublicKey.default.toBase58());
+    const client = await this.sdkClient(connection, this.walletAddress);
     const bank = requireBank(client, input);
     return snapshotFromBank(client, bank);
   }
@@ -220,18 +211,25 @@ class RealMarginfiClient implements MarginfiClient {
     connection: Connection,
     input: MarginfiActionBuildInput & { minHealthRatio?: number },
   ): Promise<MarginfiHealthPreview> {
-    const client = await this.sdkClient(connection, input.walletAddress);
-    const account = await resolveAccount(client, input);
-    const bank = requireBank(client, input);
+    const normalizedInput = normalizeMarginfiActionInput(input);
+    const client = await this.sdkClient(connection, normalizedInput.walletAddress);
+    const account = await resolveAccount(client, normalizedInput);
+    const bank = requireBank(client, normalizedInput);
     const bankSnapshot = snapshotFromBank(client, bank);
-    const amount = resolveUiAmount(account, bankSnapshot, input);
-    const amountRaw = rawAmount(amount, bankSnapshot.decimals);
+    const resolvedAmount = resolveActionAmount(account, bankSnapshot, normalizedInput);
     const before = healthFromAccount(account);
     const warnings: string[] = [];
     let after: MarginfiHealthComponents | undefined;
+    const wrapper = await actionIxs(
+      account,
+      bank.address,
+      normalizedInput.operation,
+      resolvedAmount.amount,
+      resolvedAmount,
+    );
 
     try {
-      const transaction = await buildLegacyTransaction(connection, client.wallet.publicKey, await actionIxs(account, bank.address, input.operation, amount, input));
+      const transaction = await buildLegacyTransaction(connection, client.wallet.publicKey, wrapper);
       const simulation = await account.simulateBorrowLendTransaction(
         [transaction],
         [bank.address],
@@ -242,18 +240,18 @@ class RealMarginfiClient implements MarginfiClient {
       warnings.push(`Health simulation failed: ${err instanceof Error ? err.message : String(err)}`);
     }
 
-    const minHealthRatio = input.minHealthRatio ?? DEFAULT_MARGINFI_MIN_HEALTH_RATIO;
-    const blocked = healthBlocked(input.operation, after, warnings, minHealthRatio);
+    const minHealthRatio = normalizedInput.minHealthRatio ?? DEFAULT_MARGINFI_MIN_HEALTH_RATIO;
+    const blocked = healthBlocked(normalizedInput.operation, after, warnings, minHealthRatio);
     return {
-      operation: input.operation,
+      operation: normalizedInput.operation,
       marginfiAccount: toBase58(account.address),
       bankAddress: bankSnapshot.bankAddress,
       bankMint: bankSnapshot.bankMint,
       ...(bankSnapshot.tokenSymbol ? { tokenSymbol: bankSnapshot.tokenSymbol } : {}),
-      amount,
-      amountRaw,
-      ...(input.withdrawAll ? { withdrawAll: true } : {}),
-      ...(input.repayAll ? { repayAll: true } : {}),
+      amount: resolvedAmount.amount,
+      amountRaw: resolvedAmount.amountRaw,
+      ...(resolvedAmount.withdrawAll ? { withdrawAll: true } : {}),
+      ...(resolvedAmount.repayAll ? { repayAll: true } : {}),
       before,
       ...(after ? { after } : {}),
       minHealthRatio,
@@ -267,12 +265,19 @@ class RealMarginfiClient implements MarginfiClient {
     connection: Connection,
     input: MarginfiActionBuildInput,
   ): Promise<MarginfiBuildTransactionResult> {
-    const client = await this.sdkClient(connection, input.walletAddress);
-    const account = await resolveAccount(client, input);
-    const bank = requireBank(client, input);
+    const normalizedInput = normalizeMarginfiActionInput(input);
+    const client = await this.sdkClient(connection, normalizedInput.walletAddress);
+    const account = await resolveAccount(client, normalizedInput);
+    const bank = requireBank(client, normalizedInput);
     const bankSnapshot = snapshotFromBank(client, bank);
-    const amount = resolveUiAmount(account, bankSnapshot, input);
-    const wrapper = await actionIxs(account, bank.address, input.operation, amount, input);
+    const resolvedAmount = resolveActionAmount(account, bankSnapshot, normalizedInput);
+    const wrapper = await actionIxs(
+      account,
+      bank.address,
+      normalizedInput.operation,
+      resolvedAmount.amount,
+      resolvedAmount,
+    );
     const transaction = await buildLegacyTransaction(connection, client.wallet.publicKey, wrapper);
     const signers = signerArray(wrapper);
     if (signers.length > 0) {
@@ -284,8 +289,8 @@ class RealMarginfiClient implements MarginfiClient {
         .toString('base64'),
       marginfiAccount: toBase58(account.address),
       bankSnapshot,
-      amount,
-      amountRaw: rawAmount(amount, bankSnapshot.decimals),
+      amount: resolvedAmount.amount,
+      amountRaw: resolvedAmount.amountRaw,
     };
   }
 
@@ -307,16 +312,29 @@ type InstructionsWrapper = {
   keys?: Keypair[];
 };
 
-async function buildSdkClient(connection: Connection, walletAddress: string): Promise<AnyMarginfiClient> {
-  let sdk: Record<string, any>;
+async function defaultMarginfiSdkLoader(): Promise<MarginfiSdkModule> {
   try {
-    sdk = await import('@mrgnlabs/marginfi-client-v2');
+    return await import('@mrgnlabs/marginfi-client-v2');
   } catch {
-    return new MarginfiSdkUnavailable() as unknown as AnyMarginfiClient;
+    throw new AdapterError(MARGINFI_ADAPTER_ID, 'sdk_unavailable', SDK_UNAVAILABLE_REASON);
   }
+}
+
+async function loadMarginfiSdk(): Promise<MarginfiSdkModule> {
+  const sdk = await sdkLoader();
+  loadedSdkModule = sdk;
+  return sdk;
+}
+
+async function buildSdkClient(connection: Connection, walletAddress: string): Promise<AnyMarginfiClient> {
+  const sdk = await loadMarginfiSdk();
   const MarginfiClientCtor = sdk.MarginfiClient ?? sdk.default;
-  if (!MarginfiClientCtor || typeof sdk.getConfig !== 'function') {
-    throw new Error('MarginFi SDK did not expose MarginfiClient and getConfig.');
+  if (!MarginfiClientCtor || typeof MarginfiClientCtor.fetch !== 'function' || typeof sdk.getConfig !== 'function') {
+    throw new AdapterError(
+      MARGINFI_ADAPTER_ID,
+      'sdk_invalid',
+      'MarginFi SDK did not expose MarginfiClient.fetch and getConfig.',
+    );
   }
   const publicKey = new PublicKey(walletAddress);
   const wallet = {
@@ -329,10 +347,16 @@ async function buildSdkClient(connection: Connection, walletAddress: string): Pr
     },
   };
   const config = sdk.getConfig('production');
-  return MarginfiClientCtor.fetch(config, wallet, connection, {
+  const client = await MarginfiClientCtor.fetch(config, wallet, connection, {
     readOnly: true,
     confirmOpts: { commitment: 'confirmed' },
   });
+  requireClientMethod(client, 'getMarginfiAccountsForAuthority');
+  requireClientMethod(client, 'getBankByPk');
+  requireClientMethod(client, 'getBankByMint');
+  requireClientMethod(client, 'getBankByTokenSymbol');
+  requireClientMethod(client, 'getOraclePriceByBank');
+  return client;
 }
 
 function requireBank(client: AnyMarginfiClient, input: MarginfiBankLookupInput): AnyBank {
@@ -349,13 +373,13 @@ function requireBank(client: AnyMarginfiClient, input: MarginfiBankLookupInput):
 
 function resolveBank(client: AnyMarginfiClient, input: MarginfiBankLookupInput): AnyBank | null {
   if (input.bankAddress?.trim()) {
-    return client.getBankByPk(new PublicKey(input.bankAddress.trim()));
+    return requireClientMethod(client, 'getBankByPk').call(client, new PublicKey(input.bankAddress.trim()));
   }
   if (input.bankMint?.trim()) {
-    return client.getBankByMint(new PublicKey(input.bankMint.trim()));
+    return requireClientMethod(client, 'getBankByMint').call(client, new PublicKey(input.bankMint.trim()));
   }
   if (input.token?.trim()) {
-    return client.getBankByTokenSymbol(input.token.trim());
+    return requireClientMethod(client, 'getBankByTokenSymbol').call(client, input.token.trim());
   }
   throw new AdapterError(
     MARGINFI_ADAPTER_ID,
@@ -369,11 +393,19 @@ async function resolveAccount(
   input: { walletAddress: string; marginfiAccount?: string; operation?: MarginfiOperation; createAccountIfMissing?: boolean },
 ): Promise<AnyMarginfiAccount> {
   if (input.marginfiAccount?.trim()) {
-    const sdk = await import('@mrgnlabs/marginfi-client-v2');
+    const sdk = await loadMarginfiSdk();
     const wrapper = sdk.MarginfiAccountWrapper;
+    if (!wrapper || typeof wrapper.fetch !== 'function') {
+      throw new AdapterError(
+        MARGINFI_ADAPTER_ID,
+        'sdk_invalid',
+        'MarginFi SDK did not expose MarginfiAccountWrapper.fetch.',
+      );
+    }
     return wrapper.fetch(new PublicKey(input.marginfiAccount.trim()), client as any);
   }
-  const accounts = await client.getMarginfiAccountsForAuthority(new PublicKey(input.walletAddress));
+  const accounts = await requireClientMethod(client, 'getMarginfiAccountsForAuthority')
+    .call(client, new PublicKey(input.walletAddress));
   if (accounts.length === 1) {
     return accounts[0];
   }
@@ -407,13 +439,25 @@ async function actionIxs(
 ): Promise<InstructionsWrapper> {
   switch (operation) {
     case 'deposit':
-      return account.makeDepositIx(amount, bankAddress);
+      return requireInstructionsWrapper(
+        await requireAccountMethod(account, 'makeDepositIx').call(account, amount, bankAddress),
+        operation,
+      );
     case 'withdraw':
-      return account.makeWithdrawIx(amount, bankAddress, input.withdrawAll === true);
+      return requireInstructionsWrapper(
+        await requireAccountMethod(account, 'makeWithdrawIx').call(account, amount, bankAddress, input.withdrawAll === true),
+        operation,
+      );
     case 'borrow':
-      return account.makeBorrowIx(amount, bankAddress);
+      return requireInstructionsWrapper(
+        await requireAccountMethod(account, 'makeBorrowIx').call(account, amount, bankAddress),
+        operation,
+      );
     case 'repay':
-      return account.makeRepayIx(amount, bankAddress, input.repayAll === true);
+      return requireInstructionsWrapper(
+        await requireAccountMethod(account, 'makeRepayIx').call(account, amount, bankAddress, input.repayAll === true),
+        operation,
+      );
   }
 }
 
@@ -461,7 +505,7 @@ function snapshotFromBank(client: AnyMarginfiClient, bank: AnyBank): MarginfiBan
 
 function detailFromAccount(client: AnyMarginfiClient, account: AnyMarginfiAccount): MarginfiAccountDetail {
   const positions = (account.activeBalances ?? []).flatMap((balance: AnyBank) => {
-    const bank = client.getBankByPk(balance.bankPk);
+    const bank = requireClientMethod(client, 'getBankByPk').call(client, balance.bankPk);
     if (!bank) return [];
     return [positionFromBalance(client, balance, bank)];
   });
@@ -502,7 +546,8 @@ function positionFromBalance(client: AnyMarginfiClient, balance: AnyBank, bank: 
 
 function healthFromAccount(account: AnyMarginfiAccount): MarginfiHealthComponents {
   const sdkMarginRequirement = marginRequirementType();
-  const components = account.computeHealthComponents(sdkMarginRequirement.Maintenance);
+  const components = requireAccountMethod(account, 'computeHealthComponents')
+    .call(account, sdkMarginRequirement.Maintenance);
   const assets = decimalString(components.assets);
   const liabilities = decimalString(components.liabilities);
   const assetNumber = Number(assets);
@@ -522,43 +567,155 @@ function healthFromAccount(account: AnyMarginfiAccount): MarginfiHealthComponent
 }
 
 function marginRequirementType(): { Maintenance: unknown } {
-  const sdk = require('@mrgnlabs/marginfi-client-v2') as { MarginRequirementType?: { Maintenance: unknown } };
+  let sdk: { MarginRequirementType?: { Maintenance: unknown } };
+  try {
+    sdk = (loadedSdkModule ?? require('@mrgnlabs/marginfi-client-v2')) as {
+      MarginRequirementType?: { Maintenance: unknown };
+    };
+  } catch {
+    throw new AdapterError(MARGINFI_ADAPTER_ID, 'sdk_unavailable', SDK_UNAVAILABLE_REASON);
+  }
   if (!sdk.MarginRequirementType) {
-    throw new Error('MarginFi SDK did not expose MarginRequirementType.');
+    throw new AdapterError(
+      MARGINFI_ADAPTER_ID,
+      'sdk_invalid',
+      'MarginFi SDK did not expose MarginRequirementType.',
+    );
   }
   return sdk.MarginRequirementType;
 }
 
-function resolveUiAmount(
+interface ResolvedMarginfiAmount {
+  amount: string;
+  amountRaw: string;
+  withdrawAll?: boolean;
+  repayAll?: boolean;
+}
+
+export function normalizeMarginfiActionInput<T extends MarginfiActionBuildInput>(input: T): T {
+  const amount = input.amount?.trim();
+  if (input.operation !== 'withdraw' && input.withdrawAll === true) {
+    throw new AdapterError(
+      MARGINFI_ADAPTER_ID,
+      'invalid_amount',
+      'withdrawAll is only valid for MarginFi withdraw actions.',
+    );
+  }
+  if (input.operation !== 'repay' && input.repayAll === true) {
+    throw new AdapterError(
+      MARGINFI_ADAPTER_ID,
+      'invalid_amount',
+      'repayAll is only valid for MarginFi repay actions.',
+    );
+  }
+  if (!isAllAmount(amount)) return input;
+  if (input.operation === 'withdraw') {
+    const { amount: _amount, ...rest } = input;
+    return { ...rest, withdrawAll: true } as T;
+  }
+  if (input.operation === 'repay') {
+    const { amount: _amount, ...rest } = input;
+    return { ...rest, repayAll: true } as T;
+  }
+  throw new AdapterError(
+    MARGINFI_ADAPTER_ID,
+    'invalid_amount',
+    `Amount "all" is only valid for MarginFi withdraw and repay actions.`,
+  );
+}
+
+function resolveActionAmount(
   account: AnyMarginfiAccount,
   bank: MarginfiBankSnapshot,
   input: MarginfiActionBuildInput,
-): string {
-  if (input.withdrawAll) {
+): ResolvedMarginfiAmount {
+  const normalized = normalizeMarginfiActionInput(input);
+  if (normalized.withdrawAll) {
     const position = positionForBank(account, bank.bankAddress);
     if (!position || !positiveDecimal(position.suppliedAmount)) {
       throw new AdapterError(MARGINFI_ADAPTER_ID, 'no_position', 'No supplied MarginFi balance is available to withdraw.');
     }
-    return position.suppliedAmount;
+    return {
+      amount: position.suppliedAmount,
+      amountRaw: parseMarginfiAmount(position.suppliedAmount, bank.decimals, 'withdraw'),
+      withdrawAll: true,
+    };
   }
-  if (input.repayAll) {
+  if (normalized.repayAll) {
     const position = positionForBank(account, bank.bankAddress);
     if (!position || !positiveDecimal(position.borrowedAmount)) {
       throw new AdapterError(MARGINFI_ADAPTER_ID, 'no_debt', 'No MarginFi debt is available to repay for this bank.');
     }
-    return position.borrowedAmount;
+    return {
+      amount: position.borrowedAmount,
+      amountRaw: parseMarginfiAmount(position.borrowedAmount, bank.decimals, 'repay'),
+      repayAll: true,
+    };
   }
-  if (!input.amount?.trim()) {
-    throw new AdapterError(MARGINFI_ADAPTER_ID, 'invalid_amount', `Amount is required for MarginFi ${input.operation}.`);
+  if (!normalized.amount?.trim()) {
+    throw new AdapterError(
+      MARGINFI_ADAPTER_ID,
+      'invalid_amount',
+      `Amount is required for MarginFi ${normalized.operation}.`,
+    );
   }
-  return input.amount.trim();
+  const amount = normalized.amount.trim();
+  return {
+    amount,
+    amountRaw: parseMarginfiAmount(amount, bank.decimals, normalized.operation),
+    ...(normalized.withdrawAll ? { withdrawAll: true } : {}),
+    ...(normalized.repayAll ? { repayAll: true } : {}),
+  };
+}
+
+function parseMarginfiAmount(amount: string, decimals: number, operation: MarginfiOperation): string {
+  return parseDecimalAmount(amount, decimals, `MarginFi ${operation} amount`).toString();
+}
+
+function isAllAmount(amount: string | undefined): boolean {
+  return amount?.toLowerCase() === 'all';
+}
+
+function requireClientMethod(client: AnyMarginfiClient, method: string): (...args: any[]) => any {
+  const candidate = client?.[method];
+  if (typeof candidate !== 'function') {
+    throw new AdapterError(
+      MARGINFI_ADAPTER_ID,
+      'sdk_invalid',
+      `MarginFi SDK client did not expose ${method}.`,
+    );
+  }
+  return candidate;
+}
+
+function requireAccountMethod(account: AnyMarginfiAccount, method: string): (...args: any[]) => any {
+  const candidate = account?.[method];
+  if (typeof candidate !== 'function') {
+    throw new AdapterError(
+      MARGINFI_ADAPTER_ID,
+      'sdk_invalid',
+      `MarginFi account did not expose ${method}.`,
+    );
+  }
+  return candidate;
+}
+
+function requireInstructionsWrapper(wrapper: InstructionsWrapper | undefined, operation: MarginfiOperation): InstructionsWrapper {
+  if (!wrapper || !Array.isArray(wrapper.instructions) || wrapper.instructions.length === 0) {
+    throw new AdapterError(
+      MARGINFI_ADAPTER_ID,
+      'invalid_response',
+      `MarginFi SDK returned no instructions for ${operation}.`,
+    );
+  }
+  return wrapper;
 }
 
 function positionForBank(account: AnyMarginfiAccount, bankAddress: string): MarginfiPosition | undefined {
   const client = account.client as AnyMarginfiClient;
   const balance = (account.activeBalances ?? []).find((entry: AnyBank) => toBase58(entry.bankPk) === bankAddress);
   if (!balance) return undefined;
-  const bank = client.getBankByPk(balance.bankPk);
+  const bank = requireClientMethod(client, 'getBankByPk').call(client, balance.bankPk);
   return bank ? positionFromBalance(client, balance, bank) : undefined;
 }
 
@@ -573,13 +730,6 @@ function healthBlocked(
   if (!after.healthy) return true;
   if (after.healthRatio !== null && after.healthRatio < minHealthRatio) return true;
   return warnings.some((warning) => /stale|oracle|risk engine|simulation failed/i.test(warning));
-}
-
-function rawAmount(amount: string, decimals: number): string {
-  const [whole = '0', fractional = ''] = amount.trim().split('.');
-  const normalizedFractional = fractional.padEnd(decimals, '0').slice(0, decimals);
-  const digits = `${whole}${normalizedFractional}`.replace(/^0+(?=\d)/, '');
-  return digits || '0';
 }
 
 function signerArray(wrapper: InstructionsWrapper): Keypair[] {

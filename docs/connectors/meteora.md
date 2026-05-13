@@ -1,6 +1,6 @@
 # Meteora Connector
 
-Meteora is a first-class MCP connector for DLMM pool and position reads plus prepare-only position actions. It does not use Blink URLs for the exposed DLMM flow.
+Meteora is a first-class MCP connector for DLMM pool and position reads plus prepare-only position actions. It loads the optional `@meteora-ag/dlmm` SDK in the MCP server and does not use Blink URLs for the exposed DLMM flow.
 
 ## What It Can Read
 
@@ -16,7 +16,7 @@ Meteora is a first-class MCP connector for DLMM pool and position reads plus pre
 - `solana_prepare_meteora_remove_liquidity`
 - `solana_prepare_meteora_close_position`
 
-Prepared actions become manual Approval Inbox items and execute through `solana_execute_prepared_action`. The adapter refreshes DLMM state at execution time before asking the wallet to sign.
+Prepared actions become manual Approval Inbox items and execute through `solana_execute_prepared_action`. The adapter refreshes DLMM state at execution time before asking the wallet to sign. Claim and remove-liquidity flows can require more than one sequential wallet signature when the Meteora SDK returns multiple transactions.
 
 ## Required Inputs
 
@@ -43,4 +43,4 @@ Ask:
 
 ## Deny Or Ask
 
-Deny new DLMM position creation, close-position requests for non-empty positions, non-mainnet requests, profitability or APY guarantees, and any request to move funds without wallet approval. Ask for missing pool, position, amount, bin range, or liquidity percentage before preparing an action.
+Deny new DLMM position creation, close-position requests for non-empty positions or positions with unclaimed fees/rewards, non-mainnet requests, profitability or APY guarantees, and any request to move funds without wallet approval. Ask for missing pool, position, amount, bin range, or liquidity percentage before preparing an action.

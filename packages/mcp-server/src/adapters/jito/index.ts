@@ -10,12 +10,14 @@ import {
   SPL_STAKE_POOL_PROGRAM_ID,
 } from './constants.js';
 import { getJitoStakePoolSnapshot, quoteJito } from './pool.js';
-import { getJitoWalletPositions, getJitoWalletStakeAccounts } from './wallet.js';
+import { getJitoDepositReceipt, getJitoDepositReceipts, getJitoWalletPositions, getJitoWalletStakeAccounts } from './wallet.js';
 import {
+  jitoClaimDepositReceiptAction,
   jitoDepositStakeAccountAction,
   jitoStakeSolAction,
   jitoUnstakeJitosolAction,
   jitoWithdrawSolAction,
+  type JitoClaimDepositReceiptInput,
   type JitoDepositStakeAccountInput,
   type JitoStakeSolInput,
   type JitoUnstakeJitosolInput,
@@ -72,6 +74,23 @@ const quoteRead: AdapterRead<Parameters<typeof quoteJito>[1], unknown> = {
   },
 };
 
+const depositReceiptsRead: AdapterRead<{
+  walletAddress?: string;
+  receiptAddress?: string;
+  claimableOnly?: boolean;
+}, unknown> = {
+  id: 'deposit_receipts',
+  async read(input, ctx) {
+    if (input.receiptAddress?.trim()) {
+      return getJitoDepositReceipt(ctx.connection, input.receiptAddress.trim());
+    }
+    const walletAddress = input.walletAddress?.trim() || (await ctx.backend.getAddress());
+    return getJitoDepositReceipts(ctx.connection, walletAddress, {
+      ...(input.claimableOnly !== undefined && { claimableOnly: input.claimableOnly }),
+    });
+  },
+};
+
 export const jitoAdapter: DAppAdapter = {
   id: JITO_ADAPTER_ID,
   name: JITO_NAME,
@@ -84,16 +103,19 @@ export const jitoAdapter: DAppAdapter = {
     deposit_stake_account: jitoDepositStakeAccountAction,
     unstake_jitosol: jitoUnstakeJitosolAction,
     withdraw_sol: jitoWithdrawSolAction,
+    claim_deposit_receipt: jitoClaimDepositReceiptAction,
   },
   reads: {
     stake_pool_snapshot: stakePoolSnapshotRead,
     wallet_positions: walletPositionsRead,
     wallet_stake_accounts: walletStakeAccountsRead,
     quote: quoteRead,
+    deposit_receipts: depositReceiptsRead,
   },
 };
 
 export type {
+  JitoClaimDepositReceiptInput,
   JitoDepositStakeAccountInput,
   JitoStakeSolInput,
   JitoUnstakeJitosolInput,
@@ -102,6 +124,8 @@ export type {
 export type {
   JitoQuote,
   JitoQuoteInput,
+  JitoDepositReceipt,
+  JitoDepositReceiptsResult,
   JitoStakeAccount,
   JitoStakePoolSnapshot,
   JitoWalletPositionsResult,

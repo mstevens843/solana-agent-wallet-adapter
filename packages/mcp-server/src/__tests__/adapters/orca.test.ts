@@ -15,12 +15,9 @@ import {
   type OrcaWhirlpoolSnapshot,
 } from '../../adapters/orca/client.js';
 import {
-  AdapterError,
-  actionForKind,
-  adapterForActionKind,
   assertSupportedCluster,
-  requireAdapter,
-} from '../../adapters/index.js';
+  AdapterError,
+} from '../../adapters/types.js';
 import type { AgentWalletConfig } from '../../config.js';
 import type { DAppAdapterContext } from '../../adapters/types.js';
 import type {
@@ -174,7 +171,9 @@ function makeContext(opts: {
     backend: new FakeBackend() as unknown as DAppAdapterContext['backend'],
     config: fakeConfig(opts.cluster ?? 'mainnet-beta'),
     connection: {} as Connection,
+    signTransaction: async () => 'signed-tx',
     signAndBroadcast: opts.signed ?? (async () => 'txid-orca'),
+    signMessage: async () => 'signed-message',
     store: opts.store,
   };
 }
@@ -281,10 +280,9 @@ describe('Orca adapter shape', () => {
     expect(orcaAdapter.reads.position_detail).toBeDefined();
   });
 
-  it('is discoverable via the adapter registry', () => {
-    expect(requireAdapter('orca').id).toBe('orca');
-    expect(adapterForActionKind('orca_increase_liquidity')?.id).toBe('orca');
-    expect(actionForKind('orca_collect_rewards')?.action.id).toBe('collect_rewards');
+  it('exposes stable prepared action kinds for registry discovery', () => {
+    expect(orcaAdapter.actions.increase_liquidity?.kind).toBe('orca_increase_liquidity');
+    expect(orcaAdapter.actions.collect_rewards?.kind).toBe('orca_collect_rewards');
   });
 
   it('throws AdapterError on cluster mismatch via assertSupportedCluster', () => {
@@ -327,6 +325,19 @@ describe('Orca liquidity preparation', () => {
     });
   });
 
+  it('rejects existing-position prepares when the refreshed Whirlpool owner is not Orca', async () => {
+    const state = fakeState();
+    state.snapshot = fakeSnapshot({ programId: '11111111111111111111111111111111' });
+    setOrcaClientFactory(() => fakeOrcaClient(state));
+    const ctx = makeContext({ store: inMemoryStore() });
+
+    await expect(requireOrcaAction('increase_liquidity').prepare({
+      whirlpoolAddress: WHIRLPOOL,
+      positionMint: POSITION_MINT,
+      tokenAAmount: '0.01',
+    }, ctx)).rejects.toBeInstanceOf(AdapterError);
+  });
+
   it('rejects decrease liquidity when percent and amount are both supplied', async () => {
     const state = fakeState();
     setOrcaClientFactory(() => fakeOrcaClient(state));
@@ -365,6 +376,24 @@ describe('Orca liquidity preparation', () => {
     expect(state.buildCalls).toEqual(['increase']);
     expect(signedCalls[0]).toMatchObject({ tx: 'base64-increase' });
   });
+
+  it('revalidates stored execution params before rebuilding a transaction', async () => {
+    const state = fakeState();
+    setOrcaClientFactory(() => fakeOrcaClient(state));
+    const store = inMemoryStore();
+    const ctx = makeContext({ store });
+
+    const prepared = await requireOrcaAction('increase_liquidity').prepare({
+      whirlpoolAddress: WHIRLPOOL,
+      positionMint: POSITION_MINT,
+      tokenAAmount: '0.01',
+    }, ctx);
+    const action = await store.addAction(prepared.addInput);
+    action.params.slippageBps = 10_000;
+
+    await expect(requireOrcaAction('increase_liquidity').execute(action, ctx)).rejects.toBeInstanceOf(AdapterError);
+    expect(state.buildCalls).toEqual([]);
+  });
 });
 
 describe('Orca fee and reward preparation', () => {
@@ -382,5 +411,22 @@ describe('Orca fee and reward preparation', () => {
     expect(result.addInput.params.warnings).toEqual(expect.arrayContaining([
       expect.stringContaining('Reward mint'),
     ]));
+  });
+
+  it('revalidates collect actions against the current Whirlpool snapshot at execution', async () => {
+    const state = fakeState();
+    setOrcaClientFactory(() => fakeOrcaClient(state));
+    const store = inMemoryStore();
+    const ctx = makeContext({ store });
+
+    const prepared = await requireOrcaAction('collect_fees').prepare({
+      positionMint: POSITION_MINT,
+      whirlpoolAddress: WHIRLPOOL,
+    }, ctx);
+    const action = await store.addAction(prepared.addInput);
+    state.snapshot = fakeSnapshot({ programId: '11111111111111111111111111111111' });
+
+    await expect(requireOrcaAction('collect_fees').execute(action, ctx)).rejects.toBeInstanceOf(AdapterError);
+    expect(state.buildCalls).toEqual([]);
   });
 });

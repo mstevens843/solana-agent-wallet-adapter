@@ -8,6 +8,8 @@ const ENV_KEYS = [
   'JUPITER_API_KEY',
   'JUP_API_KEY',
   'JUPITER_SWAP_BASE_URL',
+  'JUPITER_TOKENS_BASE_URL',
+  'JUPITER_PRICE_BASE_URL',
   'JUP_ULTRA_BASE',
   'JUPITER_BASE_URL',
 ] as const;
@@ -64,6 +66,38 @@ describe('config env aliases', () => {
 
     expect(config.jupiter.baseUrl).toBe('https://swap.example/v2');
     expect(config.jupiter.swapBaseUrl).toBe('https://swap.example/v2');
+  });
+
+  it('keeps JUPITER_BASE_URL as the lowest-priority legacy swap override', () => {
+    setEnv('JUPITER_BASE_URL', 'https://legacy-base.example/swap/v2/');
+
+    const config = normalizeConfig({});
+
+    expect(config.jupiter.baseUrl).toBe('https://legacy-base.example/swap/v2');
+    expect(config.jupiter.swapBaseUrl).toBe('https://legacy-base.example/swap/v2');
+  });
+
+  it('configures Jupiter Token and Price API defaults and env overrides', () => {
+    setEnv('JUPITER_TOKENS_BASE_URL', 'https://tokens.example/v2/');
+    setEnv('JUPITER_PRICE_BASE_URL', 'https://price.example/v3/');
+
+    const config = normalizeConfig({
+      connectors: {
+        jupiter: {
+          tokenPrice: {
+            maxBatchPriceIds: 25,
+            maxSearchMintIds: 40,
+          },
+        },
+      },
+    });
+
+    expect(config.jupiter.tokensBaseUrl).toBe('https://tokens.example/v2');
+    expect(config.jupiter.priceBaseUrl).toBe('https://price.example/v3');
+    expect(config.connectors?.jupiter?.tokenPrice).toMatchObject({
+      maxBatchPriceIds: 25,
+      maxSearchMintIds: 40,
+    });
   });
 });
 

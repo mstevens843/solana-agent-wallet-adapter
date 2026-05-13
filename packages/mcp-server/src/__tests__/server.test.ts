@@ -178,12 +178,26 @@ describe('mcp server tools', () => {
     expect(result.tools.map((tool) => tool.name)).toContain('solana_prepare_kamino_deposit');
     expect(result.tools.map((tool) => tool.name)).toContain('solana_marginfi_health_preview');
     expect(result.tools.map((tool) => tool.name)).toContain('solana_prepare_marginfi_borrow');
+    expect(result.tools.map((tool) => tool.name)).toContain('solana_wormhole_quote');
+    expect(result.tools.map((tool) => tool.name)).toContain('solana_prepare_wormhole_transfer');
+    expect(result.tools.map((tool) => tool.name)).toContain('solana_prepare_wormhole_redeem');
     expect(result.tools.map((tool) => tool.name)).toContain('solana_list_prepared_actions');
     expect(result.tools.map((tool) => tool.name)).toContain('solana_execute_prepared_action');
     expect(result.tools.map((tool) => tool.name)).toContain('solana_create_recurring_payment');
     expect(result.tools.map((tool) => tool.name)).toContain('solana_transfer_sol');
+    expect(result.tools.map((tool) => tool.name)).toContain('solana_jupiter_token_search');
+    expect(result.tools.map((tool) => tool.name)).toContain('solana_jupiter_token_by_tag');
+    expect(result.tools.map((tool) => tool.name)).toContain('solana_jupiter_token_category');
+    expect(result.tools.map((tool) => tool.name)).toContain('solana_jupiter_token_recent');
+    expect(result.tools.map((tool) => tool.name)).toContain('solana_jupiter_price');
+    expect(result.tools.map((tool) => tool.name)).toContain('solana_jupiter_price_batch');
+    expect(result.tools.map((tool) => tool.name)).toContain('solana_jupiter_token_risk_evidence');
     expect(result.tools.map((tool) => tool.name)).toContain('solana_jupiter_order_preview');
     expect(result.tools.map((tool) => tool.name)).toContain('solana_swap');
+    expect(result.tools.map((tool) => tool.name)).toContain('solana_jupiter_perps_status');
+    expect(result.tools.map((tool) => tool.name)).toContain('solana_jupiter_perps_pool_snapshot');
+    expect(result.tools.map((tool) => tool.name)).toContain('solana_jupiter_perps_custody_snapshot');
+    expect(result.tools.map((tool) => tool.name)).toContain('solana_jupiter_perps_position_snapshot');
   });
 
   it('describes connector write tools as wallet approval bounded', async () => {

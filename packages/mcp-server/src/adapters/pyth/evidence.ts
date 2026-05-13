@@ -134,7 +134,8 @@ export async function getOracleEvidence(
     asOfIso,
   };
   if (snapshot.symbol) evidence.symbol = snapshot.symbol;
-  if (metadata.displayName) evidence.displayName = metadata.displayName;
+  const displayName = snapshot.displayName ?? metadata.displayName;
+  if (displayName) evidence.displayName = displayName;
   if (input.consumerProtocol) evidence.consumerProtocol = input.consumerProtocol;
   if (status === 'stale') {
     evidence.reason = `Price is ${snapshot.ageSeconds}s old; older than max ${maxAgeSeconds}s.`;

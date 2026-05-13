@@ -27,14 +27,17 @@ export type DAppAdapterId =
   | 'pyth'
   | 'realms'
   | 'squads'
-  | 'wormhole';
+  | 'wormhole'
+  | 'jupiter';
 
 export interface DAppAdapterContext {
   backend: WalletBackend;
   config: AgentWalletConfig;
   connection: Connection;
-  signTransaction?: (transactionBase64: string, summary: string) => Promise<string>;
+  signTransaction: (transactionBase64: string, summary: string) => Promise<string>;
   signAndBroadcast: (transactionBase64: string, summary: string) => Promise<string>;
+  signAndBroadcastMany?: (transactionsBase64: string[], summary: string) => Promise<string[]>;
+  signMessage: (message: string, summary: string) => Promise<string>;
   store: PreparedActionStore;
 }
 
@@ -45,6 +48,7 @@ export interface AdapterPrepareResult {
 
 export interface AdapterExecuteResult {
   txid: string;
+  txids?: string[];
   signedAt: string;
   preview?: Record<string, unknown>;
 }

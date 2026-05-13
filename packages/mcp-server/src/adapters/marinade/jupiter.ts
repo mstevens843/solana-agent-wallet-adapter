@@ -12,6 +12,7 @@ import type { MarinadeQuote } from './client.js';
 
 export interface MarinadeJupiterOrder {
   requestId?: string;
+  lastValidBlockHeight?: string | number;
   transactionBase64: string;
   inputMint: string;
   outputMint: string;
@@ -52,6 +53,7 @@ export async function fetchMarinadeInstantUnstakeOrder(input: {
   }
   return {
     requestId: readString(order, 'requestId'),
+    lastValidBlockHeight: readString(order, 'lastValidBlockHeight') ?? readNumber(order, 'lastValidBlockHeight'),
     transactionBase64,
     inputMint: readString(order, 'inputMint') ?? MSOL_MINT,
     outputMint: readString(order, 'outputMint') ?? WSOL_MINT,
@@ -68,6 +70,7 @@ export async function executeMarinadeJupiterOrder(input: {
   config: AgentWalletConfig;
   signedTransaction: string;
   requestId?: string;
+  lastValidBlockHeight?: string | number;
 }): Promise<MarinadeJupiterExecuteResult> {
   if (!input.requestId) {
     throw new ProtocolError('invalid_request', 'Jupiter order did not include requestId.');
@@ -77,8 +80,10 @@ export async function executeMarinadeJupiterOrder(input: {
     body: {
       signedTransaction: input.signedTransaction,
       requestId: input.requestId,
+      ...(input.lastValidBlockHeight !== undefined ? { lastValidBlockHeight: input.lastValidBlockHeight } : {}),
     },
   });
+  assertJupiterExecutionSucceeded(raw);
   return {
     signature: readString(raw, 'signature'),
     txid: readString(raw, 'txid'),
@@ -101,6 +106,7 @@ export function quoteFromJupiterOrder(order: MarinadeJupiterOrder): MarinadeQuot
     price: order.priceImpactPct,
     raw: {
       requestId: order.requestId,
+      lastValidBlockHeight: order.lastValidBlockHeight,
       inputMint: order.inputMint,
       outputMint: order.outputMint,
       slippageBps: order.slippageBps,
@@ -132,9 +138,33 @@ export function txidFromJupiterExecution(result: MarinadeJupiterExecuteResult): 
   return txid;
 }
 
+function assertJupiterExecutionSucceeded(result: Record<string, unknown>): void {
+  const status = readString(result, 'status') ?? '';
+  const code = result.code;
+  const failedStatus = status.toLowerCase() === 'failed';
+  const failedCode =
+    (typeof code === 'number' && code !== 0) ||
+    (typeof code === 'string' && code.length > 0 && code !== '0');
+  if (!failedStatus && !failedCode) {
+    return;
+  }
+  const codeText = typeof code === 'string' || typeof code === 'number' ? ` with code ${code}` : '';
+  const signature = readString(result, 'signature');
+  const error = readString(result, 'error') ?? readString(result, 'message');
+  throw new ProtocolError(
+    'wallet_unreachable',
+    `Jupiter execute failed${codeText}${signature ? ` signature ${signature}` : ''}${error ? `: ${error}` : ''}`,
+  );
+}
+
 function readString(value: Record<string, unknown>, key: string): string | undefined {
   const result = value[key];
   return typeof result === 'string' && result.length > 0 ? result : undefined;
+}
+
+function readNumber(value: Record<string, unknown>, key: string): number | undefined {
+  const result = value[key];
+  return typeof result === 'number' && Number.isFinite(result) ? result : undefined;
 }
 
 function lamportsToAmount(raw: string): string {

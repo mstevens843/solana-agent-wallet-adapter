@@ -21,7 +21,7 @@ import {
 } from './constants.js';
 import { previewHealth } from './health.js';
 import { getObligation } from './obligations.js';
-import { requireNumber, requireOptionalString, requireString } from './params.js';
+import { assertWithinCap, requireNumber, requireOptionalString, requireString } from './params.js';
 
 export interface SaveDepositInput {
   amount: string;
@@ -45,6 +45,13 @@ export const saveDepositAction: AdapterAction<SaveDepositInput> = {
     const walletAddress = await ctx.backend.getAddress();
     const client = getSaveClient();
     const snapshot = await client.getReserveSnapshot(ctx.connection, reserveMint, marketAddress);
+    assertWithinCap({
+      amountRaw,
+      capUi: snapshot.depositLimitRemaining,
+      decimals: snapshot.decimals,
+      reserveSymbol: snapshot.reserveSymbol,
+      operation: 'deposit',
+    });
     const obligation = await getObligation(ctx.connection, walletAddress, marketAddress);
     const healthPreview = previewHealth(obligation, {
       kind: 'deposit',

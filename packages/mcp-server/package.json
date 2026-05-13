@@ -57,7 +57,8 @@
     "@solana/spl-stake-pool": "^1.1.8",
     "@solana/spl-token": "^0.4.14",
     "@solendprotocol/solend-sdk": "*",
-    "@sqds/multisig": "*"
+    "@sqds/multisig": "*",
+    "@wormhole-foundation/sdk": "^4.19.0"
   },
   "devDependencies": {
     "typescript": "^5.6.0"

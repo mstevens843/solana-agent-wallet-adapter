@@ -98,6 +98,12 @@ export interface TensorNftDetail extends TensorWalletNft {
   warnings?: string[];
   topListing?: TensorListing | null;
   topBids?: TensorBid[];
+  /**
+   * Total number of active listings the wallet has for this NFT, including
+   * `topListing`. When > 1 the adapter requires the caller to disambiguate
+   * with a `listingId` for cancel-listing prepares.
+   */
+  walletOpenListings?: number;
 }
 
 export interface TensorWalletExposure {

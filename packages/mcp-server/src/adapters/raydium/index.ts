@@ -23,7 +23,7 @@ import {
 } from './farm.js';
 import { getRaydiumPoolSnapshot } from './pools.js';
 import { getRaydiumPositionDetail, getRaydiumWalletPositions } from './positions.js';
-import type { RaydiumPoolType } from './client.js';
+import type { RaydiumLiquidityPoolType, RaydiumPoolType } from './client.js';
 
 const poolSnapshotRead: AdapterRead<{ poolId: string; poolType?: RaydiumPoolType | string }, unknown> = {
   id: 'pool_snapshot',
@@ -35,7 +35,7 @@ const poolSnapshotRead: AdapterRead<{ poolId: string; poolType?: RaydiumPoolType
 const walletPositionsRead: AdapterRead<{
   walletAddress?: string;
   poolId?: string;
-  poolType?: RaydiumPoolType | string;
+  poolType?: RaydiumLiquidityPoolType | string;
   farmId?: string;
 }, unknown> = {
   id: 'wallet_positions',
@@ -94,6 +94,7 @@ export {
   setRaydiumClientFactory,
   type RaydiumActionPreview,
   type RaydiumClient,
+  type RaydiumLiquidityPoolType,
   type RaydiumPoolSnapshot,
   type RaydiumPoolType,
   type RaydiumPosition,

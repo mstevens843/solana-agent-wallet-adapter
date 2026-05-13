@@ -21,6 +21,30 @@ export function parsePublicKey(value: string | undefined, field: string): string
   }
 }
 
+/**
+ * Tensor collection ids can be slugs (e.g. "madlads"), collection mints, or verified
+ * collection addresses. Don't force a base58 decode; just require a non-empty trim.
+ */
+export function requireCollectionId(value: string | undefined, field = 'collectionId'): string {
+  const trimmed = value?.trim();
+  if (!trimmed) {
+    throw new AdapterError(TENSOR_ADAPTER_ID, 'missing_input', `${field} is required.`);
+  }
+  if (trimmed.length > 128) {
+    throw new AdapterError(
+      TENSOR_ADAPTER_ID,
+      'invalid_input',
+      `${field} is unreasonably long.`,
+    );
+  }
+  return trimmed;
+}
+
+export function optionalCollectionId(value: string | undefined, field = 'collectionId'): string | undefined {
+  if (value === undefined || value.trim() === '') return undefined;
+  return requireCollectionId(value, field);
+}
+
 export function optionalPublicKey(value: string | undefined, field: string): string | undefined {
   if (value === undefined || value.trim() === '') return undefined;
   return parsePublicKey(value, field);

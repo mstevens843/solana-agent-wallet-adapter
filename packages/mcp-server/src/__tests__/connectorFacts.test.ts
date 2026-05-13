@@ -257,6 +257,34 @@ describe('connector fact normalization', () => {
     });
   });
 
+  it('warns when Jupiter routing is manual or RFQ constrained', () => {
+    const facts = factsFromJupiterOrderPreview({
+      mode: 'manual',
+      router: 'jupiterz',
+      swapType: 'rfq',
+      quoteId: 'quote-1',
+      maker: 'maker-1',
+      expireAt: '2026-05-12T00:01:00.000Z',
+      outAmount: '2500000',
+      otherAmountThreshold: '2400000',
+      slippageBps: 50,
+    }, '2026-05-12T00:00:00.000Z');
+
+    expect(facts).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        label: 'Router',
+        value: 'jupiterz · manual',
+        tone: 'warn',
+      }),
+      expect.objectContaining({
+        label: 'Routing constraints',
+        tone: 'warn',
+        value: expect.stringContaining('Manual mode'),
+      }),
+    ]));
+    expect(facts.find((entry) => entry.label === 'Routing constraints')?.value).toContain('JupiterZ/RFQ');
+  });
+
   it('redacts secret detail fields before returning facts', () => {
     const redacted = fact({
       connectorId: 'jupiter',
@@ -284,11 +312,11 @@ describe('connector fact normalization', () => {
       config: DEFAULT_CONFIG,
     });
 
-    await expect(service.connectorReadFacts({ connectorId: 'jupiter', capability: 'positions' })).rejects.toMatchObject({
+    await expect(service.connectorReadFacts({ connectorId: 'jupiter', capability: 'rewards' })).rejects.toMatchObject({
       name: 'ProtocolError',
       code: 'unsupported_method',
       recoverable: false,
-      message: expect.stringContaining('Jupiter does not expose positions read capability'),
+      message: expect.stringContaining('Jupiter does not expose rewards read capability'),
     });
   });
 

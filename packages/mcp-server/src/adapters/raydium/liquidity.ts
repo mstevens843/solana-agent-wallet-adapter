@@ -30,6 +30,7 @@ import {
   validateDecreaseAmountChoice,
   validateLiquidityPercent,
   validateOptionalPositiveDecimalString,
+  validateRemoveLiquidityAmount,
   validateSlippageBps,
 } from './validation.js';
 
@@ -156,21 +157,34 @@ export const raydiumAddLiquidityAction: AdapterAction<RaydiumAddLiquidityPrepare
         `Raydium add-liquidity action belongs to ${action.walletAddress}, but connected wallet is ${walletAddress}.`,
       );
     }
+    const poolId = parsePublicKey(requireStringParam(action, 'poolId'), 'poolId');
+    const poolType = parsePoolType(requireStringParam(action, 'poolType'));
+    const positionMint = optionalPublicKey(optionalStringParam(action, 'positionMint'), 'positionMint');
+    const tokenAAmount = optionalStringParam(action, 'tokenAAmount');
+    const tokenBAmount = optionalStringParam(action, 'tokenBAmount');
+    const maxTokenAAmount = optionalStringParam(action, 'maxTokenAAmount');
+    const maxTokenBAmount = optionalStringParam(action, 'maxTokenBAmount');
+    const lowerTick = optionalNumberParam(action, 'lowerTick');
+    const upperTick = optionalNumberParam(action, 'upperTick');
+    const lowerPrice = optionalStringParam(action, 'lowerPrice');
+    const upperPrice = optionalStringParam(action, 'upperPrice');
+    const slippageBps = validateSlippageBps(optionalNumberParam(action, 'slippageBps'), ctx.config.mainnet.maxSlippageBps);
     const input: RaydiumAddLiquidityInput = {
       walletAddress,
-      poolId: requireStringParam(action, 'poolId'),
-      poolType: parsePoolType(requireStringParam(action, 'poolType')),
-      ...(optionalStringParam(action, 'positionMint') !== undefined && { positionMint: optionalStringParam(action, 'positionMint') }),
-      ...(optionalStringParam(action, 'tokenAAmount') !== undefined && { tokenAAmount: optionalStringParam(action, 'tokenAAmount') }),
-      ...(optionalStringParam(action, 'tokenBAmount') !== undefined && { tokenBAmount: optionalStringParam(action, 'tokenBAmount') }),
-      ...(optionalStringParam(action, 'maxTokenAAmount') !== undefined && { maxTokenAAmount: optionalStringParam(action, 'maxTokenAAmount') }),
-      ...(optionalStringParam(action, 'maxTokenBAmount') !== undefined && { maxTokenBAmount: optionalStringParam(action, 'maxTokenBAmount') }),
-      ...(optionalNumberParam(action, 'lowerTick') !== undefined && { lowerTick: optionalNumberParam(action, 'lowerTick') }),
-      ...(optionalNumberParam(action, 'upperTick') !== undefined && { upperTick: optionalNumberParam(action, 'upperTick') }),
-      ...(optionalStringParam(action, 'lowerPrice') !== undefined && { lowerPrice: optionalStringParam(action, 'lowerPrice') }),
-      ...(optionalStringParam(action, 'upperPrice') !== undefined && { upperPrice: optionalStringParam(action, 'upperPrice') }),
-      slippageBps: optionalNumberParam(action, 'slippageBps') ?? ctx.config.mainnet.maxSlippageBps,
+      poolId,
+      poolType,
+      ...(positionMint !== undefined && { positionMint }),
+      ...(tokenAAmount !== undefined && { tokenAAmount }),
+      ...(tokenBAmount !== undefined && { tokenBAmount }),
+      ...(maxTokenAAmount !== undefined && { maxTokenAAmount }),
+      ...(maxTokenBAmount !== undefined && { maxTokenBAmount }),
+      ...(lowerTick !== undefined && { lowerTick }),
+      ...(upperTick !== undefined && { upperTick }),
+      ...(lowerPrice !== undefined && { lowerPrice }),
+      ...(upperPrice !== undefined && { upperPrice }),
+      slippageBps,
     };
+    validateAddAmounts(input);
     const built = await getRaydiumClient().buildAddLiquidityTransaction(ctx.connection, input);
     const txid = await ctx.signAndBroadcast(built.transactionBase64, action.summary);
     return {
@@ -196,7 +210,7 @@ export const raydiumRemoveLiquidityAction: AdapterAction<RaydiumRemoveLiquidityP
     const slippageBps = validateSlippageBps(input.slippageBps, ctx.config.mainnet.maxSlippageBps);
     const liquidityPercent = validateLiquidityPercent(input.liquidityPercent);
     validateDecreaseAmountChoice({ liquidityPercent, liquidityAmount: input.liquidityAmount });
-    validateOptionalPositiveDecimalString(input.liquidityAmount, 'liquidityAmount');
+    validateRemoveLiquidityAmount({ poolType, liquidityAmount: input.liquidityAmount });
     validateOptionalPositiveDecimalString(input.minTokenAAmount, 'minTokenAAmount');
     validateOptionalPositiveDecimalString(input.minTokenBAmount, 'minTokenBAmount');
 
@@ -262,17 +276,33 @@ export const raydiumRemoveLiquidityAction: AdapterAction<RaydiumRemoveLiquidityP
         `Raydium remove-liquidity action belongs to ${action.walletAddress}, but connected wallet is ${walletAddress}.`,
       );
     }
+    const poolId = parsePublicKey(requireStringParam(action, 'poolId'), 'poolId');
+    const poolType = parsePoolType(requireStringParam(action, 'poolType'));
+    const positionMint = optionalPublicKey(optionalStringParam(action, 'positionMint'), 'positionMint');
+    if (poolType === 'clmm' && !positionMint) {
+      throw new ProtocolError('invalid_request', 'positionMint is required for Raydium CLMM remove-liquidity.');
+    }
+    const liquidityPercent = validateLiquidityPercent(optionalNumberParam(action, 'liquidityPercent'));
+    const liquidityAmount = optionalStringParam(action, 'liquidityAmount');
+    const minTokenAAmount = optionalStringParam(action, 'minTokenAAmount');
+    const minTokenBAmount = optionalStringParam(action, 'minTokenBAmount');
+    const closePosition = optionalBooleanParam(action, 'closePosition');
+    const slippageBps = validateSlippageBps(optionalNumberParam(action, 'slippageBps'), ctx.config.mainnet.maxSlippageBps);
+    validateDecreaseAmountChoice({ liquidityPercent, liquidityAmount });
+    validateRemoveLiquidityAmount({ poolType, liquidityAmount });
+    validateOptionalPositiveDecimalString(minTokenAAmount, 'minTokenAAmount');
+    validateOptionalPositiveDecimalString(minTokenBAmount, 'minTokenBAmount');
     const input: RaydiumRemoveLiquidityInput = {
       walletAddress,
-      poolId: requireStringParam(action, 'poolId'),
-      poolType: parsePoolType(requireStringParam(action, 'poolType')),
-      ...(optionalStringParam(action, 'positionMint') !== undefined && { positionMint: optionalStringParam(action, 'positionMint') }),
-      ...(optionalNumberParam(action, 'liquidityPercent') !== undefined && { liquidityPercent: optionalNumberParam(action, 'liquidityPercent') }),
-      ...(optionalStringParam(action, 'liquidityAmount') !== undefined && { liquidityAmount: optionalStringParam(action, 'liquidityAmount') }),
-      ...(optionalStringParam(action, 'minTokenAAmount') !== undefined && { minTokenAAmount: optionalStringParam(action, 'minTokenAAmount') }),
-      ...(optionalStringParam(action, 'minTokenBAmount') !== undefined && { minTokenBAmount: optionalStringParam(action, 'minTokenBAmount') }),
-      ...(optionalBooleanParam(action, 'closePosition') !== undefined && { closePosition: optionalBooleanParam(action, 'closePosition') }),
-      slippageBps: optionalNumberParam(action, 'slippageBps') ?? ctx.config.mainnet.maxSlippageBps,
+      poolId,
+      poolType,
+      ...(positionMint !== undefined && { positionMint }),
+      ...(liquidityPercent !== undefined && { liquidityPercent }),
+      ...(liquidityAmount !== undefined && { liquidityAmount }),
+      ...(minTokenAAmount !== undefined && { minTokenAAmount }),
+      ...(minTokenBAmount !== undefined && { minTokenBAmount }),
+      ...(closePosition !== undefined && { closePosition }),
+      slippageBps,
     };
     const built = await getRaydiumClient().buildRemoveLiquidityTransaction(ctx.connection, input);
     const txid = await ctx.signAndBroadcast(built.transactionBase64, action.summary);
@@ -337,10 +367,11 @@ export const raydiumCollectFeesAction: AdapterAction<RaydiumCollectFeesPrepareIn
         `Raydium collect-fees action belongs to ${action.walletAddress}, but connected wallet is ${walletAddress}.`,
       );
     }
+    const poolId = optionalPublicKey(optionalStringParam(action, 'poolId'), 'poolId');
     const input: RaydiumCollectFeesInput = {
       walletAddress,
-      positionMint: requireStringParam(action, 'positionMint'),
-      ...(optionalStringParam(action, 'poolId') !== undefined && { poolId: optionalStringParam(action, 'poolId') }),
+      positionMint: parsePublicKey(requireStringParam(action, 'positionMint'), 'positionMint'),
+      ...(poolId !== undefined && { poolId }),
     };
     const built = await getRaydiumClient().buildCollectFeesTransaction(ctx.connection, input);
     const txid = await ctx.signAndBroadcast(built.transactionBase64, action.summary);

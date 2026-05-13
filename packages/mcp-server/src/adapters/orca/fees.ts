@@ -10,7 +10,9 @@ import type {
 import { getOrcaClient, type OrcaCollectInput } from './client.js';
 import { ORCA_ADAPTER_ID, ORCA_PROGRAM_IDS, shortAddress } from './constants.js';
 import { getPositionDetail } from './positions.js';
+import { getWhirlpoolSnapshot } from './whirlpools.js';
 import {
+  ensurePositionMatchesWhirlpool,
   optionalPublicKey,
   optionalStringParam,
   parsePublicKey,
@@ -59,10 +61,12 @@ async function prepareCollectAction(
   const positionMint = parsePublicKey(input.positionMint, 'positionMint');
   const whirlpoolAddress = optionalPublicKey(input.whirlpoolAddress, 'whirlpoolAddress');
   const position = await getPositionDetail(ctx, { positionMint, ...(whirlpoolAddress !== undefined && { whirlpoolAddress }) });
+  const resolvedWhirlpoolAddress = whirlpoolAddress ?? position.whirlpoolAddress;
+  await getWhirlpoolSnapshot(ctx, resolvedWhirlpoolAddress);
   const collectInput: OrcaCollectInput = {
     walletAddress,
     positionMint,
-    ...(whirlpoolAddress !== undefined ? { whirlpoolAddress } : { whirlpoolAddress: position.whirlpoolAddress }),
+    whirlpoolAddress: resolvedWhirlpoolAddress,
   };
   const preview = operation === 'collect_fees'
     ? await getOrcaClient().previewCollectFees(ctx.connection, collectInput)
@@ -118,9 +122,17 @@ async function executeCollectAction(
   }
   const input: OrcaCollectInput = {
     walletAddress,
-    positionMint: requireStringParam(action, 'positionMint'),
-    ...(optionalStringParam(action, 'whirlpoolAddress') !== undefined && { whirlpoolAddress: optionalStringParam(action, 'whirlpoolAddress') }),
+    positionMint: parsePublicKey(requireStringParam(action, 'positionMint'), 'positionMint'),
   };
+  const storedWhirlpoolAddress = optionalPublicKey(optionalStringParam(action, 'whirlpoolAddress'), 'whirlpoolAddress');
+  const position = await getPositionDetail(ctx, {
+    positionMint: input.positionMint,
+    ...(storedWhirlpoolAddress !== undefined && { whirlpoolAddress: storedWhirlpoolAddress }),
+  });
+  const whirlpoolAddress = storedWhirlpoolAddress ?? position.whirlpoolAddress;
+  ensurePositionMatchesWhirlpool(position, whirlpoolAddress);
+  await getWhirlpoolSnapshot(ctx, whirlpoolAddress);
+  input.whirlpoolAddress = whirlpoolAddress;
   const built = operation === 'collect_fees'
     ? await getOrcaClient().buildCollectFeesTransaction(ctx.connection, input)
     : await getOrcaClient().buildCollectRewardsTransaction(ctx.connection, input);

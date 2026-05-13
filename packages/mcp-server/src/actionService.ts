@@ -48,6 +48,19 @@ import type {
 import type { MarginfiActionInput } from './adapters/marginfi/index.js';
 import { marginfiMinHealthRatio } from './adapters/marginfi/actions.js';
 import type {
+  JupiterLendBorrowActionInput,
+  JupiterLendEarnActionInput,
+  JupiterTriggerCancelOrderInput,
+  JupiterTriggerChallengeType,
+  JupiterTriggerEditOrderInput,
+  JupiterTriggerOcoOrderInput,
+  JupiterTriggerOrderState,
+  JupiterTriggerOtocoOrderInput,
+  JupiterTriggerRegisterVaultInput,
+  JupiterTriggerSingleOrderInput,
+  JupiterTriggerWithdrawOrderFundsInput,
+} from './adapters/jupiter/index.js';
+import type {
   DriftVaultCancelWithdrawInput,
   DriftVaultCompleteWithdrawInput,
   DriftVaultDepositInput,
@@ -82,6 +95,7 @@ import type {
   SaveWithdrawInput,
 } from './adapters/save/index.js';
 import type {
+  JitoClaimDepositReceiptInput,
   JitoDepositStakeAccountInput,
   JitoQuoteInput,
   JitoStakeSolInput,
@@ -122,10 +136,60 @@ import type {
   PythFeedSearchInput,
   PythPostPriceUpdateInput,
 } from './adapters/pyth/index.js';
+import type {
+  WormholeQuoteReadInput,
+  WormholeRecoverOrResumeInput,
+  WormholeRedeemInput,
+  WormholeSupportedRoutesInput,
+  WormholeTokenSnapshotInput,
+  WormholeTransferInput,
+  WormholeTransferStatusInput,
+  WormholeWalletBridgeExposureInput,
+} from './adapters/wormhole/index.js';
 import { assertMaxAmount, formatRawAmount, parseDecimalAmount } from './amounts.js';
 import {
+  buildPerpsStatus,
+  getJupiterPerpsCustodySnapshot,
+  getJupiterPerpsPoolSnapshot,
+  getJupiterPerpsPositionSnapshot,
+  getJupiterPrice,
+  getJupiterPriceBatch,
+  getJupiterRecentTokens,
+  getJupiterTokenCategory,
+  getJupiterTokenRiskEvidence,
+  getJupiterTokenSearch,
+  getJupiterTokensByTag,
+  getPredictionEventDetail,
+  getPredictionEventMarkets,
+  getPredictionEvents,
+  getPredictionHistory,
+  getPredictionMarketDetail,
+  getPredictionOrderbook,
+  getPredictionOrders,
+  getPredictionOrderStatus,
+  getPredictionPositions,
+  getPredictionVaultInfo,
   jupiterApiHost,
   jupiterFetchJson,
+  searchPredictionEvents,
+  type EventDetailInput as JupiterPredictionEventDetailInput,
+  type EventMarketsInput as JupiterPredictionEventMarketsInput,
+  type GetEventsInput as JupiterPredictionEventsInput,
+  type JupiterPerpsCustodySnapshotInput,
+  type JupiterPerpsPoolSnapshotInput,
+  type JupiterPerpsPositionSnapshotInput,
+  type JupiterPerpsStatusInput,
+  type JupiterPriceBatchInput,
+  type JupiterPriceInput,
+  type JupiterTokenByTagInput,
+  type JupiterTokenCategoryInput,
+  type JupiterTokenRecentInput,
+  type JupiterTokenRiskEvidenceInput,
+  type JupiterTokenSearchInput,
+  type MarketDetailInput as JupiterPredictionMarketDetailInput,
+  type OrderbookInput as JupiterPredictionOrderbookInput,
+  type OrdersInput as JupiterPredictionOrdersInput,
+  type SearchEventsInput as JupiterPredictionSearchEventsInput,
 } from './adapters/jupiter/index.js';
 import {
   fetchBlinkMetadata,
@@ -158,6 +222,27 @@ import {
 } from './connectorRegistry.js';
 import {
   factsFromJupiterOrderPreview,
+  factsFromJupiterPerpsStatus,
+  factsFromJupiterPredictionEventDetail,
+  factsFromJupiterPredictionEvents,
+  factsFromJupiterPredictionHistory,
+  factsFromJupiterPredictionMarketDetail,
+  factsFromJupiterPredictionOrderStatus,
+  factsFromJupiterPredictionOrderbook,
+  factsFromJupiterPredictionOrders,
+  factsFromJupiterPredictionPositions,
+  factsFromJupiterPredictionVaultInfo,
+  factsFromJupiterPrice,
+  factsFromJupiterPriceBatch,
+  factsFromJupiterTokenRead,
+  factsFromJupiterTokenRiskEvidence,
+  factsFromJupiterLendBorrowHealth,
+  factsFromJupiterLendBorrowPositions,
+  factsFromJupiterLendBorrowVaults,
+  factsFromJupiterLendEarnEarnings,
+  factsFromJupiterLendEarnPositions,
+  factsFromJupiterLendEarnTokens,
+  factsFromJitoDepositReceipts,
   factsFromJitoQuote,
   factsFromJitoStakeAccounts,
   factsFromJitoStakePoolSnapshot,
@@ -214,6 +299,11 @@ import {
   factsFromSanctumLstSnapshot,
   factsFromSanctumQuote,
   factsFromSanctumWalletPositions,
+  factsFromWormholeQuote,
+  factsFromWormholeSupportedRoutes,
+  factsFromWormholeTokenSnapshot,
+  factsFromWormholeTransferStatus,
+  factsFromWormholeWalletBridgeExposure,
   type ConnectorFactReadInput,
 } from './connectorFacts.js';
 import { redactSecrets } from './trace.js';
@@ -650,6 +740,308 @@ export class AgentWalletActionService {
     return { preparedAction: stored, preview: result.preview };
   }
 
+  async jupiterLendEarnTokens(input: { includeInactive?: boolean; assetMint?: string }): Promise<Record<string, unknown>> {
+    const adapter = requireAdapter('jupiter');
+    assertSupportedCluster(adapter, this.config.cluster);
+    const read = adapter.reads.earn_tokens;
+    if (!read) throw new AdapterError('jupiter', 'unsupported_method', 'Jupiter Lend Earn tokens read is not registered.');
+    const result = (await read.read(input, this.adapterContext(adapter))) as {
+      cluster: AgentWalletConfig['cluster'];
+      tokens: Parameters<typeof factsFromJupiterLendEarnTokens>[0]['tokens'];
+    };
+    return {
+      ...result,
+      facts: factsFromJupiterLendEarnTokens({ tokens: result.tokens }),
+    };
+  }
+
+  async jupiterLendEarnTokenDetail(input: { assetMint: string }): Promise<Record<string, unknown>> {
+    const adapter = requireAdapter('jupiter');
+    assertSupportedCluster(adapter, this.config.cluster);
+    const read = adapter.reads.earn_token_detail;
+    if (!read) throw new AdapterError('jupiter', 'unsupported_method', 'Jupiter Lend Earn token detail read is not registered.');
+    const result = (await read.read(input, this.adapterContext(adapter))) as {
+      cluster: AgentWalletConfig['cluster'];
+      token: Parameters<typeof factsFromJupiterLendEarnTokens>[0]['tokens'][number];
+    };
+    return {
+      ...result,
+      facts: factsFromJupiterLendEarnTokens({ tokens: [result.token] }),
+    };
+  }
+
+  async jupiterLendEarnPositions(input: { walletAddress?: string; assetMint?: string }): Promise<Record<string, unknown>> {
+    const adapter = requireAdapter('jupiter');
+    assertSupportedCluster(adapter, this.config.cluster);
+    const read = adapter.reads.earn_positions;
+    if (!read) throw new AdapterError('jupiter', 'unsupported_method', 'Jupiter Lend Earn positions read is not registered.');
+    const result = (await read.read(input, this.adapterContext(adapter))) as {
+      walletAddress: string;
+      cluster: AgentWalletConfig['cluster'];
+      positions: Parameters<typeof factsFromJupiterLendEarnPositions>[0]['positions'];
+    };
+    return {
+      ...result,
+      facts: factsFromJupiterLendEarnPositions({ walletAddress: result.walletAddress, positions: result.positions }),
+    };
+  }
+
+  async jupiterLendEarnEarnings(input: {
+    walletAddress?: string;
+    assetMint?: string;
+    from?: string;
+    to?: string;
+  }): Promise<Record<string, unknown>> {
+    const adapter = requireAdapter('jupiter');
+    assertSupportedCluster(adapter, this.config.cluster);
+    const read = adapter.reads.earn_earnings;
+    if (!read) throw new AdapterError('jupiter', 'unsupported_method', 'Jupiter Lend Earn earnings read is not registered.');
+    const result = (await read.read(input, this.adapterContext(adapter))) as {
+      walletAddress: string;
+      cluster: AgentWalletConfig['cluster'];
+      earnings: Parameters<typeof factsFromJupiterLendEarnEarnings>[0]['earnings'];
+    };
+    return {
+      ...result,
+      facts: factsFromJupiterLendEarnEarnings({ walletAddress: result.walletAddress, earnings: result.earnings }),
+    };
+  }
+
+  async jupiterLendBorrowVaults(input: {
+    vaultId?: number;
+    supplyMint?: string;
+    borrowMint?: string;
+    includeUnavailable?: boolean;
+  }): Promise<Record<string, unknown>> {
+    const adapter = requireAdapter('jupiter');
+    assertSupportedCluster(adapter, this.config.cluster);
+    const read = adapter.reads.borrow_vaults;
+    if (!read) throw new AdapterError('jupiter', 'unsupported_method', 'Jupiter Lend Borrow vaults read is not registered.');
+    const result = (await read.read(input, this.adapterContext(adapter))) as {
+      cluster: AgentWalletConfig['cluster'];
+      vaults: Parameters<typeof factsFromJupiterLendBorrowVaults>[0]['vaults'];
+    };
+    return {
+      ...result,
+      facts: factsFromJupiterLendBorrowVaults({ vaults: result.vaults }),
+    };
+  }
+
+  async jupiterLendBorrowVaultDetail(input: { vaultId: number }): Promise<Record<string, unknown>> {
+    const adapter = requireAdapter('jupiter');
+    assertSupportedCluster(adapter, this.config.cluster);
+    const read = adapter.reads.borrow_vault_detail;
+    if (!read) throw new AdapterError('jupiter', 'unsupported_method', 'Jupiter Lend Borrow vault detail read is not registered.');
+    const result = (await read.read(input, this.adapterContext(adapter))) as {
+      cluster: AgentWalletConfig['cluster'];
+      vault: Parameters<typeof factsFromJupiterLendBorrowVaults>[0]['vaults'][number];
+    };
+    return {
+      ...result,
+      facts: factsFromJupiterLendBorrowVaults({ vaults: [result.vault] }),
+    };
+  }
+
+  async jupiterLendBorrowPositions(input: {
+    walletAddress?: string;
+    vaultId?: number;
+    positionId?: number;
+  }): Promise<Record<string, unknown>> {
+    const adapter = requireAdapter('jupiter');
+    assertSupportedCluster(adapter, this.config.cluster);
+    const read = adapter.reads.borrow_positions;
+    if (!read) throw new AdapterError('jupiter', 'unsupported_method', 'Jupiter Lend Borrow positions read is not registered.');
+    const result = (await read.read(input, this.adapterContext(adapter))) as {
+      walletAddress: string;
+      cluster: AgentWalletConfig['cluster'];
+      positions: Parameters<typeof factsFromJupiterLendBorrowPositions>[0]['positions'];
+    };
+    return {
+      ...result,
+      facts: factsFromJupiterLendBorrowPositions({ walletAddress: result.walletAddress, positions: result.positions }),
+    };
+  }
+
+  async jupiterLendBorrowHealthPreview(input: {
+    walletAddress?: string;
+    vaultId: number;
+    positionId?: number;
+    collateralDelta?: string;
+    debtDelta?: string;
+    minHealthRatio?: number;
+    maxLtvBps?: number;
+  }): Promise<Record<string, unknown>> {
+    const adapter = requireAdapter('jupiter');
+    assertSupportedCluster(adapter, this.config.cluster);
+    const read = adapter.reads.borrow_health_preview;
+    if (!read) throw new AdapterError('jupiter', 'unsupported_method', 'Jupiter Lend Borrow health preview read is not registered.');
+    const result = (await read.read(input, this.adapterContext(adapter))) as {
+      walletAddress: string;
+      cluster: AgentWalletConfig['cluster'];
+      preview: Parameters<typeof factsFromJupiterLendBorrowHealth>[0];
+    };
+    return {
+      ...result,
+      facts: factsFromJupiterLendBorrowHealth(result.preview),
+    };
+  }
+
+  async prepareJupiterLendEarnDeposit(input: JupiterLendEarnActionInput): Promise<Record<string, unknown>> {
+    return this.prepareJupiterLendAction('earn_deposit', input);
+  }
+
+  async prepareJupiterLendEarnWithdraw(input: JupiterLendEarnActionInput): Promise<Record<string, unknown>> {
+    return this.prepareJupiterLendAction('earn_withdraw', input);
+  }
+
+  async prepareJupiterLendEarnMint(input: JupiterLendEarnActionInput): Promise<Record<string, unknown>> {
+    return this.prepareJupiterLendAction('earn_mint', input);
+  }
+
+  async prepareJupiterLendEarnRedeem(input: JupiterLendEarnActionInput): Promise<Record<string, unknown>> {
+    return this.prepareJupiterLendAction('earn_redeem', input);
+  }
+
+  async prepareJupiterLendBorrowCreatePosition(input: JupiterLendBorrowActionInput): Promise<Record<string, unknown>> {
+    return this.prepareJupiterLendAction('borrow_create_position', input);
+  }
+
+  async prepareJupiterLendBorrowDepositCollateral(input: JupiterLendBorrowActionInput): Promise<Record<string, unknown>> {
+    return this.prepareJupiterLendAction('borrow_deposit_collateral', input);
+  }
+
+  async prepareJupiterLendBorrowBorrow(input: JupiterLendBorrowActionInput): Promise<Record<string, unknown>> {
+    return this.prepareJupiterLendAction('borrow_borrow', input);
+  }
+
+  async prepareJupiterLendBorrowRepay(input: JupiterLendBorrowActionInput): Promise<Record<string, unknown>> {
+    return this.prepareJupiterLendAction('borrow_repay', input);
+  }
+
+  async prepareJupiterLendBorrowWithdrawCollateral(input: JupiterLendBorrowActionInput): Promise<Record<string, unknown>> {
+    return this.prepareJupiterLendAction('borrow_withdraw_collateral', input);
+  }
+
+  private async prepareJupiterLendAction(
+    operation:
+      | 'earn_deposit'
+      | 'earn_withdraw'
+      | 'earn_mint'
+      | 'earn_redeem'
+      | 'borrow_create_position'
+      | 'borrow_deposit_collateral'
+      | 'borrow_borrow'
+      | 'borrow_repay'
+      | 'borrow_withdraw_collateral',
+    input: JupiterLendEarnActionInput | JupiterLendBorrowActionInput,
+  ): Promise<Record<string, unknown>> {
+    requireActionAllowed(this.config);
+    const adapter = requireAdapter('jupiter');
+    assertSupportedCluster(adapter, this.config.cluster);
+    const action = requireAdapterAction(adapter, operation);
+    const result = await action.prepare(input, this.adapterContext(adapter));
+    const stored = await this.store().addAction(result.addInput);
+    return { preparedAction: stored, preview: result.preview };
+  }
+
+  async jupiterTriggerAuthChallenge(input: {
+    walletAddress?: string;
+    challengeType?: JupiterTriggerChallengeType;
+  }): Promise<Record<string, unknown>> {
+    return this.runJupiterTriggerRead('trigger_auth_challenge', input);
+  }
+
+  async jupiterTriggerAuthVerify(input: {
+    walletAddress?: string;
+    challengeType: JupiterTriggerChallengeType;
+    signature?: string;
+    signedTransaction?: string;
+  }): Promise<Record<string, unknown>> {
+    return this.runJupiterTriggerRead('trigger_auth_verify', input);
+  }
+
+  async jupiterTriggerAuthStatus(input: { walletAddress?: string }): Promise<Record<string, unknown>> {
+    return this.runJupiterTriggerRead('trigger_auth_status', input);
+  }
+
+  async jupiterTriggerVault(input: { walletAddress?: string }): Promise<Record<string, unknown>> {
+    return this.runJupiterTriggerRead('trigger_vault', input);
+  }
+
+  async jupiterTriggerOrders(input: {
+    walletAddress?: string;
+    state?: JupiterTriggerOrderState;
+    limit?: number;
+    offset?: number;
+  }): Promise<Record<string, unknown>> {
+    return this.runJupiterTriggerRead('trigger_orders', input);
+  }
+
+  async jupiterTriggerOrderDetail(input: {
+    walletAddress?: string;
+    orderId: string;
+  }): Promise<Record<string, unknown>> {
+    return this.runJupiterTriggerRead('trigger_order_detail', input);
+  }
+
+  async jupiterTriggerOrderHistory(input: {
+    walletAddress?: string;
+    state?: JupiterTriggerOrderState;
+    limit?: number;
+    offset?: number;
+  }): Promise<Record<string, unknown>> {
+    return this.runJupiterTriggerRead('trigger_order_history', input);
+  }
+
+  async prepareJupiterTriggerRegisterVault(input: JupiterTriggerRegisterVaultInput): Promise<Record<string, unknown>> {
+    return this.runJupiterTriggerAction('trigger_register_vault', input);
+  }
+
+  async prepareJupiterTriggerSingleOrder(input: JupiterTriggerSingleOrderInput): Promise<Record<string, unknown>> {
+    return this.runJupiterTriggerAction('trigger_single_order', input);
+  }
+
+  async prepareJupiterTriggerOcoOrder(input: JupiterTriggerOcoOrderInput): Promise<Record<string, unknown>> {
+    return this.runJupiterTriggerAction('trigger_oco_order', input);
+  }
+
+  async prepareJupiterTriggerOtocoOrder(input: JupiterTriggerOtocoOrderInput): Promise<Record<string, unknown>> {
+    return this.runJupiterTriggerAction('trigger_otoco_order', input);
+  }
+
+  async prepareJupiterTriggerEditOrder(input: JupiterTriggerEditOrderInput): Promise<Record<string, unknown>> {
+    return this.runJupiterTriggerAction('trigger_edit_order', input);
+  }
+
+  async prepareJupiterTriggerCancelOrder(input: JupiterTriggerCancelOrderInput): Promise<Record<string, unknown>> {
+    return this.runJupiterTriggerAction('trigger_cancel_order', input);
+  }
+
+  async prepareJupiterTriggerWithdrawOrderFunds(input: JupiterTriggerWithdrawOrderFundsInput): Promise<Record<string, unknown>> {
+    return this.runJupiterTriggerAction('trigger_withdraw_order_funds', input);
+  }
+
+  private async runJupiterTriggerRead(readId: string, input: Record<string, unknown>): Promise<Record<string, unknown>> {
+    const adapter = requireAdapter('jupiter');
+    assertSupportedCluster(adapter, this.config.cluster);
+    const read = adapter.reads[readId];
+    if (!read) {
+      throw new ProtocolError('unsupported_method', `Jupiter adapter is missing read ${readId}.`);
+    }
+    const result = await read.read(input, this.adapterContext(adapter));
+    return { result };
+  }
+
+  private async runJupiterTriggerAction(actionId: string, input: unknown): Promise<Record<string, unknown>> {
+    requireActionAllowed(this.config);
+    const adapter = requireAdapter('jupiter');
+    assertSupportedCluster(adapter, this.config.cluster);
+    const action = requireAdapterAction(adapter, actionId);
+    const result = await action.prepare(input, this.adapterContext(adapter));
+    const stored = await this.store().addAction(result.addInput);
+    return { preparedAction: stored, preview: result.preview };
+  }
+
   async prepareDriftVaultDeposit(input: DriftVaultDepositInput): Promise<Record<string, unknown>> {
     requireActionAllowed(this.config);
     const adapter = requireAdapter('drift');
@@ -882,6 +1274,10 @@ export class AgentWalletActionService {
     return this.prepareJitoAction('withdraw_sol', input);
   }
 
+  async prepareJitoClaimDepositReceipt(input: JitoClaimDepositReceiptInput): Promise<Record<string, unknown>> {
+    return this.prepareJitoAction('claim_deposit_receipt', input);
+  }
+
   async prepareMarinadeLiquidStake(input: MarinadeLiquidStakeInput): Promise<Record<string, unknown>> {
     return this.prepareMarinadeAction('liquid_stake', input);
   }
@@ -899,8 +1295,13 @@ export class AgentWalletActionService {
   }
 
   private async prepareJitoAction(
-    operation: 'stake_sol' | 'deposit_stake_account' | 'unstake_jitosol' | 'withdraw_sol',
-    input: JitoStakeSolInput | JitoDepositStakeAccountInput | JitoUnstakeJitosolInput | JitoWithdrawSolInput,
+    operation: 'stake_sol' | 'deposit_stake_account' | 'unstake_jitosol' | 'withdraw_sol' | 'claim_deposit_receipt',
+    input:
+      | JitoStakeSolInput
+      | JitoDepositStakeAccountInput
+      | JitoUnstakeJitosolInput
+      | JitoWithdrawSolInput
+      | JitoClaimDepositReceiptInput,
   ): Promise<Record<string, unknown>> {
     requireActionAllowed(this.config);
     const adapter = requireAdapter('jito');
@@ -1241,6 +1642,48 @@ export class AgentWalletActionService {
     return { preparedAction: stored, preview: result.preview };
   }
 
+  async jupiterTokenSearch(input: JupiterTokenSearchInput): Promise<Record<string, unknown>> {
+    assertConnectorCluster(requireRuntimeConnector('jupiter'), this.config.cluster);
+    const result = await getJupiterTokenSearch(this.config, input);
+    return { search: result, facts: factsFromJupiterTokenRead(result) };
+  }
+
+  async jupiterTokensByTag(input: JupiterTokenByTagInput): Promise<Record<string, unknown>> {
+    assertConnectorCluster(requireRuntimeConnector('jupiter'), this.config.cluster);
+    const result = await getJupiterTokensByTag(this.config, input);
+    return { tag: result, facts: factsFromJupiterTokenRead(result) };
+  }
+
+  async jupiterTokenCategory(input: JupiterTokenCategoryInput): Promise<Record<string, unknown>> {
+    assertConnectorCluster(requireRuntimeConnector('jupiter'), this.config.cluster);
+    const result = await getJupiterTokenCategory(this.config, input);
+    return { category: result, facts: factsFromJupiterTokenRead(result) };
+  }
+
+  async jupiterRecentTokens(input: JupiterTokenRecentInput = {}): Promise<Record<string, unknown>> {
+    assertConnectorCluster(requireRuntimeConnector('jupiter'), this.config.cluster);
+    const result = await getJupiterRecentTokens(this.config, input);
+    return { recent: result, facts: factsFromJupiterTokenRead(result) };
+  }
+
+  async jupiterPrice(input: JupiterPriceInput): Promise<Record<string, unknown>> {
+    assertConnectorCluster(requireRuntimeConnector('jupiter'), this.config.cluster);
+    const price = await getJupiterPrice(this.config, input);
+    return { price, facts: factsFromJupiterPrice(price) };
+  }
+
+  async jupiterPriceBatch(input: JupiterPriceBatchInput): Promise<Record<string, unknown>> {
+    assertConnectorCluster(requireRuntimeConnector('jupiter'), this.config.cluster);
+    const batch = await getJupiterPriceBatch(this.config, input);
+    return { batch, facts: factsFromJupiterPriceBatch(batch) };
+  }
+
+  async jupiterTokenRiskEvidence(input: JupiterTokenRiskEvidenceInput): Promise<Record<string, unknown>> {
+    assertConnectorCluster(requireRuntimeConnector('jupiter'), this.config.cluster);
+    const evidence = await getJupiterTokenRiskEvidence(this.config, input);
+    return { evidence, facts: factsFromJupiterTokenRiskEvidence(evidence) };
+  }
+
   async pythPriceFeed(input: GetPythPriceFeedInput): Promise<Record<string, unknown>> {
     const adapter = requireAdapter('pyth');
     assertSupportedCluster(adapter, this.config.cluster);
@@ -1291,6 +1734,76 @@ export class AgentWalletActionService {
     const adapter = requireAdapter('pyth');
     assertSupportedCluster(adapter, this.config.cluster);
     const action = requireAdapterAction(adapter, 'post_price_update');
+    const result = await action.prepare(input, this.adapterContext(adapter));
+    const stored = await this.store().addAction(result.addInput);
+    return { preparedAction: stored, preview: result.preview };
+  }
+
+  async wormholeSupportedRoutes(input: WormholeSupportedRoutesInput = {}): Promise<Record<string, unknown>> {
+    const adapter = requireAdapter('wormhole');
+    assertSupportedCluster(adapter, this.config.cluster);
+    const read = adapter.reads.supported_routes;
+    if (!read) throw new AdapterError('wormhole', 'unsupported_method', 'Wormhole supported_routes read is not registered.');
+    const snapshot = (await read.read(input, this.adapterContext(adapter))) as Parameters<typeof factsFromWormholeSupportedRoutes>[0];
+    return { snapshot, facts: factsFromWormholeSupportedRoutes(snapshot) };
+  }
+
+  async wormholeTokenSnapshot(input: WormholeTokenSnapshotInput): Promise<Record<string, unknown>> {
+    const adapter = requireAdapter('wormhole');
+    assertSupportedCluster(adapter, this.config.cluster);
+    const read = adapter.reads.token_snapshot;
+    if (!read) throw new AdapterError('wormhole', 'unsupported_method', 'Wormhole token_snapshot read is not registered.');
+    const snapshot = (await read.read(input, this.adapterContext(adapter))) as Parameters<typeof factsFromWormholeTokenSnapshot>[0];
+    return { snapshot, facts: factsFromWormholeTokenSnapshot(snapshot) };
+  }
+
+  async wormholeQuote(input: WormholeQuoteReadInput): Promise<Record<string, unknown>> {
+    const adapter = requireAdapter('wormhole');
+    assertSupportedCluster(adapter, this.config.cluster);
+    const read = adapter.reads.quote;
+    if (!read) throw new AdapterError('wormhole', 'unsupported_method', 'Wormhole quote read is not registered.');
+    const snapshot = (await read.read(input, this.adapterContext(adapter))) as Parameters<typeof factsFromWormholeQuote>[0];
+    return { snapshot, facts: factsFromWormholeQuote(snapshot) };
+  }
+
+  async wormholeTransferStatus(input: WormholeTransferStatusInput): Promise<Record<string, unknown>> {
+    const adapter = requireAdapter('wormhole');
+    assertSupportedCluster(adapter, this.config.cluster);
+    const read = adapter.reads.transfer_status;
+    if (!read) throw new AdapterError('wormhole', 'unsupported_method', 'Wormhole transfer_status read is not registered.');
+    const snapshot = (await read.read(input, this.adapterContext(adapter))) as Parameters<typeof factsFromWormholeTransferStatus>[0];
+    return { snapshot, facts: factsFromWormholeTransferStatus(snapshot) };
+  }
+
+  async wormholeWalletBridgeExposure(input: WormholeWalletBridgeExposureInput = {}): Promise<Record<string, unknown>> {
+    const adapter = requireAdapter('wormhole');
+    assertSupportedCluster(adapter, this.config.cluster);
+    const read = adapter.reads.wallet_bridge_exposure;
+    if (!read) throw new AdapterError('wormhole', 'unsupported_method', 'Wormhole wallet_bridge_exposure read is not registered.');
+    const snapshot = (await read.read(input, this.adapterContext(adapter))) as Parameters<typeof factsFromWormholeWalletBridgeExposure>[0];
+    return { snapshot, facts: factsFromWormholeWalletBridgeExposure(snapshot) };
+  }
+
+  async prepareWormholeTransfer(input: WormholeTransferInput): Promise<Record<string, unknown>> {
+    return this.prepareWormholeAction('transfer', input);
+  }
+
+  async prepareWormholeRedeem(input: WormholeRedeemInput): Promise<Record<string, unknown>> {
+    return this.prepareWormholeAction('redeem', input);
+  }
+
+  async prepareWormholeRecoverOrResume(input: WormholeRecoverOrResumeInput): Promise<Record<string, unknown>> {
+    return this.prepareWormholeAction('recover_or_resume', input);
+  }
+
+  private async prepareWormholeAction(
+    operation: 'transfer' | 'redeem' | 'recover_or_resume',
+    input: WormholeTransferInput | WormholeRedeemInput | WormholeRecoverOrResumeInput,
+  ): Promise<Record<string, unknown>> {
+    requireActionAllowed(this.config);
+    const adapter = requireAdapter('wormhole');
+    assertSupportedCluster(adapter, this.config.cluster);
+    const action = requireAdapterAction(adapter, operation);
     const result = await action.prepare(input, this.adapterContext(adapter));
     const stored = await this.store().addAction(result.addInput);
     return { preparedAction: stored, preview: result.preview };
@@ -1350,11 +1863,12 @@ export class AgentWalletActionService {
     assertSupportedCluster(adapter, this.config.cluster);
     const read = adapter.reads.quote;
     if (!read) throw new AdapterError('sanctum', 'unsupported_method', 'Sanctum quote read is not registered.');
-    const inputDecimals = await this.sanctumTokenDecimals(input.inputMint);
-    const amountRaw = parseDecimalAmount(input.amount, inputDecimals, 'Sanctum quote amount');
+    const inputToken = await this.resolveSanctumTokenIdentifier(input.inputMint);
+    const outputToken = await this.resolveSanctumTokenIdentifier(input.outputMint);
+    const amountRaw = parseDecimalAmount(input.amount, inputToken.decimals, 'Sanctum quote amount');
     const quote = (await read.read({
-      inputMint: input.inputMint,
-      outputMint: input.outputMint,
+      inputMint: inputToken.mint,
+      outputMint: outputToken.mint,
       amountRaw: amountRaw.toString(),
       ...(input.slippageBps !== undefined && { slippageBps: input.slippageBps }),
     }, this.adapterContext(adapter))) as Parameters<typeof factsFromSanctumQuote>[0];
@@ -1402,13 +1916,27 @@ export class AgentWalletActionService {
     return { preparedAction: stored, preview: result.preview };
   }
 
-  private async sanctumTokenDecimals(mint: string): Promise<number> {
-    if (mint === WSOL_MINT || mint === SANCTUM_INF_MINT) return 9;
-    const snapshotResult = await this.sanctumLstSnapshot({ lstMint: mint });
-    const snapshot = snapshotResult.snapshot as { decimals?: unknown };
+  private async resolveSanctumTokenIdentifier(value: string): Promise<{ mint: string; decimals: number }> {
+    const trimmed = value.trim();
+    if (!trimmed) {
+      throw new ProtocolError('invalid_request', 'Sanctum token identifier is required.');
+    }
+    const known = normalizeSanctumKnownToken(trimmed);
+    if (known) return { mint: known, decimals: 9 };
+    const snapshotResult = await this.sanctumLstSnapshot({ mintOrSymbol: trimmed });
+    const snapshot = snapshotResult.snapshot as { mint?: unknown; decimals?: unknown };
+    if (typeof snapshot.mint !== 'string' || !snapshot.mint.trim()) {
+      throw new AdapterError('sanctum', 'invalid_response', `Sanctum did not return a mint for ${trimmed}.`);
+    }
+    let normalizedMint: string;
+    try {
+      normalizedMint = new PublicKey(snapshot.mint).toBase58();
+    } catch {
+      throw new AdapterError('sanctum', 'invalid_response', `Sanctum returned an invalid mint for ${trimmed}.`);
+    }
     return typeof snapshot.decimals === 'number' && Number.isFinite(snapshot.decimals)
-      ? snapshot.decimals
-      : 9;
+      ? { mint: normalizedMint, decimals: snapshot.decimals }
+      : { mint: normalizedMint, decimals: 9 };
   }
 
   async prepareBlinkAction(input: PrepareBlinkActionInput): Promise<Record<string, unknown>> {
@@ -1503,6 +2031,9 @@ export class AgentWalletActionService {
       if (connector.id === 'marginfi') {
         return await this.marginfiConnectorFacts(input);
       }
+      if (connector.id === 'drift') {
+        return await this.driftConnectorFacts(input);
+      }
       if (connector.id === 'lulo') {
         return await this.luloConnectorFacts(input);
       }
@@ -1521,11 +2052,141 @@ export class AgentWalletActionService {
       if (connector.id === 'pyth') {
         return await this.pythConnectorFacts(input);
       }
+      if (connector.id === 'wormhole') {
+        return await this.wormholeConnectorFacts(input);
+      }
+      if (connector.id === 'tensor') {
+        return await this.tensorConnectorFacts(input);
+      }
+      if (connector.id === 'magiceden') {
+        return await this.magicedenConnectorFacts(input);
+      }
       throw missingConnectorCapability(connector, input.capability, 'read');
     } catch (err) {
       if (err instanceof ProtocolError) throw err;
       throw connectorReadProtocolError(connector, err);
     }
+  }
+
+  private async magicedenConnectorFacts(input: ConnectorFactReadInput): Promise<Record<string, unknown>> {
+    const connector = requireRuntimeConnector('magiceden');
+    const hasCollection = Boolean(input.collectionSymbol?.trim() || input.collectionId?.trim());
+    const hasMint = Boolean(input.mintAddress?.trim());
+    const capability = input.capability
+      ?? (hasMint
+        ? 'positions'
+        : hasCollection
+          ? 'markets'
+          : 'positions');
+
+    if (capability === 'markets' || capability === 'marketplace') {
+      if (!hasCollection) {
+        throw new ProtocolError(
+          'invalid_request',
+          'collectionSymbol or collectionId is required to read Magic Eden market facts.',
+        );
+      }
+      const result = await this.magicedenCollectionSnapshot({
+        ...(input.collectionSymbol !== undefined && { collectionSymbol: input.collectionSymbol }),
+        ...(input.collectionId !== undefined && { collectionId: input.collectionId }),
+        ...(input.includeListings !== undefined && { includeListings: input.includeListings }),
+        ...(input.includeBids !== undefined && { includeBids: input.includeBids }),
+        ...(input.limit !== undefined && { limit: input.limit }),
+      });
+      return {
+        connector: connectorCapabilityView(connector, this.config),
+        capability,
+        snapshot: result.snapshot,
+        facts: result.facts,
+      };
+    }
+
+    if (capability === 'positions') {
+      if (hasMint) {
+        const result = await this.magicedenNftDetail({
+          mintAddress: input.mintAddress!,
+          ...(input.includeListings !== undefined && { includeListing: input.includeListings }),
+          ...(input.includeBids !== undefined && { includeBids: input.includeBids }),
+        });
+        return {
+          connector: connectorCapabilityView(connector, this.config),
+          capability,
+          snapshot: result.snapshot,
+          facts: result.facts,
+        };
+      }
+      const result = await this.magicedenWalletNfts({
+        ...(input.walletAddress !== undefined && { walletAddress: input.walletAddress }),
+        ...(input.collectionSymbol !== undefined && { collectionSymbol: input.collectionSymbol }),
+        ...(input.collectionId !== undefined && { collectionId: input.collectionId }),
+        ...(input.listedOnly !== undefined && { listedOnly: input.listedOnly }),
+      });
+      return {
+        connector: connectorCapabilityView(connector, this.config),
+        capability,
+        snapshot: result.snapshot,
+        facts: result.facts,
+      };
+    }
+
+    throw missingConnectorCapability(connector, capability, 'read');
+  }
+
+  private async tensorConnectorFacts(input: ConnectorFactReadInput): Promise<Record<string, unknown>> {
+    const connector = requireRuntimeConnector('tensor');
+    const capability = input.capability
+      ?? (input.mintAddress || input.assetId
+        ? 'positions'
+        : input.collectionId
+          ? 'markets'
+          : 'positions');
+    if (capability === 'markets' || capability === 'marketplace') {
+      if (!input.collectionId?.trim()) {
+        throw new ProtocolError(
+          'invalid_request',
+          'collectionId is required to read Tensor market facts.',
+        );
+      }
+      const result = await this.tensorCollectionSnapshot({
+        collectionId: input.collectionId,
+        ...(input.includeListings !== undefined && { includeListings: input.includeListings }),
+        ...(input.includeBids !== undefined && { includeBids: input.includeBids }),
+        ...(input.maxListings !== undefined && { maxListings: input.maxListings }),
+        ...(input.maxBids !== undefined && { maxBids: input.maxBids }),
+      });
+      return {
+        connector: connectorCapabilityView(connector, this.config),
+        capability,
+        snapshot: result.snapshot,
+        facts: result.facts,
+      };
+    }
+    if (capability === 'positions') {
+      if (input.mintAddress?.trim() || input.assetId?.trim()) {
+        const result = await this.tensorNftDetail({
+          ...(input.mintAddress !== undefined && { mintAddress: input.mintAddress }),
+          ...(input.assetId !== undefined && { assetId: input.assetId }),
+        });
+        return {
+          connector: connectorCapabilityView(connector, this.config),
+          capability,
+          snapshot: result.snapshot,
+          facts: result.facts,
+        };
+      }
+      const result = await this.tensorWalletNfts({
+        ...(input.walletAddress !== undefined && { walletAddress: input.walletAddress }),
+        ...(input.collectionId !== undefined && { collectionId: input.collectionId }),
+        ...(input.includeCompressed !== undefined && { includeCompressed: input.includeCompressed }),
+      });
+      return {
+        connector: connectorCapabilityView(connector, this.config),
+        capability,
+        snapshot: result.snapshot,
+        facts: result.facts,
+      };
+    }
+    throw missingConnectorCapability(connector, capability, 'read');
   }
 
   private async pythConnectorFacts(input: ConnectorFactReadInput): Promise<Record<string, unknown>> {
@@ -1572,11 +2233,90 @@ export class AgentWalletActionService {
           facts: result.facts,
         };
       }
+      if (!input.priceFeedId?.trim() && !input.symbol?.trim()) {
+        throw new ProtocolError(
+          'invalid_request',
+          'Pyth markets read requires priceFeedId, priceFeedIds, symbol, or query.',
+        );
+      }
       const result = await this.pythPriceFeed({
         ...(input.priceFeedId !== undefined ? { priceFeedId: input.priceFeedId } : {}),
         ...(input.symbol !== undefined ? { symbol: input.symbol } : {}),
         ...(input.maxAgeSeconds !== undefined ? { maxAgeSeconds: input.maxAgeSeconds } : {}),
         ...(input.includeEma !== undefined ? { includeEma: input.includeEma } : {}),
+      });
+      return {
+        connector: connectorCapabilityView(connector, this.config),
+        capability,
+        snapshot: result.snapshot,
+        facts: result.facts,
+      };
+    }
+    throw missingConnectorCapability(connector, capability, 'read');
+  }
+
+  private async wormholeConnectorFacts(input: ConnectorFactReadInput): Promise<Record<string, unknown>> {
+    const connector = requireRuntimeConnector('wormhole');
+    const capability = input.capability ?? (input.walletAddress ? 'positions' : input.amount ? 'bridge' : 'markets');
+    if (capability === 'markets') {
+      const result = await this.wormholeSupportedRoutes({
+        ...(input.sourceChain !== undefined ? { sourceChain: input.sourceChain } : {}),
+        ...(input.destinationChain !== undefined ? { destinationChain: input.destinationChain } : {}),
+        ...(input.sourceMint !== undefined ? { mintAddress: input.sourceMint } : input.reserveMint !== undefined ? { mintAddress: input.reserveMint } : {}),
+        ...(input.routeType !== undefined ? { routeType: input.routeType } : {}),
+      });
+      return {
+        connector: connectorCapabilityView(connector, this.config),
+        capability,
+        snapshot: result.snapshot,
+        facts: result.facts,
+      };
+    }
+    if (capability === 'bridge') {
+      if (input.txid?.trim() || input.vaa?.trim() || input.sequence?.trim() || input.transferId?.trim()) {
+        const result = await this.wormholeTransferStatus({
+          ...(input.txid !== undefined ? { txid: input.txid } : {}),
+          ...(input.vaa !== undefined ? { vaa: input.vaa } : {}),
+          ...(input.sequence !== undefined ? { sequence: input.sequence } : {}),
+          ...(input.transferId !== undefined ? { transferId: input.transferId } : {}),
+          ...(input.sourceChain !== undefined ? { sourceChain: input.sourceChain } : {}),
+          ...(input.destinationChain !== undefined ? { destinationChain: input.destinationChain } : {}),
+        });
+        return {
+          connector: connectorCapabilityView(connector, this.config),
+          capability,
+          snapshot: result.snapshot,
+          facts: result.facts,
+        };
+      }
+      if (!input.amount?.trim()) {
+        throw new ProtocolError('invalid_request', 'amount is required to read Wormhole quote facts.');
+      }
+      if (!input.sourceMint?.trim()) {
+        throw new ProtocolError('invalid_request', 'sourceMint is required to read Wormhole quote facts.');
+      }
+      if (!input.destinationChain?.trim() || !input.destinationAddress?.trim()) {
+        throw new ProtocolError('invalid_request', 'destinationChain and destinationAddress are required to read Wormhole quote facts.');
+      }
+      const result = await this.wormholeQuote({
+        sourceMint: input.sourceMint,
+        amount: input.amount,
+        destinationChain: input.destinationChain,
+        destinationAddress: input.destinationAddress,
+        ...(input.routeType !== undefined ? { routeType: input.routeType } : {}),
+        ...(input.nativeGasDropoff !== undefined ? { nativeGasDropoff: input.nativeGasDropoff } : {}),
+      });
+      return {
+        connector: connectorCapabilityView(connector, this.config),
+        capability,
+        snapshot: result.snapshot,
+        facts: result.facts,
+      };
+    }
+    if (capability === 'positions') {
+      const result = await this.wormholeWalletBridgeExposure({
+        ...(input.walletAddress !== undefined ? { walletAddress: input.walletAddress } : {}),
+        ...(input.includePendingTransfers !== undefined ? { includePendingTransfers: input.includePendingTransfers } : {}),
       });
       return {
         connector: connectorCapabilityView(connector, this.config),
@@ -1636,7 +2376,110 @@ export class AgentWalletActionService {
 
   private async jupiterConnectorFacts(input: ConnectorFactReadInput): Promise<Record<string, unknown>> {
     const connector = requireRuntimeConnector('jupiter');
-    const capability = input.capability ?? 'swap';
+    const capability = input.capability ?? (input.mints && input.mints.length > 0 ? 'price' : input.mint || input.query || input.tag || input.category ? 'tokens' : 'swap');
+    if (capability === 'tokens') {
+      if (input.tag) {
+        const result = await this.jupiterTokensByTag({
+          tag: input.tag,
+          ...(input.limit !== undefined ? { limit: input.limit } : {}),
+        });
+        return { connector: connectorCapabilityView(connector, this.config), capability, tag: result.tag, facts: result.facts };
+      }
+      if (input.category) {
+        const interval = input.interval ?? '24h';
+        const result = await this.jupiterTokenCategory({
+          category: input.category,
+          interval,
+          ...(input.limit !== undefined ? { limit: input.limit } : {}),
+        });
+        return { connector: connectorCapabilityView(connector, this.config), capability, category: result.category, facts: result.facts };
+      }
+      const mint = input.mint ?? input.sourceMint ?? input.reserveMint;
+      if (mint?.trim()) {
+        const result = await this.jupiterTokenRiskEvidence({
+          mint,
+          ...(input.includePrice !== undefined ? { includePrice: input.includePrice } : {}),
+          ...(input.includeSearchFallback !== undefined ? { includeSearchFallback: input.includeSearchFallback } : {}),
+        });
+        return { connector: connectorCapabilityView(connector, this.config), capability, evidence: result.evidence, facts: result.facts };
+      }
+      if (input.query?.trim()) {
+        const result = await this.jupiterTokenSearch({
+          query: input.query,
+          ...(input.limit !== undefined ? { limit: input.limit } : {}),
+        });
+        return { connector: connectorCapabilityView(connector, this.config), capability, search: result.search, facts: result.facts };
+      }
+      const recent = await this.jupiterRecentTokens({
+        ...(input.limit !== undefined ? { limit: input.limit } : {}),
+      });
+      return { connector: connectorCapabilityView(connector, this.config), capability, recent: recent.recent, facts: recent.facts };
+    }
+    if (capability === 'price') {
+      if (input.mints && input.mints.length > 0) {
+        const result = await this.jupiterPriceBatch({ mints: input.mints });
+        return { connector: connectorCapabilityView(connector, this.config), capability, batch: result.batch, facts: result.facts };
+      }
+      const mint = input.mint ?? input.sourceMint ?? input.reserveMint;
+      if (!mint?.trim()) {
+        throw new ProtocolError('invalid_request', 'mint or mints is required to read Jupiter price facts.');
+      }
+      const result = await this.jupiterPrice({ mint });
+      return { connector: connectorCapabilityView(connector, this.config), capability, price: result.price, facts: result.facts };
+    }
+    if (capability === 'earn') {
+      if (input.walletAddress?.trim()) {
+        const earnings = await this.jupiterLendEarnPositions({
+          walletAddress: input.walletAddress,
+          ...(input.reserveMint ? { assetMint: input.reserveMint } : {}),
+        });
+        return { connector: connectorCapabilityView(connector, this.config), capability, ...earnings };
+      }
+      const reserveMint = input.reserveMint ?? input.mint;
+      if (reserveMint?.trim()) {
+        const detail = await this.jupiterLendEarnTokenDetail({ assetMint: reserveMint });
+        return { connector: connectorCapabilityView(connector, this.config), capability, ...detail };
+      }
+      const tokens = await this.jupiterLendEarnTokens({});
+      return { connector: connectorCapabilityView(connector, this.config), capability, ...tokens };
+    }
+    if (capability === 'markets') {
+      if (input.reserveMint?.trim() || input.mint?.trim()) {
+        const detail = await this.jupiterLendEarnTokenDetail({
+          assetMint: (input.reserveMint ?? input.mint) as string,
+        });
+        return { connector: connectorCapabilityView(connector, this.config), capability, ...detail };
+      }
+      const vaults = await this.jupiterLendBorrowVaults({});
+      return { connector: connectorCapabilityView(connector, this.config), capability, ...vaults };
+    }
+    if (capability === 'positions') {
+      const walletAddress = input.walletAddress?.trim() || (await this.backend.getAddress());
+      const positions = await this.jupiterLendBorrowPositions({ walletAddress });
+      return { connector: connectorCapabilityView(connector, this.config), capability, ...positions };
+    }
+    if (capability === 'borrow' || capability === 'withdraw' || capability === 'repay') {
+      throw new ProtocolError(
+        'invalid_request',
+        'Jupiter Borrow health preview needs an explicit vaultId. Call solana_jupiter_lend_borrow_health_preview.',
+      );
+    }
+    if (capability === 'prediction') {
+      const result = await this.dispatchJupiterPredictionRead(input);
+      return {
+        connector: connectorCapabilityView(connector, this.config),
+        capability,
+        ...result,
+      };
+    }
+    if (capability === 'perps') {
+      const status = await this.jupiterPerpsStatus({});
+      return {
+        connector: connectorCapabilityView(connector, this.config),
+        capability,
+        ...status,
+      };
+    }
     if (capability !== 'swap') {
       throw missingConnectorCapability(connector, capability, 'read');
     }
@@ -1656,6 +2499,102 @@ export class AgentWalletActionService {
       preview,
       facts: preview.facts,
     };
+  }
+
+  private async dispatchJupiterPredictionRead(
+    input: ConnectorFactReadInput,
+  ): Promise<Record<string, unknown>> {
+    const op = input.predictionOperation
+      ?? (input.predictionOrderId
+        ? 'order_status'
+        : input.predictionMarketId
+          ? input.predictionEventId
+            ? 'market_detail'
+            : 'market_detail'
+          : input.predictionEventId
+            ? 'event_detail'
+            : 'events');
+    switch (op) {
+      case 'events':
+        return this.jupiterPredictionEvents({
+          ...(input.predictionProvider !== undefined && { provider: input.predictionProvider }),
+          ...(input.predictionIncludeMarkets !== undefined && { includeMarkets: input.predictionIncludeMarkets }),
+          ...(input.predictionCategory !== undefined && { category: input.predictionCategory }),
+          ...(input.predictionSortBy !== undefined && { sortBy: input.predictionSortBy }),
+          ...(input.predictionSortDirection !== undefined && { sortDirection: input.predictionSortDirection }),
+          ...(input.predictionFilter !== undefined && { filter: input.predictionFilter }),
+          ...(input.predictionStart !== undefined && { start: input.predictionStart }),
+          ...(input.predictionEnd !== undefined && { end: input.predictionEnd }),
+        });
+      case 'search_events':
+        if (!input.query?.trim()) {
+          throw new ProtocolError('invalid_request', 'query is required for prediction search.');
+        }
+        return this.jupiterPredictionSearchEvents({
+          query: input.query,
+          ...(input.predictionProvider !== undefined && { provider: input.predictionProvider }),
+          ...(input.predictionLimit !== undefined && { limit: input.predictionLimit }),
+        });
+      case 'event_detail':
+        if (!input.predictionEventId) {
+          throw new ProtocolError('invalid_request', 'predictionEventId is required for event_detail.');
+        }
+        return this.jupiterPredictionEventDetail({
+          eventId: input.predictionEventId,
+          ...(input.predictionIncludeMarkets !== undefined && { includeMarkets: input.predictionIncludeMarkets }),
+        });
+      case 'event_markets':
+        if (!input.predictionEventId) {
+          throw new ProtocolError('invalid_request', 'predictionEventId is required for event_markets.');
+        }
+        return this.jupiterPredictionEventMarkets({ eventId: input.predictionEventId });
+      case 'market_detail':
+        if (!input.predictionMarketId) {
+          throw new ProtocolError('invalid_request', 'predictionMarketId is required for market_detail.');
+        }
+        return this.jupiterPredictionMarketDetail({ marketId: input.predictionMarketId });
+      case 'orderbook':
+        if (!input.predictionMarketId) {
+          throw new ProtocolError('invalid_request', 'predictionMarketId is required for orderbook.');
+        }
+        return this.jupiterPredictionOrderbook({ marketId: input.predictionMarketId });
+      case 'orders':
+        return this.jupiterPredictionOrders({
+          ...(input.predictionOwner !== undefined && { owner: input.predictionOwner }),
+          ...(input.predictionMarketId !== undefined && { marketId: input.predictionMarketId }),
+          ...(input.predictionStatus !== undefined && { status: input.predictionStatus }),
+        });
+      case 'order_status':
+        if (!input.predictionOrderId) {
+          throw new ProtocolError('invalid_request', 'predictionOrderId is required for order_status.');
+        }
+        return this.jupiterPredictionOrderStatus({
+          orderId: input.predictionOrderId,
+          ...(input.predictionOwner !== undefined && { owner: input.predictionOwner }),
+        });
+      case 'positions':
+        return this.jupiterPredictionPositions({
+          ...(input.predictionOwner !== undefined && { owner: input.predictionOwner }),
+          ...(input.predictionMarketId !== undefined && { marketId: input.predictionMarketId }),
+          ...(input.predictionEventId !== undefined && { eventId: input.predictionEventId }),
+        });
+      case 'history':
+        return this.jupiterPredictionHistory({
+          ...(input.predictionOwner !== undefined && { owner: input.predictionOwner }),
+          ...(input.predictionMarketId !== undefined && { marketId: input.predictionMarketId }),
+          ...(input.predictionEventId !== undefined && { eventId: input.predictionEventId }),
+          ...(input.predictionLimit !== undefined && { limit: input.predictionLimit }),
+        });
+      case 'vault_info':
+        return this.jupiterPredictionVaultInfo({
+          ...(input.predictionOwner !== undefined && { owner: input.predictionOwner }),
+        });
+      default:
+        throw new ProtocolError(
+          'unsupported_method',
+          `Jupiter Prediction operation ${op} is not supported. v1 ships read-only endpoints only.`,
+        );
+    }
   }
 
   private async meteoraConnectorFacts(input: ConnectorFactReadInput): Promise<Record<string, unknown>> {
@@ -1937,6 +2876,72 @@ export class AgentWalletActionService {
     throw missingConnectorCapability(connector, capability, 'read');
   }
 
+  private async driftConnectorFacts(input: ConnectorFactReadInput): Promise<Record<string, unknown>> {
+    const connector = requireRuntimeConnector('drift');
+    const capability = input.capability ?? driftDefaultCapability(input);
+    if (capability === 'markets') {
+      if (!input.vaultAddress?.trim()) {
+        throw new ProtocolError(
+          'invalid_request',
+          'vaultAddress is required to read Drift vault market facts.',
+        );
+      }
+      const result = await this.driftVaultSnapshot({ vaultAddress: input.vaultAddress });
+      return {
+        connector: connectorCapabilityView(connector, this.config),
+        capability,
+        snapshot: result.snapshot,
+        facts: result.facts,
+      };
+    }
+    if (capability === 'withdraw') {
+      if (!input.vaultAddress?.trim()) {
+        throw new ProtocolError(
+          'invalid_request',
+          'vaultAddress is required to read Drift withdraw status.',
+        );
+      }
+      const result = await this.driftWithdrawStatus({
+        vaultAddress: input.vaultAddress,
+        ...(input.walletAddress !== undefined && { walletAddress: input.walletAddress }),
+      });
+      return {
+        connector: connectorCapabilityView(connector, this.config),
+        capability,
+        status: result.status,
+        facts: result.facts,
+      };
+    }
+    if (capability === 'positions') {
+      if (input.subAccountId !== undefined) {
+        const result = await this.driftUserSnapshot({
+          ...(input.walletAddress !== undefined && { walletAddress: input.walletAddress }),
+          subAccountId: input.subAccountId,
+        });
+        return {
+          connector: connectorCapabilityView(connector, this.config),
+          capability,
+          source: 'user_snapshot',
+          snapshot: result.snapshot,
+          facts: result.facts,
+        };
+      }
+      const result = await this.driftWalletVaultPositions({
+        ...(input.walletAddress !== undefined && { walletAddress: input.walletAddress }),
+        ...(input.vaultAddress !== undefined && { vaultAddress: input.vaultAddress }),
+      });
+      return {
+        connector: connectorCapabilityView(connector, this.config),
+        capability,
+        walletAddress: result.walletAddress,
+        positions: result.positions,
+        totals: result.totals,
+        facts: result.facts,
+      };
+    }
+    throw missingConnectorCapability(connector, capability, 'read');
+  }
+
   private async luloConnectorFacts(input: ConnectorFactReadInput): Promise<Record<string, unknown>> {
     const connector = requireRuntimeConnector('lulo');
     const capability = input.capability ?? (input.walletAddress ? 'positions' : 'markets');
@@ -2016,7 +3021,9 @@ export class AgentWalletActionService {
 
   private async jitoConnectorFacts(input: ConnectorFactReadInput): Promise<Record<string, unknown>> {
     const connector = requireRuntimeConnector('jito');
-    const capability = input.capability ?? (input.walletAddress ? 'positions' : input.amount || input.solAmount || input.jitoSolAmount ? 'earn' : 'markets');
+    const hasQuoteInput = Boolean(input.jitoOperation || input.amount || input.solAmount || input.jitoSolAmount || input.stakeAccount);
+    const hasReceiptInput = input.claimableOnly !== undefined || input.receiptAddress !== undefined;
+    const capability = input.capability ?? (hasQuoteInput ? 'earn' : input.walletAddress || hasReceiptInput ? 'positions' : 'markets');
     if (capability === 'markets') {
       const result = await this.jitoStakePoolSnapshot({
         ...(input.includeValidators !== undefined && { includeValidators: input.includeValidators }),
@@ -2029,6 +3036,21 @@ export class AgentWalletActionService {
       };
     }
     if (capability === 'positions') {
+      if (hasReceiptInput) {
+        const result = await this.jitoDepositReceipts({
+          ...(input.receiptAddress !== undefined && { receiptAddress: input.receiptAddress }),
+          ...(input.walletAddress !== undefined && { walletAddress: input.walletAddress }),
+          ...(input.claimableOnly !== undefined && { claimableOnly: input.claimableOnly }),
+        });
+        return {
+          connector: connectorCapabilityView(connector, this.config),
+          capability,
+          walletAddress: result.walletAddress,
+          receipts: result.receipts,
+          totals: result.totals,
+          facts: result.facts,
+        };
+      }
       const result = await this.jitoWalletPositions({
         ...(input.walletAddress !== undefined && { walletAddress: input.walletAddress }),
         includeStakeAccounts: input.includeStakeAccounts ?? true,
@@ -2703,6 +3725,22 @@ export class AgentWalletActionService {
     };
   }
 
+  async jitoDepositReceipts(input: {
+    walletAddress?: string;
+    receiptAddress?: string;
+    claimableOnly?: boolean;
+  } = {}): Promise<Record<string, unknown>> {
+    const adapter = requireAdapter('jito');
+    assertSupportedCluster(adapter, this.config.cluster);
+    const read = adapter.reads.deposit_receipts;
+    if (!read) throw new AdapterError('jito', 'unsupported_method', 'Jito deposit receipts read is not registered.');
+    const result = (await read.read(input, this.adapterContext(adapter))) as Parameters<typeof factsFromJitoDepositReceipts>[0];
+    return {
+      ...result,
+      facts: factsFromJitoDepositReceipts(result),
+    };
+  }
+
   async jitoQuote(input: JitoQuoteInput): Promise<Record<string, unknown>> {
     const adapter = requireAdapter('jito');
     assertSupportedCluster(adapter, this.config.cluster);
@@ -2849,6 +3887,7 @@ export class AgentWalletActionService {
       const updated = await store.updateAction(actionId, {
         status: 'approved',
         txid: result.txid,
+        ...(Array.isArray(result.txids) ? { txids: result.txids } : {}),
         txStatus: 'pending',
         confirmedAt: undefined,
         txError: undefined,
@@ -2867,6 +3906,7 @@ export class AgentWalletActionService {
   async recordPreparedActionTransaction(input: {
     actionId: string;
     txid?: string;
+    txids?: string[];
     txStatus?: PreparedActionTxStatus;
     error?: string;
   }): Promise<Record<string, unknown>> {
@@ -2877,9 +3917,12 @@ export class AgentWalletActionService {
     }
     const txStatus = input.txStatus ?? 'pending';
     const now = new Date().toISOString();
+    const txids = input.txids?.filter((txid) => txid.trim()) ?? [];
+    const txid = input.txid ?? txids[0];
     const updated = await store.updateAction(input.actionId, {
       status: txStatus === 'failed' ? 'failed' : 'approved',
-      ...(input.txid !== undefined && { txid: input.txid }),
+      ...(txid !== undefined && { txid }),
+      ...(txids.length > 0 && { txids }),
       txStatus,
       confirmedAt: txStatus === 'confirmed' ? now : undefined,
       txError: txStatus === 'failed' ? input.error ?? 'Transaction failed.' : undefined,
@@ -2891,42 +3934,35 @@ export class AgentWalletActionService {
   async refreshPreparedActionTxStatuses(): Promise<Record<string, unknown>> {
     const store = this.store();
     const actions = await store.listActions();
-    const pending = actions.filter((action) => action.txid && action.txStatus !== 'confirmed' && action.txStatus !== 'failed');
+    const pending = actions.filter((action) => txidsForAction(action).length > 0 && action.txStatus !== 'confirmed' && action.txStatus !== 'failed');
     const updates: Array<{ actionId: string; txid: string; txStatus: PreparedActionTxStatus }> = [];
-    if (pending.length > 0) {
-      const statuses = await this.connection.getSignatureStatuses(pending.map((action) => action.txid!));
-      for (let index = 0; index < pending.length; index += 1) {
-        const action = pending[index]!;
-        const txid = action.txid!;
-        const status = statuses.value[index];
-        if (!status) {
-          if (action.txStatus !== 'pending') {
-            await store.updateAction(action.id, { txStatus: 'pending' });
-            updates.push({ actionId: action.id, txid, txStatus: 'pending' });
-          }
-          continue;
-        }
-        if (status.err) {
-          await store.updateAction(action.id, {
-            txStatus: 'failed',
-            txError: JSON.stringify(status.err),
-          });
-          updates.push({ actionId: action.id, txid, txStatus: 'failed' });
-          continue;
-        }
-        if (status.confirmationStatus === 'confirmed' || status.confirmationStatus === 'finalized') {
-          await store.updateAction(action.id, {
-            txStatus: 'confirmed',
-            confirmedAt: new Date().toISOString(),
-            txError: undefined,
-          });
-          updates.push({ actionId: action.id, txid, txStatus: 'confirmed' });
-          continue;
-        }
-        if (action.txStatus !== 'pending') {
-          await store.updateAction(action.id, { txStatus: 'pending' });
-          updates.push({ actionId: action.id, txid, txStatus: 'pending' });
-        }
+    for (const action of pending) {
+      const txids = txidsForAction(action);
+      const statuses = await this.connection.getSignatureStatuses(txids);
+      const failedIndex = statuses.value.findIndex((status) => Boolean(status?.err));
+      if (failedIndex >= 0) {
+        const txid = txids[failedIndex]!;
+        await store.updateAction(action.id, {
+          txStatus: 'failed',
+          txError: JSON.stringify(statuses.value[failedIndex]?.err),
+        });
+        updates.push({ actionId: action.id, txid, txStatus: 'failed' });
+        continue;
+      }
+      const allConfirmed = statuses.value.length === txids.length &&
+        statuses.value.every((status) => status?.confirmationStatus === 'confirmed' || status?.confirmationStatus === 'finalized');
+      if (allConfirmed) {
+        await store.updateAction(action.id, {
+          txStatus: 'confirmed',
+          confirmedAt: new Date().toISOString(),
+          txError: undefined,
+        });
+        updates.push({ actionId: action.id, txid: txids[0]!, txStatus: 'confirmed' });
+        continue;
+      }
+      if (action.txStatus !== 'pending') {
+        await store.updateAction(action.id, { txStatus: 'pending' });
+        updates.push({ actionId: action.id, txid: txids[0]!, txStatus: 'pending' });
       }
     }
     return { updates, actions: await store.listActions() };
@@ -3063,6 +4099,141 @@ export class AgentWalletActionService {
     };
   }
 
+  async jupiterPerpsStatus(input: JupiterPerpsStatusInput = {}): Promise<Record<string, unknown>> {
+    assertJupiterSwapCluster(this.config);
+    const snapshot = buildPerpsStatus(this.config, input);
+    return {
+      connectorId: 'jupiter' as const,
+      product: 'perps' as const,
+      readOnly: true,
+      apiStatus: snapshot.apiStatus,
+      officialDocsStatus: snapshot.officialDocsStatus,
+      data: snapshot,
+      warnings: snapshot.warnings,
+      facts: factsFromJupiterPerpsStatus(snapshot),
+    };
+  }
+
+  async jupiterPerpsPoolSnapshot(input: JupiterPerpsPoolSnapshotInput): Promise<Record<string, unknown>> {
+    assertJupiterSwapCluster(this.config);
+    getJupiterPerpsPoolSnapshot(input);
+  }
+
+  async jupiterPerpsCustodySnapshot(input: JupiterPerpsCustodySnapshotInput): Promise<Record<string, unknown>> {
+    assertJupiterSwapCluster(this.config);
+    getJupiterPerpsCustodySnapshot(input);
+  }
+
+  async jupiterPerpsPositionSnapshot(input: JupiterPerpsPositionSnapshotInput = {}): Promise<Record<string, unknown>> {
+    assertJupiterSwapCluster(this.config);
+    const walletAddress = input.walletAddress?.trim() || (await this.backend.getAddress());
+    getJupiterPerpsPositionSnapshot({ ...input, walletAddress });
+  }
+
+  async jupiterPredictionEvents(input: JupiterPredictionEventsInput): Promise<Record<string, unknown>> {
+    requireActionAllowed(this.config);
+    const envelope = await getPredictionEvents(this.config, input);
+    return { ...envelope, facts: factsFromJupiterPredictionEvents(envelope.data) };
+  }
+
+  async jupiterPredictionSearchEvents(
+    input: JupiterPredictionSearchEventsInput,
+  ): Promise<Record<string, unknown>> {
+    requireActionAllowed(this.config);
+    const envelope = await searchPredictionEvents(this.config, input);
+    return { ...envelope, facts: factsFromJupiterPredictionEvents(envelope.data) };
+  }
+
+  async jupiterPredictionEventDetail(
+    input: JupiterPredictionEventDetailInput,
+  ): Promise<Record<string, unknown>> {
+    requireActionAllowed(this.config);
+    const envelope = await getPredictionEventDetail(this.config, input);
+    return { ...envelope, facts: factsFromJupiterPredictionEventDetail(envelope.data) };
+  }
+
+  async jupiterPredictionEventMarkets(
+    input: JupiterPredictionEventMarketsInput,
+  ): Promise<Record<string, unknown>> {
+    requireActionAllowed(this.config);
+    const envelope = await getPredictionEventMarkets(this.config, input);
+    return { ...envelope, facts: factsFromJupiterPredictionEventDetail(envelope.data) };
+  }
+
+  async jupiterPredictionMarketDetail(
+    input: JupiterPredictionMarketDetailInput,
+  ): Promise<Record<string, unknown>> {
+    requireActionAllowed(this.config);
+    const envelope = await getPredictionMarketDetail(this.config, input);
+    return { ...envelope, facts: factsFromJupiterPredictionMarketDetail(envelope.data) };
+  }
+
+  async jupiterPredictionOrderbook(
+    input: JupiterPredictionOrderbookInput,
+  ): Promise<Record<string, unknown>> {
+    requireActionAllowed(this.config);
+    const envelope = await getPredictionOrderbook(this.config, input);
+    return { ...envelope, facts: factsFromJupiterPredictionOrderbook(envelope.data) };
+  }
+
+  async jupiterPredictionOrders(
+    input: { owner?: string; marketId?: string; status?: JupiterPredictionOrdersInput['status'] },
+  ): Promise<Record<string, unknown>> {
+    requireActionAllowed(this.config);
+    const owner = input.owner?.trim() || (await this.backend.getAddress());
+    const envelope = await getPredictionOrders(this.config, {
+      owner,
+      ...(input.marketId !== undefined && { marketId: input.marketId }),
+      ...(input.status !== undefined && { status: input.status }),
+    });
+    return { ...envelope, facts: factsFromJupiterPredictionOrders(envelope.data) };
+  }
+
+  async jupiterPredictionOrderStatus(
+    input: { orderId: string; owner?: string },
+  ): Promise<Record<string, unknown>> {
+    requireActionAllowed(this.config);
+    const owner = input.owner?.trim() || (await this.backend.getAddress());
+    const envelope = await getPredictionOrderStatus(this.config, { orderId: input.orderId, owner });
+    return { ...envelope, facts: factsFromJupiterPredictionOrderStatus(envelope.data) };
+  }
+
+  async jupiterPredictionPositions(
+    input: { owner?: string; marketId?: string; eventId?: string },
+  ): Promise<Record<string, unknown>> {
+    requireActionAllowed(this.config);
+    const owner = input.owner?.trim() || (await this.backend.getAddress());
+    const envelope = await getPredictionPositions(this.config, {
+      owner,
+      ...(input.marketId !== undefined && { marketId: input.marketId }),
+      ...(input.eventId !== undefined && { eventId: input.eventId }),
+    });
+    return { ...envelope, facts: factsFromJupiterPredictionPositions(envelope.data) };
+  }
+
+  async jupiterPredictionHistory(
+    input: { owner?: string; marketId?: string; eventId?: string; limit?: number },
+  ): Promise<Record<string, unknown>> {
+    requireActionAllowed(this.config);
+    const owner = input.owner?.trim() || (await this.backend.getAddress());
+    const envelope = await getPredictionHistory(this.config, {
+      owner,
+      ...(input.marketId !== undefined && { marketId: input.marketId }),
+      ...(input.eventId !== undefined && { eventId: input.eventId }),
+      ...(input.limit !== undefined && { limit: input.limit }),
+    });
+    return { ...envelope, facts: factsFromJupiterPredictionHistory(envelope.data) };
+  }
+
+  async jupiterPredictionVaultInfo(
+    input: { owner?: string },
+  ): Promise<Record<string, unknown>> {
+    requireActionAllowed(this.config);
+    const owner = input.owner?.trim() || (await this.backend.getAddress());
+    const envelope = await getPredictionVaultInfo(this.config, { owner });
+    return { ...envelope, facts: factsFromJupiterPredictionVaultInfo(envelope.data) };
+  }
+
   async getSwapOrder(input: SwapOrderInput): Promise<Record<string, unknown>> {
     requireActionAllowed(this.config);
     const taker = input.taker ? new PublicKey(input.taker).toBase58() : await this.backend.getAddress();
@@ -3121,7 +4292,7 @@ export class AgentWalletActionService {
     };
   }
 
-  async executePreparedActionRecord(action: PreparedAction): Promise<Record<string, unknown> & { txid: string }> {
+  async executePreparedActionRecord(action: PreparedAction): Promise<Record<string, unknown> & { txid: string; txids?: string[] }> {
     const currentAddress = await this.backend.getAddress();
     if (currentAddress !== action.walletAddress) {
       throw new ProtocolError(
@@ -3169,6 +4340,7 @@ export class AgentWalletActionService {
       case 'jito_deposit_stake_account':
       case 'jito_unstake_jitosol':
       case 'jito_withdraw_sol':
+      case 'jito_claim_deposit_receipt':
       case 'marinade_liquid_stake':
       case 'marinade_liquid_unstake':
       case 'marinade_delayed_unstake':
@@ -3188,6 +4360,11 @@ export class AgentWalletActionService {
       case 'tensor_bid':
       case 'tensor_cancel_bid':
       case 'tensor_sweep':
+      case 'magiceden_buy':
+      case 'magiceden_list':
+      case 'magiceden_cancel_listing':
+      case 'magiceden_bid':
+      case 'magiceden_cancel_bid':
       case 'sanctum_swap_lst':
       case 'sanctum_add_infinity_liquidity':
       case 'sanctum_remove_infinity_liquidity':
@@ -3203,6 +4380,9 @@ export class AgentWalletActionService {
       case 'squads_reject_proposal':
       case 'squads_cancel_proposal':
       case 'squads_execute_proposal':
+      case 'wormhole_transfer':
+      case 'wormhole_redeem':
+      case 'wormhole_recover_or_resume':
         return this.executePreparedAdapterAction(action);
       case 'blink_action':
         return this.executePreparedBlinkAction(action);
@@ -3214,7 +4394,7 @@ export class AgentWalletActionService {
     }
   }
 
-  private async executePreparedAdapterAction(action: PreparedAction): Promise<Record<string, unknown> & { txid: string }> {
+  private async executePreparedAdapterAction(action: PreparedAction): Promise<Record<string, unknown> & { txid: string; txids?: string[] }> {
     const match = actionForKind(action.kind);
     if (!match) {
       throw new ProtocolError(
@@ -3228,8 +4408,10 @@ export class AgentWalletActionService {
       adapter: match.adapter.id,
       action: match.action.id,
       txid: result.txid,
+      ...(result.txids !== undefined && { txids: result.txids }),
       signedAt: result.signedAt,
       explorerUrl: explorerUrl(result.txid, this.config.cluster),
+      ...(result.txids !== undefined && { explorerUrls: result.txids.map((txid) => explorerUrl(txid, this.config.cluster)) }),
       ...(result.preview ? { preview: result.preview } : {}),
     };
   }
@@ -3255,12 +4437,29 @@ export class AgentWalletActionService {
         maxRetries: 5,
       });
     };
+    const signAndBroadcastMany = async (transactionsBase64: string[], summary: string): Promise<string[]> => {
+      const txids: string[] = [];
+      for (let index = 0; index < transactionsBase64.length; index += 1) {
+        const suffix = transactionsBase64.length > 1 ? ` (${index + 1}/${transactionsBase64.length})` : '';
+        txids.push(await signAndBroadcast(transactionsBase64[index]!, `${summary}${suffix}`));
+      }
+      return txids;
+    };
+    const signMessage = async (message: string, summary: string): Promise<string> => {
+      const signed = await this.client.signMessage(message, {
+        cluster: this.config.cluster,
+        summary,
+      });
+      return signed.signature;
+    };
     return {
       backend: this.backend,
       config: this.config,
       connection: this.connection,
       signTransaction,
       signAndBroadcast,
+      signAndBroadcastMany,
+      signMessage,
       store: this.store(),
     };
   }
@@ -3416,6 +4615,13 @@ function marginfiDefaultCapability(input: ConnectorFactReadInput): ConnectorCapa
   return 'markets';
 }
 
+function driftDefaultCapability(input: ConnectorFactReadInput): ConnectorCapability {
+  if (input.operation === 'withdraw') return 'withdraw';
+  if (input.walletAddress || input.subAccountId !== undefined) return 'positions';
+  if (input.vaultAddress) return 'markets';
+  return 'positions';
+}
+
 function missingConnectorCapability(
   connector: ConnectorRegistryEntry,
   capability: ConnectorCapability | undefined,
@@ -3479,6 +4685,14 @@ export function preparedFailureStatus(err: unknown): PreparedAction['status'] {
     return 'blocked';
   }
   return 'failed';
+}
+
+function txidsForAction(action: PreparedAction): string[] {
+  const txids = Array.isArray(action.txids)
+    ? action.txids.filter((txid): txid is string => typeof txid === 'string' && txid.trim() !== '').map((txid) => txid.trim())
+    : [];
+  if (txids.length > 0) return [...new Set(txids)];
+  return action.txid ? [action.txid] : [];
 }
 
 function requireActionAllowed(config: AgentWalletConfig): void {
@@ -3841,8 +5055,8 @@ async function normalizeSwapInput(
   const inputToken = await resolveSwapToken(config, connection, input.inputToken ?? 'SOL');
   const outputToken = await resolveSwapToken(config, connection, input.outputToken ?? 'USDC');
   const slippageBps = input.slippageBps ?? config.mainnet.maxSlippageBps;
-  if (!Number.isInteger(slippageBps) || slippageBps < 1) {
-    throw new ProtocolError('invalid_request', 'Jupiter swap slippageBps must be a positive integer.');
+  if (!Number.isInteger(slippageBps) || slippageBps < 0) {
+    throw new ProtocolError('invalid_request', 'Jupiter swap slippageBps must be a non-negative integer.');
   }
   if (slippageBps > config.mainnet.maxSlippageBps) {
     throw new ProtocolError(
@@ -3932,6 +5146,14 @@ function findKnownToken(config: AgentWalletConfig, token: string): TokenLimitCon
 function isNativeSolToken(token: string): boolean {
   const trimmed = token.trim();
   return trimmed.toUpperCase() === 'SOL' || trimmed === WSOL_MINT;
+}
+
+function normalizeSanctumKnownToken(token: string): string | undefined {
+  const trimmed = token.trim();
+  const upper = trimmed.toUpperCase();
+  if (upper === 'SOL' || trimmed === WSOL_MINT) return WSOL_MINT;
+  if (upper === 'INF' || trimmed === SANCTUM_INF_MINT) return SANCTUM_INF_MINT;
+  return undefined;
 }
 
 function normalizeTokenIdentifier(token: string): string {

@@ -167,6 +167,7 @@ export const wormholeTransferAction: AdapterAction<WormholeTransferInput> = {
     const minDestinationAmount = optionalActionString(action, 'minDestinationAmount');
     const maxBridgeFee = optionalActionString(action, 'maxBridgeFee');
     const nativeGasDropoff = optionalActionString(action, 'nativeGasDropoff');
+    const recipientMemo = optionalActionString(action, 'recipientMemo');
     const expectedDestinationToken = optionalActionString(action, 'destinationToken');
 
     const quote = await getWormholeClient().quoteTransfer(ctx.connection, {
@@ -198,9 +199,7 @@ export const wormholeTransferAction: AdapterAction<WormholeTransferInput> = {
       ...(nativeGasDropoff !== undefined && { nativeGasDropoff }),
       ...(minDestinationAmount !== undefined && { minDestinationAmount }),
       ...(maxBridgeFee !== undefined && { maxBridgeFee }),
-      ...(optionalActionString(action, 'recipientMemo') !== undefined && {
-        recipientMemo: optionalActionString(action, 'recipientMemo'),
-      }),
+      ...(recipientMemo !== undefined && { recipientMemo }),
       quote,
       wormholeNetwork,
     });
@@ -457,6 +456,13 @@ function assertStatusSolanaExecutable(
   if (!status) return;
   if (status.redeemed) {
     throw new AdapterError(WORMHOLE_ADAPTER_ID, 'already_redeemed', 'Wormhole transfer is already redeemed.');
+  }
+  if (status.state === 'failed') {
+    throw new AdapterError(
+      WORMHOLE_ADAPTER_ID,
+      'transfer_failed',
+      status.error ?? 'Wormhole transfer is marked failed and cannot be redeemed or resumed.',
+    );
   }
   if (status.solanaExecutable === false) {
     const destination = status.destinationChain ?? 'the destination chain';

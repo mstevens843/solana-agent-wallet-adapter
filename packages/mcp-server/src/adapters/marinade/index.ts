@@ -22,6 +22,7 @@ import {
 } from './actions.js';
 import {
   MARINADE_ADAPTER_ID,
+  MARINADE_DEFAULT_SLIPPAGE_BPS,
   MARINADE_DESCRIPTION,
   MARINADE_NAME,
   MARINADE_PROGRAM_ID,
@@ -47,11 +48,13 @@ export type {
   MarinadeLiquidUnstakeInput,
 } from './actions.js';
 export type {
+  MarinadeBuildTransactionInput,
   MarinadeBuiltTransaction,
   MarinadeClient,
   MarinadeClientFactory,
   MarinadeOperation,
   MarinadeQuote,
+  MarinadeQuoteInput,
   MarinadeStakeAccount,
   MarinadeStateSnapshot,
   MarinadeUnstakeTicket,
@@ -61,8 +64,15 @@ export {
   baseMarinadeStateSnapshot,
   describeMarinadeUnavailableReason,
   getMarinadeClient,
+  resetMarinadeClientFactory,
   setMarinadeClientFactory,
 } from './client.js';
+export {
+  MARINADE_ADAPTER_ID,
+  MARINADE_PROGRAM_ID,
+  MARINADE_STATE_ADDRESS,
+  MSOL_MINT,
+} from './constants.js';
 
 export interface MarinadeWalletInput {
   walletAddress?: string;
@@ -156,13 +166,15 @@ async function readMarinadeQuote(
       const minRaw = input.minMsolAmount
         ? parseDecimalAmount(input.minMsolAmount, MSOL_DECIMALS, 'minMsolAmount')
         : undefined;
-      return getMarinadeClient().getQuote(ctx.connection, {
+      const quote = await getMarinadeClient().getQuote(ctx.connection, {
         operation: 'liquid_stake',
         walletAddress,
         inputAmountRaw: amountRaw,
         minOutputAmountRaw: minRaw,
         config: ctx.config,
       });
+      enforceQuoteMinOutput('liquid_stake', quote, minRaw);
+      return quote;
     }
     case 'liquid_unstake': {
       const amountRaw = parseRequiredAmount(input.msolAmount, MSOL_DECIMALS, 'msolAmount');
@@ -173,7 +185,7 @@ async function readMarinadeQuote(
         config: ctx.config,
         taker: walletAddress,
         msolAmountRaw: amountRaw,
-        slippageBps: input.slippageBps,
+        slippageBps: resolveSlippageBps(input.slippageBps, ctx.config.mainnet.maxSlippageBps),
       });
       assertJupiterMinOutput(order, minRaw);
       return quoteFromJupiterOrder(order);
@@ -183,18 +195,20 @@ async function readMarinadeQuote(
       const minRaw = input.minSolAmount
         ? parseDecimalAmount(input.minSolAmount, SOL_DECIMALS, 'minSolAmount')
         : undefined;
-      return getMarinadeClient().getQuote(ctx.connection, {
+      const quote = await getMarinadeClient().getQuote(ctx.connection, {
         operation: 'delayed_unstake',
         walletAddress,
         inputAmountRaw: amountRaw,
         minOutputAmountRaw: minRaw,
         config: ctx.config,
       });
+      enforceQuoteMinOutput('delayed_unstake', quote, minRaw);
+      return quote;
     }
     case 'claim_delayed_unstake': {
       const ticketAccount = normalizePublicKey(input.ticketAccount, 'ticketAccount');
       const tickets = await getMarinadeClient().getUnstakeTickets(ctx.connection, walletAddress);
-      const ticket = tickets.find((entry) => entry.ticketAccount === ticketAccount);
+      const ticket = tickets.find((entry) => safeNormalizePublicKey(entry.ticketAccount) === ticketAccount);
       if (!ticket) {
         throw new AdapterError(MARINADE_ADAPTER_ID, 'ticket_not_found', `Marinade unstake ticket ${ticketAccount} was not found.`);
       }
@@ -243,4 +257,53 @@ function normalizePublicKey(value: string | undefined, label: string): string {
   } catch {
     throw new AdapterError(MARINADE_ADAPTER_ID, 'invalid_request', `${label} must be a valid Solana public key.`);
   }
+}
+
+function safeNormalizePublicKey(value: string | undefined): string | undefined {
+  if (!value) return undefined;
+  try {
+    return new PublicKey(value.trim()).toBase58();
+  } catch {
+    return undefined;
+  }
+}
+
+function enforceQuoteMinOutput(
+  operation: MarinadeOperation,
+  quote: MarinadeQuote,
+  minOutputAmountRaw: bigint | undefined,
+): void {
+  if (minOutputAmountRaw === undefined) {
+    return;
+  }
+  const raw = quote.outputAmountRaw ?? quote.minOutputAmountRaw;
+  if (!raw) {
+    throw new AdapterError(
+      MARINADE_ADAPTER_ID,
+      'quote_missing_output',
+      `Marinade ${operation} quote did not include output amount data to validate.`,
+    );
+  }
+  if (BigInt(raw) < minOutputAmountRaw) {
+    throw new AdapterError(
+      MARINADE_ADAPTER_ID,
+      'output_below_minimum',
+      `Marinade ${operation} quote output ${raw} is below requested minimum ${minOutputAmountRaw.toString()}.`,
+    );
+  }
+}
+
+function resolveSlippageBps(value: number | undefined, configMax: number): number {
+  const selected = value ?? Math.min(configMax, MARINADE_DEFAULT_SLIPPAGE_BPS);
+  if (!Number.isInteger(selected) || selected < 0) {
+    throw new AdapterError(MARINADE_ADAPTER_ID, 'invalid_request', 'Marinade slippageBps must be a non-negative integer.');
+  }
+  if (selected > configMax) {
+    throw new AdapterError(
+      MARINADE_ADAPTER_ID,
+      'slippage_above_cap',
+      `Marinade slippageBps ${selected} exceeds configured maxSlippageBps ${configMax}.`,
+    );
+  }
+  return selected;
 }

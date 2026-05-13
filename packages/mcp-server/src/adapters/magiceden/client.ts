@@ -332,13 +332,13 @@ function normalizeBaseUrl(value: string): string {
   return value.replace(/\/+$/, '');
 }
 
-interface MagicedenApiClientOptions {
+export interface MagicedenApiClientOptions {
   apiKey: string;
   baseUrl: string;
   fetchImpl?: typeof fetch;
 }
 
-class MagicedenApiClient implements MagicedenClient {
+export class MagicedenApiClient implements MagicedenClient {
   private readonly apiKey: string;
   private readonly baseUrl: string;
   private readonly fetchImpl: typeof fetch;
@@ -373,20 +373,33 @@ class MagicedenApiClient implements MagicedenClient {
 
     if (apiOperational && input.includeTradingEndpoints !== false) {
       try {
-        const probe = await this.request(
+        await this.request(
           '/instructions/buy_now?buyer=11111111111111111111111111111111&seller=11111111111111111111111111111111&auctionHouseAddress=&tokenMint=11111111111111111111111111111111&tokenATA=&price=0',
           'GET',
         );
-        if (probe.status >= 500) {
-          tradingOperational = false;
-          degradedReasons.push(`Magic Eden trading instructions endpoint returned ${probe.status}.`);
-        } else if (probe.status === 401 || probe.status === 403) {
-          tradingOperational = false;
-          degradedReasons.push('Magic Eden trading endpoint rejected the API key (auth failure).');
-        }
       } catch (err) {
-        tradingOperational = false;
-        degradedReasons.push(describeError(err, this.apiKey));
+        if (err instanceof MagicedenHttpError) {
+          const status = err.status;
+          if (status === 400 || status === 404 || status === 422) {
+            // Endpoint is alive; it rejected our intentionally-invalid probe payload.
+            // Trading remains operational.
+          } else if (status === 401 || status === 403) {
+            tradingOperational = false;
+            degradedReasons.push('Magic Eden trading endpoint rejected the API key (auth failure).');
+          } else if (status === 429) {
+            tradingOperational = false;
+            degradedReasons.push('Magic Eden trading endpoint is rate-limited.');
+          } else if (status >= 500) {
+            tradingOperational = false;
+            degradedReasons.push(`Magic Eden trading endpoint returned ${status}.`);
+          } else {
+            tradingOperational = false;
+            degradedReasons.push(`Magic Eden trading endpoint returned unexpected status ${status}.`);
+          }
+        } else {
+          tradingOperational = false;
+          degradedReasons.push(describeError(err, this.apiKey));
+        }
       }
     }
 
@@ -527,24 +540,19 @@ class MagicedenApiClient implements MagicedenClient {
     includeListing?: boolean;
     includeBids?: boolean;
   }): Promise<MagicedenNftDetail> {
-    const probe = await this.request(`/tokens/${encodeURIComponent(input.mintAddress)}`, 'GET');
+    const tokenPromise = this.request(`/tokens/${encodeURIComponent(input.mintAddress)}`, 'GET');
+    const listingPromise = input.includeListing === false
+      ? Promise.resolve<MagicedenListingRow | undefined>(undefined)
+      : this.request(`/tokens/${encodeURIComponent(input.mintAddress)}/listings`, 'GET')
+          .then((response) => asArray(response.body).map(normalizeListingRow).find((r) => r !== null) ?? undefined)
+          .catch(() => undefined);
+    const topBidPromise = input.includeBids === false
+      ? Promise.resolve<MagicedenBidRow | undefined>(undefined)
+      : this.request(`/tokens/${encodeURIComponent(input.mintAddress)}/offer_received?limit=1`, 'GET')
+          .then((response) => asArray(response.body).map(normalizeBidRow).find((r) => r !== null) ?? undefined)
+          .catch(() => undefined);
+    const [probe, listing, topBid] = await Promise.all([tokenPromise, listingPromise, topBidPromise]);
     const body = isObject(probe.body) ? probe.body : {};
-    const listing = input.includeListing === false
-      ? undefined
-      : await this.request(`/tokens/${encodeURIComponent(input.mintAddress)}/listings`, 'GET')
-          .then((response) => {
-            const row = asArray(response.body).map(normalizeListingRow).find((r) => r !== null) ?? null;
-            return row ?? undefined;
-          })
-          .catch(() => undefined);
-    const topBid = input.includeBids === false
-      ? undefined
-      : await this.request(`/tokens/${encodeURIComponent(input.mintAddress)}/offer_received?limit=1`, 'GET')
-          .then((response) => {
-            const row = asArray(response.body).map(normalizeBidRow).find((r) => r !== null) ?? null;
-            return row ?? undefined;
-          })
-          .catch(() => undefined);
     return {
       mintAddress: input.mintAddress,
       ...(stringField(body, 'name') ? { tokenName: stringField(body, 'name') } : {}),
@@ -720,7 +728,7 @@ class MagicedenApiClient implements MagicedenClient {
   }
 }
 
-class MagicedenHttpError extends Error {
+export class MagicedenHttpError extends Error {
   readonly status: number;
 
   constructor(status: number, message: string) {

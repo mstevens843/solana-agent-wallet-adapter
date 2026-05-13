@@ -55,6 +55,6 @@ export async function getSanctumInfinityPoolSnapshot(
     programIds: SANCTUM_PROGRAM_IDS.map((programId) => programId.toBase58()),
     asOfIso: lsts.asOfIso,
     source: 'sanctum-api',
-    caveat: 'Composition, fees, valuations, and liquidity are current-state facts from Sanctum sources, not guarantees.',
+    caveat: 'Composition is derived from the Sanctum catalog; the programIds field is the v1 known enforcement set, not a complete live pool audit.',
   };
 }

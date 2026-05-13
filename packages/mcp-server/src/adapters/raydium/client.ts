@@ -9,9 +9,11 @@ import {
 } from '@solana/web3.js';
 import { Decimal } from 'decimal.js';
 
-import { parseDecimalAmount } from '../../amounts.js';
+import { formatRawAmount, parseDecimalAmount } from '../../amounts.js';
+import { AdapterError } from '../types.js';
 import {
   RAYDIUM_AMM_V4_PROGRAM_ID,
+  RAYDIUM_ADAPTER_ID,
   RAYDIUM_CLMM_PROGRAM_ID,
   RAYDIUM_CPMM_PROGRAM_ID,
   RAYDIUM_FARM_PROGRAM_ID_V3,
@@ -86,6 +88,7 @@ export interface RaydiumPosition {
 export interface RaydiumWalletPositionsResult {
   walletAddress: string;
   poolId?: string;
+  farmId?: string;
   positions: RaydiumPosition[];
   totals?: {
     positions: number;
@@ -171,7 +174,7 @@ export interface RaydiumClient {
   getWalletPositions(
     connection: Connection,
     walletAddress: string,
-    input?: { poolId?: string; poolType?: RaydiumPoolType; farmId?: string },
+    input?: { poolId?: string; poolType?: RaydiumLiquidityPoolType; farmId?: string },
   ): Promise<RaydiumWalletPositionsResult>;
   getPositionDetail(
     connection: Connection,
@@ -210,7 +213,7 @@ class RaydiumSdkUnavailable implements RaydiumClient {
   readonly reason = UNAVAILABLE_REASON;
 
   private fail(method: string): never {
-    throw new Error(`Raydium adapter is not configured (${method}): ${this.reason}`);
+    throw new AdapterError(RAYDIUM_ADAPTER_ID, 'sdk_unavailable', `Raydium adapter is not configured (${method}): ${this.reason}`);
   }
 
   async getPoolSnapshot(): Promise<RaydiumPoolSnapshot> {
@@ -262,65 +265,66 @@ class RaydiumSdkUnavailable implements RaydiumClient {
 
 type RaydiumSdkModule = Record<string, any>;
 type RaydiumInstance = Record<string, any>;
+type RaydiumFarmVersion = 3 | 4 | 5 | 6;
 
 class RaydiumSdkClient implements RaydiumClient {
   async getPoolSnapshot(connection: Connection, poolId: string, poolType?: RaydiumPoolType): Promise<RaydiumPoolSnapshot> {
     const walletAddress = PublicKey.default.toBase58();
-    const { raydium } = await loadRaydium(connection, walletAddress);
-    return fetchPoolSnapshot(raydium, poolId, poolType);
+    return withRaydiumErrors('read pool snapshot', async () => {
+      const { raydium } = await loadRaydium(connection, walletAddress);
+      return fetchPoolSnapshot(raydium, poolId, poolType);
+    });
   }
 
   async getWalletPositions(
     connection: Connection,
     walletAddress: string,
-    input: { poolId?: string; poolType?: RaydiumPoolType; farmId?: string } = {},
+    input: { poolId?: string; poolType?: RaydiumLiquidityPoolType; farmId?: string } = {},
   ): Promise<RaydiumWalletPositionsResult> {
-    const { raydium } = await loadRaydium(connection, walletAddress);
-    const wallet = new PublicKey(walletAddress);
-    const positions: RaydiumPosition[] = [];
+    return withRaydiumErrors('read wallet positions', async () => {
+      const { raydium, sdk } = await loadRaydium(connection, walletAddress, { loadTokenAccounts: true });
+      const wallet = new PublicKey(walletAddress);
+      const positions: RaydiumPosition[] = [];
 
-    if (!input.poolType || input.poolType === 'clmm') {
-      const ownerPositions = await raydium.clmm.getOwnerPositionInfo({
-        programId: RAYDIUM_CLMM_PROGRAM_ID,
-      }).catch(() => []);
-      for (const position of ownerPositions as any[]) {
-        const poolId = publicKeyString(position?.poolId);
-        if (input.poolId && poolId !== input.poolId) continue;
-        const snapshot = poolId
-          ? await fetchPoolSnapshot(raydium, poolId, 'clmm').catch(() => undefined)
+      if (!input.poolType || input.poolType === 'clmm') {
+        const ownerPositions = await raydium.clmm.getOwnerPositionInfo({
+          programId: RAYDIUM_CLMM_PROGRAM_ID,
+        }).catch(() => []);
+        for (const position of ownerPositions as any[]) {
+          const poolId = publicKeyString(position?.poolId);
+          if (input.poolId && poolId !== input.poolId) continue;
+          const snapshot = poolId
+            ? await fetchPoolSnapshot(raydium, poolId, 'clmm').catch(() => undefined)
+            : undefined;
+          positions.push(positionFromClmmLayout(position, snapshot));
+        }
+      }
+
+      if (input.poolId && (!input.poolType || input.poolType === 'cpmm')) {
+        const snapshot = await fetchPoolSnapshot(raydium, input.poolId, 'cpmm').catch(() => undefined);
+        const lpMint = snapshot?.lpMint?.mint;
+        if (lpMint) {
+          const lpPositions = await tokenPositionsForMint(connection, wallet, lpMint, snapshot);
+          positions.push(...lpPositions);
+        }
+      }
+
+      if (input.farmId) {
+        const farmInfo = await fetchFarmInfo(raydium, input.farmId).catch(() => undefined);
+        const farmPosition = farmInfo
+          ? await farmPositionForWallet(connection, sdk, wallet, input.farmId, farmInfo).catch(() => undefined)
           : undefined;
-        positions.push(positionFromClmmLayout(position, snapshot));
+        if (farmPosition) positions.push(farmPosition);
       }
-    }
 
-    if (input.poolId && (!input.poolType || input.poolType === 'cpmm')) {
-      const snapshot = await fetchPoolSnapshot(raydium, input.poolId, 'cpmm').catch(() => undefined);
-      const lpMint = snapshot?.lpMint?.mint;
-      if (lpMint) {
-        const lpPositions = await tokenPositionsForMint(connection, wallet, lpMint, snapshot);
-        positions.push(...lpPositions);
-      }
-    }
-
-    if (input.farmId) {
-      const farmInfo = await fetchFarmInfo(raydium, input.farmId).catch(() => undefined);
-      if (farmInfo) {
-        positions.push({
-          positionType: 'farm',
-          farmId: input.farmId,
-          lpMint: tokenMintAddress(farmInfo.lpMint),
-          rewardsOwed: rewardMints(farmInfo).map((mint) => ({ mint, amount: 'unknown' })),
-          raw: redactLarge(farmInfo),
-        });
-      }
-    }
-
-    return {
-      walletAddress,
-      ...(input.poolId !== undefined && { poolId: input.poolId }),
-      positions,
-      totals: summarizePositions(positions),
-    };
+      return {
+        walletAddress,
+        ...(input.poolId !== undefined && { poolId: input.poolId }),
+        ...(input.farmId !== undefined && { farmId: input.farmId }),
+        positions,
+        totals: summarizePositions(positions),
+      };
+    });
   }
 
   async getPositionDetail(
@@ -328,27 +332,33 @@ class RaydiumSdkClient implements RaydiumClient {
     walletAddress: string,
     input: { positionMint: string; poolId?: string },
   ): Promise<RaydiumPosition> {
-    const result = await this.getWalletPositions(connection, walletAddress, {
-      ...(input.poolId !== undefined && { poolId: input.poolId }),
-      poolType: 'clmm',
+    return withRaydiumErrors('read position detail', async () => {
+      const result = await this.getWalletPositions(connection, walletAddress, {
+        ...(input.poolId !== undefined && { poolId: input.poolId }),
+        poolType: 'clmm',
+      });
+      const position = result.positions.find((entry) => entry.positionMint === input.positionMint);
+      if (!position) {
+        throw new Error(`Raydium CLMM position ${input.positionMint} was not found for wallet ${walletAddress}.`);
+      }
+      return position;
     });
-    const position = result.positions.find((entry) => entry.positionMint === input.positionMint);
-    if (!position) {
-      throw new Error(`Raydium CLMM position ${input.positionMint} was not found for wallet ${walletAddress}.`);
-    }
-    return position;
   }
 
   async previewAddLiquidity(connection: Connection, input: RaydiumAddLiquidityInput): Promise<RaydiumActionPreview> {
-    const { raydium } = await loadRaydium(connection, input.walletAddress);
-    const snapshot = await fetchPoolSnapshot(raydium, input.poolId, input.poolType);
-    return previewLiquidity(input, snapshot);
+    return withRaydiumErrors('preview add liquidity', async () => {
+      const { raydium } = await loadRaydium(connection, input.walletAddress);
+      const snapshot = await fetchPoolSnapshot(raydium, input.poolId, input.poolType);
+      return previewLiquidity(input, snapshot);
+    });
   }
 
   async previewRemoveLiquidity(connection: Connection, input: RaydiumRemoveLiquidityInput): Promise<RaydiumActionPreview> {
-    const { raydium } = await loadRaydium(connection, input.walletAddress);
-    const snapshot = await fetchPoolSnapshot(raydium, input.poolId, input.poolType);
-    return previewLiquidity(input, snapshot);
+    return withRaydiumErrors('preview remove liquidity', async () => {
+      const { raydium } = await loadRaydium(connection, input.walletAddress);
+      const snapshot = await fetchPoolSnapshot(raydium, input.poolId, input.poolType);
+      return previewLiquidity(input, snapshot);
+    });
   }
 
   async previewCollectFees(connection: Connection, input: RaydiumCollectFeesInput): Promise<RaydiumActionPreview> {
@@ -381,7 +391,14 @@ class RaydiumSdkClient implements RaydiumClient {
     connection: Connection,
     input: RaydiumAddLiquidityInput,
   ): Promise<RaydiumBuildTransactionResult> {
-    const loaded = await loadRaydium(connection, input.walletAddress);
+    return withRaydiumErrors('build add-liquidity transaction', async () => this.buildAddLiquidityTransactionUnchecked(connection, input));
+  }
+
+  private async buildAddLiquidityTransactionUnchecked(
+    connection: Connection,
+    input: RaydiumAddLiquidityInput,
+  ): Promise<RaydiumBuildTransactionResult> {
+    const loaded = await loadRaydium(connection, input.walletAddress, { loadTokenAccounts: true });
     const { raydium, sdk } = loaded;
     const wallet = new PublicKey(input.walletAddress);
 
@@ -445,7 +462,14 @@ class RaydiumSdkClient implements RaydiumClient {
     connection: Connection,
     input: RaydiumRemoveLiquidityInput,
   ): Promise<RaydiumBuildTransactionResult> {
-    const loaded = await loadRaydium(connection, input.walletAddress);
+    return withRaydiumErrors('build remove-liquidity transaction', async () => this.buildRemoveLiquidityTransactionUnchecked(connection, input));
+  }
+
+  private async buildRemoveLiquidityTransactionUnchecked(
+    connection: Connection,
+    input: RaydiumRemoveLiquidityInput,
+  ): Promise<RaydiumBuildTransactionResult> {
+    const loaded = await loadRaydium(connection, input.walletAddress, { loadTokenAccounts: true });
     const { raydium, sdk } = loaded;
     const wallet = new PublicKey(input.walletAddress);
 
@@ -467,6 +491,7 @@ class RaydiumSdkClient implements RaydiumClient {
     const { poolInfo, poolKeys } = await raydium.clmm.getPoolInfoFromRpc(input.poolId);
     const ownerPosition = await findClmmOwnerPosition(raydium, requireText(input.positionMint, 'positionMint'), input.poolId);
     const liquidity = clmmLiquidityAmount(ownerPosition, input);
+    assertClmmClosePositionSafe(ownerPosition, input, liquidity);
     const built = await raydium.clmm.decreaseLiquidity({
       poolInfo,
       poolKeys,
@@ -487,7 +512,14 @@ class RaydiumSdkClient implements RaydiumClient {
     connection: Connection,
     input: RaydiumCollectFeesInput,
   ): Promise<RaydiumBuildTransactionResult> {
-    const loaded = await loadRaydium(connection, input.walletAddress);
+    return withRaydiumErrors('build collect-fees transaction', async () => this.buildCollectFeesTransactionUnchecked(connection, input));
+  }
+
+  private async buildCollectFeesTransactionUnchecked(
+    connection: Connection,
+    input: RaydiumCollectFeesInput,
+  ): Promise<RaydiumBuildTransactionResult> {
+    const loaded = await loadRaydium(connection, input.walletAddress, { loadTokenAccounts: true });
     const { raydium, sdk } = loaded;
     const ownerPosition = await findClmmOwnerPosition(raydium, input.positionMint, input.poolId);
     const poolId = publicKeyString(ownerPosition.poolId);
@@ -526,17 +558,11 @@ class RaydiumSdkClient implements RaydiumClient {
   }
 
   private async previewFarm(connection: Connection, input: RaydiumFarmInput, operation: 'stake' | 'unstake' | 'harvest') {
-    const { raydium } = await loadRaydium(connection, input.walletAddress);
-    const farmInfo = await fetchFarmInfo(raydium, input.farmId);
-    return {
-      farmId: input.farmId,
-      lpMint: tokenMintAddress(farmInfo.lpMint),
-      rewardMints: rewardMints(farmInfo),
-      tokenAmounts: operation === 'harvest' || !input.amount
-        ? undefined
-        : [{ mint: tokenMintAddress(farmInfo.lpMint), amount: input.amount, decimals: tokenDecimals(farmInfo.lpMint, 'lpMint') }],
-      quote: { operation },
-    };
+    return withRaydiumErrors(`preview farm ${operation}`, async () => {
+      const { raydium } = await loadRaydium(connection, input.walletAddress);
+      const farmInfo = await fetchFarmInfo(raydium, input.farmId);
+      return previewFarmFromInfo(input, farmInfo, operation);
+    });
   }
 
   private async buildFarmTransaction(
@@ -544,24 +570,26 @@ class RaydiumSdkClient implements RaydiumClient {
     input: RaydiumFarmInput,
     operation: 'stake' | 'unstake' | 'harvest',
   ): Promise<RaydiumBuildTransactionResult> {
-    const { raydium, sdk } = await loadRaydium(connection, input.walletAddress);
-    const farmInfo = await fetchFarmInfo(raydium, input.farmId);
-    const amountRaw = operation === 'harvest'
-      ? 0n
-      : parseDecimalAmount(requireText(input.amount, 'amount'), tokenDecimals(farmInfo.lpMint, 'lpMint'), 'Raydium farm LP amount');
-    const params = {
-      farmInfo,
-      amount: sdk.toBN(amountRaw.toString(), 0),
-      useSOLBalance: true,
-      associatedOnly: false,
-      checkCreateATAOwner: true,
-      txVersion: sdk.TxVersion.LEGACY,
-      feePayer: new PublicKey(input.walletAddress),
-    };
-    const built = operation === 'stake'
-      ? await raydium.farm.deposit(params)
-      : await raydium.farm.withdraw(params);
-    return serializeBuiltTransaction(connection, input.walletAddress, built, await this.previewFarm(connection, input, operation));
+    return withRaydiumErrors(`build farm ${operation} transaction`, async () => {
+      const { raydium, sdk } = await loadRaydium(connection, input.walletAddress, { loadTokenAccounts: true });
+      const farmInfo = await fetchFarmInfo(raydium, input.farmId);
+      const amountRaw = operation === 'harvest'
+        ? 0n
+        : parseDecimalAmount(requireText(input.amount, 'amount'), tokenDecimals(farmInfo.lpMint, 'lpMint'), 'Raydium farm LP amount');
+      const params = {
+        farmInfo,
+        amount: sdk.toBN(amountRaw.toString(), 0),
+        useSOLBalance: true,
+        associatedOnly: false,
+        checkCreateATAOwner: true,
+        txVersion: sdk.TxVersion.LEGACY,
+        feePayer: new PublicKey(input.walletAddress),
+      };
+      const built = operation === 'stake'
+        ? await raydium.farm.deposit(params)
+        : await raydium.farm.withdraw(params);
+      return serializeBuiltTransaction(connection, input.walletAddress, built, previewFarmFromInfo(input, farmInfo, operation));
+    });
   }
 }
 
@@ -605,7 +633,24 @@ export function describeRaydiumUnavailableReason(): string | undefined {
   return client instanceof RaydiumSdkUnavailable ? client.reason : undefined;
 }
 
-async function loadRaydium(connection: Connection, walletAddress: string): Promise<{
+async function withRaydiumErrors<T>(operation: string, fn: () => Promise<T>): Promise<T> {
+  try {
+    return await fn();
+  } catch (error) {
+    if (error instanceof AdapterError) throw error;
+    throw new AdapterError(
+      RAYDIUM_ADAPTER_ID,
+      'raydium_sdk_error',
+      `Raydium ${operation} failed: ${errorMessage(error)}`,
+    );
+  }
+}
+
+async function loadRaydium(
+  connection: Connection,
+  walletAddress: string,
+  options: { loadTokenAccounts?: boolean } = {},
+): Promise<{
   raydium: RaydiumInstance;
   sdk: RaydiumSdkModule;
 }> {
@@ -619,7 +664,18 @@ async function loadRaydium(connection: Connection, walletAddress: string): Promi
     disableLoadToken: true,
     blockhashCommitment: 'confirmed',
   });
+  if (options.loadTokenAccounts) {
+    await refreshWalletTokenAccounts(raydium);
+  }
   return { raydium, sdk };
+}
+
+async function refreshWalletTokenAccounts(raydium: RaydiumInstance): Promise<void> {
+  const fetchWalletTokenAccounts = raydium.account?.fetchWalletTokenAccounts;
+  if (typeof fetchWalletTokenAccounts !== 'function') {
+    throw new Error('Raydium SDK account.fetchWalletTokenAccounts is not available.');
+  }
+  await fetchWalletTokenAccounts.call(raydium.account, { forceUpdate: true });
 }
 
 async function fetchPoolSnapshot(
@@ -651,7 +707,7 @@ function poolSnapshotFromCpmm(poolInfo: any, poolKeys: any): RaydiumPoolSnapshot
     ...(stringMaybe(poolInfo.price) !== undefined && { price: stringMaybe(poolInfo.price) }),
     ...(stringMaybe(poolInfo.liquidity) !== undefined && { liquidity: stringMaybe(poolInfo.liquidity) }),
     ...(stringMaybe(poolInfo.tvl) !== undefined && { tvl: stringMaybe(poolInfo.tvl) }),
-    ...(numberMaybe(poolInfo.feeRate) !== undefined && { feeRateBps: numberMaybe(poolInfo.feeRate) }),
+    ...(feeRateBps(poolInfo.feeRate) !== undefined && { feeRateBps: feeRateBps(poolInfo.feeRate) }),
     raw: redactLarge(poolInfo),
   };
 }
@@ -667,7 +723,7 @@ function poolSnapshotFromClmm(poolInfo: any, poolKeys: any): RaydiumPoolSnapshot
     ...(currentPrice !== undefined && { price: currentPrice }),
     ...(stringMaybe(poolInfo.liquidity) !== undefined && { liquidity: stringMaybe(poolInfo.liquidity) }),
     ...(stringMaybe(poolInfo.tvl) !== undefined && { tvl: stringMaybe(poolInfo.tvl) }),
-    ...(numberMaybe(poolInfo.feeRate) !== undefined && { feeRateBps: numberMaybe(poolInfo.feeRate) }),
+    ...(feeRateBps(poolInfo.feeRate) !== undefined && { feeRateBps: feeRateBps(poolInfo.feeRate) }),
     ...(numberMaybe(poolInfo.tickCurrent ?? poolInfo.tickCurrentIndex) !== undefined && { tickCurrent: numberMaybe(poolInfo.tickCurrent ?? poolInfo.tickCurrentIndex) }),
     ...(numberMaybe(poolInfo.tickSpacing ?? poolInfo.config?.tickSpacing) !== undefined && { tickSpacing: numberMaybe(poolInfo.tickSpacing ?? poolInfo.config?.tickSpacing) }),
     rewardMints: rewardMints(poolInfo),
@@ -692,7 +748,7 @@ function poolSnapshotFromApi(poolInfo: any): RaydiumPoolSnapshot {
     ...(stringMaybe(poolInfo.price) !== undefined && { price: stringMaybe(poolInfo.price) }),
     ...(stringMaybe(poolInfo.liquidity) !== undefined && { liquidity: stringMaybe(poolInfo.liquidity) }),
     ...(stringMaybe(poolInfo.tvl) !== undefined && { tvl: stringMaybe(poolInfo.tvl) }),
-    ...(numberMaybe(poolInfo.feeRate) !== undefined && { feeRateBps: numberMaybe(poolInfo.feeRate) }),
+    ...(feeRateBps(poolInfo.feeRate) !== undefined && { feeRateBps: feeRateBps(poolInfo.feeRate) }),
     ...(numberMaybe(poolInfo.tickCurrent ?? poolInfo.tickCurrentIndex) !== undefined && { tickCurrent: numberMaybe(poolInfo.tickCurrent ?? poolInfo.tickCurrentIndex) }),
     ...(numberMaybe(poolInfo.tickSpacing ?? poolInfo.config?.tickSpacing) !== undefined && { tickSpacing: numberMaybe(poolInfo.tickSpacing ?? poolInfo.config?.tickSpacing) }),
     rewardMints: rewardMints(poolInfo),
@@ -712,6 +768,9 @@ async function serializeBuiltTransaction(
   built: any,
   preview?: RaydiumActionPreview,
 ): Promise<RaydiumBuildTransactionResult> {
+  if (Array.isArray(built?.transactions) || Array.isArray(built?.builder?.allTxData)) {
+    throw new Error('Raydium SDK returned multiple transactions; this connector only prepares single wallet approvals.');
+  }
   const tx = built.transaction;
   if (!tx) {
     throw new Error('Raydium SDK did not return a single transaction for this action.');
@@ -735,7 +794,7 @@ async function serializeBuiltTransaction(
     if (signers.length > 0) tx.sign(signers);
     return {
       transactionBase64: Buffer.from(tx.serialize()).toString('base64'),
-      programIds: [],
+      programIds: programIdsFromVersionedTransaction(tx),
       signerCount: signers.length,
       ...(preview ? { preview } : {}),
     };
@@ -745,6 +804,13 @@ async function serializeBuiltTransaction(
 
 function programIdsFromLegacyTransaction(transaction: Transaction): string[] {
   return [...new Set(transaction.instructions.map((instruction) => instruction.programId.toBase58()))];
+}
+
+function programIdsFromVersionedTransaction(transaction: VersionedTransaction): string[] {
+  const keys = transaction.message.staticAccountKeys;
+  return [...new Set(transaction.message.compiledInstructions
+    .map((instruction) => keys[instruction.programIdIndex]?.toBase58())
+    .filter((programId): programId is string => Boolean(programId)))];
 }
 
 function previewLiquidity(
@@ -775,6 +841,22 @@ function previewLiquidity(
       ...(snapshot.price !== undefined ? { currentPrice: snapshot.price } : {}),
     },
     warnings: rangeWarnings(snapshot.tickCurrent, tickRange(input)),
+  };
+}
+
+function previewFarmFromInfo(
+  input: RaydiumFarmInput,
+  farmInfo: any,
+  operation: 'stake' | 'unstake' | 'harvest',
+): RaydiumActionPreview {
+  return {
+    farmId: input.farmId,
+    lpMint: tokenMintAddress(farmInfo.lpMint),
+    rewardMints: rewardMints(farmInfo),
+    tokenAmounts: operation === 'harvest' || !input.amount
+      ? undefined
+      : [{ mint: tokenMintAddress(farmInfo.lpMint), amount: input.amount, decimals: tokenDecimals(farmInfo.lpMint, 'lpMint') }],
+    quote: { operation },
   };
 }
 
@@ -846,6 +928,53 @@ async function tokenPositionsForMint(
     .filter((entry): entry is RaydiumPosition => entry !== undefined);
 }
 
+async function farmPositionForWallet(
+  connection: Connection,
+  sdk: RaydiumSdkModule,
+  wallet: PublicKey,
+  farmId: string,
+  farmInfo: any,
+): Promise<RaydiumPosition | undefined> {
+  const programIdText = stringMaybe(farmInfo.programId);
+  const programId = publicKeyFromString(programIdText);
+  const version = farmVersionForProgram(sdk, programIdText);
+  if (!programId || version === undefined) return undefined;
+  const getAssociatedLedgerAccount = sdk.getAssociatedLedgerAccount;
+  const getFarmLedgerLayout = sdk.getFarmLedgerLayout;
+  if (typeof getAssociatedLedgerAccount !== 'function' || typeof getFarmLedgerLayout !== 'function') {
+    return undefined;
+  }
+  const ledgerAddress = getAssociatedLedgerAccount({
+    programId,
+    poolId: new PublicKey(farmId),
+    owner: wallet,
+    version,
+  }) as PublicKey;
+  const account = await connection.getAccountInfo(ledgerAddress, 'confirmed').catch(() => null);
+  if (!account) return undefined;
+  const layout = getFarmLedgerLayout(version);
+  if (!layout || typeof layout.decode !== 'function') return undefined;
+  const ledger = layout.decode(account.data) as { deposited?: unknown; rewardDebts?: unknown };
+  const depositedText = stringValue(ledger.deposited);
+  if (!/^\d+$/.test(depositedText)) return undefined;
+  const depositedRaw = BigInt(depositedText);
+  if (depositedRaw <= 0n) return undefined;
+  const lpDecimals = tokenDecimals(farmInfo.lpMint, 'lpMint');
+  const depositedAmount = formatRawAmount(depositedRaw, lpDecimals);
+  return {
+    positionType: 'farm',
+    farmId,
+    positionAddress: ledgerAddress.toBase58(),
+    lpMint: tokenMintAddress(farmInfo.lpMint),
+    lpAmount: depositedAmount,
+    depositedAmount,
+    rawAmount: depositedRaw.toString(),
+    rewardsOwed: rewardMints(farmInfo).map((mint) => ({ mint, amount: 'unknown' })),
+    warnings: ['Raydium farm reward amounts are not estimated by this connector yet; reward mint metadata is provided only.'],
+    raw: redactLarge({ farmInfo, ledger }),
+  };
+}
+
 async function findClmmOwnerPosition(raydium: RaydiumInstance, positionMint: string, poolId?: string): Promise<any> {
   const positions = await raydium.clmm.getOwnerPositionInfo({
     programId: RAYDIUM_CLMM_PROGRAM_ID,
@@ -885,6 +1014,14 @@ function clmmLiquidityAmount(ownerPosition: any, input: RaydiumRemoveLiquidityIn
   const raw = BigInt(stringValue(ownerPosition.liquidity));
   const scaledPercent = BigInt(Math.round(input.liquidityPercent * 10_000));
   return raw * scaledPercent / 1_000_000n;
+}
+
+function assertClmmClosePositionSafe(ownerPosition: any, input: RaydiumRemoveLiquidityInput, liquidity: bigint): void {
+  if (input.closePosition !== true) return;
+  const fullLiquidity = BigInt(stringValue(ownerPosition.liquidity));
+  if (liquidity !== fullLiquidity) {
+    throw new Error('Raydium closePosition requires removing the full CLMM liquidity amount.');
+  }
 }
 
 async function tickForBoundary(
@@ -934,6 +1071,21 @@ function rewardMints(value: any): string[] {
   return rewards.map((reward: any) => tokenMintAddress(reward?.mint ?? reward?.tokenMint ?? reward?.rewardMint)).filter(Boolean);
 }
 
+function farmVersionForProgram(sdk: RaydiumSdkModule, programId: string | undefined): RaydiumFarmVersion | undefined {
+  if (!programId) return undefined;
+  const sdkVersion = numberMaybe(sdk.FARM_PROGRAM_TO_VERSION?.[programId]);
+  if (isFarmVersion(sdkVersion)) return sdkVersion;
+  if (programId === RAYDIUM_FARM_PROGRAM_ID_V3.toBase58()) return 3;
+  if (programId === RAYDIUM_FARM_PROGRAM_ID_V4.toBase58()) return 4;
+  if (programId === RAYDIUM_FARM_PROGRAM_ID_V5.toBase58()) return 5;
+  if (programId === RAYDIUM_FARM_PROGRAM_ID_V6.toBase58()) return 6;
+  return undefined;
+}
+
+function isFarmVersion(value: number | undefined): value is RaydiumFarmVersion {
+  return value === 3 || value === 4 || value === 5 || value === 6;
+}
+
 function summarizePositions(positions: RaydiumPosition[]): RaydiumWalletPositionsResult['totals'] {
   return {
     positions: positions.length,
@@ -961,6 +1113,15 @@ function stringMaybe(value: unknown): string | undefined {
   return text ? text : undefined;
 }
 
+function publicKeyFromString(value: string | undefined): PublicKey | undefined {
+  if (!value) return undefined;
+  try {
+    return new PublicKey(value);
+  } catch {
+    return undefined;
+  }
+}
+
 function numberMaybe(value: unknown): number | undefined {
   if (typeof value === 'number') return Number.isFinite(value) ? value : undefined;
   if (typeof value === 'string' && value.trim()) {
@@ -970,6 +1131,13 @@ function numberMaybe(value: unknown): number | undefined {
   return undefined;
 }
 
+function feeRateBps(value: unknown): number | undefined {
+  const feeRate = numberMaybe(value);
+  if (feeRate === undefined) return undefined;
+  if (Math.abs(feeRate) <= 1) return Number((feeRate * 10_000).toFixed(6));
+  return feeRate;
+}
+
 function requireText(value: string | undefined, field: string): string {
   if (!value?.trim()) throw new Error(`Raydium ${field} is required.`);
   return value.trim();
@@ -977,12 +1145,26 @@ function requireText(value: string | undefined, field: string): string {
 
 function redactLarge(value: unknown): Record<string, unknown> {
   if (!value || typeof value !== 'object') return {};
-  return JSON.parse(JSON.stringify(value, (_key, item: unknown) => {
-    if (item instanceof PublicKey) return item.toBase58();
-    if (typeof item === 'bigint') return item.toString();
-    if (item && typeof item === 'object' && 'toString' in item && item.constructor?.name === 'BN') {
-      return item.toString();
-    }
-    return item;
-  })) as Record<string, unknown>;
+  try {
+    return JSON.parse(JSON.stringify(value, (_key, item: unknown) => {
+      if (item instanceof PublicKey) return item.toBase58();
+      if (typeof item === 'bigint') return item.toString();
+      if (item && typeof item === 'object' && 'toString' in item && item.constructor?.name === 'BN') {
+        return item.toString();
+      }
+      return item;
+    })) as Record<string, unknown>;
+  } catch {
+    return { unserializable: true, type: value.constructor?.name ?? 'object' };
+  }
+}
+
+function errorMessage(error: unknown): string {
+  if (error instanceof Error && error.message) return error.message;
+  if (typeof error === 'string') return error;
+  try {
+    return JSON.stringify(error);
+  } catch {
+    return String(error);
+  }
 }

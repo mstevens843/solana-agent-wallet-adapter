@@ -1,16 +1,18 @@
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import {
   SANCTUM_ADAPTER_ID,
   SANCTUM_SUPPORTED_CLUSTERS,
   sanctumAdapter,
 } from '../../adapters/sanctum/index.js';
+import { AgentWalletActionService } from '../../actionService.js';
 import {
   SANCTUM_INF_MINT,
   WSOL_MINT,
 } from '../../adapters/sanctum/constants.js';
 import {
   resetSanctumClientFactory,
+  getSanctumClient,
   setSanctumClientFactory,
   type SanctumClient,
   type SanctumLstListSnapshot,
@@ -54,7 +56,7 @@ interface FakeSanctumState {
   outputAmountRaw: string;
   maxObservedFeeBps?: number;
   warnings: string[];
-  transactionBase64?: string;
+  transactionBase64?: string | null;
 }
 
 function buildFakeSanctum(state: FakeSanctumState): SanctumClient {
@@ -95,6 +97,9 @@ function buildFakeSanctum(state: FakeSanctumState): SanctumClient {
 
 function fakeOrder(input: SanctumTokenOrderInput, state: FakeSanctumState): SanctumTokenOrder {
   const routeSources = state.routeSources.length > 0 ? state.routeSources : input.swapSources ?? ['Inf'];
+  const transactionBase64 = state.transactionBase64 === null
+    ? undefined
+    : state.transactionBase64 ?? 'unsigned-sanctum-tx-base64';
   return {
     inputMint: input.inputMint,
     outputMint: input.outputMint,
@@ -105,8 +110,8 @@ function fakeOrder(input: SanctumTokenOrderInput, state: FakeSanctumState): Sanc
     requestedSources: input.swapSources ?? [],
     ...(input.slippageBps !== undefined && { slippageBps: input.slippageBps }),
     ...(state.maxObservedFeeBps !== undefined && { maxObservedFeeBps: state.maxObservedFeeBps }),
-    transactionBase64: state.transactionBase64 ?? 'unsigned-sanctum-tx-base64',
-    hasTransaction: true,
+    ...(transactionBase64 !== undefined && { transactionBase64 }),
+    hasTransaction: transactionBase64 !== undefined,
     warnings: state.warnings,
     asOfIso: new Date().toISOString(),
     apiBaseHost: 'sanctum-api.ironforge.network',
@@ -151,7 +156,7 @@ function fakeState(overrides: Partial<FakeSanctumState> = {}): FakeSanctumState 
     lsts: fakeLsts(),
     orderCalls: [],
     executeCalls: [],
-    routeSources: ['Inf', 'SanctumRouter'],
+    routeSources: [],
     outputAmountRaw: '950000000',
     maxObservedFeeBps: 25,
     warnings: [],
@@ -188,6 +193,7 @@ function makeContext(opts: {
     connection: {} as DAppAdapterContext['connection'],
     signAndBroadcast: async () => 'unused-for-sanctum-tests',
     signTransaction: opts.signed ?? (async () => 'signed-sanctum-tx-base64'),
+    signMessage: async () => 'signature-base64-placeholder',
     store: opts.store,
   };
 }
@@ -263,6 +269,8 @@ function inMemoryStore(): PreparedActionStore {
 
 afterEach(() => {
   resetSanctumClientFactory();
+  vi.unstubAllEnvs();
+  vi.unstubAllGlobals();
 });
 
 function requireSanctumAction(
@@ -317,6 +325,86 @@ describe('Sanctum reads', () => {
     const withDisabled = await sanctumAdapter.reads.lst_list?.read({ includeDisabled: true }, ctx) as SanctumLstListSnapshot;
     expect(withDisabled.rows.map((row) => row.symbol)).toContain('bSOL');
   });
+
+  it('normalizes Sanctum quote symbols through the action service', async () => {
+    const state = fakeState();
+    setSanctumClientFactory(() => buildFakeSanctum(state));
+    const service = new AgentWalletActionService({
+      backend: new FakeBackend() as unknown as DAppAdapterContext['backend'],
+      config: fakeConfig(),
+      connection: {} as DAppAdapterContext['connection'],
+      preparedActions: inMemoryStore(),
+    });
+
+    const result = await service.sanctumQuote({
+      inputMint: 'JitoSOL',
+      outputMint: 'mSOL',
+      amount: '1',
+    });
+
+    expect(state.orderCalls[0]).toMatchObject({
+      inputMint: JITOSOL_MINT,
+      outputMint: MSOL_MINT,
+      amountRaw: '1000000000',
+    });
+    expect(result.quote).toMatchObject({
+      inputMint: JITOSOL_MINT,
+      outputMint: MSOL_MINT,
+    });
+  });
+
+  it('does not treat slippage bps as observed fee bps in API quotes', async () => {
+    vi.stubEnv('SANCTUM_API_KEY', 'test-sanctum-key');
+    vi.stubGlobal('fetch', vi.fn(async () => new Response(JSON.stringify({
+      data: {
+        inp: JITOSOL_MINT,
+        out: MSOL_MINT,
+        inpAmt: '1000',
+        outAmt: '900',
+        slippageBps: 500,
+        maxSlippageBps: 500,
+        lpFeeBps: 12,
+        tx: 'unsigned-sanctum-tx-base64',
+      },
+    }), { status: 200 })));
+    resetSanctumClientFactory();
+
+    const quote = await getSanctumClient().getTokenOrder({
+      inputMint: JITOSOL_MINT,
+      outputMint: MSOL_MINT,
+      amountRaw: '1000',
+      slippageBps: 500,
+    });
+
+    expect(quote.maxObservedFeeBps).toBe(12);
+  });
+
+  it('does not treat swapSrcData internals as route source labels', async () => {
+    vi.stubEnv('SANCTUM_API_KEY', 'test-sanctum-key');
+    vi.stubGlobal('fetch', vi.fn(async () => new Response(JSON.stringify({
+      data: {
+        inp: JITOSOL_MINT,
+        out: SANCTUM_INF_MINT,
+        inpAmt: '1000',
+        outAmt: '990',
+        swapSrcData: {
+          inputLstState: 'not-a-route-source',
+          outputLstState: 'not-a-route-source',
+        },
+        tx: 'unsigned-sanctum-tx-base64',
+      },
+    }), { status: 200 })));
+    resetSanctumClientFactory();
+
+    const quote = await getSanctumClient().getTokenOrder({
+      inputMint: JITOSOL_MINT,
+      outputMint: SANCTUM_INF_MINT,
+      amountRaw: '1000',
+      swapSources: ['Inf'],
+    });
+
+    expect(quote.routeSources).toEqual(['Inf']);
+  });
 });
 
 describe('Sanctum prepare + execute', () => {
@@ -350,7 +438,7 @@ describe('Sanctum prepare + execute', () => {
       inputAmountRaw: '1000000000',
       minOutputAmountRaw: '900000000',
       requestedSources: ['Inf'],
-      routeSources: ['Inf', 'SanctumRouter'],
+      routeSources: ['Inf'],
       refreshAtExecution: true,
     });
     expect(result.addInput.params.quoteSnapshot).toMatchObject({
@@ -401,7 +489,7 @@ describe('Sanctum prepare + execute', () => {
   });
 
   it('rejects Jupiter route sources', async () => {
-    state.routeSources = ['Jupiter'];
+    state.routeSources = ['JupiterZ'];
     const ctx = makeContext({ store: inMemoryStore() });
     await expect(
       requireSanctumAction('swap_lst').prepare(
@@ -413,6 +501,39 @@ describe('Sanctum prepare + execute', () => {
         ctx,
       ),
     ).rejects.toBeInstanceOf(AdapterError);
+  });
+
+  it('rejects unrequested route sources for Infinity-only actions', async () => {
+    state.routeSources = ['SanctumRouter'];
+    const ctx = makeContext({ store: inMemoryStore() });
+    await expect(
+      requireSanctumAction('add_infinity_liquidity').prepare(
+        {
+          inputMint: JITOSOL_MINT,
+          amount: '1',
+        },
+        ctx,
+      ),
+    ).rejects.toMatchObject({
+      code: 'unsupported_route',
+    });
+  });
+
+  it('rejects malformed quote amounts with adapter errors', async () => {
+    state.outputAmountRaw = '0.95';
+    const ctx = makeContext({ store: inMemoryStore() });
+    await expect(
+      requireSanctumAction('swap_lst').prepare(
+        {
+          inputMint: JITOSOL_MINT,
+          outputMint: MSOL_MINT,
+          amount: '1',
+        },
+        ctx,
+      ),
+    ).rejects.toMatchObject({
+      code: 'invalid_quote',
+    });
   });
 
   it('rejects delayed unstake routes unless the caller explicitly allows them', async () => {
@@ -442,6 +563,86 @@ describe('Sanctum prepare + execute', () => {
       inputMint: JITOSOL_MINT,
       outputMint: WSOL_MINT,
       allowDelayedUnstake: true,
+    });
+  });
+
+  it('does not widen missing Infinity execution sources to router sources', async () => {
+    const store = inMemoryStore();
+    const ctx = makeContext({ store });
+    const prepared = await requireSanctumAction('add_infinity_liquidity').prepare(
+      {
+        inputMint: JITOSOL_MINT,
+        amount: '1',
+      },
+      ctx,
+    );
+    const action = await store.addAction(prepared.addInput);
+    delete action.params.requestedSources;
+
+    await requireSanctumAction('add_infinity_liquidity').execute(action, ctx);
+
+    expect(state.orderCalls[1]?.swapSources).toEqual(['Inf']);
+  });
+
+  it('rejects malformed prepared requested sources instead of widening them', async () => {
+    const store = inMemoryStore();
+    const ctx = makeContext({ store });
+    const prepared = await requireSanctumAction('add_infinity_liquidity').prepare(
+      {
+        inputMint: JITOSOL_MINT,
+        amount: '1',
+      },
+      ctx,
+    );
+    const action = await store.addAction(prepared.addInput);
+    action.params.requestedSources = ['Inf', 'SanctumRouter'];
+
+    await expect(
+      requireSanctumAction('add_infinity_liquidity').execute(action, ctx),
+    ).rejects.toMatchObject({
+      code: 'invalid_request',
+    });
+  });
+
+  it('rejects execution when Sanctum cannot return an unsigned transaction', async () => {
+    const store = inMemoryStore();
+    const ctx = makeContext({ store });
+    const prepared = await requireSanctumAction('swap_lst').prepare(
+      {
+        inputMint: JITOSOL_MINT,
+        outputMint: MSOL_MINT,
+        amount: '1',
+      },
+      ctx,
+    );
+    const action = await store.addAction(prepared.addInput);
+    state.transactionBase64 = null;
+
+    await expect(
+      requireSanctumAction('swap_lst').execute(action, ctx),
+    ).rejects.toMatchObject({
+      code: 'transaction_unavailable',
+    });
+  });
+
+  it('rejects execution when the wallet cannot sign transaction bytes', async () => {
+    const store = inMemoryStore();
+    const ctx = makeContext({ store });
+    const prepared = await requireSanctumAction('swap_lst').prepare(
+      {
+        inputMint: JITOSOL_MINT,
+        outputMint: MSOL_MINT,
+        amount: '1',
+      },
+      ctx,
+    );
+    const action = await store.addAction(prepared.addInput);
+    delete (ctx as { signTransaction?: DAppAdapterContext['signTransaction'] }).signTransaction;
+
+    await expect(
+      requireSanctumAction('swap_lst').execute(action, ctx),
+    ).rejects.toMatchObject({
+      code: 'unsupported_method',
     });
   });
 });

@@ -12,6 +12,7 @@ import { AdapterError } from '../types.js';
 import {
   getMeteoraClient,
   type MeteoraAddLiquidityInput,
+  type MeteoraBuildTransactionResult,
   type MeteoraClosePositionInput,
   type MeteoraRemoveLiquidityInput,
 } from './client.js';
@@ -24,8 +25,11 @@ import {
 } from './constants.js';
 import { getPositionDetail } from './positions.js';
 import {
+  ensureBinRangeWithinPosition,
   ensureEmptyPosition,
+  ensureNoClaimableAmounts,
   ensurePositionMatchesPool,
+  ensurePositionOwnedByWallet,
   optionalNumberParam,
   optionalStringParam,
   parsePublicKey,
@@ -80,6 +84,10 @@ export const meteoraAddLiquidityAction: AdapterAction<MeteoraAddLiquidityPrepare
     const slippageBps = validateSlippageBps(input.slippageBps, ctx.config.mainnet.maxSlippageBps);
     validateAddLiquidityAmounts(input);
     const strategyType = normalizeMeteoraStrategyType(input.strategyType);
+    const position = await getPositionDetail(ctx, { poolAddress, positionAddress });
+    ensurePositionMatchesPool(position, poolAddress);
+    ensurePositionOwnedByWallet(position, walletAddress);
+    ensureBinRangeWithinPosition(position, minBinId, maxBinId);
     const preparedInput: MeteoraAddLiquidityInput = {
       walletAddress,
       poolAddress,
@@ -115,7 +123,7 @@ export const meteoraAddLiquidityAction: AdapterAction<MeteoraAddLiquidityPrepare
       tokenAmounts: preview.tokenAmounts,
       activeBinId: preview.activeBinId,
       quote: preview.quote,
-      warnings: uniqueStrings([...(preview.warnings ?? []), ...rangeWarnings(preview.activeBinId, minBinId, maxBinId)]),
+      warnings: uniqueStrings([...(preview.warnings ?? []), ...rangeWarnings(preview.activeBinId, minBinId, maxBinId), ...(position.warnings ?? [])]),
       preparedSnapshotAt: new Date().toISOString(),
     };
     return {
@@ -134,22 +142,29 @@ export const meteoraAddLiquidityAction: AdapterAction<MeteoraAddLiquidityPrepare
 
   async execute(action, ctx): Promise<AdapterExecuteResult> {
     const walletAddress = await requireWallet(action, ctx, 'add-liquidity');
+    const tokenXAmount = optionalStringParam(action, 'tokenXAmount');
+    const tokenYAmount = optionalStringParam(action, 'tokenYAmount');
+    const range = requireBinRange(action);
     const input: MeteoraAddLiquidityInput = {
       walletAddress,
       poolAddress: requireStringParam(action, 'poolAddress'),
       positionAddress: requireStringParam(action, 'positionAddress'),
-      ...(optionalStringParam(action, 'tokenXAmount') !== undefined && { tokenXAmount: optionalStringParam(action, 'tokenXAmount') }),
-      ...(optionalStringParam(action, 'tokenYAmount') !== undefined && { tokenYAmount: optionalStringParam(action, 'tokenYAmount') }),
-      minBinId: optionalNumberParam(action, 'minBinId') ?? requireBinRange(action).minBinId,
-      maxBinId: optionalNumberParam(action, 'maxBinId') ?? requireBinRange(action).maxBinId,
+      ...(tokenXAmount !== undefined && { tokenXAmount }),
+      ...(tokenYAmount !== undefined && { tokenYAmount }),
+      minBinId: optionalNumberParam(action, 'minBinId') ?? range.minBinId,
+      maxBinId: optionalNumberParam(action, 'maxBinId') ?? range.maxBinId,
       strategyType: normalizeMeteoraStrategyType(optionalStringParam(action, 'strategyType')),
       ...(action.params.singleSidedX === true && { singleSidedX: true }),
       slippageBps: optionalNumberParam(action, 'slippageBps') ?? ctx.config.mainnet.maxSlippageBps,
     };
+    const position = await getPositionDetail(ctx, input);
+    ensurePositionOwnedByWallet(position, walletAddress);
+    ensureBinRangeWithinPosition(position, input.minBinId, input.maxBinId);
     const built = await getMeteoraClient().buildAddLiquidityTransaction(ctx.connection, input);
-    const txid = await ctx.signAndBroadcast(built.transactionBase64, `Add Meteora liquidity on ${shortAddress(input.poolAddress)}`);
+    const txids = await signMeteoraBuiltTransaction(ctx, built, `Add Meteora liquidity on ${shortAddress(input.poolAddress)}`);
     return {
-      txid,
+      txid: txids[0]!,
+      txids,
       signedAt: new Date().toISOString(),
       ...(built.preview ? { preview: built.preview as unknown as Record<string, unknown> } : {}),
     };
@@ -166,7 +181,9 @@ export const meteoraRemoveLiquidityAction: AdapterAction<MeteoraRemoveLiquidityP
     const positionAddress = parsePublicKey(input.positionAddress, 'positionAddress');
     const position = await getPositionDetail(ctx, { poolAddress, positionAddress });
     ensurePositionMatchesPool(position, poolAddress);
+    ensurePositionOwnedByWallet(position, walletAddress);
     const { minBinId, maxBinId } = validateBinRange(input.minBinId ?? position.lowerBinId, input.maxBinId ?? position.upperBinId);
+    ensureBinRangeWithinPosition(position, minBinId, maxBinId);
     const slippageBps = validateSlippageBps(input.slippageBps, ctx.config.mainnet.maxSlippageBps);
     const liquidityBps = validateLiquidityBps(input);
     const preparedInput: MeteoraRemoveLiquidityInput = {
@@ -227,10 +244,14 @@ export const meteoraRemoveLiquidityAction: AdapterAction<MeteoraRemoveLiquidityP
       maxBinId: range.maxBinId,
       slippageBps: optionalNumberParam(action, 'slippageBps') ?? ctx.config.mainnet.maxSlippageBps,
     };
+    const position = await getPositionDetail(ctx, input);
+    ensurePositionOwnedByWallet(position, walletAddress);
+    ensureBinRangeWithinPosition(position, input.minBinId, input.maxBinId);
     const built = await getMeteoraClient().buildRemoveLiquidityTransaction(ctx.connection, input);
-    const txid = await ctx.signAndBroadcast(built.transactionBase64, `Remove Meteora liquidity from ${shortAddress(input.positionAddress)}`);
+    const txids = await signMeteoraBuiltTransaction(ctx, built, `Remove Meteora liquidity from ${shortAddress(input.positionAddress)}`);
     return {
-      txid,
+      txid: txids[0]!,
+      txids,
       signedAt: new Date().toISOString(),
       ...(built.preview ? { preview: built.preview as unknown as Record<string, unknown> } : {}),
     };
@@ -246,7 +267,9 @@ export const meteoraClosePositionAction: AdapterAction<MeteoraClosePositionPrepa
     const poolAddress = parsePublicKey(input.poolAddress, 'poolAddress');
     const positionAddress = parsePublicKey(input.positionAddress, 'positionAddress');
     const position = await getPositionDetail(ctx, { poolAddress, positionAddress });
+    ensurePositionOwnedByWallet(position, walletAddress);
     ensureEmptyPosition(position);
+    ensureNoClaimableAmounts(position);
     const preparedInput: MeteoraClosePositionInput = { walletAddress, poolAddress, positionAddress };
     const preview = await getMeteoraClient().previewClosePosition(ctx.connection, preparedInput);
     const params = {
@@ -284,11 +307,14 @@ export const meteoraClosePositionAction: AdapterAction<MeteoraClosePositionPrepa
       positionAddress: requireStringParam(action, 'positionAddress'),
     };
     const position = await getPositionDetail(ctx, input);
+    ensurePositionOwnedByWallet(position, walletAddress);
     ensureEmptyPosition(position);
+    ensureNoClaimableAmounts(position);
     const built = await getMeteoraClient().buildClosePositionTransaction(ctx.connection, input);
-    const txid = await ctx.signAndBroadcast(built.transactionBase64, `Close Meteora position ${shortAddress(input.positionAddress)}`);
+    const txids = await signMeteoraBuiltTransaction(ctx, built, `Close Meteora position ${shortAddress(input.positionAddress)}`);
     return {
-      txid,
+      txid: txids[0]!,
+      txids,
       signedAt: new Date().toISOString(),
       ...(built.preview ? { preview: built.preview as unknown as Record<string, unknown> } : {}),
     };
@@ -344,6 +370,35 @@ function rangeWarnings(activeBinId: number | undefined, minBinId: number, maxBin
 
 function uniqueStrings(values: string[]): string[] {
   return [...new Set(values.map((value) => value.trim()).filter(Boolean))];
+}
+
+async function signMeteoraBuiltTransaction(
+  ctx: DAppAdapterContext,
+  built: MeteoraBuildTransactionResult,
+  summary: string,
+): Promise<string[]> {
+  const transactions = transactionsForBuiltResult(built);
+  if (ctx.signAndBroadcastMany) {
+    return ctx.signAndBroadcastMany(transactions, summary);
+  }
+  const txids: string[] = [];
+  for (let index = 0; index < transactions.length; index += 1) {
+    const suffix = transactions.length > 1 ? ` (${index + 1}/${transactions.length})` : '';
+    txids.push(await ctx.signAndBroadcast(transactions[index]!, `${summary}${suffix}`));
+  }
+  return txids;
+}
+
+function transactionsForBuiltResult(built: MeteoraBuildTransactionResult): string[] {
+  const transactions = built.transactionsBase64?.length
+    ? built.transactionsBase64
+    : built.transactionBase64
+      ? [built.transactionBase64]
+      : [];
+  if (transactions.length === 0) {
+    throw new AdapterError(METEORA_ADAPTER_ID, 'empty_transaction', 'Meteora SDK returned no transaction to sign.');
+  }
+  return transactions;
 }
 
 function stripUndefined(input: Record<string, unknown>): Record<string, unknown> {

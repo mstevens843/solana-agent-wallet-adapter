@@ -61,6 +61,7 @@ export interface MeteoraPositionReadInput {
 }
 
 export const DIALECT_MARKETS_BASE_URL = 'https://markets.dial.to/api/v0';
+// Legacy browser-only read helper. First-class Meteora connector reads and writes route through the MCP adapter.
 export const METEORA_DLMM_API_BASE_URL = 'https://dlmm-api.meteora.ag';
 
 export function normalizeBlinkUrl(value: string): string {
