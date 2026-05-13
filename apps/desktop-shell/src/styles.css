@@ -331,6 +331,11 @@ pre {
   background: rgba(255, 255, 255, 0.04);
 }
 
+.row.blink-action {
+  border-color: rgba(57, 215, 255, 0.28);
+  background: rgba(57, 215, 255, 0.06);
+}
+
 .compact .row {
   grid-template-columns: 1fr;
 }
@@ -350,6 +355,11 @@ pre {
 .row span {
   color: #91a69d;
   font-size: 0.82rem;
+}
+
+.row span.boundary {
+  color: #d9ebe4;
+  font-weight: 900;
 }
 
 .row-actions {

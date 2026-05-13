@@ -553,6 +553,37 @@ async function handleRequest(
       }));
       return;
     }
+    if (req.method === 'POST' && url.pathname === '/bridge/action/prepare-blink') {
+      const body = (await readJson(req)) as {
+        connector?: unknown;
+        protocol?: unknown;
+        operation?: unknown;
+        blinkUrl?: unknown;
+        account?: unknown;
+        parameters?: unknown;
+        expectedAmount?: unknown;
+        expectedToken?: unknown;
+        expectedRecipient?: unknown;
+        position?: unknown;
+        dueAt?: unknown;
+        note?: unknown;
+      };
+      writeJson(res, 200, await requireActionService(actionService).prepareBlinkAction({
+        blinkUrl: requireString(body.blinkUrl, 'blinkUrl'),
+        ...(body.connector !== undefined && { connector: requireString(body.connector, 'connector') }),
+        ...(body.protocol !== undefined && { protocol: requireString(body.protocol, 'protocol') }),
+        ...(body.operation !== undefined && { operation: requireString(body.operation, 'operation') }),
+        ...(body.account !== undefined && { account: requireString(body.account, 'account') }),
+        ...(body.parameters !== undefined && { parameters: requireStringRecord(body.parameters, 'parameters') }),
+        ...(body.expectedAmount !== undefined && { expectedAmount: requireString(body.expectedAmount, 'expectedAmount') }),
+        ...(body.expectedToken !== undefined && { expectedToken: requireString(body.expectedToken, 'expectedToken') }),
+        ...(body.expectedRecipient !== undefined && { expectedRecipient: requireString(body.expectedRecipient, 'expectedRecipient') }),
+        ...(body.position !== undefined && { position: requireString(body.position, 'position') }),
+        ...(body.dueAt !== undefined && { dueAt: requireString(body.dueAt, 'dueAt') }),
+        ...(body.note !== undefined && { note: requireString(body.note, 'note') }),
+      }));
+      return;
+    }
     if (req.method === 'POST' && url.pathname === '/bridge/action/transfer-sol') {
       const body = (await readJson(req)) as { recipient?: string; amountSol?: string };
       writeJson(res, 200, await requireActionService(actionService).transferSol({
@@ -1355,6 +1386,20 @@ function requireString(value: unknown, label: string): string {
     throw new ProtocolError('invalid_request', `${label} is required.`);
   }
   return value.trim();
+}
+
+function requireStringRecord(value: unknown, label: string): Record<string, string> {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    throw new ProtocolError('invalid_request', `${label} must be an object.`);
+  }
+  const entries: Array<[string, string]> = [];
+  for (const [key, entry] of Object.entries(value)) {
+    if (typeof entry !== 'string') {
+      throw new ProtocolError('invalid_request', `${label}.${key} must be a string.`);
+    }
+    entries.push([key, entry]);
+  }
+  return Object.fromEntries(entries);
 }
 
 function requireStringArray(value: unknown, label: string): string[] {

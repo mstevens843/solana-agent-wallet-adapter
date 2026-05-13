@@ -1,7 +1,8 @@
 import assert from 'node:assert/strict';
 import { spawn, spawnSync, type ChildProcessByStdio } from 'node:child_process';
 import { mkdtemp, readFile, writeFile } from 'node:fs/promises';
-import { createServer } from 'node:net';
+import { createServer as createHttpServer, type IncomingMessage, type ServerResponse } from 'node:http';
+import { createServer, type AddressInfo } from 'node:net';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import type { Readable } from 'node:stream';

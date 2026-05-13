@@ -65,9 +65,6 @@ export interface ConnectorCapabilityView extends ConnectorRegistryEntry {
 export const CONNECTOR_APPROVAL_BOUNDARY =
   'This prepares a wallet approval request; it does not sign, submit, or grant delegated authority.';
 
-const UNAVAILABLE_ACTION_BOUNDARY =
-  'This connector is registered for discovery, but this MCP runtime does not expose approval preparation for it yet.';
-
 export const CONNECTOR_REGISTRY: ConnectorRegistryEntry[] = [
   {
     id: 'kamino',
@@ -137,43 +134,43 @@ export const CONNECTOR_REGISTRY: ConnectorRegistryEntry[] = [
       'DCA SOL to USDC weekly',
     ],
   },
-  unavailableConnector({
+  blinkBackedConnector({
     id: 'meteora',
     name: 'Meteora',
     aliases: ['meteora', 'dlmm', 'meteora dlmm'],
     examples: ['check my Meteora position', 'claim Meteora fees', 'add liquidity to a Meteora DLMM pool'],
   }),
-  unavailableConnector({
+  blinkBackedConnector({
     id: 'raydium',
     name: 'Raydium',
     aliases: ['raydium', 'ray'],
     examples: ['check a Raydium pool', 'farm on Raydium', 'prepare a Raydium liquidity action'],
   }),
-  unavailableConnector({
+  blinkBackedConnector({
     id: 'orca',
     name: 'Orca',
     aliases: ['orca', 'whirlpools', 'orca whirlpools'],
     examples: ['check an Orca Whirlpool', 'add liquidity to Orca', 'claim Orca fees'],
   }),
-  unavailableConnector({
+  blinkBackedConnector({
     id: 'marginfi',
     name: 'MarginFi',
     aliases: ['marginfi', 'mrgn'],
     examples: ['show my MarginFi positions', 'borrow on MarginFi', 'repay a MarginFi loan'],
   }),
-  unavailableConnector({
+  blinkBackedConnector({
     id: 'drift',
     name: 'Drift',
     aliases: ['drift', 'drift vaults', 'strategy vaults'],
     examples: ['show my Drift vaults', 'deposit into a Drift vault', 'withdraw from Drift'],
   }),
-  unavailableConnector({
+  blinkBackedConnector({
     id: 'lulo',
     name: 'Lulo',
     aliases: ['lulo'],
     examples: ['show my Lulo deposits', 'deposit into Lulo', 'withdraw from Lulo'],
   }),
-  unavailableConnector({
+  blinkBackedConnector({
     id: 'save',
     name: 'Save',
     aliases: ['save', 'save finance'],
@@ -283,7 +280,7 @@ function runtimeConfigBlockReason(
   return undefined;
 }
 
-function unavailableConnector(input: {
+function blinkBackedConnector(input: {
   id: ConnectorId;
   name: string;
   aliases: string[];
@@ -295,17 +292,20 @@ function unavailableConnector(input: {
     aliases: input.aliases,
     supportedClusters: ['mainnet-beta'],
     readCapabilities: [],
-    writeCapabilities: [],
+    writeCapabilities: ['blinks'],
     readTools: [],
-    actionTools: [],
-    requiresClientKey: true,
-    requiredConfig: ['Connector-specific read API or Blink/Solana Action URL is not wired in MCP runtime'],
-    executionMode: 'unavailable',
-    approvalBoundary: UNAVAILABLE_ACTION_BOUNDARY,
+    actionTools: [
+      'solana_prepare_blink_action',
+      'solana_execute_prepared_action',
+    ],
+    requiresClientKey: false,
+    requiredConfig: ['User-supplied Blink/Solana Action URL'],
+    executionMode: 'wallet_approval',
+    approvalBoundary: CONNECTOR_APPROVAL_BOUNDARY,
     limitations: [
-      'Registered for discovery and honest denials only.',
-      'This MCP runtime does not expose first-class reads or prepared actions for this connector yet.',
-      'Use an explicit Blink/Solana Action URL only after a supported MCP helper is added.',
+      'URL-backed Blink/Solana Action preparation only.',
+      'This MCP runtime does not expose first-class reads for this connector yet.',
+      'Prepared actions remain approval inbox items until the wallet signs.',
     ],
     examples: input.examples,
   };

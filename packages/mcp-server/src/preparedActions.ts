@@ -12,6 +12,7 @@ export type PreparedActionKind =
   | 'transfer_sol'
   | 'transfer_spl'
   | 'swap'
+  | 'blink_action'
   | 'kamino_deposit'
   | 'kamino_withdraw';
 export type PreparedActionTxStatus = 'pending' | 'confirmed' | 'failed';

@@ -120,6 +120,9 @@ interface RecordTransactionFinalizationFailureInput {
 const FINALIZATION_PREVIEW_TTL_MS = 10 * 60_000;
 const MAX_FINALIZATION_PREVIEW_TTL_MS = 15 * 60_000;
 const MEMO_PROGRAM_ID = new PublicKey('MemoSq4gqABAXKb96qnH8TysNcWxMyWCqXgDLGmfcHr');
+const BLINK_BROWSER_LOCAL_FINALIZATION_REASON =
+  'Blink transaction bytes are resolved in the browser before wallet approval.';
+const BROWSER_WALLET_EXECUTION_KINDS = new Set(['swap', 'blink_action']);
 
 export class WorkflowServiceError extends Error {
   constructor(
@@ -255,7 +258,18 @@ export class WorkflowService {
     const plan = input.plan;
     const kind = input.kind ?? linkedPlan?.actionType ?? stringFromJson(plan, 'actionType') ?? 'manual_review';
     const summary = input.summary ?? linkedPlan?.intent ?? stringFromJson(plan, 'intent') ?? `${kind.replace(/_/g, ' ')} approval`;
-    const params = input.params ?? stringRecordToJson(linkedPlan?.parameters) ?? jsonObjectFromPlan(plan, 'parameters') ?? {};
+    const baseParams = input.params ?? stringRecordToJson(linkedPlan?.parameters) ?? jsonObjectFromPlan(plan, 'parameters') ?? {};
+    const inheritedMetadata = kind === 'blink_action'
+      ? mergeJsonMetadata(linkedPlan?.metadata, input.metadata)
+      : input.metadata;
+    const blinkDraft = kind === 'blink_action'
+      ? blinkApprovalDraftFromParams(baseParams, inheritedMetadata)
+      : undefined;
+    const params = blinkDraft?.params ?? baseParams;
+    const approvalMetadata = blinkDraft?.metadata ?? input.metadata;
+    const amount = input.amount ?? amountFromPlan(plan) ?? amountFromParams(params);
+    const token = input.token ?? tokenFromPlan(plan) ?? tokenFromParams(params);
+    const recipient = input.recipient ?? recipientFromParams(params);
     const guardrailReport = approvalGuardrailReport(input, linkedPlan, kind, params);
     const finalizationRequirement = finalizationRequirementForAction(kind);
     assertCloudApprovalKindSupported(kind);
@@ -273,9 +287,9 @@ export class WorkflowService {
       createdAt: now,
       updatedAt: now,
       ...(input.note ? { note: input.note } : {}),
-      ...(input.amount ?? amountFromPlan(plan) ? { amount: input.amount ?? amountFromPlan(plan) } : {}),
-      ...(input.token ?? tokenFromPlan(plan) ? { token: input.token ?? tokenFromPlan(plan) } : {}),
-      ...(input.recipient ?? stringFromJson(params, 'recipient') ? { recipient: input.recipient ?? stringFromJson(params, 'recipient') } : {}),
+      ...(amount ? { amount } : {}),
+      ...(token ? { token } : {}),
+      ...(recipient ? { recipient } : {}),
       ...(input.recurringScheduleId ? { recurringScheduleId: input.recurringScheduleId } : {}),
       ...(input.recurringOccurrenceId ? { recurringOccurrenceId: input.recurringOccurrenceId } : {}),
       ...(input.occurrenceKey ? { occurrenceKey: input.occurrenceKey } : {}),
@@ -283,7 +297,7 @@ export class WorkflowService {
       executionMode: executionModeForFinalizationRequirement(finalizationRequirement),
       finalizationSupport: finalizationSupportForKind(kind),
       riskMetadata: withGuardrailRiskMetadata(input.riskMetadata ?? linkedPlan?.riskMetadata, guardrailReport),
-      ...(input.metadata ? { metadata: input.metadata } : {}),
+      ...(approvalMetadata ? { metadata: approvalMetadata } : {}),
     };
 
     try {
@@ -835,11 +849,11 @@ export class WorkflowService {
     if (isTerminalApprovalStatus(existing.status)) {
       throw new WorkflowServiceError(409, 'approval_terminal', 'Approval request is already terminal.');
     }
-    if (existing.kind !== 'swap') {
+    if (!BROWSER_WALLET_EXECUTION_KINDS.has(existing.kind)) {
       throw new WorkflowServiceError(
         409,
         'wallet_execution_unsupported',
-        'Browser wallet execution is currently supported for Cloud swap approvals.',
+        'Browser wallet execution is currently supported for Cloud swap and Blink approvals.',
       );
     }
     if (!input.txid) {
@@ -1355,6 +1369,127 @@ function amountFromPlan(plan: JsonObject | undefined): string | undefined {
 function tokenFromPlan(plan: JsonObject | undefined): string | undefined {
   const params = jsonObjectFromPlan(plan, 'parameters');
   return stringFromJson(params, 'token') ?? stringFromJson(params, 'inputToken') ?? stringFromJson(params, 'outputToken');
+}
+
+function amountFromParams(params: JsonObject): string | undefined {
+  return stringFromJson(params, 'amount') ?? stringFromJson(params, 'amountSol') ?? stringFromJson(params, 'inputAmount');
+}
+
+function tokenFromParams(params: JsonObject): string | undefined {
+  return stringFromJson(params, 'token') ?? stringFromJson(params, 'inputToken') ?? stringFromJson(params, 'outputToken') ??
+    stringFromJson(params, 'expectedToken');
+}
+
+function recipientFromParams(params: JsonObject): string | undefined {
+  return stringFromJson(params, 'recipient') ?? stringFromJson(params, 'recipientAddress') ??
+    stringFromJson(params, 'expectedRecipient');
+}
+
+function mergeJsonMetadata(
+  inherited: JsonObject | undefined,
+  explicit: JsonObject | undefined,
+): JsonObject | undefined {
+  if (!inherited && !explicit) return undefined;
+  return {
+    ...(inherited ?? {}),
+    ...(explicit ?? {}),
+  };
+}
+
+function blinkApprovalDraftFromParams(
+  params: JsonObject,
+  metadata: JsonObject | undefined,
+): { params: JsonObject; metadata: JsonObject } {
+  const rawUrl = stringFromJson(params, 'blinkUrl') ?? stringFromJson(params, 'actionUrl') ??
+    stringFromJson(metadata, 'blinkUrl') ?? stringFromJson(metadata, 'actionUrl');
+  if (!rawUrl) {
+    throw new WorkflowServiceError(
+      400,
+      'missing_blink_url',
+      'Blink action approvals require a blinkUrl or actionUrl.',
+    );
+  }
+  const normalizedUrl = normalizeBlinkStorageUrl(rawUrl);
+  const storedParams: JsonObject = {
+    ...params,
+    blinkUrl: normalizedUrl,
+    actionUrl: normalizedUrl,
+    connectorActionSource: 'blink',
+  };
+  return {
+    params: storedParams,
+    metadata: blinkApprovalMetadata(storedParams, metadata, normalizedUrl),
+  };
+}
+
+function blinkApprovalMetadata(
+  params: JsonObject,
+  metadata: JsonObject | undefined,
+  normalizedUrl: string,
+): JsonObject {
+  const connectorId = optionalBlinkString(params, metadata, 'connectorId');
+  const protocol = optionalBlinkString(params, metadata, 'protocol');
+  const operation = optionalBlinkString(params, metadata, 'operation');
+  const position = optionalBlinkString(params, metadata, 'position');
+  const amount = optionalBlinkString(params, metadata, 'amount');
+  const expectedToken = optionalBlinkString(params, metadata, 'expectedToken');
+  const expectedRecipient = optionalBlinkString(params, metadata, 'expectedRecipient');
+  return {
+    ...(metadata ?? {}),
+    ...(connectorId ? { connectorId } : {}),
+    ...(protocol ? { protocol } : {}),
+    ...(operation ? { operation } : {}),
+    ...(position ? { position } : {}),
+    ...(amount ? { amount } : {}),
+    ...(expectedToken ? { expectedToken } : {}),
+    ...(expectedRecipient ? { expectedRecipient } : {}),
+    blinkUrl: normalizedUrl,
+    actionUrl: normalizedUrl,
+    actionSource: 'blink',
+    connectorActionSource: 'blink',
+    finalizationSupport: {
+      mode: 'browser_local',
+      reason: BLINK_BROWSER_LOCAL_FINALIZATION_REASON,
+    },
+  };
+}
+
+function optionalBlinkString(
+  params: JsonObject,
+  metadata: JsonObject | undefined,
+  key: string,
+): string | undefined {
+  return stringFromJson(metadata, key) ?? stringFromJson(params, key);
+}
+
+function normalizeBlinkStorageUrl(value: string): string {
+  const trimmed = value.trim();
+  if (!trimmed) {
+    throw new WorkflowServiceError(400, 'missing_blink_url', 'Blink action approvals require a blinkUrl or actionUrl.');
+  }
+  const withoutBlink = trimmed.startsWith('blink:') ? trimmed.slice('blink:'.length) : trimmed;
+  const withoutAction = withoutBlink.startsWith('solana-action:')
+    ? withoutBlink.slice('solana-action:'.length)
+    : withoutBlink;
+  let decoded = withoutAction;
+  try {
+    decoded = decodeURIComponent(withoutAction);
+  } catch {
+    decoded = withoutAction;
+  }
+  try {
+    const parsed = new URL(decoded);
+    if (parsed.protocol !== 'https:') {
+      throw new Error('Blink/Solana Action URL must use https.');
+    }
+    return parsed.toString();
+  } catch (err) {
+    throw new WorkflowServiceError(
+      400,
+      'invalid_blink_url',
+      err instanceof Error && err.message ? err.message : 'Blink/Solana Action URL must be a valid https URL.',
+    );
+  }
 }
 
 async function prepareSolTransferFinalizationPreview(
@@ -1914,6 +2049,13 @@ function finalizationSupportForKind(kind: string): { required: boolean; supporte
   const required = workflowRequiresTransactionFinalization(kind);
   if (!required) return { required: false, supported: true };
   if (kind === 'transfer_sol') return { required: true, supported: true };
+  if (kind === 'blink_action') {
+    return {
+      required: true,
+      supported: false,
+      reason: BLINK_BROWSER_LOCAL_FINALIZATION_REASON,
+    };
+  }
   return {
     required: true,
     supported: false,
@@ -1922,7 +2064,7 @@ function finalizationSupportForKind(kind: string): { required: boolean; supporte
 }
 
 function assertCloudApprovalKindSupported(kind: string): void {
-  if (kind === 'swap') return;
+  if (kind === 'swap' || kind === 'blink_action') return;
   const support = finalizationSupportForKind(kind);
   if (support.required && !support.supported) {
     throw new WorkflowServiceError(

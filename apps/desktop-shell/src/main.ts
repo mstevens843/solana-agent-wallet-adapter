@@ -77,6 +77,11 @@ interface PreparedAction {
   kind: string;
   summary: string;
   dueAt: string;
+  walletAddress?: string;
+  cluster?: string;
+  params?: Record<string, unknown>;
+  note?: string;
+  txStatus?: string;
   txid?: string;
   error?: string;
 }
@@ -137,6 +142,7 @@ const state: DesktopState = {
 const app = document.querySelector<HTMLDivElement>('#app');
 if (!app) throw new Error('Missing #app');
 const appRoot = app;
+const BLINK_BOUNDARY_COPY = 'Prepared Blink action. Wallet approval required.';
 
 render();
 void bootstrap();
@@ -364,21 +370,50 @@ function actionsHtml(): string {
   }
   return `
     <div class="list">
-      ${state.actions.slice(0, 8).map((action) => `
-        <div class="row">
-          <div>
-            <strong>${escapeHtml(action.summary)}</strong>
-            <span>${escapeHtml(action.status)} · ${escapeHtml(action.kind)} · ${escapeHtml(action.dueAt)}</span>
-            ${action.error ? `<span class="error">${escapeHtml(action.error)}</span>` : ''}
-          </div>
-          <div class="row-actions">
-            <button data-action-op="execute" data-action-id="${escapeHtml(action.id)}">Approve</button>
-            <button data-action-op="reject" data-action-id="${escapeHtml(action.id)}">Reject</button>
-            <button data-action-op="archive" data-action-id="${escapeHtml(action.id)}">Archive</button>
-          </div>
-        </div>
-      `).join('')}
+      ${state.actions.slice(0, 8).map(actionRowHtml).join('')}
     </div>
+  `;
+}
+
+function actionRowHtml(action: PreparedAction): string {
+  const blink = isBlinkAction(action);
+  const status = [action.status, action.txStatus].filter(Boolean).join(' · ');
+  const summary = blink ? blinkActionTitle(action) : action.summary;
+  return `
+    <div class="row ${blink ? 'blink-action' : ''}">
+      <div>
+        <strong>${escapeHtml(summary)}</strong>
+        <span>${escapeHtml(status)} · ${escapeHtml(blink ? 'blink' : action.kind)} · ${escapeHtml(action.dueAt)}</span>
+        ${blink ? blinkActionMetadataHtml(action) : ''}
+        ${action.note ? `<span>Note: ${escapeHtml(action.note)}</span>` : ''}
+        ${action.error ? `<span class="error">${escapeHtml(action.error)}</span>` : ''}
+      </div>
+      <div class="row-actions">
+        <button data-action-op="execute" data-action-id="${escapeHtml(action.id)}">Approve</button>
+        <button data-action-op="reject" data-action-id="${escapeHtml(action.id)}">Reject</button>
+        <button data-action-op="archive" data-action-id="${escapeHtml(action.id)}">Archive</button>
+      </div>
+    </div>
+  `;
+}
+
+function blinkActionMetadataHtml(action: PreparedAction): string {
+  const connector = stringParam(action, 'connectorId') || stringParam(action, 'connector');
+  const protocol = stringParam(action, 'protocol') || connector || 'Blink';
+  const operation = blinkOperation(action);
+  const host = blinkUrlHost(action);
+  const expected = expectedBlinkLabel(action);
+  const wallet = action.walletAddress ? short(action.walletAddress) : '';
+  const message = stringParam(action, 'blinkMessage');
+  const position = stringParam(action, 'position');
+  return `
+    <span>${escapeHtml([protocol, operation, host].filter(Boolean).join(' · '))}</span>
+    ${wallet ? `<span>Wallet: ${escapeHtml(wallet)}</span>` : ''}
+    ${expected ? `<span>Expected: ${escapeHtml(expected)}</span>` : ''}
+    ${position ? `<span>Position: ${escapeHtml(position)}</span>` : ''}
+    ${message ? `<span>${escapeHtml(message)}</span>` : ''}
+    <span class="boundary">${escapeHtml(BLINK_BOUNDARY_COPY)}</span>
+    <span class="muted">Open Agentic browser approval to sign this Blink action.</span>
   `;
 }
 
@@ -706,6 +741,48 @@ function browserHostUrl(): string {
   url.searchParams.set('bridgeUrl', state.bridgeUrl);
   url.searchParams.set('token', state.bridgeToken);
   return url.toString();
+}
+
+function isBlinkAction(action: PreparedAction): boolean {
+  return action.kind === 'blink_action'
+    || stringParam(action, 'connectorActionSource') === 'blink'
+    || Boolean(stringParam(action, 'blinkUrl') || stringParam(action, 'actionUrl'));
+}
+
+function blinkActionTitle(action: PreparedAction): string {
+  return [stringParam(action, 'protocol') || stringParam(action, 'connectorId') || 'Blink', blinkOperation(action)]
+    .filter(Boolean)
+    .join(' · ');
+}
+
+function blinkOperation(action: PreparedAction): string {
+  return stringParam(action, 'operation')
+    || stringParam(action, 'blinkLabel')
+    || stringParam(action, 'blinkTitle')
+    || action.summary
+    || 'Blink action';
+}
+
+function blinkUrlHost(action: PreparedAction): string {
+  const url = stringParam(action, 'actionUrl') || stringParam(action, 'blinkUrl');
+  if (!url) return '';
+  try {
+    return new URL(url).host;
+  } catch {
+    return short(url);
+  }
+}
+
+function expectedBlinkLabel(action: PreparedAction): string {
+  const amount = stringParam(action, 'expectedAmount') || stringParam(action, 'amount');
+  const token = stringParam(action, 'expectedToken') || stringParam(action, 'token');
+  const recipient = stringParam(action, 'expectedRecipient') || stringParam(action, 'recipient');
+  return [amount, token, recipient ? `to ${recipient}` : ''].filter(Boolean).join(' ');
+}
+
+function stringParam(action: PreparedAction, key: string): string {
+  const value = action.params?.[key];
+  return typeof value === 'string' ? value : '';
 }
 
 function metric(label: string, value: string): string {

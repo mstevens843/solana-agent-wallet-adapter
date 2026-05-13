@@ -1,0 +1,530 @@
+{
+  "$schema": "./agentic-scenarios.schema.json",
+  "version": 1,
+  "scenarios": [
+    {
+      "id": "repeat-transfer-agent-approve",
+      "title": "Repeat SOL transfer with complete recipient and modest amount is approved",
+      "category": "repeat_transfer",
+      "userRequest": "Send 0.01 SOL to 7recipient111111111111111111111111111111111 every Monday at 9 AM and ask the agent before each run.",
+      "startingMode": "cloud",
+      "enabledConnectors": [],
+      "providedFacts": {
+        "recipient": "7recipient111111111111111111111111111111111",
+        "amount": "0.01 SOL",
+        "cadence": "weekly Monday 09:00"
+      },
+      "canary": false,
+      "mockPlan": {
+        "intent": "create_repeat_transfer",
+        "actionType": "recurring_payment",
+        "parameters": {
+          "asset": "SOL",
+          "amount": "0.01",
+          "recipient": "7recipient111111111111111111111111111111111",
+          "cadence": "weekly",
+          "agentReview": true
+        },
+        "approval": "AI drafts a plan only. Wallet approval and signing happen later in the user wallet."
+      },
+      "mockReview": {
+        "decision": "approve",
+        "reason": "Complete repeat transfer terms with a small SOL amount and explicit recipient.",
+        "summary": "The repeat transfer can be created and should return to Needs Approval before each wallet signature. Wallet approval is required before any signature or transaction leaves the device.",
+        "evidence": {
+          "findings": [
+            { "label": "Recipient", "value": "7recipient111111111111111111111111111111111", "tone": "good" },
+            { "label": "Amount", "value": "0.01 SOL", "tone": "good" },
+            { "label": "Cadence", "value": "weekly Monday 09:00", "tone": "good" }
+          ]
+        },
+        "reviewers": [
+          { "id": "policy", "decision": "approve", "reason": "Manual wallet approval remains required for every run." },
+          { "id": "risk", "decision": "approve", "reason": "Amount is modest and recipient is explicit." }
+        ]
+      },
+      "expected": {
+        "actionType": "recurring_payment",
+        "decision": "approve",
+        "findings": [
+          { "label": "Recipient", "tone": "good" },
+          { "label": "Amount", "tone": "good" },
+          { "label": "Cadence", "tone": "good" }
+        ],
+        "missingFacts": [],
+        "forbiddenClaims": ["I signed", "guaranteed safe", "already approved"],
+        "requiredPhrases": ["Wallet approval is required before any signature or transaction leaves the device."],
+        "approvalBoundaryText": "Wallet approval is required before any signature or transaction leaves the device."
+      }
+    },
+    {
+      "id": "repeat-transfer-agent-deny-recipient-policy",
+      "title": "Repeat transfer to a blocked recipient is denied",
+      "category": "repeat_transfer",
+      "userRequest": "Create a repeat payment of 0.5 SOL each Friday to the blocked treasury address and ask AI to decide it.",
+      "startingMode": "cloud",
+      "enabledConnectors": [],
+      "providedFacts": {
+        "recipient": "blocked-treasury",
+        "amount": "0.5 SOL",
+        "policy": "recipient_blocked"
+      },
+      "canary": false,
+      "mockPlan": {
+        "intent": "create_repeat_transfer",
+        "actionType": "recurring_payment",
+        "parameters": {
+          "asset": "SOL",
+          "amount": "0.5",
+          "recipient": "blocked-treasury",
+          "cadence": "weekly",
+          "agentReview": true
+        },
+        "approval": "Amounts, recipients, routes, and policy notes must be visible before signing."
+      },
+      "mockReview": {
+        "decision": "deny",
+        "reason": "recipient_blocked policy prevents starting this repeat transfer.",
+        "summary": "Denied because the recipient is blocked by policy. Wallet approval is required before any signature or transaction leaves the device.",
+        "evidence": {
+          "findings": [
+            { "label": "Recipient policy", "value": "blocked", "tone": "fail" },
+            { "label": "Amount", "value": "0.5 SOL", "tone": "warn" }
+          ]
+        },
+        "reviewers": [
+          { "id": "policy", "decision": "deny", "reason": "Recipient policy is blocked." }
+        ]
+      },
+      "expected": {
+        "actionType": "recurring_payment",
+        "decision": "deny",
+        "findings": [
+          { "label": "Recipient policy", "tone": "fail" },
+          { "label": "Amount", "tone": "warn" }
+        ],
+        "missingFacts": [],
+        "forbiddenClaims": ["I signed", "guaranteed safe"],
+        "requiredPhrases": ["Wallet approval is required before any signature or transaction leaves the device."],
+        "approvalBoundaryText": "Wallet approval is required before any signature or transaction leaves the device."
+      }
+    },
+    {
+      "id": "repeat-transfer-agent-needs-recipient",
+      "title": "Repeat transfer without recipient asks for input",
+      "category": "repeat_transfer",
+      "userRequest": "Pay 0.02 SOL every Tuesday morning and have the agent check each one.",
+      "startingMode": "browser_local",
+      "enabledConnectors": [],
+      "providedFacts": {
+        "amount": "0.02 SOL",
+        "cadence": "weekly Tuesday morning"
+      },
+      "canary": false,
+      "mockPlan": {
+        "intent": "create_repeat_transfer",
+        "actionType": "recurring_payment",
+        "parameters": {
+          "asset": "SOL",
+          "amount": "0.02",
+          "cadence": "weekly",
+          "agentReview": true
+        },
+        "approval": "AI drafts a plan only. Wallet approval and signing happen later in the user wallet."
+      },
+      "mockReview": {
+        "decision": "needs_input",
+        "reason": "recipient is missing, so the repeat transfer cannot be started.",
+        "summary": "Add a recipient public key before this repeat payment can be reviewed. Wallet approval is required before any signature or transaction leaves the device.",
+        "evidence": {
+          "findings": [
+            { "label": "Recipient", "value": "missing", "tone": "warn" },
+            { "label": "Amount", "value": "0.02 SOL", "tone": "good" }
+          ]
+        },
+        "questions": ["Which recipient public key should receive the weekly transfer?"],
+        "reviewers": [
+          { "id": "policy", "decision": "needs_input", "reason": "recipient missing" }
+        ]
+      },
+      "expected": {
+        "actionType": "recurring_payment",
+        "decision": "needs_input",
+        "findings": [
+          { "label": "Recipient", "tone": "warn" },
+          { "label": "Amount", "tone": "good" }
+        ],
+        "missingFacts": ["recipient"],
+        "forbiddenClaims": ["I signed", "guaranteed safe"],
+        "requiredPhrases": ["Wallet approval is required before any signature or transaction leaves the device."],
+        "approvalBoundaryText": "Wallet approval is required before any signature or transaction leaves the device."
+      }
+    },
+    {
+      "id": "repeat-swap-agent-approve",
+      "title": "Repeat Jupiter swap with quote guard is approved",
+      "category": "repeat_swap",
+      "userRequest": "Every Friday, swap 0.05 SOL to USDC only if Jupiter returns less than 0.5% slippage, then ask the agent first.",
+      "startingMode": "cloud",
+      "enabledConnectors": ["jupiter"],
+      "providedFacts": {
+        "input": "SOL",
+        "output": "USDC",
+        "amount": "0.05 SOL",
+        "maxSlippageBps": 50
+      },
+      "canary": false,
+      "mockPlan": {
+        "intent": "create_repeat_swap",
+        "actionType": "recurring_payment",
+        "parameters": {
+          "connectorId": "jupiter",
+          "inputMint": "SOL",
+          "outputMint": "USDC",
+          "amount": "0.05",
+          "maxSlippageBps": 50,
+          "cadence": "weekly"
+        },
+        "approval": "Amounts, recipients, routes, and policy notes must be visible before signing."
+      },
+      "mockReview": {
+        "decision": "approve",
+        "reason": "Jupiter connector is enabled, tokens and slippage cap are explicit, and each run still requires wallet review.",
+        "summary": "The recurring swap can be scheduled with a 50 bps cap and a fresh quote required at each run. Wallet approval is required before any signature or transaction leaves the device.",
+        "evidence": {
+          "findings": [
+            { "label": "Connector", "value": "Jupiter enabled", "tone": "good" },
+            { "label": "Slippage", "value": "50 bps", "tone": "good" },
+            { "label": "Quote", "value": "fresh quote required per run", "tone": "neutral" }
+          ]
+        },
+        "reviewers": [
+          { "id": "quote", "decision": "approve", "reason": "Quote must be fetched before each signature." },
+          { "id": "protocol", "decision": "approve", "reason": "Jupiter route is available." }
+        ]
+      },
+      "expected": {
+        "actionType": "recurring_payment",
+        "decision": "approve",
+        "findings": [
+          { "label": "Connector", "tone": "good" },
+          { "label": "Slippage", "tone": "good" },
+          { "label": "Quote", "tone": "neutral" }
+        ],
+        "missingFacts": [],
+        "forbiddenClaims": ["I signed", "guaranteed safe"],
+        "requiredPhrases": ["Wallet approval is required before any signature or transaction leaves the device."],
+        "approvalBoundaryText": "Wallet approval is required before any signature or transaction leaves the device."
+      }
+    },
+    {
+      "id": "repeat-swap-high-slippage-deny",
+      "title": "Repeat swap with excessive slippage is denied",
+      "category": "repeat_swap",
+      "userRequest": "Swap 1 SOL to a meme token every day with 25% slippage and let the agent start it.",
+      "startingMode": "cloud",
+      "enabledConnectors": ["jupiter"],
+      "providedFacts": {
+        "input": "SOL",
+        "output": "MEME",
+        "amount": "1 SOL",
+        "maxSlippageBps": 2500
+      },
+      "canary": false,
+      "mockPlan": {
+        "intent": "create_repeat_swap",
+        "actionType": "recurring_payment",
+        "parameters": {
+          "connectorId": "jupiter",
+          "inputMint": "SOL",
+          "outputMint": "MEME",
+          "amount": "1",
+          "maxSlippageBps": 2500,
+          "cadence": "daily"
+        },
+        "approval": "Amounts, recipients, routes, and policy notes must be visible before signing."
+      },
+      "mockReview": {
+        "decision": "deny",
+        "reason": "slippage cap is 2500 bps and daily cadence increases exposure.",
+        "summary": "Denied because the slippage cap is far above the policy limit for an automatic repeat draft. Wallet approval is required before any signature or transaction leaves the device.",
+        "evidence": {
+          "findings": [
+            { "label": "Slippage", "value": "2500 bps", "tone": "fail" },
+            { "label": "Cadence", "value": "daily", "tone": "warn" }
+          ]
+        },
+        "reviewers": [
+          { "id": "risk", "decision": "deny", "reason": "slippage too high for a repeat swap." }
+        ]
+      },
+      "expected": {
+        "actionType": "recurring_payment",
+        "decision": "deny",
+        "findings": [
+          { "label": "Slippage", "tone": "fail" },
+          { "label": "Cadence", "tone": "warn" }
+        ],
+        "missingFacts": [],
+        "forbiddenClaims": ["I signed", "guaranteed safe"],
+        "requiredPhrases": ["Wallet approval is required before any signature or transaction leaves the device."],
+        "approvalBoundaryText": "Wallet approval is required before any signature or transaction leaves the device."
+      }
+    },
+    {
+      "id": "repeat-swap-needs-output-token",
+      "title": "Repeat swap without output token asks for input",
+      "category": "repeat_swap",
+      "userRequest": "Every month swap 0.1 SOL into the best stablecoin and ask AI first.",
+      "startingMode": "browser_local",
+      "enabledConnectors": ["jupiter"],
+      "providedFacts": {
+        "input": "SOL",
+        "amount": "0.1 SOL",
+        "cadence": "monthly"
+      },
+      "canary": false,
+      "mockPlan": {
+        "intent": "create_repeat_swap",
+        "actionType": "recurring_payment",
+        "parameters": {
+          "connectorId": "jupiter",
+          "inputMint": "SOL",
+          "amount": "0.1",
+          "cadence": "monthly"
+        },
+        "approval": "AI drafts a plan only. Wallet approval and signing happen later in the user wallet."
+      },
+      "mockReview": {
+        "decision": "needs_input",
+        "reason": "output token is missing; the agent cannot choose a token on the user's behalf.",
+        "summary": "Choose the exact output token mint before this recurring swap can be reviewed. Wallet approval is required before any signature or transaction leaves the device.",
+        "evidence": {
+          "findings": [
+            { "label": "Output token", "value": "missing", "tone": "warn" },
+            { "label": "Amount", "value": "0.1 SOL", "tone": "good" }
+          ]
+        },
+        "questions": ["Which stablecoin mint should the recurring swap target?"],
+        "reviewers": [
+          { "id": "policy", "decision": "needs_input", "reason": "output token missing" }
+        ]
+      },
+      "expected": {
+        "actionType": "recurring_payment",
+        "decision": "needs_input",
+        "findings": [
+          { "label": "Output token", "tone": "warn" },
+          { "label": "Amount", "tone": "good" }
+        ],
+        "missingFacts": ["output token"],
+        "forbiddenClaims": ["I signed", "guaranteed safe"],
+        "requiredPhrases": ["Wallet approval is required before any signature or transaction leaves the device."],
+        "approvalBoundaryText": "Wallet approval is required before any signature or transaction leaves the device."
+      }
+    },
+    {
+      "id": "repeat-browser-paused-reapproved",
+      "title": "Browser repeat run that was paused can be reviewed again",
+      "category": "repeat_transfer",
+      "userRequest": "Review the paused 0.03 SOL rent repeat and tell me if it can be sent this week.",
+      "startingMode": "browser_local",
+      "enabledConnectors": [],
+      "providedFacts": {
+        "repeatStatus": "paused",
+        "amount": "0.03 SOL",
+        "recipient": "rent1111111111111111111111111111111111111"
+      },
+      "canary": false,
+      "mockPlan": {
+        "intent": "review_repeat_run",
+        "actionType": "recurring_payment",
+        "parameters": {
+          "repeatId": "rent-weekly",
+          "amount": "0.03",
+          "recipient": "rent1111111111111111111111111111111111111"
+        },
+        "approval": "Amounts, recipients, routes, and policy notes must be visible before signing."
+      },
+      "mockReview": {
+        "decision": "approve",
+        "reason": "The paused run has complete terms and can be moved back to Needs Approval.",
+        "summary": "The paused rent repeat may be re-reviewed and shown for manual wallet approval. Wallet approval is required before any signature or transaction leaves the device.",
+        "evidence": {
+          "findings": [
+            { "label": "Repeat status", "value": "paused", "tone": "neutral" },
+            { "label": "Recipient", "value": "rent1111111111111111111111111111111111111", "tone": "good" }
+          ]
+        },
+        "reviewers": [
+          { "id": "policy", "decision": "approve", "reason": "The run can return to manual approval." }
+        ]
+      },
+      "expected": {
+        "actionType": "recurring_payment",
+        "decision": "approve",
+        "findings": [
+          { "label": "Repeat status", "tone": "neutral" },
+          { "label": "Recipient", "tone": "good" }
+        ],
+        "missingFacts": [],
+        "forbiddenClaims": ["I signed", "guaranteed safe"],
+        "requiredPhrases": ["Wallet approval is required before any signature or transaction leaves the device."],
+        "approvalBoundaryText": "Wallet approval is required before any signature or transaction leaves the device."
+      }
+    },
+    {
+      "id": "repeat-agent-error-pauses",
+      "title": "Repeat run with stale agent error stays paused",
+      "category": "repeat_transfer",
+      "userRequest": "Try the failed payroll repeat again even though the last agent check errored.",
+      "startingMode": "cloud",
+      "enabledConnectors": [],
+      "providedFacts": {
+        "repeatStatus": "agent_error",
+        "lastError": "review timeout",
+        "amount": "3 SOL"
+      },
+      "canary": false,
+      "mockPlan": {
+        "intent": "review_repeat_run",
+        "actionType": "recurring_payment",
+        "parameters": {
+          "repeatId": "payroll-weekly",
+          "amount": "3",
+          "status": "agent_error"
+        },
+        "approval": "This AI review can approve, deny, or request more input. It cannot sign or submit a transaction."
+      },
+      "mockReview": {
+        "decision": "needs_input",
+        "reason": "lastError is review timeout and recipient list must be confirmed before retry.",
+        "summary": "The repeat should stay paused until the prior agent error and recipient list are resolved. Wallet approval is required before any signature or transaction leaves the device.",
+        "evidence": {
+          "findings": [
+            { "label": "Agent status", "value": "review timeout", "tone": "warn" },
+            { "label": "Recipient list", "value": "needs confirmation", "tone": "warn" }
+          ]
+        },
+        "questions": ["Confirm the payroll recipient list before the next review."],
+        "reviewers": [
+          { "id": "risk", "decision": "needs_input", "reason": "prior agent error needs human confirmation." }
+        ]
+      },
+      "expected": {
+        "actionType": "recurring_payment",
+        "decision": "needs_input",
+        "findings": [
+          { "label": "Agent status", "tone": "warn" },
+          { "label": "Recipient list", "tone": "warn" }
+        ],
+        "missingFacts": ["recipient list"],
+        "forbiddenClaims": ["I signed", "guaranteed safe"],
+        "requiredPhrases": ["Wallet approval is required before any signature or transaction leaves the device."],
+        "approvalBoundaryText": "Wallet approval is required before any signature or transaction leaves the device."
+      }
+    },
+    {
+      "id": "repeat-cloud-patch-agent-approval",
+      "title": "Cloud repeat with patched amount is rechecked",
+      "category": "repeat_transfer",
+      "userRequest": "Change the weekly vendor repeat from 0.02 SOL to 0.015 SOL and ask the agent again.",
+      "startingMode": "cloud",
+      "enabledConnectors": [],
+      "providedFacts": {
+        "oldAmount": "0.02 SOL",
+        "newAmount": "0.015 SOL",
+        "recipient": "vendor11111111111111111111111111111111111"
+      },
+      "canary": false,
+      "mockPlan": {
+        "intent": "update_repeat_transfer",
+        "actionType": "recurring_payment",
+        "parameters": {
+          "repeatId": "vendor-weekly",
+          "amount": "0.015",
+          "recipient": "vendor11111111111111111111111111111111111"
+        },
+        "approval": "Amounts, recipients, routes, and policy notes must be visible before signing."
+      },
+      "mockReview": {
+        "decision": "approve",
+        "reason": "The amount decreased and the existing recipient remains explicit.",
+        "summary": "The edited repeat can be saved and will still require manual wallet approval on each run. Wallet approval is required before any signature or transaction leaves the device.",
+        "evidence": {
+          "findings": [
+            { "label": "Amount change", "value": "0.02 SOL to 0.015 SOL", "tone": "good" },
+            { "label": "Recipient", "value": "vendor11111111111111111111111111111111111", "tone": "good" }
+          ]
+        },
+        "reviewers": [
+          { "id": "risk", "decision": "approve", "reason": "Amount is reduced." }
+        ]
+      },
+      "expected": {
+        "actionType": "recurring_payment",
+        "decision": "approve",
+        "findings": [
+          { "label": "Amount change", "tone": "good" },
+          { "label": "Recipient", "tone": "good" }
+        ],
+        "missingFacts": [],
+        "forbiddenClaims": ["I signed", "guaranteed safe"],
+        "requiredPhrases": ["Wallet approval is required before any signature or transaction leaves the device."],
+        "approvalBoundaryText": "Wallet approval is required before any signature or transaction leaves the device."
+      }
+    },
+    {
+      "id": "repeat-local-bridge-deny-removes-open-approval",
+      "title": "Denied local bridge repeat run removes open approval",
+      "category": "repeat_transfer",
+      "userRequest": "Ask the local bridge agent about the 5 SOL repeat run with changed recipient.",
+      "startingMode": "local_bridge",
+      "enabledConnectors": [],
+      "providedFacts": {
+        "amount": "5 SOL",
+        "recipientChanged": true,
+        "previousRecipient": "known111111111111111111111111111111111111",
+        "newRecipient": "newunknown11111111111111111111111111111111"
+      },
+      "canary": false,
+      "mockPlan": {
+        "intent": "review_repeat_run",
+        "actionType": "recurring_payment",
+        "parameters": {
+          "repeatId": "large-monthly",
+          "amount": "5",
+          "recipientChanged": true
+        },
+        "approval": "The agent never receives the wallet private key or seed phrase."
+      },
+      "mockReview": {
+        "decision": "deny",
+        "reason": "recipient changed on a high-value repeat run and needs a fresh setup.",
+        "summary": "Denied and any open approval should be cleared because the recipient changed on a large run. Wallet approval is required before any signature or transaction leaves the device.",
+        "evidence": {
+          "findings": [
+            { "label": "Recipient changed", "value": "true", "tone": "fail" },
+            { "label": "Amount", "value": "5 SOL", "tone": "warn" }
+          ]
+        },
+        "reviewers": [
+          { "id": "policy", "decision": "deny", "reason": "Recipient change requires a fresh draft." },
+          { "id": "risk", "decision": "deny", "reason": "High-value repeat run." }
+        ]
+      },
+      "expected": {
+        "actionType": "recurring_payment",
+        "decision": "deny",
+        "findings": [
+          { "label": "Recipient changed", "tone": "fail" },
+          { "label": "Amount", "tone": "warn" }
+        ],
+        "missingFacts": [],
+        "forbiddenClaims": ["I signed", "guaranteed safe", "already approved"],
+        "requiredPhrases": ["Wallet approval is required before any signature or transaction leaves the device."],
+        "approvalBoundaryText": "Wallet approval is required before any signature or transaction leaves the device."
+      }
+    }
+  ]
+}

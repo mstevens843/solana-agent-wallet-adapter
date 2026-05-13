@@ -49,20 +49,22 @@ describe('MCP connector registry', () => {
     expect(jupiter?.limitations.join(' ')).toContain('quote preview, direct execution, and approval-time quote refresh require a Jupiter API key');
   });
 
-  it('registers planned connectors as explicit unavailable runtime capabilities', () => {
+  it('registers planned connectors as Blink-backed action capabilities', () => {
     const meteora = listConnectorCapabilities(DEFAULT_CONFIG).find((connector) => connector.id === 'meteora');
 
     expect(meteora).toMatchObject({
       name: 'Meteora',
       readCapabilities: [],
-      writeCapabilities: [],
-      executionMode: 'unavailable',
+      writeCapabilities: ['blinks'],
+      actionTools: expect.arrayContaining(['solana_prepare_blink_action']),
+      executionMode: 'wallet_approval',
       readiness: {
         reads: { ready: false },
-        actions: { ready: false },
+        actions: { ready: true },
       },
     });
     expect(meteora?.limitations.join(' ')).toContain('does not expose first-class reads');
+    expect(meteora?.limitations.join(' ')).toContain('URL-backed Blink/Solana Action preparation only');
   });
 
   it('resolves common aliases without reading browser code', () => {

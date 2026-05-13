@@ -30,6 +30,11 @@ import type {
 } from './adapters/kamino/index.js';
 import { formatRawAmount, parseDecimalAmount } from './amounts.js';
 import {
+  fetchBlinkMetadata,
+  prepareBlinkAction as prepareBlinkActionRequest,
+  type BlinkActionMetadata,
+} from './blinkActions.js';
+import {
   DEFAULT_TOKEN_REGISTRY,
   USDC_MINT,
   WSOL_MINT,
@@ -102,6 +107,21 @@ export interface PrepareTransferSplInput {
 export interface PrepareSwapInput extends SwapInput {
   dueAt?: string;
   note?: string;
+}
+
+export interface PrepareBlinkActionInput {
+  connector?: string;
+  protocol?: string;
+  operation?: string;
+  blinkUrl: string;
+  account?: string;
+  parameters?: Record<string, string>;
+  expectedAmount?: string;
+  expectedToken?: string;
+  expectedRecipient?: string;
+  position?: string;
+  note?: string;
+  dueAt?: string;
 }
 
 export interface RecurringPaymentInput {
@@ -337,6 +357,65 @@ export class AgentWalletActionService {
     const result = await action.prepare(input, this.adapterContext(adapter));
     const stored = await this.store().addAction(result.addInput);
     return { preparedAction: stored, preview: result.preview };
+  }
+
+  async prepareBlinkAction(input: PrepareBlinkActionInput): Promise<Record<string, unknown>> {
+    requireActionAllowed(this.config);
+    const connector = input.connector ? getConnector(input.connector) : undefined;
+    if (input.connector && (!connector || !connector.writeCapabilities.includes('blinks'))) {
+      throw new ProtocolError('invalid_request', 'Connector is not registered for Blink-backed actions.');
+    }
+    if (connector) {
+      assertConnectorCluster(connector, this.config.cluster);
+    }
+
+    const walletAddress = await this.backend.getAddress();
+    const account = input.account?.trim() || walletAddress;
+    if (!account) {
+      throw new ProtocolError('invalid_request', 'Wallet account is required before preparing this Blink action.');
+    }
+    if (account !== walletAddress) {
+      throw new ProtocolError('unauthorized', 'Prepared action belongs to a different wallet.');
+    }
+
+    const metadata = await fetchBlinkMetadata({ url: input.blinkUrl }).catch((): BlinkActionMetadata | undefined => undefined);
+    const prepared = await prepareBlinkActionRequest({
+      url: input.blinkUrl,
+      account,
+      ...(input.parameters !== undefined && { parameters: input.parameters }),
+    });
+    const protocol = cleanOptionalString(input.protocol) ?? connector?.name ?? metadata?.title ?? prepared.title ?? 'Blink';
+    const operation = cleanOptionalString(input.operation) ?? prepared.label ?? metadata?.label ?? 'Blink action';
+    const action = await this.store().addAction({
+      kind: 'blink_action',
+      walletAddress,
+      cluster: this.config.cluster,
+      summary: `${protocol}: ${operation}`.slice(0, 140),
+      params: {
+        ...(connector ? { connectorId: connector.id } : {}),
+        protocol,
+        operation,
+        blinkUrl: prepared.actionUrl,
+        actionUrl: prepared.actionUrl,
+        transactionBase64: prepared.transactionBase64,
+        connectorActionSource: 'blink',
+        approvalBoundary: CONNECTOR_APPROVAL_BOUNDARY,
+        ...(prepared.title ? { blinkTitle: prepared.title } : metadata?.title ? { blinkTitle: metadata.title } : {}),
+        ...(prepared.label ? { blinkLabel: prepared.label } : metadata?.label ? { blinkLabel: metadata.label } : {}),
+        ...(prepared.message ? { blinkMessage: prepared.message } : {}),
+        ...(input.parameters !== undefined ? { parameters: input.parameters } : {}),
+        ...(cleanOptionalString(input.expectedAmount) ? { expectedAmount: cleanOptionalString(input.expectedAmount) } : {}),
+        ...(cleanOptionalString(input.expectedToken) ? { expectedToken: cleanOptionalString(input.expectedToken) } : {}),
+        ...(cleanOptionalString(input.expectedRecipient) ? { expectedRecipient: cleanOptionalString(input.expectedRecipient) } : {}),
+        ...(cleanOptionalString(input.position) ? { position: cleanOptionalString(input.position) } : {}),
+      },
+      ...(input.dueAt !== undefined && { dueAt: input.dueAt }),
+      ...(input.note !== undefined && { note: input.note }),
+    });
+    return {
+      preparedAction: action,
+      ...(metadata ? { metadata } : {}),
+    };
   }
 
   connectorCapabilities(input: { connectorId?: string } = {}): Record<string, unknown> {
@@ -828,6 +907,8 @@ export class AgentWalletActionService {
       case 'kamino_deposit':
       case 'kamino_withdraw':
         return this.executePreparedAdapterAction(action);
+      case 'blink_action':
+        return this.executePreparedBlinkAction(action);
     }
   }
 
@@ -908,6 +989,40 @@ export class AgentWalletActionService {
       throw new ProtocolError('wallet_unreachable', 'Swap execution did not return a transaction signature.');
     }
     return result as Record<string, unknown> & { txid: string };
+  }
+
+  private async executePreparedBlinkAction(action: PreparedAction): Promise<Record<string, unknown> & { txid: string }> {
+    const transactionBase64 = await this.blinkTransactionBase64ForAction(action);
+    const summary = action.summary || 'Blink action';
+    await this.simulateBeforeSign(transactionBase64, summary);
+    const signed = await this.client.signTransaction(transactionBase64, {
+      cluster: this.config.cluster,
+      summary,
+    });
+    const txid = await this.connection.sendRawTransaction(Buffer.from(signed.signature, 'base64'), {
+      preflightCommitment: 'confirmed',
+      maxRetries: 5,
+    });
+    return {
+      txid,
+      explorerUrl: explorerUrl(txid, this.config.cluster),
+      connectorId: action.params.connectorId ?? null,
+      protocol: action.params.protocol ?? null,
+      operation: action.params.operation ?? null,
+    };
+  }
+
+  private async blinkTransactionBase64ForAction(action: PreparedAction): Promise<string> {
+    const stored = typeof action.params.transactionBase64 === 'string'
+      ? action.params.transactionBase64.trim()
+      : '';
+    if (stored) return stored;
+    const refreshed = await prepareBlinkActionRequest({
+      url: requireStringParam(action, 'blinkUrl'),
+      account: action.walletAddress,
+      parameters: stringRecordParam(action, 'parameters'),
+    });
+    return refreshed.transactionBase64;
   }
 
   private async signAndBroadcastTransaction(transaction: Transaction, summary: string): Promise<string> {
@@ -1332,11 +1447,28 @@ function requireStringParam(action: PreparedAction, key: string): string {
   return value;
 }
 
+function stringRecordParam(action: PreparedAction, key: string): Record<string, string> | undefined {
+  const value = action.params[key];
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return undefined;
+  const entries = Object.entries(value)
+    .map(([entryKey, entryValue]) => [
+      entryKey,
+      typeof entryValue === 'string' ? entryValue : '',
+    ] as const)
+    .filter((entry): entry is readonly [string, string] => Boolean(entry[1]));
+  return entries.length ? Object.fromEntries(entries) : undefined;
+}
+
 function requireString(value: unknown, label: string): string {
   if (typeof value !== 'string' || !value.trim()) {
     throw new ProtocolError('invalid_request', `${label} is required.`);
   }
   return value.trim();
+}
+
+function cleanOptionalString(value: string | undefined): string | undefined {
+  const trimmed = value?.trim();
+  return trimmed || undefined;
 }
 
 async function checkRpc(rpcUrl: string): Promise<{ ok: boolean; message: string }> {

@@ -1,0 +1,189 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://solana-agent-wallet-adapter/spec/evals/agentic-scenarios.schema.json",
+  "title": "Agentic Scenario Corpus",
+  "description": "Deterministic product-level scenarios for Agentic repeat payments, connector actions, denials, needs-input behavior, and Q&A. Fixtures intentionally use a small subset of live planner/reviewer interfaces so they stay readable.",
+  "type": "object",
+  "required": ["version", "scenarios"],
+  "additionalProperties": false,
+  "properties": {
+    "$schema": { "type": "string" },
+    "version": { "type": "integer", "const": 1 },
+    "scenarios": {
+      "type": "array",
+      "minItems": 1,
+      "items": { "$ref": "#/$defs/scenario" }
+    }
+  },
+  "$defs": {
+    "scenario": {
+      "type": "object",
+      "required": [
+        "id",
+        "title",
+        "category",
+        "userRequest",
+        "startingMode",
+        "enabledConnectors",
+        "providedFacts",
+        "canary",
+        "mockPlan",
+        "mockReview",
+        "expected"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "type": "string",
+          "pattern": "^[a-z0-9]+(?:-[a-z0-9]+)*$"
+        },
+        "title": { "type": "string", "minLength": 1 },
+        "category": {
+          "type": "string",
+          "enum": [
+            "repeat_transfer",
+            "repeat_swap",
+            "kamino_deposit",
+            "kamino_withdraw",
+            "kamino_read",
+            "jupiter_review",
+            "connector_unavailable",
+            "unsupported_action",
+            "connector_disabled",
+            "qa_capability",
+            "qa_denial",
+            "qa_missing_facts",
+            "qa_connector"
+          ]
+        },
+        "userRequest": { "type": "string", "minLength": 1 },
+        "startingMode": {
+          "type": "string",
+          "enum": ["browser_local", "local_bridge", "cloud"]
+        },
+        "enabledConnectors": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "enum": ["kamino", "jupiter", "meteora", "raydium", "orca", "marginfi", "drift", "lulo", "save"]
+          }
+        },
+        "providedFacts": {
+          "type": "object",
+          "additionalProperties": true
+        },
+        "canary": { "type": "boolean" },
+        "mockPlan": {
+          "anyOf": [
+            { "type": "null" },
+            {
+              "type": "object",
+              "required": ["intent", "actionType", "parameters"],
+              "additionalProperties": true,
+              "properties": {
+                "intent": { "type": "string" },
+                "actionType": {
+                  "type": "string",
+                  "enum": ["transfer_sol", "transfer_spl", "swap", "recurring_payment", "kamino_deposit", "kamino_withdraw", "read_only", "unsupported", "blink_action"]
+                },
+                "parameters": {
+                  "type": "object",
+                  "additionalProperties": true
+                },
+                "approval": { "type": "string" }
+              }
+            }
+          ]
+        },
+        "mockReview": {
+          "type": "object",
+          "required": ["decision", "summary", "reason", "evidence"],
+          "additionalProperties": true,
+          "properties": {
+            "decision": {
+              "type": "string",
+              "enum": ["approve", "deny", "needs_input"]
+            },
+            "summary": { "type": "string" },
+            "reason": { "type": "string" },
+            "evidence": {
+              "type": "object",
+              "additionalProperties": true
+            },
+            "reviewers": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "required": ["id", "decision", "reason"],
+                "additionalProperties": true,
+                "properties": {
+                  "id": {
+                    "type": "string",
+                    "enum": ["risk", "quote", "policy", "protocol"]
+                  },
+                  "decision": {
+                    "type": "string",
+                    "enum": ["approve", "deny", "needs_input"]
+                  },
+                  "reason": { "type": "string" }
+                }
+              }
+            }
+          }
+        },
+        "expected": {
+          "type": "object",
+          "required": [
+            "actionType",
+            "decision",
+            "findings",
+            "missingFacts",
+            "forbiddenClaims",
+            "requiredPhrases",
+            "approvalBoundaryText"
+          ],
+          "additionalProperties": false,
+          "properties": {
+            "actionType": {
+              "type": ["string", "null"],
+              "enum": ["transfer_sol", "transfer_spl", "swap", "recurring_payment", "kamino_deposit", "kamino_withdraw", "read_only", "unsupported", "blink_action", null]
+            },
+            "decision": {
+              "type": "string",
+              "enum": ["approve", "deny", "needs_input"]
+            },
+            "findings": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "required": ["label", "tone"],
+                "additionalProperties": false,
+                "properties": {
+                  "label": { "type": "string" },
+                  "value": { "type": "string" },
+                  "tone": {
+                    "type": "string",
+                    "enum": ["good", "warn", "neutral", "fail"]
+                  }
+                }
+              }
+            },
+            "missingFacts": {
+              "type": "array",
+              "items": { "type": "string" }
+            },
+            "forbiddenClaims": {
+              "type": "array",
+              "items": { "type": "string" }
+            },
+            "requiredPhrases": {
+              "type": "array",
+              "items": { "type": "string" }
+            },
+            "approvalBoundaryText": { "type": "string" }
+          }
+        }
+      }
+    }
+  }
+}

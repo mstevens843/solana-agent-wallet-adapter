@@ -21,7 +21,14 @@ import {
 } from '@solana-agent-wallet-adapter/mcp-server';
 
 type Cluster = 'mainnet-beta' | 'testnet' | 'devnet' | 'localnet';
-type PreparedActionKind = 'transfer_sol' | 'transfer_spl' | 'swap';
+type PreparedActionKind =
+  | 'transfer_sol'
+  | 'transfer_spl'
+  | 'swap'
+  | 'kamino_deposit'
+  | 'kamino_withdraw'
+  | 'blink_action'
+  | (string & {});
 type PreparedActionStatus =
   | 'scheduled'
   | 'ready'
@@ -57,6 +64,7 @@ const SETUP_ENV_KEYS = [
   'BIRDEYE_API_KEY',
   'BIRDEYE_REST_BASE',
 ] as const;
+const BLINK_BOUNDARY_COPY = 'Prepared Blink action. Wallet approval required.';
 
 interface ParsedArgs {
   options: GlobalOptions;
@@ -629,15 +637,34 @@ function parseSetupCommandOptions(args: string[]): SetupCommandOptions {
 
 async function dispatchInbox(parsed: ParsedArgs): Promise<unknown> {
   const op = parsed.positionals[1] ?? 'list';
-  if (op === 'list') {
-    return refreshPreparedActions(parsed.options);
+  if (op === 'list' || op === 'compact') {
+    const response = await refreshPreparedActions(parsed.options);
+    if (parsed.options.json) {
+      return response;
+    }
+    const filter = parsed.positionals[2] ?? 'all';
+    const visible = filterPreparedActions(response.actions, filter);
+    printSection('Approval Inbox');
+    console.log(`${visible.length} shown, ${response.actions.length} total. Filter: ${filter}`);
+    if (op === 'compact') {
+      renderPreparedActionsCompact(visible);
+    } else {
+      renderPreparedActionsDetailed(visible);
+    }
+    return NO_OUTPUT;
   }
   if (op === 'inspect') {
     const actionId = parsed.positionals[2];
     if (!actionId) {
       throw new Error('Usage: solana-agent-wallet inbox inspect <action-id>');
     }
-    return inspectPreparedAction(parsed.options, actionId);
+    const action = await inspectPreparedAction(parsed.options, actionId);
+    if (parsed.options.json) {
+      return action;
+    }
+    printSection(`Prepared Action ${action.id}`);
+    printPreparedActionDetail(action, 0);
+    return NO_OUTPUT;
   }
 
   const actionId = parsed.positionals[2];
@@ -729,7 +756,24 @@ async function dispatchSchedule(parsed: ParsedArgs): Promise<unknown> {
 
 async function dispatchPrepare(parsed: ParsedArgs): Promise<unknown> {
   const kind = parsed.positionals[1];
-  const rawArgs = commandValues(parsed.positionals.slice(2), new Set(['--note', '--due-at', '--slippage-bps']));
+  const prepareValueFlags = new Set([
+    '--note',
+    '--due-at',
+    '--slippage-bps',
+    '--url',
+    '--blink-url',
+    '--connector',
+    '--protocol',
+    '--operation',
+    '--account',
+    '--expected-amount',
+    '--expected-token',
+    '--expected-recipient',
+    '--position',
+    '--parameter',
+    '--param',
+  ]);
+  const rawArgs = commandValues(parsed.positionals.slice(2), prepareValueFlags);
   const note = optionValue(parsed.positionals, '--note');
   const dueAt = optionValue(parsed.positionals, '--due-at');
   const slippageBpsRaw = optionValue(parsed.positionals, '--slippage-bps');
@@ -776,7 +820,36 @@ async function dispatchPrepare(parsed: ParsedArgs): Promise<unknown> {
     });
   }
 
-  throw new Error('Usage: solana-agent-wallet prepare <transfer-sol|transfer-spl|swap> ...');
+  if (kind === 'blink') {
+    const blinkUrl = optionValue(parsed.positionals, '--url') ?? optionValue(parsed.positionals, '--blink-url') ?? rawArgs[0];
+    if (!blinkUrl) {
+      throw new Error('Usage: solana-agent-wallet prepare blink --url <url> [--connector <id>] [--operation <label>]');
+    }
+    const parameters = parseStringParameters([
+      ...optionValues(parsed.positionals, '--parameter'),
+      ...optionValues(parsed.positionals, '--param'),
+    ]);
+    await connectOneShot(parsed.options);
+    return bridgeRequest(parsed.options, '/bridge/action/prepare-blink', {
+      method: 'POST',
+      body: JSON.stringify(removeUndefined({
+        blinkUrl,
+        connector: optionValue(parsed.positionals, '--connector'),
+        protocol: optionValue(parsed.positionals, '--protocol'),
+        operation: optionValue(parsed.positionals, '--operation'),
+        account: optionValue(parsed.positionals, '--account'),
+        expectedAmount: optionValue(parsed.positionals, '--expected-amount'),
+        expectedToken: optionValue(parsed.positionals, '--expected-token'),
+        expectedRecipient: optionValue(parsed.positionals, '--expected-recipient'),
+        position: optionValue(parsed.positionals, '--position'),
+        parameters: Object.keys(parameters).length > 0 ? parameters : undefined,
+        dueAt,
+        note,
+      })),
+    });
+  }
+
+  throw new Error('Usage: solana-agent-wallet prepare <transfer-sol|transfer-spl|swap|blink> ...');
 }
 
 async function runTerminalApp(parsed: ParsedArgs): Promise<void> {
@@ -2258,6 +2331,9 @@ function walletHostLaunchUrl(options: GlobalOptions): string {
 }
 
 async function openUrl(url: string): Promise<void> {
+  if (process.env.AGENT_WALLET_SKIP_OPEN === '1') {
+    return;
+  }
   const platform = process.platform;
   const command = platform === 'darwin' ? 'open' : platform === 'win32' ? 'cmd' : 'xdg-open';
   const args = platform === 'win32' ? ['/C', 'start', '', url] : [url];
@@ -2457,17 +2533,24 @@ function renderPreparedActionsDetailed(actions: PreparedAction[]): void {
 }
 
 function printPreparedActionDetail(action: PreparedAction, row: number): void {
+  const blink = isBlinkAction(action);
   const amount = amountLabel(action);
   const token = tokenLabel(action);
-  const recipient = stringParam(action, 'recipient');
+  const recipient = recipientLabel(action);
   console.log(row > 0 ? `[${row}] ${action.id}` : action.id);
+  if (blink) {
+    console.log('  Blink action');
+  }
   console.log(`  Status: ${action.status}${action.txStatus ? ` (${action.txStatus})` : ''}`);
   console.log(`  Kind: ${action.kind}`);
   console.log(`  Summary: ${action.summary}`);
   console.log(`  Due: ${timeLabel(action.dueAt)} (${action.dueAt})`);
   console.log(`  Wallet: ${action.walletAddress}`);
-  if (amount || token || recipient) {
+  if (!blink && (amount || token || recipient)) {
     console.log(`  Action: ${[amount, token, recipient ? `to ${recipient}` : ''].filter(Boolean).join(' ')}`);
+  }
+  if (blink) {
+    printBlinkActionDetail(action);
   }
   if (action.note) {
     console.log(`  Note: ${action.note}`);
@@ -2481,8 +2564,9 @@ function printPreparedActionDetail(action: PreparedAction, row: number): void {
   if (action.error) {
     console.log(`  Error: ${action.error}`);
   }
-  if (Object.keys(action.params).length > 0) {
-    console.log(`  Params: ${stableJson(action.params).replace(/\n/g, '\n    ')}`);
+  const params = printablePreparedActionParams(action);
+  if (Object.keys(params).length > 0) {
+    console.log(`  Params: ${stableJson(params).replace(/\n/g, '\n    ')}`);
   }
 }
 
@@ -2495,9 +2579,9 @@ function renderPreparedActionsCompact(actions: PreparedAction[]): void {
     actions.map((action, index) => [
       String(index + 1),
       action.status,
-      action.kind,
+      preparedActionKindLabel(action),
       timeLabel(action.dueAt),
-      action.summary,
+      preparedActionSummaryLabel(action),
       action.id,
     ]),
     ['#', 'Status', 'Kind', 'Due', 'Summary', 'Id'],
@@ -2522,7 +2606,87 @@ function renderRecurringPayments(payments: RecurringPayment[]): void {
   );
 }
 
+function isBlinkAction(action: PreparedAction): boolean {
+  return action.kind === 'blink_action'
+    || stringParam(action, 'connectorActionSource') === 'blink'
+    || Boolean(stringParam(action, 'blinkUrl') || stringParam(action, 'actionUrl'));
+}
+
+function preparedActionKindLabel(action: PreparedAction): string {
+  return isBlinkAction(action) ? 'blink' : action.kind;
+}
+
+function preparedActionSummaryLabel(action: PreparedAction): string {
+  if (!isBlinkAction(action)) {
+    return action.summary;
+  }
+  return [blinkProtocolLabel(action), blinkOperationLabel(action), blinkUrlHost(action)].filter(Boolean).join(' ');
+}
+
+function printBlinkActionDetail(action: PreparedAction): void {
+  const connector = firstStringParam(action, 'connectorId', 'connector');
+  const protocol = firstStringParam(action, 'protocol') || connector || 'Blink';
+  const operation = blinkOperationLabel(action);
+  const url = firstStringParam(action, 'actionUrl', 'blinkUrl');
+  const expected = expectedBlinkLabel(action);
+  console.log(`  Protocol: ${protocol}`);
+  if (connector && connector !== protocol) {
+    console.log(`  Connector: ${connector}`);
+  }
+  console.log(`  Operation: ${operation}`);
+  if (url) {
+    console.log(`  URL: ${url}`);
+    console.log(`  Host: ${blinkUrlHost(action)}`);
+  }
+  if (expected) {
+    console.log(`  Expected: ${expected}`);
+  }
+  const position = firstStringParam(action, 'position');
+  if (position) {
+    console.log(`  Position: ${position}`);
+  }
+  const message = firstStringParam(action, 'blinkMessage');
+  if (message) {
+    console.log(`  Message: ${message}`);
+  }
+  if (typeof action.params.transactionBase64 === 'string') {
+    console.log('  Transaction: prepared transaction bytes present');
+  }
+  if (Array.isArray(action.params.transactions)) {
+    console.log(`  Transactions: ${action.params.transactions.length} prepared transaction entries`);
+  }
+  console.log(`  Boundary: ${BLINK_BOUNDARY_COPY}`);
+}
+
+function blinkProtocolLabel(action: PreparedAction): string {
+  return firstStringParam(action, 'protocol', 'connectorId', 'connector') || 'Blink';
+}
+
+function blinkOperationLabel(action: PreparedAction): string {
+  return firstStringParam(action, 'operation', 'blinkLabel', 'blinkTitle') || action.summary || 'Blink action';
+}
+
+function blinkUrlHost(action: PreparedAction): string {
+  const url = firstStringParam(action, 'actionUrl', 'blinkUrl');
+  if (!url) return '';
+  try {
+    return new URL(url).host;
+  } catch {
+    return short(url, 48);
+  }
+}
+
+function expectedBlinkLabel(action: PreparedAction): string {
+  const amount = amountLabel(action);
+  const token = tokenLabel(action);
+  const recipient = recipientLabel(action);
+  return [amount, token, recipient ? `to ${recipient}` : ''].filter(Boolean).join(' ');
+}
+
 function amountLabel(action: PreparedAction): string {
+  if (isBlinkAction(action)) {
+    return firstStringParam(action, 'expectedAmount', 'amount');
+  }
   if (action.kind === 'transfer_sol') {
     return stringParam(action, 'amountSol') || stringParam(action, 'amount');
   }
@@ -2530,15 +2694,57 @@ function amountLabel(action: PreparedAction): string {
 }
 
 function tokenLabel(action: PreparedAction): string {
+  if (isBlinkAction(action)) {
+    return firstStringParam(action, 'expectedToken', 'token');
+  }
   if (action.kind === 'transfer_sol') {
     return 'SOL';
   }
   return stringParam(action, 'token') || stringParam(action, 'inputToken');
 }
 
+function recipientLabel(action: PreparedAction): string {
+  return isBlinkAction(action)
+    ? firstStringParam(action, 'expectedRecipient', 'recipient')
+    : stringParam(action, 'recipient');
+}
+
+function firstStringParam(action: PreparedAction, ...keys: string[]): string {
+  for (const key of keys) {
+    const value = stringParam(action, key);
+    if (value) return value;
+  }
+  return '';
+}
+
 function stringParam(action: PreparedAction, key: string): string {
   const value = action.params[key];
   return typeof value === 'string' ? value : '';
+}
+
+function printablePreparedActionParams(action: PreparedAction): JsonRecord {
+  const hidden = new Set(['transactionBase64', 'transactions']);
+  if (isBlinkAction(action)) {
+    for (const key of [
+      'actionUrl',
+      'blinkUrl',
+      'blinkTitle',
+      'blinkLabel',
+      'blinkMessage',
+      'connector',
+      'connectorId',
+      'connectorActionSource',
+      'expectedAmount',
+      'expectedRecipient',
+      'expectedToken',
+      'operation',
+      'position',
+      'protocol',
+    ]) {
+      hidden.add(key);
+    }
+  }
+  return Object.fromEntries(Object.entries(action.params).filter(([key]) => !hidden.has(key)));
 }
 
 function renderUnknownTable(rows: unknown[], columns: string[]): void {
@@ -2669,6 +2875,7 @@ Usage:
   solana-agent-wallet prepare transfer-sol <recipient> <amount-sol>
   solana-agent-wallet prepare transfer-spl <token> <recipient> <amount>
   solana-agent-wallet prepare swap <amount> [input-token] [output-token]
+  solana-agent-wallet prepare blink --url <url> [--connector <id>] [--operation <label>]
   solana-agent-wallet schedule list
   solana-agent-wallet receipts
   solana-agent-wallet research list
@@ -2937,10 +3144,26 @@ function defaultUserRuntimeDir(): string {
 
 function optionValue(args: string[], flag: string): string | undefined {
   const index = args.indexOf(flag);
-  if (index < 0) {
-    return undefined;
+  if (index >= 0) {
+    return args[index + 1];
   }
-  return args[index + 1];
+  const inlinePrefix = `${flag}=`;
+  const inline = args.find((arg) => arg.startsWith(inlinePrefix));
+  return inline ? inline.slice(inlinePrefix.length) : undefined;
+}
+
+function optionValues(args: string[], flag: string): string[] {
+  const values: string[] = [];
+  const inlinePrefix = `${flag}=`;
+  for (let index = 0; index < args.length; index += 1) {
+    if (args[index] === flag && args[index + 1]) {
+      values.push(args[index + 1]!);
+      index += 1;
+    } else if (args[index]?.startsWith(inlinePrefix)) {
+      values.push(args[index]!.slice(inlinePrefix.length));
+    }
+  }
+  return values;
 }
 
 function commandValues(args: string[], valueFlags: Set<string>): string[] {
@@ -2949,6 +3172,9 @@ function commandValues(args: string[], valueFlags: Set<string>): string[] {
     const arg = args[index]!;
     if (valueFlags.has(arg)) {
       index += 1;
+      continue;
+    }
+    if ([...valueFlags].some((flag) => arg.startsWith(`${flag}=`))) {
       continue;
     }
     values.push(arg);
@@ -2983,6 +3209,23 @@ function splitCommandLine(line: string): string[] {
     parts.push(current);
   }
   return parts;
+}
+
+function parseStringParameters(values: string[]): Record<string, string> {
+  const parameters: Record<string, string> = {};
+  for (const value of values) {
+    const separator = value.indexOf('=');
+    if (separator <= 0) {
+      throw new Error(`Blink parameters must use key=value, received: ${value}`);
+    }
+    const key = value.slice(0, separator).trim();
+    const parameterValue = value.slice(separator + 1);
+    if (!key) {
+      throw new Error(`Blink parameter key is required, received: ${value}`);
+    }
+    parameters[key] = parameterValue;
+  }
+  return parameters;
 }
 
 async function prompt(rl: readline.Interface, label: string, defaultValue: string): Promise<string> {

@@ -1,6 +1,7 @@
 export const publicAppRoutes = [
   '/',
   '/docs',
+  '/builders',
   '/app',
   '/cli',
   '/desktop',

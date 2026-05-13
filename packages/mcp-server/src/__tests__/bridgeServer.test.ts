@@ -282,6 +282,68 @@ describe('bridge lab artifact routes', () => {
     }
   });
 
+  it('prepares Blink actions through the bridge without submitting a signing request', async () => {
+    const originalFetch = globalThis.fetch;
+    const store = new JsonPreparedActionStore(join(await mkdtemp(join(tmpdir(), 'sawa-bridge-actions-')), 'actions.json'));
+    const upstreamCalls: Array<{ url: string; init: RequestInit | undefined }> = [];
+    vi.stubGlobal('fetch', vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
+      const url = input instanceof Request ? new URL(input.url) : new URL(String(input));
+      if (url.hostname === 'example.com') {
+        upstreamCalls.push({ url: url.toString(), init });
+        if (init?.method === 'GET') {
+          return jsonResponse({
+            title: 'Claim Meteora fees',
+            description: 'Claim fees from a DLMM position',
+            label: 'Claim',
+          });
+        }
+        return jsonResponse({
+          transaction: 'base64-bridge-blink-transaction',
+          label: 'Claim fees',
+          message: 'Review before signing',
+        });
+      }
+      return originalFetch(input, init);
+    }) as typeof fetch);
+
+    const handle = await startTestBridge({
+      actionConfig: DEFAULT_CONFIG,
+      preparedActions: store,
+      connectedAddress: '11111111111111111111111111111111',
+    });
+    try {
+      const body = await bridgeFetch<{ preparedAction: { kind: string; summary: string; params: Record<string, unknown> } }>(
+        handle.url,
+        '/bridge/action/prepare-blink',
+        {
+          method: 'POST',
+          body: JSON.stringify({
+            connector: 'meteora',
+            protocol: 'Meteora',
+            operation: 'Claim fees',
+            blinkUrl: 'https://example.com/action',
+            parameters: { position: 'Position111' },
+            expectedToken: 'SOL',
+          }),
+        },
+      );
+
+      expect(upstreamCalls).toHaveLength(2);
+      expect(body.preparedAction).toMatchObject({
+        kind: 'blink_action',
+        summary: 'Meteora: Claim fees',
+        params: {
+          connectorId: 'meteora',
+          transactionBase64: 'base64-bridge-blink-transaction',
+          connectorActionSource: 'blink',
+          expectedToken: 'SOL',
+        },
+      });
+    } finally {
+      await handle.stop();
+    }
+  });
+
   it('proxies BirdEye price requests with the configured API key', async () => {
     const originalFetch = globalThis.fetch;
     const upstreamCalls: Array<{ url: string; init: RequestInit | undefined }> = [];
@@ -327,18 +389,38 @@ describe('bridge lab artifact routes', () => {
 });
 
 async function startTestBridge(
-  options: { actionConfig?: AgentWalletConfig; agentRegistry?: AgentRegistry; preparedActions?: PreparedActionStore } = {},
+  options: {
+    actionConfig?: AgentWalletConfig;
+    agentRegistry?: AgentRegistry;
+    preparedActions?: PreparedActionStore;
+    connectedAddress?: string;
+  } = {},
 ): Promise<{ url: string; stop(): Promise<void> }> {
   const port = await freePort();
   const dir = await mkdtemp(join(tmpdir(), 'sawa-bridge-labs-'));
+  const backend = new LocalBridgeBackend({
+    cluster: 'devnet',
+    rpcUrl: 'https://api.devnet.solana.com',
+    token: 'test-token',
+  });
+  if (options.connectedAddress) {
+    backend.connectHost(options.connectedAddress, {
+      backend: 'test-browser',
+      cluster: ['devnet', 'mainnet-beta'],
+      supports: {
+        signMessage: true,
+        signTransaction: true,
+        signAndSendTransaction: true,
+        multiSign: false,
+        simulationPreview: false,
+      },
+      address: options.connectedAddress,
+    });
+  }
   const bridge = createBridgeServer({
     host: '127.0.0.1',
     port,
-    backend: new LocalBridgeBackend({
-      cluster: 'devnet',
-      rpcUrl: 'https://api.devnet.solana.com',
-      token: 'test-token',
-    }),
+    backend,
     ...(options.actionConfig ? { actionConfig: options.actionConfig } : {}),
     ...(options.agentRegistry ? { agentRegistry: options.agentRegistry } : {}),
     ...(options.preparedActions ? { preparedActions: options.preparedActions } : {}),

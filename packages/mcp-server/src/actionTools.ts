@@ -192,6 +192,33 @@ export function registerActionTools(
   );
 
   server.registerTool(
+    'solana_prepare_blink_action',
+    {
+      description:
+        'Create a durable manual-approval inbox item for a Solana Action/Blink URL. The agent supplies the action URL and expected facts. Prepares wallet approval work only; it does not sign, submit, or grant delegated authority.',
+      inputSchema: {
+        connector: z.string().min(2).optional(),
+        protocol: z.string().min(1).optional(),
+        operation: z.string().min(1).optional(),
+        blinkUrl: z.string().min(1),
+        account: z.string().min(32).optional(),
+        parameters: z.record(z.string()).optional(),
+        expectedAmount: z.string().min(1).optional(),
+        expectedToken: z.string().min(1).optional(),
+        expectedRecipient: z.string().min(1).optional(),
+        position: z.string().min(1).optional(),
+        note: z.string().max(500).optional(),
+        dueAt: z.string().datetime().optional(),
+      },
+    },
+    async (input) => traceTool(
+      'solana_prepare_blink_action',
+      { cluster: options.config.cluster, input },
+      async () => jsonReply(await service.prepareBlinkAction(input)),
+    ),
+  );
+
+  server.registerTool(
     'solana_prepare_kamino_deposit',
     {
       description:

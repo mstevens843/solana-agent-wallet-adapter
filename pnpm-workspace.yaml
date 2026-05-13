@@ -1,3 +1,12 @@
 packages:
   - "packages/*"
   - "apps/*"
+
+# Refuse to install any package version published less than 7 days ago (10080 minutes).
+# This neutralizes near-real-time worm propagation (e.g. Mini Shai-Hulud / CVE-2026-45321),
+# which spread end-to-end in under 30 minutes. Detection services (Socket, Aikido,
+# StepSecurity, GitHub Advisory DB) catch malicious versions inside this window.
+# Emergency override for a real security patch: pass --config.minimumReleaseAge=0 to
+# the specific install, or add the package to minimumReleaseAgeExclude below.
+minimumReleaseAge: 10080
+minimumReleaseAgeExclude: []

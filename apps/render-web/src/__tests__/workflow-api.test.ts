@@ -224,6 +224,148 @@ describe('cloud one-time workflow API', () => {
     });
   });
 
+  it('stores and queues Blink draft approvals for browser-local wallet execution', async () => {
+    await withWorkflowServer(async ({ port }) => {
+      const createdPlan = await postJson(port, '/api/plans', createBlinkPlanBody(), walletA);
+      expect(createdPlan.status).toBe(201);
+      const plan = createdPlan.body.plan as PlanDraftRecord;
+      expect(plan).toMatchObject({
+        actionType: 'blink_action',
+        metadata: {
+          connectorId: 'jupiter',
+          protocol: 'Jupiter',
+          operation: 'swap',
+        },
+      });
+
+      const queuedFromPlan = await postJson(port, '/api/approvals', { planDraftId: plan.id }, walletA);
+      expect(queuedFromPlan.status).toBe(201);
+      const approval = queuedFromPlan.body.approval as ApprovalRequestRecord;
+      expect(approval).toMatchObject({
+        kind: 'blink_action',
+        planDraftId: plan.id,
+        finalizationRequirement: 'transaction_preview',
+        executionMode: 'wallet_execute',
+        params: {
+          blinkUrl: 'https://actions.example.com/swap?input=SOL&output=USDC',
+          actionUrl: 'https://actions.example.com/swap?input=SOL&output=USDC',
+          connectorActionSource: 'blink',
+        },
+        finalizationSupport: {
+          required: true,
+          supported: false,
+          reason: 'Blink transaction bytes are resolved in the browser before wallet approval.',
+        },
+        metadata: {
+          connectorId: 'jupiter',
+          protocol: 'Jupiter',
+          operation: 'swap',
+          amount: '0.1',
+          expectedToken: 'USDC',
+          expectedRecipient: walletB,
+          connectorActionSource: 'blink',
+          finalizationSupport: {
+            mode: 'browser_local',
+            reason: 'Blink transaction bytes are resolved in the browser before wallet approval.',
+          },
+        },
+      });
+
+      const serverPrepare = await postJson(port, `/api/approvals/${approval.id}/finalization/prepare`, {}, walletA);
+      expect(serverPrepare.status).toBe(409);
+      expect(serverPrepare.body.error).toBe('unsupported_cloud_finalization_kind');
+      expect(serverPrepare.body.message).toBe('Blink transaction bytes are resolved in the browser before wallet approval.');
+
+      const directApproval = await postJson(port, '/api/approvals', {
+        summary: 'Prepare Kamino Blink',
+        kind: 'blink_action',
+        params: {
+          actionUrl: 'solana-action:https%3A%2F%2Factions.example.com%2Fkamino%2Fdeposit',
+          protocol: 'Kamino',
+          operation: 'deposit',
+          amount: '5',
+          expectedToken: 'USDC',
+        },
+        metadata: {
+          connectorId: 'kamino',
+        },
+      }, walletA);
+      expect(directApproval.status).toBe(201);
+      expect(directApproval.body.approval).toMatchObject({
+        kind: 'blink_action',
+        params: {
+          blinkUrl: 'https://actions.example.com/kamino/deposit',
+          actionUrl: 'https://actions.example.com/kamino/deposit',
+        },
+        metadata: {
+          connectorId: 'kamino',
+          protocol: 'Kamino',
+          operation: 'deposit',
+          connectorActionSource: 'blink',
+        },
+      });
+
+      const submitted = await postJson(port, `/api/approvals/${approval.id}/wallet-execution`, {
+        ...decisionProofBody(approval, 'approved'),
+        txid: 'blink_tx_pending',
+        txStatus: 'pending',
+        explorerUrl: 'https://solscan.io/tx/blink_tx_pending',
+      }, walletA);
+      expect(submitted.status).toBe(200);
+      expect(submitted.body.completed).toBeUndefined();
+      expect(submitted.body.approval).toMatchObject({
+        id: approval.id,
+        status: 'approval_pending',
+        txid: 'blink_tx_pending',
+        txStatus: 'pending',
+        decisionProofVerified: true,
+        metadata: expect.objectContaining({
+          walletExecutionSource: 'browser_wallet_adapter',
+          executionMode: 'wallet_execute',
+        }),
+      });
+
+      const confirmed = await postJson(port, `/api/approvals/${approval.id}/wallet-execution`, {
+        txid: 'blink_tx_pending',
+        txStatus: 'confirmed',
+        explorerUrl: 'https://solscan.io/tx/blink_tx_pending',
+      }, walletA);
+      expect(confirmed.status).toBe(200);
+      expect(confirmed.body.approval).toMatchObject({
+        id: approval.id,
+        status: 'approved',
+        txid: 'blink_tx_pending',
+        txStatus: 'confirmed',
+      });
+      expect(confirmed.body.completed).toMatchObject({
+        approvalRequestId: approval.id,
+        status: 'approved',
+        txid: 'blink_tx_pending',
+        txStatus: 'confirmed',
+      });
+    });
+  });
+
+  it('rejects executable Blink approvals without a valid Blink URL', async () => {
+    await withWorkflowServer(async ({ port }) => {
+      const missing = await postJson(port, '/api/approvals', {
+        summary: 'Missing Blink URL',
+        kind: 'blink_action',
+        params: { protocol: 'Jupiter', operation: 'swap' },
+      }, walletA);
+      expect(missing.status).toBe(400);
+      expect(missing.body.error).toBe('missing_blink_url');
+
+      const invalid = await postJson(port, '/api/approvals', {
+        summary: 'Invalid Blink URL',
+        kind: 'blink_action',
+        params: { blinkUrl: 'http://actions.example.com/swap' },
+      }, walletA);
+      expect(invalid.status).toBe(400);
+      expect(invalid.body.error).toBe('invalid_blink_url');
+    });
+  });
+
   it('creates approval requests and keeps only active items in the inbox', async () => {
     await withWorkflowServer(async ({ port }) => {
       const createdPlan = await postJson(port, '/api/plans', createPlanBody(), walletA);
@@ -1032,6 +1174,22 @@ function createManualPlanBody(): Record<string, unknown> {
   };
 }
 
+function createBlinkPlanBody(): Record<string, unknown> {
+  return {
+    plan: sampleBlinkPlan(),
+    source: 'template',
+    templateId: 'protocol-blink-action',
+    templateTitle: 'Protocol connector action',
+    prompt: 'Prepare Jupiter Blink swap',
+    cluster: 'mainnet-beta',
+    metadata: {
+      connectorId: 'jupiter',
+      protocol: 'Jupiter',
+      operation: 'swap',
+    },
+  };
+}
+
 function samplePlan(): JsonObject {
   return {
     intent: 'Send 0.25 SOL to recipient',
@@ -1050,6 +1208,32 @@ function samplePlan(): JsonObject {
     fields: [
       { label: 'Recipient address', value: walletB },
       { label: 'Amount SOL', value: '0.25' },
+    ],
+    safeguards: ['Wallet approval is required.'],
+  };
+}
+
+function sampleBlinkPlan(): JsonObject {
+  return {
+    intent: 'Prepare a Jupiter Blink swap for wallet review',
+    route: 'Browser resolves the Blink action before wallet approval.',
+    risk: 'High risk. Review the final wallet transaction and protocol route before signing.',
+    approval: 'Wallet approval is required before any transaction is signed or submitted.',
+    source: 'template',
+    category: 'defi',
+    actionType: 'blink_action',
+    templateTitle: 'Protocol connector action',
+    parameters: {
+      blinkUrl: 'blink:https%3A%2F%2Factions.example.com%2Fswap%3Finput%3DSOL%26output%3DUSDC',
+      protocol: 'Jupiter',
+      operation: 'swap',
+      amount: '0.1',
+      expectedToken: 'USDC',
+      expectedRecipient: walletB,
+    },
+    fields: [
+      { label: 'Protocol', value: 'Jupiter' },
+      { label: 'Amount', value: '0.1 SOL' },
     ],
     safeguards: ['Wallet approval is required.'],
   };

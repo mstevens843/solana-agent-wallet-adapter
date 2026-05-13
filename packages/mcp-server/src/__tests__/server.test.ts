@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { mkdtemp } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
@@ -42,6 +42,7 @@ beforeEach(async () => {
 afterEach(async () => {
   await closeServer?.();
   closeServer = undefined;
+  vi.unstubAllGlobals();
 });
 
 describe('mcp server tools', () => {
@@ -173,6 +174,7 @@ describe('mcp server tools', () => {
     expect(result.tools.map((tool) => tool.name)).toContain('solana_wallet_status');
     expect(result.tools.map((tool) => tool.name)).toContain('solana_portfolio_summary');
     expect(result.tools.map((tool) => tool.name)).toContain('solana_prepare_transfer_sol');
+    expect(result.tools.map((tool) => tool.name)).toContain('solana_prepare_blink_action');
     expect(result.tools.map((tool) => tool.name)).toContain('solana_prepare_kamino_deposit');
     expect(result.tools.map((tool) => tool.name)).toContain('solana_list_prepared_actions');
     expect(result.tools.map((tool) => tool.name)).toContain('solana_execute_prepared_action');
@@ -251,9 +253,11 @@ describe('mcp server tools', () => {
     expect(payload.connectors).toHaveLength(1);
     expect(payload.connectors[0]).toMatchObject({
       id: 'meteora',
-      executionMode: 'unavailable',
+      executionMode: 'wallet_approval',
+      actionTools: expect.arrayContaining(['solana_prepare_blink_action']),
       readiness: {
         reads: { ready: false },
+        actions: { ready: true },
       },
     });
   });
@@ -327,6 +331,80 @@ describe('mcp server tools', () => {
     });
   });
 
+  it('prepares a Blink action without submitting a wallet approval', async () => {
+    await closeServer?.();
+    closeServer = undefined;
+
+    let submitCount = 0;
+    const backend = createMockBackend();
+    const countingBackend: WalletBackend = {
+      ...backend,
+      async submit(request) {
+        submitCount += 1;
+        return backend.submit(request);
+      },
+    };
+    const fetchImpl = vi.fn(async (_input: unknown, init?: RequestInit) => {
+      if (init?.method === 'GET') {
+        return jsonResponse({
+          title: 'Claim Meteora fees',
+          description: 'Claim fees from a DLMM position',
+          label: 'Claim',
+        });
+      }
+      return jsonResponse({
+        transaction: 'base64-blink-transaction',
+        label: 'Claim fees',
+        message: 'Review before signing',
+      });
+    });
+    vi.stubGlobal('fetch', fetchImpl);
+
+    const linked = InMemoryTransport.createLinkedPair();
+    const server = createServer({
+      backend: countingBackend,
+      actionConfig: DEFAULT_CONFIG,
+      preparedActions: new JsonPreparedActionStore(await tempStorePath()),
+    });
+    client = new Client({ name: 'mcp-server-test', version: '0.0.0' });
+    await Promise.all([server.connect(linked[1]), client.connect(linked[0])]);
+    closeServer = async () => {
+      await Promise.all([client.close(), server.close()]);
+    };
+
+    const result = await callTool('solana_prepare_blink_action', {
+      connector: 'meteora',
+      protocol: 'Meteora',
+      operation: 'Claim fees',
+      blinkUrl: 'blink:https://example.com/action',
+      parameters: { position: 'Position111' },
+      expectedAmount: '0.01',
+      expectedToken: 'SOL',
+    });
+    const payload = JSON.parse(textOf(result));
+
+    expect(submitCount).toBe(0);
+    expect(fetchImpl).toHaveBeenCalledTimes(2);
+    expect(payload.preparedAction).toMatchObject({
+      kind: 'blink_action',
+      status: 'ready',
+      summary: 'Meteora: Claim fees',
+      params: {
+        connectorId: 'meteora',
+        protocol: 'Meteora',
+        operation: 'Claim fees',
+        blinkUrl: 'https://example.com/action',
+        actionUrl: 'https://example.com/action',
+        transactionBase64: 'base64-blink-transaction',
+        connectorActionSource: 'blink',
+        blinkLabel: 'Claim fees',
+        blinkMessage: 'Review before signing',
+        expectedAmount: '0.01',
+        expectedToken: 'SOL',
+      },
+    });
+  });
+
   it('blocks executing scheduled prepared actions before they are due', async () => {
     await closeServer?.();
     closeServer = undefined;
@@ -379,4 +457,11 @@ function textOf(result: Awaited<ReturnType<typeof callTool>>): string {
 async function tempStorePath(): Promise<string> {
   const dir = await mkdtemp(join(tmpdir(), 'sawa-server-test-'));
   return join(dir, 'prepared-actions.json');
+}
+
+function jsonResponse(payload: unknown, status = 200): Response {
+  return new Response(JSON.stringify(payload), {
+    status,
+    headers: { 'content-type': 'application/json' },
+  });
 }

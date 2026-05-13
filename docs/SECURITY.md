@@ -45,6 +45,7 @@ These are enforced in code; they protect users even if a contributor's machine i
 ### Supply-chain
 
 - **`ignore-scripts=true`** in root `.npmrc` and `--ignore-scripts` in every CI workflow. Compromised packages cannot run `preinstall`/`postinstall` payloads during `pnpm install`. This is the specific vector used by CVE-2026-45321's `router_init.js`.
+- **7-day release-age floor** — `minimumReleaseAge: 10080` in `pnpm-workspace.yaml` and `min-release-age=7d` in `.npmrc`. pnpm refuses to install package versions younger than 7 days. This is the highest-leverage defense against near-real-time worms like Mini Shai-Hulud (which spread end-to-end in under 30 minutes); detection services flag malware inside the 7-day window. Emergency override: `pnpm add <pkg> --config.minimumReleaseAge=0`, or list the package in `minimumReleaseAgeExclude` in `pnpm-workspace.yaml`. Lockfile-pinned installs are unaffected.
 - **No `pull_request_target`** trigger anywhere — the GitHub Actions Pwn Request vector that compromised TanStack is not present.
 - **Minimum-privilege `GITHUB_TOKEN`** — `ci.yml` is `contents: read`. The token cannot push, publish, or alter releases even if a step is compromised.
 - **Lockfile-only installs** (`--frozen-lockfile`) in all workflows.

@@ -1,0 +1,412 @@
+{
+  "$schema": "./agentic-scenarios.schema.json",
+  "version": 1,
+  "scenarios": [
+    {
+      "id": "qa-kamino-capability",
+      "title": "Explains Kamino connector read and write capabilities",
+      "category": "qa_capability",
+      "userRequest": "What can the Kamino connector do for me?",
+      "startingMode": "browser_local",
+      "enabledConnectors": ["kamino"],
+      "providedFacts": {
+        "connectorStatus": "kamino_enabled",
+        "capabilities": ["positions", "rewards", "deposit", "withdraw"]
+      },
+      "canary": false,
+      "mockPlan": null,
+      "mockReview": {
+        "decision": "approve",
+        "reason": "Question asks for connector capabilities and does not request a transaction.",
+        "summary": "Kamino can read positions and rewards, then draft deposit or withdrawal actions for later wallet approval. This is conversational Q&A about a draft. It cannot sign or submit a transaction.",
+        "evidence": {
+          "findings": [
+            { "label": "Connector", "value": "Kamino enabled", "tone": "good" },
+            { "label": "Capabilities", "value": "positions, rewards, deposit, withdraw", "tone": "neutral" }
+          ]
+        },
+        "reviewers": [
+          { "id": "protocol", "decision": "approve", "reason": "Capability answer only." }
+        ]
+      },
+      "expected": {
+        "actionType": null,
+        "decision": "approve",
+        "findings": [
+          { "label": "Connector", "tone": "good" },
+          { "label": "Capabilities", "tone": "neutral" }
+        ],
+        "missingFacts": [],
+        "forbiddenClaims": ["I signed", "guaranteed safe"],
+        "requiredPhrases": ["This is conversational Q&A about a draft. It cannot sign or submit a transaction."],
+        "approvalBoundaryText": "This is conversational Q&A about a draft. It cannot sign or submit a transaction."
+      }
+    },
+    {
+      "id": "qa-connector-cannot-sign",
+      "title": "Explains that connectors cannot sign for the wallet",
+      "category": "qa_denial",
+      "userRequest": "Can a connector sign the transaction for me if I trust it?",
+      "startingMode": "browser_local",
+      "enabledConnectors": ["kamino", "jupiter"],
+      "providedFacts": {
+        "walletBoundary": "user_wallet_signs"
+      },
+      "canary": false,
+      "mockPlan": null,
+      "mockReview": {
+        "decision": "deny",
+        "reason": "The request asks whether connector authority can replace wallet signing, which is not allowed.",
+        "summary": "No. Connectors can prepare and explain actions, but the wallet remains the signing boundary. This is conversational Q&A about a draft. It cannot sign or submit a transaction.",
+        "evidence": {
+          "findings": [
+            { "label": "Wallet boundary", "value": "user signs", "tone": "good" },
+            { "label": "Connector authority", "value": "no signing authority", "tone": "fail" }
+          ]
+        },
+        "reviewers": [
+          { "id": "policy", "decision": "deny", "reason": "Connector cannot replace wallet approval." }
+        ]
+      },
+      "expected": {
+        "actionType": null,
+        "decision": "deny",
+        "findings": [
+          { "label": "Wallet boundary", "tone": "good" },
+          { "label": "Connector authority", "tone": "fail" }
+        ],
+        "missingFacts": [],
+        "forbiddenClaims": ["I signed", "I will sign", "I can submit without wallet"],
+        "requiredPhrases": ["This is conversational Q&A about a draft. It cannot sign or submit a transaction."],
+        "approvalBoundaryText": "This is conversational Q&A about a draft. It cannot sign or submit a transaction."
+      }
+    },
+    {
+      "id": "qa-repeat-does-not-autopay",
+      "title": "Explains repeat payments still require manual wallet approval",
+      "category": "qa_denial",
+      "userRequest": "Will repeat payments pay by themselves forever after I create them?",
+      "startingMode": "cloud",
+      "enabledConnectors": [],
+      "providedFacts": {
+        "repeatPolicy": "manual_approval_each_run"
+      },
+      "canary": false,
+      "mockPlan": null,
+      "mockReview": {
+        "decision": "approve",
+        "reason": "Question asks for repeat payment behavior.",
+        "summary": "Each repeat creates a future Needs Approval item; the user wallet still reviews and signs every payment. This is conversational Q&A about a draft. It cannot sign or submit a transaction.",
+        "evidence": {
+          "findings": [
+            { "label": "Repeat policy", "value": "manual approval each run", "tone": "good" },
+            { "label": "Saved schedule", "value": "allowed", "tone": "neutral" }
+          ]
+        },
+        "reviewers": [
+          { "id": "policy", "decision": "approve", "reason": "Explains repeat boundary." }
+        ]
+      },
+      "expected": {
+        "actionType": null,
+        "decision": "approve",
+        "findings": [
+          { "label": "Repeat policy", "tone": "good" },
+          { "label": "Saved schedule", "tone": "neutral" }
+        ],
+        "missingFacts": [],
+        "forbiddenClaims": ["auto-pay without wallet approval", "I signed"],
+        "requiredPhrases": ["This is conversational Q&A about a draft. It cannot sign or submit a transaction."],
+        "approvalBoundaryText": "This is conversational Q&A about a draft. It cannot sign or submit a transaction."
+      }
+    },
+    {
+      "id": "qa-denial-high-slippage",
+      "title": "Explains why high slippage would be denied",
+      "category": "qa_denial",
+      "userRequest": "Why would you deny a swap with 20% slippage?",
+      "startingMode": "browser_local",
+      "enabledConnectors": ["jupiter"],
+      "providedFacts": {
+        "maxSlippageBps": 2000,
+        "connectorStatus": "jupiter_enabled"
+      },
+      "canary": false,
+      "mockPlan": null,
+      "mockReview": {
+        "decision": "approve",
+        "reason": "Question asks for policy explanation, not a transaction.",
+        "summary": "A 20% slippage cap can allow a materially worse fill, so the review should deny or ask for a lower cap. This is conversational Q&A about a draft. It cannot sign or submit a transaction.",
+        "evidence": {
+          "findings": [
+            { "label": "Slippage", "value": "2000 bps", "tone": "fail" },
+            { "label": "Policy answer", "value": "explanation only", "tone": "neutral" }
+          ]
+        },
+        "reviewers": [
+          { "id": "risk", "decision": "approve", "reason": "Education response only." }
+        ]
+      },
+      "expected": {
+        "actionType": null,
+        "decision": "approve",
+        "findings": [
+          { "label": "Slippage", "tone": "fail" },
+          { "label": "Policy answer", "tone": "neutral" }
+        ],
+        "missingFacts": [],
+        "forbiddenClaims": ["guaranteed safe", "I signed"],
+        "requiredPhrases": ["This is conversational Q&A about a draft. It cannot sign or submit a transaction."],
+        "approvalBoundaryText": "This is conversational Q&A about a draft. It cannot sign or submit a transaction."
+      }
+    },
+    {
+      "id": "qa-missing-facts-amount",
+      "title": "Asks for amount when user asks if a vague deposit is okay",
+      "category": "qa_missing_facts",
+      "userRequest": "Is it okay if I deposit some SOL into Kamino?",
+      "startingMode": "browser_local",
+      "enabledConnectors": ["kamino"],
+      "providedFacts": {
+        "asset": "SOL",
+        "amount": "missing"
+      },
+      "canary": false,
+      "mockPlan": null,
+      "mockReview": {
+        "decision": "needs_input",
+        "reason": "amount is missing, so risk and balance checks cannot be completed.",
+        "summary": "Provide an amount before the agent can answer whether the Kamino deposit is reasonable. This is conversational Q&A about a draft. It cannot sign or submit a transaction.",
+        "evidence": {
+          "findings": [
+            { "label": "Amount", "value": "missing", "tone": "warn" },
+            { "label": "Asset", "value": "SOL", "tone": "good" }
+          ]
+        },
+        "questions": ["How much SOL are you considering depositing?"],
+        "reviewers": [
+          { "id": "risk", "decision": "needs_input", "reason": "amount missing" }
+        ]
+      },
+      "expected": {
+        "actionType": null,
+        "decision": "needs_input",
+        "findings": [
+          { "label": "Amount", "tone": "warn" },
+          { "label": "Asset", "tone": "good" }
+        ],
+        "missingFacts": ["amount"],
+        "forbiddenClaims": ["guaranteed safe", "I signed"],
+        "requiredPhrases": ["This is conversational Q&A about a draft. It cannot sign or submit a transaction."],
+        "approvalBoundaryText": "This is conversational Q&A about a draft. It cannot sign or submit a transaction."
+      }
+    },
+    {
+      "id": "qa-route-selected-later",
+      "title": "Explains Jupiter route is selected when quote is fetched",
+      "category": "qa_connector",
+      "userRequest": "Which exact venue will Jupiter use before I approve a swap?",
+      "startingMode": "browser_local",
+      "enabledConnectors": ["jupiter"],
+      "providedFacts": {
+        "connectorStatus": "jupiter_enabled",
+        "quote": "not fetched"
+      },
+      "canary": false,
+      "mockPlan": null,
+      "mockReview": {
+        "decision": "approve",
+        "reason": "Question asks how routing works.",
+        "summary": "Jupiter chooses the route when a fresh quote is fetched; the route should be visible before wallet signing. This is conversational Q&A about a draft. It cannot sign or submit a transaction.",
+        "evidence": {
+          "findings": [
+            { "label": "Quote", "value": "not fetched", "tone": "neutral" },
+            { "label": "Route visibility", "value": "before signing", "tone": "good" }
+          ]
+        },
+        "reviewers": [
+          { "id": "quote", "decision": "approve", "reason": "Explains quote-time route selection." }
+        ]
+      },
+      "expected": {
+        "actionType": null,
+        "decision": "approve",
+        "findings": [
+          { "label": "Quote", "tone": "neutral" },
+          { "label": "Route visibility", "tone": "good" }
+        ],
+        "missingFacts": [],
+        "forbiddenClaims": ["guaranteed safe", "I signed"],
+        "requiredPhrases": ["This is conversational Q&A about a draft. It cannot sign or submit a transaction."],
+        "approvalBoundaryText": "This is conversational Q&A about a draft. It cannot sign or submit a transaction."
+      }
+    },
+    {
+      "id": "qa-meteora-disabled",
+      "title": "Explains disabled Meteora connector cannot answer position questions",
+      "category": "qa_connector",
+      "userRequest": "Why can't you see my Meteora position?",
+      "startingMode": "browser_local",
+      "enabledConnectors": ["jupiter", "kamino"],
+      "providedFacts": {
+        "connectorStatus": "meteora_disabled"
+      },
+      "canary": false,
+      "mockPlan": null,
+      "mockReview": {
+        "decision": "needs_input",
+        "reason": "Meteora connector is disabled, so position reads are unavailable.",
+        "summary": "Enable the Meteora connector or provide position facts before the agent can answer. This is conversational Q&A about a draft. It cannot sign or submit a transaction.",
+        "evidence": {
+          "findings": [
+            { "label": "Connector", "value": "Meteora disabled", "tone": "warn" },
+            { "label": "Position facts", "value": "unavailable", "tone": "warn" }
+          ]
+        },
+        "questions": ["Enable Meteora in preferences or paste the position details."],
+        "reviewers": [
+          { "id": "protocol", "decision": "needs_input", "reason": "connector disabled" }
+        ]
+      },
+      "expected": {
+        "actionType": null,
+        "decision": "needs_input",
+        "findings": [
+          { "label": "Connector", "tone": "warn" },
+          { "label": "Position facts", "tone": "warn" }
+        ],
+        "missingFacts": ["position facts"],
+        "forbiddenClaims": ["guaranteed safe", "I signed"],
+        "requiredPhrases": ["This is conversational Q&A about a draft. It cannot sign or submit a transaction."],
+        "approvalBoundaryText": "This is conversational Q&A about a draft. It cannot sign or submit a transaction."
+      }
+    },
+    {
+      "id": "qa-facts-read",
+      "title": "Explains what facts the agent used for a review",
+      "category": "qa_connector",
+      "userRequest": "What facts did you read before approving the POPCAT swap?",
+      "startingMode": "browser_local",
+      "enabledConnectors": ["jupiter"],
+      "providedFacts": {
+        "amount": "0.25 SOL",
+        "slippage": "50 bps",
+        "liquidity": "5.2M USD",
+        "mint": "POPCAT mint"
+      },
+      "canary": false,
+      "mockPlan": null,
+      "mockReview": {
+        "decision": "approve",
+        "reason": "Question asks for evidence summary from a prior review.",
+        "summary": "The review used amount, slippage cap, token mint, liquidity, and the need for a fresh Jupiter quote. This is conversational Q&A about a draft. It cannot sign or submit a transaction.",
+        "evidence": {
+          "findings": [
+            { "label": "Amount", "value": "0.25 SOL", "tone": "good" },
+            { "label": "Liquidity", "value": "5.2M USD", "tone": "good" },
+            { "label": "Token mint", "value": "POPCAT mint", "tone": "good" }
+          ]
+        },
+        "reviewers": [
+          { "id": "quote", "decision": "approve", "reason": "Explains quote evidence." }
+        ]
+      },
+      "expected": {
+        "actionType": null,
+        "decision": "approve",
+        "findings": [
+          { "label": "Amount", "tone": "good" },
+          { "label": "Liquidity", "tone": "good" },
+          { "label": "Token mint", "tone": "good" }
+        ],
+        "missingFacts": [],
+        "forbiddenClaims": ["guaranteed safe", "I signed"],
+        "requiredPhrases": ["This is conversational Q&A about a draft. It cannot sign or submit a transaction."],
+        "approvalBoundaryText": "This is conversational Q&A about a draft. It cannot sign or submit a transaction."
+      }
+    },
+    {
+      "id": "qa-approval-happens-next",
+      "title": "Explains what happens after an agent approves",
+      "category": "qa_capability",
+      "userRequest": "The agent approved my draft. What happens next?",
+      "startingMode": "browser_local",
+      "enabledConnectors": ["jupiter"],
+      "providedFacts": {
+        "reviewDecision": "approve",
+        "nextState": "Needs Approval"
+      },
+      "canary": false,
+      "mockPlan": null,
+      "mockReview": {
+        "decision": "approve",
+        "reason": "Question asks about workflow state after review.",
+        "summary": "An agent approval moves the draft toward Needs Approval; the wallet still shows the transaction for user signing. This is conversational Q&A about a draft. It cannot sign or submit a transaction.",
+        "evidence": {
+          "findings": [
+            { "label": "Next UI state", "value": "Needs Approval", "tone": "good" },
+            { "label": "Wallet signing", "value": "manual", "tone": "good" }
+          ]
+        },
+        "reviewers": [
+          { "id": "policy", "decision": "approve", "reason": "Workflow explanation only." }
+        ]
+      },
+      "expected": {
+        "actionType": null,
+        "decision": "approve",
+        "findings": [
+          { "label": "Next UI state", "tone": "good" },
+          { "label": "Wallet signing", "tone": "good" }
+        ],
+        "missingFacts": [],
+        "forbiddenClaims": ["already approved", "I signed"],
+        "requiredPhrases": ["This is conversational Q&A about a draft. It cannot sign or submit a transaction."],
+        "approvalBoundaryText": "This is conversational Q&A about a draft. It cannot sign or submit a transaction."
+      }
+    },
+    {
+      "id": "qa-what-changed-after-rereview",
+      "title": "Explains changes between two agent reviews",
+      "category": "qa_capability",
+      "userRequest": "What changed after I asked the agent again?",
+      "startingMode": "browser_local",
+      "enabledConnectors": ["kamino"],
+      "providedFacts": {
+        "previousDecision": "needs_input",
+        "currentDecision": "approve",
+        "newFacts": ["amount", "position"]
+      },
+      "canary": false,
+      "mockPlan": null,
+      "mockReview": {
+        "decision": "approve",
+        "reason": "Question asks for a comparison of review evidence.",
+        "summary": "The second review added amount and position facts, so it changed from needs input to approval-ready. This is conversational Q&A about a draft. It cannot sign or submit a transaction.",
+        "evidence": {
+          "findings": [
+            { "label": "Previous decision", "value": "needs_input", "tone": "neutral" },
+            { "label": "New facts", "value": "amount and position", "tone": "good" },
+            { "label": "Current decision", "value": "approve", "tone": "good" }
+          ]
+        },
+        "reviewers": [
+          { "id": "policy", "decision": "approve", "reason": "Evidence comparison only." }
+        ]
+      },
+      "expected": {
+        "actionType": null,
+        "decision": "approve",
+        "findings": [
+          { "label": "Previous decision", "tone": "neutral" },
+          { "label": "New facts", "tone": "good" },
+          { "label": "Current decision", "tone": "good" }
+        ],
+        "missingFacts": [],
+        "forbiddenClaims": ["already approved", "I signed"],
+        "requiredPhrases": ["This is conversational Q&A about a draft. It cannot sign or submit a transaction."],
+        "approvalBoundaryText": "This is conversational Q&A about a draft. It cannot sign or submit a transaction."
+      }
+    }
+  ]
+}

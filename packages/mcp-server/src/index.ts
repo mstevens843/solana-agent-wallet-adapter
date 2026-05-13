@@ -27,6 +27,18 @@ export {
   preparedFailureStatus,
 } from './actionService.js';
 export {
+  fetchBlinkMetadata,
+  normalizeBlinkUrl,
+  prepareBlinkAction,
+} from './blinkActions.js';
+export type {
+  BlinkActionMetadata,
+  BlinkActionParameter,
+  BlinkLinkedAction,
+  BlinkPrepareInput,
+  BlinkPreparedAction,
+} from './blinkActions.js';
+export {
   CONNECTOR_APPROVAL_BOUNDARY,
   CONNECTOR_REGISTRY,
   connectorRegistryPromptContext,
@@ -55,6 +67,7 @@ export type {
 } from './connectorFacts.js';
 export type {
   AgentWalletActionServiceOptions,
+  PrepareBlinkActionInput,
   PrepareSwapInput,
   PrepareTransferSolInput,
   PrepareTransferSplInput,

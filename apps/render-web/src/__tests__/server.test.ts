@@ -337,7 +337,7 @@ describe('render web hosted BYOK API', () => {
 
   it('serves the SPA shell for direct visits to client-side routes', async () => {
     await withServer(async (port) => {
-      for (const route of ['/app', '/docs', '/cli', '/desktop', '/demo', '/android', '/mwa-test', '/privacy', '/terms']) {
+      for (const route of ['/app', '/docs', '/builders', '/cli', '/desktop', '/demo', '/android', '/mwa-test', '/privacy', '/terms']) {
         const response = await getText(port, route);
 
         expect(response.status).toBe(200);

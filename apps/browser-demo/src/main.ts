@@ -592,7 +592,7 @@ const BROWSER_AI_LIMITATIONS = [
   'Browser AI cannot run background jobs after the tab closes.',
 ];
 const CUSTOM_AI_MODEL_VALUE = '__custom__';
-const ROUTE_PATHS = ['/', '/docs', '/app', '/cli', '/desktop', '/android', '/demo', '/mwa-test', '/privacy', '/terms'] as const;
+const ROUTE_PATHS = ['/', '/docs', '/builders', '/app', '/cli', '/desktop', '/android', '/demo', '/mwa-test', '/privacy', '/terms'] as const;
 const ROUTE_PATH_SET = new Set<string>(ROUTE_PATHS);
 const SHOW_DEV_CONTROLS = resolveDevControls();
 const IS_ANDROID_APP = resolveAndroidAppSurface();
@@ -626,6 +626,7 @@ const NAV_ITEMS: ReadonlyArray<NavItem> = [
   { route: '/app', label: 'Launch App', pill: true, mobileLabel: 'App' },
 ];
 const ROUTE_TITLES: Record<string, string> = {
+  '/builders': 'Builders · Agentic',
   '/mwa-test': 'MWA · Agentic',
   '/privacy': 'Privacy Policy · Agentic',
   '/terms': 'Terms of Service · Agentic',
@@ -2698,6 +2699,8 @@ function pageContent(route: AppRoute | null): string {
       return homePage();
     case '/docs':
       return docsPage();
+    case '/builders':
+      return buildersPage();
     case '/app':
       return appPage();
     case '/cli':
@@ -2737,6 +2740,161 @@ function docsPage(): string {
     ${docsSection()}
     ${gapSection()}
     ${walletDirectorySection()}
+  `;
+}
+
+function buildersPage(): string {
+  return `
+    <section class="builders-page" aria-labelledby="builders-title">
+      <div class="builders-hero">
+        <div class="builders-hero-copy">
+          <p class="eyebrow mini">Builder preview</p>
+          <h1 id="builders-title">Integrate an agent into wallet approval today.</h1>
+          <p>
+            Agentic gives MCP clients, CLI workflows, Vercel AI apps, Solana Agent Kit agents, and protocol
+            connectors one approval boundary: agents prepare the action, and the user's wallet signs.
+          </p>
+        </div>
+        <div class="builders-boundary-panel" aria-label="Agentic approval boundary">
+          ${builderBoundaryItem('Agent runtime', 'MCP, CLI, Vercel AI, Solana Agent Kit, or app request.')}
+          ${builderBoundaryItem('Approval layer', 'Agentic bridge, inbox, caps, reviews, and receipts.')}
+          ${builderBoundaryItem('Signing boundary', 'Phantom, Solflare, Backpack, Wallet Standard, MWA, or iOS wallet path.')}
+        </div>
+      </div>
+
+      <div class="builders-section-heading">
+        <h2>Copy the path that matches your stack.</h2>
+        <p>These snippets are static preview copy for the hidden builder page. They do not connect a wallet or mutate local state.</p>
+      </div>
+
+      <div class="builders-integration-grid">
+        ${builderIntegrationCard(
+          'CLI runtime',
+          'Start the local bridge, wallet host, and terminal approval app from npm.',
+          NPM_EXEC_COMMAND,
+          'CLI one-shot command',
+        )}
+        ${builderIntegrationCard(
+          'MCP client',
+          'Register the MCP server against the local approval bridge for Claude, Codex, or another MCP host.',
+          `claude mcp add --scope user solana-agent-wallet -- \\
+  node /absolute/path/to/solana-agent-wallet-adapter/packages/mcp-server/dist/bin/server.js \\
+  --bridge-url http://127.0.0.1:8787 \\
+  --bridge-token local-agent-wallet \\
+  --env /absolute/path/to/solana-agent-wallet-adapter/.env \\
+  --config /absolute/path/to/solana-agent-wallet-adapter/agent-wallet.config.json \\
+  --prepared-actions /absolute/path/to/solana-agent-wallet-adapter/.agent-wallet/prepared-actions.json`,
+          'MCP registration command',
+        )}
+        ${builderIntegrationCard(
+          'Vercel AI SDK',
+          'Expose wallet-gated Solana tools to an AI SDK agent.',
+          `import { SolanaSigningClient } from '@solana-agent-wallet-adapter/core';
+import { WalletStandardWebBackend, requireWallet } from '@solana-agent-wallet-adapter/wallet-standard-web';
+import { createSolanaTools } from '@solana-agent-wallet-adapter/vercel-ai';
+
+const backend = new WalletStandardWebBackend({
+  wallet: requireWallet('Phantom'),
+  cluster: 'devnet',
+});
+
+const client = new SolanaSigningClient({ backend });
+const tools = createSolanaTools({ client });`,
+          'Vercel AI SDK snippet',
+        )}
+        ${builderIntegrationCard(
+          'Solana Agent Kit',
+          'Keep the Agent Kit action library while replacing key custody with wallet approval.',
+          `import { SolanaAgentKit } from 'solana-agent-kit';
+import { WalletStandardWebBackend, requireWallet } from '@solana-agent-wallet-adapter/wallet-standard-web';
+import { AgentWalletAdapterBackend } from '@solana-agent-wallet-adapter/solana-agent-kit';
+
+const backend = new WalletStandardWebBackend({
+  wallet: requireWallet('Phantom'),
+  cluster: 'devnet',
+});
+
+const wallet = await AgentWalletAdapterBackend.create({
+  backend,
+  cluster: 'devnet',
+});
+
+const agent = new SolanaAgentKit(wallet, 'https://api.devnet.solana.com', {
+  OPENAI_API_KEY: process.env.OPENAI_API_KEY,
+});`,
+          'Solana Agent Kit snippet',
+        )}
+        ${builderIntegrationCard(
+          'Connector specs',
+          'Use machine-readable connector packs to tell agents what can be read, prepared, or refused.',
+          `spec/connectors/connector-pack.schema.json
+spec/connectors/kamino.connector.json
+spec/connectors/jupiter.connector.json
+spec/connectors/safety-phrases.json`,
+          'Connector spec paths',
+        )}
+        ${builderIntegrationCard(
+          'Example prompts',
+          'Prompt an agent to inspect, prepare, queue, or explain approval-bound Solana work.',
+          `Use solana-agent-wallet to show my wallet status.
+Use solana-agent-wallet to show my SOL and token balances.
+Use solana-agent-wallet to quote swapping 0.01 SOL to USDC. Do not execute it.
+Use solana-agent-wallet to prepare sending 0.01 SOL to <recipient> for wallet approval.
+Use solana-agent-wallet to show which protocol connectors are available.`,
+          'Example prompt pack',
+        )}
+      </div>
+
+      <div class="builders-contract-band" aria-label="Builder contract">
+        ${builderContractItem('Reads are facts', 'Balances, connector capabilities, positions, rewards, and quotes inform the agent response.')}
+        ${builderContractItem('Writes are prepared work', 'Transfers, swaps, deposits, withdrawals, and Blink actions wait for approval.')}
+        ${builderContractItem('Wallet remains final', 'No adapter path can approve, sign, submit, or bypass the user wallet.')}
+      </div>
+    </section>
+  `;
+}
+
+function builderBoundaryItem(label: string, value: string): string {
+  return `
+    <div class="builder-boundary-item">
+      <span>${escapeHtml(label)}</span>
+      <strong>${escapeHtml(value)}</strong>
+    </div>
+  `;
+}
+
+function builderIntegrationCard(title: string, detail: string, snippet: string, copyName: string): string {
+  const copyId = commandCopyId('builders', title, snippet);
+  const copied = state.recentCopyId === copyId;
+  return `
+    <article class="builder-integration-card ${copied ? 'copied' : ''}">
+      <div class="builder-integration-copy">
+        <span>${escapeHtml(title)}</span>
+        <p>${escapeHtml(detail)}</p>
+      </div>
+      <div class="builder-snippet">
+        <pre><code>${escapeHtml(snippet)}</code></pre>
+        <button
+          type="button"
+          class="${copied ? 'copied' : ''}"
+          data-copy="${escapeHtml(snippet)}"
+          data-copy-id="${escapeHtml(copyId)}"
+          data-copy-name="${escapeHtml(copyName)}"
+          title="Copy ${escapeHtml(copyName)}"
+        >
+          ${copied ? 'Copied' : 'Copy'}
+        </button>
+      </div>
+    </article>
+  `;
+}
+
+function builderContractItem(label: string, detail: string): string {
+  return `
+    <article>
+      <strong>${escapeHtml(label)}</strong>
+      <p>${escapeHtml(detail)}</p>
+    </article>
   `;
 }
 
