@@ -4279,15 +4279,24 @@ code {
 }
 
 .rail-cloud-card .local-workspace-prompt.cloud-context > div:first-child > span {
-  margin-bottom: 4px;
+  margin-bottom: 0;
+}
+
+.rail-cloud-card .local-workspace-prompt.cloud-context > div:first-child {
+  align-items: center;
+  display: grid;
+  gap: 3px 7px;
+  grid-template-columns: auto minmax(0, 1fr);
 }
 
 .rail-cloud-card .local-workspace-prompt.cloud-context strong {
   font-size: 0.78rem;
+  min-width: 0;
   line-height: 1.18;
 }
 
 .rail-cloud-card .local-workspace-prompt.cloud-context p {
+  grid-column: 1 / -1;
   font-size: 0.7rem;
   line-height: 1.26;
   margin-top: 2px;
@@ -4299,12 +4308,17 @@ code {
 }
 
 .rail-cloud-card .local-workspace-counts {
+  display: grid;
   gap: 5px;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
 }
 
 .rail-cloud-card .local-workspace-counts span {
+  justify-content: center;
   gap: 4px;
+  min-width: 0;
   padding: 4px 7px;
+  white-space: nowrap;
 }
 
 .rail-cloud-card .local-workspace-counts em {

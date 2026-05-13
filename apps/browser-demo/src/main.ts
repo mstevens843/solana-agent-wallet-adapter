@@ -1054,6 +1054,7 @@ interface ActiveAiDraftOperation {
   templateTitle: string;
   prompt: string;
   cancelled: boolean;
+  planRecordId: string;
 }
 
 interface RuntimePath {
@@ -5813,22 +5814,31 @@ function cloudImportableRecurringPayment(payment: RecurringPayment): boolean {
 }
 
 function localWorkspacePrompt(context: 'backup' | 'cloud'): string {
-  const summary = localWorkspaceSummary();
-  if (summary.total === 0) return '';
   const importCandidates = localCloudImportCandidates();
+  const summary = context === 'cloud' ? importCandidates.summary : localWorkspaceSummary();
+  if (summary.total === 0) return '';
   const importCount = importCandidates.summary.total;
-  const importButton = cloudSessionMatchesWallet() && importCount > 0
-    ? `<button type="button" class="utility" data-cloud-action="copy-local-to-cloud" ${state.busy ? 'disabled' : ''}>Copy local to cloud</button>`
+  const importButton = context === 'cloud' && cloudSessionMatchesWallet() && importCount > 0
+    ? `<button type="button" class="primary" data-cloud-action="copy-local-to-cloud" ${state.busy ? 'disabled' : ''}>Transfer to storage</button>`
     : '';
+  const action = context === 'backup'
+    ? `<button type="button" class="primary" data-workspace-backup-action="export" ${state.busy ? 'disabled' : ''}>Back up</button>`
+    : importButton;
   const detail = context === 'cloud'
     ? state.cloudSession.status === 'unavailable'
-      ? 'Export a JSON backup before switching wallets or clearing browser data.'
-      : 'Review and copy eligible local items after cloud sign-in, or export a backup first.'
+      ? 'These items stay on this device until storage is available.'
+      : cloudSessionMatchesWallet() && importCount > 0
+        ? 'Transfer eligible local items into this wallet storage.'
+        : 'Sign in to create storage and transfer eligible local items into it.'
     : 'Export before signing out, switching wallets, or clearing browser data.';
-  const title = context === 'cloud' ? 'Optional local backup' : 'Back up local workspace';
-  const backupButtonLabel = context === 'cloud' ? 'Export backup' : 'Back up';
+  const title = context === 'cloud'
+    ? state.cloudSession.status === 'unavailable'
+      ? 'Local items on device'
+      : 'Local items ready'
+    : 'Back up local workspace';
+  const ariaLabel = context === 'cloud' ? 'Local workspace storage prompt' : 'Local workspace backup prompt';
   return `
-    <section class="local-workspace-prompt ${context}-context" aria-label="Local workspace backup prompt">
+    <section class="local-workspace-prompt ${context}-context" aria-label="${escapeHtml(ariaLabel)}">
       <div>
         <span>${storageBadgeHtml(storageBadge('local-only'))}</span>
         <strong>${escapeHtml(title)}</strong>
@@ -5841,10 +5851,7 @@ function localWorkspacePrompt(context: 'backup' | 'cloud'): string {
         ${localWorkspaceCountPill('Done', summary.done)}
         ${localWorkspaceCountPill('Proofs', summary.proofs)}
       </div>
-      <div class="local-workspace-actions">
-        <button type="button" class="${context === 'backup' ? 'primary' : 'utility'}" data-workspace-backup-action="export" ${state.busy ? 'disabled' : ''}>${escapeHtml(backupButtonLabel)}</button>
-        ${importButton}
-      </div>
+      ${action ? `<div class="local-workspace-actions">${action}</div>` : ''}
     </section>
   `;
 }
@@ -16380,6 +16387,7 @@ function startAiDraftOperation(templateTitle: string, prompt: string, toastId: n
     templateTitle,
     prompt,
     cancelled: false,
+    planRecordId: '',
   };
   nextAiDraftOperationId += 1;
   activeAiDraftOperation = operation;
@@ -16387,6 +16395,66 @@ function startAiDraftOperation(templateTitle: string, prompt: string, toastId: n
   state.steps.ai = 'active';
   state.error = '';
   return operation;
+}
+
+const AI_DRAFT_PLACEHOLDER_LABEL = 'Drafting…';
+const AI_DRAFT_FAILED_LABEL = 'AI draft failed — try again';
+
+function placeholderAgentPlanFromTemplate(
+  template: AgentPlanTemplate,
+  parameters: Record<string, string>,
+  userNotes: string,
+): AgentPlan {
+  return {
+    intent: userNotes || template.description || `Drafting ${template.title}…`,
+    route: template.route || '',
+    risk: template.riskText || template.risk || 'Medium',
+    approval: template.approval || 'Pending agent draft.',
+    source: 'ai',
+    category: template.category,
+    actionType: template.actionType,
+    templateTitle: template.title,
+    userNotes,
+    parameters,
+    fields: [],
+    safeguards: template.safeguards ? [...template.safeguards] : [],
+  };
+}
+
+function materializeAiDraftPlaceholder(
+  template: AgentPlanTemplate,
+  parameters: Record<string, string>,
+  userNotes: string,
+): string {
+  const now = new Date().toISOString();
+  const placeholder: GeneratedPlanRecord = {
+    id: newId('plan'),
+    plan: placeholderAgentPlanFromTemplate(template, parameters, userNotes),
+    createdAt: now,
+    updatedAt: now,
+    source: 'ai',
+    templateId: template.id,
+    templateTitle: template.title,
+    prompt: userNotes || template.description,
+    walletAddress: state.address,
+    cluster: state.cluster,
+    status: 'draft',
+    failureLabel: AI_DRAFT_PLACEHOLDER_LABEL,
+    workflowSource: activeWorkflowMode() === 'local-bridge' ? 'local-bridge' : 'browser',
+  };
+  state.generatedPlans = mergeGeneratedPlans([placeholder], state.generatedPlans);
+  saveGeneratedPlans();
+  return placeholder.id;
+}
+
+function removeGeneratedPlanLocally(planId: string): void {
+  if (!planId) return;
+  if (!state.generatedPlans.some((record) => record.id === planId)) return;
+  state.generatedPlans = state.generatedPlans.filter((record) => record.id !== planId);
+  if (state.selectedGeneratedPlanId === planId) {
+    state.selectedGeneratedPlanId = '';
+  }
+  saveGeneratedPlans();
 }
 
 function cancelActiveAiDraft(): void {
@@ -16462,6 +16530,8 @@ async function runGenerateAiPlan(): Promise<void> {
     operation.templateTitle = template.title;
     operation.prompt = userNotes || template.description;
     state.templateFields = parameters;
+    operation.planRecordId = materializeAiDraftPlaceholder(template, parameters, userNotes);
+    state.selectedGeneratedPlanId = operation.planRecordId;
     const effectiveUserNotes = injectHouseRules(connectorAiUserNotes(template, parameters, userNotes));
     state.oneTimePlanView = 'review';
     render();
@@ -16497,12 +16567,27 @@ async function runGenerateAiPlan(): Promise<void> {
     state.agentPlan = plan;
     state.agentSignature = '';
     state.agentPreparedActionId = '';
-    const record = await saveGeneratedPlan(plan, template, request.prompt, { signal: operation.controller.signal });
-    assertAiDraftActive(operation);
-    state.selectedGeneratedPlanId = record.id;
+    const upgradeToCloud = activeWorkflowMode() === 'agentic-cloud' && plan.actionType !== 'recurring_payment';
+    let finalRecordId: string;
+    if (upgradeToCloud) {
+      const cloudRecord = await saveGeneratedPlan(plan, template, request.prompt, { signal: operation.controller.signal });
+      assertAiDraftActive(operation);
+      removeGeneratedPlanLocally(operation.planRecordId);
+      operation.planRecordId = cloudRecord.id;
+      finalRecordId = cloudRecord.id;
+    } else {
+      updateGeneratedPlanLocalOnly(operation.planRecordId, {
+        plan,
+        status: 'draft',
+        failureLabel: undefined,
+        error: undefined,
+      });
+      finalRecordId = operation.planRecordId;
+    }
+    state.selectedGeneratedPlanId = finalRecordId;
     state.oneTimePlanView = 'review';
     if (state.askAgentAfterDraft && hasDetectedAgentReviewPath()) {
-      reviewAfterDraftId = record.id;
+      reviewAfterDraftId = finalRecordId;
     }
     appendAiDiagnostic({
       code: 'AI_PLAN_READY',
@@ -16518,6 +16603,7 @@ async function runGenerateAiPlan(): Promise<void> {
         state.steps.ai = 'idle';
         state.error = '';
       }
+      removeGeneratedPlanLocally(operation.planRecordId);
       if (!operation.cancelled) {
         replaceToast(toastId, 'success', 'Draft cancelled', 'No plan was saved.');
       }
@@ -16526,6 +16612,14 @@ async function runGenerateAiPlan(): Promise<void> {
       if (isCurrentOperation) {
         state.steps.ai = 'error';
         state.error = message;
+      }
+      if (operation.planRecordId) {
+        updateGeneratedPlanLocalOnly(operation.planRecordId, {
+          status: 'failed',
+          error: message,
+          failureLabel: AI_DRAFT_FAILED_LABEL,
+        });
+        state.selectedGeneratedPlanId = operation.planRecordId;
       }
       const toastMessage = applyAiErrorDiagnostics(err, message);
       replaceToast(toastId, 'error', aiErrorToastTitle(err), toastMessage);
@@ -17417,13 +17511,7 @@ function openDcaReviewProofTemplate(): void {
 }
 
 function generatedPlansForPanel(oneTimeOnly = false): GeneratedPlanRecord[] {
-  const mode = activeWorkflowMode();
-  const scoped = mode === 'agentic-cloud'
-    ? state.generatedPlans.filter((record) => record.workflowSource === 'cloud')
-    : mode === 'local-bridge'
-      ? state.generatedPlans.filter((record) => record.workflowSource === 'local-bridge')
-      : state.generatedPlans.filter((record) => record.workflowSource === 'browser' || !record.workflowSource);
-  const walletScoped = scoped.filter((record) => recordMatchesWalletScope(record, state.address));
+  const walletScoped = state.generatedPlans.filter((record) => recordMatchesWalletScope(record, state.address));
   return oneTimeOnly ? walletScoped.filter(isOneTimeGeneratedPlan) : walletScoped;
 }
 
@@ -19243,10 +19331,11 @@ async function runCloudSignIn(): Promise<void> {
     state.workflowModePreference = 'auto';
     savePersistedState();
     await refreshCloudWorkspaceData();
-    pushToast('success', 'Cloud workspace signed in', short(state.address));
-    const importCandidates = localCloudImportCandidates();
-    if (importCandidates.summary.total > 0) {
-      pushToast('pending', 'Local data ready to copy', localWorkspaceImportSummaryLabel(importCandidates.summary));
+    const transfer = await transferLocalWorkspaceToCloud({ confirm: false, showEmptyToast: false });
+    if (transfer.total > 0) {
+      toastLocalWorkspaceStorageTransfer(transfer);
+    } else {
+      pushToast('success', 'Cloud workspace signed in', short(state.address));
     }
   });
 }
@@ -19261,82 +19350,101 @@ async function runCloudLogout(): Promise<void> {
 
 async function runCopyLocalWorkspaceToCloud(): Promise<void> {
   await run('connect', async () => {
-    if (!cloudSessionMatchesWallet()) {
-      throw new Error('Sign in to Agentic Cloud with the connected wallet before copying local workspace data.');
+    const result = await transferLocalWorkspaceToCloud({ confirm: true, showEmptyToast: true });
+    toastLocalWorkspaceStorageTransfer(result);
+  });
+}
+
+interface LocalWorkspaceStorageTransferResult {
+  copied: number;
+  failed: number;
+  total: number;
+  canceled: boolean;
+}
+
+async function transferLocalWorkspaceToCloud(options: { confirm: boolean; showEmptyToast: boolean }): Promise<LocalWorkspaceStorageTransferResult> {
+  if (!cloudSessionMatchesWallet()) {
+    throw new Error('Sign in to Agentic Cloud with the connected wallet before transferring local workspace data.');
+  }
+  const candidates = localCloudImportCandidates();
+  const total = candidates.summary.total;
+  if (total === 0) {
+    if (options.showEmptyToast) {
+      pushToast('success', 'Nothing to transfer', 'No eligible local workspace records need storage import.');
     }
-    const candidates = localCloudImportCandidates();
-    if (candidates.summary.total === 0) {
-      pushToast('success', 'Nothing to copy', 'No eligible local workspace records need cloud import.');
-      return;
-    }
+    return { copied: 0, failed: 0, total, canceled: false };
+  }
+  if (options.confirm) {
     const label = localWorkspaceImportSummaryLabel(candidates.summary);
     const confirmed = window.confirm(
-      `${label || 'Local workspace records'} can be copied to Agentic Cloud for ${short(state.address)}. Continue?`,
+      `${label || 'Local workspace records'} can be transferred to Agentic Cloud storage for ${short(state.address)}. Continue?`,
     );
-    if (!confirmed) return;
+    if (!confirmed) return { copied: 0, failed: 0, total, canceled: true };
+  }
 
-    const now = new Date().toISOString();
-    const importedPlanIds = new Map<string, string>();
-    let copied = 0;
-    let failed = 0;
+  const now = new Date().toISOString();
+  const importedPlanIds = new Map<string, string>();
+  let copied = 0;
+  let failed = 0;
 
-    for (const record of candidates.plans) {
-      try {
-        const cloudPlan = parseCloudPlanResponse(await cloudRequest('/api/plans', {
-          method: 'POST',
-          body: JSON.stringify(cloudPlanImportBody(record)),
-        }));
-        const cloudRecord = cloudPlanToGeneratedPlan(cloudPlan);
-        if (cloudRecord) {
-          importedPlanIds.set(record.id, cloudRecord.id);
-          state.generatedPlans = mergeGeneratedPlans([cloudRecord], state.generatedPlans.map((candidate) =>
-            candidate.id === record.id ? { ...candidate, importedToCloudAt: now } : candidate,
-          ));
-          copied += 1;
-        }
-      } catch {
-        failed += 1;
+  for (const record of candidates.plans) {
+    try {
+      const cloudPlan = parseCloudPlanResponse(await cloudRequest('/api/plans', {
+        method: 'POST',
+        body: JSON.stringify(cloudPlanImportBody(record)),
+      }));
+      const cloudRecord = cloudPlanToGeneratedPlan(cloudPlan);
+      if (cloudRecord) {
+        importedPlanIds.set(record.id, cloudRecord.id);
+        state.generatedPlans = mergeGeneratedPlans([cloudRecord], state.generatedPlans.map((candidate) =>
+          candidate.id === record.id ? { ...candidate, importedToCloudAt: now } : candidate,
+        ));
+        copied += 1;
       }
+    } catch {
+      failed += 1;
     }
+  }
 
-    for (const action of candidates.approvals) {
-      try {
-        const approvalRecord = parseCloudApprovalResponse(await cloudRequest('/api/approvals', {
-          method: 'POST',
-          body: JSON.stringify(cloudApprovalImportBody(action, importedPlanIds.get(action.planDraftId ?? ''))),
-        }));
-        const cloudApproval = cloudApprovalToPreparedAction(approvalRecord);
-        if (cloudApproval) {
-          state.preparedActions = mergePreparedActions([cloudApproval], state.preparedActions.map((candidate) =>
-            candidate.id === action.id ? { ...candidate, importedToCloudAt: now } : candidate,
-          ));
-          state.materializedActions = state.preparedActions;
-          copied += 1;
-        }
-      } catch {
-        failed += 1;
+  for (const action of candidates.approvals) {
+    try {
+      const approvalRecord = parseCloudApprovalResponse(await cloudRequest('/api/approvals', {
+        method: 'POST',
+        body: JSON.stringify(cloudApprovalImportBody(action, importedPlanIds.get(action.planDraftId ?? ''))),
+      }));
+      const cloudApproval = cloudApprovalToPreparedAction(approvalRecord);
+      if (cloudApproval) {
+        state.preparedActions = mergePreparedActions([cloudApproval], state.preparedActions.map((candidate) =>
+          candidate.id === action.id ? { ...candidate, importedToCloudAt: now } : candidate,
+        ));
+        state.materializedActions = state.preparedActions;
+        copied += 1;
       }
+    } catch {
+      failed += 1;
     }
+  }
 
-    for (const payment of candidates.repeatPayments) {
-      try {
-        const response = await cloudCreateRecurring(cloudRecurringImportBody(payment));
-        const cloudPayment = cloudRecurringScheduleToPayment(response.schedule, {
-          lifetimeSpend: response.lifetimeSpend,
-          nextRuns: response.nextRuns,
-        });
-        if (cloudPayment) {
-          state.recurringPayments = mergeRecurringPayments([cloudPayment], state.recurringPayments.map((candidate) =>
-            candidate.id === payment.id ? { ...candidate, importedToCloudAt: now } : candidate,
-          ));
-          copied += 1;
-        }
-      } catch {
-        failed += 1;
+  for (const payment of candidates.repeatPayments) {
+    try {
+      const response = await cloudCreateRecurring(cloudRecurringImportBody(payment));
+      const cloudPayment = cloudRecurringScheduleToPayment(response.schedule, {
+        lifetimeSpend: response.lifetimeSpend,
+        nextRuns: response.nextRuns,
+      });
+      if (cloudPayment) {
+        state.recurringPayments = mergeRecurringPayments([cloudPayment], state.recurringPayments.map((candidate) =>
+          candidate.id === payment.id ? { ...candidate, importedToCloudAt: now } : candidate,
+        ));
+        copied += 1;
       }
+    } catch {
+      failed += 1;
     }
+  }
 
-    for (const artifact of candidates.proofs) {
+  for (const artifact of candidates.proofs) {
+    try {
       const uploaded = await uploadLabArtifactToCloud(artifact);
       state.labArtifacts = mergeLabArtifacts([uploaded], state.labArtifacts);
       if (uploaded.cloudSyncStatus === 'synced') {
@@ -19344,22 +19452,32 @@ async function runCopyLocalWorkspaceToCloud(): Promise<void> {
       } else {
         failed += 1;
       }
+    } catch {
+      failed += 1;
     }
+  }
 
-    saveGeneratedPlans();
-    saveBrowserWorkflowState();
-    await saveLabArtifacts();
-    await refreshCloudWorkspaceData().catch(() => undefined);
+  saveGeneratedPlans();
+  saveBrowserWorkflowState();
+  await saveLabArtifacts();
+  await refreshCloudWorkspaceData().catch(() => undefined);
 
-    if (copied === 0 && failed > 0) {
-      throw new Error('No local records could be copied to Agentic Cloud.');
-    }
-    pushToast(
-      failed > 0 ? 'pending' : 'success',
-      failed > 0 ? 'Cloud copy partially completed' : 'Local workspace copied',
-      failed > 0 ? `${copied} copied, ${failed} need review.` : `${copied} item${copied === 1 ? '' : 's'} copied to cloud.`,
-    );
-  });
+  return { copied, failed, total, canceled: false };
+}
+
+function toastLocalWorkspaceStorageTransfer(result: LocalWorkspaceStorageTransferResult): void {
+  if (result.canceled || result.total === 0) return;
+  if (result.copied === 0 && result.failed > 0) {
+    pushToast('error', 'Storage transfer failed', `${result.failed} item${result.failed === 1 ? '' : 's'} stayed on this device.`);
+    return;
+  }
+  pushToast(
+    result.failed > 0 ? 'pending' : 'success',
+    result.failed > 0 ? 'Storage transfer partially completed' : 'Local workspace transferred',
+    result.failed > 0
+      ? `${result.copied} transferred, ${result.failed} need review.`
+      : `${result.copied} item${result.copied === 1 ? '' : 's'} transferred to storage.`,
+  );
 }
 
 function notifyLocalWorkspaceBackupReminder(detail: string): void {
@@ -20754,12 +20872,29 @@ async function runDraftRecurringWithAi(): Promise<void> {
   const toastId = pushToast('pending', 'Drafting repeat with AI', 'Building and reviewing this repeat request.');
   try {
     await run('ai', async () => {
-      const generatedPlan = await generateRecurringAiPlan(state.recurringDraft);
+      let plan: AgentPlan;
       let review: AgentPlanReviewState;
       try {
-        review = await reviewRecurringPlan(generatedPlan);
+        plan = await generateRecurringAiPlan(state.recurringDraft);
       } catch (err) {
-        review = recurringAgentReviewErrorState(err, generatedPlan);
+        plan = recurringDraftToAgentPlan(state.recurringDraft, 'template');
+        review = recurringAgentReviewErrorState(err, plan);
+        const status = recurringStatusForAgentReview(review);
+        const createMode = await createRecurringFromDraft(state.recurringDraft, { status, agentReview: review });
+        state.activeTab = 'schedule';
+        state.recurringView = 'active';
+        replaceToast(
+          toastId,
+          recurringAgentToastKind(review),
+          recurringCreateToastTitle(state.recurringDraft, review, status),
+          recurringCreateToastDetail(createMode, review),
+        );
+        return;
+      }
+      try {
+        review = await reviewRecurringPlan(plan);
+      } catch (err) {
+        review = recurringAgentReviewErrorState(err, plan);
       }
       const status = recurringStatusForAgentReview(review);
       const createMode = await createRecurringFromDraft(state.recurringDraft, { status, agentReview: review });
@@ -30366,20 +30501,7 @@ function activeWorkflowPreparedActions(): PreparedAction[] {
 }
 
 function activeWorkflowRecurringPayments(): RecurringPayment[] {
-  const payments = (() => {
-    switch (activeWorkflowMode()) {
-    case 'agentic-cloud':
-      return state.recurringPayments.filter((payment) => {
-        const source = recurringPaymentWorkflowSource(payment);
-        return source === 'cloud' || source === 'browser';
-      });
-    case 'browser-workflow':
-      return state.recurringPayments.filter((payment) => recurringPaymentWorkflowSource(payment) === 'browser');
-    case 'local-bridge':
-      return state.recurringPayments.filter((payment) => recurringPaymentWorkflowSource(payment) === 'local-bridge');
-    }
-  })();
-  return payments.filter((payment) => recordMatchesWalletScope(payment, state.address));
+  return state.recurringPayments.filter((payment) => recordMatchesWalletScope(payment, state.address));
 }
 
 function isActionInboxActive(action: PreparedAction): boolean {

@@ -199,4 +199,54 @@ describe('connector drafting helpers', () => {
     expect(notes).toContain('Use this connector only');
     expect(notes).toContain('claim if it matches my position');
   });
+
+  describe('cascading-select wins when legacy template ids collide', () => {
+    it('exposes the cascading-select reserve field on the Kamino deposit template', () => {
+      const kaminoDeposit = templateById('kamino-deposit');
+      const tokenField = kaminoDeposit.fields.find((field) => field.id === 'token');
+      expect(tokenField?.type).toBe('cascading-select');
+      expect(tokenField?.cascading?.providerId).toBe('kamino.reserve');
+    });
+
+    it('preserves base template metadata when merging generated fields', () => {
+      const kaminoDeposit = templateById('kamino-deposit');
+      expect(kaminoDeposit.title).toBe('Kamino deposit');
+      expect(kaminoDeposit.actionType).toBe('kamino_deposit');
+      expect(kaminoDeposit.risk).toBe('medium');
+    });
+
+    it('surfaces cascading vault dropdown for Drift vault deposit', () => {
+      const driftDeposit = templateById('drift-vault-deposit');
+      const vaultField = driftDeposit.fields.find((field) => field.id === 'vaultAddress');
+      expect(vaultField?.type).toBe('cascading-select');
+      expect(vaultField?.cascading?.providerId).toBe('drift.vault');
+    });
+
+    it('surfaces cascading reserve dropdown for Kamino withdraw', () => {
+      const kaminoWithdraw = templateById('kamino-withdraw');
+      const tokenField = kaminoWithdraw.fields.find((field) => field.id === 'token');
+      expect(tokenField?.type).toBe('cascading-select');
+    });
+
+    it('does not strip the swap template token-picker selectField defaults', () => {
+      const swap = templateById('swap');
+      const inputToken = swap.fields.find((field) => field.id === 'inputToken');
+      const outputToken = swap.fields.find((field) => field.id === 'outputToken');
+      const amount = swap.fields.find((field) => field.id === 'amount');
+      expect(inputToken?.type).toBe('select');
+      expect(inputToken?.defaultValue).toBe('SOL');
+      expect(inputToken?.options).toEqual(expect.arrayContaining(['SOL', 'USDC']));
+      expect(outputToken?.type).toBe('select');
+      expect(outputToken?.defaultValue).toBe('USDC');
+      expect(amount?.defaultValue).toBe('0.01');
+    });
+
+    it('keeps base-only fields like Drift initializeDepositorIfMissing after merge', () => {
+      const driftDeposit = templateById('drift-vault-deposit');
+      const initField = driftDeposit.fields.find((field) => field.id === 'initializeDepositorIfMissing');
+      expect(initField?.type).toBe('select');
+      const amount = driftDeposit.fields.find((field) => field.id === 'amount');
+      expect(amount?.defaultValue).toBe('25');
+    });
+  });
 });

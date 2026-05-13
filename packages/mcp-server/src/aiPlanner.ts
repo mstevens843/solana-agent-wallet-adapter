@@ -158,7 +158,7 @@ const REVIEW_JSON_SCHEMA = {
     summary: { type: 'string' },
     evidence: {
       type: 'object',
-      additionalProperties: true,
+      additionalProperties: false,
       properties: {},
     },
     questions: {

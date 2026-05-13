@@ -227,7 +227,7 @@ describe('render web hosted BYOK API', () => {
       expect(body.text).toMatchObject({
         format: {
           name: 'agentic_ai_review',
-          strict: true,
+          strict: false,
         },
       });
     });

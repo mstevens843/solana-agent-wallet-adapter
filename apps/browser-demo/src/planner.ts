@@ -408,10 +408,41 @@ const BASE_AGENT_PLAN_TEMPLATES: AgentPlanTemplate[] = [
   ]),
 ];
 
-export const AGENT_PLAN_TEMPLATES: AgentPlanTemplate[] = [
-  ...BASE_AGENT_PLAN_TEMPLATES,
-  ...connectorActionPlanTemplates(BASE_AGENT_PLAN_TEMPLATES),
-];
+export const AGENT_PLAN_TEMPLATES: AgentPlanTemplate[] = (() => {
+  const generated = connectorActionPlanTemplates();
+  const generatedById = new Map(generated.map((entry) => [entry.id, entry]));
+  const baseIds = new Set(BASE_AGENT_PLAN_TEMPLATES.map((entry) => entry.id));
+  return [
+    ...BASE_AGENT_PLAN_TEMPLATES.map((base) => {
+      const fromForm = generatedById.get(base.id);
+      if (!fromForm) return base;
+      return { ...base, fields: mergeBaseAndGeneratedFields(base.fields, fromForm.fields) };
+    }),
+    ...generated.filter((entry) => !baseIds.has(entry.id)),
+  ];
+})();
+
+function mergeBaseAndGeneratedFields(
+  baseFields: AgentPlanTemplateField[],
+  generatedFields: AgentPlanTemplateField[],
+): AgentPlanTemplateField[] {
+  const generatedById = new Map(generatedFields.map((field) => [field.id, field]));
+  const baseIds = new Set(baseFields.map((field) => field.id));
+  const merged: AgentPlanTemplateField[] = baseFields.map((baseField) => {
+    const generatedField = generatedById.get(baseField.id);
+    if (generatedField?.type === 'cascading-select') {
+      return generatedField;
+    }
+    return baseField;
+  });
+  for (const generatedField of generatedFields) {
+    if (baseIds.has(generatedField.id)) continue;
+    if (generatedField.type === 'cascading-select' || generatedField.showWhen) {
+      merged.push(generatedField);
+    }
+  }
+  return merged;
+}
 
 export function templateById(id: string): AgentPlanTemplate {
   return AGENT_PLAN_TEMPLATES.find((template) => template.id === id) ?? AGENT_PLAN_TEMPLATES[0]!;
@@ -1964,12 +1995,11 @@ function selectField(id: string, label: string, options: string[], defaultValue:
   return { id, label, options, defaultValue, type: 'select' };
 }
 
-function connectorActionPlanTemplates(existingTemplates: AgentPlanTemplate[]): AgentPlanTemplate[] {
-  const existingIds = new Set(existingTemplates.map((entry) => entry.id));
+function connectorActionPlanTemplates(): AgentPlanTemplate[] {
   const generated: AgentPlanTemplate[] = [];
   for (const connector of PROTOCOL_CONNECTORS) {
     for (const form of connectorActionFormsForConnector(connector)) {
-      if (existingIds.has(form.templateId) || generated.some((entry) => entry.id === form.templateId)) continue;
+      if (generated.some((entry) => entry.id === form.templateId)) continue;
       if (form.executionMode === 'read-only' || form.executionMode === 'blink') continue;
       generated.push(template(
         connectorTemplateCategory(connector.id),

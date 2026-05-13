@@ -62,6 +62,10 @@ describe('BridgeAiPlanner', () => {
         strict: true,
       },
     });
+    const planFormat = (calls[0]?.body.text as { format?: { schema?: unknown } } | undefined)?.format;
+    const planSchema = (planFormat as { schema?: unknown } | undefined)?.schema;
+    expect(planSchema, 'expected agentic_ai_plan schema to be present on the request').toBeDefined();
+    expectAdditionalPropertiesClosed(planSchema, 'agentic_ai_plan root');
   });
 
   it('sends the OpenAI Responses review request with strict:false to allow open-shaped evidence', async () => {
@@ -117,6 +121,10 @@ describe('BridgeAiPlanner', () => {
         strict: false,
       },
     });
+    const reviewFormat = (reviewCall?.body.text as { format?: { schema?: unknown } } | undefined)?.format;
+    const reviewSchema = (reviewFormat as { schema?: unknown } | undefined)?.schema;
+    expect(reviewSchema, 'expected agentic_ai_review schema to be present on the request').toBeDefined();
+    expectAdditionalPropertiesClosed(reviewSchema, 'agentic_ai_review root');
   });
 
   it('removes hidden separators from bridge session keys before building provider headers', async () => {
@@ -1537,4 +1545,31 @@ function transferPlan() {
     fields: [{ label: 'Amount', value: '0.01 SOL' }],
     safeguards: ['Confirm recipient.'],
   };
+}
+
+function expectAdditionalPropertiesClosed(node: unknown, path: string): void {
+  if (!node || typeof node !== 'object') return;
+  const schema = node as Record<string, unknown>;
+  if (schema.type === 'object') {
+    expect(
+      schema.additionalProperties,
+      `${path}: every object node must declare additionalProperties: false for OpenAI strict structured output`,
+    ).toBe(false);
+  }
+  if (schema.properties && typeof schema.properties === 'object') {
+    for (const [key, child] of Object.entries(schema.properties as Record<string, unknown>)) {
+      expectAdditionalPropertiesClosed(child, `${path}.${key}`);
+    }
+  }
+  if (schema.items) {
+    expectAdditionalPropertiesClosed(schema.items, `${path}[]`);
+  }
+  for (const combinator of ['anyOf', 'oneOf', 'allOf'] as const) {
+    const branches = schema[combinator];
+    if (Array.isArray(branches)) {
+      branches.forEach((branch, index) => {
+        expectAdditionalPropertiesClosed(branch, `${path}.${combinator}[${index}]`);
+      });
+    }
+  }
 }
