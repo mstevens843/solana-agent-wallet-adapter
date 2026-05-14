@@ -2,8 +2,9 @@ import { PublicKey } from '@solana/web3.js';
 
 import { ProtocolError } from '@solana-agent-wallet-adapter/core';
 
+import { parsePositiveSolDecimal } from '../solDecimal.js';
 import { AdapterError } from '../types.js';
-import { LAMPORTS_PER_SOL, MAX_SWEEP_ITEMS, TENSOR_ADAPTER_ID } from './constants.js';
+import { MAX_SWEEP_ITEMS, TENSOR_ADAPTER_ID } from './constants.js';
 
 export function parsePublicKey(value: string | undefined, field: string): string {
   const trimmed = value?.trim();
@@ -86,40 +87,25 @@ export function parseSolDecimal(
   value: string | undefined,
   field: string,
 ): { priceLamports: bigint; priceSol: string } {
-  const trimmed = value?.trim();
-  if (!trimmed) {
-    throw new AdapterError(TENSOR_ADAPTER_ID, 'missing_input', `${field} is required.`);
-  }
-  if (!/^(?:\d+|\d*\.\d+|\d+\.)$/.test(trimmed)) {
-    throw new AdapterError(
-      TENSOR_ADAPTER_ID,
-      'invalid_amount',
-      `${field} must be a non-negative decimal string in SOL.`,
-    );
-  }
-  const parts = trimmed.split('.');
-  const wholeRaw = parts[0] ?? '0';
-  const fractionRaw = parts[1] ?? '';
-  const whole = wholeRaw === '' ? '0' : wholeRaw;
-  const fraction = (fractionRaw + '000000000').slice(0, 9);
-  let lamports: bigint;
   try {
-    lamports = BigInt(whole) * LAMPORTS_PER_SOL + BigInt(fraction);
-  } catch {
+    const parsed = parsePositiveSolDecimal(value, field);
+    return { priceLamports: parsed.lamports, priceSol: parsed.sol };
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    if (message.includes('must be greater than zero')) {
+      throw new AdapterError(TENSOR_ADAPTER_ID, 'invalid_amount', `${field} must be greater than 0 SOL.`);
+    }
+    if (message.includes('more than 9 fractional digits')) {
+      throw new AdapterError(TENSOR_ADAPTER_ID, 'invalid_amount', message);
+    }
     throw new AdapterError(
       TENSOR_ADAPTER_ID,
-      'invalid_amount',
-      `${field} must be a non-negative decimal string in SOL.`,
+      value?.trim() ? 'invalid_amount' : 'missing_input',
+      value?.trim()
+        ? `${field} must be a positive decimal SOL value.`
+        : `${field} is required.`,
     );
   }
-  if (lamports <= 0n) {
-    throw new AdapterError(
-      TENSOR_ADAPTER_ID,
-      'invalid_amount',
-      `${field} must be greater than 0 SOL.`,
-    );
-  }
-  return { priceLamports: lamports, priceSol: trimmed };
 }
 
 export function assertNotMoreThanMaxSweep(itemCount: number): void {

@@ -744,6 +744,7 @@ export function registerActionTools(
         tokenBAmount: z.string().min(1).optional(),
         maxTokenAAmount: z.string().min(1).optional().describe('Required for CLMM when tokenBAmount is the base amount.'),
         maxTokenBAmount: z.string().min(1).optional().describe('Required for CLMM when tokenAAmount is the base amount.'),
+        rangePreset: z.enum(['narrow', 'balanced', 'wide', 'custom']).optional().describe('Optional CLMM range preset. Custom requires lower/upper price or tick fields.'),
         lowerTick: z.number().int().optional(),
         upperTick: z.number().int().optional(),
         lowerPrice: z.string().min(1).optional(),

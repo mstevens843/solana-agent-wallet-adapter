@@ -476,6 +476,25 @@ describe('Magic Eden bid preparation', () => {
       quantity: 1,
     });
   });
+
+  it('accepts leading-dot bid decimals and stores canonical SOL strings', async () => {
+    const state = fakeState();
+    setMagicedenClientFactory(() => fakeClient(state));
+    const ctx = makeContext({ store: inMemoryStore() });
+    const result = await requireMeAction('bid').prepare(
+      { bidPriceSol: '.01', maxEscrowSol: '.02', collectionSymbol: 'test', quantity: 1 },
+      ctx,
+    );
+    expect(result.addInput.params).toMatchObject({
+      collectionSymbol: 'test',
+      bidPriceSol: '0.01',
+      bidPriceLamports: '10000000',
+      maxEscrowSol: '0.02',
+      maxEscrowLamports: '20000000',
+      requiredEscrowSol: '0.01',
+      requiredEscrowLamports: '10000000',
+    });
+  });
 });
 
 describe('Magic Eden cancel preparation', () => {

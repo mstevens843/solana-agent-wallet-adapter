@@ -277,11 +277,13 @@ export function buildWormholeSdkClient(options: BuildWormholeSdkClientOptions): 
       if (input.routeType === 'cctp' || input.routeType === 'ntt') {
         throw unsupportedRoute(`Wormhole ${input.routeType} routes are not wired in this connector yet. Use token_bridge/WTT.`);
       }
-      const candidates: WormholeRouteMode[] = input.routeType === 'token_bridge'
-        ? ['manual']
-        : input.nativeGasDropoff
-          ? ['automatic']
-          : ['automatic', 'manual'];
+      const candidates: WormholeRouteMode[] = input.routeMode
+        ? [input.routeMode]
+        : input.routeType === 'token_bridge'
+          ? ['manual']
+          : input.nativeGasDropoff
+            ? ['automatic']
+            : ['automatic', 'manual'];
       const failures: string[] = [];
       for (const mode of candidates) {
         try {

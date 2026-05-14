@@ -46,6 +46,15 @@ export type {
   DAppAdapterId,
 } from './adapters/types.js';
 export {
+  describeTensorUnavailableReason,
+  getTensorClient,
+  isTensorConfigured,
+  resetTensorClientFactory,
+  setTensorClientFactory,
+} from './adapters/tensor/client.js';
+export type { TensorClient } from './adapters/tensor/client.js';
+export { buildTensorApiClient } from './adapters/tensor/apiClient.js';
+export {
   prepareTransactionForApproval,
 } from './preparedActionTransactionBuilder.js';
 export {

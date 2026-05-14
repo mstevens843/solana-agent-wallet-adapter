@@ -141,6 +141,7 @@ export interface RaydiumAddLiquidityInput {
   upperTick?: number;
   lowerPrice?: string;
   upperPrice?: string;
+  rangePreset?: string;
   slippageBps: number;
 }
 

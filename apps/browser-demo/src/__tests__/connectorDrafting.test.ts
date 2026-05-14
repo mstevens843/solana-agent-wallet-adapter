@@ -251,6 +251,32 @@ describe('connector drafting helpers', () => {
     expect(renderFieldIds).not.toContain('poolType');
   });
 
+  it('keeps only the visible liquidity amount and paired max fields', () => {
+    const normalized = normalizeConnectorDraftParameters(templateById('connector-raydium-liquidity'), {
+      subAction: 'clmm-open',
+      poolId: 'SOL-USDC-CLMM',
+      amountSide: 'tokenA',
+      tokenAAmount: '0.01',
+      tokenBAmount: '1',
+      maxTokenAAmount: '0.1',
+      maxTokenBAmount: '2',
+      rangePreset: 'balanced',
+      lowerPrice: '1',
+      upperPrice: '100',
+    });
+
+    expect(normalized).toMatchObject({
+      poolType: 'clmm',
+      tokenAAmount: '0.01',
+      maxTokenBAmount: '2',
+      rangePreset: 'balanced',
+    });
+    expect(normalized).not.toHaveProperty('tokenBAmount');
+    expect(normalized).not.toHaveProperty('maxTokenAAmount');
+    expect(normalized).not.toHaveProperty('lowerPrice');
+    expect(normalized).not.toHaveProperty('upperPrice');
+  });
+
   it('lets concrete connector templates override stale connector form state', () => {
     const raydium = normalizeConnectorDraftParameters(templateById('connector-raydium-liquidity'), {
       connectorId: 'jupiter',
@@ -645,10 +671,13 @@ describe('connector drafting helpers', () => {
         const fields = formTemplateFields(form);
         const subAction = fields.find((field) => field.id === 'subAction');
         const collection = fields.find((field) => field.id === 'collectionId');
+        const spendCap = fields.find((field) => field.id === 'maxEscrowSol');
         expect(subAction?.defaultValue).toBe('collection');
         expect(collection?.type).toBe('cascading-select');
         expect(collection?.cascading?.providerId).toBe(providerId);
         expect(collection?.showWhen).toMatchObject({ subAction: 'collection' });
+        expect(spendCap?.label).toBe('Spend cap (SOL)');
+        expect(spendCap?.helperText).toContain('Maximum SOL');
       }
     });
 
@@ -683,8 +712,8 @@ describe('connector drafting helpers', () => {
           connectorOperationId: operationId,
           subAction: 'collection',
           subActionLabel: 'Collection',
-          bidPriceSol: '.01',
-          maxEscrowSol: '.01',
+          bidPriceSol: '0.01',
+          maxEscrowSol: '0.01',
           collectionId: 'madlads',
         });
         expect(collection).not.toHaveProperty('priceSol');
@@ -708,8 +737,8 @@ describe('connector drafting helpers', () => {
           connectorOperationId: operationId,
           subAction: 'nft',
           subActionLabel: 'Single NFT',
-          bidPriceSol: '.01',
-          maxEscrowSol: '.01',
+          bidPriceSol: '0.01',
+          maxEscrowSol: '0.01',
           mintAddress: 'nft-mint',
         });
         expect(nft).not.toHaveProperty('priceSol');
@@ -742,8 +771,8 @@ describe('connector drafting helpers', () => {
         expect(collection.errors).toEqual({});
         expect(collection.parameters.subAction).toBe('collection');
         expect(collection.parameters.collectionId).toBe('madlads');
-        expect(collection.parameters.bidPriceSol).toBe('.01');
-        expect(collection.parameters.maxEscrowSol).toBe('.01');
+        expect(collection.parameters.bidPriceSol).toBe('0.01');
+        expect(collection.parameters.maxEscrowSol).toBe('0.01');
 
         const nft = validateConnectorDraftParameters(template, {
           subAction: 'nft',
@@ -753,8 +782,8 @@ describe('connector drafting helpers', () => {
         expect(nft.errors).toEqual({});
         expect(nft.parameters.subAction).toBe('nft');
         expect(nft.parameters.mintAddress).toBe('nft-mint');
-        expect(nft.parameters.bidPriceSol).toBe('.01');
-        expect(nft.parameters.maxEscrowSol).toBe('.01');
+        expect(nft.parameters.bidPriceSol).toBe('0.01');
+        expect(nft.parameters.maxEscrowSol).toBe('0.01');
       }
     });
 

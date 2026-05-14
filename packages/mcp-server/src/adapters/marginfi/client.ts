@@ -220,9 +220,9 @@ class RealMarginfiClient implements MarginfiClient {
     const before = healthFromAccount(account);
     const warnings: string[] = [];
     let after: MarginfiHealthComponents | undefined;
-    const wrapper = await actionIxs(
+    const wrapper = await buildActionInstructions(
       account,
-      bank.address,
+      bankSnapshot,
       normalizedInput.operation,
       resolvedAmount.amount,
       resolvedAmount,
@@ -271,9 +271,9 @@ class RealMarginfiClient implements MarginfiClient {
     const bank = requireBank(client, normalizedInput);
     const bankSnapshot = snapshotFromBank(client, bank);
     const resolvedAmount = resolveActionAmount(account, bankSnapshot, normalizedInput);
-    const wrapper = await actionIxs(
+    const wrapper = await buildActionInstructions(
       account,
-      bank.address,
+      bankSnapshot,
       normalizedInput.operation,
       resolvedAmount.amount,
       resolvedAmount,
@@ -369,27 +369,65 @@ function requireBank(client: AnyMarginfiClient, input: MarginfiBankLookupInput):
     throw new AdapterError(
       MARGINFI_ADAPTER_ID,
       'missing_bank',
-      'MarginFi bank was not found. Pass bankAddress, bankMint, or token.',
+      `MarginFi bank was not found${describeMarginfiBankLookupInput(input)}. Pass a bank address, bank mint, or token symbol.`,
     );
   }
   return bank;
 }
 
 function resolveBank(client: AnyMarginfiClient, input: MarginfiBankLookupInput): AnyBank | null {
-  if (input.bankAddress?.trim()) {
-    return requireClientMethod(client, 'getBankByPk').call(client, new PublicKey(input.bankAddress.trim()));
+  const bankAddress = input.bankAddress?.trim();
+  const bankMint = input.bankMint?.trim();
+  const addressPublicKey = publicKeyFromUnknown(bankAddress);
+  if (addressPublicKey) {
+    const byAddress = requireClientMethod(client, 'getBankByPk').call(client, addressPublicKey);
+    if (byAddress) return byAddress;
+    const byMint = requireClientMethod(client, 'getBankByMint').call(client, addressPublicKey);
+    if (byMint) return byMint;
   }
-  if (input.bankMint?.trim()) {
-    return requireClientMethod(client, 'getBankByMint').call(client, new PublicKey(input.bankMint.trim()));
+
+  const mintPublicKey = publicKeyFromUnknown(bankMint);
+  if (mintPublicKey) {
+    const byMint = requireClientMethod(client, 'getBankByMint').call(client, mintPublicKey);
+    if (byMint) return byMint;
   }
-  if (input.token?.trim()) {
-    return requireClientMethod(client, 'getBankByTokenSymbol').call(client, input.token.trim());
+
+  const token = normalizeBankSelectorToken(input.token) ??
+    normalizeBankSelectorToken(bankAddress) ??
+    normalizeBankSelectorToken(bankMint);
+  if (token) {
+    return requireClientMethod(client, 'getBankByTokenSymbol').call(client, token.toUpperCase());
   }
+
+  if (bankAddress || bankMint) return null;
   throw new AdapterError(
     MARGINFI_ADAPTER_ID,
     'missing_bank',
     'MarginFi bank lookup requires bankAddress, bankMint, or token.',
   );
+}
+
+function normalizeBankSelectorToken(value: string | undefined): string | undefined {
+  const trimmed = value?.trim();
+  if (!trimmed || publicKeyFromUnknown(trimmed)) return undefined;
+  const [token] = trimmed
+    .replace(/\b(bank|reserve|market)\b/gi, ' ')
+    .replace(/[^a-z0-9]+/gi, ' ')
+    .trim()
+    .split(/\s+/);
+  return token ? token.toLowerCase() : undefined;
+}
+
+function describeMarginfiBankLookupInput(input: MarginfiBankLookupInput): string {
+  const parts: string[] = [];
+  if (input.bankAddress?.trim()) parts.push(`bankAddress "${input.bankAddress.trim()}"`);
+  if (input.bankMint?.trim()) parts.push(`bankMint "${input.bankMint.trim()}"`);
+  if (input.token?.trim()) parts.push(`token "${input.token.trim()}"`);
+  return parts.length > 0 ? ` for ${parts.join(', ')}` : '';
+}
+
+function marginfiBankLabel(bank: MarginfiBankSnapshot): string {
+  return bank.tokenSymbol ? `${bank.tokenSymbol} bank ${bank.bankAddress}` : `bank ${bank.bankAddress}`;
 }
 
 async function resolveAccount(
@@ -558,6 +596,25 @@ async function actionIxs(
         await requireAccountMethod(account, 'makeRepayIx').call(account, amount, bankAddress, input.repayAll === true),
         operation,
       );
+  }
+}
+
+async function buildActionInstructions(
+  account: AnyMarginfiAccount,
+  bank: MarginfiBankSnapshot,
+  operation: MarginfiOperation,
+  amount: string,
+  input: { withdrawAll?: boolean; repayAll?: boolean },
+): Promise<InstructionsWrapper> {
+  try {
+    return await actionIxs(account, new PublicKey(bank.bankAddress), operation, amount, input);
+  } catch (err) {
+    if (err instanceof AdapterError) throw err;
+    throw new AdapterError(
+      MARGINFI_ADAPTER_ID,
+      'sdk_build_error',
+      `MarginFi SDK failed while building ${operation} instructions for ${marginfiBankLabel(bank)}. Underlying SDK error: ${errorMessage(err)}`,
+    );
   }
 }
 

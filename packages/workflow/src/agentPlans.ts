@@ -52,6 +52,7 @@ export interface AgentPlanTemplateField {
   label: string;
   type?: TemplateFieldType;
   placeholder?: string;
+  helperText?: string;
   defaultValue?: string;
   options?: string[];
   required?: boolean;

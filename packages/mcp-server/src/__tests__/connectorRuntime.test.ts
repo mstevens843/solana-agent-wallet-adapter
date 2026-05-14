@@ -370,6 +370,8 @@ describe('AgentWalletActionService connector runtime', () => {
         connectorId: 'wormhole',
         operation: 'transfer',
         amountRaw: '10000000',
+        sourceTokenLabel: 'USDC',
+        token: 'USDC',
         destinationChain: 'Base',
         destinationAddress: WORMHOLE_DESTINATION,
         destinationToken: WORMHOLE_DESTINATION_TOKEN,

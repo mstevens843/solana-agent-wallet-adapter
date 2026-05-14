@@ -20,6 +20,7 @@ import {
   MAGICEDEN_API_TRANSITION_WARNING,
   MAGICEDEN_MARKETPLACE_PROGRAM_ID,
   lamportsFromSol,
+  normalizeSolDecimal,
   shortMint,
   solFromLamports,
 } from './constants.js';
@@ -433,6 +434,8 @@ export const magicedenBidAction: AdapterAction<MagicedenBidPrepareInput> = {
   async prepare(input, ctx): Promise<AdapterPrepareResult> {
     const bidLamports = lamportsFromSolField(input.bidPriceSol, 'bidPriceSol');
     const escrowCapLamports = lamportsFromSolField(input.maxEscrowSol, 'maxEscrowSol');
+    const bidPriceSol = normalizeSolDecimalField(input.bidPriceSol, 'bidPriceSol');
+    const maxEscrowSol = normalizeSolDecimalField(input.maxEscrowSol, 'maxEscrowSol');
     const isCollectionBid = !input.mintAddress;
     if (isCollectionBid && !input.collectionSymbol && !input.collectionId) {
       throw new AdapterError(
@@ -454,7 +457,7 @@ export const magicedenBidAction: AdapterAction<MagicedenBidPrepareInput> = {
       throw new AdapterError(
         MAGICEDEN_ADAPTER_ID,
         'escrow_exceeded',
-        `Magic Eden bid escrow ${solFromLamports(requiredEscrow)} SOL exceeds maxEscrowSol cap ${input.maxEscrowSol} SOL.`,
+        `Magic Eden bid escrow ${solFromLamports(requiredEscrow)} SOL exceeds spend cap ${maxEscrowSol} SOL.`,
       );
     }
 
@@ -474,8 +477,8 @@ export const magicedenBidAction: AdapterAction<MagicedenBidPrepareInput> = {
     });
 
     const summary = isCollectionBid
-      ? `Bid ${input.bidPriceSol} SOL on Magic Eden collection ${input.collectionSymbol ?? input.collectionId}`
-      : `Bid ${input.bidPriceSol} SOL on Magic Eden token ${shortMint(input.mintAddress!)}`;
+      ? `Bid ${bidPriceSol} SOL on Magic Eden collection ${input.collectionSymbol ?? input.collectionId}`
+      : `Bid ${bidPriceSol} SOL on Magic Eden token ${shortMint(input.mintAddress!)}`;
     const params: Record<string, unknown> = {
       adapter: MAGICEDEN_ADAPTER_ID,
       connectorId: MAGICEDEN_ADAPTER_ID,
@@ -486,9 +489,9 @@ export const magicedenBidAction: AdapterAction<MagicedenBidPrepareInput> = {
       ...(input.collectionSymbol ? { collectionSymbol: input.collectionSymbol } : {}),
       ...(input.collectionId ? { collectionId: input.collectionId } : {}),
       bidPriceLamports: bidLamports.toString(),
-      bidPriceSol: input.bidPriceSol,
+      bidPriceSol,
       maxEscrowLamports: escrowCapLamports.toString(),
-      maxEscrowSol: input.maxEscrowSol,
+      maxEscrowSol,
       quantity,
       requiredEscrowLamports: requiredEscrow.toString(),
       requiredEscrowSol: solFromLamports(requiredEscrow),
@@ -650,6 +653,22 @@ function lamportsFromSolField(value: string | undefined, label: string): bigint 
   }
 }
 
+function normalizeSolDecimalField(value: string | undefined, label: string): string {
+  const trimmed = value?.trim();
+  if (!trimmed) {
+    throw new AdapterError(MAGICEDEN_ADAPTER_ID, 'invalid_request', `Magic Eden requires ${label} as a decimal SOL string.`);
+  }
+  try {
+    return normalizeSolDecimal(trimmed, label);
+  } catch (err) {
+    throw new AdapterError(
+      MAGICEDEN_ADAPTER_ID,
+      'invalid_request',
+      err instanceof Error ? err.message : String(err),
+    );
+  }
+}
+
 function pickListingForMint(
   rows: MagicedenListingRow[],
   mintAddress: string,
@@ -754,4 +773,3 @@ async function assertConnectedWallet(ctx: DAppAdapterContext, action: PreparedAc
   }
   return walletAddress;
 }
-

@@ -1,6 +1,7 @@
 import { PublicKey } from '@solana/web3.js';
 
 import type { Cluster } from '@solana-agent-wallet-adapter/core';
+import { parsePositiveSolDecimal, solFromLamports as formatSolFromLamports } from '../solDecimal.js';
 
 export const MAGICEDEN_ADAPTER_ID = 'magiceden' as const;
 export const MAGICEDEN_NAME = 'Magic Eden';
@@ -35,34 +36,13 @@ export function shortMint(mint: string): string {
 }
 
 export function lamportsFromSol(value: string, label: string): bigint {
-  const trimmed = value.trim();
-  if (!/^\d+(\.\d+)?$/.test(trimmed)) {
-    throw new Error(`${label} must be a positive decimal SOL value.`);
-  }
-  const parts = trimmed.split('.');
-  const whole = BigInt(parts[0] ?? '0');
-  const fractionRaw = parts[1] ?? '';
-  if (fractionRaw.length > 9) {
-    throw new Error(`${label} cannot have more than 9 fractional digits (SOL precision).`);
-  }
-  const fraction = fractionRaw ? BigInt(fractionRaw.padEnd(9, '0')) : 0n;
-  const total = whole * LAMPORTS_PER_SOL + fraction;
-  if (total <= 0n) {
-    throw new Error(`${label} must be greater than zero.`);
-  }
-  return total;
+  return parsePositiveSolDecimal(value, label).lamports;
+}
+
+export function normalizeSolDecimal(value: string, label: string): string {
+  return parsePositiveSolDecimal(value, label).sol;
 }
 
 export function solFromLamports(lamports: bigint | number | string): string {
-  const value =
-    typeof lamports === 'bigint'
-      ? lamports
-      : typeof lamports === 'number'
-        ? BigInt(Math.trunc(lamports))
-        : BigInt(lamports);
-  const whole = value / LAMPORTS_PER_SOL;
-  const fraction = value % LAMPORTS_PER_SOL;
-  if (fraction === 0n) return whole.toString();
-  const fractionText = fraction.toString().padStart(9, '0').replace(/0+$/, '');
-  return `${whole}.${fractionText}`;
+  return formatSolFromLamports(lamports);
 }

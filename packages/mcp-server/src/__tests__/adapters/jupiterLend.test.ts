@@ -3,6 +3,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import {
   JUPITER_ADAPTER_ID,
   jupiterAdapter,
+  loadJupiterLendEarnSdkForSmokeTest,
   resetJupiterLendClientFactory,
   setJupiterLendClientFactory,
   type JupiterLendBorrowHealthPreview,
@@ -274,11 +275,12 @@ function fakeConfig(): AgentWalletConfig {
 function makeContext(opts: {
   store: PreparedActionStore;
   signed?: (transactionBase64: string, summary: string) => Promise<string>;
+  config?: AgentWalletConfig;
 }): DAppAdapterContext {
   const signAndBroadcast = opts.signed ?? (async () => 'jupiter-lend-txid');
   return {
     backend: new FakeBackend() as unknown as DAppAdapterContext['backend'],
-    config: fakeConfig(),
+    config: opts.config ?? fakeConfig(),
     connection: {} as DAppAdapterContext['connection'],
     signTransaction: signAndBroadcast,
     signAndBroadcast,
@@ -726,6 +728,17 @@ describe('Jupiter lend SDK unavailability', () => {
   });
 });
 
+describe('Jupiter lend Earn SDK wiring', () => {
+  it('imports the Earn instruction builders used by approval preparation', async () => {
+    const sdk = await loadJupiterLendEarnSdkForSmokeTest();
+    expect(typeof sdk.getDepositIxs).toBe('function');
+    expect(typeof sdk.getWithdrawIxs).toBe('function');
+    expect(typeof sdk.getMintIxs).toBe('function');
+    expect(typeof sdk.getRedeemIxs).toBe('function');
+    expect(typeof sdk.BN).toBe('function');
+  });
+});
+
 describe('Jupiter lend REST behaviour', () => {
   let originalApiKey: string | undefined;
   let originalJupKey: string | undefined;
@@ -774,6 +787,27 @@ describe('Jupiter lend REST behaviour', () => {
     try {
       await expect(listEarnTokens(config, WALLET, {})).rejects.toMatchObject({
         message: expect.stringContaining('[redacted]'),
+      });
+    } finally {
+      globalThis.fetch = realFetch;
+    }
+  });
+
+  it('reports non-JSON REST failures clearly when REST mode is forced', async () => {
+    process.env.JUPITER_API_KEY = 'sk-jupiter-supersecret';
+    const config = restConfig({ useSdk: false });
+    const fetchImpl: typeof fetch = async () =>
+      new Response('<html>service unavailable</html>', { status: 503 });
+    const realFetch = globalThis.fetch;
+    globalThis.fetch = fetchImpl;
+    try {
+      await expect(
+        requireJupiterAction('earn_deposit').prepare(
+          { assetMint: SOL_MINT, amount: '0.01' },
+          makeContext({ config, store: inMemoryStore() }),
+        ),
+      ).rejects.toMatchObject({
+        message: expect.stringContaining('Jupiter API returned non-JSON response'),
       });
     } finally {
       globalThis.fetch = realFetch;

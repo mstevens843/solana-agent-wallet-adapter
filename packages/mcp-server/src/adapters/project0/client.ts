@@ -336,7 +336,7 @@ class RealProject0Client implements Project0Client {
       throw new AdapterError(
         PROJECT0_ADAPTER_ID,
         'missing_bank',
-        'Project 0 bank was not found. Pass bankAddress, bankMint, or token.',
+        `Project 0 bank was not found${describeProject0BankLookupInput(input)}. Pass a bank address, bank mint, or token symbol.`,
       );
     }
     return bank;
@@ -906,11 +906,49 @@ function normalizeWalletToken(value: unknown): Project0WalletToken[] {
 function filterBanks(banks: Project0Bank[], input: Project0BankLookupInput): Project0Bank[] {
   const bankAddress = input.bankAddress?.trim();
   const bankMint = input.bankMint?.trim();
-  const token = input.token?.trim().toLowerCase();
-  if (bankAddress) return banks.filter((bank) => bank.bankAddress === bankAddress);
-  if (bankMint) return banks.filter((bank) => bank.mint === bankMint);
-  if (token) return banks.filter((bank) => bank.symbol.toLowerCase() === token);
+  const addressPublicKey = publicKeyFromUnknown(bankAddress);
+  if (addressPublicKey) {
+    const address = addressPublicKey.toBase58();
+    const byAddress = banks.filter((bank) => bank.bankAddress === address);
+    if (byAddress.length > 0) return byAddress;
+    const byMint = banks.filter((bank) => bank.mint === address);
+    if (byMint.length > 0) return byMint;
+  }
+
+  const mintPublicKey = publicKeyFromUnknown(bankMint);
+  if (mintPublicKey) {
+    const mint = mintPublicKey.toBase58();
+    const byMint = banks.filter((bank) => bank.mint === mint);
+    if (byMint.length > 0) return byMint;
+  }
+
+  const explicitToken = normalizeBankSelectorToken(input.token);
+  if (explicitToken) return banks.filter((bank) => bank.symbol.toLowerCase() === explicitToken);
+
+  const symbolicToken = normalizeBankSelectorToken(bankAddress) ?? normalizeBankSelectorToken(bankMint);
+  if (symbolicToken) return banks.filter((bank) => bank.symbol.toLowerCase() === symbolicToken);
+
+  if (bankAddress || bankMint) return [];
   return banks;
+}
+
+function normalizeBankSelectorToken(value: string | undefined): string | undefined {
+  const trimmed = value?.trim();
+  if (!trimmed || publicKeyFromUnknown(trimmed)) return undefined;
+  const [token] = trimmed
+    .replace(/\b(bank|reserve|market)\b/gi, ' ')
+    .replace(/[^a-z0-9]+/gi, ' ')
+    .trim()
+    .split(/\s+/);
+  return token ? token.toLowerCase() : undefined;
+}
+
+function describeProject0BankLookupInput(input: Project0BankLookupInput): string {
+  const parts: string[] = [];
+  if (input.bankAddress?.trim()) parts.push(`bankAddress "${input.bankAddress.trim()}"`);
+  if (input.bankMint?.trim()) parts.push(`bankMint "${input.bankMint.trim()}"`);
+  if (input.token?.trim()) parts.push(`token "${input.token.trim()}"`);
+  return parts.length > 0 ? ` for ${parts.join(', ')}` : '';
 }
 
 async function fetchProject0Json<T>(url: string): Promise<T> {

@@ -2,6 +2,7 @@ import type { Cluster } from '@solana-agent-wallet-adapter/core';
 
 import { AdapterError, type DAppAdapterContext } from './adapters/types.js';
 import { adapterForKind } from './adapters/registry.js';
+import { parsePositiveSolDecimal } from './adapters/solDecimal.js';
 import type { PreparedAction } from './preparedActions.js';
 
 export interface PreparedTransactionPayload {
@@ -123,14 +124,25 @@ function normalizeLegacyConnectorPrepareParams(
     normalizeJupiterRecurringPrepareParams(kind, next);
   }
   if (kind !== 'magiceden_bid' && kind !== 'tensor_bid') return next;
-  const bidPriceSol = stringParam(next, 'bidPriceSol') || stringParam(next, 'priceSol');
-  if (bidPriceSol && !stringParam(next, 'bidPriceSol')) {
+  const rawBidPriceSol = stringParam(next, 'bidPriceSol') || stringParam(next, 'priceSol');
+  const bidPriceSol = rawBidPriceSol ? normalizeSolParam(rawBidPriceSol) : '';
+  if (bidPriceSol) {
     next.bidPriceSol = bidPriceSol;
   }
-  if (bidPriceSol && !stringParam(next, 'maxEscrowSol')) {
-    next.maxEscrowSol = bidPriceSol;
+  const rawMaxEscrowSol = stringParam(next, 'maxEscrowSol') || bidPriceSol;
+  const maxEscrowSol = rawMaxEscrowSol ? normalizeSolParam(rawMaxEscrowSol) : '';
+  if (maxEscrowSol) {
+    next.maxEscrowSol = maxEscrowSol;
   }
   return next;
+}
+
+function normalizeSolParam(value: string): string {
+  try {
+    return parsePositiveSolDecimal(value, 'SOL value').sol;
+  } catch {
+    return value.trim();
+  }
 }
 
 function normalizeJupiterTriggerPrepareParams(params: Record<string, unknown>): void {

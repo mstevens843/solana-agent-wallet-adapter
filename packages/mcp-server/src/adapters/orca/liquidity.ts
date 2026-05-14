@@ -8,7 +8,7 @@ import type {
   AdapterPrepareResult,
 } from '../types.js';
 import { AdapterError } from '../types.js';
-import { getOrcaClient, type OrcaIncreaseLiquidityInput, type OrcaDecreaseLiquidityInput } from './client.js';
+import { getOrcaClient, type OrcaDecreaseLiquidityInput, type OrcaIncreaseLiquidityInput, type OrcaWhirlpoolSnapshot } from './client.js';
 import { ORCA_ADAPTER_ID, ORCA_PROGRAM_IDS, shortAddress } from './constants.js';
 import { getPositionDetail } from './positions.js';
 import { getWhirlpoolSnapshot } from './whirlpools.js';
@@ -121,7 +121,7 @@ export const orcaIncreaseLiquidityAction: AdapterAction<OrcaIncreaseLiquidityPre
         kind: 'orca_increase_liquidity',
         walletAddress,
         cluster: ctx.config.cluster,
-        summary: `Increase Orca liquidity on ${shortAddress(whirlpoolAddress)}`,
+        summary: `Increase Orca liquidity in ${orcaWhirlpoolPairLabel(snapshot)}`,
         params: stripUndefined(params),
         ...(input.dueAt !== undefined && { dueAt: input.dueAt }),
         ...(input.note !== undefined && { note: input.note }),
@@ -172,7 +172,7 @@ export const orcaIncreaseLiquidityAction: AdapterAction<OrcaIncreaseLiquidityPre
       slippageBps,
     };
     const built = await getOrcaClient().buildIncreaseLiquidityTransaction(ctx.connection, input);
-    const summary = `Increase Orca liquidity on ${shortAddress(input.whirlpoolAddress)}`;
+    const summary = `Increase Orca liquidity in ${orcaWhirlpoolPairLabel(snapshot)}`;
     const txid = await ctx.signAndBroadcast(built.transactionBase64, summary);
     return {
       txid,
@@ -303,25 +303,29 @@ function validateIncreaseAmount(input: Pick<
     ['maxTokenAAmount', input.maxTokenAAmount],
     ['maxTokenBAmount', input.maxTokenBAmount],
   ] as const;
-  let found = 0;
   for (const [field, value] of values) {
     if (value !== undefined && value.trim() !== '') {
-      found += 1;
       validatePositiveDecimalString(value, field);
     }
   }
-  if (found === 0) {
+  const hasTokenA = Boolean(input.tokenAAmount?.trim());
+  const hasTokenB = Boolean(input.tokenBAmount?.trim());
+  const hasMaxA = Boolean(input.maxTokenAAmount?.trim());
+  const hasMaxB = Boolean(input.maxTokenBAmount?.trim());
+  const baseCount = Number(hasTokenA) + Number(hasTokenB);
+  const maxCount = Number(hasMaxA) + Number(hasMaxB);
+  if (baseCount === 0 && maxCount === 0) {
     throw new AdapterError(
       ORCA_ADAPTER_ID,
       'missing_amount',
       'Provide tokenAAmount, tokenBAmount, maxTokenAAmount, or maxTokenBAmount for an Orca increase-liquidity action.',
     );
   }
-  if (found > 1) {
+  if (baseCount > 1 || maxCount > 1 || (hasTokenA && hasMaxA) || (hasTokenB && hasMaxB)) {
     throw new AdapterError(
       ORCA_ADAPTER_ID,
       'invalid_amount',
-      'Provide exactly one Orca increase-liquidity amount field.',
+      'Provide one Orca base amount and, optionally, the opposite token max amount.',
     );
   }
 }
@@ -383,6 +387,17 @@ function orcaRangePresetHalfSteps(value: string | undefined): number {
   if (normalized === 'narrow') return 8;
   if (normalized === 'wide') return 128;
   return 32;
+}
+
+function orcaWhirlpoolPairLabel(snapshot: OrcaWhirlpoolSnapshot): string {
+  return `${knownOrcaTokenLabel(snapshot.tokenMintA)}/${knownOrcaTokenLabel(snapshot.tokenMintB)}`;
+}
+
+function knownOrcaTokenLabel(mint: string): string {
+  if (mint === 'So11111111111111111111111111111111111111112') return 'SOL';
+  if (mint === 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v') return 'USDC';
+  if (mint === 'Es9vMFrzaCERmJfrF4H2FYD4KCoNkYx6AyucnVwpuS1A') return 'USDT';
+  return shortAddress(mint);
 }
 
 function numberLike(value: number | string | undefined): number | undefined {

@@ -16,6 +16,7 @@ import {
   WORMHOLE_SOURCE_CHAIN,
   routeTypeLabel,
   shortWormholeAddress,
+  type WormholeRouteMode,
   wormholeNetworkForCluster,
 } from './constants.js';
 import {
@@ -54,20 +55,35 @@ export interface WormholeTransferInput {
   note?: string;
 }
 
-const WORMHOLE_SOURCE_TOKEN_ALIASES: Record<string, string> = {
+const WORMHOLE_SOURCE_TOKEN_ALIASES = {
   SOL: 'native',
   WSOL: 'So11111111111111111111111111111111111111112',
   USDC: 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v',
   USDT: 'Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB',
   BONK: 'DezXAZ8z7PnrnRJjz3wXBoRgixCa6xjnB7YaB1pPB263',
   JUP: 'JUPyiwrYJFskUPiHa7hkeR8VUtAeFoSYbKedZNsDvCN',
+} as const satisfies Record<string, string>;
+
+const WORMHOLE_SOURCE_TOKEN_ALIAS_LOOKUP: Record<string, string> = WORMHOLE_SOURCE_TOKEN_ALIASES;
+
+const WORMHOLE_SOURCE_TOKEN_LABELS_BY_MINT: Record<string, string> = {
+  native: 'SOL',
+  [WORMHOLE_SOURCE_TOKEN_ALIASES.WSOL]: 'SOL',
+  [WORMHOLE_SOURCE_TOKEN_ALIASES.USDC]: 'USDC',
+  [WORMHOLE_SOURCE_TOKEN_ALIASES.USDT]: 'USDT',
+  [WORMHOLE_SOURCE_TOKEN_ALIASES.BONK]: 'BONK',
+  [WORMHOLE_SOURCE_TOKEN_ALIASES.JUP]: 'JUP',
 };
 
 function resolveWormholeSourceMint(input: WormholeTransferInput): string | undefined {
   const raw = input.sourceMint ?? input.sourceToken ?? input.token;
   const trimmed = raw?.trim();
   if (!trimmed) return undefined;
-  return WORMHOLE_SOURCE_TOKEN_ALIASES[trimmed.toUpperCase()] ?? trimmed;
+  return WORMHOLE_SOURCE_TOKEN_ALIAS_LOOKUP[trimmed.toUpperCase()] ?? trimmed;
+}
+
+function wormholeSourceTokenLabel(sourceMint: string): string {
+  return WORMHOLE_SOURCE_TOKEN_LABELS_BY_MINT[sourceMint] ?? shortWormholeAddress(sourceMint);
 }
 
 function resolveWormholeDestinationAddress(input: WormholeTransferInput): string | undefined {
@@ -132,6 +148,7 @@ export const wormholeTransferAction: AdapterAction<WormholeTransferInput> = {
     assertQuoteRouteCompatible(routeType, quote);
     assertDestinationTokenPresent(quote);
     const programIds = programIdsForQuote(quote);
+    const sourceTokenLabel = wormholeSourceTokenLabel(sourceMint);
 
     const warnings = [
       ...(quote.warnings ?? []),
@@ -154,6 +171,8 @@ export const wormholeTransferAction: AdapterAction<WormholeTransferInput> = {
       sourceChain: WORMHOLE_SOURCE_CHAIN,
       destinationChain,
       sourceMint,
+      sourceTokenLabel,
+      token: sourceTokenLabel,
       destinationToken: quote.destinationToken ?? null,
       amount: amount.amount,
       amountRaw: amount.amountRaw,
@@ -177,7 +196,7 @@ export const wormholeTransferAction: AdapterAction<WormholeTransferInput> = {
         kind: 'wormhole_transfer',
         walletAddress,
         cluster: ctx.config.cluster,
-        summary: `Bridge ${amount.amount} ${shortWormholeAddress(sourceMint)} from Solana to ${destinationChain} via Wormhole`,
+        summary: `Bridge ${amount.amount} ${sourceTokenLabel} from Solana to ${destinationChain} via Wormhole`,
         params,
         ...(input.dueAt !== undefined && { dueAt: input.dueAt }),
         ...(input.note !== undefined && { note: input.note }),
@@ -196,7 +215,8 @@ export const wormholeTransferAction: AdapterAction<WormholeTransferInput> = {
     const amount = requireActionString(action, 'amount');
     const amountRaw = requireActionString(action, 'amountRaw');
     const sourceDecimals = numericParam(action, 'sourceDecimals');
-    const expectedRouteMode = requireActionString(action, 'routeMode');
+    const sourceTokenLabel = optionalActionString(action, 'sourceTokenLabel') ?? wormholeSourceTokenLabel(sourceMint);
+    const expectedRouteMode = requireActionRouteMode(action);
     const minDestinationAmount = optionalNonNegativeDecimal(optionalActionString(action, 'minDestinationAmount'), 'minDestinationAmount');
     const maxBridgeFee = optionalNonNegativeDecimal(optionalActionString(action, 'maxBridgeFee'), 'maxBridgeFee');
     const nativeGasDropoff = optionalNonNegativeDecimal(optionalActionString(action, 'nativeGasDropoff'), 'nativeGasDropoff');
@@ -213,6 +233,7 @@ export const wormholeTransferAction: AdapterAction<WormholeTransferInput> = {
       destinationChain,
       destinationAddress,
       routeType,
+      routeMode: expectedRouteMode,
       ...(nativeGasDropoff !== undefined && { nativeGasDropoff }),
       wormholeNetwork,
     });
@@ -232,6 +253,7 @@ export const wormholeTransferAction: AdapterAction<WormholeTransferInput> = {
       destinationChain,
       destinationAddress,
       routeType,
+      routeMode: expectedRouteMode,
       ...(nativeGasDropoff !== undefined && { nativeGasDropoff }),
       ...(minDestinationAmount !== undefined && { minDestinationAmount }),
       ...(maxBridgeFee !== undefined && { maxBridgeFee }),
@@ -241,7 +263,7 @@ export const wormholeTransferAction: AdapterAction<WormholeTransferInput> = {
     });
     const txid = await ctx.signAndBroadcast(
       built.transactionBase64,
-      `Wormhole bridge ${amount} to ${destinationChain}`,
+      `Wormhole bridge ${amount} ${sourceTokenLabel} to ${destinationChain}`,
     );
     return {
       txid,
@@ -491,7 +513,7 @@ function assertQuoteRouteCompatible(
 
 function assertQuoteRouteStable(
   expectedRouteType: ReturnType<typeof normalizeRouteType>,
-  expectedRouteMode: string,
+  expectedRouteMode: WormholeRouteMode,
   quote: WormholeQuoteSnapshot,
 ): void {
   assertConcreteQuoteRoute(quote);
@@ -641,6 +663,12 @@ async function assertConnectedWallet(
     );
   }
   return walletAddress;
+}
+
+function requireActionRouteMode(action: PreparedAction): WormholeRouteMode {
+  const routeMode = requireActionString(action, 'routeMode');
+  if (routeMode === 'automatic' || routeMode === 'manual') return routeMode;
+  throw new ProtocolError('invalid_request', `Wormhole action ${action.id} has unsupported routeMode ${routeMode}.`);
 }
 
 function numericParam(action: PreparedAction, key: string): number | undefined {

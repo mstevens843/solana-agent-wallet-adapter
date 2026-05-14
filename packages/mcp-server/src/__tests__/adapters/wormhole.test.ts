@@ -143,6 +143,8 @@ describe('Wormhole adapter', () => {
       connectorId: 'wormhole',
       operation: 'transfer',
       sourceMint: USDC_MINT,
+      sourceTokenLabel: 'USDC',
+      token: 'USDC',
       amountRaw: '10000000',
       destinationChain: 'Base',
       destinationToken: DESTINATION_TOKEN,
@@ -153,6 +155,9 @@ describe('Wormhole adapter', () => {
 
     expect(executed.txid).toBe('tx-wormhole');
     expect(state.quoteCalls).toHaveLength(2);
+    expect(state.quoteCalls[1]).toMatchObject({
+      routeMode: 'automatic',
+    });
     expect(state.transferBuilds).toHaveLength(1);
     expect(state.transferBuilds[0]).toMatchObject({
       walletAddress: WALLET,
@@ -160,8 +165,66 @@ describe('Wormhole adapter', () => {
       amountRaw: '10000000',
       destinationChain: 'Base',
       destinationAddress: DESTINATION,
+      routeMode: 'automatic',
       nativeGasDropoff: '0.001',
       maxBridgeFee: '0.1',
+    });
+  });
+
+  it('preserves manual route mode when refreshing a prepared transfer', async () => {
+    const state = fakeState({
+      quote: fakeQuote({
+        mode: 'manual',
+        manualRedemptionRequired: true,
+        relayerSupported: false,
+      }),
+    });
+    setWormholeClientFactory(() => fakeWormholeClient(state));
+    const ctx = makeContext();
+
+    const prepared = await wormholeTransferAction.prepare({
+      sourceMint: USDC_MINT,
+      amount: '10',
+      destinationChain: 'Base',
+      destinationAddress: DESTINATION,
+      routeType: 'token_bridge',
+    }, ctx);
+    const executed = await wormholeTransferAction.execute(preparedAction(prepared.addInput), ctx);
+
+    expect(executed.txid).toBe('tx-wormhole');
+    expect(prepared.preview).toMatchObject({
+      routeMode: 'manual',
+    });
+    expect(state.quoteCalls[1]).toMatchObject({
+      routeMode: 'manual',
+    });
+    expect(state.transferBuilds[0]).toMatchObject({
+      routeMode: 'manual',
+    });
+  });
+
+  it('labels native SOL source token in prepared transfer metadata', async () => {
+    const state = fakeState();
+    setWormholeClientFactory(() => fakeWormholeClient(state));
+
+    const prepared = await wormholeTransferAction.prepare({
+      sourceMint: 'SOL',
+      amount: '0.02',
+      destinationChain: 'Ethereum',
+      destinationAddress: DESTINATION,
+    }, makeContext());
+
+    expect(prepared.addInput.summary).toBe('Bridge 0.02 SOL from Solana to Ethereum via Wormhole');
+    expect(prepared.preview).toMatchObject({
+      sourceMint: 'native',
+      sourceTokenLabel: 'SOL',
+      token: 'SOL',
+      amount: '0.02',
+      amountRaw: '20000000',
+    });
+    expect(state.quoteCalls[0]).toMatchObject({
+      sourceMint: 'native',
+      amountRaw: '20000000',
     });
   });
 

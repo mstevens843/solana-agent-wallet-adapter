@@ -32,7 +32,9 @@
   "dependencies": {
     "@drift-labs/sdk": "2.162.0-beta.1",
     "@drift-labs/vaults-sdk": "0.11.1",
+    "@jup-ag/lend": "0.1.9",
     "@modelcontextprotocol/sdk": "^1.0.0",
+    "@pythnetwork/price-service-client": "1.11.0",
     "@solana-agent-wallet-adapter/core": "workspace:*",
     "@solana-agent-wallet-adapter/ios-link": "workspace:*",
     "@solana-agent-wallet-adapter/workflow": "workspace:*",
@@ -44,7 +46,6 @@
     "@0dotxyz/p0-ts-sdk": "2.2.1",
     "@coral-xyz/anchor": "0.31.1",
     "@jito-foundation/stake-deposit-interceptor-sdk": "1.7.1",
-    "@jup-ag/lend": "0.1.9",
     "@jup-ag/lend-read": "0.0.12",
     "@kamino-finance/farms-sdk": "^3.2.24",
     "@kamino-finance/klend-sdk": "^7.3.22",

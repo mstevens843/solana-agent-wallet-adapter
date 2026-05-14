@@ -737,8 +737,27 @@ function connectorActionForm(
   };
 }
 
-function formField(id: string, label: string, required = false): AgentPlanTemplateField {
-  return { id, label, required, type: 'text' };
+function formField(
+  id: string,
+  label: string,
+  required = false,
+  options: Pick<AgentPlanTemplateField, 'placeholder' | 'helperText'> = {},
+): AgentPlanTemplateField {
+  return {
+    id,
+    label,
+    required,
+    type: 'text',
+    ...(options.placeholder !== undefined ? { placeholder: options.placeholder } : {}),
+    ...(options.helperText !== undefined ? { helperText: options.helperText } : {}),
+  };
+}
+
+function bidSpendCapField(): AgentPlanTemplateField {
+  return formField('maxEscrowSol', 'Spend cap (SOL)', false, {
+    placeholder: 'Defaults to bid price',
+    helperText: 'Maximum SOL this request may lock for the bid. For one collection bid, leave it equal to the bid price.',
+  });
 }
 
 function normalizeConnectorParameterAliases(
@@ -749,14 +768,31 @@ function normalizeConnectorParameterAliases(
   const actionType = connectorActionFormTemplateActionType(form, parameters);
   if (actionType !== 'magiceden_bid' && actionType !== 'tensor_bid') return parameters;
   const next = { ...parameters };
-  const bidPriceSol = next.bidPriceSol?.trim() || next.priceSol?.trim() || '';
-  if (bidPriceSol && !next.bidPriceSol?.trim()) {
+  const rawBidPriceSol = next.bidPriceSol?.trim() || next.priceSol?.trim() || '';
+  const bidPriceSol = rawBidPriceSol ? normalizeSolDecimalDraftValue(rawBidPriceSol) : '';
+  if (bidPriceSol) {
     next.bidPriceSol = bidPriceSol;
   }
-  if (bidPriceSol && !next.maxEscrowSol?.trim()) {
-    next.maxEscrowSol = bidPriceSol;
+  const rawMaxEscrowSol = next.maxEscrowSol?.trim() || bidPriceSol;
+  const maxEscrowSol = rawMaxEscrowSol ? normalizeSolDecimalDraftValue(rawMaxEscrowSol) : '';
+  if (maxEscrowSol) {
+    next.maxEscrowSol = maxEscrowSol;
   }
   return next;
+}
+
+function normalizeSolDecimalDraftValue(value: string): string {
+  const trimmed = value.trim();
+  if (!trimmed || !/^(?:\d+|\d*\.\d+|\d+\.)$/.test(trimmed)) return trimmed;
+  const [wholeRaw = '0', fractionRaw = ''] = trimmed.split('.');
+  if (fractionRaw.length > 9) return trimmed;
+  const whole = wholeRaw === '' ? '0' : wholeRaw;
+  const lamports = BigInt(whole) * 1_000_000_000n + BigInt(fractionRaw.padEnd(9, '0') || '0');
+  if (lamports <= 0n) return trimmed;
+  const wholeSol = lamports / 1_000_000_000n;
+  const fractionLamports = lamports % 1_000_000_000n;
+  if (fractionLamports === 0n) return wholeSol.toString();
+  return `${wholeSol.toString()}.${fractionLamports.toString().padStart(9, '0').replace(/0+$/, '')}`;
 }
 
 function formSelectField(
@@ -781,6 +817,29 @@ function liquidityTokenAmountField(
   return {
     ...formField(id, label, true),
     showWhen: { amountSide: side },
+  };
+}
+
+function liquidityOppositeMaxField(
+  id: 'maxTokenAAmount' | 'maxTokenBAmount',
+  label: string,
+  baseSide: 'tokenA' | 'tokenB',
+): AgentPlanTemplateField {
+  return {
+    ...formField(id, label, true),
+    showWhen: { amountSide: baseSide },
+    helperText: 'Maximum paired-token spend allowed for this liquidity quote.',
+  };
+}
+
+function liquidityCustomRangePriceField(
+  id: 'lowerPrice' | 'upperPrice',
+  label: string,
+): AgentPlanTemplateField {
+  return {
+    ...formField(id, label, true),
+    showWhen: { rangePreset: 'custom' },
+    helperText: 'Price is token B per token A, for example USDC per SOL in a SOL/USDC pool.',
   };
 }
 
@@ -1058,7 +1117,9 @@ function orcaForms(): ConnectorActionForm[] {
               orcaPositionField(true),
               liquidityAmountSideField(),
               liquidityTokenAmountField('tokenAAmount', 'Token A amount', 'tokenA'),
+              liquidityOppositeMaxField('maxTokenBAmount', 'Max token B amount', 'tokenA'),
               liquidityTokenAmountField('tokenBAmount', 'Token B amount', 'tokenB'),
+              liquidityOppositeMaxField('maxTokenAAmount', 'Max token A amount', 'tokenB'),
             ],
           },
           {
@@ -1070,7 +1131,9 @@ function orcaForms(): ConnectorActionForm[] {
               orcaWhirlpoolField(true),
               liquidityAmountSideField(),
               liquidityTokenAmountField('tokenAAmount', 'Token A amount', 'tokenA'),
+              liquidityOppositeMaxField('maxTokenBAmount', 'Max token B amount', 'tokenA'),
               liquidityTokenAmountField('tokenBAmount', 'Token B amount', 'tokenB'),
+              liquidityOppositeMaxField('maxTokenAAmount', 'Max token A amount', 'tokenB'),
               formSelectField('rangePreset', 'Range preset', ['balanced', 'narrow', 'wide'], 'balanced', true),
             ],
           },
@@ -1124,7 +1187,7 @@ function magicedenForms(): ConnectorActionForm[] {
       description: 'Place a bid on a single NFT or an entire collection on Magic Eden.',
       executionMode: 'first-class-adapter',
       outcome: 'queueable',
-      fields: [formField('bidPriceSol', 'Bid price (SOL)', true), formField('maxEscrowSol', 'Max escrow (SOL)'), formField('memo', 'Reason')],
+      fields: [formField('bidPriceSol', 'Bid price (SOL)', true), bidSpendCapField(), formField('memo', 'Reason')],
       subActions: {
         fieldId: 'subAction',
         label: 'Bid target',
@@ -1174,7 +1237,7 @@ function tensorForms(): ConnectorActionForm[] {
       description: 'Place a bid on a single NFT or an entire collection on Tensor.',
       executionMode: 'first-class-adapter',
       outcome: 'queueable',
-      fields: [formField('bidPriceSol', 'Bid price (SOL)', true), formField('maxEscrowSol', 'Max escrow (SOL)'), formField('memo', 'Reason')],
+      fields: [formField('bidPriceSol', 'Bid price (SOL)', true), bidSpendCapField(), formField('memo', 'Reason')],
       subActions: {
         fieldId: 'subAction',
         label: 'Bid target',
@@ -1659,9 +1722,12 @@ function raydiumLiquidityUnifiedForm(): ConnectorActionForm {
             { id: 'poolType', label: 'Pool type', type: 'select', options: ['clmm'], defaultValue: 'clmm' },
             liquidityAmountSideField(),
             liquidityTokenAmountField('tokenAAmount', 'Token A amount', 'tokenA'),
+            liquidityOppositeMaxField('maxTokenBAmount', 'Max token B amount', 'tokenA'),
             liquidityTokenAmountField('tokenBAmount', 'Token B amount', 'tokenB'),
-            formField('lowerPrice', 'Lower price', true),
-            formField('upperPrice', 'Upper price', true),
+            liquidityOppositeMaxField('maxTokenAAmount', 'Max token A amount', 'tokenB'),
+            formSelectField('rangePreset', 'Price range', ['balanced', 'narrow', 'wide', 'custom'], 'balanced', true),
+            liquidityCustomRangePriceField('lowerPrice', 'Custom lower price'),
+            liquidityCustomRangePriceField('upperPrice', 'Custom upper price'),
           ],
         },
         {
@@ -1679,7 +1745,9 @@ function raydiumLiquidityUnifiedForm(): ConnectorActionForm {
             }),
             liquidityAmountSideField(),
             liquidityTokenAmountField('tokenAAmount', 'Token A amount', 'tokenA'),
+            liquidityOppositeMaxField('maxTokenBAmount', 'Max token B amount', 'tokenA'),
             liquidityTokenAmountField('tokenBAmount', 'Token B amount', 'tokenB'),
+            liquidityOppositeMaxField('maxTokenAAmount', 'Max token A amount', 'tokenB'),
           ],
         },
         {
@@ -2109,10 +2177,14 @@ function applySingleSidedLiquidityAmountDefaults(
   const side = parameters.amountSide === 'tokenB' ? 'tokenB' : 'tokenA';
   const selectedAmount = side === 'tokenB' ? 'tokenBAmount' : 'tokenAAmount';
   const oppositeAmount = side === 'tokenB' ? 'tokenAAmount' : 'tokenBAmount';
+  const selectedMax = side === 'tokenB' ? 'maxTokenAAmount' : 'maxTokenBAmount';
+  const oppositeMax = side === 'tokenB' ? 'maxTokenBAmount' : 'maxTokenAAmount';
   if (parameters.amount?.trim() && !parameters.tokenAAmount?.trim() && !parameters.tokenBAmount?.trim()) {
     parameters[selectedAmount] = parameters.amount.trim();
   }
   delete parameters[oppositeAmount];
+  if (!branchIds.has(selectedMax)) delete parameters[selectedMax];
+  delete parameters[oppositeMax];
 }
 
 function connectorFixedSubActionField(field: AgentPlanTemplateField): boolean {
@@ -2332,12 +2404,27 @@ function connectorActionFields(actionKind: string): AgentPlanTemplateField[] {
     add(formField('poolId', 'Pool id', true));
     add(formSelectField('poolType', 'Pool type', ['cpmm', 'clmm', 'farm'], 'cpmm'));
     if (has('liquidity', 'fees')) add(formField('positionMint', 'Position mint'));
-    if (has('add_liquidity', 'remove_liquidity', 'farm_stake', 'farm_unstake')) add(formField('amount', 'Amount'));
+    if (has('add_liquidity')) {
+      add(liquidityAmountSideField());
+      add(liquidityTokenAmountField('tokenAAmount', 'Token A amount', 'tokenA'));
+      add(liquidityOppositeMaxField('maxTokenBAmount', 'Max token B amount', 'tokenA'));
+      add(liquidityTokenAmountField('tokenBAmount', 'Token B amount', 'tokenB'));
+      add(liquidityOppositeMaxField('maxTokenAAmount', 'Max token A amount', 'tokenB'));
+      add(formSelectField('rangePreset', 'Price range', ['balanced', 'narrow', 'wide', 'custom'], 'balanced'));
+      add(liquidityCustomRangePriceField('lowerPrice', 'Custom lower price'));
+      add(liquidityCustomRangePriceField('upperPrice', 'Custom upper price'));
+    } else if (has('remove_liquidity', 'farm_stake', 'farm_unstake')) {
+      add(formField('amount', 'Amount'));
+    }
   } else if (actionKind.startsWith('orca_')) {
     add(formField('whirlpoolAddress', 'Whirlpool address', true));
     add(formField('positionMint', 'Position mint'));
     if (has('increase_liquidity')) {
-      add(formField('tokenAAmount', 'Token A amount'));
+      add(liquidityAmountSideField());
+      add(liquidityTokenAmountField('tokenAAmount', 'Token A amount', 'tokenA'));
+      add(liquidityOppositeMaxField('maxTokenBAmount', 'Max token B amount', 'tokenA'));
+      add(liquidityTokenAmountField('tokenBAmount', 'Token B amount', 'tokenB'));
+      add(liquidityOppositeMaxField('maxTokenAAmount', 'Max token A amount', 'tokenB'));
       add(formSelectField('rangePreset', 'Range preset', ['balanced', 'narrow', 'wide'], 'balanced'));
     } else if (has('liquidity')) {
       add(formField('amount', 'Liquidity amount'));

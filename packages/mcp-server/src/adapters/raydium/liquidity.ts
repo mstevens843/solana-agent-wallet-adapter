@@ -7,11 +7,13 @@ import type {
   AdapterExecuteResult,
   AdapterPrepareResult,
 } from '../types.js';
+import { AdapterError } from '../types.js';
 import {
   getRaydiumClient,
   type RaydiumAddLiquidityInput,
   type RaydiumCollectFeesInput,
   type RaydiumLiquidityPoolType,
+  type RaydiumPoolSnapshot,
   type RaydiumRemoveLiquidityInput,
 } from './client.js';
 import { RAYDIUM_ADAPTER_ID, RAYDIUM_PROGRAM_IDS, shortAddress } from './constants.js';
@@ -48,6 +50,7 @@ export interface RaydiumAddLiquidityPrepareInput {
   upperTick?: number;
   lowerPrice?: string;
   upperPrice?: string;
+  rangePreset?: string;
   slippageBps?: number;
   dueAt?: string;
   note?: string;
@@ -85,15 +88,17 @@ export const raydiumAddLiquidityAction: AdapterAction<RaydiumAddLiquidityPrepare
     const positionMint = optionalPublicKey(input.positionMint, 'positionMint');
     const slippageBps = validateSlippageBps(input.slippageBps, ctx.config.mainnet.maxSlippageBps);
     const amounts = normalizeAddLiquidityAmounts(input);
+    const snapshot = await getRaydiumPoolSnapshot(ctx, { poolId, poolType });
+    assertPoolType(snapshot, poolType);
+    const range = resolveRaydiumClmmRange(input, snapshot, positionMint);
     const normalized = {
       ...input,
       poolType,
       positionMint,
       ...amounts,
+      ...range,
     };
     validateAddAmounts(normalized);
-    const snapshot = await getRaydiumPoolSnapshot(ctx, { poolId, poolType });
-    assertPoolType(snapshot, poolType);
 
     const preparedInput: RaydiumAddLiquidityInput = {
       walletAddress,
@@ -104,10 +109,11 @@ export const raydiumAddLiquidityAction: AdapterAction<RaydiumAddLiquidityPrepare
       ...(amounts.tokenBAmount !== undefined && { tokenBAmount: amounts.tokenBAmount }),
       ...(input.maxTokenAAmount !== undefined && { maxTokenAAmount: input.maxTokenAAmount }),
       ...(input.maxTokenBAmount !== undefined && { maxTokenBAmount: input.maxTokenBAmount }),
-      ...(input.lowerTick !== undefined && { lowerTick: input.lowerTick }),
-      ...(input.upperTick !== undefined && { upperTick: input.upperTick }),
-      ...(input.lowerPrice !== undefined && { lowerPrice: input.lowerPrice }),
-      ...(input.upperPrice !== undefined && { upperPrice: input.upperPrice }),
+      ...(range.lowerTick !== undefined && { lowerTick: range.lowerTick }),
+      ...(range.upperTick !== undefined && { upperTick: range.upperTick }),
+      ...(range.lowerPrice !== undefined && { lowerPrice: range.lowerPrice }),
+      ...(range.upperPrice !== undefined && { upperPrice: range.upperPrice }),
+      ...(input.rangePreset !== undefined && { rangePreset: input.rangePreset }),
       slippageBps,
     };
     const preview = await getRaydiumClient().previewAddLiquidity(ctx.connection, preparedInput);
@@ -126,10 +132,11 @@ export const raydiumAddLiquidityAction: AdapterAction<RaydiumAddLiquidityPrepare
       ...(amounts.tokenBAmount !== undefined && { tokenBAmount: amounts.tokenBAmount }),
       ...(input.maxTokenAAmount !== undefined && { maxTokenAAmount: input.maxTokenAAmount }),
       ...(input.maxTokenBAmount !== undefined && { maxTokenBAmount: input.maxTokenBAmount }),
-      ...(input.lowerTick !== undefined && { lowerTick: input.lowerTick }),
-      ...(input.upperTick !== undefined && { upperTick: input.upperTick }),
-      ...(input.lowerPrice !== undefined && { lowerPrice: input.lowerPrice }),
-      ...(input.upperPrice !== undefined && { upperPrice: input.upperPrice }),
+      ...(range.lowerTick !== undefined && { lowerTick: range.lowerTick }),
+      ...(range.upperTick !== undefined && { upperTick: range.upperTick }),
+      ...(range.lowerPrice !== undefined && { lowerPrice: range.lowerPrice }),
+      ...(range.upperPrice !== undefined && { upperPrice: range.upperPrice }),
+      ...(input.rangePreset !== undefined && { rangePreset: input.rangePreset }),
       slippageBps,
       tokenMints: preview.tokenMints,
       tokenAmounts: preview.tokenAmounts,
@@ -145,7 +152,7 @@ export const raydiumAddLiquidityAction: AdapterAction<RaydiumAddLiquidityPrepare
         kind: 'raydium_add_liquidity',
         walletAddress,
         cluster: ctx.config.cluster,
-        summary: `Add Raydium ${poolType.toUpperCase()} liquidity to ${shortAddress(poolId)}`,
+        summary: `Add Raydium ${poolType.toUpperCase()} liquidity to ${raydiumPoolPairLabel(snapshot)}`,
         params: stripUndefined(params),
         ...(input.dueAt !== undefined && { dueAt: input.dueAt }),
         ...(input.note !== undefined && { note: input.note }),
@@ -403,4 +410,52 @@ function normalizeAddLiquidityAmounts(input: RaydiumAddLiquidityPrepareInput): {
     ...(tokenAAmount ? { tokenAAmount } : {}),
     ...(tokenBAmount ? { tokenBAmount } : {}),
   };
+}
+
+function resolveRaydiumClmmRange(
+  input: RaydiumAddLiquidityPrepareInput,
+  snapshot: RaydiumPoolSnapshot,
+  positionMint: string | undefined,
+): Pick<RaydiumAddLiquidityInput, 'lowerTick' | 'upperTick' | 'lowerPrice' | 'upperPrice'> {
+  const supplied = {
+    ...(input.lowerTick !== undefined && { lowerTick: input.lowerTick }),
+    ...(input.upperTick !== undefined && { upperTick: input.upperTick }),
+    ...(input.lowerPrice !== undefined && { lowerPrice: input.lowerPrice }),
+    ...(input.upperPrice !== undefined && { upperPrice: input.upperPrice }),
+  };
+  if (snapshot.poolType !== 'clmm' || positionMint) return supplied;
+  if (input.lowerTick !== undefined || input.upperTick !== undefined || input.lowerPrice?.trim() || input.upperPrice?.trim()) {
+    return supplied;
+  }
+  const preset = normalizeRangePreset(input.rangePreset);
+  if (preset === 'custom') return supplied;
+  const currentPrice = Number(snapshot.price);
+  if (!Number.isFinite(currentPrice) || currentPrice <= 0) {
+    throw new AdapterError(
+      RAYDIUM_ADAPTER_ID,
+      'missing_range',
+      'Raydium CLMM range preset requires the pool current price. Refresh the pool or use custom lower/upper prices.',
+    );
+  }
+  const pct = preset === 'narrow' ? 0.02 : preset === 'wide' ? 0.25 : 0.10;
+  return {
+    lowerPrice: formatPresetPrice(currentPrice * (1 - pct)),
+    upperPrice: formatPresetPrice(currentPrice * (1 + pct)),
+  };
+}
+
+function normalizeRangePreset(value: string | undefined): 'narrow' | 'balanced' | 'wide' | 'custom' {
+  const normalized = value?.trim().toLowerCase();
+  if (normalized === 'narrow' || normalized === 'wide' || normalized === 'custom') return normalized;
+  return 'balanced';
+}
+
+function formatPresetPrice(value: number): string {
+  return value.toPrecision(12).replace(/(?:\.0+|(\.\d*?)0+)$/, '$1');
+}
+
+function raydiumPoolPairLabel(snapshot: RaydiumPoolSnapshot): string {
+  const tokenA = snapshot.mintA.symbol || shortAddress(snapshot.mintA.mint);
+  const tokenB = snapshot.mintB.symbol || shortAddress(snapshot.mintB.mint);
+  return `${tokenA}/${tokenB}`;
 }

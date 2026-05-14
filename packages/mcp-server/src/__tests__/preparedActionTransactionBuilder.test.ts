@@ -412,8 +412,8 @@ describe('prepareTransactionForApproval', () => {
 
     expect(prepareInput).toMatchObject({
       priceSol: '.01',
-      bidPriceSol: '.01',
-      maxEscrowSol: '.01',
+      bidPriceSol: '0.01',
+      maxEscrowSol: '0.01',
       collectionId: 'madlads',
     });
   });

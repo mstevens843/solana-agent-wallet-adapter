@@ -644,6 +644,45 @@ async function verifyWorkflowSmoke({ requireLocalBridge: bridgeRequired }) {
             assert(restoredBrowserRecurring.length === 1, `browser recurring schedule was not restored after leaving private local mode; browser schedules=${restoredBrowserRecurring.length}`);
           });
 
+          await report.check('Local bridge AI status survives app reload', async () => {
+            await page.inspect(localBridgeAppUrl(browserOrigin, bridgeOrigin, bridgeToken));
+            await page.waitFor(`Boolean(document.querySelector('[data-ai-control="mode"]'))`);
+            await page.evaluate(`(() => {
+              for (const control of document.querySelectorAll('[data-ai-control="mode"]')) {
+                control.value = 'bridge';
+                control.dispatchEvent(new Event('change', { bubbles: true }));
+              }
+            })()`);
+            await page.waitFor(`document.body.innerText.includes('Local Bridge AI') || document.body.innerText.includes('Local bridge AI')`);
+            await page.evaluate(`(() => {
+              for (const control of document.querySelectorAll('[data-ai-control="provider"]')) {
+                control.value = 'gemini';
+                control.dispatchEvent(new Event('change', { bubbles: true }));
+              }
+            })()`);
+            await page.waitFor(`Boolean(document.querySelector('[data-ai-control="api-key"]'))`);
+            await page.evaluate(`(() => {
+              for (const input of document.querySelectorAll('[data-ai-control="api-key"]')) {
+                input.value = 'sk-smoke-bridge-ai';
+                input.dispatchEvent(new Event('input', { bubbles: true }));
+              }
+            })()`);
+            await page.waitFor(`Array.from(document.querySelectorAll('[data-ai-action="save-bridge-key"]')).some((button) => !button.disabled)`);
+            await clickAndWait(page, '[data-ai-action="save-bridge-key"]', 'set mock bridge AI key');
+            await waitForBridgeAiConfirmed(page);
+
+            await page.inspect(`${browserOrigin}/app`);
+            await waitForBridgeAiConfirmed(page);
+            const keyInputStillVisible = await page.evaluate(`Boolean(document.querySelector('[data-ai-control="api-key"]'))`);
+            assert(!keyInputStillVisible, 'bridge AI key input reappeared after reload even though bridge status was configured');
+            await page.evaluate(`(() => {
+              for (const control of document.querySelectorAll('[data-ai-control="mode"]')) {
+                control.value = 'hosted';
+                control.dispatchEvent(new Event('change', { bubbles: true }));
+              }
+            })()`);
+          });
+
           await report.check('Browser AI unavailable does not block template workflow', async () => {
             await ensureCreatePlanView(page);
             await page.evaluate(`(() => {
@@ -983,6 +1022,16 @@ async function ensureLocalBridgeReady(page, label) {
     await clickAndWait(page, connectSelector, label);
   }
   await page.waitFor(`Boolean(document.querySelector('[data-workflow-mode="local-bridge"]:not([disabled])')) || Boolean(document.querySelector('[data-workflow-mode="auto"]')) || document.body.innerText.includes('Bridge connected') || document.body.innerText.includes('Private local mode')`);
+}
+
+async function waitForBridgeAiConfirmed(page) {
+  await page.waitFor(`(() => {
+    return Array.from(document.querySelectorAll('[data-layout="ai-setup-panel"]')).some((panel) => {
+      const text = panel.innerText || '';
+      const badge = panel.querySelector('summary strong')?.textContent?.trim();
+      return badge === 'confirmed' && text.includes('Bridge AI verified') && text.includes('Status confirmed');
+    });
+  })()`);
 }
 
 async function configureBridgeStorage(page, {
@@ -1571,6 +1620,11 @@ async function withMockBridge(wallet, callback) {
   const receipts = [];
   let nextActionId = 1;
   let connectedAddress = wallet.walletAddress;
+  let aiStatus = {
+    available: false,
+    configured: false,
+    source: 'none',
+  };
 
   const server = createHttpServer(async (req, res) => {
     writeCorsHeaders(res);
@@ -1625,6 +1679,28 @@ async function withMockBridge(wallet, callback) {
       }
       if (req.method === 'GET' && url.pathname === '/bridge/action/balances') {
         writeJson(res, 200, { cluster: 'devnet', items: [] });
+        return;
+      }
+      if (req.method === 'GET' && url.pathname === '/bridge/ai/status') {
+        writeJson(res, 200, aiStatus);
+        return;
+      }
+      if (req.method === 'POST' && url.pathname === '/bridge/ai/session-key') {
+        const body = await readRequestJson(req);
+        if (body.clear) {
+          aiStatus = { available: false, configured: false, source: 'none' };
+        } else {
+          aiStatus = {
+            available: true,
+            configured: true,
+            source: 'session',
+            provider: body.provider ?? 'openai-compatible',
+            apiFormat: body.apiFormat ?? 'openai-compatible',
+            baseUrl: body.baseUrl ?? 'https://generativelanguage.googleapis.com/v1beta/openai',
+            model: body.model ?? 'gemini-2.5-flash-lite',
+          };
+        }
+        writeJson(res, 200, aiStatus);
         return;
       }
       if (req.method === 'GET' && url.pathname === '/bridge/prepared-actions') {

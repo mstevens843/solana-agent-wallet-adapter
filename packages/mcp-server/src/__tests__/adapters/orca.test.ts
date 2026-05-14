@@ -320,6 +320,7 @@ describe('Orca liquidity preparation', () => {
       whirlpoolAddress: WHIRLPOOL,
       positionMint: POSITION_MINT,
       tokenAAmount: '0.01',
+      maxTokenBAmount: '1.5',
     }, ctx);
 
     expect(result.addInput.kind).toBe('orca_increase_liquidity');
@@ -328,9 +329,23 @@ describe('Orca liquidity preparation', () => {
       whirlpoolAddress: WHIRLPOOL,
       positionMint: POSITION_MINT,
       tokenAAmount: '0.01',
+      maxTokenBAmount: '1.5',
       slippageBps: 100,
       refreshAtExecution: true,
     });
+  });
+
+  it('rejects a same-side max amount with an Orca base amount', async () => {
+    const state = fakeState();
+    setOrcaClientFactory(() => fakeOrcaClient(state));
+    const ctx = makeContext({ store: inMemoryStore() });
+
+    await expect(requireOrcaAction('increase_liquidity').prepare({
+      whirlpoolAddress: WHIRLPOOL,
+      tokenAAmount: '0.01',
+      maxTokenAAmount: '0.02',
+      rangePreset: 'balanced',
+    }, ctx)).rejects.toBeInstanceOf(AdapterError);
   });
 
   it('rejects existing-position prepares when the refreshed Whirlpool owner is not Orca', async () => {

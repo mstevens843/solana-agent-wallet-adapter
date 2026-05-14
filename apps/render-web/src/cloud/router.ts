@@ -1242,22 +1242,23 @@ async function handleSolanaSignatureStatus(req: IncomingMessage, res: ServerResp
     searchTransactionHistory: true,
   })).value[0];
   if (!status) {
-    writeJson(res, 200, { txStatus: 'pending' });
+    writeJson(res, 200, { txStatus: 'pending', found: false });
     return;
   }
   if (status.err) {
     writeJson(res, 200, {
       txStatus: 'failed',
+      found: true,
       confirmationStatus: status.confirmationStatus,
       error: JSON.stringify(status.err),
     });
     return;
   }
   if (status.confirmationStatus === 'confirmed' || status.confirmationStatus === 'finalized') {
-    writeJson(res, 200, { txStatus: 'confirmed', confirmationStatus: status.confirmationStatus });
+    writeJson(res, 200, { txStatus: 'confirmed', found: true, confirmationStatus: status.confirmationStatus });
     return;
   }
-  writeJson(res, 200, { txStatus: 'pending', confirmationStatus: status.confirmationStatus });
+  writeJson(res, 200, { txStatus: 'pending', found: true, confirmationStatus: status.confirmationStatus });
 }
 
 async function handleJupiterSwapExecute(req: IncomingMessage, res: ServerResponse): Promise<void> {

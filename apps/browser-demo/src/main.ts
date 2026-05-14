@@ -27,8 +27,12 @@ import {
   formatOccurrenceStatus,
   formatScheduleStatus,
   lifetimeSpendEstimate,
+  planAgentReviewFactRoutes,
   previewUpcoming,
   reconcileThresholdReviewDecision,
+  type AgentFactNeed,
+  type AgentFactRoute,
+  type AgentFactRoutePlan,
   type AiGuardrailReport,
   type ApprovalRequestRecord as WorkflowApprovalRequestRecord,
   type AuditEventRecord as WorkflowAuditEventRecord,
@@ -523,6 +527,7 @@ interface AgentReviewFact<TDetail = Record<string, unknown>> {
 }
 
 interface AgentReviewFactSet {
+  evidenceRoutes?: AgentReviewFact;
   research?: AgentReviewFact;
   quote?: AgentReviewFact;
   route?: AgentReviewFact;
@@ -530,6 +535,7 @@ interface AgentReviewFactSet {
   simulation?: AgentReviewFact;
   protocol?: AgentReviewFact;
   protocolConnector?: AgentReviewFact;
+  connectorRead?: AgentReviewFact;
   blinkAction?: AgentReviewFact;
   blinkClassification?: AgentReviewFact;
   tokenMint?: AgentReviewFact;
@@ -702,6 +708,7 @@ const TX_CONFIRMATION_POLL_TIMEOUT_MS = 30_000;
 const TX_CONFIRMATION_POLL_INTERVAL_MS = 1_500;
 const TX_RETRY_MAX_ATTEMPTS = 2;
 const TX_RETRY_DELAY_MS = 2_500;
+const TX_SIGNATURE_NOT_FOUND_STALE_MS = 90_000;
 const TOKEN_PRICE_CACHE_MS = 60_000;
 const TOKEN_METADATA_CACHE_MS = 24 * 60 * 60_000;
 const TOKEN_MARKET_RETRY_BACKOFF_MS = 30_000;
@@ -1354,12 +1361,14 @@ interface BrowserSendTransactionResponse {
 
 interface BrowserSignatureStatusResponse {
   txStatus?: string;
+  found?: boolean;
   confirmationStatus?: string;
   error?: string;
 }
 
 interface SubmittedTransactionStatusResult {
   txStatus: SubmittedTransactionStatusKind;
+  found?: boolean;
   confirmationStatus?: string;
   error?: string;
 }
@@ -10777,6 +10786,8 @@ function planAmountTokenCopyActions(plan: AgentPlan): SummaryCopyAction[] {
 }
 
 function connectorPlanAmountInfo(plan: AgentPlan): ConnectorActionAmountInfo | undefined {
+  const liquidity = connectorPlanLiquidityAmountInfo(plan);
+  if (liquidity) return liquidity;
   const solAmountKey = [
     'bidPriceSol',
     'priceSol',
@@ -10819,13 +10830,35 @@ function connectorPlanAmountInfo(plan: AgentPlan): ConnectorActionAmountInfo | u
   };
 }
 
+function connectorPlanLiquidityAmountInfo(plan: AgentPlan): ConnectorActionAmountInfo | undefined {
+  if (plan.actionType !== 'orca_increase_liquidity' && plan.actionType !== 'raydium_add_liquidity') return undefined;
+  const tokenAAmount = planParameter(plan, ['tokenAAmount']);
+  const tokenBAmount = planParameter(plan, ['tokenBAmount']);
+  const maxTokenAAmount = planParameter(plan, ['maxTokenAAmount']);
+  const maxTokenBAmount = planParameter(plan, ['maxTokenBAmount']);
+  const tokenA = connectorPlanLiquidityTokenSymbol(plan, 'tokenA');
+  const tokenB = connectorPlanLiquidityTokenSymbol(plan, 'tokenB');
+  return connectorLiquidityAmountInfo({
+    tokenAAmount,
+    tokenBAmount,
+    maxTokenAAmount,
+    maxTokenBAmount,
+    tokenA,
+    tokenB,
+    pairLabel: connectorPlanLiquidityPairLabel(plan),
+  });
+}
+
 function connectorPlanAmountToken(plan: AgentPlan): ConnectorActionAmountToken | undefined {
   const params = plan.parameters;
   const tokenKeys = [
+    'sourceTokenLabel',
     'tokenSymbol',
     'inputSymbol',
     'token',
+    'sourceToken',
     'inputToken',
+    'sourceMint',
     'assetMint',
     'mint',
     'mintAddress',
@@ -11658,6 +11691,7 @@ function templateFieldInput(fieldDef: AgentPlanTemplateField): string {
       <label class="field compact planner-field ${state.templateFieldErrors[fieldDef.id] ? 'field-error' : ''}">
         <span>${escapeHtml(label)}</span>
         <textarea data-template-field="${escapeHtml(fieldDef.id)}" placeholder="${escapeHtml(fieldDef.placeholder ?? '')}" ${disabled}>${escapeHtml(value)}</textarea>
+        ${templateFieldHelper(fieldDef)}
         ${error}
       </label>
     `;
@@ -11673,6 +11707,7 @@ function templateFieldInput(fieldDef: AgentPlanTemplateField): string {
           attrs: { 'data-template-field': fieldDef.id },
           disabled: state.busy,
         })}
+        ${templateFieldHelper(fieldDef)}
         ${error}
       </label>
     `;
@@ -11681,9 +11716,14 @@ function templateFieldInput(fieldDef: AgentPlanTemplateField): string {
     <label class="field compact planner-field ${state.templateFieldErrors[fieldDef.id] ? 'field-error' : ''}">
       <span>${escapeHtml(label)}</span>
       <input data-template-field="${escapeHtml(fieldDef.id)}" value="${escapeHtml(value)}" placeholder="${escapeHtml(fieldDef.placeholder ?? '')}" ${disabled} />
+      ${templateFieldHelper(fieldDef)}
       ${error}
     </label>
   `;
+}
+
+function templateFieldHelper(fieldDef: AgentPlanTemplateField): string {
+  return fieldDef.helperText ? `<em class="planner-field-hint subtle">${escapeHtml(fieldDef.helperText)}</em>` : '';
 }
 
 function templateFieldDisplayLabel(fieldDef: AgentPlanTemplateField): string {
@@ -11703,15 +11743,23 @@ function templateSelectPickerOptions(
         value: 'tokenA',
         label: selectedLiquidityPoolTokenSymbol('tokenA') ?? 'Token A',
         meta: 'Deposit side',
-        detail: 'Enter this token amount; approval may also spend the paired pool token.',
+        detail: 'Use this as the base deposit amount.',
       },
       {
         value: 'tokenB',
         label: selectedLiquidityPoolTokenSymbol('tokenB') ?? 'Token B',
         meta: 'Deposit side',
-        detail: 'Enter this token amount; approval may also spend the paired pool token.',
+        detail: 'Use this as the base deposit amount.',
       },
     ];
+  }
+  if (fieldDef.id === 'rangePreset') {
+    return (fieldDef.options ?? []).map((option) => ({
+      value: option,
+      label: titleCase(option),
+      meta: fieldLabel,
+      detail: rangePresetOptionDetail(option),
+    }));
   }
   return (fieldDef.options ?? []).map((option) => ({
     value: option,
@@ -11721,10 +11769,21 @@ function templateSelectPickerOptions(
 }
 
 function liquidityAmountFieldRuntimeLabel(fieldId: string): string | undefined {
-  if (fieldId !== 'tokenAAmount' && fieldId !== 'tokenBAmount') return undefined;
-  const side = fieldId === 'tokenAAmount' ? 'tokenA' : 'tokenB';
+  if (fieldId !== 'tokenAAmount' && fieldId !== 'tokenBAmount' && fieldId !== 'maxTokenAAmount' && fieldId !== 'maxTokenBAmount') {
+    return undefined;
+  }
+  const side = fieldId === 'tokenAAmount' || fieldId === 'maxTokenAAmount' ? 'tokenA' : 'tokenB';
   const symbol = selectedLiquidityPoolTokenSymbol(side);
-  return symbol ? `${symbol} amount` : undefined;
+  if (!symbol) return undefined;
+  return fieldId.startsWith('max') ? `Max ${symbol} to spend` : `${symbol} amount`;
+}
+
+function rangePresetOptionDetail(option: string): string {
+  if (option === 'custom') return 'Manually enter lower and upper prices.';
+  if (option === 'position') return 'Use the existing position range.';
+  if (option === 'narrow') return 'Tighter range around the current pool price.';
+  if (option === 'wide') return 'Wider range around the current pool price.';
+  return 'Balanced range around the current pool price.';
 }
 
 function selectedLiquidityPoolTokenSymbol(side: 'tokenA' | 'tokenB'): string | undefined {
@@ -13131,6 +13190,11 @@ function resetAiPlannerConfirmation(message = ''): void {
     message,
     checkedAt: '',
   };
+}
+
+function confirmBridgeAiPlannerFromStatus(): void {
+  if (state.aiSettings.mode !== 'bridge' || !state.aiStatus?.available) return;
+  setAiPlannerConfirmation('confirmed', 'Local bridge AI is configured and reachable for drafts only. Workflow capability is unchanged.');
 }
 
 function canConfirmAiPlanner(): boolean {
@@ -19616,6 +19680,17 @@ function deterministicSourcesFromFacts(facts: AgentReviewFactSet, plan: AgentPla
   if (facts.walletHoldings?.state === 'ok' || facts.walletHoldings?.state === 'warn') {
     sources.push({ url: 'https://birdeye.so/', title: 'BirdEye wallet token list' });
   }
+  if (facts.connectorRead?.state === 'ok' || facts.connectorRead?.state === 'warn') {
+    const website = typeof facts.connectorRead.detail?.connectorWebsite === 'string'
+      ? facts.connectorRead.detail.connectorWebsite
+      : undefined;
+    sources.push({
+      url: website || 'https://agentic-signer.com/app',
+      title: typeof facts.connectorRead.detail?.connectorName === 'string'
+        ? `${facts.connectorRead.detail.connectorName} connector facts`
+        : 'Protocol connector facts',
+    });
+  }
   return sources;
 }
 
@@ -20190,6 +20265,7 @@ function mergeReviewFacts(
   if (!aiFacts || typeof aiFacts !== 'object' || Array.isArray(aiFacts)) return merged;
   const checkedAt = new Date().toISOString();
   const slots: Array<keyof AgentReviewFactSet> = [
+    'evidenceRoutes',
     'research',
     'quote',
     'route',
@@ -20197,6 +20273,7 @@ function mergeReviewFacts(
     'simulation',
     'protocol',
     'protocolConnector',
+    'connectorRead',
     'blinkAction',
     'blinkClassification',
     'tokenMint',
@@ -20233,65 +20310,510 @@ function mergeReviewFacts(
   return merged;
 }
 
+const TOKEN_FACT_ROUTE_NEEDS: AgentFactNeed[] = ['token_metadata', 'token_security', 'token_market'];
+
 async function gatherAgentReviewFacts(
   record: GeneratedPlanRecord,
   options: { question?: string; instruction?: string } = {},
 ): Promise<AgentReviewFactSet> {
   const facts = gatherDeterministicFacts(record);
   const plan = planWithRuntimeTokenLabels(record.plan);
-  const enriched = await enrichTokenFactsFromBirdEye(plan, facts).catch(() => false);
-  if (!enriched) {
-    await enrichTokenFactsFromDexScreener(plan, facts).catch(() => undefined);
+  const routePlan = planFactRoutesForAgentReview(record, plan, options);
+  facts.evidenceRoutes = agentFactRoutePlanFact(routePlan);
+  if (routePlanHasAnyNeed(routePlan, TOKEN_FACT_ROUTE_NEEDS)) {
+    const enriched = routePlanHasAnyId(routePlan, ['birdeye.token_metadata', 'birdeye.token_security', 'birdeye.price_multi'])
+      ? await enrichTokenFactsFromBirdEye(plan, facts).catch(() => false)
+      : false;
+    if (routePlanHasAnyId(routePlan, ['coingecko.token_evidence'])) {
+      await enrichTokenFactsFromCoinGecko(plan, facts).catch(() => undefined);
+    }
+    if (!enriched && routePlanHasAnyId(routePlan, ['dexscreener.token_pairs'])) {
+      await enrichTokenFactsFromDexScreener(plan, facts).catch(() => undefined);
+    }
   }
   await Promise.all([
-    enrichTokenFactsFromCoinGecko(plan, facts).catch(() => undefined),
-    enrichWalletFactsForAgent(record, plan, facts, options).catch(() => undefined),
-    enrichMarketSentimentFromAlternativeMe(facts).catch(() => undefined),
-    enrichMarketConditionsFromCoinGecko(facts).catch(() => undefined),
+    enrichWalletFactsForAgent(record, facts, routePlan).catch(() => undefined),
+    enrichConnectorFactsForAgent(record, plan, facts, routePlan).catch(() => undefined),
+    routePlanHasAnyId(routePlan, ['alternative_me.fear_greed'])
+      ? enrichMarketSentimentFromAlternativeMe(facts).catch(() => undefined)
+      : Promise.resolve(),
+    routePlanHasAnyId(routePlan, ['coingecko.global'])
+      ? enrichMarketConditionsFromCoinGecko(facts).catch(() => undefined)
+      : Promise.resolve(),
   ]);
   return facts;
 }
 
-async function enrichWalletFactsForAgent(
+function planFactRoutesForAgentReview(
   record: GeneratedPlanRecord,
   plan: AgentPlan,
-  facts: AgentReviewFactSet,
   options: { question?: string; instruction?: string },
+): AgentFactRoutePlan {
+  const walletContext = walletContextForAgent(record);
+  const connector = selectedConnectorForDraftParameters(plan.parameters) ??
+    findProtocolConnectorByInput(plan.parameters.protocol || plan.parameters.dapp || plan.route);
+  const connectorForm = selectedConnectorActionForm(plan.parameters) ?? connectorActionFormByActionType(plan.actionType);
+  const connectorSubAction = connectorForm ? selectedSubAction(connectorForm, plan.parameters) : undefined;
+  const connectorActionKind = connectorSubAction?.actionType ?? connectorForm?.actionType ?? plan.actionType;
+  const connectorEnabled = Boolean(connector && isDappEnabled(connector.id, state.connectedDapps, state.cluster));
+  const connectorReadReady = Boolean(
+    connector &&
+      connectorEnabled &&
+      connector.readSource &&
+      (!connector.requiresClientKey || state.protocolConnectorPrefs.dialectClientKey.trim()),
+  );
+  return planAgentReviewFactRoutes({
+    actionType: plan.actionType,
+    intent: plan.intent,
+    route: plan.route,
+    risk: plan.risk,
+    approval: plan.approval,
+    userNotes: plan.userNotes,
+    instruction: options.instruction,
+    question: options.question,
+    prompt: record.prompt,
+    parameters: plan.parameters,
+    hasWallet: Boolean(walletContext.address),
+    hasTokenMints: planTokenCandidates(plan).some((token) => Boolean(token.mint)),
+    hasProtocolConnector: connectorReadReady,
+    ...(connector
+      ? {
+          connector: {
+            id: connector.id,
+            name: connector.name,
+            enabled: connectorEnabled,
+            readReady: connectorReadReady,
+            readSource: connector.readSource ?? '',
+            actionSource: connector.actionSource ?? '',
+            capabilities: connector.capabilities,
+            actionKind: connectorActionKind,
+            operation: connectorSubAction?.label ?? connectorForm?.operationLabel ?? plan.parameters.operation,
+          },
+        }
+      : {}),
+  });
+}
+
+function agentFactRoutePlanFact(routePlan: AgentFactRoutePlan): AgentReviewFact {
+  const checkedAt = new Date().toISOString();
+  return {
+    state: routePlan.routes.length ? 'checked' : 'missing',
+    source: 'deterministic',
+    checkedAt,
+    message: routePlan.routeText,
+    detail: {
+      routes: routePlan.routes.map((route) => ({
+        id: route.id,
+        need: route.need,
+        provider: route.provider,
+        endpoint: route.endpoint,
+        status: route.status,
+        reason: route.reason,
+        ...(route.params ? { params: route.params } : {}),
+      })),
+      skipped: routePlan.skipped,
+    },
+  };
+}
+
+function routePlanHasAnyNeed(routePlan: AgentFactRoutePlan, needs: AgentFactNeed[]): boolean {
+  return routePlan.routes.some((route) => needs.includes(route.need));
+}
+
+function routePlanHasAnyId(routePlan: AgentFactRoutePlan, ids: string[]): boolean {
+  return routePlan.routes.some((route) => ids.includes(route.id));
+}
+
+function routePlanRoute(routePlan: AgentFactRoutePlan, id: string): AgentFactRoute | undefined {
+  return routePlan.routes.find((route) => route.id === id);
+}
+
+async function enrichWalletFactsForAgent(
+  record: GeneratedPlanRecord,
+  facts: AgentReviewFactSet,
+  routePlan: AgentFactRoutePlan,
 ): Promise<void> {
   const wallet = walletContextForAgent(record).address;
   if (!wallet) return;
-  const contextText = [
-    options.question,
-    options.instruction,
-    record.prompt,
-    plan.intent,
-    plan.route,
-    plan.approval,
-    plan.userNotes,
-    Object.values(plan.parameters).join(' '),
-  ].filter(Boolean).join('\n');
   await Promise.all([
-    walletTransferContextNeeded(plan, contextText)
+    routePlanHasAnyNeed(routePlan, ['wallet_transfers'])
       ? enrichWalletTransferFacts(wallet, facts)
       : Promise.resolve(),
-    walletHoldingsContextNeeded(plan, contextText)
+    routePlanHasAnyNeed(routePlan, ['wallet_holdings'])
       ? enrichWalletHoldingsFacts(wallet, facts)
       : Promise.resolve(),
   ]);
 }
 
-function walletTransferContextNeeded(plan: AgentPlan, text: string): boolean {
-  if (plan.actionType === 'transfer_sol' || plan.actionType === 'transfer_spl' || plan.actionType === 'recurring_payment') {
-    return true;
+async function enrichConnectorFactsForAgent(
+  record: GeneratedPlanRecord,
+  plan: AgentPlan,
+  facts: AgentReviewFactSet,
+  routePlan: AgentFactRoutePlan,
+): Promise<void> {
+  const route = routePlanRoute(routePlan, 'protocol_connector.read_facts');
+  if (!route) return;
+  const checkedAt = new Date().toISOString();
+  const connector = selectedConnectorForDraftParameters(plan.parameters) ??
+    findProtocolConnectorByInput(plan.parameters.protocol || plan.parameters.dapp || plan.route);
+  if (!connector) {
+    facts.connectorRead = {
+      state: route.status === 'required' ? 'warn' : 'missing',
+      source: 'deterministic',
+      checkedAt,
+      message: 'Connector read facts were selected, but no matching connector was found.',
+      detail: { routeStatus: route.status },
+    };
+    return;
   }
-  return /\b(transfer|transfers|sent|send|sending|received|receive|paid|payment|payout|counterparty|recipient\s+history|wallet\s+activity|transaction\s+history|recent\s+activity|duplicate|already\s+paid)\b/i.test(text);
+  const request = connectorReadFactsRequestForAgent(record, plan, connector, route);
+  try {
+    const response = await fetchConnectorFactsForAgent(record, request);
+    const rows = compactConnectorReadFactRows(response);
+    const capability = stringField(request.capability) ?? stringField(route.params?.capability) ?? 'facts';
+    facts.connectorRead = {
+      state: rows.length ? 'ok' : 'checked',
+      source: 'deterministic',
+      checkedAt,
+      message: connectorReadFactMessage(connector.name, capability, rows),
+      detail: {
+        provider: 'protocol_connector',
+        connectorId: connector.id,
+        connectorName: connector.name,
+        connectorWebsite: connector.website,
+        capability,
+        routeStatus: route.status,
+        routeReason: route.reason,
+        request: compactConnectorReadRequest(request),
+        factCount: rows.length,
+        facts: rows.slice(0, 12),
+        response: compactConnectorReadResponse(response),
+      },
+    };
+  } catch (err) {
+    facts.connectorRead = {
+      state: route.status === 'required' ? 'warn' : 'missing',
+      source: 'deterministic',
+      checkedAt,
+      message: `${connector.name} connector facts unavailable: ${redactSecrets(err instanceof Error ? err.message : String(err))}`,
+      detail: {
+        provider: 'protocol_connector',
+        connectorId: connector.id,
+        connectorName: connector.name,
+        connectorWebsite: connector.website,
+        routeStatus: route.status,
+        routeReason: route.reason,
+        request: compactConnectorReadRequest(request),
+      },
+    };
+  }
 }
 
-function walletHoldingsContextNeeded(plan: AgentPlan, text: string): boolean {
-  if (/\b(balance|balances|holding|holdings|portfolio|position|positions|exposure|own|owns|do i have|can afford|enough funds|wallet tokens)\b/i.test(text)) {
-    return true;
+function connectorReadFactsRequestForAgent(
+  record: GeneratedPlanRecord,
+  plan: AgentPlan,
+  connector: ProtocolConnector,
+  route: AgentFactRoute,
+): Record<string, unknown> {
+  const walletContext = walletContextForAgent(record);
+  const form = selectedConnectorActionForm(plan.parameters) ?? connectorActionFormByActionType(plan.actionType);
+  const subAction = form ? selectedSubAction(form, plan.parameters) : undefined;
+  const actionKind = subAction?.actionType ?? form?.actionType ?? plan.actionType;
+  const capability = stringField(route.params?.capability) ?? connectorReadCapabilityForAction(actionKind);
+  const request = stripUndefined({
+    connectorId: connector.id,
+    ...(capability ? { capability } : {}),
+    walletAddress: walletContext.address,
+    token: planParameter(plan, ['token', 'reserveToken']),
+    mint: planParameter(plan, ['mint', 'mintAddress', 'assetMint', 'lstMint']),
+    mints: connectorReadMints(plan),
+    reserveMint: planParameter(plan, ['reserveMint', 'reserveAddress', 'assetMint', 'bankMint', 'token']),
+    lstMint: planParameter(plan, ['lstMint', 'inputLstMint', 'outputLstMint']),
+    inputMint: planParameter(plan, ['inputMint', 'inputLstMint', 'sourceMint']),
+    outputMint: planParameter(plan, ['outputMint', 'outputLstMint']),
+    inputToken: planParameter(plan, ['inputToken', 'inputMint', 'inputLstMint']),
+    outputToken: planParameter(plan, ['outputToken', 'outputMint', 'outputLstMint']),
+    amount: planParameter(plan, [
+      'amount',
+      'collateralAmount',
+      'borrowAmount',
+      'solAmount',
+      'msolAmount',
+      'jitoSolAmount',
+      'tokenXAmount',
+      'tokenYAmount',
+      'tokenAAmount',
+      'tokenBAmount',
+      'priceSol',
+      'bidPriceSol',
+      'maxPriceSol',
+    ]),
+    amountRaw: planParameter(plan, ['amountRaw']),
+    slippageBps: numericPlanParam(plan, ['slippageBps']),
+    taker: walletContext.address,
+    poolAddress: planParameter(plan, ['poolAddress']),
+    positionAddress: planParameter(plan, ['positionAddress']),
+    whirlpoolAddress: planParameter(plan, ['whirlpoolAddress']),
+    poolId: planParameter(plan, ['poolId']),
+    poolType: planParameter(plan, ['poolType']),
+    positionMint: planParameter(plan, ['positionMint']),
+    farmId: planParameter(plan, ['farmId']),
+    bankAddress: planParameter(plan, ['bankAddress']),
+    bankMint: planParameter(plan, ['bankMint']),
+    marginfiAccount: planParameter(plan, ['marginfiAccount']),
+    project0Account: planParameter(plan, ['project0Account']),
+    operation: connectorLendingOperation(actionKind),
+    vaultAddress: planParameter(plan, ['vaultAddress']),
+    subAccountId: numericPlanParam(plan, ['subAccountId']),
+    jitoOperation: connectorJitoOperation(actionKind),
+    marinadeOperation: connectorMarinadeOperation(actionKind),
+    stakeAccount: planParameter(plan, ['stakeAccount']),
+    receiptAddress: planParameter(plan, ['receiptAddress', 'receiptAccount']),
+    solAmount: planParameter(plan, ['solAmount']),
+    jitoSolAmount: planParameter(plan, ['jitoSolAmount']),
+    msolAmount: planParameter(plan, ['msolAmount']),
+    minJitoSolAmount: planParameter(plan, ['minJitoSolAmount']),
+    minMsolAmount: planParameter(plan, ['minMsolAmount']),
+    minSolAmount: planParameter(plan, ['minSolAmount']),
+    ticketAccount: planParameter(plan, ['ticketAccount']),
+    withdrawMode: planParameter(plan, ['withdrawMode']),
+    withdrawAll: booleanPlanParam(plan, ['withdrawAll']),
+    repayAll: booleanPlanParam(plan, ['repayAll']),
+    sourceChain: planParameter(plan, ['sourceChain']),
+    sourceMint: planParameter(plan, ['sourceMint', 'mintAddress', 'token']),
+    destinationChain: planParameter(plan, ['destinationChain']),
+    destinationAddress: planParameter(plan, ['destinationAddress', 'recipient', 'destinationRecipient']),
+    routeType: planParameter(plan, ['routeType']),
+    nativeGasDropoff: planParameter(plan, ['nativeGasDropoff']),
+    txid: planParameter(plan, ['txid', 'signature']),
+    vaa: planParameter(plan, ['vaa']),
+    sequence: planParameter(plan, ['sequence']),
+    transferId: planParameter(plan, ['transferId']),
+    includePendingTransfers: booleanPlanParam(plan, ['includePendingTransfers']),
+    tag: planParameter(plan, ['tag']),
+    category: planParameter(plan, ['category']),
+    interval: planParameter(plan, ['interval']),
+    limit: numericPlanParam(plan, ['limit']),
+    includePrice: booleanPlanParam(plan, ['includePrice']),
+    includeSearchFallback: booleanPlanParam(plan, ['includeSearchFallback']),
+    priceFeedId: planParameter(plan, ['priceFeedId', 'priceFeedIds']),
+    priceFeedIds: connectorReadListParam(plan, ['priceFeedIds']),
+    symbol: planParameter(plan, ['symbol', 'priceFeedIdsLabel', 'priceFeedIdLabel', 'feedLabel']),
+    query: planParameter(plan, ['query']),
+    assetType: planParameter(plan, ['assetType']),
+    maxAgeSeconds: numericPlanParam(plan, ['maxAgeSeconds']),
+    maxConfidenceBps: numericPlanParam(plan, ['maxConfidenceBps']),
+    consumerProtocol: 'Solana Agent Wallet Adapter connector review',
+    includeEma: booleanPlanParam(plan, ['includeEma']) ?? true,
+    predictionOperation: connectorPredictionOperation(actionKind, plan),
+    predictionProvider: planParameter(plan, ['predictionProvider']),
+    predictionEventId: planParameter(plan, ['predictionEventId']),
+    predictionMarketId: planParameter(plan, ['predictionMarketId']),
+    predictionOrderId: planParameter(plan, ['predictionOrderId']),
+    predictionOwner: planParameter(plan, ['predictionOwner']),
+    predictionLimit: numericPlanParam(plan, ['predictionLimit']),
+    triggerOperation: connectorTriggerOperation(actionKind, plan),
+    triggerOrderId: planParameter(plan, ['triggerOrderId', 'orderId']),
+    triggerState: planParameter(plan, ['triggerState']),
+    recurringOperation: connectorRecurringOperation(actionKind, plan),
+    recurringOrderId: planParameter(plan, ['recurringOrderId', 'orderId']),
+    recurringState: planParameter(plan, ['recurringState']),
+    recurringType: planParameter(plan, ['recurringType']),
+    recurringPage: numericPlanParam(plan, ['recurringPage']),
+    recurringNumberOfOrders: numericPlanParam(plan, ['recurringNumberOfOrders', 'numberOfOrders']),
+    recurringIntervalSeconds: numericPlanParam(plan, ['recurringIntervalSeconds', 'intervalSeconds']),
+    recurringStartAt: planParameter(plan, ['recurringStartAt', 'startAt']),
+    recurringMinPrice: planParameter(plan, ['recurringMinPrice', 'minPrice']),
+    recurringMaxPrice: planParameter(plan, ['recurringMaxPrice', 'maxPrice']),
+    includeFailedTx: booleanPlanParam(plan, ['includeFailedTx']),
+    collectionId: planParameter(plan, ['collectionId']),
+    collectionSymbol: planParameter(plan, ['collectionSymbol']),
+    mintAddress: planParameter(plan, ['mintAddress', 'nftMint', 'assetMint']),
+    assetId: planParameter(plan, ['assetId']),
+    includeListings: booleanPlanParam(plan, ['includeListings']) ?? true,
+    includeBids: booleanPlanParam(plan, ['includeBids']) ?? true,
+    includeCompressed: booleanPlanParam(plan, ['includeCompressed']),
+    realmAddress: planParameter(plan, ['realmAddress']),
+    governanceAddress: planParameter(plan, ['governanceAddress']),
+    proposalAddress: planParameter(plan, ['proposalAddress']),
+    multisigAddress: planParameter(plan, ['multisigAddress']),
+    vaultIndex: numericPlanParam(plan, ['vaultIndex']),
+    transactionIndex: numericPlanParam(plan, ['transactionIndex']),
+    governingTokenMint: planParameter(plan, ['governingTokenMint']),
+    proposalState: planParameter(plan, ['proposalState']),
+    maxListings: numericPlanParam(plan, ['maxListings']),
+    maxBids: numericPlanParam(plan, ['maxBids']),
+    listedOnly: booleanPlanParam(plan, ['listedOnly']),
+  });
+  return asRecord(request) ?? { connectorId: connector.id };
+}
+
+async function fetchConnectorFactsForAgent(
+  record: GeneratedPlanRecord,
+  request: Record<string, unknown>,
+): Promise<Record<string, unknown>> {
+  const source = connectorReadSourceForAgent(record);
+  if (source === 'cloud') {
+    return cloudRequest<Record<string, unknown>>('/api/connector/read-facts', {
+      method: 'POST',
+      body: JSON.stringify({
+        ...request,
+        cluster: record.cluster,
+        walletAddress: walletContextForAgent(record).address,
+      }),
+    });
   }
-  return /\b(swap|transfer|deposit|withdraw|borrow|repay|stake|unstake|liquidity|vault|lend|collateral|dca|recurring)\b/i.test(plan.actionType);
+  return bridgeRequest<Record<string, unknown>>('/bridge/action/connector-read-facts', {
+    method: 'POST',
+    body: JSON.stringify(request),
+  });
+}
+
+function connectorReadSourceForAgent(record: GeneratedPlanRecord): 'cloud' | 'local-bridge' {
+  if (record.workflowSource === 'cloud' && cloudSessionMatchesWallet()) return 'cloud';
+  if (state.bridgeActive && state.bridgeToken && isLoopbackBridgeUrl(state.bridgeUrl)) return 'local-bridge';
+  if (cloudSessionMatchesWallet()) return 'cloud';
+  throw new Error('Connector facts need Agentic Cloud sign-in or a connected private local bridge.');
+}
+
+function connectorReadCapabilityForAction(actionKind: string): string | undefined {
+  const action = actionKind.toLowerCase();
+  if (action.includes('trigger')) return 'trigger';
+  if (action.includes('recurring')) return 'recurring';
+  if (action.includes('perps')) return 'perps';
+  if (action.includes('prediction')) return 'prediction';
+  if (action.includes('wormhole')) return action.includes('transfer') || action.includes('redeem') || action.includes('recover') ? 'bridge' : 'positions';
+  if (action.includes('pyth')) return 'oracle';
+  if (action.includes('magiceden') || action.includes('tensor')) return /buy|bid|list|sweep/.test(action) ? 'marketplace' : 'positions';
+  if (action.includes('realms') || action.includes('squads')) return action.includes('transfer') ? 'treasury' : 'governance';
+  if (/borrow/.test(action)) return 'borrow';
+  if (/repay/.test(action)) return 'repay';
+  if (/withdraw|unstake/.test(action)) return 'withdraw';
+  if (/deposit|stake|earn|mint|redeem/.test(action)) return 'earn';
+  if (/fee|reward|harvest|claim/.test(action)) return 'rewards';
+  return undefined;
+}
+
+function connectorLendingOperation(actionKind: string): 'deposit' | 'withdraw' | 'borrow' | 'repay' | undefined {
+  if (/borrow/.test(actionKind)) return 'borrow';
+  if (/repay/.test(actionKind)) return 'repay';
+  if (/withdraw/.test(actionKind)) return 'withdraw';
+  if (/deposit|supply|earn/.test(actionKind)) return 'deposit';
+  return undefined;
+}
+
+function connectorJitoOperation(actionKind: string): 'stake_sol' | 'deposit_stake_account' | 'unstake_jitosol' | 'withdraw_sol' | undefined {
+  if (actionKind.includes('deposit_stake_account')) return 'deposit_stake_account';
+  if (actionKind.includes('unstake')) return 'unstake_jitosol';
+  if (actionKind.includes('withdraw')) return 'withdraw_sol';
+  if (actionKind.includes('stake_sol')) return 'stake_sol';
+  return undefined;
+}
+
+function connectorMarinadeOperation(actionKind: string): 'liquid_stake' | 'liquid_unstake' | 'delayed_unstake' | 'claim_delayed_unstake' | undefined {
+  if (actionKind.includes('claim_delayed_unstake')) return 'claim_delayed_unstake';
+  if (actionKind.includes('delayed_unstake')) return 'delayed_unstake';
+  if (actionKind.includes('liquid_unstake')) return 'liquid_unstake';
+  if (actionKind.includes('liquid_stake')) return 'liquid_stake';
+  return undefined;
+}
+
+function connectorPredictionOperation(actionKind: string, plan: AgentPlan): string | undefined {
+  const explicit = planParameter(plan, ['predictionOperation']);
+  if (explicit) return explicit;
+  if (actionKind.includes('orderbook')) return 'orderbook';
+  if (actionKind.includes('positions')) return 'positions';
+  if (actionKind.includes('history')) return 'history';
+  if (actionKind.includes('market')) return 'market_detail';
+  return undefined;
+}
+
+function connectorTriggerOperation(actionKind: string, plan: AgentPlan): string | undefined {
+  const explicit = planParameter(plan, ['triggerOperation']);
+  if (explicit) return explicit;
+  if (planParameter(plan, ['orderId', 'triggerOrderId'])) return 'order_detail';
+  if (actionKind.includes('vault')) return 'vault';
+  if (actionKind.includes('auth')) return 'auth_status';
+  return actionKind.includes('trigger') ? 'orders' : undefined;
+}
+
+function connectorRecurringOperation(actionKind: string, plan: AgentPlan): string | undefined {
+  const explicit = planParameter(plan, ['recurringOperation']);
+  if (explicit) return explicit;
+  if (actionKind.includes('quote') || actionKind.includes('create_time_order')) return 'quote';
+  if (planParameter(plan, ['orderId', 'recurringOrderId'])) return 'order_detail';
+  return actionKind.includes('recurring') ? 'orders' : undefined;
+}
+
+function connectorReadMints(plan: AgentPlan): string[] | undefined {
+  const list = connectorReadListParam(plan, ['mints']);
+  if (list?.length) return list;
+  const mints = [
+    planParameter(plan, ['mint', 'mintAddress']),
+    planParameter(plan, ['inputMint', 'inputLstMint']),
+    planParameter(plan, ['outputMint', 'outputLstMint']),
+    planParameter(plan, ['reserveMint', 'assetMint']),
+  ].map((entry) => entry.trim()).filter(Boolean);
+  return mints.length ? [...new Set(mints)] : undefined;
+}
+
+function connectorReadListParam(plan: AgentPlan, keys: string[]): string[] | undefined {
+  const raw = planParameter(plan, keys).trim();
+  if (!raw) return undefined;
+  const values = raw.split(/[,;\n]/).map((entry) => entry.trim()).filter(Boolean);
+  return values.length ? values : undefined;
+}
+
+function booleanPlanParam(plan: AgentPlan, keys: string[]): boolean | undefined {
+  const raw = planParameter(plan, keys).trim().toLowerCase();
+  if (!raw) return undefined;
+  if (raw === 'true' || raw === 'yes' || raw === '1') return true;
+  if (raw === 'false' || raw === 'no' || raw === '0') return false;
+  return undefined;
+}
+
+function compactConnectorReadRequest(request: Record<string, unknown>): Record<string, unknown> {
+  const hidden = new Set(['cluster']);
+  return Object.fromEntries(Object.entries(request).filter(([key, value]) => value !== undefined && value !== '' && !hidden.has(key)));
+}
+
+function compactConnectorReadFactRows(response: unknown): JsonObject[] {
+  const rows = connectorFactsFromReadResponse(response).slice(0, 20);
+  if (rows.length) return rows;
+  const facts = asRecord(asRecord(response)?.facts);
+  return facts ? [toJsonObject(facts)] : [];
+}
+
+function connectorReadFactMessage(connectorName: string, capability: string, rows: JsonObject[]): string {
+  if (!rows.length) return `${connectorName} ${capability} facts checked; no normalized fact rows returned.`;
+  const labels = rows
+    .map((row) => stringFromJsonLike(row.label) || stringFromJsonLike(row.value))
+    .filter(Boolean)
+    .slice(0, 3);
+  return labels.length
+    ? `${connectorName} ${capability} facts: ${labels.join('; ')}.`
+    : `${connectorName} returned ${rows.length} connector fact row${rows.length === 1 ? '' : 's'}.`;
+}
+
+function compactConnectorReadResponse(response: unknown): Record<string, unknown> {
+  const record = asRecord(response) ?? {};
+  const connector = asRecord(record.connector);
+  return stripUndefined({
+    connector: connector
+      ? {
+          id: stringField(connector.id),
+          name: stringField(connector.name),
+          approvalBoundary: stringField(connector.approvalBoundary),
+        }
+      : undefined,
+    capability: stringField(record.capability),
+    source: stringField(record.source),
+    walletAddress: stringField(record.walletAddress),
+    hasSnapshot: Boolean(record.snapshot),
+    hasPreview: Boolean(record.preview),
+    hasPositions: Array.isArray(record.positions),
+    hasTotals: Boolean(record.totals),
+  }) as Record<string, unknown>;
 }
 
 async function enrichWalletTransferFacts(wallet: string, facts: AgentReviewFactSet): Promise<void> {
@@ -21349,7 +21871,6 @@ async function runSaveBridgeAiKey(): Promise<void> {
       }),
     });
     await refreshBridgeAiStatus(true);
-    resetAiPlannerConfirmation('Bridge key changed. Confirm planner again if needed.');
     const connected = await ensureBridgeConnectedAfterLocalCall();
     pushToast(
       'success',
@@ -21514,7 +22035,9 @@ async function runClearAiKey(): Promise<void> {
 async function runRefreshAiStatus(): Promise<void> {
   await run('ai', async () => {
     await refreshBridgeAiStatus(true);
-    resetAiPlannerConfirmation('Bridge AI status refreshed. Confirm planner again if needed.');
+    if (!state.aiStatus?.available) {
+      resetAiPlannerConfirmation('Bridge AI status refreshed. Confirm planner again if needed.');
+    }
     const connected = await ensureBridgeConnectedAfterLocalCall();
     pushToast(
       'success',
@@ -24008,7 +24531,29 @@ async function runCloudBrowserTransactionConfirm(action: PreparedAction): Promis
   });
   const toastContext: TransactionToastContext = { toastId, actionId: action.id, cluster: action.cluster };
   try {
-    const txStatus = await resolveSubmittedTransactionStatus(action.cluster, txid, toastContext);
+    const status = await resolveSubmittedTransactionStatusResult(action.cluster, txid, toastContext);
+    const txStatus = status.txStatus === 'confirmed' ? 'confirmed' : 'pending';
+    const ledger = findPendingTransactionByAction(action.id);
+    if (status.found === false && txStatus !== 'confirmed' && transactionNotFoundIsStale(action, ledger)) {
+      const message = staleNotFoundTransactionMessage(txid);
+      restoreBrowserActionAfterClearingPending(action, ledger?.id);
+      await recordCloudWalletExecution(action, {
+        txid,
+        txStatus: 'failed',
+        explorerUrl: explorerUrl(txid, action.cluster),
+        error: message,
+        note: 'Wallet transaction signature was not found on-chain after the stale threshold. The approval can be retried.',
+      }).catch((syncErr) => {
+        pushToast('error', 'Cloud receipt sync failed', redactSecrets(syncErr instanceof Error ? syncErr.message : String(syncErr)));
+      });
+      await refreshCloudWorkspaceData().catch(() => undefined);
+      replaceToast(toastId, 'success', 'Pending cleared', `${message} The approval is ready again.`, {
+        linkHref: explorerUrl(txid, action.cluster),
+        linkLabel: 'Open Solscan',
+      });
+      render();
+      return;
+    }
     const response = await recordCloudWalletExecution(action, {
       txid,
       txStatus,
@@ -24018,7 +24563,6 @@ async function runCloudBrowserTransactionConfirm(action: PreparedAction): Promis
         : 'Wallet transaction is still confirming.',
     });
     if (txStatus !== 'confirmed' || !isJsonObject(response.completed)) {
-      const ledger = findPendingTransactionByAction(action.id);
       if (ledger) {
         markTransactionPhase(ledger.id, 'submitted', { txid });
         syncPendingTransactionsFromLedger();
@@ -24031,9 +24575,9 @@ async function runCloudBrowserTransactionConfirm(action: PreparedAction): Promis
       render();
       return;
     }
-    const ledger = findPendingTransactionByAction(action.id);
-    if (ledger) {
-      removePendingTransaction(ledger.id);
+    const finalLedger = findPendingTransactionByAction(action.id);
+    if (finalLedger) {
+      removePendingTransaction(finalLedger.id);
       syncPendingTransactionsFromLedger();
     }
     await refreshCloudWorkspaceData();
@@ -24368,8 +24912,24 @@ async function runBrowserTransactionConfirm(action: PreparedAction): Promise<voi
   });
   const toastContext: TransactionToastContext = { toastId, actionId: action.id, cluster: action.cluster };
   try {
-    const txStatus = await resolveSubmittedTransactionStatus(action.cluster, txid, toastContext);
-    if (txStatus !== 'confirmed') {
+    const status = await resolveSubmittedTransactionStatusResult(action.cluster, txid, toastContext);
+    const ledger = findPendingTransactionByAction(action.id);
+    if (status.txStatus !== 'confirmed') {
+      if (status.found === false && transactionNotFoundIsStale(action, ledger)) {
+        const message = staleNotFoundTransactionMessage(txid);
+        restoreBrowserActionAfterClearingPending(action, ledger?.id);
+        await syncBridgePreparedActionTransaction(action, {
+          txid,
+          txStatus: 'failed',
+          error: message,
+        });
+        replaceToast(toastId, 'success', 'Pending cleared', `${message} The approval is ready again.`, {
+          linkHref: explorerUrl(txid, action.cluster),
+          linkLabel: 'Open Solscan',
+        });
+        render();
+        return;
+      }
       updateBrowserPreparedAction(action.id, {
         status: 'approval_pending',
         txStatus: 'pending',
@@ -24377,7 +24937,6 @@ async function runBrowserTransactionConfirm(action: PreparedAction): Promise<voi
         txError: undefined,
         error: undefined,
       });
-      const ledger = findPendingTransactionByAction(action.id);
       if (ledger) {
         markTransactionPhase(ledger.id, 'submitted', { txid });
         syncPendingTransactionsFromLedger();
@@ -24392,13 +24951,13 @@ async function runBrowserTransactionConfirm(action: PreparedAction): Promise<voi
     }
     completeBrowserExecutedAction(action, {
       txid,
-      txStatus,
+      txStatus: status.txStatus,
       explorerUrl: explorerUrl(txid, action.cluster),
     });
-    await syncBridgePreparedActionTransaction(action, { txid, txStatus });
+    await syncBridgePreparedActionTransaction(action, { txid, txStatus: status.txStatus });
     recordBrowserActionActivity(action.id, 'browser.transaction.saved', {
       kind: action.kind,
-      status: txStatus,
+      status: status.txStatus,
       txid,
     });
     showCompletedHistoryForAction(action.id);
@@ -24516,6 +25075,29 @@ async function clearStaleBrowserPendingTransaction(action: PreparedAction): Prom
       linkLabel: 'Open Solscan',
     });
     render();
+    return;
+  }
+
+  if (status.found === false) {
+    if (transactionNotFoundIsStale(action, ledger)) {
+      const message = staleNotFoundTransactionMessage(txid);
+      restoreBrowserActionAfterClearingPending(action, ledger?.id);
+      await syncBridgePreparedActionTransaction(action, {
+        txid,
+        txStatus: 'failed',
+        error: message,
+      });
+      replaceToast(toastId, 'success', 'Pending cleared', `${message} The approval is ready again.`, {
+        linkHref: explorerUrl(txid, action.cluster),
+        linkLabel: 'Open Solscan',
+      });
+      render();
+      return;
+    }
+    replaceToast(toastId, 'pending', 'Transaction not found yet', `${short(txid)} is not visible on-chain yet. Check again after the stale threshold.`, {
+      linkHref: explorerUrl(txid, action.cluster),
+      linkLabel: 'Open Solscan',
+    });
     return;
   }
 
@@ -24985,6 +25567,54 @@ async function reconcilePendingTransactions(opts: {
             'error',
             'Transaction failed on-chain',
             short(record.txid),
+            { linkHref: explorerUrl(record.txid, cluster), linkLabel: 'Open Solscan' },
+          );
+        }
+      } else if (status.found === false && transactionNotFoundIsStale(
+        state.preparedActions.find((candidate) => candidate.id === record.actionId) ?? {
+          id: record.actionId,
+          kind: record.kind,
+          walletAddress: record.walletAddress ?? '',
+          cluster,
+          summary: record.kind,
+          params: {},
+          status: 'ready',
+          createdAt: record.createdAt,
+          updatedAt: record.updatedAt,
+        } as PreparedAction,
+        record,
+        now.getTime(),
+      )) {
+        const failureDetail = staleNotFoundTransactionMessage(record.txid);
+        markTransactionPhase(record.id, 'failed', {
+          failedAt: now.toISOString(),
+          failureKind: 'unknown_maybe_submitted',
+          lastError: failureDetail,
+        });
+        const action = state.preparedActions.find((candidate) => candidate.id === record.actionId);
+        if (action) {
+          const priorStatus: PreparedActionStatus = action.status === 'overdue' ? 'overdue' : 'ready';
+          updateBrowserPreparedAction(action.id, {
+            status: priorStatus,
+            txStatus: 'failed',
+            txid: record.txid,
+            txError: failureDetail,
+            error: failureDetail,
+          });
+          recordBrowserActionActivity(action.id, 'browser.transaction.reconciled', {
+            kind: action.kind,
+            status: 'failed',
+            txid: record.txid,
+            trigger: opts.trigger,
+            error: failureDetail,
+          });
+        }
+        mutated = true;
+        if (isUserInitiated) {
+          pushToast(
+            'error',
+            'Transaction not found',
+            failureDetail,
             { linkHref: explorerUrl(record.txid, cluster), linkLabel: 'Open Solscan' },
           );
         }
@@ -25539,6 +26169,15 @@ async function resolveSubmittedTransactionStatus(
   txid: string,
   toastContext?: TransactionToastContext,
 ): Promise<PreparedActionTxStatus> {
+  const result = await resolveSubmittedTransactionStatusResult(cluster, txid, toastContext);
+  return result.txStatus === 'confirmed' ? 'confirmed' : 'pending';
+}
+
+async function resolveSubmittedTransactionStatusResult(
+  cluster: Cluster,
+  txid: string,
+  toastContext?: TransactionToastContext,
+): Promise<SubmittedTransactionStatusResult> {
   const deadline = Date.now() + TX_CONFIRMATION_POLL_TIMEOUT_MS;
   let lastStatus: SubmittedTransactionStatusResult | undefined;
   while (true) {
@@ -25548,7 +26187,7 @@ async function resolveSubmittedTransactionStatus(
       throw new Error(`Transaction ${short(txid)} failed on-chain: ${status.error ?? status.confirmationStatus ?? 'failed'}`);
     }
     if (status.txStatus === 'confirmed') {
-      return 'confirmed';
+      return status;
     }
     if (Date.now() >= deadline) {
       if (toastContext) {
@@ -25562,7 +26201,7 @@ async function resolveSubmittedTransactionStatus(
           txid,
         );
       }
-      return 'pending';
+      return lastStatus;
     }
     await sleep(Math.min(TX_CONFIRMATION_POLL_INTERVAL_MS, Math.max(0, deadline - Date.now())));
   }
@@ -25577,6 +26216,7 @@ async function submittedTransactionStatus(
     if (status.txStatus === 'failed') {
       return {
         txStatus: 'failed',
+        found: status.found,
         confirmationStatus: status.confirmationStatus,
         error: status.error,
       };
@@ -25584,12 +26224,14 @@ async function submittedTransactionStatus(
     if (status.txStatus === 'confirmed') {
       return {
         txStatus: 'confirmed',
+        found: status.found,
         confirmationStatus: status.confirmationStatus,
         error: status.error,
       };
     }
     return {
       txStatus: 'pending',
+      found: status.found,
       confirmationStatus: status.confirmationStatus,
       error: status.error,
     };
@@ -25599,6 +26241,40 @@ async function submittedTransactionStatus(
       error: redactSecrets(err instanceof Error ? err.message : String(err)),
     };
   }
+}
+
+function staleNotFoundTransactionMessage(txid: string): string {
+  return `Transaction ${short(txid)} was not found on-chain after ${Math.round(TX_SIGNATURE_NOT_FOUND_STALE_MS / 1000)} seconds. It likely never broadcast after wallet simulation failed.`;
+}
+
+function transactionNotFoundIsStale(
+  action: PreparedAction,
+  ledger: PendingTransactionRecord | undefined,
+  nowMs: number = Date.now(),
+): boolean {
+  const referenceMs = transactionNotFoundReferenceMs(action, ledger);
+  return referenceMs !== undefined && nowMs - referenceMs >= TX_SIGNATURE_NOT_FOUND_STALE_MS;
+}
+
+function transactionNotFoundReferenceMs(
+  action: PreparedAction,
+  ledger: PendingTransactionRecord | undefined,
+): number | undefined {
+  const candidates = [
+    ledger?.submittedAt,
+    ledger?.signedAt,
+    ledger?.lastAttemptAt,
+    ledger?.updatedAt,
+    ledger?.createdAt,
+    action.updatedAt,
+    action.createdAt,
+  ];
+  for (const candidate of candidates) {
+    if (!candidate) continue;
+    const parsed = Date.parse(candidate);
+    if (Number.isFinite(parsed)) return parsed;
+  }
+  return undefined;
 }
 
 function completeBrowserExecutedAction(action: PreparedAction, execution: BrowserTransactionExecution): void {
@@ -25921,12 +26597,12 @@ async function browserSignatureStatus(cluster: Cluster, txid: string): Promise<B
       const status = (await browserActionConnection(cluster).getSignatureStatuses([txid], {
         searchTransactionHistory: true,
       })).value[0];
-      if (!status) return { txStatus: 'pending' };
-      if (status.err) return { txStatus: 'failed', confirmationStatus: status.confirmationStatus ?? undefined, error: stableJson(status.err) };
+      if (!status) return { txStatus: 'pending', found: false };
+      if (status.err) return { txStatus: 'failed', found: true, confirmationStatus: status.confirmationStatus ?? undefined, error: stableJson(status.err) };
       if (status.confirmationStatus === 'confirmed' || status.confirmationStatus === 'finalized') {
-        return { txStatus: 'confirmed', confirmationStatus: status.confirmationStatus };
+        return { txStatus: 'confirmed', found: true, confirmationStatus: status.confirmationStatus };
       }
-      return { txStatus: 'pending', confirmationStatus: status.confirmationStatus ?? undefined };
+      return { txStatus: 'pending', found: true, confirmationStatus: status.confirmationStatus ?? undefined };
     }
     throw transactionApiUnavailableError(err);
   }
@@ -28529,6 +29205,7 @@ async function refreshBridgeAiStatus(strict: boolean): Promise<void> {
       state.aiSettings.apiKey = '';
       clearCurrentSessionAiApiKey();
     }
+    confirmBridgeAiPlannerFromStatus();
   } catch (err) {
     state.aiStatus = null;
     if (strict) {
@@ -30644,6 +31321,14 @@ function inboxApprovalTokenSummary(action: PreparedAction): { value: string; tit
   if (action.kind === 'transfer_sol') {
     return tokenDisplaySummary('SOL', { copyLabel: 'Copy token' });
   }
+  const liquidityPair = isConnectorApprovalKind(action) ? connectorActionLiquidityPairLabel(action) : '';
+  if (liquidityPair) {
+    return {
+      value: liquidityPair,
+      title: liquidityPair,
+      copyActions: connectorActionLiquidityTokenCopyActions(action),
+    };
+  }
   const connectorRoute = connectorActionTokenRoute(action);
   if (connectorRoute) {
     return tokenRouteDisplaySummary(connectorRoute.inputToken, connectorRoute.outputToken);
@@ -30724,6 +31409,7 @@ function tokenRouteCopyActions(inputToken: string, outputToken: string): Summary
 function resolveTokenMintForCopy(value: string): string | undefined {
   const trimmed = value.trim();
   if (!trimmed) return undefined;
+  if (trimmed.toLowerCase() === 'native') return WSOL_MINT;
   if (looksLikeMintAddress(trimmed)) return trimmed;
   const known = KNOWN_BROWSER_TOKENS[trimmed.toUpperCase()];
   return known?.mint;
@@ -30731,8 +31417,11 @@ function resolveTokenMintForCopy(value: string): string | undefined {
 
 function tokenDisplayLabel(value: string): string {
   const trimmed = value.trim();
+  if (trimmed.toLowerCase() === 'native') return 'SOL';
   const known = KNOWN_BROWSER_TOKENS[trimmed.toUpperCase()];
   if (known) return known.symbol;
+  const knownMint = knownBrowserTokenByMint(trimmed);
+  if (knownMint) return knownMint.symbol;
   const metadata = tokenMarketMetadata.get(trimmed);
   if (metadata?.symbol) return metadata.symbol;
   if (!looksLikeMintAddress(trimmed)) return trimmed;
@@ -30743,8 +31432,11 @@ function tokenDisplayLabel(value: string): string {
 
 function tokenDisplayTitle(value: string): string {
   const trimmed = value.trim();
+  if (trimmed.toLowerCase() === 'native') return 'SOL native token';
   const known = KNOWN_BROWSER_TOKENS[trimmed.toUpperCase()];
   if (known) return `${known.symbol} mint ${known.mint}`;
+  const knownMint = knownBrowserTokenByMint(trimmed);
+  if (knownMint) return `${knownMint.symbol} mint ${knownMint.mint}`;
   return trimmed || 'n/a';
 }
 
@@ -30752,9 +31444,16 @@ function looksLikeMintAddress(value: string): boolean {
   return /^[1-9A-HJ-NP-Za-km-z]{32,44}$/.test(value);
 }
 
+function knownBrowserTokenByMint(mint: string): { symbol: string; mint: string; decimals: number } | undefined {
+  const normalized = mint.trim();
+  if (!normalized) return undefined;
+  return Object.values(KNOWN_BROWSER_TOKENS).find((token) => token.mint === normalized);
+}
+
 function marketMintForToken(value: string | undefined): string | undefined {
   const trimmed = value?.trim();
   if (!trimmed) return undefined;
+  if (trimmed.toLowerCase() === 'native') return WSOL_MINT;
   if (looksLikeMintAddress(trimmed)) return trimmed;
   const known = KNOWN_BROWSER_TOKENS[trimmed.toUpperCase()];
   if (known) return known.mint;
@@ -33985,9 +34684,59 @@ function connectorSemanticAmountInfo(action: PreparedAction): ConnectorActionAmo
       return meteoraAddLiquidityAmountInfo(action);
     case 'meteora_remove_liquidity':
       return meteoraRemoveLiquidityAmountInfo(action);
+    case 'orca_increase_liquidity':
+    case 'raydium_add_liquidity':
+      return connectorActionLiquidityAmountInfo(action);
     default:
       return undefined;
   }
+}
+
+function connectorActionLiquidityAmountInfo(action: PreparedAction): ConnectorActionAmountInfo | undefined {
+  return connectorLiquidityAmountInfo({
+    tokenAAmount: stringParam(action, 'tokenAAmount'),
+    tokenBAmount: stringParam(action, 'tokenBAmount'),
+    maxTokenAAmount: stringParam(action, 'maxTokenAAmount'),
+    maxTokenBAmount: stringParam(action, 'maxTokenBAmount'),
+    tokenA: connectorActionLiquidityTokenSymbol(action, 'tokenA'),
+    tokenB: connectorActionLiquidityTokenSymbol(action, 'tokenB'),
+    pairLabel: connectorActionLiquidityPairLabel(action),
+    quotedParts: connectorActionLiquidityQuotedParts(action),
+  });
+}
+
+function connectorLiquidityAmountInfo(input: {
+  tokenAAmount: string;
+  tokenBAmount: string;
+  maxTokenAAmount: string;
+  maxTokenBAmount: string;
+  tokenA: string;
+  tokenB: string;
+  pairLabel: string;
+  quotedParts?: string[];
+}): ConnectorActionAmountInfo | undefined {
+  const tokenA = connectorActionAmountTokenLabel(input.tokenA || 'token A');
+  const tokenB = connectorActionAmountTokenLabel(input.tokenB || 'token B');
+  const parts = [
+    input.tokenAAmount ? `${input.tokenAAmount} ${tokenA}` : '',
+    input.maxTokenBAmount && input.tokenAAmount ? `max ${input.maxTokenBAmount} ${tokenB}` : '',
+    input.tokenBAmount ? `${input.tokenBAmount} ${tokenB}` : '',
+    input.maxTokenAAmount && input.tokenBAmount ? `max ${input.maxTokenAAmount} ${tokenA}` : '',
+  ].filter(Boolean);
+  const quoted = parts.length ? parts : input.quotedParts ?? [];
+  if (!quoted.length) return undefined;
+  const baseAmount = input.tokenAAmount || input.tokenBAmount || input.maxTokenAAmount || input.maxTokenBAmount || quoted[0] || '';
+  const marketToken = input.tokenAAmount
+    ? input.tokenA
+    : input.tokenBAmount
+      ? input.tokenB
+      : undefined;
+  return {
+    amount: baseAmount,
+    label: quoted.join(' + '),
+    token: input.pairLabel || `${tokenA}/${tokenB}`,
+    ...(marketToken ? { marketToken } : {}),
+  };
 }
 
 function meteoraAddLiquidityAmountInfo(action: PreparedAction): ConnectorActionAmountInfo | undefined {
@@ -34043,8 +34792,13 @@ function connectorAmountFromKeys(
 
 function connectorActionAmountToken(action: PreparedAction): ConnectorActionAmountToken | undefined {
   const tokenKeys = [
+    'sourceTokenLabel',
+    'tokenSymbol',
+    'inputSymbol',
     'token',
+    'sourceToken',
     'inputToken',
+    'sourceMint',
     'assetMint',
     'mint',
     'mintAddress',
@@ -34069,6 +34823,79 @@ function connectorActionAmountToken(action: PreparedAction): ConnectorActionAmou
 function connectorActionAmountTokenLabel(token: string): string {
   const display = resolveTokenDisplay(token || undefined) || tokenDisplayLabel(token);
   return display.replace(/\s+(reserve|bank|pool|mint|asset)$/i, '').trim();
+}
+
+function connectorPlanLiquidityTokenSymbol(plan: AgentPlan, side: 'tokenA' | 'tokenB'): string {
+  const fieldId = plan.actionType === 'orca_increase_liquidity' ? 'whirlpoolAddress' : 'poolId';
+  const symbolKey = side === 'tokenA' ? 'tokenASymbol' : 'tokenBSymbol';
+  const mintKey = side === 'tokenA' ? 'tokenAMint' : 'tokenBMint';
+  const indexedMint = planParameter(plan, [`${fieldId}${capitalizeMetaKey(mintKey)}`]);
+  const symbol = planParameter(plan, [`${fieldId}${capitalizeMetaKey(symbolKey)}`]);
+  if (symbol) return symbol;
+  if (indexedMint) return tokenDisplayLabel(indexedMint);
+  const label = planParameter(plan, [`${fieldId}Label`]);
+  return liquidityPairSymbolFromLabel(label, side) || (side === 'tokenA' ? 'token A' : 'token B');
+}
+
+function connectorPlanLiquidityPairLabel(plan: AgentPlan): string {
+  const tokenA = connectorPlanLiquidityTokenSymbol(plan, 'tokenA');
+  const tokenB = connectorPlanLiquidityTokenSymbol(plan, 'tokenB');
+  return tokenA && tokenB ? `${connectorActionAmountTokenLabel(tokenA)}/${connectorActionAmountTokenLabel(tokenB)}` : '';
+}
+
+function connectorActionLiquidityTokenSymbol(action: PreparedAction, side: 'tokenA' | 'tokenB'): string {
+  const fieldId = action.kind === 'orca_increase_liquidity' ? 'whirlpoolAddress' : 'poolId';
+  const symbolKey = side === 'tokenA' ? 'tokenASymbol' : 'tokenBSymbol';
+  const mintKey = side === 'tokenA' ? 'tokenAMint' : 'tokenBMint';
+  const indexedMint = stringParam(action, `${fieldId}${capitalizeMetaKey(mintKey)}`) || connectorActionLiquidityTokenMint(action, side);
+  const symbol = stringParam(action, `${fieldId}${capitalizeMetaKey(symbolKey)}`);
+  if (symbol) return symbol;
+  if (indexedMint) return tokenDisplayLabel(indexedMint);
+  const label = stringParam(action, `${fieldId}Label`);
+  return liquidityPairSymbolFromLabel(label, side) || (side === 'tokenA' ? 'token A' : 'token B');
+}
+
+function connectorActionLiquidityTokenMint(action: PreparedAction, side: 'tokenA' | 'tokenB'): string {
+  const fieldId = action.kind === 'orca_increase_liquidity' ? 'whirlpoolAddress' : 'poolId';
+  const mintKey = side === 'tokenA' ? 'tokenAMint' : 'tokenBMint';
+  const explicit = stringParam(action, `${fieldId}${capitalizeMetaKey(mintKey)}`);
+  if (explicit) return explicit;
+  const mints = stringArrayParam(action, 'tokenMints');
+  return mints[side === 'tokenA' ? 0 : 1] ?? '';
+}
+
+function connectorActionLiquidityPairLabel(action: PreparedAction): string {
+  if (action.kind !== 'orca_increase_liquidity' && action.kind !== 'raydium_add_liquidity') return '';
+  const tokenA = connectorActionLiquidityTokenSymbol(action, 'tokenA');
+  const tokenB = connectorActionLiquidityTokenSymbol(action, 'tokenB');
+  return tokenA && tokenB ? `${connectorActionAmountTokenLabel(tokenA)}/${connectorActionAmountTokenLabel(tokenB)}` : '';
+}
+
+function connectorActionLiquidityTokenCopyActions(action: PreparedAction): SummaryCopyAction[] {
+  return [
+    { label: 'Copy token A', value: connectorActionLiquidityTokenMint(action, 'tokenA'), name: 'Token A mint' },
+    { label: 'Copy token B', value: connectorActionLiquidityTokenMint(action, 'tokenB'), name: 'Token B mint' },
+  ].filter((entry) => looksLikeMintAddress(entry.value));
+}
+
+function connectorActionLiquidityQuotedParts(action: PreparedAction): string[] {
+  const amounts = Array.isArray(action.params.tokenAmounts) ? action.params.tokenAmounts : [];
+  return amounts.map((entry) => {
+    if (!entry || typeof entry !== 'object') return '';
+    const record = entry as Record<string, unknown>;
+    const amount = typeof record.amount === 'string' ? record.amount : '';
+    const symbol = typeof record.symbol === 'string'
+      ? record.symbol
+      : typeof record.mint === 'string'
+        ? tokenDisplayLabel(record.mint)
+        : '';
+    return amount && symbol ? `${amount} ${connectorActionAmountTokenLabel(symbol)}` : '';
+  }).filter(Boolean);
+}
+
+function stringArrayParam(action: PreparedAction, key: string): string[] {
+  const value = action.params[key];
+  return Array.isArray(value) ? value.filter((entry): entry is string => typeof entry === 'string') : [];
 }
 
 function connectorActionTokenRoute(action: PreparedAction): ConnectorActionTokenRoute | undefined {
@@ -34152,6 +34979,8 @@ function swapOutputTokenLabel(action: PreparedAction): string {
 function tokenLabel(action: PreparedAction): string {
   if (action.kind === 'transfer_sol') return 'SOL';
   if (isMeteoraConnectorAction(action)) return meteoraPoolTokenLabel(action);
+  const liquidityPair = connectorActionLiquidityPairLabel(action);
+  if (liquidityPair) return liquidityPair;
   const connectorRoute = connectorActionTokenRoute(action);
   if (connectorRoute) {
     return `${tokenDisplayLabel(connectorRoute.inputToken)} to ${tokenDisplayLabel(connectorRoute.outputToken)}`;
@@ -36005,8 +36834,11 @@ function resolveTokenDisplay(token: string | undefined): string | undefined {
   if (!token) return undefined;
   const trimmed = token.trim();
   if (!trimmed) return undefined;
+  if (trimmed.toLowerCase() === 'native') return 'SOL';
   const known = KNOWN_BROWSER_TOKENS[trimmed.toUpperCase()];
   if (known) return known.symbol;
+  const knownMint = knownBrowserTokenByMint(trimmed);
+  if (knownMint) return knownMint.symbol;
   if (isSolanaPublicKeyText(trimmed)) {
     const metadata = tokenMarketMetadata.get(trimmed);
     if (metadata?.symbol) return metadata.symbol;
@@ -37531,7 +38363,7 @@ function parseAgentReviewFact(value: unknown): AgentReviewFact | undefined {
 
 function parseAgentReviewFactSet(value: unknown): AgentReviewFactSet | undefined {
   if (!isJsonObject(value)) return undefined;
-  const slots: Array<keyof AgentReviewFactSet> = ['research', 'quote', 'route', 'policy', 'simulation', 'protocol', 'protocolConnector', 'blinkAction', 'blinkClassification', 'tokenMint', 'recipient', 'limits', 'schedule', 'walletActivity', 'walletHoldings', 'marketSentiment', 'marketConditions'];
+  const slots: Array<keyof AgentReviewFactSet> = ['evidenceRoutes', 'research', 'quote', 'route', 'policy', 'simulation', 'protocol', 'protocolConnector', 'connectorRead', 'blinkAction', 'blinkClassification', 'tokenMint', 'recipient', 'limits', 'schedule', 'walletActivity', 'walletHoldings', 'marketSentiment', 'marketConditions'];
   const facts: AgentReviewFactSet = {};
   for (const slot of slots) {
     const fact = parseAgentReviewFact(value[slot]);

@@ -173,7 +173,9 @@ describe('connector sub-actions', () => {
       'positionMint',
       'amountSide',
       'tokenAAmount',
+      'maxTokenBAmount',
       'tokenBAmount',
+      'maxTokenAAmount',
       'memo',
     ]);
     expect(connectorFormRenderFields(raydium!, { subAction: 'clmm-increase' }).map((field) => field.id)).toEqual([
@@ -182,7 +184,9 @@ describe('connector sub-actions', () => {
       'positionMint',
       'amountSide',
       'tokenAAmount',
+      'maxTokenBAmount',
       'tokenBAmount',
+      'maxTokenAAmount',
       'memo',
     ]);
   });

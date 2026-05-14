@@ -1549,20 +1549,20 @@ async function bridgeSignatureStatus(
   config: AgentWalletConfig,
   cluster: string | undefined,
   signature: string | undefined,
-): Promise<{ txStatus: PreparedActionTxStatus; confirmationStatus?: string; error?: string }> {
+): Promise<{ txStatus: PreparedActionTxStatus; found?: boolean; confirmationStatus?: string; error?: string }> {
   assertBridgeCluster(config, cluster);
   const txid = requireString(signature, 'txid');
   const status = (await new Connection(config.rpcUrl, 'confirmed').getSignatureStatuses([txid], {
     searchTransactionHistory: true,
   })).value[0];
-  if (!status) return { txStatus: 'pending' };
+  if (!status) return { txStatus: 'pending', found: false };
   if (status.err) {
-    return { txStatus: 'failed', confirmationStatus: status.confirmationStatus ?? undefined, error: JSON.stringify(status.err) };
+    return { txStatus: 'failed', found: true, confirmationStatus: status.confirmationStatus ?? undefined, error: JSON.stringify(status.err) };
   }
   if (status.confirmationStatus === 'confirmed' || status.confirmationStatus === 'finalized') {
-    return { txStatus: 'confirmed', confirmationStatus: status.confirmationStatus };
+    return { txStatus: 'confirmed', found: true, confirmationStatus: status.confirmationStatus };
   }
-  return { txStatus: 'pending', confirmationStatus: status.confirmationStatus ?? undefined };
+  return { txStatus: 'pending', found: true, confirmationStatus: status.confirmationStatus ?? undefined };
 }
 
 function assertBridgeCluster(config: AgentWalletConfig, cluster: string | undefined): void {

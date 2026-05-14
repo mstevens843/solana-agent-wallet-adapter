@@ -19,6 +19,7 @@ import {
   type TensorNftDetail,
   type TensorWalletExposure,
 } from '../../adapters/tensor/client.js';
+import { buildTensorApiClient } from '../../adapters/tensor/apiClient.js';
 import { TENSOR_PROGRAM_IDS } from '../../adapters/tensor/constants.js';
 // Import from types.js directly so this test does not pay the cost (or load
 // failures) of every other adapter's module side-effects via the barrel.
@@ -573,6 +574,77 @@ describe('Tensor bid preparation', () => {
       quantity: 2,
       refreshAtExecution: true,
     });
+  });
+
+  it('accepts leading-dot bid decimals and stores canonical SOL strings', async () => {
+    const state = fakeState();
+    state.exposure = fakeExposure({ marginBalanceLamports: '0', marginBalanceSol: '0' });
+    setTensorClientFactory(() => fakeTensorClient(state));
+    const ctx = makeContext({ store: inMemoryStore() });
+
+    const result = await requireTensorAction('bid').prepare(
+      {
+        collectionId: COLLECTION,
+        bidPriceSol: '.01',
+        quantity: 1,
+        maxEscrowSol: '.02',
+      },
+      ctx,
+    );
+
+    expect(result.addInput.params).toMatchObject({
+      connectorId: 'tensor',
+      collectionId: COLLECTION,
+      bidPriceSol: '0.01',
+      bidPriceLamports: '10000000',
+      maxEscrowSol: '0.02',
+      maxEscrowLamports: '20000000',
+      currentEscrowLamports: '0',
+      quantity: 1,
+    });
+  });
+});
+
+describe('Tensor REST API client', () => {
+  it('builds collection bid transaction requests with canonical SOL values', async () => {
+    const requests: Array<{ url: string; apiKey?: string }> = [];
+    const client = buildTensorApiClient({
+      apiKey: 'test-key',
+      baseUrl: 'https://tensor.local/api/v1',
+      fetchImpl: async (input, init) => {
+        requests.push({
+          url: String(input),
+          apiKey: init?.headers?.['x-tensor-api-key'],
+        });
+        return {
+          ok: true,
+          status: 200,
+          text: async () => JSON.stringify({ txs: [{ tx: [1, 2, 3] }] }),
+        };
+      },
+    });
+    const connection = {
+      getLatestBlockhash: async () => ({ blockhash: 'test-blockhash' }),
+    } as unknown as Connection;
+
+    const built = await client.buildBidTx(connection, {
+      walletAddress: WALLET,
+      collectionId: COLLECTION,
+      bidPriceLamports: '10000000',
+      quantity: 1,
+      maxEscrowLamports: '10000000',
+      compressed: false,
+    });
+
+    expect(built.transactionBase64).toBe(Buffer.from([1, 2, 3]).toString('base64'));
+    expect(requests[0]?.apiKey).toBe('test-key');
+    const url = new URL(requests[0]!.url);
+    expect(url.pathname).toBe('/api/v1/tx/collection_bid');
+    expect(url.searchParams.get('owner')).toBe(WALLET);
+    expect(url.searchParams.get('collId')).toBe(COLLECTION);
+    expect(url.searchParams.get('price')).toBe('0.01');
+    expect(url.searchParams.get('topUp')).toBe('0.01');
+    expect(url.searchParams.get('useSharedEscrow')).toBe('true');
   });
 });
 

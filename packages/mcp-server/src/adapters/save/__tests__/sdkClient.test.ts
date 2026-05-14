@@ -25,6 +25,11 @@ describe('buildSaveSdkClient — Solend SDK wiring', () => {
     expect(typeof sdk.SOLEND_PRODUCTION_PROGRAM_ID.toBase58()).toBe('string');
   });
 
+  it('imports the Pyth price-service dependency required by Solend actions', async () => {
+    const pyth = await import('@pythnetwork/price-service-client');
+    expect(typeof pyth.PriceServiceConnection).toBe('function');
+  });
+
   it('flips isSaveConfigured() once setSaveClientFactory wires the SDK client', () => {
     try {
       resetSaveClientFactory();

@@ -338,9 +338,11 @@ class OrcaSdkClient implements OrcaClient {
   }
 
   async previewIncreaseLiquidity(connection: Connection, input: OrcaIncreaseLiquidityInput): Promise<OrcaLiquidityPreview> {
-    const sdk = await this.load();
-    const { quote, snapshot, positionMint, tickRange } = await this.increaseLiquidityInstructions(connection, input);
-    return increasePreview(sdk, snapshot, input, quote, positionMint, tickRange);
+    return withOrcaErrors('preview increase liquidity', async () => {
+      const sdk = await this.load();
+      const { quote, snapshot, positionMint, tickRange } = await this.increaseLiquidityInstructions(connection, input);
+      return increasePreview(sdk, snapshot, input, quote, positionMint, tickRange);
+    });
   }
 
   async previewDecreaseLiquidity(connection: Connection, input: OrcaDecreaseLiquidityInput): Promise<OrcaLiquidityPreview> {
@@ -365,12 +367,14 @@ class OrcaSdkClient implements OrcaClient {
     connection: Connection,
     input: OrcaIncreaseLiquidityInput,
   ): Promise<OrcaBuildTransactionResult> {
-    const sdk = await this.load();
-    const { instructions, quote, snapshot, positionMint, tickRange } = await this.increaseLiquidityInstructions(connection, input);
-    return {
-      transactionBase64: await buildTransactionBase64(sdk, connection, input.walletAddress, instructions),
-      preview: increasePreview(sdk, snapshot, input, quote, positionMint, tickRange),
-    };
+    return withOrcaErrors('build increase-liquidity transaction', async () => {
+      const sdk = await this.load();
+      const { instructions, quote, snapshot, positionMint, tickRange } = await this.increaseLiquidityInstructions(connection, input);
+      return {
+        transactionBase64: await buildTransactionBase64(sdk, connection, input.walletAddress, instructions),
+        preview: increasePreview(sdk, snapshot, input, quote, positionMint, tickRange),
+      };
+    });
   }
 
   async buildDecreaseLiquidityTransaction(
@@ -442,6 +446,7 @@ class OrcaSdkClient implements OrcaClient {
         input.slippageBps,
         authority,
       ) as AnyRecord;
+      assertIncreaseMaxCaps(input, snapshot, built.quote);
       return {
         instructions: asInstructionArray(built.instructions),
         quote: built.quote,
@@ -465,6 +470,7 @@ class OrcaSdkClient implements OrcaClient {
       input.slippageBps,
       authority,
     ) as AnyRecord;
+    assertIncreaseMaxCaps(input, snapshot, built.quote);
     return {
       instructions: asInstructionArray(built.instructions),
       quote: built.quote,
@@ -701,6 +707,27 @@ function errorMessage(error: unknown): string {
   return String(error);
 }
 
+async function withOrcaErrors<T>(operation: string, fn: () => Promise<T>): Promise<T> {
+  try {
+    return await fn();
+  } catch (err) {
+    throw friendlyOrcaError(err, operation);
+  }
+}
+
+function friendlyOrcaError(error: unknown, operation: string): Error {
+  if (error instanceof AdapterError) return error;
+  const message = errorMessage(error);
+  if (message.includes('#5508000')) {
+    return new AdapterError(
+      ORCA_ADAPTER_ID,
+      'quote_failed',
+      `Orca ${operation} failed while quoting liquidity. Check the amount, price range, and paired token max, then refresh the pool and try again. Solana error #5508000.`,
+    );
+  }
+  return error instanceof Error ? error : new Error(message);
+}
+
 async function buildTransactionBase64(
   sdk: LoadedOrcaSdk,
   connection: Connection,
@@ -867,6 +894,50 @@ function liquidityIncreaseParam(
     return { tokenB: parseUiAmount(input.maxTokenBAmount, requireDecimals(snapshot.tokenDecimalsB, snapshot.tokenMintB)) };
   }
   throw new AdapterError(ORCA_ADAPTER_ID, 'missing_amount', 'Provide one token amount for Orca increase liquidity.');
+}
+
+function assertIncreaseMaxCaps(
+  input: OrcaIncreaseLiquidityInput,
+  snapshot: OrcaWhirlpoolSnapshot,
+  quote: unknown,
+): void {
+  if (input.tokenAAmount !== undefined && input.maxTokenBAmount !== undefined) {
+    assertQuotedTokenWithinMax(
+      quoteField(quote, ['tokenMaxB', 'tokenB']),
+      input.maxTokenBAmount,
+      requireDecimals(snapshot.tokenDecimalsB, snapshot.tokenMintB),
+      'token B',
+    );
+  }
+  if (input.tokenBAmount !== undefined && input.maxTokenAAmount !== undefined) {
+    assertQuotedTokenWithinMax(
+      quoteField(quote, ['tokenMaxA', 'tokenA']),
+      input.maxTokenAAmount,
+      requireDecimals(snapshot.tokenDecimalsA, snapshot.tokenMintA),
+      'token A',
+    );
+  }
+}
+
+function assertQuotedTokenWithinMax(
+  quotedRawValue: unknown,
+  maxUiAmount: string,
+  decimals: number,
+  label: string,
+): void {
+  const quotedRaw = optionalBigintString(quotedRawValue);
+  if (quotedRaw === undefined) {
+    throw new AdapterError(ORCA_ADAPTER_ID, 'invalid_response', `Orca quote did not include ${label} max spend.`);
+  }
+  const maxRaw = parseUiAmount(maxUiAmount, decimals);
+  const quoted = BigInt(quotedRaw);
+  if (quoted > maxRaw) {
+    throw new AdapterError(
+      ORCA_ADAPTER_ID,
+      'amount_exceeds_max',
+      `Orca quote needs up to ${formatRawAmount(quotedRaw, decimals)} ${label}, above the ${maxUiAmount} ${label} max.`,
+    );
+  }
 }
 
 function decreaseLiquidityParam(input: OrcaDecreaseLiquidityInput, position: OrcaPosition): { liquidity: bigint } {

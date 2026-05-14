@@ -1,5 +1,12 @@
 import { createRequire } from 'node:module';
 
+import {
+  Connection,
+  PublicKey,
+  Transaction,
+  type TransactionInstruction,
+} from '@solana/web3.js';
+
 import { AdapterError } from '../types.js';
 import type { AgentWalletConfig } from '../../config.js';
 
@@ -280,6 +287,83 @@ const REST_UNAVAILABLE_REASON =
 
 const require = createRequire(import.meta.url);
 
+type BnCtor = new (value: string | number | bigint) => unknown;
+
+interface JupiterLendEarnSdkBundle {
+  getLendingTokens(input: {
+    connection: Connection;
+  }): Promise<PublicKey[]>;
+  getLendingTokenDetails(input: {
+    lendingToken: PublicKey;
+    connection: Connection;
+  }): Promise<{
+    address: PublicKey;
+    asset: PublicKey;
+    decimals: number;
+    totalAssets?: unknown;
+    totalSupply?: unknown;
+    convertToShares?: unknown;
+    convertToAssets?: unknown;
+  }>;
+  getDepositIxs(input: {
+    amount: unknown;
+    asset: PublicKey;
+    signer: PublicKey;
+    connection: Connection;
+  }): Promise<{ ixs: TransactionInstruction[] }>;
+  getWithdrawIxs(input: {
+    amount: unknown;
+    asset: PublicKey;
+    signer: PublicKey;
+    connection: Connection;
+  }): Promise<{ ixs: TransactionInstruction[] }>;
+  getMintIxs(input: {
+    shares: unknown;
+    asset: PublicKey;
+    signer: PublicKey;
+    connection: Connection;
+  }): Promise<{ ixs: TransactionInstruction[] }>;
+  getRedeemIxs(input: {
+    shares: unknown;
+    asset: PublicKey;
+    signer: PublicKey;
+    connection: Connection;
+  }): Promise<{ ixs: TransactionInstruction[] }>;
+  BN: BnCtor;
+}
+
+let cachedEarnSdk: JupiterLendEarnSdkBundle | undefined;
+
+export async function loadJupiterLendEarnSdkForSmokeTest(): Promise<JupiterLendEarnSdkBundle> {
+  if (cachedEarnSdk) return cachedEarnSdk;
+  const earn = await import('@jup-ag/lend/earn') as Partial<JupiterLendEarnSdkBundle>;
+  const BN = loadJupiterLendBnCtor();
+  if (
+    typeof earn.getLendingTokens !== 'function' ||
+    typeof earn.getLendingTokenDetails !== 'function' ||
+    typeof earn.getDepositIxs !== 'function' ||
+    typeof earn.getWithdrawIxs !== 'function' ||
+    typeof earn.getMintIxs !== 'function' ||
+    typeof earn.getRedeemIxs !== 'function'
+  ) {
+    throw new AdapterError(
+      JUPITER_ADAPTER_ID,
+      'sdk_unavailable',
+      '@jup-ag/lend/earn did not expose the Earn instruction builders.',
+    );
+  }
+  cachedEarnSdk = {
+    getLendingTokens: earn.getLendingTokens,
+    getLendingTokenDetails: earn.getLendingTokenDetails,
+    getDepositIxs: earn.getDepositIxs,
+    getWithdrawIxs: earn.getWithdrawIxs,
+    getMintIxs: earn.getMintIxs,
+    getRedeemIxs: earn.getRedeemIxs,
+    BN,
+  };
+  return cachedEarnSdk;
+}
+
 export function describeJupiterLendSdkUnavailableReason(): string | undefined {
   try {
     require.resolve('@jup-ag/lend-read');
@@ -296,6 +380,16 @@ export function describeJupiterLendReadUnavailableReason(): string | undefined {
     return undefined;
   } catch {
     return SDK_UNAVAILABLE_REASON;
+  }
+}
+
+function areJupiterLendEarnSdkDependenciesResolvable(): boolean {
+  try {
+    require.resolve('@jup-ag/lend/earn');
+    loadJupiterLendBnCtor();
+    return true;
+  } catch {
+    return false;
   }
 }
 
@@ -435,8 +529,108 @@ class JupiterLendRestClient extends JupiterLendUnavailable {
   }
 }
 
+class JupiterLendSdkClient extends JupiterLendRestClient {
+  private readonly connection: Connection;
+
+  constructor(config: AgentWalletConfig) {
+    super(config);
+    this.connection = new Connection(config.rpcUrl, 'confirmed');
+  }
+
+  override async getEarnTokens(input: Parameters<JupiterLendClient['getEarnTokens']>[0]): Promise<JupiterLendEarnTokenSnapshot[]> {
+    const tokens = await this.loadEarnTokenSnapshots();
+    if (!input.assetMint) return tokens;
+    const requested = new PublicKey(input.assetMint);
+    return tokens.filter((token) => new PublicKey(token.assetMint).equals(requested));
+  }
+
+  override async getEarnTokenDetail(input: Parameters<JupiterLendClient['getEarnTokenDetail']>[0]): Promise<JupiterLendEarnTokenSnapshot> {
+    const requested = new PublicKey(input.assetMint);
+    const token = (await this.loadEarnTokenSnapshots()).find((entry) =>
+      new PublicKey(entry.assetMint).equals(requested)
+    );
+    if (!token) {
+      throw new AdapterError(
+        JUPITER_ADAPTER_ID,
+        'unknown_asset',
+        `Jupiter Lend Earn token "${input.assetMint}" was not found.`,
+      );
+    }
+    return token;
+  }
+
+  override async buildEarnDeposit(input: JupiterLendEarnDepositArgs): Promise<JupiterLendBuildResult> {
+    return this.buildEarnSdkTransaction('deposit', input, input.amountRaw);
+  }
+
+  override async buildEarnWithdraw(input: JupiterLendEarnWithdrawArgs): Promise<JupiterLendBuildResult> {
+    return this.buildEarnSdkTransaction('withdraw', input, input.amountRaw);
+  }
+
+  override async buildEarnMint(input: JupiterLendEarnMintArgs): Promise<JupiterLendBuildResult> {
+    return this.buildEarnSdkTransaction('mint', input, input.sharesRaw);
+  }
+
+  override async buildEarnRedeem(input: JupiterLendEarnRedeemArgs): Promise<JupiterLendBuildResult> {
+    return this.buildEarnSdkTransaction('redeem', input, input.sharesRaw);
+  }
+
+  private async buildEarnSdkTransaction(
+    operation: 'deposit' | 'withdraw' | 'mint' | 'redeem',
+    input: JupiterLendEarnDepositArgs | JupiterLendEarnWithdrawArgs | JupiterLendEarnMintArgs | JupiterLendEarnRedeemArgs,
+    rawAmount: string,
+  ): Promise<JupiterLendBuildResult> {
+    const sdk = await loadJupiterLendEarnSdkForSmokeTest();
+    const asset = new PublicKey(input.assetMint);
+    const signer = new PublicKey(input.walletAddress);
+    const amount = new sdk.BN(rawAmount);
+    const result = operation === 'deposit'
+      ? await sdk.getDepositIxs({ amount, asset, signer, connection: this.connection })
+      : operation === 'withdraw'
+        ? await sdk.getWithdrawIxs({ amount, asset, signer, connection: this.connection })
+        : operation === 'mint'
+          ? await sdk.getMintIxs({ shares: amount, asset, signer, connection: this.connection })
+          : await sdk.getRedeemIxs({ shares: amount, asset, signer, connection: this.connection });
+    const transactionBase64 = await serializeEarnInstructions(this.connection, signer, result.ixs);
+    return {
+      transactionBase64,
+      refreshAtExecution: true,
+      notes: ['Built locally with @jup-ag/lend/earn SDK; refresh before wallet signing to avoid stale blockhashes.'],
+    };
+  }
+
+  private async loadEarnTokenSnapshots(): Promise<JupiterLendEarnTokenSnapshot[]> {
+    const sdk = await loadJupiterLendEarnSdkForSmokeTest();
+    const lendingTokens = await sdk.getLendingTokens({ connection: this.connection });
+    const asOf = new Date().toISOString();
+    const snapshots = await Promise.all(lendingTokens.map(async (lendingToken) => {
+      const detail = await sdk.getLendingTokenDetails({
+        lendingToken,
+        connection: this.connection,
+      });
+      const assetMint = detail.asset.toBase58();
+      return {
+        assetMint,
+        shareMint: detail.address.toBase58(),
+        ...jupiterEarnSymbol(assetMint),
+        decimals: detail.decimals,
+        shareDecimals: detail.decimals,
+        ...optionalToString(detail.totalAssets, 'totalSupplyUnderlying'),
+        ...optionalToString(detail.totalSupply, 'totalSupplyShares'),
+        ...optionalToString(detail.convertToAssets, 'exchangePrice'),
+        active: true,
+        asOf,
+      };
+    }));
+    return snapshots.sort((left, right) =>
+      (jupiterEarnSymbolRank(left.tokenSymbol) - jupiterEarnSymbolRank(right.tokenSymbol)) ||
+      left.assetMint.localeCompare(right.assetMint)
+    );
+  }
+}
+
 let factory: JupiterLendClientFactory = (_walletAddress, config) =>
-  config ? new JupiterLendRestClient(config) : new JupiterLendUnavailable();
+  config ? buildDefaultJupiterLendClient(config) : new JupiterLendUnavailable();
 
 export function setJupiterLendClientFactory(next: JupiterLendClientFactory): void {
   factory = next;
@@ -444,7 +638,7 @@ export function setJupiterLendClientFactory(next: JupiterLendClientFactory): voi
 
 export function resetJupiterLendClientFactory(): void {
   factory = (_walletAddress, config) =>
-    config ? new JupiterLendRestClient(config) : new JupiterLendUnavailable();
+    config ? buildDefaultJupiterLendClient(config) : new JupiterLendUnavailable();
 }
 
 export async function getJupiterLendClient(
@@ -470,4 +664,73 @@ function readTransactionBase64(body: Record<string, unknown>, operation: string)
     'wallet_unreachable',
     `Jupiter Lend Earn ${operation} response did not include transaction.`,
   );
+}
+
+function buildDefaultJupiterLendClient(config: AgentWalletConfig): JupiterLendClient {
+  if (config.connectors?.jupiter?.useSdk === false) return new JupiterLendRestClient(config);
+  return areJupiterLendEarnSdkDependenciesResolvable()
+    ? new JupiterLendSdkClient(config)
+    : new JupiterLendRestClient(config);
+}
+
+async function serializeEarnInstructions(
+  connection: Connection,
+  feePayer: PublicKey,
+  ixs: TransactionInstruction[],
+): Promise<string> {
+  if (ixs.length === 0) {
+    throw new AdapterError(JUPITER_ADAPTER_ID, 'invalid_transaction', 'Jupiter Lend SDK returned no instructions.');
+  }
+  const latest = await connection.getLatestBlockhash('confirmed');
+  const tx = new Transaction({
+    feePayer,
+    recentBlockhash: latest.blockhash,
+  });
+  tx.add(...ixs);
+  return tx.serialize({
+    requireAllSignatures: false,
+    verifySignatures: false,
+  }).toString('base64');
+}
+
+function loadJupiterLendBnCtor(): BnCtor {
+  try {
+    const lendRequire = createRequire(require.resolve('@jup-ag/lend'));
+    const bn = lendRequire('bn.js') as { default?: BnCtor; BN?: BnCtor } | BnCtor;
+    if (typeof bn === 'function') return bn;
+    if (typeof bn.default === 'function') return bn.default;
+    if (typeof bn.BN === 'function') return bn.BN;
+  } catch {
+    // Fall through to the uniform SDK-unavailable error below.
+  }
+  throw new AdapterError(
+    JUPITER_ADAPTER_ID,
+    'sdk_unavailable',
+    'Unable to load bn.js from @jup-ag/lend for Jupiter Lend Earn transaction building.',
+  );
+}
+
+function optionalToString<K extends string>(value: unknown, key: K): Partial<Record<K, string>> {
+  return value !== undefined && value !== null ? { [key]: String(value) } as Partial<Record<K, string>> : {};
+}
+
+function jupiterEarnSymbol(assetMint: string): { tokenSymbol?: string } {
+  switch (assetMint) {
+    case 'So11111111111111111111111111111111111111112':
+      return { tokenSymbol: 'SOL' };
+    case 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v':
+      return { tokenSymbol: 'USDC' };
+    case 'Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB':
+      return { tokenSymbol: 'USDT' };
+    default:
+      return {};
+  }
+}
+
+function jupiterEarnSymbolRank(symbol: string | undefined): number {
+  const normalized = symbol?.trim().toUpperCase();
+  if (normalized === 'SOL') return 0;
+  if (normalized === 'USDC') return 1;
+  if (normalized === 'USDT') return 2;
+  return 3;
 }

@@ -10,6 +10,10 @@ export const TENSOR_DESCRIPTION =
 
 export const TENSOR_SUPPORTED_CLUSTERS: Cluster[] = ['mainnet-beta'];
 
+export const TENSOR_API_KEY_ENV = 'TENSOR_API_KEY';
+export const TENSOR_API_BASE_URL_ENV = 'TENSOR_API_BASE_URL';
+export const TENSOR_DEFAULT_API_BASE_URL = 'https://api.mainnet.tensordev.io/api/v1';
+
 export const TENSOR_MARKETPLACE_PROGRAM_ID = new PublicKey('TCMPhJdwDryooaGtiocG1u3xcYbRpiJzb283XfCZsDp');
 export const TENSOR_AMM_PROGRAM_ID = new PublicKey('TAMM6ub33ij1mbetoMyVBLeKY5iP41i4UPUJQGkhfsg');
 export const TENSOR_ESCROW_PROGRAM_ID = new PublicKey('TSWAPaqyCSx2KABk68Shruf4rp7CxcNi8hAsbdwmHbN');

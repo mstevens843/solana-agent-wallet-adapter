@@ -494,6 +494,7 @@ export {
   getJupiterLendClient,
   isJupiterLendBorrowOperation,
   jupiterLendRestUnavailableReason,
+  loadJupiterLendEarnSdkForSmokeTest,
   resetJupiterLendClientFactory,
   setJupiterLendClientFactory,
   type JupiterLendBorrowBorrowArgs,

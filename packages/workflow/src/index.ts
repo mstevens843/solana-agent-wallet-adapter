@@ -23,6 +23,7 @@ export type { CadenceFields, ExhaustionReason, LifetimeSpend, OccurrenceInfo } f
 export { formatOccurrenceStatus, formatScheduleStatus } from './labels.js';
 export type { ApprovalSummaryHint, LabelTone, StatusLabel } from './labels.js';
 export * from './agentPlans.js';
+export * from './agentFactRouter.js';
 export {
   appendReviewFinding,
   evidenceTextFields,

@@ -524,6 +524,17 @@ describe('MarginFi real client hardening', () => {
     });
   });
 
+  it('treats symbolic fallback bankAddress values as token selectors', async () => {
+    const sdk = installFakeMarginfiSdk();
+    const client = await getMarginfiClient(WALLET);
+
+    const snapshot = await client.getBankSnapshot(sdk.connection, { bankAddress: 'USDC bank' });
+
+    expect(snapshot.bankAddress).toBe(USDC_BANK);
+    expect(sdk.sdkClient.getBankByPk).not.toHaveBeenCalled();
+    expect(sdk.sdkClient.getBankByTokenSymbol).toHaveBeenCalledWith('USDC');
+  });
+
   it('validates decimal amounts before building SDK instructions', async () => {
     const sdk = installFakeMarginfiSdk();
     const client = await getMarginfiClient(WALLET);
@@ -537,6 +548,41 @@ describe('MarginFi real client hardening', () => {
       }),
     ).rejects.toThrow(/positive decimal string/);
     expect(sdk.account.makeBorrowIx).not.toHaveBeenCalled();
+  });
+
+  it('surfaces MarginFi SDK instruction build failures with phase context', async () => {
+    const sdk = installFakeMarginfiSdk();
+    sdk.account.makeDepositIx.mockRejectedValueOnce(new TypeError("Cannot read properties of null (reading 'property')"));
+    const client = await getMarginfiClient(WALLET);
+
+    await expect(
+      client.buildActionTransaction(sdk.connection, {
+        operation: 'deposit',
+        walletAddress: WALLET,
+        token: 'USDC',
+        amount: '1',
+      }),
+    ).rejects.toMatchObject({
+      name: 'AdapterError',
+      code: 'sdk_build_error',
+      message: expect.stringContaining('building deposit instructions for USDC bank'),
+    });
+  });
+
+  it('does not block deposit previews when health simulation fails after instruction build', async () => {
+    const sdk = installFakeMarginfiSdk();
+    sdk.account.simulateBorrowLendTransaction.mockRejectedValueOnce(new TypeError("Cannot read properties of null (reading 'property')"));
+    const client = await getMarginfiClient(WALLET);
+
+    const preview = await client.previewHealth(sdk.connection, {
+      operation: 'deposit',
+      walletAddress: WALLET,
+      token: 'USDC',
+      amount: '1',
+    });
+
+    expect(preview.blocked).toBe(false);
+    expect(preview.warnings[0]).toContain('Health simulation failed: Cannot read properties of null');
   });
 
   it("resolves real-client withdraw amount 'all' from the current position", async () => {

@@ -320,7 +320,27 @@ describe('Raydium adapter shape', () => {
 });
 
 describe('Raydium liquidity preparation', () => {
-  it('blocks new CLMM positions without a range', async () => {
+  it('resolves CLMM range presets from the current pool price', async () => {
+    const state = fakeState();
+    setRaydiumClientFactory(() => fakeRaydiumClient(state));
+    const ctx = makeContext({ store: inMemoryStore() });
+
+    const result = await requireRaydiumAction('add_liquidity').prepare({
+      poolId: POOL,
+      poolType: 'clmm',
+      tokenAAmount: '0.01',
+      maxTokenBAmount: '1',
+      rangePreset: 'balanced',
+    }, ctx);
+
+    expect(result.addInput.params).toMatchObject({
+      lowerPrice: '135',
+      upperPrice: '165',
+      rangePreset: 'balanced',
+    });
+  });
+
+  it('blocks custom new CLMM positions without a range', async () => {
     const state = fakeState();
     setRaydiumClientFactory(() => fakeRaydiumClient(state));
     const ctx = makeContext({ store: inMemoryStore() });
@@ -330,6 +350,7 @@ describe('Raydium liquidity preparation', () => {
       poolType: 'clmm',
       tokenAAmount: '0.01',
       maxTokenBAmount: '1',
+      rangePreset: 'custom',
     }, ctx)).rejects.toBeInstanceOf(AdapterError);
   });
 

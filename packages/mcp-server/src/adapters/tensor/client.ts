@@ -252,7 +252,7 @@ export interface TensorClient {
 }
 
 const UNAVAILABLE_REASON =
-  '@tensor-oss/tensorswap-sdk and @tensor-oss/tcomp-sdk are not wired. Install both packages, then call setTensorClientFactory(buildTensorClient) at boot with TENSOR_API_KEY, or inject a mock for tests.';
+  'Tensor transaction client is not wired. Set TENSOR_API_KEY before starting the local bridge so it can use Tensor REST transaction endpoints, or inject a mock with setTensorClientFactory for tests.';
 
 export class TensorSdkUnavailable implements TensorClient {
   readonly reason = UNAVAILABLE_REASON;

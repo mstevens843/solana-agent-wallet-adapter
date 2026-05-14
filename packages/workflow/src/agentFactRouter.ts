@@ -1,0 +1,566 @@
+export type AgentFactNeed =
+  | 'wallet_identity'
+  | 'wallet_transfers'
+  | 'wallet_holdings'
+  | 'token_metadata'
+  | 'token_security'
+  | 'token_market'
+  | 'swap_quote'
+  | 'swap_route'
+  | 'protocol_position'
+  | 'global_market'
+  | 'external_research';
+
+export type AgentFactProvider =
+  | 'wallet'
+  | 'helius'
+  | 'birdeye'
+  | 'coingecko'
+  | 'jupiter'
+  | 'dexscreener'
+  | 'alternative_me'
+  | 'protocol_connector'
+  | 'external_research';
+
+export type AgentFactRouteStatus = 'required' | 'optional';
+
+export type AgentConnectorProfileKind =
+  | 'lending_borrow'
+  | 'liquidity_pool'
+  | 'staking_lst'
+  | 'nft_marketplace'
+  | 'governance'
+  | 'bridge'
+  | 'oracle'
+  | 'jupiter';
+
+export type AgentConnectorReadCapability =
+  | 'positions'
+  | 'rewards'
+  | 'markets'
+  | 'blinks'
+  | 'swap'
+  | 'tokens'
+  | 'price'
+  | 'earn'
+  | 'borrow'
+  | 'withdraw'
+  | 'repay'
+  | 'add_liquidity'
+  | 'close'
+  | 'marketplace'
+  | 'oracle'
+  | 'governance'
+  | 'treasury'
+  | 'bridge'
+  | 'strategies'
+  | 'prediction'
+  | 'perps'
+  | 'trigger'
+  | 'recurring';
+
+export type AgentFactRouteParam = string | number | boolean;
+
+export interface AgentFactRoute {
+  id: string;
+  need: AgentFactNeed;
+  provider: AgentFactProvider;
+  endpoint: string;
+  status: AgentFactRouteStatus;
+  reason: string;
+  cacheKey?: string;
+  params?: Record<string, AgentFactRouteParam>;
+}
+
+export interface AgentFactSkippedNeed {
+  need: AgentFactNeed;
+  reason: string;
+}
+
+export interface AgentFactRoutePlan {
+  routes: AgentFactRoute[];
+  skipped: AgentFactSkippedNeed[];
+  routeText: string;
+}
+
+export interface PlanAgentReviewFactRoutesInput {
+  actionType?: string;
+  intent?: string;
+  route?: string;
+  risk?: string;
+  approval?: string;
+  userNotes?: string;
+  instruction?: string;
+  question?: string;
+  prompt?: string;
+  parameters?: Record<string, string>;
+  hasWallet?: boolean;
+  hasTokenMints?: boolean;
+  hasProtocolConnector?: boolean;
+  connector?: AgentReviewConnectorContext;
+}
+
+export interface AgentReviewConnectorContext {
+  id?: string;
+  name?: string;
+  enabled?: boolean;
+  readReady?: boolean;
+  readSource?: string;
+  actionSource?: string;
+  capabilities?: string[];
+  actionKind?: string;
+  operation?: string;
+}
+
+const TRANSFER_ACTION_TYPES = new Set(['transfer_sol', 'transfer_spl', 'recurring_payment']);
+const WALLET_BALANCE_ACTION_TYPES = new Set([
+  'swap',
+  'transfer_sol',
+  'transfer_spl',
+  'recurring_payment',
+  'blink_action',
+  'custom_transaction',
+]);
+const PROTOCOL_ACTION_TYPES = new Set([
+  'blink_action',
+  'custom_transaction',
+  'read_only',
+  'custom',
+]);
+const LENDING_BORROW_CONNECTORS = new Set(['kamino', 'marginfi', 'project0', 'save', 'drift', 'lulo']);
+const LIQUIDITY_CONNECTORS = new Set(['raydium', 'orca', 'meteora']);
+const STAKING_CONNECTORS = new Set(['jito', 'marinade', 'sanctum']);
+const NFT_CONNECTORS = new Set(['tensor', 'magiceden']);
+const GOVERNANCE_CONNECTORS = new Set(['realms', 'squads']);
+const BRIDGE_CONNECTORS = new Set(['wormhole', 'mayan']);
+
+const TRANSFER_CONTEXT_RE = /\b(transfer|transfers|sent|send|sending|received|receive|paid|payment|payout|counterparty|recipient\s+history|wallet\s+activity|transaction\s+history|recent\s+activity|duplicate|already\s+paid|same\s+recipient)\b/i;
+const HOLDINGS_REQUIRED_RE = /\b(balance|balances|holding|holdings|portfolio|position|positions|exposure|own|owns|do i have|can afford|enough funds|wallet tokens|available funds|insufficient|afford)\b/i;
+const HOLDINGS_OPTIONAL_RE = /\b(swap|transfer|deposit|withdraw|borrow|repay|stake|unstake|liquidity|vault|lend|collateral|dca|recurring|position)\b/i;
+const TOKEN_IDENTITY_RE = /\b(token|tokens|mint|mints|symbol|metadata|name|address|verify|verified)\b/i;
+const TOKEN_SECURITY_RE = /\b(unknown token|new token|safety|safe|risk|risky|scam|honeypot|rug|mint authority|minting authority|freeze authority|mintable|owner authority|creation|created|age|true token|security|verify token|verified token)\b/i;
+const TOKEN_MARKET_RE = /\b(price|cost|usd|market cap|mcap|fdv|liquidity|volume|24h|change|volatility|spread|pool|pair|under|over|above|below|threshold|\$)\b/i;
+const TOKEN_MARKET_DEPTH_RE = /\b(market cap|mcap|fdv|volume|24h|change|coingecko|pool count|onchain price|history|historical)\b/i;
+const SWAP_RE = /\b(swap|quote|route|slippage|minimum received|min received|output amount|price impact|jupiter|dex|aggregator|input token|output token)\b/i;
+const PROTOCOL_RE = /\b(protocol|dapp|connector|position|positions|rewards|claim|health|collateral|vault|pool|lp|lend|borrow|repay|deposit|withdraw|stake|unstake|oracle|pyth|margin|liquidation)\b/i;
+const GLOBAL_MARKET_RE = /\b(fear\s*(?:&|and)\s*greed|sentiment|btc dominance|bitcoin dominance|eth dominance|total market cap|global market|market conditions|crypto market|risk on|risk off|macro|dominance)\b/i;
+const EXTERNAL_RESEARCH_RE = /\b(latest|current|today|news|headline|status page|outage|incident|docs?|documentation|release notes|announcement|recent exploit|exploit|hack|governance vote|proposal)\b/i;
+
+export function planAgentReviewFactRoutes(input: PlanAgentReviewFactRoutesInput): AgentFactRoutePlan {
+  const routes: AgentFactRoute[] = [];
+  const skipped: AgentFactSkippedNeed[] = [];
+  const seen = new Set<string>();
+  const actionType = normalize(input.actionType);
+  const text = routePlanningText(input);
+  const hasWallet = input.hasWallet === true;
+  const hasTokenMints = input.hasTokenMints === true;
+  const connector = normalizedConnectorContext(input.connector);
+  const hasProtocolConnector = input.hasProtocolConnector === true || connector?.readReady === true;
+
+  const addRoute = (route: AgentFactRoute): void => {
+    if (seen.has(route.id)) return;
+    seen.add(route.id);
+    routes.push(route);
+  };
+  const skip = (need: AgentFactNeed, reason: string): void => {
+    if (skipped.some((entry) => entry.need === need && entry.reason === reason)) return;
+    skipped.push({ need, reason });
+  };
+
+  if (hasWallet) {
+    addRoute({
+      id: 'wallet.connected_public_key',
+      need: 'wallet_identity',
+      provider: 'wallet',
+      endpoint: 'connected_public_key',
+      status: 'required',
+      reason: 'Approval/denial must be scoped to the connected or draft wallet public key.',
+    });
+  } else {
+    skip('wallet_identity', 'No connected wallet or draft wallet address was available.');
+  }
+
+  const needsTransferHistory = TRANSFER_ACTION_TYPES.has(actionType) || TRANSFER_CONTEXT_RE.test(text);
+  if (needsTransferHistory) {
+    if (hasWallet) {
+      addRoute({
+        id: 'helius.getTransfersByAddress',
+        need: 'wallet_transfers',
+        provider: 'helius',
+        endpoint: 'getTransfersByAddress',
+        status: 'required',
+        reason: 'The question or action depends on recent wallet transfer history.',
+      });
+    } else {
+      skip('wallet_transfers', 'Transfer history requires a wallet public key.');
+    }
+  }
+
+  const holdingsRequired = HOLDINGS_REQUIRED_RE.test(text);
+  const holdingsUseful = holdingsRequired || WALLET_BALANCE_ACTION_TYPES.has(actionType) || HOLDINGS_OPTIONAL_RE.test(text);
+  if (holdingsUseful) {
+    if (hasWallet) {
+      addRoute({
+        id: 'birdeye.wallet_token_list',
+        need: 'wallet_holdings',
+        provider: 'birdeye',
+        endpoint: 'wallet-token-list',
+        status: holdingsRequired ? 'required' : 'optional',
+        reason: holdingsRequired
+          ? 'The question needs wallet balances, holdings, or affordability evidence.'
+          : 'Wallet holdings are useful context for this money-moving action.',
+      });
+    } else {
+      skip('wallet_holdings', 'Wallet holdings require a wallet public key.');
+    }
+  }
+
+  const tokenIdentityNeeded = hasTokenMints || TOKEN_IDENTITY_RE.test(text);
+  const tokenSecurityRequired = TOKEN_SECURITY_RE.test(text);
+  const tokenMarketRequired = TOKEN_MARKET_RE.test(text);
+  if (tokenIdentityNeeded) {
+    if (hasTokenMints) {
+      addRoute({
+        id: 'birdeye.token_metadata',
+        need: 'token_metadata',
+        provider: 'birdeye',
+        endpoint: 'token-meta',
+        status: TOKEN_IDENTITY_RE.test(text) ? 'required' : 'optional',
+        reason: 'Token identity should come from provider metadata when a mint is available.',
+      });
+    } else {
+      skip('token_metadata', 'Token metadata lookup needs a resolved Solana mint address.');
+    }
+  }
+
+  if (tokenSecurityRequired || hasTokenMints) {
+    if (hasTokenMints) {
+      addRoute({
+        id: 'birdeye.token_security',
+        need: 'token_security',
+        provider: 'birdeye',
+        endpoint: 'token-security',
+        status: tokenSecurityRequired ? 'required' : 'optional',
+        reason: tokenSecurityRequired
+          ? 'The question asks for token safety, authority, age, or scam-risk evidence.'
+          : 'Token security is useful context for unresolved or custom token approvals.',
+      });
+    } else if (tokenSecurityRequired) {
+      skip('token_security', 'Token security lookup needs a resolved Solana mint address.');
+    }
+  }
+
+  if (tokenMarketRequired || hasTokenMints) {
+    if (hasTokenMints) {
+      addRoute({
+        id: 'birdeye.price_multi',
+        need: 'token_market',
+        provider: 'birdeye',
+        endpoint: 'price-multi',
+        status: tokenMarketRequired ? 'required' : 'optional',
+        reason: tokenMarketRequired
+          ? 'The question depends on token price, liquidity, or threshold evidence.'
+          : 'Token market data is useful context for token approvals.',
+      });
+      addRoute({
+        id: 'coingecko.token_evidence',
+        need: 'token_market',
+        provider: 'coingecko',
+        endpoint: 'token-evidence',
+        status: TOKEN_MARKET_DEPTH_RE.test(text) ? 'required' : 'optional',
+        reason: TOKEN_MARKET_DEPTH_RE.test(text)
+          ? 'The question needs market-cap, volume, 24h change, or broader token-market evidence.'
+          : 'CoinGecko can supplement BirdEye with secondary token-market evidence.',
+      });
+      addRoute({
+        id: 'dexscreener.token_pairs',
+        need: 'token_market',
+        provider: 'dexscreener',
+        endpoint: 'token-pairs/v1/solana/{mint}',
+        status: 'optional',
+        reason: 'DEX Screener is a fallback when primary Solana token-market providers have no row.',
+      });
+    } else if (tokenMarketRequired) {
+      skip('token_market', 'Token market lookup needs a resolved Solana mint address.');
+    }
+  }
+
+  const swapLike = actionType === 'swap' || input.parameters?.actionKind === 'swap' || SWAP_RE.test(text);
+  if (swapLike) {
+    addRoute({
+      id: 'jupiter.swap_order_preview',
+      need: 'swap_quote',
+      provider: 'jupiter',
+      endpoint: 'swap.order existing tool',
+      status: 'required',
+      reason: 'Swap approvals need executable quote/output context from Jupiter.',
+    });
+    addRoute({
+      id: 'jupiter.swap_route',
+      need: 'swap_route',
+      provider: 'jupiter',
+      endpoint: 'swap.order routePlan',
+      status: 'required',
+      reason: 'Jupiter chooses the executable venue route when the quote/order is fetched.',
+    });
+  }
+
+  const connectorPlan = connector ? connectorReadRoutePlan(connector, actionType, text) : undefined;
+  if (connector && connectorPlan) {
+    if (connector.enabled === false) {
+      skip('protocol_position', `${connectorPlan.label} connector is selected but disabled.`);
+    } else if (connector.readReady === false) {
+      skip('protocol_position', `${connectorPlan.label} connector read APIs are not ready.`);
+    } else {
+      addRoute({
+        id: 'protocol_connector.read_facts',
+        need: 'protocol_position',
+        provider: 'protocol_connector',
+        endpoint: 'connector-read-facts',
+        status: connectorPlan.required ? 'required' : 'optional',
+        reason: connectorPlan.reason,
+        cacheKey: `${connector.id}:${connectorPlan.capability}`,
+        params: stripEmptyRouteParams({
+          connectorId: connector.id,
+          connectorName: connector.name,
+          profile: connectorPlan.profile,
+          capability: connectorPlan.capability,
+          actionKind: connector.actionKind,
+          operation: connector.operation,
+        }),
+      });
+    }
+  } else {
+    const protocolNeeded = hasProtocolConnector || PROTOCOL_ACTION_TYPES.has(actionType) || PROTOCOL_RE.test(text);
+    if (protocolNeeded && hasProtocolConnector) {
+      addRoute({
+        id: 'protocol_connector.read_facts',
+        need: 'protocol_position',
+        provider: 'protocol_connector',
+        endpoint: 'connector-read-facts',
+        status: PROTOCOL_RE.test(text) ? 'required' : 'optional',
+        reason: 'Protocol-specific positions, rewards, or health should use the selected connector read path.',
+      });
+    } else if (protocolNeeded && PROTOCOL_RE.test(text)) {
+      skip('protocol_position', 'Protocol fact lookup needs a matching enabled connector.');
+    }
+  }
+
+  if (GLOBAL_MARKET_RE.test(text)) {
+    addRoute({
+      id: 'coingecko.global',
+      need: 'global_market',
+      provider: 'coingecko',
+      endpoint: 'global',
+      status: 'required',
+      reason: 'The question asks for global crypto-market conditions.',
+    });
+    addRoute({
+      id: 'alternative_me.fear_greed',
+      need: 'global_market',
+      provider: 'alternative_me',
+      endpoint: 'fng',
+      status: /fear\s*(?:&|and)\s*greed|sentiment/i.test(text) ? 'required' : 'optional',
+      reason: 'Fear & Greed is useful sentiment context for market-condition questions.',
+    });
+  }
+
+  if (EXTERNAL_RESEARCH_RE.test(text)) {
+    addRoute({
+      id: 'external_research.current_web',
+      need: 'external_research',
+      provider: 'external_research',
+      endpoint: 'ai-native-current-research',
+      status: 'required',
+      reason: 'The question references current events, docs, status, or news outside deterministic wallet/provider facts.',
+    });
+  }
+
+  return {
+    routes,
+    skipped,
+    routeText: routePlanText(routes, skipped),
+  };
+}
+
+function routePlanningText(input: PlanAgentReviewFactRoutesInput): string {
+  const parameterText = input.parameters
+    ? Object.entries(input.parameters)
+        .map(([key, value]) => `${key}: ${value}`)
+        .join('\n')
+    : '';
+  return [
+    input.actionType,
+    input.intent,
+    input.route,
+    input.risk,
+    input.approval,
+    input.userNotes,
+    input.instruction,
+    input.question,
+    input.prompt,
+    parameterText,
+  ]
+    .filter((entry): entry is string => Boolean(entry?.trim()))
+    .join('\n')
+    .toLowerCase();
+}
+
+function normalize(value: string | undefined): string {
+  return value?.trim().toLowerCase() ?? '';
+}
+
+function normalizedConnectorContext(
+  connector: AgentReviewConnectorContext | undefined,
+): AgentReviewConnectorContext | undefined {
+  const id = normalize(connector?.id);
+  if (!id) return undefined;
+  return {
+    ...connector,
+    id,
+    name: connector?.name?.trim() || id,
+    actionKind: normalize(connector?.actionKind),
+    operation: connector?.operation?.trim(),
+    readSource: connector?.readSource?.trim(),
+    actionSource: connector?.actionSource?.trim(),
+  };
+}
+
+interface ConnectorReadRoutePlan {
+  profile: AgentConnectorProfileKind;
+  capability: AgentConnectorReadCapability;
+  required: boolean;
+  label: string;
+  reason: string;
+}
+
+function connectorReadRoutePlan(
+  connector: AgentReviewConnectorContext,
+  actionType: string,
+  text: string,
+): ConnectorReadRoutePlan | undefined {
+  const id = connector.id ?? '';
+  const profile = connectorProfileKind(id, connector.actionKind ?? actionType);
+  if (!profile) return undefined;
+  const capability = connectorReadCapability(id, profile, connector.actionKind ?? actionType, text);
+  const label = connector.name || id;
+  const selectedAction = Boolean(connector.actionKind || actionType === 'read_only' || actionType === 'blink_action' || actionType === 'custom_transaction');
+  return {
+    profile,
+    capability,
+    label,
+    required: selectedAction || PROTOCOL_RE.test(text),
+    reason: connectorReadReason(label, profile, capability),
+  };
+}
+
+function connectorProfileKind(id: string, actionKind: string): AgentConnectorProfileKind | undefined {
+  if (id === 'jupiter') return 'jupiter';
+  if (LENDING_BORROW_CONNECTORS.has(id)) return 'lending_borrow';
+  if (LIQUIDITY_CONNECTORS.has(id)) return 'liquidity_pool';
+  if (STAKING_CONNECTORS.has(id)) return 'staking_lst';
+  if (NFT_CONNECTORS.has(id)) return 'nft_marketplace';
+  if (GOVERNANCE_CONNECTORS.has(id)) return 'governance';
+  if (BRIDGE_CONNECTORS.has(id) || /\b(bridge|cross[-\s]?chain|wormhole|mayan)\b/.test(actionKind)) return 'bridge';
+  if (id === 'pyth') return 'oracle';
+  return undefined;
+}
+
+function connectorReadCapability(
+  connectorId: string,
+  profile: AgentConnectorProfileKind,
+  actionKind: string,
+  text: string,
+): AgentConnectorReadCapability {
+  const action = `${actionKind} ${text}`;
+  switch (profile) {
+    case 'jupiter':
+      if (/trigger|limit|oco|otoco/.test(action)) return 'trigger';
+      if (/recurring|dca/.test(action)) return 'recurring';
+      if (/perps?|perpetual/.test(action)) return 'perps';
+      if (/prediction|orderbook|polymarket|kalshi/.test(action)) return 'prediction';
+      if (/lend_earn|earn|deposit|mint|redeem/.test(action)) return 'earn';
+      if (/lend_borrow|borrow|repay|collateral|health/.test(action)) return 'positions';
+      if (/(^|_)swap\b|jupiter\s+swap/.test(action)) return 'swap';
+      if (/token|mint|risk/.test(action)) return 'tokens';
+      if (/price|quote|market/.test(action)) return 'price';
+      return 'swap';
+    case 'lending_borrow':
+      if (/reward|claim|earnings/.test(action)) return 'rewards';
+      if (connectorId === 'kamino') return /market|reserve|rate|apy/.test(action) ? 'markets' : 'positions';
+      if (connectorId === 'drift') return /withdraw/.test(action) ? 'withdraw' : /vault|market|deposit/.test(action) ? 'markets' : 'positions';
+      if (connectorId === 'lulo') return /deposit|market|rate|apy/.test(action) ? 'earn' : 'positions';
+      if (/borrow/.test(action)) return 'borrow';
+      if (/repay/.test(action)) return 'repay';
+      if (/withdraw|unstake|complete/.test(action)) return 'withdraw';
+      if (/deposit|supply|earn|mint/.test(action)) return 'earn';
+      if (/market|reserve|bank|vault|rate|apy/.test(action)) return 'markets';
+      return 'positions';
+    case 'liquidity_pool':
+      if (/fee|fees|reward|harvest|claim|farm/.test(action)) return 'rewards';
+      if (/pool|market|liquidity|add|remove|increase|decrease/.test(action)) return 'positions';
+      return 'positions';
+    case 'staking_lst':
+      if (/swap/.test(action)) return 'swap';
+      if (/withdraw|unstake|claim|remove/.test(action)) return 'withdraw';
+      if (/stake|deposit|add|liquidity|earn/.test(action)) return 'earn';
+      if (/market|pool|validator|lst|apy/.test(action)) return 'markets';
+      return 'positions';
+    case 'nft_marketplace':
+      if (/buy|bid|list|sweep|floor|collection|market/.test(action)) return 'marketplace';
+      return 'positions';
+    case 'governance':
+      if (/treasury|vault|transfer/.test(action)) return 'treasury';
+      return 'governance';
+    case 'bridge':
+      if (/transfer|redeem|recover|resume|quote|bridge|destination/.test(action)) return 'bridge';
+      return 'positions';
+    case 'oracle':
+      return 'oracle';
+  }
+}
+
+function connectorReadReason(
+  label: string,
+  profile: AgentConnectorProfileKind,
+  capability: AgentConnectorReadCapability,
+): string {
+  switch (profile) {
+    case 'lending_borrow':
+      return `${label} approvals need ${capability} facts for positions, reserves, health, or claimable rewards.`;
+    case 'liquidity_pool':
+      return `${label} approvals need pool, LP position, fee, or reward facts from the connector.`;
+    case 'staking_lst':
+      return `${label} approvals need staking, LST, pool, quote, or wallet-position facts from the connector.`;
+    case 'nft_marketplace':
+      return `${label} approvals need NFT collection, listing, bid, or wallet NFT facts from the connector.`;
+    case 'governance':
+      return `${label} approvals need governance, proposal, signer, threshold, or treasury facts from the connector.`;
+    case 'bridge':
+      return `${label} approvals need route, destination, fee, transfer-status, or bridge-exposure facts.`;
+    case 'oracle':
+      return `${label} checks need oracle price, confidence, and freshness evidence.`;
+    case 'jupiter':
+      return `${label} approvals need Jupiter ${capability} facts for the selected Jupiter product.`;
+  }
+}
+
+function stripEmptyRouteParams(
+  params: Record<string, AgentFactRouteParam | undefined>,
+): Record<string, AgentFactRouteParam> | undefined {
+  const out: Record<string, AgentFactRouteParam> = {};
+  for (const [key, value] of Object.entries(params)) {
+    if (value === undefined || value === '') continue;
+    out[key] = value;
+  }
+  return Object.keys(out).length ? out : undefined;
+}
+
+function routePlanText(routes: AgentFactRoute[], skipped: AgentFactSkippedNeed[]): string {
+  if (!routes.length && !skipped.length) return 'No external fact routes selected.';
+  const required = routes.filter((route) => route.status === 'required').length;
+  const optional = routes.length - required;
+  const providers = [...new Set(routes.map((route) => route.provider))].join(', ') || 'none';
+  const skippedText = skipped.length ? ` ${skipped.length} need${skipped.length === 1 ? '' : 's'} skipped.` : '';
+  return `Fact router selected ${routes.length} route${routes.length === 1 ? '' : 's'} (${required} required, ${optional} optional) across ${providers}.${skippedText}`;
+}

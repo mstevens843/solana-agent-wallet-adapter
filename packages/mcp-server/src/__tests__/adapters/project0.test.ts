@@ -458,6 +458,31 @@ describe('Project 0 prepare + execute', () => {
 });
 
 describe('Project 0 real client hardening', () => {
+  it('treats symbolic fallback bankAddress values as token selectors', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => ({
+      ok: true,
+      json: async () => [{
+        bankAddress: USDC_BANK,
+        mint: USDC_MINT,
+        symbol: 'SOL',
+        mintDecimals: 9,
+        venue: 'SOL Bank',
+        depositApy: 3.2,
+        borrowApy: 6.4,
+        usdPrice: 92,
+      }],
+    })));
+    const client = getProject0Client();
+
+    const banks = await client.listBanks({ bankAddress: 'SOL Bank' });
+
+    expect(banks).toHaveLength(1);
+    expect(banks[0]).toMatchObject({
+      bankAddress: USDC_BANK,
+      symbol: 'SOL',
+    });
+  });
+
   it('discovers a sponsored Project 0 PDA when SDK account scans are empty', async () => {
     const sdk = installFakeProject0Sdk({
       existingPdas: [{ accountIndex: 7, thirdPartyId: 3301 }],
