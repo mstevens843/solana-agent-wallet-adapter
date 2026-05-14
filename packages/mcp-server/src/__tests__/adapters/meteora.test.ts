@@ -84,8 +84,12 @@ function fakeMeteoraClient(state: FakeMeteoraState): MeteoraClient {
     async previewClaimRewards() {
       return preview;
     },
-    async previewAddLiquidity() {
-      return preview;
+    async previewAddLiquidity(_connection, input) {
+      return {
+        ...preview,
+        positionAddress: input.positionAddress,
+        binRange: { minBinId: input.minBinId, maxBinId: input.maxBinId },
+      };
     },
     async previewRemoveLiquidity() {
       return preview;
@@ -318,6 +322,49 @@ describe('Meteora prepared actions', () => {
       slippageBps: 50,
       strategyType: 'spot',
     });
+  });
+
+  it('defaults existing-position add-liquidity to the owned position bin range', async () => {
+    const state = fakeState({ position: fakePosition({ lowerBinId: 8, upperBinId: 14 }) });
+    setMeteoraClientFactory(() => fakeMeteoraClient(state));
+
+    const action = requireMeteoraAction('add_liquidity');
+    const prepared = await action.prepare({
+      poolAddress: POOL,
+      positionAddress: POSITION,
+      tokenXAmount: '0.01',
+      rangePreset: 'position',
+    }, makeContext());
+
+    expect(prepared.addInput.params).toMatchObject({
+      positionAddress: POSITION,
+      minBinId: 8,
+      maxBinId: 14,
+      binRange: { minBinId: 8, maxBinId: 14 },
+    });
+  });
+
+  it('prepares new-position add-liquidity from a preset without a position address', async () => {
+    const state = fakeState({ snapshot: fakeSnapshot({ activeBinId: 100 }) });
+    setMeteoraClientFactory(() => fakeMeteoraClient(state));
+
+    const action = requireMeteoraAction('add_liquidity');
+    const prepared = await action.prepare({
+      poolAddress: POOL,
+      tokenXAmount: '0.01',
+      rangePreset: 'narrow',
+    }, makeContext());
+
+    expect(prepared.addInput.summary).toContain('Open Meteora position');
+    expect(prepared.addInput.params).toMatchObject({
+      poolAddress: POOL,
+      newPosition: true,
+      minBinId: 98,
+      maxBinId: 102,
+      binRange: { minBinId: 98, maxBinId: 102 },
+      rangePreset: 'narrow',
+    });
+    expect(prepared.addInput.params).not.toHaveProperty('positionAddress');
   });
 
   it('rejects add-liquidity when the requested bins are outside the existing position range', async () => {

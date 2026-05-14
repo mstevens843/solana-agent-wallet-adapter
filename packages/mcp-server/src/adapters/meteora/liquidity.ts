@@ -14,6 +14,8 @@ import {
   type MeteoraAddLiquidityInput,
   type MeteoraBuildTransactionResult,
   type MeteoraClosePositionInput,
+  type MeteoraPoolSnapshot,
+  type MeteoraPosition,
   type MeteoraRemoveLiquidityInput,
 } from './client.js';
 import {
@@ -23,6 +25,7 @@ import {
   shortAddress,
   type MeteoraStrategyType,
 } from './constants.js';
+import { getPoolSnapshot } from './pools.js';
 import { getPositionDetail } from './positions.js';
 import {
   ensureBinRangeWithinPosition,
@@ -31,6 +34,7 @@ import {
   ensurePositionMatchesPool,
   ensurePositionOwnedByWallet,
   optionalNumberParam,
+  optionalPublicKey,
   optionalStringParam,
   parsePublicKey,
   requireStringParam,
@@ -42,10 +46,13 @@ import {
 export interface MeteoraAddLiquidityPrepareInput {
   poolAddress: string;
   positionAddress?: string;
+  amount?: string;
+  amountSide?: 'tokenX' | 'tokenY';
   tokenXAmount?: string;
   tokenYAmount?: string;
-  minBinId?: number;
-  maxBinId?: number;
+  minBinId?: number | string;
+  maxBinId?: number | string;
+  rangePreset?: string;
   strategyType?: MeteoraStrategyType;
   singleSidedX?: boolean;
   slippageBps?: number;
@@ -79,21 +86,26 @@ export const meteoraAddLiquidityAction: AdapterAction<MeteoraAddLiquidityPrepare
   async prepare(input, ctx): Promise<AdapterPrepareResult> {
     const walletAddress = await ctx.backend.getAddress();
     const poolAddress = parsePublicKey(input.poolAddress, 'poolAddress');
-    const positionAddress = parsePublicKey(input.positionAddress, 'positionAddress');
-    const { minBinId, maxBinId } = validateBinRange(input.minBinId, input.maxBinId);
+    const positionAddress = optionalPublicKey(input.positionAddress, 'positionAddress');
     const slippageBps = validateSlippageBps(input.slippageBps, ctx.config.mainnet.maxSlippageBps);
-    validateAddLiquidityAmounts(input);
+    const amounts = normalizeAddLiquidityAmounts(input);
+    validateAddLiquidityAmounts({ ...input, ...amounts });
     const strategyType = normalizeMeteoraStrategyType(input.strategyType);
-    const position = await getPositionDetail(ctx, { poolAddress, positionAddress });
-    ensurePositionMatchesPool(position, poolAddress);
-    ensurePositionOwnedByWallet(position, walletAddress);
-    ensureBinRangeWithinPosition(position, minBinId, maxBinId);
+    const snapshot = await getPoolSnapshot(ctx, poolAddress);
+    const position = positionAddress
+      ? await getPositionDetail(ctx, { poolAddress, positionAddress })
+      : undefined;
+    if (position) {
+      ensurePositionMatchesPool(position, poolAddress);
+      ensurePositionOwnedByWallet(position, walletAddress);
+    }
+    const { minBinId, maxBinId } = resolveMeteoraBinRange(input, position, snapshot);
+    if (position) ensureBinRangeWithinPosition(position, minBinId, maxBinId);
     const preparedInput: MeteoraAddLiquidityInput = {
       walletAddress,
       poolAddress,
-      positionAddress,
-      ...(input.tokenXAmount !== undefined && { tokenXAmount: input.tokenXAmount }),
-      ...(input.tokenYAmount !== undefined && { tokenYAmount: input.tokenYAmount }),
+      ...(positionAddress !== undefined && { positionAddress }),
+      ...amounts,
       minBinId,
       maxBinId,
       strategyType,
@@ -109,12 +121,13 @@ export const meteoraAddLiquidityAction: AdapterAction<MeteoraAddLiquidityPrepare
       approvalBoundary: CONNECTOR_APPROVAL_BOUNDARY,
       refreshAtExecution: true,
       poolAddress,
-      positionAddress,
-      ...(input.tokenXAmount !== undefined && { tokenXAmount: input.tokenXAmount }),
-      ...(input.tokenYAmount !== undefined && { tokenYAmount: input.tokenYAmount }),
+      ...(positionAddress !== undefined && { positionAddress }),
+      newPosition: positionAddress === undefined,
+      ...amounts,
       minBinId,
       maxBinId,
       binRange: { minBinId, maxBinId },
+      ...(input.rangePreset !== undefined && { rangePreset: input.rangePreset }),
       strategyType,
       ...(input.singleSidedX !== undefined && { singleSidedX: input.singleSidedX }),
       slippageBps,
@@ -123,7 +136,7 @@ export const meteoraAddLiquidityAction: AdapterAction<MeteoraAddLiquidityPrepare
       tokenAmounts: preview.tokenAmounts,
       activeBinId: preview.activeBinId,
       quote: preview.quote,
-      warnings: uniqueStrings([...(preview.warnings ?? []), ...rangeWarnings(preview.activeBinId, minBinId, maxBinId), ...(position.warnings ?? [])]),
+      warnings: uniqueStrings([...(preview.warnings ?? []), ...rangeWarnings(preview.activeBinId, minBinId, maxBinId), ...(position?.warnings ?? [])]),
       preparedSnapshotAt: new Date().toISOString(),
     };
     return {
@@ -131,7 +144,9 @@ export const meteoraAddLiquidityAction: AdapterAction<MeteoraAddLiquidityPrepare
         kind: 'meteora_add_liquidity',
         walletAddress,
         cluster: ctx.config.cluster,
-        summary: `Add Meteora liquidity on ${shortAddress(poolAddress)} bins ${minBinId}-${maxBinId}`,
+        summary: positionAddress
+          ? `Add Meteora liquidity on ${shortAddress(poolAddress)} bins ${minBinId}-${maxBinId}`
+          : `Open Meteora position on ${shortAddress(poolAddress)} bins ${minBinId}-${maxBinId}`,
         params: stripUndefined(params),
         ...(input.dueAt !== undefined && { dueAt: input.dueAt }),
         ...(input.note !== undefined && { note: input.note }),
@@ -145,10 +160,11 @@ export const meteoraAddLiquidityAction: AdapterAction<MeteoraAddLiquidityPrepare
     const tokenXAmount = optionalStringParam(action, 'tokenXAmount');
     const tokenYAmount = optionalStringParam(action, 'tokenYAmount');
     const range = requireBinRange(action);
+    const positionAddress = optionalStringParam(action, 'positionAddress');
     const input: MeteoraAddLiquidityInput = {
       walletAddress,
       poolAddress: requireStringParam(action, 'poolAddress'),
-      positionAddress: requireStringParam(action, 'positionAddress'),
+      ...(positionAddress !== undefined && { positionAddress }),
       ...(tokenXAmount !== undefined && { tokenXAmount }),
       ...(tokenYAmount !== undefined && { tokenYAmount }),
       minBinId: optionalNumberParam(action, 'minBinId') ?? range.minBinId,
@@ -157,11 +173,19 @@ export const meteoraAddLiquidityAction: AdapterAction<MeteoraAddLiquidityPrepare
       ...(action.params.singleSidedX === true && { singleSidedX: true }),
       slippageBps: optionalNumberParam(action, 'slippageBps') ?? ctx.config.mainnet.maxSlippageBps,
     };
-    const position = await getPositionDetail(ctx, input);
-    ensurePositionOwnedByWallet(position, walletAddress);
-    ensureBinRangeWithinPosition(position, input.minBinId, input.maxBinId);
+    if (positionAddress) {
+      const position = await getPositionDetail(ctx, { ...input, positionAddress });
+      ensurePositionOwnedByWallet(position, walletAddress);
+      ensureBinRangeWithinPosition(position, input.minBinId, input.maxBinId);
+    }
     const built = await getMeteoraClient().buildAddLiquidityTransaction(ctx.connection, input);
-    const txids = await signMeteoraBuiltTransaction(ctx, built, `Add Meteora liquidity on ${shortAddress(input.poolAddress)}`);
+    const txids = await signMeteoraBuiltTransaction(
+      ctx,
+      built,
+      positionAddress
+        ? `Add Meteora liquidity on ${shortAddress(input.poolAddress)}`
+        : `Open Meteora position on ${shortAddress(input.poolAddress)}`,
+    );
     return {
       txid: txids[0]!,
       txids,
@@ -330,6 +354,55 @@ async function requireWallet(action: PreparedAction, ctx: DAppAdapterContext, la
     );
   }
   return walletAddress;
+}
+
+type MeteoraAddLiquidityAmounts = Pick<MeteoraAddLiquidityPrepareInput, 'tokenXAmount' | 'tokenYAmount'>;
+
+function normalizeAddLiquidityAmounts(input: MeteoraAddLiquidityPrepareInput): MeteoraAddLiquidityAmounts {
+  const hasNativeAmount = [input.tokenXAmount, input.tokenYAmount]
+    .some((value) => typeof value === 'string' && value.trim() !== '');
+  if (hasNativeAmount) {
+    return {
+      ...(input.tokenXAmount !== undefined && { tokenXAmount: input.tokenXAmount }),
+      ...(input.tokenYAmount !== undefined && { tokenYAmount: input.tokenYAmount }),
+    };
+  }
+  const amount = input.amount?.trim();
+  if (!amount) return {};
+  return input.amountSide === 'tokenY'
+    ? { tokenYAmount: amount }
+    : { tokenXAmount: amount };
+}
+
+function resolveMeteoraBinRange(
+  input: MeteoraAddLiquidityPrepareInput,
+  position: MeteoraPosition | undefined,
+  snapshot: MeteoraPoolSnapshot,
+): { minBinId: number; maxBinId: number } {
+  const manualMin = numberLike(input.minBinId);
+  const manualMax = numberLike(input.maxBinId);
+  if (manualMin !== undefined || manualMax !== undefined) {
+    return validateBinRange(manualMin, manualMax);
+  }
+  const preset = input.rangePreset?.trim().toLowerCase();
+  if (position && (!preset || preset === 'position' || preset === 'existing')) {
+    return validateBinRange(position.lowerBinId, position.upperBinId);
+  }
+  const halfBins = meteoraRangePresetHalfBins(preset);
+  return validateBinRange(snapshot.activeBinId - halfBins, snapshot.activeBinId + halfBins);
+}
+
+function meteoraRangePresetHalfBins(preset: string | undefined): number {
+  if (preset === 'narrow') return 2;
+  if (preset === 'wide') return 34;
+  return 10;
+}
+
+function numberLike(value: number | string | undefined): number | undefined {
+  if (typeof value === 'number' && Number.isFinite(value)) return value;
+  if (typeof value !== 'string' || !value.trim()) return undefined;
+  const parsed = Number(value);
+  return Number.isInteger(parsed) ? parsed : undefined;
 }
 
 function validateAddLiquidityAmounts(input: MeteoraAddLiquidityPrepareInput): void {

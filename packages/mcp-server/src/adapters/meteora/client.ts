@@ -1,6 +1,7 @@
 import { createRequire } from 'node:module';
 
 import {
+  Keypair,
   PublicKey,
   Transaction,
   VersionedTransaction,
@@ -115,7 +116,7 @@ export interface MeteoraClaimInput {
 export interface MeteoraAddLiquidityInput {
   walletAddress: string;
   poolAddress: string;
-  positionAddress: string;
+  positionAddress?: string;
   tokenXAmount?: string;
   tokenYAmount?: string;
   minBinId: number;
@@ -322,20 +323,23 @@ class MeteoraSdkClient implements MeteoraClient {
 
   async previewAddLiquidity(connection: Connection, input: MeteoraAddLiquidityInput): Promise<MeteoraLiquidityPreview> {
     const pool = await this.pool(connection, input.poolAddress);
-    const position = await this.positionForAction(connection, input.poolAddress, input.positionAddress, input.walletAddress);
+    const position = input.positionAddress
+      ? await this.positionForAction(connection, input.poolAddress, input.positionAddress, input.walletAddress)
+      : undefined;
     const snapshot = await this.poolSnapshot(connection, pool, input.poolAddress);
     const tokenAmounts = liquidityInputTokenAmounts(input, snapshot);
     return stripUndefined({
       poolAddress: input.poolAddress,
-      positionAddress: input.positionAddress,
+      ...(input.positionAddress !== undefined && { positionAddress: input.positionAddress }),
       tokenMints: [snapshot.tokenMintX, snapshot.tokenMintY],
       tokenAmounts,
       binRange: { minBinId: input.minBinId, maxBinId: input.maxBinId },
       activeBinId: snapshot.activeBinId,
       strategyType: input.strategyType,
       quote: {
-        positionLowerBinId: position.lowerBinId,
-        positionUpperBinId: position.upperBinId,
+        positionLowerBinId: position?.lowerBinId ?? input.minBinId,
+        positionUpperBinId: position?.upperBinId ?? input.maxBinId,
+        newPosition: input.positionAddress === undefined,
         slippageBps: input.slippageBps,
       },
       warnings: liquidityWarnings(snapshot.activeBinId, input.minBinId, input.maxBinId, input.singleSidedX),
@@ -396,11 +400,9 @@ class MeteoraSdkClient implements MeteoraClient {
     input: MeteoraAddLiquidityInput,
   ): Promise<MeteoraBuildTransactionResult> {
     const pool = await this.pool(connection, input.poolAddress);
-    await this.positionForAction(connection, input.poolAddress, input.positionAddress, input.walletAddress);
     const snapshot = await this.poolSnapshot(connection, pool, input.poolAddress);
     const wallet = new PublicKey(input.walletAddress);
-    const tx = await pool.addLiquidityByStrategy({
-      positionPubKey: new PublicKey(input.positionAddress),
+    const addParams = {
       totalXAmount: rawAmountBn(input.tokenXAmount, snapshot.tokenXDecimals ?? 0, 'Meteora token X amount'),
       totalYAmount: rawAmountBn(input.tokenYAmount, snapshot.tokenYDecimals ?? 0, 'Meteora token Y amount'),
       strategy: {
@@ -411,10 +413,35 @@ class MeteoraSdkClient implements MeteoraClient {
       },
       user: wallet,
       slippage: input.slippageBps / 100,
-    });
+    };
+    let tx: AnyTransaction | AnyTransaction[];
+    let positionAddress = input.positionAddress;
+    let positionSigner: Keypair | undefined;
+    if (input.positionAddress) {
+      await this.positionForAction(connection, input.poolAddress, input.positionAddress, input.walletAddress);
+      tx = await pool.addLiquidityByStrategy({
+        positionPubKey: new PublicKey(input.positionAddress),
+        ...addParams,
+      });
+    } else {
+      const initializeAndAdd = requiredFunction(
+        pool.initializePositionAndAddLiquidityByStrategy,
+        'initializePositionAndAddLiquidityByStrategy',
+      );
+      positionSigner = Keypair.generate();
+      positionAddress = positionSigner.publicKey.toBase58();
+      tx = await initializeAndAdd.call(pool, {
+        positionPubKey: positionSigner.publicKey,
+        ...addParams,
+      }) as AnyTransaction | AnyTransaction[];
+    }
+    const preview = await this.previewAddLiquidity(connection, input);
     return {
-      ...await serializeTransactions(connection, wallet, tx),
-      preview: await this.previewAddLiquidity(connection, input),
+      ...await serializeTransactions(connection, wallet, tx, positionSigner ? [positionSigner] : []),
+      preview: {
+        ...preview,
+        ...(positionAddress !== undefined && { positionAddress }),
+      },
     };
   }
 
@@ -757,10 +784,18 @@ function rawAmountBn(value: string | undefined, decimals: number, label: string)
   return makeBn(parseDecimalAmount(value, decimals, label).toString());
 }
 
+function requiredFunction(value: unknown, name: string): (...args: unknown[]) => Promise<unknown> {
+  if (typeof value !== 'function') {
+    throw new AdapterError(METEORA_ADAPTER_ID, 'unsupported_method', `Meteora SDK function ${name} is unavailable.`);
+  }
+  return value as (...args: unknown[]) => Promise<unknown>;
+}
+
 async function serializeTransactions(
   connection: Connection,
   feePayer: PublicKey,
   value: AnyTransaction | AnyTransaction[],
+  signers: Keypair[] = [],
 ): Promise<Pick<MeteoraBuildTransactionResult, 'transactionBase64' | 'transactionsBase64'>> {
   const transactions = Array.isArray(value) ? value : [value];
   if (transactions.length === 0) {
@@ -768,7 +803,7 @@ async function serializeTransactions(
   }
   const serialized: string[] = [];
   for (const transaction of transactions) {
-    serialized.push(await serializeTransaction(connection, feePayer, transaction));
+    serialized.push(await serializeTransaction(connection, feePayer, transaction, signers));
   }
   return {
     transactionBase64: serialized[0],
@@ -780,8 +815,11 @@ async function serializeTransaction(
   connection: Connection,
   feePayer: PublicKey,
   transaction: AnyTransaction,
+  signers: Keypair[] = [],
 ): Promise<string> {
   if (transaction instanceof VersionedTransaction) {
+    const requiredSigners = signers.filter((signer) => versionedTransactionRequiresSigner(transaction, signer));
+    if (requiredSigners.length > 0) transaction.sign(requiredSigners);
     return Buffer.from(transaction.serialize()).toString('base64');
   }
   if (transaction instanceof Transaction || typeof transaction.serialize === 'function') {
@@ -791,9 +829,29 @@ async function serializeTransaction(
       const latest = await connection.getLatestBlockhash('confirmed');
       legacy.recentBlockhash = latest.blockhash;
     }
+    if (signers.length > 0 && typeof legacy.partialSign === 'function') {
+      const requiredSigners = signers.filter((signer) => legacyTransactionRequiresSigner(legacy, signer));
+      if (requiredSigners.length > 0) legacy.partialSign(...requiredSigners);
+    }
     return legacy.serialize({ requireAllSignatures: false, verifySignatures: false }).toString('base64');
   }
   throw new AdapterError(METEORA_ADAPTER_ID, 'invalid_transaction', 'Meteora SDK returned an unsupported transaction object.');
+}
+
+function legacyTransactionRequiresSigner(transaction: Transaction, signer: Keypair): boolean {
+  try {
+    const message = transaction.compileMessage();
+    const index = message.accountKeys.findIndex((key) => key.equals(signer.publicKey));
+    return index >= 0 && message.isAccountSigner(index);
+  } catch {
+    return true;
+  }
+}
+
+function versionedTransactionRequiresSigner(transaction: VersionedTransaction, signer: Keypair): boolean {
+  const keys = transaction.message.staticAccountKeys;
+  const signerCount = transaction.message.header.numRequiredSignatures;
+  return keys.slice(0, signerCount).some((key) => key.equals(signer.publicKey));
 }
 
 function liquidityInputTokenAmounts(input: MeteoraAddLiquidityInput, snapshot: MeteoraPoolSnapshot): MeteoraTokenAmount[] {

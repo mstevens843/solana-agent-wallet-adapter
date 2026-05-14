@@ -520,6 +520,21 @@ const SAVE_COMMON_RESERVES: Array<{ symbol: string; description: string }> = [
   { symbol: 'USDT', description: 'USDT reserve · main market' },
 ];
 
+const SAVE_KNOWN_RESERVE_MINTS: Record<string, string> = {
+  So11111111111111111111111111111111111111112: 'SOL',
+  EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v: 'USDC',
+  Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB: 'USDT',
+};
+
+function saveReserveOptionValue(entry: Record<string, unknown>): { value: string; symbol?: string; mint?: string } | undefined {
+  const rawSymbol = asString(entry.reserveSymbol) ?? asString(entry.tokenSymbol) ?? asString(entry.symbol);
+  const symbol = rawSymbol ? rawSymbol.toUpperCase() : undefined;
+  const mint = asString(entry.reserveMint) ?? asString(entry.mint);
+  const knownSymbol = mint ? SAVE_KNOWN_RESERVE_MINTS[mint] : undefined;
+  const value = knownSymbol ?? symbol ?? mint;
+  return value ? { value, symbol: knownSymbol ?? symbol, mint } : undefined;
+}
+
 const saveReserveProvider: ConnectorOptionProvider = {
   id: 'save.reserve',
   connectorId: 'save',
@@ -532,31 +547,33 @@ const saveReserveProvider: ConnectorOptionProvider = {
     const seen = new Set<string>();
     const positions: ConnectorOption[] = [];
     for (const entry of genericListing(obligationResp, ['reserves', 'deposits', 'borrows'])) {
-      const reserve = pickIdentifier(entry, ['reserveAddress', 'address', 'reserveMint', 'mint']);
-      if (!reserve || seen.has(reserve)) continue;
-      seen.add(reserve);
-      const symbol = asString(entry.reserveSymbol) ?? asString(entry.symbol);
+      const selection = saveReserveOptionValue(entry);
+      if (!selection || seen.has(selection.value)) continue;
+      seen.add(selection.value);
+      const reserveAddress = pickIdentifier(entry, ['reserveAddress', 'address']);
       positions.push({
-        value: reserve,
-        label: symbol ? `${symbol} reserve` : `Reserve ${reserve.slice(0, 6)}…`,
-        detail: 'Open Save obligation',
+        value: selection.value,
+        label: selection.symbol ? `${selection.symbol} reserve` : `Reserve ${selection.value.slice(0, 6)}…`,
+        detail: reserveAddress ? `Open Save obligation · ${reserveAddress.slice(0, 6)}…` : 'Open Save obligation',
         group: 'positions',
-        meta: { symbol },
+        meta: { symbol: selection.symbol },
       });
     }
     const reserves: ConnectorOption[] = [];
     for (const entry of genericListing(reservesResp, ['reserves'])) {
-      const reserve = pickIdentifier(entry, ['reserveAddress', 'address', 'reserveMint', 'mint']);
-      if (!reserve || seen.has(reserve)) continue;
-      seen.add(reserve);
-      const symbol = asString(entry.reserveSymbol) ?? asString(entry.symbol);
+      const selection = saveReserveOptionValue(entry);
+      if (!selection || seen.has(selection.value)) continue;
+      seen.add(selection.value);
       const apy = asString(entry.lendApy) ?? asString(entry.supplyApy) ?? asString(entry.apy);
+      const reserveAddress = pickIdentifier(entry, ['reserveAddress', 'address']);
       reserves.push({
-        value: reserve,
-        label: symbol ? `${symbol} reserve` : `Reserve ${reserve.slice(0, 6)}…`,
-        detail: apy ? `Supply APY ${apy}` : 'Save reserve',
+        value: selection.value,
+        label: selection.symbol ? `${selection.symbol} reserve` : `Reserve ${selection.value.slice(0, 6)}…`,
+        detail: [apy ? `Supply APY ${apy}` : 'Save reserve', reserveAddress ? reserveAddress.slice(0, 6) + '…' : '']
+          .filter(Boolean)
+          .join(' · '),
         group: 'all',
-        meta: { symbol, apy },
+        meta: { symbol: selection.symbol, apy },
       });
     }
     if (reserves.length === 0) {
@@ -574,6 +591,138 @@ const saveReserveProvider: ConnectorOptionProvider = {
     return [...positions, ...reserves];
   },
 };
+
+// Seeded from Drift's public vault config. The bridge-backed catalog is used
+// when available; this keeps the selector usable when that read is unavailable.
+const DRIFT_COMMON_VAULTS: Array<{
+  vaultAddress: string;
+  name: string;
+  manager: string;
+  depositSymbol: string;
+}> = [
+  {
+    vaultAddress: 'CoHd9JpwfcA76XQGA4AYfnjvAtWKoBQ6eWBkFzR1A2ui',
+    name: 'hJLP (USDC)',
+    manager: 'Gauntlet',
+    depositSymbol: 'USDC',
+  },
+  {
+    vaultAddress: 'AocrjhFd2oxyVccz1vdnZc9Hd9bnW9ejuWWH73PedykU',
+    name: 'hJLP (In Kind)',
+    manager: 'Gauntlet',
+    depositSymbol: 'JLP',
+  },
+  {
+    vaultAddress: 'EuSLjg23BrtwYAk1t4TFe5ArYSXCVXLBqrHRBfWQiTeJ',
+    name: 'SOL Super Staking',
+    manager: 'Neutral Trade',
+    depositSymbol: 'SOL',
+  },
+  {
+    vaultAddress: '9omhWDzVxpX1vPBxAhJpVao7baoVzZpNib32vozZLxGm',
+    name: 'JLP Delta Neutral V5',
+    manager: 'Neutral Trade',
+    depositSymbol: 'USDC',
+  },
+  {
+    vaultAddress: 'CG2zv4wsSetgs6mAucEKnHPwSoZSLYMwGroembTUNeaU',
+    name: 'Neutralized JLP (Deposit JLP)',
+    manager: 'Neutral Trade',
+    depositSymbol: 'JLP',
+  },
+  {
+    vaultAddress: '2dNSa3fBPMoxcs46NhtdLeTJuLasDt6VYNG4vopa7mWw',
+    name: 'JLP Hedge Vault',
+    manager: 'PrimeNumber',
+    depositSymbol: 'USDC',
+  },
+  {
+    vaultAddress: 'JCigGWJJRCPas7B9eUe2JgkyqQjGxMKkvZcJ7VQaNBqx',
+    name: 'hJLP 2x (USDC)',
+    manager: 'Gauntlet',
+    depositSymbol: 'USDC',
+  },
+  {
+    vaultAddress: 'FHF1EiAW12oCrHRh3Ycd1ZZQgCHRPRaC5wQFC68Twafq',
+    name: 'hJLP Max',
+    manager: 'Gauntlet',
+    depositSymbol: 'USDC',
+  },
+  {
+    vaultAddress: '4F7c7v9cZHatcZLy9TZFv1jrRrReACLBxciMkbDqVkfQ',
+    name: 'JitoSOL Plus',
+    manager: 'Gauntlet',
+    depositSymbol: 'JitoSOL',
+  },
+  {
+    vaultAddress: '6aowo7AoE6rw8CS6knd746XiRysuiEjs9YpZyHRAMnor',
+    name: 'dSOL Plus',
+    manager: 'Gauntlet',
+    depositSymbol: 'dSOL',
+  },
+  {
+    vaultAddress: 'BVddkVtFJLCihbVrtLo8e3iEd9NftuLunaznAxFFW8vf',
+    name: 'BTC Super Staking',
+    manager: 'Neutral Trade',
+    depositSymbol: 'BTC',
+  },
+  {
+    vaultAddress: 'ENr5e1BMN5vFUHf4iCCPzR4GjWCKgtHnQcdniRQqMdEL',
+    name: 'ETH Super Staking',
+    manager: 'Neutral Trade',
+    depositSymbol: 'ETH',
+  },
+];
+
+function driftVaultFallbackOptions(seen: Set<string>): ConnectorOption[] {
+  const options: ConnectorOption[] = [];
+  for (const fallback of DRIFT_COMMON_VAULTS) {
+    if (seen.has(fallback.vaultAddress)) continue;
+    seen.add(fallback.vaultAddress);
+    options.push({
+      value: fallback.vaultAddress,
+      label: fallback.name,
+      detail: `${fallback.depositSymbol} deposits · ${fallback.manager} · Drift vault catalog fallback`,
+      group: 'all',
+      meta: { symbol: fallback.depositSymbol, market: fallback.manager },
+    });
+  }
+  return options;
+}
+
+function driftDepositAssetSymbol(value: unknown): string | undefined {
+  const asset = typeof value === 'number'
+    ? value
+    : typeof value === 'string' && value.trim()
+      ? Number(value)
+      : undefined;
+  if (asset === undefined || !Number.isFinite(asset)) return undefined;
+  const symbols: Record<number, string> = {
+    0: 'USDC',
+    1: 'SOL',
+    3: 'BTC',
+    4: 'ETH',
+    6: 'JitoSOL',
+    9: 'JTO',
+    15: 'DRIFT',
+    17: 'dSOL',
+    19: 'JLP',
+    27: 'cbBTC',
+    52: 'dfdvSOL',
+  };
+  return symbols[asset];
+}
+
+function driftVaultManagerName(entry: Record<string, unknown>): string | undefined {
+  const manager = entry.vaultManager;
+  if (isRecord(manager)) return asString(manager.name);
+  return asString(entry.managerName);
+}
+
+function driftVaultLabel(name: string | undefined, vaultAddress: string): string {
+  if (!name) return `Vault ${vaultAddress.slice(0, 6)}…`;
+  return /\bvault\b/i.test(name) ? name : `${name} vault`;
+}
 
 const driftVaultProvider: ConnectorOptionProvider = {
   id: 'drift.vault',
@@ -594,7 +743,7 @@ const driftVaultProvider: ConnectorOptionProvider = {
       const shares = asString(entry.shares) ?? asString(entry.userShares);
       positions.push({
         value: vault,
-        label: name ? `${name} vault` : `Vault ${vault.slice(0, 6)}…`,
+        label: driftVaultLabel(name, vault),
         detail: shares ? `Your shares ${shares}` : 'Open Drift vault deposit',
         group: 'positions',
         meta: { balance: shares },
@@ -607,14 +756,22 @@ const driftVaultProvider: ConnectorOptionProvider = {
       seen.add(vault);
       const name = asString(entry.name) ?? asString(entry.vaultName);
       const apy = asString(entry.apy) ?? asString(entry.netApy);
+      const manager = driftVaultManagerName(entry);
+      const symbol = asString(entry.depositSymbol) ?? driftDepositAssetSymbol(entry.depositAsset);
+      const details = [
+        symbol ? `${symbol} deposits` : '',
+        manager ? `Manager ${manager}` : '',
+        apy ? `Net APY ${apy}` : '',
+      ].filter(Boolean);
       vaults.push({
         value: vault,
-        label: name ? `${name} vault` : `Vault ${vault.slice(0, 6)}…`,
-        detail: apy ? `Net APY ${apy}` : 'Drift strategy vault',
+        label: name ?? `Vault ${vault.slice(0, 6)}…`,
+        detail: details.length ? details.join(' · ') : 'Drift strategy vault',
         group: 'all',
-        meta: { apy },
+        meta: { symbol, apy, market: manager },
       });
     }
+    if (vaults.length === 0) vaults.push(...driftVaultFallbackOptions(seen));
     return [...positions, ...vaults];
   },
 };
@@ -1508,7 +1665,7 @@ const wormholeTokenProvider: ConnectorOptionProvider = {
     const out: ConnectorOption[] = [];
     const seen = new Set<string>();
     for (const entry of genericListing(resp, ['tokens', 'routes'])) {
-      const mint = pickIdentifier(entry, ['mint', 'sourceMint', 'address']);
+      const mint = pickIdentifier(entry, ['mintAddress', 'mint', 'sourceMint', 'address']);
       if (!mint || seen.has(mint)) continue;
       seen.add(mint);
       const symbol = asString(entry.symbol);
@@ -1536,7 +1693,7 @@ const wormholeDestinationProvider: ConnectorOptionProvider = {
   async fetch({ fieldValues, bridge }) {
     const sourceMint = fieldValues.sourceMint?.trim() ?? fieldValues.token?.trim();
     if (!sourceMint) return [];
-    const resp = await safeBridgeFacts(bridge, { connectorId: 'wormhole', capability: 'markets', token: sourceMint });
+    const resp = await safeBridgeFacts(bridge, { connectorId: 'wormhole', capability: 'markets', sourceMint });
     const out: ConnectorOption[] = [];
     const seen = new Set<string>();
     for (const entry of genericListing(resp, ['routes', 'chains'])) {

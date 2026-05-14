@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { ProtocolError } from '@solana-agent-wallet-adapter/core';
 
@@ -21,6 +21,10 @@ import {
   factsFromOrcaPositionDetail,
   factsFromOrcaWhirlpoolSnapshot,
 } from '../connectorFacts.js';
+
+afterEach(() => {
+  vi.unstubAllGlobals();
+});
 
 describe('connector fact normalization', () => {
   it('maps Kamino reserve snapshots into stable connector facts', () => {
@@ -485,6 +489,64 @@ describe('connector fact normalization', () => {
       code: 'unsupported_method',
       recoverable: false,
       message: expect.stringContaining('Jupiter does not expose rewards read capability'),
+    });
+  });
+
+  it('returns Drift vault catalog facts for markets without a vault address', async () => {
+    const fetchMock = vi.fn(async () => ({
+      ok: true,
+      status: 200,
+      async json() {
+        return [
+          {
+            name: 'hJLP (USDC)',
+            vaultPubkeyString: 'CoHd9JpwfcA76XQGA4AYfnjvAtWKoBQ6eWBkFzR1A2ui',
+            vaultManager: { name: 'Gauntlet' },
+            depositAsset: 0,
+            featured: true,
+          },
+          {
+            name: 'Hidden vault',
+            vaultPubkeyString: 'HiddenVault111111111111111111111111111111',
+            hidden: true,
+          },
+        ];
+      },
+    }));
+    vi.stubGlobal('fetch', fetchMock);
+    const service = new AgentWalletActionService({
+      backend: createMockBackend(),
+      config: DEFAULT_CONFIG,
+    });
+
+    const result = await service.connectorReadFacts({
+      connectorId: 'drift',
+      capability: 'markets',
+    });
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      'https://drift-public.s3.eu-central-1.amazonaws.com/vaults/configs.json',
+      { headers: { accept: 'application/json' } },
+    );
+    expect(result).toMatchObject({
+      capability: 'markets',
+      source: 'drift_vault_catalog',
+      vaults: [{
+        vaultAddress: 'CoHd9JpwfcA76XQGA4AYfnjvAtWKoBQ6eWBkFzR1A2ui',
+        name: 'hJLP (USDC)',
+        managerName: 'Gauntlet',
+        depositSymbol: 'USDC',
+      }],
+      facts: {
+        vaultCount: 1,
+        vaults: [{
+          vaultAddress: 'CoHd9JpwfcA76XQGA4AYfnjvAtWKoBQ6eWBkFzR1A2ui',
+          name: 'hJLP (USDC)',
+          managerName: 'Gauntlet',
+          depositSymbol: 'USDC',
+          featured: true,
+        }],
+      },
     });
   });
 

@@ -174,6 +174,184 @@ describe('built-in connector option fallbacks', () => {
     expect(options.find((option) => option.value === 'USDC')?.detail).toContain('Project 0');
   });
 
+  it('submits Save reserve symbols or mints instead of reserve account addresses', async () => {
+    registerBuiltInConnectorOptionProviders();
+    const provider = getConnectorOptionProvider('save.reserve');
+    if (!provider) throw new Error('save.reserve provider missing');
+    const bridge: ConnectorOptionBridgeFetch = async <T = unknown>(_path: string, init?: RequestInit): Promise<T> => {
+      const body = JSON.parse(String(init?.body ?? '{}')) as Record<string, unknown>;
+      if (body.capability === 'positions') {
+        return {
+          deposits: [{
+            reserveAddress: 'Reserve1111111111111111111111111111111111',
+            reserveMint: 'So11111111111111111111111111111111111111112',
+            reserveSymbol: 'SOL',
+          }],
+        } as T;
+      }
+      return {
+        reserves: [{
+          reserveAddress: 'Reserve2222222222222222222222222222222222',
+          reserveMint: 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v',
+          reserveSymbol: 'USDC',
+          supplyApy: '4.2%',
+        }],
+      } as T;
+    };
+
+    const options = await provider.fetch({
+      fieldValues: {},
+      walletAddress: 'wallet',
+      cluster: 'mainnet-beta',
+      bridge,
+    });
+
+    expect(options).toEqual(expect.arrayContaining([
+      expect.objectContaining({ value: 'SOL', label: 'SOL reserve' }),
+      expect.objectContaining({ value: 'USDC', label: 'USDC reserve' }),
+    ]));
+    expect(options.some((option) => option.value.startsWith('Reserve'))).toBe(false);
+  });
+
+  it('uses Wormhole source mint values for token and destination dropdowns', async () => {
+    registerBuiltInConnectorOptionProviders();
+    const tokenProvider = getConnectorOptionProvider('wormhole.token');
+    const destinationProvider = getConnectorOptionProvider('wormhole.destination');
+    if (!tokenProvider || !destinationProvider) throw new Error('Wormhole providers missing');
+    const solMint = 'So11111111111111111111111111111111111111112';
+    const calls: Array<{ path: string; body: Record<string, unknown> }> = [];
+    const bridge: ConnectorOptionBridgeFetch = async <T = unknown>(path: string, init?: RequestInit): Promise<T> => {
+      const body = JSON.parse(String(init?.body ?? '{}')) as Record<string, unknown>;
+      calls.push({ path, body });
+      if (body.sourceMint) {
+        return {
+          snapshot: {
+            routes: [
+              { sourceMint: solMint, destinationChain: 'Base', estimatedTime: '10 minutes' },
+            ],
+          },
+        } as T;
+      }
+      return {
+        snapshot: {
+          routes: [
+            { sourceMint: solMint, destinationChain: 'Base' },
+          ],
+        },
+      } as T;
+    };
+
+    const tokenOptions = await tokenProvider.fetch({
+      fieldValues: {},
+      cluster: 'mainnet-beta',
+      bridge,
+    });
+    const destinationOptions = await destinationProvider.fetch({
+      fieldValues: { sourceMint: solMint },
+      cluster: 'mainnet-beta',
+      bridge,
+    });
+
+    expect(tokenOptions[0]).toMatchObject({ value: solMint });
+    expect(calls[1]?.body).toMatchObject({
+      connectorId: 'wormhole',
+      capability: 'markets',
+      sourceMint: solMint,
+    });
+    expect(calls[1]?.body.token).toBeUndefined();
+    expect(destinationOptions[0]).toMatchObject({ value: 'Base', label: 'Base' });
+  });
+
+  it('loads Drift vault dropdown options from bridge catalog facts', async () => {
+    registerBuiltInConnectorOptionProviders();
+    const provider = getConnectorOptionProvider('drift.vault');
+    if (!provider) throw new Error('drift.vault provider missing');
+    const calls: Array<{ path: string; body: Record<string, unknown> }> = [];
+    const bridge: ConnectorOptionBridgeFetch = async <T = unknown>(path: string, init?: RequestInit): Promise<T> => {
+      const body = JSON.parse(String(init?.body ?? '{}')) as Record<string, unknown>;
+      calls.push({ path, body });
+      return {
+        vaults: [
+          {
+            vaultAddress: 'CoHd9JpwfcA76XQGA4AYfnjvAtWKoBQ6eWBkFzR1A2ui',
+            name: 'hJLP (USDC)',
+            managerName: 'Gauntlet',
+            depositSymbol: 'USDC',
+          },
+        ],
+      } as T;
+    };
+
+    const options = await provider.fetch({
+      fieldValues: {},
+      cluster: 'mainnet-beta',
+      bridge,
+    });
+
+    expect(calls).toEqual([{
+      path: '/bridge/action/connector-read-facts',
+      body: { connectorId: 'drift', capability: 'markets' },
+    }]);
+    expect(options[0]).toMatchObject({
+      value: 'CoHd9JpwfcA76XQGA4AYfnjvAtWKoBQ6eWBkFzR1A2ui',
+      label: 'hJLP (USDC)',
+      detail: expect.stringContaining('USDC deposits'),
+      group: 'all',
+    });
+  });
+
+  it('surfaces Drift vault fallbacks when bridge facts are unavailable', async () => {
+    registerBuiltInConnectorOptionProviders();
+    const provider = getConnectorOptionProvider('drift.vault');
+    if (!provider) throw new Error('drift.vault provider missing');
+    const options = await provider.fetch({
+      fieldValues: {},
+      cluster: 'mainnet-beta',
+      bridge: async () => {
+        throw new Error('bridge down');
+      },
+    });
+
+    expect(options.map((option) => option.label)).toEqual(expect.arrayContaining(['hJLP (USDC)', 'SOL Super Staking']));
+    expect(options.find((option) => option.label === 'hJLP (USDC)')?.value)
+      .toBe('CoHd9JpwfcA76XQGA4AYfnjvAtWKoBQ6eWBkFzR1A2ui');
+  });
+
+  it('prepends Drift wallet vault positions before fallback catalog options', async () => {
+    registerBuiltInConnectorOptionProviders();
+    const provider = getConnectorOptionProvider('drift.vault');
+    if (!provider) throw new Error('drift.vault provider missing');
+    const bridge: ConnectorOptionBridgeFetch = async <T = unknown>(_path: string, init?: RequestInit): Promise<T> => {
+      const body = JSON.parse(String(init?.body ?? '{}')) as Record<string, unknown>;
+      if (body.capability === 'positions') {
+        return {
+          positions: [
+            {
+              vaultAddress: 'UserVault111111111111111111111111111111111',
+              name: 'My Drift vault',
+              shares: '12.5',
+            },
+          ],
+        } as T;
+      }
+      throw new Error('catalog down');
+    };
+
+    const options = await provider.fetch({
+      fieldValues: {},
+      walletAddress: 'wallet',
+      cluster: 'mainnet-beta',
+      bridge,
+    });
+
+    expect(options[0]).toMatchObject({
+      value: 'UserVault111111111111111111111111111111111',
+      label: 'My Drift vault',
+      group: 'positions',
+    });
+    expect(options.some((option) => option.label === 'hJLP (USDC)' && option.group === 'all')).toBe(true);
+  });
+
   it('loads Magic Eden top collection options from bridge facts', async () => {
     registerBuiltInConnectorOptionProviders();
     const provider = getConnectorOptionProvider('magiceden.collection');

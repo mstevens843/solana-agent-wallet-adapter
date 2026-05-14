@@ -253,6 +253,13 @@ export function connectorActionFormForTemplate(
     .find((form) => form.templateId === template.id);
 }
 
+function connectorSpecificActionFormForTemplate(
+  template: Pick<AgentPlanTemplate, 'id'>,
+): ConnectorActionForm | undefined {
+  const form = connectorActionFormForTemplate(template);
+  return form && !isGenericConnectorActionForm(form) ? form : undefined;
+}
+
 export function selectedConnectorActionForm(
   parameters: Record<string, string>,
 ): ConnectorActionForm | undefined {
@@ -528,13 +535,21 @@ export function normalizeConnectorDraftParameters(
   template: Pick<AgentPlanTemplate, 'id' | 'actionType' | 'connectorCapability'> & Partial<Pick<AgentPlanTemplate, 'fields'>>,
   parameters: Record<string, string>,
 ): Record<string, string> {
-  const connector = selectedConnectorForDraftParameters(parameters);
+  const templateForm = connectorSpecificActionFormForTemplate(template);
+  const explicitForm = connectorActionFormById(parameters.connectorOperationId);
+  const formHint = explicitForm?.templateId === template.id
+    ? explicitForm
+    : templateForm ?? explicitForm;
+  const formConnector = formHint ? getAdapterMeta(formHint.connectorId) : undefined;
+  const connector = formConnector ?? selectedConnectorForDraftParameters(parameters);
   if (!connector && !isConnectorCapableTemplate(template)) return { ...parameters };
   if (!connector) return { ...parameters };
-  const explicitForm = connectorActionFormById(parameters.connectorOperationId);
-  const form = explicitForm ?? connectorActionFormForTemplate(template, connector);
-  const operation = explicitForm?.operationLabel ?? normalizedConnectorOperation(connector, parameters.operation);
-  const shouldPersistForm = Boolean(explicitForm || (form && !isGenericConnectorActionForm(form)));
+  const form = formHint ?? connectorActionFormForTemplate(template, connector);
+  const operation = formHint?.operationLabel ??
+    (form?.templateId === template.id && form.executionMode === 'read-only'
+      ? form.operationLabel
+      : normalizedConnectorOperation(connector, parameters.operation));
+  const shouldPersistForm = Boolean(form && (form === explicitForm || !isGenericConnectorActionForm(form)));
   const base = {
     ...parameters,
     connectorId: connector.id,
@@ -554,8 +569,14 @@ export function scopeConnectorDraftParameters(
   template: Pick<AgentPlanTemplate, 'id' | 'actionType' | 'connectorCapability'> & Partial<Pick<AgentPlanTemplate, 'fields'>>,
   parameters: Record<string, string>,
 ): Record<string, string> {
-  const connector = selectedConnectorForDraftParameters(parameters);
-  const form = connectorActionFormById(parameters.connectorOperationId) ??
+  const templateForm = connectorSpecificActionFormForTemplate(template);
+  const explicitForm = connectorActionFormById(parameters.connectorOperationId);
+  const formHint = explicitForm?.templateId === template.id
+    ? explicitForm
+    : templateForm ?? explicitForm;
+  const connector = (formHint ? getAdapterMeta(formHint.connectorId) : undefined) ??
+    selectedConnectorForDraftParameters(parameters);
+  const form = formHint ??
     (connector ? connectorActionFormForTemplate(template, connector) : connectorActionFormForTemplate(template));
   const scopedSource = applyConnectorSubActionDefaults(form, parameters);
   const fields = form ? formTemplateFields(form) : template.fields ?? [];
@@ -849,19 +870,57 @@ function meteoraPositionField(required: boolean): AgentPlanTemplateField {
   return cascadingField('positionAddress', 'DLMM position', 'meteora.position', {
     required,
     dependsOn: ['poolAddress'],
-    emptyHint: 'No positions found in this pool. Paste a position address to continue.',
+    emptyHint: 'No wallet position found in this pool. Choose Open new DLMM position, or paste a position address.',
   });
 }
 
 function meteoraForms(): ConnectorActionForm[] {
   return [
-    connectorActionForm('meteora', 'add-liquidity', 'Add liquidity', 'connector-meteora-add-liquidity', 'Add liquidity to a Meteora DLMM pool — new position or existing.', 'first-class-adapter', 'queueable', [
-      meteoraPoolField(true),
-      meteoraPositionField(false),
-      formField('amount', 'Amount', true),
-      formField('binRange', 'Bin range (lower/upper)'),
-      formField('memo', 'Reason'),
-    ], false, 'meteora_add_liquidity'),
+    {
+      id: 'meteora:add-liquidity',
+      connectorId: 'meteora',
+      operationId: 'add-liquidity',
+      operationLabel: 'Add liquidity',
+      templateId: 'connector-meteora-add-liquidity',
+      description: 'Add liquidity to a Meteora DLMM pool — top up an owned position or open a new preset range.',
+      executionMode: 'first-class-adapter',
+      outcome: 'queueable',
+      actionType: 'meteora_add_liquidity',
+      fields: [formField('memo', 'Reason')],
+      subActions: {
+        fieldId: 'subAction',
+        label: 'Position',
+        defaultId: 'existing-position',
+        options: [
+          {
+            id: 'existing-position',
+            label: 'Add to existing position',
+            description: 'Top up a DLMM position you already own.',
+            actionType: 'meteora_add_liquidity',
+            fields: [
+              meteoraPoolField(true),
+              meteoraPositionField(true),
+              formField('tokenXAmount', 'Token X amount', true),
+              formField('tokenYAmount', 'Token Y amount'),
+              formSelectField('rangePreset', 'Range', ['position'], 'position', true),
+            ],
+          },
+          {
+            id: 'new-position',
+            label: 'Open new position',
+            description: 'Open a new preset DLMM range. No lower/upper bin IDs required.',
+            actionType: 'meteora_add_liquidity',
+            fields: [
+              meteoraPoolField(true),
+              formField('tokenXAmount', 'Token X amount', true),
+              formField('tokenYAmount', 'Token Y amount'),
+              formSelectField('rangePreset', 'Range preset', ['balanced', 'narrow', 'wide'], 'balanced', true),
+              formSelectField('strategyType', 'Strategy', ['spot', 'bidask', 'curve'], 'spot'),
+            ],
+          },
+        ],
+      },
+    },
     connectorActionForm('meteora', 'remove-liquidity', 'Remove liquidity', 'connector-meteora-remove-liquidity', 'Remove liquidity from a Meteora DLMM position.', 'first-class-adapter', 'queueable', [
       meteoraPoolField(true),
       meteoraPositionField(true),
@@ -897,16 +956,13 @@ function orcaPositionField(required: boolean): AgentPlanTemplateField {
   return cascadingField('positionMint', 'Whirlpool position', 'orca.position', {
     required,
     dependsOn: ['whirlpoolAddress'],
-    emptyHint: 'No positions found in this whirlpool. Paste a position mint to continue.',
+    emptyHint: 'No wallet position found in this whirlpool. Choose Open new position, or paste a position mint.',
   });
 }
 
 function orcaForms(): ConnectorActionForm[] {
-  // Orca liquidity has two flavors: "add to an existing whirlpool position you already
-  // own" (no tick math required) and "open a new tick-bounded position" (custom tick
-  // math). Hide the raw tick integer inputs behind a sub-action so the simple case
-  // doesn't surface them. Users without a wallet position can pick "New position"
-  // and either accept the default wide range OR enter custom ticks.
+  // Orca liquidity has two flavors: top up an existing position or open a new
+  // preset range. The adapter maps presets to tick-aligned bounds at prepare time.
   return [
     {
       id: 'orca:increase-liquidity-flow',
@@ -917,7 +973,7 @@ function orcaForms(): ConnectorActionForm[] {
       description: 'Add liquidity to an existing Orca whirlpool position you own, or open a new tick-bounded position.',
       executionMode: 'first-class-adapter',
       outcome: 'queueable',
-      fields: [formField('amount', 'Amount', true), formField('memo', 'Reason')],
+      fields: [formField('memo', 'Reason')],
       subActions: {
         fieldId: 'subAction',
         label: 'Position',
@@ -928,17 +984,21 @@ function orcaForms(): ConnectorActionForm[] {
             label: 'Add to existing position',
             description: 'Top up a position you already own — no tick math needed.',
             actionType: 'orca_increase_liquidity',
-            fields: [orcaWhirlpoolField(true), orcaPositionField(true)],
+            fields: [
+              orcaWhirlpoolField(true),
+              orcaPositionField(true),
+              formField('tokenAAmount', 'Token A amount', true),
+            ],
           },
           {
             id: 'new-position',
-            label: 'Open new position (advanced)',
-            description: 'Open a brand-new tick-bounded position. Ticks must be aligned to the pool tick spacing.',
+            label: 'Open new position',
+            description: 'Open a brand-new preset range. No tick math required.',
             actionType: 'orca_increase_liquidity',
             fields: [
               orcaWhirlpoolField(true),
-              formField('lowerTick', 'Lower tick (integer)', true),
-              formField('upperTick', 'Upper tick (integer)', true),
+              formField('tokenAAmount', 'Token A amount', true),
+              formSelectField('rangePreset', 'Range preset', ['balanced', 'narrow', 'wide'], 'balanced', true),
             ],
           },
         ],
@@ -1339,9 +1399,10 @@ function project0Forms(): ConnectorActionForm[] {
 }
 
 function saveReserveField(required: boolean): AgentPlanTemplateField {
-  return cascadingField('reserveAddress', 'Save reserve', 'save.reserve', {
+  return cascadingField('token', 'Save reserve', 'save.reserve', {
     required,
-    emptyHint: "Couldn't load Save reserves. Paste a reserve address or token symbol.",
+    emptyHint: "Couldn't load Save reserves. Paste a token symbol (SOL, USDC, USDT) or reserve mint.",
+    placeholder: 'SOL',
   });
 }
 
@@ -1749,6 +1810,83 @@ export function effectiveFormFields(
   return [...form.fields.filter((field) => !branchIds.has(field.id)), ...branch.fields];
 }
 
+export function connectorFormRenderFields(
+  form: ConnectorActionForm,
+  parameters: Record<string, string> = {},
+): AgentPlanTemplateField[] {
+  const fields = connectorVisibleFormFields(form, parameters);
+  return fields
+    .map((field, index) => ({ field, index }))
+    .sort((left, right) => {
+      const leftRank = connectorRenderFieldRank(left.field);
+      const rightRank = connectorRenderFieldRank(right.field);
+      if (leftRank !== rightRank) return leftRank - rightRank;
+      return left.index - right.index;
+    })
+    .map((entry) => entry.field);
+}
+
+function connectorVisibleFormFields(
+  form: ConnectorActionForm,
+  parameters: Record<string, string>,
+): AgentPlanTemplateField[] {
+  if (!form.subActions) return form.fields;
+  const fields: AgentPlanTemplateField[] = [];
+  const selectField = subActionSelectField(form);
+  if (selectField) fields.push(selectField);
+  const baseIds = new Set(form.fields.map((field) => field.id));
+  const branch = selectedSubAction(form, parameters);
+  for (const field of branch?.fields ?? []) {
+    if (baseIds.has(field.id) || connectorFixedSubActionField(field)) continue;
+    fields.push(field);
+  }
+  fields.push(...form.fields);
+  return fields;
+}
+
+function connectorRenderFieldRank(field: AgentPlanTemplateField): number {
+  if (field.id === 'subAction') return 0;
+  if (connectorMemoField(field)) return 90;
+  if (connectorPrimarySelectorField(field)) return 10;
+  if (connectorDependentSelectorField(field)) return 20;
+  if (field.type === 'cascading-select' && (field.cascading?.dependsOn?.length ?? 0) === 0) return 10;
+  if (field.type === 'cascading-select') return 20;
+  if (connectorAmountField(field)) return 30;
+  if (connectorRecipientField(field)) return 40;
+  if (connectorConstraintField(field)) return 50;
+  return 60;
+}
+
+function connectorPrimarySelectorField(field: AgentPlanTemplateField): boolean {
+  return /^(protocol|operation|realmAddress|multisigAddress|vaultId|vaultAddress|poolAddress|poolId|whirlpoolAddress|reserveAddress|bankAddress|token|assetMint|mintAddress|sourceMint|inputMint|outputMint|lstMint|priceFeedIds|collectionId|stakeAccount|receiptAccount|ticketAccount)$/i.test(field.id);
+}
+
+function connectorDependentSelectorField(field: AgentPlanTemplateField): boolean {
+  return /^(positionId|positionAddress|positionMint|governingTokenMint|proposalAddress|destinationChain|listingId|withdrawalId|bidId|vaultIndex)$/i.test(field.id);
+}
+
+function connectorMemoField(field: AgentPlanTemplateField): boolean {
+  return /^(memo|reason|instructions|note|notes)$/i.test(field.id);
+}
+
+function connectorAmountField(field: AgentPlanTemplateField): boolean {
+  const id = field.id.toLowerCase();
+  return id.includes('amount') ||
+    id === 'shares' ||
+    id === 'percentage' ||
+    id === 'pricesol' ||
+    id === 'maxpricesol' ||
+    id === 'count';
+}
+
+function connectorRecipientField(field: AgentPlanTemplateField): boolean {
+  return /^(recipient|destinationAddress|destinationRecipient)$/i.test(field.id);
+}
+
+function connectorConstraintField(field: AgentPlanTemplateField): boolean {
+  return /^(slippageBps|minHealthFactor|minHealthRatio|rangePreset|strategyType|withdrawMode|lowerPrice|upperPrice|lowerTick|upperTick|maxAgeSeconds|question)$/i.test(field.id);
+}
+
 export function subActionSelectField(form: ConnectorActionForm): AgentPlanTemplateField | undefined {
   if (!form.subActions) return undefined;
   const defaultId = form.subActions.defaultId ?? form.subActions.options[0]?.id ?? '';
@@ -1871,13 +2009,20 @@ function connectorActionFields(actionKind: string): AgentPlanTemplateField[] {
   } else if (actionKind.startsWith('orca_')) {
     add(formField('whirlpoolAddress', 'Whirlpool address', true));
     add(formField('positionMint', 'Position mint'));
-    if (has('liquidity')) add(formField('amount', 'Liquidity amount'));
+    if (has('increase_liquidity')) {
+      add(formField('tokenAAmount', 'Token A amount'));
+      add(formSelectField('rangePreset', 'Range preset', ['balanced', 'narrow', 'wide'], 'balanced'));
+    } else if (has('liquidity')) {
+      add(formField('amount', 'Liquidity amount'));
+    }
   } else if (actionKind.startsWith('meteora_')) {
     add(formField('poolAddress', 'DLMM pool address', true));
     add(formField('positionAddress', 'Position address'));
-    if (has('liquidity')) {
+    if (has('add_liquidity')) {
+      add(formField('tokenXAmount', 'Token X amount'));
+      add(formSelectField('rangePreset', 'Range preset', ['balanced', 'narrow', 'wide'], 'balanced'));
+    } else if (has('liquidity')) {
       add(formField('amount', 'Amount'));
-      add(formField('binRange', 'Bin range'));
     }
   } else if (actionKind.startsWith('marginfi_')) {
     add(formField('bankAddress', 'Bank address', true));
@@ -1893,7 +2038,7 @@ function connectorActionFields(actionKind: string): AgentPlanTemplateField[] {
       add(formField('minHealthRatio', 'Minimum health ratio'));
     }
   } else if (actionKind.startsWith('save_')) {
-    add(formField('reserveAddress', 'Reserve address', true));
+    add(formField('token', 'Reserve token or mint', true));
     add(formField('amount', 'Amount', !has('withdraw', 'repay')));
     add(formField('minHealthFactor', 'Minimum health factor'));
   } else if (actionKind.startsWith('lulo_')) {

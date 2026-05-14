@@ -199,7 +199,7 @@ import {
   connectorCreateStatus,
   connectorDraftConnectors,
   connectorDraftStatus,
-  effectiveFormFields,
+  connectorFormRenderFields,
   formTemplateFields,
   isConnectorCapableTemplate,
   normalizeConnectorDraftParameters,
@@ -11634,23 +11634,39 @@ function connectorOperationFieldInput(
 }
 
 function activeConnectorActionForm(): ConnectorActionForm | undefined {
-  const fromState = selectedConnectorActionForm(state.templateFields);
-  if (fromState) return fromState;
   const template = selectedTemplate();
-  return connectorActionFormForTemplate(template);
+  return connectorActionFormForTemplateFields(template, state.templateFields);
 }
 
 // AGENT_PLAN_TEMPLATES carries a frozen `fields` list per template. Connector
-// templates additionally expose dropdowns + sub-actions via ConnectorActionForm —
-// those weren't reaching the rendered planner before, so the user saw bare bid
-// forms with only price + reason (no collection picker), Lulo with no deposit/
-// withdraw selector, etc. This helper returns the connector form's expanded fields
-// (sub-action selector + branch fields with showWhen) when one exists, falling back
-// to the static template fields for legacy non-connector templates.
+// templates additionally expose dropdowns and sub-actions via ConnectorActionForm,
+// so render through the active connector form and selected branch instead of the
+// static all-branches field list.
 function effectiveTemplateFields(template: AgentPlanTemplate): AgentPlanTemplateField[] {
-  const form = connectorActionFormForTemplate(template);
-  if (form) return formTemplateFields(form);
+  return effectiveTemplateFieldsForParameters(template, state.templateFields);
+}
+
+function effectiveTemplateFieldsForParameters(
+  template: AgentPlanTemplate,
+  parameters: Record<string, string>,
+): AgentPlanTemplateField[] {
+  const form = connectorActionFormForTemplateFields(template, parameters);
+  if (form) return connectorFormRenderFields(form, parameters);
   return template.fields;
+}
+
+function connectorActionFormForTemplateFields(
+  template: AgentPlanTemplate,
+  fields: Record<string, string>,
+): ConnectorActionForm | undefined {
+  const fromState = selectedConnectorActionForm(fields);
+  if (fromState?.templateId === template.id) return fromState;
+  const selectedConnector = selectedConnectorForDraftParameters(fields);
+  if (selectedConnector) {
+    const selectedForm = connectorActionFormForTemplate(template, selectedConnector);
+    if (selectedForm) return selectedForm;
+  }
+  return connectorActionFormForTemplate(template);
 }
 
 function templateFieldVisible(fieldDef: AgentPlanTemplateField): boolean {
@@ -11699,6 +11715,7 @@ function connectorSubActionPicker(form: ConnectorActionForm): string {
           data-template-field-choice="${escapeHtml(group.fieldId)}"
           data-template-field-value="${escapeHtml(option.id)}"
           aria-pressed="${option.id === current ? 'true' : 'false'}"
+          aria-label="${escapeHtml(`${option.label}. ${option.description}`)}"
           title="${escapeHtml(option.description)}"
           ${disabledAttr}
         >
@@ -11810,8 +11827,9 @@ function cascadingSelectFieldInput(
       cascading.emptyHint ?? 'Provider not registered yet.',
     );
   }
-  if (!dependenciesSatisfied(cascading.dependsOn, state.templateFields)) {
-    const missing = missingDependencyLabel(cascading.dependsOn, state.templateFields);
+  const fieldValues = cascadingFieldValues();
+  if (!dependenciesSatisfied(cascading.dependsOn, fieldValues)) {
+    const missing = missingDependencyLabel(cascading.dependsOn, fieldValues);
     const missingLabel = dependencyFieldLabel(missing);
     return `
       <label class="field compact planner-field disabled">
@@ -11829,7 +11847,7 @@ function cascadingSelectFieldInput(
   const cacheKey = connectorOptionCacheKey(
     cascading.providerId,
     cascading.dependsOn,
-    state.templateFields,
+    fieldValues,
     walletAddressForCascading(),
     state.cluster,
   );
@@ -11899,8 +11917,27 @@ function cascadingSelectFieldInput(
 function dependencyFieldLabel(fieldId: string | undefined): string {
   if (!fieldId) return 'previous field';
   const template = selectedTemplate();
+  const activeForm = activeConnectorActionForm();
+  const activeField = activeForm
+    ? formTemplateFields(activeForm).find((fieldDef) => fieldDef.id === fieldId)
+    : undefined;
+  if (activeField?.label) return activeField.label;
   return effectiveTemplateFields(template).find((fieldDef) => fieldDef.id === fieldId)?.label ??
-    templateFieldLabel(template, fieldId);
+    humanizeFieldId(fieldId);
+}
+
+function cascadingFieldValues(): Record<string, string> {
+  const template = selectedTemplate();
+  return { ...defaultTemplateFieldValues(template), ...state.templateFields };
+}
+
+function humanizeFieldId(fieldId: string): string {
+  return fieldId
+    .replace(/([a-z0-9])([A-Z])/g, '$1 $2')
+    .replace(/[._-]+/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .replace(/\b\w/g, (match) => match.toUpperCase()) || templateFieldLabel(selectedTemplate(), fieldId);
 }
 
 function cascadingSelectPickerOptions(options: ConnectorOption[], fallbackMeta: string): SelectPickerOption[] {
@@ -11954,7 +11991,7 @@ async function requestConnectorOptions(
   const ctxWalletAddress = walletAddressForCascading();
   try {
     const options = await provider.fetch({
-      fieldValues: fieldValuesSnapshot,
+      fieldValues: { ...defaultTemplateFieldValues(selectedTemplate()), ...fieldValuesSnapshot },
       walletAddress: ctxWalletAddress,
       cluster: state.cluster,
       bridge: bridgeRequest,
@@ -11992,9 +12029,9 @@ function handleCascadingFieldChange(
   fieldId: string,
 ): boolean {
   const isCascadingControl = control instanceof HTMLSelectElement
-    ? control.dataset.cascadingSelect === 'true'
+    ? control.hasAttribute('data-cascading-select')
     : control instanceof HTMLInputElement
-      ? control.dataset.cascadingManual === 'true'
+      ? control.hasAttribute('data-cascading-manual')
       : false;
   const cacheKeysBefore = Object.keys(state.templateFieldOptionCache).length;
   invalidateCascadingDownstream(fieldId);
@@ -14944,6 +14981,7 @@ function bind(): void {
       const fieldId = fieldInput.dataset.templateField;
       if (!fieldId) return;
       state.templateFields[fieldId] = syncTemplateFieldFromControl(fieldInput);
+      syncCascadingTemplateFieldLabel(fieldInput, fieldId, state.templateFields);
       delete state.templateFieldErrors[fieldId];
       delete state.templateFieldErrors.protocol;
       delete state.templateFieldErrors.blinkUrl;
@@ -14958,6 +14996,7 @@ function bind(): void {
       const fieldId = fieldInput.dataset.templateField;
       if (!fieldId) return;
       state.templateFields[fieldId] = syncTemplateFieldFromControl(fieldInput);
+      syncCascadingTemplateFieldLabel(fieldInput, fieldId, state.templateFields);
       syncConnectorTemplateFieldChange(fieldId);
       if (handleCascadingFieldChange(fieldInput, fieldId)) render();
     });
@@ -16192,16 +16231,21 @@ function applyConnectorActionForm(form: ConnectorActionForm): void {
   const connector = getAdapterMeta(form.connectorId);
   if (!connector) return;
   const template = templateById(form.templateId);
-  state.selectedTemplateId = template.id;
-  state.templateOutcomeFilter = templateOutcome(template);
-  state.templateFields = normalizeConnectorDraftParameters(template, {
+  const previousConnectorId = selectedConnectorForDraftParameters(state.templateFields)?.id ?? '';
+  const nextFields: Record<string, string> = {
     ...defaultTemplateFieldValues(template),
     ...state.templateFields,
     connectorId: connector.id,
     protocol: connector.id,
     operation: form.operationLabel,
     connectorOperationId: form.id,
-  });
+  };
+  if (previousConnectorId !== connector.id) {
+    nextFields.memo = '';
+  }
+  state.selectedTemplateId = template.id;
+  state.templateOutcomeFilter = templateOutcome(template);
+  state.templateFields = normalizeConnectorDraftParameters(template, nextFields);
   state.templateTokenModes = defaultTemplateTokenModes(template, state.templateFields);
   state.templateTokenSelections = defaultTemplateTokenSelections(template, state.templateFields);
   state.templateFieldErrors = {};
@@ -16238,7 +16282,11 @@ function normalizeTemplateFieldsForTemplate(
   fields: Record<string, string>,
 ): Record<string, string> {
   if (!isConnectorCapableTemplate(template)) {
-    return stripConnectorDraftExtras(template, fields);
+    const stripped = stripConnectorDraftExtras(template, fields);
+    const form = connectorActionFormForTemplateFields(template, stripped);
+    return form && isGenericConnectorActionForm(form)
+      ? scopeTemplateFieldsToConnectorForm(stripped, form)
+      : stripped;
   }
   const env = connectorDraftEnvironment();
   const templateForm = connectorActionFormForTemplate(template);
@@ -16269,9 +16317,29 @@ function normalizeTemplateFieldsForTemplate(
   return next;
 }
 
+function scopeTemplateFieldsToConnectorForm(
+  fields: Record<string, string>,
+  form: ConnectorActionForm,
+): Record<string, string> {
+  const allowed = new Set<string>();
+  for (const field of formTemplateFields(form)) {
+    allowed.add(field.id);
+    allowed.add(`${field.id}Label`);
+    allowed.add(`${field.id}Mint`);
+  }
+  const scoped: Record<string, string> = {};
+  for (const [key, value] of Object.entries(fields)) {
+    if (allowed.has(key)) scoped[key] = value;
+  }
+  return scoped;
+}
+
 function syncConnectorTemplateFieldChange(fieldId: string): boolean {
   const template = selectedTemplate();
-  if (!isConnectorCapableTemplate(template)) return false;
+  const connectorForm = connectorActionFormForTemplateFields(template, state.templateFields);
+  if (!isConnectorCapableTemplate(template) && !(connectorForm && isGenericConnectorActionForm(connectorForm))) {
+    return false;
+  }
   if (fieldId !== 'protocol' && fieldId !== 'operation') return false;
   state.templateFields = normalizeTemplateFieldsForTemplate(template, state.templateFields);
   return fieldId === 'protocol';
@@ -27264,6 +27332,7 @@ function readTemplateFields(template = selectedTemplate()): Record<string, strin
     const fieldId = input.dataset.templateField;
     if (fieldId) {
       current[fieldId] = syncTemplateFieldFromControl(input);
+      syncCascadingTemplateFieldLabel(input, fieldId, current);
     }
   }
   for (const input of document.querySelectorAll<HTMLInputElement>('[data-template-slippage-field]')) {
@@ -27314,7 +27383,7 @@ function fieldShowWhenValue(
       form.subActions.options[0]?.id ??
       '';
   }
-  const fieldDef = effectiveTemplateFields(template).find((field) => field.id === fieldId);
+  const fieldDef = effectiveTemplateFieldsForParameters(template, parameters).find((field) => field.id === fieldId);
   return fieldDef?.defaultValue ?? '';
 }
 
@@ -27338,7 +27407,7 @@ function fieldIsVisible(
 }
 
 function assertRequiredTemplateFields(template: AgentPlanTemplate, parameters: Record<string, string>): void {
-  const missing = effectiveTemplateFields(template)
+  const missing = effectiveTemplateFieldsForParameters(template, parameters)
     .filter((fieldDef) => fieldDef.required && fieldIsVisible(fieldDef, parameters, template) && !parameters[fieldDef.id]?.trim())
     .map((fieldDef) => fieldDef.label);
   if (missing.length > 0) {
@@ -27353,8 +27422,11 @@ function assertValidTemplatePlanInput(
   opts: { mode?: 'template' | 'ai' } = {},
 ): void {
   const mode = opts.mode ?? 'template';
+  if (isConnectorCapableTemplate(template) || selectedConnectorForDraftParameters(parameters)) {
+    Object.assign(parameters, normalizeConnectorDraftParameters(template, parameters));
+  }
   const errors: Record<string, string> = {};
-  for (const fieldDef of effectiveTemplateFields(template)) {
+  for (const fieldDef of effectiveTemplateFieldsForParameters(template, parameters)) {
     if (!fieldIsVisible(fieldDef, parameters, template)) continue;
     const aiConnectorMissingFact = mode === 'ai' &&
       isConnectorCapableTemplate(template) &&
@@ -30024,6 +30096,33 @@ function syncTemplateFieldFromControl(
   state.templateTokenSelections[fieldId] = selection;
   state.templateFields[fieldId] = selection.value;
   return selection.value;
+}
+
+function syncCascadingTemplateFieldLabel(
+  control: HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement,
+  fieldId: string,
+  target: Record<string, string>,
+): void {
+  const labelKey = `${fieldId}Label`;
+  if (control instanceof HTMLInputElement && control.hasAttribute('data-cascading-manual')) {
+    delete target[labelKey];
+    return;
+  }
+  if (!(control instanceof HTMLSelectElement) || !control.hasAttribute('data-cascading-select')) {
+    return;
+  }
+  const value = control.value.trim();
+  const label = selectedControlOptionLabel(control);
+  if (value && label && label !== value) {
+    target[labelKey] = label;
+  } else {
+    delete target[labelKey];
+  }
+}
+
+function selectedControlOptionLabel(control: HTMLSelectElement): string {
+  const selected = control.selectedOptions.item(0) ?? control.options.item(control.selectedIndex);
+  return (selected?.textContent ?? '').replace(/\s+/g, ' ').trim();
 }
 
 function syncRecurringTokenFieldFromControl(

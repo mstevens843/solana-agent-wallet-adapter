@@ -292,15 +292,23 @@ describe('Orca adapter shape', () => {
 });
 
 describe('Orca liquidity preparation', () => {
-  it('blocks new positions without a tick range', async () => {
+  it('maps a new-position range preset to aligned ticks', async () => {
     const state = fakeState();
     setOrcaClientFactory(() => fakeOrcaClient(state));
     const ctx = makeContext({ store: inMemoryStore() });
 
-    await expect(requireOrcaAction('increase_liquidity').prepare({
+    const result = await requireOrcaAction('increase_liquidity').prepare({
       whirlpoolAddress: WHIRLPOOL,
       tokenAAmount: '0.01',
-    }, ctx)).rejects.toBeInstanceOf(AdapterError);
+      rangePreset: 'narrow',
+    }, ctx);
+
+    expect(result.addInput.params).toMatchObject({
+      lowerTick: 0,
+      upperTick: 128,
+      tickRange: { lowerTick: 0, upperTick: 128 },
+      rangePreset: 'narrow',
+    });
   });
 
   it('prepares increase liquidity for an existing position with refreshed execution params', async () => {

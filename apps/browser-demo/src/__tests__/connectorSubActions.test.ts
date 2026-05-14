@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
 import {
+  connectorFormRenderFields,
   effectiveFormFields,
   formTemplateFields,
   selectedSubAction,
@@ -108,6 +109,12 @@ describe('connector sub-actions', () => {
     expect(vaultField?.showWhen).toEqual({ subAction: 'borrow-deposit' });
   });
 
+  it('renders only the active branch in canonical connector form order', () => {
+    const form = makeForm({ fieldId: 'subAction', label: 'Lend type', options: [earn, borrow] });
+    const fields = connectorFormRenderFields(form, { subAction: 'borrow-deposit' });
+    expect(fields.map((field) => field.id)).toEqual(['subAction', 'vaultId', 'collateralAmount', 'memo']);
+  });
+
   it('does not duplicate branch fields whose id collides with base fields', () => {
     const conflicting: ConnectorSubAction = {
       id: 'conflict',
@@ -137,5 +144,44 @@ describe('connector sub-actions', () => {
     const withdrawAmount = fields.find((field) => field.id === 'amount' && field.showWhen?.subAction === 'withdraw-protected');
     expect(depositAmount?.required).toBe(true);
     expect(withdrawAmount?.required).toBeFalsy();
+  });
+
+  it('keeps fixed sub-action params out of visible render fields', () => {
+    const raydium = connectorActionFormByActionType('raydium_add_liquidity');
+    const realms = connectorActionFormByActionType('realms_cast_vote');
+    expect(raydium).toBeDefined();
+    expect(realms).toBeDefined();
+
+    const raydiumFields = connectorFormRenderFields(raydium!, { subAction: 'cpmm-add' }).map((field) => field.id);
+    const realmsFields = connectorFormRenderFields(realms!, { subAction: 'approve' }).map((field) => field.id);
+
+    expect(raydiumFields).toEqual(['subAction', 'poolId', 'amount', 'memo']);
+    expect(raydiumFields).not.toContain('poolType');
+    expect(realmsFields).toEqual(['subAction', 'realmAddress', 'governingTokenMint', 'proposalAddress', 'memo']);
+    expect(realmsFields).not.toContain('voteKind');
+  });
+
+  it('keeps pool or position selectors before amounts and reason across liquidity forms', () => {
+    const orca = connectorActionFormByActionType('orca_increase_liquidity');
+    const raydium = connectorActionFormByActionType('raydium_add_liquidity');
+    expect(orca).toBeDefined();
+    expect(raydium).toBeDefined();
+
+    expect(connectorFormRenderFields(orca!, { subAction: 'existing-position' }).map((field) => field.id)).toEqual([
+      'subAction',
+      'whirlpoolAddress',
+      'positionMint',
+      'tokenAAmount',
+      'memo',
+    ]);
+    expect(connectorFormRenderFields(raydium!, { subAction: 'clmm-add' }).map((field) => field.id)).toEqual([
+      'subAction',
+      'poolId',
+      'positionMint',
+      'amount',
+      'lowerPrice',
+      'upperPrice',
+      'memo',
+    ]);
   });
 });

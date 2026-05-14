@@ -68,7 +68,18 @@ async function enrichActionParams(
   // The adapter's prepare() accepts an opaque input; the form-keyed action.params shape
   // is compatible with every adapter we have (e.g., Kamino reads `input.token`, MarginFi reads
   // `input.bank`, etc.). Adapters tolerate unknown fields.
-  const prepared = await adapterAction.prepare(action.params as never, ctx);
+  let prepared;
+  try {
+    prepared = await adapterAction.prepare(action.params as never, ctx);
+  } catch (err) {
+    if (err instanceof AdapterError) throw err;
+    const message = err instanceof Error ? err.message : String(err);
+    throw new AdapterError(
+      'registry',
+      'prepare_failed',
+      `Failed to prepare ${action.kind} for wallet approval: ${message}`,
+    );
+  }
   return {
     ...action,
     summary: prepared.addInput.summary || action.summary,

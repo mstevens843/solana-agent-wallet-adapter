@@ -586,6 +586,7 @@ async function handleRequest(
         capability?: 'positions' | 'rewards' | 'markets' | 'blinks' | 'swap' | 'earn' | 'borrow' | 'withdraw' | 'repay' | 'add_liquidity' | 'close';
         walletAddress?: string;
         token?: string;
+        sourceMint?: string;
         reserveMint?: string;
         inputToken?: string;
         outputToken?: string;
@@ -629,6 +630,7 @@ async function handleRequest(
         ...(body.capability !== undefined && { capability: body.capability }),
         ...(body.walletAddress !== undefined && { walletAddress: body.walletAddress }),
         ...(body.token !== undefined && { token: body.token }),
+        ...(body.sourceMint !== undefined && { sourceMint: body.sourceMint }),
         ...(body.reserveMint !== undefined && { reserveMint: body.reserveMint }),
         ...(body.inputToken !== undefined && { inputToken: body.inputToken }),
         ...(body.outputToken !== undefined && { outputToken: body.outputToken }),

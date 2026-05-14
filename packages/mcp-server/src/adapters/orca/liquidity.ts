@@ -28,12 +28,15 @@ import {
 export interface OrcaIncreaseLiquidityPrepareInput {
   whirlpoolAddress: string;
   positionMint?: string;
+  amount?: string;
+  amountSide?: 'tokenA' | 'tokenB';
   tokenAAmount?: string;
   tokenBAmount?: string;
   maxTokenAAmount?: string;
   maxTokenBAmount?: string;
-  lowerTick?: number;
-  upperTick?: number;
+  lowerTick?: number | string;
+  upperTick?: number | string;
+  rangePreset?: string;
   slippageBps?: number;
   dueAt?: string;
   note?: string;
@@ -60,11 +63,12 @@ export const orcaIncreaseLiquidityAction: AdapterAction<OrcaIncreaseLiquidityPre
     const whirlpoolAddress = parsePublicKey(input.whirlpoolAddress, 'whirlpoolAddress');
     const positionMint = optionalPublicKey(input.positionMint, 'positionMint');
     const slippageBps = validateSlippageBps(input.slippageBps, ctx.config.mainnet.maxSlippageBps);
-    validateIncreaseAmount(input);
+    const amounts = normalizeIncreaseAmounts(input);
+    validateIncreaseAmount(amounts);
     const snapshot = await getWhirlpoolSnapshot(ctx, whirlpoolAddress);
 
-    let lowerTick = input.lowerTick;
-    let upperTick = input.upperTick;
+    let lowerTick: number | undefined;
+    let upperTick: number | undefined;
     let baseWarnings: string[] = [];
     if (positionMint) {
       const position = await getPositionDetail(ctx, { positionMint, whirlpoolAddress });
@@ -73,18 +77,17 @@ export const orcaIncreaseLiquidityAction: AdapterAction<OrcaIncreaseLiquidityPre
       upperTick = position.tickUpperIndex;
       baseWarnings = [...rangeWarnings(snapshot.currentTickIndex, lowerTick, upperTick), ...(position.warnings ?? [])];
     } else {
-      validateTickRange(lowerTick, upperTick, snapshot.tickSpacing);
-      baseWarnings = rangeWarnings(snapshot.currentTickIndex, lowerTick!, upperTick!);
+      const range = resolveOrcaTickRange(input, snapshot);
+      lowerTick = range.lowerTick;
+      upperTick = range.upperTick;
+      baseWarnings = rangeWarnings(snapshot.currentTickIndex, lowerTick, upperTick);
     }
 
     const preparedInput: OrcaIncreaseLiquidityInput = {
       walletAddress,
       whirlpoolAddress,
       ...(positionMint !== undefined && { positionMint }),
-      ...(input.tokenAAmount !== undefined && { tokenAAmount: input.tokenAAmount }),
-      ...(input.tokenBAmount !== undefined && { tokenBAmount: input.tokenBAmount }),
-      ...(input.maxTokenAAmount !== undefined && { maxTokenAAmount: input.maxTokenAAmount }),
-      ...(input.maxTokenBAmount !== undefined && { maxTokenBAmount: input.maxTokenBAmount }),
+      ...amounts,
       ...(lowerTick !== undefined && { lowerTick }),
       ...(upperTick !== undefined && { upperTick }),
       slippageBps,
@@ -99,13 +102,11 @@ export const orcaIncreaseLiquidityAction: AdapterAction<OrcaIncreaseLiquidityPre
       refreshAtExecution: true,
       whirlpoolAddress,
       ...(positionMint !== undefined && { positionMint }),
-      ...(input.tokenAAmount !== undefined && { tokenAAmount: input.tokenAAmount }),
-      ...(input.tokenBAmount !== undefined && { tokenBAmount: input.tokenBAmount }),
-      ...(input.maxTokenAAmount !== undefined && { maxTokenAAmount: input.maxTokenAAmount }),
-      ...(input.maxTokenBAmount !== undefined && { maxTokenBAmount: input.maxTokenBAmount }),
+      ...amounts,
       ...(lowerTick !== undefined && { lowerTick }),
       ...(upperTick !== undefined && { upperTick }),
       tickRange: lowerTick !== undefined && upperTick !== undefined ? { lowerTick, upperTick } : undefined,
+      ...(input.rangePreset !== undefined && { rangePreset: input.rangePreset }),
       slippageBps,
       programIds: ORCA_PROGRAM_IDS,
       tokenMints: preview.tokenMints,
@@ -323,6 +324,80 @@ function validateIncreaseAmount(input: Pick<
       'Provide exactly one Orca increase-liquidity amount field.',
     );
   }
+}
+
+type OrcaIncreaseAmounts = Pick<
+  OrcaIncreaseLiquidityPrepareInput,
+  'tokenAAmount' | 'tokenBAmount' | 'maxTokenAAmount' | 'maxTokenBAmount'
+>;
+
+function normalizeIncreaseAmounts(input: OrcaIncreaseLiquidityPrepareInput): OrcaIncreaseAmounts {
+  const hasNativeAmount = [input.tokenAAmount, input.tokenBAmount, input.maxTokenAAmount, input.maxTokenBAmount]
+    .some((value) => typeof value === 'string' && value.trim() !== '');
+  if (hasNativeAmount) {
+    return {
+      ...(input.tokenAAmount !== undefined && { tokenAAmount: input.tokenAAmount }),
+      ...(input.tokenBAmount !== undefined && { tokenBAmount: input.tokenBAmount }),
+      ...(input.maxTokenAAmount !== undefined && { maxTokenAAmount: input.maxTokenAAmount }),
+      ...(input.maxTokenBAmount !== undefined && { maxTokenBAmount: input.maxTokenBAmount }),
+    };
+  }
+  const amount = input.amount?.trim();
+  if (!amount) return {};
+  return input.amountSide === 'tokenB'
+    ? { tokenBAmount: amount }
+    : { tokenAAmount: amount };
+}
+
+const ORCA_MIN_TICK_INDEX = -443_636;
+const ORCA_MAX_TICK_INDEX = 443_636;
+
+function resolveOrcaTickRange(
+  input: OrcaIncreaseLiquidityPrepareInput,
+  snapshot: { currentTickIndex: number; tickSpacing: number },
+): { lowerTick: number; upperTick: number } {
+  const manualLower = numberLike(input.lowerTick);
+  const manualUpper = numberLike(input.upperTick);
+  if (manualLower !== undefined || manualUpper !== undefined) {
+    return validateTickRange(manualLower, manualUpper, snapshot.tickSpacing);
+  }
+
+  const tickSpacing = Number.isInteger(snapshot.tickSpacing) && snapshot.tickSpacing > 0
+    ? snapshot.tickSpacing
+    : 1;
+  const halfSteps = orcaRangePresetHalfSteps(input.rangePreset);
+  const center = alignTickDown(snapshot.currentTickIndex, tickSpacing);
+  const minTick = alignTickUp(ORCA_MIN_TICK_INDEX, tickSpacing);
+  const maxTick = alignTickDown(ORCA_MAX_TICK_INDEX, tickSpacing);
+  let lowerTick = alignTickDown(center - halfSteps * tickSpacing, tickSpacing);
+  let upperTick = alignTickUp(center + halfSteps * tickSpacing, tickSpacing);
+  lowerTick = Math.max(lowerTick, minTick);
+  upperTick = Math.min(upperTick, maxTick);
+  if (upperTick <= snapshot.currentTickIndex) upperTick = Math.min(maxTick, upperTick + tickSpacing);
+  if (lowerTick >= snapshot.currentTickIndex) lowerTick = Math.max(minTick, lowerTick - tickSpacing);
+  return validateTickRange(lowerTick, upperTick, tickSpacing);
+}
+
+function orcaRangePresetHalfSteps(value: string | undefined): number {
+  const normalized = value?.trim().toLowerCase();
+  if (normalized === 'narrow') return 8;
+  if (normalized === 'wide') return 128;
+  return 32;
+}
+
+function numberLike(value: number | string | undefined): number | undefined {
+  if (typeof value === 'number' && Number.isFinite(value)) return value;
+  if (typeof value !== 'string' || !value.trim()) return undefined;
+  const parsed = Number(value);
+  return Number.isInteger(parsed) ? parsed : undefined;
+}
+
+function alignTickDown(tick: number, tickSpacing: number): number {
+  return Math.floor(tick / tickSpacing) * tickSpacing;
+}
+
+function alignTickUp(tick: number, tickSpacing: number): number {
+  return Math.ceil(tick / tickSpacing) * tickSpacing;
 }
 
 function validatePositiveDecimalString(value: string, field: string): void {

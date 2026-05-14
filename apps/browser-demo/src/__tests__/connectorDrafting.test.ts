@@ -3,10 +3,12 @@ import { describe, expect, it } from 'vitest';
 import {
   connectorActionDisplayParts,
   connectorActionFormByActionType,
+  connectorActionFormForTemplate,
   connectorActionFormTemplateActionType,
   connectorAiPlannerContext,
   connectorAiUserNotes,
   connectorActionFormsForConnector,
+  connectorFormRenderFields,
   connectorCreateConnectors,
   connectorCreateStatus,
   connectorDraftConnectors,
@@ -14,6 +16,7 @@ import {
   formTemplateFields,
   isConnectorCapableTemplate,
   normalizeConnectorDraftParameters,
+  scopeConnectorDraftParameters,
   selectedConnectorForDraftParameters,
   validateConnectorDraftParameters,
 } from '../connectorDrafting.js';
@@ -128,6 +131,91 @@ describe('connector drafting helpers', () => {
       subAction: 'earn-deposit',
       assetMint: 'USDC',
       amount: '1',
+    });
+  });
+
+  it('infers connector-specific templates before seeding default sub-actions', () => {
+    const raydium = normalizeConnectorDraftParameters(templateById('connector-raydium-liquidity'), {
+      poolId: 'SOL-USDC-CPMM',
+      amount: '0.01',
+    });
+    expect(raydium).toMatchObject({
+      connectorId: 'raydium',
+      connectorOperationId: 'raydium:liquidity-flow',
+      protocol: 'Raydium',
+      operation: 'Liquidity',
+      connectorActionSource: 'first-class-adapter',
+      subAction: 'cpmm-add',
+      poolType: 'cpmm',
+      poolId: 'SOL-USDC-CPMM',
+      amount: '0.01',
+    });
+
+    const lend = normalizeConnectorDraftParameters(templateById('connector-jupiter-lend'), {
+      assetMint: 'So11111111111111111111111111111111111111112',
+      amount: '0.01',
+    });
+    expect(lend).toMatchObject({
+      connectorId: 'jupiter',
+      connectorOperationId: 'jupiter:lend-flow',
+      protocol: 'Jupiter',
+      operation: 'Lend',
+      connectorActionSource: 'first-class-adapter',
+      subAction: 'earn-deposit',
+      assetMint: 'So11111111111111111111111111111111111111112',
+      amount: '0.01',
+    });
+
+    const lulo = normalizeConnectorDraftParameters(templateById('connector-lulo-flow'), {
+      mintAddress: 'USDC',
+      amount: '1',
+    });
+    expect(lulo).toMatchObject({
+      connectorId: 'lulo',
+      connectorOperationId: 'lulo:flow',
+      protocol: 'Lulo',
+      operation: 'Deposit or withdraw',
+      connectorActionSource: 'first-class-adapter',
+      subAction: 'deposit-protected',
+      depositType: 'protected',
+      mintAddress: 'USDC',
+      amount: '1',
+    });
+  });
+
+  it('persists fixed connector sub-action params without rendering them as fields', () => {
+    const form = connectorActionFormByActionType('raydium_add_liquidity');
+    expect(form).toBeDefined();
+
+    const normalized = normalizeConnectorDraftParameters(templateById('connector-raydium-liquidity'), {
+      subAction: 'cpmm-add',
+      poolId: 'SOL-USDC-CPMM',
+      amount: '0.01',
+    });
+    const renderFieldIds = connectorFormRenderFields(form!, normalized).map((field) => field.id);
+
+    expect(normalized.poolType).toBe('cpmm');
+    expect(renderFieldIds).toEqual(['subAction', 'poolId', 'amount', 'memo']);
+    expect(renderFieldIds).not.toContain('poolType');
+  });
+
+  it('lets concrete connector templates override stale connector form state', () => {
+    const raydium = normalizeConnectorDraftParameters(templateById('connector-raydium-liquidity'), {
+      connectorId: 'jupiter',
+      connectorOperationId: 'jupiter:lend-flow',
+      protocol: 'Jupiter',
+      operation: 'Lend',
+      poolId: 'SOL-USDC-CPMM',
+      amount: '0.01',
+    });
+
+    expect(raydium).toMatchObject({
+      connectorId: 'raydium',
+      connectorOperationId: 'raydium:liquidity-flow',
+      protocol: 'Raydium',
+      operation: 'Liquidity',
+      subAction: 'cpmm-add',
+      poolType: 'cpmm',
     });
   });
 
@@ -396,11 +484,59 @@ describe('connector drafting helpers', () => {
       expect(wormholeTransfer.fields.some((field) => field.id === 'recipient')).toBe(false);
     });
 
+    it('uses adapter-native Save reserve values instead of reserve addresses', () => {
+      const saveDeposit = templateById('connector-save-deposit');
+      const reserve = saveDeposit.fields.find((field) => field.id === 'token');
+      expect(reserve?.type).toBe('cascading-select');
+      expect(reserve?.cascading?.providerId).toBe('save.reserve');
+      expect(saveDeposit.fields.some((field) => field.id === 'reserveAddress')).toBe(false);
+    });
+
+    it('uses range presets instead of raw Meteora bin and Orca tick fields', () => {
+      const meteora = templateById('connector-meteora-add-liquidity');
+      expect(meteora.fields.find((field) => field.id === 'rangePreset')?.type).toBe('select');
+      expect(meteora.fields.some((field) => field.id === 'binRange')).toBe(false);
+
+      const orca = templateById('connector-orca-increase-liquidity');
+      expect(orca.fields.find((field) => field.id === 'rangePreset')?.type).toBe('select');
+      expect(orca.fields.some((field) => field.id === 'lowerTick')).toBe(false);
+      expect(orca.fields.some((field) => field.id === 'upperTick')).toBe(false);
+    });
+
     it('uses a Pyth feed dropdown for price update drafts', () => {
       const pyth = templateById('connector-pyth-post-price-update');
       const feed = pyth.fields.find((field) => field.id === 'priceFeedIds');
       expect(feed?.type).toBe('cascading-select');
       expect(feed?.cascading?.providerId).toBe('pyth.feed');
+    });
+
+    it('resolves Pyth position checks to a feed dropdown and drops stale fields', () => {
+      const template = templateById('protocol-position-check');
+      const pyth = PROTOCOL_CONNECTORS.find((candidate) => candidate.id === 'pyth');
+      if (!pyth) throw new Error('Missing Pyth connector');
+      const form = connectorActionFormForTemplate(template, pyth);
+      const feed = form ? formTemplateFields(form).find((field) => field.id === 'priceFeedIds') : undefined;
+
+      expect(feed?.type).toBe('cascading-select');
+      expect(feed?.cascading?.providerId).toBe('pyth.feed');
+
+      const scoped = scopeConnectorDraftParameters(template, {
+        protocol: 'Pyth',
+        vaultAddress: 'DriftVault111111111111111111111111111111111',
+        priceFeedIds: 'ef0d8b6fda2ceba41da15d4095d1da392a0d2f8ed0c6c7bc0f4cfac8c280b56d',
+        priceFeedIdsLabel: 'SOL/USD',
+        question: 'status',
+      });
+
+      expect(scoped).toMatchObject({
+        protocol: 'Pyth',
+        priceFeedIds: 'ef0d8b6fda2ceba41da15d4095d1da392a0d2f8ed0c6c7bc0f4cfac8c280b56d',
+        priceFeedIdsLabel: 'SOL/USD',
+        question: 'status',
+      });
+      expect(scoped).not.toHaveProperty('vaultAddress');
+      expect(scoped).not.toHaveProperty('position');
+      expect(normalizeConnectorDraftParameters(template, { protocol: 'Pyth' }).operation).toBe('Position check');
     });
 
     it('defaults NFT marketplace bid flows to collection dropdowns', () => {
@@ -420,6 +556,102 @@ describe('connector drafting helpers', () => {
         expect(collection?.type).toBe('cascading-select');
         expect(collection?.cascading?.providerId).toBe(providerId);
         expect(collection?.showWhen).toMatchObject({ subAction: 'collection' });
+      }
+    });
+
+    it('normalizes NFT marketplace bid target branches and drops stale target values', () => {
+      const expected = [
+        {
+          connectorId: 'magiceden',
+          actionType: 'magiceden_bid',
+          templateId: 'connector-magiceden-bid',
+          operationId: 'magiceden:bid-flow',
+        },
+        {
+          connectorId: 'tensor',
+          actionType: 'tensor_bid',
+          templateId: 'connector-tensor-bid',
+          operationId: 'tensor:bid-flow',
+        },
+      ] as const;
+
+      for (const { connectorId, actionType, templateId, operationId } of expected) {
+        const form = connectorActionFormByActionType(actionType);
+        if (!form) throw new Error(`Missing form for ${actionType}`);
+        const template = templateById(templateId);
+
+        const collection = normalizeConnectorDraftParameters(template, {
+          priceSol: '.01',
+          collectionId: 'madlads',
+          mintAddress: 'stale-nft-mint',
+        });
+        expect(collection).toMatchObject({
+          connectorId,
+          connectorOperationId: operationId,
+          subAction: 'collection',
+          subActionLabel: 'Collection',
+          priceSol: '.01',
+          collectionId: 'madlads',
+        });
+        expect(collection).not.toHaveProperty('mintAddress');
+        expect(connectorFormRenderFields(form, collection).map((field) => field.id)).toEqual([
+          'subAction',
+          'collectionId',
+          'priceSol',
+          'memo',
+        ]);
+
+        const nft = normalizeConnectorDraftParameters(template, {
+          subAction: 'nft',
+          priceSol: '.01',
+          mintAddress: 'nft-mint',
+          collectionId: 'stale-collection',
+        });
+        expect(nft).toMatchObject({
+          connectorId,
+          connectorOperationId: operationId,
+          subAction: 'nft',
+          subActionLabel: 'Single NFT',
+          priceSol: '.01',
+          mintAddress: 'nft-mint',
+        });
+        expect(nft).not.toHaveProperty('collectionId');
+        expect(connectorFormRenderFields(form, nft).map((field) => field.id)).toEqual([
+          'subAction',
+          'mintAddress',
+          'priceSol',
+          'memo',
+        ]);
+      }
+    });
+
+    it('accepts enabled NFT marketplace bid drafts with selected targets', () => {
+      const expected = [
+        { connectorId: 'magiceden', templateId: 'connector-magiceden-bid' },
+        { connectorId: 'tensor', templateId: 'connector-tensor-bid' },
+      ] as const;
+
+      for (const { connectorId, templateId } of expected) {
+        const connectedDapps = setConnectedDappEnabled(emptyConnectedDapps(), connectorId, true);
+        const template = templateById(templateId);
+        const env = { connectedDapps, cluster: 'mainnet-beta' };
+
+        const collection = validateConnectorDraftParameters(template, {
+          priceSol: '.01',
+          collectionId: 'madlads',
+        }, env, 'template');
+        expect(collection.errors).toEqual({});
+        expect(collection.parameters.subAction).toBe('collection');
+        expect(collection.parameters.collectionId).toBe('madlads');
+
+        const nft = validateConnectorDraftParameters(template, {
+          subAction: 'nft',
+          priceSol: '.01',
+          mintAddress: 'nft-mint',
+        }, env, 'template');
+        expect(nft.errors).toEqual({});
+        expect(nft.parameters.subAction).toBe('nft');
+        expect(nft.parameters.mintAddress).toBe('nft-mint');
       }
     });
 

@@ -73,6 +73,10 @@ import type {
   DriftVaultDepositInput,
   DriftVaultRequestWithdrawInput,
 } from './adapters/drift/index.js';
+import {
+  DRIFT_VAULT_CATALOG_URL,
+  fetchDriftVaultCatalog,
+} from './adapters/drift/vaultCatalog.js';
 import type {
   LuloCompleteWithdrawInput,
   LuloDepositInput,
@@ -3302,10 +3306,25 @@ export class AgentWalletActionService {
     const capability = input.capability ?? driftDefaultCapability(input);
     if (capability === 'markets') {
       if (!input.vaultAddress?.trim()) {
-        throw new ProtocolError(
-          'invalid_request',
-          'vaultAddress is required to read Drift vault market facts.',
-        );
+        const vaults = await fetchDriftVaultCatalog();
+        return {
+          connector: connectorCapabilityView(connector, this.config),
+          capability,
+          source: 'drift_vault_catalog',
+          catalogUrl: DRIFT_VAULT_CATALOG_URL,
+          vaults,
+          facts: {
+            vaultCount: vaults.length,
+            source: DRIFT_VAULT_CATALOG_URL,
+            vaults: vaults.map((vault) => ({
+              vaultAddress: vault.vaultAddress,
+              name: vault.name,
+              managerName: vault.managerName ?? null,
+              depositSymbol: vault.depositSymbol ?? null,
+              featured: vault.featured ?? false,
+            })),
+          },
+        };
       }
       const result = await this.driftVaultSnapshot({ vaultAddress: input.vaultAddress });
       return {
