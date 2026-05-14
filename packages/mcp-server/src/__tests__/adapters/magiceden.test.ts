@@ -95,6 +95,23 @@ function fakeClient(state: FakeMagicedenState): MagicedenClient {
     async getApiHealth() {
       return state.health;
     },
+    async getTopCollections() {
+      return {
+        rows: [
+          {
+            collectionSymbol: 'test',
+            name: 'Test Collection',
+            floorPriceSol: '0.9',
+            listedCount: state.listings.length,
+            rank: 1,
+            verified: true,
+          },
+        ],
+        source: 'popular_collections',
+        asOfIso: '2026-05-12T00:00:00.000Z',
+        apiBaseHost: 'api-mainnet.magiceden.dev',
+      };
+    },
     async getCollectionSummary() {
       return {
         collectionSymbol: 'test',
@@ -290,6 +307,7 @@ describe('Magic Eden adapter shape', () => {
       ['bid', 'buy', 'cancel_bid', 'cancel_listing', 'list'].sort(),
     );
     expect(magicedenAdapter.reads.api_health).toBeDefined();
+    expect(magicedenAdapter.reads.top_collections).toBeDefined();
     expect(magicedenAdapter.reads.collection_snapshot).toBeDefined();
     expect(magicedenAdapter.reads.wallet_nfts).toBeDefined();
   });

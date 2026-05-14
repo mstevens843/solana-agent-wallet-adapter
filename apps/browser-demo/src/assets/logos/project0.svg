@@ -1,0 +1,23 @@
+<svg width="128" height="128" viewBox="0 0 128 128" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <rect width="128" height="128" rx="28" fill="#05070D"/>
+  <path d="M64 28v72" stroke="url(#p0a)" stroke-width="10" stroke-linecap="round"/>
+  <path d="M64 92c-18.225 0-33-12.536-33-28s14.775-28 33-28h20c7.732 0 14 6.268 14 14v0c0 23.196-18.804 42-42 42h-2" stroke="url(#p0b)" stroke-width="10" stroke-linecap="round"/>
+  <path d="M64 36h20c7.732 0 14 6.268 14 14v0c0 23.196-18.804 42-42 42h-2" stroke="url(#p0c)" stroke-width="10" stroke-linecap="round"/>
+  <defs>
+    <linearGradient id="p0a" x1="64" y1="28" x2="64" y2="100" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#C7D7FF"/>
+      <stop offset="0.52" stop-color="#9B7BFF"/>
+      <stop offset="1" stop-color="#2467D8"/>
+    </linearGradient>
+    <linearGradient id="p0b" x1="31" y1="64" x2="98" y2="64" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#2467D8"/>
+      <stop offset="0.52" stop-color="#9B7BFF"/>
+      <stop offset="1" stop-color="#C7D7FF"/>
+    </linearGradient>
+    <linearGradient id="p0c" x1="54" y1="64" x2="98" y2="64" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#C7D7FF"/>
+      <stop offset="0.55" stop-color="#9B7BFF"/>
+      <stop offset="1" stop-color="#2467D8"/>
+    </linearGradient>
+  </defs>
+</svg>

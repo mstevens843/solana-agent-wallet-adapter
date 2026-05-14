@@ -524,6 +524,22 @@ describe('Pyth post price update prepare', () => {
     expect(result.addInput.params.hermesUrlHost).toBe('hermes.test');
   });
 
+  it('accepts dropdown/string feed inputs and symbol aliases', async () => {
+    const store = inMemoryStore();
+    const ctx = makeContext({ store });
+
+    const result = await requirePostAction().prepare(
+      { priceFeedIds: 'SOL/USD', maxAgeSeconds: '60', closeUpdateAccounts: true },
+      ctx,
+    );
+
+    expect(result.addInput.params).toMatchObject({
+      priceFeedIds: [SOL_FEED],
+      maxAgeSeconds: 60,
+    });
+    expect(hermes.latestCalls[0]?.priceFeedIds).toEqual([SOL_FEED]);
+  });
+
   it('rejects when priceFeedIds exceeds the single-transaction cap', async () => {
     const store = inMemoryStore();
     const ctx = makeContext({ store });

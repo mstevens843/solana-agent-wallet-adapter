@@ -11,7 +11,8 @@ These playbooks explain what the agent may read, what it may prepare for wallet 
 | Orca | First-class | Whirlpool snapshots, positions, fees, rewards | Increase liquidity, decrease liquidity, collect fees, collect rewards | Implemented by the MCP Orca adapter; Whirlpools only. |
 | Meteora | First-class | DLMM pool snapshots, wallet positions, position detail, fees, rewards | Add liquidity, remove liquidity, claim fees, claim rewards, close empty position | Implemented by the MCP Meteora adapter via optional `@meteora-ag/dlmm`; existing positions only. Claim/remove flows may require sequential wallet signatures. |
 | Raydium | First-class | CPMM, CLMM, and AMM v4 pool snapshots; wallet CLMM positions; CPMM LP balances by pool; farm LP deposits by farm | Add liquidity, remove liquidity, collect CLMM fees, farm stake, farm unstake, harvest | Implemented by the MCP Raydium adapter via the optional Raydium SDK. Swaps, pool administration, and Stake RAY governance positions are not exposed. |
-| MarginFi | Blink-backed planned | Positions and markets planned | Deposit, withdraw, borrow, repay via Blink planned | Borrow/withdraw must include account-health facts. |
+| MarginFi | First-class | Bank snapshots, wallet accounts, account detail, health preview | Deposit, withdraw, borrow, repay | Implemented by the MCP MarginFi adapter. Borrow/withdraw must include account-health facts and are rechecked at execution. |
+| Project 0 | First-class | Banks, strategies, wallet holdings, account detail, health preview | Create account, deposit, withdraw, borrow, repay | Implemented by the MCP Project 0 adapter via optional `@0dotxyz/p0-ts-sdk`; MarginFi remains available as a separate connector. |
 | Drift | Blink-backed planned | Strategy vault markets planned | Vault deposit/withdraw via Blink planned | Does not cover perp order placement. |
 | Lulo | Blink-backed planned | Positions, rewards, markets planned | Deposit, withdraw, rewards via Blink planned | Requires exact asset and action URL. |
 | Save | First-class | Reserve snapshots, market snapshots, wallet obligation, health preview | Deposit, withdraw, borrow, repay | Implemented by the MCP Save (Solend) adapter; borrow/withdraw gated by projected health factor. |
@@ -41,6 +42,7 @@ These playbooks explain what the agent may read, what it may prepare for wallet 
 - `meteora.md` - first-class DLMM connector.
 - `jito.connector.json` - machine-readable first-class JitoSOL liquid staking connector pack.
 - `marinade.connector.json` - machine-readable first-class Marinade mSOL liquid staking connector pack.
+- `project0.connector.json` - machine-readable first-class Project 0 lending connector pack.
 - `sanctum.md` - first-class Sanctum LST, Router, and Infinity connector.
 - `magiceden.md` - first-class NFT marketplace connector (feature-flagged).
 - `tensor.md` - first-class Tensor NFT marketplace connector with capped sweep.

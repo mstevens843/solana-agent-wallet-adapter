@@ -228,6 +228,7 @@ describe('adapterForKind / CONNECTOR_APPROVAL_ACTION_TYPES', () => {
   it('contains every adapter-registered kind', () => {
     expect(CONNECTOR_APPROVAL_ACTION_TYPES.has('kamino_deposit')).toBe(true);
     expect(CONNECTOR_APPROVAL_ACTION_TYPES.has('marginfi_deposit')).toBe(true);
+    expect(CONNECTOR_APPROVAL_ACTION_TYPES.has('project0_deposit')).toBe(true);
     expect(CONNECTOR_APPROVAL_ACTION_TYPES.has('jito_stake_sol')).toBe(true);
   });
 

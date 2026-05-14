@@ -6,6 +6,7 @@ import {
   selectedSubAction,
   subActionSelectField,
   connectorActionFormTemplateActionType,
+  connectorActionFormByActionType,
   type ConnectorActionForm,
   type ConnectorSubAction,
 } from '../connectorDrafting.js';
@@ -97,7 +98,7 @@ describe('connector sub-actions', () => {
     const form = makeForm({ fieldId: 'subAction', label: 'Lend type', options: [earn, borrow] });
     const fields = formTemplateFields(form);
     const ids = fields.map((field) => field.id);
-    expect(ids).toEqual(['memo', 'subAction', 'assetMint', 'amount', 'vaultId', 'collateralAmount']);
+    expect(ids).toEqual(['subAction', 'assetMint', 'amount', 'vaultId', 'collateralAmount', 'memo']);
     const subActionField = fields.find((field) => field.id === 'subAction');
     expect(subActionField?.type).toBe('select');
     expect(subActionField?.options).toEqual(['earn-deposit', 'borrow-deposit']);
@@ -120,8 +121,21 @@ describe('connector sub-actions', () => {
     };
     const form = makeForm({ fieldId: 'subAction', label: 'Mode', options: [conflicting] });
     const fields = formTemplateFields(form);
-    expect(fields.map((field) => field.id)).toEqual(['memo', 'subAction', 'extra']);
+    expect(fields.map((field) => field.id)).toEqual(['subAction', 'extra', 'memo']);
     const extra = fields.find((field) => field.id === 'extra');
     expect(extra?.showWhen).toEqual({ subAction: 'conflict' });
+  });
+
+  it('keeps repeated branch fields branch-scoped and hides fixed sub-action params', () => {
+    const form = connectorActionFormByActionType('lulo_deposit');
+    expect(form).toBeDefined();
+    const fields = formTemplateFields(form!);
+    expect(fields.some((field) => field.id === 'depositType')).toBe(false);
+    expect(fields.some((field) => field.id === 'withdrawType')).toBe(false);
+
+    const depositAmount = fields.find((field) => field.id === 'amount' && field.showWhen?.subAction === 'deposit-protected');
+    const withdrawAmount = fields.find((field) => field.id === 'amount' && field.showWhen?.subAction === 'withdraw-protected');
+    expect(depositAmount?.required).toBe(true);
+    expect(withdrawAmount?.required).toBeFalsy();
   });
 });

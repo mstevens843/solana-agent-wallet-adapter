@@ -23243,39 +23243,49 @@ button.danger:hover:not(:disabled) {
 }
 
 .connector-subaction-row {
-  display: flex;
-  flex-direction: column;
-  gap: 0.25rem;
-  margin-top: 0.5rem;
+  display: grid;
+  gap: 6px;
+  grid-column: 1 / -1;
+  margin: 0;
+  min-width: 0;
 }
 
 .connector-subaction-label {
-  font-size: 0.78rem;
   color: var(--text-muted, rgba(255, 255, 255, 0.65));
-  letter-spacing: 0.04em;
+  font-size: 0.68rem;
+  font-weight: 900;
+  letter-spacing: 0.08em;
+  line-height: 1.1;
   text-transform: uppercase;
 }
 
 .connector-subaction-chips {
   display: flex;
   flex-wrap: wrap;
-  gap: 0.4rem;
+  gap: 6px;
+  min-width: 0;
 }
 
 .connector-subaction-chip {
   appearance: none;
+  align-items: center;
   background: var(--surface-soft, rgba(255, 255, 255, 0.04));
   border: 1px solid var(--line, rgba(224, 230, 226, 0.12));
   border-radius: 999px;
   color: var(--text, #f2f5f3);
   cursor: pointer;
-  display: flex;
-  flex-direction: column;
-  font-size: 0.82rem;
-  gap: 0.1rem;
-  padding: 0.45rem 0.85rem;
-  text-align: left;
+  display: inline-flex;
+  flex: 0 1 auto;
+  font-size: 0.8rem;
+  gap: 0;
+  justify-content: center;
+  line-height: 1.1;
+  min-height: 34px;
+  min-width: 0;
+  padding: 0 12px;
+  text-align: center;
   transition: background 120ms ease, border-color 120ms ease;
+  white-space: nowrap;
 }
 
 .connector-subaction-chip:hover:not(:disabled) {
@@ -23283,7 +23293,8 @@ button.danger:hover:not(:disabled) {
   border-color: var(--line-strong, rgba(224, 230, 226, 0.22));
 }
 
-.connector-subaction-chip.active {
+.connector-subaction-chip.active,
+.connector-subaction-chip[aria-pressed="true"] {
   background: var(--accent-soft, rgba(80, 180, 140, 0.18));
   border-color: var(--accent, rgba(80, 180, 140, 0.6));
 }
@@ -23294,13 +23305,13 @@ button.danger:hover:not(:disabled) {
 }
 
 .connector-subaction-chip strong {
-  font-weight: 600;
+  font-size: 0.82rem;
+  font-weight: 900;
+  letter-spacing: 0;
 }
 
 .connector-subaction-chip em {
-  font-size: 0.72rem;
-  font-style: normal;
-  color: var(--text-muted, rgba(255, 255, 255, 0.65));
+  display: none;
 }
 
 .cascading-field .planner-field-hint {

@@ -20,14 +20,17 @@ import {
   PYTH_DEFAULT_MAX_AGE_SECONDS,
   PYTH_MAX_FEEDS_PER_POST,
   normalizePriceFeedId,
+  resolveAlias,
   withFeedIdPrefix,
 } from './constants.js';
 import { clientHost } from './feeds.js';
 import { getPriceFeedsBatchSnapshot } from './prices.js';
 
 export interface PythPostPriceUpdateInput {
-  priceFeedIds: string[];
-  maxAgeSeconds?: number;
+  priceFeedIds?: string[] | string;
+  priceFeedId?: string;
+  symbol?: string;
+  maxAgeSeconds?: number | string;
   payerAddress?: string;
   closeUpdateAccounts?: boolean;
   computeUnitPriceMicroLamports?: number;
@@ -43,14 +46,55 @@ interface PythPostParams {
   consumerTransactionId?: string;
 }
 
+function normalizePythPriceFeedInputs(input: PythPostPriceUpdateInput): string[] {
+  const raw: string[] = [];
+  const collect = (value: string | string[] | undefined): void => {
+    if (Array.isArray(value)) {
+      for (const entry of value) collect(entry);
+      return;
+    }
+    const trimmed = value?.trim();
+    if (!trimmed) return;
+    for (const entry of trimmed.split(/[,\n]/)) {
+      const part = entry.trim();
+      if (part) raw.push(part);
+    }
+  };
+  collect(input.priceFeedIds);
+  collect(input.priceFeedId);
+  collect(input.symbol);
+  const out: string[] = [];
+  const seen = new Set<string>();
+  for (const entry of raw) {
+    const alias = resolveAlias(entry);
+    const normalized = normalizePriceFeedId(alias?.feedId ?? entry);
+    if (!normalized || seen.has(normalized)) continue;
+    seen.add(normalized);
+    out.push(normalized);
+  }
+  return out;
+}
+
+function normalizeOptionalPositiveInteger(
+  value: number | string | undefined,
+  fallback: number,
+  field: string,
+): number {
+  if (value === undefined) return fallback;
+  if (typeof value === 'string' && !value.trim()) return fallback;
+  const parsed = typeof value === 'number' ? value : Number(value.trim());
+  if (!Number.isInteger(parsed) || parsed <= 0) {
+    throw new AdapterError(PYTH_ADAPTER_ID, 'invalid_request', `${field} must be a positive integer.`);
+  }
+  return parsed;
+}
+
 export const pythPostPriceUpdateAction: AdapterAction<PythPostPriceUpdateInput> = {
   id: 'post_price_update',
   kind: 'pyth_post_price_update',
 
   async prepare(input, ctx): Promise<AdapterPrepareResult> {
-    const priceFeedIds = (input.priceFeedIds ?? [])
-      .map(normalizePriceFeedId)
-      .filter((id) => id.length > 0);
+    const priceFeedIds = normalizePythPriceFeedInputs(input);
     if (priceFeedIds.length === 0) {
       throw new AdapterError(
         PYTH_ADAPTER_ID,
@@ -65,7 +109,11 @@ export const pythPostPriceUpdateAction: AdapterAction<PythPostPriceUpdateInput> 
         `Pyth post price update v1 supports at most ${PYTH_MAX_FEEDS_PER_POST} feeds per transaction; received ${priceFeedIds.length}.`,
       );
     }
-    const maxAgeSeconds = input.maxAgeSeconds ?? PYTH_DEFAULT_MAX_AGE_SECONDS;
+    const maxAgeSeconds = normalizeOptionalPositiveInteger(
+      input.maxAgeSeconds,
+      PYTH_DEFAULT_MAX_AGE_SECONDS,
+      'maxAgeSeconds',
+    );
     const closeUpdateAccounts = input.closeUpdateAccounts ?? true;
     const walletAddress = (input.payerAddress?.trim() || (await ctx.backend.getAddress())).trim();
     if (!walletAddress) {

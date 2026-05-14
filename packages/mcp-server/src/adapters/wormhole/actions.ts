@@ -37,10 +37,14 @@ import {
 } from './validation.js';
 
 export interface WormholeTransferInput {
-  sourceMint: string;
+  sourceMint?: string;
+  sourceToken?: string;
+  token?: string;
   amount: string;
   destinationChain: string;
-  destinationAddress: string;
+  destinationAddress?: string;
+  destinationRecipient?: string;
+  recipient?: string;
   routeType?: string;
   minDestinationAmount?: string;
   maxBridgeFee?: string;
@@ -48,6 +52,26 @@ export interface WormholeTransferInput {
   recipientMemo?: string;
   dueAt?: string;
   note?: string;
+}
+
+const WORMHOLE_SOURCE_TOKEN_ALIASES: Record<string, string> = {
+  SOL: 'native',
+  WSOL: 'So11111111111111111111111111111111111111112',
+  USDC: 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v',
+  USDT: 'Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB',
+  BONK: 'DezXAZ8z7PnrnRJjz3wXBoRgixCa6xjnB7YaB1pPB263',
+  JUP: 'JUPyiwrYJFskUPiHa7hkeR8VUtAeFoSYbKedZNsDvCN',
+};
+
+function resolveWormholeSourceMint(input: WormholeTransferInput): string | undefined {
+  const raw = input.sourceMint ?? input.sourceToken ?? input.token;
+  const trimmed = raw?.trim();
+  if (!trimmed) return undefined;
+  return WORMHOLE_SOURCE_TOKEN_ALIASES[trimmed.toUpperCase()] ?? trimmed;
+}
+
+function resolveWormholeDestinationAddress(input: WormholeTransferInput): string | undefined {
+  return input.destinationAddress ?? input.destinationRecipient ?? input.recipient;
 }
 
 export interface WormholeRedeemInput {
@@ -74,14 +98,17 @@ export const wormholeTransferAction: AdapterAction<WormholeTransferInput> = {
   async prepare(input, ctx): Promise<AdapterPrepareResult> {
     const walletAddress = await ctx.backend.getAddress();
     const wormholeNetwork = wormholeNetworkForCluster(ctx.config.cluster);
-    const sourceMint = normalizeMint(input.sourceMint, 'sourceMint');
+    const sourceMint = normalizeMint(resolveWormholeSourceMint(input), 'sourceMint');
     const amount = await normalizeWormholeAmount({
       connection: ctx.connection,
       sourceMint,
       amount: requireNonEmptyString(input.amount, 'amount'),
     });
     const destinationChain = normalizeDestinationChain(input.destinationChain);
-    const destinationAddress = validateDestinationAddress(destinationChain, input.destinationAddress);
+    const destinationAddress = validateDestinationAddress(
+      destinationChain,
+      requireNonEmptyString(resolveWormholeDestinationAddress(input), 'destinationAddress'),
+    );
     const routeType = normalizeRouteType(input.routeType);
     const nativeGasDropoff = optionalNonNegativeDecimal(input.nativeGasDropoff, 'nativeGasDropoff');
     const minDestinationAmount = optionalNonNegativeDecimal(input.minDestinationAmount, 'minDestinationAmount');

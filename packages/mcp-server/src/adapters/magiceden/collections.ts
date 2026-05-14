@@ -5,6 +5,7 @@ import {
   type MagicedenCollectionBids,
   type MagicedenCollectionListings,
   type MagicedenCollectionSummary,
+  type MagicedenTopCollections,
   type MagicedenNftDetail,
   type MagicedenRecentActivity,
 } from './client.js';
@@ -21,6 +22,13 @@ export interface CollectionSnapshotResult {
   summary: MagicedenCollectionSummary;
   listings?: MagicedenCollectionListings;
   bids?: MagicedenCollectionBids;
+}
+
+export async function getTopCollections(
+  input: { limit?: number; timeRange?: string },
+  _ctx: DAppAdapterContext,
+): Promise<MagicedenTopCollections> {
+  return getMagicedenClient().getTopCollections(input);
 }
 
 export async function getCollectionSnapshot(

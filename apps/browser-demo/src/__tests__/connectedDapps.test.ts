@@ -66,6 +66,7 @@ describe('KNOWN_CONNECTED_DAPPS', () => {
       'orca',
       'meteora',
       'marginfi',
+      'project0',
       'drift',
       'squads',
       'realms',
@@ -86,6 +87,12 @@ describe('KNOWN_CONNECTED_DAPPS', () => {
     expect(KNOWN_CONNECTED_DAPPS.find((adapter) => adapter.id === 'wormhole')?.readTools).toEqual(
       expect.arrayContaining(['solana_wormhole_quote', 'solana_wormhole_transfer_status']),
     );
+    expect(KNOWN_CONNECTED_DAPPS.find((adapter) => adapter.id === 'project0')).toMatchObject({
+      name: 'Project 0',
+      actionKinds: expect.arrayContaining(['project0_create_account', 'project0_borrow']),
+      readTools: expect.arrayContaining(['solana_project0_banks', 'solana_project0_health_preview']),
+      actionSource: 'first-class-adapter',
+    });
     const mayan = KNOWN_CONNECTED_DAPPS.find((adapter) => adapter.id === 'mayan');
     expect(mayan).toMatchObject({
       actionKinds: [],
@@ -231,6 +238,7 @@ describe('summary copy', () => {
 describe('helper lookups', () => {
   it('findAdapterByActionKind maps the action kind back to its adapter', () => {
     expect(findAdapterByActionKind('kamino_deposit')?.id).toBe('kamino');
+    expect(findAdapterByActionKind('project0_borrow')?.id).toBe('project0');
     expect(findAdapterByActionKind('raydium_harvest')?.id).toBe('raydium');
     expect(findAdapterByActionKind('marinade_liquid_stake')?.id).toBe('marinade');
     expect(findAdapterByActionKind('wormhole_transfer')?.id).toBe('wormhole');
@@ -240,6 +248,7 @@ describe('helper lookups', () => {
 
   it('findAdapterByReadTool maps the read tool name back to its adapter', () => {
     expect(findAdapterByReadTool('solana_kamino_reserve_snapshot')?.id).toBe('kamino');
+    expect(findAdapterByReadTool('solana_project0_health_preview')?.id).toBe('project0');
     expect(findAdapterByReadTool('solana_jupiter_token_risk_evidence')?.id).toBe('jupiter');
     expect(findAdapterByReadTool('solana_raydium_pool_snapshot')?.id).toBe('raydium');
     expect(findAdapterByReadTool('solana_marinade_quote')?.id).toBe('marinade');
@@ -251,6 +260,7 @@ describe('helper lookups', () => {
     expect(findProtocolConnectorByInput('Meteora DLMM')?.id).toBe('meteora');
     expect(findProtocolConnectorByInput('go check my Meteora account')?.id).toBe('meteora');
     expect(findProtocolConnectorByInput('jup')?.id).toBe('jupiter');
+    expect(findProtocolConnectorByInput('p0')?.id).toBe('project0');
     expect(findProtocolConnectorByInput('mSOL')?.id).toBe('marinade');
     expect(findProtocolConnectorByInput('portal bridge')?.id).toBe('wormhole');
     expect(findProtocolConnectorByInput('cross-chain swap')?.id).toBe('mayan');

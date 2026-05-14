@@ -23,6 +23,7 @@ describe('connectorExecution helpers', () => {
       expect(CONNECTOR_APPROVAL_ACTION_TYPES.has('kamino_deposit')).toBe(true);
       expect(CONNECTOR_APPROVAL_ACTION_TYPES.has('kamino_withdraw')).toBe(true);
       expect(CONNECTOR_APPROVAL_ACTION_TYPES.has('marginfi_deposit')).toBe(true);
+      expect(CONNECTOR_APPROVAL_ACTION_TYPES.has('project0_borrow')).toBe(true);
       expect(CONNECTOR_APPROVAL_ACTION_TYPES.has('save_deposit')).toBe(true);
       expect(CONNECTOR_APPROVAL_ACTION_TYPES.has('lulo_deposit')).toBe(true);
       // LST / staking
@@ -77,6 +78,7 @@ describe('connectorExecution helpers', () => {
   describe('isConnectorApprovalKind', () => {
     it('returns true for connector action kinds', () => {
       expect(isConnectorApprovalKind({ kind: 'kamino_deposit' })).toBe(true);
+      expect(isConnectorApprovalKind({ kind: 'project0_create_account' })).toBe(true);
       expect(isConnectorApprovalKind({ kind: 'magiceden_bid' })).toBe(true);
       expect(isConnectorApprovalKind({ kind: 'jito_unstake_jitosol' })).toBe(true);
     });

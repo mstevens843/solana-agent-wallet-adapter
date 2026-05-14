@@ -1,0 +1,239 @@
+{
+  "$schema": "./connector-pack.schema.json",
+  "id": "project0",
+  "name": "Project 0",
+  "status": "first_class",
+  "aliases": ["project0", "project 0", "p0", "0dotxyz", "0.xyz", "zero"],
+  "supportedClusters": ["mainnet-beta"],
+  "requiredConfig": [
+    {
+      "name": "@0dotxyz/p0-ts-sdk optional dependency",
+      "scope": "optional_dependency",
+      "required": true,
+      "description": "Required for Project 0 account health, prepared transaction helpers, account creation, deposit, withdraw, borrow, and repay."
+    },
+    {
+      "name": "connectors.project0.minHealthRatio",
+      "scope": "user_setting",
+      "required": false,
+      "description": "Minimum projected health ratio for borrow and withdraw previews. Defaults to 1.1."
+    },
+    {
+      "name": "PROJECT0_API_BASE_URL or P0_API_BASE_URL",
+      "scope": "env",
+      "required": false,
+      "description": "Optional override for Project 0 bank, strategy, and wallet metadata reads. Defaults to https://ai.0.xyz."
+    }
+  ],
+  "readCapabilities": [
+    {
+      "toolName": "solana_project0_banks",
+      "source": "first-class-adapter",
+      "implemented": true,
+      "requiresClientKey": false,
+      "returns": "Project 0 banks with token, mint, venue, deposit APY, borrow APY, USD price, and token program metadata.",
+      "facts": ["bankAddress", "mint", "symbol", "venue", "depositApy", "borrowApy", "usdPrice"]
+    },
+    {
+      "toolName": "solana_project0_strategies",
+      "source": "first-class-adapter",
+      "implemented": true,
+      "requiresClientKey": false,
+      "returns": "Project 0 strategy metadata including primary and secondary banks, spread, leverage, APY, and capacity.",
+      "facts": ["heading", "primaryBankAddress", "secondaryBankAddress", "spread", "leverage", "apy", "capacity"]
+    },
+    {
+      "toolName": "solana_project0_wallet",
+      "source": "first-class-adapter",
+      "implemented": true,
+      "requiresClientKey": false,
+      "returns": "Project 0 wallet holdings and token balances for the selected wallet.",
+      "facts": ["walletAddress", "tokenMint", "tokenSymbol", "balance", "usdValue"]
+    },
+    {
+      "toolName": "solana_project0_account_detail",
+      "source": "first-class-adapter",
+      "implemented": true,
+      "requiresClientKey": false,
+      "returns": "One Project 0 account with supplied and borrowed positions plus account health.",
+      "facts": ["project0Account", "authority", "suppliedAmount", "borrowedAmount", "suppliedUsd", "borrowedUsd", "healthRatio"]
+    },
+    {
+      "toolName": "solana_project0_health_preview",
+      "source": "first-class-adapter",
+      "implemented": true,
+      "requiresClientKey": false,
+      "returns": "Projected Project 0 account health after deposit, withdraw, borrow, or repay without signing.",
+      "facts": ["operation", "amount", "bankAddress", "beforeHealth", "afterHealth", "minHealthRatio", "blocked", "warnings"]
+    },
+    {
+      "toolName": "solana_connector_read_facts",
+      "source": "first-class-adapter",
+      "implemented": true,
+      "requiresClientKey": false,
+      "returns": "Normalized Project 0 facts for markets, strategies, positions, borrow, withdraw, repay, and earn prompts.",
+      "facts": ["connectorFacts", "capability", "readiness"]
+    }
+  ],
+  "writeCapabilities": [
+    {
+      "actionKind": "project0_create_account",
+      "executionMode": "first_class_adapter",
+      "implemented": true,
+      "prepares": "A manual-approval inbox item that creates a Project 0 account.",
+      "executesVia": "solana_execute_prepared_action",
+      "userApproves": "A Project 0 account creation transaction built from the Project 0 SDK."
+    },
+    {
+      "actionKind": "project0_deposit",
+      "executionMode": "first_class_adapter",
+      "implemented": true,
+      "prepares": "A manual-approval inbox item that deposits tokens into a Project 0 bank.",
+      "executesVia": "solana_execute_prepared_action",
+      "userApproves": "A Project 0 deposit transaction built from the Project 0 SDK."
+    },
+    {
+      "actionKind": "project0_withdraw",
+      "executionMode": "first_class_adapter",
+      "implemented": true,
+      "prepares": "A manual-approval inbox item that withdraws supplied tokens after projected health is checked.",
+      "executesVia": "solana_execute_prepared_action",
+      "userApproves": "A Project 0 withdraw transaction built from refreshed account and bank state."
+    },
+    {
+      "actionKind": "project0_borrow",
+      "executionMode": "first_class_adapter",
+      "implemented": true,
+      "prepares": "A manual-approval inbox item that borrows tokens only when projected health remains above policy.",
+      "executesVia": "solana_execute_prepared_action",
+      "userApproves": "A Project 0 borrow transaction built from refreshed account and bank state."
+    },
+    {
+      "actionKind": "project0_repay",
+      "executionMode": "first_class_adapter",
+      "implemented": true,
+      "prepares": "A manual-approval inbox item that repays Project 0 debt for a selected bank.",
+      "executesVia": "solana_execute_prepared_action",
+      "userApproves": "A Project 0 repay transaction built from the Project 0 SDK."
+    }
+  ],
+  "requiredUserInputs": [
+    {
+      "name": "token",
+      "kind": "text",
+      "required": true,
+      "appliesTo": ["project0_deposit", "project0_withdraw", "project0_borrow", "project0_repay"],
+      "prompt": "Which Project 0 token or bank should I use?"
+    },
+    {
+      "name": "amount",
+      "kind": "number",
+      "required": true,
+      "appliesTo": ["project0_deposit", "project0_borrow"],
+      "prompt": "How much should I prepare?"
+    },
+    {
+      "name": "project0Account",
+      "kind": "text",
+      "required": false,
+      "appliesTo": ["project0_deposit", "project0_withdraw", "project0_borrow", "project0_repay"],
+      "prompt": "Which Project 0 account should I use?"
+    }
+  ],
+  "requiredConnectorFacts": [
+    "Project 0 account address when the wallet has multiple accounts",
+    "Bank address or mint",
+    "Asset mint and decimals",
+    "Deposit APY or borrow APY",
+    "Account health before and after borrow or withdraw",
+    "Wallet balance and outstanding debt for repay or withdraw-all requests"
+  ],
+  "unsupportedRequests": [
+    "Borrow or withdraw when the projected health preview is blocked.",
+    "Borrow or withdraw without account health facts.",
+    "Guarantee liquidation safety.",
+    "Repay an unspecified debt.",
+    "Create delegated authority, recurring automation, or unlimited approvals.",
+    "Operate outside mainnet-beta.",
+    "Move funds without wallet approval.",
+    "Use liquidation, flash loan, repay-with-collateral, delegated account, or authority-transfer flows."
+  ],
+  "actionPreparationNotes": "Project 0 is first-class while MarginFi remains separately available. Use banks, account_detail, wallet, and health_preview reads for facts, and project0_* prepared action kinds for manual approval. Borrow and withdraw are rechecked at execution time against connectors.project0.minHealthRatio or an explicit minHealthRatio override.",
+  "riskNotes": "Borrowing and withdrawals can create liquidation risk. The connector blocks failed simulations, unhealthy projected accounts, stale oracle/risk warnings, and projected health below policy, but it cannot guarantee future liquidation safety.",
+  "approvalBoundary": {
+    "readGated": true,
+    "writeGated": true,
+    "blinkBacked": false,
+    "summary": "safety.prepare_only"
+  },
+  "walletApprovalBoundary": "Project 0 actions are approval-bound. The agent can read connector facts and prepare an action, but the wallet signs separately.",
+  "examples": {
+    "requests": [
+      {
+        "user": "show my Project 0 positions",
+        "classification": "read_only_answer",
+        "readTool": "solana_project0_account_detail",
+        "agentResponse": "The agent reads Project 0 account positions and health for the connected wallet."
+      },
+      {
+        "user": "show the SOL Project 0 bank",
+        "classification": "read_only_answer",
+        "readTool": "solana_project0_banks",
+        "agentResponse": "The agent reads the Project 0 SOL bank with deposit APY, borrow APY, venue, mint, and price facts."
+      },
+      {
+        "user": "deposit 50 USDC into Project 0",
+        "classification": "prepare_approval_action",
+        "writeAction": "project0_deposit",
+        "agentResponse": "Prepared a Project 0 deposit review for 50 USDC. This prepares a wallet approval request; it does not sign."
+      },
+      {
+        "user": "borrow 1 SOL on p0",
+        "classification": "prepare_approval_action",
+        "writeAction": "project0_borrow",
+        "agentResponse": "The agent previews projected account health before preparing the Project 0 borrow for wallet approval."
+      },
+      {
+        "user": "create a Project 0 account",
+        "classification": "prepare_approval_action",
+        "writeAction": "project0_create_account",
+        "agentResponse": "Prepared a Project 0 account creation review. The wallet must approve the transaction."
+      },
+      {
+        "user": "repay my Project 0 USDC loan",
+        "classification": "needs_input",
+        "needsInputQuestions": ["How much USDC should I repay, or should I repay all?"],
+        "agentResponse": "The agent needs a repay amount or repayAll flag before preparing a wallet approval item."
+      },
+      {
+        "user": "withdraw all Project 0 collateral without checking health",
+        "classification": "unsupported",
+        "denialReason": "safety.missing_facts",
+        "agentResponse": "The agent denied this because account health facts are required before a withdrawal can be reviewed."
+      },
+      {
+        "user": "guarantee my Project 0 borrow will not be liquidated",
+        "classification": "unsupported",
+        "denialReason": "safety.no_safety_guarantee",
+        "agentResponse": "The agent denied this because it cannot guarantee liquidation safety."
+      },
+      {
+        "user": "Project 0 borrow on devnet",
+        "classification": "unsupported",
+        "denialReason": "safety.action_not_exposed",
+        "agentResponse": "The agent denied this because Project 0 connector actions are cataloged for mainnet-beta only."
+      },
+      {
+        "user": "move funds from Project 0 without my wallet",
+        "classification": "unsupported",
+        "denialReason": "safety.no_autonomous_funds",
+        "agentResponse": "The agent denied this because the connector cannot move funds without wallet approval."
+      }
+    ]
+  },
+  "mirrorsCanonical": {
+    "file": "apps/browser-demo/src/connectedDapps.ts",
+    "entry": "project0",
+    "note": "Mirrors Project 0 browser catalog support for first-class lending reads, strategies, account creation, and prepared actions."
+  }
+}

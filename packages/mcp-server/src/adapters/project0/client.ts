@@ -267,6 +267,9 @@ class RealProject0Client implements Project0Client {
           { enabled: true, mandatoryBanks: [sdkBank.address ?? new PublicKey(bank.bankAddress)], excludedBanks: [] },
         );
         after = healthFromProject0Account(simulation.marginfiAccount ?? simulation.account ?? simulation);
+      } else {
+        const capacityWarning = project0CapacityWarning(account, sdkBank, input.operation, resolvedAmount.amount, bank.symbol);
+        if (capacityWarning) warnings.push(capacityWarning);
       }
     } catch (err) {
       warnings.push(`Health simulation failed: ${err instanceof Error ? err.message : String(err)}`);
@@ -567,7 +570,7 @@ async function serializeTransaction(connection: Connection, transaction: any, fe
 
 function isVersionedTransaction(value: unknown): value is VersionedTransaction {
   return value instanceof VersionedTransaction || (
-    Boolean(value) &&
+    value !== null &&
     typeof value === 'object' &&
     'version' in value &&
     'message' in value &&
@@ -667,10 +670,34 @@ function healthBlocked(
   minHealthRatio: number,
 ): boolean {
   if (operation !== 'borrow' && operation !== 'withdraw') return false;
-  if (!after) return true;
+  if (!after) return warnings.length === 0 || warnings.some((warning) => /exceeds|capacity is unavailable|stale|oracle|risk engine|simulation failed/i.test(warning));
   if (!after.healthy) return true;
   if (after.healthRatio !== null && after.healthRatio < minHealthRatio) return true;
   return warnings.some((warning) => /stale|oracle|risk engine|simulation failed/i.test(warning));
+}
+
+function project0CapacityWarning(
+  account: AnyProject0Account,
+  bank: AnyProject0Bank,
+  operation: Project0Operation,
+  amount: string,
+  tokenSymbol: string,
+): string | undefined {
+  if (operation !== 'borrow' && operation !== 'withdraw') return undefined;
+  const method = operation === 'borrow' ? 'computeMaxBorrowForBank' : 'computeMaxWithdrawForBank';
+  if (typeof account[method] !== 'function') {
+    return 'Project 0 borrow/withdraw capacity is unavailable: SDK did not expose a max borrow/withdraw helper.';
+  }
+  const bankAddress = bank.address ?? new PublicKey(toBase58(bank.publicKey));
+  const max = numberFromSdkDecimal(account[method](bankAddress));
+  const requested = Number(amount);
+  if (!Number.isFinite(max) || max < 0) {
+    return `Projected health ratio unavailable; Project 0 ${operation} capacity is unavailable.`;
+  }
+  if (Number.isFinite(requested) && requested > max) {
+    return `Requested ${operation} ${amount} ${tokenSymbol} exceeds Project 0 max ${operation} ${trimDecimal(max)} ${tokenSymbol}.`;
+  }
+  return `Projected health ratio unavailable; Project 0 max ${operation} check passed up to ${trimDecimal(max)} ${tokenSymbol}.`;
 }
 
 function normalizeBank(value: unknown): Project0Bank[] {
@@ -801,6 +828,13 @@ function numberValue(...values: unknown[]): number | undefined {
     if (Number.isFinite(parsed)) return parsed;
   }
   return undefined;
+}
+
+function numberFromSdkDecimal(value: unknown): number {
+  if (typeof value === 'number') return value;
+  const toNumber = (value as { toNumber?: () => number } | undefined)?.toNumber;
+  if (typeof toNumber === 'function') return toNumber.call(value);
+  return Number(decimalString(value));
 }
 
 function strategyCapacity(value: unknown): string | number | undefined {

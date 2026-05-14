@@ -27,6 +27,13 @@ import type {
   MarginfiHealthPreview,
   MarginfiPosition,
 } from './adapters/marginfi/client.js';
+import type {
+  Project0AccountDetail,
+  Project0Bank,
+  Project0HealthPreview,
+  Project0Strategy,
+  Project0WalletSnapshot,
+} from './adapters/project0/client.js';
 import { shortAddress } from './adapters/orca/constants.js';
 import type {
   JupiterPriceBatchResult,
@@ -79,6 +86,7 @@ import type {
   MagicedenCollectionBids,
   MagicedenCollectionListings,
   MagicedenCollectionSummary,
+  MagicedenTopCollections,
   MagicedenNftDetail,
   MagicedenRecentActivity,
   MagicedenWalletNftsSnapshot,
@@ -90,6 +98,7 @@ import type {
   TensorListing,
   TensorNftDetail,
   TensorSale,
+  TensorSupportedCollectionsResult,
   TensorWalletExposure,
   TensorWalletNftsResult,
 } from './adapters/tensor/client.js';
@@ -181,6 +190,7 @@ export interface ConnectorFactReadInput {
   bankAddress?: string;
   bankMint?: string;
   marginfiAccount?: string;
+  project0Account?: string;
   operation?: 'deposit' | 'withdraw' | 'borrow' | 'repay';
   vaultAddress?: string;
   subAccountId?: number;
@@ -2205,6 +2215,233 @@ export function factsFromMarginfiHealthPreview(
   return facts;
 }
 
+export function factsFromProject0Banks(
+  banks: Project0Bank[],
+  checkedAt = new Date().toISOString(),
+): ConnectorFact[] {
+  if (banks.length === 0) {
+    return [
+      fact({
+        connectorId: 'project0',
+        label: 'Project 0 banks',
+        value: 'No banks matched the request',
+        tone: 'neutral',
+        checkedAt,
+      }),
+    ];
+  }
+  return [
+    fact({
+      connectorId: 'project0',
+      label: 'Project 0 banks',
+      value: `${banks.length} banks matched`,
+      tone: 'good',
+      checkedAt,
+    }),
+    ...banks.slice(0, 8).map((bank) => fact({
+      connectorId: 'project0',
+      label: `${bank.symbol} ${bank.venue} bank`,
+      value: `Deposit ${formatPercent(bank.depositApy)} · borrow ${formatPercent(bank.borrowApy)}`,
+      tone: rateTone(bank.depositApy),
+      checkedAt,
+      detail: {
+        bankAddress: bank.bankAddress,
+        mint: bank.mint,
+        mintDecimals: bank.mintDecimals,
+        venue: bank.venue,
+        usdPrice: bank.usdPrice,
+        tokenProgram: bank.tokenProgram,
+      },
+    })),
+  ];
+}
+
+export function factsFromProject0Strategies(
+  strategies: Project0Strategy[],
+  checkedAt = new Date().toISOString(),
+): ConnectorFact[] {
+  if (strategies.length === 0) {
+    return [
+      fact({
+        connectorId: 'project0',
+        label: 'Project 0 strategies',
+        value: 'No strategies reported',
+        tone: 'neutral',
+        checkedAt,
+      }),
+    ];
+  }
+  return strategies.slice(0, 8).map((strategy) => fact({
+    connectorId: 'project0',
+    label: strategy.heading,
+    value: strategy.apy !== undefined
+      ? `Projected APY ${formatPercent(strategy.apy <= 1 ? strategy.apy * 100 : strategy.apy)}`
+      : strategy.spread !== undefined
+        ? `Spread ${formatPercent(strategy.spread <= 1 ? strategy.spread * 100 : strategy.spread)}`
+        : 'Strategy available',
+    tone: strategy.apy !== undefined && strategy.apy > 0 ? 'good' : 'neutral',
+    checkedAt,
+    detail: {
+      primaryBankAddress: strategy.primaryBankAddress,
+      secondaryBankAddress: strategy.secondaryBankAddress,
+      spread: strategy.spread,
+      leverage: strategy.leverage,
+      apy: strategy.apy,
+      capacity: strategy.capacity,
+    },
+  }));
+}
+
+export function factsFromProject0Wallet(
+  wallet: Project0WalletSnapshot,
+  checkedAt = new Date().toISOString(),
+): ConnectorFact[] {
+  const facts = [
+    fact({
+      connectorId: 'project0',
+      label: 'Project 0 wallet holdings',
+      value: wallet.totalUsdValue !== undefined
+        ? `${wallet.tokens.length} tokens · $${trimNumber(wallet.totalUsdValue)}`
+        : `${wallet.tokens.length} tokens`,
+      tone: wallet.tokens.length > 0 ? 'good' : 'neutral',
+      checkedAt,
+      detail: { wallet: wallet.wallet, totalUsdValue: wallet.totalUsdValue },
+    }),
+  ];
+  facts.push(...wallet.tokens.slice(0, 8).map((token) => fact({
+    connectorId: 'project0',
+    label: token.symbol,
+    value: token.usdValue !== undefined
+      ? `${token.balance} · $${trimNumber(token.usdValue)}`
+      : token.balance,
+    tone: positiveString(token.balance) ? 'good' : 'neutral',
+    checkedAt,
+    detail: {
+      mint: token.address,
+      name: token.name,
+      decimals: token.decimals,
+      usdPrice: token.usdPrice,
+      usdValue: token.usdValue,
+    },
+  })));
+  return facts;
+}
+
+export function factsFromProject0AccountDetail(
+  detail: Project0AccountDetail,
+  checkedAt = new Date().toISOString(),
+): ConnectorFact[] {
+  if (detail.positions.length === 0) {
+    return [
+      fact({
+        connectorId: 'project0',
+        label: 'Project 0 positions',
+        value: 'No active Project 0 balances found for this account',
+        tone: 'neutral',
+        checkedAt,
+        detail: {
+          project0Account: detail.project0Account,
+          authority: detail.authority,
+          health: detail.health,
+        },
+      }),
+    ];
+  }
+  return [
+    fact({
+      connectorId: 'project0',
+      label: 'Project 0 account',
+      value: `${detail.positions.length} positions · ${detail.health.netValue} net value · health ${detail.health.healthRatioText}`,
+      tone: project0HealthTone(detail.health),
+      checkedAt,
+      detail: {
+        project0Account: detail.project0Account,
+        authority: detail.authority,
+        activeBalances: detail.activeBalances,
+        netApy: detail.netApy,
+        health: detail.health,
+      },
+    }),
+    ...detail.positions.map((position) => fact({
+      connectorId: 'project0',
+      label: `${position.tokenSymbol ?? shortAddress(position.bankMint)} position`,
+      value: project0PositionValue(position),
+      tone: positiveString(position.borrowedAmount) ? 'warn' : positiveString(position.suppliedAmount) ? 'good' : 'neutral',
+      checkedAt,
+      detail: {
+        bankAddress: position.bankAddress,
+        bankMint: position.bankMint,
+        venue: position.venue,
+        decimals: position.decimals,
+        suppliedUsd: position.suppliedUsd,
+        borrowedUsd: position.borrowedUsd,
+        assetShares: position.assetShares,
+        liabilityShares: position.liabilityShares,
+      },
+    })),
+  ];
+}
+
+export function factsFromProject0HealthPreview(
+  preview: Project0HealthPreview,
+  checkedAt = new Date().toISOString(),
+): ConnectorFact[] {
+  const token = preview.tokenSymbol ?? shortAddress(preview.bankMint ?? preview.bankAddress ?? 'bank');
+  const facts = [
+    fact({
+      connectorId: 'project0',
+      label: 'Project 0 health preview',
+      value: preview.operation === 'create_account'
+        ? `Create account index ${preview.accountIndex ?? 0}`
+        : `${preview.operation} ${preview.amount ?? '0'} ${token} · projected health ${preview.after?.healthRatioText ?? 'unavailable'}`,
+      tone: preview.blocked ? 'fail' : preview.warnings.length > 0 ? 'warn' : preview.after ? project0HealthTone(preview.after) : 'good',
+      checkedAt,
+      detail: {
+        operation: preview.operation,
+        project0Account: preview.project0Account,
+        accountIndex: preview.accountIndex,
+        bankAddress: preview.bankAddress,
+        bankMint: preview.bankMint,
+        amountRaw: preview.amountRaw,
+        withdrawAll: preview.withdrawAll,
+        repayAll: preview.repayAll,
+        minHealthRatio: preview.minHealthRatio,
+        simulatedAt: preview.simulatedAt,
+      },
+    }),
+  ];
+  if (preview.before) {
+    facts.push(fact({
+      connectorId: 'project0',
+      label: 'Health before',
+      value: project0HealthValue(preview.before),
+      tone: project0HealthTone(preview.before),
+      checkedAt,
+      detail: { ...preview.before },
+    }));
+  }
+  if (preview.after) {
+    facts.push(fact({
+      connectorId: 'project0',
+      label: 'Health after',
+      value: project0HealthValue(preview.after),
+      tone: preview.blocked ? 'fail' : project0HealthTone(preview.after),
+      checkedAt,
+      detail: { ...preview.after },
+    }));
+  }
+  if (preview.warnings.length > 0) {
+    facts.push(fact({
+      connectorId: 'project0',
+      label: 'Health warnings',
+      value: preview.warnings.join('; '),
+      tone: preview.blocked ? 'fail' : 'warn',
+      checkedAt,
+    }));
+  }
+  return facts;
+}
+
 export function factsFromSaveReserveSnapshot(
   snapshot: SaveReserveSnapshot,
   checkedAt = new Date().toISOString(),
@@ -3515,6 +3752,54 @@ export function factsFromMagicedenApiHealth(
   return facts;
 }
 
+export function factsFromMagicedenTopCollections(
+  snapshot: MagicedenTopCollections,
+  checkedAt = new Date().toISOString(),
+): ConnectorFact[] {
+  if (snapshot.rows.length === 0) {
+    return [
+      fact({
+        connectorId: 'magiceden',
+        label: 'Magic Eden collections',
+        value: 'No collections returned by the API',
+        tone: 'neutral',
+        checkedAt,
+        detail: { source: snapshot.source, apiBaseHost: snapshot.apiBaseHost, asOfIso: snapshot.asOfIso },
+      }),
+    ];
+  }
+  return [
+    fact({
+      connectorId: 'magiceden',
+      label: 'Magic Eden top collections',
+      value: `${snapshot.rows.length} collection${snapshot.rows.length === 1 ? '' : 's'} from ${snapshot.source}`,
+      tone: 'good',
+      checkedAt,
+      detail: { source: snapshot.source, apiBaseHost: snapshot.apiBaseHost, asOfIso: snapshot.asOfIso },
+    }),
+    ...snapshot.rows.slice(0, 10).map((row, idx) =>
+      fact({
+        connectorId: 'magiceden',
+        label: row.name ?? row.collectionSymbol ?? row.collectionId ?? `Collection #${idx + 1}`,
+        value: nftCollectionFactValue({
+          floorPriceSol: row.floorPriceSol,
+          listedCount: row.listedCount,
+          totalSupply: row.totalSupply,
+          volume24hSol: row.volume24hSol,
+          rank: row.rank ?? idx + 1,
+        }),
+        tone: row.verified === false ? 'warn' : 'good',
+        checkedAt,
+        detail: {
+          ...(row.collectionSymbol ? { collectionSymbol: row.collectionSymbol } : {}),
+          ...(row.collectionId ? { collectionId: row.collectionId } : {}),
+          verified: row.verified ?? null,
+        },
+      }),
+    ),
+  ];
+}
+
 export function factsFromMagicedenCollectionSnapshot(
   input: MagicedenCollectionSnapshotInput,
   checkedAt = new Date().toISOString(),
@@ -3860,6 +4145,60 @@ export function factsFromTensorCollectionSnapshot(
     }
   }
   return facts;
+}
+
+export function factsFromTensorSupportedCollections(
+  snapshot: TensorSupportedCollectionsResult,
+  checkedAt = new Date().toISOString(),
+): ConnectorFact[] {
+  if (snapshot.collections.length === 0) {
+    return [
+      fact({
+        connectorId: 'tensor',
+        label: 'Tensor collections',
+        value: 'No collections returned by the configured Tensor client',
+        tone: 'neutral',
+        checkedAt,
+        detail: {
+          ...(snapshot.source !== undefined && { source: snapshot.source }),
+          ...(snapshot.asOf !== undefined && { asOf: snapshot.asOf }),
+        },
+      }),
+    ];
+  }
+  return [
+    fact({
+      connectorId: 'tensor',
+      label: 'Tensor supported collections',
+      value: `${snapshot.collections.length} supported collection${snapshot.collections.length === 1 ? '' : 's'}`,
+      tone: 'good',
+      checkedAt,
+      detail: {
+        ...(snapshot.source !== undefined && { source: snapshot.source }),
+        ...(snapshot.asOf !== undefined && { asOf: snapshot.asOf }),
+      },
+    }),
+    ...snapshot.collections.slice(0, 10).map((collection, idx) =>
+      fact({
+        connectorId: 'tensor',
+        label: collection.name ?? collection.slug ?? shortTensorAddress(collection.collectionId),
+        value: nftCollectionFactValue({
+          floorPriceSol: collection.floorPriceSol ?? (collection.floorPriceLamports ? tensorSolFromLamports(collection.floorPriceLamports) : undefined),
+          listedCount: collection.listedCount,
+          totalSupply: collection.totalSupply,
+          volume24hSol: collection.volume24hSol ?? (collection.volume24hLamports ? tensorSolFromLamports(collection.volume24hLamports) : undefined),
+          rank: collection.rank ?? idx + 1,
+        }),
+        tone: collection.verified === false ? 'warn' : 'good',
+        checkedAt,
+        detail: {
+          collectionId: collection.collectionId,
+          ...(collection.slug !== undefined && { slug: collection.slug }),
+          verified: collection.verified ?? null,
+        },
+      }),
+    ),
+  ];
 }
 
 export function factsFromTensorCollectionListings(
@@ -4412,6 +4751,22 @@ function lamportsToSol(value: string): string {
   return `${whole}.${fractionText}`;
 }
 
+function nftCollectionFactValue(input: {
+  floorPriceSol?: string | undefined;
+  listedCount?: number | undefined;
+  totalSupply?: number | undefined;
+  volume24hSol?: string | undefined;
+  rank?: number | undefined;
+}): string {
+  const parts: string[] = [];
+  if (typeof input.rank === 'number' && Number.isFinite(input.rank)) parts.push(`#${input.rank}`);
+  if (input.floorPriceSol) parts.push(`${input.floorPriceSol} SOL floor`);
+  if (typeof input.listedCount === 'number' && Number.isFinite(input.listedCount)) parts.push(`${input.listedCount} listed`);
+  if (typeof input.totalSupply === 'number' && Number.isFinite(input.totalSupply)) parts.push(`of ${input.totalSupply}`);
+  if (input.volume24hSol) parts.push(`${input.volume24hSol} SOL 24h`);
+  return parts.join(' · ') || 'Collection available';
+}
+
 function saveHealthTone(value: number): ConnectorFactTone {
   if (!Number.isFinite(value)) return 'good';
   if (value < 1.05) return 'fail';
@@ -4566,6 +4921,29 @@ function marginfiHealthValue(health: MarginfiHealthPreview['before']): string {
 }
 
 function marginfiHealthTone(health: MarginfiHealthPreview['before']): ConnectorFactTone {
+  if (!health.healthy) return 'fail';
+  if (health.healthRatio !== null && health.healthRatio < 1.2) return 'warn';
+  return 'good';
+}
+
+function project0PositionValue(position: Project0AccountDetail['positions'][number]): string {
+  const parts = [
+    `${position.suppliedAmount} supplied`,
+    `${position.borrowedAmount} borrowed`,
+  ];
+  if (position.suppliedUsd || position.borrowedUsd) {
+    parts.push(`${position.suppliedUsd ?? '0'} supplied USD`);
+    parts.push(`${position.borrowedUsd ?? '0'} borrowed USD`);
+  }
+  if (position.venue) parts.push(position.venue);
+  return parts.join(' · ');
+}
+
+function project0HealthValue(health: NonNullable<Project0HealthPreview['before']>): string {
+  return `${health.assets} assets · ${health.liabilities} liabilities · ${health.netValue} net · ${health.healthRatioText}`;
+}
+
+function project0HealthTone(health: NonNullable<Project0HealthPreview['before']>): ConnectorFactTone {
   if (!health.healthy) return 'fail';
   if (health.healthRatio !== null && health.healthRatio < 1.2) return 'warn';
   return 'good';

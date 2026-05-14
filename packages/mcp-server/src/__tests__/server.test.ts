@@ -178,6 +178,8 @@ describe('mcp server tools', () => {
     expect(result.tools.map((tool) => tool.name)).toContain('solana_prepare_kamino_deposit');
     expect(result.tools.map((tool) => tool.name)).toContain('solana_marginfi_health_preview');
     expect(result.tools.map((tool) => tool.name)).toContain('solana_prepare_marginfi_borrow');
+    expect(result.tools.map((tool) => tool.name)).toContain('solana_project0_banks');
+    expect(result.tools.map((tool) => tool.name)).toContain('solana_prepare_project0_borrow');
     expect(result.tools.map((tool) => tool.name)).toContain('solana_wormhole_quote');
     expect(result.tools.map((tool) => tool.name)).toContain('solana_prepare_wormhole_transfer');
     expect(result.tools.map((tool) => tool.name)).toContain('solana_prepare_wormhole_redeem');
@@ -218,12 +220,15 @@ describe('mcp server tools', () => {
     const result = await client.listTools();
     const kaminoDeposit = result.tools.find((tool) => tool.name === 'solana_prepare_kamino_deposit');
     const marginfiBorrow = result.tools.find((tool) => tool.name === 'solana_prepare_marginfi_borrow');
+    const project0Borrow = result.tools.find((tool) => tool.name === 'solana_prepare_project0_borrow');
     const prepareSwap = result.tools.find((tool) => tool.name === 'solana_prepare_swap');
 
     expect(kaminoDeposit?.description).toContain('Prepares wallet approval work only');
     expect(kaminoDeposit?.description).toContain('does not sign, submit, or grant delegated authority');
     expect(marginfiBorrow?.description).toContain('Prepares wallet approval work only');
     expect(marginfiBorrow?.description).toContain('does not sign, submit, or grant delegated authority');
+    expect(project0Borrow?.description).toContain('Prepares wallet approval work only');
+    expect(project0Borrow?.description).toContain('does not sign, submit, or grant delegated authority');
     expect(prepareSwap?.description).toContain('does not sign');
     expect(prepareSwap?.description).toContain('delegated authority');
   });

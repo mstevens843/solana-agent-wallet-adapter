@@ -607,6 +607,22 @@ async function handleRequest(
         positionMint?: string;
         poolAddress?: string;
         positionAddress?: string;
+        poolId?: string;
+        poolType?: string;
+        bankAddress?: string;
+        bankMint?: string;
+        project0Account?: string;
+        limit?: number;
+        collectionId?: string;
+        collectionSymbol?: string;
+        mintAddress?: string;
+        assetId?: string;
+        includeListings?: boolean;
+        includeBids?: boolean;
+        includeCompressed?: boolean;
+        maxListings?: number;
+        maxBids?: number;
+        listedOnly?: boolean;
       };
       writeJson(res, 200, await requireActionService(actionService).connectorReadFacts({
         connectorId: requireString(body.connectorId, 'connectorId'),
@@ -634,6 +650,22 @@ async function handleRequest(
         ...(body.positionMint !== undefined && { positionMint: body.positionMint }),
         ...(body.poolAddress !== undefined && { poolAddress: body.poolAddress }),
         ...(body.positionAddress !== undefined && { positionAddress: body.positionAddress }),
+        ...(body.poolId !== undefined && { poolId: body.poolId }),
+        ...(body.poolType !== undefined && { poolType: body.poolType }),
+        ...(body.bankAddress !== undefined && { bankAddress: body.bankAddress }),
+        ...(body.bankMint !== undefined && { bankMint: body.bankMint }),
+        ...(body.project0Account !== undefined && { project0Account: body.project0Account }),
+        ...(body.limit !== undefined && { limit: body.limit }),
+        ...(body.collectionId !== undefined && { collectionId: body.collectionId }),
+        ...(body.collectionSymbol !== undefined && { collectionSymbol: body.collectionSymbol }),
+        ...(body.mintAddress !== undefined && { mintAddress: body.mintAddress }),
+        ...(body.assetId !== undefined && { assetId: body.assetId }),
+        ...(body.includeListings !== undefined && { includeListings: body.includeListings }),
+        ...(body.includeBids !== undefined && { includeBids: body.includeBids }),
+        ...(body.includeCompressed !== undefined && { includeCompressed: body.includeCompressed }),
+        ...(body.maxListings !== undefined && { maxListings: body.maxListings }),
+        ...(body.maxBids !== undefined && { maxBids: body.maxBids }),
+        ...(body.listedOnly !== undefined && { listedOnly: body.listedOnly }),
       }));
       return;
     }

@@ -27,6 +27,10 @@
     "marginfi": {
       "minHealthRatio": 1.1
     },
+    "project0": {
+      "minHealthRatio": 1.1,
+      "apiBaseUrl": "https://ai.0.xyz"
+    },
     "jupiter": {
       "tokenPrice": {
         "enabled": true,

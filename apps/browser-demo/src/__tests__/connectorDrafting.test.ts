@@ -11,6 +11,7 @@ import {
   connectorCreateStatus,
   connectorDraftConnectors,
   connectorDraftStatus,
+  formTemplateFields,
   isConnectorCapableTemplate,
   normalizeConnectorDraftParameters,
   selectedConnectorForDraftParameters,
@@ -109,6 +110,27 @@ describe('connector drafting helpers', () => {
     expect(jito).not.toHaveProperty('amount');
   });
 
+  it('seeds default sub-actions before scoping branch fields', () => {
+    const lend = normalizeConnectorDraftParameters(templateById('connector-jupiter-lend'), {
+      connectorId: 'jupiter',
+      connectorOperationId: 'jupiter:lend-flow',
+      assetMint: 'USDC',
+      amount: '1',
+      memo: 'Earn yield',
+    });
+
+    expect(lend).toMatchObject({
+      connectorId: 'jupiter',
+      connectorOperationId: 'jupiter:lend-flow',
+      protocol: 'Jupiter',
+      operation: 'Lend',
+      connectorActionSource: 'first-class-adapter',
+      subAction: 'earn-deposit',
+      assetMint: 'USDC',
+      amount: '1',
+    });
+  });
+
   it('exposes first-class connector forms without requiring Blink URLs', () => {
     const connectedDapps = setConnectedDappEnabled(emptyConnectedDapps(), 'kamino', true);
     const connectors = connectorCreateConnectors({
@@ -144,6 +166,31 @@ describe('connector drafting helpers', () => {
     });
   });
 
+  it('exposes Project 0 forms while keeping MarginFi forms available', () => {
+    const project0 = PROTOCOL_CONNECTORS.find((connector) => connector.id === 'project0')!;
+    const marginfi = PROTOCOL_CONNECTORS.find((connector) => connector.id === 'marginfi')!;
+
+    expect(connectorActionFormsForConnector(project0).map((form) => form.actionType)).toEqual(expect.arrayContaining([
+      'project0_create_account',
+      'project0_deposit',
+      'project0_withdraw',
+      'project0_borrow',
+      'project0_repay',
+    ]));
+    expect(connectorActionFormsForConnector(marginfi).map((form) => form.actionType)).toEqual(expect.arrayContaining([
+      'marginfi_deposit',
+      'marginfi_withdraw',
+      'marginfi_borrow',
+      'marginfi_repay',
+    ]));
+    expect(formTemplateFields(connectorActionFormByActionType('project0_borrow')!).map((field) => field.id)).toEqual(expect.arrayContaining([
+      'bankAddress',
+      'amount',
+      'minHealthRatio',
+      'memo',
+    ]));
+  });
+
   it('creates connector forms and plan templates for every registered first-class action kind', () => {
     const templateActionTypes = new Set(AGENT_PLAN_TEMPLATES.map((candidate) => candidate.actionType));
     const templateIds = new Set(AGENT_PLAN_TEMPLATES.map((candidate) => candidate.id));
@@ -172,6 +219,43 @@ describe('connector drafting helpers', () => {
         expect(hasDirectTemplate || hasUnifiedTemplate, `${connector.id} missing template for ${actionKind}`).toBe(true);
       }
     }
+  });
+
+  it('normalizes Lulo flow selection into fixed adapter params', () => {
+    const luloTemplate = templateById('connector-lulo-flow');
+    const base = {
+      connectorId: 'lulo',
+      connectorOperationId: 'lulo:flow',
+      protocol: 'lulo',
+      operation: 'Deposit or withdraw',
+      mintAddress: 'USDC',
+      amount: '1',
+    };
+
+    const defaultFlow = normalizeConnectorDraftParameters(luloTemplate, base);
+    expect(defaultFlow).toMatchObject({
+      subAction: 'deposit-protected',
+      depositType: 'protected',
+    });
+
+    const boost = normalizeConnectorDraftParameters(luloTemplate, {
+      ...base,
+      subAction: 'deposit-boost',
+      subActionLabel: 'Deposit — Protected',
+      depositType: 'protected',
+    });
+    expect(boost.subActionLabel).toBe('Deposit — Boost');
+    expect(boost.depositType).toBe('boost');
+
+    const regularWithdraw = normalizeConnectorDraftParameters(luloTemplate, {
+      ...base,
+      subAction: 'withdraw-regular',
+      amount: '',
+      percentage: '50',
+      withdrawType: 'protected',
+    });
+    expect(regularWithdraw.withdrawType).toBe('regular');
+    expect(regularWithdraw.percentage).toBe('50');
   });
 
   it('blocks non-AI executable drafts for disabled connectors', () => {
@@ -300,6 +384,67 @@ describe('connector drafting helpers', () => {
       const amount = driftDeposit.fields.find((field) => field.id === 'amount');
       expect(amount?.defaultValue).toBe('25');
     });
+
+    it('uses adapter-native field ids for Wormhole transfer forms', () => {
+      const wormholeTransfer = templateById('connector-wormhole-transfer');
+      const source = wormholeTransfer.fields.find((field) => field.id === 'sourceMint');
+      const destination = wormholeTransfer.fields.find((field) => field.id === 'destinationChain');
+      expect(source?.type).toBe('cascading-select');
+      expect(source?.cascading?.providerId).toBe('wormhole.token');
+      expect(destination?.type).toBe('cascading-select');
+      expect(wormholeTransfer.fields.some((field) => field.id === 'destinationAddress')).toBe(true);
+      expect(wormholeTransfer.fields.some((field) => field.id === 'recipient')).toBe(false);
+    });
+
+    it('uses a Pyth feed dropdown for price update drafts', () => {
+      const pyth = templateById('connector-pyth-post-price-update');
+      const feed = pyth.fields.find((field) => field.id === 'priceFeedIds');
+      expect(feed?.type).toBe('cascading-select');
+      expect(feed?.cascading?.providerId).toBe('pyth.feed');
+    });
+
+    it('defaults NFT marketplace bid flows to collection dropdowns', () => {
+      const expected: Array<[string, string]> = [
+        ['magiceden_bid', 'magiceden.collection'],
+        ['tensor_bid', 'tensor.collection'],
+      ];
+
+      for (const [actionType, providerId] of expected) {
+        const form = connectorActionFormByActionType(actionType);
+        if (!form) throw new Error(`Missing form for ${actionType}`);
+        expect(form.subActions?.defaultId).toBe('collection');
+        const fields = formTemplateFields(form);
+        const subAction = fields.find((field) => field.id === 'subAction');
+        const collection = fields.find((field) => field.id === 'collectionId');
+        expect(subAction?.defaultValue).toBe('collection');
+        expect(collection?.type).toBe('cascading-select');
+        expect(collection?.cascading?.providerId).toBe(providerId);
+        expect(collection?.showWhen).toMatchObject({ subAction: 'collection' });
+      }
+    });
+
+    it('uses connector dropdowns on protocol position-check forms', () => {
+      const expected: Array<[string, string, string]> = [
+        ['pyth', 'priceFeedIds', 'pyth.feed'],
+        ['drift', 'vaultAddress', 'drift.vault'],
+        ['meteora', 'poolAddress', 'meteora.pool'],
+        ['raydium', 'poolId', 'raydium.pool'],
+        ['orca', 'whirlpoolAddress', 'orca.whirlpool'],
+        ['realms', 'realmAddress', 'realms.realm'],
+        ['wormhole', 'sourceMint', 'wormhole.token'],
+        ['jupiter', 'assetMint', 'jupiter.lend.earn.asset'],
+      ];
+
+      for (const [connectorId, fieldId, providerId] of expected) {
+        const connector = PROTOCOL_CONNECTORS.find((candidate) => candidate.id === connectorId);
+        if (!connector) throw new Error(`Missing connector ${connectorId}`);
+        const form = connectorActionFormsForConnector(connector).find((candidate) => candidate.operationId === 'position-check');
+        expect(form, `${connectorId} read form`).toBeDefined();
+        const field = formTemplateFields(form!).find((candidate) => candidate.id === fieldId);
+        expect(field?.type, `${connectorId}.${fieldId}`).toBe('cascading-select');
+        expect(field?.cascading?.providerId, `${connectorId}.${fieldId}`).toBe(providerId);
+      }
+    });
   });
 
   describe('connectorActionFormByActionType', () => {
@@ -314,6 +459,7 @@ describe('connector drafting helpers', () => {
     it('returns the Magic Eden bid form when given a sub-action action type', () => {
       const form = connectorActionFormByActionType('magiceden_bid');
       expect(form?.subActions?.options.map((option) => option.id)).toContain('collection');
+      expect(form?.subActions?.defaultId).toBe('collection');
     });
 
     it('returns undefined for an unknown action type', () => {

@@ -69,6 +69,12 @@ export const FINDINGS_SPEC: Record<string, FindingsSpec> = {
   marginfi_borrow: connectorSupplySpec('Borrow token'),
   marginfi_repay: connectorSupplySpec('Repay token'),
 
+  project0_create_account: connectorAdminSpec,
+  project0_deposit: connectorSupplySpec('Supply token'),
+  project0_withdraw: connectorSupplySpec('Redeem token'),
+  project0_borrow: connectorSupplySpec('Borrow token'),
+  project0_repay: connectorSupplySpec('Repay token'),
+
   save_deposit: connectorSupplySpec('Supply token'),
   save_withdraw: connectorSupplySpec('Redeem token'),
   save_borrow: connectorSupplySpec('Borrow token'),

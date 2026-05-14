@@ -91,6 +91,7 @@ interface BridgeFactsResponse {
   capability?: string;
   snapshot?: Record<string, unknown>;
   positions?: Array<Record<string, unknown>>;
+  collections?: Array<Record<string, unknown>> | Record<string, unknown>;
   walletAddress?: string;
   totals?: Record<string, unknown>;
 }
@@ -124,6 +125,11 @@ const KAMINO_COMMON_RESERVES: Array<{ symbol: string; description: string }> = [
 
 function asString(value: unknown): string | undefined {
   return typeof value === 'string' && value.trim() ? value.trim() : undefined;
+}
+
+function asDisplayString(value: unknown): string | undefined {
+  if (typeof value === 'number' && Number.isFinite(value)) return String(value);
+  return asString(value);
 }
 
 const kaminoReserveProvider: ConnectorOptionProvider = {
@@ -355,16 +361,37 @@ const MARGINFI_COMMON_BANKS: Array<{ symbol: string; description: string }> = [
   { symbol: 'JitoSOL', description: 'JitoSOL bank · main group' },
 ];
 
+const PROJECT0_COMMON_BANKS: Array<{ symbol: string; description: string }> = [
+  { symbol: 'USDC', description: 'USDC bank · Project 0' },
+  { symbol: 'SOL', description: 'SOL bank · Project 0' },
+  { symbol: 'USDT', description: 'USDT bank · Project 0' },
+  { symbol: 'JitoSOL', description: 'JitoSOL bank · Project 0' },
+];
+
 function genericListing(resp: BridgeFactsResponse | null, keys: string[]): Array<Record<string, unknown>> {
   if (!resp) return [];
-  const factsArray = (resp as Record<string, unknown>).facts;
-  if (Array.isArray(factsArray)) return factsArray as Array<Record<string, unknown>>;
   for (const key of keys) {
     const snapshot = resp.snapshot as Record<string, unknown> | undefined;
     if (snapshot && Array.isArray(snapshot[key])) return snapshot[key] as Array<Record<string, unknown>>;
+    const snapshotValue = snapshot?.[key];
+    if (isRecord(snapshotValue) && Array.isArray(snapshotValue.rows)) {
+      return snapshotValue.rows as Array<Record<string, unknown>>;
+    }
+    if (isRecord(snapshotValue) && Array.isArray(snapshotValue.collections)) {
+      return snapshotValue.collections as Array<Record<string, unknown>>;
+    }
     if (Array.isArray((resp as Record<string, unknown>)[key])) return (resp as Record<string, unknown>)[key] as Array<Record<string, unknown>>;
+    const direct = (resp as Record<string, unknown>)[key];
+    if (isRecord(direct) && Array.isArray(direct.rows)) return direct.rows as Array<Record<string, unknown>>;
+    if (isRecord(direct) && Array.isArray(direct.collections)) return direct.collections as Array<Record<string, unknown>>;
   }
+  const factsArray = (resp as Record<string, unknown>).facts;
+  if (Array.isArray(factsArray)) return factsArray as Array<Record<string, unknown>>;
   return [];
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
 function pickIdentifier(entry: Record<string, unknown>, keys: string[]): string | undefined {
@@ -423,6 +450,63 @@ const marginfiBankProvider: ConnectorOptionProvider = {
           detail: fallback.description,
           group: 'all',
           meta: { symbol: fallback.symbol },
+        });
+      }
+    }
+    return [...positions, ...banks];
+  },
+};
+
+const project0BankProvider: ConnectorOptionProvider = {
+  id: 'project0.bank',
+  connectorId: 'project0',
+  ttlMs: 60_000,
+  async fetch({ walletAddress, bridge }) {
+    const positionsResp = walletAddress
+      ? await safeBridgeFacts(bridge, { connectorId: 'project0', capability: 'positions', walletAddress })
+      : null;
+    const banksResp = await safeBridgeFacts(bridge, { connectorId: 'project0', capability: 'markets' });
+    const seen = new Set<string>();
+    const positions: ConnectorOption[] = [];
+    for (const entry of genericListing(positionsResp, ['banks', 'positions', 'accounts'])) {
+      const bank = pickIdentifier(entry, ['bankAddress', 'address', 'bankMint', 'mint']);
+      if (!bank || seen.has(bank)) continue;
+      seen.add(bank);
+      const symbol = asString(entry.bankSymbol) ?? asString(entry.tokenSymbol) ?? asString(entry.symbol);
+      const venue = asString(entry.venue) ?? 'Project 0';
+      positions.push({
+        value: bank,
+        label: symbol ? `${symbol} bank` : `Bank ${bank.slice(0, 6)}…`,
+        detail: `Open ${venue} position`,
+        group: 'positions',
+        meta: { symbol, market: venue },
+      });
+    }
+    const banks: ConnectorOption[] = [];
+    for (const entry of genericListing(banksResp, ['banks', 'reserves'])) {
+      const bank = pickIdentifier(entry, ['bankAddress', 'address', 'bankMint', 'mint']);
+      if (!bank || seen.has(bank)) continue;
+      seen.add(bank);
+      const symbol = asString(entry.bankSymbol) ?? asString(entry.tokenSymbol) ?? asString(entry.symbol);
+      const apy = asString(entry.lendingApy) ?? asString(entry.depositApy) ?? asString(entry.apy);
+      const venue = asString(entry.venue) ?? 'Project 0';
+      banks.push({
+        value: bank,
+        label: symbol ? `${symbol} bank` : `Bank ${bank.slice(0, 6)}…`,
+        detail: apy ? `Deposit APY ${apy}` : `${venue} bank`,
+        group: 'all',
+        meta: { symbol, apy, market: venue },
+      });
+    }
+    if (banks.length === 0) {
+      for (const fallback of PROJECT0_COMMON_BANKS) {
+        if (seen.has(fallback.symbol)) continue;
+        banks.push({
+          value: fallback.symbol,
+          label: `${fallback.symbol} bank`,
+          detail: fallback.description,
+          group: 'all',
+          meta: { symbol: fallback.symbol, market: 'Project 0' },
         });
       }
     }
@@ -689,6 +773,26 @@ function buildRaydiumPoolProvider(id: string, poolType: 'cpmm' | 'clmm'): Connec
 
 const raydiumCpmmPoolProvider = buildRaydiumPoolProvider('raydium.cpmm.pool', 'cpmm');
 const raydiumClmmPoolProvider = buildRaydiumPoolProvider('raydium.clmm.pool', 'clmm');
+
+const raydiumPoolProvider: ConnectorOptionProvider = {
+  id: 'raydium.pool',
+  connectorId: 'raydium',
+  ttlMs: 60_000,
+  async fetch(ctx) {
+    const combined = [
+      ...(await raydiumCpmmPoolProvider.fetch(ctx)),
+      ...(await raydiumClmmPoolProvider.fetch(ctx)),
+    ];
+    const seen = new Set<string>();
+    const out: ConnectorOption[] = [];
+    for (const option of combined) {
+      if (seen.has(option.value)) continue;
+      seen.add(option.value);
+      out.push(option);
+    }
+    return out;
+  },
+};
 
 const raydiumPositionProvider: ConnectorOptionProvider = {
   id: 'raydium.position',
@@ -1076,17 +1180,53 @@ function buildNftWalletProvider(id: string, connectorId: 'magiceden' | 'tensor')
   };
 }
 
-// Mainnet NFT collection slugs that work on both Magic Eden and Tensor symbol-based
-// APIs. Real catalogs fetched from the bridge or live APIs take precedence; this
-// fallback ensures the bid/buy/list form always has selectable collections.
-const NFT_COLLECTION_CATALOG: Array<{ id: string; name: string; detail: string }> = [
-  { id: 'mad_lads', name: 'Mad Lads', detail: 'Floor ~5.6 SOL' },
-  { id: 'famous_fox_federation', name: 'Famous Fox Federation', detail: 'Floor ~0.9 SOL' },
-  { id: 'okay_bears', name: 'Okay Bears', detail: 'Floor ~1.3 SOL' },
-  { id: 'tensorians', name: 'Tensorians', detail: 'Floor ~3.0 SOL' },
-  { id: 'claynosaurz', name: 'Claynosaurz', detail: 'Floor ~5.4 SOL' },
-  { id: 'smb_gen2', name: 'SMB Gen2', detail: 'Floor ~12.5 SOL' },
+const MAGICEDEN_COLLECTION_CATALOG: Array<{ id: string; name: string; detail: string }> = [
+  { id: 'mad_lads', name: 'Mad Lads', detail: 'Magic Eden popular collection' },
+  { id: 'famous_fox_federation', name: 'Famous Fox Federation', detail: 'Magic Eden popular collection' },
+  { id: 'okay_bears', name: 'Okay Bears', detail: 'Magic Eden popular collection' },
+  { id: 'tensorians', name: 'Tensorians', detail: 'Magic Eden popular collection' },
+  { id: 'claynosaurz', name: 'Claynosaurz', detail: 'Magic Eden popular collection' },
+  { id: 'smb_gen2', name: 'SMB Gen2', detail: 'Magic Eden popular collection' },
 ];
+
+const TENSOR_COLLECTION_CATALOG: Array<{ id: string; name: string; detail: string }> = [
+  { id: 'madlads', name: 'Mad Lads', detail: 'Tensor supported collection' },
+  { id: 'tensorians', name: 'Tensorians', detail: 'Tensor supported collection' },
+  { id: 'claynosaurz', name: 'Claynosaurz', detail: 'Tensor supported collection' },
+  { id: 'okay_bears', name: 'Okay Bears', detail: 'Tensor supported collection' },
+  { id: 'famous_fox_federation', name: 'Famous Fox Federation', detail: 'Tensor supported collection' },
+  { id: 'solana_monkey_business', name: 'Solana Monkey Business', detail: 'Tensor supported collection' },
+];
+
+function nftCollectionCatalog(connectorId: 'magiceden' | 'tensor'): Array<{ id: string; name: string; detail: string }> {
+  return connectorId === 'magiceden' ? MAGICEDEN_COLLECTION_CATALOG : TENSOR_COLLECTION_CATALOG;
+}
+
+function nftCollectionIdentifier(entry: Record<string, unknown>, connectorId: 'magiceden' | 'tensor'): string | undefined {
+  return connectorId === 'magiceden'
+    ? pickIdentifier(entry, ['collectionSymbol', 'symbol', 'slug', 'collectionId', 'id'])
+    : pickIdentifier(entry, ['collectionId', 'slug', 'symbol', 'collectionSymbol', 'id']);
+}
+
+function nftCollectionLabel(entry: Record<string, unknown>, value: string): string {
+  return asString(entry.name) ??
+    asString(entry.displayName) ??
+    asString(entry.collectionName) ??
+    value;
+}
+
+function nftCollectionDetail(entry: Record<string, unknown>): string {
+  const parts: string[] = [];
+  const rank = asDisplayString(entry.rank);
+  const floor = asDisplayString(entry.floorPriceSol) ?? asDisplayString(entry.floorPrice) ?? asDisplayString(entry.floor);
+  const volume = asDisplayString(entry.volume24hSol) ?? asDisplayString(entry.volume24h) ?? asDisplayString(entry.volume);
+  const listed = asDisplayString(entry.listedCount) ?? asDisplayString(entry.numListed) ?? asDisplayString(entry.listings);
+  if (rank) parts.push(`#${rank}`);
+  if (floor) parts.push(`Floor ${floor} SOL`);
+  if (volume) parts.push(`24h ${volume} SOL`);
+  if (listed) parts.push(`${listed} listed`);
+  return parts.join(' · ') || 'NFT collection';
+}
 
 function buildNftCollectionProvider(id: string, connectorId: 'magiceden' | 'tensor'): ConnectorOptionProvider {
   return {
@@ -1094,23 +1234,24 @@ function buildNftCollectionProvider(id: string, connectorId: 'magiceden' | 'tens
     connectorId,
     ttlMs: 5 * 60_000,
     async fetch({ bridge }) {
-      const resp = await safeBridgeFacts(bridge, { connectorId, capability: 'markets' });
+      const resp = await safeBridgeFacts(bridge, { connectorId, capability: 'markets', limit: 25 });
       const seen = new Set<string>();
       const out: ConnectorOption[] = [];
       for (const entry of genericListing(resp, ['collections'])) {
-        const collection = pickIdentifier(entry, ['collectionId', 'collectionSymbol', 'symbol']);
+        const collection = nftCollectionIdentifier(entry, connectorId);
         if (!collection || seen.has(collection)) continue;
         seen.add(collection);
-        const name = asString(entry.name) ?? collection;
+        const name = nftCollectionLabel(entry, collection);
         out.push({
           value: collection,
           label: name,
-          detail: asString(entry.floorPrice) ? `Floor ${asString(entry.floorPrice)} SOL` : 'NFT collection',
+          detail: nftCollectionDetail(entry),
           group: 'all',
+          meta: { symbol: asString(entry.symbol) ?? asString(entry.collectionSymbol) ?? asString(entry.slug) },
         });
       }
       if (out.length === 0) {
-        for (const entry of NFT_COLLECTION_CATALOG) {
+        for (const entry of nftCollectionCatalog(connectorId)) {
           if (seen.has(entry.id)) continue;
           out.push({
             value: entry.id,
@@ -1418,6 +1559,49 @@ const wormholeDestinationProvider: ConnectorOptionProvider = {
   },
 };
 
+const PYTH_COMMON_FEEDS: Array<{ symbol: string; feedId: string; displayName: string }> = [
+  {
+    symbol: 'SOL/USD',
+    feedId: 'ef0d8b6fda2ceba41da15d4095d1da392a0d2f8ed0c6c7bc0f4cfac8c280b56d',
+    displayName: 'Solana / US Dollar',
+  },
+  {
+    symbol: 'USDC/USD',
+    feedId: 'eaa020c61cc479712813461ce153894a96a6c00b21ed0cfc2798d1f9a9e9c94a',
+    displayName: 'USD Coin / US Dollar',
+  },
+  {
+    symbol: 'USDT/USD',
+    feedId: '2b89b9dc8fdf9f34709a5b106b472f0f39bb6ca9ce04b0fd7f2e971688e2e53b',
+    displayName: 'Tether USD / US Dollar',
+  },
+  {
+    symbol: 'JITOSOL/USD',
+    feedId: '67be9f519b95cf24338801051f9a808eff0a578ccb388db73b7f6fe1de019ffb',
+    displayName: 'Jito SOL / US Dollar',
+  },
+  {
+    symbol: 'MSOL/USD',
+    feedId: 'c2289a6a43d2ce91c6f55caec370f4acc38a2ed477f58813334c6d03749ff2a4',
+    displayName: 'Marinade SOL / US Dollar',
+  },
+  {
+    symbol: 'BSOL/USD',
+    feedId: '89875379e70f8fbadc17aef315adf3a8d5d160b811435537e03c97e8aac97d9c',
+    displayName: 'BlazeStake SOL / US Dollar',
+  },
+  {
+    symbol: 'BTC/USD',
+    feedId: 'e62df6c8b4a85fe1a67db44dc12de5db330f7ac66b72dc658afedf0f4a415b43',
+    displayName: 'Bitcoin / US Dollar',
+  },
+  {
+    symbol: 'ETH/USD',
+    feedId: 'ff61491a931112ddf1bd8147cd1b641375f79f5825126d665480874634fd0ace',
+    displayName: 'Ethereum / US Dollar',
+  },
+];
+
 const pythFeedProvider: ConnectorOptionProvider = {
   id: 'pyth.feed',
   connectorId: 'pyth',
@@ -1425,9 +1609,11 @@ const pythFeedProvider: ConnectorOptionProvider = {
   async fetch({ bridge }) {
     const resp = await safeBridgeFacts(bridge, { connectorId: 'pyth', capability: 'markets' });
     const out: ConnectorOption[] = [];
+    const seen = new Set<string>();
     for (const entry of genericListing(resp, ['feeds'])) {
       const id = pickIdentifier(entry, ['feedId', 'id', 'priceFeedId']);
-      if (!id) continue;
+      if (!id || seen.has(id)) continue;
+      seen.add(id);
       const symbol = asString(entry.symbol);
       out.push({
         value: id,
@@ -1436,6 +1622,17 @@ const pythFeedProvider: ConnectorOptionProvider = {
         group: 'all',
         meta: { symbol },
       });
+    }
+    if (out.length === 0) {
+      for (const entry of PYTH_COMMON_FEEDS) {
+        out.push({
+          value: entry.feedId,
+          label: entry.symbol,
+          detail: entry.displayName,
+          group: 'all',
+          meta: { symbol: entry.symbol },
+        });
+      }
     }
     return out;
   },
@@ -1458,9 +1655,11 @@ export function registerBuiltInConnectorOptionProviders(): void {
   registerConnectorOptionProvider(jupiterLendBorrowVaultProvider);
   registerConnectorOptionProvider(jupiterLendBorrowPositionProvider);
   registerConnectorOptionProvider(marginfiBankProvider);
+  registerConnectorOptionProvider(project0BankProvider);
   registerConnectorOptionProvider(saveReserveProvider);
   registerConnectorOptionProvider(driftVaultProvider);
   registerConnectorOptionProvider(luloMintProvider);
+  registerConnectorOptionProvider(raydiumPoolProvider);
   registerConnectorOptionProvider(raydiumCpmmPoolProvider);
   registerConnectorOptionProvider(raydiumClmmPoolProvider);
   registerConnectorOptionProvider(raydiumPositionProvider);

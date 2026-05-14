@@ -28,6 +28,7 @@ Core DeFi first-class connector plans in this folder:
 - `orca.md`
 - `meteora.md`
 - `marginfi.md`
+- `project0.md`
 - `drift.md`
 - `lulo.md`
 - `save.md`
@@ -75,7 +76,7 @@ One shared runtime worker should own these shared files before connector workers
 
 Shared runtime changes:
 
-- Extend `DAppAdapterId` with `raydium`, `orca`, `meteora`, `marginfi`, `drift`, `lulo`, `save`, `tensor`, `magiceden`, `sanctum`, `jito`, `marinade`, `wormhole`, `mayan`, `squads`, `realms`, and `pyth`.
+- Extend `DAppAdapterId` with `raydium`, `orca`, `meteora`, `marginfi`, `project0`, `drift`, `lulo`, `save`, `tensor`, `magiceden`, `sanctum`, `jito`, `marinade`, `wormhole`, `mayan`, `squads`, `realms`, and `pyth`.
 - Extend `PreparedActionKind` with connector-specific kinds listed in each connector doc.
 - Add a common `serializeTransactionForApproval` helper that accepts legacy `Transaction` and v0 `VersionedTransaction` shapes and returns base64 bytes plus a preview object.
 - Add a common `readonlyWallet(owner: PublicKey)` adapter helper for SDKs that require a wallet-like object but must not sign inside reads/prepares.
@@ -104,6 +105,8 @@ Shared runtime changes:
   - `JUPITER_PREDICTION_BASE_URL` optional, default `https://api.jup.ag/prediction/v1`
   - `MAYAN_API_KEY` optional, only needed when public Mayan rate limits are hit
   - `MAYAN_PRICE_API_BASE_URL` optional
+  - `PROJECT0_API_BASE_URL` optional, default `https://ai.0.xyz`
+  - `P0_API_BASE_URL` optional alias
   - `PYTH_HERMES_URL` optional, default `https://hermes.pyth.network`
   - Avoid storing provider keys, AI keys, wallet secrets, or API secrets in receipts.
 
@@ -150,6 +153,7 @@ Use these write scopes to avoid conflicts:
 - Orca worker: `packages/mcp-server/src/adapters/orca/**`, Orca tests, Orca connector pack updates, Orca docs.
 - Meteora worker: `packages/mcp-server/src/adapters/meteora/**`, Meteora tests, Meteora connector pack updates, Meteora docs.
 - MarginFi worker: `packages/mcp-server/src/adapters/marginfi/**`, MarginFi tests, MarginFi connector pack updates, MarginFi docs.
+- Project 0 worker: `packages/mcp-server/src/adapters/project0/**`, Project 0 tests, Project 0 connector pack updates, Project 0 docs.
 - Drift worker: `packages/mcp-server/src/adapters/drift/**`, Drift tests, Drift connector pack updates, Drift docs.
 - Lulo worker: `packages/mcp-server/src/adapters/lulo/**`, Lulo tests, Lulo connector pack updates, Lulo docs.
 - Save worker: `packages/mcp-server/src/adapters/save/**`, Save tests, Save connector pack updates, Save docs.
@@ -195,14 +199,15 @@ Each connector is done when:
 9. Orca and Meteora, because both are liquidity-position connectors with clear position/fee semantics.
 10. Raydium, because it spans CPMM, CLMM, farm, and staking.
 11. MarginFi, because account health and borrow/repay need stricter risk previews.
-12. Drift vaults, limited to vault deposit/withdraw lifecycle in v1.
-13. Jito, Marinade, and Sanctum, because liquid staking is high-demand and has cleaner prepare-only transaction boundaries.
-14. Tensor, because it adds the highest-value NFT marketplace surface with public SDK packages.
-15. Magic Eden, read-first, because the Solana API remains useful but should be isolated behind API health checks.
-16. Mayan, then Wormhole, because Mayan gives a higher-level cross-chain swap UX before lower-level bridge primitives.
-17. Squads and Realms, because org workflows need proposal/vote safety gates and do not move funds directly unless a proposal reaches protocol-defined approval.
-18. Pyth, because oracle facts improve risk evidence across every connector and its write path is optional.
-19. Browser UI polish and full QA matrix.
+12. Project 0, because MarginFi migration support needs a separate first-class connector while keeping MarginFi.
+13. Drift vaults, limited to vault deposit/withdraw lifecycle in v1.
+14. Jito, Marinade, and Sanctum, because liquid staking is high-demand and has cleaner prepare-only transaction boundaries.
+15. Tensor, because it adds the highest-value NFT marketplace surface with public SDK packages.
+16. Magic Eden, read-first, because the Solana API remains useful but should be isolated behind API health checks.
+17. Mayan, then Wormhole, because Mayan gives a higher-level cross-chain swap UX before lower-level bridge primitives.
+18. Squads and Realms, because org workflows need proposal/vote safety gates and do not move funds directly unless a proposal reaches protocol-defined approval.
+19. Pyth, because oracle facts improve risk evidence across every connector and its write path is optional.
+20. Browser UI polish and full QA matrix.
 
 ## Global Test Commands
 

@@ -17,6 +17,7 @@ import {
   getCollectionListings,
   getCollectionSnapshot,
   getRecentSales,
+  getSupportedCollections,
   type GetCollectionSnapshotInput,
   type TensorCollectionSnapshotResult,
 } from './collections.js';
@@ -44,6 +45,13 @@ const collectionSnapshotRead: AdapterRead<GetCollectionSnapshotInput, TensorColl
   id: 'collection_snapshot',
   async read(input, ctx) {
     return getCollectionSnapshot(ctx, input);
+  },
+};
+
+const supportedCollectionsRead: AdapterRead<{ limit?: number }, unknown> = {
+  id: 'supported_collections',
+  async read(input, ctx) {
+    return getSupportedCollections(ctx, input);
   },
 };
 
@@ -111,6 +119,7 @@ export const tensorAdapter: DAppAdapter = {
     sweep: tensorSweepAction,
   },
   reads: {
+    supported_collections: supportedCollectionsRead,
     collection_snapshot: collectionSnapshotRead,
     collection_listings: collectionListingsRead,
     collection_bids: collectionBidsRead,

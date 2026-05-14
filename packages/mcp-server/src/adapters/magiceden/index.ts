@@ -26,6 +26,7 @@ import {
   getCollectionSnapshot,
   getNftDetail,
   getRecentActivity,
+  getTopCollections,
 } from './collections.js';
 import { getApiHealthSnapshot } from './health.js';
 import { getWalletNfts } from './wallet.js';
@@ -41,6 +42,13 @@ const collectionSnapshotRead: AdapterRead<Parameters<typeof getCollectionSnapsho
   id: 'collection_snapshot',
   async read(input, ctx) {
     return getCollectionSnapshot(input, ctx);
+  },
+};
+
+const topCollectionsRead: AdapterRead<Parameters<typeof getTopCollections>[0], unknown> = {
+  id: 'top_collections',
+  async read(input, ctx) {
+    return getTopCollections(input, ctx);
   },
 };
 
@@ -95,6 +103,7 @@ export const magicedenAdapter: DAppAdapter = {
   },
   reads: {
     api_health: apiHealthRead,
+    top_collections: topCollectionsRead,
     collection_snapshot: collectionSnapshotRead,
     collection_listings: collectionListingsRead,
     collection_bids: collectionBidsRead,

@@ -13,6 +13,7 @@ export type ProtocolConnectorId =
   | 'orca'
   | 'meteora'
   | 'marginfi'
+  | 'project0'
   | 'drift'
   | 'lulo'
   | 'save'
@@ -328,6 +329,36 @@ export const PROTOCOL_CONNECTORS: ProtocolConnector[] = [
     ],
     enabledByDefault: false,
     initials: 'MF',
+    readSource: 'first-class-adapter',
+    actionSource: 'first-class-adapter',
+    requiresClientKey: false,
+  },
+  {
+    id: 'project0',
+    name: 'Project 0',
+    aliases: ['project0', 'project 0', 'p0', '0dotxyz', '0.xyz', 'zero'],
+    website: 'https://app.0.xyz',
+    description:
+      'First-class Project 0 bank, strategy, wallet, account, and health reads with prepare-only account creation, deposit, withdraw, borrow, and repay actions. MarginFi remains available as a separate connector.',
+    supportedClusters: ['mainnet-beta'],
+    capabilities: ['first_class_adapter', 'read_positions', 'blink_actions', 'read_markets'],
+    supportedActions: ['Banks', 'Strategies', 'Wallet holdings', 'Account health', 'Create account', 'Deposit', 'Withdraw', 'Borrow', 'Repay'],
+    actionKinds: [
+      'project0_create_account',
+      'project0_deposit',
+      'project0_withdraw',
+      'project0_borrow',
+      'project0_repay',
+    ],
+    readTools: [
+      'solana_project0_banks',
+      'solana_project0_strategies',
+      'solana_project0_wallet',
+      'solana_project0_account_detail',
+      'solana_project0_health_preview',
+    ],
+    enabledByDefault: false,
+    initials: 'P0',
     readSource: 'first-class-adapter',
     actionSource: 'first-class-adapter',
     requiresClientKey: false,

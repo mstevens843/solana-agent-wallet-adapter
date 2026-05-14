@@ -20,6 +20,26 @@ export interface TensorCollectionSnapshot {
   warnings?: string[];
 }
 
+export interface TensorSupportedCollection {
+  collectionId: string;
+  slug?: string;
+  name?: string;
+  verified?: boolean;
+  floorPriceLamports?: string;
+  floorPriceSol?: string;
+  listedCount?: number;
+  totalSupply?: number;
+  volume24hLamports?: string;
+  volume24hSol?: string;
+  rank?: number;
+}
+
+export interface TensorSupportedCollectionsResult {
+  collections: TensorSupportedCollection[];
+  asOf?: string;
+  source?: string;
+}
+
 export interface TensorListing {
   listingId?: string;
   mintAddress?: string;
@@ -207,6 +227,10 @@ export interface TensorBuiltTx {
 }
 
 export interface TensorClient {
+  fetchSupportedCollections(
+    connection: Connection,
+    input?: { limit?: number },
+  ): Promise<TensorSupportedCollectionsResult>;
   fetchCollectionStats(connection: Connection, collectionId: string): Promise<TensorCollectionSnapshot>;
   fetchCollectionListings(connection: Connection, collectionId: string, limit?: number): Promise<TensorListing[]>;
   fetchCollectionBids(connection: Connection, collectionId: string, limit?: number): Promise<TensorBid[]>;
@@ -242,6 +266,7 @@ export class TensorSdkUnavailable implements TensorClient {
   }
 
   async fetchCollectionStats(): Promise<TensorCollectionSnapshot> { this.fail('fetchCollectionStats'); }
+  async fetchSupportedCollections(): Promise<TensorSupportedCollectionsResult> { this.fail('fetchSupportedCollections'); }
   async fetchCollectionListings(): Promise<TensorListing[]> { this.fail('fetchCollectionListings'); }
   async fetchCollectionBids(): Promise<TensorBid[]> { this.fail('fetchCollectionBids'); }
   async fetchRecentSales(): Promise<TensorSale[]> { this.fail('fetchRecentSales'); }

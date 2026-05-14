@@ -22,10 +22,11 @@ describe('MCP connector registry', () => {
     resetMarinadeClientFactory();
   });
 
-  it('registers first-class Kamino, MarginFi, and Jupiter capabilities', () => {
+  it('registers first-class Kamino, MarginFi, Project 0, and Jupiter capabilities', () => {
     const connectors = listConnectorCapabilities(DEFAULT_CONFIG);
     const kamino = connectors.find((connector) => connector.id === 'kamino');
     const marginfi = connectors.find((connector) => connector.id === 'marginfi');
+    const project0 = connectors.find((connector) => connector.id === 'project0');
     const jupiter = connectors.find((connector) => connector.id === 'jupiter');
 
     expect(kamino).toMatchObject({
@@ -56,6 +57,29 @@ describe('MCP connector registry', () => {
       'solana_prepare_marginfi_withdraw',
       'solana_prepare_marginfi_borrow',
       'solana_prepare_marginfi_repay',
+      'solana_execute_prepared_action',
+    ]);
+    expect(project0).toMatchObject({
+      name: 'Project 0',
+      readCapabilities: ['positions', 'markets', 'strategies', 'borrow', 'withdraw', 'repay'],
+      writeCapabilities: ['earn', 'withdraw', 'borrow', 'repay'],
+      executionMode: 'first_class_prepare',
+      approvalBoundary: CONNECTOR_APPROVAL_BOUNDARY,
+    });
+    expect(project0?.readTools).toEqual([
+      'solana_connector_read_facts',
+      'solana_project0_banks',
+      'solana_project0_strategies',
+      'solana_project0_wallet',
+      'solana_project0_account_detail',
+      'solana_project0_health_preview',
+    ]);
+    expect(project0?.actionTools).toEqual([
+      'solana_prepare_project0_create_account',
+      'solana_prepare_project0_deposit',
+      'solana_prepare_project0_withdraw',
+      'solana_prepare_project0_borrow',
+      'solana_prepare_project0_repay',
       'solana_execute_prepared_action',
     ]);
     expect(jupiter).toMatchObject({

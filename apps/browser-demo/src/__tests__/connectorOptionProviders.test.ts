@@ -7,7 +7,9 @@ import {
   getConnectorOptionProvider,
   listConnectorOptionProviders,
   missingDependencyLabel,
+  registerBuiltInConnectorOptionProviders,
   registerConnectorOptionProvider,
+  unregisterBuiltInConnectorOptionProvidersForTests,
   type ConnectorOption,
   type ConnectorOptionBridgeFetch,
   type ConnectorOptionProvider,
@@ -115,5 +117,132 @@ describe('provider integration shape', () => {
     });
     expect(got).toEqual([{ value: 'a', label: 'A' }]);
     expect(calls).toEqual([{ path: '/bridge/echo', init: { method: 'POST', body: JSON.stringify({ fieldValues: { foo: 'bar' } }) } }]);
+  });
+});
+
+describe('built-in connector option fallbacks', () => {
+  afterEach(() => {
+    clearConnectorOptionProvidersForTests();
+    unregisterBuiltInConnectorOptionProvidersForTests();
+  });
+
+  it('surfaces common Pyth feeds when bridge facts are unavailable', async () => {
+    registerBuiltInConnectorOptionProviders();
+    const provider = getConnectorOptionProvider('pyth.feed');
+    if (!provider) throw new Error('pyth.feed provider missing');
+    const options = await provider.fetch({
+      fieldValues: {},
+      cluster: 'mainnet-beta',
+      bridge: async () => {
+        throw new Error('bridge down');
+      },
+    });
+
+    expect(options.map((option) => option.label)).toEqual(expect.arrayContaining(['SOL/USD', 'USDC/USD']));
+    expect(options.find((option) => option.label === 'SOL/USD')?.value).toMatch(/^[0-9a-f]{64}$/);
+  });
+
+  it('combines Raydium CPMM and CLMM pool dropdowns for read checks', async () => {
+    registerBuiltInConnectorOptionProviders();
+    const provider = getConnectorOptionProvider('raydium.pool');
+    if (!provider) throw new Error('raydium.pool provider missing');
+    const options = await provider.fetch({
+      fieldValues: {},
+      cluster: 'mainnet-beta',
+      bridge: async () => {
+        throw new Error('bridge down');
+      },
+    });
+
+    expect(options.some((option) => option.label.includes('CPMM'))).toBe(true);
+    expect(options.some((option) => option.label.includes('CLMM'))).toBe(true);
+  });
+
+  it('surfaces Project 0 bank fallbacks when bridge facts are unavailable', async () => {
+    registerBuiltInConnectorOptionProviders();
+    const provider = getConnectorOptionProvider('project0.bank');
+    if (!provider) throw new Error('project0.bank provider missing');
+    const options = await provider.fetch({
+      fieldValues: {},
+      cluster: 'mainnet-beta',
+      bridge: async () => {
+        throw new Error('bridge down');
+      },
+    });
+
+    expect(options.map((option) => option.label)).toEqual(expect.arrayContaining(['USDC bank', 'SOL bank']));
+    expect(options.find((option) => option.value === 'USDC')?.detail).toContain('Project 0');
+  });
+
+  it('loads Magic Eden top collection options from bridge facts', async () => {
+    registerBuiltInConnectorOptionProviders();
+    const provider = getConnectorOptionProvider('magiceden.collection');
+    if (!provider) throw new Error('magiceden.collection provider missing');
+    const calls: Array<{ path: string; body: Record<string, unknown> }> = [];
+    const bridge: ConnectorOptionBridgeFetch = async <T = unknown>(path: string, init?: RequestInit): Promise<T> => {
+      calls.push({ path, body: JSON.parse(String(init?.body ?? '{}')) as Record<string, unknown> });
+      return {
+        collections: {
+          rows: [
+            {
+              collectionSymbol: 'mad_lads',
+              name: 'Mad Lads',
+              floorPriceSol: '5.1',
+              rank: 1,
+            },
+          ],
+        },
+        facts: [{ label: 'Ignored fact row' }],
+      } as T;
+    };
+
+    const options = await provider.fetch({
+      fieldValues: {},
+      cluster: 'mainnet-beta',
+      bridge,
+    });
+
+    expect(calls[0]).toEqual({
+      path: '/bridge/action/connector-read-facts',
+      body: { connectorId: 'magiceden', capability: 'markets', limit: 25 },
+    });
+    expect(options[0]).toMatchObject({
+      value: 'mad_lads',
+      label: 'Mad Lads',
+      detail: expect.stringContaining('Floor 5.1 SOL'),
+    });
+  });
+
+  it('loads Tensor supported collection options from bridge facts', async () => {
+    registerBuiltInConnectorOptionProviders();
+    const provider = getConnectorOptionProvider('tensor.collection');
+    if (!provider) throw new Error('tensor.collection provider missing');
+    const bridge: ConnectorOptionBridgeFetch = async <T = unknown>(): Promise<T> => {
+      return {
+        collections: {
+          collections: [
+            {
+              collectionId: 'madlads',
+              slug: 'madlads',
+              name: 'Mad Lads',
+              floorPriceSol: '5',
+            },
+          ],
+        },
+        facts: [{ label: 'Ignored fact row' }],
+      } as T;
+    };
+
+    const options = await provider.fetch({
+      fieldValues: {},
+      cluster: 'mainnet-beta',
+      bridge,
+    });
+
+    expect(options[0]).toMatchObject({
+      value: 'madlads',
+      label: 'Mad Lads',
+      detail: expect.stringContaining('Floor 5 SOL'),
+    });
   });
 });

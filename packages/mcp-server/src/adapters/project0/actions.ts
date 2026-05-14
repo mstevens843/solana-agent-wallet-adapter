@@ -30,6 +30,7 @@ export interface Project0PrepareInput {
   accountIndex?: number;
   withdrawAll?: boolean;
   repayAll?: boolean;
+  minHealthRatio?: number;
   dueAt?: string;
   note?: string;
 }
@@ -42,7 +43,7 @@ export function project0Action(operation: Project0ActionOperation): AdapterActio
     async prepare(input, ctx): Promise<AdapterPrepareResult> {
       const walletAddress = await ctx.backend.getAddress();
       const client = getProject0Client(project0ApiBaseUrl(ctx.config));
-      const minHealthRatio = project0MinHealthRatio(ctx.config);
+      const minHealthRatio = input.minHealthRatio ?? project0MinHealthRatio(ctx.config);
       const previewInput = normalizeProject0ActionInput({
         operation,
         walletAddress,

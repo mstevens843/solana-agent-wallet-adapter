@@ -7,6 +7,7 @@ import {
   type TensorCollectionSnapshot,
   type TensorListing,
   type TensorSale,
+  type TensorSupportedCollectionsResult,
 } from './client.js';
 import { MAX_BIDS, MAX_LISTINGS, TENSOR_ADAPTER_ID } from './constants.js';
 
@@ -22,6 +23,17 @@ export interface TensorCollectionSnapshotResult {
   collection: TensorCollectionSnapshot;
   listings?: TensorListing[];
   bids?: TensorBid[];
+}
+
+export async function getSupportedCollections(
+  ctx: DAppAdapterContext,
+  input: { limit?: number } = {},
+): Promise<TensorSupportedCollectionsResult> {
+  try {
+    return await getTensorClient().fetchSupportedCollections(ctx.connection, input);
+  } catch (err) {
+    throw wrapAsAdapterError(err, 'fetchSupportedCollections');
+  }
 }
 
 function clampLimit(value: number | undefined, fallback: number, max: number): number {

@@ -39,6 +39,7 @@
     "zod": "^3.23.0"
   },
   "optionalDependencies": {
+    "@0dotxyz/p0-ts-sdk": "2.2.1",
     "@coral-xyz/anchor": "0.31.1",
     "@jito-foundation/stake-deposit-interceptor-sdk": "1.7.1",
     "@kamino-finance/farms-sdk": "^3.2.24",

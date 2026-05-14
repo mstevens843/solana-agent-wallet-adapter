@@ -81,7 +81,7 @@ export function registerActionTools(
     'solana_connector_read_facts',
     {
       description:
-        'Read normalized protocol connector facts as stable JSON. Supports Kamino, Jupiter, Raydium, Orca, MarginFi, Drift, Lulo, Save, Jito, Marinade, Sanctum, Wormhole, Tensor, Realms, Squads, and other first-class connector reads. Unsupported connectors return structured missing-capability errors.',
+        'Read normalized protocol connector facts as stable JSON. Supports Kamino, Jupiter, Raydium, Orca, MarginFi, Project 0, Drift, Lulo, Save, Jito, Marinade, Sanctum, Wormhole, Tensor, Realms, Squads, and other first-class connector reads. Unsupported connectors return structured missing-capability errors.',
       inputSchema: {
         connectorId: z.string().min(2).describe('Connector id or alias, for example kamino or jupiter.'),
         capability: connectorCapabilitySchema().optional(),
@@ -109,6 +109,8 @@ export function registerActionTools(
         bankAddress: z.string().min(32).optional(),
         bankMint: z.string().min(32).optional(),
         marginfiAccount: z.string().min(32).optional(),
+        project0Account: z.string().min(32).optional(),
+        accountIndex: z.number().int().min(0).optional(),
         operation: marginfiOperationSchema().optional(),
         vaultAddress: z.string().min(32).optional(),
         subAccountId: z.number().int().min(0).optional(),
@@ -1083,6 +1085,199 @@ export function registerActionTools(
       'solana_prepare_marginfi_repay',
       { cluster: options.config.cluster, input },
       async () => jsonReply(await service.prepareMarginfiRepay(input)),
+    ),
+  );
+
+  server.registerTool(
+    'solana_project0_banks',
+    {
+      description:
+        'Read Project 0 banks from the public P0 AI API: deposit APY, borrow APY, venue, mint, decimals, and price. Read-only. Mainnet-beta only.',
+      inputSchema: project0BankInputSchema(),
+    },
+    async ({ bankAddress, bankMint, token }) => traceTool(
+      'solana_project0_banks',
+      { cluster: options.config.cluster, bankAddress, bankMint, token },
+      async () => jsonReply(
+        await service.project0Banks({
+          ...(bankAddress !== undefined && { bankAddress }),
+          ...(bankMint !== undefined && { bankMint }),
+          ...(token !== undefined && { token }),
+        }),
+      ),
+    ),
+  );
+
+  server.registerTool(
+    'solana_project0_strategies',
+    {
+      description:
+        'Read Project 0 precomputed strategy opportunities from the public P0 AI API. Read-only; strategy reads do not prepare bundled leverage actions. Mainnet-beta only.',
+      inputSchema: {},
+    },
+    async () => traceTool(
+      'solana_project0_strategies',
+      { cluster: options.config.cluster },
+      async () => jsonReply(await service.project0Strategies()),
+    ),
+  );
+
+  server.registerTool(
+    'solana_project0_wallet',
+    {
+      description:
+        'Read token holdings for a Solana wallet from the public Project 0 wallet endpoint. Read-only. Mainnet-beta only.',
+      inputSchema: {
+        walletAddress: z.string().min(32).optional().describe('Defaults to the connected wallet.'),
+      },
+    },
+    async ({ walletAddress }) => traceTool(
+      'solana_project0_wallet',
+      { cluster: options.config.cluster, walletAddress },
+      async () => jsonReply(
+        await service.project0Wallet({
+          ...(walletAddress !== undefined && { walletAddress }),
+        }),
+      ),
+    ),
+  );
+
+  server.registerTool(
+    'solana_project0_account_detail',
+    {
+      description:
+        'Read one Project 0 account with supplied/borrowed positions and account health. Requires the optional @0dotxyz/p0-ts-sdk. Read-only. Mainnet-beta only.',
+      inputSchema: {
+        walletAddress: z.string().min(32).optional().describe('Defaults to the connected wallet.'),
+        project0Account: z.string().min(32).optional().describe('Required when the wallet has multiple Project 0 accounts.'),
+      },
+    },
+    async ({ walletAddress, project0Account }) => traceTool(
+      'solana_project0_account_detail',
+      { cluster: options.config.cluster, walletAddress, project0Account },
+      async () => jsonReply(
+        await service.project0AccountDetail({
+          ...(walletAddress !== undefined && { walletAddress }),
+          ...(project0Account !== undefined && { project0Account }),
+        }),
+      ),
+    ),
+  );
+
+  server.registerTool(
+    'solana_project0_health_preview',
+    {
+      description:
+        'Preview Project 0 account health after a deposit, withdraw, borrow, or repay action. Requires the optional @0dotxyz/p0-ts-sdk. Read-only; does not sign or submit. Mainnet-beta only.',
+      inputSchema: {
+        operation: project0OperationSchema(),
+        ...project0ActionInputSchema(),
+      },
+    },
+    async (input) => traceTool(
+      'solana_project0_health_preview',
+      { cluster: options.config.cluster, input },
+      async () => jsonReply(await service.project0HealthPreview(input)),
+    ),
+  );
+
+  server.registerTool(
+    'solana_prepare_project0_create_account',
+    {
+      description:
+        'Create a manual-approval inbox item that creates a Project 0 account. Prepares wallet approval work only; does not sign, submit, or grant delegated authority. Mainnet-beta only.',
+      inputSchema: {
+        accountIndex: z.number().int().min(0).optional().describe('Defaults to 0 only when the wallet has no existing Project 0 accounts. Required otherwise.'),
+        dueAt: z.string().datetime().optional(),
+        note: z.string().max(500).optional(),
+      },
+    },
+    async (input) => traceTool(
+      'solana_prepare_project0_create_account',
+      { cluster: options.config.cluster, input },
+      async () => jsonReply(await service.prepareProject0CreateAccount(input)),
+    ),
+  );
+
+  server.registerTool(
+    'solana_prepare_project0_deposit',
+    {
+      description:
+        'Create a manual-approval inbox item that deposits a token into a Project 0 bank. Runs a health preview and prepares wallet approval work only; does not sign, submit, or grant delegated authority. Mainnet-beta only.',
+      inputSchema: {
+        ...project0BankInputSchema(),
+        amount: z.string().min(1).describe('Human token amount, for example 10.5.'),
+        project0Account: z.string().min(32).optional(),
+        dueAt: z.string().datetime().optional(),
+        note: z.string().max(500).optional(),
+      },
+    },
+    async (input) => traceTool(
+      'solana_prepare_project0_deposit',
+      { cluster: options.config.cluster, input },
+      async () => jsonReply(await service.prepareProject0Deposit(input)),
+    ),
+  );
+
+  server.registerTool(
+    'solana_prepare_project0_withdraw',
+    {
+      description:
+        'Create a manual-approval inbox item that withdraws supplied tokens from Project 0. Rechecks account health at execution time. Prepares wallet approval work only; does not sign, submit, or grant delegated authority. Mainnet-beta only.',
+      inputSchema: {
+        ...project0BankInputSchema(),
+        amount: z.string().min(1).optional().describe("Human token amount. Pass 'all' or set withdrawAll to true to redeem the full supplied position."),
+        withdrawAll: z.boolean().optional(),
+        project0Account: z.string().min(32).optional(),
+        dueAt: z.string().datetime().optional(),
+        note: z.string().max(500).optional(),
+      },
+    },
+    async (input) => traceTool(
+      'solana_prepare_project0_withdraw',
+      { cluster: options.config.cluster, input },
+      async () => jsonReply(await service.prepareProject0Withdraw(input)),
+    ),
+  );
+
+  server.registerTool(
+    'solana_prepare_project0_borrow',
+    {
+      description:
+        'Create a manual-approval inbox item that borrows tokens from a Project 0 bank after a projected health check. Rechecks account health at execution time. Prepares wallet approval work only; does not sign, submit, or grant delegated authority. Mainnet-beta only.',
+      inputSchema: {
+        ...project0BankInputSchema(),
+        amount: z.string().min(1).describe('Human token amount to borrow, for example 1.'),
+        project0Account: z.string().min(32).optional(),
+        dueAt: z.string().datetime().optional(),
+        note: z.string().max(500).optional(),
+      },
+    },
+    async (input) => traceTool(
+      'solana_prepare_project0_borrow',
+      { cluster: options.config.cluster, input },
+      async () => jsonReply(await service.prepareProject0Borrow(input)),
+    ),
+  );
+
+  server.registerTool(
+    'solana_prepare_project0_repay',
+    {
+      description:
+        'Create a manual-approval inbox item that repays Project 0 debt. Prepares wallet approval work only; does not sign, submit, or grant delegated authority. Mainnet-beta only.',
+      inputSchema: {
+        ...project0BankInputSchema(),
+        amount: z.string().min(1).optional().describe("Human token amount. Pass 'all' or set repayAll to true to repay the full debt for the bank."),
+        repayAll: z.boolean().optional(),
+        project0Account: z.string().min(32).optional(),
+        dueAt: z.string().datetime().optional(),
+        note: z.string().max(500).optional(),
+      },
+    },
+    async (input) => traceTool(
+      'solana_prepare_project0_repay',
+      { cluster: options.config.cluster, input },
+      async () => jsonReply(await service.prepareProject0Repay(input)),
     ),
   );
 
@@ -5474,6 +5669,30 @@ function marginfiActionInputSchema() {
   };
 }
 
+function project0OperationSchema() {
+  return z.enum(['deposit', 'withdraw', 'borrow', 'repay']);
+}
+
+function project0BankInputSchema() {
+  return {
+    bankAddress: z.string().min(32).optional().describe('Project 0 bank account address.'),
+    bankMint: z.string().min(32).optional().describe('Bank mint address.'),
+    token: z.string().min(2).optional().describe('Bank token symbol, for example SOL or USDC.'),
+  };
+}
+
+function project0ActionInputSchema() {
+  return {
+    ...project0BankInputSchema(),
+    walletAddress: z.string().min(32).optional().describe('Defaults to the connected wallet.'),
+    amount: z.string().min(1).optional().describe("Human token amount. Required unless withdrawAll or repayAll resolves the amount; pass 'all' only for withdraw or repay."),
+    project0Account: z.string().min(32).optional().describe('Required when the wallet has multiple Project 0 accounts.'),
+    minHealthRatio: z.number().min(1).optional().describe('Minimum projected health ratio; defaults to connectors.project0.minHealthRatio.'),
+    withdrawAll: z.boolean().optional(),
+    repayAll: z.boolean().optional(),
+  };
+}
+
 function jupiterLendEarnInputSchema() {
   return {
     assetMint: z.string().min(32).describe('Underlying Jupiter Earn asset mint.'),
@@ -5506,6 +5725,7 @@ function connectorCapabilitySchema() {
     'governance',
     'treasury',
     'bridge',
+    'strategies',
     'prediction',
     'perps',
     'trigger',
@@ -5634,6 +5854,15 @@ function usefulPrompts(config: AgentWalletConfig) {
           'Use solana-agent-wallet to read the MarginFi SOL bank snapshot.',
           'Use solana-agent-wallet to preview borrowing 0.1 SOL on MarginFi without signing.',
           'Use solana-agent-wallet to prepare a MarginFi USDC repay for manual approval.',
+        ],
+      },
+      {
+        category: 'Project 0 (Protocol Connector)',
+        prompts: [
+          'Use solana-agent-wallet to show my Project 0 account and health.',
+          'Use solana-agent-wallet to read the Project 0 SOL bank.',
+          'Use solana-agent-wallet to preview borrowing 0.1 SOL on Project 0 without signing.',
+          'Use solana-agent-wallet to prepare a Project 0 USDC repay for manual approval.',
         ],
       },
       {

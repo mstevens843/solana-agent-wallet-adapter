@@ -75,6 +75,23 @@ function fakeTensorClient(state: FakeTensorState): TensorClient {
     preview: fakePreview(compressed),
   });
   return {
+    async fetchSupportedCollections() {
+      return {
+        collections: [
+          {
+            collectionId: COLLECTION,
+            name: 'Test Collection',
+            verified: true,
+            floorPriceSol: '1',
+            listedCount: 10,
+            totalSupply: 100,
+            rank: 1,
+          },
+        ],
+        asOf: new Date().toISOString(),
+        source: 'test',
+      };
+    },
     async fetchCollectionStats() {
       return {
         collectionId: COLLECTION,
@@ -339,6 +356,7 @@ describe('Tensor adapter shape', () => {
       'list',
       'sweep',
     ]);
+    expect(tensorAdapter.reads.supported_collections).toBeDefined();
     expect(tensorAdapter.reads.collection_snapshot).toBeDefined();
     expect(tensorAdapter.reads.collection_listings).toBeDefined();
     expect(tensorAdapter.reads.collection_bids).toBeDefined();

@@ -89,6 +89,7 @@ const CONNECTOR_ACTION_FORMS: ConnectorActionForm[] = [
   ], false, 'swap'),
   jupiterLendUnifiedForm(),
   ...marginfiForms(),
+  ...project0Forms(),
   ...saveForms(),
   ...driftForms(),
   luloUnifiedForm(),
@@ -546,7 +547,7 @@ export function normalizeConnectorDraftParameters(
         ? 'read-only'
         : connector.actionSource ?? 'blink',
   };
-  return scopeConnectorDraftParameters(template, withDefaultSubActionParameter(form, base));
+  return scopeConnectorDraftParameters(template, applyConnectorSubActionDefaults(form, base));
 }
 
 export function scopeConnectorDraftParameters(
@@ -556,7 +557,7 @@ export function scopeConnectorDraftParameters(
   const connector = selectedConnectorForDraftParameters(parameters);
   const form = connectorActionFormById(parameters.connectorOperationId) ??
     (connector ? connectorActionFormForTemplate(template, connector) : connectorActionFormForTemplate(template));
-  const scopedSource = withDefaultSubActionParameter(form, parameters);
+  const scopedSource = applyConnectorSubActionDefaults(form, parameters);
   const fields = form ? formTemplateFields(form) : template.fields ?? [];
   const allowed = new Set<string>([
     'connectorId',
@@ -571,6 +572,12 @@ export function scopeConnectorDraftParameters(
   }
   for (const field of fields) {
     if (!connectorParameterFieldIsVisible(field, scopedSource)) continue;
+    allowed.add(field.id);
+    allowed.add(`${field.id}Label`);
+    allowed.add(`${field.id}Mint`);
+  }
+  const branch = form ? selectedSubAction(form, scopedSource) : undefined;
+  for (const field of branch?.fields ?? []) {
     allowed.add(field.id);
     allowed.add(`${field.id}Label`);
     allowed.add(`${field.id}Mint`);
@@ -988,7 +995,7 @@ function magicedenForms(): ConnectorActionForm[] {
       subActions: {
         fieldId: 'subAction',
         label: 'Bid target',
-        defaultId: 'nft',
+        defaultId: 'collection',
         options: [
           { id: 'nft', label: 'Single NFT', description: 'Bid on one specific mint.', actionType: 'magiceden_bid', fields: [nftWalletField('magiceden.wallet.nft', true)] },
           { id: 'collection', label: 'Collection', description: 'Collection-wide bid.', actionType: 'magiceden_bid', fields: [nftCollectionField('magiceden.collection', true)] },
@@ -1038,7 +1045,7 @@ function tensorForms(): ConnectorActionForm[] {
       subActions: {
         fieldId: 'subAction',
         label: 'Bid target',
-        defaultId: 'nft',
+        defaultId: 'collection',
         options: [
           { id: 'nft', label: 'Single NFT', description: 'Bid on one specific mint.', actionType: 'tensor_bid', fields: [nftWalletField('tensor.wallet.nft', true)] },
           { id: 'collection', label: 'Collection', description: 'Collection-wide bid.', actionType: 'tensor_bid', fields: [nftCollectionField('tensor.collection', true)] },
@@ -1286,6 +1293,48 @@ function marginfiForms(): ConnectorActionForm[] {
       healthField,
       formField('memo', 'Reason'),
     ], false, 'marginfi_repay'),
+  ];
+}
+
+function project0BankField(required: boolean): AgentPlanTemplateField {
+  return cascadingField('bankAddress', 'Project 0 bank', 'project0.bank', {
+    required,
+    emptyHint: "Couldn't load Project 0 banks. Paste a bank address or token symbol.",
+  });
+}
+
+function project0Forms(): ConnectorActionForm[] {
+  const amountField = formField('amount', 'Amount', true);
+  const healthField = formField('minHealthRatio', 'Minimum health ratio');
+  return [
+    connectorActionForm('project0', 'create-account', 'Create account', 'connector-project0-create-account', 'Create a Project 0 account for wallet approval.', 'first-class-adapter', 'queueable', [
+      formField('accountIndex', 'Account index'),
+      formField('memo', 'Reason'),
+    ], false, 'project0_create_account'),
+    connectorActionForm('project0', 'deposit', 'Deposit', 'connector-project0-deposit', 'Supply tokens to a Project 0 bank.', 'first-class-adapter', 'queueable', [
+      project0BankField(true),
+      amountField,
+      healthField,
+      formField('memo', 'Reason'),
+    ], false, 'project0_deposit'),
+    connectorActionForm('project0', 'withdraw', 'Withdraw', 'connector-project0-withdraw', 'Redeem supplied tokens from a Project 0 bank.', 'first-class-adapter', 'queueable', [
+      project0BankField(true),
+      formField('amount', 'Amount'),
+      healthField,
+      formField('memo', 'Reason'),
+    ], false, 'project0_withdraw'),
+    connectorActionForm('project0', 'borrow', 'Borrow', 'connector-project0-borrow', 'Borrow against Project 0 collateral.', 'first-class-adapter', 'queueable', [
+      project0BankField(true),
+      amountField,
+      healthField,
+      formField('memo', 'Reason'),
+    ], false, 'project0_borrow'),
+    connectorActionForm('project0', 'repay', 'Repay', 'connector-project0-repay', 'Repay Project 0 debt.', 'first-class-adapter', 'queueable', [
+      project0BankField(true),
+      formField('amount', 'Amount'),
+      healthField,
+      formField('memo', 'Reason'),
+    ], false, 'project0_repay'),
   ];
 }
 
@@ -1659,16 +1708,35 @@ export function selectedSubAction(
   return form.subActions.options.find((option) => option.id === defaultId) ?? form.subActions.options[0];
 }
 
-function withDefaultSubActionParameter(
+function applyConnectorSubActionDefaults(
   form: ConnectorActionForm | undefined,
   parameters: Record<string, string>,
 ): Record<string, string> {
   if (!form?.subActions) return parameters;
-  const fieldId = form.subActions.fieldId;
-  if (parameters[fieldId]?.trim()) return parameters;
   const branch = selectedSubAction(form, parameters);
-  const defaultId = branch?.id ?? form.subActions.defaultId ?? form.subActions.options[0]?.id;
-  return defaultId ? { ...parameters, [fieldId]: defaultId } : parameters;
+  if (!branch) return parameters;
+  const next = { ...parameters };
+  const fieldId = form.subActions.fieldId;
+  if (!next[fieldId]?.trim()) next[fieldId] = branch.id;
+  next[`${fieldId}Label`] = branch.label;
+  for (const field of branch.fields) {
+    const defaultValue = connectorSubActionFieldDefault(field);
+    if (defaultValue === undefined) continue;
+    if (connectorFixedSubActionField(field) || !next[field.id]?.trim()) {
+      next[field.id] = defaultValue;
+    }
+  }
+  return next;
+}
+
+function connectorFixedSubActionField(field: AgentPlanTemplateField): boolean {
+  return field.type === 'select' && (field.options?.length ?? 0) === 1;
+}
+
+function connectorSubActionFieldDefault(field: AgentPlanTemplateField): string | undefined {
+  if (field.defaultValue !== undefined) return field.defaultValue;
+  if (connectorFixedSubActionField(field)) return field.options?.[0];
+  return undefined;
 }
 
 export function effectiveFormFields(
@@ -1699,42 +1767,24 @@ export function formTemplateFields(form: ConnectorActionForm): AgentPlanTemplate
   const selectField = subActionSelectField(form);
   const baseIds = new Set(form.fields.map((field) => field.id));
   const subActionFieldId = form.subActions.fieldId;
-  // Aggregate sub-actions that share a field id (e.g. `poolId` exists in cpmm-add,
-  // cpmm-remove, clmm-add, clmm-remove): build a single field whose showWhen lists
-  // every matching branch. Without this, only the first sub-action's branch shows
-  // its pool/amount/etc., and all later sub-actions render as empty forms.
-  const branchFieldsById = new Map<string, { field: AgentPlanTemplateField; matches: string[] }>();
+  const branchFields: AgentPlanTemplateField[] = [];
   for (const branch of form.subActions.options) {
     for (const field of branch.fields) {
       if (baseIds.has(field.id)) continue;
-      const existing = branchFieldsById.get(field.id);
-      if (existing) {
-        existing.matches.push(branch.id);
-        // Promote the field to required if ANY sub-action needs it required — the
-        // showWhen condition gates whether the validator sees it at all.
-        if (field.required) existing.field.required = true;
-      } else {
-        branchFieldsById.set(field.id, {
-          field: { ...field },
-          matches: [branch.id],
-        });
-      }
+      if (connectorFixedSubActionField(field)) continue;
+      branchFields.push({
+        ...field,
+        showWhen: {
+          ...(field.showWhen ?? {}),
+          [subActionFieldId]: branch.id,
+        },
+      });
     }
   }
-  const branchFields: AgentPlanTemplateField[] = [];
-  for (const { field, matches } of branchFieldsById.values()) {
-    branchFields.push({
-      ...field,
-      showWhen: {
-        ...(field.showWhen ?? {}),
-        [subActionFieldId]: matches.length === 1 ? matches[0]! : matches,
-      },
-    });
-  }
   return [
-    ...form.fields,
     ...(selectField ? [selectField] : []),
     ...branchFields,
+    ...form.fields,
   ];
 }
 
@@ -1833,6 +1883,15 @@ function connectorActionFields(actionKind: string): AgentPlanTemplateField[] {
     add(formField('bankAddress', 'Bank address', true));
     add(formField('amount', 'Amount', !has('withdraw', 'repay')));
     add(formField('minHealthFactor', 'Minimum health factor'));
+  } else if (actionKind.startsWith('project0_')) {
+    if (has('create_account')) {
+      add(formField('accountIndex', 'Account index'));
+    } else {
+      add(formField('bankAddress', 'Bank address', true));
+      add(formField('amount', 'Amount', !has('withdraw', 'repay')));
+      add(formField('project0Account', 'Project 0 account'));
+      add(formField('minHealthRatio', 'Minimum health ratio'));
+    }
   } else if (actionKind.startsWith('save_')) {
     add(formField('reserveAddress', 'Reserve address', true));
     add(formField('amount', 'Amount', !has('withdraw', 'repay')));
@@ -1893,15 +1952,19 @@ function connectorActionFields(actionKind: string): AgentPlanTemplateField[] {
     }
   } else if (actionKind.startsWith('wormhole_')) {
     if (has('transfer')) {
-      add(formField('token', 'Token or mint', true));
+      add(wormholeTokenField(true));
       add(formField('amount', 'Amount', true));
-      add(formField('destinationChain', 'Destination chain', true));
-      add(formField('recipient', 'Destination recipient', true));
+      add(wormholeDestinationField(true));
+      add(formField('destinationAddress', 'Destination recipient', true));
     } else {
       add(formField('transferId', 'Transfer id / VAA', true));
     }
   } else if (actionKind.startsWith('pyth_')) {
-    add(formField('priceFeedIds', 'Price feed ids', true));
+    add(cascadingField('priceFeedIds', 'Price feeds', 'pyth.feed', {
+      required: true,
+      emptyHint: 'Type a symbol (e.g. SOL/USD) to search Pyth feeds.',
+      placeholder: 'SOL/USD',
+    }));
     add(formField('maxAgeSeconds', 'Max price age seconds'));
   }
 

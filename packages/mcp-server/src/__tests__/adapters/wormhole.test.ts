@@ -156,6 +156,28 @@ describe('Wormhole adapter', () => {
     });
   });
 
+  it('normalizes legacy token and recipient aliases before preparing a transfer', async () => {
+    const state = fakeState();
+    setWormholeClientFactory(() => fakeWormholeClient(state));
+
+    const prepared = await wormholeTransferAction.prepare({
+      token: 'USDC',
+      amount: '10',
+      destinationChain: 'Base',
+      recipient: DESTINATION,
+    }, makeContext());
+
+    expect(prepared.preview).toMatchObject({
+      sourceMint: USDC_MINT,
+      destinationAddress: DESTINATION,
+      amountRaw: '10000000',
+    });
+    expect(state.quoteCalls[0]).toMatchObject({
+      sourceMint: USDC_MINT,
+      destinationAddress: DESTINATION,
+    });
+  });
+
   it('blocks execution when the refreshed destination token mapping changes', async () => {
     const state = fakeState();
     setWormholeClientFactory(() => fakeWormholeClient(state));

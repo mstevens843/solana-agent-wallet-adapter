@@ -39,6 +39,28 @@ export interface MagicedenCollectionSummary {
   apiBaseHost: string;
 }
 
+export interface MagicedenCollectionRow {
+  collectionSymbol?: string;
+  collectionId?: string;
+  name?: string;
+  image?: string;
+  description?: string;
+  verified?: boolean;
+  floorPriceLamports?: string;
+  floorPriceSol?: string;
+  listedCount?: number;
+  totalSupply?: number;
+  volume24hSol?: string;
+  rank?: number;
+}
+
+export interface MagicedenTopCollections {
+  rows: MagicedenCollectionRow[];
+  source: 'popular_collections' | 'collections';
+  asOfIso: string;
+  apiBaseHost: string;
+}
+
 export interface MagicedenListingRow {
   listingId?: string;
   mintAddress: string;
@@ -195,6 +217,10 @@ export interface MagicedenCancelBidParams {
 
 export interface MagicedenClient {
   getApiHealth(input: { includeTradingEndpoints?: boolean }): Promise<MagicedenApiHealthSnapshot>;
+  getTopCollections(input?: {
+    limit?: number;
+    timeRange?: string;
+  }): Promise<MagicedenTopCollections>;
   getCollectionSummary(input: {
     collectionSymbol?: string;
     collectionId?: string;
@@ -253,6 +279,9 @@ class MagicedenApiUnavailable implements MagicedenClient {
 
   async getApiHealth(): Promise<MagicedenApiHealthSnapshot> {
     this.fail('getApiHealth');
+  }
+  async getTopCollections(): Promise<MagicedenTopCollections> {
+    this.fail('getTopCollections');
   }
   async getCollectionSummary(): Promise<MagicedenCollectionSummary> {
     this.fail('getCollectionSummary');
@@ -412,6 +441,51 @@ export class MagicedenApiClient implements MagicedenClient {
       warnings,
       degradedReasons,
       ...(rateLimit ? { rateLimit } : {}),
+    };
+  }
+
+  async getTopCollections(input: {
+    limit?: number;
+    timeRange?: string;
+  } = {}): Promise<MagicedenTopCollections> {
+    const limit = boundedLimit(input.limit);
+    const popularParams = new URLSearchParams();
+    popularParams.set('limit', limit.toString());
+    popularParams.set('timeRange', input.timeRange?.trim() || '1d');
+    try {
+      const probe = await this.request(
+        `/marketplace/popular_collections?${popularParams.toString()}`,
+        'GET',
+      );
+      const rows = asArray(probe.body)
+        .map((row, index) => normalizeCollectionRow(row, index))
+        .filter((row): row is MagicedenCollectionRow => row !== null)
+        .slice(0, limit);
+      if (rows.length > 0) {
+        return {
+          rows,
+          source: 'popular_collections',
+          asOfIso: new Date().toISOString(),
+          apiBaseHost: this.baseHost,
+        };
+      }
+    } catch {
+      // Fall through to the older collection catalog endpoint. Popular
+      // collections is newer and may not be enabled for every API key/base URL.
+    }
+
+    const params = new URLSearchParams();
+    params.set('limit', limit.toString());
+    const probe = await this.request(`/collections?${params.toString()}`, 'GET');
+    const rows = asArray(probe.body)
+      .map((row, index) => normalizeCollectionRow(row, index))
+      .filter((row): row is MagicedenCollectionRow => row !== null)
+      .slice(0, limit);
+    return {
+      rows,
+      source: 'collections',
+      asOfIso: new Date().toISOString(),
+      apiBaseHost: this.baseHost,
     };
   }
 
@@ -825,6 +899,48 @@ function boundedLimit(limit?: number): number {
   return Math.min(Math.trunc(limit), 100);
 }
 
+function normalizeCollectionRow(row: unknown, index: number): MagicedenCollectionRow | null {
+  if (!isObject(row)) return null;
+  const collectionSymbol = stringField(row, 'symbol', 'collectionSymbol', 'slug', 'collection');
+  const collectionId = stringField(row, 'collectionId', 'id', 'address');
+  if (!collectionSymbol && !collectionId) return null;
+  const floor = collectionFloor(row);
+  return {
+    ...(collectionSymbol ? { collectionSymbol } : {}),
+    ...(collectionId ? { collectionId } : {}),
+    ...(stringField(row, 'name', 'displayName', 'collectionName') ? { name: stringField(row, 'name', 'displayName', 'collectionName') } : {}),
+    ...(stringField(row, 'image', 'imageUrl') ? { image: stringField(row, 'image', 'imageUrl') } : {}),
+    ...(stringField(row, 'description') ? { description: stringField(row, 'description') } : {}),
+    ...(typeof row.verified === 'boolean' || typeof row.isBadged === 'boolean'
+      ? { verified: Boolean(row.verified ?? row.isBadged) }
+      : {}),
+    ...(floor.floorPriceLamports ? { floorPriceLamports: floor.floorPriceLamports } : {}),
+    ...(floor.floorPriceSol ? { floorPriceSol: floor.floorPriceSol } : {}),
+    ...(integerField(row, 'listedCount', 'listed', 'numListed') !== undefined
+      ? { listedCount: integerField(row, 'listedCount', 'listed', 'numListed') }
+      : {}),
+    ...(integerField(row, 'totalSupply', 'supply') !== undefined
+      ? { totalSupply: integerField(row, 'totalSupply', 'supply') }
+      : {}),
+    ...(solValue(row, 'volume24hSol', 'volume24h', 'volume') ? { volume24hSol: solValue(row, 'volume24hSol', 'volume24h', 'volume') } : {}),
+    rank: integerField(row, 'rank') ?? index + 1,
+  };
+}
+
+function collectionFloor(row: Record<string, unknown>): {
+  floorPriceLamports?: string;
+  floorPriceSol?: string;
+} {
+  const explicitSol = solValue(row, 'floorPriceSol', 'floorSol');
+  if (explicitSol) return { floorPriceSol: explicitSol };
+  const raw = numberAsString(row.floorPriceLamports ?? row.floorPrice ?? row.floor);
+  if (!raw) return {};
+  if (raw.includes('.') || Number(raw) < 1_000_000) {
+    return { floorPriceSol: raw };
+  }
+  return { floorPriceLamports: raw, floorPriceSol: lamportsToSolString(raw) };
+}
+
 function normalizeListingRow(row: unknown): MagicedenListingRow | null {
   if (!isObject(row)) return null;
   const mintAddress = stringField(row, 'tokenMint', 'mintAddress', 'mint');
@@ -940,6 +1056,23 @@ function parseActivityType(value: unknown): MagicedenActivityType {
   return 'unknown';
 }
 
+function integerField(obj: Record<string, unknown>, ...keys: string[]): number | undefined {
+  for (const key of keys) {
+    const value = obj[key];
+    if (typeof value === 'number' && Number.isFinite(value)) return Math.trunc(value);
+    if (typeof value === 'string' && /^\d+$/.test(value.trim())) return Number(value.trim());
+  }
+  return undefined;
+}
+
+function solValue(obj: Record<string, unknown>, ...keys: string[]): string | undefined {
+  for (const key of keys) {
+    const value = numberAsString(obj[key]);
+    if (value) return value;
+  }
+  return undefined;
+}
+
 function stringField(obj: Record<string, unknown>, ...keys: string[]): string {
   for (const key of keys) {
     const value = obj[key];
@@ -972,6 +1105,8 @@ function asArray(value: unknown): unknown[] {
   if (isObject(value)) {
     if (Array.isArray(value.data)) return value.data;
     if (Array.isArray(value.results)) return value.results;
+    if (Array.isArray(value.rows)) return value.rows;
+    if (Array.isArray(value.collections)) return value.collections;
     if (Array.isArray(value.listings)) return value.listings;
     if (Array.isArray(value.bids)) return value.bids;
     if (Array.isArray(value.activities)) return value.activities;

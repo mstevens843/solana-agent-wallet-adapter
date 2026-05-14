@@ -302,6 +302,7 @@ import {
   factsFromMagicedenCollectionSnapshot,
   factsFromMagicedenNftDetail,
   factsFromMagicedenRecentActivity,
+  factsFromMagicedenTopCollections,
   factsFromMagicedenWalletNfts,
   factsFromMeteoraPoolSnapshot,
   factsFromMeteoraPositionDetail,
@@ -321,6 +322,7 @@ import {
   factsFromTensorCollectionSnapshot,
   factsFromTensorNftDetail,
   factsFromTensorRecentSales,
+  factsFromTensorSupportedCollections,
   factsFromTensorWalletMarketplaceExposure,
   factsFromTensorWalletNfts,
   factsFromPythPriceFeed,
@@ -780,6 +782,39 @@ export class AgentWalletActionService {
   ): Promise<Record<string, unknown>> {
     requireActionAllowed(this.config);
     const adapter = requireAdapter('marginfi');
+    assertSupportedCluster(adapter, this.config.cluster);
+    const action = requireAdapterAction(adapter, operation);
+    const result = await action.prepare(input, this.adapterContext(adapter));
+    const stored = await this.store().addAction(result.addInput);
+    return { preparedAction: stored, preview: result.preview };
+  }
+
+  async prepareProject0CreateAccount(input: Project0PrepareInput): Promise<Record<string, unknown>> {
+    return this.prepareProject0Action('create_account', input);
+  }
+
+  async prepareProject0Deposit(input: Project0PrepareInput): Promise<Record<string, unknown>> {
+    return this.prepareProject0Action('deposit', input);
+  }
+
+  async prepareProject0Withdraw(input: Project0PrepareInput): Promise<Record<string, unknown>> {
+    return this.prepareProject0Action('withdraw', input);
+  }
+
+  async prepareProject0Borrow(input: Project0PrepareInput): Promise<Record<string, unknown>> {
+    return this.prepareProject0Action('borrow', input);
+  }
+
+  async prepareProject0Repay(input: Project0PrepareInput): Promise<Record<string, unknown>> {
+    return this.prepareProject0Action('repay', input);
+  }
+
+  private async prepareProject0Action(
+    operation: 'create_account' | 'deposit' | 'withdraw' | 'borrow' | 'repay',
+    input: Project0PrepareInput,
+  ): Promise<Record<string, unknown>> {
+    requireActionAllowed(this.config);
+    const adapter = requireAdapter('project0');
     assertSupportedCluster(adapter, this.config.cluster);
     const action = requireAdapterAction(adapter, operation);
     const result = await action.prepare(input, this.adapterContext(adapter));
@@ -1483,6 +1518,18 @@ export class AgentWalletActionService {
     return { snapshot, facts: factsFromMagicedenApiHealth(snapshot) };
   }
 
+  async magicedenTopCollections(input: {
+    limit?: number;
+    timeRange?: string;
+  } = {}): Promise<Record<string, unknown>> {
+    const adapter = requireAdapter('magiceden');
+    assertSupportedCluster(adapter, this.config.cluster);
+    const read = adapter.reads.top_collections;
+    if (!read) throw new AdapterError('magiceden', 'unsupported_method', 'Magic Eden top_collections read is not registered.');
+    const collections = (await read.read(input, this.adapterContext(adapter))) as Parameters<typeof factsFromMagicedenTopCollections>[0];
+    return { collections, facts: factsFromMagicedenTopCollections(collections) };
+  }
+
   async magicedenCollectionSnapshot(input: {
     collectionSymbol?: string;
     collectionId?: string;
@@ -1631,6 +1678,15 @@ export class AgentWalletActionService {
     if (!read) throw new AdapterError('tensor', 'unsupported_method', 'Tensor collection_snapshot read is not registered.');
     const snapshot = (await read.read(input, this.adapterContext(adapter))) as Parameters<typeof factsFromTensorCollectionSnapshot>[0];
     return { snapshot, facts: factsFromTensorCollectionSnapshot(snapshot) };
+  }
+
+  async tensorSupportedCollections(input: { limit?: number } = {}): Promise<Record<string, unknown>> {
+    const adapter = requireAdapter('tensor');
+    assertSupportedCluster(adapter, this.config.cluster);
+    const read = adapter.reads.supported_collections;
+    if (!read) throw new AdapterError('tensor', 'unsupported_method', 'Tensor supported_collections read is not registered.');
+    const collections = (await read.read(input, this.adapterContext(adapter))) as Parameters<typeof factsFromTensorSupportedCollections>[0];
+    return { collections, facts: factsFromTensorSupportedCollections(collections) };
   }
 
   async tensorCollectionListings(input: { collectionId: string; limit?: number }): Promise<Record<string, unknown>> {
@@ -2194,6 +2250,9 @@ export class AgentWalletActionService {
       if (connector.id === 'marginfi') {
         return await this.marginfiConnectorFacts(input);
       }
+      if (connector.id === 'project0') {
+        return await this.project0ConnectorFacts(input);
+      }
       if (connector.id === 'drift') {
         return await this.driftConnectorFacts(input);
       }
@@ -2250,10 +2309,15 @@ export class AgentWalletActionService {
 
     if (capability === 'markets' || capability === 'marketplace') {
       if (!hasCollection) {
-        throw new ProtocolError(
-          'invalid_request',
-          'collectionSymbol or collectionId is required to read Magic Eden market facts.',
-        );
+        const result = await this.magicedenTopCollections({
+          ...(input.limit !== undefined && { limit: input.limit }),
+        });
+        return {
+          connector: connectorCapabilityView(connector, this.config),
+          capability,
+          collections: result.collections,
+          facts: result.facts,
+        };
       }
       const result = await this.magicedenCollectionSnapshot({
         ...(input.collectionSymbol !== undefined && { collectionSymbol: input.collectionSymbol }),
@@ -2311,10 +2375,15 @@ export class AgentWalletActionService {
           : 'positions');
     if (capability === 'markets' || capability === 'marketplace') {
       if (!input.collectionId?.trim()) {
-        throw new ProtocolError(
-          'invalid_request',
-          'collectionId is required to read Tensor market facts.',
-        );
+        const result = await this.tensorSupportedCollections({
+          ...(input.limit !== undefined && { limit: input.limit }),
+        });
+        return {
+          connector: connectorCapabilityView(connector, this.config),
+          capability,
+          collections: result.collections,
+          facts: result.facts,
+        };
       }
       const result = await this.tensorCollectionSnapshot({
         collectionId: input.collectionId,
@@ -3150,6 +3219,84 @@ export class AgentWalletActionService {
     throw missingConnectorCapability(connector, capability, 'read');
   }
 
+  private async project0ConnectorFacts(input: ConnectorFactReadInput): Promise<Record<string, unknown>> {
+    const connector = requireRuntimeConnector('project0');
+    const capability = input.capability ?? project0DefaultCapability(input);
+    if (capability === 'markets') {
+      const result = await this.project0Banks({
+        ...(input.bankAddress !== undefined && { bankAddress: input.bankAddress }),
+        ...(input.bankMint !== undefined && { bankMint: input.bankMint }),
+        token: input.token ?? input.mint ?? 'SOL',
+      });
+      return {
+        connector: connectorCapabilityView(connector, this.config),
+        capability,
+        banks: result.banks,
+        facts: result.facts,
+      };
+    }
+    if (capability === 'strategies') {
+      const result = await this.project0Strategies();
+      return {
+        connector: connectorCapabilityView(connector, this.config),
+        capability,
+        strategies: result.strategies,
+        facts: result.facts,
+      };
+    }
+    if (capability === 'positions') {
+      if (input.project0Account?.trim()) {
+        const result = await this.project0AccountDetail({
+          ...(input.walletAddress !== undefined && { walletAddress: input.walletAddress }),
+          project0Account: input.project0Account,
+        });
+        return {
+          connector: connectorCapabilityView(connector, this.config),
+          capability,
+          account: result.account,
+          facts: result.facts,
+        };
+      }
+      if (input.walletAddress?.trim()) {
+        const result = await this.project0Wallet({ walletAddress: input.walletAddress });
+        return {
+          connector: connectorCapabilityView(connector, this.config),
+          capability,
+          wallet: result.wallet,
+          facts: result.facts,
+        };
+      }
+      const result = await this.project0AccountDetail({});
+      return {
+        connector: connectorCapabilityView(connector, this.config),
+        capability,
+        account: result.account,
+        facts: result.facts,
+      };
+    }
+    if (capability === 'earn' || capability === 'borrow' || capability === 'withdraw' || capability === 'repay') {
+      const operation = capability === 'earn' ? 'deposit' : capability;
+      const result = await this.project0HealthPreview({
+        operation,
+        ...(input.walletAddress !== undefined && { walletAddress: input.walletAddress }),
+        ...(input.bankAddress !== undefined && { bankAddress: input.bankAddress }),
+        ...(input.bankMint !== undefined && { bankMint: input.bankMint }),
+        token: input.token ?? 'SOL',
+        ...(input.amount !== undefined && { amount: input.amount }),
+        ...(input.project0Account !== undefined && { project0Account: input.project0Account }),
+        ...(input.withdrawAll !== undefined && { withdrawAll: input.withdrawAll }),
+        ...(input.repayAll !== undefined && { repayAll: input.repayAll }),
+      });
+      return {
+        connector: connectorCapabilityView(connector, this.config),
+        capability,
+        preview: result.preview,
+        facts: result.facts,
+      };
+    }
+    throw missingConnectorCapability(connector, capability, 'read');
+  }
+
   private async driftConnectorFacts(input: ConnectorFactReadInput): Promise<Record<string, unknown>> {
     const connector = requireRuntimeConnector('drift');
     const capability = input.capability ?? driftDefaultCapability(input);
@@ -3832,6 +3979,85 @@ export class AgentWalletActionService {
     return {
       preview,
       facts: factsFromMarginfiHealthPreview(preview as Parameters<typeof factsFromMarginfiHealthPreview>[0]),
+    };
+  }
+
+  async project0Banks(input: {
+    bankAddress?: string;
+    bankMint?: string;
+    token?: string;
+  }): Promise<Record<string, unknown>> {
+    const adapter = requireAdapter('project0');
+    assertSupportedCluster(adapter, this.config.cluster);
+    const read = adapter.reads.banks;
+    if (!read) throw new AdapterError('project0', 'unsupported_method', 'Project 0 bank read is not registered.');
+    const banks = await read.read(input, this.adapterContext(adapter));
+    return {
+      banks,
+      facts: factsFromProject0Banks(banks as Parameters<typeof factsFromProject0Banks>[0]),
+    };
+  }
+
+  async project0Strategies(): Promise<Record<string, unknown>> {
+    const adapter = requireAdapter('project0');
+    assertSupportedCluster(adapter, this.config.cluster);
+    const read = adapter.reads.strategies;
+    if (!read) throw new AdapterError('project0', 'unsupported_method', 'Project 0 strategy read is not registered.');
+    const strategies = await read.read({}, this.adapterContext(adapter));
+    return {
+      strategies,
+      facts: factsFromProject0Strategies(strategies as Parameters<typeof factsFromProject0Strategies>[0]),
+    };
+  }
+
+  async project0Wallet(input: { walletAddress?: string }): Promise<Record<string, unknown>> {
+    const adapter = requireAdapter('project0');
+    assertSupportedCluster(adapter, this.config.cluster);
+    const read = adapter.reads.wallet;
+    if (!read) throw new AdapterError('project0', 'unsupported_method', 'Project 0 wallet read is not registered.');
+    const wallet = await read.read(input, this.adapterContext(adapter));
+    return {
+      wallet,
+      facts: factsFromProject0Wallet(wallet as Parameters<typeof factsFromProject0Wallet>[0]),
+    };
+  }
+
+  async project0AccountDetail(input: {
+    walletAddress?: string;
+    project0Account?: string;
+  }): Promise<Record<string, unknown>> {
+    const adapter = requireAdapter('project0');
+    assertSupportedCluster(adapter, this.config.cluster);
+    const read = adapter.reads.account_detail;
+    if (!read) throw new AdapterError('project0', 'unsupported_method', 'Project 0 account detail read is not registered.');
+    const account = await read.read(input, this.adapterContext(adapter));
+    return {
+      account,
+      facts: factsFromProject0AccountDetail(account as Parameters<typeof factsFromProject0AccountDetail>[0]),
+    };
+  }
+
+  async project0HealthPreview(
+    input: Project0PrepareInput & {
+      operation: 'deposit' | 'withdraw' | 'borrow' | 'repay';
+      walletAddress?: string;
+      minHealthRatio?: number;
+    },
+  ): Promise<Record<string, unknown>> {
+    const adapter = requireAdapter('project0');
+    assertSupportedCluster(adapter, this.config.cluster);
+    const read = adapter.reads.health_preview;
+    if (!read) throw new AdapterError('project0', 'unsupported_method', 'Project 0 health preview read is not registered.');
+    const preview = await read.read(
+      {
+        ...input,
+        minHealthRatio: input.minHealthRatio ?? project0MinHealthRatio(this.config),
+      },
+      this.adapterContext(adapter),
+    );
+    return {
+      preview,
+      facts: factsFromProject0HealthPreview(preview as Parameters<typeof factsFromProject0HealthPreview>[0]),
     };
   }
 
@@ -4818,6 +5044,11 @@ export class AgentWalletActionService {
       case 'marginfi_withdraw':
       case 'marginfi_borrow':
       case 'marginfi_repay':
+      case 'project0_create_account':
+      case 'project0_deposit':
+      case 'project0_withdraw':
+      case 'project0_borrow':
+      case 'project0_repay':
       case 'drift_vault_deposit':
       case 'drift_vault_request_withdraw':
       case 'drift_vault_cancel_withdraw':
@@ -5245,6 +5476,19 @@ function marginfiDefaultCapability(input: ConnectorFactReadInput): ConnectorCapa
     return input.operation === 'deposit' ? 'earn' : input.operation;
   }
   if (input.marginfiAccount || input.walletAddress) {
+    return 'positions';
+  }
+  if (input.amount) {
+    return 'earn';
+  }
+  return 'markets';
+}
+
+function project0DefaultCapability(input: ConnectorFactReadInput): ConnectorCapability {
+  if (input.operation) {
+    return input.operation === 'deposit' ? 'earn' : input.operation;
+  }
+  if (input.project0Account || input.walletAddress) {
     return 'positions';
   }
   if (input.amount) {

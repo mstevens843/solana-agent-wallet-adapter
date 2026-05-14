@@ -347,6 +347,11 @@ type PreparedActionKind =
   | 'marginfi_withdraw'
   | 'marginfi_borrow'
   | 'marginfi_repay'
+  | 'project0_create_account'
+  | 'project0_deposit'
+  | 'project0_withdraw'
+  | 'project0_borrow'
+  | 'project0_repay'
   | 'drift_vault_deposit'
   | 'drift_vault_request_withdraw'
   | 'drift_vault_cancel_withdraw'
@@ -911,6 +916,7 @@ type BrandLogoId =
   | 'meteora'
   | 'orca'
   | 'phantom'
+  | 'project0'
   | 'pyth'
   | 'raydium'
   | 'realms'
@@ -942,6 +948,7 @@ const BRAND_LOGOS: Record<BrandLogoId, string> = {
   meteora: new URL('./assets/logos/meteora.svg', import.meta.url).href,
   orca: new URL('./assets/logos/orca.svg', import.meta.url).href,
   phantom: new URL('./assets/logos/phantom.svg', import.meta.url).href,
+  project0: new URL('./assets/logos/project0.svg', import.meta.url).href,
   pyth: new URL('./assets/logos/pyth.svg', import.meta.url).href,
   raydium: new URL('./assets/logos/raydium.svg', import.meta.url).href,
   realms: new URL('./assets/logos/realms.svg', import.meta.url).href,
@@ -3921,7 +3928,7 @@ const PROTOCOL_CONNECTOR_DOC_GROUPS: ProtocolConnectorDocsGroup[] = [
   {
     title: 'Lending and yield',
     detail: 'Supply, borrow, repay, withdraw, vault positions, balances, reserves, account health, and position checks.',
-    connectorIds: ['kamino', 'marginfi', 'drift', 'lulo', 'save'],
+    connectorIds: ['kamino', 'marginfi', 'project0', 'drift', 'lulo', 'save'],
   },
   {
     title: 'Liquid staking',
@@ -3972,6 +3979,10 @@ const PROTOCOL_CONNECTOR_DOC_COPY: Record<ConnectedDappId, ProtocolConnectorDocs
   marginfi: {
     focus: 'Borrow and repay',
     summary: 'Read banks, accounts, and health previews, then prepare deposit, withdraw, borrow, and repay actions.',
+  },
+  project0: {
+    focus: 'Unified margin',
+    summary: 'Read P0 banks, strategies, wallet holdings, and account health, then prepare account, deposit, withdraw, borrow, and repay approvals.',
   },
   mayan: {
     focus: 'Planned cross-chain swap',
@@ -6593,6 +6604,7 @@ function protocolConnectorLogoId(id: ConnectedDappId): BrandLogoId {
     magiceden: 'magiceden',
     marinade: 'marinade',
     marginfi: 'marginfi',
+    project0: 'project0',
     mayan: 'mayan',
     meteora: 'meteora',
     orca: 'orca',
@@ -11644,13 +11656,27 @@ function effectiveTemplateFields(template: AgentPlanTemplate): AgentPlanTemplate
 function templateFieldVisible(fieldDef: AgentPlanTemplateField): boolean {
   if (!fieldDef.showWhen) return true;
   for (const [key, expected] of Object.entries(fieldDef.showWhen)) {
-    const current = state.templateFields[key]?.trim() ?? '';
+    const current = templateShowWhenValue(key);
     const expectations = Array.isArray(expected) ? expected : [expected];
     if (!expectations.some((candidate) => candidate === current)) {
       return false;
     }
   }
   return true;
+}
+
+function templateShowWhenValue(fieldId: string): string {
+  const current = state.templateFields[fieldId]?.trim();
+  if (current) return current;
+  const form = activeConnectorActionForm();
+  if (form?.subActions?.fieldId === fieldId) {
+    return selectedSubAction(form, state.templateFields)?.id ??
+      form.subActions.defaultId ??
+      form.subActions.options[0]?.id ??
+      '';
+  }
+  const fieldDef = effectiveTemplateFields(selectedTemplate()).find((field) => field.id === fieldId);
+  return fieldDef?.defaultValue ?? '';
 }
 
 function templateFieldIsSubActionSelect(fieldDef: AgentPlanTemplateField): boolean {
@@ -11690,6 +11716,74 @@ function connectorSubActionPicker(form: ConnectorActionForm): string {
   `;
 }
 
+function cascadingAdvancedManualInput(
+  fieldDef: AgentPlanTemplateField,
+  value: string,
+): string {
+  const cascading = fieldDef.cascading;
+  if (!cascading?.allowManualFallback) return '';
+  const open = value ? 'open' : '';
+  return `
+    <details class="cascading-manual-fallback" ${open}>
+      <summary>Advanced: paste value</summary>
+      <input
+        data-template-field="${escapeHtml(fieldDef.id)}"
+        data-cascading-manual="true"
+        value="${escapeHtml(value)}"
+        placeholder="${escapeHtml(fieldDef.placeholder ?? 'Paste address or id')}"
+        ${state.busy ? 'disabled' : ''}
+      />
+    </details>
+  `;
+}
+
+function shortManualValue(value: string): string {
+  const trimmed = value.trim();
+  if (trimmed.length <= 14) return trimmed;
+  return `${trimmed.slice(0, 6)}...${trimmed.slice(-4)}`;
+}
+
+function cascadingUnavailableSelectInput(
+  fieldDef: AgentPlanTemplateField,
+  value: string,
+  label: string,
+  error: string,
+  message: string,
+  retryCacheKey?: string,
+): string {
+  const fallbackLabel = value ? `Manual value ${shortManualValue(value)}` : message;
+  return `
+    <div class="field compact planner-field cascading-field ${state.templateFieldErrors[fieldDef.id] ? 'field-error' : ''}">
+      <span>${escapeHtml(label)}</span>
+      ${selectPicker({
+        value: value || '',
+        options: [{
+          value: value || '',
+          label: fallbackLabel,
+          meta: fieldDef.label,
+          disabled: true,
+        }],
+        attrs: {
+          'data-template-field': fieldDef.id,
+          'data-cascading-select': true,
+        },
+        disabled: true,
+      })}
+      <small class="planner-field-hint">${escapeHtml(message)}</small>
+      ${retryCacheKey ? `
+        <button
+          type="button"
+          class="utility cascading-retry"
+          data-cascading-retry="${escapeHtml(retryCacheKey)}"
+          ${state.busy ? 'disabled' : ''}
+        >Retry</button>
+      ` : ''}
+      ${cascadingAdvancedManualInput(fieldDef, value)}
+      ${error}
+    </div>
+  `;
+}
+
 function cascadingSelectFieldInput(
   fieldDef: AgentPlanTemplateField,
   value: string,
@@ -11708,29 +11802,23 @@ function cascadingSelectFieldInput(
   }
   const provider = getConnectorOptionProvider(cascading.providerId);
   if (!provider) {
-    return `
-      <label class="field compact planner-field ${state.templateFieldErrors[fieldDef.id] ? 'field-error' : ''}">
-        <span>${escapeHtml(label)}</span>
-        <input
-          data-template-field="${escapeHtml(fieldDef.id)}"
-          data-cascading-manual="true"
-          value="${escapeHtml(value)}"
-          placeholder="${escapeHtml(fieldDef.placeholder ?? 'Paste address or id')}"
-          ${state.busy ? 'disabled' : ''}
-        />
-        <small class="planner-field-hint">${escapeHtml(cascading.emptyHint ?? 'Provider not registered yet. Paste a value to continue.')}</small>
-        ${error}
-      </label>
-    `;
+    return cascadingUnavailableSelectInput(
+      fieldDef,
+      value,
+      label,
+      error,
+      cascading.emptyHint ?? 'Provider not registered yet.',
+    );
   }
   if (!dependenciesSatisfied(cascading.dependsOn, state.templateFields)) {
     const missing = missingDependencyLabel(cascading.dependsOn, state.templateFields);
+    const missingLabel = dependencyFieldLabel(missing);
     return `
       <label class="field compact planner-field disabled">
         <span>${escapeHtml(label)}</span>
         ${selectPicker({
           value: '',
-          options: [{ value: '', label: `Choose ${missing ?? 'previous field'} first`, meta: fieldDef.label, disabled: true }],
+          options: [{ value: '', label: `Choose ${missingLabel} first`, meta: fieldDef.label, disabled: true }],
           attrs: { 'data-template-field': fieldDef.id },
           disabled: true,
         })}
@@ -11768,43 +11856,24 @@ function cascadingSelectFieldInput(
   const fetchedAt = cached?.fetchedAt ?? 0;
   const errorMessage = cached?.error;
   const options = cached?.options ?? [];
-  if (errorMessage && !options.length && cascading.allowManualFallback) {
-    return `
-      <label class="field compact planner-field ${state.templateFieldErrors[fieldDef.id] ? 'field-error' : ''}">
-        <span>${escapeHtml(label)}</span>
-        <input
-          data-template-field="${escapeHtml(fieldDef.id)}"
-          data-cascading-manual="true"
-          value="${escapeHtml(value)}"
-          placeholder="${escapeHtml(fieldDef.placeholder ?? 'Paste address or id')}"
-          ${state.busy ? 'disabled' : ''}
-        />
-        <small class="planner-field-hint">${escapeHtml(cascading.emptyHint ?? "Couldn't load options. Paste an address to continue.")}</small>
-        <button
-          type="button"
-          class="utility cascading-retry"
-          data-cascading-retry="${escapeHtml(cacheKey)}"
-          ${state.busy ? 'disabled' : ''}
-        >Retry</button>
-        ${error}
-      </label>
-    `;
+  if (errorMessage && !options.length) {
+    return cascadingUnavailableSelectInput(
+      fieldDef,
+      value,
+      label,
+      error,
+      cascading.emptyHint ?? `Couldn't load options: ${errorMessage}`,
+      cacheKey,
+    );
   }
-  if (!options.length && cascading.allowManualFallback) {
-    return `
-      <label class="field compact planner-field ${state.templateFieldErrors[fieldDef.id] ? 'field-error' : ''}">
-        <span>${escapeHtml(label)}</span>
-        <input
-          data-template-field="${escapeHtml(fieldDef.id)}"
-          data-cascading-manual="true"
-          value="${escapeHtml(value)}"
-          placeholder="${escapeHtml(fieldDef.placeholder ?? 'Paste address or id')}"
-          ${state.busy ? 'disabled' : ''}
-        />
-        <small class="planner-field-hint">${escapeHtml(cascading.emptyHint ?? 'No options found. Paste a value to continue.')}</small>
-        ${error}
-      </label>
-    `;
+  if (!options.length) {
+    return cascadingUnavailableSelectInput(
+      fieldDef,
+      value,
+      label,
+      error,
+      cascading.emptyHint ?? 'No options found.',
+    );
   }
   return `
     <label class="field compact planner-field cascading-field ${state.templateFieldErrors[fieldDef.id] ? 'field-error' : ''}">
@@ -11812,6 +11881,7 @@ function cascadingSelectFieldInput(
       ${selectPicker({
         value,
         options: cascadingSelectPickerOptions(options, fieldDef.label),
+        placeholder: `Choose ${fieldDef.label}`,
         attrs: {
           'data-template-field': fieldDef.id,
           'data-cascading-select': true,
@@ -11824,6 +11894,13 @@ function cascadingSelectFieldInput(
       ${error}
     </label>
   `;
+}
+
+function dependencyFieldLabel(fieldId: string | undefined): string {
+  if (!fieldId) return 'previous field';
+  const template = selectedTemplate();
+  return effectiveTemplateFields(template).find((fieldDef) => fieldDef.id === fieldId)?.label ??
+    templateFieldLabel(template, fieldId);
 }
 
 function cascadingSelectPickerOptions(options: ConnectorOption[], fallbackMeta: string): SelectPickerOption[] {
@@ -15945,8 +16022,10 @@ function bindSelectPickers(): void {
     const chooseOption = (option: HTMLButtonElement): void => {
       const value = option.dataset.selectPickerOption;
       if (value === undefined || option.disabled) return;
-      const changed = select.value !== value;
+      const currentValue = select.dataset.selectPickerCurrentValue ?? select.value;
+      const changed = currentValue !== value;
       select.value = value;
+      select.dataset.selectPickerCurrentValue = value;
       updateSelectPickerView(picker, value);
       closePicker(false);
       if (changed) {
@@ -27221,15 +27300,37 @@ function templateFieldValue(fieldId: string): string {
   return state.templateFields[fieldId] ?? defaultTemplateFieldValues(template)[fieldId] ?? '';
 }
 
+function fieldShowWhenValue(
+  fieldId: string,
+  parameters: Record<string, string>,
+  template: AgentPlanTemplate,
+): string {
+  const current = parameters[fieldId]?.trim();
+  if (current) return current;
+  const form = selectedConnectorActionForm(parameters) ?? connectorActionFormForTemplate(template);
+  if (form?.subActions?.fieldId === fieldId) {
+    return selectedSubAction(form, parameters)?.id ??
+      form.subActions.defaultId ??
+      form.subActions.options[0]?.id ??
+      '';
+  }
+  const fieldDef = effectiveTemplateFields(template).find((field) => field.id === fieldId);
+  return fieldDef?.defaultValue ?? '';
+}
+
 // Connector templates surface fields from every sub-action with a `showWhen` marker
 // that points at the selected sub-action id. A field that is only "required" for the
 // borrow sub-action should NOT block earn drafts (e.g. "Borrow vault is required"
 // firing when the user picked the SOL earn pool). Skip required-field checks when
 // the field's showWhen condition does not match the current parameter snapshot.
-function fieldIsVisible(field: AgentPlanTemplateField, parameters: Record<string, string>): boolean {
+function fieldIsVisible(
+  field: AgentPlanTemplateField,
+  parameters: Record<string, string>,
+  template: AgentPlanTemplate,
+): boolean {
   if (!field.showWhen) return true;
   for (const [key, value] of Object.entries(field.showWhen)) {
-    const actual = parameters[key]?.trim() ?? '';
+    const actual = fieldShowWhenValue(key, parameters, template);
     const expected = Array.isArray(value) ? value : [value];
     if (!expected.includes(actual)) return false;
   }
@@ -27238,7 +27339,7 @@ function fieldIsVisible(field: AgentPlanTemplateField, parameters: Record<string
 
 function assertRequiredTemplateFields(template: AgentPlanTemplate, parameters: Record<string, string>): void {
   const missing = effectiveTemplateFields(template)
-    .filter((fieldDef) => fieldDef.required && fieldIsVisible(fieldDef, parameters) && !parameters[fieldDef.id]?.trim())
+    .filter((fieldDef) => fieldDef.required && fieldIsVisible(fieldDef, parameters, template) && !parameters[fieldDef.id]?.trim())
     .map((fieldDef) => fieldDef.label);
   if (missing.length > 0) {
     throw new Error(`Complete required planner fields: ${missing.join(', ')}.`);
@@ -27254,7 +27355,7 @@ function assertValidTemplatePlanInput(
   const mode = opts.mode ?? 'template';
   const errors: Record<string, string> = {};
   for (const fieldDef of effectiveTemplateFields(template)) {
-    if (!fieldIsVisible(fieldDef, parameters)) continue;
+    if (!fieldIsVisible(fieldDef, parameters, template)) continue;
     const aiConnectorMissingFact = mode === 'ai' &&
       isConnectorCapableTemplate(template) &&
       (fieldDef.id === 'blinkUrl' || fieldDef.id === 'actionUrl');
@@ -28638,22 +28739,24 @@ function selectPicker(input: {
   labelId?: string;
   className?: string;
   title?: string;
+  placeholder?: string;
 }): string {
   const selected = input.options.find((option) => option.value === input.value) ??
-    input.options.find((option) => !option.disabled) ??
-    input.options[0];
+    (input.placeholder ? undefined : input.options.find((option) => !option.disabled) ?? input.options[0]);
   const menuOptions = input.options.filter((option) => !option.hiddenFromMenu);
   const menuOpen = Boolean(input.open && !input.disabled && menuOptions.some((option) => !option.disabled));
   const baseId = selectPickerBaseId(input);
-  const selectedLabel = selected?.label ?? 'Select';
+  const selectedLabel = selected?.label ?? input.placeholder ?? 'Select';
   const selectedMeta = selected?.meta ?? '';
   const selectedMetaSuffix = selected?.metaSuffix ?? '';
   const selectedLogo = selected?.logoId ? selectPickerLogo(selected.logoId) : '';
+  const needsPlaceholderOption = Boolean(input.placeholder && !selected);
   const attrs = htmlAttrs({
     ...(input.id ? { id: input.id } : {}),
     ...(input.attrs ?? {}),
     class: 'native-select-fallback',
     'data-select-picker-native': true,
+    'data-select-picker-current-value': input.value,
     disabled: input.disabled,
     tabindex: '-1',
     'aria-hidden': 'true',
@@ -28662,6 +28765,9 @@ function selectPicker(input: {
   return `
     <div class="select-picker-shell ${input.className ? escapeHtml(input.className) : ''}">
       <select ${attrs}>
+        ${needsPlaceholderOption ? `
+          <option value="${escapeHtml(input.value)}" selected disabled hidden>${escapeHtml(selectedLabel)}</option>
+        ` : ''}
         ${input.options.map((option) => `
           <option value="${escapeHtml(option.value)}" ${option.value === input.value ? 'selected' : ''} ${option.disabled ? 'disabled' : ''}>
             ${escapeHtml(option.label)}

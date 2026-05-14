@@ -8,7 +8,7 @@ This directory holds machine-readable knowledge packs for every Solana dapp conn
 
 - `connector-pack.schema.json` — JSON Schema (draft 2020-12) describing the shape of every pack.
 - `safety-phrases.json` — canonical required/forbidden phrases with stable ids. Reference by id from prompts and evals.
-- `<connector-id>.connector.json` — one pack per connector. Today: drift, jito, jupiter, kamino, lulo, magiceden, marinade, marginfi, meteora, orca, pyth, raydium, realms, sanctum, save, squads, tensor, wormhole.
+- `<connector-id>.connector.json` — one pack per connector. Today: drift, jito, jupiter, kamino, lulo, magiceden, marinade, marginfi, meteora, orca, project0, pyth, raydium, realms, sanctum, save, squads, tensor, wormhole.
 
 ## Status enum
 
@@ -66,6 +66,7 @@ A future workstream may wire Ajv against `connector-pack.schema.json` in CI.
 
 ## Changelog
 
+- v0.5, 2026-05-13: added the first-class Project 0 lending connector pack while keeping MarginFi separate.
 - v0.4, 2026-05-12: added the first-class Wormhole bridge connector pack.
 - v0.3, 2026-05-12: added the first-class Marinade connector pack.
 - v0.2, 2026-05-12: added the first-class Jito connector pack.
