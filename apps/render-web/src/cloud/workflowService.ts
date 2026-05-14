@@ -281,8 +281,8 @@ export class WorkflowService {
       : undefined;
     const params = blinkDraft?.params ?? baseParams;
     const approvalMetadata = blinkDraft?.metadata ?? input.metadata;
-    const amount = input.amount ?? amountFromPlan(plan) ?? amountFromParams(params);
-    const token = input.token ?? tokenFromPlan(plan) ?? tokenFromParams(params);
+    const amount = input.amount ?? amountFromPlan(plan, kind) ?? amountFromParams(params, kind);
+    const token = input.token ?? tokenFromPlan(plan, kind) ?? tokenFromParams(params, kind);
     const recipient = input.recipient ?? recipientFromParams(params);
     const guardrailReport = approvalGuardrailReport(input, linkedPlan, kind, params);
     const finalizationRequirement = finalizationRequirementForAction(kind);
@@ -1415,28 +1415,85 @@ function stringRecordToJson(record: Record<string, string> | undefined): JsonObj
   return { ...record };
 }
 
-function amountFromPlan(plan: JsonObject | undefined): string | undefined {
+function amountFromPlan(plan: JsonObject | undefined, kind?: string): string | undefined {
   const params = jsonObjectFromPlan(plan, 'parameters');
-  return stringFromJson(params, 'amount') ?? stringFromJson(params, 'amountSol') ?? stringFromJson(params, 'inputAmount');
+  return amountFromParams(params ?? {}, kind);
 }
 
-function tokenFromPlan(plan: JsonObject | undefined): string | undefined {
+function tokenFromPlan(plan: JsonObject | undefined, kind?: string): string | undefined {
   const params = jsonObjectFromPlan(plan, 'parameters');
-  return stringFromJson(params, 'token') ?? stringFromJson(params, 'inputToken') ?? stringFromJson(params, 'outputToken');
+  return tokenFromParams(params ?? {}, kind);
 }
 
-function amountFromParams(params: JsonObject): string | undefined {
-  return stringFromJson(params, 'amount') ?? stringFromJson(params, 'amountSol') ?? stringFromJson(params, 'inputAmount');
+function amountFromParams(params: JsonObject, kind?: string): string | undefined {
+  switch (kind) {
+    case 'marinade_liquid_stake':
+    case 'jito_stake_sol':
+    case 'jito_withdraw_sol':
+    case 'sanctum_stake_sol_to_lst':
+      return firstStringFromJson(params, ['solAmount', 'amount', 'inputAmount', 'amountSol']);
+    case 'marinade_liquid_unstake':
+    case 'marinade_delayed_unstake':
+      return firstStringFromJson(params, ['msolAmount', 'amount', 'inputAmount']);
+    case 'jito_unstake_jitosol':
+      return firstStringFromJson(params, ['jitoSolAmount', 'amount']);
+    case 'sanctum_unstake_lst_to_sol':
+      return firstStringFromJson(params, ['lstAmount', 'inputAmount', 'amount']);
+    case 'sanctum_remove_infinity_liquidity':
+      return firstStringFromJson(params, ['infAmount', 'inputAmount', 'amount']);
+    default:
+      return firstStringFromJson(params, ['amount', 'amountSol', 'solAmount', 'inputAmount', 'msolAmount', 'jitoSolAmount']);
+  }
 }
 
-function tokenFromParams(params: JsonObject): string | undefined {
-  return stringFromJson(params, 'token') ?? stringFromJson(params, 'inputToken') ?? stringFromJson(params, 'outputToken') ??
-    stringFromJson(params, 'expectedToken');
+function tokenFromParams(params: JsonObject, kind?: string): string | undefined {
+  switch (kind) {
+    case 'marinade_liquid_stake':
+      return 'SOL to mSOL';
+    case 'marinade_liquid_unstake':
+    case 'marinade_delayed_unstake':
+      return 'mSOL to SOL';
+    case 'jito_stake_sol':
+    case 'jito_deposit_stake_account':
+      return 'SOL to JitoSOL';
+    case 'jito_unstake_jitosol':
+      return 'JitoSOL to SOL';
+    case 'jito_withdraw_sol':
+      return 'SOL';
+    case 'sanctum_stake_sol_to_lst':
+      return `SOL to ${firstStringFromJson(params, ['outputSymbol', 'outputMint', 'lstMint']) ?? 'LST'}`;
+    case 'sanctum_unstake_lst_to_sol':
+      return `${firstStringFromJson(params, ['inputSymbol', 'inputMint', 'lstMint']) ?? 'LST'} to SOL`;
+    case 'sanctum_swap_lst':
+      return `${firstStringFromJson(params, ['inputSymbol', 'inputMint', 'inputToken']) ?? 'input'} to ${
+        firstStringFromJson(params, ['outputSymbol', 'outputMint', 'outputToken']) ?? 'output'
+      }`;
+    case 'sanctum_add_infinity_liquidity':
+      return `${firstStringFromJson(params, ['inputSymbol', 'inputMint']) ?? 'input'} to INF`;
+    case 'sanctum_remove_infinity_liquidity':
+      return `INF to ${firstStringFromJson(params, ['outputSymbol', 'outputMint']) ?? 'output'}`;
+    default:
+      return tokenRouteFromSymbols(params) ?? firstStringFromJson(params, ['token', 'inputToken', 'outputToken', 'expectedToken']);
+  }
 }
 
 function recipientFromParams(params: JsonObject): string | undefined {
   return stringFromJson(params, 'recipient') ?? stringFromJson(params, 'recipientAddress') ??
     stringFromJson(params, 'expectedRecipient');
+}
+
+function firstStringFromJson(params: JsonObject, keys: string[]): string | undefined {
+  for (const key of keys) {
+    const value = stringFromJson(params, key);
+    if (value) return value;
+  }
+  return undefined;
+}
+
+function tokenRouteFromSymbols(params: JsonObject): string | undefined {
+  const input = firstStringFromJson(params, ['inputSymbol', 'inputToken']);
+  const output = firstStringFromJson(params, ['outputSymbol', 'outputToken']);
+  return input && output ? `${input} to ${output}` : undefined;
 }
 
 function mergeJsonMetadata(

@@ -57,9 +57,20 @@ export function marginfiAction(operation: MarginfiOperation): AdapterAction<Marg
         minHealthRatio,
       } satisfies MarginfiActionBuildInput & { minHealthRatio?: number });
 
-      const preview = await client.previewHealth(ctx.connection, previewInput);
-      assertHealthPreviewAllowed(preview);
-      const bankSnapshot = await client.getBankSnapshot(ctx.connection, previewInput);
+      // marginfi-client-v2 emits opaque internal errors like "Cannot read properties
+      // of null (reading 'property')" when (a) the wallet has no existing margin
+      // account, (b) the bank's oracle feed is stale, or (c) the SDK fails an
+      // internal Anchor account decode. Wrap the prepare chain to surface a
+      // human-readable hint instead of the SDK's null deref.
+      let preview;
+      let bankSnapshot;
+      try {
+        preview = await client.previewHealth(ctx.connection, previewInput);
+        assertHealthPreviewAllowed(preview);
+        bankSnapshot = await client.getBankSnapshot(ctx.connection, previewInput);
+      } catch (err) {
+        throw rewrapMarginfiSdkError(err, operation);
+      }
       parseDecimalAmount(preview.amount, bankSnapshot.decimals, `MarginFi ${operation} amount`);
       const tokenLabel = preview.tokenSymbol ?? bankSnapshot.tokenSymbol ?? shortAddress(preview.bankMint);
       const summary = `${titleCase(operation)} ${preview.amount} ${tokenLabel} ${operation === 'deposit' || operation === 'repay' ? 'to' : 'from'} MarginFi`;
@@ -141,6 +152,29 @@ export function marginfiAction(operation: MarginfiOperation): AdapterAction<Marg
       };
     },
   };
+}
+
+// marginfi-client-v2 can throw raw "Cannot read properties of null (reading
+// 'property')" errors when (a) the wallet has no margin account yet, (b) the
+// bank's oracle is missing, or (c) the SDK's Anchor decode fails. Translate
+// those into a user-actionable message instead of leaking the SDK internals.
+function rewrapMarginfiSdkError(err: unknown, operation: string): Error {
+  if (err instanceof AdapterError) return err;
+  if (err instanceof ProtocolError) return err;
+  const message = err instanceof Error ? err.message : String(err);
+  const nullProperty = /Cannot read propert(?:y|ies) of (?:null|undefined)/i.test(message);
+  if (nullProperty) {
+    return new AdapterError(
+      MARGINFI_ADAPTER_ID,
+      'sdk_missing_account',
+      `MarginFi ${operation} could not be prepared. The connected wallet may not have a MarginFi account yet — open one at app.marginfi.com (first-time deposit creates it), or pass an existing marginfiAccount address. Underlying SDK error: ${message}`,
+    );
+  }
+  return new AdapterError(
+    MARGINFI_ADAPTER_ID,
+    'sdk_error',
+    `MarginFi ${operation} failed during prepare: ${message}`,
+  );
 }
 
 export function marginfiMinHealthRatio(config: { connectors?: { marginfi?: { minHealthRatio?: number } } }): number {

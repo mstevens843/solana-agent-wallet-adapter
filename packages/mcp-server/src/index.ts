@@ -55,6 +55,13 @@ export {
 } from './adapters/kamino/client.js';
 export type { KaminoClient } from './adapters/kamino/client.js';
 export { buildKaminoSdkClient } from './adapters/kamino/sdkClient.js';
+export {
+  isSaveConfigured,
+  resetSaveClientFactory,
+  setSaveClientFactory,
+} from './adapters/save/client.js';
+export type { SaveClient } from './adapters/save/client.js';
+export { buildSaveSdkClient } from './adapters/save/sdkClient.js';
 export type { PreparedTransactionPayload } from './preparedActionTransactionBuilder.js';
 export {
   fetchBlinkMetadata,

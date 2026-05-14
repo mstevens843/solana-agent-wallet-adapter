@@ -39,14 +39,18 @@ import {
 } from './jupiter.js';
 
 export interface MarinadeLiquidStakeInput {
-  solAmount: string;
+  solAmount?: string;
+  /** @deprecated Old template field id; accepted for backward compatibility with pre-rename drafts. */
+  amount?: string;
   minMsolAmount?: string;
   dueAt?: string;
   note?: string;
 }
 
 export interface MarinadeLiquidUnstakeInput {
-  msolAmount: string;
+  msolAmount?: string;
+  /** @deprecated Old template field id; accepted for backward compatibility with pre-rename drafts. */
+  amount?: string;
   minSolAmount?: string;
   slippageBps?: number;
   dueAt?: string;
@@ -54,7 +58,9 @@ export interface MarinadeLiquidUnstakeInput {
 }
 
 export interface MarinadeDelayedUnstakeInput {
-  msolAmount: string;
+  msolAmount?: string;
+  /** @deprecated Old template field id; accepted for backward compatibility with pre-rename drafts. */
+  amount?: string;
   minSolAmount?: string;
   dueAt?: string;
   note?: string;
@@ -72,7 +78,14 @@ export const marinadeLiquidStakeAction: AdapterAction<MarinadeLiquidStakeInput> 
   kind: 'marinade_liquid_stake',
 
   async prepare(input, ctx): Promise<AdapterPrepareResult> {
-    const amountRaw = parseSolLamports(input.solAmount, 'Marinade SOL stake amount');
+    // Accept `solAmount` (current template field id) or `amount` (legacy drafts).
+    // Surfacing a clean error here is better than letting parseDecimalAmount throw
+    // on an undefined .trim() call deep in the stack.
+    const solAmount = input.solAmount ?? input.amount;
+    if (typeof solAmount !== 'string' || !solAmount.trim()) {
+      throw new ProtocolError('invalid_request', 'SOL amount is required for Marinade liquid stake.');
+    }
+    const amountRaw = parseSolLamports(solAmount, 'SOL amount');
     if (amountRaw < MARINADE_MIN_SOL_LAMPORTS) {
       throw new ProtocolError('invalid_request', 'Marinade liquid stake amount must be at least 0.001 SOL.');
     }
@@ -88,7 +101,7 @@ export const marinadeLiquidStakeAction: AdapterAction<MarinadeLiquidStakeInput> 
       config: ctx.config,
     });
     enforceQuoteMinOutput('liquid_stake', quote, minRaw);
-    const summary = `Stake ${input.solAmount} SOL for mSOL on Marinade`;
+    const summary = `Stake ${solAmount} SOL for mSOL on Marinade`;
     const params = marinadeParams({
       action: 'liquid_stake',
       operation: 'liquid_stake',
@@ -99,7 +112,7 @@ export const marinadeLiquidStakeAction: AdapterAction<MarinadeLiquidStakeInput> 
       outputSymbol: 'mSOL',
       inputDecimals: SOL_DECIMALS,
       outputDecimals: MSOL_DECIMALS,
-      solAmount: input.solAmount,
+      solAmount,
       solAmountRaw: amountRaw.toString(),
       minMsolAmount: input.minMsolAmount,
       ...(minRaw !== undefined && { minMsolAmountRaw: minRaw.toString() }),
@@ -146,7 +159,11 @@ export const marinadeLiquidUnstakeAction: AdapterAction<MarinadeLiquidUnstakeInp
   kind: 'marinade_liquid_unstake',
 
   async prepare(input, ctx): Promise<AdapterPrepareResult> {
-    const amountRaw = parseMsolLamports(input.msolAmount, 'Marinade mSOL instant unstake amount');
+    const msolAmount = input.msolAmount ?? input.amount;
+    if (typeof msolAmount !== 'string' || !msolAmount.trim()) {
+      throw new ProtocolError('invalid_request', 'Marinade mSOL instant unstake amount is required.');
+    }
+    const amountRaw = parseMsolLamports(msolAmount, 'Marinade mSOL instant unstake amount');
     if (amountRaw < MARINADE_MIN_MSOL_LAMPORTS) {
       throw new ProtocolError('invalid_request', 'Marinade instant unstake amount must be at least 0.001 mSOL.');
     }
@@ -163,7 +180,7 @@ export const marinadeLiquidUnstakeAction: AdapterAction<MarinadeLiquidUnstakeInp
     });
     assertJupiterMinOutput(order, minRaw);
     const quote = quoteFromJupiterOrder(order);
-    const summary = `Instant unstake ${input.msolAmount} mSOL to SOL through Jupiter`;
+    const summary = `Instant unstake ${msolAmount} mSOL to SOL through Jupiter`;
     const params = marinadeParams({
       action: 'liquid_unstake',
       operation: 'liquid_unstake',
@@ -176,7 +193,7 @@ export const marinadeLiquidUnstakeAction: AdapterAction<MarinadeLiquidUnstakeInp
       outputSymbol: 'SOL',
       inputDecimals: MSOL_DECIMALS,
       outputDecimals: SOL_DECIMALS,
-      msolAmount: input.msolAmount,
+      msolAmount,
       msolAmountRaw: amountRaw.toString(),
       minSolAmount: input.minSolAmount,
       ...(minRaw !== undefined && { minSolAmountRaw: minRaw.toString() }),
@@ -235,7 +252,11 @@ export const marinadeDelayedUnstakeAction: AdapterAction<MarinadeDelayedUnstakeI
   kind: 'marinade_delayed_unstake',
 
   async prepare(input, ctx): Promise<AdapterPrepareResult> {
-    const amountRaw = parseMsolLamports(input.msolAmount, 'Marinade delayed unstake amount');
+    const msolAmount = input.msolAmount ?? input.amount;
+    if (typeof msolAmount !== 'string' || !msolAmount.trim()) {
+      throw new ProtocolError('invalid_request', 'Marinade delayed unstake mSOL amount is required.');
+    }
+    const amountRaw = parseMsolLamports(msolAmount, 'Marinade delayed unstake amount');
     if (amountRaw < MARINADE_MIN_MSOL_LAMPORTS) {
       throw new ProtocolError('invalid_request', 'Marinade delayed unstake amount must be at least 0.001 mSOL.');
     }
@@ -251,7 +272,7 @@ export const marinadeDelayedUnstakeAction: AdapterAction<MarinadeDelayedUnstakeI
       config: ctx.config,
     });
     enforceQuoteMinOutput('delayed_unstake', quote, minRaw);
-    const summary = `Request delayed unstake for ${input.msolAmount} mSOL on Marinade`;
+    const summary = `Request delayed unstake for ${msolAmount} mSOL on Marinade`;
     const params = marinadeParams({
       action: 'delayed_unstake',
       operation: 'delayed_unstake',
@@ -262,7 +283,7 @@ export const marinadeDelayedUnstakeAction: AdapterAction<MarinadeDelayedUnstakeI
       outputSymbol: 'SOL',
       inputDecimals: MSOL_DECIMALS,
       outputDecimals: SOL_DECIMALS,
-      msolAmount: input.msolAmount,
+      msolAmount,
       msolAmountRaw: amountRaw.toString(),
       minSolAmount: input.minSolAmount,
       ...(minRaw !== undefined && { minSolAmountRaw: minRaw.toString() }),

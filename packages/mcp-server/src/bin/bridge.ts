@@ -10,6 +10,8 @@ import { LocalBridgeBackend } from '../localBridgeBackend.js';
 import { JsonPreparedActionStore, defaultPreparedActionStorePath } from '../preparedActions.js';
 import { isKaminoConfigured, setKaminoClientFactory } from '../adapters/kamino/client.js';
 import { buildKaminoSdkClient } from '../adapters/kamino/sdkClient.js';
+import { isSaveConfigured, setSaveClientFactory } from '../adapters/save/client.js';
+import { buildSaveSdkClient } from '../adapters/save/sdkClient.js';
 import { IosLinkBackend, type IosLinkWalletId } from '@solana-agent-wallet-adapter/ios-link';
 
 async function main(): Promise<void> {
@@ -42,11 +44,14 @@ async function main(): Promise<void> {
         rpcUrl: config.rpcUrl,
         token,
       });
-  // Wire the Kamino SDK client so connector approvals can build real KLend deposit/
-  // withdraw transactions through the local bridge instead of failing with
-  // "@kamino-finance/klend-sdk is not wired."
+  // Wire the lending-protocol SDK clients so connector approvals can build real
+  // KLend / Solend deposit-withdraw transactions through the local bridge instead
+  // of failing with "...sdk is not wired."
   if (!isKaminoConfigured()) {
     setKaminoClientFactory(() => buildKaminoSdkClient({ rpcUrl: config.rpcUrl }));
+  }
+  if (!isSaveConfigured()) {
+    setSaveClientFactory(() => buildSaveSdkClient({ rpcUrl: config.rpcUrl }));
   }
   const bridge = createBridgeServer({
     backend,

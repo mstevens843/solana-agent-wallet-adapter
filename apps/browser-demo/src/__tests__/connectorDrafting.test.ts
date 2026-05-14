@@ -59,6 +59,56 @@ describe('connector drafting helpers', () => {
     expect(selectedConnectorForDraftParameters(parameters)?.id).toBe('meteora');
   });
 
+  it('drops stale generic amount and token fields from SOL staking connector forms', () => {
+    const marinade = normalizeConnectorDraftParameters(templateById('connector-marinade-liquid-stake'), {
+      connectorId: 'marinade',
+      connectorOperationId: 'marinade:liquid-stake',
+      token: 'USDC',
+      inputToken: 'SOL',
+      outputToken: 'USDC',
+      amount: '9',
+      solAmount: '0.01',
+      memo: 'Stake into mSOL',
+    });
+
+    expect(marinade).toMatchObject({
+      connectorId: 'marinade',
+      protocol: 'Marinade',
+      operation: 'Liquid stake',
+      connectorActionSource: 'first-class-adapter',
+      solAmount: '0.01',
+      memo: 'Stake into mSOL',
+    });
+    expect(marinade).not.toHaveProperty('token');
+    expect(marinade).not.toHaveProperty('inputToken');
+    expect(marinade).not.toHaveProperty('outputToken');
+    expect(marinade).not.toHaveProperty('amount');
+
+    const jito = normalizeConnectorDraftParameters(templateById('connector-jito-stake-sol'), {
+      connectorId: 'jito',
+      connectorOperationId: 'jito:stake-sol',
+      token: 'USDC',
+      inputToken: 'SOL',
+      outputToken: 'USDC',
+      amount: '9',
+      solAmount: '0.01',
+      memo: 'Stake into JitoSOL',
+    });
+
+    expect(jito).toMatchObject({
+      connectorId: 'jito',
+      protocol: 'Jito',
+      operation: 'Stake SOL',
+      connectorActionSource: 'first-class-adapter',
+      solAmount: '0.01',
+      memo: 'Stake into JitoSOL',
+    });
+    expect(jito).not.toHaveProperty('token');
+    expect(jito).not.toHaveProperty('inputToken');
+    expect(jito).not.toHaveProperty('outputToken');
+    expect(jito).not.toHaveProperty('amount');
+  });
+
   it('exposes first-class connector forms without requiring Blink URLs', () => {
     const connectedDapps = setConnectedDappEnabled(emptyConnectedDapps(), 'kamino', true);
     const connectors = connectorCreateConnectors({

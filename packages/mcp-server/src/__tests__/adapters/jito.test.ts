@@ -17,6 +17,7 @@ import {
   jitoClaimDepositReceiptAction,
   jitoDepositStakeAccountAction,
   jitoStakeSolAction,
+  jitoUnstakeJitosolAction,
   jitoWithdrawSolAction,
 } from '../../adapters/jito/actions.js';
 import {
@@ -52,6 +53,7 @@ interface FakeJitoState {
   quote: JitoQuote;
   stakeBuilds: JitoBuildStakeSolInput[];
   depositBuilds?: JitoBuildDepositStakeInput[];
+  unstakeBuilds?: JitoBuildUnstakeInput[];
   claimBuilds?: JitoBuildClaimDepositReceiptInput[];
   withdrawBuilds?: JitoBuildWithdrawSolInput[];
   stakeAccount?: JitoStakeAccount;
@@ -126,6 +128,7 @@ function buildFakeJito(state: FakeJitoState): JitoClient {
       });
     },
     async buildUnstakeJitosolTransaction(_connection, input: JitoBuildUnstakeInput) {
+      state.unstakeBuilds?.push(input);
       return buildResult({ operation: 'unstake_jitosol', jitoSolAmountRaw: input.jitoSolAmountRaw.toString() });
     },
     async buildWithdrawSolTransaction(_connection, input: JitoBuildWithdrawSolInput) {
@@ -308,6 +311,23 @@ describe('Jito adapter', () => {
     expect(state.stakeBuilds).toEqual([{ walletAddress: WALLET, amountLamports: 1000000000n }]);
   });
 
+  it('accepts the legacy amount alias for stake SOL drafts', async () => {
+    const state: FakeJitoState = { quote: fakeQuote(), stakeBuilds: [] };
+    setJitoClientFactory(() => buildFakeJito(state));
+
+    const prepared = await jitoStakeSolAction.prepare({
+      amount: '1',
+    }, makeContext());
+
+    expect(prepared.addInput.kind).toBe('jito_stake_sol');
+    expect(prepared.addInput.summary).toBe('Stake 1 SOL for JitoSOL');
+    expect(prepared.preview).toMatchObject({
+      amount: '1',
+      solAmount: '1',
+      amountRaw: '1000000000',
+    });
+  });
+
   it('blocks stake SOL preparation when expected output is below the minimum', async () => {
     setJitoClientFactory(() => buildFakeJito({
       quote: fakeQuote({ expectedJitoSolAmount: '0.7', expectedJitoSolRaw: '700000000' }),
@@ -361,6 +381,33 @@ describe('Jito adapter', () => {
     await expect(jitoDepositStakeAccountAction.prepare({
       stakeAccount: STAKE_ACCOUNT,
     }, makeContext())).rejects.toThrow(/Stake authority/);
+  });
+
+  it('accepts the legacy amount alias for unstake JitoSOL drafts', async () => {
+    const state: FakeJitoState = { quote: fakeQuote(), stakeBuilds: [], unstakeBuilds: [] };
+    setJitoClientFactory(() => buildFakeJito(state));
+    const ctx = makeContext();
+
+    const prepared = await jitoUnstakeJitosolAction.prepare({
+      amount: '1',
+      withdrawMode: 'reserve_sol',
+    }, ctx);
+
+    expect(prepared.addInput.kind).toBe('jito_unstake_jitosol');
+    expect(prepared.addInput.summary).toBe('Unstake 1 JitoSOL to SOL');
+    expect(prepared.preview).toMatchObject({
+      jitoSolAmount: '1',
+      jitoSolAmountRaw: '1000000000',
+      withdrawMode: 'reserve_sol',
+    });
+
+    const executed = await jitoUnstakeJitosolAction.execute(preparedAction(prepared.addInput), ctx);
+    expect(executed.txid).toBe('tx-jito');
+    expect(state.unstakeBuilds).toEqual([{
+      walletAddress: WALLET,
+      jitoSolAmountRaw: 1000000000n,
+      withdrawMode: 'reserve_sol',
+    }]);
   });
 
   it('reads a specific Jito deposit receipt through the adapter read', async () => {

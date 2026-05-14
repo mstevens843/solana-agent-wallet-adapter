@@ -307,12 +307,33 @@ type PreparedActionKind =
   | 'transfer_sol'
   | 'transfer_spl'
   | 'swap'
+  | 'blink_action'
   | 'manual_review'
   | 'read_only'
   | 'custom_transaction'
   | 'custom'
   | 'kamino_deposit'
   | 'kamino_withdraw'
+  | 'jupiter_lend_earn_deposit'
+  | 'jupiter_lend_earn_withdraw'
+  | 'jupiter_lend_earn_mint'
+  | 'jupiter_lend_earn_redeem'
+  | 'jupiter_lend_borrow_create_position'
+  | 'jupiter_lend_borrow_deposit_collateral'
+  | 'jupiter_lend_borrow_borrow'
+  | 'jupiter_lend_borrow_repay'
+  | 'jupiter_lend_borrow_withdraw_collateral'
+  | 'jupiter_trigger_register_vault'
+  | 'jupiter_trigger_single_order'
+  | 'jupiter_trigger_oco_order'
+  | 'jupiter_trigger_otoco_order'
+  | 'jupiter_trigger_edit_order'
+  | 'jupiter_trigger_cancel_order'
+  | 'jupiter_trigger_withdraw_order_funds'
+  | 'jupiter_recurring_create_time_order'
+  | 'jupiter_recurring_cancel_order'
+  | 'jupiter_recurring_deposit_price_order'
+  | 'jupiter_recurring_withdraw_price_order'
   | 'meteora_claim_fees'
   | 'meteora_claim_rewards'
   | 'meteora_add_liquidity'
@@ -330,6 +351,15 @@ type PreparedActionKind =
   | 'drift_vault_request_withdraw'
   | 'drift_vault_cancel_withdraw'
   | 'drift_vault_complete_withdraw'
+  | 'squads_create_transfer_proposal'
+  | 'squads_approve_proposal'
+  | 'squads_reject_proposal'
+  | 'squads_cancel_proposal'
+  | 'squads_execute_proposal'
+  | 'realms_cast_vote'
+  | 'realms_relinquish_vote'
+  | 'realms_deposit_governance_tokens'
+  | 'realms_withdraw_governance_tokens'
   | 'save_deposit'
   | 'save_withdraw'
   | 'save_borrow'
@@ -339,6 +369,26 @@ type PreparedActionKind =
   | 'jito_claim_deposit_receipt'
   | 'jito_unstake_jitosol'
   | 'jito_withdraw_sol'
+  | 'marinade_liquid_stake'
+  | 'marinade_liquid_unstake'
+  | 'marinade_delayed_unstake'
+  | 'marinade_claim_delayed_unstake'
+  | 'sanctum_swap_lst'
+  | 'sanctum_add_infinity_liquidity'
+  | 'sanctum_remove_infinity_liquidity'
+  | 'sanctum_stake_sol_to_lst'
+  | 'sanctum_unstake_lst_to_sol'
+  | 'magiceden_buy'
+  | 'magiceden_list'
+  | 'magiceden_cancel_listing'
+  | 'magiceden_bid'
+  | 'magiceden_cancel_bid'
+  | 'tensor_buy'
+  | 'tensor_list'
+  | 'tensor_cancel_listing'
+  | 'tensor_bid'
+  | 'tensor_cancel_bid'
+  | 'tensor_sweep'
   | 'lulo_deposit'
   | 'lulo_withdraw'
   | 'lulo_complete_withdraw'
@@ -348,6 +398,7 @@ type PreparedActionKind =
   | 'raydium_farm_stake'
   | 'raydium_farm_unstake'
   | 'raydium_harvest'
+  | 'pyth_post_price_update'
   | 'wormhole_transfer'
   | 'wormhole_redeem'
   | 'wormhole_recover_or_resume';
@@ -660,6 +711,8 @@ const JUP_MINT = 'JUPyiwrYJFskUPiHa7hkeR8VUtAeFoSYbKedZNsDvCN';
 const BONK_MINT = 'DezXAZ8z7PnrnRJjz3wXBoRgixCa6xjnB7YaB1pPB263';
 const WIF_MINT = 'EKpQGSJtjMFqKZ9KQanSqYXRcF8fBopzLHYxdM65zcjm';
 const PYUSD_MINT = '2b1kV6DkPAnxd5ixfnxCpjxmKwqjjaYmCZfHsFu24GXo';
+const MSOL_MINT = 'mSoLzYCxHdYgdzU16g5QSh3i5K3z3KZK7ytfqcJm7So';
+const JITOSOL_MINT = 'J1toso1uCk3RLmjorhTtrVwY9HJ7X8V9yYac6Y7kGCPn';
 const DEXSCREENER_SOLANA_TOKEN_URL = 'https://api.dexscreener.com/tokens/v1/solana';
 const TOKEN_PROGRAM_ID = new PublicKey('TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA');
 const TOKEN_2022_PROGRAM_ID = new PublicKey('TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb');
@@ -673,6 +726,8 @@ const KNOWN_BROWSER_TOKENS: Record<string, { symbol: string; mint: string; decim
   BONK: { symbol: 'BONK', mint: BONK_MINT, decimals: 5 },
   WIF: { symbol: 'WIF', mint: WIF_MINT, decimals: 6 },
   PYUSD: { symbol: 'PYUSD', mint: PYUSD_MINT, decimals: 6 },
+  MSOL: { symbol: 'mSOL', mint: MSOL_MINT, decimals: 9 },
+  JITOSOL: { symbol: 'JitoSOL', mint: JITOSOL_MINT, decimals: 9 },
 };
 
 const CLOUD_PREFERENCE_NAMESPACES = [
@@ -11415,7 +11470,14 @@ function templateFieldInput(fieldDef: AgentPlanTemplateField): string {
     return '';
   }
   if (templateFieldIsSubActionSelect(fieldDef)) {
-    return '';
+    // The sub-action picker used to be rendered nested inside the `operation`
+    // field handler. Connector forms that don't expose an `operation` field
+    // (Lulo, Raydium liquidity, the bid flows, etc.) had no sub-action selector
+    // visible at all — so users couldn't pick deposit vs withdraw, CPMM vs CLMM,
+    // NFT vs collection, etc. Render the picker inline at the sub-action field's
+    // position so every connector form shows it.
+    const form = activeConnectorActionForm();
+    return form?.subActions ? connectorSubActionPicker(form) : '';
   }
   if (isConnectorCapableTemplate(template) && fieldDef.id === 'protocol') {
     return connectorProtocolFieldInput(fieldDef, value, label, error);
@@ -29100,6 +29162,14 @@ function inboxApprovalTokenSummary(action: PreparedAction): { value: string; tit
   if (action.kind === 'transfer_sol') {
     return tokenDisplaySummary('SOL', { copyLabel: 'Copy token' });
   }
+  const connectorRoute = connectorActionTokenRoute(action);
+  if (connectorRoute) {
+    return tokenRouteDisplaySummary(connectorRoute.inputToken, connectorRoute.outputToken);
+  }
+  const connectorAmountInfo = isConnectorApprovalKind(action) ? connectorActionAmountInfo(action) : undefined;
+  if (connectorAmountInfo?.token) {
+    return tokenDisplaySummary(connectorAmountInfo.token, { copyLabel: 'Copy token' });
+  }
   const token = stringParam(action, 'token');
   if (token) {
     return tokenDisplaySummary(token, { copyLabel: 'Copy token' });
@@ -32303,18 +32373,29 @@ type ConnectorActionAmountInfo = {
   marketToken?: string;
 };
 
+type ConnectorActionTokenRoute = {
+  inputToken: string;
+  outputToken: string;
+};
+
 type ConnectorActionAmountToken = {
   value: string;
   marketEligible: boolean;
 };
 
 function connectorActionAmountInfo(action: PreparedAction): ConnectorActionAmountInfo | undefined {
+  const semantic = connectorSemanticAmountInfo(action);
+  if (semantic) return semantic;
   const amountKeys: Array<{ key: string; token?: string }> = [
     { key: 'amountSol', token: 'SOL' },
     { key: 'priceSol', token: 'SOL' },
     { key: 'maxPriceSol', token: 'SOL' },
     { key: 'maxPricePerNftSol', token: 'SOL' },
+    { key: 'solAmount', token: 'SOL' },
     { key: 'msolAmount', token: 'mSOL' },
+    { key: 'jitoSolAmount', token: 'JitoSOL' },
+    { key: 'lstAmount' },
+    { key: 'infAmount', token: 'INF' },
     { key: 'amount' },
     { key: 'inputAmount' },
     { key: 'plannedAmount' },
@@ -32342,6 +32423,52 @@ function connectorActionAmountInfo(action: PreparedAction): ConnectorActionAmoun
     label,
     ...(displayToken ? { token: displayToken } : {}),
     ...(token?.marketEligible ? { marketToken: token.value } : {}),
+  };
+}
+
+function connectorSemanticAmountInfo(action: PreparedAction): ConnectorActionAmountInfo | undefined {
+  switch (action.kind) {
+    case 'marinade_liquid_stake':
+      return connectorAmountFromKeys(action, ['solAmount', 'amount'], 'SOL');
+    case 'marinade_liquid_unstake':
+    case 'marinade_delayed_unstake':
+      return connectorAmountFromKeys(action, ['msolAmount', 'amount'], 'mSOL');
+    case 'jito_stake_sol':
+    case 'jito_withdraw_sol':
+      return connectorAmountFromKeys(action, ['solAmount', 'amount'], 'SOL');
+    case 'jito_unstake_jitosol':
+      return connectorAmountFromKeys(action, ['jitoSolAmount', 'amount'], 'JitoSOL');
+    case 'sanctum_stake_sol_to_lst':
+      return connectorAmountFromKeys(action, ['solAmount', 'inputAmount', 'amount'], 'SOL');
+    case 'sanctum_unstake_lst_to_sol':
+      return connectorAmountFromKeys(action, ['lstAmount', 'inputAmount', 'amount'], connectorActionInputToken(action));
+    case 'sanctum_remove_infinity_liquidity':
+      return connectorAmountFromKeys(action, ['infAmount', 'inputAmount', 'amount'], 'INF');
+    case 'sanctum_swap_lst':
+    case 'sanctum_add_infinity_liquidity':
+      return connectorAmountFromKeys(action, ['inputAmount', 'amount'], connectorActionInputToken(action));
+    default:
+      return undefined;
+  }
+}
+
+function connectorAmountFromKeys(
+  action: PreparedAction,
+  keys: string[],
+  token: string,
+): ConnectorActionAmountInfo | undefined {
+  const amountKey = keys.find((key) => stringParam(action, key));
+  if (!amountKey) return undefined;
+  const amount = stringParam(action, amountKey);
+  const displayToken = connectorActionAmountTokenLabel(token);
+  const label = displayToken && !/[a-z%]/i.test(amount)
+    ? `${amount} ${displayToken}`
+    : amount;
+  return {
+    amount,
+    label,
+    ...(displayToken ? { token: displayToken } : {}),
+    marketToken: token,
   };
 }
 
@@ -32373,6 +32500,56 @@ function connectorActionAmountTokenLabel(token: string): string {
   return display.replace(/\s+(reserve|bank|pool|mint|asset)$/i, '').trim();
 }
 
+function connectorActionTokenRoute(action: PreparedAction): ConnectorActionTokenRoute | undefined {
+  switch (action.kind) {
+    case 'marinade_liquid_stake':
+      return { inputToken: 'SOL', outputToken: 'mSOL' };
+    case 'marinade_liquid_unstake':
+    case 'marinade_delayed_unstake':
+      return { inputToken: 'mSOL', outputToken: 'SOL' };
+    case 'jito_stake_sol':
+    case 'jito_deposit_stake_account':
+      return { inputToken: 'SOL', outputToken: 'JitoSOL' };
+    case 'jito_unstake_jitosol':
+      return { inputToken: 'JitoSOL', outputToken: 'SOL' };
+    case 'sanctum_stake_sol_to_lst':
+      return { inputToken: 'SOL', outputToken: connectorActionOutputLstToken(action) };
+    case 'sanctum_unstake_lst_to_sol':
+      return { inputToken: connectorActionInputToken(action), outputToken: 'SOL' };
+    case 'sanctum_swap_lst':
+      return {
+        inputToken: connectorActionInputToken(action),
+        outputToken: connectorActionOutputToken(action),
+      };
+    case 'sanctum_add_infinity_liquidity':
+      return { inputToken: connectorActionInputToken(action), outputToken: 'INF' };
+    case 'sanctum_remove_infinity_liquidity':
+      return { inputToken: 'INF', outputToken: connectorActionOutputToken(action) };
+    default:
+      return undefined;
+  }
+}
+
+function connectorActionInputToken(action: PreparedAction): string {
+  return stringParam(action, 'inputSymbol') ||
+    stringParam(action, 'inputMint') ||
+    stringParam(action, 'lstMint') ||
+    'input';
+}
+
+function connectorActionOutputToken(action: PreparedAction): string {
+  return stringParam(action, 'outputSymbol') ||
+    stringParam(action, 'outputMint') ||
+    'output';
+}
+
+function connectorActionOutputLstToken(action: PreparedAction): string {
+  return stringParam(action, 'outputSymbol') ||
+    stringParam(action, 'outputMint') ||
+    stringParam(action, 'lstMint') ||
+    'output';
+}
+
 function swapAmountLabel(action: PreparedAction): string {
   const amount = stringParam(action, 'amount') || stringParam(action, 'inputAmount');
   const input = swapInputTokenLabel(action);
@@ -32392,6 +32569,12 @@ function swapOutputTokenLabel(action: PreparedAction): string {
 
 function tokenLabel(action: PreparedAction): string {
   if (action.kind === 'transfer_sol') return 'SOL';
+  const connectorRoute = connectorActionTokenRoute(action);
+  if (connectorRoute) {
+    return `${tokenDisplayLabel(connectorRoute.inputToken)} to ${tokenDisplayLabel(connectorRoute.outputToken)}`;
+  }
+  const connectorAmountInfo = isConnectorApprovalKind(action) ? connectorActionAmountInfo(action) : undefined;
+  if (connectorAmountInfo?.token) return connectorAmountInfo.token;
   if (typeof action.params.token === 'string') return action.params.token;
   if (typeof action.params.inputToken === 'string' && typeof action.params.outputToken === 'string') {
     return `${action.params.inputToken} to ${action.params.outputToken}`;

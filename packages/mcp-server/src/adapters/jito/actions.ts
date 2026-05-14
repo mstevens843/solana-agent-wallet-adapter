@@ -31,7 +31,9 @@ const JITO_APPROVAL_BOUNDARY =
   'This prepares a wallet approval request; it does not sign, submit, or grant delegated authority.';
 
 export interface JitoStakeSolInput {
-  solAmount: string;
+  solAmount?: string;
+  /** @deprecated Old template field id; accepted for backward compatibility with pre-rename drafts. */
+  amount?: string;
   minJitoSolAmount?: string;
   dueAt?: string;
   note?: string;
@@ -45,7 +47,9 @@ export interface JitoDepositStakeAccountInput {
 }
 
 export interface JitoUnstakeJitosolInput {
-  jitoSolAmount: string;
+  jitoSolAmount?: string;
+  /** @deprecated Old template field id; accepted for backward compatibility with pre-rename drafts. */
+  amount?: string;
   minSolAmount?: string;
   withdrawMode?: JitoWithdrawMode;
   dueAt?: string;
@@ -72,22 +76,27 @@ export const jitoStakeSolAction: AdapterAction<JitoStakeSolInput> = {
   kind: 'jito_stake_sol',
 
   async prepare(input, ctx): Promise<AdapterPrepareResult> {
-    const amountRaw = parseSolLamports(input.solAmount, 'Jito SOL stake amount');
+    const solAmount = input.solAmount ?? input.amount;
+    if (typeof solAmount !== 'string' || !solAmount.trim()) {
+      throw new ProtocolError('invalid_request', 'SOL stake amount is required.');
+    }
+    const amountRaw = parseSolLamports(solAmount, 'SOL stake amount');
     if (amountRaw < JITO_MIN_STAKE_SOL_LAMPORTS) {
-      throw new ProtocolError('invalid_request', 'Jito SOL stake amount must be at least 0.001 SOL.');
+      throw new ProtocolError('invalid_request', 'Jito stake amount must be at least 0.001 SOL.');
     }
     const walletAddress = await ctx.backend.getAddress();
     const quote = await getJitoClient().quote(ctx.connection, {
       operation: 'stake_sol',
-      solAmount: input.solAmount,
+      solAmount,
     });
     const minRaw = input.minJitoSolAmount
       ? parseJitosolAmount(input.minJitoSolAmount, 'Minimum JitoSOL output')
       : undefined;
     enforceMinJitoSolOutput(quote, minRaw);
-    const summary = `Stake ${input.solAmount} SOL for JitoSOL`;
+    const summary = `Stake ${solAmount} SOL for JitoSOL`;
     const preview = jitoPreview('stake_sol', {
-      amount: input.solAmount,
+      amount: solAmount,
+      solAmount,
       amountRaw: amountRaw.toString(),
       ...(input.minJitoSolAmount !== undefined ? { minJitoSolAmount: input.minJitoSolAmount, minJitoSolRaw: minRaw?.toString() } : {}),
       quote,
@@ -214,12 +223,16 @@ export const jitoUnstakeJitosolAction: AdapterAction<JitoUnstakeJitosolInput> = 
   kind: 'jito_unstake_jitosol',
 
   async prepare(input, ctx): Promise<AdapterPrepareResult> {
-    const amountRaw = parseJitosolAmount(input.jitoSolAmount, 'JitoSOL unstake amount');
+    const jitoSolAmount = input.jitoSolAmount ?? input.amount;
+    if (typeof jitoSolAmount !== 'string' || !jitoSolAmount.trim()) {
+      throw new ProtocolError('invalid_request', 'JitoSOL unstake amount is required.');
+    }
+    const amountRaw = parseJitosolAmount(jitoSolAmount, 'JitoSOL unstake amount');
     const walletAddress = await ctx.backend.getAddress();
     const withdrawMode = input.withdrawMode ?? 'stake_account';
     const quote = await getJitoClient().quote(ctx.connection, {
       operation: 'unstake_jitosol',
-      jitoSolAmount: input.jitoSolAmount,
+      jitoSolAmount,
       withdrawMode,
     });
     const minRaw = input.minSolAmount
@@ -227,10 +240,10 @@ export const jitoUnstakeJitosolAction: AdapterAction<JitoUnstakeJitosolInput> = 
       : undefined;
     enforceMinSolOutput(quote, minRaw);
     const summary = withdrawMode === 'reserve_sol'
-      ? `Unstake ${input.jitoSolAmount} JitoSOL to SOL`
-      : `Unstake ${input.jitoSolAmount} JitoSOL to a stake account`;
+      ? `Unstake ${jitoSolAmount} JitoSOL to SOL`
+      : `Unstake ${jitoSolAmount} JitoSOL to a stake account`;
     const preview = jitoPreview('unstake_jitosol', {
-      jitoSolAmount: input.jitoSolAmount,
+      jitoSolAmount,
       jitoSolAmountRaw: amountRaw.toString(),
       withdrawMode,
       ...(input.minSolAmount !== undefined ? { minSolAmount: input.minSolAmount, minSolRaw: minRaw?.toString() } : {}),

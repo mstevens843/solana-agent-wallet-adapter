@@ -524,7 +524,7 @@ export function connectorDraftStatus(
 }
 
 export function normalizeConnectorDraftParameters(
-  template: Pick<AgentPlanTemplate, 'id' | 'actionType' | 'connectorCapability'>,
+  template: Pick<AgentPlanTemplate, 'id' | 'actionType' | 'connectorCapability'> & Partial<Pick<AgentPlanTemplate, 'fields'>>,
   parameters: Record<string, string>,
 ): Record<string, string> {
   const connector = selectedConnectorForDraftParameters(parameters);
@@ -534,7 +534,7 @@ export function normalizeConnectorDraftParameters(
   const form = explicitForm ?? connectorActionFormForTemplate(template, connector);
   const operation = explicitForm?.operationLabel ?? normalizedConnectorOperation(connector, parameters.operation);
   const shouldPersistForm = Boolean(explicitForm || (form && !isGenericConnectorActionForm(form)));
-  return {
+  return scopeConnectorDraftParameters(template, {
     ...parameters,
     connectorId: connector.id,
     protocol: connector.name,
@@ -545,7 +545,40 @@ export function normalizeConnectorDraftParameters(
       : form?.executionMode === 'read-only'
         ? 'read-only'
         : connector.actionSource ?? 'blink',
-  };
+  });
+}
+
+export function scopeConnectorDraftParameters(
+  template: Pick<AgentPlanTemplate, 'id' | 'actionType' | 'connectorCapability'> & Partial<Pick<AgentPlanTemplate, 'fields'>>,
+  parameters: Record<string, string>,
+): Record<string, string> {
+  const connector = selectedConnectorForDraftParameters(parameters);
+  const form = connectorActionFormById(parameters.connectorOperationId) ??
+    (connector ? connectorActionFormForTemplate(template, connector) : connectorActionFormForTemplate(template));
+  const fields = form ? formTemplateFields(form) : template.fields ?? [];
+  const allowed = new Set<string>([
+    'connectorId',
+    'connectorOperationId',
+    'connectorActionSource',
+    'protocol',
+    'operation',
+  ]);
+  if (connectorDraftRequiresBlink(template, parameters)) {
+    allowed.add('blinkUrl');
+    allowed.add('actionUrl');
+  }
+  for (const field of fields) {
+    if (!connectorParameterFieldIsVisible(field, parameters)) continue;
+    allowed.add(field.id);
+    allowed.add(`${field.id}Label`);
+    allowed.add(`${field.id}Mint`);
+  }
+
+  const scoped: Record<string, string> = {};
+  for (const [key, value] of Object.entries(parameters)) {
+    if (allowed.has(key)) scoped[key] = value;
+  }
+  return scoped;
 }
 
 export function stripConnectorDraftExtras(
@@ -1936,6 +1969,19 @@ function connectorDraftRequiresBlink(
 
 function isGenericConnectorActionForm(form: ConnectorActionForm): boolean {
   return form.operationId === 'position-check' || form.operationId === 'blink-action';
+}
+
+function connectorParameterFieldIsVisible(
+  field: AgentPlanTemplateField,
+  parameters: Record<string, string>,
+): boolean {
+  if (!field.showWhen) return true;
+  for (const [key, value] of Object.entries(field.showWhen)) {
+    const actual = parameters[key]?.trim() ?? '';
+    const expected = Array.isArray(value) ? value : [value];
+    if (!expected.includes(actual)) return false;
+  }
+  return true;
 }
 
 export function connectorAiPlannerContext(

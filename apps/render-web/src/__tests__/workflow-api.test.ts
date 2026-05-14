@@ -229,6 +229,52 @@ describe('cloud one-time workflow API', () => {
     });
   });
 
+  it('derives LST connector approval amount and token from semantic fields before stale generics', async () => {
+    await withWorkflowServer(async ({ port }) => {
+      const marinade = await postJson(port, '/api/approvals', {
+        summary: 'Stake SOL into mSOL',
+        kind: 'marinade_liquid_stake',
+        cluster: 'mainnet-beta',
+        params: {
+          connectorId: 'marinade',
+          connectorOperationId: 'marinade:liquid-stake',
+          token: 'USDC',
+          inputToken: 'SOL',
+          outputToken: 'USDC',
+          amount: '0.5',
+          solAmount: '0.01',
+        },
+      }, walletA);
+
+      expect(marinade.status).toBe(201);
+      expect(marinade.body.approval).toMatchObject({
+        amount: '0.01',
+        token: 'SOL to mSOL',
+      });
+
+      const jito = await postJson(port, '/api/approvals', {
+        summary: 'Stake SOL into JitoSOL',
+        kind: 'jito_stake_sol',
+        cluster: 'mainnet-beta',
+        params: {
+          connectorId: 'jito',
+          connectorOperationId: 'jito:stake-sol',
+          token: 'USDC',
+          inputToken: 'SOL',
+          outputToken: 'USDC',
+          amount: '0.5',
+          solAmount: '0.01',
+        },
+      }, walletA);
+
+      expect(jito.status).toBe(201);
+      expect(jito.body.approval).toMatchObject({
+        amount: '0.01',
+        token: 'SOL to JitoSOL',
+      });
+    });
+  });
+
   it('stores and queues Blink draft approvals for browser-local wallet execution', async () => {
     await withWorkflowServer(async ({ port }) => {
       const createdPlan = await postJson(port, '/api/plans', createBlinkPlanBody(), walletA);
