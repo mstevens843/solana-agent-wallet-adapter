@@ -665,6 +665,8 @@ export function registerActionTools(
       inputSchema: {
         ...raydiumLiquidityInputSchema(),
         positionMint: z.string().min(32).optional().describe('Existing CLMM position mint. Omit only when opening a new CLMM position.'),
+        amount: z.string().min(1).optional().describe('Legacy alias for tokenAAmount unless amountSide is tokenB.'),
+        amountSide: z.enum(['tokenA', 'tokenB']).optional(),
         tokenAAmount: z.string().min(1).optional(),
         tokenBAmount: z.string().min(1).optional(),
         maxTokenAAmount: z.string().min(1).optional().describe('Required for CLMM when tokenBAmount is the base amount.'),

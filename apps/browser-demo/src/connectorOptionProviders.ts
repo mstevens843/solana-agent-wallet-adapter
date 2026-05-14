@@ -6,6 +6,18 @@ export interface ConnectorOptionMeta {
   balance?: string;
   symbol?: string;
   market?: string;
+  tokenXSymbol?: string;
+  tokenYSymbol?: string;
+  tokenMintX?: string;
+  tokenMintY?: string;
+  binStep?: string;
+  tokenASymbol?: string;
+  tokenBSymbol?: string;
+  tokenAMint?: string;
+  tokenBMint?: string;
+  feeBps?: string;
+  poolType?: string;
+  programId?: string;
 }
 
 export interface ConnectorOption {
@@ -177,10 +189,21 @@ const kaminoReserveProvider: ConnectorOptionProvider = {
 };
 
 const JUPITER_LEND_EARN_DEFAULTS: Array<{ symbol: string; mint?: string; description: string }> = [
-  { symbol: 'USDC', description: 'USD stablecoin earn pool' },
-  { symbol: 'USDT', description: 'USDT stablecoin earn pool' },
-  { symbol: 'SOL', description: 'Native SOL earn pool' },
-  { symbol: 'JLP', description: 'Jupiter LP earn pool' },
+  {
+    symbol: 'SOL',
+    mint: 'So11111111111111111111111111111111111111112',
+    description: 'Native SOL earn pool',
+  },
+  {
+    symbol: 'USDC',
+    mint: 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v',
+    description: 'USD stablecoin earn pool',
+  },
+  {
+    symbol: 'USDT',
+    mint: 'Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB',
+    description: 'USDT stablecoin earn pool',
+  },
 ];
 
 function jupiterFactList(resp: BridgeFactsResponse | null): Array<Record<string, unknown>> {
@@ -251,9 +274,11 @@ const jupiterLendEarnAssetProvider: ConnectorOptionProvider = {
     }
     if (all.length === 0) {
       for (const fallback of JUPITER_LEND_EARN_DEFAULTS) {
-        if (seen.has(fallback.symbol)) continue;
+        const value = fallback.mint ?? fallback.symbol;
+        if (seen.has(value) || seen.has(fallback.symbol)) continue;
+        seen.add(value);
         all.push({
-          value: fallback.symbol,
+          value,
           label: `${fallback.symbol} earn pool`,
           detail: fallback.description,
           group: 'all',
@@ -674,6 +699,9 @@ const DRIFT_COMMON_VAULTS: Array<{
   },
 ];
 
+const DRIFT_PUBLIC_VAULT_CATALOG_URL =
+  'https://drift-public.s3.eu-central-1.amazonaws.com/vaults/configs.json';
+
 function driftVaultFallbackOptions(seen: Set<string>): ConnectorOption[] {
   const options: ConnectorOption[] = [];
   for (const fallback of DRIFT_COMMON_VAULTS) {
@@ -688,6 +716,43 @@ function driftVaultFallbackOptions(seen: Set<string>): ConnectorOption[] {
     });
   }
   return options;
+}
+
+async function driftVaultPublicCatalogOptions(seen: Set<string>): Promise<ConnectorOption[]> {
+  const fetcher = globalThis.fetch;
+  if (!fetcher) return [];
+  try {
+    const response = await fetcher(DRIFT_PUBLIC_VAULT_CATALOG_URL, {
+      headers: { accept: 'application/json' },
+    });
+    if (!response.ok) return [];
+    const body = await response.json();
+    if (!Array.isArray(body)) return [];
+    const options: ConnectorOption[] = [];
+    for (const item of body) {
+      if (!isRecord(item) || item.hidden === true) continue;
+      const vault = asString(item.vaultPubkeyString) ?? asString(item.vaultAddress) ?? asString(item.address);
+      const name = asString(item.name) ?? asString(item.vaultName);
+      if (!vault || !name || seen.has(vault)) continue;
+      seen.add(vault);
+      const manager = driftVaultManagerName(item);
+      const symbol = asString(item.depositSymbol) ?? driftDepositAssetSymbol(item.depositAsset);
+      options.push({
+        value: vault,
+        label: name,
+        detail: [
+          symbol ? `${symbol} deposits` : '',
+          manager ? `Manager ${manager}` : '',
+          'Drift vault catalog',
+        ].filter(Boolean).join(' · '),
+        group: 'all',
+        meta: { symbol, market: manager },
+      });
+    }
+    return sortDriftVaultOptions(options);
+  } catch {
+    return [];
+  }
 }
 
 function driftDepositAssetSymbol(value: unknown): string | undefined {
@@ -722,6 +787,22 @@ function driftVaultManagerName(entry: Record<string, unknown>): string | undefin
 function driftVaultLabel(name: string | undefined, vaultAddress: string): string {
   if (!name) return `Vault ${vaultAddress.slice(0, 6)}…`;
   return /\bvault\b/i.test(name) ? name : `${name} vault`;
+}
+
+function sortDriftVaultOptions(options: ConnectorOption[]): ConnectorOption[] {
+  return options.slice().sort((left, right) => {
+    const leftRank = driftVaultSymbolRank(left.meta?.symbol);
+    const rightRank = driftVaultSymbolRank(right.meta?.symbol);
+    if (leftRank !== rightRank) return leftRank - rightRank;
+    return left.label.localeCompare(right.label);
+  });
+}
+
+function driftVaultSymbolRank(symbol: string | undefined): number {
+  const normalized = symbol?.trim().toUpperCase();
+  if (normalized === 'SOL') return 0;
+  if (normalized === 'USDC') return 1;
+  return 2;
 }
 
 const driftVaultProvider: ConnectorOptionProvider = {
@@ -771,8 +852,9 @@ const driftVaultProvider: ConnectorOptionProvider = {
         meta: { symbol, apy, market: manager },
       });
     }
+    if (vaults.length === 0) vaults.push(...await driftVaultPublicCatalogOptions(seen));
     if (vaults.length === 0) vaults.push(...driftVaultFallbackOptions(seen));
-    return [...positions, ...vaults];
+    return [...positions, ...sortDriftVaultOptions(vaults)];
   },
 };
 
@@ -846,18 +928,147 @@ const luloMintProvider: ConnectorOptionProvider = {
   },
 };
 
-// Real on-chain Raydium pools (mainnet) — CPMM and CLMM separately, so the dropdown
-// always has options even when the bridge facts call fails on production.
-const RAYDIUM_CPMM_POOL_CATALOG: Array<{ address: string; name: string; tvl: string }> = [
-  { address: '58oQChx4yWmvKdwLLZzBi4ChoCc2fqCUWBkwMihLYQo2', name: 'SOL-USDC', tvl: '$30M' },
-  { address: '7XawhbbxtsRcQA8KTkHT9f9nc6d69UwqCDh6U5EEbEmX', name: 'SOL-USDT', tvl: '$8M' },
-  { address: '6UmmUiYoBjSrhakAobJw8BvkmJtDVxaeBtbt7rxWo1mg', name: 'RAY-USDC', tvl: '$4M' },
+const SOL_MINT = 'So11111111111111111111111111111111111111112';
+const USDC_MINT = 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v';
+const RAY_MINT = '4k3Dyjzvzp8eG8ud5Htx7Tyv6GhtNsbD5gQ4YnWLbB9Y';
+const RAYDIUM_CPMM_PROGRAM_ID = 'CPMMoo8L3F4NbTegBCKVNunggL7H1ZpdTHKxQB5qKP1C';
+const RAYDIUM_CLMM_PROGRAM_ID = 'CAMMCzo5YL8w4VFF8KVHrK22GGUsp5VTaW7grrKgrWqK';
+
+interface LiquidityPoolCatalogEntry {
+  address: string;
+  name: string;
+  tvl: string;
+  tokenASymbol: string;
+  tokenBSymbol: string;
+  tokenAMint: string;
+  tokenBMint: string;
+  feeBps?: string;
+  poolType?: string;
+  programId?: string;
+}
+
+// Verified mainnet pools only. Do not list legacy AMM v4 addresses as CPMM;
+// the Raydium adapter supports CPMM and CLMM builders, not AMM v4 liquidity.
+const RAYDIUM_CPMM_POOL_CATALOG: LiquidityPoolCatalogEntry[] = [
+  {
+    address: '47hq28mcL7q5GhBg7epyGF2dnuJd4MKFt8QhT7CzYUp4',
+    name: 'SOL-USDC',
+    tvl: '$1.7K',
+    tokenASymbol: 'SOL',
+    tokenBSymbol: 'USDC',
+    tokenAMint: SOL_MINT,
+    tokenBMint: USDC_MINT,
+    poolType: 'cpmm',
+    programId: RAYDIUM_CPMM_PROGRAM_ID,
+  },
 ];
-const RAYDIUM_CLMM_POOL_CATALOG: Array<{ address: string; name: string; tvl: string }> = [
-  { address: '3ucNos4NbumPLZNWztqGHNFFgkHeRMBQAVemeeomsUxv', name: 'SOL-USDC 0.04%', tvl: '$22M' },
-  { address: '8sLbNZoA1cfnvMJLPfp98ZLAnFSYCFApfJKMbiXNLwxj', name: 'SOL-USDC 0.25%', tvl: '$6M' },
-  { address: 'AVs9TA4nWDzfPJE9gGVNJMVhcQy3V9PGazuz33BfG2RA', name: 'RAY-SOL 0.25%', tvl: '$3M' },
+const RAYDIUM_CLMM_POOL_CATALOG: LiquidityPoolCatalogEntry[] = [
+  {
+    address: '3ucNos4NbumPLZNWztqGHNFFgkHeRMBQAVemeeomsUxv',
+    name: 'SOL-USDC 0.04%',
+    tvl: '$22M',
+    tokenASymbol: 'SOL',
+    tokenBSymbol: 'USDC',
+    tokenAMint: SOL_MINT,
+    tokenBMint: USDC_MINT,
+    feeBps: '4',
+    poolType: 'clmm',
+    programId: RAYDIUM_CLMM_PROGRAM_ID,
+  },
+  {
+    address: '8sLbNZoA1cfnvMJLPfp98ZLAnFSYCFApfJKMbiXNLwxj',
+    name: 'SOL-USDC 0.25%',
+    tvl: '$6M',
+    tokenASymbol: 'SOL',
+    tokenBSymbol: 'USDC',
+    tokenAMint: SOL_MINT,
+    tokenBMint: USDC_MINT,
+    feeBps: '25',
+    poolType: 'clmm',
+    programId: RAYDIUM_CLMM_PROGRAM_ID,
+  },
+  {
+    address: 'AVs9TA4nWDzfPJE9gGVNJMVhcQy3V9PGazuz33BfG2RA',
+    name: 'RAY-SOL 0.25%',
+    tvl: '$3M',
+    tokenASymbol: 'RAY',
+    tokenBSymbol: 'SOL',
+    tokenAMint: RAY_MINT,
+    tokenBMint: SOL_MINT,
+    feeBps: '25',
+    poolType: 'clmm',
+    programId: RAYDIUM_CLMM_PROGRAM_ID,
+  },
 ];
+
+function liquidityCatalogMeta(entry: LiquidityPoolCatalogEntry): ConnectorOptionMeta {
+  return {
+    tvl: entry.tvl,
+    tokenASymbol: entry.tokenASymbol,
+    tokenBSymbol: entry.tokenBSymbol,
+    tokenAMint: entry.tokenAMint,
+    tokenBMint: entry.tokenBMint,
+    ...(entry.feeBps !== undefined && { feeBps: entry.feeBps }),
+    ...(entry.poolType !== undefined && { poolType: entry.poolType }),
+    ...(entry.programId !== undefined && { programId: entry.programId }),
+  };
+}
+
+function raydiumEntryMeta(entry: Record<string, unknown>, poolType: 'cpmm' | 'clmm'): ConnectorOptionMeta {
+  const tokenA: Record<string, unknown> = isRecord(entry.mintA) ? entry.mintA : isRecord(entry.tokenA) ? entry.tokenA : {};
+  const tokenB: Record<string, unknown> = isRecord(entry.mintB) ? entry.mintB : isRecord(entry.tokenB) ? entry.tokenB : {};
+  const tokenASymbol = asString(tokenA.symbol) ?? asString(entry.tokenASymbol) ?? asString(entry.tokenA);
+  const tokenBSymbol = asString(tokenB.symbol) ?? asString(entry.tokenBSymbol) ?? asString(entry.tokenB);
+  const tokenAMint = pickIdentifier(tokenA, ['address', 'mint']) ?? asString(entry.tokenAMint);
+  const tokenBMint = pickIdentifier(tokenB, ['address', 'mint']) ?? asString(entry.tokenBMint);
+  const feeBps = asDisplayString(entry.feeBps) ?? feeBpsFromRate(entry.feeRate);
+  const programId = asString(entry.programId);
+  return {
+    poolType,
+    ...(tokenASymbol !== undefined && { tokenASymbol }),
+    ...(tokenBSymbol !== undefined && { tokenBSymbol }),
+    ...(tokenAMint !== undefined && { tokenAMint }),
+    ...(tokenBMint !== undefined && { tokenBMint }),
+    ...(feeBps !== undefined && { feeBps }),
+    ...(programId !== undefined && { programId }),
+  };
+}
+
+function feeBpsFromRate(value: unknown): string | undefined {
+  const numeric = typeof value === 'number'
+    ? value
+    : typeof value === 'string'
+      ? Number(value)
+      : Number.NaN;
+  if (!Number.isFinite(numeric) || numeric <= 0) return undefined;
+  const bps = numeric < 1 ? numeric * 10_000 : numeric / 100;
+  return Number.isInteger(bps) ? String(bps) : bps.toFixed(4).replace(/0+$/, '').replace(/\.$/, '');
+}
+
+function raydiumProgramMatchesPoolType(programId: string, poolType: 'cpmm' | 'clmm'): boolean {
+  return poolType === 'cpmm'
+    ? programId === RAYDIUM_CPMM_PROGRAM_ID
+    : programId === RAYDIUM_CLMM_PROGRAM_ID;
+}
+
+function orcaEntryMeta(entry: Record<string, unknown>): ConnectorOptionMeta {
+  const tokenA: Record<string, unknown> = isRecord(entry.tokenA) ? entry.tokenA : isRecord(entry.mintA) ? entry.mintA : {};
+  const tokenB: Record<string, unknown> = isRecord(entry.tokenB) ? entry.tokenB : isRecord(entry.mintB) ? entry.mintB : {};
+  const tokenASymbol = asString(tokenA.symbol) ?? asString(entry.tokenASymbol) ?? asString(entry.tokenA);
+  const tokenBSymbol = asString(tokenB.symbol) ?? asString(entry.tokenBSymbol) ?? asString(entry.tokenB);
+  const tokenAMint = pickIdentifier(tokenA, ['address', 'mint']) ?? asString(entry.tokenMintA) ?? asString(entry.tokenAMint);
+  const tokenBMint = pickIdentifier(tokenB, ['address', 'mint']) ?? asString(entry.tokenMintB) ?? asString(entry.tokenBMint);
+  const feeBps = asDisplayString(entry.feeBps) ?? feeBpsFromRate(entry.feeRate);
+  return {
+    poolType: 'whirlpool',
+    programId: ORCA_WHIRLPOOL_PROGRAM_ID,
+    ...(tokenASymbol !== undefined && { tokenASymbol }),
+    ...(tokenBSymbol !== undefined && { tokenBSymbol }),
+    ...(tokenAMint !== undefined && { tokenAMint }),
+    ...(tokenBMint !== undefined && { tokenBMint }),
+    ...(feeBps !== undefined && { feeBps }),
+  };
+}
 
 function buildRaydiumPoolProvider(id: string, poolType: 'cpmm' | 'clmm'): ConnectorOptionProvider {
   return {
@@ -884,6 +1095,8 @@ function buildRaydiumPoolProvider(id: string, poolType: 'cpmm' | 'clmm'): Connec
         if (entryType && entryType.toLowerCase() !== poolType) continue;
         const pool = pickIdentifier(entry, ['poolId', 'poolAddress', 'address']);
         if (!pool || seen.has(pool)) continue;
+        const programId = asString(entry.programId);
+        if (programId && !raydiumProgramMatchesPoolType(programId, poolType)) continue;
         seen.add(pool);
         const symbol = asString(entry.poolName) ?? asString(entry.name);
         positions.push({
@@ -891,6 +1104,7 @@ function buildRaydiumPoolProvider(id: string, poolType: 'cpmm' | 'clmm'): Connec
           label: symbol ? `${symbol} ${poolType.toUpperCase()}` : `Pool ${pool.slice(0, 6)}…`,
           detail: 'Open Raydium position',
           group: 'positions',
+          meta: raydiumEntryMeta(entry, poolType),
         });
       }
       const pools: ConnectorOption[] = [];
@@ -899,15 +1113,21 @@ function buildRaydiumPoolProvider(id: string, poolType: 'cpmm' | 'clmm'): Connec
         if (entryType && entryType.toLowerCase() !== poolType) continue;
         const pool = pickIdentifier(entry, ['poolId', 'poolAddress', 'address']);
         if (!pool || seen.has(pool)) continue;
+        const programId = asString(entry.programId);
+        if (programId && !raydiumProgramMatchesPoolType(programId, poolType)) continue;
         seen.add(pool);
         const symbol = asString(entry.poolName) ?? asString(entry.name);
         const tvl = asString(entry.tvl) ?? asString(entry.tvlUsd);
+        const meta = {
+          ...raydiumEntryMeta(entry, poolType),
+          ...(tvl !== undefined && { tvl }),
+        };
         pools.push({
           value: pool,
           label: symbol ? `${symbol} ${poolType.toUpperCase()}` : `Pool ${pool.slice(0, 6)}…`,
           detail: tvl ? `TVL $${tvl}` : `Raydium ${poolType.toUpperCase()} pool`,
           group: 'all',
-          meta: { tvl },
+          meta,
         });
       }
       if (pools.length === 0) {
@@ -919,7 +1139,7 @@ function buildRaydiumPoolProvider(id: string, poolType: 'cpmm' | 'clmm'): Connec
             label: `${entry.name} ${poolType.toUpperCase()}`,
             detail: `TVL ${entry.tvl} · Raydium ${poolType.toUpperCase()}`,
             group: 'all',
-            meta: { tvl: entry.tvl },
+            meta: liquidityCatalogMeta(entry),
           });
         }
       }
@@ -1125,14 +1345,195 @@ const sanctumLstProvider: ConnectorOptionProvider = {
   },
 };
 
-// Real on-chain Meteora DLMM pools — high-TVL mainnet pools so the dropdown is never
-// empty even when the bridge facts call fails (e.g. on Render production with no bridge).
-const METEORA_POOL_CATALOG: Array<{ address: string; name: string; tvl: string }> = [
-  { address: 'AB7E6sgsugBeTaCkN4U2ABc8Ar3D6c2sbVrJVbWmYL3i', name: 'SOL-USDC', tvl: '$15M' },
-  { address: '5rCf1DM8LjKTw4YqhnoLcngyZYeNnQqztScTogYHAS6', name: 'JUP-SOL', tvl: '$4M' },
-  { address: 'Hak4cJjLTHwt5jY2dxbWmH7HhQ6QPRGcwBPSMkmuPpQa', name: 'WIF-SOL', tvl: '$3M' },
-  { address: 'BVRbyLjjfSBcoyiYFuxbgKYnWuiFaF9CSXEa5vdSZ9Hh', name: 'JLP-USDC', tvl: '$2M' },
+const METEORA_DATA_API_POOLS_URL = 'https://dlmm.datapi.meteora.ag/pools';
+const METEORA_COMMON_POOL_QUERIES = ['SOL-USDC', 'JUP-SOL', 'WIF-SOL', 'JLP-USDC'];
+
+interface MeteoraPoolCatalogEntry {
+  address: string;
+  name: string;
+  tvl: string;
+  tokenXSymbol: string;
+  tokenYSymbol: string;
+  tokenMintX: string;
+  tokenMintY: string;
+}
+
+// Verified against Meteora's DLMM Data API and Solana RPC on 2026-05-14. These
+// keep the dropdown useful if the live Data API is temporarily unavailable.
+const METEORA_POOL_CATALOG: MeteoraPoolCatalogEntry[] = [
+  {
+    address: 'BGm1tav58oGcsQJehL9WXBFXF7D27vZsKefj4xJKD5Y',
+    name: 'SOL-USDC',
+    tvl: '$5.6M',
+    tokenXSymbol: 'SOL',
+    tokenYSymbol: 'USDC',
+    tokenMintX: 'So11111111111111111111111111111111111111112',
+    tokenMintY: 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v',
+  },
+  {
+    address: 'C8Gr6AUuq9hEdSYJzoEpNcdjpojPZwqG5MtQbeouNNwg',
+    name: 'JUP-SOL',
+    tvl: '$3.3M',
+    tokenXSymbol: 'JUP',
+    tokenYSymbol: 'SOL',
+    tokenMintX: 'JUPyiwrYJFskUPiHa7hkeR8VUtAeFoSYbKedZNsDvCN',
+    tokenMintY: 'So11111111111111111111111111111111111111112',
+  },
+  {
+    address: '8Ve9KtGNtLRxCQNAVfkHEP5GRZHjdj6BjB1RQFZewG6V',
+    name: '$WIF-SOL',
+    tvl: '$1.9M',
+    tokenXSymbol: '$WIF',
+    tokenYSymbol: 'SOL',
+    tokenMintX: 'EKpQGSJtjMFqKZ9KQanSqYXRcF8fBopzL9HYxdM65zcjm',
+    tokenMintY: 'So11111111111111111111111111111111111111112',
+  },
+  {
+    address: 'J27e5izvX4nbaaRDjMKv7DogQzcPidCAECxzE6rK4bF7',
+    name: 'JLP-USDC',
+    tvl: '$2.9M',
+    tokenXSymbol: 'JLP',
+    tokenYSymbol: 'USDC',
+    tokenMintX: 'JLPzabj7Fo6CRGvfMZZ4B8V5i2APtESc8YHYtpSrgK9',
+    tokenMintY: 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v',
+  },
 ];
+
+function formatUsdCompact(value: unknown): string | undefined {
+  const numeric = typeof value === 'number'
+    ? value
+    : typeof value === 'string'
+      ? Number(value)
+      : Number.NaN;
+  if (!Number.isFinite(numeric) || numeric <= 0) return undefined;
+  if (numeric >= 1_000_000_000) return `$${(numeric / 1_000_000_000).toFixed(numeric >= 10_000_000_000 ? 0 : 1)}B`;
+  if (numeric >= 1_000_000) return `$${(numeric / 1_000_000).toFixed(numeric >= 10_000_000 ? 0 : 1)}M`;
+  if (numeric >= 1_000) return `$${(numeric / 1_000).toFixed(numeric >= 10_000 ? 0 : 1)}K`;
+  return `$${Math.round(numeric)}`;
+}
+
+function firstMeteoraPoolToken(entry: Record<string, unknown>, side: 'x' | 'y'): Record<string, unknown> | undefined {
+  const direct = entry[`mint_${side}`] ?? entry[`token_${side}`] ?? entry[`token${side.toUpperCase()}`];
+  if (isRecord(direct)) return direct;
+  const tokens = entry.tokens;
+  if (Array.isArray(tokens)) {
+    const index = side === 'x' ? 0 : 1;
+    const token = tokens[index];
+    if (isRecord(token)) return token;
+  }
+  return undefined;
+}
+
+function meteoraPoolOptionFromApi(entry: Record<string, unknown>): ConnectorOption | undefined {
+  if (entry.is_blacklisted === true) return undefined;
+  const address = pickIdentifier(entry, ['address', 'pool_address', 'poolAddress', 'lb_pair', 'lbPair']);
+  if (!address) return undefined;
+  const tokenX = firstMeteoraPoolToken(entry, 'x');
+  const tokenY = firstMeteoraPoolToken(entry, 'y');
+  const poolConfig = isRecord(entry.pool_config) ? entry.pool_config : undefined;
+  const tokenXSymbol = asString(tokenX?.symbol) ?? asString(entry.token_x_symbol) ?? asString(entry.tokenXSymbol);
+  const tokenYSymbol = asString(tokenY?.symbol) ?? asString(entry.token_y_symbol) ?? asString(entry.tokenYSymbol);
+  const tokenMintX = pickIdentifier(tokenX ?? {}, ['address', 'mint', 'token_mint', 'tokenMint']) ??
+    asString(entry.mint_x) ??
+    asString(entry.tokenMintX);
+  const tokenMintY = pickIdentifier(tokenY ?? {}, ['address', 'mint', 'token_mint', 'tokenMint']) ??
+    asString(entry.mint_y) ??
+    asString(entry.tokenMintY);
+  const name = asString(entry.name) ??
+    asString(entry.pool_name) ??
+    (tokenXSymbol && tokenYSymbol ? `${tokenXSymbol}-${tokenYSymbol}` : undefined);
+  const tvl = formatUsdCompact(entry.liquidity) ?? formatUsdCompact(entry.tvl) ?? asString(entry.tvl);
+  const binStep = asDisplayString(entry.bin_step) ?? asDisplayString(entry.binStep) ?? asDisplayString(poolConfig?.bin_step);
+  return {
+    value: address,
+    label: name ? `${name} DLMM` : `Pool ${address.slice(0, 6)}…`,
+    detail: [tvl ? `TVL ${tvl}` : '', binStep ? `Bin step ${binStep}` : '', 'Meteora DLMM pool']
+      .filter(Boolean)
+      .join(' · '),
+    group: 'all',
+    meta: {
+      tvl,
+      tokenXSymbol,
+      tokenYSymbol,
+      tokenMintX,
+      tokenMintY,
+      binStep,
+    },
+  };
+}
+
+async function fetchMeteoraPoolsFromDataApi(query: string): Promise<ConnectorOption[]> {
+  if (typeof fetch !== 'function') return [];
+  const params = new URLSearchParams({
+    query,
+    page_size: '3',
+    sort_by: 'tvl:desc',
+  });
+  const response = await fetch(`${METEORA_DATA_API_POOLS_URL}?${params.toString()}`, {
+    headers: { accept: 'application/json' },
+  });
+  if (!response.ok) return [];
+  const payload = await response.json();
+  const rows = Array.isArray(payload)
+    ? payload
+    : isRecord(payload) && Array.isArray(payload.data)
+      ? payload.data
+      : isRecord(payload) && Array.isArray(payload.pools)
+        ? payload.pools
+      : [];
+  const options: ConnectorOption[] = [];
+  for (const row of rows) {
+    if (!isRecord(row)) continue;
+    const option = meteoraPoolOptionFromApi(row);
+    if (option) options.push(option);
+  }
+  return options;
+}
+
+async function fetchMeteoraCommonPoolsFromDataApi(): Promise<ConnectorOption[]> {
+  const batches = await Promise.all(
+    METEORA_COMMON_POOL_QUERIES.map(async (query) => {
+      try {
+        return await fetchMeteoraPoolsFromDataApi(query);
+      } catch {
+        return [];
+      }
+    }),
+  );
+  const seen = new Set<string>();
+  const options: ConnectorOption[] = [];
+  for (const batch of batches) {
+    for (const option of batch) {
+      if (seen.has(option.value)) continue;
+      seen.add(option.value);
+      options.push(option);
+      break;
+    }
+  }
+  return options;
+}
+
+function meteoraCatalogOptions(seen: Set<string>): ConnectorOption[] {
+  const options: ConnectorOption[] = [];
+  for (const entry of METEORA_POOL_CATALOG) {
+    if (seen.has(entry.address)) continue;
+    seen.add(entry.address);
+    options.push({
+      value: entry.address,
+      label: `${entry.name} DLMM`,
+      detail: `TVL ${entry.tvl} · Meteora DLMM pool`,
+      group: 'all',
+      meta: {
+        tvl: entry.tvl,
+        tokenXSymbol: entry.tokenXSymbol,
+        tokenYSymbol: entry.tokenYSymbol,
+        tokenMintX: entry.tokenMintX,
+        tokenMintY: entry.tokenMintY,
+      },
+    });
+  }
+  return options;
+}
 
 const meteoraPoolProvider: ConnectorOptionProvider = {
   id: 'meteora.pool',
@@ -1150,11 +1551,16 @@ const meteoraPoolProvider: ConnectorOptionProvider = {
       if (!pool || seen.has(pool)) continue;
       seen.add(pool);
       const name = asString(entry.poolName) ?? asString(entry.name);
+      const tokenXSymbol = asString(entry.tokenXSymbol) ?? asString(entry.tokenX);
+      const tokenYSymbol = asString(entry.tokenYSymbol) ?? asString(entry.tokenY);
+      const tokenMintX = asString(entry.tokenMintX);
+      const tokenMintY = asString(entry.tokenMintY);
       positions.push({
         value: pool,
         label: name ? `${name} DLMM` : `Pool ${pool.slice(0, 6)}…`,
         detail: 'Existing position in this pool',
         group: 'positions',
+        meta: { tokenXSymbol, tokenYSymbol, tokenMintX, tokenMintY },
       });
     }
     const pools: ConnectorOption[] = [];
@@ -1164,23 +1570,27 @@ const meteoraPoolProvider: ConnectorOptionProvider = {
       seen.add(pool);
       const name = asString(entry.poolName) ?? asString(entry.name);
       const tvl = asString(entry.tvl);
+      const tokenXSymbol = asString(entry.tokenXSymbol) ?? asString(entry.tokenX);
+      const tokenYSymbol = asString(entry.tokenYSymbol) ?? asString(entry.tokenY);
+      const tokenMintX = asString(entry.tokenMintX);
+      const tokenMintY = asString(entry.tokenMintY);
       pools.push({
         value: pool,
         label: name ? `${name} DLMM` : `Pool ${pool.slice(0, 6)}…`,
         detail: tvl ? `TVL ${tvl}` : 'Meteora DLMM pool',
         group: 'all',
+        meta: { tvl, tokenXSymbol, tokenYSymbol, tokenMintX, tokenMintY },
       });
     }
     if (pools.length === 0) {
-      for (const entry of METEORA_POOL_CATALOG) {
-        if (seen.has(entry.address)) continue;
-        pools.push({
-          value: entry.address,
-          label: `${entry.name} DLMM`,
-          detail: `TVL ${entry.tvl} · Meteora DLMM pool`,
-          group: 'all',
-        });
+      for (const option of await fetchMeteoraCommonPoolsFromDataApi()) {
+        if (seen.has(option.value)) continue;
+        seen.add(option.value);
+        pools.push(option);
       }
+    }
+    if (pools.length === 0) {
+      pools.push(...meteoraCatalogOptions(seen));
     }
     return [...positions, ...pools];
   },
@@ -1220,11 +1630,32 @@ const meteoraPositionProvider: ConnectorOptionProvider = {
 
 // Real on-chain Orca whirlpools — high-TVL mainnet whirlpools (canonical SOL/USDC,
 // USDC/USDT, mSOL/SOL, etc.) so the dropdown is never empty on production.
-const ORCA_WHIRLPOOL_CATALOG: Array<{ address: string; name: string; tvl: string }> = [
-  { address: 'Czfq3xZZDmsdGdUyrNLtRhGc47cXcZtL45ANK2cVE5C', name: 'SOL/USDC 0.04%', tvl: '$25M' },
-  { address: '4fuUiYxTQ6QCrdSq9ouBYcTM7bqSwYTSyLueGZLTy4T4', name: 'SOL/USDC 0.05%', tvl: '$10M' },
-  { address: '4mTSXTPiHpzVxAGScjFwjAYfTM6whbTYxL6cZmqRiYAd', name: 'USDC/USDT 0.01%', tvl: '$5M' },
-  { address: 'HJPjoWUrhoZzkNfRpHuieeFk9WcZWjwy6PBjZ81ngndJ', name: 'SOL/USDT 0.05%', tvl: '$4M' },
+const ORCA_WHIRLPOOL_PROGRAM_ID = 'whirLbMiicVdio4qvUfM5KAg6Ct8VwpYzGff3uctyCc';
+const ORCA_WHIRLPOOL_CATALOG: LiquidityPoolCatalogEntry[] = [
+  {
+    address: 'Czfq3xZZDmsdGdUyrNLtRhGc47cXcZtLG4crryfu44zE',
+    name: 'SOL/USDC 0.04%',
+    tvl: '$29M',
+    tokenASymbol: 'SOL',
+    tokenBSymbol: 'USDC',
+    tokenAMint: SOL_MINT,
+    tokenBMint: USDC_MINT,
+    feeBps: '4',
+    poolType: 'whirlpool',
+    programId: ORCA_WHIRLPOOL_PROGRAM_ID,
+  },
+  {
+    address: '4fuUiYxTQ6QCrdSq9ouBYcTM7bqSwYTSyLueGZLTy4T4',
+    name: 'SOL/USDC 0.05%',
+    tvl: '$10M',
+    tokenASymbol: 'SOL',
+    tokenBSymbol: 'USDC',
+    tokenAMint: SOL_MINT,
+    tokenBMint: USDC_MINT,
+    feeBps: '5',
+    poolType: 'whirlpool',
+    programId: ORCA_WHIRLPOOL_PROGRAM_ID,
+  },
 ];
 
 const orcaWhirlpoolProvider: ConnectorOptionProvider = {
@@ -1248,6 +1679,7 @@ const orcaWhirlpoolProvider: ConnectorOptionProvider = {
         label: name ? `${name} whirlpool` : `Whirlpool ${pool.slice(0, 6)}…`,
         detail: 'Existing position in this whirlpool',
         group: 'positions',
+        meta: orcaEntryMeta(entry),
       });
     }
     const pools: ConnectorOption[] = [];
@@ -1257,11 +1689,16 @@ const orcaWhirlpoolProvider: ConnectorOptionProvider = {
       seen.add(pool);
       const name = asString(entry.poolName) ?? asString(entry.name);
       const tvl = asString(entry.tvl);
+      const meta = {
+        ...orcaEntryMeta(entry),
+        ...(tvl !== undefined && { tvl }),
+      };
       pools.push({
         value: pool,
         label: name ? `${name} whirlpool` : `Whirlpool ${pool.slice(0, 6)}…`,
         detail: tvl ? `TVL ${tvl}` : 'Orca whirlpool',
         group: 'all',
+        meta,
       });
     }
     if (pools.length === 0) {
@@ -1272,6 +1709,7 @@ const orcaWhirlpoolProvider: ConnectorOptionProvider = {
           label: `${entry.name} whirlpool`,
           detail: `TVL ${entry.tvl} · Orca whirlpool`,
           group: 'all',
+          meta: liquidityCatalogMeta(entry),
         });
       }
     }

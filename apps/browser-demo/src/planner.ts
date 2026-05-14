@@ -327,7 +327,7 @@ const BASE_AGENT_PLAN_TEMPLATES: AgentPlanTemplate[] = [
     field('vaultAddress', 'Vault address', 'Drift vault account address', '', true),
     field('amount', 'Amount', '25', '25', true),
     field('mint', 'Deposit mint (optional)', 'Vault deposit mint address', ''),
-    selectField('initializeDepositorIfMissing', 'Create depositor if missing', ['no', 'yes'], 'no'),
+    selectField('initializeDepositorIfMissing', 'Create depositor if missing', ['yes', 'no'], 'yes'),
     field('memo', 'Reason', 'Earn yield in a Drift strategy vault', 'Drift vault deposit review'),
   ], { connectorCapability: 'first_class_adapter', connectorActionSource: 'first-class-adapter' }),
   template('defi', 'drift-vault-request-withdraw', 'Drift vault request withdraw', 'Request a Drift strategy vault withdraw. Rejected if a pending request already exists. Prepares wallet approval work only; the redeem period must elapse before completing.', 'drift_vault_request_withdraw', 'medium', [
@@ -351,7 +351,7 @@ const BASE_AGENT_PLAN_TEMPLATES: AgentPlanTemplate[] = [
     field('range', 'Price range / condition', 'Optional range', ''),
   ]),
   template('defi', 'protocol-position-check', 'Protocol position check', 'Read a connected protocol position or market before proposing any action. The agent must report missing connector facts honestly.', 'read_only', 'low', [
-    selectField('protocol', 'Protocol', ['Kamino', 'Jupiter', 'Raydium', 'Orca', 'Meteora', 'MarginFi', 'Drift', 'Lulo', 'Save'], 'Meteora'),
+    selectField('protocol', 'Protocol', ['Pyth', 'Kamino', 'Jupiter', 'Raydium', 'Orca', 'Meteora', 'MarginFi', 'Drift', 'Lulo', 'Save'], 'Meteora'),
     field('position', 'Position / market', 'Pool, market, vault, or position address', ''),
     selectField('question', 'Question', ['Status', 'Rewards', 'Fees', 'Unlock timing', 'Available actions'], 'Status'),
     textareaField('memo', 'Instructions', 'Check my position and show evidence before proposing anything executable.'),

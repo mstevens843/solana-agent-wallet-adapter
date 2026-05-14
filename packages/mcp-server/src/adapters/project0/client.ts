@@ -154,6 +154,13 @@ type Project0SdkLoader = () => Promise<Project0SdkModule>;
 type AnyProject0Client = Record<string, any>;
 type AnyProject0Account = Record<string, any>;
 type AnyProject0Bank = Record<string, any>;
+type Project0DiscoveryResult = {
+  addresses: PublicKey[];
+  errors: string[];
+};
+
+const PROJECT0_ACCOUNT_SCAN_LIMIT = 256;
+const PROJECT0_ACCOUNT_SCAN_BATCH_SIZE = 64;
 
 let sdkLoader: Project0SdkLoader = defaultProject0SdkLoader;
 let loadedSdkModule: Project0SdkModule | undefined;
@@ -230,7 +237,7 @@ class RealProject0Client implements Project0Client {
     input: { walletAddress: string; project0Account?: string },
   ): Promise<Project0AccountDetail> {
     const sdkClient = await this.sdkClient(connection);
-    const account = await resolveProject0Account(sdkClient, input);
+    const account = await resolveProject0Account(connection, sdkClient, input);
     const banks = await this.listBanks();
     return accountDetailFromSdkAccount(sdkClient, account, banks);
   }
@@ -238,7 +245,7 @@ class RealProject0Client implements Project0Client {
   async previewHealth(connection: Connection, input: Project0ActionInput): Promise<Project0HealthPreview> {
     const minHealthRatio = input.minHealthRatio ?? DEFAULT_PROJECT0_MIN_HEALTH_RATIO;
     if (input.operation === 'create_account') {
-      const accountIndex = await resolveCreateAccountIndex(await this.sdkClient(connection), input);
+      const accountIndex = await resolveCreateAccountIndex(connection, await this.sdkClient(connection), input);
       return {
         operation: 'create_account',
         accountIndex,
@@ -250,7 +257,7 @@ class RealProject0Client implements Project0Client {
     }
 
     const sdkClient = await this.sdkClient(connection);
-    const account = await resolveProject0Account(sdkClient, input);
+    const account = await resolveProject0Account(connection, sdkClient, input);
     const bank = await this.requireBank(input);
     const sdkBank = requireSdkBank(sdkClient, bank.bankAddress);
     const resolvedAmount = resolveProject0Amount(account, bank, input);
@@ -300,7 +307,7 @@ class RealProject0Client implements Project0Client {
     const sdkClient = await this.sdkClient(connection);
     const walletAddress = new PublicKey(input.walletAddress);
     if (input.operation === 'create_account') {
-      const accountIndex = await resolveCreateAccountIndex(sdkClient, input);
+      const accountIndex = await resolveCreateAccountIndex(connection, sdkClient, input);
       const tx = await requireSdkMethod(sdkClient, 'createMarginfiAccountTx').call(sdkClient, walletAddress, accountIndex);
       return {
         transactionsBase64: [await serializeTransaction(connection, tx, walletAddress)],
@@ -308,7 +315,7 @@ class RealProject0Client implements Project0Client {
       };
     }
 
-    const account = await resolveProject0Account(sdkClient, input);
+    const account = await resolveProject0Account(connection, sdkClient, input);
     const bank = await this.requireBank(input);
     const sdkBank = requireSdkBank(sdkClient, bank.bankAddress);
     const resolvedAmount = resolveProject0Amount(account, bank, input);
@@ -360,7 +367,7 @@ async function loadProject0Sdk(): Promise<Project0SdkModule> {
 }
 
 async function buildSdkClient(connection: Connection): Promise<AnyProject0Client> {
-  const sdk = await loadProject0Sdk();
+  const sdk = loadedSdkModule ?? await loadProject0Sdk();
   const Project0ClientCtor = sdk.Project0Client ?? sdk.default;
   if (!Project0ClientCtor || typeof Project0ClientCtor.initialize !== 'function' || typeof sdk.getConfig !== 'function') {
     throw new AdapterError(
@@ -376,6 +383,7 @@ async function buildSdkClient(connection: Connection): Promise<AnyProject0Client
 }
 
 async function resolveProject0Account(
+  connection: Connection,
   client: AnyProject0Client,
   input: { walletAddress: string; project0Account?: string },
 ): Promise<AnyProject0Account> {
@@ -390,49 +398,184 @@ async function resolveProject0Account(
     const account = await sdk.MarginfiAccount.fetch(new PublicKey(input.project0Account.trim()), client.program);
     return new sdk.MarginfiAccountWrapper(account, client);
   }
-  const addresses = await accountAddressesForWallet(client, input.walletAddress);
+  const discovery = await accountAddressesForWallet(connection, client, input.walletAddress);
+  const addresses = discovery.addresses;
   if (addresses.length === 1) {
     const address = addresses[0]!;
     return typeof client.fetchAccount === 'function'
       ? client.fetchAccount(address)
-      : resolveProject0Account(client, { walletAddress: input.walletAddress, project0Account: toBase58(address) });
+      : resolveProject0Account(connection, client, { walletAddress: input.walletAddress, project0Account: toBase58(address) });
   }
   if (addresses.length === 0) {
+    const discoveryHint = discovery.errors.length
+      ? ` Discovery errors: ${discovery.errors.slice(0, 3).join('; ')}.`
+      : '';
     throw new AdapterError(
       PROJECT0_ADAPTER_ID,
       'missing_account',
-      'No Project 0 account found for this wallet. Prepare create_account first or pass an existing project0Account address.',
+      `Project 0 account was not discoverable for this wallet after SDK scan and PDA probes. If app.0.xyz shows an account, pass its account address as project0Account.${discoveryHint}`,
     );
   }
+  const addressList = addresses.map((address) => toBase58(address)).join(', ');
   throw new AdapterError(
     PROJECT0_ADAPTER_ID,
     'ambiguous_account',
-    'Multiple Project 0 accounts found. Pass project0Account explicitly.',
+    `Multiple Project 0 accounts were discovered (${addressList}). Pass project0Account explicitly.`,
   );
 }
 
-async function accountAddressesForWallet(client: AnyProject0Client, walletAddress: string): Promise<PublicKey[]> {
-  if (typeof client.getAccountAddresses !== 'function') return [];
-  const addresses = await client.getAccountAddresses(new PublicKey(walletAddress));
-  return Array.isArray(addresses) ? addresses : [];
+async function accountAddressesForWallet(
+  connection: Connection,
+  client: AnyProject0Client,
+  walletAddress: string,
+): Promise<Project0DiscoveryResult> {
+  const authority = new PublicKey(walletAddress);
+  const errors: string[] = [];
+  const discovered: PublicKey[] = [];
+
+  if (typeof client.getAccountAddresses === 'function') {
+    try {
+      discovered.push(...normalizePublicKeys(await client.getAccountAddresses(authority)));
+    } catch (err) {
+      errors.push(`SDK account scan failed: ${errorMessage(err)}`);
+    }
+  }
+
+  const sdk = await loadProject0Sdk();
+  const group = project0GroupAddress(client);
+  const program = client.program;
+  if (program && group && typeof sdk.fetchMarginfiAccountAddresses === 'function') {
+    try {
+      discovered.push(...normalizePublicKeys(await sdk.fetchMarginfiAccountAddresses(program, authority, group)));
+    } catch (err) {
+      errors.push(`direct account scan failed: ${errorMessage(err)}`);
+    }
+  }
+
+  if (
+    group &&
+    program?.programId &&
+    typeof sdk.deriveMarginfiAccount === 'function' &&
+    typeof connection.getMultipleAccountsInfo === 'function'
+  ) {
+    try {
+      discovered.push(...await probeProject0PdaAccounts(connection, sdk, program.programId, group, authority));
+    } catch (err) {
+      errors.push(`PDA probe failed: ${errorMessage(err)}`);
+    }
+  }
+
+  return {
+    addresses: dedupePublicKeys(discovered),
+    errors,
+  };
 }
 
-async function resolveCreateAccountIndex(client: AnyProject0Client, input: Project0ActionInput): Promise<number> {
+async function probeProject0PdaAccounts(
+  connection: Connection,
+  sdk: Project0SdkModule,
+  programId: PublicKey,
+  group: PublicKey,
+  authority: PublicKey,
+): Promise<PublicKey[]> {
+  const thirdPartyIds = dedupeNumbers([
+    0,
+    Number(sdk.MARGINFI_SPONSORED_SHARD_ID),
+  ]).filter((value) => Number.isInteger(value) && value >= 0 && value <= 65_535);
+  const candidates: PublicKey[] = [];
+  for (const thirdPartyId of thirdPartyIds) {
+    for (let accountIndex = 0; accountIndex < PROJECT0_ACCOUNT_SCAN_LIMIT; accountIndex += 1) {
+      candidates.push(sdk.deriveMarginfiAccount(programId, group, authority, accountIndex, thirdPartyId)[0]);
+    }
+  }
+  const found: PublicKey[] = [];
+  for (let start = 0; start < candidates.length; start += PROJECT0_ACCOUNT_SCAN_BATCH_SIZE) {
+    const batch = candidates.slice(start, start + PROJECT0_ACCOUNT_SCAN_BATCH_SIZE);
+    const infos = await connection.getMultipleAccountsInfo(batch);
+    infos.forEach((info, index) => {
+      if (info) found.push(batch[index]!);
+    });
+  }
+  return found;
+}
+
+async function resolveCreateAccountIndex(
+  connection: Connection,
+  client: AnyProject0Client,
+  input: Project0ActionInput,
+): Promise<number> {
   if (input.accountIndex !== undefined) {
     if (!Number.isInteger(input.accountIndex) || input.accountIndex < 0) {
       throw new AdapterError(PROJECT0_ADAPTER_ID, 'invalid_account_index', 'Project 0 accountIndex must be a non-negative integer.');
     }
     return input.accountIndex;
   }
-  const addresses = await accountAddressesForWallet(client, input.walletAddress);
+  const addresses = (await accountAddressesForWallet(connection, client, input.walletAddress)).addresses;
   if (addresses.length > 0) {
     throw new AdapterError(
       PROJECT0_ADAPTER_ID,
       'account_index_required',
-      'This wallet already has Project 0 accounts. Pass an explicit accountIndex for the new account.',
+      `This wallet already has Project 0 accounts (${addresses.map((address) => toBase58(address)).join(', ')}). Pass an explicit accountIndex for the new account.`,
     );
   }
   return 0;
+}
+
+function project0GroupAddress(client: AnyProject0Client): PublicKey | undefined {
+  return publicKeyFromUnknown(
+    client.group?.address ??
+    client.groupAddress ??
+    client.config?.groupPk ??
+    client.config?.groupAddress ??
+    client.config?.group,
+  );
+}
+
+function normalizePublicKeys(values: unknown): PublicKey[] {
+  if (!Array.isArray(values)) return [];
+  return values.flatMap((value) => {
+    const publicKey = publicKeyFromUnknown(value);
+    return publicKey ? [publicKey] : [];
+  });
+}
+
+function publicKeyFromUnknown(value: unknown): PublicKey | undefined {
+  if (!value) return undefined;
+  if (value instanceof PublicKey) return value;
+  const text = toBase58(value);
+  if (!text) return undefined;
+  try {
+    return new PublicKey(text);
+  } catch {
+    return undefined;
+  }
+}
+
+function dedupePublicKeys(values: PublicKey[]): PublicKey[] {
+  const seen = new Set<string>();
+  const result: PublicKey[] = [];
+  for (const value of values) {
+    const key = value.toBase58();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    result.push(value);
+  }
+  return result;
+}
+
+function dedupeNumbers(values: number[]): number[] {
+  const seen = new Set<number>();
+  const result: number[] = [];
+  for (const value of values) {
+    if (!Number.isFinite(value) || seen.has(value)) continue;
+    seen.add(value);
+    result.push(value);
+  }
+  return result;
+}
+
+function errorMessage(err: unknown): string {
+  return err instanceof Error ? err.message : String(err);
 }
 
 function requireSdkBank(client: AnyProject0Client, bankAddress: string): AnyProject0Bank {

@@ -4,7 +4,9 @@ import {
   DRIFT_NAME,
   DRIFT_PROGRAM_ID,
   DRIFT_SUPPORTED_CLUSTERS,
+  DRIFT_VAULTS_CURRENT_PROGRAM_ID,
   DRIFT_VAULTS_PROGRAM_ID,
+  DRIFT_VAULTS_PROGRAM_IDS,
   type DriftWithdrawUnit,
 } from './constants.js';
 import { getUserSnapshot, summarizeUserSnapshot } from './users.js';
@@ -138,7 +140,7 @@ export const driftAdapter: DAppAdapter = {
   website: 'https://app.drift.trade',
   description: DRIFT_DESCRIPTION,
   supportedClusters: DRIFT_SUPPORTED_CLUSTERS,
-  programIds: [DRIFT_VAULTS_PROGRAM_ID, DRIFT_PROGRAM_ID],
+  programIds: [...DRIFT_VAULTS_PROGRAM_IDS, DRIFT_PROGRAM_ID],
   actions: {
     vault_deposit: driftVaultDepositAction,
     vault_request_withdraw: driftVaultRequestWithdrawAction,
@@ -166,5 +168,7 @@ export {
   DRIFT_DESCRIPTION,
   DRIFT_SUPPORTED_CLUSTERS,
   DRIFT_VAULTS_PROGRAM_ID,
+  DRIFT_VAULTS_CURRENT_PROGRAM_ID,
+  DRIFT_VAULTS_PROGRAM_IDS,
   DRIFT_PROGRAM_ID,
 };

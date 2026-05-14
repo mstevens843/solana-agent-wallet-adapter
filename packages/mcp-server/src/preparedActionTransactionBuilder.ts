@@ -37,7 +37,27 @@ export function createCaptureContext(ctx: DAppAdapterContext): {
       captured.summary = summary;
       return CAPTURE_SENTINEL;
     },
-    signAndBroadcastMany: async () => {
+    signAndBroadcastMany: async (transactionsBase64: string[], summary: string) => {
+      if (transactionsBase64.length === 1) {
+        const transactionBase64 = transactionsBase64[0];
+        if (!transactionBase64) {
+          throw new AdapterError(
+            'registry',
+            'transaction_missing',
+            'Adapter attempted to broadcast an empty transaction; capture requires one transaction per approval.',
+          );
+        }
+        if (captured.base64 !== undefined) {
+          throw new AdapterError(
+            'registry',
+            'multi_tx_not_supported',
+            'Adapter attempted to broadcast more than one transaction; capture supports a single transaction per approval.',
+          );
+        }
+        captured.base64 = transactionBase64;
+        captured.summary = summary;
+        return [CAPTURE_SENTINEL];
+      }
       throw new AdapterError(
         'registry',
         'multi_tx_not_supported',
@@ -68,9 +88,10 @@ async function enrichActionParams(
   // The adapter's prepare() accepts an opaque input; the form-keyed action.params shape
   // is compatible with every adapter we have (e.g., Kamino reads `input.token`, MarginFi reads
   // `input.bank`, etc.). Adapters tolerate unknown fields.
+  const prepareParams = normalizeLegacyConnectorPrepareParams(action.kind, action.params);
   let prepared;
   try {
-    prepared = await adapterAction.prepare(action.params as never, ctx);
+    prepared = await adapterAction.prepare(prepareParams as never, ctx);
   } catch (err) {
     if (err instanceof AdapterError) throw err;
     const message = err instanceof Error ? err.message : String(err);
@@ -84,10 +105,31 @@ async function enrichActionParams(
     ...action,
     summary: prepared.addInput.summary || action.summary,
     params: {
-      ...action.params,
+      ...prepareParams,
       ...prepared.addInput.params,
     },
   };
+}
+
+function normalizeLegacyConnectorPrepareParams(
+  kind: string,
+  params: Record<string, unknown>,
+): Record<string, unknown> {
+  if (kind !== 'magiceden_bid' && kind !== 'tensor_bid') return params;
+  const next: Record<string, unknown> = { ...params };
+  const bidPriceSol = stringParam(next, 'bidPriceSol') || stringParam(next, 'priceSol');
+  if (bidPriceSol && !stringParam(next, 'bidPriceSol')) {
+    next.bidPriceSol = bidPriceSol;
+  }
+  if (bidPriceSol && !stringParam(next, 'maxEscrowSol')) {
+    next.maxEscrowSol = bidPriceSol;
+  }
+  return next;
+}
+
+function stringParam(params: Record<string, unknown>, key: string): string {
+  const value = params[key];
+  return typeof value === 'string' ? value.trim() : '';
 }
 
 export async function prepareTransactionForApproval(

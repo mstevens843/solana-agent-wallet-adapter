@@ -2,7 +2,9 @@ import { randomUUID } from 'node:crypto';
 import type { IncomingMessage, ServerResponse } from 'node:http';
 
 import {
+  AgentWalletActionService,
   BridgeAiPlanner,
+  DEFAULT_CONFIG,
   requestBirdeyePriceMulti,
   requestBirdeyeSearch,
   requestBirdeyeTokenMetadata,
@@ -12,6 +14,8 @@ import {
   type AiAskRequest,
   type AiPlanRequest,
   type AiReviewRequest,
+  type ConnectorFactReadInput,
+  type DAppAdapterContext,
 } from '@solana-agent-wallet-adapter/mcp-server';
 import { Connection } from '@solana/web3.js';
 
@@ -68,11 +72,17 @@ import {
 import { createWorkflowApiHandler } from './workflowRoutes.js';
 import {
   buildKaminoSdkClient,
+  buildDriftVaultClient,
   buildSaveSdkClient,
+  buildWormholeSdkClient,
+  isDriftVaultConfigured,
   isKaminoConfigured,
   isSaveConfigured,
+  isWormholeConfigured,
+  setDriftVaultClientFactory,
   setKaminoClientFactory,
   setSaveClientFactory,
+  setWormholeClientFactory,
 } from '@solana-agent-wallet-adapter/mcp-server';
 
 const MAX_JSON_BYTES = 64 * 1024;
@@ -117,6 +127,7 @@ const REGISTERED_API_ROUTES = [
   'POST /api/swap/order',
   'POST /api/swap/execute',
   'POST /api/connector/prepare-transaction',
+  'POST /api/connector/read-facts',
   'POST /api/birdeye/price-multi',
   'POST /api/birdeye/search',
   'POST /api/birdeye/token-meta',
@@ -153,6 +164,15 @@ interface HostedAiAskBody {
   request?: unknown;
 }
 
+type ConnectorReadFactsRequest = ConnectorFactReadInput & {
+  cluster: WorkflowCluster;
+  walletAddress: string;
+};
+
+type WalletBackend = DAppAdapterContext['backend'];
+
+export type StatelessConnectorFactsReader = (input: ConnectorReadFactsRequest) => Promise<Record<string, unknown>>;
+
 export interface CloudApiRouterOptions {
   store?: WorkflowStore;
   clock?: Clock;
@@ -170,6 +190,11 @@ export interface CloudApiRouterOptions {
    * `createStatelessConnectorPreparer()` in `prepareConnectorTransaction.ts`.
    */
   statelessConnectorPreparer?: StatelessConnectorTransactionPreparer;
+  /**
+   * Test-only override: replace the stateless connector fact reader used by
+   * `POST /api/connector/read-facts`. Production constructs a read-only action service.
+   */
+  statelessConnectorReader?: StatelessConnectorFactsReader;
 }
 
 export interface CloudApiRouter {
@@ -239,23 +264,27 @@ const HOSTED_PROVIDER_PRESETS: Record<HostedProviderId, HostedProviderPreset> = 
   },
 };
 
-// Wire the lending-protocol SDK clients once per process so connector approvals
-// can build real KLend / Solend deposit-withdraw transactions. Each factory is a
-// no-op until first use; the heavy market loads happen lazily inside the client.
-// Without these, Kamino approve fails with "klend-sdk is not wired" and Save
-// approve fails with "solend-sdk is not wired."
-function ensureLendingSdksConfigured(): void {
+// Wire connector SDK clients once per process so approvals can build real unsigned
+// transactions. Each factory is a no-op until first use; heavy loads happen
+// lazily inside the client.
+function ensureConnectorSdksConfigured(): void {
   const rpcUrl = (process.env.SOLANA_RPC_URL ?? process.env.HELIUS_RPC_URL ?? 'https://api.mainnet-beta.solana.com').trim();
+  if (!isDriftVaultConfigured()) {
+    setDriftVaultClientFactory(() => buildDriftVaultClient({ rpcUrl }));
+  }
   if (!isKaminoConfigured()) {
     setKaminoClientFactory(() => buildKaminoSdkClient({ rpcUrl }));
   }
   if (!isSaveConfigured()) {
     setSaveClientFactory(() => buildSaveSdkClient({ rpcUrl }));
   }
+  if (!isWormholeConfigured()) {
+    setWormholeClientFactory(() => buildWormholeSdkClient({ rpcUrl }));
+  }
 }
 
 export function createCloudApiRouter(options: CloudApiRouterOptions = {}): CloudApiRouter {
-  ensureLendingSdksConfigured();
+  ensureConnectorSdksConfigured();
   const store = options.store ?? createDefaultWorkflowStore();
   const clock = options.clock ?? systemClock;
   const authRateLimiter = options.authRateLimiter === false
@@ -270,6 +299,7 @@ export function createCloudApiRouter(options: CloudApiRouterOptions = {}): Cloud
     ...(options.connectorPreparer ? { connectorPreparer: options.connectorPreparer } : {}),
   });
   const statelessConnectorPreparer = options.statelessConnectorPreparer ?? createStatelessConnectorPreparer();
+  const statelessConnectorReader = options.statelessConnectorReader ?? createStatelessConnectorFactsReader();
   const workflowApiHandler = createWorkflowApiHandler({
     service: workflowService,
     getSession: sessionResolver,
@@ -335,6 +365,7 @@ export function createCloudApiRouter(options: CloudApiRouterOptions = {}): Cloud
           evidenceApiHandler,
           recurringApiHandler,
           statelessConnectorPreparer,
+          statelessConnectorReader,
         );
       } catch (err) {
         const status = err instanceof ApiError ? err.status : err instanceof AuthValidationError ? 400 : 500;
@@ -415,6 +446,7 @@ function authRateLimitedRoute(pathname: string): AuthRateLimitInput['route'] | u
   if (pathname === '/api/ai/review-plan') return pathname;
   if (pathname.startsWith('/api/plans')) return '/api/plans:*';
   if (pathname.startsWith('/api/approvals')) return '/api/approvals:*';
+  if (pathname.startsWith('/api/connector')) return '/api/approvals:*';
   if (pathname.startsWith('/api/recurring')) return '/api/recurring:*';
   if (pathname.startsWith('/api/evidence')) return '/api/evidence:*';
   if (pathname.startsWith('/api/swap')) return '/api/swap:*';
@@ -452,6 +484,7 @@ async function routeApiRequest(
   evidenceApiHandler: (req: IncomingMessage, res: ServerResponse) => Promise<boolean>,
   recurringApiHandler: (req: IncomingMessage, res: ServerResponse) => Promise<boolean>,
   statelessConnectorPreparer: StatelessConnectorTransactionPreparer,
+  statelessConnectorReader: StatelessConnectorFactsReader,
 ): Promise<void> {
   if (url.pathname === '/api/ai/status') {
     requireMethod(req, 'GET');
@@ -609,6 +642,12 @@ async function routeApiRequest(
   if (url.pathname === '/api/connector/prepare-transaction') {
     requireMethod(req, 'POST');
     await handleConnectorPrepareTransaction(req, res, statelessConnectorPreparer);
+    return;
+  }
+
+  if (url.pathname === '/api/connector/read-facts') {
+    requireMethod(req, 'POST');
+    await handleConnectorReadFacts(req, res, store, clock, statelessConnectorReader);
     return;
   }
 
@@ -989,6 +1028,49 @@ async function handleConnectorPrepareTransaction(
   }
 }
 
+async function handleConnectorReadFacts(
+  req: IncomingMessage,
+  res: ServerResponse,
+  store: WorkflowStore,
+  clock: Clock,
+  reader: StatelessConnectorFactsReader,
+): Promise<void> {
+  const session = await sessionFromRequest({ req, store, clock });
+  if (!session) {
+    throw new ApiError(401, 'Sign in required.');
+  }
+  const body = asJsonRecord(await readJsonBody(req), 'connector read-facts body');
+  const connectorId = requiredBodyString(body, 'connectorId');
+  const cluster = requiredCluster(body.cluster);
+  const requestedWallet = typeof body.walletAddress === 'string' ? body.walletAddress.trim() : '';
+  if (requestedWallet && requestedWallet !== session.walletAddress) {
+    throw new ApiError(401, 'Wallet address does not match the signed-in cloud session.');
+  }
+  const capability = body.capability === undefined
+    ? undefined
+    : requiredBodyString(body, 'capability') as ConnectorFactReadInput['capability'];
+  const input: ConnectorReadFactsRequest = {
+    ...(body as unknown as ConnectorFactReadInput),
+    connectorId,
+    cluster,
+    walletAddress: session.walletAddress,
+    ...(capability !== undefined ? { capability } : {}),
+  };
+  try {
+    writeJson(res, 200, await reader(input));
+  } catch (err) {
+    const protocolCode = protocolErrorCode(err);
+    if (protocolCode) {
+      const status = protocolCode === 'invalid_request' ? 400 : protocolCode === 'unauthorized' ? 401 : 502;
+      throw new ApiError(status, err instanceof Error ? redactSecrets(err.message) : 'Connector read failed.');
+    }
+    if (err instanceof AdapterError) {
+      throw new ApiError(err.code === 'unknown_kind' ? 422 : 502, err.message);
+    }
+    throw new ApiError(502, err instanceof Error ? redactSecrets(err.message) : 'Connector read failed.');
+  }
+}
+
 async function handleJupiterSwapOrder(req: IncomingMessage, res: ServerResponse): Promise<void> {
   const body = asJsonRecord(await readJsonBody(req), 'swap order body');
   const inputMint = requiredBodyString(body, 'inputMint');
@@ -1120,6 +1202,13 @@ async function requestBirdeyeForRender(callback: () => Promise<Record<string, un
   }
 }
 
+function protocolErrorCode(err: unknown): string | undefined {
+  if (!err || typeof err !== 'object') return undefined;
+  const record = err as { name?: unknown; code?: unknown };
+  if (record.name !== 'ProtocolError' && typeof record.code !== 'string') return undefined;
+  return typeof record.code === 'string' ? record.code : undefined;
+}
+
 async function requestJupiter(
   url: URL | string,
   init: { method?: 'POST'; body?: Record<string, unknown> } = {},
@@ -1162,6 +1251,53 @@ function jupiterApiKey(): string | undefined {
 
 function solanaConnection(cluster: WorkflowCluster): Connection {
   return new Connection(solanaRpcUrl(cluster), 'confirmed');
+}
+
+function createStatelessConnectorFactsReader(): StatelessConnectorFactsReader {
+  return async ({ cluster, walletAddress, ...input }) => {
+    const rpcUrl = solanaRpcUrl(cluster);
+    const service = new AgentWalletActionService({
+      backend: readOnlyWalletBackend(walletAddress, cluster),
+      config: {
+        ...DEFAULT_CONFIG,
+        cluster,
+        rpcUrl,
+      },
+      connection: new Connection(rpcUrl, 'confirmed'),
+    });
+    return service.connectorReadFacts({
+      ...input,
+      walletAddress,
+    });
+  };
+}
+
+function readOnlyWalletBackend(walletAddress: string, cluster: WorkflowCluster): WalletBackend {
+  return {
+    async capabilities() {
+      return {
+        backend: 'agentic-cloud-readonly',
+        cluster: [cluster],
+        address: walletAddress,
+        supports: {
+          signMessage: false,
+          signTransaction: false,
+          signAndSendTransaction: false,
+          multiSign: false,
+          simulationPreview: false,
+        },
+      };
+    },
+    async getAddress() {
+      return walletAddress;
+    },
+    async submit() {
+      throw new Error('Cloud connector reads cannot request wallet signatures.');
+    },
+    async poll() {
+      throw new Error('Cloud connector reads cannot poll wallet approvals.');
+    },
+  };
 }
 
 function solanaRpcUrl(cluster: WorkflowCluster): string {

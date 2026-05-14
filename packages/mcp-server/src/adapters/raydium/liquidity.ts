@@ -38,6 +38,8 @@ export interface RaydiumAddLiquidityPrepareInput {
   poolId: string;
   poolType?: RaydiumLiquidityPoolType;
   positionMint?: string;
+  amount?: string;
+  amountSide?: 'tokenA' | 'tokenB';
   tokenAAmount?: string;
   tokenBAmount?: string;
   maxTokenAAmount?: string;
@@ -82,10 +84,12 @@ export const raydiumAddLiquidityAction: AdapterAction<RaydiumAddLiquidityPrepare
     const poolType = parsePoolType(input.poolType);
     const positionMint = optionalPublicKey(input.positionMint, 'positionMint');
     const slippageBps = validateSlippageBps(input.slippageBps, ctx.config.mainnet.maxSlippageBps);
+    const amounts = normalizeAddLiquidityAmounts(input);
     const normalized = {
       ...input,
       poolType,
       positionMint,
+      ...amounts,
     };
     validateAddAmounts(normalized);
     const snapshot = await getRaydiumPoolSnapshot(ctx, { poolId, poolType });
@@ -96,8 +100,8 @@ export const raydiumAddLiquidityAction: AdapterAction<RaydiumAddLiquidityPrepare
       poolId,
       poolType,
       ...(positionMint !== undefined && { positionMint }),
-      ...(input.tokenAAmount !== undefined && { tokenAAmount: input.tokenAAmount }),
-      ...(input.tokenBAmount !== undefined && { tokenBAmount: input.tokenBAmount }),
+      ...(amounts.tokenAAmount !== undefined && { tokenAAmount: amounts.tokenAAmount }),
+      ...(amounts.tokenBAmount !== undefined && { tokenBAmount: amounts.tokenBAmount }),
       ...(input.maxTokenAAmount !== undefined && { maxTokenAAmount: input.maxTokenAAmount }),
       ...(input.maxTokenBAmount !== undefined && { maxTokenBAmount: input.maxTokenBAmount }),
       ...(input.lowerTick !== undefined && { lowerTick: input.lowerTick }),
@@ -117,8 +121,9 @@ export const raydiumAddLiquidityAction: AdapterAction<RaydiumAddLiquidityPrepare
       poolId,
       poolType,
       ...(positionMint !== undefined && { positionMint }),
-      ...(input.tokenAAmount !== undefined && { tokenAAmount: input.tokenAAmount }),
-      ...(input.tokenBAmount !== undefined && { tokenBAmount: input.tokenBAmount }),
+      amountSide: amounts.amountSide,
+      ...(amounts.tokenAAmount !== undefined && { tokenAAmount: amounts.tokenAAmount }),
+      ...(amounts.tokenBAmount !== undefined && { tokenBAmount: amounts.tokenBAmount }),
       ...(input.maxTokenAAmount !== undefined && { maxTokenAAmount: input.maxTokenAAmount }),
       ...(input.maxTokenBAmount !== undefined && { maxTokenBAmount: input.maxTokenBAmount }),
       ...(input.lowerTick !== undefined && { lowerTick: input.lowerTick }),
@@ -382,3 +387,20 @@ export const raydiumCollectFeesAction: AdapterAction<RaydiumCollectFeesPrepareIn
     };
   },
 };
+
+function normalizeAddLiquidityAmounts(input: RaydiumAddLiquidityPrepareInput): {
+  amountSide: 'tokenA' | 'tokenB';
+  tokenAAmount?: string;
+  tokenBAmount?: string;
+} {
+  const amountSide = input.amountSide === 'tokenB' ? 'tokenB' : 'tokenA';
+  const tokenAAmount = input.tokenAAmount?.trim() ||
+    (amountSide === 'tokenA' ? input.amount?.trim() : undefined);
+  const tokenBAmount = input.tokenBAmount?.trim() ||
+    (amountSide === 'tokenB' ? input.amount?.trim() : undefined);
+  return {
+    amountSide,
+    ...(tokenAAmount ? { tokenAAmount } : {}),
+    ...(tokenBAmount ? { tokenBAmount } : {}),
+  };
+}

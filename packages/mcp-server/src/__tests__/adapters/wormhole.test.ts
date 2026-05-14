@@ -7,6 +7,7 @@ import {
 } from '../../adapters/wormhole/index.js';
 import {
   describeWormholeUnavailableReason,
+  isWormholeConfigured,
   resetWormholeClientFactory,
   setWormholeClientFactory,
   type WormholeBuildRedeemInput,
@@ -19,6 +20,7 @@ import {
   type WormholeStatusInput,
   type WormholeTransferStatus,
 } from '../../adapters/wormhole/client.js';
+import { buildWormholeSdkClient } from '../../adapters/wormhole/sdkClient.js';
 import {
   wormholeRecoverOrResumeAction,
   wormholeRedeemAction,
@@ -112,6 +114,13 @@ describe('Wormhole adapter', () => {
       }),
     ]);
     expect(describeWormholeUnavailableReason()).toContain('@wormhole-foundation/sdk');
+  });
+
+  it('reports configured once the real SDK client factory is wired', () => {
+    expect(isWormholeConfigured()).toBe(false);
+    setWormholeClientFactory(() => buildWormholeSdkClient({ rpcUrl: 'https://api.fake' }));
+    expect(isWormholeConfigured()).toBe(true);
+    expect(describeWormholeUnavailableReason()).toBeUndefined();
   });
 
   it('prepares and executes a transfer with fresh quote, fee cap, and execution refresh', async () => {

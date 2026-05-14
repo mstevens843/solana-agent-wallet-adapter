@@ -3,6 +3,7 @@ import { Connection, PublicKey, SystemProgram, Transaction, TransactionInstructi
 
 import {
   assertPlanGuardrails,
+  completedFromPlanProof,
   finalizationRequirementForAction,
   isActiveApprovalStatus,
   isTerminalApprovalStatus,
@@ -228,6 +229,14 @@ export class WorkflowService {
     }
 
     await this.store.savePlan(session.walletAddress, updated);
+    if (updated.status === 'signed' && updated.signature) {
+      const completed = completedFromPlanProof(updated);
+      await this.store.saveCompleted(session.walletAddress, completed);
+      await this.audit(session, 'plan.completed', 'completed', completed.id, {
+        planDraftId: updated.id,
+        status: updated.status,
+      });
+    }
     if (guardrailReport) {
       await this.audit(session, 'plan.guardrail.checked', 'plan', updated.id, guardrailAuditMetadata(guardrailReport));
     }
@@ -1441,6 +1450,10 @@ function amountFromParams(params: JsonObject, kind?: string): string | undefined
       return firstStringFromJson(params, ['lstAmount', 'inputAmount', 'amount']);
     case 'sanctum_remove_infinity_liquidity':
       return firstStringFromJson(params, ['infAmount', 'inputAmount', 'amount']);
+    case 'meteora_add_liquidity':
+      return meteoraAddLiquidityAmountFromParams(params);
+    case 'meteora_remove_liquidity':
+      return firstStringFromJson(params, ['amount', 'liquidityAmount', 'liquidityPercent', 'liquidityBps']);
     default:
       return firstStringFromJson(params, ['amount', 'amountSol', 'solAmount', 'inputAmount', 'msolAmount', 'jitoSolAmount']);
   }
@@ -1472,9 +1485,49 @@ function tokenFromParams(params: JsonObject, kind?: string): string | undefined 
       return `${firstStringFromJson(params, ['inputSymbol', 'inputMint']) ?? 'input'} to INF`;
     case 'sanctum_remove_infinity_liquidity':
       return `INF to ${firstStringFromJson(params, ['outputSymbol', 'outputMint']) ?? 'output'}`;
+    case 'meteora_add_liquidity':
+    case 'meteora_remove_liquidity':
+    case 'meteora_claim_fees':
+    case 'meteora_claim_rewards':
+    case 'meteora_close_position':
+      return meteoraPoolLabelFromParams(params);
     default:
       return tokenRouteFromSymbols(params) ?? firstStringFromJson(params, ['token', 'inputToken', 'outputToken', 'expectedToken']);
   }
+}
+
+function meteoraAddLiquidityAmountFromParams(params: JsonObject): string | undefined {
+  const tokenXAmount = stringFromJson(params, 'tokenXAmount');
+  const tokenYAmount = stringFromJson(params, 'tokenYAmount');
+  const tokenX = meteoraTokenSymbolFromParams(params, 'x') ?? 'token X';
+  const tokenY = meteoraTokenSymbolFromParams(params, 'y') ?? 'token Y';
+  const parts = [
+    tokenXAmount ? `${tokenXAmount} ${tokenX}` : '',
+    tokenYAmount ? `${tokenYAmount} ${tokenY}` : '',
+  ].filter(Boolean);
+  return parts.length ? parts.join(' + ') : undefined;
+}
+
+function meteoraPoolLabelFromParams(params: JsonObject): string | undefined {
+  const explicit = firstStringFromJson(params, ['poolName', 'poolAddressLabel']);
+  if (explicit) return /\bDLMM\b/i.test(explicit) ? explicit : `${explicit} DLMM`;
+  const tokenX = meteoraTokenSymbolFromParams(params, 'x');
+  const tokenY = meteoraTokenSymbolFromParams(params, 'y');
+  if (tokenX && tokenY) return `${tokenX}-${tokenY} DLMM`;
+  return stringFromJson(params, 'poolAddress');
+}
+
+function meteoraTokenSymbolFromParams(params: JsonObject, side: 'x' | 'y'): string | undefined {
+  const symbol = stringFromJson(params, side === 'x' ? 'tokenXSymbol' : 'tokenYSymbol');
+  if (symbol) return symbol;
+  const label = firstStringFromJson(params, ['poolName', 'poolAddressLabel']);
+  if (!label) return undefined;
+  const pair = label
+    .replace(/\s+DLMM\b.*$/i, '')
+    .replace(/\s+pool\b.*$/i, '')
+    .trim();
+  const parts = pair.split('-').map((part) => part.trim()).filter(Boolean);
+  return side === 'x' ? parts[0] : parts[1];
 }
 
 function recipientFromParams(params: JsonObject): string | undefined {

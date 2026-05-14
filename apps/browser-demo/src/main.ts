@@ -219,6 +219,7 @@ import {
   missingDependencyLabel,
   registerBuiltInConnectorOptionProviders,
   type ConnectorOption,
+  type ConnectorOptionMeta,
   type ConnectorOptionProvider,
 } from './connectorOptionProviders.js';
 
@@ -272,7 +273,7 @@ type CommandPreferenceSnapshotAction =
 type ArtifactView = 'create' | 'signed';
 type OneTimePlanView = 'create' | 'review';
 type RecurringView = 'create' | 'active';
-type ToastKind = 'success' | 'error' | 'pending';
+type ToastKind = 'success' | 'error' | 'pending' | 'info';
 type GeneratedPlanStatus = 'draft' | 'signed' | 'queued' | 'archived' | 'failed';
 type RuntimePathId = 'exec' | 'install' | 'desktop';
 type AppRoute = (typeof ROUTE_PATHS)[number];
@@ -1039,7 +1040,19 @@ interface Toast {
   message: string;
   linkHref?: string;
   linkLabel?: string;
+  key?: string;
+  dismissAfterMs?: number;
 }
+
+interface ToastOptions {
+  linkHref?: string;
+  linkLabel?: string;
+  key?: string;
+  dismissAfterMs?: number;
+}
+
+const LOCAL_WORKSPACE_BOUNDARY_TOAST_KEY = 'local-workspace-boundary';
+const LOCAL_WORKSPACE_REMINDER_DISMISS_MS = 7000;
 
 interface AiPlannerConfirmationState {
   status: AiPlannerConfirmationStatus;
@@ -1115,6 +1128,7 @@ interface GeneratedPlanRecord {
   failureLabel?: string;
   agentReview?: AgentPlanReviewState;
   agentOverride?: AgentReviewOverride;
+  metadata?: JsonObject;
   workflowSource?: WorkflowRecordSource;
   template?: boolean;
   templateLabel?: string;
@@ -1439,6 +1453,7 @@ interface CompletedPlanRecord {
   copyPayload: string;
   trustBundlePayload?: string;
   detailRows: Array<[string, string]>;
+  metadata?: JsonObject;
   workflowSource?: WorkflowRecordSource;
   decisionProofVerified?: boolean;
   decisionProofMessage?: string;
@@ -9718,6 +9733,7 @@ function generatedPlanCard(record: GeneratedPlanRecord): string {
           <div class="review-plan-meta">
             <span class="status-pill ${generatedPlanStatusTone(record)}">${escapeHtml(generatedPlanStatusLabel(record))}</span>
             ${storageBadgeHtml(generatedPlanStorageBadge(record))}
+            ${generatedPlanConnectorChip(displayRecord)}
             <span>${escapeHtml(record.source === 'ai' ? 'AI draft' : 'Template draft')}</span>
             ${generatedPlanFailurePill(record)}
             <span>${escapeHtml(formatDateTime(record.createdAt))}</span>
@@ -9795,7 +9811,23 @@ function generatedPlanErrorNotice(message: string): string {
 }
 
 function generatedPlanReviewTitle(record: GeneratedPlanRecord): string {
+  const connectorDisplay = CONNECTOR_APPROVAL_ACTION_TYPES.has(record.plan.actionType)
+    ? connectorActionDisplayParts(record.plan.actionType, record.plan.parameters)
+    : undefined;
+  if (connectorDisplay?.title) return connectorDisplay.title;
   return record.plan.templateTitle || record.plan.intent;
+}
+
+function generatedPlanConnectorChip(record: GeneratedPlanRecord): string {
+  const connector = selectedConnectorForDraftParameters(record.plan.parameters) ??
+    findProtocolConnectorByInput(record.plan.parameters.protocol || record.plan.parameters.dapp || record.plan.route);
+  if (!connector) return '';
+  return `
+    <span class="review-plan-meta-pill connector-meta-chip">
+      ${brandLogo(protocolConnectorLogoId(connector.id), 'connector-meta-logo')}
+      ${escapeHtml(connector.name)}
+    </span>
+  `;
 }
 
 function generatedPlanFailurePill(record: GeneratedPlanRecord): string {
@@ -9844,7 +9876,7 @@ const CONNECTOR_CONTEXT_GENERIC_FIELD_IDS = new Set<string>([
   'memo', 'reason', 'note',
   'recipient', 'recipientAddress', 'settlementWallet',
   'slippageBps',
-  'priceSol', 'maxPriceSol', 'maxPricePerNftSol',
+  'priceSol', 'bidPriceSol', 'maxEscrowSol', 'maxPriceSol', 'maxPricePerNftSol',
   'count', 'cadence', 'startAt', 'maxOccurrences',
   'inputToken', 'outputToken',
   'cluster', 'walletAddress',
@@ -9912,6 +9944,10 @@ function recurringPaymentConnectorContextLabel(payment: RecurringPayment): strin
 }
 
 function completedPlanConnectorContextLabel(plan: CompletedPlanRecord): string {
+  const connectorRead = completedPlanConnectorRead(plan);
+  if (connectorRead) {
+    return stringFromJsonLike(connectorRead.connectorName) || 'Pyth';
+  }
   if (plan.actionId) {
     const action = state.preparedActions.find((entry) => entry.id === plan.actionId);
     if (action) {
@@ -9970,6 +10006,14 @@ function reviewPlanMetric(plan: AgentPlan): { primary: string; secondary: string
     return {
       primary: planAmountSummary(plan),
       secondary: planRecipientOrRoute(plan),
+    };
+  }
+  if (CONNECTOR_APPROVAL_ACTION_TYPES.has(plan.actionType)) {
+    const amount = planAmountSummary(plan);
+    const connectorDisplay = connectorActionDisplayParts(plan.actionType, plan.parameters);
+    return {
+      primary: amount === 'n/a' ? compactRiskLabel(plan.risk) : amount,
+      secondary: compactSentence(connectorDisplay?.title || plan.templateTitle || plan.actionType.replace(/_/g, ' '), 56),
     };
   }
   if (plan.actionType === 'manual_review') {
@@ -10697,14 +10741,92 @@ function planAmountSummary(plan: AgentPlan): string {
     const amount = planParameter(plan, ['amount', 'inputAmount', 'plannedAmount']) || 'Amount';
     return `${amount} ${tokenDisplayLabel(input)} -> ${tokenDisplayLabel(output)}`;
   }
+  if (CONNECTOR_APPROVAL_ACTION_TYPES.has(plan.actionType)) {
+    return connectorPlanAmountInfo(plan)?.label ?? 'n/a';
+  }
   const amount = planParameter(plan, ['amountSol', 'amount', 'plannedAmount', 'maxAmount']) || 'n/a';
   const token = planParameter(plan, ['token', 'inputToken']) || (plan.actionType === 'transfer_sol' ? 'SOL' : '');
   return token ? `${amount} ${tokenDisplayLabel(token)}` : amount;
 }
 
 function planAmountTokenCopyActions(plan: AgentPlan): SummaryCopyAction[] {
+  if (CONNECTOR_APPROVAL_ACTION_TYPES.has(plan.actionType)) {
+    const token = connectorPlanAmountInfo(plan)?.token ?? '';
+    return token ? tokenCopyActions(token, 'Copy token', 'Token mint') : [];
+  }
   const token = planParameter(plan, ['token', 'inputToken']) || (plan.actionType === 'transfer_sol' ? 'SOL' : '');
   return token ? tokenCopyActions(token, 'Copy token', 'Token mint') : [];
+}
+
+function connectorPlanAmountInfo(plan: AgentPlan): ConnectorActionAmountInfo | undefined {
+  const solAmountKey = [
+    'bidPriceSol',
+    'priceSol',
+    'maxPriceSol',
+    'maxPricePerNftSol',
+    'amountSol',
+    'solAmount',
+    'maxEscrowSol',
+  ].find((key) => planParameter(plan, [key]));
+  if (solAmountKey) {
+    const amount = planParameter(plan, [solAmountKey]);
+    return {
+      amount,
+      label: `${amount} SOL`,
+      token: 'SOL',
+      marketToken: 'SOL',
+    };
+  }
+  const amount = planParameter(plan, [
+    'amount',
+    'inputAmount',
+    'plannedAmount',
+    'maxAmount',
+    'collateralAmount',
+    'borrowAmount',
+    'makingAmount',
+    'takingAmount',
+    'liquidityAmount',
+    'shares',
+    'percentage',
+  ]);
+  if (!amount) return undefined;
+  const token = connectorPlanAmountToken(plan);
+  const displayToken = token ? connectorActionAmountTokenLabel(token.value) : '';
+  return {
+    amount,
+    label: displayToken && !/[a-z%]/i.test(amount) ? `${amount} ${displayToken}` : amount,
+    ...(displayToken ? { token: displayToken } : {}),
+    ...(token?.marketEligible ? { marketToken: token.value } : {}),
+  };
+}
+
+function connectorPlanAmountToken(plan: AgentPlan): ConnectorActionAmountToken | undefined {
+  const params = plan.parameters;
+  const tokenKeys = [
+    'tokenSymbol',
+    'inputSymbol',
+    'token',
+    'inputToken',
+    'assetMint',
+    'mint',
+    'mintAddress',
+    'inputMint',
+    'lstMint',
+    'inputLstMint',
+    'governingTokenMint',
+  ];
+  for (const key of tokenKeys) {
+    const value = planParameter(plan, [key]);
+    if (value) return { value, marketEligible: true };
+  }
+  for (const key of ['bankAddress', 'reserveAddress']) {
+    const label = params[`${key}Label`]?.trim();
+    if (label) return { value: label, marketEligible: true };
+    const value = planParameter(plan, [key]);
+    if (value && !looksLikeMintAddress(value)) return { value, marketEligible: true };
+  }
+  return undefined;
 }
 
 function planRecipientOrRoute(plan: AgentPlan): string {
@@ -10712,6 +10834,10 @@ function planRecipientOrRoute(plan: AgentPlan): string {
   if (recipient) return recipientDisplayLabel(recipient);
   if (plan.actionType === 'swap') {
     return tokenRouteDisplaySummary(plan.parameters.inputToken || 'input', plan.parameters.outputToken || 'output').value;
+  }
+  if (CONNECTOR_APPROVAL_ACTION_TYPES.has(plan.actionType)) {
+    const connectorDisplay = connectorActionDisplayParts(plan.actionType, plan.parameters);
+    return connectorDisplay?.selectionLabel || connectorDisplay?.operationLabel || plan.route;
   }
   return plan.route;
 }
@@ -11473,7 +11599,7 @@ function templateFieldInput(fieldDef: AgentPlanTemplateField): string {
   const template = selectedTemplate();
   const value = templateFieldValue(fieldDef.id);
   const disabled = state.busy ? 'disabled' : '';
-  const label = `${fieldDef.label}${fieldDef.required ? ' *' : ''}`;
+  const label = `${templateFieldDisplayLabel(fieldDef)}${fieldDef.required ? ' *' : ''}`;
   const error = fieldError(fieldDef.id);
   if (connectorCreateOwnsTemplateField(template, fieldDef.id)) {
     return '';
@@ -11519,16 +11645,13 @@ function templateFieldInput(fieldDef: AgentPlanTemplateField): string {
     `;
   }
   if (fieldDef.type === 'select' && fieldDef.options?.length) {
+    const fieldLabel = templateFieldDisplayLabel(fieldDef);
     return `
       <label class="field compact planner-field ${state.templateFieldErrors[fieldDef.id] ? 'field-error' : ''}">
         <span>${escapeHtml(label)}</span>
         ${selectPicker({
           value,
-          options: fieldDef.options.map((option) => ({
-            value: option,
-            label: option,
-            meta: fieldDef.label,
-          })),
+          options: templateSelectPickerOptions(fieldDef, fieldLabel),
           attrs: { 'data-template-field': fieldDef.id },
           disabled: state.busy,
         })}
@@ -11543,6 +11666,95 @@ function templateFieldInput(fieldDef: AgentPlanTemplateField): string {
       ${error}
     </label>
   `;
+}
+
+function templateFieldDisplayLabel(fieldDef: AgentPlanTemplateField): string {
+  const liquidityLabel = liquidityAmountFieldRuntimeLabel(fieldDef.id);
+  if (liquidityLabel) return liquidityLabel;
+  const meteoraLabel = meteoraAmountFieldRuntimeLabel(fieldDef.id);
+  return meteoraLabel ?? fieldDef.label;
+}
+
+function templateSelectPickerOptions(
+  fieldDef: AgentPlanTemplateField,
+  fieldLabel: string,
+): SelectPickerOption[] {
+  if (fieldDef.id === 'amountSide') {
+    return [
+      {
+        value: 'tokenA',
+        label: selectedLiquidityPoolTokenSymbol('tokenA') ?? 'Token A',
+        meta: 'Deposit side',
+        detail: 'Enter this token amount; approval may also spend the paired pool token.',
+      },
+      {
+        value: 'tokenB',
+        label: selectedLiquidityPoolTokenSymbol('tokenB') ?? 'Token B',
+        meta: 'Deposit side',
+        detail: 'Enter this token amount; approval may also spend the paired pool token.',
+      },
+    ];
+  }
+  return (fieldDef.options ?? []).map((option) => ({
+    value: option,
+    label: option,
+    meta: fieldLabel,
+  }));
+}
+
+function liquidityAmountFieldRuntimeLabel(fieldId: string): string | undefined {
+  if (fieldId !== 'tokenAAmount' && fieldId !== 'tokenBAmount') return undefined;
+  const side = fieldId === 'tokenAAmount' ? 'tokenA' : 'tokenB';
+  const symbol = selectedLiquidityPoolTokenSymbol(side);
+  return symbol ? `${symbol} amount` : undefined;
+}
+
+function selectedLiquidityPoolTokenSymbol(side: 'tokenA' | 'tokenB'): string | undefined {
+  const metaKey = side === 'tokenA' ? 'tokenASymbol' : 'tokenBSymbol';
+  const selected = selectedLiquidityPoolOption();
+  const fromOption = selected?.meta?.[metaKey]?.trim();
+  if (fromOption) return fromOption;
+  for (const fieldId of ['poolId', 'whirlpoolAddress'] as const) {
+    const fromState = state.templateFields[`${fieldId}${capitalizeMetaKey(metaKey)}`]?.trim();
+    if (fromState) return fromState;
+  }
+  const label = selected?.label || state.templateFields.poolIdLabel || state.templateFields.whirlpoolAddressLabel || '';
+  return liquidityPairSymbolFromLabel(label, side);
+}
+
+function selectedLiquidityPoolOption(
+  parameters: Record<string, string> = cascadingFieldValues(),
+): ConnectorOption | undefined {
+  const template = selectedTemplate();
+  const fields = effectiveTemplateFieldsForParameters(template, parameters);
+  for (const fieldId of ['poolId', 'whirlpoolAddress'] as const) {
+    const field = fields.find((fieldDef) => fieldDef.id === fieldId && fieldDef.cascading);
+    if (!field) continue;
+    const value = parameters[fieldId] ?? '';
+    const option = cascadingFieldCachedOption(field, value, parameters);
+    if (option) return option;
+  }
+  return undefined;
+}
+
+function liquidityPairSymbolFromLabel(label: string, side: 'tokenA' | 'tokenB'): string | undefined {
+  const pair = label
+    .replace(/\s+(?:CPMM|CLMM|whirlpool|pool)\b.*$/i, '')
+    .trim();
+  const parts = pair.split(/[/-]/).map((part) => part.trim()).filter(Boolean);
+  const value = side === 'tokenA' ? parts[0] : parts[1];
+  return value || undefined;
+}
+
+function capitalizeMetaKey(key: string): string {
+  return key.replace(/^[a-z]/, (match) => match.toUpperCase());
+}
+
+function meteoraAmountFieldRuntimeLabel(fieldId: string): string | undefined {
+  if (fieldId !== 'tokenXAmount' && fieldId !== 'tokenYAmount') return undefined;
+  const side = fieldId === 'tokenXAmount' ? 'x' : 'y';
+  const symbol = selectedMeteoraPoolTokenSymbol(side);
+  return symbol ? `${symbol} amount` : undefined;
 }
 
 function connectorCreateOwnsTemplateField(template: AgentPlanTemplate, fieldId: string): boolean {
@@ -11704,6 +11916,25 @@ function connectorSubActionPicker(form: ConnectorActionForm): string {
   if (!form.subActions) return '';
   const group = form.subActions;
   const current = state.templateFields[group.fieldId]?.trim() || group.defaultId || group.options[0]?.id || '';
+  if (group.display === 'select') {
+    return `
+      <label class="field compact planner-field connector-subaction-row connector-subaction-select">
+        <span class="connector-subaction-label">${escapeHtml(group.label)}</span>
+        ${selectPicker({
+          value: current,
+          options: group.options.map((option) => ({
+            value: option.id,
+            label: option.label,
+            meta: group.label,
+            detail: option.description,
+          })),
+          attrs: { 'data-template-field': group.fieldId },
+          disabled: state.busy,
+          className: 'connector-subaction-picker',
+        })}
+      </label>
+    `;
+  }
   const chips = group.options
     .map((option) => {
       const active = option.id === current ? 'active' : '';
@@ -11929,6 +12160,56 @@ function dependencyFieldLabel(fieldId: string | undefined): string {
 function cascadingFieldValues(): Record<string, string> {
   const template = selectedTemplate();
   return { ...defaultTemplateFieldValues(template), ...state.templateFields };
+}
+
+function cascadingFieldCachedOption(
+  fieldDef: AgentPlanTemplateField,
+  value: string,
+  fieldValues: Record<string, string> = cascadingFieldValues(),
+): ConnectorOption | undefined {
+  const cascading = fieldDef.cascading;
+  if (!cascading || !value.trim()) return undefined;
+  const cacheKey = connectorOptionCacheKey(
+    cascading.providerId,
+    cascading.dependsOn,
+    fieldValues,
+    walletAddressForCascading(),
+    state.cluster,
+  );
+  const cached = state.templateFieldOptionCache[cacheKey];
+  return cached?.options.find((option) => option.value === value);
+}
+
+function selectedMeteoraPoolOption(
+  parameters: Record<string, string> = cascadingFieldValues(),
+): ConnectorOption | undefined {
+  const template = selectedTemplate();
+  const poolField = effectiveTemplateFieldsForParameters(template, parameters)
+    .find((fieldDef) => fieldDef.id === 'poolAddress' && fieldDef.cascading?.providerId === 'meteora.pool');
+  if (!poolField) return undefined;
+  return cascadingFieldCachedOption(poolField, parameters.poolAddress ?? '', parameters);
+}
+
+function selectedMeteoraPoolTokenSymbol(side: 'x' | 'y'): string | undefined {
+  const option = selectedMeteoraPoolOption();
+  const metaKey = side === 'x' ? 'tokenXSymbol' : 'tokenYSymbol';
+  const stateKey = metaKey as keyof typeof state.templateFields;
+  const fromMeta = option?.meta?.[metaKey]?.trim();
+  if (fromMeta) return fromMeta;
+  const fromState = state.templateFields[stateKey]?.trim();
+  if (fromState) return fromState;
+  const label = option?.label || state.templateFields.poolAddressLabel || '';
+  return meteoraPairSymbolFromLabel(label, side);
+}
+
+function meteoraPairSymbolFromLabel(label: string, side: 'x' | 'y'): string | undefined {
+  const pair = label
+    .replace(/\s+DLMM\b.*$/i, '')
+    .replace(/\s+pool\b.*$/i, '')
+    .trim();
+  const parts = pair.split('-').map((part) => part.trim()).filter(Boolean);
+  const value = side === 'x' ? parts[0] : parts[1];
+  return value || undefined;
 }
 
 function humanizeFieldId(fieldId: string): string {
@@ -13281,7 +13562,7 @@ function approvalInboxPanel(): string {
 function completedPlansPanel(): string {
   const plans = completedPlanRecords();
   const visiblePlans = filteredCompletedPlans(plans);
-  const receiptCount = plans.filter((plan) => plan.actionId).length;
+  const receiptCount = plans.filter(completedPlanHasReceipt).length;
   const proofCount = plans.filter((plan) => Boolean(plan.signature)).length;
   const recurringCount = plans.filter((plan) => plan.kind === 'recurring').length;
   return `
@@ -13422,7 +13703,7 @@ function completedPlanCard(plan: CompletedPlanRecord): string {
       (completedPlanIsEndedSchedule(plan) && plan.recurringId && !isBrowserWorkflowId(plan.recurringId))),
   );
   const evidenceBadge = evidenceBadgeForCompletedPlan(plan);
-  const copyLabel = plan.actionId ? 'Copy receipt JSON' : plan.signature ? 'Copy proof JSON' : 'Copy schedule JSON';
+  const copyLabel = completedPlanHasReceipt(plan) ? 'Copy receipt JSON' : plan.signature ? 'Copy proof JSON' : 'Copy schedule JSON';
   const focused = state.lastCompletedFocusId === plan.id || Boolean(plan.actionId && state.lastCompletedFocusId === plan.actionId);
   const decisionProofBlock = decisionProofRow(plan);
   const historyLabel = plan.kind === 'recurring' ? 'Repeat payment done' : 'One-time done';
@@ -13501,6 +13782,14 @@ function completedPlanHero(plan: CompletedPlanRecord): string {
 }
 
 function completedPlanMetric(plan: CompletedPlanRecord): { primary: string; secondary: string } {
+  const connectorRead = completedPlanConnectorRead(plan);
+  const readSummary = stringFromJsonLike(connectorRead?.resultSummary);
+  if (readSummary) {
+    return {
+      primary: readSummary,
+      secondary: [stringFromJsonLike(connectorRead?.feedLabel), 'Pyth oracle'].filter(Boolean).join(' - '),
+    };
+  }
   const amount = completedPlanAmountLabel(plan);
   const swap = parseCompletedSwapAmount(amount);
   if (swap) {
@@ -13585,6 +13874,15 @@ function completedPlanRecordRef(plan: CompletedPlanRecord): CompletedPlanRecordR
       copyName: 'Solscan transaction link',
     };
   }
+  if (completedPlanConnectorRead(plan)) {
+    return {
+      label: 'Receipt',
+      value: short(plan.id),
+      copyValue: plan.copyPayload,
+      copyLabel: 'Copy receipt',
+      copyName: 'Connector read receipt',
+    };
+  }
   if (plan.signature) return {
     label: 'Proof only',
     value: short(plan.signature),
@@ -13599,7 +13897,27 @@ function completedPlanRecordRef(plan: CompletedPlanRecord): CompletedPlanRecordR
 
 function completedPlanSummaryGrid(plan: CompletedPlanRecord): string {
   const record = completedPlanRecordRef(plan);
-  const rows: Array<{ label: string; value: string; title?: string; copyValue?: string; tone?: 'amount'; copyLabel?: string; copyName?: string; copyActions?: SummaryCopyAction[] }> = [
+  const connectorRead = completedPlanConnectorRead(plan);
+  const rows: Array<{ label: string; value: string; title?: string; copyValue?: string; tone?: 'amount'; copyLabel?: string; copyName?: string; copyActions?: SummaryCopyAction[] }> = connectorRead
+    ? [
+        { label: 'Question', value: pythQuestionDisplayLabel(stringFromJsonLike(connectorRead.question)) },
+        {
+          label: 'Result',
+          value: stringFromJsonLike(connectorRead.resultSummary) || completedPlanAmountLabel(plan),
+          title: stringFromJsonLike(connectorRead.resultSummary) || completedPlanAmountLabel(plan),
+          tone: 'amount',
+        },
+        {
+          label: 'Feed',
+          value: stringFromJsonLike(connectorRead.feedLabel) || stringFromJsonLike(connectorRead.symbol) || short(stringFromJsonLike(connectorRead.priceFeedId)),
+          title: stringFromJsonLike(connectorRead.priceFeedId) || stringFromJsonLike(connectorRead.feedLabel) || stringFromJsonLike(connectorRead.symbol),
+          copyValue: stringFromJsonLike(connectorRead.priceFeedId) || undefined,
+          copyLabel: stringFromJsonLike(connectorRead.priceFeedId) ? 'Copy feed' : undefined,
+          copyName: 'Pyth price feed',
+        },
+        { label: 'Completed', value: formatDateTime(plan.completedAt) },
+      ]
+    : [
     { label: 'Wallet', value: plan.walletAddress ? short(plan.walletAddress) : 'No wallet', title: plan.walletAddress || 'No wallet', copyValue: plan.walletAddress || undefined },
     {
       label: 'Amount',
@@ -17216,10 +17534,20 @@ async function runSignAgentPlan(): Promise<void> {
     }
     const plan = planWithRuntimeTokenLabels(state.agentPlan);
     state.agentPlan = plan;
-    const signature = await signAgentPlanProof(plan, 'Plan review proof');
     const activeRecord = generatedPlanById(state.selectedGeneratedPlanId);
+    const proof = await signGeneratedPlanProof(activeRecord, plan);
+    const signature = proof.signature;
     state.agentSignature = signature;
-    await updateActiveGeneratedPlanRecord({ signature, status: 'signed', error: undefined, failureLabel: undefined });
+    await updateActiveGeneratedPlanRecord({
+      signature,
+      status: 'signed',
+      error: undefined,
+      failureLabel: undefined,
+      ...(proof.metadata ? { metadata: proof.metadata } : {}),
+    });
+    if (activeRecord?.workflowSource === 'cloud') {
+      await refreshCloudWorkspaceData().catch(() => undefined);
+    }
     if (activeRecord && samePlan(planWithRuntimeTokenLabels(activeRecord.plan), plan)) {
       if (state.generatedPlanAuditId === activeRecord.id) {
         state.generatedPlanAuditId = '';
@@ -17810,8 +18138,18 @@ async function runSignGeneratedPlan(planId: string): Promise<void> {
       throw new Error('Restore this plan before signing a review proof.');
     }
     const plan = planWithRuntimeTokenLabels(record.plan);
-    const signature = await signAgentPlanProof(plan, 'Plan review proof');
-    await updateGeneratedPlan(planId, { signature, status: 'signed', error: undefined, failureLabel: undefined });
+    const proof = await signGeneratedPlanProof(record, plan);
+    const signature = proof.signature;
+    await updateGeneratedPlan(planId, {
+      signature,
+      status: 'signed',
+      error: undefined,
+      failureLabel: undefined,
+      ...(proof.metadata ? { metadata: proof.metadata } : {}),
+    });
+    if (record.workflowSource === 'cloud') {
+      await refreshCloudWorkspaceData().catch(() => undefined);
+    }
     if (state.generatedPlanAuditId === planId) {
       state.generatedPlanAuditId = '';
     }
@@ -17948,14 +18286,16 @@ async function saveGeneratedPlan(
 
 async function updateGeneratedPlan(
   planId: string,
-  patch: Partial<Pick<GeneratedPlanRecord, 'status' | 'signature' | 'preparedActionId' | 'error' | 'failureLabel' | 'agentReview' | 'agentOverride'>>,
+  patch: Partial<Pick<GeneratedPlanRecord, 'status' | 'signature' | 'preparedActionId' | 'error' | 'failureLabel' | 'agentReview' | 'agentOverride' | 'metadata'>>,
 ): Promise<void> {
   const existing = generatedPlanById(planId);
   if (existing?.workflowSource === 'cloud' && patch.error === undefined && patch.failureLabel === undefined && patch.status !== 'failed') {
-    const metadata = patch.agentReview !== undefined
-      ? {
-          agentReview: patch.agentReview,
-        }
+    const metadata = patch.metadata !== undefined || patch.agentReview !== undefined
+      ? toJsonObject({
+          ...(existing.metadata ?? {}),
+          ...(patch.metadata ?? {}),
+          ...(patch.agentReview !== undefined ? { agentReview: patch.agentReview } : {}),
+        })
       : undefined;
     const cloudPlan = parseCloudPlanResponse(await cloudRequest(`/api/plans/${encodeURIComponent(planId)}`, {
       method: 'PATCH',
@@ -18009,7 +18349,7 @@ function markGeneratedPlanQueuedLocally(planId: string, preparedActionId: string
 }
 
 async function updateActiveGeneratedPlanRecord(
-  patch: Partial<Pick<GeneratedPlanRecord, 'status' | 'signature' | 'preparedActionId' | 'error' | 'failureLabel' | 'agentReview' | 'agentOverride'>>,
+  patch: Partial<Pick<GeneratedPlanRecord, 'status' | 'signature' | 'preparedActionId' | 'error' | 'failureLabel' | 'agentReview' | 'agentOverride' | 'metadata'>>,
 ): Promise<void> {
   if (!state.agentPlan) return;
   const record = generatedPlanById(state.selectedGeneratedPlanId);
@@ -18198,9 +18538,49 @@ function filteredCompletedPlans(records = completedPlanRecords()): CompletedPlan
     case 'proofs':
       return records.filter((record) => Boolean(record.signature));
     case 'receipts':
-      return records.filter((record) => Boolean(record.actionId || record.txid));
+      return records.filter(completedPlanHasReceipt);
     case 'all':
       return records;
+  }
+}
+
+function completedPlanHasReceipt(record: CompletedPlanRecord): boolean {
+  return Boolean(record.actionId || record.txid || completedPlanConnectorRead(record));
+}
+
+function completedPlanConnectorRead(record: CompletedPlanRecord): JsonObject | undefined {
+  return connectorReadFromMetadata(record.metadata);
+}
+
+function connectorReadFromMetadata(metadata: JsonObject | undefined): JsonObject | undefined {
+  const value = metadata?.connectorRead;
+  return isJsonObject(value) ? value : undefined;
+}
+
+function connectorReadDetailRows(connectorRead: JsonObject | undefined): Array<[string, string]> {
+  if (!connectorRead) return [];
+  const rows: Array<[string, string] | undefined> = [
+    ['Question', pythQuestionDisplayLabel(stringFromJsonLike(connectorRead.question))],
+    ['Result', stringFromJsonLike(connectorRead.resultSummary)],
+    ['Feed', stringFromJsonLike(connectorRead.feedLabel) || stringFromJsonLike(connectorRead.symbol) || stringFromJsonLike(connectorRead.priceFeedId)],
+    ['Read source', stringFromJsonLike(connectorRead.source)],
+    ['Read checked', stringFromJsonLike(connectorRead.checkedAt)],
+  ];
+  return completedRows(rows);
+}
+
+function pythQuestionDisplayLabel(value: string): string {
+  switch (value) {
+    case 'oracle_evidence':
+      return 'Oracle evidence';
+    case 'freshness':
+      return 'Freshness';
+    case 'confidence':
+      return 'Confidence';
+    case 'price':
+      return 'Price';
+    default:
+      return value ? titleCase(value.replace(/_/g, ' ')) : 'Price';
   }
 }
 
@@ -18209,6 +18589,8 @@ function completedPlanFromGeneratedPlan(
   receipt: ActionReceipt | undefined,
   action: PreparedAction | undefined,
 ): CompletedPlanRecord {
+  const connectorRead = connectorReadFromMetadata(record.metadata);
+  const connectorReadSummary = stringFromJsonLike(connectorRead?.resultSummary);
   const note = completedPlanUserNote(record.plan.userNotes, receipt?.note, action?.note);
   const terminalStatus = receipt?.status ?? (action && isTerminalPreparedAction(action) ? action.status : undefined);
   const txStatus = receipt?.txStatus ?? action?.txStatus;
@@ -18229,6 +18611,7 @@ function completedPlanFromGeneratedPlan(
     status,
     plan: record.plan,
     signature: record.signature,
+    metadata: record.metadata,
     actionId: receipt?.actionId ?? action?.id ?? record.preparedActionId,
     txid: receipt?.txid ?? action?.txid,
     completedAt,
@@ -18239,7 +18622,7 @@ function completedPlanFromGeneratedPlan(
     status,
     tone: terminalStatus ? completedActionTone(terminalStatus, txStatus) : record.status === 'archived' ? 'neutral' : 'tx-confirmed',
     title: record.plan.intent,
-    summary: note,
+    summary: connectorReadSummary || note,
     completedAt,
     createdAt: record.createdAt,
     walletAddress: receipt?.walletAddress ?? action?.walletAddress ?? record.walletAddress,
@@ -18253,12 +18636,14 @@ function completedPlanFromGeneratedPlan(
     generatedPlanId: record.id,
     ...(actionId ? { actionId } : {}),
     ...(workflowSource ? { workflowSource } : {}),
+    ...(record.metadata ? { metadata: record.metadata } : {}),
     copyPayload: stableJson(payload),
     detailRows: completedRows([
       ['Type', 'One-time plan'],
       ['Status', status],
       ['Template', record.templateTitle],
       ['Action', record.plan.actionType.replace(/_/g, ' ')],
+      ...connectorReadDetailRows(connectorRead),
       ['Source', planSourceLabel(record.plan)],
       ['Wallet', (receipt?.walletAddress ?? action?.walletAddress ?? record.walletAddress) || 'No wallet at creation'],
       ['Created', formatDateTime(record.createdAt)],
@@ -18617,14 +19002,60 @@ function samePlan(left: AgentPlan, right: AgentPlan): boolean {
   return stableJson(left) === stableJson(right);
 }
 
+interface SignedPlanProofDetails {
+  signature: string;
+  message: string;
+  messageHash: string;
+  metadata?: JsonObject;
+}
+
+async function signGeneratedPlanProof(
+  record: GeneratedPlanRecord | undefined,
+  plan: AgentPlan,
+): Promise<SignedPlanProofDetails> {
+  const connectorRead = await connectorReadReceiptForPlan(record, plan);
+  const signed = await signAgentPlanProofDetails(
+    plan,
+    connectorRead ? 'Pyth oracle read proof' : 'Plan review proof',
+    connectorRead ? { connectorRead } : undefined,
+  );
+  return {
+    ...signed,
+    metadata: toJsonObject({
+      ...(record?.metadata ?? {}),
+      ...(connectorRead ? { connectorRead } : {}),
+      signedProof: {
+        message: signed.message,
+        messageHash: signed.messageHash,
+        signature: signed.signature,
+        signatureEncoding: 'base58',
+      },
+    }),
+  };
+}
+
 async function signAgentPlanProof(plan: AgentPlan, summary: string): Promise<string> {
-  const signingClient = requireClient();
-  const result = await signingClient.signMessage(agentPlanApprovalMessage(plan), signOptions(summary));
+  const result = await signAgentPlanProofDetails(plan, summary);
   return result.signature;
 }
 
-function agentPlanApprovalMessage(plan: AgentPlan): string {
-  return [
+async function signAgentPlanProofDetails(
+  plan: AgentPlan,
+  summary: string,
+  proofContext?: { connectorRead?: JsonObject },
+): Promise<SignedPlanProofDetails> {
+  const signingClient = requireClient();
+  const message = agentPlanApprovalMessage(plan, proofContext);
+  const result = await signingClient.signMessage(message, signOptions(summary));
+  return {
+    signature: result.signature,
+    message,
+    messageHash: await sha256(message),
+  };
+}
+
+function agentPlanApprovalMessage(plan: AgentPlan, proofContext?: { connectorRead?: JsonObject }): string {
+  const lines = [
     'Solana Agent Wallet Adapter plan review proof',
     `Address: ${state.address}`,
     `Cluster: ${state.cluster}`,
@@ -18640,7 +19071,166 @@ function agentPlanApprovalMessage(plan: AgentPlan): string {
     `User notes: ${plan.userNotes || 'None'}`,
     `Safeguards: ${plan.safeguards.join(' | ')}`,
     `Time: ${new Date().toISOString()}`,
-  ].join('\n');
+  ];
+  if (proofContext?.connectorRead) {
+    const read = proofContext.connectorRead;
+    lines.push(`Connector read result: ${stringFromJsonLike(read.resultSummary) || 'Recorded'}`);
+    lines.push(`Connector read question: ${stringFromJsonLike(read.question) || 'unspecified'}`);
+    lines.push(`Connector facts: ${stableJson(read)}`);
+  }
+  return lines.join('\n');
+}
+
+type PythReadQuestion = 'price' | 'freshness' | 'confidence' | 'oracle_evidence';
+
+async function connectorReadReceiptForPlan(
+  record: GeneratedPlanRecord | undefined,
+  plan: AgentPlan,
+): Promise<JsonObject | undefined> {
+  if (!isPythReadOnlyPlan(plan)) return undefined;
+  const question = normalizedPythReadQuestion(plan.parameters.question);
+  const request = pythConnectorReadRequest(plan, question);
+  const source = connectorReadSourceForPlan(record);
+  const response = source === 'cloud'
+    ? await cloudRequest<Record<string, unknown>>('/api/connector/read-facts', {
+        method: 'POST',
+        body: JSON.stringify({
+          ...request,
+          cluster: record?.cluster ?? state.cluster,
+          walletAddress: state.address,
+        }),
+      })
+    : await bridgeRequest<Record<string, unknown>>('/bridge/action/connector-read-facts', {
+        method: 'POST',
+        body: JSON.stringify(request),
+      });
+  const facts = connectorFactsFromReadResponse(response);
+  if (!facts.length) {
+    throw new Error('Pyth did not return connector facts for this price feed.');
+  }
+  const selectedFact = pythFactForQuestion(facts, question) ?? facts[0];
+  if (!selectedFact) {
+    throw new Error('Pyth did not return a usable connector fact for this price feed.');
+  }
+  const resultSummary = connectorFactSummary(selectedFact) || 'Pyth facts recorded';
+  const feedLabel = pythFeedLabelFromRead(plan, response, selectedFact);
+  const checkedAt = stringFromJsonLike(selectedFact.checkedAt) || new Date().toISOString();
+  return toJsonObject({
+    connectorId: 'pyth',
+    connectorName: 'Pyth',
+    capability: request.capability,
+    question,
+    originalQuestion: plan.parameters.question || '',
+    resultSummary,
+    feedLabel,
+    ...(typeof request.priceFeedId === 'string' ? { priceFeedId: request.priceFeedId } : {}),
+    ...(typeof request.symbol === 'string' ? { symbol: request.symbol } : {}),
+    source,
+    checkedAt,
+    facts,
+    response,
+  });
+}
+
+function isPythReadOnlyPlan(plan: AgentPlan): boolean {
+  if (plan.actionType !== 'read_only') return false;
+  const connector = selectedConnectorForDraftParameters(plan.parameters) ??
+    findProtocolConnectorByInput(plan.parameters.protocol || plan.parameters.dapp || plan.route);
+  return connector?.id === 'pyth';
+}
+
+function normalizedPythReadQuestion(value: string | undefined): PythReadQuestion {
+  const normalized = (value || '').trim().toLowerCase().replace(/[\s-]+/g, '_');
+  if (normalized === 'freshness' || normalized === 'age' || normalized === 'staleness') return 'freshness';
+  if (normalized === 'confidence' || normalized === 'conf') return 'confidence';
+  if (normalized === 'oracle_evidence' || normalized === 'evidence' || normalized === 'proof' || normalized === 'risk' || normalized === 'rewards') {
+    return 'oracle_evidence';
+  }
+  return 'price';
+}
+
+function pythConnectorReadRequest(plan: AgentPlan, question: PythReadQuestion): Record<string, unknown> {
+  const rawFeed = planParameter(plan, ['priceFeedIds', 'priceFeedId', 'feedId', 'position', 'market']);
+  const rawLabel = planParameter(plan, ['priceFeedIdsLabel', 'priceFeedIdLabel', 'feedLabel', 'symbol']);
+  const feedId = looksLikePythFeedId(rawFeed) ? rawFeed : '';
+  const symbol = feedId ? rawLabel : rawFeed || rawLabel;
+  if (!feedId && !symbol) {
+    throw new Error('Choose a Pyth price feed before signing this read proof.');
+  }
+  const maxAgeSeconds = numericPlanParam(plan, ['maxAgeSeconds']);
+  const maxConfidenceBps = numericPlanParam(plan, ['maxConfidenceBps']);
+  return stripUndefined({
+    connectorId: 'pyth',
+    capability: question === 'oracle_evidence' ? 'oracle' : 'markets',
+    ...(feedId ? { priceFeedId: feedId } : { symbol }),
+    ...(maxAgeSeconds !== undefined ? { maxAgeSeconds } : {}),
+    ...(maxConfidenceBps !== undefined ? { maxConfidenceBps } : {}),
+    consumerProtocol: 'Solana Agent Wallet Adapter Protocol position check',
+    includeEma: true,
+  }) as Record<string, unknown>;
+}
+
+function connectorReadSourceForPlan(record: GeneratedPlanRecord | undefined): 'cloud' | 'local-bridge' {
+  if (record?.workflowSource === 'local-bridge' && state.bridgeActive && state.bridgeToken && isLoopbackBridgeUrl(state.bridgeUrl)) {
+    return 'local-bridge';
+  }
+  if (record?.workflowSource === 'cloud' || activeWorkflowMode() === 'agentic-cloud') {
+    if (cloudSessionMatchesWallet()) return 'cloud';
+  }
+  if (state.bridgeActive && state.bridgeToken && isLoopbackBridgeUrl(state.bridgeUrl)) {
+    return 'local-bridge';
+  }
+  if (cloudSessionMatchesWallet()) return 'cloud';
+  throw new Error('Pyth read proofs need Agentic Cloud sign-in or a connected private local bridge to fetch fresh oracle facts.');
+}
+
+function connectorFactsFromReadResponse(response: unknown): JsonObject[] {
+  if (!isJsonObject(response) || !Array.isArray(response.facts)) return [];
+  return response.facts
+    .filter(isJsonObject)
+    .map((fact) => toJsonObject(fact))
+    .filter((fact) => stringFromJsonLike(fact.label) || stringFromJsonLike(fact.value));
+}
+
+function pythFactForQuestion(facts: JsonObject[], question: PythReadQuestion): JsonObject | undefined {
+  if (question === 'freshness') return facts.find((fact) => /freshness|age/i.test(stringFromJsonLike(fact.label)));
+  if (question === 'confidence') return facts.find((fact) => /confidence/i.test(stringFromJsonLike(fact.label)));
+  if (question === 'price') return facts.find((fact) => !/freshness|confidence/i.test(stringFromJsonLike(fact.label)));
+  return facts[0];
+}
+
+function connectorFactSummary(fact: JsonObject | undefined): string {
+  if (!fact) return '';
+  const label = stringFromJsonLike(fact.label);
+  const value = stringFromJsonLike(fact.value);
+  if (label && value) return `${label}: ${value}`;
+  return value || label;
+}
+
+function pythFeedLabelFromRead(plan: AgentPlan, response: unknown, fact: JsonObject | undefined): string {
+  const explicit = planParameter(plan, ['priceFeedIdsLabel', 'priceFeedIdLabel', 'feedLabel', 'symbol']);
+  if (explicit) return explicit;
+  const responseObject = isJsonObject(response) ? response : {};
+  const snapshot = isJsonObject(responseObject.snapshot)
+    ? responseObject.snapshot
+    : isJsonObject(responseObject.evidence)
+      ? responseObject.evidence
+      : {};
+  return stringFromJsonLike(snapshot.symbol) ||
+    stringFromJsonLike(snapshot.displayName) ||
+    stringFromJsonLike(fact?.label).replace(/^Pyth(?: oracle)?\s+/i, '') ||
+    'Pyth feed';
+}
+
+function looksLikePythFeedId(value: string): boolean {
+  return /^(0x)?[0-9a-f]{64}$/i.test(value.trim());
+}
+
+function numericPlanParam(plan: AgentPlan, keys: string[]): number | undefined {
+  const raw = planParameter(plan, keys);
+  if (!raw) return undefined;
+  const parsed = Number(raw);
+  return Number.isFinite(parsed) && parsed >= 0 ? parsed : undefined;
 }
 
 async function signAgentDenialProof(plan: AgentPlan, review: AgentPlanReviewState, summary: string): Promise<string> {
@@ -20541,6 +21131,7 @@ async function runCloudSignIn(): Promise<void> {
     state.workflowModePreference = 'auto';
     savePersistedState();
     await refreshCloudWorkspaceData();
+    dismissToastByKey(LOCAL_WORKSPACE_BOUNDARY_TOAST_KEY);
     const transfer = await transferLocalWorkspaceToCloud({ confirm: false, showEmptyToast: false });
     if (transfer.total > 0) {
       toastLocalWorkspaceStorageTransfer(transfer);
@@ -20682,18 +21273,27 @@ function toastLocalWorkspaceStorageTransfer(result: LocalWorkspaceStorageTransfe
     return;
   }
   pushToast(
-    result.failed > 0 ? 'pending' : 'success',
+    result.failed > 0 ? 'info' : 'success',
     result.failed > 0 ? 'Storage transfer partially completed' : 'Local workspace transferred',
     result.failed > 0
       ? `${result.copied} transferred, ${result.failed} need review.`
       : `${result.copied} item${result.copied === 1 ? '' : 's'} transferred to storage.`,
+    result.failed > 0 ? { dismissAfterMs: LOCAL_WORKSPACE_REMINDER_DISMISS_MS } : {},
   );
 }
 
 function notifyLocalWorkspaceBackupReminder(detail: string): void {
-  const summary = localWorkspaceSummary();
-  if (summary.total === 0) return;
-  pushToast('pending', 'Back up local workspace', `${summary.total} local item${summary.total === 1 ? '' : 's'} found. ${detail}`);
+  const importSummary = localCloudImportCandidates().summary;
+  const localSummary = localWorkspaceSummary();
+  if (importSummary.total === 0 && localSummary.total === 0) return;
+  const title = importSummary.total > 0 ? 'Local items ready' : 'Local-only history remains';
+  const message = importSummary.total > 0
+    ? `${localWorkspaceImportSummaryLabel(importSummary) || 'Local workspace records'} ready to transfer. ${detail}`
+    : `Local-only history remains on this device. ${detail}`;
+  pushToast('info', title, message, {
+    key: LOCAL_WORKSPACE_BOUNDARY_TOAST_KEY,
+    dismissAfterMs: LOCAL_WORKSPACE_REMINDER_DISMISS_MS,
+  });
 }
 
 function cloudPlanImportBody(record: GeneratedPlanRecord): Record<string, unknown> {
@@ -21169,8 +21769,8 @@ function cloudPlanToGeneratedPlan(value: unknown): GeneratedPlanRecord | null {
   const cluster = typeof record.cluster === 'string' && isCluster(record.cluster) ? record.cluster : state.cluster;
   const plan = planWithCloudGuardrails(record.plan, record.riskMetadata);
   const localFields = record as Partial<GeneratedPlanRecord>;
-  const metadata = isJsonObject(record.metadata) ? record.metadata : {};
-  const agentReview = parseAgentPlanReviewState(metadata.agentReview);
+  const metadata = isJsonObject(record.metadata) ? toJsonObject(record.metadata) : undefined;
+  const agentReview = parseAgentPlanReviewState(metadata?.agentReview);
   return {
     id: record.id,
     plan,
@@ -21188,6 +21788,7 @@ function cloudPlanToGeneratedPlan(value: unknown): GeneratedPlanRecord | null {
     ...(typeof localFields.error === 'string' && { error: localFields.error }),
     ...(typeof localFields.failureLabel === 'string' && { failureLabel: localFields.failureLabel }),
     ...(agentReview && { agentReview }),
+    ...(metadata && { metadata }),
     workflowSource: 'cloud',
   };
 }
@@ -21304,8 +21905,8 @@ function cloudCompletedToCompletedPlan(value: unknown): CompletedPlanRecord | nu
       ? record.approvalId
       : undefined;
   const kind: CompletedPlanRecord['kind'] = record.kind === 'recurring_occurrence' ? 'recurring' : 'one-time';
-  const metadata = record.metadata && typeof record.metadata === 'object' && !Array.isArray(record.metadata)
-    ? record.metadata as Record<string, unknown>
+  const metadata = isJsonObject(record.metadata)
+    ? toJsonObject(record.metadata)
     : undefined;
   const decisionProofVerified = typeof metadata?.decisionProofVerified === 'boolean'
     ? metadata.decisionProofVerified
@@ -21337,6 +21938,7 @@ function cloudCompletedToCompletedPlan(value: unknown): CompletedPlanRecord | nu
     ...(typeof record.occurrenceKey === 'string' && { occurrenceKey: record.occurrenceKey }),
     ...(decisionProofVerified !== undefined && { decisionProofVerified }),
     ...(decisionProofMessage !== undefined && { decisionProofMessage }),
+    ...(metadata ? { metadata } : {}),
     copyPayload: stableJson(record.payload ?? record.copyPayload ?? record),
     ...(trustBundlePayload ? { trustBundlePayload } : {}),
     detailRows: Array.isArray(record.detailRows) && record.detailRows.every(isDetailRow)
@@ -27341,12 +27943,97 @@ function readTemplateFields(template = selectedTemplate()): Record<string, strin
       current[fieldId] = slippagePercentInputToBps(input.value);
     }
   }
-  const withDisplay = withTemplateTokenDisplayParameters(template, current);
+  const withCascadingDisplay = withCascadingOptionDisplayParameters(template, current);
+  const withDisplay = withTemplateTokenDisplayParameters(template, withCascadingDisplay);
   const normalized = isConnectorCapableTemplate(template) || Boolean(selectedConnectorForDraftParameters(withDisplay))
     ? normalizeConnectorDraftParameters(template, withDisplay)
     : stripConnectorDraftExtras(template, withDisplay);
   state.templateFields = normalized;
   return normalized;
+}
+
+function withCascadingOptionDisplayParameters(
+  template: AgentPlanTemplate,
+  parameters: Record<string, string>,
+): Record<string, string> {
+  const next = { ...parameters };
+  for (const fieldDef of effectiveTemplateFieldsForParameters(template, next)) {
+    const cascading = fieldDef.cascading;
+    if (!cascading) continue;
+    const value = next[fieldDef.id] ?? '';
+    const option = cascadingFieldCachedOption(fieldDef, value, next);
+    if (!option) continue;
+    if (option.label && option.label !== value) {
+      next[`${fieldDef.id}Label`] = option.label;
+    }
+    if (fieldDef.id === 'poolAddress' && cascading.providerId === 'meteora.pool') {
+      applyMeteoraPoolOptionDisplayParameters(next, option);
+    }
+    if (connectorLiquidityPoolField(fieldDef)) {
+      applyLiquidityPoolOptionDisplayParameters(next, fieldDef.id, option);
+    }
+  }
+  return next;
+}
+
+function connectorLiquidityPoolField(fieldDef: AgentPlanTemplateField): boolean {
+  const providerId = fieldDef.cascading?.providerId ?? '';
+  return (fieldDef.id === 'poolId' && providerId.startsWith('raydium.')) ||
+    (fieldDef.id === 'whirlpoolAddress' && providerId === 'orca.whirlpool');
+}
+
+function applyLiquidityPoolOptionDisplayParameters(
+  target: Record<string, string>,
+  fieldId: string,
+  option: ConnectorOption,
+): void {
+  const meta = option.meta ?? {};
+  for (const key of LIQUIDITY_POOL_META_KEYS) {
+    applyLiquidityPoolMetaValue(target, fieldId, key, meta);
+  }
+}
+
+const LIQUIDITY_POOL_META_KEYS = [
+  'tokenASymbol',
+  'tokenBSymbol',
+  'tokenAMint',
+  'tokenBMint',
+  'feeBps',
+  'poolType',
+  'programId',
+] as const;
+
+function applyLiquidityPoolMetaValue(
+  target: Record<string, string>,
+  fieldId: string,
+  key: typeof LIQUIDITY_POOL_META_KEYS[number],
+  meta: ConnectorOptionMeta,
+): void {
+  const value = meta[key]?.trim();
+  const targetKey = `${fieldId}${capitalizeMetaKey(key)}`;
+  if (value) {
+    target[targetKey] = value;
+  } else {
+    delete target[targetKey];
+  }
+}
+
+function applyMeteoraPoolOptionDisplayParameters(
+  target: Record<string, string>,
+  option: ConnectorOption,
+): void {
+  target.poolAddressLabel = option.label;
+  const poolName = option.label.replace(/\s+DLMM\b.*$/i, '').trim();
+  if (poolName) target.poolName = poolName;
+  const meta = option.meta ?? {};
+  for (const key of ['tokenXSymbol', 'tokenYSymbol', 'tokenMintX', 'tokenMintY', 'binStep'] as const) {
+    const value = meta[key]?.trim();
+    if (value) {
+      target[key] = value;
+    } else {
+      delete target[key];
+    }
+  }
 }
 
 function withTemplateTokenDisplayParameters(
@@ -29479,6 +30166,13 @@ function marketAmountSubjectForPlan(plan: AgentPlan): MarketAmountSubject | unde
     const mint = marketMintForToken(token);
     return amount !== undefined && mint && token ? { amount, mint, token } : undefined;
   }
+  if (CONNECTOR_APPROVAL_ACTION_TYPES.has(plan.actionType)) {
+    const amountInfo = connectorPlanAmountInfo(plan);
+    const amount = parsePositiveAmount(amountInfo?.amount);
+    const token = amountInfo?.marketToken ?? amountInfo?.token;
+    const mint = marketMintForToken(token);
+    return amount !== undefined && mint && token ? { amount, mint, token } : undefined;
+  }
   return undefined;
 }
 
@@ -30106,6 +30800,10 @@ function syncCascadingTemplateFieldLabel(
   const labelKey = `${fieldId}Label`;
   if (control instanceof HTMLInputElement && control.hasAttribute('data-cascading-manual')) {
     delete target[labelKey];
+    if (fieldId === 'poolAddress') {
+      clearMeteoraPoolDisplayParameters(target);
+    }
+    clearLiquidityPoolDisplayParameters(target, fieldId);
     return;
   }
   if (!(control instanceof HTMLSelectElement) || !control.hasAttribute('data-cascading-select')) {
@@ -30117,6 +30815,18 @@ function syncCascadingTemplateFieldLabel(
     target[labelKey] = label;
   } else {
     delete target[labelKey];
+  }
+}
+
+function clearLiquidityPoolDisplayParameters(target: Record<string, string>, fieldId: string): void {
+  for (const key of LIQUIDITY_POOL_META_KEYS) {
+    delete target[`${fieldId}${capitalizeMetaKey(key)}`];
+  }
+}
+
+function clearMeteoraPoolDisplayParameters(target: Record<string, string>): void {
+  for (const key of ['poolName', 'tokenXSymbol', 'tokenYSymbol', 'tokenMintX', 'tokenMintY', 'binStep']) {
+    delete target[key];
   }
 }
 
@@ -32597,9 +33307,11 @@ function connectorActionAmountInfo(action: PreparedAction): ConnectorActionAmoun
   if (semantic) return semantic;
   const amountKeys: Array<{ key: string; token?: string }> = [
     { key: 'amountSol', token: 'SOL' },
+    { key: 'bidPriceSol', token: 'SOL' },
     { key: 'priceSol', token: 'SOL' },
     { key: 'maxPriceSol', token: 'SOL' },
     { key: 'maxPricePerNftSol', token: 'SOL' },
+    { key: 'maxEscrowSol', token: 'SOL' },
     { key: 'solAmount', token: 'SOL' },
     { key: 'msolAmount', token: 'mSOL' },
     { key: 'jitoSolAmount', token: 'JitoSOL' },
@@ -32656,9 +33368,44 @@ function connectorSemanticAmountInfo(action: PreparedAction): ConnectorActionAmo
     case 'sanctum_swap_lst':
     case 'sanctum_add_infinity_liquidity':
       return connectorAmountFromKeys(action, ['inputAmount', 'amount'], connectorActionInputToken(action));
+    case 'meteora_add_liquidity':
+      return meteoraAddLiquidityAmountInfo(action);
+    case 'meteora_remove_liquidity':
+      return meteoraRemoveLiquidityAmountInfo(action);
     default:
       return undefined;
   }
+}
+
+function meteoraAddLiquidityAmountInfo(action: PreparedAction): ConnectorActionAmountInfo | undefined {
+  const tokenXAmount = stringParam(action, 'tokenXAmount');
+  const tokenYAmount = stringParam(action, 'tokenYAmount');
+  const tokenX = meteoraPoolTokenSymbol(action, 'x') ?? 'token X';
+  const tokenY = meteoraPoolTokenSymbol(action, 'y') ?? 'token Y';
+  const parts = [
+    tokenXAmount ? `${tokenXAmount} ${connectorActionAmountTokenLabel(tokenX)}` : '',
+    tokenYAmount ? `${tokenYAmount} ${connectorActionAmountTokenLabel(tokenY)}` : '',
+  ].filter(Boolean);
+  if (!parts.length) return undefined;
+  return {
+    amount: parts.join(' + '),
+    label: parts.join(' + '),
+    token: meteoraPoolTokenLabel(action),
+  };
+}
+
+function meteoraRemoveLiquidityAmountInfo(action: PreparedAction): ConnectorActionAmountInfo | undefined {
+  const amount = stringParam(action, 'amount') ||
+    stringParam(action, 'liquidityAmount') ||
+    stringParam(action, 'liquidityPercent') ||
+    stringParam(action, 'liquidityBps');
+  if (!amount) return undefined;
+  const label = /[%a-z]/i.test(amount) ? amount : `${amount} liquidity`;
+  return {
+    amount,
+    label,
+    token: meteoraPoolTokenLabel(action),
+  };
 }
 
 function connectorAmountFromKeys(
@@ -32698,6 +33445,8 @@ function connectorActionAmountToken(action: PreparedAction): ConnectorActionAmou
     if (value) return { value, marketEligible: true };
   }
   for (const key of ['bankAddress', 'reserveAddress']) {
+    const label = stringParam(action, `${key}Label`);
+    if (label) return { value: label, marketEligible: true };
     const value = stringParam(action, key);
     if (value && !looksLikeMintAddress(value)) return { value, marketEligible: true };
   }
@@ -32734,12 +33483,22 @@ function connectorActionTokenRoute(action: PreparedAction): ConnectorActionToken
       return { inputToken: connectorActionInputToken(action), outputToken: 'INF' };
     case 'sanctum_remove_infinity_liquidity':
       return { inputToken: 'INF', outputToken: connectorActionOutputToken(action) };
+    case 'meteora_add_liquidity':
+    case 'meteora_remove_liquidity':
+    case 'meteora_claim_fees':
+    case 'meteora_claim_rewards':
+    case 'meteora_close_position':
+      return {
+        inputToken: meteoraPoolTokenSymbol(action, 'x') ?? 'token X',
+        outputToken: meteoraPoolTokenSymbol(action, 'y') ?? 'token Y',
+      };
     default:
       return undefined;
   }
 }
 
 function connectorActionInputToken(action: PreparedAction): string {
+  if (isMeteoraConnectorAction(action)) return meteoraPoolTokenSymbol(action, 'x') ?? 'token X';
   return stringParam(action, 'inputSymbol') ||
     stringParam(action, 'inputMint') ||
     stringParam(action, 'lstMint') ||
@@ -32747,6 +33506,7 @@ function connectorActionInputToken(action: PreparedAction): string {
 }
 
 function connectorActionOutputToken(action: PreparedAction): string {
+  if (isMeteoraConnectorAction(action)) return meteoraPoolTokenSymbol(action, 'y') ?? 'token Y';
   return stringParam(action, 'outputSymbol') ||
     stringParam(action, 'outputMint') ||
     'output';
@@ -32778,6 +33538,7 @@ function swapOutputTokenLabel(action: PreparedAction): string {
 
 function tokenLabel(action: PreparedAction): string {
   if (action.kind === 'transfer_sol') return 'SOL';
+  if (isMeteoraConnectorAction(action)) return meteoraPoolTokenLabel(action);
   const connectorRoute = connectorActionTokenRoute(action);
   if (connectorRoute) {
     return `${tokenDisplayLabel(connectorRoute.inputToken)} to ${tokenDisplayLabel(connectorRoute.outputToken)}`;
@@ -32789,6 +33550,30 @@ function tokenLabel(action: PreparedAction): string {
     return `${action.params.inputToken} to ${action.params.outputToken}`;
   }
   return 'n/a';
+}
+
+function isMeteoraConnectorAction(action: PreparedAction): boolean {
+  return action.kind.startsWith('meteora_');
+}
+
+function meteoraPoolTokenSymbol(action: PreparedAction, side: 'x' | 'y'): string | undefined {
+  const symbolKey = side === 'x' ? 'tokenXSymbol' : 'tokenYSymbol';
+  const mintKey = side === 'x' ? 'tokenMintX' : 'tokenMintY';
+  const symbol = stringParam(action, symbolKey);
+  if (symbol) return symbol;
+  const mint = stringParam(action, mintKey);
+  if (mint) return resolveTokenDisplay(mint) || tokenDisplayLabel(mint);
+  const label = stringParam(action, 'poolAddressLabel') || stringParam(action, 'poolName');
+  return meteoraPairSymbolFromLabel(label, side);
+}
+
+function meteoraPoolTokenLabel(action: PreparedAction): string {
+  const explicit = stringParam(action, 'poolName') || stringParam(action, 'poolAddressLabel');
+  if (explicit) return /\bDLMM\b/i.test(explicit) ? explicit : `${explicit} DLMM`;
+  const tokenX = meteoraPoolTokenSymbol(action, 'x');
+  const tokenY = meteoraPoolTokenSymbol(action, 'y');
+  if (tokenX && tokenY) return `${tokenDisplayLabel(tokenX)}-${tokenDisplayLabel(tokenY)} DLMM`;
+  return stringParam(action, 'poolAddress') || 'Meteora DLMM';
 }
 
 function stringParam(action: PreparedAction, key: string): string {
@@ -32952,6 +33737,9 @@ function evidenceBadgeForAction(action: PreparedAction): EvidenceBadgeView {
 function evidenceBadgeForCompletedPlan(plan: CompletedPlanRecord): EvidenceBadgeView {
   if (plan.txid) {
     return { tone: 'live', label: 'On-chain transaction' };
+  }
+  if (completedPlanConnectorRead(plan)) {
+    return { tone: 'proof', label: 'Connector read receipt' };
   }
   if (plan.signature) {
     return { tone: 'proof', label: 'Proof only' };
@@ -34200,6 +34988,21 @@ function stripUndefined(value: unknown): unknown {
   return value;
 }
 
+function toJsonValue(value: unknown): JsonValue {
+  const stripped = stripUndefined(value);
+  if (stripped === undefined) return null;
+  return JSON.parse(JSON.stringify(stripped)) as JsonValue;
+}
+
+function toJsonObject(value: unknown): JsonObject {
+  const parsed = toJsonValue(value);
+  return isJsonObject(parsed) ? parsed : {};
+}
+
+function stringFromJsonLike(value: unknown): string {
+  return typeof value === 'string' ? value.trim() : '';
+}
+
 function sortJson(value: unknown): unknown {
   if (Array.isArray(value)) {
     return value.map(sortJson);
@@ -34277,16 +35080,13 @@ function pushToast(
   kind: ToastKind,
   title: string,
   message: string,
-  options: { linkHref?: string; linkLabel?: string } = {},
+  options: ToastOptions = {},
 ): number {
   const toast: Toast = { id: nextToastId, kind, title, message, ...options };
   nextToastId += 1;
-  state.toasts = [toast, ...state.toasts].slice(0, 4);
-  if (kind !== 'pending') {
-    window.setTimeout(() => {
-      dismissToast(toast.id);
-    }, toast.linkHref ? 10_000 : 4000);
-  }
+  const retainedToasts = toast.key ? state.toasts.filter((item) => item.key !== toast.key) : state.toasts;
+  state.toasts = [toast, ...retainedToasts].slice(0, 4);
+  scheduleToastDismiss(toast);
   return toast.id;
 }
 
@@ -34295,14 +35095,17 @@ function replaceToast(
   kind: ToastKind,
   title: string,
   message: string,
-  options: { linkHref?: string; linkLabel?: string } = {},
+  options: ToastOptions = {},
 ): void {
-  state.toasts = state.toasts.map((toast) => toast.id === id ? { ...toast, kind, title, message, ...options } : toast);
-  if (kind !== 'pending') {
-    window.setTimeout(() => {
-      dismissToast(id);
-    }, options.linkHref ? 10_000 : 4000);
-  }
+  let replacement: Toast | undefined;
+  state.toasts = state.toasts
+    .filter((toast) => !options.key || toast.id === id || toast.key !== options.key)
+    .map((toast) => {
+      if (toast.id !== id) return toast;
+      replacement = { ...toast, kind, title, message, ...options };
+      return replacement;
+    });
+  if (replacement) scheduleToastDismiss(replacement);
   render();
 }
 
@@ -34313,6 +35116,27 @@ function dismissToast(id: number): void {
   render();
 }
 
+function dismissToastByKey(key: string): void {
+  const next = state.toasts.filter((toast) => toast.key !== key);
+  if (next.length === state.toasts.length) return;
+  state.toasts = next;
+  render();
+}
+
+function scheduleToastDismiss(toast: Toast): void {
+  const delay = toastDismissDelay(toast);
+  if (delay === undefined) return;
+  window.setTimeout(() => {
+    dismissToast(toast.id);
+  }, delay);
+}
+
+function toastDismissDelay(toast: Toast): number | undefined {
+  if (typeof toast.dismissAfterMs === 'number') return Math.max(0, toast.dismissAfterMs);
+  if (toast.kind === 'pending') return undefined;
+  return toast.linkHref ? 10_000 : 4000;
+}
+
 function checkIcon(): string {
   return '<svg viewBox="0 0 24 24" focusable="false"><path d="M9.4 16.6 5.8 13l1.4-1.4 2.2 2.2 7.4-7.4L18.2 8 9.4 16.6Z"></path></svg>';
 }
@@ -34321,9 +35145,14 @@ function errorIcon(): string {
   return '<svg viewBox="0 0 24 24" focusable="false"><path d="m12 10.6 4.1-4.1 1.4 1.4-4.1 4.1 4.1 4.1-1.4 1.4-4.1-4.1-4.1 4.1-1.4-1.4 4.1-4.1-4.1-4.1 1.4-1.4 4.1 4.1Z"></path></svg>';
 }
 
+function infoIcon(): string {
+  return '<svg viewBox="0 0 24 24" focusable="false"><path d="M11 10h2v8h-2v-8Zm0-4h2v2h-2V6Zm1 16a10 10 0 1 1 0-20 10 10 0 0 1 0 20Zm0-2a8 8 0 1 0 0-16 8 8 0 0 0 0 16Z"></path></svg>';
+}
+
 function toastIcon(kind: ToastKind): string {
   if (kind === 'pending') return '<span class="toast-spinner"></span>';
   if (kind === 'error') return errorIcon();
+  if (kind === 'info') return infoIcon();
   return checkIcon();
 }
 
@@ -35800,7 +36629,8 @@ function isGeneratedPlanRecord(value: unknown): value is GeneratedPlanRecord {
     (record.error === undefined || typeof record.error === 'string') &&
     (record.failureLabel === undefined || typeof record.failureLabel === 'string') &&
     (record.agentReview === undefined || Boolean(parseAgentPlanReviewState(record.agentReview))) &&
-    (record.agentOverride === undefined || Boolean(parseAgentReviewOverride(record.agentOverride)))
+    (record.agentOverride === undefined || Boolean(parseAgentReviewOverride(record.agentOverride))) &&
+    (record.metadata === undefined || isJsonObject(record.metadata))
   );
 }
 

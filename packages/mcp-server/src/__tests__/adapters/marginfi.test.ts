@@ -448,6 +448,27 @@ describe('MarginFi prepare + execute', () => {
     expect(state.previewCalls).toEqual([]);
   });
 
+  it('wraps MarginFi SDK null-property failures without claiming the account is missing', async () => {
+    setMarginfiClientFactory(() => ({
+      ...buildFakeMarginfi(state),
+      async previewHealth() {
+        throw new TypeError("Cannot read properties of null (reading 'property')");
+      },
+    }));
+    const ctx = makeContext({ store: inMemoryStore() });
+
+    await expect(
+      requireMarginfiAction('deposit').prepare({ token: 'USDC', amount: '1' }, ctx),
+    ).rejects.toMatchObject({
+      name: 'AdapterError',
+      code: 'sdk_error',
+      message: expect.stringContaining('SDK failed while building or simulating'),
+    });
+    await expect(
+      requireMarginfiAction('deposit').prepare({ token: 'USDC', amount: '1' }, ctx),
+    ).rejects.not.toThrow(/may not have a MarginFi account/);
+  });
+
   it('forwards createAccountIfMissing through direct health preview reads', async () => {
     const ctx = makeContext({ store: inMemoryStore() });
     const read = marginfiAdapter.reads.health_preview;
@@ -557,6 +578,30 @@ describe('MarginFi real client hardening', () => {
     });
     expect(sdk.account.makeDepositIx).not.toHaveBeenCalled();
   });
+
+  it('falls back to address-only account discovery when the SDK authority scan fails', async () => {
+    const sdk = installFakeMarginfiSdk({
+      accounts: [],
+      accountScanError: new TypeError("Cannot read properties of null (reading 'property')"),
+      directAddresses: [new PublicKey(MARGINFI_ACCOUNT)],
+    });
+    const client = await getMarginfiClient(WALLET);
+
+    const preview = await client.previewHealth(sdk.connection, {
+      operation: 'deposit',
+      walletAddress: WALLET,
+      token: 'USDC',
+      amount: '1',
+    });
+
+    expect(preview.marginfiAccount).toBe(MARGINFI_ACCOUNT);
+    expect(sdk.fetchMarginfiAccountAddresses).toHaveBeenCalledWith(
+      sdk.sdkClient.program,
+      new PublicKey(WALLET),
+      sdk.sdkClient.groupAddress,
+    );
+    expect(sdk.account.makeDepositIx).toHaveBeenCalledWith('1', sdk.bank.address);
+  });
 });
 
 function fakeConnection(): DAppAdapterContext['connection'] {
@@ -569,10 +614,16 @@ function fakeConnection(): DAppAdapterContext['connection'] {
   } as unknown as DAppAdapterContext['connection'];
 }
 
-function installFakeMarginfiSdk(options: { accounts?: Record<string, any>[] } = {}): {
+function installFakeMarginfiSdk(options: {
+  accounts?: Record<string, any>[];
+  accountScanError?: Error;
+  directAddresses?: PublicKey[];
+} = {}): {
   connection: DAppAdapterContext['connection'];
   account: Record<string, any>;
   bank: { address: PublicKey; mint: PublicKey; tokenSymbol: string; mintDecimals: number };
+  sdkClient: Record<string, any>;
+  fetchMarginfiAccountAddresses: ReturnType<typeof vi.fn>;
 } {
   const bankAddress = new PublicKey(USDC_BANK);
   const bankMint = new PublicKey(USDC_MINT);
@@ -613,13 +664,19 @@ function installFakeMarginfiSdk(options: { accounts?: Record<string, any>[] } = 
   };
   const sdkClient = {
     wallet: { publicKey: new PublicKey(WALLET) },
-    getMarginfiAccountsForAuthority: vi.fn(async () => options.accounts ?? [account]),
+    program: { programId: SystemProgram.programId },
+    groupAddress: new PublicKey(USDC_BANK),
+    getMarginfiAccountsForAuthority: vi.fn(async () => {
+      if (options.accountScanError) throw options.accountScanError;
+      return options.accounts ?? [account];
+    }),
     getBankByPk: vi.fn((address: PublicKey) => address.toBase58() === bankAddress.toBase58() ? bank : null),
     getBankByMint: vi.fn((mint: PublicKey) => mint.toBase58() === bankMint.toBase58() ? bank : null),
     getBankByTokenSymbol: vi.fn((token: string) => token.toUpperCase() === 'USDC' ? bank : null),
     getOraclePriceByBank: vi.fn(() => ({ priceRealtime: { price: '1' }, timestamp: '1700000000' })),
   };
   account.client = sdkClient;
+  const fetchMarginfiAccountAddresses = vi.fn(async () => options.directAddresses ?? []);
   setMarginfiSdkLoaderForTests(async () => ({
     MarginfiClient: {
       fetch: vi.fn(async () => sdkClient),
@@ -628,12 +685,15 @@ function installFakeMarginfiSdk(options: { accounts?: Record<string, any>[] } = 
       fetch: vi.fn(async () => account),
     },
     MarginRequirementType: { Maintenance: 'maintenance' },
+    fetchMarginfiAccountAddresses,
     getConfig: vi.fn(() => ({ environment: 'production' })),
   }));
   return {
     connection: fakeConnection(),
     account,
     bank,
+    sdkClient,
+    fetchMarginfiAccountAddresses,
   };
 }
 

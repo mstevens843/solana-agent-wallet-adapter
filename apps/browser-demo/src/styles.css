@@ -10566,6 +10566,10 @@ button.danger:hover:not(:disabled) {
   border-color: rgba(196, 205, 202, 0.24);
 }
 
+.toast.info {
+  border-color: rgba(100, 183, 255, 0.32);
+}
+
 .toast-icon {
   align-items: center;
   background: rgba(63, 189, 131, 0.1);
@@ -10588,6 +10592,12 @@ button.danger:hover:not(:disabled) {
   background: rgba(196, 205, 202, 0.08);
   border-color: rgba(196, 205, 202, 0.22);
   color: var(--muted);
+}
+
+.toast.info .toast-icon {
+  background: rgba(100, 183, 255, 0.1);
+  border-color: rgba(100, 183, 255, 0.26);
+  color: #9fd0ff;
 }
 
 .toast-icon svg {
@@ -17658,6 +17668,23 @@ button.danger:hover:not(:disabled) {
   padding: 2px 7px;
 }
 
+.review-plan-meta .connector-meta-chip {
+  align-items: center;
+  display: inline-flex;
+  gap: 5px;
+}
+
+.connector-meta-logo {
+  display: inline-flex;
+  height: 14px;
+  width: 14px;
+}
+
+.connector-meta-logo img {
+  height: 100%;
+  width: 100%;
+}
+
 .review-plan-value {
   display: grid;
   gap: 3px;
@@ -23265,6 +23292,12 @@ button.danger:hover:not(:disabled) {
   grid-template-columns: repeat(2, minmax(170px, 250px));
   justify-content: start;
   min-width: 0;
+}
+
+.connector-subaction-select .select-picker-shell {
+  max-width: 420px;
+  min-width: min(100%, 260px);
+  width: 100%;
 }
 
 .connector-subaction-chip {

@@ -1,5 +1,6 @@
 import { createRequire } from 'node:module';
 import { pathToFileURL } from 'node:url';
+import { Buffer } from 'node:buffer';
 
 import { PublicKey, type Connection } from '@solana/web3.js';
 
@@ -642,7 +643,11 @@ async function fetchWhirlpoolAccount(
   whirlpoolAddress: string,
 ): Promise<WhirlpoolAccount> {
   const fetchWhirlpool = requiredFunction(sdk.whirlpoolsClient.fetchWhirlpool, 'fetchWhirlpool');
-  return await fetchWhirlpool(rpc, sdk.kit.address(whirlpoolAddress)) as WhirlpoolAccount;
+  try {
+    return await fetchWhirlpool(rpc, sdk.kit.address(whirlpoolAddress)) as WhirlpoolAccount;
+  } catch (err) {
+    throw friendlyOrcaAccountError(err, 'Whirlpool', whirlpoolAddress);
+  }
 }
 
 async function derivePositionAddress(sdk: LoadedOrcaSdk, positionMint: string): Promise<string> {
@@ -658,7 +663,42 @@ async function fetchPositionAccount(
   positionAddress: string,
 ): Promise<PositionAccount> {
   const fetchPosition = requiredFunction(sdk.whirlpoolsClient.fetchPosition, 'fetchPosition');
-  return await fetchPosition(rpc, sdk.kit.address(positionAddress)) as PositionAccount;
+  try {
+    return await fetchPosition(rpc, sdk.kit.address(positionAddress)) as PositionAccount;
+  } catch (err) {
+    throw friendlyOrcaAccountError(err, 'position', positionAddress);
+  }
+}
+
+function friendlyOrcaAccountError(error: unknown, accountKind: string, fallbackAddress: string): Error {
+  if (error instanceof AdapterError) return error;
+  const message = errorMessage(error);
+  if (!message.includes('#3230000') && !/account.*not\s+found/i.test(message)) {
+    return error instanceof Error ? error : new Error(message);
+  }
+  const decodedAddress = decodedSolanaErrorAddress(message);
+  const address = decodedAddress || fallbackAddress;
+  return new AdapterError(
+    ORCA_ADAPTER_ID,
+    'account_not_found',
+    `Orca ${accountKind} account not found: ${address}. Refresh the pool list or choose another pool.`,
+  );
+}
+
+function decodedSolanaErrorAddress(message: string): string | undefined {
+  const encoded = message.match(/['"]([A-Za-z0-9+/=]{16,})['"]/)?.[1];
+  if (!encoded) return undefined;
+  try {
+    const decoded = Buffer.from(encoded, 'base64').toString('utf8');
+    return decoded.match(/address=([1-9A-HJ-NP-Za-km-z]{32,44})/)?.[1];
+  } catch {
+    return undefined;
+  }
+}
+
+function errorMessage(error: unknown): string {
+  if (error instanceof Error) return error.message;
+  return String(error);
 }
 
 async function buildTransactionBase64(

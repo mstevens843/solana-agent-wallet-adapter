@@ -624,6 +624,16 @@ async function handleRequest(
         maxListings?: number;
         maxBids?: number;
         listedOnly?: boolean;
+        priceFeedId?: string;
+        priceFeedIds?: string[];
+        symbol?: string;
+        query?: string;
+        assetType?: 'crypto' | 'equity' | 'fx' | 'commodity' | 'all';
+        maxAgeSeconds?: number;
+        maxConfidenceBps?: number;
+        consumerProtocol?: string;
+        includeEma?: boolean;
+        includeRawAccount?: boolean;
       };
       writeJson(res, 200, await requireActionService(actionService).connectorReadFacts({
         connectorId: requireString(body.connectorId, 'connectorId'),
@@ -668,6 +678,16 @@ async function handleRequest(
         ...(body.maxListings !== undefined && { maxListings: body.maxListings }),
         ...(body.maxBids !== undefined && { maxBids: body.maxBids }),
         ...(body.listedOnly !== undefined && { listedOnly: body.listedOnly }),
+        ...(body.priceFeedId !== undefined && { priceFeedId: body.priceFeedId }),
+        ...(body.priceFeedIds !== undefined && { priceFeedIds: body.priceFeedIds }),
+        ...(body.symbol !== undefined && { symbol: body.symbol }),
+        ...(body.query !== undefined && { query: body.query }),
+        ...(body.assetType !== undefined && { assetType: body.assetType }),
+        ...(body.maxAgeSeconds !== undefined && { maxAgeSeconds: body.maxAgeSeconds }),
+        ...(body.maxConfidenceBps !== undefined && { maxConfidenceBps: body.maxConfidenceBps }),
+        ...(body.consumerProtocol !== undefined && { consumerProtocol: body.consumerProtocol }),
+        ...(body.includeEma !== undefined && { includeEma: body.includeEma }),
+        ...(body.includeRawAccount !== undefined && { includeRawAccount: body.includeRawAccount }),
       }));
       return;
     }

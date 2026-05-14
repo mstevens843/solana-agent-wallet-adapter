@@ -194,7 +194,7 @@ class RealMarginfiClient implements MarginfiClient {
 
   async getWalletAccounts(connection: Connection, walletAddress: string): Promise<MarginfiAccountSummary[]> {
     const client = await this.sdkClient(connection, walletAddress);
-    const accounts = await client.getMarginfiAccountsForAuthority(new PublicKey(walletAddress));
+    const accounts = (await discoverMarginfiAccounts(client, walletAddress)).accounts;
     return accounts.map((account: any) => summaryFromAccount(account));
   }
 
@@ -307,6 +307,10 @@ class RealMarginfiClient implements MarginfiClient {
 type AnyMarginfiClient = Record<string, any>;
 type AnyMarginfiAccount = Record<string, any>;
 type AnyBank = Record<string, any>;
+type MarginfiDiscoveryResult = {
+  accounts: AnyMarginfiAccount[];
+  errors: string[];
+};
 type InstructionsWrapper = {
   instructions?: TransactionInstruction[];
   keys?: Keypair[];
@@ -393,21 +397,12 @@ async function resolveAccount(
   input: { walletAddress: string; marginfiAccount?: string; operation?: MarginfiOperation; createAccountIfMissing?: boolean },
 ): Promise<AnyMarginfiAccount> {
   if (input.marginfiAccount?.trim()) {
-    const sdk = await loadMarginfiSdk();
-    const wrapper = sdk.MarginfiAccountWrapper;
-    if (!wrapper || typeof wrapper.fetch !== 'function') {
-      throw new AdapterError(
-        MARGINFI_ADAPTER_ID,
-        'sdk_invalid',
-        'MarginFi SDK did not expose MarginfiAccountWrapper.fetch.',
-      );
-    }
-    return wrapper.fetch(new PublicKey(input.marginfiAccount.trim()), client as any);
+    return fetchMarginfiAccountWrapper(client, new PublicKey(input.marginfiAccount.trim()));
   }
-  const accounts = await requireClientMethod(client, 'getMarginfiAccountsForAuthority')
-    .call(client, new PublicKey(input.walletAddress));
+  const discovery = await discoverMarginfiAccounts(client, input.walletAddress);
+  const accounts = discovery.accounts;
   if (accounts.length === 1) {
-    return accounts[0];
+    return accounts[0]!;
   }
   if (accounts.length === 0) {
     if (input.operation === 'deposit' && input.createAccountIfMissing) {
@@ -420,14 +415,119 @@ async function resolveAccount(
     throw new AdapterError(
       MARGINFI_ADAPTER_ID,
       'missing_account',
-      'No MarginFi account found for this wallet. Pass marginfiAccount or create one in MarginFi first.',
+      `MarginFi account was not discoverable for this wallet. If app.marginfi.com shows an account, pass its account address as marginfiAccount.${discovery.errors.length ? ` Discovery errors: ${discovery.errors.slice(0, 3).join('; ')}.` : ''}`,
     );
   }
   throw new AdapterError(
     MARGINFI_ADAPTER_ID,
     'ambiguous_account',
-    'Multiple MarginFi accounts found. Pass marginfiAccount explicitly.',
+    `Multiple MarginFi accounts were discovered (${accounts.map((account) => toBase58(account.address)).join(', ')}). Pass marginfiAccount explicitly.`,
   );
+}
+
+async function discoverMarginfiAccounts(
+  client: AnyMarginfiClient,
+  walletAddress: string,
+): Promise<MarginfiDiscoveryResult> {
+  const authority = new PublicKey(walletAddress);
+  const errors: string[] = [];
+  const accounts: AnyMarginfiAccount[] = [];
+
+  try {
+    const direct = await requireClientMethod(client, 'getMarginfiAccountsForAuthority').call(client, authority);
+    if (Array.isArray(direct)) accounts.push(...direct);
+  } catch (err) {
+    errors.push(`SDK account scan failed: ${errorMessage(err)}`);
+  }
+
+  if (accounts.length === 0) {
+    const addresses = await marginfiAccountAddressesForWallet(client, authority, errors);
+    for (const address of addresses) {
+      try {
+        accounts.push(await fetchMarginfiAccountWrapper(client, address));
+      } catch (err) {
+        errors.push(`account fetch ${address.toBase58()} failed: ${errorMessage(err)}`);
+      }
+    }
+  }
+
+  return {
+    accounts: dedupeMarginfiAccounts(accounts),
+    errors,
+  };
+}
+
+async function marginfiAccountAddressesForWallet(
+  client: AnyMarginfiClient,
+  authority: PublicKey,
+  errors: string[],
+): Promise<PublicKey[]> {
+  const sdk = loadedSdkModule ?? await loadMarginfiSdk();
+  const group = marginfiGroupAddress(client);
+  if (!client.program || !group || typeof sdk.fetchMarginfiAccountAddresses !== 'function') {
+    return [];
+  }
+  try {
+    return normalizePublicKeys(await sdk.fetchMarginfiAccountAddresses(client.program, authority, group));
+  } catch (err) {
+    errors.push(`direct account scan failed: ${errorMessage(err)}`);
+    return [];
+  }
+}
+
+async function fetchMarginfiAccountWrapper(client: AnyMarginfiClient, address: PublicKey): Promise<AnyMarginfiAccount> {
+  const sdk = loadedSdkModule ?? await loadMarginfiSdk();
+  const wrapper = sdk.MarginfiAccountWrapper;
+  if (!wrapper || typeof wrapper.fetch !== 'function') {
+    throw new AdapterError(
+      MARGINFI_ADAPTER_ID,
+      'sdk_invalid',
+      'MarginFi SDK did not expose MarginfiAccountWrapper.fetch.',
+    );
+  }
+  return wrapper.fetch(address, client as any);
+}
+
+function marginfiGroupAddress(client: AnyMarginfiClient): PublicKey | undefined {
+  return publicKeyFromUnknown(
+    client.groupAddress ??
+    client.group?.address ??
+    client.config?.groupPk ??
+    client.config?.groupAddress ??
+    client.config?.group,
+  );
+}
+
+function normalizePublicKeys(values: unknown): PublicKey[] {
+  if (!Array.isArray(values)) return [];
+  return values.flatMap((value) => {
+    const publicKey = publicKeyFromUnknown(value);
+    return publicKey ? [publicKey] : [];
+  });
+}
+
+function publicKeyFromUnknown(value: unknown): PublicKey | undefined {
+  if (!value) return undefined;
+  if (value instanceof PublicKey) return value;
+  const text = toBase58(value);
+  if (!text) return undefined;
+  try {
+    return new PublicKey(text);
+  } catch {
+    return undefined;
+  }
+}
+
+function dedupeMarginfiAccounts(accounts: AnyMarginfiAccount[]): AnyMarginfiAccount[] {
+  const seen = new Set<string>();
+  const result: AnyMarginfiAccount[] = [];
+  for (const account of accounts) {
+    const address = toBase58(account.address);
+    if (!address || seen.has(address)) continue;
+    seen.add(address);
+    result.push(account);
+  }
+  return result;
 }
 
 async function actionIxs(
@@ -742,6 +842,10 @@ function safeCall<T>(run: () => T): T | undefined {
   } catch {
     return undefined;
   }
+}
+
+function errorMessage(err: unknown): string {
+  return err instanceof Error ? err.message : String(err);
 }
 
 function percentNumber(value: unknown): number {

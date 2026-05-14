@@ -347,6 +347,77 @@ describe('prepareTransactionForApproval', () => {
     expect(fakeState.depositCalls[0]?.reserveMint).toBe(fakeState.snapshot.reserveMint);
   });
 
+  it.each([
+    ['magiceden_bid' as PreparedActionKind, 'Magic Eden'],
+    ['tensor_bid' as PreparedActionKind, 'Tensor'],
+  ])('maps legacy %s priceSol params to bidPriceSol and maxEscrowSol before adapter prepare', async (kind, label) => {
+    const store = inMemoryStore();
+    const ctx = makeContext(store);
+    const now = new Date().toISOString();
+    const action: PreparedAction = {
+      id: `pa_legacy_${kind}`,
+      kind,
+      status: 'ready',
+      walletAddress: WALLET,
+      cluster: 'mainnet-beta',
+      summary: `${label} legacy bid`,
+      params: {
+        connectorOperationId: `${kind.startsWith('magiceden') ? 'magiceden' : 'tensor'}:bid-flow`,
+        subAction: 'collection',
+        collectionId: 'madlads',
+        priceSol: '.01',
+      },
+      dueAt: now,
+      createdAt: now,
+      updatedAt: now,
+    };
+    const adapter = adapterForKind(kind);
+    if (!adapter) throw new Error(`Missing adapter for ${kind}`);
+    const mutableAdapter = adapter as unknown as {
+      prepare: (input: Record<string, unknown>, ctxIn: DAppAdapterContext) => Promise<{ addInput: AddPreparedActionInput; preview: Record<string, unknown> }>;
+      execute: (actionIn: PreparedAction, ctxIn: DAppAdapterContext) => Promise<{ txid: string; signedAt: string; preview?: Record<string, unknown> }>;
+    };
+    const originalPrepare = mutableAdapter.prepare;
+    const originalExecute = mutableAdapter.execute;
+    let prepareInput: Record<string, unknown> | undefined;
+    mutableAdapter.prepare = async (input) => {
+      prepareInput = input;
+      return {
+        addInput: {
+          kind,
+          walletAddress: WALLET,
+          cluster: 'mainnet-beta',
+          summary: `${label} prepared bid`,
+          params: {
+            ...input,
+            bidPriceLamports: '10000000',
+            maxEscrowLamports: '10000000',
+            preparedSnapshotAt: now,
+          },
+        },
+        preview: {},
+      };
+    };
+    mutableAdapter.execute = async (actionIn, ctxIn) => {
+      await ctxIn.signAndBroadcast('AAAA-legacy-bid', actionIn.summary);
+      return { txid: 'captured', signedAt: now, preview: {} };
+    };
+    try {
+      const payload = await prepareTransactionForApproval(action, ctx);
+      expect(payload.transactionBase64).toBe('AAAA-legacy-bid');
+    } finally {
+      mutableAdapter.prepare = originalPrepare;
+      mutableAdapter.execute = originalExecute;
+    }
+
+    expect(prepareInput).toMatchObject({
+      priceSol: '.01',
+      bidPriceSol: '.01',
+      maxEscrowSol: '.01',
+      collectionId: 'madlads',
+    });
+  });
+
   it('does NOT re-run adapter.prepare() when params already carry preparedSnapshotAt', async () => {
     const store = inMemoryStore();
     const ctx = makeContext(store);
@@ -400,7 +471,19 @@ describe('createCaptureContext', () => {
       .rejects.toMatchObject({ code: 'multi_tx_not_supported' });
   });
 
-  it('throws AdapterError(multi_tx_not_supported) when signAndBroadcastMany is called', async () => {
+  it('captures signAndBroadcastMany when it carries exactly one transaction', async () => {
+    const store = inMemoryStore();
+    const baseCtx = makeContext(store);
+    const { ctx, captured } = createCaptureContext(baseCtx);
+
+    expect(ctx.signAndBroadcastMany).toBeDefined();
+    await expect(ctx.signAndBroadcastMany!(['AAA-base64'], 'many'))
+      .resolves.toEqual(['__captured__']);
+    expect(captured.base64).toBe('AAA-base64');
+    expect(captured.summary).toBe('many');
+  });
+
+  it('throws AdapterError(multi_tx_not_supported) when signAndBroadcastMany carries multiple transactions', async () => {
     const store = inMemoryStore();
     const baseCtx = makeContext(store);
     const { ctx } = createCaptureContext(baseCtx);

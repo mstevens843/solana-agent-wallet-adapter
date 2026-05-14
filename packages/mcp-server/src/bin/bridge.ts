@@ -8,10 +8,14 @@ import { loadDotEnv } from '../env.js';
 import { JsonLabArtifactStore, defaultLabArtifactStorePath } from '../labArtifacts.js';
 import { LocalBridgeBackend } from '../localBridgeBackend.js';
 import { JsonPreparedActionStore, defaultPreparedActionStorePath } from '../preparedActions.js';
+import { isDriftVaultConfigured, setDriftVaultClientFactory } from '../adapters/drift/client.js';
+import { buildDriftVaultClient } from '../adapters/drift/sdkClient.js';
 import { isKaminoConfigured, setKaminoClientFactory } from '../adapters/kamino/client.js';
 import { buildKaminoSdkClient } from '../adapters/kamino/sdkClient.js';
 import { isSaveConfigured, setSaveClientFactory } from '../adapters/save/client.js';
 import { buildSaveSdkClient } from '../adapters/save/sdkClient.js';
+import { isWormholeConfigured, setWormholeClientFactory } from '../adapters/wormhole/client.js';
+import { buildWormholeSdkClient } from '../adapters/wormhole/sdkClient.js';
 import { IosLinkBackend, type IosLinkWalletId } from '@solana-agent-wallet-adapter/ios-link';
 
 async function main(): Promise<void> {
@@ -44,14 +48,19 @@ async function main(): Promise<void> {
         rpcUrl: config.rpcUrl,
         token,
       });
-  // Wire the lending-protocol SDK clients so connector approvals can build real
-  // KLend / Solend deposit-withdraw transactions through the local bridge instead
-  // of failing with "...sdk is not wired."
+  // Wire SDK clients so connector approvals can build real unsigned transactions
+  // through the local bridge instead of failing with "...sdk is not wired."
+  if (!isDriftVaultConfigured()) {
+    setDriftVaultClientFactory(() => buildDriftVaultClient({ rpcUrl: config.rpcUrl }));
+  }
   if (!isKaminoConfigured()) {
     setKaminoClientFactory(() => buildKaminoSdkClient({ rpcUrl: config.rpcUrl }));
   }
   if (!isSaveConfigured()) {
     setSaveClientFactory(() => buildSaveSdkClient({ rpcUrl: config.rpcUrl }));
+  }
+  if (!isWormholeConfigured()) {
+    setWormholeClientFactory(() => buildWormholeSdkClient({ rpcUrl: config.rpcUrl }));
   }
   const bridge = createBridgeServer({
     backend,

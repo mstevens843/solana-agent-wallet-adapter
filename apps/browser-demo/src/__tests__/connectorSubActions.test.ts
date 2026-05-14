@@ -155,7 +155,7 @@ describe('connector sub-actions', () => {
     const raydiumFields = connectorFormRenderFields(raydium!, { subAction: 'cpmm-add' }).map((field) => field.id);
     const realmsFields = connectorFormRenderFields(realms!, { subAction: 'approve' }).map((field) => field.id);
 
-    expect(raydiumFields).toEqual(['subAction', 'poolId', 'amount', 'memo']);
+    expect(raydiumFields).toEqual(['subAction', 'poolId', 'amountSide', 'tokenAAmount', 'tokenBAmount', 'memo']);
     expect(raydiumFields).not.toContain('poolType');
     expect(realmsFields).toEqual(['subAction', 'realmAddress', 'governingTokenMint', 'proposalAddress', 'memo']);
     expect(realmsFields).not.toContain('voteKind');
@@ -171,16 +171,18 @@ describe('connector sub-actions', () => {
       'subAction',
       'whirlpoolAddress',
       'positionMint',
+      'amountSide',
       'tokenAAmount',
+      'tokenBAmount',
       'memo',
     ]);
-    expect(connectorFormRenderFields(raydium!, { subAction: 'clmm-add' }).map((field) => field.id)).toEqual([
+    expect(connectorFormRenderFields(raydium!, { subAction: 'clmm-increase' }).map((field) => field.id)).toEqual([
       'subAction',
       'poolId',
       'positionMint',
-      'amount',
-      'lowerPrice',
-      'upperPrice',
+      'amountSide',
+      'tokenAAmount',
+      'tokenBAmount',
       'memo',
     ]);
   });

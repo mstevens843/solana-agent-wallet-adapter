@@ -1106,6 +1106,100 @@ export interface CompletedReceiptOptions {
   completedAt: string;
 }
 
+export interface CompletedPlanProofOptions {
+  id: string;
+  completedAt: string;
+}
+
+export function completedRecordFromPlanProof(
+  plan: PlanDraftRecord,
+  options: CompletedPlanProofOptions,
+): CompletedRecord {
+  if (plan.status !== 'signed' || !plan.signature) {
+    throw new WorkflowValidationError(
+      'plan_not_signed',
+      'Plan must be signed before it can become completed proof history.',
+      'plan.status',
+    );
+  }
+  const signedProof = jsonObjectFromJson(plan.metadata, 'signedProof');
+  const connectorRead = jsonObjectFromJson(plan.metadata, 'connectorRead');
+  const proofMessage = stringFromJson(signedProof, 'message');
+  const proofMessageHash = stringFromJson(signedProof, 'messageHash') ??
+    (proofMessage ? stableWorkflowHash(proofMessage) : undefined);
+  const connectorReadSummary = stringFromJson(connectorRead, 'resultSummary');
+  const connectorId = stringFromJson(connectorRead, 'connectorId');
+  const connectorCapability = stringFromJson(connectorRead, 'capability');
+  const connectorQuestion = stringFromJson(connectorRead, 'question');
+  const amount = firstStringParam({ ...plan.parameters }, ['amountSol', 'amount', 'inputAmount', 'plannedAmount']);
+  const token = firstStringParam({ ...plan.parameters }, ['token', 'inputToken', 'outputToken', 'priceFeedIdsLabel', 'priceFeedIdLabel']);
+  const recipient = firstStringParam({ ...plan.parameters }, ['recipient', 'recipientAddress']);
+  const metadata: JsonObject = {
+    ...(plan.metadata ? { ...plan.metadata } : {}),
+    signedProof: {
+      ...(signedProof ?? {}),
+      ...(proofMessageHash ? { messageHash: proofMessageHash } : {}),
+    },
+  };
+  const copyPayload: JsonObject = {
+    type: connectorRead ? 'signed_connector_read_receipt' : 'signed_plan_review_proof',
+    planDraftId: plan.id,
+    status: 'proof signed',
+    title: plan.intent,
+    walletAddress: plan.walletAddress,
+    cluster: plan.cluster,
+    completedAt: options.completedAt,
+    signature: plan.signature,
+    ...(proofMessageHash ? { proofMessageHash } : {}),
+    ...(connectorRead ? { connectorRead } : {}),
+  };
+  return {
+    id: options.id,
+    kind: 'one_time',
+    status: 'proof signed',
+    title: plan.intent,
+    summary: connectorReadSummary ?? plan.userNotes ?? plan.approval ?? plan.intent,
+    walletAddress: plan.walletAddress,
+    createdAt: plan.createdAt,
+    completedAt: options.completedAt,
+    cluster: plan.cluster,
+    ...(amount ? { amount } : {}),
+    ...(token ? { token } : {}),
+    ...(recipient ? { recipient } : {}),
+    signature: plan.signature,
+    proofSignature: plan.signature,
+    planDraftId: plan.id,
+    copyPayload,
+    detailRows: completedRows([
+      ['Type', connectorRead ? 'Signed connector read' : 'Signed review proof'],
+      ['Status', 'proof signed'],
+      ['Plan id', plan.id],
+      ['Wallet', plan.walletAddress],
+      ['Template', plan.templateTitle],
+      ['Action', plan.actionType.replace(/_/g, ' ')],
+      connectorId ? ['Connector', connectorId] : undefined,
+      connectorCapability ? ['Read capability', connectorCapability] : undefined,
+      connectorQuestion ? ['Question', connectorQuestion] : undefined,
+      connectorReadSummary ? ['Result', connectorReadSummary] : undefined,
+      ['Created', plan.createdAt],
+      ['Completed', options.completedAt],
+      ['Review proof', plan.signature],
+      proofMessageHash ? ['Signed message hash', proofMessageHash] : undefined,
+    ]),
+    payload: {
+      type: connectorRead ? 'connector_read' : 'plan_review_proof',
+      planDraftId: plan.id,
+      status: 'proof signed',
+      signature: plan.signature,
+      ...(proofMessageHash ? { proofMessageHash } : {}),
+      ...(metadata.signedProof ? { signedProof: metadata.signedProof } : {}),
+      params: { ...plan.parameters },
+      ...(connectorRead ? { connectorRead } : {}),
+    },
+    metadata,
+  };
+}
+
 export function completedRecordFromApproval(
   approval: ApprovalRequestRecord,
   options: CompletedReceiptOptions,
@@ -1266,6 +1360,13 @@ export function completedFromApproval(approval: ApprovalRequestRecord): Complete
   return completedRecordFromApproval(approval, {
     id: `completed:${approval.id}`,
     completedAt: approval.confirmedAt ?? approval.decidedAt ?? approval.updatedAt,
+  });
+}
+
+export function completedFromPlanProof(plan: PlanDraftRecord): CompletedRecord {
+  return completedRecordFromPlanProof(plan, {
+    id: `completed:plan:${plan.id}`,
+    completedAt: plan.updatedAt,
   });
 }
 

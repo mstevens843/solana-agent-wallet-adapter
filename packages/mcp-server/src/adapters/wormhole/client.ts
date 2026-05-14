@@ -272,6 +272,10 @@ export function getWormholeClient(): WormholeClient {
   return cached;
 }
 
+export function isWormholeConfigured(): boolean {
+  return !(getWormholeClient() instanceof WormholeSdkUnavailable);
+}
+
 export function describeWormholeUnavailableReason(): string | undefined {
   const client = getWormholeClient();
   return client instanceof WormholeSdkUnavailable ? client.reason : undefined;

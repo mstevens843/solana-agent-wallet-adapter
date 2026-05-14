@@ -58,10 +58,8 @@ export function marginfiAction(operation: MarginfiOperation): AdapterAction<Marg
       } satisfies MarginfiActionBuildInput & { minHealthRatio?: number });
 
       // marginfi-client-v2 emits opaque internal errors like "Cannot read properties
-      // of null (reading 'property')" when (a) the wallet has no existing margin
-      // account, (b) the bank's oracle feed is stale, or (c) the SDK fails an
-      // internal Anchor account decode. Wrap the prepare chain to surface a
-      // human-readable hint instead of the SDK's null deref.
+      // of null (reading 'property')" during SDK build/simulation failures. Wrap
+      // the prepare chain to surface a human-readable hint instead of the null deref.
       let preview;
       let bankSnapshot;
       try {
@@ -155,9 +153,8 @@ export function marginfiAction(operation: MarginfiOperation): AdapterAction<Marg
 }
 
 // marginfi-client-v2 can throw raw "Cannot read properties of null (reading
-// 'property')" errors when (a) the wallet has no margin account yet, (b) the
-// bank's oracle is missing, or (c) the SDK's Anchor decode fails. Translate
-// those into a user-actionable message instead of leaking the SDK internals.
+// 'property')" errors during transaction build/simulation, including stale
+// account discovery, missing oracle/bank data, or Anchor decode issues.
 function rewrapMarginfiSdkError(err: unknown, operation: string): Error {
   if (err instanceof AdapterError) return err;
   if (err instanceof ProtocolError) return err;
@@ -166,8 +163,8 @@ function rewrapMarginfiSdkError(err: unknown, operation: string): Error {
   if (nullProperty) {
     return new AdapterError(
       MARGINFI_ADAPTER_ID,
-      'sdk_missing_account',
-      `MarginFi ${operation} could not be prepared. The connected wallet may not have a MarginFi account yet — open one at app.marginfi.com (first-time deposit creates it), or pass an existing marginfiAccount address. Underlying SDK error: ${message}`,
+      'sdk_error',
+      `MarginFi ${operation} could not be prepared because the MarginFi SDK failed while building or simulating the transaction. This can happen when account discovery is stale, bank/oracle data is unavailable, or an Anchor account decode fails. If app.marginfi.com shows an account, pass its account address as marginfiAccount. Underlying SDK error: ${message}`,
     );
   }
   return new AdapterError(

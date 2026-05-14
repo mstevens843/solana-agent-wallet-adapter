@@ -358,6 +358,27 @@ describe('Raydium liquidity preparation', () => {
     });
   });
 
+  it('maps legacy amount plus amountSide to tokenBAmount', async () => {
+    const state = fakeState();
+    state.snapshot = fakeSnapshot({ poolType: 'cpmm', programId: 'CPMMoo8L3F4NbTegBCKVNunggL7H1ZpdTHKxQB5qKP1C' });
+    setRaydiumClientFactory(() => fakeRaydiumClient(state));
+    const ctx = makeContext({ store: inMemoryStore() });
+
+    const result = await requireRaydiumAction('add_liquidity').prepare({
+      poolId: POOL,
+      poolType: 'cpmm',
+      amount: '5',
+      amountSide: 'tokenB',
+    }, ctx);
+
+    expect(result.addInput.params).toMatchObject({
+      poolType: 'cpmm',
+      amountSide: 'tokenB',
+      tokenBAmount: '5',
+    });
+    expect(result.addInput.params).not.toHaveProperty('tokenAAmount');
+  });
+
   it('executes by rebuilding a fresh transaction through the Raydium client', async () => {
     const state = fakeState();
     setRaydiumClientFactory(() => fakeRaydiumClient(state));

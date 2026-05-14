@@ -17,15 +17,15 @@ import {
   type DriftVaultDepositor,
   type DriftVaultSnapshot,
 } from './client.js';
-import { DRIFT_ADAPTER_ID, DRIFT_VAULTS_PROGRAM_ID } from './constants.js';
+import { DRIFT_ADAPTER_ID, DRIFT_VAULTS_PROGRAM_ID, DRIFT_VAULTS_PROGRAM_IDS } from './constants.js';
 
 export function assertDriftVaultProgram(snapshot: DriftVaultSnapshot): void {
-  const expected = DRIFT_VAULTS_PROGRAM_ID.toBase58();
-  if (snapshot.programId !== expected) {
+  const expected = DRIFT_VAULTS_PROGRAM_IDS.map((programId) => programId.toBase58());
+  if (!expected.includes(snapshot.programId)) {
     throw new AdapterError(
       DRIFT_ADAPTER_ID,
       'unknown_vault_program',
-      `Drift vault ${snapshot.vaultAddress} is owned by ${snapshot.programId}, not the canonical Drift Vaults program ${expected}.`,
+      `Drift vault ${snapshot.vaultAddress} is owned by ${snapshot.programId}, not a known Drift Vaults program (${expected.join(', ')}).`,
     );
   }
 }
@@ -34,7 +34,7 @@ export interface DriftVaultDepositInput {
   vaultAddress: string;
   amount: string;
   mint?: string;
-  initializeDepositorIfMissing?: boolean;
+  initializeDepositorIfMissing?: boolean | string;
   dueAt?: string;
   note?: string;
 }
@@ -128,7 +128,7 @@ export const driftVaultDepositAction: AdapterAction<DriftVaultDepositInput> = {
     );
     const existing = positions.find((entry) => entry.vaultAddress === vaultAddress);
     const depositorExists = Boolean(existing);
-    const initializeRequested = input.initializeDepositorIfMissing === true;
+    const initializeRequested = booleanish(input.initializeDepositorIfMissing);
     if (!depositorExists && !initializeRequested) {
       throw new AdapterError(
         DRIFT_ADAPTER_ID,
@@ -188,7 +188,7 @@ export const driftVaultDepositAction: AdapterAction<DriftVaultDepositInput> = {
     const depositMint = requireString(action, 'depositMint');
     const amountRawText = requireString(action, 'amountRaw');
     const decimals = requireNumber(action, 'decimals');
-    const initializeDepositorIfMissing = action.params.initializeDepositorIfMissing === true;
+    const initializeDepositorIfMissing = booleanish(action.params.initializeDepositorIfMissing);
 
     const walletAddress = await ctx.backend.getAddress();
     if (walletAddress !== action.walletAddress) {
@@ -310,4 +310,10 @@ function trimNumber(value: number): string {
   if (!Number.isFinite(value)) return '0';
   if (Number.isInteger(value)) return String(value);
   return value.toFixed(6).replace(/\.?0+$/, '');
+}
+
+function booleanish(value: unknown): boolean {
+  if (value === true) return true;
+  if (typeof value !== 'string') return false;
+  return ['1', 'true', 'yes', 'on'].includes(value.trim().toLowerCase());
 }

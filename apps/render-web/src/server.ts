@@ -26,6 +26,9 @@ export function createRenderWebServer(options: RenderWebServerOptions = {}): Ser
     ...(options.statelessConnectorPreparer
       ? { statelessConnectorPreparer: options.statelessConnectorPreparer }
       : {}),
+    ...(options.statelessConnectorReader
+      ? { statelessConnectorReader: options.statelessConnectorReader }
+      : {}),
   });
   return createServer((req, res) => {
     void handleRequest(req, res, staticDir, apiRouter);

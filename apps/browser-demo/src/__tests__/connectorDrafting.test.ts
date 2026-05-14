@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 
 import {
   connectorActionDisplayParts,
+  connectorActionFormById,
   connectorActionFormByActionType,
   connectorActionFormForTemplate,
   connectorActionFormTemplateActionType,
@@ -134,10 +135,16 @@ describe('connector drafting helpers', () => {
     });
   });
 
+  it('configures Jupiter Lend type selection as a dropdown-backed subaction group', () => {
+    const form = connectorActionFormById('jupiter:lend-flow');
+    expect(form?.subActions?.label).toBe('Lend type');
+    expect(form?.subActions?.display).toBe('select');
+  });
+
   it('infers connector-specific templates before seeding default sub-actions', () => {
     const raydium = normalizeConnectorDraftParameters(templateById('connector-raydium-liquidity'), {
       poolId: 'SOL-USDC-CPMM',
-      amount: '0.01',
+      tokenAAmount: '0.01',
     });
     expect(raydium).toMatchObject({
       connectorId: 'raydium',
@@ -148,7 +155,7 @@ describe('connector drafting helpers', () => {
       subAction: 'cpmm-add',
       poolType: 'cpmm',
       poolId: 'SOL-USDC-CPMM',
-      amount: '0.01',
+      tokenAAmount: '0.01',
     });
 
     const lend = normalizeConnectorDraftParameters(templateById('connector-jupiter-lend'), {
@@ -190,12 +197,12 @@ describe('connector drafting helpers', () => {
     const normalized = normalizeConnectorDraftParameters(templateById('connector-raydium-liquidity'), {
       subAction: 'cpmm-add',
       poolId: 'SOL-USDC-CPMM',
-      amount: '0.01',
+      tokenAAmount: '0.01',
     });
     const renderFieldIds = connectorFormRenderFields(form!, normalized).map((field) => field.id);
 
     expect(normalized.poolType).toBe('cpmm');
-    expect(renderFieldIds).toEqual(['subAction', 'poolId', 'amount', 'memo']);
+    expect(renderFieldIds).toEqual(['subAction', 'poolId', 'amountSide', 'tokenAAmount', 'tokenBAmount', 'memo']);
     expect(renderFieldIds).not.toContain('poolType');
   });
 
@@ -503,6 +510,42 @@ describe('connector drafting helpers', () => {
       expect(orca.fields.some((field) => field.id === 'upperTick')).toBe(false);
     });
 
+    it('preserves Meteora pool token metadata while dropping stale generic fields', () => {
+      const normalized = normalizeConnectorDraftParameters(templateById('connector-meteora-add-liquidity'), {
+        connectorId: 'meteora',
+        connectorOperationId: 'meteora:add-liquidity',
+        subAction: 'new-position',
+        poolAddress: 'BGm1tav58oGcsQJehL9WXBFXF7D27vZsKefj4xJKD5Y',
+        poolAddressLabel: 'SOL-USDC DLMM',
+        poolName: 'SOL-USDC',
+        tokenXSymbol: 'SOL',
+        tokenYSymbol: 'USDC',
+        tokenMintX: 'So11111111111111111111111111111111111111112',
+        tokenMintY: 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v',
+        binStep: '25',
+        tokenXAmount: '.01',
+        tokenYAmount: '1',
+        rangePreset: 'balanced',
+        strategyType: 'spot',
+        amount: 'stale',
+      });
+
+      expect(normalized).toMatchObject({
+        connectorId: 'meteora',
+        connectorOperationId: 'meteora:add-liquidity',
+        connectorActionSource: 'first-class-adapter',
+        poolAddressLabel: 'SOL-USDC DLMM',
+        poolName: 'SOL-USDC',
+        tokenXSymbol: 'SOL',
+        tokenYSymbol: 'USDC',
+        tokenMintX: 'So11111111111111111111111111111111111111112',
+        tokenMintY: 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v',
+        tokenXAmount: '.01',
+        tokenYAmount: '1',
+      });
+      expect(normalized).not.toHaveProperty('amount');
+    });
+
     it('uses a Pyth feed dropdown for price update drafts', () => {
       const pyth = templateById('connector-pyth-post-price-update');
       const feed = pyth.fields.find((field) => field.id === 'priceFeedIds');
@@ -516,9 +559,13 @@ describe('connector drafting helpers', () => {
       if (!pyth) throw new Error('Missing Pyth connector');
       const form = connectorActionFormForTemplate(template, pyth);
       const feed = form ? formTemplateFields(form).find((field) => field.id === 'priceFeedIds') : undefined;
+      const question = form ? formTemplateFields(form).find((field) => field.id === 'question') : undefined;
 
       expect(feed?.type).toBe('cascading-select');
       expect(feed?.cascading?.providerId).toBe('pyth.feed');
+      expect(question?.type).toBe('select');
+      expect(question?.options).toEqual(['price', 'freshness', 'confidence', 'oracle evidence']);
+      expect(question?.defaultValue).toBe('price');
 
       const scoped = scopeConnectorDraftParameters(template, {
         protocol: 'Pyth',
@@ -590,14 +637,17 @@ describe('connector drafting helpers', () => {
           connectorOperationId: operationId,
           subAction: 'collection',
           subActionLabel: 'Collection',
-          priceSol: '.01',
+          bidPriceSol: '.01',
+          maxEscrowSol: '.01',
           collectionId: 'madlads',
         });
+        expect(collection).not.toHaveProperty('priceSol');
         expect(collection).not.toHaveProperty('mintAddress');
         expect(connectorFormRenderFields(form, collection).map((field) => field.id)).toEqual([
           'subAction',
           'collectionId',
-          'priceSol',
+          'bidPriceSol',
+          'maxEscrowSol',
           'memo',
         ]);
 
@@ -612,14 +662,17 @@ describe('connector drafting helpers', () => {
           connectorOperationId: operationId,
           subAction: 'nft',
           subActionLabel: 'Single NFT',
-          priceSol: '.01',
+          bidPriceSol: '.01',
+          maxEscrowSol: '.01',
           mintAddress: 'nft-mint',
         });
+        expect(nft).not.toHaveProperty('priceSol');
         expect(nft).not.toHaveProperty('collectionId');
         expect(connectorFormRenderFields(form, nft).map((field) => field.id)).toEqual([
           'subAction',
           'mintAddress',
-          'priceSol',
+          'bidPriceSol',
+          'maxEscrowSol',
           'memo',
         ]);
       }
@@ -637,21 +690,25 @@ describe('connector drafting helpers', () => {
         const env = { connectedDapps, cluster: 'mainnet-beta' };
 
         const collection = validateConnectorDraftParameters(template, {
-          priceSol: '.01',
+          bidPriceSol: '.01',
           collectionId: 'madlads',
         }, env, 'template');
         expect(collection.errors).toEqual({});
         expect(collection.parameters.subAction).toBe('collection');
         expect(collection.parameters.collectionId).toBe('madlads');
+        expect(collection.parameters.bidPriceSol).toBe('.01');
+        expect(collection.parameters.maxEscrowSol).toBe('.01');
 
         const nft = validateConnectorDraftParameters(template, {
           subAction: 'nft',
-          priceSol: '.01',
+          bidPriceSol: '.01',
           mintAddress: 'nft-mint',
         }, env, 'template');
         expect(nft.errors).toEqual({});
         expect(nft.parameters.subAction).toBe('nft');
         expect(nft.parameters.mintAddress).toBe('nft-mint');
+        expect(nft.parameters.bidPriceSol).toBe('.01');
+        expect(nft.parameters.maxEscrowSol).toBe('.01');
       }
     });
 
@@ -725,17 +782,51 @@ describe('connector drafting helpers', () => {
       expect(display?.title).toBe('Kamino deposit - SOL Reserve');
     });
 
+    it('formats Project 0 and MarginFi bank deposits with selected bank labels', () => {
+      const project0 = connectorActionDisplayParts('project0_deposit', {
+        connectorOperationId: 'project0:deposit',
+        bankAddress: '4qp6Fx6tnZkY5Wropq9wUYgtFxXKwE6viZxFHg3rdAG8',
+        bankAddressLabel: 'SOL bank',
+        amount: '.01',
+      });
+      const marginfi = connectorActionDisplayParts('marginfi_deposit', {
+        connectorOperationId: 'marginfi:deposit',
+        bankAddress: '4qp6Fx6tnZkY5Wropq9wUYgtFxXKwE6viZxFHg3rdAG8',
+        bankAddressLabel: 'SOL bank',
+        amount: '.01',
+      });
+
+      expect(project0?.title).toBe('Project 0 deposit - SOL Bank');
+      expect(project0?.selectionLabel).toBe('SOL Bank');
+      expect(marginfi?.title).toBe('MarginFi deposit - SOL Bank');
+      expect(marginfi?.selectionLabel).toBe('SOL Bank');
+    });
+
     it('includes the selected sub-action before the selected pool for unified connector forms', () => {
       const display = connectorActionDisplayParts('raydium_add_liquidity', {
         connectorOperationId: 'raydium:liquidity-flow',
-        subAction: 'clmm-add',
+        subAction: 'clmm-open',
         poolId: 'SOL-USDC',
-        amount: '0.01',
+        tokenAAmount: '0.01',
       });
 
-      expect(display?.title).toBe('Raydium liquidity - CLMM Add Liquidity - SOL USDC');
-      expect(display?.operationLabel).toBe('Raydium liquidity - CLMM Add Liquidity');
+      expect(display?.title).toBe('Raydium liquidity - CLMM Open Position - SOL USDC');
+      expect(display?.operationLabel).toBe('Raydium liquidity - CLMM Open Position');
       expect(display?.selectionLabel).toBe('SOL USDC');
+    });
+
+    it('formats NFT marketplace collection bids with the selected collection label', () => {
+      const display = connectorActionDisplayParts('tensor_bid', {
+        connectorOperationId: 'tensor:bid-flow',
+        subAction: 'collection',
+        collectionId: 'madlads',
+        collectionIdLabel: 'Mad Lads',
+        bidPriceSol: '.01',
+      });
+
+      expect(display?.title).toBe('Tensor bid - Collection - Mad Lads');
+      expect(display?.operationLabel).toBe('Tensor bid - Collection');
+      expect(display?.selectionLabel).toBe('Mad Lads');
     });
   });
 });

@@ -51,6 +51,7 @@ interface FakeLendState {
   borrowPositions: JupiterLendBorrowPositionSnapshot[];
   healthPreviewOverride?: Partial<JupiterLendBorrowHealthPreview>;
   buildCalls: string[];
+  earnDetailRequests: string[];
   healthCalls: number;
 }
 
@@ -127,6 +128,7 @@ function fakeState(overrides: Partial<FakeLendState> = {}): FakeLendState {
       },
     ],
     buildCalls: [],
+    earnDetailRequests: [],
     healthCalls: 0,
     ...overrides,
   };
@@ -137,7 +139,8 @@ function buildFakeLendClient(state: FakeLendState): JupiterLendClient {
     async getEarnTokens(): Promise<JupiterLendEarnTokenSnapshot[]> {
       return [state.earnToken];
     },
-    async getEarnTokenDetail(): Promise<JupiterLendEarnTokenSnapshot> {
+    async getEarnTokenDetail(input): Promise<JupiterLendEarnTokenSnapshot> {
+      state.earnDetailRequests.push(input.assetMint);
       return state.earnToken;
     },
     async getEarnPositions(): Promise<JupiterLendEarnPositionSnapshot[]> {
@@ -434,6 +437,27 @@ describe('Jupiter lend prepare and execute', () => {
       amount: '5',
       amountRaw: '5000000',
       refreshAtExecution: false,
+    });
+  });
+
+  it('normalizes SOL earn deposits to the WSOL mint before token lookup', async () => {
+    state.earnToken = {
+      ...state.earnToken,
+      assetMint: SOL_MINT,
+      tokenSymbol: 'SOL',
+      decimals: 9,
+      shareDecimals: 9,
+    };
+    const ctx = makeContext({ store: inMemoryStore() });
+    const result = await requireJupiterAction('earn_deposit').prepare(
+      { assetMint: 'SOL', amount: '0.01' },
+      ctx,
+    );
+
+    expect(state.earnDetailRequests).toEqual([SOL_MINT]);
+    expect(result.addInput.params).toMatchObject({
+      assetMint: SOL_MINT,
+      amountRaw: '10000000',
     });
   });
 

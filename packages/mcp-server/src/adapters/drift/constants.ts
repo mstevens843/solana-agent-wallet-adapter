@@ -10,8 +10,16 @@ export const DRIFT_DESCRIPTION =
 
 export const DRIFT_SUPPORTED_CLUSTERS: Cluster[] = ['mainnet-beta'];
 
-// Drift Vaults program on mainnet. Strategy vault deposit/withdraw lifecycle is owned by this program.
+// Drift Vaults program used by the current public strategy-vault catalog, including SOL Super Staking.
 export const DRIFT_VAULTS_PROGRAM_ID = new PublicKey('vAuLTsyrvSfZRuRB3XgvkPwNGgYSs9YRYymVebLKoxR');
+
+// Drift's program address docs list this newer vaults deployment. Keep both ids accepted so the
+// adapter can work with catalog vaults still owned by the legacy program and newly deployed vaults.
+export const DRIFT_VAULTS_CURRENT_PROGRAM_ID = new PublicKey('JCNCMFXo5M5qwUPg2Utu1u6YWp3MbygxqBsBeXXJfrw');
+export const DRIFT_VAULTS_PROGRAM_IDS = [
+  DRIFT_VAULTS_PROGRAM_ID,
+  DRIFT_VAULTS_CURRENT_PROGRAM_ID,
+] as const;
 
 // Drift protocol program on mainnet. Read-only user/account snapshots route through this program.
 export const DRIFT_PROGRAM_ID = new PublicKey('dRiftyHA39MWEi3m9aunc5MzRF1JYuBsbn6VPcn33UH');

@@ -49,6 +49,13 @@ export {
   prepareTransactionForApproval,
 } from './preparedActionTransactionBuilder.js';
 export {
+  isDriftVaultConfigured,
+  resetDriftVaultClientFactory,
+  setDriftVaultClientFactory,
+} from './adapters/drift/client.js';
+export type { DriftVaultClient } from './adapters/drift/client.js';
+export { buildDriftVaultClient } from './adapters/drift/sdkClient.js';
+export {
   isKaminoConfigured,
   resetKaminoClientFactory,
   setKaminoClientFactory,
@@ -120,6 +127,7 @@ export type {
 export {
   describeWormholeUnavailableReason,
   getWormholeClient,
+  isWormholeConfigured,
   resetWormholeClientFactory,
   setWormholeClientFactory,
 } from './adapters/wormhole/client.js';
@@ -134,6 +142,7 @@ export type {
   WormholeTransferStatus,
   WormholeWalletBridgeExposure,
 } from './adapters/wormhole/client.js';
+export { buildWormholeSdkClient } from './adapters/wormhole/sdkClient.js';
 export type {
   AgentWalletActionServiceOptions,
   PrepareBlinkActionInput,

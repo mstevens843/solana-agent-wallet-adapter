@@ -318,6 +318,12 @@ describe('Meteora prepared actions', () => {
     expect(prepared.preview).toMatchObject({
       connectorId: 'meteora',
       action: 'add_liquidity',
+      poolName: 'SOL-USDC',
+      tokenXSymbol: 'SOL',
+      tokenYSymbol: 'USDC',
+      tokenMintX: TOKEN_X,
+      tokenMintY: TOKEN_Y,
+      binStep: 25,
       binRange: { minBinId: 10, maxBinId: 12 },
       slippageBps: 50,
       strategyType: 'spot',

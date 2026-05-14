@@ -586,10 +586,31 @@ class MeteoraSdkClient implements MeteoraClient {
       if (typeof create !== 'function') {
         throw new AdapterError(METEORA_ADAPTER_ID, 'sdk_unavailable', 'Meteora SDK did not expose DLMM.create.');
       }
-      cached = create(connection, new PublicKey(poolAddress), sdkCreateOptions());
+      cached = create(connection, new PublicKey(poolAddress), sdkCreateOptions())
+        .catch((err: unknown) => {
+          this.poolCache.delete(key);
+          throw this.poolLoadError(err, poolAddress);
+        });
       this.poolCache.set(key, cached);
     }
     return cached;
+  }
+
+  private poolLoadError(err: unknown, poolAddress: string): AdapterError {
+    if (err instanceof AdapterError) return err;
+    const message = err instanceof Error ? err.message : String(err);
+    if (/not found|LB Pair account/i.test(message)) {
+      return new AdapterError(
+        METEORA_ADAPTER_ID,
+        'pool_not_found',
+        `Meteora DLMM pool ${poolAddress} was not found on mainnet. Refresh the pool list or paste a current Meteora DLMM pool address.`,
+      );
+    }
+    return new AdapterError(
+      METEORA_ADAPTER_ID,
+      'sdk_error',
+      `Meteora SDK failed to load pool ${poolAddress}: ${message}`,
+    );
   }
 
   private async poolSnapshot(

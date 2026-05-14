@@ -29,6 +29,7 @@ export interface ConnectorSubActionGroup {
   label: string;
   options: ConnectorSubAction[];
   defaultId?: string;
+  display?: 'chips' | 'select';
 }
 
 export interface ConnectorActionForm {
@@ -417,7 +418,7 @@ function connectorFieldDisplayValue(
 
 function connectorFieldIsLowSignal(field: AgentPlanTemplateField): boolean {
   if (field.type !== 'cascading-select' && field.type !== 'select') return true;
-  return /^(memo|reason|amount|amountSol|inputAmount|msolAmount|priceSol|slippageBps|recipient|poolType|depositType|withdrawMode|voteKind)$/i.test(field.id);
+  return /^(memo|reason|amount|amountSol|inputAmount|msolAmount|priceSol|bidPriceSol|maxEscrowSol|slippageBps|recipient|poolType|depositType|withdrawMode|voteKind)$/i.test(field.id);
 }
 
 function stringParamsFromUnknown(params: Record<string, unknown>): Record<string, string> {
@@ -562,7 +563,7 @@ export function normalizeConnectorDraftParameters(
         ? 'read-only'
         : connector.actionSource ?? 'blink',
   };
-  return scopeConnectorDraftParameters(template, applyConnectorSubActionDefaults(form, base));
+  return scopeConnectorDraftParameters(template, applyConnectorSubActionDefaults(form, normalizeConnectorParameterAliases(form, base)));
 }
 
 export function scopeConnectorDraftParameters(
@@ -578,7 +579,7 @@ export function scopeConnectorDraftParameters(
     selectedConnectorForDraftParameters(parameters);
   const form = formHint ??
     (connector ? connectorActionFormForTemplate(template, connector) : connectorActionFormForTemplate(template));
-  const scopedSource = applyConnectorSubActionDefaults(form, parameters);
+  const scopedSource = applyConnectorSubActionDefaults(form, normalizeConnectorParameterAliases(form, parameters));
   const fields = form ? formTemplateFields(form) : template.fields ?? [];
   const allowed = new Set<string>([
     'connectorId',
@@ -587,21 +588,21 @@ export function scopeConnectorDraftParameters(
     'protocol',
     'operation',
   ]);
+  for (const key of connectorScopedMetadataKeys(connector?.id ?? form?.connectorId)) {
+    allowed.add(key);
+  }
   if (connectorDraftRequiresBlink(template, scopedSource)) {
     allowed.add('blinkUrl');
     allowed.add('actionUrl');
   }
   for (const field of fields) {
     if (!connectorParameterFieldIsVisible(field, scopedSource)) continue;
-    allowed.add(field.id);
-    allowed.add(`${field.id}Label`);
-    allowed.add(`${field.id}Mint`);
+    allowConnectorFieldParameter(allowed, field.id);
   }
   const branch = form ? selectedSubAction(form, scopedSource) : undefined;
   for (const field of branch?.fields ?? []) {
-    allowed.add(field.id);
-    allowed.add(`${field.id}Label`);
-    allowed.add(`${field.id}Mint`);
+    if (!connectorParameterFieldIsVisible(field, scopedSource)) continue;
+    allowConnectorFieldParameter(allowed, field.id);
   }
 
   const scoped: Record<string, string> = {};
@@ -609,6 +610,39 @@ export function scopeConnectorDraftParameters(
     if (allowed.has(key)) scoped[key] = value;
   }
   return scoped;
+}
+
+const CONNECTOR_FIELD_META_SUFFIXES = [
+  'Label',
+  'Mint',
+  'TokenASymbol',
+  'TokenBSymbol',
+  'TokenAMint',
+  'TokenBMint',
+  'FeeBps',
+  'PoolType',
+  'ProgramId',
+] as const;
+
+function allowConnectorFieldParameter(allowed: Set<string>, fieldId: string): void {
+  allowed.add(fieldId);
+  for (const suffix of CONNECTOR_FIELD_META_SUFFIXES) {
+    allowed.add(`${fieldId}${suffix}`);
+  }
+}
+
+function connectorScopedMetadataKeys(connectorId?: ProtocolConnectorId | string): string[] {
+  if (connectorId === 'meteora') {
+    return [
+      'poolName',
+      'tokenXSymbol',
+      'tokenYSymbol',
+      'tokenMintX',
+      'tokenMintY',
+      'binStep',
+    ];
+  }
+  return [];
 }
 
 export function stripConnectorDraftExtras(
@@ -705,6 +739,24 @@ function formField(id: string, label: string, required = false): AgentPlanTempla
   return { id, label, required, type: 'text' };
 }
 
+function normalizeConnectorParameterAliases(
+  form: ConnectorActionForm | undefined,
+  parameters: Record<string, string>,
+): Record<string, string> {
+  if (!form) return parameters;
+  const actionType = connectorActionFormTemplateActionType(form, parameters);
+  if (actionType !== 'magiceden_bid' && actionType !== 'tensor_bid') return parameters;
+  const next = { ...parameters };
+  const bidPriceSol = next.bidPriceSol?.trim() || next.priceSol?.trim() || '';
+  if (bidPriceSol && !next.bidPriceSol?.trim()) {
+    next.bidPriceSol = bidPriceSol;
+  }
+  if (bidPriceSol && !next.maxEscrowSol?.trim()) {
+    next.maxEscrowSol = bidPriceSol;
+  }
+  return next;
+}
+
 function formSelectField(
   id: string,
   label: string,
@@ -713,6 +765,21 @@ function formSelectField(
   required = false,
 ): AgentPlanTemplateField {
   return { id, label, options, defaultValue, required, type: 'select' };
+}
+
+function liquidityAmountSideField(): AgentPlanTemplateField {
+  return formSelectField('amountSide', 'Amount token', ['tokenA', 'tokenB'], 'tokenA', true);
+}
+
+function liquidityTokenAmountField(
+  id: 'tokenAAmount' | 'tokenBAmount',
+  label: string,
+  side: 'tokenA' | 'tokenB',
+): AgentPlanTemplateField {
+  return {
+    ...formField(id, label, true),
+    showWhen: { amountSide: side },
+  };
 }
 
 function cascadingField(
@@ -987,7 +1054,9 @@ function orcaForms(): ConnectorActionForm[] {
             fields: [
               orcaWhirlpoolField(true),
               orcaPositionField(true),
-              formField('tokenAAmount', 'Token A amount', true),
+              liquidityAmountSideField(),
+              liquidityTokenAmountField('tokenAAmount', 'Token A amount', 'tokenA'),
+              liquidityTokenAmountField('tokenBAmount', 'Token B amount', 'tokenB'),
             ],
           },
           {
@@ -997,7 +1066,9 @@ function orcaForms(): ConnectorActionForm[] {
             actionType: 'orca_increase_liquidity',
             fields: [
               orcaWhirlpoolField(true),
-              formField('tokenAAmount', 'Token A amount', true),
+              liquidityAmountSideField(),
+              liquidityTokenAmountField('tokenAAmount', 'Token A amount', 'tokenA'),
+              liquidityTokenAmountField('tokenBAmount', 'Token B amount', 'tokenB'),
               formSelectField('rangePreset', 'Range preset', ['balanced', 'narrow', 'wide'], 'balanced', true),
             ],
           },
@@ -1051,7 +1122,7 @@ function magicedenForms(): ConnectorActionForm[] {
       description: 'Place a bid on a single NFT or an entire collection on Magic Eden.',
       executionMode: 'first-class-adapter',
       outcome: 'queueable',
-      fields: [formField('priceSol', 'Price (SOL)', true), formField('memo', 'Reason')],
+      fields: [formField('bidPriceSol', 'Bid price (SOL)', true), formField('maxEscrowSol', 'Max escrow (SOL)'), formField('memo', 'Reason')],
       subActions: {
         fieldId: 'subAction',
         label: 'Bid target',
@@ -1101,7 +1172,7 @@ function tensorForms(): ConnectorActionForm[] {
       description: 'Place a bid on a single NFT or an entire collection on Tensor.',
       executionMode: 'first-class-adapter',
       outcome: 'queueable',
-      fields: [formField('priceSol', 'Price (SOL)', true), formField('memo', 'Reason')],
+      fields: [formField('bidPriceSol', 'Bid price (SOL)', true), formField('maxEscrowSol', 'Max escrow (SOL)'), formField('memo', 'Reason')],
       subActions: {
         fieldId: 'subAction',
         label: 'Bid target',
@@ -1561,6 +1632,7 @@ function raydiumLiquidityUnifiedForm(): ConnectorActionForm {
       fieldId: 'subAction',
       label: 'Pool type',
       defaultId: 'cpmm-add',
+      display: 'select',
       options: [
         {
           id: 'cpmm-add',
@@ -1570,24 +1642,42 @@ function raydiumLiquidityUnifiedForm(): ConnectorActionForm {
           fields: [
             raydiumPoolField('raydium.cpmm.pool', true),
             { id: 'poolType', label: 'Pool type', type: 'select', options: ['cpmm'], defaultValue: 'cpmm' },
-            formField('amount', 'Amount', true),
+            liquidityAmountSideField(),
+            liquidityTokenAmountField('tokenAAmount', 'Token A amount', 'tokenA'),
+            liquidityTokenAmountField('tokenBAmount', 'Token B amount', 'tokenB'),
           ],
         },
         {
-          id: 'clmm-add',
-          label: 'CLMM — add liquidity',
-          description: 'Concentrated-liquidity range deposit.',
+          id: 'clmm-open',
+          label: 'CLMM — open position',
+          description: 'Open a concentrated-liquidity position with a price range.',
+          actionType: 'raydium_add_liquidity',
+          fields: [
+            raydiumPoolField('raydium.clmm.pool', true),
+            { id: 'poolType', label: 'Pool type', type: 'select', options: ['clmm'], defaultValue: 'clmm' },
+            liquidityAmountSideField(),
+            liquidityTokenAmountField('tokenAAmount', 'Token A amount', 'tokenA'),
+            liquidityTokenAmountField('tokenBAmount', 'Token B amount', 'tokenB'),
+            formField('lowerPrice', 'Lower price', true),
+            formField('upperPrice', 'Upper price', true),
+          ],
+        },
+        {
+          id: 'clmm-increase',
+          label: 'CLMM — add to position',
+          description: 'Increase an existing concentrated-liquidity position.',
           actionType: 'raydium_add_liquidity',
           fields: [
             raydiumPoolField('raydium.clmm.pool', true),
             { id: 'poolType', label: 'Pool type', type: 'select', options: ['clmm'], defaultValue: 'clmm' },
             cascadingField('positionMint', 'Existing position', 'raydium.position', {
+              required: true,
               dependsOn: ['poolId'],
-              emptyHint: 'No CLMM positions found in this pool. Leave blank to open a new one.',
+              emptyHint: 'No CLMM positions found in this pool. Choose CLMM — open position to create one.',
             }),
-            formField('lowerPrice', 'Lower price'),
-            formField('upperPrice', 'Upper price'),
-            formField('amount', 'Amount'),
+            liquidityAmountSideField(),
+            liquidityTokenAmountField('tokenAAmount', 'Token A amount', 'tokenA'),
+            liquidityTokenAmountField('tokenBAmount', 'Token B amount', 'tokenB'),
           ],
         },
         {
@@ -1665,6 +1755,7 @@ function jupiterLendUnifiedForm(): ConnectorActionForm {
       fieldId: 'subAction',
       label: 'Lend type',
       defaultId: 'earn-deposit',
+      display: 'select',
       options: [
         {
           id: 'earn-deposit',
@@ -1787,7 +1878,23 @@ function applyConnectorSubActionDefaults(
       next[field.id] = defaultValue;
     }
   }
+  applySingleSidedLiquidityAmountDefaults(branch, next);
   return next;
+}
+
+function applySingleSidedLiquidityAmountDefaults(
+  branch: ConnectorSubAction,
+  parameters: Record<string, string>,
+): void {
+  const branchIds = new Set(branch.fields.map((field) => field.id));
+  if (!branchIds.has('amountSide') || !branchIds.has('tokenAAmount') || !branchIds.has('tokenBAmount')) return;
+  const side = parameters.amountSide === 'tokenB' ? 'tokenB' : 'tokenA';
+  const selectedAmount = side === 'tokenB' ? 'tokenBAmount' : 'tokenAAmount';
+  const oppositeAmount = side === 'tokenB' ? 'tokenAAmount' : 'tokenBAmount';
+  if (parameters.amount?.trim() && !parameters.tokenAAmount?.trim() && !parameters.tokenBAmount?.trim()) {
+    parameters[selectedAmount] = parameters.amount.trim();
+  }
+  delete parameters[oppositeAmount];
 }
 
 function connectorFixedSubActionField(field: AgentPlanTemplateField): boolean {
@@ -1875,7 +1982,9 @@ function connectorAmountField(field: AgentPlanTemplateField): boolean {
     id === 'shares' ||
     id === 'percentage' ||
     id === 'pricesol' ||
+    id === 'bidpricesol' ||
     id === 'maxpricesol' ||
+    id === 'maxescrowsol' ||
     id === 'count';
 }
 
@@ -2142,6 +2251,10 @@ function connectorReadFields(connector: ProtocolConnector): AgentPlanTemplateFie
     formSelectField('question', 'Question', ['status', 'balances', 'rewards', 'risk', 'markets'], 'status'),
     formField('memo', 'Instructions'),
   ];
+  const pythTail = [
+    formSelectField('question', 'Question', ['price', 'freshness', 'confidence', 'oracle evidence'], 'price'),
+    formField('memo', 'Instructions'),
+  ];
   switch (connector.id) {
     case 'pyth':
       return [
@@ -2150,7 +2263,7 @@ function connectorReadFields(connector: ProtocolConnector): AgentPlanTemplateFie
           emptyHint: 'Type a symbol (e.g. SOL/USD) to search Pyth feeds.',
           placeholder: 'SOL/USD',
         }),
-        ...tail,
+        ...pythTail,
       ];
     case 'drift':
       return [
@@ -2337,7 +2450,7 @@ export function connectorAiPlannerContext(
     suppliedFields: {
       blinkUrl: validation.parameters.blinkUrl || validation.parameters.actionUrl || '',
       position: validation.parameters.position || '',
-      amount: validation.parameters.amount || '',
+      amount: validation.parameters.amount || validation.parameters.bidPriceSol || validation.parameters.priceSol || '',
       memo: validation.parameters.memo || '',
     },
     missingFacts: validation.missingFacts,

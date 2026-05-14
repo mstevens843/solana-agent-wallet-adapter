@@ -1,4 +1,8 @@
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import {
+  PublicKey,
+  SystemProgram,
+} from '@solana/web3.js';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import {
   PROJECT0_ADAPTER_ID,
@@ -6,8 +10,11 @@ import {
   project0Adapter,
 } from '../../adapters/project0/index.js';
 import {
+  getProject0Client,
   resetProject0ClientFactory,
+  resetProject0SdkLoaderForTests,
   setProject0ClientFactory,
+  setProject0SdkLoaderForTests,
   type Project0AccountDetail,
   type Project0Bank,
   type Project0BuildTransactionResult,
@@ -320,6 +327,8 @@ function inMemoryStore(): PreparedActionStore {
 
 afterEach(() => {
   resetProject0ClientFactory();
+  resetProject0SdkLoaderForTests();
+  vi.unstubAllGlobals();
 });
 
 function requireProject0Action(id: 'create_account' | 'deposit' | 'withdraw' | 'borrow' | 'repay') {
@@ -447,6 +456,125 @@ describe('Project 0 prepare + execute', () => {
     expect(state.previewCalls).toEqual([{ operation: 'repay', repayAll: true, minHealthRatio: 1.1 }]);
   });
 });
+
+describe('Project 0 real client hardening', () => {
+  it('discovers a sponsored Project 0 PDA when SDK account scans are empty', async () => {
+    const sdk = installFakeProject0Sdk({
+      existingPdas: [{ accountIndex: 7, thirdPartyId: 3301 }],
+    });
+    const client = getProject0Client();
+
+    const detail = await client.getAccountDetail(sdk.connection, { walletAddress: WALLET });
+
+    expect(detail.project0Account).toBe(sdk.existingPdaAddresses[0]?.toBase58());
+    expect(sdk.sdkClient.getAccountAddresses).toHaveBeenCalledWith(new PublicKey(WALLET));
+    expect(sdk.fetchMarginfiAccountAddresses).toHaveBeenCalled();
+    expect(sdk.connection.getMultipleAccountsInfo).toHaveBeenCalled();
+    expect(sdk.sdkClient.fetchAccount).toHaveBeenCalledWith(sdk.existingPdaAddresses[0]);
+  });
+
+  it('requires an explicit account when multiple Project 0 PDAs are discovered', async () => {
+    const sdk = installFakeProject0Sdk({
+      existingPdas: [
+        { accountIndex: 0, thirdPartyId: 0 },
+        { accountIndex: 1, thirdPartyId: 3301 },
+      ],
+    });
+    const client = getProject0Client();
+
+    await expect(
+      client.getAccountDetail(sdk.connection, { walletAddress: WALLET }),
+    ).rejects.toMatchObject({
+      name: 'AdapterError',
+      code: 'ambiguous_account',
+      message: expect.stringContaining(sdk.existingPdaAddresses[0]!.toBase58()),
+    });
+  });
+});
+
+function installFakeProject0Sdk(options: {
+  getAccountAddresses?: PublicKey[];
+  directAddresses?: PublicKey[];
+  existingPdas?: Array<{ accountIndex: number; thirdPartyId: number }>;
+} = {}): {
+  connection: DAppAdapterContext['connection'] & { getMultipleAccountsInfo: ReturnType<typeof vi.fn> };
+  sdkClient: Record<string, any>;
+  existingPdaAddresses: PublicKey[];
+  fetchMarginfiAccountAddresses: ReturnType<typeof vi.fn>;
+} {
+  const authority = new PublicKey(WALLET);
+  const group = new PublicKey(USDC_BANK);
+  const programId = SystemProgram.programId;
+  const existingPdaAddresses = (options.existingPdas ?? []).map((entry) =>
+    fakeProject0Pda(programId, group, authority, entry.accountIndex, entry.thirdPartyId)[0],
+  );
+  const accountBase = {
+    authority,
+    activeBalances: [],
+    computeHealthComponentsFromCache: vi.fn(() => ({ assets: '100', liabilities: '0' })),
+  };
+  const sdkClient = {
+    program: { programId },
+    group: { address: group },
+    getBank: vi.fn(),
+    getAccountAddresses: vi.fn(async () => options.getAccountAddresses ?? []),
+    fetchAccount: vi.fn(async (address: PublicKey) => ({
+      ...accountBase,
+      address,
+    })),
+  };
+  const connection = {
+    rpcEndpoint: 'https://api.fake',
+    getMultipleAccountsInfo: vi.fn(async (addresses: PublicKey[]) =>
+      addresses.map((address) =>
+        existingPdaAddresses.some((candidate) => candidate.equals(address))
+          ? { data: Buffer.alloc(0), executable: false, lamports: 1, owner: programId }
+          : null,
+      ),
+    ),
+  } as unknown as DAppAdapterContext['connection'] & { getMultipleAccountsInfo: ReturnType<typeof vi.fn> };
+  const fetchMarginfiAccountAddresses = vi.fn(async () => options.directAddresses ?? []);
+  setProject0SdkLoaderForTests(async () => ({
+    Project0Client: {
+      initialize: vi.fn(async () => sdkClient),
+    },
+    getConfig: vi.fn(() => ({ environment: 'production' })),
+    MarginRequirementType: { Maintenance: 'maintenance' },
+    fetchMarginfiAccountAddresses,
+    deriveMarginfiAccount: vi.fn(fakeProject0Pda),
+    MARGINFI_SPONSORED_SHARD_ID: 3301,
+  }));
+  vi.stubGlobal('fetch', vi.fn(async () => ({
+    ok: true,
+    json: async () => [],
+  })));
+  return {
+    connection,
+    sdkClient,
+    existingPdaAddresses,
+    fetchMarginfiAccountAddresses,
+  };
+}
+
+function fakeProject0Pda(
+  programId: PublicKey,
+  group: PublicKey,
+  authority: PublicKey,
+  accountIndex: number,
+  thirdPartyId = 0,
+): [PublicKey, number] {
+  const accountIndexBuf = Buffer.alloc(2);
+  accountIndexBuf.writeUInt16LE(accountIndex);
+  const thirdPartyIdBuf = Buffer.alloc(2);
+  thirdPartyIdBuf.writeUInt16LE(thirdPartyId);
+  return PublicKey.findProgramAddressSync([
+    Buffer.from('project0-test-account'),
+    group.toBuffer(),
+    authority.toBuffer(),
+    accountIndexBuf,
+    thirdPartyIdBuf,
+  ], programId);
+}
 
 function rawAmount(amount: string, decimals: number): string {
   return String(BigInt(Math.round(Number(amount) * 10 ** decimals)));

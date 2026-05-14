@@ -25,7 +25,7 @@ interface BuildSaveSdkClientOptions {
   mainPoolAddress?: string;
 }
 
-interface SdkBundle {
+export interface SdkBundle {
   SolendActionCore: typeof import('@solendprotocol/solend-sdk').SolendActionCore;
   parseReserve: typeof import('@solendprotocol/solend-sdk').parseReserve;
   MAIN_POOL_ADDRESS: PublicKey;
@@ -35,7 +35,7 @@ interface SdkBundle {
 
 let cachedSdk: SdkBundle | undefined;
 
-async function loadSdk(): Promise<SdkBundle> {
+export async function loadSaveSdkForSmokeTest(): Promise<SdkBundle> {
   if (cachedSdk) return cachedSdk;
   const sdk = await import('@solendprotocol/solend-sdk');
   cachedSdk = {
@@ -47,6 +47,8 @@ async function loadSdk(): Promise<SdkBundle> {
   };
   return cachedSdk;
 }
+
+const loadSdk = loadSaveSdkForSmokeTest;
 
 interface CachedPool {
   pool: {

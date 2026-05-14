@@ -66,6 +66,58 @@ describe('cloud one-time workflow API', () => {
     });
   });
 
+  it('reads connector facts through the signed-in cloud connector endpoint', async () => {
+    const store = new MemoryWorkflowStore();
+    const session = await createWalletSession({
+      store,
+      walletAddress: walletA,
+      clock: fixedClock('2026-05-08T20:00:00.000Z'),
+    });
+
+    await withRenderWorkflowServer(store, async (port) => {
+      const response = await requestJsonWithHeaders(port, 'POST', '/api/connector/read-facts', {
+        connectorId: 'pyth',
+        capability: 'markets',
+        cluster: 'mainnet-beta',
+        priceFeedId: '0xef0d8b6fda2ceba41da15d4095d1da392a0d2f8ed0c6c7bc0f4cfac8c280b56d',
+      }, {
+        cookie: `${SESSION_COOKIE_NAME}=${encodeURIComponent(session.token)}`,
+      });
+
+      expect(response.status).toBe(200);
+      expect(response.body).toMatchObject({
+        capability: 'markets',
+        facts: [
+          {
+            connectorId: 'pyth',
+            label: 'Pyth SOL/USD',
+            value: '$150.00',
+          },
+        ],
+      });
+    }, {
+      statelessConnectorReader: async (input) => {
+        expect(input).toMatchObject({
+          walletAddress: walletA,
+          cluster: 'mainnet-beta',
+          connectorId: 'pyth',
+          capability: 'markets',
+        });
+        return {
+          capability: input.capability,
+          facts: [{
+            connectorId: 'pyth',
+            label: 'Pyth SOL/USD',
+            value: '$150.00',
+            tone: 'good',
+            source: 'connector',
+            checkedAt: '2026-05-08T20:00:00.000Z',
+          }],
+        };
+      },
+    });
+  });
+
   it('rejects workflow requests without a wallet session', async () => {
     await withWorkflowServer(async ({ port }) => {
       const response = await postJson(port, '/api/plans', createPlanBody(), null);
@@ -117,6 +169,17 @@ describe('cloud one-time workflow API', () => {
       expect(updated.status).toBe(200);
       expect((updated.body.plan as PlanDraftRecord).status).toBe('signed');
       expect((updated.body.plan as PlanDraftRecord).signature).toBe('sig_plan_review');
+
+      const completedAfterSign = await getJson(port, '/api/completed', walletA);
+      expect(completedAfterSign.status).toBe(200);
+      expect(completedAfterSign.body.completed).toEqual([
+        expect.objectContaining({
+          id: `completed:plan:${plan.id}`,
+          status: 'proof signed',
+          signature: 'sig_plan_review',
+          planDraftId: plan.id,
+        }),
+      ]);
 
       const deleted = await deleteJson(port, `/api/plans/${plan.id}`, walletA);
       expect(deleted.status).toBe(200);
@@ -271,6 +334,34 @@ describe('cloud one-time workflow API', () => {
       expect(jito.body.approval).toMatchObject({
         amount: '0.01',
         token: 'SOL to JitoSOL',
+      });
+    });
+  });
+
+  it('derives Meteora add-liquidity approval amount and pool token from selected pool metadata', async () => {
+    await withWorkflowServer(async ({ port }) => {
+      const response = await postJson(port, '/api/approvals', {
+        summary: 'Open Meteora SOL-USDC DLMM position',
+        kind: 'meteora_add_liquidity',
+        cluster: 'mainnet-beta',
+        params: {
+          connectorId: 'meteora',
+          connectorOperationId: 'meteora:add-liquidity',
+          poolAddress: 'BGm1tav58oGcsQJehL9WXBFXF7D27vZsKefj4xJKD5Y',
+          poolAddressLabel: 'SOL-USDC DLMM',
+          tokenXSymbol: 'SOL',
+          tokenYSymbol: 'USDC',
+          tokenXAmount: '.01',
+          tokenYAmount: '1',
+          amount: 'n/a',
+          token: 'n/a',
+        },
+      }, walletA);
+
+      expect(response.status).toBe(201);
+      expect(response.body.approval).toMatchObject({
+        amount: '.01 SOL + 1 USDC',
+        token: 'SOL-USDC DLMM',
       });
     });
   });
@@ -1623,12 +1714,14 @@ async function withWorkflowServer(
 async function withRenderWorkflowServer(
   store: MemoryWorkflowStore,
   callback: (port: number) => Promise<void>,
+  options: Omit<NonNullable<Parameters<typeof createRenderWebServer>[0]>, 'staticDir' | 'store' | 'clock'> = {},
 ): Promise<void> {
   const staticDir = await mkdtemp(join(tmpdir(), 'agentic-render-web-workflow-'));
   await writeFile(join(staticDir, 'index.html'), '<!doctype html><div id="app"></div>');
   await mkdir(join(staticDir, 'app'));
   await writeFile(join(staticDir, 'app', 'index.html'), '<!doctype html><div id="app"></div>');
   const server = createRenderWebServer({
+    ...options,
     staticDir,
     store,
     clock: fixedClock('2026-05-08T20:00:00.000Z'),

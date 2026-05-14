@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { buildSaveSdkClient } from '../sdkClient.js';
+import { buildSaveSdkClient, loadSaveSdkForSmokeTest } from '../sdkClient.js';
 import { isSaveConfigured, resetSaveClientFactory, setSaveClientFactory } from '../client.js';
 
 describe('buildSaveSdkClient — Solend SDK wiring', () => {
@@ -14,6 +14,15 @@ describe('buildSaveSdkClient — Solend SDK wiring', () => {
     expect(typeof client.buildWithdrawTransaction).toBe('function');
     expect(typeof client.buildBorrowTransaction).toBe('function');
     expect(typeof client.buildRepayTransaction).toBe('function');
+  });
+
+  it('imports the Solend SDK symbols used by the runtime client', async () => {
+    const sdk = await loadSaveSdkForSmokeTest();
+    expect(typeof sdk.SolendActionCore).toBe('function');
+    expect(typeof sdk.parseReserve).toBe('function');
+    expect(typeof sdk.fetchPoolMetadata).toBe('function');
+    expect(typeof sdk.MAIN_POOL_ADDRESS.toBase58()).toBe('string');
+    expect(typeof sdk.SOLEND_PRODUCTION_PROGRAM_ID.toBase58()).toBe('string');
   });
 
   it('flips isSaveConfigured() once setSaveClientFactory wires the SDK client', () => {

@@ -4,6 +4,7 @@ import {
   capabilitiesForWorkflowMode,
   assertPlanGuardrails,
   completedFromApproval,
+  completedFromPlanProof,
   evaluatePlanGuardrails,
   finalizationRequirementForAction,
   isActiveApprovalStatus,
@@ -46,6 +47,7 @@ import {
   WorkflowValidationError,
   type ApprovalRequestRecord,
   type ApprovalStatus,
+  type PlanDraftRecord,
 } from '../index.js';
 
 const NOW = '2026-05-08T12:00:00.000Z';
@@ -304,6 +306,76 @@ describe('completedFromApproval', () => {
 
   it('rejects active approvals', () => {
     expect(() => completedFromApproval(approvalRecord('ready'))).toThrow(WorkflowValidationError);
+  });
+});
+
+describe('completedFromPlanProof', () => {
+  it('creates completed proof history with connector read facts', () => {
+    const base = planRecord();
+    const plan: PlanDraftRecord = {
+      ...base,
+      fields: [...base.fields],
+      safeguards: [...base.safeguards],
+      actionType: 'read_only',
+      status: 'signed',
+      signature: 'sig_plan_review',
+      parameters: {
+        protocol: 'Pyth',
+        question: 'balances',
+        priceFeedIds: '0xef0d8b6fda2ceba41da15d4095d1da392a0d2f8ed0c6c7bc0f4cfac8c280b56d',
+        priceFeedIdsLabel: 'SOL/USD',
+      },
+      metadata: {
+        connectorRead: {
+          connectorId: 'pyth',
+          connectorName: 'Pyth',
+          capability: 'markets',
+          question: 'price',
+          resultSummary: 'Pyth SOL/USD: $150.00',
+          feedLabel: 'SOL/USD',
+        },
+        signedProof: {
+          message: 'signed text',
+          signature: 'sig_plan_review',
+        },
+      },
+    };
+
+    const completed = completedFromPlanProof(plan);
+
+    expect(completed).toMatchObject({
+      id: 'completed:plan:plan_1',
+      kind: 'one_time',
+      status: 'proof signed',
+      signature: 'sig_plan_review',
+      proofSignature: 'sig_plan_review',
+      planDraftId: 'plan_1',
+      summary: 'Pyth SOL/USD: $150.00',
+      metadata: {
+        connectorRead: {
+          connectorId: 'pyth',
+          question: 'price',
+        },
+        signedProof: {
+          messageHash: expect.any(String),
+        },
+      },
+    });
+    expect(completed.copyPayload).toMatchObject({
+      type: 'signed_connector_read_receipt',
+      connectorRead: {
+        resultSummary: 'Pyth SOL/USD: $150.00',
+      },
+    });
+  });
+
+  it('rejects unsigned plans', () => {
+    const base = planRecord();
+    expect(() => completedFromPlanProof({
+      ...base,
+      fields: [...base.fields],
+      safeguards: [...base.safeguards],
+    })).toThrow(WorkflowValidationError);
   });
 });
 

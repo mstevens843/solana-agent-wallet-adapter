@@ -21,20 +21,37 @@ export interface EarnEarningsInput {
   to?: string;
 }
 
+const KNOWN_EARN_ASSET_MINTS: Record<string, string> = {
+  SOL: 'So11111111111111111111111111111111111111112',
+  WSOL: 'So11111111111111111111111111111111111111112',
+  USDC: 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v',
+  USDT: 'Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB',
+};
+
+export function normalizeJupiterLendEarnAssetMint(value: string | undefined): string | undefined {
+  const normalized = value?.trim();
+  if (!normalized) return undefined;
+  return KNOWN_EARN_ASSET_MINTS[normalized.toUpperCase()] ?? normalized;
+}
+
 export async function listEarnTokens(
   config: AgentWalletConfig,
   walletAddress: string,
   input: ListEarnTokensInput,
 ): Promise<JupiterLendEarnTokenSnapshot[]> {
+  const normalizedInput = {
+    ...input,
+    ...(input.assetMint ? { assetMint: normalizeJupiterLendEarnAssetMint(input.assetMint) } : {}),
+  };
   if (config.connectors?.jupiter?.useSdk === false) {
-    return fetchEarnTokensViaRest(config, input);
+    return fetchEarnTokensViaRest(config, normalizedInput);
   }
   try {
     const client = await getJupiterLendClient(walletAddress, config);
-    return await client.getEarnTokens(input);
+    return await client.getEarnTokens(normalizedInput);
   } catch (err) {
     if (isSdkUnavailable(err)) {
-      return fetchEarnTokensViaRest(config, input);
+      return fetchEarnTokensViaRest(config, normalizedInput);
     }
     throw err;
   }
@@ -45,12 +62,13 @@ export async function getEarnTokenDetail(
   walletAddress: string,
   assetMint: string,
 ): Promise<JupiterLendEarnTokenSnapshot> {
-  if (!assetMint.trim()) {
+  const normalizedAssetMint = normalizeJupiterLendEarnAssetMint(assetMint);
+  if (!normalizedAssetMint) {
     throw new AdapterError(JUPITER_ADAPTER_ID, 'invalid_request', 'assetMint is required to read a Jupiter Lend Earn token.');
   }
   if (config.connectors?.jupiter?.useSdk === false) {
-    const tokens = await fetchEarnTokensViaRest(config, { assetMint });
-    const matched = tokens.find((token) => token.assetMint === assetMint);
+    const tokens = await fetchEarnTokensViaRest(config, { assetMint: normalizedAssetMint });
+    const matched = findEarnToken(tokens, normalizedAssetMint, assetMint);
     if (!matched) {
       throw new AdapterError(JUPITER_ADAPTER_ID, 'unknown_asset', `Jupiter Lend Earn token "${assetMint}" was not found.`);
     }
@@ -58,11 +76,11 @@ export async function getEarnTokenDetail(
   }
   try {
     const client = await getJupiterLendClient(walletAddress, config);
-    return await client.getEarnTokenDetail({ assetMint });
+    return await client.getEarnTokenDetail({ assetMint: normalizedAssetMint });
   } catch (err) {
     if (isSdkUnavailable(err)) {
-      const tokens = await fetchEarnTokensViaRest(config, { assetMint });
-      const matched = tokens.find((token) => token.assetMint === assetMint);
+      const tokens = await fetchEarnTokensViaRest(config, { assetMint: normalizedAssetMint });
+      const matched = findEarnToken(tokens, normalizedAssetMint, assetMint);
       if (!matched) {
         throw new AdapterError(JUPITER_ADAPTER_ID, 'unknown_asset', `Jupiter Lend Earn token "${assetMint}" was not found.`);
       }
@@ -79,15 +97,19 @@ export async function getEarnPositions(
   if (!input.walletAddress.trim()) {
     throw new AdapterError(JUPITER_ADAPTER_ID, 'invalid_request', 'walletAddress is required to read Jupiter Lend Earn positions.');
   }
+  const normalizedInput = {
+    ...input,
+    ...(input.assetMint ? { assetMint: normalizeJupiterLendEarnAssetMint(input.assetMint) } : {}),
+  };
   if (config.connectors?.jupiter?.useSdk === false) {
-    return fetchEarnPositionsViaRest(config, input);
+    return fetchEarnPositionsViaRest(config, normalizedInput);
   }
   try {
     const client = await getJupiterLendClient(input.walletAddress, config);
-    return await client.getEarnPositions(input);
+    return await client.getEarnPositions(normalizedInput);
   } catch (err) {
     if (isSdkUnavailable(err)) {
-      return fetchEarnPositionsViaRest(config, input);
+      return fetchEarnPositionsViaRest(config, normalizedInput);
     }
     throw err;
   }
@@ -100,15 +122,19 @@ export async function getEarnEarnings(
   if (!input.walletAddress.trim()) {
     throw new AdapterError(JUPITER_ADAPTER_ID, 'invalid_request', 'walletAddress is required to read Jupiter Lend Earn earnings.');
   }
+  const normalizedInput = {
+    ...input,
+    ...(input.assetMint ? { assetMint: normalizeJupiterLendEarnAssetMint(input.assetMint) } : {}),
+  };
   if (config.connectors?.jupiter?.useSdk === false) {
-    return fetchEarnEarningsViaRest(config, input);
+    return fetchEarnEarningsViaRest(config, normalizedInput);
   }
   try {
     const client = await getJupiterLendClient(input.walletAddress, config);
-    return await client.getEarnEarnings(input);
+    return await client.getEarnEarnings(normalizedInput);
   } catch (err) {
     if (isSdkUnavailable(err)) {
-      return fetchEarnEarningsViaRest(config, input);
+      return fetchEarnEarningsViaRest(config, normalizedInput);
     }
     throw err;
   }
@@ -322,4 +348,17 @@ function optionalBoolean<K extends string>(
 function isSdkUnavailable(err: unknown): boolean {
   if (err instanceof AdapterError && err.code === 'sdk_unavailable') return true;
   return false;
+}
+
+function findEarnToken(
+  tokens: JupiterLendEarnTokenSnapshot[],
+  normalizedAssetMint: string,
+  originalAssetMint: string,
+): JupiterLendEarnTokenSnapshot | undefined {
+  const originalSymbol = originalAssetMint.trim().toUpperCase();
+  return tokens.find((token) =>
+    token.assetMint === normalizedAssetMint ||
+    normalizeJupiterLendEarnAssetMint(token.assetMint) === normalizedAssetMint ||
+    token.tokenSymbol?.trim().toUpperCase() === originalSymbol,
+  );
 }
