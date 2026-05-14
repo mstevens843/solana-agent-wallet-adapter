@@ -15,6 +15,7 @@ export type DAppAdapterId =
   | 'meteora'
   | 'orca'
   | 'marginfi'
+  | 'project0'
   | 'drift'
   | 'save'
   | 'jito'

@@ -13,6 +13,7 @@ import { describeMarinadeUnavailableReason } from './adapters/marinade/client.js
 import { describeMarginfiUnavailableReason } from './adapters/marginfi/client.js';
 import { describeMeteoraUnavailableReason } from './adapters/meteora/client.js';
 import { describeOrcaUnavailableReason } from './adapters/orca/client.js';
+import { describeProject0SdkUnavailableReason } from './adapters/project0/client.js';
 import {
   describePythReceiverUnavailableReason,
   describePythUnavailableReason,
@@ -32,6 +33,7 @@ export type ConnectorId =
   | 'raydium'
   | 'orca'
   | 'marginfi'
+  | 'project0'
   | 'drift'
   | 'lulo'
   | 'save'
@@ -64,6 +66,7 @@ export type ConnectorCapability =
   | 'governance'
   | 'treasury'
   | 'bridge'
+  | 'strategies'
   | 'prediction'
   | 'perps'
   | 'trigger'
@@ -423,6 +426,50 @@ export const CONNECTOR_REGISTRY: ConnectorRegistryEntry[] = [
       'check the health impact of borrowing 5 USDC on MarginFi',
       'prepare depositing 0.01 SOL to MarginFi',
       'prepare repaying all USDC debt on MarginFi',
+    ],
+  },
+  {
+    id: 'project0',
+    name: 'Project 0',
+    aliases: ['project0', 'project 0', 'p0', '0dotxyz', '0.xyz', 'zero'],
+    supportedClusters: ['mainnet-beta'],
+    readCapabilities: ['positions', 'markets', 'strategies', 'borrow', 'withdraw', 'repay'],
+    writeCapabilities: ['earn', 'withdraw', 'borrow', 'repay'],
+    readTools: [
+      'solana_connector_read_facts',
+      'solana_project0_banks',
+      'solana_project0_strategies',
+      'solana_project0_wallet',
+      'solana_project0_account_detail',
+      'solana_project0_health_preview',
+    ],
+    actionTools: [
+      'solana_prepare_project0_create_account',
+      'solana_prepare_project0_deposit',
+      'solana_prepare_project0_withdraw',
+      'solana_prepare_project0_borrow',
+      'solana_prepare_project0_repay',
+      'solana_execute_prepared_action',
+    ],
+    requiresClientKey: false,
+    requiredConfig: ['@0dotxyz/p0-ts-sdk optional dependency for account and prepared action paths'],
+    executionMode: 'first_class_prepare',
+    approvalBoundary: CONNECTOR_APPROVAL_BOUNDARY,
+    limitations: [
+      'Mainnet-beta only.',
+      'Public bank, strategy, and wallet reads use https://ai.0.xyz and do not require the SDK.',
+      'Account reads and prepared actions require @0dotxyz/p0-ts-sdk.',
+      'Borrow and withdraw require a fresh health preview and are blocked below the configured minimum health ratio.',
+      'One-click strategy bundles, liquidation, flash loans, delegated authority, and Project 0 Pay automation are not exposed in v1.',
+      'MarginFi remains available as a separate connector; Project 0 is added for the new P0 app and migration path.',
+    ],
+    examples: [
+      'show Project 0 banks',
+      'show Project 0 strategies',
+      'show my Project 0 account health',
+      'prepare a Project 0 account',
+      'prepare depositing 0.01 SOL to Project 0',
+      'prepare borrowing 5 USDC on Project 0',
     ],
   },
   {
@@ -1082,6 +1129,11 @@ function runtimeConfigBlockReason(
   if (connector.id === 'marginfi') {
     const reason = describeMarginfiUnavailableReason();
     return reason ? `MarginFi SDK is not configured: ${reason}` : undefined;
+  }
+  if (connector.id === 'project0') {
+    if (target === 'reads') return undefined;
+    const reason = describeProject0SdkUnavailableReason();
+    return reason ? `Project 0 SDK is not configured: ${reason}` : undefined;
   }
   if (connector.id === 'drift') {
     const reason = describeDriftUnavailableReason();

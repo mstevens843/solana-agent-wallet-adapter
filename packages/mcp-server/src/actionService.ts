@@ -47,6 +47,8 @@ import type {
 } from './adapters/raydium/index.js';
 import type { MarginfiActionInput } from './adapters/marginfi/index.js';
 import { marginfiMinHealthRatio } from './adapters/marginfi/actions.js';
+import type { Project0PrepareInput } from './adapters/project0/index.js';
+import { project0MinHealthRatio } from './adapters/project0/actions.js';
 import type {
   JupiterLendBorrowActionInput,
   JupiterLendEarnActionInput,
@@ -286,6 +288,11 @@ import {
   factsFromMarginfiAccountSummaries,
   factsFromMarginfiBankSnapshot,
   factsFromMarginfiHealthPreview,
+  factsFromProject0AccountDetail,
+  factsFromProject0Banks,
+  factsFromProject0HealthPreview,
+  factsFromProject0Strategies,
+  factsFromProject0Wallet,
   factsFromLuloBalances,
   factsFromLuloPoolMeta,
   factsFromLuloRates,

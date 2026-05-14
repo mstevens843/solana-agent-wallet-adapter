@@ -9,6 +9,7 @@ import { marinadeAdapter } from './marinade/index.js';
 import { marginfiAdapter } from './marginfi/index.js';
 import { meteoraAdapter } from './meteora/index.js';
 import { orcaAdapter } from './orca/index.js';
+import { project0Adapter } from './project0/index.js';
 import { pythAdapter } from './pyth/index.js';
 import { raydiumAdapter } from './raydium/index.js';
 import { realmsAdapter } from './realms/index.js';
@@ -26,6 +27,7 @@ const ADAPTERS: Partial<Record<DAppAdapterId, DAppAdapter>> = {
   orca: orcaAdapter,
   raydium: raydiumAdapter,
   marginfi: marginfiAdapter,
+  project0: project0Adapter,
   drift: driftAdapter,
   save: saveAdapter,
   jito: jitoAdapter,

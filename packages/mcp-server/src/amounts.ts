@@ -5,11 +5,11 @@ export function parseDecimalAmount(value: string, decimals: number, label: strin
     throw new ProtocolError('invalid_request', `${label} is required.`);
   }
   const trimmed = value.trim();
-  if (!/^\d+(\.\d+)?$/.test(trimmed)) {
+  if (!/^(?:\d+(?:\.\d+)?|\.\d+)$/.test(trimmed)) {
     throw new ProtocolError('invalid_request', `${label} must be a positive decimal string.`);
   }
   const parts = trimmed.split('.');
-  const wholeRaw = parts[0] ?? '0';
+  const wholeRaw = parts[0] || '0';
   const fractionRaw = parts[1] ?? '';
   if (fractionRaw.length > decimals) {
     throw new ProtocolError(

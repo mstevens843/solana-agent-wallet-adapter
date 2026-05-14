@@ -17,6 +17,7 @@ export { marinadeAdapter } from './marinade/index.js';
 export { marginfiAdapter } from './marginfi/index.js';
 export { meteoraAdapter } from './meteora/index.js';
 export { orcaAdapter } from './orca/index.js';
+export { project0Adapter } from './project0/index.js';
 export { pythAdapter } from './pyth/index.js';
 export { raydiumAdapter } from './raydium/index.js';
 export { realmsAdapter } from './realms/index.js';

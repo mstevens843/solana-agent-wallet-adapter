@@ -113,6 +113,21 @@ describe('Marinade adapter', () => {
     });
   });
 
+  it('accepts leading-dot SOL amounts for liquid stake drafts', async () => {
+    const state = fakeState();
+    setMarinadeClientFactory(() => fakeMarinadeClient(state));
+
+    const prepared = await marinadeLiquidStakeAction.prepare({
+      solAmount: '.01',
+    }, makeContext());
+
+    expect(prepared.addInput.summary).toBe('Stake .01 SOL for mSOL on Marinade');
+    expect(prepared.preview).toMatchObject({
+      solAmount: '.01',
+      solAmountRaw: '10000000',
+    });
+  });
+
   it('rejects delayed-unstake claim preparation when the ticket is not claimable', async () => {
     const state = fakeState({
       tickets: [{

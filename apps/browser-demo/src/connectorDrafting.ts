@@ -534,7 +534,7 @@ export function normalizeConnectorDraftParameters(
   const form = explicitForm ?? connectorActionFormForTemplate(template, connector);
   const operation = explicitForm?.operationLabel ?? normalizedConnectorOperation(connector, parameters.operation);
   const shouldPersistForm = Boolean(explicitForm || (form && !isGenericConnectorActionForm(form)));
-  return scopeConnectorDraftParameters(template, {
+  const base = {
     ...parameters,
     connectorId: connector.id,
     protocol: connector.name,
@@ -545,7 +545,8 @@ export function normalizeConnectorDraftParameters(
       : form?.executionMode === 'read-only'
         ? 'read-only'
         : connector.actionSource ?? 'blink',
-  });
+  };
+  return scopeConnectorDraftParameters(template, withDefaultSubActionParameter(form, base));
 }
 
 export function scopeConnectorDraftParameters(
@@ -555,6 +556,7 @@ export function scopeConnectorDraftParameters(
   const connector = selectedConnectorForDraftParameters(parameters);
   const form = connectorActionFormById(parameters.connectorOperationId) ??
     (connector ? connectorActionFormForTemplate(template, connector) : connectorActionFormForTemplate(template));
+  const scopedSource = withDefaultSubActionParameter(form, parameters);
   const fields = form ? formTemplateFields(form) : template.fields ?? [];
   const allowed = new Set<string>([
     'connectorId',
@@ -563,19 +565,19 @@ export function scopeConnectorDraftParameters(
     'protocol',
     'operation',
   ]);
-  if (connectorDraftRequiresBlink(template, parameters)) {
+  if (connectorDraftRequiresBlink(template, scopedSource)) {
     allowed.add('blinkUrl');
     allowed.add('actionUrl');
   }
   for (const field of fields) {
-    if (!connectorParameterFieldIsVisible(field, parameters)) continue;
+    if (!connectorParameterFieldIsVisible(field, scopedSource)) continue;
     allowed.add(field.id);
     allowed.add(`${field.id}Label`);
     allowed.add(`${field.id}Mint`);
   }
 
   const scoped: Record<string, string> = {};
-  for (const [key, value] of Object.entries(parameters)) {
+  for (const [key, value] of Object.entries(scopedSource)) {
     if (allowed.has(key)) scoped[key] = value;
   }
   return scoped;
@@ -1221,7 +1223,7 @@ function wormholeForms(): ConnectorActionForm[] {
       wormholeTokenField(true),
       formField('amount', 'Amount', true),
       wormholeDestinationField(true),
-      formField('recipient', 'Destination recipient', true),
+      formField('destinationAddress', 'Destination recipient', true),
       formField('memo', 'Reason'),
     ], false, 'wormhole_transfer'),
     connectorActionForm('wormhole', 'redeem', 'Redeem', 'connector-wormhole-redeem', 'Redeem a pending Wormhole transfer on Solana.', 'first-class-adapter', 'queueable', [
@@ -1336,7 +1338,6 @@ function driftForms(): ConnectorActionForm[] {
     connectorActionForm('drift', 'vault-deposit', 'Vault deposit', 'drift-vault-deposit', 'Deposit into a Drift strategy vault.', 'first-class-adapter', 'queueable', [
       driftVaultField(true),
       formField('amount', 'Amount', true),
-      formField('mint', 'Deposit mint'),
       formField('memo', 'Reason'),
     ], false, 'drift_vault_deposit'),
     connectorActionForm('drift', 'request-withdraw', 'Request withdraw', 'drift-vault-request-withdraw', 'Request a Drift vault withdrawal.', 'first-class-adapter', 'queueable', [
@@ -1658,6 +1659,18 @@ export function selectedSubAction(
   return form.subActions.options.find((option) => option.id === defaultId) ?? form.subActions.options[0];
 }
 
+function withDefaultSubActionParameter(
+  form: ConnectorActionForm | undefined,
+  parameters: Record<string, string>,
+): Record<string, string> {
+  if (!form?.subActions) return parameters;
+  const fieldId = form.subActions.fieldId;
+  if (parameters[fieldId]?.trim()) return parameters;
+  const branch = selectedSubAction(form, parameters);
+  const defaultId = branch?.id ?? form.subActions.defaultId ?? form.subActions.options[0]?.id;
+  return defaultId ? { ...parameters, [fieldId]: defaultId } : parameters;
+}
+
 export function effectiveFormFields(
   form: ConnectorActionForm,
   parameters?: Record<string, string>,
@@ -1909,15 +1922,118 @@ function genericReadForm(connector: ProtocolConnector): ConnectorActionForm {
     'Read connector facts before proposing anything executable.',
     'read-only',
     'audit',
-    [
-      formField('protocol', 'Protocol', true),
-      formField('position', 'Position / market'),
-      formField('question', 'Question'),
-      formField('memo', 'Instructions'),
-    ],
+    connectorReadFields(connector),
     false,
     'read_only',
   );
+}
+
+function connectorReadFields(connector: ProtocolConnector): AgentPlanTemplateField[] {
+  const base = [formField('protocol', 'Protocol', true)];
+  const tail = [
+    formSelectField('question', 'Question', ['status', 'balances', 'rewards', 'risk', 'markets'], 'status'),
+    formField('memo', 'Instructions'),
+  ];
+  switch (connector.id) {
+    case 'pyth':
+      return [
+        ...base,
+        cascadingField('priceFeedIds', 'Price feed', 'pyth.feed', {
+          emptyHint: 'Type a symbol (e.g. SOL/USD) to search Pyth feeds.',
+          placeholder: 'SOL/USD',
+        }),
+        ...tail,
+      ];
+    case 'drift':
+      return [
+        ...base,
+        driftVaultField(false),
+        ...tail,
+      ];
+    case 'meteora':
+      return [
+        ...base,
+        meteoraPoolField(false),
+        meteoraPositionField(false),
+        ...tail,
+      ];
+    case 'raydium':
+      return [
+        ...base,
+        raydiumPoolField('raydium.pool', false),
+        cascadingField('positionMint', 'Raydium position', 'raydium.position', {
+          dependsOn: ['poolId'],
+          emptyHint: 'No Raydium positions found in this pool.',
+        }),
+        ...tail,
+      ];
+    case 'orca':
+      return [
+        ...base,
+        orcaWhirlpoolField(false),
+        orcaPositionField(false),
+        ...tail,
+      ];
+    case 'realms':
+      return [
+        ...base,
+        realmsRealmField(false),
+        realmsTokenField(false),
+        realmsProposalField(false),
+        ...tail,
+      ];
+    case 'wormhole':
+      return [
+        ...base,
+        wormholeTokenField(false),
+        wormholeDestinationField(false),
+        ...tail,
+      ];
+    case 'jupiter':
+      return [
+        ...base,
+        cascadingField('assetMint', 'Jupiter Lend asset', 'jupiter.lend.earn.asset', {
+          emptyHint: "Couldn't load Jupiter Lend earn pools.",
+        }),
+        ...tail,
+      ];
+    case 'kamino':
+      return [
+        ...base,
+        kaminoReserveField(false),
+        ...tail,
+      ];
+    case 'marginfi':
+      return [
+        ...base,
+        marginfiBankField(false),
+        ...tail,
+      ];
+    case 'save':
+      return [
+        ...base,
+        saveReserveField(false),
+        ...tail,
+      ];
+    case 'lulo':
+      return [
+        ...base,
+        luloMintField(false),
+        ...tail,
+      ];
+    case 'sanctum':
+      return [
+        ...base,
+        sanctumLstField('lstMint', 'Sanctum LST', 'sanctum.lst', false),
+        ...tail,
+      ];
+    default:
+      return [
+        ...base,
+        formField('position', 'Position / market'),
+        ...tail,
+      ];
+  }
 }
 
 function genericBlinkForm(connector: ProtocolConnector): ConnectorActionForm {

@@ -53,11 +53,17 @@ export interface RecipientCapConfig {
 
 export interface ConnectorPolicyConfig {
   marginfi?: MarginfiPolicyConfig;
+  project0?: Project0PolicyConfig;
   jupiter?: JupiterConnectorPolicyConfig;
 }
 
 export interface MarginfiPolicyConfig {
   minHealthRatio?: number;
+}
+
+export interface Project0PolicyConfig {
+  minHealthRatio?: number;
+  apiBaseUrl?: string;
 }
 
 export interface JupiterConnectorPolicyConfig {
@@ -225,6 +231,7 @@ export const DEFAULT_JUPITER_RECURRING_BASE_URL = 'https://api.jup.ag/recurring/
 export const DEFAULT_JUPITER_TOKENS_BASE_URL = 'https://api.jup.ag/tokens/v2';
 export const DEFAULT_JUPITER_PRICE_BASE_URL = 'https://api.jup.ag/price/v3';
 export const DEFAULT_JUPITER_PREDICTION_BASE_URL = 'https://api.jup.ag/prediction/v1';
+export const DEFAULT_PROJECT0_API_BASE_URL = 'https://ai.0.xyz';
 export const DEFAULT_JUPITER_TOKEN_PRICE_MAX_BATCH_PRICE_IDS = 50;
 export const DEFAULT_JUPITER_TOKEN_PRICE_MAX_SEARCH_MINT_IDS = 100;
 
@@ -292,6 +299,10 @@ export const DEFAULT_CONFIG: AgentWalletConfig = {
   connectors: {
     marginfi: {
       minHealthRatio: 1.1,
+    },
+    project0: {
+      minHealthRatio: 1.1,
+      apiBaseUrl: DEFAULT_PROJECT0_API_BASE_URL,
     },
     jupiter: {
       minBorrowHealthRatio: 1.25,
@@ -389,6 +400,15 @@ export function normalizeConfig(input: Partial<AgentWalletConfig>): AgentWalletC
     marginfi: {
       ...DEFAULT_CONFIG.connectors?.marginfi,
       ...(input.connectors?.marginfi ?? {}),
+    },
+    project0: {
+      ...DEFAULT_CONFIG.connectors?.project0,
+      ...(input.connectors?.project0 ?? {}),
+      apiBaseUrl: stripTrailingSlashes(
+        firstEnvValue('PROJECT0_API_BASE_URL', 'P0_API_BASE_URL') ??
+          input.connectors?.project0?.apiBaseUrl ??
+          DEFAULT_PROJECT0_API_BASE_URL,
+      ),
     },
     jupiter: {
       ...DEFAULT_CONFIG.connectors?.jupiter,

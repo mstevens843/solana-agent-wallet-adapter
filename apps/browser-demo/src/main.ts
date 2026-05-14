@@ -11670,8 +11670,9 @@ function connectorSubActionPicker(form: ConnectorActionForm): string {
         <button
           type="button"
           class="connector-subaction-chip ${active}"
-          data-template-field="${escapeHtml(group.fieldId)}"
+          data-template-field-choice="${escapeHtml(group.fieldId)}"
           data-template-field-value="${escapeHtml(option.id)}"
+          aria-pressed="${option.id === current ? 'true' : 'false'}"
           title="${escapeHtml(option.description)}"
           ${disabledAttr}
         >
@@ -11682,7 +11683,7 @@ function connectorSubActionPicker(form: ConnectorActionForm): string {
     })
     .join('');
   return `
-    <div class="connector-subaction-row">
+    <div class="connector-subaction-row" role="group" aria-label="${escapeHtml(group.label)}">
       <span class="connector-subaction-label">${escapeHtml(group.label)}</span>
       <div class="connector-subaction-chips">${chips}</div>
     </div>
@@ -14861,7 +14862,7 @@ function bind(): void {
     selectConnectorActionForCreate((event.currentTarget as HTMLSelectElement).value);
   });
 
-  for (const fieldInput of document.querySelectorAll<HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement>('[data-template-field]')) {
+  for (const fieldInput of document.querySelectorAll<HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement>('input[data-template-field], textarea[data-template-field], select[data-template-field]')) {
     fieldInput.addEventListener('input', () => {
       const fieldId = fieldInput.dataset.templateField;
       if (!fieldId) return;
@@ -14885,12 +14886,15 @@ function bind(): void {
     });
   }
 
-  for (const button of document.querySelectorAll<HTMLButtonElement>('button[data-template-field][data-template-field-value]')) {
+  for (const button of document.querySelectorAll<HTMLButtonElement>('button[data-template-field-choice][data-template-field-value]')) {
     button.addEventListener('click', () => {
-      const fieldId = button.dataset.templateField;
+      const fieldId = button.dataset.templateFieldChoice;
       const fieldValue = button.dataset.templateFieldValue;
       if (!fieldId || fieldValue === undefined) return;
-      if (state.templateFields[fieldId] === fieldValue) return;
+      if (state.templateFields[fieldId] === fieldValue) {
+        delete state.templateFieldErrors[fieldId];
+        return;
+      }
       state.templateFields[fieldId] = fieldValue;
       delete state.templateFieldErrors[fieldId];
       invalidateCascadingDownstream(fieldId);
@@ -24866,14 +24870,14 @@ function orderSummaryForReceipt(value: Record<string, unknown>): Record<string, 
 
 function parseDecimalAmountToRaw(value: string, decimals: number, label: string): bigint {
   const trimmed = value.trim();
-  if (!/^\d+(\.\d+)?$/.test(trimmed)) {
+  if (!/^(?:\d+(?:\.\d+)?|\.\d+)$/.test(trimmed)) {
     throw new Error(`${label} must be a positive decimal string.`);
   }
   const [wholeRaw = '0', fractionRaw = ''] = trimmed.split('.');
   if (fractionRaw.length > decimals) {
     throw new Error(`${label} has too many decimal places for a ${decimals}-decimal token.`);
   }
-  const whole = BigInt(wholeRaw);
+  const whole = BigInt(wholeRaw || '0');
   const fraction = BigInt((fractionRaw || '').padEnd(decimals, '0') || '0');
   const amount = whole * (10n ** BigInt(decimals)) + fraction;
   if (amount <= 0n) {
@@ -27177,7 +27181,7 @@ function selectedTemplate(): AgentPlanTemplate {
 
 function readTemplateFields(template = selectedTemplate()): Record<string, string> {
   const current = { ...defaultTemplateFieldValues(template), ...state.templateFields };
-  for (const input of document.querySelectorAll<HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement>('[data-template-field]')) {
+  for (const input of document.querySelectorAll<HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement>('input[data-template-field], textarea[data-template-field], select[data-template-field]')) {
     const fieldId = input.dataset.templateField;
     if (fieldId) {
       current[fieldId] = syncTemplateFieldFromControl(input);
