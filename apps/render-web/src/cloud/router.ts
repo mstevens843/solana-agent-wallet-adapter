@@ -66,6 +66,11 @@ import {
   type StatelessConnectorTransactionPreparer,
 } from './prepareConnectorTransaction.js';
 import { createWorkflowApiHandler } from './workflowRoutes.js';
+import {
+  buildKaminoSdkClient,
+  isKaminoConfigured,
+  setKaminoClientFactory,
+} from '@solana-agent-wallet-adapter/mcp-server';
 
 const MAX_JSON_BYTES = 64 * 1024;
 const AUTH_RATE_LIMIT_WINDOW_MS = 5 * 60 * 1000;
@@ -231,7 +236,19 @@ const HOSTED_PROVIDER_PRESETS: Record<HostedProviderId, HostedProviderPreset> = 
   },
 };
 
+// Wire the Kamino SDK client once per process so connector approvals can build
+// real KLend deposit/withdraw transactions. The factory is a no-op until first
+// use, and the heavy KaminoMarket.load happens lazily inside the client itself.
+// Without this, every Kamino approve fails with "@kamino-finance/klend-sdk is not
+// wired."
+function ensureKaminoConfigured(): void {
+  if (isKaminoConfigured()) return;
+  const rpcUrl = (process.env.SOLANA_RPC_URL ?? process.env.HELIUS_RPC_URL ?? 'https://api.mainnet-beta.solana.com').trim();
+  setKaminoClientFactory(() => buildKaminoSdkClient({ rpcUrl }));
+}
+
 export function createCloudApiRouter(options: CloudApiRouterOptions = {}): CloudApiRouter {
+  ensureKaminoConfigured();
   const store = options.store ?? createDefaultWorkflowStore();
   const clock = options.clock ?? systemClock;
   const authRateLimiter = options.authRateLimiter === false

@@ -225,6 +225,7 @@ import type {
   AddRecurringPaymentInput,
   ActionReceipt,
   PreparedAction,
+  PreparedActionKind,
   PreparedActionStore,
   PreparedActionTxStatus,
   RecurringCadence,
@@ -4304,6 +4305,30 @@ export class AgentWalletActionService {
         `Prepared action ${action.id} is already ${action.status}.`,
       );
     }
+    return prepareTransactionForApproval(action, this.adapterContext());
+  }
+
+  async prepareConnectorTransactionStateless(input: {
+    kind: string;
+    params: Record<string, unknown>;
+    walletAddress: string;
+    cluster: Cluster;
+    summary?: string;
+  }): Promise<PreparedTransactionPayload> {
+    requireActionAllowed(this.config);
+    const now = new Date().toISOString();
+    const action: PreparedAction = {
+      id: `stateless_${now}`,
+      kind: input.kind as PreparedActionKind,
+      status: 'ready',
+      walletAddress: input.walletAddress,
+      cluster: input.cluster,
+      summary: input.summary ?? `Prepare ${input.kind.replace(/_/g, ' ')}`,
+      params: input.params,
+      dueAt: now,
+      createdAt: now,
+      updatedAt: now,
+    };
     return prepareTransactionForApproval(action, this.adapterContext());
   }
 

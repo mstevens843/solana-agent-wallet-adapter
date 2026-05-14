@@ -48,6 +48,13 @@ export type {
 export {
   prepareTransactionForApproval,
 } from './preparedActionTransactionBuilder.js';
+export {
+  isKaminoConfigured,
+  resetKaminoClientFactory,
+  setKaminoClientFactory,
+} from './adapters/kamino/client.js';
+export type { KaminoClient } from './adapters/kamino/client.js';
+export { buildKaminoSdkClient } from './adapters/kamino/sdkClient.js';
 export type { PreparedTransactionPayload } from './preparedActionTransactionBuilder.js';
 export {
   fetchBlinkMetadata,

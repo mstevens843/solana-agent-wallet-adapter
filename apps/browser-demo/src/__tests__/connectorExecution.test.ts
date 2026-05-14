@@ -6,6 +6,7 @@ import {
   classifyConnectorReceipt,
   connectorExecutionUnsupportedMessage,
   connectorPrepareEndpointAvailable,
+  connectorPrepareRouteChain,
   executeBrowserConnectorAction,
   isConnectorApprovalKind,
   isProofOnlyApprovalKind,
@@ -127,6 +128,56 @@ describe('connectorExecution helpers', () => {
 
     it('is false in pure browser-workflow mode (no bridge, no cloud)', () => {
       expect(connectorPrepareEndpointAvailable({ bridgeActive: false, cloudSessionMatchesWallet: false })).toBe(false);
+    });
+  });
+
+  describe('connectorPrepareRouteChain — Approve never depends on sign-in', () => {
+    // The Approve button must never be bound to AI Bridge, Agentic Cloud, or any session.
+    // The wallet signs locally either way; the prepare endpoint just produces unsigned tx
+    // bytes. The chain orders routes from most-private (local bridge) to most-available
+    // (public cloud) and the dispatcher falls through to the next route on error.
+    const target = (overrides: Partial<ConnectorActionExecutionTarget> = {}): ConnectorActionExecutionTarget => ({
+      id: 'browser-action_abc123',
+      kind: 'kamino_deposit',
+      cluster: 'mainnet-beta',
+      walletAddress: 'Wallet111',
+      workflowSource: 'browser',
+      ...overrides,
+    });
+
+    it('browser-workflow + bridge active: prefer local bridge stateless, fall back to cloud stateless', () => {
+      const chain = connectorPrepareRouteChain(target({ workflowSource: 'browser' }), { bridgeActive: true, cloudSessionMatchesWallet: false });
+      expect(chain.map((route) => route.kind)).toEqual(['bridge-stateless', 'cloud-stateless']);
+    });
+
+    it('browser-workflow + bridge active + cloud signed-in: cloud session is irrelevant; bridge still goes first', () => {
+      const chain = connectorPrepareRouteChain(target({ workflowSource: 'browser' }), { bridgeActive: true, cloudSessionMatchesWallet: true });
+      expect(chain.map((route) => route.kind)).toEqual(['bridge-stateless', 'cloud-stateless']);
+    });
+
+    it('browser-workflow + no bridge: public cloud stateless is the only stop — no sign-in required', () => {
+      const chain = connectorPrepareRouteChain(target({ workflowSource: 'browser' }), { bridgeActive: false, cloudSessionMatchesWallet: false });
+      expect(chain.map((route) => route.kind)).toEqual(['cloud-stateless']);
+    });
+
+    it('local-bridge action + bridge active: try the stored-action endpoint first, then bridge stateless, then cloud stateless', () => {
+      const chain = connectorPrepareRouteChain(target({ workflowSource: 'local-bridge' }), { bridgeActive: true, cloudSessionMatchesWallet: false });
+      expect(chain.map((route) => route.kind)).toEqual(['bridge', 'bridge-stateless', 'cloud-stateless']);
+    });
+
+    it('local-bridge action + bridge offline: cloud stateless rebuilds tx from kind+params (no cloud sign-in needed)', () => {
+      const chain = connectorPrepareRouteChain(target({ workflowSource: 'local-bridge' }), { bridgeActive: false, cloudSessionMatchesWallet: false });
+      expect(chain.map((route) => route.kind)).toEqual(['cloud-stateless']);
+    });
+
+    it('cloud-stored action + cloud session matches: stored-approval endpoint first, public fallback if it errors', () => {
+      const chain = connectorPrepareRouteChain(target({ workflowSource: 'cloud' }), { bridgeActive: false, cloudSessionMatchesWallet: true });
+      expect(chain.map((route) => route.kind)).toEqual(['cloud-approval', 'cloud-stateless']);
+    });
+
+    it('cloud-stored action + cloud session missing: public stateless still rebuilds the tx (no sign-in required)', () => {
+      const chain = connectorPrepareRouteChain(target({ workflowSource: 'cloud' }), { bridgeActive: false, cloudSessionMatchesWallet: false });
+      expect(chain.map((route) => route.kind)).toEqual(['cloud-stateless']);
     });
   });
 
@@ -313,24 +364,62 @@ describe('executeBrowserConnectorAction — Phase D2 dispatcher', () => {
     expect(deps.signAndBroadcast).not.toHaveBeenCalled();
   });
 
-  it('routes browser-source actions to the stateless cloud endpoint even when the bridge is active', async () => {
-    // Browser-source actions live only in the user's localStorage; the bridge has
-    // no record of their `browser-action_*` IDs and 404s with "Unknown prepared
-    // action" if asked to look them up. Always send them through the stateless
-    // cloud route so Approve-and-send works for every connection combination.
+  it('routes browser-source actions to the local bridge stateless endpoint when the bridge is active', async () => {
+    // Browser-source actions live only in the user's localStorage. The bridge cannot
+    // look them up by ID — but it CAN prepare the tx statelessly from raw kind+params.
+    // Prefer the local bridge so Approve-and-send never reaches across to the cloud
+    // when a local bridge is online (and never requires a cloud sign-in). Approve and
+    // send must work whether or not the user is signed into Agentic Cloud.
     const deps = makeDeps({}, { availability: { bridgeActive: true, cloudSessionMatchesWallet: true } });
     const action = makeAction({
       workflowSource: 'browser',
       params: { token: 'SOL', amount: '0.01' },
     });
     await executeBrowserConnectorAction(action, makeToastContext(), deps);
-    expect(deps.bridgeRequest).not.toHaveBeenCalled();
-    expect(deps.cloudRequest).toHaveBeenCalledWith(
-      '/api/connector/prepare-transaction',
+    expect(deps.cloudRequest).not.toHaveBeenCalled();
+    expect(deps.bridgeRequest).toHaveBeenCalledWith(
+      '/bridge/connector/prepare-transaction',
       expect.objectContaining({
         method: 'POST',
         body: expect.stringContaining('"kind":"kamino_deposit"'),
       }),
+    );
+    const call = (deps.bridgeRequest as ReturnType<typeof vi.fn>).mock.calls[0];
+    const init = call?.[1] as { body?: string } | undefined;
+    expect(typeof init?.body).toBe('string');
+    expect(JSON.parse(init!.body!)).toEqual({
+      kind: 'kamino_deposit',
+      params: { token: 'SOL', amount: '0.01' },
+      walletAddress: 'Wallet111',
+      cluster: 'mainnet-beta',
+    });
+  });
+
+  it('falls back to the public cloud stateless endpoint when the local bridge stateless route errors', async () => {
+    // If the local bridge accepts the call but errors (e.g., adapter mismatch on this
+    // build), Approve-and-send must still succeed via the public cloud endpoint. The
+    // wallet still signs locally; the prepare endpoints only build unsigned tx bytes.
+    const deps = makeDeps(
+      {},
+      {
+        availability: { bridgeActive: true, cloudSessionMatchesWallet: false },
+        bridgeRequest: vi.fn(async () => {
+          throw new Error('bridge stateless preparer failed');
+        }),
+      },
+    );
+    const action = makeAction({
+      workflowSource: 'browser',
+      params: { token: 'SOL', amount: '0.01' },
+    });
+    await executeBrowserConnectorAction(action, makeToastContext(), deps);
+    expect(deps.bridgeRequest).toHaveBeenCalledWith(
+      '/bridge/connector/prepare-transaction',
+      expect.any(Object),
+    );
+    expect(deps.cloudRequest).toHaveBeenCalledWith(
+      '/api/connector/prepare-transaction',
+      expect.any(Object),
     );
   });
 

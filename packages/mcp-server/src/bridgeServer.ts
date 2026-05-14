@@ -856,6 +856,35 @@ async function handleRequest(
         return;
       }
     }
+    if (req.method === 'POST' && url.pathname === '/bridge/connector/prepare-transaction') {
+      const body = (await readJson(req)) as {
+        kind?: string;
+        params?: unknown;
+        walletAddress?: string;
+        cluster?: string;
+        summary?: string;
+      };
+      const kind = requireString(body.kind, 'kind');
+      const walletAddress = requireString(body.walletAddress, 'walletAddress');
+      const cluster = requireString(body.cluster, 'cluster') as 'mainnet-beta' | 'devnet' | 'testnet' | 'localnet';
+      if (!body.params || typeof body.params !== 'object' || Array.isArray(body.params)) {
+        throw new ProtocolError('invalid_request', 'params must be an object.');
+      }
+      const service = requireActionService(actionService);
+      try {
+        const payload = await service.prepareConnectorTransactionStateless({
+          kind,
+          params: body.params as Record<string, unknown>,
+          walletAddress,
+          cluster,
+          ...(typeof body.summary === 'string' ? { summary: body.summary } : {}),
+        });
+        writeJson(res, 200, payload);
+      } catch (err) {
+        writePrepareTransactionError(res, err);
+      }
+      return;
+    }
     if (req.method === 'POST' && url.pathname === '/bridge/prepared-actions/record-transaction') {
       const body = (await readJson(req)) as { actionId?: string; txid?: string; txids?: string[]; txStatus?: string; error?: string };
       if (!body.actionId) {
@@ -1030,6 +1059,7 @@ function requiredTier(method: string, pathname: string): AgentTier | null {
     ) {
       return 'capped';
     }
+    if (pathname === '/bridge/connector/prepare-transaction') return 'capped';
     if (pathname === '/bridge/ai/generate-plan') return 'capped';
     if (pathname === '/bridge/ai/review-plan') return 'capped';
     if (pathname === '/bridge/ai/ask-about-plan') return 'capped';

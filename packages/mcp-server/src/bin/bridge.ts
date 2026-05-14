@@ -8,6 +8,8 @@ import { loadDotEnv } from '../env.js';
 import { JsonLabArtifactStore, defaultLabArtifactStorePath } from '../labArtifacts.js';
 import { LocalBridgeBackend } from '../localBridgeBackend.js';
 import { JsonPreparedActionStore, defaultPreparedActionStorePath } from '../preparedActions.js';
+import { isKaminoConfigured, setKaminoClientFactory } from '../adapters/kamino/client.js';
+import { buildKaminoSdkClient } from '../adapters/kamino/sdkClient.js';
 import { IosLinkBackend, type IosLinkWalletId } from '@solana-agent-wallet-adapter/ios-link';
 
 async function main(): Promise<void> {
@@ -40,6 +42,12 @@ async function main(): Promise<void> {
         rpcUrl: config.rpcUrl,
         token,
       });
+  // Wire the Kamino SDK client so connector approvals can build real KLend deposit/
+  // withdraw transactions through the local bridge instead of failing with
+  // "@kamino-finance/klend-sdk is not wired."
+  if (!isKaminoConfigured()) {
+    setKaminoClientFactory(() => buildKaminoSdkClient({ rpcUrl: config.rpcUrl }));
+  }
   const bridge = createBridgeServer({
     backend,
     actionConfig: config,

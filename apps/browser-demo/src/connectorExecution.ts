@@ -130,11 +130,11 @@ export async function executeBrowserConnectorAction<TAction extends ConnectorAct
   if (!deps.capabilitiesSupportSignTransaction()) {
     throw new Error('Selected wallet cannot sign connector transactions from this browser.');
   }
-  const route = pickConnectorPrepareRoute(action, deps.availability);
-  if (!route) {
+  const routes = connectorPrepareRouteChain(action, deps.availability);
+  if (routes.length === 0) {
     throw new Error(connectorExecutionUnsupportedMessage(action));
   }
-  const response = await fetchPreparedTransaction(action, route, deps);
+  const response = await fetchPreparedTransactionWithFallback(action, routes, deps);
   const transactionBase64 = requireConnectorString(response?.transactionBase64, 'transactionBase64');
   const summary = requireConnectorString(response?.summary, 'summary');
   const txid = await deps.signAndBroadcast(action, transactionBase64, summary, toastContext);
@@ -148,6 +148,23 @@ export async function executeBrowserConnectorAction<TAction extends ConnectorAct
   };
 }
 
+async function fetchPreparedTransactionWithFallback<TAction extends ConnectorActionExecutionTarget & { params?: Record<string, unknown> }>(
+  action: TAction,
+  routes: ConnectorPrepareRoute[],
+  deps: ConnectorExecutionDeps<TAction>,
+): Promise<PreparedTransactionResponse> {
+  let lastError: unknown;
+  for (const route of routes) {
+    try {
+      return await fetchPreparedTransaction(action, route, deps);
+    } catch (err) {
+      lastError = err;
+    }
+  }
+  if (lastError instanceof Error) throw lastError;
+  throw new Error(lastError ? String(lastError) : 'Connector prepare-transaction failed.');
+}
+
 async function fetchPreparedTransaction<TAction extends ConnectorActionExecutionTarget & { params?: Record<string, unknown> }>(
   action: TAction,
   route: ConnectorPrepareRoute,
@@ -157,6 +174,20 @@ async function fetchPreparedTransaction<TAction extends ConnectorActionExecution
     return deps.bridgeRequest<PreparedTransactionResponse>(
       `/bridge/prepared-actions/${encodeURIComponent(action.id)}/prepare-transaction`,
       { method: 'POST' },
+    );
+  }
+  if (route.kind === 'bridge-stateless') {
+    return deps.bridgeRequest<PreparedTransactionResponse>(
+      '/bridge/connector/prepare-transaction',
+      {
+        method: 'POST',
+        body: JSON.stringify({
+          kind: action.kind,
+          params: action.params ?? {},
+          walletAddress: action.walletAddress,
+          cluster: action.cluster,
+        }),
+      },
     );
   }
   if (route.kind === 'cloud-approval') {
@@ -182,6 +213,7 @@ async function fetchPreparedTransaction<TAction extends ConnectorActionExecution
 
 export type ConnectorPrepareRoute =
   | { kind: 'bridge' }
+  | { kind: 'bridge-stateless' }
   | { kind: 'cloud-approval' }
   | { kind: 'cloud-stateless' };
 
@@ -189,19 +221,37 @@ export function pickConnectorPrepareRoute(
   action: ConnectorActionExecutionTarget,
   availability: ConnectorExecutionAvailability,
 ): ConnectorPrepareRoute | undefined {
-  // Honor where the action actually lives — local-bridge and cloud-stored approvals
-  // must be prepared by the backend that holds them so the auth + lookup work.
-  if (action.workflowSource === 'local-bridge' && availability.bridgeActive) {
-    return { kind: 'bridge' };
+  return connectorPrepareRouteChain(action, availability)[0];
+}
+
+// Approve must never be gated by an external sign-in or by the AI bridge. The wallet
+// signs locally either way; the prepare endpoint just builds unsigned tx bytes. We
+// return an ordered list of routes to try so a transient bridge or cloud failure
+// doesn't block approval — the dispatcher falls through to the next route on error.
+export function connectorPrepareRouteChain(
+  action: ConnectorActionExecutionTarget,
+  availability: ConnectorExecutionAvailability,
+): ConnectorPrepareRoute[] {
+  const routes: ConnectorPrepareRoute[] = [];
+  // Local-bridge actions live in the bridge's store — try the stored-action path first
+  // when the bridge is up; either way, also queue the stateless fallbacks.
+  if (action.workflowSource === 'local-bridge') {
+    if (availability.bridgeActive) routes.push({ kind: 'bridge' }, { kind: 'bridge-stateless' });
+    routes.push({ kind: 'cloud-stateless' });
+    return routes;
   }
-  if (action.workflowSource === 'cloud' && availability.cloudSessionMatchesWallet) {
-    return { kind: 'cloud-approval' };
+  // Cloud-stored approvals need the cloud session for lookup; fall back to the public
+  // stateless endpoint if the session check is stale.
+  if (action.workflowSource === 'cloud') {
+    if (availability.cloudSessionMatchesWallet) routes.push({ kind: 'cloud-approval' });
+    routes.push({ kind: 'cloud-stateless' });
+    return routes;
   }
-  // Browser-workflow (and source-less) actions live only in the user's localStorage:
-  // the bridge has no record of their `browser-action_*` IDs and 404s on lookup. Send
-  // them through the stateless public cloud endpoint, which builds the unsigned tx
-  // from raw kind + params + wallet + cluster. The browser still signs locally, so
-  // funds never leave the user's control. Works for wallet-only, wallet+cloud,
-  // wallet+AI, or any combination — including when a local bridge is also active.
-  return { kind: 'cloud-stateless' };
+  // Browser-workflow / source-less actions live only in localStorage. The bridge can
+  // build the tx statelessly without any account lookup. Prefer it when available so
+  // we never round-trip to the cloud (and never require any cloud sign-in). Fall back
+  // to the public cloud endpoint when the bridge is offline (production deployment).
+  if (availability.bridgeActive) routes.push({ kind: 'bridge-stateless' });
+  routes.push({ kind: 'cloud-stateless' });
+  return routes;
 }

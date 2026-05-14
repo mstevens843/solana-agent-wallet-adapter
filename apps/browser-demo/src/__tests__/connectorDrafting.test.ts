@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
 import {
+  connectorActionDisplayParts,
   connectorActionFormByActionType,
   connectorActionFormTemplateActionType,
   connectorAiPlannerContext,
@@ -269,6 +270,44 @@ describe('connector drafting helpers', () => {
       expect(connectorActionFormByActionType('not_a_real_action')).toBeUndefined();
       expect(connectorActionFormByActionType('')).toBeUndefined();
       expect(connectorActionFormByActionType(undefined)).toBeUndefined();
+    });
+  });
+
+  describe('connectorActionDisplayParts', () => {
+    it('formats the connector operation and selected reserve as the inbox title', () => {
+      const display = connectorActionDisplayParts('kamino_deposit', {
+        connectorOperationId: 'kamino:deposit',
+        token: 'SOL',
+        amount: '0.01',
+      });
+
+      expect(display?.title).toBe('Kamino deposit - SOL Reserve');
+      expect(display?.operationLabel).toBe('Kamino deposit');
+      expect(display?.selectionLabel).toBe('SOL Reserve');
+    });
+
+    it('prefers explicit dropdown labels when a connector value is an address', () => {
+      const display = connectorActionDisplayParts('kamino_deposit', {
+        connectorOperationId: 'kamino:deposit',
+        token: 'So11111111111111111111111111111111111111112',
+        tokenLabel: 'SOL reserve',
+        amount: '0.01',
+      });
+
+      expect(display?.title).toBe('Kamino deposit - SOL Reserve');
+    });
+
+    it('includes the selected sub-action before the selected pool for unified connector forms', () => {
+      const display = connectorActionDisplayParts('raydium_add_liquidity', {
+        connectorOperationId: 'raydium:liquidity-flow',
+        subAction: 'clmm-add',
+        poolId: 'SOL-USDC',
+        amount: '0.01',
+      });
+
+      expect(display?.title).toBe('Raydium liquidity - CLMM Add Liquidity - SOL USDC');
+      expect(display?.operationLabel).toBe('Raydium liquidity - CLMM Add Liquidity');
+      expect(display?.selectionLabel).toBe('SOL USDC');
     });
   });
 });

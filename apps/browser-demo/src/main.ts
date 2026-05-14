@@ -189,6 +189,7 @@ import {
 } from './connectorExecution.js';
 import {
   connectorActionFormById,
+  connectorActionDisplayParts,
   connectorActionFormForTemplate,
   connectorActionFormsForConnector,
   connectorActionFormTemplateActionType,
@@ -199,6 +200,7 @@ import {
   connectorDraftConnectors,
   connectorDraftStatus,
   effectiveFormFields,
+  formTemplateFields,
   isConnectorCapableTemplate,
   normalizeConnectorDraftParameters,
   connectorActionFormByActionType,
@@ -11109,7 +11111,7 @@ function agentPlannerWorkbench(): string {
         </div>
         <div class="planner-form-body">
           <div class="planner-fields">
-            ${template.fields.map(templateFieldInput).join('')}
+            ${effectiveTemplateFields(template).map(templateFieldInput).join('')}
           </div>
           <label class="intent-document planner-prompt">
             <span>${notesLabel}${notesRequired ? ' *' : ''}</span>
@@ -11562,6 +11564,19 @@ function activeConnectorActionForm(): ConnectorActionForm | undefined {
   if (fromState) return fromState;
   const template = selectedTemplate();
   return connectorActionFormForTemplate(template);
+}
+
+// AGENT_PLAN_TEMPLATES carries a frozen `fields` list per template. Connector
+// templates additionally expose dropdowns + sub-actions via ConnectorActionForm —
+// those weren't reaching the rendered planner before, so the user saw bare bid
+// forms with only price + reason (no collection picker), Lulo with no deposit/
+// withdraw selector, etc. This helper returns the connector form's expanded fields
+// (sub-action selector + branch fields with showWhen) when one exists, falling back
+// to the static template fields for legacy non-connector templates.
+function effectiveTemplateFields(template: AgentPlanTemplate): AgentPlanTemplateField[] {
+  const form = connectorActionFormForTemplate(template);
+  if (form) return formTemplateFields(form);
+  return template.fields;
 }
 
 function templateFieldVisible(fieldDef: AgentPlanTemplateField): boolean {
@@ -27140,9 +27155,24 @@ function templateFieldValue(fieldId: string): string {
   return state.templateFields[fieldId] ?? defaultTemplateFieldValues(template)[fieldId] ?? '';
 }
 
+// Connector templates surface fields from every sub-action with a `showWhen` marker
+// that points at the selected sub-action id. A field that is only "required" for the
+// borrow sub-action should NOT block earn drafts (e.g. "Borrow vault is required"
+// firing when the user picked the SOL earn pool). Skip required-field checks when
+// the field's showWhen condition does not match the current parameter snapshot.
+function fieldIsVisible(field: AgentPlanTemplateField, parameters: Record<string, string>): boolean {
+  if (!field.showWhen) return true;
+  for (const [key, value] of Object.entries(field.showWhen)) {
+    const actual = parameters[key]?.trim() ?? '';
+    const expected = Array.isArray(value) ? value : [value];
+    if (!expected.includes(actual)) return false;
+  }
+  return true;
+}
+
 function assertRequiredTemplateFields(template: AgentPlanTemplate, parameters: Record<string, string>): void {
-  const missing = template.fields
-    .filter((fieldDef) => fieldDef.required && !parameters[fieldDef.id]?.trim())
+  const missing = effectiveTemplateFields(template)
+    .filter((fieldDef) => fieldDef.required && fieldIsVisible(fieldDef, parameters) && !parameters[fieldDef.id]?.trim())
     .map((fieldDef) => fieldDef.label);
   if (missing.length > 0) {
     throw new Error(`Complete required planner fields: ${missing.join(', ')}.`);
@@ -27157,7 +27187,8 @@ function assertValidTemplatePlanInput(
 ): void {
   const mode = opts.mode ?? 'template';
   const errors: Record<string, string> = {};
-  for (const fieldDef of template.fields) {
+  for (const fieldDef of effectiveTemplateFields(template)) {
+    if (!fieldIsVisible(fieldDef, parameters)) continue;
     const aiConnectorMissingFact = mode === 'ai' &&
       isConnectorCapableTemplate(template) &&
       (fieldDef.id === 'blinkUrl' || fieldDef.id === 'actionUrl');
@@ -28930,8 +28961,13 @@ function preparedActionCard(action: PreparedAction): string {
   const clearablePending = !cloudWorkflow &&
     isExecutableBrowserAction(action) &&
     (pendingLedgerExecution || Boolean(action.txid && action.txStatus === 'pending'));
-  const executeDisabled = (!state.bridgeActive && !browserWorkflow && !cloudWorkflow) ||
-    state.busy ||
+  // Approve and send must NEVER be gated by AI Bridge, Agentic Cloud sign-in, or any
+  // other session. The wallet signs locally; the prepare endpoint just builds unsigned
+  // tx bytes. The connector dispatcher routes through bridge stateless → cloud stateless
+  // automatically, so any executable action with a signing-capable wallet is approvable
+  // here. We only block on real reasons: a busy worker, a non-ready status, an in-flight
+  // ledger entry, or a concrete executionBlockReason (recipient policy, wallet capability).
+  const executeDisabled = state.busy ||
     !executable ||
     pendingLedgerExecution ||
     Boolean(executionBlockReason);
@@ -28952,7 +28988,7 @@ function preparedActionCard(action: PreparedAction): string {
               <span>${escapeHtml(inboxApprovalSourceLabel(action))}</span>
             </div>
             ${actionTimelineHtml(action)}
-            <p class="ticket-meta-line">${escapeHtml(action.kind)} on ${escapeHtml(action.cluster)} - due ${formatDateTime(action.dueAt)}</p>
+            <p class="ticket-meta-line">${escapeHtml(preparedActionMetaLabel(action))} on ${escapeHtml(action.cluster)} - due ${formatDateTime(action.dueAt)}</p>
           </div>
           <div class="inbox-approval-decision">
             ${inboxApprovalHero(action)}
@@ -28995,11 +29031,20 @@ function preparedActionCard(action: PreparedAction): string {
   `;
 }
 
+function preparedActionMetaLabel(action: PreparedAction): string {
+  if (isConnectorApprovalKind(action)) {
+    return connectorActionDisplayParts(action.kind, action.params)?.operationLabel ?? action.kind.replace(/_/g, ' ');
+  }
+  return action.kind;
+}
+
 function preparedActionCardTitle(action: PreparedAction): string {
   if (action.recurringId && action.kind === 'swap') return 'Recurring swap approval';
   if (action.recurringId) return 'Repeat payment approval';
   if (action.kind === 'transfer_sol' || action.kind === 'transfer_spl') return 'Transfer approval';
   if (action.kind === 'swap') return 'Swap approval';
+  const connectorDisplay = connectorActionDisplayParts(action.kind, action.params);
+  if (connectorDisplay) return connectorDisplay.title;
   return action.summary;
 }
 
@@ -29022,7 +29067,7 @@ function inboxApprovalHero(action: PreparedAction): string {
     ? `To ${recipientDisplayLabel(recipientParam(action))}`
     : formatDateTime(action.dueAt);
   const subject = marketAmountSubjectForAction(action);
-  const context = preparedActionConnectorContextLabel(action);
+  const context = isConnectorApprovalKind(action) ? '' : preparedActionConnectorContextLabel(action);
   return `
     <div class="inbox-approval-value" title="${escapeHtml(marketHeroTitle(primary, secondary, subject))}">
       ${marketAmountLineHtml(primary, subject)}
@@ -29199,6 +29244,13 @@ function marketAmountSubjectForAction(action: PreparedAction): MarketAmountSubje
   if (action.kind === 'transfer_spl') {
     const amount = parsePositiveAmount(stringParam(action, 'amount'));
     const token = stringParam(action, 'token');
+    const mint = marketMintForToken(token);
+    return amount !== undefined && mint && token ? { amount, mint, token } : undefined;
+  }
+  if (isConnectorApprovalKind(action)) {
+    const amountInfo = connectorActionAmountInfo(action);
+    const amount = parsePositiveAmount(amountInfo?.amount);
+    const token = amountInfo?.marketToken ?? amountInfo?.token;
     const mint = marketMintForToken(token);
     return amount !== undefined && mint && token ? { amount, mint, token } : undefined;
   }
@@ -32236,11 +32288,89 @@ function emptyInboxText(): string {
 }
 
 function amountLabel(action: PreparedAction): string {
+  if (isConnectorApprovalKind(action)) return connectorActionAmountInfo(action)?.label ?? 'n/a';
   if (typeof action.params.amountSol === 'string') return `${action.params.amountSol} SOL`;
   if (action.kind === 'swap') return swapAmountLabel(action);
   if (action.kind === 'transfer_sol' && typeof action.params.amount === 'string') return `${action.params.amount} SOL`;
   if (typeof action.params.amount === 'string') return action.params.amount;
   return 'n/a';
+}
+
+type ConnectorActionAmountInfo = {
+  amount: string;
+  label: string;
+  token?: string;
+  marketToken?: string;
+};
+
+type ConnectorActionAmountToken = {
+  value: string;
+  marketEligible: boolean;
+};
+
+function connectorActionAmountInfo(action: PreparedAction): ConnectorActionAmountInfo | undefined {
+  const amountKeys: Array<{ key: string; token?: string }> = [
+    { key: 'amountSol', token: 'SOL' },
+    { key: 'priceSol', token: 'SOL' },
+    { key: 'maxPriceSol', token: 'SOL' },
+    { key: 'maxPricePerNftSol', token: 'SOL' },
+    { key: 'msolAmount', token: 'mSOL' },
+    { key: 'amount' },
+    { key: 'inputAmount' },
+    { key: 'plannedAmount' },
+    { key: 'maxAmount' },
+    { key: 'collateralAmount' },
+    { key: 'borrowAmount' },
+    { key: 'makingAmount' },
+    { key: 'takingAmount' },
+    { key: 'liquidityAmount' },
+    { key: 'shares' },
+    { key: 'percentage' },
+  ];
+  const amountField = amountKeys.find(({ key }) => stringParam(action, key));
+  if (!amountField) return undefined;
+  const amount = stringParam(action, amountField.key);
+  const token = amountField.token
+    ? { value: amountField.token, marketEligible: true }
+    : connectorActionAmountToken(action);
+  const displayToken = token ? connectorActionAmountTokenLabel(token.value) : '';
+  const label = displayToken && !/[a-z%]/i.test(amount)
+    ? `${amount} ${displayToken}`
+    : amount;
+  return {
+    amount,
+    label,
+    ...(displayToken ? { token: displayToken } : {}),
+    ...(token?.marketEligible ? { marketToken: token.value } : {}),
+  };
+}
+
+function connectorActionAmountToken(action: PreparedAction): ConnectorActionAmountToken | undefined {
+  const tokenKeys = [
+    'token',
+    'inputToken',
+    'assetMint',
+    'mint',
+    'mintAddress',
+    'inputMint',
+    'lstMint',
+    'inputLstMint',
+    'governingTokenMint',
+  ];
+  for (const key of tokenKeys) {
+    const value = stringParam(action, key);
+    if (value) return { value, marketEligible: true };
+  }
+  for (const key of ['bankAddress', 'reserveAddress']) {
+    const value = stringParam(action, key);
+    if (value && !looksLikeMintAddress(value)) return { value, marketEligible: true };
+  }
+  return undefined;
+}
+
+function connectorActionAmountTokenLabel(token: string): string {
+  const display = resolveTokenDisplay(token || undefined) || tokenDisplayLabel(token);
+  return display.replace(/\s+(reserve|bank|pool|mint|asset)$/i, '').trim();
 }
 
 function swapAmountLabel(action: PreparedAction): string {

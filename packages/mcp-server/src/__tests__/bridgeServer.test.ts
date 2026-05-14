@@ -604,6 +604,115 @@ describe('bridge prepared-action prepare-transaction', () => {
   });
 });
 
+describe('bridge connector stateless prepare-transaction', () => {
+  afterEach(() => {
+    resetKaminoClientFactory();
+    clearReserveSnapshotCache();
+    vi.unstubAllEnvs();
+    vi.unstubAllGlobals();
+  });
+
+  it('builds an unsigned transaction from raw kind+params+wallet+cluster without any pre-stored action', async () => {
+    // This is what Approve-and-send for a browser-workflow action calls: the bridge
+    // never saw the localStorage `browser-action_*` id, but it can still produce the
+    // signable tx bytes by rerunning the adapter's prepare() with the supplied params.
+    // The wallet signs locally either way; no Agentic Cloud or AI Bridge sign-in is involved.
+    const wallet = 'GgwYwf8XtAQRtu1ZUv9hY1Zk1wkJpz3DCH7jQAjmGGGV';
+    setKaminoClientFactory(() => buildFakeKaminoClient());
+
+    const store = new JsonPreparedActionStore(
+      join(await mkdtemp(join(tmpdir(), 'sawa-bridge-stateless-')), 'actions.json'),
+    );
+    const handle = await startTestBridge({
+      actionConfig: { ...DEFAULT_CONFIG, rpcUrl: 'http://127.0.0.1:1' },
+      preparedActions: store,
+      connectedAddress: wallet,
+    });
+    try {
+      const response = await fetch(new URL('/bridge/connector/prepare-transaction', handle.url), {
+        method: 'POST',
+        headers: { 'x-agent-wallet-token': 'test-token', 'content-type': 'application/json' },
+        body: JSON.stringify({
+          kind: 'kamino_deposit',
+          params: { token: 'SOL', amount: '0.5' },
+          walletAddress: wallet,
+          cluster: 'mainnet-beta',
+        }),
+      });
+      expect(response.status).toBe(200);
+      const body = (await response.json()) as {
+        transactionBase64: string;
+        summary: string;
+        cluster: string;
+        preview?: Record<string, unknown>;
+      };
+      expect(typeof body.transactionBase64).toBe('string');
+      expect(body.transactionBase64.length).toBeGreaterThan(0);
+      expect(body.summary).toMatch(/Deposit .* SOL .*Kamino/i);
+      expect(body.cluster).toBe('mainnet-beta');
+      expect(body.preview).toMatchObject({ reserveSymbol: 'SOL' });
+    } finally {
+      await handle.stop();
+    }
+  });
+
+  it('returns 422 when the kind has no registered adapter', async () => {
+    const wallet = 'GgwYwf8XtAQRtu1ZUv9hY1Zk1wkJpz3DCH7jQAjmGGGV';
+    const store = new JsonPreparedActionStore(
+      join(await mkdtemp(join(tmpdir(), 'sawa-bridge-stateless-')), 'actions.json'),
+    );
+    const handle = await startTestBridge({
+      actionConfig: { ...DEFAULT_CONFIG, rpcUrl: 'http://127.0.0.1:1' },
+      preparedActions: store,
+      connectedAddress: wallet,
+    });
+    try {
+      const response = await fetch(new URL('/bridge/connector/prepare-transaction', handle.url), {
+        method: 'POST',
+        headers: { 'x-agent-wallet-token': 'test-token', 'content-type': 'application/json' },
+        body: JSON.stringify({
+          kind: 'manual_review',
+          params: {},
+          walletAddress: wallet,
+          cluster: 'mainnet-beta',
+        }),
+      });
+      expect(response.status).toBe(422);
+      const body = (await response.json()) as { error?: { code?: string } };
+      expect(body.error?.code).toBe('unknown_kind');
+    } finally {
+      await handle.stop();
+    }
+  });
+
+  it('returns 400 when params is missing or not an object', async () => {
+    const wallet = 'GgwYwf8XtAQRtu1ZUv9hY1Zk1wkJpz3DCH7jQAjmGGGV';
+    const store = new JsonPreparedActionStore(
+      join(await mkdtemp(join(tmpdir(), 'sawa-bridge-stateless-')), 'actions.json'),
+    );
+    const handle = await startTestBridge({
+      actionConfig: { ...DEFAULT_CONFIG, rpcUrl: 'http://127.0.0.1:1' },
+      preparedActions: store,
+      connectedAddress: wallet,
+    });
+    try {
+      const response = await fetch(new URL('/bridge/connector/prepare-transaction', handle.url), {
+        method: 'POST',
+        headers: { 'x-agent-wallet-token': 'test-token', 'content-type': 'application/json' },
+        body: JSON.stringify({
+          kind: 'kamino_deposit',
+          params: 'not-an-object',
+          walletAddress: wallet,
+          cluster: 'mainnet-beta',
+        }),
+      });
+      expect(response.status).toBe(400);
+    } finally {
+      await handle.stop();
+    }
+  });
+});
+
 function buildFakeKaminoClient(): KaminoClient {
   const snapshot: KaminoReserveSnapshot = {
     reserveAddress: 'ReserveAddressForSolPlaceholder111111111111',

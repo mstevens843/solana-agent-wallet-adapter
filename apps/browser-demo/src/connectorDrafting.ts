@@ -59,6 +59,13 @@ export interface ConnectorDraftValidationResult {
   missingFacts: string[];
 }
 
+export interface ConnectorActionDisplayParts {
+  connectorName: string;
+  operationLabel: string;
+  selectionLabel: string;
+  title: string;
+}
+
 const CONNECTOR_ACTION_FORMS: ConnectorActionForm[] = [
   connectorActionForm('kamino', 'deposit', 'Deposit', 'kamino-deposit', 'Supply tokens to a Kamino Lend reserve.', 'first-class-adapter', 'queueable', [
     kaminoReserveField(true),
@@ -271,6 +278,179 @@ export function selectedConnectorForDraftParameters(
   return findProtocolConnectorByInput(
     parameters.dapp || parameters.provider || parameters.route,
   );
+}
+
+export function connectorActionDisplayParts(
+  actionKind: string | undefined,
+  params: Record<string, unknown>,
+): ConnectorActionDisplayParts | undefined {
+  const form = connectorActionFormById(stringParam(params, 'connectorOperationId')) ??
+    connectorActionFormByActionType(actionKind);
+  if (!form) return undefined;
+  const connector = getAdapterMeta(form.connectorId);
+  const branch = connectorSubActionForDisplay(form, actionKind, params);
+  const operationLabel = connectorOperationDisplayLabel(form, connector, branch, actionKind);
+  const selectionLabel = connectorPrimarySelectionLabel(form, branch, params);
+  return {
+    connectorName: connector?.name ?? form.connectorId,
+    operationLabel,
+    selectionLabel,
+    title: selectionLabel ? `${operationLabel} - ${selectionLabel}` : operationLabel,
+  };
+}
+
+function connectorSubActionForDisplay(
+  form: ConnectorActionForm,
+  actionKind: string | undefined,
+  params: Record<string, unknown>,
+): ConnectorSubAction | undefined {
+  if (!form.subActions) return undefined;
+  const stringParams = stringParamsFromUnknown(params);
+  const requested = stringParams[form.subActions.fieldId]?.trim();
+  if (requested) {
+    const byParam = selectedSubAction(form, stringParams);
+    if (byParam) return byParam;
+  }
+  const byKind = form.subActions.options.find((option) => option.actionType === actionKind);
+  if (byKind) return byKind;
+  return selectedSubAction(form, stringParams);
+}
+
+function connectorOperationDisplayLabel(
+  form: ConnectorActionForm,
+  connector: ProtocolConnector | undefined,
+  branch: ConnectorSubAction | undefined,
+  actionKind: string | undefined,
+): string {
+  const connectorLabel = compactConnectorName(connector?.name ?? form.connectorId);
+  const baseParts = branch
+    ? [form.operationLabel, branch.label]
+    : [form.operationLabel];
+  const normalizedBase = baseParts
+    .map(connectorTitleSegment)
+    .filter(Boolean)
+    .join(' - ') ||
+    connectorTitleSegment(actionKind ?? form.actionType ?? form.operationId);
+  const normalizedConnector = normalizeActionLabel(connectorLabel);
+  const normalizedOperation = normalizeActionLabel(normalizedBase);
+  if (normalizedOperation.startsWith(normalizedConnector)) return normalizedBase;
+  return `${connectorLabel} ${lowercaseFirstWord(normalizedBase)}`.trim();
+}
+
+function connectorPrimarySelectionLabel(
+  form: ConnectorActionForm,
+  branch: ConnectorSubAction | undefined,
+  params: Record<string, unknown>,
+): string {
+  const fields = connectorDisplayFields(form, branch);
+  const subActionFieldId = form.subActions?.fieldId;
+  const priority = [
+    'token',
+    'assetMint',
+    'reserveAddress',
+    'bankAddress',
+    'mintAddress',
+    'inputMint',
+    'outputMint',
+    'poolAddress',
+    'poolId',
+    'whirlpoolAddress',
+    'positionAddress',
+    'positionMint',
+    'vaultAddress',
+    'stakeAccount',
+    'receiptAccount',
+    'ticketAccount',
+    'collectionId',
+    'listingId',
+    'proposalAddress',
+    'realmAddress',
+    'governingTokenMint',
+    'multisigAddress',
+    'destinationChain',
+    'priceFeedIds',
+  ];
+  for (const id of priority) {
+    const field = fields.find((candidate) => candidate.id === id);
+    const value = field ? connectorFieldDisplayValue(field, params) : '';
+    if (value) return value;
+  }
+  for (const field of fields) {
+    if (field.id === subActionFieldId || connectorFieldIsLowSignal(field)) continue;
+    const value = connectorFieldDisplayValue(field, params);
+    if (value) return value;
+  }
+  return '';
+}
+
+function connectorDisplayFields(
+  form: ConnectorActionForm,
+  branch: ConnectorSubAction | undefined,
+): AgentPlanTemplateField[] {
+  if (!branch) return form.fields;
+  const branchIds = new Set(branch.fields.map((field) => field.id));
+  return [...form.fields.filter((field) => !branchIds.has(field.id)), ...branch.fields];
+}
+
+function connectorFieldDisplayValue(
+  field: AgentPlanTemplateField,
+  params: Record<string, unknown>,
+): string {
+  const raw = stringParam(params, field.id);
+  if (!raw) return '';
+  const explicitLabel = stringParam(params, `${field.id}Label`);
+  if (explicitLabel) return connectorTitleSegment(explicitLabel);
+  const compactRaw = connectorDisplayRawValue(raw);
+  if (/reserve/i.test(field.label) && compactRaw && !/reserve/i.test(compactRaw)) {
+    return `${compactRaw} Reserve`;
+  }
+  return compactRaw;
+}
+
+function connectorFieldIsLowSignal(field: AgentPlanTemplateField): boolean {
+  if (field.type !== 'cascading-select' && field.type !== 'select') return true;
+  return /^(memo|reason|amount|amountSol|inputAmount|msolAmount|priceSol|slippageBps|recipient|poolType|depositType|withdrawMode|voteKind)$/i.test(field.id);
+}
+
+function stringParamsFromUnknown(params: Record<string, unknown>): Record<string, string> {
+  const result: Record<string, string> = {};
+  for (const [key, value] of Object.entries(params)) {
+    if (typeof value === 'string') result[key] = value;
+  }
+  return result;
+}
+
+function stringParam(params: Record<string, unknown>, key: string): string {
+  const value = params[key];
+  return typeof value === 'string' ? value.trim() : '';
+}
+
+function connectorDisplayRawValue(value: string): string {
+  const trimmed = value.trim();
+  if (!trimmed) return '';
+  if (/^[1-9A-HJ-NP-Za-km-z]{32,44}$/.test(trimmed)) {
+    return `${trimmed.slice(0, 4)}...${trimmed.slice(-4)}`;
+  }
+  if (/^[A-Z0-9]{2,12}$/.test(trimmed)) return trimmed;
+  if (/^[a-z]{2,8}$/.test(trimmed)) return trimmed.toUpperCase();
+  return connectorTitleSegment(trimmed);
+}
+
+function connectorTitleSegment(value: string): string {
+  return titleCase(value
+    .replace(/[\u2013\u2014]+/g, ' ')
+    .replace(/\u2192/g, ' to ')
+    .replace(/[._-]+/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim());
+}
+
+function compactConnectorName(value: string): string {
+  return value.replace(/\s+Finance$/i, '').trim() || value;
+}
+
+function lowercaseFirstWord(value: string): string {
+  return value.replace(/^\S+/, (match) => match.toLowerCase());
 }
 
 export function connectorDraftConnectors(
@@ -509,17 +689,20 @@ function kaminoReserveField(required: boolean): AgentPlanTemplateField {
 }
 
 function marinadeForms(): ConnectorActionForm[] {
+  // Field IDs MUST match the Marinade adapter input shape (solAmount, msolAmount,
+  // ticketAccount). A mismatched `amount` makes the adapter's parseDecimalAmount
+  // crash with "Cannot read properties of undefined (reading 'trim')" at approve.
   const ticketField = cascadingField('ticketAccount', 'Unstake ticket', 'marinade.ticket', {
     required: true,
     emptyHint: 'No delayed-unstake tickets found. Paste a ticket account address.',
   });
   return [
     connectorActionForm('marinade', 'liquid-stake', 'Liquid stake', 'connector-marinade-liquid-stake', 'Stake SOL into mSOL via Marinade.', 'first-class-adapter', 'queueable', [
-      formField('amount', 'SOL amount', true),
+      formField('solAmount', 'SOL amount', true),
       formField('memo', 'Reason'),
     ], false, 'marinade_liquid_stake'),
     connectorActionForm('marinade', 'liquid-unstake', 'Liquid unstake', 'connector-marinade-liquid-unstake', 'Unstake mSOL into SOL immediately (with liquidity fee).', 'first-class-adapter', 'queueable', [
-      formField('amount', 'mSOL amount', true),
+      formField('msolAmount', 'mSOL amount', true),
       formField('memo', 'Reason'),
     ], false, 'marinade_liquid_unstake'),
     connectorActionForm('marinade', 'delayed-unstake', 'Delayed unstake', 'connector-marinade-delayed-unstake', 'Request a delayed unstake (no fee, takes 1–2 epochs).', 'first-class-adapter', 'queueable', [
@@ -534,6 +717,8 @@ function marinadeForms(): ConnectorActionForm[] {
 }
 
 function jitoForms(): ConnectorActionForm[] {
+  // Field IDs MUST match the Jito adapter input shape (solAmount for stake/withdraw,
+  // jitosolAmount for unstake). Mismatched ids crash adapter.prepare on .trim().
   const stakeField = cascadingField('stakeAccount', 'Stake account', 'jito.stakeAccount', {
     required: true,
     emptyHint: 'No eligible stake accounts found. Paste a stake account address.',
@@ -544,7 +729,7 @@ function jitoForms(): ConnectorActionForm[] {
   });
   return [
     connectorActionForm('jito', 'stake-sol', 'Stake SOL', 'connector-jito-stake-sol', 'Stake SOL into JitoSOL via the Jito stake pool.', 'first-class-adapter', 'queueable', [
-      formField('amount', 'SOL amount', true),
+      formField('solAmount', 'SOL amount', true),
       formField('memo', 'Reason'),
     ], false, 'jito_stake_sol'),
     connectorActionForm('jito', 'deposit-stake-account', 'Deposit stake account', 'connector-jito-deposit-stake-account', 'Deposit a native stake account into the Jito pool (creates a claim receipt).', 'first-class-adapter', 'queueable', [
@@ -552,7 +737,7 @@ function jitoForms(): ConnectorActionForm[] {
       formField('memo', 'Reason'),
     ], false, 'jito_deposit_stake_account'),
     connectorActionForm('jito', 'unstake-jitosol', 'Unstake JitoSOL', 'connector-jito-unstake-jitosol', 'Redeem JitoSOL via the stake pool. Choose the redeem route.', 'first-class-adapter', 'queueable', [
-      formField('amount', 'JitoSOL amount', true),
+      formField('jitoSolAmount', 'JitoSOL amount', true),
       { id: 'withdrawMode', label: 'Withdraw mode', type: 'select', options: ['stake_account', 'reserve_sol'], defaultValue: 'reserve_sol', required: true },
       formField('memo', 'Reason'),
     ], false, 'jito_unstake_jitosol'),
@@ -576,31 +761,36 @@ function sanctumLstField(id: string, label: string, providerId: string, required
 }
 
 function sanctumForms(): ConnectorActionForm[] {
+  // Field IDs MUST match the Sanctum adapter input shape — the adapter reads
+  // `input.inputMint` / `input.outputMint` / `input.lstMint` / `input.solAmount` /
+  // `input.lstAmount` / `input.infAmount`. Using mismatched ids (e.g. `inputLstMint`)
+  // makes the adapter see undefined and throw "inputMint must be a valid Solana mint
+  // address" at approve time.
   return [
     connectorActionForm('sanctum', 'swap-lst', 'Swap LST', 'connector-sanctum-swap-lst', 'Swap one Sanctum-supported LST for another.', 'first-class-adapter', 'queueable', [
-      sanctumLstField('inputLstMint', 'Input LST', 'sanctum.lst', true),
-      sanctumLstField('outputLstMint', 'Output LST', 'sanctum.lst', true),
+      sanctumLstField('inputMint', 'Input LST', 'sanctum.lst', true),
+      sanctumLstField('outputMint', 'Output LST', 'sanctum.lst', true),
       formField('amount', 'Amount', true),
       formField('memo', 'Reason'),
     ], false, 'sanctum_swap_lst'),
     connectorActionForm('sanctum', 'stake-sol-to-lst', 'Stake SOL → LST', 'connector-sanctum-stake-sol-to-lst', 'Stake SOL into an LST via Sanctum.', 'first-class-adapter', 'queueable', [
       sanctumLstField('lstMint', 'Target LST', 'sanctum.lst', true),
-      formField('amount', 'SOL amount', true),
+      formField('solAmount', 'SOL amount', true),
       formField('memo', 'Reason'),
     ], false, 'sanctum_stake_sol_to_lst'),
     connectorActionForm('sanctum', 'unstake-lst-to-sol', 'Unstake LST → SOL', 'connector-sanctum-unstake-lst-to-sol', 'Redeem an LST for SOL via Sanctum.', 'first-class-adapter', 'queueable', [
       sanctumLstField('lstMint', 'LST', 'sanctum.lst', true),
-      formField('amount', 'LST amount', true),
+      formField('lstAmount', 'LST amount', true),
       formField('memo', 'Reason'),
     ], false, 'sanctum_unstake_lst_to_sol'),
     connectorActionForm('sanctum', 'add-infinity-liquidity', 'Add Infinity liquidity', 'connector-sanctum-add-infinity', 'Provide liquidity to the Sanctum Infinity pool.', 'first-class-adapter', 'queueable', [
-      sanctumLstField('lstMint', 'Input LST / SOL', 'sanctum.lst', true),
+      sanctumLstField('inputMint', 'Input LST / SOL', 'sanctum.lst', true),
       formField('amount', 'Amount', true),
       formField('memo', 'Reason'),
     ], false, 'sanctum_add_infinity_liquidity'),
     connectorActionForm('sanctum', 'remove-infinity-liquidity', 'Remove Infinity liquidity', 'connector-sanctum-remove-infinity', 'Withdraw from the Sanctum Infinity pool.', 'first-class-adapter', 'queueable', [
-      sanctumLstField('lstMint', 'Output LST', 'sanctum.lst', true),
-      formField('amount', 'Amount', true),
+      sanctumLstField('outputMint', 'Output LST', 'sanctum.lst', true),
+      formField('infAmount', 'INF amount', true),
       formField('memo', 'Reason'),
     ], false, 'sanctum_remove_infinity_liquidity'),
   ];
@@ -670,15 +860,48 @@ function orcaPositionField(required: boolean): AgentPlanTemplateField {
 }
 
 function orcaForms(): ConnectorActionForm[] {
+  // Orca liquidity has two flavors: "add to an existing whirlpool position you already
+  // own" (no tick math required) and "open a new tick-bounded position" (custom tick
+  // math). Hide the raw tick integer inputs behind a sub-action so the simple case
+  // doesn't surface them. Users without a wallet position can pick "New position"
+  // and either accept the default wide range OR enter custom ticks.
   return [
-    connectorActionForm('orca', 'increase-liquidity', 'Increase liquidity', 'connector-orca-increase-liquidity', 'Add liquidity to a new or existing Orca whirlpool position.', 'first-class-adapter', 'queueable', [
-      orcaWhirlpoolField(true),
-      orcaPositionField(false),
-      formField('lowerTick', 'Lower tick (new position)'),
-      formField('upperTick', 'Upper tick (new position)'),
-      formField('amount', 'Amount'),
-      formField('memo', 'Reason'),
-    ], false, 'orca_increase_liquidity'),
+    {
+      id: 'orca:increase-liquidity-flow',
+      connectorId: 'orca',
+      operationId: 'increase-liquidity',
+      operationLabel: 'Increase liquidity',
+      templateId: 'connector-orca-increase-liquidity',
+      description: 'Add liquidity to an existing Orca whirlpool position you own, or open a new tick-bounded position.',
+      executionMode: 'first-class-adapter',
+      outcome: 'queueable',
+      fields: [formField('amount', 'Amount', true), formField('memo', 'Reason')],
+      subActions: {
+        fieldId: 'subAction',
+        label: 'Position',
+        defaultId: 'existing-position',
+        options: [
+          {
+            id: 'existing-position',
+            label: 'Add to existing position',
+            description: 'Top up a position you already own — no tick math needed.',
+            actionType: 'orca_increase_liquidity',
+            fields: [orcaWhirlpoolField(true), orcaPositionField(true)],
+          },
+          {
+            id: 'new-position',
+            label: 'Open new position (advanced)',
+            description: 'Open a brand-new tick-bounded position. Ticks must be aligned to the pool tick spacing.',
+            actionType: 'orca_increase_liquidity',
+            fields: [
+              orcaWhirlpoolField(true),
+              formField('lowerTick', 'Lower tick (integer)', true),
+              formField('upperTick', 'Upper tick (integer)', true),
+            ],
+          },
+        ],
+      },
+    },
     connectorActionForm('orca', 'decrease-liquidity', 'Decrease liquidity', 'connector-orca-decrease-liquidity', 'Remove liquidity from an Orca whirlpool position.', 'first-class-adapter', 'queueable', [
       orcaWhirlpoolField(true),
       orcaPositionField(true),
@@ -942,7 +1165,10 @@ function realmsForms(): ConnectorActionForm[] {
 }
 
 function wormholeTokenField(required: boolean): AgentPlanTemplateField {
-  return cascadingField('token', 'Source token', 'wormhole.token', {
+  // Field id MUST match the Wormhole adapter input (`sourceMint`). The provider
+  // emits real mint addresses; using `token` here makes the adapter read undefined
+  // and reject the approval with "Wormhole sourceMint is required."
+  return cascadingField('sourceMint', 'Source token', 'wormhole.token', {
     required,
     emptyHint: "Couldn't load Wormhole token routes. Paste a source mint.",
   });
@@ -951,7 +1177,7 @@ function wormholeTokenField(required: boolean): AgentPlanTemplateField {
 function wormholeDestinationField(required: boolean): AgentPlanTemplateField {
   return cascadingField('destinationChain', 'Destination chain', 'wormhole.destination', {
     required,
-    dependsOn: ['token'],
+    dependsOn: ['sourceMint'],
     emptyHint: 'Choose a source token first.',
   });
 }
@@ -1426,19 +1652,38 @@ export function formTemplateFields(form: ConnectorActionForm): AgentPlanTemplate
   if (!form.subActions) return form.fields;
   const selectField = subActionSelectField(form);
   const baseIds = new Set(form.fields.map((field) => field.id));
-  const branchFields: AgentPlanTemplateField[] = [];
+  const subActionFieldId = form.subActions.fieldId;
+  // Aggregate sub-actions that share a field id (e.g. `poolId` exists in cpmm-add,
+  // cpmm-remove, clmm-add, clmm-remove): build a single field whose showWhen lists
+  // every matching branch. Without this, only the first sub-action's branch shows
+  // its pool/amount/etc., and all later sub-actions render as empty forms.
+  const branchFieldsById = new Map<string, { field: AgentPlanTemplateField; matches: string[] }>();
   for (const branch of form.subActions.options) {
     for (const field of branch.fields) {
       if (baseIds.has(field.id)) continue;
-      if (branchFields.some((candidate) => candidate.id === field.id)) continue;
-      branchFields.push({
-        ...field,
-        showWhen: {
-          ...(field.showWhen ?? {}),
-          [form.subActions.fieldId]: branch.id,
-        },
-      });
+      const existing = branchFieldsById.get(field.id);
+      if (existing) {
+        existing.matches.push(branch.id);
+        // Promote the field to required if ANY sub-action needs it required — the
+        // showWhen condition gates whether the validator sees it at all.
+        if (field.required) existing.field.required = true;
+      } else {
+        branchFieldsById.set(field.id, {
+          field: { ...field },
+          matches: [branch.id],
+        });
+      }
     }
+  }
+  const branchFields: AgentPlanTemplateField[] = [];
+  for (const { field, matches } of branchFieldsById.values()) {
+    branchFields.push({
+      ...field,
+      showWhen: {
+        ...(field.showWhen ?? {}),
+        [subActionFieldId]: matches.length === 1 ? matches[0]! : matches,
+      },
+    });
   }
   return [
     ...form.fields,

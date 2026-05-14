@@ -1,6 +1,9 @@
 import { ProtocolError } from '@solana-agent-wallet-adapter/core';
 
 export function parseDecimalAmount(value: string, decimals: number, label: string): bigint {
+  if (typeof value !== 'string' || !value.trim()) {
+    throw new ProtocolError('invalid_request', `${label} is required.`);
+  }
   const trimmed = value.trim();
   if (!/^\d+(\.\d+)?$/.test(trimmed)) {
     throw new ProtocolError('invalid_request', `${label} must be a positive decimal string.`);
