@@ -5,15 +5,35 @@ import {
   AgentWalletActionService,
   BridgeAiPlanner,
   DEFAULT_CONFIG,
+  getTransfersByAddress,
+  listCoinGeckoEndpointCatalog,
+  requestBirdeyeExitLiquidityMulti,
+  requestBirdeyeHistoryPrice,
+  requestBirdeyeNewListings,
+  requestBirdeyeOhlcv,
   requestBirdeyePriceMulti,
+  requestBirdeyePriceVolumeMulti,
+  requestBirdeyePriceVolumeSingle,
   requestBirdeyeSearch,
+  requestBirdeyeTokenCreationInfo,
+  requestBirdeyeTokenHolders,
+  requestBirdeyeTokenListV3,
   requestBirdeyeTokenMetadata,
   requestBirdeyeTokenSecurity,
+  requestBirdeyeTrendingTokens,
+  requestBirdeyeWalletTokenList,
+  requestCoinGeckoEndpoint,
   requestCoinGeckoGlobal,
+  requestCoinGeckoSolanaTokenEvidence,
   type AiApiFormat,
   type AiAskRequest,
   type AiPlanRequest,
   type AiReviewRequest,
+  type BirdeyeHistoryPriceType,
+  type BirdeyeOhlcvType,
+  type BirdeyePriceVolumeType,
+  type BirdeyeTokenListSortBy,
+  type HeliusTransferFilters,
   type ConnectorFactReadInput,
   type DAppAdapterContext,
 } from '@solana-agent-wallet-adapter/mcp-server';
@@ -96,6 +116,7 @@ const REGISTERED_API_ROUTES = [
   'GET /api/ai/status',
   'POST /api/ai/generate-plan',
   'POST /api/ai/review-plan',
+  'POST /api/ai/ask-about-plan',
   'POST /api/auth/nonce',
   'POST /api/auth/verify-wallet',
   'POST /api/auth/logout',
@@ -129,10 +150,24 @@ const REGISTERED_API_ROUTES = [
   'POST /api/connector/prepare-transaction',
   'POST /api/connector/read-facts',
   'POST /api/birdeye/price-multi',
+  'POST /api/birdeye/price-volume',
+  'POST /api/birdeye/history-price',
+  'POST /api/birdeye/ohlcv',
   'POST /api/birdeye/search',
   'POST /api/birdeye/token-meta',
   'POST /api/birdeye/token-security',
+  'POST /api/birdeye/token-holders',
+  'POST /api/birdeye/token-creation-info',
+  'POST /api/birdeye/exit-liquidity-multi',
+  'POST /api/birdeye/trending',
+  'POST /api/birdeye/new-listings',
+  'POST /api/birdeye/token-list-v3',
+  'POST /api/birdeye/wallet-token-list',
+  'POST /api/helius/transfers-by-address',
+  'GET /api/coingecko/endpoints',
   'GET /api/coingecko/global',
+  'POST /api/coingecko/read',
+  'POST /api/coingecko/token-evidence',
 ] as const;
 
 type HostedProviderId = 'openai' | 'anthropic' | 'gemini' | 'openrouter';
@@ -432,7 +467,7 @@ async function enforceAuthRateLimit(
     now: clock.now(),
   });
   if (!allowed) {
-    throw new ApiError(429, route === '/api/ai/generate-plan' || route === '/api/ai/review-plan'
+    throw new ApiError(429, route === '/api/ai/generate-plan' || route === '/api/ai/review-plan' || route === '/api/ai/ask-about-plan'
       ? 'Too many hosted AI drafting attempts. Try again later.'
       : route === '/api/auth/nonce' || route === '/api/auth/verify-wallet'
         ? 'Too many wallet auth attempts. Try again later.'
@@ -444,6 +479,7 @@ function authRateLimitedRoute(pathname: string): AuthRateLimitInput['route'] | u
   if (pathname === '/api/auth/nonce' || pathname === '/api/auth/verify-wallet') return pathname;
   if (pathname === '/api/ai/generate-plan') return pathname;
   if (pathname === '/api/ai/review-plan') return pathname;
+  if (pathname === '/api/ai/ask-about-plan') return pathname;
   if (pathname.startsWith('/api/plans')) return '/api/plans:*';
   if (pathname.startsWith('/api/approvals')) return '/api/approvals:*';
   if (pathname.startsWith('/api/connector')) return '/api/approvals:*';
@@ -451,6 +487,8 @@ function authRateLimitedRoute(pathname: string): AuthRateLimitInput['route'] | u
   if (pathname.startsWith('/api/evidence')) return '/api/evidence:*';
   if (pathname.startsWith('/api/swap')) return '/api/swap:*';
   if (pathname.startsWith('/api/birdeye')) return '/api/birdeye:*';
+  if (pathname.startsWith('/api/helius')) return '/api/helius:*';
+  if (pathname.startsWith('/api/coingecko')) return '/api/coingecko:*';
   if (pathname.startsWith('/api/cloud-workspace')) return '/api/cloud-workspace:*';
   if (pathname === '/api/auth/logout') return pathname;
   return undefined;
@@ -463,7 +501,7 @@ function rateLimitWindowMs(route: string): number {
 
 function rateLimitMaxAttempts(route: string): number {
   if (route === '/api/auth/nonce' || route === '/api/auth/verify-wallet') return AUTH_RATE_LIMIT_MAX_ATTEMPTS;
-  if (route === '/api/ai/generate-plan' || route === '/api/ai/review-plan') return HOSTED_AI_RATE_LIMIT_MAX_ATTEMPTS;
+  if (route === '/api/ai/generate-plan' || route === '/api/ai/review-plan' || route === '/api/ai/ask-about-plan') return HOSTED_AI_RATE_LIMIT_MAX_ATTEMPTS;
   return WRITE_RATE_LIMIT_MAX_ATTEMPTS;
 }
 
@@ -675,9 +713,93 @@ async function routeApiRequest(
     return;
   }
 
+  if (url.pathname === '/api/birdeye/wallet-token-list') {
+    requireMethod(req, 'POST');
+    await handleBirdeyeWalletTokenList(req, res, store, clock);
+    return;
+  }
+
+  if (url.pathname === '/api/birdeye/token-holders') {
+    requireMethod(req, 'POST');
+    await handleBirdeyeTokenHolders(req, res);
+    return;
+  }
+
+  if (url.pathname === '/api/birdeye/token-creation-info') {
+    requireMethod(req, 'POST');
+    await handleBirdeyeTokenCreationInfo(req, res);
+    return;
+  }
+
+  if (url.pathname === '/api/birdeye/exit-liquidity-multi') {
+    requireMethod(req, 'POST');
+    await handleBirdeyeExitLiquidityMulti(req, res);
+    return;
+  }
+
+  if (url.pathname === '/api/birdeye/price-volume') {
+    requireMethod(req, 'POST');
+    await handleBirdeyePriceVolume(req, res);
+    return;
+  }
+
+  if (url.pathname === '/api/birdeye/history-price') {
+    requireMethod(req, 'POST');
+    await handleBirdeyeHistoryPrice(req, res);
+    return;
+  }
+
+  if (url.pathname === '/api/birdeye/ohlcv') {
+    requireMethod(req, 'POST');
+    await handleBirdeyeOhlcv(req, res);
+    return;
+  }
+
+  if (url.pathname === '/api/birdeye/trending') {
+    requireMethod(req, 'POST');
+    await handleBirdeyeTrending(req, res);
+    return;
+  }
+
+  if (url.pathname === '/api/birdeye/new-listings') {
+    requireMethod(req, 'POST');
+    await handleBirdeyeNewListings(req, res);
+    return;
+  }
+
+  if (url.pathname === '/api/birdeye/token-list-v3') {
+    requireMethod(req, 'POST');
+    await handleBirdeyeTokenListV3(req, res);
+    return;
+  }
+
+  if (url.pathname === '/api/helius/transfers-by-address') {
+    requireMethod(req, 'POST');
+    await handleHeliusTransfersByAddress(req, res, store, clock);
+    return;
+  }
+
   if (url.pathname === '/api/coingecko/global') {
     requireMethod(req, 'GET');
     await handleCoinGeckoGlobal(req, res);
+    return;
+  }
+
+  if (url.pathname === '/api/coingecko/endpoints') {
+    requireMethod(req, 'GET');
+    writeJson(res, 200, listCoinGeckoEndpointCatalog());
+    return;
+  }
+
+  if (url.pathname === '/api/coingecko/read') {
+    requireMethod(req, 'POST');
+    await handleCoinGeckoRead(req, res);
+    return;
+  }
+
+  if (url.pathname === '/api/coingecko/token-evidence') {
+    requireMethod(req, 'POST');
+    await handleCoinGeckoTokenEvidence(req, res);
     return;
   }
 
@@ -974,7 +1096,7 @@ async function handleHostedAiReviewRequest(
   }
   const body = await readJsonBody(req) as HostedAiReviewBody;
   const settings = hostedSettings(body.settings);
-  const request = hostedReviewRequest(body.request);
+  const request = hostedReviewRequestForSession(body.request, session.walletAddress);
   const planner = new BridgeAiPlanner();
 
   try {
@@ -1182,6 +1304,137 @@ async function handleBirdeyeTokenSecurity(req: IncomingMessage, res: ServerRespo
   writeJson(res, 200, await requestBirdeyeForRender(() => requestBirdeyeTokenSecurity(address)));
 }
 
+async function handleBirdeyeWalletTokenList(
+  req: IncomingMessage,
+  res: ServerResponse,
+  store: WorkflowStore,
+  clock: Clock,
+): Promise<void> {
+  const session = await sessionFromRequest({ req, store, clock });
+  if (!session) {
+    throw new ApiError(401, 'Sign in required for wallet token list.');
+  }
+  const body = asJsonRecord(await readJsonBody(req), 'BirdEye wallet token list body');
+  assertWalletMatchesSession(body.walletAddress ?? body.wallet, session.walletAddress, 'walletAddress');
+  writeJson(res, 200, await requestBirdeyeForRender(() => requestBirdeyeWalletTokenList(session.walletAddress, {
+    uiAmountMode: birdeyeUiAmountMode(body.uiAmountMode),
+  })));
+}
+
+async function handleBirdeyeTokenHolders(req: IncomingMessage, res: ServerResponse): Promise<void> {
+  const body = asJsonRecord(await readJsonBody(req), 'BirdEye token holders body');
+  const address = requiredBodyString(body, 'address');
+  writeJson(res, 200, await requestBirdeyeForRender(() => requestBirdeyeTokenHolders(address, {
+    limit: optionalIntegerBodyField(body, 'limit'),
+    offset: optionalIntegerBodyField(body, 'offset'),
+  })));
+}
+
+async function handleBirdeyeTokenCreationInfo(req: IncomingMessage, res: ServerResponse): Promise<void> {
+  const body = asJsonRecord(await readJsonBody(req), 'BirdEye token creation body');
+  const address = requiredBodyString(body, 'address');
+  writeJson(res, 200, await requestBirdeyeForRender(() => requestBirdeyeTokenCreationInfo(address)));
+}
+
+async function handleBirdeyeExitLiquidityMulti(req: IncomingMessage, res: ServerResponse): Promise<void> {
+  const body = asJsonRecord(await readJsonBody(req), 'BirdEye exit-liquidity body');
+  const addresses = requiredStringArray(body.addresses, 'addresses');
+  writeJson(res, 200, await requestBirdeyeForRender(() => requestBirdeyeExitLiquidityMulti(addresses)));
+}
+
+async function handleBirdeyePriceVolume(req: IncomingMessage, res: ServerResponse): Promise<void> {
+  const body = asJsonRecord(await readJsonBody(req), 'BirdEye price-volume body');
+  const addresses = optionalStringArray(body.addresses);
+  if (addresses.length) {
+    writeJson(res, 200, await requestBirdeyeForRender(() => requestBirdeyePriceVolumeMulti(addresses, {
+      type: birdeyePriceVolumeType(body.type),
+      uiAmountMode: birdeyeUiAmountMode(body.uiAmountMode),
+    })));
+    return;
+  }
+  const address = requiredBodyString(body, 'address');
+  writeJson(res, 200, await requestBirdeyeForRender(() => requestBirdeyePriceVolumeSingle(address, {
+    type: birdeyePriceVolumeType(body.type),
+  })));
+}
+
+async function handleBirdeyeHistoryPrice(req: IncomingMessage, res: ServerResponse): Promise<void> {
+  const body = asJsonRecord(await readJsonBody(req), 'BirdEye history price body');
+  const address = requiredBodyString(body, 'address');
+  writeJson(res, 200, await requestBirdeyeForRender(() => requestBirdeyeHistoryPrice(address, {
+    addressType: body.addressType === 'pair' ? 'pair' : 'token',
+    type: birdeyeHistoryPriceType(body.type),
+    timeFrom: optionalIntegerBodyField(body, 'timeFrom'),
+    timeTo: optionalIntegerBodyField(body, 'timeTo'),
+  })));
+}
+
+async function handleBirdeyeOhlcv(req: IncomingMessage, res: ServerResponse): Promise<void> {
+  const body = asJsonRecord(await readJsonBody(req), 'BirdEye OHLCV body');
+  const address = requiredBodyString(body, 'address');
+  writeJson(res, 200, await requestBirdeyeForRender(() => requestBirdeyeOhlcv(address, {
+    type: birdeyeOhlcvType(body.type),
+    timeFrom: optionalIntegerBodyField(body, 'timeFrom'),
+    timeTo: optionalIntegerBodyField(body, 'timeTo'),
+    currency: body.currency === 'native' ? 'native' : 'usd',
+  })));
+}
+
+async function handleBirdeyeTrending(req: IncomingMessage, res: ServerResponse): Promise<void> {
+  const body = asJsonRecord(await readJsonBody(req), 'BirdEye trending body');
+  writeJson(res, 200, await requestBirdeyeForRender(() => requestBirdeyeTrendingTokens({
+    limit: optionalIntegerBodyField(body, 'limit'),
+    offset: optionalIntegerBodyField(body, 'offset'),
+  })));
+}
+
+async function handleBirdeyeNewListings(req: IncomingMessage, res: ServerResponse): Promise<void> {
+  const body = asJsonRecord(await readJsonBody(req), 'BirdEye new listings body');
+  writeJson(res, 200, await requestBirdeyeForRender(() => requestBirdeyeNewListings({
+    limit: optionalIntegerBodyField(body, 'limit'),
+    timeTo: optionalIntegerBodyField(body, 'timeTo'),
+    includeMeme: typeof body.includeMeme === 'boolean' ? body.includeMeme : undefined,
+  })));
+}
+
+async function handleBirdeyeTokenListV3(req: IncomingMessage, res: ServerResponse): Promise<void> {
+  const body = asJsonRecord(await readJsonBody(req), 'BirdEye token list v3 body');
+  writeJson(res, 200, await requestBirdeyeForRender(() => requestBirdeyeTokenListV3({
+    limit: optionalIntegerBodyField(body, 'limit'),
+    offset: optionalIntegerBodyField(body, 'offset'),
+    sortBy: birdeyeTokenListSortBy(body.sortBy),
+    sortType: body.sortType === 'asc' ? 'asc' : body.sortType === 'desc' ? 'desc' : undefined,
+    minLiquidity: optionalNumberBodyField(body, 'minLiquidity'),
+    minVolume24hUsd: optionalNumberBodyField(body, 'minVolume24hUsd'),
+    includeMeme: typeof body.includeMeme === 'boolean' ? body.includeMeme : undefined,
+  })));
+}
+
+async function handleHeliusTransfersByAddress(
+  req: IncomingMessage,
+  res: ServerResponse,
+  store: WorkflowStore,
+  clock: Clock,
+): Promise<void> {
+  const session = await sessionFromRequest({ req, store, clock });
+  if (!session) {
+    throw new ApiError(401, 'Sign in required for wallet transfer history.');
+  }
+  const body = asJsonRecord(await readJsonBody(req), 'Helius transfer history body');
+  assertWalletMatchesSession(body.address ?? body.walletAddress, session.walletAddress, 'address');
+  writeJson(res, 200, await requestHeliusForRender(() => getTransfersByAddress(session.walletAddress, {
+    with: optionalBodyString(body, 'with'),
+    direction: heliusTransferDirection(body.direction),
+    mint: optionalBodyString(body, 'mint'),
+    solMode: body.solMode === 'separate' ? 'separate' : body.solMode === 'merged' ? 'merged' : undefined,
+    filters: heliusTransferFilters(body.filters),
+    limit: optionalIntegerBodyField(body, 'limit'),
+    paginationToken: optionalBodyString(body, 'paginationToken'),
+    commitment: body.commitment === 'confirmed' || body.commitment === 'finalized' ? body.commitment : undefined,
+    sortOrder: body.sortOrder === 'asc' ? 'asc' : body.sortOrder === 'desc' ? 'desc' : undefined,
+  })));
+}
+
 async function handleCoinGeckoGlobal(_req: IncomingMessage, res: ServerResponse): Promise<void> {
   try {
     const snapshot = await requestCoinGeckoGlobal();
@@ -1192,12 +1445,86 @@ async function handleCoinGeckoGlobal(_req: IncomingMessage, res: ServerResponse)
   }
 }
 
+async function handleCoinGeckoRead(req: IncomingMessage, res: ServerResponse): Promise<void> {
+  const body = asJsonRecord(await readJsonBody(req), 'CoinGecko read body');
+  writeJson(res, 200, await requestCoinGeckoForRender(() => requestCoinGeckoEndpoint({
+    endpointId: requiredBodyString(body, 'endpointId'),
+    pathParams: optionalPathParamRecord(body.pathParams, 'pathParams'),
+    query: optionalScalarRecord(body.query, 'query'),
+  })));
+}
+
+async function handleCoinGeckoTokenEvidence(req: IncomingMessage, res: ServerResponse): Promise<void> {
+  const body = asJsonRecord(await readJsonBody(req), 'CoinGecko token evidence body');
+  writeJson(res, 200, await requestCoinGeckoForRender(() => requestCoinGeckoSolanaTokenEvidence({
+    mint: optionalBodyString(body, 'mint'),
+    mints: optionalStringArray(body.mints, 'mints'),
+    network: optionalBodyString(body, 'network'),
+    includeOnchain: typeof body.includeOnchain === 'boolean' ? body.includeOnchain : undefined,
+    maxTokenDetails: optionalIntegerBodyField(body, 'maxTokenDetails'),
+  })));
+}
+
 async function requestBirdeyeForRender(callback: () => Promise<Record<string, unknown>>): Promise<Record<string, unknown>> {
   try {
     return await callback();
   } catch (err) {
     const message = err instanceof Error ? redactSecrets(err.message) : 'BirdEye request failed.';
     const status = message.includes('Missing BirdEye API key') ? 501 : 502;
+    throw new ApiError(status, message);
+  }
+}
+
+async function requestCoinGeckoForRender(callback: () => Promise<Record<string, unknown>>): Promise<Record<string, unknown>> {
+  try {
+    return await callback();
+  } catch (err) {
+    const message = err instanceof Error ? redactSecrets(err.message) : 'CoinGecko request failed.';
+    const status = message.includes('Missing CoinGecko') ? 501 : 502;
+    throw new ApiError(status, message);
+  }
+}
+
+function optionalScalarRecord(value: unknown, label: string): Record<string, string | number | boolean | undefined> | undefined {
+  if (value === undefined || value === null) return undefined;
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    throw new ApiError(400, `${label} must be a JSON object.`);
+  }
+  const record = value as Record<string, unknown>;
+  const out: Record<string, string | number | boolean | undefined> = {};
+  for (const [key, entry] of Object.entries(record)) {
+    if (entry === undefined || entry === null) continue;
+    if (typeof entry !== 'string' && typeof entry !== 'number' && typeof entry !== 'boolean') {
+      throw new ApiError(400, `${label}.${key} must be a string, number, or boolean.`);
+    }
+    out[key] = entry;
+  }
+  return out;
+}
+
+function optionalPathParamRecord(value: unknown, label: string): Record<string, string | number> | undefined {
+  if (value === undefined || value === null) return undefined;
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    throw new ApiError(400, `${label} must be a JSON object.`);
+  }
+  const record = value as Record<string, unknown>;
+  const out: Record<string, string | number> = {};
+  for (const [key, entry] of Object.entries(record)) {
+    if (entry === undefined || entry === null) continue;
+    if (typeof entry !== 'string' && typeof entry !== 'number') {
+      throw new ApiError(400, `${label}.${key} must be a string or number.`);
+    }
+    out[key] = entry;
+  }
+  return out;
+}
+
+async function requestHeliusForRender(callback: () => Promise<unknown>): Promise<unknown> {
+  try {
+    return await callback();
+  } catch (err) {
+    const message = err instanceof Error ? redactSecrets(err.message) : 'Helius request failed.';
+    const status = message.includes('Missing Helius') ? 501 : 502;
     throw new ApiError(status, message);
   }
 }
@@ -1344,6 +1671,11 @@ function requiredStringArray(value: unknown, key: string): string[] {
   return entries;
 }
 
+function optionalStringArray(value: unknown, key = 'addresses'): string[] {
+  if (value === undefined || value === null) return [];
+  return requiredStringArray(value, key);
+}
+
 type WorkflowCluster = 'mainnet-beta' | 'devnet' | 'testnet' | 'localnet';
 
 function requiredCluster(value: unknown): WorkflowCluster {
@@ -1361,6 +1693,100 @@ function optionalIntegerBodyField(body: Record<string, unknown>, key: string): n
     throw new ApiError(400, `${key} must be a non-negative integer.`);
   }
   return numeric;
+}
+
+function optionalNumberBodyField(body: Record<string, unknown>, key: string): number | undefined {
+  const value = body[key];
+  if (value === undefined || value === null || value === '') return undefined;
+  const numeric = typeof value === 'number' ? value : Number(value);
+  if (!Number.isFinite(numeric)) {
+    throw new ApiError(400, `${key} must be a number.`);
+  }
+  return numeric;
+}
+
+function optionalBodyString(body: Record<string, unknown>, key: string): string | undefined {
+  const value = body[key];
+  return typeof value === 'string' && value.trim() ? value.trim() : undefined;
+}
+
+function assertWalletMatchesSession(value: unknown, sessionWalletAddress: string, label: string): void {
+  const raw = stringField(value).trim();
+  if (!raw) return;
+  let normalized: string;
+  try {
+    normalized = normalizeWalletAddress(raw);
+  } catch (err) {
+    const message = err instanceof Error ? err.message : `${label} must be a Solana public key.`;
+    throw new ApiError(400, message);
+  }
+  if (normalized !== sessionWalletAddress) {
+    throw new ApiError(403, `${label} must match the signed-in wallet.`);
+  }
+}
+
+function birdeyeUiAmountMode(value: unknown): 'raw' | 'scaled' | 'both' | undefined {
+  return value === 'raw' || value === 'scaled' || value === 'both' ? value : undefined;
+}
+
+function birdeyePriceVolumeType(value: unknown): BirdeyePriceVolumeType | undefined {
+  return value === '1h' || value === '2h' || value === '4h' || value === '8h' || value === '24h' ? value : undefined;
+}
+
+function birdeyeHistoryPriceType(value: unknown): BirdeyeHistoryPriceType | undefined {
+  return value === '1m' || value === '5m' || value === '15m' || value === '30m' ||
+    value === '1H' || value === '2H' || value === '4H' || value === '8H' ||
+    value === '12H' || value === '1D'
+    ? value
+    : undefined;
+}
+
+function birdeyeOhlcvType(value: unknown): BirdeyeOhlcvType | undefined {
+  return value === '1m' || value === '3m' || value === '5m' || value === '15m' || value === '30m' ||
+    value === '1H' || value === '2H' || value === '4H' || value === '6H' || value === '8H' ||
+    value === '12H' || value === '1D' || value === '1W'
+    ? value
+    : undefined;
+}
+
+function birdeyeTokenListSortBy(value: unknown): BirdeyeTokenListSortBy | undefined {
+  return value === 'liquidity' || value === 'market_cap' || value === 'fdv' ||
+    value === 'v24hUSD' || value === 'v24hChangePercent' || value === 'price' ||
+    value === 'priceChange24h' || value === 'trade24h' || value === 'uniqueWallet24h' ||
+    value === 'last_trade_unix_time' || value === 'recent_listing_time'
+    ? value
+    : undefined;
+}
+
+function heliusTransferDirection(value: unknown): 'in' | 'out' | 'any' | undefined {
+  return value === 'in' || value === 'out' || value === 'any' ? value : undefined;
+}
+
+function heliusTransferFilters(value: unknown): HeliusTransferFilters | undefined {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return undefined;
+  const record = value as Record<string, unknown>;
+  return {
+    ...(heliusComparisonFilter(record.amount) ? { amount: heliusComparisonFilter(record.amount) } : {}),
+    ...(heliusComparisonFilter(record.blockTime) ? { blockTime: heliusComparisonFilter(record.blockTime) } : {}),
+    ...(heliusComparisonFilter(record.slot) ? { slot: heliusComparisonFilter(record.slot) } : {}),
+  };
+}
+
+function heliusComparisonFilter(value: unknown): { gt?: number; gte?: number; lt?: number; lte?: number } | undefined {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return undefined;
+  const record = value as Record<string, unknown>;
+  const filter = {
+    ...(finiteNumber(record.gt) !== undefined ? { gt: finiteNumber(record.gt) } : {}),
+    ...(finiteNumber(record.gte) !== undefined ? { gte: finiteNumber(record.gte) } : {}),
+    ...(finiteNumber(record.lt) !== undefined ? { lt: finiteNumber(record.lt) } : {}),
+    ...(finiteNumber(record.lte) !== undefined ? { lte: finiteNumber(record.lte) } : {}),
+  };
+  return Object.keys(filter).length ? filter : undefined;
+}
+
+function finiteNumber(value: unknown): number | undefined {
+  const numeric = typeof value === 'number' ? value : typeof value === 'string' && value.trim() ? Number(value) : undefined;
+  return numeric !== undefined && Number.isFinite(numeric) ? numeric : undefined;
 }
 
 function hostedSettings(input: HostedAiBody['settings']): {
@@ -1415,6 +1841,35 @@ function hostedAskRequest(input: unknown): AiAskRequest {
   return input as AiAskRequest;
 }
 
+function hostedReviewRequestForSession(input: unknown, walletAddress: string): AiReviewRequest {
+  return withSessionWalletContext(hostedReviewRequest(input), walletAddress);
+}
+
+function hostedAskRequestForSession(input: unknown, walletAddress: string): AiAskRequest {
+  return withSessionWalletContext(hostedAskRequest(input), walletAddress);
+}
+
+function withSessionWalletContext<T extends { walletAddress?: string; context?: Record<string, unknown>; cluster?: string }>(
+  request: T,
+  walletAddress: string,
+): T {
+  assertWalletMatchesSession(request.walletAddress, walletAddress, 'request.walletAddress');
+  return {
+    ...request,
+    walletAddress,
+    context: {
+      ...(request.context ?? {}),
+      connectedWallet: walletAddress,
+      wallet: {
+        address: walletAddress,
+        publicKey: walletAddress,
+        source: 'hosted_session',
+        ...(request.cluster ? { cluster: request.cluster } : {}),
+      },
+    },
+  };
+}
+
 async function handleHostedAiAskRequest(
   req: IncomingMessage,
   res: ServerResponse,
@@ -1427,7 +1882,7 @@ async function handleHostedAiAskRequest(
   }
   const body = await readJsonBody(req) as HostedAiAskBody;
   const settings = hostedSettings(body.settings);
-  const request = hostedAskRequest(body.request);
+  const request = hostedAskRequestForSession(body.request, session.walletAddress);
   const planner = new BridgeAiPlanner();
 
   try {

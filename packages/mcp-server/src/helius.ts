@@ -29,6 +29,31 @@ export interface HeliusTransactionHistoryOptions extends HeliusRequestOptions {
   timeoutMs?: number;
 }
 
+export interface HeliusComparisonFilter {
+  gt?: number;
+  gte?: number;
+  lt?: number;
+  lte?: number;
+}
+
+export interface HeliusTransferFilters {
+  amount?: HeliusComparisonFilter;
+  blockTime?: HeliusComparisonFilter;
+  slot?: HeliusComparisonFilter;
+}
+
+export interface HeliusTransfersByAddressOptions extends HeliusRequestOptions {
+  with?: string;
+  direction?: 'in' | 'out' | 'any';
+  mint?: string;
+  solMode?: 'merged' | 'separate';
+  filters?: HeliusTransferFilters;
+  limit?: number;
+  paginationToken?: string;
+  commitment?: 'finalized' | 'confirmed' | string;
+  sortOrder?: 'asc' | 'desc';
+}
+
 export interface HeliusRecentTxsResult {
   ok: boolean;
   txs: Record<string, unknown>[];
@@ -214,6 +239,46 @@ export async function getHeliusTransactionHistory(
   const inflight = historyInflight.get(cacheKey);
   if (inflight) return inflight;
   const promise = fetchHistoryUrl(url, options);
+  historyInflight.set(cacheKey, promise);
+  try {
+    const data = await promise;
+    historyCache.set(cacheKey, { ts: Date.now(), data });
+    return data;
+  } finally {
+    historyInflight.delete(cacheKey);
+  }
+}
+
+export async function getTransfersByAddress(
+  address: string,
+  options: HeliusTransfersByAddressOptions = {},
+): Promise<unknown> {
+  const owner = normalizedPublicKey(address, 'address');
+  const env = options.env ?? process.env;
+  const config = heliusConfigFromEnv(env);
+  if (!config.apiKey && !env.HELIUS_RPC_URL?.trim()) {
+    throw new ProtocolError(
+      'unauthorized',
+      'Missing Helius RPC endpoint for getTransfersByAddress. Set HELIUS_API_KEY or HELIUS_RPC_URL to a Helius-compatible RPC URL.',
+    );
+  }
+  const rpcConfig = heliusTransfersConfig(options);
+  const params = Object.keys(rpcConfig).length ? [owner, rpcConfig] : [owner];
+  const body = {
+    jsonrpc: '2.0',
+    id: Date.now().toString(),
+    method: 'getTransfersByAddress',
+    params,
+  };
+  const cacheKey = `transfers:${config.rpcUrl}:${JSON.stringify(params)}`;
+  const now = Date.now();
+  const cached = historyCache.get(cacheKey);
+  if (cached && now - cached.ts < config.historyTtlMs) {
+    return cached.data;
+  }
+  const inflight = historyInflight.get(cacheKey);
+  if (inflight) return inflight;
+  const promise = requestHeliusRpc(config.rpcUrl, body, options).then((data) => data.result);
   historyInflight.set(cacheKey, promise);
   try {
     const data = await promise;
@@ -771,6 +836,44 @@ function copyHistoryOptions(options: HeliusTransactionHistoryOptions): HeliusTra
   };
 }
 
+function heliusTransfersConfig(options: HeliusTransfersByAddressOptions): Record<string, unknown> {
+  const config: Record<string, unknown> = {};
+  if (options.with !== undefined && options.with.trim()) config.with = normalizedPublicKey(options.with, 'with');
+  if (options.direction !== undefined) config.direction = options.direction;
+  if (options.mint !== undefined && options.mint.trim()) config.mint = normalizedPublicKey(options.mint, 'mint');
+  if (options.solMode !== undefined) config.solMode = options.solMode;
+  if (options.filters !== undefined) {
+    const filters = sanitizeTransferFilters(options.filters);
+    if (Object.keys(filters).length) config.filters = filters;
+  }
+  if (options.limit !== undefined) config.limit = Math.min(Math.max(Math.trunc(options.limit), 1), 100);
+  if (options.paginationToken !== undefined && options.paginationToken.trim()) config.paginationToken = options.paginationToken.trim();
+  if (options.commitment !== undefined && options.commitment.trim()) config.commitment = options.commitment.trim();
+  if (options.sortOrder !== undefined) config.sortOrder = options.sortOrder;
+  return config;
+}
+
+function sanitizeTransferFilters(filters: HeliusTransferFilters): Record<string, unknown> {
+  const out: Record<string, unknown> = {};
+  const amount = sanitizeComparisonFilter(filters.amount);
+  const blockTime = sanitizeComparisonFilter(filters.blockTime);
+  const slot = sanitizeComparisonFilter(filters.slot);
+  if (amount) out.amount = amount;
+  if (blockTime) out.blockTime = blockTime;
+  if (slot) out.slot = slot;
+  return out;
+}
+
+function sanitizeComparisonFilter(filter: HeliusComparisonFilter | undefined): Record<string, number> | undefined {
+  if (!filter) return undefined;
+  const out: Record<string, number> = {};
+  for (const key of ['gt', 'gte', 'lt', 'lte'] as const) {
+    const value = filter[key];
+    if (typeof value === 'number' && Number.isFinite(value)) out[key] = value;
+  }
+  return Object.keys(out).length ? out : undefined;
+}
+
 function failedRecentTxs(error: string): HeliusRecentTxsResult {
   return {
     ok: false,
@@ -791,6 +894,15 @@ function requireTrimmed(value: string, field: string): string {
   const trimmed = value.trim();
   if (!trimmed) throw new ProtocolError('invalid_request', `${field} is required.`);
   return trimmed;
+}
+
+function normalizedPublicKey(value: string, field: string): string {
+  const trimmed = requireTrimmed(value, field);
+  try {
+    return new PublicKey(trimmed).toBase58();
+  } catch {
+    throw new ProtocolError('invalid_request', `${field} must be a valid Solana public key.`);
+  }
 }
 
 function short(value: string | null): string {

@@ -536,6 +536,8 @@ interface AgentReviewFactSet {
   recipient?: AgentReviewFact;
   limits?: AgentReviewFact;
   schedule?: AgentReviewFact;
+  walletActivity?: AgentReviewFact;
+  walletHoldings?: AgentReviewFact;
   marketSentiment?: AgentReviewFact;
   marketConditions?: AgentReviewFact;
 }
@@ -757,6 +759,9 @@ const tokenMarketPrices = new Map<string, TokenMarketPrice>();
 const tokenMarketMetadata = new Map<string, TokenMarketMetadata>();
 const tokenSecurityCache = new Map<string, TokenSecurityInfo>();
 const TOKEN_SECURITY_TTL_MS = 10 * 60 * 1000;
+const AGENT_WALLET_CONTEXT_TTL_MS = 60_000;
+const agentWalletTransferCache = new Map<string, AgentWalletTransferSummary>();
+const agentWalletHoldingsCache = new Map<string, AgentWalletHoldingSummary>();
 const tokenSearchStates = new Map<string, TokenSearchState>();
 const tokenSearchTimers = new Map<string, number>();
 const EXECUTABLE_BROWSER_ACTION_KINDS = new Set<PreparedActionKind>([
@@ -1396,6 +1401,19 @@ interface TokenSecurityInfo {
   ownerAddress?: string | null;
   isTrueToken?: boolean;
   fetchedAt: number;
+}
+
+interface AgentWalletTransferSummary {
+  wallet: string;
+  fetchedAt: number;
+  rows: Record<string, unknown>[];
+  paginationToken?: string;
+}
+
+interface AgentWalletHoldingSummary {
+  wallet: string;
+  fetchedAt: number;
+  rows: Record<string, unknown>[];
 }
 
 interface TokenSearchResult {
@@ -17794,15 +17812,18 @@ async function runAskAgentAnything(planId: string, question: string): Promise<vo
     agentReview: { ...review, conversation: initialConversation },
   });
 
-  const deterministicFacts = await gatherAgentReviewFacts(record);
+  const deterministicFacts = await gatherAgentReviewFacts(record, { question: pendingExchange.question });
   const factsForContext = factSetForContext(deterministicFacts);
+  const walletContext = walletContextForAgent(record);
   const request: AgentPlanAskRequest = {
     plan: record.plan,
     question: pendingExchange.question,
-    walletAddress: state.address || record.walletAddress,
+    walletAddress: walletContext.address,
     cluster: record.cluster,
     context: {
       activeWorkflow: activeWorkflowLabel(),
+      connectedWallet: walletContext.address,
+      wallet: walletContext,
       route: record.plan.route,
       amount: planAmountSummary(record.plan),
       risk: record.plan.risk,
@@ -17904,7 +17925,9 @@ async function runReviewGeneratedPlan(planId: string): Promise<void> {
       const refreshed = generatedPlanById(planId) ?? record;
       const reviewPlan = planWithRuntimeTokenLabels(refreshed.plan);
       const appliedPolicyIds = enabledUserAgentPolicies().map((policy) => policy.id);
-      const deterministicFacts = await gatherAgentReviewFacts(refreshed);
+      const deterministicFacts = await gatherAgentReviewFacts(refreshed, {
+        instruction: agentReviewInstruction(refreshed, reviewPlan),
+      });
       const rawResult = await runAgentReview(refreshed, deterministicFacts);
       const result = normalizeAgentReviewResultForFacts(rawResult, reviewPlan, deterministicFacts, {
         instruction: agentReviewInstruction(refreshed, reviewPlan),
@@ -19320,14 +19343,16 @@ function agentReviewRequest(
     ...(policy.params && Object.keys(policy.params).length ? { params: policy.params } : {}),
   }));
   const factsForContext = factSetForContext(deterministicFacts);
+  const walletContext = walletContextForAgent(record);
   return {
     plan: reviewPlan,
     instruction,
-    walletAddress: state.address || record.walletAddress,
+    walletAddress: walletContext.address,
     cluster: record.cluster,
     context: {
       activeWorkflow: activeWorkflowLabel(),
-      connectedWallet: state.address || '',
+      connectedWallet: walletContext.address,
+      wallet: walletContext,
       draftCreatedAt: record.createdAt,
       route: reviewPlan.route,
       amount: planAmountSummary(reviewPlan),
@@ -19551,10 +19576,21 @@ function deterministicSourcesFromFacts(facts: AgentReviewFactSet, plan: AgentPla
   const tokenSource = typeof facts.tokenMint?.detail?.marketSource === 'string'
     ? (facts.tokenMint.detail.marketSource as string)
     : undefined;
+  const tokenRows = Array.isArray(facts.tokenMint?.detail?.tokens)
+    ? facts.tokenMint.detail.tokens
+    : [];
+  const hasCoinGeckoTokenSource = tokenRows.some((entry) => {
+    const record = asRecord(entry);
+    const market = asRecord(record?.market);
+    return market?.source === 'coingecko' || Boolean(asRecord(market?.coingecko));
+  });
   if (tokenSource === 'birdeye') {
     sources.push({ url: 'https://birdeye.so/', title: 'BirdEye - Solana token prices' });
   } else if (tokenSource === 'dexscreener') {
     sources.push({ url: 'https://dexscreener.com/solana', title: 'DEX Screener - Solana markets' });
+  }
+  if (hasCoinGeckoTokenSource) {
+    sources.push({ url: 'https://www.coingecko.com/', title: 'CoinGecko - Token prices and market data' });
   }
   if (planBehavesLikeSwap(plan)) {
     sources.push({ url: 'https://jup.ag/', title: 'Jupiter - Solana swap aggregator' });
@@ -19570,6 +19606,15 @@ function deterministicSourcesFromFacts(facts: AgentReviewFactSet, plan: AgentPla
       url: 'https://www.coingecko.com/en/global-charts',
       title: 'CoinGecko - Global market dominance & volume',
     });
+  }
+  if (facts.walletActivity?.state === 'ok' || facts.walletActivity?.state === 'warn') {
+    sources.push({
+      url: 'https://www.helius.dev/docs/rpc/gettransfersbyaddress',
+      title: 'Helius getTransfersByAddress',
+    });
+  }
+  if (facts.walletHoldings?.state === 'ok' || facts.walletHoldings?.state === 'warn') {
+    sources.push({ url: 'https://birdeye.so/', title: 'BirdEye wallet token list' });
   }
   return sources;
 }
@@ -19612,6 +19657,54 @@ function questionAwareFindingsFromFacts(
       value: `${formatUsdEstimate(price)} (${token.source ?? 'BirdEye'})`,
       tone: instructionMentionsToken(lowerInstruction, symbol, token.name) ? 'good' : 'neutral',
     });
+  }
+
+  if (/\b(market\s+cap|mcap)\b/i.test(instruction)) {
+    for (const token of tokens) {
+      if (token.marketCapUsd === undefined || !Number.isFinite(token.marketCapUsd)) continue;
+      const symbol = (token.symbol ?? token.label ?? '').toUpperCase();
+      if (!symbol) continue;
+      const label = `${symbol} market cap`;
+      if (seenLabels.has(label.toLowerCase())) continue;
+      seenLabels.add(label.toLowerCase());
+      findings.push({
+        label,
+        value: `${formatUsdCompact(token.marketCapUsd)} (${token.marketSource ?? token.source ?? 'CoinGecko'})`,
+        tone: instructionMentionsToken(lowerInstruction, symbol, token.name) ? 'good' : 'neutral',
+      });
+    }
+  }
+
+  if (/\b(volume\s+24h?|24h?\s+volume)\b/i.test(instruction)) {
+    for (const token of tokens) {
+      if (token.volume24hUsd === undefined || !Number.isFinite(token.volume24hUsd)) continue;
+      const symbol = (token.symbol ?? token.label ?? '').toUpperCase();
+      if (!symbol) continue;
+      const label = `${symbol} 24h volume`;
+      if (seenLabels.has(label.toLowerCase())) continue;
+      seenLabels.add(label.toLowerCase());
+      findings.push({
+        label,
+        value: `${formatUsdCompact(token.volume24hUsd)} (${token.marketSource ?? token.source ?? 'CoinGecko'})`,
+        tone: instructionMentionsToken(lowerInstruction, symbol, token.name) ? 'good' : 'neutral',
+      });
+    }
+  }
+
+  if (/\b(24h\s+(?:change|price\s+change)|price\s+change\s+24h)\b/i.test(instruction)) {
+    for (const token of tokens) {
+      if (token.change24hPct === undefined || !Number.isFinite(token.change24hPct)) continue;
+      const symbol = (token.symbol ?? token.label ?? '').toUpperCase();
+      if (!symbol) continue;
+      const label = `${symbol} 24h change`;
+      if (seenLabels.has(label.toLowerCase())) continue;
+      seenLabels.add(label.toLowerCase());
+      findings.push({
+        label,
+        value: `${token.change24hPct >= 0 ? '+' : ''}${token.change24hPct.toFixed(2)}% (${token.marketSource ?? token.source ?? 'CoinGecko'})`,
+        tone: instructionMentionsToken(lowerInstruction, symbol, token.name) ? 'good' : 'neutral',
+      });
+    }
   }
 
   const slippageBps = typeof facts.limits?.detail?.slippageBps === 'number'
@@ -19806,7 +19899,11 @@ interface TokenPriceFact {
   label?: string;
   name?: string;
   priceUsd?: number;
+  marketCapUsd?: number;
+  volume24hUsd?: number;
+  change24hPct?: number;
   source?: string;
+  marketSource?: string;
 }
 
 function tokensFromTokenMintFact(fact: AgentReviewFact | undefined): TokenPriceFact[] {
@@ -19818,17 +19915,33 @@ function tokensFromTokenMintFact(fact: AgentReviewFact | undefined): TokenPriceF
     const market = record.market && typeof record.market === 'object' && !Array.isArray(record.market)
       ? (record.market as Record<string, unknown>)
       : undefined;
-    const price = market && typeof market.priceUsd === 'number' ? market.priceUsd : undefined;
+    const coingecko = asRecord(market?.coingecko);
+    const price = numberField(market?.priceUsd)
+      ?? numberField(coingecko?.priceUsd)
+      ?? numberField(coingecko?.onchainPriceUsd);
+    const marketCap = numberField(market?.marketCap)
+      ?? numberField(market?.marketCapUsd)
+      ?? numberField(coingecko?.marketCapUsd);
+    const volume24h = numberField(market?.volumeH24)
+      ?? numberField(market?.volume24hUsd)
+      ?? numberField(coingecko?.volume24hUsd);
+    const change24h = numberField(market?.change24hPct)
+      ?? numberField(coingecko?.change24hPct);
     const sourceTag = market && typeof market.source === 'string'
       ? market.source
-      : typeof record.source === 'string' ? record.source : undefined;
+      : typeof record.source === 'string' ? record.source : coingecko ? 'coingecko' : undefined;
+    const metricSource = coingecko ? 'CoinGecko' : sourceTag ? prettifyMarketSource(sourceTag) : undefined;
     return [{
       role: typeof record.role === 'string' ? record.role : undefined,
       symbol: typeof record.symbol === 'string' ? record.symbol : undefined,
       label: typeof record.label === 'string' ? record.label : undefined,
       name: typeof record.name === 'string' ? record.name : undefined,
       priceUsd: price,
+      marketCapUsd: marketCap,
+      volume24hUsd: volume24h,
+      change24hPct: change24h,
       source: sourceTag ? prettifyMarketSource(sourceTag) : undefined,
+      marketSource: metricSource,
     }];
   });
 }
@@ -19836,6 +19949,7 @@ function tokensFromTokenMintFact(fact: AgentReviewFact | undefined): TokenPriceF
 function prettifyMarketSource(value: string): string {
   if (value === 'birdeye') return 'BirdEye';
   if (value === 'dexscreener') return 'DEX Screener';
+  if (value === 'coingecko') return 'CoinGecko';
   return value;
 }
 
@@ -19858,6 +19972,9 @@ function unsupportedFactsFromInstruction(
   const conditionsOk = facts ? facts.marketConditions?.state === 'ok' : false;
   const conditionsDetail = (facts?.marketConditions?.detail ?? {}) as Record<string, unknown>;
   const tokenMintOk = facts ? facts.tokenMint?.state === 'ok' : false;
+  const tokenMarketFacts = tokensFromTokenMintFact(facts?.tokenMint);
+  const hasTokenMarketCap = tokenMarketFacts.some((token) => token.marketCapUsd !== undefined);
+  const hasToken24hVolume = tokenMarketFacts.some((token) => token.volume24hUsd !== undefined);
   const hasTokenSecurity = tokenMintOk && Array.isArray((facts?.tokenMint?.detail as { tokens?: unknown[] } | undefined)?.tokens)
     && ((facts!.tokenMint!.detail as { tokens?: Array<Record<string, unknown>> }).tokens ?? []).some((token) => Boolean(token.security));
   const checks: Array<{ test: RegExp; label: string; hint: string; satisfied?: boolean }> = [
@@ -19895,12 +20012,17 @@ function unsupportedFactsFromInstruction(
     { test: /\bfunding\s+rate\b/i, label: 'Funding rate', hint: 'No on-device source for this metric.' },
     { test: /\b(open\s+interest|oi)\b/i, label: 'Open interest', hint: 'No on-device source for this metric.' },
     { test: /\b(tvl|total\s+value\s+locked)\b/i, label: 'TVL', hint: 'No on-device source for this metric.' },
-    { test: /\b(volume\s+24h?|24h?\s+volume)\b/i, label: '24h volume', hint: 'No on-device source for this metric.' },
+    {
+      test: /\b(volume\s+24h?|24h?\s+volume)\b/i,
+      label: '24h volume',
+      hint: 'No on-device source for this metric.',
+      satisfied: hasToken24hVolume || (conditionsOk && typeof conditionsDetail.totalVolume24hUsd === 'number'),
+    },
     {
       test: /\b(market\s+cap|mcap)\b/i,
       label: 'Market cap',
       hint: 'No on-device source for this metric.',
-      satisfied: conditionsOk && typeof conditionsDetail.totalMarketCapUsd === 'number',
+      satisfied: hasTokenMarketCap || (conditionsOk && typeof conditionsDetail.totalMarketCapUsd === 'number'),
     },
     { test: /\b(yesterday|last\s+(?:hour|day|week|month)|historical)\b/i, label: 'Historical data', hint: 'No on-device source for historical lookups.' },
   ];
@@ -20067,7 +20189,25 @@ function mergeReviewFacts(
   const aiFacts = aiEvidence?.facts;
   if (!aiFacts || typeof aiFacts !== 'object' || Array.isArray(aiFacts)) return merged;
   const checkedAt = new Date().toISOString();
-  const slots: Array<keyof AgentReviewFactSet> = ['research', 'quote', 'route', 'policy', 'simulation', 'protocol', 'protocolConnector', 'blinkAction', 'blinkClassification', 'tokenMint', 'recipient', 'limits', 'schedule'];
+  const slots: Array<keyof AgentReviewFactSet> = [
+    'research',
+    'quote',
+    'route',
+    'policy',
+    'simulation',
+    'protocol',
+    'protocolConnector',
+    'blinkAction',
+    'blinkClassification',
+    'tokenMint',
+    'recipient',
+    'limits',
+    'schedule',
+    'walletActivity',
+    'walletHoldings',
+    'marketSentiment',
+    'marketConditions',
+  ];
   for (const slot of slots) {
     const existing = merged[slot];
     if (existing && existing.source === 'deterministic' && existing.state !== 'missing') {
@@ -20093,7 +20233,10 @@ function mergeReviewFacts(
   return merged;
 }
 
-async function gatherAgentReviewFacts(record: GeneratedPlanRecord): Promise<AgentReviewFactSet> {
+async function gatherAgentReviewFacts(
+  record: GeneratedPlanRecord,
+  options: { question?: string; instruction?: string } = {},
+): Promise<AgentReviewFactSet> {
   const facts = gatherDeterministicFacts(record);
   const plan = planWithRuntimeTokenLabels(record.plan);
   const enriched = await enrichTokenFactsFromBirdEye(plan, facts).catch(() => false);
@@ -20101,10 +20244,265 @@ async function gatherAgentReviewFacts(record: GeneratedPlanRecord): Promise<Agen
     await enrichTokenFactsFromDexScreener(plan, facts).catch(() => undefined);
   }
   await Promise.all([
+    enrichTokenFactsFromCoinGecko(plan, facts).catch(() => undefined),
+    enrichWalletFactsForAgent(record, plan, facts, options).catch(() => undefined),
     enrichMarketSentimentFromAlternativeMe(facts).catch(() => undefined),
     enrichMarketConditionsFromCoinGecko(facts).catch(() => undefined),
   ]);
   return facts;
+}
+
+async function enrichWalletFactsForAgent(
+  record: GeneratedPlanRecord,
+  plan: AgentPlan,
+  facts: AgentReviewFactSet,
+  options: { question?: string; instruction?: string },
+): Promise<void> {
+  const wallet = walletContextForAgent(record).address;
+  if (!wallet) return;
+  const contextText = [
+    options.question,
+    options.instruction,
+    record.prompt,
+    plan.intent,
+    plan.route,
+    plan.approval,
+    plan.userNotes,
+    Object.values(plan.parameters).join(' '),
+  ].filter(Boolean).join('\n');
+  await Promise.all([
+    walletTransferContextNeeded(plan, contextText)
+      ? enrichWalletTransferFacts(wallet, facts)
+      : Promise.resolve(),
+    walletHoldingsContextNeeded(plan, contextText)
+      ? enrichWalletHoldingsFacts(wallet, facts)
+      : Promise.resolve(),
+  ]);
+}
+
+function walletTransferContextNeeded(plan: AgentPlan, text: string): boolean {
+  if (plan.actionType === 'transfer_sol' || plan.actionType === 'transfer_spl' || plan.actionType === 'recurring_payment') {
+    return true;
+  }
+  return /\b(transfer|transfers|sent|send|sending|received|receive|paid|payment|payout|counterparty|recipient\s+history|wallet\s+activity|transaction\s+history|recent\s+activity|duplicate|already\s+paid)\b/i.test(text);
+}
+
+function walletHoldingsContextNeeded(plan: AgentPlan, text: string): boolean {
+  if (/\b(balance|balances|holding|holdings|portfolio|position|positions|exposure|own|owns|do i have|can afford|enough funds|wallet tokens)\b/i.test(text)) {
+    return true;
+  }
+  return /\b(swap|transfer|deposit|withdraw|borrow|repay|stake|unstake|liquidity|vault|lend|collateral|dca|recurring)\b/i.test(plan.actionType);
+}
+
+async function enrichWalletTransferFacts(wallet: string, facts: AgentReviewFactSet): Promise<void> {
+  const checkedAt = new Date().toISOString();
+  try {
+    const summary = await fetchAgentWalletTransfers(wallet);
+    const rows = summary.rows.slice(0, 10);
+    const newest = rows[0];
+    facts.walletActivity = {
+      state: rows.length ? 'ok' : 'missing',
+      source: 'deterministic',
+      checkedAt,
+      message: rows.length
+        ? `Helius returned ${summary.rows.length} recent transfer row${summary.rows.length === 1 ? '' : 's'} for ${short(wallet)}.`
+        : `Helius returned no recent transfer rows for ${short(wallet)}.`,
+      detail: {
+        provider: 'helius',
+        wallet,
+        rowCount: summary.rows.length,
+        ...(summary.paginationToken ? { paginationTokenPresent: true } : {}),
+        ...(newest ? { newestBlockTime: numberField(newest.blockTime) ?? null } : {}),
+        transfers: rows.map(compactHeliusTransferRow),
+      },
+    };
+  } catch (err) {
+    facts.walletActivity = {
+      state: 'warn',
+      source: 'deterministic',
+      checkedAt,
+      message: `Wallet transfer history unavailable: ${redactSecrets(err instanceof Error ? err.message : String(err))}`,
+      detail: { provider: 'helius', wallet },
+    };
+  }
+}
+
+async function enrichWalletHoldingsFacts(wallet: string, facts: AgentReviewFactSet): Promise<void> {
+  const checkedAt = new Date().toISOString();
+  try {
+    const summary = await fetchAgentWalletHoldings(wallet);
+    const rows = summary.rows.slice(0, 10);
+    facts.walletHoldings = {
+      state: rows.length ? 'ok' : 'missing',
+      source: 'deterministic',
+      checkedAt,
+      message: rows.length
+        ? `BirdEye returned ${summary.rows.length} wallet token row${summary.rows.length === 1 ? '' : 's'} for ${short(wallet)}.`
+        : `BirdEye returned no wallet token rows for ${short(wallet)}.`,
+      detail: {
+        provider: 'birdeye',
+        wallet,
+        tokenCount: summary.rows.length,
+        holdings: rows.map(compactBirdeyeHoldingRow),
+      },
+    };
+  } catch (err) {
+    facts.walletHoldings = {
+      state: 'warn',
+      source: 'deterministic',
+      checkedAt,
+      message: `Wallet holdings unavailable: ${redactSecrets(err instanceof Error ? err.message : String(err))}`,
+      detail: { provider: 'birdeye', wallet },
+    };
+  }
+}
+
+async function fetchAgentWalletTransfers(wallet: string): Promise<AgentWalletTransferSummary> {
+  const cacheKey = wallet;
+  const cached = agentWalletTransferCache.get(cacheKey);
+  if (cached && Date.now() - cached.fetchedAt < AGENT_WALLET_CONTEXT_TTL_MS) return cached;
+  const body = { address: wallet, limit: 25, sortOrder: 'desc' };
+  const payload = await walletScopedProviderRequest('/bridge/action/helius-history', '/api/helius/transfers-by-address', {
+    bridgeBody: { operation: 'transfers_by_address', ...body },
+    cloudBody: body,
+  });
+  const summary: AgentWalletTransferSummary = {
+    wallet,
+    fetchedAt: Date.now(),
+    rows: extractHeliusTransferRows(payload),
+    ...(extractPaginationToken(payload) ? { paginationToken: extractPaginationToken(payload) } : {}),
+  };
+  agentWalletTransferCache.set(cacheKey, summary);
+  return summary;
+}
+
+async function fetchAgentWalletHoldings(wallet: string): Promise<AgentWalletHoldingSummary> {
+  const cacheKey = wallet;
+  const cached = agentWalletHoldingsCache.get(cacheKey);
+  if (cached && Date.now() - cached.fetchedAt < AGENT_WALLET_CONTEXT_TTL_MS) return cached;
+  const body = { walletAddress: wallet, uiAmountMode: 'scaled' };
+  const payload = await walletScopedProviderRequest('/bridge/birdeye/wallet-token-list', '/api/birdeye/wallet-token-list', {
+    bridgeBody: body,
+    cloudBody: body,
+  });
+  const rows = extractWalletHoldingRows(payload)
+    .sort((left, right) => (holdingUsdValue(right) ?? 0) - (holdingUsdValue(left) ?? 0));
+  const summary: AgentWalletHoldingSummary = { wallet, fetchedAt: Date.now(), rows };
+  agentWalletHoldingsCache.set(cacheKey, summary);
+  return summary;
+}
+
+async function walletScopedProviderRequest(
+  bridgePath: string,
+  cloudPath: string,
+  bodies: { bridgeBody: Record<string, unknown>; cloudBody: Record<string, unknown> },
+): Promise<Record<string, unknown>> {
+  let bridgeError: unknown;
+  if (state.bridgeActive && state.bridgeToken && isLoopbackBridgeUrl(state.bridgeUrl)) {
+    try {
+      return await bridgeRequest<Record<string, unknown>>(bridgePath, {
+        method: 'POST',
+        body: JSON.stringify(bodies.bridgeBody),
+      });
+    } catch (err) {
+      bridgeError = err;
+    }
+  }
+  if (cloudSessionMatchesWallet()) {
+    try {
+      const response = await fetch(cloudPath, {
+        method: 'POST',
+        credentials: 'include',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify(bodies.cloudBody),
+      });
+      const payload = await response.json().catch(() => null) as unknown;
+      if (!response.ok) {
+        throw new Error(cloudErrorMessage(payload, response.status));
+      }
+      return asRecord(payload) ?? {};
+    } catch (err) {
+      if (bridgeError) throw bridgeError;
+      throw err;
+    }
+  }
+  if (bridgeError) throw bridgeError;
+  throw new Error('No signed-in cloud session or connected local bridge is available for wallet-scoped provider data.');
+}
+
+function extractHeliusTransferRows(payload: unknown): Record<string, unknown>[] {
+  const root = asRecord(payload);
+  const data = asRecord(root?.data) ?? root;
+  const result = asRecord(data?.result) ?? data;
+  const rows = result?.data;
+  if (Array.isArray(rows)) return rows.filter((row): row is Record<string, unknown> => Boolean(asRecord(row)));
+  if (Array.isArray(data?.transfers)) return data.transfers.filter((row): row is Record<string, unknown> => Boolean(asRecord(row)));
+  if (Array.isArray(data?.items)) return data.items.filter((row): row is Record<string, unknown> => Boolean(asRecord(row)));
+  return [];
+}
+
+function extractPaginationToken(payload: unknown): string | undefined {
+  const root = asRecord(payload);
+  const data = asRecord(root?.data) ?? root;
+  const result = asRecord(data?.result) ?? data;
+  return stringField(result?.paginationToken);
+}
+
+function compactHeliusTransferRow(row: Record<string, unknown>): Record<string, unknown> {
+  const out: Record<string, unknown> = {};
+  const signature = stringField(row.signature);
+  const type = stringField(row.type);
+  const mint = stringField(row.mint);
+  const fromUserAccount = stringField(row.fromUserAccount);
+  const toUserAccount = stringField(row.toUserAccount);
+  const uiAmount = stringField(row.uiAmount) ?? numberField(row.uiAmount);
+  const amount = stringField(row.amount);
+  const blockTime = numberField(row.blockTime);
+  if (signature) out.signature = signature;
+  if (blockTime !== undefined) out.blockTime = blockTime;
+  if (type) out.type = type;
+  if (mint) out.mint = mint;
+  if (fromUserAccount) out.fromUserAccount = fromUserAccount;
+  if (toUserAccount) out.toUserAccount = toUserAccount;
+  if (uiAmount !== undefined) out.uiAmount = uiAmount;
+  if (amount) out.amount = amount;
+  return out;
+}
+
+function extractWalletHoldingRows(payload: unknown): Record<string, unknown>[] {
+  const root = asRecord(payload);
+  const data = asRecord(root?.data) ?? root;
+  const wallet = asRecord(data?.wallet);
+  const candidates = [data?.items, data?.tokens, wallet?.tokens, root?.items, root?.tokens];
+  for (const candidate of candidates) {
+    if (Array.isArray(candidate)) return candidate.filter((row): row is Record<string, unknown> => Boolean(asRecord(row)));
+  }
+  return [];
+}
+
+function compactBirdeyeHoldingRow(row: Record<string, unknown>): Record<string, unknown> {
+  const out: Record<string, unknown> = {};
+  const mint = stringField(row.address) ?? stringField(row.mint) ?? stringField(row.tokenAddress);
+  const symbol = stringField(row.symbol);
+  const name = stringField(row.name);
+  const uiAmount = numberField(row.uiAmount) ?? numberField(row.ui_amount) ?? numberField(row.amount);
+  const valueUsd = holdingUsdValue(row);
+  const priceUsd = numberField(row.priceUsd) ?? numberField(row.price_usd) ?? numberField(row.price);
+  if (mint) out.mint = mint;
+  if (symbol) out.symbol = symbol;
+  if (name) out.name = name;
+  if (uiAmount !== undefined) out.uiAmount = uiAmount;
+  if (valueUsd !== undefined) out.valueUsd = valueUsd;
+  if (priceUsd !== undefined) out.priceUsd = priceUsd;
+  return out;
+}
+
+function holdingUsdValue(row: Record<string, unknown>): number | undefined {
+  return numberField(row.valueUsd)
+    ?? numberField(row.value_usd)
+    ?? numberField(row.value)
+    ?? numberField(row.usdValue)
+    ?? numberField(row.walletValue);
 }
 
 interface FearGreedIndexEntry {
@@ -20181,8 +20579,33 @@ interface CoinGeckoGlobalSnapshot {
   updatedAt?: string;
 }
 
+interface CoinGeckoTokenEvidenceRow {
+  mint: string;
+  priceUsd?: number;
+  marketCapUsd?: number;
+  volume24hUsd?: number;
+  change24hPct?: number;
+  lastUpdatedAt?: string;
+  onchainPriceUsd?: number;
+  name?: string;
+  symbol?: string;
+  coingeckoId?: string;
+  poolCount?: number;
+}
+
+interface CoinGeckoTokenEvidenceSnapshot {
+  provider?: string;
+  product?: string;
+  network?: string;
+  checkedAt?: string;
+  tokens?: CoinGeckoTokenEvidenceRow[];
+  warnings?: string[];
+}
+
 let coinGeckoGlobalCache: { snapshot: CoinGeckoGlobalSnapshot; fetchedAtMs: number } | undefined;
+const coinGeckoTokenEvidenceCache = new Map<string, { snapshot: CoinGeckoTokenEvidenceSnapshot; fetchedAtMs: number }>();
 const COINGECKO_GLOBAL_TTL_MS = 5 * 60 * 1000;
+const COINGECKO_TOKEN_EVIDENCE_TTL_MS = 5 * 60 * 1000;
 
 async function fetchCoinGeckoGlobalSnapshot(): Promise<CoinGeckoGlobalSnapshot | undefined> {
   const now = Date.now();
@@ -20208,6 +20631,48 @@ async function fetchCoinGeckoGlobalSnapshot(): Promise<CoinGeckoGlobalSnapshot |
   }
   if (!snapshot) return undefined;
   coinGeckoGlobalCache = { snapshot, fetchedAtMs: now };
+  return snapshot;
+}
+
+async function fetchCoinGeckoTokenEvidence(mints: string[]): Promise<CoinGeckoTokenEvidenceSnapshot | undefined> {
+  const uniqueMints = [...new Set(mints.map((mint) => mint.trim()).filter(Boolean))].slice(0, 10);
+  if (!uniqueMints.length) return undefined;
+  const cacheKey = uniqueMints.map((mint) => mint.toLowerCase()).sort().join(',');
+  const now = Date.now();
+  const cached = coinGeckoTokenEvidenceCache.get(cacheKey);
+  if (cached && now - cached.fetchedAtMs < COINGECKO_TOKEN_EVIDENCE_TTL_MS) {
+    return cached.snapshot;
+  }
+  const body = {
+    mints: uniqueMints,
+    network: 'solana',
+    includeOnchain: true,
+    maxTokenDetails: Math.min(3, uniqueMints.length),
+  };
+  const bridgeAttempt = state.bridgeActive && state.bridgeToken && isLoopbackBridgeUrl(state.bridgeUrl)
+    ? bridgeRequest<CoinGeckoTokenEvidenceSnapshot>('/bridge/coingecko/token-evidence', {
+        method: 'POST',
+        body: JSON.stringify(body),
+      }).catch(() => undefined)
+    : undefined;
+  let snapshot = await (bridgeAttempt ?? Promise.resolve(undefined));
+  if (!snapshot) {
+    try {
+      const response = await fetch('/api/coingecko/token-evidence', {
+        method: 'POST',
+        credentials: 'include',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify(body),
+      });
+      if (response.ok) {
+        snapshot = await response.json().catch(() => undefined) as CoinGeckoTokenEvidenceSnapshot | undefined;
+      }
+    } catch {
+      // ignore - Ask/Check review can continue with local/BirdEye/DEX facts
+    }
+  }
+  if (!snapshot || !Array.isArray(snapshot.tokens)) return undefined;
+  coinGeckoTokenEvidenceCache.set(cacheKey, { snapshot, fetchedAtMs: now });
   return snapshot;
 }
 
@@ -20252,6 +20717,135 @@ function marketConditionsFromFacts(facts: AgentReviewFactSet): CoinGeckoGlobalSn
   if (typeof detail.marketCapChangePct24hUsd === 'number') snapshot.marketCapChangePct24hUsd = detail.marketCapChangePct24hUsd;
   if (typeof detail.updatedAt === 'string') snapshot.updatedAt = detail.updatedAt;
   return snapshot;
+}
+
+async function enrichTokenFactsFromCoinGecko(plan: AgentPlan, facts: AgentReviewFactSet): Promise<boolean> {
+  const candidates = planTokenCandidates(plan).filter((token) => Boolean(token.mint));
+  if (!candidates.length) return false;
+  const uniqueMints = [...new Set(candidates.map((token) => token.mint!).filter(Boolean))];
+  const snapshot = await fetchCoinGeckoTokenEvidence(uniqueMints);
+  const rows = snapshot?.tokens ?? [];
+  const evidenceByMint = new Map(rows
+    .filter((row) => row?.mint)
+    .map((row) => [row.mint.toLowerCase(), row]));
+  if (!evidenceByMint.size) return false;
+
+  const candidateByMint = new Map(candidates.map((candidate) => [candidate.mint!.toLowerCase(), candidate]));
+  const existingTokens = Array.isArray(facts.tokenMint?.detail?.tokens)
+    ? facts.tokenMint.detail.tokens
+        .filter((entry): entry is Record<string, unknown> => Boolean(entry && typeof entry === 'object' && !Array.isArray(entry)))
+    : [];
+  const baseTokens: Record<string, unknown>[] = existingTokens.length
+    ? existingTokens
+    : candidates.map((token): Record<string, unknown> => ({
+        role: token.role,
+        value: token.raw,
+        label: token.label,
+        ...(token.mint ? { mint: token.mint } : {}),
+        ...(token.symbol ? { symbol: token.symbol } : {}),
+        ...(token.name ? { name: token.name } : {}),
+        source: token.source,
+      }));
+  const seenMints = new Set(baseTokens
+    .map((token) => stringField(token.mint)?.toLowerCase())
+    .filter((mint): mint is string => Boolean(mint)));
+  for (const candidate of candidates) {
+    const mint = candidate.mint!.toLowerCase();
+    if (seenMints.has(mint)) continue;
+    baseTokens.push({
+      role: candidate.role,
+      value: candidate.raw,
+      label: candidate.label,
+      mint: candidate.mint!,
+      ...(candidate.symbol ? { symbol: candidate.symbol } : {}),
+      ...(candidate.name ? { name: candidate.name } : {}),
+      source: candidate.source,
+    });
+  }
+
+  let enrichedCount = 0;
+  const mergedTokens = baseTokens.map((token) => {
+    const mint = stringField(token.mint);
+    const evidence = mint ? evidenceByMint.get(mint.toLowerCase()) : undefined;
+    if (!evidence) return token;
+    enrichedCount += 1;
+    const candidate = candidateByMint.get(mint!.toLowerCase());
+    const market = asRecord(token.market) ?? {};
+    const coingecko = stripUndefined({
+      source: 'coingecko',
+      priceUsd: evidence.priceUsd,
+      onchainPriceUsd: evidence.onchainPriceUsd,
+      marketCapUsd: evidence.marketCapUsd,
+      volume24hUsd: evidence.volume24hUsd,
+      change24hPct: evidence.change24hPct,
+      lastUpdatedAt: evidence.lastUpdatedAt,
+      coingeckoId: evidence.coingeckoId,
+      poolCount: evidence.poolCount,
+      checkedAt: snapshot?.checkedAt,
+    });
+    return {
+      ...token,
+      label: stringField(token.label) ?? evidence.symbol ?? candidate?.label ?? shortHexMint(mint!),
+      ...(stringField(token.symbol) ?? evidence.symbol ? { symbol: stringField(token.symbol) ?? evidence.symbol } : {}),
+      ...(stringField(token.name) ?? evidence.name ? { name: stringField(token.name) ?? evidence.name } : {}),
+      market: {
+        ...market,
+        ...(numberField(market.priceUsd) === undefined && evidence.priceUsd !== undefined ? { priceUsd: evidence.priceUsd } : {}),
+        ...(numberField(market.marketCap) === undefined && evidence.marketCapUsd !== undefined ? { marketCap: evidence.marketCapUsd } : {}),
+        ...(numberField(market.marketCapUsd) === undefined && evidence.marketCapUsd !== undefined ? { marketCapUsd: evidence.marketCapUsd } : {}),
+        ...(numberField(market.volumeH24) === undefined && evidence.volume24hUsd !== undefined ? { volumeH24: evidence.volume24hUsd } : {}),
+        ...(numberField(market.volume24hUsd) === undefined && evidence.volume24hUsd !== undefined ? { volume24hUsd: evidence.volume24hUsd } : {}),
+        ...(numberField(market.change24hPct) === undefined && evidence.change24hPct !== undefined ? { change24hPct: evidence.change24hPct } : {}),
+        coingecko,
+      },
+    };
+  });
+  if (!enrichedCount) return false;
+
+  const marketSource = typeof facts.tokenMint?.detail?.marketSource === 'string'
+    ? facts.tokenMint.detail.marketSource
+    : undefined;
+  const labels = mergedTokens
+    .filter((token) => {
+      const mint = stringField(token.mint);
+      return mint ? evidenceByMint.has(mint.toLowerCase()) : false;
+    })
+    .slice(0, 3)
+    .map((token) => {
+      const market = asRecord(token.market);
+      const coingecko = asRecord(market?.coingecko);
+      const pieces = [
+        `${String(token.role ?? 'token').toUpperCase()} ${stringField(token.symbol) ?? stringField(token.label) ?? 'token'}`,
+        numberField(coingecko?.priceUsd) !== undefined ? `price ${formatUsdEstimate(numberField(coingecko?.priceUsd)!)} ` : '',
+        numberField(coingecko?.marketCapUsd) !== undefined ? `market cap ${formatUsdCompact(numberField(coingecko?.marketCapUsd)!)} ` : '',
+        numberField(coingecko?.volume24hUsd) !== undefined ? `24h volume ${formatUsdCompact(numberField(coingecko?.volume24hUsd)!)} ` : '',
+      ].map((piece) => piece.trim()).filter(Boolean);
+      return pieces.join(' ');
+    });
+  const prefix = facts.tokenMint?.message?.trim();
+  const coingeckoMessage = labels.length
+    ? `CoinGecko checked ${labels.join('; ')}.`
+    : 'CoinGecko token evidence checked.';
+  facts.tokenMint = {
+    state: facts.tokenMint?.state === 'fail' ? 'fail' : 'ok',
+    source: 'deterministic',
+    checkedAt: new Date().toISOString(),
+    message: compactSentence([prefix, coingeckoMessage].filter(Boolean).join(' '), 300),
+    detail: {
+      ...(facts.tokenMint?.detail ?? {}),
+      marketSource: marketSource ?? 'coingecko',
+      ...(marketSource && marketSource !== 'coingecko' ? { alternateMarketSource: 'coingecko' } : {}),
+      tokens: mergedTokens,
+      coingecko: {
+        provider: 'coingecko',
+        product: snapshot?.product ?? 'solana_token_evidence',
+        network: snapshot?.network ?? 'solana',
+        checkedAt: snapshot?.checkedAt ?? new Date().toISOString(),
+        ...(snapshot?.warnings?.length ? { warnings: snapshot.warnings } : {}),
+      },
+    },
+  };
+  return true;
 }
 
 interface PlanTokenCandidate {
@@ -21008,6 +21602,25 @@ function activeWorkflowLabel(): string {
     case 'browser-workflow':
       return 'Saved on this device';
   }
+}
+
+function walletContextForAgent(record?: GeneratedPlanRecord): { address: string; publicKey: string; source: string; cluster: Cluster } {
+  const address = cloudSessionMatchesWallet()
+    ? state.cloudSession.walletAddress
+    : state.address || record?.walletAddress || '';
+  const source = cloudSessionMatchesWallet()
+    ? 'hosted_session'
+    : state.address
+      ? 'connected_wallet'
+      : record?.walletAddress
+        ? 'draft_wallet'
+        : 'not_connected';
+  return {
+    address,
+    publicKey: address,
+    source,
+    cluster: record?.cluster ?? state.cluster,
+  };
 }
 
 function cloudSessionMatchesWallet(): boolean {
@@ -22781,7 +23394,7 @@ async function reviewRecurringPlan(
 ): Promise<AgentPlanReviewState> {
   const record = generatedRecordForRecurringPlan(plan, previousReview);
   const appliedPolicyIds = enabledUserAgentPolicies().map((policy) => policy.id);
-  const deterministicFacts = await gatherAgentReviewFacts(record);
+  const deterministicFacts = await gatherAgentReviewFacts(record, { instruction: agentReviewInstruction(record, plan) });
   const rawResult = await runAgentReview(record, deterministicFacts);
   const result = normalizeAgentReviewResultForFacts(rawResult, plan, deterministicFacts, {
     instruction: agentReviewInstruction(record, plan),
@@ -36918,7 +37531,7 @@ function parseAgentReviewFact(value: unknown): AgentReviewFact | undefined {
 
 function parseAgentReviewFactSet(value: unknown): AgentReviewFactSet | undefined {
   if (!isJsonObject(value)) return undefined;
-  const slots: Array<keyof AgentReviewFactSet> = ['research', 'quote', 'route', 'policy', 'simulation', 'protocol', 'protocolConnector', 'blinkAction', 'blinkClassification', 'tokenMint', 'recipient', 'limits', 'schedule'];
+  const slots: Array<keyof AgentReviewFactSet> = ['research', 'quote', 'route', 'policy', 'simulation', 'protocol', 'protocolConnector', 'blinkAction', 'blinkClassification', 'tokenMint', 'recipient', 'limits', 'schedule', 'walletActivity', 'walletHoldings', 'marketSentiment', 'marketConditions'];
   const facts: AgentReviewFactSet = {};
   for (const slot of slots) {
     const fact = parseAgentReviewFact(value[slot]);

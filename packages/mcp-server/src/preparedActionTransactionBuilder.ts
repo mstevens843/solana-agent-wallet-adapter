@@ -115,8 +115,14 @@ function normalizeLegacyConnectorPrepareParams(
   kind: string,
   params: Record<string, unknown>,
 ): Record<string, unknown> {
-  if (kind !== 'magiceden_bid' && kind !== 'tensor_bid') return params;
   const next: Record<string, unknown> = { ...params };
+  if (kind.startsWith('jupiter_trigger_')) {
+    normalizeJupiterTriggerPrepareParams(next);
+  }
+  if (kind.startsWith('jupiter_recurring_')) {
+    normalizeJupiterRecurringPrepareParams(kind, next);
+  }
+  if (kind !== 'magiceden_bid' && kind !== 'tensor_bid') return next;
   const bidPriceSol = stringParam(next, 'bidPriceSol') || stringParam(next, 'priceSol');
   if (bidPriceSol && !stringParam(next, 'bidPriceSol')) {
     next.bidPriceSol = bidPriceSol;
@@ -125,6 +131,67 @@ function normalizeLegacyConnectorPrepareParams(
     next.maxEscrowSol = bidPriceSol;
   }
   return next;
+}
+
+function normalizeJupiterTriggerPrepareParams(params: Record<string, unknown>): void {
+  if (!stringParam(params, 'amount') && stringParam(params, 'makingAmount')) {
+    params.amount = stringParam(params, 'makingAmount');
+  }
+  for (const key of [
+    'triggerPriceUsd',
+    'slippageBps',
+    'maxDepositUsd',
+    'takeProfitPriceUsd',
+    'stopLossPriceUsd',
+    'takeProfitSlippageBps',
+    'stopLossSlippageBps',
+    'entryPriceUsd',
+    'newTriggerPriceUsd',
+    'newSlippageBps',
+  ]) {
+    coerceNumberParam(params, key);
+  }
+  coerceBooleanParam(params, 'acceptHighSlippage');
+}
+
+function normalizeJupiterRecurringPrepareParams(kind: string, params: Record<string, unknown>): void {
+  if (kind === 'jupiter_recurring_create_time_order' && !stringParam(params, 'totalAmount') && stringParam(params, 'amount')) {
+    params.totalAmount = stringParam(params, 'amount');
+  }
+  for (const key of ['numberOfOrders', 'intervalSeconds', 'maxFeeBps']) {
+    coerceNumberParam(params, key);
+  }
+  coerceBooleanParam(params, 'automationWarningAccepted');
+  coerceBooleanParam(params, 'priceOrderDeprecationAccepted');
+}
+
+function coerceNumberParam(params: Record<string, unknown>, key: string): void {
+  const value = params[key];
+  if (typeof value !== 'string') return;
+  const trimmed = value.trim();
+  if (!trimmed) {
+    delete params[key];
+    return;
+  }
+  const numeric = Number(trimmed);
+  if (Number.isFinite(numeric)) {
+    params[key] = numeric;
+  }
+}
+
+function coerceBooleanParam(params: Record<string, unknown>, key: string): void {
+  const value = params[key];
+  if (typeof value !== 'string') return;
+  const normalized = value.trim().toLowerCase();
+  if (!normalized) {
+    delete params[key];
+    return;
+  }
+  if (['true', 'yes', 'accepted', 'acknowledged'].includes(normalized)) {
+    params[key] = true;
+  } else if (['false', 'no'].includes(normalized)) {
+    params[key] = false;
+  }
 }
 
 function stringParam(params: Record<string, unknown>, key: string): string {

@@ -398,6 +398,96 @@ describe('bridge lab artifact routes', () => {
       await handle.stop();
     }
   });
+
+  it('scopes BirdEye wallet token list to the connected bridge wallet', async () => {
+    const originalFetch = globalThis.fetch;
+    const upstreamCalls: Array<{ url: string; init: RequestInit | undefined }> = [];
+    vi.stubEnv('BIRDEYE_API_KEY', 'birdeye-test-key');
+    vi.stubGlobal('fetch', vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
+      const url = input instanceof Request ? new URL(input.url) : new URL(String(input));
+      if (url.hostname === 'public-api.birdeye.so') {
+        upstreamCalls.push({ url: url.toString(), init });
+        return jsonResponse({ data: { items: [{ address: 'So11111111111111111111111111111111111111112', symbol: 'SOL' }] } });
+      }
+      return originalFetch(input, init);
+    }) as typeof fetch);
+
+    const handle = await startTestBridge({ connectedAddress: '11111111111111111111111111111111' });
+    try {
+      await bridgeFetch(handle.url, '/bridge/birdeye/wallet-token-list', {
+        method: 'POST',
+        body: JSON.stringify({ walletAddress: '11111111111111111111111111111111' }),
+      });
+
+      expect(upstreamCalls).toHaveLength(1);
+      expect(upstreamCalls[0]?.url).toContain('/v1/wallet/token_list');
+      expect(upstreamCalls[0]?.url).toContain('wallet=11111111111111111111111111111111');
+
+      const mismatch = await fetch(new URL('/bridge/birdeye/wallet-token-list', handle.url), {
+        method: 'POST',
+        headers: {
+          'content-type': 'application/json',
+          'x-agent-wallet-token': 'test-token',
+        },
+        body: JSON.stringify({ walletAddress: 'So11111111111111111111111111111111111111112' }),
+      });
+      expect(mismatch.status).toBe(400);
+    } finally {
+      await handle.stop();
+    }
+  });
+
+  it('injects the connected bridge wallet into AI review requests', async () => {
+    const originalFetch = globalThis.fetch;
+    const providerBodies: Record<string, unknown>[] = [];
+    vi.stubEnv('AGENTIC_AI_API_KEY', 'sk-test-openai');
+    vi.stubGlobal('fetch', vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
+      const url = input instanceof Request ? new URL(input.url) : new URL(String(input));
+      if (url.hostname === 'api.openai.com') {
+        providerBodies.push(JSON.parse(String(init?.body ?? '{}')) as Record<string, unknown>);
+        return jsonResponse({
+          output_text: JSON.stringify({
+            decision: 'approve',
+            reason: 'Connected wallet context is present.',
+            summary: 'Review passed.',
+            evidence: {},
+          }),
+        });
+      }
+      return originalFetch(input, init);
+    }) as typeof fetch);
+
+    const handle = await startTestBridge({ connectedAddress: '11111111111111111111111111111111' });
+    try {
+      const body = await bridgeFetch<{ decision: string }>(handle.url, '/bridge/ai/review-plan', {
+        method: 'POST',
+        body: JSON.stringify({
+          walletAddress: '11111111111111111111111111111111',
+          plan: {
+            intent: 'Transfer SOL',
+            route: 'SOL transfer',
+            risk: 'Low',
+            approval: 'Wallet approval required.',
+            source: 'template',
+            category: 'payments',
+            actionType: 'transfer_sol',
+            templateTitle: 'Transfer SOL',
+            parameters: { recipient: 'So11111111111111111111111111111111111111112', amount: '0.01' },
+            fields: [{ label: 'Amount', value: '0.01' }],
+            safeguards: ['Check recipient.'],
+          },
+          instruction: 'Review before approval.',
+        }),
+      });
+
+      expect(body.decision).toBe('approve');
+      const providerInput = String(providerBodies[0]?.input ?? '');
+      expect(providerInput).toContain('"walletAddress":"11111111111111111111111111111111"');
+      expect(providerInput).toContain('"source":"connected_bridge_wallet"');
+    } finally {
+      await handle.stop();
+    }
+  });
 });
 
 describe('bridge prepared-action prepare-transaction', () => {

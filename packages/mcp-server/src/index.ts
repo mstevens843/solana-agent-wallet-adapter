@@ -196,13 +196,27 @@ export {
   setBirdeyeWebSocketFactory,
 } from './birdeyeWebSocket.js';
 export {
+  COINGECKO_ENDPOINT_CATALOG,
+  COINGECKO_ENDPOINT_OVERVIEW_URL,
+  COINGECKO_RESPONSE_BYTE_LIMIT,
   DEFAULT_COINGECKO_PUBLIC_BASE,
   DEFAULT_COINGECKO_PRO_BASE,
   coinGeckoConfigFromEnv,
+  listCoinGeckoEndpointCatalog,
   requestCoinGecko,
+  requestCoinGeckoEndpoint,
   requestCoinGeckoGlobal,
+  requestCoinGeckoSolanaTokenEvidence,
 } from './coingecko.js';
-export type { CoinGeckoConfig, CoinGeckoGlobalSnapshot, CoinGeckoRequestInit } from './coingecko.js';
+export type {
+  CoinGeckoConfig,
+  CoinGeckoEndpointCatalogEntry,
+  CoinGeckoEndpointReadInput,
+  CoinGeckoGlobalSnapshot,
+  CoinGeckoRequestInit,
+  CoinGeckoSolanaTokenEvidenceInput,
+  CoinGeckoTokenEvidence,
+} from './coingecko.js';
 export type {
   BirdeyeConfig,
   BirdeyeHistoryPriceType,
@@ -229,6 +243,7 @@ export {
   getHeliusTransactionHistory,
   getMintCreationTxForMint,
   getRecentEnrichedTxsForMint,
+  getTransfersByAddress,
   hasHistoryBeforeTs,
   heliusConfigFromEnv,
   parseHeliusTransactions,
@@ -237,9 +252,12 @@ export {
 export type {
   HeliusAuthorityCheck,
   HeliusAuthorityTimeline,
+  HeliusComparisonFilter,
   HeliusConfig,
   HeliusRecentTxsResult,
   HeliusRequestOptions,
+  HeliusTransferFilters,
+  HeliusTransfersByAddressOptions,
   HeliusTransactionHistoryOptions,
 } from './helius.js';
 export {

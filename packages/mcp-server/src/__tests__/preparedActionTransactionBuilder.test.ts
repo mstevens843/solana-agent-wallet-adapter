@@ -418,6 +418,102 @@ describe('prepareTransactionForApproval', () => {
     });
   });
 
+  it.each([
+    {
+      kind: 'jupiter_trigger_single_order' as PreparedActionKind,
+      params: {
+        inputMint: 'SOL',
+        outputMint: 'USDC',
+        makingAmount: '0.2',
+        triggerMint: 'SOL',
+        triggerCondition: 'above',
+        triggerPriceUsd: '250',
+        slippageBps: '75',
+        acceptHighSlippage: 'true',
+        expiresAt: '2026-05-20T00:00:00.000Z',
+      },
+      expected: {
+        amount: '0.2',
+        triggerPriceUsd: 250,
+        slippageBps: 75,
+        acceptHighSlippage: true,
+      },
+    },
+    {
+      kind: 'jupiter_recurring_create_time_order' as PreparedActionKind,
+      params: {
+        inputMint: 'USDC',
+        outputMint: 'SOL',
+        amount: '100',
+        numberOfOrders: '10',
+        intervalSeconds: '86400',
+        maxFeeBps: '10',
+        automationWarningAccepted: 'true',
+      },
+      expected: {
+        totalAmount: '100',
+        numberOfOrders: 10,
+        intervalSeconds: 86400,
+        maxFeeBps: 10,
+        automationWarningAccepted: true,
+      },
+    },
+  ])('normalizes form-string params before $kind adapter prepare', async ({ kind, params, expected }) => {
+    const store = inMemoryStore();
+    const ctx = makeContext(store);
+    const now = new Date().toISOString();
+    const action: PreparedAction = {
+      id: `pa_${kind}`,
+      kind,
+      status: 'ready',
+      walletAddress: WALLET,
+      cluster: 'mainnet-beta',
+      summary: `Template-drafted ${kind}`,
+      params,
+      dueAt: now,
+      createdAt: now,
+      updatedAt: now,
+    };
+    const adapter = adapterForKind(kind);
+    if (!adapter) throw new Error(`Missing adapter for ${kind}`);
+    const mutableAdapter = adapter as unknown as {
+      prepare: (input: Record<string, unknown>, ctxIn: DAppAdapterContext) => Promise<{ addInput: AddPreparedActionInput; preview: Record<string, unknown> }>;
+      execute: (actionIn: PreparedAction, ctxIn: DAppAdapterContext) => Promise<{ txid: string; signedAt: string; preview?: Record<string, unknown> }>;
+    };
+    const originalPrepare = mutableAdapter.prepare;
+    const originalExecute = mutableAdapter.execute;
+    let prepareInput: Record<string, unknown> | undefined;
+    mutableAdapter.prepare = async (input) => {
+      prepareInput = input;
+      return {
+        addInput: {
+          kind,
+          walletAddress: WALLET,
+          cluster: 'mainnet-beta',
+          summary: `${kind} prepared`,
+          params: {
+            ...input,
+            preparedSnapshotAt: now,
+          },
+        },
+        preview: {},
+      };
+    };
+    mutableAdapter.execute = async (actionIn, ctxIn) => {
+      await ctxIn.signAndBroadcast('AAAA-jupiter-form', actionIn.summary);
+      return { txid: 'captured', signedAt: now, preview: {} };
+    };
+    try {
+      const payload = await prepareTransactionForApproval(action, ctx);
+      expect(payload.transactionBase64).toBe('AAAA-jupiter-form');
+    } finally {
+      mutableAdapter.prepare = originalPrepare;
+      mutableAdapter.execute = originalExecute;
+    }
+
+    expect(prepareInput).toMatchObject(expected);
+  });
+
   it('does NOT re-run adapter.prepare() when params already carry preparedSnapshotAt', async () => {
     const store = inMemoryStore();
     const ctx = makeContext(store);

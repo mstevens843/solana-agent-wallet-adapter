@@ -2,6 +2,12 @@
 
 Jupiter is first-class for Swap API v2 previews, prepared swaps, wallet-approved swap execution, Jupiter Lend Earn / Borrow (reads plus prepare-only actions), Jupiter Trigger V2 (disabled by default), Jupiter Recurring native DCA (disabled by default), beta read-only Prediction, read-only Perps research, and read-only Token API V2 / Price API V3 evidence in MCP. Token and price reads are review evidence only; they are not oracle guarantees and they never approve or prepare transactions.
 
+## Ask / Check Endpoint Catalog
+
+Agents can inspect `solana_market_endpoint_catalog` and call `solana_jupiter_review_read` for cataloged Jupiter Pro endpoints marked `review_evidence`. This catalog is intentionally separate from transaction preparation: build, submit, execute, verification craft transaction, Trigger deposit/order writes, Recurring create/cancel writes, Send craft transactions, Studio transaction creation/submission, and Transaction API submit are listed as `approval_only`, `existing_tool`, or `unavailable` and are blocked from generic Ask/Check reads.
+
+Browser-local and cloud Check flows may use these reads as extra evidence before the agent returns `approve`, `deny`, or `needs_input`. An `approve` result still only moves the draft toward Needs Approval; the user must still click sign/approve in the wallet flow.
+
 ## What It Can Read
 
 - `solana_jupiter_order_preview` returns a read-only Swap API v2 `/order` preview with input/output mints, raw amounts, expected output, minimum output threshold, slippage, price impact, router/mode metadata, route-plan summary, manual/RFQ routing warnings, fee fields, request id, and transaction availability.

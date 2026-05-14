@@ -2,11 +2,15 @@ import { ProtocolError } from '@solana-agent-wallet-adapter/core';
 
 import {
   DEFAULT_JUPITER_LEND_BASE_URL,
+  DEFAULT_JUPITER_PORTFOLIO_BASE_URL,
   DEFAULT_JUPITER_PREDICTION_BASE_URL,
   DEFAULT_JUPITER_PRICE_BASE_URL,
   DEFAULT_JUPITER_RECURRING_BASE_URL,
+  DEFAULT_JUPITER_SEND_BASE_URL,
+  DEFAULT_JUPITER_STUDIO_BASE_URL,
   DEFAULT_JUPITER_SWAP_BASE_URL,
   DEFAULT_JUPITER_TOKENS_BASE_URL,
+  DEFAULT_JUPITER_TRANSACTION_BASE_URL,
   DEFAULT_JUPITER_TRIGGER_BASE_URL,
   type AgentWalletConfig,
 } from '../../config.js';
@@ -19,6 +23,10 @@ export type JupiterProduct =
   | 'tokens'
   | 'price'
   | 'prediction'
+  | 'portfolio'
+  | 'send'
+  | 'studio'
+  | 'transaction'
   | 'perps';
 
 export const JUPITER_RESPONSE_BYTE_LIMIT = 512_000;
@@ -57,6 +65,14 @@ export function jupiterBaseUrl(config: AgentWalletConfig, product: JupiterProduc
       return stripTrailingSlashes(jupiter.priceBaseUrl ?? DEFAULT_JUPITER_PRICE_BASE_URL);
     case 'prediction':
       return stripTrailingSlashes(jupiter.predictionBaseUrl ?? DEFAULT_JUPITER_PREDICTION_BASE_URL);
+    case 'portfolio':
+      return stripTrailingSlashes(jupiter.portfolioBaseUrl ?? DEFAULT_JUPITER_PORTFOLIO_BASE_URL);
+    case 'send':
+      return stripTrailingSlashes(jupiter.sendBaseUrl ?? DEFAULT_JUPITER_SEND_BASE_URL);
+    case 'studio':
+      return stripTrailingSlashes(jupiter.studioBaseUrl ?? DEFAULT_JUPITER_STUDIO_BASE_URL);
+    case 'transaction':
+      return stripTrailingSlashes(jupiter.transactionBaseUrl ?? DEFAULT_JUPITER_TRANSACTION_BASE_URL);
     case 'perps':
       if (!jupiter.perpsBaseUrl) {
         throw new ProtocolError(

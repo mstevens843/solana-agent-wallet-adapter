@@ -432,6 +432,15 @@ export {
   type JupiterProduct,
 } from './client.js';
 export {
+  JUPITER_DOCS_INDEX_URL,
+  JUPITER_ENDPOINT_CATALOG,
+  listJupiterEndpointCatalog,
+  requestJupiterReviewEndpoint,
+  type JupiterEndpointCatalogEntry,
+  type JupiterEndpointRisk,
+  type JupiterReviewEndpointReadInput,
+} from './endpointCatalog.js';
+export {
   JUPITER_TOKEN_CATEGORIES,
   JUPITER_TOKEN_CATEGORY_INTERVALS,
   JUPITER_TOKEN_TAGS,

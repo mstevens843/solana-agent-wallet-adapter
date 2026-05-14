@@ -67,6 +67,10 @@ export interface ConnectorActionDisplayParts {
   title: string;
 }
 
+const CONNECTOR_DROPDOWN_HIDDEN_ACTION_KINDS = new Set<string>([
+  'jupiter:swap',
+]);
+
 const CONNECTOR_ACTION_FORMS: ConnectorActionForm[] = [
   connectorActionForm('kamino', 'deposit', 'Deposit', 'kamino-deposit', 'Supply tokens to a Kamino Lend reserve.', 'first-class-adapter', 'queueable', [
     kaminoReserveField(true),
@@ -82,13 +86,10 @@ const CONNECTOR_ACTION_FORMS: ConnectorActionForm[] = [
     kaminoReserveField(false),
     formField('memo', 'Reason'),
   ]),
-  connectorActionForm('jupiter', 'swap', 'Prepare swap', 'swap', 'Prepare a Jupiter swap review with explicit tokens, amount, and slippage.', 'first-class-adapter', 'queueable', [
-    formField('inputToken', 'Input token', true),
-    formField('outputToken', 'Output token', true),
-    formField('amount', 'Token amount', true),
-    formField('slippageBps', 'Max slippage'),
-  ], false, 'swap'),
   jupiterLendUnifiedForm(),
+  jupiterTriggerUnifiedForm(),
+  jupiterRecurringUnifiedForm(),
+  jupiterPerpsStatusForm(),
   ...marginfiForms(),
   ...project0Forms(),
   ...saveForms(),
@@ -200,6 +201,7 @@ export function connectorActionFormsForConnector(
     }
   }
   const generatedForms = connector.actionKinds
+    .filter((actionKind) => !CONNECTOR_DROPDOWN_HIDDEN_ACTION_KINDS.has(`${connector.id}:${actionKind}`))
     .filter((actionKind) => !explicitActionTypes.has(actionKind))
     .map((actionKind) => generatedConnectorActionForm(connector, actionKind));
   const generic: ConnectorActionForm[] = [];
@@ -1823,6 +1825,222 @@ function jupiterLendUnifiedForm(): ConnectorActionForm {
       ],
     },
   };
+}
+
+function jupiterTriggerUnifiedForm(): ConnectorActionForm {
+  const memo = formField('memo', 'Reason');
+  const inputMint = formField('inputMint', 'Input token mint or symbol', true);
+  const outputMint = formField('outputMint', 'Output token mint or symbol', true);
+  const triggerMint = formField('triggerMint', 'Price trigger token', true);
+  const amount = formField('amount', 'Input amount', true);
+  const expiresAt = formField('expiresAt', 'Expires at (ISO time)', true);
+  const slippageBps = formField('slippageBps', 'Max slippage bps');
+  const takeProfitPrice = formField('takeProfitPriceUsd', 'Take-profit price USD', true);
+  const stopLossPrice = formField('stopLossPriceUsd', 'Stop-loss price USD', true);
+  return {
+    id: 'jupiter:trigger-limit-orders',
+    connectorId: 'jupiter',
+    operationId: 'trigger-limit-orders',
+    operationLabel: 'Limit orders',
+    templateId: 'connector-jupiter-trigger-limit-orders',
+    description: 'Create or manage Jupiter Trigger limit orders, including TP/SL brackets. Funds sit in the Jupiter Trigger vault and future fills run through Jupiter automation.',
+    executionMode: 'first-class-adapter',
+    outcome: 'queueable',
+    fields: [memo],
+    subActions: {
+      fieldId: 'subAction',
+      label: 'Limit order action',
+      defaultId: 'single-limit-stop',
+      display: 'select',
+      options: [
+        {
+          id: 'register-vault',
+          label: 'Set up order vault',
+          description: 'Register the Jupiter Trigger vault required before creating limit orders.',
+          actionType: 'jupiter_trigger_register_vault',
+          fields: [formField('payer', 'Payer override')],
+        },
+        {
+          id: 'single-limit-stop',
+          label: 'Limit / stop order',
+          description: 'Swap when a token crosses one USD price threshold. Output is not guaranteed at trigger time.',
+          actionType: 'jupiter_trigger_single_order',
+          fields: [
+            inputMint,
+            outputMint,
+            amount,
+            triggerMint,
+            formSelectField('triggerCondition', 'Trigger when price is', ['above', 'below'], 'above', true),
+            formField('triggerPriceUsd', 'Trigger price USD', true),
+            slippageBps,
+            expiresAt,
+          ],
+        },
+        {
+          id: 'oco-tpsl',
+          label: 'TP/SL bracket (OCO)',
+          description: 'Take-profit and stop-loss pair where one fill cancels the other.',
+          actionType: 'jupiter_trigger_oco_order',
+          fields: [
+            inputMint,
+            outputMint,
+            amount,
+            triggerMint,
+            formSelectField('side', 'Position side', ['sell', 'buy'], 'sell'),
+            takeProfitPrice,
+            stopLossPrice,
+            formField('takeProfitSlippageBps', 'Take-profit slippage bps'),
+            formField('stopLossSlippageBps', 'Stop-loss slippage bps'),
+            expiresAt,
+          ],
+        },
+        {
+          id: 'otoco-entry-tpsl',
+          label: 'Entry + TP/SL (OTOCO)',
+          description: 'Entry trigger first, then automatically activates a TP/SL OCO bracket.',
+          actionType: 'jupiter_trigger_otoco_order',
+          fields: [
+            inputMint,
+            outputMint,
+            amount,
+            triggerMint,
+            formSelectField('entryCondition', 'Entry when price is', ['above', 'below'], 'above', true),
+            formField('entryPriceUsd', 'Entry price USD', true),
+            takeProfitPrice,
+            stopLossPrice,
+            slippageBps,
+            formField('takeProfitSlippageBps', 'Take-profit slippage bps'),
+            formField('stopLossSlippageBps', 'Stop-loss slippage bps'),
+            expiresAt,
+          ],
+        },
+        {
+          id: 'edit-trigger',
+          label: 'Edit order trigger',
+          description: 'Change an existing Trigger order price, slippage, or expiry.',
+          actionType: 'jupiter_trigger_edit_order',
+          fields: [
+            formField('orderId', 'Order id', true),
+            formSelectField('orderType', 'Order type', ['single', 'oco', 'otoco'], 'single'),
+            formField('newTriggerPriceUsd', 'New trigger price USD'),
+            formField('newSlippageBps', 'New slippage bps'),
+            formField('newExpiresAt', 'New expiry (ISO time)'),
+            formField('reason', 'Reason'),
+          ],
+        },
+        {
+          id: 'cancel-order',
+          label: 'Cancel order',
+          description: 'Cancel an open or pending Trigger order. Withdraw funds separately if needed.',
+          actionType: 'jupiter_trigger_cancel_order',
+          fields: [formField('orderId', 'Order id', true), formField('reason', 'Reason')],
+        },
+        {
+          id: 'withdraw-order-funds',
+          label: 'Withdraw cancelled funds',
+          description: 'Move cancelled or expired Trigger order funds from the vault back to the wallet.',
+          actionType: 'jupiter_trigger_withdraw_order_funds',
+          fields: [formField('orderId', 'Order id', true), formField('reason', 'Reason')],
+        },
+      ],
+    },
+  };
+}
+
+function jupiterRecurringUnifiedForm(): ConnectorActionForm {
+  const memo = formField('memo', 'Reason');
+  const inputMint = formField('inputMint', 'Input token mint or symbol', true);
+  const outputMint = formField('outputMint', 'Output token mint or symbol', true);
+  const automationAccepted = formSelectField('automationWarningAccepted', 'Jupiter automation acknowledged', ['true'], 'true');
+  const deprecationAccepted = formSelectField('priceOrderDeprecationAccepted', 'Deprecated price-order warning acknowledged', ['true'], 'true');
+  return {
+    id: 'jupiter:recurring-dca',
+    connectorId: 'jupiter',
+    operationId: 'recurring-dca',
+    operationLabel: 'DCA orders',
+    templateId: 'connector-jupiter-recurring-dca',
+    description: 'Create or manage Jupiter Recurring DCA orders. After setup approval, future fills run through Jupiter automation rather than Agentic approval per cycle.',
+    executionMode: 'first-class-adapter',
+    outcome: 'queueable',
+    fields: [memo],
+    subActions: {
+      fieldId: 'subAction',
+      label: 'DCA action',
+      defaultId: 'create-time-dca',
+      display: 'select',
+      options: [
+        {
+          id: 'create-time-dca',
+          label: 'Create DCA order',
+          description: 'Set up a time-based Jupiter Recurring order for repeated token swaps.',
+          actionType: 'jupiter_recurring_create_time_order',
+          fields: [
+            inputMint,
+            outputMint,
+            formField('totalAmount', 'Total input amount', true),
+            formField('numberOfOrders', 'Number of swaps', true),
+            formField('intervalSeconds', 'Seconds between swaps', true),
+            formField('startAt', 'Start at (ISO time)'),
+            formField('minPrice', 'Minimum price'),
+            formField('maxPrice', 'Maximum price'),
+            formField('maxFeeBps', 'Max fee bps'),
+            automationAccepted,
+          ],
+        },
+        {
+          id: 'cancel-dca',
+          label: 'Cancel DCA order',
+          description: 'Cancel a time-based Jupiter Recurring order and reclaim remaining funds.',
+          actionType: 'jupiter_recurring_cancel_order',
+          fields: [formField('orderId', 'Order id', true), formField('reason', 'Reason')],
+        },
+        {
+          id: 'deposit-deprecated-price-order',
+          label: 'Advanced: fund price order',
+          description: 'Deposit into a deprecated price-based Recurring order only when you already know the order id.',
+          actionType: 'jupiter_recurring_deposit_price_order',
+          fields: [
+            formField('orderId', 'Order id', true),
+            formField('amount', 'Amount'),
+            formField('amountRaw', 'Raw amount'),
+            formSelectField('inputOrOutput', 'Amount side', ['In', 'Out'], 'In'),
+            deprecationAccepted,
+          ],
+        },
+        {
+          id: 'withdraw-deprecated-price-order',
+          label: 'Advanced: withdraw price order',
+          description: 'Withdraw from a deprecated price-based Recurring order only when you already know the order id.',
+          actionType: 'jupiter_recurring_withdraw_price_order',
+          fields: [
+            formField('orderId', 'Order id', true),
+            formField('amount', 'Amount'),
+            formField('amountRaw', 'Raw amount'),
+            formSelectField('inputOrOutput', 'Amount side', ['In', 'Out'], 'In'),
+            deprecationAccepted,
+          ],
+        },
+      ],
+    },
+  };
+}
+
+function jupiterPerpsStatusForm(): ConnectorActionForm {
+  return connectorActionForm(
+    'jupiter',
+    'perps-status',
+    'Perps status (read-only)',
+    'connector-jupiter-perps-status',
+    'Check Jupiter Perps API readiness, docs, and risk warnings. Read-only; no Perps trades are prepared.',
+    'read-only',
+    'audit',
+    [
+      formSelectField('question', 'Perps check', ['status'], 'status'),
+      formField('memo', 'Research note'),
+    ],
+    false,
+    'read_only',
+  );
 }
 
 function generatedConnectorActionForm(connector: ProtocolConnector, actionKind: string): ConnectorActionForm {

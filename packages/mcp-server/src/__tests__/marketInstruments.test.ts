@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import {
+  readSolanaHeliusHistory,
   readSolanaTokenLists,
   readSolanaTokenSafetyEvidence,
 } from '../marketInstruments.js';
@@ -100,6 +101,78 @@ describe('market instruments', () => {
     expect(checks.find((check) => check.key === 'birdeyeLiquidity')?.status).toBe('PASS');
     expect(checks.find((check) => check.key === 'birdeyeVerifiedMetadata')?.status).toBe('PASS');
     expect(checks.find((check) => check.key === 'authority')?.status).toBe('PASS');
+  });
+
+  it('reads Helius parsed transfer history by address with JSON-RPC options', async () => {
+    const owner = '11111111111111111111111111111111';
+    const counterparty = 'So11111111111111111111111111111111111111112';
+    let rpcBody: Record<string, unknown> | undefined;
+    vi.stubEnv('HELIUS_API_KEY', 'helius-test-key');
+    vi.stubEnv('HELIUS_RPC_URL', 'https://helius.example');
+    vi.stubGlobal('fetch', vi.fn(async (_input: string | URL | Request, init?: RequestInit) => {
+      rpcBody = JSON.parse(String(init?.body ?? '{}')) as Record<string, unknown>;
+      expect(new Headers(init?.headers).get('x-api-key')).toBe('helius-test-key');
+      return jsonResponse({
+        result: {
+          data: [{
+            signature: 'sig1',
+            blockTime: 1774635210,
+            type: 'transfer',
+            fromUserAccount: owner,
+            toUserAccount: counterparty,
+            mint: counterparty,
+            uiAmount: '1',
+          }],
+          paginationToken: 'next-page',
+        },
+      });
+    }) as typeof fetch);
+
+    const result = await readSolanaHeliusHistory({
+      operation: 'transfers_by_address',
+      address: owner,
+      with: counterparty,
+      direction: 'out',
+      mint: counterparty,
+      solMode: 'merged',
+      filters: { blockTime: { gte: 1774000000 } },
+      limit: 250,
+      sortOrder: 'desc',
+    });
+
+    expect(result.available).toBe(true);
+    expect(rpcBody).toMatchObject({
+      jsonrpc: '2.0',
+      method: 'getTransfersByAddress',
+      params: [
+        owner,
+        {
+          with: counterparty,
+          direction: 'out',
+          mint: counterparty,
+          solMode: 'merged',
+          filters: { blockTime: { gte: 1774000000 } },
+          limit: 100,
+          sortOrder: 'desc',
+        },
+      ],
+    });
+    expect(result.data).toMatchObject({
+      data: [expect.objectContaining({ signature: 'sig1' })],
+      paginationToken: 'next-page',
+    });
+  });
+
+  it('reports Helius transfer history as unavailable without a Helius RPC config', async () => {
+    vi.stubGlobal('fetch', vi.fn() as unknown as typeof fetch);
+
+    const result = await readSolanaHeliusHistory({
+      operation: 'transfers_by_address',
+      address: '11111111111111111111111111111111',
+    });
+
+    expect(result.available).toBe(false);
+    expect(String((result.warnings as string[])[0])).toContain('Missing Helius RPC endpoint');
   });
 
   it('keeps an on-demand Birdeye websocket snapshot buffer', () => {

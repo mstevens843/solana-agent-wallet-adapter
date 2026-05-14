@@ -182,6 +182,8 @@ import {
   getPredictionVaultInfo,
   jupiterApiHost,
   jupiterFetchJson,
+  listJupiterEndpointCatalog,
+  requestJupiterReviewEndpoint,
   searchPredictionEvents,
   type EventDetailInput as JupiterPredictionEventDetailInput,
   type EventMarketsInput as JupiterPredictionEventMarketsInput,
@@ -192,6 +194,7 @@ import {
   type JupiterPerpsStatusInput,
   type JupiterPriceBatchInput,
   type JupiterPriceInput,
+  type JupiterReviewEndpointReadInput,
   type JupiterTokenByTagInput,
   type JupiterTokenCategoryInput,
   type JupiterTokenRecentInput,
@@ -203,6 +206,13 @@ import {
   type OrdersInput as JupiterPredictionOrdersInput,
   type SearchEventsInput as JupiterPredictionSearchEventsInput,
 } from './adapters/jupiter/index.js';
+import {
+  listCoinGeckoEndpointCatalog,
+  requestCoinGeckoEndpoint,
+  requestCoinGeckoSolanaTokenEvidence,
+  type CoinGeckoEndpointReadInput,
+  type CoinGeckoSolanaTokenEvidenceInput,
+} from './coingecko.js';
 import {
   fetchBlinkMetadata,
   prepareBlinkAction as prepareBlinkActionRequest,
@@ -1867,6 +1877,31 @@ export class AgentWalletActionService {
 
   async solanaHeliusHistory(input: SolanaHeliusHistoryInput): Promise<Record<string, unknown>> {
     return readSolanaHeliusHistory(input);
+  }
+
+  marketEndpointCatalog(input: { provider?: 'coingecko' | 'jupiter' } = {}): Record<string, unknown> {
+    if (input.provider === 'coingecko') return listCoinGeckoEndpointCatalog();
+    if (input.provider === 'jupiter') return listJupiterEndpointCatalog();
+    return {
+      boundary: 'review_evidence_only',
+      providers: [
+        listCoinGeckoEndpointCatalog(),
+        listJupiterEndpointCatalog(),
+      ],
+    };
+  }
+
+  async coingeckoRead(input: CoinGeckoEndpointReadInput): Promise<Record<string, unknown>> {
+    return requestCoinGeckoEndpoint(input);
+  }
+
+  async coingeckoSolanaTokenEvidence(input: CoinGeckoSolanaTokenEvidenceInput): Promise<Record<string, unknown>> {
+    return requestCoinGeckoSolanaTokenEvidence(input);
+  }
+
+  async jupiterReviewRead(input: JupiterReviewEndpointReadInput): Promise<Record<string, unknown>> {
+    assertConnectorCluster(requireRuntimeConnector('jupiter'), this.config.cluster);
+    return requestJupiterReviewEndpoint(this.config, input);
   }
 
   private async jupiterSwapTokenEvidence(input: {

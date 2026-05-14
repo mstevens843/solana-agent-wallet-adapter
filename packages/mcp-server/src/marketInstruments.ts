@@ -22,8 +22,10 @@ import {
   getHeliusTransactionHistory,
   getMintCreationTxForMint,
   getRecentEnrichedTxsForMint,
+  getTransfersByAddress,
   hasHistoryBeforeTs,
   parseHeliusTransactions,
+  type HeliusTransferFilters,
 } from './helius.js';
 import {
   getBirdeyeWebSocketSnapshot,
@@ -78,11 +80,18 @@ export interface SolanaHeliusHistoryInput {
     | 'transaction_history'
     | 'parse_transactions'
     | 'recent_mint_txs'
+    | 'transfers_by_address'
     | 'mint_creation'
     | 'has_history_before'
     | 'authority';
   address?: string;
   mint?: string;
+  with?: string;
+  direction?: 'in' | 'out' | 'any';
+  solMode?: 'merged' | 'separate';
+  filters?: HeliusTransferFilters;
+  paginationToken?: string;
+  sortOrder?: 'asc' | 'desc';
   signatures?: string[];
   before?: string;
   until?: string;
@@ -320,6 +329,11 @@ export async function readSolanaHeliusHistory(input: SolanaHeliusHistoryInput): 
       ),
       warnings,
     );
+  } else if (input.operation === 'transfers_by_address') {
+    data = await safeProviderCall(
+      () => getTransfersByAddress(requireAddress(input.address, 'address'), transfersByAddressOptions(input)),
+      warnings,
+    );
   } else if (input.operation === 'mint_creation') {
     data = await safeProviderCall(
       () => getMintCreationTxForMint(requireAddress(input.mint ?? input.address, 'mint'), historyOptions(input)),
@@ -450,6 +464,20 @@ function historyOptions(input: SolanaHeliusHistoryInput) {
     ...(input.commitment !== undefined ? { commitment: input.commitment } : {}),
     ...(input.source !== undefined ? { source: input.source } : {}),
     ...(input.type !== undefined ? { type: input.type } : {}),
+  };
+}
+
+function transfersByAddressOptions(input: SolanaHeliusHistoryInput) {
+  return {
+    ...(input.with !== undefined ? { with: input.with } : {}),
+    ...(input.direction !== undefined ? { direction: input.direction } : {}),
+    ...(input.mint !== undefined ? { mint: input.mint } : {}),
+    ...(input.solMode !== undefined ? { solMode: input.solMode } : {}),
+    ...(input.filters !== undefined ? { filters: input.filters } : {}),
+    ...(input.limit !== undefined ? { limit: input.limit } : {}),
+    ...(input.paginationToken !== undefined ? { paginationToken: input.paginationToken } : {}),
+    ...(input.commitment !== undefined ? { commitment: input.commitment } : {}),
+    ...(input.sortOrder !== undefined ? { sortOrder: input.sortOrder } : {}),
   };
 }
 

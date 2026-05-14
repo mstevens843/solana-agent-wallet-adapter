@@ -224,12 +224,107 @@ describe('render web hosted BYOK API', () => {
       expect(response.body.reason).toContain('Approved');
       expect(providerCalls[0]?.url).toBe('https://api.openai.com/v1/responses');
       const body = JSON.parse(String(providerCalls[0]?.init?.body ?? '{}')) as Record<string, unknown>;
+      expect(String(body.input)).toContain('"walletAddress":"11111111111111111111111111111111"');
+      expect(String(body.input)).toContain('"source":"hosted_session"');
       expect(body.text).toMatchObject({
         format: {
           name: 'agentic_ai_review',
           strict: false,
         },
       });
+    });
+  });
+
+  it('rejects hosted AI review wallet addresses that do not match the signed-in session', async () => {
+    const fetchMock = vi.fn();
+    vi.stubGlobal('fetch', fetchMock);
+
+    await withServer(async (port, ctx) => {
+      const response = await postJson(port, '/api/ai/review-plan', {
+        settings: {
+          provider: 'openai',
+          model: 'gpt-5',
+          apiKey: 'sk-test-openai',
+        },
+        request: {
+          walletAddress: 'So11111111111111111111111111111111111111112',
+          plan: {
+            intent: 'Transfer SOL',
+            route: 'SOL transfer',
+            risk: 'Low',
+            approval: 'Wallet approval required.',
+            source: 'template',
+            category: 'payments',
+            actionType: 'transfer_sol',
+            templateTitle: 'Transfer SOL',
+            parameters: { recipient: 'So11111111111111111111111111111111111111112', amount: '0.01' },
+            fields: [{ label: 'Amount', value: '0.01' }],
+            safeguards: ['Check recipient.'],
+          },
+          instruction: 'Review before approval.',
+        },
+      }, { cookie: ctx.cookie });
+
+      expect(response.status).toBe(403);
+      expect(String(response.body.error)).toContain('request.walletAddress must match the signed-in wallet');
+      expect(fetchMock).not.toHaveBeenCalled();
+    });
+  });
+
+  it('serves session-scoped Helius transfer history through the hosted API', async () => {
+    const upstreamCalls: Array<{ url: string; init: RequestInit | undefined }> = [];
+    vi.stubEnv('HELIUS_API_KEY', 'helius-test-key');
+    vi.stubEnv('HELIUS_RPC_URL', 'https://helius.example');
+    vi.stubGlobal('fetch', vi.fn(async (url: string | URL | Request, init?: RequestInit) => {
+      upstreamCalls.push({ url: String(url), init });
+      return jsonResponse({
+        result: {
+          data: [{ signature: 'sig1', type: 'transfer', uiAmount: '1' }],
+          paginationToken: 'next',
+        },
+      });
+    }));
+
+    await withServer(async (port, ctx) => {
+      const response = await postJson(port, '/api/helius/transfers-by-address', {
+        address: '11111111111111111111111111111111',
+        limit: 10,
+        direction: 'any',
+      }, { cookie: ctx.cookie });
+
+      expect(response.status).toBe(200);
+      expect(response.body.data).toEqual([expect.objectContaining({ signature: 'sig1' })]);
+      const rpcBody = JSON.parse(String(upstreamCalls[0]?.init?.body ?? '{}')) as Record<string, unknown>;
+      expect(rpcBody).toMatchObject({
+        method: 'getTransfersByAddress',
+        params: ['11111111111111111111111111111111', { direction: 'any', limit: 10 }],
+      });
+      expect(new Headers(upstreamCalls[0]?.init?.headers).get('x-api-key')).toBe('helius-test-key');
+    });
+  });
+
+  it('scopes hosted BirdEye wallet token lists to the signed-in session', async () => {
+    const upstreamCalls: Array<{ url: string; init: RequestInit | undefined }> = [];
+    vi.stubEnv('BIRDEYE_API_KEY', 'birdeye-test-key');
+    vi.stubGlobal('fetch', vi.fn(async (url: string | URL | Request, init?: RequestInit) => {
+      upstreamCalls.push({ url: String(url), init });
+      return jsonResponse({ data: { items: [{ address: 'So11111111111111111111111111111111111111112', symbol: 'SOL' }] } });
+    }));
+
+    await withServer(async (port, ctx) => {
+      const response = await postJson(port, '/api/birdeye/wallet-token-list', {
+        walletAddress: '11111111111111111111111111111111',
+      }, { cookie: ctx.cookie });
+
+      expect(response.status).toBe(200);
+      expect(upstreamCalls[0]?.url).toContain('/v1/wallet/token_list');
+      expect(upstreamCalls[0]?.url).toContain('wallet=11111111111111111111111111111111');
+
+      const mismatch = await postJson(port, '/api/birdeye/wallet-token-list', {
+        walletAddress: 'So11111111111111111111111111111111111111112',
+      }, { cookie: ctx.cookie });
+      expect(mismatch.status).toBe(403);
+      expect(upstreamCalls).toHaveLength(1);
     });
   });
 

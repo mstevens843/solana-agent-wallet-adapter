@@ -26,16 +26,33 @@ import {
 import { BridgeAiPlanner, type AiPlanRequest, type AiReviewRequest, type AiAskRequest } from './aiPlanner.js';
 import {
   birdeyeConfigFromEnv,
+  requestBirdeyeExitLiquidityMulti,
+  requestBirdeyeHistoryPrice,
   requestBirdeyeNewListings,
+  requestBirdeyeOhlcv,
   requestBirdeyePriceMulti,
+  requestBirdeyePriceVolumeMulti,
+  requestBirdeyePriceVolumeSingle,
   requestBirdeyeSearch,
+  requestBirdeyeTokenCreationInfo,
+  requestBirdeyeTokenHolders,
   requestBirdeyeTokenListV3,
   requestBirdeyeTokenMetadata,
   requestBirdeyeTokenSecurity,
   requestBirdeyeTrendingTokens,
+  requestBirdeyeWalletTokenList,
+  type BirdeyeHistoryPriceType,
+  type BirdeyeOhlcvType,
+  type BirdeyePriceVolumeType,
+  type BirdeyeTokenListSortBy,
 } from './birdeye.js';
 import { getBirdeyeWebSocketSnapshot } from './birdeyeWebSocket.js';
-import { requestCoinGeckoGlobal } from './coingecko.js';
+import {
+  listCoinGeckoEndpointCatalog,
+  requestCoinGeckoEndpoint,
+  requestCoinGeckoGlobal,
+  requestCoinGeckoSolanaTokenEvidence,
+} from './coingecko.js';
 import { heliusConfigFromEnv } from './helius.js';
 import { type AgentWalletConfig } from './config.js';
 import { parseDecimalAmount } from './amounts.js';
@@ -470,6 +487,77 @@ async function handleRequest(
       writeJson(res, 200, await requestBirdeyeTokenSecurity(requireString(body.address, 'address')));
       return;
     }
+    if (req.method === 'POST' && url.pathname === '/bridge/birdeye/wallet-token-list') {
+      const body = (await readJson(req)) as { wallet?: unknown; walletAddress?: unknown; uiAmountMode?: 'raw' | 'scaled' | 'both' };
+      const wallet = await scopedBridgeWalletAddress(backend, body.wallet ?? body.walletAddress);
+      writeJson(res, 200, await requestBirdeyeWalletTokenList(wallet, {
+        uiAmountMode: body.uiAmountMode,
+      }));
+      return;
+    }
+    if (req.method === 'POST' && url.pathname === '/bridge/birdeye/token-holders') {
+      const body = (await readJson(req)) as { address?: unknown; limit?: number; offset?: number };
+      writeJson(res, 200, await requestBirdeyeTokenHolders(requireString(body.address, 'address'), {
+        limit: body.limit,
+        offset: body.offset,
+      }));
+      return;
+    }
+    if (req.method === 'POST' && url.pathname === '/bridge/birdeye/token-creation-info') {
+      const body = (await readJson(req)) as { address?: unknown };
+      writeJson(res, 200, await requestBirdeyeTokenCreationInfo(requireString(body.address, 'address')));
+      return;
+    }
+    if (req.method === 'POST' && url.pathname === '/bridge/birdeye/exit-liquidity-multi') {
+      const body = (await readJson(req)) as { addresses?: unknown };
+      writeJson(res, 200, await requestBirdeyeExitLiquidityMulti(requireStringArray(body.addresses, 'addresses')));
+      return;
+    }
+    if (req.method === 'POST' && url.pathname === '/bridge/birdeye/price-volume') {
+      const body = (await readJson(req)) as {
+        address?: unknown;
+        addresses?: unknown;
+        type?: BirdeyePriceVolumeType;
+        uiAmountMode?: 'raw' | 'scaled' | 'both';
+      };
+      const addresses = optionalStringArray(body.addresses);
+      writeJson(res, 200, addresses.length
+        ? await requestBirdeyePriceVolumeMulti(addresses, { type: body.type, uiAmountMode: body.uiAmountMode })
+        : await requestBirdeyePriceVolumeSingle(requireString(body.address, 'address'), { type: body.type }));
+      return;
+    }
+    if (req.method === 'POST' && url.pathname === '/bridge/birdeye/history-price') {
+      const body = (await readJson(req)) as {
+        address?: unknown;
+        addressType?: 'token' | 'pair';
+        type?: BirdeyeHistoryPriceType;
+        timeFrom?: number;
+        timeTo?: number;
+      };
+      writeJson(res, 200, await requestBirdeyeHistoryPrice(requireString(body.address, 'address'), {
+        addressType: body.addressType,
+        type: body.type,
+        timeFrom: body.timeFrom,
+        timeTo: body.timeTo,
+      }));
+      return;
+    }
+    if (req.method === 'POST' && url.pathname === '/bridge/birdeye/ohlcv') {
+      const body = (await readJson(req)) as {
+        address?: unknown;
+        type?: BirdeyeOhlcvType;
+        timeFrom?: number;
+        timeTo?: number;
+        currency?: 'usd' | 'native';
+      };
+      writeJson(res, 200, await requestBirdeyeOhlcv(requireString(body.address, 'address'), {
+        type: body.type,
+        timeFrom: body.timeFrom,
+        timeTo: body.timeTo,
+        currency: body.currency,
+      }));
+      return;
+    }
     if (req.method === 'POST' && url.pathname === '/bridge/birdeye/trending') {
       const body = (await readJson(req)) as { limit?: number; offset?: number };
       writeJson(res, 200, await requestBirdeyeTrendingTokens({
@@ -491,7 +579,7 @@ async function handleRequest(
       const body = (await readJson(req)) as {
         limit?: number;
         offset?: number;
-        sortBy?: 'liquidity' | 'market_cap' | 'fdv' | 'v24hUSD' | 'v24hChangePercent' | 'price' | 'priceChange24h' | 'trade24h' | 'uniqueWallet24h' | 'last_trade_unix_time' | 'recent_listing_time';
+        sortBy?: BirdeyeTokenListSortBy;
         sortType?: 'asc' | 'desc';
         minLiquidity?: number;
         minVolume24hUsd?: number;
@@ -529,6 +617,41 @@ async function handleRequest(
       writeJson(res, 200, await requestCoinGeckoGlobal());
       return;
     }
+    if (req.method === 'GET' && url.pathname === '/bridge/coingecko/endpoints') {
+      writeJson(res, 200, listCoinGeckoEndpointCatalog());
+      return;
+    }
+    if (req.method === 'POST' && url.pathname === '/bridge/coingecko/read') {
+      writeJson(res, 200, await requestCoinGeckoEndpoint((await readJson(req)) as {
+        endpointId: string;
+        pathParams?: Record<string, string | number>;
+        query?: Record<string, string | number | boolean | undefined>;
+      }));
+      return;
+    }
+    if (req.method === 'POST' && url.pathname === '/bridge/coingecko/token-evidence') {
+      writeJson(res, 200, await requestCoinGeckoSolanaTokenEvidence((await readJson(req)) as {
+        mint?: string;
+        mints?: string[];
+        network?: string;
+        includeOnchain?: boolean;
+        maxTokenDetails?: number;
+      }));
+      return;
+    }
+    if (req.method === 'GET' && url.pathname === '/bridge/jupiter/endpoints') {
+      writeJson(res, 200, requireActionService(actionService).marketEndpointCatalog({ provider: 'jupiter' }));
+      return;
+    }
+    if (req.method === 'POST' && url.pathname === '/bridge/jupiter/review-read') {
+      writeJson(res, 200, await requireActionService(actionService).jupiterReviewRead((await readJson(req)) as {
+        endpointId: string;
+        pathParams?: Record<string, string | number>;
+        query?: Record<string, string | number | boolean | undefined>;
+        body?: Record<string, string | number | boolean | undefined>;
+      }));
+      return;
+    }
     if (req.method === 'GET' && url.pathname === '/bridge/ai/status') {
       writeJson(res, 200, aiPlanner.status());
       return;
@@ -550,11 +673,11 @@ async function handleRequest(
       return;
     }
     if (req.method === 'POST' && url.pathname === '/bridge/ai/review-plan') {
-      writeJson(res, 200, await aiPlanner.reviewPlan((await readJson(req)) as AiReviewRequest));
+      writeJson(res, 200, await aiPlanner.reviewPlan(await bridgeReviewRequestWithWallet(backend, await readJson(req))));
       return;
     }
     if (req.method === 'POST' && url.pathname === '/bridge/ai/ask-about-plan') {
-      writeJson(res, 200, await aiPlanner.askAboutPlan((await readJson(req)) as AiAskRequest));
+      writeJson(res, 200, await aiPlanner.askAboutPlan(await bridgeAskRequestWithWallet(backend, await readJson(req))));
       return;
     }
     if (req.method === 'GET' && url.pathname === '/bridge/action/status') {
@@ -741,9 +864,19 @@ async function handleRequest(
     }
     if (req.method === 'POST' && url.pathname === '/bridge/action/helius-history') {
       writeJson(res, 200, await requireActionService(actionService).solanaHeliusHistory((await readJson(req)) as {
-        operation: 'transaction_history' | 'parse_transactions' | 'recent_mint_txs' | 'mint_creation' | 'has_history_before' | 'authority';
+        operation: 'transaction_history' | 'parse_transactions' | 'recent_mint_txs' | 'transfers_by_address' | 'mint_creation' | 'has_history_before' | 'authority';
         address?: string;
         mint?: string;
+        with?: string;
+        direction?: 'in' | 'out' | 'any';
+        solMode?: 'merged' | 'separate';
+        filters?: {
+          amount?: { gt?: number; gte?: number; lt?: number; lte?: number };
+          blockTime?: { gt?: number; gte?: number; lt?: number; lte?: number };
+          slot?: { gt?: number; gte?: number; lt?: number; lte?: number };
+        };
+        paginationToken?: string;
+        sortOrder?: 'asc' | 'desc';
         signatures?: string[];
         before?: string;
         until?: string;
@@ -1135,6 +1268,8 @@ function requiredTier(method: string, pathname: string): AgentTier | null {
     if (pathname === '/bridge/action/token-lists') return 'capped';
     if (pathname === '/bridge/action/token-safety-evidence') return 'capped';
     if (pathname === '/bridge/action/helius-history') return 'capped';
+    if (pathname.startsWith('/bridge/coingecko/')) return 'capped';
+    if (pathname.startsWith('/bridge/jupiter/')) return 'capped';
     if (pathname === '/bridge/solana/latest-blockhash') return 'full';
     if (pathname === '/bridge/solana/send-transaction') return 'full';
     if (pathname === '/bridge/solana/signature-status') return null;
@@ -1242,6 +1377,58 @@ function assertLabArtifactWalletOwner(artifact: LabArtifact, walletAddress: stri
 
 function sameWalletAddress(left: string, right: string): boolean {
   return left.trim().toLowerCase() === right.trim().toLowerCase();
+}
+
+async function scopedBridgeWalletAddress(
+  backend: WalletBackend,
+  requestedWallet: unknown,
+): Promise<string> {
+  const walletAddress = await backend.getAddress();
+  if (requestedWallet !== undefined && requestedWallet !== null && String(requestedWallet).trim()) {
+    const requested = requireString(requestedWallet, 'walletAddress');
+    if (!sameWalletAddress(requested, walletAddress)) {
+      throw new ProtocolError('unauthorized', 'Requested wallet does not match the connected bridge wallet.');
+    }
+  }
+  return walletAddress;
+}
+
+async function bridgeReviewRequestWithWallet(
+  backend: WalletBackend,
+  input: unknown,
+): Promise<AiReviewRequest> {
+  const request = requireJsonObject(input, 'AI review request') as unknown as AiReviewRequest;
+  const walletAddress = await scopedBridgeWalletAddress(backend, request.walletAddress);
+  return withTrustedAiWalletContext(request, walletAddress);
+}
+
+async function bridgeAskRequestWithWallet(
+  backend: WalletBackend,
+  input: unknown,
+): Promise<AiAskRequest> {
+  const request = requireJsonObject(input, 'AI ask request') as unknown as AiAskRequest;
+  const walletAddress = await scopedBridgeWalletAddress(backend, request.walletAddress);
+  return withTrustedAiWalletContext(request, walletAddress);
+}
+
+function withTrustedAiWalletContext<T extends { walletAddress?: string; context?: Record<string, unknown>; cluster?: string }>(
+  request: T,
+  walletAddress: string,
+): T {
+  return {
+    ...request,
+    walletAddress,
+    context: {
+      ...(request.context ?? {}),
+      connectedWallet: walletAddress,
+      wallet: {
+        address: walletAddress,
+        publicKey: walletAddress,
+        source: 'connected_bridge_wallet',
+        ...(request.cluster ? { cluster: request.cluster } : {}),
+      },
+    },
+  };
 }
 
 function isLocalBridgeBackend(backend: WalletBackend): backend is LocalBridgeBackend {
@@ -1788,6 +1975,13 @@ function requireString(value: unknown, label: string): string {
   return value.trim();
 }
 
+function requireJsonObject(value: unknown, label: string): Record<string, unknown> {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    throw new ProtocolError('invalid_request', `${label} must be an object.`);
+  }
+  return value as Record<string, unknown>;
+}
+
 function requireStringRecord(value: unknown, label: string): Record<string, string> {
   if (!value || typeof value !== 'object' || Array.isArray(value)) {
     throw new ProtocolError('invalid_request', `${label} must be an object.`);
@@ -1813,6 +2007,11 @@ function requireStringArray(value: unknown, label: string): string[] {
     throw new ProtocolError('invalid_request', `${label} must include at least one value.`);
   }
   return entries;
+}
+
+function optionalStringArray(value: unknown): string[] {
+  if (value === undefined || value === null) return [];
+  return requireStringArray(value, 'addresses');
 }
 
 function normalizeTokenIdentifier(token: string): string {

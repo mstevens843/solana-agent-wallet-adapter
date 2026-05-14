@@ -141,6 +141,51 @@ describe('connector drafting helpers', () => {
     expect(form?.subActions?.display).toBe('select');
   });
 
+  it('groups Jupiter Trigger, DCA, and Perps into user-friendly connector templates', () => {
+    const jupiter = PROTOCOL_CONNECTORS.find((connector) => connector.id === 'jupiter')!;
+    const forms = connectorActionFormsForConnector(jupiter);
+
+    expect(forms.map((form) => form.id)).not.toContain('jupiter:swap');
+    expect(forms.map((form) => form.id)).toEqual(expect.arrayContaining([
+      'jupiter:lend-flow',
+      'jupiter:trigger-limit-orders',
+      'jupiter:recurring-dca',
+      'jupiter:perps-status',
+    ]));
+
+    const trigger = connectorActionFormById('jupiter:trigger-limit-orders');
+    expect(trigger?.operationLabel).toBe('Limit orders');
+    expect(trigger?.subActions?.label).toBe('Limit order action');
+    expect(trigger?.subActions?.display).toBe('select');
+    expect(trigger?.subActions?.options.map((option) => option.label)).toEqual([
+      'Set up order vault',
+      'Limit / stop order',
+      'TP/SL bracket (OCO)',
+      'Entry + TP/SL (OTOCO)',
+      'Edit order trigger',
+      'Cancel order',
+      'Withdraw cancelled funds',
+    ]);
+
+    const recurring = connectorActionFormById('jupiter:recurring-dca');
+    expect(recurring?.operationLabel).toBe('DCA orders');
+    expect(recurring?.subActions?.label).toBe('DCA action');
+    expect(recurring?.subActions?.options.map((option) => option.label)).toEqual([
+      'Create DCA order',
+      'Cancel DCA order',
+      'Advanced: fund price order',
+      'Advanced: withdraw price order',
+    ]);
+
+    const perps = connectorActionFormById('jupiter:perps-status');
+    expect(perps).toMatchObject({
+      operationLabel: 'Perps status (read-only)',
+      executionMode: 'read-only',
+      actionType: 'read_only',
+    });
+    expect(templateById('connector-jupiter-perps-status').title).toBe('Jupiter Perps status (read-only)');
+  });
+
   it('infers connector-specific templates before seeding default sub-actions', () => {
     const raydium = normalizeConnectorDraftParameters(templateById('connector-raydium-liquidity'), {
       poolId: 'SOL-USDC-CPMM',
@@ -308,6 +353,7 @@ describe('connector drafting helpers', () => {
       }
 
       for (const actionKind of connector.actionKinds) {
+        if (connector.id === 'jupiter' && actionKind === 'swap') continue;
         expect(formActionTypes.has(actionKind), `${connector.id} missing form for ${actionKind}`).toBe(true);
         const hasDirectTemplate = templateActionTypes.has(actionKind);
         const hasUnifiedTemplate = [...subActionTemplateIds].some((id) => templateIds.has(id));

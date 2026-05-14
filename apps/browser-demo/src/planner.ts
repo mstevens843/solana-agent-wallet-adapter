@@ -2000,7 +2000,8 @@ function connectorActionPlanTemplates(): AgentPlanTemplate[] {
   for (const connector of PROTOCOL_CONNECTORS) {
     for (const form of connectorActionFormsForConnector(connector)) {
       if (generated.some((entry) => entry.id === form.templateId)) continue;
-      if (form.executionMode === 'read-only' || form.executionMode === 'blink') continue;
+      if (form.executionMode === 'blink') continue;
+      if (form.executionMode === 'read-only' && form.operationId === 'position-check') continue;
       generated.push(template(
         connectorTemplateCategory(connector.id),
         form.templateId,

@@ -93,6 +93,15 @@ describe('KNOWN_CONNECTED_DAPPS', () => {
       readTools: expect.arrayContaining(['solana_project0_banks', 'solana_project0_health_preview']),
       actionSource: 'first-class-adapter',
     });
+    expect(KNOWN_CONNECTED_DAPPS.find((adapter) => adapter.id === 'jupiter')).toMatchObject({
+      aliases: expect.arrayContaining(['jupiter perps', 'jupiter perpetuals', 'jupiter dca']),
+      readTools: expect.arrayContaining([
+        'solana_jupiter_perps_status',
+        'solana_jupiter_perps_pool_snapshot',
+        'solana_jupiter_perps_custody_snapshot',
+        'solana_jupiter_perps_position_snapshot',
+      ]),
+    });
     const mayan = KNOWN_CONNECTED_DAPPS.find((adapter) => adapter.id === 'mayan');
     expect(mayan).toMatchObject({
       actionKinds: [],

@@ -30,6 +30,10 @@ export interface AgentWalletConfig {
     tokensBaseUrl?: string;
     priceBaseUrl?: string;
     predictionBaseUrl?: string;
+    portfolioBaseUrl?: string;
+    sendBaseUrl?: string;
+    studioBaseUrl?: string;
+    transactionBaseUrl?: string;
     /** Optional only when official Jupiter Perps endpoints stabilize. No default; opt-in via JUPITER_PERPS_BASE_URL. */
     perpsBaseUrl?: string;
     apiKeyEnv: string;
@@ -231,6 +235,10 @@ export const DEFAULT_JUPITER_RECURRING_BASE_URL = 'https://api.jup.ag/recurring/
 export const DEFAULT_JUPITER_TOKENS_BASE_URL = 'https://api.jup.ag/tokens/v2';
 export const DEFAULT_JUPITER_PRICE_BASE_URL = 'https://api.jup.ag/price/v3';
 export const DEFAULT_JUPITER_PREDICTION_BASE_URL = 'https://api.jup.ag/prediction/v1';
+export const DEFAULT_JUPITER_PORTFOLIO_BASE_URL = 'https://api.jup.ag/portfolio/v1';
+export const DEFAULT_JUPITER_SEND_BASE_URL = 'https://api.jup.ag/send/v1';
+export const DEFAULT_JUPITER_STUDIO_BASE_URL = 'https://api.jup.ag/studio/v1';
+export const DEFAULT_JUPITER_TRANSACTION_BASE_URL = 'https://api.jup.ag/tx/v1';
 export const DEFAULT_PROJECT0_API_BASE_URL = 'https://ai.0.xyz';
 export const DEFAULT_JUPITER_TOKEN_PRICE_MAX_BATCH_PRICE_IDS = 50;
 export const DEFAULT_JUPITER_TOKEN_PRICE_MAX_SEARCH_MINT_IDS = 100;
@@ -294,6 +302,10 @@ export const DEFAULT_CONFIG: AgentWalletConfig = {
     tokensBaseUrl: DEFAULT_JUPITER_TOKENS_BASE_URL,
     priceBaseUrl: DEFAULT_JUPITER_PRICE_BASE_URL,
     predictionBaseUrl: DEFAULT_JUPITER_PREDICTION_BASE_URL,
+    portfolioBaseUrl: DEFAULT_JUPITER_PORTFOLIO_BASE_URL,
+    sendBaseUrl: DEFAULT_JUPITER_SEND_BASE_URL,
+    studioBaseUrl: DEFAULT_JUPITER_STUDIO_BASE_URL,
+    transactionBaseUrl: DEFAULT_JUPITER_TRANSACTION_BASE_URL,
     apiKeyEnv: 'JUPITER_API_KEY',
   },
   connectors: {
@@ -381,6 +393,20 @@ export function normalizeConfig(input: Partial<AgentWalletConfig>): AgentWalletC
   );
   jupiter.predictionBaseUrl = stripTrailingSlashes(
     firstEnvValue('JUPITER_PREDICTION_BASE_URL') ?? jupiter.predictionBaseUrl ?? DEFAULT_JUPITER_PREDICTION_BASE_URL,
+  );
+  jupiter.portfolioBaseUrl = stripTrailingSlashes(
+    firstEnvValue('JUPITER_PORTFOLIO_BASE_URL') ?? jupiter.portfolioBaseUrl ?? DEFAULT_JUPITER_PORTFOLIO_BASE_URL,
+  );
+  jupiter.sendBaseUrl = stripTrailingSlashes(
+    firstEnvValue('JUPITER_SEND_BASE_URL') ?? jupiter.sendBaseUrl ?? DEFAULT_JUPITER_SEND_BASE_URL,
+  );
+  jupiter.studioBaseUrl = stripTrailingSlashes(
+    firstEnvValue('JUPITER_STUDIO_BASE_URL') ?? jupiter.studioBaseUrl ?? DEFAULT_JUPITER_STUDIO_BASE_URL,
+  );
+  jupiter.transactionBaseUrl = stripTrailingSlashes(
+    firstEnvValue('JUPITER_TX_BASE_URL', 'JUPITER_TRANSACTION_BASE_URL') ??
+      jupiter.transactionBaseUrl ??
+      DEFAULT_JUPITER_TRANSACTION_BASE_URL,
   );
   const perpsBaseUrlFromEnv = firstEnvValue('JUPITER_PERPS_BASE_URL');
   const perpsBaseUrl = perpsBaseUrlFromEnv ?? input.jupiter?.perpsBaseUrl;

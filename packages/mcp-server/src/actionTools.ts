@@ -198,6 +198,79 @@ export function registerActionTools(
   );
 
   server.registerTool(
+    'solana_market_endpoint_catalog',
+    {
+      description:
+        'List cataloged CoinGecko and Jupiter endpoint IDs that agents may use as read-only evidence during Ask agent / Check request review. Transaction-building endpoints are listed but not callable here.',
+      inputSchema: {
+        provider: z.enum(['coingecko', 'jupiter']).optional(),
+      },
+    },
+    async (input) => traceTool(
+      'solana_market_endpoint_catalog',
+      { cluster: options.config.cluster, provider: input.provider },
+      async () => jsonReply(service.marketEndpointCatalog(input)),
+    ),
+  );
+
+  server.registerTool(
+    'solana_coingecko_read',
+    {
+      description:
+        'Call a cataloged CoinGecko Starter/Basic-compatible GET endpoint by endpointId for review evidence. Read-only; no arbitrary URLs.',
+      inputSchema: {
+        endpointId: z.string().min(1),
+        pathParams: endpointPathParamsSchema().optional(),
+        query: endpointScalarParamsSchema().optional(),
+      },
+    },
+    async (input) => traceTool(
+      'solana_coingecko_read',
+      { cluster: options.config.cluster, endpointId: input.endpointId },
+      async () => jsonReply(await service.coingeckoRead(input)),
+    ),
+  );
+
+  server.registerTool(
+    'solana_coingecko_token_evidence',
+    {
+      description:
+        'Read CoinGecko price, market cap, volume, 24h change, and onchain token metadata for Solana mints. Use as Ask/Check review evidence only.',
+      inputSchema: {
+        mint: z.string().min(32).max(44).optional(),
+        mints: z.array(z.string().min(32).max(44)).min(1).max(10).optional(),
+        network: z.string().min(2).optional().describe('Defaults to solana.'),
+        includeOnchain: z.boolean().optional().describe('Defaults to true.'),
+        maxTokenDetails: z.number().int().min(0).max(5).optional(),
+      },
+    },
+    async (input) => traceTool(
+      'solana_coingecko_token_evidence',
+      { cluster: options.config.cluster, mint: input.mint, mints: input.mints },
+      async () => jsonReply(await service.coingeckoSolanaTokenEvidence(input)),
+    ),
+  );
+
+  server.registerTool(
+    'solana_jupiter_review_read',
+    {
+      description:
+        'Call a cataloged Jupiter Pro read endpoint by endpointId for Ask agent / Check request evidence. Transaction-build, submit, and approval endpoints are blocked and reported as structured unsupported methods.',
+      inputSchema: {
+        endpointId: z.string().min(1),
+        pathParams: endpointPathParamsSchema().optional(),
+        query: endpointScalarParamsSchema().optional(),
+        body: endpointScalarParamsSchema().optional(),
+      },
+    },
+    async (input) => traceTool(
+      'solana_jupiter_review_read',
+      { cluster: options.config.cluster, endpointId: input.endpointId },
+      async () => jsonReply(await service.jupiterReviewRead(input)),
+    ),
+  );
+
+  server.registerTool(
     'solana_get_balances',
     {
       description: 'Read SOL and configured SPL token balances for the connected wallet.',
@@ -4766,11 +4839,36 @@ export function registerActionTools(
     'solana_helius_history',
     {
       description:
-        'Read optional Helius on-chain history evidence: enhanced transaction history, parse transactions, recent mint transactions, mint creation, older-history checks, or mint authority. Read-only.',
+        'Read optional Helius on-chain history evidence: enhanced transaction history, parsed transfers by wallet address, parse transactions, recent mint transactions, mint creation, older-history checks, or mint authority. Read-only.',
       inputSchema: {
-        operation: z.enum(['transaction_history', 'parse_transactions', 'recent_mint_txs', 'mint_creation', 'has_history_before', 'authority']),
+        operation: z.enum(['transaction_history', 'parse_transactions', 'recent_mint_txs', 'transfers_by_address', 'mint_creation', 'has_history_before', 'authority']),
         address: z.string().min(32).max(44).optional(),
         mint: z.string().min(32).max(44).optional(),
+        with: z.string().min(32).max(44).optional().describe('Optional counterparty address for transfers_by_address.'),
+        direction: z.enum(['in', 'out', 'any']).optional(),
+        solMode: z.enum(['merged', 'separate']).optional(),
+        filters: z.object({
+          amount: z.object({
+            gt: z.number().optional(),
+            gte: z.number().optional(),
+            lt: z.number().optional(),
+            lte: z.number().optional(),
+          }).optional(),
+          blockTime: z.object({
+            gt: z.number().optional(),
+            gte: z.number().optional(),
+            lt: z.number().optional(),
+            lte: z.number().optional(),
+          }).optional(),
+          slot: z.object({
+            gt: z.number().optional(),
+            gte: z.number().optional(),
+            lt: z.number().optional(),
+            lte: z.number().optional(),
+          }).optional(),
+        }).optional(),
+        paginationToken: z.string().min(1).optional(),
+        sortOrder: z.enum(['asc', 'desc']).optional(),
         signatures: z.array(z.string().min(32)).min(1).max(100).optional(),
         before: z.string().min(1).optional(),
         until: z.string().min(1).optional(),
@@ -5595,6 +5693,14 @@ function jupiterTokenCategorySchema() {
 
 function jupiterTokenCategoryIntervalSchema() {
   return z.enum(['5m', '1h', '6h', '24h']);
+}
+
+function endpointPathParamsSchema() {
+  return z.record(z.union([z.string(), z.number()]));
+}
+
+function endpointScalarParamsSchema() {
+  return z.record(z.union([z.string(), z.number(), z.boolean()]));
 }
 
 function birdeyeOhlcvTypeSchema() {
