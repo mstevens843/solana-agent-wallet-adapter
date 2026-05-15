@@ -151,6 +151,7 @@ function renderHeading(): string {
       <p>
         This is the preview of what visitors see on <code>agentic-signer.com/u/&lt;wallet&gt;</code>.
         Every stat below is rolled up from on-chain receipts &mdash; nothing self-reported.
+        Copy the URL when you want to share this wallet's skill record outside the app.
       </p>
     </header>
   `;

@@ -1,5 +1,7 @@
 import { isDevWallet } from '../devGate.js';
 import { currentAddress, refreshConnection } from '../connectionState.js';
+import { dispatchAp2InboundDemoCreated } from '../ap2InboundDemoEvents.js';
+import { getConnectedAddress, getConnectedCluster } from '../walletState.js';
 import './externalAgents.css';
 
 // Mirrors the server's normalizeApprovalForResponse() at
@@ -24,7 +26,7 @@ export interface NormalizedApproval {
 }
 
 export interface NormalizedApprovalMetadata {
-  ap2VerifiedAgent?: { agentId: string; agentLabel: string; publicKey?: string };
+  ap2VerifiedAgent?: { agentId: string; agentLabel: string; publicKey?: string; verified?: boolean };
   ap2MandateId?: string;
   ap2MandateType?: string;
   ap2ProtocolVersion?: string;
@@ -56,6 +58,20 @@ const state: TabState = {
   errorMessage: '',
   lastFetchedFor: null,
 };
+
+const USDC_MINT = 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v';
+const DEMO_AMOUNT = '2.00';
+
+function randomBrowserAp2Id(): string {
+  const cryptoApi = globalThis.crypto;
+  if (cryptoApi?.getRandomValues) {
+    const bytes = new Uint8Array(8);
+    cryptoApi.getRandomValues(bytes);
+    const hex = Array.from(bytes, (byte) => byte.toString(16).padStart(2, '0')).join('');
+    return `browser-ap2_${hex}`;
+  }
+  return `browser-ap2_${Date.now().toString(16)}_${Math.random().toString(16).slice(2, 10)}`;
+}
 
 // ---------------- Pure helpers (exported for tests) ----------------
 
@@ -96,6 +112,16 @@ export function sortInbound(items: NormalizedApproval[]): NormalizedApproval[] {
   });
 }
 
+function isLocalDemoInbound(item: NormalizedApproval): boolean {
+  return item.id.startsWith('browser-ap2_') || item.metadata?.demoLocal === true;
+}
+
+function mergeInboundWithLocalDemos(inbound: NormalizedApproval[]): NormalizedApproval[] {
+  const inboundIds = new Set(inbound.map((item) => item.id));
+  const localDemos = state.inbound.filter((item) => isLocalDemoInbound(item) && !inboundIds.has(item.id));
+  return sortInbound([...localDemos, ...inbound]);
+}
+
 function statusPillClass(status: string): string {
   const normalized = status.toLowerCase();
   if (normalized === 'ready' || normalized === 'pending') return 'pending';
@@ -125,7 +151,7 @@ export function rowHtml(item: NormalizedApproval): string {
     ? `<span class="external-agents-row-cluster">${escapeHtml(item.cluster)}</span>`
     : '';
   const terminal = TERMINAL_STATUSES.has(item.status);
-  const buttonLabel = terminal ? 'Open in Inbox' : 'Open approval';
+  const buttonLabel = terminal ? 'Open in Inbox' : 'Review and pay';
   return `
     <li class="external-agents-row${terminal ? ' terminal' : ''}" data-inbound-id="${escapeHtml(item.id)}">
       <span class="external-agents-row-avatar" aria-hidden="true">${avatarLabel}</span>
@@ -164,10 +190,130 @@ export function bodyHtml(snapshot: TabState = state): string {
       `;
     case 'loaded':
       if (snapshot.inbound.length === 0) {
-        return `<p class="external-agents-empty dev-tab-empty-state">No inbound AP2 mandates yet. When an external agent sends one, it will appear here as an approval card in <strong>Needs Approval</strong>.</p>`;
+        return `
+          <div class="external-agents-empty dev-tab-empty-state">
+            <p>No inbound AP2 mandates yet. When an external agent sends one, it will appear here as an approval card in <strong>Needs Approval</strong>.</p>
+            <button type="button" class="primary" data-external-agents-demo>Create demo request</button>
+          </div>
+        `;
       }
       return `<ol class="external-agents-list">${sortInbound(snapshot.inbound).map(rowHtml).join('')}</ol>`;
   }
+}
+
+export function createDemoInboundRequest(walletAddress: string, cluster = 'mainnet-beta'): NormalizedApproval {
+  const id = randomBrowserAp2Id();
+  const now = new Date();
+  const createdAt = now.toISOString();
+  const dueAt = new Date(now.getTime() + 24 * 60 * 60 * 1000).toISOString();
+  const mandateId = `demo_mandate_${id.replace(/^browser-ap2_/, '')}`;
+  const memo = 'AP2 demo request: Acme Coffee';
+  const cart = {
+    merchantName: 'Acme Coffee',
+    lineItems: [
+      { name: 'Latte', quantity: 2, unitAmount: '0.80', currency: 'USD' },
+      { name: 'Croissant', quantity: 1, unitAmount: '0.30', currency: 'USD' },
+      { name: 'Tax', quantity: 1, unitAmount: '0.10', currency: 'USD' },
+    ],
+    totalAmount: DEMO_AMOUNT,
+    paymentToken: 'USDC',
+    requesterWallet: walletAddress,
+  };
+  return {
+    id,
+    kind: 'transfer_spl',
+    status: 'ready',
+    summary: `AP2 inbound: Acme Coffee requests ${DEMO_AMOUNT} USDC to ${shortAddress(walletAddress)}`,
+    amount: DEMO_AMOUNT,
+    token: 'USDC',
+    recipient: walletAddress,
+    cluster,
+    dueAt,
+    createdAt,
+    updatedAt: createdAt,
+    txid: null,
+    txStatus: null,
+    metadata: {
+      connectorId: 'ap2',
+      connectorName: 'Google AP2',
+      capability: 'inbound_payment',
+      operation: 'inbound_payment',
+      source: 'ap2_inbound',
+      actionSource: 'ap2_inbound',
+      approvalBoundary: 'per_run',
+      demoLocal: true,
+      ap2MandateId: mandateId,
+      ap2MandateType: 'payment_mandate',
+      ap2ProtocolVersion: 'ap2/0.1',
+      ap2VerifiedAgent: {
+        agentId: 'agent:demo.acme-coffee',
+        agentLabel: 'Acme Coffee',
+        publicKey: 'local-demo-request',
+        verified: true,
+      },
+      ap2DemoCart: cart,
+      actionProposal: {
+        protocolVersion: 'ap2/0.1',
+        mandateId,
+        mandateType: 'payment_mandate',
+        payment: {
+          amount: DEMO_AMOUNT,
+          tokenSymbol: 'USDC',
+          tokenMint: USDC_MINT,
+          recipient: walletAddress,
+          cluster,
+          memo,
+        },
+      },
+    },
+    params: {
+      fromAddress: walletAddress,
+      toAddress: walletAddress,
+      recipient: walletAddress,
+      amount: DEMO_AMOUNT,
+      token: 'USDC',
+      tokenMint: USDC_MINT,
+      tokenSymbol: 'USDC',
+      memo,
+    },
+  };
+}
+
+function createAndDispatchDemoRequest(): void {
+  const walletAddress = getConnectedAddress() ?? currentAddress();
+  if (!walletAddress) {
+    state.status = 'error';
+    state.errorMessage = 'Connect a wallet before creating a demo request.';
+    patchPanel();
+    return;
+  }
+  const demo = createDemoInboundRequest(walletAddress, getConnectedCluster() ?? 'mainnet-beta');
+  state.status = 'loaded';
+  state.errorMessage = '';
+  state.lastFetchedFor = walletAddress;
+  state.inbound = sortInbound([demo, ...state.inbound.filter((item) => item.id !== demo.id)]);
+  dispatchAp2InboundDemoCreated({
+    source: 'ap2_inbound_demo',
+    approvalId: demo.id,
+    approval: {
+      id: demo.id,
+      walletAddress,
+      kind: demo.kind,
+      status: demo.status,
+      summary: demo.summary,
+      amount: demo.amount ?? DEMO_AMOUNT,
+      token: demo.token ?? 'USDC',
+      recipient: demo.recipient ?? walletAddress,
+      cluster: demo.cluster ?? 'mainnet-beta',
+      params: demo.params,
+      metadata: demo.metadata,
+      dueAt: demo.dueAt,
+      createdAt: demo.createdAt,
+      updatedAt: demo.updatedAt,
+      note: 'Demo AP2 inbound request from Acme Coffee.',
+    },
+  });
+  patchPanel();
 }
 
 // ---------------- DOM patcher ----------------
@@ -215,27 +361,36 @@ export async function fetchInbound(force = false): Promise<void> {
       headers: { Accept: 'application/json' },
     });
     if (res.status === 404) {
-      state.inbound = [];
+      state.inbound = mergeInboundWithLocalDemos([]);
       state.status = 'loaded';
     } else if (res.status === 403) {
+      state.inbound = mergeInboundWithLocalDemos([]);
       state.errorMessage = 'AP2 inbound is disabled for this wallet on this deploy.';
-      state.status = 'error';
+      state.status = state.inbound.length ? 'loaded' : 'error';
     } else if (res.status === 401) {
+      state.inbound = mergeInboundWithLocalDemos([]);
       state.errorMessage = 'Sign into Agentic Cloud to view AP2 mandates.';
-      state.status = 'error';
+      state.status = state.inbound.length ? 'loaded' : 'error';
     } else if (!res.ok) {
+      state.inbound = mergeInboundWithLocalDemos([]);
       state.errorMessage = `HTTP ${res.status}`;
-      state.status = 'error';
+      state.status = state.inbound.length ? 'loaded' : 'error';
     } else {
       const payload = (await res.json().catch(() => null)) as
-        | { inbound?: NormalizedApproval[] }
+        | { inbound?: NormalizedApproval[]; items?: NormalizedApproval[] }
         | null;
-      state.inbound = Array.isArray(payload?.inbound) ? (payload!.inbound as NormalizedApproval[]) : [];
+      const inbound = Array.isArray(payload?.inbound)
+        ? payload.inbound
+        : Array.isArray(payload?.items)
+          ? payload.items
+          : [];
+      state.inbound = mergeInboundWithLocalDemos(inbound as NormalizedApproval[]);
       state.status = 'loaded';
     }
   } catch (err) {
+    state.inbound = mergeInboundWithLocalDemos([]);
     state.errorMessage = err instanceof Error ? err.message : 'Network error';
-    state.status = 'error';
+    state.status = state.inbound.length ? 'loaded' : 'error';
   }
   patchPanel();
 }
@@ -273,6 +428,7 @@ export function renderExternalAgentsPanel(): string {
           <p>Mandates sent by verified external agents land here before they become wallet approval cards.</p>
         </div>
         <div class="dev-tab-header-actions">
+          <button type="button" class="primary" data-external-agents-demo>Create demo request</button>
           <button type="button" class="utility" data-external-agents-refresh${refreshing ? ' disabled' : ''}>${refreshing ? 'Refreshing…' : 'Refresh'}</button>
         </div>
       </header>
@@ -327,6 +483,12 @@ function installPanelClickHandler(): void {
       void fetchInbound(true);
       return;
     }
+    const demoBtn = target.closest<HTMLButtonElement>('[data-external-agents-demo]');
+    if (demoBtn) {
+      event.preventDefault();
+      createAndDispatchDemoRequest();
+      return;
+    }
     const openBtn = target.closest<HTMLElement>('[data-external-agents-open]');
     if (openBtn) {
       const approvalId = openBtn.getAttribute('data-external-agents-open') ?? '';
@@ -360,4 +522,6 @@ export const __externalAgentsForTests = {
   rowHtml,
   sortInbound,
   fetchInbound,
+  createDemoInboundRequest,
+  createAndDispatchDemoRequest,
 };

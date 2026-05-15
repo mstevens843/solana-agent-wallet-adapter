@@ -14,12 +14,12 @@ describe('Agent Payments dev tab', () => {
 
     expect(html).toContain('one-time-method-control agent-protocols-tab-control');
     expect(html).toContain('<strong>Agent Payments</strong>');
-    expect(html).toContain('Profile, send, receive');
+    expect(html).toContain('Profile, pay, receive');
     expect(html).toContain('template-filter-row one-time-method-filter agent-protocols-tab-list');
     expect(html).toContain('data-agent-protocols-subtab="agent-card"');
     expect(html).toContain('data-agent-protocols-subtab="pay-out"');
     expect(html).toContain('data-agent-protocols-subtab="external-agents"');
     expect(html).toContain('data-active-agent-protocols-subtab="pay-out"');
-    expect(html).toContain('<h2>Pay Out</h2>');
+    expect(html).toContain('<h2>Pay Merchant</h2>');
   });
 });

@@ -14,6 +14,7 @@ import {
   formatMonetization,
   formatSuccessRate,
   handleInstall,
+  invalidateCatalogAfterInstallChange,
   loadCatalog,
   normalizeCatalog,
   normalizeInstalls,
@@ -658,6 +659,46 @@ describe('handleInstall', () => {
     expect(body.caps.allowlistedRecipients).toContain('Recipient111111111111111111111111111111111');
   });
 
+  it('requires explicit paid-term acceptance before posting monetized installs', async () => {
+    __resetStateForTests({
+      phase: 'ready',
+      rows: [
+        {
+          manifest: manifest({
+            monetization: { kind: 'monthly', amount: '0.99', payoutWallet: 'AuthorWallet' },
+          }) as unknown as CardRow['manifest'],
+          stats: null,
+          installStatus: 'none',
+        },
+      ],
+    });
+    await handleInstall('friday-dca');
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(__getStateForTests().installErrors['friday-dca']).toMatch(/author payment terms/);
+  });
+
+  it('posts monetized installs after paid-term acceptance', async () => {
+    __resetStateForTests({
+      phase: 'ready',
+      rows: [
+        {
+          manifest: manifest({
+            monetization: { kind: 'monthly', amount: '0.99', payoutWallet: 'AuthorWallet' },
+          }) as unknown as CardRow['manifest'],
+          stats: null,
+          installStatus: 'none',
+        },
+      ],
+      monetizationAccepted: { 'friday-dca': true },
+    });
+    fetchMock.mockResolvedValueOnce(jsonResponse(200, { install: { id: 'inst_paid', status: 'active' } }));
+    await handleInstall('friday-dca');
+    const [, init] = fetchMock.mock.calls[0]!;
+    const body = JSON.parse((init as RequestInit).body as string) as { acceptMonetization: boolean };
+    expect(body.acceptMonetization).toBe(true);
+    expect(__getStateForTests().rows[0]!.installStatus).toBe('active');
+  });
+
   it('403 → notice set, row unchanged, busy cleared', async () => {
     fetchMock.mockResolvedValueOnce(emptyResponse(403));
     await handleInstall('friday-dca');
@@ -707,6 +748,30 @@ describe('handleInstall', () => {
   it('unknown skillId → returns without firing fetch', async () => {
     await handleInstall('does-not-exist');
     expect(fetchMock).not.toHaveBeenCalled();
+  });
+});
+
+describe('install-change invalidation', () => {
+  it('resets Browse cache so the next tab render reloads catalog/install status', () => {
+    __resetStateForTests({
+      phase: 'ready',
+      rows: [
+        {
+          manifest: manifest() as unknown as CardRow['manifest'],
+          stats: null,
+          installStatus: 'active',
+        },
+      ],
+      error: 'stale',
+      notice: { title: 'Old', body: 'Old notice' },
+      busyInstallId: 'friday-dca',
+    });
+    invalidateCatalogAfterInstallChange();
+    const state = __getStateForTests();
+    expect(state.phase).toBe('idle');
+    expect(state.error).toBe('');
+    expect(state.notice).toBeNull();
+    expect(state.busyInstallId).toBeNull();
   });
 });
 

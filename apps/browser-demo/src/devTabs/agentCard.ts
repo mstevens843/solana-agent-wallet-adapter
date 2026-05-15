@@ -6,6 +6,8 @@ const LOCAL_AGENT_CARD_PATH = '/api/agents/card';
 const PUBLIC_AGENT_CARD_PATH = '/.well-known/agent.json';
 const BODY_ELEMENT_ID = 'dev-agent-card-body';
 const DEV_WALLET_HEADER = 'x-agentic-wallet-address';
+const USER_FACING_DESCRIPTION =
+  'Other apps and agents can use this profile to send payment requests to this wallet. Every request still opens for review before anything is signed.';
 
 type FetchStatus = 'idle' | 'loading' | 'loaded' | 'unavailable' | 'error';
 
@@ -56,6 +58,22 @@ function cardString(card: Record<string, unknown> | null, key: string): string {
   return typeof value === 'string' ? value : '';
 }
 
+function cardRecordFromState(): Record<string, unknown> | null {
+  return typeof tabState.cardJson === 'object' && tabState.cardJson !== null && !Array.isArray(tabState.cardJson)
+    ? (tabState.cardJson as Record<string, unknown>)
+    : null;
+}
+
+function profileOrigin(card: Record<string, unknown> | null): string {
+  return cardString(card, 'url') || PUBLIC_AGENT_CARD_URL.replace(PUBLIC_AGENT_CARD_PATH, '');
+}
+
+function profileEndpoint(card: Record<string, unknown> | null): string {
+  const origin = profileOrigin(card).replace(/\/+$/, '');
+  if (origin.endsWith(PUBLIC_AGENT_CARD_PATH)) return origin;
+  return `${origin}${PUBLIC_AGENT_CARD_PATH}`;
+}
+
 function protocolPills(protocols: readonly string[]): string {
   if (protocols.length === 0) return '<span class="dev-agent-card-muted">None published</span>';
   return protocols
@@ -63,45 +81,67 @@ function protocolPills(protocols: readonly string[]): string {
     .join('');
 }
 
+function tokenPills(tokens: readonly string[]): string {
+  if (tokens.length === 0) return '<span class="dev-agent-card-muted">No tokens listed</span>';
+  return tokens
+    .map((token) => `<span class="dev-agent-card-token-pill">${escapeHtml(token)}</span>`)
+    .join('');
+}
+
 function identitySummaryHtml(card: Record<string, unknown> | null): string {
   if (!card) return '';
   const walletAddress = typeof card.walletAddress === 'string' ? card.walletAddress : '';
   const protocols = stringArray(card.supportedProtocols);
+  const tokens = stringArray(card.supportedTokens);
   const version = typeof card.version === 'string' ? card.version : '';
   const parts: string[] = [];
   if (walletAddress) {
     parts.push(`<article class="dev-agent-card-summary-item"><span>Wallet</span><code>${escapeHtml(shortAddress(walletAddress))}</code></article>`);
   }
   if (protocols.length > 0) {
-    parts.push(`<article class="dev-agent-card-summary-item"><span>Protocols</span><span class="dev-agent-card-protocols">${protocolPills(protocols)}</span></article>`);
+    parts.push(`<article class="dev-agent-card-summary-item"><span>Request types</span><span class="dev-agent-card-protocols">${protocolPills(protocols)}</span></article>`);
+  }
+  if (tokens.length > 0) {
+    parts.push(`<article class="dev-agent-card-summary-item"><span>Accepted tokens</span><span class="dev-agent-card-protocols">${tokenPills(tokens)}</span></article>`);
   }
   if (version) {
-    parts.push(`<article class="dev-agent-card-summary-item"><span>Version</span><code>${escapeHtml(version)}</code></article>`);
+    parts.push(`<article class="dev-agent-card-summary-item"><span>Profile version</span><code>${escapeHtml(version)}</code></article>`);
   }
   if (parts.length === 0) return '';
   return `<div class="dev-agent-card-summary">${parts.join('')}</div>`;
 }
 
-function capabilityOverviewHtml(card: Record<string, unknown> | null): string {
-  const capabilities = card?.capabilities && typeof card.capabilities === 'object' && !Array.isArray(card.capabilities)
-    ? (card.capabilities as Record<string, unknown>)
-    : {};
+function requestOverviewHtml(card: Record<string, unknown> | null): string {
+  const protocols = stringArray(card?.supportedProtocols);
   const rows = [
-    ['Streaming', capabilities.streaming === true ? 'Enabled' : 'Off'],
-    ['Push notifications', capabilities.pushNotifications === true ? 'Enabled' : 'Off'],
-    ['State history', capabilities.stateTransitionHistory === true ? 'Enabled' : 'Off'],
+    [
+      'Incoming payments',
+      protocols.includes('ap2') ? 'Ready' : 'Not listed',
+      'External agents can send payment mandates to the approval inbox.',
+    ],
+    [
+      'Checkout payments',
+      protocols.includes('acp') ? 'Ready' : 'Not listed',
+      'Merchant carts can be reviewed before the wallet pays them.',
+    ],
+    [
+      'Approval mode',
+      'Always review',
+      'The profile advertises capabilities; it does not give anyone auto-signing access.',
+    ],
   ];
   return `
-    <section class="dev-agent-card-section" aria-label="Agent capabilities">
+    <section class="dev-agent-card-section" aria-label="Payment request overview">
       <div class="dev-agent-card-section-head">
-        <span>Capabilities</span>
-        <h3>What agents can discover</h3>
+        <span>Requests</span>
+        <h3>How this profile is used</h3>
       </div>
       <div class="dev-agent-card-capability-grid">
-        ${rows.map(([label, value]) => `
+        ${rows.map(([label, value, description]) => `
           <article>
             <span>${escapeHtml(label)}</span>
             <strong>${escapeHtml(value)}</strong>
+            <p>${escapeHtml(description)}</p>
           </article>
         `).join('')}
       </div>
@@ -130,48 +170,47 @@ function skillsOverviewHtml(card: Record<string, unknown> | null): string {
         </article>
       `;
     }).join('')
-    : '<p class="dev-agent-card-muted">No skills are published in this Agent Card.</p>';
+    : '<p class="dev-agent-card-muted">No permissions are listed for this payment profile.</p>';
   return `
     <section class="dev-agent-card-section" aria-label="Agent skills">
       <div class="dev-agent-card-section-head">
-        <span>Skills</span>
-        <h3>Actions this wallet advertises</h3>
+        <span>Permissions</span>
+        <h3>What other apps can ask for</h3>
       </div>
       <div class="dev-agent-card-skills-list">
         ${body}
       </div>
-      ${hiddenCount > 0 ? `<p class="dev-agent-card-more-note">${hiddenCount} more skill(s) in raw Agent Card.</p>` : ''}
+      ${hiddenCount > 0 ? `<p class="dev-agent-card-more-note">${hiddenCount} more permission(s) in developer details.</p>` : ''}
     </section>
   `;
 }
 
 function readableCardHtml(card: Record<string, unknown> | null): string {
   const name = cardString(card, 'name') || 'Agent Wallet';
-  const description = cardString(card, 'description') || 'Public identity and capabilities profile for this wallet.';
-  const url = cardString(card, 'url') || PUBLIC_AGENT_CARD_URL;
-  const protocols = stringArray(card?.supportedProtocols);
+  const url = profileEndpoint(card);
+  const tokens = stringArray(card?.supportedTokens);
   return `
     <div class="dev-agent-card-readable">
       <section class="dev-agent-card-profile" aria-label="Agent identity summary">
         <div>
-          <span class="dev-agent-card-readable-kicker">Agent identity</span>
+          <span class="dev-agent-card-readable-kicker">Active payment profile</span>
           <h3>${escapeHtml(name)}</h3>
-          <p>${escapeHtml(description)}</p>
+          <p>${escapeHtml(USER_FACING_DESCRIPTION)}</p>
         </div>
         <div class="dev-agent-card-profile-side">
-          <span>Protocols</span>
-          <div class="dev-agent-card-protocols">${protocolPills(protocols)}</div>
+          <span>Accepts</span>
+          <div class="dev-agent-card-protocols">${tokenPills(tokens)}</div>
         </div>
       </section>
       ${identitySummaryHtml(card)}
-      <section class="dev-agent-card-section" aria-label="Public Agent Card URL">
+      <section class="dev-agent-card-section" aria-label="Payment profile link">
         <div class="dev-agent-card-section-head">
-          <span>Public URL</span>
-          <h3>Where other agents read this profile</h3>
+          <span>Profile link</span>
+          <h3>Where compatible apps discover this wallet</h3>
         </div>
         <code class="dev-agent-card-url">${escapeHtml(url)}</code>
       </section>
-      ${capabilityOverviewHtml(card)}
+      ${requestOverviewHtml(card)}
       ${skillsOverviewHtml(card)}
     </div>
   `;
@@ -181,8 +220,8 @@ function rawJsonHtml(): string {
   return `
     <details class="dev-agent-card-advanced">
       <summary>
-        <span>Advanced</span>
-        <strong>View raw Agent Card</strong>
+        <span>Developer details</span>
+        <strong>View technical profile JSON</strong>
       </summary>
       <div class="dev-agent-card-json-window terminal-preview-window">
         <div class="terminal-preview-bar dev-agent-card-json-bar">
@@ -200,16 +239,16 @@ function rawJsonHtml(): string {
 export function statusBadgeHtml(): string {
   switch (tabState.status) {
     case 'loading':
-      return '<span class="dev-agent-card-status">Fetching…</span>';
+      return '<span class="dev-agent-card-status">Checking…</span>';
     case 'loaded':
       if (isEmptyCard(tabState.cardJson)) {
-        return '<span class="dev-agent-card-status dev-agent-card-status--pending">Empty response</span>';
+        return '<span class="dev-agent-card-status dev-agent-card-status--pending">Needs setup</span>';
       }
-      return `<span class="dev-agent-card-status dev-agent-card-status--ok">Loaded · ${formatTime(tabState.fetchedAt)}</span>`;
+      return `<span class="dev-agent-card-status dev-agent-card-status--ok">Live · ${formatTime(tabState.fetchedAt)}</span>`;
     case 'unavailable':
-      return '<span class="dev-agent-card-status dev-agent-card-status--pending">Endpoint unreachable</span>';
+      return '<span class="dev-agent-card-status dev-agent-card-status--pending">Unavailable</span>';
     case 'error':
-      return '<span class="dev-agent-card-status dev-agent-card-status--error">Fetch failed</span>';
+      return '<span class="dev-agent-card-status dev-agent-card-status--error">Check failed</span>';
     case 'idle':
     default:
       return '';
@@ -218,30 +257,26 @@ export function statusBadgeHtml(): string {
 
 export function bodyHtml(): string {
   if (tabState.status === 'idle' || tabState.status === 'loading') {
-    return '<p class="dev-agent-card-empty dev-tab-loading-state">Fetching the live Agent Card for this wallet…</p>';
+    return '<p class="dev-agent-card-empty dev-tab-loading-state">Checking this wallet&apos;s payment profile…</p>';
   }
   if (tabState.status === 'unavailable') {
     return `
       <p class="dev-agent-card-empty dev-tab-empty-state">
-        Agent Card endpoint <code>${escapeHtml(LOCAL_AGENT_CARD_PATH)}</code> didn't respond.
-        The route may not be deployed at this origin, or this wallet may not have dev access.
-        The public URL below still resolves to whatever build is currently on agentic-signer.com.
+        This wallet&apos;s payment profile is not reachable from this app session.
       </p>
       <button type="button" class="button utility" data-dev-agent-card-retry>Retry fetch</button>
     `;
   }
   if (tabState.status === 'error') {
     return `
-      <p class="dev-agent-card-empty dev-tab-empty-state">Could not fetch Agent Card: ${escapeHtml(tabState.errorMessage ?? 'Unknown error')}</p>
+      <p class="dev-agent-card-empty dev-tab-empty-state">Could not check payment profile: ${escapeHtml(tabState.errorMessage ?? 'Unknown error')}</p>
       <button type="button" class="button utility" data-dev-agent-card-retry>Retry</button>
     `;
   }
   if (isEmptyCard(tabState.cardJson)) {
-    return '<p class="dev-agent-card-empty dev-tab-empty-state">Agent Card response was empty. The route responded but returned no fields.</p>';
+    return '<p class="dev-agent-card-empty dev-tab-empty-state">This wallet does not have a payment profile yet.</p>';
   }
-  const card = typeof tabState.cardJson === 'object' && tabState.cardJson !== null && !Array.isArray(tabState.cardJson)
-    ? (tabState.cardJson as Record<string, unknown>)
-    : null;
+  const card = cardRecordFromState();
   return `
     ${readableCardHtml(card)}
     ${rawJsonHtml()}
@@ -250,66 +285,73 @@ export function bodyHtml(): string {
 
 function routeCardHtml(): string {
   const status = statusBadgeHtml() || '<span class="dev-agent-card-status dev-agent-card-status--idle">Ready</span>';
+  const card = cardRecordFromState();
+  const walletAddress = cardString(card, 'walletAddress');
+  const protocols = stringArray(card?.supportedProtocols);
+  const headline = tabState.status === 'loaded' && !isEmptyCard(tabState.cardJson)
+    ? 'Discoverable'
+    : tabState.status === 'loading'
+      ? 'Checking'
+      : 'Not reachable';
   return `
-    <div class="dev-agent-card-route-card terminal-preview-window" aria-label="AgentCard route">
-      <div class="terminal-preview-bar dev-agent-card-route-bar">
-        <span></span>
-        <span></span>
-        <span></span>
-        <strong>identity-route</strong>
+    <aside class="dev-agent-card-route-card" aria-label="Agent profile status">
+      <div class="dev-agent-card-status-head">
+        <span>Profile status</span>
+        <strong>${escapeHtml(headline)}</strong>
       </div>
       <div class="dev-agent-card-route-body">
         <div>
-          <span>Preview route</span>
-          <strong>${escapeHtml(LOCAL_AGENT_CARD_PATH)}</strong>
+          <span>Wallet</span>
+          <strong>${walletAddress ? escapeHtml(shortAddress(walletAddress)) : 'Connected wallet'}</strong>
         </div>
         <div>
-          <span>Public</span>
-          <strong>/.well-known/agent.json</strong>
+          <span>Requests</span>
+          <strong>${escapeHtml(formatProtocols(protocols).toUpperCase())}</strong>
         </div>
         <div class="dev-agent-card-status-cell" data-dev-agent-card-status-slot>
           ${status}
         </div>
       </div>
-    </div>
+    </aside>
   `;
 }
 
 export function panelHtml(): string {
   const canCopyJson = tabState.status === 'loaded' && !isEmptyCard(tabState.cardJson);
+  const card = cardRecordFromState();
+  const url = profileEndpoint(card);
   const copyJsonButton = canCopyJson
     ? `<button
           type="button"
           class="button utility"
           data-copy="${escapeHtml(stableJson(tabState.cardJson))}"
           data-copy-id="dev-agent-card-json"
-          data-copy-name="Raw Agent Card JSON"
-        >Copy raw JSON</button>`
+          data-copy-name="Technical profile JSON"
+        >Copy JSON</button>`
     : '';
   return `
     <section class="panel dev-agent-card-panel dev-tab-shell" data-layout="dev-agent-card">
       <header class="dev-agent-card-head dev-tab-header">
         <div class="dev-tab-header-main">
-          <p class="dev-agent-card-eyebrow dev-tab-kicker">A2A Agent Card · Public identity</p>
+          <p class="dev-agent-card-eyebrow dev-tab-kicker">Agent payments profile</p>
           <div class="dev-tab-title-row">
-            <h2>Agent Card</h2>
-            <span class="dev-agent-card-identity-pill">Public identity</span>
+            <h2>Payment Profile</h2>
+            <span class="dev-agent-card-identity-pill">Approval required</span>
           </div>
           <p>
-            Public identity profile for this wallet. Other agents use it to discover supported
-            protocols, capabilities, and skills; the raw <code>agent.json</code> stays available
-            for developers below.
+            Let compatible apps find this wallet, send payment requests, and route checkout carts.
+            You stay in control because every request must be approved before signing.
           </p>
           <div class="dev-agent-card-actions dev-tab-actions">
             <button
               type="button"
               class="button utility"
-              data-copy="${escapeHtml(PUBLIC_AGENT_CARD_URL)}"
+              data-copy="${escapeHtml(url)}"
               data-copy-id="dev-agent-card-public-url"
-              data-copy-name="Public AgentCard URL"
-            >Copy public URL</button>
+              data-copy-name="Payment profile link"
+            >Copy profile link</button>
             ${copyJsonButton}
-            <a class="button-link" href="${escapeHtml(PUBLIC_AGENT_CARD_URL)}" target="_blank" rel="noreferrer">View live</a>
+            <a class="button-link" href="${escapeHtml(url)}" target="_blank" rel="noreferrer">Open profile</a>
             <button type="button" class="button utility" data-dev-agent-card-retry>Refresh</button>
           </div>
         </div>

@@ -1,7 +1,8 @@
 import './browse.css';
 import type { aggregator, skills } from '@solana-agent-wallet-adapter/workflow/dev';
 import { getJson, postJson } from './fetchHelpers.js';
-import { registerSkillsSubTab } from './subTabRegistry.js';
+import { emitSkillsInstallsChanged, onSkillsInstallsChanged } from './events.js';
+import { registerSkillsSubTab, setActiveSkillsSubTab } from './subTabRegistry.js';
 
 type SkillManifest = skills.SkillManifest;
 type SkillCategory = skills.SkillCategory;
@@ -32,6 +33,8 @@ export interface BrowseState {
   busyInstallId: string | null;
   installParamDrafts: Record<string, Record<string, string>>;
   installParamErrors: Record<string, string>;
+  installErrors: Record<string, string>;
+  monetizationAccepted: Record<string, boolean>;
 }
 
 const state: BrowseState = {
@@ -42,6 +45,8 @@ const state: BrowseState = {
   busyInstallId: null,
   installParamDrafts: {},
   installParamErrors: {},
+  installErrors: {},
+  monetizationAccepted: {},
 };
 
 let catalogLoadSeq = 0;
@@ -54,6 +59,8 @@ export function __resetStateForTests(next: Partial<BrowseState> = {}): void {
   state.busyInstallId = next.busyInstallId ?? null;
   state.installParamDrafts = next.installParamDrafts ?? {};
   state.installParamErrors = next.installParamErrors ?? {};
+  state.installErrors = next.installErrors ?? {};
+  state.monetizationAccepted = next.monetizationAccepted ?? {};
   catalogLoadSeq = 0;
 }
 
@@ -251,7 +258,7 @@ function renderInstallControl(row: CardRow, busy: boolean): string {
     // Treat as not-installed; user can re-install.
   }
   const label = busy ? 'Installing…' : 'Install';
-  const disabled = busy ? 'disabled' : '';
+  const disabled = busy || requiresMonetizationAcceptance(row) ? 'disabled' : '';
   return `
     <button
       type="button"
@@ -260,6 +267,31 @@ function renderInstallControl(row: CardRow, busy: boolean): string {
       data-skill-id="${escapeHtml(row.manifest.id)}"
       ${disabled}
     >${label}</button>
+  `;
+}
+
+function requiresMonetizationAcceptance(row: CardRow): boolean {
+  if (!row.manifest.monetization) return false;
+  if (row.installStatus === 'active' || row.installStatus === 'paused') return false;
+  return state.monetizationAccepted[row.manifest.id] !== true;
+}
+
+function renderMonetizationAcceptance(row: CardRow, busy: boolean): string {
+  if (!row.manifest.monetization) return '';
+  if (row.installStatus === 'active' || row.installStatus === 'paused') return '';
+  const checked = state.monetizationAccepted[row.manifest.id] ? 'checked' : '';
+  const terms = formatMonetization(row.manifest.monetization) || 'Paid author terms';
+  return `
+    <label class="skills-browse-paid-terms">
+      <input
+        type="checkbox"
+        data-skill-id="${escapeHtml(row.manifest.id)}"
+        data-skills-browse-monetization="accept"
+        ${checked}
+        ${busy ? 'disabled' : ''}
+      />
+      <span>Accept ${escapeHtml(terms)} for this install.</span>
+    </label>
   `;
 }
 
@@ -290,6 +322,11 @@ function renderInstallParams(row: CardRow, busy: boolean): string {
   `;
 }
 
+function renderInstallError(row: CardRow): string {
+  const error = state.installErrors[row.manifest.id];
+  return error ? `<p class="skills-browse-param-error" role="alert">${escapeHtml(error)}</p>` : '';
+}
+
 export function renderCard(row: CardRow, busyInstallId: string | null): string {
   const busy = busyInstallId === row.manifest.id;
   const monetizationLine = formatMonetization(row.manifest.monetization);
@@ -307,7 +344,9 @@ export function renderCard(row: CardRow, busyInstallId: string | null): string {
         <dd>${escapeHtml(formatSuccessRate(row.stats?.successRate))}</dd>
       </dl>
       ${monetizationLine ? `<p class="skills-browse-monetization">${escapeHtml(monetizationLine)}</p>` : ''}
+      ${renderMonetizationAcceptance(row, busy)}
       ${renderInstallParams(row, busy)}
+      ${renderInstallError(row)}
       <div class="skills-browse-card-footer">
         ${renderInstallControl(row, busy)}
       </div>
@@ -364,7 +403,14 @@ function rerenderPanelOnly(): void {
 let toastEl: HTMLElement | null = null;
 let toastTimer: ReturnType<typeof setTimeout> | null = null;
 
-function showToast(message: string): void {
+function openInstalledTab(): void {
+  if (typeof document === 'undefined') return;
+  setActiveSkillsSubTab('installed');
+  const installedPill = document.querySelector<HTMLButtonElement>('[data-skills-subtab="installed"]');
+  installedPill?.click();
+}
+
+function showToast(message: string, action?: { label: string; onClick: () => void }): void {
   if (typeof document === 'undefined') return;
   if (!toastEl) {
     toastEl = document.createElement('div');
@@ -372,7 +418,14 @@ function showToast(message: string): void {
     toastEl.setAttribute('role', 'status');
     document.body.appendChild(toastEl);
   }
-  toastEl.textContent = message;
+  toastEl.replaceChildren(document.createTextNode(message));
+  if (action) {
+    const button = document.createElement('button');
+    button.type = 'button';
+    button.textContent = action.label;
+    button.addEventListener('click', action.onClick, { once: true });
+    toastEl.appendChild(button);
+  }
   toastEl.classList.add('visible');
   if (toastTimer) clearTimeout(toastTimer);
   toastTimer = setTimeout(() => {
@@ -486,6 +539,12 @@ export async function handleInstall(skillId: string): Promise<void> {
   if (!row) return;
 
   state.error = '';
+  delete state.installErrors[skillId];
+  if (row.manifest.monetization && state.monetizationAccepted[skillId] !== true) {
+    state.installErrors[skillId] = 'Accept the author payment terms to install this skill.';
+    rerenderPanelOnly();
+    return;
+  }
   const installParams = installParamsForRow(row);
   if (requiredInstallParamKeys(row.manifest).length > 0 && !installParams) {
     rerenderPanelOnly();
@@ -502,7 +561,11 @@ export async function handleInstall(skillId: string): Promise<void> {
     acceptMonetization: true,
     ...(installParams ? { installParams } : {}),
   };
-  const result = await postJson<{ installId?: string; monetizationScheduleId?: string }>(
+  const result = await postJson<{
+    installId?: string;
+    monetizationScheduleId?: string;
+    install?: { id?: string; skillId?: string; status?: string };
+  }>(
     '/api/skills/installs',
     body,
   );
@@ -511,7 +574,16 @@ export async function handleInstall(skillId: string): Promise<void> {
   if (result.kind === 'ok') {
     row.installStatus = 'active';
     rerenderPanelOnly();
-    showToast(`Installed · ${row.manifest.name}`);
+    emitSkillsInstallsChanged({
+      source: 'browse',
+      skillId: row.manifest.id,
+      installId: result.value.install?.id ?? result.value.installId,
+      status: result.value.install?.status ?? 'active',
+    });
+    showToast(`Installed · ${row.manifest.name}`, {
+      label: 'View Installed',
+      onClick: openInstalledTab,
+    });
     return;
   }
   if (result.kind === 'forbidden') {
@@ -522,6 +594,17 @@ export async function handleInstall(skillId: string): Promise<void> {
     state.error = result.message;
   }
   rerenderPanelOnly();
+}
+
+export function invalidateCatalogAfterInstallChange(): void {
+  catalogLoadSeq += 1;
+  state.phase = 'idle';
+  state.error = '';
+  state.notice = null;
+  state.busyInstallId = null;
+  if (typeof document !== 'undefined' && document.querySelector('[data-skills-browse-root]')) {
+    void loadCatalog();
+  }
 }
 
 function handleAction(action: string, target: HTMLElement): void {
@@ -559,6 +642,12 @@ if (typeof document !== 'undefined') {
   });
   document.addEventListener('input', (event) => {
     const target = event.target as HTMLInputElement | null;
+    if (target?.dataset.skillsBrowseMonetization === 'accept' && target.dataset.skillId) {
+      state.monetizationAccepted[target.dataset.skillId] = target.checked;
+      delete state.installErrors[target.dataset.skillId];
+      rerenderPanelOnly();
+      return;
+    }
     if (!target?.dataset.installParamKey || !target.dataset.skillId) return;
     const skillId = target.dataset.skillId;
     const key = target.dataset.installParamKey;
@@ -567,6 +656,10 @@ if (typeof document !== 'undefined') {
       [key]: target.value,
     };
     delete state.installParamErrors[skillId];
+  });
+  onSkillsInstallsChanged((detail) => {
+    if (detail.source === 'browse') return;
+    invalidateCatalogAfterInstallChange();
   });
 }
 

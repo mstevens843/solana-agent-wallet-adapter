@@ -39,26 +39,24 @@
 .dev-agent-card-route-card {
   align-self: stretch;
   background:
-    linear-gradient(180deg, rgba(16, 20, 19, 0.95), rgba(2, 3, 3, 0.96)),
-    radial-gradient(circle at 80% 0%, rgba(63, 189, 131, 0.16), transparent 42%);
+    radial-gradient(circle at 100% 0%, rgba(63, 189, 131, 0.12), transparent 44%),
+    linear-gradient(180deg, rgba(255, 255, 255, 0.044), rgba(255, 255, 255, 0.018)),
+    rgba(8, 12, 11, 0.76);
+  border: 1px solid rgba(224, 230, 226, 0.12);
+  border-radius: var(--app-card-radius, var(--radius));
   box-shadow:
     inset 0 1px 0 rgba(255, 255, 255, 0.045),
-    0 16px 34px rgba(0, 0, 0, 0.24),
-    0 0 34px rgba(25, 251, 204, 0.035);
+    0 16px 34px rgba(0, 0, 0, 0.18);
+  display: grid;
+  gap: 10px;
   min-height: 0;
   min-width: 260px;
+  padding: 13px;
   width: min(29vw, 330px);
 }
 
-.dev-agent-card-route-card::after,
 .dev-agent-card-json-window::after {
   opacity: 0.08;
-}
-
-.dev-agent-card-route-bar {
-  background: rgba(255, 255, 255, 0.025);
-  min-height: 34px;
-  padding-inline: 12px;
 }
 
 .dev-agent-card-json-bar {
@@ -66,10 +64,20 @@
   min-height: 38px;
 }
 
+.dev-agent-card-status-head {
+  display: grid;
+  gap: 5px;
+}
+
+.dev-agent-card-status-head strong {
+  color: var(--text);
+  font-size: 1.06rem;
+  line-height: 1.2;
+}
+
 .dev-agent-card-route-body {
   display: grid;
   gap: 7px;
-  padding: 10px;
   position: relative;
   z-index: 1;
 }
@@ -85,6 +93,7 @@
 }
 
 .dev-agent-card-route-body > div:not(.dev-agent-card-status-cell) > span,
+.dev-agent-card-status-head > span,
 .dev-agent-card-readable-kicker,
 .dev-agent-card-profile-side > span,
 .dev-agent-card-section-head > span,
@@ -101,8 +110,7 @@
 
 .dev-agent-card-route-body strong {
   color: var(--text);
-  font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Monaco, Consolas, monospace;
-  font-size: 0.8rem;
+  font-size: 0.88rem;
   line-height: 1.35;
   overflow-wrap: anywhere;
 }
@@ -265,7 +273,7 @@
   border-radius: calc(var(--app-card-radius, var(--radius)) - 2px);
   display: grid;
   gap: 6px;
-  min-height: 68px;
+  min-height: 96px;
   padding: 10px;
 }
 
@@ -273,6 +281,13 @@
   color: rgba(242, 245, 243, 0.92);
   font-size: 0.94rem;
   line-height: 1.2;
+}
+
+.dev-agent-card-capability-grid p {
+  color: rgba(196, 205, 202, 0.78);
+  font-size: 0.82rem;
+  line-height: 1.4;
+  margin: 0;
 }
 
 .dev-agent-card-skills-list {
@@ -409,7 +424,7 @@
 .dev-agent-card-summary {
   display: grid;
   gap: 10px;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(210px, 1fr));
 }
 
 .dev-agent-card-summary-item {
@@ -447,7 +462,8 @@
   gap: 5px;
 }
 
-.dev-agent-card-protocol-pill {
+.dev-agent-card-protocol-pill,
+.dev-agent-card-token-pill {
   background: rgba(63, 189, 131, 0.08);
   border: 1px solid rgba(139, 205, 170, 0.22);
   border-radius: 999px;
@@ -458,6 +474,12 @@
   letter-spacing: 0.04em;
   padding: 4px 8px;
   text-transform: uppercase;
+}
+
+.dev-agent-card-token-pill {
+  background: rgba(255, 255, 255, 0.04);
+  border-color: rgba(224, 230, 226, 0.12);
+  color: rgba(242, 245, 243, 0.9);
 }
 
 @media (max-width: 1040px) {

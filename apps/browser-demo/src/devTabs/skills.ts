@@ -78,6 +78,39 @@ function renderEmptyPlaceholder(): string {
   `;
 }
 
+function renderSkillsGuide(): string {
+  return `
+    <section class="skills-guide" aria-label="How skills work">
+      <div class="skills-guide-heading">
+        <span>How skills work</span>
+        <strong>Install a recipe. Approve every run.</strong>
+      </div>
+      <div class="skills-guide-grid">
+        <div>
+          <strong>Library</strong>
+          <span>Browse shows curated and author-published skill manifests from the registry.</span>
+        </div>
+        <div>
+          <strong>Install</strong>
+          <span>Install stores caps, params, and a signed manifest snapshot. No funds move.</span>
+        </div>
+        <div>
+          <strong>Run</strong>
+          <span>The scheduler creates a Needs Approval item when due; your wallet signs each action.</span>
+        </div>
+        <div>
+          <strong>Share</strong>
+          <span>Your public URL is a receipt-backed track record for buyers and collaborators.</span>
+        </div>
+      </div>
+      <div class="skills-guide-footer">
+        <span>Publish with <code>agentic-skill init</code>, <code>agentic-skill test</code>, then <code>agentic-skill publish</code>.</span>
+        <span>Delete an installed skill from the Installed tab with Uninstall.</span>
+      </div>
+    </section>
+  `;
+}
+
 function renderSkillsPanel(): string {
   const subTabs = listSkillsSubTabs();
   if (subTabs.length === 0) return renderEmptyPlaceholder();
@@ -86,6 +119,7 @@ function renderSkillsPanel(): string {
   return `
     <div class="skills-shell">
       ${renderSubTabPills(active.id as string)}
+      ${renderSkillsGuide()}
       <div class="skills-active-panel" data-active-subtab="${escapeHtmlLocal(String(active.id))}">
         ${active.render()}
       </div>

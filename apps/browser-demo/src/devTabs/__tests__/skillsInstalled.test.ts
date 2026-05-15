@@ -12,6 +12,7 @@ import {
   humanizeRelative,
   humanizeSchedule,
   humanizeSeconds,
+  invalidateInstalledCache,
   loadInstalls,
   normalizeCatalogResponse,
   normalizeInstallsResponse,
@@ -476,6 +477,27 @@ describe('loadInstalls', () => {
     const s = __getStateForTests();
     expect(s.phase).toBe('error');
     expect(s.error).toContain('boom');
+  });
+});
+
+describe('install-change invalidation', () => {
+  it('resets cached empty Installed state so the next tab entry loads fresh data', () => {
+    __resetStateForTests({
+      phase: 'ready',
+      rows: [],
+      fetchedAt: Date.now(),
+      silentRefetching: false,
+      error: 'stale',
+      notice: { title: 'Old', body: 'Old notice' },
+      actionError: 'old action error',
+    });
+    invalidateInstalledCache();
+    const state = __getStateForTests();
+    expect(state.phase).toBe('idle');
+    expect(state.fetchedAt).toBe(0);
+    expect(state.error).toBe('');
+    expect(state.notice).toBeNull();
+    expect(state.actionError).toBe('');
   });
 });
 

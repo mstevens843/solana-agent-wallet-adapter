@@ -24,6 +24,19 @@
   min-width: 0;
 }
 
+.external-agents-empty {
+  align-items: center;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  justify-content: center;
+}
+
+.external-agents-empty p {
+  margin: 0;
+  max-width: 780px;
+}
+
 .external-agents-list {
   display: flex;
   flex-direction: column;

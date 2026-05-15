@@ -18,25 +18,29 @@ interface AgentProtocolsSubTab {
 const subTabs: readonly AgentProtocolsSubTab[] = [
   {
     id: 'agent-card',
-    label: 'Agent Profile',
-    description: 'Public identity other agents can discover',
+    label: 'Profile',
+    description: 'How compatible apps discover this wallet',
     render: renderAgentCardPanel,
   },
   {
     id: 'pay-out',
-    label: 'Send Payment',
-    description: 'Create an outgoing agent payment request',
+    label: 'Pay Merchant',
+    description: 'Review a merchant cart and pay from this wallet',
     render: renderPayOutPanel,
   },
   {
     id: 'external-agents',
     label: 'Incoming Requests',
-    description: 'Review requests from external agents',
+    description: 'Review payment requests sent to this wallet',
     render: renderExternalAgentsPanel,
   },
 ];
 
 let activeSubTabId: AgentProtocolsSubTabId = 'agent-card';
+
+const hotModule = (import.meta as ImportMeta & {
+  hot?: { accept: (callback: () => void) => void };
+}).hot;
 
 function escapeHtml(value: string): string {
   return value.replace(/[&<>"']/g, (c) =>
@@ -73,7 +77,7 @@ function renderSubTabControl(): string {
     <div class="one-time-method-control agent-protocols-tab-control" role="presentation">
       <span class="one-time-method-label">
         <strong>Agent Payments</strong>
-        <em class="accent-note">Profile, send, receive</em>
+        <em class="accent-note">Profile, pay, receive</em>
       </span>
       <div class="template-filter-row one-time-method-filter agent-protocols-tab-list" role="tablist" aria-label="Agent payment sections">
         ${subTabs.map(renderSubTabButton).join('')}
@@ -115,6 +119,12 @@ if (typeof document !== 'undefined') {
     if (!id || !findSubTab(id)) return;
     event.preventDefault();
     activeSubTabId = id as AgentProtocolsSubTabId;
+    rerenderPanelOnly();
+  });
+}
+
+if (hotModule) {
+  hotModule.accept(() => {
     rerenderPanelOnly();
   });
 }

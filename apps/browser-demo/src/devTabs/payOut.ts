@@ -133,7 +133,7 @@ export function shortAddress(address: string): string {
 export function parseCartText(text: string): unknown {
   const trimmed = text.trim();
   if (!trimmed) {
-    throw new Error('Create, load, or import a payment request before reviewing.');
+    throw new Error('Create, load, or import a merchant payment before reviewing.');
   }
   try {
     return JSON.parse(trimmed);
@@ -488,7 +488,7 @@ function normalizeAcpCluster(value: string): string {
 
 function parseLocalLineItems(value: unknown): { items: JsonRecord[]; computedTotal: number } {
   if (!Array.isArray(value) || value.length === 0) {
-    throw new Error('Payment request must include at least one line item.');
+    throw new Error('Merchant cart must include at least one line item.');
   }
   let computedTotal = 0;
   const items = value.map((entry, index): JsonRecord => {
@@ -504,7 +504,7 @@ function parseLocalLineItems(value: unknown): { items: JsonRecord[]; computedTot
       throw new Error(`Line item ${index + 1} unit amount must be a decimal string.`);
     }
     const currency = requiredString(entry, 'currency', `Line item ${index + 1} currency`);
-    if (currency !== 'USD') throw new Error('Only USD payment requests are supported in this preview.');
+    if (currency !== 'USD') throw new Error('Only USD merchant carts are supported in this preview.');
     computedTotal += Number(unitAmount) * quantity;
     return { id, name, quantity, unitAmount, currency };
   });
@@ -534,10 +534,10 @@ function resolveLocalTokenMint(cart: JsonRecord, cluster: string, paymentToken: 
 }
 
 function buildLocalPreviewEnvelope(cartInput: unknown): JsonRecord {
-  if (!isObjectRecord(cartInput)) throw new Error('Payment request must be a JSON object.');
-  const cartId = requiredString(cartInput, 'id', 'Payment request id');
-  const cartVersion = requiredString(cartInput, 'cartVersion', 'Payment request version');
-  if (cartVersion !== '1') throw new Error('Only cartVersion 1 payment requests are supported.');
+  if (!isObjectRecord(cartInput)) throw new Error('Merchant cart must be a JSON object.');
+  const cartId = requiredString(cartInput, 'id', 'Merchant cart id');
+  const cartVersion = requiredString(cartInput, 'cartVersion', 'Merchant cart version');
+  if (cartVersion !== '1') throw new Error('Only cartVersion 1 merchant carts are supported.');
   if (!isObjectRecord(cartInput.merchant)) throw new Error('Merchant details are required.');
   const merchant = cartInput.merchant;
   const merchantId = requiredString(merchant, 'id', 'Merchant id');
@@ -555,7 +555,7 @@ function buildLocalPreviewEnvelope(cartInput: unknown): JsonRecord {
     throw new Error(`Total amount (${total.toFixed(2)}) does not match line items (${computedTotal.toFixed(2)}).`);
   }
   const currency = requiredString(cartInput, 'currency', 'Currency');
-  if (currency !== 'USD') throw new Error('Only USD payment requests are supported in this preview.');
+  if (currency !== 'USD') throw new Error('Only USD merchant carts are supported in this preview.');
   const paymentToken = requiredString(cartInput, 'paymentToken', 'Payment token');
   if (paymentToken !== 'USDC' && paymentToken !== 'USDT' && paymentToken !== 'SOL') {
     throw new Error('Payment token must be USDC, USDT, or SOL.');
@@ -565,7 +565,7 @@ function buildLocalPreviewEnvelope(cartInput: unknown): JsonRecord {
   const paymentAmount = optionalString(cartInput, 'paymentAmount');
   let transferAmount = totalAmount;
   if (paymentToken === 'SOL') {
-    if (!paymentAmount) throw new Error('SOL payment requests must include paymentAmount.');
+    if (!paymentAmount) throw new Error('SOL merchant payments must include paymentAmount.');
     if (!DECIMAL_AMOUNT_REGEX.test(paymentAmount)) throw new Error('SOL paymentAmount must be a decimal string.');
     const solAmount = Number(paymentAmount);
     if (!Number.isFinite(solAmount) || solAmount <= 0) throw new Error('SOL paymentAmount must be greater than zero.');
@@ -581,7 +581,7 @@ function buildLocalPreviewEnvelope(cartInput: unknown): JsonRecord {
   if (expiresAt) {
     const expiresMs = Date.parse(expiresAt);
     if (!Number.isFinite(expiresMs)) throw new Error('Expiration must be an ISO timestamp.');
-    if (expiresMs <= Date.now()) throw new Error('This payment request is expired.');
+    if (expiresMs <= Date.now()) throw new Error('This merchant cart is expired.');
   }
   const memo = optionalString(cartInput, 'memo');
   const paymentTokenMint = optionalString(cartInput, 'paymentTokenMint');
@@ -638,13 +638,13 @@ export function renderPayOutPanel(): string {
         <div class="dev-tab-header-main">
           <p class="dev-tab-kicker">Agentic Commerce Protocol</p>
           <div class="dev-tab-title-row">
-            <h2>Pay Out</h2>
+            <h2>Pay Merchant</h2>
             <span class="pay-out-mode">Manual approval</span>
           </div>
-          <p>Review a payment request, then send it to Needs Approval. Your wallet signs later; this screen never transfers automatically.</p>
-          <div class="pay-out-capability-row" aria-label="Pay Out safeguards">
-            <span class="dev-tab-pill">Readable request review</span>
-            <span class="dev-tab-pill">Request validation</span>
+          <p>Review a merchant cart, then add the payment to Needs Approval. Your wallet signs later; this screen never transfers automatically.</p>
+          <div class="pay-out-capability-row" aria-label="Pay Merchant safeguards">
+            <span class="dev-tab-pill">Readable cart review</span>
+            <span class="dev-tab-pill">Cart validation</span>
             <span class="dev-tab-pill">Wallet approval required</span>
           </div>
         </div>
@@ -657,7 +657,7 @@ export function renderPayOutPanel(): string {
           </div>
           <div class="pay-out-route-body">
             <div>
-              <span>Request</span>
+              <span>Merchant</span>
               <strong>Merchant or agent</strong>
             </div>
             <div>
@@ -687,22 +687,22 @@ function composeView(cartText: string, busy: boolean): string {
     <form class="pay-out-form dev-tab-panel" data-pay-out-form onsubmit="return false;">
       <div class="pay-out-form-head">
         <div>
-          <span class="pay-out-section-label">Payment request</span>
-          <h3>Create a payment request</h3>
-          <p>Type the payment details, review the human-readable summary, then send it to Needs Approval.</p>
+          <span class="pay-out-section-label">Merchant payment</span>
+          <h3>Create a merchant payment</h3>
+          <p>Type the merchant payment details, review the human-readable summary, then add it to Needs Approval.</p>
         </div>
         ${entryModeTabs(entryMode)}
       </div>
-      <section class="pay-out-entry-card" aria-label="Create payment request">
+      <section class="pay-out-entry-card" aria-label="Create merchant payment">
         ${entryMode === 'json' ? advancedJsonPanel(cartText, disabled) : manualRequestPanel(draft, disabled)}
       </section>
       <div class="pay-out-request-layout pay-out-sample-layout">
         ${demoRequestPanel(disabled)}
       </div>
       <div class="pay-out-actions">
-        <span class="pay-out-action-note">${hasRequest ? 'Loaded request values are editable above.' : 'No developer JSON required for normal use.'}</span>
+        <span class="pay-out-action-note">${hasRequest ? 'Loaded cart values are editable above.' : 'No developer JSON required for normal use.'}</span>
         <div class="pay-out-actions-end">
-          ${hasRequest ? `<button type="button" class="pay-out-button secondary" data-pay-out-action="clear" ${disabled}>Clear request</button>` : ''}
+          ${hasRequest ? `<button type="button" class="pay-out-button secondary" data-pay-out-action="clear" ${disabled}>Clear payment</button>` : ''}
         </div>
       </div>
       ${busy ? '<p class="pay-out-busy" data-pay-out-busy>Working…</p>' : ''}
@@ -723,9 +723,9 @@ function entryModeTabs(entryMode: EntryMode): string {
     </button>
   `;
   return `
-    <div class="pay-out-entry-tabs" role="tablist" aria-label="Payment request entry mode">
+    <div class="pay-out-entry-tabs" role="tablist" aria-label="Merchant payment entry mode">
       ${tab('details', 'Type payment details')}
-      ${tab('json', 'Paste JSON request')}
+      ${tab('json', 'Paste cart JSON')}
     </div>
   `;
 }
@@ -779,7 +779,7 @@ function manualRequestPanel(draft: PayOutDraft, disabled: string): string {
       <div class="pay-out-actions">
         <span class="pay-out-action-note">Validation runs before anything reaches Needs Approval.</span>
         <div class="pay-out-actions-end">
-          <button type="button" class="pay-out-button" data-pay-out-action="preview" ${disabled}>Review payment request</button>
+          <button type="button" class="pay-out-button" data-pay-out-action="preview" ${disabled}>Review merchant payment</button>
         </div>
       </div>
     </section>
@@ -884,11 +884,11 @@ function lineItemDraftRow(item: PayOutLineDraft, index: number, disabled: string
 
 function advancedJsonPanel(cartText: string, disabled: string): string {
   return `
-    <section class="pay-out-import-request pay-out-advanced-json" role="tabpanel" aria-label="Paste JSON request">
+    <section class="pay-out-import-request pay-out-advanced-json" role="tabpanel" aria-label="Paste cart JSON">
       <div class="pay-out-import-head">
         <div>
           <span class="pay-out-request-status">Developer import</span>
-          <h4>Paste JSON request</h4>
+          <h4>Paste cart JSON</h4>
         </div>
         <button type="button" class="pay-out-button secondary" data-pay-out-action="paste-clipboard" ${disabled}>Paste from clipboard</button>
       </div>
@@ -897,7 +897,7 @@ function advancedJsonPanel(cartText: string, disabled: string): string {
           <span></span>
           <span></span>
           <span></span>
-          <strong>request.json</strong>
+          <strong>cart.json</strong>
         </div>
         <textarea
           id="pay-out-cart-input"
@@ -922,8 +922,8 @@ function advancedJsonPanel(cartText: string, disabled: string): string {
 
 function demoRequestPanel(disabled: string): string {
   return `
-    <section class="pay-out-demo-request" aria-label="Demo payment request">
-      <span class="pay-out-request-status">Sample request</span>
+    <section class="pay-out-demo-request" aria-label="Demo merchant cart">
+      <span class="pay-out-request-status">Sample cart</span>
       <div class="pay-out-request-title-row">
         <h4>Acme Coffee</h4>
         <strong>17.80 USDC</strong>
@@ -939,7 +939,7 @@ function demoRequestPanel(disabled: string): string {
           <dd>Manual</dd>
         </div>
       </dl>
-      <button type="button" class="pay-out-button secondary" data-pay-out-action="load-sample" ${disabled}>Load sample request</button>
+      <button type="button" class="pay-out-button secondary" data-pay-out-action="load-sample" ${disabled}>Load sample cart</button>
     </section>
   `;
 }
@@ -1028,12 +1028,12 @@ function previewView(preview: AcpPreviewDisplay, busy: boolean): string {
           </span>
         </div>
 
-        <p class="pay-out-disclaimer">Confirming sends this request to Needs Approval. No transfer happens until your wallet approves it.</p>
+        <p class="pay-out-disclaimer">Confirming adds this merchant payment to Needs Approval. No transfer happens until your wallet approves it.</p>
 
         <div class="pay-out-actions">
-          <button type="button" class="pay-out-button secondary" data-pay-out-action="edit" ${disabled}>Change request</button>
+          <button type="button" class="pay-out-button secondary" data-pay-out-action="edit" ${disabled}>Change payment</button>
           <div class="pay-out-actions-end">
-            <button type="button" class="pay-out-button" data-pay-out-action="confirm" ${disabled}>Send to Needs Approval</button>
+            <button type="button" class="pay-out-button" data-pay-out-action="confirm" ${disabled}>Add to Needs Approval</button>
           </div>
         </div>
         ${busy ? '<p class="pay-out-busy" data-pay-out-busy>Creating approval…</p>' : ''}
@@ -1190,7 +1190,7 @@ function cartRecordForLocalApproval(cart: unknown, preview: AcpPreviewDisplay): 
 export function approveCartLocally(cart: unknown, preview: AcpPreviewDisplay): FetchResult<ApprovalCreated> {
   const walletAddress = getConnectedAddress();
   if (!walletAddress) {
-    return { kind: 'badRequest', message: 'Connect a wallet before sending the payment request to Needs Approval.' };
+    return { kind: 'badRequest', message: 'Connect a wallet before adding the merchant payment to Needs Approval.' };
   }
   const cartRecord = cartRecordForLocalApproval(cart, preview);
   const cartId = isStringField(cartRecord.id) ? cartRecord.id : preview.cartId;
@@ -1265,7 +1265,7 @@ function browserLocalNotice(): NoticeInfo {
 function forbiddenNotice(): NoticeInfo {
   return {
     title: 'Dev gate active',
-    body: 'Connect the allowed dev wallet and sign in to Agentic Cloud to use Pay Out.',
+    body: 'Connect the allowed dev wallet and sign in to Agentic Cloud to use Pay Merchant.',
   };
 }
 

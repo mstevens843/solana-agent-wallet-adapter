@@ -87,7 +87,7 @@ describe('pure helpers', () => {
   });
 
   it('parseCartText rejects empty input with a friendly message', () => {
-    expect(() => parseCartText('   ')).toThrow(/Create, load, or import a payment request/);
+    expect(() => parseCartText('   ')).toThrow(/Create, load, or import a merchant payment/);
   });
 
   it('parseCartText rejects malformed JSON', () => {
@@ -268,7 +268,7 @@ describe('renderPayOutPanel', () => {
 
   it('compose phase renders normal inputs as the primary user path', () => {
     const html = renderPayOutPanel();
-    expect(html).toContain('Create a payment request');
+    expect(html).toContain('Create a merchant payment');
     expect(html).toContain('Payment details');
     expect(html).toContain('Merchant name');
     expect(html).toContain('Recipient wallet');
@@ -281,8 +281,8 @@ describe('renderPayOutPanel', () => {
     expect(html).not.toContain('pay-out-amount-field');
     expect(html).not.toContain('data-pay-out-line-estimate');
     expect(html).toContain('Type payment details');
-    expect(html).toContain('Paste JSON request');
-    expect(html).toContain('Load sample request');
+    expect(html).toContain('Paste cart JSON');
+    expect(html).toContain('Load sample cart');
     expect(html).not.toContain('id="pay-out-cart-input"');
     expect(html).toContain('data-pay-out-action="preview"');
     expect(html).toContain('data-pay-out-action="entry-json"');
@@ -293,7 +293,7 @@ describe('renderPayOutPanel', () => {
   it('compose phase renders raw JSON only in the second tab', () => {
     __resetPanelStateForTests({ entryMode: 'json' });
     const html = renderPayOutPanel();
-    expect(html).toContain('Paste JSON request');
+    expect(html).toContain('Paste cart JSON');
     expect(html).toContain('Developer import');
     expect(html).toContain('id="pay-out-cart-input"');
     expect(html).toContain('data-pay-out-action="preview-json"');
@@ -308,8 +308,8 @@ describe('renderPayOutPanel', () => {
     expect(html).toContain('Acme Coffee');
     expect(html).toContain('17.80 USDC');
     expect(html).toContain('Latte');
-    expect(html).toContain('Review payment request');
-    expect(html).toContain('Clear request');
+    expect(html).toContain('Review merchant payment');
+    expect(html).toContain('Clear payment');
   });
 
   it('compose phase keeps line items and shows a SOL estimate when SOL is selected', () => {
@@ -378,8 +378,8 @@ describe('renderPayOutPanel', () => {
     expect(html).not.toContain('<dt>Cluster</dt>');
     expect(html).toContain('4fTq…MoHd');
     expect(html).toContain('data-pay-out-action="confirm"');
-    expect(html).toContain('Change request');
-    expect(html).toContain('Send to Needs Approval');
+    expect(html).toContain('Change payment');
+    expect(html).toContain('Add to Needs Approval');
     expect(html).toContain('data-pay-out-action="edit"');
   });
 

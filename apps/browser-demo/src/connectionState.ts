@@ -1,4 +1,4 @@
-// Shared connection-state cache used by dev-only Layer 1 tabs (Pay Out,
+// Shared connection-state cache used by dev-only Layer 1 tabs (Pay Merchant,
 // External Agents, Agent Card) to know the connected wallet's full pubkey
 // synchronously from a tab `guard()`. main.ts holds the authoritative value
 // in module-private `state.address` and exports nothing, so we derive the

@@ -208,6 +208,29 @@
   margin: 0;
 }
 
+.skills-browse-paid-terms {
+  align-items: flex-start;
+  background: rgba(255, 255, 255, 0.028);
+  border: 1px solid rgba(224, 230, 226, 0.08);
+  border-radius: var(--radius);
+  color: rgba(218, 229, 224, 0.82);
+  display: flex;
+  gap: 8px;
+  line-height: 1.35;
+  padding: 9px 10px;
+}
+
+.skills-browse-paid-terms input {
+  accent-color: var(--accent);
+  flex: 0 0 auto;
+  margin-top: 2px;
+}
+
+.skills-browse-paid-terms span {
+  font-size: 0.78rem;
+  font-weight: 700;
+}
+
 .skills-browse-install-params {
   display: grid;
   gap: 8px;
@@ -340,14 +363,18 @@
 }
 
 .skills-browse-toast {
+  align-items: center;
   background: #111827;
   border: 1px solid rgba(224, 230, 226, 0.12);
   border-radius: var(--radius);
   bottom: 24px;
   box-shadow: 0 14px 40px rgba(0, 0, 0, 0.32);
   color: #ffffff;
+  display: flex;
   font-size: 0.9rem;
   font-weight: 600;
+  gap: 12px;
+  justify-content: space-between;
   max-width: 380px;
   opacity: 0;
   padding: 11px 16px;
@@ -361,7 +388,25 @@
 
 .skills-browse-toast.visible {
   opacity: 1;
+  pointer-events: auto;
   transform: translateY(0);
+}
+
+.skills-browse-toast button {
+  background: rgba(125, 231, 176, 0.13);
+  border: 1px solid rgba(139, 205, 170, 0.32);
+  border-radius: 6px;
+  color: #c8f7df;
+  cursor: pointer;
+  flex: 0 0 auto;
+  font: inherit;
+  font-size: 0.8rem;
+  min-height: 28px;
+  padding: 0 9px;
+}
+
+.skills-browse-toast button:hover {
+  background: rgba(125, 231, 176, 0.2);
 }
 
 @media (max-width: 600px) {

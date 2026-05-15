@@ -13,6 +13,7 @@ vi.mock('../../devGate.js', () => ({
 }));
 
 import { __resetConnectionStateForTests } from '../../connectionState.js';
+import { setConnectedAddress, setConnectedCluster } from '../../walletState.js';
 
 beforeAll(() => {
   if (!(globalThis as { __DEV_TAB_REGISTRY_INSTALLED__?: boolean }).__DEV_TAB_REGISTRY_INSTALLED__) {
@@ -30,6 +31,7 @@ import {
   rowHtml,
   shortAddress,
   sortInbound,
+  createDemoInboundRequest,
   type NormalizedApproval,
 } from '../externalAgents.js';
 import { __ap2VerifiedBadgeForTests } from '../../devBadges/ap2Verified.js';
@@ -150,7 +152,7 @@ describe('rowHtml', () => {
     expect(html).toContain('>devnet<');
     expect(html).toContain('data-tab="inbox"');
     expect(html).toContain('data-external-agents-open="apr_abc"');
-    expect(html).toContain('Open approval');
+    expect(html).toContain('Review and pay');
   });
 
   it('falls back to agentId when label missing, and to "unknown agent" when both missing', () => {
@@ -206,6 +208,7 @@ describe('bodyHtml', () => {
     const html = bodyHtml({ status: 'loaded', inbound: [], errorMessage: '', lastFetchedFor: DEV_WALLET });
     expect(html).toContain('No inbound AP2 mandates yet');
     expect(html).toContain('<strong>Needs Approval</strong>');
+    expect(html).toContain('data-external-agents-demo');
   });
 
   it('renders the list when loaded with rows', () => {
@@ -239,12 +242,16 @@ describe('fetchInbound state machine', () => {
     fetchMock = vi.fn();
     (globalThis as { fetch?: typeof fetch }).fetch = fetchMock as unknown as typeof fetch;
     __resetConnectionStateForTests(DEV_WALLET);
+    setConnectedAddress(undefined);
+    setConnectedCluster(undefined);
     __externalAgentsForTests.resetState();
   });
 
   afterEach(() => {
     delete (globalThis as { fetch?: typeof fetch }).fetch;
     __resetConnectionStateForTests(null);
+    setConnectedAddress(undefined);
+    setConnectedCluster(undefined);
     __externalAgentsForTests.resetState();
   });
 
@@ -265,6 +272,16 @@ describe('fetchInbound state machine', () => {
     expect(after.inbound[0]!.id).toBe('apr_abc');
     expect(after.errorMessage).toBe('');
     expect(after.lastFetchedFor).toBe(DEV_WALLET);
+  });
+
+  it('accepts the deployed route items key as the inbound list', async () => {
+    fetchMock.mockImplementation(async (url: string) => {
+      if (url === '/api/session') return defaultSessionResponse();
+      if (url === '/api/ap2/inbound') return jsonResponse(200, { items: [makeApproval({ id: 'apr_items' })] });
+      throw new Error(`unexpected url: ${url}`);
+    });
+    await fetchInbound();
+    expect(__externalAgentsForTests.getState().inbound[0]?.id).toBe('apr_items');
   });
 
   it('treats 404 as empty list (deploy without AP2 routes)', async () => {
@@ -368,6 +385,33 @@ describe('fetchInbound state machine', () => {
     const ap2Calls = fetchMock.mock.calls.filter(([url]) => url === '/api/ap2/inbound');
     expect(ap2Calls).toHaveLength(1);
     expect(__externalAgentsForTests.getState().status).toBe('loaded');
+  });
+});
+
+describe('demo request builder', () => {
+  it('creates a local AP2 USDC request addressed to the connected wallet', () => {
+    const demo = createDemoInboundRequest(DEV_WALLET, 'mainnet-beta');
+    expect(demo.id).toMatch(/^browser-ap2_/);
+    expect(demo.kind).toBe('transfer_spl');
+    expect(demo.amount).toBe('2.00');
+    expect(demo.token).toBe('USDC');
+    expect(demo.recipient).toBe(DEV_WALLET);
+    expect(demo.metadata.ap2VerifiedAgent).toMatchObject({ agentLabel: 'Acme Coffee' });
+    expect(demo.metadata.ap2DemoCart).toMatchObject({
+      merchantName: 'Acme Coffee',
+      totalAmount: '2.00',
+      paymentToken: 'USDC',
+      lineItems: [
+        { name: 'Latte', quantity: 2, unitAmount: '0.80' },
+        { name: 'Croissant', quantity: 1, unitAmount: '0.30' },
+        { name: 'Tax', quantity: 1, unitAmount: '0.10' },
+      ],
+    });
+    expect(demo.params).toMatchObject({
+      recipient: DEV_WALLET,
+      amount: '2.00',
+      token: 'USDC',
+    });
   });
 });
 

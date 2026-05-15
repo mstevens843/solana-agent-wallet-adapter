@@ -85,7 +85,7 @@ describe('panelHtml + bodyHtml states', () => {
   });
 
   it('idle state renders the loading message and no JSON viewer', () => {
-    expect(bodyHtml()).toContain('Fetching the live Agent Card');
+    expect(bodyHtml()).toContain('Checking this wallet&apos;s payment profile');
     expect(bodyHtml()).not.toContain('dev-agent-card-json');
   });
 
@@ -95,13 +95,13 @@ describe('panelHtml + bodyHtml states', () => {
     expect(html).not.toContain('Agent 7');
     expect(html).not.toContain('Agent 5');
     expect(html).toContain('data-dev-agent-card-retry');
-    expect(html).toContain("didn't respond");
+    expect(html).toContain('payment profile is not reachable');
   });
 
   it('error state escapes the error message and offers a retry', () => {
     __resetTabStateForTests({ status: 'error', errorMessage: '<broken>' });
     const html = bodyHtml();
-    expect(html).toContain('Could not fetch Agent Card');
+    expect(html).toContain('Could not check payment profile');
     expect(html).toContain('&lt;broken&gt;');
     expect(html).toContain('data-dev-agent-card-retry');
   });
@@ -112,6 +112,7 @@ describe('panelHtml + bodyHtml states', () => {
       cardJson: {
         walletAddress: '7tQAS3PCEHKekfA5xkkFqRf9aCkqg8aLg5jLA7MwYc8M',
         supportedProtocols: ['ap2', 'acp'],
+        supportedTokens: ['USDC', 'SOL'],
         version: 'abc123',
         name: 'Test Agent',
         description: 'Signs only after user approval.',
@@ -130,53 +131,56 @@ describe('panelHtml + bodyHtml states', () => {
     });
     const html = bodyHtml();
     expect(html).toContain('dev-agent-card-readable');
-    expect(html).toContain('Agent identity');
+    expect(html).toContain('Active payment profile');
     expect(html).toContain('Test Agent');
-    expect(html).toContain('Signs only after user approval.');
+    expect(html).toContain('Every request still opens for review');
     expect(html).toContain('dev-agent-card-summary');
     expect(html).toContain('7tQA…Yc8M');
     expect(html).toContain('ap2');
     expect(html).toContain('acp');
+    expect(html).toContain('USDC');
+    expect(html).toContain('SOL');
     expect(html).toContain('abc123');
-    expect(html).toContain('Capabilities');
-    expect(html).toContain('Push notifications');
-    expect(html).toContain('Enabled');
-    expect(html).toContain('Actions this wallet advertises');
+    expect(html).toContain('How this profile is used');
+    expect(html).toContain('Incoming payments');
+    expect(html).toContain('Checkout payments');
+    expect(html).toContain('Always review');
+    expect(html).toContain('What other apps can ask for');
     expect(html).toContain('Sign Message');
     expect(html).toContain('Pay Cart');
-    expect(html).toContain('https://example.test');
-    expect(html).toContain('View raw Agent Card');
+    expect(html).toContain('https://example.test/.well-known/agent.json');
+    expect(html).toContain('View technical profile JSON');
     expect(html).toContain('dev-agent-card-json');
   });
 
   it('loaded state with empty {} renders the empty-response notice instead of JSON', () => {
     __resetTabStateForTests({ status: 'loaded', cardJson: {}, fetchedAt: Date.now() });
     const html = bodyHtml();
-    expect(html).toContain('response was empty');
+    expect(html).toContain('does not have a payment profile');
     expect(html).not.toContain('dev-agent-card-json');
   });
 
   it('loaded state with null renders the empty-response notice', () => {
     __resetTabStateForTests({ status: 'loaded', cardJson: null, fetchedAt: Date.now() });
-    expect(bodyHtml()).toContain('response was empty');
+    expect(bodyHtml()).toContain('does not have a payment profile');
   });
 
   it('statusBadgeHtml branches by status', () => {
     __resetTabStateForTests({ status: 'idle' });
     expect(statusBadgeHtml()).toBe('');
     __resetTabStateForTests({ status: 'loading' });
-    expect(statusBadgeHtml()).toContain('Fetching');
+    expect(statusBadgeHtml()).toContain('Checking');
     __resetTabStateForTests({ status: 'loaded', cardJson: { walletAddress: 'X' }, fetchedAt: Date.now() });
-    expect(statusBadgeHtml()).toContain('Loaded');
+    expect(statusBadgeHtml()).toContain('Live');
     __resetTabStateForTests({ status: 'loaded', cardJson: {}, fetchedAt: Date.now() });
-    expect(statusBadgeHtml()).toContain('Empty response');
+    expect(statusBadgeHtml()).toContain('Needs setup');
     __resetTabStateForTests({ status: 'unavailable' });
-    expect(statusBadgeHtml()).toContain('unreachable');
+    expect(statusBadgeHtml()).toContain('Unavailable');
     __resetTabStateForTests({ status: 'error', errorMessage: 'X' });
-    expect(statusBadgeHtml()).toContain('failed');
+    expect(statusBadgeHtml()).toContain('Check failed');
   });
 
-  it('panelHtml shows Copy raw JSON only when a non-empty card is loaded', () => {
+  it('panelHtml shows Copy JSON only when a non-empty card is loaded', () => {
     __resetTabStateForTests({ status: 'idle' });
     expect(panelHtml()).not.toContain('data-copy-id="dev-agent-card-json"');
     __resetTabStateForTests({ status: 'loaded', cardJson: {}, fetchedAt: Date.now() });
@@ -187,14 +191,15 @@ describe('panelHtml + bodyHtml states', () => {
       fetchedAt: Date.now(),
     });
     expect(panelHtml()).toContain('data-copy-id="dev-agent-card-json"');
-    expect(panelHtml()).toContain('Copy raw JSON');
+    expect(panelHtml()).toContain('Copy JSON');
   });
 
-  it('panelHtml always renders the Copy public URL + View live + Refresh action row', () => {
+  it('panelHtml always renders the Copy profile link + Open profile + Refresh action row', () => {
     __resetTabStateForTests();
     const html = panelHtml();
     expect(html).toContain('data-copy-id="dev-agent-card-public-url"');
-    expect(html).toContain('View live');
+    expect(html).toContain('Copy profile link');
+    expect(html).toContain('Open profile');
     expect(html).toContain('data-dev-agent-card-retry');
   });
 });
@@ -254,7 +259,7 @@ describe('fetchAgentCard behavior', () => {
     const state = __getTabStateForTests();
     expect(state.status).toBe('loaded');
     expect(state.cardJson).toEqual({});
-    expect(bodyHtml()).toContain('response was empty');
+    expect(bodyHtml()).toContain('does not have a payment profile');
   });
 
   it('does not stack a second fetch while loading', async () => {

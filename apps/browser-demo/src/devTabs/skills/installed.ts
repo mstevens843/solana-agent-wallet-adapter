@@ -1,6 +1,7 @@
 import './installed.css';
 import { parseIntervalSpec } from '@solana-agent-wallet-adapter/skills-runtime';
 import type { skills } from '@solana-agent-wallet-adapter/workflow/dev';
+import { emitSkillsInstallsChanged, onSkillsInstallsChanged } from './events.js';
 import { getJson, postJson } from './fetchHelpers.js';
 import { registerSkillsSubTab, setActiveSkillsSubTab } from './subTabRegistry.js';
 
@@ -324,6 +325,21 @@ function rowScheduleLine(row: InstallRow, nowMs: number): string {
   return humanizeSchedule(row.manifest?.schedule);
 }
 
+function rowRunBoundaryLine(row: InstallRow): string {
+  switch (row.install.status) {
+    case 'active':
+      return 'When due, this creates a Needs Approval item.';
+    case 'paused':
+      return 'Paused; no new approval items will be created.';
+    case 'expired':
+      return 'Expired; install it again to create future approvals.';
+    case 'revoked':
+      return 'Uninstalled from this wallet.';
+    default:
+      return 'Every run still requires wallet approval.';
+  }
+}
+
 export interface RowRenderOptions {
   busyInstallId: string | null;
   pendingUninstallId: string | null;
@@ -369,6 +385,7 @@ export function renderRow(row: InstallRow, opts: RowRenderOptions): string {
       <span class="skills-installed-row-status ${statusModifier(install.status)}">${escapeHtml(statusLabel(install.status))}</span>
       <div class="skills-installed-row-meta">
         <span class="skills-installed-row-schedule">${escapeHtml(rowScheduleLine(row, opts.nowMs))}</span>
+        <span>${escapeHtml(rowRunBoundaryLine(row))}</span>
         ${row.lastExecutionAt ? `<span>Last run ${escapeHtml(humanizeRelative(row.lastExecutionAt, opts.nowMs))}</span>` : ''}
       </div>
       <div class="skills-installed-row-runs">
@@ -516,6 +533,20 @@ export async function loadInstalls(opts: { silent?: boolean } = {}): Promise<voi
   rerenderPanelOnly();
 }
 
+export function invalidateInstalledCache(): void {
+  state.fetchedAt = 0;
+  state.error = '';
+  state.notice = null;
+  state.actionError = '';
+  if (typeof document !== 'undefined' && document.querySelector('[data-skills-installed-root]')) {
+    const silent = state.phase === 'ready' && state.rows.length > 0;
+    void loadInstalls({ silent });
+    return;
+  }
+  state.phase = 'idle';
+  state.silentRefetching = false;
+}
+
 async function runMutation(
   installId: string,
   action: 'pause' | 'resume' | 'uninstall',
@@ -539,6 +570,12 @@ async function runMutation(
     }
     rerenderPanelOnly();
     await loadInstalls();
+    emitSkillsInstallsChanged({
+      source: 'installed',
+      installId,
+      skillId: rowBefore?.install.skillId,
+      status: action === 'uninstall' ? 'revoked' : action === 'pause' ? 'paused' : 'active',
+    });
     return;
   }
   if (result.kind === 'forbidden') {
@@ -661,6 +698,10 @@ if (typeof document !== 'undefined') {
     event.preventDefault();
     const installId = trigger.dataset.installId ?? '';
     void handleAction(action, installId);
+  });
+  onSkillsInstallsChanged((detail) => {
+    if (detail.source === 'installed') return;
+    invalidateInstalledCache();
   });
 }
 

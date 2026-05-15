@@ -22081,10 +22081,15 @@ button.danger:hover:not(:disabled) {
 }
 
 .preferences-storage-policy strong {
+  align-items: center;
   color: #f4fff8;
+  column-gap: 6px;
+  display: flex;
+  flex-wrap: wrap;
   font-size: 0.92rem;
   font-weight: 900;
   line-height: 1.16;
+  row-gap: 3px;
 }
 
 .preferences-storage-policy article > span:last-child {

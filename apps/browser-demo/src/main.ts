@@ -305,7 +305,11 @@ import {
   addPayOutApprovalCreatedListener,
   type PayOutApprovalCreatedDetail,
 } from './payOutApprovalEvents.js';
-import { setConnectedAddress } from './walletState.js';
+import {
+  addAp2InboundDemoCreatedListener,
+  type Ap2InboundDemoCreatedDetail,
+} from './ap2InboundDemoEvents.js';
+import { setConnectedAddress, setConnectedCluster } from './walletState.js';
 import './devTabs/index.js';
 
 type StepState = 'idle' | 'active' | 'done' | 'error';
@@ -3018,6 +3022,42 @@ function installPayOutApprovalCreatedListener(): void {
   addPayOutApprovalCreatedListener((detail) => {
     void handlePayOutApprovalCreated(detail);
   });
+  addAp2InboundDemoCreatedListener((detail) => {
+    handleAp2InboundDemoCreated(detail);
+  });
+}
+
+function handleAp2InboundDemoCreated(detail: Ap2InboundDemoCreatedDetail): void {
+  const action = cloudApprovalToPreparedAction(detail.approval);
+  if (!action) {
+    state.error = 'The local AP2 demo did not return a valid approval card.';
+    pushToast('error', 'Incoming request failed', state.error);
+    render();
+    return;
+  }
+  const walletAddress = state.address || action.walletAddress;
+  if (!walletAddress) {
+    state.error = 'Connect a wallet before creating an incoming request demo.';
+    pushToast('error', 'Incoming request failed', state.error);
+    render();
+    return;
+  }
+  const localAction: PreparedAction = {
+    ...action,
+    walletAddress,
+    workflowSource: 'browser',
+    metadata: {
+      ...(action.metadata ?? {}),
+      source: 'ap2_inbound',
+      actionSource: 'ap2_inbound',
+      devLocal: true,
+    },
+  };
+  state.preparedActions = mergePreparedActions([localAction], state.preparedActions);
+  state.materializedActions = state.preparedActions;
+  saveBrowserWorkflowState();
+  pushToast('success', 'Incoming request ready', 'Open it from Incoming Requests, then approve in Needs Approval.');
+  render();
 }
 
 async function handlePayOutApprovalCreated(detail: PayOutApprovalCreatedDetail): Promise<void> {
@@ -3051,7 +3091,7 @@ async function handlePayOutApprovalCreated(detail: PayOutApprovalCreatedDetail):
   try {
     await refreshCloudSession(false);
     if (!cloudSessionMatchesWallet()) {
-      throw new Error('Connect the signed-in Agentic Cloud wallet to view the Pay Out approval.');
+      throw new Error('Connect the signed-in Agentic Cloud wallet to view the Pay Merchant approval.');
     }
     await refreshCloudWorkspaceData();
     state.steps.inbox = 'done';
@@ -3072,7 +3112,7 @@ async function handlePayOutApprovalCreated(detail: PayOutApprovalCreatedDetail):
 
 function materializeLocalPayOutApproval(detail: PayOutApprovalCreatedDetail): PreparedAction {
   if (!state.address) {
-    throw new Error('Connect a wallet before adding the Pay Out approval to Needs Approval.');
+    throw new Error('Connect a wallet before adding the Pay Merchant approval to Needs Approval.');
   }
   const action = cloudApprovalToPreparedAction(detail.approval);
   if (!action) {
@@ -3251,11 +3291,14 @@ function render(): void {
   // idempotent and run on every render.
   const connectedForDevTabs = state.address || undefined;
   setConnectedAddress(connectedForDevTabs);
+  setConnectedCluster(state.cluster);
   if (typeof document !== 'undefined' && document.body) {
     if (connectedForDevTabs) {
       document.body.dataset.walletAddress = connectedForDevTabs;
+      document.body.dataset.cluster = state.cluster;
     } else {
       delete document.body.dataset.walletAddress;
+      delete document.body.dataset.cluster;
     }
   }
   const route = currentRoute();
@@ -27158,6 +27201,9 @@ function browserExecutionStartMessage(action: PreparedAction): string {
   if (isAcpOutboundAction(action)) {
     return `Approve the wallet transaction to pay ${acpTotalLabel(action)} to ${acpMerchantName(action)}.`;
   }
+  if (isAp2InboundAction(action)) {
+    return `Approve the wallet transaction to pay ${ap2PaymentTotalLabel(action)} to ${ap2AgentName(action)}.`;
+  }
   switch (action.kind) {
     case 'transfer_sol':
     case 'transfer_spl':
@@ -32993,6 +33039,67 @@ function isAcpOutboundAction(action: PreparedAction): boolean {
   return action.metadata?.source === 'acp_outbound';
 }
 
+function isAp2InboundAction(action: PreparedAction): boolean {
+  return action.metadata?.source === 'ap2_inbound' ||
+    action.metadata?.actionSource === 'ap2_inbound' ||
+    action.metadata?.connectorId === 'ap2';
+}
+
+function ap2AgentRecord(action: PreparedAction): Record<string, unknown> {
+  const agent = action.metadata?.ap2VerifiedAgent;
+  return isJsonObject(agent) ? agent : {};
+}
+
+function ap2AgentName(action: PreparedAction): string {
+  const agent = ap2AgentRecord(action);
+  return stringFromJsonLike(agent.agentLabel) || stringFromJsonLike(agent.agentId) || 'external agent';
+}
+
+function ap2RequestId(action: PreparedAction): string {
+  return stringFromJsonLike(action.metadata?.ap2MandateId) || action.id;
+}
+
+function ap2DemoCart(action: PreparedAction): Record<string, unknown> {
+  const cart = action.metadata?.ap2DemoCart;
+  return isJsonObject(cart) ? cart : {};
+}
+
+function ap2PaymentToken(action: PreparedAction): string {
+  const cart = ap2DemoCart(action);
+  return stringFromJsonLike(cart.paymentToken) ||
+    stringParam(action, 'tokenSymbol') ||
+    stringParam(action, 'token') ||
+    tokenLabel(action);
+}
+
+function ap2PaymentTotalLabel(action: PreparedAction): string {
+  const cart = ap2DemoCart(action);
+  const amount = stringFromJsonLike(cart.totalAmount) || stringParam(action, 'amount') || amountLabel(action);
+  const token = ap2PaymentToken(action);
+  return [amount, token].filter((part) => part && part !== 'n/a').join(' ') || amountLabel(action);
+}
+
+function ap2Memo(action: PreparedAction): string {
+  return stringParam(action, 'memo') || stringFromJsonLike(action.metadata?.memo);
+}
+
+function ap2CartLineItems(action: PreparedAction): AcpCartLineItemSummary[] {
+  const cart = ap2DemoCart(action);
+  const rawItems = Array.isArray(cart.lineItems) ? cart.lineItems : [];
+  return rawItems
+    .map((item): AcpCartLineItemSummary | null => {
+      if (!isJsonObject(item)) return null;
+      const name = stringFromJsonLike(item.name);
+      if (!name) return null;
+      const quantity = acpLineItemQuantity(item.quantity);
+      const unitAmount = stringFromJsonLike(item.unitAmount) || stringFromJsonLike(item.amount);
+      const currency = stringFromJsonLike(item.currency);
+      const amount = [unitAmount, currency].filter(Boolean).join(' ');
+      return { name, quantity, amount };
+    })
+    .filter((item): item is AcpCartLineItemSummary => Boolean(item));
+}
+
 function acpCartPayload(action: PreparedAction): Record<string, unknown> {
   return isJsonObject(action.metadata?.acpCart) ? action.metadata.acpCart : {};
 }
@@ -33119,11 +33226,57 @@ function inboxAcpOutboundCartBlock(action: PreparedAction): string {
   `;
 }
 
+function inboxAp2InboundRequestBlock(action: PreparedAction): string {
+  if (!isAp2InboundAction(action)) return '';
+  const agent = ap2AgentName(action);
+  const requestId = ap2RequestId(action);
+  const recipient = recipientParam(action);
+  const token = ap2PaymentToken(action);
+  const memo = ap2Memo(action);
+  const items = ap2CartLineItems(action);
+  const visibleItems = items.slice(0, 4);
+  const itemList = visibleItems.length
+    ? `
+      <ol class="inbox-acp-line-items" aria-label="AP2 request line items">
+        ${visibleItems.map((item) => `
+          <li>
+            <span>${escapeHtml(item.name)} ${item.quantity ? `<em>${escapeHtml(item.quantity)}</em>` : ''}</span>
+            ${item.amount ? `<strong>${escapeHtml(item.amount)}</strong>` : ''}
+          </li>
+        `).join('')}
+      </ol>
+    `
+    : '';
+  return `
+    <section class="inbox-acp-cart inbox-ap2-request" aria-label="AP2 incoming payment request">
+      <div class="inbox-acp-cart-head">
+        <div>
+          <span>AP2 incoming request</span>
+          <strong>${escapeHtml(agent)}</strong>
+        </div>
+        <strong class="inbox-acp-total">${escapeHtml(ap2PaymentTotalLabel(action))}</strong>
+      </div>
+      <dl class="inbox-acp-cart-grid">
+        ${ap2DetailRow('Request', requestId)}
+        ${recipient ? ap2DetailRow('Recipient', recipientDisplayLabel(recipient), recipient) : ''}
+        ${ap2DetailRow('Pay with', token)}
+        ${memo ? ap2DetailRow('Memo', memo) : ''}
+      </dl>
+      ${itemList}
+    </section>
+  `;
+}
+
+function ap2DetailRow(label: string, value: string, title = value): string {
+  return acpDetailRow(label, value, title);
+}
+
 function preparedActionCard(action: PreparedAction): string {
   const executable = ['ready', 'overdue', 'failed'].includes(action.status);
   const browserWorkflow = isBrowserWorkflowId(action.id);
   const cloudWorkflow = action.workflowSource === 'cloud';
   const acpOutbound = isAcpOutboundAction(action);
+  const ap2Inbound = isAp2InboundAction(action);
   const decisionLabels = preparedActionDecisionLabels(action);
   const effectCopy = approvalEffectCopy(action);
   const executionBlockReason = cloudExecutionBlockReason(action)
@@ -33151,9 +33304,10 @@ function preparedActionCard(action: PreparedAction): string {
     'inbox-approval-card',
     action.status,
     acpOutbound ? 'acp-outbound-approval' : '',
+    ap2Inbound ? 'ap2-inbound-approval' : '',
   ].filter(Boolean).join(' ');
   return `
-    <article class="${escapeHtml(cardClass)}" data-action-id="${escapeHtml(action.id)}"${acpOutbound ? ' data-approval-source="acp_outbound"' : ''}>
+    <article class="${escapeHtml(cardClass)}" data-action-id="${escapeHtml(action.id)}"${acpOutbound ? ' data-approval-source="acp_outbound"' : ''}${ap2Inbound ? ' data-approval-source="ap2_inbound"' : ''}>
       <div class="ticket-body inbox-approval-body">
         <div class="inbox-approval-head">
           <div class="inbox-approval-title-block">
@@ -33185,6 +33339,7 @@ function preparedActionCard(action: PreparedAction): string {
         </div>
         ${inboxApprovalSummaryGrid(action)}
         ${inboxAcpOutboundCartBlock(action)}
+        ${inboxAp2InboundRequestBlock(action)}
         ${preSignReviewBlock(action)}
         ${inboxApprovalNote(action)}
         ${preparedActionAgentReviewStrip(action)}
@@ -33217,6 +33372,7 @@ function preparedActionCard(action: PreparedAction): string {
 
 function preparedActionMetaLabel(action: PreparedAction): string {
   if (isAcpOutboundAction(action)) return 'ACP outbound payment';
+  if (isAp2InboundAction(action)) return 'AP2 incoming request';
   if (isConnectorApprovalKind(action)) {
     return connectorActionDisplayParts(action.kind, action.params)?.operationLabel ?? action.kind.replace(/_/g, ' ');
   }
@@ -33225,6 +33381,7 @@ function preparedActionMetaLabel(action: PreparedAction): string {
 
 function preparedActionCardTitle(action: PreparedAction): string {
   if (isAcpOutboundAction(action)) return `Pay ${acpMerchantName(action)}`;
+  if (isAp2InboundAction(action)) return `Pay ${ap2AgentName(action)}`;
   if (action.recurringId && action.kind === 'swap') return 'Recurring swap approval';
   if (action.recurringId) return 'Repeat payment approval';
   if (action.kind === 'transfer_sol' || action.kind === 'transfer_spl') return 'Transfer approval';
@@ -33249,14 +33406,17 @@ function inboxActionFailurePill(action: PreparedAction): string {
 
 function inboxApprovalHero(action: PreparedAction): string {
   const acpOutbound = isAcpOutboundAction(action);
-  const primary = acpOutbound ? acpTotalLabel(action) : amountLabel(action);
+  const ap2Inbound = isAp2InboundAction(action);
+  const primary = acpOutbound ? acpTotalLabel(action) : ap2Inbound ? ap2PaymentTotalLabel(action) : amountLabel(action);
   const secondary = recipientParam(action)
     ? `To ${recipientDisplayLabel(recipientParam(action))}`
     : formatDateTime(action.dueAt);
   const subject = marketAmountSubjectForAction(action);
   const context = acpOutbound
     ? `ACP cart ${acpCartId(action)}`
-    : isConnectorApprovalKind(action) ? '' : preparedActionConnectorContextLabel(action);
+    : ap2Inbound
+      ? `AP2 request ${short(ap2RequestId(action))}`
+      : isConnectorApprovalKind(action) ? '' : preparedActionConnectorContextLabel(action);
   return `
     <div class="inbox-approval-value" title="${escapeHtml(marketHeroTitle(primary, secondary, subject))}">
       ${marketAmountLineHtml(primary, subject)}
@@ -34637,6 +34797,12 @@ function preparedActionDecisionLabels(action: PreparedAction): { approve: string
       reject: 'Deny payment',
     };
   }
+  if (isAp2InboundAction(action)) {
+    return {
+      approve: 'Approve payment',
+      reject: 'Deny request',
+    };
+  }
   if (canFinalizeCloudSolTransfer(action)) {
     return {
       approve: 'Review and send',
@@ -34684,6 +34850,9 @@ function approvalEffectCopy(action: PreparedAction): string {
   if (raydiumLiquidityCopy) return raydiumLiquidityCopy;
   if (isAcpOutboundAction(action)) {
     return 'Your wallet signs and submits the exact payment transaction to the merchant recipient. Agentic saves the ACP cart hash and receipt; nothing is sent until wallet approval.';
+  }
+  if (isAp2InboundAction(action)) {
+    return 'Your wallet signs and submits the exact payment requested by the verified agent. Agentic saves the AP2 request metadata and receipt; nothing is sent until wallet approval.';
   }
   if (canFinalizeCloudSolTransfer(action)) {
     return 'Agentic Cloud prepares and simulates the exact SOL transfer, your browser opens your wallet for that transaction only, then Agentic saves a finalization receipt. Agentic never receives signing authority.';
@@ -34852,7 +35021,7 @@ function cloudExecutionBlockReason(action: PreparedAction): string | null {
     const actionLabel = action.kind === 'swap'
       ? 'cloud swap'
       : isAcpOutboundAction(action)
-        ? 'Pay Out approval'
+        ? 'Pay Merchant approval'
         : 'cloud token transfer';
     if (!state.address || state.address !== action.walletAddress) {
       return `Connect the approval wallet before approving this ${actionLabel}.`;
