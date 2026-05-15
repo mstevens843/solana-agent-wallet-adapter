@@ -27,10 +27,10 @@ importers:
         version: 5.9.3
       vite:
         specifier: ^5.4.0
-        version: 5.4.21(@types/node@22.19.17)(terser@5.46.2)
+        version: 5.4.21(@types/node@22.19.17)(terser@5.47.1)
       vitest:
         specifier: ^2.1.0
-        version: 2.1.9(@types/node@22.19.17)(terser@5.46.2)
+        version: 2.1.9(@types/node@22.19.17)(terser@5.47.1)
 
   apps/android-twa: {}
 
@@ -72,10 +72,10 @@ importers:
         version: 5.9.3
       vite:
         specifier: ^5.4.0
-        version: 5.4.21(@types/node@22.19.17)(terser@5.46.2)
+        version: 5.4.21(@types/node@25.6.2)(terser@5.47.1)
       vitest:
         specifier: ^2.1.0
-        version: 2.1.9(@types/node@22.19.17)(terser@5.46.2)
+        version: 2.1.9(@types/node@25.6.2)(terser@5.47.1)
 
   apps/desktop-shell:
     dependencies:
@@ -88,7 +88,7 @@ importers:
         version: 5.9.3
       vite:
         specifier: ^5.4.0
-        version: 5.4.21(@types/node@22.19.17)(terser@5.46.2)
+        version: 5.4.21(@types/node@25.6.2)(terser@5.47.1)
 
   apps/ios-capacitor:
     dependencies:
@@ -129,7 +129,7 @@ importers:
         version: 5.9.3
       vite:
         specifier: ^5.4.0
-        version: 5.4.21(@types/node@22.19.17)(terser@5.46.2)
+        version: 5.4.21(@types/node@25.6.2)(terser@5.47.1)
 
   apps/render-web:
     dependencies:
@@ -157,7 +157,7 @@ importers:
         version: 5.9.3
       vitest:
         specifier: ^2.1.0
-        version: 2.1.9(@types/node@22.19.17)(terser@5.46.2)
+        version: 2.1.9(@types/node@22.19.17)(terser@5.47.1)
 
   packages/cli:
     devDependencies:
@@ -171,8 +171,8 @@ importers:
         specifier: ^6.19.0
         version: 6.19.0
       esbuild:
-        specifier: ^0.25.12
-        version: 0.25.12
+        specifier: ^0.28.0
+        version: 0.28.0
       typescript:
         specifier: ^5.6.0
         version: 5.9.3
@@ -217,7 +217,7 @@ importers:
         version: 5.9.3
       vitest:
         specifier: ^2.1.0
-        version: 2.1.9(@types/node@22.19.17)(terser@5.46.2)
+        version: 2.1.9(@types/node@25.6.2)(terser@5.47.1)
 
   packages/mcp-server:
     dependencies:
@@ -226,7 +226,7 @@ importers:
         version: 2.162.0-beta.1(@solana/sysvars@5.5.1(fastestsmallesttextencoderdecoder@1.0.22)(typescript@5.9.3))(bufferutil@4.1.0)(fastestsmallesttextencoderdecoder@1.0.22)(typescript@5.9.3)(utf-8-validate@5.0.10)(ws@8.20.0(bufferutil@4.1.0)(utf-8-validate@5.0.10))
       '@drift-labs/vaults-sdk':
         specifier: 0.11.1
-        version: 0.11.1(@coral-xyz/anchor@0.31.1(bufferutil@4.1.0)(typescript@5.9.3)(utf-8-validate@5.0.10))(@solana/sysvars@5.5.1(fastestsmallesttextencoderdecoder@1.0.22)(typescript@5.9.3))(@solana/web3.js@1.98.4(bufferutil@4.1.0)(typescript@5.9.3)(utf-8-validate@5.0.10))(@types/node@22.19.17)(arweave@1.15.7)(bufferutil@4.1.0)(fastestsmallesttextencoderdecoder@1.0.22)(utf-8-validate@5.0.10)(ws@8.20.0(bufferutil@4.1.0)(utf-8-validate@5.0.10))
+        version: 0.11.1(@coral-xyz/anchor@0.32.1(bufferutil@4.1.0)(typescript@5.9.3)(utf-8-validate@5.0.10))(@solana/sysvars@5.5.1(fastestsmallesttextencoderdecoder@1.0.22)(typescript@5.9.3))(@solana/web3.js@1.98.4(bufferutil@4.1.0)(typescript@5.9.3)(utf-8-validate@5.0.10))(@types/node@25.6.2)(arweave@1.15.7)(bufferutil@4.1.0)(fastestsmallesttextencoderdecoder@1.0.22)(utf-8-validate@5.0.10)(ws@8.20.0(bufferutil@4.1.0)(utf-8-validate@5.0.10))
       '@jup-ag/lend':
         specifier: 0.1.9
         version: 0.1.9(bufferutil@4.1.0)(fastestsmallesttextencoderdecoder@1.0.22)(typescript@5.9.3)(utf-8-validate@5.0.10)
@@ -263,17 +263,17 @@ importers:
         specifier: 2.2.1
         version: 2.2.1(bufferutil@4.1.0)(fastestsmallesttextencoderdecoder@1.0.22)(typescript@5.9.3)(utf-8-validate@5.0.10)
       '@coral-xyz/anchor':
-        specifier: 0.31.1
-        version: 0.31.1(bufferutil@4.1.0)(typescript@5.9.3)(utf-8-validate@5.0.10)
+        specifier: 0.32.1
+        version: 0.32.1(bufferutil@4.1.0)(typescript@5.9.3)(utf-8-validate@5.0.10)
       '@jito-foundation/stake-deposit-interceptor-sdk':
         specifier: 1.7.1
         version: 1.7.1(@coral-xyz/borsh@0.31.1(@solana/web3.js@1.98.4(bufferutil@4.1.0)(typescript@5.9.3)(utf-8-validate@5.0.10)))(@noble/curves@1.9.7)(@noble/ed25519@1.7.5)(@noble/hashes@1.8.0)(@noble/secp256k1@1.7.2)(@solana/spl-token@0.4.14(@solana/web3.js@1.98.4(bufferutil@4.1.0)(typescript@5.9.3)(utf-8-validate@5.0.10))(bufferutil@4.1.0)(fastestsmallesttextencoderdecoder@1.0.22)(typescript@5.9.3)(utf-8-validate@5.0.10))(@solana/web3.js@1.98.4(bufferutil@4.1.0)(typescript@5.9.3)(utf-8-validate@5.0.10))(bufferutil@4.1.0)(rpc-websockets@8.0.2)(typescript@5.9.3)(utf-8-validate@5.0.10)
       '@jup-ag/lend-read':
         specifier: 0.0.12
-        version: 0.0.12(@metaplex-foundation/umi@1.5.1)(@opentelemetry/api@1.9.0)(@types/node@22.19.17)(bufferutil@4.1.0)(fastestsmallesttextencoderdecoder@1.0.22)(node-fetch@2.7.0)(typescript@5.9.3)(utf-8-validate@5.0.10)(vite@5.4.21(@types/node@22.19.17)(terser@5.46.2))(ws@8.20.0(bufferutil@4.1.0)(utf-8-validate@5.0.10))
+        version: 0.0.12(@metaplex-foundation/umi@1.5.1)(@opentelemetry/api@1.9.0)(@types/node@25.6.2)(bufferutil@4.1.0)(fastestsmallesttextencoderdecoder@1.0.22)(node-fetch@2.7.0)(typescript@5.9.3)(utf-8-validate@5.0.10)(vite@5.4.21(@types/node@25.6.2)(terser@5.47.1))(ws@8.20.0(bufferutil@4.1.0)(utf-8-validate@5.0.10))
       '@kamino-finance/farms-sdk':
-        specifier: ^3.2.24
-        version: 3.2.24(@solana/spl-token@0.4.14(@solana/web3.js@1.98.4(bufferutil@4.1.0)(typescript@5.9.3)(utf-8-validate@5.0.10))(bufferutil@4.1.0)(fastestsmallesttextencoderdecoder@1.0.22)(typescript@5.9.3)(utf-8-validate@5.0.10))(bufferutil@4.1.0)(fastestsmallesttextencoderdecoder@1.0.22)(typescript@5.9.3)(utf-8-validate@5.0.10)(ws@8.20.0(bufferutil@4.1.0)(utf-8-validate@5.0.10))
+        specifier: ^3.2.25
+        version: 3.2.25(@solana/spl-token@0.4.14(@solana/web3.js@1.98.4(bufferutil@4.1.0)(typescript@5.9.3)(utf-8-validate@5.0.10))(bufferutil@4.1.0)(fastestsmallesttextencoderdecoder@1.0.22)(typescript@5.9.3)(utf-8-validate@5.0.10))(bufferutil@4.1.0)(fastestsmallesttextencoderdecoder@1.0.22)(typescript@5.9.3)(utf-8-validate@5.0.10)(ws@8.20.0(bufferutil@4.1.0)(utf-8-validate@5.0.10))
       '@kamino-finance/klend-sdk':
         specifier: ^7.3.22
         version: 7.3.22(@solana/spl-token@0.4.14(@solana/web3.js@1.98.4(bufferutil@4.1.0)(typescript@5.9.3)(utf-8-validate@5.0.10))(bufferutil@4.1.0)(fastestsmallesttextencoderdecoder@1.0.22)(typescript@5.9.3)(utf-8-validate@5.0.10))(@solana/web3.js@1.98.4(bufferutil@4.1.0)(typescript@5.9.3)(utf-8-validate@5.0.10))(bufferutil@4.1.0)(fastestsmallesttextencoderdecoder@1.0.22)(typescript@5.9.3)(utf-8-validate@5.0.10)(ws@8.20.0(bufferutil@4.1.0)(utf-8-validate@5.0.10))
@@ -312,7 +312,7 @@ importers:
         version: 0.4.14(@solana/web3.js@1.98.4(bufferutil@4.1.0)(typescript@5.9.3)(utf-8-validate@5.0.10))(bufferutil@4.1.0)(fastestsmallesttextencoderdecoder@1.0.22)(typescript@5.9.3)(utf-8-validate@5.0.10)
       '@solendprotocol/solend-sdk':
         specifier: ^0.14.27
-        version: 0.14.27(@types/node@22.19.17)(bufferutil@4.1.0)(fastestsmallesttextencoderdecoder@1.0.22)(typedoc@0.20.37(typescript@5.9.3))(typescript@5.9.3)(utf-8-validate@5.0.10)
+        version: 0.14.27(@types/node@25.6.2)(bufferutil@4.1.0)(fastestsmallesttextencoderdecoder@1.0.22)(typedoc@0.20.37(typescript@5.9.3))(typescript@5.9.3)(utf-8-validate@5.0.10)
       '@wormhole-foundation/sdk':
         specifier: 4.20.0
         version: 4.20.0(bufferutil@4.1.0)(google-protobuf@3.21.4)(got@11.8.6)(typescript@5.9.3)(utf-8-validate@5.0.10)(zod@3.25.76)
@@ -334,7 +334,7 @@ importers:
         version: 5.9.3
       vitest:
         specifier: ^2.1.0
-        version: 2.1.9(@types/node@22.19.17)(terser@5.46.2)
+        version: 2.1.9(@types/node@25.6.2)(terser@5.47.1)
 
   packages/solana-agent-kit:
     dependencies:
@@ -778,6 +778,10 @@ packages:
     resolution: {integrity: sha512-QUqpoEK+gi2S6nlYc2atgT2r41TT3caWr/cPUEL8n8Md9437trZ68STknq897b82p5mW0XrTBNOzRbmIRJtfsA==}
     engines: {node: '>=17'}
 
+  '@coral-xyz/anchor@0.32.1':
+    resolution: {integrity: sha512-zAyxFtfeje2FbMA1wzgcdVs7Hng/MijPKpRijoySPCicnvcTQs/+dnPZ/cR+LcXM9v9UYSyW81uRNYZtN5G4yg==}
+    engines: {node: '>=17'}
+
   '@coral-xyz/borsh@0.28.0':
     resolution: {integrity: sha512-/u1VTzw7XooK7rqeD7JLUSwOyRSesPUk0U37BV9zK0axJc1q0nRbKFGFLYCQ16OtdOJTTwGfGp11Lx9B45bRCQ==}
     engines: {node: '>=10'}
@@ -915,6 +919,12 @@ packages:
     cpu: [ppc64]
     os: [aix]
 
+  '@esbuild/aix-ppc64@0.28.0':
+    resolution: {integrity: sha512-lhRUCeuOyJQURhTxl4WkpFTjIsbDayJHih5kZC1giwE+MhIzAb7mEsQMqMf18rHLsrb5qI1tafG20mLxEWcWlA==}
+    engines: {node: '>=18'}
+    cpu: [ppc64]
+    os: [aix]
+
   '@esbuild/android-arm64@0.21.5':
     resolution: {integrity: sha512-c0uX9VAUBQ7dTDCjq+wdyGLowMdtR/GoC2U5IYk/7D1H1JYC0qseD7+11iMP2mRLN9RcCMRcjC4YMclCzGwS/A==}
     engines: {node: '>=12'}
@@ -929,6 +939,12 @@ packages:
 
   '@esbuild/android-arm64@0.27.7':
     resolution: {integrity: sha512-62dPZHpIXzvChfvfLJow3q5dDtiNMkwiRzPylSCfriLvZeq0a1bWChrGx/BbUbPwOrsWKMn8idSllklzBy+dgQ==}
+    engines: {node: '>=18'}
+    cpu: [arm64]
+    os: [android]
+
+  '@esbuild/android-arm64@0.28.0':
+    resolution: {integrity: sha512-+WzIXQOSaGs33tLEgYPYe/yQHf0WTU0X42Jca3y8NWMbUVhp7rUnw+vAsRC/QiDrdD31IszMrZy+qwPOPjd+rw==}
     engines: {node: '>=18'}
     cpu: [arm64]
     os: [android]
@@ -951,6 +967,12 @@ packages:
     cpu: [arm]
     os: [android]
 
+  '@esbuild/android-arm@0.28.0':
+    resolution: {integrity: sha512-wqh0ByljabXLKHeWXYLqoJ5jKC4XBaw6Hk08OfMrCRd2nP2ZQ5eleDZC41XHyCNgktBGYMbqnrJKq/K/lzPMSQ==}
+    engines: {node: '>=18'}
+    cpu: [arm]
+    os: [android]
+
   '@esbuild/android-x64@0.21.5':
     resolution: {integrity: sha512-D7aPRUUNHRBwHxzxRvp856rjUHRFW1SdQATKXH2hqA0kAZb1hKmi02OpYRacl0TxIGz/ZmXWlbZgjwWYaCakTA==}
     engines: {node: '>=12'}
@@ -965,6 +987,12 @@ packages:
 
   '@esbuild/android-x64@0.27.7':
     resolution: {integrity: sha512-x5VpMODneVDb70PYV2VQOmIUUiBtY3D3mPBG8NxVk5CogneYhkR7MmM3yR/uMdITLrC1ml/NV1rj4bMJuy9MCg==}
+    engines: {node: '>=18'}
+    cpu: [x64]
+    os: [android]
+
+  '@esbuild/android-x64@0.28.0':
+    resolution: {integrity: sha512-+VJggoaKhk2VNNqVL7f6S189UzShHC/mR9EE8rDdSkdpN0KflSwWY/gWjDrNxxisg8Fp1ZCD9jLMo4m0OUfeUA==}
     engines: {node: '>=18'}
     cpu: [x64]
     os: [android]
@@ -987,6 +1015,12 @@ packages:
     cpu: [arm64]
     os: [darwin]
 
+  '@esbuild/darwin-arm64@0.28.0':
+    resolution: {integrity: sha512-0T+A9WZm+bZ84nZBtk1ckYsOvyA3x7e2Acj1KdVfV4/2tdG4fzUp91YHx+GArWLtwqp77pBXVCPn2We7Letr0Q==}
+    engines: {node: '>=18'}
+    cpu: [arm64]
+    os: [darwin]
+
   '@esbuild/darwin-x64@0.21.5':
     resolution: {integrity: sha512-se/JjF8NlmKVG4kNIuyWMV/22ZaerB+qaSi5MdrXtd6R08kvs2qCN4C09miupktDitvh8jRFflwGFBQcxZRjbw==}
     engines: {node: '>=12'}
@@ -1001,6 +1035,12 @@ packages:
 
   '@esbuild/darwin-x64@0.27.7':
     resolution: {integrity: sha512-rYnXrKcXuT7Z+WL5K980jVFdvVKhCHhUwid+dDYQpH+qu+TefcomiMAJpIiC2EM3Rjtq0sO3StMV/+3w3MyyqQ==}
+    engines: {node: '>=18'}
+    cpu: [x64]
+    os: [darwin]
+
+  '@esbuild/darwin-x64@0.28.0':
+    resolution: {integrity: sha512-fyzLm/DLDl/84OCfp2f/XQ4flmORsjU7VKt8HLjvIXChJoFFOIL6pLJPH4Yhd1n1gGFF9mPwtlN5Wf82DZs+LQ==}
     engines: {node: '>=18'}
     cpu: [x64]
     os: [darwin]
@@ -1023,6 +1063,12 @@ packages:
     cpu: [arm64]
     os: [freebsd]
 
+  '@esbuild/freebsd-arm64@0.28.0':
+    resolution: {integrity: sha512-l9GeW5UZBT9k9brBYI+0WDffcRxgHQD8ShN2Ur4xWq/NFzUKm3k5lsH4PdaRgb2w7mI9u61nr2gI2mLI27Nh3Q==}
+    engines: {node: '>=18'}
+    cpu: [arm64]
+    os: [freebsd]
+
   '@esbuild/freebsd-x64@0.21.5':
     resolution: {integrity: sha512-J95kNBj1zkbMXtHVH29bBriQygMXqoVQOQYA+ISs0/2l3T9/kj42ow2mpqerRBxDJnmkUDCaQT/dfNXWX/ZZCQ==}
     engines: {node: '>=12'}
@@ -1037,6 +1083,12 @@ packages:
 
   '@esbuild/freebsd-x64@0.27.7':
     resolution: {integrity: sha512-jOBDK5XEjA4m5IJK3bpAQF9/Lelu/Z9ZcdhTRLf4cajlB+8VEhFFRjWgfy3M1O4rO2GQ/b2dLwCUGpiF/eATNQ==}
+    engines: {node: '>=18'}
+    cpu: [x64]
+    os: [freebsd]
+
+  '@esbuild/freebsd-x64@0.28.0':
+    resolution: {integrity: sha512-BXoQai/A0wPO6Es3yFJ7APCiKGc1tdAEOgeTNy3SsB491S3aHn4S4r3e976eUnPdU+NbdtmBuLncYir2tMU9Nw==}
     engines: {node: '>=18'}
     cpu: [x64]
     os: [freebsd]
@@ -1059,6 +1111,12 @@ packages:
     cpu: [arm64]
     os: [linux]
 
+  '@esbuild/linux-arm64@0.28.0':
+    resolution: {integrity: sha512-RVyzfb3FWsGA55n6WY0MEIEPURL1FcbhFE6BffZEMEekfCzCIMtB5yyDcFnVbTnwk+CLAgTujmV/Lgvih56W+A==}
+    engines: {node: '>=18'}
+    cpu: [arm64]
+    os: [linux]
+
   '@esbuild/linux-arm@0.21.5':
     resolution: {integrity: sha512-bPb5AHZtbeNGjCKVZ9UGqGwo8EUu4cLq68E95A53KlxAPRmUyYv2D6F0uUI65XisGOL1hBP5mTronbgo+0bFcA==}
     engines: {node: '>=12'}
@@ -1073,6 +1131,12 @@ packages:
 
   '@esbuild/linux-arm@0.27.7':
     resolution: {integrity: sha512-RkT/YXYBTSULo3+af8Ib0ykH8u2MBh57o7q/DAs3lTJlyVQkgQvlrPTnjIzzRPQyavxtPtfg0EopvDyIt0j1rA==}
+    engines: {node: '>=18'}
+    cpu: [arm]
+    os: [linux]
+
+  '@esbuild/linux-arm@0.28.0':
+    resolution: {integrity: sha512-CjaaREJagqJp7iTaNQjjidaNbCKYcd4IDkzbwwxtSvjI7NZm79qiHc8HqciMddQ6CKvJT6aBd8lO9kN/ZudLlw==}
     engines: {node: '>=18'}
     cpu: [arm]
     os: [linux]
@@ -1095,6 +1159,12 @@ packages:
     cpu: [ia32]
     os: [linux]
 
+  '@esbuild/linux-ia32@0.28.0':
+    resolution: {integrity: sha512-KBnSTt1kxl9x70q+ydterVdl+Cn0H18ngRMRCEQfrbqdUuntQQ0LoMZv47uB97NljZFzY6HcfqEZ2SAyIUTQBQ==}
+    engines: {node: '>=18'}
+    cpu: [ia32]
+    os: [linux]
+
   '@esbuild/linux-loong64@0.21.5':
     resolution: {integrity: sha512-uHf1BmMG8qEvzdrzAqg2SIG/02+4/DHB6a9Kbya0XDvwDEKCoC8ZRWI5JJvNdUjtciBGFQ5PuBlpEOXQj+JQSg==}
     engines: {node: '>=12'}
@@ -1109,6 +1179,12 @@ packages:
 
   '@esbuild/linux-loong64@0.27.7':
     resolution: {integrity: sha512-a4POruNM2oWsD4WKvBSEKGIiWQF8fZOAsycHOt6JBpZ+JN2n2JH9WAv56SOyu9X5IqAjqSIPTaJkqN8F7XOQ5Q==}
+    engines: {node: '>=18'}
+    cpu: [loong64]
+    os: [linux]
+
+  '@esbuild/linux-loong64@0.28.0':
+    resolution: {integrity: sha512-zpSlUce1mnxzgBADvxKXX5sl8aYQHo2ezvMNI8I0lbblJtp8V4odlm3Yzlj7gPyt3T8ReksE6bK+pT3WD+aJRg==}
     engines: {node: '>=18'}
     cpu: [loong64]
     os: [linux]
@@ -1131,6 +1207,12 @@ packages:
     cpu: [mips64el]
     os: [linux]
 
+  '@esbuild/linux-mips64el@0.28.0':
+    resolution: {integrity: sha512-2jIfP6mmjkdmeTlsX/9vmdmhBmKADrWqN7zcdtHIeNSCH1SqIoNI63cYsjQR8J+wGa4Y5izRcSHSm8K3QWmk3w==}
+    engines: {node: '>=18'}
+    cpu: [mips64el]
+    os: [linux]
+
   '@esbuild/linux-ppc64@0.21.5':
     resolution: {integrity: sha512-1hHV/Z4OEfMwpLO8rp7CvlhBDnjsC3CttJXIhBi+5Aj5r+MBvy4egg7wCbe//hSsT+RvDAG7s81tAvpL2XAE4w==}
     engines: {node: '>=12'}
@@ -1145,6 +1227,12 @@ packages:
 
   '@esbuild/linux-ppc64@0.27.7':
     resolution: {integrity: sha512-gRsL4x6wsGHGRqhtI+ifpN/vpOFTQtnbsupUF5R5YTAg+y/lKelYR1hXbnBdzDjGbMYjVJLJTd2OFmMewAgwlQ==}
+    engines: {node: '>=18'}
+    cpu: [ppc64]
+    os: [linux]
+
+  '@esbuild/linux-ppc64@0.28.0':
+    resolution: {integrity: sha512-bc0FE9wWeC0WBm49IQMPSPILRocGTQt3j5KPCA8os6VprfuJ7KD+5PzESSrJ6GmPIPJK965ZJHTUlSA6GNYEhg==}
     engines: {node: '>=18'}
     cpu: [ppc64]
     os: [linux]
@@ -1167,6 +1255,12 @@ packages:
     cpu: [riscv64]
     os: [linux]
 
+  '@esbuild/linux-riscv64@0.28.0':
+    resolution: {integrity: sha512-SQPZOwoTTT/HXFXQJG/vBX8sOFagGqvZyXcgLA3NhIqcBv1BJU1d46c0rGcrij2B56Z2rNiSLaZOYW5cUk7yLQ==}
+    engines: {node: '>=18'}
+    cpu: [riscv64]
+    os: [linux]
+
   '@esbuild/linux-s390x@0.21.5':
     resolution: {integrity: sha512-zus5sxzqBJD3eXxwvjN1yQkRepANgxE9lgOW2qLnmr8ikMTphkjgXu1HR01K4FJg8h1kEEDAqDcZQtbrRnB41A==}
     engines: {node: '>=12'}
@@ -1181,6 +1275,12 @@ packages:
 
   '@esbuild/linux-s390x@0.27.7':
     resolution: {integrity: sha512-2k8go8Ycu1Kb46vEelhu1vqEP+UeRVj2zY1pSuPdgvbd5ykAw82Lrro28vXUrRmzEsUV0NzCf54yARIK8r0fdw==}
+    engines: {node: '>=18'}
+    cpu: [s390x]
+    os: [linux]
+
+  '@esbuild/linux-s390x@0.28.0':
+    resolution: {integrity: sha512-SCfR0HN8CEEjnYnySJTd2cw0k9OHB/YFzt5zgJEwa+wL/T/raGWYMBqwDNAC6dqFKmJYZoQBRfHjgwLHGSrn3Q==}
     engines: {node: '>=18'}
     cpu: [s390x]
     os: [linux]
@@ -1203,6 +1303,12 @@ packages:
     cpu: [x64]
     os: [linux]
 
+  '@esbuild/linux-x64@0.28.0':
+    resolution: {integrity: sha512-us0dSb9iFxIi8srnpl931Nvs65it/Jd2a2K3qs7fz2WfGPHqzfzZTfec7oxZJRNPXPnNYZtanmRc4AL/JwVzHQ==}
+    engines: {node: '>=18'}
+    cpu: [x64]
+    os: [linux]
+
   '@esbuild/netbsd-arm64@0.25.12':
     resolution: {integrity: sha512-xXwcTq4GhRM7J9A8Gv5boanHhRa/Q9KLVmcyXHCTaM4wKfIpWkdXiMog/KsnxzJ0A1+nD+zoecuzqPmCRyBGjg==}
     engines: {node: '>=18'}
@@ -1211,6 +1317,12 @@ packages:
 
   '@esbuild/netbsd-arm64@0.27.7':
     resolution: {integrity: sha512-b6pqtrQdigZBwZxAn1UpazEisvwaIDvdbMbmrly7cDTMFnw/+3lVxxCTGOrkPVnsYIosJJXAsILG9XcQS+Yu6w==}
+    engines: {node: '>=18'}
+    cpu: [arm64]
+    os: [netbsd]
+
+  '@esbuild/netbsd-arm64@0.28.0':
+    resolution: {integrity: sha512-CR/RYotgtCKwtftMwJlUU7xCVNg3lMYZ0RzTmAHSfLCXw3NtZtNpswLEj/Kkf6kEL3Gw+BpOekRX0BYCtklhUw==}
     engines: {node: '>=18'}
     cpu: [arm64]
     os: [netbsd]
@@ -1233,6 +1345,12 @@ packages:
     cpu: [x64]
     os: [netbsd]
 
+  '@esbuild/netbsd-x64@0.28.0':
+    resolution: {integrity: sha512-nU1yhmYutL+fQ71Kxnhg8uEOdC0pwEW9entHykTgEbna2pw2dkbFSMeqjjyHZoCmt8SBkOSvV+yNmm94aUrrqw==}
+    engines: {node: '>=18'}
+    cpu: [x64]
+    os: [netbsd]
+
   '@esbuild/openbsd-arm64@0.25.12':
     resolution: {integrity: sha512-fF96T6KsBo/pkQI950FARU9apGNTSlZGsv1jZBAlcLL1MLjLNIWPBkj5NlSz8aAzYKg+eNqknrUJ24QBybeR5A==}
     engines: {node: '>=18'}
@@ -1241,6 +1359,12 @@ packages:
 
   '@esbuild/openbsd-arm64@0.27.7':
     resolution: {integrity: sha512-AFuojMQTxAz75Fo8idVcqoQWEHIXFRbOc1TrVcFSgCZtQfSdc1RXgB3tjOn/krRHENUB4j00bfGjyl2mJrU37A==}
+    engines: {node: '>=18'}
+    cpu: [arm64]
+    os: [openbsd]
+
+  '@esbuild/openbsd-arm64@0.28.0':
+    resolution: {integrity: sha512-cXb5vApOsRsxsEl4mcZ1XY3D4DzcoMxR/nnc4IyqYs0rTI8ZKmW6kyyg+11Z8yvgMfAEldKzP7AdP64HnSC/6g==}
     engines: {node: '>=18'}
     cpu: [arm64]
     os: [openbsd]
@@ -1263,6 +1387,12 @@ packages:
     cpu: [x64]
     os: [openbsd]
 
+  '@esbuild/openbsd-x64@0.28.0':
+    resolution: {integrity: sha512-8wZM2qqtv9UP3mzy7HiGYNH/zjTA355mpeuA+859TyR+e+Tc08IHYpLJuMsfpDJwoLo1ikIJI8jC3GFjnRClzA==}
+    engines: {node: '>=18'}
+    cpu: [x64]
+    os: [openbsd]
+
   '@esbuild/openharmony-arm64@0.25.12':
     resolution: {integrity: sha512-rm0YWsqUSRrjncSXGA7Zv78Nbnw4XL6/dzr20cyrQf7ZmRcsovpcRBdhD43Nuk3y7XIoW2OxMVvwuRvk9XdASg==}
     engines: {node: '>=18'}
@@ -1271,6 +1401,12 @@ packages:
 
   '@esbuild/openharmony-arm64@0.27.7':
     resolution: {integrity: sha512-+KrvYb/C8zA9CU/g0sR6w2RBw7IGc5J2BPnc3dYc5VJxHCSF1yNMxTV5LQ7GuKteQXZtspjFbiuW5/dOj7H4Yw==}
+    engines: {node: '>=18'}
+    cpu: [arm64]
+    os: [openharmony]
+
+  '@esbuild/openharmony-arm64@0.28.0':
+    resolution: {integrity: sha512-FLGfyizszcef5C3YtoyQDACyg95+dndv79i2EekILBofh5wpCa1KuBqOWKrEHZg3zrL3t5ouE5jgr94vA+Wb2w==}
     engines: {node: '>=18'}
     cpu: [arm64]
     os: [openharmony]
@@ -1293,6 +1429,12 @@ packages:
     cpu: [x64]
     os: [sunos]
 
+  '@esbuild/sunos-x64@0.28.0':
+    resolution: {integrity: sha512-1ZgjUoEdHZZl/YlV76TSCz9Hqj9h9YmMGAgAPYd+q4SicWNX3G5GCyx9uhQWSLcbvPW8Ni7lj4gDa1T40akdlw==}
+    engines: {node: '>=18'}
+    cpu: [x64]
+    os: [sunos]
+
   '@esbuild/win32-arm64@0.21.5':
     resolution: {integrity: sha512-Z0gOTd75VvXqyq7nsl93zwahcTROgqvuAcYDUr+vOv8uHhNSKROyU961kgtCD1e95IqPKSQKH7tBTslnS3tA8A==}
     engines: {node: '>=12'}
@@ -1307,6 +1449,12 @@ packages:
 
   '@esbuild/win32-arm64@0.27.7':
     resolution: {integrity: sha512-7yRhbHvPqSpRUV7Q20VuDwbjW5kIMwTHpptuUzV+AA46kiPze5Z7qgt6CLCK3pWFrHeNfDd1VKgyP4O+ng17CA==}
+    engines: {node: '>=18'}
+    cpu: [arm64]
+    os: [win32]
+
+  '@esbuild/win32-arm64@0.28.0':
+    resolution: {integrity: sha512-Q9StnDmQ/enxnpxCCLSg0oo4+34B9TdXpuyPeTedN/6+iXBJ4J+zwfQI28u/Jl40nOYAxGoNi7mFP40RUtkmUA==}
     engines: {node: '>=18'}
     cpu: [arm64]
     os: [win32]
@@ -1329,6 +1477,12 @@ packages:
     cpu: [ia32]
     os: [win32]
 
+  '@esbuild/win32-ia32@0.28.0':
+    resolution: {integrity: sha512-zF3ag/gfiCe6U2iczcRzSYJKH1DCI+ByzSENHlM2FcDbEeo5Zd2C86Aq0tKUYAJJ1obRP84ymxIAksZUcdztHA==}
+    engines: {node: '>=18'}
+    cpu: [ia32]
+    os: [win32]
+
   '@esbuild/win32-x64@0.21.5':
     resolution: {integrity: sha512-tQd/1efJuzPC6rCFwEvLtci/xNFcTZknmXs98FYDfGE4wP9ClFV98nyKrzJKVPMhdDnjzLhdUyMX4PsQAPjwIw==}
     engines: {node: '>=12'}
@@ -1343,6 +1497,12 @@ packages:
 
   '@esbuild/win32-x64@0.27.7':
     resolution: {integrity: sha512-56hiAJPhwQ1R4i+21FVF7V8kSD5zZTdHcVuRFMW0hn753vVfQN8xlx4uOPT4xoGH0Z/oVATuR82AiqSTDIpaHg==}
+    engines: {node: '>=18'}
+    cpu: [x64]
+    os: [win32]
+
+  '@esbuild/win32-x64@0.28.0':
+    resolution: {integrity: sha512-pEl1bO9mfAmIC+tW5btTmrKaujg3zGtUmWNdCw/xs70FBjwAL3o9OEKNHvNmnyylD6ubxUERiEhdsL0xBQ9efw==}
     engines: {node: '>=18'}
     cpu: [x64]
     os: [win32]
@@ -1666,9 +1826,6 @@ packages:
 
   '@jup-ag/lend@0.1.9':
     resolution: {integrity: sha512-wi3Gn5oAPqYv6hUPSWsfR9EWlA0zeraROtkRrGuoOPy6BHIabny2sSblJFFiwbrtffhLZNmTEW0tWIC7tex/tA==}
-
-  '@kamino-finance/farms-sdk@3.2.24':
-    resolution: {integrity: sha512-zeStSvM6Ckd8t1BD5GM/jCz4mCyPc3TCozkI/CDp1ZWdDwP3F3bUb3itQ3wAZNMdxPLPFVoUC9QpmwBOzhs4GA==}
 
   '@kamino-finance/farms-sdk@3.2.25':
     resolution: {integrity: sha512-aqbk2u17+tC4h56DvqS+NVnZNHQwbaR3W8R8EC2BvyE3fGzMzfS+zzG5cmSa19YO88HXTt9G5hYQjSJrcHxCZQ==}
@@ -3793,6 +3950,9 @@ packages:
   '@types/node@22.7.5':
     resolution: {integrity: sha512-jML7s2NAzMWc//QSJ1a3prpk78cOPchGvXJsC3C6R6PSMoooztvRVQEz89gmBTBY1SPMaqo5teB4uNHPdetShQ==}
 
+  '@types/node@25.6.2':
+    resolution: {integrity: sha512-sokuT28dxf9JT5Kady1fsXOvI4HVpjZa95NKT5y9PNTIrs2AsobR4GFAA90ZG8M+nxVRLysCXsVj6eGC7Vbrlw==}
+
   '@types/pg@8.20.0':
     resolution: {integrity: sha512-bEPFOaMAHTEP1EzpvHTbmwR8UsFyHSKsRisLIHVMXnpNefSbGA1bD6CVy+qKjGSqmZqNqBDV2azOBo8TgkcVow==}
 
@@ -5200,6 +5360,11 @@ packages:
 
   esbuild@0.27.7:
     resolution: {integrity: sha512-IxpibTjyVnmrIQo5aqNpCgoACA/dTKLTlhMHihVHhdkxKyPO1uBBthumT0rdHmcsk9uMonIWS0m4FljWzILh3w==}
+    engines: {node: '>=18'}
+    hasBin: true
+
+  esbuild@0.28.0:
+    resolution: {integrity: sha512-sNR9MHpXSUV/XB4zmsFKN+QgVG82Cc7+/aaxJ8Adi8hyOac+EXptIp45QBPaVyX3N70664wRbTcLTOemCAnyqw==}
     engines: {node: '>=18'}
     hasBin: true
 
@@ -7649,8 +7814,8 @@ packages:
   teex@1.0.1:
     resolution: {integrity: sha512-eYE6iEI62Ni1H8oIa7KlDU6uQBtqr4Eajni3wX7rpfXD8ysFx8z0+dri+KWEPWpBsxXfxu58x/0jvTVT1ekOSg==}
 
-  terser@5.46.2:
-    resolution: {integrity: sha512-uxfo9fPcSgLDYob/w1FuL0c99MWiJDnv+5qXSQc5+Ki5NjVNsYi66INnMFBjf6uFz6OnX12piJQPF4IpjJTNTw==}
+  terser@5.47.1:
+    resolution: {integrity: sha512-tPbLXTI6ohPASb/1YViL428oEHu6/qv1OxqYnfaonVCFHqx4+wCd95pHrQWsL5X4pl90CTyW9piSAsS2L0VoMw==}
     engines: {node: '>=10'}
     hasBin: true
 
@@ -7880,6 +8045,9 @@ packages:
 
   undici-types@6.21.0:
     resolution: {integrity: sha512-iwDZqg0QAGrg9Rav5H4n0M64c3mkR59cJ6wQp+7C4nI0gsmExaedaYLNO44eT4AtBBwjbTiGPMlt2Md0T9H9JQ==}
+
+  undici-types@7.19.2:
+    resolution: {integrity: sha512-qYVnV5OEm2AW8cJMCpdV20CDyaN3g0AjDlOGf1OW4iaDEx8MwdtChUp4zu4H0VP3nDRF/8RKWH+IPp9uW0YGZg==}
 
   undici-types@7.25.0:
     resolution: {integrity: sha512-AXNgS1Byr27fTI+2bsPEkV9CxkT8H6xNyRI68b3TatlZo3RkzlqQBLL+w7SmGPVpokjHbcuNVQUWE7FRTg+LRA==}
@@ -9076,7 +9244,7 @@ snapshots:
 
   '@bufbuild/protobuf@2.10.2': {}
 
-  '@bundlr-network/client@0.7.17(@types/node@22.19.17)(bufferutil@4.1.0)(debug@4.4.3)(typescript@5.9.3)(utf-8-validate@5.0.10)':
+  '@bundlr-network/client@0.7.17(@types/node@25.6.2)(bufferutil@4.1.0)(debug@4.4.3)(typescript@5.9.3)(utf-8-validate@5.0.10)':
     dependencies:
       '@solana/wallet-adapter-base': 0.9.27(@solana/web3.js@1.98.4(bufferutil@4.1.0)(typescript@5.9.3)(utf-8-validate@5.0.10))
       '@solana/web3.js': 1.98.4(bufferutil@4.1.0)(typescript@5.9.3)(utf-8-validate@5.0.10)
@@ -9092,7 +9260,7 @@ snapshots:
       commander: 8.3.0
       csv: 6.5.1
       ethers: 5.8.0(bufferutil@4.1.0)(utf-8-validate@5.0.10)
-      inquirer: 8.2.7(@types/node@22.19.17)
+      inquirer: 8.2.7(@types/node@25.6.2)
       js-sha256: 0.9.0
       mime-types: 2.1.35
       near-api-js: 0.44.2
@@ -9292,6 +9460,27 @@ snapshots:
     optional: true
 
   '@coral-xyz/anchor@0.31.1(bufferutil@4.1.0)(typescript@5.9.3)(utf-8-validate@5.0.10)':
+    dependencies:
+      '@coral-xyz/anchor-errors': 0.31.1
+      '@coral-xyz/borsh': 0.31.1(@solana/web3.js@1.98.4(bufferutil@4.1.0)(typescript@5.9.3)(utf-8-validate@5.0.10))
+      '@noble/hashes': 1.8.0
+      '@solana/web3.js': 1.98.4(bufferutil@4.1.0)(typescript@5.9.3)(utf-8-validate@5.0.10)
+      bn.js: 5.2.3
+      bs58: 4.0.1
+      buffer-layout: 1.2.2
+      camelcase: 6.3.0
+      cross-fetch: 3.2.0
+      eventemitter3: 4.0.7
+      pako: 2.1.0
+      superstruct: 0.15.5
+      toml: 3.0.0
+    transitivePeerDependencies:
+      - bufferutil
+      - encoding
+      - typescript
+      - utf-8-validate
+
+  '@coral-xyz/anchor@0.32.1(bufferutil@4.1.0)(typescript@5.9.3)(utf-8-validate@5.0.10)':
     dependencies:
       '@coral-xyz/anchor-errors': 0.31.1
       '@coral-xyz/borsh': 0.31.1(@solana/web3.js@1.98.4(bufferutil@4.1.0)(typescript@5.9.3)(utf-8-validate@5.0.10))
@@ -9669,16 +9858,16 @@ snapshots:
       - utf-8-validate
       - ws
 
-  '@drift-labs/vaults-sdk@0.11.1(@coral-xyz/anchor@0.31.1(bufferutil@4.1.0)(typescript@5.9.3)(utf-8-validate@5.0.10))(@solana/sysvars@5.5.1(fastestsmallesttextencoderdecoder@1.0.22)(typescript@5.9.3))(@solana/web3.js@1.98.4(bufferutil@4.1.0)(typescript@5.9.3)(utf-8-validate@5.0.10))(@types/node@22.19.17)(arweave@1.15.7)(bufferutil@4.1.0)(fastestsmallesttextencoderdecoder@1.0.22)(utf-8-validate@5.0.10)(ws@8.20.0(bufferutil@4.1.0)(utf-8-validate@5.0.10))':
+  '@drift-labs/vaults-sdk@0.11.1(@coral-xyz/anchor@0.32.1(bufferutil@4.1.0)(typescript@5.9.3)(utf-8-validate@5.0.10))(@solana/sysvars@5.5.1(fastestsmallesttextencoderdecoder@1.0.22)(typescript@5.9.3))(@solana/web3.js@1.98.4(bufferutil@4.1.0)(typescript@5.9.3)(utf-8-validate@5.0.10))(@types/node@25.6.2)(arweave@1.15.7)(bufferutil@4.1.0)(fastestsmallesttextencoderdecoder@1.0.22)(utf-8-validate@5.0.10)(ws@8.20.0(bufferutil@4.1.0)(utf-8-validate@5.0.10))':
     dependencies:
-      '@coral-xyz/anchor': 0.31.1(bufferutil@4.1.0)(typescript@5.9.3)(utf-8-validate@5.0.10)
+      '@coral-xyz/anchor': 0.32.1(bufferutil@4.1.0)(typescript@5.9.3)(utf-8-validate@5.0.10)
       '@drift-labs/sdk': 2.162.0-beta.1(@solana/sysvars@5.5.1(fastestsmallesttextencoderdecoder@1.0.22)(typescript@5.9.3))(bufferutil@4.1.0)(fastestsmallesttextencoderdecoder@1.0.22)(typescript@5.6.3)(utf-8-validate@5.0.10)(ws@8.20.0(bufferutil@4.1.0)(utf-8-validate@5.0.10))
-      '@metaplex-foundation/js': 0.20.1(@types/node@22.19.17)(arweave@1.15.7)(bufferutil@4.1.0)(fastestsmallesttextencoderdecoder@1.0.22)(typescript@5.6.3)(utf-8-validate@5.0.10)
+      '@metaplex-foundation/js': 0.20.1(@types/node@25.6.2)(arweave@1.15.7)(bufferutil@4.1.0)(fastestsmallesttextencoderdecoder@1.0.22)(typescript@5.6.3)(utf-8-validate@5.0.10)
       '@solana/web3.js': 1.98.4(bufferutil@4.1.0)(typescript@5.9.3)(utf-8-validate@5.0.10)
       commander: 11.1.0
       dotenv: 16.4.5
       strict-event-emitter-types: 2.0.0
-      ts-node: 10.9.2(@types/node@22.19.17)(typescript@5.6.3)
+      ts-node: 10.9.2(@types/node@25.6.2)(typescript@5.6.3)
       typescript: 5.6.3
     optionalDependencies:
       '@ledgerhq/hw-app-solana': 7.2.4
@@ -9746,6 +9935,9 @@ snapshots:
   '@esbuild/aix-ppc64@0.27.7':
     optional: true
 
+  '@esbuild/aix-ppc64@0.28.0':
+    optional: true
+
   '@esbuild/android-arm64@0.21.5':
     optional: true
 
@@ -9753,6 +9945,9 @@ snapshots:
     optional: true
 
   '@esbuild/android-arm64@0.27.7':
+    optional: true
+
+  '@esbuild/android-arm64@0.28.0':
     optional: true
 
   '@esbuild/android-arm@0.21.5':
@@ -9764,6 +9959,9 @@ snapshots:
   '@esbuild/android-arm@0.27.7':
     optional: true
 
+  '@esbuild/android-arm@0.28.0':
+    optional: true
+
   '@esbuild/android-x64@0.21.5':
     optional: true
 
@@ -9771,6 +9969,9 @@ snapshots:
     optional: true
 
   '@esbuild/android-x64@0.27.7':
+    optional: true
+
+  '@esbuild/android-x64@0.28.0':
     optional: true
 
   '@esbuild/darwin-arm64@0.21.5':
@@ -9782,6 +9983,9 @@ snapshots:
   '@esbuild/darwin-arm64@0.27.7':
     optional: true
 
+  '@esbuild/darwin-arm64@0.28.0':
+    optional: true
+
   '@esbuild/darwin-x64@0.21.5':
     optional: true
 
@@ -9789,6 +9993,9 @@ snapshots:
     optional: true
 
   '@esbuild/darwin-x64@0.27.7':
+    optional: true
+
+  '@esbuild/darwin-x64@0.28.0':
     optional: true
 
   '@esbuild/freebsd-arm64@0.21.5':
@@ -9800,6 +10007,9 @@ snapshots:
   '@esbuild/freebsd-arm64@0.27.7':
     optional: true
 
+  '@esbuild/freebsd-arm64@0.28.0':
+    optional: true
+
   '@esbuild/freebsd-x64@0.21.5':
     optional: true
 
@@ -9807,6 +10017,9 @@ snapshots:
     optional: true
 
   '@esbuild/freebsd-x64@0.27.7':
+    optional: true
+
+  '@esbuild/freebsd-x64@0.28.0':
     optional: true
 
   '@esbuild/linux-arm64@0.21.5':
@@ -9818,6 +10031,9 @@ snapshots:
   '@esbuild/linux-arm64@0.27.7':
     optional: true
 
+  '@esbuild/linux-arm64@0.28.0':
+    optional: true
+
   '@esbuild/linux-arm@0.21.5':
     optional: true
 
@@ -9825,6 +10041,9 @@ snapshots:
     optional: true
 
   '@esbuild/linux-arm@0.27.7':
+    optional: true
+
+  '@esbuild/linux-arm@0.28.0':
     optional: true
 
   '@esbuild/linux-ia32@0.21.5':
@@ -9836,6 +10055,9 @@ snapshots:
   '@esbuild/linux-ia32@0.27.7':
     optional: true
 
+  '@esbuild/linux-ia32@0.28.0':
+    optional: true
+
   '@esbuild/linux-loong64@0.21.5':
     optional: true
 
@@ -9843,6 +10065,9 @@ snapshots:
     optional: true
 
   '@esbuild/linux-loong64@0.27.7':
+    optional: true
+
+  '@esbuild/linux-loong64@0.28.0':
     optional: true
 
   '@esbuild/linux-mips64el@0.21.5':
@@ -9854,6 +10079,9 @@ snapshots:
   '@esbuild/linux-mips64el@0.27.7':
     optional: true
 
+  '@esbuild/linux-mips64el@0.28.0':
+    optional: true
+
   '@esbuild/linux-ppc64@0.21.5':
     optional: true
 
@@ -9861,6 +10089,9 @@ snapshots:
     optional: true
 
   '@esbuild/linux-ppc64@0.27.7':
+    optional: true
+
+  '@esbuild/linux-ppc64@0.28.0':
     optional: true
 
   '@esbuild/linux-riscv64@0.21.5':
@@ -9872,6 +10103,9 @@ snapshots:
   '@esbuild/linux-riscv64@0.27.7':
     optional: true
 
+  '@esbuild/linux-riscv64@0.28.0':
+    optional: true
+
   '@esbuild/linux-s390x@0.21.5':
     optional: true
 
@@ -9879,6 +10113,9 @@ snapshots:
     optional: true
 
   '@esbuild/linux-s390x@0.27.7':
+    optional: true
+
+  '@esbuild/linux-s390x@0.28.0':
     optional: true
 
   '@esbuild/linux-x64@0.21.5':
@@ -9890,10 +10127,16 @@ snapshots:
   '@esbuild/linux-x64@0.27.7':
     optional: true
 
+  '@esbuild/linux-x64@0.28.0':
+    optional: true
+
   '@esbuild/netbsd-arm64@0.25.12':
     optional: true
 
   '@esbuild/netbsd-arm64@0.27.7':
+    optional: true
+
+  '@esbuild/netbsd-arm64@0.28.0':
     optional: true
 
   '@esbuild/netbsd-x64@0.21.5':
@@ -9905,10 +10148,16 @@ snapshots:
   '@esbuild/netbsd-x64@0.27.7':
     optional: true
 
+  '@esbuild/netbsd-x64@0.28.0':
+    optional: true
+
   '@esbuild/openbsd-arm64@0.25.12':
     optional: true
 
   '@esbuild/openbsd-arm64@0.27.7':
+    optional: true
+
+  '@esbuild/openbsd-arm64@0.28.0':
     optional: true
 
   '@esbuild/openbsd-x64@0.21.5':
@@ -9920,10 +10169,16 @@ snapshots:
   '@esbuild/openbsd-x64@0.27.7':
     optional: true
 
+  '@esbuild/openbsd-x64@0.28.0':
+    optional: true
+
   '@esbuild/openharmony-arm64@0.25.12':
     optional: true
 
   '@esbuild/openharmony-arm64@0.27.7':
+    optional: true
+
+  '@esbuild/openharmony-arm64@0.28.0':
     optional: true
 
   '@esbuild/sunos-x64@0.21.5':
@@ -9935,6 +10190,9 @@ snapshots:
   '@esbuild/sunos-x64@0.27.7':
     optional: true
 
+  '@esbuild/sunos-x64@0.28.0':
+    optional: true
+
   '@esbuild/win32-arm64@0.21.5':
     optional: true
 
@@ -9942,6 +10200,9 @@ snapshots:
     optional: true
 
   '@esbuild/win32-arm64@0.27.7':
+    optional: true
+
+  '@esbuild/win32-arm64@0.28.0':
     optional: true
 
   '@esbuild/win32-ia32@0.21.5':
@@ -9953,6 +10214,9 @@ snapshots:
   '@esbuild/win32-ia32@0.27.7':
     optional: true
 
+  '@esbuild/win32-ia32@0.28.0':
+    optional: true
+
   '@esbuild/win32-x64@0.21.5':
     optional: true
 
@@ -9960,6 +10224,9 @@ snapshots:
     optional: true
 
   '@esbuild/win32-x64@0.27.7':
+    optional: true
+
+  '@esbuild/win32-x64@0.28.0':
     optional: true
 
   '@ethereumjs/rlp@4.0.1': {}
@@ -10407,12 +10674,12 @@ snapshots:
       - debug
     optional: true
 
-  '@inquirer/external-editor@1.0.3(@types/node@22.19.17)':
+  '@inquirer/external-editor@1.0.3(@types/node@25.6.2)':
     dependencies:
       chardet: 2.1.1
       iconv-lite: 0.7.2
     optionalDependencies:
-      '@types/node': 22.19.17
+      '@types/node': 25.6.2
 
   '@ionic/cli-framework-output@2.2.8':
     dependencies:
@@ -10507,7 +10774,7 @@ snapshots:
     transitivePeerDependencies:
       - debug
 
-  '@irys/sdk@0.0.2(@types/node@22.19.17)(arweave@1.15.7)(bufferutil@4.1.0)(debug@4.4.3)(typescript@5.6.3)(utf-8-validate@5.0.10)':
+  '@irys/sdk@0.0.2(@types/node@25.6.2)(arweave@1.15.7)(bufferutil@4.1.0)(debug@4.4.3)(typescript@5.6.3)(utf-8-validate@5.0.10)':
     dependencies:
       '@ethersproject/bignumber': 5.8.0
       '@ethersproject/contracts': 5.8.0
@@ -10530,7 +10797,7 @@ snapshots:
       bs58: 5.0.0
       commander: 8.3.0
       csv: 5.5.3
-      inquirer: 8.2.7(@types/node@22.19.17)
+      inquirer: 8.2.7(@types/node@25.6.2)
       js-sha256: 0.9.0
       mime-types: 2.1.35
       near-seed-phrase: 0.2.1
@@ -10625,7 +10892,7 @@ snapshots:
   '@jup-ag/api@6.0.47':
     optional: true
 
-  '@jup-ag/lend-read@0.0.12(@metaplex-foundation/umi@1.5.1)(@opentelemetry/api@1.9.0)(@types/node@22.19.17)(bufferutil@4.1.0)(fastestsmallesttextencoderdecoder@1.0.22)(node-fetch@2.7.0)(typescript@5.9.3)(utf-8-validate@5.0.10)(vite@5.4.21(@types/node@22.19.17)(terser@5.46.2))(ws@8.20.0(bufferutil@4.1.0)(utf-8-validate@5.0.10))':
+  '@jup-ag/lend-read@0.0.12(@metaplex-foundation/umi@1.5.1)(@opentelemetry/api@1.9.0)(@types/node@25.6.2)(bufferutil@4.1.0)(fastestsmallesttextencoderdecoder@1.0.22)(node-fetch@2.7.0)(typescript@5.9.3)(utf-8-validate@5.0.10)(vite@5.4.21(@types/node@25.6.2)(terser@5.47.1))(ws@8.20.0(bufferutil@4.1.0)(utf-8-validate@5.0.10))':
     dependencies:
       '@coral-xyz/anchor': 0.31.1(bufferutil@4.1.0)(typescript@5.9.3)(utf-8-validate@5.0.10)
       '@metaplex-foundation/mpl-token-metadata': 3.4.0(@metaplex-foundation/umi@1.5.1)
@@ -10639,7 +10906,7 @@ snapshots:
       dotenv: 16.6.1
       js-sha3: 0.9.3
       unbuild: 3.6.1(typescript@5.9.3)
-      vitest: 4.1.5(@opentelemetry/api@1.9.0)(@types/node@22.19.17)(vite@5.4.21(@types/node@22.19.17)(terser@5.46.2))
+      vitest: 4.1.5(@opentelemetry/api@1.9.0)(@types/node@25.6.2)(vite@5.4.21(@types/node@25.6.2)(terser@5.47.1))
     transitivePeerDependencies:
       - '@edge-runtime/vm'
       - '@metaplex-foundation/umi'
@@ -10683,34 +10950,6 @@ snapshots:
       - fastestsmallesttextencoderdecoder
       - typescript
       - utf-8-validate
-
-  '@kamino-finance/farms-sdk@3.2.24(@solana/spl-token@0.4.14(@solana/web3.js@1.98.4(bufferutil@4.1.0)(typescript@5.9.3)(utf-8-validate@5.0.10))(bufferutil@4.1.0)(fastestsmallesttextencoderdecoder@1.0.22)(typescript@5.9.3)(utf-8-validate@5.0.10))(bufferutil@4.1.0)(fastestsmallesttextencoderdecoder@1.0.22)(typescript@5.9.3)(utf-8-validate@5.0.10)(ws@8.20.0(bufferutil@4.1.0)(utf-8-validate@5.0.10))':
-    dependencies:
-      '@coral-xyz/anchor': 0.28.0(bufferutil@4.1.0)(typescript@5.9.3)(utf-8-validate@5.0.10)
-      '@coral-xyz/borsh': 0.28.0(@solana/web3.js@1.98.4(bufferutil@4.1.0)(typescript@5.9.3)(utf-8-validate@5.0.10))
-      '@kamino-finance/kliquidity-sdk': 8.5.10(@solana/spl-token@0.4.14(@solana/web3.js@1.98.4(bufferutil@4.1.0)(typescript@5.9.3)(utf-8-validate@5.0.10))(bufferutil@4.1.0)(fastestsmallesttextencoderdecoder@1.0.22)(typescript@5.9.3)(utf-8-validate@5.0.10))(@solana/web3.js@1.98.4(bufferutil@4.1.0)(typescript@5.9.3)(utf-8-validate@5.0.10))(bufferutil@4.1.0)(fastestsmallesttextencoderdecoder@1.0.22)(typescript@5.9.3)(utf-8-validate@5.0.10)(ws@8.20.0(bufferutil@4.1.0)(utf-8-validate@5.0.10))
-      '@kamino-finance/scope-sdk': 9.1.0(@solana/web3.js@1.98.4(bufferutil@4.1.0)(typescript@5.9.3)(utf-8-validate@5.0.10))(bufferutil@4.1.0)(fastestsmallesttextencoderdecoder@1.0.22)(typescript@5.9.3)(utf-8-validate@5.0.10)(ws@8.20.0(bufferutil@4.1.0)(utf-8-validate@5.0.10))
-      '@solana-program/address-lookup-table': 0.7.0(@solana/kit@2.3.0(fastestsmallesttextencoderdecoder@1.0.22)(typescript@5.9.3)(ws@8.20.0(bufferutil@4.1.0)(utf-8-validate@5.0.10)))
-      '@solana-program/compute-budget': 0.8.0(@solana/kit@2.3.0(fastestsmallesttextencoderdecoder@1.0.22)(typescript@5.9.3)(ws@8.20.0(bufferutil@4.1.0)(utf-8-validate@5.0.10)))
-      '@solana-program/system': 0.7.0(@solana/kit@2.3.0(fastestsmallesttextencoderdecoder@1.0.22)(typescript@5.9.3)(ws@8.20.0(bufferutil@4.1.0)(utf-8-validate@5.0.10)))
-      '@solana-program/token': 0.5.1(@solana/kit@2.3.0(fastestsmallesttextencoderdecoder@1.0.22)(typescript@5.9.3)(ws@8.20.0(bufferutil@4.1.0)(utf-8-validate@5.0.10)))
-      '@solana-program/token-2022': 0.4.2(@solana/kit@2.3.0(fastestsmallesttextencoderdecoder@1.0.22)(typescript@5.9.3)(ws@8.20.0(bufferutil@4.1.0)(utf-8-validate@5.0.10)))(@solana/sysvars@2.3.0(fastestsmallesttextencoderdecoder@1.0.22)(typescript@5.9.3))
-      '@solana/compat': 2.3.0(fastestsmallesttextencoderdecoder@1.0.22)(typescript@5.9.3)
-      '@solana/kit': 2.3.0(fastestsmallesttextencoderdecoder@1.0.22)(typescript@5.9.3)(ws@8.20.0(bufferutil@4.1.0)(utf-8-validate@5.0.10))
-      '@solana/sysvars': 2.3.0(fastestsmallesttextencoderdecoder@1.0.22)(typescript@5.9.3)
-      '@solana/web3.js': 1.98.4(bufferutil@4.1.0)(typescript@5.9.3)(utf-8-validate@5.0.10)
-      bn.js: 5.2.3
-      decimal.js: 10.6.0
-    transitivePeerDependencies:
-      - '@solana/spl-token'
-      - bufferutil
-      - debug
-      - encoding
-      - fastestsmallesttextencoderdecoder
-      - typescript
-      - utf-8-validate
-      - ws
-    optional: true
 
   '@kamino-finance/farms-sdk@3.2.25(@solana/spl-token@0.4.14(@solana/web3.js@1.98.4(bufferutil@4.1.0)(typescript@5.9.3)(utf-8-validate@5.0.10))(bufferutil@4.1.0)(fastestsmallesttextencoderdecoder@1.0.22)(typescript@5.9.3)(utf-8-validate@5.0.10))(bufferutil@4.1.0)(fastestsmallesttextencoderdecoder@1.0.22)(typescript@5.9.3)(utf-8-validate@5.0.10)(ws@8.20.0(bufferutil@4.1.0)(utf-8-validate@5.0.10))':
     dependencies:
@@ -11102,10 +11341,10 @@ snapshots:
 
   '@metaplex-foundation/cusper@0.0.2': {}
 
-  '@metaplex-foundation/js@0.11.7(@types/node@22.19.17)(bufferutil@4.1.0)(fastestsmallesttextencoderdecoder@1.0.22)(typescript@5.9.3)(utf-8-validate@5.0.10)':
+  '@metaplex-foundation/js@0.11.7(@types/node@25.6.2)(bufferutil@4.1.0)(fastestsmallesttextencoderdecoder@1.0.22)(typescript@5.9.3)(utf-8-validate@5.0.10)':
     dependencies:
       '@aws-sdk/client-s3': 3.1044.0
-      '@bundlr-network/client': 0.7.17(@types/node@22.19.17)(bufferutil@4.1.0)(debug@4.4.3)(typescript@5.9.3)(utf-8-validate@5.0.10)
+      '@bundlr-network/client': 0.7.17(@types/node@25.6.2)(bufferutil@4.1.0)(debug@4.4.3)(typescript@5.9.3)(utf-8-validate@5.0.10)
       '@metaplex-foundation/beet': 0.2.0
       '@metaplex-foundation/beet-solana': 0.1.1(bufferutil@4.1.0)(typescript@5.9.3)(utf-8-validate@5.0.10)
       '@metaplex-foundation/mpl-auction-house': 2.5.1(bufferutil@4.1.0)(fastestsmallesttextencoderdecoder@1.0.22)(typescript@5.9.3)(utf-8-validate@5.0.10)
@@ -11135,9 +11374,9 @@ snapshots:
       - utf-8-validate
     optional: true
 
-  '@metaplex-foundation/js@0.20.1(@types/node@22.19.17)(arweave@1.15.7)(bufferutil@4.1.0)(fastestsmallesttextencoderdecoder@1.0.22)(typescript@5.6.3)(utf-8-validate@5.0.10)':
+  '@metaplex-foundation/js@0.20.1(@types/node@25.6.2)(arweave@1.15.7)(bufferutil@4.1.0)(fastestsmallesttextencoderdecoder@1.0.22)(typescript@5.6.3)(utf-8-validate@5.0.10)':
     dependencies:
-      '@irys/sdk': 0.0.2(@types/node@22.19.17)(arweave@1.15.7)(bufferutil@4.1.0)(debug@4.4.3)(typescript@5.6.3)(utf-8-validate@5.0.10)
+      '@irys/sdk': 0.0.2(@types/node@25.6.2)(arweave@1.15.7)(bufferutil@4.1.0)(debug@4.4.3)(typescript@5.6.3)(utf-8-validate@5.0.10)
       '@metaplex-foundation/beet': 0.7.1
       '@metaplex-foundation/mpl-auction-house': 2.5.1(bufferutil@4.1.0)(fastestsmallesttextencoderdecoder@1.0.22)(typescript@5.6.3)(utf-8-validate@5.0.10)
       '@metaplex-foundation/mpl-bubblegum': 0.6.2(bufferutil@4.1.0)(fastestsmallesttextencoderdecoder@1.0.22)(typescript@5.6.3)(utf-8-validate@5.0.10)
@@ -15132,7 +15371,7 @@ snapshots:
       - ws
     optional: true
 
-  '@solendprotocol/solend-sdk@0.14.27(@types/node@22.19.17)(bufferutil@4.1.0)(fastestsmallesttextencoderdecoder@1.0.22)(typedoc@0.20.37(typescript@5.9.3))(typescript@5.9.3)(utf-8-validate@5.0.10)':
+  '@solendprotocol/solend-sdk@0.14.27(@types/node@25.6.2)(bufferutil@4.1.0)(fastestsmallesttextencoderdecoder@1.0.22)(typedoc@0.20.37(typescript@5.9.3))(typescript@5.9.3)(utf-8-validate@5.0.10)':
     dependencies:
       '@coral-xyz/anchor-30': '@coral-xyz/anchor@0.30.1(bufferutil@4.1.0)(typescript@5.9.3)(utf-8-validate@5.0.10)'
       '@project-serum/anchor': 0.24.2(bufferutil@4.1.0)(typescript@5.9.3)(utf-8-validate@5.0.10)
@@ -15143,7 +15382,7 @@ snapshots:
       '@solana/spl-token': 0.3.11(@solana/web3.js@1.92.3(bufferutil@4.1.0)(utf-8-validate@5.0.10))(bufferutil@4.1.0)(fastestsmallesttextencoderdecoder@1.0.22)(typescript@5.9.3)(utf-8-validate@5.0.10)
       '@solana/web3.js': 1.92.3(bufferutil@4.1.0)(utf-8-validate@5.0.10)
       '@solendprotocol/token2022-wrapper-sdk': 1.0.1(@solana/web3.js@1.92.3(bufferutil@4.1.0)(utf-8-validate@5.0.10))(bufferutil@4.1.0)(fastestsmallesttextencoderdecoder@1.0.22)(typescript@5.9.3)(utf-8-validate@5.0.10)
-      '@solflare-wallet/utl-sdk': 1.4.0(@solana/web3.js@1.92.3(bufferutil@4.1.0)(utf-8-validate@5.0.10))(@types/node@22.19.17)(bufferutil@4.1.0)(fastestsmallesttextencoderdecoder@1.0.22)(typescript@5.9.3)(utf-8-validate@5.0.10)
+      '@solflare-wallet/utl-sdk': 1.4.0(@solana/web3.js@1.92.3(bufferutil@4.1.0)(utf-8-validate@5.0.10))(@types/node@25.6.2)(bufferutil@4.1.0)(fastestsmallesttextencoderdecoder@1.0.22)(typescript@5.9.3)(utf-8-validate@5.0.10)
       '@switchboard-xyz/on-demand': 2.17.6(bufferutil@4.1.0)(typescript@5.9.3)(utf-8-validate@5.0.10)
       '@switchboard-xyz/sbv2-lite': 0.2.4(bufferutil@4.1.0)(typescript@5.9.3)(utf-8-validate@5.0.10)
       axios: 0.24.0
@@ -15191,9 +15430,9 @@ snapshots:
       - utf-8-validate
     optional: true
 
-  '@solflare-wallet/utl-sdk@1.4.0(@solana/web3.js@1.92.3(bufferutil@4.1.0)(utf-8-validate@5.0.10))(@types/node@22.19.17)(bufferutil@4.1.0)(fastestsmallesttextencoderdecoder@1.0.22)(typescript@5.9.3)(utf-8-validate@5.0.10)':
+  '@solflare-wallet/utl-sdk@1.4.0(@solana/web3.js@1.92.3(bufferutil@4.1.0)(utf-8-validate@5.0.10))(@types/node@25.6.2)(bufferutil@4.1.0)(fastestsmallesttextencoderdecoder@1.0.22)(typescript@5.9.3)(utf-8-validate@5.0.10)':
     dependencies:
-      '@metaplex-foundation/js': 0.11.7(@types/node@22.19.17)(bufferutil@4.1.0)(fastestsmallesttextencoderdecoder@1.0.22)(typescript@5.9.3)(utf-8-validate@5.0.10)
+      '@metaplex-foundation/js': 0.11.7(@types/node@25.6.2)(bufferutil@4.1.0)(fastestsmallesttextencoderdecoder@1.0.22)(typescript@5.9.3)(utf-8-validate@5.0.10)
       '@solana/web3.js': 1.92.3(bufferutil@4.1.0)(utf-8-validate@5.0.10)
       axios: 0.27.2
       eventemitter3: 5.0.4
@@ -15564,6 +15803,10 @@ snapshots:
       undici-types: 6.19.8
     optional: true
 
+  '@types/node@25.6.2':
+    dependencies:
+      undici-types: 7.19.2
+
   '@types/pg@8.20.0':
     dependencies:
       '@types/node': 22.19.17
@@ -15631,21 +15874,29 @@ snapshots:
       tinyrainbow: 3.1.0
     optional: true
 
-  '@vitest/mocker@2.1.9(vite@5.4.21(@types/node@22.19.17)(terser@5.46.2))':
+  '@vitest/mocker@2.1.9(vite@5.4.21(@types/node@22.19.17)(terser@5.47.1))':
     dependencies:
       '@vitest/spy': 2.1.9
       estree-walker: 3.0.3
       magic-string: 0.30.21
     optionalDependencies:
-      vite: 5.4.21(@types/node@22.19.17)(terser@5.46.2)
+      vite: 5.4.21(@types/node@22.19.17)(terser@5.47.1)
 
-  '@vitest/mocker@4.1.5(vite@5.4.21(@types/node@22.19.17)(terser@5.46.2))':
+  '@vitest/mocker@2.1.9(vite@5.4.21(@types/node@25.6.2)(terser@5.47.1))':
+    dependencies:
+      '@vitest/spy': 2.1.9
+      estree-walker: 3.0.3
+      magic-string: 0.30.21
+    optionalDependencies:
+      vite: 5.4.21(@types/node@25.6.2)(terser@5.47.1)
+
+  '@vitest/mocker@4.1.5(vite@5.4.21(@types/node@25.6.2)(terser@5.47.1))':
     dependencies:
       '@vitest/spy': 4.1.5
       estree-walker: 3.0.3
       magic-string: 0.30.21
     optionalDependencies:
-      vite: 5.4.21(@types/node@22.19.17)(terser@5.46.2)
+      vite: 5.4.21(@types/node@25.6.2)(terser@5.47.1)
     optional: true
 
   '@vitest/pretty-format@2.1.9':
@@ -17744,6 +17995,7 @@ snapshots:
       '@esbuild/win32-arm64': 0.25.12
       '@esbuild/win32-ia32': 0.25.12
       '@esbuild/win32-x64': 0.25.12
+    optional: true
 
   esbuild@0.27.7:
     optionalDependencies:
@@ -17773,6 +18025,35 @@ snapshots:
       '@esbuild/win32-arm64': 0.27.7
       '@esbuild/win32-ia32': 0.27.7
       '@esbuild/win32-x64': 0.27.7
+
+  esbuild@0.28.0:
+    optionalDependencies:
+      '@esbuild/aix-ppc64': 0.28.0
+      '@esbuild/android-arm': 0.28.0
+      '@esbuild/android-arm64': 0.28.0
+      '@esbuild/android-x64': 0.28.0
+      '@esbuild/darwin-arm64': 0.28.0
+      '@esbuild/darwin-x64': 0.28.0
+      '@esbuild/freebsd-arm64': 0.28.0
+      '@esbuild/freebsd-x64': 0.28.0
+      '@esbuild/linux-arm': 0.28.0
+      '@esbuild/linux-arm64': 0.28.0
+      '@esbuild/linux-ia32': 0.28.0
+      '@esbuild/linux-loong64': 0.28.0
+      '@esbuild/linux-mips64el': 0.28.0
+      '@esbuild/linux-ppc64': 0.28.0
+      '@esbuild/linux-riscv64': 0.28.0
+      '@esbuild/linux-s390x': 0.28.0
+      '@esbuild/linux-x64': 0.28.0
+      '@esbuild/netbsd-arm64': 0.28.0
+      '@esbuild/netbsd-x64': 0.28.0
+      '@esbuild/openbsd-arm64': 0.28.0
+      '@esbuild/openbsd-x64': 0.28.0
+      '@esbuild/openharmony-arm64': 0.28.0
+      '@esbuild/sunos-x64': 0.28.0
+      '@esbuild/win32-arm64': 0.28.0
+      '@esbuild/win32-ia32': 0.28.0
+      '@esbuild/win32-x64': 0.28.0
 
   escalade@3.2.0: {}
 
@@ -18484,9 +18765,9 @@ snapshots:
 
   ini@4.1.3: {}
 
-  inquirer@8.2.7(@types/node@22.19.17):
+  inquirer@8.2.7(@types/node@25.6.2):
     dependencies:
-      '@inquirer/external-editor': 1.0.3(@types/node@22.19.17)
+      '@inquirer/external-editor': 1.0.3(@types/node@25.6.2)
       ansi-escapes: 4.3.2
       chalk: 4.1.2
       cli-cursor: 3.1.0
@@ -19098,7 +19379,7 @@ snapshots:
   metro-minify-terser@0.84.4:
     dependencies:
       flow-enums-runtime: 0.0.6
-      terser: 5.46.2
+      terser: 5.47.1
 
   metro-resolver@0.84.4:
     dependencies:
@@ -20873,7 +21154,7 @@ snapshots:
       - bare-abort-controller
       - react-native-b4a
 
-  terser@5.46.2:
+  terser@5.47.1:
     dependencies:
       '@jridgewell/source-map': 0.3.11
       acorn: 8.16.0
@@ -20965,14 +21246,14 @@ snapshots:
 
   ts-log@2.2.7: {}
 
-  ts-node@10.9.2(@types/node@22.19.17)(typescript@5.6.3):
+  ts-node@10.9.2(@types/node@25.6.2)(typescript@5.6.3):
     dependencies:
       '@cspotcode/source-map-support': 0.8.1
       '@tsconfig/node10': 1.0.12
       '@tsconfig/node12': 1.0.11
       '@tsconfig/node14': 1.0.3
       '@tsconfig/node16': 1.0.4
-      '@types/node': 22.19.17
+      '@types/node': 25.6.2
       acorn: 8.16.0
       acorn-walk: 8.3.5
       arg: 4.1.3
@@ -21116,6 +21397,8 @@ snapshots:
 
   undici-types@6.21.0: {}
 
+  undici-types@7.19.2: {}
+
   undici-types@7.25.0: {}
 
   universalify@2.0.1: {}
@@ -21234,13 +21517,13 @@ snapshots:
       - zod
     optional: true
 
-  vite-node@2.1.9(@types/node@22.19.17)(terser@5.46.2):
+  vite-node@2.1.9(@types/node@22.19.17)(terser@5.47.1):
     dependencies:
       cac: 6.7.14
       debug: 4.4.3
       es-module-lexer: 1.7.0
       pathe: 1.1.2
-      vite: 5.4.21(@types/node@22.19.17)(terser@5.46.2)
+      vite: 5.4.21(@types/node@22.19.17)(terser@5.47.1)
     transitivePeerDependencies:
       - '@types/node'
       - less
@@ -21252,7 +21535,25 @@ snapshots:
       - supports-color
       - terser
 
-  vite@5.4.21(@types/node@22.19.17)(terser@5.46.2):
+  vite-node@2.1.9(@types/node@25.6.2)(terser@5.47.1):
+    dependencies:
+      cac: 6.7.14
+      debug: 4.4.3
+      es-module-lexer: 1.7.0
+      pathe: 1.1.2
+      vite: 5.4.21(@types/node@25.6.2)(terser@5.47.1)
+    transitivePeerDependencies:
+      - '@types/node'
+      - less
+      - lightningcss
+      - sass
+      - sass-embedded
+      - stylus
+      - sugarss
+      - supports-color
+      - terser
+
+  vite@5.4.21(@types/node@22.19.17)(terser@5.47.1):
     dependencies:
       esbuild: 0.21.5
       postcss: 8.5.13
@@ -21260,12 +21561,22 @@ snapshots:
     optionalDependencies:
       '@types/node': 22.19.17
       fsevents: 2.3.3
-      terser: 5.46.2
+      terser: 5.47.1
 
-  vitest@2.1.9(@types/node@22.19.17)(terser@5.46.2):
+  vite@5.4.21(@types/node@25.6.2)(terser@5.47.1):
+    dependencies:
+      esbuild: 0.21.5
+      postcss: 8.5.13
+      rollup: 4.60.2
+    optionalDependencies:
+      '@types/node': 25.6.2
+      fsevents: 2.3.3
+      terser: 5.47.1
+
+  vitest@2.1.9(@types/node@22.19.17)(terser@5.47.1):
     dependencies:
       '@vitest/expect': 2.1.9
-      '@vitest/mocker': 2.1.9(vite@5.4.21(@types/node@22.19.17)(terser@5.46.2))
+      '@vitest/mocker': 2.1.9(vite@5.4.21(@types/node@22.19.17)(terser@5.47.1))
       '@vitest/pretty-format': 2.1.9
       '@vitest/runner': 2.1.9
       '@vitest/snapshot': 2.1.9
@@ -21281,8 +21592,8 @@ snapshots:
       tinyexec: 0.3.2
       tinypool: 1.1.1
       tinyrainbow: 1.2.0
-      vite: 5.4.21(@types/node@22.19.17)(terser@5.46.2)
-      vite-node: 2.1.9(@types/node@22.19.17)(terser@5.46.2)
+      vite: 5.4.21(@types/node@22.19.17)(terser@5.47.1)
+      vite-node: 2.1.9(@types/node@22.19.17)(terser@5.47.1)
       why-is-node-running: 2.3.0
     optionalDependencies:
       '@types/node': 22.19.17
@@ -21297,10 +21608,45 @@ snapshots:
       - supports-color
       - terser
 
-  vitest@4.1.5(@opentelemetry/api@1.9.0)(@types/node@22.19.17)(vite@5.4.21(@types/node@22.19.17)(terser@5.46.2)):
+  vitest@2.1.9(@types/node@25.6.2)(terser@5.47.1):
+    dependencies:
+      '@vitest/expect': 2.1.9
+      '@vitest/mocker': 2.1.9(vite@5.4.21(@types/node@25.6.2)(terser@5.47.1))
+      '@vitest/pretty-format': 2.1.9
+      '@vitest/runner': 2.1.9
+      '@vitest/snapshot': 2.1.9
+      '@vitest/spy': 2.1.9
+      '@vitest/utils': 2.1.9
+      chai: 5.3.3
+      debug: 4.4.3
+      expect-type: 1.3.0
+      magic-string: 0.30.21
+      pathe: 1.1.2
+      std-env: 3.10.0
+      tinybench: 2.9.0
+      tinyexec: 0.3.2
+      tinypool: 1.1.1
+      tinyrainbow: 1.2.0
+      vite: 5.4.21(@types/node@25.6.2)(terser@5.47.1)
+      vite-node: 2.1.9(@types/node@25.6.2)(terser@5.47.1)
+      why-is-node-running: 2.3.0
+    optionalDependencies:
+      '@types/node': 25.6.2
+    transitivePeerDependencies:
+      - less
+      - lightningcss
+      - msw
+      - sass
+      - sass-embedded
+      - stylus
+      - sugarss
+      - supports-color
+      - terser
+
+  vitest@4.1.5(@opentelemetry/api@1.9.0)(@types/node@25.6.2)(vite@5.4.21(@types/node@25.6.2)(terser@5.47.1)):
     dependencies:
       '@vitest/expect': 4.1.5
-      '@vitest/mocker': 4.1.5(vite@5.4.21(@types/node@22.19.17)(terser@5.46.2))
+      '@vitest/mocker': 4.1.5(vite@5.4.21(@types/node@25.6.2)(terser@5.47.1))
       '@vitest/pretty-format': 4.1.5
       '@vitest/runner': 4.1.5
       '@vitest/snapshot': 4.1.5
@@ -21317,11 +21663,11 @@ snapshots:
       tinyexec: 1.1.2
       tinyglobby: 0.2.16
       tinyrainbow: 3.1.0
-      vite: 5.4.21(@types/node@22.19.17)(terser@5.46.2)
+      vite: 5.4.21(@types/node@25.6.2)(terser@5.47.1)
       why-is-node-running: 2.3.0
     optionalDependencies:
       '@opentelemetry/api': 1.9.0
-      '@types/node': 22.19.17
+      '@types/node': 25.6.2
     transitivePeerDependencies:
       - msw
     optional: true
