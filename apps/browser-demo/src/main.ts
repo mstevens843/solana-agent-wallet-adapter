@@ -4830,6 +4830,7 @@ function guidedDemoWalkthroughPage(): string {
             <h2>Start with a real request.</h2>
             <p>These are the approval moments Agentic is built for: the agent drafts, the wallet decides.</p>
           </div>
+          ${guidedDemoScenarioSelect(scenario)}
           <div class="guided-demo-scenario-list">
             ${GUIDED_DEMO_SCENARIOS.map((candidate) => guidedDemoScenarioCard(candidate)).join('')}
           </div>
@@ -4844,11 +4845,14 @@ function guidedDemoWalkthroughPage(): string {
           </div>
           <div class="guided-demo-runner-inner">
             ${guidedDemoStepRail()}
-            <div class="guided-demo-runner-body">
+            <div class="guided-demo-runner-body guided-demo-runner-body-desktop">
               ${guidedDemoRequestCard(scenario)}
               ${guidedDemoPreparedPlan(scenario)}
               ${guidedDemoReviewCard(scenario)}
               ${guidedDemoReceiptCard(scenario)}
+            </div>
+            <div class="guided-demo-runner-body guided-demo-runner-body-mobile">
+              ${guidedDemoMobileStageCard(scenario)}
             </div>
             ${guidedDemoActions()}
           </div>
@@ -4864,6 +4868,21 @@ function guidedDemoWalkthroughPage(): string {
         <a class="button-link mobile-redundant-nav" href="/docs">Read docs</a>
       </div>
     </section>
+  `;
+}
+
+function guidedDemoScenarioSelect(scenario: GuidedDemoScenario): string {
+  return `
+    <label class="guided-demo-scenario-select">
+      <span>Choose request</span>
+      <select data-demo-scenario-select ${state.busy ? 'disabled' : ''}>
+        ${GUIDED_DEMO_SCENARIOS.map((candidate) => `
+          <option value="${escapeHtml(candidate.id)}" ${candidate.id === scenario.id ? 'selected' : ''}>
+            ${escapeHtml(`${candidate.eyebrow} - ${candidate.title}`)}
+          </option>
+        `).join('')}
+      </select>
+    </label>
   `;
 }
 
@@ -5010,6 +5029,20 @@ function guidedDemoStepRail(): string {
         .join('')}
     </div>
   `;
+}
+
+function guidedDemoMobileStageCard(scenario: GuidedDemoScenario): string {
+  switch (state.guidedDemo.stage) {
+    case 'prepared':
+      return guidedDemoPreparedPlan(scenario);
+    case 'queued':
+      return guidedDemoReviewCard(scenario);
+    case 'receipt':
+      return guidedDemoReceiptCard(scenario);
+    case 'request':
+    default:
+      return guidedDemoRequestCard(scenario);
+  }
 }
 
 function guidedDemoRequestCard(scenario: GuidedDemoScenario): string {
@@ -15551,6 +15584,15 @@ function bind(): void {
   for (const button of document.querySelectorAll<HTMLButtonElement>('[data-demo-scenario]')) {
     button.addEventListener('click', () => {
       const scenario = guidedDemoScenarioById(button.dataset.demoScenario);
+      state.guidedDemo = defaultGuidedDemoState(scenario.id);
+      state.error = '';
+      render();
+    });
+  }
+
+  for (const select of document.querySelectorAll<HTMLSelectElement>('[data-demo-scenario-select]')) {
+    select.addEventListener('change', () => {
+      const scenario = guidedDemoScenarioById(select.value);
       state.guidedDemo = defaultGuidedDemoState(scenario.id);
       state.error = '';
       render();

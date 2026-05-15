@@ -1725,6 +1725,10 @@ code {
   gap: 9px;
 }
 
+.guided-demo-scenario-select {
+  display: none;
+}
+
 .guided-demo-scenario-card {
   align-items: start;
   background:
@@ -1985,6 +1989,10 @@ code {
 .guided-demo-runner-body {
   display: grid;
   gap: 12px;
+}
+
+.guided-demo-runner-body-mobile {
+  display: none;
 }
 
 .guided-demo-request-card,
@@ -15395,6 +15403,68 @@ button.danger:hover:not(:disabled) {
   .guided-demo-fact-grid,
   .guided-demo-review-route {
     grid-template-columns: 1fr;
+  }
+
+  .guided-demo-scenario-select {
+    display: grid;
+    gap: 7px;
+    min-width: 0;
+    position: relative;
+    width: 100%;
+  }
+
+  .guided-demo-scenario-select span {
+    color: var(--dim);
+    font-size: 0.68rem;
+    font-weight: 860;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+  }
+
+  .guided-demo-scenario-select select {
+    appearance: none;
+    background:
+      linear-gradient(135deg, rgba(63, 189, 131, 0.105), rgba(255, 255, 255, 0.034)),
+      rgba(0, 0, 0, 0.22);
+    border: 1px solid rgba(139, 205, 170, 0.34);
+    border-radius: 8px;
+    color: var(--text);
+    font: inherit;
+    font-size: 0.95rem;
+    font-weight: 820;
+    line-height: 1.2;
+    min-height: 48px;
+    overflow: hidden;
+    padding: 0 38px 0 12px;
+    text-overflow: ellipsis;
+    width: 100%;
+  }
+
+  .guided-demo-scenario-select::after {
+    border-left: 5px solid transparent;
+    border-right: 5px solid transparent;
+    border-top: 6px solid #8ee9b4;
+    bottom: 20px;
+    content: "";
+    pointer-events: none;
+    position: absolute;
+    right: 14px;
+  }
+
+  .guided-demo-scenario-list {
+    display: none;
+  }
+
+  .guided-demo-runner-body-desktop {
+    display: none;
+  }
+
+  .guided-demo-runner-body-mobile {
+    display: grid;
+  }
+
+  .guided-demo-policy-checks .agent-evidence-row {
+    grid-template-columns: minmax(0, 1fr);
   }
 
   .guided-demo-step {
