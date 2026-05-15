@@ -133,6 +133,7 @@ import {
 import {
   AI_PROVIDER_PRESETS,
   AGENT_PLAN_TEMPLATES,
+  AiPlanConnectionError,
   DEFAULT_AI_BASE_URL,
   DEFAULT_AI_MODEL,
   DEFAULT_AI_PROVIDER_ID,
@@ -151,6 +152,9 @@ import {
   generateSessionAiReview,
   inferTemplateIdForPrompt,
   inferredTemplateParameters,
+  normalizeAiAsk,
+  normalizeAiPlan,
+  normalizeAiReview,
   planWithStructuredSwapText,
   redactSecrets,
   templateById,
@@ -164,6 +168,7 @@ import {
   type AgentPlanTemplate,
   type AgentPlanTemplateField,
   type AiDiagnosticEntry,
+  type AiPlanRequest,
   type AiSettings,
   type BridgeAiStatus,
 } from './planner.js';
@@ -312,6 +317,21 @@ import {
   addAp2InboundDemoCreatedListener,
   type Ap2InboundDemoCreatedDetail,
 } from './ap2InboundDemoEvents.js';
+import {
+  ANDROID_DEVICE_AGENT_ENABLED,
+  DEVICE_AGENT_ENABLED,
+  isDeviceAgentWallet,
+} from './devGate.js';
+import {
+  DeviceAgentClientError,
+  deviceAgentDiagnosticsFromError,
+  deviceAgentRequestOrThrow,
+  isDeviceAgentBridgeAvailable,
+  parseDeviceAgentStatus as parseDeviceAgentStatusBase,
+  type DeviceAgentRuntimeKind,
+  type DeviceAgentRuntimeState,
+  type DeviceAgentStatus,
+} from './deviceAgentClient.js';
 import { setConnectedAddress, setConnectedCluster } from './walletState.js';
 import './devTabs/index.js';
 import { setCloudWalletBridge } from './cloudWalletBridge.js';
@@ -760,8 +780,17 @@ interface AgenticAndroidBridge {
   secureGet?: (key: string) => string;
   secureSet?: (key: string, value: string) => boolean;
   secureDelete?: (key: string) => boolean;
+  deviceAgentStatus?: () => string;
+  deviceAgentStart?: (configJson: string) => string;
+  deviceAgentStop?: () => string;
+  deviceAgentConfigure?: (configJson: string) => string;
+  deviceAgentRequest?: (requestId: string, method: string, payloadJson: string) => void;
   mwaRequest?: (requestId: string, method: string, payloadJson: string) => void;
 }
+
+// DeviceAgentStatus / DeviceAgentRuntimeState / DeviceAgentRuntimeKind are imported
+// from ./deviceAgentClient.js — the canonical contract owner. See `parseDeviceAgentStatus`
+// and `defaultDeviceAgentRuntime` for the runtime-context fallback used at call sites.
 
 interface IosNativeRestoreResult {
   backend: IosNativeMaintenanceBackend;
@@ -2075,6 +2104,7 @@ interface DemoState {
   aiSettings: AiSettings;
   aiSettingsPanelOpen: boolean | null;
   aiStatus: BridgeAiStatus | null;
+  deviceAgentStatus: DeviceAgentStatus | null;
   aiDiagnostics: AiDiagnosticEntry[];
   aiPlannerConfirmation: AiPlannerConfirmationState;
   toasts: Toast[];
@@ -2912,6 +2942,7 @@ const state: DemoState = {
   },
   aiSettingsPanelOpen: null,
   aiStatus: null,
+  deviceAgentStatus: null,
   aiDiagnostics: [],
   aiPlannerConfirmation: {
     status: 'untested',
@@ -3313,6 +3344,9 @@ async function bootstrap(): Promise<void> {
     if (state.aiSettings.mode === 'bridge') {
       await refreshBridgeAiStatus(false);
     }
+  }
+  if (state.aiSettings.mode === 'device-agent') {
+    await refreshDeviceAgentStatus(false);
   }
   render();
   void reconcilePendingTransactions({ trigger: 'bootstrap' });
@@ -9375,9 +9409,13 @@ function commandAiPreferenceSnapshotCard(): CommandPreferenceSnapshotCard {
   const providerPreset = aiProviderPresetById(state.aiSettings.provider);
   const provider = state.aiSettings.mode === 'bridge' && state.aiStatus?.provider
     ? state.aiStatus.provider
+    : state.aiSettings.mode === 'device-agent' && state.deviceAgentStatus?.provider
+      ? state.deviceAgentStatus.provider
     : providerPreset.label;
   const model = state.aiSettings.mode === 'bridge' && state.aiStatus?.model
     ? state.aiStatus.model
+    : state.aiSettings.mode === 'device-agent' && state.deviceAgentStatus?.model
+      ? state.deviceAgentStatus.model
     : state.aiSettings.model || providerPreset.model;
   const readiness = aiReadinessLabel(state.aiStatus);
   return {
@@ -9523,6 +9561,8 @@ function aiPathPreferenceLabel(mode: AiSettings['mode']): string {
       return 'Hosted BYOK';
     case 'bridge':
       return 'Local Bridge';
+    case 'device-agent':
+      return 'Device Agent';
     case 'session':
       return IS_ANDROID_APP ? 'Android Session' : 'Browser Session';
   }
@@ -9594,6 +9634,14 @@ function commandCenterAiPanel(): string {
             `Connect a temporary key in ${IS_ANDROID_APP ? 'this app runtime' : 'this tab'} without saving it to Agentic.`,
             'Session AI connection',
           )}
+          ${deviceAgentModeVisible() ? commandAiRouteCard(
+            'device-agent',
+            'Device Agent AI',
+            IS_ANDROID_APP
+              ? 'Connect the on-device runtime so agent requests stay inside this app boundary.'
+              : 'Connect the gated Device Agent setup for this wallet.',
+            'Device AI connection',
+          ) : ''}
         </div>
 
         ${state.aiSettings.mode === 'bridge' ? commandBridgePrereqPanel() : ''}
@@ -9684,6 +9732,12 @@ function commandAiWorkflowEducation(): string {
           'AI and workflow storage can run through the local runtime when the user wants private machine-local control.',
           'Still ends at explicit wallet approval and local signing.',
         )}
+        ${deviceAgentModeVisible() ? commandAiInfoCard(
+          'Device Agent',
+          'On-device route',
+          'The runtime path uses the same agent setup and workflow pipeline while its native worker is gated for development.',
+          'Useful for Seeker testing without changing approval authority.',
+        ) : ''}
       </div>
     </section>
   `;
@@ -11199,6 +11253,8 @@ function agentReviewPathLabel(source: AgentReviewSource | undefined): string {
       return 'Hosted BYOK';
     case 'bridge':
       return 'Local bridge';
+    case 'device-agent':
+      return 'Device Agent';
     case 'session':
       return 'Browser session';
     case 'mock':
@@ -11209,7 +11265,7 @@ function agentReviewPathLabel(source: AgentReviewSource | undefined): string {
 }
 
 function isAgentReviewSource(value: unknown): value is AgentReviewSource {
-  return value === 'hosted' || value === 'session' || value === 'bridge' || value === 'mock';
+  return value === 'hosted' || value === 'session' || value === 'bridge' || value === 'device-agent' || value === 'mock';
 }
 
 function agentReviewQuestionsForm(record: GeneratedPlanRecord): string {
@@ -13724,6 +13780,8 @@ function aiSettingsCard(location: 'rail' | 'planner' = 'planner'): string {
   const hideKeyEntry = shouldHideAiKeyEntry(status);
   const keyLabel = state.aiSettings.mode === 'bridge'
     ? 'Bridge session key'
+    : state.aiSettings.mode === 'device-agent'
+      ? 'Device Agent key'
     : state.aiSettings.mode === 'hosted'
       ? 'Hosted BYOK key'
       : IS_ANDROID_APP
@@ -13731,6 +13789,8 @@ function aiSettingsCard(location: 'rail' | 'planner' = 'planner'): string {
         : 'Browser session key';
   const securityCopy = state.aiSettings.mode === 'hosted'
     ? 'Hosted BYOK relays this key only for AI draft requests. It cannot queue approvals, create repeat payments, approve, submit, or sign.'
+    : state.aiSettings.mode === 'device-agent'
+      ? 'Device Agent stores the draft-route config in the selected runtime boundary. Queueing, repeat payments, approvals, submissions, and signatures remain separate workflow actions.'
     : state.aiSettings.mode === 'bridge'
       ? 'Local bridge AI drafts from your machine only. Needs Approval, repeat payments, proofs, and wallet signatures remain separate workflow actions.'
         : `${IS_ANDROID_APP ? 'Android session' : 'Browser session'} keys stay in ${IS_ANDROID_APP ? 'this app runtime' : 'this tab'} and draft plans only. Queueing, repeat payments, approvals, submissions, and signatures use the active workflow, not the AI key.`;
@@ -13830,13 +13890,15 @@ function aiSettingsCard(location: 'rail' | 'planner' = 'planner'): string {
           ${confirming ? `${buttonSpinner()}Confirming...` : 'Confirm planner'}
         </button>
         <button id="clearAiKey-${escapeHtml(scope)}" data-ai-action="clear-key" ${!canClearAiKey() ? 'disabled' : ''}>Clear key</button>
-        ${state.aiSettings.mode === 'bridge' ? `<button id="refreshAiStatus-${escapeHtml(scope)}" data-ai-action="refresh-status" ${state.busy ? 'disabled' : ''}>Refresh</button>` : ''}
+        ${state.aiSettings.mode === 'bridge' || state.aiSettings.mode === 'device-agent' ? `<button id="refreshAiStatus-${escapeHtml(scope)}" data-ai-action="refresh-status" ${state.busy ? 'disabled' : ''}>Refresh</button>` : ''}
+        ${state.aiSettings.mode === 'device-agent' && canStopDeviceAgentRuntime() ? `<button id="stopDeviceAgent-${escapeHtml(scope)}" data-ai-action="stop-device-agent" ${state.busy ? 'disabled' : ''} title="Stop the on-device runtime. Your config (provider, model, key) stays available so you can start again.">Stop runtime</button>` : ''}
       </div>
       ${isRail
         ? '<p class="ai-security-note compact">Drafts only. Wallet approvals stay separate.</p>'
         : `
           ${aiModeLimitations()}
           ${state.aiSettings.mode === 'bridge' ? localBridgeConnectionCard(status) : ''}
+          ${state.aiSettings.mode === 'device-agent' ? deviceAgentConnectionCard(state.deviceAgentStatus) : ''}
           <div class="ai-readiness-summary" aria-label="AI planner readiness">
             <div>
               <span>Planner check</span>
@@ -13883,11 +13945,17 @@ function aiModeSelectOptions(): SelectPickerOption[] {
   const options: Array<{ id: AiSettings['mode']; label: string }> = IS_ANDROID_APP
     ? [
         { id: 'session', label: 'Android session - drafts only' },
+        ...(deviceAgentModeVisible()
+          ? [{ id: 'device-agent' as const, label: 'Device Agent - drafts via device' }]
+          : []),
         { id: 'bridge', label: 'Local bridge AI - optional' },
         { id: 'hosted', label: 'Hosted BYOK - cloud relay' },
       ]
     : [
         { id: 'hosted', label: 'Hosted BYOK - drafts only' },
+        ...(deviceAgentModeVisible()
+          ? [{ id: 'device-agent' as const, label: 'Device Agent - drafts via device' }]
+          : []),
         { id: 'bridge', label: 'Local bridge AI - draft via bridge' },
         { id: 'session', label: 'Browser session - drafts only' },
       ];
@@ -13976,6 +14044,9 @@ function bridgeAiProviderLogoId(status: BridgeAiStatus | null): BrandLogoId | un
 }
 
 function aiModeDisabledReason(mode: AiSettings['mode']): string {
+  if (mode === 'device-agent' && !deviceAgentModeVisible()) {
+    return 'Device Agent is enabled only for local dev builds, Android device-agent builds, or allowlisted wallets.';
+  }
   if (mode === 'session' && state.aiSettings.provider === 'openai') {
     return OPENAI_BROWSER_SESSION_DISABLED_REASON;
   }
@@ -14019,6 +14090,11 @@ function aiProviderHelperText(): string {
       ? HOSTED_CUSTOM_PROVIDER_DISABLED_REASON
       : '';
   }
+  if (state.aiSettings.mode === 'device-agent') {
+    return IS_ANDROID_APP
+      ? 'Device Agent uses the gated Android native runtime and encrypted native config storage.'
+      : 'Device Agent is gated for local development or allowlisted cloud wallets.';
+  }
   return '';
 }
 
@@ -14059,6 +14135,17 @@ function aiModeLimitations(): string {
       </div>
     `;
   }
+  if (state.aiSettings.mode === 'device-agent') {
+    return `
+      <div class="ai-limitations">
+        <span>Device Agent boundary</span>
+        <ul>
+          <li>Device Agent is a gated development runtime path for AI drafting only.</li>
+          <li>Approvals, submissions, signatures, repeat payments, and proofs still use the normal workflow pipeline.</li>
+        </ul>
+      </div>
+    `;
+  }
   return `
     <div class="ai-limitations">
       <span>Local bridge AI boundary</span>
@@ -14066,6 +14153,53 @@ function aiModeLimitations(): string {
         <li>Local bridge AI drafts only from your machine.</li>
         <li>Private local workflow remains optional and separate from AI setup.</li>
       </ul>
+    </div>
+  `;
+}
+
+function deviceAgentConnectionCard(status: DeviceAgentStatus | null): string {
+  const available = Boolean(status?.available);
+  const configured = Boolean(status?.configured);
+  const tone = available ? configured ? 'connected' : 'partial' : 'offline';
+  const title = available
+    ? configured
+      ? 'Device Agent config ready'
+      : 'Device Agent runtime visible'
+    : 'Device Agent unavailable';
+  const detail = status?.message
+    ?? (available
+      ? status?.runtime === 'android-native'
+        ? 'The gated Android runtime is available for native draft, review, and ask requests.'
+        : 'The gated runtime path is available for setup. This surface remains status/control only.'
+      : 'Enable the Device Agent env or sign in with an allowlisted wallet to use this path.');
+  const provider = status?.provider ?? aiProviderPresetById(state.aiSettings.provider).label;
+  const model = status?.model ?? state.aiSettings.model ?? aiProviderPresetById(state.aiSettings.provider).model;
+  const lastError = status?.lastError ?? null;
+  const lastErrorBlock = lastError
+    ? `<p class="device-agent-last-error"><strong>${escapeHtml(
+        lastError.subcode ? `${lastError.code}:${lastError.subcode}` : lastError.code,
+      )}</strong> ${escapeHtml(lastError.message)}</p>`
+    : '';
+  const runtimeState = status?.state ?? 'unavailable';
+  const showNotificationNote = status?.runtime === 'android-native'
+    && (runtimeState === 'stopped' || runtimeState === 'unavailable');
+  const notificationNote = showNotificationNote
+    ? '<p class="device-agent-note">Confirming the planner starts the on-device runtime and shows a persistent Android notification while it is active.</p>'
+    : '';
+  return `
+    <div class="local-bridge-connection-card ${tone}${lastError ? ' has-last-error' : ''}">
+      <div class="local-bridge-connection-head">
+        <span>${escapeHtml(runtimeState)}</span>
+        <strong>${escapeHtml(title)}</strong>
+      </div>
+      <p>${escapeHtml(detail)}</p>
+      ${lastErrorBlock}
+      ${notificationNote}
+      <div class="local-bridge-facts">
+        <span>Runtime <strong>${escapeHtml(status?.runtime ?? 'not enabled')}</strong></span>
+        <span>Wallet <strong>${escapeHtml(state.address ? short(state.address) : state.cloudSession.walletAddress ? short(state.cloudSession.walletAddress) : 'Not connected')}</strong></span>
+        <span>AI <strong>${escapeHtml(`${provider} - ${model || 'model configured'}`)}</strong></span>
+      </div>
     </div>
   `;
 }
@@ -14166,6 +14300,7 @@ function isAiPlannerFailedForCurrentSettings(): boolean {
 function aiConfirmationLabel(): string {
   if (isAiPlannerConfirmedForCurrentSettings()) {
     if (state.aiSettings.mode === 'hosted') return 'Route confirmed';
+    if (state.aiSettings.mode === 'device-agent') return 'Runtime ready';
     if (state.aiSettings.mode === 'session') return 'Config checked';
     return 'Status confirmed';
   }
@@ -14216,6 +14351,7 @@ function confirmBridgeAiPlannerFromStatus(): void {
 function canConfirmAiPlanner(): boolean {
   if (state.busy) return false;
   if (state.aiSettings.mode === 'bridge') return true;
+  if (state.aiSettings.mode === 'device-agent' && !deviceAgentModeVisible()) return false;
   if (hostedByokCloudSessionReason()) return false;
   return Boolean(
     state.aiSettings.apiKey.trim()
@@ -14227,6 +14363,9 @@ function canConfirmAiPlanner(): boolean {
 function aiConfirmDisabledReason(): string {
   if (state.busy) return 'Wait for the current action to finish.';
   if (state.aiSettings.mode === 'bridge') return 'Start the local runtime, then confirm planner status.';
+  if (state.aiSettings.mode === 'device-agent' && !deviceAgentModeVisible()) {
+    return 'Device Agent is not enabled for this build or wallet.';
+  }
   const hostedBlockReason = hostedByokCloudSessionReason();
   if (hostedBlockReason) return hostedBlockReason;
   if (state.aiSettings.mode === 'session' && state.aiSettings.provider === 'openai') {
@@ -14235,6 +14374,8 @@ function aiConfirmDisabledReason(): string {
   if (!state.aiSettings.apiKey.trim()) {
     return state.aiSettings.mode === 'hosted'
       ? 'Add a Hosted BYOK request key before confirming.'
+      : state.aiSettings.mode === 'device-agent'
+        ? 'Add a Device Agent request key before confirming.'
       : 'Add a browser-compatible session key before confirming.';
   }
   if (!state.aiSettings.model.trim()) return 'Choose or enter an AI model before confirming.';
@@ -14256,6 +14397,7 @@ function canSaveBridgeAiKey(): boolean {
 
 function canSaveDirectAiKey(): boolean {
   return state.aiSettings.mode !== 'bridge'
+    && (state.aiSettings.mode !== 'device-agent' || deviceAgentModeVisible())
     && !hostedByokCloudSessionReason()
     && Boolean(state.aiSettings.apiKey.trim())
     && Boolean(state.aiSettings.model.trim())
@@ -14264,13 +14406,33 @@ function canSaveDirectAiKey(): boolean {
 }
 
 function canClearAiKey(): boolean {
-  return Boolean(state.aiSettings.apiKey.trim() || (state.aiSettings.mode === 'bridge' && isBridgeAiConfigured()));
+  return Boolean(
+    state.aiSettings.apiKey.trim()
+      || (state.aiSettings.mode === 'bridge' && isBridgeAiConfigured())
+      || (state.aiSettings.mode === 'device-agent' && state.deviceAgentStatus?.configured),
+  );
+}
+
+function canStopDeviceAgentRuntime(): boolean {
+  if (state.aiSettings.mode !== 'device-agent') return false;
+  const runtimeState = state.deviceAgentStatus?.state;
+  return runtimeState === 'running' || runtimeState === 'starting';
 }
 
 function canGenerateAiPlanFromSettings(): boolean {
   const modelReady = Boolean(state.aiSettings.model.trim());
   if (state.aiSettings.mode === 'bridge') {
     return Boolean(state.aiStatus?.available && !state.busy);
+  }
+  if (state.aiSettings.mode === 'device-agent') {
+    const status = state.deviceAgentStatus;
+    return Boolean(
+      deviceAgentModeVisible()
+        && status?.available
+        && status.configured
+        && status.state === 'running'
+        && !state.busy,
+    );
   }
   if (hostedByokCloudSessionReason()) return false;
   return Boolean(state.aiSettings.apiKey.trim() && modelReady && aiProviderReadyForCurrentMode() && !state.busy);
@@ -14279,6 +14441,10 @@ function canGenerateAiPlanFromSettings(): boolean {
 function hasDetectedAgentReviewPath(): boolean {
   if (state.aiSettings.mode === 'bridge') {
     return Boolean(state.aiStatus?.available);
+  }
+  if (state.aiSettings.mode === 'device-agent') {
+    const status = state.deviceAgentStatus;
+    return Boolean(status?.available && status.configured);
   }
   return isAiConfiguredForCurrentMode();
 }
@@ -14297,6 +14463,11 @@ function agentReviewUnavailableReason(record?: GeneratedPlanRecord): string {
       ? 'Agent review is ready through the local bridge.'
       : 'No local bridge agent detected.';
   }
+  if (state.aiSettings.mode === 'device-agent') {
+    return state.deviceAgentStatus?.configured
+      ? 'Device Agent review is ready through the gated runtime.'
+      : 'No configured Device Agent runtime detected.';
+  }
   return isAiConfiguredForCurrentMode()
     ? 'Agent review is ready.'
     : aiGenerateDisabledReason();
@@ -14312,6 +14483,14 @@ function aiGenerateDisabledReason(): string {
       return 'Start the local runtime, set a bridge key, then refresh AI status.';
     }
     return 'Bridge AI is ready.';
+  }
+  if (state.aiSettings.mode === 'device-agent') {
+    const status = state.deviceAgentStatus;
+    if (!deviceAgentModeVisible()) return 'Device Agent is not enabled for this build or wallet.';
+    if (!status?.available) return 'Refresh Device Agent status before generating.';
+    if (!status.configured) return 'Add a Device Agent key, then confirm planner.';
+    if (status.state !== 'running') return 'Start or confirm the Device Agent runtime before generating.';
+    return 'Device Agent runtime is ready for drafts.';
   }
   const hostedBlockReason = hostedByokCloudSessionReason();
   if (hostedBlockReason) return hostedBlockReason;
@@ -14338,6 +14517,10 @@ function isAiConfiguredForCurrentMode(): boolean {
   const modelReady = Boolean(state.aiSettings.model.trim());
   if (state.aiSettings.mode === 'bridge') {
     return Boolean(state.aiStatus?.available);
+  }
+  if (state.aiSettings.mode === 'device-agent') {
+    const status = state.deviceAgentStatus;
+    return Boolean(deviceAgentModeVisible() && status?.available && status.configured);
   }
   if (hostedByokCloudSessionReason()) return false;
   return Boolean(state.aiSettings.apiKey.trim() && modelReady && aiProviderReadyForCurrentMode());
@@ -14374,6 +14557,14 @@ function aiRouteStatusLabel(status: BridgeAiStatus | null): string {
     }
     return state.aiSettings.apiKey.trim() ? `browser draft - ${state.aiSettings.provider} - ${state.aiSettings.model || 'model configured'}` : 'browser draft - key required';
   }
+  if (state.aiSettings.mode === 'device-agent') {
+    if (!deviceAgentModeVisible()) return 'device agent - gated off';
+    const status = state.deviceAgentStatus;
+    if (status?.available && status.configured) {
+      return `${status.runtime} - ${status.provider ?? state.aiSettings.provider} - ${(status.model ?? state.aiSettings.model) || 'model configured'}`;
+    }
+    return state.aiSettings.apiKey.trim() ? 'device agent - config entered' : 'device agent - key required';
+  }
   return status?.available
     ? `${status.source} - ${status.provider ?? status.apiFormat ?? 'AI'} - ${status.model ?? 'model configured'}`
     : 'bridge - not configured';
@@ -14382,6 +14573,14 @@ function aiRouteStatusLabel(status: BridgeAiStatus | null): string {
 function aiReadinessLabel(status: BridgeAiStatus | null): string {
   if (state.aiSettings.mode === 'bridge') {
     return status?.available ? 'Bridge AI verified' : 'Bridge key required';
+  }
+  if (state.aiSettings.mode === 'device-agent') {
+    const status = state.deviceAgentStatus;
+    if (!deviceAgentModeVisible()) return 'Device Agent gated off';
+    if (status?.available && status.configured) {
+      return status.state === 'running' ? 'Device Agent running' : 'Device Agent configured';
+    }
+    return state.aiSettings.apiKey.trim() ? 'Device config ready' : 'Device key required';
   }
   if (state.aiSettings.mode === 'session' && state.aiSettings.provider === 'openai') {
     return 'Use hosted or bridge for OpenAI';
@@ -14411,6 +14610,156 @@ function aiRouteDiagnostic(path: string, method = 'POST'): AiDiagnosticEntry {
   });
 }
 
+function aiDraftRoutePath(action: 'generate-plan' | 'review-plan' | 'ask-about-plan'): string {
+  if (state.aiSettings.mode === 'bridge') return `/bridge/ai/${action}`;
+  if (state.aiSettings.mode === 'device-agent') return `/api/device-agent/${action}`;
+  return `/api/ai/${action}`;
+}
+
+async function generateDeviceAgentPlan(
+  request: AiPlanRequest,
+  options: { signal?: AbortSignal } = {},
+): Promise<AgentPlan> {
+  await assertDeviceAgentScaffoldAvailable('generate-plan', options.signal);
+  if (canUseDeviceAgentNative()) {
+    const raw = await invokeDeviceAgentNative<unknown>('generatePlan', deviceAgentGeneratePlanPayload(request), {
+      action: 'generate-plan',
+      ...(options.signal && { signal: options.signal }),
+    });
+    return normalizeAiPlan(raw, request);
+  }
+  throw deviceAgentWorkerNotImplementedError('generate-plan');
+}
+
+async function generateDeviceAgentReview(request: AgentPlanReviewRequest): Promise<AgentPlanReviewResult> {
+  await assertDeviceAgentScaffoldAvailable('review-plan');
+  if (canUseDeviceAgentNative()) {
+    const raw = await invokeDeviceAgentNative<unknown>('reviewPlan', deviceAgentReviewPayload(request), {
+      action: 'review-plan',
+    });
+    return normalizeAiReview(raw, request);
+  }
+  throw deviceAgentWorkerNotImplementedError('review-plan');
+}
+
+async function generateDeviceAgentAsk(request: AgentPlanAskRequest): Promise<AgentPlanAskResult> {
+  await assertDeviceAgentScaffoldAvailable('ask-about-plan');
+  if (canUseDeviceAgentNative()) {
+    const raw = await invokeDeviceAgentNative<unknown>('ask', deviceAgentAskPayload(request), {
+      action: 'ask-about-plan',
+    });
+    return normalizeAiAsk(raw);
+  }
+  throw deviceAgentWorkerNotImplementedError('ask-about-plan');
+}
+
+function canUseDeviceAgentNative(): boolean {
+  return IS_ANDROID_APP && isDeviceAgentBridgeAvailable();
+}
+
+async function invokeDeviceAgentNative<R>(
+  method: 'generatePlan' | 'reviewPlan' | 'ask',
+  payload: unknown,
+  options: { action: string; signal?: AbortSignal },
+): Promise<R> {
+  try {
+    const requestOptions = options.signal ? { signal: options.signal } : {};
+    const { status, result } = await deviceAgentRequestOrThrow<R>(method, payload, requestOptions);
+    state.deviceAgentStatus = parseDeviceAgentStatus(status);
+    if (result === undefined || result === null) {
+      throw new Error(`Device Agent ${options.action} returned an empty payload.`);
+    }
+    return result;
+  } catch (err) {
+    if (err instanceof DeviceAgentClientError && err.status) {
+      state.deviceAgentStatus = parseDeviceAgentStatus(err.status);
+    }
+    throw deviceAgentNativeError(options.action, err);
+  }
+}
+
+function deviceAgentGeneratePlanPayload(request: AiPlanRequest): Record<string, unknown> {
+  const protocolConnectors = request.connectorContext ?? [];
+  return {
+    userPrompt: request.prompt,
+    prompt: request.prompt,
+    template: request.template,
+    parameters: request.parameters,
+    protocolConnectors,
+    ...(request.userNotes ? { userNotes: request.userNotes } : {}),
+    ...(request.connectorContext ? { connectorContext: request.connectorContext } : {}),
+  };
+}
+
+function deviceAgentReviewPayload(request: AgentPlanReviewRequest): Record<string, unknown> {
+  return {
+    plan: request.plan,
+    ...(request.instruction ? { instruction: request.instruction } : {}),
+    ...(request.walletAddress ? { walletAddress: request.walletAddress } : {}),
+    ...(request.cluster ? { cluster: request.cluster } : {}),
+    ...(request.context ? { context: request.context } : {}),
+    ...(request.mode ? { mode: request.mode } : {}),
+  };
+}
+
+function deviceAgentAskPayload(request: AgentPlanAskRequest): Record<string, unknown> {
+  return {
+    plan: request.plan,
+    question: request.question,
+    ...(request.walletAddress ? { walletAddress: request.walletAddress } : {}),
+    ...(request.cluster ? { cluster: request.cluster } : {}),
+    ...(request.context ? { context: request.context } : {}),
+  };
+}
+
+function deviceAgentNativeError(action: string, err: unknown): Error {
+  if (err instanceof AiPlanConnectionError) return err;
+  if (err instanceof DeviceAgentClientError) {
+    const diagnostics = deviceAgentDiagnosticsFromError(err, {
+      action,
+      provider: state.deviceAgentStatus?.provider ?? state.aiSettings.provider,
+      model: state.deviceAgentStatus?.model ?? state.aiSettings.model,
+    });
+    return new AiPlanConnectionError(
+      `Device Agent ${action} failed: ${err.message}`,
+      diagnostics,
+    );
+  }
+  if (err instanceof Error) return err;
+  return new Error(`Device Agent ${action} failed: ${String(err)}`);
+}
+
+function isDeviceAgentErrorDiagnostics(err: unknown): boolean {
+  if (err instanceof DeviceAgentClientError) return true;
+  return aiDiagnosticsFromError(err).some(
+    (entry) => entry.path?.startsWith('/api/device-agent/') === true,
+  );
+}
+
+async function assertDeviceAgentScaffoldAvailable(action: string, signal?: AbortSignal): Promise<void> {
+  if (signal?.aborted) throw new DOMException('The operation was aborted.', 'AbortError');
+  const status = await refreshDeviceAgentStatus(true);
+  if (!status.available || !status.configured) {
+    throw new Error('Device Agent runtime is not configured. Add a key, confirm planner, then try again.');
+  }
+  state.aiDiagnostics = [
+    aiRouteDiagnostic(`/api/device-agent/${action}`),
+    {
+      code: 'AI_ROUTE',
+      message: 'Device Agent runtime selected.',
+      detail: `${status.runtime} - ${status.provider ?? state.aiSettings.provider} - ${(status.model ?? state.aiSettings.model) || 'model configured'}`,
+      method: 'POST',
+      path: `/api/device-agent/${action}`,
+    },
+  ];
+}
+
+function deviceAgentWorkerNotImplementedError(action: string): Error {
+  return new Error(
+    `Device Agent ${action} runs natively on the Android device-agent build. This runtime only exposes the scaffold; install the enabled Android build to draft, or use Hosted BYOK, Browser Session, or Local Bridge here.`,
+  );
+}
+
 function appendAiDiagnostic(entry: AiDiagnosticEntry): void {
   state.aiDiagnostics = [...state.aiDiagnostics, entry].slice(-6);
 }
@@ -14430,10 +14779,12 @@ function applyAiErrorDiagnostics(err: unknown, fallbackMessage: string): string 
 }
 
 function aiErrorToastTitle(err: unknown): string {
+  if (isDeviceAgentErrorDiagnostics(err)) return 'Device Agent draft failed';
   return aiRouteMismatchDiagnostic(err) ? 'Hosted AI route failed' : 'AI plan failed';
 }
 
 function aiConfirmErrorToastTitle(err: unknown): string {
+  if (isDeviceAgentErrorDiagnostics(err)) return 'Device Agent planner check failed';
   return aiRouteMismatchDiagnostic(err) ? 'Hosted AI route failed' : 'Planner check failed';
 }
 
@@ -14479,6 +14830,9 @@ function syncAiActionButtons(): void {
   }
   for (const clearButton of document.querySelectorAll<HTMLButtonElement>('[data-ai-action="clear-key"]')) {
     clearButton.disabled = !canClearAiKey();
+  }
+  for (const stopButton of document.querySelectorAll<HTMLButtonElement>('[data-ai-action="stop-device-agent"]')) {
+    stopButton.disabled = state.busy || !canStopDeviceAgentRuntime();
   }
   if (generateButton) {
     generateButton.disabled = !canGenerateAi || aiDrafting || state.busy;
@@ -16239,7 +16593,14 @@ function bind(): void {
           void runClearAiKey();
           return;
         case 'refresh-status':
-          void runRefreshAiStatus();
+          if (state.aiSettings.mode === 'device-agent') {
+            void runRefreshDeviceAgentStatus();
+          } else {
+            void runRefreshAiStatus();
+          }
+          return;
+        case 'stop-device-agent':
+          void runStopDeviceAgentRuntime();
           return;
       }
     });
@@ -16546,7 +16907,8 @@ function bind(): void {
   for (const button of document.querySelectorAll<HTMLButtonElement>('[data-ai-mode-choice]')) {
     button.addEventListener('click', () => {
       const value = button.dataset.aiModeChoice;
-      const mode: AiSettings['mode'] = value === 'session' || value === 'hosted' ? value : 'bridge';
+      if (!value || !isAiMode(value)) return;
+      const mode = value;
       setAiPlannerMode(mode);
     });
   }
@@ -16554,7 +16916,8 @@ function bind(): void {
   for (const control of document.querySelectorAll<HTMLSelectElement>('[data-ai-control="mode"]')) {
     control.addEventListener('change', (event) => {
       const value = (event.currentTarget as HTMLSelectElement).value;
-      const mode: AiSettings['mode'] = value === 'session' || value === 'hosted' ? value : 'bridge';
+      if (!isAiMode(value)) return;
+      const mode = value;
       setAiPlannerMode(mode);
     });
   }
@@ -18700,7 +19063,7 @@ async function runGenerateAiPlan(): Promise<void> {
       connectorContext: connectorAiPlannerContext(template, parameters, connectorDraftEnvironment()),
     };
     state.aiDiagnostics = [
-      aiRouteDiagnostic(state.aiSettings.mode === 'bridge' ? '/bridge/ai/generate-plan' : '/api/ai/generate-plan'),
+      aiRouteDiagnostic(aiDraftRoutePath('generate-plan')),
     ];
     render();
     const generatedPlan = state.aiSettings.mode === 'bridge'
@@ -18711,7 +19074,9 @@ async function runGenerateAiPlan(): Promise<void> {
       })
       : state.aiSettings.mode === 'hosted'
         ? await generateHostedAiPlan(state.aiSettings, request, hostedAiRequestOptions({ signal: operation.controller.signal }))
-        : await generateSessionAiPlan(state.aiSettings, request, { signal: operation.controller.signal });
+        : state.aiSettings.mode === 'device-agent'
+          ? await generateDeviceAgentPlan(request, { signal: operation.controller.signal })
+          : await generateSessionAiPlan(state.aiSettings, request, { signal: operation.controller.signal });
     assertAiDraftActive(operation);
     const plan = planWithRuntimeTokenLabels(generatedPlan);
     state.agentPlan = plan;
@@ -19100,6 +19465,8 @@ async function runAskAgentAnything(planId: string, question: string): Promise<vo
       });
     } else if (state.aiSettings.mode === 'hosted') {
       result = await generateHostedAiAsk(state.aiSettings, request, hostedAiRequestOptions());
+    } else if (state.aiSettings.mode === 'device-agent') {
+      result = await generateDeviceAgentAsk(request);
     } else {
       result = await generateSessionAiAsk(state.aiSettings, request);
     }
@@ -20711,7 +21078,7 @@ async function runAgentReview(
 ): Promise<AgentPlanReviewResult> {
   const request = agentReviewRequest(record, deterministicFacts, bundle);
   state.aiDiagnostics = [
-    aiRouteDiagnostic(state.aiSettings.mode === 'bridge' ? '/bridge/ai/review-plan' : '/api/ai/review-plan'),
+    aiRouteDiagnostic(aiDraftRoutePath('review-plan')),
   ];
   render();
   if (state.aiSettings.mode === 'bridge') {
@@ -20722,6 +21089,9 @@ async function runAgentReview(
   }
   if (state.aiSettings.mode === 'hosted') {
     return generateHostedAiReview(state.aiSettings, request, hostedAiRequestOptions());
+  }
+  if (state.aiSettings.mode === 'device-agent') {
+    return generateDeviceAgentReview(request);
   }
   return generateSessionAiReview(state.aiSettings, request);
 }
@@ -21681,12 +22051,18 @@ function agentReviewProviderLabel(): string {
   if (state.aiSettings.mode === 'bridge') {
     return state.aiStatus?.provider ?? state.aiStatus?.apiFormat ?? 'Local bridge AI';
   }
+  if (state.aiSettings.mode === 'device-agent') {
+    return state.deviceAgentStatus?.provider ?? aiProviderPresetById(state.aiSettings.provider).label;
+  }
   return aiProviderPresetById(state.aiSettings.provider).label;
 }
 
 function agentReviewModelLabel(): string {
   if (state.aiSettings.mode === 'bridge') {
     return state.aiStatus?.model ?? 'model configured';
+  }
+  if (state.aiSettings.mode === 'device-agent') {
+    return state.deviceAgentStatus?.model ?? state.aiSettings.model ?? 'model configured';
   }
   return state.aiSettings.model || aiProviderPresetById(state.aiSettings.provider).model;
 }
@@ -23913,17 +24289,24 @@ async function runSaveDirectAiKey(): Promise<void> {
   }
   await run('ai', async () => {
     saveCurrentSessionAiApiKey();
+    if (state.aiSettings.mode === 'device-agent') {
+      await configureDeviceAgentRuntime();
+    }
     resetAiPlannerConfirmation('AI draft key saved. Confirm planner before generating if you want a route or config check.');
-    appendAiDiagnostic(aiRouteDiagnostic('/api/ai/generate-plan'));
+    appendAiDiagnostic(aiRouteDiagnostic(aiDraftRoutePath('generate-plan')));
     pushToast(
       'success',
       state.aiSettings.mode === 'hosted'
         ? 'Hosted BYOK key entered'
+        : state.aiSettings.mode === 'device-agent'
+          ? 'Device Agent key entered'
         : IS_ANDROID_APP
           ? 'Android session key entered'
           : 'Browser session key entered',
       state.aiSettings.mode === 'hosted'
         ? 'Hosted BYOK will relay only submitted AI draft requests. Queueing, schedules, and signing stay in the active workflow.'
+        : state.aiSettings.mode === 'device-agent'
+          ? 'Device Agent config was staged for the gated runtime. Queueing, schedules, and signing stay in the active workflow.'
         : `${IS_ANDROID_APP ? 'Android session' : 'Browser session'} AI can draft plans in ${IS_ANDROID_APP ? 'this app runtime' : 'this tab'}. Queueing, schedules, and signing stay in the active workflow.`,
     );
   });
@@ -23973,6 +24356,27 @@ async function runConfirmAiPlanner(): Promise<void> {
         return;
       }
 
+      if (state.aiSettings.mode === 'device-agent') {
+        await configureDeviceAgentRuntime();
+        const status = await startDeviceAgentRuntime();
+        if (!status.available || !status.configured) {
+          throw new Error(status.message || 'Device Agent runtime is not configured.');
+        }
+        state.aiDiagnostics = [
+          aiRouteDiagnostic('/api/device-agent/status', 'GET'),
+          {
+            code: 'AI_PLAN_READY',
+            message: 'Device Agent planner route confirmed. No plan was generated.',
+            detail: `${status.runtime} - ${status.provider ?? state.aiSettings.provider} - ${(status.model ?? state.aiSettings.model) || 'model configured'}`,
+            method: 'GET',
+            path: '/api/device-agent/status',
+          },
+        ];
+        setAiPlannerConfirmation('confirmed', 'Device Agent runtime is configured for drafts only. Workflow capability is unchanged.');
+        replaceToast(toastId, 'success', 'Planner confirmed', 'Device Agent route is ready for drafts only.');
+        return;
+      }
+
       if (state.aiSettings.provider === 'openai') {
         throw new Error(OPENAI_BROWSER_SESSION_DISABLED_REASON);
       }
@@ -24014,7 +24418,51 @@ async function runClearAiKey(): Promise<void> {
       }).catch(() => undefined);
       await refreshBridgeAiStatus(false);
     }
+    if (state.aiSettings.mode === 'device-agent') {
+      await clearDeviceAgentRuntimeConfig();
+    }
     pushToast('success', 'AI key cleared', aiClearMessage());
+  });
+}
+
+async function runRefreshDeviceAgentStatus(): Promise<void> {
+  await run('ai', async () => {
+    const status = await refreshDeviceAgentStatus(true);
+    if (!status.configured) {
+      resetAiPlannerConfirmation('Device Agent status refreshed. Confirm planner again after setting a key.');
+    }
+    pushToast(
+      'success',
+      'Device Agent refreshed',
+      status.available
+        ? status.configured
+          ? 'Device Agent runtime config is staged for drafts only.'
+          : 'Device Agent runtime is visible but not configured.'
+        : status.message || 'Device Agent runtime is unavailable.',
+    );
+  }, {
+    onError(message) {
+      state.error = '';
+      pushToast('error', 'Device Agent unavailable', message);
+    },
+  });
+}
+
+async function runStopDeviceAgentRuntime(): Promise<void> {
+  await run('ai', async () => {
+    const status = await stopDeviceAgentRuntime();
+    pushToast(
+      'success',
+      'Device Agent stopped',
+      status.state === 'stopped'
+        ? 'Device Agent runtime stopped. Config is preserved; start again to resume drafting.'
+        : status.message || 'Device Agent runtime is no longer running.',
+    );
+  }, {
+    onError(message) {
+      state.error = '';
+      pushToast('error', 'Device Agent stop failed', message);
+    },
   });
 }
 
@@ -24050,6 +24498,9 @@ function aiClearMessage(): string {
   if (state.aiSettings.mode === 'hosted') {
     return 'Hosted BYOK key removed from this browser session.';
   }
+  if (state.aiSettings.mode === 'device-agent') {
+    return 'Device Agent key and staged runtime config removed from this app.';
+  }
   if (state.aiSettings.mode === 'session') {
     return IS_ANDROID_APP
       ? 'Android session key removed from this app.'
@@ -24061,6 +24512,9 @@ function aiClearMessage(): string {
 function aiModeToastMessage(mode: AiSettings['mode']): string {
   if (mode === 'bridge') {
     return 'Local bridge AI can draft plans in private local mode.';
+  }
+  if (mode === 'device-agent') {
+    return 'Device Agent AI uses the gated runtime path for drafting only.';
   }
   if (mode === 'hosted') {
     return 'Hosted BYOK drafts plans only. Workflow actions still require explicit wallet review.';
@@ -24084,6 +24538,9 @@ function setAiPlannerMode(mode: AiSettings['mode']): void {
   state.aiSettings.apiKey = shouldHideAiKeyEntry() ? '' : loadSessionAiApiKey(state.aiSettings);
   if (shouldHideAiKeyEntry()) {
     clearCurrentSessionAiApiKey();
+  }
+  if (mode === 'device-agent') {
+    void refreshDeviceAgentStatus(false);
   }
   resetAiPlannerConfirmation('AI path changed. Workflow capability is unchanged.');
   savePersistedState();
@@ -25941,7 +26398,7 @@ async function generateRecurringAiPlan(draft: RecurringDraft): Promise<AgentPlan
     connectorContext: recurringConnectorPlannerContext(draft),
   };
   state.aiDiagnostics = [
-    aiRouteDiagnostic(state.aiSettings.mode === 'bridge' ? '/bridge/ai/generate-plan' : '/api/ai/generate-plan'),
+    aiRouteDiagnostic(aiDraftRoutePath('generate-plan')),
   ];
   render();
   const generated = state.aiSettings.mode === 'bridge'
@@ -25951,7 +26408,9 @@ async function generateRecurringAiPlan(draft: RecurringDraft): Promise<AgentPlan
     })
     : state.aiSettings.mode === 'hosted'
       ? await generateHostedAiPlan(state.aiSettings, request, hostedAiRequestOptions())
-      : await generateSessionAiPlan(state.aiSettings, request);
+      : state.aiSettings.mode === 'device-agent'
+        ? await generateDeviceAgentPlan(request)
+        : await generateSessionAiPlan(state.aiSettings, request);
   return planWithRuntimeTokenLabels({
     ...fallback,
     intent: generated.intent || fallback.intent,
@@ -30172,12 +30631,16 @@ function systemHealthInputs(): {
   bridgeUrl: string | null;
   bridgeToken: string | null;
   bridgeActive: boolean;
+  deviceAgent?: ReturnType<typeof deviceAgentHealthHint>;
 } {
   const aiMode: AiHealthMode = state.aiSettings.mode === 'session'
     ? 'session'
     : state.aiSettings.mode === 'bridge'
       ? 'bridge'
+      : state.aiSettings.mode === 'device-agent'
+        ? 'device-agent'
       : 'hosted';
+  const deviceAgent = aiMode === 'device-agent' ? deviceAgentHealthHint() : undefined;
   return {
     rpcUrl: activeRpcUrl(),
     cluster: state.cluster,
@@ -30187,6 +30650,28 @@ function systemHealthInputs(): {
     bridgeUrl: state.bridgeUrl || null,
     bridgeToken: state.bridgeToken || null,
     bridgeActive: state.bridgeActive,
+    ...(deviceAgent && { deviceAgent }),
+  };
+}
+
+function deviceAgentHealthHint() {
+  const status = state.deviceAgentStatus;
+  if (!status) {
+    return {
+      available: false,
+      configured: false,
+      state: 'unavailable' as const,
+      runtime: (IS_ANDROID_APP ? 'android-native' : 'browser-dev') as 'android-native' | 'browser-dev',
+      bridgeAvailable: IS_ANDROID_APP && isDeviceAgentBridgeAvailable(),
+    };
+  }
+  return {
+    available: status.available,
+    configured: status.configured,
+    state: status.state,
+    runtime: status.runtime,
+    bridgeAvailable: IS_ANDROID_APP && isDeviceAgentBridgeAvailable(),
+    ...(status.message && { message: status.message }),
   };
 }
 
@@ -31373,6 +31858,224 @@ async function refreshBridgeAiStatus(strict: boolean): Promise<void> {
       throw err;
     }
   }
+}
+
+async function refreshDeviceAgentStatus(strict: boolean): Promise<DeviceAgentStatus> {
+  try {
+    const status = await loadDeviceAgentStatus();
+    state.deviceAgentStatus = status;
+    return status;
+  } catch (err) {
+    const status = unavailableDeviceAgentStatus(err instanceof Error ? err.message : String(err));
+    state.deviceAgentStatus = status;
+    if (strict) {
+      throw err;
+    }
+    return status;
+  }
+}
+
+async function configureDeviceAgentRuntime(): Promise<DeviceAgentStatus> {
+  const config = deviceAgentConfigPayload(true);
+  if (IS_ANDROID_APP && isDeviceAgentBridgeAvailable()) {
+    const status = await deviceAgentNativeStatusCall('configure', config);
+    state.deviceAgentStatus = status;
+    return status;
+  }
+  const android = agenticAndroidBridge();
+  if (IS_ANDROID_APP && android?.deviceAgentConfigure) {
+    const status = parseDeviceAgentStatus(android.deviceAgentConfigure(JSON.stringify(config)));
+    state.deviceAgentStatus = status;
+    return status;
+  }
+  if (cloudSessionMatchesWallet()) {
+    const status = parseDeviceAgentStatus(await cloudRequest('/api/device-agent/control', {
+      method: 'POST',
+      body: JSON.stringify({ action: 'configure', settings: deviceAgentConfigPayload(false) }),
+    }));
+    state.deviceAgentStatus = status;
+    return status;
+  }
+  const status = browserDevDeviceAgentStatus({
+    configured: Boolean(state.aiSettings.apiKey.trim() && state.aiSettings.model.trim()),
+    state: 'stopped',
+  });
+  state.deviceAgentStatus = status;
+  return status;
+}
+
+async function startDeviceAgentRuntime(): Promise<DeviceAgentStatus> {
+  const config = deviceAgentConfigPayload(true);
+  if (IS_ANDROID_APP && isDeviceAgentBridgeAvailable()) {
+    const status = await deviceAgentNativeStatusCall('start', config);
+    state.deviceAgentStatus = status;
+    return status;
+  }
+  const android = agenticAndroidBridge();
+  if (IS_ANDROID_APP && android?.deviceAgentStart) {
+    const status = parseDeviceAgentStatus(android.deviceAgentStart(JSON.stringify(config)));
+    state.deviceAgentStatus = status;
+    return status;
+  }
+  if (cloudSessionMatchesWallet()) {
+    const status = parseDeviceAgentStatus(await cloudRequest('/api/device-agent/control', {
+      method: 'POST',
+      body: JSON.stringify({ action: 'start', settings: deviceAgentConfigPayload(false) }),
+    }));
+    state.deviceAgentStatus = status;
+    return status;
+  }
+  const status = browserDevDeviceAgentStatus({
+    configured: Boolean(state.aiSettings.apiKey.trim() && state.aiSettings.model.trim()),
+    state: 'running',
+  });
+  state.deviceAgentStatus = status;
+  return status;
+}
+
+async function stopDeviceAgentRuntime(): Promise<DeviceAgentStatus> {
+  if (IS_ANDROID_APP && isDeviceAgentBridgeAvailable()) {
+    const status = await deviceAgentNativeStatusCall('stop', {});
+    state.deviceAgentStatus = status;
+    return status;
+  }
+  const android = agenticAndroidBridge();
+  if (IS_ANDROID_APP && android?.deviceAgentStop) {
+    const status = parseDeviceAgentStatus(android.deviceAgentStop());
+    state.deviceAgentStatus = status;
+    return status;
+  }
+  if (cloudSessionMatchesWallet()) {
+    const status = parseDeviceAgentStatus(await cloudRequest('/api/device-agent/control', {
+      method: 'POST',
+      body: JSON.stringify({ action: 'stop' }),
+    }));
+    state.deviceAgentStatus = status;
+    return status;
+  }
+  const status = browserDevDeviceAgentStatus({
+    configured: Boolean(state.aiSettings.apiKey.trim() && state.aiSettings.model.trim()),
+    state: 'stopped',
+  });
+  state.deviceAgentStatus = status;
+  return status;
+}
+
+async function clearDeviceAgentRuntimeConfig(): Promise<DeviceAgentStatus> {
+  if (IS_ANDROID_APP && isDeviceAgentBridgeAvailable()) {
+    const status = await deviceAgentNativeStatusCall('configure', { clear: true });
+    state.deviceAgentStatus = status;
+    return status;
+  }
+  const android = agenticAndroidBridge();
+  if (IS_ANDROID_APP && android?.deviceAgentConfigure) {
+    const status = parseDeviceAgentStatus(android.deviceAgentConfigure(JSON.stringify({ clear: true })));
+    state.deviceAgentStatus = status;
+    return status;
+  }
+  if (cloudSessionMatchesWallet()) {
+    const status = parseDeviceAgentStatus(await cloudRequest('/api/device-agent/control', {
+      method: 'POST',
+      body: JSON.stringify({ action: 'clear' }),
+    }));
+    state.deviceAgentStatus = status;
+    return status;
+  }
+  const status = browserDevDeviceAgentStatus({ configured: false, state: 'stopped' });
+  state.deviceAgentStatus = status;
+  return status;
+}
+
+async function loadDeviceAgentStatus(): Promise<DeviceAgentStatus> {
+  if (!deviceAgentModeVisible()) {
+    return unavailableDeviceAgentStatus('Device Agent is not enabled for this build or wallet.');
+  }
+  if (IS_ANDROID_APP && isDeviceAgentBridgeAvailable()) {
+    return deviceAgentNativeStatusCall('status', {});
+  }
+  const android = agenticAndroidBridge();
+  if (IS_ANDROID_APP && android?.deviceAgentStatus) {
+    return parseDeviceAgentStatus(android.deviceAgentStatus());
+  }
+  if (cloudSessionMatchesWallet()) {
+    return parseDeviceAgentStatus(await cloudRequest('/api/device-agent/status', { method: 'GET' }));
+  }
+  return browserDevDeviceAgentStatus({
+    configured: Boolean(state.aiSettings.apiKey.trim() && state.aiSettings.model.trim()),
+    state: 'stopped',
+  });
+}
+
+async function deviceAgentNativeStatusCall(
+  method: 'status' | 'configure' | 'start' | 'stop',
+  payload: Record<string, unknown>,
+): Promise<DeviceAgentStatus> {
+  try {
+    const { status } = await deviceAgentRequestOrThrow(method, payload);
+    return parseDeviceAgentStatus(status);
+  } catch (err) {
+    if (err instanceof DeviceAgentClientError && err.status) {
+      state.deviceAgentStatus = parseDeviceAgentStatus(err.status);
+    }
+    throw deviceAgentNativeError(method, err);
+  }
+}
+
+function deviceAgentConfigPayload(includeApiKey: boolean): Record<string, string> {
+  return {
+    provider: state.aiSettings.provider,
+    apiFormat: state.aiSettings.apiFormat,
+    baseUrl: state.aiSettings.baseUrl,
+    model: state.aiSettings.model,
+    ...(includeApiKey ? { apiKey: state.aiSettings.apiKey } : {}),
+  };
+}
+
+function defaultDeviceAgentRuntime(): DeviceAgentRuntimeKind {
+  if (IS_ANDROID_APP) return 'android-native';
+  if (cloudSessionMatchesWallet()) return 'render-gated';
+  return 'browser-dev';
+}
+
+// Local wrapper around the canonical client parser that fills in the
+// runtime kind based on the active surface (Android / Render / browser-dev)
+// whenever the native payload doesn't carry one. Also layers the build-time
+// env flag onto `enabled` so a bridge that returns garbage doesn't blank the
+// "build supports it" signal (the iteration-1 unavailable-status semantic).
+function parseDeviceAgentStatus(payload: unknown): DeviceAgentStatus {
+  const parsed = parseDeviceAgentStatusBase(payload, defaultDeviceAgentRuntime());
+  if (parsed.enabled) return parsed;
+  const envEnabled = DEVICE_AGENT_ENABLED || ANDROID_DEVICE_AGENT_ENABLED;
+  return envEnabled ? { ...parsed, enabled: true } : parsed;
+}
+
+function browserDevDeviceAgentStatus(input: { configured: boolean; state: DeviceAgentRuntimeState }): DeviceAgentStatus {
+  return {
+    available: deviceAgentModeVisible(),
+    enabled: DEVICE_AGENT_ENABLED || ANDROID_DEVICE_AGENT_ENABLED,
+    configured: input.configured,
+    state: input.configured ? input.state : 'stopped',
+    runtime: 'browser-dev',
+    provider: state.aiSettings.provider,
+    apiFormat: state.aiSettings.apiFormat,
+    baseUrl: state.aiSettings.baseUrl,
+    model: state.aiSettings.model,
+    walletAddress: state.address || state.cloudSession.walletAddress,
+    message: input.configured
+      ? 'Device Agent runtime scaffold is staged in this dev browser build.'
+      : 'Device Agent runtime scaffold is visible. Add a key to stage config.',
+  };
+}
+
+function unavailableDeviceAgentStatus(message: string): DeviceAgentStatus {
+  return {
+    available: false,
+    enabled: DEVICE_AGENT_ENABLED || ANDROID_DEVICE_AGENT_ENABLED,
+    configured: false,
+    state: 'unavailable',
+    runtime: defaultDeviceAgentRuntime(),
+    message,
+  };
 }
 
 function selectedTemplate(): AgentPlanTemplate {
@@ -38943,8 +39646,22 @@ function clearAllSessionAiApiKeys(): void {
   }
 }
 
-function normalizeAiModeForSurface(mode: AiSettings['mode']): AiSettings['mode'] {
+function normalizeAiModeForSurface(mode: AiSettings['mode'], walletAddress?: string): AiSettings['mode'] {
+  if (mode === 'device-agent' && !deviceAgentModeVisibleForWallet(walletAddress)) {
+    return defaultAiMode();
+  }
   return mode;
+}
+
+function deviceAgentModeVisible(): boolean {
+  return deviceAgentModeVisibleForWallet(state.address || state.cloudSession.walletAddress);
+}
+
+function deviceAgentModeVisibleForWallet(walletAddress?: string): boolean {
+  if (!DEVICE_AGENT_ENABLED && !ANDROID_DEVICE_AGENT_ENABLED) return false;
+  if (SHOW_DEV_CONTROLS) return true;
+  if (IS_ANDROID_APP && ANDROID_DEVICE_AGENT_ENABLED) return true;
+  return isDeviceAgentWallet(walletAddress);
 }
 
 function isLocalBrowserOrigin(): boolean {
@@ -39047,7 +39764,7 @@ function isPreparedActionTxStatus(value: string): value is PreparedActionTxStatu
 }
 
 function isAiMode(value: string): value is AiSettings['mode'] {
-  return value === 'hosted' || value === 'session' || value === 'bridge';
+  return value === 'hosted' || value === 'session' || value === 'bridge' || value === 'device-agent';
 }
 
 function isWorkflowModePreference(value: string): value is WorkflowModePreference {
@@ -40024,7 +40741,7 @@ function applyCloudAiSettings(payload: unknown): boolean {
   if (!isJsonObject(payload)) return false;
   saveCurrentSessionAiApiKey();
   if (typeof payload.mode === 'string' && isAiMode(payload.mode)) {
-    state.aiSettings.mode = normalizeAiModeForSurface(payload.mode);
+    state.aiSettings.mode = normalizeAiModeForSurface(payload.mode, state.address || state.cloudSession.walletAddress);
   }
   if (typeof payload.provider === 'string' && isAiProviderId(payload.provider)) {
     state.aiSettings.provider = payload.provider;

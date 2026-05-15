@@ -86,6 +86,17 @@ val allowLanBridge = booleanFlag(
     "AGENTIC_ANDROID_ALLOW_LAN_BRIDGE",
     !isReleaseBuild,
 )
+val deviceAgentInput = providers.gradleProperty("agenticDeviceAgent").orNull
+    ?: providers.gradleProperty("AGENTIC_ANDROID_DEVICE_AGENT").orNull
+    ?: System.getenv("AGENTIC_ANDROID_DEVICE_AGENT")
+    ?: System.getenv("agenticDeviceAgent")
+val deviceAgentEnabled = booleanFlag(
+    deviceAgentInput,
+    "AGENTIC_ANDROID_DEVICE_AGENT",
+    false,
+)
+val deviceAgentWalletAllowlist = propertyOrEnv("AGENTIC_DEVICE_AGENT_WALLET_ALLOWLIST")
+    ?: "4fTqUdd9SRCkmALQhQGF66VRYJFsCLDSQJYadqwMMoHd,7etjMSp87AUE135iW5dNeKridbW16rwSFVUN9ivfFm3w"
 val cloudApiBaseUrl = propertyOrEnv("AGENTIC_ANDROID_CLOUD_API_BASE_URL")
     ?: propertyOrEnv("AGENTIC_CLOUD_API_BASE_URL")
     ?: "https://agentic-signer.com"
@@ -153,6 +164,7 @@ android {
         manifestPlaceholders["agenticHost"] = launchHost
         manifestPlaceholders["agenticWebFallbackEnabled"] = enableWebFallback.toString()
         manifestPlaceholders["usesCleartextTraffic"] = (usesCleartext || allowLanBridge).toString()
+        manifestPlaceholders["agenticDeviceAgentEnabled"] = deviceAgentEnabled.toString()
 
         buildConfigField("String", "AGENTIC_LAUNCH_URL", "\"${launchUrl.replace("\"", "\\\"")}\"")
         buildConfigField("String", "AGENTIC_LAUNCH_SCHEME", "\"${launchScheme.replace("\"", "\\\"")}\"")
@@ -161,6 +173,7 @@ android {
         buildConfigField("boolean", "AGENTIC_ANDROID_SHOW_EXAMPLE_TAB", showExampleTab.toString())
         buildConfigField("boolean", "AGENTIC_ANDROID_ENABLE_WEB_FALLBACK", enableWebFallback.toString())
         buildConfigField("boolean", "AGENTIC_ANDROID_ALLOW_LAN_BRIDGE", allowLanBridge.toString())
+        buildConfigField("boolean", "AGENTIC_ANDROID_DEVICE_AGENT", deviceAgentEnabled.toString())
         buildConfigField("String", "AGENTIC_ANDROID_CLOUD_API_BASE_URL", "\"${cloudApiBaseUrl.replace("\"", "\\\"")}\"")
         resValue("string", "launch_url", launchUrl)
         resValue("string", "asset_statements", escapedResValue(assetStatements))
@@ -231,6 +244,9 @@ val buildBundledWebAssets = tasks.register<Exec>("buildBundledWebAssets") {
     environment("VITE_AGENTIC_ANDROID_APP", "true")
     environment("VITE_AGENTIC_ANDROID_SHOW_EXAMPLE_TAB", showExampleTab.toString())
     environment("VITE_AGENTIC_ANDROID_ALLOW_LAN_BRIDGE", allowLanBridge.toString())
+    environment("VITE_AGENTIC_ANDROID_DEVICE_AGENT", deviceAgentEnabled.toString())
+    environment("VITE_AGENTIC_DEVICE_AGENT", deviceAgentEnabled.toString())
+    environment("VITE_AGENTIC_DEVICE_AGENT_WALLET_ALLOWLIST", deviceAgentWalletAllowlist)
     environment("VITE_AGENTIC_CLOUD_API_BASE_URL", cloudApiBaseUrl)
     environment("VITE_CAPACITOR_IOS_APP", "false")
 }
@@ -247,6 +263,9 @@ val typecheckBundledWebAssets = tasks.register<Exec>("typecheckBundledWebAssets"
     environment("VITE_AGENTIC_ANDROID_APP", "true")
     environment("VITE_AGENTIC_ANDROID_SHOW_EXAMPLE_TAB", showExampleTab.toString())
     environment("VITE_AGENTIC_ANDROID_ALLOW_LAN_BRIDGE", allowLanBridge.toString())
+    environment("VITE_AGENTIC_ANDROID_DEVICE_AGENT", deviceAgentEnabled.toString())
+    environment("VITE_AGENTIC_DEVICE_AGENT", deviceAgentEnabled.toString())
+    environment("VITE_AGENTIC_DEVICE_AGENT_WALLET_ALLOWLIST", deviceAgentWalletAllowlist)
     environment("VITE_AGENTIC_CLOUD_API_BASE_URL", cloudApiBaseUrl)
     environment("VITE_CAPACITOR_IOS_APP", "false")
 }
@@ -285,4 +304,6 @@ dependencies {
     implementation("androidx.webkit:webkit:1.12.1")
     implementation("androidx.lifecycle:lifecycle-runtime-ktx:2.8.7")
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.9.0")
+    testImplementation("junit:junit:4.13.2")
+    testImplementation("org.json:json:20240303")
 }

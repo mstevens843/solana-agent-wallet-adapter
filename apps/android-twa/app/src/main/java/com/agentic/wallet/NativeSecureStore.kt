@@ -94,6 +94,7 @@ class NativeSecureStore(context: Context) {
 
     companion object {
         const val CLOUD_SESSION_TOKEN_KEY = "cloudSessionToken"
+        const val DEVICE_AGENT_CONFIG_KEY = "deviceAgentConfig"
     }
 }
 

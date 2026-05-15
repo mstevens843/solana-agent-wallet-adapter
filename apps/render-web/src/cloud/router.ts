@@ -58,7 +58,7 @@ import { isSecureRequest, serializeClearSessionCookie, serializeSessionCookie } 
 // Side-effect import: each Phase-1 dev-API route module self-registers on load.
 import './devApiHandlers.js';
 import { listDevApiHandlers, type DevApiHandlerContext } from './devApiRegistry.js';
-import { devLayer1Enabled, isAllowedDevWallet } from './devGate.js';
+import { deviceAgentFeatureEnabled, devLayer1Enabled, isAllowedDeviceAgentWallet, isAllowedDevWallet } from './devGate.js';
 import { createEvidenceApiHandler, evidenceStoreAdapterForCloudStore } from './evidenceRoutes.js';
 import type { EvidenceStore } from './evidenceService.js';
 import { MemoryWorkflowStore } from './memoryStore.js';
@@ -141,11 +141,27 @@ const DEFAULT_ANDROID_CLOUD_ORIGIN = 'https://agentic.local';
 const CORS_ALLOWED_HEADERS = 'authorization, content-type, x-agentic-client';
 const CORS_ALLOWED_METHODS = 'GET, POST, PUT, DELETE, OPTIONS';
 
+type RenderDeviceAgentState = 'stopped' | 'running';
+
+interface RenderDeviceAgentSession {
+  configured: boolean;
+  state: RenderDeviceAgentState;
+  provider?: string;
+  apiFormat?: string;
+  baseUrl?: string;
+  model?: string;
+  updatedAt: string;
+}
+
+const renderDeviceAgentSessions = new Map<string, RenderDeviceAgentSession>();
+
 const REGISTERED_API_ROUTES = [
   'GET /api/ai/status',
   'POST /api/ai/generate-plan',
   'POST /api/ai/review-plan',
   'POST /api/ai/ask-about-plan',
+  'GET /api/device-agent/status',
+  'POST /api/device-agent/control',
   'POST /api/auth/nonce',
   'POST /api/auth/verify-wallet',
   'POST /api/auth/logout',
@@ -702,6 +718,18 @@ async function routeApiRequest(
   if (url.pathname === '/api/ai/ask-about-plan') {
     requireMethod(req, 'POST');
     await handleHostedAiAskRequest(req, res, store, clock);
+    return;
+  }
+
+  if (url.pathname === '/api/device-agent/status') {
+    requireMethod(req, 'GET');
+    await handleDeviceAgentStatus(req, res, store, clock);
+    return;
+  }
+
+  if (url.pathname === '/api/device-agent/control') {
+    requireMethod(req, 'POST');
+    await handleDeviceAgentControl(req, res, store, clock);
     return;
   }
 
@@ -2301,6 +2329,194 @@ async function handleHostedAiAskRequest(
     const status = code === 'invalid_request' ? 400 : 502;
     const message = err instanceof Error ? redactSecrets(err.message, settings.apiKey) : 'AI provider ask request failed.';
     writeJson(res, status, { error: message });
+  }
+}
+
+async function handleDeviceAgentStatus(
+  req: IncomingMessage,
+  res: ServerResponse,
+  store: WorkflowStore,
+  clock: Clock,
+): Promise<void> {
+  const session = await requireDeviceAgentSession(req, store, clock);
+  const current = renderDeviceAgentSessions.get(session.walletAddress);
+  const state = current?.state ?? 'stopped';
+  await recordDeviceAgentAudit(store, clock, session.walletAddress, 'device-agent.status.read', { state });
+  writeJson(res, 200, deviceAgentStatusPayload(session.walletAddress));
+}
+
+async function handleDeviceAgentControl(
+  req: IncomingMessage,
+  res: ServerResponse,
+  store: WorkflowStore,
+  clock: Clock,
+): Promise<void> {
+  const session = await requireDeviceAgentSession(req, store, clock);
+  const body = await readJsonBody(req);
+  let action: 'configure' | 'start' | 'stop' | 'clear';
+  try {
+    action = deviceAgentActionFromBody(body);
+  } catch (err) {
+    if (err instanceof ApiError && err.status === 400) {
+      const rawAction = typeof body === 'object' && body !== null && 'action' in body
+        ? String((body as { action?: unknown }).action)
+        : '';
+      console.warn('[device-agent] invalid request', {
+        reason: 'unsupported_action',
+        action: rawAction,
+        walletShort: deviceAgentWalletShort(session.walletAddress),
+      });
+    }
+    throw err;
+  }
+  const now = clock.now().toISOString();
+  const current = renderDeviceAgentSessions.get(session.walletAddress);
+  if (action === 'clear') {
+    renderDeviceAgentSessions.delete(session.walletAddress);
+    await recordDeviceAgentAudit(store, clock, session.walletAddress, 'device-agent.control.clear', {
+      action,
+      state: 'stopped',
+    });
+    writeJson(res, 200, deviceAgentStatusPayload(session.walletAddress, {
+      configured: false,
+      state: 'stopped',
+      updatedAt: now,
+    }));
+    return;
+  }
+  const settings = deviceAgentSettingsFromBody(body);
+  const configured = action === 'configure' || action === 'start'
+    ? {
+        configured: Boolean(settings.provider || settings.model || settings.baseUrl),
+        state: action === 'start' ? 'running' as const : current?.state ?? 'stopped' as const,
+        updatedAt: now,
+        ...settings,
+      }
+    : {
+        configured: current?.configured ?? false,
+        state: action === 'stop' ? 'stopped' as const : 'running' as const,
+        updatedAt: now,
+        provider: current?.provider,
+        apiFormat: current?.apiFormat,
+        baseUrl: current?.baseUrl,
+        model: current?.model,
+      };
+  renderDeviceAgentSessions.set(session.walletAddress, configured);
+  await recordDeviceAgentAudit(store, clock, session.walletAddress, `device-agent.control.${action}`, {
+    action,
+    state: configured.state,
+  });
+  writeJson(res, 200, deviceAgentStatusPayload(session.walletAddress, configured));
+}
+
+async function requireDeviceAgentSession(
+  req: IncomingMessage,
+  store: WorkflowStore,
+  clock: Clock,
+): Promise<{ walletAddress: string }> {
+  if (!deviceAgentFeatureEnabled()) {
+    console.warn('[device-agent] access denied', { reason: 'feature_disabled' });
+    throw new ApiError(403, 'Device Agent is not enabled on this server.');
+  }
+  const session = await sessionFromRequest({ req, store, clock });
+  if (!session) {
+    console.warn('[device-agent] access denied', { reason: 'no_session' });
+    throw new ApiError(401, 'Sign in required for Device Agent.');
+  }
+  if (!isAllowedDeviceAgentWallet(session.walletAddress)) {
+    console.warn('[device-agent] access denied', {
+      reason: 'wallet_not_allowlisted',
+      walletShort: deviceAgentWalletShort(session.walletAddress),
+    });
+    throw new ApiError(403, 'Device Agent is not enabled for this wallet.');
+  }
+  return { walletAddress: session.walletAddress };
+}
+
+function deviceAgentStatusPayload(walletAddress: string, override?: Partial<RenderDeviceAgentSession>): Record<string, unknown> {
+  const status = {
+    ...(renderDeviceAgentSessions.get(walletAddress) ?? {
+      configured: false,
+      state: 'stopped' as const,
+      updatedAt: new Date(0).toISOString(),
+    }),
+    ...(override ?? {}),
+  };
+  return {
+    available: true,
+    enabled: true,
+    configured: status.configured,
+    state: status.state,
+    runtime: 'render-gated',
+    walletAddress,
+    ...(status.provider ? { provider: status.provider } : {}),
+    ...(status.apiFormat ? { apiFormat: status.apiFormat } : {}),
+    ...(status.baseUrl ? { baseUrl: status.baseUrl } : {}),
+    ...(status.model ? { model: status.model } : {}),
+    message: 'Device Agent runtime is gated on Render; no cloud daemon is started.',
+    updatedAt: status.updatedAt,
+  };
+}
+
+function deviceAgentActionFromBody(body: unknown): 'configure' | 'start' | 'stop' | 'clear' {
+  const action = typeof body === 'object' && body !== null && 'action' in body
+    ? String((body as { action?: unknown }).action)
+    : '';
+  if (action === 'configure' || action === 'start' || action === 'stop' || action === 'clear') {
+    return action;
+  }
+  throw new ApiError(400, 'Unsupported Device Agent control action.');
+}
+
+function deviceAgentSettingsFromBody(body: unknown): Partial<RenderDeviceAgentSession> {
+  const settings = typeof body === 'object' && body !== null && 'settings' in body
+    ? (body as { settings?: unknown }).settings
+    : undefined;
+  if (!settings || typeof settings !== 'object') return {};
+  const input = settings as Record<string, unknown>;
+  return {
+    ...(typeof input.provider === 'string' && input.provider.trim() ? { provider: input.provider.trim() } : {}),
+    ...(typeof input.apiFormat === 'string' && input.apiFormat.trim() ? { apiFormat: input.apiFormat.trim() } : {}),
+    ...(typeof input.baseUrl === 'string' && input.baseUrl.trim() ? { baseUrl: input.baseUrl.trim() } : {}),
+    ...(typeof input.model === 'string' && input.model.trim() ? { model: input.model.trim() } : {}),
+  };
+}
+
+function deviceAgentWalletShort(walletAddress: string): string {
+  if (walletAddress.length <= 8) return walletAddress;
+  return `${walletAddress.slice(0, 4)}…${walletAddress.slice(-4)}`;
+}
+
+type DeviceAgentAuditType =
+  | 'device-agent.status.read'
+  | 'device-agent.control.configure'
+  | 'device-agent.control.start'
+  | 'device-agent.control.stop'
+  | 'device-agent.control.clear';
+
+async function recordDeviceAgentAudit(
+  store: WorkflowStore,
+  clock: Clock,
+  walletAddress: string,
+  type: DeviceAgentAuditType,
+  extras: Record<string, string> = {},
+): Promise<void> {
+  // Audit is observability, not a security boundary. A failure (DB outage, transient store
+  // error) must not abort the user-facing status/control response — the operation already
+  // succeeded by the time we reach this call. Log the miss for operators and continue.
+  try {
+    await store.forWallet(walletAddress).insertAuditEvent({
+      id: randomUUID(),
+      type,
+      createdAt: clock.now().toISOString(),
+      metadata: { runtime: 'render-gated', ...extras },
+    });
+  } catch (err) {
+    console.warn('[device-agent] audit failure', {
+      type,
+      walletShort: deviceAgentWalletShort(walletAddress),
+      error: err instanceof Error ? err.message : String(err),
+    });
   }
 }
 

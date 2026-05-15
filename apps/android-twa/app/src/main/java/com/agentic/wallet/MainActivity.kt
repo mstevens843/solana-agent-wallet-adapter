@@ -20,6 +20,11 @@ import androidx.core.view.ViewCompat
 import androidx.core.view.WindowInsetsCompat
 import androidx.webkit.WebViewAssetLoader
 import androidx.lifecycle.lifecycleScope
+import com.agentic.wallet.agent.AgentRuntimeController
+import com.agentic.wallet.agent.provider.DeviceAgentProviderExecutor
+import com.agentic.wallet.agent.runtime.RuntimeMethod
+import com.agentic.wallet.agent.runtime.RuntimeRequest
+import com.agentic.wallet.agent.runtime.RuntimeResult
 import com.agentic.wallet.mwa.AgentCluster
 import com.agentic.wallet.mwa.AgentMwaAuthRecord
 import com.agentic.wallet.mwa.AgentMwaBridgeRequest
@@ -28,7 +33,9 @@ import com.agentic.wallet.mwa.AgentMwaLog
 import com.agentic.wallet.mwa.AgentMwaSigningResult
 import com.agentic.wallet.mwa.MwaController
 import com.agentic.wallet.mwa.MwaOperationException
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.launch
+import org.json.JSONException
 import org.json.JSONObject
 import java.io.FileNotFoundException
 import java.security.MessageDigest
@@ -37,12 +44,17 @@ class MainActivity : ComponentActivity() {
     private lateinit var webView: WebView
     private lateinit var mwaController: MwaController
     private lateinit var secureStore: NativeSecureStore
+    private lateinit var agentRuntimeController: AgentRuntimeController
 
     @SuppressLint("SetJavaScriptEnabled")
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         mwaController = MwaController(applicationContext, defaultMwaIdentity())
         secureStore = NativeSecureStore(applicationContext)
+        agentRuntimeController = AgentRuntimeController(applicationContext, secureStore)
+        if (BuildConfig.AGENTIC_ANDROID_DEVICE_AGENT) {
+            agentRuntimeController.setProviderExecutor(DeviceAgentProviderExecutor())
+        }
         AgentMwaLog.info(
             "MainActivity",
             "onCreate",
@@ -53,6 +65,7 @@ class MainActivity : ComponentActivity() {
                 "exampleTab" to BuildConfig.AGENTIC_ANDROID_SHOW_EXAMPLE_TAB,
                 "webFallbackEnabled" to BuildConfig.AGENTIC_ANDROID_ENABLE_WEB_FALLBACK,
                 "lanBridgeEnabled" to BuildConfig.AGENTIC_ANDROID_ALLOW_LAN_BRIDGE,
+                "deviceAgentEnabled" to BuildConfig.AGENTIC_ANDROID_DEVICE_AGENT,
                 "cloudApiBaseUrl" to BuildConfig.AGENTIC_ANDROID_CLOUD_API_BASE_URL,
             ),
         )
@@ -184,6 +197,74 @@ class MainActivity : ComponentActivity() {
         )
     }
 
+    private fun dispatchDeviceAgentResolve(requestId: String, envelope: JSONObject) {
+        if (isDestroyed) {
+            AgentMwaLog.warn(
+                "MainActivity",
+                "dispatchDeviceAgentResolve",
+                "ACTIVITY_DESTROYED",
+                "skipped Device Agent resolve on destroyed activity",
+                mapOf("requestId" to requestId),
+            )
+            return
+        }
+        val js =
+            "(function(){var b=window.__agenticAndroidDeviceAgentBridge;if(b&&b.resolve){b.resolve(${JSONObject.quote(requestId)},$envelope);}})();"
+        AgentMwaLog.info(
+            "MainActivity",
+            "dispatchDeviceAgentResolve",
+            "START",
+            "evaluating Device Agent resolve callback",
+            mapOf(
+                "requestId" to requestId,
+                "ok" to envelope.optBoolean("ok", false),
+                "envelopeBytes" to envelope.toString().toByteArray(Charsets.UTF_8).size,
+                "envelope" to if (BuildConfig.DEBUG) envelope else "[debug-only]",
+            ),
+        )
+        webView.evaluateJavascript(js) { result ->
+            AgentMwaLog.info(
+                "MainActivity",
+                "dispatchDeviceAgentResolve",
+                "DONE",
+                "Device Agent resolve callback evaluated",
+                mapOf("requestId" to requestId, "evalResult" to result.orEmpty()),
+            )
+        }
+    }
+
+    private fun dispatchDeviceAgentReject(requestId: String, code: String, message: String) {
+        if (isDestroyed) {
+            AgentMwaLog.warn(
+                "MainActivity",
+                "dispatchDeviceAgentReject",
+                "ACTIVITY_DESTROYED",
+                "skipped Device Agent reject on destroyed activity",
+                mapOf("requestId" to requestId, "code" to code),
+            )
+            return
+        }
+        val errorPayload = JSONObject().put("code", code).put("message", message)
+        val js =
+            "(function(){var b=window.__agenticAndroidDeviceAgentBridge;if(b&&b.reject){b.reject(${JSONObject.quote(requestId)},$errorPayload);}})();"
+        AgentMwaLog.warn(
+            "MainActivity",
+            "dispatchDeviceAgentReject",
+            "START",
+            "evaluating Device Agent reject callback (envelope construction failed)",
+            mapOf("requestId" to requestId, "code" to code, "message" to message),
+        )
+        webView.evaluateJavascript(js) { result ->
+            AgentMwaLog.info(
+                "MainActivity",
+                "dispatchDeviceAgentReject",
+                "DONE",
+                "Device Agent reject callback evaluated",
+                mapOf("requestId" to requestId, "evalResult" to result.orEmpty()),
+            )
+        }
+    }
+
     private fun resolveMwaRequest(requestId: String, payload: JSONObject) {
         AgentMwaLog.info(
             "MainActivity",
@@ -290,6 +371,175 @@ class MainActivity : ComponentActivity() {
         }
 
         @JavascriptInterface
+        fun deviceAgentStatus(): String =
+            activity.agentRuntimeController.statusJson().toString()
+
+        @JavascriptInterface
+        fun deviceAgentConfigure(configJson: String): String {
+            validateDeviceAgentPayload(configJson)
+            return activity.agentRuntimeController.configure(configJson).toString()
+        }
+
+        @JavascriptInterface
+        fun deviceAgentStart(configJson: String): String {
+            validateDeviceAgentPayload(configJson)
+            return activity.agentRuntimeController.start(activity, configJson).toString()
+        }
+
+        @JavascriptInterface
+        fun deviceAgentStop(): String =
+            activity.agentRuntimeController.stop(activity).toString()
+
+        /**
+         * Async Device Agent bridge entry point. Mirrors the MWA pattern but with a
+         * stricter contract: every callable response — success or operational failure —
+         * is dispatched via the JS `resolve` callback as a DeviceAgentResponseEnvelope
+         * (`{ok:true, status, result?}` or `{ok:false, status, error}`). The JS `reject`
+         * callback is reserved for envelope-construction catastrophes (validation
+         * exceptions before the controller is reachable, JSON serialization failures);
+         * it carries only `{code, message}` and discards status.
+         *
+         * Reason: Phase 4's `deviceAgentClient.ts` resolve handler parses
+         * `parseDeviceAgentResponseEnvelope` and returns the parsed envelope to the
+         * caller, who decides on `ok` themselves. The reject handler builds a
+         * `DeviceAgentClientError` from the flat `{code, message}` and discards
+         * `status`. Routing operational errors through `reject` would strip the
+         * status the browser needs to refresh its UI.
+         */
+        @JavascriptInterface
+        fun deviceAgentRequest(requestId: String, method: String, payloadJson: String) {
+            activity.lifecycleScope.launch {
+                AgentMwaLog.info(
+                    "MainActivity",
+                    "deviceAgentRequest",
+                    "START",
+                    "android device agent bridge request received",
+                    deviceAgentPayloadMetadata(requestId, method, payloadJson),
+                )
+                val envelope: JSONObject = try {
+                    buildDeviceAgentEnvelope(requestId, method, payloadJson)
+                } catch (cancel: CancellationException) {
+                    throw cancel
+                } catch (err: Throwable) {
+                    AgentMwaLog.failure(
+                        "MainActivity",
+                        "deviceAgentRequest",
+                        "FAIL_ENVELOPE",
+                        "failed to build Device Agent envelope; falling back to reject",
+                        err,
+                        mapOf("requestId" to requestId, "method" to method),
+                    )
+                    activity.dispatchDeviceAgentReject(
+                        requestId,
+                        code = errorCodeFor(err),
+                        message = err.message ?: err.javaClass.simpleName,
+                    )
+                    return@launch
+                }
+                activity.dispatchDeviceAgentResolve(requestId, envelope)
+            }
+        }
+
+        private suspend fun buildDeviceAgentEnvelope(
+            requestId: String,
+            method: String,
+            payloadJson: String,
+        ): JSONObject = try {
+            validateDeviceAgentRequest(requestId, method, payloadJson)
+            val payload = parseDeviceAgentPayload(payloadJson)
+            AgentMwaLog.info(
+                "MainActivity",
+                "deviceAgentRequest",
+                "STEP_PARSED_PAYLOAD",
+                "android device agent bridge payload parsed",
+                mapOf(
+                    "method" to method,
+                    "requestId" to requestId,
+                    "summary" to deviceAgentPayloadSummary(method, payload),
+                ),
+            )
+            val outcome = handleDeviceAgentRequest(method, payload, requestId)
+            AgentMwaLog.info(
+                "MainActivity",
+                "deviceAgentRequest",
+                "SUCCESS",
+                "android device agent bridge request resolved",
+                mapOf(
+                    "method" to method,
+                    "requestId" to requestId,
+                    "hasResult" to (outcome.result != null),
+                ),
+            )
+            JSONObject()
+                .put("ok", true)
+                .put("status", outcome.status)
+                .apply { if (outcome.result != null) put("result", outcome.result) }
+        } catch (cancel: CancellationException) {
+            throw cancel
+        } catch (err: Throwable) {
+            val code = errorCodeFor(err)
+            val message = err.message ?: err.javaClass.simpleName
+            val subcode = (err as? DeviceAgentException)?.subcode
+            AgentMwaLog.warn(
+                "MainActivity",
+                "deviceAgentRequest",
+                "OPERATIONAL_ERROR",
+                "Device Agent operation produced an error envelope",
+                mapOf(
+                    "requestId" to requestId,
+                    "method" to method,
+                    "code" to code,
+                    "subcode" to (subcode ?: ""),
+                    "class" to err.javaClass.simpleName,
+                    "message" to message,
+                ),
+            )
+            val errorObj = JSONObject().put("code", code).put("message", message)
+            if (!subcode.isNullOrBlank()) errorObj.put("subcode", subcode)
+            JSONObject()
+                .put("ok", false)
+                .put("status", safeStatusJson())
+                .put("error", errorObj)
+        }
+
+        private fun parseDeviceAgentPayload(payloadJson: String): JSONObject =
+            try {
+                if (payloadJson.isBlank()) JSONObject() else JSONObject(payloadJson)
+            } catch (err: JSONException) {
+                throw DeviceAgentException(
+                    code = "invalid_payload",
+                    message = err.message ?: "Device Agent payload is not valid JSON.",
+                )
+            }
+
+        private fun safeStatusJson(): JSONObject =
+            try {
+                activity.agentRuntimeController.statusJson()
+            } catch (err: Throwable) {
+                AgentMwaLog.warn(
+                    "MainActivity",
+                    "safeStatusJson",
+                    "FALLBACK",
+                    "failed to read Device Agent status; using unavailable fallback",
+                    mapOf("class" to err.javaClass.simpleName, "message" to err.message),
+                )
+                JSONObject()
+                    .put("available", false)
+                    .put("enabled", false)
+                    .put("configured", false)
+                    .put("state", "unavailable")
+                    .put("runtime", "android-native")
+                    .put("message", "Device Agent status unavailable.")
+            }
+
+        private fun errorCodeFor(err: Throwable): String = when (err) {
+            is DeviceAgentException -> err.code
+            is MwaOperationException -> err.code.lowercase()
+            is JSONException -> "invalid_payload"
+            else -> "device_agent_error"
+        }
+
+        @JavascriptInterface
         fun mwaRequest(requestId: String, method: String, payloadJson: String) {
             activity.lifecycleScope.launch {
                 try {
@@ -344,12 +594,38 @@ class MainActivity : ComponentActivity() {
             }
         }
 
+        private fun validateDeviceAgentRequest(requestId: String, method: String, payloadJson: String) {
+            if (!REQUEST_ID_PATTERN.matches(requestId)) {
+                throw MwaOperationException("INVALID_REQUEST", "Invalid Android Device Agent bridge request id.")
+            }
+            if (method !in ALLOWED_DEVICE_AGENT_METHODS) {
+                throw MwaOperationException("UNSUPPORTED_METHOD", "Unsupported Android Device Agent bridge method: $method")
+            }
+            val limit = if (method == "configure" || method == "start") {
+                MAX_SECURE_VALUE_CHARS
+            } else {
+                MAX_PAYLOAD_CHARS
+            }
+            if (payloadJson.length > limit) {
+                throw MwaOperationException(
+                    "INVALID_REQUEST",
+                    "Android Device Agent bridge payload is too large for $method.",
+                )
+            }
+        }
+
         private fun validateSecureStoreRequest(key: String, value: String = "") {
             if (key != NativeSecureStore.CLOUD_SESSION_TOKEN_KEY) {
                 throw MwaOperationException("INVALID_REQUEST", "Unsupported Android secure storage key.")
             }
             if (value.length > MAX_SECURE_VALUE_CHARS) {
                 throw MwaOperationException("INVALID_REQUEST", "Android secure storage value is too large.")
+            }
+        }
+
+        private fun validateDeviceAgentPayload(value: String) {
+            if (value.length > MAX_SECURE_VALUE_CHARS) {
+                throw MwaOperationException("INVALID_REQUEST", "Android Device Agent config is too large.")
             }
         }
 
@@ -393,6 +669,76 @@ class MainActivity : ComponentActivity() {
                 else -> throw MwaOperationException("UNSUPPORTED_METHOD", "Unsupported Android MWA bridge method: $method")
             }
         }
+
+        private suspend fun handleDeviceAgentRequest(
+            method: String,
+            payload: JSONObject,
+            requestId: String,
+        ): DeviceAgentOutcome {
+            val available = BuildConfig.AGENTIC_ANDROID_DEVICE_AGENT
+            if (!available && method != "status") {
+                throw DeviceAgentException(
+                    "device_agent_unavailable",
+                    "Android Device Agent is disabled for this build.",
+                )
+            }
+            return when (method) {
+                "status" -> DeviceAgentOutcome(activity.agentRuntimeController.statusJson(), null)
+                "configure" -> DeviceAgentOutcome(activity.agentRuntimeController.configure(payload.toString()), null)
+                "start" -> DeviceAgentOutcome(activity.agentRuntimeController.start(activity, payload.toString()), null)
+                "stop" -> DeviceAgentOutcome(activity.agentRuntimeController.stop(activity), null)
+                "generatePlan", "reviewPlan", "ask" -> {
+                    val runtimeMethod = RuntimeMethod.fromWire(method)
+                        ?: throw DeviceAgentException(
+                            code = "unsupported_method",
+                            message = "Unsupported Device Agent runtime method: $method",
+                        )
+                    val request = RuntimeRequest(
+                        requestId = requestId,
+                        method = runtimeMethod,
+                        payload = payload,
+                        enqueuedAtMs = System.currentTimeMillis(),
+                    )
+                    when (val result = activity.agentRuntimeController.submit(request)) {
+                        is RuntimeResult.Ok -> DeviceAgentOutcome(
+                            activity.agentRuntimeController.statusJson(),
+                            result.data,
+                        )
+                        is RuntimeResult.Failed -> throw DeviceAgentException(
+                            code = result.error.code,
+                            message = result.error.message,
+                            subcode = result.error.subcode,
+                        )
+                    }
+                }
+                else -> throw DeviceAgentException(
+                    code = "unsupported_method",
+                    message = "Unsupported Android Device Agent bridge method: $method",
+                )
+            }
+        }
+
+        private fun deviceAgentPayloadMetadata(requestId: String, method: String, payloadJson: String): Map<String, Any?> =
+            mapOf(
+                "method" to method,
+                "requestId" to requestId,
+                "payloadChars" to payloadJson.length,
+                "payloadSha256_8" to sha256First8(payloadJson.toByteArray(Charsets.UTF_8)),
+            )
+
+        private fun deviceAgentPayloadSummary(method: String, payload: JSONObject): Map<String, Any?> =
+            when (method) {
+                "configure", "start" -> mapOf(
+                    "provider" to payload.optString("provider", ""),
+                    "apiFormat" to payload.optString("apiFormat", ""),
+                    "model" to payload.optString("model", ""),
+                    "hasKey" to payload.optString("apiKey", "").isNotBlank(),
+                    "clear" to payload.optBoolean("clear", false),
+                )
+                else -> mapOf("keys" to payload.keys().asSequence().toList())
+            }
+
+        private data class DeviceAgentOutcome(val status: JSONObject, val result: JSONObject?)
 
         private fun statusJson(record: AgentMwaAuthRecord? = activity.mwaController.activeAuthorization()): JSONObject {
             val json = JSONObject()
@@ -506,10 +852,25 @@ class MainActivity : ComponentActivity() {
                 "fullReset",
                 "clearAllAccounts",
             )
+            private val ALLOWED_DEVICE_AGENT_METHODS = setOf(
+                "status",
+                "configure",
+                "start",
+                "stop",
+                "generatePlan",
+                "reviewPlan",
+                "ask",
+            )
             private const val MAX_PAYLOAD_CHARS = 2_000_000
             private const val MAX_SECURE_VALUE_CHARS = 8192
         }
     }
+
+    private class DeviceAgentException(
+        val code: String,
+        message: String,
+        val subcode: String? = null,
+    ) : RuntimeException(message)
 
     private class BundledAppPathHandler(private val context: Context) : WebViewAssetLoader.PathHandler {
         override fun handle(path: String): WebResourceResponse? {

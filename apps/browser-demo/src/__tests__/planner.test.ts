@@ -9,6 +9,8 @@ import {
   confirmHostedAiPlanner,
   inferTemplateIdForPrompt,
   inferredTemplateParameters,
+  normalizeAiAsk,
+  normalizeAiPlan,
   generateSessionAiPlan,
   normalizeAiReview,
   planWithStructuredSwapText,
@@ -80,6 +82,59 @@ describe('planner AI setup helpers', () => {
     const openaiModels = openai?.models ?? [];
     expect(openaiModels[0]).toMatchObject({ id: 'gpt-5.5', tokenRateLabel: '500K' });
     expect(openaiModels[openaiModels.length - 1]).toMatchObject({ id: 'gpt-4.1', tokenRateLabel: '30K' });
+  });
+
+  it('reports the Device Agent AI route separately from hosted and bridge', () => {
+    const diagnostic = aiRouteDiagnosticForSettings(
+      { mode: 'device-agent', provider: 'openai', model: 'gpt-5.5' },
+      { path: '/api/device-agent/status', method: 'GET', origin: 'https://agenticwalletadapter.com' },
+    );
+
+    expect(diagnostic).toMatchObject({
+      code: 'AI_ROUTE',
+      message: 'Device Agent status route selected.',
+      detail: 'openai gpt-5.5 on https://agenticwalletadapter.com',
+      method: 'GET',
+      path: '/api/device-agent/status',
+    });
+  });
+
+  it('normalizes raw Device Agent provider payloads into workflow result shapes', () => {
+    const plan = normalizeAiPlan({
+      intent: 'Transfer 0.01 SOL',
+      route: 'System Program transfer',
+      risk: 'low',
+      approval: 'Wallet approval required',
+      safeguards: ['Verify recipient'],
+    }, planRequest);
+    expect(plan).toMatchObject({
+      source: 'ai',
+      intent: 'Transfer 0.01 SOL',
+      templateTitle: planRequest.template.title,
+      category: planRequest.template.category,
+    });
+
+    const review = normalizeAiReview({
+      decision: 'approve',
+      reason: 'Plan matches the request.',
+      summary: 'Ready for wallet review.',
+      evidence: { findings: [] },
+    }, {
+      plan,
+      instruction: 'Review the draft.',
+    });
+    expect(review).toMatchObject({
+      decision: 'approve',
+      source: 'ai',
+    });
+    expect(review.checkedAt).toMatch(/^\d{4}-\d{2}-\d{2}T/);
+
+    const ask = normalizeAiAsk({ output_text: 'It prepares a transfer but does not sign it.' });
+    expect(ask).toMatchObject({
+      answer: 'It prepares a transfer but does not sign it.',
+      source: 'ai',
+    });
+    expect(ask.checkedAt).toMatch(/^\d{4}-\d{2}-\d{2}T/);
   });
 
   it('redacts exact browser-session provider keys from errors', async () => {

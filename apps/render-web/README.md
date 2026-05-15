@@ -37,6 +37,17 @@ Common optional settings:
 - `AGW_DISABLE_SCHEDULER=1`: disables scheduler ticks when a scheduler has been enabled.
 - `VITE_AGENTIC_DEV_CONTROLS=false`: production browser build setting.
 - `VITE_AGENTIC_GA_MEASUREMENT_ID`: optional GA4 measurement ID for the browser build.
+- `AGENTIC_DEVICE_AGENT=1` and `VITE_AGENTIC_DEVICE_AGENT=1`: optional gated Device Agent scaffold. Pair with
+  `AGENTIC_DEVICE_AGENT_WALLET_ALLOWLIST` and `VITE_AGENTIC_DEVICE_AGENT_WALLET_ALLOWLIST`; Render exposes status and
+  control scaffolding only and does not run a cloud agent worker. Device Agent status reads and control actions are
+  written to `audit_events` for the signed-in wallet as `device-agent.status.read` and `device-agent.control.<action>`
+  (`configure` / `start` / `stop` / `clear`) with metadata limited to runtime kind, action name, and resulting state.
+  Access denials are emitted to stderr as structured `[device-agent] access denied` warnings (`feature_disabled`,
+  `no_session`, or `wallet_not_allowlisted` with a `walletShort` ID). No provider key material, settings, or request
+  bodies are written to the audit log or denial warnings. Audit writes are best-effort: a failed `insertAuditEvent`
+  emits a `[device-agent] audit failure` stderr warning but never aborts the user-facing status/control response.
+  Malformed control bodies (unknown or missing `action`) emit a `[device-agent] invalid request` stderr warning before
+  the server returns 400.
 
 The hosted BYOK endpoint relays user-provided AI keys from the browser for the current request and does not store
 provider keys in Render env vars.
@@ -97,6 +108,11 @@ Agentic Cloud must not store seed phrases, private keys, delegated signers, unli
 transactions, or hosted BYOK provider keys. The workflow smoke rejects representative secret/authority payloads across
 workflow routes and checks hosted BYOK success/error paths for provider-key redaction. Route-local unexpected 500
 messages are redacted before JSON responses are returned.
+
+Device Agent on Render never executes provider calls and never persists provider keys. Status and control endpoints
+only retain operational state (configured flag, runtime state, optional non-secret provider/model labels) in memory
+per signed-in wallet, and audit metadata is restricted to action name and runtime kind. Access denials never write to
+the audit table; they are logged to stderr instead so unverified callers cannot seed the audit log.
 
 ## Production Release Gate
 

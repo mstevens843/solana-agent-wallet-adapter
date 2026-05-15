@@ -1,0 +1,107 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://solana-agent-wallet-adapter/spec/evals/device-agent/smoke.schema.json",
+  "title": "Device Agent Smoke Scenario Corpus",
+  "description": "Deterministic QA fixtures for the Android-native Device Agent smoke checklist. These fixtures validate expected labels, failure states, boundary language, and route separation; they do not call live AI providers.",
+  "type": "object",
+  "required": ["version", "scenarios"],
+  "additionalProperties": false,
+  "properties": {
+    "$schema": { "type": "string" },
+    "version": { "type": "integer", "const": 1 },
+    "scenarios": {
+      "type": "array",
+      "minItems": 1,
+      "items": { "$ref": "#/$defs/scenario" }
+    }
+  },
+  "$defs": {
+    "scenario": {
+      "type": "object",
+      "required": [
+        "id",
+        "title",
+        "surface",
+        "commands",
+        "requiredUiLabels",
+        "steps",
+        "expectedFailureStates",
+        "forbiddenOutcomes",
+        "acceptance"
+      ],
+      "additionalProperties": false,
+      "properties": {
+        "id": {
+          "type": "string",
+          "pattern": "^[a-z0-9]+(?:-[a-z0-9]+)*$"
+        },
+        "title": { "type": "string", "minLength": 1 },
+        "surface": {
+          "type": "string",
+          "enum": [
+            "android-enabled",
+            "android-disabled",
+            "render-allowlist",
+            "render-denylist",
+            "bridge-regression",
+            "boundary",
+            "source-completion"
+          ]
+        },
+        "commands": {
+          "type": "array",
+          "items": { "type": "string", "minLength": 1 }
+        },
+        "requiredUiLabels": {
+          "type": "array",
+          "items": { "type": "string", "minLength": 1 }
+        },
+        "steps": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "object",
+            "required": ["action", "expect"],
+            "additionalProperties": false,
+            "properties": {
+              "action": { "type": "string", "minLength": 1 },
+              "expect": { "type": "string", "minLength": 1 }
+            }
+          }
+        },
+        "expectedFailureStates": {
+          "type": "array",
+          "items": { "type": "string", "minLength": 1 }
+        },
+        "forbiddenOutcomes": {
+          "type": "array",
+          "items": { "type": "string", "minLength": 1 }
+        },
+        "acceptance": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "type": "string", "minLength": 1 }
+        },
+        "sourceChecks": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["path"],
+            "additionalProperties": false,
+            "properties": {
+              "path": { "type": "string", "minLength": 1 },
+              "mustContain": {
+                "type": "array",
+                "items": { "type": "string", "minLength": 1 }
+              },
+              "mustNotContain": {
+                "type": "array",
+                "items": { "type": "string", "minLength": 1 }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}

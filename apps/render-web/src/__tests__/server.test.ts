@@ -23,7 +23,13 @@ interface TextResponse {
 
 interface ServerCtx {
   cookie: string;
+  store: MemoryWorkflowStore;
+  walletAddress: string;
 }
+
+const DEVICE_AGENT_WALLET_A = '4fTqUdd9SRCkmALQhQGF66VRYJFsCLDSQJYadqwMMoHd';
+const DEVICE_AGENT_WALLET_B = '7etjMSp87AUE135iW5dNeKridbW16rwSFVUN9ivfFm3w';
+const DEVICE_AGENT_OTHER_WALLET = '11111111111111111111111111111111';
 
 const aiRequest = {
   prompt: 'review a SOL transfer',
@@ -73,6 +79,421 @@ describe('render web hosted BYOK API', () => {
         ]),
       });
     });
+  });
+
+  it('rejects Device Agent status when the env gate is off', async () => {
+    vi.stubEnv('AGENTIC_DEVICE_AGENT', '0');
+    await withServer(async (port, ctx) => {
+      const response = await getJson(port, '/api/device-agent/status', { cookie: ctx.cookie });
+      expect(response.status).toBe(403);
+      expect(String(response.body.error)).toContain('Device Agent is not enabled');
+    }, { walletAddress: DEVICE_AGENT_WALLET_A });
+  });
+
+  it('rejects Device Agent status for non-allowlisted wallets', async () => {
+    vi.stubEnv('AGENTIC_DEVICE_AGENT', '1');
+    await withServer(async (port, ctx) => {
+      const response = await getJson(port, '/api/device-agent/status', { cookie: ctx.cookie });
+      expect(response.status).toBe(403);
+      expect(String(response.body.error)).toContain('not enabled for this wallet');
+    }, { walletAddress: DEVICE_AGENT_OTHER_WALLET });
+  });
+
+  it.each([DEVICE_AGENT_WALLET_A, DEVICE_AGENT_WALLET_B])('serves Device Agent status for allowlisted wallet %s', async (walletAddress) => {
+    vi.stubEnv('AGENTIC_DEVICE_AGENT', '1');
+    await withServer(async (port, ctx) => {
+      const response = await getJson(port, '/api/device-agent/status', { cookie: ctx.cookie });
+      expect(response.status).toBe(200);
+      expect(response.body).toMatchObject({
+        available: true,
+        enabled: true,
+        configured: false,
+        state: 'stopped',
+        runtime: 'render-gated',
+        walletAddress,
+      });
+    }, { walletAddress });
+  });
+
+  it('stages Device Agent config without starting a cloud daemon', async () => {
+    vi.stubEnv('AGENTIC_DEVICE_AGENT', '1');
+    await withServer(async (port, ctx) => {
+      const configured = await postJson(port, '/api/device-agent/control', {
+        action: 'configure',
+        settings: { provider: 'openai', apiFormat: 'openai-compatible', model: 'gpt-5.5' },
+      }, { cookie: ctx.cookie });
+      expect(configured.status).toBe(200);
+      expect(configured.body).toMatchObject({
+        configured: true,
+        state: 'stopped',
+        runtime: 'render-gated',
+        provider: 'openai',
+        model: 'gpt-5.5',
+      });
+
+      const started = await postJson(port, '/api/device-agent/control', {
+        action: 'start',
+        settings: { provider: 'openai', apiFormat: 'openai-compatible', model: 'gpt-5.5' },
+      }, { cookie: ctx.cookie });
+      expect(started.status).toBe(200);
+      expect(started.body).toMatchObject({
+        configured: true,
+        state: 'running',
+        message: 'Device Agent runtime is gated on Render; no cloud daemon is started.',
+      });
+    }, { walletAddress: DEVICE_AGENT_WALLET_A });
+  });
+
+  it('records a structured audit event for Device Agent status reads', async () => {
+    vi.stubEnv('AGENTIC_DEVICE_AGENT', '1');
+    await withServer(async (port, ctx) => {
+      // Reset module-scoped session state for this wallet to start from a known baseline.
+      await postJson(port, '/api/device-agent/control', { action: 'clear' }, { cookie: ctx.cookie });
+      const before = (await ctx.store.forWallet(ctx.walletAddress).listAuditEvents()).length;
+
+      const response = await getJson(port, '/api/device-agent/status', { cookie: ctx.cookie });
+      expect(response.status).toBe(200);
+
+      const after = await ctx.store.forWallet(ctx.walletAddress).listAuditEvents();
+      const newEvents = after.slice(before);
+      expect(newEvents).toHaveLength(1);
+      expect(newEvents[0]).toMatchObject({
+        type: 'device-agent.status.read',
+        metadata: { runtime: 'render-gated', state: 'stopped' },
+      });
+      const metadataKeys = Object.keys(newEvents[0]?.metadata ?? {});
+      expect(metadataKeys).not.toContain('apiKey');
+      expect(metadataKeys).not.toContain('provider');
+      expect(metadataKeys).not.toContain('model');
+      expect(metadataKeys).not.toContain('baseUrl');
+      expect(metadataKeys).not.toContain('apiFormat');
+    }, { walletAddress: DEVICE_AGENT_WALLET_A });
+  });
+
+  it('records one audit event per Device Agent control action', async () => {
+    vi.stubEnv('AGENTIC_DEVICE_AGENT', '1');
+    await withServer(async (port, ctx) => {
+      // Reset module-scoped session state for this wallet to start from a known baseline.
+      await postJson(port, '/api/device-agent/control', { action: 'clear' }, { cookie: ctx.cookie });
+      const before = (await ctx.store.forWallet(ctx.walletAddress).listAuditEvents()).length;
+
+      const sequence: Array<'configure' | 'start' | 'stop' | 'clear'> = ['configure', 'start', 'stop', 'clear'];
+      for (const action of sequence) {
+        const response = await postJson(port, '/api/device-agent/control', {
+          action,
+          settings: action === 'configure' || action === 'start'
+            ? { provider: 'openai', apiFormat: 'openai-compatible', model: 'gpt-5.5' }
+            : undefined,
+        }, { cookie: ctx.cookie });
+        expect(response.status).toBe(200);
+      }
+
+      const after = await ctx.store.forWallet(ctx.walletAddress).listAuditEvents();
+      const newEvents = after.slice(before);
+      expect(newEvents.map((event) => event.type)).toEqual([
+        'device-agent.control.configure',
+        'device-agent.control.start',
+        'device-agent.control.stop',
+        'device-agent.control.clear',
+      ]);
+      expect(newEvents[0]?.metadata).toMatchObject({ runtime: 'render-gated', action: 'configure', state: 'stopped' });
+      expect(newEvents[1]?.metadata).toMatchObject({ runtime: 'render-gated', action: 'start', state: 'running' });
+      expect(newEvents[2]?.metadata).toMatchObject({ runtime: 'render-gated', action: 'stop', state: 'stopped' });
+      expect(newEvents[3]?.metadata).toMatchObject({ runtime: 'render-gated', action: 'clear', state: 'stopped' });
+    }, { walletAddress: DEVICE_AGENT_WALLET_A });
+  });
+
+  it('never persists provider key material or unrecognized secret-shaped fields in Device Agent state or audit metadata', async () => {
+    vi.stubEnv('AGENTIC_DEVICE_AGENT', '1');
+    const secretFields = {
+      apiKey: 'sk-redacted-test-key',
+      secret: 'shhh-do-not-leak',
+      accessToken: 'access-token-leak-canary',
+      authorization: 'Bearer leak-canary',
+      privateKey: 'priv-leak-canary',
+    } as const;
+    const secretFieldNames = Object.keys(secretFields);
+    const secretValues = Object.values(secretFields);
+    await withServer(async (port, ctx) => {
+      const configured = await postJson(port, '/api/device-agent/control', {
+        action: 'configure',
+        settings: {
+          provider: 'openai',
+          apiFormat: 'openai-compatible',
+          model: 'gpt-5.5',
+          ...secretFields,
+        },
+      }, { cookie: ctx.cookie });
+      expect(configured.status).toBe(200);
+      const configuredSerialized = JSON.stringify(configured.body);
+      for (const name of secretFieldNames) expect(configuredSerialized).not.toContain(name);
+      for (const value of secretValues) expect(configuredSerialized).not.toContain(value);
+
+      const status = await getJson(port, '/api/device-agent/status', { cookie: ctx.cookie });
+      expect(status.status).toBe(200);
+      const statusSerialized = JSON.stringify(status.body);
+      for (const name of secretFieldNames) expect(statusSerialized).not.toContain(name);
+      for (const value of secretValues) expect(statusSerialized).not.toContain(value);
+
+      const events = await ctx.store.forWallet(ctx.walletAddress).listAuditEvents();
+      const serializedEvents = JSON.stringify(events);
+      for (const name of secretFieldNames) expect(serializedEvents).not.toContain(name);
+      for (const value of secretValues) expect(serializedEvents).not.toContain(value);
+    }, { walletAddress: DEVICE_AGENT_WALLET_A });
+  });
+
+  it('logs a structured access-denied warning when the Device Agent env gate is off', async () => {
+    vi.stubEnv('AGENTIC_DEVICE_AGENT', '0');
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      await withServer(async (port, ctx) => {
+        const response = await getJson(port, '/api/device-agent/status', { cookie: ctx.cookie });
+        expect(response.status).toBe(403);
+      }, { walletAddress: DEVICE_AGENT_WALLET_A });
+      const denialCalls = warn.mock.calls.filter((args) => args[0] === '[device-agent] access denied');
+      expect(denialCalls).toHaveLength(1);
+      expect(denialCalls[0]?.[1]).toEqual({ reason: 'feature_disabled' });
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it('logs a structured access-denied warning with a wallet short ID when the wallet is not allowlisted', async () => {
+    vi.stubEnv('AGENTIC_DEVICE_AGENT', '1');
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      await withServer(async (port, ctx) => {
+        const response = await getJson(port, '/api/device-agent/status', { cookie: ctx.cookie });
+        expect(response.status).toBe(403);
+      }, { walletAddress: DEVICE_AGENT_OTHER_WALLET });
+      const denialCalls = warn.mock.calls.filter((args) => args[0] === '[device-agent] access denied');
+      expect(denialCalls).toHaveLength(1);
+      expect(denialCalls[0]?.[1]).toEqual({
+        reason: 'wallet_not_allowlisted',
+        walletShort: '1111…1111',
+      });
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it('logs a structured access-denied warning when there is no signed-in session', async () => {
+    vi.stubEnv('AGENTIC_DEVICE_AGENT', '1');
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      await withServer(async (port) => {
+        const response = await getJson(port, '/api/device-agent/status');
+        expect(response.status).toBe(401);
+      }, { walletAddress: DEVICE_AGENT_WALLET_A });
+      const denialCalls = warn.mock.calls.filter((args) => args[0] === '[device-agent] access denied');
+      expect(denialCalls).toHaveLength(1);
+      expect(denialCalls[0]?.[1]).toEqual({ reason: 'no_session' });
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it('rejects POST /api/device-agent/status with 405 method_not_allowed', async () => {
+    vi.stubEnv('AGENTIC_DEVICE_AGENT', '1');
+    await withServer(async (port, ctx) => {
+      const response = await postJson(port, '/api/device-agent/status', {}, { cookie: ctx.cookie });
+      expect(response.status).toBe(405);
+      expect(String(response.body.error)).toContain('method_not_allowed');
+    }, { walletAddress: DEVICE_AGENT_WALLET_A });
+  });
+
+  it('rejects GET /api/device-agent/control with 405 method_not_allowed', async () => {
+    vi.stubEnv('AGENTIC_DEVICE_AGENT', '1');
+    await withServer(async (port, ctx) => {
+      const response = await getJson(port, '/api/device-agent/control', { cookie: ctx.cookie });
+      expect(response.status).toBe(405);
+      expect(String(response.body.error)).toContain('method_not_allowed');
+    }, { walletAddress: DEVICE_AGENT_WALLET_A });
+  });
+
+  it('returns 400 with a structured warning for an unsupported Device Agent control action', async () => {
+    vi.stubEnv('AGENTIC_DEVICE_AGENT', '1');
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      await withServer(async (port, ctx) => {
+        const before = (await ctx.store.forWallet(ctx.walletAddress).listAuditEvents()).length;
+        const response = await postJson(port, '/api/device-agent/control', { action: 'reboot' }, { cookie: ctx.cookie });
+        expect(response.status).toBe(400);
+        expect(String(response.body.error)).toContain('Unsupported Device Agent control action');
+        const after = await ctx.store.forWallet(ctx.walletAddress).listAuditEvents();
+        expect(after.length - before).toBe(0);
+      }, { walletAddress: DEVICE_AGENT_WALLET_A });
+      const invalidCalls = warn.mock.calls.filter((args) => args[0] === '[device-agent] invalid request');
+      expect(invalidCalls).toHaveLength(1);
+      expect(invalidCalls[0]?.[1]).toEqual({
+        reason: 'unsupported_action',
+        action: 'reboot',
+        walletShort: '4fTq…MoHd',
+      });
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it('returns 400 with a structured warning when the Device Agent control body omits an action', async () => {
+    vi.stubEnv('AGENTIC_DEVICE_AGENT', '1');
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      await withServer(async (port, ctx) => {
+        const response = await postJson(port, '/api/device-agent/control', {}, { cookie: ctx.cookie });
+        expect(response.status).toBe(400);
+        expect(String(response.body.error)).toContain('Unsupported Device Agent control action');
+      }, { walletAddress: DEVICE_AGENT_WALLET_A });
+      const invalidCalls = warn.mock.calls.filter((args) => args[0] === '[device-agent] invalid request');
+      expect(invalidCalls).toHaveLength(1);
+      expect(invalidCalls[0]?.[1]).toEqual({
+        reason: 'unsupported_action',
+        action: '',
+        walletShort: '4fTq…MoHd',
+      });
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it('rejects POST /api/device-agent/control without a session and logs a structured no_session warning', async () => {
+    vi.stubEnv('AGENTIC_DEVICE_AGENT', '1');
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      await withServer(async (port) => {
+        const response = await postJson(port, '/api/device-agent/control', { action: 'configure' });
+        expect(response.status).toBe(401);
+      }, { walletAddress: DEVICE_AGENT_WALLET_A });
+      const denialCalls = warn.mock.calls.filter((args) => args[0] === '[device-agent] access denied');
+      expect(denialCalls).toHaveLength(1);
+      expect(denialCalls[0]?.[1]).toEqual({ reason: 'no_session' });
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it('preserves running state when configure is called while the Device Agent is running', async () => {
+    vi.stubEnv('AGENTIC_DEVICE_AGENT', '1');
+    await withServer(async (port, ctx) => {
+      await postJson(port, '/api/device-agent/control', { action: 'clear' }, { cookie: ctx.cookie });
+      const before = (await ctx.store.forWallet(ctx.walletAddress).listAuditEvents()).length;
+
+      const started = await postJson(port, '/api/device-agent/control', {
+        action: 'start',
+        settings: { provider: 'openai', apiFormat: 'openai-compatible', model: 'gpt-5.5' },
+      }, { cookie: ctx.cookie });
+      expect(started.status).toBe(200);
+      expect(started.body).toMatchObject({ state: 'running' });
+
+      const reconfigured = await postJson(port, '/api/device-agent/control', {
+        action: 'configure',
+        settings: { provider: 'anthropic', apiFormat: 'anthropic', model: 'claude-opus-4-7' },
+      }, { cookie: ctx.cookie });
+      expect(reconfigured.status).toBe(200);
+      expect(reconfigured.body).toMatchObject({
+        state: 'running',
+        configured: true,
+        provider: 'anthropic',
+        model: 'claude-opus-4-7',
+      });
+
+      const status = await getJson(port, '/api/device-agent/status', { cookie: ctx.cookie });
+      expect(status.body).toMatchObject({ state: 'running', provider: 'anthropic' });
+
+      const after = await ctx.store.forWallet(ctx.walletAddress).listAuditEvents();
+      const newEvents = after.slice(before);
+      const controlEvents = newEvents.filter((event) => event.type.startsWith('device-agent.control.'));
+      expect(controlEvents.map((event) => event.type)).toEqual([
+        'device-agent.control.start',
+        'device-agent.control.configure',
+      ]);
+      expect(controlEvents[0]?.metadata).toMatchObject({ action: 'start', state: 'running' });
+      expect(controlEvents[1]?.metadata).toMatchObject({ action: 'configure', state: 'running' });
+    }, { walletAddress: DEVICE_AGENT_WALLET_A });
+  });
+
+  it('drops optional provider fields from the status response after a clear action', async () => {
+    vi.stubEnv('AGENTIC_DEVICE_AGENT', '1');
+    await withServer(async (port, ctx) => {
+      const configured = await postJson(port, '/api/device-agent/control', {
+        action: 'configure',
+        settings: {
+          provider: 'openai',
+          apiFormat: 'openai-compatible',
+          baseUrl: 'https://api.openai.com/v1',
+          model: 'gpt-5.5',
+        },
+      }, { cookie: ctx.cookie });
+      expect(configured.body).toMatchObject({
+        configured: true,
+        provider: 'openai',
+        apiFormat: 'openai-compatible',
+        baseUrl: 'https://api.openai.com/v1',
+        model: 'gpt-5.5',
+      });
+
+      const cleared = await postJson(port, '/api/device-agent/control', { action: 'clear' }, { cookie: ctx.cookie });
+      expect(cleared.status).toBe(200);
+
+      const status = await getJson(port, '/api/device-agent/status', { cookie: ctx.cookie });
+      expect(status.status).toBe(200);
+      expect(status.body).toMatchObject({
+        configured: false,
+        state: 'stopped',
+        runtime: 'render-gated',
+      });
+      expect(status.body).not.toHaveProperty('provider');
+      expect(status.body).not.toHaveProperty('apiFormat');
+      expect(status.body).not.toHaveProperty('baseUrl');
+      expect(status.body).not.toHaveProperty('model');
+    }, { walletAddress: DEVICE_AGENT_WALLET_A });
+  });
+
+  it('still returns a successful status response when the audit store fails, and logs an audit-failure warning', async () => {
+    vi.stubEnv('AGENTIC_DEVICE_AGENT', '1');
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      await withServer(async (port, ctx) => {
+        const originalForWallet = MemoryWorkflowStore.prototype.forWallet;
+        const spy = vi.spyOn(MemoryWorkflowStore.prototype, 'forWallet').mockImplementation(function (
+          this: MemoryWorkflowStore,
+          walletAddress: string,
+        ) {
+          const scoped = originalForWallet.call(this, walletAddress);
+          return new Proxy(scoped, {
+            get(target, prop, recv) {
+              if (prop === 'insertAuditEvent') {
+                return async () => {
+                  throw new Error('audit_store_unavailable_test');
+                };
+              }
+              return Reflect.get(target, prop, recv);
+            },
+          });
+        });
+        try {
+          const response = await getJson(port, '/api/device-agent/status', { cookie: ctx.cookie });
+          expect(response.status).toBe(200);
+          expect(response.body).toMatchObject({
+            available: true,
+            enabled: true,
+            runtime: 'render-gated',
+            walletAddress: ctx.walletAddress,
+          });
+        } finally {
+          spy.mockRestore();
+        }
+      }, { walletAddress: DEVICE_AGENT_WALLET_A });
+      const failureCalls = warn.mock.calls.filter((args) => args[0] === '[device-agent] audit failure');
+      expect(failureCalls).toHaveLength(1);
+      expect(failureCalls[0]?.[1]).toMatchObject({
+        type: 'device-agent.status.read',
+        walletShort: '4fTq…MoHd',
+        error: 'audit_store_unavailable_test',
+      });
+    } finally {
+      warn.mockRestore();
+    }
   });
 
   it('proxies BirdEye market data through the hosted API', async () => {
@@ -616,21 +1037,27 @@ describe('render web hosted BYOK API', () => {
 
 async function withServer(
   callback: (port: number, ctx: ServerCtx) => Promise<void>,
-  options: { statelessConnectorPreparer?: import('../cloud/prepareConnectorTransaction.js').StatelessConnectorTransactionPreparer } = {},
+  options: {
+    statelessConnectorPreparer?: import('../cloud/prepareConnectorTransaction.js').StatelessConnectorTransactionPreparer;
+    walletAddress?: string;
+  } = {},
 ): Promise<void> {
   const staticDir = await mkdtemp(join(tmpdir(), 'agentic-render-web-'));
   await writeFile(join(staticDir, 'index.html'), '<!doctype html><div id="app"></div>');
   await mkdir(join(staticDir, 'app'));
   await writeFile(join(staticDir, 'app', 'index.html'), '<!doctype html><div id="app"></div>');
   const store = new MemoryWorkflowStore();
+  const walletAddress = options.walletAddress ?? DEVICE_AGENT_OTHER_WALLET;
+  const fixedClock = { now: () => new Date('2026-05-08T18:00:00.000Z') };
   const session = await createWalletSession({
     store,
-    walletAddress: '11111111111111111111111111111111',
-    clock: { now: () => new Date('2026-05-08T18:00:00.000Z') },
+    walletAddress,
+    clock: fixedClock,
   });
   const server = createRenderWebServer({
     staticDir,
     store,
+    clock: fixedClock,
     ...(options.statelessConnectorPreparer
       ? { statelessConnectorPreparer: options.statelessConnectorPreparer }
       : {}),
@@ -644,6 +1071,8 @@ async function withServer(
     if (!address || typeof address === 'string') throw new Error('Server did not bind a TCP port.');
     await callback(address.port, {
       cookie: `${SESSION_COOKIE_NAME}=${encodeURIComponent(session.token)}`,
+      store,
+      walletAddress,
     });
   } finally {
     await new Promise<void>((resolve, reject) => {

@@ -40,6 +40,7 @@ export * from './confidence.js';
 export * from './counterfactuals.js';
 export * from './behavioralBaselines.js';
 export * from './priceUsd.js';
+export * from './deviceAgent.js';
 export {
   appendReviewFinding,
   evidenceTextFields,

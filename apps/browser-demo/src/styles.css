@@ -7393,6 +7393,12 @@ code {
   color: rgba(244, 224, 188, 0.96);
 }
 
+.agent-path-pill.device-agent {
+  background: rgba(79, 204, 184, 0.13);
+  border-color: rgba(79, 204, 184, 0.34);
+  color: rgba(203, 249, 242, 0.96);
+}
+
 .agent-path-pill.mock {
   background: rgba(99, 217, 169, 0.14);
   border-color: rgba(99, 217, 169, 0.36);
@@ -7919,6 +7925,12 @@ code {
   background: rgba(212, 152, 246, 0.14);
   border-color: rgba(212, 152, 246, 0.34);
   color: #efd9ff;
+}
+
+.agent-path-pill.device-agent {
+  background: rgba(79, 204, 184, 0.13);
+  border-color: rgba(79, 204, 184, 0.34);
+  color: #cbf9f2;
 }
 
 .agent-path-pill.none {
@@ -12985,6 +12997,26 @@ button.danger:hover:not(:disabled) {
 
 .local-bridge-connection-card.offline {
   border-color: rgba(224, 230, 226, 0.12);
+}
+
+.local-bridge-connection-card .device-agent-last-error {
+  color: #ffb86b;
+  font-size: 0.75rem;
+  margin: 4px 0 0;
+  line-height: 1.35;
+}
+
+.local-bridge-connection-card .device-agent-last-error strong {
+  color: #ff7a7a;
+  margin-right: 6px;
+  font-family: var(--mono, monospace);
+}
+
+.local-bridge-connection-card .device-agent-note {
+  color: rgba(224, 230, 226, 0.72);
+  font-size: 0.75rem;
+  margin: 4px 0 0;
+  line-height: 1.4;
 }
 
 .local-bridge-connection-head {
@@ -18118,7 +18150,12 @@ button.danger:hover:not(:disabled) {
   white-space: nowrap;
 }
 
-.command-route-grid,
+.command-route-grid {
+  display: grid;
+  gap: 10px;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+}
+
 .command-storage-grid {
   display: grid;
   gap: 10px;

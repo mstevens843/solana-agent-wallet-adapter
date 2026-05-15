@@ -6,6 +6,10 @@
 // real network state.
 
 import { Connection } from '@solana/web3.js';
+import type {
+  DeviceAgentRuntimeKind,
+  DeviceAgentRuntimeState,
+} from './deviceAgentClient.js';
 
 export type HealthStatus = 'ok' | 'warn' | 'fail' | 'unknown';
 export type HealthCheckId = 'rpc' | 'jupiter' | 'wallet' | 'cluster' | 'ai';
@@ -38,7 +42,16 @@ export interface SystemHealth {
   worstStatus: HealthStatus;
 }
 
-export type AiHealthMode = 'session' | 'bridge' | 'hosted';
+export type AiHealthMode = 'session' | 'bridge' | 'hosted' | 'device-agent';
+
+export interface DeviceAgentHealthHint {
+  available: boolean;
+  configured: boolean;
+  state: DeviceAgentRuntimeState;
+  runtime: DeviceAgentRuntimeKind;
+  bridgeAvailable?: boolean;
+  message?: string;
+}
 
 export interface HealthCheckInputs {
   rpcUrl: string;
@@ -51,6 +64,7 @@ export interface HealthCheckInputs {
   bridgeActive: boolean;
   jupiterProbeUrl?: string;
   signal?: AbortSignal;
+  deviceAgent?: DeviceAgentHealthHint;
 }
 
 const DEFAULT_JUPITER_PROBE_URL =
@@ -287,7 +301,91 @@ export async function checkAi(inputs: HealthCheckInputs): Promise<HealthCheck> {
       inputs.signal,
     );
   }
+  if (inputs.aiMode === 'device-agent') {
+    return checkDeviceAgentAi(inputs.deviceAgent, checkedAt);
+  }
   return probeUrlForAi('/api/ai/status', null, 'Hosted AI', inputs.signal);
+}
+
+function checkDeviceAgentAi(
+  hint: DeviceAgentHealthHint | undefined,
+  checkedAt: string,
+): HealthCheck {
+  if (!hint || hint.runtime === 'browser-dev') {
+    return {
+      id: 'ai',
+      label: 'AI',
+      status: 'warn',
+      message: 'Device Agent scaffold',
+      detail: hint?.message
+        ?? 'Browser dev shows Device Agent scaffold only; generation runs on Android.',
+      checkedAt,
+      remediation: { label: 'Open settings', intent: 'open-settings' },
+    };
+  }
+  if (hint.runtime === 'render-gated') {
+    return {
+      id: 'ai',
+      label: 'AI',
+      status: 'warn',
+      message: 'Device Agent control-only',
+      detail: hint.message ?? 'Render exposes status and control only; drafting runs on Android.',
+      checkedAt,
+      remediation: { label: 'Open settings', intent: 'open-settings' },
+    };
+  }
+  if (!hint.bridgeAvailable) {
+    return {
+      id: 'ai',
+      label: 'AI',
+      status: 'warn',
+      message: 'Device Agent bridge missing',
+      detail: hint.message ?? 'Install or update the Android device-agent build to enable drafting.',
+      checkedAt,
+      remediation: { label: 'Open settings', intent: 'open-settings' },
+    };
+  }
+  if (hint.state === 'error') {
+    return {
+      id: 'ai',
+      label: 'AI',
+      status: 'fail',
+      message: 'Device Agent error',
+      detail: hint.message ?? 'Device Agent runtime reported an error.',
+      checkedAt,
+      remediation: { label: 'Open settings', intent: 'open-settings' },
+    };
+  }
+  if (!hint.configured) {
+    return {
+      id: 'ai',
+      label: 'AI',
+      status: 'warn',
+      message: 'Device Agent unconfigured',
+      detail: hint.message ?? 'Add a Device Agent provider key and confirm planner to enable drafting.',
+      checkedAt,
+      remediation: { label: 'Open settings', intent: 'open-settings' },
+    };
+  }
+  if (hint.state === 'running') {
+    return {
+      id: 'ai',
+      label: 'AI',
+      status: 'ok',
+      message: 'Device Agent ready',
+      detail: hint.message ?? 'Drafting runs natively on the Android runtime.',
+      checkedAt,
+    };
+  }
+  return {
+    id: 'ai',
+    label: 'AI',
+    status: 'warn',
+    message: hint.state === 'starting' ? 'Device Agent starting' : 'Device Agent stopped',
+    detail: hint.message ?? 'Start the Device Agent runtime to enable drafting.',
+    checkedAt,
+    remediation: { label: 'Open settings', intent: 'open-settings' },
+  };
 }
 
 async function probeUrlForAi(

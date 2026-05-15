@@ -16,6 +16,18 @@ const androidAllowLanBridge =
   process.env.VITE_AGENTIC_ANDROID_ALLOW_LAN_BRIDGE ??
   process.env.AGENTIC_ANDROID_ALLOW_LAN_BRIDGE ??
   'false';
+const androidDeviceAgent =
+  process.env.VITE_AGENTIC_ANDROID_DEVICE_AGENT ??
+  process.env.AGENTIC_ANDROID_DEVICE_AGENT ??
+  'false';
+const deviceAgent =
+  process.env.VITE_AGENTIC_DEVICE_AGENT ??
+  process.env.AGENTIC_DEVICE_AGENT ??
+  'false';
+const deviceAgentWalletAllowlist =
+  process.env.VITE_AGENTIC_DEVICE_AGENT_WALLET_ALLOWLIST ??
+  process.env.AGENTIC_DEVICE_AGENT_WALLET_ALLOWLIST ??
+  '';
 const cloudApiBaseUrl =
   process.env.VITE_AGENTIC_CLOUD_API_BASE_URL ??
   process.env.AGENTIC_CLOUD_API_BASE_URL ??
@@ -31,6 +43,9 @@ export default defineConfig({
     'import.meta.env.VITE_AGENTIC_ANDROID_APP': JSON.stringify(androidApp),
     'import.meta.env.VITE_AGENTIC_ANDROID_SHOW_EXAMPLE_TAB': JSON.stringify(androidShowExampleTab),
     'import.meta.env.VITE_AGENTIC_ANDROID_ALLOW_LAN_BRIDGE': JSON.stringify(androidAllowLanBridge),
+    'import.meta.env.VITE_AGENTIC_ANDROID_DEVICE_AGENT': JSON.stringify(androidDeviceAgent),
+    'import.meta.env.VITE_AGENTIC_DEVICE_AGENT': JSON.stringify(deviceAgent),
+    'import.meta.env.VITE_AGENTIC_DEVICE_AGENT_WALLET_ALLOWLIST': JSON.stringify(deviceAgentWalletAllowlist),
     'import.meta.env.VITE_AGENTIC_CLOUD_API_BASE_URL': JSON.stringify(cloudApiBaseUrl),
     'import.meta.env.VITE_AGENTIC_APP_SURFACE': JSON.stringify(appSurface),
     'import.meta.env.VITE_AGENTIC_GA_MEASUREMENT_ID': JSON.stringify(gaMeasurementId),

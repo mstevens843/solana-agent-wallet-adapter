@@ -50,7 +50,7 @@ export type AiApiFormat = 'openai-compatible' | 'anthropic';
 export type AiProviderId = 'openai' | 'anthropic' | 'gemini' | 'openrouter' | 'custom-openai-compatible';
 
 export interface AiSettings {
-  mode: 'hosted' | 'session' | 'bridge';
+  mode: 'hosted' | 'session' | 'bridge' | 'device-agent';
   provider: AiProviderId;
   apiFormat: AiApiFormat;
   baseUrl: string;
@@ -669,6 +669,15 @@ export function aiRouteDiagnosticForSettings(
       code: 'AI_ROUTE',
       message: 'Browser session AI route selected.',
       detail: `${settings.provider} ${model}`,
+    };
+  }
+  if (settings.mode === 'device-agent') {
+    return {
+      code: 'AI_ROUTE',
+      message: method === 'GET' ? 'Device Agent status route selected.' : 'Device Agent route selected.',
+      detail: `${settings.provider} ${model}${route.origin ? ` on ${route.origin}` : ''}`,
+      ...(method && { method }),
+      path: route.path,
     };
   }
   return {

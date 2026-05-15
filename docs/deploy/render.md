@@ -132,6 +132,24 @@ OpenRouter key in the browser. The same-origin Node server relays that request t
 persist or log the key. Android uses the same Hosted BYOK endpoints over the bearer-authenticated Agentic Cloud API.
 Do not add user keys to Render environment variables.
 
+## Device Agent Gate
+
+Device Agent is a gated runtime scaffold, not a Render-hosted AI daemon. To expose the fourth AI path only to the
+Seeker test wallets on a deployed Render build, set both build-time and runtime flags:
+
+```text
+VITE_AGENTIC_DEVICE_AGENT=1
+VITE_AGENTIC_DEVICE_AGENT_WALLET_ALLOWLIST=4fTqUdd9SRCkmALQhQGF66VRYJFsCLDSQJYadqwMMoHd,7etjMSp87AUE135iW5dNeKridbW16rwSFVUN9ivfFm3w
+AGENTIC_DEVICE_AGENT=1
+AGENTIC_DEVICE_AGENT_WALLET_ALLOWLIST=4fTqUdd9SRCkmALQhQGF66VRYJFsCLDSQJYadqwMMoHd,7etjMSp87AUE135iW5dNeKridbW16rwSFVUN9ivfFm3w
+```
+
+The Render API only returns status/control scaffolding for allowlisted signed-in wallets and does not start a cloud
+agent worker or execute provider calls. Render Device Agent must stay status/control only even when the Android-native
+runtime is enabled elsewhere. Do not store Device Agent API keys in Render environment variables, and do not enable
+these flags for a public production build unless a release owner explicitly approves that exposure. Device Agent cannot
+approve, sign, submit, or move funds; wallet approval remains the only transaction authority.
+
 ## Private Local Mode
 
 Private local mode remains optional. Users who start the desktop app or local bridge can keep workflow state local to

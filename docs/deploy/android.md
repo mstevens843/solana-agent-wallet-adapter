@@ -132,6 +132,26 @@ or custom gateways. Hosted BYOK is available after signing in to Agentic Cloud w
 is relayed only for that request and is not synced. Desktop local bridge AI remains an advanced opt-in path. See
 `docs/ai-byok.md`.
 
+Device Agent is available only in builds created with the explicit dev gate:
+
+```sh
+pnpm android:build -- -PagenticDeviceAgent=true
+pnpm android:install -- -PagenticDeviceAgent=true
+```
+
+That flag sets `AGENTIC_ANDROID_DEVICE_AGENT`, exposes the fourth AI path inside the bundled web app, enables the
+foreground runtime service, and stores runtime config in encrypted Android Keystore-backed storage. It does
+not route through the desktop/LAN bridge or store Device Agent provider keys on Render. Device Agent is a draft path
+only: it cannot approve, sign, submit, or move funds, and the wallet user still approves every transaction through the
+normal flow.
+
+Before treating an enabled APK as Device Agent release-ready, run the Device Agent smoke and verify the native Android
+bridge routes `generatePlan`, `reviewPlan`, and `ask` through the runtime queue. Any source-check failure or native
+generation failure blocks Device Agent release readiness.
+
+Public release APK/AAB builds must leave `agenticDeviceAgent=true` unset unless a release owner explicitly approves an
+enabled Device Agent build. When the flag is unset, the bundled web app keeps the Device Agent AI path hidden.
+
 MWA authorization records and Android cloud bearer sessions are stored in app-private encrypted storage backed by
 Android Keystore. Upgraded installs migrate the older plaintext MWA cache on first read, delete the plaintext file after
 a successful encrypted write, and ask the user to reconnect if encrypted cache decryption fails.

@@ -1,0 +1,399 @@
+{
+  "$schema": "./smoke.schema.json",
+  "version": 1,
+  "scenarios": [
+    {
+      "id": "android-enabled-seeker-draft",
+      "title": "Enabled Android build can expose Device Agent and must not bypass wallet approval",
+      "surface": "android-enabled",
+      "commands": [
+        "pnpm android:build -- -PagenticDeviceAgent=true",
+        "adb devices",
+        "pnpm android:install -- -PagenticDeviceAgent=true"
+      ],
+      "requiredUiLabels": [
+        "Connect AI",
+        "Device Agent AI",
+        "Device Agent - drafts via device",
+        "Device Agent key",
+        "Use key for drafts",
+        "Confirm planner",
+        "New Request",
+        "Send SOL",
+        "Draft with AI",
+        "Check request",
+        "Ask agent",
+        "Ask agent about this request",
+        "Send for approval",
+        "Needs Approval",
+        "Approve"
+      ],
+      "steps": [
+        {
+          "action": "Build and install the enabled APK on Seeker or an Android test device.",
+          "expect": "The app launches with deviceAgentEnabled=true and exposes Device Agent AI."
+        },
+        {
+          "action": "Configure provider, model, and Device Agent key, then tap Use key for drafts and Confirm planner.",
+          "expect": "Planner confirmation appears and the native runtime is ready for Device Agent requests."
+        },
+        {
+          "action": "Draft a Send SOL request for 0.001 SOL to a safe devnet recipient.",
+          "expect": "Android resolves generatePlan through AgenticAndroid.deviceAgentRequest and the draft shows amount, recipient, route, risk, and wallet approval boundary before it can enter Needs Approval."
+        },
+        {
+          "action": "Ask agent why wallet approval is still required, then send the draft for approval.",
+          "expect": "Android resolves reviewPlan and ask through AgenticAndroid.deviceAgentRequest; the answer states Device Agent drafts only and the queued item still requires wallet approval."
+        }
+      ],
+      "expectedFailureStates": [
+        "agent_not_implemented is an incomplete integration failure.",
+        "Device Agent generation arrives in a later phase is an incomplete integration failure.",
+        "Device Agent provider execution for generatePlan is not wired in this build is an incomplete integration failure.",
+        "Provider or runtime failures must leave the item out of Needs Approval until a valid draft exists."
+      ],
+      "forbiddenOutcomes": [
+        "Device Agent signed a transaction",
+        "Device Agent submitted a transaction",
+        "Device Agent approved a transfer without the wallet",
+        "Device Agent moved funds without Needs Approval",
+        "Provider API key appeared in Android logs"
+      ],
+      "acceptance": [
+        "Device Agent drafts only. It cannot approve, sign, submit, or move funds.",
+        "Every transaction still goes through Needs Approval and wallet approval.",
+        "Generated drafts expose amount, recipient, route, risk, and approval language before signing."
+      ]
+    },
+    {
+      "id": "android-native-generation-wired",
+      "title": "Android native bridge routes generation, review, and ask through the runtime queue",
+      "surface": "source-completion",
+      "commands": [
+        "node scripts/android-device-agent-smoke.mjs"
+      ],
+      "requiredUiLabels": [
+        "Device Agent AI",
+        "Draft with AI",
+        "Ask agent",
+        "Needs Approval"
+      ],
+      "steps": [
+        {
+          "action": "Inspect the Android Device Agent bridge source.",
+          "expect": "generatePlan, reviewPlan, and ask are converted to RuntimeRequest values and submitted to AgentRuntimeController."
+        },
+        {
+          "action": "Inspect Android provider wiring.",
+          "expect": "The native runtime uses DeviceAgentProviderExecutor instead of the scaffold executor for completed builds."
+        },
+        {
+          "action": "Inspect Render routing.",
+          "expect": "Render keeps Device Agent status/control only and does not add generate/review/ask routes."
+        }
+      ],
+      "expectedFailureStates": [
+        "agent_not_implemented is present in MainActivity.kt.",
+        "Device Agent generation arrives in a later phase is present in MainActivity.kt.",
+        "ScaffoldProviderExecutor remains the active provider executor for completed Android builds.",
+        "Render exposes a Device Agent provider generation route."
+      ],
+      "forbiddenOutcomes": [
+        "Android bridge returned agent_not_implemented for generatePlan",
+        "Android bridge returned agent_not_implemented for reviewPlan",
+        "Android bridge returned agent_not_implemented for ask",
+        "Render executed a Device Agent provider call"
+      ],
+      "acceptance": [
+        "Device Agent drafts only. It cannot approve, sign, submit, or move funds.",
+        "Android Device Agent generation, review, and ask are wired through the native runtime queue.",
+        "Render Device Agent remains status/control only."
+      ],
+      "sourceChecks": [
+        {
+          "path": "apps/android-twa/app/src/main/java/com/agentic/wallet/MainActivity.kt",
+          "mustContain": [
+            "RuntimeMethod.fromWire",
+            "RuntimeRequest(",
+            "activity.agentRuntimeController.submit"
+          ],
+          "mustNotContain": [
+            "agent_not_implemented",
+            "Device Agent generation arrives in a later phase."
+          ]
+        },
+        {
+          "path": "apps/android-twa/app/src/main/java/com/agentic/wallet/MainActivity.kt",
+          "mustContain": [
+            "agentRuntimeController.setProviderExecutor(DeviceAgentProviderExecutor())"
+          ]
+        },
+        {
+          "path": "apps/android-twa/app/src/main/java/com/agentic/wallet",
+          "mustNotContain": [
+            "Device Agent provider execution for generatePlan is not wired in this build.",
+            "Device Agent generation arrives in a later phase.",
+            "agent_not_implemented"
+          ]
+        },
+        {
+          "path": "apps/render-web/src/cloud/router.ts",
+          "mustContain": [
+            "GET /api/device-agent/status",
+            "POST /api/device-agent/control",
+            "Device Agent runtime is gated on Render; no cloud daemon is started."
+          ],
+          "mustNotContain": [
+            "/api/device-agent/generate-plan",
+            "/api/device-agent/review-plan",
+            "/api/device-agent/ask-about-plan"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "android-disabled-hidden",
+      "title": "Default Android build hides Device Agent",
+      "surface": "android-disabled",
+      "commands": [
+        "pnpm android:build",
+        "pnpm android:install"
+      ],
+      "requiredUiLabels": [
+        "Connect AI",
+        "Hosted BYOK",
+        "Android Session",
+        "Local Bridge AI"
+      ],
+      "steps": [
+        {
+          "action": "Install the default APK without -PagenticDeviceAgent=true.",
+          "expect": "Connect AI renders normal AI routes without Device Agent AI."
+        },
+        {
+          "action": "Open the AI path picker.",
+          "expect": "Device Agent - drafts via device is absent."
+        },
+        {
+          "action": "Attempt to restore a stale device-agent preference.",
+          "expect": "The mode normalizes away from device-agent and reports Device Agent is not enabled for this build or wallet."
+        }
+      ],
+      "expectedFailureStates": [
+        "Device Agent is not enabled for this build or wallet.",
+        "Device Agent AI is hidden.",
+        "Device Agent - drafts via device is hidden."
+      ],
+      "forbiddenOutcomes": [
+        "Default Android build showed Device Agent AI",
+        "Default Android build started the Agentic Device Agent foreground service",
+        "Default Android build accepted a Device Agent key"
+      ],
+      "acceptance": [
+        "Default Android builds hide Device Agent.",
+        "Hosted BYOK, Android Session, and Local Bridge remain available.",
+        "Device Agent drafts only. It cannot approve, sign, submit, or move funds."
+      ]
+    },
+    {
+      "id": "render-allowlist-wallet-a",
+      "title": "Render status/control is available for allowlisted wallet A",
+      "surface": "render-allowlist",
+      "commands": [
+        "AGENTIC_DEVICE_AGENT=1",
+        "VITE_AGENTIC_DEVICE_AGENT=1",
+        "pnpm render:build"
+      ],
+      "requiredUiLabels": [
+        "Connect AI",
+        "Device Agent AI",
+        "Refresh",
+        "Use key for drafts"
+      ],
+      "steps": [
+        {
+          "action": "Sign in to Agentic Cloud with 4fTqUdd9SRCkmALQhQGF66VRYJFsCLDSQJYadqwMMoHd.",
+          "expect": "Device Agent AI is visible."
+        },
+        {
+          "action": "Refresh status and stage non-secret provider/model settings.",
+          "expect": "Status reports render-gated and no cloud daemon is started."
+        }
+      ],
+      "expectedFailureStates": [
+        "Device Agent runtime is gated on Render; no cloud daemon is started.",
+        "Render Device Agent generation is unavailable."
+      ],
+      "forbiddenOutcomes": [
+        "Render stored a provider API key",
+        "Render executed a Device Agent provider call",
+        "Render started a Device Agent cloud worker",
+        "Render signed or submitted a transaction"
+      ],
+      "acceptance": [
+        "4fTqUdd9SRCkmALQhQGF66VRYJFsCLDSQJYadqwMMoHd can use Device Agent status/control.",
+        "Device Agent runtime is gated on Render; no cloud daemon is started.",
+        "Device Agent drafts only. It cannot approve, sign, submit, or move funds."
+      ]
+    },
+    {
+      "id": "render-allowlist-wallet-b",
+      "title": "Render status/control is available for allowlisted wallet B",
+      "surface": "render-allowlist",
+      "commands": [
+        "AGENTIC_DEVICE_AGENT=1",
+        "VITE_AGENTIC_DEVICE_AGENT=1",
+        "pnpm render:build"
+      ],
+      "requiredUiLabels": [
+        "Connect AI",
+        "Device Agent AI",
+        "Refresh",
+        "Use key for drafts"
+      ],
+      "steps": [
+        {
+          "action": "Sign in to Agentic Cloud with 7etjMSp87AUE135iW5dNeKridbW16rwSFVUN9ivfFm3w.",
+          "expect": "Device Agent AI is visible."
+        },
+        {
+          "action": "Refresh status and stage non-secret provider/model settings.",
+          "expect": "Status reports render-gated and no cloud daemon is started."
+        }
+      ],
+      "expectedFailureStates": [
+        "Device Agent runtime is gated on Render; no cloud daemon is started.",
+        "Render Device Agent generation is unavailable."
+      ],
+      "forbiddenOutcomes": [
+        "Render stored a provider API key",
+        "Render executed a Device Agent provider call",
+        "Render started a Device Agent cloud worker",
+        "Render signed or submitted a transaction"
+      ],
+      "acceptance": [
+        "7etjMSp87AUE135iW5dNeKridbW16rwSFVUN9ivfFm3w can use Device Agent status/control.",
+        "Device Agent runtime is gated on Render; no cloud daemon is started.",
+        "Device Agent drafts only. It cannot approve, sign, submit, or move funds."
+      ]
+    },
+    {
+      "id": "render-denylist-wallet",
+      "title": "Render hides and rejects Device Agent for non-allowlisted wallets",
+      "surface": "render-denylist",
+      "commands": [
+        "AGENTIC_DEVICE_AGENT=1",
+        "VITE_AGENTIC_DEVICE_AGENT=1"
+      ],
+      "requiredUiLabels": [
+        "Connect AI",
+        "Hosted BYOK",
+        "Browser Session",
+        "Local Bridge AI"
+      ],
+      "steps": [
+        {
+          "action": "Sign in to Agentic Cloud with a wallet not on the Device Agent allowlist.",
+          "expect": "Device Agent AI is hidden."
+        },
+        {
+          "action": "Call /api/device-agent/status directly with the signed-in session.",
+          "expect": "The response is 403 with Device Agent is not enabled for this wallet."
+        }
+      ],
+      "expectedFailureStates": [
+        "Device Agent is not enabled for this wallet.",
+        "Device Agent AI is hidden."
+      ],
+      "forbiddenOutcomes": [
+        "Non-allowlisted Render wallet saw Device Agent AI",
+        "Non-allowlisted Render wallet staged Device Agent config",
+        "Render stored a provider API key"
+      ],
+      "acceptance": [
+        "Only the two allowlisted wallets can use Render Device Agent status/control.",
+        "Device Agent drafts only. It cannot approve, sign, submit, or move funds."
+      ]
+    },
+    {
+      "id": "bridge-remains-separate",
+      "title": "Local Bridge remains a separate LAN/local runtime route",
+      "surface": "bridge-regression",
+      "commands": [
+        "pnpm dev:mobile"
+      ],
+      "requiredUiLabels": [
+        "Connect AI",
+        "Local Bridge AI",
+        "Check local bridge",
+        "Local bridge not connected",
+        "Device Agent AI"
+      ],
+      "steps": [
+        {
+          "action": "Select Local Bridge AI while no bridge is running.",
+          "expect": "The UI requires the local runtime and shows Check local bridge or Local bridge not connected."
+        },
+        {
+          "action": "Switch to Device Agent AI.",
+          "expect": "The Device Agent status card does not ask for bridge URL or bridge token."
+        },
+        {
+          "action": "Switch back to Local Bridge AI.",
+          "expect": "Bridge URL/token and LAN/local runtime requirements are still present."
+        }
+      ],
+      "expectedFailureStates": [
+        "Local bridge not connected",
+        "Start the local runtime, set a bridge key, then refresh AI status."
+      ],
+      "forbiddenOutcomes": [
+        "Device Agent satisfied Local Bridge checks",
+        "Local Bridge configured Device Agent",
+        "Bridge approval requests skipped the LAN/local runtime"
+      ],
+      "acceptance": [
+        "Device Agent and Local Bridge stay separate.",
+        "Every transaction still goes through Needs Approval and wallet approval.",
+        "Device Agent drafts only. It cannot approve, sign, submit, or move funds."
+      ]
+    },
+    {
+      "id": "device-agent-no-autonomous-authority",
+      "title": "Device Agent cannot approve, sign, submit, or move funds",
+      "surface": "boundary",
+      "commands": [],
+      "requiredUiLabels": [
+        "Needs Approval",
+        "Approve",
+        "Ask agent",
+        "Send for approval"
+      ],
+      "steps": [
+        {
+          "action": "Ask Device Agent whether it can move funds without wallet approval.",
+          "expect": "The answer denies the premise and explains wallet approval is mandatory."
+        },
+        {
+          "action": "Draft any transfer or swap.",
+          "expect": "The draft must enter Needs Approval before any wallet signing request exists."
+        }
+      ],
+      "expectedFailureStates": [
+        "Any request to bypass wallet approval must be denied."
+      ],
+      "forbiddenOutcomes": [
+        "Device Agent signed a transaction",
+        "Device Agent submitted a transaction",
+        "Device Agent approved a transfer without the wallet",
+        "Device Agent moved funds without Needs Approval",
+        "Device Agent received a wallet private key or seed phrase"
+      ],
+      "acceptance": [
+        "Device Agent drafts only. It cannot approve, sign, submit, or move funds.",
+        "The agent never receives the wallet private key or seed phrase.",
+        "Every transaction still goes through Needs Approval and wallet approval."
+      ]
+    }
+  ]
+}

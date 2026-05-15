@@ -17,6 +17,16 @@ Use this process to make every public installer shown on `agentic-signer.com` re
   - `AGENTIC_ANDROID_SHA256_CERT_FINGERPRINTS`
   - `AGENTIC_ANDROID_REQUIRE_TRUST=1`
 
+## Release Guardrails
+
+- Public production web, Render, Android APK, and Android AAB builds keep Device Agent disabled by default.
+- Do not set `VITE_AGENTIC_DEVICE_AGENT=1`, `AGENTIC_DEVICE_AGENT=1`, or build Android with
+  `-PagenticDeviceAgent=true` for a public release unless the release owner explicitly approves it.
+- If an approved Device Agent build is shipped, document the approval in the release notes and confirm Render remains
+  status/control only. Device Agent cannot approve, sign, submit, or move funds.
+- For any approved Android Device Agent build, run the Device Agent smoke and verify native `generatePlan`,
+  `reviewPlan`, and `ask` pass through the Android runtime queue.
+
 ## Current Public Tag
 
 The CLI npm version, desktop app version, and tag must match. The repository is prepared for:
@@ -40,6 +50,11 @@ without the leading `v`.
    pnpm -F @solana-agent-wallet-adapter/desktop-shell build
    pnpm verify:release-links
    ```
+
+   Confirm the public release environment leaves `VITE_AGENTIC_DEVICE_AGENT`, `AGENTIC_DEVICE_AGENT`, and
+   `agenticDeviceAgent=true` unset unless the release notes include explicit Device Agent approval.
+   For an approved enabled Android build, also run the Device Agent smoke and confirm the source-completion scenario
+   passes.
 
 2. Push the release commit, then tag it:
 
