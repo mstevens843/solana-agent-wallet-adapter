@@ -181,6 +181,97 @@ describe('agent review fact router', () => {
     }));
   });
 
+  it('routes Jupiter swap actions through the swap_dex profile', () => {
+    const route = planAgentReviewFactRoutes({
+      actionType: 'swap',
+      question: 'Approve this swap if the route is healthy.',
+      hasWallet: true,
+      hasTokenMints: true,
+      connector: {
+        id: 'jupiter',
+        name: 'Jupiter',
+        enabled: true,
+        readReady: true,
+        actionKind: 'jupiter_swap',
+      },
+    }).routes.find((entry) => entry.id === 'protocol_connector.read_facts');
+
+    expect(route?.params).toEqual(expect.objectContaining({
+      connectorId: 'jupiter',
+      profile: 'swap_dex',
+      capability: 'swap',
+    }));
+  });
+
+  it('routes Squads actions through the multisig profile', () => {
+    const route = planAgentReviewFactRoutes({
+      actionType: 'squads_create_transfer_proposal',
+      question: 'Approve this multisig proposal if my wallet is an authorized signer.',
+      hasWallet: true,
+      connector: {
+        id: 'squads',
+        name: 'Squads',
+        enabled: true,
+        readReady: true,
+        actionKind: 'squads_create_transfer_proposal',
+      },
+    }).routes.find((entry) => entry.id === 'protocol_connector.read_facts');
+
+    expect(route?.params).toEqual(expect.objectContaining({
+      connectorId: 'squads',
+      profile: 'multisig',
+      capability: 'treasury',
+    }));
+  });
+
+  it('routes Drift vault actions through vault_yield and perps actions through perps_margin', () => {
+    const vaultRoute = planAgentReviewFactRoutes({
+      actionType: 'drift_vault_deposit',
+      hasWallet: true,
+      connector: {
+        id: 'drift',
+        name: 'Drift',
+        enabled: true,
+        readReady: true,
+        actionKind: 'drift_vault_deposit',
+      },
+    }).routes.find((entry) => entry.id === 'protocol_connector.read_facts');
+    const perpsRoute = planAgentReviewFactRoutes({
+      actionType: 'drift_perps_open',
+      hasWallet: true,
+      connector: {
+        id: 'drift',
+        name: 'Drift',
+        enabled: true,
+        readReady: true,
+        actionKind: 'drift_perps_open',
+      },
+    }).routes.find((entry) => entry.id === 'protocol_connector.read_facts');
+
+    expect(vaultRoute?.params).toEqual(expect.objectContaining({ profile: 'vault_yield' }));
+    expect(perpsRoute?.params).toEqual(expect.objectContaining({ profile: 'perps_margin', capability: 'perps' }));
+  });
+
+  it('routes Lulo through yield_earn profile', () => {
+    const route = planAgentReviewFactRoutes({
+      actionType: 'lulo_deposit',
+      hasWallet: true,
+      connector: {
+        id: 'lulo',
+        name: 'Lulo',
+        enabled: true,
+        readReady: true,
+        actionKind: 'lulo_deposit',
+      },
+    }).routes.find((entry) => entry.id === 'protocol_connector.read_facts');
+
+    expect(route?.params).toEqual(expect.objectContaining({
+      connectorId: 'lulo',
+      profile: 'yield_earn',
+      capability: 'earn',
+    }));
+  });
+
   it('uses marketplace and bridge capabilities for NFT and cross-chain connectors', () => {
     const nftRoute = planAgentReviewFactRoutes({
       actionType: 'magiceden_bid',

@@ -25,11 +25,16 @@ export type AgentFactProvider =
 export type AgentFactRouteStatus = 'required' | 'optional';
 
 export type AgentConnectorProfileKind =
+  | 'swap_dex'
   | 'lending_borrow'
   | 'liquidity_pool'
   | 'staking_lst'
+  | 'vault_yield'
+  | 'yield_earn'
+  | 'perps_margin'
   | 'nft_marketplace'
   | 'governance'
+  | 'multisig'
   | 'bridge'
   | 'oracle'
   | 'jupiter';
@@ -127,12 +132,17 @@ const PROTOCOL_ACTION_TYPES = new Set([
   'read_only',
   'custom',
 ]);
-const LENDING_BORROW_CONNECTORS = new Set(['kamino', 'marginfi', 'project0', 'save', 'drift', 'lulo']);
+const LENDING_BORROW_CONNECTORS = new Set(['kamino', 'marginfi', 'project0', 'save']);
 const LIQUIDITY_CONNECTORS = new Set(['raydium', 'orca', 'meteora']);
 const STAKING_CONNECTORS = new Set(['jito', 'marinade', 'sanctum']);
 const NFT_CONNECTORS = new Set(['tensor', 'magiceden']);
-const GOVERNANCE_CONNECTORS = new Set(['realms', 'squads']);
+const GOVERNANCE_CONNECTORS = new Set(['realms']);
+const MULTISIG_CONNECTORS = new Set(['squads']);
 const BRIDGE_CONNECTORS = new Set(['wormhole', 'mayan']);
+const YIELD_EARN_CONNECTORS = new Set(['lulo']);
+const DRIFT_VAULT_HINT_RE = /\bvault\b/i;
+const PERPS_HINT_RE = /perps?|perpetual|leverage|liquidation/i;
+const SWAP_HINT_RE = /(^|_)swap\b|aggregator|jupiter\s+swap/i;
 
 const TRANSFER_CONTEXT_RE = /\b(transfer|transfers|sent|send|sending|received|receive|paid|payment|payout|counterparty|recipient\s+history|wallet\s+activity|transaction\s+history|recent\s+activity|duplicate|already\s+paid|same\s+recipient)\b/i;
 const HOLDINGS_REQUIRED_RE = /\b(balance|balances|holding|holdings|portfolio|position|positions|exposure|own|owns|do i have|can afford|enough funds|wallet tokens|available funds|insufficient|afford)\b/i;
@@ -455,7 +465,18 @@ function connectorReadRoutePlan(
 }
 
 function connectorProfileKind(id: string, actionKind: string): AgentConnectorProfileKind | undefined {
-  if (id === 'jupiter') return 'jupiter';
+  if (id === 'jupiter') {
+    if (SWAP_HINT_RE.test(actionKind)) return 'swap_dex';
+    if (PERPS_HINT_RE.test(actionKind)) return 'perps_margin';
+    return 'jupiter';
+  }
+  if (id === 'drift') {
+    if (DRIFT_VAULT_HINT_RE.test(actionKind)) return 'vault_yield';
+    if (PERPS_HINT_RE.test(actionKind)) return 'perps_margin';
+    return 'perps_margin';
+  }
+  if (MULTISIG_CONNECTORS.has(id)) return 'multisig';
+  if (YIELD_EARN_CONNECTORS.has(id)) return 'yield_earn';
   if (LENDING_BORROW_CONNECTORS.has(id)) return 'lending_borrow';
   if (LIQUIDITY_CONNECTORS.has(id)) return 'liquidity_pool';
   if (STAKING_CONNECTORS.has(id)) return 'staking_lst';
@@ -485,11 +506,13 @@ function connectorReadCapability(
       if (/token|mint|risk/.test(action)) return 'tokens';
       if (/price|quote|market/.test(action)) return 'price';
       return 'swap';
+    case 'swap_dex':
+      if (/token|mint|risk/.test(action)) return 'tokens';
+      if (/price|quote|impact|slippage|market/.test(action)) return 'price';
+      return 'swap';
     case 'lending_borrow':
       if (/reward|claim|earnings/.test(action)) return 'rewards';
       if (connectorId === 'kamino') return /market|reserve|rate|apy/.test(action) ? 'markets' : 'positions';
-      if (connectorId === 'drift') return /withdraw/.test(action) ? 'withdraw' : /vault|market|deposit/.test(action) ? 'markets' : 'positions';
-      if (connectorId === 'lulo') return /deposit|market|rate|apy/.test(action) ? 'earn' : 'positions';
       if (/borrow/.test(action)) return 'borrow';
       if (/repay/.test(action)) return 'repay';
       if (/withdraw|unstake|complete/.test(action)) return 'withdraw';
@@ -506,11 +529,28 @@ function connectorReadCapability(
       if (/stake|deposit|add|liquidity|earn/.test(action)) return 'earn';
       if (/market|pool|validator|lst|apy/.test(action)) return 'markets';
       return 'positions';
+    case 'vault_yield':
+      if (/withdraw|complete|cancel|redeem/.test(action)) return 'withdraw';
+      if (/deposit|stake|earn|mint/.test(action)) return 'earn';
+      if (/market|vault|strategy|apy/.test(action)) return 'markets';
+      return 'positions';
+    case 'yield_earn':
+      if (/withdraw|complete|redeem|cancel/.test(action)) return 'withdraw';
+      if (/deposit|earn|supply|mint|rate|apy|market/.test(action)) return 'earn';
+      return 'positions';
+    case 'perps_margin':
+      if (/withdraw|complete|cancel|redeem/.test(action)) return 'withdraw';
+      if (/deposit|earn|stake|fund/.test(action)) return 'earn';
+      if (/market|vault|custody|pool/.test(action)) return 'markets';
+      return 'perps';
     case 'nft_marketplace':
       if (/buy|bid|list|sweep|floor|collection|market/.test(action)) return 'marketplace';
       return 'positions';
     case 'governance':
       if (/treasury|vault|transfer/.test(action)) return 'treasury';
+      return 'governance';
+    case 'multisig':
+      if (/treasury|vault|transfer|fund/.test(action)) return 'treasury';
       return 'governance';
     case 'bridge':
       if (/transfer|redeem|recover|resume|quote|bridge|destination/.test(action)) return 'bridge';
@@ -526,16 +566,26 @@ function connectorReadReason(
   capability: AgentConnectorReadCapability,
 ): string {
   switch (profile) {
+    case 'swap_dex':
+      return `${label} swap approvals need quote, route, and token-market facts before signing.`;
     case 'lending_borrow':
       return `${label} approvals need ${capability} facts for positions, reserves, health, or claimable rewards.`;
     case 'liquidity_pool':
       return `${label} approvals need pool, LP position, fee, or reward facts from the connector.`;
     case 'staking_lst':
       return `${label} approvals need staking, LST, pool, quote, or wallet-position facts from the connector.`;
+    case 'vault_yield':
+      return `${label} approvals need vault position, deposit/withdraw state, and strategy facts from the connector.`;
+    case 'yield_earn':
+      return `${label} approvals need earn position, withdrawal state, and rate facts from the connector.`;
+    case 'perps_margin':
+      return `${label} approvals need margin/custody, market, leverage, and liquidation/health facts from the connector.`;
     case 'nft_marketplace':
       return `${label} approvals need NFT collection, listing, bid, or wallet NFT facts from the connector.`;
     case 'governance':
       return `${label} approvals need governance, proposal, signer, threshold, or treasury facts from the connector.`;
+    case 'multisig':
+      return `${label} approvals need multisig threshold, signer membership, transaction index, and vault/treasury facts.`;
     case 'bridge':
       return `${label} approvals need route, destination, fee, transfer-status, or bridge-exposure facts.`;
     case 'oracle':
