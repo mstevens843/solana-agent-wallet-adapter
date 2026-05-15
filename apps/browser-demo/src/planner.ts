@@ -238,8 +238,8 @@ const BASE_AGENT_PLAN_TEMPLATES: AgentPlanTemplate[] = [
   ]),
   template('trading', 'swap', 'Swap tokens', 'Prepare a DeFi swap review with explicit input, output, amount, protocol route, and slippage cap.', 'swap', 'medium', [
     selectField('inputToken', 'Input token', ['SOL', 'USDC', 'JUP', 'BONK', 'WIF', 'PYUSD', 'POPCAT'], 'SOL'),
-    selectField('outputToken', 'Output token', ['POPCAT', 'USDC', 'SOL', 'JUP', 'BONK', 'WIF', 'PYUSD'], 'POPCAT'),
-    field('amount', 'Token amount', '0.04', '0.04', true),
+    selectField('outputToken', 'Output token', ['USDC', 'SOL', 'JUP', 'BONK', 'WIF', 'PYUSD', 'POPCAT'], 'USDC'),
+    field('amount', 'Token amount', '0.01', '0.01', true),
     field('slippageBps', 'Max slippage', '0.5%', '50'),
   ]),
   template('recurring', 'dca', 'DCA review proof', 'Sign a review proof for a recurring DCA strategy before using a swap-capable recurring engine.', 'manual_review', 'medium', [

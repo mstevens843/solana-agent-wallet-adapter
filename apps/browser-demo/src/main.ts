@@ -476,7 +476,7 @@ type PreparedActionKind =
   | 'wormhole_transfer'
   | 'wormhole_redeem'
   | 'wormhole_recover_or_resume';
-type GuidedDemoScenarioId = 'transfer' | 'swap' | 'dca' | 'payouts';
+type GuidedDemoScenarioId = 'transfer' | 'swap' | 'policy-swap' | 'dca' | 'payouts';
 type GuidedDemoStage = 'request' | 'prepared' | 'queued' | 'receipt';
 type GuidedDemoDecision = 'pending' | 'approved' | 'denied';
 type FirstRunStepId = 'wallet' | 'plan' | 'review' | 'decision' | 'receipt';
@@ -755,13 +755,7 @@ const DEMO_MEMO = 'Solana Agent Wallet Adapter demo';
 const DEFAULT_BRIDGE_URL = 'http://127.0.0.1:8787';
 const DEFAULT_BRIDGE_TOKEN = 'local-agent-wallet';
 const MOCK_PRE_SIGN_POLICY_PROMPT = 'Run my pre-signing policy for this swap. Market gates: BTC Fear & Greed must be above 20 SOL must be above $60 Token gates: mint authority disabled freeze authority disabled token age above 24h Transaction gates: must only execute the requested swap no extra transfers no unknown recipients no unrelated instructions Return APPROVE or DENY with the exact rule that decided it.';
-const DEFAULT_AGENT_PROMPT = MOCK_PRE_SIGN_POLICY_PROMPT;
-const MOCK_PRE_SIGN_SWAP_DEFAULT_FIELDS: Record<string, string> = {
-  inputToken: 'SOL',
-  outputToken: 'POPCAT',
-  amount: '0.04',
-  slippageBps: '50',
-};
+const DEFAULT_AGENT_PROMPT = '';
 const STORAGE_KEY = 'solana-agent-wallet-demo-v2';
 const BRIDGE_TOKEN_SESSION_KEY = 'agentic-local-bridge-token';
 const AI_API_KEYS_SESSION_STORAGE_KEY = 'solana-agent-wallet-ai-api-keys-v1';
@@ -2564,10 +2558,6 @@ const launchParams = readLaunchParams();
 clearSensitiveLaunchParams();
 const initialCluster = SHOW_DEV_CONTROLS ? (persisted.cluster ?? 'mainnet-beta') : 'mainnet-beta';
 const initialTemplate = templateById('swap');
-const initialTemplateFields = {
-  ...defaultTemplateFieldValues(initialTemplate),
-  ...MOCK_PRE_SIGN_SWAP_DEFAULT_FIELDS,
-};
 const defaultWorkspaceTab: ActiveTab = 'overview';
 const initialAiSettings = persistedAiSettings(persisted);
 const initialBrowserWorkflow = loadBrowserWorkflowState();
@@ -2663,6 +2653,31 @@ const GUIDED_DEMO_SCENARIOS: ReadonlyArray<GuidedDemoScenario> = [
     ],
   },
   {
+    id: 'policy-swap',
+    eyebrow: 'Pre-sign policy',
+    title: 'SOL to POPCAT policy check',
+    prompt: MOCK_PRE_SIGN_POLICY_PROMPT,
+    detail: 'The mock agent checks market gates, token authority gates, and transaction-shape gates before returning APPROVE.',
+    planTitle: 'Mock pre-signing policy approved',
+    route: 'New Request -> Agent review -> Mock approval',
+    risk: 'The policy requires BTC Fear & Greed above 20, SOL above $60, disabled mint/freeze authorities, token age above 24h, and no extra transfers or unrelated instructions.',
+    approvalBoundary: 'No wallet opens in this demo. The agent result is mocked, then a local mock signature and approval receipt are created.',
+    receiptType: 'mock_pre_sign_policy_receipt',
+    receiptSummary: 'The mock agent approved the SOL to POPCAT swap after all configured policy gates passed.',
+    constraints: [
+      'SOL price is mocked at $90.96, above the $60 gate.',
+      'BTC Fear & Greed is mocked at 42, above the 20 gate.',
+      'POPCAT mint and freeze authorities are disabled.',
+      'POPCAT age is mocked at 29.4 months.',
+      'Transaction shape is limited to the requested swap only.',
+    ],
+    facts: [
+      { label: 'Route', value: '0.04 SOL -> POPCAT' },
+      { label: 'Market gates', value: 'SOL $90.96 / F&G 42' },
+      { label: 'Agent result', value: 'APPROVE' },
+    ],
+  },
+  {
     id: 'dca',
     eyebrow: 'Repeat payment',
     title: 'Weekly capped DCA',
@@ -2731,7 +2746,7 @@ const state: DemoState = {
   activeTab: defaultWorkspaceTab,
   commandCenterView: 'center',
   oneTimePlanView: 'create',
-  askAgentAfterDraft: true,
+  askAgentAfterDraft: false,
   recurringView: 'create',
   artifactView: 'create',
   completedPlanFilter: 'all',
@@ -2777,9 +2792,9 @@ const state: DemoState = {
   agentPrompt: DEFAULT_AGENT_PROMPT,
   selectedTemplateId: initialTemplate.id,
   templateOutcomeFilter: 'queueable',
-  templateFields: initialTemplateFields,
-  templateTokenModes: defaultTemplateTokenModes(initialTemplate, initialTemplateFields),
-  templateTokenSelections: defaultTemplateTokenSelections(initialTemplate, initialTemplateFields),
+  templateFields: defaultTemplateFieldValues(initialTemplate),
+  templateTokenModes: defaultTemplateTokenModes(initialTemplate),
+  templateTokenSelections: defaultTemplateTokenSelections(initialTemplate),
   templateFieldErrors: {},
   templateFieldOptionCache: {},
   templateFieldOptionLoading: {},
@@ -4874,6 +4889,7 @@ function guidedDemoScenarioCard(scenario: GuidedDemoScenario): string {
 function guidedDemoScenarioLogo(scenarioId: GuidedDemoScenarioId): BrandLogoId {
   switch (scenarioId) {
     case 'swap':
+    case 'policy-swap':
       return 'jupiter';
     case 'dca':
       return 'solanaMobile';
