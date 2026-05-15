@@ -286,11 +286,11 @@ function renderNotDeployedBody(wallet: string): string {
   return `
     <div class="skills-profile-card">
       <div class="skills-profile-notice">
-        <strong>Profile aggregator hasn't deployed yet</strong>
+        <strong>Profile aggregator API unavailable</strong>
         <p>
-          The <code>/api/aggregator/wallets/&lt;wallet&gt;</code> endpoint isn't live in this
-          environment. The public URL pattern below is still the canonical place your page will
-          live once the rollup ships.
+          The <code>/api/aggregator/wallets/&lt;wallet&gt;</code> endpoint returned 404 in this
+          environment. The public URL pattern below is still the canonical place for your page
+          when this UI is pointed at a render-web server with aggregator routes enabled.
         </p>
       </div>
     </div>

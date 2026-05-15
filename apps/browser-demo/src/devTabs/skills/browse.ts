@@ -217,8 +217,8 @@ function forbiddenNotice(): BrowseNotice {
 
 function notDeployedNotice(): BrowseNotice {
   return {
-    title: 'Skills not deployed yet',
-    body: '/api/skills returned 404. The catalog backend has not shipped to this environment.',
+    title: 'Skills API unavailable',
+    body: '/api/skills returned 404. Check that this UI is pointed at a render-web server with Skills routes enabled.',
   };
 }
 

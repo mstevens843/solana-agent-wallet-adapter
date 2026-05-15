@@ -86,8 +86,13 @@ describe('pure helpers', () => {
     expect(escapeHtml('<b>"x"</b>')).toBe('&lt;b&gt;&quot;x&quot;&lt;/b&gt;');
   });
 
-  it('buildSkillPageUrl returns the canonical agentic-signer.com URL', () => {
+  it('buildSkillPageUrl uses the fallback production origin outside the browser', () => {
     expect(buildSkillPageUrl('friday-dca')).toBe('https://agentic-signer.com/skills/friday-dca');
+  });
+
+  it('buildSkillPageUrl accepts the current app origin for local and staging builds', () => {
+    expect(buildSkillPageUrl('friday-dca', 'http://localhost:3000/')).toBe('http://localhost:3000/skills/friday-dca');
+    expect(buildSkillPageUrl('yield-auto-rotate', 'https://preview.example')).toBe('https://preview.example/skills/yield-auto-rotate');
   });
 
   it('CLI_INSTALL_SNIPPET contains the three documented commands', () => {
@@ -187,7 +192,7 @@ describe('renderPublishPanel — phase bodies', () => {
   it('notDeployed explains the registry status', () => {
     __resetPanelStateForTests({ phase: 'notDeployed' });
     const html = renderPublishPanel();
-    expect(html).toContain("hasn't deployed yet");
+    expect(html).toContain('Skill registry API unavailable');
     expect(html).toContain('/api/skills');
   });
 

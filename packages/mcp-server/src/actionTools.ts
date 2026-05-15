@@ -5581,6 +5581,7 @@ function registerJupiterRecurringTools(
       inputSchema: {
         inputMint: z.string().min(32),
         outputMint: z.string().min(32),
+        inputMintDecimals: z.number().int().min(0).max(18).optional().describe('Optional input-mint decimals for UI-resolved custom tokens.'),
         totalAmount: z.string().min(1).optional().describe('Human input-token amount; requires configured input-mint decimals.'),
         totalAmountRaw: z.string().min(1).optional().describe('Raw integer input-token amount. Preferred for arbitrary mints.'),
         numberOfOrders: z.number().int().min(1),
@@ -5604,6 +5605,7 @@ function registerJupiterRecurringTools(
       inputSchema: {
         inputMint: z.string().min(32),
         outputMint: z.string().min(32),
+        inputMintDecimals: z.number().int().min(0).max(18).optional().describe('Optional input-mint decimals for UI-resolved custom tokens.'),
         totalAmount: z.string().min(1).optional().describe('Human input-token amount deposited for the whole DCA order; requires configured input-mint decimals.'),
         totalAmountRaw: z.string().min(1).optional().describe('Raw integer amount deposited for the whole DCA order. Preferred for arbitrary mints.'),
         numberOfOrders: z.number().int().min(1),

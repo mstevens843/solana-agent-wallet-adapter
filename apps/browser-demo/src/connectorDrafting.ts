@@ -67,6 +67,37 @@ export interface ConnectorActionDisplayParts {
   title: string;
 }
 
+const JUPITER_FORM_TOKEN_MINTS = {
+  SOL: 'So11111111111111111111111111111111111111112',
+  USDC: 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v',
+  JUP: 'JUPyiwrYJFskUPiHa7hkeR8VUtAeFoSYbKedZNsDvCN',
+  BONK: 'DezXAZ8z7PnrnRJjz3wXBoRgixCa6xjnB7YaB1pPB263',
+  WIF: 'EKpQGSJtjMFqKZ9KQanSqYXRcF8fBopzLHYxdM65zcjm',
+  PYUSD: '2b1kV6DkPAnxd5ixfnxCpjxmKwqjjaYmCZfHsFu24GXo',
+  MSOL: 'mSoLzYCxHdYgdzU16g5QSh3i5K3z3wX3KZK7ytfqcJm7So',
+} as const;
+
+const JUPITER_FORM_TOKEN_OPTIONS: string[] = [
+  JUPITER_FORM_TOKEN_MINTS.SOL,
+  JUPITER_FORM_TOKEN_MINTS.USDC,
+  JUPITER_FORM_TOKEN_MINTS.JUP,
+  JUPITER_FORM_TOKEN_MINTS.BONK,
+  JUPITER_FORM_TOKEN_MINTS.WIF,
+  JUPITER_FORM_TOKEN_MINTS.PYUSD,
+  JUPITER_FORM_TOKEN_MINTS.MSOL,
+];
+
+const JUPITER_FORM_TOKEN_SYMBOL_TO_MINT: Record<string, string> = {
+  SOL: JUPITER_FORM_TOKEN_MINTS.SOL,
+  WSOL: JUPITER_FORM_TOKEN_MINTS.SOL,
+  USDC: JUPITER_FORM_TOKEN_MINTS.USDC,
+  JUP: JUPITER_FORM_TOKEN_MINTS.JUP,
+  BONK: JUPITER_FORM_TOKEN_MINTS.BONK,
+  WIF: JUPITER_FORM_TOKEN_MINTS.WIF,
+  PYUSD: JUPITER_FORM_TOKEN_MINTS.PYUSD,
+  MSOL: JUPITER_FORM_TOKEN_MINTS.MSOL,
+};
+
 const CONNECTOR_DROPDOWN_HIDDEN_ACTION_KINDS = new Set<string>([
   'jupiter:swap',
 ]);
@@ -629,6 +660,7 @@ export function scopeConnectorDraftParameters(
 const CONNECTOR_FIELD_META_SUFFIXES = [
   'Label',
   'Mint',
+  'Decimals',
   'TokenASymbol',
   'TokenBSymbol',
   'TokenAMint',
@@ -765,6 +797,35 @@ function formField(
   };
 }
 
+function formDateTimeField(
+  id: string,
+  label: string,
+  required = false,
+  options: Pick<AgentPlanTemplateField, 'placeholder' | 'helperText'> = {},
+): AgentPlanTemplateField {
+  return {
+    ...formField(id, label, required, options),
+    type: 'datetime-local',
+  };
+}
+
+function jupiterTokenField(
+  id: 'inputMint' | 'outputMint' | 'triggerMint',
+  label: string,
+  required = false,
+  defaultValue: string = JUPITER_FORM_TOKEN_MINTS.USDC,
+): AgentPlanTemplateField {
+  return {
+    id,
+    label,
+    required,
+    type: 'select',
+    options: JUPITER_FORM_TOKEN_OPTIONS,
+    defaultValue,
+    placeholder: 'Search symbol/name or paste mint',
+  };
+}
+
 function bidSpendCapField(): AgentPlanTemplateField {
   return formField('maxEscrowSol', 'Spend cap (SOL)', false, {
     placeholder: 'Defaults to bid price',
@@ -794,7 +855,9 @@ function normalizeConnectorParameterAliases(
   form: ConnectorActionForm | undefined,
   parameters: Record<string, string>,
 ): Record<string, string> {
-  if (!form) return parameters;
+  const tokenNormalized = normalizeConnectorTokenParameters(form, parameters);
+  if (!form) return tokenNormalized;
+  parameters = tokenNormalized;
   const actionType = connectorActionFormTemplateActionType(form, parameters);
   if (actionType !== 'magiceden_bid' && actionType !== 'tensor_bid') return parameters;
   const next = { ...parameters };
@@ -807,6 +870,24 @@ function normalizeConnectorParameterAliases(
   const maxEscrowSol = rawMaxEscrowSol ? normalizeSolDecimalDraftValue(rawMaxEscrowSol) : '';
   if (maxEscrowSol) {
     next.maxEscrowSol = maxEscrowSol;
+  }
+  return next;
+}
+
+function normalizeConnectorTokenParameters(
+  form: ConnectorActionForm | undefined,
+  parameters: Record<string, string>,
+): Record<string, string> {
+  if (form?.connectorId !== 'jupiter') return parameters;
+  const next = { ...parameters };
+  for (const fieldId of ['inputMint', 'outputMint', 'triggerMint'] as const) {
+    const explicitMint = next[`${fieldId}Mint`]?.trim();
+    if (explicitMint) {
+      next[fieldId] = explicitMint;
+      continue;
+    }
+    const symbolMint = JUPITER_FORM_TOKEN_SYMBOL_TO_MINT[next[fieldId]?.trim().toUpperCase() ?? ''];
+    if (symbolMint) next[fieldId] = symbolMint;
   }
   return next;
 }
@@ -1938,14 +2019,14 @@ function jupiterLendUnifiedForm(): ConnectorActionForm {
 
 function jupiterTriggerUnifiedForm(): ConnectorActionForm {
   const memo = formField('memo', 'Reason');
-  const inputMint = formField('inputMint', 'Input token mint or symbol', true);
-  const outputMint = formField('outputMint', 'Output token mint or symbol', true);
-  const triggerMint = formField('triggerMint', 'Price trigger token', true);
-  const amount = formField('amount', 'Input amount', true);
-  const expiresAt = formField('expiresAt', 'Expires at (ISO time)', true);
-  const slippageBps = formField('slippageBps', 'Max slippage bps');
-  const takeProfitPrice = formField('takeProfitPriceUsd', 'Take-profit price USD', true);
-  const stopLossPrice = formField('stopLossPriceUsd', 'Stop-loss price USD', true);
+  const inputMint = jupiterTokenField('inputMint', 'Spend token', true, JUPITER_FORM_TOKEN_MINTS.SOL);
+  const outputMint = jupiterTokenField('outputMint', 'Receive token', true, JUPITER_FORM_TOKEN_MINTS.USDC);
+  const triggerMint = jupiterTokenField('triggerMint', 'Watch price of', true, JUPITER_FORM_TOKEN_MINTS.SOL);
+  const amount = formField('amount', 'Amount to spend', true);
+  const expiresAt = formDateTimeField('expiresAt', 'Expires at', true);
+  const slippageBps = formField('slippageBps', 'Max slippage', false, { placeholder: '0.5%' });
+  const takeProfitPrice = formField('takeProfitPriceUsd', 'Take-profit price', true);
+  const stopLossPrice = formField('stopLossPriceUsd', 'Stop-loss price', true);
   return {
     id: 'jupiter:trigger-limit-orders',
     connectorId: 'jupiter',
@@ -1998,8 +2079,8 @@ function jupiterTriggerUnifiedForm(): ConnectorActionForm {
             formSelectField('side', 'Position side', ['sell', 'buy'], 'sell'),
             takeProfitPrice,
             stopLossPrice,
-            formField('takeProfitSlippageBps', 'Take-profit slippage bps'),
-            formField('stopLossSlippageBps', 'Stop-loss slippage bps'),
+            formField('takeProfitSlippageBps', 'Take-profit max slippage', false, { placeholder: '0.5%' }),
+            formField('stopLossSlippageBps', 'Stop-loss max slippage', false, { placeholder: '0.5%' }),
             expiresAt,
           ],
         },
@@ -2018,8 +2099,8 @@ function jupiterTriggerUnifiedForm(): ConnectorActionForm {
             takeProfitPrice,
             stopLossPrice,
             slippageBps,
-            formField('takeProfitSlippageBps', 'Take-profit slippage bps'),
-            formField('stopLossSlippageBps', 'Stop-loss slippage bps'),
+            formField('takeProfitSlippageBps', 'Take-profit max slippage', false, { placeholder: '0.5%' }),
+            formField('stopLossSlippageBps', 'Stop-loss max slippage', false, { placeholder: '0.5%' }),
             expiresAt,
           ],
         },
@@ -2032,8 +2113,8 @@ function jupiterTriggerUnifiedForm(): ConnectorActionForm {
             formField('orderId', 'Order id', true),
             formSelectField('orderType', 'Order type', ['single', 'oco', 'otoco'], 'single'),
             formField('newTriggerPriceUsd', 'New trigger price USD'),
-            formField('newSlippageBps', 'New slippage bps'),
-            formField('newExpiresAt', 'New expiry (ISO time)'),
+            formField('newSlippageBps', 'New max slippage', false, { placeholder: '0.5%' }),
+            formDateTimeField('newExpiresAt', 'New expiry'),
             formField('reason', 'Reason'),
           ],
         },
@@ -2058,8 +2139,8 @@ function jupiterTriggerUnifiedForm(): ConnectorActionForm {
 
 function jupiterRecurringUnifiedForm(): ConnectorActionForm {
   const memo = formField('memo', 'Reason');
-  const inputMint = formField('inputMint', 'Input token mint or symbol', true);
-  const outputMint = formField('outputMint', 'Output token mint or symbol', true);
+  const inputMint = jupiterTokenField('inputMint', 'Spend token', true, JUPITER_FORM_TOKEN_MINTS.USDC);
+  const outputMint = jupiterTokenField('outputMint', 'Buy token', true, JUPITER_FORM_TOKEN_MINTS.SOL);
   const automationAccepted = formSelectField('automationWarningAccepted', 'Jupiter automation acknowledged', ['true'], 'true');
   const deprecationAccepted = formSelectField('priceOrderDeprecationAccepted', 'Deprecated price-order warning acknowledged', ['true'], 'true');
   return {
@@ -2084,15 +2165,15 @@ function jupiterRecurringUnifiedForm(): ConnectorActionForm {
           description: 'Set up a time-based Jupiter Recurring order for repeated token swaps.',
           actionType: 'jupiter_recurring_create_time_order',
           fields: [
+            formSelectField('dcaDirection', 'Direction', ['buy', 'sell'], 'buy', true),
             inputMint,
             outputMint,
-            formField('totalAmount', 'Total input amount', true),
-            formField('numberOfOrders', 'Number of swaps', true),
-            formField('intervalSeconds', 'Seconds between swaps', true),
-            formField('startAt', 'Start at (ISO time)'),
+            formField('totalAmount', 'Total spend', true),
+            formField('numberOfOrders', 'How many buys', true),
+            formField('intervalSeconds', 'Every', true),
+            formDateTimeField('startAt', 'Start at'),
             formField('minPrice', 'Minimum price'),
             formField('maxPrice', 'Maximum price'),
-            formField('maxFeeBps', 'Max fee bps'),
             automationAccepted,
           ],
         },
@@ -2423,23 +2504,24 @@ function connectorActionFields(actionKind: string): AgentPlanTemplateField[] {
   } else if (actionKind.startsWith('jupiter_trigger_')) {
     if (has('cancel', 'edit', 'withdraw')) add(formField('orderId', 'Order id', true));
     if (has('single_order', 'oco_order', 'otoco_order')) {
-      add(formField('inputMint', 'Input mint or symbol', true));
-      add(formField('outputMint', 'Output mint or symbol', true));
-      add(formField('makingAmount', 'Input amount', true));
+      add(jupiterTokenField('inputMint', 'Spend token', true, JUPITER_FORM_TOKEN_MINTS.SOL));
+      add(jupiterTokenField('outputMint', 'Receive token', true, JUPITER_FORM_TOKEN_MINTS.USDC));
+      add(formField('amount', 'Amount to spend', true));
       add(formField('takingAmount', 'Minimum output amount'));
-      add(formField('triggerPriceUsd', 'Trigger price USD'));
-      add(formField('slippageBps', 'Max slippage bps'));
+      add(formField('triggerPriceUsd', 'Trigger price'));
+      add(formField('slippageBps', 'Max slippage', false, { placeholder: '0.5%' }));
     }
     if (has('register_vault')) add(formField('payer', 'Payer override'));
-    if (has('edit')) add(formField('newTriggerPriceUsd', 'New trigger price USD'));
+    if (has('edit')) add(formField('newTriggerPriceUsd', 'New trigger price'));
   } else if (actionKind.startsWith('jupiter_recurring_')) {
     if (has('cancel', 'deposit_price_order', 'withdraw_price_order')) add(formField('orderId', 'Order id', true));
     if (has('create_time_order')) {
-      add(formField('inputMint', 'Input mint or symbol', true));
-      add(formField('outputMint', 'Output mint or symbol', true));
-      add(formField('amount', 'Order amount', true));
-      add(formField('intervalSeconds', 'Interval seconds', true));
-      add(formField('numberOfOrders', 'Number of orders'));
+      add(formSelectField('dcaDirection', 'Direction', ['buy', 'sell'], 'buy', true));
+      add(jupiterTokenField('inputMint', 'Spend token', true, JUPITER_FORM_TOKEN_MINTS.USDC));
+      add(jupiterTokenField('outputMint', 'Buy token', true, JUPITER_FORM_TOKEN_MINTS.SOL));
+      add(formField('totalAmount', 'Total spend', true));
+      add(formField('intervalSeconds', 'Every', true));
+      add(formField('numberOfOrders', 'How many buys'));
     }
   } else if (actionKind.startsWith('raydium_')) {
     add(formField('poolId', 'Pool id', true));

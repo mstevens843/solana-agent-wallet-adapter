@@ -18,7 +18,6 @@ import {
   normalizeSkillApprovalKind,
   SandboxError,
 } from '@solana-agent-wallet-adapter/skills-runtime';
-import { getPriceFeedSnapshot } from '@solana-agent-wallet-adapter/mcp-server';
 import type { ApprovalRequestRecord, AuditEventRecord, WorkflowCluster } from '@solana-agent-wallet-adapter/workflow';
 
 import type {
@@ -29,11 +28,15 @@ import type {
   SkillsStore,
 } from './store.js';
 import { isSkillsStore } from './store.js';
+import {
+  createStatelessConnectorFactsReader,
+  type ConnectorReadFactsRequest,
+  type StatelessConnectorFactsReader,
+} from './connectorFactsReader.js';
 import type { EvidenceStore } from './evidenceService.js';
 import { CONNECTOR_APPROVAL_ACTION_TYPES } from './prepareConnectorTransaction.js';
 import { recordSkillExecutionOutcomeForApproval } from './skillExecutionLifecycle.js';
 import {
-  manifestHashFromInstall,
   manifestSnapshotFromInstall,
   skillManifestHash,
   skillManifestHashForRecord,
@@ -54,14 +57,19 @@ export interface SkillsExecuteTickInput {
    */
   workflowService?: WorkflowService;
   /**
+   * Override the stateless connector reader used by default Pyth and APY reads.
+   * Production builds an adapter-backed read-only service for the install wallet.
+   */
+  connectorFactsReader?: StatelessConnectorFactsReader;
+  /**
    * Override the Pyth lookup used by `'price-trigger'` schedules. When omitted,
-   * the executor reads the public Pyth Hermes feed through the shared connector.
+   * the executor reads Pyth price facts through the shared connector reader.
    */
   priceLookup?: PriceLookup;
   /**
    * Optional resolver for the launch catalog's `yield.auto_rotate` sentinel.
-   * Production may wire this to connector APY reads; the default maps supported
-   * USDC deposits to conservative concrete connector approvals.
+   * When omitted, the executor reads supported USDC APY facts through connector
+   * facts and resolves to the highest valid concrete deposit action.
    */
   yieldAutoRotateResolver?: YieldAutoRotateResolver;
 }
@@ -95,8 +103,7 @@ export async function runSkillsExecuteTick(
   if (!isSkillsStore(store)) {
     if (!warnedNoSkillsStore) {
       console.warn(
-        'skills-execute: configured store does not implement SkillsStore; tick is a no-op. '
-          + 'Postgres SkillsStore methods land with Agent 5.',
+        'skills-execute: configured store does not implement SkillsStore; tick is a no-op.',
       );
       warnedNoSkillsStore = true;
     }
@@ -106,8 +113,12 @@ export async function runSkillsExecuteTick(
   const skillsStore = store as unknown as SkillsStore;
   const evidenceStore = hasEvidenceStore(store) ? store : undefined;
   const workflowService = input.workflowService ?? new WorkflowService(store);
-  const priceLookup = input.priceLookup ?? defaultPythPriceLookup;
-  const yieldAutoRotateResolver = input.yieldAutoRotateResolver ?? defaultYieldAutoRotateResolver;
+  const connectorFactsReader = input.connectorFactsReader ?? createStatelessConnectorFactsReader();
+  const yieldAutoRotateResolver: YieldAutoRotateResolver = input.yieldAutoRotateResolver
+    ?? ((resolverInput) => defaultYieldAutoRotateResolver({
+      ...resolverInput,
+      connectorFactsReader,
+    }));
   const now = clock.now();
   const nowIso = now.toISOString();
 
@@ -130,6 +141,7 @@ export async function runSkillsExecuteTick(
           skillId: install.skillId,
           manifestVersion: install.manifestVersion,
           ...(manifestResolution.manifestHash ? { manifestHash: manifestResolution.manifestHash } : {}),
+          ...(manifestResolution.details ? manifestResolution.details : {}),
           capsSnapshot: install.caps as unknown as JsonObject,
           reason: manifestResolution.error,
         });
@@ -177,6 +189,13 @@ export async function runSkillsExecuteTick(
       }, '0');
 
       const cluster = resolveCluster(manifest);
+      const priceLookup = input.priceLookup
+        ?? ((feedSymbol, lookupCluster) => defaultPythPriceLookup(
+          feedSymbol,
+          lookupCluster,
+          install.walletAddress,
+          connectorFactsReader,
+        ));
 
       const scheduleDecision = await evaluateSchedule({
         install,
@@ -464,60 +483,289 @@ async function resolveApprovalRequest(input: {
   };
 }
 
-async function defaultPythPriceLookup(feedSymbol: string, cluster: WorkflowCluster): Promise<number> {
+async function defaultPythPriceLookup(
+  feedSymbol: string,
+  cluster: WorkflowCluster,
+  walletAddress: string,
+  connectorFactsReader: StatelessConnectorFactsReader,
+): Promise<number> {
   if (cluster !== 'mainnet-beta') {
     throw new Error(`Pyth price lookup is only available on mainnet-beta; received ${cluster}.`);
   }
   const feed = feedSymbol.trim();
-  const result = await getPriceFeedSnapshot(
-    {
-      ...(isPythFeedId(feed) ? { priceFeedId: feed } : { symbol: feed }),
-      maxAgeSeconds: 300,
-      includeEma: true,
-    },
-    {} as Parameters<typeof getPriceFeedSnapshot>[1],
-  );
-  if (result.snapshot.status !== 'fresh') {
-    throw new Error(`Pyth price for ${feed} is ${result.snapshot.status}.`);
+  const result = await connectorFactsReader({
+    connectorId: 'pyth',
+    capability: 'markets',
+    cluster,
+    walletAddress,
+    ...(isPythFeedId(feed) ? { priceFeedId: feed } : { symbol: feed }),
+    maxAgeSeconds: 300,
+    includeEma: true,
+  });
+  const snapshot = isJsonObject(result.snapshot)
+    ? result.snapshot
+    : isJsonObject(result.evidence)
+      ? result.evidence
+      : undefined;
+  if (!snapshot) {
+    throw new Error(`Pyth price for ${feed} did not include a snapshot.`);
   }
-  const price = Number(result.snapshot.priceUi);
-  if (!Number.isFinite(price)) {
+  const status = typeof snapshot.status === 'string' ? snapshot.status : undefined;
+  if (status && status !== 'fresh') {
+    throw new Error(`Pyth price for ${feed} is ${status}.`);
+  }
+  const price = parseNumberLike(snapshot.priceUi ?? snapshot.price ?? snapshot.priceUsd);
+  if (price === undefined || !Number.isFinite(price)) {
     throw new Error(`Pyth price for ${feed} is not finite.`);
   }
   return price;
 }
 
-async function defaultYieldAutoRotateResolver(input: {
+interface DefaultYieldAutoRotateResolverInput {
+  install: SkillInstallRecord;
   boundParams: JsonObject;
-}): Promise<readonly YieldAutoRotateCandidate[]> {
+  cluster: WorkflowCluster;
+  connectorFactsReader: StatelessConnectorFactsReader;
+}
+
+interface YieldFactProvider {
+  provider: string;
+  label: string;
+  connectorAction: string;
+  readInput: Omit<ConnectorReadFactsRequest, 'cluster' | 'walletAddress'>;
+  params: (amount: string) => JsonObject;
+  requiredDepositType?: string;
+}
+
+interface YieldObservation {
+  apyPercent: number;
+  liquidity?: number;
+  sourceLabel?: string;
+}
+
+const YIELD_FACT_PROVIDERS: readonly YieldFactProvider[] = [
+  {
+    provider: 'lulo',
+    label: 'Lulo Protected USDC',
+    connectorAction: 'prepare_lulo_deposit',
+    readInput: {
+      connectorId: 'lulo',
+      capability: 'markets',
+      reserveMint: USDC_MINT,
+    },
+    params: (amount) => ({
+      mintAddress: USDC_MINT,
+      amount,
+      depositType: 'protected',
+    }),
+    requiredDepositType: 'protected',
+  },
+  {
+    provider: 'kamino',
+    label: 'Kamino USDC',
+    connectorAction: 'prepare_kamino_deposit',
+    readInput: {
+      connectorId: 'kamino',
+      capability: 'markets',
+      token: 'USDC',
+      reserveMint: USDC_MINT,
+    },
+    params: (amount) => ({
+      token: 'USDC',
+      reserveMint: USDC_MINT,
+      amount,
+    }),
+  },
+  {
+    provider: 'save',
+    label: 'Save USDC',
+    connectorAction: 'prepare_save_deposit',
+    readInput: {
+      connectorId: 'save',
+      capability: 'markets',
+      token: 'USDC',
+      reserveMint: USDC_MINT,
+    },
+    params: (amount) => ({
+      token: 'USDC',
+      reserveMint: USDC_MINT,
+      amount,
+      depositCollateral: true,
+    }),
+  },
+  {
+    provider: 'jupiter',
+    label: 'Jupiter Earn USDC',
+    connectorAction: 'prepare_jupiter_lend_earn_deposit',
+    readInput: {
+      connectorId: 'jupiter',
+      capability: 'earn',
+      reserveMint: USDC_MINT,
+    },
+    params: (amount) => ({
+      assetMint: USDC_MINT,
+      amount,
+    }),
+  },
+];
+
+async function defaultYieldAutoRotateResolver(
+  input: DefaultYieldAutoRotateResolverInput,
+): Promise<readonly YieldAutoRotateCandidate[]> {
   const token = extractStringParam(input.boundParams, ['token', 'mint', 'mintAddress', 'inputToken']);
   const amount = extractStringParam(input.boundParams, ['amount', 'inputAmount', 'sourceAmount', 'totalAmount']);
   if (!amount || !/^\d+(\.\d+)?$/.test(amount)) return [];
   if (!token || !isUsdcToken(token)) return [];
+  if (input.cluster !== 'mainnet-beta') return [];
 
-  return [
-    {
-      connectorAction: 'prepare_lulo_deposit',
-      params: {
-        mintAddress: USDC_MINT,
-        amount,
-        depositType: 'protected',
-      },
-      apyPercent: 0,
-      label: 'Lulo Protected USDC',
-      metadata: { source: 'default-conservative-resolver', token: USDC_MINT },
+  const reads = await Promise.allSettled(YIELD_FACT_PROVIDERS.map(async (provider) => {
+    const facts = await input.connectorFactsReader({
+      ...provider.readInput,
+      cluster: input.cluster,
+      walletAddress: input.install.walletAddress,
+    });
+    return candidateFromYieldFacts(provider, facts, amount);
+  }));
+
+  return reads.flatMap((read) => (
+    read.status === 'fulfilled' && read.value ? [read.value] : []
+  ));
+}
+
+function candidateFromYieldFacts(
+  provider: YieldFactProvider,
+  facts: Record<string, unknown>,
+  amount: string,
+): YieldAutoRotateCandidate | undefined {
+  const observation = extractYieldObservation(provider, facts);
+  if (!observation) return undefined;
+  if (observation.liquidity !== undefined && observation.liquidity <= 0) return undefined;
+  return {
+    connectorAction: provider.connectorAction,
+    params: provider.params(amount),
+    apyPercent: observation.apyPercent,
+    label: provider.label,
+    metadata: {
+      source: 'connector-facts',
+      provider: provider.provider,
+      token: USDC_MINT,
+      ...(observation.liquidity !== undefined ? { liquidity: observation.liquidity } : {}),
+      ...(observation.sourceLabel ? { sourceLabel: observation.sourceLabel } : {}),
     },
-    {
-      connectorAction: 'prepare_kamino_deposit',
-      params: {
-        token: 'USDC',
-        amount,
-      },
-      apyPercent: 0,
-      label: 'Kamino USDC',
-      metadata: { source: 'default-conservative-resolver', token: USDC_MINT },
-    },
-  ];
+  };
+}
+
+function extractYieldObservation(
+  provider: YieldFactProvider,
+  facts: Record<string, unknown>,
+): YieldObservation | undefined {
+  let objects = collectJsonObjects(facts);
+  const usdcObjects = objects.filter((entry) => objectMentionsUsdc(entry));
+  if (usdcObjects.length > 0) objects = usdcObjects;
+  if (provider.requiredDepositType) {
+    const matchingType = objects.filter((entry) => objectMentionsDepositType(entry, provider.requiredDepositType as string));
+    if (matchingType.length > 0) objects = matchingType;
+  }
+
+  const scored = objects.flatMap((entry) => {
+    const apyPercent = extractApyPercent(entry);
+    if (apyPercent === undefined) return [];
+    return [{
+      apyPercent,
+      liquidity: extractLiquidity(entry),
+      sourceLabel: typeof entry.label === 'string' ? entry.label : undefined,
+      score: yieldObjectScore(provider, entry),
+    }];
+  });
+  const best = scored
+    .filter((entry) => Number.isFinite(entry.apyPercent) && entry.apyPercent >= 0)
+    .sort((left, right) => (
+      right.score - left.score
+      || right.apyPercent - left.apyPercent
+    ))[0];
+  if (!best) return undefined;
+  return {
+    apyPercent: best.apyPercent,
+    ...(best.liquidity !== undefined ? { liquidity: best.liquidity } : {}),
+    ...(best.sourceLabel ? { sourceLabel: best.sourceLabel } : {}),
+  };
+}
+
+function yieldObjectScore(provider: YieldFactProvider, value: JsonObject): number {
+  let score = 0;
+  if (objectMentionsUsdc(value)) score += 4;
+  if (provider.requiredDepositType && objectMentionsDepositType(value, provider.requiredDepositType)) score += 4;
+  if (typeof value.label === 'string' && /supply|deposit|earn|protected/i.test(value.label)) score += 2;
+  if (typeof value.connectorId === 'string' && value.connectorId === provider.provider) score += 1;
+  return score;
+}
+
+function collectJsonObjects(value: unknown, limit = 300): JsonObject[] {
+  const objects: JsonObject[] = [];
+  const seen = new Set<unknown>();
+  const visit = (entry: unknown) => {
+    if (objects.length >= limit || entry === null || entry === undefined) return;
+    if (typeof entry !== 'object') return;
+    if (seen.has(entry)) return;
+    seen.add(entry);
+    if (Array.isArray(entry)) {
+      for (const item of entry) visit(item);
+      return;
+    }
+    if (!isJsonObject(entry)) return;
+    objects.push(entry);
+    for (const item of Object.values(entry)) visit(item);
+  };
+  visit(value);
+  return objects;
+}
+
+function extractApyPercent(value: JsonObject): number | undefined {
+  for (const [key, entry] of Object.entries(value)) {
+    if (!isApyField(key, value.label)) continue;
+    const parsed = parseNumberLike(entry);
+    if (parsed !== undefined) return parsed;
+  }
+  if (typeof value.label === 'string' && isApyField('value', value.label)) {
+    const parsed = parseNumberLike(value.value);
+    if (parsed !== undefined) return parsed;
+  }
+  return undefined;
+}
+
+function isApyField(key: string, label: unknown): boolean {
+  const text = `${key} ${typeof label === 'string' ? label : ''}`.toLowerCase();
+  if (text.includes('borrow') || text.includes('reward')) return false;
+  return /\b(apy|apr)\b/.test(text)
+    || /supplyapy|depositapy|currentapy|netapy|baseapy|yieldapy/.test(text)
+    || key.toLowerCase() === 'rate';
+}
+
+function extractLiquidity(value: JsonObject): number | undefined {
+  for (const [key, entry] of Object.entries(value)) {
+    if (!/liquidity|capacity|depositlimitremaining|available|tvl/i.test(key)) continue;
+    const parsed = parseNumberLike(entry);
+    if (parsed !== undefined) return parsed;
+  }
+  if (typeof value.label === 'string' && /liquidity|capacity|deposit/i.test(value.label)) {
+    return parseNumberLike(value.value);
+  }
+  return undefined;
+}
+
+function objectMentionsUsdc(value: JsonObject): boolean {
+  return Object.values(value).some((entry) => {
+    if (typeof entry !== 'string') return false;
+    const normalized = entry.trim().toUpperCase();
+    return normalized === 'USDC' || entry.trim() === USDC_MINT;
+  });
+}
+
+function objectMentionsDepositType(value: JsonObject, depositType: string): boolean {
+  const expected = depositType.trim().toLowerCase();
+  return Object.values(value).some((entry) => (
+    typeof entry === 'string' && entry.trim().toLowerCase().includes(expected)
+  ));
 }
 
 function isPythFeedId(value: string): boolean {
@@ -536,6 +784,17 @@ function extractStringParam(params: JsonObject, keys: readonly string[]): string
     if (typeof value === 'number' && Number.isFinite(value)) return String(value);
   }
   return undefined;
+}
+
+function parseNumberLike(value: unknown): number | undefined {
+  if (typeof value === 'number') return Number.isFinite(value) ? value : undefined;
+  if (typeof value !== 'string') return undefined;
+  const direct = Number(value);
+  if (Number.isFinite(direct)) return direct;
+  const match = value.replace(/,/g, '').match(/-?\d+(?:\.\d+)?/);
+  if (!match) return undefined;
+  const parsed = Number(match[0]);
+  return Number.isFinite(parsed) ? parsed : undefined;
 }
 
 function isSupportedSkillApprovalKind(kind: string): boolean {
@@ -585,22 +844,56 @@ interface ResolvedManifest {
 
 type ManifestResolution =
   | ResolvedManifest
-  | { error: 'manifest-missing' | 'manifest-version-mismatch' | 'manifest-snapshot-invalid'; manifestHash?: string };
+  | {
+      error:
+        | 'manifest-missing'
+        | 'manifest-version-mismatch'
+        | 'manifest-snapshot-invalid'
+        | 'manifest-snapshot-hash-mismatch';
+      manifestHash?: string;
+      details?: JsonObject;
+    };
 
 async function resolveManifestForInstall(
   skillsStore: SkillsStore,
   cache: Map<string, SkillManifestStoreRecord | undefined>,
   install: SkillInstallRecord,
 ): Promise<ManifestResolution> {
-  const snapshot = manifestSnapshotFromInstall(install);
-  if (snapshot) {
+  const snapshotRead = manifestSnapshotFromInstall(install);
+  if (snapshotRead.status === 'valid') {
+    const snapshot = snapshotRead.manifest;
+    const computedManifestHash = skillManifestHash(snapshot);
     if (snapshot.id !== install.skillId || snapshot.version !== install.manifestVersion) {
-      return { error: 'manifest-snapshot-invalid', manifestHash: manifestHashFromInstall(install) };
+      return {
+        error: 'manifest-snapshot-invalid',
+        manifestHash: computedManifestHash,
+        details: {
+          snapshotSkillId: snapshot.id,
+          snapshotManifestVersion: snapshot.version,
+        },
+      };
+    }
+    if (snapshotRead.manifestHash && snapshotRead.manifestHash !== computedManifestHash) {
+      return {
+        error: 'manifest-snapshot-hash-mismatch',
+        manifestHash: computedManifestHash,
+        details: {
+          storedManifestHash: snapshotRead.manifestHash,
+          computedManifestHash,
+        },
+      };
     }
     return {
       manifest: snapshot,
-      manifestHash: manifestHashFromInstall(install) ?? skillManifestHash(snapshot),
+      manifestHash: computedManifestHash,
       manifestSource: 'install-snapshot',
+    };
+  }
+  if (snapshotRead.status === 'invalid') {
+    return {
+      error: 'manifest-snapshot-invalid',
+      ...(snapshotRead.manifestHash ? { manifestHash: snapshotRead.manifestHash } : {}),
+      details: { snapshotInvalidReason: snapshotRead.reason },
     };
   }
 

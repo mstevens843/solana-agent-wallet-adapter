@@ -257,8 +257,8 @@ async function handlePostInbound(
     token: approvalParams.token,
     amount: approvalParams.amount,
   };
-  // Pass the mapper's metadata through unmodified — it already contains
-  // `ap2VerifiedAgent: { ..., verified: true }` which Agent 9's badge requires.
+  // Pass the mapper's metadata through unmodified; the UI badge contract reads
+  // `ap2VerifiedAgent: { ..., verified: true }` from the approval metadata.
   const cluster: Ap2Cluster = validated.cluster ?? approvalParams.cluster;
 
   const approval = await context.workflowService.createApproval(session, {

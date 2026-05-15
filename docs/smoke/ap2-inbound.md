@@ -34,9 +34,8 @@ allows the test wallet through the AP2 routes. Twelve checks:
    (mirroring all common fields + the `intent` subtree), and `intent`
    with `description` + `cap: {amount, tokenSymbol, tokenMint,
    recipient, cluster: 'mainnet-beta'}`. Sign
-   `canonicalize(signedFields)` (Agent 1's deterministic JSON
-   formatter) with the agent's ed25519 key; base58-encode the
-   signature.
+   `canonicalize(signedFields)` with the shared deterministic JSON formatter
+   and the agent's ed25519 key; base58-encode the signature.
 5. `POST /api/ap2/inbound` with the signed mandate and session cookie.
    Expect a 2xx response with `{inboundId, approvalId}`.
 6. `GET /api/ap2/inbound` and confirm the listing contains the new

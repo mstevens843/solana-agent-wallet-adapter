@@ -220,11 +220,27 @@ export function renderPayOutPanel(): string {
       : composeView(panelState.cartText, panelState.busy);
 
   return `
-    <section class="pay-out-panel" data-pay-out-root>
-      <header class="pay-out-header">
-        <h2>Pay Out</h2>
-        <p>Settle an Agentic Commerce Protocol cart. Every payment routes through your wallet — nothing auto-pays.</p>
+    <section class="pay-out-panel dev-tab-shell" data-pay-out-root>
+      <header class="pay-out-header dev-tab-header">
+        <div class="dev-tab-header-main">
+          <p class="dev-tab-kicker">Agentic Commerce Protocol</p>
+          <div class="dev-tab-title-row">
+            <h2>Pay Out</h2>
+            <span class="pay-out-mode">Manual approval</span>
+          </div>
+          <p>Preview an ACP cart, validate the transfer details, then create the approval card your wallet signs in Needs Approval.</p>
+        </div>
+        <div class="pay-out-route-card" aria-label="Payment route">
+          <span>Route</span>
+          <strong>Cart to approval</strong>
+          <small>No automatic transfer</small>
+        </div>
       </header>
+      <div class="pay-out-capability-row" aria-label="Pay Out safeguards">
+        <span class="dev-tab-pill">JSON cart validation</span>
+        <span class="dev-tab-pill">SPL transfer preview</span>
+        <span class="dev-tab-pill">Wallet-signed approval</span>
+      </div>
       ${noticeBlock}
       ${errorBlock}
       ${body}
@@ -235,17 +251,25 @@ export function renderPayOutPanel(): string {
 function composeView(cartText: string, busy: boolean): string {
   const disabled = busy ? 'disabled' : '';
   return `
-    <form class="pay-out-form" data-pay-out-form onsubmit="return false;">
-      <label for="pay-out-cart-input">ACP cart</label>
-      <textarea
-        id="pay-out-cart-input"
-        class="pay-out-cart-input"
-        name="cart"
-        spellcheck="false"
-        autocapitalize="off"
-        autocomplete="off"
-        ${disabled}
-      >${escapeHtml(cartText)}</textarea>
+    <form class="pay-out-form dev-tab-panel" data-pay-out-form onsubmit="return false;">
+      <div class="pay-out-form-head">
+        <div>
+          <label for="pay-out-cart-input">ACP cart</label>
+          <span>Paste the cart JSON from a merchant or external agent.</span>
+        </div>
+      </div>
+      <div class="pay-out-editor-shell">
+        <textarea
+          id="pay-out-cart-input"
+          class="pay-out-cart-input"
+          name="cart"
+          spellcheck="false"
+          autocapitalize="off"
+          autocomplete="off"
+          placeholder='{"id":"cart_...","lineItems":[...],"totalAmount":"17.80","paymentToken":"USDC"}'
+          ${disabled}
+        >${escapeHtml(cartText)}</textarea>
+      </div>
       <div class="pay-out-actions">
         <button type="button" class="pay-out-button ghost" data-pay-out-action="load-sample" ${disabled}>Load sample</button>
         <div class="pay-out-actions-end">
@@ -260,6 +284,7 @@ function composeView(cartText: string, busy: boolean): string {
 
 function previewView(preview: AcpPreviewDisplay, busy: boolean): string {
   const disabled = busy ? 'disabled' : '';
+  const totalFiat = preview.totalFiat ? `<span>${escapeHtml(preview.totalFiat)}</span>` : '';
   const lineRows = preview.lineItems
     .map(
       (item) => `
@@ -288,6 +313,17 @@ function previewView(preview: AcpPreviewDisplay, busy: boolean): string {
 
   return `
     <div class="pay-out-preview" data-pay-out-preview>
+      <div class="pay-out-preview-head">
+        <div>
+          <span>Merchant</span>
+          <strong>${escapeHtml(preview.merchant.name)}</strong>
+        </div>
+        <div class="pay-out-preview-total">
+          <span>Total</span>
+          <strong>${escapeHtml(preview.totalAmount)} ${escapeHtml(preview.paymentToken)}</strong>
+          ${totalFiat}
+        </div>
+      </div>
       <dl class="pay-out-meta">
         <dt>Merchant</dt>
         <dd>${escapeHtml(preview.merchant.name)} ${merchantWalletHint}</dd>

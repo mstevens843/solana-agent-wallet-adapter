@@ -8,9 +8,7 @@ CLI for authoring Agentic Layer 2 Skills. Three commands:
 - `agentic-skill publish` — POST a validated manifest to
   `/api/skills/manifests` on the cloud server.
 
-The CLI is part of the Layer 2 Skills Hub plan
-(`/Users/devlegacy/.claude/plans/ok-please-plan-out-purrfect-squirrel.md`,
-Phase 1 Agent 3).
+The CLI is part of the Layer 2 Skills Hub authoring flow.
 
 ## Install
 
@@ -142,10 +140,10 @@ A 401/403 response triggers a hint pointing to this flow.
 
 ## Known limitations
 
-- `agentic-skill publish` POSTs to `/api/skills/manifests`. That route
-  is owned by Layer 2 Agent 5 (`apps/render-web/src/cloud/skillsRoutes.ts`);
-  until it ships, expect a 404 from a live server. The CLI surfaces a
-  hint when this happens.
+- `agentic-skill publish` POSTs to `/api/skills/manifests`. A 404 means
+  `AGENTIC_API_URL` points at the wrong server, an older deployment, or an
+  environment where render-web Skills routes are unavailable. The CLI surfaces
+  a hint when this happens.
 - `validateSkillManifest` itself may lag behind the cloud route validator.
   The CLI therefore keeps local safety checks for forbidden authority fields
   and dry-runs the runtime before publishing.

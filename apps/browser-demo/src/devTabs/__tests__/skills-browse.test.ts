@@ -317,11 +317,11 @@ describe('renderBrowsePanel', () => {
   it('notice → renders banner with dismiss button', () => {
     __resetStateForTests({
       phase: 'ready',
-      notice: { title: 'Coming soon', body: 'Backend not deployed yet.' },
+      notice: { title: 'API unavailable', body: 'Backend returned 404.' },
     });
     const html = renderBrowsePanel();
     expect(html).toContain('skills-browse-notice');
-    expect(html).toContain('Coming soon');
+    expect(html).toContain('API unavailable');
     expect(html).toContain('data-skills-browse-action="dismiss-notice"');
   });
 });
@@ -513,7 +513,7 @@ describe('loadCatalog', () => {
     await loadCatalog();
     const s = __getStateForTests();
     expect(s.phase).toBe('ready');
-    expect(s.notice?.title).toBe('Skills not deployed yet');
+    expect(s.notice?.title).toBe('Skills API unavailable');
   });
 
   it('500 catalog → phase error with message', async () => {
@@ -670,7 +670,7 @@ describe('handleInstall', () => {
   it('404 → notDeployed notice', async () => {
     fetchMock.mockResolvedValueOnce(emptyResponse(404));
     await handleInstall('friday-dca');
-    expect(__getStateForTests().notice?.title).toBe('Skills not deployed yet');
+    expect(__getStateForTests().notice?.title).toBe('Skills API unavailable');
   });
 
   it('500 with { error } → state.error captures the message', async () => {

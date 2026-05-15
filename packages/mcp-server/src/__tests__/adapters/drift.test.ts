@@ -18,6 +18,7 @@ import {
   type DriftVaultSnapshot,
   type DriftWithdrawStatus,
 } from '../../adapters/drift/client.js';
+import { isUninitializedDepositorError } from '../../adapters/drift/sdkClient.js';
 import {
   AdapterError,
   actionForKind,
@@ -716,5 +717,33 @@ describe('Drift wallet vault positions read returns facts', () => {
       totalValue: '42',
     });
     expect(Array.isArray((result.facts as { vaults: unknown[] }).vaults)).toBe(true);
+  });
+});
+
+describe('isUninitializedDepositorError', () => {
+  it('matches Anchor "Account does not exist" variants', () => {
+    expect(isUninitializedDepositorError(new Error('Account does not exist'))).toBe(true);
+    expect(
+      isUninitializedDepositorError(
+        new Error('Account does not exist or has no data Gx7yJZk5z3vCRgrCRrSqdHiYpRT8Xc1nW2pPKVnP1xyz'),
+      ),
+    ).toBe(true);
+    expect(isUninitializedDepositorError(new Error('account not found'))).toBe(true);
+    expect(isUninitializedDepositorError(new Error('failed to find account'))).toBe(true);
+  });
+
+  it('matches Anchor discriminator + buffer errors', () => {
+    expect(isUninitializedDepositorError(new Error('Invalid account discriminator'))).toBe(true);
+    expect(isUninitializedDepositorError(new Error('discriminator mismatch detected'))).toBe(true);
+    expect(isUninitializedDepositorError(new Error('Reached end of buffer when deserializing'))).toBe(true);
+  });
+
+  it('rejects unrelated errors and non-Error inputs', () => {
+    expect(isUninitializedDepositorError(new Error('RPC request failed: timeout'))).toBe(false);
+    expect(isUninitializedDepositorError(new Error('Transaction simulation failed'))).toBe(false);
+    expect(isUninitializedDepositorError('Invalid account discriminator')).toBe(false);
+    expect(isUninitializedDepositorError(null)).toBe(false);
+    expect(isUninitializedDepositorError(undefined)).toBe(false);
+    expect(isUninitializedDepositorError({ message: 'Invalid account discriminator' })).toBe(false);
   });
 });

@@ -32,6 +32,7 @@ const JUPITER_RECURRING_FEE_BPS = 10;
 export interface JupiterRecurringCreateTimeOrderInput {
   inputMint: string;
   outputMint: string;
+  inputMintDecimals?: number;
   /** Human amount. Requires known input-mint decimals in config. */
   totalAmount?: string;
   /** Raw integer amount in input token base units. Preferred for arbitrary mints. */
@@ -68,6 +69,7 @@ export interface JupiterRecurringPriceOrderInput {
 export interface JupiterRecurringQuoteInput {
   inputMint: string;
   outputMint: string;
+  inputMintDecimals?: number;
   totalAmount?: string;
   totalAmountRaw?: string;
   numberOfOrders: number;
@@ -96,7 +98,7 @@ export async function quoteRecurringTimeOrder(
   requireRecurringEnabled(config);
   const policy = getJupiterRecurringPolicy(config);
   validateTimeOrderInput(input, policy, false);
-  const amount = recurringAmount(config, input.inputMint, input.totalAmount, input.totalAmountRaw, 'Jupiter Recurring total amount');
+  const amount = recurringAmount(config, input.inputMint, input.totalAmount, input.totalAmountRaw, 'Jupiter Recurring total amount', input.inputMintDecimals);
   enforceRecurringAmountPolicy(config, policy, input.inputMint, amount);
   const perCycle = perCycleAmounts(amount.amountRaw, input.numberOfOrders, amount.decimals);
   return {
@@ -129,7 +131,7 @@ export const createTimeOrderAction: AdapterAction<JupiterRecurringCreateTimeOrde
     const walletAddress = await ctx.backend.getAddress();
     const policy = getJupiterRecurringPolicy(ctx.config);
     validateTimeOrderInput(input, policy, true);
-    const amount = recurringAmount(ctx.config, input.inputMint, input.totalAmount, input.totalAmountRaw, 'Jupiter Recurring total amount');
+    const amount = recurringAmount(ctx.config, input.inputMint, input.totalAmount, input.totalAmountRaw, 'Jupiter Recurring total amount', input.inputMintDecimals);
     enforceRecurringAmountPolicy(ctx.config, policy, input.inputMint, amount);
     enforceFeeCap(input.maxFeeBps);
     const createOrderParams = buildCreateTimeOrderParams(walletAddress, input, amount);
@@ -397,8 +399,9 @@ function recurringAmount(
   amount: string | undefined,
   amountRaw: string | undefined,
   label: string,
+  decimalsHint?: number,
 ): RecurringAmountResolution {
-  const decimals = tokenDecimals(config, mint);
+  const decimals = normalizeDecimalsHint(decimalsHint) ?? tokenDecimals(config, mint);
   const raw = amountRaw?.trim()
     ? validateRawAmount(amountRaw, label)
     : amount?.trim()
@@ -421,6 +424,14 @@ function recurringAmount(
   }
   if (decimals !== undefined) resolved.decimals = decimals;
   return resolved;
+}
+
+function normalizeDecimalsHint(value: number | undefined): number | undefined {
+  if (value === undefined) return undefined;
+  if (!Number.isInteger(value) || value < 0 || value > 18) {
+    throw new AdapterError(JUPITER_ADAPTER_ID, 'invalid_request', 'inputMintDecimals must be an integer from 0 to 18.');
+  }
+  return value;
 }
 
 function enforceRecurringAmountPolicy(

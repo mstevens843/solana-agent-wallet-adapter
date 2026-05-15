@@ -9,6 +9,7 @@ import {
   cloneSkillManifest,
   skillManifestHash,
 } from '../cloud/skillManifestIntegrity.js';
+import type { StatelessConnectorFactsReader } from '../cloud/connectorFactsReader.js';
 import type {
   Clock,
   SkillInstallStoreRecord,
@@ -25,6 +26,7 @@ import type { ApprovalRequestRecord } from '@solana-agent-wallet-adapter/workflo
 
 const WALLET = 'Wallet1111111111111111111111111111111111111';
 const AUTHOR = 'Author11111111111111111111111111111111111';
+const USDC_MINT = 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v';
 const FRIDAY_9AM = '2026-05-15T09:00:00.000Z';
 const FIXED_CLOCK: Clock = { now: () => new Date(FRIDAY_9AM) };
 
@@ -193,6 +195,58 @@ describe('runSkillsExecuteTick', () => {
     });
   });
 
+  it('rejects an invalid install-time manifest snapshot instead of falling back to the catalog', async () => {
+    const store = new MemoryWorkflowStore();
+    await seed(
+      store,
+      manifest(),
+      install({
+        metadata: {
+          manifestSnapshot: 'not-a-manifest',
+        },
+      }),
+    );
+
+    const result = await runSkillsExecuteTick({ store, clock: FIXED_CLOCK });
+
+    expect(result).toEqual({ evaluated: 1, proposed: 0, skipped: 1 });
+    expect(await store.listApprovals(WALLET)).toEqual([]);
+    const audit = await store.forWallet(WALLET).listAuditEvents();
+    expect(audit.find((e) => e.type === 'skill.execution.skipped')?.metadata)
+      .toMatchObject({
+        reason: 'manifest-snapshot-invalid',
+        snapshotInvalidReason: 'manifest-snapshot-not-object',
+      });
+  });
+
+  it('rejects an install-time manifest snapshot when the stored hash no longer matches', async () => {
+    const store = new MemoryWorkflowStore();
+    const installedManifest = manifest();
+    const wrongHash = `sha256:${'0'.repeat(64)}`;
+    await seed(
+      store,
+      installedManifest,
+      install({
+        metadata: {
+          manifestSnapshot: cloneSkillManifest(installedManifest) as unknown as JsonObject,
+          manifestHash: wrongHash,
+        },
+      }),
+    );
+
+    const result = await runSkillsExecuteTick({ store, clock: FIXED_CLOCK });
+
+    expect(result).toEqual({ evaluated: 1, proposed: 0, skipped: 1 });
+    expect(await store.listApprovals(WALLET)).toEqual([]);
+    const audit = await store.forWallet(WALLET).listAuditEvents();
+    expect(audit.find((e) => e.type === 'skill.execution.skipped')?.metadata)
+      .toMatchObject({
+        reason: 'manifest-snapshot-hash-mismatch',
+        storedManifestHash: wrongHash,
+        computedManifestHash: skillManifestHash(installedManifest),
+      });
+  });
+
   it('skips legacy installs when the catalog head has moved to a different manifest version', async () => {
     const store = new MemoryWorkflowStore();
     await seed(
@@ -208,6 +262,33 @@ describe('runSkillsExecuteTick', () => {
     const audit = await store.forWallet(WALLET).listAuditEvents();
     expect(audit.find((e) => e.type === 'skill.execution.skipped')?.metadata)
       .toMatchObject({ reason: 'manifest-version-mismatch', manifestVersion: '1.0.0' });
+  });
+
+  it('uses connector facts for the default Pyth price-trigger lookup', async () => {
+    const store = new MemoryWorkflowStore();
+    const reads: Array<{ connectorId: string; symbol?: string; capability?: string }> = [];
+    await seed(
+      store,
+      manifest({ schedule: { kind: 'price-trigger', spec: 'SOL/USD:lt:150' } }),
+    );
+
+    const result = await runSkillsExecuteTick({
+      store,
+      clock: FIXED_CLOCK,
+      connectorFactsReader: async (input) => {
+        reads.push({
+          connectorId: input.connectorId,
+          symbol: input.symbol,
+          capability: input.capability,
+        });
+        return { snapshot: { status: 'fresh', priceUi: '120.25' } };
+      },
+    });
+
+    expect(result).toEqual({ evaluated: 1, proposed: 1, skipped: 0 });
+    expect(reads).toEqual([{ connectorId: 'pyth', symbol: 'SOL/USD', capability: 'markets' }]);
+    const approvals = await store.listApprovals(WALLET);
+    expect(approvals[0]?.kind).toBe('swap');
   });
 
   it('does not propose again on a second tick within the same firing window', async () => {
@@ -388,7 +469,94 @@ describe('runSkillsExecuteTick', () => {
     });
   });
 
-  it('resolves yield.auto_rotate with the default conservative resolver', async () => {
+  it('resolves yield.auto_rotate with the data-driven default resolver', async () => {
+    const store = new MemoryWorkflowStore();
+    const connectorFactsReader: StatelessConnectorFactsReader = async (input) => {
+      if (input.connectorId === 'lulo') {
+        return {
+          snapshot: {
+            rows: [
+              {
+                mintAddress: USDC_MINT,
+                depositType: 'protected',
+                apy: 6.4,
+                liquidityAvailable: '1000',
+              },
+            ],
+          },
+        };
+      }
+      if (input.connectorId === 'kamino') {
+        return {
+          snapshot: {
+            reserveMint: USDC_MINT,
+            reserveSymbol: 'USDC',
+            supplyApy: 5.2,
+            depositLimitRemaining: '1000',
+          },
+        };
+      }
+      if (input.connectorId === 'save') {
+        return {
+          snapshot: {
+            reserveMint: USDC_MINT,
+            reserveSymbol: 'USDC',
+            supplyApy: 4.1,
+            depositLimitRemaining: '1000',
+          },
+        };
+      }
+      if (input.connectorId === 'jupiter') {
+        return {
+          token: {
+            assetMint: USDC_MINT,
+            tokenSymbol: 'USDC',
+            apy: 5.7,
+            availableLiquidity: '1000',
+            active: true,
+          },
+        };
+      }
+      throw new Error(`unexpected connector ${input.connectorId}`);
+    };
+    await seed(
+      store,
+      manifest({
+        id: 'yield-auto-rotate',
+        action: {
+          connectorAction: 'yield.auto_rotate',
+          paramsTemplate: {
+            token: 'USDC',
+            amount: '50',
+          },
+        },
+      }),
+      install({ skillId: 'yield-auto-rotate' }),
+    );
+
+    const result = await runSkillsExecuteTick({ store, clock: FIXED_CLOCK, connectorFactsReader });
+
+    expect(result).toEqual({ evaluated: 1, proposed: 1, skipped: 0 });
+    const approvals = await store.listApprovals(WALLET);
+    expect(approvals[0]?.kind).toBe('lulo_deposit');
+    expect(approvals[0]?.params).toMatchObject({
+      mintAddress: USDC_MINT,
+      amount: '50',
+      depositType: 'protected',
+    });
+    expect(approvals[0]?.metadata).toMatchObject({
+      yieldAutoRotate: {
+        resolvedConnectorAction: 'prepare_lulo_deposit',
+        apyPercent: 6.4,
+        metadata: {
+          source: 'connector-facts',
+          provider: 'lulo',
+        },
+      },
+    });
+  });
+
+  it('does not fall back to a blind yield.auto_rotate candidate when provider reads fail', async () => {
     const store = new MemoryWorkflowStore();
     await seed(
       store,
@@ -405,21 +573,22 @@ describe('runSkillsExecuteTick', () => {
       install({ skillId: 'yield-auto-rotate' }),
     );
 
-    const result = await runSkillsExecuteTick({ store, clock: FIXED_CLOCK });
-
-    expect(result).toEqual({ evaluated: 1, proposed: 1, skipped: 0 });
-    const approvals = await store.listApprovals(WALLET);
-    expect(approvals[0]?.kind).toBe('lulo_deposit');
-    expect(approvals[0]?.params).toMatchObject({
-      mintAddress: 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v',
-      amount: '50',
-      depositType: 'protected',
-    });
-    expect(approvals[0]?.metadata).toMatchObject({
-      yieldAutoRotate: {
-        resolvedConnectorAction: 'prepare_lulo_deposit',
+    const result = await runSkillsExecuteTick({
+      store,
+      clock: FIXED_CLOCK,
+      connectorFactsReader: async () => {
+        throw new Error('provider unavailable');
       },
     });
+
+    expect(result).toEqual({ evaluated: 1, proposed: 0, skipped: 1 });
+    expect(await store.listApprovals(WALLET)).toEqual([]);
+    const audit = await store.forWallet(WALLET).listAuditEvents();
+    expect(audit.find((e) => e.type === 'skill.execution.skipped')?.metadata)
+      .toMatchObject({
+        reason: 'yield-auto-rotate-no-candidates',
+        stage: 'resolver',
+      });
   });
 
   it('resolves yield.auto_rotate to the highest APY concrete action', async () => {

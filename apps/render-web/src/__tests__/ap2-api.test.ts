@@ -426,7 +426,7 @@ describe('AP2 inbound API (/api/ap2/inbound)', () => {
         expect(approval.kind).toBe('transfer_sol');
         expect(approval.metadata?.actionSource).toBe(AP2_INBOUND_ACTION_SOURCE);
         expect(approval.metadata?.ap2MandateId).toBe('mandate-fixture-1');
-        // A1: verified:true preserved (Agent 9 badge contract)
+        // verified:true must be preserved for the UI badge contract.
         const agentMeta = approval.metadata?.ap2VerifiedAgent as {
           agentId: string;
           publicKey: string;

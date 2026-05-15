@@ -1,61 +1,72 @@
 .skills-publish {
   display: grid;
   gap: 16px;
+  min-width: 0;
 }
 
 .skills-publish-cli-card,
 .skills-publish-list-card {
-  background: rgba(255, 255, 255, 0.024);
-  border: 1px solid var(--line);
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.03), rgba(255, 255, 255, 0.014)),
+    rgba(0, 0, 0, 0.18);
+  border: 1px solid rgba(224, 230, 226, 0.09);
   border-radius: var(--radius);
   display: grid;
   gap: 14px;
-  padding: 22px 26px;
+  padding: 20px;
 }
 
 .skills-publish-tag {
   background: rgba(125, 231, 176, 0.12);
+  border: 1px solid rgba(139, 205, 170, 0.22);
   border-radius: 999px;
   color: #c8f7df;
   display: inline-block;
   font-size: 0.7rem;
+  font-weight: 820;
   letter-spacing: 0.05em;
-  margin-bottom: 8px;
-  padding: 3px 10px;
+  margin-bottom: 9px;
+  padding: 4px 10px;
   text-transform: uppercase;
 }
 
 .skills-publish-cli-card h2 {
+  color: var(--text);
   font-size: 1.25rem;
+  line-height: 1.2;
   margin: 0 0 6px;
 }
 
 .skills-publish-cli-card p {
-  color: rgba(196, 205, 202, 0.78);
+  color: rgba(196, 205, 202, 0.84);
   font-size: 0.92rem;
   line-height: 1.5;
   margin: 0;
-  max-width: 60ch;
+  max-width: 70ch;
 }
 
-.skills-publish-cli-card code {
-  background: rgba(0, 0, 0, 0.25);
+.skills-publish-cli-card code,
+.skills-publish-notice code,
+.skills-publish-skill-meta code {
+  background: rgba(0, 0, 0, 0.28);
   border-radius: 4px;
   font-size: 0.85em;
   padding: 1px 6px;
 }
 
 .skills-publish-pre {
-  background: #06140e;
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.02), rgba(255, 255, 255, 0.008)),
+    #06140e;
   border: 1px solid rgba(125, 231, 176, 0.18);
-  border-radius: 10px;
+  border-radius: var(--radius);
   color: #d0f5e0;
   font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Monaco, Consolas, monospace;
   font-size: 0.85rem;
-  line-height: 1.55;
+  line-height: 1.58;
   margin: 0;
   overflow-x: auto;
-  padding: 14px 16px;
+  padding: 14px;
   white-space: pre;
 }
 
@@ -66,43 +77,59 @@
 }
 
 .skills-publish-button {
-  background: #7de7b0;
-  border: 1px solid transparent;
-  border-radius: 999px;
-  color: #032817;
+  align-items: center;
+  background: var(--accent);
+  border: 1px solid rgba(139, 205, 170, 0.58);
+  border-radius: var(--radius);
+  color: #04110b;
   cursor: pointer;
   display: inline-flex;
-  align-items: center;
   font-size: 0.85rem;
-  font-weight: 600;
+  font-weight: 800;
+  justify-content: center;
   line-height: 1;
-  padding: 8px 14px;
+  min-height: 38px;
+  padding: 0 13px;
   text-decoration: none;
-  transition: opacity 120ms ease, transform 120ms ease;
+  transition:
+    background 120ms ease,
+    border-color 120ms ease,
+    transform 120ms ease;
+  white-space: nowrap;
 }
 
 .skills-publish-button:hover {
-  opacity: 0.92;
+  background: #52ca91;
+  border-color: rgba(163, 226, 190, 0.72);
+  color: #04110b;
+  transform: translateY(-1px);
 }
 
 .skills-publish-button:active {
-  transform: translateY(1px);
+  transform: translateY(0);
 }
 
 .skills-publish-button-secondary {
   background: rgba(125, 231, 176, 0.14);
+  border-color: rgba(139, 205, 170, 0.24);
   color: #d0f5e0;
+}
+
+.skills-publish-button-secondary:hover {
+  background: rgba(255, 255, 255, 0.065);
+  color: var(--text);
 }
 
 .skills-publish-list-header {
   align-items: baseline;
   display: flex;
-  justify-content: space-between;
   flex-wrap: wrap;
   gap: 8px;
+  justify-content: space-between;
 }
 
 .skills-publish-list-header h3 {
+  color: var(--text);
   font-size: 1.05rem;
   margin: 0;
 }
@@ -119,29 +146,35 @@
 
 .skills-publish-row {
   align-items: center;
-  background: rgba(0, 0, 0, 0.22);
-  border: 1px solid var(--line);
-  border-radius: 10px;
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.028), rgba(255, 255, 255, 0.012)),
+    rgba(0, 0, 0, 0.18);
+  border: 1px solid rgba(224, 230, 226, 0.09);
+  border-radius: var(--radius);
   display: grid;
   gap: 12px;
   grid-template-columns: minmax(0, 1.6fr) minmax(0, 0.7fr) minmax(0, 0.7fr) minmax(0, 0.9fr) auto;
-  padding: 14px 16px;
+  padding: 14px;
+  transition:
+    background 120ms ease,
+    border-color 120ms ease;
 }
 
 .skills-publish-row:hover {
   background: rgba(125, 231, 176, 0.05);
+  border-color: rgba(139, 205, 170, 0.18);
 }
 
 .skills-publish-row-name {
   display: grid;
-  gap: 2px;
+  gap: 3px;
   min-width: 0;
 }
 
 .skills-publish-skill-name {
   color: #f2fff7;
   font-size: 1rem;
-  font-weight: 600;
+  font-weight: 760;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -152,36 +185,33 @@
   font-size: 0.8rem;
 }
 
-.skills-publish-skill-meta code {
-  background: rgba(0, 0, 0, 0.3);
-  border-radius: 4px;
-  font-size: 0.85em;
-  padding: 1px 5px;
-}
-
 .skills-publish-chip {
   background: rgba(125, 231, 176, 0.1);
-  border: 1px solid rgba(139, 205, 170, 0.18);
+  border: 1px solid rgba(139, 205, 170, 0.2);
   border-radius: 999px;
   color: #c8f7df;
   display: inline-block;
-  font-size: 0.78rem;
-  padding: 3px 10px;
+  font-size: 0.72rem;
+  font-weight: 820;
+  letter-spacing: 0.04em;
+  padding: 4px 9px;
   text-transform: uppercase;
 }
 
 .skills-publish-cell-label {
-  color: rgba(196, 205, 202, 0.7);
+  color: var(--dim);
   display: block;
-  font-size: 0.72rem;
-  letter-spacing: 0.04em;
+  font-size: 0.68rem;
+  font-weight: 860;
+  letter-spacing: 0.06em;
   text-transform: uppercase;
 }
 
 .skills-publish-cell-value {
   color: #f2fff7;
   font-size: 0.95rem;
-  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  font-weight: 760;
 }
 
 .skills-publish-row-actions {
@@ -190,11 +220,11 @@
 
 .skills-publish-notice {
   background: rgba(0, 0, 0, 0.18);
-  border: 1px solid var(--line);
-  border-radius: 10px;
+  border: 1px solid rgba(224, 230, 226, 0.09);
+  border-radius: var(--radius);
   display: grid;
   gap: 8px;
-  padding: 16px 18px;
+  padding: 16px;
 }
 
 .skills-publish-notice strong {
@@ -208,19 +238,14 @@
   margin: 0;
 }
 
-.skills-publish-notice code {
-  background: rgba(0, 0, 0, 0.3);
-  border-radius: 4px;
-  font-size: 0.85em;
-  padding: 1px 6px;
-}
-
 .skills-publish-notice-warn {
-  border-color: rgba(241, 196, 81, 0.35);
+  background: rgba(214, 168, 79, 0.08);
+  border-color: rgba(241, 196, 81, 0.32);
 }
 
 .skills-publish-notice-error {
-  border-color: rgba(241, 105, 105, 0.35);
+  background: var(--danger-soft);
+  border-color: rgba(241, 105, 105, 0.32);
 }
 
 .skills-publish-skeleton {
@@ -230,6 +255,7 @@
 }
 
 .skills-publish-skeleton-line {
+  animation: skills-publish-skeleton-shimmer 1.4s ease-in-out infinite;
   background: linear-gradient(
     90deg,
     rgba(255, 255, 255, 0.05),
@@ -241,7 +267,6 @@
   display: block;
   height: 14px;
   width: 60%;
-  animation: skills-publish-skeleton-shimmer 1.4s ease-in-out infinite;
 }
 
 .skills-publish-skeleton-line-wide {
@@ -252,6 +277,7 @@
   0% {
     background-position: 0% 50%;
   }
+
   100% {
     background-position: -200% 50%;
   }
@@ -259,12 +285,13 @@
 
 .skills-publish-toast {
   background: #111827;
-  border-radius: 12px;
+  border: 1px solid rgba(224, 230, 226, 0.12);
+  border-radius: var(--radius);
   bottom: 1.5rem;
   box-shadow: 0 14px 40px rgba(0, 0, 0, 0.32);
   color: #ffffff;
   font-size: 0.9rem;
-  font-weight: 500;
+  font-weight: 600;
   max-width: 380px;
   opacity: 0;
   padding: 0.75rem 1rem;
@@ -281,19 +308,29 @@
   transform: translateY(0);
 }
 
-@media (max-width: 720px) {
+@media (max-width: 860px) {
   .skills-publish-row {
     grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
   }
+
   .skills-publish-row-name {
     grid-column: 1 / -1;
   }
+
   .skills-publish-row-actions {
     grid-column: 1 / -1;
     justify-self: stretch;
   }
+
   .skills-publish-row-actions a {
-    width: 100%;
     justify-content: center;
+    width: 100%;
+  }
+}
+
+@media (max-width: 600px) {
+  .skills-publish-cli-card,
+  .skills-publish-list-card {
+    padding: 16px;
   }
 }

@@ -6843,6 +6843,12 @@ code {
   color: rgba(244, 224, 188, 0.96);
 }
 
+.agent-path-pill.mock {
+  background: rgba(99, 217, 169, 0.14);
+  border-color: rgba(99, 217, 169, 0.36);
+  color: rgba(205, 247, 224, 0.98);
+}
+
 .agent-path-pill.none {
   background: rgba(190, 196, 206, 0.12);
   border-color: rgba(190, 196, 206, 0.26);
@@ -15995,6 +16001,30 @@ button.danger:hover:not(:disabled) {
   font-size: 0.86rem;
 }
 
+.route-app .interval-field {
+  gap: 6px;
+}
+
+.route-app .interval-field-row {
+  display: grid;
+  gap: 10px;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+.route-app .interval-part {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+}
+
+.route-app .interval-part span {
+  color: var(--dim);
+  font-size: 0.62rem;
+  font-weight: 900;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
 .route-app .token-search-shell {
   display: grid;
   gap: 7px;
@@ -23659,4 +23689,203 @@ button.danger:hover:not(:disabled) {
 .connector-key-card footer a:hover {
   color: var(--text);
   text-decoration: underline;
+}
+
+/* Shared phone nav and docs layout contract. Keep this after route-specific mobile rules. */
+@media (max-width: 900px) {
+  .homepage-nav[data-site-nav] {
+    background: rgba(5, 8, 7, 0.9);
+    border-color: rgba(224, 230, 226, 0.105);
+    border-radius: 9px;
+    box-shadow: 0 10px 22px rgba(0, 0, 0, 0.28);
+    display: grid;
+    gap: 5px;
+    grid-template-columns: 38px minmax(0, 1fr);
+    height: var(--mobile-nav-height);
+    min-height: 0;
+    overflow: hidden;
+    padding: 5px 6px;
+  }
+
+  .homepage-nav[data-site-nav] .homepage-brand {
+    flex: 0 0 auto;
+    max-width: 38px;
+    min-width: 38px;
+    overflow: hidden;
+  }
+
+  .homepage-nav[data-site-nav] .homepage-brand .agentic-mark {
+    height: 25px;
+    width: 36px;
+  }
+
+  .homepage-nav[data-site-nav] .homepage-brand > span {
+    display: none;
+  }
+
+  .homepage-links[data-site-links] {
+    align-items: center;
+    display: grid;
+    gap: 4px;
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+    justify-content: stretch;
+    min-width: 0;
+    overflow: hidden;
+    padding: 0;
+    width: 100%;
+  }
+
+  .homepage-links[data-site-links] a[data-site-link="/"],
+  .homepage-links[data-site-links] a[data-site-link="/docs"],
+  .homepage-links[data-site-links] a[data-site-link="/demo"],
+  .homepage-links[data-site-links] a[data-site-link="/app"] {
+    align-items: center;
+    border-radius: 7px;
+    display: inline-flex !important;
+    flex: 0 1 auto;
+    font-size: 0.77rem;
+    justify-content: center;
+    min-height: 44px;
+    min-width: 0;
+    padding: 0 7px;
+    white-space: nowrap;
+    width: 100%;
+  }
+
+  .homepage-links[data-site-links] .mobile-nav-hidden,
+  .homepage-links[data-site-links] a[data-site-link="/builders"],
+  .homepage-links[data-site-links] a[data-site-link="/cli"],
+  .homepage-links[data-site-links] a[data-site-link="/desktop"],
+  .homepage-links[data-site-links] a[data-site-link="/mwa-test"] {
+    display: none !important;
+  }
+
+  .homepage-links[data-site-links] .launch-app-link {
+    min-width: 0;
+    padding: 0 9px;
+  }
+
+  .homepage-links[data-site-links] .nav-label {
+    display: inline;
+    max-width: 100%;
+    overflow: hidden;
+    text-align: center;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .homepage-links[data-site-links] .has-mobile-label .nav-label-full {
+    display: none;
+  }
+
+  .homepage-links[data-site-links] .has-mobile-label .nav-label-mobile {
+    display: inline;
+  }
+
+  .route-app .homepage-nav[data-site-nav][data-layout="app-nav"] {
+    grid-template-columns: 38px minmax(0, 1fr);
+  }
+
+  .route-app .homepage-links[data-site-links] {
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+  }
+
+  .route-docs .docs-grid,
+  .route-docs .protocol-connector-flow-grid,
+  .route-docs .protocol-connector-card-grid {
+    display: grid;
+    gap: 10px;
+    grid-auto-columns: initial;
+    grid-auto-flow: row;
+    grid-template-columns: minmax(0, 1fr);
+    overflow: visible;
+    overscroll-behavior-x: auto;
+    padding-bottom: 0;
+    scroll-snap-type: none;
+  }
+
+  .route-docs .docs-card,
+  .route-docs .protocol-connector-flow-card,
+  .route-docs .protocol-connector-card {
+    min-height: 0;
+    min-width: 0;
+    scroll-snap-align: none;
+    width: 100%;
+  }
+
+  .route-docs .protocol-connector-card-head {
+    align-items: center;
+    display: grid;
+    gap: 10px;
+    grid-template-areas:
+      "logo copy"
+      "status status";
+    grid-template-columns: 46px minmax(0, 1fr);
+  }
+
+  .route-docs .protocol-connector-doc-logo {
+    grid-area: logo;
+    height: 46px;
+    width: 46px;
+  }
+
+  .route-docs .protocol-connector-card-head > div {
+    grid-area: copy;
+    min-width: 0;
+  }
+
+  .route-docs .protocol-connector-card-head h4 {
+    overflow-wrap: normal;
+    word-break: normal;
+  }
+
+  .route-docs .protocol-connector-status {
+    grid-area: status;
+    justify-self: start;
+    max-width: 100%;
+    white-space: nowrap;
+  }
+
+  .route-docs .docs-card p,
+  .route-docs .protocol-connector-flow-card p,
+  .route-docs .protocol-connector-card > p {
+    display: block;
+    font-size: 0.88rem;
+    line-height: 1.42;
+    overflow: visible;
+    -webkit-line-clamp: unset;
+    -webkit-box-orient: initial;
+  }
+
+  .route-docs .protocol-connector-meta {
+    align-items: flex-start;
+  }
+}
+
+@media (max-width: 430px) {
+  .homepage-links[data-site-links] {
+    gap: 3px;
+  }
+
+  .homepage-links[data-site-links] a[data-site-link="/"],
+  .homepage-links[data-site-links] a[data-site-link="/docs"],
+  .homepage-links[data-site-links] a[data-site-link="/demo"],
+  .homepage-links[data-site-links] a[data-site-link="/app"] {
+    font-size: 0.74rem;
+    padding: 0 6px;
+  }
+
+  .homepage-links[data-site-links] .launch-app-link {
+    padding: 0 8px;
+  }
+}
+
+@media (max-width: 370px) {
+  .homepage-links[data-site-links] a[data-site-link="/"],
+  .homepage-links[data-site-links] a[data-site-link="/docs"],
+  .homepage-links[data-site-links] a[data-site-link="/demo"],
+  .homepage-links[data-site-links] a[data-site-link="/app"] {
+    font-size: 0.71rem;
+    padding: 0 5px;
+  }
 }

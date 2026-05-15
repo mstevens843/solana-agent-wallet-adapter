@@ -341,6 +341,7 @@ type OneTimePlanView = 'create' | 'review';
 type RecurringView = 'create' | 'active';
 type ToastKind = 'success' | 'error' | 'pending' | 'info';
 type GeneratedPlanStatus = 'draft' | 'signed' | 'queued' | 'archived' | 'failed';
+type AgentReviewSource = AiSettings['mode'] | 'mock';
 type RuntimePathId = 'exec' | 'install' | 'desktop';
 type AppRoute = (typeof ROUTE_PATHS)[number];
 type InboxFilter = 'all' | 'ready' | 'scheduled' | 'attention' | 'one-time' | 'recurring';
@@ -362,6 +363,7 @@ interface TokenFieldSelection {
   name?: string;
   logoURI?: string;
   priceUsd?: number;
+  decimals?: number;
 }
 type AgentPlanReviewStatus = 'checking' | 'approved' | 'denied' | 'needs_input' | 'error';
 type AgentReviewFilter = AgentPlanReviewStatus | 'all' | 'not_asked';
@@ -550,7 +552,7 @@ interface AgentReviewOverride {
   userReason?: string;
   provider?: string;
   model?: string;
-  source?: AiSettings['mode'];
+  source?: AgentReviewSource;
 }
 
 interface AgentReviewerEntry {
@@ -619,7 +621,7 @@ interface AgentAskExchange {
   askedAt: string;
   answeredAt?: string;
   pending?: boolean;
-  source?: AiSettings['mode'];
+  source?: AgentReviewSource;
   provider?: string;
   model?: string;
 }
@@ -642,7 +644,7 @@ interface AgentPlanReviewState {
   checkedAt?: string;
   provider?: string;
   model?: string;
-  source?: AiSettings['mode'];
+  source?: AgentReviewSource;
   evidence?: Record<string, unknown>;
   checks?: AgentReviewCheck[];
   questions?: AgentReviewQuestion[];
@@ -752,7 +754,14 @@ const DEMO_MESSAGE = 'Approve this Solana agent action with user custody.';
 const DEMO_MEMO = 'Solana Agent Wallet Adapter demo';
 const DEFAULT_BRIDGE_URL = 'http://127.0.0.1:8787';
 const DEFAULT_BRIDGE_TOKEN = 'local-agent-wallet';
-const DEFAULT_AGENT_PROMPT = '';
+const MOCK_PRE_SIGN_POLICY_PROMPT = 'Run my pre-signing policy for this swap. Market gates: BTC Fear & Greed must be above 20 SOL must be above $60 Token gates: mint authority disabled freeze authority disabled token age above 24h Transaction gates: must only execute the requested swap no extra transfers no unknown recipients no unrelated instructions Return APPROVE or DENY with the exact rule that decided it.';
+const DEFAULT_AGENT_PROMPT = MOCK_PRE_SIGN_POLICY_PROMPT;
+const MOCK_PRE_SIGN_SWAP_DEFAULT_FIELDS: Record<string, string> = {
+  inputToken: 'SOL',
+  outputToken: 'POPCAT',
+  amount: '0.04',
+  slippageBps: '50',
+};
 const STORAGE_KEY = 'solana-agent-wallet-demo-v2';
 const BRIDGE_TOKEN_SESSION_KEY = 'agentic-local-bridge-token';
 const AI_API_KEYS_SESSION_STORAGE_KEY = 'solana-agent-wallet-ai-api-keys-v1';
@@ -1500,6 +1509,7 @@ interface TokenSearchResult {
   name: string;
   logoURI?: string;
   priceUsd?: number;
+  decimals?: number;
   liquidity?: number;
   marketCap?: number;
   source: string;
@@ -2554,6 +2564,10 @@ const launchParams = readLaunchParams();
 clearSensitiveLaunchParams();
 const initialCluster = SHOW_DEV_CONTROLS ? (persisted.cluster ?? 'mainnet-beta') : 'mainnet-beta';
 const initialTemplate = templateById('swap');
+const initialTemplateFields = {
+  ...defaultTemplateFieldValues(initialTemplate),
+  ...MOCK_PRE_SIGN_SWAP_DEFAULT_FIELDS,
+};
 const defaultWorkspaceTab: ActiveTab = 'overview';
 const initialAiSettings = persistedAiSettings(persisted);
 const initialBrowserWorkflow = loadBrowserWorkflowState();
@@ -2717,7 +2731,7 @@ const state: DemoState = {
   activeTab: defaultWorkspaceTab,
   commandCenterView: 'center',
   oneTimePlanView: 'create',
-  askAgentAfterDraft: false,
+  askAgentAfterDraft: true,
   recurringView: 'create',
   artifactView: 'create',
   completedPlanFilter: 'all',
@@ -2763,9 +2777,9 @@ const state: DemoState = {
   agentPrompt: DEFAULT_AGENT_PROMPT,
   selectedTemplateId: initialTemplate.id,
   templateOutcomeFilter: 'queueable',
-  templateFields: defaultTemplateFieldValues(initialTemplate),
-  templateTokenModes: defaultTemplateTokenModes(initialTemplate),
-  templateTokenSelections: defaultTemplateTokenSelections(initialTemplate),
+  templateFields: initialTemplateFields,
+  templateTokenModes: defaultTemplateTokenModes(initialTemplate, initialTemplateFields),
+  templateTokenSelections: defaultTemplateTokenSelections(initialTemplate, initialTemplateFields),
   templateFieldErrors: {},
   templateFieldOptionCache: {},
   templateFieldOptionLoading: {},
@@ -3867,12 +3881,12 @@ function termsPage(): string {
 
 function homepageNav(activeRoute: AppRoute | null): string {
   return `
-    <header class="homepage-nav" aria-label="Agentic navigation" ${activeRoute === '/app' ? 'data-layout="app-nav"' : ''}>
+    <header class="homepage-nav" aria-label="Agentic navigation" data-site-nav ${activeRoute === '/app' ? 'data-layout="app-nav"' : ''}>
       <a class="homepage-brand" href="/" aria-label="Agentic home" ${activeRoute === '/' ? 'aria-current="page"' : ''}>
         ${agenticMark()}
         <span>Agentic</span>
       </a>
-      <nav class="homepage-links" aria-label="Primary navigation">
+      <nav class="homepage-links" aria-label="Primary navigation" data-site-links>
         ${NAV_ITEMS.map((item) => navLink(item, activeRoute)).join('')}
       </nav>
     </header>
@@ -3891,7 +3905,7 @@ function navLink(item: NavItem, activeRoute: AppRoute | null): string {
     ? `<span class="nav-label nav-label-full">${escapeHtml(item.label)}</span><span class="nav-label nav-label-mobile">${escapeHtml(item.mobileLabel)}</span>`
     : `<span class="nav-label">${escapeHtml(item.label)}</span>`;
   return `
-    <a href="${escapeHtml(item.route)}" class="${className}" ${active ? 'aria-current="page"' : ''}>
+    <a href="${escapeHtml(item.route)}" class="${className}" data-site-link="${escapeHtml(item.route)}" ${active ? 'aria-current="page"' : ''}>
       ${label}
     </a>
   `;
@@ -10244,7 +10258,8 @@ function generatedPlanConsistencyWarning(record: GeneratedPlanRecord): string {
 }
 
 function agentReviewButton(record: GeneratedPlanRecord): string {
-  if (!hasDetectedAgentReviewPath()) return '';
+  const mockReview = isMockPreSignPolicyPlan(record);
+  if (!hasDetectedAgentReviewPath() && !mockReview) return '';
   const review = record.agentReview;
   const checking = state.activeOperation === 'review-agent-plan' && review?.status === 'checking';
   const label = checking
@@ -10259,8 +10274,8 @@ function agentReviewButton(record: GeneratedPlanRecord): string {
       class="utility review-action-agent ${review ? `agent-${escapeHtml(review.status)}` : ''}"
       data-generated-plan-action="agent-review"
       data-generated-plan-id="${escapeHtml(record.id)}"
-      ${!canRunAgentReview() || record.status === 'archived' ? 'disabled' : ''}
-      title="${escapeHtml(canRunAgentReview() ? 'Ask the configured agent to approve, deny, or ask questions about this draft.' : agentReviewUnavailableReason())}"
+      ${!canRunAgentReview(record) || record.status === 'archived' ? 'disabled' : ''}
+      title="${escapeHtml(canRunAgentReview(record) ? 'Ask the configured agent to approve, deny, or ask questions about this draft.' : agentReviewUnavailableReason(record))}"
     >
       ${checking ? buttonSpinner() : ''}${escapeHtml(label)}
     </button>
@@ -10315,9 +10330,10 @@ function agentReviewBlockingReasonPanel(review: AgentPlanReviewState): string {
 function agentAskAnythingPanel(record: GeneratedPlanRecord): string {
   const review = record.agentReview;
   if (!review?.required) return '';
-  if (!hasDetectedAgentReviewPath()) return '';
+  const mockOnly = !hasDetectedAgentReviewPath() && isMockPreSignPolicyPlan(record);
+  if (!hasDetectedAgentReviewPath() && !mockOnly) return '';
   const exchanges = (review.conversation ?? []).slice(-3);
-  const disabled = !canRunAgentReview() || record.status === 'archived';
+  const disabled = mockOnly || !canRunAgentReview(record) || record.status === 'archived';
   const placeholder = agentAskPlaceholder(record);
   const exchangesHtml = exchanges.map((exchange) => `
     <div class="agent-ask-exchange ${exchange.pending ? 'pending' : exchange.error ? 'errored' : 'answered'}">
@@ -10509,13 +10525,13 @@ function agentReviewStripLabel(status: AgentPlanReviewStatus): string {
   }
 }
 
-function agentReviewPathBadge(source: AiSettings['mode'] | undefined): string {
+function agentReviewPathBadge(source: AgentReviewSource | undefined): string {
   const label = agentReviewPathLabel(source);
   const modifier = source ?? 'none';
   return `<span class="agent-path-pill ${escapeHtml(modifier)}" title="Agent review path">${escapeHtml(label)}</span>`;
 }
 
-function agentReviewPathLabel(source: AiSettings['mode'] | undefined): string {
+function agentReviewPathLabel(source: AgentReviewSource | undefined): string {
   switch (source) {
     case 'hosted':
       return 'Hosted BYOK';
@@ -10523,9 +10539,15 @@ function agentReviewPathLabel(source: AiSettings['mode'] | undefined): string {
       return 'Local bridge';
     case 'session':
       return 'Browser session';
+    case 'mock':
+      return 'Local demo';
     default:
       return 'No agent';
   }
+}
+
+function isAgentReviewSource(value: unknown): value is AgentReviewSource {
+  return value === 'hosted' || value === 'session' || value === 'bridge' || value === 'mock';
 }
 
 function agentReviewQuestionsForm(record: GeneratedPlanRecord): string {
@@ -11018,6 +11040,7 @@ function connectorPlanAmountToken(plan: AgentPlan): ConnectorActionAmountToken |
   const tokenKeys = [
     'sourceTokenLabel',
     'tokenSymbol',
+    'depositSymbol',
     'inputSymbol',
     'token',
     'sourceToken',
@@ -11027,6 +11050,7 @@ function connectorPlanAmountToken(plan: AgentPlan): ConnectorActionAmountToken |
     'mint',
     'mintAddress',
     'inputMint',
+    'depositMint',
     'lstMint',
     'inputLstMint',
     'governingTokenMint',
@@ -11486,6 +11510,8 @@ function agentPlannerWorkbench(): string {
   const template = selectedTemplate();
   const notesRequired = templateRequiresUserNotes(template);
   const aiPathConnected = hasDetectedAgentReviewPath();
+  const mockReviewAvailable = isMockPreSignDemoCreateFlow(template);
+  const reviewAfterDraftAvailable = aiPathConnected || mockReviewAvailable;
   const canUseAi = canGenerateAiPlanFromSettings();
   const aiDisabledReason = aiGenerateDisabledReason();
   const templateGenerating = state.activeOperation === 'generate-template-plan';
@@ -11498,6 +11524,9 @@ function agentPlannerWorkbench(): string {
   const notesPlaceholder = notesRequired
     ? 'Describe what you want prepared or reviewed.'
     : 'Optional context, reason, or policy note saved with this plan.';
+  const askAgentDetail = mockReviewAvailable && !aiPathConnected
+    ? 'Optional. Runs a local mock policy check in Check after drafting. No bridge, AI key, or wallet popup.'
+    : 'Optional. Runs the review in Check after drafting. Sending for approval stays manual.';
   return `
     <div class="agent-planner-grid planner-single-column">
       <div class="intent-capsule intent-document-card planner-card ${state.agentPlan ? 'plan-linked' : 'draft'}">
@@ -11528,13 +11557,13 @@ function agentPlannerWorkbench(): string {
           </label>
           <div class="agent-actions signature-actions intent-document-actions">
             <div class="agent-actions-row">
-              ${aiPathConnected ? `
+              ${reviewAfterDraftAvailable ? `
                 <label class="ask-agent-after-draft ${state.askAgentAfterDraft ? 'checked' : ''}">
                   <input type="checkbox" data-ask-agent-after-draft ${state.askAgentAfterDraft ? 'checked' : ''} ${state.busy ? 'disabled' : ''} />
                   <span class="ask-agent-check" aria-hidden="true">${checkIcon()}</span>
                   <span class="ask-agent-copy">
                     <strong>Ask agent after draft</strong>
-                    <em>Optional. Runs the review in Check after drafting. Sending for approval stays manual.</em>
+                    <em>${escapeHtml(askAgentDetail)}</em>
                   </span>
                 </label>
               ` : ''}
@@ -11841,11 +11870,17 @@ function templateFieldInput(fieldDef: AgentPlanTemplateField): string {
   if (fieldDef.type === 'cascading-select' && fieldDef.cascading) {
     return cascadingSelectFieldInput(fieldDef, value, label, error);
   }
-  if (fieldDef.id === 'slippageBps') {
+  if (isSlippageBpsField(fieldDef.id)) {
     return slippageFieldInput(fieldDef, value, label, error);
   }
   if (isTokenSelectField(fieldDef)) {
     return tokenFieldInput(fieldDef, value, label, error);
+  }
+  if (fieldDef.id === 'intervalSeconds' && isJupiterDcaCreateTemplate()) {
+    return jupiterDcaIntervalFieldInput(fieldDef, value, label, error);
+  }
+  if (fieldDef.type === 'datetime-local') {
+    return dateTimeFieldInput(fieldDef, value, label, error);
   }
   if (isRecipientTemplateField(fieldDef)) {
     return recipientTemplateFieldInput(fieldDef, value, label, error);
@@ -11916,10 +11951,35 @@ function raydiumPairPreviewHintForField(fieldId: string): string {
 }
 
 function templateFieldDisplayLabel(fieldDef: AgentPlanTemplateField): string {
+  const jupiterDcaLabel = jupiterDcaRuntimeLabel(fieldDef.id);
+  if (jupiterDcaLabel) return jupiterDcaLabel;
   const liquidityLabel = liquidityAmountFieldRuntimeLabel(fieldDef.id);
   if (liquidityLabel) return liquidityLabel;
   const meteoraLabel = meteoraAmountFieldRuntimeLabel(fieldDef.id);
   return meteoraLabel ?? fieldDef.label;
+}
+
+function isJupiterDcaCreateTemplate(): boolean {
+  const template = selectedTemplate();
+  if (template.id !== 'connector-jupiter-recurring-dca') return false;
+  const form = activeConnectorActionForm();
+  const branch = form ? selectedSubAction(form, state.templateFields) : undefined;
+  return !branch || branch.id === 'create-time-dca';
+}
+
+function jupiterDcaDirection(): 'buy' | 'sell' {
+  const value = (state.templateFields.dcaDirection || 'buy').trim().toLowerCase();
+  return value === 'sell' ? 'sell' : 'buy';
+}
+
+function jupiterDcaRuntimeLabel(fieldId: string): string | undefined {
+  if (!isJupiterDcaCreateTemplate()) return undefined;
+  const direction = jupiterDcaDirection();
+  if (fieldId === 'inputMint') return direction === 'sell' ? 'Sell token' : 'Spend token';
+  if (fieldId === 'outputMint') return direction === 'sell' ? 'Receive token' : 'Buy token';
+  if (fieldId === 'totalAmount') return direction === 'sell' ? 'Total to sell' : 'Total spend';
+  if (fieldId === 'numberOfOrders') return direction === 'sell' ? 'How many sells' : 'How many buys';
+  return undefined;
 }
 
 function templateSelectPickerOptions(
@@ -11948,6 +12008,16 @@ function templateSelectPickerOptions(
       label: titleCase(option),
       meta: fieldLabel,
       detail: rangePresetOptionDetail(option),
+    }));
+  }
+  if (fieldDef.id === 'dcaDirection') {
+    return (fieldDef.options ?? []).map((option) => ({
+      value: option,
+      label: titleCase(option),
+      meta: fieldLabel,
+      detail: option === 'sell'
+        ? 'Sell the input token over repeated swaps.'
+        : 'Buy the output token over repeated swaps.',
     }));
   }
   return (fieldDef.options ?? []).map((option) => ({
@@ -12625,6 +12695,103 @@ function connectorDraftStatusPanel(connector: ProtocolConnector | undefined, has
   `;
 }
 
+function dateTimeFieldInput(fieldDef: AgentPlanTemplateField, value: string, label: string, error: string): string {
+  return `
+    <label class="field compact planner-field ${state.templateFieldErrors[fieldDef.id] ? 'field-error' : ''}">
+      <span>${escapeHtml(label)}</span>
+      <input
+        type="datetime-local"
+        data-template-field="${escapeHtml(fieldDef.id)}"
+        value="${escapeHtml(dateTimeInputValue(value))}"
+        ${state.busy ? 'disabled' : ''}
+      />
+      ${templateFieldHelper(fieldDef)}
+      ${error}
+    </label>
+  `;
+}
+
+function dateTimeInputValue(value: string): string {
+  const trimmed = value.trim();
+  if (!trimmed) return '';
+  const parsed = new Date(trimmed);
+  if (Number.isNaN(parsed.getTime())) return trimmed;
+  return localDateTime(parsed);
+}
+
+function jupiterDcaIntervalFieldInput(
+  fieldDef: AgentPlanTemplateField,
+  value: string,
+  label: string,
+  error: string,
+): string {
+  const parts = intervalSecondsToParts(value);
+  return `
+    <div class="field compact planner-field interval-field ${state.templateFieldErrors[fieldDef.id] ? 'field-error' : ''}">
+      <span>${escapeHtml(label)}</span>
+      <div class="interval-field-row" role="group" aria-label="${escapeHtml(label)}">
+        ${intervalPartInput(fieldDef.id, 'days', 'Days', parts.days)}
+        ${intervalPartInput(fieldDef.id, 'hours', 'Hours', parts.hours)}
+        ${intervalPartInput(fieldDef.id, 'minutes', 'Minutes', parts.minutes)}
+      </div>
+      <input type="hidden" data-template-field="${escapeHtml(fieldDef.id)}" value="${escapeHtml(parts.totalSeconds)}" />
+      ${templateFieldHelper(fieldDef)}
+      ${error}
+    </div>
+  `;
+}
+
+function intervalPartInput(fieldId: string, unit: 'days' | 'hours' | 'minutes', label: string, value: number): string {
+  return `
+    <label class="interval-part">
+      <span>${escapeHtml(label)}</span>
+      <input
+        type="number"
+        min="0"
+        step="1"
+        inputmode="numeric"
+        data-template-interval-field="${escapeHtml(fieldId)}"
+        data-template-interval-unit="${escapeHtml(unit)}"
+        value="${escapeHtml(String(value))}"
+        ${state.busy ? 'disabled' : ''}
+      />
+    </label>
+  `;
+}
+
+function intervalSecondsToParts(value: string): { days: number; hours: number; minutes: number; totalSeconds: string } {
+  const parsed = Number(value);
+  const total = Number.isFinite(parsed) && parsed > 0 ? Math.floor(parsed) : 86_400;
+  const days = Math.floor(total / 86_400);
+  const hours = Math.floor((total % 86_400) / 3_600);
+  const minutes = Math.floor((total % 3_600) / 60);
+  return { days, hours, minutes, totalSeconds: String(total) };
+}
+
+function intervalPartsToSeconds(fieldId: string): string {
+  const part = (unit: string): number => {
+    const input = document.querySelector<HTMLInputElement>(
+      `[data-template-interval-field="${cssEscape(fieldId)}"][data-template-interval-unit="${cssEscape(unit)}"]`,
+    );
+    const value = Number(input?.value ?? '0');
+    return Number.isFinite(value) && value > 0 ? Math.floor(value) : 0;
+  };
+  const seconds = part('days') * 86_400 + part('hours') * 3_600 + part('minutes') * 60;
+  return String(seconds > 0 ? seconds : 3_600);
+}
+
+function syncTemplateIntervalField(fieldId: string): string {
+  const seconds = intervalPartsToSeconds(fieldId);
+  const hidden = document.querySelector<HTMLInputElement>(`input[type="hidden"][data-template-field="${cssEscape(fieldId)}"]`);
+  if (hidden) hidden.value = seconds;
+  state.templateFields[fieldId] = seconds;
+  return seconds;
+}
+
+function isSlippageBpsField(fieldId: string): boolean {
+  return fieldId.toLowerCase().endsWith('slippagebps');
+}
+
 function slippageFieldInput(fieldDef: AgentPlanTemplateField, value: string, label: string, error: string): string {
   return `
     <label class="field compact planner-field ${state.templateFieldErrors[fieldDef.id] ? 'field-error' : ''}">
@@ -12665,7 +12832,7 @@ function slippagePercentInputToBps(value: string): string {
 
 function isTokenSelectField(fieldDef: AgentPlanTemplateField): boolean {
   return fieldDef.type === 'select' &&
-    ['token', 'inputToken', 'outputToken'].includes(fieldDef.id) &&
+    ['token', 'inputToken', 'outputToken', 'inputMint', 'outputMint', 'triggerMint'].includes(fieldDef.id) &&
     Boolean(fieldDef.options?.length);
 }
 
@@ -12708,8 +12875,9 @@ function tokenFieldInput(fieldDef: AgentPlanTemplateField, value: string, label:
         value: selectValue,
         options: options.map((option) => ({
           value: option,
-          label: option,
+          label: tokenDisplayLabel(option),
           meta: fieldDef.label,
+          detail: tokenDisplayTitle(option),
         })),
         attrs: { 'data-template-field': fieldDef.id },
         disabled,
@@ -13456,12 +13624,15 @@ function hasDetectedAgentReviewPath(): boolean {
   return isAiConfiguredForCurrentMode();
 }
 
-function canRunAgentReview(): boolean {
-  return hasDetectedAgentReviewPath() && !state.busy;
+function canRunAgentReview(record?: GeneratedPlanRecord): boolean {
+  return !state.busy && (hasDetectedAgentReviewPath() || Boolean(record && isMockPreSignPolicyPlan(record)));
 }
 
-function agentReviewUnavailableReason(): string {
+function agentReviewUnavailableReason(record?: GeneratedPlanRecord): string {
   if (state.busy) return 'Wait for the current action to finish.';
+  if (record && isMockPreSignPolicyPlan(record)) {
+    return 'Mock policy review is ready for this demo request.';
+  }
   if (state.aiSettings.mode === 'bridge') {
     return state.aiStatus?.available
       ? 'Agent review is ready through the local bridge.'
@@ -15165,8 +15336,7 @@ function bind(): void {
 
   // Layer 2 Skills Hub sub-tabs. Tracked inside subTabRegistry; main.ts only
   // wires the click → setter → render dance. Sub-tab IDs are open string union
-  // to allow Phase 1 agents to register additional surfaces without editing
-  // this file.
+  // so Skills surfaces can self-register without editing this file.
   for (const button of document.querySelectorAll<HTMLButtonElement>('[data-skills-subtab]')) {
     button.addEventListener('click', () => {
       const view = button.dataset.skillsSubtab;
@@ -15598,7 +15768,7 @@ function bind(): void {
       state.agentSignature = '';
       state.agentPreparedActionId = '';
       scheduleRaydiumPairPreview(fieldId);
-      if (shouldRerender || cascadingRerender) render();
+      if (shouldRerender || cascadingRerender || fieldId === 'dcaDirection') render();
     });
     fieldInput.addEventListener('change', () => {
       const fieldId = fieldInput.dataset.templateField;
@@ -15607,7 +15777,7 @@ function bind(): void {
       syncCascadingTemplateFieldLabel(fieldInput, fieldId, state.templateFields);
       syncConnectorTemplateFieldChange(fieldId);
       scheduleRaydiumPairPreview(fieldId);
-      if (handleCascadingFieldChange(fieldInput, fieldId)) render();
+      if (handleCascadingFieldChange(fieldInput, fieldId) || fieldId === 'dcaDirection') render();
     });
   }
 
@@ -15669,6 +15839,23 @@ function bind(): void {
       if (!fieldId) return;
       state.templateFields[fieldId] = slippagePercentInputToBps(fieldInput.value);
       fieldInput.value = slippageBpsToPercentInput(state.templateFields[fieldId] ?? '');
+    });
+  }
+
+  for (const fieldInput of document.querySelectorAll<HTMLInputElement>('[data-template-interval-field]')) {
+    fieldInput.addEventListener('input', () => {
+      const fieldId = fieldInput.dataset.templateIntervalField;
+      if (!fieldId) return;
+      syncTemplateIntervalField(fieldId);
+      delete state.templateFieldErrors[fieldId];
+      state.agentPlan = null;
+      state.agentSignature = '';
+      state.agentPreparedActionId = '';
+    });
+    fieldInput.addEventListener('change', () => {
+      const fieldId = fieldInput.dataset.templateIntervalField;
+      if (!fieldId) return;
+      syncTemplateIntervalField(fieldId);
     });
   }
 
@@ -16936,6 +17123,7 @@ function scopeTemplateFieldsToConnectorForm(
     allowed.add(field.id);
     allowed.add(`${field.id}Label`);
     allowed.add(`${field.id}Mint`);
+    allowed.add(`${field.id}Decimals`);
   }
   const scoped: Record<string, string> = {};
   for (const [key, value] of Object.entries(fields)) {
@@ -17533,6 +17721,7 @@ async function runGenerateAgentPlan(): Promise<void> {
   trackGenerateTemplatePlan(template.id);
   state.activeOperation = 'generate-template-plan';
   const toastId = pushToast('pending', 'Creating template plan', 'Preparing a saved plan for review.');
+  let reviewAfterDraftId = '';
   try {
     await run(
       'sign',
@@ -17549,6 +17738,9 @@ async function runGenerateAgentPlan(): Promise<void> {
         const record = await saveGeneratedPlan(plan, template, userNotes || template.description);
         state.selectedGeneratedPlanId = record.id;
         state.oneTimePlanView = 'review';
+        if (state.askAgentAfterDraft && (hasDetectedAgentReviewPath() || isMockPreSignPolicyPlan(record))) {
+          reviewAfterDraftId = record.id;
+        }
         replaceToast(toastId, 'success', 'Plan created', `${template.title} is ready in Check request.`);
       },
       { onError: (message) => replaceToast(toastId, 'error', 'Template plan failed', message) },
@@ -17556,6 +17748,9 @@ async function runGenerateAgentPlan(): Promise<void> {
   } finally {
     state.activeOperation = null;
     render();
+  }
+  if (reviewAfterDraftId) {
+    await runReviewGeneratedPlan(reviewAfterDraftId);
   }
 }
 
@@ -17766,7 +17961,8 @@ async function runGenerateAiPlan(): Promise<void> {
     }
     state.selectedGeneratedPlanId = finalRecordId;
     state.oneTimePlanView = 'review';
-    if (state.askAgentAfterDraft && hasDetectedAgentReviewPath()) {
+    const finalRecord = generatedPlanById(finalRecordId);
+    if (state.askAgentAfterDraft && (hasDetectedAgentReviewPath() || Boolean(finalRecord && isMockPreSignPolicyPlan(finalRecord)))) {
       reviewAfterDraftId = finalRecordId;
     }
     appendAiDiagnostic({
@@ -18171,8 +18367,17 @@ async function runReviewGeneratedPlan(planId: string): Promise<void> {
     render();
     return;
   }
-  if (!canRunAgentReview()) {
-    pushToast('error', 'Agent not detected', agentReviewUnavailableReason());
+  if (isMockPreSignPolicyPlan(record)) {
+    if (!canRunAgentReview(record)) {
+      pushToast('error', 'Mock review unavailable', agentReviewUnavailableReason(record));
+      render();
+      return;
+    }
+    await runMockPreSignPolicyReview(planId);
+    return;
+  }
+  if (!canRunAgentReview(record)) {
+    pushToast('error', 'Agent not detected', agentReviewUnavailableReason(record));
     render();
     return;
   }
@@ -18243,6 +18448,166 @@ async function runReviewGeneratedPlan(planId: string): Promise<void> {
     state.activeOperation = null;
     render();
   }
+}
+
+function isMockPreSignDemoCreateFlow(template = selectedTemplate()): boolean {
+  if (template.id !== 'swap') return false;
+  const fields = { ...defaultTemplateFieldValues(template), ...state.templateFields };
+  return fields.inputToken?.trim().toUpperCase() === 'SOL' &&
+    fields.outputToken?.trim().toUpperCase() === 'POPCAT';
+}
+
+function isMockPreSignPolicyPlan(record: GeneratedPlanRecord): boolean {
+  const plan = record.plan;
+  const inputToken = (plan.parameters.inputTokenLabel || plan.parameters.inputToken || '').trim().toUpperCase();
+  const outputToken = (plan.parameters.outputTokenLabel || plan.parameters.outputToken || '').trim().toUpperCase();
+  const amount = (plan.parameters.amount || '').trim();
+  const notes = `${plan.userNotes || ''} ${record.prompt || ''}`.toLowerCase();
+  return plan.actionType === 'swap' &&
+    inputToken === 'SOL' &&
+    outputToken === 'POPCAT' &&
+    amount === '0.04' &&
+    notes.includes('pre-signing policy') &&
+    notes.includes('$60');
+}
+
+async function runMockPreSignPolicyReview(planId: string): Promise<void> {
+  const record = requireGeneratedPlanRecord(planId);
+  const previousReview = record.agentReview;
+  const checkedAt = new Date().toISOString();
+  const checkingReview: AgentPlanReviewState = {
+    schemaVersion: AGENT_REVIEW_SCHEMA_VERSION,
+    required: true,
+    status: 'checking',
+    reason: 'Mock policy agent is checking market, token, and transaction gates.',
+    provider: 'Mock policy agent',
+    model: 'demo-pre-sign-v1',
+    source: 'mock',
+    checkedAt,
+    ...(previousReview?.history?.length ? { history: previousReview.history } : {}),
+  };
+  state.activeOperation = 'review-agent-plan';
+  const toastId = pushToast('pending', 'Mock agent checking', 'Running the pre-signing policy locally.');
+  try {
+    await updateGeneratedPlan(planId, { agentReview: checkingReview, error: undefined, failureLabel: undefined });
+    render();
+    await sleep(350);
+    const refreshed = generatedPlanById(planId) ?? record;
+    const review = mockPreSignPolicyReviewState(refreshed, previousReview);
+    await updateGeneratedPlan(planId, { agentReview: review, error: undefined, failureLabel: undefined });
+    completeMockPreSignApproval(refreshed, review);
+    replaceToast(toastId, 'success', 'Agent approved', 'Mock signature and approval receipt saved.');
+  } catch (err) {
+    const message = redactSecrets(err instanceof Error ? err.message : String(err));
+    const failedReview: AgentPlanReviewState = {
+      ...checkingReview,
+      status: 'error',
+      reason: message,
+      checkedAt: new Date().toISOString(),
+    };
+    await updateGeneratedPlan(planId, { agentReview: failedReview }).catch(() => undefined);
+    replaceToast(toastId, 'error', 'Mock review failed', message);
+  } finally {
+    state.activeOperation = null;
+    render();
+  }
+}
+
+function mockPreSignPolicyReviewState(
+  record: GeneratedPlanRecord,
+  previousReview: AgentPlanReviewState | undefined,
+): AgentPlanReviewState {
+  const checkedAt = new Date().toISOString();
+  const reason = 'APPROVE: SOL price $90.96 is above the $60 gate, BTC Fear & Greed is 42 above the 20 gate, POPCAT mint/freeze authorities are disabled, token age is above 24h, and the mock transaction contains only the requested swap with no extra transfers, unknown recipients, or unrelated instructions.';
+  const history = appendReviewAttempt(previousReview?.history, {
+    attemptId: `attempt_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 7)}`,
+    startedAt: checkedAt,
+    finishedAt: checkedAt,
+    decision: 'approve',
+    reason,
+  });
+  return {
+    schemaVersion: AGENT_REVIEW_SCHEMA_VERSION,
+    required: true,
+    status: 'approved',
+    decision: 'approve',
+    reason,
+    summary: 'APPROVE - all requested mock policy gates passed.',
+    checkedAt,
+    provider: 'Mock policy agent',
+    model: 'demo-pre-sign-v1',
+    source: 'mock',
+    checks: mockPreSignPolicyChecks(),
+    evidence: {
+      sources: [
+        { title: 'BirdEye - Solana token prices', url: 'https://birdeye.so/' },
+        { title: 'Jupiter - Solana swap aggregator', url: 'https://jup.ag/' },
+        { title: 'alternative.me - Crypto Fear & Greed Index', url: 'https://alternative.me/crypto/fear-and-greed-index/' },
+        { title: 'CoinGecko - Global market dominance & volume', url: 'https://www.coingecko.com/en/global-charts' },
+      ],
+    },
+    ...(history.length ? { history } : {}),
+    reviewedPlanFingerprint: planFingerprint(planWithRuntimeTokenLabels(record.plan)),
+  };
+}
+
+function mockPreSignPolicyChecks(): AgentReviewCheck[] {
+  const row = (label: string, value: string, tone: AgentEvidenceTone = 'good'): AgentReviewCheck => ({
+    label,
+    value,
+    tone,
+    source: 'deterministic',
+  });
+  return [
+    row('SOL price', '$90.96 (BirdEye)'),
+    row('POPCAT price', '$0.0640 (BirdEye)'),
+    row('Slippage protection', '0.50% (50 bps)'),
+    row('Swap amount', '0.04 SOL (~$3.6383)'),
+    row('BTC Fear & Greed Index', '42 (Fear) - alternative.me'),
+    row('BTC dominance', '58.10% - CoinGecko'),
+    row('INPUT SOL mint authority', 'disabled (null) - BirdEye'),
+    row('INPUT SOL freeze authority', 'disabled (null) - BirdEye'),
+    row('INPUT SOL token age', 'unknown', 'neutral'),
+    row('OUTPUT POPCAT mint authority', 'disabled (null) - BirdEye'),
+    row('OUTPUT POPCAT freeze authority', 'disabled (null) - BirdEye'),
+    row('OUTPUT POPCAT token age', '29.4 months - BirdEye'),
+  ];
+}
+
+function completeMockPreSignApproval(record: GeneratedPlanRecord, review: AgentPlanReviewState): void {
+  const completedAt = new Date().toISOString();
+  const plan = planWithRuntimeTokenLabels(record.plan);
+  const actionId = `browser-mock-pre-sign-${record.id}`;
+  const kind: PreparedActionKind = 'swap';
+  const action: PreparedAction = {
+    id: actionId,
+    kind,
+    status: 'ready',
+    walletAddress: state.address || record.walletAddress || '',
+    cluster: record.cluster,
+    summary: `Mock approved swap: ${plan.parameters.amount || '0.04'} ${plan.parameters.inputToken || 'SOL'} to ${plan.parameters.outputTokenLabel || plan.parameters.outputToken || 'POPCAT'}`,
+    params: browserActionParams(plan, kind),
+    dueAt: completedAt,
+    createdAt: record.createdAt,
+    updatedAt: completedAt,
+    note: plan.userNotes || record.prompt || '',
+    planDraftId: record.id,
+    agentReview: review,
+    metadata: {
+      mockPreSignDemo: true,
+      mockPreSignApprovedAt: completedAt,
+    },
+    workflowSource: 'browser',
+  };
+  completeBrowserPreparedAction(action, 'approved', `mock_sig_${record.id.replace(/[^a-z0-9_-]/gi, '').slice(0, 32)}`);
+  void updateGeneratedPlan(record.id, {
+    metadata: {
+      ...(record.metadata ?? {}),
+      mockPreSignDemo: true,
+      mockPreSignActionId: actionId,
+      mockPreSignApprovedAt: completedAt,
+    },
+  }).catch(() => undefined);
 }
 
 async function runReviewGeneratedPlanWithAnswers(planId: string): Promise<void> {
@@ -30178,6 +30543,10 @@ function readTemplateFields(template = selectedTemplate()): Record<string, strin
       current[fieldId] = slippagePercentInputToBps(input.value);
     }
   }
+  for (const input of document.querySelectorAll<HTMLInputElement>('[data-template-interval-field]')) {
+    const fieldId = input.dataset.templateIntervalField;
+    if (fieldId) current[fieldId] = syncTemplateIntervalField(fieldId);
+  }
   const withCascadingDisplay = withCascadingOptionDisplayParameters(template, current);
   const withDisplay = withTemplateTokenDisplayParameters(template, withCascadingDisplay);
   const normalized = isConnectorCapableTemplate(template) || Boolean(selectedConnectorForDraftParameters(withDisplay))
@@ -30276,7 +30645,7 @@ function withTemplateTokenDisplayParameters(
   parameters: Record<string, string>,
 ): Record<string, string> {
   const next = { ...parameters };
-  for (const fieldDef of template.fields) {
+  for (const fieldDef of effectiveTemplateFieldsForParameters(template, next)) {
     if (!isTokenSelectField(fieldDef)) continue;
     const value = next[fieldDef.id] ?? '';
     const selection = state.templateTokenSelections[fieldDef.id] ??
@@ -33026,15 +33395,17 @@ function tokenSelectionFromValue(
   const trimmed = value.trim();
   const metadata = tokenMarketMetadata.get(trimmed);
   const known = KNOWN_BROWSER_TOKENS[trimmed.toUpperCase()];
+  const knownMint = knownBrowserTokenByMint(trimmed);
   const label = metadata?.symbol || known?.symbol || tokenDisplayLabel(trimmed);
   return {
     mode,
     value: trimmed,
     label,
     source,
-    ...(looksLikeMintAddress(trimmed) ? { mint: trimmed } : known?.mint ? { mint: known.mint } : {}),
+    ...(looksLikeMintAddress(trimmed) ? { mint: trimmed } : known?.mint ? { mint: known.mint } : knownMint?.mint ? { mint: knownMint.mint } : {}),
     ...(metadata?.name ? { name: metadata.name } : {}),
     ...(metadata?.logoURI ? { logoURI: metadata.logoURI } : {}),
+    ...(metadata?.decimals !== undefined ? { decimals: metadata.decimals } : known?.decimals !== undefined ? { decimals: known.decimals } : knownMint?.decimals !== undefined ? { decimals: knownMint.decimals } : {}),
   };
 }
 
@@ -33048,6 +33419,7 @@ function tokenSelectionFromSearchResult(result: TokenSearchResult): TokenFieldSe
     name: result.name,
     ...(result.logoURI ? { logoURI: result.logoURI } : {}),
     ...(result.priceUsd !== undefined ? { priceUsd: result.priceUsd } : {}),
+    ...(result.decimals !== undefined ? { decimals: result.decimals } : {}),
   };
 }
 
@@ -33079,6 +33451,7 @@ function tokenDisplayParametersForField(fieldId: string, selection: TokenFieldSe
   if (label && label !== selection.value) params[`${fieldId}Label`] = label;
   if (selection.mint && selection.mint !== selection.value) params[`${fieldId}Mint`] = selection.mint;
   if (selection.mint && selection.label && selection.value === selection.mint) params[`${fieldId}Mint`] = selection.mint;
+  if (selection.decimals !== undefined) params[`${fieldId}Decimals`] = String(selection.decimals);
   return params;
 }
 
@@ -33415,6 +33788,7 @@ function tokenSearchResultFromRecord(record: Record<string, unknown>): TokenSear
     symbol: metadata.symbol,
     name: metadata.name,
     ...(metadata.logoURI ? { logoURI: metadata.logoURI } : {}),
+    ...(metadata.decimals !== undefined ? { decimals: metadata.decimals } : {}),
     ...(priceUsd !== undefined ? { priceUsd } : {}),
     ...(marketNumberField(record, ['liquidity', 'liquidityUsd', 'liquidity_usd']) !== undefined
       ? { liquidity: marketNumberField(record, ['liquidity', 'liquidityUsd', 'liquidity_usd']) }
@@ -33437,10 +33811,12 @@ function tokenSearchResultFromRecord(record: Record<string, unknown>): TokenSear
 
 function tokenSearchResultFromMint(mint: string): TokenSearchResult | undefined {
   if (!looksLikeMintAddress(mint)) return undefined;
+  const known = knownBrowserTokenByMint(mint);
   return enrichTokenSearchResult({
     mint,
-    symbol: tokenDisplayLabel(mint),
-    name: shortHexMint(mint),
+    symbol: known?.symbol ?? tokenDisplayLabel(mint),
+    name: known?.symbol ?? shortHexMint(mint),
+    ...(known?.decimals !== undefined ? { decimals: known.decimals } : {}),
     source: 'mint',
   });
 }
@@ -33453,6 +33829,7 @@ function enrichTokenSearchResult(result: TokenSearchResult): TokenSearchResult {
     symbol: metadata?.symbol ?? result.symbol,
     name: metadata?.name ?? result.name,
     ...(metadata?.logoURI || result.logoURI ? { logoURI: metadata?.logoURI ?? result.logoURI } : {}),
+    ...(metadata?.decimals !== undefined ? { decimals: metadata.decimals } : result.decimals !== undefined ? { decimals: result.decimals } : {}),
     ...(price ? { priceUsd: price.value } : result.priceUsd !== undefined ? { priceUsd: result.priceUsd } : {}),
     ...(price?.liquidity !== undefined ? { liquidity: price.liquidity } : result.liquidity !== undefined ? { liquidity: result.liquidity } : {}),
   };
@@ -35993,6 +36370,7 @@ function connectorActionAmountToken(action: PreparedAction): ConnectorActionAmou
   const tokenKeys = [
     'sourceTokenLabel',
     'tokenSymbol',
+    'depositSymbol',
     'inputSymbol',
     'token',
     'sourceToken',
@@ -36002,6 +36380,7 @@ function connectorActionAmountToken(action: PreparedAction): ConnectorActionAmou
     'mint',
     'mintAddress',
     'inputMint',
+    'depositMint',
     'lstMint',
     'inputLstMint',
     'governingTokenMint',
@@ -39350,7 +39729,7 @@ function parseAgentPlanReviewState(value: unknown): AgentPlanReviewState | undef
     ...(typeof value.checkedAt === 'string' && { checkedAt: value.checkedAt }),
     ...(typeof value.provider === 'string' && { provider: value.provider }),
     ...(typeof value.model === 'string' && { model: value.model }),
-    ...(value.source === 'hosted' || value.source === 'session' || value.source === 'bridge' ? { source: value.source } : {}),
+    ...(isAgentReviewSource(value.source) ? { source: value.source } : {}),
     ...(isJsonObject(value.evidence) && { evidence: value.evidence }),
     ...(checks && { checks }),
     ...(questions && { questions }),
@@ -39413,7 +39792,7 @@ function parseAgentAskConversation(value: unknown): AgentAskExchange[] | undefin
       ...(typeof entry.error === 'string' ? { error: entry.error } : {}),
       ...(typeof entry.answeredAt === 'string' ? { answeredAt: entry.answeredAt } : {}),
       ...(entry.pending === true ? { pending: true } : {}),
-      ...(entry.source === 'hosted' || entry.source === 'session' || entry.source === 'bridge' ? { source: entry.source } : {}),
+      ...(isAgentReviewSource(entry.source) ? { source: entry.source } : {}),
       ...(typeof entry.provider === 'string' ? { provider: entry.provider } : {}),
       ...(typeof entry.model === 'string' ? { model: entry.model } : {}),
     });
@@ -39448,7 +39827,7 @@ function parseAgentReviewOverride(value: unknown): AgentReviewOverride | undefin
     ...(typeof value.userReason === 'string' && value.userReason.trim() && { userReason: value.userReason }),
     ...(typeof value.provider === 'string' && { provider: value.provider }),
     ...(typeof value.model === 'string' && { model: value.model }),
-    ...(value.source === 'hosted' || value.source === 'session' || value.source === 'bridge' ? { source: value.source } : {}),
+    ...(isAgentReviewSource(value.source) ? { source: value.source } : {}),
   };
 }
 

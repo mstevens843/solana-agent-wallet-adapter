@@ -270,6 +270,24 @@ describe('Jupiter Recurring quote and order reads', () => {
     expect(String(quote.warnings)).toContain('0.1%');
   });
 
+  it('uses UI-provided input mint decimals for custom token DCA amounts', async () => {
+    const quote = await jupiterRecurringQuote(fakeConfig(), {
+      inputMint: '11111111111111111111111111111111',
+      outputMint: SOL_MINT,
+      inputMintDecimals: 5,
+      totalAmount: '1.23456',
+      numberOfOrders: 2,
+      intervalSeconds: 3600,
+    });
+
+    expect(quote).toMatchObject({
+      totalAmountRaw: '123456',
+      totalAmount: '1.23456',
+      amountPerCycleRaw: '61728',
+      amountPerCycle: '0.61728',
+    });
+  });
+
   it('lists price orders and filters history sub-states locally', async () => {
     const captured: CapturedRequest[] = [];
     vi.stubGlobal('fetch', fakeFetch(() => ({

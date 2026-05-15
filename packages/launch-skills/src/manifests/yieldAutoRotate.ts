@@ -8,7 +8,7 @@ export const yieldAutoRotateSkill: skills.SkillManifest = {
   version: '1.0.0',
   authorWallet: DEV_AUTHOR_WALLET,
   description:
-    'Routes idle USDC into the highest-APY lending vault each day across Jupiter Lend Earn, Kamino, Marginfi, and Lulo. Each rotation still requires your manual approval.',
+    'Routes idle USDC into the highest-APY lending vault each day across Lulo, Kamino, Save, and Jupiter Lend Earn. Each rotation still requires your manual approval.',
   category: 'yield',
   schedule: {
     kind: 'cron',

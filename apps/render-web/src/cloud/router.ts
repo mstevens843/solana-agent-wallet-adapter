@@ -2,9 +2,7 @@ import { randomUUID } from 'node:crypto';
 import type { IncomingMessage, ServerResponse } from 'node:http';
 
 import {
-  AgentWalletActionService,
   BridgeAiPlanner,
-  DEFAULT_CONFIG,
   getTransfersByAddress,
   listCoinGeckoEndpointCatalog,
   requestBirdeyeExitLiquidityMulti,
@@ -34,8 +32,6 @@ import {
   type BirdeyePriceVolumeType,
   type BirdeyeTokenListSortBy,
   type HeliusTransferFilters,
-  type ConnectorFactReadInput,
-  type DAppAdapterContext,
 } from '@solana-agent-wallet-adapter/mcp-server';
 import { Connection } from '@solana/web3.js';
 
@@ -72,6 +68,12 @@ import { createRecurringApiHandler, recurringStoreAdapterForCloudStore } from '.
 import { RecurringService, type RecurringStore } from './recurringService.js';
 import { redactSecrets } from './redaction.js';
 import { createAgentBackgroundWatch } from './agentBackgroundWatch.js';
+import {
+  createStatelessConnectorFactsReader,
+  solanaRpcUrl,
+  type ConnectorReadFactsRequest,
+  type StatelessConnectorFactsReader,
+} from './connectorFactsReader.js';
 import { RecurringScheduler } from './scheduler.js';
 import { createWalletSession, deleteSessionFromRequest, SESSION_TTL_MS, sessionFromRequest } from './session.js';
 import {
@@ -213,15 +215,6 @@ interface HostedAiAskBody {
   settings?: HostedAiBody['settings'];
   request?: unknown;
 }
-
-type ConnectorReadFactsRequest = ConnectorFactReadInput & {
-  cluster: WorkflowCluster;
-  walletAddress: string;
-};
-
-type WalletBackend = DAppAdapterContext['backend'];
-
-export type StatelessConnectorFactsReader = (input: ConnectorReadFactsRequest) => Promise<Record<string, unknown>>;
 
 export interface CloudApiRouterOptions {
   store?: WorkflowStore;
@@ -1257,9 +1250,9 @@ async function handleConnectorReadFacts(
   }
   const capability = body.capability === undefined
     ? undefined
-    : requiredBodyString(body, 'capability') as ConnectorFactReadInput['capability'];
+    : requiredBodyString(body, 'capability') as ConnectorReadFactsRequest['capability'];
   const input: ConnectorReadFactsRequest = {
-    ...(body as unknown as ConnectorFactReadInput),
+    ...(body as unknown as ConnectorReadFactsRequest),
     connectorId,
     cluster,
     walletAddress: session.walletAddress,
@@ -1713,69 +1706,6 @@ function jupiterApiKey(): string | undefined {
 
 function solanaConnection(cluster: WorkflowCluster): Connection {
   return new Connection(solanaRpcUrl(cluster), 'confirmed');
-}
-
-function createStatelessConnectorFactsReader(): StatelessConnectorFactsReader {
-  return async ({ cluster, walletAddress, ...input }) => {
-    const rpcUrl = solanaRpcUrl(cluster);
-    const service = new AgentWalletActionService({
-      backend: readOnlyWalletBackend(walletAddress, cluster),
-      config: {
-        ...DEFAULT_CONFIG,
-        cluster,
-        rpcUrl,
-      },
-      connection: new Connection(rpcUrl, 'confirmed'),
-    });
-    return service.connectorReadFacts({
-      ...input,
-      walletAddress,
-    });
-  };
-}
-
-function readOnlyWalletBackend(walletAddress: string, cluster: WorkflowCluster): WalletBackend {
-  return {
-    async capabilities() {
-      return {
-        backend: 'agentic-cloud-readonly',
-        cluster: [cluster],
-        address: walletAddress,
-        supports: {
-          signMessage: false,
-          signTransaction: false,
-          signAndSendTransaction: false,
-          multiSign: false,
-          simulationPreview: false,
-        },
-      };
-    },
-    async getAddress() {
-      return walletAddress;
-    },
-    async submit() {
-      throw new Error('Cloud connector reads cannot request wallet signatures.');
-    },
-    async poll() {
-      throw new Error('Cloud connector reads cannot poll wallet approvals.');
-    },
-  };
-}
-
-function solanaRpcUrl(cluster: WorkflowCluster): string {
-  if (process.env.SOLANA_RPC_URL?.trim()) return process.env.SOLANA_RPC_URL.trim();
-  if (process.env.HELIUS_RPC_URL?.trim()) return process.env.HELIUS_RPC_URL.trim();
-  switch (cluster) {
-    case 'mainnet-beta':
-      return 'https://api.mainnet-beta.solana.com';
-    case 'testnet':
-      return 'https://api.testnet.solana.com';
-    case 'localnet':
-      return 'http://127.0.0.1:8899';
-    case 'devnet':
-    default:
-      return 'https://api.devnet.solana.com';
-  }
 }
 
 function asJsonRecord(value: unknown, label: string): Record<string, unknown> {

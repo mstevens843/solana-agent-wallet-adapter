@@ -1,12 +1,6 @@
-// Phase 1 dev-tab modules import themselves here. Each module's import
+// Dev-tab modules import themselves here. Each module's import
 // triggers a side-effecting registerDevTab() call at module load.
-//
-// Append-only — Phase 1 agents add lines like:
-//   import './payOut.js';
-//   import './externalAgents.js';
-//   import './agentCard.js';
-// And badge modules:
-//   import '../devBadges/ap2Verified.js';
+import './shared.css';
 import './payOut.js';
 import './externalAgents.js';
 import './agentCard.js';

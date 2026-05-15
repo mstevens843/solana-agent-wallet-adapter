@@ -170,7 +170,7 @@ function normalizeJupiterRecurringPrepareParams(kind: string, params: Record<str
   if (kind === 'jupiter_recurring_create_time_order' && !stringParam(params, 'totalAmount') && stringParam(params, 'amount')) {
     params.totalAmount = stringParam(params, 'amount');
   }
-  for (const key of ['numberOfOrders', 'intervalSeconds', 'maxFeeBps']) {
+  for (const key of ['numberOfOrders', 'intervalSeconds', 'maxFeeBps', 'inputMintDecimals']) {
     coerceNumberParam(params, key);
   }
   coerceBooleanParam(params, 'automationWarningAccepted');

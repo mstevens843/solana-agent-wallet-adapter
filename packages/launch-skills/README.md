@@ -1,6 +1,6 @@
 # @solana-agent-wallet-adapter/launch-skills
 
-Five hand-built `SkillManifest` constants that seed the Layer 2 Skills Hub catalog on day one. Imported by the cloud `skillsRoutes` startup hook (Agent 5) to populate the `skill_manifests` table when empty.
+Five hand-built `SkillManifest` constants that seed the Layer 2 Skills Hub catalog on day one. Imported by the cloud `skillsRoutes` startup hook to populate the `skill_manifests` table when empty.
 
 ## Exports
 
@@ -27,15 +27,15 @@ import {
 | `bridge-idle-usdc` | bridge | Mon 15:00 UTC | `prepare_wormhole_transfer` Solana → Base | free |
 | `recurring-donation` | donation | 1st of month 14:00 UTC | `prepare_transfer_spl` USDC | free |
 
-## Cross-agent contracts
+## Runtime contracts
 
-These are the interface contracts between this package and the executor (Agent 1) / cloud routes (Agent 5). Do not drift.
+These are the interface contracts between this package, the executor, and the cloud routes. Do not drift.
 
 ### 1. `connectorAction` naming
 
 Format: `prepare_<mcp_suffix>` where `<mcp_suffix>` is the MCP tool name minus its `solana_` prefix. So MCP tool `solana_prepare_swap` → `connectorAction: 'prepare_swap'`.
 
-Sentinel form `<namespace>.<action>` (containing a dot) signals a runtime-resolved meta-action that Agent 1's executor must resolve. The only sentinel in v1 is `yield.auto_rotate`.
+Sentinel form `<namespace>.<action>` (containing a dot) signals a runtime-resolved meta-action that the executor must resolve. The only sentinel in v1 is `yield.auto_rotate`.
 
 ### 2. `schedule.spec` encoding
 
@@ -49,18 +49,18 @@ Sentinel form `<namespace>.<action>` (containing a dot) signals a runtime-resolv
 
 ### 4. Manifest `expiresAt` vs install `expiresAt`
 
-Manifest-level `caps.expiresAt` is the **manifest horizon** (~1 year; forces eventual version refresh). The per-install `expiresAt` is a separate concern that Agent 5's install handler sets from user input.
+Manifest-level `caps.expiresAt` is the **manifest horizon** (~1 year; forces eventual version refresh). The per-install `expiresAt` is a separate concern that the install handler sets from user input.
 
 ## Sentinel actions
 
-The `yield.auto_rotate` sentinel signals "executor picks the best vault at runtime." Agent 1's executor must:
+The `yield.auto_rotate` sentinel signals "executor picks the best vault at runtime." The cloud executor:
 
 1. Read `paramsTemplate.token` and `paramsTemplate.amount` plus the optional `minApyDeltaBps`.
-2. Query APY across Jupiter Lend Earn, Kamino, Marginfi, and Lulo.
+2. Query USDC APY through stateless connector facts for Lulo Protected, Kamino, Save, and Jupiter Lend Earn.
 3. Resolve to the appropriate concrete `prepare_*` connector action (`prepare_jupiter_lend_earn_deposit`, `prepare_kamino_deposit`, etc.).
 4. Propose the resulting approval to the wallet.
 
-If Agent 1 ships without sentinel resolution, the `yield-auto-rotate` manifest stays valid data but un-executable. The aggregate test guards the contract by asserting `yield.auto_rotate` is the only dotted action in the catalog.
+Provider read failures are skipped; if no valid APY candidate remains, the executor does not propose a blind fallback. The aggregate test guards the catalog contract by asserting `yield.auto_rotate` is the only dotted action in the catalog.
 
 ## Demo placeholders
 

@@ -1,7 +1,6 @@
-// Layer 2 / Phase 1 / Agent 2 — turns one publisher emission into N per-follower
-// approval requests, each clamped to the follower's subscription caps. Followers
-// always sign manually; fanout never auto-signs. See plan:
-// /Users/devlegacy/.claude/plans/ok-please-plan-out-purrfect-squirrel.md
+// Turns one publisher signal emission into N per-follower approval requests,
+// each clamped to the follower's subscription caps. Followers always sign
+// manually; fanout never auto-signs.
 import { randomUUID } from 'node:crypto';
 
 import {

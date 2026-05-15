@@ -110,7 +110,9 @@ function statusPillClass(status: string): string {
 
 export function rowHtml(item: NormalizedApproval): string {
   const agent = item.metadata?.ap2VerifiedAgent;
-  const agentLabel = escapeHtml((agent?.agentLabel?.trim() || agent?.agentId?.trim() || 'unknown agent'));
+  const rawAgentLabel = agent?.agentLabel?.trim() || agent?.agentId?.trim() || 'unknown agent';
+  const agentLabel = escapeHtml(rawAgentLabel);
+  const avatarLabel = escapeHtml((rawAgentLabel.slice(0, 1) || 'A').toUpperCase());
   const amountText =
     item.amount && item.token
       ? `${escapeHtml(item.amount)} ${escapeHtml(item.token)}`
@@ -127,6 +129,7 @@ export function rowHtml(item: NormalizedApproval): string {
   const buttonLabel = terminal ? 'Open in Inbox' : 'Open approval';
   return `
     <li class="external-agents-row${terminal ? ' terminal' : ''}" data-inbound-id="${escapeHtml(item.id)}">
+      <span class="external-agents-row-avatar" aria-hidden="true">${avatarLabel}</span>
       <div class="external-agents-row-main">
         <div class="external-agents-row-head">
           <strong class="external-agents-row-agent">${agentLabel}</strong>
@@ -152,7 +155,7 @@ export function bodyHtml(snapshot: TabState = state): string {
   switch (snapshot.status) {
     case 'idle':
     case 'loading':
-      return `<p class="external-agents-loading">Loading inbound mandates…</p>`;
+      return `<p class="external-agents-loading dev-tab-loading-state">Loading inbound mandates…</p>`;
     case 'error':
       return `
         <div class="external-agents-error">
@@ -162,7 +165,7 @@ export function bodyHtml(snapshot: TabState = state): string {
       `;
     case 'loaded':
       if (snapshot.inbound.length === 0) {
-        return `<p class="external-agents-empty">No inbound AP2 mandates yet. When an external agent sends one, it will appear here as an approval card in <strong>Needs Approval</strong>.</p>`;
+        return `<p class="external-agents-empty dev-tab-empty-state">No inbound AP2 mandates yet. When an external agent sends one, it will appear here as an approval card in <strong>Needs Approval</strong>.</p>`;
       }
       return `<ol class="external-agents-list">${sortInbound(snapshot.inbound).map(rowHtml).join('')}</ol>`;
   }
@@ -257,21 +260,32 @@ function render(): string {
     });
   }
   const refreshing = state.status === 'loading';
+  const activeCount = state.inbound.filter((item) => !TERMINAL_STATUSES.has(item.status)).length;
+  const terminalCount = state.inbound.length - activeCount;
   return `
-    <details class="external-agents-panel rail-details" open data-layout="external-agents-panel">
-      <summary>
-        <div class="external-agents-summary-text">
-          <strong>External Agents</strong>
-          <span class="external-agents-sub">Inbound AP2 mandates</span>
+    <section class="external-agents-panel dev-tab-shell" data-layout="external-agents-panel">
+      <header class="external-agents-header dev-tab-header">
+        <div class="dev-tab-header-main">
+          <p class="dev-tab-kicker">AP2 inbound</p>
+          <div class="dev-tab-title-row">
+            <h2>External Agents</h2>
+            <span class="external-agents-live-pill">${refreshing ? 'Syncing' : 'Live queue'}</span>
+          </div>
+          <p>Mandates sent by verified external agents land here before they become wallet approval cards.</p>
         </div>
-        <div class="external-agents-summary-actions">
+        <div class="dev-tab-header-actions">
           <button type="button" class="utility" data-external-agents-refresh${refreshing ? ' disabled' : ''}>${refreshing ? 'Refreshing…' : 'Refresh'}</button>
         </div>
-      </summary>
+      </header>
+      <div class="external-agents-overview" aria-label="External agent queue summary">
+        <div class="dev-tab-stat"><span>Active</span><strong>${activeCount}</strong></div>
+        <div class="dev-tab-stat"><span>Completed</span><strong>${terminalCount}</strong></div>
+        <div class="dev-tab-stat"><span>Source</span><strong>AP2</strong></div>
+      </div>
       <section id="external-agents-body" class="external-agents-body" aria-label="Inbound AP2 mandates" aria-busy="${refreshing}">
         ${bodyHtml()}
       </section>
-    </details>
+    </section>
   `;
 }
 

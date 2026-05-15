@@ -148,11 +148,18 @@ describe('humanizeSchedule', () => {
   });
 
   it('humanizes interval kind', () => {
+    expect(humanizeSchedule({ kind: 'interval', spec: '60s' })).toBe('Every minute');
+    expect(humanizeSchedule({ kind: 'interval', spec: '15m' })).toBe('Every 15m');
+    expect(humanizeSchedule({ kind: 'interval', spec: '2h' })).toBe('Every 2h');
+    expect(humanizeSchedule({ kind: 'interval', spec: '7d' })).toBe('Every week');
+    expect(humanizeSchedule({ kind: 'interval', spec: 'P1W' })).toBe('Every week');
+    expect(humanizeSchedule({ kind: 'interval', spec: 'PT15M' })).toBe('Every 15m');
     expect(humanizeSchedule({ kind: 'interval', spec: '60' })).toBe('Every minute');
     expect(humanizeSchedule({ kind: 'interval', spec: '3600' })).toBe('Every hour');
     expect(humanizeSchedule({ kind: 'interval', spec: '86400' })).toBe('Every day');
     expect(humanizeSchedule({ kind: 'interval', spec: '604800' })).toBe('Every week');
     expect(humanizeSchedule({ kind: 'interval', spec: '300' })).toBe('Every 5m');
+    expect(humanizeSchedule({ kind: 'interval', spec: 'soon-ish' })).toBe('Interval(soon-ish)');
   });
 
   it('handles price-trigger kind', () => {
@@ -292,11 +299,11 @@ describe('renderInstalledPanel branches', () => {
   it('renders notDeployed notice', () => {
     __resetStateForTests({
       phase: 'ready',
-      notice: { title: 'Skills not deployed yet', body: '/api/skills/installs returned 404.' },
+      notice: { title: 'Skills API unavailable', body: '/api/skills/installs returned 404.' },
     });
     const html = renderInstalledPanel();
     expect(html).toContain('is-not-deployed');
-    expect(html).toContain('Skills not deployed yet');
+    expect(html).toContain('Skills API unavailable');
   });
 
   it('renders error banner when phase=error', () => {
@@ -457,7 +464,7 @@ describe('loadInstalls', () => {
     await loadInstalls();
     const s = __getStateForTests();
     expect(s.phase).toBe('ready');
-    expect(s.notice?.title).toBe('Skills not deployed yet');
+    expect(s.notice?.title).toBe('Skills API unavailable');
   });
 
   it('flips phase=error when GET returns 500', async () => {

@@ -28,6 +28,9 @@ import {
 } from '../connectedDapps.js';
 import { AGENT_PLAN_TEMPLATES, templateById } from '../planner.js';
 
+const WSOL_MINT = 'So11111111111111111111111111111111111111112';
+const USDC_MINT = 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v';
+
 describe('connector drafting helpers', () => {
   const template = templateById('protocol-blink-action');
 
@@ -184,6 +187,74 @@ describe('connector drafting helpers', () => {
       actionType: 'read_only',
     });
     expect(templateById('connector-jupiter-perps-status').title).toBe('Jupiter Perps status (read-only)');
+  });
+
+  it('uses swap-style token pickers for Jupiter Trigger and DCA token fields', () => {
+    const trigger = connectorActionFormById('jupiter:trigger-limit-orders');
+    const triggerFields = connectorFormRenderFields(trigger!, { subAction: 'single-limit-stop' });
+    expect(triggerFields.find((field) => field.id === 'inputMint')).toMatchObject({
+      label: 'Spend token',
+      type: 'select',
+      defaultValue: WSOL_MINT,
+    });
+    expect(triggerFields.find((field) => field.id === 'outputMint')).toMatchObject({
+      label: 'Receive token',
+      type: 'select',
+      defaultValue: USDC_MINT,
+    });
+    expect(triggerFields.find((field) => field.id === 'triggerMint')).toMatchObject({
+      label: 'Watch price of',
+      type: 'select',
+      defaultValue: WSOL_MINT,
+    });
+    expect(triggerFields.find((field) => field.id === 'slippageBps')?.label).toBe('Max slippage');
+
+    const recurring = connectorActionFormById('jupiter:recurring-dca');
+    const recurringFields = connectorFormRenderFields(recurring!, { subAction: 'create-time-dca' });
+    expect(recurringFields.find((field) => field.id === 'dcaDirection')).toMatchObject({
+      label: 'Direction',
+      options: ['buy', 'sell'],
+    });
+    expect(recurringFields.find((field) => field.id === 'inputMint')).toMatchObject({
+      label: 'Spend token',
+      type: 'select',
+      defaultValue: USDC_MINT,
+    });
+    expect(recurringFields.find((field) => field.id === 'outputMint')).toMatchObject({
+      label: 'Buy token',
+      type: 'select',
+      defaultValue: WSOL_MINT,
+    });
+    expect(recurringFields.map((field) => field.id)).not.toContain('maxFeeBps');
+    expect(recurringFields.find((field) => field.id === 'intervalSeconds')?.label).toBe('Every');
+  });
+
+  it('normalizes Jupiter connector token labels and symbols to executable mints', () => {
+    const normalized = normalizeConnectorDraftParameters(templateById('connector-jupiter-recurring-dca'), {
+      connectorId: 'jupiter',
+      connectorOperationId: 'jupiter:recurring-dca',
+      subAction: 'create-time-dca',
+      dcaDirection: 'buy',
+      inputMint: 'SOL',
+      inputMintDecimals: '9',
+      outputMint: 'USDC',
+      totalAmount: '1',
+      numberOfOrders: '4',
+      intervalSeconds: '86400',
+      automationWarningAccepted: 'true',
+      maxFeeBps: '10',
+    });
+
+    expect(normalized).toMatchObject({
+      inputMint: WSOL_MINT,
+      inputMintDecimals: '9',
+      outputMint: USDC_MINT,
+      totalAmount: '1',
+      numberOfOrders: '4',
+      intervalSeconds: '86400',
+      automationWarningAccepted: 'true',
+    });
+    expect(normalized).not.toHaveProperty('maxFeeBps');
   });
 
   it('infers connector-specific templates before seeding default sub-actions', () => {

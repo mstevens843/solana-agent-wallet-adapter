@@ -94,7 +94,7 @@ export const CLI_INSTALL_SNIPPET = [
   'agentic-skill publish ./my-skill/manifest.json',
 ].join('\n');
 
-const SKILL_PAGE_URL_BASE = 'https://agentic-signer.com/skills/';
+const DEFAULT_SKILL_PAGE_ORIGIN = 'https://agentic-signer.com';
 const MONTHLY_EARNED_TOOLTIP =
   'Active monthly USDC author-fee run-rate from recurring schedules';
 
@@ -141,8 +141,16 @@ export function escapeHtml(value: string): string {
   );
 }
 
-export function buildSkillPageUrl(id: string): string {
-  return `${SKILL_PAGE_URL_BASE}${id}`;
+function currentBrowserOrigin(): string | undefined {
+  if (typeof window === 'undefined') return undefined;
+  return window.location.origin || undefined;
+}
+
+export function buildSkillPageUrl(
+  id: string,
+  origin = currentBrowserOrigin() ?? DEFAULT_SKILL_PAGE_ORIGIN,
+): string {
+  return `${origin.replace(/\/+$/, '')}/skills/${encodeURIComponent(id)}`;
 }
 
 function isObject(value: unknown): value is Record<string, unknown> {
@@ -368,11 +376,11 @@ function renderListSection(): string {
       return `
         <section class="skills-publish-list-card">
           <div class="skills-publish-notice">
-            <strong>Skill registry hasn't deployed yet</strong>
+            <strong>Skill registry API unavailable</strong>
             <p>
-              The <code>/api/skills</code> endpoint isn't live in this environment. The CLI
-              snippet above still scaffolds and validates a manifest locally; publishing will
-              succeed once the registry ships.
+              The <code>/api/skills</code> endpoint returned 404 in this environment. The CLI
+              snippet above still scaffolds and validates a manifest locally; publishing needs a
+              render-web server with Skills routes enabled.
             </p>
           </div>
         </section>

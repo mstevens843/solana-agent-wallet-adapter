@@ -25,15 +25,38 @@ export function cloneSkillManifest(manifest: SkillManifest): SkillManifest {
   return JSON.parse(JSON.stringify(manifest)) as SkillManifest;
 }
 
-export function manifestSnapshotFromInstall(install: SkillInstallRecord): SkillManifest | undefined {
+export type InstallManifestSnapshotRead =
+  | { status: 'missing'; manifestHash?: string }
+  | { status: 'valid'; manifest: SkillManifest; manifestHash?: string }
+  | { status: 'invalid'; reason: string; manifestHash?: string };
+
+export function manifestSnapshotFromInstall(install: SkillInstallRecord): InstallManifestSnapshotRead {
+  const manifestHash = manifestHashFromInstall(install);
   const metadata = install.metadata;
-  if (!isJsonObject(metadata)) return undefined;
+  if (!isJsonObject(metadata)) return { status: 'missing', ...(manifestHash ? { manifestHash } : {}) };
+  if (!Object.prototype.hasOwnProperty.call(metadata, 'manifestSnapshot')) {
+    return { status: 'missing', ...(manifestHash ? { manifestHash } : {}) };
+  }
   const snapshot = metadata.manifestSnapshot;
-  if (!isJsonObject(snapshot)) return undefined;
+  if (!isJsonObject(snapshot)) {
+    return {
+      status: 'invalid',
+      reason: 'manifest-snapshot-not-object',
+      ...(manifestHash ? { manifestHash } : {}),
+    };
+  }
   try {
-    return DevLayer1.skills.validateSkillManifest(snapshot) as SkillManifest;
-  } catch {
-    return undefined;
+    return {
+      status: 'valid',
+      manifest: DevLayer1.skills.validateSkillManifest(snapshot) as SkillManifest,
+      ...(manifestHash ? { manifestHash } : {}),
+    };
+  } catch (err) {
+    return {
+      status: 'invalid',
+      reason: err instanceof Error ? err.message.slice(0, 160) : 'manifest-snapshot-validation-failed',
+      ...(manifestHash ? { manifestHash } : {}),
+    };
   }
 }
 
@@ -42,10 +65,6 @@ export function manifestHashFromInstall(install: SkillInstallRecord): string | u
   if (!isJsonObject(metadata)) return undefined;
   const raw = metadata.manifestHash;
   return typeof raw === 'string' && raw.startsWith(HASH_PREFIX) ? raw : undefined;
-}
-
-export function validateSkillManifestRecord(value: unknown): SkillManifest {
-  return DevLayer1.skills.validateSkillManifest(value) as SkillManifest;
 }
 
 function canonicalJson(value: JsonValue): string {

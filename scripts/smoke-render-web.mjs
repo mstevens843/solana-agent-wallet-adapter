@@ -139,7 +139,7 @@ Modes:
   --workflow              End-to-end cloud/browser workflow release smoke.
   --live [origin]         Content-type smoke against a deployed origin.
   --ap2                   End-to-end AP2 inbound smoke against a local Render server.
-  --skills                End-to-end Skills Layer 2 smoke against a local in-process Render server.
+  --skills                End-to-end Skills smoke against a local in-process Render server.
 
 Options:
   --require-local-bridge  Also require a real bridge at AGENTIC_BRIDGE_URL.
@@ -191,6 +191,7 @@ async function verifyLayoutSmoke() {
     await withWalletSigner(wallet, async ({ origin: signerOrigin }) => {
       await withChrome(async (page) => {
         await page.addInitScript(fakeWalletScript(wallet, signerOrigin));
+        await verifyPublicRouteLayoutSmoke(page, origin);
         for (const viewport of viewports) {
           await page.setViewport(viewport.width, viewport.height);
           await page.inspect(`${origin}/app`);
@@ -221,6 +222,114 @@ async function verifyLayoutSmoke() {
       });
     });
   });
+}
+
+async function verifyPublicRouteLayoutSmoke(page, origin) {
+  const viewports = [
+    { width: 430, height: 932 },
+    { width: 390, height: 844 },
+    { width: 360, height: 800 },
+  ];
+  const routes = ['/', '/docs', '/demo', '/app'];
+  for (const viewport of viewports) {
+    await page.setViewport(viewport.width, viewport.height);
+    for (const route of routes) {
+      await page.inspect(`${origin}${route}`);
+      await page.evaluate('window.scrollTo(0, 0)');
+      await page.waitFor('window.scrollY < 3');
+      const report = await publicRouteLayoutReport(page, `${viewport.width}x${viewport.height} ${route}`);
+      if (report.errors.length) {
+        throw new Error(`Public route layout failed for ${report.label}: ${report.errors.join('; ')}\n${JSON.stringify(report, null, 2)}`);
+      }
+      console.log(`[smoke-render-web] PASS public layout ${report.label} nav=${report.visibleNavLabels.join('|')} scroll=${report.scrollWidth}/${report.innerWidth}`);
+    }
+  }
+}
+
+async function publicRouteLayoutReport(page, label) {
+  return page.evaluate(`(() => {
+    const label = ${JSON.stringify(label)};
+    const errors = [];
+    const innerWidth = window.innerWidth;
+    const scrollWidth = document.documentElement.scrollWidth;
+    const rectData = (element) => {
+      const rect = element.getBoundingClientRect();
+      const style = window.getComputedStyle(element);
+      return {
+        bottom: rect.bottom,
+        display: style.display,
+        height: rect.height,
+        left: rect.left,
+        right: rect.right,
+        text: element.innerText.trim().replace(/\\s+/g, ' '),
+        top: rect.top,
+        visibility: style.visibility,
+        width: rect.width,
+      };
+    };
+    if (scrollWidth > innerWidth + 1) errors.push('document has horizontal overflow');
+    const nav = document.querySelector('[data-site-nav]');
+    if (!nav) {
+      errors.push('site nav missing');
+    } else {
+      const navRect = rectData(nav);
+      if (navRect.display === 'none' || navRect.visibility === 'hidden') errors.push('site nav hidden');
+      if (navRect.left < -1 || navRect.right > innerWidth + 1) errors.push('site nav clips offscreen');
+      if (navRect.width <= 0 || navRect.height <= 0) errors.push('site nav has empty geometry');
+    }
+    const visibleLinks = Array.from(document.querySelectorAll('[data-site-links] [data-site-link]'))
+      .map((link) => ({ route: link.getAttribute('data-site-link'), rect: rectData(link) }))
+      .filter((entry) => entry.rect.display !== 'none' && entry.rect.visibility !== 'hidden' && entry.rect.width > 0 && entry.rect.height > 0);
+    const visibleNavRoutes = visibleLinks.map((entry) => entry.route);
+    const visibleNavLabels = visibleLinks.map((entry) => entry.rect.text);
+    const expectedRoutes = ['/', '/docs', '/demo', '/app'];
+    const expectedLabels = ['Home', 'Docs', 'Demo', 'App'];
+    if (visibleNavRoutes.join('|') !== expectedRoutes.join('|')) {
+      errors.push('visible nav route order changed: ' + visibleNavRoutes.join('|'));
+    }
+    if (visibleNavLabels.join('|') !== expectedLabels.join('|')) {
+      errors.push('visible nav labels changed: ' + visibleNavLabels.join('|'));
+    }
+    for (const entry of visibleLinks) {
+      if (entry.rect.left < -1 || entry.rect.right > innerWidth + 1) {
+        errors.push('nav link ' + entry.route + ' clips offscreen');
+      }
+    }
+    for (let index = 1; index < visibleLinks.length; index += 1) {
+      if (visibleLinks[index - 1].rect.right > visibleLinks[index].rect.left + 1) {
+        errors.push('nav links overlap around ' + visibleLinks[index - 1].route + ' and ' + visibleLinks[index].route);
+      }
+    }
+    const isDocs = document.querySelector('.route-docs') !== null;
+    const docsCards = isDocs
+      ? Array.from(document.querySelectorAll('.docs-card, .protocol-connector-flow-card, .protocol-connector-card')).map((card, index) => {
+          const cardRect = rectData(card);
+          const title = card.querySelector('h3, h4');
+          const status = card.querySelector('.protocol-connector-status');
+          const titleRect = title ? rectData(title) : null;
+          const statusRect = status ? rectData(status) : null;
+          if (cardRect.left < -1 || cardRect.right > innerWidth + 1) errors.push('docs card ' + index + ' clips offscreen');
+          if (titleRect && titleRect.width <= 16) errors.push('docs card ' + index + ' title is squeezed');
+          if (titleRect && statusRect) {
+            const overlap = titleRect.left < statusRect.right - 1 &&
+              titleRect.right > statusRect.left + 1 &&
+              titleRect.top < statusRect.bottom - 1 &&
+              titleRect.bottom > statusRect.top + 1;
+            if (overlap) errors.push('docs card ' + index + ' title overlaps status');
+          }
+          return { card: cardRect, index, status: statusRect, title: titleRect };
+        })
+      : [];
+    return {
+      docsCards: docsCards.slice(0, 8),
+      errors,
+      innerWidth,
+      label,
+      scrollWidth,
+      visibleNavLabels,
+      visibleNavRoutes,
+    };
+  })()`);
 }
 
 async function verifyAppInteractionContracts(page, origin, wallet) {
@@ -1328,7 +1437,7 @@ async function verifySkillsSmoke({ live, liveOrigin }) {
           txid: `skills_smoke_${approval.id}`,
           txStatus: 'confirmed',
           explorerUrl: `https://solscan.io/tx/skills_smoke_${approval.id}`,
-          note: 'Approved in Skills Layer 2 smoke.',
+          note: 'Approved in Skills smoke.',
           metadata: { transactionBoundary: 'skills_smoke_wallet_execution' },
         },
       });
@@ -1363,7 +1472,7 @@ async function verifySkillsSmoke({ live, liveOrigin }) {
       assert(profileHtml.includes('friday-dca'), 'profile HTML did not list friday-dca');
       console.log(`[smoke-render-web] PASS public profile /u/${wallet.walletAddress} lists friday-dca.`);
 
-      console.log('[smoke-render-web] PASS Skills Layer 2 smoke completed.');
+      console.log('[smoke-render-web] PASS Skills smoke completed.');
     });
   });
 }

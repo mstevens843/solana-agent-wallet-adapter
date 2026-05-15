@@ -1,4 +1,5 @@
 import './installed.css';
+import { parseIntervalSpec } from '@solana-agent-wallet-adapter/skills-runtime';
 import type { skills } from '@solana-agent-wallet-adapter/workflow/dev';
 import { getJson, postJson } from './fetchHelpers.js';
 import { registerSkillsSubTab, setActiveSkillsSubTab } from './subTabRegistry.js';
@@ -143,6 +144,14 @@ export function humanizeSeconds(totalSeconds: number): string {
   return `Every ${s}s`;
 }
 
+function intervalSpecToSeconds(spec: string): number | undefined {
+  const parsed = parseIntervalSpec(spec);
+  if (typeof parsed === 'number') return parsed / 1_000;
+  if (!/^\d+$/.test(spec)) return undefined;
+  const legacySeconds = Number.parseInt(spec, 10);
+  return Number.isFinite(legacySeconds) && legacySeconds > 0 ? legacySeconds : undefined;
+}
+
 export function humanizeSchedule(schedule: SkillSchedule | undefined | null): string {
   if (!schedule || typeof schedule !== 'object') return 'Schedule unavailable';
   const spec = String(schedule.spec ?? '').trim();
@@ -151,8 +160,8 @@ export function humanizeSchedule(schedule: SkillSchedule | undefined | null): st
     return spec ? `cron(${spec})` : 'Cron schedule';
   }
   if (schedule.kind === 'interval') {
-    const seconds = Number.parseInt(spec, 10);
-    if (Number.isFinite(seconds) && seconds > 0) return humanizeSeconds(seconds);
+    const seconds = intervalSpecToSeconds(spec);
+    if (seconds !== undefined) return humanizeSeconds(seconds);
     return spec ? `Interval(${spec})` : 'Interval schedule';
   }
   if (schedule.kind === 'price-trigger') {
@@ -273,8 +282,8 @@ function forbiddenNotice(): InstalledNotice {
 
 function notDeployedNotice(): InstalledNotice {
   return {
-    title: 'Skills not deployed yet',
-    body: '/api/skills/installs returned 404. Skills backend has not shipped to this environment.',
+    title: 'Skills API unavailable',
+    body: '/api/skills/installs returned 404. Check that this UI is pointed at a render-web server with Skills routes enabled.',
   };
 }
 
@@ -535,7 +544,7 @@ async function runMutation(
   if (result.kind === 'forbidden') {
     state.actionError = 'Dev gate is active. Connect the allowed dev wallet to perform this action.';
   } else if (result.kind === 'notDeployed') {
-    state.actionError = 'Skills backend is not deployed; this action cannot run.';
+    state.actionError = 'Skills API is unavailable in this environment; this action cannot run.';
   } else {
     state.actionError = result.message;
   }

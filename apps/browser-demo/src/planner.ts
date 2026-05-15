@@ -237,9 +237,9 @@ const BASE_AGENT_PLAN_TEMPLATES: AgentPlanTemplate[] = [
     field('memo', 'Memo / reason', 'Payment reason', 'User-approved token payment'),
   ]),
   template('trading', 'swap', 'Swap tokens', 'Prepare a DeFi swap review with explicit input, output, amount, protocol route, and slippage cap.', 'swap', 'medium', [
-    selectField('inputToken', 'Input token', ['SOL', 'USDC', 'JUP', 'BONK', 'WIF', 'PYUSD'], 'SOL'),
-    selectField('outputToken', 'Output token', ['USDC', 'SOL', 'JUP', 'BONK', 'WIF', 'PYUSD'], 'USDC'),
-    field('amount', 'Token amount', '0.01', '0.01', true),
+    selectField('inputToken', 'Input token', ['SOL', 'USDC', 'JUP', 'BONK', 'WIF', 'PYUSD', 'POPCAT'], 'SOL'),
+    selectField('outputToken', 'Output token', ['POPCAT', 'USDC', 'SOL', 'JUP', 'BONK', 'WIF', 'PYUSD'], 'POPCAT'),
+    field('amount', 'Token amount', '0.04', '0.04', true),
     field('slippageBps', 'Max slippage', '0.5%', '50'),
   ]),
   template('recurring', 'dca', 'DCA review proof', 'Sign a review proof for a recurring DCA strategy before using a swap-capable recurring engine.', 'manual_review', 'medium', [
@@ -2175,7 +2175,7 @@ function blinkUrlFromPrompt(prompt: string): string | undefined {
   return /\b(?:blink:[^\s]+|solana-action:[^\s]+|https:\/\/[^\s]+)\b/i.exec(prompt)?.[0];
 }
 
-const SWAP_TEXT_TOKENS = ['USDC', 'SOL', 'JUP', 'BONK', 'WIF', 'PYUSD'];
+const SWAP_TEXT_TOKENS = ['USDC', 'SOL', 'JUP', 'BONK', 'WIF', 'PYUSD', 'POPCAT'];
 
 function rewriteSwapOutputTokenText(
   text: string,

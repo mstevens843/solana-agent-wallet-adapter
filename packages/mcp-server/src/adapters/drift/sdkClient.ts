@@ -457,7 +457,7 @@ async function fetchDepositorIfExists(
   try {
     return await vaultClient.getVaultDepositor(depositorAddress) as VaultDepositor;
   } catch (err) {
-    if (isAccountMissingError(err)) return undefined;
+    if (isUninitializedDepositorError(err)) return undefined;
     throw err;
   }
 }
@@ -539,13 +539,17 @@ async function safeString(fn: () => Promise<string>, fallback: string): Promise<
   }
 }
 
-function isAccountMissingError(err: unknown): boolean {
+export function isUninitializedDepositorError(err: unknown): boolean {
   if (!(err instanceof Error)) return false;
   const message = err.message.toLowerCase();
   return message.includes('account does not exist') ||
     message.includes('account not found') ||
     message.includes('could not find') ||
-    message.includes('failed to find account');
+    message.includes('failed to find account') ||
+    message.includes('does not exist or has no data') ||
+    message.includes('invalid account discriminator') ||
+    message.includes('discriminator mismatch') ||
+    message.includes('reached end of buffer');
 }
 
 class ReadOnlyWallet implements IWallet {

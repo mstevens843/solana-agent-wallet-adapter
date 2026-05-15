@@ -105,7 +105,12 @@ The live checker performs the same content-type checks:
 
 ```sh
 pnpm smoke:render-web:live
+pnpm smoke:render-web:skills-live
 ```
+
+`AGENTIC_PUBLIC_ORIGIN` must stay aligned with the production domain
+(`https://agentic-signer.com`) so public Skills SSR links and live smoke checks
+resolve against the deployed host.
 
 ## Google Analytics
 
@@ -209,6 +214,7 @@ pnpm -F @solana-agent-wallet-adapter/browser-demo typecheck
 pnpm -F @solana-agent-wallet-adapter/browser-demo test
 pnpm smoke:render-web
 pnpm smoke:render-web:workflow
+pnpm smoke:render-web:skills
 pnpm verify:release-links
 ```
 

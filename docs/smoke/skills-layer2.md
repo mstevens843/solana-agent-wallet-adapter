@@ -4,6 +4,11 @@ End-to-end local verification for the Skills Hub path: catalog, install,
 executor, approval, evidence receipt, aggregator snapshot, and public profile
 SSR.
 
+Installs persist a validated manifest snapshot plus `sha256:` manifest hash.
+The executor uses that immutable snapshot when present, rejects corrupted
+snapshots or hash mismatches, and only falls back to the catalog for legacy
+installs without a snapshot when the catalog version still matches.
+
 ## Preconditions
 
 - Build output is current:
@@ -20,6 +25,12 @@ pnpm -r build
 
 ```bash
 pnpm smoke:render-web:skills
+```
+
+For the deployed Render service:
+
+```bash
+pnpm smoke:render-web:skills-live
 ```
 
 ## Expected Flow
@@ -45,8 +56,9 @@ The final line should be:
 
 ## Deployed Verification
 
-The automated smoke is intentionally local. For a deployed Render URL, use the
-same feature surfaces manually: connect the allowlisted dev wallet, install
-Friday DCA, run the configured `skills-execute` and `aggregator-roll` crons,
-approve the generated inbox item, then inspect `/api/aggregator/skills/friday-dca`
-and `/u/<dev-wallet>`.
+The live smoke checks the public Skills routes against `AGENTIC_PUBLIC_ORIGIN`
+(currently `https://agentic-signer.com` in `render.yaml`). For manual deployed
+verification, connect the allowlisted dev wallet, install Friday DCA, run the
+configured `skills-execute` and `aggregator-roll` crons, approve the generated
+inbox item, then inspect `/api/aggregator/skills/friday-dca` and
+`/u/<dev-wallet>`.

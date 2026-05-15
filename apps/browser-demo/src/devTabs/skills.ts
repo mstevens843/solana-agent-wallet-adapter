@@ -8,7 +8,7 @@ import {
   listSkillsSubTabs,
 } from './skills/subTabRegistry.js';
 
-// Side-effect import: each Phase 1 Layer 2 sub-tab self-registers on load.
+// Side-effect import: each Skills sub-tab self-registers on load.
 import './skills/index.js';
 
 function escapeHtmlLocal(value: string): string {
@@ -50,12 +50,11 @@ function renderSubTabPills(activeId: string): string {
 function renderEmptyPlaceholder(): string {
   return `
     <div class="skills-placeholder">
-      <span class="skills-placeholder-tag">Coming soon · Layer 2</span>
+      <span class="skills-placeholder-tag">Skills unavailable</span>
       <h2>Skills Hub</h2>
       <p>
-        Install pre-built strategy recipes that propose actions in your inbox on a schedule. Every run
-        still requires wallet approval &mdash; skills cannot move funds on their own. Authors monetize via
-        USDC; receipts make every track record cryptographically verifiable.
+        The Skills container loaded, but no sections registered in this build. Rebuild the browser app
+        with the Skills sub-tab modules included.
       </p>
       <div class="skills-placeholder-grid">
         <div class="skills-placeholder-card">

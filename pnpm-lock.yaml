@@ -51,6 +51,9 @@ importers:
       '@solana-agent-wallet-adapter/mwa-mobile-web':
         specifier: workspace:*
         version: link:../../packages/mwa-mobile-web
+      '@solana-agent-wallet-adapter/skills-runtime':
+        specifier: workspace:*
+        version: link:../../packages/skills-runtime
       '@solana-agent-wallet-adapter/wallet-standard-web':
         specifier: workspace:*
         version: link:../../packages/wallet-standard-web
