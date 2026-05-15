@@ -5,19 +5,12 @@ import { defaultAgentsStorePath } from '../agentRegistry.js';
 import { createBridgeServer } from '../bridgeServer.js';
 import { loadConfig } from '../config.js';
 import { loadDotEnv } from '../env.js';
+import { bootstrapHostConnectorFactoriesFromConfig } from '../hostBootstrap.js';
 import { JsonLabArtifactStore, defaultLabArtifactStorePath } from '../labArtifacts.js';
 import { LocalBridgeBackend } from '../localBridgeBackend.js';
 import { JsonPreparedActionStore, defaultPreparedActionStorePath } from '../preparedActions.js';
-import { isDriftVaultConfigured, setDriftVaultClientFactory } from '../adapters/drift/client.js';
-import { buildDriftVaultClient } from '../adapters/drift/sdkClient.js';
-import { isKaminoConfigured, setKaminoClientFactory } from '../adapters/kamino/client.js';
-import { buildKaminoSdkClient } from '../adapters/kamino/sdkClient.js';
-import { isSaveConfigured, setSaveClientFactory } from '../adapters/save/client.js';
-import { buildSaveSdkClient } from '../adapters/save/sdkClient.js';
 import { isTensorConfigured, setTensorClientFactory } from '../adapters/tensor/client.js';
 import { buildTensorApiClient } from '../adapters/tensor/apiClient.js';
-import { isWormholeConfigured, setWormholeClientFactory } from '../adapters/wormhole/client.js';
-import { buildWormholeSdkClient } from '../adapters/wormhole/sdkClient.js';
 import { IosLinkBackend, type IosLinkWalletId } from '@solana-agent-wallet-adapter/ios-link';
 
 async function main(): Promise<void> {
@@ -52,18 +45,9 @@ async function main(): Promise<void> {
       });
   // Wire SDK clients so connector approvals can build real unsigned transactions
   // through the local bridge instead of failing with "...sdk is not wired."
-  if (!isDriftVaultConfigured()) {
-    setDriftVaultClientFactory(() => buildDriftVaultClient({ rpcUrl: config.rpcUrl }));
-  }
-  if (!isKaminoConfigured()) {
-    setKaminoClientFactory(() => buildKaminoSdkClient({ rpcUrl: config.rpcUrl }));
-  }
-  if (!isSaveConfigured()) {
-    setSaveClientFactory(() => buildSaveSdkClient({ rpcUrl: config.rpcUrl }));
-  }
-  if (!isWormholeConfigured()) {
-    setWormholeClientFactory(() => buildWormholeSdkClient({ rpcUrl: config.rpcUrl }));
-  }
+  bootstrapHostConnectorFactoriesFromConfig(config);
+  // Tensor stays inline as a single-user bridge fallback: cloud users supply
+  // their own TENSOR_API_KEY via Connectors UX (per-user secrets).
   if (!isTensorConfigured() && process.env.TENSOR_API_KEY?.trim()) {
     setTensorClientFactory(() => buildTensorApiClient());
   }

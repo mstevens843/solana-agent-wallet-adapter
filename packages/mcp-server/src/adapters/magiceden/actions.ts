@@ -11,7 +11,7 @@ import type {
 import { AdapterError } from '../types.js';
 
 import {
-  getMagicedenClient,
+  resolveMagicedenClient,
   type MagicedenApiHealthSnapshot,
   type MagicedenListingRow,
 } from './client.js';
@@ -82,10 +82,10 @@ export const magicedenBuyAction: AdapterAction<MagicedenBuyPrepareInput> = {
   async prepare(input, ctx): Promise<AdapterPrepareResult> {
     const mintAddress = requireString(input.mintAddress, 'mintAddress');
     const maxPriceLamports = lamportsFromSolField(input.maxPriceSol, 'maxPriceSol');
-    const health = await getApiHealthSnapshot({ includeTradingEndpoints: true });
+    const health = await getApiHealthSnapshot({ includeTradingEndpoints: true }, ctx);
     requireTradingOperational(health);
 
-    const client = getMagicedenClient();
+    const client = resolveMagicedenClient(ctx);
     const listings = await client.getCollectionListings({
       ...(input.collectionSymbol ? { collectionSymbol: input.collectionSymbol } : {}),
       ...(input.collectionId ? { collectionId: input.collectionId } : {}),
@@ -183,9 +183,9 @@ export const magicedenBuyAction: AdapterAction<MagicedenBuyPrepareInput> = {
     const maxPriceLamports = BigInt(requireParamString(action, 'maxPriceLamports'));
     const collectionSymbol = optionalParamString(action, 'collectionSymbol');
 
-    requireTradingOperational(await getApiHealthSnapshot({ includeTradingEndpoints: true }));
+    requireTradingOperational(await getApiHealthSnapshot({ includeTradingEndpoints: true }, ctx));
     const walletAddress = await assertConnectedWallet(ctx, action);
-    const client = getMagicedenClient();
+    const client = resolveMagicedenClient(ctx);
     const listings = await client.getCollectionListings({
       ...(collectionSymbol ? { collectionSymbol } : {}),
       limit: 100,
@@ -256,11 +256,11 @@ export const magicedenListAction: AdapterAction<MagicedenListPrepareInput> = {
   async prepare(input, ctx): Promise<AdapterPrepareResult> {
     const mintAddress = requireString(input.mintAddress, 'mintAddress');
     const priceLamports = lamportsFromSolField(input.priceSol, 'priceSol');
-    const health = await getApiHealthSnapshot({ includeTradingEndpoints: true });
+    const health = await getApiHealthSnapshot({ includeTradingEndpoints: true }, ctx);
     requireTradingOperational(health);
 
     const walletAddress = await ctx.backend.getAddress();
-    const client = getMagicedenClient();
+    const client = resolveMagicedenClient(ctx);
     const wallet = await client.getWalletNfts({ walletAddress });
     const owned = wallet.rows.find((row) => row.mintAddress === mintAddress);
     if (!owned) {
@@ -316,10 +316,10 @@ export const magicedenListAction: AdapterAction<MagicedenListPrepareInput> = {
     const mintAddress = requireParamString(action, 'mintAddress');
     const priceLamports = requireParamString(action, 'priceLamports');
     const expiresAt = optionalParamString(action, 'expiresAt');
-    requireTradingOperational(await getApiHealthSnapshot({ includeTradingEndpoints: true }));
+    requireTradingOperational(await getApiHealthSnapshot({ includeTradingEndpoints: true }, ctx));
     const walletAddress = await assertConnectedWallet(ctx, action);
 
-    const client = getMagicedenClient();
+    const client = resolveMagicedenClient(ctx);
     const wallet = await client.getWalletNfts({ walletAddress });
     if (!wallet.rows.some((row) => row.mintAddress === mintAddress)) {
       throw new AdapterError(
@@ -351,11 +351,11 @@ export const magicedenCancelListingAction: AdapterAction<MagicedenCancelListingP
 
   async prepare(input, ctx): Promise<AdapterPrepareResult> {
     const mintAddress = requireString(input.mintAddress, 'mintAddress');
-    const health = await getApiHealthSnapshot({ includeTradingEndpoints: true });
+    const health = await getApiHealthSnapshot({ includeTradingEndpoints: true }, ctx);
     requireTradingOperational(health);
 
     const walletAddress = await ctx.backend.getAddress();
-    const client = getMagicedenClient();
+    const client = resolveMagicedenClient(ctx);
     const wallet = await client.getWalletNfts({ walletAddress, listedOnly: true });
     const owned = wallet.rows.find((row) => row.mintAddress === mintAddress);
     if (!owned || !owned.listed || !owned.listingPriceLamports) {
@@ -408,9 +408,9 @@ export const magicedenCancelListingAction: AdapterAction<MagicedenCancelListingP
     const mintAddress = requireParamString(action, 'mintAddress');
     const priceLamports = requireParamString(action, 'priceLamports');
     const listingId = optionalParamString(action, 'listingId');
-    requireTradingOperational(await getApiHealthSnapshot({ includeTradingEndpoints: true }));
+    requireTradingOperational(await getApiHealthSnapshot({ includeTradingEndpoints: true }, ctx));
     const walletAddress = await assertConnectedWallet(ctx, action);
-    const built = await getMagicedenClient().generateCancelListingTransaction({
+    const built = await resolveMagicedenClient(ctx).generateCancelListingTransaction({
       sellerAddress: walletAddress,
       mintAddress,
       priceLamports,
@@ -461,11 +461,11 @@ export const magicedenBidAction: AdapterAction<MagicedenBidPrepareInput> = {
       );
     }
 
-    const health = await getApiHealthSnapshot({ includeTradingEndpoints: true });
+    const health = await getApiHealthSnapshot({ includeTradingEndpoints: true }, ctx);
     requireTradingOperational(health);
 
     const walletAddress = await ctx.backend.getAddress();
-    const client = getMagicedenClient();
+    const client = resolveMagicedenClient(ctx);
     const built = await client.generateBidTransaction({
       buyerAddress: walletAddress,
       bidPriceLamports: bidLamports.toString(),
@@ -518,7 +518,7 @@ export const magicedenBidAction: AdapterAction<MagicedenBidPrepareInput> = {
   },
 
   async execute(action: PreparedAction, ctx): Promise<AdapterExecuteResult> {
-    requireTradingOperational(await getApiHealthSnapshot({ includeTradingEndpoints: true }));
+    requireTradingOperational(await getApiHealthSnapshot({ includeTradingEndpoints: true }, ctx));
     const walletAddress = await assertConnectedWallet(ctx, action);
     const bidLamports = requireParamString(action, 'bidPriceLamports');
     const quantity = typeof action.params.quantity === 'number' ? action.params.quantity : 1;
@@ -526,7 +526,7 @@ export const magicedenBidAction: AdapterAction<MagicedenBidPrepareInput> = {
     const collectionSymbol = optionalParamString(action, 'collectionSymbol');
     const collectionId = optionalParamString(action, 'collectionId');
     const expiresAt = optionalParamString(action, 'expiresAt');
-    const built = await getMagicedenClient().generateBidTransaction({
+    const built = await resolveMagicedenClient(ctx).generateBidTransaction({
       buyerAddress: walletAddress,
       bidPriceLamports: bidLamports,
       ...(mintAddress ? { mintAddress } : {}),
@@ -560,10 +560,10 @@ export const magicedenCancelBidAction: AdapterAction<MagicedenCancelBidPrepareIn
         'Magic Eden cancel bid requires bidId, mintAddress, or collectionSymbol/collectionId.',
       );
     }
-    const health = await getApiHealthSnapshot({ includeTradingEndpoints: true });
+    const health = await getApiHealthSnapshot({ includeTradingEndpoints: true }, ctx);
     requireTradingOperational(health);
     const walletAddress = await ctx.backend.getAddress();
-    const built = await getMagicedenClient().generateCancelBidTransaction({
+    const built = await resolveMagicedenClient(ctx).generateCancelBidTransaction({
       buyerAddress: walletAddress,
       ...(input.bidId ? { bidId: input.bidId } : {}),
       ...(input.mintAddress ? { mintAddress: input.mintAddress } : {}),
@@ -603,13 +603,13 @@ export const magicedenCancelBidAction: AdapterAction<MagicedenCancelBidPrepareIn
   },
 
   async execute(action: PreparedAction, ctx): Promise<AdapterExecuteResult> {
-    requireTradingOperational(await getApiHealthSnapshot({ includeTradingEndpoints: true }));
+    requireTradingOperational(await getApiHealthSnapshot({ includeTradingEndpoints: true }, ctx));
     const walletAddress = await assertConnectedWallet(ctx, action);
     const bidId = optionalParamString(action, 'bidId');
     const mintAddress = optionalParamString(action, 'mintAddress');
     const collectionSymbol = optionalParamString(action, 'collectionSymbol');
     const collectionId = optionalParamString(action, 'collectionId');
-    const built = await getMagicedenClient().generateCancelBidTransaction({
+    const built = await resolveMagicedenClient(ctx).generateCancelBidTransaction({
       buyerAddress: walletAddress,
       ...(bidId ? { bidId } : {}),
       ...(mintAddress ? { mintAddress } : {}),

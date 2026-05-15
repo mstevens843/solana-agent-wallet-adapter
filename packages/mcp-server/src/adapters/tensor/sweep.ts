@@ -5,7 +5,7 @@ import type { PreparedAction } from '../../preparedActions.js';
 import type { AdapterAction, AdapterExecuteResult, AdapterPrepareResult } from '../types.js';
 import { AdapterError } from '../types.js';
 import {
-  getTensorClient,
+  resolveTensorClient,
   withTensorErrors,
   type TensorListing,
   type TensorSweepInput,
@@ -84,7 +84,7 @@ export const tensorSweepAction: AdapterAction<TensorSweepPrepareInput> = {
       );
     }
 
-    const client = getTensorClient();
+    const client = resolveTensorClient(ctx);
     let selected: TensorListing[];
     if (required.length > 0) {
       // When the caller pins specific items, refresh each one directly. A bulk
@@ -232,7 +232,7 @@ export const tensorSweepAction: AdapterAction<TensorSweepPrepareInput> = {
     assertNotMoreThanMaxSweep(storedItems.length);
     const compressed = assertCompressedHomogeneous(storedItems);
 
-    const client = getTensorClient();
+    const client = resolveTensorClient(ctx);
     const refreshed: TensorListing[] = [];
     for (const item of storedItems) {
       const fresh = await withTensorErrors('refreshListing', () =>

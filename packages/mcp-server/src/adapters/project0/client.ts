@@ -135,7 +135,7 @@ export interface Project0BuildTransactionResult {
 }
 
 export interface Project0Client {
-  listBanks(input?: Project0BankLookupInput): Promise<Project0Bank[]>;
+  listBanks(input?: Project0BankLookupInput, connection?: Connection): Promise<Project0Bank[]>;
   listStrategies(): Promise<Project0Strategy[]>;
   getWallet(walletAddress: string): Promise<Project0WalletSnapshot>;
   getAccountDetail(connection: Connection, input: { walletAddress: string; project0Account?: string }): Promise<Project0AccountDetail>;
@@ -161,6 +161,14 @@ type Project0DiscoveryResult = {
 
 const PROJECT0_ACCOUNT_SCAN_LIMIT = 256;
 const PROJECT0_ACCOUNT_SCAN_BATCH_SIZE = 64;
+
+const PROJECT0_KNOWN_MINTS: Record<string, string> = {
+  So11111111111111111111111111111111111111112: 'SOL',
+  EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v: 'USDC',
+  Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB: 'USDT',
+  J1toso1uCk3RLmjorhTtrVwY9HJ7X8V9yYac6Y7kGCPn: 'JitoSOL',
+  mSoLzYCxHdYgdzU16g5QSh3i5K3z3KZK7ytfqcJm7So: 'mSOL',
+};
 
 let sdkLoader: Project0SdkLoader = defaultProject0SdkLoader;
 let loadedSdkModule: Project0SdkModule | undefined;
@@ -205,10 +213,45 @@ class RealProject0Client implements Project0Client {
     this.apiBaseUrl = stripTrailingSlashes(apiBaseUrl ?? PROJECT0_API_BASE_URL);
   }
 
-  async listBanks(input: Project0BankLookupInput = {}): Promise<Project0Bank[]> {
-    const banks = await fetchProject0Json<unknown[]>(`${this.apiBaseUrl}/api/banks`);
-    const normalized = banks.flatMap(normalizeBank);
+  async listBanks(input: Project0BankLookupInput = {}, connection?: Connection): Promise<Project0Bank[]> {
+    let normalized: Project0Bank[] = [];
+    try {
+      const banks = await fetchProject0Json<unknown[]>(`${this.apiBaseUrl}/api/banks`);
+      normalized = banks.flatMap(normalizeBank);
+    } catch {
+      // REST upstream failure — fall through to SDK fallback below.
+    }
+    if (normalized.length === 0 && connection) {
+      normalized = await this.listBanksFromSdk(connection);
+    }
     return filterBanks(normalized, input);
+  }
+
+  private async listBanksFromSdk(connection: Connection): Promise<Project0Bank[]> {
+    const sdkClient = await this.sdkClient(connection);
+    const bankMap = sdkClient.bankMap;
+    if (!bankMap || typeof bankMap.values !== 'function') return [];
+    const result: Project0Bank[] = [];
+    for (const bank of bankMap.values() as Iterable<AnyProject0Bank>) {
+      const address = toBase58(bank.address);
+      const mint = toBase58(bank.mint);
+      const mintDecimals = typeof bank.mintDecimals === 'number' ? bank.mintDecimals : undefined;
+      if (!address || !mint || mintDecimals === undefined) continue;
+      const sdkSymbol = typeof bank.tokenSymbol === 'string' && bank.tokenSymbol ? bank.tokenSymbol : undefined;
+      const symbol = sdkSymbol ?? PROJECT0_KNOWN_MINTS[mint];
+      if (!symbol) continue;
+      result.push({
+        bankAddress: address,
+        symbol,
+        mint,
+        mintDecimals,
+        venue: 'P0',
+        depositApy: Number.NaN,
+        borrowApy: Number.NaN,
+        usdPrice: Number.NaN,
+      });
+    }
+    return result;
   }
 
   async listStrategies(): Promise<Project0Strategy[]> {
@@ -238,7 +281,7 @@ class RealProject0Client implements Project0Client {
   ): Promise<Project0AccountDetail> {
     const sdkClient = await this.sdkClient(connection);
     const account = await resolveProject0Account(connection, sdkClient, input);
-    const banks = await this.listBanks();
+    const banks = await this.listBanks({}, connection);
     return accountDetailFromSdkAccount(sdkClient, account, banks);
   }
 
@@ -258,7 +301,7 @@ class RealProject0Client implements Project0Client {
 
     const sdkClient = await this.sdkClient(connection);
     const account = await resolveProject0Account(connection, sdkClient, input);
-    const bank = await this.requireBank(input);
+    const bank = await this.requireBank(input, connection);
     const sdkBank = requireSdkBank(sdkClient, bank.bankAddress);
     const resolvedAmount = resolveProject0Amount(account, bank, input);
     const before = healthFromProject0Account(account);
@@ -316,7 +359,7 @@ class RealProject0Client implements Project0Client {
     }
 
     const account = await resolveProject0Account(connection, sdkClient, input);
-    const bank = await this.requireBank(input);
+    const bank = await this.requireBank(input, connection);
     const sdkBank = requireSdkBank(sdkClient, bank.bankAddress);
     const resolvedAmount = resolveProject0Amount(account, bank, input);
     const txs = await buildOperationTransactions(connection, sdkClient, account, sdkBank, input.operation, resolvedAmount);
@@ -329,8 +372,8 @@ class RealProject0Client implements Project0Client {
     };
   }
 
-  private async requireBank(input: Project0BankLookupInput): Promise<Project0Bank> {
-    const banks = await this.listBanks(input);
+  private async requireBank(input: Project0BankLookupInput, connection?: Connection): Promise<Project0Bank> {
+    const banks = await this.listBanks(input, connection);
     const bank = banks[0];
     if (!bank) {
       throw new AdapterError(

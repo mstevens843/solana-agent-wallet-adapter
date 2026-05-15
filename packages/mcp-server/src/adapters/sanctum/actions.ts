@@ -13,7 +13,7 @@ import type {
 } from '../types.js';
 import { AdapterError } from '../types.js';
 import {
-  getSanctumClient,
+  resolveSanctumClient,
   type SanctumLstSnapshot,
   type SanctumTokenOrder,
 } from './client.js';
@@ -221,15 +221,15 @@ async function prepareSanctumOrder(
   const walletAddress = await ctx.backend.getAddress();
   const inputMint = normalizeMint(spec.inputMint, 'inputMint');
   const outputMint = normalizeMint(spec.outputMint, 'outputMint');
-  const inputMeta = await resolveTokenMeta(inputMint);
-  const outputMeta = await resolveTokenMeta(outputMint);
+  const inputMeta = await resolveTokenMeta(inputMint, ctx);
+  const outputMeta = await resolveTokenMeta(outputMint, ctx);
   const amountRaw = parseDecimalAmount(spec.amount, inputMeta.decimals, `${inputMeta.symbol} Sanctum input amount`);
   const minOutputAmountRaw = spec.minOutputAmount
     ? parseDecimalAmount(spec.minOutputAmount, outputMeta.decimals, `${outputMeta.symbol} minimum output amount`)
     : undefined;
   const slippageBps = resolveSlippageBps(spec.slippageBps, ctx.config.mainnet.maxSlippageBps);
   const maxFeeBps = resolveMaxFeeBps(spec.maxFeeBps);
-  const quote = await getSanctumClient().getTokenOrder({
+  const quote = await resolveSanctumClient(ctx).getTokenOrder({
     inputMint,
     outputMint,
     amountRaw: amountRaw.toString(),
@@ -310,7 +310,7 @@ async function executeSanctumOrder(
   const slippageBps = optionalNumberParam(action, 'slippageBps') ?? SANCTUM_DEFAULT_SLIPPAGE_BPS;
   const allowDelayedUnstake = action.params.allowDelayedUnstake === true;
   const requestedSources = requestedSourcesFromAction(action, operation);
-  const fresh = await getSanctumClient().getTokenOrder({
+  const fresh = await resolveSanctumClient(ctx).getTokenOrder({
     inputMint,
     outputMint,
     amountRaw: inputAmountRaw,
@@ -333,7 +333,7 @@ async function executeSanctumOrder(
     );
   }
   const signedTx = await ctx.signTransaction(fresh.transactionBase64, action.summary);
-  const executed = await getSanctumClient().executeTokenOrder({
+  const executed = await resolveSanctumClient(ctx).executeTokenOrder({
     signedTx,
     orderResponse: fresh.orderResponse,
   });
@@ -390,10 +390,13 @@ function validateQuote(
   return { outputAmountRaw };
 }
 
-async function resolveTokenMeta(mint: string): Promise<{ symbol: string; decimals: number; snapshot?: SanctumLstSnapshot }> {
+async function resolveTokenMeta(
+  mint: string,
+  ctx: DAppAdapterContext,
+): Promise<{ symbol: string; decimals: number; snapshot?: SanctumLstSnapshot }> {
   if (mint === WSOL_MINT) return { symbol: 'SOL', decimals: 9 };
   if (mint === SANCTUM_INF_MINT) return { symbol: 'INF', decimals: 9 };
-  const snapshot = await getSanctumClient().getLst({ mintOrSymbol: mint });
+  const snapshot = await resolveSanctumClient(ctx).getLst({ mintOrSymbol: mint });
   if (!snapshot.enabled) {
     throw new AdapterError(
       SANCTUM_ADAPTER_ID,

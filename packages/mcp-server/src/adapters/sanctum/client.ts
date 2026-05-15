@@ -1,3 +1,5 @@
+import type { DAppAdapterContext } from '../types.js';
+
 import {
   SANCTUM_API_BASE_URL_ENV,
   SANCTUM_API_KEY_ENV,
@@ -150,6 +152,26 @@ export function isSanctumConfigured(): boolean {
 export function describeSanctumUnavailableReason(): string | undefined {
   const client = getSanctumClient();
   return client instanceof SanctumApiUnavailable ? client.reason : undefined;
+}
+
+export interface SanctumClientOverride {
+  apiKey: string;
+  baseUrl?: string;
+}
+
+export function buildSanctumClientFromOverride(override: SanctumClientOverride): SanctumClient {
+  const apiKey = override.apiKey.trim();
+  if (!apiKey) return new SanctumApiUnavailable(MISSING_KEY_REASON);
+  const baseUrl = normalizeBaseUrl(override.baseUrl?.trim() || SANCTUM_DEFAULT_API_BASE_URL);
+  return new SanctumApiClient({ apiKey, baseUrl });
+}
+
+export function resolveSanctumClient(ctx?: DAppAdapterContext): SanctumClient {
+  const override = ctx?.connectorSecrets?.sanctum;
+  if (override?.apiKey) {
+    return buildSanctumClientFromOverride(override);
+  }
+  return getSanctumClient();
 }
 
 function buildDefaultSanctumClient(): SanctumClient {

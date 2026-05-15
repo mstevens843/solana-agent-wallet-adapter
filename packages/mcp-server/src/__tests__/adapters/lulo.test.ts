@@ -533,9 +533,83 @@ describe('Lulo unknown mint decimals', () => {
     };
     await expect(
       requireLuloAction('deposit').prepare(
-        { amount: '1', mintAddress: USDC_MINT },
+        { amount: '1', mintAddress: 'So11111111111111111111111111111111111111112' },
         ctx,
       ),
     ).rejects.toBeInstanceOf(AdapterError);
+  });
+});
+
+describe('Lulo symbol resolution', () => {
+  let state: FakeLuloState;
+
+  beforeEach(() => {
+    state = {
+      rates: fakeRates(),
+      poolMeta: fakePoolMeta(),
+      balances: fakeBalances(),
+      depositCalls: [],
+      withdrawCalls: [],
+      completeCalls: [],
+    };
+    setLuloClientFactory(() => buildFakeLulo(state));
+  });
+
+  it('deposit accepts the "USDC" symbol and resolves to the USDC mint', async () => {
+    const ctx = makeContext({ store: inMemoryStore() });
+    const result = await requireLuloAction('deposit').prepare(
+      { amount: '10', mintAddress: 'USDC', depositType: 'protected' },
+      ctx,
+    );
+    expect(result.addInput.params.mintAddress).toBe(USDC_MINT);
+    expect(result.addInput.params.decimals).toBe(6);
+  });
+
+  it('deposit accepts a lowercase symbol ("usdt") and resolves to the USDT mint', async () => {
+    const ctx = makeContext({ store: inMemoryStore() });
+    const result = await requireLuloAction('deposit').prepare(
+      { amount: '10', mintAddress: 'usdt', depositType: 'protected' },
+      ctx,
+    );
+    expect(result.addInput.params.mintAddress).toBe('Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB');
+    expect(result.addInput.params.decimals).toBe(6);
+  });
+
+  it('deposit still accepts a raw mint address (USDC base58) unchanged', async () => {
+    const ctx = makeContext({ store: inMemoryStore() });
+    const result = await requireLuloAction('deposit').prepare(
+      { amount: '10', mintAddress: USDC_MINT, depositType: 'protected' },
+      ctx,
+    );
+    expect(result.addInput.params.mintAddress).toBe(USDC_MINT);
+  });
+
+  it('deposit rejects an unknown symbol with the base58 error', async () => {
+    const ctx = makeContext({ store: inMemoryStore() });
+    await expect(
+      requireLuloAction('deposit').prepare(
+        { amount: '10', mintAddress: 'FOO', depositType: 'protected' },
+        ctx,
+      ),
+    ).rejects.toThrow(/not a valid base58 public key/);
+  });
+
+  it('withdraw accepts the "USDC" symbol and resolves to the USDC mint', async () => {
+    const ctx = makeContext({ store: inMemoryStore() });
+    const result = await requireLuloAction('withdraw').prepare(
+      { mintAddress: 'USDC', withdrawType: 'protected' },
+      ctx,
+    );
+    expect(result.addInput.params.mintAddress).toBe(USDC_MINT);
+  });
+
+  it('complete_withdraw accepts the "USDC" symbol and resolves to the USDC mint', async () => {
+    const ctx = makeContext({ store: inMemoryStore() });
+    const result = await requireLuloAction('complete_withdraw').prepare(
+      { mintAddress: 'USDC', withdrawalId: 'wd_42' },
+      ctx,
+    );
+    expect(result.addInput.params.mintAddress).toBe(USDC_MINT);
+    expect(result.addInput.params.withdrawalId).toBe('wd_42');
   });
 });

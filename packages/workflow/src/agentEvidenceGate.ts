@@ -242,13 +242,16 @@ export function validateAgentReviewDecision(
       decision = 'deny';
       reason = `Required evidence is stale or blocked: ${gate.reason}`;
       violations.push('AI approved while required evidence was stale or had blocking facts.');
-    } else if (contract.evidenceFactIds.length === 0 && requirements.some((req) => req.status === 'required')) {
-      decision = 'needs_input';
-      reason = 'AI did not cite any evidence fact ids; cannot verify approval.';
-      violations.push('AI approved without citing evidence ids.');
     } else {
+      // Gate has already verified every required requirement is present, fresh, and not blocked.
+      // We DO NOT require the AI to cite an internal evidenceFactId — many valid approvals are
+      // driven entirely by external research (e.g., "approve if T-Mobile plan < $20"), where the
+      // citation is in `evidence.sources` rather than the deterministic fact set. Trust the gate;
+      // only strip ids the AI hallucinated.
       const unknownIds = contract.evidenceFactIds.filter((id) => !knownFactIds.has(id));
-      if (unknownIds.length === contract.evidenceFactIds.length && unknownIds.length > 0) {
+      const allCitedUnknown = unknownIds.length > 0 && unknownIds.length === contract.evidenceFactIds.length;
+      const hasExternalCitation = hasExternalResearchCitation(aiResult);
+      if (allCitedUnknown && !hasExternalCitation) {
         decision = 'needs_input';
         reason = `AI cited only unknown evidence ids: ${unknownIds.join(', ')}`;
         violations.push('AI cited only unknown evidence ids.');
@@ -322,6 +325,24 @@ function extractDecisionContractFromAiResult(
 
 function isJsonObject(value: unknown): value is Record<string, unknown> {
   return Boolean(value) && typeof value === 'object' && !Array.isArray(value);
+}
+
+/**
+ * The AI may approve based on external web research (e.g., "approve if T-Mobile plan < $20").
+ * In that case the citation lives in `evidence.research` and `evidence.sources` rather than
+ * in our deterministic `evidenceFactIds`. Detect that here so the validator doesn't downgrade
+ * a research-backed approval just because no deterministic fact was cited.
+ */
+function hasExternalResearchCitation(aiResult: AgentPlanReviewResult): boolean {
+  const evidence = aiResult.evidence as Record<string, unknown> | undefined;
+  if (!evidence) return false;
+  const research = evidence.research;
+  if (isJsonObject(research) && (research.status === 'checked' || research.required === true)) {
+    return true;
+  }
+  const sources = evidence.sources;
+  if (Array.isArray(sources) && sources.length > 0) return true;
+  return false;
 }
 
 export interface CreateDecisionAuditReceiptInput {

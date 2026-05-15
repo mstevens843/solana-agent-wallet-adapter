@@ -1,7 +1,11 @@
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { PublicKey } from '@solana/web3.js';
 
 import {
   JUPITER_ADAPTER_ID,
+  __resetJupiterLendEarnSdkCacheForTests,
+  __setJupiterLendEarnSdkForTests,
+  getJupiterLendClient,
   jupiterAdapter,
   loadJupiterLendEarnSdkForSmokeTest,
   resetJupiterLendClientFactory,
@@ -13,6 +17,7 @@ import {
   type JupiterLendClient,
   type JupiterLendEarnEarningsSnapshot,
   type JupiterLendEarnPositionSnapshot,
+  type JupiterLendEarnSdkBundle,
   type JupiterLendEarnTokenSnapshot,
 } from '../../adapters/jupiter/index.js';
 import {
@@ -832,3 +837,138 @@ function restConfig(overrides: { useSdk?: boolean } = {}): AgentWalletConfig {
     },
   } as AgentWalletConfig;
 }
+
+describe('Jupiter Lend Earn detail SDK resilience', () => {
+  let originalJupKey: string | undefined;
+  let originalApiKey: string | undefined;
+  let originalFetch: typeof fetch;
+  let warnSpy: ReturnType<typeof vi.spyOn>;
+
+  beforeEach(() => {
+    originalJupKey = process.env.JUP_API_KEY;
+    originalApiKey = process.env.JUPITER_API_KEY;
+    originalFetch = globalThis.fetch;
+    warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    resetJupiterLendClientFactory();
+  });
+
+  afterEach(() => {
+    __resetJupiterLendEarnSdkCacheForTests();
+    if (originalJupKey === undefined) delete process.env.JUP_API_KEY;
+    else process.env.JUP_API_KEY = originalJupKey;
+    if (originalApiKey === undefined) delete process.env.JUPITER_API_KEY;
+    else process.env.JUPITER_API_KEY = originalApiKey;
+    globalThis.fetch = originalFetch;
+    warnSpy.mockRestore();
+  });
+
+  function makeFakeBundle(overrides: Partial<JupiterLendEarnSdkBundle>): JupiterLendEarnSdkBundle {
+    class StubBN {
+      constructor(public readonly value: string | number | bigint) {}
+    }
+    return {
+      getLendingTokens: vi.fn(async () => []),
+      getLendingTokenDetails: vi.fn(async () => {
+        throw new Error('getLendingTokenDetails was not stubbed in this test.');
+      }),
+      getDepositIxs: vi.fn(async () => ({ ixs: [] })),
+      getWithdrawIxs: vi.fn(async () => ({ ixs: [] })),
+      getMintIxs: vi.fn(async () => ({ ixs: [] })),
+      getRedeemIxs: vi.fn(async () => ({ ixs: [] })),
+      BN: StubBN as unknown as JupiterLendEarnSdkBundle['BN'],
+      ...overrides,
+    };
+  }
+
+  it('single-token detail derives the f-token PDA and skips the enumerate call', async () => {
+    const enumerateSpy = vi.fn(async () => {
+      throw new Error('getLendingTokens must NOT be called for single-token detail.');
+    });
+    const detailSpy = vi.fn(async ({ lendingToken }: { lendingToken: PublicKey }) => ({
+      address: lendingToken,
+      asset: new PublicKey(SOL_MINT),
+      decimals: 9,
+    }));
+    __setJupiterLendEarnSdkForTests(makeFakeBundle({
+      getLendingTokens: enumerateSpy as unknown as JupiterLendEarnSdkBundle['getLendingTokens'],
+      getLendingTokenDetails: detailSpy as unknown as JupiterLendEarnSdkBundle['getLendingTokenDetails'],
+    }));
+
+    const client = await getJupiterLendClient(WALLET, fakeConfig());
+    const snapshot = await client.getEarnTokenDetail({ assetMint: SOL_MINT });
+
+    expect(snapshot.assetMint).toBe(SOL_MINT);
+    expect(snapshot.tokenSymbol).toBe('SOL');
+    expect(snapshot.decimals).toBe(9);
+    expect(snapshot.shareDecimals).toBe(9);
+    expect(detailSpy).toHaveBeenCalledTimes(1);
+    expect(enumerateSpy).not.toHaveBeenCalled();
+  });
+
+  it('reframes bn.js "Assertion failed" as sdk_unavailable so REST fallback runs', async () => {
+    process.env.JUP_API_KEY = 'sk-test';
+    delete process.env.JUPITER_API_KEY;
+
+    __setJupiterLendEarnSdkForTests(makeFakeBundle({
+      getLendingTokenDetails: vi.fn(async () => {
+        throw new Error('Assertion failed');
+      }) as unknown as JupiterLendEarnSdkBundle['getLendingTokenDetails'],
+    }));
+
+    const fetchImpl: typeof fetch = async () =>
+      new Response(
+        JSON.stringify({
+          tokens: [
+            {
+              assetMint: SOL_MINT,
+              shareMint: SOL_MINT,
+              decimals: 9,
+              shareDecimals: 9,
+              active: true,
+            },
+          ],
+        }),
+        { status: 200, headers: { 'content-type': 'application/json' } },
+      );
+    globalThis.fetch = fetchImpl;
+
+    const { getEarnTokenDetail } = await import('../../adapters/jupiter/lendEarn.js');
+    const snapshot = await getEarnTokenDetail(fakeConfig(), WALLET, SOL_MINT);
+
+    expect(snapshot.assetMint).toBe(SOL_MINT);
+    expect(snapshot.decimals).toBe(9);
+  });
+
+  it('list path drops one broken pool, keeps the survivors, and warns once', async () => {
+    const okMintA = PublicKey.unique();
+    const okMintB = PublicKey.unique();
+    const okPdaA = PublicKey.unique();
+    const okPdaB = PublicKey.unique();
+    const brokenPda = PublicKey.unique();
+
+    const detailSpy = vi.fn(async ({ lendingToken }: { lendingToken: PublicKey }) => {
+      if (lendingToken.equals(brokenPda)) throw new Error('Assertion failed');
+      if (lendingToken.equals(okPdaA)) {
+        return { address: lendingToken, asset: okMintA, decimals: 9 };
+      }
+      return { address: lendingToken, asset: okMintB, decimals: 6 };
+    });
+    __setJupiterLendEarnSdkForTests(makeFakeBundle({
+      getLendingTokens: vi.fn(async () => [okPdaA, brokenPda, okPdaB]) as unknown as
+        JupiterLendEarnSdkBundle['getLendingTokens'],
+      getLendingTokenDetails: detailSpy as unknown as JupiterLendEarnSdkBundle['getLendingTokenDetails'],
+    }));
+
+    const client = await getJupiterLendClient(WALLET, fakeConfig());
+    const snapshots = await client.getEarnTokens({});
+
+    expect(snapshots).toHaveLength(2);
+    expect(new Set(snapshots.map((s) => s.assetMint))).toEqual(
+      new Set([okMintA.toBase58(), okMintB.toBase58()]),
+    );
+    expect(warnSpy).toHaveBeenCalledTimes(1);
+    const warnArg = String(warnSpy.mock.calls[0]?.[0] ?? '');
+    expect(warnArg).toMatch(/Jupiter Lend Earn snapshot skipped for/);
+    expect(warnArg).toContain(brokenPda.toBase58());
+  });
+});

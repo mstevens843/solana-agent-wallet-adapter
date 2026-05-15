@@ -274,15 +274,17 @@ export class BridgeAiPlanner {
     const normalizedRequest = normalizeReviewRequest(request);
     assertAiReviewRequestAllowed(normalizedRequest);
     if (reviewNeedsWebResearch(normalizedRequest) && !supportsNativeWebResearch(config)) {
-      return unsupportedResearchReview(normalizedRequest, config);
+      return applyServerSideReviewSafety(unsupportedResearchReview(normalizedRequest, config), normalizedRequest);
     }
+    let result: AiReviewResult;
     if (config.apiFormat === 'anthropic') {
-      return this.generateAnthropicReview(config, normalizedRequest);
+      result = await this.generateAnthropicReview(config, normalizedRequest);
+    } else if (shouldUseOpenAiResponses(config)) {
+      result = await this.generateOpenAiResponsesReview(config, normalizedRequest);
+    } else {
+      result = await this.generateOpenAiCompatibleReview(config, normalizedRequest);
     }
-    if (shouldUseOpenAiResponses(config)) {
-      return this.generateOpenAiResponsesReview(config, normalizedRequest);
-    }
-    return this.generateOpenAiCompatibleReview(config, normalizedRequest);
+    return applyServerSideReviewSafety(result, normalizedRequest);
   }
 
   async askAboutPlan(request: AiAskRequest): Promise<AiAskResult> {
@@ -1111,7 +1113,7 @@ function aiReviewMessages(
 ): Array<{ role: 'system' | 'user'; content: string }> {
   const multi = request.mode === 'multi';
   const needsResearch = reviewNeedsWebResearch(request);
-  const baseSystem = 'You review a Solana wallet action draft before it is sent for wallet approval. Return only JSON with: decision ("approve", "deny", or "needs_input"); reason as one or two concise sentences; summary as one short sentence; evidence as an object. Put flexible user-facing findings in evidence.findings as an array of {label,value,tone}, where tone is good, warn, neutral, or fail. Findings must match the user request and connector facts; do not force route/quote/slippage rows when they do not apply. Use plan.actionType to decide which checks apply: swap drafts deserve route/quote/slippage scrutiny; lend/deposit/withdraw/stake/vault drafts deserve connector/reserve/vault checks and a balance/cap sanity check, not swap heuristics. For first-class adapter actions (kamino_deposit, kamino_withdraw, marginfi_*, save_*, marinade_*, jito_*, jupiter_lend_*, drift_vault_*, meteora_*, orca_*, raydium_*, sanctum_*), if the connector is enabled, the target token/reserve/vault is resolvable, and the amount is positive and within plausible bounds, approve unless a user policy or research result blocks. If the instruction asks for current or outside facts and web search is available, search reliable sources before deciding. Put source-backed findings in evidence.findings, put source links in evidence.sources as an array of {title,url}, and include evidence.research = {status:"checked"} when research was used. Apply user threshold rules exactly, for example "approve if under $20, deny if over $20". When the instruction asks a threshold or conditional question (e.g., "approve if under $X", "deny if over $Y"), you MUST include the asked-about value as a finding in evidence.findings with label matching the asked fact (e.g., "Plan rate", "Subscription price", "Monthly rate", "Current price"), value formatted with the currency unit (e.g., "$16.79" or "$16.79/month"), and tone set to "good" when the user\'s approve-when condition holds and "fail" otherwise. Also include a separate "Threshold check" finding stating the comparison in plain language. Always emit these findings even when you cannot decide; never omit the asked fact. Numeric values like "$16.79" must always be the precise figure you found, never rounded up or down to favor a decision. If multiple researched facts lead to different outcomes and the draft does not identify which one applies, return "needs_input" and list the found options. When you cannot decide because user intent is genuinely ambiguous, return decision "needs_input" plus a "questions" array with 1-3 short, specific questions answerable in under 20 words. Use "needs_input" only when the missing information is something the user must supply, such as a missing amount, missing token, missing recipient, or which researched option applies. Do not use "needs_input" for facts that are present in the plan, context.facts, context.executionPath, research results, or facts you can infer. For browser swap or recurring-swap drafts, Jupiter is the execution aggregator unless context says otherwise; do not ask the user which DEX/protocol will execute it. If a token mint address is present, review that mint address; do not ask the user what token it is or whether they verified it. If token metadata is missing, return approve or deny with a warning, not needs_input. If context includes protocolConnectors or connector facts, use reads as evidence and treat writes as prepare-only wallet-approval actions. If the context includes "userPolicies", treat each as a soft rule the user wants you to honor: factor them into your decision and cite the relevant policy id in evidence.policiesApplied when one influences the outcome. Be flexible: use the user instruction and available facts, not a fixed checklist. Never claim anything is signed, submitted, guaranteed safe, or already approved. Never request private keys. The wallet user must still approve separately.';
+  const baseSystem = 'You review a Solana wallet action draft before it is sent for wallet approval. Return only JSON with: decision ("approve", "deny", or "needs_input"); reason as one or two concise sentences; summary as one short sentence; evidence as an object. Put flexible user-facing findings in evidence.findings as an array of {label,value,tone}, where tone is good, warn, neutral, or fail. Findings must match the user request and connector facts; do not force route/quote/slippage rows when they do not apply. Use plan.actionType to decide which checks apply: swap drafts deserve route/quote/slippage scrutiny; lend/deposit/withdraw/stake/vault drafts deserve connector/reserve/vault checks and a balance/cap sanity check, not swap heuristics. For first-class adapter actions (kamino_deposit, kamino_withdraw, marginfi_*, save_*, marinade_*, jito_*, jupiter_lend_*, drift_vault_*, meteora_*, orca_*, raydium_*, sanctum_*), if the connector is enabled, the target token/reserve/vault is resolvable, and the amount is positive and within plausible bounds, approve unless a user policy or research result blocks. If the instruction asks for current or outside facts and web search is available, search reliable sources before deciding. Put source-backed findings in evidence.findings, put source links in evidence.sources as an array of {title,url}, and include evidence.research = {status:"checked"} when research was used. Apply user threshold rules exactly, for example "approve if under $20, deny if over $20". When the instruction asks a threshold or conditional question (e.g., "approve if under $X", "deny if over $Y"), you MUST include the asked-about value as a finding in evidence.findings with label matching the asked fact (e.g., "Plan rate", "Subscription price", "Monthly rate", "Current price"), value formatted with the currency unit (e.g., "$16.79" or "$16.79/month"), and tone set to "good" when the user\'s approve-when condition holds and "fail" otherwise. Also include a separate "Threshold check" finding stating the comparison in plain language. Always emit these findings even when you cannot decide; never omit the asked fact. Numeric values like "$16.79" must always be the precise figure you found, never rounded up or down to favor a decision. If multiple researched facts lead to different outcomes and the draft does not identify which one applies, return "needs_input" and list the found options. When you cannot decide because user intent is genuinely ambiguous, return decision "needs_input" plus a "questions" array with 1-3 short, specific questions answerable in under 20 words. Use "needs_input" only when the missing information is something the user must supply, such as a missing amount, missing token, missing recipient, or which researched option applies. Do not use "needs_input" for facts that are present in the plan, context.facts, context.executionPath, research results, or facts you can infer. For browser swap or recurring-swap drafts, Jupiter is the execution aggregator unless context says otherwise; do not ask the user which DEX/protocol will execute it. If a token mint address is present, review that mint address; do not ask the user what token it is or whether they verified it. If token metadata is missing, return approve or deny with a warning, not needs_input. If context includes protocolConnectors or connector facts, use reads as evidence and treat writes as prepare-only wallet-approval actions. If the context includes "userPolicies", treat each as a soft rule the user wants you to honor: factor them into your decision and cite the relevant policy id in evidence.policiesApplied when one influences the outcome. Be flexible: use the user instruction and available facts, not a fixed checklist. Never claim anything is signed, submitted, guaranteed safe, or already approved. Never request private keys. The wallet user must still approve separately. STRUCTURED DECISION CONTRACT: Always also return top-level "evidenceFactIds" as an array of strings citing real `id` values from context.evidenceFacts. When you deny, list the ids that caused the deny in "blockingFactIds". When you return needs_input, list the missing required ids in "missingFactIds". Optionally include "confidence" as "high", "medium", or "low". You may only return decision "approve" when context.evidenceGate.decision === "pass". If context.evidenceGate.decision === "block", you must return "deny". If context.evidenceGate.decision === "needs_input", you must return "needs_input". Citing an id that is not present in context.evidenceFacts is a contract violation.';
   const multiSystem = multi
     ? ' Additionally, fill the "reviewers" array with one entry per role (risk, quote, policy, protocol). Each reviewer evaluates the draft from their perspective independently and reports their own decision ("approve", "deny", or "needs_input") and a 1-sentence reason. The top-level decision should reflect the most severe verdict: any "deny" > any "needs_input" > all "approve". Risk inspects authority changes, unknown programs, and dangerous semantics. Quote checks slippage, output amount, and route freshness for swaps. Policy applies the user policies from context.userPolicies. Protocol identifies the protocol/aggregator and flags unknowns. Skip reviewers whose role does not apply (e.g., no quote role on a read-only plan).'
     : '';
@@ -1325,6 +1327,10 @@ function aiReviewFromParsed(
       evidence.sources = options.researchEvidence.sources;
     }
   }
+  const decisionContract = decisionContractFromParsed(parsed, decision, reason, parsed.summary);
+  if (decisionContract) {
+    evidence.decisionContract = decisionContract;
+  }
   const result: AiReviewResult = {
     decision,
     reason: compactReviewText(reason, 280),
@@ -1336,6 +1342,126 @@ function aiReviewFromParsed(
     ...(reviewers && reviewers.length ? { reviewers } : {}),
   };
   return reconcileThresholdReviewDecision(result, request);
+}
+
+/**
+ * Server-side defense-in-depth. The browser-side gate is authoritative — this is a structural
+ * sanity check on the AI response itself.
+ *
+ * Rules:
+ *   - If the AI cited evidence ids that aren't in context.evidenceFacts, strip them.
+ *     If approval relied entirely on hallucinated ids, downgrade to needs_input.
+ *   - If context.evidenceGate.decision !== 'pass' and the AI returned approve, downgrade
+ *     to deny (gate=block) or needs_input (gate=needs_input). Preserve AI's reason + summary.
+ */
+export function applyServerSideReviewSafety(
+  result: AiReviewResult,
+  request: Required<AiReviewRequest>,
+): AiReviewResult {
+  const context = (request.context ?? {}) as Record<string, unknown>;
+  const facts = Array.isArray(context.evidenceFacts) ? context.evidenceFacts : undefined;
+  const gate = isJsonObjectLike(context.evidenceGate) ? (context.evidenceGate as Record<string, unknown>) : undefined;
+  if (!facts && !gate) return result;
+
+  let decision = result.decision;
+  let reason = result.reason;
+  let summary = result.summary;
+  let safetyTriggered = false;
+
+  const evidence = isJsonObjectLike(result.evidence) ? { ...(result.evidence as Record<string, unknown>) } : {};
+  const contract = isJsonObjectLike(evidence.decisionContract) ? { ...(evidence.decisionContract as Record<string, unknown>) } : undefined;
+
+  if (facts && contract && Array.isArray(contract.evidenceFactIds)) {
+    const knownIds = new Set((facts as Array<Record<string, unknown>>).map((fact) => (typeof fact.id === 'string' ? fact.id : '')).filter(Boolean));
+    const incoming = (contract.evidenceFactIds as unknown[]).filter((id): id is string => typeof id === 'string');
+    const filtered = incoming.filter((id) => knownIds.has(id));
+    const dropped = incoming.filter((id) => !knownIds.has(id));
+    if (dropped.length) {
+      contract.evidenceFactIds = filtered;
+      contract.serverSafetyStrippedIds = dropped;
+      safetyTriggered = true;
+      // Only downgrade when the AI cited zero valid internal ids AND has not produced external
+      // research citations. Research-backed approvals (e.g., "approve if T-Mobile < $20") cite
+      // their evidence via `evidence.sources`/`evidence.research`, not via internal fact ids.
+      const hasResearchCitation = hasExternalResearchCitationLike(result.evidence);
+      if (decision === 'approve' && filtered.length === 0 && !hasResearchCitation) {
+        decision = 'needs_input';
+        reason = 'Server safety: AI cited only unrecognized evidence ids.';
+      }
+    }
+  }
+
+  if (gate) {
+    const gateDecision = typeof gate.decision === 'string' ? gate.decision : 'pass';
+    if (decision === 'approve' && gateDecision !== 'pass') {
+      decision = gateDecision === 'block' ? 'deny' : 'needs_input';
+      reason = `Server safety: gate decision is "${gateDecision}", AI approval downgraded to "${decision}".`;
+      safetyTriggered = true;
+    }
+  }
+
+  if (!safetyTriggered) return result;
+  if (contract) {
+    contract.decision = decision;
+    contract.reason = reason;
+    contract.summary = summary;
+  }
+  evidence.decisionContract = contract;
+  evidence.serverSafetyApplied = true;
+  return {
+    ...result,
+    decision,
+    reason,
+    summary,
+    evidence,
+  };
+}
+
+function isJsonObjectLike(value: unknown): value is Record<string, unknown> {
+  return Boolean(value) && typeof value === 'object' && !Array.isArray(value);
+}
+
+function hasExternalResearchCitationLike(evidence: unknown): boolean {
+  if (!isJsonObjectLike(evidence)) return false;
+  const research = (evidence as Record<string, unknown>).research;
+  if (isJsonObjectLike(research) && (research.status === 'checked' || research.required === true)) {
+    return true;
+  }
+  const sources = (evidence as Record<string, unknown>).sources;
+  if (Array.isArray(sources) && sources.length > 0) return true;
+  return false;
+}
+
+function decisionContractFromParsed(
+  parsed: Record<string, unknown>,
+  decision: 'approve' | 'deny' | 'needs_input',
+  fallbackReason: string,
+  fallbackSummary: unknown,
+): Record<string, unknown> | undefined {
+  const evidenceFactIds = parsed.evidenceFactIds;
+  const blockingFactIds = parsed.blockingFactIds;
+  const missingFactIds = parsed.missingFactIds;
+  const confidence = parsed.confidence;
+  const anySignal = Array.isArray(evidenceFactIds) || Array.isArray(blockingFactIds) || Array.isArray(missingFactIds) || typeof confidence === 'string';
+  if (!anySignal) return undefined;
+  const factIds = Array.isArray(evidenceFactIds)
+    ? evidenceFactIds.filter((id): id is string => typeof id === 'string')
+    : [];
+  const blocking = Array.isArray(blockingFactIds)
+    ? blockingFactIds.filter((id): id is string => typeof id === 'string')
+    : [];
+  const missing = Array.isArray(missingFactIds)
+    ? missingFactIds.filter((id): id is string => typeof id === 'string')
+    : [];
+  return {
+    decision,
+    reason: fallbackReason,
+    summary: typeof fallbackSummary === 'string' ? fallbackSummary : fallbackReason,
+    evidenceFactIds: factIds,
+    blockingFactIds: blocking,
+    missingFactIds: missing,
+    ...(typeof confidence === 'string' ? { confidence } : {}),
+  };
 }
 
 function malformedAiReviewResult(

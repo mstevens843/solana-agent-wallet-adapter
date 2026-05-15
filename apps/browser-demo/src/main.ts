@@ -13,6 +13,13 @@ import {
 } from '@solana-agent-wallet-adapter/core';
 import {
   EVIDENCE_RECEIPT_KINDS,
+  VERIFIED_PROGRAM_IDS,
+  buildEvidenceRequirements,
+  connectorProfileKind,
+  createDecisionAuditReceipt,
+  evaluateAgentEvidenceGate,
+  isVerifiedProgramId,
+  normalizeAgentEvidenceFact,
   parseApprovalListResponse,
   parseAuditEventRecord,
   parseApprovalRequestRecord,
@@ -30,6 +37,14 @@ import {
   planAgentReviewFactRoutes,
   previewUpcoming,
   reconcileThresholdReviewDecision,
+  validateAgentReviewDecision,
+  type AgentConnectorProfileKind,
+  type AgentDecisionAuditReceipt,
+  type AgentDecisionContract,
+  type AgentEvidenceContext,
+  type AgentEvidenceFact,
+  type AgentEvidenceGateResult,
+  type AgentEvidenceRequirement,
   type AgentFactNeed,
   type AgentFactRoute,
   type AgentFactRoutePlan,
@@ -88,6 +103,7 @@ import {
   type AgentEvidenceTone,
 } from './agentReviewPresentation.js';
 import { findingsSpecFor } from './agentFindingsSpec.js';
+import { evaluateSimulationOutcome } from './simulationOutcome.js';
 import {
   hostedByokCloudSessionBlockReason,
   shouldAutoSignOutCloudSession,
@@ -177,6 +193,7 @@ import {
   type ConnectedDappsState,
   type ProtocolConnector,
 } from './connectedDapps.js';
+import { mountConnectorKeysPanel } from './connectorKeys.js';
 import {
   CONNECTOR_APPROVAL_ACTION_TYPES,
   classifyConnectorReceipt,
@@ -593,6 +610,12 @@ interface AgentPlanReviewState {
   reviewedPlanFingerprint?: string;
   appliedUserPolicyIds?: string[];
   conversation?: AgentAskExchange[];
+  evidenceRequirements?: AgentEvidenceRequirement[];
+  evidenceFacts?: AgentEvidenceFact[];
+  evidenceGate?: AgentEvidenceGateResult;
+  decisionContract?: AgentDecisionContract;
+  auditReceipt?: AgentDecisionAuditReceipt;
+  decisionViolations?: string[];
 }
 
 type AgentPolicyKind =
@@ -1891,6 +1914,19 @@ interface TemplateFieldOptionCacheEntry {
   error?: string;
 }
 
+interface TemplateFieldPairPreview {
+  templateId: string;
+  pairLabel: string;
+  amountSide: 'tokenA' | 'tokenB';
+  pairedSide: 'tokenA' | 'tokenB';
+  pairedSymbol: string;
+  pairedAmount: string;
+  pairedMaxAmount?: string;
+  fetchedAt: number;
+  estimateNote: string;
+  error?: string;
+}
+
 interface DemoState {
   activeTab: ActiveTab;
   commandCenterView: CommandCenterView;
@@ -1937,6 +1973,7 @@ interface DemoState {
   templateFieldErrors: Record<string, string>;
   templateFieldOptionCache: Record<string, TemplateFieldOptionCacheEntry>;
   templateFieldOptionLoading: Record<string, boolean>;
+  templateFieldPairPreview: Record<string, TemplateFieldPairPreview>;
   agentPlan: AgentPlan | null;
   agentSignature: string;
   agentPreparedActionId: string;
@@ -2684,6 +2721,7 @@ const state: DemoState = {
   templateFieldErrors: {},
   templateFieldOptionCache: {},
   templateFieldOptionLoading: {},
+  templateFieldPairPreview: {},
   agentPlan: null,
   agentSignature: '',
   agentPreparedActionId: '',
@@ -2978,6 +3016,7 @@ function render(): void {
   closeArtifactPickerInteractions();
   appRoot.innerHTML = pageShell(pageContent(route), route);
   bind();
+  mountConnectorKeysPanel({ container: 'connector-keys-panel' });
   updateTabTitleBadge();
   scheduleInboxSwapQuoteHydration();
   scheduleVisibleTokenMarketHydration();
@@ -6094,6 +6133,7 @@ function preferencesActiveView(): string {
           ${connectedAgentsPanel()}
           ${connectedDappsPanel()}
         </div>
+        <div id="connector-keys-panel" class="connector-keys-mount"></div>
       `);
     case 'rules':
       return preferencesGroup('Review Rules', 'Optional checks that help the signer review recipients, routes, and agent advice.', `
@@ -11723,7 +11763,32 @@ function templateFieldInput(fieldDef: AgentPlanTemplateField): string {
 }
 
 function templateFieldHelper(fieldDef: AgentPlanTemplateField): string {
-  return fieldDef.helperText ? `<em class="planner-field-hint subtle">${escapeHtml(fieldDef.helperText)}</em>` : '';
+  const base = fieldDef.helperText ? `<em class="planner-field-hint subtle">${escapeHtml(fieldDef.helperText)}</em>` : '';
+  const pairHint = raydiumPairPreviewHintForField(fieldDef.id);
+  return [base, pairHint].filter(Boolean).join('');
+}
+
+function raydiumPairPreviewHintForField(fieldId: string): string {
+  if (fieldId !== 'tokenAAmount' && fieldId !== 'tokenBAmount') return '';
+  const template = selectedTemplate();
+  if (!template) return '';
+  const active = isRaydiumAddLiquidityActive(template.id);
+  if (!active) return '';
+  const preview = state.templateFieldPairPreview[active.templateId];
+  if (!preview) return '';
+  const inputSide = state.templateFields['amountSide']?.trim() === 'tokenB' ? 'tokenB' : 'tokenA';
+  const inputFieldForSide = inputSide === 'tokenA' ? 'tokenAAmount' : 'tokenBAmount';
+  if (fieldId !== inputFieldForSide) return '';
+  if (preview.error) {
+    return `<em class="planner-field-hint subtle">Paired-amount preview unavailable: ${escapeHtml(preview.error)}</em>`;
+  }
+  if (!preview.pairedAmount || !preview.pairedSymbol) return '';
+  const main = `≈ ${preview.pairedAmount} ${preview.pairedSymbol} will also be deposited`;
+  const maxSegment = preview.pairedMaxAmount
+    ? ` (max ${preview.pairedMaxAmount} ${preview.pairedSymbol} with slippage)`
+    : '';
+  const noteSegment = preview.estimateNote ? ` — ${preview.estimateNote}` : '';
+  return `<em class="planner-field-hint subtle">${escapeHtml(`${main}${maxSegment}${noteSegment}`)}</em>`;
 }
 
 function templateFieldDisplayLabel(fieldDef: AgentPlanTemplateField): string {
@@ -15390,6 +15455,7 @@ function bind(): void {
       state.agentPlan = null;
       state.agentSignature = '';
       state.agentPreparedActionId = '';
+      scheduleRaydiumPairPreview(fieldId);
       if (shouldRerender || cascadingRerender) render();
     });
     fieldInput.addEventListener('change', () => {
@@ -15398,6 +15464,7 @@ function bind(): void {
       state.templateFields[fieldId] = syncTemplateFieldFromControl(fieldInput);
       syncCascadingTemplateFieldLabel(fieldInput, fieldId, state.templateFields);
       syncConnectorTemplateFieldChange(fieldId);
+      scheduleRaydiumPairPreview(fieldId);
       if (handleCascadingFieldChange(fieldInput, fieldId)) render();
     });
   }
@@ -15417,6 +15484,7 @@ function bind(): void {
       state.agentPlan = null;
       state.agentSignature = '';
       state.agentPreparedActionId = '';
+      scheduleRaydiumPairPreview(fieldId);
       render();
     });
   }
@@ -17992,11 +18060,11 @@ async function runReviewGeneratedPlan(planId: string): Promise<void> {
       const deterministicFacts = await gatherAgentReviewFacts(refreshed, {
         instruction: agentReviewInstruction(refreshed, reviewPlan),
       });
-      const rawResult = await runAgentReview(refreshed, deterministicFacts);
-      const result = normalizeAgentReviewResultForFacts(rawResult, reviewPlan, deterministicFacts, {
+      const orchestration = await runAgentReviewWithEvidence(refreshed, reviewPlan, deterministicFacts);
+      const result = normalizeAgentReviewResultForFacts(orchestration.rawResult, reviewPlan, deterministicFacts, {
         instruction: agentReviewInstruction(refreshed, reviewPlan),
       });
-      const review = agentReviewStateFromResult(result, previousReview, reviewPlan, appliedPolicyIds);
+      const review = agentReviewStateFromResult(result, previousReview, reviewPlan, appliedPolicyIds, orchestration);
       review.facts = mergeReviewFacts(deterministicFacts, result.evidence);
       await updateGeneratedPlan(planId, { agentReview: review, error: undefined, failureLabel: undefined });
       if (state.agentPlan && samePlan(planWithRuntimeTokenLabels(state.agentPlan), reviewPlan)) {
@@ -19357,8 +19425,9 @@ function agentDenialProofMessage(plan: AgentPlan, review: AgentPlanReviewState):
 async function runAgentReview(
   record: GeneratedPlanRecord,
   deterministicFacts = gatherDeterministicFacts(record),
+  bundle?: AgentReviewEvidenceBundle,
 ): Promise<AgentPlanReviewResult> {
-  const request = agentReviewRequest(record, deterministicFacts);
+  const request = agentReviewRequest(record, deterministicFacts, bundle);
   state.aiDiagnostics = [
     aiRouteDiagnostic(state.aiSettings.mode === 'bridge' ? '/bridge/ai/review-plan' : '/api/ai/review-plan'),
   ];
@@ -19375,6 +19444,49 @@ async function runAgentReview(
   return generateSessionAiReview(state.aiSettings, request);
 }
 
+interface AgentReviewOrchestrationResult {
+  rawResult: AgentPlanReviewResult;
+  bundle: AgentReviewEvidenceBundle;
+  decisionContract: AgentDecisionContract;
+  validationViolations: string[];
+  auditReceipt: AgentDecisionAuditReceipt;
+}
+
+async function runAgentReviewWithEvidence(
+  record: GeneratedPlanRecord,
+  plan: AgentPlan,
+  deterministicFacts: AgentReviewFactSet,
+): Promise<AgentReviewOrchestrationResult> {
+  const bundle = buildAgentReviewEvidenceBundle(record, plan, deterministicFacts);
+  const rawResult = await runAgentReview(record, deterministicFacts, bundle);
+  const validated = validateAgentReviewDecision({
+    aiResult: rawResult,
+    gate: bundle.gate,
+    facts: bundle.evidenceFacts,
+    requirements: bundle.requirements,
+  });
+  const auditReceipt = await createDecisionAuditReceipt({
+    finalDecision: validated.final.decision,
+    decisionContract: validated.decisionContract,
+    gate: bundle.gate,
+    facts: bundle.evidenceFacts,
+    requirements: bundle.requirements,
+    routes: bundle.routePlan,
+    walletAddress: bundle.evidenceContext.walletAddress ?? 'not_connected',
+    cluster: bundle.evidenceContext.cluster ?? 'unknown',
+    planFingerprint: bundle.evidenceContext.planFingerprint ?? planFingerprint(plan),
+    ...(bundle.evidenceContext.connectorId ? { connectorId: bundle.evidenceContext.connectorId } : {}),
+    ...(bundle.evidenceContext.connectorProfile ? { connectorProfile: bundle.evidenceContext.connectorProfile } : {}),
+  });
+  return {
+    rawResult: validated.final,
+    bundle,
+    decisionContract: validated.decisionContract,
+    validationViolations: validated.violations,
+    auditReceipt,
+  };
+}
+
 function agentReviewInstruction(record: GeneratedPlanRecord, plan: AgentPlan = record.plan): string {
   return [
     plan.userNotes,
@@ -19388,6 +19500,7 @@ function agentReviewInstruction(record: GeneratedPlanRecord, plan: AgentPlan = r
 function agentReviewRequest(
   record: GeneratedPlanRecord,
   deterministicFacts = gatherDeterministicFacts(record),
+  bundle?: AgentReviewEvidenceBundle,
 ): AgentPlanReviewRequest {
   const reviewPlan = planWithRuntimeTokenLabels(record.plan);
   const review = record.agentReview;
@@ -19445,6 +19558,13 @@ function agentReviewRequest(
           }
         : {}),
       ...(priorHistorySnippet?.length ? { priorAttempts: priorHistorySnippet } : {}),
+      ...(bundle
+        ? {
+            evidenceRequirements: bundle.requirements,
+            evidenceFacts: bundle.evidenceFacts,
+            evidenceGate: bundle.gate,
+          }
+        : {}),
     },
     ...(state.aiSettings.multiReviewer ? { mode: 'multi' as const } : {}),
   };
@@ -19455,6 +19575,7 @@ function agentReviewStateFromResult(
   previous?: AgentPlanReviewState | undefined,
   reviewedPlan?: AgentPlan | undefined,
   appliedUserPolicyIds?: string[],
+  orchestration?: AgentReviewOrchestrationResult,
 ): AgentPlanReviewState {
   const status: AgentPlanReviewStatus = result.decision === 'approve'
     ? 'approved'
@@ -19492,6 +19613,18 @@ function agentReviewStateFromResult(
     ...(fingerprint ? { reviewedPlanFingerprint: fingerprint } : {}),
     ...(appliedUserPolicyIds && appliedUserPolicyIds.length ? { appliedUserPolicyIds } : {}),
     ...(result.reviewers?.length ? { reviewers: result.reviewers as AgentReviewerEntry[] } : {}),
+    ...(orchestration
+      ? {
+          evidenceRequirements: orchestration.bundle.requirements,
+          evidenceFacts: orchestration.bundle.evidenceFacts,
+          evidenceGate: orchestration.bundle.gate,
+          decisionContract: orchestration.decisionContract,
+          auditReceipt: orchestration.auditReceipt,
+          ...(orchestration.validationViolations.length
+            ? { decisionViolations: orchestration.validationViolations }
+            : {}),
+        }
+      : {}),
   };
 }
 
@@ -20334,6 +20467,9 @@ async function gatherAgentReviewFacts(
   await Promise.all([
     enrichWalletFactsForAgent(record, facts, routePlan).catch(() => undefined),
     enrichConnectorFactsForAgent(record, plan, facts, routePlan).catch(() => undefined),
+    routePlanHasAnyId(routePlan, ['rpc.simulate_transaction'])
+      ? enrichSimulationFactsForAgent(record, plan, facts, routePlan).catch(() => undefined)
+      : Promise.resolve(),
     routePlanHasAnyId(routePlan, ['alternative_me.fear_greed'])
       ? enrichMarketSentimentFromAlternativeMe(facts).catch(() => undefined)
       : Promise.resolve(),
@@ -20362,6 +20498,9 @@ function planFactRoutesForAgentReview(
       connector.readSource &&
       (!connector.requiresClientKey || state.protocolConnectorPrefs.dialectClientKey.trim()),
   );
+  const riskProfile = connector
+    ? connectorProfileKind(connector.id, connectorActionKind ?? '')
+    : undefined;
   return planAgentReviewFactRoutes({
     actionType: plan.actionType,
     intent: plan.intent,
@@ -20376,6 +20515,8 @@ function planFactRoutesForAgentReview(
     hasWallet: Boolean(walletContext.address),
     hasTokenMints: planTokenCandidates(plan).some((token) => Boolean(token.mint)),
     hasProtocolConnector: connectorReadReady,
+    hasPreparedTx: Boolean(extractPreparedTxBase64(record)),
+    ...(riskProfile ? { riskProfile } : {}),
     ...(connector
       ? {
           connector: {
@@ -20416,6 +20557,171 @@ function agentFactRoutePlanFact(routePlan: AgentFactRoutePlan): AgentReviewFact 
   };
 }
 
+interface FactSetEvidenceSlotMapping {
+  slot: keyof AgentReviewFactSet;
+  routeId: string;
+  source: AgentEvidenceFact['source'];
+  label: string;
+}
+
+const FACT_SET_TO_EVIDENCE_ROUTES: FactSetEvidenceSlotMapping[] = [
+  { slot: 'quote', routeId: 'jupiter.swap_order_preview', source: 'jupiter', label: 'Swap quote' },
+  { slot: 'route', routeId: 'jupiter.swap_route', source: 'jupiter', label: 'Swap route' },
+  { slot: 'walletActivity', routeId: 'helius.getTransfersByAddress', source: 'helius', label: 'Recent wallet activity' },
+  { slot: 'walletHoldings', routeId: 'birdeye.wallet_token_list', source: 'birdeye', label: 'Wallet holdings' },
+  { slot: 'tokenMint', routeId: 'birdeye.token_metadata', source: 'birdeye', label: 'Token identity' },
+  { slot: 'marketSentiment', routeId: 'alternative_me.fear_greed', source: 'alternative_me', label: 'Market sentiment' },
+  { slot: 'marketConditions', routeId: 'coingecko.global', source: 'coingecko', label: 'Market conditions' },
+  { slot: 'connectorRead', routeId: 'protocol_connector.read_facts', source: 'protocol_connector', label: 'Connector read facts' },
+  { slot: 'simulation', routeId: 'rpc.simulate_transaction', source: 'rpc', label: 'Transaction simulation' },
+  { slot: 'research', routeId: 'external_research.current_web', source: 'external_research', label: 'Current research' },
+];
+
+function toneFromFactState(state: AgentReviewFact['state']): AgentEvidenceFact['tone'] {
+  switch (state) {
+    case 'ok':
+      return 'good';
+    case 'warn':
+    case 'missing':
+      return 'warn';
+    case 'fail':
+      return 'fail';
+    case 'checked':
+    default:
+      return 'neutral';
+  }
+}
+
+function severityForFactState(state: AgentReviewFact['state']): AgentEvidenceFact['severity'] {
+  if (state === 'fail') return 'block';
+  if (state === 'warn' || state === 'missing') return 'warn';
+  return 'info';
+}
+
+function compactValueFromFact(fact: AgentReviewFact): string {
+  if (fact.message) return fact.message.length > 240 ? `${fact.message.slice(0, 237)}...` : fact.message;
+  return fact.state;
+}
+
+function normalizeFactSetToEvidenceFacts(
+  factSet: AgentReviewFactSet,
+  requirements: AgentEvidenceRequirement[],
+  walletAddress: string | undefined,
+): AgentEvidenceFact[] {
+  const requirementByRoute = new Map(requirements.map((req) => [req.routeId, req]));
+  const evidenceFacts: AgentEvidenceFact[] = [];
+
+  if (walletAddress) {
+    const walletReq = requirementByRoute.get('wallet.connected_public_key');
+    evidenceFacts.push(normalizeAgentEvidenceFact({
+      id: 'fact.wallet.connected_public_key',
+      routeId: 'wallet.connected_public_key',
+      ...(walletReq ? { requirementId: walletReq.id } : {}),
+      label: 'Connected wallet',
+      value: walletAddress,
+      tone: 'good',
+      severity: 'info',
+      source: 'wallet',
+      checkedAt: new Date().toISOString(),
+      ttlMs: walletReq?.ttlMs ?? Number.POSITIVE_INFINITY,
+    }));
+  }
+
+  for (const mapping of FACT_SET_TO_EVIDENCE_ROUTES) {
+    const fact = factSet[mapping.slot];
+    if (!fact) continue;
+    const req = requirementByRoute.get(mapping.routeId);
+    evidenceFacts.push(normalizeAgentEvidenceFact({
+      id: `fact.${mapping.slot}`,
+      routeId: mapping.routeId,
+      ...(req ? { requirementId: req.id } : {}),
+      label: mapping.label,
+      value: compactValueFromFact(fact),
+      tone: toneFromFactState(fact.state),
+      severity: severityForFactState(fact.state),
+      source: mapping.source,
+      checkedAt: fact.checkedAt,
+      ttlMs: req?.ttlMs ?? Number.POSITIVE_INFINITY,
+      ...(fact.detail ? { detail: fact.detail } : {}),
+    }));
+  }
+  return evidenceFacts;
+}
+
+interface AgentReviewEvidenceBundle {
+  routePlan: AgentFactRoutePlan;
+  requirements: AgentEvidenceRequirement[];
+  evidenceFacts: AgentEvidenceFact[];
+  gate: AgentEvidenceGateResult;
+  evidenceContext: AgentEvidenceContext;
+}
+
+function evidenceContextForReview(record: GeneratedPlanRecord, plan: AgentPlan, routePlan: AgentFactRoutePlan): AgentEvidenceContext {
+  const walletContext = walletContextForAgent(record);
+  const connector = selectedConnectorForDraftParameters(plan.parameters) ??
+    findProtocolConnectorByInput(plan.parameters.protocol || plan.parameters.dapp || plan.route);
+  const connectorEnabled = Boolean(connector && isDappEnabled(connector.id, state.connectedDapps, state.cluster));
+  const connectorReadReady = Boolean(
+    connector &&
+      connectorEnabled &&
+      connector.readSource &&
+      (!connector.requiresClientKey || state.protocolConnectorPrefs.dialectClientKey.trim()),
+  );
+  const connectorRoute = routePlan.routes.find((entry) => entry.id === 'protocol_connector.read_facts');
+  const connectorProfile = (connectorRoute?.params?.profile as AgentConnectorProfileKind | undefined) ?? undefined;
+  const draftWallet = stringField(plan.parameters.walletAddress) ?? stringField(plan.parameters.draftWallet);
+  return {
+    walletAddress: walletContext.address || undefined,
+    ...(draftWallet ? { draftWalletAddress: draftWallet } : {}),
+    cluster: record.cluster,
+    ...(connector ? { connectorId: connector.id } : {}),
+    ...(connectorProfile ? { connectorProfile } : {}),
+    connectorEnabled: connector ? connectorEnabled : undefined,
+    connectorReadReady: connector ? connectorReadReady : undefined,
+    planFingerprint: planFingerprint(plan),
+    isWalletScoped: true,
+    enabledUserPolicyIds: enabledUserAgentPolicies().map((policy) => policy.id),
+  };
+}
+
+function buildAgentReviewEvidenceBundle(
+  record: GeneratedPlanRecord,
+  plan: AgentPlan,
+  factSet: AgentReviewFactSet,
+): AgentReviewEvidenceBundle {
+  const routePlanFact = factSet.evidenceRoutes;
+  const routePlan: AgentFactRoutePlan = routePlanFactToRoutePlan(routePlanFact) ?? planFactRoutesForAgentReview(record, plan, {});
+  const evidenceContext = evidenceContextForReview(record, plan, routePlan);
+  const requirements = buildEvidenceRequirements(routePlan, evidenceContext);
+  const evidenceFacts = normalizeFactSetToEvidenceFacts(factSet, requirements, evidenceContext.walletAddress);
+  const gate = evaluateAgentEvidenceGate(requirements, evidenceFacts, evidenceContext);
+  return { routePlan, requirements, evidenceFacts, gate, evidenceContext };
+}
+
+function routePlanFactToRoutePlan(fact: AgentReviewFact | undefined): AgentFactRoutePlan | undefined {
+  if (!fact?.detail) return undefined;
+  const detail = fact.detail as { routes?: unknown; skipped?: unknown };
+  if (!Array.isArray(detail.routes)) return undefined;
+  const routes = detail.routes
+    .filter((row): row is Record<string, unknown> => Boolean(row) && typeof row === 'object')
+    .map((row) => ({
+      id: String(row.id ?? ''),
+      need: row.need as AgentFactRoute['need'],
+      provider: row.provider as AgentFactRoute['provider'],
+      endpoint: String(row.endpoint ?? ''),
+      status: (row.status === 'optional' ? 'optional' : 'required') as AgentFactRoute['status'],
+      reason: String(row.reason ?? ''),
+      ...(row.params && typeof row.params === 'object' && !Array.isArray(row.params)
+        ? { params: row.params as Record<string, string | number | boolean> }
+        : {}),
+    }))
+    .filter((row) => row.id);
+  const skipped = Array.isArray(detail.skipped)
+    ? (detail.skipped as Array<{ need: AgentFactNeed; reason: string }>)
+    : [];
+  return { routes, skipped, routeText: typeof fact.message === 'string' ? fact.message : '' };
+}
+
 function routePlanHasAnyNeed(routePlan: AgentFactRoutePlan, needs: AgentFactNeed[]): boolean {
   return routePlan.routes.some((route) => needs.includes(route.need));
 }
@@ -20443,6 +20749,137 @@ async function enrichWalletFactsForAgent(
       ? enrichWalletHoldingsFacts(wallet, facts)
       : Promise.resolve(),
   ]);
+}
+
+function extractPreparedTxBase64(record: GeneratedPlanRecord): string | undefined {
+  if (!record.preparedActionId) return undefined;
+  const action = state.preparedActions.find((entry) => entry.id === record.preparedActionId);
+  if (!action) return undefined;
+  const raw = (action.params as Record<string, unknown> | undefined)?.transactionBase64;
+  return typeof raw === 'string' && raw.trim() ? raw : undefined;
+}
+
+async function enrichSimulationFactsForAgent(
+  record: GeneratedPlanRecord,
+  plan: AgentPlan,
+  facts: AgentReviewFactSet,
+  routePlan: AgentFactRoutePlan,
+): Promise<void> {
+  const route = routePlanRoute(routePlan, 'rpc.simulate_transaction');
+  if (!route) return;
+  const checkedAt = new Date().toISOString();
+  const txBase64 = extractPreparedTxBase64(record);
+  if (!txBase64) {
+    facts.simulation = {
+      state: route.status === 'required' ? 'warn' : 'missing',
+      source: 'deterministic',
+      checkedAt,
+      message: 'Simulation requested but no serialized transaction is on the record yet.',
+      detail: { routeStatus: route.status, routeReason: route.reason },
+    };
+    return;
+  }
+
+  const walletAddress = walletContextForAgent(record).address ?? '';
+  try {
+    const bytes = base64ToUint8Array(txBase64);
+    const versioned = tryDeserializeVersionedTx(bytes);
+    const legacy = versioned ? undefined : tryDeserializeLegacyTx(bytes);
+    if (!versioned && !legacy) {
+      throw new Error('Could not deserialize transaction bytes.');
+    }
+    const writableProgramIds = collectWritableProgramIds(versioned ?? legacy!);
+    const connection = browserActionConnection(record.cluster);
+    const simResult = versioned
+      ? await connection.simulateTransaction(versioned, { sigVerify: false, replaceRecentBlockhash: true })
+      : await connection.simulateTransaction(legacy!, undefined, false);
+    const evaluation = evaluateSimulationOutcome({
+      result: {
+        err: simResult.value.err,
+        logs: simResult.value.logs ?? null,
+        accounts: simResult.value.accounts ?? null,
+        unitsConsumed: simResult.value.unitsConsumed ?? null,
+      },
+      preWalletLamports: null,
+      postWalletLamports: null,
+      walletAddress,
+      planSolLamports: planAmountSolLamports(plan),
+      writableProgramIds,
+    });
+    facts.simulation = {
+      state: evaluation.state,
+      source: 'deterministic',
+      checkedAt,
+      message: evaluation.summary,
+      detail: {
+        ...evaluation.detail,
+        routeStatus: route.status,
+        routeReason: route.reason,
+      },
+    };
+  } catch (err) {
+    facts.simulation = {
+      state: route.status === 'required' ? 'warn' : 'missing',
+      source: 'deterministic',
+      checkedAt,
+      message: `Simulation could not run: ${redactSecrets(err instanceof Error ? err.message : String(err))}`,
+      detail: { routeStatus: route.status, routeReason: route.reason },
+    };
+  }
+}
+
+function tryDeserializeVersionedTx(bytes: Uint8Array): VersionedTransaction | undefined {
+  try {
+    return VersionedTransaction.deserialize(bytes);
+  } catch {
+    return undefined;
+  }
+}
+
+function tryDeserializeLegacyTx(bytes: Uint8Array): Transaction | undefined {
+  try {
+    return Transaction.from(bytes);
+  } catch {
+    return undefined;
+  }
+}
+
+function collectWritableProgramIds(tx: VersionedTransaction | Transaction): string[] {
+  const ids = new Set<string>();
+  if (tx instanceof VersionedTransaction) {
+    const message = tx.message;
+    const staticKeys = message.staticAccountKeys.map((k) => k.toBase58());
+    for (const ix of message.compiledInstructions) {
+      const programKey = staticKeys[ix.programIdIndex];
+      if (programKey) ids.add(programKey);
+    }
+  } else {
+    for (const ix of tx.instructions) {
+      ids.add(ix.programId.toBase58());
+    }
+  }
+  return Array.from(ids);
+}
+
+function planAmountSolLamports(plan: AgentPlan): number | null {
+  const candidates = [plan.parameters?.solAmount, plan.parameters?.amountSol, plan.parameters?.amount];
+  for (const value of candidates) {
+    if (typeof value === 'string' && value.trim()) {
+      const num = Number(value.trim());
+      if (Number.isFinite(num) && num >= 0) return Math.round(num * 1e9);
+    }
+  }
+  return null;
+}
+
+function base64ToUint8Array(value: string): Uint8Array {
+  if (typeof atob === 'function') {
+    const binary = atob(value);
+    const out = new Uint8Array(binary.length);
+    for (let i = 0; i < binary.length; i++) out[i] = binary.charCodeAt(i);
+    return out;
+  }
+  return Uint8Array.from(Buffer.from(value, 'base64'));
 }
 
 async function enrichConnectorFactsForAgent(
@@ -23918,11 +24355,11 @@ async function reviewRecurringPlan(
   const record = generatedRecordForRecurringPlan(plan, previousReview);
   const appliedPolicyIds = enabledUserAgentPolicies().map((policy) => policy.id);
   const deterministicFacts = await gatherAgentReviewFacts(record, { instruction: agentReviewInstruction(record, plan) });
-  const rawResult = await runAgentReview(record, deterministicFacts);
-  const result = normalizeAgentReviewResultForFacts(rawResult, plan, deterministicFacts, {
+  const orchestration = await runAgentReviewWithEvidence(record, plan, deterministicFacts);
+  const result = normalizeAgentReviewResultForFacts(orchestration.rawResult, plan, deterministicFacts, {
     instruction: agentReviewInstruction(record, plan),
   });
-  const review = agentReviewStateFromResult(result, previousReview, plan, appliedPolicyIds);
+  const review = agentReviewStateFromResult(result, previousReview, plan, appliedPolicyIds, orchestration);
   review.facts = mergeReviewFacts(deterministicFacts, result.evidence);
   return review;
 }
@@ -30358,6 +30795,167 @@ function bridgeOfflineMessage(): string {
   return `Local approval bridge is not running at ${compactEndpoint(state.bridgeUrl)}. Run ${NPM_EXEC_COMMAND}, keep that terminal open, then click Check local bridge.`;
 }
 
+const RAYDIUM_ADD_LIQUIDITY_SUB_ACTIONS = new Set(['cpmm-add', 'clmm-open', 'clmm-increase']);
+const RAYDIUM_PAIR_PREVIEW_FIELDS = new Set([
+  'subAction',
+  'poolId',
+  'poolType',
+  'positionMint',
+  'amountSide',
+  'tokenAAmount',
+  'tokenBAmount',
+  'maxTokenAAmount',
+  'maxTokenBAmount',
+  'lowerPrice',
+  'upperPrice',
+  'rangePreset',
+  'slippageBps',
+]);
+const raydiumPairPreviewTimers: Map<string, ReturnType<typeof setTimeout>> = new Map();
+const raydiumPairPreviewSeq: Map<string, number> = new Map();
+
+function isRaydiumAddLiquidityActive(templateId: string): { templateId: string; subAction: string } | undefined {
+  if (templateId !== 'connector-raydium-liquidity') return undefined;
+  const subAction = state.templateFields['subAction']?.trim() || 'cpmm-add';
+  if (!RAYDIUM_ADD_LIQUIDITY_SUB_ACTIONS.has(subAction)) return undefined;
+  return { templateId, subAction };
+}
+
+function scheduleRaydiumPairPreview(fieldId: string): void {
+  if (!RAYDIUM_PAIR_PREVIEW_FIELDS.has(fieldId)) return;
+  const template = selectedTemplate();
+  if (!template) return;
+  const active = isRaydiumAddLiquidityActive(template.id);
+  if (!active) return;
+  const existing = raydiumPairPreviewTimers.get(active.templateId);
+  if (existing) clearTimeout(existing);
+  const handle = setTimeout(() => {
+    raydiumPairPreviewTimers.delete(active.templateId);
+    void runRaydiumPairPreview(active.templateId, active.subAction).catch(() => {});
+  }, 250);
+  raydiumPairPreviewTimers.set(active.templateId, handle);
+}
+
+async function runRaydiumPairPreview(templateId: string, subAction: string): Promise<void> {
+  const fields = state.templateFields;
+  const poolId = fields['poolId']?.trim();
+  if (!poolId) {
+    delete state.templateFieldPairPreview[templateId];
+    render();
+    return;
+  }
+  const amountSide = (fields['amountSide']?.trim() === 'tokenB' ? 'tokenB' : 'tokenA') as 'tokenA' | 'tokenB';
+  const tokenAAmount = fields['tokenAAmount']?.trim();
+  const tokenBAmount = fields['tokenBAmount']?.trim();
+  const inputAmount = amountSide === 'tokenA' ? tokenAAmount : tokenBAmount;
+  if (!inputAmount) {
+    delete state.templateFieldPairPreview[templateId];
+    render();
+    return;
+  }
+  const poolType = fields['poolType']?.trim() === 'clmm' ? 'clmm' : 'cpmm';
+  if (poolType === 'clmm' && subAction === 'clmm-open') {
+    const preset = fields['rangePreset']?.trim() || 'balanced';
+    if (preset === 'custom' && (!fields['lowerPrice']?.trim() || !fields['upperPrice']?.trim())) {
+      delete state.templateFieldPairPreview[templateId];
+      render();
+      return;
+    }
+  }
+  if (poolType === 'clmm' && subAction === 'clmm-increase' && !fields['positionMint']?.trim()) {
+    delete state.templateFieldPairPreview[templateId];
+    render();
+    return;
+  }
+  const positionMint = fields['positionMint']?.trim();
+  const slippageBpsText = fields['slippageBps']?.trim();
+  const slippageBps = slippageBpsText && /^\d+$/.test(slippageBpsText) ? Number(slippageBpsText) : undefined;
+  const rangePreset = fields['rangePreset']?.trim();
+  const lowerPrice = fields['lowerPrice']?.trim();
+  const upperPrice = fields['upperPrice']?.trim();
+  const maxTokenAAmount = fields['maxTokenAAmount']?.trim();
+  const maxTokenBAmount = fields['maxTokenBAmount']?.trim();
+
+  const seq = (raydiumPairPreviewSeq.get(templateId) ?? 0) + 1;
+  raydiumPairPreviewSeq.set(templateId, seq);
+
+  const requestBody: Record<string, unknown> = {
+    poolId,
+    poolType,
+    amountSide,
+    ...(amountSide === 'tokenA' && tokenAAmount ? { tokenAAmount } : {}),
+    ...(amountSide === 'tokenB' && tokenBAmount ? { tokenBAmount } : {}),
+    ...(positionMint ? { positionMint } : {}),
+    ...(maxTokenAAmount ? { maxTokenAAmount } : {}),
+    ...(maxTokenBAmount ? { maxTokenBAmount } : {}),
+    ...(lowerPrice ? { lowerPrice } : {}),
+    ...(upperPrice ? { upperPrice } : {}),
+    ...(rangePreset ? { rangePreset } : {}),
+    ...(slippageBps !== undefined ? { slippageBps } : {}),
+  };
+
+  try {
+    const response = await bridgeRequest<{
+      preview?: {
+        tokenAmounts?: Array<{ mint?: string; amount?: string; symbol?: string; isEstimate?: boolean; maxAmount?: string }>;
+        maxTokenAAmount?: string;
+        maxTokenBAmount?: string;
+      };
+      pairLabel?: string;
+      amountSide?: 'tokenA' | 'tokenB';
+      pairedSide?: 'tokenA' | 'tokenB';
+    }>('/bridge/action/raydium-quote-add-liquidity', {
+      method: 'POST',
+      body: JSON.stringify(requestBody),
+    });
+
+    if (raydiumPairPreviewSeq.get(templateId) !== seq) return;
+
+    const tokenAmounts = response.preview?.tokenAmounts ?? [];
+    const pairedEntry = tokenAmounts.find((entry) => entry?.isEstimate);
+    if (!pairedEntry?.amount) {
+      delete state.templateFieldPairPreview[templateId];
+      render();
+      return;
+    }
+    const pairedMaxAmount = pairedEntry.maxAmount
+      ?? (response.pairedSide === 'tokenA' ? response.preview?.maxTokenAAmount : response.preview?.maxTokenBAmount);
+    const pairedSymbol = (pairedEntry.symbol && pairedEntry.symbol.trim())
+      || (pairedEntry.mint ? shortenMintLabel(pairedEntry.mint) : (response.pairedSide ?? 'paired'));
+    state.templateFieldPairPreview[templateId] = {
+      templateId,
+      pairLabel: response.pairLabel ?? '',
+      amountSide: response.amountSide ?? amountSide,
+      pairedSide: response.pairedSide ?? (amountSide === 'tokenA' ? 'tokenB' : 'tokenA'),
+      pairedSymbol,
+      pairedAmount: pairedEntry.amount,
+      ...(pairedMaxAmount ? { pairedMaxAmount } : {}),
+      fetchedAt: Date.now(),
+      estimateNote: 'estimated from pool curve; final amount confirmed at signing',
+    };
+    render();
+  } catch (error) {
+    if (raydiumPairPreviewSeq.get(templateId) !== seq) return;
+    state.templateFieldPairPreview[templateId] = {
+      templateId,
+      pairLabel: '',
+      amountSide,
+      pairedSide: amountSide === 'tokenA' ? 'tokenB' : 'tokenA',
+      pairedSymbol: '',
+      pairedAmount: '',
+      fetchedAt: Date.now(),
+      estimateNote: '',
+      error: error instanceof Error ? error.message : 'Failed to load paired-amount preview.',
+    };
+    render();
+  }
+}
+
+function shortenMintLabel(mint: string): string {
+  if (mint.length <= 12) return mint;
+  return `${mint.slice(0, 4)}…${mint.slice(-4)}`;
+}
+
 function isBridgeOfflineMessage(message: string): boolean {
   return message.startsWith('Local approval bridge is not running at ');
 }
@@ -32698,6 +33296,8 @@ function preparedActionDecisionLabels(action: PreparedAction): { approve: string
 }
 
 function approvalEffectCopy(action: PreparedAction): string {
+  const raydiumLiquidityCopy = raydiumAddLiquidityEffectCopy(action);
+  if (raydiumLiquidityCopy) return raydiumLiquidityCopy;
   if (canFinalizeCloudSolTransfer(action)) {
     return 'Agentic Cloud prepares and simulates the exact SOL transfer, your browser opens your wallet for that transaction only, then Agentic saves a finalization receipt. Agentic never receives signing authority.';
   }
@@ -32731,6 +33331,43 @@ function approvalEffectCopy(action: PreparedAction): string {
     return 'Your wallet signs a browser-local decision proof. The receipt stays on this device; no transaction is submitted by this proof.';
   }
   return 'Private local mode sends the prepared action to your local runtime. The connected wallet still controls the final signature or send request.';
+}
+
+function raydiumAddLiquidityEffectCopy(action: PreparedAction): string {
+  if (action.kind !== 'raydium_add_liquidity') return '';
+  const tokenA = connectorActionLiquidityTokenSymbol(action, 'tokenA');
+  const tokenB = connectorActionLiquidityTokenSymbol(action, 'tokenB');
+  const tokenAAmount = stringParam(action, 'tokenAAmount');
+  const tokenBAmount = stringParam(action, 'tokenBAmount');
+  const maxTokenAAmount = stringParam(action, 'maxTokenAAmount');
+  const maxTokenBAmount = stringParam(action, 'maxTokenBAmount');
+  const poolType = stringParam(action, 'poolType')?.toUpperCase() || 'CPMM';
+  const pair = tokenA && tokenB ? `${tokenA}/${tokenB}` : '';
+  const estimateFlag = action.params?.pairedAmountEstimate === true;
+  const amountSide = stringParam(action, 'amountSide') === 'tokenB' ? 'tokenB' : 'tokenA';
+  const pairedSide = amountSide === 'tokenA' ? 'tokenB' : 'tokenA';
+  const sideAmountText = (side: 'tokenA' | 'tokenB'): string => {
+    const amount = side === 'tokenA' ? tokenAAmount : tokenBAmount;
+    const symbol = side === 'tokenA' ? tokenA : tokenB;
+    if (!amount || !symbol) return '';
+    const prefix = estimateFlag && side === pairedSide ? '~' : '';
+    return `${prefix}${amount} ${symbol}`;
+  };
+  const aText = sideAmountText('tokenA');
+  const bText = sideAmountText('tokenB');
+  if (!aText && !bText) return '';
+  const depositText = [aText, bText].filter(Boolean).join(' + ');
+  const poolLabel = pair ? `Raydium ${poolType} ${pair}` : `Raydium ${poolType}`;
+  const slippageParts: string[] = [];
+  if (maxTokenAAmount && tokenA) slippageParts.push(`${maxTokenAAmount} ${tokenA}`);
+  if (maxTokenBAmount && tokenB) slippageParts.push(`${maxTokenBAmount} ${tokenB}`);
+  const slippageSentence = slippageParts.length
+    ? ` Slippage allows up to ${slippageParts.join(' / ')}.`
+    : '';
+  const tail = isExecutableBrowserAction(action) || isCloudBrowserExecutableAction(action)
+    ? ' Final amounts confirmed when your wallet signs; pending transactions stay here with a Solscan link.'
+    : ' Final amounts confirmed when your wallet signs.';
+  return `Deposit ${depositText} into ${poolLabel}.${slippageSentence}${tail}`;
 }
 
 const CLOUD_TRANSACTION_FINALIZATION_KINDS = new Set<PreparedActionKind>([

@@ -84,6 +84,14 @@ export function buildSaveSdkClient(options: BuildSaveSdkClientOptions): SaveClie
       ? new PublicKey(options.mainPoolAddress)
       : sdk.MAIN_POOL_ADDRESS;
     const programId = sdk.SOLEND_PRODUCTION_PROGRAM_ID;
+    // Lending market authority PDA. Solend deposit/withdraw/borrow/repay
+    // instructions all read pool.authorityAddress and call new PublicKey on
+    // it; an empty string here throws "Invalid public key input" before the
+    // wallet ever sees a transaction.
+    const [poolAuthority] = PublicKey.findProgramAddressSync(
+      [mainPoolAddress.toBytes()],
+      programId,
+    );
     // Pull every Solend reserve account owned by the program and filtered to this
     // lending market. memcmp offset 10 is `lendingMarket` per the on-chain layout
     // (1 byte version + 1 byte unused + 8 byte lastUpdate.slot + 1 byte stale = 10
@@ -132,7 +140,7 @@ export function buildSaveSdkClient(options: BuildSaveSdkClientOptions): SaveClie
       address: mainPoolAddress.toBase58(),
       owner: '',
       name: 'Main Pool',
-      authorityAddress: '',
+      authorityAddress: poolAuthority.toBase58(),
       reserves,
     };
     cached = { pool, loadedAt: Date.now() };

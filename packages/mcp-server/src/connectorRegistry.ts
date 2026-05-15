@@ -322,6 +322,7 @@ export const CONNECTOR_REGISTRY: ConnectorRegistryEntry[] = [
       'solana_raydium_pool_snapshot',
       'solana_raydium_wallet_positions',
       'solana_raydium_position_detail',
+      'solana_raydium_quote_add_liquidity',
     ],
     actionTools: [
       'solana_prepare_raydium_add_liquidity',

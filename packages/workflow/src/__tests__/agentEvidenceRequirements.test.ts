@@ -117,11 +117,11 @@ describe('agent evidence requirements', () => {
     }
   });
 
-  it('synthesizes missing required routes when the profile demands them', () => {
+  it('does not synthesize routes the router did not select (decorate-only)', () => {
     const routePlan = planAgentReviewFactRoutes({
       actionType: 'jupiter_swap',
       hasWallet: true,
-      hasTokenMints: false, // no token mints -> birdeye routes not selected
+      hasTokenMints: false, // no token mints -> birdeye token routes not selected
       connector: {
         id: 'jupiter',
         name: 'Jupiter',
@@ -139,10 +139,14 @@ describe('agent evidence requirements', () => {
       connectorReadReady: true,
       isWalletScoped: true,
     });
-    const synth = requirements.find((req) => req.routeId === 'birdeye.price_multi');
-    expect(synth).toBeDefined();
-    expect(synth?.status).toBe('required');
-    expect(synth?.blocking).toBe(true);
-    expect(synth?.reason.toLowerCase()).toContain('did not select');
+    // birdeye.price_multi is not in the route plan (no token mints), so it must not appear in requirements.
+    expect(requirements.find((req) => req.routeId === 'birdeye.price_multi')).toBeUndefined();
+    // Jupiter quote route wasn't selected by router either (actionType="jupiter_swap" doesn't match the swap_dex
+    // route trigger today). Decorate-only contract: we must NOT fabricate it as a requirement.
+    expect(requirements.find((req) => req.routeId === 'jupiter.swap_order_preview')).toBeUndefined();
+    // The connector read route is still required (it was selected by the router).
+    const connectorReq = requirements.find((req) => req.routeId === 'protocol_connector.read_facts');
+    expect(connectorReq?.blocking).toBe(true);
+    expect(connectorReq?.connectorProfile).toBe('swap_dex');
   });
 });

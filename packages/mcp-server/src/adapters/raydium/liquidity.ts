@@ -117,6 +117,11 @@ export const raydiumAddLiquidityAction: AdapterAction<RaydiumAddLiquidityPrepare
       slippageBps,
     };
     const preview = await getRaydiumClient().previewAddLiquidity(ctx.connection, preparedInput);
+    const derived = derivePairedAmountsFromPreview(preview, snapshot);
+    const tokenAAmount = amounts.tokenAAmount ?? derived.tokenAAmount;
+    const tokenBAmount = amounts.tokenBAmount ?? derived.tokenBAmount;
+    const maxTokenAAmount = input.maxTokenAAmount ?? preview.maxTokenAAmount;
+    const maxTokenBAmount = input.maxTokenBAmount ?? preview.maxTokenBAmount;
     const params = {
       adapter: RAYDIUM_ADAPTER_ID,
       connectorId: RAYDIUM_ADAPTER_ID,
@@ -128,10 +133,10 @@ export const raydiumAddLiquidityAction: AdapterAction<RaydiumAddLiquidityPrepare
       poolType,
       ...(positionMint !== undefined && { positionMint }),
       amountSide: amounts.amountSide,
-      ...(amounts.tokenAAmount !== undefined && { tokenAAmount: amounts.tokenAAmount }),
-      ...(amounts.tokenBAmount !== undefined && { tokenBAmount: amounts.tokenBAmount }),
-      ...(input.maxTokenAAmount !== undefined && { maxTokenAAmount: input.maxTokenAAmount }),
-      ...(input.maxTokenBAmount !== undefined && { maxTokenBAmount: input.maxTokenBAmount }),
+      ...(tokenAAmount !== undefined && { tokenAAmount }),
+      ...(tokenBAmount !== undefined && { tokenBAmount }),
+      ...(maxTokenAAmount !== undefined && { maxTokenAAmount }),
+      ...(maxTokenBAmount !== undefined && { maxTokenBAmount }),
       ...(range.lowerTick !== undefined && { lowerTick: range.lowerTick }),
       ...(range.upperTick !== undefined && { upperTick: range.upperTick }),
       ...(range.lowerPrice !== undefined && { lowerPrice: range.lowerPrice }),
@@ -145,6 +150,10 @@ export const raydiumAddLiquidityAction: AdapterAction<RaydiumAddLiquidityPrepare
       lpMint: preview.lpMint,
       programIds: RAYDIUM_PROGRAM_IDS,
       warnings: preview.warnings,
+      ...(preview.pairedAmountEstimate ? { pairedAmountEstimate: true } : {}),
+      ...(preview.pairedAmountSource !== undefined && { pairedAmountSource: preview.pairedAmountSource }),
+      ...(preview.pairedAmountAt !== undefined && { pairedAmountAt: preview.pairedAmountAt }),
+      pairedSide: pairedSideFromAmountSide(amounts.amountSide),
       preparedSnapshotAt: new Date().toISOString(),
     };
     return {
@@ -454,8 +463,80 @@ function formatPresetPrice(value: number): string {
   return value.toPrecision(12).replace(/(?:\.0+|(\.\d*?)0+)$/, '$1');
 }
 
+export async function quoteRaydiumAddLiquidity(
+  input: RaydiumAddLiquidityPrepareInput,
+  ctx: Parameters<typeof raydiumAddLiquidityAction.prepare>[1],
+): Promise<{
+  preview: Record<string, unknown>;
+  pairLabel: string;
+  poolType: 'cpmm' | 'clmm';
+  amountSide: 'tokenA' | 'tokenB';
+  pairedSide: 'tokenA' | 'tokenB';
+}> {
+  const walletAddress = await ctx.backend.getAddress();
+  const poolId = parsePublicKey(input.poolId, 'poolId');
+  const poolType = parsePoolType(input.poolType);
+  const positionMint = optionalPublicKey(input.positionMint, 'positionMint');
+  const slippageBps = validateSlippageBps(input.slippageBps, ctx.config.mainnet.maxSlippageBps);
+  const amounts = normalizeAddLiquidityAmounts(input);
+  const snapshot = await getRaydiumPoolSnapshot(ctx, { poolId, poolType });
+  assertPoolType(snapshot, poolType);
+  const range = resolveRaydiumClmmRange(input, snapshot, positionMint);
+  const normalized = {
+    ...input,
+    poolType,
+    positionMint,
+    ...amounts,
+    ...range,
+  };
+  validateAddAmounts(normalized, { requireClmmMax: false });
+
+  const preparedInput: RaydiumAddLiquidityInput = {
+    walletAddress,
+    poolId,
+    poolType,
+    ...(positionMint !== undefined && { positionMint }),
+    ...(amounts.tokenAAmount !== undefined && { tokenAAmount: amounts.tokenAAmount }),
+    ...(amounts.tokenBAmount !== undefined && { tokenBAmount: amounts.tokenBAmount }),
+    ...(input.maxTokenAAmount !== undefined && { maxTokenAAmount: input.maxTokenAAmount }),
+    ...(input.maxTokenBAmount !== undefined && { maxTokenBAmount: input.maxTokenBAmount }),
+    ...(range.lowerTick !== undefined && { lowerTick: range.lowerTick }),
+    ...(range.upperTick !== undefined && { upperTick: range.upperTick }),
+    ...(range.lowerPrice !== undefined && { lowerPrice: range.lowerPrice }),
+    ...(range.upperPrice !== undefined && { upperPrice: range.upperPrice }),
+    ...(input.rangePreset !== undefined && { rangePreset: input.rangePreset }),
+    slippageBps,
+  };
+  const preview = await getRaydiumClient().previewAddLiquidity(ctx.connection, preparedInput);
+  return {
+    preview: stripUndefined({ ...preview }) as Record<string, unknown>,
+    pairLabel: raydiumPoolPairLabel(snapshot),
+    poolType,
+    amountSide: amounts.amountSide,
+    pairedSide: amounts.amountSide === 'tokenA' ? 'tokenB' : 'tokenA',
+  };
+}
+
 function raydiumPoolPairLabel(snapshot: RaydiumPoolSnapshot): string {
   const tokenA = snapshot.mintA.symbol || shortAddress(snapshot.mintA.mint);
   const tokenB = snapshot.mintB.symbol || shortAddress(snapshot.mintB.mint);
   return `${tokenA}/${tokenB}`;
+}
+
+function derivePairedAmountsFromPreview(
+  preview: { tokenAmounts?: { mint: string; amount?: string; isEstimate?: boolean }[] | undefined },
+  snapshot: RaydiumPoolSnapshot,
+): { tokenAAmount?: string; tokenBAmount?: string } {
+  const amounts = preview.tokenAmounts ?? [];
+  const result: { tokenAAmount?: string; tokenBAmount?: string } = {};
+  for (const entry of amounts) {
+    if (!entry?.isEstimate || !entry.amount) continue;
+    if (entry.mint === snapshot.mintA.mint) result.tokenAAmount = entry.amount;
+    else if (entry.mint === snapshot.mintB.mint) result.tokenBAmount = entry.amount;
+  }
+  return result;
+}
+
+function pairedSideFromAmountSide(amountSide: 'tokenA' | 'tokenB'): 'tokenA' | 'tokenB' {
+  return amountSide === 'tokenA' ? 'tokenB' : 'tokenA';
 }

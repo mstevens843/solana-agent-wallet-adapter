@@ -59,6 +59,8 @@ export interface RaydiumTokenAmount {
   decimals?: number;
   symbol?: string;
   rawAmount?: string;
+  isEstimate?: boolean;
+  maxAmount?: string;
 }
 
 export interface RaydiumPosition {
@@ -118,6 +120,11 @@ export interface RaydiumActionPreview {
   rewardMints?: string[];
   quote?: Record<string, unknown>;
   warnings?: string[];
+  maxTokenAAmount?: string;
+  maxTokenBAmount?: string;
+  pairedAmountEstimate?: boolean;
+  pairedAmountSource?: 'cpmm_curve' | 'clmm_liquidity_math';
+  pairedAmountAt?: string;
 }
 
 export interface RaydiumBuildTransactionResult {
@@ -348,7 +355,19 @@ class RaydiumSdkClient implements RaydiumClient {
 
   async previewAddLiquidity(connection: Connection, input: RaydiumAddLiquidityInput): Promise<RaydiumActionPreview> {
     return withRaydiumErrors('preview add liquidity', async () => {
-      const { raydium } = await loadRaydium(connection, input.walletAddress);
+      const { raydium, sdk } = await loadRaydium(connection, input.walletAddress);
+      if (input.poolType === 'cpmm') {
+        const { poolInfo, poolKeys, rpcData } = await raydium.cpmm.getPoolInfoFromRpc(input.poolId);
+        const snapshot = poolSnapshotFromCpmm(poolInfo, poolKeys);
+        const base = previewLiquidity(input, snapshot);
+        return enrichAddLiquidityPreview(base, { raydium, sdk, connection, poolInfo, rpcData }, input, snapshot);
+      }
+      if (input.poolType === 'clmm') {
+        const { poolInfo, poolKeys } = await raydium.clmm.getPoolInfoFromRpc(input.poolId);
+        const snapshot = poolSnapshotFromClmm(poolInfo, poolKeys);
+        const base = previewLiquidity(input, snapshot);
+        return enrichAddLiquidityPreview(base, { raydium, sdk, connection, poolInfo }, input, snapshot);
+      }
       const snapshot = await fetchPoolSnapshot(raydium, input.poolId, input.poolType);
       return previewLiquidity(input, snapshot);
     });
@@ -404,7 +423,7 @@ class RaydiumSdkClient implements RaydiumClient {
     const wallet = new PublicKey(input.walletAddress);
 
     if (input.poolType === 'cpmm') {
-      const { poolInfo, poolKeys } = await raydium.cpmm.getPoolInfoFromRpc(input.poolId);
+      const { poolInfo, poolKeys, rpcData } = await raydium.cpmm.getPoolInfoFromRpc(input.poolId);
       const baseIn = Boolean(input.tokenAAmount);
       const amount = input.tokenAAmount ?? input.tokenBAmount;
       if (!amount) throw new Error('Raydium CPMM add-liquidity requires tokenAAmount or tokenBAmount.');
@@ -419,7 +438,10 @@ class RaydiumSdkClient implements RaydiumClient {
         txVersion: sdk.TxVersion.LEGACY,
         feePayer: wallet,
       });
-      return serializeBuiltTransaction(connection, input.walletAddress, built, previewLiquidity(input, poolSnapshotFromCpmm(poolInfo, poolKeys)));
+      const snapshot = poolSnapshotFromCpmm(poolInfo, poolKeys);
+      const basePreview = previewLiquidity(input, snapshot);
+      const preview = await enrichAddLiquidityPreview(basePreview, { raydium, sdk, connection, poolInfo, rpcData }, input, snapshot);
+      return serializeBuiltTransaction(connection, input.walletAddress, built, preview);
     }
 
     const pool = await raydium.clmm.getPoolInfoFromRpc(input.poolId);
@@ -456,7 +478,10 @@ class RaydiumSdkClient implements RaydiumClient {
           tickUpper: await tickForBoundary(sdk, poolInfo, input, 'upper'),
           withMetadata: 'create',
         });
-    return serializeBuiltTransaction(connection, input.walletAddress, built, previewLiquidity(input, poolSnapshotFromClmm(poolInfo, pool.poolKeys)));
+    const snapshot = poolSnapshotFromClmm(poolInfo, pool.poolKeys);
+    const basePreview = previewLiquidity(input, snapshot);
+    const preview = await enrichAddLiquidityPreview(basePreview, { raydium, sdk, connection, poolInfo }, input, snapshot);
+    return serializeBuiltTransaction(connection, input.walletAddress, built, preview);
   }
 
   async buildRemoveLiquidityTransaction(
@@ -843,6 +868,189 @@ function previewLiquidity(
     },
     warnings: rangeWarnings(snapshot.tickCurrent, tickRange(input)),
   };
+}
+
+interface AddLiquiditySdkContext {
+  raydium: RaydiumInstance;
+  sdk: RaydiumSdkModule;
+  connection: Connection;
+  poolInfo: any;
+  rpcData?: any;
+}
+
+async function enrichAddLiquidityPreview(
+  base: RaydiumActionPreview,
+  ctx: AddLiquiditySdkContext,
+  input: RaydiumAddLiquidityInput,
+  snapshot: RaydiumPoolSnapshot,
+): Promise<RaydiumActionPreview> {
+  try {
+    if (input.poolType === 'cpmm') return await enrichCpmmAddLiquidityPreview(base, ctx, input, snapshot);
+    if (input.poolType === 'clmm') return await enrichClmmAddLiquidityPreview(base, ctx, input, snapshot);
+  } catch {
+    // Fall back to the un-enriched preview if SDK math fails; the prepare flow must still succeed.
+  }
+  return base;
+}
+
+async function enrichCpmmAddLiquidityPreview(
+  base: RaydiumActionPreview,
+  ctx: AddLiquiditySdkContext,
+  input: RaydiumAddLiquidityInput,
+  snapshot: RaydiumPoolSnapshot,
+): Promise<RaydiumActionPreview> {
+  if (input.tokenAAmount && input.tokenBAmount) return base;
+  const amount = input.tokenAAmount ?? input.tokenBAmount;
+  if (!amount) return base;
+  if (!ctx.rpcData?.baseReserve || !ctx.rpcData?.quoteReserve) return base;
+
+  const baseIn = Boolean(input.tokenAAmount);
+  const epochInfo = await ctx.connection.getEpochInfo();
+  const slippage = new ctx.sdk.Percent(input.slippageBps, 10_000);
+  const result = ctx.raydium.cpmm.computePairAmount({
+    poolInfo: ctx.poolInfo,
+    baseReserve: ctx.rpcData.baseReserve,
+    quoteReserve: ctx.rpcData.quoteReserve,
+    amount,
+    slippage,
+    epochInfo,
+    baseIn,
+  });
+
+  const userMint = baseIn ? snapshot.mintA : snapshot.mintB;
+  const pairedMint = baseIn ? snapshot.mintB : snapshot.mintA;
+  const pairedAmount = formatRawAmount(toBigIntFromBN(result.anotherAmount?.amount), pairedMint.decimals);
+  const pairedMaxRaw = result.maxAnotherAmount?.amount ?? result.anotherAmount?.amount;
+  const pairedMax = formatRawAmount(toBigIntFromBN(pairedMaxRaw), pairedMint.decimals);
+  if (!pairedAmount) return base;
+
+  const tokenAmounts: RaydiumTokenAmount[] = [
+    stripUndefinedTokenAmount({
+      mint: userMint.mint,
+      amount,
+      decimals: userMint.decimals,
+      symbol: userMint.symbol,
+    }),
+    stripUndefinedTokenAmount({
+      mint: pairedMint.mint,
+      amount: pairedAmount,
+      decimals: pairedMint.decimals,
+      symbol: pairedMint.symbol,
+      isEstimate: true,
+      ...(pairedMax ? { maxAmount: pairedMax } : {}),
+    }),
+  ];
+
+  return stripUndefined({
+    ...base,
+    tokenAmounts,
+    ...(baseIn
+      ? { maxTokenBAmount: input.maxTokenBAmount ?? pairedMax }
+      : { maxTokenAAmount: input.maxTokenAAmount ?? pairedMax }),
+    pairedAmountEstimate: true,
+    pairedAmountSource: 'cpmm_curve',
+    pairedAmountAt: new Date().toISOString(),
+  }) as RaydiumActionPreview;
+}
+
+async function enrichClmmAddLiquidityPreview(
+  base: RaydiumActionPreview,
+  ctx: AddLiquiditySdkContext,
+  input: RaydiumAddLiquidityInput,
+  snapshot: RaydiumPoolSnapshot,
+): Promise<RaydiumActionPreview> {
+  if (input.tokenAAmount && input.tokenBAmount) return base;
+  const amount = input.tokenAAmount ?? input.tokenBAmount;
+  if (!amount) return base;
+  if (!Number.isInteger(input.lowerTick) || !Number.isInteger(input.upperTick)) return base;
+  if (!ctx.sdk.PoolUtils?.getLiquidityAmountOutFromAmountIn) return base;
+
+  const inputA = Boolean(input.tokenAAmount);
+  const baseDecimals = inputA ? snapshot.mintA.decimals : snapshot.mintB.decimals;
+  const epochInfo = await ctx.connection.getEpochInfo();
+  const amountBN = ctx.sdk.toBN(parseDecimalAmount(amount, baseDecimals, 'Raydium CLMM amount').toString(), 0);
+  const result = await ctx.sdk.PoolUtils.getLiquidityAmountOutFromAmountIn({
+    poolInfo: ctx.poolInfo,
+    inputA,
+    tickLower: input.lowerTick as number,
+    tickUpper: input.upperTick as number,
+    amount: amountBN,
+    slippage: input.slippageBps / 10_000,
+    add: true,
+    epochInfo,
+    amountHasFee: true,
+  });
+
+  const decimalsA = snapshot.mintA.decimals;
+  const decimalsB = snapshot.mintB.decimals;
+  const exactA = formatRawAmount(toBigIntFromBN(result.amountA?.amount), decimalsA);
+  const exactB = formatRawAmount(toBigIntFromBN(result.amountB?.amount), decimalsB);
+  const maxA = formatRawAmount(toBigIntFromBN(result.amountSlippageA?.amount), decimalsA);
+  const maxB = formatRawAmount(toBigIntFromBN(result.amountSlippageB?.amount), decimalsB);
+
+  const tokenAmounts: RaydiumTokenAmount[] = [];
+  if (toBigIntFromBN(result.amountA?.amount) > 0n) {
+    tokenAmounts.push(stripUndefinedTokenAmount({
+      mint: snapshot.mintA.mint,
+      amount: exactA,
+      decimals: decimalsA,
+      symbol: snapshot.mintA.symbol,
+      isEstimate: !inputA,
+      ...(maxA ? { maxAmount: maxA } : {}),
+    }));
+  }
+  if (toBigIntFromBN(result.amountB?.amount) > 0n) {
+    tokenAmounts.push(stripUndefinedTokenAmount({
+      mint: snapshot.mintB.mint,
+      amount: exactB,
+      decimals: decimalsB,
+      symbol: snapshot.mintB.symbol,
+      isEstimate: inputA,
+      ...(maxB ? { maxAmount: maxB } : {}),
+    }));
+  }
+  if (tokenAmounts.length === 0) return base;
+
+  return stripUndefined({
+    ...base,
+    tokenAmounts,
+    ...(maxA ? { maxTokenAAmount: input.maxTokenAAmount ?? maxA } : {}),
+    ...(maxB ? { maxTokenBAmount: input.maxTokenBAmount ?? maxB } : {}),
+    pairedAmountEstimate: true,
+    pairedAmountSource: 'clmm_liquidity_math',
+    pairedAmountAt: new Date().toISOString(),
+  }) as RaydiumActionPreview;
+}
+
+function toBigIntFromBN(value: unknown): bigint {
+  if (value === undefined || value === null) return 0n;
+  if (typeof value === 'bigint') return value;
+  if (typeof value === 'number') return BigInt(Math.trunc(value));
+  if (typeof value === 'string') return value ? BigInt(value) : 0n;
+  if (typeof (value as { toString?: () => string }).toString === 'function') {
+    const text = (value as { toString: () => string }).toString();
+    return text && /^-?\d+$/.test(text) ? BigInt(text) : 0n;
+  }
+  return 0n;
+}
+
+function stripUndefinedTokenAmount(entry: RaydiumTokenAmount): RaydiumTokenAmount {
+  const cleaned: RaydiumTokenAmount = { mint: entry.mint, amount: entry.amount };
+  if (entry.decimals !== undefined) cleaned.decimals = entry.decimals;
+  if (entry.symbol !== undefined) cleaned.symbol = entry.symbol;
+  if (entry.rawAmount !== undefined) cleaned.rawAmount = entry.rawAmount;
+  if (entry.isEstimate) cleaned.isEstimate = true;
+  if (entry.maxAmount !== undefined) cleaned.maxAmount = entry.maxAmount;
+  return cleaned;
+}
+
+function stripUndefined<T extends Record<string, unknown>>(record: T): T {
+  const cleaned: Record<string, unknown> = {};
+  for (const [key, value] of Object.entries(record)) {
+    if (value === undefined) continue;
+    cleaned[key] = value;
+  }
+  return cleaned as T;
 }
 
 function previewFarmFromInfo(

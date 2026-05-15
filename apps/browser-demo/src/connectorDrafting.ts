@@ -1461,6 +1461,13 @@ function marginfiBankField(required: boolean): AgentPlanTemplateField {
   });
 }
 
+function marginfiAccountField(): AgentPlanTemplateField {
+  return formField('marginfiAccount', 'MarginFi account (optional)', false, {
+    placeholder: 'Paste from app.marginfi.com if auto-discovery fails',
+    helperText: 'Required only when the SDK cannot auto-discover your account.',
+  });
+}
+
 function marginfiForms(): ConnectorActionForm[] {
   const amountField = formField('amount', 'Amount', true);
   const healthField = formField('minHealthFactor', 'Minimum health factor');
@@ -1468,24 +1475,28 @@ function marginfiForms(): ConnectorActionForm[] {
     connectorActionForm('marginfi', 'deposit', 'Deposit', 'connector-marginfi-deposit', 'Supply tokens to a MarginFi bank.', 'first-class-adapter', 'queueable', [
       marginfiBankField(true),
       amountField,
+      marginfiAccountField(),
       healthField,
       formField('memo', 'Reason'),
     ], false, 'marginfi_deposit'),
     connectorActionForm('marginfi', 'withdraw', 'Withdraw', 'connector-marginfi-withdraw', 'Redeem supplied tokens from a MarginFi bank.', 'first-class-adapter', 'queueable', [
       marginfiBankField(true),
       formField('amount', 'Amount'),
+      marginfiAccountField(),
       healthField,
       formField('memo', 'Reason'),
     ], false, 'marginfi_withdraw'),
     connectorActionForm('marginfi', 'borrow', 'Borrow', 'connector-marginfi-borrow', 'Borrow against MarginFi collateral.', 'first-class-adapter', 'queueable', [
       marginfiBankField(true),
       amountField,
+      marginfiAccountField(),
       healthField,
       formField('memo', 'Reason'),
     ], false, 'marginfi_borrow'),
     connectorActionForm('marginfi', 'repay', 'Repay', 'connector-marginfi-repay', 'Repay a MarginFi loan.', 'first-class-adapter', 'queueable', [
       marginfiBankField(true),
       formField('amount', 'Amount'),
+      marginfiAccountField(),
       healthField,
       formField('memo', 'Reason'),
     ], false, 'marginfi_repay'),

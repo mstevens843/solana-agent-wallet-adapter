@@ -83,3 +83,27 @@ export async function resolveLuloDecimals(
     `Could not resolve decimals for Lulo mint ${mintAddress}. Confirm the mint exists on the configured cluster.`,
   );
 }
+
+export interface LuloKnownPool {
+  mint: string;
+  symbol: string;
+  decimals: number;
+}
+
+export const LULO_KNOWN_POOLS: LuloKnownPool[] = [
+  { mint: 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v', symbol: 'USDC', decimals: 6 },
+  { mint: 'Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB', symbol: 'USDT', decimals: 6 },
+  { mint: '2b1kV6DkPAnxd5ixfnxCpjxmKwqjjaYmCZfHsFu24GXo', symbol: 'PYUSD', decimals: 6 },
+  { mint: 'USDSwr9ApdHk5bvJKMjzff41FfuX8bSxdKcR81vTwcA', symbol: 'USDS', decimals: 6 },
+];
+
+export function resolveLuloMint(input: string): { mint: string; decimalsHint?: number } {
+  const trimmed = input.trim();
+  const known = LULO_KNOWN_POOLS.find(
+    (pool) => pool.symbol.toLowerCase() === trimmed.toLowerCase() || pool.mint === trimmed,
+  );
+  if (known) {
+    return { mint: known.mint, decimalsHint: known.decimals };
+  }
+  return { mint: trimmed };
+}

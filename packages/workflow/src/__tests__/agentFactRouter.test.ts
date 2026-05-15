@@ -100,6 +100,118 @@ describe('agent review fact router', () => {
     ]));
   });
 
+  it('tags rpc.simulate_transaction (required) when an outcome question is asked AND a prepared tx exists', () => {
+    const plan = planAgentReviewFactRoutes({
+      actionType: 'blink_action',
+      question: 'Will this drain my wallet?',
+      hasWallet: true,
+      hasPreparedTx: true,
+    });
+    const sim = plan.routes.find((route) => route.id === 'rpc.simulate_transaction');
+    expect(sim).toBeDefined();
+    expect(sim?.status).toBe('required');
+    expect(sim?.provider).toBe('rpc');
+    expect(sim?.need).toBe('tx_simulation');
+  });
+
+  it('tags rpc.simulate_transaction (required) for blink_action even without an outcome question', () => {
+    const plan = planAgentReviewFactRoutes({
+      actionType: 'blink_action',
+      userNotes: 'fetched from xyz.com blink endpoint',
+      hasWallet: true,
+      hasPreparedTx: true,
+    });
+    const sim = plan.routes.find((route) => route.id === 'rpc.simulate_transaction');
+    expect(sim).toBeDefined();
+    expect(sim?.status).toBe('required');
+    expect(sim?.reason.toLowerCase()).toContain('untrusted');
+  });
+
+  it('tags rpc.simulate_transaction (required) for custom_transaction with prepared tx', () => {
+    const plan = planAgentReviewFactRoutes({
+      actionType: 'custom_transaction',
+      hasWallet: true,
+      hasPreparedTx: true,
+    });
+    expect(plan.routes.find((route) => route.id === 'rpc.simulate_transaction')?.status).toBe('required');
+  });
+
+  it('tags rpc.simulate_transaction (optional) for high-risk profile with prepared tx', () => {
+    const plan = planAgentReviewFactRoutes({
+      actionType: 'drift_perps_open',
+      hasWallet: true,
+      hasPreparedTx: true,
+      riskProfile: 'perps_margin',
+    });
+    expect(plan.routes.find((route) => route.id === 'rpc.simulate_transaction')?.status).toBe('optional');
+  });
+
+  it('does NOT tag rpc.simulate_transaction when no prepared tx is available (even with outcome question)', () => {
+    const plan = planAgentReviewFactRoutes({
+      actionType: 'blink_action',
+      question: 'will this drain my wallet?',
+      hasWallet: true,
+      hasPreparedTx: false,
+    });
+    expect(plan.routes.some((route) => route.id === 'rpc.simulate_transaction')).toBe(false);
+    // Should be reported as a skipped need so the gate surfaces it as needs_input.
+    expect(plan.skipped.some((entry) => entry.need === 'tx_simulation')).toBe(true);
+  });
+
+  it('does NOT tag rpc.simulate_transaction for a routine first-class adapter without outcome question', () => {
+    const plan = planAgentReviewFactRoutes({
+      actionType: 'marginfi_deposit',
+      userNotes: 'deposit 100 USDC',
+      hasWallet: true,
+      hasPreparedTx: false,
+    });
+    expect(plan.routes.some((route) => route.id === 'rpc.simulate_transaction')).toBe(false);
+    expect(plan.skipped.some((entry) => entry.need === 'tx_simulation')).toBe(false);
+  });
+
+  it('does NOT tag rpc.simulate_transaction for the phone-plan threshold case', () => {
+    const plan = planAgentReviewFactRoutes({
+      actionType: 'recurring_payment',
+      userNotes: 'check this phone plan if its less than 20 dollar approve this plan. for tmobile. send to uscc.',
+      hasWallet: true,
+      hasPreparedTx: false,
+    });
+    expect(plan.routes.some((route) => route.id === 'rpc.simulate_transaction')).toBe(false);
+    expect(plan.skipped.some((entry) => entry.need === 'tx_simulation')).toBe(false);
+  });
+
+  it('does NOT auto-tag Helius or BirdEye for an external-pricing recurring_payment (e.g., phone plan)', () => {
+    const plan = planAgentReviewFactRoutes({
+      actionType: 'recurring_payment',
+      userNotes: 'check this phone plan if its less than 20 dollar approve this plan. for tmobile. send to uscc.',
+      hasWallet: true,
+      hasTokenMints: false,
+    });
+    const providers = new Set(plan.routes.map((route) => route.provider));
+    expect(providers.has('helius')).toBe(false);
+    expect(providers.has('birdeye')).toBe(false);
+    // The only deterministic requirement should be wallet identity.
+    expect(plan.routes.some((route) => route.id === 'wallet.connected_public_key' && route.status === 'required')).toBe(true);
+  });
+
+  it('does NOT tag Helius for an imperative "send to X" without history wording', () => {
+    const plan = planAgentReviewFactRoutes({
+      actionType: 'transfer_sol',
+      userNotes: 'send 0.5 SOL to alice.sol',
+      hasWallet: true,
+    });
+    expect(plan.routes.some((route) => route.id === 'helius.getTransfersByAddress')).toBe(false);
+  });
+
+  it('still tags Helius when the question explicitly references history (already paid)', () => {
+    const plan = planAgentReviewFactRoutes({
+      actionType: 'transfer_spl',
+      question: 'Did I already pay this recipient recently?',
+      hasWallet: true,
+    });
+    expect(plan.routes.some((route) => route.id === 'helius.getTransfersByAddress' && route.status === 'required')).toBe(true);
+  });
+
   it('records skipped wallet-scoped routes when no wallet is available', () => {
     const plan = planAgentReviewFactRoutes({
       actionType: 'transfer_sol',

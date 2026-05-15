@@ -38,6 +38,7 @@ import {
   DRIFT_VAULTS_PROGRAM_IDS,
   type DriftWithdrawUnit,
 } from './constants.js';
+import { convertLegacyAnchorIdl } from './legacyIdl.js';
 import { fetchDriftVaultCatalog, type DriftVaultCatalogEntry } from './vaultCatalog.js';
 
 interface BuildDriftVaultClientOptions {
@@ -470,7 +471,8 @@ function withdrawAmount(input: DriftBuildVaultRequestWithdrawInput): BN {
 }
 
 function driftVaultProgram(vaultProgramId: PublicKey, provider: anchor.AnchorProvider): anchor.Program {
-  const idl = { ...IDL, address: vaultProgramId.toBase58() } as unknown as anchor.Idl;
+  const baseIdl = { ...IDL, address: vaultProgramId.toBase58() };
+  const idl = convertLegacyAnchorIdl(baseIdl) as unknown as anchor.Idl;
   return new anchor.Program(idl, provider);
 }
 

@@ -731,6 +731,35 @@ export function registerActionTools(
   );
 
   server.registerTool(
+    'solana_raydium_quote_add_liquidity',
+    {
+      description:
+        'Preview a Raydium CPMM or CLMM add-liquidity request. Returns the paired-token amount the user would deposit (CPMM curve math or CLMM LiquidityMath) plus slippage-bounded maxes. Read-only: no prepared action, no storage, no signing. Use to display "≈ X USDC will also be deposited" before opening a wallet approval. Mainnet-beta only.',
+      inputSchema: {
+        ...raydiumLiquidityInputSchema(),
+        positionMint: z.string().min(32).optional().describe('Existing CLMM position mint. Omit only when opening a new CLMM position.'),
+        amount: z.string().min(1).optional(),
+        amountSide: z.enum(['tokenA', 'tokenB']).optional(),
+        tokenAAmount: z.string().min(1).optional(),
+        tokenBAmount: z.string().min(1).optional(),
+        maxTokenAAmount: z.string().min(1).optional(),
+        maxTokenBAmount: z.string().min(1).optional(),
+        rangePreset: z.enum(['narrow', 'balanced', 'wide', 'custom']).optional(),
+        lowerTick: z.number().int().optional(),
+        upperTick: z.number().int().optional(),
+        lowerPrice: z.string().min(1).optional(),
+        upperPrice: z.string().min(1).optional(),
+        slippageBps: z.number().int().min(0).optional(),
+      },
+    },
+    async (input) => traceTool(
+      'solana_raydium_quote_add_liquidity',
+      { cluster: options.config.cluster, input },
+      async () => jsonReply(await service.quoteRaydiumAddLiquidity(input)),
+    ),
+  );
+
+  server.registerTool(
     'solana_prepare_raydium_add_liquidity',
     {
       description:
@@ -2523,7 +2552,7 @@ export function registerActionTools(
         "Create a manual-approval inbox item that deposits a token into Lulo Protected, Boost, or Regular. Prepares wallet approval work only; does not sign, submit, or grant delegated authority. Natural-language synonyms: 'supply to Lulo', 'lend on Lulo', 'earn yield on Lulo Protected'. Mainnet-beta only.",
       inputSchema: {
         amount: z.string().min(1).describe('Human token amount (e.g. 10).'),
-        mintAddress: z.string().min(32).describe('SPL token mint address.'),
+        mintAddress: z.string().min(1).describe('SPL token mint address or supported symbol (USDC, USDT, PYUSD, USDS).'),
         depositType: z.enum(['protected', 'boost', 'regular']).optional().describe('Defaults to protected.'),
         priorityFee: z.number().int().nonnegative().optional().describe('Optional micro-lamport priority fee.'),
         dueAt: z.string().datetime().optional(),
@@ -2552,7 +2581,7 @@ export function registerActionTools(
       description:
         "Create a manual-approval inbox item that initiates a Lulo Protected or Regular withdrawal. Regular withdrawals require a separate complete step after the cooldown. Prepares wallet approval work only; does not sign, submit, or grant delegated authority. Mainnet-beta only.",
       inputSchema: {
-        mintAddress: z.string().min(32),
+        mintAddress: z.string().min(1).describe('SPL token mint address or supported symbol (USDC, USDT, PYUSD, USDS).'),
         withdrawType: z.enum(['protected', 'regular']).optional().describe('Defaults to protected.'),
         amount: z.string().min(1).optional().describe('Human token amount. Provide amount OR percentage, not both.'),
         percentage: z.number().int().min(1).max(100).optional().describe('Percentage of position to withdraw (defaults to 100 when amount is omitted).'),
@@ -2582,7 +2611,7 @@ export function registerActionTools(
       description:
         'Create a manual-approval inbox item that completes a Lulo regular withdrawal once the cooldown has elapsed. Requires the withdrawalId returned from the initiating withdrawal. Prepares wallet approval work only; does not sign, submit, or grant delegated authority. Mainnet-beta only.',
       inputSchema: {
-        mintAddress: z.string().min(32),
+        mintAddress: z.string().min(1).describe('SPL token mint address or supported symbol (USDC, USDT, PYUSD, USDS). Must match the mint of the original initiating withdrawal.'),
         withdrawalId: z.string().min(1).describe('Withdrawal id returned by Lulo when the regular withdraw was initiated.'),
         dueAt: z.string().datetime().optional(),
         note: z.string().max(500).optional(),

@@ -1,7 +1,7 @@
 import type { DAppAdapterContext } from '../types.js';
 import { AdapterError } from '../types.js';
 import {
-  getTensorClient,
+  resolveTensorClient,
   redactApiKey,
   type TensorNftDetail,
   type TensorWalletExposure,
@@ -23,7 +23,7 @@ export async function getWalletNfts(
   try {
     const walletAddress =
       optionalPublicKey(input.walletAddress, 'walletAddress') ?? (await ctx.backend.getAddress());
-    return await getTensorClient().fetchWalletNfts(ctx.connection, {
+    return await resolveTensorClient(ctx).fetchWalletNfts(ctx.connection, {
       walletAddress,
       ...(input.collectionId !== undefined && input.collectionId.trim() !== '' && { collectionId: input.collectionId.trim() }),
       includeCompressed: input.includeCompressed ?? true,
@@ -39,7 +39,7 @@ export async function getNftDetail(
 ): Promise<TensorNftDetail> {
   const idRef = requireMintOrAssetId(input);
   try {
-    return await getTensorClient().fetchNftDetail(ctx.connection, idRef);
+    return await resolveTensorClient(ctx).fetchNftDetail(ctx.connection, idRef);
   } catch (err) {
     throw wrapAsAdapterError(err, 'fetchNftDetail');
   }
@@ -52,7 +52,7 @@ export async function getWalletMarketplaceExposure(
   try {
     const walletAddress =
       optionalPublicKey(input.walletAddress, 'walletAddress') ?? (await ctx.backend.getAddress());
-    return await getTensorClient().fetchWalletExposure(ctx.connection, walletAddress);
+    return await resolveTensorClient(ctx).fetchWalletExposure(ctx.connection, walletAddress);
   } catch (err) {
     throw wrapAsAdapterError(err, 'fetchWalletExposure');
   }

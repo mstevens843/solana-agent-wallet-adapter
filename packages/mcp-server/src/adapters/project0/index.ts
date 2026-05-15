@@ -13,7 +13,7 @@ import type { AdapterRead, DAppAdapter } from '../types.js';
 const banksRead: AdapterRead<{ bankAddress?: string; bankMint?: string; token?: string }, unknown> = {
   id: 'banks',
   async read(input, ctx) {
-    return getProject0Client(project0ApiBaseUrl(ctx.config)).listBanks(input);
+    return getProject0Client(project0ApiBaseUrl(ctx.config)).listBanks(input, ctx.connection);
   },
 };
 

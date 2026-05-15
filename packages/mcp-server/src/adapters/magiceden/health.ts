@@ -1,13 +1,14 @@
-import { AdapterError } from '../types.js';
+import { AdapterError, type DAppAdapterContext } from '../types.js';
 
-import { getMagicedenClient, type MagicedenApiHealthSnapshot } from './client.js';
+import { resolveMagicedenClient, type MagicedenApiHealthSnapshot } from './client.js';
 import { MAGICEDEN_ADAPTER_ID, MAGICEDEN_API_TRANSITION_WARNING } from './constants.js';
 
-export async function getApiHealthSnapshot(input: {
-  includeTradingEndpoints?: boolean;
-}): Promise<MagicedenApiHealthSnapshot> {
+export async function getApiHealthSnapshot(
+  input: { includeTradingEndpoints?: boolean },
+  ctx?: DAppAdapterContext,
+): Promise<MagicedenApiHealthSnapshot> {
   const includeTradingEndpoints = input.includeTradingEndpoints !== false;
-  const snapshot = await getMagicedenClient().getApiHealth({ includeTradingEndpoints });
+  const snapshot = await resolveMagicedenClient(ctx).getApiHealth({ includeTradingEndpoints });
   const warnings = snapshot.warnings.includes(MAGICEDEN_API_TRANSITION_WARNING)
     ? snapshot.warnings
     : [...snapshot.warnings, MAGICEDEN_API_TRANSITION_WARNING];

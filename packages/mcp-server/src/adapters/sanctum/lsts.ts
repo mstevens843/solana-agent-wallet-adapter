@@ -1,6 +1,6 @@
 import type { DAppAdapterContext } from '../types.js';
 import { AdapterError } from '../types.js';
-import { getSanctumClient, type SanctumLstListSnapshot, type SanctumLstSnapshot } from './client.js';
+import { resolveSanctumClient, type SanctumLstListSnapshot, type SanctumLstSnapshot } from './client.js';
 import {
   SANCTUM_ADAPTER_ID,
   SANCTUM_INF_MINT,
@@ -10,21 +10,25 @@ import {
 
 export async function listSanctumLsts(
   input: { includeDisabled?: boolean } = {},
+  ctx?: DAppAdapterContext,
 ): Promise<SanctumLstListSnapshot> {
-  return getSanctumClient().getLsts({ includeDisabled: input.includeDisabled === true });
+  return resolveSanctumClient(ctx).getLsts({ includeDisabled: input.includeDisabled === true });
 }
 
-export async function getSanctumLstSnapshot(input: {
-  lstMint?: string;
-  mintOrSymbol?: string;
-  includeApy?: boolean;
-  apyLimit?: number;
-}): Promise<SanctumLstSnapshot> {
+export async function getSanctumLstSnapshot(
+  input: {
+    lstMint?: string;
+    mintOrSymbol?: string;
+    includeApy?: boolean;
+    apyLimit?: number;
+  },
+  ctx?: DAppAdapterContext,
+): Promise<SanctumLstSnapshot> {
   const mintOrSymbol = (input.lstMint ?? input.mintOrSymbol ?? '').trim();
   if (!mintOrSymbol) {
     throw new AdapterError(SANCTUM_ADAPTER_ID, 'invalid_request', 'Sanctum LST snapshot requires lstMint or mintOrSymbol.');
   }
-  return getSanctumClient().getLst({
+  return resolveSanctumClient(ctx).getLst({
     mintOrSymbol,
     includeApy: input.includeApy === true,
     ...(input.apyLimit !== undefined && { apyLimit: input.apyLimit }),
@@ -33,10 +37,10 @@ export async function getSanctumLstSnapshot(input: {
 
 export async function getSanctumInfinityPoolSnapshot(
   input: { includeComposition?: boolean } = {},
-  _ctx?: DAppAdapterContext,
+  ctx?: DAppAdapterContext,
 ): Promise<Record<string, unknown>> {
   const includeComposition = input.includeComposition !== false;
-  const lsts = await getSanctumClient().getLsts({ includeDisabled: false });
+  const lsts = await resolveSanctumClient(ctx).getLsts({ includeDisabled: false });
   const composition = includeComposition
     ? lsts.rows.map((row) => ({
         mint: row.mint,

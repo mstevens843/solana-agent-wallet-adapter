@@ -367,6 +367,25 @@ describe('classifyTransactionFailure — invalid transaction', () => {
   }
 });
 
+describe('classifyTransactionFailure — bridge account null', () => {
+  it('classifies Wormhole "account info is null" as bridge-route failure', () => {
+    const result = classify('account info is null');
+    expectKind(result, 'invalid_transaction');
+    expect(result.title).toBe('Bridge route not available');
+    expect(result.message).toContain('Recreate the draft');
+    expect(result.retryableSignedBroadcast).toBe(false);
+    expect(result.maybeSubmitted).toBe(false);
+    expect(result.safeToAskWalletAgain).toBe(false);
+    expect(result.shouldCheckChainBeforeFailing).toBe(false);
+  });
+
+  it('matches even with surrounding context from the SDK stack', () => {
+    const result = classify(new Error('Error: account info is null'));
+    expectKind(result, 'invalid_transaction');
+    expect(result.title).toBe('Bridge route not available');
+  });
+});
+
 describe('classifyTransactionFailure — unknown', () => {
   it('without signed bytes: maybeSubmitted false, safe to ask again', () => {
     const result = classify('Some weird error nobody mapped');

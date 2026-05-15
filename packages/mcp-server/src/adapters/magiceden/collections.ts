@@ -1,7 +1,7 @@
 import type { DAppAdapterContext } from '../types.js';
 
 import {
-  getMagicedenClient,
+  resolveMagicedenClient,
   type MagicedenCollectionBids,
   type MagicedenCollectionListings,
   type MagicedenCollectionSummary,
@@ -26,16 +26,16 @@ export interface CollectionSnapshotResult {
 
 export async function getTopCollections(
   input: { limit?: number; timeRange?: string },
-  _ctx: DAppAdapterContext,
+  ctx: DAppAdapterContext,
 ): Promise<MagicedenTopCollections> {
-  return getMagicedenClient().getTopCollections(input);
+  return resolveMagicedenClient(ctx).getTopCollections(input);
 }
 
 export async function getCollectionSnapshot(
   input: CollectionSnapshotInput,
-  _ctx: DAppAdapterContext,
+  ctx: DAppAdapterContext,
 ): Promise<CollectionSnapshotResult> {
-  const client = getMagicedenClient();
+  const client = resolveMagicedenClient(ctx);
   const wantListings = input.includeListings !== false;
   const wantBids = input.includeBids !== false;
   const [summary, listings, bids] = await Promise.all([
@@ -67,9 +67,9 @@ export async function getCollectionSnapshot(
 
 export async function getCollectionListings(
   input: { collectionSymbol?: string; collectionId?: string; limit?: number },
-  _ctx: DAppAdapterContext,
+  ctx: DAppAdapterContext,
 ): Promise<MagicedenCollectionListings> {
-  return getMagicedenClient().getCollectionListings({
+  return resolveMagicedenClient(ctx).getCollectionListings({
     ...(input.collectionSymbol ? { collectionSymbol: input.collectionSymbol } : {}),
     ...(input.collectionId ? { collectionId: input.collectionId } : {}),
     ...(input.limit !== undefined ? { limit: input.limit } : {}),
@@ -78,9 +78,9 @@ export async function getCollectionListings(
 
 export async function getCollectionBids(
   input: { collectionSymbol?: string; collectionId?: string; limit?: number },
-  _ctx: DAppAdapterContext,
+  ctx: DAppAdapterContext,
 ): Promise<MagicedenCollectionBids> {
-  return getMagicedenClient().getCollectionBids({
+  return resolveMagicedenClient(ctx).getCollectionBids({
     ...(input.collectionSymbol ? { collectionSymbol: input.collectionSymbol } : {}),
     ...(input.collectionId ? { collectionId: input.collectionId } : {}),
     ...(input.limit !== undefined ? { limit: input.limit } : {}),
@@ -89,9 +89,9 @@ export async function getCollectionBids(
 
 export async function getRecentActivity(
   input: { collectionSymbol?: string; collectionId?: string; limit?: number },
-  _ctx: DAppAdapterContext,
+  ctx: DAppAdapterContext,
 ): Promise<MagicedenRecentActivity> {
-  return getMagicedenClient().getRecentActivity({
+  return resolveMagicedenClient(ctx).getRecentActivity({
     ...(input.collectionSymbol ? { collectionSymbol: input.collectionSymbol } : {}),
     ...(input.collectionId ? { collectionId: input.collectionId } : {}),
     ...(input.limit !== undefined ? { limit: input.limit } : {}),
@@ -100,9 +100,9 @@ export async function getRecentActivity(
 
 export async function getNftDetail(
   input: { mintAddress: string; includeListing?: boolean; includeBids?: boolean },
-  _ctx: DAppAdapterContext,
+  ctx: DAppAdapterContext,
 ): Promise<MagicedenNftDetail> {
-  return getMagicedenClient().getNftDetail({
+  return resolveMagicedenClient(ctx).getNftDetail({
     mintAddress: input.mintAddress,
     ...(input.includeListing !== undefined ? { includeListing: input.includeListing } : {}),
     ...(input.includeBids !== undefined ? { includeBids: input.includeBids } : {}),

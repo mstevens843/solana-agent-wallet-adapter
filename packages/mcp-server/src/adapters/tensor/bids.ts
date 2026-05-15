@@ -5,7 +5,7 @@ import type { PreparedAction } from '../../preparedActions.js';
 import type { AdapterAction, AdapterExecuteResult, AdapterPrepareResult } from '../types.js';
 import { AdapterError } from '../types.js';
 import {
-  getTensorClient,
+  resolveTensorClient,
   withTensorErrors,
   type TensorBidInput,
   type TensorCancelBidInput,
@@ -104,7 +104,7 @@ export const tensorBidAction: AdapterAction<TensorBidPrepareInput> = {
       compressed,
     };
     const built = await withTensorErrors('buildBidTx', () =>
-      getTensorClient().buildBidTx(ctx.connection, bidInput),
+      resolveTensorClient(ctx).buildBidTx(ctx.connection, bidInput),
     );
 
     const params: Record<string, unknown> = stripUndefined({
@@ -198,7 +198,7 @@ export const tensorBidAction: AdapterAction<TensorBidPrepareInput> = {
       compressed,
     };
     const built = await withTensorErrors('buildBidTx', () =>
-      getTensorClient().buildBidTx(ctx.connection, bidInput),
+      resolveTensorClient(ctx).buildBidTx(ctx.connection, bidInput),
     );
     const summary = `Tensor bid on collection ${shortAddress(collectionId)}`;
     const txid = await ctx.signAndBroadcast(built.transactionBase64, summary);
@@ -257,7 +257,7 @@ export const tensorCancelBidAction: AdapterAction<TensorCancelBidPrepareInput> =
       ...(bid.collectionId !== undefined && { collectionId: bid.collectionId }),
     };
     const built = await withTensorErrors('buildCancelBidTx', () =>
-      getTensorClient().buildCancelBidTx(ctx.connection, cancelInput),
+      resolveTensorClient(ctx).buildCancelBidTx(ctx.connection, cancelInput),
     );
 
     const params: Record<string, unknown> = stripUndefined({
@@ -303,7 +303,7 @@ export const tensorCancelBidAction: AdapterAction<TensorCancelBidPrepareInput> =
     }
     const bidId = requireStringParam(action, 'bidId');
     const refreshed = await withTensorErrors('refreshBid', () =>
-      getTensorClient().refreshBid(ctx.connection, { bidId }),
+      resolveTensorClient(ctx).refreshBid(ctx.connection, { bidId }),
     );
     if (!refreshed) {
       throw new AdapterError(
@@ -328,7 +328,7 @@ export const tensorCancelBidAction: AdapterAction<TensorCancelBidPrepareInput> =
       }),
     };
     const built = await withTensorErrors('buildCancelBidTx', () =>
-      getTensorClient().buildCancelBidTx(ctx.connection, cancelInput),
+      resolveTensorClient(ctx).buildCancelBidTx(ctx.connection, cancelInput),
     );
     const summary = `Cancel Tensor bid ${shortAddress(bidId)}`;
     const txid = await ctx.signAndBroadcast(built.transactionBase64, summary);

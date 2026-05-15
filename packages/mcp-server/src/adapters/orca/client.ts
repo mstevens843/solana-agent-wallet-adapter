@@ -161,7 +161,7 @@ export interface OrcaClient {
   ): Promise<OrcaBuildTransactionResult>;
 }
 
-interface LoadedOrcaSdk {
+export interface LoadedOrcaSdk {
   orca: AnyRecord;
   kit: SolanaKitModule;
   whirlpoolsClient: AnyRecord;
@@ -369,9 +369,11 @@ class OrcaSdkClient implements OrcaClient {
   ): Promise<OrcaBuildTransactionResult> {
     return withOrcaErrors('build increase-liquidity transaction', async () => {
       const sdk = await this.load();
-      const { instructions, quote, snapshot, positionMint, tickRange } = await this.increaseLiquidityInstructions(connection, input);
+      const authority = sdk.kit.createNoopSigner(sdk.kit.address(input.walletAddress));
+      const { instructions, quote, snapshot, positionMint, tickRange } =
+        await this.increaseLiquidityInstructions(connection, input, authority);
       return {
-        transactionBase64: await buildTransactionBase64(sdk, connection, input.walletAddress, instructions),
+        transactionBase64: await buildTransactionBase64(sdk, connection, authority, instructions),
         preview: increasePreview(sdk, snapshot, input, quote, positionMint, tickRange),
       };
     });
@@ -381,57 +383,69 @@ class OrcaSdkClient implements OrcaClient {
     connection: Connection,
     input: OrcaDecreaseLiquidityInput,
   ): Promise<OrcaBuildTransactionResult> {
-    const sdk = await this.load();
-    const { instructions, quote, snapshot, position } = await this.decreaseLiquidityInstructions(connection, input);
-    return {
-      transactionBase64: await buildTransactionBase64(sdk, connection, input.walletAddress, instructions),
-      preview: decreasePreview(sdk, snapshot, input, position, quote),
-    };
+    return withOrcaErrors('build decrease-liquidity transaction', async () => {
+      const sdk = await this.load();
+      const authority = sdk.kit.createNoopSigner(sdk.kit.address(input.walletAddress));
+      const { instructions, quote, snapshot, position } =
+        await this.decreaseLiquidityInstructions(connection, input, authority);
+      return {
+        transactionBase64: await buildTransactionBase64(sdk, connection, authority, instructions),
+        preview: decreasePreview(sdk, snapshot, input, position, quote),
+      };
+    });
   }
 
   async buildCollectFeesTransaction(
     connection: Connection,
     input: OrcaCollectInput,
   ): Promise<OrcaBuildTransactionResult> {
-    const sdk = await this.load();
-    const { harvested, snapshot } = await this.harvestInstructions(connection, input);
-    const instructions = filterHarvestInstructions(sdk, harvested.instructions, 'fees');
-    assertHarvestCollectInstruction(sdk, instructions, 'fees');
-    return {
-      transactionBase64: await buildTransactionBase64(sdk, connection, input.walletAddress, instructions),
-      preview: collectFeesPreview(harvested.feesQuote, snapshot, input),
-    };
+    return withOrcaErrors('build collect-fees transaction', async () => {
+      const sdk = await this.load();
+      const authority = sdk.kit.createNoopSigner(sdk.kit.address(input.walletAddress));
+      const { harvested, snapshot } = await this.harvestInstructions(connection, input, authority);
+      const instructions = filterHarvestInstructions(sdk, harvested.instructions, 'fees');
+      assertHarvestCollectInstruction(sdk, instructions, 'fees');
+      return {
+        transactionBase64: await buildTransactionBase64(sdk, connection, authority, instructions),
+        preview: collectFeesPreview(harvested.feesQuote, snapshot, input),
+      };
+    });
   }
 
   async buildCollectRewardsTransaction(
     connection: Connection,
     input: OrcaCollectInput,
   ): Promise<OrcaBuildTransactionResult> {
-    const sdk = await this.load();
-    const { harvested, snapshot } = await this.harvestInstructions(connection, input);
-    const instructions = filterHarvestInstructions(sdk, harvested.instructions, 'rewards');
-    assertHarvestCollectInstruction(sdk, instructions, 'rewards');
-    return {
-      transactionBase64: await buildTransactionBase64(sdk, connection, input.walletAddress, instructions),
-      preview: collectRewardsPreview(harvested.rewardsQuote, snapshot, input),
-    };
+    return withOrcaErrors('build collect-rewards transaction', async () => {
+      const sdk = await this.load();
+      const authority = sdk.kit.createNoopSigner(sdk.kit.address(input.walletAddress));
+      const { harvested, snapshot } = await this.harvestInstructions(connection, input, authority);
+      const instructions = filterHarvestInstructions(sdk, harvested.instructions, 'rewards');
+      assertHarvestCollectInstruction(sdk, instructions, 'rewards');
+      return {
+        transactionBase64: await buildTransactionBase64(sdk, connection, authority, instructions),
+        preview: collectRewardsPreview(harvested.rewardsQuote, snapshot, input),
+      };
+    });
   }
 
   private async increaseLiquidityInstructions(
     connection: Connection,
     input: OrcaIncreaseLiquidityInput,
+    providedAuthority?: unknown,
   ): Promise<{
     instructions: unknown[];
     quote: unknown;
     snapshot: OrcaWhirlpoolSnapshot;
     positionMint?: string;
     tickRange: { lowerTick: number; upperTick: number };
+    authority: unknown;
   }> {
     const sdk = await this.load();
     const rpc = this.rpc(sdk, connection);
     const snapshot = await this.getWhirlpoolSnapshot(connection, input.whirlpoolAddress);
     const param = liquidityIncreaseParam(input, snapshot);
-    const authority = sdk.kit.createNoopSigner(sdk.kit.address(input.walletAddress));
+    const authority = providedAuthority ?? sdk.kit.createNoopSigner(sdk.kit.address(input.walletAddress));
 
     if (input.positionMint) {
       const position = await this.getPositionDetail(connection, input.positionMint, input.whirlpoolAddress);
@@ -453,6 +467,7 @@ class OrcaSdkClient implements OrcaClient {
         snapshot,
         positionMint: input.positionMint,
         tickRange: { lowerTick: position.tickLowerIndex, upperTick: position.tickUpperIndex },
+        authority,
       };
     }
 
@@ -477,24 +492,27 @@ class OrcaSdkClient implements OrcaClient {
       snapshot,
       positionMint: asOptionalAddress(built.positionMint),
       tickRange: { lowerTick, upperTick },
+      authority,
     };
   }
 
   private async decreaseLiquidityInstructions(
     connection: Connection,
     input: OrcaDecreaseLiquidityInput,
+    providedAuthority?: unknown,
   ): Promise<{
     instructions: unknown[];
     quote: unknown;
     snapshot: OrcaWhirlpoolSnapshot;
     position: OrcaPosition;
+    authority: unknown;
   }> {
     const sdk = await this.load();
     const rpc = this.rpc(sdk, connection);
     const position = await this.getPositionDetail(connection, input.positionMint, input.whirlpoolAddress);
     const snapshot = await this.getWhirlpoolSnapshot(connection, position.whirlpoolAddress);
     const param = decreaseLiquidityParam(input, position);
-    const authority = sdk.kit.createNoopSigner(sdk.kit.address(input.walletAddress));
+    const authority = providedAuthority ?? sdk.kit.createNoopSigner(sdk.kit.address(input.walletAddress));
     const decreaseLiquidityInstructions = requiredFunction(
       sdk.orca.decreaseLiquidityInstructions,
       'decreaseLiquidityInstructions',
@@ -511,18 +529,20 @@ class OrcaSdkClient implements OrcaClient {
       quote: built.quote,
       snapshot,
       position,
+      authority,
     };
   }
 
   private async harvestInstructions(
     connection: Connection,
     input: OrcaCollectInput,
-  ): Promise<{ harvested: AnyRecord; snapshot: OrcaWhirlpoolSnapshot; position: OrcaPosition }> {
+    providedAuthority?: unknown,
+  ): Promise<{ harvested: AnyRecord; snapshot: OrcaWhirlpoolSnapshot; position: OrcaPosition; authority: unknown }> {
     const sdk = await this.load();
     const rpc = this.rpc(sdk, connection);
     const position = await this.getPositionDetail(connection, input.positionMint, input.whirlpoolAddress);
     const snapshot = await this.getWhirlpoolSnapshot(connection, position.whirlpoolAddress);
-    const authority = sdk.kit.createNoopSigner(sdk.kit.address(input.walletAddress));
+    const authority = providedAuthority ?? sdk.kit.createNoopSigner(sdk.kit.address(input.walletAddress));
     const harvestPositionInstructions = requiredFunction(
       sdk.orca.harvestPositionInstructions,
       'harvestPositionInstructions',
@@ -532,7 +552,7 @@ class OrcaSdkClient implements OrcaClient {
       sdk.kit.address(input.positionMint),
       authority,
     );
-    return { harvested: harvested as AnyRecord, snapshot, position };
+    return { harvested: harvested as AnyRecord, snapshot, position, authority };
   }
 
   private async snapshotFromAccount(
@@ -587,6 +607,10 @@ class OrcaSdkClient implements OrcaClient {
     return this.loaded;
   }
 
+  resetLoadedSdkForTesting(): void {
+    this.loaded = undefined;
+  }
+
   private rpc(sdk: LoadedOrcaSdk, connection: Connection): unknown {
     const endpoint = typeof connection.rpcEndpoint === 'string' && connection.rpcEndpoint.trim()
       ? connection.rpcEndpoint
@@ -598,7 +622,7 @@ class OrcaSdkClient implements OrcaClient {
   }
 }
 
-async function loadOrcaSdk(): Promise<LoadedOrcaSdk> {
+const defaultLoadOrcaSdk = async (): Promise<LoadedOrcaSdk> => {
   const reason = resolveOrcaUnavailableReason();
   if (reason) {
     throw new AdapterError(ORCA_ADAPTER_ID, 'unsupported_method', `Orca SDK is unavailable: ${reason}`);
@@ -618,6 +642,16 @@ async function loadOrcaSdk(): Promise<LoadedOrcaSdk> {
     whirlpoolsClient: whirlpoolsClient as AnyRecord,
     whirlpoolsCore: whirlpoolsCore as AnyRecord,
   };
+};
+
+let loadOrcaSdk: () => Promise<LoadedOrcaSdk> = defaultLoadOrcaSdk;
+
+export function setLoadOrcaSdkForTesting(next: () => Promise<LoadedOrcaSdk>): void {
+  loadOrcaSdk = next;
+}
+
+export function resetLoadOrcaSdkForTesting(): void {
+  loadOrcaSdk = defaultLoadOrcaSdk;
 }
 
 async function importResolved(requireFrom: NodeRequire, specifier: string): Promise<unknown> {
@@ -721,8 +755,8 @@ function friendlyOrcaError(error: unknown, operation: string): Error {
   if (message.includes('#5508000')) {
     return new AdapterError(
       ORCA_ADAPTER_ID,
-      'quote_failed',
-      `Orca ${operation} failed while quoting liquidity. Check the amount, price range, and paired token max, then refresh the pool and try again. Solana error #5508000.`,
+      'duplicate_signer',
+      `Orca ${operation} failed: multiple distinct signers were bound to the wallet address. This is an internal bug; please report it. Solana error #5508000.`,
     );
   }
   return error instanceof Error ? error : new Error(message);
@@ -731,12 +765,11 @@ function friendlyOrcaError(error: unknown, operation: string): Error {
 async function buildTransactionBase64(
   sdk: LoadedOrcaSdk,
   connection: Connection,
-  walletAddress: string,
+  feePayer: unknown,
   instructions: unknown[],
 ): Promise<string> {
   const latest = await connection.getLatestBlockhash('confirmed');
   const kit = sdk.kit as unknown as Record<string, any>;
-  const feePayer = kit.createNoopSigner(kit.address(walletAddress));
   let message = kit.createTransactionMessage({ version: 0 });
   message = kit.setTransactionMessageFeePayerSigner(feePayer, message);
   message = kit.setTransactionMessageLifetimeUsingBlockhash({

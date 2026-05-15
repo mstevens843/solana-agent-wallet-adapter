@@ -88,6 +88,7 @@ export interface CloudWorkspaceDeleteStore {
 export const CLOUD_PREFERENCE_NAMESPACES = [
   'agent-policies',
   'protocol-connectors',
+  'protocol-connector-secrets',
   'safety-rails',
   'failure-policies',
   'custom-tokens',

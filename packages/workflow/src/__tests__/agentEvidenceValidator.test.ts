@@ -148,6 +148,40 @@ describe('validateAgentReviewDecision — golden scenarios', () => {
     expect(final.decision).toBe('needs_input');
   });
 
+  it('approve is allowed when gate passes and AI drove decision from external research (no internal ids)', () => {
+    // External-fact threshold approval like "approve this T-Mobile plan if it's under $20".
+    // The gate has only wallet identity (no Helius, no BirdEye — router was correctly silent).
+    // The AI did web research and approved. Validator must respect the gate's pass.
+    const reqs = [requirement({ routeId: 'wallet.connected_public_key', need: 'wallet_identity', provider: 'wallet', ttlMs: Number.POSITIVE_INFINITY })];
+    const facts = [fact({ id: 'fact.wallet.connected_public_key', routeId: 'wallet.connected_public_key', label: 'Wallet', tone: 'good' })];
+    const gate = passingGate(reqs, facts);
+    expect(gate.decision).toBe('pass');
+    const ai = aiResult({
+      decision: 'approve',
+      reason: 'T-Mobile Essentials is $15/month, which is under your $20 threshold.',
+      evidence: {
+        research: { status: 'checked', required: true },
+        sources: [{ title: 'T-Mobile Essentials', url: 'https://www.t-mobile.com/cell-phone-plans/essentials' }],
+        findings: [
+          { label: 'Plan rate', value: '$15.00/month', tone: 'good' },
+          { label: 'Threshold check', value: '$15 < $20', tone: 'good' },
+        ],
+        // AI cites no internal evidenceFactIds — its citation is the research sources above.
+        decisionContract: {
+          decision: 'approve',
+          reason: 'Research-backed',
+          summary: 'ok',
+          evidenceFactIds: [],
+          blockingFactIds: [],
+          missingFactIds: [],
+        },
+      },
+    });
+    const { final, violations } = validateAgentReviewDecision({ aiResult: ai, gate, facts, requirements: reqs });
+    expect(final.decision).toBe('approve');
+    expect(violations).toEqual([]);
+  });
+
   it('approve is allowed when gate passes and AI cites real fact ids', () => {
     const reqs = [requirement({ routeId: 'jupiter.swap_order_preview', need: 'swap_quote', provider: 'jupiter' })];
     const facts = [fact({ id: 'fact.jupiter.quote', routeId: 'jupiter.swap_order_preview', label: 'Quote' })];

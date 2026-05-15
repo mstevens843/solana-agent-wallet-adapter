@@ -8,6 +8,7 @@ import {
   RAYDIUM_WEBSITE,
 } from './constants.js';
 import {
+  quoteRaydiumAddLiquidity,
   raydiumAddLiquidityAction,
   raydiumCollectFeesAction,
   raydiumRemoveLiquidityAction,
@@ -79,6 +80,7 @@ export type {
   RaydiumFarmPrepareInput,
   RaydiumRemoveLiquidityPrepareInput,
 };
+export { quoteRaydiumAddLiquidity };
 export {
   RAYDIUM_ADAPTER_ID,
   RAYDIUM_DESCRIPTION,

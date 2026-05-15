@@ -85,10 +85,21 @@ import {
 import { WorkflowService, type WorkflowStore as OneTimeWorkflowStore } from './workflowService.js';
 import {
   AdapterError,
+  createDefaultConnectorPreparer,
   createStatelessConnectorPreparer,
+  type ConnectorSecretsLoader,
   type ConnectorTransactionPreparer,
   type StatelessConnectorTransactionPreparer,
 } from './prepareConnectorTransaction.js';
+import {
+  ConnectorSecretsError,
+  createConnectorSecretsService,
+  emptyConnectorSecretsSummary,
+  isByoKeyConnectorId,
+  resolveConnectorSecretsKek,
+  type ByoKeyConnectorId,
+  type ConnectorSecretsService,
+} from './connectorSecrets.js';
 import { createWorkflowApiHandler } from './workflowRoutes.js';
 import {
   buildKaminoSdkClient,
@@ -330,10 +341,17 @@ export function createCloudApiRouter(options: CloudApiRouterOptions = {}): Cloud
     return session ? { walletAddress: session.walletAddress, sessionId: session.tokenHash } : null;
   };
   const workflowStore = requireOneTimeWorkflowStore(store);
-  const workflowService = new WorkflowService(workflowStore, {
-    ...(options.connectorPreparer ? { connectorPreparer: options.connectorPreparer } : {}),
-  });
-  const statelessConnectorPreparer = options.statelessConnectorPreparer ?? createStatelessConnectorPreparer();
+  const connectorSecretsService = buildConnectorSecretsService(store);
+  const secretsLoader: ConnectorSecretsLoader | undefined = connectorSecretsService
+    ? (wallet) => connectorSecretsService.loadAll(wallet)
+    : undefined;
+  const connectorPreparer =
+    options.connectorPreparer ??
+    createDefaultConnectorPreparer(secretsLoader ? { secretsLoader } : {});
+  const workflowService = new WorkflowService(workflowStore, { connectorPreparer });
+  const statelessConnectorPreparer =
+    options.statelessConnectorPreparer ??
+    createStatelessConnectorPreparer(secretsLoader ? { secretsLoader } : {});
   const statelessConnectorReader = options.statelessConnectorReader ?? createStatelessConnectorFactsReader();
   const workflowApiHandler = createWorkflowApiHandler({
     service: workflowService,
@@ -401,6 +419,7 @@ export function createCloudApiRouter(options: CloudApiRouterOptions = {}): Cloud
           recurringApiHandler,
           statelessConnectorPreparer,
           statelessConnectorReader,
+          connectorSecretsService,
         );
       } catch (err) {
         const status = err instanceof ApiError ? err.status : err instanceof AuthValidationError ? 400 : 500;
@@ -523,6 +542,7 @@ async function routeApiRequest(
   recurringApiHandler: (req: IncomingMessage, res: ServerResponse) => Promise<boolean>,
   statelessConnectorPreparer: StatelessConnectorTransactionPreparer,
   statelessConnectorReader: StatelessConnectorFactsReader,
+  connectorSecretsService: ConnectorSecretsService | undefined,
 ): Promise<void> {
   if (url.pathname === '/api/ai/status') {
     requireMethod(req, 'GET');
@@ -592,6 +612,26 @@ async function routeApiRequest(
       return;
     }
     requireMethod(req, 'GET');
+    return;
+  }
+
+  if (url.pathname === '/api/connector-secrets') {
+    requireMethod(req, 'GET');
+    await handleListConnectorSecrets(req, res, store, clock, connectorSecretsService);
+    return;
+  }
+
+  const connectorSecretId = connectorIdFromPath(url.pathname);
+  if (connectorSecretId) {
+    if (req.method === 'POST') {
+      await handlePostConnectorSecret(req, res, store, clock, connectorSecretsService, connectorSecretId);
+      return;
+    }
+    if (req.method === 'DELETE') {
+      await handleDeleteConnectorSecret(req, res, store, clock, connectorSecretsService, connectorSecretId);
+      return;
+    }
+    requireMethod(req, 'POST');
     return;
   }
 
@@ -2052,6 +2092,118 @@ function isCloudPreferencesStore(store: unknown): store is CloudPreferencesStore
     typeof record.getPreference === 'function' &&
     typeof record.savePreference === 'function';
 }
+
+function buildConnectorSecretsService(store: unknown): ConnectorSecretsService | undefined {
+  if (!isCloudPreferencesStore(store)) return undefined;
+  try {
+    const kek = resolveConnectorSecretsKek();
+    return createConnectorSecretsService({ store, kek });
+  } catch (err) {
+    if (err instanceof ConnectorSecretsError) {
+      // KEK not configured — connector-secrets feature stays disabled; reads
+      // and writes will fall back to the env-based adapter factories.
+      return undefined;
+    }
+    throw err;
+  }
+}
+
+const CONNECTOR_SECRET_PATH = /^\/api\/connector-secrets\/([^/]+)$/;
+
+function connectorIdFromPath(pathname: string): ByoKeyConnectorId | null {
+  const match = CONNECTOR_SECRET_PATH.exec(pathname);
+  if (!match) return null;
+  const id = decodeURIComponent(match[1] ?? '');
+  return isByoKeyConnectorId(id) ? id : null;
+}
+
+async function handleListConnectorSecrets(
+  req: IncomingMessage,
+  res: ServerResponse,
+  store: WorkflowStore,
+  clock: Clock,
+  service: ConnectorSecretsService | undefined,
+): Promise<void> {
+  const session = await sessionFromRequest({ req, store, clock });
+  if (!session) {
+    throw new ApiError(401, 'Sign in required to read connector keys.');
+  }
+  if (!service) {
+    writeJson(res, 200, { secrets: emptyConnectorSecretsSummary(), available: false });
+    return;
+  }
+  const summary = await service.list(session.walletAddress);
+  writeJson(res, 200, { secrets: summary, available: true });
+}
+
+async function handlePostConnectorSecret(
+  req: IncomingMessage,
+  res: ServerResponse,
+  store: WorkflowStore,
+  clock: Clock,
+  service: ConnectorSecretsService | undefined,
+  connector: ByoKeyConnectorId,
+): Promise<void> {
+  const session = await sessionFromRequest({ req, store, clock });
+  if (!session) {
+    throw new ApiError(401, 'Sign in required to save connector keys.');
+  }
+  if (!service) {
+    throw new ApiError(503, 'Connector key storage is not configured on this server.');
+  }
+  const body = await readJsonBody(req);
+  if (!body || typeof body !== 'object' || Array.isArray(body)) {
+    throw new ApiError(400, 'Missing connector key payload.');
+  }
+  const apiKey = typeof (body as { apiKey?: unknown }).apiKey === 'string'
+    ? ((body as { apiKey: string }).apiKey).trim()
+    : '';
+  if (!apiKey) {
+    throw new ApiError(400, 'apiKey is required.');
+  }
+  if (apiKey.length > 1024) {
+    throw new ApiError(400, 'apiKey is too long.');
+  }
+  const baseUrlRaw = (body as { baseUrl?: unknown }).baseUrl;
+  let baseUrl: string | undefined;
+  if (typeof baseUrlRaw === 'string' && baseUrlRaw.trim()) {
+    const trimmed = baseUrlRaw.trim();
+    try {
+      const parsed = new URL(trimmed);
+      if (parsed.protocol !== 'https:' && parsed.protocol !== 'http:') {
+        throw new Error('protocol');
+      }
+      baseUrl = trimmed;
+    } catch {
+      throw new ApiError(400, 'baseUrl must be a valid http(s) URL.');
+    }
+  }
+  const summary = await service.save(session.walletAddress, connector, {
+    apiKey,
+    ...(baseUrl ? { baseUrl } : {}),
+  });
+  writeJson(res, 200, { connector, ...summary });
+}
+
+async function handleDeleteConnectorSecret(
+  req: IncomingMessage,
+  res: ServerResponse,
+  store: WorkflowStore,
+  clock: Clock,
+  service: ConnectorSecretsService | undefined,
+  connector: ByoKeyConnectorId,
+): Promise<void> {
+  const session = await sessionFromRequest({ req, store, clock });
+  if (!session) {
+    throw new ApiError(401, 'Sign in required to remove connector keys.');
+  }
+  if (!service) {
+    throw new ApiError(503, 'Connector key storage is not configured on this server.');
+  }
+  const removed = await service.delete(session.walletAddress, connector);
+  writeJson(res, 200, { connector, removed });
+}
+
 
 function preferenceNamespaceFromPath(pathname: string): CloudPreferenceNamespace | null {
   const match = /^\/api\/preferences\/([^/]+)$/.exec(pathname);

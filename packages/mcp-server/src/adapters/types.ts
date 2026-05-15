@@ -31,6 +31,15 @@ export type DAppAdapterId =
   | 'wormhole'
   | 'jupiter';
 
+export type ByoKeyConnectorId = 'magiceden' | 'tensor' | 'sanctum';
+
+export interface ConnectorSecretMaterial {
+  apiKey: string;
+  baseUrl?: string;
+}
+
+export type ConnectorSecretsMap = Partial<Record<ByoKeyConnectorId, ConnectorSecretMaterial>>;
+
 export interface DAppAdapterContext {
   backend: WalletBackend;
   config: AgentWalletConfig;
@@ -40,6 +49,7 @@ export interface DAppAdapterContext {
   signAndBroadcastMany?: (transactionsBase64: string[], summary: string) => Promise<string[]>;
   signMessage: (message: string, summary: string) => Promise<string>;
   store: PreparedActionStore;
+  connectorSecrets?: ConnectorSecretsMap;
 }
 
 export interface AdapterPrepareResult {

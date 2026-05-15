@@ -5,7 +5,7 @@ import type { PreparedAction } from '../../preparedActions.js';
 import type { AdapterAction, AdapterExecuteResult, AdapterPrepareResult } from '../types.js';
 import { AdapterError } from '../types.js';
 import {
-  getTensorClient,
+  resolveTensorClient,
   withTensorErrors,
   type TensorCancelListingInput,
   type TensorListInput,
@@ -96,7 +96,7 @@ export const tensorListAction: AdapterAction<TensorListPrepareInput> = {
       compressed: detail.compressed,
     };
     const built = await withTensorErrors('buildListTx', () =>
-      getTensorClient().buildListTx(ctx.connection, listInput),
+      resolveTensorClient(ctx).buildListTx(ctx.connection, listInput),
     );
 
     const identifier = idRef.mintAddress ?? idRef.assetId!;
@@ -176,7 +176,7 @@ export const tensorListAction: AdapterAction<TensorListPrepareInput> = {
       compressed,
     };
     const built = await withTensorErrors('buildListTx', () =>
-      getTensorClient().buildListTx(ctx.connection, listInput),
+      resolveTensorClient(ctx).buildListTx(ctx.connection, listInput),
     );
     const summary = `List Tensor NFT ${shortAddress((mintAddress ?? assetId)!)} for ${solFromLamports(priceLamportsText)} SOL`;
     const txid = await ctx.signAndBroadcast(built.transactionBase64, summary);
@@ -229,7 +229,7 @@ export const tensorCancelListingAction: AdapterAction<TensorCancelListingPrepare
       compressed: listing.compressed,
     };
     const built = await withTensorErrors('buildCancelListingTx', () =>
-      getTensorClient().buildCancelListingTx(ctx.connection, cancelInput),
+      resolveTensorClient(ctx).buildCancelListingTx(ctx.connection, cancelInput),
     );
 
     const identifier = idRef.mintAddress ?? idRef.assetId!;
@@ -281,7 +281,7 @@ export const tensorCancelListingAction: AdapterAction<TensorCancelListingPrepare
     const listingId = optionalStringParam(action, 'listingId');
 
     const refreshed = await withTensorErrors('refreshListing', () =>
-      getTensorClient().refreshListing(ctx.connection, {
+      resolveTensorClient(ctx).refreshListing(ctx.connection, {
         ...(mintAddress !== undefined && { mintAddress }),
         ...(assetId !== undefined && { assetId }),
         ...(listingId !== undefined && { listingId }),
@@ -311,7 +311,7 @@ export const tensorCancelListingAction: AdapterAction<TensorCancelListingPrepare
       compressed,
     };
     const built = await withTensorErrors('buildCancelListingTx', () =>
-      getTensorClient().buildCancelListingTx(ctx.connection, cancelInput),
+      resolveTensorClient(ctx).buildCancelListingTx(ctx.connection, cancelInput),
     );
     const summary = `Cancel Tensor listing for ${shortAddress((mintAddress ?? assetId)!)}`;
     const txid = await ctx.signAndBroadcast(built.transactionBase64, summary);

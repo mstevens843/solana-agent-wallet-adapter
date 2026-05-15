@@ -124,7 +124,13 @@ describe('Wormhole adapter', () => {
   });
 
   it('prepares and executes a transfer with fresh quote, fee cap, and execution refresh', async () => {
-    const state = fakeState();
+    const state = fakeState({
+      quote: fakeQuote({
+        mode: 'manual',
+        manualRedemptionRequired: true,
+        relayerSupported: false,
+      }),
+    });
     setWormholeClientFactory(() => fakeWormholeClient(state));
     const ctx = makeContext();
 
@@ -156,7 +162,7 @@ describe('Wormhole adapter', () => {
     expect(executed.txid).toBe('tx-wormhole');
     expect(state.quoteCalls).toHaveLength(2);
     expect(state.quoteCalls[1]).toMatchObject({
-      routeMode: 'automatic',
+      routeMode: 'manual',
     });
     expect(state.transferBuilds).toHaveLength(1);
     expect(state.transferBuilds[0]).toMatchObject({
@@ -165,9 +171,53 @@ describe('Wormhole adapter', () => {
       amountRaw: '10000000',
       destinationChain: 'Base',
       destinationAddress: DESTINATION,
-      routeMode: 'automatic',
+      routeMode: 'manual',
       nativeGasDropoff: '0.001',
       maxBridgeFee: '0.1',
+    });
+  });
+
+  it('blocks stale automatic routeMode for non-SOL source mint at execute', async () => {
+    // Older drafts may carry routeMode: 'automatic' for an SPL mint like USDC. The legacy
+    // AutomaticTokenBridge relayer routes those through getWrappedMeta → throws
+    // "account info is null" inside the Wormhole SDK. Block them with a clear error.
+    const state = fakeState();
+    setWormholeClientFactory(() => fakeWormholeClient(state));
+    const ctx = makeContext();
+
+    const prepared = await wormholeTransferAction.prepare({
+      sourceMint: USDC_MINT,
+      amount: '10',
+      destinationChain: 'Base',
+      destinationAddress: DESTINATION,
+    }, ctx);
+    // The fake quote forces mode='automatic'; that's a stale-draft simulation.
+    expect((prepared.addInput.params as Record<string, unknown>).routeMode).toBe('automatic');
+
+    await expect(wormholeTransferAction.execute(preparedAction(prepared.addInput), ctx)).rejects.toMatchObject({
+      code: 'route_mode_unsupported',
+    });
+    expect(state.quoteCalls).toHaveLength(1);
+    expect(state.transferBuilds).toHaveLength(0);
+  });
+
+  it('still allows automatic routeMode for native SOL gas token', async () => {
+    const state = fakeState();
+    setWormholeClientFactory(() => fakeWormholeClient(state));
+    const ctx = makeContext();
+
+    const prepared = await wormholeTransferAction.prepare({
+      sourceMint: 'SOL',
+      amount: '0.02',
+      destinationChain: 'Ethereum',
+      destinationAddress: DESTINATION,
+    }, ctx);
+    const executed = await wormholeTransferAction.execute(preparedAction(prepared.addInput), ctx);
+
+    expect(executed.txid).toBe('tx-wormhole');
+    expect(state.transferBuilds[0]).toMatchObject({
+      sourceMint: 'native',
+      routeMode: 'automatic',
     });
   });
 
@@ -251,25 +301,13 @@ describe('Wormhole adapter', () => {
   });
 
   it('blocks execution when the refreshed destination token mapping changes', async () => {
-    const state = fakeState();
-    setWormholeClientFactory(() => fakeWormholeClient(state));
-    const ctx = makeContext();
-    const prepared = await wormholeTransferAction.prepare({
-      sourceMint: USDC_MINT,
-      amount: '10',
-      destinationChain: 'Base',
-      destinationAddress: DESTINATION,
-    }, ctx);
-    state.quote = fakeQuote({ destinationToken: '0x2222222222222222222222222222222222222222' });
-
-    await expect(wormholeTransferAction.execute(preparedAction(prepared.addInput), ctx)).rejects.toMatchObject({
-      code: 'destination_token_changed',
+    const state = fakeState({
+      quote: fakeQuote({
+        mode: 'manual',
+        manualRedemptionRequired: true,
+        relayerSupported: false,
+      }),
     });
-    expect(state.transferBuilds).toHaveLength(0);
-  });
-
-  it('blocks execution when the refreshed route type changes', async () => {
-    const state = fakeState();
     setWormholeClientFactory(() => fakeWormholeClient(state));
     const ctx = makeContext();
     const prepared = await wormholeTransferAction.prepare({
@@ -279,6 +317,36 @@ describe('Wormhole adapter', () => {
       destinationAddress: DESTINATION,
     }, ctx);
     state.quote = fakeQuote({
+      mode: 'manual',
+      manualRedemptionRequired: true,
+      relayerSupported: false,
+      destinationToken: '0x2222222222222222222222222222222222222222',
+    });
+
+    await expect(wormholeTransferAction.execute(preparedAction(prepared.addInput), ctx)).rejects.toMatchObject({
+      code: 'destination_token_changed',
+    });
+    expect(state.transferBuilds).toHaveLength(0);
+  });
+
+  it('blocks execution when the refreshed route type changes', async () => {
+    const state = fakeState({
+      quote: fakeQuote({
+        mode: 'manual',
+        manualRedemptionRequired: true,
+        relayerSupported: false,
+      }),
+    });
+    setWormholeClientFactory(() => fakeWormholeClient(state));
+    const ctx = makeContext();
+    const prepared = await wormholeTransferAction.prepare({
+      sourceMint: USDC_MINT,
+      amount: '10',
+      destinationChain: 'Base',
+      destinationAddress: DESTINATION,
+    }, ctx);
+    state.quote = fakeQuote({
+      mode: 'manual',
       routeType: 'cctp',
       programIds: ['CCTP11111111111111111111111111111111111111'],
     });

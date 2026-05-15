@@ -78,6 +78,24 @@ describe('evaluateAgentEvidenceGate — golden scenarios', () => {
     expect(result.reason).toMatch(/connected public key/);
   });
 
+  it('4. duplicate payment is reported as a blocking Helius fact and the gate blocks', () => {
+    const reqs = [
+      requirement({ routeId: 'helius.getTransfersByAddress', need: 'wallet_transfers', provider: 'helius', ttlMs: 120_000 }),
+    ];
+    const facts = [
+      fact({
+        id: 'fact.helius.duplicate',
+        routeId: 'helius.getTransfersByAddress',
+        label: 'Duplicate transfer to same recipient in last 10 minutes',
+        tone: 'fail',
+        severity: 'block',
+      }),
+    ];
+    const result = evaluateAgentEvidenceGate(reqs, facts, { walletAddress: WALLET, isWalletScoped: true });
+    expect(result.decision).toBe('block');
+    expect(result.blockingFacts.map((f) => f.id)).toContain('fact.helius.duplicate');
+  });
+
   it('5. trusted recipient transfer approves when Helius transfer history is fresh and matches policy', () => {
     const reqs = [
       requirement({ routeId: 'helius.getTransfersByAddress', need: 'wallet_transfers', provider: 'helius', ttlMs: 120_000 }),

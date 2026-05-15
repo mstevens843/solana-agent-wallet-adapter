@@ -39,11 +39,12 @@ import type {
   OrcaDecreaseLiquidityPrepareInput,
   OrcaIncreaseLiquidityPrepareInput,
 } from './adapters/orca/index.js';
-import type {
-  RaydiumAddLiquidityPrepareInput,
-  RaydiumCollectFeesPrepareInput,
-  RaydiumFarmPrepareInput,
-  RaydiumRemoveLiquidityPrepareInput,
+import {
+  quoteRaydiumAddLiquidity,
+  type RaydiumAddLiquidityPrepareInput,
+  type RaydiumCollectFeesPrepareInput,
+  type RaydiumFarmPrepareInput,
+  type RaydiumRemoveLiquidityPrepareInput,
 } from './adapters/raydium/index.js';
 import type { MarginfiActionInput } from './adapters/marginfi/index.js';
 import { marginfiMinHealthRatio } from './adapters/marginfi/actions.js';
@@ -739,6 +740,12 @@ export class AgentWalletActionService {
 
   async prepareRaydiumAddLiquidity(input: RaydiumAddLiquidityPrepareInput): Promise<Record<string, unknown>> {
     return this.prepareRaydiumAction('add_liquidity', input);
+  }
+
+  async quoteRaydiumAddLiquidity(input: RaydiumAddLiquidityPrepareInput): Promise<Record<string, unknown>> {
+    const adapter = requireAdapter('raydium');
+    assertSupportedCluster(adapter, this.config.cluster);
+    return quoteRaydiumAddLiquidity(input, this.adapterContext(adapter));
   }
 
   async prepareRaydiumRemoveLiquidity(input: RaydiumRemoveLiquidityPrepareInput): Promise<Record<string, unknown>> {

@@ -92,10 +92,36 @@ Shared runtime changes:
   - `LULO_API_KEY` required for Lulo live API
   - `LULO_API_BASE_URL` optional
   - `DRIFT_ENV` optional, default mainnet-beta
-  - `TENSOR_API_KEY` required for Tensor REST reads if enabled
+  - `TENSOR_API_KEY` required for Tensor REST reads if enabled (single-user bridge fallback; cloud uses per-user keys — see below)
   - `TENSOR_API_BASE_URL` optional
-  - `MAGICEDEN_API_KEY` required for Magic Eden gated endpoints
+  - `MAGICEDEN_API_KEY` required for Magic Eden gated endpoints (single-user bridge fallback; cloud uses per-user keys — see below)
   - `MAGICEDEN_API_BASE_URL` optional
+  - `SANCTUM_API_KEY` required for Sanctum quotes/swaps (single-user bridge fallback; cloud uses per-user keys — see below)
+  - `SANCTUM_API_BASE_URL` optional, default `https://sanctum-api.ironforge.network`
+  - `CONNECTOR_SECRET_KEY` cloud-only KEK for encrypting per-user connector keys; falls back to `SESSION_SECRET` if unset. Must be 32+ chars.
+
+### Per-user connector keys (cloud workspace)
+
+Magic Eden, Tensor, and Sanctum require API keys obtained from each connector's
+developer portal. In the cloud workspace (`apps/render-web`), each user supplies
+their own key through the Connectors panel under **Preferences → Agent Access**.
+Keys are persisted per wallet, encrypted with AES-256-GCM keyed by a
+per-wallet HKDF-derived data key (see
+`apps/render-web/src/cloud/connectorSecrets.ts`). The cloud preparer pulls the
+caller's keys at request time and injects them through
+`DAppAdapterContext.connectorSecrets`; the adapters' `resolve*Client(ctx)`
+helpers prefer this per-request override over the env-based singleton.
+
+API routes (session-authenticated):
+- `GET /api/connector-secrets` — list which connectors have a stored key (never
+  returns the plaintext).
+- `POST /api/connector-secrets/:connector` — body `{ apiKey, baseUrl? }`.
+- `DELETE /api/connector-secrets/:connector` — remove a stored key.
+
+The local bridge (`packages/mcp-server/src/bin/bridge.ts`) keeps the env-var
+model for solo operators. If `TENSOR_API_KEY` (etc.) is present in the host
+env, the bridge wires the corresponding connector factory at startup so
+single-user dev flows still work without the cloud workspace.
   - `JUPITER_SWAP_BASE_URL` optional, default `https://api.jup.ag/swap/v2`
   - `JUPITER_LEND_BASE_URL` optional, default `https://api.jup.ag/lend/v1`
   - `JUPITER_TRIGGER_BASE_URL` optional, default `https://api.jup.ag/trigger/v2`

@@ -4,6 +4,7 @@ import {
   CONNECTOR_APPROVAL_ACTION_TYPES,
   DEFAULT_CONFIG,
   prepareTransactionForApproval,
+  type ConnectorSecretsMap,
   type DAppAdapterContext,
   type PreparedAction,
   type PreparedActionKind,
@@ -17,6 +18,8 @@ import type {
 
 export { AdapterError, CONNECTOR_APPROVAL_ACTION_TYPES };
 export type { PreparedTransactionPayload };
+
+export type ConnectorSecretsLoader = (walletAddress: string) => Promise<ConnectorSecretsMap>;
 
 export type ConnectorTransactionPreparer = (
   approval: ApprovalRequestRecord,
@@ -36,21 +39,45 @@ export type StatelessConnectorTransactionPreparer = (
 
 type PrepareOnlyBackend = DAppAdapterContext['backend'];
 
-export function createDefaultConnectorPreparer(): ConnectorTransactionPreparer {
+export interface ConnectorPreparerOptions {
+  secretsLoader?: ConnectorSecretsLoader;
+}
+
+export function createDefaultConnectorPreparer(
+  options: ConnectorPreparerOptions = {},
+): ConnectorTransactionPreparer {
   return async (approval) => {
     const cluster: WorkflowCluster = approval.cluster ?? 'devnet';
     const rpcUrl = resolveRpcUrl(cluster);
-    const ctx = buildPrepareOnlyContext({ walletAddress: approval.walletAddress, cluster, rpcUrl });
+    const connectorSecrets = options.secretsLoader
+      ? await options.secretsLoader(approval.walletAddress)
+      : undefined;
+    const ctx = buildPrepareOnlyContext({
+      walletAddress: approval.walletAddress,
+      cluster,
+      rpcUrl,
+      ...(connectorSecrets ? { connectorSecrets } : {}),
+    });
     const action = approvalRecordToPreparedAction(approval, cluster);
     return prepareTransactionForApproval(action, ctx);
   };
 }
 
-export function createStatelessConnectorPreparer(): StatelessConnectorTransactionPreparer {
+export function createStatelessConnectorPreparer(
+  options: ConnectorPreparerOptions = {},
+): StatelessConnectorTransactionPreparer {
   return async (input) => {
     const cluster: WorkflowCluster = input.cluster;
     const rpcUrl = resolveRpcUrl(cluster);
-    const ctx = buildPrepareOnlyContext({ walletAddress: input.walletAddress, cluster, rpcUrl });
+    const connectorSecrets = options.secretsLoader
+      ? await options.secretsLoader(input.walletAddress)
+      : undefined;
+    const ctx = buildPrepareOnlyContext({
+      walletAddress: input.walletAddress,
+      cluster,
+      rpcUrl,
+      ...(connectorSecrets ? { connectorSecrets } : {}),
+    });
     const now = new Date().toISOString();
     const action: PreparedAction = {
       id: `stateless_${now}`,
@@ -91,8 +118,9 @@ function buildPrepareOnlyContext(args: {
   walletAddress: string;
   cluster: WorkflowCluster;
   rpcUrl: string;
+  connectorSecrets?: ConnectorSecretsMap;
 }): DAppAdapterContext {
-  const { walletAddress, cluster, rpcUrl } = args;
+  const { walletAddress, cluster, rpcUrl, connectorSecrets } = args;
   return {
     backend: prepareOnlyBackend(walletAddress, cluster),
     config: { ...DEFAULT_CONFIG, cluster, rpcUrl },
@@ -101,6 +129,7 @@ function buildPrepareOnlyContext(args: {
     signAndBroadcast: throwInPrepareOnly('signAndBroadcast'),
     signMessage: throwInPrepareOnly('signMessage'),
     store: prepareOnlyStore(),
+    ...(connectorSecrets ? { connectorSecrets } : {}),
   };
 }
 

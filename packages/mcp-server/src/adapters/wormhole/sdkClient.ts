@@ -277,13 +277,20 @@ export function buildWormholeSdkClient(options: BuildWormholeSdkClientOptions): 
       if (input.routeType === 'cctp' || input.routeType === 'ntt') {
         throw unsupportedRoute(`Wormhole ${input.routeType} routes are not wired in this connector yet. Use token_bridge/WTT.`);
       }
+      // The OLD AutomaticTokenBridge relayer routes non-SOL Solana-native mints through
+      // createTransferWrappedTokensWithRelayInstruction, which calls getWrappedMeta on the
+      // source mint and throws "account info is null" because Solana-native tokens don't have
+      // a wrapped-meta PDA. Restrict automatic to the native SOL gas token.
+      const isGasToken = input.sourceMint === 'native';
       const candidates: WormholeRouteMode[] = input.routeMode
         ? [input.routeMode]
         : input.routeType === 'token_bridge'
           ? ['manual']
-          : input.nativeGasDropoff
-            ? ['automatic']
-            : ['automatic', 'manual'];
+          : isGasToken
+            ? input.nativeGasDropoff
+              ? ['automatic']
+              : ['automatic', 'manual']
+            : ['manual'];
       const failures: string[] = [];
       for (const mode of candidates) {
         try {

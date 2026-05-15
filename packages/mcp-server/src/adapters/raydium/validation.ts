@@ -117,18 +117,22 @@ export function validateRemoveLiquidityAmount(input: {
   }
 }
 
-export function validateAddAmounts(input: {
-  poolType: RaydiumLiquidityPoolType;
-  tokenAAmount?: string;
-  tokenBAmount?: string;
-  maxTokenAAmount?: string;
-  maxTokenBAmount?: string;
-  positionMint?: string;
-  lowerTick?: number;
-  upperTick?: number;
-  lowerPrice?: string;
-  upperPrice?: string;
-}): void {
+export function validateAddAmounts(
+  input: {
+    poolType: RaydiumLiquidityPoolType;
+    tokenAAmount?: string;
+    tokenBAmount?: string;
+    maxTokenAAmount?: string;
+    maxTokenBAmount?: string;
+    positionMint?: string;
+    lowerTick?: number;
+    upperTick?: number;
+    lowerPrice?: string;
+    upperPrice?: string;
+  },
+  options: { requireClmmMax?: boolean } = {},
+): void {
+  const requireClmmMax = options.requireClmmMax !== false;
   validateOptionalPositiveDecimalString(input.tokenAAmount, 'tokenAAmount');
   validateOptionalPositiveDecimalString(input.tokenBAmount, 'tokenBAmount');
   validateOptionalPositiveDecimalString(input.maxTokenAAmount, 'maxTokenAAmount');
@@ -143,11 +147,13 @@ export function validateAddAmounts(input: {
     );
   }
   if (input.poolType === 'clmm') {
-    if (hasTokenA && !input.maxTokenBAmount?.trim()) {
-      throw new AdapterError(RAYDIUM_ADAPTER_ID, 'missing_amount', 'maxTokenBAmount is required when tokenAAmount is the CLMM base amount.');
-    }
-    if (hasTokenB && !input.maxTokenAAmount?.trim()) {
-      throw new AdapterError(RAYDIUM_ADAPTER_ID, 'missing_amount', 'maxTokenAAmount is required when tokenBAmount is the CLMM base amount.');
+    if (requireClmmMax) {
+      if (hasTokenA && !input.maxTokenBAmount?.trim()) {
+        throw new AdapterError(RAYDIUM_ADAPTER_ID, 'missing_amount', 'maxTokenBAmount is required when tokenAAmount is the CLMM base amount.');
+      }
+      if (hasTokenB && !input.maxTokenAAmount?.trim()) {
+        throw new AdapterError(RAYDIUM_ADAPTER_ID, 'missing_amount', 'maxTokenAAmount is required when tokenBAmount is the CLMM base amount.');
+      }
     }
     if (!input.positionMint) {
       validateClmmRange(input);

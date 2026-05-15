@@ -27,6 +27,7 @@ export * from './agentFactRouter.js';
 export * from './agentEvidence.js';
 export * from './agentEvidenceRequirements.js';
 export * from './agentEvidenceGate.js';
+export * from './verifiedPrograms.js';
 export {
   appendReviewFinding,
   evidenceTextFields,

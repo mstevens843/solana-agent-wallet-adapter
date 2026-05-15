@@ -16,6 +16,7 @@ import {
   LULO_ADAPTER_ID,
   LULO_WITHDRAW_TYPES,
   resolveLuloDecimals,
+  resolveLuloMint,
   shortMint,
   withdrawTypeLabel,
   type LuloDepositType,
@@ -36,14 +37,15 @@ export const luloWithdrawAction: AdapterAction<LuloWithdrawInput> = {
   kind: 'lulo_withdraw',
 
   async prepare(input, ctx): Promise<AdapterPrepareResult> {
-    const mintAddress = input.mintAddress?.trim();
-    if (!mintAddress) {
+    const rawMint = input.mintAddress?.trim();
+    if (!rawMint) {
       throw new AdapterError(
         LULO_ADAPTER_ID,
         'invalid_request',
         'Lulo withdraw requires mintAddress.',
       );
     }
+    const { mint: mintAddress, decimalsHint } = resolveLuloMint(rawMint);
     const withdrawType = normalizeWithdrawType(input.withdrawType);
     const hasAmount = typeof input.amount === 'string' && input.amount.trim().length > 0;
     const hasPercentage = typeof input.percentage === 'number';
@@ -62,7 +64,7 @@ export const luloWithdrawAction: AdapterAction<LuloWithdrawInput> = {
       );
     }
 
-    const decimals = await resolveLuloDecimals(ctx.connection, mintAddress);
+    const decimals = await resolveLuloDecimals(ctx.connection, mintAddress, decimalsHint);
     let amountRaw: bigint | undefined;
     if (hasAmount) {
       amountRaw = parseDecimalAmount(
@@ -183,9 +185,9 @@ export const luloCompleteWithdrawAction: AdapterAction<LuloCompleteWithdrawInput
   kind: 'lulo_complete_withdraw',
 
   async prepare(input, ctx): Promise<AdapterPrepareResult> {
-    const mintAddress = input.mintAddress?.trim();
+    const rawMint = input.mintAddress?.trim();
     const withdrawalId = input.withdrawalId?.trim();
-    if (!mintAddress) {
+    if (!rawMint) {
       throw new AdapterError(
         LULO_ADAPTER_ID,
         'invalid_request',
@@ -200,7 +202,8 @@ export const luloCompleteWithdrawAction: AdapterAction<LuloCompleteWithdrawInput
       );
     }
 
-    const decimals = await resolveLuloDecimals(ctx.connection, mintAddress);
+    const { mint: mintAddress, decimalsHint } = resolveLuloMint(rawMint);
+    const decimals = await resolveLuloDecimals(ctx.connection, mintAddress, decimalsHint);
     const walletAddress = await ctx.backend.getAddress();
     const poolMetaSnapshot = await safePoolMeta(mintAddress);
 

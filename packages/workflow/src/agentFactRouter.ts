@@ -9,7 +9,8 @@ export type AgentFactNeed =
   | 'swap_route'
   | 'protocol_position'
   | 'global_market'
-  | 'external_research';
+  | 'external_research'
+  | 'tx_simulation';
 
 export type AgentFactProvider =
   | 'wallet'
@@ -20,7 +21,8 @@ export type AgentFactProvider =
   | 'dexscreener'
   | 'alternative_me'
   | 'protocol_connector'
-  | 'external_research';
+  | 'external_research'
+  | 'rpc';
 
 export type AgentFactRouteStatus = 'required' | 'optional';
 
@@ -103,6 +105,17 @@ export interface PlanAgentReviewFactRoutesInput {
   hasTokenMints?: boolean;
   hasProtocolConnector?: boolean;
   connector?: AgentReviewConnectorContext;
+  /**
+   * Set to true when the plan record carries a serialized transaction (base64) that the
+   * agent can simulate before approval. Only used by the rpc.simulate_transaction route —
+   * if false, simulation is never tagged even when the question asks for it.
+   */
+  hasPreparedTx?: boolean;
+  /**
+   * Connector risk profile when known. Used only to upgrade simulation from "not tagged"
+   * to "optional" for inherently risky profiles (perps, bridge, multisig) when a tx exists.
+   */
+  riskProfile?: AgentConnectorProfileKind;
 }
 
 export interface AgentReviewConnectorContext {
@@ -117,15 +130,6 @@ export interface AgentReviewConnectorContext {
   operation?: string;
 }
 
-const TRANSFER_ACTION_TYPES = new Set(['transfer_sol', 'transfer_spl', 'recurring_payment']);
-const WALLET_BALANCE_ACTION_TYPES = new Set([
-  'swap',
-  'transfer_sol',
-  'transfer_spl',
-  'recurring_payment',
-  'blink_action',
-  'custom_transaction',
-]);
 const PROTOCOL_ACTION_TYPES = new Set([
   'blink_action',
   'custom_transaction',
@@ -140,11 +144,20 @@ const GOVERNANCE_CONNECTORS = new Set(['realms']);
 const MULTISIG_CONNECTORS = new Set(['squads']);
 const BRIDGE_CONNECTORS = new Set(['wormhole', 'mayan']);
 const YIELD_EARN_CONNECTORS = new Set(['lulo']);
-const DRIFT_VAULT_HINT_RE = /\bvault\b/i;
+const DRIFT_VAULT_HINT_RE = /(?:^|[^a-z0-9])vault(?:[^a-z0-9]|$)/i;
 const PERPS_HINT_RE = /perps?|perpetual|leverage|liquidation/i;
-const SWAP_HINT_RE = /(^|_)swap\b|aggregator|jupiter\s+swap/i;
+const SWAP_HINT_RE = /(?:^|[^a-z0-9])swap(?:[^a-z0-9]|$)|aggregator|jupiter\s+swap/i;
+const UNTRUSTED_ACTION_TYPES = new Set(['custom_transaction', 'blink_action', 'custom']);
+const SIMULATION_HIGH_RISK_PROFILES = new Set<AgentConnectorProfileKind>(['perps_margin', 'bridge', 'multisig']);
+// Phrases that mean "the user wants to know what this tx will actually do on chain".
+// Matches imperative or interrogative outcome questions; deliberately narrow so we don't
+// fire simulation for unrelated mentions of "result" in token-market questions.
+const SIMULATION_OUTCOME_RE = /\b(will\s+this|what\s+(?:will|happens?|changes?|do(?:es)?)|drain|balance\s+after|outcome|side[-\s]?effects?|state\s+change|preview\s+the\s+effects?)\b/i;
 
-const TRANSFER_CONTEXT_RE = /\b(transfer|transfers|sent|send|sending|received|receive|paid|payment|payout|counterparty|recipient\s+history|wallet\s+activity|transaction\s+history|recent\s+activity|duplicate|already\s+paid|same\s+recipient)\b/i;
+// Match backward-looking / history-asking phrases only — not imperatives like "send to bob"
+// or noun forms like "this transfer" that describe the current action. The router should
+// trigger Helius only when the user is actually asking about transfer history.
+const TRANSFER_CONTEXT_RE = /\b(sent|paid|payment|payout|counterparty|recipient\s+history|wallet\s+activity|transaction\s+history|recent\s+activity|duplicate|already|same\s+recipient|past\s+transfers?|previous\s+transfers?|prior\s+transfers?)\b/i;
 const HOLDINGS_REQUIRED_RE = /\b(balance|balances|holding|holdings|portfolio|position|positions|exposure|own|owns|do i have|can afford|enough funds|wallet tokens|available funds|insufficient|afford)\b/i;
 const HOLDINGS_OPTIONAL_RE = /\b(swap|transfer|deposit|withdraw|borrow|repay|stake|unstake|liquidity|vault|lend|collateral|dca|recurring|position)\b/i;
 const TOKEN_IDENTITY_RE = /\b(token|tokens|mint|mints|symbol|metadata|name|address|verify|verified)\b/i;
@@ -190,8 +203,12 @@ export function planAgentReviewFactRoutes(input: PlanAgentReviewFactRoutesInput)
     skip('wallet_identity', 'No connected wallet or draft wallet address was available.');
   }
 
-  const needsTransferHistory = TRANSFER_ACTION_TYPES.has(actionType) || TRANSFER_CONTEXT_RE.test(text);
-  if (needsTransferHistory) {
+  // Transfer history is only useful when the QUESTION explicitly cares about it
+  // (duplicate payment, recipient history, recent activity, etc.). Action type alone
+  // (e.g., transfer_sol) does NOT imply the agent needs transfer history — calling
+  // Helius for an unrelated question (e.g., a USD-threshold approval) wastes a network
+  // round-trip and adds noise to the gate.
+  if (TRANSFER_CONTEXT_RE.test(text)) {
     if (hasWallet) {
       addRoute({
         id: 'helius.getTransfersByAddress',
@@ -199,15 +216,20 @@ export function planAgentReviewFactRoutes(input: PlanAgentReviewFactRoutesInput)
         provider: 'helius',
         endpoint: 'getTransfersByAddress',
         status: 'required',
-        reason: 'The question or action depends on recent wallet transfer history.',
+        reason: 'The question explicitly asks about transfer history, recipient history, or duplicate payments.',
       });
     } else {
       skip('wallet_transfers', 'Transfer history requires a wallet public key.');
     }
   }
 
+  // Wallet holdings are only queried when the QUESTION cares about balance/affordability/
+  // exposure (required) or when the question mentions a wallet operation that benefits from
+  // a quick balance sanity check (optional). Action type alone does NOT add this route — the
+  // chain rejects insufficient-funds transactions, so we don't need a Birdeye round-trip just
+  // because the plan is a transfer.
   const holdingsRequired = HOLDINGS_REQUIRED_RE.test(text);
-  const holdingsUseful = holdingsRequired || WALLET_BALANCE_ACTION_TYPES.has(actionType) || HOLDINGS_OPTIONAL_RE.test(text);
+  const holdingsUseful = holdingsRequired || HOLDINGS_OPTIONAL_RE.test(text);
   if (holdingsUseful) {
     if (hasWallet) {
       addRoute({
@@ -313,6 +335,41 @@ export function planAgentReviewFactRoutes(input: PlanAgentReviewFactRoutesInput)
       status: 'required',
       reason: 'Jupiter chooses the executable venue route when the quote/order is fetched.',
     });
+  }
+
+  // Pre-sign transaction simulation. Only tagged when the question or action source warrants
+  // it AND a serialized tx is already on the record. Designed to be opt-in: most plans (simple
+  // transfers, phone-plan threshold checks, first-class adapter actions without an outcome
+  // question) never trigger this and never call the RPC.
+  const wantsSimulationOutcome = SIMULATION_OUTCOME_RE.test(text);
+  const isUntrustedAction = UNTRUSTED_ACTION_TYPES.has(actionType);
+  const highRiskProfile = input.riskProfile ? SIMULATION_HIGH_RISK_PROFILES.has(input.riskProfile) : false;
+  if (input.hasPreparedTx) {
+    if (wantsSimulationOutcome || isUntrustedAction) {
+      addRoute({
+        id: 'rpc.simulate_transaction',
+        need: 'tx_simulation',
+        provider: 'rpc',
+        endpoint: 'simulateTransaction',
+        status: 'required',
+        reason: wantsSimulationOutcome
+          ? 'The question asks about the on-chain effects of this transaction.'
+          : `Action source (${actionType}) is untrusted; simulation is required to verify on-chain effects.`,
+      });
+    } else if (highRiskProfile) {
+      addRoute({
+        id: 'rpc.simulate_transaction',
+        need: 'tx_simulation',
+        provider: 'rpc',
+        endpoint: 'simulateTransaction',
+        status: 'optional',
+        reason: `Risk profile (${input.riskProfile}) benefits from simulating effects before approval.`,
+      });
+    }
+  } else if (wantsSimulationOutcome) {
+    // Outcome question asked but no tx available — record as skipped need so the gate
+    // surfaces it as needs_input rather than silently dropping the user's intent.
+    skip('tx_simulation', 'Simulation requested but no serialized transaction is on the record yet.');
   }
 
   const connectorPlan = connector ? connectorReadRoutePlan(connector, actionType, text) : undefined;
@@ -464,7 +521,7 @@ function connectorReadRoutePlan(
   };
 }
 
-function connectorProfileKind(id: string, actionKind: string): AgentConnectorProfileKind | undefined {
+export function connectorProfileKind(id: string, actionKind: string): AgentConnectorProfileKind | undefined {
   if (id === 'jupiter') {
     if (SWAP_HINT_RE.test(actionKind)) return 'swap_dex';
     if (PERPS_HINT_RE.test(actionKind)) return 'perps_margin';

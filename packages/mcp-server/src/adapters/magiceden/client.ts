@@ -1,3 +1,4 @@
+import type { DAppAdapterContext } from '../types.js';
 import {
   MAGICEDEN_API_BASE_URL_ENV,
   MAGICEDEN_API_KEY_ENV,
@@ -343,6 +344,28 @@ export function isMagicedenConfigured(): boolean {
 export function describeMagicedenUnavailableReason(): string | undefined {
   const client = getMagicedenClient();
   return client instanceof MagicedenApiUnavailable ? client.reason : undefined;
+}
+
+export interface MagicedenClientOverride {
+  apiKey: string;
+  baseUrl?: string;
+}
+
+export function buildMagicedenClientFromOverride(
+  override: MagicedenClientOverride,
+): MagicedenClient {
+  const apiKey = override.apiKey.trim();
+  if (!apiKey) return new MagicedenApiUnavailable(MISSING_KEY_REASON);
+  const baseUrl = normalizeBaseUrl(override.baseUrl?.trim() || MAGICEDEN_DEFAULT_API_BASE_URL);
+  return new MagicedenApiClient({ apiKey, baseUrl });
+}
+
+export function resolveMagicedenClient(ctx?: DAppAdapterContext): MagicedenClient {
+  const override = ctx?.connectorSecrets?.magiceden;
+  if (override?.apiKey) {
+    return buildMagicedenClientFromOverride(override);
+  }
+  return getMagicedenClient();
 }
 
 function buildDefaultMagicedenClient(): MagicedenClient {

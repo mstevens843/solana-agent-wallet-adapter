@@ -489,6 +489,8 @@ export {
   type JupiterTokenRiskEvidenceInput,
 } from './tokenEvidence.js';
 export {
+  __resetJupiterLendEarnSdkCacheForTests,
+  __setJupiterLendEarnSdkForTests,
   describeJupiterLendReadUnavailableReason,
   describeJupiterLendSdkUnavailableReason,
   getJupiterLendClient,
@@ -513,6 +515,7 @@ export {
   type JupiterLendEarnMintArgs,
   type JupiterLendEarnPositionSnapshot,
   type JupiterLendEarnRedeemArgs,
+  type JupiterLendEarnSdkBundle,
   type JupiterLendEarnTokenSnapshot,
   type JupiterLendEarnWithdrawArgs,
   type JupiterLendOracleSnapshot,

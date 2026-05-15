@@ -1,6 +1,7 @@
 import type { Connection } from '@solana/web3.js';
 
-import { AdapterError } from '../types.js';
+import { AdapterError, type DAppAdapterContext } from '../types.js';
+import { buildTensorApiClient } from './apiClient.js';
 import { TENSOR_ADAPTER_ID, TENSOR_PROGRAM_IDS } from './constants.js';
 
 export interface TensorCollectionSnapshot {
@@ -308,6 +309,26 @@ export function isTensorConfigured(): boolean {
 export function describeTensorUnavailableReason(): string | undefined {
   const client = getTensorClient();
   return client instanceof TensorSdkUnavailable ? client.reason : undefined;
+}
+
+export interface TensorClientOverride {
+  apiKey: string;
+  baseUrl?: string;
+}
+
+export function resolveTensorClient(ctx?: DAppAdapterContext): TensorClient {
+  const override = ctx?.connectorSecrets?.tensor;
+  if (override?.apiKey) {
+    return buildTensorClientFromOverride(override);
+  }
+  return getTensorClient();
+}
+
+function buildTensorClientFromOverride(override: TensorClientOverride): TensorClient {
+  return buildTensorApiClient({
+    apiKey: override.apiKey,
+    ...(override.baseUrl ? { baseUrl: override.baseUrl } : {}),
+  });
 }
 
 export function redactApiKey(message: string): string {

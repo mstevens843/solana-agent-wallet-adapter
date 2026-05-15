@@ -265,6 +265,7 @@ export const PROTOCOL_CONNECTORS: ProtocolConnector[] = [
       'solana_raydium_pool_snapshot',
       'solana_raydium_wallet_positions',
       'solana_raydium_position_detail',
+      'solana_raydium_quote_add_liquidity',
     ],
     enabledByDefault: false,
     initials: 'RY',

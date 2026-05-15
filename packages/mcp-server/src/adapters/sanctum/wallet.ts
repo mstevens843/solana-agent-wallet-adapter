@@ -2,7 +2,7 @@ import { PublicKey } from '@solana/web3.js';
 
 import { formatRawAmount } from '../../amounts.js';
 import type { DAppAdapterContext } from '../types.js';
-import { getSanctumClient, type SanctumLstMetadata } from './client.js';
+import { resolveSanctumClient, type SanctumLstMetadata } from './client.js';
 import { SANCTUM_INF_MINT, WSOL_MINT } from './constants.js';
 
 const TOKEN_PROGRAM_ID = new PublicKey('TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA');
@@ -37,7 +37,7 @@ export async function getSanctumWalletPositions(
 ): Promise<SanctumWalletPositionsSnapshot> {
   const walletAddress = input.walletAddress?.trim() || (await ctx.backend.getAddress());
   const owner = new PublicKey(walletAddress);
-  const metadata = await getSanctumClient().getLsts({ includeDisabled: false });
+  const metadata = await resolveSanctumClient(ctx).getLsts({ includeDisabled: false });
   const byMint = new Map<string, SanctumLstMetadata>();
   for (const row of metadata.rows) byMint.set(row.mint, row);
   byMint.set(SANCTUM_INF_MINT, {

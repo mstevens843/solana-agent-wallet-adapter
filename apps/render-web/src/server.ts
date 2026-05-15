@@ -3,6 +3,12 @@ import { readFile, stat } from 'node:fs/promises';
 import { extname, isAbsolute, join, relative, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
+import {
+  bootstrapHostConnectorFactoriesFromConfig,
+  loadConfig,
+  loadDotEnv,
+} from '@solana-agent-wallet-adapter/mcp-server';
+
 import { redactSecrets } from './cloud/redaction.js';
 import { createCloudApiRouter, type CloudApiRouter, type CloudApiRouterOptions } from './cloud/router.js';
 import { assertProductionConfig, createRuntimeWorkflowStore } from './cloud/runtimeStore.js';
@@ -179,10 +185,13 @@ class HttpError extends Error {
 }
 
 async function start(): Promise<void> {
+  loadDotEnv(process.env.AGENTIC_ENV_FILE ?? '.env');
   assertProductionConfig();
   const port = Number(process.env.PORT ?? DEFAULT_PORT);
   const host = process.env.HOST ?? DEFAULT_HOST;
   const store = await createRuntimeWorkflowStore();
+  const config = await loadConfig(process.env.AGENTIC_CONFIG_FILE);
+  bootstrapHostConnectorFactoriesFromConfig(config);
   const server = createRenderWebServer({ store });
   await new Promise<void>((resolve, reject) => {
     server.once('error', reject);

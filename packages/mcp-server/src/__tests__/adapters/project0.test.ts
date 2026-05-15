@@ -515,6 +515,77 @@ describe('Project 0 real client hardening', () => {
       message: expect.stringContaining(sdk.existingPdaAddresses[0]!.toBase58()),
     });
   });
+
+  it('falls back to the SDK bankMap when the REST API returns no banks', async () => {
+    const SOL_MINT = 'So11111111111111111111111111111111111111112';
+    const SOL_BANK = '7Q3vXgrwzcXrCvUJYTwo3vMRf6oj2HtSe8oxMmgGz2pX';
+    const sdk = installFakeProject0SdkWithBankMap([
+      { address: new PublicKey(SOL_BANK), mint: new PublicKey(SOL_MINT), mintDecimals: 9 },
+    ]);
+    const client = getProject0Client();
+
+    const banks = await client.listBanks({ bankAddress: 'SOL' }, sdk.connection);
+
+    expect(banks).toHaveLength(1);
+    expect(banks[0]).toMatchObject({
+      bankAddress: SOL_BANK,
+      symbol: 'SOL',
+      mint: SOL_MINT,
+      mintDecimals: 9,
+      venue: 'P0',
+    });
+  });
+
+  it('prefers REST data when it is populated and skips the SDK fallback', async () => {
+    const sdk = installFakeProject0SdkWithBankMap([
+      { address: new PublicKey('7Q3vXgrwzcXrCvUJYTwo3vMRf6oj2HtSe8oxMmgGz2pX'), mint: new PublicKey('So11111111111111111111111111111111111111112'), mintDecimals: 9 },
+    ]);
+    // Override the helper's empty-fetch stub: REST returns a USDC bank, so the SDK fallback must be skipped.
+    vi.stubGlobal('fetch', vi.fn(async () => ({
+      ok: true,
+      json: async () => [{
+        bankAddress: USDC_BANK,
+        mint: USDC_MINT,
+        symbol: 'USDC',
+        mintDecimals: 6,
+        venue: 'P0',
+        depositApy: 3.2,
+        borrowApy: 6.4,
+        usdPrice: 1,
+      }],
+    })));
+    const client = getProject0Client();
+
+    const banks = await client.listBanks({ token: 'USDC' }, sdk.connection);
+
+    expect(banks).toHaveLength(1);
+    expect(banks[0]).toMatchObject({ bankAddress: USDC_BANK, symbol: 'USDC', depositApy: 3.2 });
+  });
+
+  it('drops SDK banks with no tokenSymbol and an unknown mint', async () => {
+    const UNKNOWN_MINT = 'Fg6PaFpoGXkYsidMpWxqSWGcRVoF44PoQ5LgFAaJxRzg';
+    const UNKNOWN_BANK = '4Q3vXgrwzcXrCvUJYTwo3vMRf6oj2HtSe8oxMmgGz2pX';
+    const sdk = installFakeProject0SdkWithBankMap([
+      { address: new PublicKey(UNKNOWN_BANK), mint: new PublicKey(UNKNOWN_MINT), mintDecimals: 6 },
+    ]);
+    const client = getProject0Client();
+
+    const banks = await client.listBanks({}, sdk.connection);
+
+    expect(banks).toEqual([]);
+  });
+
+  it('does not attempt the SDK fallback when no Connection is provided', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => ({ ok: true, json: async () => [] })));
+    setProject0SdkLoaderForTests(async () => {
+      throw new Error('SDK loader must not be invoked without a Connection');
+    });
+    const client = getProject0Client();
+
+    const banks = await client.listBanks({ token: 'SOL' });
+
+    expect(banks).toEqual([]);
+  });
 });
 
 function installFakeProject0Sdk(options: {
@@ -579,6 +650,45 @@ function installFakeProject0Sdk(options: {
     existingPdaAddresses,
     fetchMarginfiAccountAddresses,
   };
+}
+
+function installFakeProject0SdkWithBankMap(banks: Array<{
+  address: PublicKey;
+  mint: PublicKey;
+  mintDecimals: number;
+  tokenSymbol?: string;
+}>): {
+  connection: DAppAdapterContext['connection'];
+  sdkClient: Record<string, any>;
+} {
+  const bankMap = new Map<string, { address: PublicKey; mint: PublicKey; mintDecimals: number; tokenSymbol?: string }>();
+  for (const bank of banks) {
+    bankMap.set(bank.address.toBase58(), bank);
+  }
+  const sdkClient = {
+    program: { programId: SystemProgram.programId },
+    group: { address: SystemProgram.programId },
+    bankMap,
+    getBank: vi.fn((address: PublicKey) => bankMap.get(address.toBase58())),
+    getAccountAddresses: vi.fn(async () => []),
+    fetchAccount: vi.fn(),
+  };
+  const connection = {
+    rpcEndpoint: 'https://api.fake',
+    getMultipleAccountsInfo: vi.fn(async () => []),
+  } as unknown as DAppAdapterContext['connection'];
+  setProject0SdkLoaderForTests(async () => ({
+    Project0Client: {
+      initialize: vi.fn(async () => sdkClient),
+    },
+    getConfig: vi.fn(() => ({ environment: 'production' })),
+    MarginRequirementType: { Maintenance: 'maintenance' },
+    fetchMarginfiAccountAddresses: vi.fn(async () => []),
+    deriveMarginfiAccount: vi.fn(fakeProject0Pda),
+    MARGINFI_SPONSORED_SHARD_ID: 3301,
+  }));
+  vi.stubGlobal('fetch', vi.fn(async () => ({ ok: true, json: async () => [] })));
+  return { connection, sdkClient };
 }
 
 function fakeProject0Pda(

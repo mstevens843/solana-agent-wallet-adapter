@@ -5,7 +5,7 @@ import type { PreparedAction } from '../../preparedActions.js';
 import type { AdapterAction, AdapterExecuteResult, AdapterPrepareResult } from '../types.js';
 import { AdapterError } from '../types.js';
 import {
-  getTensorClient,
+  resolveTensorClient,
   withTensorErrors,
   type TensorBuyInput,
   type TensorListing,
@@ -53,7 +53,7 @@ export const tensorBuyAction: AdapterAction<TensorBuyPrepareInput> = {
     const expectedMarketplace = input.expectedMarketplace;
 
     const listing = await withTensorErrors('refreshListing', () =>
-      getTensorClient().refreshListing(ctx.connection, idRef),
+      resolveTensorClient(ctx).refreshListing(ctx.connection, idRef),
     );
     if (!listing) {
       throw new AdapterError(
@@ -99,7 +99,7 @@ export const tensorBuyAction: AdapterAction<TensorBuyPrepareInput> = {
       compressed: listing.compressed,
     };
     const built = await withTensorErrors('buildBuyTx', () =>
-      getTensorClient().buildBuyTx(ctx.connection, buyInput),
+      resolveTensorClient(ctx).buildBuyTx(ctx.connection, buyInput),
     );
 
     const identifier = idRef.mintAddress ?? idRef.assetId!;
@@ -171,7 +171,7 @@ export const tensorBuyAction: AdapterAction<TensorBuyPrepareInput> = {
     const expectedMarketplace = optionalStringParam(action, 'expectedMarketplace');
 
     const refreshed = await withTensorErrors('refreshListing', () =>
-      getTensorClient().refreshListing(ctx.connection, {
+      resolveTensorClient(ctx).refreshListing(ctx.connection, {
         ...(mintAddress !== undefined && { mintAddress }),
         ...(assetId !== undefined && { assetId }),
       }),
@@ -221,7 +221,7 @@ export const tensorBuyAction: AdapterAction<TensorBuyPrepareInput> = {
     };
 
     const built = await withTensorErrors('buildBuyTx', () =>
-      getTensorClient().buildBuyTx(ctx.connection, buyInput),
+      resolveTensorClient(ctx).buildBuyTx(ctx.connection, buyInput),
     );
     const summary = `Buy Tensor NFT ${shortAddress((mintAddress ?? assetId)!)}`;
     const txid = await ctx.signAndBroadcast(built.transactionBase64, summary);

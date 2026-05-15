@@ -223,6 +223,105 @@ describe('AgentWalletActionService connector runtime', () => {
     });
   });
 
+  it('forwards paired-amount estimate from the Raydium preview into prepared action params', async () => {
+    setRaydiumClientFactory(() => fakeRaydiumClientWithPairedPreview('cpmm'));
+    const service = newService();
+
+    const result = await service.prepareRaydiumAddLiquidity({
+      poolId: RAYDIUM_POOL,
+      poolType: 'cpmm',
+      amountSide: 'tokenA',
+      tokenAAmount: '0.02',
+    });
+
+    const action = result.preparedAction as PreparedAction;
+    expect(action.kind).toBe('raydium_add_liquidity');
+    expect(action.params).toMatchObject({
+      tokenAAmount: '0.02',
+      tokenBAmount: '1.8273',
+      maxTokenBAmount: '1.8456',
+      pairedAmountEstimate: true,
+      pairedAmountSource: 'cpmm_curve',
+      amountSide: 'tokenA',
+      pairedSide: 'tokenB',
+    });
+    expect(Array.isArray(action.params.tokenAmounts)).toBe(true);
+    const tokenAmounts = action.params.tokenAmounts as Array<{ mint?: string; amount?: string; isEstimate?: boolean }>;
+    expect(tokenAmounts).toHaveLength(2);
+    expect(tokenAmounts[1]).toMatchObject({ amount: '1.8273', isEstimate: true });
+  });
+
+  it('forwards paired-amount estimate for CLMM open-position previews', async () => {
+    setRaydiumClientFactory(() => fakeRaydiumClientWithPairedPreview('clmm'));
+    const service = newService();
+
+    const result = await service.prepareRaydiumAddLiquidity({
+      poolId: RAYDIUM_POOL,
+      poolType: 'clmm',
+      amountSide: 'tokenA',
+      tokenAAmount: '0.02',
+      maxTokenBAmount: '1.85',
+      rangePreset: 'balanced',
+    });
+
+    const action = result.preparedAction as PreparedAction;
+    expect(action.params).toMatchObject({
+      tokenAAmount: '0.02',
+      tokenBAmount: '1.7',
+      maxTokenBAmount: '1.85',
+      pairedAmountEstimate: true,
+      pairedAmountSource: 'clmm_liquidity_math',
+      pairedSide: 'tokenB',
+    });
+  });
+
+  it('does not overwrite a user-supplied maxTokenBAmount when the preview also computes one', async () => {
+    setRaydiumClientFactory(() => fakeRaydiumClientWithPairedPreview('cpmm'));
+    const service = newService();
+
+    const result = await service.prepareRaydiumAddLiquidity({
+      poolId: RAYDIUM_POOL,
+      poolType: 'cpmm',
+      amountSide: 'tokenA',
+      tokenAAmount: '0.02',
+      maxTokenBAmount: '2.5',
+    });
+
+    const action = result.preparedAction as PreparedAction;
+    expect(action.params.maxTokenBAmount).toBe('2.5');
+  });
+
+  it('quotes Raydium add-liquidity without creating a prepared action', async () => {
+    setRaydiumClientFactory(() => fakeRaydiumClientWithPairedPreview('cpmm'));
+    const service = newService();
+    const store = inMemoryStore();
+    const serviceWithStore = new AgentWalletActionService({
+      backend: createMockBackend(),
+      config: fakeConfig(),
+      connection: fakeConnection(),
+      preparedActions: store,
+    });
+
+    const before = (await store.listActions()).length;
+    const quote = await serviceWithStore.quoteRaydiumAddLiquidity({
+      poolId: RAYDIUM_POOL,
+      poolType: 'cpmm',
+      amountSide: 'tokenA',
+      tokenAAmount: '0.02',
+    });
+    const after = (await store.listActions()).length;
+
+    expect(after).toBe(before);
+    expect(quote).toMatchObject({
+      pairLabel: 'SOL/USDC',
+      amountSide: 'tokenA',
+      pairedSide: 'tokenB',
+    });
+    const preview = quote.preview as { tokenAmounts?: Array<{ amount?: string; isEstimate?: boolean }> };
+    expect(preview.tokenAmounts?.[1]).toMatchObject({ amount: '1.8273', isEstimate: true });
+    void service; // silence unused-variable lint
+  });
+
   it('returns normalized MarginFi health preview facts', async () => {
     setMarginfiClientFactory(() => fakeMarginfiClient());
     const service = newService();
@@ -951,6 +1050,59 @@ function fakeOrcaClient(): OrcaClient {
     },
     async buildCollectRewardsTransaction() {
       return { transactionBase64: 'base64-rewards', preview };
+    },
+  };
+}
+
+function fakeRaydiumClientWithPairedPreview(poolType: 'cpmm' | 'clmm'): RaydiumClient {
+  const snapshot: RaydiumPoolSnapshot = {
+    poolId: RAYDIUM_POOL,
+    poolType,
+    programId: poolType === 'cpmm'
+      ? 'CPMMoo8L3F4NbTegBCKVNunggL7H1ZpdTHKxQB5qKP1C'
+      : 'CAMMCzo5YL8w4VFF8KVHrK22GGUsp5VTaW7grrKgrWqK',
+    mintA: { mint: 'So11111111111111111111111111111111111111112', decimals: 9, symbol: 'SOL' },
+    mintB: { mint: USDC_MINT, decimals: 6, symbol: 'USDC' },
+    price: poolType === 'cpmm' ? '91.365' : '85',
+    liquidity: '100000',
+    tvl: '500000',
+    feeRateBps: 25,
+    asOfSlot: 280_000_000,
+    ...(poolType === 'clmm' ? { tickCurrent: 64, tickSpacing: 8 } : {}),
+  };
+  const pairedAmount = poolType === 'cpmm' ? '1.8273' : '1.7';
+  const pairedMax = poolType === 'cpmm' ? '1.8456' : '1.72';
+  const preview = {
+    poolId: RAYDIUM_POOL,
+    poolType,
+    tokenMints: [snapshot.mintA.mint, snapshot.mintB.mint],
+    tokenAmounts: [
+      { mint: snapshot.mintA.mint, amount: '0.02', decimals: 9, symbol: 'SOL' },
+      {
+        mint: snapshot.mintB.mint,
+        amount: pairedAmount,
+        decimals: 6,
+        symbol: 'USDC',
+        isEstimate: true,
+        maxAmount: pairedMax,
+      },
+    ],
+    maxTokenBAmount: pairedMax,
+    pairedAmountEstimate: true,
+    pairedAmountSource: poolType === 'cpmm' ? 'cpmm_curve' as const : 'clmm_liquidity_math' as const,
+    pairedAmountAt: '2026-05-14T22:46:00.000Z',
+  };
+  const base: RaydiumClient = fakeRaydiumClient();
+  return {
+    ...base,
+    async getPoolSnapshot() {
+      return snapshot;
+    },
+    async previewAddLiquidity() {
+      return preview;
+    },
+    async buildAddLiquidityTransaction() {
+      return { transactionBase64: 'base64-raydium-add', programIds: [snapshot.programId], preview };
     },
   };
 }

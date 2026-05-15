@@ -165,75 +165,28 @@ export function buildEvidenceRequirements(
   return applyConnectorRiskProfileRequirements(requirements, routePlan, context);
 }
 
+/**
+ * Decorate-only: upgrade matching optional requirements to required+blocking based on the
+ * connector risk profile. We never synthesize routes the router didn't select — the router is
+ * the single source of truth for which provider endpoints are queryable. If a profile expects
+ * a route that's missing, fix the router; do not fabricate evidence requirements here.
+ */
 export function applyConnectorRiskProfileRequirements(
   requirements: AgentEvidenceRequirement[],
-  routePlan: AgentFactRoutePlan,
+  _routePlan: AgentFactRoutePlan,
   context: AgentEvidenceContext,
 ): AgentEvidenceRequirement[] {
   const profileKind = context.connectorProfile;
   if (!profileKind) return requirements;
   const profile = AGENT_CONNECTOR_RISK_PROFILES[profileKind];
   if (!profile) return requirements;
-  const byRouteId = new Map(requirements.map((req) => [req.routeId, req]));
+  const wanted = new Set(profile.requiredRouteIds);
   let touched = false;
-  for (const routeId of profile.requiredRouteIds) {
-    const req = byRouteId.get(routeId);
-    if (req) {
-      if (req.status !== 'required' || !req.blocking) {
-        byRouteId.set(routeId, { ...req, status: 'required', blocking: true });
-        touched = true;
-      }
-    } else {
-      // The router did not select this route id; record a synthetic required-but-missing requirement
-      // so the pre-AI gate can detect it as a hard block rather than silently passing.
-      byRouteId.set(routeId, syntheticRequirementForProfile(profile, routeId, context));
-      touched = true;
-    }
-  }
-  if (!touched) return requirements;
-  return Array.from(byRouteId.values());
-}
-
-function syntheticRequirementForProfile(
-  profile: AgentConnectorRiskProfile,
-  routeId: string,
-  context: AgentEvidenceContext,
-): AgentEvidenceRequirement {
-  const provider = providerForSyntheticRouteId(routeId);
-  return {
-    id: requirementIdFor(routeId),
-    routeId,
-    need: needForSyntheticRouteId(routeId, profile),
-    provider,
-    endpoint: routeId,
-    status: 'required',
-    ttlMs: ttlForRoute({ id: routeId } as AgentFactRoute, context.connectorProfile),
-    blocking: true,
-    reason: `${profile.label} risk profile requires ${routeId} but the router did not select it.`,
-    ...(context.connectorProfile ? { connectorProfile: context.connectorProfile } : {}),
-    ...(context.connectorId ? { connectorId: context.connectorId } : {}),
-  };
-}
-
-function providerForSyntheticRouteId(routeId: string): AgentEvidenceRequirement['provider'] {
-  if (routeId.startsWith('jupiter.')) return 'jupiter';
-  if (routeId.startsWith('birdeye.')) return 'birdeye';
-  if (routeId.startsWith('coingecko.')) return 'coingecko';
-  if (routeId.startsWith('helius.')) return 'helius';
-  if (routeId.startsWith('protocol_connector.')) return 'protocol_connector';
-  if (routeId.startsWith('wallet.')) return 'wallet';
-  if (routeId.startsWith('external_research.')) return 'external_research';
-  if (routeId.startsWith('alternative_me.')) return 'alternative_me';
-  if (routeId.startsWith('dexscreener.')) return 'dexscreener';
-  return 'external_research';
-}
-
-function needForSyntheticRouteId(routeId: string, profile: AgentConnectorRiskProfile): AgentFactNeed {
-  if (routeId === SWAP_QUOTE_ROUTE) return 'swap_quote';
-  if (routeId === SWAP_ROUTE_ROUTE) return 'swap_route';
-  if (routeId === TOKEN_PRICE_ROUTE) return 'token_market';
-  if (routeId === TOKEN_SECURITY_ROUTE) return 'token_security';
-  if (routeId === WALLET_HOLDINGS_ROUTE) return 'wallet_holdings';
-  if (routeId === CONNECTOR_READ_ROUTE) return 'protocol_position';
-  return profile.requiredNeeds[0] ?? 'protocol_position';
+  const next = requirements.map((req) => {
+    if (!wanted.has(req.routeId)) return req;
+    if (req.status === 'required' && req.blocking) return req;
+    touched = true;
+    return { ...req, status: 'required' as const, blocking: true };
+  });
+  return touched ? next : requirements;
 }

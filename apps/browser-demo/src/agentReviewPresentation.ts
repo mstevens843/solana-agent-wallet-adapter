@@ -42,6 +42,38 @@ export interface AgentEvidenceStalenessLike {
   triggers?: Array<{ field: string }>;
 }
 
+export interface AgentEvidenceFactRow {
+  id: string;
+  routeId?: string;
+  label: string;
+  value: string;
+  tone?: AgentEvidenceTone;
+  severity?: 'info' | 'warn' | 'block';
+  freshness?: 'fresh' | 'stale' | 'missing';
+  source?: string;
+  checkedAt?: string;
+}
+
+export interface AgentAuditReceiptLike {
+  schemaVersion: number;
+  receiptId: string;
+  planFingerprint: string;
+  walletAddress: string;
+  cluster: string;
+  connectorId?: string;
+  connectorProfile?: string;
+  routePlanHash: string;
+  evidenceHash: string;
+  aiDecisionHash: string;
+  finalDecision: 'approve' | 'deny' | 'needs_input';
+  gateDecision: 'pass' | 'block' | 'needs_input';
+  checkedAt: string;
+  providerRoutes: string[];
+  evidenceFactIds: string[];
+  blockingFactIds: string[];
+  missingRequirementIds: string[];
+}
+
 export interface AgentEvidenceReviewLike {
   status?: 'checking' | 'approved' | 'denied' | 'needs_input' | 'error';
   decision?: 'approve' | 'deny' | 'needs_input';
@@ -57,6 +89,8 @@ export interface AgentEvidenceReviewLike {
   reviewers?: AgentEvidenceReviewerLike[];
   questions?: AgentEvidenceQuestionLike[];
   staleness?: AgentEvidenceStalenessLike;
+  evidenceFacts?: AgentEvidenceFactRow[];
+  auditReceipt?: AgentAuditReceiptLike;
 }
 
 export interface ReviewEvidenceRowsOptions {
@@ -154,6 +188,85 @@ export function swapTokenTextMismatchWarning(
   };
 }
 
+export function evidenceFactDisplayRows(facts: AgentEvidenceFactRow[] | undefined): AgentEvidenceDisplayRow[] {
+  if (!facts?.length) return [];
+  return facts.map((fact) => {
+    const tone: AgentEvidenceTone = fact.tone ?? (fact.severity === 'block'
+      ? 'fail'
+      : fact.severity === 'warn' || fact.freshness === 'stale' || fact.freshness === 'missing'
+        ? 'warn'
+        : 'neutral');
+    const suffix = fact.freshness === 'stale'
+      ? ' (stale)'
+      : fact.freshness === 'missing'
+        ? ' (missing)'
+        : '';
+    return {
+      label: fact.label,
+      value: `${fact.value}${suffix}`,
+      tone,
+    };
+  });
+}
+
+export function auditReceiptDisplayRows(receipt: AgentAuditReceiptLike | undefined): AgentEvidenceDisplayRow[] {
+  if (!receipt) return [];
+  const rows: AgentEvidenceDisplayRow[] = [];
+  const decisionTone: AgentEvidenceTone = receipt.finalDecision === 'approve'
+    ? 'good'
+    : receipt.finalDecision === 'needs_input'
+      ? 'warn'
+      : 'fail';
+  const gateTone: AgentEvidenceTone = receipt.gateDecision === 'pass'
+    ? 'good'
+    : receipt.gateDecision === 'needs_input'
+      ? 'warn'
+      : 'fail';
+  rows.push({ label: 'Audit receipt', value: receipt.receiptId, tone: 'neutral' });
+  rows.push({ label: 'Final decision', value: receipt.finalDecision, tone: decisionTone });
+  rows.push({ label: 'Gate decision', value: receipt.gateDecision, tone: gateTone });
+  rows.push({ label: 'Plan fingerprint', value: receipt.planFingerprint, tone: 'neutral' });
+  rows.push({ label: 'Route plan hash', value: receipt.routePlanHash, tone: 'neutral' });
+  rows.push({ label: 'Evidence hash', value: receipt.evidenceHash, tone: 'neutral' });
+  rows.push({ label: 'AI decision hash', value: receipt.aiDecisionHash, tone: 'neutral' });
+  if (receipt.connectorId || receipt.connectorProfile) {
+    rows.push({
+      label: 'Connector',
+      value: [receipt.connectorId, receipt.connectorProfile].filter(Boolean).join(' · '),
+      tone: 'neutral',
+    });
+  }
+  if (receipt.providerRoutes.length) {
+    rows.push({
+      label: 'Provider routes',
+      value: receipt.providerRoutes.join(', '),
+      tone: 'neutral',
+    });
+  }
+  if (receipt.evidenceFactIds.length) {
+    rows.push({
+      label: 'Cited evidence ids',
+      value: receipt.evidenceFactIds.join(', '),
+      tone: 'neutral',
+    });
+  }
+  if (receipt.blockingFactIds.length) {
+    rows.push({
+      label: 'Blocking ids',
+      value: receipt.blockingFactIds.join(', '),
+      tone: 'fail',
+    });
+  }
+  if (receipt.missingRequirementIds.length) {
+    rows.push({
+      label: 'Missing requirements',
+      value: receipt.missingRequirementIds.join(', '),
+      tone: 'warn',
+    });
+  }
+  return rows;
+}
+
 export function tokenMismatchEvidenceRows(evidence: Record<string, unknown> | undefined): AgentEvidenceDisplayRow[] {
   if (!evidence) return [];
   const mismatch = evidenceValue(evidence, ['tokenMismatch', 'token_mismatch']);
@@ -200,6 +313,9 @@ export function reviewEvidenceRows(
   for (const check of review.checks ?? []) {
     addRow({ label: check.label, value: check.value, tone: check.tone });
   }
+  for (const row of evidenceFactDisplayRows(review.evidenceFacts)) {
+    addRow(row);
+  }
   for (const finding of evidenceFindingRows(evidence)) {
     addRow(finding);
   }
@@ -207,6 +323,9 @@ export function reviewEvidenceRows(
     addRow(row);
   }
   for (const row of sourceEvidenceRows(evidence)) {
+    addRow(row);
+  }
+  for (const row of auditReceiptDisplayRows(review.auditReceipt)) {
     addRow(row);
   }
 

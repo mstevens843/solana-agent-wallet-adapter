@@ -23378,3 +23378,131 @@ button.danger:hover:not(:disabled) {
   align-self: flex-start;
   margin-top: 0.3rem;
 }
+
+/* Connector API keys (BYO-key UX) */
+.connector-keys-mount {
+  margin-top: 1rem;
+}
+.connector-keys-panel {
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  padding: 1.1rem 1.2rem;
+}
+.connector-keys-panel header {
+  display: flex;
+  flex-direction: column;
+  gap: 0.3rem;
+  margin-bottom: 1rem;
+}
+.connector-keys-panel header h3 {
+  margin: 0;
+  font-size: 1rem;
+  font-weight: 600;
+}
+.connector-keys-panel header p {
+  margin: 0;
+  font-size: 0.85rem;
+  color: var(--text-muted, rgba(242, 245, 243, 0.7));
+}
+.connector-keys-status {
+  font-size: 0.85rem;
+  color: var(--text-muted, rgba(242, 245, 243, 0.65));
+}
+.connector-keys-error {
+  background: rgba(220, 80, 80, 0.12);
+  border: 1px solid rgba(220, 80, 80, 0.35);
+  color: #ffb4b4;
+  padding: 0.5rem 0.7rem;
+  border-radius: 8px;
+  font-size: 0.85rem;
+}
+.connector-keys-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+  gap: 0.8rem;
+}
+.connector-key-card {
+  background: var(--surface-soft);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  padding: 0.85rem 0.95rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.7rem;
+}
+.connector-key-card header {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 0.5rem;
+  margin-bottom: 0;
+}
+.connector-key-card header h4 {
+  margin: 0;
+  font-size: 0.95rem;
+  font-weight: 600;
+}
+.connector-key-card header p {
+  margin: 0.2rem 0 0;
+  font-size: 0.8rem;
+  color: var(--text-muted, rgba(242, 245, 243, 0.7));
+}
+.connector-key-status {
+  font-size: 0.72rem;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  padding: 0.2rem 0.5rem;
+  border-radius: 999px;
+  white-space: nowrap;
+}
+.connector-key-status[data-status="on"] {
+  background: rgba(94, 222, 161, 0.16);
+  color: #5edea1;
+}
+.connector-key-status[data-status="off"] {
+  background: rgba(255, 255, 255, 0.06);
+  color: var(--text-muted, rgba(242, 245, 243, 0.65));
+}
+.connector-key-actions {
+  display: flex;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+}
+.connector-key-form {
+  display: flex;
+  flex-direction: column;
+  gap: 0.6rem;
+}
+.connector-key-form label {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+  font-size: 0.78rem;
+  color: var(--text-muted, rgba(242, 245, 243, 0.7));
+}
+.connector-key-form label em {
+  font-style: italic;
+  opacity: 0.7;
+}
+.connector-key-form input {
+  background: var(--bg-2);
+  border: 1px solid var(--line);
+  color: var(--text);
+  padding: 0.45rem 0.6rem;
+  border-radius: 6px;
+  font-size: 0.85rem;
+}
+.connector-key-form input:focus {
+  outline: 1px solid var(--line-strong);
+}
+.connector-key-card footer a {
+  font-size: 0.78rem;
+  color: var(--text-muted, rgba(242, 245, 243, 0.7));
+  text-decoration: none;
+}
+.connector-key-card footer a:hover {
+  color: var(--text);
+  text-decoration: underline;
+}

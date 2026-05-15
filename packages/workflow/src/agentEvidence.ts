@@ -12,15 +12,13 @@ export type AgentEvidenceRequirementStatus = 'required' | 'optional';
 export type AgentEvidenceFreshness = 'fresh' | 'stale' | 'missing';
 export type AgentEvidenceGateDecision = 'pass' | 'block' | 'needs_input';
 export type AgentEvidenceFactTone = 'good' | 'neutral' | 'warn' | 'fail';
-export type AgentEvidenceFactSource =
-  | 'deterministic'
-  | 'wallet'
-  | 'helius'
-  | 'birdeye'
-  | 'coingecko'
-  | 'jupiter'
-  | 'connector'
-  | 'ai';
+/**
+ * Evidence facts originate from one of three places:
+ * - 'deterministic' values computed locally from the plan/parameters,
+ * - 'ai' values added by the model,
+ * - or one of the AgentFactProvider sources the router can select.
+ */
+export type AgentEvidenceFactSource = 'deterministic' | 'ai' | AgentFactProvider;
 
 export interface AgentEvidenceRequirement {
   id: string;
@@ -133,6 +131,7 @@ export const AGENT_EVIDENCE_TTL_MS_BY_ROUTE: Readonly<Record<string, number>> = 
   'protocol_connector.read_facts': 60 * ONE_SECOND_MS,
   'external_research.current_web': 10 * ONE_MINUTE_MS,
   'dexscreener.token_pairs': 60 * ONE_SECOND_MS,
+  'rpc.simulate_transaction': 15 * ONE_SECOND_MS,
 });
 
 const ORACLE_CONNECTOR_TTL_MS = 30 * ONE_SECOND_MS;

@@ -971,6 +971,43 @@ async function handleRequest(
       }));
       return;
     }
+    if (req.method === 'POST' && url.pathname === '/bridge/action/raydium-quote-add-liquidity') {
+      const body = (await readJson(req)) as {
+        poolId?: string;
+        poolType?: string;
+        positionMint?: string;
+        amount?: string;
+        amountSide?: string;
+        tokenAAmount?: string;
+        tokenBAmount?: string;
+        maxTokenAAmount?: string;
+        maxTokenBAmount?: string;
+        lowerTick?: number;
+        upperTick?: number;
+        lowerPrice?: string;
+        upperPrice?: string;
+        rangePreset?: string;
+        slippageBps?: number;
+      };
+      writeJson(res, 200, await requireActionService(actionService).quoteRaydiumAddLiquidity({
+        poolId: requireString(body.poolId, 'poolId'),
+        ...(body.poolType !== undefined && { poolType: body.poolType as 'cpmm' | 'clmm' }),
+        ...(body.positionMint !== undefined && { positionMint: body.positionMint }),
+        ...(body.amount !== undefined && { amount: body.amount }),
+        ...(body.amountSide !== undefined && { amountSide: body.amountSide as 'tokenA' | 'tokenB' }),
+        ...(body.tokenAAmount !== undefined && { tokenAAmount: body.tokenAAmount }),
+        ...(body.tokenBAmount !== undefined && { tokenBAmount: body.tokenBAmount }),
+        ...(body.maxTokenAAmount !== undefined && { maxTokenAAmount: body.maxTokenAAmount }),
+        ...(body.maxTokenBAmount !== undefined && { maxTokenBAmount: body.maxTokenBAmount }),
+        ...(body.lowerTick !== undefined && { lowerTick: body.lowerTick }),
+        ...(body.upperTick !== undefined && { upperTick: body.upperTick }),
+        ...(body.lowerPrice !== undefined && { lowerPrice: body.lowerPrice }),
+        ...(body.upperPrice !== undefined && { upperPrice: body.upperPrice }),
+        ...(body.rangePreset !== undefined && { rangePreset: body.rangePreset }),
+        ...(body.slippageBps !== undefined && { slippageBps: body.slippageBps }),
+      }));
+      return;
+    }
     if (req.method === 'POST' && url.pathname === '/bridge/action/swap-quote') {
       const body = (await readJson(req)) as { inputToken?: string; outputToken?: string; amount?: string; slippageBps?: number };
       writeJson(res, 200, await requireActionService(actionService).getSwapQuote({

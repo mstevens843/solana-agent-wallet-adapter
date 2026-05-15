@@ -1,7 +1,7 @@
 import type { DAppAdapterContext } from '../types.js';
 import { AdapterError } from '../types.js';
 import {
-  getTensorClient,
+  resolveTensorClient,
   redactApiKey,
   type TensorBid,
   type TensorCollectionSnapshot,
@@ -30,7 +30,7 @@ export async function getSupportedCollections(
   input: { limit?: number } = {},
 ): Promise<TensorSupportedCollectionsResult> {
   try {
-    return await getTensorClient().fetchSupportedCollections(ctx.connection, input);
+    return await resolveTensorClient(ctx).fetchSupportedCollections(ctx.connection, input);
   } catch (err) {
     throw wrapAsAdapterError(err, 'fetchSupportedCollections');
   }
@@ -56,7 +56,7 @@ export async function getCollectionSnapshot(
 ): Promise<TensorCollectionSnapshotResult> {
   const collectionId = requireCollectionId(input.collectionId);
   try {
-    const client = getTensorClient();
+    const client = resolveTensorClient(ctx);
     const collection = await client.fetchCollectionStats(ctx.connection, collectionId);
     const wantListings = input.includeListings !== false;
     const wantBids = input.includeBids !== false;
@@ -83,7 +83,7 @@ export async function getCollectionListings(
   const collectionId = requireCollectionId(input.collectionId);
   try {
     const limit = clampLimit(input.limit, 10, MAX_LISTINGS);
-    const listings = await getTensorClient().fetchCollectionListings(ctx.connection, collectionId, limit);
+    const listings = await resolveTensorClient(ctx).fetchCollectionListings(ctx.connection, collectionId, limit);
     return { collectionId, listings };
   } catch (err) {
     throw wrapAsAdapterError(err, 'fetchCollectionListings');
@@ -97,7 +97,7 @@ export async function getCollectionBids(
   const collectionId = requireCollectionId(input.collectionId);
   try {
     const limit = clampLimit(input.limit, 10, MAX_BIDS);
-    const bids = await getTensorClient().fetchCollectionBids(ctx.connection, collectionId, limit);
+    const bids = await resolveTensorClient(ctx).fetchCollectionBids(ctx.connection, collectionId, limit);
     return { collectionId, bids };
   } catch (err) {
     throw wrapAsAdapterError(err, 'fetchCollectionBids');
@@ -111,7 +111,7 @@ export async function getRecentSales(
   const collectionId = requireCollectionId(input.collectionId);
   try {
     const limit = clampLimit(input.limit, 25, 100);
-    const sales = await getTensorClient().fetchRecentSales(ctx.connection, collectionId, limit);
+    const sales = await resolveTensorClient(ctx).fetchRecentSales(ctx.connection, collectionId, limit);
     return { collectionId, sales };
   } catch (err) {
     throw wrapAsAdapterError(err, 'fetchRecentSales');

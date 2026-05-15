@@ -217,6 +217,13 @@ export const wormholeTransferAction: AdapterAction<WormholeTransferInput> = {
     const sourceDecimals = numericParam(action, 'sourceDecimals');
     const sourceTokenLabel = optionalActionString(action, 'sourceTokenLabel') ?? wormholeSourceTokenLabel(sourceMint);
     const expectedRouteMode = requireActionRouteMode(action);
+    if (expectedRouteMode === 'automatic' && sourceMint !== 'native') {
+      throw new AdapterError(
+        WORMHOLE_ADAPTER_ID,
+        'route_mode_unsupported',
+        `Wormhole automatic mode is not supported for ${sourceTokenLabel} on this connector. Recreate the draft (manual TokenBridge is used by default).`,
+      );
+    }
     const minDestinationAmount = optionalNonNegativeDecimal(optionalActionString(action, 'minDestinationAmount'), 'minDestinationAmount');
     const maxBridgeFee = optionalNonNegativeDecimal(optionalActionString(action, 'maxBridgeFee'), 'maxBridgeFee');
     const nativeGasDropoff = optionalNonNegativeDecimal(optionalActionString(action, 'nativeGasDropoff'), 'nativeGasDropoff');

@@ -163,6 +163,12 @@ const INVALID_TRANSACTION_PATTERNS = [
   'versioned transaction not supported',
 ];
 
+// Wormhole SDK throws this from getAccountData(info) when a Wormhole PDA fetch returns null —
+// e.g. routing a Solana-native mint through the legacy AutomaticTokenBridge relayer. Treat as a
+// pre-signature route-availability failure: no wallet prompt happened, recreating the draft is
+// the remediation.
+const BRIDGE_ACCOUNT_NULL_PATTERNS = ['account info is null'];
+
 const RATE_LIMITED_PATTERNS = ['429', 'rate limit', 'too many requests'];
 
 // HTTP 5xx and gateway markers.
@@ -372,6 +378,20 @@ export function classifyTransactionFailure(
       kind: 'invalid_transaction',
       title: TITLE_BY_KIND.invalid_transaction,
       message: 'The transaction was rejected as invalid. Rebuild and try again.',
+      technicalMessage,
+      retryableSignedBroadcast: false,
+      maybeSubmitted: false,
+      safeToAskWalletAgain: false,
+      shouldCheckChainBeforeFailing: false,
+    };
+  }
+
+  // 10b. Wormhole bridge PDA missing (legacy relayer mis-routed this token). Pre-signature.
+  if (matchAny(matchText, BRIDGE_ACCOUNT_NULL_PATTERNS)) {
+    return {
+      kind: 'invalid_transaction',
+      title: 'Bridge route not available',
+      message: 'This token cannot be bridged via the automatic relayer. Recreate the draft to use the manual Token Bridge route.',
       technicalMessage,
       retryableSignedBroadcast: false,
       maybeSubmitted: false,

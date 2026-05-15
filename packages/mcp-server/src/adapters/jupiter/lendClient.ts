@@ -10,7 +10,7 @@ import {
 import { AdapterError } from '../types.js';
 import type { AgentWalletConfig } from '../../config.js';
 
-import { JUPITER_ADAPTER_ID, type JupiterLendOperation } from './constants.js';
+import { JUPITER_ADAPTER_ID, JUPITER_LEND_EARN_PROGRAM_ID, type JupiterLendOperation } from './constants.js';
 import { jupiterFetchJson } from './client.js';
 
 export interface JupiterLendEarnTokenSnapshot {
@@ -364,6 +364,16 @@ export async function loadJupiterLendEarnSdkForSmokeTest(): Promise<JupiterLendE
   return cachedEarnSdk;
 }
 
+export function __resetJupiterLendEarnSdkCacheForTests(): void {
+  cachedEarnSdk = undefined;
+}
+
+export function __setJupiterLendEarnSdkForTests(bundle: JupiterLendEarnSdkBundle | undefined): void {
+  cachedEarnSdk = bundle;
+}
+
+export type { JupiterLendEarnSdkBundle };
+
 export function describeJupiterLendSdkUnavailableReason(): string | undefined {
   try {
     require.resolve('@jup-ag/lend-read');
@@ -545,18 +555,34 @@ class JupiterLendSdkClient extends JupiterLendRestClient {
   }
 
   override async getEarnTokenDetail(input: Parameters<JupiterLendClient['getEarnTokenDetail']>[0]): Promise<JupiterLendEarnTokenSnapshot> {
-    const requested = new PublicKey(input.assetMint);
-    const token = (await this.loadEarnTokenSnapshots()).find((entry) =>
-      new PublicKey(entry.assetMint).equals(requested)
+    const requestedAsset = new PublicKey(input.assetMint);
+    const [lendingToken] = PublicKey.findProgramAddressSync(
+      [Buffer.from('f_token_mint'), requestedAsset.toBuffer()],
+      JUPITER_LEND_EARN_PROGRAM_ID,
     );
-    if (!token) {
+    const sdk = await loadJupiterLendEarnSdkForSmokeTest();
+    let detail: Awaited<ReturnType<JupiterLendEarnSdkBundle['getLendingTokenDetails']>>;
+    try {
+      detail = await sdk.getLendingTokenDetails({ lendingToken, connection: this.connection });
+    } catch (err) {
+      // The SDK's exchange-price math (getNewExchangePrice / getRewardsRate) divides by
+      // on-chain values that can be 0 for low-TVL or freshly-initialized pools, surfacing
+      // as bn.js "Assertion failed" with no further context. Reframe as sdk_unavailable so
+      // lendEarn.ts:getEarnTokenDetail falls back to the REST snapshot path.
+      throw new AdapterError(
+        JUPITER_ADAPTER_ID,
+        'sdk_unavailable',
+        `Jupiter Lend Earn SDK could not load pool details for ${input.assetMint}: ${err instanceof Error ? err.message : String(err)}`,
+      );
+    }
+    if (!detail?.asset || detail.asset.toBase58() !== requestedAsset.toBase58()) {
       throw new AdapterError(
         JUPITER_ADAPTER_ID,
         'unknown_asset',
         `Jupiter Lend Earn token "${input.assetMint}" was not found.`,
       );
     }
-    return token;
+    return toEarnTokenSnapshot(detail, new Date().toISOString());
   }
 
   override async buildEarnDeposit(input: JupiterLendEarnDepositArgs): Promise<JupiterLendBuildResult> {
@@ -603,25 +629,25 @@ class JupiterLendSdkClient extends JupiterLendRestClient {
     const sdk = await loadJupiterLendEarnSdkForSmokeTest();
     const lendingTokens = await sdk.getLendingTokens({ connection: this.connection });
     const asOf = new Date().toISOString();
-    const snapshots = await Promise.all(lendingTokens.map(async (lendingToken) => {
+    const settled = await Promise.allSettled(lendingTokens.map(async (lendingToken) => {
       const detail = await sdk.getLendingTokenDetails({
         lendingToken,
         connection: this.connection,
       });
-      const assetMint = detail.asset.toBase58();
-      return {
-        assetMint,
-        shareMint: detail.address.toBase58(),
-        ...jupiterEarnSymbol(assetMint),
-        decimals: detail.decimals,
-        shareDecimals: detail.decimals,
-        ...optionalToString(detail.totalAssets, 'totalSupplyUnderlying'),
-        ...optionalToString(detail.totalSupply, 'totalSupplyShares'),
-        ...optionalToString(detail.convertToAssets, 'exchangePrice'),
-        active: true,
-        asOf,
-      };
+      return toEarnTokenSnapshot(detail, asOf);
     }));
+    const snapshots: JupiterLendEarnTokenSnapshot[] = [];
+    settled.forEach((result, index) => {
+      if (result.status === 'fulfilled') {
+        snapshots.push(result.value);
+        return;
+      }
+      const lendingToken = lendingTokens[index]?.toBase58() ?? '<unknown>';
+      const reason = result.reason instanceof Error ? result.reason.message : String(result.reason);
+      // One pool's broken on-chain state (e.g. uninitialized exchange prices that trip
+      // bn.js "Assertion failed") must not blank the entire Earn list.
+      console.warn(`Jupiter Lend Earn snapshot skipped for ${lendingToken}: ${reason}`);
+    });
     return snapshots.sort((left, right) =>
       (jupiterEarnSymbolRank(left.tokenSymbol) - jupiterEarnSymbolRank(right.tokenSymbol)) ||
       left.assetMint.localeCompare(right.assetMint)
@@ -712,6 +738,25 @@ function loadJupiterLendBnCtor(): BnCtor {
 
 function optionalToString<K extends string>(value: unknown, key: K): Partial<Record<K, string>> {
   return value !== undefined && value !== null ? { [key]: String(value) } as Partial<Record<K, string>> : {};
+}
+
+function toEarnTokenSnapshot(
+  detail: Awaited<ReturnType<JupiterLendEarnSdkBundle['getLendingTokenDetails']>>,
+  asOf: string,
+): JupiterLendEarnTokenSnapshot {
+  const assetMint = detail.asset.toBase58();
+  return {
+    assetMint,
+    shareMint: detail.address.toBase58(),
+    ...jupiterEarnSymbol(assetMint),
+    decimals: detail.decimals,
+    shareDecimals: detail.decimals,
+    ...optionalToString(detail.totalAssets, 'totalSupplyUnderlying'),
+    ...optionalToString(detail.totalSupply, 'totalSupplyShares'),
+    ...optionalToString(detail.convertToAssets, 'exchangePrice'),
+    active: true,
+    asOf,
+  };
 }
 
 function jupiterEarnSymbol(assetMint: string): { tokenSymbol?: string } {

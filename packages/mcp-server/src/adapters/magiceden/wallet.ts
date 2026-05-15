@@ -1,6 +1,6 @@
 import type { DAppAdapterContext } from '../types.js';
 
-import { getMagicedenClient, type MagicedenWalletNftsSnapshot } from './client.js';
+import { resolveMagicedenClient, type MagicedenWalletNftsSnapshot } from './client.js';
 
 export interface WalletNftsInput {
   walletAddress?: string;
@@ -14,7 +14,7 @@ export async function getWalletNfts(
   ctx: DAppAdapterContext,
 ): Promise<MagicedenWalletNftsSnapshot> {
   const walletAddress = input.walletAddress?.trim() || (await ctx.backend.getAddress());
-  return getMagicedenClient().getWalletNfts({
+  return resolveMagicedenClient(ctx).getWalletNfts({
     walletAddress,
     ...(input.collectionSymbol ? { collectionSymbol: input.collectionSymbol } : {}),
     ...(input.collectionId ? { collectionId: input.collectionId } : {}),

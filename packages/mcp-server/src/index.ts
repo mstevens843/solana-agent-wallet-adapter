@@ -7,6 +7,12 @@ export { RemoteBridgeBackend } from './remoteBridgeBackend.js';
 export { createBridgeServer } from './bridgeServer.js';
 export { DEFAULT_CONFIG, loadConfig, normalizeConfig } from './config.js';
 export type { AgentWalletConfig, TokenLimitConfig } from './config.js';
+export { loadDotEnv } from './env.js';
+export {
+  bootstrapHostConnectorFactories,
+  bootstrapHostConnectorFactoriesFromConfig,
+} from './hostBootstrap.js';
+export type { HostConnectorBootstrapOptions } from './hostBootstrap.js';
 export {
   JsonPreparedActionStore,
   TERMINAL_PREPARED_ACTION_STATUSES,
@@ -41,6 +47,9 @@ export type {
   AdapterAction,
   AdapterExecuteResult,
   AdapterPrepareResult,
+  ByoKeyConnectorId,
+  ConnectorSecretMaterial,
+  ConnectorSecretsMap,
   DAppAdapter,
   DAppAdapterContext,
   DAppAdapterId,

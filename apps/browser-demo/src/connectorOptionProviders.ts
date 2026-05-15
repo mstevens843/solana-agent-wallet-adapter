@@ -6,6 +6,7 @@ export interface ConnectorOptionMeta {
   balance?: string;
   symbol?: string;
   market?: string;
+  mint?: string;
   tokenXSymbol?: string;
   tokenYSymbol?: string;
   tokenMintX?: string;
@@ -858,9 +859,11 @@ const driftVaultProvider: ConnectorOptionProvider = {
   },
 };
 
-const LULO_COMMON_MINTS: Array<{ symbol: string; description: string }> = [
-  { symbol: 'USDC', description: 'USDC pool · multiple tiers' },
-  { symbol: 'USDT', description: 'USDT pool · multiple tiers' },
+const LULO_COMMON_MINTS: Array<{ symbol: string; mint: string; description: string }> = [
+  { symbol: 'USDC', mint: 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v', description: 'USDC pool · multiple tiers' },
+  { symbol: 'USDT', mint: 'Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB', description: 'USDT pool · multiple tiers' },
+  { symbol: 'PYUSD', mint: '2b1kV6DkPAnxd5ixfnxCpjxmKwqjjaYmCZfHsFu24GXo', description: 'PYUSD pool · stablecoin' },
+  { symbol: 'USDS', mint: 'USDSwr9ApdHk5bvJKMjzff41FfuX8bSxdKcR81vTwcA', description: 'USDS pool · stablecoin' },
 ];
 
 const luloMintProvider: ConnectorOptionProvider = {
@@ -914,13 +917,13 @@ const luloMintProvider: ConnectorOptionProvider = {
     }
     if (mints.length === 0) {
       for (const fallback of LULO_COMMON_MINTS) {
-        if (seen.has(fallback.symbol)) continue;
+        if (seen.has(fallback.mint)) continue;
         mints.push({
-          value: fallback.symbol,
+          value: fallback.mint,
           label: `${fallback.symbol} pool`,
           detail: fallback.description,
           group: 'all',
-          meta: { symbol: fallback.symbol },
+          meta: { symbol: fallback.symbol, mint: fallback.mint },
         });
       }
     }

@@ -17,6 +17,7 @@ import {
   LULO_DEPOSIT_TYPES,
   depositTypeLabel,
   resolveLuloDecimals,
+  resolveLuloMint,
   shortMint,
   type LuloDepositType,
 } from './constants.js';
@@ -35,14 +36,15 @@ export const luloDepositAction: AdapterAction<LuloDepositInput> = {
   kind: 'lulo_deposit',
 
   async prepare(input, ctx): Promise<AdapterPrepareResult> {
-    const mintAddress = input.mintAddress?.trim();
-    if (!mintAddress) {
+    const rawMint = input.mintAddress?.trim();
+    if (!rawMint) {
       throw new AdapterError(
         LULO_ADAPTER_ID,
         'invalid_request',
         'Lulo deposit requires mintAddress.',
       );
     }
+    const { mint: mintAddress, decimalsHint } = resolveLuloMint(rawMint);
     const depositType = normalizeDepositType(input.depositType);
     if (input.priorityFee !== undefined && (!Number.isFinite(input.priorityFee) || input.priorityFee < 0)) {
       throw new AdapterError(
@@ -52,7 +54,7 @@ export const luloDepositAction: AdapterAction<LuloDepositInput> = {
       );
     }
 
-    const decimals = await resolveLuloDecimals(ctx.connection, mintAddress);
+    const decimals = await resolveLuloDecimals(ctx.connection, mintAddress, decimalsHint);
     const amountRaw = parseDecimalAmount(input.amount, decimals, `${shortMint(mintAddress)} Lulo deposit amount`);
 
     const walletAddress = await ctx.backend.getAddress();

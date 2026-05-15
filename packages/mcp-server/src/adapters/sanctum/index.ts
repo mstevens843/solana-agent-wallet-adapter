@@ -25,19 +25,19 @@ import {
   listSanctumLsts,
 } from './lsts.js';
 import { getSanctumWalletPositions } from './wallet.js';
-import { getSanctumClient } from './client.js';
+import { resolveSanctumClient } from './client.js';
 
 const lstListRead: AdapterRead<Parameters<typeof listSanctumLsts>[0], unknown> = {
   id: 'lst_list',
-  async read(input) {
-    return listSanctumLsts(input ?? {});
+  async read(input, ctx) {
+    return listSanctumLsts(input ?? {}, ctx);
   },
 };
 
 const lstSnapshotRead: AdapterRead<Parameters<typeof getSanctumLstSnapshot>[0], unknown> = {
   id: 'lst_snapshot',
-  async read(input) {
-    return getSanctumLstSnapshot(input);
+  async read(input, ctx) {
+    return getSanctumLstSnapshot(input, ctx);
   },
 };
 
@@ -62,8 +62,8 @@ const quoteRead: AdapterRead<{
   slippageBps?: number;
 }, unknown> = {
   id: 'quote',
-  async read(input) {
-    return getSanctumClient().getTokenOrder({
+  async read(input, ctx) {
+    return resolveSanctumClient(ctx).getTokenOrder({
       inputMint: input.inputMint,
       outputMint: input.outputMint,
       amountRaw: input.amountRaw,
