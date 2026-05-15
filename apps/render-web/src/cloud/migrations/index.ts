@@ -5,6 +5,11 @@ import { migration004TransactionFinalizations } from './004_transaction_finaliza
 import { migration005RecurringExpiresAt } from './005_recurring_expires_at.js';
 import { migration006RecurringNotificationDeliveries } from './006_recurring_notification_deliveries.js';
 import { migration007WalletPreferences } from './007_wallet_preferences.js';
+import { migration008SkillsLayer2 } from './008_skills_layer2.js';
+import { migration009SignalSubscriptionActiveUnique } from './009_signal_subscription_active_unique.js';
+import { migration010SkillInstallsReinstallIndex } from './010_skill_installs_reinstall_index.js';
+import { migration011SignalsFanoutHardening } from './011_signals_fanout_hardening.js';
+import { migration012SkillExecutionApprovalLookup } from './012_skill_execution_approval_lookup.js';
 
 export interface PostgresMigration {
   id: string;
@@ -19,4 +24,9 @@ export const postgresMigrations: PostgresMigration[] = [
   migration005RecurringExpiresAt,
   migration006RecurringNotificationDeliveries,
   migration007WalletPreferences,
+  migration008SkillsLayer2,
+  migration009SignalSubscriptionActiveUnique,
+  migration010SkillInstallsReinstallIndex,
+  migration011SignalsFanoutHardening,
+  migration012SkillExecutionApprovalLookup,
 ];

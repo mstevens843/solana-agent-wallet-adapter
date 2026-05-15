@@ -22,7 +22,13 @@ export type { CadenceFields, ExhaustionReason, LifetimeSpend, OccurrenceInfo } f
 
 export { formatOccurrenceStatus, formatScheduleStatus } from './labels.js';
 export type { ApprovalSummaryHint, LabelTone, StatusLabel } from './labels.js';
-export * as DevLayer1 from './dev/index.js';
+// DevLayer1 (AP2/ACP/AgentCard/Bridge validators) lives at
+// `@solana-agent-wallet-adapter/workflow/dev` because it transitively
+// imports the `ap2-adapter`/`acp-adapter` packages, which depend on Node
+// crypto and must not enter browser bundles. Server-side consumers import
+// it via the subpath; browser consumers continue using the main barrel
+// without pulling node:crypto into Vite/Rollup.
+//   import * as DevLayer1 from '@solana-agent-wallet-adapter/workflow/dev';
 export * from './agentPlans.js';
 export * from './agentFactRouter.js';
 export * from './agentEvidence.js';
@@ -164,6 +170,7 @@ export const EVIDENCE_RECEIPT_KINDS = [
   'tool_trace_receipt',
   'agent_override_receipt',
   'acp_outbound',
+  'ap2_inbound',
 ] as const;
 export type EvidenceReceiptKind = (typeof EVIDENCE_RECEIPT_KINDS)[number];
 
@@ -601,7 +608,7 @@ export interface AuditEventRecord {
   createdAt: string;
   actor?: AuditActor;
   eventType?: string;
-  recordType?: 'plan' | 'approval' | 'completed' | 'evidence';
+  recordType?: 'plan' | 'approval' | 'completed' | 'evidence' | 'signal_feed' | 'signal_emission' | 'signal_subscription' | 'skill_execution';
   recordId?: string;
   subjectType?: string;
   subjectId?: string;
@@ -1833,7 +1840,12 @@ export function parseAuditEventRecord(input: unknown, path = '$'): AuditEventRec
     createdAt: expectString(record, 'createdAt', path),
     ...optionalEnumProp(record, 'actor', AUDIT_ACTORS, path),
     eventType,
-    ...optionalEnumProp(record, 'recordType', ['plan', 'approval', 'completed', 'evidence'] as const, path),
+    ...optionalEnumProp(
+      record,
+      'recordType',
+      ['plan', 'approval', 'completed', 'evidence', 'signal_feed', 'signal_emission', 'signal_subscription', 'skill_execution'] as const,
+      path,
+    ),
     ...optionalStringProp(record, 'recordId', path),
     ...(subjectType ? { subjectType } : {}),
     ...(subjectId ? { subjectId } : {}),
@@ -2641,8 +2653,8 @@ function requiredConstraintGroups(actionType: string): Array<{ label: string; ke
   }
   if (actionType === 'swap') {
     return [
-      { label: 'Input token', keys: ['inputToken'] },
-      { label: 'Output token', keys: ['outputToken'] },
+      { label: 'Input token', keys: ['inputToken', 'inputMint'] },
+      { label: 'Output token', keys: ['outputToken', 'outputMint'] },
       { label: 'Amount', keys: ['amount', 'inputAmount'] },
       { label: 'Slippage cap', keys: ['slippageBps'] },
     ];
@@ -2699,6 +2711,7 @@ function normalizeStringRecord(value: unknown): Record<string, string> {
   const output: Record<string, string> = {};
   for (const [key, entry] of Object.entries(value)) {
     if (typeof entry === 'string') output[key] = entry;
+    if (typeof entry === 'number' && Number.isFinite(entry)) output[key] = String(entry);
   }
   return output;
 }

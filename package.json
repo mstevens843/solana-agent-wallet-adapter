@@ -48,6 +48,7 @@
     "smoke:render-web:live": "node scripts/smoke-render-web.mjs --live",
     "smoke:render-web:ap2": "node scripts/smoke-render-web.mjs --ap2",
     "smoke:render-web:ap2-live": "node scripts/smoke-render-web.mjs --ap2 --live",
+    "smoke:render-web:skills": "node scripts/smoke-render-web.mjs --skills",
     "demo:browser": "VITE_AGENTIC_APP_SURFACE=public pnpm -F @solana-agent-wallet-adapter/browser-demo dev",
     "demo:browser:debug": "VITE_AGENTIC_APP_SURFACE=debug pnpm -F @solana-agent-wallet-adapter/browser-demo dev",
     "demo:browser:build": "pnpm --filter @solana-agent-wallet-adapter/browser-demo^... build && pnpm -F @solana-agent-wallet-adapter/browser-demo typecheck && pnpm -F @solana-agent-wallet-adapter/browser-demo build && node scripts/verify-browser-dist.mjs && node scripts/write-spa-route-fallbacks.mjs",

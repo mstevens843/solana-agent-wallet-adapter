@@ -88,9 +88,26 @@ describe('mandateToApprovalParams', () => {
       actionSource: 'ap2_inbound',
       ap2MandateId: '01J0AP2INTENT01',
       ap2MandateType: 'intent_mandate',
-      ap2VerifiedAgent: { agentId: AGENT.agentId, agentLabel: AGENT.agentLabel },
+      ap2VerifiedAgent: {
+        agentId: AGENT.agentId,
+        agentLabel: AGENT.agentLabel,
+        publicKey: AGENT_PUBKEY,
+        verified: true,
+      },
     });
     expect(result.metadata.actionProposal).toBe(mandate);
+  });
+
+  it('emits ap2VerifiedAgent with publicKey + verified:true so the Agent 9 badge matches', () => {
+    const result = mandateToApprovalParams(intentMandate(), AGENT, WALLET);
+    const agentMeta = result.metadata.ap2VerifiedAgent as {
+      agentId: string;
+      agentLabel: string;
+      publicKey: string;
+      verified: boolean;
+    };
+    expect(agentMeta.verified).toBe(true);
+    expect(agentMeta.publicKey).toBe(AGENT_PUBKEY);
   });
 
   it('maps a SOL PaymentMandate to a transfer_sol approval', () => {

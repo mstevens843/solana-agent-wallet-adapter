@@ -63,6 +63,13 @@ export interface CloudWorkspaceDeleteCounts {
   sessions: number;
   users: number;
   preferences: number;
+  skillManifests: number;
+  skillInstalls: number;
+  skillExecutions: number;
+  signalFeeds: number;
+  signalSubscriptions: number;
+  signalEmissions: number;
+  aggregatorSnapshots: number;
 }
 
 export const emptyCloudWorkspaceDeleteCounts = (): CloudWorkspaceDeleteCounts => ({
@@ -79,6 +86,13 @@ export const emptyCloudWorkspaceDeleteCounts = (): CloudWorkspaceDeleteCounts =>
   sessions: 0,
   users: 0,
   preferences: 0,
+  skillManifests: 0,
+  skillInstalls: 0,
+  skillExecutions: 0,
+  signalFeeds: 0,
+  signalSubscriptions: 0,
+  signalEmissions: 0,
+  aggregatorSnapshots: 0,
 });
 
 export interface CloudWorkspaceDeleteStore {
@@ -120,6 +134,154 @@ export interface WorkflowStore {
   deleteSession(tokenHash: string, revokedAt: string): Promise<void>;
   cleanupExpired(nowIso: string): Promise<void>;
   forWallet(walletAddress: string): WalletScopedWorkflowStore;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Layer 2 Skills Hub store contracts shared by memory and Postgres stores.
+// ─────────────────────────────────────────────────────────────────────────────
+
+export interface SkillManifestStoreRecord {
+  id: string;
+  version: string;
+  authorWallet: string;
+  createdAt: string;
+  updatedAt: string;
+  manifestHash?: string;
+  manifest: unknown; // shape: SkillManifest from @solana-agent-wallet-adapter/workflow DevLayer1.skills
+}
+
+export interface SkillInstallStoreRecord {
+  id: string;
+  walletAddress: string;
+  skillId: string;
+  status: 'active' | 'paused' | 'expired' | 'revoked';
+  installedAt: string;
+  updatedAt: string;
+  install: unknown; // shape: SkillInstallRecord
+}
+
+export interface SkillExecutionStoreRecord {
+  id: string;
+  installId: string;
+  walletAddress: string;
+  skillId: string;
+  proposedAt: string;
+  result?: 'pending' | 'success' | 'failed' | 'rejected';
+  approvalRequestId?: string;
+  evidenceReceiptId?: string;
+  execution: unknown; // shape: SkillExecutionRecord
+}
+
+export interface SkillsStore {
+  saveSkillManifest(record: SkillManifestStoreRecord): Promise<SkillManifestStoreRecord>;
+  getSkillManifest(skillId: string): Promise<SkillManifestStoreRecord | undefined>;
+  listSkillManifests(): Promise<SkillManifestStoreRecord[]>;
+  saveSkillInstall(record: SkillInstallStoreRecord): Promise<SkillInstallStoreRecord>;
+  getSkillInstall(installId: string): Promise<SkillInstallStoreRecord | undefined>;
+  listSkillInstallsForWallet(walletAddress: string): Promise<SkillInstallStoreRecord[]>;
+  listActiveSkillInstalls(): Promise<SkillInstallStoreRecord[]>;
+  saveSkillExecution(record: SkillExecutionStoreRecord): Promise<SkillExecutionStoreRecord>;
+  getSkillExecutionByApprovalRequestId(
+    walletAddress: string,
+    approvalRequestId: string,
+  ): Promise<SkillExecutionStoreRecord | undefined>;
+  listSkillExecutionsByInstall(installId: string): Promise<SkillExecutionStoreRecord[]>;
+  listSkillExecutionsForSkill(skillId: string, sinceIso?: string): Promise<SkillExecutionStoreRecord[]>;
+}
+
+export interface SignalFeedStoreRecord {
+  id: string;
+  publisherWallet: string;
+  status: 'active' | 'paused' | 'archived';
+  createdAt: string;
+  updatedAt: string;
+  feed: unknown; // shape: SignalFeedRecord
+}
+
+export interface SignalSubscriptionStoreRecord {
+  id: string;
+  followerWallet: string;
+  feedId: string;
+  status: 'active' | 'paused' | 'revoked';
+  subscribedAt: string;
+  updatedAt: string;
+  subscription: unknown; // shape: SignalSubscriptionRecord
+}
+
+export interface SignalEmissionStoreRecord {
+  id: string;
+  feedId: string;
+  publisherWallet: string;
+  emittedAt: string;
+  delivered: number;
+  fanoutProcessedAt?: string;
+  emission: unknown; // shape: SignalEmissionRecord
+}
+
+export interface SignalsStore {
+  saveSignalFeed(record: SignalFeedStoreRecord): Promise<SignalFeedStoreRecord>;
+  getSignalFeed(feedId: string): Promise<SignalFeedStoreRecord | undefined>;
+  listSignalFeedsByPublisher(publisherWallet: string): Promise<SignalFeedStoreRecord[]>;
+  saveSignalSubscription(record: SignalSubscriptionStoreRecord): Promise<SignalSubscriptionStoreRecord>;
+  listSignalSubscriptionsForFollower(followerWallet: string): Promise<SignalSubscriptionStoreRecord[]>;
+  listSignalSubscriptionsForFeed(feedId: string): Promise<SignalSubscriptionStoreRecord[]>;
+  saveSignalEmission(record: SignalEmissionStoreRecord): Promise<SignalEmissionStoreRecord>;
+  listUndeliveredSignalEmissions(limit?: number): Promise<SignalEmissionStoreRecord[]>;
+  markSignalEmissionFanoutProcessed(
+    emissionId: string,
+    delivered: number,
+    fanoutProcessedAt: string,
+  ): Promise<void>;
+}
+
+export interface AggregatorSnapshotStoreRecord {
+  key: string; // 'skill:friday-dca' | 'wallet:<addr>'
+  kind: 'skill' | 'wallet';
+  computedAt: string;
+  snapshot: unknown; // shape: SkillStatsSnapshot | WalletStatsSnapshot
+}
+
+export interface AggregatorStore {
+  saveAggregatorSnapshot(record: AggregatorSnapshotStoreRecord): Promise<AggregatorSnapshotStoreRecord>;
+  getAggregatorSnapshot(key: string): Promise<AggregatorSnapshotStoreRecord | undefined>;
+  listAggregatorSnapshotsByKind(
+    kind: 'skill' | 'wallet',
+  ): Promise<AggregatorSnapshotStoreRecord[]>;
+}
+
+export function isSkillsStore(value: unknown): value is SkillsStore {
+  return Boolean(value)
+    && typeof (value as SkillsStore).saveSkillManifest === 'function'
+    && typeof (value as SkillsStore).getSkillManifest === 'function'
+    && typeof (value as SkillsStore).listSkillManifests === 'function'
+    && typeof (value as SkillsStore).saveSkillInstall === 'function'
+    && typeof (value as SkillsStore).getSkillInstall === 'function'
+    && typeof (value as SkillsStore).listSkillInstallsForWallet === 'function'
+    && typeof (value as SkillsStore).listActiveSkillInstalls === 'function'
+    && typeof (value as SkillsStore).saveSkillExecution === 'function'
+    && typeof (value as SkillsStore).getSkillExecutionByApprovalRequestId === 'function'
+    && typeof (value as SkillsStore).listSkillExecutionsByInstall === 'function'
+    && typeof (value as SkillsStore).listSkillExecutionsForSkill === 'function';
+}
+
+export function isSignalsStore(value: unknown): value is SignalsStore {
+  return Boolean(value)
+    && typeof (value as SignalsStore).saveSignalFeed === 'function'
+    && typeof (value as SignalsStore).getSignalFeed === 'function'
+    && typeof (value as SignalsStore).listSignalFeedsByPublisher === 'function'
+    && typeof (value as SignalsStore).saveSignalSubscription === 'function'
+    && typeof (value as SignalsStore).listSignalSubscriptionsForFollower === 'function'
+    && typeof (value as SignalsStore).listSignalSubscriptionsForFeed === 'function'
+    && typeof (value as SignalsStore).saveSignalEmission === 'function'
+    && typeof (value as SignalsStore).listUndeliveredSignalEmissions === 'function'
+    && typeof (value as SignalsStore).markSignalEmissionFanoutProcessed === 'function';
+}
+
+export function isAggregatorStore(value: unknown): value is AggregatorStore {
+  return Boolean(value)
+    && typeof (value as AggregatorStore).saveAggregatorSnapshot === 'function'
+    && typeof (value as AggregatorStore).getAggregatorSnapshot === 'function'
+    && typeof (value as AggregatorStore).listAggregatorSnapshotsByKind === 'function';
 }
 
 export function sessionResponse(session: WalletSessionRecord | undefined): SessionResponse {

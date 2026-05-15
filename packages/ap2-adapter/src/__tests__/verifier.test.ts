@@ -1,8 +1,8 @@
 import { generateKeyPairSync, sign as signDetached, type KeyObject } from 'node:crypto';
 import { beforeAll, describe, expect, it } from 'vitest';
 
-import { Ap2VerifyError, type Ap2PaymentMandate } from '../types.js';
-import { canonicalize, decodeBase58, encodeBase58, verifyAp2Mandate } from '../verifier.js';
+import { Ap2VerifyError, type Ap2IntentMandate, type Ap2PaymentMandate } from '../types.js';
+import { canonicalize, decodeBase58, encodeBase58, paymentDetailsFor, verifyAp2Mandate } from '../verifier.js';
 
 const RECIPIENT = '4fTqUdd9SRCkmALQhQGF66VRYJFsCLDSQJYadqwMMoHd';
 const USDC_MINT = 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v';
@@ -55,6 +55,43 @@ function signAndBuild(signedFields: Record<string, unknown>): Ap2PaymentMandate 
   };
 }
 
+function buildIntentSignedFields(): Record<string, unknown> {
+  return {
+    mandateId: '01J0AP2INTENT99',
+    mandateType: 'intent_mandate',
+    protocolVersion: 'ap2/0.1',
+    issuedAt: '2026-05-14T10:00:00.000Z',
+    expiresAt: '2026-05-14T11:00:00.000Z',
+    intent: {
+      description: 'Subscription Tier B',
+      cap: {
+        amount: '8.00',
+        tokenSymbol: 'USDC',
+        tokenMint: USDC_MINT,
+        recipient: RECIPIENT,
+        cluster: 'mainnet-beta',
+      },
+    },
+  };
+}
+
+function signIntentAndBuild(signedFields: Record<string, unknown>): Ap2IntentMandate {
+  const message = Buffer.from(canonicalize(signedFields as never), 'utf8');
+  const sigBytes = signDetached(null, message, agentPrivateKey);
+  const signature = encodeBase58(sigBytes);
+  return {
+    mandateId: signedFields.mandateId as string,
+    mandateType: 'intent_mandate',
+    protocolVersion: signedFields.protocolVersion as string,
+    issuedAt: signedFields.issuedAt as string,
+    expiresAt: signedFields.expiresAt as string,
+    agent: { agentId: 'did:web:merchant.example', agentLabel: 'Acme', publicKey: agentPublicKey },
+    intent: signedFields.intent as Ap2IntentMandate['intent'],
+    signature,
+    signedFields: signedFields as never,
+  };
+}
+
 describe('verifyAp2Mandate', () => {
   it('verifies a freshly signed mandate', () => {
     const mandate = signAndBuild(buildSignedFields());
@@ -62,6 +99,14 @@ describe('verifyAp2Mandate', () => {
     expect(result.verified).toBe(true);
     expect(result.agent.agentLabel).toBe('Acme');
     expect(result.agent.publicKey).toBe(agentPublicKey);
+  });
+
+  it('verifies a freshly signed IntentMandate', () => {
+    const mandate = signIntentAndBuild(buildIntentSignedFields());
+    const result = verifyAp2Mandate(mandate, { clockNow: NOW });
+    expect(result.verified).toBe(true);
+    expect(paymentDetailsFor(mandate).amount).toBe('8.00');
+    expect(paymentDetailsFor(mandate).cluster).toBe('mainnet-beta');
   });
 
   it('throws bad_signature when signedFields are tampered', () => {

@@ -1,4 +1,4 @@
-export type AcpCluster = 'mainnet' | 'devnet';
+export type AcpCluster = 'mainnet-beta' | 'testnet' | 'devnet' | 'localnet';
 export type AcpCurrency = 'USD';
 export type AcpPaymentToken = 'USDC' | 'USDT';
 
@@ -54,6 +54,7 @@ export interface AcpTransferParams {
 }
 
 export interface AcpReceipt {
+  readonly schema: 'acp/outbound/0.1';
   readonly receiptVersion: '1';
   readonly receiptId: string;
   readonly cartId: string;
@@ -63,9 +64,11 @@ export interface AcpReceipt {
   readonly settledAt: string;
   readonly amount: string;
   readonly token: AcpPaymentToken;
+  readonly paymentTokenMint?: string;
   readonly recipient: string;
   readonly cluster: AcpCluster;
   readonly merchant: AcpMerchant;
   readonly lineItems: readonly AcpLineItem[];
   readonly memo?: string;
+  readonly metadata?: Readonly<Record<string, string>>;
 }

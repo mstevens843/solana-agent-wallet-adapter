@@ -2,7 +2,11 @@ import { createServer, request as httpRequest, type IncomingMessage, type Incomi
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-import type { ApprovalRequestRecord, EvidenceReceiptRecord } from '@solana-agent-wallet-adapter/workflow';
+import type {
+  ApprovalRequestRecord,
+  EvidenceReceiptRecord,
+  TransactionFinalizationRecord,
+} from '@solana-agent-wallet-adapter/workflow';
 
 import type { DevApiHandler, DevApiHandlerContext } from '../cloud/devApiRegistry.js';
 import { MemoryEvidenceStore } from '../cloud/evidenceService.js';
@@ -275,11 +279,43 @@ function sampleCart(overrides: Record<string, unknown> = {}): Record<string, unk
     totalAmount: '19.99',
     currency: 'USD',
     paymentToken: 'USDC',
-    cluster: 'mainnet',
+    cluster: 'mainnet-beta',
     expiresAt: '2099-01-01T00:00:00.000Z',
     memo: 'Order #ACP-1',
     ...overrides,
   };
+}
+
+async function injectConfirmedFinalization(
+  workflowStore: MemoryWorkflowStore,
+  approval: ApprovalRequestRecord,
+  txid: string,
+): Promise<TransactionFinalizationRecord> {
+  const finalization: TransactionFinalizationRecord = {
+    id: `finalization_${approval.id}`,
+    walletAddress: approval.walletAddress,
+    approvalRequestId: approval.id,
+    kind: approval.kind,
+    status: 'confirmed',
+    cluster: 'mainnet-beta',
+    walletAction: {
+      kind: approval.kind,
+      walletAddress: approval.walletAddress,
+      cluster: 'mainnet-beta',
+      summary: approval.summary,
+      instructionSummary: [],
+      touchedPrograms: [],
+    },
+    transactionHash: `tx-hash-${approval.id}`,
+    txid,
+    txStatus: 'confirmed',
+    createdAt: '2026-05-14T11:30:00.000Z',
+    updatedAt: '2026-05-14T11:35:00.000Z',
+    expiresAt: '2026-05-14T14:00:00.000Z',
+    confirmedAt: '2026-05-14T11:35:00.000Z',
+  };
+  await workflowStore.saveFinalization(approval.walletAddress, finalization);
+  return finalization;
 }
 
 const DEFAULT_ENV: EnvSnapshot = {
@@ -359,7 +395,21 @@ describe('cloud ACP cart API', () => {
       });
     });
 
-    it('returns 400 with parse_error for malformed cart strings', async () => {
+    it("normalizes the legacy 'mainnet' cluster alias to 'mainnet-beta'", async () => {
+      await withAcpServer(DEFAULT_ENV, async ({ port }) => {
+        const response = await postJson(
+          port,
+          '/api/acp/cart/preview',
+          { cart: sampleCart({ cluster: 'mainnet' }) },
+          DEV_WALLET,
+        );
+        expect(response.status).toBe(200);
+        const preview = response.body?.preview as Record<string, unknown>;
+        expect((preview.cart as Record<string, unknown>).cluster).toBe('mainnet-beta');
+      });
+    });
+
+    it('returns 400 with invalid_acp_cart:invalid_json for malformed cart strings', async () => {
       await withAcpServer(DEFAULT_ENV, async ({ port }) => {
         const response = await postJson(
           port,
@@ -368,7 +418,8 @@ describe('cloud ACP cart API', () => {
           DEV_WALLET,
         );
         expect(response.status).toBe(400);
-        expect(response.body?.error).toBe('invalid_json');
+        expect(response.body?.error).toBe('invalid_acp_cart:invalid_json');
+        expect(response.body?.message).toBeTruthy();
       });
     });
 
@@ -391,7 +442,7 @@ describe('cloud ACP cart API', () => {
       });
     });
 
-    it('writes an acp.cart.previewed audit event', async () => {
+    it('writes an acp.cart.previewed audit event with actor=user', async () => {
       await withAcpServer(DEFAULT_ENV, async ({ port, workflowStore }) => {
         const response = await postJson(port, '/api/acp/cart/preview', { cart: sampleCart() }, DEV_WALLET);
         expect(response.status).toBe(200);
@@ -401,7 +452,8 @@ describe('cloud ACP cart API', () => {
         expect(previewEvents[0]?.metadata).toMatchObject({
           cartId: 'cart_test_001',
           paymentToken: 'USDC',
-          cluster: 'mainnet',
+          cluster: 'mainnet-beta',
+          actor: 'user',
         });
       });
     });
@@ -419,24 +471,34 @@ describe('cloud ACP cart API', () => {
         expect(response.status).toBe(201);
         const approval = response.body?.approval as ApprovalRequestRecord;
         expect(approval).toBeTruthy();
-        expect(approval.kind).toBe('manual_review');
+        expect(approval.kind).toBe('transfer_spl');
         expect(approval.amount).toBe('19.99');
         expect(approval.token).toBe('USDC');
         expect(approval.recipient).toBe(MERCHANT_RECIPIENT);
         expect(approval.cluster).toBe('mainnet-beta');
         expect(approval.metadata?.source).toBe('acp_outbound');
+        expect(approval.metadata?.actionSource).toBe('acp_outbound');
         expect(approval.metadata?.acpCartId).toBe('cart_test_001');
         expect(approval.metadata?.acpCartHash).toEqual(expect.any(String));
         expect(approval.metadata?.acpCart).toMatchObject({ id: 'cart_test_001' });
-        expect((approval.params as Record<string, unknown>).action).toBe('acp_outbound_transfer_spl');
+
+        // Guardrail-friendly params: top-level recipient/token/amount.
+        const params = approval.params as Record<string, unknown>;
+        expect(params.recipient).toBe(MERCHANT_RECIPIENT);
+        expect(params.token).toBe('USDC');
+        expect(params.amount).toBe('19.99');
+        expect(params.tokenMint).toBe('EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v');
+        expect(params.action).toBeUndefined();
 
         const stored = await workflowStore.getApproval(DEV_WALLET, approval.id);
-        expect(stored?.kind).toBe('manual_review');
+        expect(stored?.kind).toBe('transfer_spl');
         expect(response.body?.cartId).toBe('cart_test_001');
+        expect(response.body?.approvalId).toBe(approval.id);
+        expect(response.body?.cartHash).toEqual(expect.any(String));
       });
     });
 
-    it('writes an acp.cart.approved audit event referencing the approval', async () => {
+    it('writes an acp.cart.approved audit event with actor=user referencing the approval', async () => {
       await withAcpServer(DEFAULT_ENV, async ({ port, workflowStore }) => {
         const response = await postJson(port, '/api/acp/cart/approve', { cart: sampleCart() }, DEV_WALLET);
         expect(response.status).toBe(201);
@@ -447,6 +509,7 @@ describe('cloud ACP cart API', () => {
         expect(approvedEvents[0]?.metadata).toMatchObject({
           approvalId: approval.id,
           cartId: 'cart_test_001',
+          actor: 'user',
         });
       });
     });
@@ -465,17 +528,35 @@ describe('cloud ACP cart API', () => {
   });
 
   describe('POST /api/acp/cart/:id/receipt', () => {
-    it('persists an evidence receipt after an approved cart finalizes on-chain', async () => {
-      await withAcpServer(DEFAULT_ENV, async ({ port, evidenceStore }) => {
+    it('returns 409 not_finalized when no confirmed finalization exists', async () => {
+      await withAcpServer(DEFAULT_ENV, async ({ port }) => {
+        const approveResponse = await postJson(port, '/api/acp/cart/approve', { cart: sampleCart() }, DEV_WALLET);
+        const approval = approveResponse.body?.approval as ApprovalRequestRecord;
+        const response = await postJson(
+          port,
+          `/api/acp/cart/${approval.id}/receipt`,
+          {},
+          DEV_WALLET,
+        );
+        expect(response.status).toBe(409);
+        expect(response.body?.error).toBe('not_finalized');
+        expect(response.body?.message).toBeTruthy();
+      });
+    });
+
+    it('persists an evidence receipt after a confirmed finalization is recorded', async () => {
+      await withAcpServer(DEFAULT_ENV, async ({ port, evidenceStore, workflowStore }) => {
         const approveResponse = await postJson(port, '/api/acp/cart/approve', { cart: sampleCart() }, DEV_WALLET);
         expect(approveResponse.status).toBe(201);
         const approval = approveResponse.body?.approval as ApprovalRequestRecord;
 
         const txid = 'tx_signature_demo_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa';
+        await injectConfirmedFinalization(workflowStore, approval, txid);
+
         const receiptResponse = await postJson(
           port,
           `/api/acp/cart/${approval.id}/receipt`,
-          { txid, settledAt: '2026-05-14T13:00:00.000Z' },
+          {},
           DEV_WALLET,
         );
         expect(receiptResponse.status).toBe(201);
@@ -487,11 +568,84 @@ describe('cloud ACP cart API', () => {
         expect(record.signature).toBe(txid);
         expect(record.verified).toBe(true);
         expect((record.payload as Record<string, unknown>).receiptVersion).toBe('1');
+        expect((record.payload as Record<string, unknown>).schema).toBe('acp/outbound/0.1');
         expect(record.metadata?.approvalId).toBe(approval.id);
         expect(record.metadata?.cartId).toBe('cart_test_001');
 
         const stored = await evidenceStore.getEvidence(DEV_WALLET, record.id);
         expect(stored?.kind).toBe('acp_outbound');
+        expect(receiptResponse.body?.approvalId).toBe(approval.id);
+      });
+    });
+
+    it("extracts txid from the finalization, ignoring any client-supplied txid", async () => {
+      await withAcpServer(DEFAULT_ENV, async ({ port, workflowStore }) => {
+        const approveResponse = await postJson(port, '/api/acp/cart/approve', { cart: sampleCart() }, DEV_WALLET);
+        const approval = approveResponse.body?.approval as ApprovalRequestRecord;
+        await injectConfirmedFinalization(workflowStore, approval, 'TXFROMFINALIZATION');
+
+        const receiptResponse = await postJson(
+          port,
+          `/api/acp/cart/${approval.id}/receipt`,
+          { txid: 'TXFROMCLIENT' },
+          DEV_WALLET,
+        );
+        expect(receiptResponse.status).toBe(201);
+        const record = receiptResponse.body?.receipt as EvidenceReceiptRecord;
+        expect(record.signature).toBe('TXFROMFINALIZATION');
+        const acp = receiptResponse.body?.acp as Record<string, unknown>;
+        expect(acp.txid).toBe('TXFROMFINALIZATION');
+      });
+    });
+
+    it('persists the receipt onto approval.metadata.acpOutboundReceipt', async () => {
+      await withAcpServer(DEFAULT_ENV, async ({ port, workflowStore }) => {
+        const approveResponse = await postJson(port, '/api/acp/cart/approve', { cart: sampleCart() }, DEV_WALLET);
+        const approval = approveResponse.body?.approval as ApprovalRequestRecord;
+        await injectConfirmedFinalization(workflowStore, approval, 'TXAPPMETA');
+
+        const receiptResponse = await postJson(
+          port,
+          `/api/acp/cart/${approval.id}/receipt`,
+          {},
+          DEV_WALLET,
+        );
+        expect(receiptResponse.status).toBe(201);
+
+        const refreshed = await workflowStore.getApproval(DEV_WALLET, approval.id);
+        const receiptOnApproval = refreshed?.metadata?.acpOutboundReceipt as Record<string, unknown> | undefined;
+        expect(receiptOnApproval).toBeTruthy();
+        expect(receiptOnApproval?.cartId).toBe('cart_test_001');
+        expect(receiptOnApproval?.txid).toBe('TXAPPMETA');
+        expect(refreshed?.metadata?.acpOutboundReceiptIssuedAt).toEqual(expect.any(String));
+        expect(refreshed?.metadata?.acpEvidenceReceiptId).toEqual(expect.stringMatching(/^evidence_acp_/));
+      });
+    });
+
+    it('returns 409 cart_hash_mismatch when the stored hash does not match the cart payload', async () => {
+      await withAcpServer(DEFAULT_ENV, async ({ port, workflowStore }) => {
+        const approveResponse = await postJson(port, '/api/acp/cart/approve', { cart: sampleCart() }, DEV_WALLET);
+        const approval = approveResponse.body?.approval as ApprovalRequestRecord;
+        await injectConfirmedFinalization(workflowStore, approval, 'TXHASHCHECK');
+
+        const tampered: ApprovalRequestRecord = {
+          ...approval,
+          metadata: {
+            ...(approval.metadata ?? {}),
+            acpCartHash: 'definitely-wrong-hash',
+          },
+        };
+        await workflowStore.saveApproval(DEV_WALLET, tampered);
+
+        const response = await postJson(
+          port,
+          `/api/acp/cart/${approval.id}/receipt`,
+          {},
+          DEV_WALLET,
+        );
+        expect(response.status).toBe(409);
+        expect(response.body?.error).toBe('cart_hash_mismatch');
+        expect(response.body?.message).toBeTruthy();
       });
     });
 
@@ -500,11 +654,12 @@ describe('cloud ACP cart API', () => {
         const response = await postJson(
           port,
           '/api/acp/cart/approval_does_not_exist/receipt',
-          { txid: 'tx_anything' },
+          {},
           DEV_WALLET,
         );
         expect(response.status).toBe(404);
         expect(response.body?.error).toBe('approval_not_found');
+        expect(response.body?.message).toBeTruthy();
       });
     });
 
@@ -523,37 +678,41 @@ describe('cloud ACP cart API', () => {
         const response = await postJson(
           port,
           `/api/acp/cart/${approval.id}/receipt`,
-          { txid: 'tx_anything' },
+          {},
           DEV_WALLET,
         );
         expect(response.status).toBe(409);
         expect(response.body?.error).toBe('not_an_acp_approval');
+        expect(response.body?.message).toBeTruthy();
       });
     });
 
-    it('returns 400 when txid is missing', async () => {
-      await withAcpServer(DEFAULT_ENV, async ({ port }) => {
+    it('returns 400 when settledAt is provided in an invalid format', async () => {
+      await withAcpServer(DEFAULT_ENV, async ({ port, workflowStore }) => {
         const approveResponse = await postJson(port, '/api/acp/cart/approve', { cart: sampleCart() }, DEV_WALLET);
         const approval = approveResponse.body?.approval as ApprovalRequestRecord;
+        await injectConfirmedFinalization(workflowStore, approval, 'TXBADTS');
         const response = await postJson(
           port,
           `/api/acp/cart/${approval.id}/receipt`,
-          {},
+          { settledAt: 'not-a-timestamp' },
           DEV_WALLET,
         );
         expect(response.status).toBe(400);
-        expect(response.body?.error).toBe('missing_field');
+        expect(response.body?.error).toBe('invalid_timestamp');
       });
     });
 
     it('writes an acp.receipt.created audit event in the evidence store', async () => {
-      await withAcpServer(DEFAULT_ENV, async ({ port, evidenceStore }) => {
+      await withAcpServer(DEFAULT_ENV, async ({ port, evidenceStore, workflowStore }) => {
         const approveResponse = await postJson(port, '/api/acp/cart/approve', { cart: sampleCart() }, DEV_WALLET);
         const approval = approveResponse.body?.approval as ApprovalRequestRecord;
+        await injectConfirmedFinalization(workflowStore, approval, 'tx_audit_demo');
+
         const receiptResponse = await postJson(
           port,
           `/api/acp/cart/${approval.id}/receipt`,
-          { txid: 'tx_audit_demo' },
+          {},
           DEV_WALLET,
         );
         expect(receiptResponse.status).toBe(201);
@@ -564,6 +723,31 @@ describe('cloud ACP cart API', () => {
           approvalId: approval.id,
           cartId: 'cart_test_001',
           txid: 'tx_audit_demo',
+        });
+      });
+    });
+
+    it('writes an acp.receipt.created audit event with actor=server on the workflow store', async () => {
+      await withAcpServer(DEFAULT_ENV, async ({ port, workflowStore }) => {
+        const approveResponse = await postJson(port, '/api/acp/cart/approve', { cart: sampleCart() }, DEV_WALLET);
+        const approval = approveResponse.body?.approval as ApprovalRequestRecord;
+        await injectConfirmedFinalization(workflowStore, approval, 'tx_server_actor');
+
+        const receiptResponse = await postJson(
+          port,
+          `/api/acp/cart/${approval.id}/receipt`,
+          {},
+          DEV_WALLET,
+        );
+        expect(receiptResponse.status).toBe(201);
+        const events = await workflowStore.forWallet(DEV_WALLET).listAuditEvents();
+        const created = events.filter((event) => event.type === 'acp.receipt.created');
+        expect(created.length).toBe(1);
+        expect(created[0]?.metadata).toMatchObject({
+          actor: 'server',
+          approvalId: approval.id,
+          cartId: 'cart_test_001',
+          txid: 'tx_server_actor',
         });
       });
     });

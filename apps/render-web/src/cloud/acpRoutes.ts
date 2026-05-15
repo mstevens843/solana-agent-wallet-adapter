@@ -15,15 +15,16 @@ import {
   type AcpReceipt,
 } from '@solana-agent-wallet-adapter/acp-adapter';
 import {
-  DevLayer1,
   WorkflowValidationError,
   type ApprovalRequestRecord,
+  type AuditActor,
   type AuditEventRecord,
   type EvidenceReceiptRecord,
   type JsonObject,
   type WorkflowCluster,
   type WorkflowSession,
 } from '@solana-agent-wallet-adapter/workflow';
+import * as DevLayer1 from '@solana-agent-wallet-adapter/workflow/dev';
 
 import {
   registerDevApiHandler,
@@ -36,6 +37,7 @@ const MAX_JSON_BYTES = 64 * 1024;
 const PREVIEW_PATH = '/api/acp/cart/preview';
 const APPROVE_PATH = '/api/acp/cart/approve';
 const RECEIPT_PATH_RE = /^\/api\/acp\/cart\/([A-Za-z0-9_-]+)\/receipt$/;
+const ACP_OUTBOUND_SOURCE = 'acp_outbound';
 
 class BodyTooLargeError extends Error {
   constructor() {
@@ -86,7 +88,7 @@ async function handlePreview(
   try {
     const body = await readJsonBody(req);
     const requested = DevLayer1.acp.validateCreateAcpCartRequest(body);
-    const cart = parseAcpCart(requested.cart);
+    const cart = requested.cart;
     const validated = validateAcpCart(cart);
     const transfer = cartToTransferParams(validated, {
       ...(requested.dueAt !== undefined ? { dueAt: requested.dueAt } : {}),
@@ -94,12 +96,13 @@ async function handlePreview(
     });
 
     if (context.walletAddress) {
-      await appendAcpAuditEvent(context, 'acp.cart.previewed', cart.id, {
+      await appendAcpAuditEvent(context, 'user', 'acp.cart.previewed', cart.id, {
         cartId: cart.id,
         merchantId: cart.merchant.id,
         totalAmount: cart.totalAmount,
         paymentToken: cart.paymentToken,
         cluster: cart.cluster,
+        receivedAt: requested.receivedAt,
       });
     }
 
@@ -122,39 +125,43 @@ async function handleApprove(
   context: DevApiHandlerContext,
 ): Promise<void> {
   if (!context.walletAddress) {
-    writeJsonNoStore(res, 403, { error: 'dev_layer1_disabled' });
+    writeJsonNoStore(res, 403, {
+      error: 'dev_layer1_disabled',
+      message: 'This route is only available to allowlisted dev wallets.',
+    });
     return;
   }
 
   try {
     const body = await readJsonBody(req);
     const requested = DevLayer1.acp.validateCreateAcpCartRequest(body);
-    const cart = parseAcpCart(requested.cart);
+    const cart = requested.cart;
     const validated = validateAcpCart(cart);
     const transfer = cartToTransferParams(validated, {
       ...(requested.dueAt !== undefined ? { dueAt: requested.dueAt } : {}),
       ...(requested.note !== undefined ? { note: requested.note } : {}),
     });
-    const cluster = resolveWorkflowCluster(cart.cluster, requested.cluster);
+    const cluster: WorkflowCluster = requested.cluster ?? cart.cluster;
     const session: WorkflowSession = { walletAddress: context.walletAddress };
     const cartJson = cartAsJson(cart);
     const cartHash = hashCart(cart);
 
-    // NOTE: Materialized as `manual_review` rather than `transfer_spl` because
-    // cloud server-side finalization currently only supports SOL transfers
-    // (workflowService.ts:finalizationSupportForKind). The browser-side
-    // "Pay Out" tab (Agent 8) detects `metadata.source === 'acp_outbound'` and
-    // constructs the real SPL transfer client-side. Once cloud SPL finalization
-    // ships, switch this back to `transfer_spl`.
+    // Materialized as `transfer_spl` — the proper kind for an outbound USDC/USDT
+    // payment. The wallet builds the actual SPL transfer transaction client-side
+    // (the cloud doesn't prepare SPL transfers yet); we record the cart, the
+    // hash, and the cart payload in `metadata` so the "Pay Out" UI and the
+    // receipt route can reconstruct the obligation.
     const approval = await context.workflowService.createApproval(session, {
-      kind: 'manual_review',
+      kind: 'transfer_spl',
       summary: `ACP: ${cart.merchant.name} — ${cart.totalAmount} ${cart.currency}`,
+      // Guardrail-friendly params: top-level recipient/token/amount mirror what
+      // the workflow approval-guardrails expect for transfer_spl. ACP-specific
+      // keys (tokenMint, memo) ride alongside.
       params: {
         recipient: transfer.recipient,
         token: cart.paymentToken,
-        tokenMint: validated.resolvedTokenMint,
         amount: cart.totalAmount,
-        action: 'acp_outbound_transfer_spl',
+        tokenMint: validated.resolvedTokenMint,
         ...(cart.memo !== undefined ? { memo: cart.memo } : {}),
       } satisfies JsonObject,
       cluster,
@@ -164,7 +171,8 @@ async function handleApprove(
       recipient: transfer.recipient,
       ...(requested.note !== undefined ? { note: requested.note } : {}),
       metadata: {
-        source: 'acp_outbound',
+        source: ACP_OUTBOUND_SOURCE,
+        actionSource: ACP_OUTBOUND_SOURCE,
         acpCartId: cart.id,
         acpCartHash: cartHash,
         acpCart: cartJson,
@@ -174,21 +182,23 @@ async function handleApprove(
         resolvedTokenMint: validated.resolvedTokenMint,
         acpCluster: cart.cluster,
         totalFiat: validated.totalFiat,
+        receivedAt: requested.receivedAt,
       },
     });
 
-    await appendAcpAuditEvent(context, 'acp.cart.approved', approval.id, {
+    await appendAcpAuditEvent(context, 'user', 'acp.cart.approved', approval.id, {
       approvalId: approval.id,
       cartId: cart.id,
       cartHash,
       merchantId: cart.merchant.id,
       totalAmount: cart.totalAmount,
       paymentToken: cart.paymentToken,
-      cluster: cart.cluster,
+      cluster,
     });
 
     writeJsonNoStore(res, 201, {
       approval,
+      approvalId: approval.id,
       cartId: cart.id,
       cartHash,
     });
@@ -204,36 +214,66 @@ async function handleReceipt(
   approvalId: string,
 ): Promise<void> {
   if (!context.walletAddress) {
-    writeJsonNoStore(res, 403, { error: 'dev_layer1_disabled' });
+    writeJsonNoStore(res, 403, {
+      error: 'dev_layer1_disabled',
+      message: 'This route is only available to allowlisted dev wallets.',
+    });
     return;
   }
 
   try {
     const body = await readJsonBody(req);
-    const { txid, settledAt } = parseReceiptBody(body);
+    const overrides = parseReceiptBody(body);
+    const session: WorkflowSession = { walletAddress: context.walletAddress };
 
     const approval = await context.workflowStore.getApproval(context.walletAddress, approvalId);
     if (!approval) {
-      writeJsonNoStore(res, 404, { error: 'approval_not_found' });
+      writeJsonNoStore(res, 404, {
+        error: 'approval_not_found',
+        message: `No approval found for id ${approvalId}.`,
+      });
       return;
     }
     const cart = extractAcpCartFromApproval(approval);
     if (!cart) {
-      writeJsonNoStore(res, 409, { error: 'not_an_acp_approval' });
+      writeJsonNoStore(res, 409, {
+        error: 'not_an_acp_approval',
+        message: 'This approval does not carry an ACP outbound cart in its metadata.',
+      });
       return;
     }
     const cartHash = hashCart(cart);
     const storedHash = approval.metadata?.acpCartHash;
     if (typeof storedHash === 'string' && storedHash !== cartHash) {
-      writeJsonNoStore(res, 409, { error: 'cart_hash_mismatch' });
+      writeJsonNoStore(res, 409, {
+        error: 'cart_hash_mismatch',
+        message: 'Stored cart hash on the approval does not match the canonical hash of its cart payload.',
+      });
       return;
     }
+
+    // Gate: only build a receipt when an on-chain finalization is confirmed.
+    // Source of truth for txid is the finalization record, not the request body
+    // — mirrors AP2 inbound receipt handling.
+    const finalizations = await context.workflowService.listFinalizationsForApproval(session, approvalId);
+    const confirmed = finalizations.find((f) => f.txid && f.status === 'confirmed');
+    if (!confirmed?.txid) {
+      writeJsonNoStore(res, 409, {
+        error: 'not_finalized',
+        message: 'Approval has not yet been confirmed on-chain.',
+      });
+      return;
+    }
+
+    const txid = confirmed.txid;
+    const finalizedAt = confirmed.confirmedAt ?? confirmed.updatedAt ?? confirmed.createdAt;
+    const nowIso = context.clock.now().toISOString();
 
     const receipt = buildAcpOutboundReceipt({
       cart,
       txid,
       walletAddress: context.walletAddress,
-      ...(settledAt !== undefined ? { settledAt } : {}),
+      settledAt: overrides.settledAt ?? finalizedAt ?? nowIso,
     });
 
     const record = buildEvidenceRecord({
@@ -241,9 +281,21 @@ async function handleReceipt(
       cart,
       approvalId: approval.id,
       cluster: approval.cluster,
-      now: context.clock.now(),
+      nowIso,
     });
     await context.evidenceStore.saveEvidence(context.walletAddress, record);
+
+    const updatedApproval: ApprovalRequestRecord = {
+      ...approval,
+      metadata: {
+        ...(approval.metadata ?? {}),
+        acpOutboundReceipt: receiptAsJsonObject(receipt),
+        acpOutboundReceiptIssuedAt: nowIso,
+        acpEvidenceReceiptId: record.id,
+      },
+      updatedAt: nowIso,
+    };
+    await context.workflowStore.saveApproval(context.walletAddress, updatedApproval);
 
     await context.evidenceStore.appendEvidenceAuditEvent(context.walletAddress, {
       id: `audit_${randomUUID()}`,
@@ -251,47 +303,55 @@ async function handleReceipt(
       type: 'acp.receipt.created',
       recordType: 'evidence',
       recordId: record.id,
-      createdAt: context.clock.now().toISOString(),
+      createdAt: nowIso,
       metadata: {
         approvalId: approval.id,
         cartId: cart.id,
         cartHash,
         txid,
+        receiptId: receipt.receiptId,
       },
     });
 
-    writeJsonNoStore(res, 201, { receipt: record, acp: receipt });
+    await appendAcpAuditEvent(context, 'server', 'acp.receipt.created', approval.id, {
+      approvalId: approval.id,
+      cartId: cart.id,
+      cartHash,
+      txid,
+      receiptId: receipt.receiptId,
+      evidenceId: record.id,
+      artifactHash: receipt.cartHash,
+    });
+
+    writeJsonNoStore(res, 201, {
+      receipt: record,
+      acp: receipt,
+      approvalId: approval.id,
+    });
   } catch (err) {
     writeAcpError(res, err);
   }
 }
 
-function parseReceiptBody(body: unknown): { txid: string; settledAt?: string } {
-  if (!body || typeof body !== 'object' || Array.isArray(body)) {
+function parseReceiptBody(body: unknown): { settledAt?: string } {
+  if (body === undefined || body === null) return {};
+  if (typeof body !== 'object' || Array.isArray(body)) {
     throw new WorkflowValidationError('invalid_object', 'Expected a JSON object.', '$');
   }
   const record = body as Record<string, unknown>;
-  const txid = record.txid;
-  if (typeof txid !== 'string' || !txid.trim()) {
-    throw new WorkflowValidationError('missing_field', 'txid is required.', '$.txid');
+  if (record.settledAt === undefined) return {};
+  const s = record.settledAt;
+  if (typeof s !== 'string' || Number.isNaN(Date.parse(s))) {
+    throw new WorkflowValidationError('invalid_timestamp', 'settledAt must be an ISO-8601 timestamp.', '$.settledAt');
   }
-  if (txid.length > 256) {
-    throw new WorkflowValidationError('field_too_long', 'txid must be ≤ 256 characters.', '$.txid');
-  }
-  if (record.settledAt !== undefined) {
-    const s = record.settledAt;
-    if (typeof s !== 'string' || Number.isNaN(Date.parse(s))) {
-      throw new WorkflowValidationError('invalid_timestamp', 'settledAt must be an ISO-8601 timestamp.', '$.settledAt');
-    }
-    return { txid: txid.trim(), settledAt: s };
-  }
-  return { txid: txid.trim() };
+  return { settledAt: s };
 }
 
 function extractAcpCartFromApproval(approval: ApprovalRequestRecord): AcpCart | null {
   const meta = approval.metadata;
   if (!meta || typeof meta !== 'object') return null;
-  if ((meta as Record<string, unknown>).source !== 'acp_outbound') return null;
+  const source = (meta as Record<string, unknown>).source;
+  if (source !== ACP_OUTBOUND_SOURCE) return null;
   const candidate = (meta as Record<string, unknown>).acpCart;
   if (!candidate || typeof candidate !== 'object') return null;
   try {
@@ -306,10 +366,9 @@ function buildEvidenceRecord(input: {
   cart: AcpCart;
   approvalId: string;
   cluster: string | undefined;
-  now: Date;
+  nowIso: string;
 }): EvidenceReceiptRecord {
-  const { receipt, cart, approvalId, cluster, now } = input;
-  const nowIso = now.toISOString();
+  const { receipt, cart, approvalId, cluster, nowIso } = input;
   const payload = receiptAsJsonObject(receipt);
   return {
     id: `evidence_acp_${randomUUID()}`,
@@ -338,14 +397,6 @@ function buildEvidenceRecord(input: {
   };
 }
 
-function resolveWorkflowCluster(
-  cartCluster: AcpCart['cluster'],
-  requestedCluster: 'mainnet' | 'devnet' | undefined,
-): WorkflowCluster {
-  const effective = requestedCluster ?? cartCluster;
-  return effective === 'mainnet' ? 'mainnet-beta' : 'devnet';
-}
-
 function cartAsJson(cart: AcpCart): JsonObject {
   return JSON.parse(JSON.stringify(cart)) as JsonObject;
 }
@@ -356,6 +407,7 @@ function receiptAsJsonObject(receipt: AcpReceipt): JsonObject {
 
 async function appendAcpAuditEvent(
   context: DevApiHandlerContext,
+  actor: AuditActor,
   type: string,
   recordId: string,
   metadata: JsonObject,
@@ -366,7 +418,7 @@ async function appendAcpAuditEvent(
     walletAddress: context.walletAddress,
     type,
     createdAt: context.clock.now().toISOString(),
-    actor: 'user',
+    actor,
     recordType: 'approval',
     recordId,
     metadata,
@@ -384,44 +436,42 @@ function writeAcpError(res: ServerResponse, err: unknown): void {
     return;
   }
   if (err instanceof WorkflowValidationError) {
-    writeJsonNoStore(res, 400, {
-      error: err.code ?? 'invalid_input',
-      message: err.message,
-      path: err.path,
-    });
+    const code = err.code ?? 'invalid_input';
+    const payload: JsonObject = { error: code, message: err.message };
+    if (err.path) payload.path = err.path;
+    writeJsonNoStore(res, 400, payload);
     return;
   }
   if (err instanceof AcpParseError) {
-    writeJsonNoStore(res, 400, {
-      error: `parse_error:${err.code}`,
-      message: err.message,
-      path: err.path,
-    });
+    const payload: JsonObject = { error: `parse_error:${err.code}`, message: err.message };
+    if (err.path) payload.path = err.path;
+    writeJsonNoStore(res, 400, payload);
     return;
   }
   if (err instanceof AcpValidationError) {
-    writeJsonNoStore(res, 400, {
-      error: `validation_error:${err.code}`,
-      message: err.message,
-      path: err.path,
-    });
+    const payload: JsonObject = { error: `validation_error:${err.code}`, message: err.message };
+    if (err.path) payload.path = err.path;
+    writeJsonNoStore(res, 400, payload);
     return;
   }
   if (err instanceof AcpReceiptError) {
-    writeJsonNoStore(res, 400, {
-      error: `receipt_error:${err.code}`,
-      message: err.message,
-      path: err.path,
-    });
+    const payload: JsonObject = { error: `receipt_error:${err.code}`, message: err.message };
+    if (err.path) payload.path = err.path;
+    writeJsonNoStore(res, 400, payload);
     return;
   }
   if (err instanceof AcpError) {
-    writeJsonNoStore(res, 400, { error: 'acp_error', message: err.message, path: err.path });
+    const payload: JsonObject = { error: 'acp_error', message: err.message };
+    if (err.path) payload.path = err.path;
+    writeJsonNoStore(res, 400, payload);
     return;
   }
   // eslint-disable-next-line no-console
   console.error('[acpRoutes] internal error', err);
-  writeJsonNoStore(res, 500, { error: 'internal_error' });
+  writeJsonNoStore(res, 500, {
+    error: 'internal_error',
+    message: err instanceof Error ? err.message : 'Unexpected server error.',
+  });
 }
 
 async function readJsonBody(req: IncomingMessage): Promise<unknown> {

@@ -1175,12 +1175,12 @@ describe('cloud recurring scheduler API', () => {
     });
   });
 
-  it('rejects non-SOL cloud recurring schedules at create and update time', async () => {
+  it('rejects unsupported cloud recurring transfer tokens at create and update time', async () => {
     await withRecurringServer(async ({ port }) => {
       const unsupportedCreate = await postJson(
         port,
         '/api/recurring',
-        { ...validCreateBody(), token: 'USDC' },
+        { ...validCreateBody(), token: 'BONK' },
         walletA,
       );
       expect(unsupportedCreate.status).toBe(409);
@@ -1192,7 +1192,7 @@ describe('cloud recurring scheduler API', () => {
       const unsupportedUpdate = await patchJson(
         port,
         `/api/recurring/${schedule.id}`,
-        { token: 'USDC' },
+        { token: 'BONK' },
         walletA,
       );
       expect(unsupportedUpdate.status).toBe(409);

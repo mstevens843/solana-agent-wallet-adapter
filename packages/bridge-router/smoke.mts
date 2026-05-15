@@ -1,3 +1,6 @@
+// Manual end-to-end sanity check for bridge-router. Not part of the test
+// suite; run with: `npx tsx smoke.mts` from this directory. See README.md
+// for the scenarios this exercises (direct USDC, Jupiter fallback, timeout).
 import {
   createDirectStablecoinSource,
   createJupiterSource,

@@ -56,6 +56,16 @@ export interface Ap2PaymentMandate extends Ap2MandateCommonFields {
 
 export type Ap2Mandate = Ap2IntentMandate | Ap2PaymentMandate;
 
+/** Type guard for the `intent_mandate` variant of `Ap2Mandate`. */
+export function isIntentMandate(mandate: Ap2Mandate): mandate is Ap2IntentMandate {
+  return mandate.mandateType === 'intent_mandate';
+}
+
+/** Type guard for the `payment_mandate` variant of `Ap2Mandate`. */
+export function isPaymentMandate(mandate: Ap2Mandate): mandate is Ap2PaymentMandate {
+  return mandate.mandateType === 'payment_mandate';
+}
+
 export type Ap2ApprovalKind = 'transfer_sol' | 'transfer_spl';
 
 export interface Ap2InboundApprovalParams {
@@ -94,6 +104,11 @@ export interface Ap2InboundReceipt {
   artifactHash: string;
 }
 
+/**
+ * Structural / forbidden-secret validation failure raised by the parser and
+ * receipt parser. `code` is stable and machine-readable; the route layer
+ * wraps it as `WorkflowValidationError('invalid_ap2_mandate:<code>', …)`.
+ */
 export class Ap2ParseError extends Error {
   readonly code: string;
   readonly path?: string;
@@ -105,6 +120,11 @@ export class Ap2ParseError extends Error {
   }
 }
 
+/**
+ * Signature / expiry / binding failure raised by `verifyAp2Mandate`. `code`
+ * is stable: `expired`, `invalid_expiry`, `invalid_public_key`,
+ * `invalid_signature`, `bad_signature`, `recipient_mismatch`, `cluster_mismatch`.
+ */
 export class Ap2VerifyError extends Error {
   readonly code: string;
   constructor(code: string, message: string) {

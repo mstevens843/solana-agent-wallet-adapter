@@ -27,7 +27,7 @@ export function mainnetUsdcCart(overrides: Partial<AcpCart> = {}): AcpCart {
     totalAmount: '19.99',
     currency: 'USD',
     paymentToken: 'USDC',
-    cluster: 'mainnet',
+    cluster: 'mainnet-beta',
     expiresAt: '2099-01-01T00:00:00.000Z',
     memo: 'Order #123',
     ...overrides,
@@ -65,6 +65,26 @@ export function expiredCart(): AcpCart {
     ...mainnetUsdcCart(),
     expiresAt: '2000-01-01T00:00:00.000Z',
   });
+}
+
+// Raw cart-shaped object that uses the colloquial 'mainnet' alias so we can
+// exercise the parser's CLUSTER_ALIASES path. Returns the object as-is; the
+// parser is expected to normalize cluster to 'mainnet-beta'.
+export function rawAliasedMainnetCart(): Record<string, unknown> {
+  return {
+    id: 'cart_alias_001',
+    cartVersion: '1',
+    merchant: {
+      id: 'merchant_acme',
+      name: 'Acme Inc.',
+      recipient: MERCHANT_RECIPIENT_MAINNET,
+    },
+    lineItems: [{ id: 'li', name: 'thing', quantity: 1, unitAmount: '1.00', currency: 'USD' }],
+    totalAmount: '1.00',
+    currency: 'USD',
+    paymentToken: 'USDC',
+    cluster: 'mainnet',
+  };
 }
 
 export const SAMPLE_CART_JSON = JSON.stringify(mainnetUsdcCart());

@@ -143,4 +143,44 @@ describe('buildAgenticAgentCard', () => {
     tokens.push('MUTATED');
     expect(card.supportedTokens).toEqual(['USDC']);
   });
+
+  it('exposes defi.settle_route in defaultAgenticCapabilities', () => {
+    expect(defaultAgenticCapabilities.length).toBe(13);
+    expect(defaultAgenticCapabilities.some((c) => c.id === 'defi.settle_route')).toBe(true);
+  });
+
+  it('respects protocolVersion override', () => {
+    const card = buildAgenticAgentCard({
+      walletAddress: DEV_WALLET,
+      baseUrl: 'https://agentic-signer.com',
+      supportedTokens: ['USDC'],
+      capabilities: [],
+      protocolVersion: '0.3.0',
+    });
+    expect(card.protocolVersion).toBe('0.3.0');
+  });
+
+  it('deep-copies supplied paymentMethods tokens', () => {
+    const tokens = ['USDC', 'SOL'];
+    const card = buildAgenticAgentCard({
+      walletAddress: DEV_WALLET,
+      baseUrl: 'https://agentic-signer.com',
+      supportedTokens: ['USDC'],
+      capabilities: [],
+      paymentMethods: [{ protocol: 'spl-transfer', tokens, network: 'solana-mainnet' }],
+    });
+    tokens.push('MUTATED');
+    const splMethod = card.paymentMethods.find((m) => m.protocol === 'spl-transfer');
+    expect(splMethod?.tokens).toEqual(['USDC', 'SOL']);
+  });
+
+  it('passes empty supportedTokens through (validator job, not builder job)', () => {
+    const card = buildAgenticAgentCard({
+      walletAddress: DEV_WALLET,
+      baseUrl: 'https://agentic-signer.com',
+      supportedTokens: [],
+      capabilities: [],
+    });
+    expect(card.supportedTokens).toEqual([]);
+  });
 });

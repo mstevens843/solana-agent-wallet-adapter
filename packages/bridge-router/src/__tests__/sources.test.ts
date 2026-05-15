@@ -4,6 +4,7 @@ import {
   createDirectStablecoinSource,
   createJupiterSource,
   createSanctumSource,
+  createStubStablecoinSource,
   createWormholeSource,
   type JupiterRouterQuote,
   type JupiterSwapClient,
@@ -26,6 +27,73 @@ function ctx(request: SettlementRequest): QuoteContext {
     now: () => new Date('2026-01-01T00:00:00Z'),
   };
 }
+
+describe('createStubStablecoinSource', () => {
+  it('returns a deterministic 1:1 USDC route for a valid USD amount', async () => {
+    const source = createStubStablecoinSource();
+    const route = await source.quote(ctx({ usdAmount: '50', recipient: RECIPIENT }));
+    expect(route).not.toBeNull();
+    expect(route!.sourceId).toBe('stub-stablecoin');
+    expect(route!.expectedUsdOut).toBe('50');
+    expect(route!.estimatedCostUsd).toBe('50');
+    expect(route!.slippageBps).toBe(50);
+    expect(route!.hops).toHaveLength(1);
+    const hop = route!.hops[0]!;
+    if (hop.kind !== 'direct') throw new Error('expected direct hop');
+    expect(hop.mint).toBe(USDC_MINT_MAINNET);
+    expect(hop.amountRaw).toBe('50000000');
+    expect(hop.decimals).toBe(6);
+    expect(route!.warnings).toContain('Synthetic 1:1 quote — no live pricing.');
+  });
+
+  it('honors a custom slippageBps option', async () => {
+    const source = createStubStablecoinSource({ slippageBps: 200 });
+    const route = await source.quote(ctx({ usdAmount: '50', recipient: RECIPIENT }));
+    expect(route!.slippageBps).toBe(200);
+  });
+
+  it('honors a custom estimatedFeeUsd (folded into estimatedCostUsd)', async () => {
+    const source = createStubStablecoinSource({ estimatedFeeUsd: '0.50' });
+    const route = await source.quote(ctx({ usdAmount: '50', recipient: RECIPIENT }));
+    expect(route!.estimatedCostUsd).toBe('50.5');
+  });
+
+  it('sets expiresAtIso based on injected now()', async () => {
+    const fixed = new Date('2026-01-01T00:00:00Z');
+    const source = createStubStablecoinSource({ ttlMs: 30_000 });
+    const route = await source.quote({
+      request: { usdAmount: '50', recipient: RECIPIENT },
+      signal: new AbortController().signal,
+      now: () => fixed,
+    });
+    expect(route!.expiresAtIso).toBe(new Date(fixed.getTime() + 30_000).toISOString());
+  });
+
+  it('returns null when targetMint is a non-USDC mint', async () => {
+    const source = createStubStablecoinSource();
+    const route = await source.quote(
+      ctx({ usdAmount: '50', recipient: RECIPIENT, targetMint: SOL_MINT }),
+    );
+    expect(route).toBeNull();
+  });
+
+  it('returns null when usdAmount is malformed', async () => {
+    const source = createStubStablecoinSource();
+    const route = await source.quote(ctx({ usdAmount: 'abc', recipient: RECIPIENT }));
+    expect(route).toBeNull();
+  });
+
+  it('honors a fixedUsdcMint override', async () => {
+    const source = createStubStablecoinSource({ fixedUsdcMint: USDC_MINT_MAINNET });
+    const route = await source.quote(
+      ctx({ usdAmount: '50', recipient: RECIPIENT, cluster: 'devnet' }),
+    );
+    expect(route).not.toBeNull();
+    const hop = route!.hops[0]!;
+    if (hop.kind !== 'direct') throw new Error('expected direct hop');
+    expect(hop.mint).toBe(USDC_MINT_MAINNET);
+  });
+});
 
 describe('createDirectStablecoinSource', () => {
   const source = createDirectStablecoinSource();
@@ -134,6 +202,28 @@ describe('createJupiterSource', () => {
     if (hop.kind !== 'jupiter-swap') throw new Error('expected jupiter-swap hop');
     expect(hop.inputMint).toBe(SOL_MINT);
     expect(hop.outputMint).toBe(USDC_MINT_MAINNET);
+  });
+
+  it('propagates warnings from the injected client into the final route', async () => {
+    const source = createJupiterSource(
+      stubClient({
+        inputMint: SOL_MINT,
+        outputMint: USDC_MINT_MAINNET,
+        inputAmountRaw: '500000000',
+        outputAmountRaw: '50000000',
+        slippageBps: 50,
+        inputUsdValue: '50',
+        warnings: ['high price impact', 'low liquidity'],
+      }),
+    );
+    const route = await source.quote(
+      ctx({
+        usdAmount: '50',
+        recipient: RECIPIENT,
+        payerHoldings: [{ mint: SOL_MINT, amountRaw: '1000000000', decimals: 9 }],
+      }),
+    );
+    expect(route!.warnings).toEqual(['high price impact', 'low liquidity']);
   });
 });
 

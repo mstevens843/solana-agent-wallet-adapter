@@ -1,0 +1,303 @@
+.skills-profile {
+  display: grid;
+  gap: 16px;
+}
+
+.skills-profile-heading {
+  background: rgba(255, 255, 255, 0.024);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  padding: 22px 26px;
+}
+
+.skills-profile-tag {
+  background: rgba(125, 231, 176, 0.12);
+  border-radius: 999px;
+  color: #c8f7df;
+  display: inline-block;
+  font-size: 0.7rem;
+  letter-spacing: 0.05em;
+  margin-bottom: 10px;
+  padding: 3px 10px;
+  text-transform: uppercase;
+}
+
+.skills-profile-heading h2 {
+  font-size: 1.25rem;
+  margin: 0 0 6px;
+}
+
+.skills-profile-heading p {
+  color: rgba(196, 205, 202, 0.78);
+  font-size: 0.92rem;
+  line-height: 1.5;
+  margin: 0;
+  max-width: 60ch;
+}
+
+.skills-profile-heading code {
+  background: rgba(0, 0, 0, 0.25);
+  border-radius: 4px;
+  font-size: 0.85em;
+  padding: 1px 6px;
+}
+
+.skills-profile-card {
+  background: rgba(255, 255, 255, 0.024);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  padding: 22px 26px;
+  display: grid;
+  gap: 18px;
+}
+
+.skills-profile-header {
+  align-items: center;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  justify-content: space-between;
+}
+
+.skills-profile-wallet {
+  color: #f2fff7;
+  font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Monaco, Consolas, monospace;
+  font-size: 1rem;
+  margin-right: 12px;
+}
+
+.skills-profile-computed {
+  color: rgba(196, 205, 202, 0.65);
+  font-size: 0.82rem;
+}
+
+.skills-profile-stats {
+  display: grid;
+  gap: 12px;
+  grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+}
+
+.skills-profile-stat-card {
+  background: rgba(0, 0, 0, 0.22);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  display: grid;
+  gap: 4px;
+  padding: 12px 14px;
+}
+
+.skills-profile-stat-label {
+  color: rgba(196, 205, 202, 0.7);
+  font-size: 0.72rem;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.skills-profile-stat-value {
+  color: #f2fff7;
+  font-size: 1.15rem;
+  font-weight: 600;
+}
+
+.skills-profile-section {
+  display: grid;
+  gap: 8px;
+}
+
+.skills-profile-section-label {
+  color: rgba(196, 205, 202, 0.7);
+  font-size: 0.72rem;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.skills-profile-skills-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.skills-profile-chip {
+  background: rgba(125, 231, 176, 0.08);
+  border: 1px solid rgba(139, 205, 170, 0.18);
+  border-radius: 999px;
+  color: #c8f7df;
+  font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Monaco, Consolas, monospace;
+  font-size: 0.8rem;
+  padding: 3px 10px;
+  text-decoration: none;
+}
+
+.skills-profile-chip:hover {
+  background: rgba(125, 231, 176, 0.16);
+}
+
+.skills-profile-empty-chips {
+  color: rgba(196, 205, 202, 0.6);
+  font-size: 0.85rem;
+  margin: 0;
+}
+
+.skills-profile-actions {
+  align-items: center;
+  background: rgba(255, 255, 255, 0.02);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  padding: 14px 16px;
+}
+
+.skills-profile-url {
+  background: rgba(0, 0, 0, 0.3);
+  border-radius: 6px;
+  color: #d0f5e0;
+  flex: 1 1 240px;
+  font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Monaco, Consolas, monospace;
+  font-size: 0.82rem;
+  overflow-x: auto;
+  padding: 6px 10px;
+  white-space: nowrap;
+}
+
+.skills-profile-button {
+  background: #7de7b0;
+  border: 1px solid transparent;
+  border-radius: 999px;
+  color: #032817;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  font-size: 0.85rem;
+  font-weight: 600;
+  line-height: 1;
+  padding: 8px 14px;
+  text-decoration: none;
+  transition: opacity 120ms ease, transform 120ms ease;
+}
+
+.skills-profile-button:hover {
+  opacity: 0.92;
+}
+
+.skills-profile-button:active {
+  transform: translateY(1px);
+}
+
+.skills-profile-button-secondary {
+  background: rgba(125, 231, 176, 0.14);
+  color: #d0f5e0;
+}
+
+.skills-profile-button-ghost {
+  background: transparent;
+  border-color: var(--line);
+  color: rgba(196, 205, 202, 0.85);
+}
+
+.skills-profile-notice {
+  background: rgba(0, 0, 0, 0.18);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  display: grid;
+  gap: 8px;
+  padding: 16px 18px;
+}
+
+.skills-profile-notice strong {
+  color: #f2fff7;
+}
+
+.skills-profile-notice p {
+  color: rgba(196, 205, 202, 0.82);
+  font-size: 0.9rem;
+  line-height: 1.5;
+  margin: 0;
+}
+
+.skills-profile-notice code {
+  background: rgba(0, 0, 0, 0.3);
+  border-radius: 4px;
+  font-size: 0.85em;
+  padding: 1px 6px;
+}
+
+.skills-profile-notice-warn {
+  border-color: rgba(241, 196, 81, 0.35);
+}
+
+.skills-profile-notice-error {
+  border-color: rgba(241, 105, 105, 0.35);
+}
+
+.skills-profile-skeleton {
+  display: grid;
+  gap: 10px;
+  padding: 8px 0;
+}
+
+.skills-profile-skeleton-line {
+  background: linear-gradient(
+    90deg,
+    rgba(255, 255, 255, 0.05),
+    rgba(255, 255, 255, 0.12),
+    rgba(255, 255, 255, 0.05)
+  );
+  background-size: 200% 100%;
+  border-radius: 6px;
+  display: block;
+  height: 14px;
+  width: 60%;
+  animation: skills-profile-skeleton-shimmer 1.4s ease-in-out infinite;
+}
+
+.skills-profile-skeleton-line-wide {
+  width: 90%;
+}
+
+@keyframes skills-profile-skeleton-shimmer {
+  0% {
+    background-position: 0% 50%;
+  }
+  100% {
+    background-position: -200% 50%;
+  }
+}
+
+.skills-profile-toast {
+  background: #111827;
+  border-radius: 12px;
+  bottom: 1.5rem;
+  box-shadow: 0 14px 40px rgba(0, 0, 0, 0.32);
+  color: #ffffff;
+  font-size: 0.9rem;
+  font-weight: 500;
+  max-width: 380px;
+  opacity: 0;
+  padding: 0.75rem 1rem;
+  pointer-events: none;
+  position: fixed;
+  right: 1.5rem;
+  transform: translateY(8px);
+  transition: opacity 160ms ease, transform 160ms ease;
+  z-index: 9999;
+}
+
+.skills-profile-toast.visible {
+  opacity: 1;
+  transform: translateY(0);
+}
+
+@media (max-width: 720px) {
+  .skills-profile-stats {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+  .skills-profile-actions {
+    flex-direction: column;
+    align-items: stretch;
+  }
+  .skills-profile-url {
+    flex: 1 1 auto;
+  }
+}

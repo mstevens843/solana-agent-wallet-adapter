@@ -7,6 +7,7 @@ import {
   type ServerResponse,
 } from 'node:http';
 
+import { USDC_MINT_MAINNET } from '@solana-agent-wallet-adapter/bridge-router';
 import { PublicKey } from '@solana/web3.js';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -14,7 +15,7 @@ import type { DevApiHandler, DevApiHandlerContext } from '../cloud/devApiRegistr
 
 const DEV_WALLET = '4fTqUdd9SRCkmALQhQGF66VRYJFsCLDSQJYadqwMMoHd';
 const OTHER_WALLET = 'So11111111111111111111111111111111111111112';
-const USDC_MINT = 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v';
+const USDC_MINT = USDC_MINT_MAINNET;
 const USDT_MINT = 'Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB';
 
 const [OFF_CURVE_PDA] = PublicKey.findProgramAddressSync(
@@ -277,72 +278,139 @@ describe('bridge settlement quote API (POST /api/agents/settlement/quote)', () =
   });
 
   describe('valid requests', () => {
-    it('returns a placeholder route for a valid body', async () => {
-      await withRoutes(
-        { AGENTIC_DEV_AP2_ACP: '1', AGENTIC_DEV_WALLET_ALLOWLIST: DEV_WALLET },
-        async ({ port }) => {
-          const response = await postJson(port, '/api/agents/settlement/quote', validBody());
-          expect(response.status).toBe(200);
-          expect(response.body?.route).toMatchObject({
-            source: 'placeholder',
-            inputUsd: 50,
-            outputAmount: '50000000',
-            outputMint: USDC_MINT,
-            slippageBps: 50,
-            estimatedFeeLamports: 5000,
-            hops: [],
-          });
-          expect(typeof (response.body?.route as Record<string, unknown>)?.quoteId).toBe('string');
-          expect((response.body?.route as Record<string, unknown>)?.expiresAt).toMatch(
-            /^\d{4}-\d{2}-\d{2}T/,
-          );
-          expect(response.headers['cache-control']).toBe('no-store');
-        },
-      );
+    const baseEnv = { AGENTIC_DEV_AP2_ACP: '1', AGENTIC_DEV_WALLET_ALLOWLIST: DEV_WALLET };
+
+    it('returns an empty result with a no_route diagnostic when no payer holdings are supplied', async () => {
+      await withRoutes(baseEnv, async ({ port }) => {
+        const response = await postJson(port, '/api/agents/settlement/quote', validBody());
+        expect(response.status).toBe(200);
+        const result = response.body?.result as Record<string, unknown>;
+        expect(result.best).toBeUndefined();
+        expect(result.candidates).toEqual([]);
+        const diagnostics = result.diagnostics as Array<Record<string, unknown>>;
+        expect(diagnostics).toHaveLength(1);
+        expect(diagnostics[0]?.sourceId).toBe('direct-usdc');
+        expect(diagnostics[0]?.status).toBe('no_route');
+        expect(typeof diagnostics[0]?.latencyMs).toBe('number');
+        expect(response.headers['cache-control']).toBe('no-store');
+      });
     });
 
-    it('honors a custom targetMint', async () => {
-      await withRoutes(
-        { AGENTIC_DEV_AP2_ACP: '1', AGENTIC_DEV_WALLET_ALLOWLIST: DEV_WALLET },
-        async ({ port }) => {
-          const response = await postJson(
-            port,
-            '/api/agents/settlement/quote',
-            validBody({ targetMint: USDT_MINT }),
-          );
-          expect(response.status).toBe(200);
-          expect((response.body?.route as Record<string, unknown>)?.outputMint).toBe(USDT_MINT);
-        },
-      );
+    it('returns a direct route as best when payerHoldings cover the amount', async () => {
+      await withRoutes(baseEnv, async ({ port }) => {
+        const response = await postJson(
+          port,
+          '/api/agents/settlement/quote',
+          validBody({
+            payerHoldings: [{ mint: USDC_MINT, amountRaw: '100000000', decimals: 6 }],
+          }),
+        );
+        expect(response.status).toBe(200);
+        const result = response.body?.result as Record<string, unknown>;
+        const best = result.best as Record<string, unknown>;
+        expect(best?.sourceId).toBe('direct-usdc');
+        expect(best?.slippageBps).toBe(0);
+        expect(best?.expectedUsdOut).toBe('50');
+        expect(best?.estimatedCostUsd).toBe('50');
+        const hops = best?.hops as Array<Record<string, unknown>>;
+        expect(hops).toHaveLength(1);
+        expect(hops[0]).toMatchObject({
+          kind: 'direct',
+          mint: USDC_MINT,
+          amountRaw: '50000000',
+          decimals: 6,
+        });
+        const diagnostics = result.diagnostics as Array<Record<string, unknown>>;
+        expect(diagnostics[0]?.status).toBe('ok');
+      });
+    });
+
+    it('returns no_route when payerHoldings cannot cover the amount', async () => {
+      await withRoutes(baseEnv, async ({ port }) => {
+        const response = await postJson(
+          port,
+          '/api/agents/settlement/quote',
+          validBody({
+            payerHoldings: [{ mint: USDC_MINT, amountRaw: '1000000', decimals: 6 }],
+          }),
+        );
+        expect(response.status).toBe(200);
+        const result = response.body?.result as Record<string, unknown>;
+        expect(result.best).toBeUndefined();
+        const diagnostics = result.diagnostics as Array<Record<string, unknown>>;
+        expect(diagnostics[0]?.status).toBe('no_route');
+      });
+    });
+
+    it('returns no_route when targetMint is not USDC (direct source declines)', async () => {
+      await withRoutes(baseEnv, async ({ port }) => {
+        const response = await postJson(
+          port,
+          '/api/agents/settlement/quote',
+          validBody({
+            targetMint: USDT_MINT,
+            payerHoldings: [{ mint: USDC_MINT, amountRaw: '100000000', decimals: 6 }],
+          }),
+        );
+        expect(response.status).toBe(200);
+        const result = response.body?.result as Record<string, unknown>;
+        expect(result.best).toBeUndefined();
+        const diagnostics = result.diagnostics as Array<Record<string, unknown>>;
+        expect(diagnostics[0]?.status).toBe('no_route');
+      });
+    });
+
+    it('routes the upper boundary amountUsd (100000) when holdings cover', async () => {
+      await withRoutes(baseEnv, async ({ port }) => {
+        const response = await postJson(
+          port,
+          '/api/agents/settlement/quote',
+          validBody({
+            amountUsd: 100_000,
+            payerHoldings: [{ mint: USDC_MINT, amountRaw: '200000000000', decimals: 6 }],
+          }),
+        );
+        expect(response.status).toBe(200);
+        const best = (response.body?.result as Record<string, unknown>).best as Record<string, unknown>;
+        const hops = best?.hops as Array<Record<string, unknown>>;
+        expect(hops[0]?.amountRaw).toBe('100000000000');
+      });
     });
 
     it('accepts an off-curve recipient when allowOffCurveRecipient is true', async () => {
-      await withRoutes(
-        { AGENTIC_DEV_AP2_ACP: '1', AGENTIC_DEV_WALLET_ALLOWLIST: DEV_WALLET },
-        async ({ port }) => {
-          const response = await postJson(
-            port,
-            '/api/agents/settlement/quote',
-            validBody({ recipient: OFF_CURVE_RECIPIENT, allowOffCurveRecipient: true }),
-          );
-          expect(response.status).toBe(200);
-        },
-      );
+      await withRoutes(baseEnv, async ({ port }) => {
+        const response = await postJson(
+          port,
+          '/api/agents/settlement/quote',
+          validBody({ recipient: OFF_CURVE_RECIPIENT, allowOffCurveRecipient: true }),
+        );
+        expect(response.status).toBe(200);
+        expect(response.body?.result).toBeDefined();
+      });
     });
 
-    it('accepts the upper boundary amountUsd value (100000)', async () => {
-      await withRoutes(
-        { AGENTIC_DEV_AP2_ACP: '1', AGENTIC_DEV_WALLET_ALLOWLIST: DEV_WALLET },
-        async ({ port }) => {
-          const response = await postJson(
-            port,
-            '/api/agents/settlement/quote',
-            validBody({ amountUsd: 100_000 }),
-          );
-          expect(response.status).toBe(200);
-          expect((response.body?.route as Record<string, unknown>)?.inputUsd).toBe(100_000);
-        },
-      );
+    it('accepts an explicit cluster value', async () => {
+      await withRoutes(baseEnv, async ({ port }) => {
+        const response = await postJson(
+          port,
+          '/api/agents/settlement/quote',
+          validBody({ cluster: 'devnet' }),
+        );
+        expect(response.status).toBe(200);
+        expect(response.body?.result).toBeDefined();
+      });
+    });
+
+    it('accepts a valid maxSlippageBps', async () => {
+      await withRoutes(baseEnv, async ({ port }) => {
+        const response = await postJson(
+          port,
+          '/api/agents/settlement/quote',
+          validBody({ maxSlippageBps: 100 }),
+        );
+        expect(response.status).toBe(200);
+        expect(response.body?.result).toBeDefined();
+      });
     });
   });
 
@@ -497,6 +565,108 @@ describe('bridge settlement quote API (POST /api/agents/settlement/quote)', () =
         const response = await postRaw(port, '/api/agents/settlement/quote', body);
         expect(response.status).toBe(413);
         expect(response.body?.error).toBe('body_too_large');
+      });
+    });
+
+    it('returns 400 invalid_cluster when cluster is not a supported value', async () => {
+      await withRoutes(baseEnv, async ({ port }) => {
+        const response = await postJson(
+          port,
+          '/api/agents/settlement/quote',
+          validBody({ cluster: 'testnet' }),
+        );
+        expect(response.status).toBe(400);
+        expect(response.body?.error).toBe('invalid_cluster');
+      });
+    });
+
+    it('returns 400 invalid_payer_holdings when payerHoldings is not an array', async () => {
+      await withRoutes(baseEnv, async ({ port }) => {
+        const response = await postJson(
+          port,
+          '/api/agents/settlement/quote',
+          validBody({ payerHoldings: { mint: USDC_MINT } }),
+        );
+        expect(response.status).toBe(400);
+        expect(response.body?.error).toBe('invalid_payer_holdings');
+      });
+    });
+
+    it('returns 400 invalid_payer_holdings when a holding mint is invalid', async () => {
+      await withRoutes(baseEnv, async ({ port }) => {
+        const response = await postJson(
+          port,
+          '/api/agents/settlement/quote',
+          validBody({
+            payerHoldings: [{ mint: 'not-base58!!!', amountRaw: '100', decimals: 6 }],
+          }),
+        );
+        expect(response.status).toBe(400);
+        expect(response.body?.error).toBe('invalid_payer_holdings');
+      });
+    });
+
+    it('returns 400 invalid_payer_holdings when amountRaw is not digit-only', async () => {
+      await withRoutes(baseEnv, async ({ port }) => {
+        const response = await postJson(
+          port,
+          '/api/agents/settlement/quote',
+          validBody({
+            payerHoldings: [{ mint: USDC_MINT, amountRaw: '100.5', decimals: 6 }],
+          }),
+        );
+        expect(response.status).toBe(400);
+        expect(response.body?.error).toBe('invalid_payer_holdings');
+      });
+    });
+
+    it('returns 400 invalid_payer_holdings when decimals is out of range', async () => {
+      await withRoutes(baseEnv, async ({ port }) => {
+        const response = await postJson(
+          port,
+          '/api/agents/settlement/quote',
+          validBody({
+            payerHoldings: [{ mint: USDC_MINT, amountRaw: '100', decimals: 25 }],
+          }),
+        );
+        expect(response.status).toBe(400);
+        expect(response.body?.error).toBe('invalid_payer_holdings');
+      });
+    });
+
+    it('returns 400 invalid_max_slippage when maxSlippageBps is negative', async () => {
+      await withRoutes(baseEnv, async ({ port }) => {
+        const response = await postJson(
+          port,
+          '/api/agents/settlement/quote',
+          validBody({ maxSlippageBps: -10 }),
+        );
+        expect(response.status).toBe(400);
+        expect(response.body?.error).toBe('invalid_max_slippage');
+      });
+    });
+
+    it('returns 400 invalid_max_slippage when maxSlippageBps exceeds 10000', async () => {
+      await withRoutes(baseEnv, async ({ port }) => {
+        const response = await postJson(
+          port,
+          '/api/agents/settlement/quote',
+          validBody({ maxSlippageBps: 10_001 }),
+        );
+        expect(response.status).toBe(400);
+        expect(response.body?.error).toBe('invalid_max_slippage');
+      });
+    });
+
+    it('returns 400 invalid_max_slippage when maxSlippageBps is non-integer', async () => {
+      await withRoutes(baseEnv, async ({ port }) => {
+        const response = await postJson(
+          port,
+          '/api/agents/settlement/quote',
+          validBody({ maxSlippageBps: 12.5 }),
+        );
+        expect(response.status).toBe(400);
+        expect(response.body?.error).toBe('invalid_max_slippage');
       });
     });
   });

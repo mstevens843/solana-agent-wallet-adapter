@@ -19,14 +19,60 @@ interface TabState {
 const tabState: TabState = { status: 'idle' };
 let kickoffScheduled = false;
 
-function statusBadgeHtml(): string {
+export function shortAddress(address: string | undefined | null): string {
+  if (!address) return '';
+  if (address.length <= 12) return address;
+  return `${address.slice(0, 4)}…${address.slice(-4)}`;
+}
+
+export function formatProtocols(protocols: readonly string[] | undefined | null): string {
+  if (!protocols || protocols.length === 0) return '—';
+  return protocols.join(' · ');
+}
+
+function isEmptyCard(value: unknown): boolean {
+  if (value === null || value === undefined) return true;
+  if (typeof value === 'object' && !Array.isArray(value)) {
+    return Object.keys(value as Record<string, unknown>).length === 0;
+  }
+  return false;
+}
+
+function summaryHtml(card: Record<string, unknown> | null): string {
+  if (!card) return '';
+  const walletAddress = typeof card.walletAddress === 'string' ? card.walletAddress : '';
+  const protocols = Array.isArray(card.supportedProtocols)
+    ? (card.supportedProtocols as unknown[]).filter((entry): entry is string => typeof entry === 'string')
+    : [];
+  const version = typeof card.version === 'string' ? card.version : '';
+  const parts: string[] = [];
+  if (walletAddress) {
+    parts.push(`<span class="dev-agent-card-summary-item">Wallet <code>${escapeHtml(shortAddress(walletAddress))}</code></span>`);
+  }
+  if (protocols.length > 0) {
+    const pills = protocols
+      .map((proto) => `<span class="dev-agent-card-protocol-pill">${escapeHtml(proto)}</span>`)
+      .join('');
+    parts.push(`<span class="dev-agent-card-summary-item">${pills}</span>`);
+  }
+  if (version) {
+    parts.push(`<span class="dev-agent-card-summary-item">v<code>${escapeHtml(version)}</code></span>`);
+  }
+  if (parts.length === 0) return '';
+  return `<div class="dev-agent-card-summary">${parts.join('')}</div>`;
+}
+
+export function statusBadgeHtml(): string {
   switch (tabState.status) {
     case 'loading':
       return '<span class="dev-agent-card-status">Fetching…</span>';
     case 'loaded':
+      if (isEmptyCard(tabState.cardJson)) {
+        return '<span class="dev-agent-card-status dev-agent-card-status--pending">Empty response</span>';
+      }
       return `<span class="dev-agent-card-status dev-agent-card-status--ok">Loaded · ${formatTime(tabState.fetchedAt)}</span>`;
     case 'unavailable':
-      return '<span class="dev-agent-card-status dev-agent-card-status--pending">Endpoint pending</span>';
+      return '<span class="dev-agent-card-status dev-agent-card-status--pending">Endpoint unreachable</span>';
     case 'error':
       return '<span class="dev-agent-card-status dev-agent-card-status--error">Fetch failed</span>';
     case 'idle':
@@ -35,16 +81,16 @@ function statusBadgeHtml(): string {
   }
 }
 
-function bodyHtml(): string {
+export function bodyHtml(): string {
   if (tabState.status === 'idle' || tabState.status === 'loading') {
     return '<p class="dev-agent-card-empty">Fetching the live AgentCard for this wallet…</p>';
   }
   if (tabState.status === 'unavailable') {
     return `
       <p class="dev-agent-card-empty">
-        Agent Card endpoint <code>${escapeHtml(LOCAL_AGENT_CARD_PATH)}</code> is not yet available.
-        It ships with the Agent 7 deploy. Until then the public URL below still resolves to
-        whatever build is currently on agentic-signer.com.
+        Agent Card endpoint <code>${escapeHtml(LOCAL_AGENT_CARD_PATH)}</code> didn't respond.
+        The route may not be deployed at this origin, or this wallet may not have dev access.
+        The public URL below still resolves to whatever build is currently on agentic-signer.com.
       </p>
       <button type="button" class="button utility" data-dev-agent-card-retry>Retry fetch</button>
     `;
@@ -55,10 +101,26 @@ function bodyHtml(): string {
       <button type="button" class="button utility" data-dev-agent-card-retry>Retry</button>
     `;
   }
-  return `<pre class="dev-agent-card-json">${escapeHtml(stableJson(tabState.cardJson))}</pre>`;
+  if (isEmptyCard(tabState.cardJson)) {
+    return '<p class="dev-agent-card-empty">Agent Card response was empty. The route responded but returned no fields.</p>';
+  }
+  const card = typeof tabState.cardJson === 'object' && tabState.cardJson !== null && !Array.isArray(tabState.cardJson)
+    ? (tabState.cardJson as Record<string, unknown>)
+    : null;
+  return `${summaryHtml(card)}<pre class="dev-agent-card-json">${escapeHtml(stableJson(tabState.cardJson))}</pre>`;
 }
 
-function panelHtml(): string {
+export function panelHtml(): string {
+  const canCopyJson = tabState.status === 'loaded' && !isEmptyCard(tabState.cardJson);
+  const copyJsonButton = canCopyJson
+    ? `<button
+          type="button"
+          class="button utility"
+          data-copy="${escapeHtml(stableJson(tabState.cardJson))}"
+          data-copy-id="dev-agent-card-json"
+          data-copy-name="AgentCard JSON"
+        >Copy JSON</button>`
+    : '';
   return `
     <section class="panel dev-agent-card-panel" data-layout="dev-agent-card">
       <header class="dev-agent-card-head">
@@ -82,6 +144,7 @@ function panelHtml(): string {
           data-copy-id="dev-agent-card-public-url"
           data-copy-name="Public AgentCard URL"
         >Copy public URL</button>
+        ${copyJsonButton}
         <a class="button-link" href="${escapeHtml(PUBLIC_AGENT_CARD_URL)}" target="_blank" rel="noreferrer">View live</a>
         <button type="button" class="button utility" data-dev-agent-card-retry>Refresh</button>
       </div>
@@ -92,7 +155,7 @@ function panelHtml(): string {
   `;
 }
 
-async function fetchAgentCard(): Promise<void> {
+export async function fetchAgentCard(): Promise<void> {
   if (tabState.status === 'loading') return;
   tabState.status = 'loading';
   tabState.errorMessage = undefined;
@@ -117,6 +180,7 @@ async function fetchAgentCard(): Promise<void> {
 }
 
 function updateBody(): void {
+  if (typeof document === 'undefined') return;
   const body = document.getElementById(BODY_ELEMENT_ID);
   if (body) body.innerHTML = bodyHtml();
   const statusSlot = document.querySelector('[data-layout="dev-agent-card"] .dev-agent-card-head');
@@ -128,7 +192,7 @@ function updateBody(): void {
   }
 }
 
-function escapeHtml(value: string | undefined): string {
+export function escapeHtml(value: string | undefined): string {
   if (!value) return '';
   return value
     .replace(/&/g, '&amp;')
@@ -138,7 +202,7 @@ function escapeHtml(value: string | undefined): string {
     .replace(/'/g, '&#39;');
 }
 
-function stableJson(value: unknown): string {
+export function stableJson(value: unknown): string {
   if (value === undefined) return '';
   try {
     return JSON.stringify(value, null, 2);
@@ -147,7 +211,7 @@ function stableJson(value: unknown): string {
   }
 }
 
-function formatTime(timestamp: number | undefined): string {
+export function formatTime(timestamp: number | undefined): string {
   if (!timestamp) return '';
   try {
     return new Date(timestamp).toLocaleTimeString([], {
@@ -187,3 +251,20 @@ registerDevTab({
     return panelHtml();
   },
 });
+
+export function __resetTabStateForTests(next?: Partial<TabState>): void {
+  tabState.status = next?.status ?? 'idle';
+  tabState.cardJson = next?.cardJson;
+  tabState.errorMessage = next?.errorMessage;
+  tabState.fetchedAt = next?.fetchedAt;
+  kickoffScheduled = false;
+}
+
+export function __getTabStateForTests(): Readonly<TabState> {
+  return {
+    status: tabState.status,
+    cardJson: tabState.cardJson,
+    errorMessage: tabState.errorMessage,
+    fetchedAt: tabState.fetchedAt,
+  };
+}

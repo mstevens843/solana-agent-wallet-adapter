@@ -1,0 +1,102 @@
+import './skills.css';
+import { isDevWallet } from '../devGate.js';
+import { registerDevTab } from '../devTabRegistry.js';
+import { getConnectedAddress } from '../walletState.js';
+import {
+  findSkillsSubTab,
+  getActiveSkillsSubTab,
+  listSkillsSubTabs,
+} from './skills/subTabRegistry.js';
+
+// Side-effect import: each Phase 1 Layer 2 sub-tab self-registers on load.
+import './skills/index.js';
+
+function escapeHtmlLocal(value: string): string {
+  return value.replace(/[&<>"']/g, (c) =>
+    c === '&' ? '&amp;'
+    : c === '<' ? '&lt;'
+    : c === '>' ? '&gt;'
+    : c === '"' ? '&quot;'
+    : '&#39;',
+  );
+}
+
+function renderSubTabPills(activeId: string): string {
+  const subTabs = listSkillsSubTabs();
+  if (subTabs.length === 0) return '';
+  return `
+    <div class="skills-subtab-row" role="tablist" aria-label="Skills sections">
+      ${subTabs
+        .map((tab) => {
+          const active = tab.id === activeId;
+          return `
+            <button
+              type="button"
+              class="${active ? 'active' : ''}"
+              data-skills-subtab="${escapeHtmlLocal(String(tab.id))}"
+              role="tab"
+              aria-selected="${active ? 'true' : 'false'}"
+            >
+              <strong>${escapeHtmlLocal(tab.label)}</strong>
+              <span>${escapeHtmlLocal(tab.description)}</span>
+            </button>
+          `;
+        })
+        .join('')}
+    </div>
+  `;
+}
+
+function renderEmptyPlaceholder(): string {
+  return `
+    <div class="skills-placeholder">
+      <span class="skills-placeholder-tag">Coming soon · Layer 2</span>
+      <h2>Skills Hub</h2>
+      <p>
+        Install pre-built strategy recipes that propose actions in your inbox on a schedule. Every run
+        still requires wallet approval &mdash; skills cannot move funds on their own. Authors monetize via
+        USDC; receipts make every track record cryptographically verifiable.
+      </p>
+      <div class="skills-placeholder-grid">
+        <div class="skills-placeholder-card">
+          <strong>Browse</strong>
+          <span>Catalog of installable skills, sorted by track record.</span>
+        </div>
+        <div class="skills-placeholder-card">
+          <strong>Installed</strong>
+          <span>Active skills with next-run countdown, pause / resume, uninstall.</span>
+        </div>
+        <div class="skills-placeholder-card">
+          <strong>My Profile</strong>
+          <span>Public <code>/u/&lt;wallet&gt;</code> page aggregating receipts into a verifiable performance record.</span>
+        </div>
+        <div class="skills-placeholder-card">
+          <strong>Publish</strong>
+          <span>Author dashboard for uploading skills via <code>agentic-skill</code> CLI.</span>
+        </div>
+      </div>
+    </div>
+  `;
+}
+
+function renderSkillsPanel(): string {
+  const subTabs = listSkillsSubTabs();
+  if (subTabs.length === 0) return renderEmptyPlaceholder();
+  const activeId = String(getActiveSkillsSubTab());
+  const active = findSkillsSubTab(activeId) ?? subTabs[0]!;
+  return `
+    <div class="skills-shell">
+      ${renderSubTabPills(active.id as string)}
+      <div class="skills-active-panel" data-active-subtab="${escapeHtmlLocal(String(active.id))}">
+        ${active.render()}
+      </div>
+    </div>
+  `;
+}
+
+registerDevTab({
+  id: 'skills',
+  label: 'Skills',
+  guard: () => isDevWallet(getConnectedAddress()),
+  render: renderSkillsPanel,
+});

@@ -111,7 +111,7 @@ describe('validateAcpCart', () => {
     const customMint = 'CUSTOMmint11111111111111111111111111111111';
     const cart = mainnetUsdcCart({ paymentTokenMint: customMint });
     const result = validateAcpCart(cart, {
-      allowedTokenMints: { mainnet: [customMint], devnet: [] },
+      allowedTokenMints: { 'mainnet-beta': [customMint], testnet: [], devnet: [], localnet: [] },
     });
     expect(result.resolvedTokenMint).toBe(customMint);
   });
@@ -119,7 +119,9 @@ describe('validateAcpCart', () => {
   it('requires paymentTokenMint when override is given', () => {
     const cart = mainnetUsdcCart();
     validationError(
-      () => validateAcpCart(cart, { allowedTokenMints: { mainnet: ['CUSTOM'], devnet: [] } }),
+      () => validateAcpCart(cart, {
+        allowedTokenMints: { 'mainnet-beta': ['CUSTOM'], testnet: [], devnet: [], localnet: [] },
+      }),
       'invalid_token_mint',
     );
   });

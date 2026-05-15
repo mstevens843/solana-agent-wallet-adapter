@@ -134,4 +134,94 @@ describe('validateSettlementQuoteRequest', () => {
       metadata: { approvalAuthority: 'unlimited' },
     }))).toMatchObject({ code: 'forbidden_authority' });
   });
+
+  describe('payerHoldings', () => {
+    const USDC = 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v';
+    const SOL = 'So11111111111111111111111111111111111111112';
+
+    it('omits payerHoldings from the typed output when absent', () => {
+      const result = validateSettlementQuoteRequest({ usdAmount: '50', recipient: RECIPIENT });
+      expect('payerHoldings' in result).toBe(false);
+    });
+
+    it('accepts an empty array', () => {
+      const result = validateSettlementQuoteRequest({
+        usdAmount: '50',
+        recipient: RECIPIENT,
+        payerHoldings: [],
+      });
+      expect(result.payerHoldings).toEqual([]);
+    });
+
+    it('accepts a single valid holding (with usdPrice)', () => {
+      const result = validateSettlementQuoteRequest({
+        usdAmount: '50',
+        recipient: RECIPIENT,
+        payerHoldings: [
+          { mint: USDC, amountRaw: '100000000', decimals: 6, usdPrice: '1.00' },
+        ],
+      });
+      expect(result.payerHoldings).toEqual([
+        { mint: USDC, amountRaw: '100000000', decimals: 6, usdPrice: '1.00' },
+      ]);
+    });
+
+    it('accepts a valid holding without usdPrice', () => {
+      const result = validateSettlementQuoteRequest({
+        usdAmount: '50',
+        recipient: RECIPIENT,
+        payerHoldings: [{ mint: SOL, amountRaw: '1000000000', decimals: 9 }],
+      });
+      expect(result.payerHoldings).toEqual([
+        { mint: SOL, amountRaw: '1000000000', decimals: 9 },
+      ]);
+    });
+
+    it('rejects non-array payerHoldings', () => {
+      expect(workflowError(() => validateSettlementQuoteRequest({
+        usdAmount: '50', recipient: RECIPIENT, payerHoldings: 'oops',
+      }))).toMatchObject({ code: 'invalid_array', path: '$.payerHoldings' });
+    });
+
+    it('rejects a holding entry that is not an object', () => {
+      expect(workflowError(() => validateSettlementQuoteRequest({
+        usdAmount: '50', recipient: RECIPIENT, payerHoldings: ['not-an-object'],
+      }))).toMatchObject({ code: 'invalid_object', path: '$.payerHoldings[0]' });
+    });
+
+    it('rejects a holding with a missing mint', () => {
+      expect(workflowError(() => validateSettlementQuoteRequest({
+        usdAmount: '50', recipient: RECIPIENT,
+        payerHoldings: [{ amountRaw: '100', decimals: 6 }],
+      }))).toMatchObject({ code: 'invalid_pubkey', path: '$.payerHoldings[0].mint' });
+    });
+
+    it('rejects a holding whose amountRaw is a decimal', () => {
+      expect(workflowError(() => validateSettlementQuoteRequest({
+        usdAmount: '50', recipient: RECIPIENT,
+        payerHoldings: [{ mint: USDC, amountRaw: '1.5', decimals: 6 }],
+      }))).toMatchObject({ code: 'invalid_integer_string', path: '$.payerHoldings[0].amountRaw' });
+    });
+
+    it('rejects a holding whose decimals are out of range', () => {
+      expect(workflowError(() => validateSettlementQuoteRequest({
+        usdAmount: '50', recipient: RECIPIENT,
+        payerHoldings: [{ mint: USDC, amountRaw: '1', decimals: 19 }],
+      }))).toMatchObject({ code: 'out_of_range', path: '$.payerHoldings[0].decimals' });
+    });
+
+    it('rejects a holding whose usdPrice is negative', () => {
+      expect(workflowError(() => validateSettlementQuoteRequest({
+        usdAmount: '50', recipient: RECIPIENT,
+        payerHoldings: [{ mint: USDC, amountRaw: '1', decimals: 6, usdPrice: '-1' }],
+      }))).toMatchObject({ code: 'invalid_decimal', path: '$.payerHoldings[0].usdPrice' });
+    });
+
+    it('detects forbidden secrets nested inside a holding', () => {
+      expect(workflowError(() => validateSettlementQuoteRequest({
+        usdAmount: '50', recipient: RECIPIENT,
+        payerHoldings: [{ mint: USDC, amountRaw: '1', decimals: 6, privateKey: 'leak' }],
+      }))).toMatchObject({ code: 'forbidden_secret' });
+    });
+  });
 });

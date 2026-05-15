@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
+import { RECEIPT_SCHEMA, USDC_MINT_MAINNET } from '../constants.js';
 import { AcpReceiptError } from '../errors.js';
 import {
   buildAcpOutboundReceipt,
@@ -29,13 +30,38 @@ describe('buildAcpOutboundReceipt', () => {
       walletAddress: WALLET,
       txid: 'mockTxId123',
     });
+    expect(receipt.schema).toBe(RECEIPT_SCHEMA);
     expect(receipt.receiptVersion).toBe('1');
     expect(receipt.receiptId).toMatch(/^acp_rcpt_[0-9a-f-]{36}$/);
     expect(receipt.walletAddress).toBe(WALLET);
     expect(receipt.txid).toBe('mockTxId123');
     expect(receipt.recipient).toBe(MERCHANT_RECIPIENT_MAINNET);
+    expect(receipt.cluster).toBe('mainnet-beta');
     expect(receipt.cartHash).toMatch(/^[0-9a-f]{64}$/);
     expect(Object.isFrozen(receipt)).toBe(true);
+  });
+
+  it('omits paymentTokenMint and metadata when absent from the cart', () => {
+    const receipt = buildAcpOutboundReceipt({
+      cart: mainnetUsdcCart(),
+      walletAddress: WALLET,
+      txid: 'tx',
+    });
+    expect(receipt.paymentTokenMint).toBeUndefined();
+    expect(receipt.metadata).toBeUndefined();
+  });
+
+  it('round-trips paymentTokenMint and metadata from the cart', () => {
+    const receipt = buildAcpOutboundReceipt({
+      cart: mainnetUsdcCart({
+        paymentTokenMint: USDC_MINT_MAINNET,
+        metadata: { orderRef: 'op_42' },
+      }),
+      walletAddress: WALLET,
+      txid: 'tx',
+    });
+    expect(receipt.paymentTokenMint).toBe(USDC_MINT_MAINNET);
+    expect(receipt.metadata).toEqual({ orderRef: 'op_42' });
   });
 
   it('produces a deterministic cartHash for the same cart', () => {

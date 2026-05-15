@@ -3,6 +3,7 @@ export * from './errors.js';
 export * from './constants.js';
 export { isValidSolanaAddress } from './addressValidation.js';
 export { parseAcpCart } from './parser.js';
+export type { ParseAcpCartOptions } from './parser.js';
 export { validateAcpCart } from './cartValidator.js';
 export { cartToTransferParams } from './payment.js';
 export type { CartToTransferOptions } from './payment.js';

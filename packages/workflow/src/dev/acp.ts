@@ -1,17 +1,29 @@
-import { WorkflowValidationError, assertNoForbiddenWorkflowSecrets } from '../index.js';
+import {
+  WORKFLOW_CLUSTERS,
+  WorkflowValidationError,
+  assertNoForbiddenWorkflowSecrets,
+  type WorkflowCluster,
+} from '../index.js';
+import {
+  AcpParseError,
+  parseAcpCart,
+  type AcpCart,
+} from '@solana-agent-wallet-adapter/acp-adapter';
 
 export interface CreateAcpCartRequest {
-  cart: Record<string, unknown>;
-  cluster?: 'mainnet' | 'devnet';
+  cart: AcpCart;
+  cluster?: WorkflowCluster;
   note?: string;
   dueAt?: string;
+  receivedAt: string;
 }
 
 export interface AcpReceiptIssuanceRequest {
   cartId: string;
   txid: string;
-  settledAt?: string;
   walletAddress: string;
+  settledAt?: string;
+  receivedAt: string;
 }
 
 export function validateCreateAcpCartRequest(body: unknown, path = '$'): CreateAcpCartRequest {
@@ -20,27 +32,47 @@ export function validateCreateAcpCartRequest(body: unknown, path = '$'): CreateA
   if (record.cart === undefined) {
     throw new WorkflowValidationError('missing_field', 'Missing required field.', `${path}.cart`);
   }
-  const cart = expectCartObject(record.cart, `${path}.cart`);
-  assertNoForbiddenWorkflowSecrets(cart, `${path}.cart`);
+
+  // When `cart` arrives as a JSON string, pre-parse it so the secret scan
+  // can descend into the embedded fields BEFORE parseAcpCart drops unknown
+  // keys (the parser only retains its declared shape; a smuggled
+  // `delegatedSigner` would otherwise be silently scrubbed).
+  let rawCart: unknown = record.cart;
+  if (typeof rawCart === 'string') {
+    try {
+      rawCart = JSON.parse(rawCart);
+    } catch {
+      // Leave as string; parseAcpCart below will raise the proper
+      // AcpParseError('invalid_json') which we wrap.
+    }
+  }
+  assertNoForbiddenWorkflowSecrets(rawCart, `${path}.cart`);
+
+  let cart: AcpCart;
+  try {
+    cart = parseAcpCart(rawCart, {}, `${path}.cart`);
+  } catch (err) {
+    if (err instanceof AcpParseError) {
+      throw new WorkflowValidationError(
+        `invalid_acp_cart:${err.code}`,
+        err.message,
+        err.path ?? `${path}.cart`,
+      );
+    }
+    throw new WorkflowValidationError(
+      'invalid_acp_cart',
+      (err as Error).message ?? 'ACP cart could not be parsed.',
+      `${path}.cart`,
+    );
+  }
+
   return {
     cart,
     ...(record.cluster !== undefined ? { cluster: expectCluster(record.cluster, `${path}.cluster`) } : {}),
     ...(record.note !== undefined ? { note: expectShortString(record.note, `${path}.note`, 500) } : {}),
     ...(record.dueAt !== undefined ? { dueAt: expectIsoString(record.dueAt, `${path}.dueAt`) } : {}),
+    receivedAt: new Date().toISOString(),
   };
-}
-
-function expectCartObject(value: unknown, path: string): Record<string, unknown> {
-  if (typeof value === 'string') {
-    let parsed: unknown;
-    try {
-      parsed = JSON.parse(value);
-    } catch {
-      throw new WorkflowValidationError('invalid_json', 'cart string must be valid JSON.', path);
-    }
-    return expectObject(parsed, path);
-  }
-  return expectObject(value, path);
 }
 
 export function validateAcpReceiptIssuanceRequest(body: unknown, path = '$'): AcpReceiptIssuanceRequest {
@@ -51,6 +83,7 @@ export function validateAcpReceiptIssuanceRequest(body: unknown, path = '$'): Ac
     txid: expectShortString(record.txid, `${path}.txid`, 256),
     walletAddress: expectShortString(record.walletAddress, `${path}.walletAddress`, 64),
     ...(record.settledAt !== undefined ? { settledAt: expectIsoString(record.settledAt, `${path}.settledAt`) } : {}),
+    receivedAt: new Date().toISOString(),
   };
 }
 
@@ -78,11 +111,15 @@ function expectShortString(value: unknown, path: string, max: number): string {
   return trimmed;
 }
 
-function expectCluster(value: unknown, path: string): 'mainnet' | 'devnet' {
-  if (value !== 'mainnet' && value !== 'devnet') {
-    throw new WorkflowValidationError('invalid_enum', 'Expected one of: mainnet, devnet.', path);
+function expectCluster(value: unknown, path: string): WorkflowCluster {
+  if (typeof value !== 'string' || !(WORKFLOW_CLUSTERS as readonly string[]).includes(value)) {
+    throw new WorkflowValidationError(
+      'invalid_enum',
+      `Expected one of: ${WORKFLOW_CLUSTERS.join(', ')}.`,
+      path,
+    );
   }
-  return value;
+  return value as WorkflowCluster;
 }
 
 function expectIsoString(value: unknown, path: string): string {

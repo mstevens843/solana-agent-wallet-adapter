@@ -30,6 +30,19 @@ const FORBIDDEN_KEY_TOKENS = new Set([
   'unlimitedapproval',
 ]);
 
+/**
+ * Parse + structurally validate an AP2 inbound mandate.
+ *
+ * Accepts either a raw JSON string (subject to a 64 KiB default size cap) or
+ * an already-parsed unknown object. Runs `assertNoForbiddenAp2Secrets` before
+ * structural validation so payloads carrying `privateKey`, `seedPhrase`,
+ * `delegatedSigner`, etc. are rejected up front. Asserts the `signedFields`
+ * subtree deeply mirrors the top-level `intent` / `payment` subtree so an
+ * attacker cannot sign a small amount and present a larger one.
+ *
+ * Does NOT verify the ed25519 signature — call `verifyAp2Mandate` afterwards.
+ * Throws `Ap2ParseError` with stable `code`.
+ */
 export function parseAp2Mandate(raw: string | unknown, opts: { maxBytes?: number } = {}): Ap2Mandate {
   const maxBytes = opts.maxBytes ?? DEFAULT_MAX_BYTES;
   let value: unknown;
@@ -56,6 +69,14 @@ export function parseAp2Mandate(raw: string | unknown, opts: { maxBytes?: number
   return parsePaymentMandate(object);
 }
 
+/**
+ * Recursively scan an arbitrary JSON-shaped value for forbidden key tokens
+ * (private keys, seed phrases, delegated-signer hints, etc). Throws
+ * `Ap2ParseError('forbidden_secret', …)` on the first hit. This is the
+ * adapter's local copy of the workflow's forbidden-secret guardrail so the
+ * adapter can be embedded without a workflow dependency; the route layer
+ * also runs `assertNoForbiddenWorkflowSecrets` for defense-in-depth.
+ */
 export function assertNoForbiddenAp2Secrets(value: unknown, path = '$'): void {
   if (!value || typeof value !== 'object') return;
   if (Array.isArray(value)) {

@@ -272,16 +272,20 @@ describe('cloud one-time workflow API', () => {
     });
   });
 
-  it('rejects unsupported executable cloud approvals before they enter the inbox', async () => {
+  it('accepts transfer_spl approvals (SPL is now cloud-supported alongside SOL)', async () => {
     await withWorkflowServer(async ({ port }) => {
       const splApproval = await postJson(port, '/api/approvals', {
-        summary: 'Unsupported token transfer',
+        summary: 'USDC transfer',
         kind: 'transfer_spl',
         params: { token: 'USDC', recipient: 'Recipient111', amount: '5' },
       }, walletA);
-      expect(splApproval.status).toBe(409);
-      expect(splApproval.body.error).toBe('unsupported_cloud_finalization_kind');
+      expect(splApproval.status).toBe(201);
+      expect((splApproval.body.approval as { kind?: string })?.kind).toBe('transfer_spl');
+    });
+  });
 
+  it('still rejects custom_transaction approvals (no cloud finalization mapping yet)', async () => {
+    await withWorkflowServer(async ({ port }) => {
       const customApproval = await postJson(port, '/api/approvals', {
         summary: 'Unsupported custom transaction',
         kind: 'custom_transaction',

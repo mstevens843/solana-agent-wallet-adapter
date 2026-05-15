@@ -55,6 +55,16 @@ export type {
   DAppAdapterId,
 } from './adapters/types.js';
 export {
+  getPriceFeedSnapshot,
+  getPriceFeedsBatchSnapshot,
+} from './adapters/pyth/prices.js';
+export type {
+  GetPythPriceFeedInput,
+  GetPythPriceFeedsBatchInput,
+  PythPriceFeedSnapshotResult,
+  PythPriceFeedsBatchResult,
+} from './adapters/pyth/index.js';
+export {
   describeTensorUnavailableReason,
   getTensorClient,
   isTensorConfigured,

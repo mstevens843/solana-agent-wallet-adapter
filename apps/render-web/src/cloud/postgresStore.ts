@@ -19,6 +19,8 @@ import type {
   RecurringStore,
 } from './recurringService.js';
 import type {
+  AggregatorSnapshotStoreRecord,
+  AggregatorStore,
   CloudPreferenceNamespace,
   CloudPreferenceRecord,
   CloudPreferencesStore,
@@ -26,6 +28,14 @@ import type {
   CloudWorkspaceDeleteStore,
   AuditEventRecord,
   AuthNonceRecord,
+  SignalEmissionStoreRecord,
+  SignalFeedStoreRecord,
+  SignalSubscriptionStoreRecord,
+  SignalsStore,
+  SkillExecutionStoreRecord,
+  SkillInstallStoreRecord,
+  SkillManifestStoreRecord,
+  SkillsStore,
   WalletScopedWorkflowStore,
   WalletSessionRecord,
   WorkflowStore as SessionWorkflowStore,
@@ -44,6 +54,7 @@ import type {
 const { Pool } = pg;
 const ACTIVE_APPROVAL_PLAN_DRAFT_INDEX = 'approval_requests_active_plan_draft_idx';
 const ACTIVE_APPROVAL_RECURRING_OCCURRENCE_INDEX = 'approval_requests_active_recurring_occurrence_idx';
+const ACTIVE_APPROVAL_SIGNAL_FANOUT_INDEX = 'approval_requests_active_signal_fanout_idx';
 
 export interface PgClient {
   query<R extends QueryResultRow = QueryResultRow>(query: QueryConfig): Promise<QueryResult<R>>;
@@ -108,6 +119,29 @@ interface PreferenceRow extends QueryResultRow {
   version: number | string;
 }
 
+interface AggregatorSnapshotRow extends QueryResultRow {
+  key: string;
+  kind: string;
+  computed_at: Date | string;
+  record: AggregatorSnapshotStoreRecord | string;
+}
+
+interface SignalFeedRecordRow extends QueryResultRow {
+  record: SignalFeedStoreRecord | string;
+}
+
+interface SignalSubscriptionRecordRow extends QueryResultRow {
+  record: SignalSubscriptionStoreRecord | string;
+}
+
+interface SignalEmissionRecordRow extends QueryResultRow {
+  record: SignalEmissionStoreRecord | string;
+}
+
+interface SkillIdRow extends QueryResultRow {
+  id: string;
+}
+
 export class PostgresWorkflowStore implements
   SessionWorkflowStore,
   OneTimeWorkflowStore,
@@ -115,7 +149,10 @@ export class PostgresWorkflowStore implements
   RecurringStore,
   RecurringNotificationStore,
   CloudWorkspaceDeleteStore,
-  CloudPreferencesStore {
+  CloudPreferencesStore,
+  SkillsStore,
+  SignalsStore,
+  AggregatorStore {
   private readonly client: PgClient;
   private readonly ownsClient: boolean;
 
@@ -430,7 +467,8 @@ export class PostgresWorkflowStore implements
     } catch (err) {
       if (
         isPgUniqueViolation(err, ACTIVE_APPROVAL_PLAN_DRAFT_INDEX) ||
-        isPgUniqueViolation(err, ACTIVE_APPROVAL_RECURRING_OCCURRENCE_INDEX)
+        isPgUniqueViolation(err, ACTIVE_APPROVAL_RECURRING_OCCURRENCE_INDEX) ||
+        isPgUniqueViolation(err, ACTIVE_APPROVAL_SIGNAL_FANOUT_INDEX)
       ) {
         throw approvalExistsError();
       }
@@ -651,6 +689,345 @@ export class PostgresWorkflowStore implements
         recordType: event.recordType,
         recordId: event.recordId,
       },
+    });
+  }
+
+  // ── SkillsStore ──
+  async saveSkillManifest(record: SkillManifestStoreRecord): Promise<SkillManifestStoreRecord> {
+    await this.query({
+      name: 'skill.manifest.upsert',
+      text: `
+        INSERT INTO skill_manifests (id, version, author_wallet, created_at, updated_at, record)
+        VALUES ($1, $2, $3, $4, $5, $6::jsonb)
+        ON CONFLICT (id) DO UPDATE SET
+          version = EXCLUDED.version,
+          author_wallet = EXCLUDED.author_wallet,
+          updated_at = EXCLUDED.updated_at,
+          record = EXCLUDED.record
+      `,
+      values: [
+        record.id,
+        record.version,
+        record.authorWallet,
+        record.createdAt,
+        record.updatedAt,
+        jsonParam(record),
+      ],
+    });
+    return record;
+  }
+
+  async getSkillManifest(skillId: string): Promise<SkillManifestStoreRecord | undefined> {
+    const result = await this.query<JsonRecordRow<SkillManifestStoreRecord>>({
+      name: 'skill.manifest.get',
+      text: 'SELECT record FROM skill_manifests WHERE id = $1',
+      values: [skillId],
+    });
+    const row = result.rows[0];
+    return row ? jsonRecord(row.record) : undefined;
+  }
+
+  async listSkillManifests(): Promise<SkillManifestStoreRecord[]> {
+    const result = await this.query<JsonRecordRow<SkillManifestStoreRecord>>({
+      name: 'skill.manifest.list',
+      text: 'SELECT record FROM skill_manifests ORDER BY updated_at DESC, id ASC',
+    });
+    return result.rows.map((row) => jsonRecord(row.record));
+  }
+
+  async saveSkillInstall(record: SkillInstallStoreRecord): Promise<SkillInstallStoreRecord> {
+    await this.ensureUser(record.walletAddress, record.installedAt);
+    await this.query({
+      name: 'skill.install.upsert',
+      text: `
+        INSERT INTO skill_installs (id, wallet_address, skill_id, status, installed_at, updated_at, record)
+        VALUES ($1, $2, $3, $4, $5, $6, $7::jsonb)
+        ON CONFLICT (id) DO UPDATE SET
+          status = EXCLUDED.status,
+          updated_at = EXCLUDED.updated_at,
+          record = EXCLUDED.record
+        WHERE skill_installs.wallet_address = EXCLUDED.wallet_address
+      `,
+      values: [
+        record.id,
+        record.walletAddress,
+        record.skillId,
+        record.status,
+        record.installedAt,
+        record.updatedAt,
+        jsonParam(record),
+      ],
+    });
+    return record;
+  }
+
+  async getSkillInstall(installId: string): Promise<SkillInstallStoreRecord | undefined> {
+    const result = await this.query<JsonRecordRow<SkillInstallStoreRecord>>({
+      name: 'skill.install.get',
+      text: 'SELECT record FROM skill_installs WHERE id = $1',
+      values: [installId],
+    });
+    const row = result.rows[0];
+    return row ? jsonRecord(row.record) : undefined;
+  }
+
+  async listSkillInstallsForWallet(walletAddress: string): Promise<SkillInstallStoreRecord[]> {
+    const result = await this.query<JsonRecordRow<SkillInstallStoreRecord>>({
+      name: 'skill.install.listForWallet',
+      text: 'SELECT record FROM skill_installs WHERE wallet_address = $1 ORDER BY installed_at DESC, updated_at DESC',
+      values: [walletAddress],
+    });
+    return result.rows.map((row) => jsonRecord(row.record));
+  }
+
+  async listActiveSkillInstalls(): Promise<SkillInstallStoreRecord[]> {
+    const result = await this.query<JsonRecordRow<SkillInstallStoreRecord>>({
+      name: 'skill.install.listActive',
+      text: "SELECT record FROM skill_installs WHERE status = 'active' ORDER BY installed_at DESC, updated_at DESC",
+    });
+    return result.rows.map((row) => jsonRecord(row.record));
+  }
+
+  async saveSkillExecution(record: SkillExecutionStoreRecord): Promise<SkillExecutionStoreRecord> {
+    await this.ensureUser(record.walletAddress, record.proposedAt);
+    await this.query({
+      name: 'skill.execution.upsert',
+      text: `
+        INSERT INTO skill_executions (
+          id, install_id, wallet_address, skill_id, proposed_at, result,
+          approval_request_id, evidence_receipt_id, record
+        )
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9::jsonb)
+        ON CONFLICT (id) DO UPDATE SET
+          result = EXCLUDED.result,
+          approval_request_id = EXCLUDED.approval_request_id,
+          evidence_receipt_id = EXCLUDED.evidence_receipt_id,
+          record = EXCLUDED.record
+        WHERE skill_executions.wallet_address = EXCLUDED.wallet_address
+      `,
+      values: [
+        record.id,
+        record.installId,
+        record.walletAddress,
+        record.skillId,
+        record.proposedAt,
+        record.result ?? null,
+        record.approvalRequestId ?? null,
+        record.evidenceReceiptId ?? null,
+        jsonParam(record),
+      ],
+    });
+    return record;
+  }
+
+  async getSkillExecutionByApprovalRequestId(
+    walletAddress: string,
+    approvalRequestId: string,
+  ): Promise<SkillExecutionStoreRecord | undefined> {
+    const result = await this.query<JsonRecordRow<SkillExecutionStoreRecord>>({
+      name: 'skill.execution.getByApproval',
+      text: `
+        SELECT record
+        FROM skill_executions
+        WHERE wallet_address = $1 AND approval_request_id = $2
+        ORDER BY proposed_at DESC, id DESC
+        LIMIT 1
+      `,
+      values: [walletAddress, approvalRequestId],
+    });
+    const row = result.rows[0];
+    return row ? jsonRecord(row.record) : undefined;
+  }
+
+  async listSkillExecutionsByInstall(installId: string): Promise<SkillExecutionStoreRecord[]> {
+    const result = await this.query<JsonRecordRow<SkillExecutionStoreRecord>>({
+      name: 'skill.execution.listByInstall',
+      text: 'SELECT record FROM skill_executions WHERE install_id = $1 ORDER BY proposed_at ASC, id ASC',
+      values: [installId],
+    });
+    return result.rows.map((row) => jsonRecord(row.record));
+  }
+
+  async listSkillExecutionsForSkill(
+    skillId: string,
+    sinceIso?: string,
+  ): Promise<SkillExecutionStoreRecord[]> {
+    const result = await this.query<JsonRecordRow<SkillExecutionStoreRecord>>({
+      name: sinceIso ? 'skill.execution.listForSkillSince' : 'skill.execution.listForSkill',
+      text: sinceIso
+        ? 'SELECT record FROM skill_executions WHERE skill_id = $1 AND proposed_at >= $2 ORDER BY proposed_at ASC, id ASC'
+        : 'SELECT record FROM skill_executions WHERE skill_id = $1 ORDER BY proposed_at ASC, id ASC',
+      values: sinceIso ? [skillId, sinceIso] : [skillId],
+    });
+    return result.rows.map((row) => jsonRecord(row.record));
+  }
+
+  // ── SignalsStore ──
+  async saveSignalFeed(record: SignalFeedStoreRecord): Promise<SignalFeedStoreRecord> {
+    await this.ensureUser(record.publisherWallet, record.createdAt);
+    await this.query({
+      name: 'signal.feed.upsert',
+      text: `
+        INSERT INTO signal_feeds (id, publisher_wallet, name, created_at, updated_at, status, record)
+        VALUES ($1, $2, $3, $4, $5, $6, $7::jsonb)
+        ON CONFLICT (id) DO UPDATE SET
+          publisher_wallet = EXCLUDED.publisher_wallet,
+          name = EXCLUDED.name,
+          updated_at = EXCLUDED.updated_at,
+          status = EXCLUDED.status,
+          record = EXCLUDED.record
+      `,
+      values: [
+        record.id,
+        record.publisherWallet,
+        signalFeedName(record),
+        record.createdAt,
+        record.updatedAt,
+        record.status,
+        jsonParam(record),
+      ],
+    });
+    return record;
+  }
+
+  async getSignalFeed(feedId: string): Promise<SignalFeedStoreRecord | undefined> {
+    const result = await this.query<SignalFeedRecordRow>({
+      name: 'signal.feed.get',
+      text: 'SELECT record FROM signal_feeds WHERE id = $1',
+      values: [feedId],
+    });
+    const row = result.rows[0];
+    return row ? jsonRecord(row.record) : undefined;
+  }
+
+  async listSignalFeedsByPublisher(publisherWallet: string): Promise<SignalFeedStoreRecord[]> {
+    const result = await this.query<SignalFeedRecordRow>({
+      name: 'signal.feed.listByPublisher',
+      text: 'SELECT record FROM signal_feeds WHERE publisher_wallet = $1 ORDER BY updated_at DESC, created_at DESC, id ASC',
+      values: [publisherWallet],
+    });
+    return result.rows.map((row) => jsonRecord(row.record));
+  }
+
+  async saveSignalSubscription(
+    record: SignalSubscriptionStoreRecord,
+  ): Promise<SignalSubscriptionStoreRecord> {
+    await this.ensureUser(record.followerWallet, record.subscribedAt);
+    await this.query({
+      name: 'signal.subscription.upsert',
+      text: `
+        INSERT INTO signal_subscriptions (
+          id, follower_wallet, feed_id, status, subscribed_at, updated_at, record
+        )
+        VALUES ($1, $2, $3, $4, $5, $6, $7::jsonb)
+        ON CONFLICT (id) DO UPDATE SET
+          status = EXCLUDED.status,
+          updated_at = EXCLUDED.updated_at,
+          record = EXCLUDED.record
+        WHERE signal_subscriptions.follower_wallet = EXCLUDED.follower_wallet
+      `,
+      values: [
+        record.id,
+        record.followerWallet,
+        record.feedId,
+        record.status,
+        record.subscribedAt,
+        record.updatedAt,
+        jsonParam(record),
+      ],
+    });
+    return record;
+  }
+
+  async listSignalSubscriptionsForFollower(
+    followerWallet: string,
+  ): Promise<SignalSubscriptionStoreRecord[]> {
+    const result = await this.query<SignalSubscriptionRecordRow>({
+      name: 'signal.subscription.listForFollower',
+      text: 'SELECT record FROM signal_subscriptions WHERE follower_wallet = $1 ORDER BY updated_at DESC, subscribed_at DESC, id ASC',
+      values: [followerWallet],
+    });
+    return result.rows.map((row) => jsonRecord(row.record));
+  }
+
+  async listSignalSubscriptionsForFeed(feedId: string): Promise<SignalSubscriptionStoreRecord[]> {
+    const result = await this.query<SignalSubscriptionRecordRow>({
+      name: 'signal.subscription.listForFeed',
+      text: 'SELECT record FROM signal_subscriptions WHERE feed_id = $1 ORDER BY updated_at DESC, subscribed_at DESC, id ASC',
+      values: [feedId],
+    });
+    return result.rows.map((row) => jsonRecord(row.record));
+  }
+
+  async saveSignalEmission(record: SignalEmissionStoreRecord): Promise<SignalEmissionStoreRecord> {
+    const normalized = normalizeSignalEmissionRecord(record);
+    await this.ensureUser(record.publisherWallet, record.emittedAt);
+    await this.query({
+      name: 'signal.emission.upsert',
+      text: `
+        INSERT INTO signal_emissions (
+          id, feed_id, publisher_wallet, emitted_at, source_txid, delivered, fanout_processed_at, record
+        )
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8::jsonb)
+        ON CONFLICT (id) DO UPDATE SET
+          delivered = EXCLUDED.delivered,
+          fanout_processed_at = EXCLUDED.fanout_processed_at,
+          record = EXCLUDED.record
+      `,
+      values: [
+        normalized.id,
+        normalized.feedId,
+        normalized.publisherWallet,
+        normalized.emittedAt,
+        signalEmissionSourceTxid(normalized),
+        normalized.delivered,
+        normalized.fanoutProcessedAt ?? null,
+        jsonParam(normalized),
+      ],
+    });
+    return normalized;
+  }
+
+  async listUndeliveredSignalEmissions(limit = 200): Promise<SignalEmissionStoreRecord[]> {
+    const result = await this.query<SignalEmissionRecordRow>({
+      name: 'signal.emission.listUndelivered',
+      text: `
+        SELECT record
+        FROM signal_emissions
+        WHERE fanout_processed_at IS NULL
+        ORDER BY emitted_at ASC, id ASC
+        LIMIT $1
+      `,
+      values: [limit],
+    });
+    return result.rows.map((row) => jsonRecord(row.record));
+  }
+
+  async markSignalEmissionFanoutProcessed(
+    emissionId: string,
+    delivered: number,
+    fanoutProcessedAt: string,
+  ): Promise<void> {
+    await this.query({
+      name: 'signal.emission.markFanoutProcessed',
+      text: `
+        UPDATE signal_emissions
+        SET
+          delivered = $2,
+          fanout_processed_at = $3,
+          record = jsonb_set(
+            jsonb_set(
+              jsonb_set(
+                jsonb_set(record, '{delivered}', to_jsonb($2::int), true),
+                '{fanoutProcessedAt}', to_jsonb($3::text), true
+              ),
+              '{emission,delivered}', to_jsonb($2::int), true
+            ),
+            '{emission,fanoutProcessedAt}', to_jsonb($3::text), true
+          )
+        WHERE id = $1
+      `,
+      values: [emissionId, delivered, fanoutProcessedAt],
     });
   }
 
@@ -1009,6 +1386,7 @@ export class PostgresWorkflowStore implements
     await client.query({ text: 'BEGIN' });
     try {
       const counts = emptyCloudWorkspaceDeleteCounts();
+      const authoredSkillIds = await listAuthoredSkillIdsWithClient(client, walletAddress);
       counts.preferences = await deleteByWalletWithClient(
         client,
         'cloudWorkspace.preferences.delete',
@@ -1044,6 +1422,53 @@ export class PostgresWorkflowStore implements
         'cloudWorkspace.evidence.delete',
         'evidence_receipts',
         walletAddress,
+      );
+      counts.skillInstalls = await deleteByColumnWithClient(
+        client,
+        'cloudWorkspace.skillInstalls.delete',
+        'skill_installs',
+        'wallet_address',
+        walletAddress,
+      );
+      counts.skillExecutions = await deleteByColumnWithClient(
+        client,
+        'cloudWorkspace.skillExecutions.delete',
+        'skill_executions',
+        'wallet_address',
+        walletAddress,
+      );
+      counts.signalSubscriptions = await deleteByColumnWithClient(
+        client,
+        'cloudWorkspace.signalSubscriptions.delete',
+        'signal_subscriptions',
+        'follower_wallet',
+        walletAddress,
+      );
+      counts.signalEmissions = await deleteByColumnWithClient(
+        client,
+        'cloudWorkspace.signalEmissions.delete',
+        'signal_emissions',
+        'publisher_wallet',
+        walletAddress,
+      );
+      counts.signalFeeds = await deleteByColumnWithClient(
+        client,
+        'cloudWorkspace.signalFeeds.delete',
+        'signal_feeds',
+        'publisher_wallet',
+        walletAddress,
+      );
+      counts.skillManifests = await deleteByColumnWithClient(
+        client,
+        'cloudWorkspace.skillManifests.delete',
+        'skill_manifests',
+        'author_wallet',
+        walletAddress,
+      );
+      counts.aggregatorSnapshots = await deleteAggregatorSnapshotsWithClient(
+        client,
+        walletAddress,
+        authoredSkillIds,
       );
       counts.completedRecords = await deleteByWalletWithClient(
         client,
@@ -1197,6 +1622,82 @@ export class PostgresWorkflowStore implements
     }
     return this.client;
   }
+
+  // ── AggregatorStore ──
+  async saveAggregatorSnapshot(
+    record: AggregatorSnapshotStoreRecord,
+  ): Promise<AggregatorSnapshotStoreRecord> {
+    await this.query({
+      name: 'aggregator.upsert',
+      text: `
+        INSERT INTO aggregator_snapshots (key, kind, computed_at, record)
+        VALUES ($1, $2, $3, $4::jsonb)
+        ON CONFLICT (key) DO UPDATE SET
+          kind = EXCLUDED.kind,
+          computed_at = EXCLUDED.computed_at,
+          record = EXCLUDED.record
+      `,
+      values: [record.key, record.kind, record.computedAt, jsonParam(record)],
+    });
+    return record;
+  }
+
+  async getAggregatorSnapshot(key: string): Promise<AggregatorSnapshotStoreRecord | undefined> {
+    const result = await this.query<AggregatorSnapshotRow>({
+      name: 'aggregator.get',
+      text: 'SELECT key, kind, computed_at, record FROM aggregator_snapshots WHERE key = $1',
+      values: [key],
+    });
+    const row = result.rows[0];
+    return row ? aggregatorRecordFromRow(row) : undefined;
+  }
+
+  async listAggregatorSnapshotsByKind(
+    kind: 'skill' | 'wallet',
+  ): Promise<AggregatorSnapshotStoreRecord[]> {
+    const result = await this.query<AggregatorSnapshotRow>({
+      name: 'aggregator.listByKind',
+      text: 'SELECT key, kind, computed_at, record FROM aggregator_snapshots WHERE kind = $1 ORDER BY computed_at DESC',
+      values: [kind],
+    });
+    return result.rows.map(aggregatorRecordFromRow);
+  }
+}
+
+function aggregatorRecordFromRow(row: AggregatorSnapshotRow): AggregatorSnapshotStoreRecord {
+  const parsed = typeof row.record === 'string'
+    ? (JSON.parse(row.record) as AggregatorSnapshotStoreRecord)
+    : row.record;
+  return parsed;
+}
+
+function signalFeedName(record: SignalFeedStoreRecord): string {
+  const feed = record.feed;
+  if (feed && typeof feed === 'object' && !Array.isArray(feed)) {
+    const value = (feed as Record<string, unknown>).name;
+    if (typeof value === 'string' && value.trim()) return value;
+  }
+  return record.id;
+}
+
+function signalEmissionSourceTxid(record: SignalEmissionStoreRecord): string {
+  const emission = record.emission;
+  if (emission && typeof emission === 'object' && !Array.isArray(emission)) {
+    const value = (emission as Record<string, unknown>).sourceTxid;
+    if (typeof value === 'string' && value.trim()) return value;
+  }
+  return record.id;
+}
+
+function normalizeSignalEmissionRecord(record: SignalEmissionStoreRecord): SignalEmissionStoreRecord {
+  const emission = record.emission && typeof record.emission === 'object' && !Array.isArray(record.emission)
+    ? {
+        ...(record.emission as Record<string, unknown>),
+        delivered: record.delivered,
+        ...(record.fanoutProcessedAt ? { fanoutProcessedAt: record.fanoutProcessedAt } : {}),
+      }
+    : record.emission;
+  return { ...record, emission };
 }
 
 function isPgUniqueViolation(err: unknown, name: string): boolean {
@@ -1212,10 +1713,49 @@ async function deleteByWalletWithClient(
   table: string,
   walletAddress: string,
 ): Promise<number> {
+  return deleteByColumnWithClient(client, name, table, 'wallet_address', walletAddress);
+}
+
+async function deleteByColumnWithClient(
+  client: PgClient,
+  name: string,
+  table: string,
+  column: string,
+  value: string,
+): Promise<number> {
   const result = await client.query({
     name,
-    text: `DELETE FROM ${table} WHERE wallet_address = $1`,
+    text: `DELETE FROM ${table} WHERE ${column} = $1`,
+    values: [value],
+  });
+  return result.rowCount ?? 0;
+}
+
+async function listAuthoredSkillIdsWithClient(
+  client: PgClient,
+  walletAddress: string,
+): Promise<string[]> {
+  const result = await client.query<SkillIdRow>({
+    name: 'cloudWorkspace.skillManifests.listAuthoredIds',
+    text: 'SELECT id FROM skill_manifests WHERE author_wallet = $1 ORDER BY id ASC',
     values: [walletAddress],
+  });
+  return result.rows.map((row) => row.id);
+}
+
+async function deleteAggregatorSnapshotsWithClient(
+  client: PgClient,
+  walletAddress: string,
+  authoredSkillIds: readonly string[],
+): Promise<number> {
+  const keys = [
+    `wallet:${walletAddress}`,
+    ...authoredSkillIds.map((skillId) => `skill:${skillId}`),
+  ];
+  const result = await client.query({
+    name: 'cloudWorkspace.aggregatorSnapshots.delete',
+    text: 'DELETE FROM aggregator_snapshots WHERE key = ANY($1::text[])',
+    values: [keys],
   });
   return result.rowCount ?? 0;
 }

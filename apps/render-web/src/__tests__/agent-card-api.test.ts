@@ -235,17 +235,26 @@ describe('agent-card API (public + dev preview)', () => {
           const response = await rawRequest(port, 'GET', '/.well-known/agent.json');
           expect(response.status).toBe(200);
           expect(response.body).toMatchObject({
-            schemaVersion: '1.0',
+            protocolVersion: '0.2.5',
             name: 'Agentic Wallet',
             walletAddress: DEV_WALLET,
-            supportedProtocols: ['ap2', 'acp'],
+            supportedProtocols: ['ap2', 'acp', 'a2a'],
             supportedTokens: ['USDC', 'USDT', 'SOL'],
-            capabilities: ['ap2.inbound', 'acp.outbound', 'bridge.quote'],
+            capabilities: {
+              streaming: false,
+              pushNotifications: false,
+              stateTransitionHistory: false,
+            },
           });
           expect(response.body?.version).toBe('abcdef123456');
-          expect(response.body?.serviceEndpoint).toMatch(/^http:\/\/127\.0\.0\.1:\d+\/api\/agents$/);
+          expect(response.body?.url).toMatch(/^http:\/\/127\.0\.0\.1:\d+$/);
+          expect(response.body?.serviceEndpoint).toBe(response.body?.url);
+          expect(Array.isArray(response.body?.skills)).toBe(true);
+          expect((response.body?.skills as unknown[]).length).toBeGreaterThanOrEqual(13);
           expect(response.body?.paymentMethods).toEqual([
-            { network: 'solana-mainnet', settlement: 'spl-transfer' },
+            { protocol: 'ap2-inbound', endpoint: expect.stringMatching(/\/api\/ap2\/inbound$/) },
+            { protocol: 'acp-outbound', endpoint: expect.stringMatching(/\/api\/acp\/cart\/preview$/) },
+            { protocol: 'spl-transfer', tokens: ['USDC', 'USDT', 'SOL'], network: 'solana-mainnet' },
           ]);
         },
       );
@@ -266,7 +275,7 @@ describe('agent-card API (public + dev preview)', () => {
       );
     });
 
-    it('uses AGENTIC_PUBLIC_ORIGIN for serviceEndpoint when set', async () => {
+    it('uses AGENTIC_PUBLIC_ORIGIN for url / serviceEndpoint when set', async () => {
       await withRoutes(
         {
           AGENTIC_DEV_AP2_ACP: '1',
@@ -276,7 +285,8 @@ describe('agent-card API (public + dev preview)', () => {
         async ({ port }) => {
           const response = await rawRequest(port, 'GET', '/.well-known/agent.json');
           expect(response.status).toBe(200);
-          expect(response.body?.serviceEndpoint).toBe('https://agentic-signer.com/api/agents');
+          expect(response.body?.url).toBe('https://agentic-signer.com');
+          expect(response.body?.serviceEndpoint).toBe('https://agentic-signer.com');
         },
       );
     });
@@ -374,6 +384,78 @@ describe('agent-card API (public + dev preview)', () => {
         },
       );
     });
+
+    it('emits a strong ETag header on 200 responses', async () => {
+      await withRoutes(
+        {
+          AGENTIC_DEV_AP2_ACP: '1',
+          AGENTIC_DEV_WALLET_ALLOWLIST: DEV_WALLET,
+        },
+        async ({ port }) => {
+          const response = await rawRequest(port, 'GET', '/.well-known/agent.json');
+          expect(response.status).toBe(200);
+          const etag = response.headers['etag'];
+          expect(typeof etag).toBe('string');
+          expect(etag).toMatch(/^"[A-Za-z0-9_-]+"$/);
+        },
+      );
+    });
+
+    it('returns 304 Not Modified when If-None-Match matches the current ETag', async () => {
+      await withRoutes(
+        {
+          AGENTIC_DEV_AP2_ACP: '1',
+          AGENTIC_DEV_WALLET_ALLOWLIST: DEV_WALLET,
+        },
+        async ({ port }) => {
+          const first = await rawRequest(port, 'GET', '/.well-known/agent.json');
+          const etag = first.headers['etag'];
+          expect(typeof etag).toBe('string');
+          const second = await rawRequest(port, 'GET', '/.well-known/agent.json', {
+            'if-none-match': etag as string,
+          });
+          expect(second.status).toBe(304);
+          expect(second.rawBody).toBe('');
+          expect(second.headers['etag']).toBe(etag);
+          expect(second.headers['cache-control']).toBe('public, max-age=60');
+          expect(second.headers['access-control-allow-origin']).toBe('*');
+        },
+      );
+    });
+
+    it('returns the full body when If-None-Match does not match', async () => {
+      await withRoutes(
+        {
+          AGENTIC_DEV_AP2_ACP: '1',
+          AGENTIC_DEV_WALLET_ALLOWLIST: DEV_WALLET,
+        },
+        async ({ port }) => {
+          const response = await rawRequest(port, 'GET', '/.well-known/agent.json', {
+            'if-none-match': '"stale-etag-value"',
+          });
+          expect(response.status).toBe(200);
+          expect(response.body?.walletAddress).toBe(DEV_WALLET);
+          expect(typeof response.headers['etag']).toBe('string');
+        },
+      );
+    });
+
+    it('honors a weak If-None-Match validator (W/) matching the strong ETag', async () => {
+      await withRoutes(
+        {
+          AGENTIC_DEV_AP2_ACP: '1',
+          AGENTIC_DEV_WALLET_ALLOWLIST: DEV_WALLET,
+        },
+        async ({ port }) => {
+          const first = await rawRequest(port, 'GET', '/.well-known/agent.json');
+          const etag = first.headers['etag'] as string;
+          const second = await rawRequest(port, 'GET', '/.well-known/agent.json', {
+            'if-none-match': `W/${etag}`,
+          });
+          expect(second.status).toBe(304);
+        },
+      );
+    });
   });
 
   describe('GET /api/agents/card (dev-gated preview)', () => {
@@ -435,13 +517,38 @@ describe('agent-card API (public + dev preview)', () => {
           });
           expect(response.status).toBe(200);
           expect(response.body).toMatchObject({
-            schemaVersion: '1.0',
+            protocolVersion: '0.2.5',
             name: 'Agentic Wallet',
             walletAddress: DEV_WALLET,
-            supportedProtocols: ['ap2', 'acp'],
+            supportedProtocols: ['ap2', 'acp', 'a2a'],
           });
           expect(response.headers['cache-control']).toBe('no-store');
           expect(response.headers['access-control-allow-origin']).toBeUndefined();
+        },
+      );
+    });
+
+    it('emits an ETag and short-circuits to 304 on If-None-Match hit (dev preview)', async () => {
+      await withRoutes(
+        {
+          AGENTIC_DEV_AP2_ACP: '1',
+          AGENTIC_DEV_WALLET_ALLOWLIST: DEV_WALLET,
+        },
+        async ({ port }) => {
+          const first = await rawRequest(port, 'GET', '/api/agents/card', {
+            'x-test-wallet': DEV_WALLET,
+          });
+          expect(first.status).toBe(200);
+          const etag = first.headers['etag'];
+          expect(typeof etag).toBe('string');
+          const second = await rawRequest(port, 'GET', '/api/agents/card', {
+            'x-test-wallet': DEV_WALLET,
+            'if-none-match': etag as string,
+          });
+          expect(second.status).toBe(304);
+          expect(second.rawBody).toBe('');
+          expect(second.headers['etag']).toBe(etag);
+          expect(second.headers['cache-control']).toBe('no-store');
         },
       );
     });

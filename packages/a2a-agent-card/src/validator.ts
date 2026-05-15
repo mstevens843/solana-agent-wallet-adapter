@@ -137,6 +137,14 @@ function validatePaymentMethods(raw: unknown, errors: string[]): void {
   });
 }
 
+/**
+ * Validate that an unknown payload conforms to the A2A AgentCard shape plus
+ * Agentic extensions. Strict on required fields, lenient on unknown top-level
+ * keys (extension-friendly). Returns a typed `value` only when `valid` is true.
+ *
+ * Error strings are JSON-path prefixed (e.g. `$.skills[0].id: ...`) so route
+ * handlers can surface them directly to API callers.
+ */
 export function validateAgentCard(card: unknown): ValidateAgentCardResult {
   if (!isObject(card)) {
     return { valid: false, errors: ['$: card must be an object'] };
@@ -192,6 +200,8 @@ export function validateAgentCard(card: unknown): ValidateAgentCardResult {
 
   if (!isStringArray(card.supportedProtocols)) {
     errors.push('$.supportedProtocols: required string array');
+  } else if (card.supportedProtocols.length === 0) {
+    errors.push('$.supportedProtocols: must declare at least one protocol');
   } else {
     card.supportedProtocols.forEach((p, i) => {
       if (!ALLOWED_PROTOCOLS.has(p as AgenticProtocol)) {
@@ -204,6 +214,15 @@ export function validateAgentCard(card: unknown): ValidateAgentCardResult {
 
   if (!isStringArray(card.supportedTokens) || (card.supportedTokens as string[]).length === 0) {
     errors.push('$.supportedTokens: required non-empty string array');
+  } else {
+    const seenTokens = new Set<string>();
+    card.supportedTokens.forEach((t, i) => {
+      const key = t.toUpperCase();
+      if (seenTokens.has(key)) {
+        errors.push(`$.supportedTokens[${i}]: duplicate token "${t}"`);
+      }
+      seenTokens.add(key);
+    });
   }
 
   validatePaymentMethods(card.paymentMethods, errors);

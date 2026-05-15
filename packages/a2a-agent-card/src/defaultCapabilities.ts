@@ -68,6 +68,15 @@ export const defaultAgenticCapabilities: AgenticCapability[] = [
     tags: ['defi', 'lend', 'deposit'],
   },
   {
+    id: 'defi.settle_route',
+    name: 'Quote Settlement Route',
+    description:
+      'Quote an optimal settlement route across Jupiter / Wormhole / Sanctum for a fiat-denominated payment. Read-only; no user prompt.',
+    tags: ['defi', 'bridge', 'settlement', 'routing'],
+    inputModes: ['application/json'],
+    outputModes: ['application/json'],
+  },
+  {
     id: 'protocol.ap2_inbound',
     name: 'Accept AP2 Mandate',
     description:

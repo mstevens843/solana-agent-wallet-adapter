@@ -133,6 +133,7 @@ const BLINK_BROWSER_LOCAL_FINALIZATION_REASON =
   'Blink transaction bytes are resolved in the browser before wallet approval.';
 const BROWSER_WALLET_EXECUTION_KINDS = new Set<string>([
   'swap',
+  'transfer_spl',
   'blink_action',
   ...CONNECTOR_APPROVAL_ACTION_TYPES,
 ]);
@@ -898,7 +899,7 @@ export class WorkflowService {
       throw new WorkflowServiceError(
         409,
         'wallet_execution_unsupported',
-        'Browser wallet execution is currently supported for Cloud swap and Blink approvals.',
+        'Browser wallet execution is currently supported for Cloud swap, SPL transfer, Blink, and connector approvals.',
       );
     }
     if (!input.txid) {
@@ -2212,7 +2213,9 @@ function executionModeForFinalizationRequirement(requirement: FinalizationRequir
 function finalizationSupportForKind(kind: string): { required: boolean; supported: boolean; reason?: string } {
   const required = workflowRequiresTransactionFinalization(kind);
   if (!required) return { required: false, supported: true };
-  if (kind === 'transfer_sol') return { required: true, supported: true };
+  if (kind === 'transfer_sol' || kind === 'transfer_spl') {
+    return { required: true, supported: true };
+  }
   if (kind === 'blink_action') {
     return {
       required: true,
@@ -2223,7 +2226,7 @@ function finalizationSupportForKind(kind: string): { required: boolean; supporte
   return {
     required: true,
     supported: false,
-    reason: 'Cloud server finalization currently supports SOL transfers only.',
+    reason: 'This approval kind is not yet supported by Agentic Cloud transaction finalization.',
   };
 }
 
@@ -2318,6 +2321,7 @@ function stringRecordFromJson(value: unknown): Record<string, string> {
   const output: Record<string, string> = {};
   for (const [key, entry] of Object.entries(value)) {
     if (typeof entry === 'string') output[key] = entry;
+    if (typeof entry === 'number' && Number.isFinite(entry)) output[key] = String(entry);
   }
   return output;
 }

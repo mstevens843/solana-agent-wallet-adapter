@@ -3,6 +3,8 @@ import {
   applySlippageBps,
   compareUnsignedBigStrings,
   decimalUsdToRaw,
+  rawToDecimal,
+  subtractUnsignedIntegerStrings,
 } from './decimal.js';
 import { defaultUsdcMint, isUsdcMint } from './usdc.js';
 import type {
@@ -17,8 +19,10 @@ const DIRECT_SOURCE_ID = 'direct-usdc';
 const JUPITER_SOURCE_ID = 'jupiter';
 const SANCTUM_SOURCE_ID = 'sanctum';
 const WORMHOLE_SOURCE_ID = 'wormhole';
+const STUB_SOURCE_ID = 'stub-stablecoin';
 
 const DEFAULT_SLIPPAGE_BPS = 50;
+const STUB_DEFAULT_TTL_MS = 60_000;
 
 // ── Direct stablecoin (no swap) source ────────────────────────────────────
 
@@ -55,6 +59,58 @@ export function createDirectStablecoinSource(): QuoteSource {
         estimatedCostUsd: request.usdAmount,
         slippageBps: 0,
         warnings: [],
+      };
+    },
+  };
+}
+
+// ── Synthetic stub stablecoin source ──────────────────────────────────────
+// Deterministic 1:1 USD→USDC fallback. Useful while real adapter sources are
+// being wired up, and as a safety net so the router always returns a route
+// for USDC settlements. Never reads from the network.
+
+export interface StubStablecoinSourceOptions {
+  slippageBps?: number;
+  estimatedFeeUsd?: string;
+  ttlMs?: number;
+  fixedUsdcMint?: string;
+}
+
+export function createStubStablecoinSource(options: StubStablecoinSourceOptions = {}): QuoteSource {
+  const slippageBps = options.slippageBps ?? DEFAULT_SLIPPAGE_BPS;
+  const feeUsd = options.estimatedFeeUsd ?? '0';
+  const ttlMs = options.ttlMs ?? STUB_DEFAULT_TTL_MS;
+  return {
+    id: STUB_SOURCE_ID,
+    async quote({ request, now }: QuoteContext): Promise<SettlementRoute | null> {
+      const targetMint = options.fixedUsdcMint
+        ?? request.targetMint
+        ?? defaultUsdcMint(request.cluster as SupportedCluster | undefined);
+      if (!isUsdcMint(targetMint)) return null;
+      let amountRaw: string;
+      try {
+        amountRaw = decimalUsdToRaw(request.usdAmount, 6);
+      } catch {
+        return null;
+      }
+      const expiresAtIso = new Date(now().getTime() + ttlMs).toISOString();
+      const estimatedCostUsd = addDecimalStrings(request.usdAmount, feeUsd);
+      return {
+        sourceId: STUB_SOURCE_ID,
+        label: 'Deterministic stub (1:1 USD→USDC)',
+        hops: [
+          {
+            kind: 'direct',
+            mint: targetMint,
+            amountRaw,
+            decimals: 6,
+          },
+        ],
+        expectedUsdOut: request.usdAmount,
+        estimatedCostUsd,
+        slippageBps,
+        expiresAtIso,
+        warnings: ['Synthetic 1:1 quote — no live pricing.'],
       };
     },
   };
@@ -352,39 +408,8 @@ function slippageCostUsd(usdAmount: string, slippageBps: number): string {
     return '0';
   }
   const scaled = applySlippageBps(raw, slippageBps, 'inflate');
-  const slippage = subtractUnsignedDecimalCents(scaled, raw);
-  return rawToUsd(slippage, 8);
-}
-
-function rawToUsd(amountRaw: string, decimals: number): string {
-  if (decimals === 0) return amountRaw;
-  const padded = amountRaw.padStart(decimals + 1, '0');
-  const cut = padded.length - decimals;
-  const whole = padded.slice(0, cut).replace(/^0+(?=\d)/, '') || '0';
-  const frac = padded.slice(cut).replace(/0+$/, '');
-  return frac ? `${whole}.${frac}` : whole;
-}
-
-function subtractUnsignedDecimalCents(a: string, b: string): string {
-  let i = a.length - 1;
-  let j = b.length - 1;
-  let borrow = 0;
-  let result = '';
-  while (i >= 0) {
-    const ai = a.charCodeAt(i) - 48;
-    const bi = j >= 0 ? b.charCodeAt(j) - 48 : 0;
-    let diff = ai - bi - borrow;
-    if (diff < 0) {
-      diff += 10;
-      borrow = 1;
-    } else {
-      borrow = 0;
-    }
-    result = `${diff}${result}`;
-    i--;
-    j--;
-  }
-  return result.replace(/^0+(?=\d)/, '') || '0';
+  const slippage = subtractUnsignedIntegerStrings(scaled, raw);
+  return rawToDecimal(slippage, 8);
 }
 
 function shortMint(mint: string): string {

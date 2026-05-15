@@ -1,6 +1,6 @@
 import { createHash, randomUUID } from 'node:crypto';
 
-import { RECEIPT_VERSION } from './constants.js';
+import { RECEIPT_SCHEMA, RECEIPT_VERSION } from './constants.js';
 import { AcpReceiptError } from './errors.js';
 import type { AcpCart, AcpReceipt } from './types.js';
 
@@ -20,6 +20,7 @@ export function buildAcpOutboundReceipt(input: BuildAcpOutboundReceiptInput): Ac
   }
   const cartHash = hashCart(input.cart);
   return Object.freeze({
+    schema: RECEIPT_SCHEMA,
     receiptVersion: RECEIPT_VERSION,
     receiptId: `acp_rcpt_${randomUUID()}`,
     cartId: input.cart.id,
@@ -29,11 +30,13 @@ export function buildAcpOutboundReceipt(input: BuildAcpOutboundReceiptInput): Ac
     settledAt,
     amount: input.cart.totalAmount,
     token: input.cart.paymentToken,
+    ...(input.cart.paymentTokenMint !== undefined ? { paymentTokenMint: input.cart.paymentTokenMint } : {}),
     recipient: input.cart.merchant.recipient,
     cluster: input.cart.cluster,
     merchant: input.cart.merchant,
     lineItems: input.cart.lineItems,
     ...(input.cart.memo !== undefined ? { memo: input.cart.memo } : {}),
+    ...(input.cart.metadata !== undefined ? { metadata: input.cart.metadata } : {}),
   });
 }
 

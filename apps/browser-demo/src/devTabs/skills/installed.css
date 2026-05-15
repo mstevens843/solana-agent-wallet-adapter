@@ -1,0 +1,307 @@
+.skills-installed-root {
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+  padding: 24px 28px;
+  background: rgba(255, 255, 255, 0.024);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+}
+
+.skills-installed-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+  flex-wrap: wrap;
+}
+
+.skills-installed-header h2 {
+  font-size: 1.25rem;
+  margin: 0 0 4px;
+  letter-spacing: -0.01em;
+}
+
+.skills-installed-header p {
+  color: var(--muted);
+  font-size: 0.92rem;
+  line-height: 1.45;
+  margin: 0;
+  max-width: 60ch;
+}
+
+.skills-installed-header-actions {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+
+.skills-installed-spinner {
+  display: inline-block;
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  border: 2px solid rgba(255, 255, 255, 0.18);
+  border-top-color: var(--accent-2);
+  animation: skills-installed-spin 0.8s linear infinite;
+}
+
+@keyframes skills-installed-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+.skills-installed-banner {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 11px 14px;
+  border-radius: 10px;
+  font-size: 0.9rem;
+  line-height: 1.45;
+}
+
+.skills-installed-banner strong {
+  display: block;
+  margin-bottom: 2px;
+}
+
+.skills-installed-banner.is-error,
+.skills-installed-banner.is-action-error {
+  background: var(--danger-soft);
+  border: 1px solid rgba(239, 111, 120, 0.28);
+  color: #fecaca;
+}
+
+.skills-installed-banner.is-forbidden,
+.skills-installed-banner.is-not-deployed {
+  background: var(--accent-soft);
+  border: 1px solid rgba(63, 189, 131, 0.24);
+  color: var(--accent-2);
+}
+
+.skills-installed-banner .dismiss {
+  background: transparent;
+  border: none;
+  color: inherit;
+  cursor: pointer;
+  font-size: 1.1rem;
+  line-height: 1;
+  padding: 0 4px;
+  opacity: 0.7;
+}
+
+.skills-installed-banner .dismiss:hover {
+  opacity: 1;
+}
+
+.skills-installed-loading,
+.skills-installed-empty {
+  color: var(--muted);
+  font-size: 0.95rem;
+  padding: 28px 8px;
+  text-align: center;
+}
+
+.skills-installed-empty .skills-installed-empty-link {
+  color: var(--accent-2);
+  background: none;
+  border: none;
+  cursor: pointer;
+  font: inherit;
+  padding: 0;
+  margin-left: 4px;
+  text-decoration: underline;
+}
+
+.skills-installed-grid {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.skills-installed-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1.7fr) auto minmax(0, 1.2fr) auto auto;
+  align-items: center;
+  gap: 14px;
+  padding: 14px 16px;
+  background: rgba(0, 0, 0, 0.2);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  transition: opacity 120ms ease;
+}
+
+.skills-installed-row.is-busy {
+  opacity: 0.55;
+  pointer-events: none;
+}
+
+.skills-installed-row-name {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.skills-installed-row-name strong {
+  font-size: 0.98rem;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+  color: var(--text);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.skills-installed-row-name .skills-installed-row-id {
+  color: var(--dim);
+  font-size: 0.72rem;
+  font-variant-numeric: tabular-nums;
+}
+
+.skills-installed-row-status {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 10px;
+  border-radius: 999px;
+  font-size: 0.74rem;
+  font-weight: 600;
+  letter-spacing: 0.03em;
+  text-transform: uppercase;
+}
+
+.skills-installed-row-status.is-active {
+  background: var(--accent-soft);
+  border: 1px solid rgba(63, 189, 131, 0.32);
+  color: var(--accent-2);
+}
+
+.skills-installed-row-status.is-paused {
+  background: rgba(214, 168, 79, 0.1);
+  border: 1px solid rgba(214, 168, 79, 0.32);
+  color: var(--warn);
+}
+
+.skills-installed-row-status.is-expired {
+  background: rgba(255, 255, 255, 0.04);
+  border: 1px solid var(--line);
+  color: var(--muted);
+}
+
+.skills-installed-row-status.is-revoked {
+  background: var(--danger-soft);
+  border: 1px solid rgba(239, 111, 120, 0.32);
+  color: #fecaca;
+}
+
+.skills-installed-row-meta {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  color: var(--muted);
+  font-size: 0.82rem;
+  line-height: 1.35;
+  min-width: 0;
+}
+
+.skills-installed-row-meta .skills-installed-row-schedule {
+  color: var(--text);
+  font-weight: 500;
+}
+
+.skills-installed-row-runs {
+  color: var(--text);
+  font-size: 0.82rem;
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+}
+
+.skills-installed-row-runs .skills-installed-row-runs-label {
+  display: block;
+  color: var(--dim);
+  font-size: 0.7rem;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.skills-installed-row-actions {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+  justify-content: flex-end;
+}
+
+.skills-installed-button {
+  appearance: none;
+  -webkit-appearance: none;
+  border: 1px solid var(--line-strong);
+  background: transparent;
+  color: var(--text);
+  padding: 6px 12px;
+  border-radius: 999px;
+  font-size: 0.84rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background 120ms ease, opacity 120ms ease, transform 120ms ease;
+}
+
+.skills-installed-button:hover {
+  background: rgba(255, 255, 255, 0.04);
+}
+
+.skills-installed-button:active {
+  transform: translateY(1px);
+}
+
+.skills-installed-button[disabled] {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.skills-installed-button.is-primary {
+  background: var(--accent);
+  border-color: transparent;
+  color: #0a1c12;
+}
+
+.skills-installed-button.is-primary:hover {
+  background: var(--accent);
+  opacity: 0.92;
+}
+
+.skills-installed-button.is-danger {
+  border-color: rgba(239, 111, 120, 0.42);
+  color: #fecaca;
+}
+
+.skills-installed-button.is-danger:hover {
+  background: rgba(239, 111, 120, 0.08);
+}
+
+.skills-installed-button.is-confirming {
+  background: rgba(239, 111, 120, 0.1);
+  border-color: rgba(239, 111, 120, 0.6);
+  color: #fecaca;
+}
+
+@media (max-width: 700px) {
+  .skills-installed-root {
+    padding: 18px 16px;
+  }
+  .skills-installed-row {
+    grid-template-columns: 1fr;
+    gap: 8px;
+  }
+  .skills-installed-row-runs {
+    text-align: left;
+  }
+  .skills-installed-row-actions {
+    justify-content: flex-start;
+    flex-wrap: wrap;
+  }
+}

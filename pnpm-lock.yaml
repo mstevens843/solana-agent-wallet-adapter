@@ -133,15 +133,30 @@ importers:
 
   apps/render-web:
     dependencies:
+      '@solana-agent-wallet-adapter/a2a-agent-card':
+        specifier: workspace:*
+        version: link:../../packages/a2a-agent-card
       '@solana-agent-wallet-adapter/acp-adapter':
         specifier: workspace:*
         version: link:../../packages/acp-adapter
       '@solana-agent-wallet-adapter/ap2-adapter':
         specifier: workspace:*
         version: link:../../packages/ap2-adapter
+      '@solana-agent-wallet-adapter/bridge-router':
+        specifier: workspace:*
+        version: link:../../packages/bridge-router
+      '@solana-agent-wallet-adapter/launch-skills':
+        specifier: workspace:*
+        version: link:../../packages/launch-skills
       '@solana-agent-wallet-adapter/mcp-server':
         specifier: workspace:*
         version: link:../../packages/mcp-server
+      '@solana-agent-wallet-adapter/signals-runtime':
+        specifier: workspace:*
+        version: link:../../packages/signals-runtime
+      '@solana-agent-wallet-adapter/skills-runtime':
+        specifier: workspace:*
+        version: link:../../packages/skills-runtime
       '@solana-agent-wallet-adapter/workflow':
         specifier: workspace:*
         version: link:../../packages/workflow
@@ -254,6 +269,19 @@ importers:
       '@types/qrcode':
         specifier: ^1.5.6
         version: 1.5.6
+      typescript:
+        specifier: ^5.6.0
+        version: 5.9.3
+      vitest:
+        specifier: ^2.1.0
+        version: 2.1.9(@types/node@22.19.17)(terser@5.46.2)
+
+  packages/launch-skills:
+    dependencies:
+      '@solana-agent-wallet-adapter/workflow':
+        specifier: workspace:*
+        version: link:../workflow
+    devDependencies:
       typescript:
         specifier: ^5.6.0
         version: 5.9.3
@@ -378,6 +406,48 @@ importers:
         specifier: ^2.1.0
         version: 2.1.9(@types/node@22.19.17)(terser@5.46.2)
 
+  packages/signals-runtime:
+    dependencies:
+      '@solana-agent-wallet-adapter/workflow':
+        specifier: workspace:*
+        version: link:../workflow
+    devDependencies:
+      typescript:
+        specifier: ^5.6.0
+        version: 5.9.3
+      vitest:
+        specifier: ^2.1.0
+        version: 2.1.9(@types/node@22.19.17)(terser@5.46.2)
+
+  packages/skills-cli:
+    dependencies:
+      '@solana-agent-wallet-adapter/skills-runtime':
+        specifier: workspace:*
+        version: link:../skills-runtime
+      '@solana-agent-wallet-adapter/workflow':
+        specifier: workspace:*
+        version: link:../workflow
+    devDependencies:
+      typescript:
+        specifier: ^5.6.0
+        version: 5.9.3
+      vitest:
+        specifier: ^2.1.0
+        version: 2.1.9(@types/node@22.19.17)(terser@5.46.2)
+
+  packages/skills-runtime:
+    dependencies:
+      '@solana-agent-wallet-adapter/workflow':
+        specifier: workspace:*
+        version: link:../workflow
+    devDependencies:
+      typescript:
+        specifier: ^5.6.0
+        version: 5.9.3
+      vitest:
+        specifier: ^2.1.0
+        version: 2.1.9(@types/node@22.19.17)(terser@5.46.2)
+
   packages/solana-agent-kit:
     dependencies:
       '@solana-agent-wallet-adapter/core':
@@ -443,6 +513,9 @@ importers:
 
   packages/workflow:
     dependencies:
+      '@solana-agent-wallet-adapter/acp-adapter':
+        specifier: workspace:*
+        version: link:../acp-adapter
       '@solana-agent-wallet-adapter/ap2-adapter':
         specifier: workspace:*
         version: link:../ap2-adapter

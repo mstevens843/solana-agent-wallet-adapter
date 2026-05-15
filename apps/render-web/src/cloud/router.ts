@@ -357,11 +357,14 @@ export function createCloudApiRouter(options: CloudApiRouterOptions = {}): Cloud
     options.statelessConnectorPreparer ??
     createStatelessConnectorPreparer(secretsLoader ? { secretsLoader } : {});
   const statelessConnectorReader = options.statelessConnectorReader ?? createStatelessConnectorFactsReader();
+  const evidenceStore = isEvidenceStore(store) ? store : evidenceStoreAdapterForCloudStore(store);
   const workflowApiHandler = createWorkflowApiHandler({
     service: workflowService,
+    store: workflowStore,
+    evidenceStore,
+    clock,
     getSession: sessionResolver,
   });
-  const evidenceStore = isEvidenceStore(store) ? store : evidenceStoreAdapterForCloudStore(store);
   const evidenceApiHandler = createEvidenceApiHandler({
     store: evidenceStore,
     getSession: sessionResolver,

@@ -10,5 +10,7 @@
 import './payOut.js';
 import './externalAgents.js';
 import './agentCard.js';
+import './skills.js';
 import '../devBadges/ap2Verified.js';
+import '../devBadges/acpOutbound.js';
 export {};

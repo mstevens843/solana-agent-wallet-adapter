@@ -128,4 +128,76 @@ describe('validateAgentCard', () => {
     expect(result.valid).toBe(false);
     expect(result.errors.some((e) => e.includes('contactEmail'))).toBe(true);
   });
+
+  it('rejects empty supportedProtocols', () => {
+    const broken = { ...sampleCard, supportedProtocols: [] };
+    const result = validateAgentCard(broken);
+    expect(result.valid).toBe(false);
+    expect(result.errors.some((e) => e.includes('$.supportedProtocols'))).toBe(true);
+  });
+
+  it('rejects duplicate supportedTokens (case-insensitive)', () => {
+    const broken = { ...sampleCard, supportedTokens: ['USDC', 'usdc'] };
+    const result = validateAgentCard(broken);
+    expect(result.valid).toBe(false);
+    expect(result.errors.some((e) => e.includes('duplicate token'))).toBe(true);
+  });
+
+  it('rejects provider with non-https url', () => {
+    const broken = {
+      ...sampleCard,
+      provider: { organization: 'Agentic Signer', url: 'ftp://example.com' },
+    };
+    const result = validateAgentCard(broken);
+    expect(result.valid).toBe(false);
+    expect(result.errors.some((e) => e.includes('$.provider.url'))).toBe(true);
+  });
+
+  it('rejects provider with missing organization', () => {
+    const broken = {
+      ...sampleCard,
+      provider: { organization: '', url: 'https://agentic-signer.com' },
+    };
+    const result = validateAgentCard(broken);
+    expect(result.valid).toBe(false);
+    expect(result.errors.some((e) => e.includes('$.provider.organization'))).toBe(true);
+  });
+
+  it('rejects walletAddress at 31 chars (below min)', () => {
+    const broken = { ...sampleCard, walletAddress: '4fTq' + 'a'.repeat(27) }; // 31 total
+    const result = validateAgentCard(broken);
+    expect(broken.walletAddress.length).toBe(31);
+    expect(result.valid).toBe(false);
+    expect(result.errors.some((e) => e.includes('walletAddress'))).toBe(true);
+  });
+
+  it('accepts walletAddress at 32 chars (min boundary)', () => {
+    const card = {
+      ...sampleCard,
+      walletAddress: '4fTq' + 'a'.repeat(28), // 32 total, all base58
+    };
+    expect(card.walletAddress.length).toBe(32);
+    const result = validateAgentCard(card);
+    expect(result.errors.filter((e) => e.includes('walletAddress'))).toEqual([]);
+  });
+
+  it('rejects walletAddress at 45 chars (above max)', () => {
+    const broken = { ...sampleCard, walletAddress: '4fTq' + 'a'.repeat(41) }; // 45 total
+    const result = validateAgentCard(broken);
+    expect(broken.walletAddress.length).toBe(45);
+    expect(result.valid).toBe(false);
+    expect(result.errors.some((e) => e.includes('walletAddress'))).toBe(true);
+  });
+
+  it('rejects malformed skill.examples (non-string array)', () => {
+    const broken = {
+      ...sampleCard,
+      skills: [
+        { id: 's.one', name: 'One', description: 'd', tags: ['t'], examples: 'not-an-array' },
+      ],
+    };
+    const result = validateAgentCard(broken);
+    expect(result.valid).toBe(false);
+    expect(result.errors.some((e) => e.includes('skills[0].examples'))).toBe(true);
+  });
 });

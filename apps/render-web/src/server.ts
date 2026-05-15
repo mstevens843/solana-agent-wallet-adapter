@@ -11,7 +11,11 @@ import {
 
 import { redactSecrets } from './cloud/redaction.js';
 import { createCloudApiRouter, type CloudApiRouter, type CloudApiRouterOptions } from './cloud/router.js';
+import { listPublicSsrHandlers, type PublicSsrContext } from './cloud/publicSsrRegistry.js';
+// Side-effect import: each Layer 2 SSR module self-registers on load.
+import './cloud/publicSsrHandlers.js';
 import { assertProductionConfig, createRuntimeWorkflowStore } from './cloud/runtimeStore.js';
+import { systemClock } from './cloud/store.js';
 
 const DEFAULT_HOST = '0.0.0.0';
 const DEFAULT_PORT = 3000;
@@ -51,6 +55,19 @@ async function handleRequest(
   setCommonHeaders(req, res);
 
   try {
+    // Layer 2 public SSR routes (e.g. /u/:wallet, /skills/:id) run before
+    // /api/ dispatch and SPA fallback. Handlers enforce their own visibility.
+    if (req.method === 'GET' || req.method === 'HEAD') {
+      const ssrCtx: PublicSsrContext = { store: apiRouter.store, clock: systemClock };
+      for (const handler of listPublicSsrHandlers()) {
+        const match = url.pathname.match(handler.pattern);
+        if (match) {
+          const handled = await handler.handle(req, res, match, ssrCtx);
+          if (handled) return;
+        }
+      }
+    }
+
     if (url.pathname.startsWith('/api/')) {
       await apiRouter.handle(req, res, url);
       return;

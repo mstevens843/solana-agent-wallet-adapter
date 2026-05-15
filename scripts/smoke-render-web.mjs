@@ -13,6 +13,8 @@ import {
   workflowFinalizationProofMessage as sharedWorkflowFinalizationProofMessage,
 } from '../packages/workflow/dist/index.js';
 
+import { canonicalize as ap2Canonicalize } from '../packages/ap2-adapter/dist/verifier.js';
+
 import { publicAppRoutes } from './public-routes.mjs';
 
 const DEFAULT_RENDER_ORIGIN = 'https://agentic-signer.com';
@@ -36,6 +38,8 @@ async function main() {
       await verifyWorkflowSmoke({ requireLocalBridge: options.requireLocalBridge });
     } else if (options.mode === 'ap2') {
       await verifyAp2Smoke({ live: options.ap2Live, liveOrigin: options.liveOrigin });
+    } else if (options.mode === 'skills') {
+      await verifySkillsSmoke({ live: options.skillsLive, liveOrigin: options.liveOrigin });
     } else {
       await verifyLocalRender();
     }
@@ -54,6 +58,7 @@ function parseArgs(rawArgs) {
     mode: 'local',
     requireLocalBridge: false,
     ap2Live: false,
+    skillsLive: false,
   };
   const setMode = (mode, flag) => {
     if (parsed.mode !== 'local' && parsed.mode !== mode) {
@@ -72,9 +77,18 @@ function parseArgs(rawArgs) {
       setMode('layout', arg);
     } else if (arg === '--ap2') {
       setMode('ap2', arg);
+    } else if (arg === '--skills') {
+      setMode('skills', arg);
     } else if (arg === '--live') {
       if (parsed.mode === 'ap2') {
         parsed.ap2Live = true;
+        const candidate = normalized[index + 1];
+        if (candidate && !candidate.startsWith('-')) {
+          parsed.liveOrigin = candidate;
+          index += 1;
+        }
+      } else if (parsed.mode === 'skills') {
+        parsed.skillsLive = true;
         const candidate = normalized[index + 1];
         if (candidate && !candidate.startsWith('-')) {
           parsed.liveOrigin = candidate;
@@ -99,7 +113,10 @@ function parseArgs(rawArgs) {
     throw new Error('--require-local-bridge can only be used with --workflow.');
   }
   if (parsed.ap2Live && parsed.mode !== 'ap2') {
-    throw new Error('--live can only modify --ap2 (or be used as a standalone mode).');
+    throw new Error('--live can only modify --ap2/--skills (or be used as a standalone mode).');
+  }
+  if (parsed.skillsLive && parsed.mode !== 'skills') {
+    throw new Error('--live can only modify --ap2/--skills (or be used as a standalone mode).');
   }
   return parsed;
 }
@@ -113,6 +130,8 @@ function printUsage() {
   pnpm smoke:render-web -- --live [origin]
   pnpm smoke:render-web -- --ap2
   pnpm smoke:render-web -- --ap2 --live [origin]
+  pnpm smoke:render-web -- --skills
+  pnpm smoke:render-web -- --skills --live [origin]
 
 Modes:
   default                 Build-output route smoke against local Render server.
@@ -120,10 +139,12 @@ Modes:
   --workflow              End-to-end cloud/browser workflow release smoke.
   --live [origin]         Content-type smoke against a deployed origin.
   --ap2                   End-to-end AP2 inbound smoke against a local Render server.
+  --skills                End-to-end Skills Layer 2 smoke against a local in-process Render server.
 
 Options:
   --require-local-bridge  Also require a real bridge at AGENTIC_BRIDGE_URL.
   --live (with --ap2)     Thin live-mode probe of the deployed AP2 surfaces.
+  --live (with --skills)  Thin live-mode probe of deployed Skills public surfaces.
   -h, --help              Show this help.
 `);
 }
@@ -1233,6 +1254,8 @@ async function verifyLiveRender(origin) {
 }
 
 const AP2_SMOKE_USDC_MINT = 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v';
+const AP2_SMOKE_SOL_MINT = 'So11111111111111111111111111111111111111112';
+const SKILLS_SMOKE_FRIDAY_TICK = '2026-05-15T14:00:00.000Z';
 
 async function verifyAp2Smoke({ live, liveOrigin }) {
   if (live) {
@@ -1240,6 +1263,133 @@ async function verifyAp2Smoke({ live, liveOrigin }) {
     return;
   }
   await verifyAp2LocalSmoke();
+}
+
+async function verifySkillsSmoke({ live, liveOrigin }) {
+  if (live) {
+    await verifySkillsLiveSmoke(liveOrigin);
+    return;
+  }
+
+  const wallet = createTestWallet();
+  await withDevLayerEnv(wallet.walletAddress, async () => {
+    await withLocalServerInProcess(async ({ origin, store }) => {
+      const session = await createSignedSession(origin, wallet);
+      const catalog = await apiJson(origin, '/api/skills', { cookie: session.cookie });
+      const skills = arrayPayload(catalog.skills);
+      const fridayDca = skills.find((entry) => entry?.id === 'friday-dca');
+      assert(fridayDca, 'GET /api/skills did not include friday-dca');
+      console.log('[smoke-render-web] PASS Skills catalog includes friday-dca.');
+
+      const installResponse = await apiJson(origin, '/api/skills/installs', {
+        method: 'POST',
+        cookie: session.cookie,
+        body: {
+          skillId: fridayDca.id,
+          manifestVersion: fridayDca.version,
+          acceptMonetization: false,
+          caps: {
+            perRunMaxAmount: '50',
+            lifetimeMaxAmount: '50',
+            allowlistedTokens: arrayPayload(fridayDca.caps?.allowlistedTokens),
+          },
+        },
+      });
+      const install = requiredObject(installResponse.install, 'skill install');
+      assert(install.skillId === 'friday-dca', `install skillId was ${install.skillId}`);
+      console.log(`[smoke-render-web] PASS installed friday-dca as ${install.id}.`);
+
+      const { runSkillsExecuteTick } = await import(pathToFileURL(join(process.cwd(), 'apps/render-web/dist/cloud/skillExecutorService.js')).href);
+      const executeResult = await runSkillsExecuteTick({
+        store,
+        clock: { now: () => new Date(SKILLS_SMOKE_FRIDAY_TICK) },
+      });
+      if (executeResult.proposed !== 1) {
+        const auditEvents = await store.forWallet(wallet.walletAddress).listAuditEvents();
+        const lastSkillAudit = auditEvents.filter((entry) => String(entry.type ?? '').startsWith('skill.')).at(-1);
+        const reason = lastSkillAudit?.metadata?.reason ? `; last skill audit reason=${lastSkillAudit.metadata.reason}` : '';
+        const stage = lastSkillAudit?.metadata?.stage ? `; stage=${lastSkillAudit.metadata.stage}` : '';
+        throw new Error(`skills execute proposed=${executeResult.proposed}, expected 1${reason}${stage}`);
+      }
+      const executions = await store.listSkillExecutionsForSkill('friday-dca');
+      assert(executions.length === 1, `expected one skill execution, found ${executions.length}`);
+      const pendingExecution = executions[0];
+      assert(pendingExecution?.approvalRequestId, 'skill execution did not link an approval request');
+      console.log(`[smoke-render-web] PASS skills executor proposed approval ${pendingExecution.approvalRequestId}.`);
+
+      const inbox = await apiJson(origin, '/api/approvals', { cookie: session.cookie });
+      const approval = arrayPayload(inbox.approvals).find((entry) => entry?.id === pendingExecution.approvalRequestId);
+      assert(approval, `approval ${pendingExecution.approvalRequestId} did not appear in inbox`);
+      await apiJson(origin, `/api/approvals/${encodeURIComponent(approval.id)}/wallet-execution`, {
+        method: 'POST',
+        cookie: session.cookie,
+        body: {
+          ...decisionProofBody(approval, 'approved', wallet),
+          txid: `skills_smoke_${approval.id}`,
+          txStatus: 'confirmed',
+          explorerUrl: `https://solscan.io/tx/skills_smoke_${approval.id}`,
+          note: 'Approved in Skills Layer 2 smoke.',
+          metadata: { transactionBoundary: 'skills_smoke_wallet_execution' },
+        },
+      });
+      console.log(`[smoke-render-web] PASS wallet-executed skill approval ${approval.id}.`);
+
+      const completedExecutions = await store.listSkillExecutionsForSkill('friday-dca');
+      const completedExecution = completedExecutions.find((entry) => entry.id === pendingExecution.id);
+      assert(completedExecution?.result === 'success', `skill execution result=${completedExecution?.result}`);
+      assert(completedExecution.evidenceReceiptId, 'skill execution did not link an evidence receipt');
+      const evidence = await apiJson(origin, '/api/evidence', { cookie: session.cookie });
+      const receipt = arrayPayload(evidence.receipts).find((entry) => entry?.id === completedExecution.evidenceReceiptId);
+      assert(receipt, `evidence receipt ${completedExecution.evidenceReceiptId} was not listed`);
+      assert(receipt.verified === true, 'skill evidence receipt was not verified');
+      console.log(`[smoke-render-web] PASS skill evidence receipt ${receipt.id} was written.`);
+
+      const { runAggregatorRoll } = await import(pathToFileURL(join(process.cwd(), 'apps/render-web/dist/cloud/aggregatorJob.js')).href);
+      const rollResult = await runAggregatorRoll({
+        store,
+        clock: { now: () => new Date('2026-05-15T14:05:00.000Z') },
+      });
+      assert(rollResult.skillSnapshots >= 1, `aggregator skillSnapshots=${rollResult.skillSnapshots}`);
+      const statsResponse = await apiJson(origin, '/api/aggregator/skills/friday-dca');
+      const stats = requiredObject(statsResponse.snapshot, 'friday-dca stats snapshot');
+      assert(stats.totalExecutions >= 1, `friday-dca totalExecutions=${stats.totalExecutions}`);
+      assert(stats.successRate === 1, `friday-dca successRate=${stats.successRate}`);
+      console.log('[smoke-render-web] PASS aggregator reports friday-dca execution.');
+
+      const profileResponse = await fetch(`${origin}/u/${encodeURIComponent(wallet.walletAddress)}`);
+      const profileHtml = await profileResponse.text();
+      assert(profileResponse.status === 200, `/u/${wallet.walletAddress} returned HTTP ${profileResponse.status}: ${snippet(profileHtml)}`);
+      assert(/text\/html/i.test(profileResponse.headers.get('content-type') ?? ''), 'profile route did not return HTML');
+      assert(profileHtml.includes('friday-dca'), 'profile HTML did not list friday-dca');
+      console.log(`[smoke-render-web] PASS public profile /u/${wallet.walletAddress} lists friday-dca.`);
+
+      console.log('[smoke-render-web] PASS Skills Layer 2 smoke completed.');
+    });
+  });
+}
+
+async function verifySkillsLiveSmoke(origin) {
+  const base = origin.replace(/\/+$/, '');
+  await verifyHostedAiStatus(`${base}/api/ai/status`);
+  await verifyJsonSession(`${base}/api/session`);
+  await verifyJsonApiRoute(`${base}/api/skills`, [200, 401, 403]);
+
+  const skillUrl = `${base}/skills/friday-dca`;
+  const response = await fetch(skillUrl);
+  const contentType = response.headers.get('content-type') ?? '';
+  const raw = await response.text();
+  if (!response.ok) throw new Error(`${skillUrl} returned HTTP ${response.status}: ${snippet(raw)}`);
+  if (!/text\/html/i.test(contentType)) {
+    throw new Error(`${skillUrl} returned ${contentType || 'missing content-type'} instead of text/html.`);
+  }
+  if (!raw.includes('Friday DCA')) throw new Error(`${skillUrl} did not render the Friday DCA launch skill.`);
+  if (!raw.includes('/app#skills/install/friday-dca')) {
+    throw new Error(`${skillUrl} did not include the skill install deep link.`);
+  }
+  if (!raw.includes(`${base}/skills/friday-dca`)) {
+    throw new Error(`${skillUrl} did not include the configured canonical origin.`);
+  }
+  console.log(`[smoke-render-web] PASS ${skillUrl} returned launch skill SSR HTML.`);
 }
 
 async function verifyAp2LocalSmoke() {
@@ -1252,8 +1402,9 @@ async function verifyAp2LocalSmoke() {
         recipient: wallet.walletAddress,
         agentKey,
         agentLabel: 'Smoke Operator',
-        amount: '1.0',
-        tokenMint: AP2_SMOKE_USDC_MINT,
+        amount: '0.01',
+        tokenMint: AP2_SMOKE_SOL_MINT,
+        tokenSymbol: 'SOL',
         memo: 'Headline AP2 smoke',
       });
 
@@ -1263,7 +1414,7 @@ async function verifyAp2LocalSmoke() {
         body: inboundBody,
       });
       if (inboundResponse.status === 404) {
-        throw new Error('POST /api/ap2/inbound returned HTTP 404 — Agent 5 routes have not landed yet. Re-run after ap2Routes.ts is merged.');
+        throw new Error('POST /api/ap2/inbound returned HTTP 404 — the route is not registered on this server. Run `pnpm -F @solana-agent-wallet-adapter/render-web build` and retry.');
       }
       if (inboundResponse.status < 200 || inboundResponse.status >= 300) {
         throw new Error(`POST /api/ap2/inbound returned HTTP ${inboundResponse.status}: ${JSON.stringify(inboundResponse.body)}`);
@@ -1275,13 +1426,16 @@ async function verifyAp2LocalSmoke() {
       console.log(`[smoke-render-web] PASS POST /api/ap2/inbound → inboundId=${inboundId} approvalId=${approvalId}.`);
 
       const list = await apiJson(origin, '/api/ap2/inbound', { cookie: session.cookie });
-      const inboundList = arrayPayload(list.inbound ?? list.records ?? list.items);
-      assert(inboundList.some((entry) => entry && entry.id === inboundId), `GET /api/ap2/inbound did not include new record ${inboundId}`);
+      const inboundList = arrayPayload(list.items ?? list.inbound ?? list.records);
+      const inboundIdMatches = (entry) =>
+        entry && (entry.inboundId === inboundId || entry.id === inboundId || entry.approvalId === approvalId);
+      assert(inboundList.some(inboundIdMatches), `GET /api/ap2/inbound did not include new record ${inboundId}`);
       console.log(`[smoke-render-web] PASS GET /api/ap2/inbound list includes ${inboundId}.`);
 
       const single = await apiJson(origin, `/api/ap2/inbound/${encodeURIComponent(inboundId)}`, { cookie: session.cookie });
-      const singleRecord = requiredObject(single.inbound ?? single.record ?? single, 'ap2 inbound detail');
-      assert(typeof singleRecord.id === 'string' && singleRecord.id === inboundId, `GET /api/ap2/inbound/${inboundId} returned id=${singleRecord.id}`);
+      const singleRecord = requiredObject(single.item ?? single.inbound ?? single.record ?? single, 'ap2 inbound detail');
+      const singleId = singleRecord.inboundId ?? singleRecord.id ?? singleRecord.approvalId;
+      assert(singleId === inboundId, `GET /api/ap2/inbound/${inboundId} returned id=${singleId}`);
       console.log(`[smoke-render-web] PASS GET /api/ap2/inbound/${inboundId} returned matching record.`);
 
       const inbox = await apiJson(origin, '/api/approvals', { cookie: session.cookie });
@@ -1289,16 +1443,9 @@ async function verifyAp2LocalSmoke() {
       assert(approval, `approval ${approvalId} did not appear in /api/approvals inbox`);
       console.log(`[smoke-render-web] PASS approval ${approvalId} materialized into inbox.`);
 
-      await apiJson(origin, `/api/approvals/${encodeURIComponent(approvalId)}/approve`, {
-        method: 'POST',
-        cookie: session.cookie,
-        body: {
-          ...decisionProofBody(approval, 'approved', wallet),
-          note: 'Approved in AP2 smoke.',
-        },
-      });
-      console.log(`[smoke-render-web] PASS approval ${approvalId} approved.`);
-
+      // Money-moving approvals (transfer_sol/transfer_spl) skip the explicit
+      // /approve decision and progress directly through the finalization
+      // chain — the server gates this with HTTP 409 if you try /approve.
       const preview = await apiJson(origin, `/api/approvals/${encodeURIComponent(approvalId)}/finalization/prepare`, {
         method: 'POST',
         cookie: session.cookie,
@@ -1311,13 +1458,14 @@ async function verifyAp2LocalSmoke() {
         cookie: session.cookie,
         body: {
           ...finalizationProofBody(approval, preview, wallet),
+          finalizationId,
           finalizationStatus: 'confirmed',
           txStatus: 'confirmed',
           txid: 'ap2-smoke-tx',
           transactionHash: preview.transactionHash,
           messageHash: preview.messageHash,
-          quoteHash: preview.quoteHash,
-          simulationHash: preview.simulationHash,
+          quoteHash: preview.quote?.quoteHash,
+          simulationHash: preview.simulation?.simulationHash,
           explorerUrl: 'https://explorer.solana.com/tx/ap2-smoke-tx',
           note: 'Finalized in AP2 smoke.',
         },
@@ -1332,9 +1480,26 @@ async function verifyAp2LocalSmoke() {
       if (receiptResponse.status < 200 || receiptResponse.status >= 300) {
         throw new Error(`POST /api/ap2/inbound/${inboundId}/receipt returned HTTP ${receiptResponse.status}: ${JSON.stringify(receiptResponse.body)}`);
       }
-      const receipt = receiptResponse.body ?? {};
+      const receiptBody = receiptResponse.body ?? {};
+      const receipt = receiptBody.receipt ?? receiptBody;
       assert(receipt && typeof receipt === 'object', 'AP2 receipt response was not an object');
-      console.log(`[smoke-render-web] PASS POST /api/ap2/inbound/${inboundId}/receipt produced a receipt object.`);
+      assert(
+        receipt.schema === 'ap2/inbound/0.1',
+        `AP2 receipt schema was ${receipt.schema}, expected ap2/inbound/0.1`,
+      );
+      assert(
+        typeof receipt.artifactHash === 'string' && /^[a-f0-9]{64}$/i.test(receipt.artifactHash),
+        `AP2 receipt artifactHash was not a 64-char hex string: ${receipt.artifactHash}`,
+      );
+      assert(
+        receipt.mandateId === inboundBody.mandate.mandateId,
+        `AP2 receipt mandateId did not round-trip: ${receipt.mandateId} vs ${inboundBody.mandate.mandateId}`,
+      );
+      assert(
+        receipt.approval?.id === approvalId,
+        `AP2 receipt approval.id mismatch: ${receipt.approval?.id} vs ${approvalId}`,
+      );
+      console.log(`[smoke-render-web] PASS POST /api/ap2/inbound/${inboundId}/receipt produced a receipt with schema=${receipt.schema}, mandateId=${receipt.mandateId}.`);
 
       console.log(`[smoke-render-web] PASS AP2 inbound lifecycle: ${inboundId} → ${approvalId} → finalized → receipted.`);
     });
@@ -1345,7 +1510,7 @@ async function verifyAp2LiveSmoke(liveOrigin) {
   const base = liveOrigin.replace(/\/+$/, '');
   const wellKnown = await fetch(`${base}/.well-known/agent.json`);
   if (wellKnown.status === 404) {
-    console.log('[smoke-render-web] SKIP /.well-known/agent.json not yet deployed (Agent 7 pending).');
+    console.log(`[smoke-render-web] SKIP ${base}/.well-known/agent.json is not deployed at this origin yet.`);
   } else {
     const contentType = wellKnown.headers.get('content-type') ?? '';
     const raw = await wellKnown.text();
@@ -1365,7 +1530,7 @@ async function verifyAp2LiveSmoke(liveOrigin) {
 
   const inboundProbe = await fetch(`${base}/api/ap2/inbound`);
   if (inboundProbe.status === 404) {
-    console.log('[smoke-render-web] SKIP /api/ap2/inbound not yet deployed (Agent 5 pending).');
+    console.log(`[smoke-render-web] SKIP ${base}/api/ap2/inbound is not deployed at this origin yet.`);
   } else if (inboundProbe.status === 401 || inboundProbe.status === 403) {
     console.log(`[smoke-render-web] PASS ${base}/api/ap2/inbound rejected unauthenticated caller with HTTP ${inboundProbe.status}.`);
   } else {
@@ -1385,27 +1550,57 @@ function generateAp2AgentKey() {
   };
 }
 
-function createAp2InboundBody({ recipient, agentKey, agentLabel, amount, tokenMint, memo }) {
-  const mandate = {
-    kind: 'ap2_inbound_payment',
-    version: 1,
-    sourceAgentId: agentKey.publicKeyBase58,
-    sourceAgentLabel: agentLabel,
-    recipient,
-    amount,
-    tokenMint,
-    memo,
-    issuedAt: new Date().toISOString(),
-    nonce: randomHex(16),
+function createAp2InboundBody({
+  recipient,
+  agentKey,
+  agentLabel,
+  amount,
+  tokenMint,
+  memo,
+  cluster = 'mainnet-beta',
+  tokenSymbol = 'USDC',
+}) {
+  const mandateId = `smoke-${randomHex(12)}`;
+  const now = new Date();
+  const issuedAt = now.toISOString();
+  const expiresAt = new Date(now.getTime() + 60 * 60_000).toISOString();
+  const intent = {
+    description: memo ?? 'Agent 10 smoke mandate',
+    cap: {
+      amount,
+      tokenSymbol,
+      tokenMint,
+      recipient,
+      cluster,
+      ...(memo ? { memo } : {}),
+    },
   };
-  const canonical = stableJson(mandate);
+  const signedFields = {
+    mandateId,
+    mandateType: 'intent_mandate',
+    protocolVersion: 'ap2/0.1',
+    issuedAt,
+    expiresAt,
+    intent,
+  };
+  const canonical = ap2Canonicalize(signedFields);
   const signatureBytes = signDetached(null, Buffer.from(canonical, 'utf8'), agentKey.privateKey);
-  return {
-    mandate,
-    signature: Buffer.from(signatureBytes).toString('base64'),
-    signatureEncoding: 'base64',
-    canonicalMandate: canonical,
+  const mandate = {
+    mandateId,
+    mandateType: 'intent_mandate',
+    protocolVersion: 'ap2/0.1',
+    issuedAt,
+    expiresAt,
+    agent: {
+      agentId: `smoke-agent-${randomHex(6)}`,
+      agentLabel,
+      publicKey: agentKey.publicKeyBase58,
+    },
+    signature: encodeBase58(signatureBytes),
+    signedFields,
+    intent,
   };
+  return { mandate };
 }
 
 function randomHex(byteLength) {
@@ -1752,6 +1947,27 @@ async function withLocalServer(callback, { mockHostedAi = false } = {}) {
   } finally {
     await terminate(server);
     if (preload) rmSync(preload.dir, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
+  }
+}
+
+async function withLocalServerInProcess(callback) {
+  if (!existsSync(RENDER_SERVER_ENTRY)) {
+    throw new Error(`${RENDER_SERVER_ENTRY} does not exist. Run pnpm -F @solana-agent-wallet-adapter/render-web build before smoke.`);
+  }
+  const serverPort = await freePort();
+  const [{ createRenderWebServer }, { MemoryWorkflowStore }] = await Promise.all([
+    import(pathToFileURL(join(process.cwd(), RENDER_SERVER_ENTRY)).href),
+    import(pathToFileURL(join(process.cwd(), 'apps/render-web/dist/cloud/memoryStore.js')).href),
+  ]);
+  const store = new MemoryWorkflowStore();
+  const server = createRenderWebServer({ store });
+  await listen(server, serverPort);
+  const origin = `http://127.0.0.1:${serverPort}`;
+  try {
+    await waitForHostedAiStatus(`${origin}/api/ai/status`);
+    await callback({ origin, serverPort, store });
+  } finally {
+    await close(server);
   }
 }
 

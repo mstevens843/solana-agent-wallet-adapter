@@ -26,7 +26,7 @@ services:
       - key: SESSION_SECRET
         generateValue: true
       - key: AGENTIC_PUBLIC_ORIGIN
-        value: "https://agentic-seeker.com"
+        value: "https://agentic-signer.com"
       - key: VITE_AGENTIC_DEV_CONTROLS
         value: "false"
       - key: VITE_AGENTIC_GA_MEASUREMENT_ID
@@ -52,6 +52,50 @@ services:
     schedule: "* * * * *"
     buildCommand: pnpm install --frozen-lockfile --ignore-scripts && pnpm -F @solana-agent-wallet-adapter/render-web build
     startCommand: pnpm -F @solana-agent-wallet-adapter/render-web notifications:deliver
+    envVars:
+      - key: SKIP_INSTALL_DEPS
+        value: "true"
+      - key: DATABASE_URL
+        fromDatabase:
+          name: agentic-postgres
+          property: connectionString
+
+  # Layer 2 Skills Hub crons. Dev-gated by allowlist inside the executor; safe
+  # to run on production with no allowlisted wallets (no-op).
+  - type: cron
+    name: agentic-skills-execute
+    runtime: node
+    schedule: "*/5 * * * *"
+    buildCommand: pnpm install --frozen-lockfile --ignore-scripts && pnpm -F @solana-agent-wallet-adapter/render-web build
+    startCommand: pnpm -F @solana-agent-wallet-adapter/render-web skills:execute
+    envVars:
+      - key: SKIP_INSTALL_DEPS
+        value: "true"
+      - key: DATABASE_URL
+        fromDatabase:
+          name: agentic-postgres
+          property: connectionString
+
+  - type: cron
+    name: agentic-aggregator-roll
+    runtime: node
+    schedule: "*/15 * * * *"
+    buildCommand: pnpm install --frozen-lockfile --ignore-scripts && pnpm -F @solana-agent-wallet-adapter/render-web build
+    startCommand: pnpm -F @solana-agent-wallet-adapter/render-web aggregator:roll
+    envVars:
+      - key: SKIP_INSTALL_DEPS
+        value: "true"
+      - key: DATABASE_URL
+        fromDatabase:
+          name: agentic-postgres
+          property: connectionString
+
+  - type: cron
+    name: agentic-signals-fanout
+    runtime: node
+    schedule: "* * * * *"
+    buildCommand: pnpm install --frozen-lockfile --ignore-scripts && pnpm -F @solana-agent-wallet-adapter/render-web build
+    startCommand: pnpm -F @solana-agent-wallet-adapter/render-web signals:fanout
     envVars:
       - key: SKIP_INSTALL_DEPS
         value: "true"

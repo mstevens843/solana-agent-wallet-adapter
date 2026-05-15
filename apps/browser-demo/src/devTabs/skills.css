@@ -1,0 +1,56 @@
+.skills-placeholder {
+  background: rgba(255, 255, 255, 0.024);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  padding: 28px 32px;
+}
+
+.skills-placeholder h2 {
+  font-size: 1.4rem;
+  margin: 0 0 8px;
+}
+
+.skills-placeholder p {
+  color: rgba(196, 205, 202, 0.85);
+  line-height: 1.55;
+  margin: 0 0 14px;
+  max-width: 60ch;
+}
+
+.skills-placeholder-grid {
+  display: grid;
+  gap: 16px;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  margin-top: 24px;
+}
+
+.skills-placeholder-card {
+  background: rgba(0, 0, 0, 0.2);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  padding: 16px 18px;
+}
+
+.skills-placeholder-card strong {
+  color: var(--text);
+  display: block;
+  margin-bottom: 6px;
+}
+
+.skills-placeholder-card span {
+  color: rgba(196, 205, 202, 0.7);
+  font-size: 0.875rem;
+  line-height: 1.45;
+}
+
+.skills-placeholder-tag {
+  background: rgba(255, 255, 255, 0.06);
+  border-radius: 999px;
+  color: rgba(196, 205, 202, 0.85);
+  display: inline-block;
+  font-size: 0.72rem;
+  letter-spacing: 0.04em;
+  margin-bottom: 12px;
+  padding: 3px 9px;
+  text-transform: uppercase;
+}

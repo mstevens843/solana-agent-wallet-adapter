@@ -4,9 +4,24 @@ import pg from 'pg';
 import type { QueryConfig, QueryResult, QueryResultRow } from 'pg';
 import { describe, expect, it } from 'vitest';
 
+import { runAggregatorRoll } from '../cloud/aggregatorJob.js';
+import type { EvidenceReceiptRecord } from '../cloud/evidenceService.js';
+import { migration008SkillsLayer2 } from '../cloud/migrations/008_skills_layer2.js';
+import { migration009SignalSubscriptionActiveUnique } from '../cloud/migrations/009_signal_subscription_active_unique.js';
+import { migration010SkillInstallsReinstallIndex } from '../cloud/migrations/010_skill_installs_reinstall_index.js';
+import { migration011SignalsFanoutHardening } from '../cloud/migrations/011_signals_fanout_hardening.js';
 import { PostgresWorkflowStore, type PgClient, type PgConnection } from '../cloud/postgresStore.js';
 import { RecurringService, type RecurringOccurrenceRecord } from '../cloud/recurringService.js';
-import type { AuthNonceRecord, WalletSessionRecord } from '../cloud/store.js';
+import type {
+  AuthNonceRecord,
+  SkillExecutionStoreRecord,
+  SkillInstallStoreRecord,
+  SkillManifestStoreRecord,
+  SignalEmissionStoreRecord,
+  SignalFeedStoreRecord,
+  SignalSubscriptionStoreRecord,
+  WalletSessionRecord,
+} from '../cloud/store.js';
 import type { ApprovalRequestRecord, PlanDraftRecord } from '../cloud/workflowValidation.js';
 
 const { Pool } = pg;
@@ -28,8 +43,33 @@ describe('postgres workflow store', () => {
     expect(client.connections.at(-1)?.queries.some((query) => query.includes('duplicate_active_plan_approval'))).toBe(true);
     expect(client.connections.at(-1)?.queries.some((query) => query.includes('approval_requests_active_recurring_occurrence_idx'))).toBe(true);
     expect(client.connections.at(-1)?.queries.some((query) => query.includes('duplicate_active_recurring_occurrence_approval'))).toBe(true);
+    expect(client.connections.at(-1)?.queries.some((query) => query.includes('approval_requests_active_signal_fanout_idx'))).toBe(true);
     expect(client.connections[0]?.queries.at(-1)).toBe('COMMIT');
     expect(client.connections[0]?.released).toBe(true);
+  });
+
+  it('uses non-revoked uniqueness for signal subscriptions', () => {
+    expect(migration008SkillsLayer2.sql).not.toContain('UNIQUE (follower_wallet, feed_id)');
+    expect(migration008SkillsLayer2.sql).toContain('signal_subscriptions_active_unique_idx');
+    expect(migration008SkillsLayer2.sql).toContain("WHERE status <> 'revoked'");
+    expect(migration009SignalSubscriptionActiveUnique.sql).toContain(
+      'DROP CONSTRAINT IF EXISTS signal_subscriptions_follower_wallet_feed_id_key',
+    );
+    expect(migration009SignalSubscriptionActiveUnique.sql).toContain("WHERE status <> 'revoked'");
+  });
+
+  it('uses non-revoked uniqueness for skill installs after the follow-up migration', () => {
+    expect(migration010SkillInstallsReinstallIndex.sql).toContain(
+      'DROP CONSTRAINT IF EXISTS skill_installs_wallet_address_skill_id_key',
+    );
+    expect(migration010SkillInstallsReinstallIndex.sql).toContain('skill_installs_wallet_skill_active_idx');
+    expect(migration010SkillInstallsReinstallIndex.sql).toContain("WHERE status <> 'revoked'");
+  });
+
+  it('hardens signal fanout processing state and duplicate approval protection', () => {
+    expect(migration011SignalsFanoutHardening.sql).toContain('fanout_processed_at');
+    expect(migration011SignalsFanoutHardening.sql).toContain('signal_emissions_unprocessed_idx');
+    expect(migration011SignalsFanoutHardening.sql).toContain('approval_requests_active_signal_fanout_idx');
   });
 
   it('persists workflow records across store instances and keeps wallet scope', async () => {
@@ -65,6 +105,129 @@ describe('postgres workflow store', () => {
     expect((await second.listPreferences(walletA)).map((entry) => entry.namespace)).toEqual(['ai-settings']);
   });
 
+  it('persists Layer 2 skill records across store instances', async () => {
+    const client = new FakePgClient();
+    const first = new PostgresWorkflowStore({ client });
+    const second = new PostgresWorkflowStore({ client });
+
+    await first.saveSkillManifest(sampleSkillManifest('friday-dca'));
+    await first.saveSkillInstall(sampleSkillInstall('skill_install_1', walletA, 'friday-dca'));
+    await first.saveSkillExecution(sampleSkillExecution('skill_exec_1', 'skill_install_1', walletA, 'friday-dca'));
+
+    expect(await second.getSkillManifest('friday-dca')).toMatchObject({ id: 'friday-dca' });
+    expect((await second.listSkillManifests()).map((record) => record.id)).toEqual(['friday-dca']);
+    expect((await second.listSkillInstallsForWallet(walletA)).map((record) => record.id)).toEqual(['skill_install_1']);
+    expect(await second.getSkillInstall('skill_install_1')).toMatchObject({ status: 'active' });
+    expect((await second.listActiveSkillInstalls()).map((record) => record.id)).toEqual(['skill_install_1']);
+    expect((await second.listSkillExecutionsByInstall('skill_install_1')).map((record) => record.id)).toEqual(['skill_exec_1']);
+    expect((await second.listSkillExecutionsForSkill('friday-dca')).map((record) => record.id)).toEqual(['skill_exec_1']);
+    expect(await second.listSkillExecutionsForSkill('friday-dca', '2026-05-08T20:01:00.000Z')).toEqual([]);
+
+    await first.saveSkillInstall({
+      ...sampleSkillInstall('skill_install_1', walletA, 'friday-dca'),
+      status: 'revoked',
+      updatedAt: '2026-05-08T20:02:00.000Z',
+    });
+    expect(await second.listActiveSkillInstalls()).toEqual([]);
+  });
+
+  it('runs the aggregator roll against Postgres-backed skills and evidence records', async () => {
+    const client = new FakePgClient();
+    const store = new PostgresWorkflowStore({ client });
+
+    await store.saveSkillManifest(sampleSkillManifest('friday-dca'));
+    await store.saveSkillInstall(sampleSkillInstall('skill_install_1', walletA, 'friday-dca'));
+    await store.saveEvidence(walletA, sampleEvidence('evidence_1', walletA, { gasUsed: '0.001', pnl: '7.5' }));
+    await store.saveSkillExecution(sampleSkillExecution('skill_exec_1', 'skill_install_1', walletA, 'friday-dca', {
+      evidenceReceiptId: 'evidence_1',
+    }));
+
+    const result = await runAggregatorRoll({
+      store,
+      clock: { now: () => new Date('2026-05-08T21:00:00.000Z') },
+    });
+    const skill = await store.getAggregatorSnapshot('skill:friday-dca');
+    const wallet = await store.getAggregatorSnapshot(`wallet:${walletA}`);
+
+    expect(result).toEqual({ skillSnapshots: 1, walletSnapshots: 1 });
+    expect(skill?.snapshot).toMatchObject({
+      skillId: 'friday-dca',
+      installs: 1,
+      totalExecutions: 1,
+      successRate: 1,
+      medianGasUsd: '0.001',
+    });
+    expect(wallet?.snapshot).toMatchObject({
+      walletAddress: walletA,
+      totalExecutions: 1,
+      totalGasUsd: '0.001',
+      totalProfitUsd: '7.5',
+    });
+  });
+
+  it('deletes Layer 2 workspace records and owned aggregator snapshots', async () => {
+    const client = new FakePgClient();
+    const store = new PostgresWorkflowStore({ client });
+    const keptManifest = sampleSkillManifest('kept-skill');
+
+    await store.saveSkillManifest(sampleSkillManifest('friday-dca'));
+    await store.saveSkillManifest({
+      ...keptManifest,
+      authorWallet: walletB,
+      manifest: {
+        ...(keptManifest.manifest as Record<string, unknown>),
+        authorWallet: walletB,
+      },
+    });
+    await store.saveSkillInstall(sampleSkillInstall('skill_install_1', walletA, 'friday-dca'));
+    await store.saveSkillExecution(sampleSkillExecution('skill_exec_1', 'skill_install_1', walletA, 'friday-dca'));
+    await store.saveSignalFeed(signalFeedRecord('feed_1', walletA));
+    await store.saveSignalFeed(signalFeedRecord('feed_keep', walletB));
+    await store.saveSignalSubscription(signalSubscriptionRecord('sub_1', walletA, 'feed_keep'));
+    await store.saveSignalEmission(signalEmissionRecord('emission_1', 'feed_1', walletA));
+    await store.saveAggregatorSnapshot({
+      key: `wallet:${walletA}`,
+      kind: 'wallet',
+      computedAt: '2026-05-08T21:00:00.000Z',
+      snapshot: { walletAddress: walletA, totalExecutions: 1 },
+    });
+    await store.saveAggregatorSnapshot({
+      key: 'skill:friday-dca',
+      kind: 'skill',
+      computedAt: '2026-05-08T21:00:00.000Z',
+      snapshot: { skillId: 'friday-dca', totalExecutions: 1 },
+    });
+    await store.saveAggregatorSnapshot({
+      key: 'skill:kept-skill',
+      kind: 'skill',
+      computedAt: '2026-05-08T21:00:00.000Z',
+      snapshot: { skillId: 'kept-skill', totalExecutions: 1 },
+    });
+
+    const counts = await store.deleteCloudWorkspace(walletA);
+
+    expect(counts).toMatchObject({
+      skillManifests: 1,
+      skillInstalls: 1,
+      skillExecutions: 1,
+      signalFeeds: 1,
+      signalSubscriptions: 1,
+      signalEmissions: 1,
+      aggregatorSnapshots: 2,
+    });
+    expect(await store.getSkillManifest('friday-dca')).toBeUndefined();
+    expect(await store.getSkillManifest('kept-skill')).toMatchObject({ authorWallet: walletB });
+    expect(await store.listSkillInstallsForWallet(walletA)).toEqual([]);
+    expect(await store.listSkillExecutionsByInstall('skill_install_1')).toEqual([]);
+    expect(await store.listSignalFeedsByPublisher(walletA)).toEqual([]);
+    expect(await store.listSignalFeedsByPublisher(walletB)).toHaveLength(1);
+    expect(await store.listSignalSubscriptionsForFollower(walletA)).toEqual([]);
+    expect(await store.listUndeliveredSignalEmissions()).toEqual([]);
+    expect(await store.getAggregatorSnapshot(`wallet:${walletA}`)).toBeUndefined();
+    expect(await store.getAggregatorSnapshot('skill:friday-dca')).toBeUndefined();
+    expect(await store.getAggregatorSnapshot('skill:kept-skill')).toMatchObject({ key: 'skill:kept-skill' });
+  });
+
   it('maps active approval plan uniqueness conflicts to approval_exists', async () => {
     const store = new PostgresWorkflowStore({ client: new FakePgClient() });
 
@@ -98,6 +261,33 @@ describe('postgres workflow store', () => {
       planDraftId: undefined,
       recurringScheduleId: 'recurring_1',
       recurringOccurrenceId: 'occurrence_1',
+    }))).resolves.toBeUndefined();
+  });
+
+  it('maps active signal fanout approval conflicts to approval_exists', async () => {
+    const store = new PostgresWorkflowStore({ client: new FakePgClient() });
+    const metadata = {
+      signalEmissionId: 'emission_1',
+      signalSubscriptionId: 'sub_1',
+    };
+
+    await store.saveApproval(walletA, sampleApproval('approval_1', walletA, {
+      planDraftId: undefined,
+      metadata,
+    }));
+
+    await expect(store.saveApproval(walletA, sampleApproval('approval_2', walletA, {
+      planDraftId: undefined,
+      metadata,
+    }))).rejects.toMatchObject({ code: 'approval_exists' });
+    await expect(store.saveApproval(walletB, sampleApproval('approval_3', walletB, {
+      planDraftId: undefined,
+      metadata,
+    }))).resolves.toBeUndefined();
+    await expect(store.saveApproval(walletA, sampleApproval('approval_4', walletA, {
+      planDraftId: undefined,
+      metadata,
+      status: 'rejected',
     }))).resolves.toBeUndefined();
   });
 
@@ -190,6 +380,48 @@ describe('postgres workflow store', () => {
     expect(second).toMatchObject({ created: false, occurrence: { id: 'occurrence_1' } });
     expect(occurrences).toHaveLength(1);
   });
+
+  it('persists signal feeds, subscriptions, and queued emissions across store instances', async () => {
+    const client = new FakePgClient();
+    const first = new PostgresWorkflowStore({ client });
+    const second = new PostgresWorkflowStore({ client });
+
+    await first.saveSignalFeed(signalFeedRecord('feed_1', walletA));
+
+    expect(await second.getSignalFeed('feed_1')).toMatchObject({
+      id: 'feed_1',
+      publisherWallet: walletA,
+    });
+    expect((await second.listSignalFeedsByPublisher(walletA)).map((feed) => feed.id)).toEqual(['feed_1']);
+    expect(await second.listSignalFeedsByPublisher(walletB)).toEqual([]);
+
+    await first.saveSignalSubscription(signalSubscriptionRecord('sub_1', walletB, 'feed_1'));
+    expect((await second.listSignalSubscriptionsForFollower(walletB)).map((sub) => sub.id)).toEqual(['sub_1']);
+    expect((await second.listSignalSubscriptionsForFeed('feed_1')).map((sub) => sub.id)).toEqual(['sub_1']);
+
+    await first.saveSignalEmission(signalEmissionRecord('emission_1', 'feed_1', walletA));
+    expect((await second.listUndeliveredSignalEmissions()).map((emission) => emission.id)).toEqual(['emission_1']);
+
+    await second.markSignalEmissionFanoutProcessed('emission_1', 1, '2026-05-08T20:05:00.000Z');
+    expect(await first.listUndeliveredSignalEmissions()).toEqual([]);
+    expect(client.signalEmissions.get('emission_1')).toMatchObject({
+      delivered: 1,
+      fanoutProcessedAt: '2026-05-08T20:05:00.000Z',
+    });
+  });
+
+  it('keeps revoked signal subscription history while allowing a fresh subscription row', async () => {
+    const client = new FakePgClient();
+    const store = new PostgresWorkflowStore({ client });
+
+    await store.saveSignalSubscription(signalSubscriptionRecord('sub_old', walletB, 'feed_1', 'revoked'));
+    await store.saveSignalSubscription(signalSubscriptionRecord('sub_new', walletB, 'feed_1', 'active'));
+
+    expect((await store.listSignalSubscriptionsForFollower(walletB)).map((sub) => sub.id).sort()).toEqual([
+      'sub_new',
+      'sub_old',
+    ]);
+  });
 });
 
 const testDatabaseUrl = process.env.TEST_DATABASE_URL;
@@ -242,6 +474,14 @@ interface JsonRow<T> {
   due_at?: string;
 }
 
+function testSignalFanoutMetadataField(
+  record: ApprovalRequestRecord,
+  key: 'signalEmissionId' | 'signalSubscriptionId',
+): string | undefined {
+  const value = record.metadata?.[key];
+  return typeof value === 'string' ? value : undefined;
+}
+
 class FakePgClient implements PgClient {
   readonly nonces = new Map<string, Record<string, unknown>>();
   readonly sessions = new Map<string, Record<string, unknown>>();
@@ -249,6 +489,19 @@ class FakePgClient implements PgClient {
   readonly approvals = new Map<string, JsonRow<ApprovalRequestRecord>>();
   readonly schedules = new Map<string, JsonRow<ReturnType<typeof scheduleRecord>>>();
   readonly occurrences = new Map<string, JsonRow<RecurringOccurrenceRecord>>();
+  readonly evidence = new Map<string, JsonRow<EvidenceReceiptRecord>>();
+  readonly skillManifests = new Map<string, SkillManifestStoreRecord>();
+  readonly skillInstalls = new Map<string, SkillInstallStoreRecord>();
+  readonly skillExecutions = new Map<string, SkillExecutionStoreRecord>();
+  readonly signalFeeds = new Map<string, SignalFeedStoreRecord>();
+  readonly signalSubscriptions = new Map<string, SignalSubscriptionStoreRecord>();
+  readonly signalEmissions = new Map<string, SignalEmissionStoreRecord>();
+  readonly aggregatorSnapshots = new Map<string, {
+    key: string;
+    kind: string;
+    computed_at: string;
+    record: unknown;
+  }>();
   readonly preferences = new Map<string, {
     wallet_address: string;
     namespace: string;
@@ -263,6 +516,11 @@ class FakePgClient implements PgClient {
     const values = query.values ?? [];
 
     switch (name) {
+      case 'BEGIN':
+      case 'COMMIT':
+      case 'ROLLBACK':
+        return result([]);
+
       case 'user.upsert':
         this.userUpserts += 1;
         return result([]);
@@ -376,6 +634,88 @@ class FakePgClient implements PgClient {
         return result(rows);
       }
 
+      case 'evidence.upsert': {
+        const record = JSON.parse(String(values[6])) as EvidenceReceiptRecord;
+        this.evidence.set(record.id, {
+          id: record.id,
+          wallet_address: String(values[1]),
+          status: String(values[3]),
+          created_at: String(values[4]),
+          updated_at: String(values[5]),
+          record,
+        });
+        return result([]);
+      }
+
+      case 'evidence.get': {
+        const row = this.evidence.get(String(values[1]));
+        return result(row && row.wallet_address === values[0] ? [{ record: cloneTest(row.record) }] : []);
+      }
+
+      case 'skill.manifest.upsert': {
+        const record = JSON.parse(String(values[5])) as SkillManifestStoreRecord;
+        this.skillManifests.set(record.id, cloneTest(record));
+        return result([]);
+      }
+
+      case 'skill.manifest.get': {
+        const row = this.skillManifests.get(String(values[0]));
+        return result(row ? [{ record: cloneTest(row) }] : []);
+      }
+
+      case 'skill.manifest.list':
+        return result([...this.skillManifests.values()].map((row) => ({ record: cloneTest(row) })));
+
+      case 'cloudWorkspace.skillManifests.listAuthoredIds':
+        return result([...this.skillManifests.values()]
+          .filter((row) => row.authorWallet === values[0])
+          .map((row) => ({ id: row.id })));
+
+      case 'skill.install.upsert': {
+        const record = JSON.parse(String(values[6])) as SkillInstallStoreRecord;
+        this.skillInstalls.set(record.id, cloneTest(record));
+        return result([]);
+      }
+
+      case 'skill.install.get': {
+        const row = this.skillInstalls.get(String(values[0]));
+        return result(row ? [{ record: cloneTest(row) }] : []);
+      }
+
+      case 'skill.install.listForWallet':
+        return result([...this.skillInstalls.values()]
+          .filter((row) => row.walletAddress === values[0])
+          .map((row) => ({ record: cloneTest(row) })));
+
+      case 'skill.install.listActive':
+        return result([...this.skillInstalls.values()]
+          .filter((row) => row.status === 'active')
+          .map((row) => ({ record: cloneTest(row) })));
+
+      case 'skill.execution.upsert': {
+        const record = JSON.parse(String(values[8])) as SkillExecutionStoreRecord;
+        this.skillExecutions.set(record.id, cloneTest(record));
+        return result([]);
+      }
+
+      case 'skill.execution.listByInstall':
+        return result([...this.skillExecutions.values()]
+          .filter((row) => row.installId === values[0])
+          .map((row) => ({ record: cloneTest(row) })));
+
+      case 'skill.execution.listForSkill':
+        return result([...this.skillExecutions.values()]
+          .filter((row) => row.skillId === values[0])
+          .map((row) => ({ record: cloneTest(row) })));
+
+      case 'skill.execution.listForSkillSince': {
+        const sinceMs = Date.parse(String(values[1]));
+        return result([...this.skillExecutions.values()]
+          .filter((row) => row.skillId === values[0])
+          .filter((row) => Date.parse(row.proposedAt) >= sinceMs)
+          .map((row) => ({ record: cloneTest(row) })));
+      }
+
       case 'approval.upsert': {
         const record = JSON.parse(String(values[6])) as ApprovalRequestRecord;
         const planDraftId = approvalPlanDraftId(record);
@@ -405,6 +745,23 @@ class FakePgClient implements PgClient {
           throw Object.assign(new Error('duplicate key value violates unique constraint "approval_requests_active_recurring_occurrence_idx"'), {
             code: '23505',
             constraint: 'approval_requests_active_recurring_occurrence_idx',
+          });
+        }
+        const signalEmissionId = testSignalFanoutMetadataField(record, 'signalEmissionId');
+        const signalSubscriptionId = testSignalFanoutMetadataField(record, 'signalSubscriptionId');
+        const duplicateSignalFanout = signalEmissionId && signalSubscriptionId && isActiveApprovalStatusForIndex(record.status)
+          ? [...this.approvals.values()].find((entry) => {
+            return entry.wallet_address === values[1] &&
+              entry.id !== record.id &&
+              testSignalFanoutMetadataField(entry.record, 'signalEmissionId') === signalEmissionId &&
+              testSignalFanoutMetadataField(entry.record, 'signalSubscriptionId') === signalSubscriptionId &&
+              isActiveApprovalStatusForIndex(entry.record.status);
+          })
+          : undefined;
+        if (duplicateSignalFanout) {
+          throw Object.assign(new Error('duplicate key value violates unique constraint "approval_requests_active_signal_fanout_idx"'), {
+            code: '23505',
+            constraint: 'approval_requests_active_signal_fanout_idx',
           });
         }
         this.approvals.set(record.id, {
@@ -504,6 +861,139 @@ class FakePgClient implements PgClient {
           .filter((row) => values[1] ? row.recurring_schedule_id === values[1] : true)
           .map((row) => ({ record: row.record })));
 
+      case 'signal.feed.upsert': {
+        const record = JSON.parse(String(values[6])) as SignalFeedStoreRecord;
+        this.signalFeeds.set(record.id, cloneTest(record));
+        return result([]);
+      }
+
+      case 'signal.feed.get': {
+        const row = this.signalFeeds.get(String(values[0]));
+        return result(row ? [{ record: cloneTest(row) }] : []);
+      }
+
+      case 'signal.feed.listByPublisher':
+        return result([...this.signalFeeds.values()]
+          .filter((row) => row.publisherWallet === values[0])
+          .map((row) => ({ record: cloneTest(row) })));
+
+      case 'signal.subscription.upsert': {
+        const record = JSON.parse(String(values[6])) as SignalSubscriptionStoreRecord;
+        this.signalSubscriptions.set(record.id, cloneTest(record));
+        return result([]);
+      }
+
+      case 'signal.subscription.listForFollower':
+        return result([...this.signalSubscriptions.values()]
+          .filter((row) => row.followerWallet === values[0])
+          .map((row) => ({ record: cloneTest(row) })));
+
+      case 'signal.subscription.listForFeed':
+        return result([...this.signalSubscriptions.values()]
+          .filter((row) => row.feedId === values[0])
+          .map((row) => ({ record: cloneTest(row) })));
+
+      case 'signal.emission.upsert': {
+        const record = JSON.parse(String(values[7])) as SignalEmissionStoreRecord;
+        this.signalEmissions.set(record.id, cloneTest(record));
+        return result([]);
+      }
+
+      case 'signal.emission.listUndelivered': {
+        const limit = Number(values[0]);
+        return result([...this.signalEmissions.values()]
+          .filter((row) => !row.fanoutProcessedAt)
+          .slice(0, limit)
+          .map((row) => ({ record: cloneTest(row) })));
+      }
+
+      case 'signal.emission.markFanoutProcessed': {
+        const row = this.signalEmissions.get(String(values[0]));
+        if (!row) return result([]);
+        const delivered = Number(values[1]);
+        const fanoutProcessedAt = String(values[2]);
+        const emission = row.emission && typeof row.emission === 'object' && !Array.isArray(row.emission)
+          ? { ...(row.emission as Record<string, unknown>), delivered, fanoutProcessedAt }
+          : row.emission;
+        this.signalEmissions.set(row.id, cloneTest({ ...row, delivered, fanoutProcessedAt, emission }));
+        return result([]);
+      }
+
+      case 'aggregator.upsert': {
+        const record = JSON.parse(String(values[3])) as unknown;
+        this.aggregatorSnapshots.set(String(values[0]), {
+          key: String(values[0]),
+          kind: String(values[1]),
+          computed_at: String(values[2]),
+          record,
+        });
+        return result([]);
+      }
+
+      case 'aggregator.get': {
+        const row = this.aggregatorSnapshots.get(String(values[0]));
+        return result(row ? [cloneTest(row)] : []);
+      }
+
+      case 'aggregator.listByKind':
+        return result([...this.aggregatorSnapshots.values()]
+          .filter((row) => row.kind === values[0])
+          .map((row) => cloneTest(row)));
+
+      case 'cloudWorkspace.preferences.delete':
+        return countResult(deleteMapEntries(this.preferences, (row) => row.wallet_address === values[0]));
+
+      case 'cloudWorkspace.recurringNotifications.delete':
+      case 'cloudWorkspace.finalizations.delete':
+      case 'cloudWorkspace.completed.delete':
+      case 'cloudWorkspace.audit.delete':
+      case 'cloudWorkspace.users.delete':
+        return countResult(0);
+
+      case 'cloudWorkspace.recurringOccurrences.delete':
+        return countResult(deleteMapEntries(this.occurrences, (row) => row.wallet_address === values[0]));
+
+      case 'cloudWorkspace.recurringSchedules.delete':
+        return countResult(deleteMapEntries(this.schedules, (row) => row.wallet_address === values[0]));
+
+      case 'cloudWorkspace.evidence.delete':
+        return countResult(deleteMapEntries(this.evidence, (row) => row.wallet_address === values[0]));
+
+      case 'cloudWorkspace.approvals.delete':
+        return countResult(deleteMapEntries(this.approvals, (row) => row.wallet_address === values[0]));
+
+      case 'cloudWorkspace.plans.delete':
+        return countResult(deleteMapEntries(this.plans, (row) => row.wallet_address === values[0]));
+
+      case 'cloudWorkspace.nonces.delete':
+        return countResult(deleteMapEntries(this.nonces, (row) => row.wallet_address === values[0]));
+
+      case 'cloudWorkspace.sessions.delete':
+        return countResult(deleteMapEntries(this.sessions, (row) => row.wallet_address === values[0]));
+
+      case 'cloudWorkspace.skillInstalls.delete':
+        return countResult(deleteMapEntries(this.skillInstalls, (row) => row.walletAddress === values[0]));
+
+      case 'cloudWorkspace.skillExecutions.delete':
+        return countResult(deleteMapEntries(this.skillExecutions, (row) => row.walletAddress === values[0]));
+
+      case 'cloudWorkspace.signalSubscriptions.delete':
+        return countResult(deleteMapEntries(this.signalSubscriptions, (row) => row.followerWallet === values[0]));
+
+      case 'cloudWorkspace.signalEmissions.delete':
+        return countResult(deleteMapEntries(this.signalEmissions, (row) => row.publisherWallet === values[0]));
+
+      case 'cloudWorkspace.signalFeeds.delete':
+        return countResult(deleteMapEntries(this.signalFeeds, (row) => row.publisherWallet === values[0]));
+
+      case 'cloudWorkspace.skillManifests.delete':
+        return countResult(deleteMapEntries(this.skillManifests, (row) => row.authorWallet === values[0]));
+
+      case 'cloudWorkspace.aggregatorSnapshots.delete': {
+        const keys = new Set((values[0] as string[]).map(String));
+        return countResult(deleteMapEntries(this.aggregatorSnapshots, (row) => keys.has(row.key)));
+      }
+
       default:
         throw new Error(`Unhandled fake pg query: ${name}`);
     }
@@ -551,6 +1041,221 @@ function result<R extends QueryResultRow>(rows: Array<Record<string, unknown>>):
     fields: [],
     rowCount: rows.length,
     rows: rows as R[],
+  };
+}
+
+function countResult<R extends QueryResultRow>(rowCount: number): QueryResult<R> {
+  return {
+    command: '',
+    oid: 0,
+    fields: [],
+    rowCount,
+    rows: [],
+  };
+}
+
+function deleteMapEntries<K, V>(
+  map: Map<K, V>,
+  predicate: (value: V, key: K) => boolean,
+): number {
+  let deleted = 0;
+  for (const [key, value] of map) {
+    if (predicate(value, key)) {
+      map.delete(key);
+      deleted += 1;
+    }
+  }
+  return deleted;
+}
+
+function cloneTest<T>(value: T): T {
+  return JSON.parse(JSON.stringify(value)) as T;
+}
+
+function signalFeedRecord(id: string, publisherWallet: string): SignalFeedStoreRecord {
+  const now = '2026-05-08T20:00:00.000Z';
+  return {
+    id,
+    publisherWallet,
+    status: 'active',
+    createdAt: now,
+    updatedAt: now,
+    feed: {
+      id,
+      publisherWallet,
+      name: 'Signals',
+      description: 'Receipt-backed calls',
+      createdAt: now,
+      updatedAt: now,
+      status: 'active',
+    },
+  };
+}
+
+function signalSubscriptionRecord(
+  id: string,
+  followerWallet: string,
+  feedId: string,
+  status: SignalSubscriptionStoreRecord['status'] = 'active',
+): SignalSubscriptionStoreRecord {
+  const now = '2026-05-08T20:00:00.000Z';
+  return {
+    id,
+    followerWallet,
+    feedId,
+    status,
+    subscribedAt: now,
+    updatedAt: now,
+    subscription: {
+      id,
+      followerWallet,
+      feedId,
+      status,
+      subscribedAt: now,
+      updatedAt: now,
+      caps: {
+        perRunMaxAmount: '200',
+        lifetimeMaxAmount: '1000',
+        allowlistedTokens: ['USDC'],
+      },
+    },
+  };
+}
+
+function signalEmissionRecord(
+  id: string,
+  feedId: string,
+  publisherWallet: string,
+): SignalEmissionStoreRecord {
+  const emittedAt = '2026-05-08T20:00:00.000Z';
+  return {
+    id,
+    feedId,
+    publisherWallet,
+    emittedAt,
+    delivered: 0,
+    emission: {
+      id,
+      feedId,
+      publisherWallet,
+      emittedAt,
+      sourceTxid: '5'.repeat(64),
+      actionTemplate: {
+        connectorAction: 'swap',
+        inputToken: 'USDC',
+        outputToken: 'SOL',
+        amount: '100',
+      },
+      delivered: 0,
+    },
+  };
+}
+
+function sampleSkillManifest(id: string): SkillManifestStoreRecord {
+  const now = '2026-05-08T20:00:00.000Z';
+  return {
+    id,
+    version: '1.0.0',
+    authorWallet: walletA,
+    createdAt: now,
+    updatedAt: now,
+    manifest: {
+      id,
+      name: 'Friday DCA',
+      version: '1.0.0',
+      authorWallet: walletA,
+      description: 'Buy SOL every Friday.',
+      category: 'dca',
+      schedule: { kind: 'cron', spec: '0 14 * * 5' },
+      action: { connectorAction: 'prepare_swap', paramsTemplate: {} },
+      caps: {
+        perRunMaxAmount: '50',
+        lifetimeMaxAmount: '2600',
+        allowlistedTokens: ['USDC', 'SOL'],
+      },
+    },
+  };
+}
+
+function sampleSkillInstall(
+  id: string,
+  walletAddress: string,
+  skillId: string,
+): SkillInstallStoreRecord {
+  const now = '2026-05-08T20:00:00.000Z';
+  return {
+    id,
+    walletAddress,
+    skillId,
+    status: 'active',
+    installedAt: now,
+    updatedAt: now,
+    install: {
+      id,
+      walletAddress,
+      skillId,
+      manifestVersion: '1.0.0',
+      caps: {
+        perRunMaxAmount: '50',
+        lifetimeMaxAmount: '2600',
+        allowlistedTokens: ['USDC', 'SOL'],
+      },
+      installedAt: now,
+      updatedAt: now,
+      status: 'active',
+    },
+  };
+}
+
+function sampleSkillExecution(
+  id: string,
+  installId: string,
+  walletAddress: string,
+  skillId: string,
+  overrides: Partial<SkillExecutionStoreRecord> = {},
+): SkillExecutionStoreRecord {
+  const proposedAt = '2026-05-08T20:00:00.000Z';
+  return {
+    id,
+    installId,
+    walletAddress,
+    skillId,
+    proposedAt,
+    result: 'success',
+    approvalRequestId: `approval_${id}`,
+    execution: {
+      id,
+      installId,
+      walletAddress,
+      skillId,
+      proposedAt,
+      result: 'success',
+      approvalRequestId: `approval_${id}`,
+    },
+    ...overrides,
+  };
+}
+
+function sampleEvidence(
+  id: string,
+  walletAddress: string,
+  metadata: NonNullable<EvidenceReceiptRecord['metadata']>,
+): EvidenceReceiptRecord {
+  return {
+    id,
+    walletAddress,
+    title: 'Skill execution receipt',
+    kind: 'review_proof',
+    status: 'approved',
+    payload: {},
+    preSignatureHash: `pre_${id}`,
+    signingMessage: `msg_${id}`,
+    signature: `sig_${id}`,
+    verified: true,
+    artifactHash: `pre_${id}`,
+    createdAt: '2026-05-08T20:00:00.000Z',
+    updatedAt: '2026-05-08T20:00:00.000Z',
+    metadata,
   };
 }
 

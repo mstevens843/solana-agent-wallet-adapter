@@ -29,6 +29,7 @@ export {
   createDirectStablecoinSource,
   createJupiterSource,
   createSanctumSource,
+  createStubStablecoinSource,
   createWormholeSource,
 } from './sources.js';
 
@@ -39,6 +40,7 @@ export type {
   SanctumLstClient,
   SanctumQuoteInput,
   SanctumRouterQuote,
+  StubStablecoinSourceOptions,
   WormholeQuoteClient,
   WormholeQuoteInput,
   WormholeRequestOverrides,

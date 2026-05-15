@@ -1,18 +1,9 @@
-import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 // Minimal stubs to let payOut.ts load in vitest's default node env. The CSS
 // import is gated on `typeof document !== 'undefined'`, so leaving document
 // unset prevents the Vite style-injection side effect, while letting us
 // import the pure renderers and the fetch wrappers.
-
-beforeAll(() => {
-  // No DOM stubbing here — payOut.ts is structured to no-op DOM bits when
-  // `document` is undefined. Tests that need a fake document install one
-  // explicitly inside the test body.
-  if (!(globalThis as { __DEV_TAB_REGISTRY_INSTALLED__?: boolean }).__DEV_TAB_REGISTRY_INSTALLED__) {
-    (globalThis as { __DEV_TAB_REGISTRY_INSTALLED__?: boolean }).__DEV_TAB_REGISTRY_INSTALLED__ = true;
-  }
-});
 
 import {
   SAMPLE_CART,
@@ -27,6 +18,35 @@ import {
   renderPayOutPanel,
   shortAddress,
 } from '../payOut.js';
+
+function makePreviewEnvelope(overrides: Record<string, unknown> = {}): Record<string, unknown> {
+  return {
+    cart: {
+      id: 'cart_test_001',
+      cartVersion: '1',
+      merchant: { id: 'm1', name: 'Acme Coffee', recipient: '7tQAS3PCEHKekfA5xkkFqRf9aCkqg8aLg5jLA7MwYc8M' },
+      lineItems: [
+        { id: 'li_001', name: 'Latte', quantity: 2, unitAmount: '6.00', currency: 'USD' },
+        { id: 'li_002', name: 'Croissant', quantity: 1, unitAmount: '4.50', currency: 'USD' },
+        { id: 'li_003', name: 'Tax', quantity: 1, unitAmount: '1.30', currency: 'USD' },
+      ],
+      totalAmount: '17.80',
+      currency: 'USD',
+      paymentToken: 'USDC',
+      cluster: 'mainnet-beta',
+      memo: 'demo',
+    },
+    transfer: {
+      token: 'USDC',
+      recipient: '7tQAS3PCEHKekfA5xkkFqRf9aCkqg8aLg5jLA7MwYc8M',
+      amount: '17.80',
+      note: 'demo',
+    },
+    totalFiat: 17.8,
+    resolvedTokenMint: 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v',
+    ...overrides,
+  };
+}
 
 describe('pure helpers', () => {
   it('escapes HTML special characters', () => {
@@ -50,37 +70,71 @@ describe('pure helpers', () => {
   it('parseCartText rejects malformed JSON', () => {
     expect(() => parseCartText('{not json}')).toThrow(/not valid JSON/);
   });
+
+  it('SAMPLE_CART parses back to a structurally-valid AcpCart shape', () => {
+    const parsed = parseCartText(SAMPLE_CART) as Record<string, unknown>;
+    expect(parsed.id).toBe('cart_demo_001');
+    expect(parsed.cartVersion).toBe('1');
+    expect((parsed.merchant as Record<string, unknown>).recipient).toMatch(/^[A-Za-z0-9]+$/);
+    expect(Array.isArray(parsed.lineItems)).toBe(true);
+    expect(parsed.totalAmount).toBe('17.80');
+    expect(parsed.paymentToken).toBe('USDC');
+    expect(parsed.cluster).toBe('mainnet-beta');
+  });
 });
 
 describe('normalizePreview', () => {
-  it('accepts a well-formed payload and keeps known fields', () => {
-    const result = normalizePreview({
-      cartId: 'cart_001',
-      merchant: { name: 'Acme', wallet: '7tQAS3PCEHKekfA5xkkFqRf9aCkqg8aLg5jLA7MwYc8M' },
-      recipient: '7tQAS3PCEHKekfA5xkkFqRf9aCkqg8aLg5jLA7MwYc8M',
-      tokenMint: 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v',
-      tokenSymbol: 'USDC',
-      lineItems: [
-        { label: 'Latte', quantity: 2, amount: '12.00' },
-        { label: 'Tax', amount: '1.30' },
-        { label: '', amount: 'oops' }, // dropped (empty label)
-        'garbage', // dropped (wrong shape)
-      ],
-      total: '13.30',
-      memo: 'demo',
-    });
-    expect(result.cartId).toBe('cart_001');
-    expect(result.merchant.name).toBe('Acme');
-    expect(result.lineItems).toHaveLength(2);
-    expect(result.lineItems[0]).toEqual({ label: 'Latte', amount: '12.00', quantity: 2 });
-    expect(result.lineItems[1]).toEqual({ label: 'Tax', amount: '1.30', quantity: undefined });
-    expect(result.total).toBe('13.30');
+  it('accepts the server envelope { cart, transfer, totalFiat, resolvedTokenMint }', () => {
+    const result = normalizePreview(makePreviewEnvelope());
+    expect(result.cartId).toBe('cart_test_001');
+    expect(result.merchant.name).toBe('Acme Coffee');
+    expect(result.merchant.recipient).toBe('7tQAS3PCEHKekfA5xkkFqRf9aCkqg8aLg5jLA7MwYc8M');
+    expect(result.lineItems).toHaveLength(3);
+    expect(result.lineItems[0]).toEqual({ name: 'Latte', quantity: 2, unitAmount: '6.00' });
+    expect(result.lineItems[2]).toEqual({ name: 'Tax', quantity: 1, unitAmount: '1.30' });
+    expect(result.totalAmount).toBe('17.80');
+    expect(result.totalFiat).toBe('USD 17.80');
+    expect(result.paymentToken).toBe('USDC');
+    expect(result.resolvedTokenMint).toBe('EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v');
+    expect(result.cluster).toBe('mainnet-beta');
     expect(result.memo).toBe('demo');
+    expect(result.recipient).toBe('7tQAS3PCEHKekfA5xkkFqRf9aCkqg8aLg5jLA7MwYc8M');
   });
 
-  it('throws when required fields are missing', () => {
-    expect(() => normalizePreview({ merchant: {}, lineItems: [], total: '1' })).toThrow();
+  it('drops malformed line items but keeps the rest', () => {
+    const envelope = makePreviewEnvelope({
+      cart: {
+        ...(makePreviewEnvelope().cart as Record<string, unknown>),
+        lineItems: [
+          { id: 'a', name: 'Latte', quantity: 2, unitAmount: '6.00', currency: 'USD' },
+          { id: 'b', name: '', unitAmount: 'oops', currency: 'USD' },
+          'garbage',
+          null,
+          { id: 'c', name: 'Tax', quantity: 1, unitAmount: '1.30', currency: 'USD' },
+        ],
+      },
+    });
+    const result = normalizePreview(envelope);
+    expect(result.lineItems).toHaveLength(2);
+    expect(result.lineItems.map((it) => it.name)).toEqual(['Latte', 'Tax']);
+  });
+
+  it('throws when cart or transfer is missing', () => {
+    expect(() => normalizePreview({ transfer: {} })).toThrow(/missing the cart/);
+    expect(() => normalizePreview({ cart: {} })).toThrow(/missing the transfer/);
     expect(() => normalizePreview(null)).toThrow();
+  });
+
+  it('throws when totalAmount or transfer.recipient is missing', () => {
+    const envelope = makePreviewEnvelope({
+      cart: { ...(makePreviewEnvelope().cart as Record<string, unknown>), totalAmount: '' },
+    });
+    expect(() => normalizePreview(envelope)).toThrow();
+  });
+
+  it('formats totalFiat from numeric or string sources', () => {
+    expect(normalizePreview(makePreviewEnvelope({ totalFiat: 19.99 })).totalFiat).toBe('USD 19.99');
+    expect(normalizePreview(makePreviewEnvelope({ totalFiat: '12.5' })).totalFiat).toBe('USD 12.50');
   });
 });
 
@@ -97,22 +151,27 @@ describe('renderPayOutPanel', () => {
     expect(html).not.toContain('data-pay-out-preview');
   });
 
-  it('preview phase renders one row per line item, total, and the confirm button', () => {
+  it('preview phase renders one row per line item, total, USD subtitle and the confirm button', () => {
     __resetPanelStateForTests({
       phase: 'preview',
       cartText: SAMPLE_CART,
       preview: {
         cartId: 'cart_x',
-        merchant: { name: 'Acme', wallet: 'WMERCH8aLg5jLA7Mw' },
-        recipient: '7tQAS3PCEHKekfA5xkkFqRf9aCkqg8aLg5jLA7MwYc8M',
-        tokenMint: 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v',
-        tokenSymbol: 'USDC',
+        cartVersion: '1',
+        merchant: { name: 'Acme Coffee', recipient: '7tQAS3PCEHKekfA5xkkFqRf9aCkqg8aLg5jLA7MwYc8M' },
         lineItems: [
-          { label: 'Latte', quantity: 2, amount: '12.00' },
-          { label: 'Croissant', amount: '4.50' },
-          { label: 'Tax', amount: '1.30' },
+          { name: 'Latte', quantity: 2, unitAmount: '6.00' },
+          { name: 'Croissant', quantity: 1, unitAmount: '4.50' },
+          { name: 'Tax', quantity: 1, unitAmount: '1.30' },
         ],
-        total: '17.80',
+        totalAmount: '17.80',
+        totalFiat: 'USD 17.80',
+        paymentToken: 'USDC',
+        resolvedTokenMint: 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v',
+        cluster: 'mainnet-beta',
+        recipient: '7tQAS3PCEHKekfA5xkkFqRf9aCkqg8aLg5jLA7MwYc8M',
+        transferAmount: '17.80',
+        memo: 'demo',
       },
     });
     const html = renderPayOutPanel();
@@ -123,6 +182,8 @@ describe('renderPayOutPanel', () => {
     expect(html).toMatch(/× 2/);
     expect(html).toContain('17.80');
     expect(html).toContain('USDC');
+    expect(html).toContain('USD 17.80');
+    expect(html).toContain('mainnet-beta');
     expect(html).toContain('7tQA…Yc8M');
     expect(html).toContain('data-pay-out-action="confirm"');
     expect(html).toContain('data-pay-out-action="edit"');
@@ -145,7 +206,7 @@ describe('renderPayOutPanel', () => {
   });
 });
 
-describe('previewCart + approveCart fetch behavior', () => {
+describe('previewCart fetch behavior', () => {
   type FetchMock = ReturnType<typeof vi.fn>;
   let fetchMock: FetchMock;
 
@@ -163,19 +224,8 @@ describe('previewCart + approveCart fetch behavior', () => {
     return new Response(text, { status, headers: { 'Content-Type': 'application/json' } });
   }
 
-  it('previewCart returns ok with normalized preview on 200', async () => {
-    fetchMock.mockResolvedValueOnce(
-      jsonResponse(200, {
-        preview: {
-          merchant: { name: 'Acme' },
-          recipient: '7tQAS3PCEHKekfA5xkkFqRf9aCkqg8aLg5jLA7MwYc8M',
-          tokenMint: 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v',
-          tokenSymbol: 'USDC',
-          lineItems: [{ label: 'Latte', amount: '12.00' }],
-          total: '12.00',
-        },
-      }),
-    );
+  it('previewCart returns ok with normalized display preview on 200', async () => {
+    fetchMock.mockResolvedValueOnce(jsonResponse(200, { preview: makePreviewEnvelope() }));
     const result = await previewCart({});
     expect(fetchMock).toHaveBeenCalledTimes(1);
     const [path, init] = fetchMock.mock.calls[0]!;
@@ -183,8 +233,9 @@ describe('previewCart + approveCart fetch behavior', () => {
     expect((init as RequestInit).method).toBe('POST');
     expect(result.kind).toBe('ok');
     if (result.kind === 'ok') {
-      expect(result.value.total).toBe('12.00');
-      expect(result.value.lineItems[0]?.label).toBe('Latte');
+      expect(result.value.totalAmount).toBe('17.80');
+      expect(result.value.lineItems[0]?.name).toBe('Latte');
+      expect(result.value.totalFiat).toBe('USD 17.80');
     }
   });
 
@@ -201,28 +252,70 @@ describe('previewCart + approveCart fetch behavior', () => {
   });
 
   it('previewCart returns badRequest with server detail on 400', async () => {
-    fetchMock.mockResolvedValueOnce(jsonResponse(400, { error: 'cart_invalid', detail: 'merchant.wallet is not base58' }));
+    fetchMock.mockResolvedValueOnce(jsonResponse(400, { error: 'parse_error:invalid_json', message: 'merchant.recipient is not base58' }));
     const result = await previewCart({});
     expect(result.kind).toBe('badRequest');
     if (result.kind === 'badRequest') {
-      expect(result.message).toContain('merchant.wallet');
+      expect(result.message).toContain('merchant.recipient');
     }
   });
+});
 
-  it('approveCart returns cartId and approvalId on 200', async () => {
-    fetchMock.mockResolvedValueOnce(jsonResponse(200, { cartId: 'cart_abc', approvalId: 'apr_xyz' }));
+describe('approveCart fetch behavior', () => {
+  type FetchMock = ReturnType<typeof vi.fn>;
+  let fetchMock: FetchMock;
+
+  beforeEach(() => {
+    fetchMock = vi.fn();
+    (globalThis as { fetch?: typeof fetch }).fetch = fetchMock as unknown as typeof fetch;
+  });
+
+  afterEach(() => {
+    delete (globalThis as { fetch?: typeof fetch }).fetch;
+  });
+
+  function jsonResponse(status: number, body: unknown): Response {
+    const text = JSON.stringify(body);
+    return new Response(text, { status, headers: { 'Content-Type': 'application/json' } });
+  }
+
+  it('reads approval.id and cartId on 201', async () => {
+    fetchMock.mockResolvedValueOnce(jsonResponse(201, {
+      approval: { id: 'apr_xyz', kind: 'manual_review' },
+      cartId: 'cart_abc',
+      cartHash: 'abc123',
+    }));
     const result = await approveCart({});
     expect(result.kind).toBe('ok');
     if (result.kind === 'ok') {
       expect(result.value.cartId).toBe('cart_abc');
       expect(result.value.approvalId).toBe('apr_xyz');
+      expect(result.value.cartHash).toBe('abc123');
     }
   });
 
-  it('approveCart errors when server omits required fields', async () => {
-    fetchMock.mockResolvedValueOnce(jsonResponse(200, { cartId: 'only-cart' }));
+  it('errors when approval is missing', async () => {
+    fetchMock.mockResolvedValueOnce(jsonResponse(201, { cartId: 'only-cart' }));
     const result = await approveCart({});
     expect(result.kind).toBe('error');
+  });
+
+  it('errors when approval.id is missing', async () => {
+    fetchMock.mockResolvedValueOnce(jsonResponse(201, { approval: { kind: 'manual_review' }, cartId: 'c' }));
+    const result = await approveCart({});
+    expect(result.kind).toBe('error');
+  });
+
+  it('returns notDeployed on 404', async () => {
+    fetchMock.mockResolvedValueOnce(new Response('', { status: 404 }));
+    const result = await approveCart({});
+    expect(result.kind).toBe('notDeployed');
+  });
+
+  it('returns forbidden on 403', async () => {
+    fetchMock.mockResolvedValueOnce(jsonResponse(403, { error: 'dev_layer1_disabled' }));
+    const result = await approveCart({});
+    expect(result.kind).toBe('forbidden');
   });
 });
 

@@ -1,4 +1,4 @@
-import { createPublicKey, verify as verifyDetached } from 'node:crypto';
+import { createHash, createPublicKey, verify as verifyDetached } from 'node:crypto';
 
 import {
   Ap2VerifyError,
@@ -29,6 +29,18 @@ export interface Ap2VerifySuccess {
   agent: Ap2VerifiedAgent;
 }
 
+/**
+ * Verify a parsed AP2 mandate's ed25519 signature and optional bindings.
+ *
+ * SECURITY CONTRACT: Callers in the route layer MUST pass
+ * `opts.expectedRecipient = session.walletAddress` so an attacker cannot
+ * replay a mandate sent to a different wallet. `opts.expectedCluster` SHOULD
+ * be set to the request's cluster. Default clock skew is 60 seconds.
+ *
+ * Throws `Ap2VerifyError` with `code` in:
+ *   `expired`, `invalid_expiry`, `invalid_public_key`, `invalid_signature`,
+ *   `bad_signature`, `recipient_mismatch`, `cluster_mismatch`.
+ */
 export function verifyAp2Mandate(mandate: Ap2Mandate, opts: Ap2VerifyOptions = {}): Ap2VerifySuccess {
   const clockNow = opts.clockNow ?? new Date();
   const skewMs = opts.clockSkewMs ?? DEFAULT_CLOCK_SKEW_MS;
@@ -92,10 +104,29 @@ export function verifyAp2Mandate(mandate: Ap2Mandate, opts: Ap2VerifyOptions = {
   };
 }
 
+/**
+ * Extract the effective `Ap2PaymentDetails` from either mandate variant.
+ * For IntentMandate this returns `intent.cap`; for PaymentMandate, `payment`.
+ */
 export function paymentDetailsFor(mandate: Ap2Mandate): Ap2PaymentDetails {
   return mandate.mandateType === 'intent_mandate' ? mandate.intent.cap : mandate.payment;
 }
 
+/**
+ * Sha256 (hex) of `canonicalize(value)`. Used as the `artifactHash` in
+ * receipts and as the deterministic content hash anywhere stable identity
+ * is needed for JSON-shaped data.
+ */
+export function canonicalJsonSha256(value: JsonValue): string {
+  return createHash('sha256').update(canonicalize(value), 'utf8').digest('hex');
+}
+
+/**
+ * RFC 8785 JCS subset: deterministic JSON serialization. Sorts object keys
+ * by UTF-16 code-unit order, no whitespace, escapes strings via `JSON.stringify`.
+ * Throws `Ap2VerifyError('invalid_signed_fields')` if asked to canonicalize
+ * `NaN`, `Infinity`, or unsupported types.
+ */
 export function canonicalize(value: JsonValue): string {
   if (value === null) return 'null';
   if (typeof value === 'boolean') return value ? 'true' : 'false';
@@ -118,6 +149,7 @@ export function canonicalize(value: JsonValue): string {
   throw new Ap2VerifyError('invalid_signed_fields', `unsupported value of type ${typeof value} in signedFields.`);
 }
 
+/** Base58 (Bitcoin alphabet) encode. Mirrors `apps/render-web/src/cloud/auth.ts`. */
 export function encodeBase58(bytes: Uint8Array): string {
   if (bytes.length === 0) return '';
   let zeros = 0;
@@ -142,6 +174,7 @@ export function encodeBase58(bytes: Uint8Array): string {
   return result;
 }
 
+/** Base58 (Bitcoin alphabet) decode. Throws on invalid characters. */
 export function decodeBase58(value: string): Uint8Array {
   if (value.length === 0) return new Uint8Array();
   let zeros = 0;

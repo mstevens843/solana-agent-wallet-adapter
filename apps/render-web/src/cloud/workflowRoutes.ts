@@ -5,6 +5,9 @@ import {
   WorkflowServiceError,
   type WorkflowStore,
 } from './workflowService.js';
+import type { EvidenceStore } from './evidenceService.js';
+import { recordSkillExecutionOutcomeForApproval } from './skillExecutionLifecycle.js';
+import type { Clock } from './store.js';
 import {
   WorkflowValidationError,
   isApprovalDecision,
@@ -25,10 +28,15 @@ const MAX_JSON_BYTES = 64 * 1024;
 export interface WorkflowRouteContext {
   store?: WorkflowStore;
   service?: WorkflowService;
+  evidenceStore?: EvidenceStore;
+  clock?: Clock;
   getSession(req: IncomingMessage): Promise<WorkflowSession | null | undefined> | WorkflowSession | null | undefined;
 }
 
 type WorkflowHandler = (req: IncomingMessage, res: ServerResponse) => Promise<boolean>;
+type WorkflowRouteRuntimeContext =
+  Required<Pick<WorkflowRouteContext, 'service' | 'getSession'>>
+  & Pick<WorkflowRouteContext, 'store' | 'evidenceStore' | 'clock'>;
 
 export function createWorkflowApiHandler(context: WorkflowRouteContext): WorkflowHandler {
   const service = context.service ?? (context.store ? new WorkflowService(context.store) : undefined);
@@ -39,13 +47,16 @@ export function createWorkflowApiHandler(context: WorkflowRouteContext): Workflo
   return async (req, res) => handleWorkflowApiRequest(req, res, {
     service,
     getSession: context.getSession,
+    store: context.store,
+    evidenceStore: context.evidenceStore,
+    clock: context.clock,
   });
 }
 
 export async function handleWorkflowApiRequest(
   req: IncomingMessage,
   res: ServerResponse,
-  context: Required<Pick<WorkflowRouteContext, 'service' | 'getSession'>>,
+  context: WorkflowRouteRuntimeContext,
 ): Promise<boolean> {
   try {
     const url = new URL(req.url ?? '/', `http://${req.headers.host ?? 'localhost'}`);
@@ -72,10 +83,10 @@ export async function handleWorkflowApiRequest(
         await handleApprovalRecurringBacklogCleanup(req, res, context.service, session);
         return true;
       case 'approval-decision':
-        await handleApprovalDecision(req, res, context.service, session, route.id, route.decision);
+        await handleApprovalDecision(req, res, context, session, route.id, route.decision);
         return true;
       case 'approval-wallet-execution':
-        await handleApprovalWalletExecution(req, res, context.service, session, route.id);
+        await handleApprovalWalletExecution(req, res, context, session, route.id);
         return true;
       case 'approval-prepare-transaction':
         await handleApprovalPrepareTransaction(req, res, context.service, session, route.id);
@@ -87,19 +98,19 @@ export async function handleWorkflowApiRequest(
         await handleApprovalFinalizationPrepare(req, res, context.service, session, route.id);
         return true;
       case 'approval-finalization-submit':
-        await handleApprovalFinalizationSubmit(req, res, context.service, session, route.id, route.finalizationId);
+        await handleApprovalFinalizationSubmit(req, res, context, session, route.id, route.finalizationId);
         return true;
       case 'approval-finalization-confirm':
-        await handleApprovalFinalizationConfirm(req, res, context.service, session, route.id, route.finalizationId);
+        await handleApprovalFinalizationConfirm(req, res, context, session, route.id, route.finalizationId);
         return true;
       case 'approval-finalization-fail':
-        await handleApprovalFinalizationFail(req, res, context.service, session, route.id, route.finalizationId);
+        await handleApprovalFinalizationFail(req, res, context, session, route.id, route.finalizationId);
         return true;
       case 'approval-finalization-preview':
         await handleApprovalFinalizationPreview(req, res, context.service, session, route.id);
         return true;
       case 'approval-finalization-result':
-        await handleApprovalFinalizationResult(req, res, context.service, session, route.id);
+        await handleApprovalFinalizationResult(req, res, context, session, route.id);
         return true;
       case 'completed':
         await handleCompleted(req, res, context.service, session);
@@ -297,7 +308,7 @@ async function handleApprovalRecurringBacklogCleanup(
 async function handleApprovalDecision(
   req: IncomingMessage,
   res: ServerResponse,
-  service: WorkflowService,
+  context: WorkflowRouteRuntimeContext,
   session: WorkflowSession,
   id: string,
   decision: 'approved' | 'rejected' | 'cancelled',
@@ -306,19 +317,20 @@ async function handleApprovalDecision(
     methodNotAllowed(res);
     return;
   }
-  const result = await service.decideApproval(
+  const result = await context.service.decideApproval(
     session,
     id,
     decision,
     validateApprovalDecisionRequest(await readJsonBody(req)),
   );
+  await maybeRecordSkillExecutionOutcome(context, session, result.approval);
   writeJson(res, 200, result);
 }
 
 async function handleApprovalWalletExecution(
   req: IncomingMessage,
   res: ServerResponse,
-  service: WorkflowService,
+  context: WorkflowRouteRuntimeContext,
   session: WorkflowSession,
   id: string,
 ): Promise<void> {
@@ -326,11 +338,12 @@ async function handleApprovalWalletExecution(
     methodNotAllowed(res);
     return;
   }
-  const result = await service.recordWalletExecution(
+  const result = await context.service.recordWalletExecution(
     session,
     id,
     validateApprovalDecisionRequest(await readJsonBody(req)),
   );
+  await maybeRecordSkillExecutionOutcome(context, session, result.approval);
   writeJson(res, 200, result);
 }
 
@@ -380,7 +393,7 @@ async function handleApprovalFinalizationPrepare(
 async function handleApprovalFinalizationSubmit(
   req: IncomingMessage,
   res: ServerResponse,
-  service: WorkflowService,
+  context: WorkflowRouteRuntimeContext,
   session: WorkflowSession,
   id: string,
   finalizationId: string,
@@ -389,19 +402,20 @@ async function handleApprovalFinalizationSubmit(
     methodNotAllowed(res);
     return;
   }
-  const result = await service.submitTransactionFinalization(
+  const result = await context.service.submitTransactionFinalization(
     session,
     id,
     finalizationId,
     validateRecordTransactionFinalizationResultRequest(bodyWithRouteFinalizationId(await readJsonBody(req), finalizationId)),
   );
+  await maybeRecordSkillExecutionOutcome(context, session, result.approval);
   writeJson(res, 200, result);
 }
 
 async function handleApprovalFinalizationConfirm(
   req: IncomingMessage,
   res: ServerResponse,
-  service: WorkflowService,
+  context: WorkflowRouteRuntimeContext,
   session: WorkflowSession,
   id: string,
   finalizationId: string,
@@ -411,14 +425,15 @@ async function handleApprovalFinalizationConfirm(
     return;
   }
   await readJsonBody(req);
-  const result = await service.confirmTransactionFinalization(session, id, finalizationId);
+  const result = await context.service.confirmTransactionFinalization(session, id, finalizationId);
+  await maybeRecordSkillExecutionOutcome(context, session, result.approval);
   writeJson(res, 200, result);
 }
 
 async function handleApprovalFinalizationFail(
   req: IncomingMessage,
   res: ServerResponse,
-  service: WorkflowService,
+  context: WorkflowRouteRuntimeContext,
   session: WorkflowSession,
   id: string,
   finalizationId: string,
@@ -427,12 +442,13 @@ async function handleApprovalFinalizationFail(
     methodNotAllowed(res);
     return;
   }
-  const result = await service.failTransactionFinalization(
+  const result = await context.service.failTransactionFinalization(
     session,
     id,
     finalizationId,
     validateFinalizationFailureRequest(await readJsonBody(req)),
   );
+  await maybeRecordSkillExecutionOutcome(context, session, result.approval);
   writeJson(res, 200, result);
 }
 
@@ -458,7 +474,7 @@ async function handleApprovalFinalizationPreview(
 async function handleApprovalFinalizationResult(
   req: IncomingMessage,
   res: ServerResponse,
-  service: WorkflowService,
+  context: WorkflowRouteRuntimeContext,
   session: WorkflowSession,
   id: string,
 ): Promise<void> {
@@ -466,11 +482,12 @@ async function handleApprovalFinalizationResult(
     methodNotAllowed(res);
     return;
   }
-  const result = await service.recordFinalizationResult(
+  const result = await context.service.recordFinalizationResult(
     session,
     id,
     validateRecordTransactionFinalizationResultRequest(await readJsonBody(req)),
   );
+  await maybeRecordSkillExecutionOutcome(context, session, result.approval);
   writeJson(res, 200, result);
 }
 
@@ -500,6 +517,21 @@ async function handleCompletedRecord(
   }
   await service.deleteCompleted(session, id);
   writeJson(res, 200, { ok: true });
+}
+
+async function maybeRecordSkillExecutionOutcome(
+  context: WorkflowRouteRuntimeContext,
+  session: WorkflowSession,
+  approval: Parameters<typeof recordSkillExecutionOutcomeForApproval>[0]['approval'],
+): Promise<void> {
+  if (!context.store || !context.evidenceStore || !context.clock) return;
+  await recordSkillExecutionOutcomeForApproval({
+    store: context.store,
+    evidenceStore: context.evidenceStore,
+    clock: context.clock,
+    session,
+    approval,
+  });
 }
 
 async function readJsonBody(req: IncomingMessage): Promise<unknown> {

@@ -294,9 +294,33 @@ import {
 } from './workspaceBackup.js';
 import './styles.css';
 
+// Dev-only Layer 1 integration hooks. These imports register the three dev
+// tabs (Pay Out, External Agents, Agent Card) and approval-card badges
+// (AP2 verified, ACP outbound) as side effects at module load. Visibility is
+// gated client-side by `isDevWallet(...)` inside each tab's guard() and
+// server-side by `isAllowedDevWallet(...)` for /api/* routes.
+import { findDevTab, listDevTabs } from './devTabRegistry.js';
+import { renderApprovalBadges } from './approvalBadges.js';
+import { setConnectedAddress } from './walletState.js';
+import './devTabs/index.js';
+
 type StepState = 'idle' | 'active' | 'done' | 'error';
 type StepName = 'discover' | 'connect' | 'sign' | 'transaction' | 'bridge' | 'inbox' | 'lab' | 'ai';
-type ActiveTab = 'overview' | 'wallet' | 'agent' | 'generated' | 'inbox' | 'completed' | 'schedule' | 'labs' | 'preferences';
+type ActiveTab =
+  | 'overview'
+  | 'wallet'
+  | 'agent'
+  | 'generated'
+  | 'inbox'
+  | 'completed'
+  | 'schedule'
+  | 'labs'
+  | 'preferences'
+  // Dev-only Layer 1 tab ids registered at runtime via DEV_TAB_REGISTRY.
+  // The (string & {}) intersection preserves literal-union autocomplete
+  // while permitting arbitrary registry-supplied ids without an
+  // exhaustiveness break.
+  | (string & {});
 type PreferencesView = 'workspace' | 'ai' | 'access' | 'rules' | 'tokens';
 type CommandCenterView = 'center' | 'ai' | 'storage';
 type CommandCenterIconId =
@@ -1225,6 +1249,7 @@ interface PreparedAction {
   cluster: Cluster;
   summary: string;
   params: Record<string, unknown>;
+  metadata?: Record<string, unknown>;
   decisionProofParams?: Record<string, unknown>;
   dueAt: string;
   createdAt: string;
@@ -3033,6 +3058,19 @@ async function bootstrap(): Promise<void> {
 
 function render(): void {
   if (!appRoot) return;
+  // Publish the connected wallet address to the shared dev-tab sinks BEFORE
+  // pageContent() runs, so dev-tab guards (which fire inside pageContent's
+  // tab-nav fan-out) see the current address synchronously. Both writes are
+  // idempotent and run on every render.
+  const connectedForDevTabs = state.address || undefined;
+  setConnectedAddress(connectedForDevTabs);
+  if (typeof document !== 'undefined' && document.body) {
+    if (connectedForDevTabs) {
+      document.body.dataset.walletAddress = connectedForDevTabs;
+    } else {
+      delete document.body.dataset.walletAddress;
+    }
+  }
   const route = currentRoute();
   applyRouteTitle(route);
   trackPageView(route ?? normalizePathname(window.location.pathname), document.title);
@@ -5210,7 +5248,7 @@ function appWorkspace(mode: 'app' | 'demo' = 'app'): string {
               ${tabButton('schedule', 'Repeat Payments', 'Repeats')}
               ${tabButton('inbox', 'Needs Approval', 'Approve')}
               ${tabButton('completed', 'Done')}
-              ${tabButton('labs', 'Save Proof', 'Proof')}
+              ${moreMenuButton()}
             </nav>
             ${preferencesButton()}
           </div>
@@ -8531,6 +8569,14 @@ function activePanel(): string {
       return labsPanel();
     case 'preferences':
       return preferencesPanel();
+    default: {
+      // Dev-only Layer 1 tab fallthrough. If the activeTab id matches a
+      // registered dev tab AND its guard passes, render its panel. Otherwise
+      // fall back to the command center so a stale id never strands the UI.
+      const devTab = findDevTab(state.activeTab);
+      if (devTab && devTab.guard()) return devTab.render();
+      return commandCenterPanel();
+    }
   }
 }
 
@@ -15114,6 +15160,21 @@ function bind(): void {
       state.commandCenterView = view;
       state.error = '';
       render();
+    });
+  }
+
+  // Layer 2 Skills Hub sub-tabs. Tracked inside subTabRegistry; main.ts only
+  // wires the click → setter → render dance. Sub-tab IDs are open string union
+  // to allow Phase 1 agents to register additional surfaces without editing
+  // this file.
+  for (const button of document.querySelectorAll<HTMLButtonElement>('[data-skills-subtab]')) {
+    button.addEventListener('click', () => {
+      const view = button.dataset.skillsSubtab;
+      if (!view) return;
+      void import('./devTabs/skills/subTabRegistry.js').then(({ setActiveSkillsSubTab }) => {
+        setActiveSkillsSubTab(view);
+        render();
+      });
     });
   }
 
@@ -23770,6 +23831,7 @@ function cloudApprovalToPreparedAction(value: unknown): PreparedAction | null {
     cluster,
     summary: record.summary,
     params: paramsFromCloudApproval(record),
+    ...(isJsonObject(record.metadata) && { metadata: { ...record.metadata } }),
     ...(isJsonObject(record.params) && { decisionProofParams: { ...record.params } }),
     dueAt: record.dueAt,
     createdAt: record.createdAt,
@@ -26003,7 +26065,7 @@ function isExecutableBrowserAction(action: PreparedAction): boolean {
 
 function isCloudBrowserExecutableAction(action: PreparedAction): boolean {
   if (action.workflowSource !== 'cloud') return false;
-  if (action.kind === 'swap' && EXECUTABLE_BROWSER_ACTION_KINDS.has(action.kind)) return true;
+  if ((action.kind === 'swap' || action.kind === 'transfer_spl') && EXECUTABLE_BROWSER_ACTION_KINDS.has(action.kind)) return true;
   return isConnectorApprovalKind(action) && cloudSessionMatchesWallet();
 }
 
@@ -26471,12 +26533,47 @@ async function executeBrowserPreparedActionRecord(
       return executeBrowserSwap(action, toastContext);
     case 'custom_transaction':
       return executeBrowserCustomTransaction(action, toastContext);
+    case 'manual_review': {
+      // ACP outbound approvals are stamped as `manual_review` server-side
+      // because cloud finalization doesn't yet support SPL transfers (see
+      // apps/render-web/src/cloud/acpRoutes.ts:143-148). Detect the ACP
+      // metadata and route to the existing SPL executor; params already
+      // match transfer_spl's expected shape.
+      if ((action.metadata as { source?: unknown } | null | undefined)?.source === 'acp_outbound') {
+        return executeBrowserAcpOutbound(action, toastContext);
+      }
+      throw new Error('Browser workflow cannot broadcast manual_review without ACP metadata.');
+    }
     default:
       if (isConnectorApprovalKind(action)) {
         return executeBrowserConnectorPreparedAction(action, toastContext);
       }
       throw new Error(`Browser workflow cannot broadcast ${action.kind}.`);
   }
+}
+
+async function executeBrowserAcpOutbound(
+  action: PreparedAction,
+  toastContext: TransactionToastContext,
+): Promise<BrowserTransactionExecution> {
+  const splAction: PreparedAction = { ...action, kind: 'transfer_spl' };
+  const execution = await executeBrowserSplTransfer(splAction, toastContext);
+  try {
+    await cloudRequest(
+      `/api/acp/cart/${encodeURIComponent(action.id)}/receipt`,
+      {
+        method: 'POST',
+        body: JSON.stringify({ txid: execution.txid, settledAt: new Date().toISOString() }),
+      },
+    );
+  } catch (err) {
+    // Receipt persistence is best-effort. The on-chain transaction already
+    // succeeded and the txid is observable via the explorer; the user can
+    // re-trigger the receipt later. Log for diagnostics.
+    // eslint-disable-next-line no-console
+    console.warn('[acp] receipt POST failed', err);
+  }
+  return execution;
 }
 
 function browserConnectorExecutionDeps(): ConnectorExecutionDeps<PreparedAction> {
@@ -31975,6 +32072,50 @@ function lockedTabReason(tab: ActiveTab): string {
   return '';
 }
 
+interface MoreMenuItem {
+  id: string;
+  label: string;
+}
+
+function moreMenuItems(): MoreMenuItem[] {
+  // "Save Proof" is always present (replaces its old top-level slot). Dev-gated
+  // Layer 1 tabs (Pay Out / External Agents / Agent Card / Skills) opt in only
+  // when their registered guard returns true (i.e. dev wallet connected).
+  const items: MoreMenuItem[] = [{ id: 'labs', label: 'Save Proof' }];
+  for (const tab of listDevTabs()) {
+    if (tab.guard()) items.push({ id: tab.id, label: tab.label });
+  }
+  return items;
+}
+
+function moreMenuButton(): string {
+  const items = moreMenuItems();
+  if (items.length === 0) return '';
+  const activeInMenu = items.some((item) => state.activeTab === item.id);
+  return `
+    <details class="workspace-more${activeInMenu ? ' has-active' : ''}">
+      <summary class="workspace-more-trigger ${activeInMenu ? 'active' : ''}" aria-haspopup="menu">
+        <span class="nav-label">More</span>
+        <span class="workspace-more-caret" aria-hidden="true">▾</span>
+      </summary>
+      <div class="workspace-more-menu" role="menu">
+        ${items
+          .map(
+            (item) => `
+          <button
+            type="button"
+            role="menuitem"
+            data-tab="${escapeHtml(item.id)}"
+            class="workspace-more-item ${state.activeTab === item.id ? 'active' : ''}"
+          >${escapeHtml(item.label)}</button>
+        `,
+          )
+          .join('')}
+      </div>
+    </details>
+  `;
+}
+
 function isPreferencesView(value: string): value is PreferencesView {
   return value === 'workspace' || value === 'ai' || value === 'access' || value === 'rules' || value === 'tokens';
 }
@@ -32210,6 +32351,7 @@ function preparedActionCard(action: PreparedAction): string {
             <div class="inbox-approval-meta">
               <span class="status-pill ${statusTone(action.status)}">${escapeHtml(action.status)}</span>
               ${storageBadgeHtml(preparedActionStorageBadge(action))}
+              ${renderApprovalBadges(action)}
               ${connectorChip(connectorMeta?.id, connectorMeta?.name)}
               <strong class="inbox-approval-meta-title">${escapeHtml(preparedActionCardTitle(action))}</strong>
               ${evidenceBadgeHtml(evidenceBadgeForAction(action))}
@@ -35602,6 +35744,9 @@ function surfaceEyebrow(): string {
       return state.artifactView === 'signed' ? 'Saved proofs' : 'Save proof';
     case 'preferences':
       return 'Preferences';
+    default: {
+      return findDevTab(state.activeTab) ? 'Layer 1 dev' : 'Home';
+    }
   }
 }
 
@@ -35625,6 +35770,10 @@ function surfaceTitle(): string {
       return 'Save Proof';
     case 'preferences':
       return 'Preferences';
+    default: {
+      const devTab = findDevTab(state.activeTab);
+      return devTab?.label ?? 'Home';
+    }
   }
 }
 

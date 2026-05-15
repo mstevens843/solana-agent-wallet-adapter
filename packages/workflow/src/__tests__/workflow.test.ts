@@ -221,6 +221,30 @@ describe('AI product guardrails', () => {
     expect(report.violations.map((violation) => violation.code)).not.toContain('ai_claims_approved');
   });
 
+  it('accepts mint addresses as executable swap token constraints', () => {
+    const report = evaluatePlanGuardrails({
+      plan: {
+        source: 'template',
+        category: 'trading',
+        actionType: 'swap',
+        intent: 'Prepare a USDC to SOL swap.',
+        route: 'Prepare a route for wallet approval.',
+        risk: 'Medium risk. Check token mints and slippage before approval.',
+        approval: 'Wallet approval is required before signing or submitting.',
+        parameters: {
+          inputMint: 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v',
+          outputMint: 'So11111111111111111111111111111111111111112',
+          amount: '50',
+          slippageBps: 50,
+        },
+        cluster: 'mainnet-beta',
+      },
+    });
+
+    expect(report.verdict).toBe('pass');
+    expect(report.violations.map((violation) => violation.code)).not.toContain('missing_executable_constraint');
+  });
+
   it('blocks secrets, delegated signers, and missing executable constraints', () => {
     expect(evaluatePlanGuardrails({
       plan: {

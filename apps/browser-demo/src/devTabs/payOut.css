@@ -198,6 +198,19 @@
   font-weight: 600;
 }
 
+.pay-out-fiat-hint {
+  display: inline-block;
+  margin-left: 0.5rem;
+  padding: 0.05rem 0.45rem;
+  border-radius: 999px;
+  background: rgba(37, 99, 235, 0.08);
+  color: var(--text-muted, rgba(0, 0, 0, 0.6));
+  font-size: 0.78rem;
+  font-weight: 500;
+  font-variant-numeric: tabular-nums;
+  vertical-align: 0.05em;
+}
+
 .pay-out-disclaimer {
   font-size: 0.85rem;
   color: var(--text-muted, rgba(0, 0, 0, 0.6));

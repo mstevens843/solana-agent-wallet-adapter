@@ -41,6 +41,14 @@ function defaultPaymentMethods(baseUrl: string, supportedTokens: string[]): Paym
   ];
 }
 
+/**
+ * Build an A2A-compliant `AgentCard` from caller-supplied wallet identity and
+ * capabilities. Pure: no fetches, no clocks, no global state. Output is safe
+ * to JSON-serialize as-is and serve at `/.well-known/agent.json`.
+ *
+ * The result is *not* validated by this function — pair with `validateAgentCard`
+ * if you need a runtime guarantee.
+ */
 export function buildAgenticAgentCard(input: BuildAgenticAgentCardInput): AgentCard {
   const url = trimTrailingSlash(input.baseUrl);
   const skills = input.capabilities.map(capabilityToSkill);

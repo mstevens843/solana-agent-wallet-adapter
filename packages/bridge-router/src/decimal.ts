@@ -126,7 +126,7 @@ function divideUnsignedIntegerString(dividend: string, divisor: string): string 
   return result.replace(/^0+(?=\d)/, '') || '0';
 }
 
-function subtractUnsignedIntegerStrings(a: string, b: string): string {
+export function subtractUnsignedIntegerStrings(a: string, b: string): string {
   let i = a.length - 1;
   let j = b.length - 1;
   let borrow = 0;

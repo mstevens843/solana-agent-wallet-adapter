@@ -39,6 +39,11 @@ export interface PaymentMethod {
   network?: string;
 }
 
+/**
+ * A single capability the wallet advertises in its AgentCard. Maps 1:1 to an
+ * A2A `AgentSkill` at build time. Use stable, dotted ids (e.g. `wallet.swap`)
+ * so external discovery tools can filter or alias deterministically.
+ */
 export interface AgenticCapability {
   id: string;
   name: string;
@@ -49,6 +54,11 @@ export interface AgenticCapability {
   outputModes?: string[];
 }
 
+/**
+ * Input shape accepted by `buildAgenticAgentCard`. Required fields are the
+ * minimum needed to materialize a discoverable AgentCard; optional fields
+ * override the package defaults (protocol version, payment methods, etc.).
+ */
 export interface BuildAgenticAgentCardInput {
   walletAddress: string;
   baseUrl: string;

@@ -1,57 +1,23 @@
-import { randomUUID } from 'node:crypto';
 import type { IncomingMessage, ServerResponse } from 'node:http';
 
+import {
+  createDirectStablecoinSource,
+  findOptimalSettlement,
+  type PayerHolding,
+  type SettlementRequest,
+  type SupportedCluster,
+} from '@solana-agent-wallet-adapter/bridge-router';
 import { PublicKey } from '@solana/web3.js';
 
 import { registerDevApiHandler, type DevApiHandler } from './devApiRegistry.js';
 
-// TODO: Replace with import from `@solana-agent-wallet-adapter/bridge-router`
-// once Agent 4 ships router.ts. At that point also add the workspace dep
-// to apps/render-web/package.json.
-interface SettlementRequest {
-  amountUsd: number;
-  recipient: string;
-  targetMint?: string;
-  allowOffCurveRecipient?: boolean;
-}
-
-interface SettlementRoute {
-  quoteId: string;
-  source: 'placeholder';
-  inputUsd: number;
-  outputAmount: string;
-  outputMint: string;
-  slippageBps: number;
-  estimatedFeeLamports: number;
-  hops: readonly unknown[];
-  expiresAt: string;
-  note: string;
-}
-
-const USDC_MAINNET_MINT = 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v';
-const QUOTE_TTL_MS = 60_000;
-
-function findOptimalSettlement(request: SettlementRequest): SettlementRoute {
-  const outputMint = request.targetMint ?? USDC_MAINNET_MINT;
-  // USDC has 6 decimals. Placeholder math: 1 USD == 1 USDC (no FX adjustment).
-  const outputAmount = Math.round(request.amountUsd * 1_000_000).toString();
-  return {
-    quoteId: randomUUID(),
-    source: 'placeholder',
-    inputUsd: request.amountUsd,
-    outputAmount,
-    outputMint,
-    slippageBps: 50,
-    estimatedFeeLamports: 5000,
-    hops: [],
-    expiresAt: new Date(Date.now() + QUOTE_TTL_MS).toISOString(),
-    note: 'Placeholder route — Agent 4 (bridge-router) not yet implemented.',
-  };
-}
-
 const QUOTE_PREFIX = '/api/agents/settlement/quote';
 const MAX_JSON_BYTES = 16 * 1024;
 const MAX_AMOUNT_USD = 100_000;
+const MAX_SLIPPAGE_BPS = 10_000;
+const MAX_HOLDINGS = 50;
+const MAX_DECIMALS = 18;
+const PER_SOURCE_TIMEOUT_MS = 5_000;
 
 class ValidationError extends Error {
   constructor(
@@ -70,15 +36,29 @@ class BodyTooLargeError extends Error {
   }
 }
 
+interface ParsedQuoteInput {
+  amountUsd: number;
+  recipient: string;
+  targetMint?: string;
+  allowOffCurveRecipient?: boolean;
+  cluster?: SupportedCluster;
+  payerHoldings?: PayerHolding[];
+  maxSlippageBps?: number;
+}
+
 const quoteHandler: DevApiHandler = {
   prefix: QUOTE_PREFIX,
   methods: ['POST'],
-  async handle(req, res, _url, _context) {
+  async handle(req, res, _url, context) {
     try {
       const raw = await readJsonBody(req);
       const parsed = parseSettlementRequest(raw);
-      const route = findOptimalSettlement(parsed);
-      writeJsonNoStore(res, 200, { route });
+      const settlementRequest = buildSettlementRequest(parsed, context.walletAddress);
+      const sources = [createDirectStablecoinSource()];
+      const result = await findOptimalSettlement(settlementRequest, sources, {
+        perSourceTimeoutMs: PER_SOURCE_TIMEOUT_MS,
+      });
+      writeJsonNoStore(res, 200, { result });
     } catch (err) {
       if (err instanceof ValidationError) {
         writeJsonNoStore(res, 400, { error: err.code, message: err.message });
@@ -94,7 +74,7 @@ const quoteHandler: DevApiHandler = {
   },
 };
 
-function parseSettlementRequest(body: unknown): SettlementRequest {
+function parseSettlementRequest(body: unknown): ParsedQuoteInput {
   if (!body || typeof body !== 'object' || Array.isArray(body)) {
     throw new ValidationError('invalid_input', 'Request body must be a JSON object.');
   }
@@ -149,17 +129,139 @@ function parseSettlementRequest(body: unknown): SettlementRequest {
     targetMint = o.targetMint;
   }
 
-  const result: SettlementRequest = {
-    amountUsd,
-    recipient,
+  let cluster: SupportedCluster | undefined;
+  if (o.cluster !== undefined && o.cluster !== null) {
+    if (o.cluster !== 'mainnet-beta' && o.cluster !== 'devnet') {
+      throw new ValidationError(
+        'invalid_cluster',
+        'cluster must be "mainnet-beta" or "devnet".',
+      );
+    }
+    cluster = o.cluster;
+  }
+
+  let payerHoldings: PayerHolding[] | undefined;
+  if (o.payerHoldings !== undefined && o.payerHoldings !== null) {
+    payerHoldings = parsePayerHoldings(o.payerHoldings);
+  }
+
+  let maxSlippageBps: number | undefined;
+  if (o.maxSlippageBps !== undefined && o.maxSlippageBps !== null) {
+    const value = o.maxSlippageBps;
+    if (
+      typeof value !== 'number' ||
+      !Number.isInteger(value) ||
+      value < 0 ||
+      value > MAX_SLIPPAGE_BPS
+    ) {
+      throw new ValidationError(
+        'invalid_max_slippage',
+        `maxSlippageBps must be an integer between 0 and ${MAX_SLIPPAGE_BPS}.`,
+      );
+    }
+    maxSlippageBps = value;
+  }
+
+  const parsed: ParsedQuoteInput = { amountUsd, recipient };
+  if (targetMint !== undefined) parsed.targetMint = targetMint;
+  if (allowOffCurveRecipient) parsed.allowOffCurveRecipient = true;
+  if (cluster !== undefined) parsed.cluster = cluster;
+  if (payerHoldings !== undefined) parsed.payerHoldings = payerHoldings;
+  if (maxSlippageBps !== undefined) parsed.maxSlippageBps = maxSlippageBps;
+  return parsed;
+}
+
+function parsePayerHoldings(raw: unknown): PayerHolding[] {
+  if (!Array.isArray(raw)) {
+    throw new ValidationError('invalid_payer_holdings', 'payerHoldings must be an array.');
+  }
+  if (raw.length > MAX_HOLDINGS) {
+    throw new ValidationError(
+      'invalid_payer_holdings',
+      `payerHoldings may not contain more than ${MAX_HOLDINGS} entries.`,
+    );
+  }
+  return raw.map((entry, index) => parsePayerHolding(entry, index));
+}
+
+function parsePayerHolding(entry: unknown, index: number): PayerHolding {
+  if (!entry || typeof entry !== 'object' || Array.isArray(entry)) {
+    throw new ValidationError(
+      'invalid_payer_holdings',
+      `payerHoldings[${index}] must be a JSON object.`,
+    );
+  }
+  const e = entry as Record<string, unknown>;
+
+  if (typeof e.mint !== 'string' || e.mint.length === 0) {
+    throw new ValidationError(
+      'invalid_payer_holdings',
+      `payerHoldings[${index}].mint must be a non-empty string.`,
+    );
+  }
+  try {
+    new PublicKey(e.mint);
+  } catch {
+    throw new ValidationError(
+      'invalid_payer_holdings',
+      `payerHoldings[${index}].mint must be a valid Solana mint address.`,
+    );
+  }
+
+  if (typeof e.amountRaw !== 'string' || !/^\d+$/.test(e.amountRaw)) {
+    throw new ValidationError(
+      'invalid_payer_holdings',
+      `payerHoldings[${index}].amountRaw must be a digit-only string.`,
+    );
+  }
+
+  if (
+    typeof e.decimals !== 'number' ||
+    !Number.isInteger(e.decimals) ||
+    e.decimals < 0 ||
+    e.decimals > MAX_DECIMALS
+  ) {
+    throw new ValidationError(
+      'invalid_payer_holdings',
+      `payerHoldings[${index}].decimals must be an integer between 0 and ${MAX_DECIMALS}.`,
+    );
+  }
+
+  const holding: PayerHolding = {
+    mint: e.mint,
+    amountRaw: e.amountRaw,
+    decimals: e.decimals,
   };
-  if (targetMint !== undefined) {
-    result.targetMint = targetMint;
+
+  if (e.usdPrice !== undefined && e.usdPrice !== null) {
+    if (typeof e.usdPrice !== 'string' || !/^\d+(\.\d+)?$/.test(e.usdPrice)) {
+      throw new ValidationError(
+        'invalid_payer_holdings',
+        `payerHoldings[${index}].usdPrice must be a decimal string.`,
+      );
+    }
+    holding.usdPrice = e.usdPrice;
   }
-  if (allowOffCurveRecipient) {
-    result.allowOffCurveRecipient = true;
-  }
-  return result;
+
+  return holding;
+}
+
+function buildSettlementRequest(
+  parsed: ParsedQuoteInput,
+  walletAddress: string | undefined,
+): SettlementRequest {
+  // USDC has 6 decimals; toFixed(6) bounds JS float precision without scientific
+  // notation, and stripping trailing zeros keeps responses readable ('50' vs '50.000000').
+  const request: SettlementRequest = {
+    usdAmount: parsed.amountUsd.toFixed(6).replace(/\.?0+$/, ''),
+    recipient: parsed.recipient,
+  };
+  if (walletAddress !== undefined) request.payerWallet = walletAddress;
+  if (parsed.targetMint !== undefined) request.targetMint = parsed.targetMint;
+  if (parsed.cluster !== undefined) request.cluster = parsed.cluster;
+  if (parsed.payerHoldings !== undefined) request.payerHoldings = parsed.payerHoldings;
+  if (parsed.maxSlippageBps !== undefined) request.maxSlippageBps = parsed.maxSlippageBps;
+  return request;
 }
 
 async function readJsonBody(req: IncomingMessage): Promise<unknown> {

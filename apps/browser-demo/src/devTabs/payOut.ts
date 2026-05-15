@@ -1,34 +1,33 @@
 import './payOut.css';
-import { currentAddress } from '../connectionState.js';
 import { isDevWallet } from '../devGate.js';
 import { registerDevTab } from '../devTabRegistry.js';
+import { getConnectedAddress } from '../walletState.js';
 
-export interface AcpLineItem {
-  label: string;
-  quantity?: number;
-  amount: string;
+export interface AcpLineItemDisplay {
+  name: string;
+  quantity: number;
+  unitAmount: string;
 }
 
-export interface AcpMerchantInfo {
-  name?: string;
-  wallet?: string;
-}
-
-export interface AcpPreview {
-  cartId?: string;
-  merchant: AcpMerchantInfo;
-  recipient: string;
-  tokenMint: string;
-  tokenSymbol?: string;
-  lineItems: AcpLineItem[];
-  total: string;
-  totalRaw?: string;
+export interface AcpPreviewDisplay {
+  cartId: string;
+  cartVersion: string;
+  merchant: { name: string; recipient: string };
+  lineItems: AcpLineItemDisplay[];
+  totalAmount: string;
+  totalFiat: string;
+  paymentToken: string;
+  resolvedTokenMint: string;
+  cluster: string;
   memo?: string;
+  recipient: string;
+  transferAmount: string;
 }
 
 export interface ApprovalCreated {
   cartId: string;
   approvalId: string;
+  cartHash?: string;
 }
 
 export type Phase = 'compose' | 'preview';
@@ -41,24 +40,32 @@ interface NoticeInfo {
 export interface PanelState {
   phase: Phase;
   cartText: string;
-  preview: AcpPreview | null;
+  preview: AcpPreviewDisplay | null;
   error: string;
   notice: NoticeInfo | null;
   busy: boolean;
 }
 
+// Sample cart that round-trips through `validateAcpCart`:
+//   2 × $6.00 + 1 × $4.50 + 1 × $1.30 = $17.80 (matches totalAmount).
 export const SAMPLE_CART = JSON.stringify(
   {
-    merchant: { name: 'Acme Coffee', wallet: '7tQAS3PCEHKekfA5xkkFqRf9aCkqg8aLg5jLA7MwYc8M' },
-    recipient: '7tQAS3PCEHKekfA5xkkFqRf9aCkqg8aLg5jLA7MwYc8M',
-    tokenMint: 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v',
-    tokenSymbol: 'USDC',
+    id: 'cart_demo_001',
+    cartVersion: '1',
+    merchant: {
+      id: 'merchant_acme_coffee',
+      name: 'Acme Coffee',
+      recipient: '7tQAS3PCEHKekfA5xkkFqRf9aCkqg8aLg5jLA7MwYc8M',
+    },
     lineItems: [
-      { label: 'Latte', quantity: 2, amount: '12.00' },
-      { label: 'Croissant', quantity: 1, amount: '4.50' },
-      { label: 'Tax', amount: '1.30' },
+      { id: 'item_001', name: 'Latte', quantity: 2, unitAmount: '6.00', currency: 'USD' },
+      { id: 'item_002', name: 'Croissant', quantity: 1, unitAmount: '4.50', currency: 'USD' },
+      { id: 'item_003', name: 'Tax', quantity: 1, unitAmount: '1.30', currency: 'USD' },
     ],
-    total: '17.80',
+    totalAmount: '17.80',
+    currency: 'USD',
+    paymentToken: 'USDC',
+    cluster: 'mainnet-beta',
     memo: 'ACP order #demo-001',
   },
   null,
@@ -119,49 +126,87 @@ function isStringField(value: unknown): value is string {
   return typeof value === 'string' && value.length > 0;
 }
 
-export function normalizePreview(input: unknown): AcpPreview {
+function formatFiat(value: unknown): string {
+  if (typeof value === 'number' && Number.isFinite(value)) {
+    return `USD ${value.toFixed(2)}`;
+  }
+  if (isStringField(value)) {
+    const parsed = Number(value);
+    if (Number.isFinite(parsed)) return `USD ${parsed.toFixed(2)}`;
+    return value;
+  }
+  return '';
+}
+
+// Server returns { preview: { cart, transfer, totalFiat, resolvedTokenMint } }
+// where cart matches `AcpCart` and transfer matches `AcpTransferParams`.
+// See apps/render-web/src/cloud/acpRoutes.ts:106-113 and the contract test at
+// apps/render-web/src/__tests__/acp-api.test.ts:331-345.
+export function normalizePreview(input: unknown): AcpPreviewDisplay {
   if (!input || typeof input !== 'object') {
     throw new Error('Server returned an empty cart preview.');
   }
-  const raw = input as Record<string, unknown>;
-  const merchantRaw = (raw.merchant && typeof raw.merchant === 'object' ? raw.merchant : {}) as Record<string, unknown>;
-  const lineItemsRaw = Array.isArray(raw.lineItems) ? raw.lineItems : [];
-  const lineItems: AcpLineItem[] = [];
+  const env = input as Record<string, unknown>;
+  const cart = env.cart;
+  const transfer = env.transfer;
+  if (!cart || typeof cart !== 'object') throw new Error('Cart preview is missing the cart object.');
+  if (!transfer || typeof transfer !== 'object') throw new Error('Cart preview is missing the transfer object.');
+
+  const cartRec = cart as Record<string, unknown>;
+  const transferRec = transfer as Record<string, unknown>;
+  const merchantRaw = (cartRec.merchant && typeof cartRec.merchant === 'object'
+    ? (cartRec.merchant as Record<string, unknown>)
+    : {});
+
+  const merchantName = isStringField(merchantRaw.name) ? merchantRaw.name : 'Unknown merchant';
+  const merchantRecipient = isStringField(merchantRaw.recipient) ? merchantRaw.recipient : '';
+
+  const lineItemsRaw = Array.isArray(cartRec.lineItems) ? cartRec.lineItems : [];
+  const lineItems: AcpLineItemDisplay[] = [];
   for (const item of lineItemsRaw) {
     if (!item || typeof item !== 'object') continue;
     const row = item as Record<string, unknown>;
-    const label = isStringField(row.label) ? row.label : '';
-    const amount = isStringField(row.amount) ? row.amount : '';
-    if (!label || !amount) continue;
-    const entry: AcpLineItem = { label, amount };
-    if (typeof row.quantity === 'number' && Number.isFinite(row.quantity)) {
-      entry.quantity = row.quantity;
-    }
-    lineItems.push(entry);
+    const name = isStringField(row.name) ? row.name : '';
+    const unitAmount = isStringField(row.unitAmount) ? row.unitAmount : '';
+    if (!name || !unitAmount) continue;
+    const quantityRaw = row.quantity;
+    const quantity = typeof quantityRaw === 'number' && Number.isFinite(quantityRaw)
+      ? quantityRaw
+      : Number(quantityRaw ?? 1);
+    lineItems.push({ name, unitAmount, quantity: Number.isFinite(quantity) ? quantity : 1 });
   }
 
-  const recipient = isStringField(raw.recipient) ? raw.recipient : '';
-  const tokenMint = isStringField(raw.tokenMint) ? raw.tokenMint : '';
-  const total = isStringField(raw.total) ? raw.total : '';
+  const cartId = isStringField(cartRec.id) ? cartRec.id : '';
+  const cartVersion = isStringField(cartRec.cartVersion) ? cartRec.cartVersion : '1';
+  const totalAmount = isStringField(cartRec.totalAmount) ? cartRec.totalAmount : '';
+  const paymentToken = isStringField(cartRec.paymentToken) ? cartRec.paymentToken : 'USDC';
+  const cluster = isStringField(cartRec.cluster) ? cartRec.cluster : 'mainnet-beta';
+  const memo = isStringField(cartRec.memo) ? cartRec.memo : undefined;
+  const resolvedTokenMint = isStringField(env.resolvedTokenMint) ? env.resolvedTokenMint : '';
+  const transferRecipient = isStringField(transferRec.recipient) ? transferRec.recipient : merchantRecipient;
+  const transferAmount = isStringField(transferRec.amount) ? transferRec.amount : totalAmount;
 
-  if (!recipient || !tokenMint || !total) {
-    throw new Error('Cart preview is missing recipient, tokenMint, or total.');
+  if (!totalAmount || !transferRecipient) {
+    throw new Error('Cart preview is missing totalAmount or transfer.recipient.');
   }
 
-  return {
-    cartId: isStringField(raw.cartId) ? raw.cartId : undefined,
-    merchant: {
-      name: isStringField(merchantRaw.name) ? merchantRaw.name : undefined,
-      wallet: isStringField(merchantRaw.wallet) ? merchantRaw.wallet : undefined,
-    },
-    recipient,
-    tokenMint,
-    tokenSymbol: isStringField(raw.tokenSymbol) ? raw.tokenSymbol : undefined,
+  const result: AcpPreviewDisplay = {
+    cartId,
+    cartVersion,
+    merchant: { name: merchantName, recipient: merchantRecipient },
     lineItems,
-    total,
-    totalRaw: isStringField(raw.totalRaw) ? raw.totalRaw : undefined,
-    memo: isStringField(raw.memo) ? raw.memo : undefined,
+    totalAmount,
+    totalFiat: formatFiat(env.totalFiat),
+    paymentToken,
+    resolvedTokenMint,
+    cluster,
+    recipient: transferRecipient,
+    transferAmount,
   };
+  if (memo !== undefined) {
+    result.memo = memo;
+  }
+  return result;
 }
 
 export function renderPayOutPanel(): string {
@@ -213,63 +258,64 @@ function composeView(cartText: string, busy: boolean): string {
   `;
 }
 
-function previewView(preview: AcpPreview, busy: boolean): string {
+function previewView(preview: AcpPreviewDisplay, busy: boolean): string {
   const disabled = busy ? 'disabled' : '';
-  const merchantName = preview.merchant.name ?? 'Unknown merchant';
-  const merchantWallet = preview.merchant.wallet ?? '';
-  const token = preview.tokenSymbol ?? 'token';
   const lineRows = preview.lineItems
     .map(
       (item) => `
         <tr>
-          <td>${escapeHtml(item.label)}${
-            typeof item.quantity === 'number' && item.quantity > 1
-              ? ` <span aria-hidden="true">× ${item.quantity}</span>`
-              : ''
+          <td>${escapeHtml(item.name)}${
+            item.quantity > 1 ? ` <span aria-hidden="true">× ${item.quantity}</span>` : ''
           }</td>
-          <td class="amount">${escapeHtml(item.amount)}</td>
+          <td class="amount">${escapeHtml(item.unitAmount)}</td>
         </tr>
       `,
     )
     .join('');
 
+  const mintHint = preview.resolvedTokenMint
+    ? `<span class="muted" title="${escapeHtml(preview.resolvedTokenMint)}">(${escapeHtml(shortAddress(preview.resolvedTokenMint))})</span>`
+    : '';
+  const fiatHint = preview.totalFiat
+    ? `<span class="pay-out-fiat-hint">${escapeHtml(preview.totalFiat)}</span>`
+    : '';
+  const memoRow = preview.memo
+    ? `<dt>Memo</dt><dd>${escapeHtml(preview.memo)}</dd>`
+    : '';
+  const merchantWalletHint = preview.merchant.recipient
+    ? `<span class="muted" title="${escapeHtml(preview.merchant.recipient)}">(${escapeHtml(shortAddress(preview.merchant.recipient))})</span>`
+    : '';
+
   return `
     <div class="pay-out-preview" data-pay-out-preview>
       <dl class="pay-out-meta">
         <dt>Merchant</dt>
-        <dd>${escapeHtml(merchantName)}${
-          merchantWallet
-            ? ` <span class="muted">(${escapeHtml(shortAddress(merchantWallet))})</span>`
-            : ''
-        }</dd>
+        <dd>${escapeHtml(preview.merchant.name)} ${merchantWalletHint}</dd>
         <dt>Recipient</dt>
         <dd title="${escapeHtml(preview.recipient)}">${escapeHtml(shortAddress(preview.recipient))}</dd>
-        <dt>Token</dt>
-        <dd>${escapeHtml(token)}${
-          preview.tokenMint
-            ? ` <span class="muted" title="${escapeHtml(preview.tokenMint)}">(${escapeHtml(shortAddress(preview.tokenMint))})</span>`
-            : ''
-        }</dd>
-        ${
-          preview.memo
-            ? `<dt>Memo</dt><dd>${escapeHtml(preview.memo)}</dd>`
-            : ''
-        }
+        <dt>Pay with</dt>
+        <dd>${escapeHtml(preview.paymentToken)} ${mintHint}</dd>
+        <dt>Cluster</dt>
+        <dd>${escapeHtml(preview.cluster)}</dd>
+        ${memoRow}
       </dl>
 
       <table class="pay-out-line-items" aria-label="Line items">
         <thead>
-          <tr><th scope="col">Item</th><th scope="col" class="amount">Amount</th></tr>
+          <tr><th scope="col">Item</th><th scope="col" class="amount">Unit amount</th></tr>
         </thead>
         <tbody>${lineRows}</tbody>
       </table>
 
       <div class="pay-out-total">
         <span class="label">Total</span>
-        <span><span aria-hidden="true">${escapeHtml(token)} </span>${escapeHtml(preview.total)}</span>
+        <span>
+          <span aria-hidden="true">${escapeHtml(preview.paymentToken)} </span>${escapeHtml(preview.totalAmount)}
+          ${fiatHint}
+        </span>
       </div>
 
-      <p class="pay-out-disclaimer">Confirming creates a single approval in Needs Approval. Your wallet signs the SPL transfer there — nothing is sent automatically.</p>
+      <p class="pay-out-disclaimer">Confirming creates an approval card in Needs Approval. The wallet you connect there signs the SPL transfer — nothing is sent automatically.</p>
 
       <div class="pay-out-actions">
         <button type="button" class="pay-out-button secondary" data-pay-out-action="edit" ${disabled}>← Edit cart</button>
@@ -309,8 +355,8 @@ type FetchResult<T> =
 
 async function extractErrorMessage(res: Response, fallback: string): Promise<string> {
   try {
-    const body = (await res.json()) as { error?: string; detail?: string; message?: string };
-    return body.detail ?? body.error ?? body.message ?? fallback;
+    const body = (await res.json()) as { error?: string; detail?: string; message?: string; path?: string };
+    return body.message ?? body.detail ?? body.error ?? fallback;
   } catch {
     return fallback;
   }
@@ -346,7 +392,7 @@ async function postJson<T>(path: string, body: unknown): Promise<FetchResult<T>>
   }
 }
 
-export async function previewCart(cart: unknown): Promise<FetchResult<AcpPreview>> {
+export async function previewCart(cart: unknown): Promise<FetchResult<AcpPreviewDisplay>> {
   const result = await postJson<{ preview?: unknown }>('/api/acp/cart/preview', { cart });
   if (result.kind !== 'ok') return result;
   try {
@@ -358,20 +404,35 @@ export async function previewCart(cart: unknown): Promise<FetchResult<AcpPreview
   }
 }
 
+// Server returns { approval: ApprovalRequestRecord, cartId, cartHash }
+// (see apps/render-web/src/cloud/acpRoutes.ts:190-194 and the contract test
+// at apps/render-web/src/__tests__/acp-api.test.ts:410-436).
 export async function approveCart(cart: unknown): Promise<FetchResult<ApprovalCreated>> {
-  const result = await postJson<{ cartId?: string; approvalId?: string }>('/api/acp/cart/approve', { cart });
+  const result = await postJson<{
+    approval?: { id?: unknown } | null;
+    cartId?: unknown;
+    cartHash?: unknown;
+  }>('/api/acp/cart/approve', { cart });
   if (result.kind !== 'ok') return result;
-  const { cartId, approvalId } = result.value;
-  if (!isStringField(cartId) || !isStringField(approvalId)) {
-    return { kind: 'error', message: 'Server did not return cartId + approvalId.' };
+  const approvalIdRaw = result.value.approval && typeof result.value.approval === 'object'
+    ? (result.value.approval as { id?: unknown }).id
+    : undefined;
+  const cartIdRaw = result.value.cartId;
+  if (!isStringField(approvalIdRaw) || !isStringField(cartIdRaw)) {
+    return { kind: 'error', message: 'Server did not return approval.id and cartId.' };
   }
-  return { kind: 'ok', value: { cartId, approvalId } };
+  const created: ApprovalCreated = { cartId: cartIdRaw, approvalId: approvalIdRaw };
+  const cartHashRaw = result.value.cartHash;
+  if (isStringField(cartHashRaw)) {
+    created.cartHash = cartHashRaw;
+  }
+  return { kind: 'ok', value: created };
 }
 
 function notDeployedNotice(): NoticeInfo {
   return {
     title: 'ACP backend not deployed yet',
-    body: '/api/acp/cart/preview returned 404. The Pay Out tab lights up once Agents 2 (packages/acp-adapter) and 6 (apps/render-web/src/cloud/acpRoutes.ts) ship.',
+    body: '/api/acp/cart/* returned 404. Server-side ACP routes are not live on this deployment.',
   };
 }
 
@@ -508,7 +569,7 @@ async function runConfirm(): Promise<void> {
   const result = await approveCart(cart ?? {});
   panelState.busy = false;
   if (result.kind === 'ok') {
-    showToast(`Sent to Needs Approval · ${shortAddress(result.value.approvalId)}`);
+    showToast(`Approval ready · ${shortAddress(result.value.approvalId)} — sign in Needs Approval`);
     panelState.phase = 'compose';
     panelState.cartText = '';
     panelState.preview = null;
@@ -555,6 +616,6 @@ registerDevTab({
   id: 'pay-out',
   label: 'Pay Out',
   mobileLabel: 'Pay',
-  guard: () => isDevWallet(currentAddress()),
+  guard: () => isDevWallet(getConnectedAddress()),
   render: renderPayOutPanel,
 });

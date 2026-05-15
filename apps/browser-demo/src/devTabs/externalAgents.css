@@ -3,11 +3,22 @@
   padding: 0.5rem 0;
 }
 .external-agents-panel > summary {
+  align-items: center;
   cursor: pointer;
   display: flex;
-  align-items: baseline;
   gap: 0.5rem;
+  justify-content: space-between;
   padding: 0.5rem 0.75rem;
+}
+.external-agents-summary-text {
+  align-items: baseline;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+}
+.external-agents-summary-actions {
+  display: flex;
+  gap: 0.5rem;
 }
 .external-agents-sub {
   color: rgba(213, 223, 219, 0.65);
@@ -85,4 +96,59 @@
 .external-agents-error p {
   color: rgba(244, 154, 154, 0.92);
   margin: 0;
+}
+.external-agents-row.terminal {
+  opacity: 0.62;
+}
+.external-agents-row-summary {
+  color: rgba(213, 223, 219, 0.85);
+  font-size: 0.78rem;
+  margin: 0.15rem 0 0.25rem;
+}
+.external-agents-row-status.status-pill {
+  border-radius: 999px;
+  font-size: 0.62rem;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  line-height: 1;
+  padding: 3px 7px;
+  text-transform: uppercase;
+}
+.external-agents-row-status.status-pill.pending {
+  background: rgba(244, 192, 132, 0.16);
+  border: 1px solid rgba(244, 192, 132, 0.34);
+  color: rgba(244, 192, 132, 0.95);
+}
+.external-agents-row-status.status-pill.approved {
+  background: rgba(122, 217, 182, 0.16);
+  border: 1px solid rgba(122, 217, 182, 0.38);
+  color: rgba(122, 217, 182, 0.95);
+}
+.external-agents-row-status.status-pill.terminated {
+  background: rgba(244, 154, 154, 0.16);
+  border: 1px solid rgba(244, 154, 154, 0.36);
+  color: rgba(244, 154, 154, 0.95);
+}
+.external-agents-row-status.status-pill.neutral {
+  background: rgba(224, 230, 226, 0.1);
+  border: 1px solid rgba(224, 230, 226, 0.18);
+  color: rgba(224, 230, 226, 0.82);
+}
+.external-agents-row-recipient,
+.external-agents-row-kind,
+.external-agents-row-cluster {
+  color: rgba(213, 223, 219, 0.7);
+  font-size: 0.7rem;
+}
+.external-agents-row-cluster {
+  background: rgba(122, 217, 182, 0.08);
+  border-radius: 999px;
+  padding: 2px 8px;
+}
+@keyframes external-agents-flash {
+  0%, 100% { box-shadow: 0 0 0 0 rgba(122, 217, 182, 0); }
+  35% { box-shadow: 0 0 0 4px rgba(122, 217, 182, 0.55); }
+}
+.external-agents-flash {
+  animation: external-agents-flash 1.4s ease-out 1;
 }

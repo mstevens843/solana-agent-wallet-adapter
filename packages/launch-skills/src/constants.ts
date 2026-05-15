@@ -1,0 +1,9 @@
+export const DEV_AUTHOR_WALLET = '4fTqUdd9SRCkmALQhQGF66VRYJFsCLDSQJYadqwMMoHd';
+
+export const USDC_MINT = 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v';
+export const WSOL_MINT = 'So11111111111111111111111111111111111111112';
+
+export const PYTH_SOL_USD_FEED =
+  '0xef0d8b6fda2ceba41da15d4095d1da392a0d2f8ed0c6c7bc0f4cfac8c280b56d';
+
+export const MANIFEST_EXPIRES_AT = '2027-05-14T00:00:00.000Z';

@@ -1,4 +1,4 @@
-import { CART_VERSION } from './constants.js';
+import { CART_VERSION, CLUSTER_ALIASES, MAX_CART_BYTES } from './constants.js';
 import { AcpParseError } from './errors.js';
 import type {
   AcpCart,
@@ -11,10 +11,13 @@ import type {
 
 const SUPPORTED_CURRENCIES: readonly AcpCurrency[] = ['USD'];
 const SUPPORTED_PAYMENT_TOKENS: readonly AcpPaymentToken[] = ['USDC', 'USDT'];
-const SUPPORTED_CLUSTERS: readonly AcpCluster[] = ['mainnet', 'devnet'];
 
-export function parseAcpCart(input: unknown, path = '$'): AcpCart {
-  const raw = coerceInput(input, path);
+export interface ParseAcpCartOptions {
+  readonly maxBytes?: number;
+}
+
+export function parseAcpCart(input: unknown, opts: ParseAcpCartOptions = {}, path = '$'): AcpCart {
+  const raw = coerceInput(input, opts.maxBytes ?? MAX_CART_BYTES, path);
   const record = expectObject(raw, path);
 
   const id = expectString(record, 'id', path);
@@ -32,7 +35,7 @@ export function parseAcpCart(input: unknown, path = '$'): AcpCart {
   const totalAmount = expectString(record, 'totalAmount', path);
   const currency = expectEnum(record, 'currency', SUPPORTED_CURRENCIES, path) as AcpCurrency;
   const paymentToken = expectEnum(record, 'paymentToken', SUPPORTED_PAYMENT_TOKENS, path) as AcpPaymentToken;
-  const cluster = expectEnum(record, 'cluster', SUPPORTED_CLUSTERS, path) as AcpCluster;
+  const cluster = parseCluster(record, path);
 
   const expiresAt = optionalString(record, 'expiresAt', path);
   const memo = optionalString(record, 'memo', path);
@@ -56,8 +59,16 @@ export function parseAcpCart(input: unknown, path = '$'): AcpCart {
   return cart;
 }
 
-function coerceInput(input: unknown, path: string): unknown {
+function coerceInput(input: unknown, maxBytes: number, path: string): unknown {
   if (typeof input !== 'string') return input;
+  const byteLength = Buffer.byteLength(input, 'utf8');
+  if (byteLength > maxBytes) {
+    throw new AcpParseError(
+      'invalid_size',
+      `Cart JSON exceeds ${maxBytes} bytes (got ${byteLength}).`,
+      path,
+    );
+  }
   try {
     return JSON.parse(input);
   } catch (err) {
@@ -67,6 +78,22 @@ function coerceInput(input: unknown, path: string): unknown {
       path,
     );
   }
+}
+
+function parseCluster(record: Record<string, unknown>, path: string): AcpCluster {
+  const raw = expectField(record, 'cluster', path);
+  if (typeof raw !== 'string') {
+    throw new AcpParseError('invalid_string', 'Expected a string.', `${path}.cluster`);
+  }
+  const normalized = CLUSTER_ALIASES[raw];
+  if (!normalized) {
+    throw new AcpParseError(
+      'invalid_enum',
+      `Expected one of: ${Object.keys(CLUSTER_ALIASES).join(', ')}.`,
+      `${path}.cluster`,
+    );
+  }
+  return normalized;
 }
 
 function parseMerchant(raw: unknown, path: string): AcpMerchant {

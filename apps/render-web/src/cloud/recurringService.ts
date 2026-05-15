@@ -1135,12 +1135,19 @@ function assertCreateRecurringScheduleStatus(status: CreateRecurringRequest['sta
 
 function assertCloudRecurringScheduleSupported(input: Pick<RecurringScheduleRecord | CreateRecurringRequest | UpdateRecurringRequest, 'actionKind' | 'token' | 'outputToken'>): void {
   if (input.actionKind === 'swap' || input.outputToken) return;
-  if (input.token?.toUpperCase() === 'SOL') return;
+  if (isSupportedCloudTransferToken(input.token)) return;
   throw new RecurringServiceError(
     409,
     'unsupported_cloud_recurring_token',
-    'Agentic Cloud recurring execution currently supports SOL schedules only.',
+    'Agentic Cloud recurring execution currently supports SOL and USDC transfer schedules only.',
   );
+}
+
+function isSupportedCloudTransferToken(token: string | undefined): boolean {
+  const normalized = token?.trim().toUpperCase();
+  return normalized === 'SOL' ||
+    normalized === 'USDC' ||
+    normalized === 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v'.toUpperCase();
 }
 
 function mapApprovalStatusToOccurrence(

@@ -408,6 +408,13 @@ describe('render web cloud wallet auth', () => {
           completedRecords: 1,
           recurringSchedules: 1,
           evidenceReceipts: 1,
+          skillManifests: 1,
+          skillInstalls: 1,
+          skillExecutions: 1,
+          signalFeeds: 1,
+          signalSubscriptions: 1,
+          signalEmissions: 1,
+          aggregatorSnapshots: 2,
         },
       });
       expect(firstSetCookie(deleted)).toContain('Max-Age=0');
@@ -427,6 +434,16 @@ describe('render web cloud wallet auth', () => {
       expect((await getJson(port, '/api/evidence', { cookie: nextCookie })).body.receipts).toEqual([]);
       expect((await getJson(port, '/api/recurring', { cookie: nextCookie })).body.schedules).toEqual([]);
       expect((await getJson(port, '/api/audit', { cookie: nextCookie })).body.events).toEqual([]);
+      expect(await store.getSkillManifest('delete-skill')).toBeUndefined();
+      expect(await store.getSkillManifest('kept-skill')).toMatchObject({ id: 'kept-skill' });
+      expect(await store.listSkillInstallsForWallet(wallet.walletAddress)).toEqual([]);
+      expect(await store.listSkillExecutionsByInstall('skill_install_delete')).toEqual([]);
+      expect(await store.listSignalFeedsByPublisher(wallet.walletAddress)).toEqual([]);
+      expect(await store.listSignalSubscriptionsForFollower(wallet.walletAddress)).toEqual([]);
+      expect(await store.listUndeliveredSignalEmissions()).toEqual([]);
+      expect(await store.getAggregatorSnapshot(`wallet:${wallet.walletAddress}`)).toBeUndefined();
+      expect(await store.getAggregatorSnapshot('skill:delete-skill')).toBeUndefined();
+      expect(await store.getAggregatorSnapshot('skill:kept-skill')).toMatchObject({ key: 'skill:kept-skill' });
     }, { store });
   });
 
@@ -654,6 +671,175 @@ async function seedCloudWorkspace(
       recordType: 'approval',
       recordId: approval.id,
     },
+  });
+  await store.saveSkillManifest({
+    id: 'delete-skill',
+    version: '1.0.0',
+    authorWallet: walletAddress,
+    createdAt: now,
+    updatedAt: now,
+    manifest: {
+      id: 'delete-skill',
+      name: 'Delete Skill',
+      version: '1.0.0',
+      authorWallet: walletAddress,
+      description: 'Skill slated for workspace deletion',
+      category: 'custom',
+      schedule: { kind: 'interval', spec: '7d' },
+      action: { connectorAction: 'prepare_swap', paramsTemplate: { inputToken: 'USDC', amount: '1' } },
+      caps: {
+        perRunMaxAmount: '1',
+        lifetimeMaxAmount: '10',
+        allowlistedTokens: ['USDC'],
+      },
+    },
+  });
+  await store.saveSkillManifest({
+    id: 'kept-skill',
+    version: '1.0.0',
+    authorWallet: recipient,
+    createdAt: now,
+    updatedAt: now,
+    manifest: {
+      id: 'kept-skill',
+      name: 'Kept Skill',
+      version: '1.0.0',
+      authorWallet: recipient,
+      description: 'Skill owned by another wallet',
+      category: 'custom',
+      schedule: { kind: 'interval', spec: '7d' },
+      action: { connectorAction: 'prepare_swap', paramsTemplate: { inputToken: 'USDC', amount: '1' } },
+      caps: {
+        perRunMaxAmount: '1',
+        lifetimeMaxAmount: '10',
+        allowlistedTokens: ['USDC'],
+      },
+    },
+  });
+  await store.saveSkillInstall({
+    id: 'skill_install_delete',
+    walletAddress,
+    skillId: 'delete-skill',
+    status: 'active',
+    installedAt: now,
+    updatedAt: now,
+    install: {
+      id: 'skill_install_delete',
+      walletAddress,
+      skillId: 'delete-skill',
+      manifestVersion: '1.0.0',
+      caps: {
+        perRunMaxAmount: '1',
+        lifetimeMaxAmount: '10',
+        allowlistedTokens: ['USDC'],
+      },
+      installedAt: now,
+      updatedAt: now,
+      status: 'active',
+    },
+  });
+  await store.saveSkillExecution({
+    id: 'skill_exec_delete',
+    installId: 'skill_install_delete',
+    walletAddress,
+    skillId: 'delete-skill',
+    proposedAt: now,
+    result: 'success',
+    execution: {
+      id: 'skill_exec_delete',
+      installId: 'skill_install_delete',
+      walletAddress,
+      skillId: 'delete-skill',
+      proposedAt: now,
+      result: 'success',
+    },
+  });
+  await store.saveSignalFeed({
+    id: 'feed_delete',
+    publisherWallet: walletAddress,
+    status: 'active',
+    createdAt: now,
+    updatedAt: now,
+    feed: {
+      id: 'feed_delete',
+      publisherWallet: walletAddress,
+      name: 'Delete feed',
+      description: 'Feed slated for deletion',
+      createdAt: now,
+      updatedAt: now,
+      status: 'active',
+    },
+  });
+  await store.saveSignalFeed({
+    id: 'feed_keep',
+    publisherWallet: recipient,
+    status: 'active',
+    createdAt: now,
+    updatedAt: now,
+    feed: {
+      id: 'feed_keep',
+      publisherWallet: recipient,
+      name: 'Kept feed',
+      description: 'Feed owned by another wallet',
+      createdAt: now,
+      updatedAt: now,
+      status: 'active',
+    },
+  });
+  await store.saveSignalSubscription({
+    id: 'sub_delete',
+    followerWallet: walletAddress,
+    feedId: 'feed_keep',
+    status: 'active',
+    subscribedAt: now,
+    updatedAt: now,
+    subscription: {
+      id: 'sub_delete',
+      followerWallet: walletAddress,
+      feedId: 'feed_keep',
+      status: 'active',
+      subscribedAt: now,
+      updatedAt: now,
+      caps: {
+        perRunMaxAmount: '1',
+        lifetimeMaxAmount: '10',
+        allowlistedTokens: ['USDC'],
+      },
+    },
+  });
+  await store.saveSignalEmission({
+    id: 'emission_delete',
+    feedId: 'feed_delete',
+    publisherWallet: walletAddress,
+    emittedAt: now,
+    delivered: 0,
+    emission: {
+      id: 'emission_delete',
+      feedId: 'feed_delete',
+      publisherWallet: walletAddress,
+      emittedAt: now,
+      sourceTxid: '5'.repeat(64),
+      actionTemplate: { connectorAction: 'prepare_swap', inputToken: 'USDC', amount: '1' },
+      delivered: 0,
+    },
+  });
+  await store.saveAggregatorSnapshot({
+    key: `wallet:${walletAddress}`,
+    kind: 'wallet',
+    computedAt: now,
+    snapshot: { walletAddress, totalExecutions: 1 },
+  });
+  await store.saveAggregatorSnapshot({
+    key: 'skill:delete-skill',
+    kind: 'skill',
+    computedAt: now,
+    snapshot: { skillId: 'delete-skill', totalExecutions: 1 },
+  });
+  await store.saveAggregatorSnapshot({
+    key: 'skill:kept-skill',
+    kind: 'skill',
+    computedAt: now,
+    snapshot: { skillId: 'kept-skill', totalExecutions: 1 },
   });
 }
 

@@ -58,6 +58,9 @@ export async function findOptimalSettlement(
   };
 }
 
+// All current sources emit valid finite decimal strings, so the localeCompare
+// fallback is defensive only — it would only fire if a future source returned
+// 'NaN' / 'Infinity' / non-numeric content.
 function compareDecimalStrings(a: string, b: string): number {
   const na = Number(a);
   const nb = Number(b);

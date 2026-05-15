@@ -1,0 +1,328 @@
+.skills-browse-root {
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+  padding: 24px 28px;
+  background: rgba(255, 255, 255, 0.024);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+}
+
+.skills-browse-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+  flex-wrap: wrap;
+}
+
+.skills-browse-header h2 {
+  font-size: 1.25rem;
+  margin: 0 0 4px;
+  letter-spacing: 0;
+}
+
+.skills-browse-header p {
+  color: var(--muted);
+  font-size: 0.92rem;
+  line-height: 1.45;
+  margin: 0;
+  max-width: 60ch;
+}
+
+.skills-browse-header-actions {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+
+.skills-browse-error,
+.skills-browse-notice {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 11px 14px;
+  border-radius: var(--radius);
+  font-size: 0.9rem;
+  line-height: 1.45;
+}
+
+.skills-browse-error {
+  background: var(--danger-soft);
+  border: 1px solid rgba(239, 111, 120, 0.28);
+  color: #fecaca;
+}
+
+.skills-browse-notice {
+  background: var(--accent-soft);
+  border: 1px solid rgba(63, 189, 131, 0.24);
+  color: var(--accent-2);
+}
+
+.skills-browse-error strong,
+.skills-browse-notice strong {
+  display: block;
+  margin-bottom: 2px;
+}
+
+.skills-browse-error .dismiss,
+.skills-browse-notice .dismiss {
+  background: transparent;
+  border: none;
+  color: inherit;
+  cursor: pointer;
+  font-size: 1.1rem;
+  line-height: 1;
+  padding: 0 4px;
+  opacity: 0.7;
+}
+
+.skills-browse-error .dismiss:hover,
+.skills-browse-notice .dismiss:hover {
+  opacity: 1;
+}
+
+.skills-browse-loading,
+.skills-browse-empty {
+  color: var(--muted);
+  font-size: 0.95rem;
+  padding: 28px 8px;
+  text-align: center;
+}
+
+.skills-browse-grid {
+  display: grid;
+  gap: 16px;
+  grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+}
+
+.skills-browse-card {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 18px 18px 16px;
+  background: rgba(0, 0, 0, 0.2);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+}
+
+.skills-browse-card-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.skills-browse-card-head h3 {
+  font-size: 1.02rem;
+  font-weight: 600;
+  margin: 0;
+  letter-spacing: 0;
+  color: var(--text);
+}
+
+.skills-browse-category {
+  background: rgba(255, 255, 255, 0.06);
+  border-radius: 999px;
+  color: var(--muted);
+  font-size: 0.7rem;
+  font-weight: 600;
+  letter-spacing: 0;
+  padding: 3px 9px;
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+
+.skills-browse-card-description {
+  color: var(--muted);
+  font-size: 0.86rem;
+  line-height: 1.5;
+  margin: 0;
+  /* Clamp to a comfortable 4-line preview. */
+  display: -webkit-box;
+  -webkit-line-clamp: 4;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+.skills-browse-stats {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 4px 12px;
+  margin: 2px 0 0;
+}
+
+.skills-browse-stats dt {
+  color: var(--dim);
+  font-size: 0.72rem;
+  font-weight: 600;
+  letter-spacing: 0;
+  text-transform: uppercase;
+}
+
+.skills-browse-stats dd {
+  color: var(--text);
+  font-size: 0.92rem;
+  font-variant-numeric: tabular-nums;
+  margin: 0 0 6px;
+}
+
+.skills-browse-monetization {
+  color: var(--muted);
+  font-size: 0.78rem;
+  margin: 0;
+}
+
+.skills-browse-install-params {
+  display: grid;
+  gap: 8px;
+  margin-top: 2px;
+}
+
+.skills-browse-param-field {
+  display: grid;
+  gap: 5px;
+}
+
+.skills-browse-param-field span {
+  color: var(--dim);
+  font-size: 0.72rem;
+  font-weight: 600;
+  letter-spacing: 0;
+  text-transform: uppercase;
+}
+
+.skills-browse-param-field input {
+  width: 100%;
+  min-width: 0;
+  box-sizing: border-box;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.035);
+  color: var(--text);
+  font: inherit;
+  font-size: 0.84rem;
+  padding: 8px 10px;
+}
+
+.skills-browse-param-field input:focus {
+  outline: none;
+  border-color: rgba(63, 189, 131, 0.55);
+  box-shadow: 0 0 0 2px rgba(63, 189, 131, 0.12);
+}
+
+.skills-browse-param-error {
+  color: #fecaca;
+  font-size: 0.78rem;
+  margin: 0;
+}
+
+.skills-browse-card-footer {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  margin-top: 4px;
+}
+
+.skills-browse-button {
+  appearance: none;
+  -webkit-appearance: none;
+  border: 1px solid transparent;
+  padding: 7px 14px;
+  border-radius: 999px;
+  font-size: 0.88rem;
+  font-weight: 600;
+  cursor: pointer;
+  background: var(--accent);
+  color: #0a1c12;
+  transition: opacity 120ms ease, transform 120ms ease;
+}
+
+.skills-browse-button:hover {
+  opacity: 0.92;
+}
+
+.skills-browse-button:active {
+  transform: translateY(1px);
+}
+
+.skills-browse-button[disabled] {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.skills-browse-button.refresh {
+  background: transparent;
+  border-color: var(--line-strong);
+  color: var(--text);
+  font-weight: 500;
+  padding: 6px 12px;
+}
+
+.skills-browse-button.refresh:hover {
+  background: rgba(255, 255, 255, 0.04);
+}
+
+.skills-browse-installed {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 11px;
+  border-radius: 999px;
+  background: var(--accent-soft);
+  border: 1px solid rgba(63, 189, 131, 0.32);
+  color: var(--accent-2);
+  font-size: 0.8rem;
+  font-weight: 600;
+}
+
+.skills-browse-installed::before {
+  content: '✓';
+  font-size: 0.85rem;
+  line-height: 1;
+}
+
+.skills-browse-installed.paused {
+  background: rgba(214, 168, 79, 0.1);
+  border-color: rgba(214, 168, 79, 0.3);
+  color: var(--warn);
+}
+
+.skills-browse-installed.paused::before {
+  content: '⏸';
+}
+
+.skills-browse-toast {
+  position: fixed;
+  bottom: 24px;
+  right: 24px;
+  z-index: 9999;
+  padding: 11px 16px;
+  border-radius: var(--radius);
+  background: #1a3a28;
+  border: 1px solid rgba(63, 189, 131, 0.35);
+  color: var(--accent-2);
+  font-size: 0.9rem;
+  font-weight: 500;
+  box-shadow: 0 14px 40px rgba(0, 0, 0, 0.32);
+  opacity: 0;
+  transform: translateY(8px);
+  transition: opacity 160ms ease, transform 160ms ease;
+  pointer-events: none;
+  max-width: 380px;
+}
+
+.skills-browse-toast.visible {
+  opacity: 1;
+  transform: translateY(0);
+}
+
+@media (max-width: 600px) {
+  .skills-browse-root {
+    padding: 18px 16px;
+  }
+  .skills-browse-grid {
+    grid-template-columns: 1fr;
+  }
+}

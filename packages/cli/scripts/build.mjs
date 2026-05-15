@@ -12,6 +12,37 @@ const repoRoot = join(cliRoot, '..', '..');
 const browserDist = join(repoRoot, 'apps', 'browser-demo', 'dist');
 const distDir = join(cliRoot, 'dist');
 const walletHostDist = join(distDir, 'wallet-host');
+const optionalNativeModuleFilter =
+  /^(?:@triton-one\/yellowstone-grpc|helius-laserstream|@triton-one\/yellowstone-grpc-napi-.+|yellowstone-grpc-napi-.+|helius-laserstream-.+)$/;
+
+const optionalNativeStubPlugin = {
+  name: 'optional-native-stub',
+  setup(build) {
+    build.onResolve({ filter: optionalNativeModuleFilter }, (args) => ({
+      path: args.path,
+      namespace: 'optional-native-stub',
+    }));
+    build.onLoad({ filter: /.*/, namespace: 'optional-native-stub' }, (args) => ({
+      loader: 'js',
+      contents: `
+const unavailable = () => {
+  throw new Error(${JSON.stringify(`Optional native module ${args.path} is not bundled in the Agentic CLI.`)});
+};
+class OptionalNativeClient {
+  constructor() {
+    unavailable();
+  }
+}
+module.exports = OptionalNativeClient;
+module.exports.default = OptionalNativeClient;
+module.exports.CommitmentLevel = {};
+module.exports.CompressionAlgorithms = {};
+module.exports.LaserCommitmentLevel = {};
+module.exports.subscribe = unavailable;
+`,
+    }));
+  },
+};
 
 if (!existsSync(join(browserDist, 'index.html'))) {
   throw new Error(`Browser wallet host build is missing at ${browserDist}.`);
@@ -25,12 +56,23 @@ await build({
   format: 'esm',
   target: 'node20',
   sourcemap: true,
+  plugins: [optionalNativeStubPlugin],
   banner: {
-    js: 'import { createRequire as __agenticCreateRequire } from "node:module";\nconst require = __agenticCreateRequire(import.meta.url);',
+    js: [
+      'import { createRequire as __agenticCreateRequire } from "node:module";',
+      'import { fileURLToPath as __agenticFileURLToPath } from "node:url";',
+      'import { dirname as __agenticDirname } from "node:path";',
+      'const require = __agenticCreateRequire(import.meta.url);',
+      'const __filename = __agenticFileURLToPath(import.meta.url);',
+      'const __dirname = __agenticDirname(__filename);',
+    ].join('\n'),
   },
   external: [
     'bufferutil',
     'utf-8-validate',
+    '*.node',
+    '@triton-one/yellowstone-grpc-napi-darwin-arm64',
+    'helius-laserstream-darwin-arm64',
   ],
 });
 
