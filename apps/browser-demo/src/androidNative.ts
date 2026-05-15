@@ -25,6 +25,7 @@ export interface AndroidNativeRestoreResult {
 
 export interface AndroidNativeWalletBackendOptions {
   cluster: Cluster;
+  rpcUrl?: string;
 }
 
 interface AndroidNativeBridge {
@@ -94,11 +95,17 @@ export async function restoreLatestAndroidNativeWallet(
 
 export class AndroidNativeWalletBackend implements WalletBackend {
   private readonly cluster: Cluster;
+  private rpcUrl?: string;
   private readonly approvals = new Map<SigningRequestId, ApprovalResource>();
   private activeStatus: AndroidMwaStatus | null = null;
 
   constructor(options: AndroidNativeWalletBackendOptions) {
     this.cluster = requireAndroidNativeCluster(options.cluster);
+    this.rpcUrl = normalizeRpcUrl(options.rpcUrl);
+  }
+
+  setRpcUrl(rpcUrl: string | undefined): void {
+    this.rpcUrl = normalizeRpcUrl(rpcUrl);
   }
 
   async capabilities(): Promise<AdapterCapabilities> {
@@ -125,6 +132,7 @@ export class AndroidNativeWalletBackend implements WalletBackend {
   async connect(): Promise<string> {
     const status = await androidNativeRequest<AndroidMwaStatus>('connect', {
       cluster: this.cluster,
+      ...this.nativeRpcContext(),
     });
     this.applyStatus(status);
     if (!status.address) {
@@ -136,6 +144,7 @@ export class AndroidNativeWalletBackend implements WalletBackend {
   async reconnectLatest(): Promise<string | null> {
     const status = await androidNativeRequest<AndroidMwaStatus>('reconnectLatest', {
       cluster: this.cluster,
+      ...this.nativeRpcContext(),
     });
     this.applyStatus(status);
     return status.address ?? null;
@@ -154,14 +163,18 @@ export class AndroidNativeWalletBackend implements WalletBackend {
       status: 'pending',
     };
     this.approvals.set(request.id, approval);
+    const nativeRequest = {
+      ...request,
+      ...this.nativeRpcContext(),
+    };
     logAndroidNative('submit', 'START', {
       requestId: request.id,
       kind: request.kind,
       cluster: request.cluster,
-      payload: formatNativePayload(request),
+      payload: formatNativePayload(nativeRequest),
     });
 
-    void androidNativeRequest<SigningResult>('sign', request)
+    void androidNativeRequest<SigningResult>('sign', nativeRequest)
       .then((result) => {
         this.approvals.set(request.id, {
           requestId: request.id,
@@ -249,6 +262,10 @@ export class AndroidNativeWalletBackend implements WalletBackend {
     return status;
   }
 
+  private nativeRpcContext(): { rpcUrl?: string } {
+    return this.rpcUrl ? { rpcUrl: this.rpcUrl } : {};
+  }
+
   private applyStatus(status: AndroidMwaStatus): void {
     this.activeStatus = {
       ...status,
@@ -291,6 +308,11 @@ function requireAndroidNativeCluster(cluster: Cluster): Cluster {
     );
   }
   return cluster;
+}
+
+function normalizeRpcUrl(rpcUrl: string | undefined): string | undefined {
+  const trimmed = rpcUrl?.trim();
+  return trimmed ? trimmed : undefined;
 }
 
 function androidNativeRequest<T>(method: string, payload?: unknown): Promise<T> {
@@ -513,6 +535,7 @@ function summarizeNativePayload(value: unknown): unknown {
             simulationLogCount: request.display.simulation?.logs?.length ?? 0,
           }
         : undefined,
+      rpcUrl: (request as SigningRequest & { rpcUrl?: string }).rpcUrl,
       expiresAt: request.expiresAt,
     };
   }

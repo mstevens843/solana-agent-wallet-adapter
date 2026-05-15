@@ -87,6 +87,7 @@ async function dispatch(
   res: ServerResponse,
   handlers: readonly DevApiHandler[],
   gate: DevGateModule,
+  workflowStoreOverride?: unknown,
 ): Promise<void> {
   const url = new URL(req.url ?? '/', `http://${req.headers.host ?? 'localhost'}`);
   const method = req.method ?? 'GET';
@@ -119,7 +120,7 @@ async function dispatch(
   const context: DevApiHandlerContext = {
     walletAddress,
     workflowService: {} as DevApiHandlerContext['workflowService'],
-    workflowStore: {} as DevApiHandlerContext['workflowStore'],
+    workflowStore: (workflowStoreOverride ?? {}) as DevApiHandlerContext['workflowStore'],
     evidenceStore: {} as DevApiHandlerContext['evidenceStore'],
     clock: { now: () => new Date() },
   };
@@ -137,11 +138,12 @@ async function dispatch(
 async function withRoutes(
   env: Partial<Record<(typeof ENV_KEYS)[number], string | undefined>>,
   callback: (server: { port: number }) => Promise<void>,
+  workflowStoreOverride?: unknown,
 ): Promise<void> {
   setEnv(env);
   const { handlers, gate } = await loadFreshRoutes();
   const server = createServer((req, res) => {
-    void dispatch(req, res, handlers, gate);
+    void dispatch(req, res, handlers, gate, workflowStoreOverride);
   });
   await listen(server);
   try {
@@ -549,6 +551,149 @@ describe('agent-card API (public + dev preview)', () => {
           expect(second.rawBody).toBe('');
           expect(second.headers['etag']).toBe(etag);
           expect(second.headers['cache-control']).toBe('no-store');
+        },
+      );
+    });
+  });
+
+  describe('GET /agents/:wallet/card.json (per-wallet public)', () => {
+    function makeFakePreferenceStore(record?: {
+      payload: unknown;
+      updatedAt: string;
+      version: number;
+    }) {
+      return {
+        async getPreference(_wallet: string, namespace: string) {
+          if (namespace !== 'agent-payment-profile') return undefined;
+          return record;
+        },
+        async savePreference() {
+          throw new Error('not implemented for test');
+        },
+        async listPreferences() {
+          return record ? [record] : [];
+        },
+      };
+    }
+
+    it('returns 404 when no profile record exists for the wallet', async () => {
+      await withRoutes(
+        { AGENTIC_DEV_AP2_ACP: '1', AGENTIC_DEV_WALLET_ALLOWLIST: DEV_WALLET },
+        async ({ port }) => {
+          const response = await rawRequest(port, 'GET', `/agents/${DEV_WALLET}/card.json`);
+          expect(response.status).toBe(404);
+        },
+      );
+    });
+
+    it('returns 404 when a record exists but discoverable is false', async () => {
+      const store = makeFakePreferenceStore({
+        payload: {
+          version: 1,
+          discoverable: false,
+          displayName: 'Hidden Wallet',
+          acceptedTokens: ['USDC'],
+          protocols: ['ap2'],
+        },
+        updatedAt: '2026-05-15T00:00:00.000Z',
+        version: 1,
+      });
+      await withRoutes(
+        { AGENTIC_DEV_AP2_ACP: '1', AGENTIC_DEV_WALLET_ALLOWLIST: DEV_WALLET },
+        async ({ port }) => {
+          const response = await rawRequest(port, 'GET', `/agents/${DEV_WALLET}/card.json`);
+          expect(response.status).toBe(404);
+        },
+        store,
+      );
+    });
+
+    it('returns 200 with a per-wallet card when the profile is discoverable', async () => {
+      const store = makeFakePreferenceStore({
+        payload: {
+          version: 1,
+          discoverable: true,
+          displayName: "Mathew's Wallet",
+          acceptedTokens: ['USDC', 'USDT'],
+          protocols: ['ap2', 'acp'],
+          contactEmail: 'ops@example.com',
+        },
+        updatedAt: '2026-05-15T00:00:00.000Z',
+        version: 3,
+      });
+      await withRoutes(
+        { AGENTIC_DEV_AP2_ACP: '1', AGENTIC_DEV_WALLET_ALLOWLIST: DEV_WALLET },
+        async ({ port }) => {
+          const response = await rawRequest(port, 'GET', `/agents/${DEV_WALLET}/card.json`);
+          expect(response.status).toBe(200);
+          expect(response.body).toMatchObject({
+            name: "Mathew's Wallet",
+            walletAddress: DEV_WALLET,
+            supportedTokens: ['USDC', 'USDT'],
+            supportedProtocols: ['ap2', 'acp'],
+            contactEmail: 'ops@example.com',
+          });
+          expect(response.headers['cache-control']).toBe('public, max-age=60, must-revalidate');
+          expect(response.headers['etag']).toBeTruthy();
+          expect(response.headers['access-control-allow-origin']).toBe('*');
+        },
+        store,
+      );
+    });
+
+    it('returns 304 on If-None-Match with the stored ETag', async () => {
+      const store = makeFakePreferenceStore({
+        payload: {
+          version: 1,
+          discoverable: true,
+          displayName: 'Live Wallet',
+          acceptedTokens: ['USDC'],
+          protocols: ['ap2'],
+        },
+        updatedAt: '2026-05-15T00:00:00.000Z',
+        version: 1,
+      });
+      await withRoutes(
+        { AGENTIC_DEV_AP2_ACP: '1', AGENTIC_DEV_WALLET_ALLOWLIST: DEV_WALLET },
+        async ({ port }) => {
+          const first = await rawRequest(port, 'GET', `/agents/${DEV_WALLET}/card.json`);
+          expect(first.status).toBe(200);
+          const etag = first.headers['etag'];
+          const second = await rawRequest(port, 'GET', `/agents/${DEV_WALLET}/card.json`, {
+            'if-none-match': String(etag),
+          });
+          expect(second.status).toBe(304);
+        },
+        store,
+      );
+    });
+
+    it('returns 404 for malformed wallet keys (path-traversal defense)', async () => {
+      await withRoutes(
+        { AGENTIC_DEV_AP2_ACP: '1', AGENTIC_DEV_WALLET_ALLOWLIST: DEV_WALLET },
+        async ({ port }) => {
+          const traversal = await rawRequest(port, 'GET', '/agents/..%2Fadmin/card.json');
+          expect(traversal.status).toBe(404);
+
+          const tooShort = await rawRequest(port, 'GET', '/agents/abc/card.json');
+          expect(tooShort.status).toBe(404);
+        },
+      );
+    });
+
+    it('does not affect the /.well-known/agent.json global behavior', async () => {
+      await withRoutes(
+        {
+          AGENTIC_DEV_AP2_ACP: '1',
+          AGENTIC_DEV_WALLET_ALLOWLIST: DEV_WALLET,
+        },
+        async ({ port }) => {
+          const wellKnown = await rawRequest(port, 'GET', '/.well-known/agent.json');
+          expect(wellKnown.status).toBe(200);
+          expect(wellKnown.body).toMatchObject({
+            walletAddress: DEV_WALLET,
+            name: 'Agentic Wallet',
+          });
         },
       );
     });

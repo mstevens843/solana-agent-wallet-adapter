@@ -68,7 +68,11 @@ async function handleRequest(
       }
     }
 
-    if (url.pathname.startsWith('/api/') || url.pathname.startsWith('/.well-known/')) {
+    if (
+      url.pathname.startsWith('/api/') ||
+      url.pathname.startsWith('/.well-known/') ||
+      url.pathname.startsWith('/agents/')
+    ) {
       await apiRouter.handle(req, res, url);
       return;
     }

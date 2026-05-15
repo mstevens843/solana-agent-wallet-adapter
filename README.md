@@ -17,7 +17,7 @@ MCP server / Vercel AI tool / Solana Agent Kit BaseWallet / CLI
 SolanaSigningClient -> SigningRequest -> WalletBackend
       |
       +-- Wallet Standard web wallet
-      +-- Android Mobile Wallet Adapter web path
+      +-- Android Mobile Wallet Adapter native and mobile-web paths
       +-- iOS wallet link or WalletConnect path
       +-- mock backend for smoke tests
       |
@@ -155,7 +155,7 @@ Open `http://127.0.0.1:5174`, choose a Wallet Standard provider, connect, sign a
 | Transport | Package | Current role |
 | --- | --- | --- |
 | Browser Wallet Standard | [`@solana-agent-wallet-adapter/wallet-standard-web`](./packages/wallet-standard-web) | Works with installed Solana browser wallets that register Wallet Standard features. |
-| Android mobile web MWA | [`@solana-agent-wallet-adapter/mwa-mobile-web`](./packages/mwa-mobile-web) | Registers Solana Mobile's Mobile Wallet Standard implementation so Android Chrome can discover mobile wallets. |
+| Android MWA | [`@solana-agent-wallet-adapter/mwa-mobile-web`](./packages/mwa-mobile-web), [`apps/android-twa`](./apps/android-twa) | Native Android app bridge plus Android Chrome mobile-web registration for MWA-compatible wallets. |
 | iOS wallet links | [`@solana-agent-wallet-adapter/ios-link`](./packages/ios-link) | Experimental bridge path for Phantom, Solflare, Backpack encrypted links, and Jupiter Mobile WalletConnect/Reown QR approvals. |
 | Mock backend | [`@solana-agent-wallet-adapter/mcp-server`](./packages/mcp-server) | Deterministic smoke backend for MCP registration, tests, and examples. |
 

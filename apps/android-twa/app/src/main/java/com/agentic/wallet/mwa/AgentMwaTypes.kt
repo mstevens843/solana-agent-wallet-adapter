@@ -72,5 +72,6 @@ data class AgentMwaBridgeRequest(
     val payloadData: String,
     val payloadEncoding: String,
     val cluster: AgentCluster,
+    val rpcUrl: String?,
     val summary: String?,
 )

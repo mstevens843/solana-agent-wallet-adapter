@@ -493,6 +493,233 @@
   }
 }
 
+.dev-agent-card-form-section {
+  display: grid;
+  gap: 16px;
+}
+
+.dev-agent-card-form-onboard {
+  background: rgba(63, 189, 131, 0.06);
+  border: 1px solid rgba(139, 205, 170, 0.22);
+  border-radius: 10px;
+  color: rgba(213, 232, 222, 0.92);
+  font-size: 0.82rem;
+  margin: 0;
+  padding: 10px 12px;
+}
+
+.dev-agent-card-form-banner {
+  border-radius: 10px;
+  font-size: 0.82rem;
+  margin: 0;
+  padding: 10px 12px;
+}
+
+.dev-agent-card-form-banner--ok {
+  background: rgba(63, 189, 131, 0.1);
+  border: 1px solid rgba(139, 205, 170, 0.32);
+  color: #c5ebd6;
+}
+
+.dev-agent-card-form-banner--err {
+  background: rgba(232, 100, 100, 0.08);
+  border: 1px solid rgba(232, 100, 100, 0.32);
+  color: #f3c5c5;
+}
+
+.dev-agent-card-form-toggle {
+  margin: 0;
+}
+
+.dev-agent-card-form-field {
+  display: grid;
+  gap: 6px;
+}
+
+.dev-agent-card-form-label {
+  color: rgba(213, 232, 222, 0.86);
+  font-size: 0.78rem;
+  font-weight: 760;
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
+}
+
+.dev-agent-card-form-label em {
+  color: var(--muted);
+  font-style: normal;
+  font-weight: 540;
+  text-transform: none;
+}
+
+.dev-agent-card-form-help {
+  color: var(--muted);
+  font-size: 0.78rem;
+  margin: 0;
+}
+
+.dev-agent-card-form-input {
+  background: rgba(11, 18, 17, 0.6);
+  border: 1px solid rgba(99, 110, 124, 0.32);
+  border-radius: 8px;
+  color: var(--text);
+  font-size: 0.88rem;
+  padding: 10px 12px;
+  width: 100%;
+}
+
+.dev-agent-card-form-input:focus {
+  border-color: rgba(140, 164, 255, 0.5);
+  outline: none;
+}
+
+.dev-agent-card-form-error {
+  color: #f3a8a8;
+  font-size: 0.76rem;
+  margin: 0;
+}
+
+.dev-agent-card-chip-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.dev-agent-card-chip-toggle {
+  cursor: pointer;
+  font: inherit;
+  text-align: left;
+  transition: border-color 120ms ease, background-color 120ms ease, color 120ms ease;
+}
+
+.dev-agent-card-chip-toggle[data-selected='false'] {
+  background: rgba(255, 255, 255, 0.02);
+  border-color: rgba(224, 230, 226, 0.1);
+  color: rgba(180, 192, 187, 0.6);
+}
+
+.dev-agent-card-chip-toggle[data-selected='true'] {
+  background: rgba(63, 189, 131, 0.16);
+  border-color: rgba(139, 205, 170, 0.48);
+  color: #d6f5e3;
+}
+
+.dev-agent-card-chip-toggle:hover {
+  border-color: rgba(140, 164, 255, 0.4);
+}
+
+.dev-agent-card-form-actions {
+  align-items: center;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
+.dev-agent-card-form-hint {
+  color: var(--muted);
+  font-size: 0.74rem;
+}
+
+.dev-agent-card-link-section {
+  display: grid;
+  gap: 8px;
+}
+
+.dev-agent-card-link-section--disabled .dev-agent-card-url {
+  opacity: 0.55;
+}
+
+.dev-agent-card-link-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.dev-agent-card-demo-link {
+  align-items: center;
+  background: rgba(11, 18, 17, 0.42);
+  border: 1px dashed rgba(99, 110, 124, 0.34);
+  border-radius: 12px;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 16px;
+  justify-content: space-between;
+  padding: 14px 16px;
+}
+
+.dev-agent-card-demo-link h3 {
+  font-size: 0.92rem;
+  margin: 0 0 4px;
+}
+
+.dev-agent-card-demo-link p {
+  color: var(--muted);
+  font-size: 0.78rem;
+  margin: 0;
+}
+
+.dev-agent-card-explainer {
+  margin-top: 6px;
+}
+
+.dev-agent-card-explainer-lede {
+  color: rgba(232, 240, 235, 0.92);
+  font-size: 0.95rem;
+  margin: 12px 0 6px;
+}
+
+.dev-agent-card-explainer-grid {
+  display: grid;
+  gap: 12px;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  margin: 14px 0;
+}
+
+.dev-agent-card-explainer-grid article {
+  background: rgba(11, 18, 17, 0.5);
+  border: 1px solid rgba(99, 110, 124, 0.2);
+  border-radius: 10px;
+  padding: 10px 12px;
+}
+
+.dev-agent-card-explainer-grid h4 {
+  font-size: 0.84rem;
+  margin: 0 0 4px;
+}
+
+.dev-agent-card-explainer-grid p {
+  color: var(--muted);
+  font-size: 0.78rem;
+  margin: 0;
+}
+
+.dev-agent-card-explainer ul {
+  margin: 6px 0 12px;
+  padding-left: 20px;
+}
+
+.dev-agent-card-explainer li {
+  color: rgba(213, 232, 222, 0.88);
+  font-size: 0.82rem;
+  margin: 4px 0;
+}
+
+.dev-agent-card-explainer-foot {
+  color: var(--muted);
+  font-size: 0.78rem;
+  margin: 8px 0 0;
+}
+
+@media (max-width: 720px) {
+  .dev-agent-card-explainer-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .dev-agent-card-demo-link {
+    flex-direction: column;
+    align-items: flex-start;
+  }
+}
+
 @media (max-width: 780px) {
   .dev-agent-card-profile,
   .dev-agent-card-capability-grid {

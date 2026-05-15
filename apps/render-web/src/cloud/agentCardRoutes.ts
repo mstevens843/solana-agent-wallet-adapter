@@ -6,15 +6,24 @@ import {
   defaultAgenticCapabilities,
   validateAgentCard,
   type AgentCard,
+  type AgenticProtocol,
+  type AllowedProfileProtocol,
+  type AllowedProfileToken,
+  type AgentPaymentProfilePayload,
 } from '@solana-agent-wallet-adapter/a2a-agent-card';
 
+import { normalizeWalletAddress } from './auth.js';
 import { registerDevApiHandler, type DevApiHandler } from './devApiRegistry.js';
 import { DEV_WALLET_ALLOWLIST } from './devGate.js';
+import type { CloudPreferencesStore } from './store.js';
 
 const DEFAULT_SUPPORTED_TOKENS = ['USDC', 'USDT', 'SOL'];
 const WELL_KNOWN_PREFIX = '/.well-known/agent.json';
 const DEV_PREVIEW_PREFIX = '/api/agents/card';
+const PER_WALLET_PREFIX = '/agents/';
+const PER_WALLET_SUFFIX = '/card.json';
 const PUBLIC_CACHE_CONTROL = 'public, max-age=60';
+const PER_WALLET_CACHE_CONTROL = 'public, max-age=60, must-revalidate';
 const NO_STORE_CACHE_CONTROL = 'no-store';
 
 interface RenderedCard {
@@ -194,5 +203,129 @@ function writeJsonNoStore(res: ServerResponse, status: number, payload: unknown)
   res.end(JSON.stringify(payload));
 }
 
+const perWalletHandler: DevApiHandler = {
+  prefix: PER_WALLET_PREFIX,
+  methods: ['GET', 'HEAD', 'OPTIONS'],
+  publicRoute: true,
+  async handle(req, res, url, context) {
+    if (req.method === 'OPTIONS') {
+      writeCorsNoBody(res, 204);
+      return true;
+    }
+    const walletFromPath = walletAddressFromPerWalletPath(url.pathname);
+    if (!walletFromPath) return false;
+    let walletAddress: string;
+    try {
+      walletAddress = normalizeWalletAddress(walletFromPath);
+    } catch {
+      writeJsonPublic(res, 404, { error: 'profile_not_found' });
+      return true;
+    }
+    const preferenceStore = isCloudPreferencesStore(context.workflowStore) ? context.workflowStore : undefined;
+    if (!preferenceStore) {
+      writeJsonPublic(res, 404, { error: 'profile_not_found' });
+      return true;
+    }
+    const record = await preferenceStore.getPreference(walletAddress, 'agent-payment-profile');
+    const payload = extractDiscoverableProfilePayload(record?.payload);
+    if (!payload) {
+      writeJsonPublic(res, 404, { error: 'profile_not_found' });
+      return true;
+    }
+    const rendered = renderPerWalletAgentCard(req, url, walletAddress, payload, record?.updatedAt);
+    if (rendered === 'invalid') {
+      writeJsonNoStore(res, 500, { error: 'agent_card_invalid' });
+      return true;
+    }
+    if (ifNoneMatchHits(req, rendered.etag)) {
+      writeNotModifiedPublic(res, rendered.etag, PER_WALLET_CACHE_CONTROL);
+      return true;
+    }
+    const headOnly = req.method === 'HEAD';
+    writeCardWithCors(res, 200, rendered, PER_WALLET_CACHE_CONTROL, headOnly);
+    return true;
+  },
+};
+
+function walletAddressFromPerWalletPath(pathname: string): string | undefined {
+  if (!pathname.startsWith(PER_WALLET_PREFIX)) return undefined;
+  const after = pathname.slice(PER_WALLET_PREFIX.length);
+  if (!after.endsWith(PER_WALLET_SUFFIX)) return undefined;
+  const candidate = after.slice(0, -PER_WALLET_SUFFIX.length);
+  if (!candidate || candidate.includes('/')) return undefined;
+  return candidate;
+}
+
+function isCloudPreferencesStore(store: unknown): store is CloudPreferencesStore {
+  if (!store || typeof store !== 'object') return false;
+  const record = store as Record<string, unknown>;
+  return typeof record.getPreference === 'function' && typeof record.savePreference === 'function';
+}
+
+function extractDiscoverableProfilePayload(payload: unknown): AgentPaymentProfilePayload | undefined {
+  if (!payload || typeof payload !== 'object' || Array.isArray(payload)) return undefined;
+  const record = payload as Record<string, unknown>;
+  if (record.discoverable !== true) return undefined;
+  if (record.version !== 1) return undefined;
+  const displayName = typeof record.displayName === 'string' ? record.displayName.trim() : '';
+  if (displayName.length === 0) return undefined;
+  const acceptedTokens = Array.isArray(record.acceptedTokens)
+    ? record.acceptedTokens.filter((value): value is AllowedProfileToken => typeof value === 'string')
+    : [];
+  const protocols = Array.isArray(record.protocols)
+    ? record.protocols.filter((value): value is AllowedProfileProtocol => typeof value === 'string')
+    : [];
+  if (acceptedTokens.length === 0 || protocols.length === 0) return undefined;
+  const result: AgentPaymentProfilePayload = {
+    version: 1,
+    discoverable: true,
+    displayName,
+    acceptedTokens,
+    protocols,
+  };
+  if (typeof record.contactEmail === 'string' && record.contactEmail.trim().length > 0) {
+    result.contactEmail = record.contactEmail.trim();
+  }
+  return result;
+}
+
+function renderPerWalletAgentCard(
+  req: IncomingMessage,
+  url: URL,
+  walletAddress: string,
+  payload: AgentPaymentProfilePayload,
+  updatedAt: string | undefined,
+): RenderedCard | 'invalid' {
+  const card: AgentCard = buildAgenticAgentCard({
+    walletAddress,
+    baseUrl: resolveBaseUrl(req, url),
+    supportedTokens: payload.acceptedTokens,
+    capabilities: defaultAgenticCapabilities,
+    name: payload.displayName,
+    supportedProtocols: payload.protocols as AgenticProtocol[],
+    version: resolveBuildVersion(),
+    ...(payload.contactEmail ? { contactEmail: payload.contactEmail } : {}),
+  });
+  const validation = validateAgentCard(card);
+  if (!validation.valid) return 'invalid';
+  const serialized = JSON.stringify(card);
+  const hash = createHash('sha256');
+  hash.update(serialized);
+  if (updatedAt) hash.update(updatedAt);
+  const etag = `"${hash.digest('base64url').slice(0, 27)}"`;
+  return { serialized, etag };
+}
+
+function writeJsonPublic(res: ServerResponse, status: number, payload: unknown): void {
+  res.statusCode = status;
+  res.setHeader('content-type', 'application/json; charset=utf-8');
+  res.setHeader('cache-control', NO_STORE_CACHE_CONTROL);
+  res.setHeader('access-control-allow-origin', '*');
+  res.setHeader('access-control-allow-methods', 'GET, HEAD, OPTIONS');
+  res.setHeader('vary', 'Origin');
+  res.end(JSON.stringify(payload));
+}
+
 registerDevApiHandler(publicHandler);
 registerDevApiHandler(devPreviewHandler);
+registerDevApiHandler(perWalletHandler);

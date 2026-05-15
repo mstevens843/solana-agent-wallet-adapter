@@ -76,6 +76,49 @@ export function createCloudWorkspaceDeleteIntentResponse(input: {
   };
 }
 
+export type AgentProfileIntentResponse = AuthNonceResponse;
+
+export function createAgentProfilePublishIntentResponse(input: {
+  walletAddress: string;
+  domain: string;
+  payloadHashHex: string;
+  clock: Clock;
+}): AgentProfileIntentResponse {
+  const issuedAt = input.clock.now();
+  const expiresAt = new Date(issuedAt.getTime() + AUTH_NONCE_TTL_MS);
+  const fields = {
+    domain: input.domain,
+    walletAddress: input.walletAddress,
+    nonce: encodeBase58(randomBytes(24)),
+    issuedAt: issuedAt.toISOString(),
+    expiresAt: expiresAt.toISOString(),
+  };
+  return {
+    ...fields,
+    message: buildAgentProfilePublishMessage(fields, input.payloadHashHex),
+  };
+}
+
+export function createAgentProfileTakedownIntentResponse(input: {
+  walletAddress: string;
+  domain: string;
+  clock: Clock;
+}): AgentProfileIntentResponse {
+  const issuedAt = input.clock.now();
+  const expiresAt = new Date(issuedAt.getTime() + AUTH_NONCE_TTL_MS);
+  const fields = {
+    domain: input.domain,
+    walletAddress: input.walletAddress,
+    nonce: encodeBase58(randomBytes(24)),
+    issuedAt: issuedAt.toISOString(),
+    expiresAt: expiresAt.toISOString(),
+  };
+  return {
+    ...fields,
+    message: buildAgentProfileTakedownMessage(fields),
+  };
+}
+
 export function buildWalletLoginMessage(fields: LoginMessageFields): string {
   return [
     'Agentic Cloud wants you to sign in with your Solana wallet.',
@@ -102,6 +145,35 @@ export function buildCloudWorkspaceDeleteMessage(fields: LoginMessageFields): st
     '',
     'This signature permanently deletes Agentic Cloud workspace data for this wallet, including drafts, approvals, schedules, receipts, completed history, and app audit events.',
     'It does not submit a transaction, grant spending authority, delegated signing, or permission to move funds.',
+  ].join('\n');
+}
+
+export function buildAgentProfilePublishMessage(fields: LoginMessageFields, payloadHashHex: string): string {
+  return [
+    'Agentic Cloud wants you to publish your agent payment profile.',
+    '',
+    `Domain: ${fields.domain}`,
+    `Wallet: ${fields.walletAddress}`,
+    `Nonce: ${fields.nonce}`,
+    `Issued At: ${fields.issuedAt}`,
+    `Expires At: ${fields.expiresAt}`,
+    `Payload SHA-256: ${payloadHashHex}`,
+    '',
+    'This signature publishes a discovery profile only. It does not grant spending authority, delegated signing, or permission to move funds.',
+  ].join('\n');
+}
+
+export function buildAgentProfileTakedownMessage(fields: LoginMessageFields): string {
+  return [
+    'Agentic Cloud wants you to take down your agent payment profile.',
+    '',
+    `Domain: ${fields.domain}`,
+    `Wallet: ${fields.walletAddress}`,
+    `Nonce: ${fields.nonce}`,
+    `Issued At: ${fields.issuedAt}`,
+    `Expires At: ${fields.expiresAt}`,
+    '',
+    'This signature removes your wallet from discovery. It does not grant spending authority, delegated signing, or permission to move funds.',
   ].join('\n');
 }
 

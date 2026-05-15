@@ -2,8 +2,9 @@
 
 Agentic's public homepage is a Vite build from `apps/browser-demo` served by a small same-origin Node service in
 `apps/render-web`. Render serves the website and the hosted BYOK AI planning proxy; the CLI, desktop app, bridge, and
-wallet host still run locally on the user's machine after installation. The Android app is a Trusted Web Activity
-wrapper around this hosted origin.
+wallet host still run locally on the user's machine after installation. The Android app defaults to a bundled native
+shell; the hosted origin is still used for website traffic, release downloads, Digital Asset Links, and optional
+web/TWA fallback builds.
 
 ## Blueprint Deploy
 
@@ -28,7 +29,7 @@ one cron job:
 - Production Android trust guard: `AGENTIC_ANDROID_REQUIRE_TRUST=1`
 
 `pnpm render:build` also writes static fallback files for the known client routes (`/app`, `/docs`, `/cli`,
-`/desktop`, `/demo`, `/terms`, `/privacy`, and Android/TWA utility routes). The Node server also falls back to
+`/desktop`, `/demo`, `/terms`, `/privacy`, and Android utility routes). The Node server also falls back to
 `index.html` for direct visits and hard refreshes on client-side routes.
 
 ## Manual Web Service Settings

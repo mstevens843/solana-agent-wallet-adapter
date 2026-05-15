@@ -119,6 +119,67 @@ describe('bridge lab artifact routes', () => {
     }
   });
 
+  it('allows bundled Android app preflight requests', async () => {
+    const handle = await startTestBridge();
+    try {
+      const origin = 'https://agentic.local';
+      const response = await fetch(new URL('/bridge/ai/status', handle.url), {
+        method: 'OPTIONS',
+        headers: {
+          origin,
+          'access-control-request-method': 'POST',
+          'access-control-request-private-network': 'true',
+        },
+      });
+
+      expect(response.status).toBe(204);
+      expect(response.headers.get('access-control-allow-origin')).toBe(origin);
+      expect(response.headers.get('access-control-allow-private-network')).toBe('true');
+    } finally {
+      await handle.stop();
+    }
+  });
+
+  it('allows private LAN browser origins only when mobile dev mode opts in', async () => {
+    vi.stubEnv('BRIDGE_ALLOW_PRIVATE_ORIGINS', '1');
+    const handle = await startTestBridge();
+    try {
+      const origin = 'http://192.168.1.50:5174';
+      const response = await fetch(new URL('/bridge/ai/status', handle.url), {
+        method: 'OPTIONS',
+        headers: {
+          origin,
+          'access-control-request-method': 'POST',
+          'access-control-request-private-network': 'true',
+        },
+      });
+
+      expect(response.status).toBe(204);
+      expect(response.headers.get('access-control-allow-origin')).toBe(origin);
+    } finally {
+      await handle.stop();
+    }
+  });
+
+  it('does not allow private LAN browser origins without mobile dev opt-in', async () => {
+    const handle = await startTestBridge();
+    try {
+      const response = await fetch(new URL('/bridge/ai/status', handle.url), {
+        method: 'OPTIONS',
+        headers: {
+          origin: 'http://192.168.1.50:5174',
+          'access-control-request-method': 'POST',
+          'access-control-request-private-network': 'true',
+        },
+      });
+
+      expect(response.status).toBe(204);
+      expect(response.headers.get('access-control-allow-origin')).toBeNull();
+    } finally {
+      await handle.stop();
+    }
+  });
+
   it('does not grant CORS access to untrusted browser origins', async () => {
     const handle = await startTestBridge();
     try {

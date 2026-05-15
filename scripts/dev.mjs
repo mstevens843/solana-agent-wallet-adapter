@@ -10,6 +10,7 @@ const children = new Set();
 const mobileMode = process.argv.includes('--mobile');
 const host = mobileMode ? '0.0.0.0' : '127.0.0.1';
 const browserEnv = browserDevEnv();
+const bridgeEnv = bridgeDevEnv();
 
 if (!existsSync(new URL('../.env', import.meta.url))) {
   console.error('[dev] Missing .env. Copy .env.example to .env first.');
@@ -39,7 +40,7 @@ const bridge = start('bridge', 'node', [
   preparedActionsPath,
   '--host',
   host,
-]);
+], bridgeEnv);
 
 const browser = start('browser', 'pnpm', [
   '-F',
@@ -93,6 +94,14 @@ function browserDevEnv() {
   const env = { ...process.env };
   if (!env.VITE_AGENTIC_APP_SURFACE && !env.VITE_AGENTIC_DEV_CONTROLS) {
     env.VITE_AGENTIC_APP_SURFACE = 'public';
+  }
+  return env;
+}
+
+function bridgeDevEnv() {
+  const env = { ...process.env };
+  if (mobileMode && !env.BRIDGE_ALLOW_PRIVATE_ORIGINS) {
+    env.BRIDGE_ALLOW_PRIVATE_ORIGINS = '1';
   }
   return env;
 }

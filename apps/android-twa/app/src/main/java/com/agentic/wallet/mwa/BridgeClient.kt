@@ -13,12 +13,15 @@ class BridgeClient(
     private val baseUrl: String,
     private val token: String,
 ) {
+    private var configuredRpcUrl: String = ""
+
     suspend fun config(): Pair<AgentCluster, String> {
         AgentMwaLog.info("BridgeClient", "config", "START", "fetching bridge config", bridgeBaseMetadata())
         val json = request("GET", "/bridge/config")
         val cluster = AgentCluster.requireSupported(json.optString("cluster", "devnet"))
+        configuredRpcUrl = json.optString("rpcUrl", "")
         AgentMwaLog.info("BridgeClient", "config", "SUCCESS", "bridge config loaded", bridgeBaseMetadata() + mapOf("cluster" to cluster.id, "rpcUrl" to json.optString("rpcUrl", ""), "response" to if (BuildConfig.DEBUG) json else "[debug-only]"))
-        return cluster to json.optString("rpcUrl", "")
+        return cluster to configuredRpcUrl
     }
 
     suspend fun connect(address: String, capabilities: JSONObject) {
@@ -56,6 +59,7 @@ class BridgeClient(
             payloadData = payload.optString("data", ""),
             payloadEncoding = payload.optString("encoding", "base64"),
             cluster = AgentCluster.requireSupported(request.optString("cluster", "devnet")),
+            rpcUrl = request.optString("rpcUrl", "").takeIf { it.isNotBlank() } ?: configuredRpcUrl.takeIf { it.isNotBlank() },
             summary = display?.optString("summary"),
         ).takeIf { it.id.isNotBlank() && it.kind.isNotBlank() }
         AgentMwaLog.info(
@@ -203,6 +207,7 @@ class BridgeClient(
                 "requestId" to request.id,
                 "kind" to request.kind,
                 "cluster" to request.cluster.id,
+                "rpcUrl" to request.rpcUrl.orEmpty(),
                 "summary" to request.summary.orEmpty(),
                 "payloadEncoding" to request.payloadEncoding,
                 "payloadChars" to request.payloadData.length,

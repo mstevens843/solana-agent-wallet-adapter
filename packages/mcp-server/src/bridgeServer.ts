@@ -1514,6 +1514,9 @@ function allowedBridgeOrigin(origin: string | undefined): string | undefined {
   }
   const host = parsed.hostname.toLowerCase();
   if (isLoopbackHost(host)) return origin;
+  if (process.env.BRIDGE_ALLOW_PRIVATE_ORIGINS === '1' && isLocalOrPrivateHost(host)) {
+    return origin;
+  }
   const allowed = bridgeAllowedOrigins();
   return allowed.has(origin) ? origin : undefined;
 }
@@ -1524,6 +1527,7 @@ function bridgeAllowedOrigins(): Set<string> {
     .map((entry) => entry.trim())
     .filter(Boolean);
   return new Set([
+    'https://agentic.local',
     'https://agentic-seeker.com',
     'https://www.agentic-seeker.com',
     'https://agentic-signer.com',
@@ -1535,10 +1539,32 @@ function bridgeAllowedOrigins(): Set<string> {
 }
 
 function isLoopbackHost(hostname: string): boolean {
-  return hostname === 'localhost' ||
-    hostname === '127.0.0.1' ||
-    hostname === '::1' ||
-    hostname === '[::1]';
+  const normalized = normalizeHost(hostname);
+  return normalized === 'localhost' ||
+    normalized === '127.0.0.1' ||
+    normalized === '::1';
+}
+
+function isLocalOrPrivateHost(hostname: string): boolean {
+  const normalized = normalizeHost(hostname);
+  if (isLoopbackHost(normalized) || normalized.endsWith('.local')) return true;
+  const parts = normalized.split('.');
+  if (parts.length === 4) {
+    const octets = parts.map((part) => (/^\d{1,3}$/.test(part) ? Number(part) : Number.NaN));
+    if (octets.every((octet) => Number.isInteger(octet) && octet >= 0 && octet <= 255)) {
+      const [first, second] = octets as [number, number, number, number];
+      return first === 10 ||
+        first === 127 ||
+        (first === 172 && second >= 16 && second <= 31) ||
+        (first === 192 && second === 168) ||
+        (first === 169 && second === 254);
+    }
+  }
+  return normalized.startsWith('fc') || normalized.startsWith('fd') || normalized.startsWith('fe80:');
+}
+
+function normalizeHost(hostname: string): string {
+  return hostname.trim().toLowerCase().replace(/^\[|\]$/g, '').replace(/\.$/, '');
 }
 
 function headerValue(value: string | string[] | undefined): string | undefined {

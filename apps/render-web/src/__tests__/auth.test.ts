@@ -586,6 +586,175 @@ describe('render web cloud wallet auth', () => {
       });
     }, { store, clock });
   });
+
+  describe('per-wallet agent payment profile', () => {
+    const VALID_PAYLOAD = {
+      version: 1,
+      discoverable: true,
+      displayName: "Mathew's Wallet",
+      acceptedTokens: ['USDC', 'USDT', 'SOL'],
+      protocols: ['ap2', 'acp', 'a2a'],
+    };
+
+    function signedProfileBody(wallet: TestWallet, intent: Record<string, unknown>, extra: Record<string, unknown> = {}): Record<string, unknown> {
+      return {
+        walletAddress: wallet.walletAddress,
+        nonce: intent.nonce,
+        message: intent.message,
+        signature: signMessage(String(intent.message), wallet.privateKey),
+        domain: intent.domain,
+        issuedAt: intent.issuedAt,
+        expiresAt: intent.expiresAt,
+        signatureEncoding: 'base58',
+        ...extra,
+      };
+    }
+
+    it('publish flow: intent → sign → PUT → GET per-wallet card resolves; takedown 404s the URL', async () => {
+      const store = new MemoryWorkflowStore();
+      await withServer(async (port) => {
+        const wallet = createTestWallet();
+        const nonce = await createNonce(port, wallet);
+        const verify = await postJson(port, '/api/auth/verify-wallet', signedVerifyBody(wallet, nonce.body));
+        const cookie = sessionCookie(verify);
+
+        const intent = await postJson(port, '/api/agents/profile-intent', {
+          action: 'publish',
+          payload: VALID_PAYLOAD,
+        }, { cookie });
+        expect(intent.status).toBe(200);
+        expect(String(intent.body.message)).toContain('publish your agent payment profile');
+        expect(String(intent.body.message)).toMatch(/Payload SHA-256: [0-9a-f]{64}/);
+
+        const published = await requestJson(
+          port,
+          '/api/agents/profile',
+          'PUT',
+          { ...signedProfileBody(wallet, intent.body), payload: VALID_PAYLOAD },
+          { cookie },
+        );
+        expect(published.status).toBe(200);
+        expect((published.body as { profile: { payload: { discoverable: boolean } } }).profile.payload.discoverable).toBe(true);
+
+        const card = await requestJson(port, `/agents/${wallet.walletAddress}/card.json`, 'GET', undefined, {});
+        expect(card.status).toBe(200);
+        expect((card.body as { walletAddress: string; name: string }).walletAddress).toBe(wallet.walletAddress);
+        expect((card.body as { walletAddress: string; name: string }).name).toBe("Mathew's Wallet");
+
+        const takeIntent = await postJson(port, '/api/agents/profile-intent', { action: 'takedown' }, { cookie });
+        expect(takeIntent.status).toBe(200);
+        expect(String(takeIntent.body.message)).toContain('take down your agent payment profile');
+
+        const takendown = await requestJson(
+          port,
+          '/api/agents/profile',
+          'DELETE',
+          signedProfileBody(wallet, takeIntent.body),
+          { cookie },
+        );
+        expect(takendown.status).toBe(200);
+
+        const after = await requestJson(port, `/agents/${wallet.walletAddress}/card.json`, 'GET', undefined, {});
+        expect(after.status).toBe(404);
+      }, { store });
+    });
+
+    it('rejects publish when the payload differs from the hash embedded in the signed message', async () => {
+      const store = new MemoryWorkflowStore();
+      await withServer(async (port) => {
+        const wallet = createTestWallet();
+        const nonce = await createNonce(port, wallet);
+        const verify = await postJson(port, '/api/auth/verify-wallet', signedVerifyBody(wallet, nonce.body));
+        const cookie = sessionCookie(verify);
+
+        const intent = await postJson(port, '/api/agents/profile-intent', {
+          action: 'publish',
+          payload: VALID_PAYLOAD,
+        }, { cookie });
+        expect(intent.status).toBe(200);
+
+        const tamperedPayload = { ...VALID_PAYLOAD, displayName: 'Substituted Wallet' };
+        const tampered = await requestJson(
+          port,
+          '/api/agents/profile',
+          'PUT',
+          { ...signedProfileBody(wallet, intent.body), payload: tamperedPayload },
+          { cookie },
+        );
+        expect(tampered.status).toBe(401);
+        expect(String((tampered.body as { error: string }).error)).toContain('Signed message');
+      }, { store });
+    });
+
+    it('rejects publish signed by the wrong wallet', async () => {
+      const store = new MemoryWorkflowStore();
+      await withServer(async (port) => {
+        const wallet = createTestWallet();
+        const attacker = createTestWallet();
+        const nonce = await createNonce(port, wallet);
+        const verify = await postJson(port, '/api/auth/verify-wallet', signedVerifyBody(wallet, nonce.body));
+        const cookie = sessionCookie(verify);
+
+        const intent = await postJson(port, '/api/agents/profile-intent', {
+          action: 'publish',
+          payload: VALID_PAYLOAD,
+        }, { cookie });
+        expect(intent.status).toBe(200);
+
+        const body = signedProfileBody(wallet, intent.body);
+        body.signature = signMessage(String(intent.body.message), attacker.privateKey);
+        const response = await requestJson(
+          port,
+          '/api/agents/profile',
+          'PUT',
+          { ...body, payload: VALID_PAYLOAD },
+          { cookie },
+        );
+        expect(response.status).toBe(401);
+      }, { store });
+    });
+
+    it('rejects re-using a consumed nonce', async () => {
+      const store = new MemoryWorkflowStore();
+      await withServer(async (port) => {
+        const wallet = createTestWallet();
+        const nonce = await createNonce(port, wallet);
+        const verify = await postJson(port, '/api/auth/verify-wallet', signedVerifyBody(wallet, nonce.body));
+        const cookie = sessionCookie(verify);
+
+        const intent = await postJson(port, '/api/agents/profile-intent', {
+          action: 'publish',
+          payload: VALID_PAYLOAD,
+        }, { cookie });
+        const body = { ...signedProfileBody(wallet, intent.body), payload: VALID_PAYLOAD };
+
+        const first = await requestJson(port, '/api/agents/profile', 'PUT', body, { cookie });
+        expect(first.status).toBe(200);
+
+        const second = await requestJson(port, '/api/agents/profile', 'PUT', body, { cookie });
+        expect(second.status).toBe(401);
+      }, { store });
+    });
+
+    it('rejects unauthenticated callers on the generic PUT preferences route for this namespace', async () => {
+      const store = new MemoryWorkflowStore();
+      await withServer(async (port) => {
+        const wallet = createTestWallet();
+        const nonce = await createNonce(port, wallet);
+        const verify = await postJson(port, '/api/auth/verify-wallet', signedVerifyBody(wallet, nonce.body));
+        const cookie = sessionCookie(verify);
+
+        const response = await requestJson(
+          port,
+          '/api/preferences/agent-payment-profile',
+          'PUT',
+          { payload: VALID_PAYLOAD },
+          { cookie },
+        );
+        expect(response.status).toBe(405);
+      }, { store });
+    });
+  });
 });
 
 async function withServer(
@@ -1152,7 +1321,7 @@ function requestRaw(
 function requestJson(
   port: number,
   path: string,
-  method: 'GET' | 'POST',
+  method: 'GET' | 'POST' | 'PUT' | 'DELETE',
   body: unknown,
   headers: Record<string, string>,
 ): Promise<JsonResponse> {

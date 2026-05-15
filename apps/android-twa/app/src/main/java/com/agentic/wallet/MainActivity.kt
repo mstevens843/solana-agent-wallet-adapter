@@ -45,8 +45,13 @@ class MainActivity : ComponentActivity() {
             "MainActivity",
             "onCreate",
             "START",
-            "bundled Android app shell launched",
-            mapOf("exampleTab" to BuildConfig.AGENTIC_ANDROID_SHOW_EXAMPLE_TAB),
+            "native activity launched",
+            mapOf(
+                "mode" to "app_native",
+                "exampleTab" to BuildConfig.AGENTIC_ANDROID_SHOW_EXAMPLE_TAB,
+                "webFallbackEnabled" to BuildConfig.AGENTIC_ANDROID_ENABLE_WEB_FALLBACK,
+                "lanBridgeEnabled" to BuildConfig.AGENTIC_ANDROID_ALLOW_LAN_BRIDGE,
+            ),
         )
 
         val assetLoader = WebViewAssetLoader.Builder()
@@ -62,6 +67,9 @@ class MainActivity : ComponentActivity() {
             settings.allowFileAccess = false
             settings.allowContentAccess = false
             settings.mediaPlaybackRequiresUserGesture = false
+            if (BuildConfig.AGENTIC_ANDROID_ALLOW_LAN_BRIDGE) {
+                settings.mixedContentMode = WebSettings.MIXED_CONTENT_ALWAYS_ALLOW
+            }
             addJavascriptInterface(AndroidBridge(this@MainActivity), "AgenticAndroid")
             webChromeClient = object : WebChromeClient() {
                 override fun onConsoleMessage(consoleMessage: ConsoleMessage): Boolean {
@@ -403,6 +411,7 @@ class MainActivity : ComponentActivity() {
                 payloadData = signingPayload.optString("data", ""),
                 payloadEncoding = signingPayload.optString("encoding", "base64"),
                 cluster = AgentCluster.requireSupported(payload.optString("cluster", "devnet")),
+                rpcUrl = payload.optString("rpcUrl", "").takeIf { it.isNotBlank() },
                 summary = display?.optString("summary")?.takeIf { it.isNotBlank() },
             )
             AgentMwaLog.info(
@@ -444,6 +453,7 @@ class MainActivity : ComponentActivity() {
                 "requestId" to request.id,
                 "kind" to request.kind,
                 "cluster" to request.cluster.id,
+                "rpcUrl" to request.rpcUrl.orEmpty(),
                 "summary" to request.summary.orEmpty(),
                 "payloadEncoding" to request.payloadEncoding,
                 "payloadChars" to request.payloadData.length,

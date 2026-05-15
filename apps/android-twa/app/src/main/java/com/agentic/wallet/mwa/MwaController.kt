@@ -444,10 +444,10 @@ class MwaController(
             }
         }
 
-    suspend fun signAndSendTransaction(activity: ComponentActivity, transaction: ByteArray): AgentMwaSigningResult =
-        signAndSendTransactions(activity, arrayOf(transaction)).first()
+    suspend fun signAndSendTransaction(activity: ComponentActivity, transaction: ByteArray, rpcUrl: String? = null): AgentMwaSigningResult =
+        signAndSendTransactions(activity, arrayOf(transaction), rpcUrl).first()
 
-    suspend fun signAndSendTransactions(activity: ComponentActivity, transactions: Array<ByteArray>): List<AgentMwaSigningResult> =
+    suspend fun signAndSendTransactions(activity: ComponentActivity, transactions: Array<ByteArray>, rpcUrl: String? = null): List<AgentMwaSigningResult> =
         privileged(activity, "signAndSendTransactions") {
             if (transactions.isEmpty() || transactions.any { it.isEmpty() }) {
                 throwOperation(
@@ -466,13 +466,13 @@ class MwaController(
                 "signAndSendTransactions",
                 "START",
                 "opening wallet sign-and-send approval",
-                authRecordMetadata(record) + mapOf("route" to route, "reason" to if (forceSignThenRpc) "backpack_native_unsupported" else "native_default") + transactionsMetadata(transactions),
+                authRecordMetadata(record) + mapOf("route" to route, "reason" to if (forceSignThenRpc) "backpack_native_unsupported" else "native_default", "requestedRpcUrl" to rpcUrl.orEmpty()) + transactionsMetadata(transactions),
             )
             val adapter = newAdapter(record.cluster, record)
             if (routeNative) {
-                signAndSendNative(activity, adapter, record, transactions)
+                signAndSendNative(activity, adapter, record, transactions, rpcUrl)
             } else {
-                signThenRpc(activity, adapter, record, transactions)
+                signThenRpc(activity, adapter, record, transactions, rpcUrl)
             }
         }
 
@@ -528,7 +528,7 @@ class MwaController(
             "sign_and_send_transaction" -> {
                 val transaction = decodePayload(request.payloadData, request.payloadEncoding)
                 AgentMwaLog.info("MwaController", "signBridgeRequest", "STEP_DECODED_TRANSACTION", "bridge sign-and-send payload decoded", AgentMwaLog.transactionMetadata("transaction", transaction) + bridgeRequestMetadata(request))
-                signAndSendTransaction(activity, transaction)
+                signAndSendTransaction(activity, transaction, request.rpcUrl)
             }
             else -> throwOperation(
                 "signBridgeRequest",
@@ -544,8 +544,10 @@ class MwaController(
         adapter: MobileWalletAdapter,
         record: AgentMwaAuthRecord,
         transactions: Array<ByteArray>,
+        rpcUrl: String?,
     ): List<AgentMwaSigningResult> {
-        val minContextSlot = fetchLatestContextSlot(record.cluster).takeIf { it > 0 }?.toInt()
+        val resolvedRpcUrl = resolveRpcUrl(record.cluster, rpcUrl)
+        val minContextSlot = fetchLatestContextSlot(record.cluster, resolvedRpcUrl).takeIf { it > 0 }?.toInt()
         val params = TransactionParams(minContextSlot, "confirmed", true, 3, null)
         AgentMwaLog.info(
             "MwaController",
@@ -557,6 +559,7 @@ class MwaController(
                 "commitment" to "confirmed",
                 "skipPreflight" to true,
                 "maxRetries" to 3,
+                "rpc" to resolvedRpcUrl,
             ) + transactionsMetadata(transactions),
         )
         val result = withTimeoutOrNull(SIGN_AND_SEND_TIMEOUT_MS) {
@@ -611,9 +614,11 @@ class MwaController(
         adapter: MobileWalletAdapter,
         record: AgentMwaAuthRecord,
         transactions: Array<ByteArray>,
+        rpcUrl: String?,
     ): List<AgentMwaSigningResult> {
-        val balance = getConnectedBalanceLamports(record)
-        AgentMwaLog.info("MwaController", "signThenRpc", "STEP_BALANCE", "balance checked", authRecordMetadata(record) + mapOf("lamports" to balance, "threshold" to MIN_FEE_PAYER_LAMPORTS))
+        val resolvedRpcUrl = resolveRpcUrl(record.cluster, rpcUrl)
+        val balance = getConnectedBalanceLamports(record, resolvedRpcUrl)
+        AgentMwaLog.info("MwaController", "signThenRpc", "STEP_BALANCE", "balance checked", authRecordMetadata(record) + mapOf("lamports" to balance, "threshold" to MIN_FEE_PAYER_LAMPORTS, "rpc" to resolvedRpcUrl))
         if (balance in 0 until MIN_FEE_PAYER_LAMPORTS) {
             throwOperation(
                 "signThenRpc",
@@ -627,7 +632,7 @@ class MwaController(
             "signThenRpc",
             "START",
             "calling sign_transactions before RPC broadcast",
-            authRecordMetadata(record) + transactionsMetadata(transactions),
+            authRecordMetadata(record) + mapOf("rpc" to resolvedRpcUrl) + transactionsMetadata(transactions),
         )
         val result = withTimeoutOrNull(SIGN_AND_SEND_TIMEOUT_MS) {
             adapter.transact(ActivityResultSender(activity)) { _ ->
@@ -653,7 +658,7 @@ class MwaController(
                     )
                 }
                 signed.mapIndexed { index, tx ->
-                    val txid = sendSignedTransactionViaRpc(record.cluster, tx)
+                    val txid = sendSignedTransactionViaRpc(record.cluster, tx, resolvedRpcUrl)
                     AgentMwaLog.info("MwaController", "signThenRpc", "STEP_RPC_SENT", "signed transaction broadcast", mapOf("txIndex" to index, "txid" to txid) + AgentMwaLog.transactionMetadata("signedTransaction", tx))
                     AgentMwaSigningResult(signature = txid, txid = txid)
                 }.also {
@@ -825,27 +830,27 @@ class MwaController(
         )
     }
 
-    private suspend fun fetchLatestContextSlot(cluster: AgentCluster): Long = try {
-        val json = postJsonRpc(cluster.rpcUrl(), "getLatestBlockhash", """[{"commitment":"confirmed"}]""")
+    private suspend fun fetchLatestContextSlot(cluster: AgentCluster, rpcUrl: String = cluster.rpcUrl()): Long = try {
+        val json = postJsonRpc(rpcUrl, "getLatestBlockhash", """[{"commitment":"confirmed"}]""")
         val slot = json.optJSONObject("result")?.optJSONObject("context")?.optLong("slot", -1L) ?: -1L
-        AgentMwaLog.info("MwaController", "fetchLatestContextSlot", "DONE", "context slot fetched", mapOf("slot" to slot, "rpc" to cluster.rpcUrl()))
+        AgentMwaLog.info("MwaController", "fetchLatestContextSlot", "DONE", "context slot fetched", mapOf("slot" to slot, "rpc" to rpcUrl, "cluster" to cluster.id))
         slot
     } catch (err: Exception) {
         AgentMwaLog.warn("MwaController", "fetchLatestContextSlot", "FAIL", "context slot fetch failed", mapOf("class" to err.javaClass.simpleName, "message" to err.message))
         -1L
     }
 
-    private suspend fun getConnectedBalanceLamports(record: AgentMwaAuthRecord): Long = try {
-        val json = postJsonRpc(record.cluster.rpcUrl(), "getBalance", """["${record.publicKeyBase58}",{"commitment":"confirmed"}]""")
+    private suspend fun getConnectedBalanceLamports(record: AgentMwaAuthRecord, rpcUrl: String = record.cluster.rpcUrl()): Long = try {
+        val json = postJsonRpc(rpcUrl, "getBalance", """["${record.publicKeyBase58}",{"commitment":"confirmed"}]""")
         val balance = json.optJSONObject("result")?.optLong("value", -1L) ?: -1L
-        AgentMwaLog.info("MwaController", "getConnectedBalanceLamports", "DONE", "balance lookup completed", authRecordMetadata(record) + mapOf("lamports" to balance))
+        AgentMwaLog.info("MwaController", "getConnectedBalanceLamports", "DONE", "balance lookup completed", authRecordMetadata(record) + mapOf("lamports" to balance, "rpc" to rpcUrl))
         balance
     } catch (err: Exception) {
         AgentMwaLog.failure("MwaController", "getConnectedBalanceLamports", "FAIL", "balance lookup failed", err, authRecordMetadata(record))
         -1L
     }
 
-    private suspend fun sendSignedTransactionViaRpc(cluster: AgentCluster, signedTx: ByteArray): String {
+    private suspend fun sendSignedTransactionViaRpc(cluster: AgentCluster, signedTx: ByteArray, rpcUrl: String = cluster.rpcUrl()): String {
         val encoded = Base64.encodeToString(signedTx, Base64.NO_WRAP)
         val params = """["$encoded",{"encoding":"base64","skipPreflight":false,"preflightCommitment":"confirmed","maxRetries":3}]"""
         AgentMwaLog.info(
@@ -853,9 +858,9 @@ class MwaController(
             "sendSignedTransactionViaRpc",
             "START",
             "broadcasting signed transaction by RPC",
-            mapOf("cluster" to cluster.id, "rpc" to cluster.rpcUrl(), "encodedBase64" to if (BuildConfig.DEBUG) encoded else "[debug-only]") + AgentMwaLog.transactionMetadata("signedTransaction", signedTx),
+            mapOf("cluster" to cluster.id, "rpc" to rpcUrl, "encodedBase64" to if (BuildConfig.DEBUG) encoded else "[debug-only]") + AgentMwaLog.transactionMetadata("signedTransaction", signedTx),
         )
-        val json = postJsonRpc(cluster.rpcUrl(), "sendTransaction", params)
+        val json = postJsonRpc(rpcUrl, "sendTransaction", params)
         val error = json.optJSONObject("error")
         if (error != null) {
             throwOperation(
@@ -876,6 +881,53 @@ class MwaController(
         }
         AgentMwaLog.info("MwaController", "sendSignedTransactionViaRpc", "SUCCESS", "RPC returned transaction id", mapOf("cluster" to cluster.id, "txid" to result, "rpcResponse" to json))
         return result
+    }
+
+    private fun resolveRpcUrl(cluster: AgentCluster, requestedRpcUrl: String?): String {
+        val trimmed = requestedRpcUrl?.trim().orEmpty()
+        if (trimmed.isBlank()) return cluster.rpcUrl()
+        val uri = Uri.parse(trimmed)
+        val scheme = uri.scheme?.lowercase().orEmpty()
+        val host = uri.host.orEmpty()
+        val allowed = when (scheme) {
+            "https" -> host.isNotBlank()
+            "http" -> isLocalOrPrivateHost(host)
+            else -> false
+        }
+        if (!allowed) {
+            throw MwaOperationException(
+                "INVALID_REQUEST",
+                "Android MWA RPC URL must be HTTPS or a trusted local/private HTTP host.",
+            )
+        }
+        AgentMwaLog.info(
+            "MwaController",
+            "resolveRpcUrl",
+            "DONE",
+            "RPC URL selected",
+            mapOf("cluster" to cluster.id, "rpc" to trimmed, "source" to "bridge_payload"),
+        )
+        return trimmed
+    }
+
+    private fun isLocalOrPrivateHost(host: String): Boolean {
+        val normalized = host.trim().lowercase().removePrefix("[").removeSuffix("]").removeSuffix(".")
+        if (normalized == "localhost" || normalized == "127.0.0.1" || normalized == "::1") return true
+        if (normalized.endsWith(".local")) return true
+        val parts = normalized.split(".")
+        if (parts.size == 4) {
+            val octets = parts.map { it.toIntOrNull() }
+            if (octets.all { it != null && it >= 0 && it <= 255 }) {
+                val first = octets[0] ?: return false
+                val second = octets[1] ?: return false
+                return first == 10 ||
+                    first == 127 ||
+                    (first == 172 && second in 16..31) ||
+                    (first == 192 && second == 168) ||
+                    (first == 169 && second == 254)
+            }
+        }
+        return normalized.startsWith("fc") || normalized.startsWith("fd") || normalized.startsWith("fe80:")
     }
 
     private suspend fun postJsonRpc(rpcUrl: String, method: String, paramsJson: String): JSONObject {
@@ -1094,6 +1146,7 @@ class MwaController(
             "requestId" to request.id,
             "kind" to request.kind,
             "cluster" to request.cluster.id,
+            "rpcUrl" to request.rpcUrl.orEmpty(),
             "summary" to request.summary.orEmpty(),
             "payloadEncoding" to request.payloadEncoding,
             "payloadChars" to request.payloadData.length,

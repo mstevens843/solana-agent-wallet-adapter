@@ -104,6 +104,17 @@ For LAN testing the native Android app can connect to the local bridge URL print
 fallback can still open the deployed HTTPS origin or the LAN URL in Android Chrome when
 `AGENTIC_ANDROID_ENABLE_WEB_FALLBACK=true` is set for the APK build.
 
+Enable LAN bridge access in a bundled APK when the app itself needs to call the local bridge over the phone's network:
+
+```sh
+AGENTIC_ANDROID_ALLOW_LAN_BRIDGE=true pnpm android:install
+pnpm android:install -- -PagenticAllowLanBridge=true
+```
+
+This is enabled by default for debug/install builds and disabled by default for release builds. For release-candidate
+APK testing against a laptop bridge, set it explicitly. The app still accepts only localhost, private LAN IPs, and
+`.local` bridge hosts for cleartext HTTP bridge traffic.
+
 Android users can use the app planner without an AI key through templates. If they want AI planning without a
 desktop bridge, the bundled app defaults to Android session BYOK with browser-compatible providers such as OpenRouter
 or custom gateways. Hosted BYOK is disabled inside the bundled shell because there is no same-origin hosted API server;
@@ -195,7 +206,7 @@ The workflow fails if it cannot produce a signed release APK and AAB.
 
 1. Start the local bridge/browser flow with `pnpm dev:mobile` when testing bridge approvals from a phone.
 2. Install an MWA-compatible Android wallet such as Phantom, Solflare, or Seed Vault Wallet.
-3. Install the native debug APK with `pnpm android:install`.
+3. Install the native APK with `AGENTIC_ANDROID_ALLOW_LAN_BRIDGE=true pnpm android:install` for LAN bridge testing, or a signed release-candidate APK with the same flag set.
 4. Launch Agentic.
 5. Tap `Connect wallet` and approve in the installed wallet.
 6. Close and relaunch Agentic. It should restore the cached encrypted authorization automatically without a button press.
@@ -210,6 +221,7 @@ The workflow fails if it cannot produce a signed release APK and AAB.
 
 Wallet caveats match the Unity/Godot/Unreal native SDKs: Backpack uses sign-then-RPC for sign-and-send, Phantom and
 Solflare may not support MWA message signing, Jupiter does not support standalone `sign_transactions`, and Phantom
-native sign-and-send requires a `minContextSlot` workaround.
+native sign-and-send requires a `minContextSlot` workaround. Mainnet-beta release-candidate tests should start with
+no-value memo transactions before any capped value transfer.
 
 iOS MWA and generic Android WebView wrappers are intentionally out of scope.

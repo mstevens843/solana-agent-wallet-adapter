@@ -37,14 +37,23 @@ import { Connection } from '@solana/web3.js';
 
 import {
   AuthValidationError,
+  buildAgentProfilePublishMessage,
+  buildAgentProfileTakedownMessage,
   buildCloudWorkspaceDeleteMessage,
   buildWalletLoginMessage,
+  createAgentProfilePublishIntentResponse,
+  createAgentProfileTakedownIntentResponse,
   createAuthNonceResponse,
   createCloudWorkspaceDeleteIntentResponse,
   normalizeWalletAddress,
   parseVerifyWalletRequest,
   verifyWalletSignature,
 } from './auth.js';
+import {
+  hashProfilePayload,
+  validateProfilePayload,
+  type AgentPaymentProfilePayload,
+} from '@solana-agent-wallet-adapter/a2a-agent-card';
 import { isSecureRequest, serializeClearSessionCookie, serializeSessionCookie } from './cookies.js';
 // Side-effect import: each Phase-1 dev-API route module self-registers on load.
 import './devApiHandlers.js';
@@ -139,6 +148,9 @@ const REGISTERED_API_ROUTES = [
   'POST /api/auth/logout',
   'POST /api/cloud-workspace/delete-intent',
   'POST /api/cloud-workspace/delete',
+  'POST /api/agents/profile-intent',
+  'PUT /api/agents/profile',
+  'DELETE /api/agents/profile',
   'GET /api/session',
   'GET /api/audit',
   '/api/plans',
@@ -397,7 +409,11 @@ export function createCloudApiRouter(options: CloudApiRouterOptions = {}): Cloud
   return {
     store,
     async handle(req, res, url) {
-      if (!url.pathname.startsWith('/api/') && !url.pathname.startsWith('/.well-known/')) {
+      if (
+        !url.pathname.startsWith('/api/') &&
+        !url.pathname.startsWith('/.well-known/') &&
+        !url.pathname.startsWith('/agents/')
+      ) {
         return false;
       }
 
@@ -711,6 +727,25 @@ async function routeApiRequest(
       evidenceStore,
       recurringStore,
     );
+    return;
+  }
+
+  if (url.pathname === '/api/agents/profile-intent') {
+    requireMethod(req, 'POST');
+    await handleAgentProfileIntent(req, res, url, store, clock);
+    return;
+  }
+
+  if (url.pathname === '/api/agents/profile') {
+    if (req.method === 'PUT') {
+      await handleAgentProfilePublish(req, res, url, store, clock);
+      return;
+    }
+    if (req.method === 'DELETE') {
+      await handleAgentProfileTakedown(req, res, url, store, clock);
+      return;
+    }
+    requireMethod(req, 'PUT');
     return;
   }
 
@@ -1083,6 +1118,237 @@ async function handleCloudWorkspaceDelete(
   );
   res.setHeader('set-cookie', serializeClearSessionCookie(shouldSetSecureCookie(req)));
   writeJson(res, 200, { ok: true, signedOut: true, deleted });
+}
+
+const AGENT_PROFILE_NAMESPACE: CloudPreferenceNamespace = 'agent-payment-profile';
+
+async function handleAgentProfileIntent(
+  req: IncomingMessage,
+  res: ServerResponse,
+  url: URL,
+  store: WorkflowStore,
+  clock: Clock,
+): Promise<void> {
+  const session = await sessionFromRequest({ req, store, clock });
+  if (!session) {
+    throw new ApiError(401, 'Sign in required to update your agent profile.');
+  }
+  const body = await readJsonBody(req);
+  const record = (body && typeof body === 'object' && !Array.isArray(body)) ? body as Record<string, unknown> : {};
+  const action = record.action === 'takedown' ? 'takedown' : 'publish';
+  await store.cleanupExpired(clock.now().toISOString());
+
+  let response;
+  if (action === 'publish') {
+    const payload = parseAgentProfilePayloadInput(record.payload);
+    const payloadHashHex = await hashProfilePayload(payload);
+    response = createAgentProfilePublishIntentResponse({
+      walletAddress: session.walletAddress,
+      domain: requestDomain(req, url),
+      payloadHashHex,
+      clock,
+    });
+  } else {
+    response = createAgentProfileTakedownIntentResponse({
+      walletAddress: session.walletAddress,
+      domain: requestDomain(req, url),
+      clock,
+    });
+  }
+
+  await store.createAuthNonce({
+    ...response,
+    createdAt: response.issuedAt,
+  });
+  writeJson(res, 200, { ...response, action });
+}
+
+async function handleAgentProfilePublish(
+  req: IncomingMessage,
+  res: ServerResponse,
+  url: URL,
+  store: WorkflowStore,
+  clock: Clock,
+): Promise<void> {
+  const session = await sessionFromRequest({ req, store, clock });
+  if (!session) {
+    throw new ApiError(401, 'Sign in required to publish your agent profile.');
+  }
+  const preferenceStore = isCloudPreferencesStore(store) ? store : undefined;
+  if (!preferenceStore) {
+    throw new ApiError(503, 'Profile storage is not configured on this server.');
+  }
+  const rawBody = await readJsonBody(req);
+  const body = parseAgentProfileRequest(rawBody, session.walletAddress);
+  const payload = parseAgentProfilePayloadInput((rawBody as Record<string, unknown>).payload);
+
+  const nonce = await assertProfileNonce(store, body, session.walletAddress, requestDomain(req, url), clock);
+  const recomputedHashHex = await hashProfilePayload(payload);
+  const expectedMessage = buildAgentProfilePublishMessage(nonce, recomputedHashHex);
+  if (body.message !== nonce.message || body.message !== expectedMessage) {
+    throw new ApiError(401, 'Signed message does not match the profile publish intent.');
+  }
+  if (!verifyWalletSignature(body)) {
+    throw new ApiError(401, 'Wallet signature could not be verified.');
+  }
+  const consumed = await store.consumeAuthNonce(nonce.nonce, clock.now().toISOString());
+  if (!consumed) {
+    throw new ApiError(401, 'Invalid or already used profile nonce.');
+  }
+
+  const existing = await preferenceStore.getPreference(session.walletAddress, AGENT_PROFILE_NAMESPACE);
+  const saved = await preferenceStore.savePreference(session.walletAddress, {
+    namespace: AGENT_PROFILE_NAMESPACE,
+    payload,
+    updatedAt: clock.now().toISOString(),
+    version: (existing?.version ?? 0) + 1,
+  });
+  await store.forWallet(session.walletAddress).insertAuditEvent({
+    id: randomUUID(),
+    type: 'agent.profile.published',
+    createdAt: saved.updatedAt,
+    metadata: {
+      version: saved.version,
+      discoverable: payload.discoverable,
+      payloadHash: recomputedHashHex,
+    },
+  });
+  writeJson(res, 200, { ok: true, profile: saved });
+}
+
+async function handleAgentProfileTakedown(
+  req: IncomingMessage,
+  res: ServerResponse,
+  url: URL,
+  store: WorkflowStore,
+  clock: Clock,
+): Promise<void> {
+  const session = await sessionFromRequest({ req, store, clock });
+  if (!session) {
+    throw new ApiError(401, 'Sign in required to take down your agent profile.');
+  }
+  const preferenceStore = isCloudPreferencesStore(store) ? store : undefined;
+  if (!preferenceStore) {
+    throw new ApiError(503, 'Profile storage is not configured on this server.');
+  }
+  const body = parseAgentProfileRequest(await readJsonBody(req), session.walletAddress);
+  const nonce = await assertProfileNonce(store, body, session.walletAddress, requestDomain(req, url), clock);
+  const expectedMessage = buildAgentProfileTakedownMessage(nonce);
+  if (body.message !== nonce.message || body.message !== expectedMessage) {
+    throw new ApiError(401, 'Signed message does not match the profile takedown intent.');
+  }
+  if (!verifyWalletSignature(body)) {
+    throw new ApiError(401, 'Wallet signature could not be verified.');
+  }
+  const consumed = await store.consumeAuthNonce(nonce.nonce, clock.now().toISOString());
+  if (!consumed) {
+    throw new ApiError(401, 'Invalid or already used profile nonce.');
+  }
+
+  const existing = await preferenceStore.getPreference(session.walletAddress, AGENT_PROFILE_NAMESPACE);
+  if (!existing) {
+    writeJson(res, 200, { ok: true, profile: null });
+    return;
+  }
+  const existingPayload = existing.payload && typeof existing.payload === 'object' && !Array.isArray(existing.payload)
+    ? (existing.payload as Record<string, unknown>)
+    : {};
+  const hiddenPayload: AgentPaymentProfilePayload = {
+    version: 1,
+    discoverable: false,
+    displayName: typeof existingPayload.displayName === 'string' ? existingPayload.displayName : '',
+    acceptedTokens: Array.isArray(existingPayload.acceptedTokens)
+      ? (existingPayload.acceptedTokens as AgentPaymentProfilePayload['acceptedTokens'])
+      : [],
+    protocols: Array.isArray(existingPayload.protocols)
+      ? (existingPayload.protocols as AgentPaymentProfilePayload['protocols'])
+      : [],
+  };
+  if (typeof existingPayload.contactEmail === 'string' && existingPayload.contactEmail.trim().length > 0) {
+    hiddenPayload.contactEmail = existingPayload.contactEmail.trim();
+  }
+  const saved = await preferenceStore.savePreference(session.walletAddress, {
+    namespace: AGENT_PROFILE_NAMESPACE,
+    payload: hiddenPayload,
+    updatedAt: clock.now().toISOString(),
+    version: existing.version + 1,
+  });
+  await store.forWallet(session.walletAddress).insertAuditEvent({
+    id: randomUUID(),
+    type: 'agent.profile.takedown',
+    createdAt: saved.updatedAt,
+    metadata: { version: saved.version },
+  });
+  writeJson(res, 200, { ok: true, profile: saved });
+}
+
+interface AgentProfileSignedRequest {
+  walletAddress: string;
+  nonce: string;
+  message: string;
+  signature: string;
+  domain: string;
+  issuedAt: string;
+  expiresAt: string;
+  signatureEncoding: 'base58' | 'base64';
+}
+
+function parseAgentProfileRequest(input: unknown, fallbackWalletAddress: string): AgentProfileSignedRequest {
+  if (!input || typeof input !== 'object' || Array.isArray(input)) {
+    throw new ApiError(400, 'Missing agent profile request body.');
+  }
+  const record = input as Record<string, unknown>;
+  return {
+    walletAddress: record.walletAddress === undefined
+      ? fallbackWalletAddress
+      : normalizeWalletAddress(record.walletAddress),
+    nonce: requiredDeleteString(record.nonce, 'Missing profile nonce.'),
+    message: requiredDeleteString(record.message, 'Missing signed profile message.'),
+    signature: requiredDeleteString(record.signature, 'Missing wallet signature.'),
+    domain: requiredDeleteString(record.domain, 'Missing signed domain.'),
+    issuedAt: requiredDeleteString(record.issuedAt, 'Missing signed issued time.'),
+    expiresAt: requiredDeleteString(record.expiresAt, 'Missing signed expiration time.'),
+    signatureEncoding: parseSignatureEncoding(record.signatureEncoding),
+  };
+}
+
+async function assertProfileNonce(
+  store: WorkflowStore,
+  body: AgentProfileSignedRequest,
+  sessionWalletAddress: string,
+  serverDomain: string,
+  clock: Clock,
+): Promise<{ nonce: string; walletAddress: string; domain: string; issuedAt: string; expiresAt: string; message: string }> {
+  const nonce = await store.getAuthNonce(body.nonce);
+  const now = clock.now();
+  if (!nonce || nonce.consumedAt) {
+    throw new ApiError(401, 'Invalid or already used profile nonce.');
+  }
+  if (nonce.walletAddress !== sessionWalletAddress || body.walletAddress !== sessionWalletAddress) {
+    throw new ApiError(401, 'Wallet address does not match the signed-in cloud session.');
+  }
+  if (nonce.domain !== serverDomain || body.domain !== nonce.domain) {
+    throw new ApiError(401, 'Signed domain does not match this server.');
+  }
+  if (body.issuedAt !== nonce.issuedAt || body.expiresAt !== nonce.expiresAt) {
+    throw new ApiError(401, 'Signed profile metadata does not match the nonce.');
+  }
+  if (Date.parse(nonce.issuedAt) > now.getTime() || Date.parse(nonce.expiresAt) <= now.getTime()) {
+    throw new ApiError(401, 'Profile nonce has expired.');
+  }
+  if (!nonce.message) {
+    throw new ApiError(401, 'Profile nonce is missing its canonical message.');
+  }
+  return nonce as { nonce: string; walletAddress: string; domain: string; issuedAt: string; expiresAt: string; message: string };
+}
+
+function parseAgentProfilePayloadInput(input: unknown): AgentPaymentProfilePayload {
+  const result = validateProfilePayload(input);
+  if (!result.ok) {
+    const first = result.errors[0];
+    throw new ApiError(400, first ? `Profile payload invalid: ${first.message}` : 'Profile payload invalid.');
+  }
+  return result.payload;
 }
 
 async function handleListAuditEvents(
@@ -2079,6 +2345,9 @@ async function handlePutPreference(
   clock: Clock,
   namespace: CloudPreferenceNamespace,
 ): Promise<void> {
+  if (namespace === 'agent-payment-profile') {
+    throw new ApiError(405, 'Use /api/agents/profile (signed) to update this preference.');
+  }
   const session = await sessionFromRequest({ req, store, clock });
   if (!session) {
     throw new ApiError(401, 'Sign in required to save preferences.');

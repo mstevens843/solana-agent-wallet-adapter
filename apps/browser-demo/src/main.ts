@@ -311,6 +311,18 @@ import {
 } from './ap2InboundDemoEvents.js';
 import { setConnectedAddress, setConnectedCluster } from './walletState.js';
 import './devTabs/index.js';
+import { setCloudWalletBridge } from './cloudWalletBridge.js';
+
+setCloudWalletBridge({
+  async signMessage(message, summary) {
+    const signingClient = requireClient();
+    const result = await signingClient.signMessage(message, signOptions(summary));
+    return { signature: result.signature, encoding: 'base58' };
+  },
+  cloudRequest(path, init) {
+    return cloudRequest(path, init);
+  },
+});
 
 type StepState = 'idle' | 'active' | 'done' | 'error';
 type StepName = 'discover' | 'connect' | 'sign' | 'transaction' | 'bridge' | 'inbox' | 'lab' | 'ai';
@@ -895,6 +907,7 @@ const ROUTE_PATH_SET = new Set<string>(ROUTE_PATHS);
 const SHOW_DEV_CONTROLS = resolveDevControls();
 const IS_ANDROID_APP = resolveAndroidAppSurface();
 const SHOW_ANDROID_EXAMPLE_TAB = resolveAndroidExampleTab();
+const ANDROID_ALLOW_LAN_BRIDGE = resolveAndroidAllowLanBridge();
 const HASH_ROUTE_MAP = new Map<string, AppRoute>([
   ['#top', '/'],
   ['#docs', '/docs'],
@@ -3426,6 +3439,7 @@ function homePage(): string {
 function docsPage(): string {
   return `
     ${docsSection()}
+    ${agenticLayersDocsSection()}
     ${protocolConnectorsDocsSection()}
     ${gapSection()}
     ${walletDirectorySection()}
@@ -4279,6 +4293,177 @@ function docsCard(title: string, detail: string): string {
   `;
 }
 
+interface AgenticLayerDocsBet {
+  code: string;
+  title: string;
+  surface: string;
+  summary: string;
+  logoId: BrandLogoId;
+}
+
+interface AgenticLayerDocs {
+  id: string;
+  eyebrow: string;
+  title: string;
+  summary: string;
+  surface: string;
+  tabs: string[];
+  proof: string;
+  bets: AgenticLayerDocsBet[];
+}
+
+const AGENTIC_LAYER_DOCS: AgenticLayerDocs[] = [
+  {
+    id: 'payments',
+    eyebrow: 'Layer 1 / S1',
+    title: 'Agent Payments',
+    summary:
+      'The settlement layer for agent commerce: publish this wallet, receive signed payment requests, pay merchant carts, and route settlement through Solana rails without handing custody to the agent.',
+    surface: 'More / Agent Payments',
+    tabs: ['Profile', 'Pay Merchant', 'Incoming Requests'],
+    proof: 'Agents discover, request, or prepare. The connected wallet still approves and signs every payment.',
+    bets: [
+      {
+        code: 'S1.1',
+        title: 'AP2 inbound',
+        surface: 'Incoming Requests',
+        summary:
+          'External agents submit verified AP2 mandates that materialize as approval cards with agent metadata, payment caps, and AP2 receipts.',
+        logoId: 'agentRouter',
+      },
+      {
+        code: 'S1.2',
+        title: 'ACP outbound',
+        surface: 'Pay Merchant',
+        summary:
+          'Merchant carts become plain-English line items, recipient checks, and wallet-signed USDC payment approvals.',
+        logoId: 'solana',
+      },
+      {
+        code: 'S1.3',
+        title: 'A2A AgentCard',
+        surface: 'Profile',
+        summary:
+          'The wallet publishes discoverable capabilities at /.well-known/agent.json so compatible agents can negotiate with it programmatically.',
+        logoId: 'codex',
+      },
+      {
+        code: 'S1.5',
+        title: 'Bridge settlement',
+        surface: 'Connector router',
+        summary:
+          'Connector facts, bridge routes, and swap previews turn any-token intent into bounded settlement work before signing.',
+        logoId: 'wormhole',
+      },
+    ],
+  },
+  {
+    id: 'skills',
+    eyebrow: 'Layer 2 / S2',
+    title: 'Skills',
+    summary:
+      'The strategy marketplace on top of receipts and connector actions: install bounded recipes, approve each run, publish author workflows, and let receipts prove performance.',
+    surface: 'More / Skills',
+    tabs: ['Browse', 'Installed', 'My Profile', 'Publish'],
+    proof: 'Skills can schedule and propose work. Caps, receipts, and wallet approval remain the boundary.',
+    bets: [
+      {
+        code: 'S2.6',
+        title: 'Composable skills',
+        surface: 'Browse',
+        summary:
+          'Versioned recipes like DCA, yield rotation, stop loss, bridge idle USDC, and donations install with explicit caps.',
+        logoId: 'jupiter',
+      },
+      {
+        code: 'S2.3',
+        title: 'Receipt aggregator',
+        surface: 'My Profile',
+        summary:
+          'Evidence receipts roll into public wallet and skill stats so track records are verifiable instead of self-reported.',
+        logoId: 'solanaMobile',
+      },
+      {
+        code: 'S2.5',
+        title: 'Signals / copy-trading',
+        surface: 'Installed + receipts',
+        summary:
+          'Publisher receipts can fan out matching proposals to followers under follower-owned caps; every follower still approves.',
+        logoId: 'pyth',
+      },
+      {
+        code: 'S2.4',
+        title: 'Creator monetization',
+        surface: 'Publish',
+        summary:
+          'Authors can price skills with one-time, monthly, or performance-fee USDC rails using the same non-custodial approval model.',
+        logoId: 'save',
+      },
+    ],
+  },
+];
+
+function agenticLayersDocsSection(): string {
+  return `
+    <section id="agentic-layers" class="agentic-layers-section" aria-labelledby="agentic-layers-title">
+      <div class="section-heading agentic-layers-heading">
+        <p class="eyebrow mini">More menu architecture</p>
+        <h2 id="agentic-layers-title">The new app tabs are the settlement layer and the skills layer.</h2>
+        <p>
+          The app's More menu now carries the two strategic layers from the blueprint. Agent Payments is Layer 1:
+          a wallet endpoint for AP2, ACP, AgentCard discovery, and settlement routing. Skills is Layer 2:
+          a marketplace of bounded recipes, receipt-backed profiles, Signals, and creator revenue.
+        </p>
+      </div>
+      <div class="agentic-layer-grid" aria-label="Agentic Layer 1 and Layer 2 docs">
+        ${AGENTIC_LAYER_DOCS.map(agenticLayerDocsPanel).join('')}
+      </div>
+      <div class="agentic-layer-contract" aria-label="Layer contract">
+        <strong>Shared contract</strong>
+        <span>These surfaces are currently dev-gated in the app. The production contract stays the same: agents prepare, users approve, wallets sign, receipts persist.</span>
+      </div>
+    </section>
+  `;
+}
+
+function agenticLayerDocsPanel(layer: AgenticLayerDocs): string {
+  return `
+    <article class="agentic-layer-panel ${escapeHtml(layer.id)}">
+      <div class="agentic-layer-panel-head">
+        <div>
+          <span class="agentic-layer-eyebrow">${escapeHtml(layer.eyebrow)}</span>
+          <h3>${escapeHtml(layer.title)}</h3>
+        </div>
+        <span class="agentic-layer-surface">${escapeHtml(layer.surface)}</span>
+      </div>
+      <p class="agentic-layer-summary">${escapeHtml(layer.summary)}</p>
+      <div class="agentic-layer-tabs" aria-label="${escapeHtml(layer.title)} app tabs">
+        ${layer.tabs.map((tab) => `<span>${escapeHtml(tab)}</span>`).join('')}
+      </div>
+      <div class="agentic-layer-bet-list">
+        ${layer.bets.map(agenticLayerBetRow).join('')}
+      </div>
+      <div class="agentic-layer-proof">
+        <strong>Boundary</strong>
+        <span>${escapeHtml(layer.proof)}</span>
+      </div>
+    </article>
+  `;
+}
+
+function agenticLayerBetRow(bet: AgenticLayerDocsBet): string {
+  return `
+    <div class="agentic-layer-bet">
+      ${brandLogo(bet.logoId, 'agentic-layer-bet-logo')}
+      <div class="agentic-layer-bet-copy">
+        <span>${escapeHtml(bet.code)} / ${escapeHtml(bet.surface)}</span>
+        <strong>${escapeHtml(bet.title)}</strong>
+        <p>${escapeHtml(bet.summary)}</p>
+      </div>
+    </div>
+  `;
+}
+
 interface ProtocolConnectorDocsGroup {
   title: string;
   detail: string;
@@ -4899,8 +5084,8 @@ function androidDownloadSection(): string {
         <!-- Android eyebrow intentionally hidden. -->
         <h2 id="android-title">Install the Agentic Android app.</h2>
         <p>
-          The Android build is a Trusted Web Activity for the Render-hosted Agentic site. It keeps the browser-based
-          Solana Mobile Wallet Adapter path available without turning the app into a private-key custodian.
+          The Android build is a bundled native app shell for Agentic with native Solana Mobile Wallet Adapter signing.
+          The optional hosted web/TWA fallback stays disabled unless a build explicitly enables it.
         </p>
       </div>
       <div class="download-section">
@@ -4913,8 +5098,8 @@ function androidDownloadSection(): string {
         </div>
       </div>
       <p class="download-note">
-        Use the APK for direct install testing and the AAB for Play or managed release pipelines. Production trusted
-        mode requires the deployed site to serve Digital Asset Links for the signing certificate.
+        Use the APK for direct install testing and the AAB for Play or managed release pipelines. If a build enables
+        hosted web/TWA fallback, production trusted mode requires Digital Asset Links for the signing certificate.
       </p>
     </section>
   `;
@@ -5280,12 +5465,30 @@ function guidedDemoPolicyMetric(label: string, value: string, detail: string): s
 }
 
 function guidedDemoPolicyCheckRow(check: { label: string; value: string; tone?: AgentEvidenceTone }): string {
+  const status = guidedDemoPolicyCheckStatus(check.tone);
   return `
     <div class="agent-evidence-row ${check.tone ? escapeHtml(check.tone) : ''}">
-      <dt>${escapeHtml(check.label)}</dt>
-      <dd>${agentEvidenceValueHtml(check)}</dd>
+      <dt>
+        <span class="agent-evidence-row-label">${escapeHtml(check.label)}</span>
+        <span class="agent-evidence-row-pill ${status.className}">${status.label}</span>
+      </dt>
+      <dd>${guidedDemoPolicyCheckValueHtml(check.value)}</dd>
     </div>
   `;
+}
+
+function guidedDemoPolicyCheckStatus(tone?: AgentEvidenceTone): { label: string; className: string } {
+  if (tone === 'fail') return { label: 'Fail', className: 'fail' };
+  if (tone === 'warn') return { label: 'Note', className: 'warn' };
+  if (tone === 'neutral') return { label: 'Info', className: 'neutral' };
+  return { label: 'Pass', className: 'pass' };
+}
+
+function guidedDemoPolicyCheckValueHtml(value: string): string {
+  return escapeHtml(value).replace(
+    /(~?\$?\d+(?:\.\d+)?(?:\/SOL)?(?:\s*(?:bps|SOL|months|h))?%?)/g,
+    '<span class="guided-demo-policy-evidence-number">$1</span>',
+  );
 }
 
 function guidedDemoReviewCard(scenario: GuidedDemoScenario): string {
@@ -5363,7 +5566,7 @@ function guidedDemoActions(): string {
     if (isMockPolicy) {
       return `
         <div class="guided-demo-actions">
-          <button class="primary" data-demo-action="approve" ${disabled}>Record approval</button>
+          <button class="primary" data-demo-action="approve" ${disabled}>Sign and approve tx</button>
           <button data-demo-action="reset" ${disabled}>Reset demo</button>
           <span class="guided-demo-action-note">The agent already returned APPROVE, so the next step records a local demo signature.</span>
         </div>
@@ -17713,7 +17916,10 @@ async function runReconnectAndroidCached(): Promise<void> {
   trackWalletConnectClick('android_native', 'reconnect_cached');
   await run('connect', async () => {
     assertAndroidNativeRuntime();
-    const restored = await restoreLatestAndroidNativeWallet({ cluster: androidNativeCluster() });
+    const restored = await restoreLatestAndroidNativeWallet({
+      cluster: androidNativeCluster(),
+      rpcUrl: activeRpcUrl(),
+    });
     if (!restored) {
       throw new Error('No cached Android MWA authorization found.');
     }
@@ -20170,13 +20376,13 @@ function pythConnectorReadRequest(plan: AgentPlan, question: PythReadQuestion): 
 }
 
 function connectorReadSourceForPlan(record: GeneratedPlanRecord | undefined): 'cloud' | 'local-bridge' {
-  if (record?.workflowSource === 'local-bridge' && state.bridgeActive && state.bridgeToken && isLoopbackBridgeUrl(state.bridgeUrl)) {
+  if (record?.workflowSource === 'local-bridge' && state.bridgeActive && state.bridgeToken && isTrustedBridgeUrl(state.bridgeUrl)) {
     return 'local-bridge';
   }
   if (record?.workflowSource === 'cloud' || activeWorkflowMode() === 'agentic-cloud') {
     if (cloudSessionMatchesWallet()) return 'cloud';
   }
-  if (state.bridgeActive && state.bridgeToken && isLoopbackBridgeUrl(state.bridgeUrl)) {
+  if (state.bridgeActive && state.bridgeToken && isTrustedBridgeUrl(state.bridgeUrl)) {
     return 'local-bridge';
   }
   if (cloudSessionMatchesWallet()) return 'cloud';
@@ -22219,7 +22425,7 @@ async function fetchConnectorFactsForAgent(
 
 function connectorReadSourceForAgent(record: GeneratedPlanRecord): 'cloud' | 'local-bridge' {
   if (record.workflowSource === 'cloud' && cloudSessionMatchesWallet()) return 'cloud';
-  if (state.bridgeActive && state.bridgeToken && isLoopbackBridgeUrl(state.bridgeUrl)) return 'local-bridge';
+  if (state.bridgeActive && state.bridgeToken && isTrustedBridgeUrl(state.bridgeUrl)) return 'local-bridge';
   if (cloudSessionMatchesWallet()) return 'cloud';
   throw new Error('Connector facts need Agentic Cloud sign-in or a connected private local bridge.');
 }
@@ -22468,7 +22674,7 @@ async function walletScopedProviderRequest(
   bodies: { bridgeBody: Record<string, unknown>; cloudBody: Record<string, unknown> },
 ): Promise<Record<string, unknown>> {
   let bridgeError: unknown;
-  if (state.bridgeActive && state.bridgeToken && isLoopbackBridgeUrl(state.bridgeUrl)) {
+  if (state.bridgeActive && state.bridgeToken && isTrustedBridgeUrl(state.bridgeUrl)) {
     try {
       return await bridgeRequest<Record<string, unknown>>(bridgePath, {
         method: 'POST',
@@ -22683,7 +22889,7 @@ async function fetchCoinGeckoGlobalSnapshot(): Promise<CoinGeckoGlobalSnapshot |
     return coinGeckoGlobalCache.snapshot;
   }
   // Try bridge first (uses the user's local key), then cloud (uses the deployed key).
-  const bridgeAttempt = state.bridgeActive && state.bridgeToken && isLoopbackBridgeUrl(state.bridgeUrl)
+  const bridgeAttempt = state.bridgeActive && state.bridgeToken && isTrustedBridgeUrl(state.bridgeUrl)
     ? bridgeRequest<CoinGeckoGlobalSnapshot>('/bridge/coingecko/global', { method: 'GET' }).catch(() => undefined)
     : undefined;
   const bridgeSnapshot = await (bridgeAttempt ?? Promise.resolve(undefined));
@@ -22719,7 +22925,7 @@ async function fetchCoinGeckoTokenEvidence(mints: string[]): Promise<CoinGeckoTo
     includeOnchain: true,
     maxTokenDetails: Math.min(3, uniqueMints.length),
   };
-  const bridgeAttempt = state.bridgeActive && state.bridgeToken && isLoopbackBridgeUrl(state.bridgeUrl)
+  const bridgeAttempt = state.bridgeActive && state.bridgeToken && isTrustedBridgeUrl(state.bridgeUrl)
     ? bridgeRequest<CoinGeckoTokenEvidenceSnapshot>('/bridge/coingecko/token-evidence', {
         method: 'POST',
         body: JSON.stringify(body),
@@ -28304,7 +28510,7 @@ function canUseDirectBrowserRpc(cluster: Cluster): boolean {
 
 function canAttemptLocalBridgeForCluster(cluster: Cluster): boolean {
   return Boolean(state.bridgeToken) &&
-    isLoopbackBridgeUrl(state.bridgeUrl) &&
+    isTrustedBridgeUrl(state.bridgeUrl) &&
     cluster === state.cluster;
 }
 
@@ -30647,6 +30853,9 @@ async function activateBridgeConnection(
   } else {
     await loadBridgeConfig(false);
   }
+  if (walletBackend instanceof AndroidNativeWalletBackend) {
+    walletBackend.setRpcUrl(activeRpcUrl());
+  }
   await connectBridgeHost();
   state.bridgeActive = true;
   state.bridgeAutoReconnect = true;
@@ -31982,8 +32191,8 @@ async function bridgeRequest<T = unknown>(path: string, init?: RequestInit): Pro
   if (!state.bridgeToken) {
     throw new Error('Bridge token is required.');
   }
-  if (!isLoopbackBridgeUrl(state.bridgeUrl)) {
-    throw new Error('Local bridge URL must use localhost, 127.0.0.1, or ::1.');
+  if (!isTrustedBridgeUrl(state.bridgeUrl)) {
+    throw new Error('Local bridge URL must use localhost, 127.0.0.1, ::1, or a trusted private LAN host.');
   }
   const url = new URL(path, bridgeBaseUrl());
   const headers = new Headers(init?.headers);
@@ -32302,7 +32511,10 @@ function selectedWallet(): DiscoveredWallet {
 
 async function connectAndroidNativeWallet(_forcePicker: boolean): Promise<void> {
   assertAndroidNativeRuntime();
-  const backend = new AndroidNativeWalletBackend({ cluster: androidNativeCluster() });
+  const backend = new AndroidNativeWalletBackend({
+    cluster: androidNativeCluster(),
+    rpcUrl: activeRpcUrl(),
+  });
   walletBackend = backend;
   client = new SolanaSigningClient({ backend });
   const cachedAddress = _forcePicker ? null : await backend.reconnectLatest();
@@ -32338,6 +32550,7 @@ async function restoreAndroidNativeSession(): Promise<void> {
   }
   const restored = await restoreLatestAndroidNativeWallet({
     cluster: androidNativeCluster(),
+    rpcUrl: activeRpcUrl(),
   });
   if (!restored) {
     state.androidNativeStatus = 'No cached Android MWA authorization found. Tap Discover to open the wallet picker.';
@@ -32357,7 +32570,10 @@ async function refreshAndroidNativeCacheState(): Promise<void> {
 function androidBackendOrNew(): AndroidNativeWalletBackend {
   return walletBackend instanceof AndroidNativeWalletBackend
     ? walletBackend
-    : new AndroidNativeWalletBackend({ cluster: androidNativeCluster() });
+    : new AndroidNativeWalletBackend({
+        cluster: androidNativeCluster(),
+        rpcUrl: activeRpcUrl(),
+      });
 }
 
 function androidNativeCluster(): Cluster {
@@ -33867,7 +34083,7 @@ function parseTokenSecurityPayload(mint: string, payload: unknown): TokenSecurit
 
 async function tokenMarketRequest(path: string, body: Record<string, unknown>): Promise<Record<string, unknown>> {
   let bridgeError: unknown;
-  if (state.bridgeActive && state.bridgeToken && isLoopbackBridgeUrl(state.bridgeUrl)) {
+  if (state.bridgeActive && state.bridgeToken && isTrustedBridgeUrl(state.bridgeUrl)) {
     try {
       return await bridgeRequest<Record<string, unknown>>(`/bridge/birdeye${path}`, {
         method: 'POST',
@@ -38224,12 +38440,15 @@ function bridgeBaseUrl(): string {
   return state.bridgeUrl.endsWith('/') ? state.bridgeUrl : `${state.bridgeUrl}/`;
 }
 
-function isLoopbackBridgeUrl(value: string): boolean {
+function isTrustedBridgeUrl(value: string): boolean {
   try {
     const url = new URL(value);
     if (url.protocol !== 'http:') return false;
-    const host = url.hostname.toLowerCase().replace(/^\[/, '').replace(/\]$/, '');
-    return host === 'localhost' || host === '127.0.0.1' || host === '::1';
+    const host = url.hostname;
+    if (isLoopbackHostname(host)) return true;
+    if (!isLocalOrPrivateHostname(host)) return false;
+    if (IS_ANDROID_APP) return ANDROID_ALLOW_LAN_BRIDGE;
+    return isLocalOrPrivateHostname(globalThis.location?.hostname ?? '');
   } catch {
     return false;
   }
@@ -38496,6 +38715,16 @@ function resolveAndroidAppSurface(): boolean {
     };
   }).env;
   const explicit = String(viteEnv?.VITE_AGENTIC_ANDROID_APP ?? '').trim().toLowerCase();
+  return ['1', 'true', 'yes', 'on'].includes(explicit);
+}
+
+function resolveAndroidAllowLanBridge(): boolean {
+  const viteEnv = (import.meta as ImportMeta & {
+    env?: {
+      VITE_AGENTIC_ANDROID_ALLOW_LAN_BRIDGE?: string;
+    };
+  }).env;
+  const explicit = String(viteEnv?.VITE_AGENTIC_ANDROID_ALLOW_LAN_BRIDGE ?? '').trim().toLowerCase();
   return ['1', 'true', 'yes', 'on'].includes(explicit);
 }
 
@@ -39831,7 +40060,7 @@ function readLaunchParams(): { bridgeUrl?: string; bridgeToken?: string } {
     saveSessionBridgeToken(bridgeToken);
   }
   return {
-    ...(bridgeUrl && isLoopbackBridgeUrl(bridgeUrl) ? { bridgeUrl } : {}),
+    ...(bridgeUrl && isTrustedBridgeUrl(bridgeUrl) ? { bridgeUrl } : {}),
     ...(bridgeToken ? { bridgeToken } : {}),
   };
 }

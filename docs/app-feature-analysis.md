@@ -123,7 +123,7 @@ Supported approval behavior:
 | MCP stdio and HTTP server | Shipped | Exposes wallet tools and product-level action tools to clients such as Codex, Claude Code, and Claude Desktop. |
 | CLI | Shipped | Terminal app for bridge lifecycle, wallet host launch, approval inbox, schedules, plans, receipts, transfers, swaps, and health. |
 | Desktop app | Shipped as Tauri shell | Starts and monitors local bridge and wallet host, shows health, inbox, receipts, and logs. |
-| Android TWA/app | Partial | Android app artifacts and MWA surface exist; release/trust setup depends on asset links and signing config. |
+| Android app | Shipped / RC-gated | Bundled native shell with Android native MWA signing; release/trust setup still depends on signing config and asset links when hosted web/TWA fallback is enabled. |
 | iOS Capacitor/native paths | Partial | iOS app and bridge packages exist, but iOS wallet-link paths remain experimental. |
 
 ## MCP And Developer Features

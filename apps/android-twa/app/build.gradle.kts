@@ -77,6 +77,15 @@ val enableWebFallback = booleanFlag(
     "AGENTIC_ANDROID_ENABLE_WEB_FALLBACK",
     false,
 )
+val allowLanBridgeInput = providers.gradleProperty("agenticAllowLanBridge").orNull
+    ?: providers.gradleProperty("AGENTIC_ANDROID_ALLOW_LAN_BRIDGE").orNull
+    ?: System.getenv("AGENTIC_ANDROID_ALLOW_LAN_BRIDGE")
+    ?: System.getenv("agenticAllowLanBridge")
+val allowLanBridge = booleanFlag(
+    allowLanBridgeInput,
+    "AGENTIC_ANDROID_ALLOW_LAN_BRIDGE",
+    !isReleaseBuild,
+)
 val localLaunchHosts = setOf("localhost", "127.0.0.1", "0.0.0.0", "::1")
 
 if (isReleaseBuild && (launchScheme != "https" || launchHost.lowercase() in localLaunchHosts)) {
@@ -133,7 +142,7 @@ android {
         manifestPlaceholders["agenticScheme"] = launchScheme
         manifestPlaceholders["agenticHost"] = launchHost
         manifestPlaceholders["agenticWebFallbackEnabled"] = enableWebFallback.toString()
-        manifestPlaceholders["usesCleartextTraffic"] = usesCleartext.toString()
+        manifestPlaceholders["usesCleartextTraffic"] = (usesCleartext || allowLanBridge).toString()
 
         buildConfigField("String", "AGENTIC_LAUNCH_URL", "\"${launchUrl.replace("\"", "\\\"")}\"")
         buildConfigField("String", "AGENTIC_LAUNCH_SCHEME", "\"${launchScheme.replace("\"", "\\\"")}\"")
@@ -141,6 +150,7 @@ android {
         buildConfigField("int", "AGENTIC_LAUNCH_PORT", launchPort.toString())
         buildConfigField("boolean", "AGENTIC_ANDROID_SHOW_EXAMPLE_TAB", showExampleTab.toString())
         buildConfigField("boolean", "AGENTIC_ANDROID_ENABLE_WEB_FALLBACK", enableWebFallback.toString())
+        buildConfigField("boolean", "AGENTIC_ANDROID_ALLOW_LAN_BRIDGE", allowLanBridge.toString())
         resValue("string", "launch_url", launchUrl)
         resValue("string", "asset_statements", escapedResValue(assetStatements))
     }
@@ -209,6 +219,7 @@ val buildBundledWebAssets = tasks.register<Exec>("buildBundledWebAssets") {
     )
     environment("VITE_AGENTIC_ANDROID_APP", "true")
     environment("VITE_AGENTIC_ANDROID_SHOW_EXAMPLE_TAB", showExampleTab.toString())
+    environment("VITE_AGENTIC_ANDROID_ALLOW_LAN_BRIDGE", allowLanBridge.toString())
     environment("VITE_CAPACITOR_IOS_APP", "false")
 }
 
@@ -223,6 +234,7 @@ val typecheckBundledWebAssets = tasks.register<Exec>("typecheckBundledWebAssets"
     )
     environment("VITE_AGENTIC_ANDROID_APP", "true")
     environment("VITE_AGENTIC_ANDROID_SHOW_EXAMPLE_TAB", showExampleTab.toString())
+    environment("VITE_AGENTIC_ANDROID_ALLOW_LAN_BRIDGE", allowLanBridge.toString())
     environment("VITE_CAPACITOR_IOS_APP", "false")
 }
 

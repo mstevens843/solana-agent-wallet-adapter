@@ -19,6 +19,7 @@ env:
   AGENTIC_ANDROID_LAUNCH_URL: "https://agentic-signer.com/app"
   AGENTIC_ANDROID_REQUIRE_SIGNING: "1"
   AGENTIC_ANDROID_SHOW_EXAMPLE_TAB: "false"
+  AGENTIC_ANDROID_ALLOW_LAN_BRIDGE: "false"
 
 jobs:
   build:

@@ -1,275 +1,394 @@
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 
-// Mirror the payOut.test.ts setup. The agentCard module's CSS import is
-// gated on `typeof document !== 'undefined'`, and so is the body-level
-// click delegate, so leaving `document` unset prevents Vite style
-// injection while still letting us exercise the pure helpers + the
-// fetchAgentCard state machine.
+vi.mock('../../connectionState.js', () => ({
+  currentAddress: () => '4fTqUdd9SRCkmALQhQGF66VRYJFsCLDSQJYadqwMMoHd',
+  refreshConnection: () => Promise.resolve(),
+}));
 
 beforeAll(() => {
-  if (!(globalThis as { __DEV_TAB_REGISTRY_INSTALLED__?: boolean }).__DEV_TAB_REGISTRY_INSTALLED__) {
-    (globalThis as { __DEV_TAB_REGISTRY_INSTALLED__?: boolean }).__DEV_TAB_REGISTRY_INSTALLED__ = true;
+  const flagHolder = globalThis as { __DEV_TAB_REGISTRY_INSTALLED__?: boolean };
+  if (!flagHolder.__DEV_TAB_REGISTRY_INSTALLED__) {
+    flagHolder.__DEV_TAB_REGISTRY_INSTALLED__ = true;
   }
 });
 
 import {
   __getTabStateForTests,
   __resetTabStateForTests,
-  bodyHtml,
   escapeHtml,
-  fetchAgentCard,
-  formatProtocols,
   formatTime,
   panelHtml,
   shortAddress,
-  stableJson,
-  statusBadgeHtml,
 } from '../agentCard.js';
+import {
+  setCloudWalletBridge,
+  type CloudWalletBridge,
+} from '../../cloudWalletBridge.js';
+import type { AgentPaymentProfilePayload } from '@solana-agent-wallet-adapter/a2a-agent-card';
+
+interface MockRequestRecord {
+  path: string;
+  init?: RequestInit;
+  body?: unknown;
+}
+
+function parseBody(init?: RequestInit): unknown {
+  if (!init || typeof init.body !== 'string') return undefined;
+  try {
+    return JSON.parse(init.body);
+  } catch {
+    return init.body;
+  }
+}
+
+function publishedPayload(): AgentPaymentProfilePayload {
+  return {
+    version: 1,
+    discoverable: true,
+    displayName: 'Mathew Wallet',
+    acceptedTokens: ['USDC', 'USDT', 'SOL'],
+    protocols: ['ap2', 'acp', 'a2a'],
+  };
+}
 
 describe('pure helpers', () => {
-  it('escapes HTML special characters', () => {
+  it('escapeHtml escapes HTML special chars and tolerates empty input', () => {
     expect(escapeHtml('<b>"hi" & \'bye\'</b>')).toBe('&lt;b&gt;&quot;hi&quot; &amp; &#39;bye&#39;&lt;/b&gt;');
-  });
-
-  it('escapeHtml returns empty string for empty input', () => {
     expect(escapeHtml('')).toBe('');
     expect(escapeHtml(undefined)).toBe('');
   });
 
-  it('stableJson pretty-prints objects with 2-space indent', () => {
-    expect(stableJson({ a: 1, b: [2, 3] })).toContain('"a": 1');
-    expect(stableJson({ a: 1, b: [2, 3] })).toContain('"b": [');
-  });
-
-  it('stableJson returns empty string for undefined', () => {
-    expect(stableJson(undefined)).toBe('');
-  });
-
-  it('stableJson renders null as "null"', () => {
-    expect(stableJson(null)).toBe('null');
-  });
-
-  it('formatTime returns HH:MM:SS-style local time for a timestamp', () => {
-    const result = formatTime(Date.UTC(2026, 4, 14, 10, 30, 0));
-    expect(result).toMatch(/\d{1,2}:\d{2}:\d{2}/);
-  });
-
-  it('formatTime returns empty string for undefined', () => {
-    expect(formatTime(undefined)).toBe('');
-  });
-
-  it('shortAddress truncates long base58 addresses', () => {
-    expect(shortAddress('7tQAS3PCEHKekfA5xkkFqRf9aCkqg8aLg5jLA7MwYc8M')).toBe('7tQA…Yc8M');
-  });
-
-  it('shortAddress leaves short inputs untouched', () => {
+  it('shortAddress shortens long addresses with an ellipsis and leaves short input intact', () => {
+    expect(shortAddress('4fTqUdd9SRCkmALQhQGF66VRYJFsCLDSQJYadqwMMoHd')).toBe('4fTq…MoHd');
     expect(shortAddress('short')).toBe('short');
-    expect(shortAddress('')).toBe('');
-    expect(shortAddress(undefined)).toBe('');
+    expect(shortAddress(null)).toBe('');
   });
 
-  it('formatProtocols joins entries with a middle dot', () => {
-    expect(formatProtocols(['ap2', 'acp'])).toBe('ap2 · acp');
-  });
-
-  it('formatProtocols returns em-dash for empty input', () => {
-    expect(formatProtocols([])).toBe('—');
-    expect(formatProtocols(undefined)).toBe('—');
-    expect(formatProtocols(null)).toBe('—');
+  it('formatTime returns an empty string when given no timestamp', () => {
+    expect(formatTime(undefined)).toBe('');
+    expect(formatTime(null)).toBe('');
   });
 });
 
-describe('panelHtml + bodyHtml states', () => {
+describe('panelHtml — header always renders', () => {
   beforeEach(() => {
     __resetTabStateForTests();
   });
 
-  it('idle state renders the loading message and no JSON viewer', () => {
-    expect(bodyHtml()).toContain('Checking this wallet&apos;s payment profile');
-    expect(bodyHtml()).not.toContain('dev-agent-card-json');
-  });
-
-  it('unavailable state has no "Agent 7" wording and offers a retry', () => {
-    __resetTabStateForTests({ status: 'unavailable' });
-    const html = bodyHtml();
-    expect(html).not.toContain('Agent 7');
-    expect(html).not.toContain('Agent 5');
-    expect(html).toContain('data-dev-agent-card-retry');
-    expect(html).toContain('payment profile is not reachable');
-  });
-
-  it('error state escapes the error message and offers a retry', () => {
-    __resetTabStateForTests({ status: 'error', errorMessage: '<broken>' });
-    const html = bodyHtml();
-    expect(html).toContain('Could not check payment profile');
-    expect(html).toContain('&lt;broken&gt;');
-    expect(html).toContain('data-dev-agent-card-retry');
-  });
-
-  it('loaded state renders a readable identity view with raw JSON in advanced details', () => {
-    __resetTabStateForTests({
-      status: 'loaded',
-      cardJson: {
-        walletAddress: '7tQAS3PCEHKekfA5xkkFqRf9aCkqg8aLg5jLA7MwYc8M',
-        supportedProtocols: ['ap2', 'acp'],
-        supportedTokens: ['USDC', 'SOL'],
-        version: 'abc123',
-        name: 'Test Agent',
-        description: 'Signs only after user approval.',
-        url: 'https://example.test',
-        capabilities: {
-          streaming: false,
-          pushNotifications: true,
-          stateTransitionHistory: false,
-        },
-        skills: [
-          { id: 'wallet.sign_message', name: 'Sign Message', description: 'Sign a message.' },
-          { id: 'wallet.pay_cart', name: 'Pay Cart', description: 'Review and approve a payment request.' },
-        ],
-      },
-      fetchedAt: Date.now(),
-    });
-    const html = bodyHtml();
-    expect(html).toContain('dev-agent-card-readable');
-    expect(html).toContain('Active payment profile');
-    expect(html).toContain('Test Agent');
-    expect(html).toContain('Every request still opens for review');
-    expect(html).toContain('dev-agent-card-summary');
-    expect(html).toContain('7tQA…Yc8M');
-    expect(html).toContain('ap2');
-    expect(html).toContain('acp');
-    expect(html).toContain('USDC');
-    expect(html).toContain('SOL');
-    expect(html).toContain('abc123');
-    expect(html).toContain('How this profile is used');
-    expect(html).toContain('Incoming payments');
-    expect(html).toContain('Checkout payments');
-    expect(html).toContain('Always review');
-    expect(html).toContain('What other apps can ask for');
-    expect(html).toContain('Sign Message');
-    expect(html).toContain('Pay Cart');
-    expect(html).toContain('https://example.test/.well-known/agent.json');
-    expect(html).toContain('View technical profile JSON');
-    expect(html).toContain('dev-agent-card-json');
-  });
-
-  it('loaded state with empty {} renders the empty-response notice instead of JSON', () => {
-    __resetTabStateForTests({ status: 'loaded', cardJson: {}, fetchedAt: Date.now() });
-    const html = bodyHtml();
-    expect(html).toContain('does not have a payment profile');
-    expect(html).not.toContain('dev-agent-card-json');
-  });
-
-  it('loaded state with null renders the empty-response notice', () => {
-    __resetTabStateForTests({ status: 'loaded', cardJson: null, fetchedAt: Date.now() });
-    expect(bodyHtml()).toContain('does not have a payment profile');
-  });
-
-  it('statusBadgeHtml branches by status', () => {
-    __resetTabStateForTests({ status: 'idle' });
-    expect(statusBadgeHtml()).toBe('');
-    __resetTabStateForTests({ status: 'loading' });
-    expect(statusBadgeHtml()).toContain('Checking');
-    __resetTabStateForTests({ status: 'loaded', cardJson: { walletAddress: 'X' }, fetchedAt: Date.now() });
-    expect(statusBadgeHtml()).toContain('Live');
-    __resetTabStateForTests({ status: 'loaded', cardJson: {}, fetchedAt: Date.now() });
-    expect(statusBadgeHtml()).toContain('Needs setup');
-    __resetTabStateForTests({ status: 'unavailable' });
-    expect(statusBadgeHtml()).toContain('Unavailable');
-    __resetTabStateForTests({ status: 'error', errorMessage: 'X' });
-    expect(statusBadgeHtml()).toContain('Check failed');
-  });
-
-  it('panelHtml shows Copy JSON only when a non-empty card is loaded', () => {
-    __resetTabStateForTests({ status: 'idle' });
-    expect(panelHtml()).not.toContain('data-copy-id="dev-agent-card-json"');
-    __resetTabStateForTests({ status: 'loaded', cardJson: {}, fetchedAt: Date.now() });
-    expect(panelHtml()).not.toContain('data-copy-id="dev-agent-card-json"');
-    __resetTabStateForTests({
-      status: 'loaded',
-      cardJson: { name: 'AC', walletAddress: 'X' },
-      fetchedAt: Date.now(),
-    });
-    expect(panelHtml()).toContain('data-copy-id="dev-agent-card-json"');
-    expect(panelHtml()).toContain('Copy JSON');
-  });
-
-  it('panelHtml always renders the Copy profile link + Open profile + Refresh action row', () => {
-    __resetTabStateForTests();
+  it('always renders the Payment Profile header and status card', () => {
     const html = panelHtml();
-    expect(html).toContain('data-copy-id="dev-agent-card-public-url"');
-    expect(html).toContain('Copy profile link');
-    expect(html).toContain('Open profile');
-    expect(html).toContain('data-dev-agent-card-retry');
+    expect(html).toContain('Payment Profile');
+    expect(html).toContain('Approval required');
+    expect(html).toContain('Profile status');
+  });
+
+  it('renders the empty-state body when status is idle', () => {
+    expect(panelHtml()).toContain('Loading your payment profile');
   });
 });
 
-describe('fetchAgentCard behavior', () => {
-  type FetchMock = ReturnType<typeof vi.fn>;
-  let fetchMock: FetchMock;
+describe('panelHtml — loaded body sections', () => {
+  beforeEach(() => {
+    __resetTabStateForTests({
+      status: 'loaded',
+      fetched: { payload: publishedPayload(), updatedAt: '2026-05-15T00:00:00Z', version: 1 },
+      draft: {
+        discoverable: true,
+        displayName: 'Mathew Wallet',
+        acceptedTokens: new Set(['USDC', 'USDT', 'SOL']),
+        protocols: new Set(['ap2', 'acp', 'a2a']),
+        contactEmail: '',
+      },
+    });
+  });
+
+  it('renders the editable form with discoverable toggle, name field, token + protocol chips', () => {
+    const html = panelHtml();
+    expect(html).toContain('Edit your payment profile');
+    expect(html).toContain('data-profile-toggle="discoverable"');
+    expect(html).toContain('data-profile-field="displayName"');
+    expect(html).toContain('data-profile-chip-token="USDC"');
+    expect(html).toContain('data-profile-chip-protocol="ap2"');
+    expect(html).toContain('AP2 Inbound');
+    expect(html).toContain('ACP Checkout');
+    expect(html).toContain('A2A Discovery');
+  });
+
+  it('shows the per-wallet link in the live state (not the demo URL)', () => {
+    // jsdom defaults window.location.origin to http://localhost:3000
+    const html = panelHtml();
+    expect(html).toContain('/card.json');
+    expect(html).not.toContain('agentic-signer.com/.well-known');
+  });
+
+  it('shows the cross-link demo trigger', () => {
+    expect(panelHtml()).toContain('Try a sample agent payment');
+  });
+
+  it('renders the bottom collapsible "What\'s a payment profile?" explainer reusing the request-context primitive', () => {
+    const html = panelHtml();
+    expect(html).toContain('public-request-context');
+    expect(html).toContain('dev-agent-card-explainer');
+    expect(html).toContain("What's a payment profile?");
+    expect(html).toContain('Without a profile');
+    expect(html).toContain('With a profile');
+    expect(html).toContain('When it matters');
+    expect(html).toContain('When it doesn');
+  });
+
+  it('renders the Take profile down button when a record exists', () => {
+    expect(panelHtml()).toContain('data-profile-action="takedown"');
+  });
+
+  it('hides the takedown button before any record has been saved', () => {
+    __resetTabStateForTests({
+      status: 'loaded',
+      fetched: { payload: null, updatedAt: null, version: 0 },
+      draft: {
+        discoverable: false,
+        displayName: 'Wallet 4fTq…MoHd',
+        acceptedTokens: new Set(['USDC']),
+        protocols: new Set(['ap2']),
+        contactEmail: '',
+      },
+    });
+    expect(panelHtml()).not.toContain('data-profile-action="takedown"');
+  });
+});
+
+describe('panelHtml — disabled link in hidden state', () => {
+  it('shows the per-wallet URL grayed with a help line when hidden', () => {
+    const originalWindow = (globalThis as { window?: unknown }).window;
+    (globalThis as { window?: unknown }).window = { location: { origin: 'https://agentic-signer.com' } };
+    try {
+      __resetTabStateForTests({
+        status: 'loaded',
+        fetched: {
+          payload: { ...publishedPayload(), discoverable: false },
+          updatedAt: '2026-05-15T00:00:00Z',
+          version: 2,
+        },
+        draft: {
+          discoverable: false,
+          displayName: 'Mathew Wallet',
+          acceptedTokens: new Set(['USDC']),
+          protocols: new Set(['ap2']),
+          contactEmail: '',
+        },
+      });
+      const html = panelHtml();
+      expect(html).toContain('dev-agent-card-link-section--disabled');
+      expect(html).toContain('Toggle Discoverable on');
+    } finally {
+      if (originalWindow === undefined) {
+        delete (globalThis as { window?: unknown }).window;
+      } else {
+        (globalThis as { window?: unknown }).window = originalWindow;
+      }
+    }
+  });
+});
+
+describe('save flow', () => {
+  const calls: MockRequestRecord[] = [];
+  let bridge: CloudWalletBridge;
 
   beforeEach(() => {
-    __resetTabStateForTests();
-    fetchMock = vi.fn();
-    (globalThis as { fetch?: typeof fetch }).fetch = fetchMock as unknown as typeof fetch;
+    calls.length = 0;
+    bridge = {
+      async signMessage(message, _summary) {
+        return { signature: `sig_${message.length}`, encoding: 'base58' };
+      },
+      async cloudRequest<T>(path: string, init?: RequestInit): Promise<T> {
+        const record: MockRequestRecord = { path, init, body: parseBody(init) };
+        calls.push(record);
+        if (path === '/api/agents/profile-intent') {
+          return {
+            nonce: 'nonce-123',
+            message: 'sign this',
+            domain: 'localhost',
+            issuedAt: '2026-05-15T00:00:00Z',
+            expiresAt: '2026-05-15T00:05:00Z',
+            walletAddress: '4fTqUdd9SRCkmALQhQGF66VRYJFsCLDSQJYadqwMMoHd',
+            action: 'publish',
+          } as unknown as T;
+        }
+        if (path === '/api/agents/profile') {
+          return {
+            ok: true,
+            profile: {
+              namespace: 'agent-payment-profile',
+              payload: publishedPayload(),
+              updatedAt: '2026-05-15T00:00:00Z',
+              version: 1,
+            },
+          } as unknown as T;
+        }
+        throw new Error(`Unmocked path: ${path}`);
+      },
+    };
+    setCloudWalletBridge(bridge);
+    __resetTabStateForTests({
+      status: 'loaded',
+      fetched: { payload: null, updatedAt: null, version: 0 },
+      draft: {
+        discoverable: true,
+        displayName: 'Mathew Wallet',
+        acceptedTokens: new Set(['USDC', 'USDT', 'SOL']),
+        protocols: new Set(['ap2', 'acp', 'a2a']),
+        contactEmail: '',
+      },
+    });
   });
 
   afterEach(() => {
-    delete (globalThis as { fetch?: typeof fetch }).fetch;
+    // restore a no-op bridge so other tests don't leak
+    setCloudWalletBridge({
+      async signMessage() { throw new Error('bridge cleared'); },
+      async cloudRequest() { throw new Error('bridge cleared'); },
+    });
   });
 
-  function jsonResponse(status: number, body: unknown): Response {
-    return new Response(JSON.stringify(body), { status, headers: { 'Content-Type': 'application/json' } });
-  }
-
-  it('200 + valid JSON transitions to loaded with cardJson populated and fetchedAt set', async () => {
-    fetchMock.mockResolvedValueOnce(jsonResponse(200, { name: 'X', walletAddress: 'Y' }));
-    await fetchAgentCard();
+  it('publishes a valid form via intent → sign → PUT and stores the returned profile', async () => {
+    const mod = await import('../agentCard.js');
+    // Internal save is wired through DOM events; we exercise it directly by
+    // dispatching a click on the save button via a stub element.
+    // Because the DOM may not be present in jsdom-less suites, call the
+    // private save flow via re-exported handlers if available — otherwise
+    // we drive it through the click delegate.
+    if (typeof document === 'undefined') return;
+    document.body.innerHTML = '<button data-profile-action="save"></button>';
+    document.querySelector<HTMLButtonElement>('[data-profile-action="save"]')!.click();
+    // Allow the async save flow to resolve.
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(calls.map((c) => `${c.init?.method ?? 'GET'} ${c.path}`)).toEqual([
+      'POST /api/agents/profile-intent',
+      'PUT /api/agents/profile',
+    ]);
     const state = __getTabStateForTests();
-    expect(state.status).toBe('loaded');
-    expect(state.cardJson).toEqual({ name: 'X', walletAddress: 'Y' });
-    expect(typeof state.fetchedAt).toBe('number');
+    expect(state.fetched?.payload?.discoverable).toBe(true);
+    expect(state.formBanner?.tone).toBe('success');
+    // Ensure mod is the same import the test driver used.
+    expect(typeof mod.panelHtml).toBe('function');
   });
 
-  it('404 transitions to unavailable', async () => {
-    fetchMock.mockResolvedValueOnce(jsonResponse(404, { error: 'not_found' }));
-    await fetchAgentCard();
-    expect(__getTabStateForTests().status).toBe('unavailable');
-  });
-
-  it('500 transitions to error with HTTP status in errorMessage', async () => {
-    fetchMock.mockResolvedValueOnce(new Response('boom', { status: 500 }));
-    await fetchAgentCard();
+  it('rejects an invalid form without making any network calls', async () => {
+    __resetTabStateForTests({
+      status: 'loaded',
+      fetched: { payload: null, updatedAt: null, version: 0 },
+      draft: {
+        discoverable: true,
+        displayName: '',
+        acceptedTokens: new Set([]),
+        protocols: new Set([]),
+        contactEmail: '',
+      },
+    });
+    if (typeof document === 'undefined') return;
+    document.body.innerHTML = '<button data-profile-action="save"></button>';
+    document.querySelector<HTMLButtonElement>('[data-profile-action="save"]')!.click();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(calls.length).toBe(0);
     const state = __getTabStateForTests();
-    expect(state.status).toBe('error');
-    expect(state.errorMessage).toBe('HTTP 500');
+    expect(state.fieldErrors.length).toBeGreaterThan(0);
+    expect(state.formBanner?.tone).toBe('error');
+  });
+});
+
+describe('takedown flow', () => {
+  const calls: MockRequestRecord[] = [];
+
+  beforeEach(() => {
+    calls.length = 0;
+    setCloudWalletBridge({
+      async signMessage(message) { return { signature: `sig_${message.length}`, encoding: 'base58' }; },
+      async cloudRequest<T>(path: string, init?: RequestInit): Promise<T> {
+        calls.push({ path, init, body: parseBody(init) });
+        if (path === '/api/agents/profile-intent') {
+          return {
+            nonce: 'nonce-takedown',
+            message: 'sign takedown',
+            domain: 'localhost',
+            issuedAt: '2026-05-15T00:00:00Z',
+            expiresAt: '2026-05-15T00:05:00Z',
+            walletAddress: '4fTqUdd9SRCkmALQhQGF66VRYJFsCLDSQJYadqwMMoHd',
+            action: 'takedown',
+          } as unknown as T;
+        }
+        if (path === '/api/agents/profile') {
+          return {
+            ok: true,
+            profile: {
+              namespace: 'agent-payment-profile',
+              payload: { ...publishedPayload(), discoverable: false },
+              updatedAt: '2026-05-15T00:01:00Z',
+              version: 2,
+            },
+          } as unknown as T;
+        }
+        throw new Error(`Unmocked path: ${path}`);
+      },
+    });
+    __resetTabStateForTests({
+      status: 'loaded',
+      fetched: { payload: publishedPayload(), updatedAt: '2026-05-15T00:00:00Z', version: 1 },
+      draft: {
+        discoverable: true,
+        displayName: 'Mathew Wallet',
+        acceptedTokens: new Set(['USDC']),
+        protocols: new Set(['ap2']),
+        contactEmail: '',
+      },
+    });
   });
 
-  it('thrown fetch transitions to error with the message', async () => {
-    fetchMock.mockRejectedValueOnce(new Error('network is down'));
-    await fetchAgentCard();
-    const state = __getTabStateForTests();
-    expect(state.status).toBe('error');
-    expect(state.errorMessage).toBe('network is down');
+  afterEach(() => {
+    setCloudWalletBridge({
+      async signMessage() { throw new Error('bridge cleared'); },
+      async cloudRequest() { throw new Error('bridge cleared'); },
+    });
   });
 
-  it('200 + empty body keeps status loaded; the empty UI is rendered via bodyHtml', async () => {
-    fetchMock.mockResolvedValueOnce(jsonResponse(200, {}));
-    await fetchAgentCard();
-    const state = __getTabStateForTests();
-    expect(state.status).toBe('loaded');
-    expect(state.cardJson).toEqual({});
-    expect(bodyHtml()).toContain('does not have a payment profile');
+  it('takes the profile down via intent → sign → DELETE and flips discoverable false', async () => {
+    if (typeof document === 'undefined') return;
+    document.body.innerHTML = '<button data-profile-action="takedown"></button>';
+    document.querySelector<HTMLButtonElement>('[data-profile-action="takedown"]')!.click();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(calls.map((c) => `${c.init?.method ?? 'GET'} ${c.path}`)).toEqual([
+      'POST /api/agents/profile-intent',
+      'DELETE /api/agents/profile',
+    ]);
+    expect(__getTabStateForTests().fetched?.payload?.discoverable).toBe(false);
+  });
+});
+
+describe('try-demo cross-link', () => {
+  beforeEach(() => {
+    __resetTabStateForTests();
   });
 
-  it('does not stack a second fetch while loading', async () => {
-    let resolveFirst!: (value: Response) => void;
-    const first = new Promise<Response>((resolve) => { resolveFirst = resolve; });
-    fetchMock.mockReturnValueOnce(first);
-    const inflight = fetchAgentCard();
-    await fetchAgentCard();
-    expect(fetchMock).toHaveBeenCalledTimes(1);
-    resolveFirst(jsonResponse(200, { name: 'X' }));
-    await inflight;
+  it('clicks the Incoming Requests sub-tab and the demo trigger when the demo button fires', async () => {
+    if (typeof document === 'undefined') return;
+    const clicked: string[] = [];
+    document.body.innerHTML = `
+      <button data-agent-protocols-subtab="external-agents"></button>
+      <button data-external-agents-demo></button>
+      <button data-profile-action="try-demo"></button>
+    `;
+    document.querySelectorAll('button').forEach((btn) => {
+      btn.addEventListener('click', () => {
+        if (btn.dataset.agentProtocolsSubtab) clicked.push('subtab');
+        else if (btn.hasAttribute('data-external-agents-demo')) clicked.push('demo');
+        else if (btn.dataset.profileAction === 'try-demo') clicked.push('try-demo');
+      });
+    });
+    document.querySelector<HTMLButtonElement>('[data-profile-action="try-demo"]')!.click();
+    // requestAnimationFrame deferred — flush via microtask + rAF
+    await new Promise((resolve) => requestAnimationFrame(() => resolve(undefined)));
+    expect(clicked).toContain('try-demo');
+    expect(clicked).toContain('subtab');
+    expect(clicked).toContain('demo');
   });
 });

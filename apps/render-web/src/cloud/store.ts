@@ -107,6 +107,7 @@ export const CLOUD_PREFERENCE_NAMESPACES = [
   'failure-policies',
   'custom-tokens',
   'ai-settings',
+  'agent-payment-profile',
 ] as const;
 
 export type CloudPreferenceNamespace = (typeof CLOUD_PREFERENCE_NAMESPACES)[number];
