@@ -31,7 +31,7 @@ export type DAppAdapterId =
   | 'wormhole'
   | 'jupiter';
 
-export type ByoKeyConnectorId = 'magiceden' | 'tensor' | 'sanctum';
+export type ByoKeyConnectorId = 'magiceden' | 'tensor' | 'sanctum' | 'lulo';
 
 export interface ConnectorSecretMaterial {
   apiKey: string;

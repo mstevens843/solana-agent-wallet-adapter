@@ -1,3 +1,5 @@
+import type { DAppAdapterContext } from '../types.js';
+
 import {
   LULO_API_BASE_URL_ENV,
   LULO_API_KEY_ENV,
@@ -186,6 +188,26 @@ export function isLuloConfigured(): boolean {
 export function describeLuloUnavailableReason(): string | undefined {
   const client = getLuloClient();
   return client instanceof LuloApiUnavailable ? client.reason : undefined;
+}
+
+export interface LuloClientOverride {
+  apiKey: string;
+  baseUrl?: string;
+}
+
+export function buildLuloClientFromOverride(override: LuloClientOverride): LuloClient {
+  const apiKey = override.apiKey.trim();
+  if (!apiKey) return new LuloApiUnavailable();
+  const baseUrl = normalizeBaseUrl(override.baseUrl?.trim() || LULO_DEFAULT_API_BASE_URL);
+  return new LuloApiClient({ apiKey, baseUrl });
+}
+
+export function resolveLuloClient(ctx?: DAppAdapterContext): LuloClient {
+  const override = ctx?.connectorSecrets?.lulo;
+  if (override?.apiKey) {
+    return buildLuloClientFromOverride(override);
+  }
+  return getLuloClient();
 }
 
 function buildDefaultLuloClient(): LuloClient {

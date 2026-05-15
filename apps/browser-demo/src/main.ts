@@ -13,7 +13,9 @@ import {
 } from '@solana-agent-wallet-adapter/core';
 import {
   EVIDENCE_RECEIPT_KINDS,
+  SOL_MINT_KEY,
   VERIFIED_PROGRAM_IDS,
+  augmentValueWithUsd,
   baselineStorageKey,
   buildEvidenceRequirements,
   connectorProfileKind,
@@ -24,12 +26,17 @@ import {
   evaluateBaselineSignals,
   extractAmountFromParameters,
   extractRecipientFromParameters,
+  formatUsd,
+  isStablecoinMint,
   isVerifiedProgramId,
   normalizeAgentEvidenceFact,
   sanitizeUserTextOrEmpty,
+  stablecoinSnapshot,
+  tokenAmountToUsd,
   updateBaselineFromCompletion,
   type BaselineSignal,
   type BehavioralBaseline,
+  type PriceUsdSnapshot,
   type PromptInjectionFieldHit,
   parseApprovalListResponse,
   parseAuditEventRecord,
@@ -115,6 +122,7 @@ import {
 } from './agentReviewPresentation.js';
 import { findingsSpecFor } from './agentFindingsSpec.js';
 import { evaluateSimulationOutcome } from './simulationOutcome.js';
+import { getCachedUsdPrice, getUsdPriceForMint } from './priceCache.js';
 import {
   hostedByokCloudSessionBlockReason,
   shouldAutoSignOutCloudSession,
@@ -181,6 +189,7 @@ import {
 } from './transactionLedger.js';
 import {
   classifyTransactionFailure,
+  isRpcAuthRejected,
   transactionFailureToastCopy,
   type TransactionFailureKind,
 } from './transactionFailure.js';
@@ -236,6 +245,7 @@ import {
   isConnectorCapableTemplate,
   normalizeConnectorDraftParameters,
   connectorActionFormByActionType,
+  resolveConnectorMetaForAction,
   selectedConnectorActionForm,
   selectedConnectorForDraftParameters,
   selectedSubAction,
@@ -9899,16 +9909,22 @@ function generatedPlanReviewTitle(record: GeneratedPlanRecord): string {
   return record.plan.templateTitle || record.plan.intent;
 }
 
+function connectorChip(connectorId: string | undefined, connectorName: string | undefined): string {
+  if (!connectorId) return '';
+  const logoId = protocolConnectorLogoId(connectorId as ConnectedDappId);
+  if (!logoId) return '';
+  return `
+    <span class="review-plan-meta-pill connector-meta-chip">
+      ${brandLogo(logoId, 'connector-meta-logo')}
+      ${escapeHtml(connectorName ?? connectorId)}
+    </span>
+  `;
+}
+
 function generatedPlanConnectorChip(record: GeneratedPlanRecord): string {
   const connector = selectedConnectorForDraftParameters(record.plan.parameters) ??
     findProtocolConnectorByInput(record.plan.parameters.protocol || record.plan.parameters.dapp || record.plan.route);
-  if (!connector) return '';
-  return `
-    <span class="review-plan-meta-pill connector-meta-chip">
-      ${brandLogo(protocolConnectorLogoId(connector.id), 'connector-meta-logo')}
-      ${escapeHtml(connector.name)}
-    </span>
-  `;
+  return connector ? connectorChip(connector.id, connector.name) : '';
 }
 
 function generatedPlanFailurePill(record: GeneratedPlanRecord): string {
@@ -10118,10 +10134,12 @@ function generatedPlanReviewSummaryGrid(record: GeneratedPlanRecord): string {
   const amountCopyActions = plan.actionType === 'swap'
     ? undefined
     : planAmountTokenCopyActions(plan);
+  const destination = planParameter(plan, ['destinationAddress', 'destinationRecipient']);
   const rows: WalletActionSummaryRow[] = [
     {
       label: 'Wallet',
-      value: record.walletAddress || 'No wallet yet',
+      value: record.walletAddress ? short(record.walletAddress) : 'No wallet yet',
+      title: record.walletAddress,
       tone: 'wallet',
       copyValue: record.walletAddress,
       copyName: 'Wallet address',
@@ -10138,7 +10156,15 @@ function generatedPlanReviewSummaryGrid(record: GeneratedPlanRecord): string {
       title: routeSummary?.title,
       copyActions: routeSummary?.copyActions,
     },
-    { label: 'Risk', value: compactRiskLabel(plan.risk) },
+    destination
+      ? {
+          label: 'Recipient',
+          value: recipientDisplayLabel(destination),
+          title: destination,
+          copyValue: destination,
+          copyName: 'Destination recipient',
+        }
+      : { label: 'Risk', value: compactRiskLabel(plan.risk) },
   ];
   return `
     <section class="review-plan-summary" aria-label="Review summary">
@@ -10885,6 +10911,7 @@ function connectorPlanAmountInfo(plan: AgentPlan): ConnectorActionAmountInfo | u
 }
 
 function connectorPlanLiquidityAmountInfo(plan: AgentPlan): ConnectorActionAmountInfo | undefined {
+  if (plan.actionType === 'meteora_add_liquidity') return meteoraPlanAddLiquidityAmountInfo(plan);
   if (plan.actionType !== 'orca_increase_liquidity' && plan.actionType !== 'raydium_add_liquidity') return undefined;
   const tokenAAmount = planParameter(plan, ['tokenAAmount']);
   const tokenBAmount = planParameter(plan, ['tokenBAmount']);
@@ -10901,6 +10928,43 @@ function connectorPlanLiquidityAmountInfo(plan: AgentPlan): ConnectorActionAmoun
     tokenB,
     pairLabel: connectorPlanLiquidityPairLabel(plan),
   });
+}
+
+function meteoraPlanAddLiquidityAmountInfo(plan: AgentPlan): ConnectorActionAmountInfo | undefined {
+  const tokenXAmount = planParameter(plan, ['tokenXAmount']);
+  const tokenYAmount = planParameter(plan, ['tokenYAmount']);
+  const tokenX = meteoraPlanPoolTokenSymbol(plan, 'x') ?? 'token X';
+  const tokenY = meteoraPlanPoolTokenSymbol(plan, 'y') ?? 'token Y';
+  const parts = [
+    tokenXAmount ? `${tokenXAmount} ${connectorActionAmountTokenLabel(tokenX)}` : '',
+    tokenYAmount ? `${tokenYAmount} ${connectorActionAmountTokenLabel(tokenY)}` : '',
+  ].filter(Boolean);
+  if (!parts.length) return undefined;
+  return {
+    amount: parts.join(' + '),
+    label: parts.join(' + '),
+    token: meteoraPlanPoolTokenLabel(plan),
+  };
+}
+
+function meteoraPlanPoolTokenSymbol(plan: AgentPlan, side: 'x' | 'y'): string | undefined {
+  const symbolKey = side === 'x' ? 'tokenXSymbol' : 'tokenYSymbol';
+  const mintKey = side === 'x' ? 'tokenMintX' : 'tokenMintY';
+  const symbol = planParameter(plan, [symbolKey]);
+  if (symbol) return symbol;
+  const mint = planParameter(plan, [mintKey]);
+  if (mint) return resolveTokenDisplay(mint) || tokenDisplayLabel(mint);
+  const label = planParameter(plan, ['poolAddressLabel']) || planParameter(plan, ['poolName']);
+  return meteoraPairSymbolFromLabel(label, side);
+}
+
+function meteoraPlanPoolTokenLabel(plan: AgentPlan): string {
+  const explicit = planParameter(plan, ['poolName']) || planParameter(plan, ['poolAddressLabel']);
+  if (explicit) return /\bDLMM\b/i.test(explicit) ? explicit : `${explicit} DLMM`;
+  const tokenX = meteoraPlanPoolTokenSymbol(plan, 'x');
+  const tokenY = meteoraPlanPoolTokenSymbol(plan, 'y');
+  if (tokenX && tokenY) return `${tokenDisplayLabel(tokenX)}-${tokenDisplayLabel(tokenY)} DLMM`;
+  return planParameter(plan, ['poolAddress']) || 'Meteora DLMM';
 }
 
 function connectorPlanAmountToken(plan: AgentPlan): ConnectorActionAmountToken | undefined {
@@ -13869,6 +13933,7 @@ function completedPlanCard(plan: CompletedPlanRecord): string {
   const decisionProofBlock = decisionProofRow(plan);
   const historyLabel = plan.kind === 'recurring' ? 'Repeat payment done' : 'One-time done';
   const submissionPill = completedPlanSubmissionPill(plan);
+  const connectorMeta = resolveConnectorMetaForAction(plan.actionKind, (plan.metadata ?? {}) as Record<string, unknown>);
   return `
     <article class="generated-plan-card completed-plan-card ${focused ? 'focused' : ''}" ${focused ? 'data-completed-focus="true"' : ''}>
       <div class="completed-history-head">
@@ -13876,6 +13941,7 @@ function completedPlanCard(plan: CompletedPlanRecord): string {
           <div class="completed-history-meta">
             <span class="status-pill ${escapeHtml(plan.tone)}">${escapeHtml(plan.status)}</span>
             ${storageBadgeHtml(completedPlanStorageBadge(plan))}
+            ${connectorChip(connectorMeta?.id, connectorMeta?.name)}
             <strong class="completed-history-meta-title">${escapeHtml(historyLabel)}</strong>
             ${evidenceBadgeHtml(evidenceBadge)}
             ${submissionPill}
@@ -13933,8 +13999,9 @@ function completedPlanHero(plan: CompletedPlanRecord): string {
   const metric = completedPlanMetric(plan);
   const subject = marketAmountSubjectForCompletedPlan(plan);
   const context = completedPlanConnectorContextLabel(plan);
+  const compact = metric.primary.length > 22 || metric.primary.includes(' + ');
   return `
-    <div class="completed-history-value" title="${escapeHtml(marketHeroTitle(metric.primary, metric.secondary, subject))}">
+    <div class="completed-history-value${compact ? ' is-compact' : ''}" title="${escapeHtml(marketHeroTitle(metric.primary, metric.secondary, subject))}">
       ${marketAmountLineHtml(metric.primary, subject)}
       ${metric.secondary ? `<span>${escapeHtml(metric.secondary)}</span>` : ''}
       ${context ? `<span class="completed-history-context">${escapeHtml(context)}</span>` : ''}
@@ -19493,6 +19560,23 @@ async function runAgentReviewWithEvidence(
     ...(bundle.evidenceContext.connectorId ? { connectorId: bundle.evidenceContext.connectorId } : {}),
     ...(bundle.evidenceContext.connectorProfile ? { connectorProfile: bundle.evidenceContext.connectorProfile } : {}),
   });
+  // Attach the spot prices captured at review time and the plan's total USD-at-risk.
+  // Both are best-effort annotations — token-native amounts on the plan remain canonical.
+  const spotPrices = spotPricesForPlan(plan);
+  const totalUsdAtRisk = planTotalUsdAtRisk(plan);
+  if (Object.keys(spotPrices).length > 0) {
+    auditReceipt.spotPrices = Object.fromEntries(
+      Object.entries(spotPrices).map(([mint, snap]) => [mint, {
+        usdPerToken: snap.usdPerToken,
+        source: snap.source,
+        checkedAt: snap.checkedAt,
+        ...(typeof snap.confidence === 'number' ? { confidence: snap.confidence } : {}),
+      }]),
+    );
+  }
+  if (typeof totalUsdAtRisk === 'number') {
+    auditReceipt.totalUsdAtRisk = totalUsdAtRisk;
+  }
   return {
     rawResult: validated.final,
     bundle,
@@ -20737,6 +20821,121 @@ function lookupBehavioralBaseline(walletAddress: string | undefined, cluster: st
   return state.behavioralBaselines[key];
 }
 
+/**
+ * Collect the mints involved in a plan so the price cache can be primed. SOL is normalized
+ * to the SOL_MINT_KEY sentinel; SPL mints are passed through.
+ */
+function planMints(plan: AgentPlan): string[] {
+  const params = plan.parameters ?? {};
+  const out = new Set<string>();
+  // SOL: anything that looks like a SOL-denominated action.
+  if (typeof params.solAmount === 'string' || typeof params.amountSol === 'string' || plan.actionType === 'transfer_sol') {
+    out.add(SOL_MINT_KEY);
+  }
+  // SPL: scan common mint param names.
+  for (const key of ['mint', 'token', 'outputMint', 'inputMint', 'reserveMint', 'assetMint', 'lstMint']) {
+    const value = params[key];
+    if (typeof value === 'string' && value.trim().length >= 32) out.add(value.trim());
+  }
+  return Array.from(out);
+}
+
+/**
+ * Resolve spot prices for the plan's mints using only the in-memory cache (zero network
+ * cost during this synchronous call). Stablecoins always resolve. SOL resolves if the
+ * Pyth fetch in `kickPriceFetchesForPlan` populated the cache before this point. Other
+ * mints rely on whatever the router already fetched.
+ */
+function spotPricesForPlan(plan: AgentPlan): Record<string, PriceUsdSnapshot> {
+  const out: Record<string, PriceUsdSnapshot> = {};
+  for (const mint of planMints(plan)) {
+    const snap = getCachedUsdPrice(mint);
+    if (snap) out[mint] = snap;
+  }
+  return out;
+}
+
+/**
+ * Fire-and-forget: kick the Pyth fetch for SOL (when relevant) so the next review has
+ * it cached. Stablecoins are resolved synchronously by the cache itself.
+ */
+function kickPriceFetchesForPlan(plan: AgentPlan): void {
+  for (const mint of planMints(plan)) {
+    if (isStablecoinMint(mint) || getCachedUsdPrice(mint)) continue;
+    if (mint !== SOL_MINT_KEY) continue;
+    void getUsdPriceForMint(mint).catch(() => undefined);
+  }
+}
+
+/**
+ * Best-effort SOL-lamport USD lookup for an evidence fact. Returns undefined when no
+ * price is cached (either Pyth hasn't fetched yet, or this is the first review).
+ */
+function lamportsUsd(rawAmount: string | number | bigint | undefined, mintKey: string): number | undefined {
+  if (rawAmount === undefined) return undefined;
+  const snap = getCachedUsdPrice(mintKey);
+  if (!snap) return undefined;
+  const decimals = mintKey === SOL_MINT_KEY ? 9 : isStablecoinMint(mintKey) ? 6 : 6;
+  return tokenAmountToUsd(rawAmount, decimals, snap.usdPerToken);
+}
+
+/**
+ * Compute the USD-at-risk for a plan, when computable from cached prices. SOL amounts
+ * use Pyth (when cached); stablecoin amounts use the $1.00 shortcut. Returns undefined
+ * when the plan has no priceable amount.
+ */
+function planTotalUsdAtRisk(plan: AgentPlan): number | undefined {
+  const params = plan.parameters ?? {};
+  // SOL-denominated amount
+  const solRaw = params.solAmount ?? params.amountSol;
+  if (typeof solRaw === 'string' && solRaw.trim()) {
+    const solNum = Number(solRaw.trim());
+    if (Number.isFinite(solNum) && solNum > 0) {
+      const lamports = Math.round(solNum * 1e9);
+      const usd = lamportsUsd(lamports, SOL_MINT_KEY);
+      if (typeof usd === 'number') return usd;
+    }
+  }
+  // SPL amount with known mint
+  const splAmount = params.amount;
+  const mintCandidates = ['mint', 'token', 'reserveMint', 'assetMint', 'outputMint', 'inputMint'];
+  for (const key of mintCandidates) {
+    const mint = params[key];
+    if (typeof mint !== 'string' || mint.length < 32) continue;
+    const snap = getCachedUsdPrice(mint);
+    if (!snap) continue;
+    if (typeof splAmount !== 'string' || !splAmount.trim()) continue;
+    const num = Number(splAmount.trim());
+    if (!Number.isFinite(num) || num <= 0) continue;
+    // Assume 6 decimals for stablecoins (the common case); SPL decimals are not on the
+    // plan record so we default to 6 for unknown tokens. This is best-effort display only.
+    const decimals = isStablecoinMint(mint) ? 6 : 6;
+    return tokenAmountToUsd(Math.round(num * Math.pow(10, decimals)), decimals, snap.usdPerToken);
+  }
+  return undefined;
+}
+
+/**
+ * Append USD annotations to amount-bearing evidence facts. Pure additive — the existing
+ * native token value stays in `value`, USD is appended as "(≈$X.XX)" and stored on `usd`.
+ */
+function augmentEvidenceFactsWithUsd(facts: AgentEvidenceFact[], plan: AgentPlan): void {
+  const totalUsd = planTotalUsdAtRisk(plan);
+  for (const fact of facts) {
+    if (typeof fact.usd === 'number') continue;
+    // Only augment facts that look like they describe a transferable amount.
+    if (fact.routeId === 'wallet.connected_public_key') continue;
+    // Use the plan's total USD-at-risk for facts that summarize the wallet action.
+    if (fact.id === 'fact.simulation' || fact.id === 'fact.connectorRead') continue;
+    if (typeof totalUsd !== 'number') continue;
+    // Heuristic: tag the route-plan summary fact + any wallet holdings fact.
+    if (fact.routeId === 'birdeye.wallet_token_list' || fact.id.startsWith('fact.walletHoldings')) {
+      fact.usd = totalUsd;
+      fact.value = augmentValueWithUsd(fact.value, totalUsd);
+    }
+  }
+}
+
 const baselineUpdatedActionIds = new Set<string>();
 
 function recordBaselineCompletion(action: PreparedAction, approvedAt: string): void {
@@ -20812,11 +21011,16 @@ function buildAgentReviewEvidenceBundle(
   plan: AgentPlan,
   factSet: AgentReviewFactSet,
 ): AgentReviewEvidenceBundle {
+  // Best-effort: warm the price cache (Pyth SOL) in the background so subsequent reviews
+  // and the USD-suffix augmentation below have data. Stablecoins resolve synchronously
+  // via the cache so no fetch fires for them.
+  kickPriceFetchesForPlan(plan);
   const routePlanFact = factSet.evidenceRoutes;
   const routePlan: AgentFactRoutePlan = routePlanFactToRoutePlan(routePlanFact) ?? planFactRoutesForAgentReview(record, plan, {});
   const evidenceContext = evidenceContextForReview(record, plan, routePlan);
   const requirements = buildEvidenceRequirements(routePlan, evidenceContext);
   const evidenceFacts = normalizeFactSetToEvidenceFacts(factSet, requirements, evidenceContext.walletAddress);
+  augmentEvidenceFactsWithUsd(evidenceFacts, plan);
   // Layer 1: scan user-controlled text for prompt-injection attempts. Each match becomes a
   // blocking evidence fact so the existing gate denies the approval (no AI consultation
   // can override a block-severity fact).
@@ -27152,21 +27356,81 @@ async function browserLatestBlockhash(cluster: Cluster): Promise<BrowserLatestBl
 
 async function broadcastSignedBrowserTransaction(cluster: Cluster, signedTransactionBase64: string): Promise<string> {
   const request = { cluster, signedTransactionBase64 };
+  let firstAuthError: unknown;
   try {
     const response = await sameOriginTransactionRequest<BrowserSendTransactionResponse>('/api/solana/send-transaction', request);
     return requiredResponseString(response.txid ?? response.signature, 'Transaction signature');
   } catch (err) {
-    const bridgeResponse = await bridgeSolanaRequest<BrowserSendTransactionResponse>('/bridge/solana/send-transaction', request, cluster);
+    if (isRpcAuthRejected(err)) firstAuthError = err;
+    let bridgeResponse: BrowserSendTransactionResponse | undefined;
+    try {
+      bridgeResponse = await bridgeSolanaRequest<BrowserSendTransactionResponse>('/bridge/solana/send-transaction', request, cluster);
+    } catch (bridgeErr) {
+      if (isRpcAuthRejected(bridgeErr) && !firstAuthError) firstAuthError = bridgeErr;
+    }
     if (bridgeResponse) {
       return requiredResponseString(bridgeResponse.txid ?? bridgeResponse.signature, 'Transaction signature');
     }
     if (canUseDirectBrowserRpc(cluster)) {
-      return browserActionConnection(cluster).sendRawTransaction(decodeBase64(signedTransactionBase64), {
-        preflightCommitment: 'confirmed',
-        maxRetries: 5,
-      });
+      try {
+        return await browserActionConnection(cluster).sendRawTransaction(decodeBase64(signedTransactionBase64), {
+          preflightCommitment: 'confirmed',
+          maxRetries: 5,
+        });
+      } catch (directErr) {
+        if (isRpcAuthRejected(directErr)) {
+          return broadcastViaPublicRpcFallback(cluster, signedTransactionBase64, directErr);
+        }
+        if (firstAuthError) {
+          return broadcastViaPublicRpcFallback(cluster, signedTransactionBase64, firstAuthError);
+        }
+        throw directErr;
+      }
+    }
+    if (firstAuthError) {
+      return broadcastViaPublicRpcFallback(cluster, signedTransactionBase64, firstAuthError);
     }
     throw transactionApiUnavailableError(err);
+  }
+}
+
+// Fallback sender: when the configured RPC refuses with HTTP 401/403/451,
+// retry exactly once via the public mainnet/devnet RPC. If the public RPC
+// also refuses (rare; usually rate-limit, not auth), propagate the ORIGINAL
+// auth error so the user fixes the right endpoint instead of debugging the
+// public fallback. Read paths still use the configured RPC.
+async function broadcastViaPublicRpcFallback(
+  cluster: Cluster,
+  signedTransactionBase64: string,
+  originalAuthError: unknown,
+): Promise<string> {
+  const fallbackUrl = defaultRpcUrl(cluster);
+  const configuredHost = describeRpcEndpoint(activeRpcUrl());
+  const message = redactSecrets(
+    originalAuthError instanceof Error ? originalAuthError.message : String(originalAuthError),
+  );
+  console.warn(
+    `[send-fallback] Configured Solana RPC (${configuredHost}) refused sendTransaction (${message}). ` +
+    `Retrying once via public RPC ${fallbackUrl}.`,
+  );
+  try {
+    return await new Connection(fallbackUrl, 'confirmed').sendRawTransaction(
+      decodeBase64(signedTransactionBase64),
+      { preflightCommitment: 'confirmed', maxRetries: 5 },
+    );
+  } catch (fallbackErr) {
+    if (isRpcAuthRejected(fallbackErr)) {
+      throw originalAuthError instanceof Error ? originalAuthError : new Error(String(originalAuthError));
+    }
+    throw fallbackErr instanceof Error ? fallbackErr : new Error(String(fallbackErr));
+  }
+}
+
+function describeRpcEndpoint(url: string): string {
+  try {
+    return new URL(url).host || url;
+  } catch {
+    return url;
   }
 }
 
@@ -31937,6 +32201,7 @@ function preparedActionCard(action: PreparedAction): string {
     !executable ||
     pendingLedgerExecution ||
     Boolean(executionBlockReason);
+  const connectorMeta = resolveConnectorMetaForAction(action.kind, action.params as Record<string, unknown>);
   return `
     <article class="inbox-item approval-ticket inbox-approval-card ${action.status}">
       <div class="ticket-body inbox-approval-body">
@@ -31945,6 +32210,7 @@ function preparedActionCard(action: PreparedAction): string {
             <div class="inbox-approval-meta">
               <span class="status-pill ${statusTone(action.status)}">${escapeHtml(action.status)}</span>
               ${storageBadgeHtml(preparedActionStorageBadge(action))}
+              ${connectorChip(connectorMeta?.id, connectorMeta?.name)}
               <strong class="inbox-approval-meta-title">${escapeHtml(preparedActionCardTitle(action))}</strong>
               ${evidenceBadgeHtml(evidenceBadgeForAction(action))}
               <span>${escapeHtml(action.kind.replace(/_/g, ' '))}</span>
@@ -35809,7 +36075,8 @@ function stringParam(action: PreparedAction, key: string): string {
 
 function recipientParam(action: PreparedAction): string {
   return normalizedRecipientParam(stringParam(action, 'recipient')) ||
-    normalizedRecipientParam(stringParam(action, 'recipientAddress'));
+    normalizedRecipientParam(stringParam(action, 'recipientAddress')) ||
+    normalizedRecipientParam(stringParam(action, 'destinationAddress'));
 }
 
 function normalizedRecipientParam(value: string): string {

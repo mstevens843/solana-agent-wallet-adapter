@@ -624,7 +624,7 @@ export const CONNECTOR_REGISTRY: ConnectorRegistryEntry[] = [
       'solana_prepare_lulo_complete_withdraw',
       'solana_execute_prepared_action',
     ],
-    requiresClientKey: false,
+    requiresClientKey: true,
     requiredConfig: ['LULO_API_KEY environment variable'],
     executionMode: 'first_class_prepare',
     approvalBoundary: CONNECTOR_APPROVAL_BOUNDARY,
@@ -903,7 +903,7 @@ export const CONNECTOR_REGISTRY: ConnectorRegistryEntry[] = [
       'solana_prepare_tensor_sweep',
       'solana_execute_prepared_action',
     ],
-    requiresClientKey: false,
+    requiresClientKey: true,
     requiredConfig: [
       'TENSOR_API_KEY environment variable',
       '@tensor-oss/tensorswap-sdk and @tensor-oss/tcomp-sdk optional dependencies (host-wired via setTensorClientFactory)',

@@ -6,7 +6,9 @@ import {
   luloAdapter,
 } from '../../adapters/lulo/index.js';
 import {
+  buildLuloClientFromOverride,
   resetLuloClientFactory,
+  resolveLuloClient,
   setLuloClientFactory,
   redactLuloError,
   type LuloBalancesUnavailable,
@@ -611,5 +613,57 @@ describe('Lulo symbol resolution', () => {
     );
     expect(result.addInput.params.mintAddress).toBe(USDC_MINT);
     expect(result.addInput.params.withdrawalId).toBe('wd_42');
+  });
+});
+
+describe('resolveLuloClient precedence', () => {
+  let factoryClient: LuloClient;
+
+  beforeEach(() => {
+    factoryClient = buildFakeLulo({
+      rates: fakeRates(),
+      poolMeta: fakePoolMeta(),
+      balances: fakeBalances(),
+      depositCalls: [],
+      withdrawCalls: [],
+      completeCalls: [],
+    });
+    setLuloClientFactory(() => factoryClient);
+  });
+
+  afterEach(() => {
+    resetLuloClientFactory();
+  });
+
+  it('uses ctx.connectorSecrets.lulo when a non-empty apiKey is provided (does not consult the factory)', () => {
+    const ctx = makeContext({ store: inMemoryStore() });
+    ctx.connectorSecrets = { lulo: { apiKey: 'user-supplied-key', baseUrl: 'https://api.lulo.fi' } };
+    const resolved = resolveLuloClient(ctx);
+    expect(resolved).not.toBe(factoryClient);
+    // Equivalent to a fresh override-built client.
+    const direct = buildLuloClientFromOverride({ apiKey: 'user-supplied-key' });
+    expect(resolved.constructor).toBe(direct.constructor);
+  });
+
+  it('routes a whitespace-only override through buildLuloClientFromOverride (which surfaces "not configured")', async () => {
+    // Mirrors Sanctum's resolver: any non-falsy apiKey enters the override branch;
+    // an all-whitespace key then trims to empty and returns the unavailable client
+    // instead of silently bypassing the user's saved key. The Preferences UI
+    // rejects empty/whitespace input before it ever reaches save, so this is a
+    // defense-in-depth contract test, not a hot path.
+    const ctx = makeContext({ store: inMemoryStore() });
+    ctx.connectorSecrets = { lulo: { apiKey: '   ' } };
+    const resolved = resolveLuloClient(ctx);
+    expect(resolved).not.toBe(factoryClient);
+    await expect(resolved.getRates({})).rejects.toThrow(/Lulo adapter is not configured/);
+  });
+
+  it('falls back to the factory singleton when ctx is undefined', () => {
+    expect(resolveLuloClient(undefined)).toBe(factoryClient);
+  });
+
+  it('falls back to the factory singleton when ctx has no connectorSecrets', () => {
+    const ctx = makeContext({ store: inMemoryStore() });
+    expect(resolveLuloClient(ctx)).toBe(factoryClient);
   });
 });

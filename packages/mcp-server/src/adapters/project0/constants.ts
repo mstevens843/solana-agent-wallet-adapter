@@ -13,3 +13,9 @@ export const PROJECT0_DESCRIPTION =
 export const PROJECT0_SUPPORTED_CLUSTERS: Cluster[] = ['mainnet-beta'];
 export const PROJECT0_PROGRAM_ID = new PublicKey('MFv2hWf31Z9kbCa1snEPYctwafyhdvnV7FZnsebVacA');
 export const DEFAULT_PROJECT0_MIN_HEALTH_RATIO = 1.1;
+
+// Opt-in env: when truthy ("1", "true", "yes", "on"), the Project 0 adapter
+// rebuilds the cached SDK client per prepare/execute call instead of reusing
+// a process-lifetime cached instance. Use this to rule out cache staleness
+// when the SDK throws account-decode errors mid-session.
+export const PROJECT0_FRESH_CLIENT_PER_PREPARE_ENV = 'PROJECT0_FRESH_CLIENT_PER_PREPARE';

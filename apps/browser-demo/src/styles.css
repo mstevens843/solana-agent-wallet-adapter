@@ -8206,7 +8206,7 @@ button.danger:hover:not(:disabled) {
   gap: 5px;
 }
 
-.inbox-approval-meta > span:not(.status-pill) {
+.inbox-approval-meta > span:not(.status-pill):not(.review-plan-meta-pill) {
   background: rgba(255, 255, 255, 0.032);
   border: 1px solid rgba(224, 230, 226, 0.08);
   border-radius: 999px;
@@ -17657,6 +17657,7 @@ button.danger:hover:not(:disabled) {
   color: rgba(196, 205, 202, 0.64);
 }
 
+.review-plan-meta-pill,
 .review-plan-meta .review-plan-meta-pill {
   background: rgba(255, 255, 255, 0.026);
   border: 1px solid transparent;
@@ -17668,7 +17669,7 @@ button.danger:hover:not(:disabled) {
   padding: 2px 7px;
 }
 
-.review-plan-meta .connector-meta-chip {
+.connector-meta-chip {
   align-items: center;
   display: inline-flex;
   gap: 5px;
@@ -18551,7 +18552,7 @@ button.danger:hover:not(:disabled) {
   gap: 7px;
 }
 
-.completed-history-meta > span:not(.status-pill) {
+.completed-history-meta > span:not(.status-pill):not(.review-plan-meta-pill) {
   background: rgba(255, 255, 255, 0.045);
   border: 1px solid rgba(224, 230, 226, 0.09);
   border-radius: 999px;
@@ -18587,6 +18588,10 @@ button.danger:hover:not(:disabled) {
   letter-spacing: 0;
   line-height: 1;
   white-space: nowrap;
+}
+
+.completed-history-value.is-compact strong {
+  font-size: clamp(1rem, 1.55vw, 1.32rem);
 }
 
 .completed-history-value span {

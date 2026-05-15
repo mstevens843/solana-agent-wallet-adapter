@@ -1,7 +1,7 @@
 import type { DAppAdapterContext } from '../types.js';
 
 import {
-  getLuloClient,
+  resolveLuloClient,
   type LuloPoolMetaSnapshot,
   type LuloRatesSnapshot,
 } from './client.js';
@@ -14,10 +14,9 @@ export interface GetLuloRatesInput {
 
 export async function getLuloRates(
   input: GetLuloRatesInput,
-  _ctx: DAppAdapterContext,
+  ctx: DAppAdapterContext,
 ): Promise<LuloRatesSnapshot> {
-  void _ctx;
-  return getLuloClient().getRates({
+  return resolveLuloClient(ctx).getRates({
     ...(input.mintAddress?.trim() ? { mintAddress: input.mintAddress.trim() } : {}),
     ...(input.depositType ? { depositType: input.depositType } : {}),
   });
@@ -29,10 +28,9 @@ export interface GetLuloPoolMetaInput {
 
 export async function getLuloPoolMeta(
   input: GetLuloPoolMetaInput,
-  _ctx: DAppAdapterContext,
+  ctx: DAppAdapterContext,
 ): Promise<LuloPoolMetaSnapshot> {
-  void _ctx;
-  return getLuloClient().getPoolMeta({
+  return resolveLuloClient(ctx).getPoolMeta({
     ...(input.mintAddress?.trim() ? { mintAddress: input.mintAddress.trim() } : {}),
   });
 }

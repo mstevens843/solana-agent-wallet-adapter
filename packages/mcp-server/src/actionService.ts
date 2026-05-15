@@ -5498,6 +5498,9 @@ export class AgentWalletActionService {
     } catch {
       try {
         const legacy = Transaction.from(bytes);
+        // Legacy simulateTransaction has no replaceRecentBlockhash option; freshen
+        // the blockhash manually so a tx built moments earlier still simulates cleanly.
+        legacy.recentBlockhash = (await this.connection.getLatestBlockhash('confirmed')).blockhash;
         const result = await this.connection.simulateTransaction(legacy);
         simulationErr = result.value.err;
         logs = result.value.logs ?? undefined;

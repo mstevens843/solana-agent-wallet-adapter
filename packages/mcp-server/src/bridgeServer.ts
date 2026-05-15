@@ -54,7 +54,7 @@ import {
   requestCoinGeckoSolanaTokenEvidence,
 } from './coingecko.js';
 import { heliusConfigFromEnv } from './helius.js';
-import { type AgentWalletConfig } from './config.js';
+import { defaultRpcUrl, type AgentWalletConfig } from './config.js';
 import { parseDecimalAmount } from './amounts.js';
 import { LocalBridgeBackend } from './localBridgeBackend.js';
 import type { LabArtifact, LabArtifactStore } from './labArtifacts.js';
@@ -1574,12 +1574,43 @@ async function bridgeSendTransaction(
 ): Promise<{ txid: string; signature: string }> {
   assertBridgeCluster(config, cluster);
   const encoded = requireString(signedTransaction, 'signedTransaction');
-  const connection = new Connection(config.rpcUrl, 'confirmed');
-  const txid = await connection.sendRawTransaction(Buffer.from(encoded, 'base64'), {
-    preflightCommitment: 'confirmed',
-    maxRetries: 5,
-  });
-  return { txid, signature: txid };
+  const bytes = Buffer.from(encoded, 'base64');
+  const sendOptions = { preflightCommitment: 'confirmed' as const, maxRetries: 5 };
+  try {
+    const txid = await new Connection(config.rpcUrl, 'confirmed').sendRawTransaction(bytes, sendOptions);
+    return { txid, signature: txid };
+  } catch (err) {
+    if (!isRpcAuthRejectedError(err)) throw err;
+    const fallbackUrl = defaultRpcUrl(config.cluster);
+    if (fallbackUrl === config.rpcUrl) throw err;
+    try {
+      const txid = await new Connection(fallbackUrl, 'confirmed').sendRawTransaction(bytes, sendOptions);
+      console.warn(
+        `[bridge:send-fallback] Configured RPC refused sendTransaction (${rpcAuthErrorSummary(err)}). ` +
+        `Sent via public RPC ${fallbackUrl}.`,
+      );
+      return { txid, signature: txid };
+    } catch (fallbackErr) {
+      // Public RPC also refused — propagate the original auth error so the
+      // operator fixes the configured endpoint, not the public fallback.
+      if (isRpcAuthRejectedError(fallbackErr)) throw err;
+      throw fallbackErr;
+    }
+  }
+}
+
+function isRpcAuthRejectedError(err: unknown): boolean {
+  const message = (err instanceof Error ? err.message : String(err ?? '')).toLowerCase();
+  if (!message) return false;
+  if (/\b(401|403|451)\b/.test(message)) return true;
+  if (/"code"\s*:\s*(?:401|403|451)/.test(message)) return true;
+  if (/access\s+(?:forbidden|denied)|^forbidden|\bforbidden\b/.test(message)) return true;
+  return false;
+}
+
+function rpcAuthErrorSummary(err: unknown): string {
+  const text = err instanceof Error ? err.message : String(err ?? '');
+  return text.length > 240 ? `${text.slice(0, 237)}...` : text;
 }
 
 async function bridgeSignatureStatus(

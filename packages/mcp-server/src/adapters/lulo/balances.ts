@@ -1,7 +1,7 @@
 import type { DAppAdapterContext } from '../types.js';
 
 import {
-  getLuloClient,
+  resolveLuloClient,
   type LuloBalancesUnavailable,
   type LuloWalletBalancesSnapshot,
 } from './client.js';
@@ -18,5 +18,5 @@ export async function getLuloWalletBalances(
   if (!walletAddress) {
     throw new Error('walletAddress is required to read Lulo balances.');
   }
-  return getLuloClient().getWalletBalances({ walletAddress });
+  return resolveLuloClient(ctx).getWalletBalances({ walletAddress });
 }

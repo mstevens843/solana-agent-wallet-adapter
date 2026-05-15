@@ -1,5 +1,12 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { PublicKey } from '@solana/web3.js';
+import {
+  ComputeBudgetProgram,
+  Connection,
+  PublicKey,
+  SystemProgram,
+  Transaction,
+  TransactionInstruction,
+} from '@solana/web3.js';
 
 import {
   JUPITER_ADAPTER_ID,
@@ -970,5 +977,172 @@ describe('Jupiter Lend Earn detail SDK resilience', () => {
     const warnArg = String(warnSpy.mock.calls[0]?.[0] ?? '');
     expect(warnArg).toMatch(/Jupiter Lend Earn snapshot skipped for/);
     expect(warnArg).toContain(brokenPda.toBase58());
+  });
+});
+
+describe('Jupiter Lend Earn — native SOL wrap/unwrap and compute budget', () => {
+  const JUPITER_LEND_EARN_PROGRAM = 'jup3YeL8QhtSx1e253b2FDvsMNC87fDrgQZivbrndc9';
+  const COMPUTE_BUDGET_PROGRAM_BASE58 = ComputeBudgetProgram.programId.toBase58();
+  const SYSTEM_PROGRAM_BASE58 = SystemProgram.programId.toBase58();
+  const TOKEN_PROGRAM_BASE58 = 'TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA';
+  const ATA_PROGRAM_BASE58 = 'ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL';
+
+  let getLatestBlockhashSpy: ReturnType<typeof vi.spyOn> | undefined;
+
+  beforeEach(() => {
+    resetJupiterLendClientFactory();
+    getLatestBlockhashSpy = vi
+      .spyOn(Connection.prototype, 'getLatestBlockhash')
+      .mockResolvedValue({
+        blockhash: 'EkSnNWid2cvwEVnVx9aBqawnmiCNiDgp3gUdkDPTKN1N',
+        lastValidBlockHeight: 0,
+      }) as unknown as ReturnType<typeof vi.spyOn>;
+  });
+
+  afterEach(() => {
+    __resetJupiterLendEarnSdkCacheForTests();
+    getLatestBlockhashSpy?.mockRestore();
+  });
+
+  function makeBundle(ixsFor: (asset: PublicKey, signer: PublicKey) => TransactionInstruction[]): JupiterLendEarnSdkBundle {
+    class StubBN {
+      constructor(public readonly value: string | number | bigint) {}
+    }
+    return {
+      getLendingTokens: vi.fn(async () => []),
+      getLendingTokenDetails: vi.fn(async () => {
+        throw new Error('not used in wrap/unwrap tests');
+      }),
+      getDepositIxs: vi.fn(async ({ asset, signer }: { asset: PublicKey; signer: PublicKey }) => ({
+        ixs: ixsFor(asset, signer),
+      })) as unknown as JupiterLendEarnSdkBundle['getDepositIxs'],
+      getWithdrawIxs: vi.fn(async ({ asset, signer }: { asset: PublicKey; signer: PublicKey }) => ({
+        ixs: ixsFor(asset, signer),
+      })) as unknown as JupiterLendEarnSdkBundle['getWithdrawIxs'],
+      getMintIxs: vi.fn(async ({ asset, signer }: { asset: PublicKey; signer: PublicKey }) => ({
+        ixs: ixsFor(asset, signer),
+      })) as unknown as JupiterLendEarnSdkBundle['getMintIxs'],
+      getRedeemIxs: vi.fn(async ({ asset, signer }: { asset: PublicKey; signer: PublicKey }) => ({
+        ixs: ixsFor(asset, signer),
+      })) as unknown as JupiterLendEarnSdkBundle['getRedeemIxs'],
+      BN: StubBN as unknown as JupiterLendEarnSdkBundle['BN'],
+    };
+  }
+
+  // Two-instruction realistic shape matching @jup-ag/lend@0.1.9 getDepositIxs:
+  // an ATA-idempotent for the f-token and the program's deposit ix.
+  function realisticIxs(asset: PublicKey, signer: PublicKey): TransactionInstruction[] {
+    const fakeFTokenAta = new PublicKey('11111111111111111111111111111112');
+    const fakeFTokenMint = new PublicKey('11111111111111111111111111111113');
+    const ataIdempotent = new TransactionInstruction({
+      programId: new PublicKey(ATA_PROGRAM_BASE58),
+      keys: [
+        { pubkey: signer, isSigner: true, isWritable: true },
+        { pubkey: fakeFTokenAta, isSigner: false, isWritable: true },
+        { pubkey: signer, isSigner: false, isWritable: false },
+        { pubkey: fakeFTokenMint, isSigner: false, isWritable: false },
+        { pubkey: SystemProgram.programId, isSigner: false, isWritable: false },
+        { pubkey: new PublicKey(TOKEN_PROGRAM_BASE58), isSigner: false, isWritable: false },
+      ],
+      data: Buffer.from([1]),
+    });
+    const depositIx = new TransactionInstruction({
+      programId: new PublicKey(JUPITER_LEND_EARN_PROGRAM),
+      keys: [
+        { pubkey: signer, isSigner: true, isWritable: true },
+        { pubkey: asset, isSigner: false, isWritable: false },
+        { pubkey: fakeFTokenAta, isSigner: false, isWritable: true },
+      ],
+      data: Buffer.from([0xf2, 0x23, 0xc6, 0x89, 0x52, 0xe1, 0xf2, 0xb6]),
+    });
+    return [ataIdempotent, depositIx];
+  }
+
+  it('SOL deposit prepends ComputeBudget + wSOL ATA + transfer + syncNative; preserves SDK ixs', async () => {
+    __setJupiterLendEarnSdkForTests(makeBundle(realisticIxs));
+    const client = await getJupiterLendClient(WALLET, fakeConfig());
+
+    const result = await client.buildEarnDeposit({
+      walletAddress: WALLET,
+      cluster: 'mainnet-beta',
+      assetMint: SOL_MINT,
+      amount: '0.02',
+      amountRaw: '20000000',
+    });
+
+    const tx = Transaction.from(Buffer.from(result.transactionBase64, 'base64'));
+    const programIds = tx.instructions.map((ix) => ix.programId.toBase58());
+    // Expected order: ComputeBudget, ATA(wSOL idempotent), SystemProgram.transfer,
+    // syncNative (Token), SDK ATA (idempotent fToken), Jupiter Lend deposit.
+    expect(programIds[0]).toBe(COMPUTE_BUDGET_PROGRAM_BASE58);
+    expect(programIds).toContain(SYSTEM_PROGRAM_BASE58);
+    expect(programIds.filter((id) => id === TOKEN_PROGRAM_BASE58).length).toBeGreaterThanOrEqual(1);
+    expect(programIds).toContain(JUPITER_LEND_EARN_PROGRAM);
+    expect(programIds).toContain(ATA_PROGRAM_BASE58);
+    // Six instructions total: 4 prepended head + 2 SDK ixs.
+    expect(tx.instructions.length).toBe(6);
+    // The original SDK deposit ix must be present, after the prepended head.
+    expect(tx.instructions[tx.instructions.length - 1]?.programId.toBase58())
+      .toBe(JUPITER_LEND_EARN_PROGRAM);
+  });
+
+  it('USDC deposit does NOT prepend wrap-SOL; ComputeBudget still present', async () => {
+    __setJupiterLendEarnSdkForTests(makeBundle(realisticIxs));
+    const client = await getJupiterLendClient(WALLET, fakeConfig());
+
+    const result = await client.buildEarnDeposit({
+      walletAddress: WALLET,
+      cluster: 'mainnet-beta',
+      assetMint: USDC_MINT,
+      amount: '5',
+      amountRaw: '5000000',
+    });
+
+    const tx = Transaction.from(Buffer.from(result.transactionBase64, 'base64'));
+    const programIds = tx.instructions.map((ix) => ix.programId.toBase58());
+    expect(programIds[0]).toBe(COMPUTE_BUDGET_PROGRAM_BASE58);
+    // No SystemProgram.transfer for SOL wrapping.
+    expect(programIds.includes(SYSTEM_PROGRAM_BASE58)).toBe(false);
+    // Three instructions total: ComputeBudget + 2 SDK ixs.
+    expect(tx.instructions.length).toBe(3);
+    expect(programIds).toContain(JUPITER_LEND_EARN_PROGRAM);
+  });
+
+  it('SOL withdraw appends closeAccount on the wSOL ATA', async () => {
+    __setJupiterLendEarnSdkForTests(makeBundle(realisticIxs));
+    const client = await getJupiterLendClient(WALLET, fakeConfig());
+
+    const result = await client.buildEarnWithdraw({
+      walletAddress: WALLET,
+      cluster: 'mainnet-beta',
+      assetMint: SOL_MINT,
+      amount: '0.01',
+      amountRaw: '10000000',
+    });
+
+    const tx = Transaction.from(Buffer.from(result.transactionBase64, 'base64'));
+    const programIds = tx.instructions.map((ix) => ix.programId.toBase58());
+    // No SystemProgram.transfer (no wrap on withdraw), but Token close at the tail.
+    expect(programIds.includes(SYSTEM_PROGRAM_BASE58)).toBe(false);
+    expect(programIds[0]).toBe(COMPUTE_BUDGET_PROGRAM_BASE58);
+    expect(programIds[programIds.length - 1]).toBe(TOKEN_PROGRAM_BASE58);
+    // Last ix should be closeAccount (Token program, discriminator 9).
+    const last = tx.instructions[tx.instructions.length - 1];
+    expect(last?.data[0]).toBe(9);
+  });
+
+  it('SOL mint throws invalid_request (deferred — use earn_deposit)', async () => {
+    __setJupiterLendEarnSdkForTests(makeBundle(realisticIxs));
+    const client = await getJupiterLendClient(WALLET, fakeConfig());
+
+    await expect(
+      client.buildEarnMint({
+        walletAddress: WALLET,
+        cluster: 'mainnet-beta',
+        assetMint: SOL_MINT,
+        shares: '0.01',
+        sharesRaw: '10000000',
+      }),
+    ).rejects.toBeInstanceOf(AdapterError);
   });
 });

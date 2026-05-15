@@ -48,6 +48,8 @@ export interface AgentEvidenceFact {
   freshness: AgentEvidenceFreshness;
   severity: AgentEvidenceSeverity;
   detail?: Record<string, unknown>;
+  /** Optional dollar value for amount-bearing facts. Additive annotation — token-native amount remains in `value`. */
+  usd?: number;
 }
 
 export interface AgentEvidenceGateResult {
@@ -123,6 +125,10 @@ export interface AgentDecisionAuditReceipt {
   confidenceScore?: number;
   confidenceBand?: 'high' | 'medium' | 'low';
   counterfactualSummary?: Array<{ id: string; rationale: string; decisionAfter: 'approve' | 'deny' | 'needs_input' }>;
+  /** Per-mint USD snapshots captured at review time. Empty/absent when no priceable mints were involved. */
+  spotPrices?: Record<string, { usdPerToken: number; source: string; checkedAt: string; confidence?: number }>;
+  /** Total USD at risk for the action, when computable. Token-native amounts remain canonical on the plan. */
+  totalUsdAtRisk?: number;
 }
 
 export interface AgentEvidenceContext {

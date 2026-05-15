@@ -310,6 +310,18 @@ export function connectorActionDisplayParts(
   };
 }
 
+export function resolveConnectorMetaForAction(
+  actionKind: string | undefined,
+  params: Record<string, unknown> = {},
+): { id: string; name: string } | undefined {
+  const form =
+    connectorActionFormById(stringParam(params, 'connectorOperationId')) ??
+    connectorActionFormByActionType(actionKind);
+  if (!form) return undefined;
+  const connector = getAdapterMeta(form.connectorId);
+  return { id: form.connectorId, name: connector?.name ?? form.connectorId };
+}
+
 function connectorSubActionForDisplay(
   form: ConnectorActionForm,
   actionKind: string | undefined,
@@ -757,6 +769,24 @@ function bidSpendCapField(): AgentPlanTemplateField {
   return formField('maxEscrowSol', 'Spend cap (SOL)', false, {
     placeholder: 'Defaults to bid price',
     helperText: 'Maximum SOL this request may lock for the bid. For one collection bid, leave it equal to the bid price.',
+  });
+}
+
+function minHealthFactorField(): AgentPlanTemplateField {
+  return formField('minHealthFactor', 'Minimum health factor (1.0+)', false, {
+    placeholder: 'e.g. 1.10',
+    helperText:
+      "Block the action if your loan's health factor would fall below this. " +
+      '1.0 = at liquidation; 1.10 = 10% buffer above liquidation (recommended).',
+  });
+}
+
+function minHealthRatioField(): AgentPlanTemplateField {
+  return formField('minHealthRatio', 'Minimum health ratio (1.0+)', false, {
+    placeholder: 'e.g. 1.10',
+    helperText:
+      "Block the action if your loan's health ratio would fall below this. " +
+      '1.0 = at liquidation; 1.10 = 10% buffer above liquidation (recommended).',
   });
 }
 
@@ -1470,7 +1500,7 @@ function marginfiAccountField(): AgentPlanTemplateField {
 
 function marginfiForms(): ConnectorActionForm[] {
   const amountField = formField('amount', 'Amount', true);
-  const healthField = formField('minHealthFactor', 'Minimum health factor');
+  const healthField = minHealthFactorField();
   return [
     connectorActionForm('marginfi', 'deposit', 'Deposit', 'connector-marginfi-deposit', 'Supply tokens to a MarginFi bank.', 'first-class-adapter', 'queueable', [
       marginfiBankField(true),
@@ -1512,7 +1542,7 @@ function project0BankField(required: boolean): AgentPlanTemplateField {
 
 function project0Forms(): ConnectorActionForm[] {
   const amountField = formField('amount', 'Amount', true);
-  const healthField = formField('minHealthRatio', 'Minimum health ratio');
+  const healthField = minHealthRatioField();
   return [
     connectorActionForm('project0', 'create-account', 'Create account', 'connector-project0-create-account', 'Create a Project 0 account for wallet approval.', 'first-class-adapter', 'queueable', [
       formField('accountIndex', 'Account index'),
@@ -1554,7 +1584,7 @@ function saveReserveField(required: boolean): AgentPlanTemplateField {
 }
 
 function saveForms(): ConnectorActionForm[] {
-  const healthField = formField('minHealthFactor', 'Minimum health factor');
+  const healthField = minHealthFactorField();
   return [
     connectorActionForm('save', 'deposit', 'Deposit', 'connector-save-deposit', 'Supply tokens to a Save reserve.', 'first-class-adapter', 'queueable', [
       saveReserveField(true),
@@ -1885,7 +1915,7 @@ function jupiterLendUnifiedForm(): ConnectorActionForm {
           label: 'Borrow — draw',
           description: 'Borrow against the position’s collateral.',
           actionType: 'jupiter_lend_borrow_borrow',
-          fields: [borrowVault, borrowPosition, formField('borrowAmount', 'Borrow amount', true), formField('minHealthRatio', 'Minimum health ratio')],
+          fields: [borrowVault, borrowPosition, formField('borrowAmount', 'Borrow amount', true), minHealthRatioField()],
         },
         {
           id: 'borrow-repay',
@@ -1899,7 +1929,7 @@ function jupiterLendUnifiedForm(): ConnectorActionForm {
           label: 'Borrow — withdraw collateral',
           description: 'Withdraw collateral once health permits.',
           actionType: 'jupiter_lend_borrow_withdraw_collateral',
-          fields: [borrowVault, borrowPosition, formField('amount', 'Withdraw amount', true), formField('minHealthRatio', 'Minimum health ratio')],
+          fields: [borrowVault, borrowPosition, formField('amount', 'Withdraw amount', true), minHealthRatioField()],
         },
       ],
     },
@@ -2389,7 +2419,7 @@ function connectorActionFields(actionKind: string): AgentPlanTemplateField[] {
     if (actionKind.endsWith('_borrow')) add(formField('borrowAmount', 'Borrow amount', true));
     if (has('repay')) add(formField('amount', 'Repay amount', true));
     if (has('withdraw_collateral')) add(formField('amount', 'Withdraw amount', true));
-    add(formField('minHealthRatio', 'Minimum health ratio'));
+    add(minHealthRatioField());
   } else if (actionKind.startsWith('jupiter_trigger_')) {
     if (has('cancel', 'edit', 'withdraw')) add(formField('orderId', 'Order id', true));
     if (has('single_order', 'oco_order', 'otoco_order')) {
@@ -2452,7 +2482,7 @@ function connectorActionFields(actionKind: string): AgentPlanTemplateField[] {
   } else if (actionKind.startsWith('marginfi_')) {
     add(formField('bankAddress', 'Bank address', true));
     add(formField('amount', 'Amount', !has('withdraw', 'repay')));
-    add(formField('minHealthFactor', 'Minimum health factor'));
+    add(minHealthFactorField());
   } else if (actionKind.startsWith('project0_')) {
     if (has('create_account')) {
       add(formField('accountIndex', 'Account index'));
@@ -2460,12 +2490,12 @@ function connectorActionFields(actionKind: string): AgentPlanTemplateField[] {
       add(formField('bankAddress', 'Bank address', true));
       add(formField('amount', 'Amount', !has('withdraw', 'repay')));
       add(formField('project0Account', 'Project 0 account'));
-      add(formField('minHealthRatio', 'Minimum health ratio'));
+      add(minHealthRatioField());
     }
   } else if (actionKind.startsWith('save_')) {
     add(formField('token', 'Reserve token or mint', true));
     add(formField('amount', 'Amount', !has('withdraw', 'repay')));
-    add(formField('minHealthFactor', 'Minimum health factor'));
+    add(minHealthFactorField());
   } else if (actionKind.startsWith('lulo_')) {
     add(formField('mintAddress', 'Mint address', true));
     if (has('deposit')) {

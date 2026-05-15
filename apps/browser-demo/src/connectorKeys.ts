@@ -1,12 +1,12 @@
 // BYO-API-key UX for the cloud workspace.
 //
-// Magic Eden, Tensor, and Sanctum require per-user API keys obtained from the
-// connector's developer portal. The cloud persists these per-wallet encrypted
-// (see apps/render-web/src/cloud/connectorSecrets.ts) and injects them into the
-// prepare-transaction path at request time. This module is the user-facing UX
-// for managing those keys.
+// Magic Eden, Tensor, Sanctum, and Lulo require per-user API keys obtained
+// from each connector's developer portal. The cloud persists these per-wallet
+// encrypted (see apps/render-web/src/cloud/connectorSecrets.ts) and injects
+// them into the prepare-transaction path at request time. This module is the
+// user-facing UX for managing those keys.
 
-export const BYO_KEY_CONNECTOR_IDS = ['magiceden', 'tensor', 'sanctum'] as const;
+export const BYO_KEY_CONNECTOR_IDS = ['magiceden', 'tensor', 'sanctum', 'lulo'] as const;
 export type ByoKeyConnectorId = (typeof BYO_KEY_CONNECTOR_IDS)[number];
 
 export interface ByoKeyConnectorMeta {
@@ -38,6 +38,13 @@ export const BYO_KEY_CONNECTOR_META: Record<ByoKeyConnectorId, ByoKeyConnectorMe
     description: 'Liquid staking token routing and Infinity pool.',
     portalUrl: 'https://docs.sanctum.so/',
     defaultBaseUrl: 'https://sanctum-api.ironforge.network',
+  },
+  lulo: {
+    id: 'lulo',
+    label: 'Lulo',
+    description: 'Protected, Boost, and Regular lending: rates, balances, deposits, and withdrawals.',
+    portalUrl: 'https://app.lulo.fi/',
+    defaultBaseUrl: 'https://api.lulo.fi',
   },
 };
 
@@ -141,6 +148,7 @@ const INITIAL_SECRETS: ConnectorSecretsSummary = {
   magiceden: { hasKey: false },
   tensor: { hasKey: false },
   sanctum: { hasKey: false },
+  lulo: { hasKey: false },
 };
 
 // Module-level state — survives across mount/unmount cycles caused by the
@@ -314,7 +322,7 @@ function renderAll(): void {
 
 function renderPanel(state: PanelState): string {
   const intro = state.available
-    ? 'Magic Eden, Tensor, and Sanctum require your own API keys. Keys are encrypted per wallet and only injected when the cloud prepares a transaction for you.'
+    ? 'Magic Eden, Tensor, Sanctum, and Lulo require your own API keys. Keys are encrypted per wallet and only injected when the cloud prepares a transaction for you.'
     : 'Connector key storage is not configured on this server. Set CONNECTOR_SECRET_KEY (or SESSION_SECRET) on the host to enable per-user keys.';
   const cards = BYO_KEY_CONNECTOR_IDS.map((id) => renderCard(id, state)).join('');
   const error = state.error

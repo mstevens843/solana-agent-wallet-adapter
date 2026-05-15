@@ -11,7 +11,7 @@ import type {
 } from '../types.js';
 import { AdapterError } from '../types.js';
 
-import { getLuloClient, type LuloPoolMetaRow, type LuloRateRow } from './client.js';
+import { resolveLuloClient, type LuloPoolMetaRow, type LuloRateRow } from './client.js';
 import {
   LULO_ADAPTER_ID,
   LULO_WITHDRAW_TYPES,
@@ -76,8 +76,8 @@ export const luloWithdrawAction: AdapterAction<LuloWithdrawInput> = {
     const percentage: number = hasAmount ? 0 : hasPercentage ? input.percentage! : 100;
 
     const walletAddress = await ctx.backend.getAddress();
-    const ratesSnapshot = await safeRateSnapshot(mintAddress, withdrawType);
-    const poolMetaSnapshot = await safePoolMeta(mintAddress);
+    const ratesSnapshot = await safeRateSnapshot(mintAddress, withdrawType, ctx);
+    const poolMetaSnapshot = await safePoolMeta(mintAddress, ctx);
 
     const amountDescriptor = hasAmount
       ? `${input.amount}`
@@ -143,7 +143,7 @@ export const luloWithdrawAction: AdapterAction<LuloWithdrawInput> = {
       );
     }
 
-    const built = await getLuloClient().generateWithdrawTransaction({
+    const built = await resolveLuloClient(ctx).generateWithdrawTransaction({
       walletAddress,
       mintAddress,
       withdrawType,
@@ -205,7 +205,7 @@ export const luloCompleteWithdrawAction: AdapterAction<LuloCompleteWithdrawInput
     const { mint: mintAddress, decimalsHint } = resolveLuloMint(rawMint);
     const decimals = await resolveLuloDecimals(ctx.connection, mintAddress, decimalsHint);
     const walletAddress = await ctx.backend.getAddress();
-    const poolMetaSnapshot = await safePoolMeta(mintAddress);
+    const poolMetaSnapshot = await safePoolMeta(mintAddress, ctx);
 
     const summary = `Complete Lulo regular withdrawal #${withdrawalId} (${shortMint(mintAddress)})`;
     const previewParams: Record<string, unknown> = {
@@ -250,7 +250,7 @@ export const luloCompleteWithdrawAction: AdapterAction<LuloCompleteWithdrawInput
       );
     }
 
-    const built = await getLuloClient().generateCompleteWithdrawTransaction({
+    const built = await resolveLuloClient(ctx).generateCompleteWithdrawTransaction({
       walletAddress,
       mintAddress,
       withdrawalId,
@@ -282,19 +282,23 @@ function normalizeWithdrawType(value: LuloWithdrawType | string | undefined): Lu
 async function safeRateSnapshot(
   mintAddress: string,
   withdrawType: LuloWithdrawType,
+  ctx: DAppAdapterContext,
 ): Promise<LuloRateRow | undefined> {
   try {
     const ratesType: LuloDepositType = withdrawType === 'regular' ? 'regular' : 'protected';
-    const snapshot = await getLuloClient().getRates({ mintAddress, depositType: ratesType });
+    const snapshot = await resolveLuloClient(ctx).getRates({ mintAddress, depositType: ratesType });
     return snapshot.rows.find((row) => row.mintAddress === mintAddress) ?? snapshot.rows[0];
   } catch {
     return undefined;
   }
 }
 
-async function safePoolMeta(mintAddress: string): Promise<LuloPoolMetaRow | undefined> {
+async function safePoolMeta(
+  mintAddress: string,
+  ctx: DAppAdapterContext,
+): Promise<LuloPoolMetaRow | undefined> {
   try {
-    const snapshot = await getLuloClient().getPoolMeta({ mintAddress });
+    const snapshot = await resolveLuloClient(ctx).getPoolMeta({ mintAddress });
     return snapshot.pools.find((row) => row.mintAddress === mintAddress) ?? snapshot.pools[0];
   } catch {
     return undefined;

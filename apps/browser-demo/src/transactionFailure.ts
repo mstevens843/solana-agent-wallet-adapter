@@ -171,6 +171,36 @@ const BRIDGE_ACCOUNT_NULL_PATTERNS = ['account info is null'];
 
 const RATE_LIMITED_PATTERNS = ['429', 'rate limit', 'too many requests'];
 
+// HTTP 401/403/451 from the RPC means the endpoint refuses the request —
+// invalid API key, method not in plan, region/IP block. Resending the same
+// bytes is futile and burns the retry budget. Surface a clear remediation.
+const RPC_FORBIDDEN_PATTERNS = [
+  ' 401 ',
+  ' 403 ',
+  ' 451 ',
+  'http 401',
+  'http 403',
+  'http 451',
+  'status 401',
+  'status 403',
+  'status 451',
+  '"code": 401',
+  '"code":401',
+  '"code": 403',
+  '"code":403',
+  '"code": 451',
+  '"code":451',
+  "'code': 401",
+  "'code':401",
+  "'code': 403",
+  "'code':403",
+  "'code': 451",
+  "'code':451",
+  'access forbidden',
+  'access denied',
+  'forbidden',
+];
+
 // HTTP 5xx and gateway markers.
 const SERVER_5XX_PATTERNS = [
   ' 500 ',
@@ -400,6 +430,22 @@ export function classifyTransactionFailure(
     };
   }
 
+  // 10c. RPC 401/403/451. The endpoint refused the request (bad API key,
+  //      method not in plan, IP block, etc.). Not retryable against the same
+  //      endpoint; the sender should fall back to a public RPC before giving up.
+  if (matchAny(matchText, RPC_FORBIDDEN_PATTERNS)) {
+    return {
+      kind: 'rpc_rejected',
+      title: TITLE_BY_KIND.rpc_rejected,
+      message: 'The configured Solana RPC refused the request (401/403/451). Verify SOLANA_RPC_URL / HELIUS_RPC_URL (API key, plan tier, method allowlist) — or set SENDER_RPC_URL to a paid sender — before retrying.',
+      technicalMessage,
+      retryableSignedBroadcast: false,
+      maybeSubmitted: false,
+      safeToAskWalletAgain: false,
+      shouldCheckChainBeforeFailing: false,
+    };
+  }
+
   // 11. Rate limited. Same signed bytes can be rebroadcast after a delay.
   if (matchAny(matchText, RATE_LIMITED_PATTERNS)) {
     return ambiguousNetworkResult('rate_limited', technicalMessage, hasSignedOrTxid);
@@ -473,6 +519,16 @@ export function shouldRetrySignedBroadcast(err: unknown): boolean {
     default:
       return false;
   }
+}
+
+/**
+ * True when the RPC endpoint refused the request with HTTP 401/403/451
+ * (bad API key, plan tier, IP block, etc.). Sender code should fall back to
+ * a public RPC once before propagating, since the same signed bytes will
+ * always be rejected against this endpoint.
+ */
+export function isRpcAuthRejected(err: unknown): boolean {
+  return classifyTransactionFailure(err).kind === 'rpc_rejected';
 }
 
 /**

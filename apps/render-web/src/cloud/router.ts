@@ -1267,11 +1267,58 @@ async function handleSolanaSendTransaction(req: IncomingMessage, res: ServerResp
     body.signedTransactionBase64 ?? body.signedTransaction,
     'signedTransaction',
   );
-  const txid = await solanaConnection(cluster).sendRawTransaction(Buffer.from(signedTransaction, 'base64'), {
-    preflightCommitment: 'confirmed',
-    maxRetries: 5,
-  });
-  writeJson(res, 200, { txid, signature: txid });
+  const bytes = Buffer.from(signedTransaction, 'base64');
+  const sendOptions = { preflightCommitment: 'confirmed' as const, maxRetries: 5 };
+  const configuredUrl = solanaRpcUrl(cluster);
+  try {
+    const txid = await new Connection(configuredUrl, 'confirmed').sendRawTransaction(bytes, sendOptions);
+    writeJson(res, 200, { txid, signature: txid });
+    return;
+  } catch (err) {
+    if (!isRpcAuthRejectedSendError(err)) throw err;
+    const fallbackUrl = publicSolanaRpcFallback(cluster);
+    if (fallbackUrl === configuredUrl) throw err;
+    try {
+      const txid = await new Connection(fallbackUrl, 'confirmed').sendRawTransaction(bytes, sendOptions);
+      console.warn(
+        `[cloud:send-fallback] Configured RPC refused sendTransaction (${rpcAuthSendErrorSummary(err)}). ` +
+        `Sent via public RPC ${fallbackUrl}.`,
+      );
+      writeJson(res, 200, { txid, signature: txid });
+      return;
+    } catch (fallbackErr) {
+      if (isRpcAuthRejectedSendError(fallbackErr)) throw err;
+      throw fallbackErr;
+    }
+  }
+}
+
+function isRpcAuthRejectedSendError(err: unknown): boolean {
+  const message = (err instanceof Error ? err.message : String(err ?? '')).toLowerCase();
+  if (!message) return false;
+  if (/\b(401|403|451)\b/.test(message)) return true;
+  if (/"code"\s*:\s*(?:401|403|451)/.test(message)) return true;
+  if (/access\s+(?:forbidden|denied)|\bforbidden\b/.test(message)) return true;
+  return false;
+}
+
+function rpcAuthSendErrorSummary(err: unknown): string {
+  const text = err instanceof Error ? err.message : String(err ?? '');
+  return text.length > 240 ? `${text.slice(0, 237)}...` : text;
+}
+
+function publicSolanaRpcFallback(cluster: WorkflowCluster): string {
+  switch (cluster) {
+    case 'mainnet-beta':
+      return 'https://api.mainnet-beta.solana.com';
+    case 'testnet':
+      return 'https://api.testnet.solana.com';
+    case 'localnet':
+      return 'http://127.0.0.1:8899';
+    case 'devnet':
+    default:
+      return 'https://api.devnet.solana.com';
+  }
 }
 
 async function handleSolanaSignatureStatus(req: IncomingMessage, res: ServerResponse): Promise<void> {

@@ -11,7 +11,7 @@ import type {
 } from '../types.js';
 import { AdapterError } from '../types.js';
 
-import { getLuloClient, type LuloPoolMetaRow, type LuloRateRow } from './client.js';
+import { resolveLuloClient, type LuloPoolMetaRow, type LuloRateRow } from './client.js';
 import {
   LULO_ADAPTER_ID,
   LULO_DEPOSIT_TYPES,
@@ -58,8 +58,8 @@ export const luloDepositAction: AdapterAction<LuloDepositInput> = {
     const amountRaw = parseDecimalAmount(input.amount, decimals, `${shortMint(mintAddress)} Lulo deposit amount`);
 
     const walletAddress = await ctx.backend.getAddress();
-    const ratesSnapshot = await safeRateSnapshot(mintAddress, depositType);
-    const poolMetaSnapshot = await safePoolMeta(mintAddress);
+    const ratesSnapshot = await safeRateSnapshot(mintAddress, depositType, ctx);
+    const poolMetaSnapshot = await safePoolMeta(mintAddress, ctx);
     const supplyApy = ratesSnapshot?.apy;
 
     const summary = `Deposit ${input.amount} ${ratesSnapshot?.symbol ?? poolMetaSnapshot?.symbol ?? shortMint(mintAddress)} into Lulo ${depositTypeLabel(depositType)}`;
@@ -121,7 +121,7 @@ export const luloDepositAction: AdapterAction<LuloDepositInput> = {
       );
     }
 
-    const built = await getLuloClient().generateDepositTransaction({
+    const built = await resolveLuloClient(ctx).generateDepositTransaction({
       walletAddress,
       mintAddress,
       amountRaw,
@@ -158,18 +158,22 @@ function normalizeDepositType(value: LuloDepositType | string | undefined): Lulo
 async function safeRateSnapshot(
   mintAddress: string,
   depositType: LuloDepositType,
+  ctx: DAppAdapterContext,
 ): Promise<LuloRateRow | undefined> {
   try {
-    const snapshot = await getLuloClient().getRates({ mintAddress, depositType });
+    const snapshot = await resolveLuloClient(ctx).getRates({ mintAddress, depositType });
     return snapshot.rows.find((row) => row.mintAddress === mintAddress && row.depositType === depositType) ?? snapshot.rows[0];
   } catch {
     return undefined;
   }
 }
 
-async function safePoolMeta(mintAddress: string): Promise<LuloPoolMetaRow | undefined> {
+async function safePoolMeta(
+  mintAddress: string,
+  ctx: DAppAdapterContext,
+): Promise<LuloPoolMetaRow | undefined> {
   try {
-    const snapshot = await getLuloClient().getPoolMeta({ mintAddress });
+    const snapshot = await resolveLuloClient(ctx).getPoolMeta({ mintAddress });
     return snapshot.pools.find((row) => row.mintAddress === mintAddress) ?? snapshot.pools[0];
   } catch {
     return undefined;

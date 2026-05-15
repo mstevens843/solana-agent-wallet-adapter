@@ -191,6 +191,41 @@ describe('classifyTransactionFailure — rate limit and 5xx', () => {
   });
 });
 
+describe('classifyTransactionFailure — RPC 403 forbidden', () => {
+  it('classifies HTTP 403 as rpc_rejected and not retryable', () => {
+    const result = classify('HTTP 403 Forbidden from RPC');
+    expectKind(result, 'rpc_rejected');
+    expect(result.retryableSignedBroadcast).toBe(false);
+    expect(result.safeToAskWalletAgain).toBe(false);
+    expect(result.maybeSubmitted).toBe(false);
+    expect(result.shouldCheckChainBeforeFailing).toBe(false);
+  });
+
+  it('classifies JSON-RPC "code": 403 envelope as rpc_rejected', () => {
+    const result = classify('{"jsonrpc":"2.0","error":{"code": 403,"message":"Access forbidden"},"id":"abc"}');
+    expectKind(result, 'rpc_rejected');
+    expect(result.retryableSignedBroadcast).toBe(false);
+  });
+
+  it('classifies "access forbidden" substring as rpc_rejected', () => {
+    const result = classify('sendTransaction: access forbidden by RPC provider');
+    expectKind(result, 'rpc_rejected');
+    expect(result.retryableSignedBroadcast).toBe(false);
+  });
+
+  it('403 with signed bytes does not loop the retry', () => {
+    const result = classify('HTTP 403 Forbidden', { hasSignedBytes: true, txid: 'sig123' });
+    expectKind(result, 'rpc_rejected');
+    expect(result.retryableSignedBroadcast).toBe(false);
+    expect(result.safeToAskWalletAgain).toBe(false);
+  });
+
+  it('shouldRetrySignedBroadcast returns false for 403', () => {
+    expect(shouldRetrySignedBroadcast('HTTP 403 Forbidden')).toBe(false);
+    expect(shouldRetrySignedBroadcast('"code": 403')).toBe(false);
+  });
+});
+
 describe('classifyTransactionFailure — already processed / duplicate signature', () => {
   const cases = [
     'Transaction already processed',

@@ -75,6 +75,8 @@ export interface AgentAuditReceiptLike {
   confidenceScore?: number;
   confidenceBand?: 'high' | 'medium' | 'low';
   counterfactualSummary?: Array<{ id: string; rationale: string; decisionAfter: 'approve' | 'deny' | 'needs_input' }>;
+  spotPrices?: Record<string, { usdPerToken: number; source: string; checkedAt: string; confidence?: number }>;
+  totalUsdAtRisk?: number;
 }
 
 export interface AgentEvidenceReviewLike {
@@ -191,6 +193,13 @@ export function swapTokenTextMismatchWarning(
   };
 }
 
+function formatUsdInline(value: number): string {
+  if (!Number.isFinite(value)) return '$?';
+  if (value === 0) return '$0.00';
+  if (Math.abs(value) < 0.01) return value < 0 ? '-<$0.01' : '<$0.01';
+  return new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD', minimumFractionDigits: 2, maximumFractionDigits: 2 }).format(value);
+}
+
 export function evidenceFactDisplayRows(facts: AgentEvidenceFactRow[] | undefined): AgentEvidenceDisplayRow[] {
   if (!facts?.length) return [];
   return facts.map((fact) => {
@@ -228,6 +237,20 @@ export function auditReceiptDisplayRows(receipt: AgentAuditReceiptLike | undefin
   rows.push({ label: 'Audit receipt', value: receipt.receiptId, tone: 'neutral' });
   rows.push({ label: 'Final decision', value: receipt.finalDecision, tone: decisionTone });
   rows.push({ label: 'Gate decision', value: receipt.gateDecision, tone: gateTone });
+  if (typeof receipt.totalUsdAtRisk === 'number') {
+    rows.push({
+      label: 'USD at risk',
+      value: formatUsdInline(receipt.totalUsdAtRisk),
+      tone: receipt.totalUsdAtRisk > 100 ? 'warn' : 'neutral',
+    });
+  }
+  if (receipt.spotPrices && Object.keys(receipt.spotPrices).length > 0) {
+    const lines = Object.entries(receipt.spotPrices).map(([mint, snap]) => {
+      const label = mint === 'SOL' ? 'SOL' : mint.length > 10 ? `${mint.slice(0, 4)}…${mint.slice(-4)}` : mint;
+      return `${label}: ${formatUsdInline(snap.usdPerToken)} (${snap.source})`;
+    });
+    rows.push({ label: 'Spot prices', value: lines.join(' · '), tone: 'neutral' });
+  }
   if (typeof receipt.confidenceScore === 'number' && receipt.confidenceBand) {
     const confidenceTone: AgentEvidenceTone = receipt.confidenceBand === 'high'
       ? 'good'

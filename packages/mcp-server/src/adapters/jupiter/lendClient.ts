@@ -1,8 +1,10 @@
 import { createRequire } from 'node:module';
 
 import {
+  ComputeBudgetProgram,
   Connection,
   PublicKey,
+  SystemProgram,
   Transaction,
   type TransactionInstruction,
 } from '@solana/web3.js';
@@ -12,6 +14,24 @@ import type { AgentWalletConfig } from '../../config.js';
 
 import { JUPITER_ADAPTER_ID, JUPITER_LEND_EARN_PROGRAM_ID, type JupiterLendOperation } from './constants.js';
 import { jupiterFetchJson } from './client.js';
+
+const WSOL_MINT_BASE58 = 'So11111111111111111111111111111111111111112';
+const SPL_TOKEN_PACKAGE = '@solana/spl-token';
+const SPL_TOKEN_UNAVAILABLE_REASON =
+  '@solana/spl-token is not installed or could not be resolved. Jupiter Lend native-SOL earn deposits/withdrawals require it for wSOL wrap/sync/close.';
+
+type SplTokenModule = typeof import('@solana/spl-token');
+let cachedSplToken: SplTokenModule | undefined;
+async function loadSplToken(): Promise<SplTokenModule> {
+  if (cachedSplToken) return cachedSplToken;
+  try {
+    require.resolve(SPL_TOKEN_PACKAGE);
+  } catch {
+    throw new AdapterError(JUPITER_ADAPTER_ID, 'spl_token_unavailable', SPL_TOKEN_UNAVAILABLE_REASON);
+  }
+  cachedSplToken = (await import(SPL_TOKEN_PACKAGE)) as SplTokenModule;
+  return cachedSplToken;
+}
 
 export interface JupiterLendEarnTokenSnapshot {
   assetMint: string;
@@ -610,6 +630,17 @@ class JupiterLendSdkClient extends JupiterLendRestClient {
     const asset = new PublicKey(input.assetMint);
     const signer = new PublicKey(input.walletAddress);
     const amount = new sdk.BN(rawAmount);
+    const isWsol = asset.toBase58() === WSOL_MINT_BASE58;
+    // @jup-ag/lend@0.1.9 getDepositIxs emits only the f-token ATA + deposit ix; it never
+    // wraps native SOL into the user's wSOL ATA. Mint requires a shares→underlying
+    // conversion that we don't trust off a stale snapshot, so defer it.
+    if (isWsol && operation === 'mint') {
+      throw new AdapterError(
+        JUPITER_ADAPTER_ID,
+        'invalid_request',
+        'Jupiter Lend Earn mint with native SOL is not yet supported — use earn_deposit instead.',
+      );
+    }
     const result = operation === 'deposit'
       ? await sdk.getDepositIxs({ amount, asset, signer, connection: this.connection })
       : operation === 'withdraw'
@@ -617,7 +648,14 @@ class JupiterLendSdkClient extends JupiterLendRestClient {
         : operation === 'mint'
           ? await sdk.getMintIxs({ shares: amount, asset, signer, connection: this.connection })
           : await sdk.getRedeemIxs({ shares: amount, asset, signer, connection: this.connection });
-    const transactionBase64 = await serializeEarnInstructions(this.connection, signer, result.ixs);
+    const lamportsToWrap = isWsol && operation === 'deposit' ? BigInt(rawAmount) : 0n;
+    const unwrapAfter = isWsol && (operation === 'withdraw' || operation === 'redeem');
+    const transactionBase64 = await serializeEarnInstructions(this.connection, signer, result.ixs, {
+      operation,
+      asset,
+      lamportsToWrap,
+      unwrapAfter,
+    });
     return {
       transactionBase64,
       refreshAtExecution: true,
@@ -699,24 +737,93 @@ function buildDefaultJupiterLendClient(config: AgentWalletConfig): JupiterLendCl
     : new JupiterLendRestClient(config);
 }
 
+interface SerializeEarnOptions {
+  operation: 'deposit' | 'withdraw' | 'mint' | 'redeem';
+  asset: PublicKey;
+  lamportsToWrap: bigint;
+  unwrapAfter: boolean;
+}
+
 async function serializeEarnInstructions(
   connection: Connection,
   feePayer: PublicKey,
   ixs: TransactionInstruction[],
+  opts: SerializeEarnOptions,
 ): Promise<string> {
   if (ixs.length === 0) {
     throw new AdapterError(JUPITER_ADAPTER_ID, 'invalid_transaction', 'Jupiter Lend SDK returned no instructions.');
   }
+
+  const head: TransactionInstruction[] = [];
+  const tail: TransactionInstruction[] = [];
+
+  // Jupiter Lend deposit/withdraw CPIs into multiple programs; pad CU limit.
+  head.push(ComputeBudgetProgram.setComputeUnitLimit({ units: 600_000 }));
+
+  // TODO: remove wrap/unwrap once upstream @jup-ag/lend handles native SOL.
+  // Detect by checking ixs for SystemProgram.transfer ahead of the deposit.
+  if (opts.lamportsToWrap > 0n || opts.unwrapAfter) {
+    const splToken = await loadSplToken();
+    const wsolAta = splToken.getAssociatedTokenAddressSync(splToken.NATIVE_MINT, feePayer, true);
+    if (opts.lamportsToWrap > 0n) {
+      head.push(
+        splToken.createAssociatedTokenAccountIdempotentInstruction(
+          feePayer,
+          wsolAta,
+          feePayer,
+          splToken.NATIVE_MINT,
+        ),
+      );
+      head.push(
+        SystemProgram.transfer({
+          fromPubkey: feePayer,
+          toPubkey: wsolAta,
+          lamports: opts.lamportsToWrap,
+        }),
+      );
+      head.push(splToken.createSyncNativeInstruction(wsolAta));
+    }
+    if (opts.unwrapAfter) {
+      // Closes the wSOL ATA back to native SOL after withdraw/redeem.
+      // Drains any pre-existing wSOL too, which matches the user expectation
+      // ("I want my SOL back") for the Earn flow.
+      tail.push(splToken.createCloseAccountInstruction(wsolAta, feePayer, feePayer));
+    }
+  }
+
   const latest = await connection.getLatestBlockhash('confirmed');
   const tx = new Transaction({
     feePayer,
     recentBlockhash: latest.blockhash,
   });
-  tx.add(...ixs);
+  tx.add(...head, ...ixs, ...tail);
+
+  if (process.env.AGENT_WALLET_JUPITER_LEND_DEBUG === '1') {
+    emitJupiterLendIxDiagnostic(opts.operation, opts.asset, tx.instructions);
+  }
+
   return tx.serialize({
     requireAllSignatures: false,
     verifySignatures: false,
   }).toString('base64');
+}
+
+function emitJupiterLendIxDiagnostic(
+  operation: SerializeEarnOptions['operation'],
+  asset: PublicKey,
+  instructions: TransactionInstruction[],
+): void {
+  const summary = instructions.map((ix) => ({
+    programId: ix.programId.toBase58(),
+    accountCount: ix.keys.length,
+    dataPrefix: ix.data.subarray(0, Math.min(8, ix.data.length)).toString('hex'),
+  }));
+  console.info('[jupiter-lend-ix]', JSON.stringify({
+    operation,
+    asset: asset.toBase58(),
+    instructionCount: instructions.length,
+    instructions: summary,
+  }));
 }
 
 function loadJupiterLendBnCtor(): BnCtor {
