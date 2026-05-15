@@ -47,16 +47,16 @@ function summaryHtml(card: Record<string, unknown> | null): string {
   const version = typeof card.version === 'string' ? card.version : '';
   const parts: string[] = [];
   if (walletAddress) {
-    parts.push(`<span class="dev-agent-card-summary-item"><span>Wallet</span><code>${escapeHtml(shortAddress(walletAddress))}</code></span>`);
+    parts.push(`<article class="dev-agent-card-summary-item"><span>Wallet</span><code>${escapeHtml(shortAddress(walletAddress))}</code></article>`);
   }
   if (protocols.length > 0) {
     const pills = protocols
       .map((proto) => `<span class="dev-agent-card-protocol-pill">${escapeHtml(proto)}</span>`)
       .join('');
-    parts.push(`<span class="dev-agent-card-summary-item"><span>Protocols</span><span class="dev-agent-card-protocols">${pills}</span></span>`);
+    parts.push(`<article class="dev-agent-card-summary-item"><span>Protocols</span><span class="dev-agent-card-protocols">${pills}</span></article>`);
   }
   if (version) {
-    parts.push(`<span class="dev-agent-card-summary-item"><span>Version</span><code>${escapeHtml(version)}</code></span>`);
+    parts.push(`<article class="dev-agent-card-summary-item"><span>Version</span><code>${escapeHtml(version)}</code></article>`);
   }
   if (parts.length === 0) return '';
   return `<div class="dev-agent-card-summary">${parts.join('')}</div>`;
@@ -107,7 +107,45 @@ export function bodyHtml(): string {
   const card = typeof tabState.cardJson === 'object' && tabState.cardJson !== null && !Array.isArray(tabState.cardJson)
     ? (tabState.cardJson as Record<string, unknown>)
     : null;
-  return `${summaryHtml(card)}<pre class="dev-agent-card-json">${escapeHtml(stableJson(tabState.cardJson))}</pre>`;
+  return `
+    ${summaryHtml(card)}
+    <div class="dev-agent-card-json-window terminal-preview-window">
+      <div class="terminal-preview-bar dev-agent-card-json-bar">
+        <span></span>
+        <span></span>
+        <span></span>
+        <strong>agent.json</strong>
+      </div>
+      <pre class="dev-agent-card-json">${escapeHtml(stableJson(tabState.cardJson))}</pre>
+    </div>
+  `;
+}
+
+function routeCardHtml(): string {
+  const status = statusBadgeHtml() || '<span class="dev-agent-card-status dev-agent-card-status--idle">Ready</span>';
+  return `
+    <div class="dev-agent-card-route-card terminal-preview-window" aria-label="AgentCard route">
+      <div class="terminal-preview-bar dev-agent-card-route-bar">
+        <span></span>
+        <span></span>
+        <span></span>
+        <strong>identity-route</strong>
+      </div>
+      <div class="dev-agent-card-route-body">
+        <div>
+          <span>Local</span>
+          <strong>${escapeHtml(LOCAL_AGENT_CARD_PATH)}</strong>
+        </div>
+        <div>
+          <span>Public</span>
+          <strong>/.well-known/agent.json</strong>
+        </div>
+        <div class="dev-agent-card-status-cell" data-dev-agent-card-status-slot>
+          ${status}
+        </div>
+      </div>
+    </div>
+  `;
 }
 
 export function panelHtml(): string {
@@ -137,7 +175,7 @@ export function panelHtml(): string {
             live right now.
           </p>
         </div>
-        ${statusBadgeHtml()}
+        ${routeCardHtml()}
       </header>
       <div class="dev-agent-card-actions dev-tab-actions">
         <button
@@ -186,12 +224,17 @@ function updateBody(): void {
   if (typeof document === 'undefined') return;
   const body = document.getElementById(BODY_ELEMENT_ID);
   if (body) body.innerHTML = bodyHtml();
-  const statusSlot = document.querySelector('[data-layout="dev-agent-card"] .dev-agent-card-head');
+  const statusSlot = document.querySelector('[data-dev-agent-card-status-slot]');
   if (statusSlot) {
-    const existing = statusSlot.querySelector('.dev-agent-card-status');
+    statusSlot.innerHTML = statusBadgeHtml() || '<span class="dev-agent-card-status dev-agent-card-status--idle">Ready</span>';
+    return;
+  }
+  const legacyStatusSlot = document.querySelector('[data-layout="dev-agent-card"] .dev-agent-card-head');
+  if (legacyStatusSlot) {
+    const existing = legacyStatusSlot.querySelector('.dev-agent-card-status');
     if (existing) existing.remove();
     const html = statusBadgeHtml();
-    if (html) statusSlot.insertAdjacentHTML('beforeend', html);
+    if (html) legacyStatusSlot.insertAdjacentHTML('beforeend', html);
   }
 }
 

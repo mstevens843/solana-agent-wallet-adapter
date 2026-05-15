@@ -1,10 +1,12 @@
 .dev-agent-card-panel {
+  border-color: rgba(224, 230, 226, 0.13);
   display: grid;
   gap: 18px;
 }
 
 .dev-agent-card-head {
-  align-items: start;
+  align-items: stretch;
+  gap: 18px;
 }
 
 .dev-agent-card-head p {
@@ -19,27 +21,101 @@
 
 .dev-agent-card-identity-pill {
   background: rgba(139, 205, 170, 0.1);
-  border: 1px solid rgba(139, 205, 170, 0.24);
+  border: 1px solid rgba(139, 205, 170, 0.26);
   border-radius: 999px;
   color: #ccebd8;
   font-size: 0.72rem;
-  font-weight: 860;
-  letter-spacing: 0.03em;
-  padding: 5px 9px;
+  font-weight: 900;
+  letter-spacing: 0.04em;
+  padding: 5px 10px;
   text-transform: uppercase;
   white-space: nowrap;
 }
 
+.dev-agent-card-route-card {
+  align-self: stretch;
+  background:
+    linear-gradient(180deg, rgba(16, 20, 19, 0.95), rgba(2, 3, 3, 0.96)),
+    radial-gradient(circle at 80% 0%, rgba(63, 189, 131, 0.16), transparent 42%);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.045),
+    0 20px 46px rgba(0, 0, 0, 0.26),
+    0 0 34px rgba(25, 251, 204, 0.035);
+  min-height: 0;
+  min-width: 300px;
+  width: min(34vw, 390px);
+}
+
+.dev-agent-card-route-card::after,
+.dev-agent-card-json-window::after {
+  opacity: 0.08;
+}
+
+.dev-agent-card-route-bar,
+.dev-agent-card-json-bar {
+  background: rgba(255, 255, 255, 0.025);
+  min-height: 38px;
+}
+
+.dev-agent-card-route-body {
+  display: grid;
+  gap: 8px;
+  padding: 12px;
+  position: relative;
+  z-index: 1;
+}
+
+.dev-agent-card-route-body > div {
+  background: rgba(255, 255, 255, 0.034);
+  border: 1px solid rgba(224, 230, 226, 0.085);
+  border-radius: calc(var(--radius) - 2px);
+  display: grid;
+  gap: 5px;
+  min-width: 0;
+  padding: 10px 11px;
+}
+
+.dev-agent-card-route-body > div:not(.dev-agent-card-status-cell) > span,
+.dev-agent-card-summary-item > span:first-child {
+  color: var(--dim);
+  font-size: var(--app-label-size, 0.68rem);
+  font-weight: 900;
+  letter-spacing: var(--app-label-tracking, 0.08em);
+  line-height: 1.15;
+  text-transform: uppercase;
+}
+
+.dev-agent-card-route-body strong {
+  color: var(--text);
+  font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Monaco, Consolas, monospace;
+  font-size: 0.84rem;
+  line-height: 1.35;
+  overflow-wrap: anywhere;
+}
+
+.dev-agent-card-status-cell {
+  align-content: center;
+}
+
 .dev-agent-card-status {
-  align-self: start;
+  align-items: center;
   background: rgba(255, 255, 255, 0.055);
   border: 1px solid rgba(224, 230, 226, 0.105);
   border-radius: 999px;
   color: rgba(218, 229, 224, 0.86);
+  display: inline-flex;
   font-size: 0.78rem;
-  font-weight: 760;
+  font-weight: 860;
+  justify-self: start;
+  min-height: 30px;
   padding: 6px 10px;
   white-space: nowrap;
+}
+
+.dev-agent-card-status--idle {
+  background: rgba(140, 164, 255, 0.12);
+  border-color: rgba(140, 164, 255, 0.28);
+  color: rgba(217, 224, 252, 0.96);
 }
 
 .dev-agent-card-status--ok {
@@ -61,23 +137,41 @@
 }
 
 .dev-agent-card-actions {
+  background: var(--app-card-bg, rgba(0, 0, 0, 0.18));
+  border: 1px solid var(--app-card-border, rgba(224, 230, 226, 0.1));
+  border-radius: var(--app-card-radius, var(--radius));
   justify-content: flex-start;
+  padding: 10px;
+}
+
+.dev-agent-card-actions .button,
+.dev-agent-card-actions .button-link {
+  border-radius: var(--app-card-radius, var(--radius));
+  font-size: 0.86rem;
+  font-weight: 900;
+  min-height: var(--app-control-h, 38px);
 }
 
 .dev-agent-card-body {
-  display: flex;
-  flex-direction: column;
+  display: grid;
   gap: 12px;
   min-width: 0;
 }
 
-.dev-agent-card-json {
+.dev-agent-card-json-window {
   background:
-    linear-gradient(180deg, rgba(255, 255, 255, 0.022), rgba(255, 255, 255, 0.01)),
-    #07100d;
-  border: 1px solid rgba(224, 230, 226, 0.09);
-  border-radius: var(--radius);
+    linear-gradient(180deg, rgba(16, 20, 19, 0.95), rgba(2, 3, 3, 0.96)),
+    radial-gradient(circle at 84% 0%, rgba(63, 189, 131, 0.13), transparent 42%);
+  border-color: rgba(224, 230, 226, 0.14);
+  min-height: 0;
+}
+
+.dev-agent-card-json {
+  background: rgba(1, 8, 5, 0.62);
+  border: 0;
+  border-radius: 0;
   color: rgba(242, 245, 243, 0.94);
+  display: block;
   font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Monaco, Consolas, monospace;
   font-size: 0.82rem;
   line-height: 1.58;
@@ -85,7 +179,9 @@
   max-height: 560px;
   overflow: auto;
   padding: 16px;
+  position: relative;
   white-space: pre;
+  z-index: 1;
 }
 
 .dev-agent-card-empty {
@@ -106,27 +202,21 @@
 
 .dev-agent-card-summary-item {
   background:
-    linear-gradient(180deg, rgba(255, 255, 255, 0.03), rgba(255, 255, 255, 0.014)),
-    rgba(0, 0, 0, 0.18);
-  border: 1px solid rgba(224, 230, 226, 0.09);
-  border-radius: var(--radius);
+    radial-gradient(circle at 100% 0%, rgba(63, 189, 131, 0.09), transparent 42%),
+    linear-gradient(180deg, rgba(255, 255, 255, 0.034), rgba(255, 255, 255, 0.014)),
+    rgba(10, 12, 12, 0.62);
+  border: 1px solid rgba(224, 230, 226, 0.1);
+  border-radius: var(--app-card-radius, var(--radius));
   color: var(--text);
   display: grid;
-  gap: 7px;
+  gap: 8px;
+  min-height: 82px;
   min-width: 0;
   padding: 12px;
 }
 
-.dev-agent-card-summary-item > span:first-child {
-  color: var(--dim);
-  font-size: 0.68rem;
-  font-weight: 860;
-  letter-spacing: 0.07em;
-  text-transform: uppercase;
-}
-
 .dev-agent-card-summary code {
-  background: rgba(0, 0, 0, 0.28);
+  background: rgba(0, 0, 0, 0.3);
   border: 1px solid rgba(224, 230, 226, 0.09);
   border-radius: 6px;
   color: #d8ebe0;
@@ -146,19 +236,42 @@
 }
 
 .dev-agent-card-protocol-pill {
-  border: 1px solid rgba(139, 205, 170, 0.2);
+  background: rgba(63, 189, 131, 0.08);
+  border: 1px solid rgba(139, 205, 170, 0.22);
   border-radius: 999px;
   color: #ccebd8;
   display: inline-block;
   font-size: 0.7rem;
-  font-weight: 820;
+  font-weight: 860;
   letter-spacing: 0.04em;
-  padding: 3px 8px;
+  padding: 4px 8px;
   text-transform: uppercase;
+}
+
+@media (max-width: 1040px) {
+  .dev-agent-card-head {
+    grid-template-columns: 1fr;
+  }
+
+  .dev-agent-card-route-card {
+    min-width: 0;
+    width: 100%;
+  }
 }
 
 @media (max-width: 780px) {
   .dev-agent-card-summary {
     grid-template-columns: 1fr;
+  }
+
+  .dev-agent-card-actions {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .dev-agent-card-actions .button,
+  .dev-agent-card-actions .button-link {
+    justify-content: center;
+    width: 100%;
   }
 }

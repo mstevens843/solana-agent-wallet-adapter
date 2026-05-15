@@ -230,10 +230,27 @@ export function renderPayOutPanel(): string {
           </div>
           <p>Preview an ACP cart, validate the transfer details, then create the approval card your wallet signs in Needs Approval.</p>
         </div>
-        <div class="pay-out-route-card" aria-label="Payment route">
-          <span>Route</span>
-          <strong>Cart to approval</strong>
-          <small>No automatic transfer</small>
+        <div class="pay-out-route-card terminal-preview-window" aria-label="Payment route">
+          <div class="terminal-preview-bar pay-out-route-bar">
+            <span></span>
+            <span></span>
+            <span></span>
+            <strong>acp-route</strong>
+          </div>
+          <div class="pay-out-route-body">
+            <div>
+              <span>Input</span>
+              <strong>ACP cart</strong>
+            </div>
+            <div>
+              <span>Review</span>
+              <strong>Transfer preview</strong>
+            </div>
+            <div>
+              <span>Output</span>
+              <strong>Needs Approval</strong>
+            </div>
+          </div>
         </div>
       </header>
       <div class="pay-out-capability-row" aria-label="Pay Out safeguards">
@@ -258,7 +275,13 @@ function composeView(cartText: string, busy: boolean): string {
           <span>Paste the cart JSON from a merchant or external agent.</span>
         </div>
       </div>
-      <div class="pay-out-editor-shell">
+      <div class="pay-out-editor-shell terminal-preview-window">
+        <div class="terminal-preview-bar pay-out-editor-bar">
+          <span></span>
+          <span></span>
+          <span></span>
+          <strong>cart.json</strong>
+        </div>
         <textarea
           id="pay-out-cart-input"
           class="pay-out-cart-input"
@@ -312,54 +335,71 @@ function previewView(preview: AcpPreviewDisplay, busy: boolean): string {
     : '';
 
   return `
-    <div class="pay-out-preview" data-pay-out-preview>
-      <div class="pay-out-preview-head">
-        <div>
-          <span>Merchant</span>
-          <strong>${escapeHtml(preview.merchant.name)}</strong>
-        </div>
-        <div class="pay-out-preview-total">
-          <span>Total</span>
-          <strong>${escapeHtml(preview.totalAmount)} ${escapeHtml(preview.paymentToken)}</strong>
-          ${totalFiat}
-        </div>
+    <div class="pay-out-preview terminal-preview-window" data-pay-out-preview>
+      <div class="terminal-preview-bar pay-out-preview-bar">
+        <span></span>
+        <span></span>
+        <span></span>
+        <strong>approval-preview</strong>
       </div>
-      <dl class="pay-out-meta">
-        <dt>Merchant</dt>
-        <dd>${escapeHtml(preview.merchant.name)} ${merchantWalletHint}</dd>
-        <dt>Recipient</dt>
-        <dd title="${escapeHtml(preview.recipient)}">${escapeHtml(shortAddress(preview.recipient))}</dd>
-        <dt>Pay with</dt>
-        <dd>${escapeHtml(preview.paymentToken)} ${mintHint}</dd>
-        <dt>Cluster</dt>
-        <dd>${escapeHtml(preview.cluster)}</dd>
-        ${memoRow}
-      </dl>
-
-      <table class="pay-out-line-items" aria-label="Line items">
-        <thead>
-          <tr><th scope="col">Item</th><th scope="col" class="amount">Unit amount</th></tr>
-        </thead>
-        <tbody>${lineRows}</tbody>
-      </table>
-
-      <div class="pay-out-total">
-        <span class="label">Total</span>
-        <span>
-          <span aria-hidden="true">${escapeHtml(preview.paymentToken)} </span>${escapeHtml(preview.totalAmount)}
-          ${fiatHint}
-        </span>
-      </div>
-
-      <p class="pay-out-disclaimer">Confirming creates an approval card in Needs Approval. The wallet you connect there signs the SPL transfer — nothing is sent automatically.</p>
-
-      <div class="pay-out-actions">
-        <button type="button" class="pay-out-button secondary" data-pay-out-action="edit" ${disabled}>← Edit cart</button>
-        <div class="pay-out-actions-end">
-          <button type="button" class="pay-out-button" data-pay-out-action="confirm" ${disabled}>Confirm payment</button>
+      <div class="pay-out-preview-body">
+        <div class="pay-out-preview-head">
+          <div>
+            <span>Merchant</span>
+            <strong>${escapeHtml(preview.merchant.name)}</strong>
+          </div>
+          <div class="pay-out-preview-total">
+            <span>Total</span>
+            <strong>${escapeHtml(preview.totalAmount)} ${escapeHtml(preview.paymentToken)}</strong>
+            ${totalFiat}
+          </div>
         </div>
+
+        <dl class="pay-out-meta">
+          <div>
+            <dt>Merchant</dt>
+            <dd>${escapeHtml(preview.merchant.name)} ${merchantWalletHint}</dd>
+          </div>
+          <div>
+            <dt>Recipient</dt>
+            <dd title="${escapeHtml(preview.recipient)}">${escapeHtml(shortAddress(preview.recipient))}</dd>
+          </div>
+          <div>
+            <dt>Pay with</dt>
+            <dd>${escapeHtml(preview.paymentToken)} ${mintHint}</dd>
+          </div>
+          <div>
+            <dt>Cluster</dt>
+            <dd>${escapeHtml(preview.cluster)}</dd>
+          </div>
+          ${memoRow ? `<div>${memoRow}</div>` : ''}
+        </dl>
+
+        <table class="pay-out-line-items" aria-label="Line items">
+          <thead>
+            <tr><th scope="col">Item</th><th scope="col" class="amount">Unit amount</th></tr>
+          </thead>
+          <tbody>${lineRows}</tbody>
+        </table>
+
+        <div class="pay-out-total">
+          <span class="label">Total</span>
+          <span>
+            <span aria-hidden="true">${escapeHtml(preview.paymentToken)} </span>${escapeHtml(preview.totalAmount)}
+            ${fiatHint}
+          </span>
+        </div>
+
+        <p class="pay-out-disclaimer">Confirming creates an approval card in Needs Approval. The connected wallet signs the SPL transfer; nothing is sent automatically.</p>
+
+        <div class="pay-out-actions">
+          <button type="button" class="pay-out-button secondary" data-pay-out-action="edit" ${disabled}>Edit cart</button>
+          <div class="pay-out-actions-end">
+            <button type="button" class="pay-out-button" data-pay-out-action="confirm" ${disabled}>Confirm payment</button>
+          </div>
+        </div>
+        ${busy ? '<p class="pay-out-busy" data-pay-out-busy>Creating approval…</p>' : ''}
       </div>
-      ${busy ? '<p class="pay-out-busy" data-pay-out-busy>Creating approval…</p>' : ''}
     </div>
   `;
 }

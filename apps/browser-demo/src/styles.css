@@ -1798,6 +1798,103 @@ code {
   line-height: 1.36;
 }
 
+.guided-demo-scenario-card.compact {
+  gap: 8px;
+  min-height: 0;
+}
+
+.guided-demo-scenario-groups {
+  display: grid;
+  gap: 8px;
+  margin-top: 2px;
+  width: 100%;
+}
+
+.guided-demo-scenario-group {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+}
+
+.guided-demo-scenario-group strong {
+  color: #bce3cc;
+  font-size: 0.68rem;
+  letter-spacing: 0.07em;
+  line-height: 1.05;
+  text-transform: uppercase;
+}
+
+.guided-demo-scenario-group ul {
+  display: grid;
+  gap: 3px;
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.guided-demo-scenario-group li {
+  color: rgba(214, 224, 220, 0.9);
+  font-size: 0.76rem;
+  font-weight: 720;
+  line-height: 1.22;
+  padding-left: 13px;
+  position: relative;
+}
+
+.guided-demo-scenario-group li::before {
+  background: #4fd18d;
+  border-radius: 999px;
+  box-shadow: 0 0 9px rgba(79, 209, 141, 0.28);
+  content: "";
+  height: 4px;
+  left: 1px;
+  position: absolute;
+  top: 0.53em;
+  width: 4px;
+}
+
+.guided-demo-scenario-value {
+  color: #6be49f;
+  font-weight: 900;
+}
+
+.guided-demo-policy-agent-line {
+  align-items: center;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  min-width: 0;
+}
+
+.guided-demo-policy-agent-logo {
+  align-items: center;
+  background: rgba(255, 255, 255, 0.052);
+  border: 1px solid rgba(224, 230, 226, 0.09);
+  border-radius: 6px;
+  display: inline-flex;
+  flex: 0 0 auto;
+  height: 28px;
+  justify-content: center;
+  overflow: hidden;
+  padding: 5px;
+  width: 28px;
+}
+
+.guided-demo-policy-agent-logo img {
+  display: block;
+  height: 100%;
+  object-fit: contain;
+  width: 100%;
+}
+
+.guided-demo-policy-agent-line em {
+  color: var(--muted);
+  font-size: 0.8rem;
+  font-style: normal;
+  font-weight: 720;
+  overflow-wrap: anywhere;
+}
+
 .guided-demo-runner {
   display: grid;
   min-height: 640px;
@@ -3959,6 +4056,7 @@ code {
 }
 
 .workspace-more {
+  min-width: 0;
   position: relative;
 }
 
@@ -4014,39 +4112,55 @@ code {
 }
 
 .workspace-more-menu {
-  background: rgba(20, 24, 28, 0.98);
-  border: 1px solid var(--line);
-  border-radius: 10px;
-  box-shadow: 0 12px 32px rgba(0, 0, 0, 0.45);
-  display: flex;
-  flex-direction: column;
-  min-width: 200px;
+  backdrop-filter: blur(18px);
+  background: rgba(14, 17, 16, 0.98);
+  border: 1px solid rgba(224, 230, 226, 0.15);
+  border-radius: var(--radius);
+  box-shadow:
+    0 24px 58px rgba(0, 0, 0, 0.38),
+    inset 0 1px 0 rgba(255, 255, 255, 0.035);
+  display: grid;
+  gap: 4px;
+  min-width: 250px;
   padding: 6px;
   position: absolute;
   right: 0;
-  top: calc(100% + 6px);
-  z-index: 50;
+  top: calc(100% + 8px);
+  z-index: 180;
 }
 
 .workspace-more-item {
-  background: transparent;
-  border: 0;
+  align-items: center;
+  background: rgba(255, 255, 255, 0.026);
+  border: 1px solid transparent;
   border-radius: 6px;
-  color: rgba(196, 205, 202, 0.85);
+  color: var(--text);
   cursor: pointer;
-  font-size: 0.9rem;
-  padding: 8px 12px;
+  display: flex;
+  font-size: 0.94rem;
+  font-weight: 860;
+  justify-content: flex-start;
+  line-height: 1.22;
+  min-height: 48px;
+  padding: 9px 10px;
   text-align: left;
+  white-space: normal;
+  width: 100%;
 }
 
-.workspace-more-item:hover {
+.workspace-more-item:hover,
+.workspace-more-item:focus-visible {
   background: rgba(255, 255, 255, 0.06);
+  border-color: rgba(224, 230, 226, 0.17);
+  box-shadow: none;
   color: var(--text);
+  transform: none;
 }
 
 .workspace-more-item.active {
-  background: rgba(255, 255, 255, 0.08);
-  color: var(--text);
+  background: var(--accent-soft);
+  border-color: rgba(139, 205, 170, 0.34);
+  color: #dcffe9;
 }
 
 .workspace-tab-tooltip {

@@ -754,7 +754,9 @@ const DEMO_MESSAGE = 'Approve this Solana agent action with user custody.';
 const DEMO_MEMO = 'Solana Agent Wallet Adapter demo';
 const DEFAULT_BRIDGE_URL = 'http://127.0.0.1:8787';
 const DEFAULT_BRIDGE_TOKEN = 'local-agent-wallet';
-const MOCK_PRE_SIGN_POLICY_PROMPT = 'Run my pre-signing policy for this swap. Market gates: BTC Fear & Greed must be above 20 SOL must be above $60 Token gates: mint authority disabled freeze authority disabled token age above 24h Transaction gates: must only execute the requested swap no extra transfers no unknown recipients no unrelated instructions Return APPROVE or DENY with the exact rule that decided it.';
+const MOCK_PRE_SIGN_POLICY_PROMPT = 'Run agent pre-signing decision for this swap. Market gates: BTC Fear & Greed must be above 20 SOL must be above $60 Token gates: mint authority disabled freeze authority disabled token age above 24h Transaction gates: must only execute the requested swap no extra transfers no unknown recipients no unrelated instructions Return APPROVE or DENY with the exact rule that decided it.';
+const MOCK_PRE_SIGN_POLICY_AGENT_PROVIDER = 'anthropic';
+const MOCK_PRE_SIGN_POLICY_AGENT_MODEL = 'claude-sonnet-4-5';
 const DEFAULT_AGENT_PROMPT = '';
 const STORAGE_KEY = 'solana-agent-wallet-demo-v2';
 const BRIDGE_TOKEN_SESSION_KEY = 'agentic-local-bridge-token';
@@ -1793,6 +1795,8 @@ interface GuidedDemoScenario {
   eyebrow: string;
   title: string;
   prompt: string;
+  cardIntro?: string;
+  cardGroups?: Array<{ title: string; items: string[] }>;
   detail: string;
   planTitle: string;
   route: string;
@@ -1802,6 +1806,9 @@ interface GuidedDemoScenario {
   receiptSummary: string;
   constraints: string[];
   facts: Array<{ label: string; value: string }>;
+  agentProvider?: string;
+  agentModel?: string;
+  agentChecks?: Array<{ label: string; value: string; tone?: AgentEvidenceTone }>;
 }
 
 interface GuidedDemoState {
@@ -2654,27 +2661,74 @@ const GUIDED_DEMO_SCENARIOS: ReadonlyArray<GuidedDemoScenario> = [
   },
   {
     id: 'policy-swap',
-    eyebrow: 'Pre-sign policy',
-    title: 'SOL to POPCAT policy check',
+    eyebrow: 'Agent decision',
+    title: 'SOL to POPCAT pre-sign decision',
     prompt: MOCK_PRE_SIGN_POLICY_PROMPT,
-    detail: 'The mock agent checks market gates, token authority gates, and transaction-shape gates before returning APPROVE.',
-    planTitle: 'Mock pre-signing policy approved',
-    route: 'New Request -> Agent review -> Mock approval',
-    risk: 'The policy requires BTC Fear & Greed above 20, SOL above $60, disabled mint/freeze authorities, token age above 24h, and no extra transfers or unrelated instructions.',
-    approvalBoundary: 'No wallet opens in this demo. The agent result is mocked, then a local mock signature and approval receipt are created.',
-    receiptType: 'mock_pre_sign_policy_receipt',
-    receiptSummary: 'The mock agent approved the SOL to POPCAT swap after all configured policy gates passed.',
+    cardIntro: 'Run the agent pre-signing decision before this swap reaches my wallet.',
+    cardGroups: [
+      {
+        title: 'Market gates',
+        items: [
+          'BTC Fear & Greed must be above 20',
+          'SOL must be above $60',
+        ],
+      },
+      {
+        title: 'Token gates',
+        items: [
+          'mint authority disabled',
+          'freeze authority disabled',
+          'token age above 24h',
+        ],
+      },
+      {
+        title: 'Transaction gates',
+        items: [
+          'only executes the requested swap',
+          'no extra transfers',
+          'no unknown recipients',
+          'no unrelated instructions',
+        ],
+      },
+    ],
+    detail: 'The agent checks market gates, token authority gates, and transaction-shape gates before returning APPROVE.',
+    planTitle: 'Pre-signing decision approved',
+    route: 'New Request -> Agent review -> Approval receipt',
+    risk: 'The decision checks BTC Fear & Greed above 20, SOL above $60, disabled mint/freeze authorities, token age above 24h, and no extra transfers or unrelated instructions.',
+    approvalBoundary: 'No wallet opens in this demo. The agent result is simulated, then a local demo signature and approval receipt are created.',
+    receiptType: 'pre_sign_decision_receipt',
+    receiptSummary: 'The agent approved the SOL to POPCAT swap after all configured decision gates passed.',
     constraints: [
-      'SOL price is mocked at $90.96, above the $60 gate.',
-      'BTC Fear & Greed is mocked at 42, above the 20 gate.',
+      'SOL price is set at $90.96, above the $60 gate.',
+      'BTC Fear & Greed is set at 42, above the 20 gate.',
       'POPCAT mint and freeze authorities are disabled.',
-      'POPCAT age is mocked at 29.4 months.',
+      'POPCAT age is set at 29.4 months.',
       'Transaction shape is limited to the requested swap only.',
     ],
     facts: [
       { label: 'Route', value: '0.04 SOL -> POPCAT' },
       { label: 'Market gates', value: 'SOL $90.96 / F&G 42' },
       { label: 'Agent result', value: 'APPROVE' },
+    ],
+    agentProvider: MOCK_PRE_SIGN_POLICY_AGENT_PROVIDER,
+    agentModel: MOCK_PRE_SIGN_POLICY_AGENT_MODEL,
+    agentChecks: [
+      { label: 'Route', value: 'SOL -> POPCAT; exact venue route resolves from the Jupiter quote.', tone: 'good' },
+      { label: 'Quote', value: 'Demo quote context only; no browser quote fetched for this demo.', tone: 'neutral' },
+      { label: 'Protocol', value: 'Browser swaps execute through Jupiter; Jupiter chooses the venue route at order time.', tone: 'neutral' },
+      { label: 'BTC Fear & Greed', value: '42 is above the required 20 gate.', tone: 'good' },
+      { label: 'SOL price', value: '$90.96 is above the required $60 gate.', tone: 'good' },
+      { label: 'Mint authority', value: 'POPCAT mint authority is disabled.', tone: 'good' },
+      { label: 'Freeze authority', value: 'POPCAT freeze authority is disabled.', tone: 'good' },
+      { label: 'Token age', value: 'POPCAT age is 29.4 months, above the required 24h gate.', tone: 'good' },
+      { label: 'Requested swap only', value: 'Transaction scope contains only the requested SOL -> POPCAT swap.', tone: 'good' },
+      { label: 'Extra transfers', value: 'No extra transfers detected in the transaction scope.', tone: 'good' },
+      { label: 'Unknown recipients', value: 'No unknown recipients detected.', tone: 'good' },
+      { label: 'Unrelated instructions', value: 'No unrelated instructions detected.', tone: 'good' },
+      { label: 'Limits', value: 'Max slippage 50 bps (0.50%).', tone: 'good' },
+      { label: 'Amount', value: '0.04 SOL (~$3.6383 at $90.96/SOL).', tone: 'good' },
+      { label: 'Risk factors', value: 'POPCAT volatility noted; decision still passes under the configured gates.', tone: 'warn' },
+      { label: 'Decision rule', value: 'Agent pre-signing decision returned APPROVE.', tone: 'good' },
     ],
   },
   {
@@ -4869,9 +4923,16 @@ function guidedDemoTrustItem(title: string, detail: string, logoId: BrandLogoId)
 
 function guidedDemoScenarioCard(scenario: GuidedDemoScenario): string {
   const active = scenario.id === state.guidedDemo.selectedScenarioId;
+  const groups = scenario.cardGroups?.length
+    ? `
+      <div class="guided-demo-scenario-groups" aria-label="${escapeHtml(`${scenario.title} gates`)}">
+        ${scenario.cardGroups.map(guidedDemoScenarioGroup).join('')}
+      </div>
+    `
+    : '';
   return `
     <button
-      class="guided-demo-scenario-card ${active ? 'active' : ''}"
+      class="guided-demo-scenario-card ${scenario.cardGroups?.length ? 'compact' : ''} ${active ? 'active' : ''}"
       data-demo-scenario="${escapeHtml(scenario.id)}"
       aria-pressed="${active ? 'true' : 'false'}"
       ${state.busy ? 'disabled' : ''}
@@ -4881,9 +4942,25 @@ function guidedDemoScenarioCard(scenario: GuidedDemoScenario): string {
         <span>${escapeHtml(scenario.eyebrow)}</span>
       </div>
       <strong>${escapeHtml(scenario.title)}</strong>
-      <em>${escapeHtml(scenario.prompt)}</em>
+      <em>${escapeHtml(scenario.cardIntro ?? scenario.prompt)}</em>
+      ${groups}
     </button>
   `;
+}
+
+function guidedDemoScenarioGroup(group: { title: string; items: string[] }): string {
+  return `
+    <section class="guided-demo-scenario-group">
+      <strong>${escapeHtml(group.title)}</strong>
+      <ul>
+        ${group.items.map((item) => `<li>${guidedDemoScenarioGateText(item)}</li>`).join('')}
+      </ul>
+    </section>
+  `;
+}
+
+function guidedDemoScenarioGateText(value: string): string {
+  return escapeHtml(value).replace(/(\$60|24h|\b20\b)/g, '<span class="guided-demo-scenario-value">$1</span>');
 }
 
 function guidedDemoScenarioLogo(scenarioId: GuidedDemoScenarioId): BrandLogoId {
@@ -4957,6 +5034,9 @@ function guidedDemoPreparedPlan(scenario: GuidedDemoScenario): string {
       </article>
     `;
   }
+  if (scenario.id === 'policy-swap') {
+    return guidedDemoPolicyPreparedPlan(scenario);
+  }
   return `
     <article class="guided-demo-plan-card">
       <div class="guided-demo-card-heading">
@@ -4978,6 +5058,69 @@ function guidedDemoPreparedPlan(scenario: GuidedDemoScenario): string {
         <p>${escapeHtml(scenario.risk)}</p>
       </div>
     </article>
+  `;
+}
+
+function guidedDemoPolicyPreparedPlan(scenario: GuidedDemoScenario): string {
+  const providerLine = [scenario.agentProvider, scenario.agentModel].filter(Boolean).join(' - ');
+  const checks = scenario.agentChecks ?? [];
+  return `
+    <article class="guided-demo-plan-card guided-demo-policy-plan">
+      <div class="guided-demo-policy-review-head">
+        <div class="guided-demo-policy-agent-line">
+          ${brandLogo('claude', 'guided-demo-policy-agent-logo')}
+          <span class="agent-review-state approved">Agent approved</span>
+          ${providerLine ? `<em>${escapeHtml(providerLine)}</em>` : ''}
+          ${agentReviewPathBadge('mock')}
+        </div>
+        <div class="guided-demo-card-heading">
+          <span>Prepared plan</span>
+          <h3>${escapeHtml(scenario.planTitle)}</h3>
+          <p>${escapeHtml(scenario.detail)}</p>
+        </div>
+      </div>
+      <div class="guided-demo-policy-metrics" aria-label="Agent decision approval summary">
+        ${guidedDemoPolicyMetric('Route', '0.04 SOL -> POPCAT', 'requested swap only')}
+        ${guidedDemoPolicyMetric('Market gates', 'SOL $90.96 / F&G 42', 'both thresholds passed')}
+        ${guidedDemoPolicyMetric('Agent result', 'APPROVE', 'all gates passed')}
+      </div>
+      <details class="agent-evidence-drawer guided-demo-policy-checks" open>
+        <summary>
+          <span class="agent-evidence-summary-left">
+            <span class="agent-evidence-summary-label">What the agent checked (${checks.length})</span>
+            <span class="agent-evidence-summary-state pass">Pass</span>
+          </span>
+        </summary>
+        <dl class="agent-evidence-rows">
+          ${checks.map(guidedDemoPolicyCheckRow).join('')}
+        </dl>
+      </details>
+      <div class="guided-demo-constraint-list guided-demo-policy-constraints">
+        <span>Approval constraints</span>
+        <ul>
+          ${scenario.constraints.map((constraint) => `<li>${escapeHtml(constraint)}</li>`).join('')}
+        </ul>
+      </div>
+    </article>
+  `;
+}
+
+function guidedDemoPolicyMetric(label: string, value: string, detail: string): string {
+  return `
+    <div class="guided-demo-policy-metric">
+      <span>${escapeHtml(label)}</span>
+      <strong>${escapeHtml(value)}</strong>
+      <em>${escapeHtml(detail)}</em>
+    </div>
+  `;
+}
+
+function guidedDemoPolicyCheckRow(check: { label: string; value: string; tone?: AgentEvidenceTone }): string {
+  return `
+    <div class="agent-evidence-row ${check.tone ? escapeHtml(check.tone) : ''}">
+      <dt>${escapeHtml(check.label)}</dt>
+      <dd>${agentEvidenceValueHtml(check)}</dd>
+    </div>
   `;
 }
 
@@ -5042,15 +5185,26 @@ function guidedDemoFact(label: string, value: string): string {
 
 function guidedDemoActions(): string {
   const demo = state.guidedDemo;
+  const scenario = selectedGuidedDemoScenario();
+  const isMockPolicy = scenario.id === 'policy-swap';
   const disabled = state.busy ? 'disabled' : '';
   if (demo.stage === 'request') {
     return `
       <div class="guided-demo-actions">
-        <button class="primary" data-demo-action="prepare" ${disabled}>Prepare request</button>
+        <button class="primary" data-demo-action="prepare" ${disabled}>${escapeHtml(isMockPolicy ? 'Run decision' : 'Prepare request')}</button>
       </div>
     `;
   }
   if (demo.stage === 'prepared') {
+    if (isMockPolicy) {
+      return `
+        <div class="guided-demo-actions">
+          <button class="primary" data-demo-action="approve" ${disabled}>Record approval</button>
+          <button data-demo-action="reset" ${disabled}>Reset demo</button>
+          <span class="guided-demo-action-note">The agent already returned APPROVE, so the next step records a local demo signature.</span>
+        </div>
+      `;
+    }
     return `
       <div class="guided-demo-actions">
         <button class="primary" data-demo-action="queue" ${disabled}>Move to wallet review</button>
@@ -11541,7 +11695,7 @@ function agentPlannerWorkbench(): string {
     ? 'Describe what you want prepared or reviewed.'
     : 'Optional context, reason, or policy note saved with this plan.';
   const askAgentDetail = mockReviewAvailable && !aiPathConnected
-    ? 'Optional. Runs a local mock policy check in Check after drafting. No bridge, AI key, or wallet popup.'
+    ? 'Optional. Runs a local agent decision in Check after drafting. No bridge, AI key, or wallet popup.'
     : 'Optional. Runs the review in Check after drafting. Sending for approval stays manual.';
   return `
     <div class="agent-planner-grid planner-single-column">
@@ -13647,7 +13801,7 @@ function canRunAgentReview(record?: GeneratedPlanRecord): boolean {
 function agentReviewUnavailableReason(record?: GeneratedPlanRecord): string {
   if (state.busy) return 'Wait for the current action to finish.';
   if (record && isMockPreSignPolicyPlan(record)) {
-    return 'Mock policy review is ready for this demo request.';
+    return 'Agent decision review is ready for this demo request.';
   }
   if (state.aiSettings.mode === 'bridge') {
     return state.aiStatus?.available
@@ -17559,19 +17713,22 @@ function completeGuidedDemo(decision: Exclude<GuidedDemoDecision, 'pending'>): v
   const scenario = selectedGuidedDemoScenario();
   const receiptId = newId('demo');
   const receiptCreatedAt = new Date().toISOString();
+  const mockSignature = scenario.id === 'policy-swap' && decision === 'approved'
+    ? `demo_sig_${receiptId.replace(/[^a-z0-9_-]/gi, '').slice(0, 32)}`
+    : '';
   state.guidedDemo = {
     ...state.guidedDemo,
     stage: 'receipt',
     decision,
     receiptId,
     receiptCreatedAt,
-    receiptJson: stableJson(guidedDemoReceiptPayload(scenario, decision, receiptId, receiptCreatedAt)),
-    signedReceipt: '',
+    receiptJson: stableJson(guidedDemoReceiptPayload(scenario, decision, receiptId, receiptCreatedAt, mockSignature)),
+    signedReceipt: mockSignature,
   };
   pushToast(
     'success',
     decision === 'approved' ? 'Simulation approved' : 'Simulation denied',
-    'Demo receipt created. Nothing was signed or submitted.',
+    mockSignature ? 'Demo signature and approval receipt saved.' : 'Demo receipt created. Nothing was signed or submitted.',
   );
   render();
 }
@@ -18385,7 +18542,7 @@ async function runReviewGeneratedPlan(planId: string): Promise<void> {
   }
   if (isMockPreSignPolicyPlan(record)) {
     if (!canRunAgentReview(record)) {
-      pushToast('error', 'Mock review unavailable', agentReviewUnavailableReason(record));
+      pushToast('error', 'Agent review unavailable', agentReviewUnavailableReason(record));
       render();
       return;
     }
@@ -18483,7 +18640,7 @@ function isMockPreSignPolicyPlan(record: GeneratedPlanRecord): boolean {
     inputToken === 'SOL' &&
     outputToken === 'POPCAT' &&
     amount === '0.04' &&
-    notes.includes('pre-signing policy') &&
+    (notes.includes('agent pre-signing decision') || notes.includes('pre-signing policy')) &&
     notes.includes('$60');
 }
 
@@ -18495,15 +18652,15 @@ async function runMockPreSignPolicyReview(planId: string): Promise<void> {
     schemaVersion: AGENT_REVIEW_SCHEMA_VERSION,
     required: true,
     status: 'checking',
-    reason: 'Mock policy agent is checking market, token, and transaction gates.',
-    provider: 'Mock policy agent',
-    model: 'demo-pre-sign-v1',
+    reason: 'Agent is checking market, token, and transaction gates.',
+    provider: MOCK_PRE_SIGN_POLICY_AGENT_PROVIDER,
+    model: MOCK_PRE_SIGN_POLICY_AGENT_MODEL,
     source: 'mock',
     checkedAt,
     ...(previousReview?.history?.length ? { history: previousReview.history } : {}),
   };
   state.activeOperation = 'review-agent-plan';
-  const toastId = pushToast('pending', 'Mock agent checking', 'Running the pre-signing policy locally.');
+  const toastId = pushToast('pending', 'Agent checking', 'Running the pre-signing decision locally.');
   try {
     await updateGeneratedPlan(planId, { agentReview: checkingReview, error: undefined, failureLabel: undefined });
     render();
@@ -18512,7 +18669,7 @@ async function runMockPreSignPolicyReview(planId: string): Promise<void> {
     const review = mockPreSignPolicyReviewState(refreshed, previousReview);
     await updateGeneratedPlan(planId, { agentReview: review, error: undefined, failureLabel: undefined });
     completeMockPreSignApproval(refreshed, review);
-    replaceToast(toastId, 'success', 'Agent approved', 'Mock signature and approval receipt saved.');
+    replaceToast(toastId, 'success', 'Agent approved', 'Demo signature and approval receipt saved.');
   } catch (err) {
     const message = redactSecrets(err instanceof Error ? err.message : String(err));
     const failedReview: AgentPlanReviewState = {
@@ -18522,7 +18679,7 @@ async function runMockPreSignPolicyReview(planId: string): Promise<void> {
       checkedAt: new Date().toISOString(),
     };
     await updateGeneratedPlan(planId, { agentReview: failedReview }).catch(() => undefined);
-    replaceToast(toastId, 'error', 'Mock review failed', message);
+    replaceToast(toastId, 'error', 'Agent review failed', message);
   } finally {
     state.activeOperation = null;
     render();
@@ -18534,7 +18691,7 @@ function mockPreSignPolicyReviewState(
   previousReview: AgentPlanReviewState | undefined,
 ): AgentPlanReviewState {
   const checkedAt = new Date().toISOString();
-  const reason = 'APPROVE: SOL price $90.96 is above the $60 gate, BTC Fear & Greed is 42 above the 20 gate, POPCAT mint/freeze authorities are disabled, token age is above 24h, and the mock transaction contains only the requested swap with no extra transfers, unknown recipients, or unrelated instructions.';
+  const reason = 'APPROVE: SOL price $90.96 is above the $60 gate, BTC Fear & Greed is 42 above the 20 gate, POPCAT mint/freeze authorities are disabled, token age is above 24h, and the transaction contains only the requested swap with no extra transfers, unknown recipients, or unrelated instructions.';
   const history = appendReviewAttempt(previousReview?.history, {
     attemptId: `attempt_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 7)}`,
     startedAt: checkedAt,
@@ -18548,10 +18705,10 @@ function mockPreSignPolicyReviewState(
     status: 'approved',
     decision: 'approve',
     reason,
-    summary: 'APPROVE - all requested mock policy gates passed.',
+    summary: 'APPROVE - all requested decision gates passed.',
     checkedAt,
-    provider: 'Mock policy agent',
-    model: 'demo-pre-sign-v1',
+    provider: MOCK_PRE_SIGN_POLICY_AGENT_PROVIDER,
+    model: MOCK_PRE_SIGN_POLICY_AGENT_MODEL,
     source: 'mock',
     checks: mockPreSignPolicyChecks(),
     evidence: {
@@ -18575,18 +18732,18 @@ function mockPreSignPolicyChecks(): AgentReviewCheck[] {
     source: 'deterministic',
   });
   return [
-    row('SOL price', '$90.96 (BirdEye)'),
-    row('POPCAT price', '$0.0640 (BirdEye)'),
+    row('BTC Fear & Greed', '42 is above the required 20 gate - alternative.me'),
+    row('SOL price', '$90.96 is above the required $60 gate - BirdEye'),
+    row('Mint authority', 'POPCAT mint authority disabled (null) - BirdEye'),
+    row('Freeze authority', 'POPCAT freeze authority disabled (null) - BirdEye'),
+    row('Token age', 'POPCAT token age 29.4 months, above 24h - BirdEye'),
+    row('Requested swap only', 'Transaction scope contains only SOL -> POPCAT'),
+    row('Extra transfers', 'No extra transfers detected'),
+    row('Unknown recipients', 'No unknown recipients detected'),
+    row('Unrelated instructions', 'No unrelated instructions detected'),
     row('Slippage protection', '0.50% (50 bps)'),
     row('Swap amount', '0.04 SOL (~$3.6383)'),
-    row('BTC Fear & Greed Index', '42 (Fear) - alternative.me'),
-    row('BTC dominance', '58.10% - CoinGecko'),
-    row('INPUT SOL mint authority', 'disabled (null) - BirdEye'),
-    row('INPUT SOL freeze authority', 'disabled (null) - BirdEye'),
-    row('INPUT SOL token age', 'unknown', 'neutral'),
-    row('OUTPUT POPCAT mint authority', 'disabled (null) - BirdEye'),
-    row('OUTPUT POPCAT freeze authority', 'disabled (null) - BirdEye'),
-    row('OUTPUT POPCAT token age', '29.4 months - BirdEye'),
+    row('Agent result', 'APPROVE'),
   ];
 }
 
@@ -18601,7 +18758,7 @@ function completeMockPreSignApproval(record: GeneratedPlanRecord, review: AgentP
     status: 'ready',
     walletAddress: state.address || record.walletAddress || '',
     cluster: record.cluster,
-    summary: `Mock approved swap: ${plan.parameters.amount || '0.04'} ${plan.parameters.inputToken || 'SOL'} to ${plan.parameters.outputTokenLabel || plan.parameters.outputToken || 'POPCAT'}`,
+    summary: `Approved swap: ${plan.parameters.amount || '0.04'} ${plan.parameters.inputToken || 'SOL'} to ${plan.parameters.outputTokenLabel || plan.parameters.outputToken || 'POPCAT'}`,
     params: browserActionParams(plan, kind),
     dueAt: completedAt,
     createdAt: record.createdAt,
@@ -18615,7 +18772,7 @@ function completeMockPreSignApproval(record: GeneratedPlanRecord, review: AgentP
     },
     workflowSource: 'browser',
   };
-  completeBrowserPreparedAction(action, 'approved', `mock_sig_${record.id.replace(/[^a-z0-9_-]/gi, '').slice(0, 32)}`);
+  completeBrowserPreparedAction(action, 'approved', `demo_sig_${record.id.replace(/[^a-z0-9_-]/gi, '').slice(0, 32)}`);
   void updateGeneratedPlan(record.id, {
     metadata: {
       ...(record.metadata ?? {}),
