@@ -26724,6 +26724,7 @@ function isExecutableBrowserAction(action: PreparedAction): boolean {
 
 function isCloudBrowserExecutableAction(action: PreparedAction): boolean {
   if (action.workflowSource !== 'cloud') return false;
+  if (isAcpOutboundAction(action) && action.kind === 'transfer_sol') return true;
   if ((action.kind === 'swap' || action.kind === 'transfer_spl') && EXECUTABLE_BROWSER_ACTION_KINDS.has(action.kind)) return true;
   return isConnectorApprovalKind(action) && cloudSessionMatchesWallet();
 }
@@ -27188,6 +27189,7 @@ async function executeBrowserPreparedActionRecord(
 ): Promise<BrowserTransactionExecution> {
   switch (action.kind) {
     case 'transfer_sol':
+      if (isAcpOutboundAction(action)) return executeBrowserAcpOutbound(action, toastContext);
       return executeBrowserSolTransfer(action, toastContext);
     case 'transfer_spl':
       if (isAcpOutboundAction(action)) return executeBrowserAcpOutbound(action, toastContext);
@@ -27216,8 +27218,9 @@ async function executeBrowserAcpOutbound(
   action: PreparedAction,
   toastContext: TransactionToastContext,
 ): Promise<BrowserTransactionExecution> {
-  const splAction: PreparedAction = { ...action, kind: 'transfer_spl' };
-  const execution = await executeBrowserSplTransfer(splAction, toastContext);
+  const execution = action.kind === 'transfer_sol'
+    ? await executeBrowserSolTransfer(action, toastContext)
+    : await executeBrowserSplTransfer({ ...action, kind: 'transfer_spl' }, toastContext);
   try {
     await cloudRequest(
       `/api/acp/cart/${encodeURIComponent(action.id)}/receipt`,
@@ -33018,9 +33021,12 @@ function acpPaymentToken(action: PreparedAction): string {
 
 function acpTotalLabel(action: PreparedAction): string {
   const cart = acpCartPayload(action);
-  const amount = stringFromJsonLike(action.metadata?.totalAmount) ||
-    stringFromJsonLike(cart.totalAmount) ||
+  const amount = stringFromJsonLike(action.metadata?.paymentAmount) ||
+    stringFromJsonLike(cart.paymentAmount) ||
+    stringParam(action, 'amountSol') ||
     stringParam(action, 'amount') ||
+    stringFromJsonLike(action.metadata?.totalAmount) ||
+    stringFromJsonLike(cart.totalAmount) ||
     amountLabel(action);
   const token = acpPaymentToken(action);
   return [amount, token].filter((part) => part && part !== 'n/a').join(' ') || amountLabel(action);
@@ -34677,7 +34683,7 @@ function approvalEffectCopy(action: PreparedAction): string {
   const raydiumLiquidityCopy = raydiumAddLiquidityEffectCopy(action);
   if (raydiumLiquidityCopy) return raydiumLiquidityCopy;
   if (isAcpOutboundAction(action)) {
-    return 'Your wallet signs and submits the exact SPL transfer to the merchant recipient. Agentic saves the ACP cart hash and receipt; nothing is sent until wallet approval.';
+    return 'Your wallet signs and submits the exact payment transaction to the merchant recipient. Agentic saves the ACP cart hash and receipt; nothing is sent until wallet approval.';
   }
   if (canFinalizeCloudSolTransfer(action)) {
     return 'Agentic Cloud prepares and simulates the exact SOL transfer, your browser opens your wallet for that transaction only, then Agentic saves a finalization receipt. Agentic never receives signing authority.';
@@ -34761,6 +34767,7 @@ const CLOUD_TRANSACTION_FINALIZATION_KINDS = new Set<PreparedActionKind>([
 function canFinalizeCloudSolTransfer(action: PreparedAction): boolean {
   return action.workflowSource === 'cloud' &&
     action.kind === 'transfer_sol' &&
+    !isAcpOutboundAction(action) &&
     state.capabilities?.supports.signTransaction === true &&
     Boolean(state.address && state.address === action.walletAddress);
 }

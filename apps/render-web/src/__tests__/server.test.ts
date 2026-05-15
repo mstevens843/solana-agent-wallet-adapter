@@ -453,6 +453,21 @@ describe('render web hosted BYOK API', () => {
     });
   });
 
+  it('serves the public Agent Card before the SPA fallback', async () => {
+    vi.stubEnv('AGENTIC_AGENT_CARD_WALLET', '4fTqUdd9SRCkmALQhQGF66VRYJFsCLDSQJYadqwMMoHd');
+
+    await withServer(async (port) => {
+      const response = await getText(port, '/.well-known/agent.json');
+      const body = JSON.parse(response.body) as Record<string, unknown>;
+
+      expect(response.status).toBe(200);
+      expect(String(response.headers['content-type'])).toContain('application/json');
+      expect(body.name).toBe('Agentic Wallet');
+      expect(body.walletAddress).toBe('4fTqUdd9SRCkmALQhQGF66VRYJFsCLDSQJYadqwMMoHd');
+      expect(response.body).not.toContain('<div id="app"></div>');
+    });
+  });
+
   it('keeps Solana transaction helper routes on JSON validation paths', async () => {
     await withServer(async (port) => {
       const latest = await postJson(port, '/api/solana/latest-blockhash', { cluster: 'bogus' });

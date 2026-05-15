@@ -381,6 +381,28 @@ describe('cloud ACP cart API', () => {
       });
     });
 
+    it('returns native SOL amount in previews for SOL carts', async () => {
+      await withAcpServer(DEFAULT_ENV, async ({ port }) => {
+        const response = await postJson(port, '/api/acp/cart/preview', {
+          cart: sampleCart({
+            paymentToken: 'SOL',
+            paymentAmount: '0.10',
+            totalAmount: '20.00',
+            lineItems: [{ id: 'li_1', name: 'SOL checkout', quantity: 1, unitAmount: '20.00', currency: 'USD' }],
+          }),
+        }, DEV_WALLET);
+        expect(response.status).toBe(200);
+        const preview = response.body?.preview as Record<string, unknown>;
+        expect(preview.transfer).toMatchObject({
+          token: 'SOL',
+          recipient: MERCHANT_RECIPIENT,
+          amount: '0.10',
+        });
+        expect(preview.totalFiat).toBe(20);
+        expect(preview.resolvedTokenMint).toBe('SOL');
+      });
+    });
+
     it('accepts a JSON-string-form cart', async () => {
       await withAcpServer(DEFAULT_ENV, async ({ port }) => {
         const response = await postJson(
@@ -495,6 +517,40 @@ describe('cloud ACP cart API', () => {
         expect(response.body?.cartId).toBe('cart_test_001');
         expect(response.body?.approvalId).toBe(approval.id);
         expect(response.body?.cartHash).toEqual(expect.any(String));
+      });
+    });
+
+    it('materializes a transfer_sol approval for SOL ACP payments', async () => {
+      await withAcpServer(DEFAULT_ENV, async ({ port, workflowStore }) => {
+        const response = await postJson(
+          port,
+          '/api/acp/cart/approve',
+          {
+            cart: sampleCart({
+              paymentToken: 'SOL',
+              paymentAmount: '0.10',
+              totalAmount: '20.00',
+              lineItems: [{ id: 'li_1', name: 'SOL checkout', quantity: 1, unitAmount: '20.00', currency: 'USD' }],
+            }),
+          },
+          DEV_WALLET,
+        );
+        expect(response.status).toBe(201);
+        const approval = response.body?.approval as ApprovalRequestRecord;
+        expect(approval.kind).toBe('transfer_sol');
+        expect(approval.amount).toBe('0.10');
+        expect(approval.token).toBe('SOL');
+        expect(approval.metadata?.paymentAmount).toBe('0.10');
+        expect(approval.metadata?.totalAmount).toBe('20.00');
+        expect(approval.metadata?.resolvedTokenMint).toBe('SOL');
+        const params = approval.params as Record<string, unknown>;
+        expect(params.recipient).toBe(MERCHANT_RECIPIENT);
+        expect(params.amountSol).toBe('0.10');
+        expect(params.token).toBeUndefined();
+        expect(params.tokenMint).toBeUndefined();
+
+        const stored = await workflowStore.getApproval(DEV_WALLET, approval.id);
+        expect(stored?.kind).toBe('transfer_sol');
       });
     });
 

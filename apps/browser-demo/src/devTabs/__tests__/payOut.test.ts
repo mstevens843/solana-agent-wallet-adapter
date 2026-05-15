@@ -25,6 +25,18 @@ import {
 } from '../payOut.js';
 
 const TEST_WALLET = '4fTqUdd9SRCkmALQhQGF66VRYJFsCLDSQJYadqwMMoHd';
+const SOL_CART = {
+  id: 'cart_sol_001',
+  cartVersion: '1',
+  merchant: { id: 'merchant_acme', name: 'Acme Coffee', recipient: TEST_WALLET },
+  lineItems: [{ id: 'li_1', name: 'SOL checkout', quantity: 1, unitAmount: '20.00', currency: 'USD' }],
+  totalAmount: '20.00',
+  currency: 'USD',
+  paymentToken: 'SOL',
+  paymentAmount: '0.10',
+  cluster: 'mainnet-beta',
+  memo: 'SOL order',
+};
 
 afterEach(() => {
   setConnectedAddress(undefined);
@@ -80,6 +92,20 @@ describe('pure helpers', () => {
 
   it('parseCartText rejects malformed JSON', () => {
     expect(() => parseCartText('{not json}')).toThrow(/not valid JSON/);
+  });
+
+  it('accepts .25 decimal formatting as 25 cents in local preview validation', () => {
+    const cart = {
+      ...(parseCartText(SAMPLE_CART) as Record<string, unknown>),
+      lineItems: [{ id: 'li_1', name: 'Quarter', quantity: 1, unitAmount: '.25', currency: 'USD' }],
+      totalAmount: '.25',
+    };
+    const result = previewCartLocally(cart);
+    expect(result.kind).toBe('ok');
+    if (result.kind === 'ok') {
+      expect(result.value.totalAmount).toBe('.25');
+      expect(result.value.transferAmount).toBe('.25');
+    }
   });
 
   it('SAMPLE_CART parses back to a structurally-valid AcpCart shape', () => {
@@ -168,6 +194,18 @@ describe('browser-local ACP fallback', () => {
     }
   });
 
+  it('builds a SOL preview with native transfer amount and USD total', () => {
+    const result = previewCartLocally(SOL_CART);
+    expect(result.kind).toBe('ok');
+    if (result.kind === 'ok') {
+      expect(result.value.paymentToken).toBe('SOL');
+      expect(result.value.totalAmount).toBe('20.00');
+      expect(result.value.totalFiat).toBe('USD 20.00');
+      expect(result.value.transferAmount).toBe('0.10');
+      expect(result.value.resolvedTokenMint).toBe('SOL');
+    }
+  });
+
   it('rejects locally when line item totals do not match', () => {
     const badCart = {
       ...(parseCartText(SAMPLE_CART) as Record<string, unknown>),
@@ -199,6 +237,28 @@ describe('browser-local ACP fallback', () => {
       }));
     }
   });
+
+  it('creates a browser SOL approval as transfer_sol', () => {
+    setConnectedAddress(TEST_WALLET);
+    const previewResult = previewCartLocally(SOL_CART);
+    expect(previewResult.kind).toBe('ok');
+    if (previewResult.kind !== 'ok') return;
+
+    const result = approveCartLocally(SOL_CART, previewResult.value);
+    expect(result.kind).toBe('ok');
+    if (result.kind === 'ok') {
+      expect(result.value.approval).toEqual(expect.objectContaining({
+        walletAddress: TEST_WALLET,
+        kind: 'transfer_sol',
+        amount: '0.10',
+        token: 'SOL',
+      }));
+      expect((result.value.approval as { params?: Record<string, unknown> }).params).toMatchObject({
+        recipient: TEST_WALLET,
+        amountSol: '0.10',
+      });
+    }
+  });
 });
 
 describe('renderPayOutPanel', () => {
@@ -212,7 +272,14 @@ describe('renderPayOutPanel', () => {
     expect(html).toContain('Payment details');
     expect(html).toContain('Merchant name');
     expect(html).toContain('Recipient wallet');
+    expect(html).toContain('Payment token');
+    expect(html).toContain('data-select-picker-label="SOL"');
+    expect(html).not.toContain('Solana (SOL)');
     expect(html).toContain('Line items');
+    expect(html).toContain('data-pay-out-action="add-line-item"');
+    expect(html).toContain('data-pay-out-action="remove-line-item:0"');
+    expect(html).not.toContain('pay-out-amount-field');
+    expect(html).not.toContain('data-pay-out-line-estimate');
     expect(html).toContain('Type payment details');
     expect(html).toContain('Paste JSON request');
     expect(html).toContain('Load sample request');
@@ -243,6 +310,36 @@ describe('renderPayOutPanel', () => {
     expect(html).toContain('Latte');
     expect(html).toContain('Review payment request');
     expect(html).toContain('Clear request');
+  });
+
+  it('compose phase keeps line items and shows a SOL estimate when SOL is selected', () => {
+    __resetPanelStateForTests({
+      draft: {
+        merchantName: 'Acme Coffee',
+        recipient: TEST_WALLET,
+        paymentToken: 'SOL',
+        paymentAmount: '',
+        memo: '',
+        lineItems: [{ name: 'Latte', quantity: '1', unitAmount: '0.01' }],
+        solPriceStatus: 'ready',
+        solUsdPerToken: 200,
+        solPriceSource: 'pyth',
+        solPriceCheckedAt: '2026-05-15T00:00:00.000Z',
+      },
+    });
+    const html = renderPayOutPanel();
+    expect(html).toContain('data-payment-token="SOL"');
+    expect(html).toContain('Line items');
+    expect(html).toContain('data-pay-out-action="add-line-item"');
+    expect(html).toContain('data-pay-out-action="remove-line-item:0"');
+    expect(html).toContain('pay-out-amount-field');
+    expect(html).toContain('data-pay-out-line-estimate');
+    expect(html).toContain('$2.0000');
+    expect(html).toContain('0.01 SOL');
+    expect(html).toContain('$2.0000 USD');
+    expect(html).toContain('Estimated total');
+    expect(html).toContain('SOL');
+    expect(html).not.toContain('Solana (SOL)');
   });
 
   it('preview phase renders one row per line item, total, USD subtitle and the confirm button', () => {
@@ -485,6 +582,44 @@ describe('handleAction (state-only paths)', () => {
     const state = __getPanelStateForTests();
     expect(state.phase).toBe('compose');
     expect(state.cartText).toBe('kept');
+  });
+
+  it('add-line-item appends a blank line item to the draft', async () => {
+    __resetPanelStateForTests({
+      draft: {
+        merchantName: 'Acme Coffee',
+        recipient: TEST_WALLET,
+        paymentToken: 'USDC',
+        paymentAmount: '',
+        memo: '',
+        lineItems: [{ name: 'Latte', quantity: '1', unitAmount: '6.00' }],
+        solPriceStatus: 'idle',
+      },
+    });
+
+    await handleAction('add-line-item');
+
+    const state = __getPanelStateForTests();
+    expect(state.draft?.lineItems).toHaveLength(2);
+    expect(state.draft?.lineItems[1]).toEqual({ name: '', quantity: '1', unitAmount: '' });
+  });
+
+  it('remove-line-item removes the requested row and leaves one blank row when empty', async () => {
+    __resetPanelStateForTests({
+      draft: {
+        merchantName: 'Acme Coffee',
+        recipient: TEST_WALLET,
+        paymentToken: 'USDC',
+        paymentAmount: '',
+        memo: '',
+        lineItems: [{ name: 'Latte', quantity: '1', unitAmount: '6.00' }],
+        solPriceStatus: 'idle',
+      },
+    });
+
+    await handleAction('remove-line-item:0');
+
+    expect(__getPanelStateForTests().draft?.lineItems).toEqual([{ name: '', quantity: '1', unitAmount: '' }]);
   });
 });
 

@@ -6,12 +6,13 @@
   "license": "Apache-2.0",
   "type": "module",
   "scripts": {
-    "build": "pnpm -F @solana-agent-wallet-adapter/core build && pnpm -F @solana-agent-wallet-adapter/ios-link build && pnpm -F @solana-agent-wallet-adapter/wallet-standard-web build && pnpm -F @solana-agent-wallet-adapter/mwa-mobile-web build && pnpm -F @solana-agent-wallet-adapter/acp-adapter build && pnpm -F @solana-agent-wallet-adapter/workflow build && pnpm -F @solana-agent-wallet-adapter/skills-runtime build && pnpm -F @solana-agent-wallet-adapter/launch-skills build && vite build",
-    "dev": "pnpm -F @solana-agent-wallet-adapter/acp-adapter build && pnpm -F @solana-agent-wallet-adapter/workflow build && pnpm -F @solana-agent-wallet-adapter/skills-runtime build && pnpm -F @solana-agent-wallet-adapter/launch-skills build && vite --host 127.0.0.1",
+    "build": "pnpm -F @solana-agent-wallet-adapter/core build && pnpm -F @solana-agent-wallet-adapter/ios-link build && pnpm -F @solana-agent-wallet-adapter/wallet-standard-web build && pnpm -F @solana-agent-wallet-adapter/mwa-mobile-web build && pnpm -F @solana-agent-wallet-adapter/a2a-agent-card build && pnpm -F @solana-agent-wallet-adapter/acp-adapter build && pnpm -F @solana-agent-wallet-adapter/workflow build && pnpm -F @solana-agent-wallet-adapter/skills-runtime build && pnpm -F @solana-agent-wallet-adapter/launch-skills build && vite build",
+    "dev": "pnpm -F @solana-agent-wallet-adapter/a2a-agent-card build && pnpm -F @solana-agent-wallet-adapter/acp-adapter build && pnpm -F @solana-agent-wallet-adapter/workflow build && pnpm -F @solana-agent-wallet-adapter/skills-runtime build && pnpm -F @solana-agent-wallet-adapter/launch-skills build && vite --host 127.0.0.1",
     "test": "vitest run",
-    "typecheck": "pnpm -F @solana-agent-wallet-adapter/core build && pnpm -F @solana-agent-wallet-adapter/ios-link build && pnpm -F @solana-agent-wallet-adapter/wallet-standard-web build && pnpm -F @solana-agent-wallet-adapter/mwa-mobile-web build && pnpm -F @solana-agent-wallet-adapter/acp-adapter build && pnpm -F @solana-agent-wallet-adapter/workflow build && pnpm -F @solana-agent-wallet-adapter/skills-runtime build && pnpm -F @solana-agent-wallet-adapter/launch-skills build && tsc -p tsconfig.json --noEmit"
+    "typecheck": "pnpm -F @solana-agent-wallet-adapter/core build && pnpm -F @solana-agent-wallet-adapter/ios-link build && pnpm -F @solana-agent-wallet-adapter/wallet-standard-web build && pnpm -F @solana-agent-wallet-adapter/mwa-mobile-web build && pnpm -F @solana-agent-wallet-adapter/a2a-agent-card build && pnpm -F @solana-agent-wallet-adapter/acp-adapter build && pnpm -F @solana-agent-wallet-adapter/workflow build && pnpm -F @solana-agent-wallet-adapter/skills-runtime build && pnpm -F @solana-agent-wallet-adapter/launch-skills build && tsc -p tsconfig.json --noEmit"
   },
   "dependencies": {
+    "@solana-agent-wallet-adapter/a2a-agent-card": "workspace:*",
     "@solana-agent-wallet-adapter/acp-adapter": "workspace:*",
     "@solana-agent-wallet-adapter/core": "workspace:*",
     "@solana-agent-wallet-adapter/ios-link": "workspace:*",

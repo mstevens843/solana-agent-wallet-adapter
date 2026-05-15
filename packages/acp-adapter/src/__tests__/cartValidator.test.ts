@@ -171,6 +171,16 @@ describe('validateAcpCart', () => {
     validationError(() => validateAcpCart(cart), 'invalid_amount');
   });
 
+  it('accepts leading-dot decimal amounts as cents', () => {
+    const cart = mainnetUsdcCart({
+      lineItems: [{ id: 'li', name: 'quarter', quantity: 1, unitAmount: '.25', currency: 'USD' }],
+      totalAmount: '.25',
+    });
+    const result = validateAcpCart(cart);
+    expect(result.totalFiat).toBe(0.25);
+    expect(result.transferAmount).toBe('.25');
+  });
+
   it('uses MERCHANT_RECIPIENT_MAINNET in the happy-path cart (sanity)', () => {
     const result = validateAcpCart(mainnetUsdcCart());
     expect(result.cart.merchant.recipient).toBe(MERCHANT_RECIPIENT_MAINNET);

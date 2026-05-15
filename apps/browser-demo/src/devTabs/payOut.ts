@@ -180,6 +180,37 @@ function formatMoney(value: number): string {
   return Number.isFinite(value) ? value.toFixed(2) : '0.00';
 }
 
+function formatUsdAmountString(value: number): string {
+  if (!Number.isFinite(value) || value <= 0) return '0.00';
+  const decimals = value >= 1 ? 2 : 6;
+  const formatted = value.toFixed(decimals).replace(/0+$/, '').replace(/\.$/, '');
+  return formatted === '0' ? '0.00' : formatted;
+}
+
+function normalizeDecimalInput(value: string): string {
+  const trimmed = value.trim();
+  return trimmed.startsWith('.') ? `0${trimmed}` : trimmed;
+}
+
+function formatTokenAmount(value: number): string {
+  if (!Number.isFinite(value) || value <= 0) return '0.00';
+  const trimmed = value.toFixed(6).replace(/0+$/, '').replace(/\.$/, '');
+  const [whole, fraction = ''] = trimmed.split('.');
+  if (!fraction) return `${whole}.00`;
+  if (fraction.length === 1) return `${whole}.${fraction}0`;
+  return trimmed;
+}
+
+function formatUsdDisplay(value: number): string {
+  if (!Number.isFinite(value)) return 'USD unavailable';
+  return new Intl.NumberFormat('en-US', {
+    style: 'currency',
+    currency: 'USD',
+    minimumFractionDigits: value >= 10 ? 2 : 4,
+    maximumFractionDigits: value >= 10 ? 2 : 4,
+  }).format(value);
+}
+
 interface PayOutLineDraft {
   name: string;
   quantity: string;
@@ -260,8 +291,8 @@ function cartDraftFromText(cartText: string): PayOutDraft {
 
 function draftTotal(draft: PayOutDraft): number {
   return draft.lineItems.reduce((sum, item) => {
-    const quantity = Number(item.quantity || '0');
-    const unitAmount = Number(item.unitAmount || '0');
+    const quantity = Number(normalizeDecimalInput(item.quantity || '0'));
+    const unitAmount = Number(normalizeDecimalInput(item.unitAmount || '0'));
     return Number.isFinite(quantity) && Number.isFinite(unitAmount) ? sum + quantity * unitAmount : sum;
   }, 0);
 }
@@ -271,11 +302,11 @@ function buildCartTextFromDraft(draft: PayOutDraft): string {
   if (!merchantName) throw new Error('Merchant name is required.');
   const recipient = draft.recipient.trim();
   if (!recipient) throw new Error('Recipient wallet is required.');
-  const paymentToken = draft.paymentToken.trim().toUpperCase() || 'USDC';
+  const paymentToken = normalizePaymentToken(draft.paymentToken);
   const lineItems = draft.lineItems.flatMap((item, index) => {
     const name = item.name.trim();
-    const quantityText = item.quantity.trim();
-    const unitAmount = item.unitAmount.trim();
+    const quantityText = normalizeDecimalInput(item.quantity);
+    const unitAmount = normalizeDecimalInput(item.unitAmount);
     if (!name && !quantityText && !unitAmount) return [];
     if (!name) throw new Error(`Line item ${index + 1} needs a name.`);
     if (!quantityText) throw new Error(`Line item ${index + 1} needs a quantity.`);
@@ -296,7 +327,23 @@ function buildCartTextFromDraft(draft: PayOutDraft): string {
     }];
   });
   if (lineItems.length === 0) throw new Error('Add at least one line item.');
-  const total = lineItems.reduce((sum, item) => sum + Number(item.unitAmount) * Number(item.quantity), 0);
+  const tokenTotal = lineItems.reduce((sum, item) => sum + Number(item.unitAmount) * Number(item.quantity), 0);
+  let cartLineItems = lineItems;
+  let totalAmount = formatMoney(tokenTotal);
+  let solPaymentAmount = '';
+  if (paymentToken === 'SOL') {
+    const price = draft.solUsdPerToken;
+    if (typeof price !== 'number' || !Number.isFinite(price) || price <= 0) {
+      throw new Error('SOL price is unavailable. Wait for the USD estimate before review.');
+    }
+    solPaymentAmount = formatTokenAmount(tokenTotal);
+    cartLineItems = lineItems.map((item) => ({
+      ...item,
+      unitAmount: formatUsdAmountString(Number(item.unitAmount) * price),
+    }));
+    const totalUsd = cartLineItems.reduce((sum, item) => sum + Number(item.unitAmount) * Number(item.quantity), 0);
+    totalAmount = formatUsdAmountString(totalUsd);
+  }
   const cart = {
     id: `cart_${Date.now().toString(36)}`,
     cartVersion: '1',
@@ -305,14 +352,37 @@ function buildCartTextFromDraft(draft: PayOutDraft): string {
       name: merchantName,
       recipient,
     },
-    lineItems,
-    totalAmount: formatMoney(total),
+    lineItems: cartLineItems,
+    totalAmount,
     currency: 'USD',
     paymentToken,
+    ...(solPaymentAmount ? { paymentAmount: solPaymentAmount } : {}),
     cluster: DEFAULT_ACP_CLUSTER,
     ...(draft.memo.trim() ? { memo: draft.memo.trim() } : {}),
+    ...(paymentToken === 'SOL'
+      ? {
+          metadata: {
+            solUsdPerToken: String(draft.solUsdPerToken),
+            solUsdEstimate: totalAmount,
+            priceSource: draft.solPriceSource ?? 'pyth',
+            priceCheckedAt: draft.solPriceCheckedAt ?? new Date().toISOString(),
+          },
+        }
+      : {}),
   };
   return JSON.stringify(cart, null, 2);
+}
+
+function estimatedUsdForSolAmount(draft: PayOutDraft, solAmount: number): string {
+  if (draft.paymentToken !== 'SOL' || solAmount <= 0) return '';
+  const price = draft.solUsdPerToken;
+  if (typeof price !== 'number' || !Number.isFinite(price) || price <= 0) return '';
+  return formatUsdDisplay(solAmount * price);
+}
+
+function estimatedSolAmount(draft: PayOutDraft, total = draftTotal(draft)): string {
+  if (draft.paymentToken !== 'SOL' || total <= 0) return '';
+  return formatTokenAmount(total);
 }
 
 function formatFiat(value: unknown): string {
@@ -368,12 +438,13 @@ export function normalizePreview(input: unknown): AcpPreviewDisplay {
   const cartId = isStringField(cartRec.id) ? cartRec.id : '';
   const cartVersion = isStringField(cartRec.cartVersion) ? cartRec.cartVersion : '1';
   const totalAmount = isStringField(cartRec.totalAmount) ? cartRec.totalAmount : '';
+  const paymentAmount = isStringField(cartRec.paymentAmount) ? cartRec.paymentAmount : '';
   const paymentToken = isStringField(cartRec.paymentToken) ? cartRec.paymentToken : 'USDC';
   const cluster = isStringField(cartRec.cluster) ? cartRec.cluster : 'mainnet-beta';
   const memo = isStringField(cartRec.memo) ? cartRec.memo : undefined;
   const resolvedTokenMint = isStringField(env.resolvedTokenMint) ? env.resolvedTokenMint : '';
   const transferRecipient = isStringField(transferRec.recipient) ? transferRec.recipient : merchantRecipient;
-  const transferAmount = isStringField(transferRec.amount) ? transferRec.amount : totalAmount;
+  const transferAmount = isStringField(transferRec.amount) ? transferRec.amount : paymentAmount || totalAmount;
 
   if (!totalAmount || !transferRecipient) {
     throw new Error('Cart preview is missing totalAmount or transfer.recipient.');
@@ -442,6 +513,10 @@ function parseLocalLineItems(value: unknown): { items: JsonRecord[]; computedTot
 
 function resolveLocalTokenMint(cart: JsonRecord, cluster: string, paymentToken: string): string {
   const explicitMint = optionalString(cart, 'paymentTokenMint');
+  if (paymentToken === 'SOL') {
+    if (explicitMint) throw new Error('SOL payments use native SOL and cannot set paymentTokenMint.');
+    return SOL_MINT_KEY;
+  }
   const defaultMint = LOCAL_TOKEN_MINTS[cluster]?.[paymentToken];
   if (explicitMint) {
     if (!SOLANA_ADDRESS_REGEX.test(explicitMint)) {
@@ -482,11 +557,26 @@ function buildLocalPreviewEnvelope(cartInput: unknown): JsonRecord {
   const currency = requiredString(cartInput, 'currency', 'Currency');
   if (currency !== 'USD') throw new Error('Only USD payment requests are supported in this preview.');
   const paymentToken = requiredString(cartInput, 'paymentToken', 'Payment token');
-  if (paymentToken !== 'USDC' && paymentToken !== 'USDT') {
-    throw new Error('Payment token must be USDC or USDT.');
+  if (paymentToken !== 'USDC' && paymentToken !== 'USDT' && paymentToken !== 'SOL') {
+    throw new Error('Payment token must be USDC, USDT, or SOL.');
   }
   const cluster = normalizeAcpCluster(requiredString(cartInput, 'cluster', 'Cluster'));
   const resolvedTokenMint = resolveLocalTokenMint(cartInput, cluster, paymentToken);
+  const paymentAmount = optionalString(cartInput, 'paymentAmount');
+  let transferAmount = totalAmount;
+  if (paymentToken === 'SOL') {
+    if (!paymentAmount) throw new Error('SOL payment requests must include paymentAmount.');
+    if (!DECIMAL_AMOUNT_REGEX.test(paymentAmount)) throw new Error('SOL paymentAmount must be a decimal string.');
+    const solAmount = Number(paymentAmount);
+    if (!Number.isFinite(solAmount) || solAmount <= 0) throw new Error('SOL paymentAmount must be greater than zero.');
+    transferAmount = normalizeDecimalInput(paymentAmount);
+  } else if (paymentAmount) {
+    if (!DECIMAL_AMOUNT_REGEX.test(paymentAmount)) throw new Error('paymentAmount must be a decimal string.');
+    if (Math.abs(Number(paymentAmount) - total) > LOCAL_TOTAL_TOLERANCE) {
+      throw new Error('Stablecoin paymentAmount must match totalAmount.');
+    }
+    transferAmount = normalizeDecimalInput(paymentAmount);
+  }
   const expiresAt = optionalString(cartInput, 'expiresAt');
   if (expiresAt) {
     const expiresMs = Date.parse(expiresAt);
@@ -504,6 +594,7 @@ function buildLocalPreviewEnvelope(cartInput: unknown): JsonRecord {
     totalAmount,
     currency,
     paymentToken,
+    ...(paymentAmount ? { paymentAmount: transferAmount } : {}),
     ...(paymentTokenMint ? { paymentTokenMint } : {}),
     cluster,
     ...(expiresAt ? { expiresAt } : {}),
@@ -515,7 +606,7 @@ function buildLocalPreviewEnvelope(cartInput: unknown): JsonRecord {
     transfer: {
       token: paymentToken,
       recipient,
-      amount: totalAmount,
+      amount: transferAmount,
       note: memo ?? `ACP cart ${cartId}: ${merchantName}`,
     },
     totalFiat: Math.round(total * 100) / 100,
@@ -641,20 +732,21 @@ function entryModeTabs(entryMode: EntryMode): string {
 
 function manualRequestPanel(draft: PayOutDraft, disabled: string): string {
   const total = draftTotal(draft);
-  const lineRows = draft.lineItems.map((item, index) => lineItemDraftRow(item, index, disabled)).join('');
-  const tokenOptions = ['USDC', 'USDT'].map((token) =>
-    `<option value="${token}" ${draft.paymentToken.toUpperCase() === token ? 'selected' : ''}>${token}</option>`,
-  ).join('');
+  const paymentToken = normalizePaymentToken(draft.paymentToken);
+  const lineRows = draft.lineItems.map((item, index) => lineItemDraftRow(item, index, disabled, paymentToken, draft)).join('');
   return `
-    <section class="pay-out-manual-request" data-pay-out-builder role="tabpanel" aria-label="Payment details">
+    <section class="pay-out-manual-request" data-pay-out-builder data-payment-token="${escapeHtml(paymentToken)}" role="tabpanel" aria-label="Payment details">
       <div class="pay-out-builder-head">
         <div>
           <span class="pay-out-request-status">Normal entry</span>
           <h4>Payment details</h4>
         </div>
-        <div class="pay-out-builder-total" aria-label="Current calculated total">
-          <span>Total</span>
-          <strong>${escapeHtml(formatMoney(total))} ${escapeHtml(draft.paymentToken.toUpperCase() || 'USDC')}</strong>
+        <div class="pay-out-builder-side">
+          <button type="button" class="pay-out-button secondary pay-out-builder-add" data-pay-out-action="add-line-item" ${disabled}>Add item</button>
+          <div class="pay-out-builder-total" aria-label="Current calculated total" data-pay-out-builder-total>
+            ${builderTotalLabelHtml(draft, total)}
+            <strong>${escapeHtml(formatDraftPaymentTotal(draft, total))}</strong>
+          </div>
         </div>
       </div>
       <div class="pay-out-field-grid">
@@ -667,8 +759,8 @@ function manualRequestPanel(draft: PayOutDraft, disabled: string): string {
           <input class="pay-out-input" name="recipient" value="${escapeHtml(draft.recipient)}" placeholder="Merchant Solana address" ${disabled}>
         </label>
         <label>
-          <span>Token</span>
-          <select class="pay-out-input" name="paymentToken" ${disabled}>${tokenOptions}</select>
+          <span>Payment token</span>
+          ${tokenPicker(paymentToken, disabled)}
         </label>
         <label>
           <span>Memo</span>
@@ -694,10 +786,83 @@ function manualRequestPanel(draft: PayOutDraft, disabled: string): string {
   `;
 }
 
-function lineItemDraftRow(item: PayOutLineDraft, index: number, disabled: string): string {
-  const row = index + 1;
+function formatDraftPaymentTotal(draft: PayOutDraft, total = draftTotal(draft)): string {
+  if (draft.paymentToken === 'SOL') {
+    return `${estimatedSolAmount(draft, total) || '0.00'} SOL`;
+  }
+  return `${formatMoney(total)} ${draft.paymentToken}`;
+}
+
+function builderTotalLabelHtml(draft: PayOutDraft, total = draftTotal(draft)): string {
+  if (draft.paymentToken === 'SOL') {
+    const usd = estimatedUsdForSolAmount(draft, total);
+    return `<span><em>${escapeHtml(usd ? `${usd} USD` : 'USD estimate')}</em><b>Estimated total</b></span>`;
+  }
+  return '<span>Total</span>';
+}
+
+function tokenPicker(selectedToken: PayOutPaymentToken, disabled: string): string {
+  const option = (token: PayOutPaymentToken): string => {
+    const selected = token === selectedToken;
+    return `
+      <button
+        class="template-picker-option select-picker-option ${selected ? 'selected active' : ''}"
+        type="button"
+        role="option"
+        aria-selected="${selected ? 'true' : 'false'}"
+        data-pay-out-token-option="${escapeHtml(token)}"
+        data-select-picker-option="${escapeHtml(token)}"
+        data-select-picker-label="${escapeHtml(token)}"
+        tabindex="${selected ? '0' : '-1'}"
+      >
+        <span class="select-picker-option-copy">
+          <strong>${escapeHtml(token)}</strong>
+        </span>
+      </button>
+    `;
+  };
   return `
-    <div class="pay-out-line-row" data-pay-out-line-item>
+    <div class="select-picker-shell pay-out-token-picker">
+      <input type="hidden" name="paymentToken" value="${escapeHtml(selectedToken)}" data-pay-out-token-value>
+      <div class="template-picker select-picker" data-pay-out-token-picker>
+        <button
+          class="template-picker-trigger select-picker-trigger"
+          type="button"
+          aria-haspopup="listbox"
+          aria-expanded="false"
+          ${disabled}
+          data-pay-out-token-trigger
+        >
+          <span class="template-picker-current">
+            <strong data-select-picker-value>${escapeHtml(selectedToken)}</strong>
+          </span>
+          <span class="template-picker-caret" aria-hidden="true"></span>
+        </button>
+        <div class="template-picker-menu select-picker-menu" role="listbox" hidden>
+          <div class="template-picker-group select-picker-group">
+            ${PAYMENT_TOKEN_OPTIONS.map(option).join('')}
+          </div>
+        </div>
+      </div>
+    </div>
+  `;
+}
+
+function lineItemSolEstimateText(item: PayOutLineDraft, draft: PayOutDraft): string {
+  if (draft.paymentToken !== 'SOL') return '';
+  const unitAmount = Number(normalizeDecimalInput(item.unitAmount || '0'));
+  if (!Number.isFinite(unitAmount) || unitAmount <= 0) return 'USD estimate';
+  if (draft.solPriceStatus === 'loading') return 'Estimating...';
+  return estimatedUsdForSolAmount(draft, unitAmount) || 'Price needed';
+}
+
+function lineItemDraftRow(item: PayOutLineDraft, index: number, disabled: string, paymentToken: PayOutPaymentToken, draft: PayOutDraft): string {
+  const row = index + 1;
+  const unitAmountInput = `
+    <input class="pay-out-input ${paymentToken === 'SOL' ? 'pay-out-input-inline' : ''}" name="lineUnitAmount" inputmode="decimal" value="${escapeHtml(item.unitAmount)}" placeholder="0.00" ${disabled}>
+  `;
+  return `
+    <div class="pay-out-line-row" data-pay-out-line-item data-pay-out-line-index="${index}">
       <label>
         <span>Item ${row}</span>
         <input class="pay-out-input" name="lineName" value="${escapeHtml(item.name)}" placeholder="${row === 1 ? 'Latte' : 'Optional item'}" ${disabled}>
@@ -708,8 +873,11 @@ function lineItemDraftRow(item: PayOutLineDraft, index: number, disabled: string
       </label>
       <label>
         <span>Unit amount</span>
-        <input class="pay-out-input" name="lineUnitAmount" inputmode="decimal" value="${escapeHtml(item.unitAmount)}" placeholder="0.00" ${disabled}>
+        ${paymentToken === 'SOL'
+          ? `<span class="pay-out-amount-field">${unitAmountInput}<em data-pay-out-line-estimate>${escapeHtml(lineItemSolEstimateText(item, draft))}</em></span>`
+          : unitAmountInput}
       </label>
+      <button type="button" class="pay-out-button secondary pay-out-line-remove" data-pay-out-action="remove-line-item:${index}" aria-label="Remove line item ${row}" ${disabled}>Remove</button>
     </div>
   `;
 }
@@ -778,6 +946,7 @@ function demoRequestPanel(disabled: string): string {
 
 function previewView(preview: AcpPreviewDisplay, busy: boolean): string {
   const disabled = busy ? 'disabled' : '';
+  const paymentLabel = `${preview.transferAmount} ${preview.paymentToken}`;
   const totalFiat = preview.totalFiat ? `<span>${escapeHtml(preview.totalFiat)}</span>` : '';
   const lineRows = preview.lineItems
     .map(
@@ -792,7 +961,9 @@ function previewView(preview: AcpPreviewDisplay, busy: boolean): string {
     )
     .join('');
 
-  const mintHint = preview.resolvedTokenMint
+  const mintHint = preview.resolvedTokenMint === SOL_MINT_KEY
+    ? '<span class="muted">(native)</span>'
+    : preview.resolvedTokenMint
     ? `<span class="muted" title="${escapeHtml(preview.resolvedTokenMint)}">(${escapeHtml(shortAddress(preview.resolvedTokenMint))})</span>`
     : '';
   const fiatHint = preview.totalFiat
@@ -820,8 +991,8 @@ function previewView(preview: AcpPreviewDisplay, busy: boolean): string {
             <strong>${escapeHtml(preview.merchant.name)}</strong>
           </div>
           <div class="pay-out-preview-total">
-            <span>Total</span>
-            <strong>${escapeHtml(preview.totalAmount)} ${escapeHtml(preview.paymentToken)}</strong>
+            <span>Payment</span>
+            <strong>${escapeHtml(paymentLabel)}</strong>
             ${totalFiat}
           </div>
         </div>
@@ -850,9 +1021,9 @@ function previewView(preview: AcpPreviewDisplay, busy: boolean): string {
         </table>
 
         <div class="pay-out-total">
-          <span class="label">Total</span>
+          <span class="label">Payment</span>
           <span>
-            <span aria-hidden="true">${escapeHtml(preview.paymentToken)} </span>${escapeHtml(preview.totalAmount)}
+            <span aria-hidden="true">${escapeHtml(preview.paymentToken)} </span>${escapeHtml(preview.transferAmount)}
             ${fiatHint}
           </span>
         </div>
@@ -1009,7 +1180,8 @@ function cartRecordForLocalApproval(cart: unknown, preview: AcpPreviewDisplay): 
     totalAmount: preview.totalAmount,
     currency: 'USD',
     paymentToken: preview.paymentToken,
-    ...(preview.resolvedTokenMint ? { paymentTokenMint: preview.resolvedTokenMint } : {}),
+    ...(preview.paymentToken === 'SOL' ? { paymentAmount: preview.transferAmount } : {}),
+    ...(preview.resolvedTokenMint && preview.paymentToken !== 'SOL' ? { paymentTokenMint: preview.resolvedTokenMint } : {}),
     cluster: preview.cluster,
     ...(preview.memo ? { memo: preview.memo } : {}),
   };
@@ -1027,19 +1199,26 @@ export function approveCartLocally(cart: unknown, preview: AcpPreviewDisplay): F
   const dueAt = optionalString(cartRecord, 'expiresAt') ?? now;
   const merchant = isObjectRecord(cartRecord.merchant) ? cartRecord.merchant : preview.merchant;
   const approvalId = randomLocalApprovalId();
-  const params: JsonRecord = {
-    recipient: preview.recipient,
-    token: preview.paymentToken,
-    amount: preview.transferAmount,
-    ...(preview.resolvedTokenMint ? { tokenMint: preview.resolvedTokenMint } : {}),
-    ...(preview.memo ? { memo: preview.memo } : {}),
-  };
+  const isSolPayment = preview.paymentToken === 'SOL';
+  const params: JsonRecord = isSolPayment
+    ? {
+        recipient: preview.recipient,
+        amountSol: preview.transferAmount,
+        ...(preview.memo ? { memo: preview.memo } : {}),
+      }
+    : {
+        recipient: preview.recipient,
+        token: preview.paymentToken,
+        amount: preview.transferAmount,
+        ...(preview.resolvedTokenMint ? { tokenMint: preview.resolvedTokenMint } : {}),
+        ...(preview.memo ? { memo: preview.memo } : {}),
+      };
   const approval: JsonRecord = {
     id: approvalId,
     walletAddress,
-    kind: 'transfer_spl',
+    kind: isSolPayment ? 'transfer_sol' : 'transfer_spl',
     status: 'ready',
-    summary: `ACP: ${preview.merchant.name} - ${preview.totalAmount} ${preview.paymentToken}`,
+    summary: `ACP: ${preview.merchant.name} - ${preview.transferAmount} ${preview.paymentToken}`,
     params,
     cluster: preview.cluster,
     dueAt,
@@ -1056,6 +1235,7 @@ export function approveCartLocally(cart: unknown, preview: AcpPreviewDisplay): F
       acpCart: cartRecord,
       merchant,
       totalAmount: preview.totalAmount,
+      paymentAmount: preview.transferAmount,
       paymentToken: preview.paymentToken,
       resolvedTokenMint: preview.resolvedTokenMint,
       acpCluster: preview.cluster,
@@ -1133,10 +1313,15 @@ function readCartTextarea(): string {
   return textarea ? textarea.value : panelState.cartText;
 }
 
-function readBuilderCartText(): string {
-  if (typeof document === 'undefined') return panelState.cartText;
+async function readBuilderCartText(): Promise<string> {
+  if (typeof document === 'undefined') {
+    if (!panelState.draft) return panelState.cartText;
+    await ensureSolPriceForDraft(panelState.draft);
+    return buildCartTextFromDraft(panelState.draft);
+  }
   const draft = readBuilderDraftFromDom();
   if (!draft) return panelState.cartText;
+  await ensureSolPriceForDraft(draft);
   panelState.draft = draft;
   return buildCartTextFromDraft(draft);
 }
@@ -1155,10 +1340,90 @@ function readBuilderDraftFromDom(): PayOutDraft | null {
   return {
     merchantName: input('merchantName'),
     recipient: input('recipient'),
-    paymentToken: input('paymentToken'),
+    paymentToken: normalizePaymentToken(input('paymentToken')),
+    paymentAmount: input('paymentAmount'),
     memo: input('memo'),
     lineItems,
+    solPriceStatus: panelState.draft?.solPriceStatus ?? 'idle',
+    ...(panelState.draft?.solUsdPerToken !== undefined ? { solUsdPerToken: panelState.draft.solUsdPerToken } : {}),
+    ...(panelState.draft?.solPriceSource !== undefined ? { solPriceSource: panelState.draft.solPriceSource } : {}),
+    ...(panelState.draft?.solPriceCheckedAt !== undefined ? { solPriceCheckedAt: panelState.draft.solPriceCheckedAt } : {}),
+    ...(panelState.draft?.solPriceError !== undefined ? { solPriceError: panelState.draft.solPriceError } : {}),
   };
+}
+
+let solPriceRequestId = 0;
+
+function applySolPriceSnapshot(draft: PayOutDraft, snapshot: PriceUsdSnapshot): void {
+  draft.solPriceStatus = 'ready';
+  draft.solUsdPerToken = snapshot.usdPerToken;
+  draft.solPriceSource = snapshot.source;
+  draft.solPriceCheckedAt = snapshot.checkedAt;
+  draft.solPriceError = undefined;
+}
+
+async function ensureSolPriceForDraft(draft: PayOutDraft): Promise<void> {
+  if (draft.paymentToken !== 'SOL') return;
+  if (typeof draft.solUsdPerToken === 'number' && Number.isFinite(draft.solUsdPerToken)) {
+    draft.solPriceStatus = 'ready';
+    return;
+  }
+  draft.solPriceStatus = 'loading';
+  const snapshot = await getUsdPriceForMint(SOL_MINT_KEY);
+  if (!snapshot || !Number.isFinite(snapshot.usdPerToken)) {
+    draft.solPriceStatus = 'error';
+    draft.solPriceError = 'SOL price is unavailable. Try again when the USD estimate loads.';
+    throw new Error(draft.solPriceError);
+  }
+  applySolPriceSnapshot(draft, snapshot);
+}
+
+async function refreshSolPriceForVisibleDraft(): Promise<void> {
+  const draft = readBuilderDraftFromDom();
+  if (!draft || draft.paymentToken !== 'SOL') return;
+  const requestId = ++solPriceRequestId;
+  draft.solPriceStatus = 'loading';
+  panelState.draft = draft;
+  updateBuilderDerivedUi();
+  const snapshot = await getUsdPriceForMint(SOL_MINT_KEY);
+  if (requestId !== solPriceRequestId) return;
+  const latest = readBuilderDraftFromDom() ?? draft;
+  if (latest.paymentToken !== 'SOL') {
+    panelState.draft = latest;
+    updateBuilderDerivedUi();
+    return;
+  }
+  if (snapshot && Number.isFinite(snapshot.usdPerToken)) {
+    applySolPriceSnapshot(latest, snapshot);
+  } else {
+    latest.solPriceStatus = 'error';
+    latest.solPriceError = 'SOL price is unavailable. Review is blocked until the estimate loads.';
+  }
+  panelState.draft = latest;
+  updateBuilderDerivedUi();
+}
+
+function updateBuilderDerivedUi(): void {
+  if (typeof document === 'undefined') return;
+  const root = document.querySelector<HTMLElement>('[data-pay-out-builder]');
+  if (!root || !panelState.draft) return;
+  root.dataset.paymentToken = panelState.draft.paymentToken;
+  const total = root.querySelector<HTMLElement>('[data-pay-out-builder-total] strong');
+  if (total) total.textContent = formatDraftPaymentTotal(panelState.draft);
+  const label = root.querySelector<HTMLElement>('[data-pay-out-builder-total] > span');
+  if (label) label.outerHTML = builderTotalLabelHtml(panelState.draft);
+  const lineRows = Array.from(root.querySelectorAll<HTMLElement>('[data-pay-out-line-item]'));
+  const staleLineMarkup = panelState.draft.paymentToken === 'SOL'
+    ? lineRows.some((row) => !row.querySelector('[data-pay-out-line-estimate]'))
+    : lineRows.some((row) => row.querySelector('[data-pay-out-line-estimate]'));
+  if (staleLineMarkup) {
+    rerenderPanelOnly();
+    return;
+  }
+  for (const [index, row] of lineRows.entries()) {
+    const estimate = row.querySelector<HTMLElement>('[data-pay-out-line-estimate]');
+    if (estimate) estimate.textContent = lineItemSolEstimateText(panelState.draft.lineItems[index] ?? emptyLineDraft(), panelState.draft);
+  }
 }
 
 async function pasteRequestFromClipboard(): Promise<void> {
@@ -1194,7 +1459,35 @@ function rememberBuilderDraft(): void {
   if (draft) panelState.draft = draft;
 }
 
+function mutableBuilderDraft(): PayOutDraft {
+  const draft = readBuilderDraftFromDom() ?? panelState.draft ?? cartDraftFromText(panelState.cartText);
+  panelState.draft = draft;
+  return draft;
+}
+
+function addLineItem(): void {
+  const draft = mutableBuilderDraft();
+  draft.lineItems = [...draft.lineItems, emptyLineDraft()];
+  panelState.phase = 'compose';
+  panelState.entryMode = 'details';
+  rerenderPanelOnly();
+}
+
+function removeLineItem(index: number): void {
+  if (!Number.isInteger(index) || index < 0) return;
+  const draft = mutableBuilderDraft();
+  draft.lineItems = draft.lineItems.filter((_, itemIndex) => itemIndex !== index);
+  if (draft.lineItems.length === 0) draft.lineItems = [emptyLineDraft()];
+  panelState.phase = 'compose';
+  panelState.entryMode = 'details';
+  rerenderPanelOnly();
+}
+
 export async function handleAction(action: string): Promise<void> {
+  if (action.startsWith('remove-line-item:')) {
+    removeLineItem(Number(action.slice('remove-line-item:'.length)));
+    return;
+  }
   switch (action) {
     case 'entry-details':
       rememberBuilderDraft();
@@ -1246,6 +1539,9 @@ export async function handleAction(action: string): Promise<void> {
     case 'paste-clipboard':
       await pasteRequestFromClipboard();
       return;
+    case 'add-line-item':
+      addLineItem();
+      return;
     case 'preview':
       await runPreview('form');
       return;
@@ -1266,7 +1562,7 @@ async function runPreview(source: 'form' | 'json'): Promise<void> {
   panelState.notice = null;
   let parsed: unknown;
   try {
-    panelState.cartText = source === 'json' ? readCartTextarea() : readBuilderCartText();
+    panelState.cartText = source === 'json' ? readCartTextarea() : await readBuilderCartText();
     if (source === 'json') panelState.draft = null;
     parsed = parseCartText(panelState.cartText);
   } catch (err) {
@@ -1356,15 +1652,117 @@ function safeJsonParse(text: string): unknown {
   }
 }
 
+function closeTokenPickers(except?: HTMLElement): void {
+  if (typeof document === 'undefined') return;
+  for (const picker of document.querySelectorAll<HTMLElement>('[data-pay-out-token-picker]')) {
+    if (except && picker === except) continue;
+    picker.classList.remove('open');
+    const trigger = picker.querySelector<HTMLElement>('[data-pay-out-token-trigger]');
+    const menu = picker.querySelector<HTMLElement>('.select-picker-menu');
+    trigger?.setAttribute('aria-expanded', 'false');
+    if (menu) menu.hidden = true;
+  }
+}
+
+function chooseTokenOption(option: HTMLElement): void {
+  const token = normalizePaymentToken(option.dataset.payOutTokenOption);
+  const picker = option.closest<HTMLElement>('[data-pay-out-token-picker]');
+  const shell = picker?.closest<HTMLElement>('.select-picker-shell');
+  const root = picker?.closest<HTMLElement>('[data-pay-out-builder]');
+  const hidden = shell?.querySelector<HTMLInputElement>('[data-pay-out-token-value]');
+  if (!picker || !hidden || !root) return;
+  const previousDraft = panelState.draft;
+  hidden.value = token;
+  const valueNode = picker.querySelector<HTMLElement>('[data-select-picker-value]');
+  if (valueNode) valueNode.textContent = token;
+  for (const item of picker.querySelectorAll<HTMLElement>('[data-pay-out-token-option]')) {
+    const selected = item === option;
+    item.classList.toggle('selected', selected);
+    item.classList.toggle('active', selected);
+    item.setAttribute('aria-selected', selected ? 'true' : 'false');
+    item.tabIndex = selected ? 0 : -1;
+  }
+  closeTokenPickers();
+  const draft = readBuilderDraftFromDom();
+  if (draft) {
+    if (previousDraft) {
+      draft.solPriceStatus = previousDraft.solPriceStatus;
+      if (previousDraft.solUsdPerToken !== undefined) draft.solUsdPerToken = previousDraft.solUsdPerToken;
+      if (previousDraft.solPriceSource !== undefined) draft.solPriceSource = previousDraft.solPriceSource;
+      if (previousDraft.solPriceCheckedAt !== undefined) draft.solPriceCheckedAt = previousDraft.solPriceCheckedAt;
+      if (previousDraft.solPriceError !== undefined) draft.solPriceError = previousDraft.solPriceError;
+    }
+    panelState.draft = draft;
+    panelState.phase = 'compose';
+    panelState.entryMode = 'details';
+    rerenderPanelOnly();
+    if (token === 'SOL') void refreshSolPriceForVisibleDraft();
+  }
+}
+
+function handleTokenPickerClick(target: HTMLElement): boolean {
+  const option = target.closest<HTMLElement>('[data-pay-out-token-option]');
+  if (option) {
+    chooseTokenOption(option);
+    return true;
+  }
+  const trigger = target.closest<HTMLElement>('[data-pay-out-token-trigger]');
+  if (trigger) {
+    const picker = trigger.closest<HTMLElement>('[data-pay-out-token-picker]');
+    if (!picker) return true;
+    const menu = picker.querySelector<HTMLElement>('.select-picker-menu');
+    const open = !picker.classList.contains('open');
+    closeTokenPickers(open ? picker : undefined);
+    picker.classList.toggle('open', open);
+    trigger.setAttribute('aria-expanded', open ? 'true' : 'false');
+    if (menu) menu.hidden = !open;
+    return true;
+  }
+  return false;
+}
+
+function handleBuilderInput(target: HTMLElement): void {
+  const root = target.closest<HTMLElement>('[data-pay-out-builder]');
+  if (!root) return;
+  const draft = readBuilderDraftFromDom();
+  if (!draft) return;
+  panelState.draft = draft;
+  updateBuilderDerivedUi();
+  if (
+    draft.paymentToken === 'SOL' &&
+    draft.solPriceStatus !== 'loading' &&
+    (typeof draft.solUsdPerToken !== 'number' || !Number.isFinite(draft.solUsdPerToken))
+  ) {
+    void refreshSolPriceForVisibleDraft();
+  }
+}
+
 if (typeof document !== 'undefined') {
   document.addEventListener('click', (event) => {
     const target = event.target as HTMLElement | null;
     if (!target) return;
+    if (handleTokenPickerClick(target)) {
+      event.preventDefault();
+      return;
+    }
     const trigger = target.closest<HTMLElement>('[data-pay-out-action]');
     if (!trigger) return;
     const action = trigger.dataset.payOutAction;
     if (!action) return;
     event.preventDefault();
     void handleAction(action);
+  });
+  document.addEventListener('input', (event) => {
+    const target = event.target as HTMLElement | null;
+    if (target) handleBuilderInput(target);
+  });
+  document.addEventListener('change', (event) => {
+    const target = event.target as HTMLElement | null;
+    if (target) handleBuilderInput(target);
+  });
+  document.addEventListener('pointerdown', (event) => {
+    const target = event.target as HTMLElement | null;
+    if (target?.closest('[data-pay-out-token-picker]')) return;
+    closeTokenPickers();
   });
 }

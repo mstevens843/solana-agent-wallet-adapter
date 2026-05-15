@@ -100,6 +100,7 @@ async function handlePreview(
         cartId: cart.id,
         merchantId: cart.merchant.id,
         totalAmount: cart.totalAmount,
+        paymentAmount: validated.transferAmount,
         paymentToken: cart.paymentToken,
         cluster: cart.cluster,
         receivedAt: requested.receivedAt,
@@ -146,27 +147,29 @@ async function handleApprove(
     const cartJson = cartAsJson(cart);
     const cartHash = hashCart(cart);
 
-    // Materialized as `transfer_spl` — the proper kind for an outbound USDC/USDT
-    // payment. The wallet builds the actual SPL transfer transaction client-side
-    // (the cloud doesn't prepare SPL transfers yet); we record the cart, the
-    // hash, and the cart payload in `metadata` so the "Pay Out" UI and the
-    // receipt route can reconstruct the obligation.
+    const isSolPayment = cart.paymentToken === 'SOL';
+    const approvalKind = isSolPayment ? 'transfer_sol' : 'transfer_spl';
+    const params = isSolPayment
+      ? {
+          recipient: transfer.recipient,
+          amountSol: transfer.amount,
+          ...(cart.memo !== undefined ? { memo: cart.memo } : {}),
+        } satisfies JsonObject
+      : {
+          recipient: transfer.recipient,
+          token: cart.paymentToken,
+          amount: transfer.amount,
+          tokenMint: validated.resolvedTokenMint,
+          ...(cart.memo !== undefined ? { memo: cart.memo } : {}),
+        } satisfies JsonObject;
+
     const approval = await context.workflowService.createApproval(session, {
-      kind: 'transfer_spl',
-      summary: `ACP: ${cart.merchant.name} — ${cart.totalAmount} ${cart.currency}`,
-      // Guardrail-friendly params: top-level recipient/token/amount mirror what
-      // the workflow approval-guardrails expect for transfer_spl. ACP-specific
-      // keys (tokenMint, memo) ride alongside.
-      params: {
-        recipient: transfer.recipient,
-        token: cart.paymentToken,
-        amount: cart.totalAmount,
-        tokenMint: validated.resolvedTokenMint,
-        ...(cart.memo !== undefined ? { memo: cart.memo } : {}),
-      } satisfies JsonObject,
+      kind: approvalKind,
+      summary: `ACP: ${cart.merchant.name} — ${transfer.amount} ${cart.paymentToken}`,
+      params,
       cluster,
       ...(cart.expiresAt !== undefined ? { dueAt: cart.expiresAt } : {}),
-      amount: cart.totalAmount,
+      amount: transfer.amount,
       token: cart.paymentToken,
       recipient: transfer.recipient,
       ...(requested.note !== undefined ? { note: requested.note } : {}),
@@ -178,6 +181,7 @@ async function handleApprove(
         acpCart: cartJson,
         merchant: cartJson.merchant as JsonObject,
         totalAmount: cart.totalAmount,
+        paymentAmount: transfer.amount,
         paymentToken: cart.paymentToken,
         resolvedTokenMint: validated.resolvedTokenMint,
         acpCluster: cart.cluster,
@@ -192,6 +196,7 @@ async function handleApprove(
       cartHash,
       merchantId: cart.merchant.id,
       totalAmount: cart.totalAmount,
+      paymentAmount: transfer.amount,
       paymentToken: cart.paymentToken,
       cluster,
     });
@@ -386,7 +391,7 @@ function buildEvidenceRecord(input: {
     createdAt: nowIso,
     updatedAt: nowIso,
     receiptType: 'acp_outbound',
-    summary: `Paid ${cart.totalAmount} ${cart.currency} to ${cart.merchant.name} via ${cart.paymentToken}.`,
+    summary: `Paid ${cart.paymentAmount ?? cart.totalAmount} ${cart.paymentToken} to ${cart.merchant.name}.`,
     metadata: {
       approvalId,
       cartId: cart.id,

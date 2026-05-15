@@ -24,6 +24,7 @@ if (!existsSync(new URL('../agent-wallet.config.json', import.meta.url))) {
 await assertPortFree(8787, host);
 await assertPortFree(5174, host);
 
+await run('pnpm', ['--filter', '@solana-agent-wallet-adapter/a2a-agent-card', 'build']);
 await run('pnpm', ['--filter', '@solana-agent-wallet-adapter/mcp-server', 'build']);
 
 const bridge = start('bridge', 'node', [

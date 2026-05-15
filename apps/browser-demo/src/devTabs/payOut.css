@@ -267,6 +267,20 @@
   justify-content: space-between;
 }
 
+.pay-out-builder-side {
+  align-items: stretch;
+  display: flex;
+  flex-wrap: nowrap;
+  gap: 10px;
+  justify-content: flex-end;
+}
+
+.pay-out-builder-add {
+  align-self: center;
+  min-height: 38px;
+  white-space: nowrap;
+}
+
 .pay-out-builder-total {
   background: rgba(63, 189, 131, 0.08);
   border: 1px solid rgba(139, 205, 170, 0.18);
@@ -279,10 +293,25 @@
 }
 
 .pay-out-builder-total span {
+  align-items: baseline;
   color: rgba(196, 205, 202, 0.72);
+  display: flex;
+  gap: 8px;
   font-size: 0.72rem;
   font-weight: 850;
+  justify-content: flex-end;
   text-transform: uppercase;
+}
+
+.pay-out-builder-total span b,
+.pay-out-builder-total span em {
+  font: inherit;
+}
+
+.pay-out-builder-total span em {
+  color: rgba(139, 205, 170, 0.92);
+  letter-spacing: 0;
+  text-transform: none;
 }
 
 .pay-out-builder-total strong {
@@ -329,13 +358,37 @@
   box-shadow: 0 0 0 3px rgba(63, 189, 131, 0.12);
 }
 
-select.pay-out-input {
-  background-image: linear-gradient(45deg, transparent 50%, rgba(196, 205, 202, 0.78) 50%),
-    linear-gradient(135deg, rgba(196, 205, 202, 0.78) 50%, transparent 50%);
-  background-position: calc(100% - 17px) 50%, calc(100% - 12px) 50%;
-  background-repeat: no-repeat;
-  background-size: 5px 5px, 5px 5px;
-  padding-right: 34px;
+.pay-out-token-picker {
+  position: relative;
+}
+
+.pay-out-token-picker .template-picker-trigger {
+  min-height: var(--app-control-h, 40px);
+}
+
+.pay-out-token-picker .template-picker-current {
+  display: grid;
+  gap: 3px;
+  min-width: 0;
+}
+
+.pay-out-token-picker .template-picker-category,
+.pay-out-token-picker .select-picker-option-copy > span {
+  color: rgba(196, 205, 202, 0.68);
+  font-size: 0.64rem;
+  font-weight: 900;
+  letter-spacing: var(--app-label-tracking, 0.08em);
+  line-height: 1.1;
+  text-transform: uppercase;
+}
+
+.pay-out-token-picker .select-picker-option {
+  min-height: 56px;
+}
+
+.pay-out-token-picker .select-picker-option-copy {
+  display: grid;
+  gap: 3px;
 }
 
 .pay-out-line-editor {
@@ -356,9 +409,61 @@ select.pay-out-input {
 }
 
 .pay-out-line-row {
+  align-items: end;
   display: grid;
   gap: 8px;
-  grid-template-columns: minmax(180px, 1fr) minmax(86px, 0.25fr) minmax(130px, 0.35fr);
+  grid-template-columns: minmax(180px, 1fr) minmax(86px, 0.22fr) minmax(130px, 0.32fr) auto;
+}
+
+.pay-out-manual-request[data-payment-token="SOL"] .pay-out-line-row {
+  grid-template-columns: minmax(160px, 1fr) minmax(76px, 0.18fr) minmax(250px, 0.52fr) auto;
+}
+
+.pay-out-line-remove {
+  align-self: end;
+  font-size: 0.78rem;
+  justify-self: end;
+  min-height: var(--app-control-h, 40px);
+  padding: 0 10px;
+  width: auto;
+}
+
+.pay-out-amount-field {
+  align-items: center;
+  background: rgba(1, 8, 5, 0.64);
+  border: 1px solid rgba(224, 230, 226, 0.12);
+  border-radius: var(--app-card-radius, var(--radius));
+  box-sizing: border-box;
+  display: grid;
+  gap: 8px;
+  grid-template-columns: minmax(0, 1fr) auto;
+  min-height: var(--app-control-h, 40px);
+  padding-right: 10px;
+}
+
+.pay-out-amount-field:focus-within {
+  border-color: rgba(139, 205, 170, 0.48);
+  box-shadow: 0 0 0 3px rgba(63, 189, 131, 0.12);
+}
+
+.pay-out-input-inline {
+  background: transparent;
+  border: 0;
+  box-shadow: none !important;
+  min-height: calc(var(--app-control-h, 40px) - 2px);
+}
+
+.pay-out-amount-field em {
+  background: rgba(63, 189, 131, 0.1);
+  border: 1px solid rgba(139, 205, 170, 0.18);
+  border-radius: 6px;
+  color: rgba(139, 205, 170, 0.9);
+  font-size: 0.76rem;
+  font-style: normal;
+  font-weight: 850;
+  line-height: 1.2;
+  padding: 4px 6px;
+  white-space: nowrap;
 }
 
 .pay-out-import-request h4,
@@ -921,7 +1026,6 @@ select.pay-out-input {
 @media (max-width: 700px) {
   .pay-out-route-body,
   .pay-out-field-grid,
-  .pay-out-line-row,
   .pay-out-meta,
   .pay-out-request-layout,
   .pay-out-request-mini-grid,
@@ -950,6 +1054,24 @@ select.pay-out-input {
   .pay-out-actions-end,
   .pay-out-button {
     width: 100%;
+  }
+
+  .pay-out-builder-side {
+    justify-content: flex-start;
+  }
+
+  .pay-out-builder-add,
+  .pay-out-line-remove {
+    flex: 0 0 auto;
+    width: auto;
+  }
+
+  .pay-out-line-row {
+    grid-template-columns: minmax(72px, 0.35fr) minmax(120px, 1fr) auto;
+  }
+
+  .pay-out-line-row label:first-child {
+    grid-column: 1 / -1;
   }
 
   .pay-out-cart-input {

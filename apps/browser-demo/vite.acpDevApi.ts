@@ -2,6 +2,12 @@ import { randomUUID } from 'node:crypto';
 import type { IncomingMessage, ServerResponse } from 'node:http';
 
 import {
+  buildAgenticAgentCard,
+  defaultAgenticCapabilities,
+  validateAgentCard,
+  type AgentCard,
+} from '@solana-agent-wallet-adapter/a2a-agent-card';
+import {
   buildAcpOutboundReceipt,
   cartToTransferParams,
   hashCart,
@@ -36,9 +42,14 @@ const SKILLS_DETAIL_RE = /^\/api\/skills\/([a-z0-9][a-z0-9-]{0,63})$/;
 const SKILLS_INSTALL_ACTION_RE = /^\/api\/skills\/installs\/([A-Za-z0-9_-]+)\/(pause|resume|uninstall)$/;
 const AGGREGATOR_SKILL_RE = /^\/api\/aggregator\/skills\/([a-z0-9-]+)\/?$/;
 const AGGREGATOR_WALLET_RE = /^\/api\/aggregator\/wallets\/([1-9A-HJ-NP-Za-km-z]{32,44})\/?$/;
+const AGENT_CARD_PREVIEW_PATH = '/api/agents/card';
+const AGENT_CARD_PUBLIC_PATH = '/.well-known/agent.json';
 const DEV_WALLET_HEADER = 'x-agentic-wallet-address';
 const LOCAL_WALLET_FALLBACK = 'local-browser-wallet';
+const LOCAL_AGENT_CARD_WALLET_FALLBACK = '4fTqUdd9SRCkmALQhQGF66VRYJFsCLDSQJYadqwMMoHd';
+const DEFAULT_AGENT_CARD_TOKENS = ['USDC', 'USDT', 'SOL'];
 const MAX_JSON_BYTES = 64 * 1024;
+const BASE58_PUBKEY_RE = /^[1-9A-HJ-NP-Za-km-z]{32,44}$/;
 
 const devApprovals = new Map<string, ApprovalRequestRecord>();
 const localSkillCatalog = new Map<string, LocalSkillManifestRecord>();
@@ -85,6 +96,9 @@ export function acpDevApiPlugin(): Plugin {
       server.middlewares.use(async (req, res, next) => {
         const url = new URL(req.url ?? '/', 'http://127.0.0.1');
         try {
+          if (handleLocalAgentCardApi(req, res, url)) {
+            return;
+          }
           if (url.pathname.startsWith('/api/acp/cart/')) {
             if (req.method !== 'POST') {
               writeJson(res, 405, { error: 'method_not_allowed', message: 'Use POST for ACP cart routes.' });
@@ -118,6 +132,85 @@ export function acpDevApiPlugin(): Plugin {
       });
     },
   };
+}
+
+function handleLocalAgentCardApi(req: IncomingMessage, res: ServerResponse, url: URL): boolean {
+  const isPreview = url.pathname === AGENT_CARD_PREVIEW_PATH;
+  const isPublic = url.pathname === AGENT_CARD_PUBLIC_PATH;
+  if (!isPreview && !isPublic) return false;
+
+  const method = req.method ?? 'GET';
+  if (isPublic && method === 'OPTIONS') {
+    res.statusCode = 204;
+    setAgentCardCorsHeaders(res);
+    res.setHeader('access-control-max-age', '600');
+    res.end();
+    return true;
+  }
+  if (method !== 'GET' && method !== 'HEAD') {
+    writeJson(res, 405, {
+      error: 'method_not_allowed',
+      message: 'Use GET for the local Agent Card route.',
+    });
+    return true;
+  }
+
+  const card = buildLocalAgentCard(req, url);
+  const validation = validateAgentCard(card);
+  if (!validation.valid) {
+    writeJson(res, 500, {
+      error: 'agent_card_invalid',
+      message: validation.errors.join('; '),
+    });
+    return true;
+  }
+
+  res.statusCode = 200;
+  res.setHeader('content-type', 'application/json; charset=utf-8');
+  res.setHeader('cache-control', isPublic ? 'public, max-age=60' : 'no-store');
+  if (isPublic) setAgentCardCorsHeaders(res);
+  if (method === 'HEAD') {
+    res.end();
+    return true;
+  }
+  res.end(JSON.stringify(card));
+  return true;
+}
+
+function buildLocalAgentCard(req: IncomingMessage, url: URL): AgentCard {
+  return buildAgenticAgentCard({
+    walletAddress: resolveLocalAgentCardWallet(req),
+    baseUrl: resolveRequestOrigin(req, url),
+    supportedTokens: DEFAULT_AGENT_CARD_TOKENS,
+    capabilities: defaultAgenticCapabilities,
+    version: process.env.AGENTIC_BUILD_ID ?? '0.0.1-dev',
+  });
+}
+
+function resolveLocalAgentCardWallet(req: IncomingMessage): string {
+  const rawHeader = req.headers[DEV_WALLET_HEADER];
+  const header = Array.isArray(rawHeader) ? rawHeader[0] : rawHeader;
+  const candidates = [
+    typeof header === 'string' ? header.trim() : '',
+    process.env.AGENTIC_AGENT_CARD_WALLET?.trim() ?? '',
+    LOCAL_AGENT_CARD_WALLET_FALLBACK,
+  ];
+  return candidates.find((candidate) => BASE58_PUBKEY_RE.test(candidate)) ?? LOCAL_AGENT_CARD_WALLET_FALLBACK;
+}
+
+function resolveRequestOrigin(req: IncomingMessage, url: URL): string {
+  const protoHeader = req.headers['x-forwarded-proto'];
+  const proto = protoHeader === 'https' || (Array.isArray(protoHeader) && protoHeader.includes('https'))
+    ? 'https'
+    : 'http';
+  const host = req.headers.host ?? url.host ?? '127.0.0.1:5174';
+  return `${proto}://${host}`;
+}
+
+function setAgentCardCorsHeaders(res: ServerResponse): void {
+  res.setHeader('access-control-allow-origin', '*');
+  res.setHeader('access-control-allow-methods', 'GET, HEAD, OPTIONS');
+  res.setHeader('vary', 'Origin');
 }
 
 async function handlePreview(req: IncomingMessage, res: ServerResponse): Promise<void> {
@@ -162,27 +255,37 @@ async function handleApprove(req: IncomingMessage, res: ServerResponse): Promise
   const cartJson = jsonObject(cart);
   const cartHash = hashCart(cart);
   const now = new Date().toISOString();
-  const finalizationRequirement = finalizationRequirementForAction('transfer_spl');
+  const isSolPayment = cart.paymentToken === 'SOL';
+  const approvalKind = isSolPayment ? 'transfer_sol' : 'transfer_spl';
+  const finalizationRequirement = finalizationRequirementForAction(approvalKind);
   const finalizationSupport: FinalizationSupport = { required: true, supported: true };
+
+  const params: JsonObject = isSolPayment
+    ? {
+        recipient: transfer.recipient,
+        amountSol: transfer.amount,
+        ...(cart.memo !== undefined ? { memo: cart.memo } : {}),
+      }
+    : {
+        recipient: transfer.recipient,
+        token: cart.paymentToken,
+        amount: transfer.amount,
+        tokenMint: validated.resolvedTokenMint,
+        ...(cart.memo !== undefined ? { memo: cart.memo } : {}),
+      };
 
   const approval: ApprovalRequestRecord = {
     id: `browser-acp_${randomUUID()}`,
     walletAddress,
-    kind: 'transfer_spl',
+    kind: approvalKind,
     status: 'ready',
-    summary: `ACP: ${cart.merchant.name} - ${cart.totalAmount} ${cart.currency}`,
-    params: {
-      recipient: transfer.recipient,
-      token: cart.paymentToken,
-      amount: cart.totalAmount,
-      tokenMint: validated.resolvedTokenMint,
-      ...(cart.memo !== undefined ? { memo: cart.memo } : {}),
-    },
+    summary: `ACP: ${cart.merchant.name} — ${transfer.amount} ${cart.paymentToken}`,
+    params,
     cluster,
     dueAt: cart.expiresAt ?? requested.dueAt ?? now,
     createdAt: now,
     updatedAt: now,
-    amount: cart.totalAmount,
+    amount: transfer.amount,
     token: cart.paymentToken,
     recipient: transfer.recipient,
     ...(requested.note !== undefined ? { note: requested.note } : {}),
@@ -197,6 +300,7 @@ async function handleApprove(req: IncomingMessage, res: ServerResponse): Promise
       acpCart: cartJson,
       merchant: cartJson.merchant as JsonObject,
       totalAmount: cart.totalAmount,
+      paymentAmount: transfer.amount,
       paymentToken: cart.paymentToken,
       resolvedTokenMint: validated.resolvedTokenMint,
       acpCluster: cart.cluster,

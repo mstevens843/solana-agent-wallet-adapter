@@ -1,8 +1,11 @@
 import './agentCard.css';
+import { currentAddress } from '../connectionState.js';
 
 const PUBLIC_AGENT_CARD_URL = 'https://agentic-signer.com/.well-known/agent.json';
 const LOCAL_AGENT_CARD_PATH = '/api/agents/card';
+const PUBLIC_AGENT_CARD_PATH = '/.well-known/agent.json';
 const BODY_ELEMENT_ID = 'dev-agent-card-body';
+const DEV_WALLET_HEADER = 'x-agentic-wallet-address';
 
 type FetchStatus = 'idle' | 'loading' | 'loaded' | 'unavailable' | 'error';
 
@@ -11,6 +14,12 @@ interface TabState {
   cardJson?: unknown;
   errorMessage?: string;
   fetchedAt?: number;
+}
+
+interface AgentCardFetchResult {
+  status: 'loaded' | 'unavailable' | 'error';
+  cardJson?: unknown;
+  errorMessage?: string;
 }
 
 const tabState: TabState = { status: 'idle' };
@@ -318,23 +327,102 @@ export async function fetchAgentCard(): Promise<void> {
   tabState.status = 'loading';
   tabState.errorMessage = undefined;
   updateBody();
+  let lastError: string | undefined;
+  let unavailable = false;
   try {
-    const response = await fetch(LOCAL_AGENT_CARD_PATH, { credentials: 'include' });
-    if (response.status === 404) {
-      tabState.status = 'unavailable';
-    } else if (!response.ok) {
-      tabState.status = 'error';
-      tabState.errorMessage = `HTTP ${response.status}`;
-    } else {
-      tabState.cardJson = await response.json();
-      tabState.status = 'loaded';
-      tabState.fetchedAt = Date.now();
+    for (const path of agentCardFetchPaths()) {
+      const result = await fetchAgentCardPath(path);
+      if (result.status === 'loaded') {
+        tabState.cardJson = result.cardJson;
+        tabState.status = 'loaded';
+        tabState.fetchedAt = Date.now();
+        updateBody();
+        return;
+      }
+      if (result.status === 'unavailable') {
+        unavailable = true;
+      } else {
+        tabState.status = 'error';
+        tabState.errorMessage = result.errorMessage;
+        updateBody();
+        return;
+      }
     }
   } catch (error) {
+    lastError = error instanceof Error ? error.message : String(error);
+  }
+  if (lastError && !unavailable) {
     tabState.status = 'error';
-    tabState.errorMessage = error instanceof Error ? error.message : String(error);
+    tabState.errorMessage = lastError;
+  } else {
+    tabState.status = 'unavailable';
+    tabState.errorMessage = lastError;
   }
   updateBody();
+}
+
+function agentCardFetchPaths(): string[] {
+  const paths = [LOCAL_AGENT_CARD_PATH, PUBLIC_AGENT_CARD_PATH];
+  if (typeof window !== 'undefined') {
+    try {
+      const publicUrl = new URL(PUBLIC_AGENT_CARD_URL);
+      if (publicUrl.origin !== window.location.origin) paths.push(PUBLIC_AGENT_CARD_URL);
+    } catch {
+      paths.push(PUBLIC_AGENT_CARD_URL);
+    }
+  }
+  return [...new Set(paths)];
+}
+
+async function fetchAgentCardPath(path: string): Promise<AgentCardFetchResult> {
+  const headers: Record<string, string> = { Accept: 'application/json' };
+  const sameOrigin = isSameOriginFetchPath(path);
+  const walletAddress = sameOrigin ? currentAddress() : null;
+  if (walletAddress) headers[DEV_WALLET_HEADER] = walletAddress;
+
+  let response: Response;
+  try {
+    response = await fetch(path, {
+      credentials: sameOrigin ? 'include' : 'omit',
+      headers,
+    });
+  } catch (error) {
+    return {
+      status: 'error',
+      errorMessage: error instanceof Error ? error.message : String(error),
+    };
+  }
+
+  if (response.status === 403 || response.status === 404) {
+    return { status: 'unavailable' };
+  }
+  if (!response.ok) {
+    return { status: 'error', errorMessage: `HTTP ${response.status}` };
+  }
+
+  const raw = await response.text();
+  const contentType = response.headers.get('content-type')?.toLowerCase() ?? '';
+  if (!contentType.includes('application/json') && raw.trimStart().startsWith('<')) {
+    return { status: 'unavailable' };
+  }
+
+  try {
+    return { status: 'loaded', cardJson: JSON.parse(raw) };
+  } catch {
+    return {
+      status: 'error',
+      errorMessage: 'Agent Card route returned invalid JSON.',
+    };
+  }
+}
+
+function isSameOriginFetchPath(path: string): boolean {
+  if (typeof window === 'undefined') return true;
+  try {
+    return new URL(path, window.location.href).origin === window.location.origin;
+  } catch {
+    return true;
+  }
 }
 
 function updateBody(): void {

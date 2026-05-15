@@ -68,7 +68,7 @@ async function handleRequest(
       }
     }
 
-    if (url.pathname.startsWith('/api/')) {
+    if (url.pathname.startsWith('/api/') || url.pathname.startsWith('/.well-known/')) {
       await apiRouter.handle(req, res, url);
       return;
     }
