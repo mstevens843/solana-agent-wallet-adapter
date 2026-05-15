@@ -14,14 +14,22 @@ import {
 import {
   EVIDENCE_RECEIPT_KINDS,
   VERIFIED_PROGRAM_IDS,
+  baselineStorageKey,
   buildEvidenceRequirements,
   connectorProfileKind,
   createDecisionAuditReceipt,
+  createEmptyBaseline,
   detectPromptInjectionInFields,
   evaluateAgentEvidenceGate,
+  evaluateBaselineSignals,
+  extractAmountFromParameters,
+  extractRecipientFromParameters,
   isVerifiedProgramId,
   normalizeAgentEvidenceFact,
   sanitizeUserTextOrEmpty,
+  updateBaselineFromCompletion,
+  type BaselineSignal,
+  type BehavioralBaseline,
   type PromptInjectionFieldHit,
   parseApprovalListResponse,
   parseAuditEventRecord,
@@ -2070,6 +2078,8 @@ interface DemoState {
   auditOpen: Record<string, boolean>;
   auditActivity: Record<string, AuditActivityState>;
   steps: Record<StepName, StepState>;
+  /** Per-wallet behavioural baselines keyed by `${cluster}|${walletAddress}`. */
+  behavioralBaselines: Record<string, BehavioralBaseline>;
 }
 
 interface AuditActivityState {
@@ -2835,6 +2845,7 @@ const state: DemoState = {
     lab: 'idle',
     ai: 'idle',
   },
+  behavioralBaselines: loadBehavioralBaselines(),
 };
 
 let nextAiDraftOperationId = 1;
@@ -19467,6 +19478,7 @@ async function runAgentReviewWithEvidence(
     gate: bundle.gate,
     facts: bundle.evidenceFacts,
     requirements: bundle.requirements,
+    context: bundle.evidenceContext,
   });
   const auditReceipt = await createDecisionAuditReceipt({
     finalDecision: validated.final.decision,
@@ -20719,6 +20731,57 @@ function userControlledFieldsForReview(record: GeneratedPlanRecord, plan: AgentP
   return fields;
 }
 
+function lookupBehavioralBaseline(walletAddress: string | undefined, cluster: string): BehavioralBaseline | undefined {
+  if (!walletAddress) return undefined;
+  const key = baselineStorageKey(walletAddress, cluster);
+  return state.behavioralBaselines[key];
+}
+
+const baselineUpdatedActionIds = new Set<string>();
+
+function recordBaselineCompletion(action: PreparedAction, approvedAt: string): void {
+  if (baselineUpdatedActionIds.has(action.id)) return;
+  baselineUpdatedActionIds.add(action.id);
+  if (!action.walletAddress) return;
+  const key = baselineStorageKey(action.walletAddress, action.cluster);
+  const existing = state.behavioralBaselines[key] ?? createEmptyBaseline(action.walletAddress, action.cluster, approvedAt);
+  const params = action.params as Record<string, unknown> | undefined;
+  const paramRecord: Record<string, string> = {};
+  if (params) {
+    for (const [k, v] of Object.entries(params)) {
+      if (typeof v === 'string') paramRecord[k] = v;
+    }
+  }
+  const recipient = extractRecipientFromParameters(paramRecord);
+  const amount = extractAmountFromParameters(paramRecord, action.kind);
+  const next = updateBaselineFromCompletion(existing, {
+    decision: 'approve',
+    approvedAt,
+    actionType: action.kind,
+    connectorId: typeof paramRecord.connectorId === 'string' ? paramRecord.connectorId : undefined,
+    ...(recipient ? { recipient } : {}),
+    ...(amount ? { amountLamports: amount.amountLamports, amountTokenKey: amount.tokenKey } : {}),
+  });
+  state.behavioralBaselines = { ...state.behavioralBaselines, [key]: next };
+  saveBehavioralBaselines();
+}
+
+function baselineFactsFor(signals: BaselineSignal[]): AgentEvidenceFact[] {
+  if (!signals.length) return [];
+  const checkedAt = new Date().toISOString();
+  return signals.map((signal, index) => normalizeAgentEvidenceFact({
+    id: `fact.baseline.${signal.kind}.${index}`,
+    label: `Behavioural baseline: ${signal.label}`,
+    value: signal.value,
+    tone: signal.severity === 'block' ? 'fail' : signal.severity === 'warn' ? 'warn' : 'neutral',
+    severity: signal.severity,
+    source: 'deterministic',
+    checkedAt,
+    ttlMs: Number.POSITIVE_INFINITY,
+    detail: { signalKind: signal.kind, ...(signal.detail ?? {}) },
+  }));
+}
+
 function promptInjectionFactsFor(hits: PromptInjectionFieldHit[]): AgentEvidenceFact[] {
   if (!hits.length) return [];
   const checkedAt = new Date().toISOString();
@@ -20759,6 +20822,22 @@ function buildAgentReviewEvidenceBundle(
   // can override a block-severity fact).
   const injectionHits = detectPromptInjectionInFields(userControlledFieldsForReview(record, plan));
   evidenceFacts.push(...promptInjectionFactsFor(injectionHits));
+
+  // Behavioural baseline signals: compare the plan against the wallet's historical norms.
+  // These default to severity 'warn' / 'info' — they SURFACE patterns to the AI reviewer
+  // (and the audit receipt) rather than auto-deny. Users wanting hard blocks can add a
+  // dedicated policy.
+  const baseline = lookupBehavioralBaseline(evidenceContext.walletAddress, evidenceContext.cluster ?? record.cluster);
+  if (baseline) {
+    const baselineSignals = evaluateBaselineSignals(baseline, {
+      actionType: plan.actionType,
+      connectorId: evidenceContext.connectorId,
+      recipient: extractRecipientFromParameters(plan.parameters),
+      ...(extractAmountFromParameters(plan.parameters, plan.actionType) ?? {}),
+    });
+    evidenceFacts.push(...baselineFactsFor(baselineSignals));
+  }
+
   const gate = evaluateAgentEvidenceGate(requirements, evidenceFacts, evidenceContext);
   return { routePlan, requirements, evidenceFacts, gate, evidenceContext };
 }
@@ -26781,6 +26860,9 @@ function transactionNotFoundReferenceMs(
 
 function completeBrowserExecutedAction(action: PreparedAction, execution: BrowserTransactionExecution): void {
   const completedAt = new Date().toISOString();
+  if (execution.txStatus === 'confirmed') {
+    recordBaselineCompletion(action, completedAt);
+  }
   const updatedAction: PreparedAction = {
     ...action,
     status: 'approved',
@@ -37760,6 +37842,41 @@ function saveAgentPolicies(): void {
     // Best-effort browser persistence.
   }
   void syncAgentPoliciesToCloud();
+}
+
+const BEHAVIORAL_BASELINES_STORAGE_KEY = 'solana-agent-wallet-behavioral-baselines-v1';
+
+function loadBehavioralBaselines(): Record<string, BehavioralBaseline> {
+  try {
+    const raw = window.localStorage.getItem(BEHAVIORAL_BASELINES_STORAGE_KEY);
+    if (!raw) return {};
+    const parsed = JSON.parse(raw);
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return {};
+    const out: Record<string, BehavioralBaseline> = {};
+    for (const [key, value] of Object.entries(parsed as Record<string, unknown>)) {
+      const baseline = parseBehavioralBaseline(value);
+      if (baseline) out[key] = baseline;
+    }
+    return out;
+  } catch {
+    return {};
+  }
+}
+
+function saveBehavioralBaselines(): void {
+  try {
+    window.localStorage.setItem(BEHAVIORAL_BASELINES_STORAGE_KEY, JSON.stringify(state.behavioralBaselines));
+  } catch {
+    // Best-effort browser persistence.
+  }
+}
+
+function parseBehavioralBaseline(value: unknown): BehavioralBaseline | null {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
+  const record = value as Record<string, unknown>;
+  if (record.schemaVersion !== 1) return null;
+  if (typeof record.walletAddress !== 'string' || typeof record.cluster !== 'string') return null;
+  return value as BehavioralBaseline;
 }
 
 const cloudPreferenceVersions: Partial<Record<CloudPreferenceNamespace, number>> = {};

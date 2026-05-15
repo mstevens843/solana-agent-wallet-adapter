@@ -16,6 +16,8 @@ import {
   generateReceiptId,
   routePlanHash,
 } from './agentEvidence.js';
+import { computeConfidence, type ConfidenceBand } from './confidence.js';
+import { computeCounterfactuals } from './counterfactuals.js';
 
 const WALLET_IDENTITY_ROUTE = 'wallet.connected_public_key';
 const EXTERNAL_RESEARCH_ROUTE = 'external_research.current_web';
@@ -194,6 +196,8 @@ export interface ValidateAgentReviewDecisionInput {
   gate: AgentEvidenceGateResult;
   facts: AgentEvidenceFact[];
   requirements: AgentEvidenceRequirement[];
+  /** Optional. When supplied, counterfactuals are computed against the same context. */
+  context?: AgentEvidenceContext;
 }
 
 export interface ValidateAgentReviewDecisionOutput {
@@ -270,12 +274,42 @@ export function validateAgentReviewDecision(
   }
 
   const sanitizedFactIds = contract.evidenceFactIds.filter((id) => knownFactIds.has(id));
+
+  // Deterministic confidence calibration. Combines gate health with the AI's stated band
+  // as a weighted input, producing a numeric score and a band the receipt can record.
+  const externalResearchUsed = hasExternalResearchCitation(aiResult);
+  const confidence = computeConfidence({
+    gate,
+    facts,
+    requirements,
+    aiBand: contract.confidence,
+    decision,
+    citedFactIdCount: sanitizedFactIds.length,
+    externalResearchUsed,
+  });
+
+  // Counterfactuals: which evidence would, if changed, flip the decision? Requires the
+  // context that produced the gate so the simulator can re-evaluate.
+  const counterfactuals = input.context
+    ? computeCounterfactuals({
+        decision,
+        gate,
+        facts,
+        requirements,
+        context: input.context,
+      })
+    : [];
+
   const sanitizedContract: AgentDecisionContract = {
     ...contract,
     decision,
     reason,
     summary,
     evidenceFactIds: sanitizedFactIds,
+    confidence: confidence.band,
+    confidenceScore: confidence.score,
+    confidenceFactors: confidence.factors,
+    counterfactuals,
   };
 
   const finalResult: AgentPlanReviewResult = {
@@ -371,6 +405,11 @@ export async function createDecisionAuditReceipt(
     aiDecisionHash(input.decisionContract),
   ]);
   const checkedAt = input.nowIso ?? new Date().toISOString();
+  const counterfactualSummary = (input.decisionContract.counterfactuals ?? []).map((cf) => ({
+    id: cf.id,
+    rationale: cf.rationale,
+    decisionAfter: cf.decisionAfter,
+  }));
   return {
     schemaVersion: AGENT_EVIDENCE_RECEIPT_SCHEMA_VERSION,
     receiptId: generateReceiptId(input.receiptIdSeed ?? input.walletAddress),
@@ -389,6 +428,13 @@ export async function createDecisionAuditReceipt(
     evidenceFactIds: input.decisionContract.evidenceFactIds,
     blockingFactIds: input.decisionContract.blockingFactIds ?? input.gate.blockingFacts.map((f) => f.id),
     missingRequirementIds: input.gate.missingRequired.map((req) => req.id),
+    ...(typeof input.decisionContract.confidenceScore === 'number'
+      ? { confidenceScore: input.decisionContract.confidenceScore }
+      : {}),
+    ...(input.decisionContract.confidence
+      ? { confidenceBand: input.decisionContract.confidence }
+      : {}),
+    ...(counterfactualSummary.length ? { counterfactualSummary } : {}),
   };
 }
 

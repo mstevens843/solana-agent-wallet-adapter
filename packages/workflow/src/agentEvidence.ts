@@ -62,9 +62,37 @@ export interface AgentEvidenceGateResult {
   reason: string;
 }
 
+export interface AgentDecisionConfidenceFactor {
+  id: string;
+  label: string;
+  delta: number;
+  detail?: string;
+}
+
+export interface AgentDecisionCounterfactual {
+  id: string;
+  factId?: string;
+  requirementId?: string;
+  change:
+    | 'fact_becomes_stale'
+    | 'fact_becomes_blocking'
+    | 'fact_becomes_fresh'
+    | 'fact_becomes_clean'
+    | 'fact_becomes_present'
+    | 'fact_becomes_missing'
+    | 'wallet_disconnect';
+  rationale: string;
+  decisionBefore: 'approve' | 'deny' | 'needs_input';
+  decisionAfter: 'approve' | 'deny' | 'needs_input';
+}
+
 export interface AgentDecisionContract {
   decision: 'approve' | 'deny' | 'needs_input';
   confidence?: 'high' | 'medium' | 'low';
+  /** Deterministic numeric confidence in [0,1] computed by the validator. */
+  confidenceScore?: number;
+  confidenceFactors?: AgentDecisionConfidenceFactor[];
+  counterfactuals?: AgentDecisionCounterfactual[];
   reason: string;
   summary: string;
   evidenceFactIds: string[];
@@ -92,6 +120,9 @@ export interface AgentDecisionAuditReceipt {
   evidenceFactIds: string[];
   blockingFactIds: string[];
   missingRequirementIds: string[];
+  confidenceScore?: number;
+  confidenceBand?: 'high' | 'medium' | 'low';
+  counterfactualSummary?: Array<{ id: string; rationale: string; decisionAfter: 'approve' | 'deny' | 'needs_input' }>;
 }
 
 export interface AgentEvidenceContext {
@@ -292,6 +323,16 @@ export async function aiDecisionHash(contract: AgentDecisionContract): Promise<s
     reason: contract.reason,
     summary: contract.summary,
     confidence: contract.confidence,
+    confidenceScore: contract.confidenceScore,
+    confidenceFactors: (contract.confidenceFactors ?? []).map((factor) => ({
+      id: factor.id,
+      delta: factor.delta,
+    })),
+    counterfactuals: (contract.counterfactuals ?? []).map((cf) => ({
+      id: cf.id,
+      change: cf.change,
+      decisionAfter: cf.decisionAfter,
+    })),
     evidenceFactIds: [...contract.evidenceFactIds].sort(),
     blockingFactIds: [...(contract.blockingFactIds ?? [])].sort(),
     missingFactIds: [...(contract.missingFactIds ?? [])].sort(),

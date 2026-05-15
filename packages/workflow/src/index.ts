@@ -29,6 +29,9 @@ export * from './agentEvidenceRequirements.js';
 export * from './agentEvidenceGate.js';
 export * from './verifiedPrograms.js';
 export * from './promptInjectionDefense.js';
+export * from './confidence.js';
+export * from './counterfactuals.js';
+export * from './behavioralBaselines.js';
 export {
   appendReviewFinding,
   evidenceTextFields,

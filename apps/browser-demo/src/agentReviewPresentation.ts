@@ -72,6 +72,9 @@ export interface AgentAuditReceiptLike {
   evidenceFactIds: string[];
   blockingFactIds: string[];
   missingRequirementIds: string[];
+  confidenceScore?: number;
+  confidenceBand?: 'high' | 'medium' | 'low';
+  counterfactualSummary?: Array<{ id: string; rationale: string; decisionAfter: 'approve' | 'deny' | 'needs_input' }>;
 }
 
 export interface AgentEvidenceReviewLike {
@@ -225,6 +228,32 @@ export function auditReceiptDisplayRows(receipt: AgentAuditReceiptLike | undefin
   rows.push({ label: 'Audit receipt', value: receipt.receiptId, tone: 'neutral' });
   rows.push({ label: 'Final decision', value: receipt.finalDecision, tone: decisionTone });
   rows.push({ label: 'Gate decision', value: receipt.gateDecision, tone: gateTone });
+  if (typeof receipt.confidenceScore === 'number' && receipt.confidenceBand) {
+    const confidenceTone: AgentEvidenceTone = receipt.confidenceBand === 'high'
+      ? 'good'
+      : receipt.confidenceBand === 'medium'
+        ? 'warn'
+        : 'fail';
+    rows.push({
+      label: 'Confidence',
+      value: `${receipt.confidenceBand} (${(receipt.confidenceScore * 100).toFixed(1)}%)`,
+      tone: confidenceTone,
+    });
+  }
+  if (receipt.counterfactualSummary?.length) {
+    for (const cf of receipt.counterfactualSummary) {
+      const tone: AgentEvidenceTone = cf.decisionAfter === 'approve'
+        ? 'good'
+        : cf.decisionAfter === 'needs_input'
+          ? 'warn'
+          : 'fail';
+      rows.push({
+        label: `Counterfactual → ${cf.decisionAfter}`,
+        value: cf.rationale,
+        tone,
+      });
+    }
+  }
   rows.push({ label: 'Plan fingerprint', value: receipt.planFingerprint, tone: 'neutral' });
   rows.push({ label: 'Route plan hash', value: receipt.routePlanHash, tone: 'neutral' });
   rows.push({ label: 'Evidence hash', value: receipt.evidenceHash, tone: 'neutral' });
