@@ -9,6 +9,10 @@
   gap: 18px;
 }
 
+.dev-agent-card-head .dev-tab-header-main {
+  align-content: start;
+}
+
 .dev-agent-card-head p {
   color: rgba(196, 205, 202, 0.86);
   margin: 0;

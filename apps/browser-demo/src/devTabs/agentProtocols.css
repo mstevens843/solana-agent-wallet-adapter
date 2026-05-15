@@ -5,9 +5,9 @@
 }
 
 .agent-protocols-tab-control {
-  justify-content: start;
-  justify-self: start;
-  margin-left: 0;
+  justify-content: end;
+  justify-self: end;
+  margin-left: auto;
 }
 
 .agent-protocols-tab-list {

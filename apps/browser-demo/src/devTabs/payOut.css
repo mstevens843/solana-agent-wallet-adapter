@@ -9,6 +9,10 @@
   padding-bottom: 0;
 }
 
+.pay-out-header .dev-tab-header-main {
+  align-content: start;
+}
+
 .pay-out-mode {
   background: rgba(63, 189, 131, 0.12);
   border: 1px solid rgba(139, 205, 170, 0.3);
