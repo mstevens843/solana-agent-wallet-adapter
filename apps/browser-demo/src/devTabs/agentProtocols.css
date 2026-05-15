@@ -1,0 +1,46 @@
+.agent-protocols-shell {
+  display: grid;
+  gap: 14px;
+  min-width: 0;
+}
+
+.agent-protocols-tab-control {
+  justify-content: start;
+  justify-self: start;
+  margin-left: 0;
+}
+
+.agent-protocols-tab-list {
+  grid-template-columns: none;
+}
+
+.agent-protocols-active-panel {
+  min-width: 0;
+}
+
+@media (max-width: 720px) {
+  .agent-protocols-tab-control {
+    align-items: stretch;
+    grid-template-columns: 1fr;
+    justify-self: stretch;
+    width: 100%;
+  }
+
+  .agent-protocols-tab-control .one-time-method-label {
+    border-right: 0;
+    padding-right: 0;
+  }
+
+  .agent-protocols-tab-list {
+    display: grid;
+    grid-auto-flow: initial;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    width: 100%;
+  }
+
+  .agent-protocols-tab-list button {
+    justify-content: center;
+    min-width: 0;
+    white-space: normal;
+  }
+}

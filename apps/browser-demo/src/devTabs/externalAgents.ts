@@ -1,4 +1,3 @@
-import { registerDevTab } from '../devTabRegistry.js';
 import { isDevWallet } from '../devGate.js';
 import { currentAddress, refreshConnection } from '../connectionState.js';
 import './externalAgents.css';
@@ -253,7 +252,7 @@ function guard(): boolean {
   return isDevWallet(addr);
 }
 
-function render(): string {
+export function renderExternalAgentsPanel(): string {
   if (state.status === 'idle') {
     queueMicrotask(() => {
       void fetchInbound();
@@ -345,14 +344,6 @@ function installPanelClickHandler(): void {
 }
 
 installPanelClickHandler();
-
-registerDevTab({
-  id: 'external-agents',
-  label: 'External Agents',
-  mobileLabel: 'Agents',
-  guard,
-  render,
-});
 
 // ---------------- Test-only surface ----------------
 

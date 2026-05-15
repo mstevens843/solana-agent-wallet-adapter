@@ -1,7 +1,4 @@
 import './agentCard.css';
-import { registerDevTab } from '../devTabRegistry.js';
-import { isDevWallet } from '../devGate.js';
-import { getConnectedAddress } from '../walletState.js';
 
 const PUBLIC_AGENT_CARD_URL = 'https://agentic-signer.com/.well-known/agent.json';
 const LOCAL_AGENT_CARD_PATH = '/api/agents/card';
@@ -38,28 +35,157 @@ function isEmptyCard(value: unknown): boolean {
   return false;
 }
 
-function summaryHtml(card: Record<string, unknown> | null): string {
+function stringArray(value: unknown): string[] {
+  return Array.isArray(value)
+    ? value.filter((entry): entry is string => typeof entry === 'string' && entry.length > 0)
+    : [];
+}
+
+function cardString(card: Record<string, unknown> | null, key: string): string {
+  if (!card) return '';
+  const value = card[key];
+  return typeof value === 'string' ? value : '';
+}
+
+function protocolPills(protocols: readonly string[]): string {
+  if (protocols.length === 0) return '<span class="dev-agent-card-muted">None published</span>';
+  return protocols
+    .map((proto) => `<span class="dev-agent-card-protocol-pill">${escapeHtml(proto)}</span>`)
+    .join('');
+}
+
+function identitySummaryHtml(card: Record<string, unknown> | null): string {
   if (!card) return '';
   const walletAddress = typeof card.walletAddress === 'string' ? card.walletAddress : '';
-  const protocols = Array.isArray(card.supportedProtocols)
-    ? (card.supportedProtocols as unknown[]).filter((entry): entry is string => typeof entry === 'string')
-    : [];
+  const protocols = stringArray(card.supportedProtocols);
   const version = typeof card.version === 'string' ? card.version : '';
   const parts: string[] = [];
   if (walletAddress) {
     parts.push(`<article class="dev-agent-card-summary-item"><span>Wallet</span><code>${escapeHtml(shortAddress(walletAddress))}</code></article>`);
   }
   if (protocols.length > 0) {
-    const pills = protocols
-      .map((proto) => `<span class="dev-agent-card-protocol-pill">${escapeHtml(proto)}</span>`)
-      .join('');
-    parts.push(`<article class="dev-agent-card-summary-item"><span>Protocols</span><span class="dev-agent-card-protocols">${pills}</span></article>`);
+    parts.push(`<article class="dev-agent-card-summary-item"><span>Protocols</span><span class="dev-agent-card-protocols">${protocolPills(protocols)}</span></article>`);
   }
   if (version) {
     parts.push(`<article class="dev-agent-card-summary-item"><span>Version</span><code>${escapeHtml(version)}</code></article>`);
   }
   if (parts.length === 0) return '';
   return `<div class="dev-agent-card-summary">${parts.join('')}</div>`;
+}
+
+function capabilityOverviewHtml(card: Record<string, unknown> | null): string {
+  const capabilities = card?.capabilities && typeof card.capabilities === 'object' && !Array.isArray(card.capabilities)
+    ? (card.capabilities as Record<string, unknown>)
+    : {};
+  const rows = [
+    ['Streaming', capabilities.streaming === true ? 'Enabled' : 'Off'],
+    ['Push notifications', capabilities.pushNotifications === true ? 'Enabled' : 'Off'],
+    ['State history', capabilities.stateTransitionHistory === true ? 'Enabled' : 'Off'],
+  ];
+  return `
+    <section class="dev-agent-card-section" aria-label="Agent capabilities">
+      <div class="dev-agent-card-section-head">
+        <span>Capabilities</span>
+        <h3>What agents can discover</h3>
+      </div>
+      <div class="dev-agent-card-capability-grid">
+        ${rows.map(([label, value]) => `
+          <article>
+            <span>${escapeHtml(label)}</span>
+            <strong>${escapeHtml(value)}</strong>
+          </article>
+        `).join('')}
+      </div>
+    </section>
+  `;
+}
+
+function skillsOverviewHtml(card: Record<string, unknown> | null): string {
+  const skills = Array.isArray(card?.skills) ? card.skills : [];
+  const visible = skills
+    .filter((skill): skill is Record<string, unknown> => skill !== null && typeof skill === 'object' && !Array.isArray(skill))
+    .slice(0, 4);
+  const hiddenCount = Math.max(0, skills.length - visible.length);
+  const body = visible.length > 0
+    ? visible.map((skill) => {
+      const name = typeof skill.name === 'string' ? skill.name : 'Unnamed skill';
+      const description = typeof skill.description === 'string' ? skill.description : 'No description published.';
+      const id = typeof skill.id === 'string' ? skill.id : '';
+      return `
+        <article class="dev-agent-card-skill">
+          <div>
+            <strong>${escapeHtml(name)}</strong>
+            ${id ? `<code>${escapeHtml(id)}</code>` : ''}
+          </div>
+          <p>${escapeHtml(description)}</p>
+        </article>
+      `;
+    }).join('')
+    : '<p class="dev-agent-card-muted">No skills are published in this Agent Card.</p>';
+  return `
+    <section class="dev-agent-card-section" aria-label="Agent skills">
+      <div class="dev-agent-card-section-head">
+        <span>Skills</span>
+        <h3>Actions this wallet advertises</h3>
+      </div>
+      <div class="dev-agent-card-skills-list">
+        ${body}
+      </div>
+      ${hiddenCount > 0 ? `<p class="dev-agent-card-more-note">${hiddenCount} more skill(s) in raw Agent Card.</p>` : ''}
+    </section>
+  `;
+}
+
+function readableCardHtml(card: Record<string, unknown> | null): string {
+  const name = cardString(card, 'name') || 'Agent Wallet';
+  const description = cardString(card, 'description') || 'Public identity and capabilities profile for this wallet.';
+  const url = cardString(card, 'url') || PUBLIC_AGENT_CARD_URL;
+  const protocols = stringArray(card?.supportedProtocols);
+  return `
+    <div class="dev-agent-card-readable">
+      <section class="dev-agent-card-profile" aria-label="Agent identity summary">
+        <div>
+          <span class="dev-agent-card-readable-kicker">Agent identity</span>
+          <h3>${escapeHtml(name)}</h3>
+          <p>${escapeHtml(description)}</p>
+        </div>
+        <div class="dev-agent-card-profile-side">
+          <span>Protocols</span>
+          <div class="dev-agent-card-protocols">${protocolPills(protocols)}</div>
+        </div>
+      </section>
+      ${identitySummaryHtml(card)}
+      <section class="dev-agent-card-section" aria-label="Public Agent Card URL">
+        <div class="dev-agent-card-section-head">
+          <span>Public URL</span>
+          <h3>Where other agents read this profile</h3>
+        </div>
+        <code class="dev-agent-card-url">${escapeHtml(url)}</code>
+      </section>
+      ${capabilityOverviewHtml(card)}
+      ${skillsOverviewHtml(card)}
+    </div>
+  `;
+}
+
+function rawJsonHtml(): string {
+  return `
+    <details class="dev-agent-card-advanced">
+      <summary>
+        <span>Advanced</span>
+        <strong>View raw Agent Card</strong>
+      </summary>
+      <div class="dev-agent-card-json-window terminal-preview-window">
+        <div class="terminal-preview-bar dev-agent-card-json-bar">
+          <span></span>
+          <span></span>
+          <span></span>
+          <strong>agent.json</strong>
+        </div>
+        <pre class="dev-agent-card-json">${escapeHtml(stableJson(tabState.cardJson))}</pre>
+      </div>
+    </details>
+  `;
 }
 
 export function statusBadgeHtml(): string {
@@ -83,7 +209,7 @@ export function statusBadgeHtml(): string {
 
 export function bodyHtml(): string {
   if (tabState.status === 'idle' || tabState.status === 'loading') {
-    return '<p class="dev-agent-card-empty dev-tab-loading-state">Fetching the live AgentCard for this wallet…</p>';
+    return '<p class="dev-agent-card-empty dev-tab-loading-state">Fetching the live Agent Card for this wallet…</p>';
   }
   if (tabState.status === 'unavailable') {
     return `
@@ -97,7 +223,7 @@ export function bodyHtml(): string {
   }
   if (tabState.status === 'error') {
     return `
-      <p class="dev-agent-card-empty dev-tab-empty-state">Could not fetch AgentCard: ${escapeHtml(tabState.errorMessage ?? 'Unknown error')}</p>
+      <p class="dev-agent-card-empty dev-tab-empty-state">Could not fetch Agent Card: ${escapeHtml(tabState.errorMessage ?? 'Unknown error')}</p>
       <button type="button" class="button utility" data-dev-agent-card-retry>Retry</button>
     `;
   }
@@ -108,16 +234,8 @@ export function bodyHtml(): string {
     ? (tabState.cardJson as Record<string, unknown>)
     : null;
   return `
-    ${summaryHtml(card)}
-    <div class="dev-agent-card-json-window terminal-preview-window">
-      <div class="terminal-preview-bar dev-agent-card-json-bar">
-        <span></span>
-        <span></span>
-        <span></span>
-        <strong>agent.json</strong>
-      </div>
-      <pre class="dev-agent-card-json">${escapeHtml(stableJson(tabState.cardJson))}</pre>
-    </div>
+    ${readableCardHtml(card)}
+    ${rawJsonHtml()}
   `;
 }
 
@@ -133,7 +251,7 @@ function routeCardHtml(): string {
       </div>
       <div class="dev-agent-card-route-body">
         <div>
-          <span>Local</span>
+          <span>Preview route</span>
           <strong>${escapeHtml(LOCAL_AGENT_CARD_PATH)}</strong>
         </div>
         <div>
@@ -156,23 +274,22 @@ export function panelHtml(): string {
           class="button utility"
           data-copy="${escapeHtml(stableJson(tabState.cardJson))}"
           data-copy-id="dev-agent-card-json"
-          data-copy-name="AgentCard JSON"
-        >Copy JSON</button>`
+          data-copy-name="Raw Agent Card JSON"
+        >Copy raw JSON</button>`
     : '';
   return `
     <section class="panel dev-agent-card-panel dev-tab-shell" data-layout="dev-agent-card">
       <header class="dev-agent-card-head dev-tab-header">
         <div class="dev-tab-header-main">
-          <p class="dev-agent-card-eyebrow dev-tab-kicker">A2A AgentCard · Layer 1 dev preview</p>
+          <p class="dev-agent-card-eyebrow dev-tab-kicker">A2A Agent Card · Public identity</p>
           <div class="dev-tab-title-row">
             <h2>Agent Card</h2>
             <span class="dev-agent-card-identity-pill">Public identity</span>
           </div>
           <p>
-            Public-facing identity document that external AI agents read to discover this
-            wallet's supported payment protocols and capabilities. Lives at
-            <code>/.well-known/agent.json</code> for the public web; this preview shows what is
-            live right now.
+            Public identity profile for this wallet. Other agents use it to discover supported
+            protocols, capabilities, and skills; the raw <code>agent.json</code> stays available
+            for developers below.
           </p>
         </div>
         ${routeCardHtml()}
@@ -281,22 +398,16 @@ if (typeof document !== 'undefined') {
   });
 }
 
-registerDevTab({
-  id: 'agent-card',
-  label: 'Agent Card',
-  mobileLabel: 'Card',
-  guard: () => isDevWallet(getConnectedAddress()),
-  render: () => {
-    if (tabState.status === 'idle' && !kickoffScheduled) {
-      kickoffScheduled = true;
-      Promise.resolve().then(() => {
-        kickoffScheduled = false;
-        void fetchAgentCard();
-      });
-    }
-    return panelHtml();
-  },
-});
+export function renderAgentCardPanel(): string {
+  if (tabState.status === 'idle' && !kickoffScheduled) {
+    kickoffScheduled = true;
+    Promise.resolve().then(() => {
+      kickoffScheduled = false;
+      void fetchAgentCard();
+    });
+  }
+  return panelHtml();
+}
 
 export function __resetTabStateForTests(next?: Partial<TabState>): void {
   tabState.status = next?.status ?? 'idle';

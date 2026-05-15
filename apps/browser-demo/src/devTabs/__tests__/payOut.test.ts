@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { PAY_OUT_APPROVAL_CREATED_EVENT } from '../../payOutApprovalEvents.js';
 
 // Minimal stubs to let payOut.ts load in vitest's default node env. The CSS
 // import is gated on `typeof document !== 'undefined'`, so leaving document
@@ -64,7 +65,7 @@ describe('pure helpers', () => {
   });
 
   it('parseCartText rejects empty input with a friendly message', () => {
-    expect(() => parseCartText('   ')).toThrow(/Paste an ACP cart/);
+    expect(() => parseCartText('   ')).toThrow(/Choose or import a payment request/);
   });
 
   it('parseCartText rejects malformed JSON', () => {
@@ -143,12 +144,27 @@ describe('renderPayOutPanel', () => {
     __resetPanelStateForTests();
   });
 
-  it('compose phase renders the textarea + preview button', () => {
+  it('compose phase renders the user-facing request picker and advanced import', () => {
     const html = renderPayOutPanel();
+    expect(html).toContain('Choose a request to review');
+    expect(html).toContain('Use demo request');
+    expect(html).toContain('No payment request yet');
+    expect(html).toContain('Import raw ACP request');
     expect(html).toContain('id="pay-out-cart-input"');
     expect(html).toContain('data-pay-out-action="preview"');
     expect(html).toContain('data-pay-out-action="load-sample"');
     expect(html).not.toContain('data-pay-out-preview');
+  });
+
+  it('compose phase renders selected payment request details when a request is loaded', () => {
+    __resetPanelStateForTests({ cartText: SAMPLE_CART });
+    const html = renderPayOutPanel();
+    expect(html).toContain('Selected request');
+    expect(html).toContain('Acme Coffee');
+    expect(html).toContain('17.80 USDC');
+    expect(html).toContain('Latte');
+    expect(html).toContain('Review payment request');
+    expect(html).toContain('Clear request');
   });
 
   it('preview phase renders one row per line item, total, USD subtitle and the confirm button', () => {
@@ -186,6 +202,8 @@ describe('renderPayOutPanel', () => {
     expect(html).toContain('mainnet-beta');
     expect(html).toContain('7tQA…Yc8M');
     expect(html).toContain('data-pay-out-action="confirm"');
+    expect(html).toContain('Change request');
+    expect(html).toContain('Send to Needs Approval');
     expect(html).toContain('data-pay-out-action="edit"');
   });
 
@@ -356,5 +374,77 @@ describe('handleAction (state-only paths)', () => {
     const state = __getPanelStateForTests();
     expect(state.phase).toBe('compose');
     expect(state.cartText).toBe('kept');
+  });
+});
+
+describe('handleAction confirm path', () => {
+  type FetchMock = ReturnType<typeof vi.fn>;
+  let fetchMock: FetchMock;
+
+  beforeEach(() => {
+    fetchMock = vi.fn();
+    (globalThis as { fetch?: typeof fetch }).fetch = fetchMock as unknown as typeof fetch;
+    __resetPanelStateForTests();
+  });
+
+  afterEach(() => {
+    delete (globalThis as { fetch?: typeof fetch }).fetch;
+    delete (globalThis as { window?: Window }).window;
+  });
+
+  function jsonResponse(status: number, body: unknown): Response {
+    const text = JSON.stringify(body);
+    return new Response(text, { status, headers: { 'Content-Type': 'application/json' } });
+  }
+
+  it('dispatches an approval-created event after a successful confirm', async () => {
+    const previousCustomEvent = globalThis.CustomEvent;
+    if (typeof previousCustomEvent === 'undefined') {
+      class TestCustomEvent<T = unknown> extends Event {
+        detail: T;
+
+        constructor(type: string, init?: CustomEventInit<T>) {
+          super(type);
+          this.detail = init?.detail as T;
+        }
+      }
+      (globalThis as { CustomEvent?: typeof CustomEvent }).CustomEvent =
+        TestCustomEvent as unknown as typeof CustomEvent;
+    }
+
+    const target = new EventTarget();
+    (globalThis as { window?: Window }).window = target as unknown as Window;
+    const details: unknown[] = [];
+    target.addEventListener(PAY_OUT_APPROVAL_CREATED_EVENT, (event) => {
+      details.push((event as CustomEvent).detail);
+    });
+
+    fetchMock.mockResolvedValueOnce(jsonResponse(201, {
+      approval: { id: 'approval_pay_out_001', kind: 'transfer_spl' },
+      cartId: 'cart_demo_001',
+      cartHash: 'cart_hash_001',
+    }));
+    __resetPanelStateForTests({
+      phase: 'preview',
+      cartText: SAMPLE_CART,
+      preview: normalizePreview(makePreviewEnvelope()),
+    });
+
+    try {
+      await handleAction('confirm');
+    } finally {
+      if (typeof previousCustomEvent === 'undefined') {
+        delete (globalThis as { CustomEvent?: typeof CustomEvent }).CustomEvent;
+      }
+    }
+
+    expect(details).toEqual([{
+      source: 'acp_outbound',
+      approvalId: 'approval_pay_out_001',
+      cartId: 'cart_demo_001',
+      cartHash: 'cart_hash_001',
+    }]);
+    expect(__getPanelStateForTests().phase).toBe('compose');
+    expect(__getPanelStateForTests().cartText).toBe('');
   });
 });

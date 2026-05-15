@@ -85,7 +85,7 @@ describe('panelHtml + bodyHtml states', () => {
   });
 
   it('idle state renders the loading message and no JSON viewer', () => {
-    expect(bodyHtml()).toContain('Fetching the live AgentCard');
+    expect(bodyHtml()).toContain('Fetching the live Agent Card');
     expect(bodyHtml()).not.toContain('dev-agent-card-json');
   });
 
@@ -101,28 +101,51 @@ describe('panelHtml + bodyHtml states', () => {
   it('error state escapes the error message and offers a retry', () => {
     __resetTabStateForTests({ status: 'error', errorMessage: '<broken>' });
     const html = bodyHtml();
-    expect(html).toContain('Could not fetch AgentCard');
+    expect(html).toContain('Could not fetch Agent Card');
     expect(html).toContain('&lt;broken&gt;');
     expect(html).toContain('data-dev-agent-card-retry');
   });
 
-  it('loaded state renders the summary strip + JSON viewer when card has fields', () => {
+  it('loaded state renders a readable identity view with raw JSON in advanced details', () => {
     __resetTabStateForTests({
       status: 'loaded',
       cardJson: {
         walletAddress: '7tQAS3PCEHKekfA5xkkFqRf9aCkqg8aLg5jLA7MwYc8M',
         supportedProtocols: ['ap2', 'acp'],
         version: 'abc123',
-        name: 'Test',
+        name: 'Test Agent',
+        description: 'Signs only after user approval.',
+        url: 'https://example.test',
+        capabilities: {
+          streaming: false,
+          pushNotifications: true,
+          stateTransitionHistory: false,
+        },
+        skills: [
+          { id: 'wallet.sign_message', name: 'Sign Message', description: 'Sign a message.' },
+          { id: 'wallet.pay_cart', name: 'Pay Cart', description: 'Review and approve a payment request.' },
+        ],
       },
       fetchedAt: Date.now(),
     });
     const html = bodyHtml();
+    expect(html).toContain('dev-agent-card-readable');
+    expect(html).toContain('Agent identity');
+    expect(html).toContain('Test Agent');
+    expect(html).toContain('Signs only after user approval.');
     expect(html).toContain('dev-agent-card-summary');
     expect(html).toContain('7tQA…Yc8M');
     expect(html).toContain('ap2');
     expect(html).toContain('acp');
     expect(html).toContain('abc123');
+    expect(html).toContain('Capabilities');
+    expect(html).toContain('Push notifications');
+    expect(html).toContain('Enabled');
+    expect(html).toContain('Actions this wallet advertises');
+    expect(html).toContain('Sign Message');
+    expect(html).toContain('Pay Cart');
+    expect(html).toContain('https://example.test');
+    expect(html).toContain('View raw Agent Card');
     expect(html).toContain('dev-agent-card-json');
   });
 
@@ -153,7 +176,7 @@ describe('panelHtml + bodyHtml states', () => {
     expect(statusBadgeHtml()).toContain('failed');
   });
 
-  it('panelHtml shows Copy JSON only when a non-empty card is loaded', () => {
+  it('panelHtml shows Copy raw JSON only when a non-empty card is loaded', () => {
     __resetTabStateForTests({ status: 'idle' });
     expect(panelHtml()).not.toContain('data-copy-id="dev-agent-card-json"');
     __resetTabStateForTests({ status: 'loaded', cardJson: {}, fetchedAt: Date.now() });
@@ -164,6 +187,7 @@ describe('panelHtml + bodyHtml states', () => {
       fetchedAt: Date.now(),
     });
     expect(panelHtml()).toContain('data-copy-id="dev-agent-card-json"');
+    expect(panelHtml()).toContain('Copy raw JSON');
   });
 
   it('panelHtml always renders the Copy public URL + View live + Refresh action row', () => {

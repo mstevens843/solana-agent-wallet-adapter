@@ -1,7 +1,5 @@
 import './payOut.css';
-import { isDevWallet } from '../devGate.js';
-import { registerDevTab } from '../devTabRegistry.js';
-import { getConnectedAddress } from '../walletState.js';
+import { dispatchPayOutApprovalCreated } from '../payOutApprovalEvents.js';
 
 export interface AcpLineItemDisplay {
   name: string;
@@ -112,7 +110,7 @@ export function shortAddress(address: string): string {
 export function parseCartText(text: string): unknown {
   const trimmed = text.trim();
   if (!trimmed) {
-    throw new Error('Paste an ACP cart before previewing.');
+    throw new Error('Choose or import a payment request before reviewing.');
   }
   try {
     return JSON.parse(trimmed);
@@ -228,7 +226,7 @@ export function renderPayOutPanel(): string {
             <h2>Pay Out</h2>
             <span class="pay-out-mode">Manual approval</span>
           </div>
-          <p>Preview an ACP cart, validate the transfer details, then create the approval card your wallet signs in Needs Approval.</p>
+          <p>Review a payment request, then send it to Needs Approval. Your wallet signs later; this screen never transfers automatically.</p>
         </div>
         <div class="pay-out-route-card terminal-preview-window" aria-label="Payment route">
           <div class="terminal-preview-bar pay-out-route-bar">
@@ -239,24 +237,24 @@ export function renderPayOutPanel(): string {
           </div>
           <div class="pay-out-route-body">
             <div>
-              <span>Input</span>
-              <strong>ACP cart</strong>
+              <span>Request</span>
+              <strong>Merchant or agent</strong>
             </div>
             <div>
               <span>Review</span>
-              <strong>Transfer preview</strong>
+              <strong>Human-readable details</strong>
             </div>
             <div>
-              <span>Output</span>
+              <span>Approval</span>
               <strong>Needs Approval</strong>
             </div>
           </div>
         </div>
       </header>
       <div class="pay-out-capability-row" aria-label="Pay Out safeguards">
-        <span class="dev-tab-pill">JSON cart validation</span>
-        <span class="dev-tab-pill">SPL transfer preview</span>
-        <span class="dev-tab-pill">Wallet-signed approval</span>
+        <span class="dev-tab-pill">Readable request review</span>
+        <span class="dev-tab-pill">Backend validation</span>
+        <span class="dev-tab-pill">Wallet approval required</span>
       </div>
       ${noticeBlock}
       ${errorBlock}
@@ -267,42 +265,180 @@ export function renderPayOutPanel(): string {
 
 function composeView(cartText: string, busy: boolean): string {
   const disabled = busy ? 'disabled' : '';
+  const hasRequest = cartText.trim().length > 0;
   return `
     <form class="pay-out-form dev-tab-panel" data-pay-out-form onsubmit="return false;">
       <div class="pay-out-form-head">
         <div>
-          <label for="pay-out-cart-input">ACP cart</label>
-          <span>Paste the cart JSON from a merchant or external agent.</span>
+          <span class="pay-out-section-label">Payment request</span>
+          <h3>Choose a request to review</h3>
+          <p>Payment requests normally arrive from a checkout, QR link, or another agent. Use the demo request here to test the user flow.</p>
         </div>
       </div>
-      <div class="pay-out-editor-shell terminal-preview-window">
-        <div class="terminal-preview-bar pay-out-editor-bar">
-          <span></span>
-          <span></span>
-          <span></span>
-          <strong>cart.json</strong>
-        </div>
-        <textarea
-          id="pay-out-cart-input"
-          class="pay-out-cart-input"
-          name="cart"
-          spellcheck="false"
-          autocapitalize="off"
-          autocomplete="off"
-          placeholder='{"id":"cart_...","lineItems":[...],"totalAmount":"17.80","paymentToken":"USDC"}'
-          ${disabled}
-        >${escapeHtml(cartText)}</textarea>
+      <div class="pay-out-request-layout">
+        ${selectedRequestPanel(cartText)}
+        ${demoRequestPanel(disabled)}
       </div>
       <div class="pay-out-actions">
-        <button type="button" class="pay-out-button ghost" data-pay-out-action="load-sample" ${disabled}>Load sample</button>
+        <span class="pay-out-action-note">${hasRequest ? 'Ready to validate with the backend.' : 'Select a request before review.'}</span>
         <div class="pay-out-actions-end">
-          <button type="button" class="pay-out-button secondary" data-pay-out-action="clear" ${disabled}>Clear</button>
-          <button type="button" class="pay-out-button" data-pay-out-action="preview" ${disabled}>Preview cart</button>
+          ${hasRequest ? `<button type="button" class="pay-out-button secondary" data-pay-out-action="clear" ${disabled}>Clear request</button>` : ''}
+          ${hasRequest ? `<button type="button" class="pay-out-button" data-pay-out-action="preview" ${disabled}>Review payment request</button>` : ''}
         </div>
       </div>
+      <details class="pay-out-advanced">
+        <summary>
+          <span>Advanced</span>
+          <strong>Import raw ACP request</strong>
+        </summary>
+        <div class="pay-out-advanced-body">
+          <div class="pay-out-form-head compact">
+            <div>
+              <label for="pay-out-cart-input">Raw ACP request</label>
+              <span>For merchant and agent integrations. Most users should not need to edit this.</span>
+            </div>
+          </div>
+          <div class="pay-out-editor-shell terminal-preview-window">
+            <div class="terminal-preview-bar pay-out-editor-bar">
+              <span></span>
+              <span></span>
+              <span></span>
+              <strong>request.json</strong>
+            </div>
+            <textarea
+              id="pay-out-cart-input"
+              class="pay-out-cart-input"
+              name="cart"
+              spellcheck="false"
+              autocapitalize="off"
+              autocomplete="off"
+              placeholder='{"id":"cart_...","lineItems":[...],"totalAmount":"17.80","paymentToken":"USDC"}'
+              ${disabled}
+            >${escapeHtml(cartText)}</textarea>
+          </div>
+          <div class="pay-out-actions">
+            <span class="pay-out-action-note">Raw requests are validated by the backend before an approval is created.</span>
+            <div class="pay-out-actions-end">
+              <button type="button" class="pay-out-button" data-pay-out-action="preview" ${disabled}>Review imported request</button>
+            </div>
+          </div>
+        </div>
+      </details>
       ${busy ? '<p class="pay-out-busy" data-pay-out-busy>Working…</p>' : ''}
     </form>
   `;
+}
+
+function selectedRequestPanel(cartText: string): string {
+  const summary = requestSummary(cartText);
+  if (!summary) {
+    return `
+      <section class="pay-out-selected-request is-empty" aria-label="Selected payment request">
+        <span class="pay-out-request-status">No request selected</span>
+        <h4>No payment request yet</h4>
+        <p>Use the demo request to test Pay Out without pasting protocol data.</p>
+      </section>
+    `;
+  }
+  const items = summary.items.length > 0
+    ? `<p>${escapeHtml(summary.items.join(', '))}${summary.hiddenItemCount > 0 ? ` and ${summary.hiddenItemCount} more` : ''}</p>`
+    : '<p>Line items will be checked during backend validation.</p>';
+  return `
+    <section class="pay-out-selected-request" aria-label="Selected payment request">
+      <span class="pay-out-request-status">${escapeHtml(summary.status)}</span>
+      <div class="pay-out-request-title-row">
+        <h4>${escapeHtml(summary.merchantName)}</h4>
+        <strong>${escapeHtml(summary.totalLabel)}</strong>
+      </div>
+      ${items}
+      <dl class="pay-out-request-mini-grid">
+        <div>
+          <dt>Items</dt>
+          <dd>${escapeHtml(summary.itemCountLabel)}</dd>
+        </div>
+        <div>
+          <dt>Pay with</dt>
+          <dd>${escapeHtml(summary.paymentToken)}</dd>
+        </div>
+      </dl>
+    </section>
+  `;
+}
+
+function demoRequestPanel(disabled: string): string {
+  return `
+    <section class="pay-out-demo-request" aria-label="Demo payment request">
+      <span class="pay-out-request-status">Demo request</span>
+      <div class="pay-out-request-title-row">
+        <h4>Acme Coffee</h4>
+        <strong>17.80 USDC</strong>
+      </div>
+      <p>Latte x2, Croissant, Tax</p>
+      <dl class="pay-out-request-mini-grid">
+        <div>
+          <dt>Source</dt>
+          <dd>Checkout</dd>
+        </div>
+        <div>
+          <dt>Approval</dt>
+          <dd>Manual</dd>
+        </div>
+      </dl>
+      <button type="button" class="pay-out-button" data-pay-out-action="load-sample" ${disabled}>Use demo request</button>
+    </section>
+  `;
+}
+
+interface RequestSummary {
+  merchantName: string;
+  totalLabel: string;
+  paymentToken: string;
+  itemCountLabel: string;
+  itemCount: number;
+  hiddenItemCount: number;
+  items: string[];
+  status: string;
+}
+
+function requestSummary(cartText: string): RequestSummary | null {
+  if (!cartText.trim()) return null;
+  const parsed = safeJsonParse(cartText);
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+    return {
+      merchantName: 'Imported request',
+      totalLabel: 'Needs review',
+      paymentToken: 'Backend check',
+      itemCountLabel: 'Needs validation',
+      itemCount: 0,
+      hiddenItemCount: 0,
+      items: [],
+      status: 'Needs validation',
+    };
+  }
+  const record = parsed as Record<string, unknown>;
+  const merchant = record.merchant && typeof record.merchant === 'object' && !Array.isArray(record.merchant)
+    ? (record.merchant as Record<string, unknown>)
+    : {};
+  const merchantName = isStringField(merchant.name) ? merchant.name : 'Imported request';
+  const paymentToken = isStringField(record.paymentToken) ? record.paymentToken : 'Token pending';
+  const totalAmount = isStringField(record.totalAmount) ? record.totalAmount : 'Amount pending';
+  const totalLabel = `${totalAmount}${paymentToken ? ` ${paymentToken}` : ''}`;
+  const lineItems = Array.isArray(record.lineItems) ? record.lineItems : [];
+  const itemNames = lineItems
+    .map((item) => item && typeof item === 'object' && !Array.isArray(item) ? (item as Record<string, unknown>).name : undefined)
+    .filter((name): name is string => isStringField(name))
+    .slice(0, 3);
+  const hiddenItemCount = Math.max(0, lineItems.length - itemNames.length);
+  return {
+    merchantName,
+    totalLabel,
+    paymentToken,
+    itemCountLabel: lineItems.length === 1 ? '1 item' : `${lineItems.length} items`,
+    itemCount: lineItems.length,
+    hiddenItemCount,
+    items: itemNames,
+    status: 'Selected request',
+  };
 }
 
 function previewView(preview: AcpPreviewDisplay, busy: boolean): string {
@@ -390,12 +526,12 @@ function previewView(preview: AcpPreviewDisplay, busy: boolean): string {
           </span>
         </div>
 
-        <p class="pay-out-disclaimer">Confirming creates an approval card in Needs Approval. The connected wallet signs the SPL transfer; nothing is sent automatically.</p>
+        <p class="pay-out-disclaimer">Confirming sends this request to Needs Approval. No transfer happens until your wallet approves it.</p>
 
         <div class="pay-out-actions">
-          <button type="button" class="pay-out-button secondary" data-pay-out-action="edit" ${disabled}>Edit cart</button>
+          <button type="button" class="pay-out-button secondary" data-pay-out-action="edit" ${disabled}>Change request</button>
           <div class="pay-out-actions-end">
-            <button type="button" class="pay-out-button" data-pay-out-action="confirm" ${disabled}>Confirm payment</button>
+            <button type="button" class="pay-out-button" data-pay-out-action="confirm" ${disabled}>Send to Needs Approval</button>
           </div>
         </div>
         ${busy ? '<p class="pay-out-busy" data-pay-out-busy>Creating approval…</p>' : ''}
@@ -646,13 +782,19 @@ async function runConfirm(): Promise<void> {
   panelState.busy = false;
   if (result.kind === 'ok') {
     showToast(`Approval ready · ${shortAddress(result.value.approvalId)} — sign in Needs Approval`);
+    const dispatched = dispatchPayOutApprovalCreated({
+      source: 'acp_outbound',
+      approvalId: result.value.approvalId,
+      cartId: result.value.cartId,
+      ...(result.value.cartHash ? { cartHash: result.value.cartHash } : {}),
+    });
     panelState.phase = 'compose';
     panelState.cartText = '';
     panelState.preview = null;
     panelState.error = '';
     panelState.notice = null;
     rerenderPanelOnly();
-    clickInboxTab();
+    if (!dispatched) clickInboxTab();
     return;
   }
   if (result.kind === 'badRequest') {
@@ -687,11 +829,3 @@ if (typeof document !== 'undefined') {
     void handleAction(action);
   });
 }
-
-registerDevTab({
-  id: 'pay-out',
-  label: 'Pay Out',
-  mobileLabel: 'Pay',
-  guard: () => isDevWallet(getConnectedAddress()),
-  render: renderPayOutPanel,
-});

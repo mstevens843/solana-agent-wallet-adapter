@@ -1,0 +1,136 @@
+import './agentProtocols.css';
+import { isDevWallet } from '../devGate.js';
+import { registerDevTab } from '../devTabRegistry.js';
+import { getConnectedAddress } from '../walletState.js';
+import { renderAgentCardPanel } from './agentCard.js';
+import { renderExternalAgentsPanel } from './externalAgents.js';
+import { renderPayOutPanel } from './payOut.js';
+
+type AgentProtocolsSubTabId = 'agent-card' | 'pay-out' | 'external-agents';
+
+interface AgentProtocolsSubTab {
+  id: AgentProtocolsSubTabId;
+  label: string;
+  description: string;
+  render: () => string;
+}
+
+const subTabs: readonly AgentProtocolsSubTab[] = [
+  {
+    id: 'agent-card',
+    label: 'Agent Profile',
+    description: 'Public identity other agents can discover',
+    render: renderAgentCardPanel,
+  },
+  {
+    id: 'pay-out',
+    label: 'Send Payment',
+    description: 'Create an outgoing agent payment request',
+    render: renderPayOutPanel,
+  },
+  {
+    id: 'external-agents',
+    label: 'Incoming Requests',
+    description: 'Review requests from external agents',
+    render: renderExternalAgentsPanel,
+  },
+];
+
+let activeSubTabId: AgentProtocolsSubTabId = 'agent-card';
+
+function escapeHtml(value: string): string {
+  return value.replace(/[&<>"']/g, (c) =>
+    c === '&' ? '&amp;'
+    : c === '<' ? '&lt;'
+    : c === '>' ? '&gt;'
+    : c === '"' ? '&quot;'
+    : '&#39;',
+  );
+}
+
+function findSubTab(id: string): AgentProtocolsSubTab | undefined {
+  return subTabs.find((tab) => tab.id === id);
+}
+
+function renderSubTabButton(tab: AgentProtocolsSubTab): string {
+  const active = tab.id === activeSubTabId;
+  return `
+    <button
+      type="button"
+      class="${active ? 'active' : ''}"
+      role="tab"
+      aria-selected="${active ? 'true' : 'false'}"
+      title="${escapeHtml(tab.description)}"
+      data-agent-protocols-subtab="${escapeHtml(tab.id)}"
+    >
+      ${escapeHtml(tab.label)}
+    </button>
+  `;
+}
+
+function renderSubTabControl(): string {
+  return `
+    <div class="one-time-method-control agent-protocols-tab-control" role="presentation">
+      <span class="one-time-method-label">
+        <strong>Agent Payments</strong>
+        <em class="accent-note">Profile, send, receive</em>
+      </span>
+      <div class="template-filter-row one-time-method-filter agent-protocols-tab-list" role="tablist" aria-label="Agent payment sections">
+        ${subTabs.map(renderSubTabButton).join('')}
+      </div>
+    </div>
+  `;
+}
+
+function renderAgentProtocolsPanel(): string {
+  const active = findSubTab(activeSubTabId) ?? subTabs[0]!;
+  activeSubTabId = active.id;
+  return `
+    <div class="agent-protocols-shell" data-agent-protocols-root>
+      ${renderSubTabControl()}
+      <div class="agent-protocols-active-panel" role="tabpanel" data-active-agent-protocols-subtab="${escapeHtml(active.id)}">
+        ${active.render()}
+      </div>
+    </div>
+  `;
+}
+
+function rerenderPanelOnly(): void {
+  if (typeof document === 'undefined') return;
+  const root = document.querySelector('[data-agent-protocols-root]');
+  if (!root || !root.parentNode) return;
+  const template = document.createElement('template');
+  template.innerHTML = renderAgentProtocolsPanel().trim();
+  const next = template.content.firstElementChild;
+  if (next) root.replaceWith(next);
+}
+
+if (typeof document !== 'undefined') {
+  document.addEventListener('click', (event) => {
+    const target = event.target;
+    if (!(target instanceof Element)) return;
+    const trigger = target.closest<HTMLElement>('[data-agent-protocols-subtab]');
+    if (!trigger) return;
+    const id = trigger.dataset.agentProtocolsSubtab;
+    if (!id || !findSubTab(id)) return;
+    event.preventDefault();
+    activeSubTabId = id as AgentProtocolsSubTabId;
+    rerenderPanelOnly();
+  });
+}
+
+registerDevTab({
+  id: 'agent-protocols',
+  label: 'Agent Payments',
+  mobileLabel: 'Agents',
+  guard: () => isDevWallet(getConnectedAddress()),
+  render: renderAgentProtocolsPanel,
+});
+
+export const __agentProtocolsForTests = {
+  getActiveSubTab: (): AgentProtocolsSubTabId => activeSubTabId,
+  setActiveSubTab(id: AgentProtocolsSubTabId): void {
+    activeSubTabId = id;
+  },
+  renderAgentProtocolsPanel,
+};

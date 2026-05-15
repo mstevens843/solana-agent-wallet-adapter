@@ -295,12 +295,16 @@ import {
 import './styles.css';
 
 // Dev-only Layer 1 integration hooks. These imports register the three dev
-// tabs (Pay Out, External Agents, Agent Card) and approval-card badges
+// tabs (Agent Payments, Skills) and approval-card badges
 // (AP2 verified, ACP outbound) as side effects at module load. Visibility is
 // gated client-side by `isDevWallet(...)` inside each tab's guard() and
 // server-side by `isAllowedDevWallet(...)` for /api/* routes.
 import { findDevTab, listDevTabs } from './devTabRegistry.js';
 import { renderApprovalBadges } from './approvalBadges.js';
+import {
+  addPayOutApprovalCreatedListener,
+  type PayOutApprovalCreatedDetail,
+} from './payOutApprovalEvents.js';
 import { setConnectedAddress } from './walletState.js';
 import './devTabs/index.js';
 
@@ -3003,10 +3007,68 @@ async function startApp(): Promise<void> {
     startAgentBackgroundWatch();
     window.addEventListener('popstate', () => render());
     window.addEventListener('keydown', handleGlobalKeydown);
+    installPayOutApprovalCreatedListener();
     await bootstrap();
   } catch (err) {
     renderStartupFailure(err);
   }
+}
+
+function installPayOutApprovalCreatedListener(): void {
+  addPayOutApprovalCreatedListener((detail) => {
+    void handlePayOutApprovalCreated(detail);
+  });
+}
+
+async function handlePayOutApprovalCreated(detail: PayOutApprovalCreatedDetail): Promise<void> {
+  state.activeTab = 'inbox';
+  state.inboxFilter = 'all';
+  state.error = '';
+  state.steps.inbox = 'active';
+  if (state.workflowModePreference === 'local-bridge') {
+    state.workflowModePreference = 'auto';
+    savePersistedState();
+  }
+  render();
+
+  try {
+    await refreshCloudSession(false);
+    if (!cloudSessionMatchesWallet()) {
+      throw new Error('Connect the signed-in Agentic Cloud wallet to view the Pay Out approval.');
+    }
+    await refreshCloudWorkspaceData();
+    state.steps.inbox = 'done';
+    state.error = '';
+    render();
+    focusInboxApprovalCard(detail.approvalId);
+  } catch (err) {
+    state.steps.inbox = 'error';
+    state.error = redactSecrets(err instanceof Error ? err.message : String(err));
+    render();
+    pushToast(
+      'error',
+      'Approval created, inbox refresh failed',
+      `${detail.cartId} is saved in Agentic Cloud. ${state.error}`,
+    );
+  }
+}
+
+function focusInboxApprovalCard(approvalId: string): void {
+  if (!approvalId || typeof document === 'undefined') return;
+  requestAnimationFrame(() =>
+    requestAnimationFrame(() => {
+      const escaped = typeof CSS !== 'undefined' && CSS.escape
+        ? CSS.escape(approvalId)
+        : approvalId.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
+      const anchor = document.querySelector(`[data-action-id="${escaped}"]`);
+      const article = anchor?.closest('article');
+      if (article instanceof HTMLElement) {
+        article.scrollIntoView({ behavior: 'smooth', block: 'center' });
+        article.classList.add('inbox-approval-created-flash');
+        window.setTimeout(() => article.classList.remove('inbox-approval-created-flash'), 1600);
+      }
+    }),
+  );
 }
 
 function handleGlobalKeydown(event: KeyboardEvent): void {
@@ -4830,7 +4892,6 @@ function guidedDemoWalkthroughPage(): string {
             <h2>Start with a real request.</h2>
             <p>These are the approval moments Agentic is built for: the agent drafts, the wallet decides.</p>
           </div>
-          ${guidedDemoScenarioSelect(scenario)}
           <div class="guided-demo-scenario-list">
             ${GUIDED_DEMO_SCENARIOS.map((candidate) => guidedDemoScenarioCard(candidate)).join('')}
           </div>
@@ -4868,21 +4929,6 @@ function guidedDemoWalkthroughPage(): string {
         <a class="button-link mobile-redundant-nav" href="/docs">Read docs</a>
       </div>
     </section>
-  `;
-}
-
-function guidedDemoScenarioSelect(scenario: GuidedDemoScenario): string {
-  return `
-    <label class="guided-demo-scenario-select">
-      <span>Choose request</span>
-      <select data-demo-scenario-select ${state.busy ? 'disabled' : ''}>
-        ${GUIDED_DEMO_SCENARIOS.map((candidate) => `
-          <option value="${escapeHtml(candidate.id)}" ${candidate.id === scenario.id ? 'selected' : ''}>
-            ${escapeHtml(`${candidate.eyebrow} - ${candidate.title}`)}
-          </option>
-        `).join('')}
-      </select>
-    </label>
   `;
 }
 
@@ -15584,15 +15630,6 @@ function bind(): void {
   for (const button of document.querySelectorAll<HTMLButtonElement>('[data-demo-scenario]')) {
     button.addEventListener('click', () => {
       const scenario = guidedDemoScenarioById(button.dataset.demoScenario);
-      state.guidedDemo = defaultGuidedDemoState(scenario.id);
-      state.error = '';
-      render();
-    });
-  }
-
-  for (const select of document.querySelectorAll<HTMLSelectElement>('[data-demo-scenario-select]')) {
-    select.addEventListener('change', () => {
-      const scenario = guidedDemoScenarioById(select.value);
       state.guidedDemo = defaultGuidedDemoState(scenario.id);
       state.error = '';
       render();
@@ -27075,6 +27112,9 @@ async function reconcilePendingTransactions(opts: {
 }
 
 function browserExecutionStartMessage(action: PreparedAction): string {
+  if (isAcpOutboundAction(action)) {
+    return `Approve the wallet transaction to pay ${acpTotalLabel(action)} to ${acpMerchantName(action)}.`;
+  }
   switch (action.kind) {
     case 'transfer_sol':
     case 'transfer_spl':
@@ -27108,17 +27148,15 @@ async function executeBrowserPreparedActionRecord(
     case 'transfer_sol':
       return executeBrowserSolTransfer(action, toastContext);
     case 'transfer_spl':
+      if (isAcpOutboundAction(action)) return executeBrowserAcpOutbound(action, toastContext);
       return executeBrowserSplTransfer(action, toastContext);
     case 'swap':
       return executeBrowserSwap(action, toastContext);
     case 'custom_transaction':
       return executeBrowserCustomTransaction(action, toastContext);
     case 'manual_review': {
-      // ACP outbound approvals are stamped as `manual_review` server-side
-      // because cloud finalization doesn't yet support SPL transfers (see
-      // apps/render-web/src/cloud/acpRoutes.ts:143-148). Detect the ACP
-      // metadata and route to the existing SPL executor; params already
-      // match transfer_spl's expected shape.
+      // Older ACP outbound approvals were stamped as `manual_review`.
+      // Preserve that route while current approvals use `transfer_spl`.
       if ((action.metadata as { source?: unknown } | null | undefined)?.source === 'acp_outbound') {
         return executeBrowserAcpOutbound(action, toastContext);
       }
@@ -32663,8 +32701,7 @@ interface MoreMenuItem {
 
 function moreMenuItems(): MoreMenuItem[] {
   // "Save Proof" is always present (replaces its old top-level slot). Dev-gated
-  // Layer 1 tabs (Pay Out / External Agents / Agent Card / Skills) opt in only
-  // when their registered guard returns true (i.e. dev wallet connected).
+  // tabs opt in only when their registered guard returns true (i.e. dev wallet connected).
   const items: MoreMenuItem[] = [{ id: 'labs', label: 'Save Proof' }];
   for (const tab of listDevTabs()) {
     if (tab.guard()) items.push({ id: tab.id, label: tab.label });
@@ -32682,18 +32719,23 @@ function moreMenuButton(): string {
         <span class="nav-label">More</span>
         <span class="workspace-more-caret" aria-hidden="true">▾</span>
       </summary>
-      <div class="workspace-more-menu" role="menu">
+      <div class="workspace-more-menu template-picker-menu" role="menu">
         ${items
-          .map(
-            (item) => `
+          .map((item) => {
+            const active = state.activeTab === item.id;
+            return `
           <button
             type="button"
             role="menuitem"
             data-tab="${escapeHtml(item.id)}"
-            class="workspace-more-item ${state.activeTab === item.id ? 'active' : ''}"
-          >${escapeHtml(item.label)}</button>
-        `,
-          )
+            class="workspace-more-item template-picker-option ${active ? 'selected active' : ''}"
+          >
+            <span class="select-picker-option-copy">
+              <strong>${escapeHtml(item.label)}</strong>
+            </span>
+          </button>
+        `;
+          })
           .join('')}
       </div>
     </details>
@@ -32902,10 +32944,138 @@ function queueEmptyState(kind: 'bridge' | 'clear'): string {
   `;
 }
 
+function isAcpOutboundAction(action: PreparedAction): boolean {
+  return action.metadata?.source === 'acp_outbound';
+}
+
+function acpCartPayload(action: PreparedAction): Record<string, unknown> {
+  return isJsonObject(action.metadata?.acpCart) ? action.metadata.acpCart : {};
+}
+
+function acpMerchantRecord(action: PreparedAction): Record<string, unknown> {
+  if (isJsonObject(action.metadata?.merchant)) return action.metadata.merchant;
+  const cart = acpCartPayload(action);
+  return isJsonObject(cart.merchant) ? cart.merchant : {};
+}
+
+function acpMerchantName(action: PreparedAction): string {
+  return stringFromJsonLike(acpMerchantRecord(action).name) || 'merchant';
+}
+
+function acpCartId(action: PreparedAction): string {
+  const cart = acpCartPayload(action);
+  return stringFromJsonLike(action.metadata?.acpCartId) || stringFromJsonLike(cart.id) || action.id;
+}
+
+function acpPaymentToken(action: PreparedAction): string {
+  const cart = acpCartPayload(action);
+  return stringFromJsonLike(action.metadata?.paymentToken) ||
+    stringFromJsonLike(cart.paymentToken) ||
+    tokenLabel(action);
+}
+
+function acpTotalLabel(action: PreparedAction): string {
+  const cart = acpCartPayload(action);
+  const amount = stringFromJsonLike(action.metadata?.totalAmount) ||
+    stringFromJsonLike(cart.totalAmount) ||
+    stringParam(action, 'amount') ||
+    amountLabel(action);
+  const token = acpPaymentToken(action);
+  return [amount, token].filter((part) => part && part !== 'n/a').join(' ') || amountLabel(action);
+}
+
+function acpMemo(action: PreparedAction): string {
+  const cart = acpCartPayload(action);
+  return stringParam(action, 'memo') || stringFromJsonLike(cart.memo);
+}
+
+interface AcpCartLineItemSummary {
+  name: string;
+  quantity: string;
+  amount: string;
+}
+
+function acpCartLineItems(action: PreparedAction): AcpCartLineItemSummary[] {
+  const cart = acpCartPayload(action);
+  const rawItems = Array.isArray(cart.lineItems) ? cart.lineItems : [];
+  return rawItems
+    .map((item): AcpCartLineItemSummary | null => {
+      if (!isJsonObject(item)) return null;
+      const name = stringFromJsonLike(item.name);
+      if (!name) return null;
+      const quantity = acpLineItemQuantity(item.quantity);
+      const unitAmount = stringFromJsonLike(item.unitAmount) || stringFromJsonLike(item.amount);
+      const currency = stringFromJsonLike(item.currency);
+      const amount = [unitAmount, currency].filter(Boolean).join(' ');
+      return { name, quantity, amount };
+    })
+    .filter((item): item is AcpCartLineItemSummary => Boolean(item));
+}
+
+function acpLineItemQuantity(value: unknown): string {
+  if (typeof value === 'number' && Number.isFinite(value) && value !== 1) return `x ${value}`;
+  if (typeof value === 'string' && value.trim() && value.trim() !== '1') return `x ${value.trim()}`;
+  return '';
+}
+
+function acpDetailRow(label: string, value: string, title = value): string {
+  if (!value) return '';
+  return `
+    <div title="${escapeHtml(title)}">
+      <dt>${escapeHtml(label)}</dt>
+      <dd>${escapeHtml(value)}</dd>
+    </div>
+  `;
+}
+
+function inboxAcpOutboundCartBlock(action: PreparedAction): string {
+  if (!isAcpOutboundAction(action)) return '';
+  const merchant = acpMerchantName(action);
+  const cartId = acpCartId(action);
+  const recipient = recipientParam(action);
+  const token = acpPaymentToken(action);
+  const memo = acpMemo(action);
+  const items = acpCartLineItems(action);
+  const visibleItems = items.slice(0, 4);
+  const hiddenCount = Math.max(0, items.length - visibleItems.length);
+  const itemList = visibleItems.length
+    ? `
+      <ol class="inbox-acp-line-items" aria-label="ACP cart line items">
+        ${visibleItems.map((item) => `
+          <li>
+            <span>${escapeHtml(item.name)} ${item.quantity ? `<em>${escapeHtml(item.quantity)}</em>` : ''}</span>
+            ${item.amount ? `<strong>${escapeHtml(item.amount)}</strong>` : ''}
+          </li>
+        `).join('')}
+        ${hiddenCount > 0 ? `<li class="more"><span>${hiddenCount} more item${hiddenCount === 1 ? '' : 's'}</span></li>` : ''}
+      </ol>
+    `
+    : '';
+  return `
+    <section class="inbox-acp-cart" aria-label="ACP payment details">
+      <div class="inbox-acp-cart-head">
+        <div>
+          <span>ACP checkout</span>
+          <strong>${escapeHtml(merchant)}</strong>
+        </div>
+        <strong class="inbox-acp-total">${escapeHtml(acpTotalLabel(action))}</strong>
+      </div>
+      <dl class="inbox-acp-cart-grid">
+        ${acpDetailRow('Cart', cartId)}
+        ${recipient ? acpDetailRow('Recipient', recipientDisplayLabel(recipient), recipient) : ''}
+        ${acpDetailRow('Pay with', token)}
+        ${memo ? acpDetailRow('Memo', memo) : ''}
+      </dl>
+      ${itemList}
+    </section>
+  `;
+}
+
 function preparedActionCard(action: PreparedAction): string {
   const executable = ['ready', 'overdue', 'failed'].includes(action.status);
   const browserWorkflow = isBrowserWorkflowId(action.id);
   const cloudWorkflow = action.workflowSource === 'cloud';
+  const acpOutbound = isAcpOutboundAction(action);
   const decisionLabels = preparedActionDecisionLabels(action);
   const effectCopy = approvalEffectCopy(action);
   const executionBlockReason = cloudExecutionBlockReason(action)
@@ -32927,8 +33097,15 @@ function preparedActionCard(action: PreparedAction): string {
     pendingLedgerExecution ||
     Boolean(executionBlockReason);
   const connectorMeta = resolveConnectorMetaForAction(action.kind, action.params as Record<string, unknown>);
+  const cardClass = [
+    'inbox-item',
+    'approval-ticket',
+    'inbox-approval-card',
+    action.status,
+    acpOutbound ? 'acp-outbound-approval' : '',
+  ].filter(Boolean).join(' ');
   return `
-    <article class="inbox-item approval-ticket inbox-approval-card ${action.status}">
+    <article class="${escapeHtml(cardClass)}" data-action-id="${escapeHtml(action.id)}"${acpOutbound ? ' data-approval-source="acp_outbound"' : ''}>
       <div class="ticket-body inbox-approval-body">
         <div class="inbox-approval-head">
           <div class="inbox-approval-title-block">
@@ -32959,6 +33136,7 @@ function preparedActionCard(action: PreparedAction): string {
           </div>
         </div>
         ${inboxApprovalSummaryGrid(action)}
+        ${inboxAcpOutboundCartBlock(action)}
         ${preSignReviewBlock(action)}
         ${inboxApprovalNote(action)}
         ${preparedActionAgentReviewStrip(action)}
@@ -32990,6 +33168,7 @@ function preparedActionCard(action: PreparedAction): string {
 }
 
 function preparedActionMetaLabel(action: PreparedAction): string {
+  if (isAcpOutboundAction(action)) return 'ACP outbound payment';
   if (isConnectorApprovalKind(action)) {
     return connectorActionDisplayParts(action.kind, action.params)?.operationLabel ?? action.kind.replace(/_/g, ' ');
   }
@@ -32997,6 +33176,7 @@ function preparedActionMetaLabel(action: PreparedAction): string {
 }
 
 function preparedActionCardTitle(action: PreparedAction): string {
+  if (isAcpOutboundAction(action)) return `Pay ${acpMerchantName(action)}`;
   if (action.recurringId && action.kind === 'swap') return 'Recurring swap approval';
   if (action.recurringId) return 'Repeat payment approval';
   if (action.kind === 'transfer_sol' || action.kind === 'transfer_spl') return 'Transfer approval';
@@ -33020,12 +33200,15 @@ function inboxActionFailurePill(action: PreparedAction): string {
 }
 
 function inboxApprovalHero(action: PreparedAction): string {
-  const primary = amountLabel(action);
+  const acpOutbound = isAcpOutboundAction(action);
+  const primary = acpOutbound ? acpTotalLabel(action) : amountLabel(action);
   const secondary = recipientParam(action)
     ? `To ${recipientDisplayLabel(recipientParam(action))}`
     : formatDateTime(action.dueAt);
   const subject = marketAmountSubjectForAction(action);
-  const context = isConnectorApprovalKind(action) ? '' : preparedActionConnectorContextLabel(action);
+  const context = acpOutbound
+    ? `ACP cart ${acpCartId(action)}`
+    : isConnectorApprovalKind(action) ? '' : preparedActionConnectorContextLabel(action);
   return `
     <div class="inbox-approval-value" title="${escapeHtml(marketHeroTitle(primary, secondary, subject))}">
       ${marketAmountLineHtml(primary, subject)}
@@ -34400,6 +34583,12 @@ function inlineReceiptActions(action: PreparedAction): string {
 }
 
 function preparedActionDecisionLabels(action: PreparedAction): { approve: string; reject: string } {
+  if (isAcpOutboundAction(action)) {
+    return {
+      approve: 'Approve payment',
+      reject: 'Deny payment',
+    };
+  }
   if (canFinalizeCloudSolTransfer(action)) {
     return {
       approve: 'Review and send',
@@ -34445,6 +34634,9 @@ function preparedActionDecisionLabels(action: PreparedAction): { approve: string
 function approvalEffectCopy(action: PreparedAction): string {
   const raydiumLiquidityCopy = raydiumAddLiquidityEffectCopy(action);
   if (raydiumLiquidityCopy) return raydiumLiquidityCopy;
+  if (isAcpOutboundAction(action)) {
+    return 'Your wallet signs and submits the exact SPL transfer to the merchant recipient. Agentic saves the ACP cart hash and receipt; nothing is sent until wallet approval.';
+  }
   if (canFinalizeCloudSolTransfer(action)) {
     return 'Agentic Cloud prepares and simulates the exact SOL transfer, your browser opens your wallet for that transaction only, then Agentic saves a finalization receipt. Agentic never receives signing authority.';
   }
@@ -34608,14 +34800,19 @@ function completedPlanSubmissionPill(plan: CompletedPlanRecord): string {
 
 function cloudExecutionBlockReason(action: PreparedAction): string | null {
   if (isCloudBrowserExecutableAction(action)) {
+    const actionLabel = action.kind === 'swap'
+      ? 'cloud swap'
+      : isAcpOutboundAction(action)
+        ? 'Pay Out approval'
+        : 'cloud token transfer';
     if (!state.address || state.address !== action.walletAddress) {
-      return 'Connect the approval wallet before approving this cloud swap.';
+      return `Connect the approval wallet before approving this ${actionLabel}.`;
     }
     if (action.cluster !== state.cluster) {
-      return `Switch to ${titleCaseCluster(action.cluster)} before approving this cloud swap.`;
+      return `Switch to ${titleCaseCluster(action.cluster)} before approving this ${actionLabel}.`;
     }
     if (state.capabilities?.supports.signTransaction !== true) {
-      return 'This wallet cannot sign swap transactions from this browser.';
+      return `This wallet cannot sign this ${actionLabel} transaction from this browser.`;
     }
     return null;
   }
@@ -34633,6 +34830,7 @@ function cloudExecutionBlockReason(action: PreparedAction): string | null {
 }
 
 function finalizationChecklist(action: PreparedAction): string {
+  if (isAcpOutboundAction(action)) return '';
   const requiresWalletFinalization = requiresCloudTransactionFinalization(action);
   if (!requiresWalletFinalization && !action.finalization) return '';
   const status = action.finalization?.status ?? action.finalizationStatus ?? 'not_started';
