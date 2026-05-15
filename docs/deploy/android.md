@@ -78,6 +78,17 @@ pnpm android:debug -- -PagenticLaunchUrl=https://agentic-signer.com/app
 The release workflow builds with `AGENTIC_ANDROID_LAUNCH_URL=https://agentic-signer.com/app`. The fallback URL is used
 only when web fallback is explicitly enabled, not as the default Android launcher.
 
+Override the Agentic Cloud API origin used by the bundled Android shell:
+
+```sh
+AGENTIC_ANDROID_CLOUD_API_BASE_URL=https://agentic-signer.com pnpm android:install
+pnpm android:install -- -PAGENTIC_ANDROID_CLOUD_API_BASE_URL=https://agentic-signer.com
+```
+
+The default is `https://agentic-signer.com`. Release builds require an HTTPS cloud API origin. The bundled shell runs at
+`https://agentic.local/`, so cloud storage and Hosted BYOK use bearer-authenticated cross-origin API calls instead of
+same-site cookies.
+
 Enable the hosted web/TWA fallback for a debug build:
 
 ```sh
@@ -117,12 +128,13 @@ APK testing against a laptop bridge, set it explicitly. The app still accepts on
 
 Android users can use the app planner without an AI key through templates. If they want AI planning without a
 desktop bridge, the bundled app defaults to Android session BYOK with browser-compatible providers such as OpenRouter
-or custom gateways. Hosted BYOK is disabled inside the bundled shell because there is no same-origin hosted API server;
-desktop local bridge AI remains an advanced opt-in path. See `docs/ai-byok.md`.
+or custom gateways. Hosted BYOK is available after signing in to Agentic Cloud with the connected wallet; the API key
+is relayed only for that request and is not synced. Desktop local bridge AI remains an advanced opt-in path. See
+`docs/ai-byok.md`.
 
-MWA authorization records are stored in app-private encrypted storage backed by Android Keystore. Upgraded installs
-migrate the older plaintext cache on first read, delete the plaintext file after a successful encrypted write, and ask
-the user to reconnect if encrypted cache decryption fails.
+MWA authorization records and Android cloud bearer sessions are stored in app-private encrypted storage backed by
+Android Keystore. Upgraded installs migrate the older plaintext MWA cache on first read, delete the plaintext file after
+a successful encrypted write, and ask the user to reconnect if encrypted cache decryption fails.
 
 ## Store Listing
 

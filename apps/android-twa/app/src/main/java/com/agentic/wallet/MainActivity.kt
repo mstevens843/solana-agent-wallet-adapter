@@ -36,11 +36,13 @@ import java.security.MessageDigest
 class MainActivity : ComponentActivity() {
     private lateinit var webView: WebView
     private lateinit var mwaController: MwaController
+    private lateinit var secureStore: NativeSecureStore
 
     @SuppressLint("SetJavaScriptEnabled")
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         mwaController = MwaController(applicationContext, defaultMwaIdentity())
+        secureStore = NativeSecureStore(applicationContext)
         AgentMwaLog.info(
             "MainActivity",
             "onCreate",
@@ -51,6 +53,7 @@ class MainActivity : ComponentActivity() {
                 "exampleTab" to BuildConfig.AGENTIC_ANDROID_SHOW_EXAMPLE_TAB,
                 "webFallbackEnabled" to BuildConfig.AGENTIC_ANDROID_ENABLE_WEB_FALLBACK,
                 "lanBridgeEnabled" to BuildConfig.AGENTIC_ANDROID_ALLOW_LAN_BRIDGE,
+                "cloudApiBaseUrl" to BuildConfig.AGENTIC_ANDROID_CLOUD_API_BASE_URL,
             ),
         )
 
@@ -267,6 +270,26 @@ class MainActivity : ComponentActivity() {
         fun isDebugBuild(): Boolean = BuildConfig.DEBUG
 
         @JavascriptInterface
+        fun secureGet(key: String): String {
+            validateSecureStoreRequest(key)
+            return activity.secureStore.get(key).orEmpty()
+        }
+
+        @JavascriptInterface
+        fun secureSet(key: String, value: String): Boolean {
+            validateSecureStoreRequest(key, value)
+            activity.secureStore.set(key, value)
+            return true
+        }
+
+        @JavascriptInterface
+        fun secureDelete(key: String): Boolean {
+            validateSecureStoreRequest(key)
+            activity.secureStore.remove(key)
+            return true
+        }
+
+        @JavascriptInterface
         fun mwaRequest(requestId: String, method: String, payloadJson: String) {
             activity.lifecycleScope.launch {
                 try {
@@ -318,6 +341,15 @@ class MainActivity : ComponentActivity() {
             }
             if (payloadJson.length > MAX_PAYLOAD_CHARS) {
                 throw MwaOperationException("INVALID_REQUEST", "Android MWA bridge payload is too large.")
+            }
+        }
+
+        private fun validateSecureStoreRequest(key: String, value: String = "") {
+            if (key != NativeSecureStore.CLOUD_SESSION_TOKEN_KEY) {
+                throw MwaOperationException("INVALID_REQUEST", "Unsupported Android secure storage key.")
+            }
+            if (value.length > MAX_SECURE_VALUE_CHARS) {
+                throw MwaOperationException("INVALID_REQUEST", "Android secure storage value is too large.")
             }
         }
 
@@ -475,6 +507,7 @@ class MainActivity : ComponentActivity() {
                 "clearAllAccounts",
             )
             private const val MAX_PAYLOAD_CHARS = 2_000_000
+            private const val MAX_SECURE_VALUE_CHARS = 8192
         }
     }
 

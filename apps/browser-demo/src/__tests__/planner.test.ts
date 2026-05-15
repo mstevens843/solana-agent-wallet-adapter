@@ -411,6 +411,33 @@ describe('planner AI setup helpers', () => {
     ]));
   });
 
+  it('can confirm Hosted BYOK through an injected cloud fetcher', async () => {
+    const hostedFetch = vi.fn(async (path: string) => {
+      expect(path).toBe('/api/ai/status');
+      return jsonResponse({ available: true, mode: 'hosted-byok' });
+    });
+
+    const diagnostics = await confirmHostedAiPlanner({
+      ...sessionSettings,
+      mode: 'hosted',
+      provider: 'openai',
+      model: 'gpt-5',
+    }, {
+      hostedFetch,
+      hostedOrigin: 'https://agentic-signer.com',
+    });
+
+    expect(hostedFetch).toHaveBeenCalledTimes(1);
+    expect(diagnostics).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        code: 'AI_PLAN_READY',
+        method: 'GET',
+        path: '/api/ai/status',
+      }),
+    ]));
+  });
+
+
   it('reports Hosted BYOK route mismatches when the status route returns HTML', async () => {
     vi.stubGlobal('fetch', vi.fn(async () => new Response('<!doctype html><div id="app"></div>', {
       status: 200,

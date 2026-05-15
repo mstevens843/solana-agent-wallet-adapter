@@ -86,11 +86,21 @@ val allowLanBridge = booleanFlag(
     "AGENTIC_ANDROID_ALLOW_LAN_BRIDGE",
     !isReleaseBuild,
 )
+val cloudApiBaseUrl = propertyOrEnv("AGENTIC_ANDROID_CLOUD_API_BASE_URL")
+    ?: propertyOrEnv("AGENTIC_CLOUD_API_BASE_URL")
+    ?: "https://agentic-signer.com"
+val cloudApiUri = uri(cloudApiBaseUrl)
 val localLaunchHosts = setOf("localhost", "127.0.0.1", "0.0.0.0", "::1")
 
 if (isReleaseBuild && (launchScheme != "https" || launchHost.lowercase() in localLaunchHosts)) {
     throw GradleException(
         "Release Android builds must use a non-local HTTPS AGENTIC_ANDROID_LAUNCH_URL. Current value: $launchUrl",
+    )
+}
+
+if (isReleaseBuild && cloudApiUri.scheme != "https") {
+    throw GradleException(
+        "Release Android builds must use an HTTPS AGENTIC_ANDROID_CLOUD_API_BASE_URL. Current value: $cloudApiBaseUrl",
     )
 }
 
@@ -151,6 +161,7 @@ android {
         buildConfigField("boolean", "AGENTIC_ANDROID_SHOW_EXAMPLE_TAB", showExampleTab.toString())
         buildConfigField("boolean", "AGENTIC_ANDROID_ENABLE_WEB_FALLBACK", enableWebFallback.toString())
         buildConfigField("boolean", "AGENTIC_ANDROID_ALLOW_LAN_BRIDGE", allowLanBridge.toString())
+        buildConfigField("String", "AGENTIC_ANDROID_CLOUD_API_BASE_URL", "\"${cloudApiBaseUrl.replace("\"", "\\\"")}\"")
         resValue("string", "launch_url", launchUrl)
         resValue("string", "asset_statements", escapedResValue(assetStatements))
     }
@@ -220,6 +231,7 @@ val buildBundledWebAssets = tasks.register<Exec>("buildBundledWebAssets") {
     environment("VITE_AGENTIC_ANDROID_APP", "true")
     environment("VITE_AGENTIC_ANDROID_SHOW_EXAMPLE_TAB", showExampleTab.toString())
     environment("VITE_AGENTIC_ANDROID_ALLOW_LAN_BRIDGE", allowLanBridge.toString())
+    environment("VITE_AGENTIC_CLOUD_API_BASE_URL", cloudApiBaseUrl)
     environment("VITE_CAPACITOR_IOS_APP", "false")
 }
 
@@ -235,6 +247,7 @@ val typecheckBundledWebAssets = tasks.register<Exec>("typecheckBundledWebAssets"
     environment("VITE_AGENTIC_ANDROID_APP", "true")
     environment("VITE_AGENTIC_ANDROID_SHOW_EXAMPLE_TAB", showExampleTab.toString())
     environment("VITE_AGENTIC_ANDROID_ALLOW_LAN_BRIDGE", allowLanBridge.toString())
+    environment("VITE_AGENTIC_CLOUD_API_BASE_URL", cloudApiBaseUrl)
     environment("VITE_CAPACITOR_IOS_APP", "false")
 }
 

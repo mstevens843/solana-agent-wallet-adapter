@@ -31,6 +31,9 @@ export interface AndroidNativeWalletBackendOptions {
 interface AndroidNativeBridge {
   mwaRequest?: (requestId: string, method: string, payloadJson: string) => void;
   isDebugBuild?: () => boolean;
+  secureGet?: (key: string) => string;
+  secureSet?: (key: string, value: string) => boolean;
+  secureDelete?: (key: string) => boolean;
 }
 
 interface AndroidNativeCallbackBridge {
@@ -61,6 +64,7 @@ interface AndroidMwaStatus {
 }
 
 const ANDROID_NATIVE_TIMEOUT_MS = 120_000;
+const CLOUD_SESSION_TOKEN_KEY = 'cloudSessionToken';
 const pendingNativeRequests = new Map<string, PendingNativeRequest>();
 let nextRequestNonce = 1;
 
@@ -75,6 +79,49 @@ export function detectAndroidNativeEnvironment(): AndroidNativeEnvironment {
 export async function androidNativeCacheSummary(): Promise<{ count: number }> {
   const status = await androidNativeRequest<AndroidMwaStatus>('status');
   return { count: status.cachedCount };
+}
+
+export function androidNativeCloudSessionToken(): string {
+  const bridge = androidNativeBridge();
+  if (!bridge?.secureGet) return '';
+  try {
+    return bridge.secureGet(CLOUD_SESSION_TOKEN_KEY).trim();
+  } catch (err) {
+    logAndroidNative('secureGet', 'FAIL', {
+      key: CLOUD_SESSION_TOKEN_KEY,
+      error: err instanceof Error ? err.message : String(err),
+    }, 'warn');
+    return '';
+  }
+}
+
+export function setAndroidNativeCloudSessionToken(token: string): boolean {
+  const bridge = androidNativeBridge();
+  if (!bridge?.secureSet) return false;
+  try {
+    return bridge.secureSet(CLOUD_SESSION_TOKEN_KEY, token);
+  } catch (err) {
+    logAndroidNative('secureSet', 'FAIL', {
+      key: CLOUD_SESSION_TOKEN_KEY,
+      tokenChars: token.length,
+      error: err instanceof Error ? err.message : String(err),
+    }, 'warn');
+    return false;
+  }
+}
+
+export function clearAndroidNativeCloudSessionToken(): boolean {
+  const bridge = androidNativeBridge();
+  if (!bridge?.secureDelete) return false;
+  try {
+    return bridge.secureDelete(CLOUD_SESSION_TOKEN_KEY);
+  } catch (err) {
+    logAndroidNative('secureDelete', 'FAIL', {
+      key: CLOUD_SESSION_TOKEN_KEY,
+      error: err instanceof Error ? err.message : String(err),
+    }, 'warn');
+    return false;
+  }
 }
 
 export async function restoreLatestAndroidNativeWallet(

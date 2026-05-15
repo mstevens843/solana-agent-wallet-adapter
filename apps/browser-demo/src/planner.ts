@@ -62,7 +62,11 @@ export interface AiSettings {
 
 export interface AiRequestOptions {
   signal?: AbortSignal;
+  hostedFetch?: HostedAiFetch;
+  hostedOrigin?: string;
 }
+
+export type HostedAiFetch = (path: string, init?: RequestInit) => Promise<Response>;
 
 export interface BridgeAiStatus {
   available: boolean;
@@ -741,7 +745,7 @@ export async function generateHostedAiPlan(
     },
   ];
   await assertHostedAiAvailable(diagnostics, options);
-  const response = await fetch('/api/ai/generate-plan', {
+  const response = await hostedAiFetch(options)('/api/ai/generate-plan', {
     method: 'POST',
     headers: {
       'content-type': 'application/json',
@@ -802,6 +806,7 @@ export async function generateHostedAiPlan(
 export async function generateHostedAiReview(
   settings: AiSettings,
   request: AgentPlanReviewRequest,
+  options: AiRequestOptions = {},
 ): Promise<AgentPlanReviewResult> {
   const apiKey = normalizeAiApiKey(settings.apiKey);
   if (!apiKey) {
@@ -818,12 +823,13 @@ export async function generateHostedAiReview(
       path: '/api/ai/review-plan',
     },
   ];
-  await assertHostedAiAvailable(diagnostics);
-  const response = await fetch('/api/ai/review-plan', {
+  await assertHostedAiAvailable(diagnostics, options);
+  const response = await hostedAiFetch(options)('/api/ai/review-plan', {
     method: 'POST',
     headers: {
       'content-type': 'application/json',
     },
+    ...(options.signal ? { signal: options.signal } : {}),
     body: JSON.stringify({
       settings: {
         apiKey,
@@ -903,6 +909,7 @@ export async function generateSessionAiAsk(
 export async function generateHostedAiAsk(
   settings: AiSettings,
   request: AgentPlanAskRequest,
+  options: AiRequestOptions = {},
 ): Promise<AgentPlanAskResult> {
   const apiKey = normalizeAiApiKey(settings.apiKey);
   if (!apiKey) {
@@ -921,10 +928,11 @@ export async function generateHostedAiAsk(
       path: '/api/ai/ask-about-plan',
     },
   ];
-  await assertHostedAiAvailable(diagnostics);
-  const response = await fetch('/api/ai/ask-about-plan', {
+  await assertHostedAiAvailable(diagnostics, options);
+  const response = await hostedAiFetch(options)('/api/ai/ask-about-plan', {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
+    ...(options.signal ? { signal: options.signal } : {}),
     body: JSON.stringify({
       settings: {
         apiKey,
@@ -968,7 +976,7 @@ export async function generateHostedAiAsk(
   return normalizeHostedAiAsk(payload);
 }
 
-export async function confirmHostedAiPlanner(settings: AiSettings): Promise<AiDiagnosticEntry[]> {
+export async function confirmHostedAiPlanner(settings: AiSettings, options: AiRequestOptions = {}): Promise<AiDiagnosticEntry[]> {
   const apiKey = normalizeAiApiKey(settings.apiKey);
   if (!apiKey) {
     throw new Error('Hosted BYOK key is required before confirming planner setup.');
@@ -990,7 +998,7 @@ export async function confirmHostedAiPlanner(settings: AiSettings): Promise<AiDi
       path: '/api/ai/status',
     },
   ];
-  await assertHostedAiAvailable(diagnostics);
+  await assertHostedAiAvailable(diagnostics, options);
   diagnostics.push({
     code: 'AI_PLAN_READY',
     message: 'Hosted BYOK planner route confirmed. No plan was generated.',
@@ -1002,7 +1010,7 @@ export async function confirmHostedAiPlanner(settings: AiSettings): Promise<AiDi
 }
 
 async function assertHostedAiAvailable(diagnostics: AiDiagnosticEntry[], options: AiRequestOptions = {}): Promise<void> {
-  const response = await fetch('/api/ai/status', {
+  const response = await hostedAiFetch(options)('/api/ai/status', {
     headers: {
       accept: 'application/json',
     },
@@ -1041,6 +1049,10 @@ async function assertHostedAiAvailable(diagnostics: AiDiagnosticEntry[], options
       },
     );
   }
+}
+
+function hostedAiFetch(options: AiRequestOptions): HostedAiFetch {
+  return options.hostedFetch ?? ((path, init) => fetch(path, init));
 }
 
 function isAbortError(err: unknown): boolean {

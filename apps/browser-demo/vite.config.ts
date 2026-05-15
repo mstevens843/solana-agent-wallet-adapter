@@ -16,6 +16,10 @@ const androidAllowLanBridge =
   process.env.VITE_AGENTIC_ANDROID_ALLOW_LAN_BRIDGE ??
   process.env.AGENTIC_ANDROID_ALLOW_LAN_BRIDGE ??
   'false';
+const cloudApiBaseUrl =
+  process.env.VITE_AGENTIC_CLOUD_API_BASE_URL ??
+  process.env.AGENTIC_CLOUD_API_BASE_URL ??
+  '';
 const appSurface = process.env.VITE_AGENTIC_APP_SURFACE ?? process.env.AGENTIC_APP_SURFACE ?? '';
 const gaMeasurementId = process.env.VITE_AGENTIC_GA_MEASUREMENT_ID ?? process.env.AGENTIC_GA_MEASUREMENT_ID ?? '';
 
@@ -27,6 +31,7 @@ export default defineConfig({
     'import.meta.env.VITE_AGENTIC_ANDROID_APP': JSON.stringify(androidApp),
     'import.meta.env.VITE_AGENTIC_ANDROID_SHOW_EXAMPLE_TAB': JSON.stringify(androidShowExampleTab),
     'import.meta.env.VITE_AGENTIC_ANDROID_ALLOW_LAN_BRIDGE': JSON.stringify(androidAllowLanBridge),
+    'import.meta.env.VITE_AGENTIC_CLOUD_API_BASE_URL': JSON.stringify(cloudApiBaseUrl),
     'import.meta.env.VITE_AGENTIC_APP_SURFACE': JSON.stringify(appSurface),
     'import.meta.env.VITE_AGENTIC_GA_MEASUREMENT_ID': JSON.stringify(gaMeasurementId),
   },

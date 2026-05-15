@@ -99,8 +99,11 @@ import { Connection, PublicKey, SystemProgram, Transaction, TransactionInstructi
 import {
   AndroidNativeWalletBackend,
   androidNativeCacheSummary,
+  androidNativeCloudSessionToken,
+  clearAndroidNativeCloudSessionToken,
   detectAndroidNativeEnvironment,
   restoreLatestAndroidNativeWallet,
+  setAndroidNativeCloudSessionToken,
   type AndroidNativeEnvironment,
   type AndroidNativeRestoreResult,
 } from './androidNative.js';
@@ -752,6 +755,9 @@ interface AgenticAndroidBridge {
   openMwaExample?: () => void;
   isExampleTabEnabled?: () => boolean;
   isDebugBuild?: () => boolean;
+  secureGet?: (key: string) => string;
+  secureSet?: (key: string, value: string) => boolean;
+  secureDelete?: (key: string) => boolean;
   mwaRequest?: (requestId: string, method: string, payloadJson: string) => void;
 }
 
@@ -894,8 +900,8 @@ const OPENAI_BROWSER_SESSION_DISABLED_REASON =
   'OpenAI cannot be called directly from Browser Session. Use Hosted BYOK or Local bridge for OpenAI.';
 const HOSTED_CUSTOM_PROVIDER_DISABLED_REASON =
   'Hosted BYOK supports preset providers only. Use Local bridge or Browser Session for custom gateways.';
-const ANDROID_HOSTED_BYOK_DISABLED_REASON =
-  'Hosted BYOK needs the hosted web app API. The Android app is a bundled local shell; use Browser Session or Local bridge.';
+const DEFAULT_ANDROID_CLOUD_API_BASE_URL = 'https://agentic-signer.com';
+const ANDROID_CLOUD_CLIENT_HEADER = 'android-bundled';
 const BROWSER_AI_LIMITATIONS = [
   'Provider may block direct browser calls.',
   'Key lives only in the current browser runtime.',
@@ -5267,6 +5273,7 @@ function guidedDemoScenarioCard(scenario: GuidedDemoScenario): string {
     : '';
   return `
     <button
+      type="button"
       class="guided-demo-scenario-card ${scenario.cardGroups?.length ? 'compact' : ''} ${active ? 'active' : ''}"
       data-demo-scenario="${escapeHtml(scenario.id)}"
       aria-pressed="${active ? 'true' : 'false'}"
@@ -13759,7 +13766,7 @@ function aiModeSelectOptions(): SelectPickerOption[] {
     ? [
         { id: 'session', label: 'Android session - drafts only' },
         { id: 'bridge', label: 'Local bridge AI - optional' },
-        { id: 'hosted', label: 'Hosted BYOK - hosted web only' },
+        { id: 'hosted', label: 'Hosted BYOK - cloud relay' },
       ]
     : [
         { id: 'hosted', label: 'Hosted BYOK - drafts only' },
@@ -13851,9 +13858,6 @@ function bridgeAiProviderLogoId(status: BridgeAiStatus | null): BrandLogoId | un
 }
 
 function aiModeDisabledReason(mode: AiSettings['mode']): string {
-  if (IS_ANDROID_APP && mode === 'hosted') {
-    return ANDROID_HOSTED_BYOK_DISABLED_REASON;
-  }
   if (mode === 'session' && state.aiSettings.provider === 'openai') {
     return OPENAI_BROWSER_SESSION_DISABLED_REASON;
   }
@@ -13891,7 +13895,7 @@ function aiProviderHelperText(): string {
   }
   if (state.aiSettings.mode === 'hosted') {
     if (IS_ANDROID_APP) {
-      return ANDROID_HOSTED_BYOK_DISABLED_REASON;
+      return 'Hosted BYOK relays through Agentic Cloud from this Android app. Sign in to cloud with the connected wallet first.';
     }
     return state.aiSettings.provider === 'custom-openai-compatible'
       ? HOSTED_CUSTOM_PROVIDER_DISABLED_REASON
@@ -14320,15 +14324,6 @@ function aiRouteMismatchDiagnostic(err: unknown): AiDiagnosticEntry | undefined 
 }
 
 function ensureAiProviderAllowedForMode(): void {
-  if (IS_ANDROID_APP && state.aiSettings.mode === 'hosted') {
-    const preset = aiProviderPresetById(BROWSER_SESSION_DEFAULT_PROVIDER_ID);
-    state.aiSettings.mode = 'session';
-    state.aiSettings.provider = preset.id;
-    state.aiSettings.apiFormat = preset.apiFormat;
-    state.aiSettings.baseUrl = preset.baseUrl;
-    state.aiSettings.model = preset.model;
-    return;
-  }
   if (state.aiSettings.mode === 'session' && state.aiSettings.provider === 'openai') {
     const preset = aiProviderPresetById(BROWSER_SESSION_DEFAULT_PROVIDER_ID);
     state.aiSettings.provider = preset.id;
@@ -15918,9 +15913,11 @@ function bind(): void {
   for (const button of document.querySelectorAll<HTMLButtonElement>('[data-demo-scenario]')) {
     button.addEventListener('click', () => {
       const scenario = guidedDemoScenarioById(button.dataset.demoScenario);
+      const anchorTop = button.getBoundingClientRect().top;
       state.guidedDemo = defaultGuidedDemoState(scenario.id);
       state.error = '';
       render();
+      restoreGuidedDemoScenarioAnchor(scenario.id, anchorTop);
     });
   }
 
@@ -17035,6 +17032,18 @@ function bind(): void {
       void copyDiagnosticBundle(actionId || undefined);
     });
   }
+}
+
+function restoreGuidedDemoScenarioAnchor(scenarioId: string, previousTop: number): void {
+  const nextButton = Array.from(document.querySelectorAll<HTMLButtonElement>('[data-demo-scenario]'))
+    .find((candidate) => candidate.dataset.demoScenario === scenarioId);
+  if (!nextButton) return;
+  const nextTop = nextButton.getBoundingClientRect().top;
+  const delta = nextTop - previousTop;
+  if (Math.abs(delta) > 0.5) {
+    window.scrollBy({ top: delta, behavior: 'auto' });
+  }
+  nextButton.focus({ preventScroll: true });
 }
 
 function bindRouteLinks(): void {
@@ -18478,7 +18487,7 @@ async function runGenerateAiPlan(): Promise<void> {
         signal: operation.controller.signal,
       })
       : state.aiSettings.mode === 'hosted'
-        ? await generateHostedAiPlan(state.aiSettings, request, { signal: operation.controller.signal })
+        ? await generateHostedAiPlan(state.aiSettings, request, hostedAiRequestOptions({ signal: operation.controller.signal }))
         : await generateSessionAiPlan(state.aiSettings, request, { signal: operation.controller.signal });
     assertAiDraftActive(operation);
     const plan = planWithRuntimeTokenLabels(generatedPlan);
@@ -18867,7 +18876,7 @@ async function runAskAgentAnything(planId: string, question: string): Promise<vo
         body: JSON.stringify(request),
       });
     } else if (state.aiSettings.mode === 'hosted') {
-      result = await generateHostedAiAsk(state.aiSettings, request);
+      result = await generateHostedAiAsk(state.aiSettings, request, hostedAiRequestOptions());
     } else {
       result = await generateSessionAiAsk(state.aiSettings, request);
     }
@@ -20489,7 +20498,7 @@ async function runAgentReview(
     });
   }
   if (state.aiSettings.mode === 'hosted') {
-    return generateHostedAiReview(state.aiSettings, request);
+    return generateHostedAiReview(state.aiSettings, request, hostedAiRequestOptions());
   }
   return generateSessionAiReview(state.aiSettings, request);
 }
@@ -23735,7 +23744,7 @@ async function runConfirmAiPlanner(): Promise<void> {
       if (state.aiSettings.mode === 'hosted') {
         const hostedBlockReason = hostedByokCloudSessionReason();
         if (hostedBlockReason) throw new Error(hostedBlockReason);
-        state.aiDiagnostics = await confirmHostedAiPlanner(state.aiSettings);
+        state.aiDiagnostics = await confirmHostedAiPlanner(state.aiSettings, hostedAiRequestOptions());
         setAiPlannerConfirmation('confirmed', 'Hosted BYOK route is reachable for draft requests only. Provider key validity is checked on the first AI draft. Workflow capability is unchanged.');
         replaceToast(toastId, 'success', 'Planner confirmed', 'Hosted BYOK can draft plans only.');
         return;
@@ -24482,18 +24491,38 @@ async function refreshCloudWorkspaceData(): Promise<void> {
 
 const CLOUD_EVIDENCE_SYNC_TTL_MS = 60_000;
 
-async function cloudRequest<T = unknown>(path: string, init: RequestInit = {}): Promise<T> {
+async function cloudFetch(path: string, init: RequestInit = {}): Promise<Response> {
   const headers = new Headers(init.headers);
   if (init.body !== undefined && !headers.has('content-type')) {
     headers.set('content-type', 'application/json');
   }
+  const remote = cloudApiUsesRemoteOrigin();
+  if (IS_ANDROID_APP) {
+    headers.set('x-agentic-client', ANDROID_CLOUD_CLIENT_HEADER);
+    const token = androidNativeCloudSessionToken();
+    if (token) {
+      headers.set('authorization', `Bearer ${token}`);
+    }
+  }
+  return fetch(cloudRequestUrl(path), {
+    ...init,
+    credentials: remote ? 'omit' : 'include',
+    headers,
+  });
+}
+
+function hostedAiRequestOptions(options: { signal?: AbortSignal } = {}) {
+  return {
+    ...options,
+    hostedFetch: cloudFetch,
+    hostedOrigin: cloudApiOriginLabel(),
+  };
+}
+
+async function cloudRequest<T = unknown>(path: string, init: RequestInit = {}): Promise<T> {
   let response: Response;
   try {
-    response = await fetch(path, {
-      ...init,
-      credentials: 'include',
-      headers,
-    });
+    response = await cloudFetch(path, init);
   } catch (err) {
     if (isAbortError(err)) throw err;
     throw new Error('Agentic Cloud is not reachable from this page.');
@@ -24502,13 +24531,59 @@ async function cloudRequest<T = unknown>(path: string, init: RequestInit = {}): 
   if (!response.ok) {
     if (response.status === 401) {
       state.cloudSession = emptyCloudSession('signed-out');
+      clearAndroidNativeCloudSessionToken();
     }
     throw new Error(cloudErrorMessage(payload, response.status));
   }
   if (payload === null) {
     throw new Error('Agentic Cloud did not return JSON. Use the same-origin Render app for cloud workflow APIs.');
   }
+  applyAndroidCloudSessionResponse(path, payload);
   return payload as T;
+}
+
+function applyAndroidCloudSessionResponse(path: string, payload: unknown): void {
+  if (!IS_ANDROID_APP || !payload || typeof payload !== 'object') return;
+  const record = payload as Record<string, unknown>;
+  if (typeof record.sessionToken === 'string' && record.sessionToken.trim()) {
+    setAndroidNativeCloudSessionToken(record.sessionToken.trim());
+    return;
+  }
+  if (path.startsWith('/api/auth/logout') || record.signedIn === false || record.signedOut === true) {
+    clearAndroidNativeCloudSessionToken();
+  }
+}
+
+function cloudRequestUrl(path: string): string {
+  if (!cloudApiUsesRemoteOrigin()) return path;
+  const trimmed = path.trim();
+  if (!trimmed.startsWith('/api/')) {
+    throw new Error('Android Agentic Cloud requests must target /api/ paths.');
+  }
+  return new URL(trimmed, `${androidCloudApiBaseUrl().replace(/\/+$/, '')}/`).toString();
+}
+
+function cloudApiUsesRemoteOrigin(): boolean {
+  return IS_ANDROID_APP && Boolean(androidCloudApiBaseUrl());
+}
+
+function cloudApiOriginLabel(): string {
+  if (!cloudApiUsesRemoteOrigin()) return window.location.origin;
+  try {
+    return new URL(androidCloudApiBaseUrl()).origin;
+  } catch {
+    return androidCloudApiBaseUrl();
+  }
+}
+
+function androidCloudApiBaseUrl(): string {
+  if (!IS_ANDROID_APP) return '';
+  const viteEnv = (import.meta as ImportMeta & {
+    env?: {
+      VITE_AGENTIC_CLOUD_API_BASE_URL?: string;
+    };
+  }).env;
+  return String(viteEnv?.VITE_AGENTIC_CLOUD_API_BASE_URL ?? '').trim() || DEFAULT_ANDROID_CLOUD_API_BASE_URL;
 }
 
 async function loadAuditEventsForRecord(
@@ -25652,7 +25727,7 @@ async function generateRecurringAiPlan(draft: RecurringDraft): Promise<AgentPlan
       body: JSON.stringify(request),
     })
     : state.aiSettings.mode === 'hosted'
-      ? await generateHostedAiPlan(state.aiSettings, request)
+      ? await generateHostedAiPlan(state.aiSettings, request, hostedAiRequestOptions())
       : await generateSessionAiPlan(state.aiSettings, request);
   return planWithRuntimeTokenLabels({
     ...fallback,
@@ -38646,7 +38721,6 @@ function clearAllSessionAiApiKeys(): void {
 }
 
 function normalizeAiModeForSurface(mode: AiSettings['mode']): AiSettings['mode'] {
-  if (IS_ANDROID_APP && mode === 'hosted') return 'session';
   return mode;
 }
 

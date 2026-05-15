@@ -9,11 +9,12 @@ templates for common Solana wallet plans, and the wallet still performs every si
   approval proof in their wallet. The notes box is included in the plan review and signed approval message.
 - **Local bridge BYOK:** recommended for desktop and CLI users. The key stays on the user's machine and the hosted site
   talks only to the local bridge.
-- **Hosted BYOK:** default for the deployed web app. The user enters a provider key in the browser, the same-origin
-  Agentic web server relays one plan-generation request to the selected provider, and the key is not stored or logged.
-- **Session BYOK:** fallback for Android and browser-only users. The key is held in browser memory for the current
-  session and is forgotten on refresh or close. Raw OpenAI keys should not use this path because OpenAI does not allow
-  exposing API keys in browser/mobile clients.
+- **Hosted BYOK:** default for the deployed web app and available in the bundled Android app after Agentic Cloud
+  sign-in. The user enters a provider key in the client, the Agentic web server relays one AI request to the selected
+  provider, and the key is not stored or logged.
+- **Session BYOK:** fallback for Android and browser-only users who do not want Cloud relay. The key is held in browser
+  memory for the current session and is forgotten on refresh or close. Raw OpenAI keys should not use this path because
+  OpenAI does not allow exposing API keys in browser/mobile clients.
 
 ## Local Bridge Env
 

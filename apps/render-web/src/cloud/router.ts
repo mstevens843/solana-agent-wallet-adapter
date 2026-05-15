@@ -137,6 +137,9 @@ const AUTH_RATE_LIMIT_MAX_ATTEMPTS = 60;
 const WRITE_RATE_LIMIT_WINDOW_MS = 5 * 60 * 1000;
 const WRITE_RATE_LIMIT_MAX_ATTEMPTS = 180;
 const HOSTED_AI_RATE_LIMIT_MAX_ATTEMPTS = 30;
+const DEFAULT_ANDROID_CLOUD_ORIGIN = 'https://agentic.local';
+const CORS_ALLOWED_HEADERS = 'authorization, content-type, x-agentic-client';
+const CORS_ALLOWED_METHODS = 'GET, POST, PUT, DELETE, OPTIONS';
 
 const REGISTERED_API_ROUTES = [
   'GET /api/ai/status',
@@ -418,6 +421,11 @@ export function createCloudApiRouter(options: CloudApiRouterOptions = {}): Cloud
       }
 
       try {
+        applyCloudCorsHeaders(req, res);
+        if (req.method === 'OPTIONS') {
+          handleCloudCorsPreflight(req, res);
+          return true;
+        }
         enforceSameOrigin(req, url);
         enforceJsonWriteRequest(req);
         await enforceAuthRateLimit(req, url, clock, authRateLimiter);
@@ -495,6 +503,7 @@ function enforceSameOrigin(req: IncomingMessage, url: URL): void {
   if (!isStateChangingMethod(req.method)) return;
   const origin = firstHeaderValue(req.headers.origin);
   if (origin) {
+    if (isAllowedCloudCorsOrigin(origin)) return;
     assertSameHost(origin, requestDomain(req, url));
     return;
   }
@@ -504,6 +513,64 @@ function enforceSameOrigin(req: IncomingMessage, url: URL): void {
     throw new ApiError(403, 'State-changing API requests require a same-origin browser context.');
   }
   assertSameHost(referer, requestDomain(req, url));
+}
+
+function applyCloudCorsHeaders(req: IncomingMessage, res: ServerResponse): void {
+  const origin = firstHeaderValue(req.headers.origin);
+  if (!origin || !isAllowedCloudCorsOrigin(origin)) return;
+  res.setHeader('access-control-allow-origin', normalizeOrigin(origin));
+  res.setHeader('access-control-allow-methods', CORS_ALLOWED_METHODS);
+  res.setHeader('access-control-allow-headers', CORS_ALLOWED_HEADERS);
+  res.setHeader('access-control-max-age', '600');
+  appendVaryHeader(res, 'Origin');
+}
+
+function handleCloudCorsPreflight(req: IncomingMessage, res: ServerResponse): void {
+  const origin = firstHeaderValue(req.headers.origin);
+  if (!origin || !isAllowedCloudCorsOrigin(origin)) {
+    writeJson(res, 403, { error: 'cors_origin_not_allowed' });
+    return;
+  }
+  res.statusCode = 204;
+  res.end();
+}
+
+function isAllowedCloudCorsOrigin(origin: string): boolean {
+  const normalized = normalizeOrigin(origin);
+  if (!normalized) return false;
+  return configuredCloudCorsOrigins().has(normalized);
+}
+
+function configuredCloudCorsOrigins(): Set<string> {
+  const configured = [
+    DEFAULT_ANDROID_CLOUD_ORIGIN,
+    ...(process.env.AGENTIC_ANDROID_WEBVIEW_ORIGIN ? [process.env.AGENTIC_ANDROID_WEBVIEW_ORIGIN] : []),
+    ...String(process.env.AGENTIC_CLOUD_CORS_ORIGINS ?? '')
+      .split(',')
+      .map((origin) => origin.trim())
+      .filter(Boolean),
+  ];
+  return new Set(configured.map(normalizeOrigin).filter(Boolean));
+}
+
+function normalizeOrigin(origin: string): string {
+  try {
+    return new URL(origin).origin.toLowerCase();
+  } catch {
+    return '';
+  }
+}
+
+function appendVaryHeader(res: ServerResponse, value: string): void {
+  const existing = res.getHeader('vary');
+  const parts = new Set(
+    String(existing ?? '')
+      .split(',')
+      .map((part) => part.trim())
+      .filter(Boolean),
+  );
+  parts.add(value);
+  res.setHeader('vary', [...parts].join(', '));
 }
 
 function assertSameHost(rawUrl: string, expectedHost: string): void {
@@ -1016,7 +1083,10 @@ async function handleVerifyWallet(
     expires: new Date(session.record.expiresAt),
     secure: shouldSetSecureCookie(req),
   }));
-  writeJson(res, 200, sessionResponse(session.record));
+  writeJson(res, 200, {
+    ...sessionResponse(session.record),
+    ...(shouldReturnBearerSession(req) ? { sessionToken: session.token } : {}),
+  });
 }
 
 async function handleLogout(
@@ -1116,6 +1186,7 @@ async function handleCloudWorkspaceDelete(
     evidenceStore,
     recurringStore,
   );
+  await deleteSessionFromRequest({ req, store, clock });
   res.setHeader('set-cookie', serializeClearSessionCookie(shouldSetSecureCookie(req)));
   writeJson(res, 200, { ok: true, signedOut: true, deleted });
 }
@@ -2638,6 +2709,12 @@ function shouldSetSecureCookie(req: IncomingMessage): boolean {
   return isSecureRequest(req) ||
     isProductionRequest() ||
     publicOriginUsesHttps();
+}
+
+function shouldReturnBearerSession(req: IncomingMessage): boolean {
+  const origin = firstHeaderValue(req.headers.origin);
+  const client = firstHeaderValue(req.headers['x-agentic-client'])?.toLowerCase();
+  return client === 'android-bundled' && Boolean(origin && isAllowedCloudCorsOrigin(origin));
 }
 
 function isProductionRequest(): boolean {

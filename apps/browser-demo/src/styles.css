@@ -7423,6 +7423,48 @@ code {
   text-transform: uppercase;
 }
 
+.agent-evidence-row-label {
+  min-width: 0;
+}
+
+.agent-evidence-row-pill {
+  align-items: center;
+  border: 1px solid rgba(224, 230, 226, 0.1);
+  border-radius: 999px;
+  display: inline-flex;
+  flex: 0 0 auto;
+  font-size: 0.5rem;
+  font-weight: 900;
+  letter-spacing: 0.08em;
+  line-height: 1;
+  padding: 2px 4px;
+  text-transform: uppercase;
+}
+
+.agent-evidence-row-pill.pass {
+  background: rgba(44, 151, 99, 0.08);
+  border-color: rgba(111, 181, 143, 0.22);
+  color: rgba(174, 221, 193, 0.92);
+}
+
+.agent-evidence-row-pill.warn {
+  background: rgba(210, 164, 77, 0.08);
+  border-color: rgba(210, 164, 77, 0.22);
+  color: rgba(240, 216, 172, 0.9);
+}
+
+.agent-evidence-row-pill.fail {
+  background: rgba(199, 79, 88, 0.1);
+  border-color: rgba(211, 103, 112, 0.28);
+  color: rgba(224, 154, 162, 0.92);
+}
+
+.agent-evidence-row-pill.neutral {
+  background: rgba(224, 230, 226, 0.045);
+  border-color: rgba(224, 230, 226, 0.12);
+  color: rgba(200, 210, 206, 0.78);
+}
+
 .agent-evidence-row dd {
   color: rgba(224, 230, 226, 0.95);
   font-size: 0.82rem;
@@ -7445,6 +7487,44 @@ code {
 
 .agent-evidence-value-source {
   color: rgba(224, 230, 226, 0.95);
+}
+
+.guided-demo-policy-checks .agent-evidence-rows {
+  gap: 0;
+}
+
+.guided-demo-policy-checks .agent-evidence-row {
+  border-top: 1px solid rgba(224, 230, 226, 0.055);
+  gap: 6px 12px;
+  grid-template-columns: minmax(126px, 30%) minmax(0, 1fr);
+  padding: 7px 0;
+}
+
+.guided-demo-policy-checks .agent-evidence-row:first-child {
+  border-top: 0;
+  padding-top: 0;
+}
+
+.guided-demo-policy-checks .agent-evidence-row:last-child {
+  padding-bottom: 0;
+}
+
+.guided-demo-policy-checks .agent-evidence-row dt {
+  align-items: center;
+  display: inline-flex;
+  gap: 5px;
+  line-height: 1.12;
+}
+
+.guided-demo-policy-checks .agent-evidence-row dd {
+  color: rgba(224, 230, 226, 0.9);
+  font-weight: 640;
+  line-height: 1.32;
+}
+
+.guided-demo-policy-evidence-number {
+  color: rgba(158, 218, 184, 0.98);
+  font-weight: 860;
 }
 
 .agent-policies-panel summary {

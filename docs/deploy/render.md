@@ -66,9 +66,11 @@ The schema indexes wallet address, status, due time, created time, and recurring
 and nonces are removed by the store cleanup path. Render should use the database's internal connection string and keep
 external database access disabled unless you need temporary admin access.
 
-Session cookies are HTTP-only and same-site. They are marked `Secure` in Render production and whenever the canonical
-origin is HTTPS. Wallet auth messages are bound to `AGENTIC_PUBLIC_ORIGIN`, so use `https://agentic-signer.com` for final
-sign-in testing instead of the `.onrender.com` service URL.
+Session cookies are HTTP-only and same-site for the hosted web app. The bundled Android shell cannot use those cookies
+from `https://agentic.local/`, so Android receives a bearer session after wallet verification and stores it in native
+encrypted storage. The API allows the Android WebView origin by default; set `AGENTIC_CLOUD_CORS_ORIGINS` only when an
+additional trusted bundled origin is needed. Wallet auth messages are bound to `AGENTIC_PUBLIC_ORIGIN`, so use
+`https://agentic-signer.com` for final sign-in testing instead of the `.onrender.com` service URL.
 
 ## Recurring Cron
 
@@ -127,7 +129,8 @@ page views show duplicates. The app already sets `send_page_view: false` and emi
 
 The deployed app defaults to `Hosted BYOK` for AI planning. Users paste their OpenAI, Claude / Anthropic, Gemini, or
 OpenRouter key in the browser. The same-origin Node server relays that request to the selected provider and does not
-persist or log the key. Do not add user keys to Render environment variables.
+persist or log the key. Android uses the same Hosted BYOK endpoints over the bearer-authenticated Agentic Cloud API.
+Do not add user keys to Render environment variables.
 
 ## Private Local Mode
 

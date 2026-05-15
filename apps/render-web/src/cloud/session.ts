@@ -35,7 +35,7 @@ export async function sessionFromRequest(input: {
   store: WorkflowStore;
   clock: Clock;
 }): Promise<WalletSessionRecord | undefined> {
-  const token = readSessionCookie(input.req);
+  const token = readBearerToken(input.req) ?? readSessionCookie(input.req);
   if (!token) return undefined;
   const tokenHash = hashSessionToken(token);
   const now = input.clock.now();
@@ -55,7 +55,7 @@ export async function deleteSessionFromRequest(input: {
   store: WorkflowStore;
   clock: Clock;
 }): Promise<WalletSessionRecord | undefined> {
-  const token = readSessionCookie(input.req);
+  const token = readBearerToken(input.req) ?? readSessionCookie(input.req);
   if (!token) return undefined;
   const tokenHash = hashSessionToken(token);
   const session = await input.store.getSession(tokenHash);
@@ -69,4 +69,13 @@ export function hashSessionToken(token: string): string {
     return createHmac('sha256', secret).update(token).digest('base64url');
   }
   return createHash('sha256').update(token).digest('base64url');
+}
+
+function readBearerToken(req: IncomingMessage): string | undefined {
+  const header = Array.isArray(req.headers.authorization)
+    ? req.headers.authorization[0]
+    : req.headers.authorization;
+  const match = header?.trim().match(/^Bearer\s+(.+)$/i);
+  const token = match?.[1]?.trim();
+  return token || undefined;
 }

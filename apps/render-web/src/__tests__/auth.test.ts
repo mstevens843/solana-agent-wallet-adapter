@@ -106,6 +106,50 @@ describe('render web cloud wallet auth', () => {
     });
   });
 
+  it('returns an Android bearer session for the bundled app origin', async () => {
+    await withServer(async (port) => {
+      const headers = {
+        origin: 'https://agentic.local',
+        'x-agentic-client': 'android-bundled',
+      };
+      const wallet = createTestWallet();
+      const nonce = await postJson(port, '/api/auth/nonce', {
+        walletAddress: wallet.walletAddress,
+      }, headers);
+      const verify = await postJson(port, '/api/auth/verify-wallet', signedVerifyBody(wallet, nonce.body), headers);
+
+      expect(verify.status).toBe(200);
+      expect(verify.body.sessionToken).toEqual(expect.any(String));
+      expect(String(verify.headers['access-control-allow-origin'])).toBe('https://agentic.local');
+
+      const session = await getJson(port, '/api/session', {
+        origin: 'https://agentic.local',
+        authorization: `Bearer ${String(verify.body.sessionToken)}`,
+      });
+      expect(session.status).toBe(200);
+      expect(session.body).toMatchObject({
+        signedIn: true,
+        user: {
+          walletAddress: wallet.walletAddress,
+        },
+      });
+    });
+  });
+
+  it('handles Android cloud CORS preflight without cookies', async () => {
+    await withServer(async (port) => {
+      const response = await requestRaw(port, '/api/session', 'OPTIONS', undefined, {
+        origin: 'https://agentic.local',
+        'access-control-request-method': 'GET',
+        'access-control-request-headers': 'authorization, content-type, x-agentic-client',
+      });
+
+      expect(response.status).toBe(204);
+      expect(response.headers['access-control-allow-origin']).toBe('https://agentic.local');
+      expect(String(response.headers['access-control-allow-headers'])).toContain('authorization');
+    });
+  });
+
   it('keeps legacy minimal verify payloads working for the current browser client', async () => {
     await withServer(async (port) => {
       const wallet = createTestWallet();
@@ -1276,7 +1320,7 @@ function getJson(port: number, path: string, headers: Record<string, string> = {
 function requestRaw(
   port: number,
   path: string,
-  method: 'GET' | 'POST',
+  method: 'GET' | 'POST' | 'OPTIONS',
   body?: string,
   headers: Record<string, string> = {},
 ): Promise<JsonResponse> {
