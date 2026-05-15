@@ -2203,6 +2203,80 @@ code {
   max-width: 360px;
 }
 
+.guided-demo-swap-flow-actions {
+  align-items: stretch;
+}
+
+.guided-demo-inline-tx-status {
+  align-items: start;
+  background: rgba(8, 12, 11, 0.9);
+  border: 1px solid rgba(196, 205, 202, 0.24);
+  border-radius: 8px;
+  color: var(--text);
+  display: grid;
+  gap: 10px;
+  grid-template-columns: auto minmax(0, 1fr);
+  max-width: min(100%, 468px);
+  min-height: 66px;
+  min-width: min(100%, 320px);
+  padding: 12px 14px;
+}
+
+.guided-demo-inline-tx-status.success {
+  border-color: rgba(139, 205, 170, 0.3);
+}
+
+.guided-demo-inline-tx-icon {
+  align-items: center;
+  background: rgba(196, 205, 202, 0.08);
+  border: 1px solid rgba(196, 205, 202, 0.22);
+  border-radius: 8px;
+  color: var(--muted);
+  display: inline-flex;
+  height: 34px;
+  justify-content: center;
+  width: 34px;
+}
+
+.guided-demo-inline-tx-status.success .guided-demo-inline-tx-icon {
+  background: rgba(63, 189, 131, 0.1);
+  border-color: rgba(139, 205, 170, 0.24);
+  color: var(--accent-2);
+}
+
+.guided-demo-inline-tx-icon svg {
+  fill: currentColor;
+  height: 22px;
+  width: 22px;
+}
+
+.guided-demo-inline-tx-status strong {
+  display: block;
+  font-size: 0.96rem;
+  line-height: 1.2;
+}
+
+.guided-demo-inline-tx-status p {
+  color: var(--muted);
+  font-size: 0.9rem;
+  line-height: 1.32;
+  margin: 2px 0 0;
+  overflow-wrap: anywhere;
+}
+
+.guided-demo-inline-tx-status a {
+  color: var(--accent-2);
+  display: inline-flex;
+  font-size: 0.9rem;
+  font-weight: 800;
+  margin-top: 8px;
+  text-decoration: none;
+}
+
+.guided-demo-inline-tx-status a:hover {
+  text-decoration: underline;
+}
+
 .guided-demo-footer-cta {
   align-items: center;
   background:

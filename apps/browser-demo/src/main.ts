@@ -502,6 +502,7 @@ type PreparedActionKind =
 type GuidedDemoScenarioId = 'transfer' | 'swap' | 'policy-swap' | 'dca' | 'payouts';
 type GuidedDemoStage = 'request' | 'prepared' | 'queued' | 'receipt';
 type GuidedDemoDecision = 'pending' | 'approved' | 'denied';
+type GuidedDemoSwapFlowStep = 'idle' | 'preparing' | 'signing' | 'sending' | 'confirmed';
 type FirstRunStepId = 'wallet' | 'plan' | 'review' | 'decision' | 'receipt';
 type FirstRunActionId =
   | 'discover-wallets'
@@ -1846,6 +1847,7 @@ interface GuidedDemoState {
   receiptCreatedAt: string;
   receiptJson: string;
   signedReceipt: string;
+  swapFlowStep: GuidedDemoSwapFlowStep;
 }
 
 interface FirstRunStep {
@@ -2811,6 +2813,13 @@ const GUIDED_DEMO_SCENARIOS: ReadonlyArray<GuidedDemoScenario> = [
   },
 ];
 
+const GUIDED_DEMO_SWAP_TX_ID = '2EDzBNAT8XPAaVwVLBk71zBRr4PfqzqZfqeNXCCfkQ473ndztaAjmD76hK69rtDycE3FrroFMN7t4kA74VP8XusB';
+const GUIDED_DEMO_SWAP_TX_URL = `https://solscan.io/tx/${GUIDED_DEMO_SWAP_TX_ID}`;
+const GUIDED_DEMO_SWAP_REVIEW_ID = '019e2c78...030f95cc';
+const GUIDED_DEMO_SWAP_FLOW_DELAY_MS = 500;
+let guidedDemoSwapFlowRunId = 0;
+let guidedDemoSwapFlowTimer: number | undefined;
+
 function defaultGuidedDemoState(scenarioId: GuidedDemoScenarioId = 'transfer'): GuidedDemoState {
   return {
     selectedScenarioId: scenarioId,
@@ -2820,6 +2829,7 @@ function defaultGuidedDemoState(scenarioId: GuidedDemoScenarioId = 'transfer'): 
     receiptCreatedAt: '',
     receiptJson: '',
     signedReceipt: '',
+    swapFlowStep: 'idle',
   };
 }
 
@@ -5562,6 +5572,9 @@ function guidedDemoActions(): string {
   const scenario = selectedGuidedDemoScenario();
   const isMockPolicy = scenario.id === 'policy-swap';
   const disabled = state.busy ? 'disabled' : '';
+  if (isMockPolicy && demo.swapFlowStep !== 'idle') {
+    return guidedDemoSwapFlowAction(demo.swapFlowStep, disabled);
+  }
   if (demo.stage === 'request') {
     return `
       <div class="guided-demo-actions">
@@ -5573,7 +5586,7 @@ function guidedDemoActions(): string {
     if (isMockPolicy) {
       return `
         <div class="guided-demo-actions">
-          <button class="primary" data-demo-action="approve" ${disabled}>Sign and approve tx</button>
+          <button class="primary" data-demo-action="approve" ${disabled}>Approve swap</button>
           <button data-demo-action="reset" ${disabled}>Reset demo</button>
           <span class="guided-demo-action-note">The agent already returned APPROVE, so the next step records a local demo signature.</span>
         </div>
@@ -5613,6 +5626,38 @@ function guidedDemoActions(): string {
       <a class="button-link launch-app-link mobile-redundant-nav" href="/app">Try in full app</a>
     </div>
   `;
+}
+
+function guidedDemoSwapFlowAction(step: GuidedDemoSwapFlowStep, disabled: string): string {
+  const done = step === 'confirmed';
+  const title = done ? 'Swap confirmed' : guidedDemoSwapFlowTitle(step);
+  return `
+    <div class="guided-demo-actions guided-demo-swap-flow-actions">
+      <div class="guided-demo-inline-tx-status ${done ? 'success' : 'pending'}" role="status" aria-live="polite">
+        <span class="guided-demo-inline-tx-icon" aria-hidden="true">${done ? checkIcon() : '<span class="toast-spinner"></span>'}</span>
+        <div>
+          <strong>${escapeHtml(title)}</strong>
+          <p>${escapeHtml(guidedDemoSwapFlowMessage(step))}</p>
+          ${done ? `<a href="${escapeHtml(GUIDED_DEMO_SWAP_TX_URL)}" target="_blank" rel="noreferrer">Open Solscan</a>` : ''}
+        </div>
+      </div>
+      ${done ? `<button data-demo-action="reset" ${disabled}>Reset demo</button>` : ''}
+    </div>
+  `;
+}
+
+function guidedDemoSwapFlowTitle(step: GuidedDemoSwapFlowStep): string {
+  if (step === 'preparing') return 'Preparing swap';
+  if (step === 'signing') return 'Signing swap';
+  if (step === 'sending') return 'Sending swap transaction';
+  return 'Swap confirmed';
+}
+
+function guidedDemoSwapFlowMessage(step: GuidedDemoSwapFlowStep): string {
+  if (step === 'preparing') return 'Fetching the Jupiter transaction for wallet review.';
+  if (step === 'signing') return `Sign Jupiter swap ${GUIDED_DEMO_SWAP_REVIEW_ID} in your wallet.`;
+  if (step === 'sending') return 'Submitting the signed swap through Jupiter.';
+  return `${short(GUIDED_DEMO_SWAP_TX_ID)} - Solscan link saved in Done.`;
 }
 
 function selectedGuidedDemoScenario(): GuidedDemoScenario {
@@ -15914,6 +15959,7 @@ function bind(): void {
     button.addEventListener('click', () => {
       const scenario = guidedDemoScenarioById(button.dataset.demoScenario);
       const anchorTop = button.getBoundingClientRect().top;
+      clearGuidedDemoSwapFlowTimer();
       state.guidedDemo = defaultGuidedDemoState(scenario.id);
       state.error = '';
       render();
@@ -18052,6 +18098,7 @@ function runGuidedDemoAction(action: string): void {
   const currentScenarioId = state.guidedDemo.selectedScenarioId;
   switch (action) {
     case 'prepare':
+      clearGuidedDemoSwapFlowTimer();
       state.guidedDemo = {
         ...defaultGuidedDemoState(currentScenarioId),
         stage: 'prepared',
@@ -18060,6 +18107,7 @@ function runGuidedDemoAction(action: string): void {
       render();
       return;
     case 'queue':
+      clearGuidedDemoSwapFlowTimer();
       state.guidedDemo = {
         ...state.guidedDemo,
         stage: 'queued',
@@ -18073,12 +18121,18 @@ function runGuidedDemoAction(action: string): void {
       render();
       return;
     case 'approve':
+      if (selectedGuidedDemoScenario().id === 'policy-swap') {
+        startGuidedDemoSwapFlow();
+        return;
+      }
       completeGuidedDemo('approved');
       return;
     case 'deny':
+      clearGuidedDemoSwapFlowTimer();
       completeGuidedDemo('denied');
       return;
     case 'reset':
+      clearGuidedDemoSwapFlowTimer();
       state.guidedDemo = defaultGuidedDemoState(currentScenarioId);
       pushToast('success', 'Demo reset', 'Choose a scenario or prepare the current one again.');
       render();
@@ -18088,7 +18142,50 @@ function runGuidedDemoAction(action: string): void {
   }
 }
 
-function completeGuidedDemo(decision: Exclude<GuidedDemoDecision, 'pending'>): void {
+function clearGuidedDemoSwapFlowTimer(): void {
+  guidedDemoSwapFlowRunId += 1;
+  if (guidedDemoSwapFlowTimer !== undefined) {
+    window.clearTimeout(guidedDemoSwapFlowTimer);
+    guidedDemoSwapFlowTimer = undefined;
+  }
+}
+
+function startGuidedDemoSwapFlow(): void {
+  clearGuidedDemoSwapFlowTimer();
+  const runId = guidedDemoSwapFlowRunId;
+  state.guidedDemo = {
+    ...state.guidedDemo,
+    swapFlowStep: 'preparing',
+  };
+  render();
+  scheduleGuidedDemoSwapFlowStep(runId, 'signing');
+}
+
+function scheduleGuidedDemoSwapFlowStep(runId: number, step: GuidedDemoSwapFlowStep): void {
+  guidedDemoSwapFlowTimer = window.setTimeout(() => {
+    if (runId !== guidedDemoSwapFlowRunId || selectedGuidedDemoScenario().id !== 'policy-swap') return;
+    if (step === 'confirmed') {
+      state.guidedDemo = {
+        ...state.guidedDemo,
+        swapFlowStep: 'confirmed',
+      };
+      completeGuidedDemo('approved', { toast: false });
+      guidedDemoSwapFlowTimer = undefined;
+      return;
+    }
+    state.guidedDemo = {
+      ...state.guidedDemo,
+      swapFlowStep: step,
+    };
+    render();
+    scheduleGuidedDemoSwapFlowStep(runId, step === 'signing' ? 'sending' : 'confirmed');
+  }, GUIDED_DEMO_SWAP_FLOW_DELAY_MS);
+}
+
+function completeGuidedDemo(
+  decision: Exclude<GuidedDemoDecision, 'pending'>,
+  options: { toast?: boolean } = {},
+): void {
   const scenario = selectedGuidedDemoScenario();
   const receiptId = newId('demo');
   const receiptCreatedAt = new Date().toISOString();
@@ -18104,11 +18201,13 @@ function completeGuidedDemo(decision: Exclude<GuidedDemoDecision, 'pending'>): v
     receiptJson: stableJson(guidedDemoReceiptPayload(scenario, decision, receiptId, receiptCreatedAt, mockSignature)),
     signedReceipt: mockSignature,
   };
-  pushToast(
-    'success',
-    decision === 'approved' ? 'Simulation approved' : 'Simulation denied',
-    mockSignature ? 'Demo signature and approval receipt saved.' : 'Demo receipt created. Nothing was signed or submitted.',
-  );
+  if (options.toast !== false) {
+    pushToast(
+      'success',
+      decision === 'approved' ? 'Simulation approved' : 'Simulation denied',
+      mockSignature ? 'Demo signature and approval receipt saved.' : 'Demo receipt created. Nothing was signed or submitted.',
+    );
+  }
   render();
 }
 
