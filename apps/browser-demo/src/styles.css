@@ -1992,6 +1992,7 @@ code {
 }
 
 .guided-demo-request-card,
+.guided-demo-agent-flow-card,
 .guided-demo-placeholder,
 .guided-demo-plan-card,
 .guided-demo-review-card,
@@ -2030,6 +2031,111 @@ code {
   flex: 0 0 auto;
   font-size: 0.72rem;
   padding: 7px 10px;
+}
+
+.guided-demo-agent-flow-card {
+  background:
+    linear-gradient(180deg, rgba(32, 40, 54, 0.48), rgba(9, 12, 11, 0.84)),
+    rgba(0, 0, 0, 0.18);
+  display: grid;
+  gap: 14px;
+}
+
+.guided-demo-agent-flow-card.asking {
+  background: rgba(8, 12, 11, 0.92);
+}
+
+.guided-demo-agent-flow-card.drafting {
+  background:
+    radial-gradient(circle at 100% 0%, rgba(63, 189, 131, 0.08), transparent 40%),
+    rgba(9, 15, 13, 0.86);
+}
+
+.guided-demo-agent-flow-head {
+  align-items: center;
+  display: grid;
+  gap: 12px;
+  grid-template-columns: minmax(0, 1fr) auto;
+}
+
+.guided-demo-agent-flow-head > div > span,
+.guided-demo-agent-review-meta > span {
+  color: var(--dim);
+  font-size: 0.68rem;
+  font-weight: 900;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.guided-demo-agent-flow-head h3 {
+  color: var(--text);
+  font-size: 1.06rem;
+  line-height: 1.2;
+  margin: 4px 0 5px;
+}
+
+.guided-demo-agent-flow-head p {
+  color: var(--muted);
+  font-size: 0.95rem;
+  line-height: 1.4;
+  margin: 0;
+}
+
+.guided-demo-agent-flow-pill {
+  align-items: center;
+  background: rgba(63, 189, 131, 0.12);
+  border: 1px solid rgba(139, 205, 170, 0.24);
+  border-radius: 999px;
+  color: #d9f2e3;
+  display: inline-flex;
+  flex: 0 0 auto;
+  font-size: 0.78rem;
+  gap: 7px;
+  line-height: 1;
+  padding: 8px 11px;
+  white-space: nowrap;
+}
+
+.guided-demo-agent-flow-pill .toast-spinner {
+  height: 16px;
+  width: 16px;
+}
+
+.guided-demo-agent-review-meta {
+  align-items: center;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.guided-demo-agent-review-meta em {
+  color: var(--muted);
+  font-size: 0.84rem;
+  font-style: normal;
+  font-weight: 760;
+}
+
+.guided-demo-agent-review-meta strong {
+  border: 1px solid rgba(139, 205, 170, 0.28);
+  border-radius: 999px;
+  color: #d9f2e3;
+  font-size: 0.68rem;
+  letter-spacing: 0.08em;
+  padding: 5px 9px;
+  text-transform: uppercase;
+}
+
+.guided-demo-agent-question {
+  background: rgba(255, 255, 255, 0.035);
+  border: 1px solid rgba(224, 230, 226, 0.09);
+  border-radius: 8px;
+  padding: 10px 12px;
+}
+
+.guided-demo-agent-question summary {
+  color: var(--text);
+  cursor: pointer;
+  font-weight: 800;
 }
 
 .guided-demo-placeholder {
@@ -15989,6 +16095,15 @@ button.danger:hover:not(:disabled) {
   .guided-demo-request-card {
     align-items: start;
     display: grid;
+  }
+
+  .guided-demo-agent-flow-head {
+    align-items: start;
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .guided-demo-agent-flow-pill {
+    justify-self: start;
   }
 
   .guided-demo-actions,

@@ -502,6 +502,7 @@ type PreparedActionKind =
 type GuidedDemoScenarioId = 'transfer' | 'swap' | 'policy-swap' | 'dca' | 'payouts';
 type GuidedDemoStage = 'request' | 'prepared' | 'queued' | 'receipt';
 type GuidedDemoDecision = 'pending' | 'approved' | 'denied';
+type GuidedDemoAgentFlowStep = 'idle' | 'asking' | 'drafting' | 'reviewing';
 type GuidedDemoSwapFlowStep = 'idle' | 'preparing' | 'signing' | 'sending' | 'confirmed';
 type FirstRunStepId = 'wallet' | 'plan' | 'review' | 'decision' | 'receipt';
 type FirstRunActionId =
@@ -1847,6 +1848,7 @@ interface GuidedDemoState {
   receiptCreatedAt: string;
   receiptJson: string;
   signedReceipt: string;
+  agentFlowStep: GuidedDemoAgentFlowStep;
   swapFlowStep: GuidedDemoSwapFlowStep;
 }
 
@@ -2817,8 +2819,11 @@ const GUIDED_DEMO_SWAP_TX_ID = '2EDzBNAT8XPAaVwVLBk71zBRr4PfqzqZfqeNXCCfkQ473ndz
 const GUIDED_DEMO_SWAP_TX_URL = `https://solscan.io/tx/${GUIDED_DEMO_SWAP_TX_ID}`;
 const GUIDED_DEMO_SWAP_REVIEW_ID = '019e2c78...030f95cc';
 const GUIDED_DEMO_SWAP_FLOW_DELAY_MS = 500;
+const GUIDED_DEMO_AGENT_FLOW_DELAY_MS = GUIDED_DEMO_SWAP_FLOW_DELAY_MS;
 let guidedDemoSwapFlowRunId = 0;
 let guidedDemoSwapFlowTimer: number | undefined;
+let guidedDemoAgentFlowRunId = 0;
+let guidedDemoAgentFlowTimer: number | undefined;
 
 function defaultGuidedDemoState(scenarioId: GuidedDemoScenarioId = 'transfer'): GuidedDemoState {
   return {
@@ -2829,6 +2834,7 @@ function defaultGuidedDemoState(scenarioId: GuidedDemoScenarioId = 'transfer'): 
     receiptCreatedAt: '',
     receiptJson: '',
     signedReceipt: '',
+    agentFlowStep: 'idle',
     swapFlowStep: 'idle',
   };
 }
@@ -5365,6 +5371,9 @@ function guidedDemoStepRail(): string {
 }
 
 function guidedDemoMobileStageCard(scenario: GuidedDemoScenario): string {
+  if (scenario.id === 'policy-swap' && state.guidedDemo.agentFlowStep !== 'idle') {
+    return guidedDemoAgentFlowCard(state.guidedDemo.agentFlowStep);
+  }
   switch (state.guidedDemo.stage) {
     case 'prepared':
       return guidedDemoPreparedPlan(scenario);
@@ -5390,7 +5399,64 @@ function guidedDemoRequestCard(scenario: GuidedDemoScenario): string {
   `;
 }
 
+function guidedDemoAgentFlowCard(step: GuidedDemoAgentFlowStep): string {
+  const copy = guidedDemoAgentFlowCopy(step);
+  return `
+    <article class="guided-demo-agent-flow-card ${escapeHtml(step)}" aria-live="polite">
+      <div class="guided-demo-agent-flow-head">
+        <div>
+          <span>${escapeHtml(copy.eyebrow)}</span>
+          <h3>${escapeHtml(copy.title)}</h3>
+          <p>${escapeHtml(copy.detail)}</p>
+        </div>
+        <strong class="guided-demo-agent-flow-pill">
+          <span class="toast-spinner" aria-hidden="true"></span>
+          ${escapeHtml(copy.status)}
+        </strong>
+      </div>
+      ${step === 'reviewing' ? `
+        <div class="guided-demo-agent-review-meta">
+          <span>Agent checking</span>
+          <em>anthropic - claude-sonnet-4-5</em>
+          <strong>Local bridge</strong>
+        </div>
+        <details class="guided-demo-agent-question">
+          <summary>Ask agent about this request</summary>
+        </details>
+      ` : ''}
+    </article>
+  `;
+}
+
+function guidedDemoAgentFlowCopy(step: GuidedDemoAgentFlowStep): { eyebrow: string; title: string; detail: string; status: string } {
+  if (step === 'asking') {
+    return {
+      eyebrow: 'Agent',
+      title: 'Asking agent',
+      detail: 'Reviewing this draft before approval.',
+      status: 'Working',
+    };
+  }
+  if (step === 'drafting') {
+    return {
+      eyebrow: 'AI draft',
+      title: 'Swap tokens is being drafted',
+      detail: 'Review a new DeFi position before signing. Check route, amount, protocol, and slippage before my wallet approves.',
+      status: 'Working',
+    };
+  }
+  return {
+    eyebrow: 'Agent review',
+    title: 'Agent is reviewing this draft before it can move forward.',
+    detail: 'Agent checks the prepared swap against the configured decision gates.',
+    status: 'Agent checking',
+  };
+}
+
 function guidedDemoPreparedPlan(scenario: GuidedDemoScenario): string {
+  if (scenario.id === 'policy-swap' && state.guidedDemo.agentFlowStep !== 'idle') {
+    return guidedDemoAgentFlowCard(state.guidedDemo.agentFlowStep);
+  }
   if (!guidedDemoAtLeast('prepared')) {
     return `
       <article class="guided-demo-placeholder">
@@ -5572,13 +5638,20 @@ function guidedDemoActions(): string {
   const scenario = selectedGuidedDemoScenario();
   const isMockPolicy = scenario.id === 'policy-swap';
   const disabled = state.busy ? 'disabled' : '';
+  if (isMockPolicy && demo.agentFlowStep !== 'idle') {
+    return `
+      <div class="guided-demo-actions">
+        <button class="primary" disabled><span class="button-spinner" aria-hidden="true"></span>Ask AI Agent</button>
+      </div>
+    `;
+  }
   if (isMockPolicy && demo.swapFlowStep !== 'idle') {
     return guidedDemoSwapFlowAction(demo.swapFlowStep, disabled);
   }
   if (demo.stage === 'request') {
     return `
       <div class="guided-demo-actions">
-        <button class="primary" data-demo-action="prepare" ${disabled}>${escapeHtml(isMockPolicy ? 'Run decision' : 'Prepare request')}</button>
+        <button class="primary" data-demo-action="prepare" ${disabled}>${escapeHtml(isMockPolicy ? 'Ask AI Agent' : 'Prepare request')}</button>
       </div>
     `;
   }
@@ -15960,6 +16033,7 @@ function bind(): void {
       const scenario = guidedDemoScenarioById(button.dataset.demoScenario);
       const anchorTop = button.getBoundingClientRect().top;
       clearGuidedDemoSwapFlowTimer();
+      clearGuidedDemoAgentFlowTimer();
       state.guidedDemo = defaultGuidedDemoState(scenario.id);
       state.error = '';
       render();
@@ -18099,6 +18173,11 @@ function runGuidedDemoAction(action: string): void {
   switch (action) {
     case 'prepare':
       clearGuidedDemoSwapFlowTimer();
+      clearGuidedDemoAgentFlowTimer();
+      if (selectedGuidedDemoScenario().id === 'policy-swap') {
+        startGuidedDemoAgentFlow();
+        return;
+      }
       state.guidedDemo = {
         ...defaultGuidedDemoState(currentScenarioId),
         stage: 'prepared',
@@ -18108,6 +18187,7 @@ function runGuidedDemoAction(action: string): void {
       return;
     case 'queue':
       clearGuidedDemoSwapFlowTimer();
+      clearGuidedDemoAgentFlowTimer();
       state.guidedDemo = {
         ...state.guidedDemo,
         stage: 'queued',
@@ -18121,6 +18201,7 @@ function runGuidedDemoAction(action: string): void {
       render();
       return;
     case 'approve':
+      clearGuidedDemoAgentFlowTimer();
       if (selectedGuidedDemoScenario().id === 'policy-swap') {
         startGuidedDemoSwapFlow();
         return;
@@ -18129,10 +18210,12 @@ function runGuidedDemoAction(action: string): void {
       return;
     case 'deny':
       clearGuidedDemoSwapFlowTimer();
+      clearGuidedDemoAgentFlowTimer();
       completeGuidedDemo('denied');
       return;
     case 'reset':
       clearGuidedDemoSwapFlowTimer();
+      clearGuidedDemoAgentFlowTimer();
       state.guidedDemo = defaultGuidedDemoState(currentScenarioId);
       pushToast('success', 'Demo reset', 'Choose a scenario or prepare the current one again.');
       render();
@@ -18148,6 +18231,47 @@ function clearGuidedDemoSwapFlowTimer(): void {
     window.clearTimeout(guidedDemoSwapFlowTimer);
     guidedDemoSwapFlowTimer = undefined;
   }
+}
+
+function clearGuidedDemoAgentFlowTimer(): void {
+  guidedDemoAgentFlowRunId += 1;
+  if (guidedDemoAgentFlowTimer !== undefined) {
+    window.clearTimeout(guidedDemoAgentFlowTimer);
+    guidedDemoAgentFlowTimer = undefined;
+  }
+}
+
+function startGuidedDemoAgentFlow(): void {
+  clearGuidedDemoAgentFlowTimer();
+  const runId = guidedDemoAgentFlowRunId;
+  state.guidedDemo = {
+    ...defaultGuidedDemoState(state.guidedDemo.selectedScenarioId),
+    agentFlowStep: 'asking',
+  };
+  render();
+  scheduleGuidedDemoAgentFlowStep(runId, 'drafting');
+}
+
+function scheduleGuidedDemoAgentFlowStep(runId: number, step: GuidedDemoAgentFlowStep | 'approved'): void {
+  guidedDemoAgentFlowTimer = window.setTimeout(() => {
+    if (runId !== guidedDemoAgentFlowRunId || selectedGuidedDemoScenario().id !== 'policy-swap') return;
+    if (step === 'approved') {
+      state.guidedDemo = {
+        ...state.guidedDemo,
+        stage: 'prepared',
+        agentFlowStep: 'idle',
+      };
+      guidedDemoAgentFlowTimer = undefined;
+      render();
+      return;
+    }
+    state.guidedDemo = {
+      ...state.guidedDemo,
+      agentFlowStep: step,
+    };
+    render();
+    scheduleGuidedDemoAgentFlowStep(runId, step === 'drafting' ? 'reviewing' : 'approved');
+  }, GUIDED_DEMO_AGENT_FLOW_DELAY_MS);
 }
 
 function startGuidedDemoSwapFlow(): void {
