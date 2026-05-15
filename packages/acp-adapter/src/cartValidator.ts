@@ -5,6 +5,7 @@ import {
   DEFAULT_MAX_LINE_ITEMS,
   DEFAULT_MAX_QUANTITY_PER_LINE_ITEM,
   DEFAULT_MAX_TOTAL_AMOUNT_USD,
+  SOL_NATIVE_MINT,
   SYMBOL_TO_DEFAULT_MINT,
 } from './constants.js';
 import { AcpValidationError } from './errors.js';
@@ -105,11 +106,13 @@ export function validateAcpCart(
   }
 
   const resolvedTokenMint = resolveTokenMint(cart, opts);
+  const transferAmount = resolveTransferAmount(cart, total);
 
   return Object.freeze({
     ok: true,
     cart,
     totalFiat: round2(total),
+    transferAmount,
     resolvedTokenMint,
   });
 }
@@ -163,6 +166,17 @@ function indicatesUnlimitedAuthority(value: unknown): boolean {
 }
 
 function resolveTokenMint(cart: AcpCart, opts: AcpCartValidationOptions): string {
+  if (cart.paymentToken === 'SOL') {
+    if (cart.paymentTokenMint !== undefined) {
+      throw new AcpValidationError(
+        'invalid_token_mint',
+        'SOL payments use the native SOL token and cannot set paymentTokenMint.',
+        '$.paymentTokenMint',
+      );
+    }
+    return SOL_NATIVE_MINT;
+  }
+
   const allowed = (opts.allowedTokenMints ?? DEFAULT_ALLOWED_TOKEN_MINTS)[cart.cluster] ?? [];
   if (allowed.length === 0) {
     throw new AcpValidationError(
@@ -206,6 +220,48 @@ function resolveTokenMint(cart: AcpCart, opts: AcpCartValidationOptions): string
     );
   }
   return mint;
+}
+
+function resolveTransferAmount(cart: AcpCart, totalUsd: number): string {
+  if (cart.paymentToken === 'SOL') {
+    if (cart.paymentAmount === undefined) {
+      throw new AcpValidationError(
+        'missing_payment_amount',
+        'SOL payment requests must include paymentAmount in native SOL.',
+        '$.paymentAmount',
+      );
+    }
+    assertPaymentAmount(cart.paymentAmount);
+    return cart.paymentAmount;
+  }
+
+  if (cart.paymentAmount !== undefined) {
+    assertPaymentAmount(cart.paymentAmount);
+    const amount = Number(cart.paymentAmount);
+    if (Math.abs(amount - totalUsd) > TOTAL_TOLERANCE) {
+      throw new AcpValidationError(
+        'payment_amount_mismatch',
+        'Stablecoin paymentAmount must match totalAmount.',
+        '$.paymentAmount',
+      );
+    }
+    return cart.paymentAmount;
+  }
+
+  return cart.totalAmount;
+}
+
+function assertPaymentAmount(value: string): void {
+  if (!DECIMAL_AMOUNT_REGEX.test(value)) {
+    throw new AcpValidationError('invalid_amount', 'paymentAmount must be a positive decimal string.', '$.paymentAmount');
+  }
+  const amount = Number(value);
+  if (!Number.isFinite(amount)) {
+    throw new AcpValidationError('invalid_amount', 'paymentAmount must be finite.', '$.paymentAmount');
+  }
+  if (amount <= 0) {
+    throw new AcpValidationError('payment_amount_non_positive', 'paymentAmount must be greater than zero.', '$.paymentAmount');
+  }
 }
 
 function assertSymbolMintMatches(cluster: AcpCluster, symbol: AcpPaymentToken, mint: string): void {

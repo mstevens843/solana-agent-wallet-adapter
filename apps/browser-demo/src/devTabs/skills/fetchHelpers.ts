@@ -2,6 +2,8 @@
 // Lifted from the payOut.ts pattern so each sub-tab agent doesn't duplicate
 // fetch / error-shape logic.
 
+import { getConnectedAddress } from '../../walletState.js';
+
 export type FetchResult<T> =
   | { kind: 'ok'; value: T }
   | { kind: 'error'; status: number; message: string }
@@ -9,9 +11,12 @@ export type FetchResult<T> =
   | { kind: 'notDeployed' }
   | { kind: 'networkError'; message: string };
 
-const COMMON_HEADERS = {
-  Accept: 'application/json',
-} as const;
+function commonHeaders(): Record<string, string> {
+  const headers: Record<string, string> = { Accept: 'application/json' };
+  const wallet = getConnectedAddress();
+  if (wallet) headers['X-Agentic-Wallet-Address'] = wallet;
+  return headers;
+}
 
 export async function getJson<T>(path: string): Promise<FetchResult<T>> {
   let res: Response;
@@ -19,7 +24,7 @@ export async function getJson<T>(path: string): Promise<FetchResult<T>> {
     res = await fetch(path, {
       method: 'GET',
       credentials: 'include',
-      headers: COMMON_HEADERS,
+      headers: commonHeaders(),
     });
   } catch (err) {
     return { kind: 'networkError', message: (err as Error).message };
@@ -33,7 +38,7 @@ export async function postJson<T>(path: string, body: unknown): Promise<FetchRes
     res = await fetch(path, {
       method: 'POST',
       credentials: 'include',
-      headers: { ...COMMON_HEADERS, 'Content-Type': 'application/json' },
+      headers: { ...commonHeaders(), 'Content-Type': 'application/json' },
       body: JSON.stringify(body),
     });
   } catch (err) {
@@ -48,7 +53,7 @@ export async function deleteJson<T = { ok: true }>(path: string): Promise<FetchR
     res = await fetch(path, {
       method: 'DELETE',
       credentials: 'include',
-      headers: COMMON_HEADERS,
+      headers: commonHeaders(),
     });
   } catch (err) {
     return { kind: 'networkError', message: (err as Error).message };

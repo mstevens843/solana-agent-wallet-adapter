@@ -5,6 +5,7 @@ import { parseAcpCart } from '../parser.js';
 import {
   MERCHANT_RECIPIENT_MAINNET,
   SAMPLE_CART_JSON,
+  mainnetSolCart,
   mainnetUsdcCart,
   rawAliasedMainnetCart,
 } from './fixtures.js';
@@ -41,6 +42,12 @@ describe('parseAcpCart', () => {
   it("normalizes legacy 'mainnet' cluster alias to 'mainnet-beta'", () => {
     const cart = parseAcpCart(rawAliasedMainnetCart());
     expect(cart.cluster).toBe('mainnet-beta');
+  });
+
+  it('parses SOL payment requests with paymentAmount', () => {
+    const cart = parseAcpCart(mainnetSolCart());
+    expect(cart.paymentToken).toBe('SOL');
+    expect(cart.paymentAmount).toBe('0.10');
   });
 
   it('rejects unknown cluster names', () => {

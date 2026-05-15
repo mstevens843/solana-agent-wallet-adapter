@@ -15,7 +15,7 @@ export function cartToTransferParams(
   return Object.freeze({
     token: cart.paymentToken,
     recipient: cart.merchant.recipient,
-    amount: cart.totalAmount,
+    amount: validated.transferAmount,
     ...(dueAt !== undefined ? { dueAt } : {}),
     ...(note !== undefined ? { note } : {}),
   });

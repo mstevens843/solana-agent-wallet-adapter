@@ -3031,6 +3031,23 @@ async function handlePayOutApprovalCreated(detail: PayOutApprovalCreatedDetail):
   }
   render();
 
+  if (detail.localOnly) {
+    try {
+      const action = materializeLocalPayOutApproval(detail);
+      state.steps.inbox = 'done';
+      state.error = '';
+      pushToast('success', 'Approval added to Needs Approval', `${detail.cartId} is saved on this device.`);
+      render();
+      focusInboxApprovalCard(action.id);
+    } catch (err) {
+      state.steps.inbox = 'error';
+      state.error = redactSecrets(err instanceof Error ? err.message : String(err));
+      pushToast('error', 'Local approval failed', state.error);
+      render();
+    }
+    return;
+  }
+
   try {
     await refreshCloudSession(false);
     if (!cloudSessionMatchesWallet()) {
@@ -3051,6 +3068,31 @@ async function handlePayOutApprovalCreated(detail: PayOutApprovalCreatedDetail):
       `${detail.cartId} is saved in Agentic Cloud. ${state.error}`,
     );
   }
+}
+
+function materializeLocalPayOutApproval(detail: PayOutApprovalCreatedDetail): PreparedAction {
+  if (!state.address) {
+    throw new Error('Connect a wallet before adding the Pay Out approval to Needs Approval.');
+  }
+  const action = cloudApprovalToPreparedAction(detail.approval);
+  if (!action) {
+    throw new Error('The local ACP dev route did not return a valid approval card.');
+  }
+  const localAction: PreparedAction = {
+    ...action,
+    walletAddress: state.address,
+    workflowSource: 'browser',
+    metadata: {
+      ...(action.metadata ?? {}),
+      source: 'acp_outbound',
+      actionSource: 'acp_outbound',
+      devLocal: true,
+    },
+  };
+  state.preparedActions = mergePreparedActions([localAction], state.preparedActions);
+  state.materializedActions = state.preparedActions;
+  saveBrowserWorkflowState();
+  return localAction;
 }
 
 function focusInboxApprovalCard(approvalId: string): void {

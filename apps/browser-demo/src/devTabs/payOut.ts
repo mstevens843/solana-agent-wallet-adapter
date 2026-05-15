@@ -1,5 +1,8 @@
 import './payOut.css';
+import { SOL_MINT_KEY, type PriceUsdSnapshot } from '@solana-agent-wallet-adapter/workflow';
 import { dispatchPayOutApprovalCreated } from '../payOutApprovalEvents.js';
+import { getUsdPriceForMint } from '../priceCache.js';
+import { getConnectedAddress } from '../walletState.js';
 
 export interface AcpLineItemDisplay {
   name: string;
@@ -26,9 +29,14 @@ export interface ApprovalCreated {
   cartId: string;
   approvalId: string;
   cartHash?: string;
+  approval?: unknown;
+  localOnly?: boolean;
 }
 
 export type Phase = 'compose' | 'preview';
+export type EntryMode = 'details' | 'json';
+export type PayOutPaymentToken = 'USDC' | 'USDT' | 'SOL';
+type SolPriceStatus = 'idle' | 'loading' | 'ready' | 'error';
 
 interface NoticeInfo {
   title: string;
@@ -37,6 +45,8 @@ interface NoticeInfo {
 
 export interface PanelState {
   phase: Phase;
+  entryMode: EntryMode;
+  draft: PayOutDraft | null;
   cartText: string;
   preview: AcpPreviewDisplay | null;
   error: string;
@@ -44,16 +54,17 @@ export interface PanelState {
   busy: boolean;
 }
 
-// Sample cart that round-trips through `validateAcpCart`:
-//   2 × $6.00 + 1 × $4.50 + 1 × $1.30 = $17.80 (matches totalAmount).
-export const SAMPLE_CART = JSON.stringify(
-  {
+const SAMPLE_CART_FALLBACK_RECIPIENT = '4fTqUdd9SRCkmALQhQGF66VRYJFsCLDSQJYadqwMMoHd';
+const PAYMENT_TOKEN_OPTIONS: readonly PayOutPaymentToken[] = ['USDC', 'USDT', 'SOL'];
+
+function sampleCartPayload(recipient: string): Record<string, unknown> {
+  return {
     id: 'cart_demo_001',
     cartVersion: '1',
     merchant: {
       id: 'merchant_acme_coffee',
       name: 'Acme Coffee',
-      recipient: '7tQAS3PCEHKekfA5xkkFqRf9aCkqg8aLg5jLA7MwYc8M',
+      recipient,
     },
     lineItems: [
       { id: 'item_001', name: 'Latte', quantity: 2, unitAmount: '6.00', currency: 'USD' },
@@ -65,13 +76,23 @@ export const SAMPLE_CART = JSON.stringify(
     paymentToken: 'USDC',
     cluster: 'mainnet-beta',
     memo: 'ACP order #demo-001',
-  },
-  null,
-  2,
-);
+  };
+}
+
+export function sampleCartForRecipient(recipient: string): string {
+  const trimmed = recipient.trim();
+  if (!trimmed) throw new Error('Connect a wallet before loading the demo request.');
+  return JSON.stringify(sampleCartPayload(trimmed), null, 2);
+}
+
+// Sample cart that round-trips through `validateAcpCart`:
+//   2 × $6.00 + 1 × $4.50 + 1 × $1.30 = $17.80 (matches totalAmount).
+export const SAMPLE_CART = sampleCartForRecipient(SAMPLE_CART_FALLBACK_RECIPIENT);
 
 const panelState: PanelState = {
   phase: 'compose',
+  entryMode: 'details',
+  draft: null,
   cartText: '',
   preview: null,
   error: '',
@@ -81,6 +102,8 @@ const panelState: PanelState = {
 
 export function __resetPanelStateForTests(next: Partial<PanelState> = {}): void {
   panelState.phase = next.phase ?? 'compose';
+  panelState.entryMode = next.entryMode ?? 'details';
+  panelState.draft = next.draft ?? null;
   panelState.cartText = next.cartText ?? '';
   panelState.preview = next.preview ?? null;
   panelState.error = next.error ?? '';
@@ -110,7 +133,7 @@ export function shortAddress(address: string): string {
 export function parseCartText(text: string): unknown {
   const trimmed = text.trim();
   if (!trimmed) {
-    throw new Error('Choose or import a payment request before reviewing.');
+    throw new Error('Create, load, or import a payment request before reviewing.');
   }
   try {
     return JSON.parse(trimmed);
@@ -122,6 +145,174 @@ export function parseCartText(text: string): unknown {
 
 function isStringField(value: unknown): value is string {
   return typeof value === 'string' && value.length > 0;
+}
+
+type JsonRecord = Record<string, unknown>;
+
+const SOLANA_ADDRESS_REGEX = /^[1-9A-HJ-NP-Za-km-z]{32,44}$/;
+const DECIMAL_AMOUNT_REGEX = /^(?:(?!0\d)\d+(?:\.\d{1,9})?|\.\d{1,9})$/;
+const DEFAULT_ACP_CLUSTER = 'mainnet-beta';
+const LOCAL_TOTAL_TOLERANCE = 0.005;
+const LOCAL_TOKEN_MINTS: Readonly<Record<string, Readonly<Record<string, string>>>> = Object.freeze({
+  'mainnet-beta': Object.freeze({
+    USDC: 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v',
+    USDT: 'Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB',
+    SOL: SOL_MINT_KEY,
+  }),
+  devnet: Object.freeze({
+    USDC: '4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU',
+    SOL: SOL_MINT_KEY,
+  }),
+  testnet: Object.freeze({ SOL: SOL_MINT_KEY }),
+  localnet: Object.freeze({ SOL: SOL_MINT_KEY }),
+});
+
+function isObjectRecord(value: unknown): value is JsonRecord {
+  return Boolean(value && typeof value === 'object' && !Array.isArray(value));
+}
+
+function slugId(value: string, fallback: string): string {
+  const slug = value.trim().toLowerCase().replace(/[^a-z0-9]+/g, '_').replace(/^_+|_+$/g, '');
+  return slug || fallback;
+}
+
+function formatMoney(value: number): string {
+  return Number.isFinite(value) ? value.toFixed(2) : '0.00';
+}
+
+interface PayOutLineDraft {
+  name: string;
+  quantity: string;
+  unitAmount: string;
+}
+
+interface PayOutDraft {
+  merchantName: string;
+  recipient: string;
+  paymentToken: PayOutPaymentToken;
+  paymentAmount: string;
+  memo: string;
+  lineItems: PayOutLineDraft[];
+  solPriceStatus: SolPriceStatus;
+  solUsdPerToken?: number;
+  solPriceSource?: string;
+  solPriceCheckedAt?: string;
+  solPriceError?: string;
+}
+
+function emptyLineDraft(): PayOutLineDraft {
+  return { name: '', quantity: '1', unitAmount: '' };
+}
+
+function defaultPayOutDraft(): PayOutDraft {
+  return {
+    merchantName: '',
+    recipient: '',
+    paymentToken: 'USDC',
+    paymentAmount: '',
+    memo: '',
+    lineItems: [emptyLineDraft(), emptyLineDraft(), emptyLineDraft()],
+    solPriceStatus: 'idle',
+  };
+}
+
+function normalizePaymentToken(value: unknown): PayOutPaymentToken {
+  return PAYMENT_TOKEN_OPTIONS.includes(value as PayOutPaymentToken) ? value as PayOutPaymentToken : 'USDC';
+}
+
+function cartDraftFromText(cartText: string): PayOutDraft {
+  const fallback: PayOutDraft = defaultPayOutDraft();
+  const parsed = safeJsonParse(cartText);
+  if (!isObjectRecord(parsed)) return fallback;
+  const merchant = isObjectRecord(parsed.merchant) ? parsed.merchant : {};
+  const metadata = isObjectRecord(parsed.metadata) ? parsed.metadata : {};
+  const rawItems = Array.isArray(parsed.lineItems) ? parsed.lineItems : [];
+  const lineItems = rawItems
+    .filter(isObjectRecord)
+    .slice(0, 4)
+    .map((item) => ({
+      name: isStringField(item.name) ? item.name : '',
+      quantity: typeof item.quantity === 'number' && Number.isFinite(item.quantity)
+        ? String(item.quantity)
+        : isStringField(item.quantity)
+          ? item.quantity
+          : '1',
+      unitAmount: isStringField(item.unitAmount) ? item.unitAmount : '',
+    }));
+  while (lineItems.length < 3) lineItems.push(emptyLineDraft());
+  return {
+    merchantName: isStringField(merchant.name) ? merchant.name : '',
+    recipient: isStringField(merchant.recipient) ? merchant.recipient : '',
+    paymentToken: normalizePaymentToken(parsed.paymentToken),
+    paymentAmount: isStringField(parsed.paymentAmount) ? parsed.paymentAmount : '',
+    memo: isStringField(parsed.memo) ? parsed.memo : '',
+    lineItems,
+    solPriceStatus: typeof metadata.solUsdPerToken === 'string' && Number.isFinite(Number(metadata.solUsdPerToken))
+      ? 'ready'
+      : 'idle',
+    ...(typeof metadata.solUsdPerToken === 'string' && Number.isFinite(Number(metadata.solUsdPerToken))
+      ? { solUsdPerToken: Number(metadata.solUsdPerToken) }
+      : {}),
+    ...(isStringField(metadata.priceSource) ? { solPriceSource: metadata.priceSource } : {}),
+    ...(isStringField(metadata.priceCheckedAt) ? { solPriceCheckedAt: metadata.priceCheckedAt } : {}),
+  };
+}
+
+function draftTotal(draft: PayOutDraft): number {
+  return draft.lineItems.reduce((sum, item) => {
+    const quantity = Number(item.quantity || '0');
+    const unitAmount = Number(item.unitAmount || '0');
+    return Number.isFinite(quantity) && Number.isFinite(unitAmount) ? sum + quantity * unitAmount : sum;
+  }, 0);
+}
+
+function buildCartTextFromDraft(draft: PayOutDraft): string {
+  const merchantName = draft.merchantName.trim();
+  if (!merchantName) throw new Error('Merchant name is required.');
+  const recipient = draft.recipient.trim();
+  if (!recipient) throw new Error('Recipient wallet is required.');
+  const paymentToken = draft.paymentToken.trim().toUpperCase() || 'USDC';
+  const lineItems = draft.lineItems.flatMap((item, index) => {
+    const name = item.name.trim();
+    const quantityText = item.quantity.trim();
+    const unitAmount = item.unitAmount.trim();
+    if (!name && !quantityText && !unitAmount) return [];
+    if (!name) throw new Error(`Line item ${index + 1} needs a name.`);
+    if (!quantityText) throw new Error(`Line item ${index + 1} needs a quantity.`);
+    if (!unitAmount) throw new Error(`Line item ${index + 1} needs an amount.`);
+    const quantity = Number(quantityText);
+    if (!Number.isInteger(quantity) || quantity <= 0) {
+      throw new Error(`Line item ${index + 1} quantity must be a positive whole number.`);
+    }
+    if (!DECIMAL_AMOUNT_REGEX.test(unitAmount)) {
+      throw new Error(`Line item ${index + 1} amount must be a decimal value.`);
+    }
+    return [{
+      id: `item_${String(index + 1).padStart(3, '0')}`,
+      name,
+      quantity,
+      unitAmount,
+      currency: 'USD',
+    }];
+  });
+  if (lineItems.length === 0) throw new Error('Add at least one line item.');
+  const total = lineItems.reduce((sum, item) => sum + Number(item.unitAmount) * Number(item.quantity), 0);
+  const cart = {
+    id: `cart_${Date.now().toString(36)}`,
+    cartVersion: '1',
+    merchant: {
+      id: `merchant_${slugId(merchantName, 'custom')}`,
+      name: merchantName,
+      recipient,
+    },
+    lineItems,
+    totalAmount: formatMoney(total),
+    currency: 'USD',
+    paymentToken,
+    cluster: DEFAULT_ACP_CLUSTER,
+    ...(draft.memo.trim() ? { memo: draft.memo.trim() } : {}),
+  };
+  return JSON.stringify(cart, null, 2);
 }
 
 function formatFiat(value: unknown): string {
@@ -207,6 +398,139 @@ export function normalizePreview(input: unknown): AcpPreviewDisplay {
   return result;
 }
 
+function requiredString(record: JsonRecord, key: string, label: string): string {
+  const value = record[key];
+  if (!isStringField(value)) throw new Error(`${label} is required.`);
+  return value;
+}
+
+function optionalString(record: JsonRecord, key: string): string | undefined {
+  const value = record[key];
+  return isStringField(value) ? value : undefined;
+}
+
+function normalizeAcpCluster(value: string): string {
+  if (value === 'mainnet') return 'mainnet-beta';
+  if (value === 'mainnet-beta' || value === 'devnet' || value === 'testnet' || value === 'localnet') return value;
+  throw new Error('Cluster must be mainnet-beta, devnet, testnet, or localnet.');
+}
+
+function parseLocalLineItems(value: unknown): { items: JsonRecord[]; computedTotal: number } {
+  if (!Array.isArray(value) || value.length === 0) {
+    throw new Error('Payment request must include at least one line item.');
+  }
+  let computedTotal = 0;
+  const items = value.map((entry, index): JsonRecord => {
+    if (!isObjectRecord(entry)) throw new Error(`Line item ${index + 1} must be an object.`);
+    const id = requiredString(entry, 'id', `Line item ${index + 1} id`);
+    const name = requiredString(entry, 'name', `Line item ${index + 1} name`);
+    const quantity = entry.quantity;
+    if (typeof quantity !== 'number' || !Number.isInteger(quantity) || quantity <= 0) {
+      throw new Error(`Line item ${index + 1} quantity must be a positive whole number.`);
+    }
+    const unitAmount = requiredString(entry, 'unitAmount', `Line item ${index + 1} unit amount`);
+    if (!DECIMAL_AMOUNT_REGEX.test(unitAmount)) {
+      throw new Error(`Line item ${index + 1} unit amount must be a decimal string.`);
+    }
+    const currency = requiredString(entry, 'currency', `Line item ${index + 1} currency`);
+    if (currency !== 'USD') throw new Error('Only USD payment requests are supported in this preview.');
+    computedTotal += Number(unitAmount) * quantity;
+    return { id, name, quantity, unitAmount, currency };
+  });
+  return { items, computedTotal };
+}
+
+function resolveLocalTokenMint(cart: JsonRecord, cluster: string, paymentToken: string): string {
+  const explicitMint = optionalString(cart, 'paymentTokenMint');
+  const defaultMint = LOCAL_TOKEN_MINTS[cluster]?.[paymentToken];
+  if (explicitMint) {
+    if (!SOLANA_ADDRESS_REGEX.test(explicitMint)) {
+      throw new Error('paymentTokenMint must be a Solana token mint address.');
+    }
+    if (defaultMint && explicitMint !== defaultMint) {
+      throw new Error(`paymentTokenMint does not match canonical ${paymentToken} on ${cluster}.`);
+    }
+    return explicitMint;
+  }
+  if (!defaultMint) {
+    throw new Error(`${paymentToken} is not supported on ${cluster} without paymentTokenMint.`);
+  }
+  return defaultMint;
+}
+
+function buildLocalPreviewEnvelope(cartInput: unknown): JsonRecord {
+  if (!isObjectRecord(cartInput)) throw new Error('Payment request must be a JSON object.');
+  const cartId = requiredString(cartInput, 'id', 'Payment request id');
+  const cartVersion = requiredString(cartInput, 'cartVersion', 'Payment request version');
+  if (cartVersion !== '1') throw new Error('Only cartVersion 1 payment requests are supported.');
+  if (!isObjectRecord(cartInput.merchant)) throw new Error('Merchant details are required.');
+  const merchant = cartInput.merchant;
+  const merchantId = requiredString(merchant, 'id', 'Merchant id');
+  const merchantName = requiredString(merchant, 'name', 'Merchant name');
+  const recipient = requiredString(merchant, 'recipient', 'Merchant recipient');
+  if (!SOLANA_ADDRESS_REGEX.test(recipient)) {
+    throw new Error('Merchant recipient must be a Solana wallet address.');
+  }
+  const { items, computedTotal } = parseLocalLineItems(cartInput.lineItems);
+  const totalAmount = requiredString(cartInput, 'totalAmount', 'Total amount');
+  if (!DECIMAL_AMOUNT_REGEX.test(totalAmount)) throw new Error('Total amount must be a decimal string.');
+  const total = Number(totalAmount);
+  if (!Number.isFinite(total) || total <= 0) throw new Error('Total amount must be greater than zero.');
+  if (Math.abs(total - computedTotal) > LOCAL_TOTAL_TOLERANCE) {
+    throw new Error(`Total amount (${total.toFixed(2)}) does not match line items (${computedTotal.toFixed(2)}).`);
+  }
+  const currency = requiredString(cartInput, 'currency', 'Currency');
+  if (currency !== 'USD') throw new Error('Only USD payment requests are supported in this preview.');
+  const paymentToken = requiredString(cartInput, 'paymentToken', 'Payment token');
+  if (paymentToken !== 'USDC' && paymentToken !== 'USDT') {
+    throw new Error('Payment token must be USDC or USDT.');
+  }
+  const cluster = normalizeAcpCluster(requiredString(cartInput, 'cluster', 'Cluster'));
+  const resolvedTokenMint = resolveLocalTokenMint(cartInput, cluster, paymentToken);
+  const expiresAt = optionalString(cartInput, 'expiresAt');
+  if (expiresAt) {
+    const expiresMs = Date.parse(expiresAt);
+    if (!Number.isFinite(expiresMs)) throw new Error('Expiration must be an ISO timestamp.');
+    if (expiresMs <= Date.now()) throw new Error('This payment request is expired.');
+  }
+  const memo = optionalString(cartInput, 'memo');
+  const paymentTokenMint = optionalString(cartInput, 'paymentTokenMint');
+  const metadata = isObjectRecord(cartInput.metadata) ? cartInput.metadata : undefined;
+  const cart: JsonRecord = {
+    id: cartId,
+    cartVersion,
+    merchant: { id: merchantId, name: merchantName, recipient },
+    lineItems: items,
+    totalAmount,
+    currency,
+    paymentToken,
+    ...(paymentTokenMint ? { paymentTokenMint } : {}),
+    cluster,
+    ...(expiresAt ? { expiresAt } : {}),
+    ...(memo ? { memo } : {}),
+    ...(metadata ? { metadata } : {}),
+  };
+  return {
+    cart,
+    transfer: {
+      token: paymentToken,
+      recipient,
+      amount: totalAmount,
+      note: memo ?? `ACP cart ${cartId}: ${merchantName}`,
+    },
+    totalFiat: Math.round(total * 100) / 100,
+    resolvedTokenMint,
+  };
+}
+
+export function previewCartLocally(cart: unknown): FetchResult<AcpPreviewDisplay> {
+  try {
+    return { kind: 'ok', value: normalizePreview(buildLocalPreviewEnvelope(cart)) };
+  } catch (err) {
+    return { kind: 'badRequest', message: err instanceof Error ? err.message : String(err) };
+  }
+}
+
 export function renderPayOutPanel(): string {
   const errorBlock = panelState.error ? errorBanner(panelState.error) : '';
   const noticeBlock = panelState.notice
@@ -227,6 +551,11 @@ export function renderPayOutPanel(): string {
             <span class="pay-out-mode">Manual approval</span>
           </div>
           <p>Review a payment request, then send it to Needs Approval. Your wallet signs later; this screen never transfers automatically.</p>
+          <div class="pay-out-capability-row" aria-label="Pay Out safeguards">
+            <span class="dev-tab-pill">Readable request review</span>
+            <span class="dev-tab-pill">Request validation</span>
+            <span class="dev-tab-pill">Wallet approval required</span>
+          </div>
         </div>
         <div class="pay-out-route-card terminal-preview-window" aria-label="Payment route">
           <div class="terminal-preview-bar pay-out-route-bar">
@@ -251,11 +580,6 @@ export function renderPayOutPanel(): string {
           </div>
         </div>
       </header>
-      <div class="pay-out-capability-row" aria-label="Pay Out safeguards">
-        <span class="dev-tab-pill">Readable request review</span>
-        <span class="dev-tab-pill">Backend validation</span>
-        <span class="dev-tab-pill">Wallet approval required</span>
-      </div>
       ${noticeBlock}
       ${errorBlock}
       ${body}
@@ -266,101 +590,164 @@ export function renderPayOutPanel(): string {
 function composeView(cartText: string, busy: boolean): string {
   const disabled = busy ? 'disabled' : '';
   const hasRequest = cartText.trim().length > 0;
+  const entryMode = panelState.entryMode;
+  const draft = panelState.draft ?? cartDraftFromText(cartText);
   return `
     <form class="pay-out-form dev-tab-panel" data-pay-out-form onsubmit="return false;">
       <div class="pay-out-form-head">
         <div>
           <span class="pay-out-section-label">Payment request</span>
-          <h3>Choose a request to review</h3>
-          <p>Payment requests normally arrive from a checkout, QR link, or another agent. Use the demo request here to test the user flow.</p>
+          <h3>Create a payment request</h3>
+          <p>Type the payment details, review the human-readable summary, then send it to Needs Approval.</p>
         </div>
+        ${entryModeTabs(entryMode)}
       </div>
-      <div class="pay-out-request-layout">
-        ${selectedRequestPanel(cartText)}
+      <section class="pay-out-entry-card" aria-label="Create payment request">
+        ${entryMode === 'json' ? advancedJsonPanel(cartText, disabled) : manualRequestPanel(draft, disabled)}
+      </section>
+      <div class="pay-out-request-layout pay-out-sample-layout">
         ${demoRequestPanel(disabled)}
       </div>
       <div class="pay-out-actions">
-        <span class="pay-out-action-note">${hasRequest ? 'Ready to validate with the backend.' : 'Select a request before review.'}</span>
+        <span class="pay-out-action-note">${hasRequest ? 'Loaded request values are editable above.' : 'No developer JSON required for normal use.'}</span>
         <div class="pay-out-actions-end">
           ${hasRequest ? `<button type="button" class="pay-out-button secondary" data-pay-out-action="clear" ${disabled}>Clear request</button>` : ''}
-          ${hasRequest ? `<button type="button" class="pay-out-button" data-pay-out-action="preview" ${disabled}>Review payment request</button>` : ''}
         </div>
       </div>
-      <details class="pay-out-advanced">
-        <summary>
-          <span>Advanced</span>
-          <strong>Import raw ACP request</strong>
-        </summary>
-        <div class="pay-out-advanced-body">
-          <div class="pay-out-form-head compact">
-            <div>
-              <label for="pay-out-cart-input">Raw ACP request</label>
-              <span>For merchant and agent integrations. Most users should not need to edit this.</span>
-            </div>
-          </div>
-          <div class="pay-out-editor-shell terminal-preview-window">
-            <div class="terminal-preview-bar pay-out-editor-bar">
-              <span></span>
-              <span></span>
-              <span></span>
-              <strong>request.json</strong>
-            </div>
-            <textarea
-              id="pay-out-cart-input"
-              class="pay-out-cart-input"
-              name="cart"
-              spellcheck="false"
-              autocapitalize="off"
-              autocomplete="off"
-              placeholder='{"id":"cart_...","lineItems":[...],"totalAmount":"17.80","paymentToken":"USDC"}'
-              ${disabled}
-            >${escapeHtml(cartText)}</textarea>
-          </div>
-          <div class="pay-out-actions">
-            <span class="pay-out-action-note">Raw requests are validated by the backend before an approval is created.</span>
-            <div class="pay-out-actions-end">
-              <button type="button" class="pay-out-button" data-pay-out-action="preview" ${disabled}>Review imported request</button>
-            </div>
-          </div>
-        </div>
-      </details>
       ${busy ? '<p class="pay-out-busy" data-pay-out-busy>Working…</p>' : ''}
     </form>
   `;
 }
 
-function selectedRequestPanel(cartText: string): string {
-  const summary = requestSummary(cartText);
-  if (!summary) {
-    return `
-      <section class="pay-out-selected-request is-empty" aria-label="Selected payment request">
-        <span class="pay-out-request-status">No request selected</span>
-        <h4>No payment request yet</h4>
-        <p>Use the demo request to test Pay Out without pasting protocol data.</p>
-      </section>
-    `;
-  }
-  const items = summary.items.length > 0
-    ? `<p>${escapeHtml(summary.items.join(', '))}${summary.hiddenItemCount > 0 ? ` and ${summary.hiddenItemCount} more` : ''}</p>`
-    : '<p>Line items will be checked during backend validation.</p>';
+function entryModeTabs(entryMode: EntryMode): string {
+  const tab = (mode: EntryMode, label: string) => `
+    <button
+      type="button"
+      class="${entryMode === mode ? 'active' : ''}"
+      role="tab"
+      aria-selected="${entryMode === mode ? 'true' : 'false'}"
+      data-pay-out-action="entry-${mode}"
+    >
+      ${escapeHtml(label)}
+    </button>
+  `;
   return `
-    <section class="pay-out-selected-request" aria-label="Selected payment request">
-      <span class="pay-out-request-status">${escapeHtml(summary.status)}</span>
-      <div class="pay-out-request-title-row">
-        <h4>${escapeHtml(summary.merchantName)}</h4>
-        <strong>${escapeHtml(summary.totalLabel)}</strong>
+    <div class="pay-out-entry-tabs" role="tablist" aria-label="Payment request entry mode">
+      ${tab('details', 'Type payment details')}
+      ${tab('json', 'Paste JSON request')}
+    </div>
+  `;
+}
+
+function manualRequestPanel(draft: PayOutDraft, disabled: string): string {
+  const total = draftTotal(draft);
+  const lineRows = draft.lineItems.map((item, index) => lineItemDraftRow(item, index, disabled)).join('');
+  const tokenOptions = ['USDC', 'USDT'].map((token) =>
+    `<option value="${token}" ${draft.paymentToken.toUpperCase() === token ? 'selected' : ''}>${token}</option>`,
+  ).join('');
+  return `
+    <section class="pay-out-manual-request" data-pay-out-builder role="tabpanel" aria-label="Payment details">
+      <div class="pay-out-builder-head">
+        <div>
+          <span class="pay-out-request-status">Normal entry</span>
+          <h4>Payment details</h4>
+        </div>
+        <div class="pay-out-builder-total" aria-label="Current calculated total">
+          <span>Total</span>
+          <strong>${escapeHtml(formatMoney(total))} ${escapeHtml(draft.paymentToken.toUpperCase() || 'USDC')}</strong>
+        </div>
       </div>
-      ${items}
-      <dl class="pay-out-request-mini-grid">
-        <div>
-          <dt>Items</dt>
-          <dd>${escapeHtml(summary.itemCountLabel)}</dd>
+      <div class="pay-out-field-grid">
+        <label>
+          <span>Merchant name</span>
+          <input class="pay-out-input" name="merchantName" value="${escapeHtml(draft.merchantName)}" placeholder="Acme Coffee" ${disabled}>
+        </label>
+        <label>
+          <span>Recipient wallet</span>
+          <input class="pay-out-input" name="recipient" value="${escapeHtml(draft.recipient)}" placeholder="Merchant Solana address" ${disabled}>
+        </label>
+        <label>
+          <span>Token</span>
+          <select class="pay-out-input" name="paymentToken" ${disabled}>${tokenOptions}</select>
+        </label>
+        <label>
+          <span>Memo</span>
+          <input class="pay-out-input" name="memo" value="${escapeHtml(draft.memo)}" placeholder="Invoice, order, or note" ${disabled}>
+        </label>
+      </div>
+      <div class="pay-out-line-editor">
+        <div class="pay-out-line-editor-head">
+          <span>Line items</span>
+          <em>Quantity x unit amount becomes the total</em>
         </div>
-        <div>
-          <dt>Pay with</dt>
-          <dd>${escapeHtml(summary.paymentToken)}</dd>
+        <div class="pay-out-line-grid" role="group" aria-label="Line items">
+          ${lineRows}
         </div>
-      </dl>
+      </div>
+      <div class="pay-out-actions">
+        <span class="pay-out-action-note">Validation runs before anything reaches Needs Approval.</span>
+        <div class="pay-out-actions-end">
+          <button type="button" class="pay-out-button" data-pay-out-action="preview" ${disabled}>Review payment request</button>
+        </div>
+      </div>
+    </section>
+  `;
+}
+
+function lineItemDraftRow(item: PayOutLineDraft, index: number, disabled: string): string {
+  const row = index + 1;
+  return `
+    <div class="pay-out-line-row" data-pay-out-line-item>
+      <label>
+        <span>Item ${row}</span>
+        <input class="pay-out-input" name="lineName" value="${escapeHtml(item.name)}" placeholder="${row === 1 ? 'Latte' : 'Optional item'}" ${disabled}>
+      </label>
+      <label>
+        <span>Qty</span>
+        <input class="pay-out-input" name="lineQuantity" inputmode="numeric" value="${escapeHtml(item.quantity)}" placeholder="1" ${disabled}>
+      </label>
+      <label>
+        <span>Unit amount</span>
+        <input class="pay-out-input" name="lineUnitAmount" inputmode="decimal" value="${escapeHtml(item.unitAmount)}" placeholder="0.00" ${disabled}>
+      </label>
+    </div>
+  `;
+}
+
+function advancedJsonPanel(cartText: string, disabled: string): string {
+  return `
+    <section class="pay-out-import-request pay-out-advanced-json" role="tabpanel" aria-label="Paste JSON request">
+      <div class="pay-out-import-head">
+        <div>
+          <span class="pay-out-request-status">Developer import</span>
+          <h4>Paste JSON request</h4>
+        </div>
+        <button type="button" class="pay-out-button secondary" data-pay-out-action="paste-clipboard" ${disabled}>Paste from clipboard</button>
+      </div>
+      <div class="pay-out-editor-shell terminal-preview-window">
+        <div class="terminal-preview-bar pay-out-editor-bar">
+          <span></span>
+          <span></span>
+          <span></span>
+          <strong>request.json</strong>
+        </div>
+        <textarea
+          id="pay-out-cart-input"
+          class="pay-out-cart-input"
+          name="cart"
+          spellcheck="false"
+          autocapitalize="off"
+          autocomplete="off"
+          placeholder='{"id":"cart_...","lineItems":[...],"totalAmount":"17.80","paymentToken":"USDC"}'
+          ${disabled}
+        >${escapeHtml(cartText)}</textarea>
+      </div>
+      <div class="pay-out-actions">
+        <span class="pay-out-action-note">Use this only for checkout, QR, or external-agent payloads.</span>
+        <div class="pay-out-actions-end">
+          <button type="button" class="pay-out-button secondary" data-pay-out-action="preview-json" ${disabled}>Review raw JSON</button>
+        </div>
+      </div>
     </section>
   `;
 }
@@ -368,7 +755,7 @@ function selectedRequestPanel(cartText: string): string {
 function demoRequestPanel(disabled: string): string {
   return `
     <section class="pay-out-demo-request" aria-label="Demo payment request">
-      <span class="pay-out-request-status">Demo request</span>
+      <span class="pay-out-request-status">Sample request</span>
       <div class="pay-out-request-title-row">
         <h4>Acme Coffee</h4>
         <strong>17.80 USDC</strong>
@@ -384,61 +771,9 @@ function demoRequestPanel(disabled: string): string {
           <dd>Manual</dd>
         </div>
       </dl>
-      <button type="button" class="pay-out-button" data-pay-out-action="load-sample" ${disabled}>Use demo request</button>
+      <button type="button" class="pay-out-button secondary" data-pay-out-action="load-sample" ${disabled}>Load sample request</button>
     </section>
   `;
-}
-
-interface RequestSummary {
-  merchantName: string;
-  totalLabel: string;
-  paymentToken: string;
-  itemCountLabel: string;
-  itemCount: number;
-  hiddenItemCount: number;
-  items: string[];
-  status: string;
-}
-
-function requestSummary(cartText: string): RequestSummary | null {
-  if (!cartText.trim()) return null;
-  const parsed = safeJsonParse(cartText);
-  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
-    return {
-      merchantName: 'Imported request',
-      totalLabel: 'Needs review',
-      paymentToken: 'Backend check',
-      itemCountLabel: 'Needs validation',
-      itemCount: 0,
-      hiddenItemCount: 0,
-      items: [],
-      status: 'Needs validation',
-    };
-  }
-  const record = parsed as Record<string, unknown>;
-  const merchant = record.merchant && typeof record.merchant === 'object' && !Array.isArray(record.merchant)
-    ? (record.merchant as Record<string, unknown>)
-    : {};
-  const merchantName = isStringField(merchant.name) ? merchant.name : 'Imported request';
-  const paymentToken = isStringField(record.paymentToken) ? record.paymentToken : 'Token pending';
-  const totalAmount = isStringField(record.totalAmount) ? record.totalAmount : 'Amount pending';
-  const totalLabel = `${totalAmount}${paymentToken ? ` ${paymentToken}` : ''}`;
-  const lineItems = Array.isArray(record.lineItems) ? record.lineItems : [];
-  const itemNames = lineItems
-    .map((item) => item && typeof item === 'object' && !Array.isArray(item) ? (item as Record<string, unknown>).name : undefined)
-    .filter((name): name is string => isStringField(name))
-    .slice(0, 3);
-  const hiddenItemCount = Math.max(0, lineItems.length - itemNames.length);
-  return {
-    merchantName,
-    totalLabel,
-    paymentToken,
-    itemCountLabel: lineItems.length === 1 ? '1 item' : `${lineItems.length} items`,
-    itemCount: lineItems.length,
-    hiddenItemCount,
-    items: itemNames,
-    status: 'Selected request',
-  };
 }
 
 function previewView(preview: AcpPreviewDisplay, busy: boolean): string {
@@ -503,10 +838,6 @@ function previewView(preview: AcpPreviewDisplay, busy: boolean): string {
           <div>
             <dt>Pay with</dt>
             <dd>${escapeHtml(preview.paymentToken)} ${mintHint}</dd>
-          </div>
-          <div>
-            <dt>Cluster</dt>
-            <dd>${escapeHtml(preview.cluster)}</dd>
           </div>
           ${memoRow ? `<div>${memoRow}</div>` : ''}
         </dl>
@@ -624,7 +955,11 @@ export async function approveCart(cart: unknown): Promise<FetchResult<ApprovalCr
     approval?: { id?: unknown } | null;
     cartId?: unknown;
     cartHash?: unknown;
-  }>('/api/acp/cart/approve', { cart });
+    localOnly?: unknown;
+  }>('/api/acp/cart/approve', {
+    cart,
+    walletAddress: getConnectedAddress(),
+  });
   if (result.kind !== 'ok') return result;
   const approvalIdRaw = result.value.approval && typeof result.value.approval === 'object'
     ? (result.value.approval as { id?: unknown }).id
@@ -638,13 +973,112 @@ export async function approveCart(cart: unknown): Promise<FetchResult<ApprovalCr
   if (isStringField(cartHashRaw)) {
     created.cartHash = cartHashRaw;
   }
+  if (result.value.approval && typeof result.value.approval === 'object') {
+    created.approval = result.value.approval;
+  }
+  if (result.value.localOnly === true) {
+    created.localOnly = true;
+  }
   return { kind: 'ok', value: created };
 }
 
-function notDeployedNotice(): NoticeInfo {
+function randomLocalApprovalId(): string {
+  const cryptoApi = globalThis.crypto;
+  if (cryptoApi?.getRandomValues) {
+    const bytes = new Uint8Array(8);
+    cryptoApi.getRandomValues(bytes);
+    const hex = Array.from(bytes, (byte) => byte.toString(16).padStart(2, '0')).join('');
+    return `browser-acp_${hex}`;
+  }
+  return `browser-acp_${Date.now().toString(16)}_${Math.random().toString(16).slice(2, 10)}`;
+}
+
+function cartRecordForLocalApproval(cart: unknown, preview: AcpPreviewDisplay): JsonRecord {
+  if (isObjectRecord(cart)) return cart;
   return {
-    title: 'ACP backend not deployed yet',
-    body: '/api/acp/cart/* returned 404. Server-side ACP routes are not live on this deployment.',
+    id: preview.cartId,
+    cartVersion: preview.cartVersion,
+    merchant: preview.merchant,
+    lineItems: preview.lineItems.map((item, index) => ({
+      id: `line_${index + 1}`,
+      name: item.name,
+      quantity: item.quantity,
+      unitAmount: item.unitAmount,
+      currency: 'USD',
+    })),
+    totalAmount: preview.totalAmount,
+    currency: 'USD',
+    paymentToken: preview.paymentToken,
+    ...(preview.resolvedTokenMint ? { paymentTokenMint: preview.resolvedTokenMint } : {}),
+    cluster: preview.cluster,
+    ...(preview.memo ? { memo: preview.memo } : {}),
+  };
+}
+
+export function approveCartLocally(cart: unknown, preview: AcpPreviewDisplay): FetchResult<ApprovalCreated> {
+  const walletAddress = getConnectedAddress();
+  if (!walletAddress) {
+    return { kind: 'badRequest', message: 'Connect a wallet before sending the payment request to Needs Approval.' };
+  }
+  const cartRecord = cartRecordForLocalApproval(cart, preview);
+  const cartId = isStringField(cartRecord.id) ? cartRecord.id : preview.cartId;
+  if (!cartId) return { kind: 'badRequest', message: 'Payment request is missing an id.' };
+  const now = new Date().toISOString();
+  const dueAt = optionalString(cartRecord, 'expiresAt') ?? now;
+  const merchant = isObjectRecord(cartRecord.merchant) ? cartRecord.merchant : preview.merchant;
+  const approvalId = randomLocalApprovalId();
+  const params: JsonRecord = {
+    recipient: preview.recipient,
+    token: preview.paymentToken,
+    amount: preview.transferAmount,
+    ...(preview.resolvedTokenMint ? { tokenMint: preview.resolvedTokenMint } : {}),
+    ...(preview.memo ? { memo: preview.memo } : {}),
+  };
+  const approval: JsonRecord = {
+    id: approvalId,
+    walletAddress,
+    kind: 'transfer_spl',
+    status: 'ready',
+    summary: `ACP: ${preview.merchant.name} - ${preview.totalAmount} ${preview.paymentToken}`,
+    params,
+    cluster: preview.cluster,
+    dueAt,
+    createdAt: now,
+    updatedAt: now,
+    amount: preview.transferAmount,
+    token: preview.paymentToken,
+    recipient: preview.recipient,
+    note: preview.memo ?? `ACP cart ${cartId}: ${preview.merchant.name}`,
+    metadata: {
+      source: 'acp_outbound',
+      actionSource: 'acp_outbound',
+      acpCartId: cartId,
+      acpCart: cartRecord,
+      merchant,
+      totalAmount: preview.totalAmount,
+      paymentToken: preview.paymentToken,
+      resolvedTokenMint: preview.resolvedTokenMint,
+      acpCluster: preview.cluster,
+      totalFiat: preview.totalFiat,
+      receivedAt: now,
+      devLocal: true,
+    },
+  };
+  return {
+    kind: 'ok',
+    value: {
+      cartId,
+      approvalId,
+      approval,
+      localOnly: true,
+    },
+  };
+}
+
+function browserLocalNotice(): NoticeInfo {
+  return {
+    title: 'Using browser-local approvals',
+    body: 'This dev server has no ACP API route, so the approval will be saved in this browser under Needs Approval.',
   };
 }
 
@@ -699,13 +1133,91 @@ function readCartTextarea(): string {
   return textarea ? textarea.value : panelState.cartText;
 }
 
+function readBuilderCartText(): string {
+  if (typeof document === 'undefined') return panelState.cartText;
+  const draft = readBuilderDraftFromDom();
+  if (!draft) return panelState.cartText;
+  panelState.draft = draft;
+  return buildCartTextFromDraft(draft);
+}
+
+function readBuilderDraftFromDom(): PayOutDraft | null {
+  if (typeof document === 'undefined') return null;
+  const root = document.querySelector<HTMLElement>('[data-pay-out-builder]');
+  if (!root) return null;
+  const input = (name: string): string =>
+    root.querySelector<HTMLInputElement | HTMLSelectElement>(`[name="${name}"]`)?.value ?? '';
+  const lineItems = Array.from(root.querySelectorAll<HTMLElement>('[data-pay-out-line-item]')).map((row) => ({
+    name: row.querySelector<HTMLInputElement>('[name="lineName"]')?.value ?? '',
+    quantity: row.querySelector<HTMLInputElement>('[name="lineQuantity"]')?.value ?? '',
+    unitAmount: row.querySelector<HTMLInputElement>('[name="lineUnitAmount"]')?.value ?? '',
+  }));
+  return {
+    merchantName: input('merchantName'),
+    recipient: input('recipient'),
+    paymentToken: input('paymentToken'),
+    memo: input('memo'),
+    lineItems,
+  };
+}
+
+async function pasteRequestFromClipboard(): Promise<void> {
+  if (panelState.busy) return;
+  if (typeof navigator === 'undefined' || !navigator.clipboard?.readText) {
+    panelState.error = 'Clipboard paste is unavailable in this browser. Paste the request into the text box.';
+    rerenderPanelOnly();
+    return;
+  }
+  try {
+    const text = await navigator.clipboard.readText();
+    if (!text.trim()) {
+      panelState.error = 'Clipboard is empty.';
+      rerenderPanelOnly();
+      return;
+    }
+    panelState.cartText = text;
+    panelState.draft = null;
+    panelState.entryMode = 'json';
+    panelState.error = '';
+    panelState.notice = null;
+    panelState.phase = 'compose';
+    panelState.preview = null;
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    panelState.error = `Clipboard paste failed: ${message}`;
+  }
+  rerenderPanelOnly();
+}
+
+function rememberBuilderDraft(): void {
+  const draft = readBuilderDraftFromDom();
+  if (draft) panelState.draft = draft;
+}
+
 export async function handleAction(action: string): Promise<void> {
   switch (action) {
+    case 'entry-details':
+      rememberBuilderDraft();
+      panelState.entryMode = 'details';
+      rerenderPanelOnly();
+      return;
+    case 'entry-json':
+      rememberBuilderDraft();
+      panelState.entryMode = 'json';
+      rerenderPanelOnly();
+      return;
     case 'load-sample':
-      panelState.cartText = SAMPLE_CART;
       panelState.error = '';
       panelState.notice = null;
       panelState.phase = 'compose';
+      panelState.entryMode = 'details';
+      panelState.cartText = '';
+      panelState.draft = null;
+      try {
+        panelState.cartText = sampleCartForRecipient(getConnectedAddress() ?? '');
+      } catch (err) {
+        panelState.error = err instanceof Error ? err.message : String(err);
+      }
       rerenderPanelOnly();
       return;
     case 'clear':
@@ -713,11 +1225,14 @@ export async function handleAction(action: string): Promise<void> {
       panelState.error = '';
       panelState.notice = null;
       panelState.phase = 'compose';
+      panelState.entryMode = 'details';
+      panelState.draft = null;
       panelState.preview = null;
       rerenderPanelOnly();
       return;
     case 'edit':
       panelState.phase = 'compose';
+      panelState.entryMode = 'details';
       rerenderPanelOnly();
       return;
     case 'dismiss-error':
@@ -728,8 +1243,14 @@ export async function handleAction(action: string): Promise<void> {
       panelState.notice = null;
       rerenderPanelOnly();
       return;
+    case 'paste-clipboard':
+      await pasteRequestFromClipboard();
+      return;
     case 'preview':
-      await runPreview();
+      await runPreview('form');
+      return;
+    case 'preview-json':
+      await runPreview('json');
       return;
     case 'confirm':
       await runConfirm();
@@ -739,13 +1260,14 @@ export async function handleAction(action: string): Promise<void> {
   }
 }
 
-async function runPreview(): Promise<void> {
+async function runPreview(source: 'form' | 'json'): Promise<void> {
   if (panelState.busy) return;
-  panelState.cartText = readCartTextarea();
   panelState.error = '';
   panelState.notice = null;
   let parsed: unknown;
   try {
+    panelState.cartText = source === 'json' ? readCartTextarea() : readBuilderCartText();
+    if (source === 'json') panelState.draft = null;
     parsed = parseCartText(panelState.cartText);
   } catch (err) {
     panelState.error = err instanceof Error ? err.message : String(err);
@@ -754,17 +1276,26 @@ async function runPreview(): Promise<void> {
   }
   panelState.busy = true;
   rerenderPanelOnly();
-  const result = await previewCart(parsed);
+  let result = await previewCart(parsed);
+  let usingLocalFallback = false;
+  if (result.kind === 'notDeployed') {
+    result = previewCartLocally(parsed);
+    usingLocalFallback = result.kind === 'ok';
+  }
   panelState.busy = false;
   if (result.kind === 'ok') {
     panelState.preview = result.value;
     panelState.phase = 'preview';
+    if (source === 'form') panelState.draft = cartDraftFromText(panelState.cartText);
+    if (usingLocalFallback) {
+      panelState.notice = browserLocalNotice();
+    }
   } else if (result.kind === 'badRequest') {
     panelState.error = result.message;
   } else if (result.kind === 'forbidden') {
     panelState.notice = forbiddenNotice();
   } else if (result.kind === 'notDeployed') {
-    panelState.notice = notDeployedNotice();
+    panelState.notice = browserLocalNotice();
   } else {
     panelState.error = result.message;
   }
@@ -773,23 +1304,31 @@ async function runPreview(): Promise<void> {
 
 async function runConfirm(): Promise<void> {
   if (panelState.busy) return;
-  if (!panelState.preview) return;
+  const preview = panelState.preview;
+  if (!preview) return;
   panelState.busy = true;
   panelState.error = '';
   rerenderPanelOnly();
   const cart = panelState.cartText ? safeJsonParse(panelState.cartText) : null;
-  const result = await approveCart(cart ?? {});
+  let result = await approveCart(cart ?? {});
+  if (result.kind === 'notDeployed') {
+    result = approveCartLocally(cart ?? {}, preview);
+  }
   panelState.busy = false;
   if (result.kind === 'ok') {
-    showToast(`Approval ready · ${shortAddress(result.value.approvalId)} — sign in Needs Approval`);
+    showToast(`Approval ready · ${shortAddress(result.value.approvalId)} — review in Needs Approval`);
     const dispatched = dispatchPayOutApprovalCreated({
       source: 'acp_outbound',
       approvalId: result.value.approvalId,
       cartId: result.value.cartId,
       ...(result.value.cartHash ? { cartHash: result.value.cartHash } : {}),
+      ...(result.value.approval ? { approval: result.value.approval } : {}),
+      ...(result.value.localOnly ? { localOnly: true } : {}),
     });
     panelState.phase = 'compose';
+    panelState.entryMode = 'details';
     panelState.cartText = '';
+    panelState.draft = null;
     panelState.preview = null;
     panelState.error = '';
     panelState.notice = null;
@@ -802,7 +1341,7 @@ async function runConfirm(): Promise<void> {
   } else if (result.kind === 'forbidden') {
     panelState.notice = forbiddenNotice();
   } else if (result.kind === 'notDeployed') {
-    panelState.notice = notDeployedNotice();
+    panelState.notice = browserLocalNotice();
   } else {
     panelState.error = result.message;
   }

@@ -161,8 +161,8 @@
   align-items: center;
   display: flex;
   flex-wrap: wrap;
-  gap: 10px;
-  padding: 14px;
+  gap: 8px;
+  padding: 10px;
 }
 
 .skills-profile-url {
@@ -186,12 +186,12 @@
   color: #04110b;
   cursor: pointer;
   display: inline-flex;
-  font-size: 0.85rem;
+  font-size: 0.8rem;
   font-weight: 800;
   justify-content: center;
   line-height: 1;
-  min-height: 38px;
-  padding: 0 13px;
+  min-height: 32px;
+  padding: 0 10px;
   text-decoration: none;
   transition:
     background 120ms ease,

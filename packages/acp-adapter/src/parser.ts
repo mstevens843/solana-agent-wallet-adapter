@@ -10,7 +10,7 @@ import type {
 } from './types.js';
 
 const SUPPORTED_CURRENCIES: readonly AcpCurrency[] = ['USD'];
-const SUPPORTED_PAYMENT_TOKENS: readonly AcpPaymentToken[] = ['USDC', 'USDT'];
+const SUPPORTED_PAYMENT_TOKENS: readonly AcpPaymentToken[] = ['USDC', 'USDT', 'SOL'];
 
 export interface ParseAcpCartOptions {
   readonly maxBytes?: number;
@@ -39,6 +39,7 @@ export function parseAcpCart(input: unknown, opts: ParseAcpCartOptions = {}, pat
 
   const expiresAt = optionalString(record, 'expiresAt', path);
   const memo = optionalString(record, 'memo', path);
+  const paymentAmount = optionalString(record, 'paymentAmount', path);
   const paymentTokenMint = optionalString(record, 'paymentTokenMint', path);
   const metadata = optionalStringRecord(record, 'metadata', path);
 
@@ -50,6 +51,7 @@ export function parseAcpCart(input: unknown, opts: ParseAcpCartOptions = {}, pat
     totalAmount,
     currency,
     paymentToken,
+    ...(paymentAmount !== undefined ? { paymentAmount } : {}),
     cluster,
     ...(paymentTokenMint !== undefined ? { paymentTokenMint } : {}),
     ...(expiresAt !== undefined ? { expiresAt } : {}),

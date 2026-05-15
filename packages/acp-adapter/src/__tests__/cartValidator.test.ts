@@ -5,6 +5,7 @@ import {
   USDC_MINT_DEVNET,
   USDC_MINT_MAINNET,
   USDT_MINT_MAINNET,
+  SOL_NATIVE_MINT,
 } from '../constants.js';
 import { AcpValidationError } from '../errors.js';
 import {
@@ -12,6 +13,7 @@ import {
   devnetUsdcCart,
   expiredCart,
   mainnetUsdcCart,
+  mainnetSolCart,
   mainnetUsdtCart,
 } from './fixtures.js';
 
@@ -33,6 +35,7 @@ describe('validateAcpCart', () => {
     expect(result.ok).toBe(true);
     expect(result.resolvedTokenMint).toBe(USDC_MINT_MAINNET);
     expect(result.totalFiat).toBe(19.99);
+    expect(result.transferAmount).toBe('19.99');
     expect(Object.isFrozen(result)).toBe(true);
   });
 
@@ -44,6 +47,28 @@ describe('validateAcpCart', () => {
   it('accepts a mainnet USDT cart', () => {
     const result = validateAcpCart(mainnetUsdtCart({ totalAmount: '10.00', lineItems: [{ id: 'li', name: 'thing', quantity: 1, unitAmount: '10.00', currency: 'USD' }] }));
     expect(result.resolvedTokenMint).toBe(USDT_MINT_MAINNET);
+  });
+
+  it('accepts a mainnet SOL cart with a native payment amount', () => {
+    const result = validateAcpCart(mainnetSolCart());
+    expect(result.resolvedTokenMint).toBe(SOL_NATIVE_MINT);
+    expect(result.transferAmount).toBe('0.10');
+    expect(result.totalFiat).toBe(20);
+  });
+
+  it('rejects SOL carts without a native payment amount', () => {
+    const cart = mainnetSolCart({ paymentAmount: undefined });
+    validationError(() => validateAcpCart(cart), 'missing_payment_amount');
+  });
+
+  it('rejects SOL carts with paymentTokenMint', () => {
+    const cart = mainnetSolCart({ paymentTokenMint: USDC_MINT_MAINNET });
+    validationError(() => validateAcpCart(cart), 'invalid_token_mint');
+  });
+
+  it('rejects stablecoin paymentAmount that does not match totalAmount', () => {
+    const cart = mainnetUsdcCart({ paymentAmount: '1.00' });
+    validationError(() => validateAcpCart(cart), 'payment_amount_mismatch');
   });
 
   it('rejects USDT on devnet', () => {

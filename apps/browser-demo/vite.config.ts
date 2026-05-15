@@ -1,4 +1,5 @@
 import { defineConfig } from 'vite';
+import { acpDevApiPlugin } from './vite.acpDevApi.js';
 
 const capacitorIosApp =
   process.env.VITE_CAPACITOR_IOS_APP ??
@@ -15,6 +16,7 @@ const appSurface = process.env.VITE_AGENTIC_APP_SURFACE ?? process.env.AGENTIC_A
 const gaMeasurementId = process.env.VITE_AGENTIC_GA_MEASUREMENT_ID ?? process.env.AGENTIC_GA_MEASUREMENT_ID ?? '';
 
 export default defineConfig({
+  plugins: [acpDevApiPlugin()],
   define: {
     'import.meta.env.VITE_CAPACITOR_IOS_APP': JSON.stringify(capacitorIosApp),
     'import.meta.env.VITE_CAPACITATOR_IOS_APP': JSON.stringify(capacitorIosApp),

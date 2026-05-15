@@ -3,6 +3,7 @@ import type { AcpCluster, AcpPaymentToken } from './types.js';
 export const USDC_MINT_MAINNET = 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v';
 export const USDC_MINT_DEVNET = '4zMMC9srt5Ri5X14GAgXhaHii3GnPAEERYPJgZJDncDU';
 export const USDT_MINT_MAINNET = 'Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB';
+export const SOL_NATIVE_MINT = 'SOL';
 
 export const DEFAULT_ALLOWED_TOKEN_MINTS: Readonly<Record<AcpCluster, readonly string[]>> = Object.freeze({
   'mainnet-beta': Object.freeze([USDC_MINT_MAINNET, USDT_MINT_MAINNET]),
@@ -37,4 +38,4 @@ export const RECEIPT_SCHEMA = 'acp/outbound/0.1' as const;
 export const MAX_CART_BYTES = 65_536;
 
 export const SOLANA_ADDRESS_REGEX = /^[1-9A-HJ-NP-Za-km-z]{32,44}$/;
-export const DECIMAL_AMOUNT_REGEX = /^(?!0\d)\d+(\.\d{1,9})?$/;
+export const DECIMAL_AMOUNT_REGEX = /^(?:(?!0\d)\d+(?:\.\d{1,9})?|\.\d{1,9})$/;

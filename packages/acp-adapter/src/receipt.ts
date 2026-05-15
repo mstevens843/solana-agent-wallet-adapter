@@ -28,7 +28,7 @@ export function buildAcpOutboundReceipt(input: BuildAcpOutboundReceiptInput): Ac
     walletAddress,
     txid,
     settledAt,
-    amount: input.cart.totalAmount,
+    amount: input.cart.paymentAmount ?? input.cart.totalAmount,
     token: input.cart.paymentToken,
     ...(input.cart.paymentTokenMint !== undefined ? { paymentTokenMint: input.cart.paymentTokenMint } : {}),
     recipient: input.cart.merchant.recipient,

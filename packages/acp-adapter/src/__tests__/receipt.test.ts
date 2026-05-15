@@ -7,7 +7,7 @@ import {
   canonicalJsonStringify,
   hashCart,
 } from '../receipt.js';
-import { MERCHANT_RECIPIENT_MAINNET, mainnetUsdcCart } from './fixtures.js';
+import { MERCHANT_RECIPIENT_MAINNET, mainnetSolCart, mainnetUsdcCart } from './fixtures.js';
 
 const WALLET = '4fTqUdd9SRCkmALQhQGF66VRYJFsCLDSQJYadqwMMoHd';
 
@@ -62,6 +62,16 @@ describe('buildAcpOutboundReceipt', () => {
     });
     expect(receipt.paymentTokenMint).toBe(USDC_MINT_MAINNET);
     expect(receipt.metadata).toEqual({ orderRef: 'op_42' });
+  });
+
+  it('uses native paymentAmount as the receipt amount for SOL carts', () => {
+    const receipt = buildAcpOutboundReceipt({
+      cart: mainnetSolCart(),
+      walletAddress: WALLET,
+      txid: 'tx',
+    });
+    expect(receipt.token).toBe('SOL');
+    expect(receipt.amount).toBe('0.10');
   });
 
   it('produces a deterministic cartHash for the same cart', () => {

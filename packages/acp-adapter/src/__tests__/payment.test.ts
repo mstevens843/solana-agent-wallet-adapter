@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 
 import { validateAcpCart } from '../cartValidator.js';
 import { cartToTransferParams } from '../payment.js';
-import { MERCHANT_RECIPIENT_MAINNET, mainnetUsdcCart } from './fixtures.js';
+import { MERCHANT_RECIPIENT_MAINNET, mainnetSolCart, mainnetUsdcCart } from './fixtures.js';
 
 describe('cartToTransferParams', () => {
   it('maps a validated cart to transfer-spl params', () => {
@@ -22,6 +22,16 @@ describe('cartToTransferParams', () => {
     const cart = mainnetUsdcCart({ memo: undefined });
     const params = cartToTransferParams(validateAcpCart(cart));
     expect(params.note).toBe(`ACP cart ${cart.id}: ${cart.merchant.name}`);
+  });
+
+  it('maps a SOL cart to native SOL transfer params', () => {
+    const validated = validateAcpCart(mainnetSolCart());
+    const params = cartToTransferParams(validated);
+    expect(params).toMatchObject({
+      token: 'SOL',
+      recipient: MERCHANT_RECIPIENT_MAINNET,
+      amount: '0.10',
+    });
   });
 
   it('honors caller-supplied dueAt and note overrides', () => {

@@ -1,6 +1,6 @@
 export type AcpCluster = 'mainnet-beta' | 'testnet' | 'devnet' | 'localnet';
 export type AcpCurrency = 'USD';
-export type AcpPaymentToken = 'USDC' | 'USDT';
+export type AcpPaymentToken = 'USDC' | 'USDT' | 'SOL';
 
 export interface AcpLineItem {
   readonly id: string;
@@ -24,6 +24,7 @@ export interface AcpCart {
   readonly totalAmount: string;
   readonly currency: AcpCurrency;
   readonly paymentToken: AcpPaymentToken;
+  readonly paymentAmount?: string;
   readonly paymentTokenMint?: string;
   readonly cluster: AcpCluster;
   readonly expiresAt?: string;
@@ -42,6 +43,7 @@ export interface AcpCartValidationResult {
   readonly ok: true;
   readonly cart: AcpCart;
   readonly totalFiat: number;
+  readonly transferAmount: string;
   readonly resolvedTokenMint: string;
 }
 

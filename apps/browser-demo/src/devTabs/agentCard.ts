@@ -291,21 +291,21 @@ export function panelHtml(): string {
             protocols, capabilities, and skills; the raw <code>agent.json</code> stays available
             for developers below.
           </p>
+          <div class="dev-agent-card-actions dev-tab-actions">
+            <button
+              type="button"
+              class="button utility"
+              data-copy="${escapeHtml(PUBLIC_AGENT_CARD_URL)}"
+              data-copy-id="dev-agent-card-public-url"
+              data-copy-name="Public AgentCard URL"
+            >Copy public URL</button>
+            ${copyJsonButton}
+            <a class="button-link" href="${escapeHtml(PUBLIC_AGENT_CARD_URL)}" target="_blank" rel="noreferrer">View live</a>
+            <button type="button" class="button utility" data-dev-agent-card-retry>Refresh</button>
+          </div>
         </div>
         ${routeCardHtml()}
       </header>
-      <div class="dev-agent-card-actions dev-tab-actions">
-        <button
-          type="button"
-          class="button utility"
-          data-copy="${escapeHtml(PUBLIC_AGENT_CARD_URL)}"
-          data-copy-id="dev-agent-card-public-url"
-          data-copy-name="Public AgentCard URL"
-        >Copy public URL</button>
-        ${copyJsonButton}
-        <a class="button-link" href="${escapeHtml(PUBLIC_AGENT_CARD_URL)}" target="_blank" rel="noreferrer">View live</a>
-        <button type="button" class="button utility" data-dev-agent-card-retry>Refresh</button>
-      </div>
       <div class="dev-agent-card-body" id="${BODY_ELEMENT_ID}">
         ${bodyHtml()}
       </div>

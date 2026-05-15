@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { PAY_OUT_APPROVAL_CREATED_EVENT } from '../../payOutApprovalEvents.js';
+import { setConnectedAddress } from '../../walletState.js';
 
 // Minimal stubs to let payOut.ts load in vitest's default node env. The CSS
 // import is gated on `typeof document !== 'undefined'`, so leaving document
@@ -11,21 +12,30 @@ import {
   __getPanelStateForTests,
   __resetPanelStateForTests,
   approveCart,
+  approveCartLocally,
   escapeHtml,
   handleAction,
   normalizePreview,
   parseCartText,
   previewCart,
+  previewCartLocally,
   renderPayOutPanel,
+  sampleCartForRecipient,
   shortAddress,
 } from '../payOut.js';
+
+const TEST_WALLET = '4fTqUdd9SRCkmALQhQGF66VRYJFsCLDSQJYadqwMMoHd';
+
+afterEach(() => {
+  setConnectedAddress(undefined);
+});
 
 function makePreviewEnvelope(overrides: Record<string, unknown> = {}): Record<string, unknown> {
   return {
     cart: {
       id: 'cart_test_001',
       cartVersion: '1',
-      merchant: { id: 'm1', name: 'Acme Coffee', recipient: '7tQAS3PCEHKekfA5xkkFqRf9aCkqg8aLg5jLA7MwYc8M' },
+      merchant: { id: 'm1', name: 'Acme Coffee', recipient: TEST_WALLET },
       lineItems: [
         { id: 'li_001', name: 'Latte', quantity: 2, unitAmount: '6.00', currency: 'USD' },
         { id: 'li_002', name: 'Croissant', quantity: 1, unitAmount: '4.50', currency: 'USD' },
@@ -39,7 +49,7 @@ function makePreviewEnvelope(overrides: Record<string, unknown> = {}): Record<st
     },
     transfer: {
       token: 'USDC',
-      recipient: '7tQAS3PCEHKekfA5xkkFqRf9aCkqg8aLg5jLA7MwYc8M',
+      recipient: TEST_WALLET,
       amount: '17.80',
       note: 'demo',
     },
@@ -55,7 +65,7 @@ describe('pure helpers', () => {
   });
 
   it('shortens long addresses', () => {
-    expect(shortAddress('7tQAS3PCEHKekfA5xkkFqRf9aCkqg8aLg5jLA7MwYc8M')).toBe('7tQA…Yc8M');
+    expect(shortAddress(TEST_WALLET)).toBe('4fTq…MoHd');
     expect(shortAddress('short')).toBe('short');
     expect(shortAddress('')).toBe('');
   });
@@ -65,7 +75,7 @@ describe('pure helpers', () => {
   });
 
   it('parseCartText rejects empty input with a friendly message', () => {
-    expect(() => parseCartText('   ')).toThrow(/Choose or import a payment request/);
+    expect(() => parseCartText('   ')).toThrow(/Create, load, or import a payment request/);
   });
 
   it('parseCartText rejects malformed JSON', () => {
@@ -76,11 +86,16 @@ describe('pure helpers', () => {
     const parsed = parseCartText(SAMPLE_CART) as Record<string, unknown>;
     expect(parsed.id).toBe('cart_demo_001');
     expect(parsed.cartVersion).toBe('1');
-    expect((parsed.merchant as Record<string, unknown>).recipient).toMatch(/^[A-Za-z0-9]+$/);
+    expect((parsed.merchant as Record<string, unknown>).recipient).toBe(TEST_WALLET);
     expect(Array.isArray(parsed.lineItems)).toBe(true);
     expect(parsed.totalAmount).toBe('17.80');
     expect(parsed.paymentToken).toBe('USDC');
     expect(parsed.cluster).toBe('mainnet-beta');
+  });
+
+  it('builds the demo cart for the provided recipient', () => {
+    const parsed = parseCartText(sampleCartForRecipient(TEST_WALLET)) as Record<string, unknown>;
+    expect((parsed.merchant as Record<string, unknown>).recipient).toBe(TEST_WALLET);
   });
 });
 
@@ -89,7 +104,7 @@ describe('normalizePreview', () => {
     const result = normalizePreview(makePreviewEnvelope());
     expect(result.cartId).toBe('cart_test_001');
     expect(result.merchant.name).toBe('Acme Coffee');
-    expect(result.merchant.recipient).toBe('7tQAS3PCEHKekfA5xkkFqRf9aCkqg8aLg5jLA7MwYc8M');
+    expect(result.merchant.recipient).toBe(TEST_WALLET);
     expect(result.lineItems).toHaveLength(3);
     expect(result.lineItems[0]).toEqual({ name: 'Latte', quantity: 2, unitAmount: '6.00' });
     expect(result.lineItems[2]).toEqual({ name: 'Tax', quantity: 1, unitAmount: '1.30' });
@@ -99,7 +114,7 @@ describe('normalizePreview', () => {
     expect(result.resolvedTokenMint).toBe('EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v');
     expect(result.cluster).toBe('mainnet-beta');
     expect(result.memo).toBe('demo');
-    expect(result.recipient).toBe('7tQAS3PCEHKekfA5xkkFqRf9aCkqg8aLg5jLA7MwYc8M');
+    expect(result.recipient).toBe(TEST_WALLET);
   });
 
   it('drops malformed line items but keeps the rest', () => {
@@ -139,27 +154,90 @@ describe('normalizePreview', () => {
   });
 });
 
+describe('browser-local ACP fallback', () => {
+  it('builds a readable preview without server routes', () => {
+    const result = previewCartLocally(parseCartText(SAMPLE_CART));
+    expect(result.kind).toBe('ok');
+    if (result.kind === 'ok') {
+      expect(result.value.cartId).toBe('cart_demo_001');
+      expect(result.value.merchant.name).toBe('Acme Coffee');
+      expect(result.value.totalAmount).toBe('17.80');
+      expect(result.value.paymentToken).toBe('USDC');
+      expect(result.value.recipient).toBe(TEST_WALLET);
+      expect(result.value.resolvedTokenMint).toBe('EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v');
+    }
+  });
+
+  it('rejects locally when line item totals do not match', () => {
+    const badCart = {
+      ...(parseCartText(SAMPLE_CART) as Record<string, unknown>),
+      totalAmount: '999.00',
+    };
+    const result = previewCartLocally(badCart);
+    expect(result.kind).toBe('badRequest');
+    if (result.kind === 'badRequest') {
+      expect(result.message).toContain('does not match line items');
+    }
+  });
+
+  it('creates a browser approval card when the wallet is connected', () => {
+    setConnectedAddress(TEST_WALLET);
+    const previewResult = previewCartLocally(parseCartText(SAMPLE_CART));
+    expect(previewResult.kind).toBe('ok');
+    if (previewResult.kind !== 'ok') return;
+
+    const result = approveCartLocally(parseCartText(SAMPLE_CART), previewResult.value);
+    expect(result.kind).toBe('ok');
+    if (result.kind === 'ok') {
+      expect(result.value.localOnly).toBe(true);
+      expect(result.value.approvalId).toMatch(/^browser-acp_/);
+      expect(result.value.cartId).toBe('cart_demo_001');
+      expect(result.value.approval).toEqual(expect.objectContaining({
+        walletAddress: TEST_WALLET,
+        kind: 'transfer_spl',
+        status: 'ready',
+      }));
+    }
+  });
+});
+
 describe('renderPayOutPanel', () => {
   beforeEach(() => {
     __resetPanelStateForTests();
   });
 
-  it('compose phase renders the user-facing request picker and advanced import', () => {
+  it('compose phase renders normal inputs as the primary user path', () => {
     const html = renderPayOutPanel();
-    expect(html).toContain('Choose a request to review');
-    expect(html).toContain('Use demo request');
-    expect(html).toContain('No payment request yet');
-    expect(html).toContain('Import raw ACP request');
-    expect(html).toContain('id="pay-out-cart-input"');
+    expect(html).toContain('Create a payment request');
+    expect(html).toContain('Payment details');
+    expect(html).toContain('Merchant name');
+    expect(html).toContain('Recipient wallet');
+    expect(html).toContain('Line items');
+    expect(html).toContain('Type payment details');
+    expect(html).toContain('Paste JSON request');
+    expect(html).toContain('Load sample request');
+    expect(html).not.toContain('id="pay-out-cart-input"');
     expect(html).toContain('data-pay-out-action="preview"');
+    expect(html).toContain('data-pay-out-action="entry-json"');
     expect(html).toContain('data-pay-out-action="load-sample"');
     expect(html).not.toContain('data-pay-out-preview');
   });
 
-  it('compose phase renders selected payment request details when a request is loaded', () => {
+  it('compose phase renders raw JSON only in the second tab', () => {
+    __resetPanelStateForTests({ entryMode: 'json' });
+    const html = renderPayOutPanel();
+    expect(html).toContain('Paste JSON request');
+    expect(html).toContain('Developer import');
+    expect(html).toContain('id="pay-out-cart-input"');
+    expect(html).toContain('data-pay-out-action="preview-json"');
+    expect(html).toContain('data-pay-out-action="paste-clipboard"');
+    expect(html).toContain('data-pay-out-action="entry-details"');
+  });
+
+  it('compose phase fills the normal inputs when a request is loaded', () => {
     __resetPanelStateForTests({ cartText: SAMPLE_CART });
     const html = renderPayOutPanel();
-    expect(html).toContain('Selected request');
+    expect(html).toContain('Normal entry');
     expect(html).toContain('Acme Coffee');
     expect(html).toContain('17.80 USDC');
     expect(html).toContain('Latte');
@@ -174,7 +252,7 @@ describe('renderPayOutPanel', () => {
       preview: {
         cartId: 'cart_x',
         cartVersion: '1',
-        merchant: { name: 'Acme Coffee', recipient: '7tQAS3PCEHKekfA5xkkFqRf9aCkqg8aLg5jLA7MwYc8M' },
+        merchant: { name: 'Acme Coffee', recipient: TEST_WALLET },
         lineItems: [
           { name: 'Latte', quantity: 2, unitAmount: '6.00' },
           { name: 'Croissant', quantity: 1, unitAmount: '4.50' },
@@ -185,7 +263,7 @@ describe('renderPayOutPanel', () => {
         paymentToken: 'USDC',
         resolvedTokenMint: 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v',
         cluster: 'mainnet-beta',
-        recipient: '7tQAS3PCEHKekfA5xkkFqRf9aCkqg8aLg5jLA7MwYc8M',
+        recipient: TEST_WALLET,
         transferAmount: '17.80',
         memo: 'demo',
       },
@@ -199,8 +277,9 @@ describe('renderPayOutPanel', () => {
     expect(html).toContain('17.80');
     expect(html).toContain('USDC');
     expect(html).toContain('USD 17.80');
-    expect(html).toContain('mainnet-beta');
-    expect(html).toContain('7tQA…Yc8M');
+    expect(html).not.toContain('mainnet-beta');
+    expect(html).not.toContain('<dt>Cluster</dt>');
+    expect(html).toContain('4fTq…MoHd');
     expect(html).toContain('data-pay-out-action="confirm"');
     expect(html).toContain('Change request');
     expect(html).toContain('Send to Needs Approval');
@@ -234,6 +313,7 @@ describe('previewCart fetch behavior', () => {
   });
 
   afterEach(() => {
+    setConnectedAddress(undefined);
     delete (globalThis as { fetch?: typeof fetch }).fetch;
   });
 
@@ -304,11 +384,34 @@ describe('approveCart fetch behavior', () => {
       cartHash: 'abc123',
     }));
     const result = await approveCart({});
+    const [, init] = fetchMock.mock.calls[0]!;
+    expect(JSON.parse(String((init as RequestInit).body))).toEqual({ cart: {} });
     expect(result.kind).toBe('ok');
     if (result.kind === 'ok') {
       expect(result.value.cartId).toBe('cart_abc');
       expect(result.value.approvalId).toBe('apr_xyz');
       expect(result.value.cartHash).toBe('abc123');
+      expect(result.value.approval).toEqual({ id: 'apr_xyz', kind: 'manual_review' });
+    }
+  });
+
+  it('sends the connected wallet address for local dev approve routes', async () => {
+    setConnectedAddress('DevWallet1111111111111111111111111111111111');
+    fetchMock.mockResolvedValueOnce(jsonResponse(201, {
+      approval: { id: 'browser-acp_123', kind: 'transfer_spl' },
+      cartId: 'cart_abc',
+      localOnly: true,
+    }));
+    const result = await approveCart({ id: 'cart_abc' });
+    const [, init] = fetchMock.mock.calls[0]!;
+    expect(JSON.parse(String((init as RequestInit).body))).toEqual({
+      cart: { id: 'cart_abc' },
+      walletAddress: 'DevWallet1111111111111111111111111111111111',
+    });
+    expect(result.kind).toBe('ok');
+    if (result.kind === 'ok') {
+      expect(result.value.localOnly).toBe(true);
+      expect(result.value.approvalId).toBe('browser-acp_123');
     }
   });
 
@@ -343,8 +446,16 @@ describe('handleAction (state-only paths)', () => {
   });
 
   it('load-sample populates panel cartText with the sample fixture', async () => {
+    setConnectedAddress(TEST_WALLET);
     await handleAction('load-sample');
-    expect(__getPanelStateForTests().cartText).toBe(SAMPLE_CART);
+    expect(__getPanelStateForTests().cartText).toBe(sampleCartForRecipient(TEST_WALLET));
+  });
+
+  it('load-sample refuses to populate a recipient without a connected wallet', async () => {
+    await handleAction('load-sample');
+    const state = __getPanelStateForTests();
+    expect(state.cartText).toBe('');
+    expect(state.error).toContain('Connect a wallet');
   });
 
   it('clear empties cartText and resets preview state', async () => {
@@ -377,6 +488,89 @@ describe('handleAction (state-only paths)', () => {
   });
 });
 
+describe('handleAction browser-local fallback paths', () => {
+  type FetchMock = ReturnType<typeof vi.fn>;
+  let fetchMock: FetchMock;
+
+  beforeEach(() => {
+    fetchMock = vi.fn();
+    (globalThis as { fetch?: typeof fetch }).fetch = fetchMock as unknown as typeof fetch;
+    __resetPanelStateForTests();
+    setConnectedAddress(TEST_WALLET);
+  });
+
+  afterEach(() => {
+    delete (globalThis as { fetch?: typeof fetch }).fetch;
+  });
+
+  it('reviews the request locally when the preview API route is missing', async () => {
+    fetchMock.mockResolvedValueOnce(new Response('', { status: 404 }));
+    __resetPanelStateForTests({ cartText: SAMPLE_CART });
+
+    await handleAction('preview');
+
+    const state = __getPanelStateForTests();
+    expect(state.phase).toBe('preview');
+    expect(state.preview?.cartId).toBe('cart_demo_001');
+    expect(state.notice?.title).toBe('Using browser-local approvals');
+  });
+
+  it('dispatches a local approval when the approve API route is missing', async () => {
+    const previousCustomEvent = globalThis.CustomEvent;
+    if (typeof previousCustomEvent === 'undefined') {
+      class TestCustomEvent<T = unknown> extends Event {
+        detail: T;
+
+        constructor(type: string, init?: CustomEventInit<T>) {
+          super(type);
+          this.detail = init?.detail as T;
+        }
+      }
+      (globalThis as { CustomEvent?: typeof CustomEvent }).CustomEvent =
+        TestCustomEvent as unknown as typeof CustomEvent;
+    }
+
+    const target = new EventTarget();
+    (globalThis as { window?: Window }).window = target as unknown as Window;
+    const details: unknown[] = [];
+    target.addEventListener(PAY_OUT_APPROVAL_CREATED_EVENT, (event) => {
+      details.push((event as CustomEvent).detail);
+    });
+
+    fetchMock.mockResolvedValueOnce(new Response('', { status: 404 }));
+    const previewResult = previewCartLocally(parseCartText(SAMPLE_CART));
+    expect(previewResult.kind).toBe('ok');
+    if (previewResult.kind !== 'ok') return;
+    __resetPanelStateForTests({
+      phase: 'preview',
+      cartText: SAMPLE_CART,
+      preview: previewResult.value,
+    });
+
+    try {
+      await handleAction('confirm');
+    } finally {
+      if (typeof previousCustomEvent === 'undefined') {
+        delete (globalThis as { CustomEvent?: typeof CustomEvent }).CustomEvent;
+      }
+      delete (globalThis as { window?: Window }).window;
+    }
+
+    expect(details).toHaveLength(1);
+    expect(details[0]).toEqual(expect.objectContaining({
+      source: 'acp_outbound',
+      cartId: 'cart_demo_001',
+      localOnly: true,
+    }));
+    expect((details[0] as { approvalId?: unknown }).approvalId).toEqual(expect.stringMatching(/^browser-acp_/));
+    expect((details[0] as { approval?: Record<string, unknown> }).approval).toEqual(expect.objectContaining({
+      walletAddress: TEST_WALLET,
+      kind: 'transfer_spl',
+    }));
+    expect(__getPanelStateForTests().phase).toBe('compose');
+  });
+});
+
 describe('handleAction confirm path', () => {
   type FetchMock = ReturnType<typeof vi.fn>;
   let fetchMock: FetchMock;
@@ -388,6 +582,7 @@ describe('handleAction confirm path', () => {
   });
 
   afterEach(() => {
+    setConnectedAddress(undefined);
     delete (globalThis as { fetch?: typeof fetch }).fetch;
     delete (globalThis as { window?: Window }).window;
   });
@@ -414,15 +609,17 @@ describe('handleAction confirm path', () => {
 
     const target = new EventTarget();
     (globalThis as { window?: Window }).window = target as unknown as Window;
+    setConnectedAddress('DevWallet1111111111111111111111111111111111');
     const details: unknown[] = [];
     target.addEventListener(PAY_OUT_APPROVAL_CREATED_EVENT, (event) => {
       details.push((event as CustomEvent).detail);
     });
 
     fetchMock.mockResolvedValueOnce(jsonResponse(201, {
-      approval: { id: 'approval_pay_out_001', kind: 'transfer_spl' },
+      approval: { id: 'browser-acp_pay_out_001', kind: 'transfer_spl' },
       cartId: 'cart_demo_001',
       cartHash: 'cart_hash_001',
+      localOnly: true,
     }));
     __resetPanelStateForTests({
       phase: 'preview',
@@ -440,9 +637,11 @@ describe('handleAction confirm path', () => {
 
     expect(details).toEqual([{
       source: 'acp_outbound',
-      approvalId: 'approval_pay_out_001',
+      approvalId: 'browser-acp_pay_out_001',
       cartId: 'cart_demo_001',
       cartHash: 'cart_hash_001',
+      approval: { id: 'browser-acp_pay_out_001', kind: 'transfer_spl' },
+      localOnly: true,
     }]);
     expect(__getPanelStateForTests().phase).toBe('compose');
     expect(__getPanelStateForTests().cartText).toBe('');

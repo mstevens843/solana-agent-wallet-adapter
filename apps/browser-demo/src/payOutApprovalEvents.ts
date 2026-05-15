@@ -5,6 +5,8 @@ export interface PayOutApprovalCreatedDetail {
   approvalId: string;
   cartId: string;
   cartHash?: string;
+  approval?: unknown;
+  localOnly?: boolean;
 }
 
 export function isPayOutApprovalCreatedDetail(value: unknown): value is PayOutApprovalCreatedDetail {
@@ -15,7 +17,10 @@ export function isPayOutApprovalCreatedDetail(value: unknown): value is PayOutAp
     record.approvalId.length > 0 &&
     typeof record.cartId === 'string' &&
     record.cartId.length > 0 &&
-    (record.cartHash === undefined || typeof record.cartHash === 'string');
+    (record.cartHash === undefined || typeof record.cartHash === 'string') &&
+    (record.approval === undefined ||
+      (record.approval !== null && typeof record.approval === 'object' && !Array.isArray(record.approval))) &&
+    (record.localOnly === undefined || typeof record.localOnly === 'boolean');
 }
 
 export function dispatchPayOutApprovalCreated(detail: PayOutApprovalCreatedDetail): boolean {

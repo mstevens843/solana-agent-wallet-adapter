@@ -60,6 +60,20 @@ export function mainnetUsdtCart(overrides: Partial<AcpCart> = {}): AcpCart {
   });
 }
 
+export function mainnetSolCart(overrides: Partial<AcpCart> = {}): AcpCart {
+  return freezeCart({
+    ...mainnetUsdcCart({
+      id: 'cart_sol_001',
+      totalAmount: '20.00',
+      lineItems: [{ id: 'li', name: 'SOL priced item', quantity: 1, unitAmount: '20.00', currency: 'USD' }],
+      paymentToken: 'SOL',
+      paymentAmount: '0.10',
+      paymentTokenMint: undefined,
+    }),
+    ...overrides,
+  });
+}
+
 export function expiredCart(): AcpCart {
   return freezeCart({
     ...mainnetUsdcCart(),
