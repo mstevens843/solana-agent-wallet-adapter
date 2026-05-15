@@ -17,9 +17,12 @@ import {
   buildEvidenceRequirements,
   connectorProfileKind,
   createDecisionAuditReceipt,
+  detectPromptInjectionInFields,
   evaluateAgentEvidenceGate,
   isVerifiedProgramId,
   normalizeAgentEvidenceFact,
+  sanitizeUserTextOrEmpty,
+  type PromptInjectionFieldHit,
   parseApprovalListResponse,
   parseAuditEventRecord,
   parseApprovalRequestRecord,
@@ -19503,10 +19506,23 @@ function agentReviewRequest(
   bundle?: AgentReviewEvidenceBundle,
 ): AgentPlanReviewRequest {
   const reviewPlan = planWithRuntimeTokenLabels(record.plan);
+  // Layer 2: wrap user-controlled prose in UNTRUSTED_USER_TEXT delimiters so the model can
+  // distinguish data from instructions. The matching system-prompt rule tells the model
+  // not to follow commands embedded inside those delimiters.
+  const sanitizedReviewPlan = reviewPlan.userNotes
+    ? { ...reviewPlan, userNotes: sanitizeUserTextOrEmpty(reviewPlan.userNotes, 'userNotes') }
+    : reviewPlan;
   const review = record.agentReview;
   const priorAnswers = review?.answers;
+  const sanitizedPriorAnswers = priorAnswers
+    ? Object.fromEntries(Object.entries(priorAnswers).map(([key, value]) => [
+        key,
+        typeof value === 'string' ? sanitizeUserTextOrEmpty(value, `answer.${key}`) : value,
+      ]))
+    : priorAnswers;
   const priorQuestions = review?.questions;
-  const instruction = agentReviewInstruction(record, reviewPlan);
+  const rawInstruction = agentReviewInstruction(record, reviewPlan);
+  const instruction = sanitizeUserTextOrEmpty(rawInstruction, 'instruction') || rawInstruction;
   const priorHistorySnippet = review?.history?.slice(-2).map((attempt) => ({
     decision: attempt.decision,
     reason: attempt.reason,
@@ -19522,7 +19538,7 @@ function agentReviewRequest(
   const factsForContext = factSetForContext(deterministicFacts);
   const walletContext = walletContextForAgent(record);
   return {
-    plan: reviewPlan,
+    plan: sanitizedReviewPlan,
     instruction,
     walletAddress: walletContext.address,
     cluster: record.cluster,
@@ -19553,7 +19569,7 @@ function agentReviewRequest(
       ...(userPolicies.length ? { userPolicies } : {}),
       ...(priorAnswers && Object.keys(priorAnswers).length
         ? {
-            priorAnswers,
+            priorAnswers: sanitizedPriorAnswers ?? priorAnswers,
             priorQuestions: priorQuestions?.map((question) => ({ id: question.id, prompt: question.prompt })) ?? [],
           }
         : {}),
@@ -20684,6 +20700,50 @@ function evidenceContextForReview(record: GeneratedPlanRecord, plan: AgentPlan, 
   };
 }
 
+function userControlledFieldsForReview(record: GeneratedPlanRecord, plan: AgentPlan): Array<{ name: string; value: string | undefined }> {
+  const fields: Array<{ name: string; value: string | undefined }> = [
+    { name: 'plan.userNotes', value: plan.userNotes },
+    { name: 'record.prompt', value: record.prompt },
+  ];
+  if (plan.parameters) {
+    for (const [key, value] of Object.entries(plan.parameters)) {
+      if (typeof value === 'string') fields.push({ name: `plan.parameters.${key}`, value });
+    }
+  }
+  const priorAnswers = record.agentReview?.answers;
+  if (priorAnswers) {
+    for (const [key, value] of Object.entries(priorAnswers)) {
+      if (typeof value === 'string') fields.push({ name: `agentReview.answers.${key}`, value });
+    }
+  }
+  return fields;
+}
+
+function promptInjectionFactsFor(hits: PromptInjectionFieldHit[]): AgentEvidenceFact[] {
+  if (!hits.length) return [];
+  const checkedAt = new Date().toISOString();
+  return hits.map((hit, index) => {
+    const top = hit.detection.matches[0];
+    const value = top
+      ? `${top.label} (in ${hit.field}): "${top.snippet}"`
+      : `Suspicious content detected in ${hit.field}.`;
+    return normalizeAgentEvidenceFact({
+      id: `fact.security.prompt_injection.${index}`,
+      label: 'Prompt-injection attempt blocked',
+      value,
+      tone: 'fail',
+      severity: hit.detection.highestSeverity === 'block' ? 'block' : 'warn',
+      source: 'deterministic',
+      checkedAt,
+      ttlMs: Number.POSITIVE_INFINITY,
+      detail: {
+        field: hit.field,
+        matches: hit.detection.matches,
+      },
+    });
+  });
+}
+
 function buildAgentReviewEvidenceBundle(
   record: GeneratedPlanRecord,
   plan: AgentPlan,
@@ -20694,6 +20754,11 @@ function buildAgentReviewEvidenceBundle(
   const evidenceContext = evidenceContextForReview(record, plan, routePlan);
   const requirements = buildEvidenceRequirements(routePlan, evidenceContext);
   const evidenceFacts = normalizeFactSetToEvidenceFacts(factSet, requirements, evidenceContext.walletAddress);
+  // Layer 1: scan user-controlled text for prompt-injection attempts. Each match becomes a
+  // blocking evidence fact so the existing gate denies the approval (no AI consultation
+  // can override a block-severity fact).
+  const injectionHits = detectPromptInjectionInFields(userControlledFieldsForReview(record, plan));
+  evidenceFacts.push(...promptInjectionFactsFor(injectionHits));
   const gate = evaluateAgentEvidenceGate(requirements, evidenceFacts, evidenceContext);
   return { routePlan, requirements, evidenceFacts, gate, evidenceContext };
 }

@@ -28,6 +28,7 @@ export * from './agentEvidence.js';
 export * from './agentEvidenceRequirements.js';
 export * from './agentEvidenceGate.js';
 export * from './verifiedPrograms.js';
+export * from './promptInjectionDefense.js';
 export {
   appendReviewFinding,
   evidenceTextFields,
