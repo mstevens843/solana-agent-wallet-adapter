@@ -133,6 +133,12 @@ importers:
 
   apps/render-web:
     dependencies:
+      '@solana-agent-wallet-adapter/acp-adapter':
+        specifier: workspace:*
+        version: link:../../packages/acp-adapter
+      '@solana-agent-wallet-adapter/ap2-adapter':
+        specifier: workspace:*
+        version: link:../../packages/ap2-adapter
       '@solana-agent-wallet-adapter/mcp-server':
         specifier: workspace:*
         version: link:../../packages/mcp-server
@@ -152,6 +158,42 @@ importers:
       '@types/pg':
         specifier: ^8.20.0
         version: 8.20.0
+      typescript:
+        specifier: ^5.6.0
+        version: 5.9.3
+      vitest:
+        specifier: ^2.1.0
+        version: 2.1.9(@types/node@22.19.17)(terser@5.46.2)
+
+  packages/a2a-agent-card:
+    devDependencies:
+      typescript:
+        specifier: ^5.6.0
+        version: 5.9.3
+      vitest:
+        specifier: ^2.1.0
+        version: 2.1.9(@types/node@22.19.17)(terser@5.46.2)
+
+  packages/acp-adapter:
+    devDependencies:
+      typescript:
+        specifier: ^5.6.0
+        version: 5.9.3
+      vitest:
+        specifier: ^2.1.0
+        version: 2.1.9(@types/node@22.19.17)(terser@5.46.2)
+
+  packages/ap2-adapter:
+    devDependencies:
+      typescript:
+        specifier: ^5.6.0
+        version: 5.9.3
+      vitest:
+        specifier: ^2.1.0
+        version: 2.1.9(@types/node@22.19.17)(terser@5.46.2)
+
+  packages/bridge-router:
+    devDependencies:
       typescript:
         specifier: ^5.6.0
         version: 5.9.3
@@ -399,7 +441,11 @@ importers:
         specifier: ^5.6.0
         version: 5.9.3
 
-  packages/workflow: {}
+  packages/workflow:
+    dependencies:
+      '@solana-agent-wallet-adapter/ap2-adapter':
+        specifier: workspace:*
+        version: link:../ap2-adapter
 
 packages:
 

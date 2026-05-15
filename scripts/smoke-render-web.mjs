@@ -34,6 +34,8 @@ async function main() {
       await verifyLayoutSmoke();
     } else if (options.mode === 'workflow') {
       await verifyWorkflowSmoke({ requireLocalBridge: options.requireLocalBridge });
+    } else if (options.mode === 'ap2') {
+      await verifyAp2Smoke({ live: options.ap2Live, liveOrigin: options.liveOrigin });
     } else {
       await verifyLocalRender();
     }
@@ -51,6 +53,7 @@ function parseArgs(rawArgs) {
     liveOrigin: process.env.AGENTIC_RENDER_ORIGIN ?? DEFAULT_RENDER_ORIGIN,
     mode: 'local',
     requireLocalBridge: false,
+    ap2Live: false,
   };
   const setMode = (mode, flag) => {
     if (parsed.mode !== 'local' && parsed.mode !== mode) {
@@ -67,12 +70,23 @@ function parseArgs(rawArgs) {
       setMode('workflow', arg);
     } else if (arg === '--layout') {
       setMode('layout', arg);
+    } else if (arg === '--ap2') {
+      setMode('ap2', arg);
     } else if (arg === '--live') {
-      setMode('live', arg);
-      const candidate = normalized[index + 1];
-      if (candidate && !candidate.startsWith('-')) {
-        parsed.liveOrigin = candidate;
-        index += 1;
+      if (parsed.mode === 'ap2') {
+        parsed.ap2Live = true;
+        const candidate = normalized[index + 1];
+        if (candidate && !candidate.startsWith('-')) {
+          parsed.liveOrigin = candidate;
+          index += 1;
+        }
+      } else {
+        setMode('live', arg);
+        const candidate = normalized[index + 1];
+        if (candidate && !candidate.startsWith('-')) {
+          parsed.liveOrigin = candidate;
+          index += 1;
+        }
       }
     } else if (arg === '--require-local-bridge') {
       parsed.requireLocalBridge = true;
@@ -84,6 +98,9 @@ function parseArgs(rawArgs) {
   if (parsed.requireLocalBridge && parsed.mode !== 'workflow') {
     throw new Error('--require-local-bridge can only be used with --workflow.');
   }
+  if (parsed.ap2Live && parsed.mode !== 'ap2') {
+    throw new Error('--live can only modify --ap2 (or be used as a standalone mode).');
+  }
   return parsed;
 }
 
@@ -94,15 +111,19 @@ function printUsage() {
   pnpm smoke:render-web -- --workflow
   pnpm smoke:render-web -- --workflow --require-local-bridge
   pnpm smoke:render-web -- --live [origin]
+  pnpm smoke:render-web -- --ap2
+  pnpm smoke:render-web -- --ap2 --live [origin]
 
 Modes:
   default                 Build-output route smoke against local Render server.
   --layout                Browser geometry smoke for deterministic /app layout.
   --workflow              End-to-end cloud/browser workflow release smoke.
   --live [origin]         Content-type smoke against a deployed origin.
+  --ap2                   End-to-end AP2 inbound smoke against a local Render server.
 
 Options:
   --require-local-bridge  Also require a real bridge at AGENTIC_BRIDGE_URL.
+  --live (with --ap2)     Thin live-mode probe of the deployed AP2 surfaces.
   -h, --help              Show this help.
 `);
 }
@@ -1208,6 +1229,211 @@ async function verifyLiveRender(origin) {
   await verifyJson404(`${base}/api/not-a-real-route`);
   for (const route of ['/app', '/demo']) {
     await verifyHtmlRoute(`${base}${route}`, route);
+  }
+}
+
+const AP2_SMOKE_USDC_MINT = 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v';
+
+async function verifyAp2Smoke({ live, liveOrigin }) {
+  if (live) {
+    await verifyAp2LiveSmoke(liveOrigin);
+    return;
+  }
+  await verifyAp2LocalSmoke();
+}
+
+async function verifyAp2LocalSmoke() {
+  const wallet = createTestWallet();
+  await withDevLayerEnv(wallet.walletAddress, async () => {
+    await withLocalServer(async ({ origin }) => {
+      const session = await createSignedSession(origin, wallet);
+      const agentKey = generateAp2AgentKey();
+      const inboundBody = createAp2InboundBody({
+        recipient: wallet.walletAddress,
+        agentKey,
+        agentLabel: 'Smoke Operator',
+        amount: '1.0',
+        tokenMint: AP2_SMOKE_USDC_MINT,
+        memo: 'Headline AP2 smoke',
+      });
+
+      const inboundResponse = await apiRaw(origin, '/api/ap2/inbound', {
+        method: 'POST',
+        cookie: session.cookie,
+        body: inboundBody,
+      });
+      if (inboundResponse.status === 404) {
+        throw new Error('POST /api/ap2/inbound returned HTTP 404 — Agent 5 routes have not landed yet. Re-run after ap2Routes.ts is merged.');
+      }
+      if (inboundResponse.status < 200 || inboundResponse.status >= 300) {
+        throw new Error(`POST /api/ap2/inbound returned HTTP ${inboundResponse.status}: ${JSON.stringify(inboundResponse.body)}`);
+      }
+      const inbound = inboundResponse.body ?? {};
+      assert(typeof inbound.inboundId === 'string' && inbound.inboundId.length > 0, 'POST /api/ap2/inbound did not return an inboundId string');
+      assert(typeof inbound.approvalId === 'string' && inbound.approvalId.length > 0, 'POST /api/ap2/inbound did not return an approvalId string');
+      const { inboundId, approvalId } = inbound;
+      console.log(`[smoke-render-web] PASS POST /api/ap2/inbound → inboundId=${inboundId} approvalId=${approvalId}.`);
+
+      const list = await apiJson(origin, '/api/ap2/inbound', { cookie: session.cookie });
+      const inboundList = arrayPayload(list.inbound ?? list.records ?? list.items);
+      assert(inboundList.some((entry) => entry && entry.id === inboundId), `GET /api/ap2/inbound did not include new record ${inboundId}`);
+      console.log(`[smoke-render-web] PASS GET /api/ap2/inbound list includes ${inboundId}.`);
+
+      const single = await apiJson(origin, `/api/ap2/inbound/${encodeURIComponent(inboundId)}`, { cookie: session.cookie });
+      const singleRecord = requiredObject(single.inbound ?? single.record ?? single, 'ap2 inbound detail');
+      assert(typeof singleRecord.id === 'string' && singleRecord.id === inboundId, `GET /api/ap2/inbound/${inboundId} returned id=${singleRecord.id}`);
+      console.log(`[smoke-render-web] PASS GET /api/ap2/inbound/${inboundId} returned matching record.`);
+
+      const inbox = await apiJson(origin, '/api/approvals', { cookie: session.cookie });
+      const approval = arrayPayload(inbox.approvals).find((entry) => entry && entry.id === approvalId);
+      assert(approval, `approval ${approvalId} did not appear in /api/approvals inbox`);
+      console.log(`[smoke-render-web] PASS approval ${approvalId} materialized into inbox.`);
+
+      await apiJson(origin, `/api/approvals/${encodeURIComponent(approvalId)}/approve`, {
+        method: 'POST',
+        cookie: session.cookie,
+        body: {
+          ...decisionProofBody(approval, 'approved', wallet),
+          note: 'Approved in AP2 smoke.',
+        },
+      });
+      console.log(`[smoke-render-web] PASS approval ${approvalId} approved.`);
+
+      const preview = await apiJson(origin, `/api/approvals/${encodeURIComponent(approvalId)}/finalization/prepare`, {
+        method: 'POST',
+        cookie: session.cookie,
+        body: {},
+      }).then((payload) => requiredObject(payload.finalization, 'finalization preview'));
+      const finalizationId = String(preview.id ?? '');
+      assert(finalizationId.length > 0, 'finalization prepare did not return a finalization id');
+      await apiJson(origin, `/api/approvals/${encodeURIComponent(approvalId)}/finalization/${encodeURIComponent(finalizationId)}/submit`, {
+        method: 'POST',
+        cookie: session.cookie,
+        body: {
+          ...finalizationProofBody(approval, preview, wallet),
+          finalizationStatus: 'confirmed',
+          txStatus: 'confirmed',
+          txid: 'ap2-smoke-tx',
+          transactionHash: preview.transactionHash,
+          messageHash: preview.messageHash,
+          quoteHash: preview.quoteHash,
+          simulationHash: preview.simulationHash,
+          explorerUrl: 'https://explorer.solana.com/tx/ap2-smoke-tx',
+          note: 'Finalized in AP2 smoke.',
+        },
+      });
+      console.log(`[smoke-render-web] PASS approval ${approvalId} finalized.`);
+
+      const receiptResponse = await apiRaw(origin, `/api/ap2/inbound/${encodeURIComponent(inboundId)}/receipt`, {
+        method: 'POST',
+        cookie: session.cookie,
+        body: {},
+      });
+      if (receiptResponse.status < 200 || receiptResponse.status >= 300) {
+        throw new Error(`POST /api/ap2/inbound/${inboundId}/receipt returned HTTP ${receiptResponse.status}: ${JSON.stringify(receiptResponse.body)}`);
+      }
+      const receipt = receiptResponse.body ?? {};
+      assert(receipt && typeof receipt === 'object', 'AP2 receipt response was not an object');
+      console.log(`[smoke-render-web] PASS POST /api/ap2/inbound/${inboundId}/receipt produced a receipt object.`);
+
+      console.log(`[smoke-render-web] PASS AP2 inbound lifecycle: ${inboundId} → ${approvalId} → finalized → receipted.`);
+    });
+  });
+}
+
+async function verifyAp2LiveSmoke(liveOrigin) {
+  const base = liveOrigin.replace(/\/+$/, '');
+  const wellKnown = await fetch(`${base}/.well-known/agent.json`);
+  if (wellKnown.status === 404) {
+    console.log('[smoke-render-web] SKIP /.well-known/agent.json not yet deployed (Agent 7 pending).');
+  } else {
+    const contentType = wellKnown.headers.get('content-type') ?? '';
+    const raw = await wellKnown.text();
+    if (!wellKnown.ok) {
+      throw new Error(`GET /.well-known/agent.json returned HTTP ${wellKnown.status}: ${snippet(raw)}`);
+    }
+    if (!/application\/json/i.test(contentType)) {
+      throw new Error(`GET /.well-known/agent.json returned ${contentType || 'missing content-type'} instead of application/json: ${snippet(raw)}`);
+    }
+    const payload = parseJson(raw, `${base}/.well-known/agent.json`);
+    assert(payload && typeof payload === 'object', '/.well-known/agent.json body was not an object');
+    for (const field of ['name', 'description', 'walletAddress']) {
+      assert(typeof payload[field] === 'string' && payload[field].length > 0, `/.well-known/agent.json missing required string field "${field}"`);
+    }
+    console.log(`[smoke-render-web] PASS ${base}/.well-known/agent.json returned valid AgentCard JSON.`);
+  }
+
+  const inboundProbe = await fetch(`${base}/api/ap2/inbound`);
+  if (inboundProbe.status === 404) {
+    console.log('[smoke-render-web] SKIP /api/ap2/inbound not yet deployed (Agent 5 pending).');
+  } else if (inboundProbe.status === 401 || inboundProbe.status === 403) {
+    console.log(`[smoke-render-web] PASS ${base}/api/ap2/inbound rejected unauthenticated caller with HTTP ${inboundProbe.status}.`);
+  } else {
+    const body = await inboundProbe.text();
+    throw new Error(`GET /api/ap2/inbound returned HTTP ${inboundProbe.status} unauthenticated; expected 401 or 403: ${snippet(body)}`);
+  }
+}
+
+function generateAp2AgentKey() {
+  const { publicKey, privateKey } = generateKeyPairSync('ed25519');
+  const publicKeyDer = publicKey.export({ format: 'der', type: 'spki' });
+  const publicKeyBytes = Buffer.from(publicKeyDer).subarray(-32);
+  return {
+    publicKeyBase58: encodeBase58(publicKeyBytes),
+    publicKeyBytes,
+    privateKey,
+  };
+}
+
+function createAp2InboundBody({ recipient, agentKey, agentLabel, amount, tokenMint, memo }) {
+  const mandate = {
+    kind: 'ap2_inbound_payment',
+    version: 1,
+    sourceAgentId: agentKey.publicKeyBase58,
+    sourceAgentLabel: agentLabel,
+    recipient,
+    amount,
+    tokenMint,
+    memo,
+    issuedAt: new Date().toISOString(),
+    nonce: randomHex(16),
+  };
+  const canonical = stableJson(mandate);
+  const signatureBytes = signDetached(null, Buffer.from(canonical, 'utf8'), agentKey.privateKey);
+  return {
+    mandate,
+    signature: Buffer.from(signatureBytes).toString('base64'),
+    signatureEncoding: 'base64',
+    canonicalMandate: canonical,
+  };
+}
+
+function randomHex(byteLength) {
+  const bytes = new Uint8Array(byteLength);
+  globalThis.crypto.getRandomValues(bytes);
+  return Array.from(bytes, (byte) => byte.toString(16).padStart(2, '0')).join('');
+}
+
+async function withDevLayerEnv(walletAddress, callback) {
+  const prior = {
+    AGENTIC_DEV_AP2_ACP: process.env.AGENTIC_DEV_AP2_ACP,
+    AGENTIC_DEV_WALLET_ALLOWLIST: process.env.AGENTIC_DEV_WALLET_ALLOWLIST,
+  };
+  process.env.AGENTIC_DEV_AP2_ACP = '1';
+  process.env.AGENTIC_DEV_WALLET_ALLOWLIST = walletAddress;
+  try {
+    return await callback();
+  } finally {
+    if (prior.AGENTIC_DEV_AP2_ACP === undefined) {
+      delete process.env.AGENTIC_DEV_AP2_ACP;
+    } else {
+      process.env.AGENTIC_DEV_AP2_ACP = prior.AGENTIC_DEV_AP2_ACP;
+    }
+    if (prior.AGENTIC_DEV_WALLET_ALLOWLIST === undefined) {
+      delete process.env.AGENTIC_DEV_WALLET_ALLOWLIST;
+    } else {
+      process.env.AGENTIC_DEV_WALLET_ALLOWLIST = prior.AGENTIC_DEV_WALLET_ALLOWLIST;
+    }
   }
 }
 

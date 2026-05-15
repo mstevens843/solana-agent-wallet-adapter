@@ -1,0 +1,15 @@
+.ap2-verified-pill {
+  align-items: center;
+  background: rgba(122, 217, 182, 0.13);
+  border: 1px solid rgba(122, 217, 182, 0.38);
+  border-radius: 999px;
+  color: var(--accent, #7ad9b6);
+  display: inline-flex;
+  font-size: 0.66rem;
+  font-weight: 750;
+  letter-spacing: 0.02em;
+  line-height: 1;
+  padding: 3px 8px;
+  text-transform: none;
+  white-space: nowrap;
+}

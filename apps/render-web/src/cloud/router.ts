@@ -50,6 +50,10 @@ import {
   verifyWalletSignature,
 } from './auth.js';
 import { isSecureRequest, serializeClearSessionCookie, serializeSessionCookie } from './cookies.js';
+// Side-effect import: each Phase-1 dev-API route module self-registers on load.
+import './devApiHandlers.js';
+import { listDevApiHandlers, type DevApiHandlerContext } from './devApiRegistry.js';
+import { devLayer1Enabled, isAllowedDevWallet } from './devGate.js';
 import { createEvidenceApiHandler, evidenceStoreAdapterForCloudStore } from './evidenceRoutes.js';
 import type { EvidenceStore } from './evidenceService.js';
 import { MemoryWorkflowStore } from './memoryStore.js';
@@ -397,7 +401,7 @@ export function createCloudApiRouter(options: CloudApiRouterOptions = {}): Cloud
   return {
     store,
     async handle(req, res, url) {
-      if (!url.pathname.startsWith('/api/')) {
+      if (!url.pathname.startsWith('/api/') && !url.pathname.startsWith('/.well-known/')) {
         return false;
       }
 
@@ -405,6 +409,46 @@ export function createCloudApiRouter(options: CloudApiRouterOptions = {}): Cloud
         enforceSameOrigin(req, url);
         enforceJsonWriteRequest(req);
         await enforceAuthRateLimit(req, url, clock, authRateLimiter);
+
+        // Dev-only Layer 1 dispatch (AP2 / ACP / A2A AgentCard / Bridge router).
+        // Public routes (e.g. /.well-known/agent.json) bypass the wallet gate;
+        // all other dev routes require devLayer1Enabled() AND a session whose
+        // wallet is in AGENTIC_DEV_WALLET_ALLOWLIST. Non-matching prefixes fall
+        // through to the existing API route table below.
+        const devHandlers = listDevApiHandlers();
+        let devHandled = false;
+        for (const handler of devHandlers) {
+          if (!url.pathname.startsWith(handler.prefix)) continue;
+          if (!handler.methods.includes(req.method ?? 'GET')) continue;
+          let walletAddress: string | undefined;
+          if (!handler.publicRoute) {
+            if (!devLayer1Enabled()) {
+              writeJson(res, 403, { error: 'dev_layer1_disabled' });
+              devHandled = true;
+              break;
+            }
+            const session = await sessionFromRequest({ req, store, clock });
+            walletAddress = session?.walletAddress;
+            if (!isAllowedDevWallet(walletAddress)) {
+              writeJson(res, 403, { error: 'dev_layer1_disabled' });
+              devHandled = true;
+              break;
+            }
+          }
+          const context: DevApiHandlerContext = {
+            walletAddress,
+            workflowService,
+            workflowStore,
+            evidenceStore,
+            clock,
+          };
+          if (await handler.handle(req, res, url, context)) {
+            devHandled = true;
+            break;
+          }
+        }
+        if (devHandled) return true;
+
         await routeApiRequest(
           req,
           res,

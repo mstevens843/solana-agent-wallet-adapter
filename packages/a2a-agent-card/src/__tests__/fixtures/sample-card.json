@@ -1,0 +1,55 @@
+{
+  "protocolVersion": "0.2.5",
+  "name": "Sample Agentic Wallet",
+  "description": "Hand-written reference AgentCard fixture. Independent of the builder so the validator is exercised end-to-end on a spec-compliant document.",
+  "url": "https://agentic-signer.com",
+  "version": "0.0.1-dev",
+  "documentationUrl": "https://agentic-signer.com/docs",
+  "provider": {
+    "organization": "Agentic Signer",
+    "url": "https://agentic-signer.com"
+  },
+  "capabilities": {
+    "streaming": false,
+    "pushNotifications": false,
+    "stateTransitionHistory": false
+  },
+  "defaultInputModes": ["application/json", "text/plain"],
+  "defaultOutputModes": ["application/json"],
+  "skills": [
+    {
+      "id": "wallet.sign_message",
+      "name": "Sign Message",
+      "description": "Sign an arbitrary message.",
+      "tags": ["wallet", "signing"]
+    },
+    {
+      "id": "protocol.ap2_inbound",
+      "name": "Accept AP2 Mandate",
+      "description": "Receive an AP2 IntentMandate from another agent.",
+      "tags": ["ap2", "payments"],
+      "inputModes": ["application/json"],
+      "outputModes": ["application/json"]
+    }
+  ],
+  "serviceEndpoint": "https://agentic-signer.com",
+  "supportedProtocols": ["ap2", "acp", "a2a"],
+  "supportedTokens": ["USDC", "USDT", "SOL"],
+  "paymentMethods": [
+    {
+      "protocol": "ap2-inbound",
+      "endpoint": "https://agentic-signer.com/api/ap2/inbound"
+    },
+    {
+      "protocol": "acp-outbound",
+      "endpoint": "https://agentic-signer.com/api/acp/cart/preview"
+    },
+    {
+      "protocol": "spl-transfer",
+      "tokens": ["USDC", "USDT", "SOL"],
+      "network": "solana-mainnet"
+    }
+  ],
+  "walletAddress": "4fTqUdd9SRCkmALQhQGF66VRYJFsCLDSQJYadqwMMoHd",
+  "contactEmail": "support@agentic-signer.com"
+}

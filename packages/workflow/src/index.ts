@@ -22,6 +22,7 @@ export type { CadenceFields, ExhaustionReason, LifetimeSpend, OccurrenceInfo } f
 
 export { formatOccurrenceStatus, formatScheduleStatus } from './labels.js';
 export type { ApprovalSummaryHint, LabelTone, StatusLabel } from './labels.js';
+export * as DevLayer1 from './dev/index.js';
 export * from './agentPlans.js';
 export * from './agentFactRouter.js';
 export * from './agentEvidence.js';
@@ -162,6 +163,7 @@ export const EVIDENCE_RECEIPT_KINDS = [
   'rejection_receipt',
   'tool_trace_receipt',
   'agent_override_receipt',
+  'acp_outbound',
 ] as const;
 export type EvidenceReceiptKind = (typeof EVIDENCE_RECEIPT_KINDS)[number];
 

@@ -1,8 +1,9 @@
 {
-  "name": "@solana-agent-wallet-adapter/workflow",
-  "version": "0.0.1",
-  "description": "Shared Agentic Cloud workflow contracts and validators.",
+  "name": "@solana-agent-wallet-adapter/acp-adapter",
+  "version": "0.0.1-dev",
+  "description": "Dev-only ACP (Stripe/OpenAI Agent Commerce) outbound cart parser, validator, and receipt builder.",
   "license": "Apache-2.0",
+  "private": true,
   "type": "module",
   "main": "./dist/index.js",
   "module": "./dist/index.js",
@@ -19,13 +20,14 @@
     "README.md"
   ],
   "scripts": {
-    "build": "pnpm -F @solana-agent-wallet-adapter/ap2-adapter build && tsc -p tsconfig.json",
+    "build": "tsc -p tsconfig.json",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test": "vitest run",
     "test:watch": "vitest",
     "clean": "rm -rf dist"
   },
-  "dependencies": {
-    "@solana-agent-wallet-adapter/ap2-adapter": "workspace:*"
+  "devDependencies": {
+    "typescript": "^5.6.0",
+    "vitest": "^2.1.0"
   }
 }
