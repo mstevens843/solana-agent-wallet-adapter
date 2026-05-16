@@ -1,8 +1,13 @@
 # Browser-Native Device Agent Runtime — Parallel Implementation Plan
 
-> **Status:** Phase 0 complete (contract extension, gate flag, barrel stub, plan doc landed).
-> Phases 1-9 are ready for parallel dispatch.
-> **Companion of:** `docs/plans/device-agent-runtime-parallel-plan.md` (Android-native v1, completed 2026-05-15).
+> **Implementation status:** COMPLETE as of 2026-05-16. Phases 0-9 landed with parallel agents and
+> independent file ownership. Public production builds keep `VITE_AGENTIC_BROWSER_DEVICE_AGENT`
+> and `AGENTIC_BROWSER_DEVICE_AGENT` **unset** by default per
+> [docs/deploy/release.md](../deploy/release.md). Operator and provider guidance lives in
+> [docs/deploy/browser-device-agent.md](../deploy/browser-device-agent.md); the manual verification
+> path is [docs/smoke/browser-device-agent.md](../smoke/browser-device-agent.md).
+> **Companion of:** [docs/plans/device-agent-runtime-parallel-plan.md](./device-agent-runtime-parallel-plan.md)
+> (Android-native v1, completed 2026-05-15).
 
 ## Context
 

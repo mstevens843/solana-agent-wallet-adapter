@@ -154,6 +154,22 @@
   padding: 2px 8px;
 }
 
+.approval-badge--mpp {
+  align-items: center;
+  background: rgba(236, 201, 75, 0.14);
+  border: 1px solid rgba(236, 201, 75, 0.4);
+  border-radius: 999px;
+  color: #f5d66d;
+  display: inline-flex;
+  font-size: 0.66rem;
+  font-weight: 800;
+  letter-spacing: 0.02em;
+  line-height: 1;
+  padding: 3px 8px;
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+
 .external-agents-row-actions {
   display: flex;
   gap: 8px;

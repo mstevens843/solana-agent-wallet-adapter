@@ -35,6 +35,8 @@ import {
   type NormalizedApproval,
 } from '../externalAgents.js';
 import { __ap2VerifiedBadgeForTests } from '../../devBadges/ap2Verified.js';
+import { __mppSessionBadgeForTests } from '../../devBadges/mppSession.js';
+import { renderApprovalBadges } from '../../approvalBadges.js';
 
 function makeApproval(overrides: Partial<NormalizedApproval> = {}): NormalizedApproval {
   return {
@@ -449,5 +451,22 @@ describe('AP2 verified badge', () => {
   it('isValidVerifiedAgent narrows the type', () => {
     const candidate: unknown = { agentId: 'a', agentLabel: 'b' };
     expect(__ap2VerifiedBadgeForTests.isValidVerifiedAgent(candidate)).toBe(true);
+  });
+});
+
+describe('MPP badge', () => {
+  it('matches MPP approvals and renders the MPP pill', () => {
+    const action = { metadata: { connectorId: 'mpp' } };
+    expect(__mppSessionBadgeForTests.matchMppSession(action)).toBe(true);
+    expect(__mppSessionBadgeForTests.renderMppSessionBadge(action)).toBe(
+      '<span class="approval-badge approval-badge--mpp">MPP</span>',
+    );
+    expect(renderApprovalBadges(action)).toContain('approval-badge--mpp');
+  });
+
+  it('rejects non-MPP approvals', () => {
+    expect(__mppSessionBadgeForTests.matchMppSession({ metadata: { connectorId: 'ap2' } })).toBe(false);
+    expect(__mppSessionBadgeForTests.matchMppSession({ metadata: null })).toBe(false);
+    expect(__mppSessionBadgeForTests.matchMppSession({})).toBe(false);
   });
 });

@@ -54,6 +54,7 @@ type JsonRecord = Record<string, unknown>;
 
 const DEFAULT_BRIDGE_URL = 'http://127.0.0.1:8787';
 const DEFAULT_WALLET_HOST_URL = 'http://127.0.0.1:5174';
+const DEFAULT_RENDER_WEB_URL = 'http://127.0.0.1:3000';
 const REQUEST_TIMEOUT_MS = 120_000;
 const POLL_INTERVAL_MS = 750;
 const RUNTIME_DIR_NAME = 'solana-agent-wallet';
@@ -82,6 +83,7 @@ interface ParsedArgs {
 
 interface GlobalOptions {
   bridgeUrl: string;
+  renderWebUrl: string;
   token: string;
   walletHostUrl: string;
   repoRoot: string | null;
@@ -491,24 +493,31 @@ async function dispatchSession(parsed: ParsedArgs): Promise<unknown> {
 }
 
 async function dispatchMpp(parsed: ParsedArgs): Promise<unknown> {
-  // Phase 0 scaffolding for the MPP CLI surface. Phase 1 wires `mpp challenge
-  // <file.json>` to /api/mpp/challenge and `mpp config` to /api/mpp/config.
   const subcommand = parsed.positionals[1] ?? 'help';
   const knownSubs = new Set(['challenge', 'config']);
   if (subcommand === 'help' || !knownSubs.has(subcommand)) {
     return {
       command: 'mpp',
       subcommands: ['challenge', 'config'],
-      status: 'not_implemented',
-      message: 'Not implemented (Phase 1). Scaffolding only — Phase 1 wires this to render-web.',
+      renderWebUrl: parsed.options.renderWebUrl,
     };
   }
-  return {
-    command: 'mpp',
-    subcommand,
-    status: 'not_implemented',
-    message: 'Not implemented (Phase 1).',
-  };
+  if (subcommand === 'config') {
+    return mppRenderWebRequest(parsed.options, '/api/mpp/config');
+  }
+  const file = parsed.positionals[2];
+  if (!file) {
+    throw new Error('Usage: solana-agent-wallet mpp challenge <file.json>');
+  }
+  const raw = await readFile(resolve(file), 'utf8');
+  const parsedJson = JSON.parse(raw) as unknown;
+  const body = isRecord(parsedJson) && parsedJson.challenge !== undefined
+    ? parsedJson
+    : { challenge: parsedJson };
+  return mppRenderWebRequest(parsed.options, '/api/mpp/challenge', {
+    method: 'POST',
+    body: JSON.stringify(body),
+  });
 }
 
 async function dispatchBridge(parsed: ParsedArgs): Promise<unknown> {
@@ -2506,11 +2515,47 @@ async function tryBridgeRequest<T>(
   }
 }
 
+async function mppRenderWebRequest<T = unknown>(
+  options: GlobalOptions,
+  path: string,
+  init: RequestInit = {},
+): Promise<T> {
+  const url = renderWebUrl(options, path);
+  const cookie = process.env.AGENTIC_RENDER_WEB_COOKIE ?? process.env.AGENTIC_CLOUD_COOKIE ?? process.env.AGENTIC_SESSION_COOKIE;
+  let response: Response;
+  try {
+    response = await fetchWithTimeout(url, {
+      ...init,
+      headers: {
+        Accept: 'application/json',
+        ...(init.body !== undefined ? { 'content-type': 'application/json' } : {}),
+        ...(cookie ? { cookie } : {}),
+        ...(init.headers ?? {}),
+      },
+    }, REQUEST_TIMEOUT_MS);
+  } catch (err) {
+    throw new Error(`Render-web MPP API is not reachable at ${options.renderWebUrl}. ${errorMessage(err)}`);
+  }
+
+  const text = await response.text();
+  const body = parseJsonBody(text);
+  if (!response.ok) {
+    const error = responseError(body);
+    throw new Error(error ?? `Render-web MPP API returned HTTP ${response.status}.`);
+  }
+  return body as T;
+}
+
 function bridgeUrl(options: GlobalOptions, path: string): URL {
   const base = options.bridgeUrl.endsWith('/') ? options.bridgeUrl : `${options.bridgeUrl}/`;
   const url = new URL(path.startsWith('/') ? path.slice(1) : path, base);
   url.searchParams.set('token', options.token);
   return url;
+}
+
+function renderWebUrl(options: GlobalOptions, path: string): URL {
+  const base = options.renderWebUrl.endsWith('/') ? options.renderWebUrl : `${options.renderWebUrl}/`;
+  return new URL(path.startsWith('/') ? path.slice(1) : path, base);
 }
 
 async function fetchWithTimeout(input: URL | string, init: RequestInit, timeoutMs: number): Promise<Response> {
@@ -3160,6 +3205,8 @@ Usage:
   solana-agent-wallet prepare swap <amount> [input-token] [output-token]
   solana-agent-wallet prepare blink --url <url> [--connector <id>] [--operation <label>]
   solana-agent-wallet schedule list
+  solana-agent-wallet mpp challenge <file.json>
+  solana-agent-wallet mpp config
   solana-agent-wallet receipts
   solana-agent-wallet research list
   solana-agent-wallet research sign <number|id> [artifact input]
@@ -3179,6 +3226,7 @@ Setup options:
 
 Global options:
   --bridge-url <url>         Default: ${DEFAULT_BRIDGE_URL}
+  --render-web-url <url>     Default: ${DEFAULT_RENDER_WEB_URL}
   --token <token>            Default: BRIDGE_TOKEN or a generated per-run token
   --wallet-host-url <url>    Default: ${DEFAULT_WALLET_HOST_URL}
   --runtime-dir <path>       Installed config/data dir
@@ -3246,6 +3294,12 @@ function parseArgs(argv: string[]): ParsedArgs {
     : repoRoot ?? defaultUserRuntimeDir();
   const options: GlobalOptions = {
     bridgeUrl: stripTrailingSlash(process.env.AGENT_WALLET_BRIDGE_URL ?? process.env.BRIDGE_URL ?? DEFAULT_BRIDGE_URL),
+    renderWebUrl: stripTrailingSlash(
+      process.env.AGENTIC_RENDER_WEB_URL ??
+        process.env.AGENTIC_PUBLIC_ORIGIN ??
+        process.env.RENDER_WEB_URL ??
+        DEFAULT_RENDER_WEB_URL,
+    ),
     token: process.env.BRIDGE_TOKEN ?? randomBridgeToken(),
     walletHostUrl: stripTrailingSlash(process.env.AGENT_WALLET_WALLET_HOST_URL ?? DEFAULT_WALLET_HOST_URL),
     repoRoot,
@@ -3291,6 +3345,12 @@ function parseArgs(argv: string[]): ParsedArgs {
     if (flag === '--bridge-url') {
       const value = optionArgument(argv, index, flag, inlineValue);
       options.bridgeUrl = stripTrailingSlash(value.value);
+      index = value.index;
+      continue;
+    }
+    if (flag === '--render-web-url') {
+      const value = optionArgument(argv, index, flag, inlineValue);
+      options.renderWebUrl = stripTrailingSlash(value.value);
       index = value.index;
       continue;
     }

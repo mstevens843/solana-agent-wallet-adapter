@@ -56,3 +56,13 @@ export function isDeviceAgentWallet(address: string | undefined | null): boolean
   if (!address) return false;
   return DEVICE_AGENT_WALLET_ALLOWLIST.includes(address);
 }
+
+export function isBrowserNativeRuntimeEligible(
+  walletAddress: string | undefined | null,
+  isAndroidApp: boolean,
+): boolean {
+  if (!DEVICE_AGENT_ENABLED) return false;
+  if (!BROWSER_DEVICE_AGENT_ENABLED) return false;
+  if (isAndroidApp) return false;
+  return isDeviceAgentWallet(walletAddress);
+}

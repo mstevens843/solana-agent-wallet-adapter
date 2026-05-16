@@ -12,7 +12,6 @@ import { describe, expect, it } from 'vitest';
 
 import {
   SessionExpiredError,
-  STREAMING_SETTLEMENT_SCHEMA,
   STREAMING_VOUCHER_SCHEMA,
   VoucherExceedsRemainingError,
   VoucherReplayError,

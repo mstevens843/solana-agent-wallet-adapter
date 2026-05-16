@@ -27,6 +27,7 @@
     "@solana-agent-wallet-adapter/bridge-router": "workspace:*",
     "@solana-agent-wallet-adapter/launch-skills": "workspace:*",
     "@solana-agent-wallet-adapter/mcp-server": "workspace:*",
+    "@solana-agent-wallet-adapter/mpp-adapter": "workspace:*",
     "@solana-agent-wallet-adapter/signals-runtime": "workspace:*",
     "@solana-agent-wallet-adapter/skills-runtime": "workspace:*",
     "@solana-agent-wallet-adapter/workflow": "workspace:*",

@@ -7,6 +7,13 @@ import {
   type ProtocolErrorPayload,
   type WalletBackend,
 } from '@solana-agent-wallet-adapter/core';
+import {
+  MppParseError,
+  MppVerifyError,
+  challengeToApprovalParams,
+  parseMppChallenge,
+  verifyMppChallenge,
+} from '@solana-agent-wallet-adapter/mpp-adapter';
 
 import {
   AgentWalletActionService,
@@ -1721,7 +1728,7 @@ export function registerActionTools(
   );
 
   registerJupiterTriggerTools(server, service, options);
-  registerJupiterRecurringTools(server, service, options);
+  registerJupiterRecurringTools(server, service, options, preparedActions);
 
   server.registerTool(
     'solana_drift_user_snapshot',
@@ -5527,6 +5534,7 @@ function registerJupiterRecurringTools(
   server: McpServer,
   service: AgentWalletActionService,
   options: RegisterActionToolsOptions,
+  preparedActions: PreparedActionStore,
 ): void {
   const cluster = options.config.cluster;
   const recurringStateSchema = z.enum(['active', 'history', 'completed', 'cancelled', 'failed', 'all']);
@@ -5692,15 +5700,51 @@ function registerJupiterRecurringTools(
     'solana_mpp_challenge_handler',
     {
       description:
-        'Parse and verify an inbound Machine Payments Protocol (MPP) HTTP-402 challenge, then build a manual-approval inbox item. Phase 0 scaffolding returns not_implemented; Phase 1 wires the mpp-adapter parser/verifier/mapper.',
+        'Parse and verify an inbound Machine Payments Protocol (MPP) HTTP-402 challenge, then build a manual-approval inbox item.',
       inputSchema: {
-        challenge: z.unknown().optional(),
+        challenge: z.unknown(),
       },
     },
     async (input) => traceTool(
       'solana_mpp_challenge_handler',
       { cluster, input },
-      async () => jsonReply({ status: 'not_implemented', phase: 'phase_0_scaffolding', tool: 'solana_mpp_challenge_handler' }),
+      async () => {
+        try {
+          const challenge = parseMppChallenge(input.challenge);
+          const verified = verifyMppChallenge(challenge, {
+            clockNow: new Date(),
+            expectedCluster: options.config.cluster,
+            allowedMints: options.config.tokens.map((token) => token.mint),
+          });
+          const walletAddress = await options.backend.getAddress();
+          const approvalParams = challengeToApprovalParams(challenge, walletAddress, {
+            paymentMethod: verified.paymentMethod,
+          });
+          const preparedAction = await preparedActions.addAction({
+            kind: approvalParams.kind,
+            walletAddress,
+            cluster: approvalParams.cluster,
+            summary: approvalParams.summary,
+            params: {
+              ...approvalParams.params,
+              metadata: approvalParams.metadata,
+            },
+            dueAt: challenge.expiresAt,
+          });
+          return jsonReply({
+            approvalId: preparedAction.id,
+            signingRequestId: preparedAction.activeRequestId ?? preparedAction.id,
+            summary: preparedAction.summary,
+            challengeHash: verified.challengeHash,
+            preparedAction,
+          });
+        } catch (err) {
+          if (err instanceof MppParseError || err instanceof MppVerifyError) {
+            throw new ProtocolError('invalid_request', `MPP challenge rejected (${err.code}): ${err.message}`);
+          }
+          throw err;
+        }
+      },
     ),
   );
 

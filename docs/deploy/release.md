@@ -26,6 +26,14 @@ Use this process to make every public installer shown on `agentic-signer.com` re
   status/control only. Device Agent cannot approve, sign, submit, or move funds.
 - For any approved Android Device Agent build, run the Device Agent smoke and verify native `generatePlan`,
   `reviewPlan`, and `ask` pass through the Android runtime queue.
+- Do not set `VITE_AGENTIC_BROWSER_DEVICE_AGENT=1` or `AGENTIC_BROWSER_DEVICE_AGENT=1` for a public release unless the
+  release owner explicitly approves a browser-native Device Agent build.
+- If an approved browser-native Device Agent build is shipped, document the approval in the release notes, run the
+  browser Device Agent smoke (`docs/smoke/browser-device-agent.md`) for every supported provider, and confirm Render
+  still serves only the `runtimes: { android, browserNative }` block from `/api/device-agent/status` with no provider
+  calls and no key persistence.
+- The browser-native runtime cannot approve, sign, submit, or move funds. Every drafted transfer must still pass
+  through Needs Approval and the installed wallet's approval flow.
 
 ## Current Public Tag
 
@@ -51,10 +59,11 @@ without the leading `v`.
    pnpm verify:release-links
    ```
 
-   Confirm the public release environment leaves `VITE_AGENTIC_DEVICE_AGENT`, `AGENTIC_DEVICE_AGENT`, and
-   `agenticDeviceAgent=true` unset unless the release notes include explicit Device Agent approval.
-   For an approved enabled Android build, also run the Device Agent smoke and confirm the source-completion scenario
-   passes.
+   Confirm the public release environment leaves `VITE_AGENTIC_DEVICE_AGENT`, `AGENTIC_DEVICE_AGENT`,
+   `VITE_AGENTIC_BROWSER_DEVICE_AGENT`, `AGENTIC_BROWSER_DEVICE_AGENT`, and `agenticDeviceAgent=true` unset unless the
+   release notes include explicit Device Agent approval. For an approved enabled build, also run the matching Device
+   Agent smoke (`docs/smoke/android-device-agent.md` for Android, `docs/smoke/browser-device-agent.md` for browser)
+   and confirm the source-completion scenario passes.
 
 2. Push the release commit, then tag it:
 

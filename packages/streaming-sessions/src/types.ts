@@ -11,7 +11,7 @@ export interface SessionGrant {
   walletAddress: string;
   cluster: StreamingCluster;
   tokenMint: string;
-  tokenDecimals: number;
+  tokenDecimals?: number;
   delegatePubkey: string;
   ephemeralSignerPubkey: string;
   capAmount: string;

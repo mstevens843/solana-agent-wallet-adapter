@@ -4,6 +4,7 @@
 // the browser shell can route generation through the Android JS bridge while
 // staying scaffold-only on Render and browser-dev.
 
+import { BROWSER_DEVICE_AGENT_ENABLED } from './devGate.js';
 import type { AiDiagnosticCode, AiDiagnosticEntry } from './planner.js';
 
 export type DeviceAgentRuntimeState = 'unavailable' | 'stopped' | 'starting' | 'running' | 'error';
@@ -732,4 +733,39 @@ function unavailableStatus(message: string, defaultRuntime?: DeviceAgentRuntimeK
     runtime: defaultRuntime ?? 'browser-dev',
     message,
   };
+}
+
+/**
+ * Returns true when the browser-native Device Agent runtime is compiled into
+ * this bundle (gated by `VITE_AGENTIC_BROWSER_DEVICE_AGENT`). Symmetric to
+ * {@link isDeviceAgentBridgeAvailable} for the Android JS bridge: a pure sync
+ * check on the build flag. Phase 6 in main.ts additionally combines this with
+ * `!IS_ANDROID_APP` and `isBrowserNativeRuntimeEligible(...)` from devGate.
+ */
+export function isBrowserNativeRuntimeAvailable(): boolean {
+  return BROWSER_DEVICE_AGENT_ENABLED;
+}
+
+/**
+ * Routes a Device Agent request through the on-tab browser-native runtime.
+ * Mirrors {@link deviceAgentRequestOrThrow} for symmetry, but bypasses the
+ * Android JS bridge and runs entirely in the current tab. The dispatcher module
+ * is loaded lazily so the Android-only chunk does not pull in the runtime/
+ * storage/provider/prompts tree.
+ *
+ * Throws {@link DeviceAgentClientError} on validation failures, storage errors,
+ * provider failures, or aborts (same contract as the Android path).
+ */
+export async function browserNativeDeviceAgentRequestOrThrow<R = unknown>(
+  method: DeviceAgentMethod,
+  payload?: unknown,
+  options?: DeviceAgentRequestOptions,
+): Promise<{ status: DeviceAgentStatus; result?: R }> {
+  const mod = await import('./deviceAgent/index.js');
+  const dispatchOptions = options?.signal ? { signal: options.signal } : undefined;
+  return mod.browserDeviceAgentRequest<R>(
+    method,
+    (payload ?? undefined) as Record<string, unknown> | undefined,
+    dispatchOptions,
+  );
 }

@@ -5,6 +5,9 @@ templates for common Solana wallet plans, and the wallet still performs every si
 
 ## Modes
 
+Agentic exposes five BYOK paths plus the keyless baseline. Each path has a distinct trust radius
+and no two paths share storage, surface, or fallback semantics.
+
 - **Keyless templates:** default. Users choose a template, fill visible fields, generate a plan, and optionally sign an
   approval proof in their wallet. The notes box is included in the plan review and signed approval message.
 - **Local bridge BYOK:** recommended for desktop and CLI users. The key stays on the user's machine and the hosted site
@@ -15,44 +18,60 @@ templates for common Solana wallet plans, and the wallet still performs every si
 - **Session BYOK:** fallback for Android and browser-only users who do not want Cloud relay. The key is held in browser
   memory for the current session and is forgotten on refresh or close. Raw OpenAI keys should not use this path because
   OpenAI does not allow exposing API keys in browser/mobile clients.
-- **Device Agent BYOK:** gated Android-native development path for Seeker/on-device runtime work. It reuses the same
-  AI path, provider, model, and key UX, stores Android runtime config in encrypted app storage, and does not change
-  approval or signing authority. Render can expose status/control scaffolding for allowlisted wallets, but it does not
-  run a Device Agent worker.
+- **Device Agent BYOK — Browser-native:** gated browser-native development path. The key stays on the user's device,
+  encrypted at rest in IndexedDB with a non-extractable WebCrypto AES-GCM key by default, or held only in tab memory
+  when the user picks Session-only mode. Render never sees the key. Browser-grade storage is not Keystore-grade and is
+  disclosed as such. Available providers are OpenRouter and Gemini (designed for browser CORS), OpenAI and Anthropic
+  (vendor-flagged direct-from-browser), and custom OpenAI-compatible gateways.
+- **Device Agent BYOK — Android-native:** gated Android-native development path for Seeker/on-device runtime work. The
+  bundled Android shell runs provider calls inside the app and stores runtime config in Android Keystore-backed
+  encrypted storage. When both Device Agent bridges are present in the same WebView, Android-native always wins.
+
+Render can expose status/control scaffolding for allowlisted wallets for either Device Agent runtime, but it does not
+run a Device Agent worker and never stores Device Agent provider keys.
 
 ## Device Agent Env
 
-Device Agent is hidden unless an explicit dev gate is enabled:
+Device Agent is hidden unless an explicit dev gate is enabled. The Android-native and browser-native runtimes have
+independent gates and do not enable each other.
+
+### Browser-native Device Agent
 
 ```sh
-export AGENTIC_DEVICE_AGENT=1
-export AGENTIC_DEVICE_AGENT_WALLET_ALLOWLIST=4fTqUdd9SRCkmALQhQGF66VRYJFsCLDSQJYadqwMMoHd,7etjMSp87AUE135iW5dNeKridbW16rwSFVUN9ivfFm3w
 export VITE_AGENTIC_DEVICE_AGENT=1
-export VITE_AGENTIC_DEVICE_AGENT_WALLET_ALLOWLIST="$AGENTIC_DEVICE_AGENT_WALLET_ALLOWLIST"
+export VITE_AGENTIC_BROWSER_DEVICE_AGENT=1
+export VITE_AGENTIC_DEVICE_AGENT_WALLET_ALLOWLIST=4fTqUdd9SRCkmALQhQGF66VRYJFsCLDSQJYadqwMMoHd,7etjMSp87AUE135iW5dNeKridbW16rwSFVUN9ivfFm3w
 pnpm -F @solana-agent-wallet-adapter/browser-demo build
 ```
 
-For Android APK builds, use:
+Render reports browser-native availability on `/api/device-agent/status` only when `AGENTIC_DEVICE_AGENT=1` and
+`AGENTIC_BROWSER_DEVICE_AGENT=1` are both set. Render still runs no provider calls and never stores Device Agent keys.
+
+### Android-native Device Agent
 
 ```sh
 pnpm android:build -- -PagenticDeviceAgent=true
 pnpm android:install -- -PagenticDeviceAgent=true
 ```
 
-Leave these gates unset for public production builds unless a release owner explicitly approves shipping Device Agent.
-Device Agent is a draft path only: it cannot approve, sign, submit, or move funds, and the wallet user still reviews
-every transaction through the normal approval flow.
+### Public builds
+
+Leave all Device Agent gates unset for public production builds unless a release owner explicitly approves shipping a
+Device Agent runtime. Device Agent is a draft path only: it cannot approve, sign, submit, or move funds, and the wallet
+user still reviews every transaction through the normal approval flow.
 
 ## Device Agent Runtime Matrix
 
 | Surface | Status | Provider calls | Key/config boundary |
 |---|---|---|---|
 | Android default build | Hidden | None | No Device Agent config accepted |
-| Android `agenticDeviceAgent=true` build | Native status/config/start/stop enabled | `generatePlan`, `reviewPlan`, and `ask` route through the Android runtime queue | Android encrypted app storage |
+| Android `agenticDeviceAgent=true` build | Native status/config/start/stop enabled | `generatePlan`, `reviewPlan`, and `ask` route through the Android runtime queue | Android Keystore-backed encrypted app storage |
+| Browser default build | Hidden | None | No Device Agent config accepted |
+| Browser `VITE_AGENTIC_BROWSER_DEVICE_AGENT=1` build | Browser-native status/config/start/stop enabled for allowlisted wallets | `generatePlan`, `reviewPlan`, and `ask` route through the in-tab `fetch` + WebCrypto pipeline | Encrypted IndexedDB by default; Session-only tab memory when the user selects it |
 | Render with both Device Agent gates | Allowlisted status/control only | None | Non-secret status/config only; never store provider keys |
-| Browser dev | Scaffold/status only | None | Local dev state only |
 
-Treat any Android build that fails the Device Agent smoke source checks as not release-ready for Device Agent drafting.
+When both the Android-native bridge and the browser-native runtime are present in the same WebView, Android-native
+wins. Treat any build that fails the matching Device Agent smoke as not release-ready for Device Agent drafting.
 
 ## Local Bridge Env
 
@@ -93,6 +112,11 @@ Hosted BYOK accepts preset providers only: OpenAI, Claude / Anthropic, Gemini, a
 - AI output is only a draft plan. It cannot approve, sign, submit, or bypass wallet review.
 - Device Agent keys and config must stay inside the selected runtime boundary. Do not sync them, log them, write them to
   receipts, or store them on Render.
+- Browser-native Device Agent uses browser-grade storage (non-extractable WebCrypto AES-GCM in IndexedDB), which is
+  not equivalent to Android Keystore. Treat browser-native keys as device-scoped but tab-bound, and use Session-only
+  mode on shared or temporary machines.
+- The browser-native runtime calls provider chat endpoints directly from the tab. The user's provider must accept
+  browser-origin requests; CORS limits, not Agentic, ultimately decide whether a key reaches the model.
 - Browser session BYOK is for users who accept that their provider must allow browser-origin requests. The safer saved
   path is the local bridge.
 
