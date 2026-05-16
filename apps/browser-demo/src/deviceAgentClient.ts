@@ -7,7 +7,7 @@
 import type { AiDiagnosticCode, AiDiagnosticEntry } from './planner.js';
 
 export type DeviceAgentRuntimeState = 'unavailable' | 'stopped' | 'starting' | 'running' | 'error';
-export type DeviceAgentRuntimeKind = 'android-native' | 'render-gated' | 'browser-dev';
+export type DeviceAgentRuntimeKind = 'android-native' | 'render-gated' | 'browser-dev' | 'browser-native';
 export type DeviceAgentApiFormat = 'openai-compatible' | 'anthropic';
 export type DeviceAgentMethod =
   | 'status'
@@ -674,7 +674,12 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 }
 
 function isRuntimeKind(value: unknown): value is DeviceAgentRuntimeKind {
-  return value === 'android-native' || value === 'render-gated' || value === 'browser-dev';
+  return (
+    value === 'android-native'
+    || value === 'render-gated'
+    || value === 'browser-dev'
+    || value === 'browser-native'
+  );
 }
 
 function isRuntimeState(value: unknown): value is DeviceAgentRuntimeState {

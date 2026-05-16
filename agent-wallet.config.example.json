@@ -51,5 +51,16 @@
     "maxLifetimeAmount": { "SOL": "10", "USDC": "1000" },
     "maxPerWeekAmount":  { "SOL": "1",  "USDC": "100" },
     "maxPerMonthAmount": { "SOL": "4",  "USDC": "400" }
+  },
+  "mpp": {
+    "endpoint": "",
+    "acceptedRails": ["sol", "usdc"],
+    "maxChallengeAmount": "10"
+  },
+  "streaming": {
+    "defaultTokenMint": "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
+    "maxSessionDurationSeconds": 3600,
+    "maxSessionCapUsdc": "100",
+    "autoSettleEverySeconds": 60
   }
 }

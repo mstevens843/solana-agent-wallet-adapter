@@ -58,7 +58,7 @@ import { isSecureRequest, serializeClearSessionCookie, serializeSessionCookie } 
 // Side-effect import: each Phase-1 dev-API route module self-registers on load.
 import './devApiHandlers.js';
 import { listDevApiHandlers, type DevApiHandlerContext } from './devApiRegistry.js';
-import { deviceAgentFeatureEnabled, devLayer1Enabled, isAllowedDeviceAgentWallet, isAllowedDevWallet } from './devGate.js';
+import { deviceAgentFeatureEnabled, deviceAgentRuntimeAvailability, devLayer1Enabled, isAllowedDeviceAgentWallet, isAllowedDevWallet } from './devGate.js';
 import { createEvidenceApiHandler, evidenceStoreAdapterForCloudStore } from './evidenceRoutes.js';
 import type { EvidenceStore } from './evidenceService.js';
 import { MemoryWorkflowStore } from './memoryStore.js';
@@ -2448,6 +2448,7 @@ function deviceAgentStatusPayload(walletAddress: string, override?: Partial<Rend
     configured: status.configured,
     state: status.state,
     runtime: 'render-gated',
+    runtimes: deviceAgentRuntimeAvailability(),
     walletAddress,
     ...(status.provider ? { provider: status.provider } : {}),
     ...(status.apiFormat ? { apiFormat: status.apiFormat } : {}),

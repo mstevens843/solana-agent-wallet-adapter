@@ -1,0 +1,11 @@
+/* Phase 0 scaffolding — Phase 2C fills in the Sessions tab styles. */
+/* Follow agentProtocols.css / externalAgents.css conventions:           */
+/*   .dev-tab-shell, .sessions-list, .sessions-detail, .sessions-progress, */
+/*   .sessions-voucher-row, .sessions-pill--active|expired|revoked|settled */
+
+.sessions-placeholder {
+  padding: 24px;
+  color: var(--agentic-text-muted, #6b7280);
+  font-size: 14px;
+  line-height: 1.5;
+}

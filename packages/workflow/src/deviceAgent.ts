@@ -4,8 +4,31 @@ import type { JsonObject, JsonValue } from './index.js';
 export const DEVICE_AGENT_RUNTIME_STATES = ['unavailable', 'stopped', 'starting', 'running', 'error'] as const;
 export type DeviceAgentRuntimeState = (typeof DEVICE_AGENT_RUNTIME_STATES)[number];
 
-export const DEVICE_AGENT_RUNTIME_KINDS = ['android-native', 'render-gated', 'browser-dev'] as const;
+export const DEVICE_AGENT_RUNTIME_KINDS = ['android-native', 'render-gated', 'browser-dev', 'browser-native'] as const;
 export type DeviceAgentRuntimeKind = (typeof DEVICE_AGENT_RUNTIME_KINDS)[number];
+
+export const DEVICE_AGENT_ERROR_CODES = {
+  INVALID_CONFIG: 'invalid_config',
+  INVALID_PAYLOAD: 'invalid_payload',
+  RUNTIME_DISABLED: 'runtime_disabled',
+  RUNTIME_NOT_RUNNING: 'runtime_not_running',
+  RUNTIME_BUSY: 'runtime_busy',
+  RUNTIME_CANCELED: 'runtime_canceled',
+  RUNTIME_INTERNAL: 'runtime_internal',
+  UNSUPPORTED_METHOD: 'unsupported_method',
+  PROVIDER_UNAVAILABLE: 'provider_unavailable',
+  PROVIDER_FAILED: 'provider_failed',
+  PROVIDER_TIMEOUT: 'provider_timeout',
+  PROVIDER_AUTH: 'provider_auth',
+  PROVIDER_RATE_LIMITED: 'provider_rate_limited',
+  PROVIDER_INVALID_RESPONSE: 'provider_invalid_response',
+  PROVIDER_INVALID_CONFIG: 'provider_invalid_config',
+  PROVIDER_UPSTREAM: 'provider_upstream',
+  PROVIDER_NETWORK: 'provider_network',
+  SERVICE_START_FAILED: 'service_start_failed',
+  STORAGE_UNAVAILABLE: 'storage_unavailable',
+} as const;
+export type DeviceAgentErrorCode = (typeof DEVICE_AGENT_ERROR_CODES)[keyof typeof DEVICE_AGENT_ERROR_CODES];
 
 export const DEVICE_AGENT_METHODS = [
   'status',

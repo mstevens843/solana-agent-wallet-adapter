@@ -15,7 +15,8 @@ type Command =
   | 'notifications-deliver'
   | 'skills-execute'
   | 'aggregator-roll'
-  | 'signals-fanout';
+  | 'signals-fanout'
+  | 'streaming-settle';
 
 export async function runCloudCommand(command: Command): Promise<void> {
   const store = new PostgresWorkflowStore();
@@ -63,6 +64,14 @@ export async function runCloudCommand(command: Command): Promise<void> {
       );
       return;
     }
+    if (command === 'streaming-settle') {
+      const { materializeStreamingSettlements } = await import('./settlementService.js');
+      const result = await materializeStreamingSettlements({ store, clock: systemClock });
+      console.log(
+        `Agentic streaming settlement settled=${result.settled} failed=${result.failed} skipped=${result.skipped}`,
+      );
+      return;
+    }
 
     await store.cleanupExpired(new Date().toISOString());
     const workflowService = new WorkflowService(store);
@@ -95,12 +104,13 @@ function parseCommand(value: string | undefined): Command {
     value === 'notifications-deliver' ||
     value === 'skills-execute' ||
     value === 'aggregator-roll' ||
-    value === 'signals-fanout'
+    value === 'signals-fanout' ||
+    value === 'streaming-settle'
   ) {
     return value;
   }
   throw new Error(
-    'Usage: node dist/cloud/cli.js <migrate|materialize-due|notifications-deliver|skills-execute|aggregator-roll|signals-fanout>',
+    'Usage: node dist/cloud/cli.js <migrate|materialize-due|notifications-deliver|skills-execute|aggregator-roll|signals-fanout|streaming-settle>',
   );
 }
 

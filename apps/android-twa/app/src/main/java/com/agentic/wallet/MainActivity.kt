@@ -539,6 +539,72 @@ class MainActivity : ComponentActivity() {
             else -> "device_agent_error"
         }
 
+        /**
+         * Phase 0 scaffolding bridge for the Machine Payments Protocol (MPP).
+         * Phase 1 will route this to a Kotlin-side MPP HTTP-402 interceptor.
+         * Returns a JSON envelope synchronously; the browser-side
+         * `androidBridgeShim.ts` wrapper parses it and falls back to cloud HTTP
+         * when this method is absent.
+         */
+        @JavascriptInterface
+        fun mppRequest(requestId: String, method: String, payloadJson: String): String {
+            return runCatching {
+                validateScaffoldedBridgeRequest(requestId, method, payloadJson)
+                notImplementedEnvelope("mpp", requestId, method)
+            }.getOrElse { err ->
+                errorEnvelope("mpp", requestId, method, err)
+            }
+        }
+
+        /**
+         * Phase 0 scaffolding bridge for streaming-payment sessions. Phase 2D
+         * wires this into the device-agent runtime so vouchers can be signed
+         * locally without WebView roundtrips or per-voucher MWA approvals.
+         * Returns a JSON envelope synchronously.
+         */
+        @JavascriptInterface
+        fun streamingRequest(requestId: String, method: String, payloadJson: String): String {
+            return runCatching {
+                validateScaffoldedBridgeRequest(requestId, method, payloadJson)
+                notImplementedEnvelope("streaming", requestId, method)
+            }.getOrElse { err ->
+                errorEnvelope("streaming", requestId, method, err)
+            }
+        }
+
+        private fun validateScaffoldedBridgeRequest(requestId: String, method: String, payloadJson: String) {
+            if (!REQUEST_ID_PATTERN.matches(requestId)) {
+                throw MwaOperationException("INVALID_REQUEST", "Invalid scaffolded bridge request id.")
+            }
+            if (method.isBlank() || method.length > 64) {
+                throw MwaOperationException("UNSUPPORTED_METHOD", "Invalid scaffolded bridge method.")
+            }
+            if (payloadJson.length > MAX_PAYLOAD_CHARS) {
+                throw MwaOperationException("INVALID_REQUEST", "Scaffolded bridge payload is too large.")
+            }
+        }
+
+        private fun notImplementedEnvelope(bridge: String, requestId: String, method: String): String =
+            JSONObject()
+                .put("ok", false)
+                .put("status", "not_implemented")
+                .put("phase", "phase_0_scaffolding")
+                .put("bridge", bridge)
+                .put("requestId", requestId)
+                .put("method", method)
+                .toString()
+
+        private fun errorEnvelope(bridge: String, requestId: String, method: String, err: Throwable): String =
+            JSONObject()
+                .put("ok", false)
+                .put("status", "error")
+                .put("bridge", bridge)
+                .put("requestId", requestId)
+                .put("method", method)
+                .put("code", if (err is MwaOperationException) err.code else "INTERNAL_ERROR")
+                .put("message", err.message ?: "Unknown error.")
+                .toString()
+
         @JavascriptInterface
         fun mwaRequest(requestId: String, method: String, payloadJson: String) {
             activity.lifecycleScope.launch {

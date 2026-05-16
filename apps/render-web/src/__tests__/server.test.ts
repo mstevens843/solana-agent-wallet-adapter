@@ -110,9 +110,23 @@ describe('render web hosted BYOK API', () => {
         configured: false,
         state: 'stopped',
         runtime: 'render-gated',
+        runtimes: { android: true, browserNative: false },
         walletAddress,
       });
     }, { walletAddress });
+  });
+
+  it('reports browser-native availability when AGENTIC_BROWSER_DEVICE_AGENT is set', async () => {
+    vi.stubEnv('AGENTIC_DEVICE_AGENT', '1');
+    vi.stubEnv('AGENTIC_BROWSER_DEVICE_AGENT', '1');
+    await withServer(async (port, ctx) => {
+      const response = await getJson(port, '/api/device-agent/status', { cookie: ctx.cookie });
+      expect(response.status).toBe(200);
+      expect(response.body).toMatchObject({
+        runtime: 'render-gated',
+        runtimes: { android: true, browserNative: true },
+      });
+    }, { walletAddress: DEVICE_AGENT_WALLET_A });
   });
 
   it('stages Device Agent config without starting a cloud daemon', async () => {

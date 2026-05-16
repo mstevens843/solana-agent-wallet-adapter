@@ -459,9 +459,56 @@ async function dispatch(parsed: ParsedArgs): Promise<unknown> {
       return dispatchBridge(parsed);
     case 'wallet-host':
       return dispatchWalletHost(parsed);
+    case 'session':
+      return dispatchSession(parsed);
+    case 'mpp':
+      return dispatchMpp(parsed);
     default:
       throw new Error(`Unknown command: ${command ?? ''}. Run solana-agent-wallet help.`);
   }
+}
+
+async function dispatchSession(parsed: ParsedArgs): Promise<unknown> {
+  // Phase 0 scaffolding for the streaming-session CLI surface. Phase 2E wires
+  // each subcommand to the render-web /api/streaming/* endpoints + voucher
+  // signing through the device agent (Android) or cloud relay (browser).
+  const subcommand = parsed.positionals[1] ?? 'help';
+  const knownSubs = new Set(['list', 'create', 'spend', 'revoke', 'history', 'settle']);
+  if (subcommand === 'help' || !knownSubs.has(subcommand)) {
+    return {
+      command: 'session',
+      subcommands: ['list', 'create', 'spend', 'revoke', 'history', 'settle'],
+      status: 'not_implemented',
+      message: 'Not implemented (Phase 2). Scaffolding only — Phase 2E wires this to render-web.',
+    };
+  }
+  return {
+    command: 'session',
+    subcommand,
+    status: 'not_implemented',
+    message: 'Not implemented (Phase 2).',
+  };
+}
+
+async function dispatchMpp(parsed: ParsedArgs): Promise<unknown> {
+  // Phase 0 scaffolding for the MPP CLI surface. Phase 1 wires `mpp challenge
+  // <file.json>` to /api/mpp/challenge and `mpp config` to /api/mpp/config.
+  const subcommand = parsed.positionals[1] ?? 'help';
+  const knownSubs = new Set(['challenge', 'config']);
+  if (subcommand === 'help' || !knownSubs.has(subcommand)) {
+    return {
+      command: 'mpp',
+      subcommands: ['challenge', 'config'],
+      status: 'not_implemented',
+      message: 'Not implemented (Phase 1). Scaffolding only — Phase 1 wires this to render-web.',
+    };
+  }
+  return {
+    command: 'mpp',
+    subcommand,
+    status: 'not_implemented',
+    message: 'Not implemented (Phase 1).',
+  };
 }
 
 async function dispatchBridge(parsed: ParsedArgs): Promise<unknown> {

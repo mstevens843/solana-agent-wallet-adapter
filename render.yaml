@@ -103,3 +103,20 @@ services:
         fromDatabase:
           name: agentic-postgres
           property: connectionString
+
+  # Phase 0 scaffolding — Phase 2B fills in materializeStreamingSettlements().
+  # Safe to leave running on production; the stub returns settled=0 with no
+  # side effects until streaming sessions ship.
+  - type: cron
+    name: agentic-streaming-settlement
+    runtime: node
+    schedule: "* * * * *"
+    buildCommand: pnpm install --frozen-lockfile --ignore-scripts && pnpm -F @solana-agent-wallet-adapter/render-web build
+    startCommand: pnpm -F @solana-agent-wallet-adapter/render-web streaming:settle
+    envVars:
+      - key: SKIP_INSTALL_DEPS
+        value: "true"
+      - key: DATABASE_URL
+        fromDatabase:
+          name: agentic-postgres
+          property: connectionString

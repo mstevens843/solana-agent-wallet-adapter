@@ -47,7 +47,11 @@ Common optional settings:
   bodies are written to the audit log or denial warnings. Audit writes are best-effort: a failed `insertAuditEvent`
   emits a `[device-agent] audit failure` stderr warning but never aborts the user-facing status/control response.
   Malformed control bodies (unknown or missing `action`) emit a `[device-agent] invalid request` stderr warning before
-  the server returns 400.
+  the server returns 400. Optional sibling env vars `AGENTIC_ANDROID_DEVICE_AGENT` (defaults to available; set `0` to
+  opt the Android-native runtime out of the reported availability) and `AGENTIC_BROWSER_DEVICE_AGENT` (off by default;
+  set `1` to expose the browser-native runtime to the bundled web app) drive the
+  `runtimes: { android, browserNative }` block of `/api/device-agent/status`. Render itself never runs either runtime;
+  these vars are operator labels only.
 
 The hosted BYOK endpoint relays user-provided AI keys from the browser for the current request and does not store
 provider keys in Render env vars.

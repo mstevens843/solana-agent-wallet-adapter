@@ -70,3 +70,10 @@ Agentic Layer 1 dev-gated rollout. This package is Agent 4 of that plan.
   Blocked on opening up `packages/mcp-server`'s adapter client deep imports.
 - Emit `AgentEvidenceFact` entries from the route handler for cited prices.
 - USD price feed integration so the router scores routes on real spread.
+- **Streaming-session escrow replenishment (Phase 2.5+).** When an active
+  streaming session (see `packages/streaming-sessions/`) approaches its
+  delegate cap and the agent's owner wallet holds the funds in a non-escrow
+  mint, `findOptimalSettlement` is the right primitive to quote the cheapest
+  swap-and-fund route. Today the streaming-sessions package and bridge-router
+  do not import each other; the integration point would be a new
+  `apps/render-web/src/cloud/streamingTopUpService.ts` that composes both.

@@ -3,6 +3,8 @@
 import './shared.css';
 import './agentProtocols.js';
 import './skills.js';
+import './sessions.js';
 import '../devBadges/ap2Verified.js';
 import '../devBadges/acpOutbound.js';
+import '../devBadges/mppSession.js';
 export {};

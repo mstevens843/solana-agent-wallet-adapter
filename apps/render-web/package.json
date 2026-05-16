@@ -15,6 +15,7 @@
     "skills:execute": "node dist/cloud/cli.js skills-execute",
     "aggregator:roll": "node dist/cloud/cli.js aggregator-roll",
     "signals:fanout": "node dist/cloud/cli.js signals-fanout",
+    "streaming:settle": "node dist/cloud/cli.js streaming-settle",
     "start": "node dist/server.js",
     "typecheck": "pnpm -F @solana-agent-wallet-adapter/workflow build && pnpm -F @solana-agent-wallet-adapter/a2a-agent-card build && pnpm -F @solana-agent-wallet-adapter/ap2-adapter build && pnpm -F @solana-agent-wallet-adapter/acp-adapter build && pnpm -F @solana-agent-wallet-adapter/bridge-router build && pnpm -F @solana-agent-wallet-adapter/signals-runtime build && pnpm -F @solana-agent-wallet-adapter/skills-runtime build && pnpm -F @solana-agent-wallet-adapter/launch-skills build && pnpm -F @solana-agent-wallet-adapter/mcp-server build && tsc -p tsconfig.json --noEmit",
     "test": "pnpm -F @solana-agent-wallet-adapter/workflow build && pnpm -F @solana-agent-wallet-adapter/a2a-agent-card build && pnpm -F @solana-agent-wallet-adapter/ap2-adapter build && pnpm -F @solana-agent-wallet-adapter/acp-adapter build && pnpm -F @solana-agent-wallet-adapter/bridge-router build && pnpm -F @solana-agent-wallet-adapter/signals-runtime build && pnpm -F @solana-agent-wallet-adapter/skills-runtime build && pnpm -F @solana-agent-wallet-adapter/launch-skills build && vitest run"

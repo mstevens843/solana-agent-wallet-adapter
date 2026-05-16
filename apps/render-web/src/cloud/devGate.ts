@@ -38,3 +38,10 @@ export function isAllowedDeviceAgentWallet(walletAddress: string | undefined | n
   if (!walletAddress) return false;
   return DEVICE_AGENT_WALLET_ALLOWLIST.includes(walletAddress);
 }
+
+export function deviceAgentRuntimeAvailability(): { android: boolean; browserNative: boolean } {
+  return {
+    android: process.env.AGENTIC_DEVICE_AGENT === '1' && process.env.AGENTIC_ANDROID_DEVICE_AGENT !== '0',
+    browserNative: process.env.AGENTIC_DEVICE_AGENT === '1' && process.env.AGENTIC_BROWSER_DEVICE_AGENT === '1',
+  };
+}

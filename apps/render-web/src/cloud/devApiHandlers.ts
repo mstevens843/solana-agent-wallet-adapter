@@ -5,7 +5,9 @@ import './agentCardRoutes.js';
 import './aggregatorRoutes.js';
 import './ap2Routes.js';
 import './bridgeRoutes.js';
+import './mppRoutes.js';
 import './signalsRoutes.js';
 import './skillsRoutes.js';
+import './streamingRoutes.js';
 
 export {};

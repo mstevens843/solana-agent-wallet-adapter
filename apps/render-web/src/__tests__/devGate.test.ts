@@ -5,6 +5,8 @@ const ENV_KEYS = [
   'AGENTIC_DEV_WALLET_ALLOWLIST',
   'AGENTIC_DEVICE_AGENT',
   'AGENTIC_DEVICE_AGENT_WALLET_ALLOWLIST',
+  'AGENTIC_ANDROID_DEVICE_AGENT',
+  'AGENTIC_BROWSER_DEVICE_AGENT',
 ] as const;
 const TEST_WALLET = '4fTqUdd9SRCkmALQhQGF66VRYJFsCLDSQJYadqwMMoHd';
 const SECOND_DEVICE_WALLET = '7etjMSp87AUE135iW5dNeKridbW16rwSFVUN9ivfFm3w';
@@ -21,6 +23,7 @@ interface DevGateModule {
   isAllowedDeviceAgentWallet: (walletAddress: string | undefined | null) => boolean;
   devLayer1Enabled: () => boolean;
   deviceAgentFeatureEnabled: () => boolean;
+  deviceAgentRuntimeAvailability: () => { android: boolean; browserNative: boolean };
 }
 
 function snapshotEnv(): EnvSnapshot {
@@ -121,5 +124,53 @@ describe('devGate', () => {
     const gate = await loadFreshGate();
     expect(gate.isAllowedDeviceAgentWallet(TEST_WALLET)).toBe(false);
     expect(gate.isAllowedDeviceAgentWallet(OTHER_WALLET)).toBe(true);
+  });
+
+  describe('deviceAgentRuntimeAvailability', () => {
+    it('reports both runtimes unavailable when the master gate is off', async () => {
+      delete process.env.AGENTIC_DEVICE_AGENT;
+      process.env.AGENTIC_BROWSER_DEVICE_AGENT = '1';
+      delete process.env.AGENTIC_ANDROID_DEVICE_AGENT;
+      const gate = await loadFreshGate();
+      expect(gate.deviceAgentRuntimeAvailability()).toEqual({ android: false, browserNative: false });
+    });
+
+    it('defaults Android runtime to available when the master gate is on', async () => {
+      process.env.AGENTIC_DEVICE_AGENT = '1';
+      delete process.env.AGENTIC_ANDROID_DEVICE_AGENT;
+      delete process.env.AGENTIC_BROWSER_DEVICE_AGENT;
+      const gate = await loadFreshGate();
+      expect(gate.deviceAgentRuntimeAvailability()).toEqual({ android: true, browserNative: false });
+    });
+
+    it('opts the Android runtime out only when AGENTIC_ANDROID_DEVICE_AGENT is exactly "0"', async () => {
+      process.env.AGENTIC_DEVICE_AGENT = '1';
+      process.env.AGENTIC_ANDROID_DEVICE_AGENT = '0';
+      const gate = await loadFreshGate();
+      expect(gate.deviceAgentRuntimeAvailability().android).toBe(false);
+
+      process.env.AGENTIC_ANDROID_DEVICE_AGENT = 'false';
+      const gateAgain = await loadFreshGate();
+      expect(gateAgain.deviceAgentRuntimeAvailability().android).toBe(true);
+    });
+
+    it('enables the browser-native runtime only when AGENTIC_BROWSER_DEVICE_AGENT is exactly "1"', async () => {
+      process.env.AGENTIC_DEVICE_AGENT = '1';
+      process.env.AGENTIC_BROWSER_DEVICE_AGENT = 'true';
+      let gate = await loadFreshGate();
+      expect(gate.deviceAgentRuntimeAvailability().browserNative).toBe(false);
+
+      process.env.AGENTIC_BROWSER_DEVICE_AGENT = '1';
+      gate = await loadFreshGate();
+      expect(gate.deviceAgentRuntimeAvailability().browserNative).toBe(true);
+    });
+
+    it('reports both runtimes when fully enabled', async () => {
+      process.env.AGENTIC_DEVICE_AGENT = '1';
+      delete process.env.AGENTIC_ANDROID_DEVICE_AGENT;
+      process.env.AGENTIC_BROWSER_DEVICE_AGENT = '1';
+      const gate = await loadFreshGate();
+      expect(gate.deviceAgentRuntimeAvailability()).toEqual({ android: true, browserNative: true });
+    });
   });
 });

@@ -172,8 +172,62 @@ export const EVIDENCE_RECEIPT_KINDS = [
   'agent_override_receipt',
   'acp_outbound',
   'ap2_inbound',
+  'mpp_session',
+  'streaming_session_grant',
+  'streaming_voucher',
+  'streaming_settlement',
 ] as const;
 export type EvidenceReceiptKind = (typeof EVIDENCE_RECEIPT_KINDS)[number];
+
+export const STREAMING_SESSION_STATUSES = ['pending', 'active', 'expired', 'revoked', 'settled'] as const;
+export type StreamingSessionStatus = (typeof STREAMING_SESSION_STATUSES)[number];
+
+export interface StreamingSessionRecord {
+  id: string;
+  walletAddress: string;
+  cluster: WorkflowCluster;
+  tokenMint: string;
+  delegatePubkey: string;
+  ephemeralSignerPubkey: string;
+  capAmount: string;
+  spentAmount: string;
+  expiresAt: string;
+  status: StreamingSessionStatus;
+  recipientAllowlist?: readonly string[];
+  approveTxid?: string;
+  revokeTxid?: string;
+  createdAt: string;
+  updatedAt: string;
+  metadata?: JsonObject;
+}
+
+export interface StreamingVoucherRecord {
+  id: string;
+  sessionId: string;
+  nonce: string;
+  amount: string;
+  recipient: string;
+  voucherHash: string;
+  signature: string;
+  issuedAt: string;
+  createdAt: string;
+  settledAt?: string;
+  settlementTxid?: string;
+}
+
+export interface StreamingSettlementRecord {
+  id: string;
+  sessionId: string;
+  walletAddress: string;
+  cluster: WorkflowCluster;
+  totalAmount: string;
+  voucherCount: number;
+  txid?: string;
+  status: 'pending' | 'submitted' | 'confirmed' | 'failed';
+  createdAt: string;
+  updatedAt: string;
+  receiptId?: string;
+}
 
 export const AUDIT_ACTORS = ['user', 'wallet', 'server', 'system'] as const;
 export type AuditActor = (typeof AUDIT_ACTORS)[number];

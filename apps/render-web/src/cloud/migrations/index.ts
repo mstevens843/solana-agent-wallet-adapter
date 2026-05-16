@@ -10,6 +10,9 @@ import { migration009SignalSubscriptionActiveUnique } from './009_signal_subscri
 import { migration010SkillInstallsReinstallIndex } from './010_skill_installs_reinstall_index.js';
 import { migration011SignalsFanoutHardening } from './011_signals_fanout_hardening.js';
 import { migration012SkillExecutionApprovalLookup } from './012_skill_execution_approval_lookup.js';
+import { migration013StreamingSessions } from './013_streaming_sessions.js';
+import { migration014StreamingVouchers } from './014_streaming_vouchers.js';
+import { migration015MppWalletPreferencesNamespace } from './015_mpp_wallet_preferences_namespace.js';
 
 export interface PostgresMigration {
   id: string;
@@ -29,4 +32,7 @@ export const postgresMigrations: PostgresMigration[] = [
   migration010SkillInstallsReinstallIndex,
   migration011SignalsFanoutHardening,
   migration012SkillExecutionApprovalLookup,
+  migration013StreamingSessions,
+  migration014StreamingVouchers,
+  migration015MppWalletPreferencesNamespace,
 ];

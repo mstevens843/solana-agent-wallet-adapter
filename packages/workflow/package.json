@@ -23,7 +23,7 @@
     "README.md"
   ],
   "scripts": {
-    "build": "pnpm -F @solana-agent-wallet-adapter/ap2-adapter build && pnpm -F @solana-agent-wallet-adapter/acp-adapter build && tsc -p tsconfig.json",
+    "build": "pnpm -F @solana-agent-wallet-adapter/ap2-adapter build && pnpm -F @solana-agent-wallet-adapter/acp-adapter build && pnpm -F @solana-agent-wallet-adapter/mpp-adapter build && tsc -p tsconfig.json",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test": "vitest run",
     "test:watch": "vitest",
@@ -31,6 +31,7 @@
   },
   "dependencies": {
     "@solana-agent-wallet-adapter/ap2-adapter": "workspace:*",
-    "@solana-agent-wallet-adapter/acp-adapter": "workspace:*"
+    "@solana-agent-wallet-adapter/acp-adapter": "workspace:*",
+    "@solana-agent-wallet-adapter/mpp-adapter": "workspace:*"
   }
 }

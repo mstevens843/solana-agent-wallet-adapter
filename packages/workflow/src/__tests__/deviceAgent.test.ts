@@ -53,6 +53,31 @@ describe('Device Agent workflow contract', () => {
       code: 'invalid_enum',
       path: '$.runtime',
     });
+    expect(workflowError(() => parseDeviceAgentStatus({
+      ...STATUS,
+      runtime: 'browser-unknown',
+    }))).toMatchObject({
+      code: 'invalid_enum',
+      path: '$.runtime',
+    });
+  });
+
+  it('parses a browser-native status payload', () => {
+    const browserNativeStatus = { ...STATUS, runtime: 'browser-native' as const };
+    expect(parseDeviceAgentStatus(browserNativeStatus)).toEqual(browserNativeStatus);
+  });
+
+  it('parses a browser-native success response envelope', () => {
+    const status = { ...STATUS, runtime: 'browser-native' as const };
+    expect(parseDeviceAgentResponseEnvelope({
+      ok: true,
+      status,
+      result: { title: 'Draft SOL transfer' },
+    })).toEqual({
+      ok: true,
+      status,
+      result: { title: 'Draft SOL transfer' },
+    });
   });
 
   it('parses a success response envelope', () => {
