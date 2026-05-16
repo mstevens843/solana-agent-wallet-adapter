@@ -287,6 +287,17 @@ describe('sessions dev tab', () => {
     });
     expect(tooLarge.valid).toBe(false);
     expect(tooLarge.errors.recipientAllowlist).toMatch(/64 or fewer/);
+
+    // P4.2 — native SOL pseudo-mint should be rejected with a friendly error
+    // pointing users at wSOL.
+    const nativeSol = __sessionsForTests.validateCreateDraft({
+      tokenMint: '11111111111111111111111111111111',
+      capAmount: '1',
+      durationMinutes: '10',
+      recipientAllowlist: '',
+    });
+    expect(nativeSol.valid).toBe(false);
+    expect(nativeSol.errors.tokenMint).toMatch(/wSOL|Native SOL/i);
   });
 
   it('maps signed approval callbacks to render-web route fields', () => {

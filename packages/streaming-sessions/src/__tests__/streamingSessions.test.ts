@@ -14,12 +14,14 @@ import { describe, expect, it } from 'vitest';
 
 import {
   MAX_SETTLEMENT_VOUCHERS_PER_TX,
+  NATIVE_SOL_PSEUDO_MINT,
   SOLANA_PACKET_DATA_SIZE,
   SessionExpiredError,
   STREAMING_VOUCHER_SCHEMA,
   StreamingInvalidAmountError,
   StreamingInvalidInputError,
   StreamingInvalidPublicKeyError,
+  StreamingNativeSolUnsupportedError,
   VoucherExceedsRemainingError,
   VoucherReplayError,
   VoucherRecipientNotAllowedError,
@@ -296,6 +298,21 @@ describe('streaming-sessions delegate transaction builders', () => {
     const signed = VersionedTransaction.deserialize(Buffer.from(txs[0]?.txBase64 ?? '', 'base64'));
     signed.sign([feePayer, delegate]);
     expect(Buffer.from(signed.serialize()).length).toBe(txs[0]?.serializedLength);
+  });
+
+  it('rejects native SOL pseudo-mint at buildApproveDelegateTx (P4.2 library-layer guard)', () => {
+    const owner = Keypair.generate();
+    const delegate = Keypair.generate();
+    expect(() =>
+      buildApproveDelegateTx({
+        ownerPubkey: owner.publicKey.toBase58(),
+        tokenMint: NATIVE_SOL_PSEUDO_MINT,
+        delegatePubkey: delegate.publicKey.toBase58(),
+        capAmount: '1',
+        cluster: 'devnet',
+        recentBlockhash: Keypair.generate().publicKey.toBase58(),
+      }),
+    ).toThrow(StreamingNativeSolUnsupportedError);
   });
 
   it('rejects invalid blockhashes and settlement recipient pubkeys', () => {

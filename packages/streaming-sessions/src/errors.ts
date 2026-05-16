@@ -3,6 +3,7 @@ export type StreamingErrorCode =
   | 'invalid_amount'
   | 'invalid_public_key'
   | 'invalid_schema'
+  | 'unsupported_native_sol'
   | 'session_expired'
   | 'session_revoked'
   | 'session_not_active'
@@ -40,6 +41,23 @@ export class StreamingInvalidSchemaError extends Error {
   constructor(message = 'Voucher schema is invalid.') {
     super(message);
     this.name = 'StreamingInvalidSchemaError';
+  }
+}
+
+/**
+ * Thrown when a caller tries to open a streaming session against the native
+ * SOL pseudo-mint (`11111111111111111111111111111111`). SPL Token delegate
+ * authority cannot wrap native SOL — users must wrap to wSOL first or pick a
+ * regular SPL token. Surfaced as a 400 from render-web and as an inline form
+ * error in the browser create-session modal.
+ */
+export class StreamingNativeSolUnsupportedError extends Error {
+  readonly code: StreamingErrorCode = 'unsupported_native_sol';
+  constructor(
+    message = 'Native SOL streaming is not supported in v1. Wrap to wSOL (So11111111111111111111111111111111111111112) or use any SPL token like USDC.',
+  ) {
+    super(message);
+    this.name = 'StreamingNativeSolUnsupportedError';
   }
 }
 

@@ -8,8 +8,8 @@ import {
 import { PublicKey, TransactionMessage, VersionedTransaction, type TransactionInstruction } from '@solana/web3.js';
 import bs58 from 'bs58';
 
-import { StreamingInvalidInputError } from './errors.js';
-import { type StreamingCluster, type Voucher, type VoucherHash } from './types.js';
+import { StreamingInvalidInputError, StreamingNativeSolUnsupportedError } from './errors.js';
+import { NATIVE_SOL_PSEUDO_MINT, type StreamingCluster, type Voucher, type VoucherHash } from './types.js';
 import { computeVoucherHash, parseTokenAmountToBaseUnits, tokenDecimalsFor } from './voucher.js';
 
 export const MAX_SETTLEMENT_VOUCHERS_PER_TX = 10;
@@ -88,6 +88,9 @@ interface PreparedSettlementTransfer {
 }
 
 export function buildApproveDelegateTx(input: BuildApproveDelegateTxInput): UnsignedDelegateTx {
+  if (input.tokenMint === NATIVE_SOL_PSEUDO_MINT) {
+    throw new StreamingNativeSolUnsupportedError();
+  }
   const owner = publicKeyFromString(input.ownerPubkey, 'ownerPubkey');
   const mint = publicKeyFromString(input.tokenMint, 'tokenMint');
   const delegate = publicKeyFromString(input.delegatePubkey, 'delegatePubkey');

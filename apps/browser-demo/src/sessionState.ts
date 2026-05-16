@@ -147,6 +147,8 @@ export function selectedDetail(snapshot: SessionsState = state): StreamingSessio
   return snapshot.details[snapshot.selectedSessionId] ?? null;
 }
 
+const NATIVE_SOL_PSEUDO_MINT = '11111111111111111111111111111111';
+
 export function validateCreateDraft(
   draft: CreateSessionDraft,
   now: number = Date.now(),
@@ -155,6 +157,9 @@ export function validateCreateDraft(
   const tokenMint = draft.tokenMint.trim();
   if (!SOLANA_ADDRESS_REGEX.test(tokenMint)) {
     errors.tokenMint = 'Enter a valid token mint address.';
+  } else if (tokenMint === NATIVE_SOL_PSEUDO_MINT) {
+    errors.tokenMint =
+      'Native SOL streaming is not supported yet. Wrap SOL to wSOL (So11…112) or pick a regular SPL token like USDC.';
   }
 
   const capAmount = normalizeDecimal(draft.capAmount);

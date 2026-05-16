@@ -193,6 +193,13 @@ export interface StreamingSessionRecord {
   spentAmount: string;
   expiresAt: string;
   status: StreamingSessionStatus;
+  /**
+   * Optional whitelist of accepted voucher recipients. `undefined` or empty
+   * array means "allow ANY recipient"; populated array is a strict whitelist
+   * enforced server-side by `acceptVoucher` and on the library side by
+   * `validateVoucher`. Mirror of `SessionGrant.recipientAllowlist` in
+   * `@solana-agent-wallet-adapter/streaming-sessions`.
+   */
   recipientAllowlist?: readonly string[];
   approveTxid?: string;
   revokeTxid?: string;

@@ -183,6 +183,21 @@ describe('rowHtml', () => {
     expect(html).toContain('external-agents-row-amount">—');
   });
 
+  it('renders the MPP badge in the row head when metadata.connectorId is "mpp" (P4.3)', () => {
+    const html = rowHtml(
+      makeApproval({
+        metadata: { connectorId: 'mpp' },
+      } as Partial<NormalizedApproval>),
+    );
+    expect(html).toContain('approval-badge--mpp');
+    expect(html).toContain('>MPP</span>');
+  });
+
+  it('omits the MPP badge for non-MPP rows', () => {
+    const html = rowHtml(makeApproval());
+    expect(html).not.toContain('approval-badge--mpp');
+  });
+
   it('escapes hostile labels', () => {
     const html = rowHtml(
       makeApproval({

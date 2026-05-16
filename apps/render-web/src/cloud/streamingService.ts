@@ -9,6 +9,7 @@ import pg from 'pg';
 import type { PoolConfig, QueryConfig, QueryResult, QueryResultRow } from 'pg';
 
 import {
+  NATIVE_SOL_PSEUDO_MINT,
   STREAMING_VOUCHER_SCHEMA,
   buildApproveDelegateTx,
   buildRevokeDelegateTx,
@@ -192,6 +193,13 @@ export class StreamingService {
   async createSession(input: CreateStreamingSessionInput): Promise<CreateStreamingSessionResult> {
     const walletAddress = requirePublicKey(input.walletAddress, 'walletAddress');
     const tokenMint = requirePublicKey(input.tokenMint, 'tokenMint');
+    if (tokenMint === NATIVE_SOL_PSEUDO_MINT) {
+      throw new StreamingServiceError(
+        400,
+        'unsupported_native_sol',
+        'Native SOL streaming is not supported in v1 — SPL Token delegate authority does not apply to native SOL. Wrap to wSOL (So11111111111111111111111111111111111111112) or pick a regular SPL token like USDC.',
+      );
+    }
     const cluster = input.cluster ?? defaultStreamingCluster();
     assertStreamingCluster(cluster);
     const tokenDecimals = assertTokenDecimals(input.tokenDecimals ?? DEFAULT_TOKEN_DECIMALS);

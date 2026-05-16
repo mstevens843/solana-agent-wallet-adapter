@@ -133,6 +133,22 @@ describe('streaming session routes', () => {
     expect(receipts).toHaveLength(1);
     expect(receipts[0]?.metadata?.sessionId).toBe(sessionId);
   });
+
+  it('rejects native SOL pseudo-mint at createSession (P4.2 server-layer guard)', async () => {
+    const ctx = createRouteContext();
+    await expect(
+      ctx.service.createSession({
+        walletAddress: WALLET,
+        tokenMint: '11111111111111111111111111111111',
+        capAmount: '1',
+        expiresAt: '2026-05-16T13:00:00.000Z',
+        cluster: 'devnet',
+      }),
+    ).rejects.toMatchObject({
+      status: 400,
+      code: 'unsupported_native_sol',
+    });
+  });
 });
 
 interface RouteTestContext {

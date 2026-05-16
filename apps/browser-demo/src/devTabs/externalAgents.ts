@@ -1,3 +1,4 @@
+import { renderApprovalBadges } from '../approvalBadges.js';
 import { isDevWallet } from '../devGate.js';
 import { currentAddress, refreshConnection } from '../connectionState.js';
 import { dispatchAp2InboundDemoCreated } from '../ap2InboundDemoEvents.js';
@@ -159,6 +160,7 @@ export function rowHtml(item: NormalizedApproval): string {
         <div class="external-agents-row-head">
           <strong class="external-agents-row-agent">${agentLabel}</strong>
           <span class="external-agents-row-status status-pill ${escapeHtml(statusPillClass(item.status))}">${escapeHtml(item.status)}</span>
+          ${renderApprovalBadges(item)}
           <span class="external-agents-row-time" title="${escapeHtml(item.createdAt)}">${escapeHtml(formatRelative(item.createdAt))}</span>
         </div>
         <p class="external-agents-row-summary">${escapeHtml(item.summary)}</p>
