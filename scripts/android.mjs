@@ -44,11 +44,19 @@ const tasks = {
   debug: ['assembleDebug'],
   release: ['bundleRelease', 'assembleRelease'],
   install: ['installDebug'],
+  // Unit tests (JVM, no device required). Wired to gradle `testDebugUnitTest`
+  // so CI can run the agent/provider/runtime test trees without a Pixel.
+  test: ['testDebugUnitTest'],
+  // Instrumented tests (require a connected device or running emulator).
+  // Covers StreamingSessionControllerInstrumentedTest (1000 voucher signs +
+  // <50ms latency assertion + revoke-after-sign rejection) — Phase 2D /
+  // Phase 4.1 deliverable.
+  'instrumented-test': ['connectedDebugAndroidTest'],
 };
 
 if (!Object.hasOwn(tasks, command)) {
   console.error(`[android] Unknown command: ${command}`);
-  console.error('[android] Use one of: build, debug, release, install, fingerprint, assetlinks, assetlinks:write, assetlinks:verify');
+  console.error('[android] Use one of: build, debug, release, install, test, instrumented-test, fingerprint, assetlinks, assetlinks:write, assetlinks:verify');
   process.exit(1);
 }
 

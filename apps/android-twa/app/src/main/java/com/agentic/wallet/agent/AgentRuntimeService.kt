@@ -26,6 +26,54 @@ import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.launch
 import org.json.JSONObject
 
+/**
+ * Foreground service that hosts the on-device agent runtime and the streaming
+ * voucher worker. Started on demand from the JS bridge (`MainActivity`
+ * `streamingRequest`/`deviceAgentRequest`) and from `StreamingVoucherWorker`
+ * itself when the WebView enqueues work.
+ *
+ * **Lifecycle (Phase 4.7 documentation):**
+ *
+ *  - **Start trigger:** any JS-bridge call into [StreamingVoucherWorker.submit]
+ *    or the device-agent path causes `ContextCompat.startForegroundService` to
+ *    fire, landing here. We immediately call [startForeground] so Android
+ *    grants the wakelock-equivalent we need to sign vouchers off the UI thread.
+ *  - **Stop trigger:** when [StreamingSessionController]'s active session
+ *    count drops to zero (last `revokeLocalSession` / `markSessionSettled`
+ *    fires), the worker calls back into this service with
+ *    `ACTION_STREAMING_REFRESH`. We then re-evaluate notification state and
+ *    return `START_NOT_STICKY` so Android can reclaim the service. The
+ *    notification stays sticky (via `setOngoing(true)`) while at least one
+ *    session is active — that's the trade-off for the foreground wakelock.
+ *  - **Cold-start re-bind:** the service does NOT auto-restart on cold start
+ *    with pending sessions. The JS code in `androidBridgeShim.ts` is
+ *    responsible for re-issuing `streamingRequest('createSession', …)` (or
+ *    equivalent) when a session resumes from local storage, which restarts
+ *    the service. This keeps the service free of unbounded background work.
+ *  - **Notification cadence:** [notification] reads
+ *    [StreamingVoucherWorker.notificationState] each time
+ *    [onStartCommand] is called. The notification text ("Streaming session
+ *    active — N sessions, $X.XX remaining") updates whenever the worker
+ *    refreshes the service (per voucher signed, per session revoked). We use
+ *    `setOnlyAlertOnce(true)` to avoid notification spam on rapid voucher
+ *    streams.
+ *  - **Doze / battery optimization:** because the service runs in foreground
+ *    type `dataSync` (declared in AndroidManifest.xml), Doze does NOT
+ *    suspend it while the user has an active session. Voucher signing is a
+ *    pure crypto operation against Keystore-backed keys (typically <5ms on
+ *    modern hardware) so it remains <50ms-per-voucher even when the app is
+ *    backgrounded. If the user force-stops the app or kills the foreground
+ *    service via system settings, the next voucher attempt fails fast with
+ *    `streaming_unavailable`; the browser-side shim then falls back to the
+ *    cloud-relay path.
+ *  - **Instrumented-test coverage:** the StreamingSessionController happy
+ *    path (1000 voucher signs + revoke + signature verification) is covered
+ *    by `androidTest/.../StreamingSessionControllerInstrumentedTest`.
+ *    Doze-state behavior is NOT covered automatically — verifying it
+ *    requires `adb shell dumpsys battery unplug && adb shell dumpsys deviceidle force-idle`
+ *    on the connected device, which is a manual release-smoke step
+ *    documented in the release runbook.
+ */
 class AgentRuntimeService : Service() {
     override fun onBind(intent: Intent?): IBinder? = null
 
