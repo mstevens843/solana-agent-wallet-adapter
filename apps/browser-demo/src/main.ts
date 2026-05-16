@@ -383,6 +383,7 @@ type ActiveTab =
   // while permitting arbitrary registry-supplied ids without an
   // exhaustiveness break.
   | (string & {});
+type SpendNavFilter = 'all' | 'needs_approval' | 'active_schedules' | 'live_streams' | 'settled';
 type PreferencesView = 'workspace' | 'ai' | 'access' | 'rules' | 'tokens';
 type CommandCenterView = 'center' | 'ai' | 'storage';
 type CommandCenterIconId =
@@ -3133,6 +3134,8 @@ function currentBrowserNativeRuntimeEligible(): boolean {
   });
 }
 
+let browserDeviceAgentStatusUnsubscribe: (() => void) | null = null;
+
 async function ensureBrowserDeviceAgentInitialized(): Promise<BrowserDeviceAgentModule | null> {
   if (!currentBrowserNativeRuntimeEligible()) return null;
   const mod = await loadBrowserDeviceAgentModule();
@@ -3141,10 +3144,27 @@ async function ensureBrowserDeviceAgentInitialized(): Promise<BrowserDeviceAgent
       secretStoreMode: readBrowserDeviceAgentSecretStoreMode(),
       walletAddress: currentDeviceAgentWalletAddress(),
     });
+    attachBrowserDeviceAgentStatusListener(mod);
     return mod;
   }
   syncBrowserDeviceAgentWalletAddress(mod);
+  attachBrowserDeviceAgentStatusListener(mod);
   return mod;
+}
+
+function attachBrowserDeviceAgentStatusListener(mod: BrowserDeviceAgentModule): void {
+  if (browserDeviceAgentStatusUnsubscribe) return;
+  browserDeviceAgentStatusUnsubscribe = mod.subscribeBrowserDeviceAgentStatus((nextStatus) => {
+    // Only update the visible status while the user is on the device-agent
+    // path. Other AI modes shouldn't redraw on background runtime transitions.
+    if (state.aiSettings.mode !== 'device-agent') return;
+    try {
+      state.deviceAgentStatus = parseDeviceAgentStatus(nextStatus);
+    } catch {
+      state.deviceAgentStatus = nextStatus;
+    }
+    render();
+  });
 }
 
 function warmBrowserDeviceAgent(): void {
@@ -3165,6 +3185,7 @@ async function startApp(): Promise<void> {
     warmBrowserDeviceAgent();
     normalizeInitialRoute();
     hydrateGeneratedPlansForStartup();
+    installSpendBridgeHandlers();
     render();
     if (SHOW_DEV_CONTROLS) {
       startSystemHealthPolling();
@@ -3577,16 +3598,158 @@ function render(): void {
     }
   }
   const route = currentRoute();
+  normalizeActiveSpendTab();
   applyRouteTitle(route);
   trackPageView(route ?? normalizePathname(window.location.pathname), document.title);
   closeTemplatePickerInteractions();
   closeArtifactPickerInteractions();
   appRoot.innerHTML = pageShell(pageContent(route), route);
+  flushPendingSpendNavigation();
   bind();
   mountConnectorKeysPanel({ container: 'connector-keys-panel' });
   updateTabTitleBadge();
   scheduleInboxSwapQuoteHydration();
   scheduleVisibleTokenMarketHydration();
+}
+
+interface PendingSpendNavigation {
+  filter: SpendNavFilter;
+  selectedEnvelopeKey?: string;
+}
+
+let pendingSpendNavigation: PendingSpendNavigation | null = null;
+let spendBridgeHandlersInstalled = false;
+
+function normalizeActiveSpendTab(): void {
+  if (legacyTabsEnabled()) return;
+  const filter = spendFilterForLegacyTab(state.activeTab);
+  if (!filter) return;
+  const spendTab = findDevTab('spend');
+  if (!spendTab?.guard()) return;
+  state.activeTab = 'spend';
+  pendingSpendNavigation = { filter };
+}
+
+function openSpendFilter(filter: SpendNavFilter, selectedEnvelopeKey?: string): boolean {
+  const spendTab = findDevTab('spend');
+  if (!spendTab?.guard()) return false;
+  state.activeTab = 'spend';
+  state.error = '';
+  pendingSpendNavigation = selectedEnvelopeKey ? { filter, selectedEnvelopeKey } : { filter };
+  render();
+  return true;
+}
+
+function flushPendingSpendNavigation(): void {
+  if (!pendingSpendNavigation || typeof window === 'undefined') return;
+  const navigation = pendingSpendNavigation;
+  pendingSpendNavigation = null;
+  window.dispatchEvent(new CustomEvent('spend:set-filter', { detail: navigation }));
+}
+
+function refreshSpendView(): void {
+  if (typeof window === 'undefined') return;
+  window.dispatchEvent(new CustomEvent('spend:refresh'));
+}
+
+function spendFilterForLegacyTab(tab: string): SpendNavFilter | null {
+  switch (tab) {
+    case 'inbox':
+      return 'needs_approval';
+    case 'schedule':
+      return 'active_schedules';
+    case 'sessions':
+      return 'live_streams';
+    case 'agent-protocols':
+      return 'all';
+    default:
+      return null;
+  }
+}
+
+function isSpendNavFilter(value: string | undefined): value is SpendNavFilter {
+  return value === 'all' ||
+    value === 'needs_approval' ||
+    value === 'active_schedules' ||
+    value === 'live_streams' ||
+    value === 'settled';
+}
+
+function spendEnvelopeKeyForLegacyOpen(tab: string, id: string | undefined): string | undefined {
+  if (!id) return undefined;
+  if (tab === 'inbox') return `one-time:${id}`;
+  if (tab === 'schedule') return `recurring:${id}`;
+  if (tab === 'sessions') return `streaming:${id}`;
+  return undefined;
+}
+
+function installSpendBridgeHandlers(): void {
+  if (typeof window === 'undefined' || spendBridgeHandlersInstalled) return;
+  spendBridgeHandlersInstalled = true;
+  window.addEventListener('spend:approval-op', (event) => {
+    const detail = customEventDetail(event);
+    const actionId = stringDetail(detail, 'actionId');
+    const op = stringDetail(detail, 'op');
+    if (!actionId || !op) return;
+    void runPreparedActionOp(actionId, op)
+      .then(refreshSpendView)
+      .catch((err) => {
+        state.error = redactSecrets(err instanceof Error ? err.message : String(err));
+        pushToast('error', 'Spend action failed', state.error);
+        render();
+      });
+  });
+  window.addEventListener('spend:recurring-op', (event) => {
+    const detail = customEventDetail(event);
+    const scheduleId = stringDetail(detail, 'scheduleId');
+    const op = stringDetail(detail, 'op');
+    if (!scheduleId || !op) return;
+    void runRecurringOp(scheduleId, op)
+      .then(refreshSpendView)
+      .catch((err) => {
+        state.error = redactSecrets(err instanceof Error ? err.message : String(err));
+        pushToast('error', 'Repeat action failed', state.error);
+        render();
+      });
+  });
+  window.addEventListener('spend:legacy-open', (event) => {
+    const detail = customEventDetail(event);
+    const tab = stringDetail(detail, 'tab');
+    if (!tab) return;
+    const open = stringDetail(detail, 'open');
+    if (!legacyTabsEnabled()) {
+      const filter = spendFilterForLegacyTab(tab);
+      if (filter) openSpendFilter(filter, spendEnvelopeKeyForLegacyOpen(tab, open));
+      return;
+    }
+    state.activeTab = tab as ActiveTab;
+    if (tab === 'schedule' && stringDetail(detail, 'recurringView') === 'active') {
+      state.recurringView = 'active';
+      state.listPages.recurring = 1;
+    }
+    state.error = '';
+    render();
+    if (tab === 'inbox' && open) {
+      focusInboxApprovalCard(open);
+    }
+    if (tab === 'sessions' && open) {
+      void openSessionDetail(open).catch((err) => {
+        state.error = redactSecrets(err instanceof Error ? err.message : String(err));
+        pushToast('error', 'Could not open session', state.error);
+        render();
+      });
+    }
+  });
+}
+
+function customEventDetail(event: Event): Record<string, unknown> | null {
+  const detail = (event as CustomEvent<unknown>).detail;
+  return detail && typeof detail === 'object' ? detail as Record<string, unknown> : null;
+}
+
+function stringDetail(detail: Record<string, unknown> | null, key: string): string | undefined {
+  const value = detail?.[key];
+  return typeof value === 'string' && value ? value : undefined;
 }
 
 function normalizeInitialRoute(): void {
@@ -9477,16 +9640,22 @@ function activePanel(): string {
       state.oneTimePlanView = 'review';
       return agentPlanPanel();
     case 'inbox':
+      if (!legacyTabsEnabled()) return spendFallbackPanel('needs_approval');
       return approvalInboxPanel();
     case 'completed':
       return completedPlansPanel();
     case 'schedule':
+      if (!legacyTabsEnabled()) return spendFallbackPanel('active_schedules');
       return scheduledApprovalsPanel();
     case 'labs':
       return labsPanel();
     case 'preferences':
       return preferencesPanel();
     default: {
+      if (!legacyTabsEnabled()) {
+        const filter = spendFilterForLegacyTab(state.activeTab);
+        if (filter) return spendFallbackPanel(filter);
+      }
       // Dev-only Layer 1 tab fallthrough. If the activeTab id matches a
       // registered dev tab AND its guard passes, render its panel. Otherwise
       // fall back to the command center so a stale id never strands the UI.
@@ -9495,6 +9664,14 @@ function activePanel(): string {
       return commandCenterPanel();
     }
   }
+}
+
+function spendFallbackPanel(filter: SpendNavFilter): string {
+  const spendTab = findDevTab('spend');
+  if (!spendTab?.guard()) return commandCenterPanel();
+  state.activeTab = 'spend';
+  pendingSpendNavigation = { filter };
+  return spendTab.render();
 }
 
 function commandCenterPanel(): string {
@@ -10344,7 +10521,10 @@ function commandCenterCard(
   const disabled = action === 'connect-wallet'
     ? !state.address && state.wallets.length === 0 && !state.androidNativeEnvironment.isAndroidNative && !state.iosNativeEnvironment.isIosNative
     : false;
-  const targetTab = action === 'open-recurring'
+  const spendFilter = action === 'open-recurring' && !legacyTabsEnabled() ? 'active_schedules' : '';
+  const targetTab = spendFilter
+    ? ''
+    : action === 'open-recurring'
     ? 'schedule'
     : action === 'open-proofs'
       ? 'labs'
@@ -10354,7 +10534,9 @@ function commandCenterCard(
       ${commandCenterCardLabel(label, icon)}
       <strong>${escapeHtml(value)}</strong>
       <p>${escapeHtml(detail)}</p>
-      ${targetTab
+      ${spendFilter
+        ? `<button type="button" class="utility" data-spend-nav-filter="${escapeHtml(spendFilter)}">${escapeHtml(buttonLabel)}</button>`
+        : targetTab
         ? `<button type="button" class="utility" data-tab="${escapeHtml(targetTab)}" ${action === 'open-recurring' ? 'data-recurring-view="active"' : ''}>${escapeHtml(buttonLabel)}</button>`
         : `<button type="button" class="utility" data-first-run-action="${escapeHtml(action)}" ${disabled ? 'disabled' : ''}>${escapeHtml(buttonLabel)}</button>`}
     </article>
@@ -16615,6 +16797,10 @@ function bind(): void {
     button.addEventListener('click', () => {
       const tab = button.dataset.tab as ActiveTab;
       const spendOpen = button.dataset.spendOpen;
+      if (!legacyTabsEnabled()) {
+        const filter = spendFilterForLegacyTab(tab);
+        if (filter && openSpendFilter(filter, spendEnvelopeKeyForLegacyOpen(tab, spendOpen))) return;
+      }
       trackNavClick(`${currentRoute() ?? '/app'}#${tab}`, 'workspace');
       state.activeTab = tab;
       if (state.activeTab === 'labs') {
@@ -16632,6 +16818,14 @@ function bind(): void {
           render();
         });
       }
+    });
+  }
+
+  for (const button of document.querySelectorAll<HTMLButtonElement>('[data-spend-nav-filter]')) {
+    button.addEventListener('click', () => {
+      const filter = button.dataset.spendNavFilter;
+      if (!isSpendNavFilter(filter)) return;
+      void openSpendFilter(filter);
     });
   }
 
@@ -16680,6 +16874,10 @@ function bind(): void {
     button.addEventListener('click', () => {
       const view = button.dataset.recurringView as RecurringView | undefined;
       if (!view) return;
+      if (!legacyTabsEnabled()) {
+        void openSpendFilter('active_schedules');
+        return;
+      }
       state.activeTab = 'schedule';
       state.recurringView = view;
       if (view === 'active') {
@@ -18561,6 +18759,7 @@ async function runFirstRunAction(action: FirstRunActionId): Promise<void> {
       render();
       return;
     case 'open-inbox':
+      if (!legacyTabsEnabled() && openSpendFilter('needs_approval')) return;
       state.activeTab = 'inbox';
       state.inboxFilter = 'ready';
       state.error = '';

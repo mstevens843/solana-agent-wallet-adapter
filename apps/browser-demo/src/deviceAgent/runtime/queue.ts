@@ -54,10 +54,13 @@ function createDeferred<T>(): Deferred<T> {
 interface PendingEntry {
   readonly request: RuntimeRequest;
   readonly deferred: Deferred<RuntimeResult>;
+  readonly externalSignal?: AbortSignal;
 }
 
 interface InflightEntry extends PendingEntry {
   readonly controller: AbortController;
+  /** Cleanup for the external-signal relay attached in runWorker. */
+  detachRelay?(): void;
 }
 
 export class RequestQueue {
@@ -82,7 +85,7 @@ export class RequestQueue {
     // No-op marker for API parity with the Kotlin runtime. The worker is kicked on submit().
   }
 
-  submit(request: RuntimeRequest): Promise<RuntimeResult> {
+  submit(request: RuntimeRequest, externalSignal?: AbortSignal): Promise<RuntimeResult> {
     const deferred = createDeferred<RuntimeResult>();
 
     if (this.stopped) {
@@ -90,6 +93,12 @@ export class RequestQueue {
         code: RUNTIME_ERROR_CODES.RUNTIME_NOT_RUNNING,
         message: 'Device Agent runtime queue is closed.',
       }));
+      return deferred.promise;
+    }
+
+    // If the caller already aborted before submit, short-circuit.
+    if (externalSignal?.aborted) {
+      deferred.resolve(this.canceledResult(request));
       return deferred.promise;
     }
 
@@ -102,7 +111,7 @@ export class RequestQueue {
       return deferred.promise;
     }
 
-    this.pending.push({ request, deferred });
+    this.pending.push({ request, deferred, externalSignal });
     this.kickWorker();
     return deferred.promise;
   }
@@ -118,6 +127,7 @@ export class RequestQueue {
       } catch {
         // AbortController.abort() never throws in standard environments; defensive only.
       }
+      inflight.detachRelay?.();
       inflight.deferred.resolve(this.canceledResult(inflight.request));
     }
 
@@ -141,9 +151,30 @@ export class RequestQueue {
         if (entry.deferred.settled) continue;
 
         const controller = new AbortController();
-        this.inflight = { ...entry, controller };
+        // Relay the caller's external AbortSignal onto our internal controller
+        // so the HTTP fetch actually cancels. We cannot use AbortSignal.any
+        // unconditionally because older test envs may lack it; the manual
+        // listener relay works in every environment that has AbortController.
+        const externalSignal = entry.externalSignal;
+        let detachRelay: (() => void) | undefined;
+        if (externalSignal) {
+          if (externalSignal.aborted) {
+            controller.abort();
+          } else {
+            const onAbort = () => {
+              try { controller.abort(); } catch { /* ignore */ }
+            };
+            externalSignal.addEventListener('abort', onAbort, { once: true });
+            detachRelay = () => {
+              try { externalSignal.removeEventListener('abort', onAbort); } catch { /* ignore */ }
+            };
+          }
+        }
+        const inflight: InflightEntry = { ...entry, controller, detachRelay };
+        this.inflight = inflight;
 
         const result = await this.runRequest(entry.request, controller.signal);
+        inflight.detachRelay?.();
         entry.deferred.resolve(result);
 
         if (this.inflight && this.inflight.request === entry.request) {

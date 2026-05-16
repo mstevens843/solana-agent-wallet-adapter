@@ -384,4 +384,63 @@ describe('RequestQueue exactly-once', () => {
     await new Promise((r) => setTimeout(r, 10));
     expect(resolveCount).toBe(1);
   });
+
+  it('relays caller-supplied AbortSignal onto the executor and resolves as runtime_canceled', async () => {
+    const seenSignals: AbortSignal[] = [];
+    const executor: ProviderExecutor = {
+      generatePlan: (_config, _payload, signal) => new Promise((_resolve, reject) => {
+        if (!signal) throw new Error('expected executor to receive a signal');
+        seenSignals.push(signal);
+        const onAbort = () => {
+          const err = new Error('aborted');
+          err.name = 'AbortError';
+          reject(err);
+        };
+        if (signal.aborted) onAbort();
+        else signal.addEventListener('abort', onAbort, { once: true });
+      }),
+      reviewPlan: async () => ({ ok: true }),
+      ask: async () => ({ ok: true }),
+    };
+    const queue = new RequestQueue({
+      executorProvider: () => executor,
+      configProvider: () => CONFIG,
+    });
+    queue.start();
+
+    const ac = new AbortController();
+    const p = queue.submit(makeRequest({ requestId: 'cancel' }), ac.signal);
+
+    // Give the worker one tick to pick up the request and attach the relay.
+    await new Promise((r) => setTimeout(r, 5));
+    ac.abort();
+    const result = await p;
+    expect(result.kind).toBe('failed');
+    expect(seenSignals.length).toBe(1);
+    expect(seenSignals[0]!.aborted).toBe(true);
+    if (result.kind === 'failed') {
+      expect(result.error.code).toBe(RUNTIME_ERROR_CODES.RUNTIME_CANCELED);
+    }
+  });
+
+  it('returns runtime_canceled synchronously when caller signal is already aborted at submit time', async () => {
+    const executor: ProviderExecutor = {
+      generatePlan: async () => ({ ok: true }),
+      reviewPlan: async () => ({ ok: true }),
+      ask: async () => ({ ok: true }),
+    };
+    const queue = new RequestQueue({
+      executorProvider: () => executor,
+      configProvider: () => CONFIG,
+    });
+    queue.start();
+
+    const ac = new AbortController();
+    ac.abort();
+    const result = await queue.submit(makeRequest({ requestId: 'pre-aborted' }), ac.signal);
+    expect(result.kind).toBe('failed');
+    if (result.kind === 'failed') {
+      expect(result.error.code).toBe(RUNTIME_ERROR_CODES.RUNTIME_CANCELED);
+    }
+  });
 });

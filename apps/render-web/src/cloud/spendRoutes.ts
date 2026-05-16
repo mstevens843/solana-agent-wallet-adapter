@@ -24,6 +24,14 @@ const DEFAULT_LIMIT = 50;
 const MAX_LIMIT = 100;
 
 type SpendFilter = 'all' | 'needs_approval' | 'active_schedules' | 'live_streams' | 'settled';
+type SpendCounts = Record<SpendFilter, number>;
+
+class SpendQueryError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'SpendQueryError';
+  }
+}
 
 async function handleSpendRequest(
   req: IncomingMessage,
@@ -44,11 +52,16 @@ async function handleSpendRequest(
     return true;
   }
 
+  const parsed = parseSpendQuery(url);
+  if (parsed instanceof SpendQueryError) {
+    writeJsonNoStore(req, res, 400, { error: 'invalid_spend_query', message: parsed.message });
+    return true;
+  }
+
   try {
-    const filter = parseFilter(url.searchParams.get('filter'));
-    const limit = parseLimit(url.searchParams.get('limit'));
-    const cursor = parseCursor(url.searchParams.get('cursor'));
+    const { filter, limit, cursor } = parsed;
     const envelopes = await listSpendEnvelopes(ctx);
+    const counts = countEnvelopes(envelopes);
     const filtered = envelopes
       .filter((envelope) => matchesFilter(envelope, filter))
       .sort((left, right) => envelopeUpdatedAt(right).localeCompare(envelopeUpdatedAt(left)));
@@ -58,6 +71,7 @@ async function handleSpendRequest(
       envelopes: page,
       items: page,
       filter,
+      counts,
       pagination: {
         limit,
         total: filtered.length,
@@ -67,7 +81,7 @@ async function handleSpendRequest(
     });
   } catch (err) {
     const message = err instanceof Error ? err.message : 'Unexpected spend envelope error.';
-    writeJsonNoStore(req, res, 400, { error: 'invalid_spend_query', message });
+    writeJsonNoStore(req, res, 500, { error: 'spend_envelopes_unavailable', message });
   }
   return true;
 }
@@ -141,6 +155,28 @@ function isTerminalEnvelopeStatus(status: SpendEnvelopeStatus): boolean {
   return status === 'settled' || status === 'expired' || status === 'cancelled' || status === 'failed';
 }
 
+function countEnvelopes(envelopes: SpendEnvelope[]): SpendCounts {
+  return {
+    all: envelopes.length,
+    needs_approval: envelopes.filter((envelope) => matchesFilter(envelope, 'needs_approval')).length,
+    active_schedules: envelopes.filter((envelope) => matchesFilter(envelope, 'active_schedules')).length,
+    live_streams: envelopes.filter((envelope) => matchesFilter(envelope, 'live_streams')).length,
+    settled: envelopes.filter((envelope) => matchesFilter(envelope, 'settled')).length,
+  };
+}
+
+function parseSpendQuery(url: URL): { filter: SpendFilter; limit: number; cursor: number } | SpendQueryError {
+  try {
+    return {
+      filter: parseFilter(url.searchParams.get('filter')),
+      limit: parseLimit(url.searchParams.get('limit')),
+      cursor: parseCursor(url.searchParams.get('cursor')),
+    };
+  } catch (err) {
+    return new SpendQueryError(err instanceof Error ? err.message : 'Invalid spend query.');
+  }
+}
+
 function parseFilter(raw: string | null): SpendFilter {
   if (!raw || raw === 'all') return 'all';
   if (
@@ -151,20 +187,20 @@ function parseFilter(raw: string | null): SpendFilter {
   ) {
     return raw;
   }
-  throw new Error('filter must be all, needs_approval, active_schedules, live_streams, or settled.');
+  throw new SpendQueryError('filter must be all, needs_approval, active_schedules, live_streams, or settled.');
 }
 
 function parseLimit(raw: string | null): number {
   if (!raw) return DEFAULT_LIMIT;
   const limit = Number(raw);
-  if (!Number.isInteger(limit) || limit < 1) throw new Error('limit must be a positive integer.');
+  if (!Number.isInteger(limit) || limit < 1) throw new SpendQueryError('limit must be a positive integer.');
   return Math.min(limit, MAX_LIMIT);
 }
 
 function parseCursor(raw: string | null): number {
   if (!raw) return 0;
   const cursor = Number(raw);
-  if (!Number.isInteger(cursor) || cursor < 0) throw new Error('cursor must be a non-negative integer.');
+  if (!Number.isInteger(cursor) || cursor < 0) throw new SpendQueryError('cursor must be a non-negative integer.');
   return cursor;
 }
 

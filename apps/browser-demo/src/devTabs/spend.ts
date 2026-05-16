@@ -13,19 +13,37 @@ import {
 import { currentAddress, refreshConnection } from '../connectionState.js';
 import { isDevWallet } from '../devGate.js';
 import { registerDevTab } from '../devTabRegistry.js';
+import { legacyTabsEnabled } from '../legacyTabs.js';
 
 type SpendFilter = 'all' | 'needs_approval' | 'active_schedules' | 'live_streams' | 'settled';
 type LoadState = 'idle' | 'loading' | 'loaded' | 'error';
+type SpendCounts = Record<SpendFilter, number>;
 
 interface SpendState {
   status: LoadState;
   envelopes: SpendEnvelope[];
   filter: SpendFilter;
+  counts: SpendCounts | null;
   errorMessage: string;
   lastFetchedFor: string | null;
+  loadedFilter: SpendFilter | null;
+  nextCursor: string | null;
+  selectedEnvelopeKey: string | null;
+  loadingMore: boolean;
+}
+
+interface SpendEnvelopeResponse {
+  envelopes?: SpendEnvelope[];
+  items?: SpendEnvelope[];
+  counts?: Partial<SpendCounts>;
+  pagination?: {
+    nextCursor?: string;
+  };
+  nextCursor?: string;
 }
 
 const FILTERS: readonly SpendFilter[] = ['all', 'needs_approval', 'active_schedules', 'live_streams', 'settled'];
+const PAGE_LIMIT = 50;
 const FILTER_LABELS: Record<SpendFilter, string> = {
   all: 'All',
   needs_approval: 'Needs Approval',
@@ -38,8 +56,13 @@ const state: SpendState = {
   status: 'idle',
   envelopes: [],
   filter: 'all',
+  counts: null,
   errorMessage: '',
   lastFetchedFor: null,
+  loadedFilter: null,
+  nextCursor: null,
+  selectedEnvelopeKey: null,
+  loadingMore: false,
 };
 
 function escapeHtml(value: string): string {
@@ -61,6 +84,17 @@ function titleCase(value: string): string {
     .replace(/\b\w/g, (match) => match.toUpperCase());
 }
 
+function tokenLabelFromMint(mint: string): string {
+  if (mint === 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v') return 'USDC';
+  return shortAddress(mint);
+}
+
+function streamingTokenLabel(envelope: Extract<SpendEnvelope, { kind: 'streaming' }>): string {
+  return typeof envelope.session.metadata?.tokenSymbol === 'string' && envelope.session.metadata.tokenSymbol.trim()
+    ? envelope.session.metadata.tokenSymbol.trim()
+    : tokenLabelFromMint(envelope.session.tokenMint);
+}
+
 function formatTime(iso: string | undefined): string {
   if (!iso) return '';
   const date = new Date(iso);
@@ -71,6 +105,19 @@ function formatTime(iso: string | undefined): string {
     hour: 'numeric',
     minute: '2-digit',
   });
+}
+
+function envelopeKey(envelope: SpendEnvelope): string {
+  return `${envelope.kind}:${envelopeId(envelope)}`;
+}
+
+function parseEnvelopeKey(key: string): { kind: SpendEnvelope['kind']; id: string } | null {
+  const separator = key.indexOf(':');
+  if (separator < 1) return null;
+  const kind = key.slice(0, separator) as SpendEnvelope['kind'];
+  const id = key.slice(separator + 1);
+  if ((kind === 'one-time' || kind === 'recurring' || kind === 'streaming') && id) return { kind, id };
+  return null;
 }
 
 function matchesFilter(envelope: SpendEnvelope, filter: SpendFilter): boolean {
@@ -97,6 +144,7 @@ function filteredEnvelopes(snapshot: SpendState = state): SpendEnvelope[] {
 }
 
 function filterCount(filter: SpendFilter): number {
+  if (state.counts) return state.counts[filter] ?? 0;
   return state.envelopes.filter((envelope) => matchesFilter(envelope, filter)).length;
 }
 
@@ -126,23 +174,123 @@ function envelopeSummary(envelope: SpendEnvelope): string {
       return `${schedule.amount} ${token} ${cadence}${recipient}`;
     }
     case 'streaming': {
-      const token = typeof envelope.session.metadata?.tokenSymbol === 'string'
-        ? envelope.session.metadata.tokenSymbol
-        : 'USDC';
+      const token = streamingTokenLabel(envelope);
       return `${envelope.session.spentAmount} of ${envelope.session.capAmount} ${token} streamed`;
     }
   }
 }
 
 function envelopePrimaryAction(envelope: SpendEnvelope): string {
+  const key = envelopeKey(envelope);
+  const selected = state.selectedEnvelopeKey === key;
+  const label = selected
+    ? 'Hide'
+    : envelope.kind === 'one-time'
+      ? 'Review'
+      : envelope.kind === 'recurring'
+        ? 'Manage'
+        : 'Inspect';
+  return `<button type="button" class="${envelope.kind === 'one-time' ? 'primary' : 'utility'}" data-spend-select="${escapeHtml(key)}">${label}</button>`;
+}
+
+function legacyEnvelopeAction(envelope: SpendEnvelope): string {
+  if (!legacyTabsEnabled()) return '';
   switch (envelope.kind) {
     case 'one-time':
-      return `<button type="button" class="primary" data-tab="inbox" data-spend-open="${escapeHtml(envelope.action.id)}">Review</button>`;
+      return `<button type="button" class="utility" data-spend-legacy-tab="inbox" data-spend-open="${escapeHtml(envelope.action.id)}">Open in Needs Approval</button>`;
     case 'recurring':
-      return `<button type="button" class="utility" data-tab="schedule" data-recurring-view="active" data-spend-open="${escapeHtml(envelope.schedule.id)}">Manage</button>`;
+      return `<button type="button" class="utility" data-spend-legacy-tab="schedule" data-recurring-view="active" data-spend-open="${escapeHtml(envelope.schedule.id)}">Open in Repeat Payments</button>`;
     case 'streaming':
-      return `<button type="button" class="utility" data-tab="sessions" data-spend-open="${escapeHtml(envelope.session.id)}">Manage</button>`;
+      return `<button type="button" class="utility" data-spend-legacy-tab="sessions" data-spend-open="${escapeHtml(envelope.session.id)}">Open in Sessions</button>`;
   }
+}
+
+function detailRow(label: string, value: string | undefined, title = value): string {
+  if (!value) return '';
+  return `
+    <div class="spend-detail-row" ${title ? `title="${escapeHtml(title)}"` : ''}>
+      <dt>${escapeHtml(label)}</dt>
+      <dd>${escapeHtml(value)}</dd>
+    </div>
+  `;
+}
+
+function envelopeDetailHtml(envelope: SpendEnvelope): string {
+  const remaining = envelopeRemaining(envelope);
+  const nextEvent = envelopeNextEvent(envelope);
+  const status = envelopeStatus(envelope);
+  const rows = [
+    detailRow('Status', titleCase(status)),
+    detailRow('Remaining', remaining.label),
+    detailRow(nextEvent.label, nextEvent.at ? formatTime(nextEvent.at) : undefined, nextEvent.at),
+    ...kindDetailRows(envelope),
+  ].join('');
+  return `
+    <section class="spend-row-detail" aria-label="Spend envelope detail">
+      <dl class="spend-detail-grid">${rows}</dl>
+      <div class="spend-detail-actions">
+        ${spendInlineActions(envelope)}
+        ${legacyEnvelopeAction(envelope)}
+      </div>
+    </section>
+  `;
+}
+
+function kindDetailRows(envelope: SpendEnvelope): string[] {
+  switch (envelope.kind) {
+    case 'one-time':
+      return [
+        detailRow('Request ID', shortAddress(envelope.action.id), envelope.action.id),
+        detailRow('Kind', titleCase(envelope.action.kind)),
+        detailRow('Recipient', envelope.action.recipient ? shortAddress(envelope.action.recipient) : undefined, envelope.action.recipient),
+      ];
+    case 'recurring':
+      return [
+        detailRow('Schedule ID', shortAddress(envelope.schedule.id), envelope.schedule.id),
+        detailRow('Cadence', titleCase(envelope.schedule.cadence)),
+        detailRow('Recipient', envelope.schedule.recipient ? shortAddress(envelope.schedule.recipient) : undefined, envelope.schedule.recipient),
+      ];
+    case 'streaming':
+      return [
+        detailRow('Session ID', shortAddress(envelope.session.id), envelope.session.id),
+        detailRow('Mint', tokenLabelFromMint(envelope.session.tokenMint), envelope.session.tokenMint),
+        detailRow('Delegate', shortAddress(envelope.session.delegatePubkey), envelope.session.delegatePubkey),
+      ];
+  }
+}
+
+function spendInlineActions(envelope: SpendEnvelope): string {
+  switch (envelope.kind) {
+    case 'one-time':
+      return approvalInlineActions(envelope.action);
+    case 'recurring':
+      return recurringInlineActions(envelope.schedule);
+    case 'streaming':
+      return '<span class="spend-detail-note">Streaming revoke and voucher inspection stay in Sessions for this release.</span>';
+  }
+}
+
+function approvalInlineActions(action: Extract<SpendEnvelope, { kind: 'one-time' }>['action']): string {
+  if (action.status === 'approval_pending') {
+    return `<button type="button" class="primary" data-spend-approval-op="confirm" data-spend-action-id="${escapeHtml(action.id)}">Check confirmation</button>`;
+  }
+  if (envelopeStatus({ kind: 'one-time', action }) !== 'needs_approval') {
+    return '<span class="spend-detail-note">No approval action is pending.</span>';
+  }
+  return `
+    <button type="button" class="primary" data-spend-approval-op="execute" data-spend-action-id="${escapeHtml(action.id)}">Approve</button>
+    <button type="button" class="utility danger" data-spend-approval-op="reject" data-spend-action-id="${escapeHtml(action.id)}">Deny</button>
+  `;
+}
+
+function recurringInlineActions(schedule: Extract<SpendEnvelope, { kind: 'recurring' }>['schedule']): string {
+  if (schedule.status === 'active') {
+    return `<button type="button" class="utility" data-spend-recurring-op="pause" data-spend-schedule-id="${escapeHtml(schedule.id)}">Pause</button>`;
+  }
+  if (schedule.status === 'paused') {
+    return `<button type="button" class="primary" data-spend-recurring-op="resume" data-spend-schedule-id="${escapeHtml(schedule.id)}">Resume</button>`;
+  }
+  return '<span class="spend-detail-note">This schedule is settled.</span>';
 }
 
 export function spendRowHtml(envelope: SpendEnvelope): string {
@@ -150,8 +298,10 @@ export function spendRowHtml(envelope: SpendEnvelope): string {
   const status = envelopeStatus(envelope);
   const remaining = envelopeRemaining(envelope);
   const nextEvent = envelopeNextEvent(envelope);
+  const key = envelopeKey(envelope);
+  const selected = state.selectedEnvelopeKey === key;
   return `
-    <li class="spend-row spend-row--${escapeHtml(envelope.kind)}" data-spend-envelope="${escapeHtml(envelope.kind)}:${escapeHtml(envelopeId(envelope))}">
+    <li class="spend-row spend-row--${escapeHtml(envelope.kind)} ${selected ? 'selected' : ''}" data-spend-envelope="${escapeHtml(key)}">
       <div class="spend-row-main">
         <div class="spend-badge-stack">
           <span class="spend-badge spend-badge--protocol spend-badge--${escapeHtml(protocol.id)}">${escapeHtml(protocol.label)}</span>
@@ -167,6 +317,7 @@ export function spendRowHtml(envelope: SpendEnvelope): string {
         <span class="spend-status spend-status--${escapeHtml(status)}">${escapeHtml(titleCase(status))}</span>
         ${envelopePrimaryAction(envelope)}
       </div>
+      ${selected ? envelopeDetailHtml(envelope) : ''}
     </li>
   `;
 }
@@ -191,16 +342,30 @@ export function spendBodyHtml(snapshot: SpendState = state): string {
       </div>
     `;
   }
-  return `<ol class="spend-list">${rows.map(spendRowHtml).join('')}</ol>`;
+  return `
+    <ol class="spend-list">${rows.map(spendRowHtml).join('')}</ol>
+    ${snapshot.nextCursor ? `
+      <div class="spend-load-more-row">
+        <button type="button" class="utility" data-spend-load-more ${snapshot.loadingMore ? 'disabled' : ''}>
+          ${snapshot.loadingMore ? 'Loading...' : 'Load more'}
+        </button>
+      </div>
+    ` : ''}
+  `;
 }
 
 export function renderSpendPanel(): string {
-  if (state.status === 'idle') {
+  const addr = currentAddress();
+  const walletChanged = Boolean(addr && isDevWallet(addr) && state.lastFetchedFor && state.lastFetchedFor !== addr);
+  const filterChanged = Boolean(state.loadedFilter && state.loadedFilter !== state.filter);
+  if (state.status === 'idle' || (state.status !== 'loading' && (walletChanged || filterChanged))) {
     queueMicrotask(() => {
-      void loadSpendEnvelopes();
+      void loadSpendEnvelopes(true);
     });
   }
-  const activeCount = state.envelopes.filter((envelope) => !isTerminalStatus(envelopeStatus(envelope))).length;
+  const activeCount = state.counts
+    ? Math.max(0, state.counts.all - state.counts.settled)
+    : state.envelopes.filter((envelope) => !isTerminalStatus(envelopeStatus(envelope))).length;
   const needsApprovalCount = filterCount('needs_approval');
   const liveStreamCount = filterCount('live_streams');
   return `
@@ -232,42 +397,97 @@ export function renderSpendPanel(): string {
   `;
 }
 
-export async function loadSpendEnvelopes(force = false): Promise<void> {
+export async function loadSpendEnvelopes(force = false, append = false): Promise<void> {
+  if (append && !state.nextCursor) return;
   if (state.status === 'loading' && !force) return;
+  if (state.loadingMore && !force) return;
   const initialAddr = currentAddress();
   if (initialAddr && !isDevWallet(initialAddr)) return;
-  state.status = 'loading';
+  const requestedFilter = state.filter;
+  const requestedCursor = append ? state.nextCursor : null;
+  if (append) {
+    state.loadingMore = true;
+  } else {
+    state.status = 'loading';
+    state.nextCursor = null;
+  }
   state.errorMessage = '';
   patchSpendRoot();
   await refreshConnection();
   const addr = currentAddress();
   if (!addr || !isDevWallet(addr)) {
     state.status = 'idle';
+    state.envelopes = [];
+    state.counts = null;
     state.lastFetchedFor = null;
+    state.loadedFilter = null;
+    state.nextCursor = null;
+    state.loadingMore = false;
     patchSpendRoot();
     return;
   }
   state.lastFetchedFor = addr;
   try {
-    const res = await fetch('/api/spend/envelopes?limit=100', {
+    const query = new URLSearchParams({
+      filter: requestedFilter,
+      limit: String(PAGE_LIMIT),
+    });
+    if (requestedCursor) query.set('cursor', requestedCursor);
+    const res = await fetch(`/api/spend/envelopes?${query.toString()}`, {
       credentials: 'include',
       headers: { Accept: 'application/json' },
     });
     if (!res.ok) {
       throw new Error(`HTTP ${res.status}`);
     }
-    const payload = (await res.json()) as { envelopes?: SpendEnvelope[]; items?: SpendEnvelope[] };
-    state.envelopes = Array.isArray(payload.envelopes)
-      ? payload.envelopes
-      : Array.isArray(payload.items)
-        ? payload.items
-        : [];
+    const payload = (await res.json()) as SpendEnvelopeResponse;
+    const page = responseEnvelopes(payload);
+    if (state.filter !== requestedFilter || currentAddress() !== addr) {
+      state.status = 'idle';
+      state.loadingMore = false;
+      patchSpendRoot();
+      return;
+    }
+    state.envelopes = append ? mergeEnvelopePages(state.envelopes, page) : page;
+    state.counts = normalizeCounts(payload.counts);
+    state.loadedFilter = requestedFilter;
+    state.nextCursor = payload.pagination?.nextCursor ?? payload.nextCursor ?? null;
     state.status = 'loaded';
   } catch (err) {
     state.errorMessage = err instanceof Error ? err.message : 'Network error';
-    state.status = 'error';
+    state.status = append && state.envelopes.length ? 'loaded' : 'error';
+  } finally {
+    state.loadingMore = false;
   }
   patchSpendRoot();
+}
+
+function responseEnvelopes(payload: SpendEnvelopeResponse): SpendEnvelope[] {
+  if (Array.isArray(payload.envelopes)) return payload.envelopes;
+  if (Array.isArray(payload.items)) return payload.items;
+  return [];
+}
+
+function mergeEnvelopePages(current: SpendEnvelope[], next: SpendEnvelope[]): SpendEnvelope[] {
+  const byKey = new Map<string, SpendEnvelope>();
+  for (const envelope of current) byKey.set(envelopeKey(envelope), envelope);
+  for (const envelope of next) byKey.set(envelopeKey(envelope), envelope);
+  return Array.from(byKey.values());
+}
+
+function normalizeCounts(counts: Partial<SpendCounts> | undefined): SpendCounts | null {
+  if (!counts) return null;
+  return {
+    all: countOrZero(counts.all),
+    needs_approval: countOrZero(counts.needs_approval),
+    active_schedules: countOrZero(counts.active_schedules),
+    live_streams: countOrZero(counts.live_streams),
+    settled: countOrZero(counts.settled),
+  };
+}
+
+function countOrZero(value: unknown): number {
+  return typeof value === 'number' && Number.isFinite(value) && value > 0 ? value : 0;
 }
 
 function patchSpendRoot(): void {
@@ -288,8 +508,48 @@ function installSpendHandlers(): void {
     const filter = target.closest<HTMLButtonElement>('[data-spend-filter]');
     if (filter?.dataset.spendFilter && FILTERS.includes(filter.dataset.spendFilter as SpendFilter)) {
       event.preventDefault();
-      state.filter = filter.dataset.spendFilter as SpendFilter;
+      setSpendFilter(filter.dataset.spendFilter as SpendFilter);
+      return;
+    }
+    const select = target.closest<HTMLButtonElement>('[data-spend-select]');
+    if (select?.dataset.spendSelect && parseEnvelopeKey(select.dataset.spendSelect)) {
+      event.preventDefault();
+      const key = select.dataset.spendSelect;
+      state.selectedEnvelopeKey = state.selectedEnvelopeKey === key ? null : key;
       patchSpendRoot();
+      return;
+    }
+    if (target.closest('[data-spend-load-more]')) {
+      event.preventDefault();
+      void loadSpendEnvelopes(false, true);
+      return;
+    }
+    const approval = target.closest<HTMLButtonElement>('[data-spend-approval-op]');
+    if (approval?.dataset.spendApprovalOp && approval.dataset.spendActionId) {
+      event.preventDefault();
+      dispatchSpendEvent('spend:approval-op', {
+        actionId: approval.dataset.spendActionId,
+        op: approval.dataset.spendApprovalOp,
+      });
+      return;
+    }
+    const recurring = target.closest<HTMLButtonElement>('[data-spend-recurring-op]');
+    if (recurring?.dataset.spendRecurringOp && recurring.dataset.spendScheduleId) {
+      event.preventDefault();
+      dispatchSpendEvent('spend:recurring-op', {
+        scheduleId: recurring.dataset.spendScheduleId,
+        op: recurring.dataset.spendRecurringOp,
+      });
+      return;
+    }
+    const legacy = target.closest<HTMLButtonElement>('[data-spend-legacy-tab]');
+    if (legacy?.dataset.spendLegacyTab) {
+      event.preventDefault();
+      dispatchSpendEvent('spend:legacy-open', {
+        tab: legacy.dataset.spendLegacyTab,
+        open: legacy.dataset.spendOpen,
+        recurringView: legacy.dataset.recurringView,
+      });
       return;
     }
     if (target.closest('[data-spend-refresh]')) {
@@ -299,7 +559,49 @@ function installSpendHandlers(): void {
   });
 }
 
+function setSpendFilter(filter: SpendFilter, selectedEnvelopeKey: string | null = null): void {
+  state.filter = filter;
+  state.selectedEnvelopeKey = selectedEnvelopeKey;
+  state.nextCursor = null;
+  if (state.loadedFilter !== filter) {
+    state.envelopes = [];
+    state.loadedFilter = null;
+  }
+  patchSpendRoot();
+  void loadSpendEnvelopes(true);
+}
+
+function dispatchSpendEvent(name: string, detail: Record<string, unknown>): void {
+  if (typeof window === 'undefined') return;
+  window.dispatchEvent(new CustomEvent(name, { detail }));
+}
+
+let spendWindowHandlersInstalled = false;
+
+function installSpendWindowHandlers(): void {
+  if (typeof window === 'undefined' || spendWindowHandlersInstalled) return;
+  spendWindowHandlersInstalled = true;
+  window.addEventListener('spend:set-filter', (event) => {
+    const detail = spendEventDetail(event);
+    const filter = detail?.filter;
+    if (typeof filter !== 'string' || !FILTERS.includes(filter as SpendFilter)) return;
+    const envelopeKey = typeof detail?.envelopeKey === 'string' && parseEnvelopeKey(detail.envelopeKey)
+      ? detail.envelopeKey
+      : null;
+    setSpendFilter(filter as SpendFilter, envelopeKey);
+  });
+  window.addEventListener('spend:refresh', () => {
+    void loadSpendEnvelopes(true);
+  });
+}
+
+function spendEventDetail(event: Event): Record<string, unknown> | null {
+  if (!('detail' in event) || typeof event.detail !== 'object' || event.detail === null) return null;
+  return event.detail as Record<string, unknown>;
+}
+
 installSpendHandlers();
+installSpendWindowHandlers();
 
 registerDevTab({
   id: 'spend',
@@ -315,9 +617,15 @@ export const __spendForTests = {
     state.status = next?.status ?? 'idle';
     state.envelopes = next?.envelopes ?? [];
     state.filter = next?.filter ?? 'all';
+    state.counts = next?.counts ?? null;
     state.errorMessage = next?.errorMessage ?? '';
     state.lastFetchedFor = next?.lastFetchedFor ?? null;
+    state.loadedFilter = next?.loadedFilter ?? null;
+    state.nextCursor = next?.nextCursor ?? null;
+    state.selectedEnvelopeKey = next?.selectedEnvelopeKey ?? null;
+    state.loadingMore = next?.loadingMore ?? false;
   },
+  loadSpendEnvelopes,
   matchesFilter,
   renderSpendPanel,
   spendBodyHtml,

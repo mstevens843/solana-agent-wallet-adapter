@@ -120,8 +120,22 @@ export function isBrowserDeviceAgentInitialized(): boolean {
 }
 
 export function initBrowserDeviceAgent(deps: BrowserDeviceAgentDeps = {}): void {
-  if (_state) return;
+  if (_state) {
+    const incomingMode = deps.secretStoreMode ?? DEFAULT_SECRET_STORE_MODE;
+    if (incomingMode !== _state.deps.secretStoreMode) {
+      // Surface the footgun in dev tools without throwing — the runtime stays
+      // on the first mode. Callers that need to switch modes after init must
+      // use setBrowserDeviceAgentSecretStoreMode (which serializes with
+      // in-flight requests and clears the previous store).
+      // eslint-disable-next-line no-console
+      console.warn(
+        `[browser-device-agent] initBrowserDeviceAgent called again with secretStoreMode='${incomingMode}' but runtime is already initialized as '${_state.deps.secretStoreMode}'. The second call was ignored. Use setBrowserDeviceAgentSecretStoreMode() to change modes at runtime.`,
+      );
+    }
+    return;
+  }
   _state = buildState(deps);
+  flushPendingListeners(_state);
 }
 
 export function setBrowserDeviceAgentWalletAddress(walletAddress: string | undefined | null): void {
@@ -180,6 +194,49 @@ export async function setBrowserDeviceAgentSecretStoreMode(
 export function browserDeviceAgentStatusSnapshot(): DeviceAgentStatus {
   if (!_state) return unavailableStatus(undefined);
   return buildStatus(_state);
+}
+
+/**
+ * Subscribe to status changes driven by registry state transitions (start,
+ * stop, recordError, hydrate). The listener fires AFTER the registry persists
+ * the new state, so the snapshot reflects the latest value. Returns an
+ * unsubscribe function. Calling before init queues the listener and forwards
+ * it to the registry once init runs.
+ */
+export function subscribeBrowserDeviceAgentStatus(
+  listener: (status: DeviceAgentStatus) => void,
+): () => void {
+  if (!_state) {
+    // Pre-init: queue and attach after init.
+    _pendingListeners.push(listener);
+    return () => {
+      const idx = _pendingListeners.indexOf(listener);
+      if (idx >= 0) _pendingListeners.splice(idx, 1);
+    };
+  }
+  return _state.registry.subscribe(() => {
+    try {
+      listener(buildStatus(_state!));
+    } catch {
+      // Listener failures must never break the registry.
+    }
+  });
+}
+
+const _pendingListeners: Array<(status: DeviceAgentStatus) => void> = [];
+
+function flushPendingListeners(state: InternalState): void {
+  if (_pendingListeners.length === 0) return;
+  const drained = _pendingListeners.splice(0);
+  for (const listener of drained) {
+    state.registry.subscribe(() => {
+      try {
+        listener(buildStatus(state));
+      } catch {
+        // ignore
+      }
+    });
+  }
 }
 
 export async function browserDeviceAgentRequest<R = unknown>(
@@ -469,8 +526,10 @@ async function handleSubmit<R>(
     enqueuedAtMs: state.deps.now().getTime(),
   };
 
-  const submitPromise = state.registry.submit(request);
-  const result = await raceAbort(submitPromise, signal);
+  // The caller's AbortSignal is plumbed into the queue, which relays it onto
+  // the per-request AbortController. The HTTP fetch sees a real abort and
+  // unwinds; the queue then maps the resulting AbortError to runtime_canceled.
+  const result = await state.registry.submit(request, signal);
   return finalizeResult<R>(state, result);
 }
 
@@ -482,49 +541,6 @@ function finalizeResult<R>(
     return { status: buildStatus(state), result: result.data as R };
   }
   throw asClientError(state, result.error);
-}
-
-async function raceAbort<T>(promise: Promise<T>, signal: AbortSignal | undefined): Promise<T> {
-  // Per-request abort caveat: rejecting the caller's promise here does NOT cancel
-  // the underlying `RequestQueue.submit` work — Phase 1's queue (runtime/queue.ts)
-  // only exposes a global `stop()`-driven cancel via its single AbortController.
-  // The in-flight HTTP request therefore runs to completion in the background and
-  // its result is discarded. This is bounded by FetchHttpExecutor's internal
-  // connect/read timeouts (30s/60s, see provider/http.ts). For hard cancellation
-  // use `browserDeviceAgentRequest('stop')`.
-  if (!signal) return promise;
-  return new Promise<T>((resolve, reject) => {
-    let settled = false;
-    const onAbort = () => {
-      if (settled) return;
-      settled = true;
-      reject(
-        new DeviceAgentClientError(
-          DEVICE_AGENT_ERROR_CODES.RUNTIME_CANCELED,
-          'Device Agent request was aborted.',
-        ),
-      );
-    };
-    if (signal.aborted) {
-      onAbort();
-      return;
-    }
-    signal.addEventListener('abort', onAbort, { once: true });
-    promise.then(
-      (value) => {
-        if (settled) return;
-        settled = true;
-        signal.removeEventListener('abort', onAbort);
-        resolve(value);
-      },
-      (err) => {
-        if (settled) return;
-        settled = true;
-        signal.removeEventListener('abort', onAbort);
-        reject(err);
-      },
-    );
-  });
 }
 
 function buildStatus(state: InternalState): DeviceAgentStatus {

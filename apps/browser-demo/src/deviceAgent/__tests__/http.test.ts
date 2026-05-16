@@ -316,4 +316,29 @@ describe('FetchHttpExecutor — body cap', () => {
     expect(result.status).toBe(200);
     expect(result.body).toBe('{"ok":true}');
   });
+
+  it('text() fallback counts UTF-8 bytes, not UTF-16 code units, so multi-byte chars cannot slip past the cap', async () => {
+    // 60 code units of "😀" (each emoji is one UTF-16 surrogate pair = 2 code
+    // units) but encodes to 240 UTF-8 bytes — over the 100-byte cap.
+    const oversize = '😀'.repeat(60);
+    expect(oversize.length).toBeLessThan(150); // proves UTF-16 length undercounts
+    const fakeResponse = {
+      status: 200,
+      body: null,
+      text: () => Promise.resolve(oversize),
+    } as unknown as Response;
+    const executor = new FetchHttpExecutor({
+      fetchImpl: () => Promise.resolve(fakeResponse),
+      maxBytes: 100,
+    });
+
+    let captured: unknown = null;
+    try {
+      await executor.postJson('https://api.example.com/v1/x', {}, '{}');
+    } catch (err) {
+      captured = err;
+    }
+    expect(captured).toBeInstanceOf(ProviderHttpError);
+    expect((captured as ProviderHttpError).code).toBe('provider_invalid_response');
+  });
 });

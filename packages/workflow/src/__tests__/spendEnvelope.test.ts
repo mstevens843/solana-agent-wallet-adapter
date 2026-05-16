@@ -54,6 +54,7 @@ describe('spendEnvelope helpers', () => {
     };
 
     expect(envelopeStatus(envelope)).toBe('active');
+    expect(envelopeProtocolBadge(envelope)).toEqual({ id: 'scheduler', label: 'Scheduler' });
     expect(envelopeRemaining(envelope)).toMatchObject({
       label: '0.1 SOL per run, 3 left',
       remainingOccurrences: 3,
@@ -82,9 +83,36 @@ describe('spendEnvelope helpers', () => {
     };
 
     expect(envelopeStatus(envelope)).toBe('active');
+    expect(envelopeProtocolBadge(envelope)).toEqual({ id: 'spl-delegate', label: 'SPL Delegate' });
     expect(envelopeRemaining(envelope)).toMatchObject({
       label: '7.25 USDC remaining',
       remaining: '7.25',
+    });
+  });
+
+  it('uses a shortened mint for non-USDC streaming sessions without token metadata', () => {
+    const envelope: SpendEnvelope = {
+      kind: 'streaming',
+      session: {
+        id: 'stream_2',
+        walletAddress: 'wallet',
+        cluster: 'devnet',
+        tokenMint: 'So11111111111111111111111111111111111111112',
+        delegatePubkey: 'delegate',
+        ephemeralSignerPubkey: 'delegate',
+        capAmount: '5',
+        spentAmount: '1.5',
+        expiresAt: '2026-05-16T12:00:00.000Z',
+        status: 'active',
+        createdAt: '2026-05-16T09:00:00.000Z',
+        updatedAt: '2026-05-16T09:00:00.000Z',
+      },
+    };
+
+    expect(envelopeRemaining(envelope)).toMatchObject({
+      label: '3.5 So11...1112 remaining',
+      token: 'So11...1112',
+      remaining: '3.5',
     });
   });
 });

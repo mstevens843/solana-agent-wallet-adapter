@@ -107,7 +107,7 @@ configuration, not Agentic, decides whether the request completes.
 |---|---|---|---|---|
 | OpenRouter | green ✅ | `Recommended browser tier` | Designed for browser-origin requests | `Authorization: Bearer` from the tab |
 | Gemini (OpenAI-compatible endpoint) | green ✅ | `Recommended browser tier` | Google publishes CORS on `generativelanguage.googleapis.com/v1beta/openai/chat/completions` | `Authorization: Bearer` from the tab |
-| OpenAI | amber ⚠️ | `Direct-browser caution` | Works from the tab; vendor-flagged direct-from-browser access. Use a short-lived, low-cap key. | Some model families (`gpt-5`, `o1`, `o3`, `o4`) omit `temperature` |
+| OpenAI | amber ⚠️ | `Direct-browser caution` | **Currently fails CORS in practice**: `api.openai.com/v1/chat/completions` does not include `Access-Control-Allow-Origin` on POST responses, so the browser blocks the response body even when the request succeeds. Use **OpenRouter** to reach OpenAI models from the browser, or proxy through your own backend. `scripts/browser-device-agent-cors-check.mjs --filter=openai` confirms this. | Some model families (`gpt-5`, `o1`, `o3`, `o4`) omit `temperature` |
 | Anthropic | amber ⚠️ | `Direct-browser caution` | Works from the tab when `anthropic-dangerous-direct-browser-access: true` is sent | Header is set by the runtime, not the user. `anthropic-version: 2023-06-01`. |
 | Custom OpenAI-compatible | neutral | `CORS depends on gateway` | CORS is the gateway operator's responsibility | Run `node scripts/browser-device-agent-cors-check.mjs --filter=custom-openai-compatible --base-url=...` before trusting |
 

@@ -21,6 +21,8 @@ export interface RegistryDependencies {
   readonly clock?: () => number;
 }
 
+export type RegistryTransitionListener = (snapshot: RegistrySnapshot) => void;
+
 export interface RegistrySnapshot {
   readonly state: RuntimeStateWire;
   readonly lastError: RuntimeError | null;
@@ -43,11 +45,24 @@ export class BrowserRuntimeRegistry {
   private queue: RequestQueue | null = null;
 
   private mutex: Promise<unknown> = Promise.resolve();
+  private readonly listeners = new Set<RegistryTransitionListener>();
 
   constructor(deps: RegistryDependencies) {
     this.persistence = deps.persistence;
     this.executorProvider = deps.executorProvider;
     this.clock = deps.clock ?? Date.now;
+  }
+
+  /**
+   * Subscribe to state transitions. The listener fires AFTER persistAndStamp
+   * completes for every observable transition (start, stop, recordError,
+   * hydrate). Returns an unsubscribe function.
+   */
+  subscribe(listener: RegistryTransitionListener): () => void {
+    this.listeners.add(listener);
+    return () => {
+      this.listeners.delete(listener);
+    };
   }
 
   setExecutor(executor: ProviderExecutor): void {
@@ -140,7 +155,7 @@ export class BrowserRuntimeRegistry {
     });
   }
 
-  async submit(request: RuntimeRequest): Promise<RuntimeResult> {
+  async submit(request: RuntimeRequest, externalSignal?: AbortSignal): Promise<RuntimeResult> {
     const activeQueue = this.queue;
     if (this.state !== 'running' || !activeQueue) {
       return {
@@ -154,7 +169,7 @@ export class BrowserRuntimeRegistry {
         completedAtMs: this.clock(),
       };
     }
-    return activeQueue.submit(request);
+    return activeQueue.submit(request, externalSignal);
   }
 
   private resolveExecutor(): ProviderExecutor {
@@ -176,6 +191,19 @@ export class BrowserRuntimeRegistry {
       // Persistence is best-effort. In-memory state is authoritative; the dispatcher
       // surfaces storage_unavailable via the secret store paths where it actually
       // affects functionality.
+    }
+    this.emit();
+  }
+
+  private emit(): void {
+    if (this.listeners.size === 0) return;
+    const snapshot = this.snapshot();
+    for (const listener of this.listeners) {
+      try {
+        listener(snapshot);
+      } catch {
+        // Listener failures must never break the registry.
+      }
     }
   }
 

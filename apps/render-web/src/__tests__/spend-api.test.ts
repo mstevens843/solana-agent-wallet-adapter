@@ -1,5 +1,5 @@
 import { createServer, request as httpRequest, type IncomingMessage, type ServerResponse } from 'node:http';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 
 import { listDevApiHandlers, type DevApiHandlerContext } from '../cloud/devApiRegistry.js';
 import { MemoryWorkflowStore } from '../cloud/memoryStore.js';
@@ -31,12 +31,20 @@ describe('GET /api/spend/envelopes', () => {
     expect(response.status).toBe(200);
     const envelopes = response.body.envelopes as Array<{ kind: string }>;
     expect(envelopes.map((envelope) => envelope.kind).sort()).toEqual(['one-time', 'recurring', 'streaming']);
+    expect(response.body.counts).toMatchObject({
+      all: 3,
+      needs_approval: 2,
+      active_schedules: 1,
+      live_streams: 1,
+      settled: 0,
+    });
     expect(response.body.pagination).toMatchObject({ limit: 10, total: 3 });
   });
 
   it('filters needs-approval envelopes and paginates', async () => {
     const store = new MemoryWorkflowStore();
     await store.saveApproval(DEV_WALLET, approvalRecord({ id: 'approval_ready', status: 'ready' }));
+    await store.saveApproval(DEV_WALLET, approvalRecord({ id: 'approval_pending', status: 'pending' }));
     await store.saveApproval(DEV_WALLET, approvalRecord({ id: 'approval_done', status: 'approved' }));
 
     const response = await withSpendServer(store, (port) =>
@@ -45,8 +53,37 @@ describe('GET /api/spend/envelopes', () => {
 
     expect(response.status).toBe(200);
     expect((response.body.envelopes as unknown[])).toHaveLength(1);
-    expect(response.body.nextCursor).toBeUndefined();
-    expect(response.body.pagination).toMatchObject({ limit: 1, total: 1 });
+    expect(response.body.nextCursor).toBe('1');
+    expect(response.body.counts).toMatchObject({
+      all: 3,
+      needs_approval: 2,
+      settled: 1,
+    });
+    expect(response.body.pagination).toMatchObject({ limit: 1, total: 2, nextCursor: '1' });
+  });
+
+  it('rejects invalid query values as client errors', async () => {
+    const store = new MemoryWorkflowStore();
+
+    const response = await withSpendServer(store, (port) =>
+      getJson(port, '/api/spend/envelopes?filter=unknown'),
+    );
+
+    expect(response.status).toBe(400);
+    expect(response.body).toMatchObject({ error: 'invalid_spend_query' });
+  });
+
+  it('reports aggregation failures as server errors', async () => {
+    const store = new MemoryWorkflowStore();
+    vi.spyOn(store, 'listApprovals').mockRejectedValueOnce(new Error('store down'));
+
+    const response = await withSpendServer(store, (port) => getJson(port, '/api/spend/envelopes'));
+
+    expect(response.status).toBe(500);
+    expect(response.body).toMatchObject({
+      error: 'spend_envelopes_unavailable',
+      message: 'store down',
+    });
   });
 });
 

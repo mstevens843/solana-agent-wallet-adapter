@@ -1,11 +1,19 @@
 # Browser Device Agent Evals — OpenAI
 
+> **⚠️ Known CORS limitation:** Direct OpenAI calls from the browser-native runtime currently **fail** because
+> `api.openai.com/v1/chat/completions` does not include `Access-Control-Allow-Origin` on POST responses. The
+> browser blocks the response body even when the request succeeds upstream. The CORS probe
+> (`node scripts/browser-device-agent-cors-check.mjs --filter=openai`) exits non-zero to surface this.
+> **To run these evals end-to-end, use the OpenRouter provider with an `openai/*` model route** (OpenRouter
+> exposes OpenAI models with browser-correct CORS) **or proxy through your own backend.** The amber-tier UI
+> chip warns users at runtime.
+
 **Runtime:** `browser-native`
 **Provider id:** `openai`
 **API format:** `openai-compatible`
 **Default base URL:** `https://api.openai.com/v1`
 **Chat endpoint:** `https://api.openai.com/v1/chat/completions`
-**Browser tier:** Amber — vendor-flagged direct-from-browser access.
+**Browser tier:** Amber — vendor-flagged direct-from-browser access (currently CORS-blocked).
 **Auth:** `Authorization: Bearer <key>`
 **Special headers:** none beyond `Content-Type: application/json` and `Accept: application/json`.
 

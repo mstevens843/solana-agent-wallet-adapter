@@ -14,6 +14,7 @@ import {
   initBrowserDeviceAgent,
   setBrowserDeviceAgentSecretStoreMode,
   setBrowserDeviceAgentWalletAddress,
+  subscribeBrowserDeviceAgentStatus,
   type ConfigMetadata,
   type MetadataStore,
 } from '../deviceAgent/index.js';
@@ -383,5 +384,104 @@ describe('browser-native Device Agent dispatcher', () => {
       caught = err as DeviceAgentClientError;
     }
     expect(caught?.code).toBe('unsupported_method');
+  });
+
+  it('warns and ignores a second initBrowserDeviceAgent call with a different secretStoreMode', async () => {
+    initBrowserDeviceAgent({
+      persistence: createMemoryPersistence(),
+      secretStore: createMemorySecretStore(),
+      metadataStore: createMemoryMetadataStore(),
+      httpExecutor: new FakeHttpExecutor(),
+      secretStoreMode: 'encrypted-indexeddb',
+    });
+    const warnings: string[] = [];
+    const originalWarn = console.warn;
+    console.warn = (...args: unknown[]) => {
+      warnings.push(args.map((a) => String(a)).join(' '));
+    };
+    try {
+      initBrowserDeviceAgent({
+        persistence: createMemoryPersistence(),
+        secretStore: createMemorySecretStore(),
+        metadataStore: createMemoryMetadataStore(),
+        httpExecutor: new FakeHttpExecutor(),
+        secretStoreMode: 'session-memory',
+      });
+    } finally {
+      console.warn = originalWarn;
+    }
+    expect(warnings.length).toBe(1);
+    expect(warnings[0]).toContain('[browser-device-agent]');
+    expect(warnings[0]).toContain("'session-memory'");
+    expect(warnings[0]).toContain("'encrypted-indexeddb'");
+    const snapshot = browserDeviceAgentStatusSnapshot();
+    // First init's mode is preserved
+    expect(snapshot.runtime).toBe('browser-native');
+  });
+
+  it('emits status snapshots through subscribeBrowserDeviceAgentStatus on registry transitions', async () => {
+    initBrowserDeviceAgent({
+      persistence: createMemoryPersistence(),
+      secretStore: createMemorySecretStore(),
+      metadataStore: createMemoryMetadataStore(),
+      httpExecutor: new FakeHttpExecutor(),
+    });
+    const emitted: string[] = [];
+    const unsubscribe = subscribeBrowserDeviceAgentStatus((status) => {
+      emitted.push(status.state);
+    });
+
+    await browserDeviceAgentRequest('configure', validConfigPayload);
+    await browserDeviceAgentRequest('start');
+    await browserDeviceAgentRequest('stop');
+
+    unsubscribe();
+    expect(emitted).toContain('running');
+    expect(emitted).toContain('stopped');
+  });
+
+  it('subscribeBrowserDeviceAgentStatus queues listeners installed before init', async () => {
+    const emitted: string[] = [];
+    const unsubscribe = subscribeBrowserDeviceAgentStatus((status) => {
+      emitted.push(status.state);
+    });
+    initBrowserDeviceAgent({
+      persistence: createMemoryPersistence(),
+      secretStore: createMemorySecretStore(),
+      metadataStore: createMemoryMetadataStore(),
+      httpExecutor: new FakeHttpExecutor(),
+    });
+    await browserDeviceAgentRequest('configure', validConfigPayload);
+    await browserDeviceAgentRequest('start');
+    unsubscribe();
+    expect(emitted.length).toBeGreaterThan(0);
+    expect(emitted).toContain('running');
+  });
+
+  it('does NOT warn on a repeat init with the same secretStoreMode', () => {
+    initBrowserDeviceAgent({
+      persistence: createMemoryPersistence(),
+      secretStore: createMemorySecretStore(),
+      metadataStore: createMemoryMetadataStore(),
+      httpExecutor: new FakeHttpExecutor(),
+      secretStoreMode: 'session-memory',
+    });
+    const warnings: string[] = [];
+    const originalWarn = console.warn;
+    console.warn = (...args: unknown[]) => {
+      warnings.push(args.map((a) => String(a)).join(' '));
+    };
+    try {
+      initBrowserDeviceAgent({
+        persistence: createMemoryPersistence(),
+        secretStore: createMemorySecretStore(),
+        metadataStore: createMemoryMetadataStore(),
+        httpExecutor: new FakeHttpExecutor(),
+        secretStoreMode: 'session-memory',
+      });
+    } finally {
+      console.warn = originalWarn;
+    }
+    expect(warnings.length).toBe(0);
   });
 });

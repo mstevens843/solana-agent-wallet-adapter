@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { SpendEnvelope } from '@solana-agent-wallet-adapter/workflow';
 
 const DEV_WALLET = '4fTqUdd9SRCkmALQhQGF66VRYJFsCLDSQJYadqwMMoHd';
@@ -81,6 +81,10 @@ describe('Spend dev tab', () => {
     });
   });
 
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
   it('registers the Spend tab', () => {
     const tab = findDevTab('spend');
     expect(tab?.label).toBe('Spend');
@@ -110,9 +114,72 @@ describe('Spend dev tab', () => {
     expect(html).toContain('3.25 of 10 USDC streamed');
   });
 
-  it('links streaming rows to the Sessions detail view', () => {
+  it('keeps row actions inside Spend by default', () => {
     const html = __spendForTests.spendRowHtml(envelopes()[2]!);
-    expect(html).toContain('data-tab="sessions"');
+    expect(html).toContain('data-spend-select="streaming:stream_live"');
+    expect(html).not.toContain('data-tab="sessions"');
+    expect(html).not.toContain('data-spend-legacy-tab="sessions"');
+  });
+
+  it('shows inline approval actions when a one-time envelope is selected', () => {
+    __spendForTests.resetState({
+      status: 'loaded',
+      envelopes: envelopes(),
+      selectedEnvelopeKey: 'one-time:approval_mpp',
+    });
+
+    const html = __spendForTests.spendRowHtml(envelopes()[0]!);
+    expect(html).toContain('class="spend-row spend-row--one-time selected"');
+    expect(html).toContain('data-spend-approval-op="execute"');
+    expect(html).toContain('data-spend-approval-op="reject"');
+    expect(html).not.toContain('data-tab="inbox"');
+  });
+
+  it('keeps legacy deep links behind legacy-tabs=1', () => {
+    vi.stubGlobal('window', {
+      location: { href: 'https://demo.local/app?legacy-tabs=1' },
+      addEventListener: vi.fn(),
+      dispatchEvent: vi.fn(),
+    });
+    __spendForTests.resetState({
+      status: 'loaded',
+      envelopes: envelopes(),
+      selectedEnvelopeKey: 'streaming:stream_live',
+    });
+
+    const html = __spendForTests.spendRowHtml(envelopes()[2]!);
+    expect(html).toContain('data-spend-legacy-tab="sessions"');
     expect(html).toContain('data-spend-open="stream_live"');
+  });
+
+  it('loads server-filtered pages with counts and cursors', async () => {
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => ({
+      ok: true,
+      json: async () => ({
+        envelopes: [envelopes()[1]],
+        counts: {
+          all: 3,
+          needs_approval: 1,
+          active_schedules: 1,
+          live_streams: 1,
+          settled: 0,
+        },
+        pagination: { nextCursor: '50' },
+      }),
+    }));
+    vi.stubGlobal('fetch', fetchMock);
+    __spendForTests.resetState({
+      status: 'loaded',
+      envelopes: [],
+      filter: 'active_schedules',
+    });
+
+    await __spendForTests.loadSpendEnvelopes(true);
+
+    expect(String(fetchMock.mock.calls[0]?.[0])).toContain('filter=active_schedules');
+    expect(String(fetchMock.mock.calls[0]?.[0])).toContain('limit=50');
+    expect(__spendForTests.getState().counts?.all).toBe(3);
+    expect(__spendForTests.getState().nextCursor).toBe('50');
+    expect(__spendForTests.getState().loadedFilter).toBe('active_schedules');
   });
 });

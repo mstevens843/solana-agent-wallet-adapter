@@ -56,6 +56,7 @@ const FAILED_APPROVAL_STATUSES: ReadonlySet<ApprovalStatus> = new Set([
   'blocked',
   'failed',
 ]);
+const USDC_MINT = 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v';
 
 export function envelopeStatus(envelope: SpendEnvelope): SpendEnvelopeStatus {
   switch (envelope.kind) {
@@ -105,10 +106,10 @@ export function envelopeProtocolBadge(envelope: SpendEnvelope): SpendEnvelopePro
       const connectorId = stringFromRecord(envelope.schedule.metadata, 'connectorId')
         ?? stringFromRecord(envelope.schedule.riskMetadata, 'connectorId');
       if (connectorId) return { id: normalizedBadgeId(connectorId), label: connectorId.toUpperCase() };
-      return { id: 'recurring', label: 'Recurring' };
+      return { id: 'scheduler', label: 'Scheduler' };
     }
     case 'streaming':
-      return { id: 'streaming', label: 'Streaming' };
+      return { id: 'spl-delegate', label: 'SPL Delegate' };
   }
 }
 
@@ -189,7 +190,7 @@ function recurringRemaining(schedule: RecurringScheduleRecord): SpendEnvelopeRem
 }
 
 function streamingRemaining(session: SessionGrant): SpendEnvelopeRemaining {
-  const token = stringFromRecord(session.metadata, 'tokenSymbol') ?? 'USDC';
+  const token = streamingTokenLabel(session);
   const remaining = subtractDecimalStrings(session.capAmount, session.spentAmount);
   return {
     label: `${remaining} ${token} remaining`,
@@ -198,6 +199,14 @@ function streamingRemaining(session: SessionGrant): SpendEnvelopeRemaining {
     cap: session.capAmount,
     remaining,
   };
+}
+
+function streamingTokenLabel(session: SessionGrant): string {
+  const metadataLabel = stringFromRecord(session.metadata, 'tokenSymbol')
+    ?? stringFromRecord(session.metadata, 'token');
+  if (metadataLabel) return metadataLabel;
+  if (session.tokenMint === USDC_MINT) return 'USDC';
+  return shortAddress(session.tokenMint);
 }
 
 function oneTimeNextEvent(action: PreparedAction): SpendEnvelopeNextEvent {
@@ -230,6 +239,10 @@ function stringFromRecord(record: unknown, key: string): string | undefined {
 function normalizedBadgeId(value: string): string {
   const normalized = value.trim().toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '');
   return normalized || 'protocol';
+}
+
+function shortAddress(value: string): string {
+  return value.length > 12 ? `${value.slice(0, 4)}...${value.slice(-4)}` : value;
 }
 
 function subtractDecimalStrings(left: string, right: string): string {

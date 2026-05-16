@@ -12,6 +12,7 @@ export {
   isBrowserDeviceAgentInitialized,
   setBrowserDeviceAgentSecretStoreMode,
   setBrowserDeviceAgentWalletAddress,
+  subscribeBrowserDeviceAgentStatus,
   type BrowserDeviceAgentDeps,
   type ConfigMetadata,
   type MetadataStore,

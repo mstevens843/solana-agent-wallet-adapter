@@ -187,3 +187,38 @@ describe('OpenAiCompatibleProvider.ask', () => {
     expect(result.output_text).toBe('answer here from responses api');
   });
 });
+
+describe('OpenAiCompatibleProvider OpenRouter headers', () => {
+  function openRouterConfig(): RuntimeConfig {
+    return {
+      provider: 'openrouter',
+      apiFormat: 'openai-compatible',
+      model: 'meta-llama/llama-3.1-70b-instruct',
+      baseUrl: 'https://openrouter.ai/api',
+      apiKey: 'sk-or-test-ABCDEFGHIJKLMNOP',
+    };
+  }
+
+  it('sends HTTP-Referer and X-Title when provider is openrouter', async () => {
+    const http = new FakeHttpExecutor();
+    http.queueResponse(200, JSON.stringify({ choices: [{ message: { content: '{"intent":"x"}' } }] }));
+    const provider = new OpenAiCompatibleProvider(openRouterConfig(), http);
+    await provider.generatePlan({ userPrompt: 'hi' });
+
+    const headers = http.calls[0]!.headers;
+    expect(headers['HTTP-Referer']).toBeDefined();
+    expect(String(headers['HTTP-Referer'])).toMatch(/^https?:\/\//);
+    expect(headers['X-Title']).toBe('Agentic Browser Device Agent');
+  });
+
+  it('does NOT send HTTP-Referer or X-Title for non-openrouter providers (no origin leakage)', async () => {
+    const http = new FakeHttpExecutor();
+    http.queueResponse(200, JSON.stringify({ choices: [{ message: { content: '{"intent":"x"}' } }] }));
+    const provider = new OpenAiCompatibleProvider(config(), http);
+    await provider.generatePlan({ userPrompt: 'hi' });
+
+    const headers = http.calls[0]!.headers;
+    expect(headers['HTTP-Referer']).toBeUndefined();
+    expect(headers['X-Title']).toBeUndefined();
+  });
+});

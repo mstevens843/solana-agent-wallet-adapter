@@ -124,6 +124,12 @@ Per-provider expectations to verify in DevTools while step 14 fires:
 - **OpenAI**: outbound URL is `https://api.openai.com/v1/chat/completions`. The request omits `temperature` when the
   selected model is in the `gpt-5`, `o1`, `o3`, or `o4` family. The body includes `response_format` of
   `{ "type": "json_object" }` for plan and review, and omits it for ask.
+  **Known CORS limitation:** OpenAI does not include `Access-Control-Allow-Origin` on POST responses, so the
+  browser blocks the response body even when the request reaches OpenAI. Direct OpenAI calls from the browser-native
+  runtime will appear to hang or fail. The OpenAI CORS probe (`--filter=openai`) exits non-zero to surface this.
+  Workaround: select **OpenRouter** and use one of its `openai/*` model routes (OpenRouter has correct CORS), or
+  proxy through your own backend. The amber-tier UI chip warns users; the smoke checklist should EXPECT this
+  failure for direct OpenAI in step 14 until the workaround is applied.
 - **Anthropic**: outbound URL is `https://api.anthropic.com/v1/messages`. The request headers include
   `anthropic-dangerous-direct-browser-access: true`, `x-api-key: <redacted>`, and `anthropic-version: 2023-06-01`.
 - **Gemini**: outbound URL is `https://generativelanguage.googleapis.com/v1beta/openai/chat/completions`. The request

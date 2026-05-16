@@ -176,7 +176,12 @@ export class FetchHttpExecutor implements HttpExecutor {
     }
 
     const text = await response.text();
-    if (text.length > this.maxBytes) {
+    // Count UTF-8 bytes, not UTF-16 code units. text.length undercounts
+    // multi-byte chars (emoji, non-Latin scripts) by up to 4x, which would let
+    // an oversized response slip past the cap. Streaming path above already
+    // counts byteLength correctly.
+    const byteLength = new TextEncoder().encode(text).length;
+    if (byteLength > this.maxBytes) {
       throw new ProviderHttpError(
         PROVIDER_ERROR_CODES.INVALID_RESPONSE,
         `Provider response exceeded the ${Math.floor(this.maxBytes / 1024)} KiB cap.`,
