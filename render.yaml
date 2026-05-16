@@ -43,6 +43,14 @@ services:
         value: "false"
       - key: VITE_AGENTIC_GA_MEASUREMENT_ID
         value: "G-MJ3VZ7VEX7"
+      # Evidence-provider operator keys. The cloud `/api/birdeye/*` and
+      # `/api/coingecko/*` endpoints are the fall-through path used by Device
+      # Agent and any client that does not have the local bridge running. Set
+      # the values in the Render dashboard so the keys are not committed.
+      - key: BIRDEYE_API_KEY
+        sync: false
+      - key: COINGECKO_API_KEY
+        sync: false
       # User-funded streaming-session delegates: per-session lamports the web
       # service transfers from the user's wallet to the ephemeral delegate at
       # session-open. Default in code is 5_000_000 (0.005 SOL). Override only

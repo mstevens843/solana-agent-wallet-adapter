@@ -2,8 +2,10 @@ import { describe, expect, it } from 'vitest';
 
 import {
   evidenceEntryTone,
+  isAuditEvidenceKey,
   isTokenMismatchEvidenceKey,
   reviewEvidenceRows,
+  reviewEvidenceSections,
   swapTokenTextMismatchWarning,
   tokenMismatchEvidenceRows,
 } from '../agentReviewPresentation.js';
@@ -129,6 +131,85 @@ describe('agent review presentation helpers', () => {
       { label: 'Wallet boundary', value: 'Wallet approval is still required', tone: 'neutral' },
     ]);
     expect(rows.map((row) => row.label)).not.toContain('Findings');
+  });
+
+  it('keeps decision contract and raw object evidence out of normal findings', () => {
+    const rows = reviewEvidenceRows({
+      status: 'approved',
+      evidence: {
+        findings: [
+          { label: 'SOL price', value: '$86.60 (BirdEye)', tone: 'good' },
+        ],
+        decisionContract: {
+          decision: 'approve',
+          evidenceFactIds: ['fact.price.sol'],
+          blockingFactIds: [],
+          missingFactIds: [],
+          confidence: 'low',
+        },
+        confidenceFactors: [{ id: 'gate.passed', delta: 0.2 }],
+        rawProviderPayload: { nested: true },
+      },
+      auditReceipt: {
+        schemaVersion: 1,
+        receiptId: 'rcpt_123',
+        planFingerprint: 'plan_hash',
+        walletAddress: 'wallet',
+        cluster: 'mainnet-beta',
+        routePlanHash: 'route_hash',
+        evidenceHash: 'evidence_hash',
+        aiDecisionHash: 'ai_hash',
+        finalDecision: 'approve',
+        gateDecision: 'pass',
+        checkedAt: '2026-05-16T00:00:00.000Z',
+        providerRoutes: ['price'],
+        evidenceFactIds: ['fact.price.sol'],
+        blockingFactIds: [],
+        missingRequirementIds: [],
+      },
+    });
+
+    expect(isAuditEvidenceKey('decisionContract')).toBe(true);
+    expect(rows).toEqual([{ label: 'SOL price', value: '$86.60 (BirdEye)', tone: 'good' }]);
+    expect(rows.map((row) => row.label)).not.toContain('Decision contract');
+    expect(rows.map((row) => row.label)).not.toContain('Raw provider payload');
+    expect(rows.map((row) => row.label)).not.toContain('Audit receipt');
+  });
+
+  it('groups varied agent findings and moves audit rows into Advanced Audit', () => {
+    const sections = reviewEvidenceSections({
+      status: 'approved',
+      summary: 'All requested gates passed.',
+      reason: 'The swap matched the requested policy.',
+      evidence: {
+        findings: [
+          { label: 'SOL price', value: '$86.60 (BirdEye)', tone: 'good' },
+          { label: 'BTC Fear & Greed Index', value: '31 (Fear) - alternative.me', tone: 'good' },
+          { label: 'INPUT SOL mint authority', value: 'disabled (null) - BirdEye', tone: 'good' },
+          { label: 'Slippage protection', value: '0.50% (50 bps)', tone: 'good' },
+          { label: 'Swap amount', value: '0.01 SOL (~$0.87)', tone: 'neutral' },
+        ],
+        sources: [{ title: 'BirdEye', url: 'https://birdeye.so/' }],
+        decisionContract: {
+          decision: 'approve',
+          evidenceFactIds: ['fact.price.sol'],
+          blockingFactIds: [],
+          missingFactIds: [],
+          confidence: 'low',
+        },
+      },
+    }, { actionType: 'swap' });
+
+    expect(sections.find((section) => section.id === 'decision')?.rows.map((row) => row.label)).toEqual(['Summary', 'Approval summary']);
+    expect(sections.find((section) => section.id === 'market')?.rows.map((row) => row.label)).toEqual(['SOL price', 'BTC Fear & Greed Index']);
+    expect(sections.find((section) => section.id === 'token')?.rows.map((row) => row.label)).toEqual(['INPUT SOL mint authority']);
+    expect(sections.find((section) => section.id === 'transaction')?.rows.map((row) => row.label)).toEqual(['Slippage protection', 'Swap amount']);
+    expect(sections.find((section) => section.id === 'sources')?.rows.map((row) => row.label)).toEqual(['Source: BirdEye']);
+    expect(sections.find((section) => section.id === 'advanced')?.rows.map((row) => row.label)).toEqual(expect.arrayContaining([
+      'Decision contract',
+      'Confidence',
+      'Cited evidence ids',
+    ]));
   });
 
   it('renders research sources as first-class rows without raw source JSON', () => {

@@ -119,8 +119,10 @@ import {
   trackWalletConnectSuccess,
 } from './analytics.js';
 import {
-  reviewEvidenceRows,
+  reviewEvidenceSections,
   swapTokenTextMismatchWarning,
+  type AgentEvidenceDisplayRow,
+  type AgentEvidenceDisplaySection,
   type AgentEvidenceTone,
 } from './agentReviewPresentation.js';
 import { findingsSpecFor } from './agentFindingsSpec.js';
@@ -5349,7 +5351,7 @@ function cliHeroSection(): string {
         </div>
       </div>
       <div class="tooling-proof-grid" aria-label="CLI runtime model">
-        ${toolingProofCard('Bridge', 'Local only', 'HTTP approval bridge stays on 127.0.0.1 with a user-owned token.', 'agentRouter')}
+        ${toolingProofCard('Bridge', 'Local runtime', 'HTTP approval bridge stays on 127.0.0.1 with a user-owned token.', 'agentRouter')}
         ${toolingProofCard('Wallet host', 'External signer', 'Browser and mobile wallets approve the prepared transaction bytes.', 'phantom')}
         ${toolingProofCard('Receipts', 'Auditable handoff', 'Agents get bounded results, denials, and receipts instead of private keys.', 'solana')}
       </div>
@@ -6974,11 +6976,12 @@ function storageBadge(kind: StorageDurabilityKind, title?: string): StorageDurab
       return { kind, label: 'Cloud retry', title: title ?? 'Cloud upload failed and can be retried.' };
     case 'local-only':
     default:
-      return { kind: 'local-only', label: 'Local only', title: title ?? 'Saved only in this browser workspace.' };
+      return { kind: 'local-only', label: 'Local workspace', title: title ?? 'Saved only in this browser workspace.' };
   }
 }
 
 function storageBadgeHtml(badge: StorageDurabilityBadge): string {
+  if (badge.kind === 'local-only') return '';
   return `<span class="storage-durability-chip ${escapeHtml(badge.kind)}" title="${escapeHtml(badge.title)}">${escapeHtml(badge.label)}</span>`;
 }
 
@@ -9824,7 +9827,7 @@ function commandCloudPreferenceSnapshotCard(): CommandPreferenceSnapshotCard {
     : signedIn
       ? 'Wallet identity issue'
       : unavailable
-        ? 'Local only'
+        ? 'Local workspace'
         : 'Local workspace';
   return {
     label: 'Cloud storage',
@@ -11318,8 +11321,43 @@ function generatedPlanUserNote(plan: AgentPlan): string {
   return `
     <section class="review-plan-user-note" aria-label="User note" title="${escapeHtml(note)}">
       <span>Note</span>
-      <p>${escapeHtml(note)}</p>
+      ${expandableCopyHtml(note, {
+        className: 'review-plan-user-note-copy',
+        showLabel: 'Show full note',
+        hideLabel: 'Hide note',
+      })}
     </section>
+  `;
+}
+
+function expandableCopyHtml(
+  value: string,
+  opts: {
+    className?: string;
+    previewLength?: number;
+    showLabel?: string;
+    hideLabel?: string;
+    paragraphClassName?: string;
+  } = {},
+): string {
+  const normalized = value.replace(/\s+/g, ' ').trim();
+  const previewLength = opts.previewLength ?? 178;
+  const className = ['expandable-copy', opts.className].filter(Boolean).join(' ');
+  if (normalized.length <= previewLength) {
+    return `<p class="${escapeHtml(['expandable-copy-static', opts.paragraphClassName].filter(Boolean).join(' '))}">${escapeHtml(value.trim())}</p>`;
+  }
+  const preview = compactSentence(normalized, previewLength);
+  return `
+    <details class="${escapeHtml(className)}">
+      <summary>
+        <span class="expandable-copy-preview">${escapeHtml(preview)}</span>
+        <span class="expandable-copy-toggle">
+          <span class="expandable-copy-show">+ ${escapeHtml(opts.showLabel ?? 'Show full text')}</span>
+          <span class="expandable-copy-hide">- ${escapeHtml(opts.hideLabel ?? 'Hide text')}</span>
+        </span>
+      </summary>
+      <p class="expandable-copy-full ${escapeHtml(opts.paragraphClassName ?? '')}">${escapeHtml(value.trim())}</p>
+    </details>
   `;
 }
 
@@ -11374,7 +11412,7 @@ function generatedPlanAgentReviewStrip(record: GeneratedPlanRecord): string {
     : '';
   return `
     <section class="agent-review-strip ${escapeHtml(review.status)}${watching ? ' watching' : ''}" aria-label="Agent review">
-      <div>
+      <div class="agent-review-strip-head">
         <span>Agent review</span>
         <strong class="agent-review-state ${escapeHtml(review.status)}">${escapeHtml(label)}</strong>
         <em>${escapeHtml(detail)}</em>
@@ -11382,7 +11420,7 @@ function generatedPlanAgentReviewStrip(record: GeneratedPlanRecord): string {
         ${watchBadge}
         ${stale ? '<span class="agent-review-stale-pill" title="The draft changed after this review.">Stale</span>' : ''}
       </div>
-      ${agentReviewBlockingReasonPanel(review) || `<p>${escapeHtml(review.reason || 'Agent review is available for context. Sending for approval is still your decision.')}</p>`}
+      ${agentReviewDecisionCopy(review)}
       ${stale ? '<p class="accent-note">This review is stale because the draft changed. Ask the agent again before relying on the decision.</p>' : ''}
       ${review.status === 'needs_input' ? agentReviewQuestionsForm(record) : ''}
       ${agentEvidenceDrawer(review, { stale, actionType: record.plan.actionType })}
@@ -11392,14 +11430,57 @@ function generatedPlanAgentReviewStrip(record: GeneratedPlanRecord): string {
   `;
 }
 
-function agentReviewBlockingReasonPanel(review: AgentPlanReviewState): string {
-  if (review.status !== 'denied' && review.status !== 'error') return '';
-  const reason = review.reason?.trim();
-  if (!reason) return '';
+function agentReviewDecisionCopy(
+  review: AgentPlanReviewState,
+  fallback = 'Agent review is available for context. Sending for approval is still your decision.',
+): string {
+  const reason = review.reason?.trim() || fallback;
+  const summary = review.summary?.trim();
+  const summaryHtml = summary && summary !== reason
+    ? `
+      <section class="agent-review-copy-card">
+        <span>Summary</span>
+        ${expandableCopyHtml(summary, {
+          className: 'agent-review-copy-text',
+          showLabel: 'Show full summary',
+          hideLabel: 'Hide summary',
+          previewLength: 180,
+        })}
+      </section>
+    `
+    : '';
   return `
-    <section class="agent-review-blocking-reason" aria-label="Agent blocking reason">
-      <span>Blocking reason</span>
-      <p>${escapeHtml(reason)}</p>
+    <div class="agent-review-copy">
+      ${summaryHtml}
+      ${agentReviewReasonPanel(review, reason)}
+    </div>
+  `;
+}
+
+function agentReviewReasonPanel(review: AgentPlanReviewState, reason: string): string {
+  const label = review.status === 'denied' || review.status === 'error'
+    ? 'Blocking reason'
+    : review.status === 'needs_input'
+      ? 'Needs input'
+      : review.status === 'approved'
+        ? 'Why it passed'
+        : 'Review status';
+  const tone = review.status === 'denied' || review.status === 'error'
+    ? 'danger'
+    : review.status === 'needs_input'
+      ? 'warn'
+      : review.status === 'approved'
+        ? 'pass'
+        : 'neutral';
+  return `
+    <section class="agent-review-copy-card agent-review-reason-panel ${escapeHtml(tone)}" aria-label="${escapeHtml(label)}">
+      <span>${escapeHtml(label)}</span>
+      ${expandableCopyHtml(reason, {
+        className: 'agent-review-copy-text',
+        showLabel: 'Show full reason',
+        hideLabel: 'Hide reason',
+        previewLength: 220,
+      })}
     </section>
   `;
 }
@@ -11511,8 +11592,12 @@ function agentEvidenceDrawer(
   review: AgentPlanReviewState,
   opts: { stale?: boolean; actionType?: string } = {},
 ): string {
-  const rows = agentEvidenceRows(review, opts);
-  if (!rows.length) return '';
+  const sections = agentEvidenceSections(review, opts);
+  const visibleSections = sections.filter((section) => !section.advanced);
+  const advancedSection = sections.find((section) => section.advanced);
+  const visibleCount = visibleSections.reduce((sum, section) => sum + section.rows.length, 0);
+  const advancedCount = advancedSection?.rows.length ?? 0;
+  if (!visibleCount && !advancedCount) return '';
   const statusTone = review.status === 'approved'
     ? 'pass'
     : review.status === 'denied' || review.status === 'error'
@@ -11527,23 +11612,78 @@ function agentEvidenceDrawer(
     <details class="agent-evidence-drawer">
       <summary>
         <span class="agent-evidence-summary-left">
-          <span class="agent-evidence-summary-label">Agent findings (${rows.length})</span>
+          <span class="agent-evidence-summary-label">Agent findings (${visibleCount})</span>
           <span class="agent-evidence-summary-state ${statusTone}">${escapeHtml(statusLabel)}</span>
         </span>
       </summary>
+      <div class="agent-evidence-sections">
+        ${visibleSections.map(agentEvidenceSectionHtml).join('')}
+      </div>
+      ${advancedSection ? agentEvidenceAdvancedSectionHtml(advancedSection, review) : ''}
+    </details>
+  `;
+}
+
+function agentEvidenceSectionHtml(section: AgentEvidenceDisplaySection): string {
+  return `
+    <section class="agent-evidence-section ${escapeHtml(section.id)}">
+      <div class="agent-evidence-section-head">
+        <span>${escapeHtml(section.label)}</span>
+        <strong>${section.rows.length}</strong>
+      </div>
       <dl class="agent-evidence-rows">
-        ${rows.map((row) => `
-          <div class="agent-evidence-row ${row.tone ? escapeHtml(row.tone) : ''}">
-            <dt>${escapeHtml(row.label)}</dt>
-            <dd>${agentEvidenceValueHtml(row)}</dd>
-          </div>
-        `).join('')}
+        ${section.rows.map(agentEvidenceRowHtml).join('')}
       </dl>
+    </section>
+  `;
+}
+
+function agentEvidenceAdvancedSectionHtml(section: AgentEvidenceDisplaySection, review: AgentPlanReviewState): string {
+  return `
+    <details class="agent-evidence-advanced">
+      <summary>
+        <span>${escapeHtml(section.label)} (${section.rows.length})</span>
+      </summary>
+      <dl class="agent-evidence-rows">
+        ${section.rows.map(agentEvidenceRowHtml).join('')}
+      </dl>
+      ${agentEvidenceAdvancedRawHtml(review)}
+    </details>
+  `;
+}
+
+function agentEvidenceRowHtml(row: AgentEvidenceDisplayRow): string {
+  return `
+    <div class="agent-evidence-row ${row.tone ? escapeHtml(row.tone) : ''}">
+      <dt>${escapeHtml(row.label)}</dt>
+      <dd>${agentEvidenceValueHtml(row)}</dd>
+    </div>
+  `;
+}
+
+function agentEvidenceAdvancedRawHtml(review: AgentPlanReviewState): string {
+  const evidenceDecisionContract = review.evidence?.decisionContract;
+  const raw = toJsonObject({
+    ...(review.decisionContract ? { decisionContract: review.decisionContract } : {}),
+    ...(!review.decisionContract && isJsonObject(evidenceDecisionContract) ? { decisionContract: evidenceDecisionContract } : {}),
+    ...(review.evidenceGate ? { evidenceGate: review.evidenceGate } : {}),
+    ...(review.auditReceipt ? { auditReceipt: review.auditReceipt } : {}),
+    ...(review.decisionViolations?.length ? { decisionViolations: review.decisionViolations } : {}),
+  });
+  if (!raw || Object.keys(raw).length === 0) return '';
+  return `
+    <details class="agent-evidence-raw">
+      <summary>Raw contract JSON</summary>
+      <pre>${escapeHtml(stableJson(raw))}</pre>
     </details>
   `;
 }
 
 function agentEvidenceValueHtml(row: { value: string; tone?: AgentEvidenceTone }): string {
+  if (/^https?:\/\//i.test(row.value.trim())) {
+    const url = row.value.trim();
+    return `<a href="${escapeHtml(url)}" target="_blank" rel="noreferrer">${escapeHtml(citationHost(url))}</a>`;
+  }
   if (!row.tone || row.tone === 'neutral') return escapeHtml(row.value);
   const sourceSuffix = splitAgentEvidenceSourceSuffix(row.value);
   if (!sourceSuffix) {
@@ -11575,11 +11715,11 @@ function isAgentEvidenceSourceSuffix(value: string): boolean {
   return /^(?:BirdEye|Jupiter|CoinGecko|alternative\.me|DEX Screener|https?:\/\/|www\.)/i.test(value);
 }
 
-function agentEvidenceRows(
+function agentEvidenceSections(
   review: AgentPlanReviewState,
   opts: { stale?: boolean; actionType?: string } = {},
-): Array<{ label: string; value: string; tone?: AgentEvidenceTone }> {
-  return reviewEvidenceRows(review, {
+): AgentEvidenceDisplaySection[] {
+  return reviewEvidenceSections(review, {
     stale: opts.stale,
     stringify: stableJson,
     actionType: opts.actionType,
@@ -14508,7 +14648,7 @@ function aiProviderHelperText(): string {
       return 'Device Agent uses the gated Android native runtime and encrypted native config storage.';
     }
     return canUseDeviceAgentBrowserNative()
-      ? 'Device Agent runs provider calls in this tab. Use a low-cap key and close the tab to stop the runtime.'
+      ? 'Device Agent makes AI calls in this tab. We suggest a low-limit key to avoid burning quota; close the tab to stop it.'
       : 'Device Agent is gated for local development or allowlisted cloud wallets.';
   }
   return '';
@@ -15621,7 +15761,6 @@ function completedPlanCard(plan: CompletedPlanRecord): string {
             ${evidenceBadgeHtml(evidenceBadge)}
             ${submissionPill}
             <span>${escapeHtml(plan.kind === 'recurring' ? 'Repeat' : 'One-time')}</span>
-            <span>${escapeHtml(titleCaseCluster(plan.cluster))}</span>
           </div>
           ${completedPlanTimelineHtml(plan)}
           <h3 title="${escapeHtml(plan.title)}">${escapeHtml(completedPlanDisplayTitle(plan))}</h3>
@@ -15629,18 +15768,6 @@ function completedPlanCard(plan: CompletedPlanRecord): string {
         </div>
         <div class="completed-history-decision">
           ${completedPlanHero(plan)}
-          <div class="completed-header-actions completed-history-actions">
-            <button data-copy="${escapeHtml(plan.copyPayload)}" data-copy-name="Done item">${escapeHtml(copyLabel)}</button>
-            ${plan.trustBundlePayload ? `<button data-copy="${escapeHtml(plan.trustBundlePayload)}" data-copy-name="Trust bundle">Copy trust bundle</button>` : ''}
-            <button
-              class="utility danger"
-              data-completed-delete="${escapeHtml(plan.id)}"
-              ${state.busy || deleteRequiresBridge ? 'disabled' : ''}
-              title="${deleteRequiresBridge ? 'Connect the local bridge before deleting bridge-backed done work.' : 'Delete this item from Done.'}"
-            >
-              Delete
-            </button>
-          </div>
         </div>
       </div>
       ${completedPlanSummaryGrid(plan)}
@@ -15658,6 +15785,18 @@ function completedPlanCard(plan: CompletedPlanRecord): string {
             ${plan.txid ? txBlock(plan.txid, plan.cluster) : ''}
           </div>
         </details>
+      </div>
+      <div class="inbox-approval-footer-row completed-history-footer-row">
+        <button class="utility inbox-footer-action" data-copy="${escapeHtml(plan.copyPayload)}" data-copy-name="Done item">${escapeHtml(copyLabel)}</button>
+        ${plan.trustBundlePayload ? `<button class="utility inbox-footer-action" data-copy="${escapeHtml(plan.trustBundlePayload)}" data-copy-name="Trust bundle">Copy trust bundle</button>` : ''}
+        <button
+          class="utility danger recurring-delete-mini"
+          data-completed-delete="${escapeHtml(plan.id)}"
+          ${state.busy || deleteRequiresBridge ? 'disabled' : ''}
+          title="${deleteRequiresBridge ? 'Connect the local bridge before deleting bridge-backed done work.' : 'Delete this item from Done.'}"
+        >
+          Delete
+        </button>
       </div>
     </article>
   `;
@@ -15712,10 +15851,24 @@ function completedPlanAmountLabel(plan: CompletedPlanRecord): string {
   const token = plan.token?.trim();
   const formattedAmount = formatCompletedAmountText(plan.amount);
   if (!token) return formattedAmount;
-  if (plan.amount.includes(token)) return formattedAmount;
   const route = parseTokenRoute(token);
-  if (route) return `${formattedAmount} ${tokenDisplayLabel(route.from)} to ${tokenDisplayLabel(route.to)}`;
+  if (route) {
+    if (parseCompletedSwapAmount(formattedAmount)) return formattedAmount;
+    const fromLabel = tokenDisplayLabel(route.from);
+    const toLabel = tokenDisplayLabel(route.to);
+    const amountIncludesFrom = amountEndsWithTokenLabel(formattedAmount, route.from) || amountEndsWithTokenLabel(formattedAmount, fromLabel);
+    return `${formattedAmount}${amountIncludesFrom ? '' : ` ${fromLabel}`} to ${toLabel}`;
+  }
+  const tokenLabel = tokenDisplayLabel(token);
+  if (amountEndsWithTokenLabel(formattedAmount, token) || amountEndsWithTokenLabel(formattedAmount, tokenLabel)) return formattedAmount;
   return `${formattedAmount} ${tokenDisplayLabel(token)}`;
+}
+
+function amountEndsWithTokenLabel(value: string, token: string): boolean {
+  const label = token.trim().toLowerCase();
+  if (!label) return false;
+  const parts = value.trim().toLowerCase().split(/\s+/);
+  return parts[parts.length - 1] === label;
 }
 
 function formatCompletedAmountText(value: string): string {
@@ -15801,13 +15954,14 @@ function completedPlanRecordRef(plan: CompletedPlanRecord): CompletedPlanRecordR
 function completedPlanSummaryGrid(plan: CompletedPlanRecord): string {
   const record = completedPlanRecordRef(plan);
   const connectorRead = completedPlanConnectorRead(plan);
+  const amountLabel = completedPlanAmountLabel(plan);
   const rows: Array<{ label: string; value: string; title?: string; copyValue?: string; tone?: 'amount'; copyLabel?: string; copyName?: string; copyActions?: SummaryCopyAction[] }> = connectorRead
     ? [
         { label: 'Question', value: pythQuestionDisplayLabel(stringFromJsonLike(connectorRead.question)) },
         {
           label: 'Result',
-          value: stringFromJsonLike(connectorRead.resultSummary) || completedPlanAmountLabel(plan),
-          title: stringFromJsonLike(connectorRead.resultSummary) || completedPlanAmountLabel(plan),
+          value: stringFromJsonLike(connectorRead.resultSummary) || amountLabel,
+          title: stringFromJsonLike(connectorRead.resultSummary) || amountLabel,
           tone: 'amount',
         },
         {
@@ -15824,8 +15978,8 @@ function completedPlanSummaryGrid(plan: CompletedPlanRecord): string {
     { label: 'Wallet', value: plan.walletAddress ? short(plan.walletAddress) : 'No wallet', title: plan.walletAddress || 'No wallet', copyValue: plan.walletAddress || undefined },
     {
       label: 'Amount',
-      value: completedPlanAmountLabel(plan),
-      title: plan.token ? `${plan.amount ?? ''} ${plan.token}`.trim() : completedPlanAmountLabel(plan),
+      value: amountLabel,
+      title: amountLabel,
       tone: 'amount',
       copyActions: completedPlanTokenCopyActions(plan),
     },
@@ -23983,7 +24137,11 @@ async function fetchCoinGeckoGlobalSnapshot(): Promise<CoinGeckoGlobalSnapshot |
   if (!snapshot) {
     try {
       const response = await fetch('/api/coingecko/global', { method: 'GET', credentials: 'include' });
-      if (response.ok) {
+      if (!response.ok) {
+        const contentType = response.headers.get('content-type') ?? '';
+        const payload = await response.json().catch(() => null) as unknown;
+        recordEvidenceProviderUnavailable('coingecko', '/api/coingecko/global', response.status, contentType, payload);
+      } else {
         const parsed = await response.json().catch(() => undefined) as CoinGeckoGlobalSnapshot | undefined;
         if (parsed) snapshot = parsed;
       }
@@ -24026,7 +24184,11 @@ async function fetchCoinGeckoTokenEvidence(mints: string[]): Promise<CoinGeckoTo
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify(body),
       });
-      if (response.ok) {
+      if (!response.ok) {
+        const contentType = response.headers.get('content-type') ?? '';
+        const payload = await response.json().catch(() => null) as unknown;
+        recordEvidenceProviderUnavailable('coingecko', '/api/coingecko/token-evidence', response.status, contentType, payload);
+      } else {
         snapshot = await response.json().catch(() => undefined) as CoinGeckoTokenEvidenceSnapshot | undefined;
       }
     } catch {
@@ -24397,11 +24559,16 @@ async function enrichTokenFactsFromBirdEye(plan: AgentPlan, facts: AgentReviewFa
   const candidates = planTokenCandidates(plan).filter((token) => Boolean(token.mint));
   if (!candidates.length) return false;
   const uniqueMints = [...new Set(candidates.map((token) => token.mint!).filter(Boolean))];
-  await Promise.all([
-    fetchTokenMetadataForMints(uniqueMints),
-    fetchTokenPricesForMints(uniqueMints),
-    fetchTokenSecurityForMints(uniqueMints).catch(() => false),
+  // Each inner fetcher is wrapped so one provider hiccup does not drop the others.
+  // Without this, a single Birdeye reject would shortcut Promise.all and the caller's
+  // outer `.catch(() => false)` would swallow the error silently — the exact pattern that
+  // caused Device Agent reviews to show "Agent needs input" with no diagnostic.
+  const fetchOutcomes = await Promise.all([
+    fetchTokenMetadataForMints(uniqueMints).then(() => true).catch((err) => err instanceof Error ? err.message : String(err)),
+    fetchTokenPricesForMints(uniqueMints).then(() => true).catch((err) => err instanceof Error ? err.message : String(err)),
+    fetchTokenSecurityForMints(uniqueMints).then(() => true).catch((err) => err instanceof Error ? err.message : String(err)),
   ]);
+  const failureMessages = fetchOutcomes.filter((entry): entry is string => typeof entry === 'string');
   const mergedTokens = candidates.map((token) => {
     const metadata = token.mint ? tokenMarketMetadata.get(token.mint) : undefined;
     const price = token.mint ? tokenMarketPrices.get(token.mint) : undefined;
@@ -24440,7 +24607,28 @@ async function enrichTokenFactsFromBirdEye(plan: AgentPlan, facts: AgentReviewFa
         : {}),
     };
   });
-  if (!mergedTokens.some((token) => token.source === 'birdeye')) return false;
+  if (!mergedTokens.some((token) => token.source === 'birdeye')) {
+    // Every Birdeye sub-fetch came back empty. If at least one rejected with a real
+    // message, surface that as a `warn` fact so the evidence pipe and the AI (and the
+    // user's findings panel) know WHY this evidence is missing instead of silently
+    // dropping to "needs_input" with a bare `req.birdeye.*` id.
+    if (failureMessages.length) {
+      const reason = redactSecrets(failureMessages[0]!);
+      facts.tokenMint = {
+        state: 'warn',
+        source: 'deterministic',
+        checkedAt: new Date().toISOString(),
+        message: `BirdEye token evidence unavailable: ${reason}`,
+        detail: {
+          ...(facts.tokenMint?.detail ?? {}),
+          provider: 'birdeye',
+          reason,
+          failures: failureMessages.map((message) => redactSecrets(message)),
+        },
+      };
+    }
+    return false;
+  }
   const marketLabels = mergedTokens
     .filter((token) => token.source === 'birdeye')
     .map((token) => {
@@ -35181,16 +35369,13 @@ function preparedActionCard(action: PreparedAction): string {
           <div class="inbox-approval-title-block">
             <div class="inbox-approval-meta">
               <span class="status-pill ${statusTone(action.status)}">${escapeHtml(action.status)}</span>
-              ${storageBadgeHtml(preparedActionStorageBadge(action))}
               ${renderApprovalBadges(action)}
               ${connectorChip(connectorMeta?.id, connectorMeta?.name)}
               <strong class="inbox-approval-meta-title">${escapeHtml(preparedActionCardTitle(action))}</strong>
-              ${evidenceBadgeHtml(evidenceBadgeForAction(action))}
               <span>${escapeHtml(action.kind.replace(/_/g, ' '))}</span>
               ${action.recurringId ? '<span>Repeat</span>' : ''}
               ${inboxActionFailurePill(action)}
               ${action.txStatus && action.txStatus !== 'failed' ? `<span class="status-pill ${txTone(action.txStatus)}">tx ${escapeHtml(action.txStatus)}</span>` : ''}
-              <span>${escapeHtml(inboxApprovalSourceLabel(action))}</span>
             </div>
             ${actionTimelineHtml(action)}
             <p class="ticket-meta-line">${escapeHtml(preparedActionMetaLabel(action))} on ${escapeHtml(action.cluster)} - due ${formatDateTime(action.dueAt)}</p>
@@ -35201,7 +35386,6 @@ function preparedActionCard(action: PreparedAction): string {
               ${confirmable
                 ? `<button data-action-op="confirm" data-action-id="${action.id}" class="primary" ${state.busy ? 'disabled' : ''}>Check confirmation</button>`
                 : `<button data-action-op="execute" data-action-id="${action.id}" class="primary" ${executeDisabled ? 'disabled' : ''} ${executionBlockReason ? `title="${escapeHtml(executionBlockReason)}"` : ''}>${escapeHtml(decisionLabels.approve)}</button>`}
-              <button class="utility danger" data-action-op="reject" data-action-id="${action.id}" ${state.busy || isTerminalPreparedAction(action) ? 'disabled' : ''}>${escapeHtml(decisionLabels.reject)}</button>
             </div>
           </div>
         </div>
@@ -35231,6 +35415,7 @@ function preparedActionCard(action: PreparedAction): string {
           ${hasPendingExecutionLedgerEntry(action) || action.txid || action.status === 'failed' ? `<button class="utility inbox-footer-action" data-attach-tx-action="open" data-action-id="${escapeHtml(action.id)}">Attach existing transaction</button>` : ''}
           ${action.status === 'failed' || action.txError ? `<button class="utility inbox-footer-action" data-debug-export data-action-id="${escapeHtml(action.id)}">Copy debug log</button>` : ''}
           <button class="utility inbox-footer-action" data-action-op="archive" data-action-id="${action.id}" ${state.busy ? 'disabled' : ''} title="Remove from Needs Approval without signing a denial proof.">Archive</button>
+          <button class="utility danger inbox-footer-action" data-action-op="reject" data-action-id="${action.id}" ${state.busy || isTerminalPreparedAction(action) ? 'disabled' : ''}>${escapeHtml(decisionLabels.reject)}</button>
           <button class="utility danger recurring-delete-mini" data-action-op="delete" data-action-id="${action.id}" ${state.busy ? 'disabled' : ''}>Delete</button>
         </div>
       </div>
@@ -35551,17 +35736,32 @@ function marketUsdLabel(subject: MarketAmountSubject | undefined): string {
 
 function marketAmountLineHtml(primary: string, subject: MarketAmountSubject | undefined): string {
   const usd = marketUsdLabel(subject);
+  const displayPrimary = formatDisplayAmountLabel(primary);
   return `
     <div class="market-amount-line">
       ${usd ? `<span class="market-usd-estimate">${escapeHtml(usd)}</span>` : ''}
-      <strong>${escapeHtml(primary)}</strong>
+      <strong>${escapeHtml(displayPrimary)}</strong>
     </div>
   `;
 }
 
 function marketHeroTitle(primary: string, secondary: string, subject: MarketAmountSubject | undefined): string {
   const usd = marketUsdLabel(subject);
-  return [usd, primary, secondary].filter(Boolean).join(' ');
+  return [usd, formatDisplayAmountLabel(primary), secondary].filter(Boolean).join(' ');
+}
+
+function formatDisplayAmountLabel(value: string): string {
+  const trimmed = value.trim();
+  const match = trimmed.match(/^([+-]?\d[\d,]*(?:\.\d+)?)\s+([A-Za-z][A-Za-z0-9-]{0,15})$/);
+  if (!match || !match[1] || !match[2]) return value;
+  const amount = Number(match[1].replace(/,/g, ''));
+  if (!Number.isFinite(amount)) return value;
+  const rounded = amount.toLocaleString('en-US', {
+    maximumFractionDigits: 2,
+    minimumFractionDigits: 0,
+    useGrouping: false,
+  });
+  return `${rounded} ${match[2]}`;
 }
 
 function formatUsdEstimate(value: number): string {
@@ -35570,8 +35770,8 @@ function formatUsdEstimate(value: number): string {
   return new Intl.NumberFormat('en-US', {
     style: 'currency',
     currency: 'USD',
-    minimumFractionDigits: value >= 10 ? 2 : 4,
-    maximumFractionDigits: value >= 10 ? 2 : 4,
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 2,
   }).format(value);
 }
 
@@ -35745,8 +35945,9 @@ async function tokenMarketRequest(path: string, body: Record<string, unknown>): 
       bridgeError = err;
     }
   }
+  const cloudPath = `/api/birdeye${path}`;
   try {
-    const response = await fetch(`/api/birdeye${path}`, {
+    const response = await fetch(cloudPath, {
       method: 'POST',
       credentials: 'include',
       headers: { 'content-type': 'application/json' },
@@ -35754,10 +35955,12 @@ async function tokenMarketRequest(path: string, body: Record<string, unknown>): 
     });
     const contentType = response.headers.get('content-type') ?? '';
     if (!contentType.toLowerCase().includes('application/json')) {
+      recordEvidenceProviderUnavailable('birdeye', cloudPath, response.status, contentType);
       throw new Error('BirdEye market data APIs are not reachable from this page.');
     }
     const payload = await response.json().catch(() => null) as unknown;
     if (!response.ok) {
+      recordEvidenceProviderUnavailable('birdeye', cloudPath, response.status, contentType, payload);
       throw new Error(cloudErrorMessage(payload, response.status));
     }
     return asRecord(payload) ?? {};
@@ -35765,6 +35968,29 @@ async function tokenMarketRequest(path: string, body: Record<string, unknown>): 
     if (bridgeError) throw bridgeError;
     throw err;
   }
+}
+
+function recordEvidenceProviderUnavailable(
+  provider: 'birdeye' | 'coingecko',
+  path: string,
+  status: number,
+  contentType: string,
+  payload?: unknown,
+): void {
+  const reason = status === 501
+    ? `${provider === 'birdeye' ? 'BirdEye' : 'CoinGecko'} operator key is not configured on the cloud (HTTP 501).`
+    : !contentType.toLowerCase().includes('application/json')
+      ? `${provider === 'birdeye' ? 'BirdEye' : 'CoinGecko'} endpoint returned ${contentType || 'no content-type'} instead of JSON.`
+      : `${provider === 'birdeye' ? 'BirdEye' : 'CoinGecko'} endpoint failed: ${cloudErrorMessage(payload, status)}`;
+  appendAiDiagnostic({
+    code: 'EVIDENCE_PROVIDER_UNAVAILABLE',
+    message: `${reason} Start the local bridge or set ${provider === 'birdeye' ? 'BIRDEYE_API_KEY' : 'COINGECKO_API_KEY'} on the cloud to populate evidence facts.`,
+    detail: `provider=${provider} status=${status} contentType=${contentType || 'unknown'}`,
+    method: 'POST',
+    path,
+    status,
+    ...(contentType ? { contentType } : {}),
+  });
 }
 
 function parseBirdeyePricePayload(payload: unknown): TokenMarketPrice[] {
@@ -36579,7 +36805,11 @@ function inboxApprovalNote(action: PreparedAction): string {
   return `
     <section class="review-plan-user-note inbox-approval-note" aria-label="Approval note" title="${escapeHtml(note)}">
       <span>Note</span>
-      <p>${escapeHtml(note)}</p>
+      ${expandableCopyHtml(note, {
+        className: 'review-plan-user-note-copy',
+        showLabel: 'Show full note',
+        hideLabel: 'Hide note',
+      })}
     </section>
   `;
 }
@@ -37700,7 +37930,11 @@ function recurringCardNote(payment: RecurringPayment): string {
   return `
     <section class="review-plan-user-note recurring-card-note" aria-label="Repeat payment note" title="${escapeHtml(note)}">
       <span>Note</span>
-      <p>${escapeHtml(note)}</p>
+      ${expandableCopyHtml(note, {
+        className: 'review-plan-user-note-copy',
+        showLabel: 'Show full note',
+        hideLabel: 'Hide note',
+      })}
     </section>
   `;
 }
@@ -37717,13 +37951,13 @@ function recurringAgentReviewStrip(payment: RecurringPayment): string {
     : 'Schedule remains manual at each due wallet approval.';
   return `
     <section class="agent-review-strip recurring-agent-review ${escapeHtml(review.status)}" aria-label="Repeat agent review">
-      <div>
+      <div class="agent-review-strip-head">
         <span>Agent review</span>
         <strong class="agent-review-state ${escapeHtml(review.status)}">${escapeHtml(label)}</strong>
         <em>${escapeHtml(detail)}</em>
         ${agentReviewPathBadge(review.source)}
       </div>
-      ${agentReviewBlockingReasonPanel(review) || `<p>${escapeHtml(review.reason || stateDetail)}</p>`}
+      ${agentReviewDecisionCopy(review, stateDetail)}
       <p class="accent-note">${escapeHtml(stateDetail)}</p>
       ${agentEvidenceDrawer(review, { actionType: 'recurring_payment' })}
     </section>
@@ -40129,7 +40363,7 @@ function bridgeHostLabel(): string {
 }
 
 function titleCaseCluster(cluster: Cluster): string {
-  return cluster === 'mainnet-beta' ? 'Mainnet-Beta' : cluster[0]!.toUpperCase() + cluster.slice(1);
+  return cluster === 'mainnet-beta' ? 'Mainnet' : cluster[0]!.toUpperCase() + cluster.slice(1);
 }
 
 function labKindLabel(kind: string): string {

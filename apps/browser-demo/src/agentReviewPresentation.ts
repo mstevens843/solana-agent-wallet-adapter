@@ -9,6 +9,22 @@ export interface AgentEvidenceDisplayRow {
   tone: AgentEvidenceTone;
 }
 
+export type AgentEvidenceSectionId =
+  | 'decision'
+  | 'market'
+  | 'token'
+  | 'transaction'
+  | 'sources'
+  | 'other'
+  | 'advanced';
+
+export interface AgentEvidenceDisplaySection {
+  id: AgentEvidenceSectionId;
+  label: string;
+  rows: AgentEvidenceDisplayRow[];
+  advanced?: boolean;
+}
+
 export interface AgentEvidenceCheckLike {
   label: string;
   value: string;
@@ -96,6 +112,9 @@ export interface AgentEvidenceReviewLike {
   staleness?: AgentEvidenceStalenessLike;
   evidenceFacts?: AgentEvidenceFactRow[];
   auditReceipt?: AgentAuditReceiptLike;
+  decisionContract?: unknown;
+  evidenceGate?: unknown;
+  decisionViolations?: string[];
 }
 
 export interface ReviewEvidenceRowsOptions {
@@ -148,6 +167,45 @@ const STRUCTURED_EVIDENCE_KEYS = new Set([
   'sources',
   'citations',
   'research',
+]);
+
+const AUDIT_EVIDENCE_KEYS = new Set([
+  'decisioncontract',
+  'decision_contract',
+  'evidencefactids',
+  'evidence_fact_ids',
+  'blockingfactids',
+  'blocking_fact_ids',
+  'missingfactids',
+  'missing_fact_ids',
+  'missingrequirementids',
+  'missing_requirement_ids',
+  'confidence',
+  'confidencescore',
+  'confidence_score',
+  'confidenceband',
+  'confidence_band',
+  'confidencefactors',
+  'confidence_factors',
+  'counterfactuals',
+  'counterfactualsummary',
+  'counterfactual_summary',
+  'evidencegate',
+  'evidence_gate',
+  'decisionviolations',
+  'decision_violations',
+  'auditreceipt',
+  'audit_receipt',
+  'receiptid',
+  'receipt_id',
+  'planfingerprint',
+  'plan_fingerprint',
+  'routeplanhash',
+  'route_plan_hash',
+  'evidencehash',
+  'evidence_hash',
+  'aidecisionhash',
+  'ai_decision_hash',
 ]);
 
 const RESEARCH_FALLBACK_EVIDENCE_KEYS = new Set([
@@ -377,9 +435,6 @@ export function reviewEvidenceRows(
   for (const row of sourceEvidenceRows(evidence)) {
     addRow(row);
   }
-  for (const row of auditReceiptDisplayRows(review.auditReceipt)) {
-    addRow(row);
-  }
 
   const facts = review.facts;
   if (facts) {
@@ -469,7 +524,8 @@ export function reviewEvidenceRows(
     for (const [key, raw] of Object.entries(evidence)) {
       if (raw === undefined || raw === null) continue;
       if (researchFocused && isResearchFallbackEvidenceKey(key)) continue;
-      if (isTokenMismatchEvidenceKey(key) || isStructuredEvidenceKey(key) || isMissingInputEvidenceKey(key)) continue;
+      if (isTokenMismatchEvidenceKey(key) || isStructuredEvidenceKey(key) || isMissingInputEvidenceKey(key) || isAuditEvidenceKey(key)) continue;
+      if (!isDisplayableEvidenceValue(raw)) continue;
       const label = humanizeEvidenceKey(key);
       if (seenLabels.has(label.toLowerCase())) continue;
       const value = evidenceValueText(raw, stringify);
@@ -483,8 +539,155 @@ export function reviewEvidenceRows(
   return rows.slice(0, 32);
 }
 
+export function reviewEvidenceSections(
+  review: AgentEvidenceReviewLike,
+  options: ReviewEvidenceRowsOptions = {},
+): AgentEvidenceDisplaySection[] {
+  const sections = new Map<AgentEvidenceSectionId, AgentEvidenceDisplayRow[]>();
+  const addToSection = (id: AgentEvidenceSectionId, row: AgentEvidenceDisplayRow): void => {
+    const rows = sections.get(id) ?? [];
+    rows.push(row);
+    sections.set(id, rows);
+  };
+
+  const decisionRows = reviewDecisionDisplayRows(review);
+  for (const row of decisionRows) {
+    addToSection('decision', row);
+  }
+
+  const evidenceRows = reviewEvidenceRows(review, options);
+  const groupedRows = decisionRows.length
+    ? evidenceRows.filter((row) => !isDecisionSummaryRow(row))
+    : evidenceRows;
+  for (const row of groupedRows) {
+    addToSection(evidenceSectionForRow(row), row);
+  }
+
+  const ordered: AgentEvidenceDisplaySection[] = [];
+  for (const id of ['decision', 'market', 'token', 'transaction', 'sources', 'other'] as const) {
+    const rows = sections.get(id);
+    if (rows?.length) {
+      ordered.push({ id, label: evidenceSectionLabel(id), rows });
+    }
+  }
+
+  const advancedRows = advancedEvidenceRows(review, options);
+  if (advancedRows.length) {
+    ordered.push({
+      id: 'advanced',
+      label: evidenceSectionLabel('advanced'),
+      rows: advancedRows,
+      advanced: true,
+    });
+  }
+  return ordered;
+}
+
+export function advancedEvidenceRows(
+  review: AgentEvidenceReviewLike,
+  options: ReviewEvidenceRowsOptions = {},
+): AgentEvidenceDisplayRow[] {
+  const rows: AgentEvidenceDisplayRow[] = [];
+  const seen = new Set<string>();
+  const evidence = review.evidence && isPlainRecord(review.evidence) ? review.evidence : undefined;
+  const stringify = options.stringify ?? stableStringify;
+  const addRow = (row: Partial<AgentEvidenceDisplayRow>): void => {
+    const label = textValue(row.label).slice(0, 96);
+    const value = textValue(row.value).slice(0, 720);
+    if (!label || !value) return;
+    const key = `${label.toLowerCase()}\n${value.toLowerCase()}`;
+    if (seen.has(key)) return;
+    seen.add(key);
+    rows.push({
+      label,
+      value,
+      tone: normalizeEvidenceTone(row.tone) ?? 'neutral',
+    });
+  };
+
+  const decisionContract = decisionContractRecord(review, evidence);
+  if (decisionContract) {
+    const decision = textValue(decisionContract.decision);
+    const factIds = stringArrayValue(decisionContract.evidenceFactIds);
+    const blocking = stringArrayValue(decisionContract.blockingFactIds);
+    const missing = stringArrayValue(decisionContract.missingFactIds);
+    const confidence = textValue(decisionContract.confidence);
+    addRow({
+      label: 'Decision contract',
+      value: [
+        decision ? `decision: ${decision}` : '',
+        `${factIds.length} cited fact${factIds.length === 1 ? '' : 's'}`,
+        `${blocking.length} blocking`,
+        `${missing.length} missing`,
+      ].filter(Boolean).join(' · '),
+      tone: decision === 'approve' ? 'good' : decision === 'deny' ? 'fail' : decision === 'needs_input' ? 'warn' : 'neutral',
+    });
+    if (confidence) {
+      addRow({
+        label: 'Confidence',
+        value: confidence,
+        tone: confidence === 'high' ? 'good' : confidence === 'medium' ? 'warn' : 'fail',
+      });
+    }
+    if (factIds.length) {
+      addRow({ label: 'Cited evidence ids', value: factIds.join(', '), tone: 'neutral' });
+    }
+    if (blocking.length) {
+      addRow({ label: 'Blocking facts', value: blocking.join(', '), tone: 'fail' });
+    }
+    if (missing.length) {
+      addRow({ label: 'Missing facts', value: missing.join(', '), tone: 'warn' });
+    }
+    const warnings = stringArrayValue(decisionContract.warnings);
+    if (warnings.length) {
+      addRow({ label: 'Contract warnings', value: warnings.join('; '), tone: 'warn' });
+    }
+  }
+
+  const evidenceGate = isPlainRecord(review.evidenceGate) ? review.evidenceGate : undefined;
+  if (evidenceGate) {
+    const decision = textValue(evidenceGate.decision);
+    addRow({
+      label: 'Evidence gate',
+      value: decision ? `Gate result: ${decision}` : evidenceValueText(evidenceGate, stringify),
+      tone: decision === 'pass' ? 'good' : decision === 'block' ? 'fail' : decision === 'needs_input' ? 'warn' : 'neutral',
+    });
+  }
+
+  if (review.decisionViolations?.length) {
+    addRow({ label: 'Validation issues', value: review.decisionViolations.join('; '), tone: 'warn' });
+  }
+
+  for (const row of auditReceiptDisplayRows(review.auditReceipt)) {
+    addRow(row);
+  }
+
+  if (evidence) {
+    for (const [key, raw] of Object.entries(evidence)) {
+      if (raw === undefined || raw === null) continue;
+      if (normalizeEvidenceKey(key) === 'decisioncontract') continue;
+      if (isStructuredEvidenceKey(key) || isMissingInputEvidenceKey(key) || isTokenMismatchEvidenceKey(key)) continue;
+      if (!isAuditEvidenceKey(key) && isDisplayableEvidenceValue(raw)) continue;
+      const value = isDisplayableEvidenceValue(raw)
+        ? evidenceValueText(raw, stringify)
+        : 'Available in raw audit JSON.';
+      addRow({
+        label: humanizeEvidenceKey(key),
+        value,
+        tone: isAuditEvidenceKey(key) ? 'neutral' : evidenceEntryTone(key, value),
+      });
+    }
+  }
+
+  return rows.slice(0, 24);
+}
+
 export function isTokenMismatchEvidenceKey(key: string): boolean {
   return TOKEN_MISMATCH_KEYS.has(normalizeEvidenceKey(key));
+}
+
+export function isAuditEvidenceKey(key: string): boolean {
+  return AUDIT_EVIDENCE_KEYS.has(normalizeEvidenceKey(key));
 }
 
 function isResearchFallbackEvidenceKey(key: string): boolean {
@@ -574,6 +777,34 @@ function missingInputEvidenceRows(
   return rows;
 }
 
+function reviewDecisionDisplayRows(review: AgentEvidenceReviewLike): AgentEvidenceDisplayRow[] {
+  const status = review.status ?? (review.decision === 'approve' ? 'approved' : review.decision === 'deny' ? 'denied' : undefined);
+  const rows: AgentEvidenceDisplayRow[] = [];
+  if (review.summary) {
+    rows.push({ label: 'Summary', value: review.summary, tone: statusTone(status) });
+  }
+  const reason = textValue(review.reason);
+  if (reason && reason !== review.summary) {
+    rows.push({ label: reasonFallbackLabel(status), value: reason, tone: statusTone(status) });
+  }
+  return rows;
+}
+
+const DECISION_SUMMARY_LABELS = new Set([
+  'summary',
+  'reason',
+  'approval summary',
+  'denial reason',
+  'missing information',
+  'review error',
+  'review status',
+  'review state',
+]);
+
+function isDecisionSummaryRow(row: AgentEvidenceDisplayRow): boolean {
+  return DECISION_SUMMARY_LABELS.has(row.label.toLowerCase());
+}
+
 function addFallbackRows(
   review: AgentEvidenceReviewLike,
   addRow: (row: Partial<AgentEvidenceDisplayRow>) => void,
@@ -591,6 +822,36 @@ function addFallbackRows(
       value: status ? humanizeEvidenceKey(status) : 'No findings were returned by the agent.',
       tone: statusTone(status),
     });
+  }
+}
+
+function evidenceSectionForRow(row: AgentEvidenceDisplayRow): AgentEvidenceSectionId {
+  const text = `${row.label} ${row.value}`.toLowerCase();
+  if (/^source:|^source$|https?:\/\/|www\./i.test(row.label) || /^https?:\/\//i.test(row.value)) return 'sources';
+  if (/\b(threshold|decision|approval|denial|missing input|requested input|stale review)\b/.test(text)) return 'decision';
+  if (/\b(token|mint|freeze authority|mint authority|age|symbol)\b/.test(text)) return 'token';
+  if (/\b(price|rate|usd|market|liquidity|volume|dominance|fear\s*&\s*greed|fear and greed|coingecko|birdeye|dex screener)\b/.test(text)) return 'market';
+  if (/\b(route|quote|slippage|swap amount|simulation|recipient|wallet|transfer|instruction|connector|protocol|policy|limit|schedule|program)\b/.test(text)) return 'transaction';
+  return 'other';
+}
+
+function evidenceSectionLabel(id: AgentEvidenceSectionId): string {
+  switch (id) {
+    case 'decision':
+      return 'Decision';
+    case 'market':
+      return 'Market & Price';
+    case 'token':
+      return 'Token Safety';
+    case 'transaction':
+      return 'Transaction Safety';
+    case 'sources':
+      return 'Sources';
+    case 'advanced':
+      return 'Advanced Audit';
+    case 'other':
+    default:
+      return 'Other Checks';
   }
 }
 
@@ -657,6 +918,21 @@ function agentEvidenceFactStateLabel(state: AgentEvidenceFactLike['state']): str
   }
 }
 
+function decisionContractRecord(
+  review: AgentEvidenceReviewLike,
+  evidence: Record<string, unknown> | undefined,
+): Record<string, unknown> | undefined {
+  if (isPlainRecord(review.decisionContract)) return review.decisionContract;
+  const fromEvidence = evidence?.decisionContract;
+  return isPlainRecord(fromEvidence) ? fromEvidence : undefined;
+}
+
+function stringArrayValue(value: unknown): string[] {
+  return Array.isArray(value)
+    ? value.filter((entry): entry is string => typeof entry === 'string' && Boolean(entry.trim()))
+    : [];
+}
+
 function evidenceValueText(raw: unknown, stringify: (value: unknown) => string): string {
   if (typeof raw === 'string') return raw.trim();
   if (typeof raw === 'number' || typeof raw === 'boolean') return String(raw);
@@ -667,6 +943,12 @@ function evidenceValueText(raw: unknown, stringify: (value: unknown) => string):
     if (primitiveValues.length === raw.length) return primitiveValues.join(', ');
   }
   return stringify(raw);
+}
+
+function isDisplayableEvidenceValue(raw: unknown): boolean {
+  if (raw === null || raw === undefined) return false;
+  if (typeof raw === 'string' || typeof raw === 'number' || typeof raw === 'boolean') return true;
+  return Array.isArray(raw) && raw.every((entry) => typeof entry === 'string' || typeof entry === 'number' || typeof entry === 'boolean');
 }
 
 function isStructuredEvidenceKey(key: string): boolean {

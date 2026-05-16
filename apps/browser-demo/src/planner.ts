@@ -84,7 +84,8 @@ export type AiDiagnosticCode =
   | 'AI_CONTENT_TYPE'
   | 'AI_ROUTE_MISMATCH'
   | 'AI_PROVIDER_ERROR'
-  | 'AI_PLAN_READY';
+  | 'AI_PLAN_READY'
+  | 'EVIDENCE_PROVIDER_UNAVAILABLE';
 
 export interface AiDiagnosticEntry {
   code: AiDiagnosticCode;
