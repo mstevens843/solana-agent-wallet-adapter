@@ -36,7 +36,7 @@ const ROOT_SELECTOR = '[data-sessions-root]';
 
 let domInstalled = false;
 let initialLoadScheduled = false;
-let countdownTimer: ReturnType<typeof window.setInterval> | null = null;
+let countdownTimer: number | null = null;
 
 function escapeHtml(value: string | undefined | null): string {
   if (!value) return '';

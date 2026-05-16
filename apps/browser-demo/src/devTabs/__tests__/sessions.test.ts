@@ -135,7 +135,7 @@ describe('sessions dev tab', () => {
         super(type);
         this.detail = init.detail as T;
       }
-    } as typeof CustomEvent;
+    } as unknown as typeof CustomEvent;
     fetchMock.mockImplementation(async (url: string) => {
       if (url === '/api/streaming/sessions/sess_active_001/revoke') {
         return jsonResponse(200, {

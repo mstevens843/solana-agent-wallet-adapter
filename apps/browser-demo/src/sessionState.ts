@@ -74,7 +74,7 @@ const state: SessionsState = {
 };
 
 const listeners = new Set<() => void>();
-let detailPollTimer: ReturnType<typeof window.setInterval> | null = null;
+let detailPollTimer: number | null = null;
 let pollInFlight = false;
 
 export function getSessionsState(): Readonly<SessionsState> {

@@ -24,6 +24,7 @@ import {
 import { RecurringScheduler } from '../cloud/scheduler.js';
 import { createWalletSession } from '../cloud/session.js';
 import { createRenderWebServer } from '../server.js';
+import type { Clock } from '../cloud/store.js';
 import { workflowDecisionProofMessage } from '../cloud/workflowService.js';
 import type { ApprovalRequestRecord, TransactionFinalizationRecord } from '../cloud/workflowValidation.js';
 
@@ -1397,12 +1398,16 @@ async function withRecurringServer(callback: (ctx: ServerCtx) => Promise<void>):
 async function withRenderRecurringServer(
   store: MemoryWorkflowStore,
   callback: (port: number) => Promise<void>,
-  options: { recurringPolicy?: { maxPerWeekAmount?: Record<string, string> } } = {},
+  options: { recurringPolicy?: { maxPerWeekAmount?: Record<string, string> }; clock?: Clock } = {},
 ): Promise<void> {
   const server = createRenderWebServer({
     staticDir: await staticDir(),
     store,
     recurringPolicy: options.recurringPolicy,
+    // Default to the same fixed clock used by the cookie-based tests so session
+    // expiry checks line up with createWalletSession timestamps. Tests using
+    // x-test-wallet auth are unaffected.
+    clock: options.clock ?? { now: () => new Date('2026-05-08T20:00:00.000Z') },
   });
   await listen(server);
   try {

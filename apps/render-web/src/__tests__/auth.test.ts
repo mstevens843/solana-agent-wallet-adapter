@@ -406,6 +406,9 @@ describe('render web cloud wallet auth', () => {
     const wallet = createTestWallet();
     const recipient = createTestWallet();
     await withServer(async (port) => {
+      // Match the fixed clock used when creating sessions below so server-side
+      // session expiry checks don't trip the 7-day TTL relative to real wall
+      // clock.
       const nonce = await createNonce(port, wallet);
       const verify = await postJson(port, '/api/auth/verify-wallet', signedVerifyBody(wallet, nonce.body));
       const cookie = sessionCookie(verify);
@@ -488,7 +491,7 @@ describe('render web cloud wallet auth', () => {
       expect(await store.getAggregatorSnapshot(`wallet:${wallet.walletAddress}`)).toBeUndefined();
       expect(await store.getAggregatorSnapshot('skill:delete-skill')).toBeUndefined();
       expect(await store.getAggregatorSnapshot('skill:kept-skill')).toMatchObject({ key: 'skill:kept-skill' });
-    }, { store });
+    }, { store, clock: fixedClock('2026-05-08T18:10:00.000Z') });
   });
 
   it('marks session cookies secure in Render production', async () => {
