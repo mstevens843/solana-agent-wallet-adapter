@@ -1,5 +1,7 @@
 import { randomUUID } from 'node:crypto';
+import { existsSync } from 'node:fs';
 import type { IncomingMessage, ServerResponse } from 'node:http';
+import { dirname, join } from 'node:path';
 
 import {
   buildAgenticAgentCard,
@@ -23,7 +25,7 @@ import {
   type WorkflowCluster,
 } from '@solana-agent-wallet-adapter/workflow';
 import * as DevLayer1 from '@solana-agent-wallet-adapter/workflow/dev';
-import type { Plugin } from 'vite';
+import type { Plugin, ViteDevServer } from 'vite';
 
 type SkillManifest = DevLayer1.skills.SkillManifest;
 type SkillInstallRecord = DevLayer1.skills.SkillInstallRecord;
@@ -83,6 +85,18 @@ interface LocalStreamingApi {
   context: Omit<LocalStreamingApiContext, 'walletAddress'>;
 }
 
+interface LocalStreamingRegistryModule {
+  listDevApiHandlers(): readonly LocalStreamingApiHandler[];
+}
+
+interface LocalStreamingMemoryStoreModule {
+  MemoryWorkflowStore: new () => object;
+}
+
+interface LocalStreamingEvidenceStoreModule {
+  MemoryEvidenceStore: new () => object;
+}
+
 interface LocalSkillManifestRecord {
   id: string;
   version: string;
@@ -125,7 +139,7 @@ export function acpDevApiPlugin(): Plugin {
         const url = new URL(req.url ?? '/', 'http://127.0.0.1');
         try {
           if (url.pathname.startsWith(STREAMING_PREFIX)) {
-            const handled = await handleLocalStreamingApi(req, res, url);
+            const handled = await handleLocalStreamingApi(req, res, url, server);
             if (!handled) next();
             return;
           }
@@ -167,8 +181,13 @@ export function acpDevApiPlugin(): Plugin {
   };
 }
 
-async function handleLocalStreamingApi(req: IncomingMessage, res: ServerResponse, url: URL): Promise<boolean> {
-  const api = await localStreamingApi();
+async function handleLocalStreamingApi(
+  req: IncomingMessage,
+  res: ServerResponse,
+  url: URL,
+  server: ViteDevServer,
+): Promise<boolean> {
+  const api = await localStreamingApi(server);
   const method = req.method ?? 'GET';
   if (!api.handler.methods.includes(method)) {
     writeJson(res, 405, { error: 'method_not_allowed', message: 'Use GET, HEAD, or POST for streaming routes.' });
@@ -180,19 +199,19 @@ async function handleLocalStreamingApi(req: IncomingMessage, res: ServerResponse
   });
 }
 
-async function localStreamingApi(): Promise<LocalStreamingApi> {
-  localStreamingApiPromise ??= createLocalStreamingApi();
+async function localStreamingApi(server: ViteDevServer): Promise<LocalStreamingApi> {
+  localStreamingApiPromise ??= createLocalStreamingApi(server);
   return localStreamingApiPromise;
 }
 
-async function createLocalStreamingApi(): Promise<LocalStreamingApi> {
+async function createLocalStreamingApi(server: ViteDevServer): Promise<LocalStreamingApi> {
   process.env.STREAMING_SESSION_ENCRYPTION_KEY ??= LOCAL_STREAMING_DEV_KEY;
 
-  await import('../render-web/src/cloud/streamingRoutes.js');
+  await server.ssrLoadModule(renderWebCloudModulePath('streamingRoutes.ts'));
   const [{ listDevApiHandlers }, { MemoryWorkflowStore }, { MemoryEvidenceStore }] = await Promise.all([
-    import('../render-web/src/cloud/devApiRegistry.js'),
-    import('../render-web/src/cloud/memoryStore.js'),
-    import('../render-web/src/cloud/evidenceService.js'),
+    server.ssrLoadModule(renderWebCloudModulePath('devApiRegistry.ts')) as Promise<LocalStreamingRegistryModule>,
+    server.ssrLoadModule(renderWebCloudModulePath('memoryStore.ts')) as Promise<LocalStreamingMemoryStoreModule>,
+    server.ssrLoadModule(renderWebCloudModulePath('evidenceService.ts')) as Promise<LocalStreamingEvidenceStoreModule>,
   ]);
   const handler = listDevApiHandlers().find((candidate) => candidate.prefix === STREAMING_PREFIX);
   if (!handler) throw new Error('Local streaming dev API handler was not registered.');
@@ -206,6 +225,20 @@ async function createLocalStreamingApi(): Promise<LocalStreamingApi> {
       clock: { now: () => new Date() },
     },
   };
+}
+
+function renderWebCloudModulePath(fileName: string): string {
+  return join(workspaceRoot(), 'apps/render-web/src/cloud', fileName);
+}
+
+function workspaceRoot(): string {
+  let dir = process.cwd();
+  for (;;) {
+    if (existsSync(join(dir, 'pnpm-workspace.yaml'))) return dir;
+    const parent = dirname(dir);
+    if (parent === dir) return process.cwd();
+    dir = parent;
+  }
 }
 
 function handleLocalAgentCardApi(req: IncomingMessage, res: ServerResponse, url: URL): boolean {
