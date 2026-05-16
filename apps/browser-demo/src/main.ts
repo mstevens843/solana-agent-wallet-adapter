@@ -308,7 +308,6 @@ import './styles.css';
 // gated client-side by `isDevWallet(...)` inside each tab's guard() and
 // server-side by `isAllowedDevWallet(...)` for /api/* routes.
 import { findDevTab, listDevTabs } from './devTabRegistry.js';
-import { legacyTabsEnabled } from './legacyTabs.js';
 import { renderApprovalBadges } from './approvalBadges.js';
 import {
   addPayOutApprovalCreatedListener,
@@ -3598,7 +3597,6 @@ function render(): void {
     }
   }
   const route = currentRoute();
-  normalizeActiveSpendTab();
   applyRouteTitle(route);
   trackPageView(route ?? normalizePathname(window.location.pathname), document.title);
   closeTemplatePickerInteractions();
@@ -3619,16 +3617,6 @@ interface PendingSpendNavigation {
 
 let pendingSpendNavigation: PendingSpendNavigation | null = null;
 let spendBridgeHandlersInstalled = false;
-
-function normalizeActiveSpendTab(): void {
-  if (legacyTabsEnabled()) return;
-  const filter = spendFilterForLegacyTab(state.activeTab);
-  if (!filter) return;
-  const spendTab = findDevTab('spend');
-  if (!spendTab?.guard()) return;
-  state.activeTab = 'spend';
-  pendingSpendNavigation = { filter };
-}
 
 function openSpendFilter(filter: SpendNavFilter, selectedEnvelopeKey?: string): boolean {
   const spendTab = findDevTab('spend');
@@ -3717,11 +3705,6 @@ function installSpendBridgeHandlers(): void {
     const tab = stringDetail(detail, 'tab');
     if (!tab) return;
     const open = stringDetail(detail, 'open');
-    if (!legacyTabsEnabled()) {
-      const filter = spendFilterForLegacyTab(tab);
-      if (filter) openSpendFilter(filter, spendEnvelopeKeyForLegacyOpen(tab, open));
-      return;
-    }
     state.activeTab = tab as ActiveTab;
     if (tab === 'schedule' && stringDetail(detail, 'recurringView') === 'active') {
       state.recurringView = 'active';
@@ -6325,8 +6308,8 @@ function appWorkspace(mode: 'app' | 'demo' = 'app'): string {
               ${tabButton('overview', 'Home')}
               ${tabButton('agent', 'New Request', 'New')}
               ${spendTabVisible() ? tabButton('spend', 'Spend') : ''}
-              ${legacyTabsEnabled() ? tabButton('schedule', 'Repeat Payments', 'Repeats') : ''}
-              ${legacyTabsEnabled() ? tabButton('inbox', 'Needs Approval', 'Approve') : ''}
+              ${tabButton('schedule', 'Repeat Payments', 'Repeats')}
+              ${tabButton('inbox', 'Needs Approval', 'Approve')}
               ${tabButton('completed', 'Done')}
               ${moreMenuButton()}
             </nav>
@@ -9640,22 +9623,16 @@ function activePanel(): string {
       state.oneTimePlanView = 'review';
       return agentPlanPanel();
     case 'inbox':
-      if (!legacyTabsEnabled()) return spendFallbackPanel('needs_approval');
       return approvalInboxPanel();
     case 'completed':
       return completedPlansPanel();
     case 'schedule':
-      if (!legacyTabsEnabled()) return spendFallbackPanel('active_schedules');
       return scheduledApprovalsPanel();
     case 'labs':
       return labsPanel();
     case 'preferences':
       return preferencesPanel();
     default: {
-      if (!legacyTabsEnabled()) {
-        const filter = spendFilterForLegacyTab(state.activeTab);
-        if (filter) return spendFallbackPanel(filter);
-      }
       // Dev-only Layer 1 tab fallthrough. If the activeTab id matches a
       // registered dev tab AND its guard passes, render its panel. Otherwise
       // fall back to the command center so a stale id never strands the UI.
@@ -10521,10 +10498,7 @@ function commandCenterCard(
   const disabled = action === 'connect-wallet'
     ? !state.address && state.wallets.length === 0 && !state.androidNativeEnvironment.isAndroidNative && !state.iosNativeEnvironment.isIosNative
     : false;
-  const spendFilter = action === 'open-recurring' && !legacyTabsEnabled() ? 'active_schedules' : '';
-  const targetTab = spendFilter
-    ? ''
-    : action === 'open-recurring'
+  const targetTab = action === 'open-recurring'
     ? 'schedule'
     : action === 'open-proofs'
       ? 'labs'
@@ -10534,9 +10508,7 @@ function commandCenterCard(
       ${commandCenterCardLabel(label, icon)}
       <strong>${escapeHtml(value)}</strong>
       <p>${escapeHtml(detail)}</p>
-      ${spendFilter
-        ? `<button type="button" class="utility" data-spend-nav-filter="${escapeHtml(spendFilter)}">${escapeHtml(buttonLabel)}</button>`
-        : targetTab
+      ${targetTab
         ? `<button type="button" class="utility" data-tab="${escapeHtml(targetTab)}" ${action === 'open-recurring' ? 'data-recurring-view="active"' : ''}>${escapeHtml(buttonLabel)}</button>`
         : `<button type="button" class="utility" data-first-run-action="${escapeHtml(action)}" ${disabled ? 'disabled' : ''}>${escapeHtml(buttonLabel)}</button>`}
     </article>
@@ -16797,10 +16769,6 @@ function bind(): void {
     button.addEventListener('click', () => {
       const tab = button.dataset.tab as ActiveTab;
       const spendOpen = button.dataset.spendOpen;
-      if (!legacyTabsEnabled()) {
-        const filter = spendFilterForLegacyTab(tab);
-        if (filter && openSpendFilter(filter, spendEnvelopeKeyForLegacyOpen(tab, spendOpen))) return;
-      }
       trackNavClick(`${currentRoute() ?? '/app'}#${tab}`, 'workspace');
       state.activeTab = tab;
       if (state.activeTab === 'labs') {
@@ -16874,10 +16842,6 @@ function bind(): void {
     button.addEventListener('click', () => {
       const view = button.dataset.recurringView as RecurringView | undefined;
       if (!view) return;
-      if (!legacyTabsEnabled()) {
-        void openSpendFilter('active_schedules');
-        return;
-      }
       state.activeTab = 'schedule';
       state.recurringView = view;
       if (view === 'active') {
@@ -18759,7 +18723,6 @@ async function runFirstRunAction(action: FirstRunActionId): Promise<void> {
       render();
       return;
     case 'open-inbox':
-      if (!legacyTabsEnabled() && openSpendFilter('needs_approval')) return;
       state.activeTab = 'inbox';
       state.inboxFilter = 'ready';
       state.error = '';
@@ -24678,10 +24641,10 @@ function gatherDeterministicFacts(record: GeneratedPlanRecord): AgentReviewFactS
     }
     if (allows('quote')) {
       facts.quote = {
-        state: 'missing',
+        state: 'checked',
         source: 'deterministic',
         checkedAt,
-        message: 'No quote fetched in the browser yet for this draft; this is not user input.',
+        message: 'Live Jupiter quote resolves at the wallet step. Not required for this review unless the prompt asks about price impact, output amount, or best route.',
       };
     }
   }
@@ -24724,10 +24687,10 @@ function gatherDeterministicFacts(record: GeneratedPlanRecord): AgentReviewFactS
 
   if (allows('simulation') && plan.actionType !== 'read_only' && plan.actionType !== 'manual_review') {
     facts.simulation = {
-      state: 'missing',
+      state: 'checked',
       source: 'deterministic',
       checkedAt,
-      message: 'Transaction simulation runs after the wallet signs and broadcasts.',
+      message: 'Transaction simulation runs after the wallet signs and broadcasts. Not required for draft review unless the prompt asks about on-chain effects.',
     };
   }
 
@@ -34698,10 +34661,8 @@ function moreMenuItems(): MoreMenuItem[] {
   // "Save Proof" is always present (replaces its old top-level slot). Dev-gated
   // tabs opt in only when their registered guard returns true (i.e. dev wallet connected).
   const items: MoreMenuItem[] = [{ id: 'labs', label: 'Save Proof' }];
-  const showLegacyTabs = legacyTabsEnabled();
   for (const tab of listDevTabs()) {
     if (tab.id === 'spend') continue;
-    if (!showLegacyTabs && (tab.id === 'agent-protocols' || tab.id === 'sessions')) continue;
     if (tab.guard()) items.push({ id: tab.id, label: tab.label });
   }
   return items;

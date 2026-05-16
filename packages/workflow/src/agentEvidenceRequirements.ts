@@ -21,10 +21,7 @@ export interface AgentConnectorRiskProfile {
   rationale: string;
 }
 
-const SWAP_QUOTE_ROUTE = 'jupiter.swap_order_preview';
-const SWAP_ROUTE_ROUTE = 'jupiter.swap_route';
 const TOKEN_PRICE_ROUTE = 'birdeye.price_multi';
-const TOKEN_SECURITY_ROUTE = 'birdeye.token_security';
 const WALLET_HOLDINGS_ROUTE = 'birdeye.wallet_token_list';
 const CONNECTOR_READ_ROUTE = 'protocol_connector.read_facts';
 
@@ -32,9 +29,9 @@ export const AGENT_CONNECTOR_RISK_PROFILES: Readonly<Record<AgentConnectorProfil
   swap_dex: {
     kind: 'swap_dex',
     label: 'Swap / DEX',
-    requiredRouteIds: [SWAP_QUOTE_ROUTE, SWAP_ROUTE_ROUTE, TOKEN_PRICE_ROUTE],
-    requiredNeeds: ['swap_quote', 'swap_route', 'token_market'],
-    rationale: 'Swap approvals need quote, executable route, and current token-market evidence.',
+    requiredRouteIds: [TOKEN_PRICE_ROUTE],
+    requiredNeeds: ['token_market'],
+    rationale: 'Swap approvals need current token-market evidence. Quote/route are required only when the prompt asks for live quote details or the draft is missing amount/slippage — the router decides.',
   },
   lending_borrow: {
     kind: 'lending_borrow',

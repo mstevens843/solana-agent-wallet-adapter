@@ -13,7 +13,6 @@ import {
 import { currentAddress, refreshConnection } from '../connectionState.js';
 import { isDevWallet } from '../devGate.js';
 import { registerDevTab } from '../devTabRegistry.js';
-import { legacyTabsEnabled } from '../legacyTabs.js';
 
 type SpendFilter = 'all' | 'needs_approval' | 'active_schedules' | 'live_streams' | 'settled';
 type LoadState = 'idle' | 'loading' | 'loaded' | 'error';
@@ -194,7 +193,6 @@ function envelopePrimaryAction(envelope: SpendEnvelope): string {
 }
 
 function legacyEnvelopeAction(envelope: SpendEnvelope): string {
-  if (!legacyTabsEnabled()) return '';
   switch (envelope.kind) {
     case 'one-time':
       return `<button type="button" class="utility" data-spend-legacy-tab="inbox" data-spend-open="${escapeHtml(envelope.action.id)}">Open in Needs Approval</button>`;

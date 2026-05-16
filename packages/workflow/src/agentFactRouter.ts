@@ -153,6 +153,11 @@ const SIMULATION_HIGH_RISK_PROFILES = new Set<AgentConnectorProfileKind>(['perps
 // Matches imperative or interrogative outcome questions; deliberately narrow so we don't
 // fire simulation for unrelated mentions of "result" in token-market questions.
 const SIMULATION_OUTCOME_RE = /\b(will\s+this|what\s+(?:will|happens?|changes?|do(?:es)?)|drain|balance\s+after|outcome|side[-\s]?effects?|state\s+change|preview\s+the\s+effects?)\b/i;
+// Match prompts that genuinely demand a live executable quote (price impact, output amount,
+// best route comparison). Generic mentions of "swap" or "slippage" do not qualify — the user
+// already supplied those values on the draft form. Only when the question asks the agent to
+// derive quote/route information do we require a live Jupiter fetch.
+const SWAP_QUOTE_DEMAND_RE = /\b(price\s*impact|best\s*route|how\s*much.*(?:get|receive|out)|compare.*(?:dex|aggregator|route|venue)|optimal\s*(?:route|venue)|optimize|fair\s*price|live\s*quote|fetch.*quote|expected\s*output|min(?:imum)?\s*received)\b/i;
 
 // Match backward-looking / history-asking phrases only — not imperatives like "send to bob"
 // or noun forms like "this transfer" that describe the current action. The router should
@@ -319,21 +324,34 @@ export function planAgentReviewFactRoutes(input: PlanAgentReviewFactRoutesInput)
 
   const swapLike = actionType === 'swap' || input.parameters?.actionKind === 'swap' || SWAP_RE.test(text);
   if (swapLike) {
+    const amountString = (input.parameters?.amount ?? input.parameters?.inputAmount ?? '').trim();
+    const hasAmount = amountString.length > 0 && Number(amountString) > 0;
+    const slippageString = (input.parameters?.slippageBps ?? input.parameters?.maxSlippage ?? '').trim();
+    const hasSlippage = slippageString.length > 0;
+    const quoteDemanded = SWAP_QUOTE_DEMAND_RE.test(text) || !hasAmount || !hasSlippage;
+    const quoteStatus: AgentFactRouteStatus = quoteDemanded ? 'required' : 'optional';
+    const quoteReason = quoteDemanded
+      ? !hasAmount
+        ? 'Swap draft has no amount; a Jupiter quote is required to compute the executable order.'
+        : !hasSlippage
+          ? 'Swap draft has no slippage cap; a Jupiter quote is required before approval.'
+          : 'The question asks for live quote details (price impact, output amount, best route).'
+      : 'Quote/route resolve at the wallet step; user already supplied amount and slippage.';
     addRoute({
       id: 'jupiter.swap_order_preview',
       need: 'swap_quote',
       provider: 'jupiter',
       endpoint: 'swap.order existing tool',
-      status: 'required',
-      reason: 'Swap approvals need executable quote/output context from Jupiter.',
+      status: quoteStatus,
+      reason: quoteReason,
     });
     addRoute({
       id: 'jupiter.swap_route',
       need: 'swap_route',
       provider: 'jupiter',
       endpoint: 'swap.order routePlan',
-      status: 'required',
-      reason: 'Jupiter chooses the executable venue route when the quote/order is fetched.',
+      status: quoteStatus,
+      reason: 'Tracks the executable Jupiter route alongside the quote.',
     });
   }
 

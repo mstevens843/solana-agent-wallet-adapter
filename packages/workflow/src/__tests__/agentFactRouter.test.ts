@@ -86,6 +86,54 @@ describe('agent review fact router', () => {
     ]));
   });
 
+  it('marks Jupiter quote/route as REQUIRED when the prompt asks about quote details', () => {
+    const plan = planAgentReviewFactRoutes({
+      actionType: 'swap',
+      instruction: 'Approve only if price impact stays under 0.5%.',
+      parameters: { amount: '0.01', slippageBps: '50' },
+      hasWallet: true,
+      hasTokenMints: true,
+    });
+    const quote = plan.routes.find((r) => r.id === 'jupiter.swap_order_preview');
+    const route = plan.routes.find((r) => r.id === 'jupiter.swap_route');
+    expect(quote?.status).toBe('required');
+    expect(route?.status).toBe('required');
+  });
+
+  it('marks Jupiter quote/route as OPTIONAL for a generic swap draft with amount+slippage already supplied', () => {
+    const plan = planAgentReviewFactRoutes({
+      actionType: 'swap',
+      instruction: 'Prepare a DeFi swap review with explicit input, output, amount, protocol route, and slippage cap.',
+      parameters: { amount: '0.01', slippageBps: '50' },
+      hasWallet: true,
+      hasTokenMints: true,
+    });
+    const quote = plan.routes.find((r) => r.id === 'jupiter.swap_order_preview');
+    const route = plan.routes.find((r) => r.id === 'jupiter.swap_route');
+    expect(quote?.status).toBe('optional');
+    expect(route?.status).toBe('optional');
+  });
+
+  it('marks Jupiter quote as REQUIRED when amount or slippage is missing from the draft', () => {
+    const planNoAmount = planAgentReviewFactRoutes({
+      actionType: 'swap',
+      instruction: 'Generic swap.',
+      parameters: { slippageBps: '50' },
+      hasWallet: true,
+      hasTokenMints: true,
+    });
+    expect(planNoAmount.routes.find((r) => r.id === 'jupiter.swap_order_preview')?.status).toBe('required');
+
+    const planNoSlippage = planAgentReviewFactRoutes({
+      actionType: 'swap',
+      instruction: 'Generic swap.',
+      parameters: { amount: '0.01' },
+      hasWallet: true,
+      hasTokenMints: true,
+    });
+    expect(planNoSlippage.routes.find((r) => r.id === 'jupiter.swap_order_preview')?.status).toBe('required');
+  });
+
   it('selects CoinGecko global and Fear & Greed routes for market-condition questions', () => {
     const ids = routeIdsFor({
       actionType: 'manual_review',
