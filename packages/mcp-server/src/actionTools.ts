@@ -35,8 +35,19 @@ import {
 import { AdapterError } from './adapters/types.js';
 import { newTraceId, trace } from './trace.js';
 
-const DEFAULT_RENDER_WEB_URL = 'http://127.0.0.1:3000';
-const RENDER_WEB_TIMEOUT_MS = 120_000;
+// Phase 5.17 — operator-overridable defaults. Set AGENTIC_RENDER_WEB_URL to
+// point at a non-local render-web instance (e.g. https://agentic-signer.com).
+// Set AGENTIC_MCP_RENDER_WEB_TIMEOUT_MS to extend the wait for slow links.
+const DEFAULT_RENDER_WEB_URL = (() => {
+  const raw = process.env.AGENTIC_RENDER_WEB_URL?.trim();
+  return raw && raw.length > 0 ? raw : 'http://127.0.0.1:3000';
+})();
+const RENDER_WEB_TIMEOUT_MS = (() => {
+  const raw = process.env.AGENTIC_MCP_RENDER_WEB_TIMEOUT_MS?.trim();
+  if (!raw) return 120_000;
+  const parsed = Number(raw);
+  return Number.isInteger(parsed) && parsed > 0 ? parsed : 120_000;
+})();
 
 export interface RegisterActionToolsOptions {
   backend: WalletBackend;

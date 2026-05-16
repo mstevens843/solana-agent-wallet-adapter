@@ -5,7 +5,13 @@ import {
   getAssociatedTokenAddressSync,
   TOKEN_PROGRAM_ID,
 } from '@solana/spl-token';
-import { PublicKey, TransactionMessage, VersionedTransaction, type TransactionInstruction } from '@solana/web3.js';
+import {
+  PublicKey,
+  SystemProgram,
+  TransactionMessage,
+  VersionedTransaction,
+  type TransactionInstruction,
+} from '@solana/web3.js';
 import bs58 from 'bs58';
 
 import { StreamingInvalidInputError, StreamingNativeSolUnsupportedError } from './errors.js';
@@ -28,6 +34,20 @@ export interface BuildApproveDelegateTxInput {
   feePayerPubkey?: string;
   tokenProgramId?: string;
   allowOwnerOffCurve?: boolean;
+  /**
+   * Optional SOL pre-fund (in lamports) sent from owner → delegate as part
+   * of the same approve tx. When set, the delegate pays its own settlement
+   * fees instead of relying on a platform-funded fee payer.
+   */
+  delegatePrefundLamports?: number;
+}
+
+export interface BuildSweepDelegateTxInput {
+  delegatePubkey: string;
+  ownerPubkey: string;
+  lamports: number;
+  cluster: StreamingCluster;
+  recentBlockhash: string;
 }
 
 export interface BuildRevokeDelegateTxInput {
@@ -52,9 +72,16 @@ export interface BuildSettlementTxInput {
   tokenDecimals?: number;
   tokenProgramId?: string;
   allowOwnerOffCurve?: boolean;
+  /**
+   * Phase 5.17 — optional override for the per-tx voucher count cap. Defaults
+   * to {@link MAX_SETTLEMENT_VOUCHERS_PER_TX}. The settlement service reads
+   * `STREAMING_MAX_VOUCHERS_PER_TX` and passes the value in here so operators
+   * can tune throughput without redeploying the library.
+   */
+  maxVouchersPerTx?: number;
 }
 
-export type DelegateTxKind = 'approve_delegate' | 'revoke_delegate' | 'settlement';
+export type DelegateTxKind = 'approve_delegate' | 'revoke_delegate' | 'settlement' | 'sweep_delegate';
 
 export interface UnsignedDelegateTx {
   txBase64: string;
@@ -98,7 +125,7 @@ export function buildApproveDelegateTx(input: BuildApproveDelegateTxInput): Unsi
   const decimals = tokenDecimalsFor(input.tokenDecimals);
   const capAmount = resolveApproveAmount(input);
   const sourceAta = getAssociatedTokenAddressSync(mint, owner, input.allowOwnerOffCurve ?? false, tokenProgramId);
-  const instruction = createApproveCheckedInstruction(
+  const approveInstruction = createApproveCheckedInstruction(
     sourceAta,
     mint,
     delegate,
@@ -108,26 +135,81 @@ export function buildApproveDelegateTx(input: BuildApproveDelegateTxInput): Unsi
     [],
     tokenProgramId,
   );
+  const prefundLamports = resolvePrefundLamports(input.delegatePrefundLamports);
+  const instructions: TransactionInstruction[] = [];
+  if (prefundLamports > 0) {
+    instructions.push(
+      SystemProgram.transfer({
+        fromPubkey: owner,
+        toPubkey: delegate,
+        lamports: prefundLamports,
+      }),
+    );
+  }
+  instructions.push(approveInstruction);
   const feePayer = publicKeyFromString(input.feePayerPubkey ?? input.ownerPubkey, 'feePayerPubkey');
   const unsignedTx = buildUnsignedVersionedTx({
     feePayer,
     recentBlockhash: input.recentBlockhash,
-    instructions: [instruction],
+    instructions,
   });
+
+  const description = prefundLamports > 0
+    ? `Approve ${capAmount} tokens for streaming session delegate ${delegate.toBase58()} and pre-fund delegate with ${prefundLamports} lamports for settlement fees.`
+    : `Approve ${capAmount} tokens for streaming session delegate ${delegate.toBase58()}.`;
 
   return {
     txBase64: unsignedTx.txBase64,
     cluster: input.cluster,
-    description: `Approve ${capAmount} tokens for streaming session delegate ${delegate.toBase58()}.`,
+    description,
     kind: 'approve_delegate',
     requiredSigners: uniquePubkeys([feePayer, owner]),
     tokenMint: mint.toBase58(),
     tokenDecimals: decimals,
     sourceAta: sourceAta.toBase58(),
     totalAmount: capAmount,
+    instructionCount: instructions.length,
+    serializedLength: unsignedTx.serializedLength,
+  };
+}
+
+export function buildSweepDelegateTx(input: BuildSweepDelegateTxInput): UnsignedDelegateTx {
+  const delegate = publicKeyFromString(input.delegatePubkey, 'delegatePubkey');
+  const owner = publicKeyFromString(input.ownerPubkey, 'ownerPubkey');
+  const lamports = resolvePrefundLamports(input.lamports);
+  if (lamports <= 0) {
+    throw new StreamingInvalidInputError('lamports must be a positive integer to build a sweep tx.');
+  }
+  const instruction = SystemProgram.transfer({
+    fromPubkey: delegate,
+    toPubkey: owner,
+    lamports,
+  });
+  const unsignedTx = buildUnsignedVersionedTx({
+    feePayer: delegate,
+    recentBlockhash: input.recentBlockhash,
+    instructions: [instruction],
+  });
+  return {
+    txBase64: unsignedTx.txBase64,
+    cluster: input.cluster,
+    description: `Sweep ${lamports} lamports from streaming session delegate ${delegate.toBase58()} back to owner ${owner.toBase58()}.`,
+    kind: 'sweep_delegate',
+    requiredSigners: uniquePubkeys([delegate]),
+    tokenMint: '',
     instructionCount: 1,
     serializedLength: unsignedTx.serializedLength,
   };
+}
+
+function resolvePrefundLamports(value: number | undefined): number {
+  if (value === undefined || value === null) return 0;
+  if (!Number.isFinite(value) || !Number.isInteger(value) || value < 0) {
+    throw new StreamingInvalidInputError(
+      `delegatePrefundLamports must be a non-negative integer; got ${JSON.stringify(value)}.`,
+    );
+  }
+  return value;
 }
 
 export function buildRevokeDelegateTx(input: BuildRevokeDelegateTxInput): UnsignedDelegateTx {
@@ -206,6 +288,7 @@ export function buildSettlementTx(input: BuildSettlementTxInput): UnsignedDelega
     transfers: preparedTransfers,
     feePayer,
     recentBlockhash: input.recentBlockhash,
+    maxVouchersPerTx: input.maxVouchersPerTx ?? MAX_SETTLEMENT_VOUCHERS_PER_TX,
   });
 
   return batches.map((batch, batchIndex) => {
@@ -295,13 +378,14 @@ function packSettlementTransfers(input: {
   transfers: readonly PreparedSettlementTransfer[];
   feePayer: PublicKey;
   recentBlockhash: string;
+  maxVouchersPerTx: number;
 }): Array<{ transfers: PreparedSettlementTransfer[] }> {
   const batches: Array<{ transfers: PreparedSettlementTransfer[] }> = [];
   let current: PreparedSettlementTransfer[] = [];
 
   for (const transfer of input.transfers) {
     const candidate = [...current, transfer];
-    const candidateTooLargeByCount = candidate.length > MAX_SETTLEMENT_VOUCHERS_PER_TX;
+    const candidateTooLargeByCount = candidate.length > input.maxVouchersPerTx;
     const candidateTooLargeBySize = !candidateTooLargeByCount
       && serializedLengthForTransfers(candidate, input.feePayer, input.recentBlockhash) > SOLANA_PACKET_DATA_SIZE;
 

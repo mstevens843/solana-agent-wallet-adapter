@@ -8,4 +8,11 @@ export const migration015MppWalletPreferencesNamespace = {
   sql: `
     SELECT 1;
   `,
+  // Phase 5.10 — schema-neutral migration, so down is also a no-op. We DELETE
+  // any rows that were tagged with the new namespace so a rollback genuinely
+  // unwinds the operator-facing surface (no stale wallet_preferences rows
+  // referencing a namespace that's no longer documented).
+  down: `
+    DELETE FROM wallet_preferences WHERE namespace = 'mpp-config';
+  `,
 };

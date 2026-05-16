@@ -3,6 +3,7 @@ import { randomUUID } from 'node:crypto';
 
 import type { EvidenceReceiptRecord } from '@solana-agent-wallet-adapter/workflow';
 
+import { redactSecrets } from './redaction.js';
 import { settleStreamingSession } from './settlementService.js';
 import {
   StreamingService,
@@ -420,22 +421,27 @@ function methodNotAllowed(req: IncomingMessage, res: ServerResponse): void {
 
 function writeStreamingError(req: IncomingMessage, res: ServerResponse, err: unknown): void {
   if (res.headersSent) return;
+  // Phase 5.7 — redact secrets from every error message before writing to the
+  // wire. Streaming decrypt failures, Solana RPC errors, and unhandled
+  // exceptions could otherwise leak fragments of the encrypted delegate
+  // payload, API keys present in env-loaded RPC URLs, or partial signatures.
+  const redact = (raw: string) => redactSecrets(raw);
   if (err instanceof StreamingServiceError) {
-    writeJsonNoStore(req, res, err.status, { error: err.code, message: err.message });
+    writeJsonNoStore(req, res, err.status, { error: err.code, message: redact(err.message) });
     return;
   }
   if (err instanceof BodyTooLargeError) {
-    writeJsonNoStore(req, res, 413, { error: 'body_too_large', message: err.message });
+    writeJsonNoStore(req, res, 413, { error: 'body_too_large', message: redact(err.message) });
     return;
   }
   if (err instanceof InvalidJsonError) {
-    writeJsonNoStore(req, res, 400, { error: 'invalid_json', message: err.message });
+    writeJsonNoStore(req, res, 400, { error: 'invalid_json', message: redact(err.message) });
     return;
   }
   const code = typeof (err as { code?: unknown })?.code === 'string' ? (err as { code: string }).code : 'internal_error';
   const status = statusForStreamingCode(code);
   const message = err instanceof Error ? err.message : 'Unexpected streaming session error.';
-  writeJsonNoStore(req, res, status, { error: code, message });
+  writeJsonNoStore(req, res, status, { error: code, message: redact(message) });
 }
 
 function statusForStreamingCode(code: string): number {

@@ -1,0 +1,105 @@
+name: android instrumented
+
+# Phase 5.1 — nightly run of the StreamingSessionController instrumented test
+# (1000 voucher signs + <50ms latency assertion) against an emulator.
+# Manual dispatch is also available so a contributor can re-run on demand.
+
+on:
+  schedule:
+    # 03:00 UTC nightly. Picks a slot when shared runners are less contended
+    # and gives someone time to react to a regression before the morning.
+    - cron: '0 3 * * *'
+  workflow_dispatch:
+    inputs:
+      api-level:
+        description: 'Android API level to test against (default 34).'
+        required: false
+        default: '34'
+        type: string
+
+permissions:
+  contents: read
+
+env:
+  ANDROID_API_LEVEL: ${{ github.event.inputs['api-level'] || '34' }}
+
+jobs:
+  instrumented:
+    name: connectedDebugAndroidTest
+    # macos-13 is the cheapest runner with hardware-accelerated KVM emulation.
+    # ubuntu-latest works too but the emulator is markedly slower.
+    runs-on: macos-13
+    timeout-minutes: 60
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 10.33.0
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - name: Setup Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 21
+
+      - name: Install Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Install Android platform + emulator deps
+        run: |
+          set -euo pipefail
+          sdkmanager "platforms;android-${{ env.ANDROID_API_LEVEL }}" "build-tools;36.0.0" \
+            "system-images;android-${{ env.ANDROID_API_LEVEL }};default;x86_64" \
+            "emulator" "platform-tools"
+
+      - name: Install workspace dependencies
+        run: pnpm install --frozen-lockfile --ignore-scripts
+
+      - name: Build browser-demo dist (required for android assembleDebug)
+        run: pnpm -F @solana-agent-wallet-adapter/browser-demo build
+
+      # reactivecircus/android-emulator-runner is the canonical way to spin up
+      # an emulator on GitHub-hosted runners. The action handles AVD creation,
+      # cold-boot, and tear-down, and exposes the emulator as `adb devices`
+      # so any gradle `connectedAndroidTest` task picks it up automatically.
+      - name: Run StreamingSessionController instrumented test
+        uses: reactivecircus/android-emulator-runner@v2
+        with:
+          api-level: ${{ env.ANDROID_API_LEVEL }}
+          arch: x86_64
+          profile: pixel_6
+          force-avd-creation: false
+          emulator-options: -no-snapshot -no-window -no-audio -gpu swiftshader_indirect -accel on -no-boot-anim -camera-back none
+          disable-animations: true
+          script: pnpm android:instrumented-test
+
+      - name: Surface instrumented test report on failure
+        if: failure()
+        run: |
+          set -euo pipefail
+          report_root="apps/android-twa/app/build/reports/androidTests/connected"
+          if [ -d "$report_root" ]; then
+            echo "::group::Instrumented test reports"
+            find "$report_root" -name "*.html" -print -exec cat {} \;
+            echo "::endgroup::"
+          fi
+
+      - name: Upload androidTest results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: android-instrumented-test-report
+          path: |
+            apps/android-twa/app/build/reports/androidTests/connected/**
+            apps/android-twa/app/build/outputs/androidTest-results/connected/**
+          if-no-files-found: ignore

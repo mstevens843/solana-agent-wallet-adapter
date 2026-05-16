@@ -5,6 +5,17 @@ databases:
     plan: basic-256mb
     ipAllowList: []
 
+# Streaming-session secrets shared between the web service (which encrypts
+# delegate secrets at session-open) and the streaming-settlement cron (which
+# decrypts them to sign settlements). Both services MUST read identical
+# values; setting them as a Render env group keeps them in sync. Set the
+# values once in the Render dashboard under "Environment Groups".
+envVarGroups:
+  - name: agentic-streaming
+    envVars:
+      - key: STREAMING_SESSION_ENCRYPTION_KEY
+        sync: false
+
 services:
   - type: web
     name: agentic
@@ -23,10 +34,7 @@ services:
         fromDatabase:
           name: agentic-postgres
           property: connectionString
-      - key: STREAMING_SESSION_ENCRYPTION_KEY
-        sync: false
-      - key: STREAMING_SETTLEMENT_FEE_PAYER_SECRET_KEY
-        sync: false
+      - fromGroup: agentic-streaming
       - key: SESSION_SECRET
         generateValue: true
       - key: AGENTIC_PUBLIC_ORIGIN
@@ -35,6 +43,12 @@ services:
         value: "false"
       - key: VITE_AGENTIC_GA_MEASUREMENT_ID
         value: "G-MJ3VZ7VEX7"
+      # User-funded streaming-session delegates: per-session lamports the web
+      # service transfers from the user's wallet to the ephemeral delegate at
+      # session-open. Default in code is 5_000_000 (0.005 SOL). Override only
+      # if you need to widen or tighten that budget.
+      # - key: STREAMING_DELEGATE_PREFUND_LAMPORTS
+      #   value: "5000000"
 
   - type: cron
     name: agentic-recurring-materializer
@@ -121,7 +135,6 @@ services:
         fromDatabase:
           name: agentic-postgres
           property: connectionString
-      - key: STREAMING_SESSION_ENCRYPTION_KEY
-        sync: false
-      - key: STREAMING_SETTLEMENT_FEE_PAYER_SECRET_KEY
-        sync: false
+      # Shared with the web service via the `agentic-streaming` env group so
+      # the cron can decrypt delegate secrets the web service encrypted.
+      - fromGroup: agentic-streaming

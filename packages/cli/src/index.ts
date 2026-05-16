@@ -494,6 +494,10 @@ async function dispatchSession(parsed: ParsedArgs): Promise<unknown> {
     if (!tokenMint || !capAmount || !expiresInSeconds) {
       throw new Error('Usage: solana-agent-wallet session create <token-mint> <cap-amount> <expires-in-seconds> [--allowlist <addr,addr>]');
     }
+    // Phase 5.18 — validate before round-tripping render-web so users get a
+    // friendly local error instead of an opaque 400.
+    assertPositiveDecimal(capAmount, 'cap-amount');
+    assertPositiveInteger(expiresInSeconds, 'expires-in-seconds');
     return streamingRenderWebRequest(parsed.options, '/api/streaming/sessions', {
       method: 'POST',
       body: JSON.stringify(removeUndefined({
@@ -516,6 +520,8 @@ async function dispatchSession(parsed: ParsedArgs): Promise<unknown> {
     if (!amount || !recipient) {
       throw new Error('Usage: solana-agent-wallet session spend <session-id> <amount> <recipient>');
     }
+    // Phase 5.18 — same local validation as session create.
+    assertPositiveDecimal(amount, 'amount');
     return streamingRenderWebRequest(parsed.options, `/api/streaming/sessions/${encodeURIComponent(sessionId)}/voucher-relay`, {
       method: 'POST',
       body: JSON.stringify({ amount, recipient }),
@@ -2646,6 +2652,23 @@ function parseAllowlist(raw: string | undefined): string[] | undefined {
   if (!raw) return undefined;
   const entries = raw.split(',').map((entry) => entry.trim()).filter(Boolean);
   return entries.length ? entries : undefined;
+}
+
+// Phase 5.18 — pre-flight CLI input validation so users get a friendly error
+// before the render-web round-trip turns a typo into an opaque 400.
+const POSITIVE_DECIMAL_RE = /^(?:0|[1-9][0-9]*)(?:\.[0-9]+)?$/;
+function assertPositiveDecimal(raw: string, field: string): void {
+  const trimmed = raw.trim();
+  if (!POSITIVE_DECIMAL_RE.test(trimmed) || Number(trimmed) <= 0) {
+    throw new Error(`${field} must be a positive decimal number (e.g. 1, 0.05, 10.25); got "${raw}".`);
+  }
+}
+function assertPositiveInteger(raw: string, field: string): void {
+  const trimmed = raw.trim();
+  const parsed = Number(trimmed);
+  if (!Number.isInteger(parsed) || parsed <= 0) {
+    throw new Error(`${field} must be a positive integer; got "${raw}".`);
+  }
 }
 
 function bridgeUrl(options: GlobalOptions, path: string): URL {

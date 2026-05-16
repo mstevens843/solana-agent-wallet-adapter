@@ -11,6 +11,7 @@ import { WorkflowService } from './workflowService.js';
 
 type Command =
   | 'migrate'
+  | 'rollback'
   | 'materialize-due'
   | 'notifications-deliver'
   | 'skills-execute'
@@ -18,9 +19,22 @@ type Command =
   | 'signals-fanout'
   | 'streaming-settle';
 
-export async function runCloudCommand(command: Command): Promise<void> {
+export async function runCloudCommand(command: Command, args: readonly string[] = []): Promise<void> {
   const store = new PostgresWorkflowStore();
   try {
+    // Rollback runs against the existing schema; we must NOT call migrate()
+    // first because that would re-apply the migration we're trying to undo.
+    if (command === 'rollback') {
+      const targetId = args[0]?.trim();
+      if (!targetId) {
+        throw new Error('Usage: node dist/cloud/cli.js rollback <migration-id>');
+      }
+      const result = await store.rollbackOne(targetId);
+      console.log(
+        `Agentic Cloud rollback complete. id=${result.rolledBack} downApplied=${result.downApplied}`,
+      );
+      return;
+    }
     await store.migrate();
     if (command === 'migrate') {
       console.log('Agentic Cloud database migrations complete.');
@@ -100,6 +114,7 @@ export async function runCloudCommand(command: Command): Promise<void> {
 function parseCommand(value: string | undefined): Command {
   if (
     value === 'migrate' ||
+    value === 'rollback' ||
     value === 'materialize-due' ||
     value === 'notifications-deliver' ||
     value === 'skills-execute' ||
@@ -110,12 +125,12 @@ function parseCommand(value: string | undefined): Command {
     return value;
   }
   throw new Error(
-    'Usage: node dist/cloud/cli.js <migrate|materialize-due|notifications-deliver|skills-execute|aggregator-roll|signals-fanout|streaming-settle>',
+    'Usage: node dist/cloud/cli.js <migrate|rollback <id>|materialize-due|notifications-deliver|skills-execute|aggregator-roll|signals-fanout|streaming-settle>',
   );
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
-  runCloudCommand(parseCommand(process.argv[2])).catch((err) => {
+  runCloudCommand(parseCommand(process.argv[2]), process.argv.slice(3)).catch((err) => {
     console.error(err);
     process.exit(1);
   });

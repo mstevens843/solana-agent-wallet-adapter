@@ -486,7 +486,10 @@ function refreshCountdownText(): void {
   if (!root) {
     stopSessionDetailPolling();
     if (countdownTimer !== null) {
-      window.clearInterval(countdownTimer);
+      // Phase 5.18 — guard `window` for non-browser environments (SSR, tests
+      // that import this module outside of a JSDOM context). globalThis
+      // exposes clearInterval in both Node and browsers.
+      if (typeof window !== 'undefined') window.clearInterval(countdownTimer);
       countdownTimer = null;
     }
     return;
@@ -509,7 +512,11 @@ function ensureSessionsRuntime(): void {
     });
   }
   startSessionDetailPolling();
-  if (countdownTimer === null) {
+  if (countdownTimer === null && typeof window !== 'undefined') {
+    // Phase 5.18 — guard `window` for non-browser environments. If window is
+    // unavailable we skip the countdown refresh; the per-render text still
+    // calls expiryCountdown() so the user sees a fresh value on every
+    // re-render, just without the per-second tick.
     countdownTimer = window.setInterval(refreshCountdownText, 1000);
   }
 }

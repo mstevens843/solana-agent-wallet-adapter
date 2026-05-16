@@ -17,6 +17,16 @@ import { migration015MppWalletPreferencesNamespace } from './015_mpp_wallet_pref
 export interface PostgresMigration {
   id: string;
   sql: string;
+  /**
+   * Optional rollback SQL that reverses {@link sql}. Phase 5.10: pure ratchet
+   * migrations may omit this, but every new migration that mutates schema
+   * SHOULD provide a `down` so operators can run
+   * `pnpm -F render-web db:rollback <id>` to recover from a bad apply.
+   *
+   * Idempotent rollbacks (e.g. `DROP TABLE IF EXISTS …`) are preferred so
+   * partial-apply states can be cleaned up safely.
+   */
+  down?: string;
 }
 
 export const postgresMigrations: PostgresMigration[] = [

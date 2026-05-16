@@ -34,16 +34,6 @@
         "readOnly": true
       }
     }
-  },
-  "mpp": {
-    "endpoint": "",
-    "acceptedRails": ["sol", "usdc"],
-    "maxChallengeAmount": "10"
-  },
-  "streaming": {
-    "defaultTokenMint": "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
-    "maxSessionDurationSeconds": 3600,
-    "maxSessionCapUsdc": "100",
-    "autoSettleEverySeconds": 60
   }
 }
+

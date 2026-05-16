@@ -37,10 +37,30 @@ const DEFAULT_TOKEN_DECIMALS = 6;
 const MAX_RECIPIENT_ALLOWLIST = 64;
 const SESSION_LOCK_METADATA_KEY = 'streamingSettlementLock';
 const DELEGATE_KEY_METADATA_KEY = 'streamingDelegateKey';
+const DELEGATE_PREFUND_LAMPORTS_METADATA_KEY = 'delegatePrefundLamports';
 const SIGNER_RUNTIME_METADATA_KEY = 'signerRuntime';
 const SERVER_SIGNER_RUNTIME = 'server';
 const ANDROID_NATIVE_SIGNER_RUNTIME = 'android-native';
 const TEST_RECENT_BLOCKHASH_ENV = 'STREAMING_TEST_RECENT_BLOCKHASH';
+
+// User-funded delegate model: each session pre-funds its ephemeral delegate
+// keypair with a small SOL amount so the settlement cron can pay its own
+// transaction fees without a shared platform fee-payer wallet.
+// 0.005 SOL ≈ ~800 settlement signatures after the rent-exempt minimum.
+const DEFAULT_DELEGATE_PREFUND_LAMPORTS = 5_000_000;
+
+function delegatePrefundLamportsFromEnv(): number {
+  const raw = process.env.STREAMING_DELEGATE_PREFUND_LAMPORTS;
+  if (raw === undefined || raw === '') return DEFAULT_DELEGATE_PREFUND_LAMPORTS;
+  const parsed = Number(raw);
+  if (!Number.isFinite(parsed) || !Number.isInteger(parsed) || parsed < 0) {
+    console.warn(
+      `[streaming-session] STREAMING_DELEGATE_PREFUND_LAMPORTS=${raw} is not a non-negative integer; using default ${DEFAULT_DELEGATE_PREFUND_LAMPORTS}.`,
+    );
+    return DEFAULT_DELEGATE_PREFUND_LAMPORTS;
+  }
+  return parsed;
+}
 
 export interface StoredStreamingSession extends SessionGrant {
   metadata?: Record<string, unknown>;
@@ -148,7 +168,50 @@ export interface StreamingStore {
     settledAtIso: string,
   ): Promise<StreamingVoucherRecord[]>;
   markSessionSettledIfTerminal(sessionId: string, nowIso: string): Promise<StoredStreamingSession | undefined>;
+  /**
+   * Phase 5.6 — extend the settlement lock's `expiresAt` to give a slow
+   * in-flight settlement more time before another worker can reclaim. Refuses
+   * to extend if the lock isn't currently held (i.e. no SESSION_LOCK metadata
+   * or it has already expired) so a crashed worker can't "resurrect" a stale
+   * lock. Returns the post-update session or undefined if the heartbeat was
+   * refused.
+   */
+  heartbeatSettlementLock(
+    sessionId: string,
+    nowIso: string,
+    lockExpiresAtIso: string,
+  ): Promise<StoredStreamingSession | undefined>;
+  /**
+   * Phase 5.4 — read the most recent settlement attempt persisted by
+   * {@link setLastSettlementAttempt}, if any. The settlement service reads
+   * this at the start of each settle to reconcile against on-chain state
+   * before submitting a fresh tx.
+   */
+  getLastSettlementAttempt(sessionId: string): Promise<LastSettlementAttempt | undefined>;
+  /**
+   * Phase 5.4 — record the txid + the voucher hashes the attempt covers
+   * + the submission timestamp into session metadata. Pass `null` to clear.
+   */
+  setLastSettlementAttempt(
+    sessionId: string,
+    attempt: LastSettlementAttempt | null,
+    updatedAtIso: string,
+  ): Promise<StoredStreamingSession | undefined>;
 }
+
+/**
+ * Phase 5.4 settlement-retry safety. Persisted per session in
+ * `metadata.lastSettlementAttempt`; cleared after the settle confirms or is
+ * declared dead. Used by the cron to avoid double-submitting vouchers when a
+ * previous attempt is still pending on-chain.
+ */
+export interface LastSettlementAttempt {
+  txid: string;
+  voucherHashes: readonly string[];
+  submittedAt: string;
+}
+
+export const LAST_SETTLEMENT_ATTEMPT_METADATA_KEY = 'lastSettlementAttempt';
 
 export type StreamingSessionListStatus = SessionGrant['status'] | 'all';
 
@@ -226,6 +289,13 @@ export class StreamingService {
         secretKeyBase64: Buffer.from(keypair.secretKey).toString('base64'),
       })
       : undefined;
+    // Only server-runtime delegates (where the cron holds the secret key and
+    // signs settlements) need a SOL pre-fund — they're the ones paying their
+    // own fees. Android-native sessions are settled on-device and don't need
+    // server-side SOL.
+    const prefundLamports = signerRuntime === SERVER_SIGNER_RUNTIME
+      ? delegatePrefundLamportsFromEnv()
+      : 0;
     const session: StoredStreamingSession = {
       sessionId: id,
       walletAddress,
@@ -246,6 +316,7 @@ export class StreamingService {
         tokenDecimals,
         [SIGNER_RUNTIME_METADATA_KEY]: signerRuntime,
         ...(encryptedDelegateKey ? { [DELEGATE_KEY_METADATA_KEY]: encryptedDelegateKey } : {}),
+        ...(prefundLamports > 0 ? { [DELEGATE_PREFUND_LAMPORTS_METADATA_KEY]: prefundLamports } : {}),
       }),
     };
     const stored = await this.store.createSession(session);
@@ -257,6 +328,7 @@ export class StreamingService {
       tokenDecimals,
       cluster,
       recentBlockhash: await this.latestBlockhash(cluster),
+      ...(prefundLamports > 0 ? { delegatePrefundLamports: prefundLamports } : {}),
     });
     return {
       session: publicSession(stored, this.clock.now()),
@@ -614,6 +686,63 @@ export class MemoryStreamingStore implements StreamingStore {
     this.sessions.set(sessionId, clone(updated));
     return clone(updated);
   }
+
+  async heartbeatSettlementLock(
+    sessionId: string,
+    nowIso: string,
+    lockExpiresAtIso: string,
+  ): Promise<StoredStreamingSession | undefined> {
+    const session = this.sessions.get(sessionId);
+    if (!session) return undefined;
+    const lock = session.metadata?.[SESSION_LOCK_METADATA_KEY] as { lockedAt?: string; expiresAt?: string } | undefined;
+    if (!lock?.expiresAt) return undefined;
+    if (new Date(lock.expiresAt).getTime() <= new Date(nowIso).getTime()) return undefined;
+    const updated = {
+      ...session,
+      updatedAt: nowIso,
+      metadata: {
+        ...(session.metadata ?? {}),
+        [SESSION_LOCK_METADATA_KEY]: { ...lock, expiresAt: lockExpiresAtIso },
+      },
+    };
+    this.sessions.set(sessionId, clone(updated));
+    return clone(updated);
+  }
+
+  async getLastSettlementAttempt(sessionId: string): Promise<LastSettlementAttempt | undefined> {
+    const session = this.sessions.get(sessionId);
+    const value = session?.metadata?.[LAST_SETTLEMENT_ATTEMPT_METADATA_KEY];
+    return isLastSettlementAttempt(value) ? clone(value) : undefined;
+  }
+
+  async setLastSettlementAttempt(
+    sessionId: string,
+    attempt: LastSettlementAttempt | null,
+    updatedAtIso: string,
+  ): Promise<StoredStreamingSession | undefined> {
+    const session = this.sessions.get(sessionId);
+    if (!session) return undefined;
+    const metadata = { ...(session.metadata ?? {}) };
+    if (attempt) {
+      metadata[LAST_SETTLEMENT_ATTEMPT_METADATA_KEY] = clone(attempt);
+    } else {
+      delete metadata[LAST_SETTLEMENT_ATTEMPT_METADATA_KEY];
+    }
+    const updated = { ...session, updatedAt: updatedAtIso, metadata };
+    this.sessions.set(sessionId, clone(updated));
+    return clone(updated);
+  }
+}
+
+function isLastSettlementAttempt(value: unknown): value is LastSettlementAttempt {
+  if (!value || typeof value !== 'object') return false;
+  const record = value as Record<string, unknown>;
+  return (
+    typeof record.txid === 'string'
+    && typeof record.submittedAt === 'string'
+    && Array.isArray(record.voucherHashes)
+    && (record.voucherHashes as unknown[]).every((entry) => typeof entry === 'string')
+  );
 }
 
 export class PostgresStreamingStore implements StreamingStore {
@@ -965,6 +1094,72 @@ export class PostgresStreamingStore implements StreamingStore {
     return existing.rows[0] ? sessionFromRow(existing.rows[0]) : undefined;
   }
 
+  async heartbeatSettlementLock(
+    sessionId: string,
+    nowIso: string,
+    lockExpiresAtIso: string,
+  ): Promise<StoredStreamingSession | undefined> {
+    // Phase 5.6 — extend the in-flight lock's expiresAt. The conditional WHERE
+    // refuses to extend if the lock isn't currently held, so a crashed worker
+    // can't write over a fresh lock another worker just acquired.
+    const result = await this.query<StreamingSessionRow>({
+      name: 'streaming.settlement.heartbeat',
+      text: `
+        UPDATE streaming_sessions
+        SET metadata = jsonb_set(metadata, '{${SESSION_LOCK_METADATA_KEY},expiresAt}', $3::jsonb, true),
+            updated_at = $2
+        WHERE id = $1
+          AND metadata ? '${SESSION_LOCK_METADATA_KEY}'
+          AND COALESCE((metadata->'${SESSION_LOCK_METADATA_KEY}'->>'expiresAt')::timestamptz, 'epoch'::timestamptz) > $2
+        RETURNING *
+      `,
+      values: [sessionId, nowIso, jsonParam(lockExpiresAtIso)],
+    });
+    return result.rows[0] ? sessionFromRow(result.rows[0]) : undefined;
+  }
+
+  async getLastSettlementAttempt(sessionId: string): Promise<LastSettlementAttempt | undefined> {
+    const result = await this.query<StreamingSessionRow>({
+      name: 'streaming.settlement.getLastAttempt',
+      text: 'SELECT metadata FROM streaming_sessions WHERE id = $1',
+      values: [sessionId],
+    });
+    const metadata = result.rows[0]?.metadata as Record<string, unknown> | null | undefined;
+    const value = metadata?.[LAST_SETTLEMENT_ATTEMPT_METADATA_KEY];
+    return isLastSettlementAttempt(value) ? value : undefined;
+  }
+
+  async setLastSettlementAttempt(
+    sessionId: string,
+    attempt: LastSettlementAttempt | null,
+    updatedAtIso: string,
+  ): Promise<StoredStreamingSession | undefined> {
+    const result = attempt === null
+      ? await this.query<StreamingSessionRow>({
+          name: 'streaming.settlement.clearLastAttempt',
+          text: `
+            UPDATE streaming_sessions
+            SET metadata = COALESCE(metadata, '{}'::jsonb) - '${LAST_SETTLEMENT_ATTEMPT_METADATA_KEY}',
+                updated_at = $2
+            WHERE id = $1
+            RETURNING *
+          `,
+          values: [sessionId, updatedAtIso],
+        })
+      : await this.query<StreamingSessionRow>({
+          name: 'streaming.settlement.setLastAttempt',
+          text: `
+            UPDATE streaming_sessions
+            SET metadata = jsonb_set(COALESCE(metadata, '{}'::jsonb), '{${LAST_SETTLEMENT_ATTEMPT_METADATA_KEY}}', $3::jsonb, true),
+                updated_at = $2
+            WHERE id = $1
+            RETURNING *
+          `,
+          values: [sessionId, updatedAtIso, jsonParam(attempt)],
+        });
+    return result.rows[0] ? sessionFromRow(result.rows[0]) : undefined;
+  }
+
   private async ensureUser(walletAddress: string, createdAt: string): Promise<void> {
     await this.query({
       name: 'streaming.user.upsert',
@@ -1016,7 +1211,12 @@ export function streamingStoreFor(backingStore?: unknown): StreamingStore {
 }
 
 export function publicSession(session: StoredStreamingSession, now: Date): StoredStreamingSession {
-  const { [DELEGATE_KEY_METADATA_KEY]: _delegateKey, [SESSION_LOCK_METADATA_KEY]: _lock, ...metadata } = session.metadata ?? {};
+  const {
+    [DELEGATE_KEY_METADATA_KEY]: _delegateKey,
+    [SESSION_LOCK_METADATA_KEY]: _lock,
+    [LAST_SETTLEMENT_ATTEMPT_METADATA_KEY]: _lastAttempt,
+    ...metadata
+  } = session.metadata ?? {};
   const safeMetadata = Object.keys(metadata).length > 0 ? metadata : undefined;
   return {
     ...session,
@@ -1053,6 +1253,12 @@ export function signerRuntimeFor(session: StoredStreamingSession): StreamingSign
 
 export function sessionHasServerDelegateKey(session: StoredStreamingSession): boolean {
   return signerRuntimeFor(session) === SERVER_SIGNER_RUNTIME;
+}
+
+export function sessionDelegatePrefundLamports(session: StoredStreamingSession): number {
+  const raw = session.metadata?.[DELEGATE_PREFUND_LAMPORTS_METADATA_KEY];
+  if (typeof raw !== 'number' || !Number.isFinite(raw) || !Number.isInteger(raw) || raw < 0) return 0;
+  return raw;
 }
 
 export function normalizeVoucher(input: unknown): Voucher {
@@ -1299,11 +1505,47 @@ function decryptDelegateKey(payload: EncryptedDelegateKey): DelegateKeyPayload {
   return { publicKey: parsed.publicKey, secretKeyBase64: parsed.secretKeyBase64 };
 }
 
-function streamingEncryptionKey(): Buffer {
+/**
+ * Phase 5.2 — resolve and validate the streaming-session encryption master key.
+ * Three accepted shapes:
+ *   - Raw key (RECOMMENDED): base64-encoded 32-byte value. Generate via
+ *     `openssl rand -base64 32`. Used verbatim — no entropy downgrade.
+ *   - Passphrase (>=32 chars): SHA-256-hashed to 32 bytes. Logs a one-line
+ *     warning on first read so operators notice the entropy downgrade.
+ *   - Test mode (`NODE_ENV === 'test'` and env unset): deterministic test key.
+ *
+ * Refuses to return a key derived from a string shorter than 32 chars when
+ * base64 decode also fails to yield 32 bytes — the previous behavior silently
+ * hashed `STREAMING_SESSION_ENCRYPTION_KEY=changeme` to a "valid" 32-byte
+ * digest with only ~64 bits of practical entropy.
+ */
+let warnedOnStreamingPassphrase = false;
+
+export function streamingEncryptionKey(): Buffer {
   const configured = process.env.STREAMING_SESSION_ENCRYPTION_KEY?.trim();
   if (configured) {
-    const base64 = Buffer.from(configured, 'base64');
+    const base64 = (() => {
+      try {
+        return Buffer.from(configured, 'base64');
+      } catch {
+        return Buffer.alloc(0);
+      }
+    })();
     if (base64.length === 32) return base64;
+    if (configured.length < 32) {
+      throw new StreamingServiceError(
+        500,
+        'streaming_encryption_key_too_short',
+        'STREAMING_SESSION_ENCRYPTION_KEY is too weak: provide a base64-encoded 32-byte raw key (recommended) or a passphrase of at least 32 characters. The previous silent SHA-256-of-short-passphrase behavior has been removed.',
+      );
+    }
+    if (!warnedOnStreamingPassphrase) {
+      warnedOnStreamingPassphrase = true;
+      console.warn(
+        '[streaming-service] STREAMING_SESSION_ENCRYPTION_KEY is being SHA-256-hashed from a passphrase. ' +
+          'For maximum entropy, prefer a base64-encoded 32-byte raw key (`openssl rand -base64 32`).',
+      );
+    }
     return createHash('sha256').update(configured).digest();
   }
   if (process.env.NODE_ENV === 'test') {
@@ -1314,6 +1556,12 @@ function streamingEncryptionKey(): Buffer {
     'streaming_encryption_key_missing',
     'STREAMING_SESSION_ENCRYPTION_KEY is required for streaming session key storage.',
   );
+}
+
+// Test-only helper: reset the one-shot passphrase warning so unit tests can
+// assert the warning fires on first read after a reconfigure.
+export function __resetStreamingEncryptionKeyWarningForTests(): void {
+  warnedOnStreamingPassphrase = false;
 }
 
 function envInteger(name: string, fallback: number): number {

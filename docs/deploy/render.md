@@ -241,3 +241,108 @@ pnpm verify:release-links
 ```
 
 Then manually smoke `/docs`, `/cli`, `/desktop`, and `/android` at desktop and mobile widths.
+
+---
+
+## Streaming Sessions
+
+Phase 1–5 added a non-custodial streaming-payments primitive. The render-web
+host handles session lifecycle (create / accept-voucher / revoke / settle)
+and runs a per-minute cron that materializes settlements. This section is the
+operator runbook for the new moving parts.
+
+### Required environment variables
+
+| Variable | Required? | Notes |
+|---|---|---|
+| `STREAMING_SESSION_ENCRYPTION_KEY` | **Yes** for any streaming session | Master key for AES-256-GCM encryption of session delegate keys. Accept formats: base64-encoded 32 bytes (recommended; `openssl rand -base64 32`) OR passphrase of at least 32 characters (SHA-256-hashed on first read, logs a warning). Shorter values are rejected at first use. |
+| `STREAMING_DELEGATE_PREFUND_LAMPORTS` | No (default `5000000` = 0.005 SOL) | Per-session lamports the wallet's `Approve` tx funds into the ephemeral delegate keypair. Covers ~800 settlement signatures after the rent-exempt minimum. The cron sweeps the leftover back to the owner after settlement (`maybeSweepDelegate`). The platform no longer runs a shared fee-payer wallet — each session is self-funded, which eliminates a class of "shared key compromise drains everything" scenarios that the earlier security review flagged. |
+| `STREAMING_DEFAULT_CLUSTER` | No (default `mainnet-beta`) | One of `mainnet-beta` / `testnet` / `devnet` / `localnet`. |
+| `STREAMING_SETTLEMENT_THRESHOLD_BPS_DEFAULT` | No (default `9000` = 90% of cap) | Sessions become settlement-eligible when spent ≥ this fraction of cap, OR they expire, OR they're revoked. |
+| `STREAMING_CANDIDATE_LIMIT` | No (default `25`) | Max sessions the cron processes per tick. |
+| `STREAMING_LOCK_TTL_MS` | No (default `55000`) | Initial settlement-lock TTL. Heartbeats extend it between chunks. |
+| `STREAMING_MAX_VOUCHERS_PER_TX` | No (default `10`, library cap) | Per-tx voucher chunk cap. Lower for safety margin on hot paths. |
+| `STREAMING_RECONCILE_PENDING_HORIZON_MS` | No (default `180000`) | How long after `lastSettlementAttempt.submittedAt` we still treat a pending tx as in-flight; after this we assume the tx was dropped and a fresh attempt is allowed. |
+| `STREAMING_TEST_RECENT_BLOCKHASH` / `STREAMING_TEST_SETTLEMENT_TXID` | NEVER in production | Test-only fakes; the service refuses to honor them outside `NODE_ENV=test` (P5.5 guard). |
+
+### The settlement cron
+
+`render.yaml` declares `agentic-streaming-settlement` as a per-minute cron
+running `pnpm -F @solana-agent-wallet-adapter/render-web streaming:settle`.
+
+The cron:
+
+1. Picks up to `STREAMING_CANDIDATE_LIMIT` sessions whose spent amount
+   exceeds the configured threshold OR which have expired/revoked.
+2. Locks each candidate via a per-session metadata lock (CTAS-style
+   conditional UPDATE — see `claimSettlementCandidate`).
+3. Reconciles any `metadata.lastSettlementAttempt` against on-chain state
+   (`Connection.getSignatureStatus`) before building a new tx; if a prior
+   attempt confirmed, marks the vouchers settled with that txid and skips
+   the rebuild (P5.4).
+4. Re-verifies every voucher signature against the session's ephemeral
+   signer pubkey before passing them to `buildSettlementTx` (P5.8); forged
+   vouchers are quarantined with a `streaming.voucher.quarantined` audit
+   event.
+5. Heartbeats the session lock between chunks so a slow settlement doesn't
+   lose its lock to a second worker (P5.6).
+6. Submits each chunk, marks vouchers `settled_at + settlement_txid`,
+   writes a `streaming_settlement` evidence receipt (note: `signature: ''`,
+   txid is in `metadata.settlementTxid`; the on-chain tx IS the proof —
+   P5.9).
+7. Logs a summary line: `Agentic streaming settlement settled=N failed=M skipped=K`.
+
+### Monitoring
+
+- Tail Render logs for the `agentic-streaming-settlement` service. Look for
+  `failed > 0` or repeated `[streaming-settlement] session=… failed: …`
+  messages (errors are redacted via `redactSecrets()` — P5.7).
+- The fee-payer account balance decays one tx fee per settled chunk. Set up
+  an external alert (Slack, Sentry, PagerDuty) when its balance drops below
+  0.1 SOL.
+
+### Key rotation procedure
+
+`STREAMING_SESSION_ENCRYPTION_KEY` rotation requires draining active
+sessions first because the v1 encryption envelope has no key-id field:
+
+1. Block session creation (operator gate; communicate the freeze to wallet
+   integrators directly until a feature flag ships).
+2. Wait for all `active` sessions to either (a) settle via the cron or (b)
+   be revoked on-chain by their owners. Track via the dashboard or
+   `SELECT COUNT(*) FROM streaming_sessions WHERE status = 'active';`.
+3. Update `STREAMING_SESSION_ENCRYPTION_KEY` in Render's env (encrypted
+   secret — not committed to git). Re-deploy.
+4. Re-enable session creation. New sessions encrypt with the new key.
+
+Fee-payer rotation: **not applicable.** As of 2026-05-16 the platform-funded
+fee payer was eliminated. Each session funds its own ephemeral delegate
+keypair at session-open time and the leftover lamports are swept back to the
+owner after settlement. There's no shared key to rotate.
+
+### Database
+
+Migrations 013 (`streaming_sessions`), 014 (`streaming_vouchers`), and 015
+(`mpp-config` namespace doc) ship with `down` SQL (P5.10) so a bad migration
+can be rolled back via:
+
+```bash
+pnpm -F @solana-agent-wallet-adapter/render-web db:rollback 015
+pnpm -F @solana-agent-wallet-adapter/render-web db:rollback 014
+pnpm -F @solana-agent-wallet-adapter/render-web db:rollback 013
+```
+
+Rollback only the latest-applied migration at a time; the runner refuses
+out-of-order rollbacks.
+
+### Disaster recovery
+
+See [`render-streaming-recovery.md`](./render-streaming-recovery.md) for
+operator procedures covering encryption-key loss, fee-payer depletion,
+Postgres restore mid-rotation, and stuck-settlement recovery.
+
+### Pre-mainnet smoke
+
+Before flipping streaming sessions on for any mainnet wallet, run
+[`docs/smoke/streaming-settlement.md`](../smoke/streaming-settlement.md)
+against devnet and verify every pass-criterion checkbox.

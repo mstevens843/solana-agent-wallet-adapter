@@ -214,6 +214,55 @@ export class PostgresWorkflowStore implements
     }
   }
 
+  /**
+   * Phase 5.10 — roll back exactly one migration. Refuses if (a) `id` is not
+   * the most-recently-applied migration, (b) `id` is unknown, or (c) the
+   * migration has no `down` SQL. Operators chain multiple rollbacks by
+   * calling this for each id in reverse-apply order. Runs under the same
+   * advisory lock as {@link migrate} so it can't race with a concurrent apply.
+   */
+  async rollbackOne(id: string): Promise<{ rolledBack: string; downApplied: boolean }> {
+    const target = postgresMigrations.find((entry) => entry.id === id);
+    if (!target) {
+      throw new Error(`Unknown migration id "${id}". Cannot roll back.`);
+    }
+    const client = await this.checkoutClient();
+    await client.query({ text: 'BEGIN' });
+    try {
+      await client.query({ text: 'SELECT pg_advisory_xact_lock(1788732421, 424242)' });
+      const latest = await client.query<{ id: string }>({
+        name: 'migration.latest',
+        text: 'SELECT id FROM agentic_migrations ORDER BY applied_at DESC, id DESC LIMIT 1',
+      });
+      const latestId = latest.rows[0]?.id;
+      if (!latestId) {
+        throw new Error('No migrations are currently applied; nothing to roll back.');
+      }
+      if (latestId !== id) {
+        throw new Error(
+          `Refusing to roll back "${id}" — it is not the latest applied migration ("${latestId}"). ` +
+            `Roll back migrations in reverse order one at a time.`,
+        );
+      }
+      const downApplied = Boolean(target.down?.trim());
+      if (downApplied) {
+        await client.query({ text: target.down! });
+      }
+      await client.query({
+        name: 'migration.delete',
+        text: 'DELETE FROM agentic_migrations WHERE id = $1',
+        values: [id],
+      });
+      await client.query({ text: 'COMMIT' });
+      return { rolledBack: id, downApplied };
+    } catch (err) {
+      await client.query({ text: 'ROLLBACK' });
+      throw err;
+    } finally {
+      client.release?.();
+    }
+  }
+
   async close(): Promise<void> {
     if (this.ownsClient && this.client.end) {
       await this.client.end();

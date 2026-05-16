@@ -114,7 +114,7 @@ describe('Spend dev tab', () => {
     expect(html).toContain('3.25 of 10 USDC streamed');
   });
 
-  it('keeps row actions inside Spend by default', () => {
+  it('keeps the collapsed row free of cross-tab buttons', () => {
     const html = __spendForTests.spendRowHtml(envelopes()[2]!);
     expect(html).toContain('data-spend-select="streaming:stream_live"');
     expect(html).not.toContain('data-tab="sessions"');
@@ -135,12 +135,7 @@ describe('Spend dev tab', () => {
     expect(html).not.toContain('data-tab="inbox"');
   });
 
-  it('keeps legacy deep links behind legacy-tabs=1', () => {
-    vi.stubGlobal('window', {
-      location: { href: 'https://demo.local/app?legacy-tabs=1' },
-      addEventListener: vi.fn(),
-      dispatchEvent: vi.fn(),
-    });
+  it('renders deep links into the legacy tabs for cross-navigation', () => {
     __spendForTests.resetState({
       status: 'loaded',
       envelopes: envelopes(),

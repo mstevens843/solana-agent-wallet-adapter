@@ -7,7 +7,7 @@ import {
   createTransferCheckedInstruction,
   getAssociatedTokenAddressSync,
 } from '@solana/spl-token';
-import { Keypair, PublicKey, VersionedTransaction } from '@solana/web3.js';
+import { Keypair, PublicKey, SystemProgram, VersionedTransaction } from '@solana/web3.js';
 import bs58 from 'bs58';
 import nacl from 'tweetnacl';
 import { describe, expect, it } from 'vitest';
@@ -28,6 +28,7 @@ import {
   buildApproveDelegateTx,
   buildRevokeDelegateTx,
   buildSettlementTx,
+  buildSweepDelegateTx,
   canonicalize,
   computeVoucherHash,
   generateEphemeralKeypair,
@@ -223,8 +224,111 @@ describe('streaming-sessions delegate transaction builders', () => {
     expect(tx.kind).toBe('approve_delegate');
     expect(tx.sourceAta).toBe(sourceAta.toBase58());
     expect(tx.serializedLength).toBeGreaterThan(0);
+    expect(tx.instructionCount).toBe(1);
     expect(firstInstructionData(tx.txBase64)).toEqual(Buffer.from(expected.data));
     expect(firstInstructionProgramId(tx.txBase64)).toBe(TOKEN_PROGRAM_ID.toBase58());
+  });
+
+  it('prepends a SystemProgram.transfer when delegatePrefundLamports is set', () => {
+    const owner = Keypair.generate();
+    const mint = Keypair.generate().publicKey;
+    const delegate = Keypair.generate().publicKey;
+    const recentBlockhash = Keypair.generate().publicKey.toBase58();
+    const prefundLamports = 5_000_000;
+    const tx = buildApproveDelegateTx({
+      ownerPubkey: owner.publicKey.toBase58(),
+      tokenMint: mint.toBase58(),
+      delegatePubkey: delegate.toBase58(),
+      capAmount: '10',
+      tokenDecimals: 6,
+      cluster: 'devnet',
+      recentBlockhash,
+      delegatePrefundLamports: prefundLamports,
+    });
+    expect(tx.instructionCount).toBe(2);
+    expect(tx.description).toContain(`${prefundLamports} lamports`);
+
+    const versioned = VersionedTransaction.deserialize(Buffer.from(tx.txBase64, 'base64'));
+    const compiled = versioned.message.compiledInstructions;
+    expect(compiled).toHaveLength(2);
+    const firstProgramId = versioned.message.staticAccountKeys[compiled[0]!.programIdIndex]!.toBase58();
+    expect(firstProgramId).toBe(SystemProgram.programId.toBase58());
+    const secondProgramId = versioned.message.staticAccountKeys[compiled[1]!.programIdIndex]!.toBase58();
+    expect(secondProgramId).toBe(TOKEN_PROGRAM_ID.toBase58());
+  });
+
+  it('rejects a negative or fractional delegatePrefundLamports', () => {
+    const owner = Keypair.generate();
+    const mint = Keypair.generate().publicKey;
+    const delegate = Keypair.generate().publicKey;
+    const recentBlockhash = Keypair.generate().publicKey.toBase58();
+    expect(() =>
+      buildApproveDelegateTx({
+        ownerPubkey: owner.publicKey.toBase58(),
+        tokenMint: mint.toBase58(),
+        delegatePubkey: delegate.toBase58(),
+        capAmount: '1',
+        cluster: 'devnet',
+        recentBlockhash,
+        delegatePrefundLamports: -1,
+      }),
+    ).toThrow(StreamingInvalidInputError);
+    expect(() =>
+      buildApproveDelegateTx({
+        ownerPubkey: owner.publicKey.toBase58(),
+        tokenMint: mint.toBase58(),
+        delegatePubkey: delegate.toBase58(),
+        capAmount: '1',
+        cluster: 'devnet',
+        recentBlockhash,
+        delegatePrefundLamports: 0.5,
+      }),
+    ).toThrow(StreamingInvalidInputError);
+  });
+
+  it('buildSweepDelegateTx returns a single SystemProgram.transfer with delegate as fee payer', () => {
+    const owner = Keypair.generate();
+    const delegate = Keypair.generate();
+    const recentBlockhash = Keypair.generate().publicKey.toBase58();
+    const lamports = 1_234_567;
+    const tx = buildSweepDelegateTx({
+      delegatePubkey: delegate.publicKey.toBase58(),
+      ownerPubkey: owner.publicKey.toBase58(),
+      lamports,
+      cluster: 'devnet',
+      recentBlockhash,
+    });
+    expect(tx.kind).toBe('sweep_delegate');
+    expect(tx.instructionCount).toBe(1);
+    expect(tx.requiredSigners).toEqual([delegate.publicKey.toBase58()]);
+    expect(tx.description).toContain(`${lamports} lamports`);
+
+    const versioned = VersionedTransaction.deserialize(Buffer.from(tx.txBase64, 'base64'));
+    expect(versioned.message.compiledInstructions).toHaveLength(1);
+    const programId = versioned.message.staticAccountKeys[
+      versioned.message.compiledInstructions[0]!.programIdIndex
+    ]!.toBase58();
+    expect(programId).toBe(SystemProgram.programId.toBase58());
+    // The delegate signs as fee payer (slot 0 of static keys).
+    expect(versioned.message.staticAccountKeys[0]!.toBase58()).toBe(delegate.publicKey.toBase58());
+
+    versioned.sign([delegate]);
+    expect(versioned.signatures[0]).toBeDefined();
+  });
+
+  it('buildSweepDelegateTx rejects non-positive lamports', () => {
+    const owner = Keypair.generate();
+    const delegate = Keypair.generate();
+    const recentBlockhash = Keypair.generate().publicKey.toBase58();
+    expect(() =>
+      buildSweepDelegateTx({
+        delegatePubkey: delegate.publicKey.toBase58(),
+        ownerPubkey: owner.publicKey.toBase58(),
+        lamports: 0,
+        cluster: 'devnet',
+        recentBlockhash,
+      }),
+    ).toThrow(StreamingInvalidInputError);
   });
 
   it('builds Revoke instruction data matching @solana/spl-token', () => {

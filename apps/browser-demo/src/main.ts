@@ -39557,6 +39557,20 @@ function receiptLabelForKind(kind: string): string {
       return 'Rejection';
     case 'tool_trace_receipt':
       return 'Tool Trace';
+    // Phase 5.16 — user-friendly labels for the Phase 1/2 receipt kinds so the
+    // receipts UI doesn't surface raw enum strings like "streaming_settlement".
+    case 'mpp_session':
+      return 'MPP Payment';
+    case 'streaming_session_grant':
+      return 'Streaming Grant';
+    case 'streaming_voucher':
+      return 'Streaming Voucher';
+    case 'streaming_settlement':
+      return 'Stream Settled';
+    case 'ap2_inbound':
+      return 'AP2 Inbound';
+    case 'acp_outbound':
+      return 'ACP Cart';
     default:
       return labKindLabel(kind);
   }

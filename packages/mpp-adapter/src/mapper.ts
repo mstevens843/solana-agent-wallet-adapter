@@ -2,12 +2,11 @@ import { MppVerifyError } from './errors.js';
 import {
   SOL_NATIVE_MINT,
   type JsonObject,
-  type JsonValue,
   type MppApprovalParams,
   type MppChallenge,
   type MppPaymentMethod,
 } from './types.js';
-import { canonicalChallengeHash, selectSupportedPaymentMethod } from './verifier.js';
+import { canonicalChallengeHash, selectSupportedPaymentMethod, toJsonValue } from './verifier.js';
 
 export interface ChallengeToApprovalOptions {
   paymentMethod?: MppPaymentMethod;
@@ -51,10 +50,10 @@ export function challengeToApprovalParams(
       resourceUrl: challenge.resourceUrl,
       nonce: challenge.nonce,
       expiresAt: challenge.expiresAt,
-      ...(challenge.merchant ? { merchant: challenge.merchant as unknown as JsonValue } : {}),
+      ...(challenge.merchant ? { merchant: toJsonValue(challenge.merchant) } : {}),
     },
-    mppPaymentMethod: paymentMethod as unknown as JsonValue,
-    actionProposal: challenge as unknown as JsonValue,
+    mppPaymentMethod: toJsonValue(paymentMethod),
+    actionProposal: toJsonValue(challenge),
   };
   return {
     kind,

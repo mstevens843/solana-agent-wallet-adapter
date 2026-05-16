@@ -13,7 +13,7 @@ import {
   type MppPaymentRail,
   type MppReceipt,
 } from './types.js';
-import { canonicalChallengeHash, canonicalJsonSha256 } from './verifier.js';
+import { canonicalChallengeHash, canonicalJsonSha256, toJsonValue } from './verifier.js';
 
 export interface BuildMppPaymentReceiptInput {
   challenge: MppChallenge;
@@ -43,7 +43,7 @@ export function buildMppPaymentReceipt(input: BuildMppPaymentReceiptInput): MppR
     settledAt: input.credential.settledAt || input.settledAt,
   };
   const challengeHash = canonicalChallengeHash(input.challenge);
-  const credentialHash = canonicalJsonSha256(credential as unknown as JsonValue);
+  const credentialHash = canonicalJsonSha256(toJsonValue(credential));
   const draft: Omit<MppReceipt, 'artifactHash'> = {
     schema: MPP_PAYMENT_RECEIPT_SCHEMA,
     protocolVersion: MPP_PROTOCOL_VERSION,
@@ -64,7 +64,7 @@ export function buildMppPaymentReceipt(input: BuildMppPaymentReceiptInput): MppR
     ...(input.challenge.merchant ? { merchant: input.challenge.merchant } : {}),
     ...(input.challenge.metadata ? { metadata: input.challenge.metadata } : {}),
   };
-  const artifactHash = canonicalJsonSha256(draft as unknown as JsonValue);
+  const artifactHash = canonicalJsonSha256(toJsonValue(draft));
   return { ...draft, artifactHash };
 }
 
@@ -116,7 +116,7 @@ export function parseMppPaymentReceipt(value: unknown): MppReceipt {
 
 export function verifyMppPaymentReceiptHash(receipt: MppReceipt): boolean {
   const { artifactHash, ...rest } = receipt;
-  const expected = canonicalJsonSha256(rest as unknown as JsonValue);
+  const expected = canonicalJsonSha256(toJsonValue(rest));
   return expected === artifactHash;
 }
 

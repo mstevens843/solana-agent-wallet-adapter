@@ -11,6 +11,7 @@ import {
   parseMppPaymentReceipt,
   parseMppChallenge,
   selectSupportedPaymentMethod,
+  toJsonObject,
   verifyMppChallenge,
   verifyMppPaymentReceiptHash,
   type JsonObject,
@@ -34,6 +35,7 @@ import {
   type DevApiHandler,
   type DevApiHandlerContext,
 } from './devApiRegistry.js';
+import { redactSecrets } from './redaction.js';
 import {
   EvidenceService,
   EvidenceServiceError,
@@ -310,7 +312,7 @@ async function handlePostSettle(
     ...approval,
     metadata: {
       ...(approval.metadata ?? {}),
-      mppPaymentReceipt: receipt as unknown as JsonObject,
+      mppPaymentReceipt: toJsonObject(receipt),
       mppPaymentReceiptIssuedAt: issuedAt,
       mppEvidenceReceiptId: evidenceRecord.id,
       ...(signedEvidence.status === 'created' || signedEvidence.status === 'exists'
@@ -484,7 +486,7 @@ function buildMppEvidenceRecord(input: {
     title: `MPP Payment: ${merchant}`,
     kind: MPP_EVIDENCE_KIND,
     status: 'approved',
-    payload: receipt as unknown as JsonObject,
+    payload: toJsonObject(receipt),
     preSignatureHash: receipt.artifactHash,
     signingMessage: `mpp-payment:${challenge.nonce}@${receipt.txid ?? receipt.credentialHash}`,
     signature: receipt.txid ?? receipt.credentialHash,
@@ -549,7 +551,7 @@ async function maybeCreateOrLoadSignedMppEvidence(input: {
     title: `Signed MPP Payment: ${merchant}`,
     kind: MPP_EVIDENCE_KIND,
     status: 'approved',
-    payload: receipt as unknown as JsonObject,
+    payload: toJsonObject(receipt),
     preSignatureHash: receipt.artifactHash,
     artifactHash: receipt.artifactHash,
     signingMessage,
@@ -682,24 +684,28 @@ async function readJsonBody(req: IncomingMessage): Promise<unknown> {
 }
 
 function writeMppError(req: IncomingMessage, res: ServerResponse, err: unknown): void {
+  // Phase 5.7 — every error message reaching the wire goes through
+  // redactSecrets() so a stray RPC error or a wrapped EvidenceService error
+  // can't leak fragments of API keys, JWTs, or other tokens that may have
+  // been logged earlier in the chain.
   if (err instanceof JsonBodyError) {
-    writeJsonNoStore(req, res, err.status, { error: err.code, message: err.message });
+    writeJsonNoStore(req, res, err.status, { error: err.code, message: redactSecrets(err.message) });
     return;
   }
   if (err instanceof WorkflowValidationError) {
-    writeJsonNoStore(req, res, 400, { error: err.code, message: err.message, path: err.path });
+    writeJsonNoStore(req, res, 400, { error: err.code, message: redactSecrets(err.message), path: err.path });
     return;
   }
   if (err instanceof MppParseError || err instanceof MppVerifyError || err instanceof MppReceiptError) {
-    writeJsonNoStore(req, res, 400, { error: `mpp_error:${err.code}`, message: err.message, path: err.path });
+    writeJsonNoStore(req, res, 400, { error: `mpp_error:${err.code}`, message: redactSecrets(err.message), path: err.path });
     return;
   }
   if (err instanceof EvidenceServiceError) {
-    writeJsonNoStore(req, res, err.status, { error: err.code, message: err.message });
+    writeJsonNoStore(req, res, err.status, { error: err.code, message: redactSecrets(err.message) });
     return;
   }
   const message = err instanceof Error ? err.message : 'Unexpected MPP API error.';
-  writeJsonNoStore(req, res, 500, { error: 'internal_error', message });
+  writeJsonNoStore(req, res, 500, { error: 'internal_error', message: redactSecrets(message) });
 }
 
 function writeJsonNoStore(req: IncomingMessage, res: ServerResponse, status: number, payload: unknown): void {

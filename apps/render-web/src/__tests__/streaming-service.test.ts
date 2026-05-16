@@ -1,4 +1,4 @@
-import { Keypair } from '@solana/web3.js';
+import { Keypair, SystemProgram, VersionedTransaction } from '@solana/web3.js';
 import { describe, expect, it } from 'vitest';
 
 import {
@@ -9,11 +9,17 @@ import {
 } from '@solana-agent-wallet-adapter/streaming-sessions';
 
 import { MemoryEvidenceStore } from '../cloud/evidenceService.js';
-import { materializeStreamingSettlements, settleStreamingSession } from '../cloud/settlementService.js';
+import {
+  __latestBlockhashForClusterForTests,
+  materializeStreamingSettlements,
+  settleStreamingSession,
+} from '../cloud/settlementService.js';
 import {
   decryptSessionDelegateKey,
   MemoryStreamingStore,
   StreamingService,
+  __resetStreamingEncryptionKeyWarningForTests,
+  streamingEncryptionKey,
   type StreamingStore,
 } from '../cloud/streamingService.js';
 
@@ -311,8 +317,212 @@ describe('streaming sessions service', () => {
     expect(receipts[0]?.payload).toMatchObject({
       schema: 'streaming/settlement/0.1',
       sessionId: session.sessionId,
-      txid: 'STREAM_TX_EXPIRED',
+      // P5.9 — receipt payload now uses `settlementTxid` (the on-chain proof
+      // pointer) instead of `signature: txid` (which was misleading because
+      // verifiers expected an ed25519 sig).
+      settlementTxid: 'STREAM_TX_EXPIRED',
     });
+    expect(receipts[0]?.signature).toBe('');
+    expect(receipts[0]?.metadata).toMatchObject({
+      settlementTxid: 'STREAM_TX_EXPIRED',
+    });
+  });
+});
+
+describe('user-funded delegate (prefund + sweep)', () => {
+  it('open-session approve tx pre-funds the delegate with a SystemProgram.transfer', async () => {
+    const ctx = createContext({ now: '2026-05-16T12:00:00.000Z' });
+    const created = await ctx.service.createSession({
+      walletAddress: WALLET,
+      tokenMint: TOKEN_MINT,
+      capAmount: '1',
+      expiresAt: '2026-05-16T13:00:00.000Z',
+      cluster: 'devnet',
+    });
+    // Default delegate prefund is 5_000_000 lamports (0.005 SOL). The tx must
+    // carry two instructions: SystemProgram.transfer then SPL Approve.
+    expect(created.approveTx.instructionCount).toBe(2);
+    const versioned = VersionedTransaction.deserialize(
+      Buffer.from(created.approveTx.txBase64, 'base64'),
+    );
+    const compiled = versioned.message.compiledInstructions;
+    expect(compiled).toHaveLength(2);
+    const firstProgramId = versioned.message.staticAccountKeys[compiled[0]!.programIdIndex]!.toBase58();
+    expect(firstProgramId).toBe(SystemProgram.programId.toBase58());
+
+    // Session metadata records the prefund amount for the cron's sweep logic.
+    const stored = await ctx.store.getSession(WALLET, created.session.sessionId);
+    expect(stored?.metadata?.delegatePrefundLamports).toBe(5_000_000);
+  });
+
+  it('honors STREAMING_DELEGATE_PREFUND_LAMPORTS env override', async () => {
+    const original = process.env.STREAMING_DELEGATE_PREFUND_LAMPORTS;
+    process.env.STREAMING_DELEGATE_PREFUND_LAMPORTS = '1234567';
+    try {
+      const ctx = createContext({ now: '2026-05-16T12:00:00.000Z' });
+      const created = await ctx.service.createSession({
+        walletAddress: WALLET,
+        tokenMint: TOKEN_MINT,
+        capAmount: '1',
+        expiresAt: '2026-05-16T13:00:00.000Z',
+        cluster: 'devnet',
+      });
+      const stored = await ctx.store.getSession(WALLET, created.session.sessionId);
+      expect(stored?.metadata?.delegatePrefundLamports).toBe(1234567);
+      expect(created.approveTx.description).toContain('1234567 lamports');
+    } finally {
+      if (original === undefined) delete process.env.STREAMING_DELEGATE_PREFUND_LAMPORTS;
+      else process.env.STREAMING_DELEGATE_PREFUND_LAMPORTS = original;
+    }
+  });
+
+  it('sweeps residual delegate SOL back to owner when a session reaches terminal', async () => {
+    const recipient = Keypair.generate().publicKey.toBase58();
+    const ctx = createContext({ now: '2026-05-16T12:00:00.000Z' });
+    const evidenceStore = new MemoryEvidenceStore();
+    const session = await createActiveSession(ctx, {
+      capAmount: '0.05',
+      expiresAt: '2026-05-16T13:00:00.000Z',
+    });
+    // Single voucher exhausts the cap -> session becomes terminal after settle.
+    await ctx.service.acceptVoucher({
+      walletAddress: WALLET,
+      sessionId: session.sessionId,
+      voucher: voucher(ctx.keypair, session.sessionId, 'nonce_terminal', '0.05', recipient),
+    });
+
+    const submitCalls: Array<{ kind: string; lamports?: number }> = [];
+    const result = await materializeStreamingSettlements({
+      streamingStore: ctx.store,
+      evidenceStore,
+      clock: ctx.clock,
+      thresholdBps: 5_000,
+      latestBlockhash: async () => ({ blockhash: RECENT_BLOCKHASH }),
+      // Simulate the delegate having ~0.005 SOL residual after the settlement.
+      lookupDelegateBalance: async () => 5_000_000,
+      submitSignedTransaction: async (input) => {
+        submitCalls.push({
+          kind: input.unsignedTx.kind,
+          ...(input.unsignedTx.kind === 'sweep_delegate' && typeof input.unsignedTx.serializedLength === 'number'
+            ? { lamports: 5_000_000 - 5_000 }
+            : {}),
+        });
+        return { txid: `TX_${submitCalls.length}`, confirmedAt: '2026-05-16T12:01:00.000Z' };
+      },
+    });
+
+    expect(result.settled).toBe(1);
+    // First submission is the settlement, second is the sweep.
+    expect(submitCalls.map((call) => call.kind)).toEqual(['settlement', 'sweep_delegate']);
+  });
+
+  it('skips the sweep when residual balance is below the dust threshold', async () => {
+    const recipient = Keypair.generate().publicKey.toBase58();
+    const ctx = createContext({ now: '2026-05-16T12:00:00.000Z' });
+    const evidenceStore = new MemoryEvidenceStore();
+    const session = await createActiveSession(ctx, {
+      capAmount: '0.05',
+      expiresAt: '2026-05-16T13:00:00.000Z',
+    });
+    await ctx.service.acceptVoucher({
+      walletAddress: WALLET,
+      sessionId: session.sessionId,
+      voucher: voucher(ctx.keypair, session.sessionId, 'nonce_dust', '0.05', recipient),
+    });
+
+    const kinds: string[] = [];
+    await materializeStreamingSettlements({
+      streamingStore: ctx.store,
+      evidenceStore,
+      clock: ctx.clock,
+      thresholdBps: 5_000,
+      latestBlockhash: async () => ({ blockhash: RECENT_BLOCKHASH }),
+      // Dust — below the 500_000 lamport sweep threshold.
+      lookupDelegateBalance: async () => 100_000,
+      submitSignedTransaction: async (input) => {
+        kinds.push(input.unsignedTx.kind);
+        return { txid: 'TX_DUST', confirmedAt: '2026-05-16T12:01:00.000Z' };
+      },
+    });
+    // Only the settlement tx was submitted; no sweep follow-up.
+    expect(kinds).toEqual(['settlement']);
+  });
+
+  it('does not sweep when the session was created with prefund disabled (0 lamports)', async () => {
+    const recipient = Keypair.generate().publicKey.toBase58();
+    const original = process.env.STREAMING_DELEGATE_PREFUND_LAMPORTS;
+    process.env.STREAMING_DELEGATE_PREFUND_LAMPORTS = '0';
+    try {
+      const ctx = createContext({ now: '2026-05-16T12:00:00.000Z' });
+      const evidenceStore = new MemoryEvidenceStore();
+      const session = await createActiveSession(ctx, {
+        capAmount: '0.05',
+        expiresAt: '2026-05-16T13:00:00.000Z',
+      });
+      const stored = await ctx.store.getSession(WALLET, session.sessionId);
+      expect(stored?.metadata?.delegatePrefundLamports).toBeUndefined();
+
+      await ctx.service.acceptVoucher({
+        walletAddress: WALLET,
+        sessionId: session.sessionId,
+        voucher: voucher(ctx.keypair, session.sessionId, 'nonce_no_prefund', '0.05', recipient),
+      });
+
+      let balanceLookups = 0;
+      const kinds: string[] = [];
+      await materializeStreamingSettlements({
+        streamingStore: ctx.store,
+        evidenceStore,
+        clock: ctx.clock,
+        thresholdBps: 5_000,
+        latestBlockhash: async () => ({ blockhash: RECENT_BLOCKHASH }),
+        lookupDelegateBalance: async () => {
+          balanceLookups += 1;
+          return 5_000_000;
+        },
+        submitSignedTransaction: async (input) => {
+          kinds.push(input.unsignedTx.kind);
+          return { txid: 'TX_NO_PREFUND', confirmedAt: '2026-05-16T12:01:00.000Z' };
+        },
+      });
+      expect(kinds).toEqual(['settlement']);
+      expect(balanceLookups).toBe(0);
+    } finally {
+      if (original === undefined) delete process.env.STREAMING_DELEGATE_PREFUND_LAMPORTS;
+      else process.env.STREAMING_DELEGATE_PREFUND_LAMPORTS = original;
+    }
+  });
+
+  it('settlement failure does not propagate sweep errors', async () => {
+    const recipient = Keypair.generate().publicKey.toBase58();
+    const ctx = createContext({ now: '2026-05-16T12:00:00.000Z' });
+    const evidenceStore = new MemoryEvidenceStore();
+    const session = await createActiveSession(ctx, {
+      capAmount: '0.05',
+      expiresAt: '2026-05-16T13:00:00.000Z',
+    });
+    await ctx.service.acceptVoucher({
+      walletAddress: WALLET,
+      sessionId: session.sessionId,
+      voucher: voucher(ctx.keypair, session.sessionId, 'nonce_sweep_fail', '0.05', recipient),
+    });
+
+    const result = await materializeStreamingSettlements({
+      streamingStore: ctx.store,
+      evidenceStore,
+      clock: ctx.clock,
+      thresholdBps: 5_000,
+      latestBlockhash: async () => ({ blockhash: RECENT_BLOCKHASH }),
+      lookupDelegateBalance: async () => 5_000_000,
+      submitSignedTransaction: async (input) => {
+        if (input.unsignedTx.kind === 'sweep_delegate') {
+          throw new Error('simulated sweep RPC failure');
+        }
+        return { txid: 'TX_SETTLED', confirmedAt: '2026-05-16T12:01:00.000Z' };
+      },
+    });
+    // Settlement succeeded; sweep error was logged but swallowed.
+    expect(result).toMatchObject({ settled: 1, failed: 0 });
   });
 });
 
@@ -388,3 +598,92 @@ function voucher(
 async function expectCode(promise: Promise<unknown>, code: string): Promise<void> {
   await expect(promise).rejects.toMatchObject({ code });
 }
+
+describe('latestBlockhashForCluster TEST_* env guard (P5.5)', () => {
+  const ORIGINAL_NODE_ENV = process.env.NODE_ENV;
+  const ORIGINAL_BLOCKHASH = process.env.STREAMING_TEST_RECENT_BLOCKHASH;
+  function restore() {
+    if (ORIGINAL_NODE_ENV === undefined) delete process.env.NODE_ENV;
+    else process.env.NODE_ENV = ORIGINAL_NODE_ENV;
+    if (ORIGINAL_BLOCKHASH === undefined) delete process.env.STREAMING_TEST_RECENT_BLOCKHASH;
+    else process.env.STREAMING_TEST_RECENT_BLOCKHASH = ORIGINAL_BLOCKHASH;
+  }
+
+  it('refuses to honor STREAMING_TEST_RECENT_BLOCKHASH outside NODE_ENV=test', async () => {
+    process.env.NODE_ENV = 'production';
+    process.env.STREAMING_TEST_RECENT_BLOCKHASH = 'FakeBlockHash11111111111111111111111111111111';
+    try {
+      await expect(__latestBlockhashForClusterForTests('devnet')).rejects.toThrowError(
+        /NODE_ENV=test/,
+      );
+    } finally {
+      restore();
+    }
+  });
+
+  it('honors STREAMING_TEST_RECENT_BLOCKHASH inside NODE_ENV=test', async () => {
+    process.env.NODE_ENV = 'test';
+    process.env.STREAMING_TEST_RECENT_BLOCKHASH = 'AcceptedTestBlockHash11111111111111111111111';
+    try {
+      const result = await __latestBlockhashForClusterForTests('devnet');
+      expect(result.blockhash).toBe('AcceptedTestBlockHash11111111111111111111111');
+    } finally {
+      restore();
+    }
+  });
+});
+
+describe('streamingEncryptionKey (P5.2 hardening)', () => {
+  const ORIGINAL = process.env.STREAMING_SESSION_ENCRYPTION_KEY;
+  const ORIGINAL_NODE_ENV = process.env.NODE_ENV;
+
+  function restore() {
+    if (ORIGINAL === undefined) delete process.env.STREAMING_SESSION_ENCRYPTION_KEY;
+    else process.env.STREAMING_SESSION_ENCRYPTION_KEY = ORIGINAL;
+    if (ORIGINAL_NODE_ENV === undefined) delete process.env.NODE_ENV;
+    else process.env.NODE_ENV = ORIGINAL_NODE_ENV;
+    __resetStreamingEncryptionKeyWarningForTests();
+  }
+
+  it('refuses short passphrases that would silently SHA-256-downgrade entropy', () => {
+    process.env.STREAMING_SESSION_ENCRYPTION_KEY = 'changeme';
+    try {
+      expect(() => streamingEncryptionKey()).toThrowError(/too weak|too short/i);
+    } finally {
+      restore();
+    }
+  });
+
+  it('accepts a 32-byte raw base64 key verbatim with no entropy downgrade', () => {
+    const raw = Buffer.alloc(32, 7);
+    process.env.STREAMING_SESSION_ENCRYPTION_KEY = raw.toString('base64');
+    try {
+      const key = streamingEncryptionKey();
+      expect(key.length).toBe(32);
+      expect(key.equals(raw)).toBe(true);
+    } finally {
+      restore();
+    }
+  });
+
+  it('accepts a >=32-char passphrase but warns once about the entropy downgrade', () => {
+    process.env.STREAMING_SESSION_ENCRYPTION_KEY =
+      'this-is-a-perfectly-acceptable-passphrase-of-sufficient-length';
+    const warnings: string[] = [];
+    const originalWarn = console.warn;
+    console.warn = (message?: unknown) => {
+      warnings.push(typeof message === 'string' ? message : String(message));
+    };
+    try {
+      const first = streamingEncryptionKey();
+      const second = streamingEncryptionKey();
+      expect(first.length).toBe(32);
+      expect(first.equals(second)).toBe(true);
+      expect(warnings.length).toBe(1); // only on first read
+      expect(warnings[0]).toContain('SHA-256');
+    } finally {
+      console.warn = originalWarn;
+      restore();
+    }
+  });
+});

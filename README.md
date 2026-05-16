@@ -64,9 +64,12 @@ The current app also includes the public workflow layer around that signing boun
 - agent plan reviews with approve, deny, or needs-input decisions
 - Approval Inbox queues for one-time and recurring actions
 - recurring transfer and recurring swap setup, with each due occurrence returning to the inbox for wallet review
+- **AP2, ACP, and MPP** (Machine Payments Protocol — HTTP-402 from Stripe + Tempo) inbound payment adapters; agents using any of these protocols can pay via the user's wallet through the same approval flow
+- **non-custodial streaming-payment sessions** — user signs one SPL Token delegate approval granting a bounded cap; agent signs off-chain vouchers (sub-50ms latency on Android via the device-agent runtime); render-web batch-settles via the delegate; user revokes any time
+- unified Spend Envelopes view (one-time + recurring + streaming in a single filterable tab)
 - local, browser, and Agentic Cloud workflow storage modes
 - connector preferences for hosted BYOK, local bridge AI, browser session keys, and provider presets
-- receipts, signed artifacts, and rejection/review proofs for audit trails
+- receipts, signed artifacts, and rejection/review proofs for audit trails — including `mpp_session`, `streaming_session_grant`, and `streaming_settlement` evidence kinds
 
 ## Launch Positioning
 

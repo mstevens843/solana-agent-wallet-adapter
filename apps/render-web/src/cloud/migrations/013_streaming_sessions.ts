@@ -26,4 +26,10 @@ export const migration013StreamingSessions = {
       ON streaming_sessions(expires_at)
       WHERE status IN ('pending', 'active');
   `,
+  // Phase 5.10 rollback. CASCADE cleans up the streaming_vouchers FK from 014.
+  down: `
+    DROP INDEX IF EXISTS streaming_sessions_expires_at_idx;
+    DROP INDEX IF EXISTS streaming_sessions_wallet_status_idx;
+    DROP TABLE IF EXISTS streaming_sessions CASCADE;
+  `,
 };

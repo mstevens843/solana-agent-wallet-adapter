@@ -77,7 +77,7 @@ export function verifyMppChallenge(
 }
 
 export function canonicalChallengeHash(challenge: MppChallenge): string {
-  return canonicalJsonSha256(challenge as unknown as JsonValue);
+  return canonicalJsonSha256(toJsonValue(challenge));
 }
 
 export function selectSupportedPaymentMethod(
@@ -136,6 +136,63 @@ function normalizeAllowedMints(allowedMints: readonly string[] | undefined): Set
  */
 export function canonicalJsonSha256(value: JsonValue): string {
   return createHash('sha256').update(canonicalize(value), 'utf8').digest('hex');
+}
+
+/**
+ * Phase 5.13 — structural converter from any MPP shape (challenges,
+ * credentials, receipts) into a typed JsonValue. Replaces the previous
+ * `value as unknown as JsonValue` casts that bypassed type checking on the
+ * hash-determinism path. The converter:
+ *
+ *   - Drops `undefined` properties (JsonValue can't represent undefined).
+ *   - Recurses into nested objects and arrays.
+ *   - Rejects functions, symbols, bigints, and other non-JSON values with a
+ *     clear error so a refactor that accidentally adds a non-serializable
+ *     field doesn't silently produce a different canonical hash.
+ *
+ * Callers should pass plain data shapes (records / arrays / primitives).
+ * Class instances with prototypes are converted as plain key/value bags.
+ */
+export function toJsonValue(value: unknown): JsonValue {
+  if (value === null || value === undefined) return null;
+  const kind = typeof value;
+  if (kind === 'string' || kind === 'boolean') return value as JsonValue;
+  if (kind === 'number') {
+    if (!Number.isFinite(value as number)) {
+      throw new MppVerifyError('invalid_schema', 'toJsonValue cannot encode NaN or Infinity.');
+    }
+    return value as number;
+  }
+  if (Array.isArray(value)) {
+    return value.map((entry) => toJsonValue(entry));
+  }
+  if (kind === 'object') {
+    const result: JsonObject = {};
+    for (const [key, entry] of Object.entries(value as Record<string, unknown>)) {
+      if (entry === undefined) continue;
+      result[key] = toJsonValue(entry);
+    }
+    return result;
+  }
+  throw new MppVerifyError(
+    'invalid_schema',
+    `toJsonValue cannot encode value of type ${kind}; only JSON-compatible shapes are supported.`,
+  );
+}
+
+/**
+ * Convenience: structural conversion that asserts the top-level result is an
+ * object (callers commonly want `JsonObject` for receipt payloads etc.).
+ */
+export function toJsonObject(value: unknown): JsonObject {
+  const converted = toJsonValue(value);
+  if (converted === null || typeof converted !== 'object' || Array.isArray(converted)) {
+    throw new MppVerifyError(
+      'invalid_schema',
+      'toJsonObject expected an object-shaped input; got a primitive or array.',
+    );
+  }
+  return converted;
 }
 
 /**

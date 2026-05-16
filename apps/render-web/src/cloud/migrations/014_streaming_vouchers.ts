@@ -23,4 +23,12 @@ export const migration014StreamingVouchers = {
       ON streaming_vouchers(session_id)
       WHERE settled_at IS NULL;
   `,
+  // Phase 5.10 rollback. If 013 has already been rolled back, the CASCADE
+  // there already removed this table — DROP IF EXISTS keeps both orders safe.
+  down: `
+    DROP INDEX IF EXISTS streaming_vouchers_unsettled_idx;
+    DROP INDEX IF EXISTS streaming_vouchers_session_settled_idx;
+    DROP INDEX IF EXISTS streaming_vouchers_session_nonce_uidx;
+    DROP TABLE IF EXISTS streaming_vouchers;
+  `,
 };
