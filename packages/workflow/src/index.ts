@@ -3772,3 +3772,5 @@ function isPlainObject(input: unknown): input is Record<string, unknown> {
   const prototype = Object.getPrototypeOf(input);
   return prototype === Object.prototype || prototype === null;
 }
+
+export * from './spendEnvelope.js';

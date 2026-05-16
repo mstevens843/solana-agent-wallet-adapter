@@ -78,6 +78,9 @@ async function resolveGradle() {
   const configured = process.env.GRADLE;
   if (configured) return { command: configured, args: [] };
 
+  const wrapperGradle = join(appDir, 'gradlew');
+  if (existsSync(wrapperGradle)) return { command: wrapperGradle, args: [] };
+
   const systemGradle = spawnSync('gradle', ['--version'], { stdio: 'ignore' });
   if (systemGradle.status === 0) return { command: 'gradle', args: [] };
 

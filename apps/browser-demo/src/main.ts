@@ -302,12 +302,13 @@ import {
 } from './workspaceBackup.js';
 import './styles.css';
 
-// Dev-only Layer 1 integration hooks. These imports register the three dev
-// tabs (Agent Payments, Skills) and approval-card badges
+// Dev-only Layer 1 integration hooks. These imports register dev tabs
+// (Spend, Agent Payments, Skills, Sessions) and approval-card badges
 // (AP2 verified, ACP outbound) as side effects at module load. Visibility is
 // gated client-side by `isDevWallet(...)` inside each tab's guard() and
 // server-side by `isAllowedDevWallet(...)` for /api/* routes.
 import { findDevTab, listDevTabs } from './devTabRegistry.js';
+import { legacyTabsEnabled } from './legacyTabs.js';
 import { renderApprovalBadges } from './approvalBadges.js';
 import {
   addPayOutApprovalCreatedListener,
@@ -6153,8 +6154,9 @@ function appWorkspace(mode: 'app' | 'demo' = 'app'): string {
               */ ''}
               ${tabButton('overview', 'Home')}
               ${tabButton('agent', 'New Request', 'New')}
-              ${tabButton('schedule', 'Repeat Payments', 'Repeats')}
-              ${tabButton('inbox', 'Needs Approval', 'Approve')}
+              ${spendTabVisible() ? tabButton('spend', 'Spend') : ''}
+              ${legacyTabsEnabled() ? tabButton('schedule', 'Repeat Payments', 'Repeats') : ''}
+              ${legacyTabsEnabled() ? tabButton('inbox', 'Needs Approval', 'Approve') : ''}
               ${tabButton('completed', 'Done')}
               ${moreMenuButton()}
             </nav>
@@ -34459,6 +34461,11 @@ function lockedTabReason(tab: ActiveTab): string {
   return '';
 }
 
+function spendTabVisible(): boolean {
+  const spendTab = findDevTab('spend');
+  return Boolean(spendTab?.guard());
+}
+
 interface MoreMenuItem {
   id: string;
   label: string;
@@ -34468,7 +34475,10 @@ function moreMenuItems(): MoreMenuItem[] {
   // "Save Proof" is always present (replaces its old top-level slot). Dev-gated
   // tabs opt in only when their registered guard returns true (i.e. dev wallet connected).
   const items: MoreMenuItem[] = [{ id: 'labs', label: 'Save Proof' }];
+  const showLegacyTabs = legacyTabsEnabled();
   for (const tab of listDevTabs()) {
+    if (tab.id === 'spend') continue;
+    if (!showLegacyTabs && (tab.id === 'agent-protocols' || tab.id === 'sessions')) continue;
     if (tab.guard()) items.push({ id: tab.id, label: tab.label });
   }
   return items;

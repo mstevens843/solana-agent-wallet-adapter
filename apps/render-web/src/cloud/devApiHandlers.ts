@@ -8,6 +8,7 @@ import './bridgeRoutes.js';
 import './mppRoutes.js';
 import './signalsRoutes.js';
 import './skillsRoutes.js';
+import './spendRoutes.js';
 import './streamingRoutes.js';
 
 export {};

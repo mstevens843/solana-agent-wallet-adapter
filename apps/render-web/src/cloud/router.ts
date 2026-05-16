@@ -197,6 +197,7 @@ const REGISTERED_API_ROUTES = [
   'POST /api/swap/execute',
   'POST /api/connector/prepare-transaction',
   'POST /api/connector/read-facts',
+  'GET /api/spend/envelopes',
   'POST /api/birdeye/price-multi',
   'POST /api/birdeye/price-volume',
   'POST /api/birdeye/history-price',
