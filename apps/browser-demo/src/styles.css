@@ -12849,6 +12849,38 @@ button.danger:hover:not(:disabled) {
   margin-top: 6px;
 }
 
+.ai-provider-tier {
+  align-items: center;
+  border: 1px solid rgba(224, 230, 226, 0.14);
+  border-radius: 999px;
+  display: inline-flex;
+  font-size: 0.7rem;
+  font-weight: 900;
+  line-height: 1.15;
+  margin-top: 7px;
+  min-height: 24px;
+  padding: 4px 8px;
+  width: fit-content;
+}
+
+.ai-provider-tier-recommended {
+  background: rgba(32, 117, 74, 0.24);
+  border-color: rgba(94, 231, 158, 0.34);
+  color: #a8f0c6;
+}
+
+.ai-provider-tier-dangerous-direct {
+  background: rgba(126, 88, 19, 0.24);
+  border-color: rgba(244, 208, 130, 0.34);
+  color: #ffd589;
+}
+
+.ai-provider-tier-neutral {
+  background: rgba(86, 96, 111, 0.2);
+  border-color: rgba(184, 196, 210, 0.26);
+  color: rgba(229, 236, 240, 0.86);
+}
+
 .ai-key-configured-note {
   background: rgba(19, 63, 42, 0.28);
   border: 1px solid rgba(94, 231, 158, 0.26);

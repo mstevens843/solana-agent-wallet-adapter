@@ -246,6 +246,118 @@ test('prepare blink calls bridge prepare route with connector metadata', async (
   }
 });
 
+test('session commands proxy to render-web streaming API and print stable JSON', async () => {
+  const renderWeb = await startMockRenderWeb();
+  try {
+    const list = await runCliAsync([
+      '--render-web-url',
+      renderWeb.url,
+      'session',
+      'list',
+      '--wallet',
+      'Wallet1111111111111111111111111111111111',
+      '--json',
+    ]);
+    assert.equal(list.status, 0, list.stderr);
+    assert.equal(list.stdout.trim(), `{
+  "sessions": [
+    {
+      "capAmount": "10",
+      "sessionId": "sess_cli",
+      "spentAmount": "0",
+      "status": "active",
+      "tokenMint": "TokenMint1111111111111111111111111111111111"
+    }
+  ],
+  "walletAddress": "Wallet1111111111111111111111111111111111"
+}`);
+
+    const created = await runCliAsync([
+      '--render-web-url',
+      renderWeb.url,
+      'session',
+      'create',
+      'TokenMint1111111111111111111111111111111111',
+      '10',
+      '3600',
+      '--allowlist',
+      'Recipient111111111111111111111111111111111,Recipient222222222222222222222222222222222',
+      '--json',
+    ]);
+    assert.equal(created.status, 0, created.stderr);
+    assert.deepEqual(JSON.parse(created.stdout), {
+      approveTx: 'approve-cli-base64',
+      ephemeralSignerPubkey: 'signer-cli',
+      sessionId: 'sess_cli',
+    });
+
+    const spent = await runCliAsync([
+      '--render-web-url',
+      renderWeb.url,
+      'session',
+      'spend',
+      'sess_cli',
+      '0.05',
+      'Recipient111111111111111111111111111111111',
+      '--json',
+    ]);
+    assert.equal(spent.status, 0, spent.stderr);
+    assert.deepEqual(JSON.parse(spent.stdout), {
+      accepted: true,
+      remaining: '9.95',
+      voucher: { sessionId: 'sess_cli', amount: '0.05' },
+    });
+
+    const revoked = await runCliAsync(['--render-web-url', renderWeb.url, 'session', 'revoke', 'sess_cli', '--json']);
+    assert.equal(revoked.status, 0, revoked.stderr);
+    assert.deepEqual(JSON.parse(revoked.stdout), { revokeTx: 'revoke-cli-base64', sessionId: 'sess_cli' });
+
+    const history = await runCliAsync(['--render-web-url', renderWeb.url, 'session', 'history', 'sess_cli', '--json']);
+    assert.equal(history.status, 0, history.stderr);
+    assert.deepEqual(JSON.parse(history.stdout), {
+      receipt: { receipts: [{ receiptId: 'receipt_cli', txid: 'tx_cli' }] },
+      session: { session: { sessionId: 'sess_cli', status: 'active', vouchers: [{ nonce: 'nonce-1' }] } },
+    });
+
+    const settled = await runCliAsync(['--render-web-url', renderWeb.url, 'session', 'settle', 'sess_cli', '--json']);
+    assert.equal(settled.status, 0, settled.stderr);
+    assert.deepEqual(JSON.parse(settled.stdout), { failed: 0, sessionId: 'sess_cli', settled: 1 });
+
+    const createRequest = renderWeb.requests.find((request) => request.method === 'POST' && request.path === '/api/streaming/sessions');
+    assert.ok(createRequest);
+    assert.deepEqual(
+      {
+        ...(createRequest.body as Record<string, unknown>),
+        expiresAt: '<iso>',
+      },
+      {
+        tokenMint: 'TokenMint1111111111111111111111111111111111',
+        capAmount: '10',
+        expiresAt: '<iso>',
+        recipientAllowlist: [
+          'Recipient111111111111111111111111111111111',
+          'Recipient222222222222222222222222222222222',
+        ],
+      },
+    );
+    const expiresAt = (createRequest.body as Record<string, unknown>).expiresAt;
+    assert.equal(typeof expiresAt, 'string');
+    if (typeof expiresAt !== 'string') {
+      throw new Error('Expected expiresAt string.');
+    }
+    assert.ok(!Number.isNaN(Date.parse(expiresAt)));
+
+    const spendRequest = renderWeb.requests.find((request) => request.path === '/api/streaming/sessions/sess_cli/voucher');
+    assert.ok(spendRequest);
+    assert.deepEqual(spendRequest.body, {
+      amount: '0.05',
+      recipient: 'Recipient111111111111111111111111111111111',
+    });
+  } finally {
+    await renderWeb.close();
+  }
+});
+
 function runCli(args: string[]): { status: number | null; stdout: string; stderr: string } {
   return spawnSync(process.execPath, [cliPath, ...args], {
     env: {
@@ -390,6 +502,89 @@ async function startMockWalletHost(): Promise<{ url: string; close: () => Promis
   const url = await listenHttp(server);
   return {
     url,
+    close: () => closeHttp(server),
+  };
+}
+
+async function startMockRenderWeb(): Promise<{
+  url: string;
+  requests: Array<{ method: string; path: string; query: Record<string, string>; body: unknown }>;
+  close: () => Promise<void>;
+}> {
+  const requests: Array<{ method: string; path: string; query: Record<string, string>; body: unknown }> = [];
+  const server = createHttpServer((req, res) => {
+    void (async () => {
+      const url = new URL(req.url ?? '/', 'http://127.0.0.1');
+      const body = req.method === 'POST' ? await readRequestJson(req) : undefined;
+      requests.push({
+        method: req.method ?? 'GET',
+        path: url.pathname,
+        query: Object.fromEntries(url.searchParams.entries()),
+        body,
+      });
+
+      if (req.method === 'GET' && url.pathname === '/api/streaming/sessions') {
+        writeJsonResponse(res, {
+          walletAddress: url.searchParams.get('walletAddress') ?? null,
+          sessions: [
+            {
+              sessionId: 'sess_cli',
+              tokenMint: 'TokenMint1111111111111111111111111111111111',
+              capAmount: '10',
+              spentAmount: '0',
+              status: 'active',
+            },
+          ],
+        });
+        return;
+      }
+      if (req.method === 'POST' && url.pathname === '/api/streaming/sessions') {
+        writeJsonResponse(res, {
+          sessionId: 'sess_cli',
+          approveTx: 'approve-cli-base64',
+          ephemeralSignerPubkey: 'signer-cli',
+        }, 201);
+        return;
+      }
+      if (req.method === 'POST' && url.pathname === '/api/streaming/sessions/sess_cli/voucher') {
+        writeJsonResponse(res, {
+          accepted: true,
+          remaining: '9.95',
+          voucher: { sessionId: 'sess_cli', amount: '0.05' },
+        });
+        return;
+      }
+      if (req.method === 'POST' && url.pathname === '/api/streaming/sessions/sess_cli/revoke') {
+        writeJsonResponse(res, { sessionId: 'sess_cli', revokeTx: 'revoke-cli-base64' });
+        return;
+      }
+      if (req.method === 'GET' && url.pathname === '/api/streaming/sessions/sess_cli') {
+        writeJsonResponse(res, {
+          session: {
+            sessionId: 'sess_cli',
+            status: 'active',
+            vouchers: [{ nonce: 'nonce-1' }],
+          },
+        });
+        return;
+      }
+      if (req.method === 'GET' && url.pathname === '/api/streaming/sessions/sess_cli/receipt') {
+        writeJsonResponse(res, { receipts: [{ receiptId: 'receipt_cli', txid: 'tx_cli' }] });
+        return;
+      }
+      if (req.method === 'POST' && url.pathname === '/api/streaming/sessions/sess_cli/settle') {
+        writeJsonResponse(res, { sessionId: 'sess_cli', settled: 1, failed: 0 });
+        return;
+      }
+      writeJsonResponse(res, { error: 'not found' }, 404);
+    })().catch((err) => {
+      writeJsonResponse(res, { error: err instanceof Error ? err.message : String(err) }, 500);
+    });
+  });
+  const url = await listenHttp(server);
+  return {
+    url,
+    requests,
     close: () => closeHttp(server),
   };
 }

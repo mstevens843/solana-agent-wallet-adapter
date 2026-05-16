@@ -21,6 +21,7 @@ import androidx.core.view.WindowInsetsCompat
 import androidx.webkit.WebViewAssetLoader
 import androidx.lifecycle.lifecycleScope
 import com.agentic.wallet.agent.AgentRuntimeController
+import com.agentic.wallet.agent.StreamingVoucherWorker
 import com.agentic.wallet.agent.provider.DeviceAgentProviderExecutor
 import com.agentic.wallet.agent.runtime.RuntimeMethod
 import com.agentic.wallet.agent.runtime.RuntimeRequest
@@ -33,6 +34,7 @@ import com.agentic.wallet.mwa.AgentMwaLog
 import com.agentic.wallet.mwa.AgentMwaSigningResult
 import com.agentic.wallet.mwa.MwaController
 import com.agentic.wallet.mwa.MwaOperationException
+import com.agentic.wallet.streaming.StreamingSessionException
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.launch
 import org.json.JSONException
@@ -260,6 +262,42 @@ class MainActivity : ComponentActivity() {
                 "dispatchDeviceAgentReject",
                 "DONE",
                 "Device Agent reject callback evaluated",
+                mapOf("requestId" to requestId, "evalResult" to result.orEmpty()),
+            )
+        }
+    }
+
+    private fun dispatchStreamingResolve(requestId: String, envelope: JSONObject) {
+        if (isDestroyed) {
+            AgentMwaLog.warn(
+                "MainActivity",
+                "dispatchStreamingResolve",
+                "ACTIVITY_DESTROYED",
+                "skipped Streaming resolve on destroyed activity",
+                mapOf("requestId" to requestId),
+            )
+            return
+        }
+        val js =
+            "(function(){var b=window.__agenticAndroidStreamingBridge;if(b&&b.resolve){b.resolve(${JSONObject.quote(requestId)},$envelope);}})();"
+        AgentMwaLog.info(
+            "MainActivity",
+            "dispatchStreamingResolve",
+            "START",
+            "evaluating Streaming resolve callback",
+            mapOf(
+                "requestId" to requestId,
+                "ok" to envelope.optBoolean("ok", false),
+                "envelopeBytes" to envelope.toString().toByteArray(Charsets.UTF_8).size,
+                "envelope" to if (BuildConfig.DEBUG) envelope else "[debug-only]",
+            ),
+        )
+        webView.evaluateJavascript(js) { result ->
+            AgentMwaLog.info(
+                "MainActivity",
+                "dispatchStreamingResolve",
+                "DONE",
+                "Streaming resolve callback evaluated",
                 mapOf("requestId" to requestId, "evalResult" to result.orEmpty()),
             )
         }
@@ -557,19 +595,102 @@ class MainActivity : ComponentActivity() {
         }
 
         /**
-         * Phase 0 scaffolding bridge for streaming-payment sessions. Phase 2D
-         * wires this into the device-agent runtime so vouchers can be signed
-         * locally without WebView roundtrips or per-voucher MWA approvals.
-         * Returns a JSON envelope synchronously.
+         * Async bridge for streaming-payment sessions. The browser installs
+         * `window.__agenticAndroidStreamingBridge`; this method queues native
+         * work and resolves operational success/failure through that callback
+         * contract so signing never blocks the WebView thread.
          */
         @JavascriptInterface
-        fun streamingRequest(requestId: String, method: String, payloadJson: String): String {
-            return runCatching {
-                validateScaffoldedBridgeRequest(requestId, method, payloadJson)
-                notImplementedEnvelope("streaming", requestId, method)
-            }.getOrElse { err ->
-                errorEnvelope("streaming", requestId, method, err)
+        fun streamingRequest(requestId: String, method: String, payloadJson: String) {
+            activity.lifecycleScope.launch {
+                val envelope = try {
+                    validateStreamingBridgeRequest(requestId, method, payloadJson)
+                    AgentMwaLog.info(
+                        "MainActivity",
+                        "streamingRequest",
+                        "START",
+                        "android streaming bridge request received",
+                        mapOf(
+                            "method" to method,
+                            "requestId" to requestId,
+                            "payloadChars" to payloadJson.length,
+                            "payloadSha256_8" to sha256First8(payloadJson.toByteArray(Charsets.UTF_8)),
+                        ),
+                    )
+                    val payload = parseStreamingPayload(payloadJson)
+                    val result = StreamingVoucherWorker.submit(activity.applicationContext, method, payload)
+                    JSONObject()
+                        .put("ok", true)
+                        .put("bridge", "streaming")
+                        .put("requestId", requestId)
+                        .put("method", method)
+                        .put("status", StreamingVoucherWorker.statusJson(activity.applicationContext))
+                        .put("result", result)
+                } catch (cancel: CancellationException) {
+                    throw cancel
+                } catch (err: Throwable) {
+                    val code = streamingErrorCodeFor(err)
+                    val message = err.message ?: err.javaClass.simpleName
+                    AgentMwaLog.warn(
+                        "MainActivity",
+                        "streamingRequest",
+                        "OPERATIONAL_ERROR",
+                        "Streaming bridge operation produced an error envelope",
+                        mapOf(
+                            "requestId" to requestId,
+                            "method" to method,
+                            "code" to code,
+                            "class" to err.javaClass.simpleName,
+                            "message" to message,
+                        ),
+                    )
+                    JSONObject()
+                        .put("ok", false)
+                        .put("bridge", "streaming")
+                        .put("requestId", requestId)
+                        .put("method", method)
+                        .put("status", safeStreamingStatusJson())
+                        .put("error", JSONObject().put("code", code).put("message", message))
+                }
+                activity.dispatchStreamingResolve(requestId, envelope)
             }
+        }
+
+        private fun parseStreamingPayload(payloadJson: String): JSONObject =
+            try {
+                if (payloadJson.isBlank()) JSONObject() else JSONObject(payloadJson)
+            } catch (err: JSONException) {
+                throw StreamingSessionException(
+                    code = "invalid_payload",
+                    message = err.message ?: "Streaming bridge payload is not valid JSON.",
+                    cause = err,
+                )
+            }
+
+        private fun safeStreamingStatusJson(): JSONObject =
+            try {
+                StreamingVoucherWorker.statusJson(activity.applicationContext)
+            } catch (err: Throwable) {
+                AgentMwaLog.warn(
+                    "MainActivity",
+                    "safeStreamingStatusJson",
+                    "FALLBACK",
+                    "failed to read Streaming status; using unavailable fallback",
+                    mapOf("class" to err.javaClass.simpleName, "message" to err.message),
+                )
+                JSONObject()
+                    .put("available", false)
+                    .put("runtime", "android-native")
+                    .put("activeSessions", 0)
+                    .put("remainingDisplay", "\$0.00")
+                    .put("message", "Streaming session status unavailable.")
+            }
+
+        private fun streamingErrorCodeFor(err: Throwable): String = when (err) {
+            is StreamingSessionException -> err.code
+            is MwaOperationException -> err.code.lowercase()
+            is JSONException -> "invalid_payload"
+            else -> "streaming_error"
         }
 
         private fun validateScaffoldedBridgeRequest(requestId: String, method: String, payloadJson: String) {
@@ -581,6 +702,18 @@ class MainActivity : ComponentActivity() {
             }
             if (payloadJson.length > MAX_PAYLOAD_CHARS) {
                 throw MwaOperationException("INVALID_REQUEST", "Scaffolded bridge payload is too large.")
+            }
+        }
+
+        private fun validateStreamingBridgeRequest(requestId: String, method: String, payloadJson: String) {
+            if (!REQUEST_ID_PATTERN.matches(requestId)) {
+                throw MwaOperationException("INVALID_REQUEST", "Invalid Android Streaming bridge request id.")
+            }
+            if (method !in ALLOWED_STREAMING_METHODS) {
+                throw MwaOperationException("UNSUPPORTED_METHOD", "Unsupported Android Streaming bridge method: $method")
+            }
+            if (payloadJson.length > MAX_PAYLOAD_CHARS) {
+                throw MwaOperationException("INVALID_REQUEST", "Android Streaming bridge payload is too large.")
             }
         }
 
@@ -926,6 +1059,11 @@ class MainActivity : ComponentActivity() {
                 "generatePlan",
                 "reviewPlan",
                 "ask",
+            )
+            private val ALLOWED_STREAMING_METHODS = setOf(
+                "createSession",
+                "signVoucher",
+                "revokeLocalSession",
             )
             private const val MAX_PAYLOAD_CHARS = 2_000_000
             private const val MAX_SECURE_VALUE_CHARS = 8192

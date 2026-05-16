@@ -1,0 +1,145 @@
+import { describe, expect, it } from 'vitest';
+
+import {
+  browserNativeProviderTierForProvider,
+  chooseDeviceAgentRequestRoute,
+  defaultDeviceAgentRuntimeForSurface,
+  deviceAgentModeVisibleForSurface,
+} from '../deviceAgentWiring.js';
+
+describe('Phase 6 browser-native Device Agent wiring helpers', () => {
+  it('keeps Android native ahead of browser-native when both are present', () => {
+    expect(chooseDeviceAgentRequestRoute({
+      isAndroidApp: true,
+      androidBridgeAvailable: true,
+      browserDeviceAgentEnabled: true,
+      browserNativeEligible: true,
+      cloudSessionMatchesWallet: true,
+    })).toBe('android-native');
+  });
+
+  it('uses browser-native after Android and before the fallback paths', () => {
+    expect(chooseDeviceAgentRequestRoute({
+      isAndroidApp: false,
+      androidBridgeAvailable: false,
+      browserDeviceAgentEnabled: true,
+      browserNativeEligible: true,
+      cloudSessionMatchesWallet: true,
+    })).toBe('browser-native');
+  });
+
+  it('does not select a runtime request route when browser-native is not eligible', () => {
+    expect(chooseDeviceAgentRequestRoute({
+      isAndroidApp: false,
+      androidBridgeAvailable: false,
+      browserDeviceAgentEnabled: true,
+      browserNativeEligible: false,
+      cloudSessionMatchesWallet: true,
+    })).toBe('none');
+  });
+
+  it('chooses default runtime by surface precedence', () => {
+    expect(defaultDeviceAgentRuntimeForSurface({
+      isAndroidApp: true,
+      browserDeviceAgentEnabled: true,
+      browserNativeEligible: true,
+      cloudSessionMatchesWallet: true,
+    })).toBe('android-native');
+
+    expect(defaultDeviceAgentRuntimeForSurface({
+      isAndroidApp: false,
+      browserDeviceAgentEnabled: true,
+      browserNativeEligible: true,
+      cloudSessionMatchesWallet: true,
+    })).toBe('browser-native');
+
+    expect(defaultDeviceAgentRuntimeForSurface({
+      isAndroidApp: false,
+      browserDeviceAgentEnabled: false,
+      browserNativeEligible: false,
+      cloudSessionMatchesWallet: true,
+    })).toBe('render-gated');
+
+    expect(defaultDeviceAgentRuntimeForSurface({
+      isAndroidApp: false,
+      browserDeviceAgentEnabled: false,
+      browserNativeEligible: false,
+      cloudSessionMatchesWallet: false,
+    })).toBe('browser-dev');
+  });
+
+  it('keeps Device Agent mode hidden when browser flag is on but the wallet is missing', () => {
+    expect(deviceAgentModeVisibleForSurface({
+      deviceAgentEnabled: true,
+      androidDeviceAgentEnabled: false,
+      browserDeviceAgentEnabled: true,
+      showDevControls: false,
+      isAndroidApp: false,
+      androidDeviceAgentRuntimeEnabled: false,
+      walletIsDeviceAgentAllowlisted: false,
+      browserNativeEligible: false,
+    })).toBe(false);
+  });
+
+  it('does not show Device Agent for browser flag alone without umbrella eligibility', () => {
+    expect(deviceAgentModeVisibleForSurface({
+      deviceAgentEnabled: false,
+      androidDeviceAgentEnabled: false,
+      browserDeviceAgentEnabled: true,
+      showDevControls: false,
+      isAndroidApp: false,
+      androidDeviceAgentRuntimeEnabled: false,
+      walletIsDeviceAgentAllowlisted: true,
+      browserNativeEligible: false,
+    })).toBe(false);
+  });
+
+  it('shows Device Agent mode for an eligible browser-native wallet', () => {
+    expect(deviceAgentModeVisibleForSurface({
+      deviceAgentEnabled: true,
+      androidDeviceAgentEnabled: false,
+      browserDeviceAgentEnabled: true,
+      showDevControls: false,
+      isAndroidApp: false,
+      androidDeviceAgentRuntimeEnabled: false,
+      walletIsDeviceAgentAllowlisted: true,
+      browserNativeEligible: true,
+    })).toBe(true);
+  });
+
+  it('shows Device Agent mode when dev controls expose the browser-native runtime', () => {
+    expect(deviceAgentModeVisibleForSurface({
+      deviceAgentEnabled: true,
+      androidDeviceAgentEnabled: false,
+      browserDeviceAgentEnabled: true,
+      showDevControls: true,
+      isAndroidApp: false,
+      androidDeviceAgentRuntimeEnabled: false,
+      walletIsDeviceAgentAllowlisted: false,
+      browserNativeEligible: true,
+    })).toBe(true);
+  });
+
+  it('labels browser-native providers by direct-browser support tier', () => {
+    expect(browserNativeProviderTierForProvider('openrouter')).toMatchObject({
+      className: 'ai-provider-tier-recommended',
+      label: 'Recommended browser tier',
+    });
+    expect(browserNativeProviderTierForProvider('gemini')).toMatchObject({
+      className: 'ai-provider-tier-recommended',
+      label: 'Recommended browser tier',
+    });
+    expect(browserNativeProviderTierForProvider('openai')).toMatchObject({
+      className: 'ai-provider-tier-dangerous-direct',
+      label: 'Direct-browser caution',
+    });
+    expect(browserNativeProviderTierForProvider('anthropic')).toMatchObject({
+      className: 'ai-provider-tier-dangerous-direct',
+      label: 'Direct-browser caution',
+    });
+    expect(browserNativeProviderTierForProvider('custom-openai-compatible')).toMatchObject({
+      className: 'ai-provider-tier-neutral',
+      label: 'CORS depends on gateway',
+    });
+  });
+});

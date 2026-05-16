@@ -23,8 +23,8 @@
     "README.md"
   ],
   "scripts": {
-    "build": "pnpm -F @solana-agent-wallet-adapter/workflow build && pnpm -F @solana-agent-wallet-adapter/core build && pnpm -F @solana-agent-wallet-adapter/ios-link build && tsc -p tsconfig.json",
-    "typecheck": "pnpm -F @solana-agent-wallet-adapter/workflow build && pnpm -F @solana-agent-wallet-adapter/core build && pnpm -F @solana-agent-wallet-adapter/ios-link build && tsc -p tsconfig.json --noEmit",
+    "build": "pnpm -F @solana-agent-wallet-adapter/workflow build && pnpm -F @solana-agent-wallet-adapter/core build && pnpm -F @solana-agent-wallet-adapter/ios-link build && pnpm -F @solana-agent-wallet-adapter/streaming-sessions build && tsc -p tsconfig.json",
+    "typecheck": "pnpm -F @solana-agent-wallet-adapter/workflow build && pnpm -F @solana-agent-wallet-adapter/core build && pnpm -F @solana-agent-wallet-adapter/ios-link build && pnpm -F @solana-agent-wallet-adapter/streaming-sessions build && tsc -p tsconfig.json --noEmit",
     "test": "vitest run",
     "test:watch": "vitest",
     "clean": "rm -rf dist"
@@ -38,6 +38,7 @@
     "@solana-agent-wallet-adapter/core": "workspace:*",
     "@solana-agent-wallet-adapter/ios-link": "workspace:*",
     "@solana-agent-wallet-adapter/mpp-adapter": "workspace:*",
+    "@solana-agent-wallet-adapter/streaming-sessions": "workspace:*",
     "@solana-agent-wallet-adapter/workflow": "workspace:*",
     "@solana/web3.js": "^1.95.0",
     "decimal.js": "^10.6.0",

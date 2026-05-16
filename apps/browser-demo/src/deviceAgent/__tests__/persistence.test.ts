@@ -46,6 +46,16 @@ describe('createMemoryPersistence', () => {
     expect(snap.error).toEqual({ code: 'x', message: 'm' });
     expect(snap.error).not.toHaveProperty('subcode');
   });
+
+  it('stamps lastTransitionAtMs from the injected clock on every save', async () => {
+    let now = 1000;
+    const persistence = createMemoryPersistence({ clock: () => now });
+    await persistence.save('starting', null);
+    expect((await persistence.load()).lastTransitionAtMs).toBe(1000);
+    now = 2000;
+    await persistence.save('running', null);
+    expect((await persistence.load()).lastTransitionAtMs).toBe(2000);
+  });
 });
 
 describe('createIndexedDbPersistence', () => {
@@ -109,17 +119,48 @@ describe('createIndexedDbPersistence', () => {
     expect(snap.error).not.toHaveProperty('subcode');
   });
 
-  it('updates lastTransitionAtMs on every save', async () => {
-    const persistence = createIndexedDbPersistence();
-    const t0 = Date.now();
+  it('stamps lastTransitionAtMs from the injected clock on every save', async () => {
+    let now = 1000;
+    const persistence = createIndexedDbPersistence({ clock: () => now });
     await persistence.save('starting', null);
-    const first = (await persistence.load()).lastTransitionAtMs;
-    expect(first).toBeGreaterThanOrEqual(t0);
-
-    await new Promise((resolve) => setTimeout(resolve, 2));
+    expect((await persistence.load()).lastTransitionAtMs).toBe(1000);
+    now = 2000;
     await persistence.save('running', null);
-    const second = (await persistence.load()).lastTransitionAtMs;
-    expect(second).toBeGreaterThan(first);
+    expect((await persistence.load()).lastTransitionAtMs).toBe(2000);
+  });
+
+  it('defaults to Date.now when no clock is provided', async () => {
+    const persistence = createIndexedDbPersistence();
+    const before = Date.now();
+    await persistence.save('starting', null);
+    const snap = await persistence.load();
+    expect(snap.lastTransitionAtMs).toBeGreaterThanOrEqual(before);
+    expect(snap.lastTransitionAtMs).toBeLessThanOrEqual(Date.now());
+  });
+
+  it('writes a record with exactly { id, state, lastTransitionAtMs } after save(stopped, null) following an error', async () => {
+    const persistence = createIndexedDbPersistence({ clock: () => 1234 });
+    await persistence.save('error', { code: 'invalid_config', subcode: 'missing_model', message: 'no model' });
+    await persistence.save('stopped', null);
+
+    const record = fake.peek(SECRETS_DB_NAME, STATE_META_STORE, 'state') as Record<string, unknown>;
+    expect(record).toBeDefined();
+    expect(Object.keys(record).sort()).toEqual(['id', 'lastTransitionAtMs', 'state']);
+    expect(record).toEqual({ id: 'state', state: 'stopped', lastTransitionAtMs: 1234 });
+  });
+
+  it('save() rejects with storage_unavailable and propagates a cause when a transaction op fails', async () => {
+    const persistence = createIndexedDbPersistence();
+    fake.failNextOp('UnknownError', 'simulated put failure');
+    let caught: Error | null = null;
+    try {
+      await persistence.save('starting', null);
+    } catch (err) {
+      caught = err as Error;
+    }
+    expect(caught).not.toBeNull();
+    expect(caught!.message).toMatch(/^storage_unavailable:/);
+    expect(caught!.cause).toBeDefined();
   });
 
   it('load() falls back to defaults when IDB open fails', async () => {

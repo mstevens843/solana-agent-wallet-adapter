@@ -122,7 +122,7 @@ describe('Phase 2 storage layer', () => {
       }
     });
 
-    it('uses a fresh 12-byte IV for every write', async () => {
+    it('uses a fresh non-zero 12-byte IV for every write', async () => {
       const store = createSecretStore('encrypted-indexeddb');
       try {
         await store.put('apiKey:openai', 'sk-secret-payload');
@@ -135,6 +135,9 @@ describe('Phase 2 storage layer', () => {
         expect(second.iv.byteLength).toBe(12);
         expect(Array.from(first.iv)).not.toEqual(Array.from(second.iv));
         expect(Array.from(first.ct)).not.toEqual(Array.from(second.ct));
+        // Pin: a stubbed-out crypto.getRandomValues would leave IVs all-zero.
+        expect(Array.from(first.iv).some((byte) => byte !== 0)).toBe(true);
+        expect(Array.from(second.iv).some((byte) => byte !== 0)).toBe(true);
       } finally {
         store.dispose();
       }
@@ -194,6 +197,31 @@ describe('Phase 2 storage layer', () => {
       } finally {
         store.dispose();
       }
+    });
+
+    it('wraps an IDB delete failure as storage_unavailable with cause', async () => {
+      const store = createSecretStore('encrypted-indexeddb');
+      try {
+        await store.put('apiKey:openai', 'sk-existing');
+        fake.failNextOp('UnknownError', 'simulated delete failure');
+        let caught: Error | null = null;
+        try {
+          await store.delete('apiKey:openai');
+        } catch (err) {
+          caught = err as Error;
+        }
+        expect(caught).not.toBeNull();
+        expect(caught!.message).toMatch(/^storage_unavailable:/);
+        expect(caught!.cause).toBeDefined();
+      } finally {
+        store.dispose();
+      }
+    });
+
+    it('dispose() is a safe no-op in encrypted-indexeddb mode', () => {
+      const store = createSecretStore('encrypted-indexeddb');
+      expect(() => store.dispose()).not.toThrow();
+      expect(() => store.dispose()).not.toThrow(); // idempotent
     });
 
     it('reports mode() === "encrypted-indexeddb"', () => {
@@ -269,6 +297,26 @@ describe('Phase 2 storage layer', () => {
       expect(store.get('a')).toBe('one');
       store.dispose();
       expect(store.get('a')).toBeUndefined();
+    });
+
+    it('dispose() is idempotent and only removes its listener once', () => {
+      const target = new EventTarget();
+      let removeCount = 0;
+      const adapter = {
+        addEventListener(type: string, listener: () => void) {
+          target.addEventListener(type, listener);
+        },
+        removeEventListener(type: string, listener: () => void) {
+          removeCount += 1;
+          target.removeEventListener(type, listener);
+        },
+      };
+      const store = createSessionMemoryStore({ unloadTarget: adapter });
+      store.put('a', 'one');
+      expect(() => store.dispose()).not.toThrow();
+      expect(() => store.dispose()).not.toThrow();
+      expect(() => store.dispose()).not.toThrow();
+      expect(removeCount).toBe(1);
     });
   });
 

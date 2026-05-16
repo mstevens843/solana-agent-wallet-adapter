@@ -8,7 +8,7 @@
   "main": "./dist/server.js",
   "types": "./dist/server.d.ts",
   "scripts": {
-    "build": "pnpm -F @solana-agent-wallet-adapter/workflow build && pnpm -F @solana-agent-wallet-adapter/a2a-agent-card build && pnpm -F @solana-agent-wallet-adapter/ap2-adapter build && pnpm -F @solana-agent-wallet-adapter/acp-adapter build && pnpm -F @solana-agent-wallet-adapter/bridge-router build && pnpm -F @solana-agent-wallet-adapter/signals-runtime build && pnpm -F @solana-agent-wallet-adapter/skills-runtime build && pnpm -F @solana-agent-wallet-adapter/launch-skills build && pnpm -F @solana-agent-wallet-adapter/mcp-server build && tsc -p tsconfig.json",
+    "build": "pnpm -F @solana-agent-wallet-adapter/workflow build && pnpm -F @solana-agent-wallet-adapter/a2a-agent-card build && pnpm -F @solana-agent-wallet-adapter/ap2-adapter build && pnpm -F @solana-agent-wallet-adapter/acp-adapter build && pnpm -F @solana-agent-wallet-adapter/bridge-router build && pnpm -F @solana-agent-wallet-adapter/streaming-sessions build && pnpm -F @solana-agent-wallet-adapter/signals-runtime build && pnpm -F @solana-agent-wallet-adapter/skills-runtime build && pnpm -F @solana-agent-wallet-adapter/launch-skills build && pnpm -F @solana-agent-wallet-adapter/mcp-server build && tsc -p tsconfig.json",
     "db:migrate": "node dist/cloud/cli.js migrate",
     "recurring:materialize": "node dist/cloud/cli.js materialize-due",
     "notifications:deliver": "node dist/cloud/cli.js notifications-deliver",
@@ -17,8 +17,8 @@
     "signals:fanout": "node dist/cloud/cli.js signals-fanout",
     "streaming:settle": "node dist/cloud/cli.js streaming-settle",
     "start": "node dist/server.js",
-    "typecheck": "pnpm -F @solana-agent-wallet-adapter/workflow build && pnpm -F @solana-agent-wallet-adapter/a2a-agent-card build && pnpm -F @solana-agent-wallet-adapter/ap2-adapter build && pnpm -F @solana-agent-wallet-adapter/acp-adapter build && pnpm -F @solana-agent-wallet-adapter/bridge-router build && pnpm -F @solana-agent-wallet-adapter/signals-runtime build && pnpm -F @solana-agent-wallet-adapter/skills-runtime build && pnpm -F @solana-agent-wallet-adapter/launch-skills build && pnpm -F @solana-agent-wallet-adapter/mcp-server build && tsc -p tsconfig.json --noEmit",
-    "test": "pnpm -F @solana-agent-wallet-adapter/workflow build && pnpm -F @solana-agent-wallet-adapter/a2a-agent-card build && pnpm -F @solana-agent-wallet-adapter/ap2-adapter build && pnpm -F @solana-agent-wallet-adapter/acp-adapter build && pnpm -F @solana-agent-wallet-adapter/bridge-router build && pnpm -F @solana-agent-wallet-adapter/signals-runtime build && pnpm -F @solana-agent-wallet-adapter/skills-runtime build && pnpm -F @solana-agent-wallet-adapter/launch-skills build && vitest run"
+    "typecheck": "pnpm -F @solana-agent-wallet-adapter/workflow build && pnpm -F @solana-agent-wallet-adapter/a2a-agent-card build && pnpm -F @solana-agent-wallet-adapter/ap2-adapter build && pnpm -F @solana-agent-wallet-adapter/acp-adapter build && pnpm -F @solana-agent-wallet-adapter/bridge-router build && pnpm -F @solana-agent-wallet-adapter/streaming-sessions build && pnpm -F @solana-agent-wallet-adapter/signals-runtime build && pnpm -F @solana-agent-wallet-adapter/skills-runtime build && pnpm -F @solana-agent-wallet-adapter/launch-skills build && pnpm -F @solana-agent-wallet-adapter/mcp-server build && tsc -p tsconfig.json --noEmit",
+    "test": "pnpm -F @solana-agent-wallet-adapter/workflow build && pnpm -F @solana-agent-wallet-adapter/a2a-agent-card build && pnpm -F @solana-agent-wallet-adapter/ap2-adapter build && pnpm -F @solana-agent-wallet-adapter/acp-adapter build && pnpm -F @solana-agent-wallet-adapter/bridge-router build && pnpm -F @solana-agent-wallet-adapter/streaming-sessions build && pnpm -F @solana-agent-wallet-adapter/signals-runtime build && pnpm -F @solana-agent-wallet-adapter/skills-runtime build && pnpm -F @solana-agent-wallet-adapter/launch-skills build && vitest run"
   },
   "dependencies": {
     "@solana-agent-wallet-adapter/a2a-agent-card": "workspace:*",
@@ -30,6 +30,7 @@
     "@solana-agent-wallet-adapter/mpp-adapter": "workspace:*",
     "@solana-agent-wallet-adapter/signals-runtime": "workspace:*",
     "@solana-agent-wallet-adapter/skills-runtime": "workspace:*",
+    "@solana-agent-wallet-adapter/streaming-sessions": "workspace:*",
     "@solana-agent-wallet-adapter/workflow": "workspace:*",
     "@solana/web3.js": "^1.95.0",
     "pg": "^8.20.0"

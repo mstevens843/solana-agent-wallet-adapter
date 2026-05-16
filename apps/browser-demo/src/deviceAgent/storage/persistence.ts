@@ -72,8 +72,16 @@ function buildRecord(
   return record;
 }
 
-export function createIndexedDbPersistence(): RuntimePersistence {
+export interface PersistenceOptions {
+  readonly clock?: () => number;
+}
+
+export function createIndexedDbPersistence(options: PersistenceOptions = {}): RuntimePersistence {
+  const clock = options.clock ?? Date.now;
   return {
+    // Never rejects. Returns the default snapshot on IDB failure so
+    // BrowserRuntimeRegistry.hydrate() can always make forward progress.
+    // Storage health is observable via save() rejecting with `storage_unavailable: …`.
     async load() {
       try {
         return await withDb(
@@ -86,12 +94,11 @@ export function createIndexedDbPersistence(): RuntimePersistence {
           },
         );
       } catch {
-        // The registry hydrate path treats load() as never-rejecting; degrade gracefully.
         return defaultSnapshot();
       }
     },
     async save(state, error) {
-      const record = buildRecord(state, error, Date.now());
+      const record = buildRecord(state, error, clock());
       await withDb(
         SECRETS_DB_NAME,
         SECRETS_DB_VERSION,
@@ -104,7 +111,8 @@ export function createIndexedDbPersistence(): RuntimePersistence {
   };
 }
 
-export function createMemoryPersistence(): RuntimePersistence {
+export function createMemoryPersistence(options: PersistenceOptions = {}): RuntimePersistence {
+  const clock = options.clock ?? Date.now;
   let snapshot: RegistrySnapshotPersist = defaultSnapshot();
   return {
     async load() {
@@ -118,7 +126,7 @@ export function createMemoryPersistence(): RuntimePersistence {
               ? { code: error.code, subcode: error.subcode, message: error.message }
               : { code: error.code, message: error.message })
           : null,
-        lastTransitionAtMs: Date.now(),
+        lastTransitionAtMs: clock(),
       };
     },
   };

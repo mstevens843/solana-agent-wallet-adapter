@@ -28,6 +28,14 @@ const ANDROID_RUNNING: DeviceAgentHealthHint = {
   bridgeAvailable: true,
 };
 
+const BROWSER_NATIVE_RUNNING: DeviceAgentHealthHint = {
+  available: true,
+  configured: true,
+  state: 'running',
+  runtime: 'browser-native',
+  bridgeAvailable: false,
+};
+
 describe('checkAi (device-agent mode)', () => {
   it('reports scaffold-only on browser dev when no hint is provided', async () => {
     const result = await checkAi(baseInputs());
@@ -101,6 +109,30 @@ describe('checkAi (device-agent mode)', () => {
     const result = await checkAi(baseInputs({ deviceAgent: ANDROID_RUNNING }));
     expect(result.status).toBe('ok');
     expect(result.message).toBe('Device Agent ready');
+  });
+
+  it('reports OK when the browser-native runtime is running without an Android bridge', async () => {
+    const result = await checkAi(baseInputs({ deviceAgent: BROWSER_NATIVE_RUNNING }));
+    expect(result.status).toBe('ok');
+    expect(result.message).toBe('Device Agent ready');
+    expect(result.detail).toContain('browser tab');
+  });
+
+  it('uses reload remediation when browser-native enters an error state', async () => {
+    const result = await checkAi(baseInputs({
+      deviceAgent: { ...BROWSER_NATIVE_RUNNING, state: 'error', message: 'Storage failed.' },
+    }));
+    expect(result.status).toBe('fail');
+    expect(result.message).toBe('Device Agent error');
+    expect(result.remediation).toEqual({ label: 'Reload tab', intent: 'reload' });
+  });
+
+  it('reports browser-native as unconfigured before a key is staged', async () => {
+    const result = await checkAi(baseInputs({
+      deviceAgent: { ...BROWSER_NATIVE_RUNNING, configured: false, state: 'stopped' },
+    }));
+    expect(result.message).toBe('Device Agent unconfigured');
+    expect(result.status).toBe('warn');
   });
 
   it('distinguishes starting from stopped when configured but not yet running', async () => {

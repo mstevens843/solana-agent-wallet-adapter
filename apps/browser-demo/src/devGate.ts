@@ -57,12 +57,34 @@ export function isDeviceAgentWallet(address: string | undefined | null): boolean
   return DEVICE_AGENT_WALLET_ALLOWLIST.includes(address);
 }
 
+export interface BrowserNativeRuntimeEligibilityInput {
+  deviceAgentEnabled: boolean;
+  browserDeviceAgentEnabled: boolean;
+  walletAddress?: string | null;
+  isAndroidApp: boolean;
+  showDevControls: boolean;
+  deviceAgentWalletAllowlisted?: boolean;
+}
+
+export function browserNativeRuntimeEligibleForSurface(
+  input: BrowserNativeRuntimeEligibilityInput,
+): boolean {
+  if (!input.deviceAgentEnabled) return false;
+  if (!input.browserDeviceAgentEnabled) return false;
+  if (input.isAndroidApp) return false;
+  if (input.showDevControls) return true;
+  return input.deviceAgentWalletAllowlisted ?? isDeviceAgentWallet(input.walletAddress);
+}
+
 export function isBrowserNativeRuntimeEligible(
   walletAddress: string | undefined | null,
   isAndroidApp: boolean,
 ): boolean {
-  if (!DEVICE_AGENT_ENABLED) return false;
-  if (!BROWSER_DEVICE_AGENT_ENABLED) return false;
-  if (isAndroidApp) return false;
-  return isDeviceAgentWallet(walletAddress);
+  return browserNativeRuntimeEligibleForSurface({
+    deviceAgentEnabled: DEVICE_AGENT_ENABLED,
+    browserDeviceAgentEnabled: BROWSER_DEVICE_AGENT_ENABLED,
+    walletAddress,
+    isAndroidApp,
+    showDevControls: false,
+  });
 }

@@ -318,10 +318,19 @@ import {
   type Ap2InboundDemoCreatedDetail,
 } from './ap2InboundDemoEvents.js';
 import {
+  addStreamingApprovalRequestedListener,
+  dispatchStreamingApprovalCompleted,
+  type StreamingApprovalOperation,
+  type StreamingApprovalRequestedDetail,
+} from './streamingApprovalEvents.js';
+import {
   ANDROID_DEVICE_AGENT_ENABLED,
+  BROWSER_DEVICE_AGENT_ENABLED,
   DEVICE_AGENT_ENABLED,
+  browserNativeRuntimeEligibleForSurface,
   isDeviceAgentWallet,
 } from './devGate.js';
+import type { SecretStoreMode } from './deviceAgent/index.js';
 import {
   DeviceAgentClientError,
   deviceAgentDiagnosticsFromError,
@@ -332,6 +341,13 @@ import {
   type DeviceAgentRuntimeState,
   type DeviceAgentStatus,
 } from './deviceAgentClient.js';
+import {
+  canUseDeviceAgentBrowserNative as canUseDeviceAgentBrowserNativeForSurface,
+  browserNativeProviderTierForProvider,
+  chooseDeviceAgentRequestRoute,
+  defaultDeviceAgentRuntimeForSurface,
+  deviceAgentModeVisibleForSurface,
+} from './deviceAgentWiring.js';
 import { setConnectedAddress, setConnectedCluster } from './walletState.js';
 import './devTabs/index.js';
 import { setCloudWalletBridge } from './cloudWalletBridge.js';
@@ -818,6 +834,7 @@ const DEFAULT_AGENT_PROMPT = '';
 const STORAGE_KEY = 'solana-agent-wallet-demo-v2';
 const BRIDGE_TOKEN_SESSION_KEY = 'agentic-local-bridge-token';
 const AI_API_KEYS_SESSION_STORAGE_KEY = 'solana-agent-wallet-ai-api-keys-v1';
+const DEVICE_AGENT_SECRET_STORE_MODE_KEY = 'agentic-device-agent-secret-store-mode';
 const GENERATED_PLANS_STORAGE_KEY = 'solana-agent-wallet-generated-plans-v1';
 const BROWSER_WORKFLOW_STORAGE_KEY = 'solana-agent-wallet-browser-workflow-v1';
 const LOCAL_COMPLETED_STORAGE_KEY = 'solana-agent-wallet-local-completed-v1';
@@ -3061,12 +3078,88 @@ let tokenMarketHydrationInFlight = false;
 
 const appRoot = document.querySelector<HTMLDivElement>('#app');
 
+type BrowserDeviceAgentModule = typeof import('./deviceAgent/index.js');
+let browserDeviceAgentModule: BrowserDeviceAgentModule | null = null;
+let browserDeviceAgentModulePromise: Promise<BrowserDeviceAgentModule> | null = null;
+
+async function loadBrowserDeviceAgentModule(): Promise<BrowserDeviceAgentModule> {
+  if (browserDeviceAgentModule) return browserDeviceAgentModule;
+  browserDeviceAgentModulePromise ??= import('./deviceAgent/index.js').then((mod) => {
+    browserDeviceAgentModule = mod;
+    return mod;
+  }).catch((err) => {
+    browserDeviceAgentModulePromise = null;
+    throw err;
+  });
+  return browserDeviceAgentModulePromise;
+}
+
+function isBrowserDeviceAgentSecretStoreMode(value: unknown): value is SecretStoreMode {
+  return value === 'encrypted-indexeddb' || value === 'session-memory';
+}
+
+function readBrowserDeviceAgentSecretStoreMode(): SecretStoreMode {
+  try {
+    const value = window.localStorage.getItem(DEVICE_AGENT_SECRET_STORE_MODE_KEY);
+    return isBrowserDeviceAgentSecretStoreMode(value) ? value : 'encrypted-indexeddb';
+  } catch {
+    return 'encrypted-indexeddb';
+  }
+}
+
+function persistBrowserDeviceAgentSecretStoreMode(mode: SecretStoreMode): void {
+  if (!isBrowserDeviceAgentSecretStoreMode(mode)) return;
+  try {
+    window.localStorage.setItem(DEVICE_AGENT_SECRET_STORE_MODE_KEY, mode);
+  } catch {
+    // Best-effort preference persistence.
+  }
+}
+
+function currentDeviceAgentWalletAddress(): string | undefined {
+  return state.address || state.cloudSession.walletAddress || undefined;
+}
+
+function currentBrowserNativeRuntimeEligible(): boolean {
+  return browserNativeRuntimeEligibleForSurface({
+    deviceAgentEnabled: DEVICE_AGENT_ENABLED,
+    browserDeviceAgentEnabled: BROWSER_DEVICE_AGENT_ENABLED,
+    walletAddress: currentDeviceAgentWalletAddress(),
+    isAndroidApp: IS_ANDROID_APP,
+    showDevControls: SHOW_DEV_CONTROLS,
+  });
+}
+
+async function ensureBrowserDeviceAgentInitialized(): Promise<BrowserDeviceAgentModule | null> {
+  if (!currentBrowserNativeRuntimeEligible()) return null;
+  const mod = await loadBrowserDeviceAgentModule();
+  if (!mod.isBrowserDeviceAgentInitialized()) {
+    mod.initBrowserDeviceAgent({
+      secretStoreMode: readBrowserDeviceAgentSecretStoreMode(),
+      walletAddress: currentDeviceAgentWalletAddress(),
+    });
+    return mod;
+  }
+  syncBrowserDeviceAgentWalletAddress(mod);
+  return mod;
+}
+
+function warmBrowserDeviceAgent(): void {
+  void ensureBrowserDeviceAgentInitialized();
+}
+
+function syncBrowserDeviceAgentWalletAddress(mod = browserDeviceAgentModule): void {
+  if (!mod?.isBrowserDeviceAgentInitialized()) return;
+  mod.setBrowserDeviceAgentWalletAddress(currentDeviceAgentWalletAddress());
+}
+
 async function startApp(): Promise<void> {
   try {
     if (!appRoot) {
       throw new Error('Missing #app');
     }
     initializeAnalytics();
+    warmBrowserDeviceAgent();
     normalizeInitialRoute();
     hydrateGeneratedPlansForStartup();
     render();
@@ -3090,6 +3183,9 @@ function installPayOutApprovalCreatedListener(): void {
   });
   addAp2InboundDemoCreatedListener((detail) => {
     handleAp2InboundDemoCreated(detail);
+  });
+  addStreamingApprovalRequestedListener((detail) => {
+    handleStreamingApprovalRequested(detail);
   });
 }
 
@@ -3199,6 +3295,106 @@ function materializeLocalPayOutApproval(detail: PayOutApprovalCreatedDetail): Pr
   state.materializedActions = state.preparedActions;
   saveBrowserWorkflowState();
   return localAction;
+}
+
+function handleStreamingApprovalRequested(detail: StreamingApprovalRequestedDetail): void {
+  try {
+    const action = materializeLocalStreamingApproval(detail);
+    state.activeTab = 'inbox';
+    state.inboxFilter = 'all';
+    state.error = '';
+    state.steps.inbox = 'done';
+    pushToast('success', 'Streaming approval ready', `${streamingOperationLabel(detail.operation)} is in Needs Approval.`);
+    render();
+    focusInboxApprovalCard(action.id);
+    dispatchStreamingApprovalCompleted({
+      source: 'streaming_session',
+      operation: detail.operation,
+      sessionId: detail.sessionId,
+      approvalId: action.id,
+      status: 'queued',
+    });
+  } catch (err) {
+    const message = redactSecrets(err instanceof Error ? err.message : String(err));
+    state.error = message;
+    pushToast('error', 'Streaming approval failed', message);
+    render();
+    dispatchStreamingApprovalCompleted({
+      source: 'streaming_session',
+      operation: detail.operation,
+      sessionId: detail.sessionId,
+      approvalId: detail.sessionId,
+      status: 'failed',
+      error: message,
+    });
+  }
+}
+
+function materializeLocalStreamingApproval(detail: StreamingApprovalRequestedDetail): PreparedAction {
+  if (!state.address) {
+    throw new Error('Connect a wallet before adding the streaming session approval to Needs Approval.');
+  }
+  const cluster = streamingApprovalCluster(detail);
+  const now = new Date().toISOString();
+  const action: PreparedAction = {
+    id: newId('browser-streaming'),
+    kind: 'custom_transaction',
+    status: 'ready',
+    walletAddress: state.address,
+    cluster,
+    summary: detail.summary || streamingApprovalSummary(detail.operation, detail.sessionId),
+    params: {
+      transactionBase64: detail.tx.txBase64,
+      reason: detail.summary || streamingApprovalSummary(detail.operation, detail.sessionId),
+      streamingSessionId: detail.sessionId,
+      streamingOperation: detail.operation,
+      ...(detail.tx.tokenMint ? { tokenMint: detail.tx.tokenMint, token: detail.tx.tokenMint } : {}),
+      ...(detail.tx.totalAmount ? { amount: detail.tx.totalAmount } : {}),
+      ...(detail.tx.description ? { description: detail.tx.description } : {}),
+      ...(detail.tx.kind ? { delegateTxKind: detail.tx.kind } : {}),
+      ...(detail.tx.sourceAta ? { sourceAta: detail.tx.sourceAta } : {}),
+    },
+    metadata: {
+      source: 'streaming_session',
+      actionSource: 'streaming_session',
+      connectorId: 'streaming',
+      connectorName: 'Streaming Sessions',
+      operation: detail.operation,
+      sessionId: detail.sessionId,
+      callbackPath: detail.callbackPath,
+      streamingCallbackStatus: 'pending',
+      ...(detail.tx.tokenMint ? { tokenMint: detail.tx.tokenMint } : {}),
+      ...(detail.tx.totalAmount ? { capAmount: detail.tx.totalAmount } : {}),
+      ...(detail.tx.description ? { delegateTxDescription: detail.tx.description } : {}),
+    },
+    dueAt: now,
+    createdAt: now,
+    updatedAt: now,
+    note: detail.tx.description || 'Streaming session delegate transaction.',
+    workflowSource: 'browser',
+  };
+  state.preparedActions = mergePreparedActions([action], state.preparedActions);
+  state.materializedActions = state.preparedActions;
+  saveBrowserWorkflowState();
+  return action;
+}
+
+function streamingApprovalCluster(detail: StreamingApprovalRequestedDetail): Cluster {
+  const cluster = detail.cluster ?? detail.tx.cluster;
+  if (cluster === 'mainnet-beta' || cluster === 'devnet' || cluster === 'testnet' || cluster === 'localnet') {
+    return cluster;
+  }
+  return state.cluster;
+}
+
+function streamingOperationLabel(operation: StreamingApprovalOperation): string {
+  return operation === 'grant' ? 'Session grant' : 'Session revoke';
+}
+
+function streamingApprovalSummary(operation: StreamingApprovalOperation, sessionId: string): string {
+  return operation === 'grant'
+    ? `Grant streaming session ${short(sessionId)}`
+    : `Revoke streaming session ${short(sessionId)}`;
 }
 
 function focusInboxApprovalCard(approvalId: string): void {
@@ -3336,6 +3532,7 @@ async function bootstrap(): Promise<void> {
   if (cloudSessionMatchesWallet()) {
     await refreshCloudWorkspaceData().catch(() => undefined);
   }
+  warmBrowserDeviceAgent();
   if (shouldProbeBridgeOnStartup()) {
     await loadBridgeConfig(false);
     if (shouldReconnectBridgeOnStartup()) {
@@ -3361,6 +3558,7 @@ function render(): void {
   const connectedForDevTabs = state.address || undefined;
   setConnectedAddress(connectedForDevTabs);
   setConnectedCluster(state.cluster);
+  syncBrowserDeviceAgentWalletAddress();
   if (typeof document !== 'undefined' && document.body) {
     if (connectedForDevTabs) {
       document.body.dataset.walletAddress = connectedForDevTabs;
@@ -13760,6 +13958,56 @@ function fieldError(fieldId: string): string {
   return message ? `<em class="field-error-text">${escapeHtml(message)}</em>` : '';
 }
 
+function browserDeviceAgentUiVisible(): boolean {
+  return state.aiSettings.mode === 'device-agent'
+    && (state.deviceAgentStatus?.runtime === 'browser-native' || canUseDeviceAgentBrowserNative());
+}
+
+function currentBrowserDeviceAgentSecretStoreMode(): SecretStoreMode {
+  return browserDeviceAgentModule?.isBrowserDeviceAgentInitialized()
+    ? browserDeviceAgentModule.getBrowserDeviceAgentSecretStoreMode()
+    : readBrowserDeviceAgentSecretStoreMode();
+}
+
+function browserDeviceAgentSecretStoreControl(scope: string): string {
+  if (!browserDeviceAgentUiVisible()) return '';
+  return `
+    <label class="field compact ai-setting-field ai-setting-secret-store">
+      <span>Secret store mode</span>
+      ${selectPicker({
+        id: `deviceAgentSecretStoreMode-${scope}`,
+        value: currentBrowserDeviceAgentSecretStoreMode(),
+        options: [
+          {
+            value: 'encrypted-indexeddb',
+            label: 'Encrypted (IndexedDB)',
+            meta: 'Persistent',
+            detail: 'Encrypts the provider key with WebCrypto and stores ciphertext in IndexedDB.',
+          },
+          {
+            value: 'session-memory',
+            label: 'Session only',
+            meta: 'Tab memory',
+            detail: 'Keeps the key only in this tab and clears it when the tab closes.',
+          },
+        ],
+        attrs: { 'data-ai-control': 'device-agent-secret-store-mode' },
+        disabled: state.busy,
+      })}
+    </label>
+  `;
+}
+
+function browserNativeProviderTierChip(): string {
+  if (!browserDeviceAgentUiVisible()) return '';
+  const tier = browserNativeProviderTierForProvider(state.aiSettings.provider);
+  return `
+    <span class="ai-provider-tier ${tier.className}" title="${escapeHtml(tier.title)}">
+      ${escapeHtml(tier.label)}
+    </span>
+  `;
+}
+
 function aiSettingsCard(location: 'rail' | 'planner' = 'planner'): string {
   const status = state.aiStatus;
   const providerPreset = aiProviderPresetById(state.aiSettings.provider);
@@ -13827,6 +14075,7 @@ function aiSettingsCard(location: 'rail' | 'planner' = 'planner'): string {
           disabled: state.busy,
           title: providerHelperText,
         })}
+        ${!isRail ? browserNativeProviderTierChip() : ''}
         ${isRail && providerHelperText ? `<em class="ai-route-helper">${escapeHtml(providerHelperText)}</em>` : ''}
       </label>
       <label class="field compact ai-setting-field ai-setting-model">
@@ -13867,6 +14116,7 @@ function aiSettingsCard(location: 'rail' | 'planner' = 'planner'): string {
           ${setupHelperMessages.map((message) => `<em class="ai-route-helper">${escapeHtml(message)}</em>`).join('')}
         </div>
       ` : ''}
+      ${!isRail ? browserDeviceAgentSecretStoreControl(scope) : ''}
       ${hideKeyEntry ? `
         <div class="ai-key-configured-note" aria-live="polite">
           <span>Bridge key</span>
@@ -14091,8 +14341,11 @@ function aiProviderHelperText(): string {
       : '';
   }
   if (state.aiSettings.mode === 'device-agent') {
-    return IS_ANDROID_APP
-      ? 'Device Agent uses the gated Android native runtime and encrypted native config storage.'
+    if (IS_ANDROID_APP) {
+      return 'Device Agent uses the gated Android native runtime and encrypted native config storage.';
+    }
+    return canUseDeviceAgentBrowserNative()
+      ? 'Device Agent runs provider calls in this tab. Use a low-cap key and close the tab to stop the runtime.'
       : 'Device Agent is gated for local development or allowlisted cloud wallets.';
   }
   return '';
@@ -14170,7 +14423,9 @@ function deviceAgentConnectionCard(status: DeviceAgentStatus | null): string {
     ?? (available
       ? status?.runtime === 'android-native'
         ? 'The gated Android runtime is available for native draft, review, and ask requests.'
-        : 'The gated runtime path is available for setup. This surface remains status/control only.'
+        : status?.runtime === 'browser-native'
+          ? 'The gated browser-native runtime is available for on-tab draft, review, and ask requests.'
+          : 'The gated runtime path is available for setup. This surface remains status/control only.'
       : 'Enable the Device Agent env or sign in with an allowlisted wallet to use this path.');
   const provider = status?.provider ?? aiProviderPresetById(state.aiSettings.provider).label;
   const model = status?.model ?? state.aiSettings.model ?? aiProviderPresetById(state.aiSettings.provider).model;
@@ -14181,10 +14436,12 @@ function deviceAgentConnectionCard(status: DeviceAgentStatus | null): string {
       )}</strong> ${escapeHtml(lastError.message)}</p>`
     : '';
   const runtimeState = status?.state ?? 'unavailable';
-  const showNotificationNote = status?.runtime === 'android-native'
+  const showNotificationNote = (status?.runtime === 'android-native' || status?.runtime === 'browser-native')
     && (runtimeState === 'stopped' || runtimeState === 'unavailable');
   const notificationNote = showNotificationNote
-    ? '<p class="device-agent-note">Confirming the planner starts the on-device runtime and shows a persistent Android notification while it is active.</p>'
+    ? status?.runtime === 'browser-native'
+      ? '<p class="device-agent-note">Confirming the planner starts the on-tab runtime. Closing the tab stops it.</p>'
+      : '<p class="device-agent-note">Confirming the planner starts the on-device runtime and shows a persistent Android notification while it is active.</p>'
     : '';
   return `
     <div class="local-bridge-connection-card ${tone}${lastError ? ' has-last-error' : ''}">
@@ -14654,7 +14911,21 @@ async function generateDeviceAgentAsk(request: AgentPlanAskRequest): Promise<Age
 }
 
 function canUseDeviceAgentNative(): boolean {
-  return IS_ANDROID_APP && isDeviceAgentBridgeAvailable();
+  return chooseDeviceAgentRequestRoute(currentDeviceAgentRuntimeSurface()) !== 'none';
+}
+
+function canUseDeviceAgentBrowserNative(): boolean {
+  return canUseDeviceAgentBrowserNativeForSurface(currentDeviceAgentRuntimeSurface());
+}
+
+function currentDeviceAgentRuntimeSurface() {
+  return {
+    isAndroidApp: IS_ANDROID_APP,
+    androidBridgeAvailable: isDeviceAgentBridgeAvailable(),
+    browserDeviceAgentEnabled: BROWSER_DEVICE_AGENT_ENABLED,
+    browserNativeEligible: currentBrowserNativeRuntimeEligible(),
+    cloudSessionMatchesWallet: cloudSessionMatchesWallet(),
+  };
 }
 
 async function invokeDeviceAgentNative<R>(
@@ -14664,7 +14935,12 @@ async function invokeDeviceAgentNative<R>(
 ): Promise<R> {
   try {
     const requestOptions = options.signal ? { signal: options.signal } : {};
-    const { status, result } = await deviceAgentRequestOrThrow<R>(method, payload, requestOptions);
+    const route = chooseDeviceAgentRequestRoute(currentDeviceAgentRuntimeSurface());
+    const { status, result } = route === 'android-native'
+      ? await deviceAgentRequestOrThrow<R>(method, payload, requestOptions)
+      : route === 'browser-native'
+        ? await invokeBrowserDeviceAgent<R>(method, payload as Record<string, unknown>, requestOptions)
+        : await deviceAgentRequestOrThrow<R>(method, payload, requestOptions);
     state.deviceAgentStatus = parseDeviceAgentStatus(status);
     if (result === undefined || result === null) {
       throw new Error(`Device Agent ${options.action} returned an empty payload.`);
@@ -14676,6 +14952,21 @@ async function invokeDeviceAgentNative<R>(
     }
     throw deviceAgentNativeError(options.action, err);
   }
+}
+
+async function invokeBrowserDeviceAgent<R>(
+  method: 'status' | 'configure' | 'start' | 'stop' | 'generatePlan' | 'reviewPlan' | 'ask',
+  payload: Record<string, unknown>,
+  options: { signal?: AbortSignal } = {},
+): Promise<{ status: DeviceAgentStatus; result?: R }> {
+  const mod = await ensureBrowserDeviceAgentInitialized();
+  if (!mod) {
+    throw new DeviceAgentClientError(
+      'device_agent_unavailable',
+      'Browser-native Device Agent runtime is not available in this build.',
+    );
+  }
+  return mod.browserDeviceAgentRequest<R>(method, payload, options);
 }
 
 function deviceAgentGeneratePlanPayload(request: AiPlanRequest): Record<string, unknown> {
@@ -16987,6 +17278,14 @@ function bind(): void {
       saveCurrentSessionAiApiKey();
       resetAiPlannerConfirmation('AI key changed. Confirm planner again if needed.');
       syncAiActionButtons();
+    });
+  }
+
+  for (const control of document.querySelectorAll<HTMLSelectElement>('[data-ai-control="device-agent-secret-store-mode"]')) {
+    control.addEventListener('change', (event) => {
+      const mode = (event.currentTarget as HTMLSelectElement).value;
+      if (!isBrowserDeviceAgentSecretStoreMode(mode)) return;
+      void runSetBrowserDeviceAgentSecretStoreMode(mode);
     });
   }
 
@@ -24466,6 +24765,37 @@ async function runStopDeviceAgentRuntime(): Promise<void> {
   });
 }
 
+async function runSetBrowserDeviceAgentSecretStoreMode(mode: SecretStoreMode): Promise<void> {
+  if (!browserDeviceAgentUiVisible()) {
+    render();
+    return;
+  }
+  await run('ai', async () => {
+    const mod = await ensureBrowserDeviceAgentInitialized();
+    if (!mod) {
+      throw new Error('Browser-native Device Agent runtime is not available in this build.');
+    }
+    const status = await mod.setBrowserDeviceAgentSecretStoreMode(mode);
+    persistBrowserDeviceAgentSecretStoreMode(mode);
+    state.deviceAgentStatus = parseDeviceAgentStatus(status);
+    state.aiSettings.apiKey = '';
+    clearCurrentSessionAiApiKey();
+    resetAiPlannerConfirmation('Device Agent secret store changed. Re-enter the key, then confirm planner.');
+    pushToast(
+      'success',
+      'Device Agent storage changed',
+      mode === 'session-memory'
+        ? 'Session-only mode is active. Re-enter the provider key for this tab.'
+        : 'Encrypted IndexedDB mode is active. Re-enter the provider key to store it there.',
+    );
+  }, {
+    onError(message) {
+      state.error = '';
+      pushToast('error', 'Device Agent storage change failed', message);
+    },
+  });
+}
+
 async function runRefreshAiStatus(): Promise<void> {
   await run('ai', async () => {
     await refreshBridgeAiStatus(true);
@@ -24540,7 +24870,7 @@ function setAiPlannerMode(mode: AiSettings['mode']): void {
     clearCurrentSessionAiApiKey();
   }
   if (mode === 'device-agent') {
-    void refreshDeviceAgentStatus(false);
+    void refreshDeviceAgentStatus(false).then(() => render());
   }
   resetAiPlannerConfirmation('AI path changed. Workflow capability is unchanged.');
   savePersistedState();
@@ -27454,6 +27784,11 @@ async function runBrowserTransactionConfirm(action: PreparedAction): Promise<voi
         syncPendingTransactionsFromLedger();
       }
       await syncBridgePreparedActionTransaction(action, { txid, txStatus: 'pending' });
+      await finalizeStreamingApprovalCallback(action, {
+        txid,
+        txStatus: 'pending',
+        explorerUrl: explorerUrl(txid, action.cluster),
+      }, 'submitted');
       replaceToast(toastId, 'pending', 'Transaction submitted', short(txid), {
         linkHref: explorerUrl(txid, action.cluster),
         linkLabel: 'Open Solscan',
@@ -27467,6 +27802,11 @@ async function runBrowserTransactionConfirm(action: PreparedAction): Promise<voi
       explorerUrl: explorerUrl(txid, action.cluster),
     });
     await syncBridgePreparedActionTransaction(action, { txid, txStatus: status.txStatus });
+    await finalizeStreamingApprovalCallback(action, {
+      txid,
+      txStatus: status.txStatus,
+      explorerUrl: explorerUrl(txid, action.cluster),
+    }, 'confirmed');
     recordBrowserActionActivity(action.id, 'browser.transaction.saved', {
       kind: action.kind,
       status: status.txStatus,
@@ -27520,6 +27860,92 @@ async function runBrowserTransactionConfirm(action: PreparedAction): Promise<voi
   }
 }
 
+interface StreamingApprovalCallbackInfo {
+  operation: StreamingApprovalOperation;
+  sessionId: string;
+  callbackPath: string;
+  callbackStatus: string;
+}
+
+async function finalizeStreamingApprovalCallback(
+  action: PreparedAction,
+  execution: BrowserTransactionExecution,
+  status: 'submitted' | 'confirmed',
+): Promise<void> {
+  const info = streamingApprovalCallbackInfo(action);
+  if (!info) return;
+  if (info.callbackStatus === 'submitted' || info.callbackStatus === 'confirmed') return;
+  try {
+    await cloudRequest(info.callbackPath, {
+      method: 'POST',
+      body: JSON.stringify({
+        txid: execution.txid,
+        signature: execution.txid,
+        approvalId: action.id,
+        status,
+        txStatus: execution.txStatus,
+      }),
+    });
+    updateBrowserPreparedAction(action.id, {
+      metadata: {
+        ...(action.metadata ?? {}),
+        streamingCallbackStatus: status,
+        streamingCallbackTxid: execution.txid,
+        streamingCallbackAt: new Date().toISOString(),
+      },
+      error: undefined,
+    });
+    dispatchStreamingApprovalCompleted({
+      source: 'streaming_session',
+      operation: info.operation,
+      sessionId: info.sessionId,
+      approvalId: action.id,
+      status,
+      txid: execution.txid,
+    });
+  } catch (err) {
+    const message = redactSecrets(err instanceof Error ? err.message : String(err));
+    updateBrowserPreparedAction(action.id, {
+      metadata: {
+        ...(action.metadata ?? {}),
+        streamingCallbackStatus: 'failed',
+        streamingCallbackTxid: execution.txid,
+        streamingCallbackError: message,
+        streamingCallbackAt: new Date().toISOString(),
+      },
+      error: `Streaming session callback failed: ${message}`,
+    });
+    pushToast('error', 'Streaming callback failed', message);
+    dispatchStreamingApprovalCompleted({
+      source: 'streaming_session',
+      operation: info.operation,
+      sessionId: info.sessionId,
+      approvalId: action.id,
+      status: 'failed',
+      txid: execution.txid,
+      error: message,
+    });
+  }
+}
+
+function streamingApprovalCallbackInfo(action: PreparedAction): StreamingApprovalCallbackInfo | null {
+  const metadata = action.metadata;
+  if (!isJsonObject(metadata)) return null;
+  if (metadata.source !== 'streaming_session' && metadata.actionSource !== 'streaming_session') return null;
+  const operation = metadata.operation === 'grant' || metadata.operation === 'revoke'
+    ? metadata.operation
+    : undefined;
+  const sessionId = typeof metadata.sessionId === 'string' ? metadata.sessionId : '';
+  const callbackPath = typeof metadata.callbackPath === 'string' ? metadata.callbackPath : '';
+  if (!operation || !sessionId || !callbackPath) return null;
+  return {
+    operation,
+    sessionId,
+    callbackPath,
+    callbackStatus: typeof metadata.streamingCallbackStatus === 'string' ? metadata.streamingCallbackStatus : '',
+  };
+}
+
 async function clearStaleBrowserPendingTransaction(action: PreparedAction): Promise<void> {
   if (!isExecutableBrowserAction(action)) {
     throw new Error('Only browser-wallet transactions can clear local pending state here.');
@@ -27552,6 +27978,11 @@ async function clearStaleBrowserPendingTransaction(action: PreparedAction): Prom
       explorerUrl: explorerUrl(txid, action.cluster),
     });
     await syncBridgePreparedActionTransaction(action, { txid, txStatus: 'confirmed' });
+    await finalizeStreamingApprovalCallback(action, {
+      txid,
+      txStatus: 'confirmed',
+      explorerUrl: explorerUrl(txid, action.cluster),
+    }, 'confirmed');
     showCompletedHistoryForAction(action.id);
     replaceToast(toastId, 'success', 'Transaction confirmed', `${short(txid)} - Solscan link saved in Done.`, {
       linkHref: explorerUrl(txid, action.cluster),
@@ -27814,6 +28245,7 @@ async function executeBrowserPreparedAction(action: PreparedAction): Promise<voi
         txid: execution.txid,
         txStatus: execution.txStatus,
       });
+      await finalizeStreamingApprovalCallback(current, execution, 'submitted');
       state.activeTab = 'inbox';
       replaceToast(
         toastId,
@@ -27836,6 +28268,7 @@ async function executeBrowserPreparedAction(action: PreparedAction): Promise<voi
       txid: execution.txid,
       txStatus: execution.txStatus,
     });
+    await finalizeStreamingApprovalCallback(current, execution, execution.txStatus === 'confirmed' ? 'confirmed' : 'submitted');
     recordBrowserActionActivity(action.id, 'browser.transaction.saved', {
       kind: action.kind,
       status: execution.txStatus,
@@ -30661,7 +31094,7 @@ function deviceAgentHealthHint() {
       available: false,
       configured: false,
       state: 'unavailable' as const,
-      runtime: (IS_ANDROID_APP ? 'android-native' : 'browser-dev') as 'android-native' | 'browser-dev',
+      runtime: defaultDeviceAgentRuntime(),
       bridgeAvailable: IS_ANDROID_APP && isDeviceAgentBridgeAvailable(),
     };
   }
@@ -31888,6 +32321,11 @@ async function configureDeviceAgentRuntime(): Promise<DeviceAgentStatus> {
     state.deviceAgentStatus = status;
     return status;
   }
+  if (canUseDeviceAgentBrowserNative()) {
+    const { status } = await invokeBrowserDeviceAgent('configure', config);
+    state.deviceAgentStatus = parseDeviceAgentStatus(status);
+    return state.deviceAgentStatus;
+  }
   if (cloudSessionMatchesWallet()) {
     const status = parseDeviceAgentStatus(await cloudRequest('/api/device-agent/control', {
       method: 'POST',
@@ -31917,6 +32355,11 @@ async function startDeviceAgentRuntime(): Promise<DeviceAgentStatus> {
     state.deviceAgentStatus = status;
     return status;
   }
+  if (canUseDeviceAgentBrowserNative()) {
+    const { status } = await invokeBrowserDeviceAgent('start', {});
+    state.deviceAgentStatus = parseDeviceAgentStatus(status);
+    return state.deviceAgentStatus;
+  }
   if (cloudSessionMatchesWallet()) {
     const status = parseDeviceAgentStatus(await cloudRequest('/api/device-agent/control', {
       method: 'POST',
@@ -31944,6 +32387,11 @@ async function stopDeviceAgentRuntime(): Promise<DeviceAgentStatus> {
     const status = parseDeviceAgentStatus(android.deviceAgentStop());
     state.deviceAgentStatus = status;
     return status;
+  }
+  if (canUseDeviceAgentBrowserNative()) {
+    const { status } = await invokeBrowserDeviceAgent('stop', {});
+    state.deviceAgentStatus = parseDeviceAgentStatus(status);
+    return state.deviceAgentStatus;
   }
   if (cloudSessionMatchesWallet()) {
     const status = parseDeviceAgentStatus(await cloudRequest('/api/device-agent/control', {
@@ -31973,6 +32421,11 @@ async function clearDeviceAgentRuntimeConfig(): Promise<DeviceAgentStatus> {
     state.deviceAgentStatus = status;
     return status;
   }
+  if (canUseDeviceAgentBrowserNative()) {
+    const { status } = await invokeBrowserDeviceAgent('configure', { clear: true });
+    state.deviceAgentStatus = parseDeviceAgentStatus(status);
+    return state.deviceAgentStatus;
+  }
   if (cloudSessionMatchesWallet()) {
     const status = parseDeviceAgentStatus(await cloudRequest('/api/device-agent/control', {
       method: 'POST',
@@ -31996,6 +32449,10 @@ async function loadDeviceAgentStatus(): Promise<DeviceAgentStatus> {
   const android = agenticAndroidBridge();
   if (IS_ANDROID_APP && android?.deviceAgentStatus) {
     return parseDeviceAgentStatus(android.deviceAgentStatus());
+  }
+  if (canUseDeviceAgentBrowserNative()) {
+    const { status } = await invokeBrowserDeviceAgent('status', {});
+    return parseDeviceAgentStatus(status);
   }
   if (cloudSessionMatchesWallet()) {
     return parseDeviceAgentStatus(await cloudRequest('/api/device-agent/status', { method: 'GET' }));
@@ -32022,19 +32479,19 @@ async function deviceAgentNativeStatusCall(
 }
 
 function deviceAgentConfigPayload(includeApiKey: boolean): Record<string, string> {
+  const walletAddress = currentDeviceAgentWalletAddress();
   return {
     provider: state.aiSettings.provider,
     apiFormat: state.aiSettings.apiFormat,
     baseUrl: state.aiSettings.baseUrl,
     model: state.aiSettings.model,
     ...(includeApiKey ? { apiKey: state.aiSettings.apiKey } : {}),
+    ...(walletAddress ? { walletAddress } : {}),
   };
 }
 
 function defaultDeviceAgentRuntime(): DeviceAgentRuntimeKind {
-  if (IS_ANDROID_APP) return 'android-native';
-  if (cloudSessionMatchesWallet()) return 'render-gated';
-  return 'browser-dev';
+  return defaultDeviceAgentRuntimeForSurface(currentDeviceAgentRuntimeSurface());
 }
 
 // Local wrapper around the canonical client parser that fills in the
@@ -32045,14 +32502,14 @@ function defaultDeviceAgentRuntime(): DeviceAgentRuntimeKind {
 function parseDeviceAgentStatus(payload: unknown): DeviceAgentStatus {
   const parsed = parseDeviceAgentStatusBase(payload, defaultDeviceAgentRuntime());
   if (parsed.enabled) return parsed;
-  const envEnabled = DEVICE_AGENT_ENABLED || ANDROID_DEVICE_AGENT_ENABLED;
+  const envEnabled = DEVICE_AGENT_ENABLED || ANDROID_DEVICE_AGENT_ENABLED || BROWSER_DEVICE_AGENT_ENABLED;
   return envEnabled ? { ...parsed, enabled: true } : parsed;
 }
 
 function browserDevDeviceAgentStatus(input: { configured: boolean; state: DeviceAgentRuntimeState }): DeviceAgentStatus {
   return {
     available: deviceAgentModeVisible(),
-    enabled: DEVICE_AGENT_ENABLED || ANDROID_DEVICE_AGENT_ENABLED,
+    enabled: DEVICE_AGENT_ENABLED || ANDROID_DEVICE_AGENT_ENABLED || BROWSER_DEVICE_AGENT_ENABLED,
     configured: input.configured,
     state: input.configured ? input.state : 'stopped',
     runtime: 'browser-dev',
@@ -32070,7 +32527,7 @@ function browserDevDeviceAgentStatus(input: { configured: boolean; state: Device
 function unavailableDeviceAgentStatus(message: string): DeviceAgentStatus {
   return {
     available: false,
-    enabled: DEVICE_AGENT_ENABLED || ANDROID_DEVICE_AGENT_ENABLED,
+    enabled: DEVICE_AGENT_ENABLED || ANDROID_DEVICE_AGENT_ENABLED || BROWSER_DEVICE_AGENT_ENABLED,
     configured: false,
     state: 'unavailable',
     runtime: defaultDeviceAgentRuntime(),
@@ -39658,10 +40115,24 @@ function deviceAgentModeVisible(): boolean {
 }
 
 function deviceAgentModeVisibleForWallet(walletAddress?: string): boolean {
-  if (!DEVICE_AGENT_ENABLED && !ANDROID_DEVICE_AGENT_ENABLED) return false;
-  if (SHOW_DEV_CONTROLS) return true;
-  if (IS_ANDROID_APP && ANDROID_DEVICE_AGENT_ENABLED) return true;
-  return isDeviceAgentWallet(walletAddress);
+  const walletIsDeviceAgentAllowlisted = isDeviceAgentWallet(walletAddress);
+  return deviceAgentModeVisibleForSurface({
+    deviceAgentEnabled: DEVICE_AGENT_ENABLED,
+    androidDeviceAgentEnabled: ANDROID_DEVICE_AGENT_ENABLED,
+    browserDeviceAgentEnabled: BROWSER_DEVICE_AGENT_ENABLED,
+    showDevControls: SHOW_DEV_CONTROLS,
+    isAndroidApp: IS_ANDROID_APP,
+    androidDeviceAgentRuntimeEnabled: ANDROID_DEVICE_AGENT_ENABLED,
+    walletIsDeviceAgentAllowlisted,
+    browserNativeEligible: browserNativeRuntimeEligibleForSurface({
+      deviceAgentEnabled: DEVICE_AGENT_ENABLED,
+      browserDeviceAgentEnabled: BROWSER_DEVICE_AGENT_ENABLED,
+      walletAddress,
+      isAndroidApp: IS_ANDROID_APP,
+      showDevControls: SHOW_DEV_CONTROLS,
+      deviceAgentWalletAllowlisted: walletIsDeviceAgentAllowlisted,
+    }),
+  });
 }
 
 function isLocalBrowserOrigin(): boolean {

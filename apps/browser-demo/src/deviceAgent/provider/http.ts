@@ -3,9 +3,12 @@
 //   - HTTPS-only URLs (case-insensitive).
 //   - Caller headers override built-in Content-Type / Accept defaults.
 //   - Composed timeout (connect + read) shared with the caller's AbortSignal.
-//     If the caller cancels, we re-throw AbortError verbatim; the queue maps
-//     that to runtime_canceled. If our internal timeout fires first, we throw
-//     ProviderHttpError(provider_timeout).
+//     The timeout and external-abort listener stay armed through both the
+//     fetch and the body read so a slow body trickle cannot pin the request
+//     open. If the caller cancels, we re-throw AbortError verbatim; the queue
+//     maps that to runtime_canceled. If our internal timeout fires first
+//     (during either fetch or body read), we throw ProviderHttpError(
+//     provider_timeout).
 //   - 1 MiB response body cap. Stream when ReadableStream is available; fall
 //     back to response.text() with a post-hoc length guard in degraded envs.
 //   - Network failures (fetch's TypeError) → ProviderHttpError(provider_network).
@@ -92,35 +95,44 @@ export class FetchHttpExecutor implements HttpExecutor {
       signal.addEventListener('abort', onExternalAbort, { once: true });
     }
 
-    let response: Response;
+    // Shared classifier — applied to both fetch failures and body-read failures
+    // so the timeout/abort listener can stay armed through the whole operation.
+    // ProviderHttpError (from readBodyCapped 1 MiB overflow) passes through
+    // unchanged; AbortError from a user-supplied signal propagates verbatim so
+    // the runtime queue maps it to runtime_canceled.
+    const classify = (err: unknown): unknown => {
+      if (timedOut) {
+        return new ProviderHttpError(PROVIDER_ERROR_CODES.TIMEOUT, 'Provider request timed out.');
+      }
+      if (signal?.aborted) {
+        return abortErrorFrom(signal);
+      }
+      if (err instanceof ProviderHttpError) return err;
+      if (err instanceof Error && err.name === 'AbortError') return err;
+      if (err instanceof TypeError) {
+        const message = err.message && err.message.length > 0 ? err.message : 'Provider network error.';
+        return new ProviderHttpError(PROVIDER_ERROR_CODES.NETWORK, message);
+      }
+      return err;
+    };
+
     try {
-      response = await this.fetchImpl(url, {
+      const response = await this.fetchImpl(url, {
         method: 'POST',
         headers: finalHeaders,
         body,
         signal: internal.signal,
       });
+      const bodyText = await this.readBodyCapped(response);
+      return { status: response.status, body: bodyText };
     } catch (err) {
-      if (timedOut) {
-        throw new ProviderHttpError(PROVIDER_ERROR_CODES.TIMEOUT, 'Provider request timed out.');
-      }
-      if (signal?.aborted) {
-        throw abortErrorFrom(signal);
-      }
-      if (err instanceof TypeError) {
-        const message = err.message && err.message.length > 0 ? err.message : 'Provider network error.';
-        throw new ProviderHttpError(PROVIDER_ERROR_CODES.NETWORK, message);
-      }
-      throw err;
+      throw classify(err);
     } finally {
       clearTimeout(timeoutId);
       if (signal && onExternalAbort) {
         signal.removeEventListener('abort', onExternalAbort);
       }
     }
-
-    const bodyText = await this.readBodyCapped(response);
-    return { status: response.status, body: bodyText };
   }
 
   private async readBodyCapped(response: Response): Promise<string> {

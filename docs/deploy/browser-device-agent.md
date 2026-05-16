@@ -53,9 +53,11 @@ served — toggling a Vite flag without rebuilding has no effect.
 | `VITE_AGENTIC_DEVICE_AGENT` | Browser build | unset | Umbrella Device Agent flag for the browser bundle. Required by both Android-native and browser-native browser UX. |
 | `VITE_AGENTIC_BROWSER_DEVICE_AGENT` | Browser build | unset | Enables the browser-native runtime path. Without this flag the bundle keeps the legacy scaffold-only behavior. |
 | `VITE_AGENTIC_DEVICE_AGENT_WALLET_ALLOWLIST` | Browser build | unset | Comma-separated wallet addresses allowed to use Device Agent in the browser. Empty list disables Device Agent for every wallet. |
+| `VITE_AGENTIC_ANDROID_DEVICE_AGENT` | Browser build | unset | Used by Android-targeted browser builds to keep the Android-native bridge visible while the browser-native runtime is also gated. Documented in `docs/smoke/browser-device-agent.md`. |
 | `AGENTIC_DEVICE_AGENT` | Render | unset | Umbrella server-side Device Agent flag. Required for the `runtimes` status block to expose anything. |
 | `AGENTIC_BROWSER_DEVICE_AGENT` | Render | unset | Sets `runtimes.browserNative` to `true` on `/api/device-agent/status`. Has no effect on the browser bundle itself. |
 | `AGENTIC_DEVICE_AGENT_WALLET_ALLOWLIST` | Render | unset | Wallet addresses Render will accept for Device Agent status/control calls. 403 for everything else. |
+| `AGENTIC_BROWSER_CORS_CHECK_CUSTOM_BASE_URL` | Local script env | unset | Fallback for `node scripts/browser-device-agent-cors-check.mjs --base-url=...` when running the CORS probe without flags. Read at `scripts/browser-device-agent-cors-check.mjs:424`. |
 
 Enabling only `AGENTIC_BROWSER_DEVICE_AGENT=1` on Render does not start anything — it only changes the
 `runtimes.browserNative` boolean reported by `/api/device-agent/status`. Render still serves no provider calls and
@@ -73,8 +75,10 @@ an empty card).
 
 ## Secret Store Modes
 
-The browser-native runtime stores the provider key locally and never sends it to Render. Two modes are selectable;
-both are configurable from the Device Agent card's `Secret store mode` toggle.
+The browser-native runtime stores the provider key locally and never sends it to Render. The Device Agent card
+exposes a `Secret store mode` selector with two options whose labels match the UI verbatim: `Encrypted IndexedDB`
+(default) and `Session only`. Both modes are switchable at any time; switching writes the new mode to `localStorage`
+and re-applies it on the next session.
 
 ### Encrypted IndexedDB (default)
 
@@ -99,13 +103,13 @@ error payload before it reaches diagnostics, receipts, or the console.
 The browser-native runtime calls each provider's chat endpoint directly from the tab. The provider's CORS
 configuration, not Agentic, decides whether the request completes.
 
-| Provider | Tier | CORS behavior | Notes |
-|---|---|---|---|
-| OpenRouter | green ✅ | Designed for browser-origin requests | `Authorization: Bearer` from the tab |
-| Gemini (OpenAI-compatible endpoint) | green ✅ | Google publishes CORS on `generativelanguage.googleapis.com/v1beta/openai/chat/completions` | `Authorization: Bearer` from the tab |
-| OpenAI | amber ⚠️ | Works from the tab; vendor-flagged direct-from-browser access. Use a short-lived, low-cap key. | Some model families (`gpt-5`, `o1`, `o3`, `o4`) omit `temperature` |
-| Anthropic | amber ⚠️ | Works from the tab when `anthropic-dangerous-direct-browser-access: true` is sent | Header is set by the runtime, not the user. `anthropic-version: 2023-06-01`. |
-| Custom OpenAI-compatible | neutral | CORS is the gateway operator's responsibility | Run `node scripts/browser-device-agent-cors-check.mjs --base-url=...` before trusting |
+| Provider | Tier | UI chip label | CORS behavior | Notes |
+|---|---|---|---|---|
+| OpenRouter | green ✅ | `Recommended browser tier` | Designed for browser-origin requests | `Authorization: Bearer` from the tab |
+| Gemini (OpenAI-compatible endpoint) | green ✅ | `Recommended browser tier` | Google publishes CORS on `generativelanguage.googleapis.com/v1beta/openai/chat/completions` | `Authorization: Bearer` from the tab |
+| OpenAI | amber ⚠️ | `Direct-browser caution` | Works from the tab; vendor-flagged direct-from-browser access. Use a short-lived, low-cap key. | Some model families (`gpt-5`, `o1`, `o3`, `o4`) omit `temperature` |
+| Anthropic | amber ⚠️ | `Direct-browser caution` | Works from the tab when `anthropic-dangerous-direct-browser-access: true` is sent | Header is set by the runtime, not the user. `anthropic-version: 2023-06-01`. |
+| Custom OpenAI-compatible | neutral | `CORS depends on gateway` | CORS is the gateway operator's responsibility | Run `node scripts/browser-device-agent-cors-check.mjs --filter=custom-openai-compatible --base-url=...` before trusting |
 
 Run the CORS probe before switching providers or pointing the runtime at a custom gateway. The probe never reads a
 real key and never prints one.
@@ -116,6 +120,18 @@ When the browser-native bundle loads inside the Android TWA and the Android Devi
 `defaultDeviceAgentRuntime()` returns `'android-native'`. The browser-side `Secret store mode` toggle is inert in
 that case; the Android Keystore-backed store is the authority and the Kotlin runtime executes provider calls. Setting
 `VITE_AGENTIC_BROWSER_DEVICE_AGENT=1` in an Android-targeted build does not weaken this precedence.
+
+## Runtime Controls
+
+When the Device Agent card is showing the browser-native runtime, two buttons appear next to the status block:
+
+- **`Refresh`** — re-reads the local runtime state (mode, error, configured/running flags) and the Render status
+  payload. Use this after toggling secret-store mode or after any browser-storage clear.
+- **`Stop runtime`** — stops the in-tab runtime. Your config (provider, model, key) stays available so you can
+  start again. Visible only when `canStopDeviceAgentRuntime()` is true.
+
+Closing the tab also stops the runtime; closing it while in `Session only` mode additionally drops the key from
+memory.
 
 ## Storage Failures
 
@@ -135,3 +151,14 @@ non-status/control call and never persists Device Agent provider keys.
 The manual verification path lives in [docs/smoke/browser-device-agent.md](../smoke/browser-device-agent.md). This
 deploy doc explains how to assemble a build; the smoke doc explains how to verify one against every supported
 provider. Do not duplicate per-provider step lists between the two documents.
+
+Two read-only scripts back the smoke path:
+
+- **`node scripts/browser-device-agent-cors-check.mjs`** — probes every provider's chat endpoint with OPTIONS/POST and
+  reports CORS readiness. Exits `0` (all green/amber OK), `1` (a green/amber probe failed), `2` (bad CLI input), or
+  `3` (unexpected error). Flags: `--filter=<provider>`, `--base-url=<url>`, `--origin=<url>`, `--timeout-ms=<ms>`,
+  `--no-post`, `--json`, `--report=<path>`, `--help`. Falls back to `AGENTIC_BROWSER_CORS_CHECK_CUSTOM_BASE_URL` when
+  `--base-url` is omitted. Never prints provider keys.
+- **`node scripts/browser-device-agent-status.mjs`** — read-only derivation of the gate state for the browser-native
+  runtime (flags resolved, allowlist parsed, eligibility for a given wallet). Useful to confirm a build's gate posture
+  without booting the browser.

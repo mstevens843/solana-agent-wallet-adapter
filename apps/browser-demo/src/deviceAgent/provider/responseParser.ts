@@ -51,9 +51,9 @@ export function parseModelJson(text: string): Record<string, unknown> {
   const seen = new Set<string>();
   const candidates: string[] = [];
   candidates.push(trimmed);
-  CODE_FENCE_JSON.lastIndex = 0;
-  let fenceMatch: RegExpExecArray | null;
-  while ((fenceMatch = CODE_FENCE_JSON.exec(trimmed)) !== null) {
+  // matchAll manages its own iterator state — does NOT pollute the regex's
+  // lastIndex like a manual exec() loop would. Equivalent observable behavior.
+  for (const fenceMatch of trimmed.matchAll(CODE_FENCE_JSON)) {
     candidates.push((fenceMatch[1] ?? '').trim());
   }
   for (const candidate of balancedJsonObjectCandidates(trimmed)) {

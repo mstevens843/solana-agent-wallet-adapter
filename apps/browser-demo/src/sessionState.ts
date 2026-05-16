@@ -1,0 +1,482 @@
+import type {
+  StreamingSessionRecord,
+  StreamingSettlementRecord,
+  StreamingVoucherRecord,
+  WorkflowCluster,
+} from '@solana-agent-wallet-adapter/workflow';
+import {
+  createStreamingSession,
+  getStreamingSession,
+  listStreamingSessions,
+  revokeStreamingSession,
+  StreamingApiError,
+  type CreateSessionRequestBody,
+  type StreamingSessionDetail,
+} from './streamingClient.js';
+import {
+  dispatchStreamingApprovalRequested,
+  type StreamingApprovalOperation,
+} from './streamingApprovalEvents.js';
+import { getConnectedCluster } from './walletState.js';
+
+export type SessionsStatusFilter = 'active' | 'expired' | 'settled' | 'revoked';
+export type SessionsLoadStatus = 'idle' | 'loading' | 'loaded' | 'error';
+
+export interface CreateSessionDraft {
+  tokenMint: string;
+  capAmount: string;
+  durationMinutes: string;
+  recipientAllowlist: string;
+}
+
+export interface SessionsNotice {
+  tone: 'success' | 'error' | 'pending';
+  message: string;
+}
+
+export interface SessionsState {
+  status: SessionsLoadStatus;
+  sessions: StreamingSessionRecord[];
+  details: Record<string, StreamingSessionDetail>;
+  selectedSessionId: string | null;
+  filter: SessionsStatusFilter;
+  errorMessage: string;
+  busy: false | 'create' | 'revoke' | 'refresh';
+  createModalOpen: boolean;
+  createDraft: CreateSessionDraft;
+  createErrors: Record<string, string>;
+  voucherPage: number;
+  lastFetchedAt: number;
+  notice: SessionsNotice | null;
+}
+
+export const DEFAULT_USDC_MINT = 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v';
+export const SESSIONS_DETAIL_POLL_MS = 5_000;
+export const VOUCHERS_PER_PAGE = 8;
+
+const SOLANA_ADDRESS_REGEX = /^[1-9A-HJ-NP-Za-km-z]{32,44}$/;
+const DECIMAL_AMOUNT_REGEX = /^(?:(?:0|[1-9]\d*)(?:\.\d{1,6})?)$/;
+
+const state: SessionsState = {
+  status: 'idle',
+  sessions: [],
+  details: {},
+  selectedSessionId: null,
+  filter: 'active',
+  errorMessage: '',
+  busy: false,
+  createModalOpen: false,
+  createDraft: defaultCreateSessionDraft(),
+  createErrors: {},
+  voucherPage: 0,
+  lastFetchedAt: 0,
+  notice: null,
+};
+
+const listeners = new Set<() => void>();
+let detailPollTimer: ReturnType<typeof window.setInterval> | null = null;
+let pollInFlight = false;
+
+export function getSessionsState(): Readonly<SessionsState> {
+  return state;
+}
+
+export function subscribeSessionsState(listener: () => void): () => void {
+  listeners.add(listener);
+  return () => listeners.delete(listener);
+}
+
+export function defaultCreateSessionDraft(): CreateSessionDraft {
+  return {
+    tokenMint: DEFAULT_USDC_MINT,
+    capAmount: '',
+    durationMinutes: '60',
+    recipientAllowlist: '',
+  };
+}
+
+export function setSessionsFilter(filter: SessionsStatusFilter): void {
+  state.filter = filter;
+  const first = filteredSessions().at(0);
+  state.selectedSessionId = first?.id ?? null;
+  state.voucherPage = 0;
+  notify();
+  if (state.selectedSessionId) {
+    void refreshSelectedSession();
+  }
+}
+
+export function setCreateModalOpen(open: boolean): void {
+  state.createModalOpen = open;
+  if (open) {
+    state.createDraft = defaultCreateSessionDraft();
+    state.createErrors = {};
+  }
+  notify();
+}
+
+export function updateCreateDraftField(field: keyof CreateSessionDraft, value: string): void {
+  state.createDraft = { ...state.createDraft, [field]: value };
+  state.createErrors = { ...state.createErrors };
+  delete state.createErrors[field];
+  delete state.createErrors.form;
+}
+
+export function setVoucherPage(page: number): void {
+  state.voucherPage = Math.max(0, page);
+  notify();
+}
+
+export function filteredSessions(snapshot: SessionsState = state): StreamingSessionRecord[] {
+  return sortSessions(snapshot.sessions).filter((session) => {
+    if (snapshot.filter === 'active') return session.status === 'active' || session.status === 'pending';
+    return session.status === snapshot.filter;
+  });
+}
+
+export function selectedDetail(snapshot: SessionsState = state): StreamingSessionDetail | null {
+  if (!snapshot.selectedSessionId) return null;
+  return snapshot.details[snapshot.selectedSessionId] ?? null;
+}
+
+export function validateCreateDraft(
+  draft: CreateSessionDraft,
+  now: number = Date.now(),
+): { valid: boolean; errors: Record<string, string>; body?: CreateSessionRequestBody } {
+  const errors: Record<string, string> = {};
+  const tokenMint = draft.tokenMint.trim();
+  if (!SOLANA_ADDRESS_REGEX.test(tokenMint)) {
+    errors.tokenMint = 'Enter a valid token mint address.';
+  }
+
+  const capAmount = normalizeDecimal(draft.capAmount);
+  if (!DECIMAL_AMOUNT_REGEX.test(capAmount) || Number(capAmount) <= 0) {
+    errors.capAmount = 'Enter a positive token amount with up to 6 decimals.';
+  }
+
+  const duration = Number(draft.durationMinutes);
+  if (!Number.isInteger(duration) || duration < 1 || duration > 60) {
+    errors.durationMinutes = 'Choose an expiry between 1 and 60 minutes.';
+  }
+
+  const allowlist = parseAllowlistDraft(draft.recipientAllowlist);
+  if (allowlist.invalid.length > 0) {
+    errors.recipientAllowlist = `Invalid recipient address: ${allowlist.invalid[0]}`;
+  }
+
+  if (Object.keys(errors).length > 0) return { valid: false, errors };
+  const expiresAt = new Date(now + duration * 60_000).toISOString();
+  return {
+    valid: true,
+    errors: {},
+    body: {
+      tokenMint,
+      capAmount,
+      expiresAt,
+      ...(allowlist.valid.length ? { recipientAllowlist: allowlist.valid } : {}),
+      cluster: currentCluster(),
+      tokenDecimals: 6,
+    },
+  };
+}
+
+export async function loadSessions(force = false): Promise<void> {
+  if (state.status === 'loading' && !force) return;
+  state.status = 'loading';
+  state.errorMessage = '';
+  notify();
+  try {
+    const sessions = await listStreamingSessions();
+    state.sessions = sortSessions(sessions);
+    state.lastFetchedAt = Date.now();
+    state.status = 'loaded';
+    state.errorMessage = '';
+    state.details = pruneDetails(state.details, sessions);
+    if (!state.selectedSessionId || !state.sessions.some((session) => session.id === state.selectedSessionId)) {
+      state.selectedSessionId = filteredSessions().at(0)?.id ?? state.sessions.at(0)?.id ?? null;
+    }
+    notify();
+    if (state.selectedSessionId) await refreshSelectedSession();
+  } catch (err) {
+    state.errorMessage = friendlyStreamingError(err);
+    state.status = 'error';
+    notify();
+  }
+}
+
+export async function selectSession(sessionId: string): Promise<void> {
+  if (!sessionId) return;
+  state.selectedSessionId = sessionId;
+  state.voucherPage = 0;
+  notify();
+  await refreshSelectedSession();
+}
+
+export async function refreshSelectedSession(): Promise<void> {
+  const sessionId = state.selectedSessionId;
+  if (!sessionId) return;
+  try {
+    const detail = await getStreamingSession(sessionId);
+    state.details = { ...state.details, [sessionId]: detail };
+    state.sessions = mergeSessionRecords([detail.session], state.sessions);
+    state.errorMessage = '';
+    if (state.status === 'idle') state.status = 'loaded';
+    notify();
+  } catch (err) {
+    state.errorMessage = friendlyStreamingError(err);
+    if (state.status === 'idle' || state.status === 'loading') state.status = 'error';
+    notify();
+  }
+}
+
+export async function submitCreateSession(): Promise<boolean> {
+  const validation = validateCreateDraft(state.createDraft);
+  state.createErrors = validation.errors;
+  if (!validation.valid || !validation.body) {
+    notify();
+    return false;
+  }
+  state.busy = 'create';
+  state.notice = null;
+  notify();
+  try {
+    const result = await createStreamingSession(validation.body);
+    state.sessions = mergeSessionRecords([result.session], state.sessions);
+    state.details = {
+      ...state.details,
+      [result.session.id]: { session: result.session, vouchers: [] },
+    };
+    state.selectedSessionId = result.session.id;
+    state.filter = 'active';
+    state.createModalOpen = false;
+    state.createDraft = defaultCreateSessionDraft();
+    state.createErrors = {};
+    queueStreamingApproval('grant', result.session, result.approveTx);
+    state.notice = { tone: 'pending', message: 'Grant transaction added to Needs Approval.' };
+    notify();
+    return true;
+  } catch (err) {
+    state.createErrors = { form: friendlyStreamingError(err) };
+    state.notice = { tone: 'error', message: friendlyStreamingError(err) };
+    notify();
+    return false;
+  } finally {
+    state.busy = false;
+    notify();
+  }
+}
+
+export async function requestRevokeSelectedSession(): Promise<boolean> {
+  const sessionId = state.selectedSessionId;
+  const session = sessionId ? state.sessions.find((candidate) => candidate.id === sessionId) : undefined;
+  if (!sessionId || !session) return false;
+  state.busy = 'revoke';
+  state.notice = null;
+  notify();
+  try {
+    const result = await revokeStreamingSession(sessionId);
+    const nextSession = result.session ?? session;
+    if (result.session) {
+      state.sessions = mergeSessionRecords([result.session], state.sessions);
+      state.details = {
+        ...state.details,
+        [sessionId]: {
+          ...(state.details[sessionId] ?? { session: result.session, vouchers: [] }),
+          session: result.session,
+        },
+      };
+    }
+    queueStreamingApproval('revoke', nextSession, result.revokeTx);
+    state.notice = { tone: 'pending', message: 'Revoke transaction added to Needs Approval.' };
+    notify();
+    return true;
+  } catch (err) {
+    state.notice = { tone: 'error', message: friendlyStreamingError(err) };
+    notify();
+    return false;
+  } finally {
+    state.busy = false;
+    notify();
+  }
+}
+
+export function handleStreamingApprovalStatus(input: {
+  sessionId: string;
+  operation: StreamingApprovalOperation;
+  status: 'queued' | 'submitted' | 'confirmed' | 'failed';
+  error?: string;
+}): void {
+  if (input.status === 'failed') {
+    state.notice = {
+      tone: 'error',
+      message: input.error || `Streaming ${input.operation} approval failed.`,
+    };
+  } else if (input.status === 'queued') {
+    state.notice = {
+      tone: 'pending',
+      message: input.operation === 'grant'
+        ? 'Grant transaction is ready in Needs Approval.'
+        : 'Revoke transaction is ready in Needs Approval.',
+    };
+  } else {
+    state.notice = {
+      tone: 'success',
+      message: input.operation === 'grant'
+        ? 'Grant transaction submitted. Refreshing session.'
+        : 'Revoke transaction submitted. Refreshing session.',
+    };
+    state.selectedSessionId = input.sessionId;
+    void refreshSelectedSession();
+  }
+  notify();
+}
+
+export function startSessionDetailPolling(): () => void {
+  if (typeof window === 'undefined') return () => undefined;
+  if (detailPollTimer !== null) return stopSessionDetailPolling;
+  detailPollTimer = window.setInterval(() => {
+    if (!state.selectedSessionId || pollInFlight) return;
+    pollInFlight = true;
+    void refreshSelectedSession().finally(() => {
+      pollInFlight = false;
+    });
+  }, SESSIONS_DETAIL_POLL_MS);
+  return stopSessionDetailPolling;
+}
+
+export function stopSessionDetailPolling(): void {
+  if (typeof window === 'undefined') return;
+  if (detailPollTimer !== null) {
+    window.clearInterval(detailPollTimer);
+    detailPollTimer = null;
+  }
+  pollInFlight = false;
+}
+
+export function __resetSessionsStateForTests(next: Partial<SessionsState> = {}): void {
+  stopSessionDetailPolling();
+  state.status = next.status ?? 'idle';
+  state.sessions = next.sessions ?? [];
+  state.details = next.details ?? {};
+  state.selectedSessionId = next.selectedSessionId ?? null;
+  state.filter = next.filter ?? 'active';
+  state.errorMessage = next.errorMessage ?? '';
+  state.busy = next.busy ?? false;
+  state.createModalOpen = next.createModalOpen ?? false;
+  state.createDraft = next.createDraft ?? defaultCreateSessionDraft();
+  state.createErrors = next.createErrors ?? {};
+  state.voucherPage = next.voucherPage ?? 0;
+  state.lastFetchedAt = next.lastFetchedAt ?? 0;
+  state.notice = next.notice ?? null;
+  notify();
+}
+
+function queueStreamingApproval(
+  operation: StreamingApprovalOperation,
+  session: StreamingSessionRecord,
+  tx: { txBase64: string; cluster?: WorkflowCluster; description?: string; tokenMint?: string; totalAmount?: string },
+): void {
+  dispatchStreamingApprovalRequested({
+    source: 'streaming_session',
+    operation,
+    sessionId: session.id,
+    tx: {
+      ...tx,
+      cluster: tx.cluster ?? session.cluster,
+      tokenMint: tx.tokenMint ?? session.tokenMint,
+      totalAmount: tx.totalAmount ?? (operation === 'grant' ? session.capAmount : undefined),
+    },
+    cluster: tx.cluster ?? session.cluster,
+    walletAddress: session.walletAddress,
+    callbackPath: `/api/streaming/sessions/${encodeURIComponent(session.id)}/${operation === 'grant' ? 'grant-signed' : 'revoke-signed'}`,
+    summary: operation === 'grant'
+      ? `Grant streaming session ${shortId(session.id)} up to ${session.capAmount} USDC`
+      : `Revoke streaming session ${shortId(session.id)}`,
+  });
+}
+
+function sortSessions(sessions: readonly StreamingSessionRecord[]): StreamingSessionRecord[] {
+  return [...sessions].sort((left, right) => {
+    const rank = statusRank(left.status) - statusRank(right.status);
+    if (rank !== 0) return rank;
+    return right.createdAt.localeCompare(left.createdAt);
+  });
+}
+
+function statusRank(status: StreamingSessionRecord['status']): number {
+  if (status === 'active' || status === 'pending') return 0;
+  if (status === 'expired') return 1;
+  if (status === 'revoked') return 2;
+  return 3;
+}
+
+function mergeSessionRecords(
+  updates: readonly StreamingSessionRecord[],
+  existing: readonly StreamingSessionRecord[],
+): StreamingSessionRecord[] {
+  const byId = new Map<string, StreamingSessionRecord>();
+  for (const session of existing) byId.set(session.id, session);
+  for (const session of updates) {
+    const current = byId.get(session.id);
+    if (!current || session.updatedAt.localeCompare(current.updatedAt) >= 0) {
+      byId.set(session.id, session);
+    }
+  }
+  return sortSessions([...byId.values()]);
+}
+
+function pruneDetails(
+  details: Record<string, StreamingSessionDetail>,
+  sessions: readonly StreamingSessionRecord[],
+): Record<string, StreamingSessionDetail> {
+  const ids = new Set(sessions.map((session) => session.id));
+  const next: Record<string, StreamingSessionDetail> = {};
+  for (const [id, detail] of Object.entries(details)) {
+    if (ids.has(id)) next[id] = detail;
+  }
+  return next;
+}
+
+function parseAllowlistDraft(value: string): { valid: string[]; invalid: string[] } {
+  const entries = value
+    .split(/[\n,]+/)
+    .map((entry) => entry.trim())
+    .filter(Boolean);
+  const valid: string[] = [];
+  const invalid: string[] = [];
+  for (const entry of entries) {
+    if (SOLANA_ADDRESS_REGEX.test(entry)) {
+      if (!valid.includes(entry)) valid.push(entry);
+    } else {
+      invalid.push(entry);
+    }
+  }
+  return { valid, invalid };
+}
+
+function normalizeDecimal(value: string): string {
+  const trimmed = value.trim();
+  return trimmed.startsWith('.') ? `0${trimmed}` : trimmed;
+}
+
+function currentCluster(): WorkflowCluster {
+  const cluster = getConnectedCluster();
+  if (cluster === 'devnet' || cluster === 'testnet' || cluster === 'localnet' || cluster === 'mainnet-beta') return cluster;
+  return 'mainnet-beta';
+}
+
+function friendlyStreamingError(err: unknown): string {
+  if (err instanceof StreamingApiError && err.code === 'not_implemented') {
+    return 'Streaming session routes are not available on this dev server yet.';
+  }
+  if (err instanceof Error) return err.message;
+  return 'Streaming session request failed.';
+}
+
+function shortId(id: string): string {
+  return id.length > 12 ? `${id.slice(0, 6)}...${id.slice(-4)}` : id;
+}
+
+function notify(): void {
+  for (const listener of listeners) listener();
+}

@@ -141,6 +141,7 @@ describe('render web hosted BYOK API', () => {
         configured: true,
         state: 'stopped',
         runtime: 'render-gated',
+        runtimes: { android: true, browserNative: false },
         provider: 'openai',
         model: 'gpt-5.5',
       });
@@ -153,6 +154,7 @@ describe('render web hosted BYOK API', () => {
       expect(started.body).toMatchObject({
         configured: true,
         state: 'running',
+        runtimes: { android: true, browserNative: false },
         message: 'Device Agent runtime is gated on Render; no cloud daemon is started.',
       });
     }, { walletAddress: DEVICE_AGENT_WALLET_A });
@@ -181,6 +183,7 @@ describe('render web hosted BYOK API', () => {
       expect(metadataKeys).not.toContain('model');
       expect(metadataKeys).not.toContain('baseUrl');
       expect(metadataKeys).not.toContain('apiFormat');
+      expect(metadataKeys).not.toContain('runtimes');
     }, { walletAddress: DEVICE_AGENT_WALLET_A });
   });
 

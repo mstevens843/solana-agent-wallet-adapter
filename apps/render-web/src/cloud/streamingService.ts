@@ -1,0 +1,1362 @@
+import { createCipheriv, createDecipheriv, createHash, randomBytes, randomUUID } from 'node:crypto';
+
+import {
+  Keypair,
+  Connection,
+  PublicKey,
+} from '@solana/web3.js';
+import pg from 'pg';
+import type { QueryConfig, QueryResult, QueryResultRow } from 'pg';
+
+import {
+  STREAMING_VOUCHER_SCHEMA,
+  buildApproveDelegateTx,
+  buildRevokeDelegateTx,
+  formatBaseUnitsToDecimal,
+  generateEphemeralKeypair,
+  parseTokenAmountToBaseUnits,
+  validateVoucher,
+  type EphemeralKeypair,
+  type SessionGrant,
+  type StreamingCluster,
+  type UnsignedDelegateTx,
+  type Voucher,
+} from '@solana-agent-wallet-adapter/streaming-sessions';
+import type { StreamingVoucherRecord as WorkflowStreamingVoucherRecord } from '@solana-agent-wallet-adapter/workflow';
+
+import { solanaRpcUrl } from './connectorFactsReader.js';
+import type { PgClient, PgConnection } from './postgresStore.js';
+import type { Clock } from './store.js';
+
+const { Pool } = pg;
+
+const DEFAULT_CLUSTER: StreamingCluster = 'devnet';
+const DEFAULT_TOKEN_DECIMALS = 6;
+const MAX_RECIPIENT_ALLOWLIST = 64;
+const SESSION_LOCK_METADATA_KEY = 'streamingSettlementLock';
+const DELEGATE_KEY_METADATA_KEY = 'streamingDelegateKey';
+const TEST_RECENT_BLOCKHASH_ENV = 'STREAMING_TEST_RECENT_BLOCKHASH';
+
+export interface StoredStreamingSession extends SessionGrant {
+  metadata?: Record<string, unknown>;
+}
+
+export interface StreamingVoucherRecord extends WorkflowStreamingVoucherRecord {
+  voucher: Voucher;
+}
+
+export interface CreateStreamingSessionInput {
+  walletAddress: string;
+  tokenMint: string;
+  capAmount: string;
+  expiresAt: string;
+  recipientAllowlist?: readonly string[];
+  cluster?: StreamingCluster;
+  tokenDecimals?: number;
+  metadata?: Record<string, unknown>;
+}
+
+export interface CreateStreamingSessionResult {
+  session: StoredStreamingSession;
+  approveTx: UnsignedDelegateTx;
+  ephemeralSignerPubkey: string;
+}
+
+export interface AcceptStreamingVoucherResult {
+  session: StoredStreamingSession;
+  voucher: StreamingVoucherRecord;
+  accepted: true;
+  remaining: string;
+  spentAmount: string;
+  voucherHash: string;
+}
+
+export interface StreamingSessionDetail {
+  session: StoredStreamingSession;
+  vouchers: StreamingVoucherRecord[];
+  remaining: string;
+  timeToExpirySeconds: number;
+}
+
+export interface SettlementCandidate {
+  session: StoredStreamingSession;
+  unsettledVoucherCount: number;
+}
+
+export interface StreamingStore {
+  createSession(record: StoredStreamingSession): Promise<StoredStreamingSession>;
+  getSession(walletAddress: string, sessionId: string): Promise<StoredStreamingSession | undefined>;
+  listSessions(walletAddress: string, status?: StreamingSessionListStatus): Promise<StoredStreamingSession[]>;
+  recordGrantSigned(
+    walletAddress: string,
+    sessionId: string,
+    approveTxid: string,
+    updatedAt: string,
+  ): Promise<StoredStreamingSession | undefined>;
+  markRevoked(
+    walletAddress: string,
+    sessionId: string,
+    updatedAt: string,
+  ): Promise<StoredStreamingSession | undefined>;
+  recordRevokeSigned(
+    walletAddress: string,
+    sessionId: string,
+    revokeTxid: string,
+    updatedAt: string,
+  ): Promise<StoredStreamingSession | undefined>;
+  acceptVoucher(
+    walletAddress: string,
+    sessionId: string,
+    voucher: Voucher,
+    nowIso: string,
+    voucherId: string,
+  ): Promise<AcceptStreamingVoucherResult>;
+  listVouchers(sessionId: string): Promise<StreamingVoucherRecord[]>;
+  listSettlementCandidates(
+    nowIso: string,
+    thresholdBps: number,
+    limit: number,
+  ): Promise<SettlementCandidate[]>;
+  claimSettlementCandidate(
+    sessionId: string,
+    nowIso: string,
+    lockExpiresAtIso: string,
+  ): Promise<StoredStreamingSession | undefined>;
+  listUnsettledVouchers(sessionId: string): Promise<StreamingVoucherRecord[]>;
+  markVouchersSettled(
+    sessionId: string,
+    voucherHashes: readonly string[],
+    txid: string,
+    settledAtIso: string,
+  ): Promise<StreamingVoucherRecord[]>;
+  markSessionSettledIfTerminal(sessionId: string, nowIso: string): Promise<StoredStreamingSession | undefined>;
+}
+
+export type StreamingSessionListStatus = SessionGrant['status'] | 'all';
+
+export interface LatestBlockhashProvider {
+  (cluster: StreamingCluster): Promise<string>;
+}
+
+export interface StreamingServiceOptions {
+  clock?: Clock;
+  idFactory?: () => string;
+  keypairFactory?: () => EphemeralKeypair;
+  latestBlockhash?: LatestBlockhashProvider;
+}
+
+export class StreamingServiceError extends Error {
+  constructor(
+    readonly status: number,
+    readonly code: string,
+    message: string,
+  ) {
+    super(message);
+    this.name = 'StreamingServiceError';
+  }
+}
+
+export class StreamingService {
+  private readonly clock: Clock;
+  private readonly idFactory: () => string;
+  private readonly keypairFactory: () => EphemeralKeypair;
+  private readonly latestBlockhash: LatestBlockhashProvider;
+
+  constructor(
+    private readonly store: StreamingStore,
+    options: StreamingServiceOptions = {},
+  ) {
+    this.clock = options.clock ?? { now: () => new Date() };
+    this.idFactory = options.idFactory ?? (() => randomUUID());
+    this.keypairFactory = options.keypairFactory ?? (() => generateEphemeralKeypair());
+    this.latestBlockhash = options.latestBlockhash ?? latestBlockhashForCluster;
+  }
+
+  async createSession(input: CreateStreamingSessionInput): Promise<CreateStreamingSessionResult> {
+    const walletAddress = requirePublicKey(input.walletAddress, 'walletAddress');
+    const tokenMint = requirePublicKey(input.tokenMint, 'tokenMint');
+    const cluster = input.cluster ?? defaultStreamingCluster();
+    assertStreamingCluster(cluster);
+    const tokenDecimals = assertTokenDecimals(input.tokenDecimals ?? DEFAULT_TOKEN_DECIMALS);
+    const capAmount = requireAmount(input.capAmount, tokenDecimals, 'capAmount');
+    const expiresAt = requireFutureIso(input.expiresAt, this.clock.now(), 'expiresAt');
+    const recipientAllowlist = normalizeRecipientAllowlist(input.recipientAllowlist);
+    const keypair = this.keypairFactory();
+    const delegatePubkey = requirePublicKey(keypair.publicKey, 'delegatePubkey');
+    const delegateSecret = Keypair.fromSecretKey(keypair.secretKey);
+    if (delegateSecret.publicKey.toBase58() !== delegatePubkey) {
+      throw new StreamingServiceError(500, 'delegate_key_mismatch', 'Generated delegate keypair is internally inconsistent.');
+    }
+
+    const now = this.now();
+    const id = `stream_${this.idFactory()}`;
+    const encryptedDelegateKey = encryptDelegateKey({
+      publicKey: delegatePubkey,
+      secretKeyBase64: Buffer.from(keypair.secretKey).toString('base64'),
+    });
+    const session: StoredStreamingSession = {
+      sessionId: id,
+      walletAddress,
+      cluster,
+      tokenMint,
+      tokenDecimals,
+      delegatePubkey,
+      ephemeralSignerPubkey: delegatePubkey,
+      capAmount,
+      spentAmount: '0',
+      expiresAt,
+      status: 'pending',
+      ...(recipientAllowlist.length ? { recipientAllowlist } : {}),
+      createdAt: now,
+      updatedAt: now,
+      metadata: sanitizeSessionMetadata({
+        ...(input.metadata ?? {}),
+        tokenDecimals,
+        [DELEGATE_KEY_METADATA_KEY]: encryptedDelegateKey,
+      }),
+    };
+    const stored = await this.store.createSession(session);
+    const approveTx = buildApproveDelegateTx({
+      ownerPubkey: walletAddress,
+      tokenMint,
+      delegatePubkey,
+      capAmount,
+      tokenDecimals,
+      cluster,
+      recentBlockhash: await this.latestBlockhash(cluster),
+    });
+    return {
+      session: publicSession(stored, this.clock.now()),
+      approveTx,
+      ephemeralSignerPubkey: delegatePubkey,
+    };
+  }
+
+  async recordGrantSigned(input: {
+    walletAddress: string;
+    sessionId: string;
+    approveTxid: string;
+  }): Promise<StoredStreamingSession> {
+    const existing = await this.requireSession(input.walletAddress, input.sessionId);
+    if (existing.status === 'revoked' || existing.status === 'settled') {
+      throw new StreamingServiceError(409, 'session_terminal', 'Session is no longer grantable.');
+    }
+    if (isExpired(existing, this.clock.now())) {
+      throw new StreamingServiceError(409, 'session_expired', 'Session expired before the grant was signed.');
+    }
+    const updated = await this.store.recordGrantSigned(
+      input.walletAddress,
+      input.sessionId,
+      requireShortString(input.approveTxid, 'approveTxid', 256),
+      this.now(),
+    );
+    if (!updated) throw notFound(input.sessionId);
+    return publicSession(updated, this.clock.now());
+  }
+
+  async acceptVoucher(input: {
+    walletAddress: string;
+    sessionId: string;
+    voucher: Voucher;
+  }): Promise<AcceptStreamingVoucherResult> {
+    const result = await this.store.acceptVoucher(
+      input.walletAddress,
+      input.sessionId,
+      normalizeVoucher(input.voucher),
+      this.now(),
+      `voucher_${this.idFactory()}`,
+    );
+    return {
+      ...result,
+      session: publicSession(result.session, this.clock.now()),
+    };
+  }
+
+  async revokeSession(input: {
+    walletAddress: string;
+    sessionId: string;
+  }): Promise<{ session: StoredStreamingSession; revokeTx: UnsignedDelegateTx }> {
+    const existing = await this.requireSession(input.walletAddress, input.sessionId);
+    if (existing.status === 'settled') {
+      throw new StreamingServiceError(409, 'session_settled', 'Session is already settled.');
+    }
+    const revoked = await this.store.markRevoked(input.walletAddress, input.sessionId, this.now());
+    if (!revoked) throw notFound(input.sessionId);
+    const revokeTx = buildRevokeDelegateTx({
+      ownerPubkey: revoked.walletAddress,
+      tokenMint: revoked.tokenMint,
+      cluster: revoked.cluster,
+      recentBlockhash: await this.latestBlockhash(revoked.cluster),
+    });
+    return { session: publicSession(revoked, this.clock.now()), revokeTx };
+  }
+
+  async recordRevokeSigned(input: {
+    walletAddress: string;
+    sessionId: string;
+    revokeTxid: string;
+  }): Promise<StoredStreamingSession> {
+    await this.requireSession(input.walletAddress, input.sessionId);
+    const updated = await this.store.recordRevokeSigned(
+      input.walletAddress,
+      input.sessionId,
+      requireShortString(input.revokeTxid, 'revokeTxid', 256),
+      this.now(),
+    );
+    if (!updated) throw notFound(input.sessionId);
+    return publicSession(updated, this.clock.now());
+  }
+
+  async listSessions(input: {
+    walletAddress: string;
+    status?: StreamingSessionListStatus;
+  }): Promise<StoredStreamingSession[]> {
+    const status = input.status ?? 'active';
+    const sessions = await this.store.listSessions(
+      input.walletAddress,
+      status === 'active' || status === 'expired' ? 'all' : status,
+    );
+    return sessions
+      .map((session) => publicSession(session, this.clock.now()))
+      .filter((session) => status === 'all' || session.status === status);
+  }
+
+  async getSession(input: {
+    walletAddress: string;
+    sessionId: string;
+  }): Promise<StreamingSessionDetail> {
+    const session = await this.requireSession(input.walletAddress, input.sessionId);
+    const vouchers = await this.store.listVouchers(session.sessionId);
+    const presented = publicSession(session, this.clock.now());
+    return {
+      session: presented,
+      vouchers,
+      remaining: remainingFor(presented),
+      timeToExpirySeconds: secondsUntil(presented.expiresAt, this.clock.now()),
+    };
+  }
+
+  private async requireSession(walletAddress: string, sessionId: string): Promise<StoredStreamingSession> {
+    const session = await this.store.getSession(walletAddress, sessionId);
+    if (!session) throw notFound(sessionId);
+    return session;
+  }
+
+  private now(): string {
+    return this.clock.now().toISOString();
+  }
+}
+
+export class MemoryStreamingStore implements StreamingStore {
+  private readonly sessions = new Map<string, StoredStreamingSession>();
+  private readonly vouchers = new Map<string, StreamingVoucherRecord>();
+
+  async createSession(record: StoredStreamingSession): Promise<StoredStreamingSession> {
+    this.sessions.set(record.sessionId, clone(record));
+    return clone(record);
+  }
+
+  async getSession(walletAddress: string, sessionId: string): Promise<StoredStreamingSession | undefined> {
+    const record = this.sessions.get(sessionId);
+    return record?.walletAddress === walletAddress ? clone(record) : undefined;
+  }
+
+  async listSessions(walletAddress: string, status: StreamingSessionListStatus = 'active'): Promise<StoredStreamingSession[]> {
+    return [...this.sessions.values()]
+      .filter((record) => record.walletAddress === walletAddress)
+      .filter((record) => status === 'all' || record.status === status)
+      .sort((left, right) => right.createdAt.localeCompare(left.createdAt))
+      .map(clone);
+  }
+
+  async recordGrantSigned(
+    walletAddress: string,
+    sessionId: string,
+    approveTxid: string,
+    updatedAt: string,
+  ): Promise<StoredStreamingSession | undefined> {
+    const session = await this.getSession(walletAddress, sessionId);
+    if (!session) return undefined;
+    const updated = {
+      ...session,
+      approveTxid,
+      status: session.status === 'pending' ? 'active' : session.status,
+      updatedAt,
+    } satisfies StoredStreamingSession;
+    this.sessions.set(sessionId, clone(updated));
+    return clone(updated);
+  }
+
+  async markRevoked(
+    walletAddress: string,
+    sessionId: string,
+    updatedAt: string,
+  ): Promise<StoredStreamingSession | undefined> {
+    const session = await this.getSession(walletAddress, sessionId);
+    if (!session) return undefined;
+    const updated = {
+      ...session,
+      status: 'revoked',
+      updatedAt,
+    } satisfies StoredStreamingSession;
+    this.sessions.set(sessionId, clone(updated));
+    return clone(updated);
+  }
+
+  async recordRevokeSigned(
+    walletAddress: string,
+    sessionId: string,
+    revokeTxid: string,
+    updatedAt: string,
+  ): Promise<StoredStreamingSession | undefined> {
+    const session = await this.getSession(walletAddress, sessionId);
+    if (!session) return undefined;
+    const updated = {
+      ...session,
+      status: 'revoked',
+      revokeTxid,
+      updatedAt,
+    } satisfies StoredStreamingSession;
+    this.sessions.set(sessionId, clone(updated));
+    return clone(updated);
+  }
+
+  async acceptVoucher(
+    walletAddress: string,
+    sessionId: string,
+    voucher: Voucher,
+    nowIso: string,
+    voucherId: string,
+  ): Promise<AcceptStreamingVoucherResult> {
+    const session = await this.getSession(walletAddress, sessionId);
+    if (!session) throw notFound(sessionId);
+    const usedNonces = new Set(
+      [...this.vouchers.values()]
+        .filter((record) => record.sessionId === sessionId)
+        .map((record) => record.nonce),
+    );
+    const validation = validateVoucher({
+      grant: session,
+      voucher,
+      usedNonces,
+      now: nowIso,
+    });
+    const decimals = session.tokenDecimals ?? DEFAULT_TOKEN_DECIMALS;
+    const spentAmount = formatBaseUnitsToDecimal(validation.spentBaseUnits + validation.amountBaseUnits, decimals);
+    const updated = {
+      ...session,
+      spentAmount,
+      updatedAt: nowIso,
+    } satisfies StoredStreamingSession;
+    const record = voucherRecordFromVoucher(voucherId, voucher, validation.voucherHash, nowIso);
+    this.sessions.set(sessionId, clone(updated));
+    this.vouchers.set(record.id, clone(record));
+    return {
+      session: clone(updated),
+      voucher: clone(record),
+      accepted: true,
+      remaining: validation.remainingAmount,
+      spentAmount,
+      voucherHash: validation.voucherHash,
+    };
+  }
+
+  async listVouchers(sessionId: string): Promise<StreamingVoucherRecord[]> {
+    return [...this.vouchers.values()]
+      .filter((record) => record.sessionId === sessionId)
+      .sort((left, right) => left.createdAt.localeCompare(right.createdAt))
+      .map(clone);
+  }
+
+  async listSettlementCandidates(
+    nowIso: string,
+    thresholdBps: number,
+    limit: number,
+  ): Promise<SettlementCandidate[]> {
+    const now = new Date(nowIso);
+    const candidates: SettlementCandidate[] = [];
+    for (const session of this.sessions.values()) {
+      if (session.status === 'pending' || session.status === 'settled') continue;
+      if (settlementLockActive(session, now)) continue;
+      const unsettled = [...this.vouchers.values()].filter((v) => v.sessionId === session.sessionId && !v.settledAt);
+      if (unsettled.length === 0) continue;
+      if (!sessionSettlementEligible(session, now, thresholdBps)) continue;
+      candidates.push({ session: clone(session), unsettledVoucherCount: unsettled.length });
+      if (candidates.length >= limit) break;
+    }
+    return candidates;
+  }
+
+  async claimSettlementCandidate(
+    sessionId: string,
+    nowIso: string,
+    lockExpiresAtIso: string,
+  ): Promise<StoredStreamingSession | undefined> {
+    const session = this.sessions.get(sessionId);
+    if (!session || settlementLockActive(session, new Date(nowIso))) return undefined;
+    const updated = {
+      ...session,
+      updatedAt: nowIso,
+      metadata: {
+        ...(session.metadata ?? {}),
+        [SESSION_LOCK_METADATA_KEY]: { lockedAt: nowIso, expiresAt: lockExpiresAtIso },
+      },
+    };
+    this.sessions.set(sessionId, clone(updated));
+    return clone(updated);
+  }
+
+  async listUnsettledVouchers(sessionId: string): Promise<StreamingVoucherRecord[]> {
+    return [...this.vouchers.values()]
+      .filter((record) => record.sessionId === sessionId && !record.settledAt)
+      .sort((left, right) => left.createdAt.localeCompare(right.createdAt))
+      .map(clone);
+  }
+
+  async markVouchersSettled(
+    sessionId: string,
+    voucherHashes: readonly string[],
+    txid: string,
+    settledAtIso: string,
+  ): Promise<StreamingVoucherRecord[]> {
+    const wanted = new Set(voucherHashes);
+    const updated: StreamingVoucherRecord[] = [];
+    for (const [id, record] of this.vouchers.entries()) {
+      if (record.sessionId !== sessionId || !wanted.has(record.voucherHash) || record.settledAt) continue;
+      const settled = { ...record, settledAt: settledAtIso, settlementTxid: txid };
+      this.vouchers.set(id, clone(settled));
+      updated.push(clone(settled));
+    }
+    return updated;
+  }
+
+  async markSessionSettledIfTerminal(sessionId: string, nowIso: string): Promise<StoredStreamingSession | undefined> {
+    const session = this.sessions.get(sessionId);
+    if (!session) return undefined;
+    const hasUnsettled = [...this.vouchers.values()].some((record) => record.sessionId === sessionId && !record.settledAt);
+    if (hasUnsettled || !isTerminalForSettlement(session, new Date(nowIso))) return clone(session);
+    const updated = {
+      ...session,
+      status: 'settled',
+      updatedAt: nowIso,
+    } satisfies StoredStreamingSession;
+    this.sessions.set(sessionId, clone(updated));
+    return clone(updated);
+  }
+}
+
+export class PostgresStreamingStore implements StreamingStore {
+  private readonly client: PgClient;
+  private readonly ownsClient: boolean;
+
+  constructor(options: { client?: PgClient; connectionString?: string } = {}) {
+    if (options.client) {
+      this.client = options.client;
+      this.ownsClient = false;
+      return;
+    }
+    const connectionString = options.connectionString ?? process.env.DATABASE_URL;
+    if (!connectionString) {
+      throw new Error('DATABASE_URL is required for PostgresStreamingStore.');
+    }
+    this.client = new Pool({ connectionString });
+    this.ownsClient = true;
+  }
+
+  async close(): Promise<void> {
+    if (this.ownsClient && this.client.end) await this.client.end();
+  }
+
+  async createSession(record: StoredStreamingSession): Promise<StoredStreamingSession> {
+    await this.ensureUser(record.walletAddress, record.createdAt);
+    const result = await this.query<StreamingSessionRow>({
+      name: 'streaming.session.insert',
+      text: `
+        INSERT INTO streaming_sessions (
+          id, wallet_address, cluster, token_mint, delegate_pubkey, ephemeral_signer_pubkey,
+          cap_amount, spent_amount, expires_at, status, recipient_allowlist, approve_txid,
+          revoke_txid, created_at, updated_at, metadata
+        ) VALUES (
+          $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11::jsonb, $12, $13, $14, $15, $16::jsonb
+        )
+        RETURNING *
+      `,
+      values: [
+        record.sessionId,
+        record.walletAddress,
+        record.cluster,
+        record.tokenMint,
+        record.delegatePubkey,
+        record.ephemeralSignerPubkey,
+        record.capAmount,
+        record.spentAmount,
+        record.expiresAt,
+        record.status,
+        record.recipientAllowlist ? jsonParam(record.recipientAllowlist) : null,
+        record.approveTxid ?? null,
+        record.revokeTxid ?? null,
+        record.createdAt,
+        record.updatedAt,
+        record.metadata ? jsonParam(record.metadata) : null,
+      ],
+    });
+    return sessionFromRow(result.rows[0]);
+  }
+
+  async getSession(walletAddress: string, sessionId: string): Promise<StoredStreamingSession | undefined> {
+    const result = await this.query<StreamingSessionRow>({
+      name: 'streaming.session.getForWallet',
+      text: 'SELECT * FROM streaming_sessions WHERE id = $1 AND wallet_address = $2',
+      values: [sessionId, walletAddress],
+    });
+    return result.rows[0] ? sessionFromRow(result.rows[0]) : undefined;
+  }
+
+  async listSessions(walletAddress: string, status: StreamingSessionListStatus = 'active'): Promise<StoredStreamingSession[]> {
+    const result = await this.query<StreamingSessionRow>({
+      name: status === 'all' ? 'streaming.session.listAll' : 'streaming.session.listByStatus',
+      text: status === 'all'
+        ? 'SELECT * FROM streaming_sessions WHERE wallet_address = $1 ORDER BY created_at DESC'
+        : 'SELECT * FROM streaming_sessions WHERE wallet_address = $1 AND status = $2 ORDER BY created_at DESC',
+      values: status === 'all' ? [walletAddress] : [walletAddress, status],
+    });
+    return result.rows.map(sessionFromRow);
+  }
+
+  async recordGrantSigned(
+    walletAddress: string,
+    sessionId: string,
+    approveTxid: string,
+    updatedAt: string,
+  ): Promise<StoredStreamingSession | undefined> {
+    const result = await this.query<StreamingSessionRow>({
+      name: 'streaming.session.recordGrantSigned',
+      text: `
+        UPDATE streaming_sessions
+        SET approve_txid = $3,
+            status = CASE WHEN status = 'pending' THEN 'active' ELSE status END,
+            updated_at = $4
+        WHERE id = $1 AND wallet_address = $2
+        RETURNING *
+      `,
+      values: [sessionId, walletAddress, approveTxid, updatedAt],
+    });
+    return result.rows[0] ? sessionFromRow(result.rows[0]) : undefined;
+  }
+
+  async markRevoked(
+    walletAddress: string,
+    sessionId: string,
+    updatedAt: string,
+  ): Promise<StoredStreamingSession | undefined> {
+    const result = await this.query<StreamingSessionRow>({
+      name: 'streaming.session.markRevoked',
+      text: `
+        UPDATE streaming_sessions
+        SET status = 'revoked', updated_at = $3
+        WHERE id = $1 AND wallet_address = $2
+        RETURNING *
+      `,
+      values: [sessionId, walletAddress, updatedAt],
+    });
+    return result.rows[0] ? sessionFromRow(result.rows[0]) : undefined;
+  }
+
+  async recordRevokeSigned(
+    walletAddress: string,
+    sessionId: string,
+    revokeTxid: string,
+    updatedAt: string,
+  ): Promise<StoredStreamingSession | undefined> {
+    const result = await this.query<StreamingSessionRow>({
+      name: 'streaming.session.recordRevokeSigned',
+      text: `
+        UPDATE streaming_sessions
+        SET revoke_txid = $3, status = 'revoked', updated_at = $4
+        WHERE id = $1 AND wallet_address = $2
+        RETURNING *
+      `,
+      values: [sessionId, walletAddress, revokeTxid, updatedAt],
+    });
+    return result.rows[0] ? sessionFromRow(result.rows[0]) : undefined;
+  }
+
+  async acceptVoucher(
+    walletAddress: string,
+    sessionId: string,
+    voucher: Voucher,
+    nowIso: string,
+    voucherId: string,
+  ): Promise<AcceptStreamingVoucherResult> {
+    const client = await this.checkoutClient();
+    await client.query({ text: 'BEGIN' });
+    try {
+      const sessionResult = await client.query<StreamingSessionRow>({
+        name: 'streaming.session.lockForVoucher',
+        text: 'SELECT * FROM streaming_sessions WHERE id = $1 AND wallet_address = $2 FOR UPDATE',
+        values: [sessionId, walletAddress],
+      });
+      const sessionRow = sessionResult.rows[0];
+      if (!sessionRow) throw notFound(sessionId);
+      const session = sessionFromRow(sessionRow);
+      const nonceResult = await client.query<{ nonce: string }>({
+        name: 'streaming.voucher.usedNonce',
+        text: 'SELECT nonce FROM streaming_vouchers WHERE session_id = $1 AND nonce = $2 LIMIT 1',
+        values: [sessionId, voucher.nonce],
+      });
+      const validation = validateVoucher({
+        grant: session,
+        voucher,
+        usedNonces: new Set(nonceResult.rows.map((row) => row.nonce)),
+        now: nowIso,
+      });
+      const decimals = session.tokenDecimals ?? DEFAULT_TOKEN_DECIMALS;
+      const spentAmount = formatBaseUnitsToDecimal(validation.spentBaseUnits + validation.amountBaseUnits, decimals);
+      const voucherRecord = voucherRecordFromVoucher(voucherId, voucher, validation.voucherHash, nowIso);
+      await client.query({
+        name: 'streaming.voucher.insert',
+        text: `
+          INSERT INTO streaming_vouchers (
+            id, session_id, nonce, amount, recipient, voucher_hash, signature, issued_at, created_at,
+            settled_at, settlement_txid
+          ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, NULL, NULL)
+        `,
+        values: [
+          voucherRecord.id,
+          voucherRecord.sessionId,
+          voucherRecord.nonce,
+          voucherRecord.amount,
+          voucherRecord.recipient,
+          voucherRecord.voucherHash,
+          voucherRecord.signature,
+          voucherRecord.issuedAt,
+          voucherRecord.createdAt,
+        ],
+      });
+      const updatedResult = await client.query<StreamingSessionRow>({
+        name: 'streaming.session.updateSpent',
+        text: `
+          UPDATE streaming_sessions
+          SET spent_amount = $3, updated_at = $4
+          WHERE id = $1 AND wallet_address = $2
+          RETURNING *
+        `,
+        values: [sessionId, walletAddress, spentAmount, nowIso],
+      });
+      await client.query({ text: 'COMMIT' });
+      return {
+        session: sessionFromRow(updatedResult.rows[0]),
+        voucher: voucherRecord,
+        accepted: true,
+        remaining: validation.remainingAmount,
+        spentAmount,
+        voucherHash: validation.voucherHash,
+      };
+    } catch (err) {
+      await client.query({ text: 'ROLLBACK' });
+      if (isPgUniqueViolation(err, 'streaming_vouchers_session_nonce_uidx')) {
+        throw new StreamingServiceError(409, 'voucher_replay', 'Voucher nonce has already been used.');
+      }
+      throw err;
+    } finally {
+      client.release?.();
+    }
+  }
+
+  async listVouchers(sessionId: string): Promise<StreamingVoucherRecord[]> {
+    const result = await this.query<StreamingVoucherRow>({
+      name: 'streaming.voucher.listBySession',
+      text: 'SELECT * FROM streaming_vouchers WHERE session_id = $1 ORDER BY created_at ASC, id ASC',
+      values: [sessionId],
+    });
+    return result.rows.map(voucherFromRow);
+  }
+
+  async listSettlementCandidates(
+    nowIso: string,
+    thresholdBps: number,
+    limit: number,
+  ): Promise<SettlementCandidate[]> {
+    const threshold = thresholdBps / 10_000;
+    const result = await this.query<StreamingCandidateRow>({
+      name: 'streaming.settlement.candidates',
+      text: `
+        SELECT s.*, COUNT(v.id)::int AS unsettled_voucher_count
+        FROM streaming_sessions s
+        JOIN streaming_vouchers v ON v.session_id = s.id AND v.settled_at IS NULL
+        WHERE s.status <> 'pending'
+          AND s.status <> 'settled'
+          AND (
+            s.expires_at <= $1
+            OR s.status = 'revoked'
+            OR s.spent_amount::numeric >= (s.cap_amount::numeric * $2::numeric)
+          )
+          AND COALESCE((s.metadata->'${SESSION_LOCK_METADATA_KEY}'->>'expiresAt')::timestamptz, 'epoch'::timestamptz) <= $1
+        GROUP BY s.id
+        ORDER BY s.expires_at ASC, s.created_at ASC
+        LIMIT $3
+      `,
+      values: [nowIso, String(threshold), limit],
+    });
+    return result.rows.map((row) => ({
+      session: sessionFromRow(row),
+      unsettledVoucherCount: Number(row.unsettled_voucher_count) || 0,
+    }));
+  }
+
+  async claimSettlementCandidate(
+    sessionId: string,
+    nowIso: string,
+    lockExpiresAtIso: string,
+  ): Promise<StoredStreamingSession | undefined> {
+    const lock = { lockedAt: nowIso, expiresAt: lockExpiresAtIso };
+    const result = await this.query<StreamingSessionRow>({
+      name: 'streaming.settlement.claim',
+      text: `
+        UPDATE streaming_sessions
+        SET metadata = jsonb_set(COALESCE(metadata, '{}'::jsonb), '{${SESSION_LOCK_METADATA_KEY}}', $3::jsonb, true),
+            updated_at = $2
+        WHERE id = $1
+          AND COALESCE((metadata->'${SESSION_LOCK_METADATA_KEY}'->>'expiresAt')::timestamptz, 'epoch'::timestamptz) <= $2
+        RETURNING *
+      `,
+      values: [sessionId, nowIso, jsonParam(lock)],
+    });
+    return result.rows[0] ? sessionFromRow(result.rows[0]) : undefined;
+  }
+
+  async listUnsettledVouchers(sessionId: string): Promise<StreamingVoucherRecord[]> {
+    const result = await this.query<StreamingVoucherRow>({
+      name: 'streaming.voucher.listUnsettled',
+      text: `
+        SELECT * FROM streaming_vouchers
+        WHERE session_id = $1 AND settled_at IS NULL
+        ORDER BY created_at ASC, id ASC
+      `,
+      values: [sessionId],
+    });
+    return result.rows.map(voucherFromRow);
+  }
+
+  async markVouchersSettled(
+    sessionId: string,
+    voucherHashes: readonly string[],
+    txid: string,
+    settledAtIso: string,
+  ): Promise<StreamingVoucherRecord[]> {
+    if (voucherHashes.length === 0) return [];
+    const result = await this.query<StreamingVoucherRow>({
+      name: 'streaming.voucher.markSettled',
+      text: `
+        UPDATE streaming_vouchers
+        SET settled_at = $3, settlement_txid = $4
+        WHERE session_id = $1
+          AND voucher_hash = ANY($2::text[])
+          AND settled_at IS NULL
+        RETURNING *
+      `,
+      values: [sessionId, voucherHashes, settledAtIso, txid],
+    });
+    return result.rows.map(voucherFromRow);
+  }
+
+  async markSessionSettledIfTerminal(sessionId: string, nowIso: string): Promise<StoredStreamingSession | undefined> {
+    const result = await this.query<StreamingSessionRow>({
+      name: 'streaming.session.markSettledIfTerminal',
+      text: `
+        UPDATE streaming_sessions
+        SET status = 'settled', updated_at = $2
+        WHERE id = $1
+          AND NOT EXISTS (
+            SELECT 1 FROM streaming_vouchers v
+            WHERE v.session_id = streaming_sessions.id AND v.settled_at IS NULL
+          )
+          AND (
+            expires_at <= $2
+            OR status IN ('revoked', 'expired')
+            OR spent_amount::numeric >= cap_amount::numeric
+          )
+        RETURNING *
+      `,
+      values: [sessionId, nowIso],
+    });
+    if (result.rows[0]) return sessionFromRow(result.rows[0]);
+    const existing = await this.query<StreamingSessionRow>({
+      name: 'streaming.session.getAny',
+      text: 'SELECT * FROM streaming_sessions WHERE id = $1',
+      values: [sessionId],
+    });
+    return existing.rows[0] ? sessionFromRow(existing.rows[0]) : undefined;
+  }
+
+  private async ensureUser(walletAddress: string, createdAt: string): Promise<void> {
+    await this.query({
+      name: 'streaming.user.upsert',
+      text: `
+        INSERT INTO users (wallet_address, created_at, updated_at, last_seen_at)
+        VALUES ($1, $2, $2, $2)
+        ON CONFLICT (wallet_address) DO UPDATE SET
+          updated_at = EXCLUDED.updated_at,
+          last_seen_at = COALESCE(users.last_seen_at, EXCLUDED.last_seen_at)
+      `,
+      values: [walletAddress, createdAt],
+    });
+  }
+
+  private query<R extends QueryResultRow = QueryResultRow>(query: QueryConfig): Promise<QueryResult<R>> {
+    return this.client.query<R>(query);
+  }
+
+  private async checkoutClient(): Promise<PgClient> {
+    const connect = (this.client as PgClient & { connect?: () => Promise<PgConnection> }).connect;
+    if (connect) return connect.call(this.client);
+    return this.client;
+  }
+}
+
+const streamingStores = new WeakMap<object, StreamingStore>();
+let defaultStreamingStore: StreamingStore | undefined;
+
+export function streamingStoreFor(backingStore?: unknown): StreamingStore {
+  if (isStreamingStore(backingStore)) return backingStore;
+  if (backingStore && typeof backingStore === 'object') {
+    const cached = streamingStores.get(backingStore);
+    if (cached) return cached;
+    const pgClient = pgClientFromStore(backingStore);
+    const store = pgClient
+      ? new PostgresStreamingStore({ client: pgClient })
+      : shouldUseStandalonePostgres()
+        ? new PostgresStreamingStore()
+        : new MemoryStreamingStore();
+    streamingStores.set(backingStore, store);
+    return store;
+  }
+  if (!defaultStreamingStore) {
+    defaultStreamingStore = shouldUseStandalonePostgres()
+      ? new PostgresStreamingStore()
+      : new MemoryStreamingStore();
+  }
+  return defaultStreamingStore;
+}
+
+export function publicSession(session: StoredStreamingSession, now: Date): StoredStreamingSession {
+  const { [DELEGATE_KEY_METADATA_KEY]: _delegateKey, [SESSION_LOCK_METADATA_KEY]: _lock, ...metadata } = session.metadata ?? {};
+  const safeMetadata = Object.keys(metadata).length > 0 ? metadata : undefined;
+  return {
+    ...session,
+    status: isExpired(session, now) && (session.status === 'active' || session.status === 'pending')
+      ? 'expired'
+      : session.status,
+    ...(safeMetadata ? { metadata: safeMetadata } : { metadata: undefined }),
+  };
+}
+
+export function decryptSessionDelegateKey(session: StoredStreamingSession): Keypair {
+  const encrypted = session.metadata?.[DELEGATE_KEY_METADATA_KEY];
+  if (!encrypted || typeof encrypted !== 'object' || Array.isArray(encrypted)) {
+    throw new StreamingServiceError(409, 'delegate_key_missing', 'Session is missing encrypted delegate key material.');
+  }
+  const decrypted = decryptDelegateKey(encrypted as EncryptedDelegateKey);
+  if (decrypted.publicKey !== session.delegatePubkey) {
+    throw new StreamingServiceError(409, 'delegate_key_mismatch', 'Encrypted delegate key does not match session delegate pubkey.');
+  }
+  return Keypair.fromSecretKey(Buffer.from(decrypted.secretKeyBase64, 'base64'));
+}
+
+export function normalizeVoucher(input: unknown): Voucher {
+  if (!input || typeof input !== 'object' || Array.isArray(input)) {
+    throw new StreamingServiceError(400, 'invalid_voucher', 'voucher must be an object.');
+  }
+  const record = input as Record<string, unknown>;
+  const schema = record.schema === undefined ? STREAMING_VOUCHER_SCHEMA : requireString(record.schema, 'voucher.schema');
+  if (schema !== STREAMING_VOUCHER_SCHEMA) {
+    throw new StreamingServiceError(400, 'invalid_schema', `voucher.schema must be ${STREAMING_VOUCHER_SCHEMA}.`);
+  }
+  return {
+    schema: STREAMING_VOUCHER_SCHEMA,
+    sessionId: requireString(record.sessionId, 'voucher.sessionId'),
+    nonce: requireString(record.nonce, 'voucher.nonce'),
+    amount: requireString(record.amount, 'voucher.amount'),
+    recipient: requireString(record.recipient, 'voucher.recipient'),
+    issuedAt: requireString(record.issuedAt, 'voucher.issuedAt'),
+    signature: requireString(record.signature, 'voucher.signature'),
+  };
+}
+
+export function remainingFor(session: SessionGrant): string {
+  const decimals = session.tokenDecimals ?? DEFAULT_TOKEN_DECIMALS;
+  const cap = parseTokenAmountToBaseUnits(session.capAmount, decimals, { field: 'capAmount' });
+  const spent = parseTokenAmountToBaseUnits(session.spentAmount, decimals, {
+    allowZero: true,
+    field: 'spentAmount',
+  });
+  return formatBaseUnitsToDecimal(cap > spent ? cap - spent : 0n, decimals);
+}
+
+function latestBlockhashForCluster(cluster: StreamingCluster): Promise<string> {
+  const testBlockhash = process.env[TEST_RECENT_BLOCKHASH_ENV]?.trim();
+  if (testBlockhash) return Promise.resolve(testBlockhash);
+  return new Connection(solanaRpcUrl(cluster), 'confirmed')
+    .getLatestBlockhash('confirmed')
+    .then((result) => result.blockhash);
+}
+
+function defaultStreamingCluster(): StreamingCluster {
+  const raw = process.env.STREAMING_DEFAULT_CLUSTER?.trim();
+  if (raw) {
+    assertStreamingCluster(raw);
+    return raw;
+  }
+  return DEFAULT_CLUSTER;
+}
+
+function assertStreamingCluster(value: unknown): asserts value is StreamingCluster {
+  if (value !== 'mainnet-beta' && value !== 'testnet' && value !== 'devnet' && value !== 'localnet') {
+    throw new StreamingServiceError(400, 'invalid_cluster', 'cluster must be mainnet-beta, testnet, devnet, or localnet.');
+  }
+}
+
+function requirePublicKey(value: unknown, field: string): string {
+  const text = requireString(value, field).trim();
+  try {
+    return new PublicKey(text).toBase58();
+  } catch (err) {
+    throw new StreamingServiceError(400, 'invalid_public_key', `${field} must be a valid Solana public key.`);
+  }
+}
+
+function requireAmount(value: unknown, decimals: number, field: string): string {
+  const text = requireString(value, field).trim();
+  parseTokenAmountToBaseUnits(text, decimals, { field });
+  return text;
+}
+
+function requireFutureIso(value: unknown, now: Date, field: string): string {
+  const text = requireString(value, field).trim();
+  const date = new Date(text);
+  if (Number.isNaN(date.getTime())) {
+    throw new StreamingServiceError(400, 'invalid_timestamp', `${field} must be an ISO-8601 timestamp.`);
+  }
+  if (date.getTime() <= now.getTime()) {
+    throw new StreamingServiceError(400, 'expires_at_past', `${field} must be in the future.`);
+  }
+  return date.toISOString();
+}
+
+function requireShortString(value: unknown, field: string, max: number): string {
+  const text = requireString(value, field).trim();
+  if (text.length > max) {
+    throw new StreamingServiceError(400, 'field_too_long', `${field} must be at most ${max} characters.`);
+  }
+  return text;
+}
+
+function requireString(value: unknown, field: string): string {
+  if (typeof value !== 'string' || !value.trim()) {
+    throw new StreamingServiceError(400, 'missing_field', `${field} is required.`);
+  }
+  return value;
+}
+
+function assertTokenDecimals(value: number): number {
+  if (!Number.isInteger(value) || value < 0 || value > 255) {
+    throw new StreamingServiceError(400, 'invalid_token_decimals', 'tokenDecimals must be an integer between 0 and 255.');
+  }
+  return value;
+}
+
+function normalizeRecipientAllowlist(value: readonly string[] | undefined): string[] {
+  if (value === undefined) return [];
+  if (!Array.isArray(value)) {
+    throw new StreamingServiceError(400, 'invalid_allowlist', 'recipientAllowlist must be an array.');
+  }
+  if (value.length > MAX_RECIPIENT_ALLOWLIST) {
+    throw new StreamingServiceError(400, 'allowlist_too_large', `recipientAllowlist must contain at most ${MAX_RECIPIENT_ALLOWLIST} recipients.`);
+  }
+  const normalized = value.map((entry, index) => requirePublicKey(entry, `recipientAllowlist[${index}]`));
+  return [...new Set(normalized)];
+}
+
+function sanitizeSessionMetadata(value: Record<string, unknown>): Record<string, unknown> {
+  return JSON.parse(JSON.stringify(value)) as Record<string, unknown>;
+}
+
+function voucherRecordFromVoucher(
+  id: string,
+  voucher: Voucher,
+  voucherHash: string,
+  createdAt: string,
+): StreamingVoucherRecord {
+  return {
+    id,
+    sessionId: voucher.sessionId,
+    nonce: voucher.nonce,
+    amount: voucher.amount,
+    recipient: voucher.recipient,
+    voucherHash,
+    signature: voucher.signature,
+    issuedAt: new Date(voucher.issuedAt).toISOString(),
+    createdAt,
+    voucher: clone(voucher),
+  };
+}
+
+function isExpired(session: SessionGrant, now: Date): boolean {
+  return Date.parse(session.expiresAt) <= now.getTime();
+}
+
+function secondsUntil(iso: string, now: Date): number {
+  return Math.max(0, Math.floor((Date.parse(iso) - now.getTime()) / 1000));
+}
+
+function notFound(sessionId: string): StreamingServiceError {
+  return new StreamingServiceError(404, 'session_not_found', `No streaming session found for id ${sessionId}.`);
+}
+
+function sessionSettlementEligible(session: StoredStreamingSession, now: Date, thresholdBps: number): boolean {
+  if (isExpired(session, now) || session.status === 'revoked') return true;
+  const decimals = session.tokenDecimals ?? DEFAULT_TOKEN_DECIMALS;
+  const spent = parseTokenAmountToBaseUnits(session.spentAmount, decimals, {
+    allowZero: true,
+    field: 'spentAmount',
+  });
+  const cap = parseTokenAmountToBaseUnits(session.capAmount, decimals, { field: 'capAmount' });
+  return spent * 10_000n >= cap * BigInt(thresholdBps);
+}
+
+function isTerminalForSettlement(session: StoredStreamingSession, now: Date): boolean {
+  if (isExpired(session, now) || session.status === 'revoked' || session.status === 'expired') return true;
+  const decimals = session.tokenDecimals ?? DEFAULT_TOKEN_DECIMALS;
+  const spent = parseTokenAmountToBaseUnits(session.spentAmount, decimals, {
+    allowZero: true,
+    field: 'spentAmount',
+  });
+  const cap = parseTokenAmountToBaseUnits(session.capAmount, decimals, { field: 'capAmount' });
+  return spent >= cap;
+}
+
+function settlementLockActive(session: StoredStreamingSession, now: Date): boolean {
+  const lock = session.metadata?.[SESSION_LOCK_METADATA_KEY];
+  if (!lock || typeof lock !== 'object' || Array.isArray(lock)) return false;
+  const expiresAt = (lock as Record<string, unknown>).expiresAt;
+  return typeof expiresAt === 'string' && Date.parse(expiresAt) > now.getTime();
+}
+
+interface EncryptedDelegateKey {
+  v: 1;
+  alg: 'aes-256-gcm';
+  iv: string;
+  ciphertext: string;
+  tag: string;
+}
+
+interface DelegateKeyPayload {
+  publicKey: string;
+  secretKeyBase64: string;
+}
+
+function encryptDelegateKey(payload: DelegateKeyPayload): EncryptedDelegateKey {
+  const iv = randomBytes(12);
+  const cipher = createCipheriv('aes-256-gcm', streamingEncryptionKey(), iv);
+  const ciphertext = Buffer.concat([
+    cipher.update(JSON.stringify(payload), 'utf8'),
+    cipher.final(),
+  ]);
+  return {
+    v: 1,
+    alg: 'aes-256-gcm',
+    iv: iv.toString('base64'),
+    ciphertext: ciphertext.toString('base64'),
+    tag: cipher.getAuthTag().toString('base64'),
+  };
+}
+
+function decryptDelegateKey(payload: EncryptedDelegateKey): DelegateKeyPayload {
+  if (payload.v !== 1 || payload.alg !== 'aes-256-gcm') {
+    throw new StreamingServiceError(409, 'delegate_key_unsupported', 'Encrypted delegate key format is unsupported.');
+  }
+  const decipher = createDecipheriv('aes-256-gcm', streamingEncryptionKey(), Buffer.from(payload.iv, 'base64'));
+  decipher.setAuthTag(Buffer.from(payload.tag, 'base64'));
+  const decrypted = Buffer.concat([
+    decipher.update(Buffer.from(payload.ciphertext, 'base64')),
+    decipher.final(),
+  ]);
+  const parsed = JSON.parse(decrypted.toString('utf8')) as Partial<DelegateKeyPayload>;
+  if (!parsed.publicKey || !parsed.secretKeyBase64) {
+    throw new StreamingServiceError(409, 'delegate_key_invalid', 'Encrypted delegate key payload is invalid.');
+  }
+  return { publicKey: parsed.publicKey, secretKeyBase64: parsed.secretKeyBase64 };
+}
+
+function streamingEncryptionKey(): Buffer {
+  const configured = process.env.STREAMING_SESSION_ENCRYPTION_KEY?.trim();
+  if (configured) {
+    const base64 = Buffer.from(configured, 'base64');
+    if (base64.length === 32) return base64;
+    return createHash('sha256').update(configured).digest();
+  }
+  if (process.env.NODE_ENV === 'test') {
+    return createHash('sha256').update('agentic-streaming-test-key').digest();
+  }
+  throw new StreamingServiceError(
+    500,
+    'streaming_encryption_key_missing',
+    'STREAMING_SESSION_ENCRYPTION_KEY is required for streaming session key storage.',
+  );
+}
+
+interface StreamingSessionRow extends QueryResultRow {
+  id: string;
+  wallet_address: string;
+  cluster: string;
+  token_mint: string;
+  delegate_pubkey: string;
+  ephemeral_signer_pubkey: string;
+  cap_amount: string;
+  spent_amount: string;
+  expires_at: Date | string;
+  status: SessionGrant['status'];
+  recipient_allowlist: unknown;
+  approve_txid: string | null;
+  revoke_txid: string | null;
+  created_at: Date | string;
+  updated_at: Date | string;
+  metadata: unknown;
+}
+
+interface StreamingCandidateRow extends StreamingSessionRow {
+  unsettled_voucher_count: number | string;
+}
+
+interface StreamingVoucherRow extends QueryResultRow {
+  id: string;
+  session_id: string;
+  nonce: string;
+  amount: string;
+  recipient: string;
+  voucher_hash: string;
+  signature: string;
+  issued_at: Date | string;
+  created_at: Date | string;
+  settled_at: Date | string | null;
+  settlement_txid: string | null;
+}
+
+function sessionFromRow(row: StreamingSessionRow | undefined): StoredStreamingSession {
+  if (!row) throw new Error('Expected streaming session row.');
+  const tokenDecimals = metadataTokenDecimals(row.metadata);
+  return {
+    sessionId: row.id,
+    walletAddress: row.wallet_address,
+    cluster: row.cluster as StreamingCluster,
+    tokenMint: row.token_mint,
+    delegatePubkey: row.delegate_pubkey,
+    ephemeralSignerPubkey: row.ephemeral_signer_pubkey,
+    capAmount: row.cap_amount,
+    spentAmount: row.spent_amount,
+    expiresAt: iso(row.expires_at),
+    status: row.status,
+    ...(tokenDecimals !== undefined ? { tokenDecimals } : {}),
+    ...(recipientAllowlistFromDb(row.recipient_allowlist).length
+      ? { recipientAllowlist: recipientAllowlistFromDb(row.recipient_allowlist) }
+      : {}),
+    ...(row.approve_txid ? { approveTxid: row.approve_txid } : {}),
+    ...(row.revoke_txid ? { revokeTxid: row.revoke_txid } : {}),
+    createdAt: iso(row.created_at),
+    updatedAt: iso(row.updated_at),
+    ...(metadataFromDb(row.metadata) ? { metadata: metadataFromDb(row.metadata) } : {}),
+  };
+}
+
+function voucherFromRow(row: StreamingVoucherRow): StreamingVoucherRecord {
+  const voucher: Voucher = {
+    schema: STREAMING_VOUCHER_SCHEMA,
+    sessionId: row.session_id,
+    nonce: row.nonce,
+    amount: row.amount,
+    recipient: row.recipient,
+    issuedAt: iso(row.issued_at),
+    signature: row.signature,
+  };
+  return {
+    id: row.id,
+    sessionId: row.session_id,
+    nonce: row.nonce,
+    amount: row.amount,
+    recipient: row.recipient,
+    voucherHash: row.voucher_hash,
+    signature: row.signature,
+    issuedAt: iso(row.issued_at),
+    createdAt: iso(row.created_at),
+    ...(row.settled_at ? { settledAt: iso(row.settled_at) } : {}),
+    ...(row.settlement_txid ? { settlementTxid: row.settlement_txid } : {}),
+    voucher,
+  };
+}
+
+function recipientAllowlistFromDb(value: unknown): string[] {
+  const parsed = value ? jsonRecord<unknown>(value) : undefined;
+  return Array.isArray(parsed)
+    ? parsed.filter((entry): entry is string => typeof entry === 'string' && entry.trim().length > 0)
+    : [];
+}
+
+function metadataFromDb(metadata: unknown): Record<string, unknown> | undefined {
+  if (!metadata) return undefined;
+  if (typeof metadata === 'string') return JSON.parse(metadata) as Record<string, unknown>;
+  if (typeof metadata === 'object' && !Array.isArray(metadata)) return clone(metadata as Record<string, unknown>);
+  return undefined;
+}
+
+function metadataTokenDecimals(metadata: unknown): number | undefined {
+  const parsed = metadataFromDb(metadata);
+  const value = parsed?.tokenDecimals;
+  return typeof value === 'number' && Number.isInteger(value) ? value : undefined;
+}
+
+function isStreamingStore(value: unknown): value is StreamingStore {
+  return Boolean(value)
+    && typeof (value as StreamingStore).createSession === 'function'
+    && typeof (value as StreamingStore).acceptVoucher === 'function'
+    && typeof (value as StreamingStore).listSettlementCandidates === 'function';
+}
+
+function pgClientFromStore(value: unknown): PgClient | undefined {
+  if (!value || typeof value !== 'object') return undefined;
+  const client = (value as { client?: unknown }).client;
+  return isPgClient(client) ? client : undefined;
+}
+
+function isPgClient(value: unknown): value is PgClient {
+  return Boolean(value) && typeof (value as PgClient).query === 'function';
+}
+
+function shouldUseStandalonePostgres(): boolean {
+  return Boolean(process.env.DATABASE_URL?.trim()) && process.env.NODE_ENV !== 'test';
+}
+
+function isPgUniqueViolation(err: unknown, name: string): boolean {
+  if (!err || typeof err !== 'object') return false;
+  const pgError = err as { code?: unknown; constraint?: unknown; message?: unknown; detail?: unknown };
+  return pgError.code === '23505' &&
+    (pgError.constraint === name || String(pgError.message ?? '').includes(name) || String(pgError.detail ?? '').includes(name));
+}
+
+function iso(value: Date | string): string {
+  if (value instanceof Date) return value.toISOString();
+  const date = new Date(value);
+  return Number.isNaN(date.getTime()) ? value : date.toISOString();
+}
+
+function jsonRecord<T>(value: T | string): T {
+  if (typeof value === 'string') return JSON.parse(value) as T;
+  return clone(value);
+}
+
+function jsonParam(value: unknown): string {
+  return JSON.stringify(value);
+}
+
+function clone<T>(value: T): T {
+  return JSON.parse(JSON.stringify(value)) as T;
+}

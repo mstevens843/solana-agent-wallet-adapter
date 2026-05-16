@@ -66,13 +66,21 @@ export class BrowserRuntimeRegistry {
   async hydrate(): Promise<void> {
     await this.withLock(async () => {
       if (this.hydrated) return;
-      const snap = await this.persistence.load();
-      const downgraded = snap.state === 'running' || snap.state === 'starting' ? 'stopped' : snap.state;
-      this.state = downgraded;
-      this.lastError = downgraded === 'error' ? snap.error : null;
-      this.lastTransitionAtMs = snap.lastTransitionAtMs;
-      if (downgraded !== snap.state) {
-        await this.persistAndStamp(this.state, this.lastError);
+      let snap: RegistrySnapshotPersist | null = null;
+      try {
+        snap = await this.persistence.load();
+      } catch {
+        // Persistence load failed (e.g., IndexedDB blocked). Fall back to a fresh
+        // stopped snapshot so the registry can still operate in-memory.
+      }
+      if (snap) {
+        const downgraded = snap.state === 'running' || snap.state === 'starting' ? 'stopped' : snap.state;
+        this.state = downgraded;
+        this.lastError = downgraded === 'error' ? snap.error : null;
+        this.lastTransitionAtMs = snap.lastTransitionAtMs;
+        if (downgraded !== snap.state) {
+          await this.persistAndStamp(this.state, this.lastError);
+        }
       }
       this.hydrated = true;
     });
@@ -162,7 +170,13 @@ export class BrowserRuntimeRegistry {
 
   private async persistAndStamp(state: RuntimeStateWire, error: RuntimeError | null): Promise<void> {
     this.lastTransitionAtMs = this.clock();
-    await this.persistence.save(state, error);
+    try {
+      await this.persistence.save(state, error);
+    } catch {
+      // Persistence is best-effort. In-memory state is authoritative; the dispatcher
+      // surfaces storage_unavailable via the secret store paths where it actually
+      // affects functionality.
+    }
   }
 
   private withLock<T>(fn: () => Promise<T>): Promise<T> {

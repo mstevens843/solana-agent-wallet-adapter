@@ -33,10 +33,6 @@ export const SECRETS_STORES_SCHEMA: readonly ObjectStoreSchema[] = Object.freeze
   { name: STATE_META_STORE, keyPath: 'id' },
 ]);
 
-export const SECRETS_STORES: ReadonlyArray<string> = Object.freeze(
-  SECRETS_STORES_SCHEMA.map((schema) => schema.name),
-);
-
 interface CiphertextRecord {
   readonly key: string;
   readonly iv: Uint8Array<ArrayBuffer>;

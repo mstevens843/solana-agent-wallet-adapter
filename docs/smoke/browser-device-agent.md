@@ -53,7 +53,7 @@ Repeat the steps below once per provider (OpenAI → Anthropic → Gemini → Op
 2. Tap `Connect wallet` and approve with the allowlisted wallet.
 3. Open `Connect AI`.
 4. In the route card grid, select `Device Agent AI`, or use the `AI path` picker and choose
-   `Device Agent - drafts via browser`.
+   `Device Agent - drafts via device`.
 5. Pick the provider preset and model. Confirm the provider tier chip is:
     - **green** for `OpenRouter` and `Gemini` (designed for browser CORS).
     - **amber** for `OpenAI` and `Claude / Anthropic` (vendor-flagged direct-from-browser access).
@@ -117,7 +117,7 @@ Why is wallet approval still required?
     - Confirm the toggle persists in `localStorage` under `agentic-device-agent-secret-store-mode`.
     - Reload the tab.
     - Expected: the key is gone, the status is `stopped`, and `configured=false`. The user must paste the key again.
-29. Switch the toggle back to `Encrypted (IndexedDB)` for subsequent providers.
+29. Switch the toggle back to `Encrypted IndexedDB` (`main.ts:13958`) for subsequent providers.
 
 Per-provider expectations to verify in DevTools while step 14 fires:
 
@@ -152,7 +152,7 @@ Expected state:
 2. Connect a wallet.
 3. Open `Connect AI`.
 4. `Device Agent AI` is not present in the route card grid.
-5. The `AI path` picker does not include `Device Agent - drafts via browser`.
+5. The `AI path` picker does not include `Device Agent - drafts via device`.
 6. Hosted BYOK, Browser Session, and Local Bridge options still appear normally.
 7. If a stale session or URL tries to force `device-agent`, the status must be unavailable with
    `Device Agent is not enabled for this build or wallet.`
@@ -311,11 +311,56 @@ In a Chrome or Firefox private/incognito window where IndexedDB is unavailable o
 1. Open the dev URL with both flags on.
 2. Connect a wallet.
 3. Open `Connect AI` → `Device Agent AI` → paste a key → `Use key for drafts`.
-4. Expected:
-    - The Device Agent status card surfaces error code `storage_unavailable`.
-    - The remediation message points the user to switch the `Secret store mode` selector to `Session only`.
-    - After switching to `Session only`, paste-and-use succeeds, and the runtime can be confirmed and started normally.
-    - The session-only key is wiped when the tab closes.
+4. Expected runtime behavior:
+    - The configure path throws with error code `storage_unavailable`. The code is emitted by the dispatcher's
+      encrypted IndexedDB store and propagated to the dispatcher response surface
+      (`apps/browser-demo/src/deviceAgent/dispatcher.ts:583`).
+    - The Device Agent status card renders the standard error row with that code visible. The shipped UI does **not**
+      include a dedicated toast that names `Session only` — the next step is manual.
+5. Manual remediation:
+    - Switch the `Secret store mode` selector (`main.ts:13951`) from `Encrypted IndexedDB` to `Session only`.
+    - Re-paste the provider key and tap `Use key for drafts`.
+6. Expected after remediation:
+    - The configure path succeeds; the runtime can be confirmed and started normally without touching IndexedDB.
+    - The session-only key is held only in memory and is wiped when the tab closes (`Session only` semantics, not a
+      persisted store).
+    - Reloading the tab returns the status to `stopped` with `configured=false`; the key is gone.
+
+## System Health
+
+The Device Agent system-health card in `Connect AI` surfaces remediation copy when the browser-native runtime is in an
+error state. The handler lives at `apps/browser-demo/src/systemHealth.ts:337-376` and emits the reload remediation
+`Reload the tab to recover the Device Agent runtime.` whenever the dispatcher reports `state: 'error'` for the
+browser-native runtime. The matching test cases are
+`apps/browser-demo/src/__tests__/systemHealthDeviceAgent.test.ts:114,121,130` (running, error, and unconfigured cases).
+
+Smoke check:
+
+1. With the runtime in `running`, open the system-health panel and confirm the Device Agent row reports OK.
+2. Force an error by reloading the tab while the runtime is mid-request (or temporarily pointing the custom OpenAI
+   base URL at an unreachable host and submitting a draft).
+3. Confirm the system-health row flips to the error tier with the reload remediation copy above.
+4. Reload the tab; the row returns to OK or to the "Start or confirm the Device Agent runtime before generating."
+   row (`main.ts:14753`) depending on whether the key is still staged.
+
+## Source-completion Tripwires
+
+These greps fail the smoke if Phase 5/6 ever regresses to a scaffolded stub. Mirror of the Android validator's
+`agent_not_implemented` guard in `scripts/android-device-agent-smoke.mjs:60-63`:
+
+```sh
+# All four greps must return zero matches in the browser-native runtime source tree.
+grep -RnF "agent_not_implemented" apps/browser-demo/src/deviceAgent || echo 'tripwire clean: agent_not_implemented'
+grep -RnF "Device Agent generation arrives in a later phase." apps/browser-demo/src/deviceAgent || echo 'tripwire clean: later-phase stub'
+grep -RnF "Device Agent provider execution for generatePlan is not wired in this build." apps/browser-demo/src/deviceAgent || echo 'tripwire clean: provider-not-wired stub'
+
+# These two greps must each return a positive line count, confirming the wiring is present.
+grep -nF "isBrowserNativeRuntimeAvailable" apps/browser-demo/src/deviceAgentClient.ts
+grep -nF "initBrowserDeviceAgent" apps/browser-demo/src/deviceAgent/dispatcher.ts
+```
+
+If any tripwire returns scaffold text inside `apps/browser-demo/src/deviceAgent/`, fail the smoke and re-open the
+relevant Phase 1–6 lane.
 
 ## Log Checks
 
@@ -346,6 +391,7 @@ Browser DevTools and storage inspection:
   `/api/device-agent/status`.
 - Render never runs a Device Agent provider call.
 - Local Bridge remains a separate LAN/local runtime path.
-- Private-mode IndexedDB failure surfaces as `storage_unavailable` with the `Session only` remediation.
+- Private-mode IndexedDB failure surfaces as `storage_unavailable` on the Device Agent status card; manual switch to
+  `Session only` lets the runtime continue.
 - No provider API key string leaks to DevTools, IndexedDB plaintext, Local storage, or Session storage.
 - Every transaction still goes through `Needs Approval` and wallet approval.

@@ -8,6 +8,7 @@ import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
 
 import type { WalletBackend } from '@solana-agent-wallet-adapter/core';
 import { IosLinkBackend } from '@solana-agent-wallet-adapter/ios-link';
+import { generateEphemeralKeypair, signVoucher } from '@solana-agent-wallet-adapter/streaming-sessions';
 
 import { createMockBackend } from '../mockBackend.js';
 import { createServer } from '../server.js';
@@ -254,6 +255,165 @@ describe('mcp server tools', () => {
     expect(payload.worksNow[0].category).toBe('Wallet status');
     expect(JSON.stringify(payload)).toContain('Use solana-agent-wallet to show my wallet status.');
     expect(JSON.stringify(payload)).toContain('roadmapNotAutomatedYet');
+  });
+
+  it('proxies streaming session create and voucher spend to render-web', async () => {
+    await closeServer?.();
+    closeServer = undefined;
+
+    vi.stubEnv('AGENTIC_RENDER_WEB_URL', 'http://render.test');
+    vi.stubEnv('AGENTIC_RENDER_WEB_COOKIE', 'session=test-cookie');
+    const requests: Array<{ method: string; path: string; body: unknown; cookie?: string }> = [];
+    vi.stubGlobal('fetch', vi.fn(async (input: URL | string, init?: RequestInit) => {
+      const url = new URL(String(input));
+      const headers = init?.headers as Record<string, string> | undefined;
+      const body = typeof init?.body === 'string' ? JSON.parse(init.body) as unknown : undefined;
+      requests.push({
+        method: init?.method ?? 'GET',
+        path: url.pathname,
+        body,
+        cookie: headers?.cookie,
+      });
+      if (url.pathname === '/api/streaming/sessions') {
+        return jsonResponse({
+          sessionId: 'sess_create',
+          approveTx: 'approve-tx-base64',
+          ephemeralSignerPubkey: 'signer-pubkey',
+        }, 201);
+      }
+      if (url.pathname === '/api/streaming/sessions/sess_create/voucher') {
+        return jsonResponse({
+          accepted: true,
+          remaining: '9.95',
+          voucher: {
+            sessionId: 'sess_create',
+            amount: '0.05',
+            recipient: 'Recipient111111111111111111111111111111111',
+          },
+        });
+      }
+      return jsonResponse({ error: 'not_found' }, 404);
+    }));
+
+    const linked = InMemoryTransport.createLinkedPair();
+    const server = createServer({
+      backend: createMockBackend(),
+      actionConfig: DEFAULT_CONFIG,
+    });
+    client = new Client({ name: 'mcp-server-test', version: '0.0.0' });
+    await Promise.all([server.connect(linked[1]), client.connect(linked[0])]);
+    closeServer = async () => {
+      await Promise.all([client.close(), server.close()]);
+    };
+
+    const created = JSON.parse(textOf(await callTool('solana_streaming_session_create', {
+      tokenMint: 'TokenMint1111111111111111111111111111111111',
+      capAmount: '10',
+      expiresAt: '2030-01-01T00:00:00.000Z',
+      recipientAllowlist: ['Recipient111111111111111111111111111111111'],
+    })));
+    const spent = JSON.parse(textOf(await callTool('solana_streaming_voucher_sign', {
+      sessionId: 'sess_create',
+      amount: '0.05',
+      recipient: 'Recipient111111111111111111111111111111111',
+    })));
+
+    expect(created).toMatchObject({ sessionId: 'sess_create', approveTx: 'approve-tx-base64' });
+    expect(spent).toMatchObject({ accepted: true, remaining: '9.95' });
+    expect(requests).toEqual([
+      {
+        method: 'POST',
+        path: '/api/streaming/sessions',
+        cookie: 'session=test-cookie',
+        body: {
+          tokenMint: 'TokenMint1111111111111111111111111111111111',
+          capAmount: '10',
+          expiresAt: '2030-01-01T00:00:00.000Z',
+          recipientAllowlist: ['Recipient111111111111111111111111111111111'],
+        },
+      },
+      {
+        method: 'POST',
+        path: '/api/streaming/sessions/sess_create/voucher',
+        cookie: 'session=test-cookie',
+        body: {
+          amount: '0.05',
+          recipient: 'Recipient111111111111111111111111111111111',
+        },
+      },
+    ]);
+  });
+
+  it('verifies streaming vouchers against render-web session detail', async () => {
+    await closeServer?.();
+    closeServer = undefined;
+
+    const keypair = generateEphemeralKeypair();
+    const voucher = signVoucher(keypair, {
+      sessionId: 'sess_verify',
+      nonce: 'nonce-1',
+      amount: '0.05',
+      recipient: 'Recipient111111111111111111111111111111111',
+      issuedAt: '2030-01-01T00:00:00.000Z',
+    });
+    vi.stubEnv('AGENTIC_RENDER_WEB_URL', 'http://render.test');
+    vi.stubGlobal('fetch', vi.fn(async (input: URL | string) => {
+      const url = new URL(String(input));
+      if (url.pathname === '/api/streaming/sessions/sess_verify') {
+        return jsonResponse({ session: { ephemeralSignerPubkey: keypair.publicKey } });
+      }
+      return jsonResponse({ error: 'not_found' }, 404);
+    }));
+
+    const linked = InMemoryTransport.createLinkedPair();
+    const server = createServer({
+      backend: createMockBackend(),
+      actionConfig: DEFAULT_CONFIG,
+    });
+    client = new Client({ name: 'mcp-server-test', version: '0.0.0' });
+    await Promise.all([server.connect(linked[1]), client.connect(linked[0])]);
+    closeServer = async () => {
+      await Promise.all([client.close(), server.close()]);
+    };
+
+    const result = await callTool('solana_streaming_voucher_verify', {
+      sessionId: 'sess_verify',
+      voucher,
+    });
+    const payload = JSON.parse(textOf(result));
+
+    expect(payload.valid).toBe(true);
+    expect(payload.sessionId).toBe('sess_verify');
+    expect(typeof payload.voucherHash).toBe('string');
+    expect(payload.ephemeralSignerPubkey).toBe(keypair.publicKey);
+  });
+
+  it('returns a structured streaming API error when render-web is still scaffolded', async () => {
+    await closeServer?.();
+    closeServer = undefined;
+
+    vi.stubEnv('AGENTIC_RENDER_WEB_URL', 'http://render.test');
+    vi.stubGlobal('fetch', vi.fn(async () => jsonResponse({
+      error: 'not_implemented',
+      message: 'Streaming session handler is Phase 2B.',
+    }, 501)));
+
+    const linked = InMemoryTransport.createLinkedPair();
+    const server = createServer({
+      backend: createMockBackend(),
+      actionConfig: DEFAULT_CONFIG,
+    });
+    client = new Client({ name: 'mcp-server-test', version: '0.0.0' });
+    await Promise.all([server.connect(linked[1]), client.connect(linked[0])]);
+    closeServer = async () => {
+      await Promise.all([client.close(), server.close()]);
+    };
+
+    const result = await callTool('solana_streaming_session_list', {});
+
+    expect(result.isError).toBe(true);
+    expect(textOf(result)).toContain('Code: unsupported_method');
+    expect(textOf(result)).toContain('not_implemented: Streaming session handler is Phase 2B.');
   });
 
   it('returns connector capabilities through the MCP tool', async () => {

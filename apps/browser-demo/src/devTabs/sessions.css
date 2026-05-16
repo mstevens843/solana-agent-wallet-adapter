@@ -1,11 +1,531 @@
-/* Phase 0 scaffolding — Phase 2C fills in the Sessions tab styles. */
-/* Follow agentProtocols.css / externalAgents.css conventions:           */
-/*   .dev-tab-shell, .sessions-list, .sessions-detail, .sessions-progress, */
-/*   .sessions-voucher-row, .sessions-pill--active|expired|revoked|settled */
+.sessions-shell {
+  max-width: none;
+}
 
-.sessions-placeholder {
-  padding: 24px;
-  color: var(--agentic-text-muted, #6b7280);
-  font-size: 14px;
-  line-height: 1.5;
+.sessions-live-pill,
+.sessions-pill {
+  align-items: center;
+  border-radius: 999px;
+  display: inline-flex;
+  font-size: 0.68rem;
+  font-weight: 860;
+  gap: 6px;
+  letter-spacing: 0.04em;
+  line-height: 1;
+  padding: 5px 9px;
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+
+.sessions-live-pill {
+  background: rgba(122, 217, 182, 0.12);
+  border: 1px solid rgba(122, 217, 182, 0.28);
+  color: #c9f1df;
+}
+
+.sessions-pill--active {
+  background: rgba(122, 217, 182, 0.14);
+  border: 1px solid rgba(122, 217, 182, 0.36);
+  color: rgba(122, 217, 182, 0.96);
+}
+
+.sessions-pill--expired {
+  background: rgba(244, 192, 132, 0.14);
+  border: 1px solid rgba(244, 192, 132, 0.34);
+  color: rgba(244, 192, 132, 0.96);
+}
+
+.sessions-pill--revoked {
+  background: rgba(244, 154, 154, 0.14);
+  border: 1px solid rgba(244, 154, 154, 0.34);
+  color: rgba(244, 154, 154, 0.96);
+}
+
+.sessions-pill--settled {
+  background: rgba(140, 180, 255, 0.13);
+  border: 1px solid rgba(140, 180, 255, 0.28);
+  color: rgba(197, 214, 255, 0.96);
+}
+
+.sessions-notice {
+  border-radius: var(--radius);
+  font-size: 0.88rem;
+  font-weight: 720;
+  line-height: 1.4;
+  margin: 0;
+  padding: 10px 12px;
+}
+
+.sessions-notice--pending {
+  background: rgba(244, 192, 132, 0.1);
+  border: 1px solid rgba(244, 192, 132, 0.28);
+  color: rgba(253, 221, 181, 0.94);
+}
+
+.sessions-notice--success {
+  background: rgba(122, 217, 182, 0.1);
+  border: 1px solid rgba(122, 217, 182, 0.24);
+  color: rgba(208, 245, 226, 0.94);
+}
+
+.sessions-notice--error,
+.sessions-error,
+.sessions-form-error {
+  background: rgba(239, 111, 120, 0.12);
+  border: 1px solid rgba(239, 111, 120, 0.28);
+  color: #fecaca;
+}
+
+.sessions-overview {
+  display: grid;
+  gap: 10px;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+.sessions-filter-row {
+  background: rgba(255, 255, 255, 0.024);
+  border: 1px solid rgba(224, 230, 226, 0.08);
+  border-radius: var(--radius);
+  display: grid;
+  gap: 6px;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  padding: 6px;
+}
+
+.sessions-filter-button {
+  appearance: none;
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: calc(var(--radius) - 2px);
+  color: rgba(196, 205, 202, 0.78);
+  cursor: pointer;
+  display: flex;
+  font-size: 0.82rem;
+  font-weight: 820;
+  gap: 7px;
+  justify-content: center;
+  min-height: 34px;
+  padding: 0 10px;
+}
+
+.sessions-filter-button.active {
+  background: rgba(63, 189, 131, 0.14);
+  border-color: rgba(139, 205, 170, 0.26);
+  color: var(--text);
+}
+
+.sessions-filter-button strong {
+  color: inherit;
+}
+
+.sessions-layout {
+  align-items: start;
+  display: grid;
+  gap: 14px;
+  grid-template-columns: minmax(260px, 0.8fr) minmax(0, 1.45fr);
+  min-width: 0;
+}
+
+.sessions-list-pane,
+.sessions-detail {
+  min-width: 0;
+  padding: 14px;
+}
+
+.sessions-list-state {
+  min-height: 248px;
+}
+
+.sessions-list {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.sessions-row {
+  appearance: none;
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.03), rgba(255, 255, 255, 0.014)),
+    rgba(0, 0, 0, 0.18);
+  border: 1px solid rgba(224, 230, 226, 0.09);
+  border-radius: var(--radius);
+  color: var(--text);
+  cursor: pointer;
+  display: block;
+  padding: 12px;
+  text-align: left;
+  width: 100%;
+}
+
+.sessions-row:hover,
+.sessions-row.selected {
+  background: rgba(63, 189, 131, 0.055);
+  border-color: rgba(139, 205, 170, 0.24);
+}
+
+.sessions-row-main,
+.sessions-row-head,
+.sessions-row-meta {
+  display: grid;
+  min-width: 0;
+}
+
+.sessions-row-main {
+  gap: 9px;
+}
+
+.sessions-row-head {
+  align-items: center;
+  gap: 8px;
+  grid-template-columns: minmax(0, 1fr) auto;
+}
+
+.sessions-row-head strong {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.sessions-row-meta {
+  color: rgba(196, 205, 202, 0.74);
+  font-size: 0.78rem;
+  gap: 4px;
+}
+
+.sessions-mini-progress,
+.sessions-progress-track {
+  background: rgba(255, 255, 255, 0.055);
+  border-radius: 999px;
+  display: block;
+  height: 6px;
+  overflow: hidden;
+}
+
+.sessions-mini-progress span,
+.sessions-progress-track span {
+  background: linear-gradient(90deg, #7ad9b6, #8cb4ff);
+  border-radius: inherit;
+  display: block;
+  height: 100%;
+}
+
+.sessions-error {
+  border-radius: var(--radius);
+  display: grid;
+  gap: 10px;
+  padding: 14px;
+}
+
+.sessions-error p {
+  margin: 0;
+}
+
+.sessions-detail {
+  display: grid;
+  gap: 14px;
+}
+
+.sessions-detail-head,
+.sessions-subsection-head,
+.sessions-progress-label,
+.sessions-detail-actions {
+  align-items: center;
+  display: flex;
+  gap: 10px;
+  justify-content: space-between;
+  min-width: 0;
+}
+
+.sessions-detail-head h3,
+.sessions-subsection h4 {
+  color: var(--text);
+  margin: 0;
+}
+
+.sessions-detail-head h3 {
+  font-size: 1.1rem;
+}
+
+.sessions-detail-grid {
+  display: grid;
+  gap: 10px;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+.sessions-metric {
+  background: rgba(255, 255, 255, 0.035);
+  border: 1px solid rgba(224, 230, 226, 0.085);
+  border-radius: var(--radius);
+  display: grid;
+  gap: 4px;
+  padding: 10px;
+}
+
+.sessions-metric span,
+.sessions-facts dt,
+.sessions-voucher-head,
+.sessions-subsection-head span {
+  color: var(--dim);
+  font-size: 0.68rem;
+  font-weight: 860;
+  letter-spacing: 0.07em;
+  text-transform: uppercase;
+}
+
+.sessions-metric strong {
+  color: var(--text);
+  font-size: 1rem;
+  line-height: 1.2;
+}
+
+.sessions-progress {
+  display: grid;
+  gap: 8px;
+}
+
+.sessions-progress-label {
+  color: rgba(196, 205, 202, 0.8);
+  font-size: 0.82rem;
+}
+
+.sessions-progress-label strong {
+  color: var(--text);
+}
+
+.sessions-progress-track {
+  height: 10px;
+}
+
+.sessions-facts {
+  display: grid;
+  gap: 8px;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  margin: 0;
+}
+
+.sessions-facts div {
+  background: rgba(255, 255, 255, 0.024);
+  border: 1px solid rgba(224, 230, 226, 0.07);
+  border-radius: var(--radius);
+  display: grid;
+  gap: 4px;
+  padding: 9px;
+}
+
+.sessions-facts dd {
+  color: rgba(232, 239, 235, 0.9);
+  margin: 0;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.sessions-subsection {
+  display: grid;
+  gap: 10px;
+}
+
+.sessions-chip-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.sessions-chip,
+.sessions-allowlist-empty {
+  background: rgba(255, 255, 255, 0.05);
+  border: 1px solid rgba(224, 230, 226, 0.1);
+  border-radius: 999px;
+  color: rgba(218, 229, 224, 0.88);
+  font-size: 0.78rem;
+  font-weight: 760;
+  padding: 5px 9px;
+}
+
+.sessions-vouchers-table {
+  border: 1px solid rgba(224, 230, 226, 0.08);
+  border-radius: var(--radius);
+  overflow: hidden;
+}
+
+.sessions-voucher-head,
+.sessions-voucher-row {
+  display: grid;
+  gap: 10px;
+  grid-template-columns: 0.85fr 1fr 1fr 0.95fr;
+  padding: 10px 12px;
+}
+
+.sessions-voucher-head {
+  background: rgba(255, 255, 255, 0.035);
+}
+
+.sessions-vouchers-table ol {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.sessions-voucher-row {
+  align-items: center;
+  border-top: 1px solid rgba(224, 230, 226, 0.07);
+  color: rgba(214, 224, 220, 0.88);
+  font-size: 0.82rem;
+}
+
+.sessions-voucher-row span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.sessions-voucher-row em {
+  color: var(--dim);
+  display: block;
+  font-size: 0.68rem;
+  font-style: normal;
+  margin-top: 2px;
+  text-transform: uppercase;
+}
+
+.sessions-vouchers-empty,
+.sessions-receipt-empty {
+  color: rgba(196, 205, 202, 0.72);
+  margin: 0;
+}
+
+.sessions-voucher-pagination {
+  align-items: center;
+  display: flex;
+  gap: 8px;
+  justify-content: flex-end;
+}
+
+.sessions-voucher-pagination span {
+  color: rgba(196, 205, 202, 0.74);
+  font-size: 0.8rem;
+}
+
+.sessions-receipt-link {
+  border: 1px solid rgba(122, 217, 182, 0.24);
+  border-radius: 999px;
+  color: #c9f1df;
+  display: inline-flex;
+  font-size: 0.84rem;
+  font-weight: 820;
+  padding: 7px 10px;
+  text-decoration: none;
+  width: fit-content;
+}
+
+.sessions-modal-backdrop {
+  align-items: center;
+  background: rgba(0, 0, 0, 0.62);
+  display: flex;
+  inset: 0;
+  justify-content: center;
+  padding: 20px;
+  position: fixed;
+  z-index: 80;
+}
+
+.sessions-modal {
+  background:
+    linear-gradient(180deg, rgba(19, 25, 23, 0.98), rgba(8, 11, 10, 0.98)),
+    rgba(8, 11, 10, 0.98);
+  border: 1px solid rgba(224, 230, 226, 0.13);
+  border-radius: var(--radius);
+  box-shadow: 0 30px 80px rgba(0, 0, 0, 0.44);
+  display: grid;
+  gap: 13px;
+  max-width: 520px;
+  padding: 18px;
+  width: min(100%, 520px);
+}
+
+.sessions-modal-head {
+  align-items: start;
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.sessions-modal-head h3 {
+  color: var(--text);
+  margin: 4px 0 0;
+}
+
+.sessions-modal label {
+  display: grid;
+  gap: 6px;
+}
+
+.sessions-modal label span {
+  color: var(--dim);
+  font-size: 0.7rem;
+  font-weight: 860;
+  letter-spacing: 0.07em;
+  text-transform: uppercase;
+}
+
+.sessions-modal input,
+.sessions-modal textarea {
+  background: rgba(0, 0, 0, 0.2);
+  border: 1px solid rgba(224, 230, 226, 0.12);
+  border-radius: calc(var(--radius) - 2px);
+  color: var(--text);
+  font: inherit;
+  min-height: 40px;
+  padding: 9px 10px;
+  resize: vertical;
+}
+
+.sessions-modal label em,
+.sessions-form-error {
+  border-radius: calc(var(--radius) - 3px);
+  font-size: 0.78rem;
+  font-style: normal;
+  line-height: 1.35;
+  padding: 7px 9px;
+}
+
+.sessions-modal-actions {
+  display: flex;
+  gap: 8px;
+  justify-content: flex-end;
+}
+
+@media (max-width: 860px) {
+  .sessions-layout,
+  .sessions-overview,
+  .sessions-detail-grid,
+  .sessions-facts {
+    grid-template-columns: 1fr;
+  }
+
+  .sessions-filter-row {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+@media (max-width: 640px) {
+  .sessions-voucher-head {
+    display: none;
+  }
+
+  .sessions-voucher-row {
+    gap: 6px;
+    grid-template-columns: 1fr;
+  }
+
+  .sessions-voucher-pagination,
+  .sessions-modal-actions {
+    align-items: stretch;
+    flex-direction: column;
+  }
 }

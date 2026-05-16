@@ -60,6 +60,11 @@ export function getOrCreateWrappingKey(db: IDBDatabase, storeName: string): Prom
   const key = cacheKey(db.name, storeName);
   const cached = cache.get(key);
   if (cached) return cached;
+  // Race-safety invariant: the in-flight promise must be cached before any await
+  // happens. JS is single-threaded, so concurrent callers in the same tick observe
+  // the cached promise on their `cache.get` instead of starting parallel
+  // loadOrCreate runs (which would each generate+persist a new wrapping key and
+  // orphan whichever lost the IDB write race).
   const promise = loadOrCreate(db, storeName);
   cache.set(key, promise);
   // Evict on failure so retries can re-attempt cleanly.

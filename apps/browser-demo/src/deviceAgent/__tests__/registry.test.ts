@@ -359,3 +359,111 @@ describe('BrowserRuntimeRegistry concurrency', () => {
     expect(providerSpy).not.toHaveBeenCalled();
   });
 });
+
+describe('BrowserRuntimeRegistry persistence degradation', () => {
+  function failingPersistence(opts: {
+    loadError?: Error;
+    saveError?: Error;
+  }): RuntimePersistence & { loadCalls: number; saveCalls: number } {
+    let loadCalls = 0;
+    let saveCalls = 0;
+    return {
+      get loadCalls() {
+        return loadCalls;
+      },
+      get saveCalls() {
+        return saveCalls;
+      },
+      async load() {
+        loadCalls += 1;
+        if (opts.loadError) throw opts.loadError;
+        return { state: 'stopped', error: null, lastTransitionAtMs: 0 };
+      },
+      async save() {
+        saveCalls += 1;
+        if (opts.saveError) throw opts.saveError;
+      },
+    };
+  }
+
+  it('start succeeds and the queue is usable when persistence.save rejects', async () => {
+    const persistence = failingPersistence({
+      saveError: new Error('storage_unavailable: write blocked'),
+    });
+    let invoked = 0;
+    const registry = new BrowserRuntimeRegistry({
+      persistence,
+      executorProvider: () => ({
+        generatePlan: async () => {
+          invoked += 1;
+          return { ok: true };
+        },
+        reviewPlan: async () => ({ ok: true }),
+        ask: async () => ({ ok: true }),
+      }),
+    });
+
+    await registry.hydrate();
+    const state = await registry.start(VALID_CONFIG);
+
+    expect(state).toBe('running');
+    expect(registry.snapshot()).toMatchObject({
+      state: 'running',
+      lastError: null,
+      config: VALID_CONFIG,
+    });
+
+    const result = await registry.submit(makeRequest({ requestId: 'r1' }));
+    expect(invoked).toBe(1);
+    expect(result).toMatchObject({ kind: 'ok', requestId: 'r1' });
+  });
+
+  it('stop and recordError also tolerate persistence.save rejections', async () => {
+    const persistence = failingPersistence({
+      saveError: new Error('storage_unavailable: write blocked'),
+    });
+    const registry = new BrowserRuntimeRegistry({
+      persistence,
+      executorProvider: noopExecutor,
+    });
+
+    await registry.hydrate();
+    await registry.start(VALID_CONFIG);
+
+    await expect(registry.stop()).resolves.toBe('stopped');
+    expect(registry.snapshot()).toMatchObject({ state: 'stopped', lastError: null });
+
+    await registry.start(VALID_CONFIG);
+    const errored = await registry.recordError({
+      code: RUNTIME_ERROR_CODES.SERVICE_START_FAILED,
+      message: 'simulated',
+    });
+    expect(errored).toBe('error');
+    expect(registry.snapshot().lastError).toMatchObject({ code: RUNTIME_ERROR_CODES.SERVICE_START_FAILED });
+  });
+
+  it('hydrate falls through to a fresh stopped snapshot when persistence.load rejects', async () => {
+    const persistence = failingPersistence({
+      loadError: new Error('storage_unavailable: read blocked'),
+    });
+    const registry = new BrowserRuntimeRegistry({
+      persistence,
+      executorProvider: noopExecutor,
+    });
+
+    await expect(registry.hydrate()).resolves.toBeUndefined();
+    expect(registry.snapshot()).toEqual({
+      state: 'stopped',
+      lastError: null,
+      config: null,
+      lastTransitionAtMs: 0,
+    });
+
+    // No remediation write on the load-failure path (would also reject).
+    expect(persistence.saveCalls).toBe(0);
+
+    // Idempotent: subsequent hydrate does not re-attempt load.
+    await registry.hydrate();
+    expect(persistence.loadCalls).toBe(1);
+  });
+});

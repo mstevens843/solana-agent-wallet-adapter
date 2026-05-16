@@ -471,25 +471,76 @@ async function dispatch(parsed: ParsedArgs): Promise<unknown> {
 }
 
 async function dispatchSession(parsed: ParsedArgs): Promise<unknown> {
-  // Phase 0 scaffolding for the streaming-session CLI surface. Phase 2E wires
-  // each subcommand to the render-web /api/streaming/* endpoints + voucher
-  // signing through the device agent (Android) or cloud relay (browser).
   const subcommand = parsed.positionals[1] ?? 'help';
   const knownSubs = new Set(['list', 'create', 'spend', 'revoke', 'history', 'settle']);
   if (subcommand === 'help' || !knownSubs.has(subcommand)) {
     return {
       command: 'session',
       subcommands: ['list', 'create', 'spend', 'revoke', 'history', 'settle'],
-      status: 'not_implemented',
-      message: 'Not implemented (Phase 2). Scaffolding only — Phase 2E wires this to render-web.',
+      renderWebUrl: parsed.options.renderWebUrl,
     };
   }
-  return {
-    command: 'session',
-    subcommand,
-    status: 'not_implemented',
-    message: 'Not implemented (Phase 2).',
-  };
+
+  const rawArgs = commandValues(parsed.positionals.slice(2), new Set(['--wallet', '--allowlist']));
+  if (subcommand === 'list') {
+    const walletAddress = optionValue(parsed.positionals, '--wallet');
+    return streamingRenderWebRequest(parsed.options, streamingSessionsPath({ walletAddress }));
+  }
+
+  if (subcommand === 'create') {
+    const tokenMint = rawArgs[0];
+    const capAmount = rawArgs[1];
+    const expiresInSeconds = rawArgs[2];
+    if (!tokenMint || !capAmount || !expiresInSeconds) {
+      throw new Error('Usage: solana-agent-wallet session create <token-mint> <cap-amount> <expires-in-seconds> [--allowlist <addr,addr>]');
+    }
+    return streamingRenderWebRequest(parsed.options, '/api/streaming/sessions', {
+      method: 'POST',
+      body: JSON.stringify(removeUndefined({
+        tokenMint,
+        capAmount,
+        expiresAt: expiresAtFromSeconds(expiresInSeconds),
+        recipientAllowlist: parseAllowlist(optionValue(parsed.positionals, '--allowlist')),
+      })),
+    });
+  }
+
+  const sessionId = rawArgs[0];
+  if (!sessionId) {
+    throw new Error(`Usage: solana-agent-wallet session ${subcommand} <session-id>`);
+  }
+
+  if (subcommand === 'spend') {
+    const amount = rawArgs[1];
+    const recipient = rawArgs[2];
+    if (!amount || !recipient) {
+      throw new Error('Usage: solana-agent-wallet session spend <session-id> <amount> <recipient>');
+    }
+    return streamingRenderWebRequest(parsed.options, `/api/streaming/sessions/${encodeURIComponent(sessionId)}/voucher`, {
+      method: 'POST',
+      body: JSON.stringify({ amount, recipient }),
+    });
+  }
+
+  if (subcommand === 'revoke') {
+    return streamingRenderWebRequest(parsed.options, `/api/streaming/sessions/${encodeURIComponent(sessionId)}/revoke`, {
+      method: 'POST',
+      body: '{}',
+    });
+  }
+
+  if (subcommand === 'history') {
+    const [session, receipt] = await Promise.all([
+      streamingRenderWebRequest(parsed.options, `/api/streaming/sessions/${encodeURIComponent(sessionId)}`),
+      streamingRenderWebRequest(parsed.options, `/api/streaming/sessions/${encodeURIComponent(sessionId)}/receipt`),
+    ]);
+    return { session, receipt };
+  }
+
+  return streamingRenderWebRequest(parsed.options, `/api/streaming/sessions/${encodeURIComponent(sessionId)}/settle`, {
+    method: 'POST',
+    body: '{}',
+  });
 }
 
 async function dispatchMpp(parsed: ParsedArgs): Promise<unknown> {
@@ -2546,6 +2597,57 @@ async function mppRenderWebRequest<T = unknown>(
   return body as T;
 }
 
+async function streamingRenderWebRequest<T = unknown>(
+  options: GlobalOptions,
+  path: string,
+  init: RequestInit = {},
+): Promise<T> {
+  const url = renderWebUrl(options, path);
+  const cookie = process.env.AGENTIC_RENDER_WEB_COOKIE ?? process.env.AGENTIC_CLOUD_COOKIE ?? process.env.AGENTIC_SESSION_COOKIE;
+  let response: Response;
+  try {
+    response = await fetchWithTimeout(url, {
+      ...init,
+      headers: {
+        Accept: 'application/json',
+        ...(init.body !== undefined ? { 'content-type': 'application/json' } : {}),
+        ...(cookie ? { cookie } : {}),
+        ...(init.headers ?? {}),
+      },
+    }, REQUEST_TIMEOUT_MS);
+  } catch (err) {
+    throw new Error(`Render-web streaming API is not reachable at ${options.renderWebUrl}. ${errorMessage(err)}`);
+  }
+
+  const text = await response.text();
+  const body = parseJsonBody(text);
+  if (!response.ok) {
+    const error = responseError(body);
+    throw new Error(error ?? `Render-web streaming API returned HTTP ${response.status}.`);
+  }
+  return body as T;
+}
+
+function streamingSessionsPath(input: { walletAddress?: string }): string {
+  if (!input.walletAddress) return '/api/streaming/sessions';
+  const query = new URLSearchParams({ walletAddress: input.walletAddress });
+  return `/api/streaming/sessions?${query.toString()}`;
+}
+
+function expiresAtFromSeconds(raw: string): string {
+  const seconds = Number(raw);
+  if (!Number.isFinite(seconds) || seconds <= 0 || !Number.isInteger(seconds)) {
+    throw new Error('expires-in-seconds must be a positive integer.');
+  }
+  return new Date(Date.now() + seconds * 1000).toISOString();
+}
+
+function parseAllowlist(raw: string | undefined): string[] | undefined {
+  if (!raw) return undefined;
+  const entries = raw.split(',').map((entry) => entry.trim()).filter(Boolean);
+  return entries.length ? entries : undefined;
+}
+
 function bridgeUrl(options: GlobalOptions, path: string): URL {
   const base = options.bridgeUrl.endsWith('/') ? options.bridgeUrl : `${options.bridgeUrl}/`;
   const url = new URL(path.startsWith('/') ? path.slice(1) : path, base);
@@ -3205,6 +3307,12 @@ Usage:
   solana-agent-wallet prepare swap <amount> [input-token] [output-token]
   solana-agent-wallet prepare blink --url <url> [--connector <id>] [--operation <label>]
   solana-agent-wallet schedule list
+  solana-agent-wallet session list [--wallet <addr>]
+  solana-agent-wallet session create <token-mint> <cap-amount> <expires-in-seconds> [--allowlist <addr,addr>]
+  solana-agent-wallet session spend <session-id> <amount> <recipient>
+  solana-agent-wallet session revoke <session-id>
+  solana-agent-wallet session history <session-id>
+  solana-agent-wallet session settle <session-id>
   solana-agent-wallet mpp challenge <file.json>
   solana-agent-wallet mpp config
   solana-agent-wallet receipts

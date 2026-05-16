@@ -118,6 +118,9 @@ export async function putRecord(db: IDBDatabase, store: string, record: unknown)
   const tx = openTransaction(db, store, 'readwrite');
   const done = awaitTransaction(tx, `put failed in ${store}`);
   try {
+    // IDBObjectStore.put is typed `value: any` in lib.dom; we accept `unknown`
+    // for safety at the helper boundary and cast through `never` to satisfy
+    // strict-mode without widening to `any`.
     const req = tx.objectStore(store).put(record as never);
     req.onerror = () => {
       // Surfaces via tx.onerror/onabort; swallow here so the event is not "unhandled".

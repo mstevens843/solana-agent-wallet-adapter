@@ -172,6 +172,9 @@ importers:
       '@solana-agent-wallet-adapter/skills-runtime':
         specifier: workspace:*
         version: link:../../packages/skills-runtime
+      '@solana-agent-wallet-adapter/streaming-sessions':
+        specifier: workspace:*
+        version: link:../../packages/streaming-sessions
       '@solana-agent-wallet-adapter/workflow':
         specifier: workspace:*
         version: link:../../packages/workflow
@@ -330,6 +333,9 @@ importers:
       '@solana-agent-wallet-adapter/mpp-adapter':
         specifier: workspace:*
         version: link:../mpp-adapter
+      '@solana-agent-wallet-adapter/streaming-sessions':
+        specifier: workspace:*
+        version: link:../streaming-sessions
       '@solana-agent-wallet-adapter/workflow':
         specifier: workspace:*
         version: link:../workflow

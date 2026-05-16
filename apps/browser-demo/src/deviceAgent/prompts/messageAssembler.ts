@@ -2,6 +2,37 @@
 // alias resolution (prompt → userPrompt, connectorContext → protocolConnectors),
 // connector rule derivation, hardcoded research object, and exact field
 // insertion order so JSON.stringify produces wire-compatible payloads.
+//
+// Intentional divergences from apps/browser-demo/src/planner.ts (the original
+// JS source) — do NOT "fix" these back to the planner.ts shape; they exist so
+// the browser-native Device Agent emits the same request body as the Android
+// (Kotlin) runtime. Source-of-truth is the Kotlin port. See parent plan
+// docs/plans/browser-device-agent-runtime-plan.md line 83 ("When in doubt,
+// Kotlin wins").
+//
+//   1. research.needed/mode are hardcoded `false` / `'not_required'`.
+//      planner.ts:1676-1714 toggles these dynamically via
+//      reviewNeedsWebResearch(request). The Device Agent runtime does not
+//      perform web research — it runs a single chat completion only — so the
+//      simpler shape is correct.
+//
+//   2. `plan` defaults to `{}` when absent in the payload.
+//      planner.ts:1674 passes `request.plan` raw; if it's undefined,
+//      JSON.stringify omits the field. Kotlin's
+//      `payload.opt("plan") ?: JSONObject()` always emits an empty object.
+//      We mirror Kotlin so Android and browser produce byte-identical wire
+//      bodies for the same input.
+//
+//   3. `walletAddress` / `cluster` are trimmed before the
+//      `'not_connected'` / `'unknown'` fallback.
+//      planner.ts:1672-1673 uses `||` without trim, so `'   '` would pass
+//      through as truthy. Kotlin trims first via `.optString(...).trim()`.
+//      We mirror Kotlin.
+//
+//   4. Connector `name` / `id` are trimmed inside deriveConnectorRule.
+//      planner.ts:1627 uses `selectedConnector.name || selectedConnector.id
+//      || 'selected connector'` without trim. Kotlin trims each candidate.
+//      We mirror Kotlin.
 
 import { DEVICE_AGENT_BOUNDARIES } from './boundaries.js';
 import { DEVICE_AGENT_SYSTEM_PROMPTS } from './systemPrompts.js';

@@ -14,6 +14,11 @@ import {
   parseMppChallenge,
   verifyMppChallenge,
 } from '@solana-agent-wallet-adapter/mpp-adapter';
+import {
+  computeVoucherHash,
+  verifyVoucher,
+  type Voucher,
+} from '@solana-agent-wallet-adapter/streaming-sessions';
 
 import {
   AgentWalletActionService,
@@ -28,11 +33,16 @@ import {
 import { AdapterError } from './adapters/types.js';
 import { newTraceId, trace } from './trace.js';
 
+const DEFAULT_RENDER_WEB_URL = 'http://127.0.0.1:3000';
+const RENDER_WEB_TIMEOUT_MS = 120_000;
+
 export interface RegisterActionToolsOptions {
   backend: WalletBackend;
   config: AgentWalletConfig;
   preparedActions?: PreparedActionStore;
 }
+
+type JsonRecord = Record<string, unknown>;
 
 export function registerActionTools(
   server: McpServer,
@@ -5691,10 +5701,7 @@ function registerJupiterRecurringTools(
     ),
   );
 
-  // ---------- Phase 0 scaffolding: MPP + Streaming Sessions tools ----------
-  // All return { status: 'not_implemented', phase: 'phase_0_scaffolding' }.
-  // Phase 1 implements the MPP handler; Phase 2E implements streaming tools.
-  // Registered here so MCP clients discover the tool surface immediately.
+  // ---------- MPP + Streaming Sessions tools ----------
 
   server.registerTool(
     'solana_mpp_challenge_handler',
@@ -5752,18 +5759,26 @@ function registerJupiterRecurringTools(
     'solana_streaming_session_create',
     {
       description:
-        'Create a streaming-payment session: an SPL Token delegate authority bounded by amount, expiry, and optional recipient allowlist. Returns an unsigned Approve tx for the wallet to sign. Phase 0 scaffolding returns not_implemented; Phase 2E ships the real builder.',
+        'Create a streaming-payment session: an SPL Token delegate authority bounded by amount, expiry, and optional recipient allowlist. Returns an unsigned Approve tx for the wallet to sign.',
       inputSchema: {
-        tokenMint: z.string().min(32).optional(),
-        capAmount: z.string().min(1).optional(),
-        expiresAt: z.string().min(8).optional(),
+        tokenMint: z.string().min(32),
+        capAmount: z.string().min(1),
+        expiresAt: z.string().datetime(),
         recipientAllowlist: z.array(z.string().min(32)).optional(),
       },
     },
     async (input) => traceTool(
       'solana_streaming_session_create',
       { cluster, input },
-      async () => jsonReply({ status: 'not_implemented', phase: 'phase_0_scaffolding', tool: 'solana_streaming_session_create' }),
+      async () => jsonReply(await streamingRenderWebRequest('/api/streaming/sessions', {
+        method: 'POST',
+        body: JSON.stringify(removeUndefined({
+          tokenMint: input.tokenMint,
+          capAmount: input.capAmount,
+          expiresAt: input.expiresAt,
+          recipientAllowlist: input.recipientAllowlist,
+        })),
+      })),
     ),
   );
 
@@ -5771,7 +5786,7 @@ function registerJupiterRecurringTools(
     'solana_streaming_session_list',
     {
       description:
-        'List active streaming-payment sessions for the connected wallet (or for a specific wallet, if supplied). Phase 0 scaffolding returns not_implemented.',
+        'List streaming-payment sessions for the connected wallet (or for a specific wallet, if supplied).',
       inputSchema: {
         walletAddress: z.string().min(32).optional(),
       },
@@ -5779,7 +5794,9 @@ function registerJupiterRecurringTools(
     async (input) => traceTool(
       'solana_streaming_session_list',
       { cluster, input },
-      async () => jsonReply({ status: 'not_implemented', phase: 'phase_0_scaffolding', tool: 'solana_streaming_session_list' }),
+      async () => jsonReply(await streamingRenderWebRequest(streamingSessionsPath({
+        walletAddress: input.walletAddress,
+      }))),
     ),
   );
 
@@ -5787,15 +5804,18 @@ function registerJupiterRecurringTools(
     'solana_streaming_session_revoke',
     {
       description:
-        'Revoke an active streaming-payment session. Builds an unsigned Revoke tx and returns it for the wallet to sign; the cloud also stops accepting new vouchers immediately. Phase 0 scaffolding returns not_implemented.',
+        'Revoke an active streaming-payment session. Builds an unsigned Revoke tx and returns it for the wallet to sign; the cloud also stops accepting new vouchers immediately.',
       inputSchema: {
-        sessionId: z.string().min(4).optional(),
+        sessionId: z.string().min(4),
       },
     },
     async (input) => traceTool(
       'solana_streaming_session_revoke',
       { cluster, input },
-      async () => jsonReply({ status: 'not_implemented', phase: 'phase_0_scaffolding', tool: 'solana_streaming_session_revoke' }),
+      async () => jsonReply(await streamingRenderWebRequest(`/api/streaming/sessions/${encodeURIComponent(input.sessionId)}/revoke`, {
+        method: 'POST',
+        body: '{}',
+      })),
     ),
   );
 
@@ -5803,17 +5823,23 @@ function registerJupiterRecurringTools(
     'solana_streaming_voucher_sign',
     {
       description:
-        'Sign a streaming-payment voucher (off-chain, ed25519) under an active session. On Android the device-agent signs locally; in browser mode this is server-relayed. Phase 0 scaffolding returns not_implemented.',
+        'Sign and submit a streaming-payment voucher under an active session through render-web server-relayed signing.',
       inputSchema: {
-        sessionId: z.string().min(4).optional(),
-        amount: z.string().min(1).optional(),
-        recipient: z.string().min(32).optional(),
+        sessionId: z.string().min(4),
+        amount: z.string().min(1),
+        recipient: z.string().min(32),
       },
     },
     async (input) => traceTool(
       'solana_streaming_voucher_sign',
       { cluster, input },
-      async () => jsonReply({ status: 'not_implemented', phase: 'phase_0_scaffolding', tool: 'solana_streaming_voucher_sign' }),
+      async () => jsonReply(await streamingRenderWebRequest(`/api/streaming/sessions/${encodeURIComponent(input.sessionId)}/voucher`, {
+        method: 'POST',
+        body: JSON.stringify({
+          amount: input.amount,
+          recipient: input.recipient,
+        }),
+      })),
     ),
   );
 
@@ -5821,16 +5847,31 @@ function registerJupiterRecurringTools(
     'solana_streaming_voucher_verify',
     {
       description:
-        'Verify a streaming-payment voucher signature against the session ephemeral signer public key. Useful for receivers to confirm a voucher before extending credit. Phase 0 scaffolding returns not_implemented.',
+        'Verify a streaming-payment voucher signature against the session ephemeral signer public key. Useful for receivers to confirm a voucher before extending credit.',
       inputSchema: {
-        sessionId: z.string().min(4).optional(),
-        voucher: z.unknown().optional(),
+        sessionId: z.string().min(4),
+        voucher: z.unknown(),
       },
     },
     async (input) => traceTool(
       'solana_streaming_voucher_verify',
       { cluster, input },
-      async () => jsonReply({ status: 'not_implemented', phase: 'phase_0_scaffolding', tool: 'solana_streaming_voucher_verify' }),
+      async () => {
+        const session = await streamingRenderWebRequest(`/api/streaming/sessions/${encodeURIComponent(input.sessionId)}`);
+        const ephemeralSignerPubkey = extractEphemeralSignerPubkey(session);
+        const voucher = requireVoucher(input.voucher);
+        const valid = verifyVoucher(voucher, ephemeralSignerPubkey);
+        let voucherHash: string | undefined;
+        if (valid) {
+          voucherHash = computeVoucherHash(voucher);
+        }
+        return jsonReply(removeUndefined({
+          valid,
+          sessionId: input.sessionId,
+          voucherHash,
+          ephemeralSignerPubkey,
+        }));
+      },
     ),
   );
 
@@ -5838,17 +5879,148 @@ function registerJupiterRecurringTools(
     'solana_streaming_session_settle',
     {
       description:
-        'Force-trigger settlement of a streaming-payment session (batch-transfer all accepted vouchers using the delegate authority). Normally driven by the agentic-streaming-settlement cron. Phase 0 scaffolding returns not_implemented.',
+        'Force-trigger settlement of a streaming-payment session (batch-transfer all accepted vouchers using the delegate authority). Normally driven by the agentic-streaming-settlement cron.',
       inputSchema: {
-        sessionId: z.string().min(4).optional(),
+        sessionId: z.string().min(4),
       },
     },
     async (input) => traceTool(
       'solana_streaming_session_settle',
       { cluster, input },
-      async () => jsonReply({ status: 'not_implemented', phase: 'phase_0_scaffolding', tool: 'solana_streaming_session_settle' }),
+      async () => jsonReply(await streamingRenderWebRequest(`/api/streaming/sessions/${encodeURIComponent(input.sessionId)}/settle`, {
+        method: 'POST',
+        body: '{}',
+      })),
     ),
   );
+}
+
+async function streamingRenderWebRequest<T = unknown>(
+  path: string,
+  init: RequestInit = {},
+): Promise<T> {
+  const url = renderWebUrl(path);
+  const cookie = process.env.AGENTIC_RENDER_WEB_COOKIE ?? process.env.AGENTIC_CLOUD_COOKIE ?? process.env.AGENTIC_SESSION_COOKIE;
+  let response: Response;
+  try {
+    response = await fetchWithTimeout(url, {
+      ...init,
+      headers: {
+        Accept: 'application/json',
+        ...(init.body !== undefined ? { 'content-type': 'application/json' } : {}),
+        ...(cookie ? { cookie } : {}),
+        ...(init.headers ?? {}),
+      },
+    }, RENDER_WEB_TIMEOUT_MS);
+  } catch (err) {
+    throw new ProtocolError(
+      'wallet_unreachable',
+      `Render-web streaming API is not reachable at ${renderWebBaseUrl()}. ${err instanceof Error ? err.message : String(err)}`,
+    );
+  }
+
+  const text = await response.text();
+  const body = parseJsonBody(text);
+  if (!response.ok) {
+    const message = responseErrorMessage(body) ?? `Render-web streaming API returned HTTP ${response.status}.`;
+    throw new ProtocolError(errorCodeForHttpStatus(response.status), message);
+  }
+  return body as T;
+}
+
+function streamingSessionsPath(input: { walletAddress?: string }): string {
+  if (!input.walletAddress) return '/api/streaming/sessions';
+  const query = new URLSearchParams({ walletAddress: input.walletAddress });
+  return `/api/streaming/sessions?${query.toString()}`;
+}
+
+function renderWebUrl(path: string): URL {
+  const base = renderWebBaseUrl();
+  return new URL(path.startsWith('/') ? path.slice(1) : path, base.endsWith('/') ? base : `${base}/`);
+}
+
+function renderWebBaseUrl(): string {
+  return (
+    process.env.AGENTIC_RENDER_WEB_URL?.trim() ||
+    process.env.AGENTIC_PUBLIC_ORIGIN?.trim() ||
+    process.env.RENDER_WEB_URL?.trim() ||
+    DEFAULT_RENDER_WEB_URL
+  ).replace(/\/+$/, '');
+}
+
+async function fetchWithTimeout(input: URL, init: RequestInit, timeoutMs: number): Promise<Response> {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    return await fetch(input, { ...init, signal: controller.signal });
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+function parseJsonBody(text: string): unknown {
+  if (!text) return {};
+  try {
+    return JSON.parse(text) as unknown;
+  } catch {
+    return { raw: text };
+  }
+}
+
+function responseErrorMessage(body: unknown): string | undefined {
+  if (!isJsonRecord(body)) return undefined;
+  const error = body.error;
+  if (typeof error === 'string') {
+    return typeof body.message === 'string' ? `${error}: ${body.message}` : error;
+  }
+  if (isJsonRecord(error) && typeof error.message === 'string') {
+    return error.message;
+  }
+  if (typeof body.message === 'string') {
+    return body.message;
+  }
+  return undefined;
+}
+
+function errorCodeForHttpStatus(status: number): ErrorCode {
+  if (status === 401 || status === 403) return 'unauthorized';
+  if (status === 501) return 'unsupported_method';
+  return 'invalid_request';
+}
+
+function extractEphemeralSignerPubkey(value: unknown): string {
+  const candidates = [
+    value,
+    isJsonRecord(value) ? value.session : undefined,
+    isJsonRecord(value) ? value.grant : undefined,
+    isJsonRecord(value) ? value.sessionGrant : undefined,
+  ];
+  for (const candidate of candidates) {
+    if (!isJsonRecord(candidate)) continue;
+    const direct = stringField(candidate, 'ephemeralSignerPubkey') ?? stringField(candidate, 'ephemeralSignerPublicKey');
+    if (direct) return direct;
+  }
+  throw new ProtocolError('invalid_request', 'Streaming session detail did not include ephemeralSignerPubkey.');
+}
+
+function requireVoucher(value: unknown): Voucher {
+  if (!isJsonRecord(value)) {
+    throw new ProtocolError('invalid_request', 'voucher must be a JSON object.');
+  }
+  return value as unknown as Voucher;
+}
+
+function stringField(record: JsonRecord, field: string): string | undefined {
+  const value = record[field];
+  return typeof value === 'string' && value.trim() ? value.trim() : undefined;
+}
+
+function isJsonRecord(value: unknown): value is JsonRecord {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+function removeUndefined(record: JsonRecord): JsonRecord {
+  return Object.fromEntries(Object.entries(record).filter(([, value]) => value !== undefined));
 }
 
 async function traceTool<T>(tool: string, payload: Record<string, unknown>, run: () => Promise<T> | T) {
@@ -6209,18 +6381,18 @@ function usefulPrompts(config: AgentWalletConfig) {
         ],
       },
       {
-        category: 'Machine Payments Protocol (MPP) — scaffolded for Phase 1',
+        category: 'Machine Payments Protocol (MPP)',
         prompts: [
-          'Use solana-agent-wallet to handle this MPP HTTP-402 challenge: <challenge-json>. (Tool stub: solana_mpp_challenge_handler.)',
+          'Use solana-agent-wallet to handle this MPP HTTP-402 challenge: <challenge-json>.',
         ],
       },
       {
-        category: 'Streaming-payment sessions — scaffolded for Phase 2',
+        category: 'Streaming-payment sessions',
         prompts: [
-          'Use solana-agent-wallet to create a 10 USDC, 1-hour streaming session to <recipient>. (Tool stub: solana_streaming_session_create.)',
-          'Use solana-agent-wallet to list my active streaming sessions. (Tool stub: solana_streaming_session_list.)',
-          'Use solana-agent-wallet to sign a 0.05 USDC voucher under session <id> to <recipient>. (Tool stub: solana_streaming_voucher_sign.)',
-          'Use solana-agent-wallet to revoke streaming session <id>. (Tool stub: solana_streaming_session_revoke.)',
+          'Use solana-agent-wallet to create a 10 USDC, 1-hour streaming session to <recipient>.',
+          'Use solana-agent-wallet to list my active streaming sessions.',
+          'Use solana-agent-wallet to sign a 0.05 USDC voucher under session <id> to <recipient>.',
+          'Use solana-agent-wallet to revoke streaming session <id>.',
         ],
       },
     ],

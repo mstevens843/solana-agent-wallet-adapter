@@ -97,17 +97,21 @@ export class OpenAiCompatibleProvider implements DeviceAgentProvider {
     if (errorCode !== null) {
       throw new ProviderHttpError(errorCode, composeErrorMessage(response.status, response.body));
     }
+    let parsed: unknown;
     try {
-      const parsed = JSON.parse(response.body) as unknown;
-      if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) {
-        throw new Error('not an object');
-      }
-      return parsed as Record<string, unknown>;
+      parsed = JSON.parse(response.body);
     } catch {
       throw new ProviderHttpError(
         PROVIDER_ERROR_CODES.INVALID_RESPONSE,
         'Provider response was not valid JSON.',
       );
     }
+    if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) {
+      throw new ProviderHttpError(
+        PROVIDER_ERROR_CODES.INVALID_RESPONSE,
+        'Provider response was not valid JSON.',
+      );
+    }
+    return parsed as Record<string, unknown>;
   }
 }

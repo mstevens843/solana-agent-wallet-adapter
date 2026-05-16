@@ -13,6 +13,7 @@ import {
   browserDeviceAgentStatusSnapshot,
   initBrowserDeviceAgent,
   setBrowserDeviceAgentSecretStoreMode,
+  setBrowserDeviceAgentWalletAddress,
   type ConfigMetadata,
   type MetadataStore,
 } from '../deviceAgent/index.js';
@@ -125,6 +126,19 @@ describe('browser-native Device Agent dispatcher', () => {
     expect(status.state).toBe('stopped');
     expect(status.configured).toBe(false);
     expect(status.provider).toBeUndefined();
+    expect(status.message).toBe('Browser Device Agent runtime is stopped.');
+    expect(status.lastError).toBeNull();
+  });
+
+  it('returns a disabled-build message when status is read before initialization', () => {
+    const status = browserDeviceAgentStatusSnapshot();
+    expect(status.runtime).toBe('browser-native');
+    expect(status.state).toBe('unavailable');
+    expect(status.configured).toBe(false);
+    // In the test bundle BROWSER_DEVICE_AGENT_ENABLED is false; pre-init path
+    // surfaces the disabled-build message (Kotlin parity with disabledStatusJson).
+    expect(status.message).toBe('Browser Device Agent is disabled for this build.');
+    expect(status.lastError).toBeNull();
   });
 
   it('persists secret + metadata on configure happy path', async () => {
@@ -195,18 +209,21 @@ describe('browser-native Device Agent dispatcher', () => {
     await browserDeviceAgentRequest('configure', validConfigPayload);
     const startResp = await browserDeviceAgentRequest('start');
     expect(startResp.status.state).toBe('running');
+    expect(startResp.status.message).toBe('Browser Device Agent runtime is running.');
 
     const planResp = await browserDeviceAgentRequest<Record<string, unknown>>(
       'generatePlan',
       { userPrompt: 'send 1 SOL' },
     );
     expect(planResp.status.state).toBe('running');
+    expect(planResp.status.message).toBe('Browser Device Agent runtime is running.');
     expect(planResp.result?.intent).toBe('transfer');
     expect(http.calls).toHaveLength(1);
     expect(http.calls[0]!.url.endsWith('/chat/completions')).toBe(true);
 
     const stopResp = await browserDeviceAgentRequest('stop');
     expect(stopResp.status.state).toBe('stopped');
+    expect(stopResp.status.message).toBe('Browser Device Agent runtime is stopped.');
   });
 
   it('throws runtime_not_running on generatePlan before start', async () => {
@@ -254,6 +271,7 @@ describe('browser-native Device Agent dispatcher', () => {
     const { status } = await browserDeviceAgentRequest('status');
     expect(status.state).toBe('unavailable');
     expect(status.lastError?.code).toBe('storage_unavailable');
+    expect(status.message).toBe('idb blocked');
 
     let caught: DeviceAgentClientError | null = null;
     try {
@@ -324,6 +342,31 @@ describe('browser-native Device Agent dispatcher', () => {
     });
     const { status } = await browserDeviceAgentRequest('status');
     expect(status.checkedAt).toBe(fixed.toISOString());
+  });
+
+  it('serializes setBrowserDeviceAgentWalletAddress against in-flight configure', async () => {
+    const metadata = createMemoryMetadataStore();
+    initBrowserDeviceAgent({
+      persistence: createMemoryPersistence(),
+      secretStore: createMemorySecretStore(),
+      metadataStore: metadata,
+      httpExecutor: new FakeHttpExecutor(),
+      walletAddress: 'OldWalletAddress',
+    });
+    // Schedule the mutation and a configure call back-to-back. The serializer
+    // chains them — the mutation enqueues first, so it lands before configure
+    // reads state.deps.walletAddress inside parseConfigPayload. The result is
+    // a consistent observation: configure sees the new wallet, never a torn
+    // read where the mutation lands halfway through configure.
+    setBrowserDeviceAgentWalletAddress('NewWalletAddress');
+    await browserDeviceAgentRequest('configure', {
+      provider: 'openai',
+      apiFormat: 'openai-compatible',
+      model: 'gpt-4o-mini',
+      apiKey: 'sk-test-EXAMPLEKEY12345',
+    });
+    expect(metadata.current?.walletAddress).toBe('NewWalletAddress');
+    expect(browserDeviceAgentStatusSnapshot().walletAddress).toBe('NewWalletAddress');
   });
 
   it('throws unsupported_method for unknown methods', async () => {

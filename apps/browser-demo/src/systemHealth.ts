@@ -334,6 +334,49 @@ function checkDeviceAgentAi(
       remediation: { label: 'Open settings', intent: 'open-settings' },
     };
   }
+  if (hint.runtime === 'browser-native') {
+    if (hint.state === 'error') {
+      return {
+        id: 'ai',
+        label: 'AI',
+        status: 'fail',
+        message: 'Device Agent error',
+        detail: hint.message ?? 'Browser-native Device Agent runtime reported an error.',
+        checkedAt,
+        remediation: { label: 'Reload tab', intent: 'reload' },
+      };
+    }
+    if (!hint.configured) {
+      return {
+        id: 'ai',
+        label: 'AI',
+        status: 'warn',
+        message: 'Device Agent unconfigured',
+        detail: hint.message ?? 'Add a Device Agent provider key and confirm planner to enable on-tab drafting.',
+        checkedAt,
+        remediation: { label: 'Open settings', intent: 'open-settings' },
+      };
+    }
+    if (hint.state === 'running') {
+      return {
+        id: 'ai',
+        label: 'AI',
+        status: 'ok',
+        message: 'Device Agent ready',
+        detail: hint.message ?? 'Drafting runs in the current browser tab.',
+        checkedAt,
+      };
+    }
+    return {
+      id: 'ai',
+      label: 'AI',
+      status: 'warn',
+      message: hint.state === 'starting' ? 'Device Agent starting' : 'Device Agent stopped',
+      detail: hint.message ?? 'Start the browser-native Device Agent runtime to enable drafting.',
+      checkedAt,
+      remediation: { label: 'Open settings', intent: 'open-settings' },
+    };
+  }
   if (!hint.bridgeAvailable) {
     return {
       id: 'ai',

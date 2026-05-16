@@ -113,6 +113,72 @@ describe('buildPlanMessages', () => {
     const parsed = JSON.parse(messages.userContent) as Record<string, unknown>;
     expect(parsed.requiredBoundary).toBe('custom plan boundary');
   });
+
+  it('falls back to the default boundary when requiredBoundary is whitespace-only', () => {
+    const messages = buildPlanMessages({ userPrompt: 'swap', requiredBoundary: '   \t  ' });
+    const parsed = JSON.parse(messages.userContent) as Record<string, unknown>;
+    expect(parsed.requiredBoundary).toBe(DEVICE_AGENT_BOUNDARIES.PLAN);
+  });
+
+  it('derives the connector rule when connectorRule is whitespace-only', () => {
+    const messages = buildPlanMessages({
+      userPrompt: 'swap',
+      connectorRule: '   ',
+      protocolConnectors: [{ id: 'jupiter', selected: true }],
+    });
+    const parsed = JSON.parse(messages.userContent) as Record<string, unknown>;
+    expect((parsed.connectorRule as string).startsWith('Use the selected protocol connector only: jupiter.')).toBe(true);
+  });
+
+  it('prefers userPrompt over prompt when both are present', () => {
+    const messages = buildPlanMessages({ userPrompt: 'win', prompt: 'lose' });
+    const parsed = JSON.parse(messages.userContent) as Record<string, unknown>;
+    expect(parsed.userPrompt).toBe('win');
+  });
+
+  it('prefers protocolConnectors over connectorContext when both are present', () => {
+    const messages = buildPlanMessages({
+      userPrompt: 'swap',
+      protocolConnectors: [{ id: 'kept', selected: true }],
+      connectorContext: [{ id: 'dropped', selected: true }],
+    });
+    const parsed = JSON.parse(messages.userContent) as Record<string, unknown>;
+    const connectors = parsed.protocolConnectors as Array<Record<string, unknown>>;
+    expect(connectors).toHaveLength(1);
+    expect(connectors[0]?.id).toBe('kept');
+    expect((parsed.connectorRule as string)).toContain('kept');
+    expect((parsed.connectorRule as string)).not.toContain('dropped');
+  });
+
+  it('silently skips non-object entries in the connectors array', () => {
+    const messages = buildPlanMessages({
+      userPrompt: 'swap',
+      protocolConnectors: [null, 'string-entry', 42, { id: 'jupiter', selected: true }],
+    });
+    const parsed = JSON.parse(messages.userContent) as Record<string, unknown>;
+    expect((parsed.connectorRule as string).startsWith('Use the selected protocol connector only: jupiter.')).toBe(true);
+  });
+
+  it('serializes plan fields in the exact Kotlin JSONObject.put() order when all are present', () => {
+    const messages = buildPlanMessages({
+      userPrompt: 'swap',
+      userNotes: 'a note',
+      template: { id: 'swap' },
+      parameters: { amount: '1' },
+      protocolConnectors: [{ id: 'jupiter', selected: true }],
+      requiredBoundary: 'b',
+    });
+    const parsed = JSON.parse(messages.userContent) as Record<string, unknown>;
+    expect(Object.keys(parsed)).toEqual([
+      'userPrompt',
+      'userNotes',
+      'template',
+      'parameters',
+      'protocolConnectors',
+      'connectorRule',
+      'requiredBoundary',
+    ]);
+  });
 });
 
 describe('buildReviewMessages', () => {
@@ -164,6 +230,29 @@ describe('buildReviewMessages', () => {
     expect(stamped).toBeGreaterThanOrEqual(before);
     expect(stamped).toBeLessThanOrEqual(after);
   });
+
+  it('serializes review fields in the exact Kotlin JSONObject.put() order', () => {
+    const messages = buildReviewMessages(
+      {
+        instruction: 'check it',
+        walletAddress: 'ABC',
+        cluster: 'mainnet',
+        plan: { intent: 'swap' },
+        context: { facts: [] },
+      },
+      FIXED_NOW,
+    );
+    const parsed = JSON.parse(messages.userContent) as Record<string, unknown>;
+    expect(Object.keys(parsed)).toEqual([
+      'instruction',
+      'walletAddress',
+      'cluster',
+      'plan',
+      'context',
+      'research',
+      'requiredBoundary',
+    ]);
+  });
 });
 
 describe('buildAskMessages', () => {
@@ -190,5 +279,39 @@ describe('buildAskMessages', () => {
     expect(parsed.plan).toEqual({});
     expect(parsed.walletAddress).toBe('not_connected');
     expect(parsed.cluster).toBe('unknown');
+  });
+
+  it('uses the system clock when no NowFn is supplied', () => {
+    const before = Date.now();
+    const messages = buildAskMessages({ question: 'q' });
+    const after = Date.now();
+    const parsed = JSON.parse(messages.userContent) as Record<string, unknown>;
+    const research = parsed.research as Record<string, unknown>;
+    const stamped = Date.parse(research.currentDate as string);
+    expect(stamped).toBeGreaterThanOrEqual(before);
+    expect(stamped).toBeLessThanOrEqual(after);
+  });
+
+  it('serializes ask fields in the exact Kotlin JSONObject.put() order', () => {
+    const messages = buildAskMessages(
+      {
+        question: 'why?',
+        plan: { intent: 'swap' },
+        walletAddress: 'ABC',
+        cluster: 'mainnet',
+        context: { facts: [] },
+      },
+      FIXED_NOW,
+    );
+    const parsed = JSON.parse(messages.userContent) as Record<string, unknown>;
+    expect(Object.keys(parsed)).toEqual([
+      'question',
+      'plan',
+      'walletAddress',
+      'cluster',
+      'context',
+      'research',
+      'requiredBoundary',
+    ]);
   });
 });

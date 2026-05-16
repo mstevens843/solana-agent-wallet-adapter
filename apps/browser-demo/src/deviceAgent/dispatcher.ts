@@ -37,10 +37,7 @@ import type {
 } from './runtime/request.js';
 import type { RuntimeError } from './runtime/state.js';
 import { storageUnavailableError } from './storage/indexedDbStore.js';
-import {
-  createIndexedDbPersistence,
-  createMemoryPersistence,
-} from './storage/persistence.js';
+import { createIndexedDbPersistence } from './storage/persistence.js';
 import {
   createSecretStore,
   type SecretStore,
@@ -53,6 +50,18 @@ const RUNTIME_KIND = 'browser-native' as const;
 const DEFAULT_SECRET_STORE_MODE: SecretStoreMode = 'encrypted-indexeddb';
 
 const RUNTIME_METHOD_WIRES: ReadonlySet<RuntimeMethodWire> = new Set(['generatePlan', 'reviewPlan', 'ask']);
+
+// State-based status messages — Kotlin parity with AgentRuntimeController.kt
+// (lines 40-46, 193). Phase 6 surfaces these via state.deviceAgentStatus.message
+// in the Connect-AI card and as the systemHealth detail string.
+const RUNTIME_MESSAGES = {
+  RUNNING: 'Browser Device Agent runtime is running.',
+  STARTING: 'Browser Device Agent runtime is starting.',
+  STOPPED: 'Browser Device Agent runtime is stopped.',
+  ERROR_FALLBACK: 'Browser Device Agent runtime is in an error state.',
+  DISABLED: 'Browser Device Agent is disabled for this build.',
+  UNINITIALIZED: 'Browser Device Agent has not been initialized.',
+} as const;
 
 export interface ConfigMetadata {
   provider: string;
@@ -116,8 +125,17 @@ export function initBrowserDeviceAgent(deps: BrowserDeviceAgentDeps = {}): void 
 }
 
 export function setBrowserDeviceAgentWalletAddress(walletAddress: string | undefined | null): void {
-  const state = ensureState();
-  state.deps.walletAddress = walletAddress ?? undefined;
+  if (!_state) return;
+  const state = _state;
+  const normalized = walletAddress ?? undefined;
+  // Schedule the mutation under the same serializer that guards configure/start/stop
+  // so an in-flight configure observes either the pre-mutation or post-mutation value
+  // consistently — never a torn read across handleConfigure's parseConfigPayload path.
+  // External callers keep the sync `void` contract (main.ts:3138 fires this without
+  // awaiting); the scheduled mutation lands before the next serialized request runs.
+  void runSerialized(state, async () => {
+    state.deps.walletAddress = normalized;
+  });
 }
 
 export function getBrowserDeviceAgentSecretStoreMode(): SecretStoreMode {
@@ -160,7 +178,7 @@ export async function setBrowserDeviceAgentSecretStoreMode(
 }
 
 export function browserDeviceAgentStatusSnapshot(): DeviceAgentStatus {
-  if (!_state) return unavailableStatus(undefined, DEFAULT_SECRET_STORE_MODE);
+  if (!_state) return unavailableStatus(undefined);
   return buildStatus(_state);
 }
 
@@ -234,7 +252,11 @@ function buildState(deps: BrowserDeviceAgentDeps): InternalState {
     metadataStoreOverride: deps.metadataStore,
   };
 
-  const persistence = resolved.persistenceOverride ?? createSafeIndexedDbPersistence();
+  // createIndexedDbPersistence() is a pure factory — IDB open happens lazily in
+  // load()/save(). load() already degrades to a default snapshot on failure (see
+  // storage/persistence.ts); save() failures are caught inside handleConfigure /
+  // handleStart and surfaced as STORAGE_UNAVAILABLE via toStorageUnavailableError.
+  const persistence = resolved.persistenceOverride ?? createIndexedDbPersistence();
   const secretStore = resolved.secretStoreOverride ?? createSecretStore(mode);
   const executor =
     resolved.executorOverride ?? new DeviceAgentProviderExecutor(resolved.httpExecutor);
@@ -267,6 +289,16 @@ function buildState(deps: BrowserDeviceAgentDeps): InternalState {
 
 async function hydrate(state: InternalState): Promise<void> {
   try {
+    // Probe persistence directly first — registry.hydrate() swallows load
+    // failures internally (it falls back to a fresh stopped snapshot so the
+    // in-memory state machine stays usable). The dispatcher however must
+    // surface STORAGE_UNAVAILABLE to UI/diagnostics so users get private-mode
+    // remediation instead of a silent dead runtime. The production IDB
+    // persistence already catches IDB errors inside its own load() and never
+    // throws, so this probe is a no-op in real browsers — only test overrides
+    // (failingPersistence) or non-default persistence implementations whose
+    // load() rejects will surface here.
+    await state.persistence.load();
     await state.registry.hydrate();
     state.metadata = state.metadataStore.load();
     const existing = await state.secretStore.get(API_KEY_SECRET_KEY);
@@ -453,6 +485,13 @@ function finalizeResult<R>(
 }
 
 async function raceAbort<T>(promise: Promise<T>, signal: AbortSignal | undefined): Promise<T> {
+  // Per-request abort caveat: rejecting the caller's promise here does NOT cancel
+  // the underlying `RequestQueue.submit` work — Phase 1's queue (runtime/queue.ts)
+  // only exposes a global `stop()`-driven cancel via its single AbortController.
+  // The in-flight HTTP request therefore runs to completion in the background and
+  // its result is discarded. This is bounded by FetchHttpExecutor's internal
+  // connect/read timeouts (30s/60s, see provider/http.ts). For hard cancellation
+  // use `browserDeviceAgentRequest('stop')`.
   if (!signal) return promise;
   return new Promise<T>((resolve, reject) => {
     let settled = false;
@@ -501,6 +540,7 @@ function buildStatus(state: InternalState): DeviceAgentStatus {
     configured,
     state: liveState,
     runtime: RUNTIME_KIND,
+    message: statusMessageFor(liveState, lastError),
     checkedAt: state.deps.now().toISOString(),
   };
   if (meta?.provider) status.provider = meta.provider;
@@ -519,21 +559,45 @@ function buildStatus(state: InternalState): DeviceAgentStatus {
     };
     if (lastError.subcode) errorOut.subcode = lastError.subcode;
     status.lastError = errorOut;
+  } else {
+    status.lastError = null;
   }
   return status;
 }
 
-function unavailableStatus(
-  walletAddress: string | undefined,
-  _mode: SecretStoreMode,
-): DeviceAgentStatus {
+function statusMessageFor(
+  liveState: DeviceAgentRuntimeState,
+  lastError: RuntimeError | null,
+): string {
+  switch (liveState) {
+    case 'running':
+      return RUNTIME_MESSAGES.RUNNING;
+    case 'starting':
+      return RUNTIME_MESSAGES.STARTING;
+    case 'error':
+      return lastError?.message?.trim().length
+        ? lastError.message
+        : RUNTIME_MESSAGES.ERROR_FALLBACK;
+    case 'unavailable':
+      return lastError?.message?.trim().length
+        ? lastError.message
+        : RUNTIME_MESSAGES.UNINITIALIZED;
+    case 'stopped':
+    default:
+      return RUNTIME_MESSAGES.STOPPED;
+  }
+}
+
+function unavailableStatus(walletAddress: string | undefined): DeviceAgentStatus {
   const status: DeviceAgentStatus = {
     available: BROWSER_DEVICE_AGENT_ENABLED,
     enabled: BROWSER_DEVICE_AGENT_ENABLED,
     configured: false,
     state: 'unavailable',
     runtime: RUNTIME_KIND,
+    message: BROWSER_DEVICE_AGENT_ENABLED ? RUNTIME_MESSAGES.UNINITIALIZED : RUNTIME_MESSAGES.DISABLED,
     checkedAt: new Date().toISOString(),
+    lastError: null,
   };
   if (walletAddress) status.walletAddress = walletAddress;
   return status;
@@ -583,18 +647,6 @@ function toStorageUnavailableError(err: unknown): RuntimeError {
     code: DEVICE_AGENT_ERROR_CODES.STORAGE_UNAVAILABLE,
     message: message || 'Device Agent storage is unavailable.',
   };
-}
-
-function createSafeIndexedDbPersistence(): RuntimePersistence {
-  try {
-    return createIndexedDbPersistence();
-  } catch {
-    // createIndexedDbPersistence itself only throws on misuse; the actual IDB
-    // open happens lazily inside load()/save(). The persistence layer already
-    // degrades load() to a default snapshot on failure, so save() is the only
-    // surface that can surface storage_unavailable to the dispatcher.
-    return createMemoryPersistence();
-  }
 }
 
 function createLocalStorageMetadataStore(): MetadataStore {

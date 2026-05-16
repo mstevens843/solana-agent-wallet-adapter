@@ -159,6 +159,7 @@ android {
         targetSdk = 35
         versionCode = parsedVersionCode
         versionName = appVersionName
+        testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
 
         manifestPlaceholders["agenticScheme"] = launchScheme
         manifestPlaceholders["agenticHost"] = launchHost
@@ -304,6 +305,10 @@ dependencies {
     implementation("androidx.webkit:webkit:1.12.1")
     implementation("androidx.lifecycle:lifecycle-runtime-ktx:2.8.7")
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.9.0")
+    implementation("org.bouncycastle:bcprov-jdk18on:1.78.1")
     testImplementation("junit:junit:4.13.2")
     testImplementation("org.json:json:20240303")
+    androidTestImplementation("androidx.test:core-ktx:1.6.1")
+    androidTestImplementation("androidx.test.ext:junit:1.2.1")
+    androidTestImplementation("androidx.test:runner:1.6.2")
 }
