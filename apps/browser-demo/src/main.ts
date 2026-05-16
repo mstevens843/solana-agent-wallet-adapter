@@ -345,6 +345,9 @@ import {
   type DeviceAgentRuntimeState,
   type DeviceAgentStatus,
 } from './deviceAgentClient.js';
+import { renderAgentProtocolsPanel } from './devTabs/agentProtocols.js';
+import { renderSkillsPanel } from './devTabs/skills.js';
+import { renderSessionsPanel } from './devTabs/sessions.js';
 import {
   canUseDeviceAgentBrowserNative as canUseDeviceAgentBrowserNativeForSurface,
   browserNativeProviderTierForProvider,
@@ -355,6 +358,7 @@ import {
 import { setConnectedAddress, setConnectedCluster } from './walletState.js';
 import './devTabs/index.js';
 import { setCloudWalletBridge } from './cloudWalletBridge.js';
+import { workspaceMoreMenuItems, type WorkspaceMoreMenuItem } from './workspaceMore.js';
 
 setCloudWalletBridge({
   async signMessage(message, summary) {
@@ -9641,6 +9645,8 @@ function activePanel(): string {
       // command center so a stale id never strands the UI.
       const devTab = findDevTab(state.activeTab);
       if (devTab && devTab.guard()) return devTab.render();
+      const requiredSurface = requiredMoreSurface(state.activeTab);
+      if (requiredSurface) return requiredSurface.render();
       return commandCenterPanel();
     }
   }
@@ -35047,20 +35053,18 @@ function spendTabVisible(): boolean {
   return Boolean(spendTab?.guard());
 }
 
-interface MoreMenuItem {
-  id: string;
-  label: string;
+const REQUIRED_MORE_SURFACES: Record<string, { label: string; render: () => string }> = {
+  'agent-protocols': { label: 'Agent Payments', render: renderAgentProtocolsPanel },
+  skills: { label: 'Skills', render: renderSkillsPanel },
+  sessions: { label: 'Sessions', render: renderSessionsPanel },
+};
+
+function moreMenuItems(): WorkspaceMoreMenuItem[] {
+  return workspaceMoreMenuItems(listDevTabs());
 }
 
-function moreMenuItems(): MoreMenuItem[] {
-  // "Save Proof" is always present (replaces its old top-level slot). Registered
-  // More surfaces are included when their surface guard allows rendering.
-  const items: MoreMenuItem[] = [{ id: 'labs', label: 'Save Proof' }];
-  for (const tab of listDevTabs()) {
-    if (tab.id === 'spend') continue;
-    if (tab.guard()) items.push({ id: tab.id, label: tab.label });
-  }
-  return items;
+function requiredMoreSurface(id: string): { label: string; render: () => string } | undefined {
+  return REQUIRED_MORE_SURFACES[id];
 }
 
 function moreMenuButton(): string {
@@ -39062,7 +39066,7 @@ function surfaceEyebrow(): string {
     case 'preferences':
       return 'Preferences';
     default: {
-      return findDevTab(state.activeTab) ? 'Layer 1 dev' : 'Home';
+      return findDevTab(state.activeTab) || requiredMoreSurface(state.activeTab) ? 'Layer 1 dev' : 'Home';
     }
   }
 }
@@ -39089,7 +39093,7 @@ function surfaceTitle(): string {
       return 'Preferences';
     default: {
       const devTab = findDevTab(state.activeTab);
-      return devTab?.label ?? 'Home';
+      return devTab?.label ?? requiredMoreSurface(state.activeTab)?.label ?? 'Home';
     }
   }
 }

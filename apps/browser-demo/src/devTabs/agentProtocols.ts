@@ -84,7 +84,7 @@ function renderSubTabControl(): string {
   `;
 }
 
-function renderAgentProtocolsPanel(): string {
+export function renderAgentProtocolsPanel(): string {
   const active = findSubTab(activeSubTabId) ?? subTabs[0]!;
   activeSubTabId = active.id;
   return `

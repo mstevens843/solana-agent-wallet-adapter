@@ -109,7 +109,7 @@ function renderSkillsGuide(): string {
   `;
 }
 
-function renderSkillsPanel(): string {
+export function renderSkillsPanel(): string {
   const subTabs = listSkillsSubTabs();
   if (subTabs.length === 0) return renderEmptyPlaceholder();
   const activeId = String(getActiveSkillsSubTab());
